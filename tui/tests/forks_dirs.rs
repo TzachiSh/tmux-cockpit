@@ -1,14 +1,10 @@
 //! A fetch is one `tmux list-panes`: `@cockpit_dir` rides on it, so the git
 //! facts no longer fork a second `list-panes -a` per tick. Its own test binary,
 //! as `forks.rs` is: `list_panes` keeps thread-local caches and reads the env.
-use cockpit_tui::data::list_panes;
-use std::os::unix::fs::PermissionsExt;
-use std::path::Path;
+mod fake;
 
-fn write_exec(p: &Path, body: &str) {
-    std::fs::write(p, body).unwrap();
-    std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o755)).unwrap();
-}
+use cockpit_tui::data::list_panes;
+use fake::write_exec;
 
 #[test]
 fn one_fetch_is_one_tmux_call_and_cockpit_dir_comes_off_it() {
@@ -44,6 +40,8 @@ fn one_fetch_is_one_tmux_call_and_cockpit_dir_comes_off_it() {
         std::env::set_var("COCKPIT_TMUX", format!("{d}/bin/tmux"));
         std::env::set_var("HOME", &d);
         std::env::set_var("COCKPIT_READONLY", "1");
+        // #505: no proc under it, so the walk asks the fake ps, not the live pid of the same number
+        std::env::set_var("COCKPIT_PROC_DIR", format!("{d}/proc"));
     }
 
     assert_eq!(list_panes().unwrap().len(), 3);

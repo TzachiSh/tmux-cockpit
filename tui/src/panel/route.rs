@@ -62,5 +62,6 @@ fn rule(flow: &Flow) -> (&'static str, &'static str) {
         Flow::Write { .. } => ("sonnet", "asks and writes better"),
         Flow::Fix { .. } => ("haiku", "quick spelling fix"),
         Flow::Explain => ("haiku", "quick screen explanation"),
+        Flow::Ask(_) => ("sonnet", "reads the code before it answers"),
     }
 }

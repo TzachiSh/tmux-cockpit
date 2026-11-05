@@ -423,6 +423,18 @@ fn jq_eq(a: &Value, b: &Value) -> bool {
     }
 }
 
+/// The newest main-thread row's `cwd` in the last 300 lines (#452): where the
+/// session works now, which a `cd` into a worktree moves and the pane's cwd does
+/// not. A sidechain's never counts. The board's reader keeps the same rule.
+pub fn cwd(path: &Path) -> Option<String> {
+    last_lines(path)?
+        .lines()
+        .rev()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter(|r| r["isSidechain"].as_bool() != Some(true) && r["agentId"].is_null())
+        .find_map(|r| r["cwd"].as_str().filter(|c| !c.is_empty()).map(String::from))
+}
+
 /// `doing\t<label>\t<secs>`, `said\t<text>`, `asked\t<prompt>\t<secs>`, each left
 /// out when unknown. Only the last tool_use counts, open parallel ones before it do not.
 /// Then `ask\t<question>` for the newest AskUserQuestion still open (#453).

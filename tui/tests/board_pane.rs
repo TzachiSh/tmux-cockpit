@@ -279,6 +279,18 @@ fn the_pane_names_what_was_asked_said_and_is_being_done() {
     assert!(rows[4].contains("said   —"), "nothing said reads as a dash: {rows:#?}");
 }
 
+/// #452: the header names the dir the branch came from, not the launch path:
+/// a worktree pane launched in the main checkout shows the worktree.
+#[test]
+fn the_header_path_is_the_work_dir_the_branch_came_from() {
+    let (mut ps, th) = (trio(), th());
+    (ps[0].path, ps[0].dir) = ("/src/main".into(), "/src/wt-feat".into());
+    let n = nav(&ps, Sel::Pane("%3".into()));
+    let rows = pane_rows_text(&buf(180, 40, &list(&ps, &[], &th, &n)), 64);
+    assert!(rows[2].contains("/src/wt-feat · ⑂feat/rate-limit · %3"), "{rows:#?}");
+    assert!(!rows[2].contains("/src/main"), "{rows:#?}");
+}
+
 #[test]
 fn a_blocked_agent_shows_its_question_and_where_it_is() {
     let (ps, th) = (trio(), th());
@@ -598,4 +610,42 @@ fn preview_goldens() {
         t.draw(|f| board::render(f, f.area(), &list(&ps, &pvs, &th, &n))).unwrap();
         golden(&format!("board-preview-{w}"), &t.backend().to_string());
     }
+}
+
+/// #460: a viewer pane bound to a background job names the job in place of its
+/// title, on the list row and the pane's own header, so a wrong bind shows.
+#[test]
+fn a_bound_viewer_pane_names_its_job_in_place_of_the_title() {
+    for (th, mark) in [(th(), "→"), (ascii(), "->")] {
+        let mut ps = trio();
+        ps[1].job = "sweep".into();
+        let n = nav(&ps, Sel::Pane("%4".into()));
+        let b = buf(180, 40, &list(&ps, &[], &th, &n));
+        let rows = list_part(&b, 64).join("\n");
+        assert!(rows.contains(&format!("{mark} sweep ")) && !rows.contains("tests"), "{rows}");
+        let head = pane_rows_text(&b, 64);
+        assert!(head[1].contains(&format!("api:1 {} {mark} sweep", th.g.dot)), "{head:#?}");
+    }
+}
+
+/// #460 review: at the name column's 6-column floor the mark must not eat the
+/// name: a bound row keeps at least its job's first characters, in ASCII too.
+#[test]
+fn a_narrow_bound_row_keeps_part_of_the_job_name() {
+    for th in [th(), ascii()] {
+        let mut ps = trio();
+        ps[1].job = "nightly-dependency-sweep".into();
+        let n = nav(&ps, Sel::Pane("%4".into()));
+        let rows = list_part(&buf(120, 20, &list(&ps, &[], &th, &n)), 48).join("\n");
+        assert!(rows.contains(&format!("{} nig", th.g.arrow)), "{rows}");
+    }
+}
+
+/// #460 review: the kill confirm names a bound pane by its job, as its row does.
+#[test]
+fn the_confirm_title_names_the_bound_job() {
+    let mut ps = trio();
+    ps[1].job = "sweep".into();
+    let title = board::Confirm::open(&board::EXTRAS[0], &ps[1]).unwrap().title;
+    assert!(title.ends_with(" · sweep") && !title.contains("tests"), "{title:?}");
 }

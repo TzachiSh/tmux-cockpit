@@ -11,12 +11,20 @@ The board lists every agent pane, on every session, blocked ones first. Each row
 shows its diff stat (`+a -d`, `clean`, `no repo`, `?N new`) and branch, so
 "which of my agents needs my eyes" is answered without visiting each pane.
 
-The tree a row diffs is the pane's cwd, unless the pane option `@cockpit_dir`
-names another. An agent that made its worktree by hand (`git worktree add`
-from the main checkout) keeps its process, and so its cwd, in the main
-checkout and drives the tree with `git -C`; its row would read clean master.
-One line from the agent fixes that, and every reader (the board, `--delta`
-for the Stop hook's ◆, `prefix + i`) follows it:
+The tree a row diffs is the pane option `@cockpit_dir` when it names a
+directory, else the session transcript's newest `cwd`, else the pane's cwd.
+`r` reviews that same tree: tmux-review asks `cockpit-tui workdir %N` for it
+(#470), for every pane whose `@cockpit_dir` does not name a directory. When the
+binary is missing, has no `workdir`, exits non-zero or prints anything but an
+absolute directory, it takes `@cockpit_dir`, else the cwd. The call is bounded by
+`timeout 3`; on a box without GNU `timeout` (stock macOS) it runs unbounded. An
+agent pane with no session id is the one case left apart: `workdir` does not run
+`claude agents` to find its transcript, so it gets its launch dir, where the
+board's row may show the transcript's tree. An agent that made its worktree by hand
+(`git worktree add` from the main checkout) keeps its process, and so its cwd,
+in the main checkout and drives the tree with `git -C`; its row would read
+clean master. One line from the agent fixes that, and every reader (the board,
+`--delta` for the Stop hook's ◆, `prefix + i`) follows it:
 
 ```sh
 tmux set-option -p -t "$TMUX_PANE" @cockpit_dir ~/.cache/cockpit-wt/my-branch
@@ -35,7 +43,7 @@ From an **agent pane** the board opens with that pane selected, so `prefix + r`
 there is one `r` from its review. Finishing a review returns to the board, on
 the pane you just left; `q` is the way out.
 
-The review diffs the **git root of the pane's cwd**, and the header names it
+The review diffs the **git root of that tree**, and the header names it
 (`root: ~/.cache/cockpit-wt/api-work`). An agent that edits another worktree
 by absolute path from a main-checkout pane is reviewed on the wrong tree, and
 that line is how you notice. The fix is workflow, not the plugin: an agent that
@@ -138,23 +146,15 @@ row, when what you want is a handful of lines rather than a file. All three go
 out as OSC 52, so they reach the system clipboard only if your terminal accepts
 clipboard writes; some disable them by default.
 
-**Big files are named, not diffed.** To tell whether a file changed at all git
-hashes the whole of it, about 100 ms at 32 MB and 26 s at 1 GB, and the popup
-is modal and rebuilds its rows on every reload. So a changed or untracked file
-over **32 MB** is kept away from git and reported on one notice row at the top
-of the list instead, though a tracked file whose size did not change is still
-hashed once, so git can tell it changed:
-
-```text
-data/dump.bin (412 MB) skipped — over 32 MB, review it directly
-```
-
-The row carries no comment, no `^Y` and no mark glyph, exactly like the row a
-diff too large to anchor line-by-line leaves. The file itself is untouched, and
-the tree still counts as dirty because of it, so a pane whose only change is a
-skipped file stays on the board and its review opens on that notice
-rather than on an empty diff. Put core dumps in `.gitignore`, as git's own
-templates do, and the review never sees them at all.
+**Big files are counted, not hashed.** To tell whether a file changed at all
+git hashes the whole of it, about 100 ms at 32 MB and 26 s at 1 GB. So when the
+cockpit asks whether a tree changed, a changed or untracked file over **32 MB**
+is kept away from git and counted as one binary change instead, though a
+tracked file whose size did not change is still hashed once, so git can tell it
+changed. The file itself is untouched, and the tree still counts as dirty
+because of it, so a pane whose only change is a big file stays on the board and
+its review still opens. Put core dumps in `.gitignore`, as git's own templates
+do, and the review never sees them at all.
 
 **`^B` picks what the diff is taken against.** The base is the first of three
 that holds: the checkpoint `refs/cockpit/reviewed/<branch>` when a review of

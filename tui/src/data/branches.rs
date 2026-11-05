@@ -1,6 +1,7 @@
 //! What the branch popup reads from git (#246). Every call goes through
 //! `gitsafe`'s flags, so a repo's own config runs nothing as the user.
 use super::gitsafe::git;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Branch {
@@ -48,23 +49,87 @@ fn refs(dir: &str, ns: &str) -> Vec<(String, String)> {
 /// Every worktree as `(path, branch)`. `-z` keeps a path with a newline in one
 /// record, but needs git 2.36; older git rejects it and prints nothing, so the
 /// plain porcelain is read instead, and a record whose path was cut by a newline
-/// (a line that is no worktree attribute) is dropped rather than guessed at.
-fn worktrees(dir: &str) -> Vec<(String, Option<String>)> {
+/// (a line that is no worktree attribute) is dropped rather than guessed at. So
+/// is one that is not this repo's (#348, #532): a newline name can forge a whole
+/// `worktree <dir>` line, and `<dir>` may be any checkout. See [`ours`].
+fn worktrees(dir: &str, top: &str) -> Vec<(String, Option<String>)> {
     let z = git(dir, &[], None, &["worktree", "list", "--porcelain", "-z"]);
     if !z.is_empty() {
         return records(z.split('\0'), true);
     }
+    // Asked from the top: before 2.13 the answer was the cwd's prefix plus a path from the top.
+    let top = if top.is_empty() { dir } else { top };
+    let common = git(top, &[], None, &["rev-parse", "--git-common-dir"]);
+    let common = common.trim_end_matches('\n');
+    if common.is_empty() {
+        return Vec::new();
+    }
+    let common = Path::new(top).join(common);
     let plain = git(dir, &[], None, &["worktree", "list", "--porcelain"]);
-    records(plain.split('\n'), false)
+    let mut v = records(plain.split('\n'), false);
+    v.retain(|(p, b)| ours(Path::new(p), b.as_deref(), &common));
+    v
+}
+
+/// True for a worktree of the repo whose common dir is `common`, as tmux-branch's
+/// `wt_ours` decides it, and holding `branch` if it names one. A forged record can
+/// pair a real tree's path with a cut tree's branch line; that tree's own HEAD names
+/// its real branch. A path that is gone is kept: it names no directory to open.
+fn ours(p: &Path, branch: Option<&str>, common: &Path) -> bool {
+    if !p.exists() {
+        return true;
+    }
+    let Some(e) = entry(p, common) else { return false };
+    let head = || first_line(&e.join("HEAD"));
+    branch.is_none_or(|b| head().is_some_and(|h| h.strip_prefix("ref: refs/heads/") == Some(b)))
+}
+
+/// The git dir of the tree at `p` when the tree is this repo's. The main checkout's
+/// `.git` is the common dir; a linked tree's `.git` file names a dir in its
+/// `worktrees/` whose `gitdir` file names that `.git` back. Links are followed, as
+/// git follows them.
+fn entry(p: &Path, common: &Path) -> Option<PathBuf> {
+    let dot = p.join(".git");
+    if dot.is_dir() {
+        return same(&dot, common).then_some(dot);
+    }
+    let g = p.join(first_line(&dot)?.strip_prefix("gitdir: ")?);
+    let home = same(&g.join(".."), &common.join("worktrees"));
+    let back = home && first_line(&g.join("gitdir")).is_some_and(|b| same(&g.join(b), &dot));
+    back.then_some(g)
+}
+
+/// Both paths exist and are the same file (device and inode), as the shell's `-ef`.
+fn same(a: &Path, b: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let id = |p: &Path| std::fs::metadata(p).map(|m| (m.dev(), m.ino()));
+    matches!((id(a), id(b)), (Ok(x), Ok(y)) if x == y)
+}
+
+/// The first line of a regular file, read no further than 4 KiB.
+fn first_line(f: &Path) -> Option<String> {
+    use std::io::Read;
+    if !f.is_file() {
+        return None;
+    }
+    let mut s = String::new();
+    std::fs::File::open(f).ok()?.take(4096).read_to_string(&mut s).ok()?;
+    let l = s.lines().next()?;
+    (!l.is_empty()).then(|| l.to_string())
 }
 
 fn records<'a>(fields: impl Iterator<Item = &'a str>, nul: bool) -> Vec<(String, Option<String>)> {
-    const ATTRS: [&str; 6] = ["HEAD ", "branch ", "bare", "detached", "locked", "prunable"];
+    // As git's porcelain prints them: each label is a whole line, and `locked`
+    // and `prunable` may also carry a reason after a space.
+    const LABELS: [&str; 4] = ["bare", "detached", "locked", "prunable"];
+    const PREFIXES: [&str; 4] = ["HEAD ", "branch ", "locked ", "prunable "];
+    let attr = |f: &str| LABELS.contains(&f) || PREFIXES.iter().any(|a| f.starts_with(a));
     let mut out = Vec::new();
     let mut cur: Option<(String, Option<String>, bool)> = None;
     let mut flush = |cur: &mut Option<(String, Option<String>, bool)>| {
-        if let Some((p, b, ok)) = cur.take()
-            && ok
+        // An empty path names nothing; tmux-branch drops it too.
+        if let Some((p, b, true)) = cur.take()
+            && !p.is_empty()
         {
             out.push((p, b));
         }
@@ -76,7 +141,7 @@ fn records<'a>(fields: impl Iterator<Item = &'a str>, nul: bool) -> Vec<(String,
         } else if let Some((_, b, ok)) = cur.as_mut() {
             if let Some(r) = f.strip_prefix("branch refs/heads/") {
                 *b = Some(r.to_string());
-            } else if !nul && !f.is_empty() && !ATTRS.iter().any(|a| f.starts_with(a)) {
+            } else if !nul && !f.is_empty() && !attr(f) {
                 *ok = false;
             }
         }
@@ -90,7 +155,7 @@ fn records<'a>(fields: impl Iterator<Item = &'a str>, nul: bool) -> Vec<(String,
 fn elsewhere(dir: &str) -> Vec<(String, String)> {
     let top = git(dir, &[], None, &["rev-parse", "--show-toplevel"]);
     let top = top.trim_end_matches('\n');
-    worktrees(dir)
+    worktrees(dir, top)
         .into_iter()
         .filter_map(|(p, b)| if p == top { None } else { Some((b?, p)) })
         .collect()
@@ -145,4 +210,56 @@ pub fn graph(dir: &str, b: &Branch) -> String {
 /// differs from the input is refused too.
 pub fn valid_name(dir: &str, name: &str) -> bool {
     !name.is_empty() && git(dir, &[], None, &["check-ref-format", "--branch", name]).trim_end_matches('\n') == name
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{records, same};
+
+    fn plain(s: &str) -> Vec<(String, Option<String>)> {
+        records(s.split('\n'), false)
+    }
+
+    #[test]
+    fn a_whole_bare_or_detached_line_is_a_label_that_keeps_the_record() {
+        for l in ["bare", "detached"] {
+            let got = plain(&format!("worktree /none/d\nHEAD 0\n{l}\n"));
+            assert_eq!(got, [("/none/d".to_string(), None)], "{l}");
+        }
+    }
+
+    #[test]
+    fn locked_and_prunable_are_labels_alone_or_before_a_space_and_a_reason() {
+        for l in ["locked", "locked on usb", "prunable", "prunable gitdir gone"] {
+            let got = plain(&format!("worktree /none/d\nHEAD 0\n{l}\n"));
+            assert_eq!(got, [("/none/d".to_string(), None)], "{l}");
+        }
+    }
+
+    #[test]
+    fn a_line_that_only_starts_with_locked_or_prunable_cuts_the_record() {
+        for l in ["lockedx", "prunablex", "locked\tx"] {
+            let got = plain(&format!("worktree /none/d\n{l}\nHEAD 0\nbranch refs/heads/c\n"));
+            assert_eq!(got, [], "{l}");
+        }
+    }
+
+    #[test]
+    fn same_is_one_inode_so_a_hard_link_is_the_same_file_as_the_shells_ef() {
+        let d = std::env::temp_dir().join(format!("cockpit-same-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("a"), "x").unwrap();
+        std::fs::hard_link(d.join("a"), d.join("b")).unwrap();
+        std::fs::write(d.join("c"), "x").unwrap();
+        let (ab, ac) = (same(&d.join("a"), &d.join("b")), same(&d.join("a"), &d.join("c")));
+        let _ = std::fs::remove_dir_all(&d);
+        assert!(ab, "a hard link");
+        assert!(!ac, "a copy");
+    }
+
+    #[test]
+    fn an_empty_worktree_path_is_dropped() {
+        let got = plain("worktree /none/x\nworktree \nHEAD 0\nbranch refs/heads/e\n");
+        assert_eq!(got, [("/none/x".to_string(), None)]);
+    }
 }

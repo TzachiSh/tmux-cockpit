@@ -2,14 +2,11 @@
 //! the hook's running count, field 15 names the session whose `subagents/` dir fills
 //! `Pane.subs`. Its own test binary, as `forks_dirs.rs` is: `list_panes` keeps thread-local
 //! caches and reads the env.
-use cockpit_tui::data::{Pane, list_panes};
-use std::os::unix::fs::PermissionsExt;
-use std::path::Path;
+mod fake;
 
-fn write_exec(p: &Path, body: &str) {
-    std::fs::write(p, body).unwrap();
-    std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o755)).unwrap();
-}
+use cockpit_tui::data::{Pane, list_panes};
+use fake::write_exec;
+use std::path::Path;
 
 fn sub(dir: &Path, id: &str, desc: &str) {
     std::fs::create_dir_all(dir).unwrap();
@@ -81,6 +78,8 @@ fn field_14_is_the_count_and_the_subagents_dir_follows_the_transcript_then_the_s
         std::env::set_var("HOME", &d);
         std::env::remove_var("CLAUDE_CONFIG_DIR");
         std::env::set_var("COCKPIT_READONLY", "1");
+        // #505: no proc under it, so the walk asks the fake ps, not the live pid of the same number
+        std::env::set_var("COCKPIT_PROC_DIR", format!("{d}/proc"));
     }
 
     let mut ps = list_panes().unwrap();

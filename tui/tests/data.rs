@@ -1,10 +1,12 @@
 //! The data layer's caches, classifier and pane reads, driven through PATH
 //! shims: no real tmux, no real ps, no clock assertion and no sleep. Every
 //! fixture is a literal, so a failure names one behaviour and not the box.
+mod fake;
+
 use cockpit_tui::data::gitsafe::{SAFE, no_filters, tree_stat};
 use cockpit_tui::data::{Pane, git_facts, list_panes, preview, screen, split_cursor, view};
+use fake::write_exec;
 use std::fs::{FileTimes, OpenOptions};
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
@@ -37,11 +39,6 @@ impl Drop for Env {
             }
         }
     }
-}
-
-fn write_exec(p: &Path, body: &str) {
-    std::fs::write(p, body).unwrap();
-    std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o755)).unwrap();
 }
 
 pub struct Rig {
@@ -78,6 +75,8 @@ impl Rig {
         let env = Env::set(&[
             ("PATH", format!("{d}/bin:{}", std::env::var("PATH").unwrap_or_default())),
             ("COCKPIT_TMUX", format!("{d}/bin/tmux")),
+            // no proc under it: the walk falls back to the fake `ps`, not the box's pids
+            ("COCKPIT_PROC_DIR", format!("{d}/proc")),
             ("HOME", d),
             ("COCKPIT_READONLY", "1".into()),
         ]);
@@ -90,6 +89,18 @@ impl Rig {
 
     fn rows(&self, rows: &[String]) {
         std::fs::write(self.dir.join("rows"), rows.join("\n") + "\n").unwrap();
+    }
+
+    /// A fake proc root: `(pid, comm, children)`; the walk reads it, not `ps`.
+    fn proc(&self, procs: &[(&str, &str, &str)]) {
+        let root = self.dir.join("proc");
+        std::fs::create_dir_all(root.join("self/task")).unwrap();
+        for (pid, comm, kids) in procs {
+            let d = root.join(pid);
+            std::fs::create_dir_all(d.join("task").join(pid)).unwrap();
+            std::fs::write(d.join("task").join(pid).join("children"), kids).unwrap();
+            std::fs::write(d.join("comm"), format!("{comm}\n")).unwrap();
+        }
     }
 
     fn ps(&self, table: &str) {
@@ -188,6 +199,24 @@ fn agent_panes_come_from_the_process_tree_and_not_from_a_name() {
         row("%2", "zsh", "-", "s2", "202"),
         row_at("%3", "henosis-claude-resume:0", "zsh", "-", "s3", "203", "/w"),
     ]);
+
+    assert_eq!(ids(&list_panes().unwrap()), ["%1"]);
+}
+
+/// #492: with a proc root, the tree comes from `children` files and `ps` is not
+/// asked: the fake `ps` here lists only a shell, so a verdict of "agent" can
+/// only have come from the grandchild under /proc.
+#[test]
+fn a_pane_tree_is_walked_under_proc_and_ps_is_not_asked() {
+    let r = Rig::new("procwalk");
+    r.ps("");
+    r.proc(&[
+        ("400", "bash", "401 "),
+        ("401", "sh", "402 "),
+        ("402", "2.1.318", ""),
+        ("410", "zsh", ""),
+    ]);
+    r.rows(&[row("%1", "bash", "-", "s1", "400"), row("%2", "zsh", "-", "s2", "410")]);
 
     assert_eq!(ids(&list_panes().unwrap()), ["%1"]);
 }
@@ -644,6 +673,45 @@ fn planted_git_config_never_runs() {
     assert_eq!(pm, "+5 -1  ?1 new", "the hardened diff still measures the tree");
 }
 
+/// The board may start with a dotfiles setup's GIT_DIR, or one of its kin, in
+/// its environment: a row's name, branch, diff count and root stay the pane repo's.
+#[test]
+fn an_inherited_git_variable_never_moves_a_boards_row() {
+    let r = Repo::new("redirect");
+    // tracked past the cap: only the inherited index makes it look untracked, so big
+    std::fs::File::create(r.dir.join("core"))
+        .unwrap()
+        .set_len(33 * 1024 * 1024)
+        .unwrap();
+    r.git(&["add", "core"]);
+    r.git(&["-c", "user.name=t", "-c", "user.email=t@e", "commit", "-q", "-m", "core"]);
+    let other = r.dir.join(".git/other"); // inside .git: never in the pane repo's tree
+    let o = other.display().to_string();
+    let git = |args: &[&str]| assert!(r.git(&[&["-C", o.as_str()][..], args].concat()).status.success());
+    std::fs::create_dir_all(&other).unwrap();
+    git(&["init", "-q", "-b", "elsewhere"]);
+    std::fs::write(other.join("g"), "x\n").unwrap();
+    git(&["add", "-A"]);
+    git(&["-c", "user.name=t", "-c", "user.email=t@e", "commit", "-q", "-m", "other"]);
+    let want = git_facts(&r.path());
+    assert_eq!(want.1, "clean", "{want:?}");
+    let rows = [
+        ("GIT_DIR", format!("{o}/.git")),
+        ("GIT_WORK_TREE", o.clone()),
+        ("GIT_COMMON_DIR", format!("{o}/.git")),
+        ("GIT_INDEX_FILE", format!("{o}/.git/index")),
+    ];
+    let moved: Vec<&str> = rows
+        .into_iter()
+        .filter(|(var, val)| {
+            let _e = Env::set(&[(var, val.clone())]); // `r` holds ENV
+            git_facts(&r.path()) != want
+        })
+        .map(|(var, _)| var)
+        .collect();
+    assert_eq!(moved, Vec::<&str>::new(), "these moved the row");
+}
+
 fn stat(r: &Repo, base: Option<&str>) -> Option<(u64, u64, u64, String)> {
     tree_stat(&r.path(), &r.dir.join(".git").display().to_string(), base)
 }
@@ -903,7 +971,13 @@ fn a_hanging_claude_agents_does_not_hang_the_read() {
     assert_eq!(ids(&ps), ["%1"]);
     assert_eq!(get(&ps, "%1").sess, "");
     assert!(took < std::time::Duration::from_secs(8), "the read took {took:?}");
-    // the fake ran, so the deadline was what ended it
+    // the fake ran (on its own thread, #492), so the deadline was what ended it
+    for _ in 0..2000 {
+        if r.dir.join("claude.pid").exists() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
     assert!(r.dir.join("claude.pid").exists());
 }
 
@@ -1164,6 +1238,106 @@ fn a_prompt_dated_after_now_has_no_age_in_the_window_or_kept() {
     assert_eq!(asked_of(&r, "%1"), ("go".to_string(), None));
 }
 
+/// #452: a user row carrying `cwd`, main-thread or sidechain.
+fn cwd_row(cwd: &str, side: bool) -> String {
+    let v = serde_json::json!({"type": "user", "timestamp": "2026-08-27T00:00:00.000Z", "cwd": cwd,
+        "isSidechain": side, "message": {"content": [{"type": "tool_result", "tool_use_id": "x"}]}});
+    format!("{v}\n")
+}
+
+/// #452: pane %1 at `/w`, its `@cockpit_dir` `opt`, transcript s1 `body`; its `dir`.
+fn dir_of(r: &Rig, opt: &str, body: &str) -> String {
+    r.transcript("s1", body);
+    r.rows(&[format!("{}\u{1f}{opt}", row("%1", "claude", "running", "s1", "100"))]);
+    get(&list_panes().unwrap(), "%1").dir.clone()
+}
+
+impl Rig {
+    /// A directory under the rig, created, as a string.
+    fn sub(&self, name: &str) -> String {
+        let d = self.dir.join(name);
+        std::fs::create_dir_all(&d).unwrap();
+        d.display().to_string()
+    }
+}
+
+/// #452: with no `@cockpit_dir`, the transcript's newest main-thread cwd is the
+/// work dir: an agent that moved into a worktree is shown there.
+#[test]
+fn the_transcripts_newest_cwd_is_the_work_dir() {
+    let r = Rig::new("dircwd");
+    let (old, new, side) = (r.sub("old"), r.sub("wt"), r.sub("side"));
+    let body = cwd_row(&old, false) + &cwd_row(&new, false) + &cwd_row(&side, true);
+    assert_eq!(dir_of(&r, "", &body), new);
+}
+
+/// #452: `@cockpit_dir` naming a directory outranks the transcript's cwd.
+#[test]
+fn cockpit_dir_outranks_the_transcript_cwd() {
+    let r = Rig::new("diropt");
+    let (opt, said) = (r.sub("opt"), r.sub("said"));
+    assert_eq!(dir_of(&r, &opt, &cwd_row(&said, false)), opt);
+}
+
+/// #452: rows: a dangling `@cockpit_dir` and a dangling transcript cwd, an
+/// empty cwd, no transcript at all. Each falls through to pane_current_path.
+#[test]
+fn a_work_dir_that_is_not_a_directory_falls_through_to_the_pane_path() {
+    let r = Rig::new("dirgone");
+    let said = r.sub("said");
+    assert_eq!(dir_of(&r, "/no/such/opt", &cwd_row(&said, false)), said, "dangling option");
+    assert_eq!(dir_of(&r, "/no/such/opt", &cwd_row("/no/such/said", false)), "/w", "both dangling");
+    assert_eq!(dir_of(&r, "", &cwd_row("", false)), "/w", "an empty cwd");
+    assert_eq!(dir_of(&r, "", ""), "/w", "nothing in the transcript");
+}
+
+/// #452: the cwd seen is kept for the transcript, so 300 KB of rows that carry
+/// none, past the 256 KB window, do not take the work dir back to the pane path.
+#[test]
+fn the_transcript_cwd_outlives_a_window_of_rows_without_one() {
+    let r = Rig::new("dirkeep");
+    let wt = r.sub("wt");
+    assert_eq!(dir_of(&r, "", &cwd_row(&wt, false)), wt);
+    append(&r.dir.join(".claude/projects/-w/s1.jsonl"), &turn_output(300));
+    r.rows(&[format!("{}\u{1f}", row("%1", "claude", "running", "s1", "100"))]);
+    assert_eq!(get(&list_panes().unwrap(), "%1").dir, wt);
+}
+
+/// #452: a file shorter than the last read is another file: its cwd is not kept.
+#[test]
+fn a_rewritten_transcript_keeps_no_cwd_from_the_old_one() {
+    let r = Rig::new("dirshrink");
+    let wt = r.sub("wt");
+    assert_eq!(dir_of(&r, "", &(cwd_row(&wt, false) + &turn_output(1))), wt);
+    assert_eq!(dir_of(&r, "", BASH_ROW), "/w");
+}
+
+/// #452: `--json` keeps `path`, the launch cwd, and adds `dir`, the work dir.
+#[test]
+fn the_json_rows_carry_the_work_dir_beside_the_launch_path() {
+    let r = Rig::new("dirjson");
+    let wt = r.sub("wt");
+    dir_of(&r, "", &cwd_row(&wt, false));
+    let v: serde_json::Value = serde_json::from_str(&cockpit_tui::fleet::rows_json(&list_panes().unwrap())).unwrap();
+    assert_eq!((v[0]["path"].as_str(), v[0]["dir"].as_str()), (Some("/w"), Some(wt.as_str())));
+}
+
+/// #452 review: another file replacing the transcript at the same path, even a
+/// longer one, is another session's: the old file's cwd is not kept.
+#[test]
+fn a_replaced_transcript_keeps_no_cwd_from_the_old_file() {
+    let r = Rig::new("dirreplace");
+    let wt = r.sub("wt");
+    assert_eq!(dir_of(&r, "", &cwd_row(&wt, false)), wt);
+    // created beside it while the old file still exists, so its inode differs,
+    // then renamed over it
+    let p = r.dir.join(".claude/projects/-w/s1.jsonl");
+    std::fs::write(p.with_extension("new"), turn_output(1)).unwrap();
+    std::fs::rename(p.with_extension("new"), &p).unwrap();
+    r.rows(&[format!("{}\u{1f}", row("%1", "claude", "running", "s1", "100"))]);
+    assert_eq!(get(&list_panes().unwrap(), "%1").dir, "/w");
+}
+
 /// #453: an assistant row asking `questions` through AskUserQuestion, as id `id`.
 fn ask_row(id: &str, questions: serde_json::Value) -> String {
     let v = serde_json::json!({"type": "assistant", "timestamp": "2026-08-27T00:00:01.000Z",
@@ -1419,4 +1593,25 @@ fn a_tool_use_after_the_open_question_keeps_the_hooks_message() {
     r.transcript("s1", &format!("{v}\n"));
     r.rows(&[hooked("%1", "needs-input", "s1")]);
     assert_eq!(get(&list_panes().unwrap(), "%1").msg, "Claude needs your permission");
+}
+
+/// #460: `@cockpit_job_name`, field 16, is the bound job's name, cleaned: it comes
+/// from a pane title. A row without it (an older format) has no job.
+#[test]
+fn the_bound_job_name_is_read_cleaned_and_absent_is_none() {
+    let r = Rig::new("jobname");
+    let base = row("%1", "claude", "running", "-", "100");
+    let job = "night\u{202e}ly\u{1b}[31m sweep";
+    r.rows(&[
+        format!("{base}\u{1f}\u{1f}\u{1f}\u{1f}{job}"),
+        row("%2", "claude", "running", "-", "101"),
+    ]);
+    let ps = list_panes().unwrap();
+    assert_eq!(
+        (get(&ps, "%1").job.as_str(), get(&ps, "%2").job.as_str()),
+        ("nightly[31m sweep", "")
+    );
+    let v: serde_json::Value = serde_json::from_str(&cockpit_tui::fleet::rows_json(&ps)).unwrap();
+    let job_of = |id: &str| v.as_array().unwrap().iter().find(|o| o["id"] == id).unwrap()["job"].clone();
+    assert_eq!((job_of("%1"), job_of("%2")), ("nightly[31m sweep".into(), "".into()));
 }

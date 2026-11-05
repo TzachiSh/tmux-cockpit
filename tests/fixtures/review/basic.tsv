@@ -1,6 +1,0 @@
-tests/foo_test.sh	-2	y	tests/foo_test.sh:2 (-)  y
-tests/foo_test.sh	2	CHANGED	tests/foo_test.sh:2 (+)  CHANGED
-deleteme.txt	-1	gone1	deleteme.txt:1 (-)  gone1
-deleteme.txt	-2	gone2	deleteme.txt:2 (-)  gone2
-src.go	-2	b	src.go:2 (-)  b
-src.go	2	CHANGED	src.go:2 (+)  CHANGED

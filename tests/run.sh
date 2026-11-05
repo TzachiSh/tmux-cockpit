@@ -226,6 +226,10 @@ cpu_under() {                 # <label> <budget-seconds> <cmd...>  stdout -> $CP
     [ "$rc" -eq 124 ] && { bad "$label" "under ${budget}s of CPU" "hung: killed at 10s"; return; }
     cpu_is "$label" "$budget" "$(awk '{printf "%.3f", $1+$2}' "$CPUT")"
 }
+# The worktree's tree_diff, sourced as tmux-review sources it: git.sh's guards first.
+tdiff() {                     # <dir> [git diff args...]
+    bash -c '. "$1/git.sh"; . "$1/review-diff.sh"; shift; tree_diff "$@"' _ "$DIR/scripts/lib" "$@"
+}
 cleanup() {
     kill_socks
     "$TMUX_REAL" -L "$SUITE_SOCK" kill-server >/dev/null 2>&1
@@ -357,6 +361,47 @@ until_cap "$PBO" o '*on beta*' && ok "prefix b opens on the pane's repo (beta), 
     || bad "prefix b opens on the pane's repo (beta), not the session's start dir (alpha)" "on beta" "$("$TMUX_REAL" -L "$PBO" capture-pane -p -t o | grep -o 'on [a-z]* ·[^ ]* [^ ]*' | head -1)"
 "$TMUX_REAL" -L "$PBO" send-keys -t o Escape; sleep 0.3
 "$TMUX_REAL" -L "$PBO" kill-server >/dev/null 2>&1; "$TMUX_REAL" -L "$PB" kill-server >/dev/null 2>&1
+fi
+
+echo "== prefix i, f and w open on the pane they were pressed in, not one an earlier key stored (#494) =="
+# Each popup key stores #{pane_id} on the session and its popup reads it back. A
+# key that forgot to store it would open on whatever pane the last key left there:
+# live, so nothing complains, but the wrong one. A stub cockpit-tui logs each call.
+if need_tmux "popup source pane"; then :; else
+SP="cockpit-sp-$$"; SPO="cockpit-spo-$$"; SOCKS="$SOCKS $SP $SPO"; SPD=$(mktmpd)
+# The board passes no pane to the binary, so for it the stub logs its caller's -p.
+cat > "$SPD/cockpit-tui" <<STUB
+#!/bin/sh
+[ "\$1" = --version ] && { echo "cockpit-tui 9.9.9"; exit 0; }
+[ "\$1" = board ] && set -- board "\$(ps -o args= -p \$PPID | grep -o -- '-p %[0-9]*')"
+printf '%s\\n' "\$*" >> "$SPD/log"
+STUB
+chmod +x "$SPD/cockpit-tui"
+COCKPIT_TUI_BIN="$SPD/cockpit-tui" XDG_STATE_HOME="$SPD/state" \
+    "$TMUX_REAL" -L "$SP" -f /dev/null new-session -d -s t -x 120 -y 30 -c "$SPD" 'exec sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$SP" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+"$TMUX_REAL" -L "$SP" new-window -t t: -c "$SPD" 'exec sleep 300' >/dev/null 2>&1
+sp0=$("$TMUX_REAL" -L "$SP" display-message -p -t t:0 '#{pane_id}')
+sp1=$("$TMUX_REAL" -L "$SP" display-message -p -t t:1 '#{pane_id}')
+"$TMUX_REAL" -L "$SPO" -f /dev/null new-session -d -s o -x 120 -y 32 -c "$SPD" \
+    "TERM=xterm-256color exec $TMUX_REAL -L $SP attach -t t" >/dev/null 2>&1
+until_out '?*' "$TMUX_REAL" -L "$SP" list-clients -F '#{client_name}'
+spkey() {                     # <window> <key> <log line it must add>: press it there, wait for the popup to close
+    "$TMUX_REAL" -L "$SP" select-window -t "t:$1" >/dev/null 2>&1
+    "$TMUX_REAL" -L "$SPO" send-keys -t o C-b "$2"
+    until_file "$SPD/log" "*$3"
+    until_out 'closed' sh -c "\"$TMUX_REAL\" -L $SPO capture-pane -p -t o | grep -q -e 'info · %' -e 'panel · %' || echo closed"
+}
+spkey 0 i "info $sp0"
+spkey 1 f "panel $sp1"
+spkey 0 i "info $sp0"
+spkey 1 w "board"
+is "f opens on its own pane after i stored another, and i on its own after f" \
+   "info $sp0|panel $sp1|info $sp0" "$(head -3 "$SPD/log" | tr '\n' '|' | sed 's/|$//')"
+is "and the board key (w) passes the pane it was pressed in" "board -p $sp1" "$(sed -n 4p "$SPD/log")"
+is "the popup reads the stored pane once: none is left on the session for a key that forgets to store it" "" \
+   "$("$TMUX_REAL" -L "$SP" show-option -qv -t t: @cockpit_src_pane)"
+"$TMUX_REAL" -L "$SPO" kill-server >/dev/null 2>&1; "$TMUX_REAL" -L "$SP" kill-server >/dev/null 2>&1
 fi
 
 echo "== the menu is not a way for a directory name to run tmux commands =="
@@ -1585,6 +1630,32 @@ is "an unchanged branch writes nothing" "0" "$(wc -l < "$WSLOG" | tr -d ' ')"
 printf 'ref: refs/heads/main\n' > "$WSD/repo/.git/HEAD"
 wset "$WSR"
 is "a switched branch lands" "main" "$(wsb "$WSR")"
+# #452: a worktree made by hand leaves the process in the main checkout, so the
+# branch comes from @cockpit_dir when it names a directory; a space in it is quoted.
+mkdir -p "$WSD/repo/.git/worktrees/wt1" "$WSD/wt dir"
+printf 'ref: refs/heads/fix/wt\n' > "$WSD/repo/.git/worktrees/wt1/HEAD"
+printf 'gitdir: %s\n' "$WSD/repo/.git/worktrees/wt1" > "$WSD/wt dir/.git"
+"$TMUX_REAL" -L "$WS" set-option -p -t "$WSR" @cockpit_dir "$WSD/wt dir" >/dev/null 2>&1
+wset "$WSR"
+is "@cockpit_dir's worktree branch, not the cwd's" "fix/wt ⑂wt1" "$(wsb "$WSR")"
+"$TMUX_REAL" -L "$WS" set-option -p -t "$WSR" @cockpit_dir "$WSD/gone" >/dev/null 2>&1
+wset "$WSR"
+is "a dangling @cockpit_dir falls back to the cwd" "main" "$(wsb "$WSR")"
+# A relative @cockpit_dir passes -d against the hook's own cwd, and git_label's walk
+# up never ends on a path with no slash: every hook fire left a spinning bash.
+# `timeout` is only the hang guard; the row asserts the exit and the fallback.
+if command -v timeout >/dev/null 2>&1; then
+    mkdir -p "$WSD/sub"
+    for rel in . sub; do
+        "$TMUX_REAL" -L "$WS" set-option -p -t "$WSR" @cockpit_dir "$rel" >/dev/null 2>&1
+        rc=0
+        (cd "$WSD" && TMUX="$SOCKDIR/$WS,0,0" timeout 5 "$DIR/scripts/tmux-where" branch --set "$WSR" \
+            >/dev/null 2>&1) || rc=$?
+        is "a relative @cockpit_dir ($rel) returns and falls back to the cwd" "0 main" "$rc $(wsb "$WSR")"
+    done
+else
+    skip_ "a relative @cockpit_dir returns (no timeout)"
+fi
 "$TMUX_REAL" -L "$WS" kill-server >/dev/null 2>&1
 fi
 
@@ -1740,6 +1811,14 @@ tcsid=$("$TMUX_REAL" -L "$TC" display-message -p -t here '#{session_id}')
 ( cd "$TCD/a" && env -u TMUX_PANE TMUX="/tmp/tmux-$(id -u)/$TC,0,${tcsid#\$}" "$DIR/scripts/tm" made </dev/null >/dev/null 2>&1 )
 is "the new session starts where the pane was, not where the old session began" "$TCD/b" \
    "$("$TMUX_REAL" -L "$TC" display-message -p -t made: '#{session_path}' 2>/dev/null)"
+# On tmux master the popup is the session's active pane, so the session's active
+# pane is no longer the one prefix+s was pressed in (#494): the key passes it as
+# TM_PANE. Here a pane in a, with b's window active, stands in for that.
+tcpa=$("$TMUX_REAL" -L "$TC" display-message -p -t here:0 '#{pane_id}')
+( cd "$TCD/b" && env -u TMUX_PANE TM_PANE="$tcpa" TMUX="/tmp/tmux-$(id -u)/$TC,0,${tcsid#\$}" \
+    "$DIR/scripts/tm" fromkey </dev/null >/dev/null 2>&1 )
+is "with TM_PANE the new session starts in that pane's folder, not the active pane's" "$TCD/a" \
+   "$("$TMUX_REAL" -L "$TC" display-message -p -t fromkey: '#{session_path}' 2>/dev/null)"
 # With a real client on "here", popup-shaped tm must switch THAT client, not
 # attach a second one inside the popup (#45): in_client() wanted $TMUX_PANE,
 # which a popup never has.
@@ -3342,11 +3421,11 @@ pk() { "$TMUX_REAL" -L "$PS" list-keys -T prefix 2>/dev/null | awk -v k="$1" '$4
 # 10/10 -- the binding is queryable the instant run-shell returns).
 "$TMUX_REAL" -L "$PS" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
 # tm --popup opens the popup itself, sized to the sessions, on the pressing
-# client and in its session.
+# client and in its session, with the pane it was pressed in (#494).
 case "$(pk s)" in
-    *"run-shell -b"*"/tm' --popup '#{client_name}' '#{session_id}' '#{client_width}' '#{client_height}'"*)
+    *"run-shell -b"*"/tm' --popup '#{client_name}' '#{session_id}' '#{client_width}' '#{client_height}' '#{pane_id}'"*)
         ok "prefix s is bound to the sessions popup" ;;
-    *) bad "prefix s is bound to the sessions popup" "run-shell -b tm --popup <client> <session> <w> <h>" "$(pk s)" ;;
+    *) bad "prefix s is bound to the sessions popup" "run-shell -b tm --popup <client> <session> <w> <h> <pane>" "$(pk s)" ;;
 esac
 case "$(pk g)" in *--popup*) bad "and g is left to tmux" "no sessions popup on g" "$(pk g)" ;;
     *) ok "and g is left to tmux" ;; esac
@@ -4061,16 +4140,17 @@ fi
 echo "== branch popup passes the source pane id =="
 # Inside a popup $TMUX_PANE is the popup's own pseudo-pane, so tmux-branch
 # must be told which pane the key/click actually fired on rather than
-# resolving it itself. The prefix+b bind passes -p resolved by the popup's own
-# sh from $TMUX's session id (#38), and the branch tap replays that bind; the
+# resolving it itself. The prefix+b bind stores #{pane_id} on the session and
+# the popup's own sh reads it back by $TMUX's session id (#38): on tmux master the
+# popup is the session's active pane. The branch tap replays that bind; the
 # key-press test above proves the resolution, this one pins the shape.
 if need_tmux "branch popup pane id"; then :; else
 BPI="cockpit-bpi-$$"; SOCKS="$SOCKS $BPI"
 "$TMUX_REAL" -L "$BPI" -f /dev/null new-session -d -s t >/dev/null 2>&1
 "$TMUX_REAL" -L "$BPI" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
 case "$("$TMUX_REAL" -L "$BPI" list-keys -T prefix 2>/dev/null | awk '$4=="b"')" in
-    *'-p \"$(tmux display-message -p -t'*) ok "prefix b passes the source pane id" ;;
-    *) bad "prefix b passes the source pane id" '-p "$(tmux display-message -p -t ... "#{pane_id}")" in the bind' \
+    *'@cockpit_src_pane "#{pane_id}"'*'-p \"$(tmux show-option -qv -t'*'@cockpit_src_pane)'*) ok "prefix b passes the source pane id" ;;
+    *) bad "prefix b passes the source pane id" 'set-option -F @cockpit_src_pane "#{pane_id}", then -p "$(tmux show-option ... @cockpit_src_pane)"' \
          "$("$TMUX_REAL" -L "$BPI" list-keys -T prefix | awk '$4=="b"')" ;;
 esac
 case "$("$TMUX_REAL" -L "$BPI" list-keys -T root | grep MouseUp1Control3)" in
@@ -5024,709 +5104,97 @@ is "the stored value is still correct" "4" \
 "$TMUX_REAL" -L "$CX2" kill-server >/dev/null 2>&1
 fi
 
-echo "== tmux-review --lines: the diff rows a review anchors to =="
-RV1=$(mktmpd)
-(
-  cd "$RV1" || exit
-  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
-  git init -q -b main .
-  mkdir -p tests
-  printf 'a\nb\nc\n' > src.go
-  printf 'x\ny\nz\n' > tests/foo_test.sh
-  printf 'gone1\ngone2\n' > deleteme.txt
-  git add -A
-  git commit -q -m init
-  printf 'a\nCHANGED\nc\n' > src.go
-  printf 'x\nCHANGED\nz\n' > tests/foo_test.sh
-  rm deleteme.txt
-) >/dev/null 2>&1
-
-rv1out=$("$DIR/scripts/tmux-review" --lines "$RV1")
-is "test file's rows come first" "tests/foo_test.sh" "$(printf '%s\n' "$rv1out" | head -1 | cut -f1)"
-
-rv1bad=""
-while IFS=$'\t' read -r p l f _d; do
-    [ -n "$p" ] || continue
-    case "$l" in
-        -[0-9]*|[0-9]*) ;;
-        *) rv1bad="bad line field for $p: [$l]" ;;
-    esac
-    [ -n "$f" ] || rv1bad="empty fragment for $p:$l"
-done <<<"$rv1out"
-is "every row carries path, numeric line, non-empty fragment" "" "$rv1bad"
-
-case "$rv1out" in
-    *"deleteme.txt"$'\t'-[0-9]*$'\t'*) ok "a deletion row's line is the OLD number, prefixed -" ;;
-    *) bad "a deletion row's line is the OLD number, prefixed -" \
-         "a deleteme.txt row with a -N line field" "$rv1out" ;;
-esac
-rm -rf "$RV1"
-
-echo "== tmux-review --lines: staged and unstaged changes are one review, not either/or =="
-# `git diff` alone answers about the WORKING TREE only, so the moment one
-# unstaged edit existed the whole index went missing from the list. `git diff
-# HEAD` is both halves in one call. FAIL-first: on the old code no staged.txt row exists.
-RVMIX=$(mktmpd)
-(
-  cd "$RVMIX" || exit
-  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
-  git init -q -b main .
-  printf 'a\n' > staged.txt; printf 'a\n' > unstaged.txt
-  git add -A; git commit -q -m init
-  printf 'a\nSTAGED-CHANGE\n' > staged.txt; git add staged.txt
-  printf 'a\nUNSTAGED-CHANGE\n' > unstaged.txt
-) >/dev/null 2>&1
-rvmix=$("$DIR/scripts/tmux-review" --lines "$RVMIX")
-case "$rvmix" in *"staged.txt"$'\t'2$'\t'"STAGED-CHANGE"*) ok "the staged half is reviewable" ;;
-    *) bad "the staged half is reviewable" "a staged.txt:2 STAGED-CHANGE row" "$rvmix" ;; esac
-case "$rvmix" in *"unstaged.txt"$'\t'2$'\t'"UNSTAGED-CHANGE"*) ok "and so is the unstaged half" ;;
-    *) bad "and so is the unstaged half" "an unstaged.txt:2 row" "$rvmix" ;; esac
-rm -rf "$RVMIX"
-
-echo "== tmux-review --lines: a brand-new file is reviewable, line by line =="
-# An untracked file carries no diff at all, so the whole new-code case -- the
-# code most worth reviewing -- was invisible to the reviewer. Its rows are
-# synthesised from the file itself, every line a + row at its own number.
-RVNEW=$(mktmpd)
-(
-  cd "$RVNEW" || exit
-  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
-  git init -q -b main .
-  printf 'seed\n' > seed.txt; git add -A; git commit -q -m init
-  printf 'first\nsecond\n' > new.txt
-  printf 'NEW-LINE\n' > 'café-new.txt'
-) >/dev/null 2>&1
-rvnew=$("$DIR/scripts/tmux-review" --lines "$RVNEW")
-case "$rvnew" in *"new.txt"$'\t'1$'\t'"first"*"new.txt"$'\t'2$'\t'"second"*) ok "untracked lines are + rows with their own numbers" ;;
-    *) bad "untracked lines are + rows with their own numbers" "new.txt:1 first, new.txt:2 second" "$rvnew" ;; esac
-# ls-files C-quotes a non-ASCII path the same way diff headers do ("caf\303\251-new.txt"),
-# and a quoted name is not a file that exists: [ -f ] failed and the file was
-# dropped from the list WITHOUT a word. FAIL-first: no café-new.txt row at all.
-case "$rvnew" in *'café-new.txt'$'\t'1$'\t'"NEW-LINE"*) ok "a new file with a non-ASCII name is listed too, not silently dropped" ;;
-    *) bad "a new file with a non-ASCII name is listed too, not silently dropped" \
-         "café-new.txt<TAB>1<TAB>NEW-LINE" "$rvnew" ;; esac
-# A literal TAB in an untracked path. `ls-files -z` does NOT C-quote -- the -z
-# form emits raw bytes, quotePath or not -- so the tab reached the row list as
-# a real field separator and every downstream `awk -F'\t'` mis-split the row:
-# path=has, line=tab.txt, fragment=the file's first line, offset=+. attach()
-# guards only "path non-empty" and "not the cap sentinel", so that row pinned
-# and composed into an instruction about a file that does not exist at a line
-# that is not a number, and --preview-window=+{5}-/2 got "+" for an offset.
-# The wire format is tab-separated: a path carrying a tab cannot go on it, so
-# it is dropped -- the same thing already done for binaries and unreadable
-# files. (The old `IFS=$'\t' read` row loop collapsed the doubled tab and
-# dropped the file silently; the awk rewrite turned it into a plausible,
-# DELIVERABLE row, which is worse.)
-# FAIL-first: a "has<TAB>tab.txt<TAB>3body line" row is emitted.
-printf 'body line\n' > "$RVNEW/has$(printf '\t')tab.txt"
-rvtab=$("$DIR/scripts/tmux-review" --lines "$RVNEW")
-is "an untracked path holding a literal TAB is dropped, not split into a row" \
-   "0" "$(printf '%s\n' "$rvtab" | awk -F'\t' '$1 == "has"' | grep -c .)"
-is "...and no row anywhere carries a piece of its name" \
-   "0" "$(printf '%s\n' "$rvtab" | grep -c 'tab\.txt')"
-case "$rvtab" in *"new.txt"$'\t'1$'\t'"first"*"new.txt"$'\t'2$'\t'"second"*)
-        ok "the untracked file beside it still gets both its rows" ;;
-    *) bad "the untracked file beside it still gets both its rows" \
-         "new.txt:1 first, new.txt:2 second" "$rvtab" ;; esac
-rm -rf "$RVNEW"
-
-# group: serial
-echo "== tmux-review --lines: an untracked tree is walked once, not four forks per file =="
-# The untracked synthesis walked every file FOUR times over -- [ -f ],
-# grep -Iq, wc -l and awk -- and did it twice, once in the numstat loop that
-# feeds the cap and once in the row loop. rows_mode calls lines_mode, so the
-# review popup re-paid the whole cost after every pinned comment. Measured with
-# 800 one-line untracked files: the whole `--lines` run took 6.885s before and
-# takes 0.134s now (the walk itself 7.9s -> 0.008s in the review's own
-# measurement; master, which ignored untracked files entirely, was 0.018s), off
-# the single batched `ls-files -z | xargs grep -Il .` list both loops now share.
-# The per-file walk is 3200 forks, so CPU is where it shows: 1.4s against a
-# measured 0.46s under twelve spinners.
-RVMANY=$(mktmpd)
-(
-  cd "$RVMANY" || exit
-  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
-  git init -q -b main .
-  printf 'seed\n' > seed.txt; git add -A; git commit -q -m init
-  mkdir -p vendor
-  i=1; while [ "$i" -le 800 ]; do printf 'line\n' > "vendor/f$i.txt"; i=$((i+1)); done
-) >/dev/null 2>&1
-cpu_under "800 untracked files list in well under 1.4s of CPU" 1.4 \
-    "$DIR/scripts/tmux-review" --lines "$RVMANY"
-is "each untracked file still contributes its one + row" \
-   "800" "$("$DIR/scripts/tmux-review" --lines "$RVMANY" | grep -c .)"
-rm -rf "$RVMANY"
-
-echo "== tmux-review --lines: a giant diff caps to one notice instead of wedging the popup =="
-# The review popup is modal and runs lines_mode at startup and on every reload.
-# A regenerated lockfile / vendored bundle is a single-file diff of tens of
-# thousands of rows; the per-row shell parse used to lock the one client for
-# minutes to hours (measured: 100k rows did not finish in 5 minutes, 8k rows
-# = 56s). numstat totals the exact row count at one cheap git call, so past
-# the 5000-row cap --lines emits a single "too large" notice and returns at
-# once. FAIL-first: on the pre-cap parser this same fixture takes ~30s (the
-# timeout below fires) and never emits the notice string at all.
-RVCAP=$(mktmpd)
-(
-  cd "$RVCAP" || exit
-  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
-  git init -q -b main .
-  printf 'seed\n' > lock.txt
-  git add -A; git commit -q -m init
-  # 12000 lines replacing the 1 seed line: 12000 added + 1 deleted = 12001
-  # rows, over the 5000 cap. On the old parser that is ~20s of shell (measured
-  # 6.2s at 6000 rows, 21.2s at 12000), so timeout below has teeth.
-  seq 1 12000 > lock.txt
-) >/dev/null 2>&1
-rvcaptotal=$(git -C "$RVCAP" diff --numstat | awk -F'\t' '{a+=$1; d+=$2} END{print a+d}')
-is "the fixture's diff really exceeds the 5000-row cap" "12001" "$rvcaptotal"
-# timeout is the fail-first teeth: the fixed path returns in ~0.1s, the old
-# O(n) shell build of 12001 rows blows well past 10s and timeout kills it (124).
-rvcapout=$(timeout 10 "$DIR/scripts/tmux-review" --lines "$RVCAP"); rvcaprc=$?
-if [ "$rvcaprc" -eq 124 ]; then
-    bad "a 12001-row diff returns fast, not after a 10s+ parse" \
-        "output within 10s" "timed out (the pre-cap parser)"
-else
-    ok "a 12001-row diff returns fast, not after a 10s+ parse"
-fi
-case "$rvcapout" in
-    *"diff too large to anchor line-by-line (12001 changed lines)"*)
-        ok "the cap emits the too-large notice naming the row count" ;;
-    *) bad "the cap emits the too-large notice naming the row count" \
-         "a 'diff too large ... (12001 changed lines)' notice" "$rvcapout" ;;
-esac
-is "the capped output is exactly one row (the popup stays trivially small)" \
-   "1" "$(printf '%s\n' "$rvcapout" | grep -c .)"
-# The notice is a row like any other: the same four fields.
-is "the cap notice has a row's four fields, so no row is short" \
-   "4" "$(printf '%s' "$rvcapout" | awk -F'\t' '{print NF}')"
-# A diff at or under the cap is untouched -- still fully parsed, row per line.
-RVUNDER=$(mktmpd)
-(
-  cd "$RVUNDER" || exit
-  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
-  git init -q -b main .
-  printf 'seed\n' > small.txt
-  git add -A; git commit -q -m init
-  seq 1 100 > small.txt
-) >/dev/null 2>&1
-rvunderout=$("$DIR/scripts/tmux-review" --lines "$RVUNDER")
-case "$rvunderout" in
-    *"diff too large"*) bad "an under-cap diff is parsed normally, not capped" \
-         "real per-line rows, no notice" "$rvunderout" ;;
-    *"small.txt"$'\t'*) ok "an under-cap diff is parsed normally, not capped" ;;
-    *) bad "an under-cap diff is parsed normally, not capped" \
-         "small.txt rows" "$rvunderout" ;;
-esac
-rm -rf "$RVCAP" "$RVUNDER"
-
-# Counting is cheap; CAPTURING is what costs. The cap above only helped once
-# `diff=$(tree_diff "$dir")` had already run, so a tree the cap was built to
-# refuse was still read whole into a bash variable first. Measured here on the
-# fixture below (30 regenerated lockfiles, 200k rows each, 38 MB on disk):
-# 3.25s and 222 MB peak RSS to produce one notice row, of which `git diff
-# --numstat` -- everything the cap decision actually needs -- is 0.75s and
-# 32 MB. So numstat comes first, the cap decides, and the full capture happens
-# only for a diff that is going to be parsed.
-#
-# 30 moderate files rather than the one 51 MB lockfile the plan measured: a
-# single file that large makes git's OWN diff the bottleneck (365 MB RSS in
-# numstat alone), which no ordering can fix, and hides the thing being removed.
-# Spread over 30 files git's peak stays at one file's worth and the 222 MB is
-# the shell's captured copy -- exactly what the reorder deletes.
-# FAIL-first: before the reorder the full `git diff` ran before numstat, so
-# the shim log below shows a diff call without --numstat. `timeout 1.5`
-# (3.25 s pre-fix) went red under peer load and took the notice check with it
-# through an empty rvlock.out (issue #32); every timeout in this block is a
-# hang guard now, and the shim is what pins the reorder.
-RVLOCK=$(mktmpd)
-(
-  cd "$RVLOCK" || exit
-  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
-  git init -q -b main .
-  for i in $(seq 1 30); do printf 'seed\n' > "lock$i.json"; done
-  git add -A; git commit -q -m init
-  for i in $(seq 1 30); do seq 1 200000 > "lock$i.json"; done
-) >/dev/null 2>&1
-RVLOCK_SHIM=$(mktmpd); RVLOCK_LOG="$STATE/rvlock-git-calls"; : > "$RVLOCK_LOG"
-cat > "$RVLOCK_SHIM/git" <<SHIMEOF
-#!/bin/sh
-printf '%s\n' "\$*" >> "$RVLOCK_LOG"
-exec "$(command -v git)" "\$@"
-SHIMEOF
-chmod +x "$RVLOCK_SHIM/git"
-if PATH="$RVLOCK_SHIM:$PATH" timeout 10 "$DIR/scripts/tmux-review" --lines "$RVLOCK" > "$STATE/rvlock.out" 2>/dev/null; then
-    ok "a 6,000,030-row tree answers with a notice"
-else
-    bad "a 6,000,030-row tree answers with a notice" "exit 0 within 10s" "rc $?"
-fi
-# "1" is the positive control: an empty log (shim never reached) must not
-# read as "nothing captured".
-is "the capped tree is counted once and never captured" "1 0" \
-   "$(grep -cE '(^| )diff( |$)' "$RVLOCK_LOG") $(grep -E '(^| )diff( |$)' "$RVLOCK_LOG" | grep -vc -- '--numstat')"
-case "$(cat "$STATE/rvlock.out")" in
-    *"diff too large to anchor line-by-line (6000030 changed lines)"*)
-        ok "the uncaptured cap still names the exact row count numstat totalled" ;;
-    *) bad "the uncaptured cap still names the exact row count numstat totalled" \
-         "a '(6000030 changed lines)' notice" "$(head -c 200 "$STATE/rvlock.out")" ;;
-esac
-rm -rf "$RVLOCK"
-
-# Rows are not the only way a diff gets too big to hand a reviewer: 4000 rows
-# is comfortably under the 5000-row cap, but at 1.5 KB a row that is 5.7 MB of
-# text -- captured, parsed into 4001 shell rows, and rendered into an fzf list
-# whose every entry is a 1500-column line. So the cap counts BYTES too, 4 MB
-# across the changed files (`wc -c` on the worktree copy, the HEAD blob's size
-# for a deletion), and says which limit it hit.
-RVWIDE=$(mktmpd)
-(
-  cd "$RVWIDE" || exit
-  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
-  git init -q -b main .
-  printf 'seed\n' > wide.txt
-  git add -A; git commit -q -m init
-  awk 'BEGIN{ s=sprintf("%1500s",""); gsub(/ /,"w",s); for(i=0;i<4000;i++) print s }' > wide.txt
-) >/dev/null 2>&1
-is "the wide fixture is UNDER the row cap, so only bytes can trip it" "4001" \
-   "$(git -C "$RVWIDE" diff --numstat | awk -F'\t' '{a+=$1; d+=$2} END{print a+d}')"
-rvwideout=$("$DIR/scripts/tmux-review" --lines "$RVWIDE")
-case "$rvwideout" in
-    *"diff too large"*" MB)"*)
-        ok "4000 rows of 1.5 KB each cap on bytes, and the notice says MB not lines" ;;
-    *) bad "4000 rows of 1.5 KB each cap on bytes, and the notice says MB not lines" \
-         "a too-large notice naming MB" "$(head -c 200 <<<"$rvwideout")" ;;
-esac
-is "the byte cap's notice is one row, same shape as the row cap's" \
-   "1" "$(printf '%s\n' "$rvwideout" | grep -c .)"
-is "the byte cap's notice has a row's four fields too" \
-   "4" "$(printf '%s' "$rvwideout" | awk -F'\t' '{print NF}')"
-# A wide file that stays UNDER 4 MB is still parsed row by row -- the byte cap
-# must not swallow an ordinary diff that merely has long lines.
-RVNARROW=$(mktmpd)
-(
-  cd "$RVNARROW" || exit
-  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
-  git init -q -b main .
-  printf 'seed\n' > narrow.txt
-  git add -A; git commit -q -m init
-  awk 'BEGIN{ s=sprintf("%1500s",""); gsub(/ /,"w",s); for(i=0;i<100;i++) print s }' > narrow.txt
-) >/dev/null 2>&1
-case "$("$DIR/scripts/tmux-review" --lines "$RVNARROW")" in
-    *"diff too large"*) bad "a 150 KB wide-line diff is under the byte cap and parsed normally" \
-         "real per-line rows, no notice" "capped" ;;
-    *"narrow.txt"$'\t'*) ok "a 150 KB wide-line diff is under the byte cap and parsed normally" ;;
-    *) bad "a 150 KB wide-line diff is under the byte cap and parsed normally" \
-         "narrow.txt rows" "no rows at all" ;;
-esac
-rm -rf "$RVWIDE" "$RVNARROW"
-
-# ...and the byte cap has to measure the DIFF, not the FILE. A whole-file
-# `wc -c` refused a one-line version bump in a big lockfile: 4.6 MB of file,
-# two changed rows, a diff of about 70 bytes -- nothing expensive about it,
-# and the popup answered "review it directly" for a change a reviewer could
-# read at a glance. A per-file average -- `size * (add + del) / max(lines, 1)`
-# -- was tried next: the wide fixture above still estimated 5.7 MB and capped,
-# this one estimated ~74 bytes and did not (that estimator's own failure mode
-# is covered below).
-# FAIL-first: on the whole-file cap this returns "(4.5 MB)" and no rows.
-RVBUMP=$(mktmpd)
-(
-  cd "$RVBUMP" || exit
-  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
-  git init -q -b main .
-  # 130k fixed-width lines: 4,810,000 bytes, well over the 4 MB cap as a file.
-  awk 'BEGIN { for (i = 1; i <= 130000; i++) printf "%036d\n", i }' > package-lock.json
-  git add -A; git commit -q -m init
-  # One line rewritten at the SAME width, so the file's size is unchanged and
-  # only the estimate can tell the two fixtures apart.
-  awk 'BEGIN { for (i = 1; i <= 130000; i++) printf "%036d\n", (i == 5 ? 42 : i) }' > package-lock.json
-) >/dev/null 2>&1
-is "the bump fixture is over the 4 MB cap when measured as a whole file" \
-   "4810000" "$(wc -c < "$RVBUMP/package-lock.json")"
-is "...while its diff is two rows" "2" \
-   "$(git -C "$RVBUMP" diff --numstat | awk -F'\t' '{print $1 + $2}')"
-rvbumpout=$(timeout 10 "$DIR/scripts/tmux-review" --lines "$RVBUMP")
-case "$rvbumpout" in
-    *"diff too large"*)
-        bad "a one-line bump in a 4.6 MB lockfile is still reviewable" \
-            "two anchored package-lock.json rows" "$(head -c 120 <<<"$rvbumpout")" ;;
-    *"package-lock.json"$'\t'*)
-        ok "a one-line bump in a 4.6 MB lockfile is still reviewable" ;;
-    *) bad "a one-line bump in a 4.6 MB lockfile is still reviewable" \
-         "two anchored package-lock.json rows" "$(head -c 120 <<<"$rvbumpout")" ;;
-esac
-is "the bump is exactly its two rows, nothing else" "2" \
-   "$(printf '%s\n' "$rvbumpout" | grep -c .)"
-rm -rf "$RVBUMP"
-
-# ...and the byte cap has to MEASURE the diff, not estimate it. Two estimators
-# were tried here and both broke, in opposite directions:
-#
-#   size * (add+del) / lines   -- a per-file AVERAGE. On the fixture below
-#     (100,000 one-byte lines plus one 5 MB line, only the long line changed)
-#     it answers 103 bytes and lets a 10 MB capture through: measured 0.91s,
-#     82,148 kB RSS, two 5 MB rows, in the MODAL popup, for a two-row review.
-#
-#   max(that, maxlen * (add+del))  -- the average, floored by the widest line.
-#     It catches the fixture below, but it charges that width to EVERY changed
-#     row of any file that merely CONTAINS a long line, and the cap is a
-#     per-review TOTAL: a 744-byte, 26-row review was refused as "(6.8 MB)"
-#     with an unrelated one-line Go change lost along with it (the block after
-#     this one). It also needs `wc -L`, and on a wc without it the whole sized
-#     map came back empty and the byte cap disappeared in silence -- measured,
-#     4000 rows parsed in 1.02s where the cap had fired before.
-#
-# So the diff is measured EXACTLY, and bounded so that measuring cannot itself
-# be the expensive thing: capture once through `head -c cap+1`, let git die on
-# SIGPIPE past that, and what comes back either fits -- and then IS the diff,
-# with no second git call -- or proves the cap is exceeded without ever having
-# held more than 4 MB. Untracked files have no diff to bound, so their exact
-# `wc -c` size is summed and charged first.
-# FAIL-first against the max() estimate: BOTH cases below -- it refuses the
-# short-line edit that this must show, and the block after it.
-RVSKEW=$(mktmpd)
-(
-  cd "$RVSKEW" || exit
-  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
-  git init -q -b main .
-  # tr, not awk's sprintf: mawk's sprintf buffer is 8192 bytes and dies on a
-  # 5 MB %*s ("program limit exceeded").
-  { awk 'BEGIN { for (i = 0; i < 100000; i++) print "x" }'
-    head -c 5000000 /dev/zero | tr '\0' 'L'; printf '\n'; } > mix.txt
-  git add -A; git commit -q -m init
-  # Only the long line changes, at the same width: the file's size and line
-  # count are identical, so only the estimator can tell the two apart.
-  { awk 'BEGIN { for (i = 0; i < 100000; i++) print "x" }'
-    head -c 5000000 /dev/zero | tr '\0' 'M'; printf '\n'; } > mix.txt
-) >/dev/null 2>&1
-is "the mixed fixture is two numstat rows, so the ROW cap cannot be what fires" \
-   "2" "$(git -C "$RVSKEW" diff --numstat | awk -F'\t' '{print $1 + $2}')"
-is "...and its per-file AVERAGE estimate is 103 bytes, far under the 4 MB cap" \
-   "103" "$(wc -lc < "$RVSKEW/mix.txt" | awk '{printf "%d\n", $2 * 2 / $1}')"
-rvskewout=$(timeout 10 "$DIR/scripts/tmux-review" --lines "$RVSKEW" 2>/dev/null)
-case "$rvskewout" in
-    *"diff too large"*" MB)"*)
-        ok "one 5 MB line among 100k short ones caps on bytes, not on the average" ;;
-    *) bad "one 5 MB line among 100k short ones caps on bytes, not on the average" \
-         "a too-large notice naming MB" "$(head -c 120 <<<"$rvskewout")" ;;
-esac
-is "the skewed notice is one row, not two 5 MB ones" \
-   "1" "$(printf '%s\n' "$rvskewout" | grep -c .)"
-# The other half of the same fixture, and the half an estimate cannot get
-# right: the SHORT line changed instead. The diff is a couple of hundred
-# bytes and belongs on screen -- but `maxlen * (add+del)` reads the 5 MB line
-# it did not touch and refuses the review anyway. Exactly the same file, the
-# only difference is which line moved.
-{ awk 'BEGIN { for (i = 0; i < 100000; i++) print (i == 5 ? "y" : "x") }'
-  head -c 5000000 /dev/zero | tr '\0' 'L'; printf '\n'; } > "$RVSKEW/mix.txt"
-is "...and with only a SHORT line changed it is two numstat rows too" \
-   "2" "$(git -C "$RVSKEW" diff --numstat | awk -F'\t' '{print $1 + $2}')"
-rvskewshort=$(timeout 10 "$DIR/scripts/tmux-review" --lines "$RVSKEW" 2>/dev/null)
-case "$rvskewshort" in
-    *"diff too large"*) bad "a SHORT-line edit in the same skewed file is shown, not refused" \
-         "two anchored mix.txt rows" "$(head -c 120 <<<"$rvskewshort")" ;;
-    *"mix.txt"$'\t'*) ok "a SHORT-line edit in the same skewed file is shown, not refused" ;;
-    *) bad "a SHORT-line edit in the same skewed file is shown, not refused" \
-         "two anchored mix.txt rows" "no rows at all" ;;
-esac
-is "and it is exactly its two rows" "2" \
-   "$(printf '%s\n' "$rvskewshort" | grep -c .)"
-rm -rf "$RVSKEW"
-
-# The over-refusal in its realistic shape, and the reason it is Important
-# rather than cosmetic: the cap is a per-review TOTAL, so one skewed file
-# takes every OTHER file's rows down with it. A JS file of 500 short lines
-# plus one 300 KB data-URI line, 12 short lines edited, beside a one-line Go
-# change in a file that has nothing to do with it.
-#
-#   real diff : 26 rows, 744 bytes
-#   max()     : 1 row -- "(diff too large) … (6.8 MB) — review it directly"
-#   exact     : 26 rows, both main.go rows among them
-#
-# FAIL-first: the notice, and no main.go rows at all.
-RVCROSS=$(mktmpd)
-(
-  cd "$RVCROSS" || exit
-  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
-  git init -q -b main .
-  { awk 'BEGIN { for (i = 1; i <= 500; i++) printf "const v%d = %d;\n", i, i }'
-    printf 'const IMG = "data:image/png;base64,'
-    head -c 300000 /dev/zero | tr '\0' 'A'; printf '";\n'; } > assets.js
-  printf 'package main\n\nfunc main() { println("one") }\n' > main.go
-  git add -A; git commit -q -m init
-  awk '{ if (NR <= 12 && /^const v/) sub(/= [0-9]+;/, "= 999;"); print }' assets.js > .t
-  mv .t assets.js
-  printf 'package main\n\nfunc main() { println("two") }\n' > main.go
-) >/dev/null 2>&1
-is "the cross-file fixture is 26 changed rows, well under the row cap" "26" \
-   "$(git -C "$RVCROSS" diff --numstat | awk -F'\t' '{a += $1 + $2} END {print a}')"
-is "...and its whole real diff is well under 4 MB" "1" \
-   "$(git -C "$RVCROSS" diff | wc -c | awk '{print ($1 < 4194304) ? 1 : 0}')"
-rvcrossout=$(timeout 10 "$DIR/scripts/tmux-review" --lines "$RVCROSS" 2>/dev/null)
-case "$rvcrossout" in
-    *"diff too large"*) bad "a 744-byte review is not refused for containing one long line" \
-         "26 anchored rows" "$(head -c 120 <<<"$rvcrossout")" ;;
-    *) ok "a 744-byte review is not refused for containing one long line" ;;
-esac
-is "every row is there, both files" "26" "$(printf '%s\n' "$rvcrossout" | grep -c .)"
-is "and the unrelated Go file is not lost with the skewed one" "2" \
-   "$(printf '%s\n' "$rvcrossout" | awk -F'\t' '$1 == "main.go"' | grep -c .)"
-rm -rf "$RVCROSS"
-
-# The untracked half of the same measure. An untracked file has no diff to
-# bound -- every byte of it is an added row -- so it is sized exactly, with
-# one batched `wc -c` over the same operand list the row walk uses, and
-# charged BEFORE the capture: an unignored 6 MB text file drop must cap on
-# its own, without a capture happening at all. Nothing else in the suite
-# exercises that sum (the 800-untracked-file block above is one line each).
-RVUBIG=$(mktmpd)
-(
-  cd "$RVUBIG" || exit
-  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
-  git init -q -b main .
-  printf 'seed\n' > seed.txt; git add -A; git commit -q -m init
-  awk 'BEGIN{ s=sprintf("%1500s",""); gsub(/ /,"u",s); for(i=0;i<4000;i++) print s }' > huge.txt
-) >/dev/null 2>&1
-is "the untracked fixture is 6 MB on disk, and tracked-clean" "6004000" \
-   "$(wc -c < "$RVUBIG/huge.txt")"
-rvubigout=$(timeout 10 "$DIR/scripts/tmux-review" --lines "$RVUBIG" 2>/dev/null)
-case "$rvubigout" in
-    *"diff too large"*) ok "a 6 MB untracked file caps on its own exact size" ;;
-    *) bad "a 6 MB untracked file caps on its own exact size" \
-         "a too-large notice" "$(head -c 120 <<<"$rvubigout")" ;;
-esac
-is "and that notice is one row, not 4000 untracked ones" "1" \
-   "$(printf '%s\n' "$rvubigout" | grep -c .)"
-rm -rf "$RVUBIG"
-
-# A tracked BINARY is one LINE of diff, not its size. Without --binary git
-# prints "Binary files a/x and b/x differ" and nothing else, whatever the file
-# weighs: the fixture below is a rebuilt 5 MB asset beside a one-line code
-# change and its whole diff is 240 bytes. Charging the cap the asset's size
-# blanked the review of the code change sitting next to it -- the one thing
-# there was to review. A "-\t-" row costs the width of that one line, 80
-# bytes, and is sized no further.
-RVBIN=$(mktmpd)
-(
-  cd "$RVBIN" || exit
-  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
-  git init -q -b main .
-  head -c 5000000 /dev/urandom > asset.bin
-  printf 'alpha\nbeta\ngamma\n' > app.go
-  git add -A; git commit -q -m init
-  head -c 5000000 /dev/urandom > asset.bin
-  printf 'alpha\nBETA\ngamma\n' > app.go
-) >/dev/null 2>&1
-is "the asset really is binary to git, so its numstat row is the '-' one" \
-   "-	-	asset.bin" "$(git -C "$RVBIN" diff --numstat HEAD -- asset.bin)"
-is "...and the whole diff, 5 MB asset included, is nowhere near the 4 MB cap" \
-   "small" "$( [ "$(git -C "$RVBIN" diff --no-color HEAD | wc -c)" -lt 4194304 ] \
-              && echo small || echo large )"
-rvbinout=$("$DIR/scripts/tmux-review" --lines "$RVBIN")
-case "$rvbinout" in
-    *"diff too large"*)
-        bad "a rebuilt 5 MB asset does not blank the code change beside it" \
-            "app.go's two anchored rows" "$(head -c 120 <<<"$rvbinout")" ;;
-    *"app.go"$'\t'*)
-        ok "a rebuilt 5 MB asset does not blank the code change beside it" ;;
-    *) bad "a rebuilt 5 MB asset does not blank the code change beside it" \
-         "app.go's two anchored rows" "$(head -c 120 <<<"$rvbinout")" ;;
-esac
-is "the binary itself contributes no rows, so the output is app.go's two" \
-   "2" "$(printf '%s\n' "$rvbinout" | grep -c .)"
-# A DELETED binary is the same "-\t-" row with no worktree copy, so it used to
-# be charged its whole HEAD blob by the deletion path instead -- the same hole,
-# one branch over.
-rm -f "$RVBIN/asset.bin"
-case "$("$DIR/scripts/tmux-review" --lines "$RVBIN")" in
-    *"diff too large"*)
-        bad "a DELETED 5 MB asset does not blank it either" \
-            "app.go's two anchored rows" "capped" ;;
-    *"app.go"$'\t'*) ok "a DELETED 5 MB asset does not blank it either" ;;
-    *) bad "a DELETED 5 MB asset does not blank it either" \
-         "app.go's two anchored rows" "no rows at all" ;;
-esac
-rm -rf "$RVBIN"
-
-# group: serial
-echo "== tmux-review --lines: builds rows without a fork or a quadratic append per line =="
-# The row build used `disp=$(printf ...)` (a subshell fork per row) and
-# `group[path]+=<row>` into one associative-array element (bash rebuilds the
-# whole growing string on each append -> O(n^2) for a single file). Both are
-# gone: printf -v, and one indexed array with per-file [start,end] ranges.
-# Correctness: the output is locked to a golden that the pre-fix parser
-# produced byte-for-byte (verified out of band), so the refactor cannot shift
-# a byte -- ordering, the -N deletion line, the display column, all intact.
-RVGOLD=$(mktmpd)
-(
-  cd "$RVGOLD" || exit
-  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
-  git init -q -b main .
-  mkdir -p tests
-  printf 'a\nb\nc\n' > app.go
-  printf 'p\nq\n' > tests/unit_test.go
-  git add -A; git commit -q -m init
-  printf 'a\nZED\nc\nADDED\n' > app.go
-  printf 'p\nQQ\n' > tests/unit_test.go
-) >/dev/null 2>&1
-rvgoldwant=$(printf '%s\n' \
-  'tests/unit_test.go	-2	q	tests/unit_test.go:2 (-)  q' \
-  'tests/unit_test.go	2	QQ	tests/unit_test.go:2 (+)  QQ' \
-  'app.go	-2	b	app.go:2 (-)  b' \
-  'app.go	2	ZED	app.go:2 (+)  ZED' \
-  'app.go	4	ADDED	app.go:4 (+)  ADDED')
-is "the rebuilt --lines output is byte-identical to the pre-fix parser" \
-   "$rvgoldwant" "$("$DIR/scripts/tmux-review" --lines "$RVGOLD")"
-rm -rf "$RVGOLD"
-
-# Perf: a 5000-row single-file diff (the largest that stays under the cap) is
-# ~0.2s now; the pre-fix O(n^2)+fork build was ~5s here and ~13s on the slower
-# hunt machine. The budget is CPU, 3x this site's 0.211s under twelve spinners
-# (0.146-0.235s idle) -- a wall tooth grades the box, not the build (#75).
-RVPERF=$(mktmpd)
-(
-  cd "$RVPERF" || exit
-  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
-  git init -q -b main .
-  : > big.txt
-  git add -A; git commit -q -m init
-  seq 1 5000 > big.txt
-) >/dev/null 2>&1
-cpu_under "a 5000-row under-cap diff parses in well under 0.7s of CPU" 0.7 \
-    "$DIR/scripts/tmux-review" --lines "$RVPERF"
-rvperfrows=$("$DIR/scripts/tmux-review" --lines "$RVPERF" | grep -c .)
-is "the 5000-row diff is fully parsed, not capped (5000 rows, no notice)" \
-   "5000" "$rvperfrows"
-rm -rf "$RVPERF"
-
-# Perf: the rows themselves come out of awk, not a bash `read` loop. The row
-# build was four bash passes over the same data (a churn map, the row build,
-# the test partition, two emit loops) and bash pays an interpreter step per
-# row for every one of them, so the whole function cost 4x its own diff
-# parse. Measured here on this 4900-row single-file diff, ten runs each:
-# 195-227ms with the bash build, 59-74ms with the awk one -- of which the
-# git diff and the parsing awk, both of which were always there, are 44ms.
-# So the row build fell from ~165ms to ~19ms.
-#
-# The tooth is 0.4s of CPU (#75): 0.15-0.17s idle here and 0.23-0.26s under
-# both twelve and twenty-four spinners, so it plateaus. It bites the bash
-# build less often than the old 0.2s wall tooth did, which is the trade --
-# that tooth also rejected the awk build on any box with a peer job running.
-RV49=$(mktmpd)
-(
-  cd "$RV49" || exit
-  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
-  git init -q -b main .
-  : > f
-  git add -A; git commit -q -m init
-  seq 1 4900 > f
-) >/dev/null 2>&1
-cpu_under "4900 rows build in under 0.4s of CPU" 0.4 \
-    "$DIR/scripts/tmux-review" --lines "$RV49"
-is "and all 4900 rows are there" "4900" \
-   "$("$DIR/scripts/tmux-review" --lines "$RV49" | grep -c .)"
-rm -rf "$RV49"
-
-# group: serial
-echo "== tmux-review --lines: a non-ASCII filename anchors its own rows, not the previous file's =="
-# git C-quotes non-ASCII paths by default (`--- \"a/caf\\303\\251.txt\"`), which
-# the bare `a/`/`b/` header match could not read -- so café.txt's rows were
-# attributed to the file BEFORE it (or dropped when café was first). Diffing
-# with core.quotePath=false keeps the path literal. FAIL-first: on the old code
-# café's rows carry alpha.txt / zeta.txt and no row says café at all.
-RVQ=$(mktmpd)
-(
-  cd "$RVQ" || exit
-  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
-  git init -q -b main .
-  printf 'a\nb\n' > alpha.txt
-  printf 'x\ny\n' > café.txt
-  git add -A; git commit -q -m init
-  printf 'a\nAA\n' > alpha.txt
-  printf 'x\nCC\n' > café.txt
-) >/dev/null 2>&1
-rvqout=$("$DIR/scripts/tmux-review" --lines "$RVQ")
-case "$rvqout" in
-    *'café.txt'$'\t''2'$'\t''CC'$'\t'*) ok "café's added row anchors to café.txt at café's own line 2" ;;
-    *) bad "café's added row anchors to café.txt at café's own line 2" \
-         "café.txt<TAB>2<TAB>CC" "$rvqout" ;;
-esac
-if printf '%s\n' "$rvqout" | grep -q '^alpha\.txt	.*CC'; then
-    bad "café's row is not smeared onto the previous file" \
-        "no alpha.txt row carrying café's CC" "$rvqout"
-else
-    ok "café's row is not smeared onto the previous file"
-fi
-rm -rf "$RVQ"
-
-# The first-file-in-diff variant: when the odd-named file leads the diff, the
-# old code had no previous file to fall back to and dropped its rows entirely.
-RVQ1=$(mktmpd)
-(
-  cd "$RVQ1" || exit
-  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
-  git init -q -b main .
-  printf 'x\ny\n' > café.txt
-  printf 'a\nb\n' > zeta.txt
-  git add -A; git commit -q -m init
-  printf 'x\nCC\n' > café.txt
-  printf 'a\nAA\n' > zeta.txt
-) >/dev/null 2>&1
-rvq1out=$("$DIR/scripts/tmux-review" --lines "$RVQ1")
-case "$rvq1out" in
-    *'café.txt'$'\t''2'$'\t''CC'$'\t'*) ok "a leading non-ASCII file's rows are not dropped" ;;
-    *) bad "a leading non-ASCII file's rows are not dropped" \
-         "café.txt<TAB>2<TAB>CC" "$rvq1out" ;;
-esac
-case "$rvq1out" in
-    *'zeta.txt'$'\t''2'$'\t''AA'$'\t'*) ok "the following file still anchors to itself" ;;
-    *) bad "the following file still anchors to itself" \
-         "zeta.txt<TAB>2<TAB>AA" "$rvq1out" ;;
-esac
-rm -rf "$RVQ1"
-
-# The 160 cut is 160 BYTES on every awk, and never lands inside a UTF-8
-# sequence. Two seams meet here. First, the row-build awk runs under LC_ALL=C
-# so `substr` counts bytes in gawk (which counts CHARACTERS in a UTF-8 locale)
-# as well as in mawk (which always counted bytes) -- otherwise the same diff
-# produced a 160-character fragment on one box and a 160-byte one on the next.
-# Second, a byte cut splits multi-byte characters: FAIL-first, line 3 below
-# (an ASCII byte then 200 'é') put é #80's lead byte C3 at byte 160 and its
-# continuation byte at 161, so the fragment ended in a dangling C3 -- invalid
-# UTF-8 handed to an fzf display column and written into the comment store as
-# a quote header. Line 2 (200 'é', no prefix) is the aligned case the back-off
-# must NOT touch: 80 whole characters, exactly 160 bytes, nothing to trim.
-RVU=$(mktmpd)
-(
-  cd "$RVU" || exit
-  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
-  git init -q -b main .
-  printf 'seed\n' > wide.txt
-  git add -A; git commit -q -m init
-  eacc=$(printf 'é%.0s' $(seq 1 200))
-  printf 'seed\n%s\nx%s\n' "$eacc" "$eacc" > wide.txt
-) >/dev/null 2>&1
-rvuout=$("$DIR/scripts/tmux-review" --lines "$RVU")
-for rvuln in 2 3; do
-    rvufrag=$(printf '%s\n' "$rvuout" | awk -F'\t' -v n="$rvuln" '$2 == n { print $3 }')
-    rvubytes=$(printf '%s' "$rvufrag" | wc -c)
-    if printf '%s' "$rvufrag" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1; then
-        ok "the line $rvuln fragment is valid UTF-8, not a split character"
-    else
-        bad "the line $rvuln fragment is valid UTF-8, not a split character" \
-            "a decodable fragment" "$rvubytes bytes ending mid-sequence"
-    fi
-    if [ "$rvubytes" -le 160 ] && [ "$rvubytes" -gt 0 ]; then
-        ok "the line $rvuln fragment is at most 160 bytes ($rvubytes)"
-    else
-        bad "the line $rvuln fragment is at most 160 bytes" "1..160" "$rvubytes"
-    fi
+echo "== tree_diff: staged, unstaged and untracked changes are one diff (#390) =="
+# --delta and the review loop ask one question: is `tree_diff --numstat` empty?
+# A change that lives only in the index, or only in an untracked file, must be
+# in it, or that tree reads clean. Paths with a space or non-ASCII bytes too.
+# The fixtures are mkfix.sh's, which the diffstat parity block also builds.
+for td_row in 'mixed|1	0	staged.txt' 'mixed|1	0	unstaged.txt' \
+              'untracked|2	0	new.txt' 'untracked|1	0	café-new.txt' \
+              'spaces|1	2	has space.txt' 'spaces|1	0	new file.txt' \
+              'nonascii|1	1	alpha.txt' 'nonascii|2	1	café.txt'; do
+    TDF=$(mktmpd); "$DIR/tests/fixtures/review/mkfix.sh" "${td_row%%|*}" "$TDF" >/dev/null 2>&1
+    is "${td_row%%|*}: numstat has ${td_row##*	}" "1" \
+       "$(tdiff "$TDF" --numstat | grep -cxF -- "${td_row#*|}")"
+    rm -rf "$TDF"
 done
-# The aligned case loses nothing: 200 'é' cut at 160 bytes is 80 whole
-# characters, so a back-off that fired here would be trimming valid output.
-is "the aligned fragment keeps all 160 of its bytes" "160" \
-   "$(printf '%s\n' "$rvuout" | awk -F'\t' '$2 == 2 { print $3 }' | tr -d '\n' | wc -c)"
-rm -rf "$RVU"
+
+echo "== tree_diff: an inherited GIT_DIR or its kin never reviews another repo (#475) =="
+# A dotfiles setup can export GIT_DIR into tmux's environment, and every popup
+# inherits it. FAIL-first: on the old code each variable below turned the diff
+# into the other repo's, into none, or added a tracked big file as skipped.
+RVENV=$(mktmpd)
+(
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  for r in pane other; do
+    mkdir "$RVENV/$r" && cd "$RVENV/$r" || exit
+    git init -q -b main .
+    printf '%s\n' "$r one" > "$r.txt"; git add -A; git commit -q -m init
+    printf '%s\n' "$r one" "$r CHANGED" > "$r.txt"
+  done
+  # tracked past BIGCAP: only another index makes it untracked, so big
+  cd "$RVENV/pane" && dd if=/dev/null of=core bs=1048576 seek=33 && git add core && git commit -q -m core
+) >/dev/null 2>&1
+is "the pane repo's own numstat, nothing inherited" "1	0	pane.txt" "$(tdiff "$RVENV/pane" --numstat)"
+for v in GIT_DIR=@/.git GIT_WORK_TREE=@ GIT_COMMON_DIR=@/.git GIT_INDEX_FILE=@/.git/index; do
+    rvenvv=${v#*=}; rvenvv=${rvenvv//@/$RVENV/other}
+    is "${v%%=*} naming another repo leaves the pane's numstat" "1	0	pane.txt" \
+       "$(export "${v%%=*}=$rvenvv"; tdiff "$RVENV/pane" --numstat)"
+done
+rm -rf "$RVENV"
+
+echo "== tmux-review --request: an inherited GIT_DIR or its kin never opens another repo's review (#475) =="
+# --request sources no diff engine: its git_root runs before any lib could
+# unset the four. The pane sits in a subfolder, so a GIT_DIR alone (the cwd as
+# the tree) moves the root too. A tmux shim records the popup's command.
+# FAIL-first: on the old code GIT_DIR and GIT_WORK_TREE opened --loop on
+# another root. GIT_COMMON_DIR and GIT_INDEX_FILE do not move a --show-toplevel.
+if need_tmux "tmux-review --request under GIT_DIR"; then :; else
+RQE="cockpit-rqe-$$"; SOCKS="$SOCKS $RQE"; RQED=$(mktmpd); RQES=$(mktmpd)
+(
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  for r in pane other; do
+    mkdir -p "$RQED/$r/sub" && cd "$RQED/$r" || exit
+    git init -q -b main .; printf 'a\n' > sub/f; git add -A; git commit -q -m init
+  done
+) >/dev/null 2>&1
+"$TMUX_REAL" -L "$RQE" -f /dev/null new-session -d -s t -x 100 -y 30 -c "$RQED/pane/sub" 'exec -a claude bash' \
+    >/dev/null 2>&1
+RQEP=$("$TMUX_REAL" -L "$RQE" list-panes -t t: -F '#{pane_id}')
+RQESHIM=$(mktmpd)
+cat > "$RQESHIM/tmux" <<SHIMEOF
+#!/bin/sh
+case "\$1" in
+    display-popup) for a; do :; done; printf '%s' "\$a" > "$RQES/cmd"; exit 0 ;;
+    display-message) for a; do :; done; case "\$a" in *session_attached*) echo 1; exit 0 ;; esac ;;
+esac
+exec "$TMUX_REAL" -L "$RQE" "\$@"
+SHIMEOF
+chmod +x "$RQESHIM/tmux"
+rqe_cmd() {                   # [VAR=value] -> the --loop root the popup was given
+    rm -f "$RQES/cmd"
+    ( [ $# -eq 0 ] || export "${1%%=*}=${1#*=}"
+      PATH="$RQESHIM:$PATH" XDG_STATE_HOME=$RQES "$DIR/scripts/tmux-review" --request "$RQEP" >/dev/null 2>&1 )
+    sed -n 's/.* --loop \([^ ]*\) .*/\1/p' "$RQES/cmd" 2>/dev/null
+}
+rqewant=$(printf '%q' "$(git -C "$RQED/pane" rev-parse --show-toplevel)")
+is "the popup reviews the pane repo's root, nothing inherited" "$rqewant" "$(rqe_cmd)"
+for v in GIT_DIR=@/.git GIT_WORK_TREE=@ GIT_COMMON_DIR=@/.git GIT_INDEX_FILE=@/.git/index; do
+    rqev=${v#*=}; rqev=${rqev//@/$RQED/other}
+    is "${v%%=*} naming another repo: the popup still reviews the pane repo" "$rqewant" "$(rqe_cmd "${v%%=*}=$rqev")"
+done
+unset -f rqe_cmd
+"$TMUX_REAL" -L "$RQE" kill-server >/dev/null 2>&1
+fi
+
+echo "== tmux-review --lines is gone: an unknown option, status 2 (#390) =="
+TDL=$(mktmpd)
+"$DIR/scripts/tmux-review" --lines "$TDL" >"$TDL.out" 2>"$TDL.err"; tdlrc=$?
+is "--lines: status 2, nothing on stdout" "|2|" "|$tdlrc|$(cat "$TDL.out")"
+is "and stderr names the option it refused" "1" "$(grep -c -- '--lines' "$TDL.err")"
+is "and the usage no longer names it" "0" \
+   "$("$DIR/scripts/tmux-review" -h 2>&1 | grep -c -- '--lines')"
+rm -rf "$TDL" "$TDL.out" "$TDL.err"
 
 rv_src() { cat "$DIR/scripts/tmux-review" "$DIR/scripts/lib/review-diff.sh" "$DIR/scripts/lib/review-revdiff.sh" "$DIR/scripts/lib/review-deliver.sh" "$DIR/scripts/lib/review-fleet.sh"; }
 echo "== review-store: parse is the inverse of format over the full grammar =="
@@ -5864,110 +5332,10 @@ is "the composed review names the root when --compose is given one" \
    "$("$DIR/scripts/tmux-review" --compose "$RV3STORE" /home/agent/project)"
 rm -f "$RV3STORE"
 
-echo "== tmux-review --lines: a hunk's funcname context does not corrupt the anchor line =="
-# git's default xfuncname heuristic appends the nearest preceding line that
-# looks like a declaration to the "@@" header -- for Rust that is routinely a
-# signature ending "-> T {", and a token scan that looks for "any field
-# starting with -" finds that arrow too and overwrites the real -o,c token
-# with it.
-RV4=$(mktmpd)
-(
-  cd "$RV4" || exit
-  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
-  git init -q -b main .
-  printf 'fn compute() -> i32 {\n    let a = 1;\n    let b = 2;\n    let c = 3;\n    let d = 4;\n    let e = 5;\n    a + b\n}\n' > f.rs
-  git add -A; git commit -q -m init
-  sed -i '5d' f.rs   # removes "    let d = 4;", the old file's line 5
-) >/dev/null 2>&1
-# Confirm the fixture actually exercises the funcname-context shape before
-# trusting the assertion below -- git's heuristic is not this test's to own.
-rv4hunk=$(git -C "$RV4" diff --no-color --no-ext-diff | grep '^@@')
-case "$rv4hunk" in
-    *'-> i32 {'*) ;;
-    *) bad "the fixture's own hunk header carries funcname context" \
-         "an @@ line ending '-> i32 {'" "$rv4hunk" ;;
-esac
-rv4out=$("$DIR/scripts/tmux-review" --lines "$RV4")
-case "$rv4out" in
-    *'f.rs'$'\t''-5'$'\t'*) ok "the deletion is anchored to the real old line, 5" ;;
-    *) bad "the deletion is anchored to the real old line, 5" "f.rs<TAB>-5<TAB>..." "$rv4out" ;;
-esac
-rm -rf "$RV4"
-
-echo "== tmux-review --lines: a body line starting '-- ' does not read as a --- header =="
-# Diff prepends its own leading '-' to a deleted line -- a deleted line whose
-# OWN text starts "-- " becomes "--- ..." once marked, indistinguishable from
-# a real "--- a/file" header by a plain /^--- / match. Reproduced: this row
-# vanished outright and the deletion after it anchored two lines too early.
-RV6=$(mktmpd)
-(
-  cd "$RV6" || exit
-  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
-  git init -q -b main .
-  printf 'line1\n-- a sql comment\nline3\nline4\nline5\nline6\nline7\n' > q.sql
-  git add -A; git commit -q -m init
-  printf 'line1\nline3\nline4\nCHANGED5\nline6\nline7\n' > q.sql
-) >/dev/null 2>&1
-rv6out=$("$DIR/scripts/tmux-review" --lines "$RV6")
-case "$rv6out" in
-    *'q.sql'$'\t''-2'$'\t''-- a sql comment'$'\t'*) \
-        ok "the '-- ' row is present, anchored to its real old line, 2" ;;
-    *) bad "the '-- ' row is present, anchored to its real old line, 2" \
-         "q.sql<TAB>-2<TAB>-- a sql comment<TAB>..." "$rv6out" ;;
-esac
-case "$rv6out" in
-    *'q.sql'$'\t''-5'$'\t''line5'$'\t'*) \
-        ok "the later deletion still anchors to its real old line, 5" ;;
-    *) bad "the later deletion still anchors to its real old line, 5" \
-         "q.sql<TAB>-5<TAB>line5<TAB>..." "$rv6out" ;;
-esac
-case "$rv6out" in
-    *'q.sql'$'\t''4'$'\t''CHANGED5'$'\t'*) \
-        ok "the addition anchors to its real new line, 4" ;;
-    *) bad "the addition anchors to its real new line, 4" \
-         "q.sql<TAB>4<TAB>CHANGED5<TAB>..." "$rv6out" ;;
-esac
-rm -rf "$RV6"
-
-echo "== tmux-review --lines: a body line starting '++ ' does not read as a +++ header =="
-# Same seam, the addition side: an added line whose OWN text starts "++ "
-# becomes "+++ ..." once diff marks it. Reproduced: this row vanished and
-# reset the running counters, throwing every later anchor off by its length.
-RV7=$(mktmpd)
-(
-  cd "$RV7" || exit
-  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
-  git init -q -b main .
-  printf 'l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\nl11\nl12\n' > m.md
-  git add -A; git commit -q -m init
-  printf 'l1\nl2\nl3\nl4\nl5\n++ added by the patch\nl6\nl7\nl8\nl9\nl10\nCHANGED\nl12\n' > m.md
-) >/dev/null 2>&1
-rv7out=$("$DIR/scripts/tmux-review" --lines "$RV7")
-case "$rv7out" in
-    *'m.md'$'\t''6'$'\t''++ added by the patch'$'\t'*) \
-        ok "the '++ ' row is present, anchored to its real new line, 6" ;;
-    *) bad "the '++ ' row is present, anchored to its real new line, 6" \
-         "m.md<TAB>6<TAB>++ added by the patch<TAB>..." "$rv7out" ;;
-esac
-case "$rv7out" in
-    *'m.md'$'\t''-11'$'\t''l11'$'\t'*) \
-        ok "the later deletion still anchors to its real old line, 11" ;;
-    *) bad "the later deletion still anchors to its real old line, 11" \
-         "m.md<TAB>-11<TAB>l11<TAB>..." "$rv7out" ;;
-esac
-case "$rv7out" in
-    *'m.md'$'\t''12'$'\t''CHANGED'$'\t'*) \
-        ok "the later addition still anchors to its real new line, 12" ;;
-    *) bad "the later addition still anchors to its real new line, 12" \
-         "m.md<TAB>12<TAB>CHANGED<TAB>..." "$rv7out" ;;
-esac
-rm -rf "$RV7"
-
-echo "== tmux-review --lines: a subdir pane's cwd still resolves to the repo root =="
-# git -C <dir> diff always emits paths relative to the repo ROOT, not <dir> --
-# so a pane whose cwd is a subdirectory used to hand --lines rows that
-# --preview-diff (cd <dir> && ...) could never find: "gone: root.txt"
-# instead of the real diff.
+echo "== tree_diff: from a subdir it still diffs the whole repo, paths from the root =="
+# git -C <dir> diff names paths from the repo root, and big_files and the index
+# copy's ls-files read ':(top)', so a subdir dir misses nothing above it: a big
+# file at the root is kept away from git from the subdir too.
 RV8=$(mktmpd)
 (
   cd "$RV8" || exit
@@ -5979,47 +5347,33 @@ RV8=$(mktmpd)
   git add -A; git commit -q -m init
   printf 'root\nroot\nmore\n' > root.txt
   printf 'one\ntwo\n' > sub/foo.sh
+  head -c $(( 64 * 1024 * 1024 )) /dev/zero > core          # untracked, 64 MiB, above sub/
 ) >/dev/null 2>&1
-rv8lines=$("$DIR/scripts/tmux-review" --lines "$RV8/sub")
-case "$rv8lines" in
-    *'root.txt'$'\t'*) ok "--lines from a subdir pane still anchors the root file" ;;
-    *) bad "--lines from a subdir pane still anchors the root file" \
-         "a root.txt row" "$rv8lines" ;;
-esac
-case "$rv8lines" in
-    *'sub/foo.sh'$'\t''2'$'\t'*) ok "--lines from a subdir pane anchors a row inside that subdir too" ;;
-    *) bad "--lines from a subdir pane anchors a row inside that subdir too" \
-         "sub/foo.sh<TAB>2<TAB>..." "$rv8lines" ;;
-esac
-
+rv8num=$(tdiff "$RV8/sub" --numstat)
+is "from a subdir, the root file is in the diff" "1" \
+   "$(printf '%s\n' "$rv8num" | grep -cxF "2	0	root.txt")"
+is "and the subdir's own file, by its path from the root" "1" \
+   "$(printf '%s\n' "$rv8num" | grep -cxF "1	0	sub/foo.sh")"
+is "a big file above the subdir is kept away too" "0" \
+   "$(tdiff "$RV8/sub" | grep -c '^diff --git a/core')"
 rm -rf "$RV8"
 
-echo "== tmux-review --lines: output is byte-identical to the committed goldens =="
-for gf in basic mixed untracked blank nonascii funcname hunks spaces; do
-    GD=$(mktmpd); "$DIR/tests/fixtures/review/mkfix.sh" "$gf" "$GD" >/dev/null 2>&1
-    if "$DIR/scripts/tmux-review" --lines "$GD" | cmp -s - "$DIR/tests/fixtures/review/$gf.tsv"; then ok "golden $gf"
-    else bad "golden $gf" "byte-identical" "$("$DIR/scripts/tmux-review" --lines "$GD" | diff - "$DIR/tests/fixtures/review/$gf.tsv" | head -5)"; fi
-    rm -rf "$GD"
-done
-
-echo "== tmux-review --lines: the diff never writes the agent's index =="
-# Every diff now runs against a COPY of the index (git add -N -A on the copy
-# folds untracked files into the same diff). The copy is the whole point:
-# an `add -N` against the real index would rewrite the agent's own index
-# under it mid-commit. Pinned by the index file's mtime and size.
+echo "== tree_diff never writes the agent's index =="
+# Every diff runs against a COPY of the index (git add -N -A on the copy folds
+# untracked files into the same diff). An `add -N` against the real index would
+# rewrite the agent's own index under it mid-commit. Pinned by mtime and size.
 RI=$(mktmpd); "$DIR/tests/fixtures/review/mkfix.sh" untracked "$RI" >/dev/null 2>&1
 ri_stamp() { stat -c '%Y %s' "$RI/.git/index" 2>/dev/null || stat -f '%m %z' "$RI/.git/index"; }
 touch -d '2020-01-01 00:00:00' "$RI/.git/index" 2>/dev/null || touch -t 202001010000 "$RI/.git/index"
 ri_before=$(ri_stamp)
-is "untracked rows still come out of one diff" "2" \
-   "$("$DIR/scripts/tmux-review" --lines "$RI" | grep -c $'^new.txt\t')"
+is "an untracked file is in the one diff" "1" "$(tdiff "$RI" --numstat | grep -cxF "2	0	new.txt")"
 is "and the real index is byte- and mtime-identical afterwards" "$ri_before" "$(ri_stamp)"
 is "no intent-to-add entry leaked into the real index" "" \
    "$(git -C "$RI" ls-files -s -- new.txt)"
 unset -f ri_stamp
 rm -rf "$RI"
 
-echo "== tmux-review --lines: a file over 32 MB is skipped before git reads it, and the list says so =="
+echo "== tree_diff: a file over 32 MB is kept away from git, and numstat still names it =="
 RB=$(mktmpd)
 (
   cd "$RB" || exit
@@ -6027,27 +5381,21 @@ RB=$(mktmpd)
   git init -q -b main .; printf 'a\n' > f.c; git add -A; git commit -q -m init
   printf 'a\nb\n' > f.c
   head -c $(( 64 * 1024 * 1024 )) /dev/zero > core          # untracked, 64 MiB
-  printf 'x\n' > small.txt                                  # untracked, small: still reviewed
+  printf 'x\n' > small.txt                                  # untracked, small: still counted
 ) >/dev/null 2>&1
-# CPU, not the wall clock: the claim is that the 64 MiB file is skipped rather
-# than diffed, and diffing it is CPU. 3x this site's 0.157s under twelve
-# spinners (0.109-0.132s idle); a wall bound grades the box's I/O too (#75).
-cpu_under "a 64 MiB file is skipped, not diffed: the list is under 0.5s of CPU" 0.5 \
-    "$DIR/scripts/tmux-review" --lines "$RB"
-rbrows=$(cat "$CPUOUT")
-is "the small change is still a row"      "1" "$(printf '%s\n' "$rbrows" | grep -c $'^f.c\t')"
-is "the small untracked file is still a row" "1" "$(printf '%s\n' "$rbrows" | grep -c $'^small.txt\t')"
-is "the big file has no rows"             "0" "$(printf '%s\n' "$rbrows" | grep -c $'^core\t')"
-case "$rbrows" in
-    *"(diff too large)"*"core (64 MB) skipped"*"over 32 MB"*) ok "one notice row names the skipped file and its size" ;;
-    *) bad "one notice row names the skipped file and its size" "(diff too large) ... core (64 MB) skipped ... over 32 MB" "$rbrows" ;;
-esac
-is "the full diff omits it too" "0" "$(bash -c '. "$1/git.sh"; . "$1/review-diff.sh"; tree_diff "$2"' _ "$DIR/scripts/lib" "$RB" | grep -c '^diff --git a/core')"
-is "and numstat names it as a binary row, unread" "-	-	core" "$(bash -c '. "$1/git.sh"; . "$1/review-diff.sh"; tree_diff "$2" --numstat' _ "$DIR/scripts/lib" "$RB" | grep -P '\tcore$')"
+# No CPU budget: 64 MiB of zeros hashes under any sane one. The diff rows
+# below are what tell a skipped file from a hashed one.
+rbnum=$(tdiff "$RB" --numstat)
+is "the small change is counted" "1" "$(printf '%s\n' "$rbnum" | grep -cxF "1	0	f.c")"
+is "the small untracked file is counted" "1" \
+   "$(printf '%s\n' "$rbnum" | grep -cxF "1	0	small.txt")"
+is "and numstat names the big one as a binary row, unread" "1" \
+   "$(printf '%s\n' "$rbnum" | grep -cxF -- "-	-	core")"
+is "the full diff omits it" "0" "$(tdiff "$RB" | grep -c '^diff --git a/core')"
 printf 'big\n' > "$RB/f.c"; head -c $(( 64 * 1024 * 1024 )) /dev/zero >> "$RB/f.c"   # a TRACKED file grown past the cap
-rbrows2=$("$DIR/scripts/tmux-review" --lines "$RB")
-is "a tracked file grown past the cap is skipped the same way" "0" "$(printf '%s\n' "$rbrows2" | grep -c $'^f.c\t')"
-case "$rbrows2" in *"f.c (64 MB) skipped"*) ok "and named" ;; *) bad "and named" "f.c (64 MB) skipped" "$rbrows2" ;; esac
+is "a tracked file grown past the cap is skipped the same way" "0" \
+   "$(tdiff "$RB" | grep -c '^diff --git a/f.c')"
+is "and named as a binary row" "1" "$(tdiff "$RB" --numstat | grep -cxF -- "-	-	f.c")"
 rm -rf "$RB"
 
 # A stand-in for revdiff, which is interactive and so cannot be driven here. Each
@@ -6091,8 +5439,8 @@ rd_last() { awk '{print $NF}' "$RDW/argv.$1"; }
 echo "== tmux-review: the review base is since-last-review, else the branch, else uncommitted =="
 # revdiff's auto-detect, one function: a checkpoint ref wins, then the
 # merge-base with the upstream/default branch when it is not HEAD itself,
-# then HEAD (today's view). ^B cycles the modes that hold. Exercised through
-# --delta and --lines so the tests see what a reviewer sees.
+# then HEAD (today's view). ^B cycles the modes that hold. Read through
+# tree_diff's numstat, what --delta and the review loop read.
 RB=$(mktmpd)
 (
   cd "$RB" || exit
@@ -6106,13 +5454,12 @@ RB=$(mktmpd)
   git checkout -q -b topic
   printf 'a\nCOMMITTED-ON-FEAT\n' > f; git commit -q -am topic
 ) >/dev/null 2>&1
-is "a clean feature branch reviews its commits against main" "1" \
-   "$("$DIR/scripts/tmux-review" --lines "$RB" | grep -c 'COMMITTED-ON-FEAT')"
+is "a clean feature branch reviews its commits against main" "1	0	f" \
+   "$(tdiff "$RB" --numstat)"
 printf 'a\nCOMMITTED-ON-FEAT\nUNCOMMITTED\n' > "$RB/f"
-is "branch + uncommitted are one set" "2" \
-   "$("$DIR/scripts/tmux-review" --lines "$RB" | grep -c 'COMMITTED-ON-FEAT\|UNCOMMITTED')"
-is "COCKPIT_REVIEW_BASE=uncommitted narrows it to HEAD" "1" \
-   "$(COCKPIT_REVIEW_BASE=uncommitted "$DIR/scripts/tmux-review" --lines "$RB" | grep -c 'COMMITTED-ON-FEAT\|UNCOMMITTED')"
+is "branch + uncommitted are one set" "2	0	f" "$(tdiff "$RB" --numstat)"
+is "COCKPIT_REVIEW_BASE=uncommitted narrows it to HEAD" "1	0	f" \
+   "$(COCKPIT_REVIEW_BASE=uncommitted tdiff "$RB" --numstat)"
 # A checkpoint: the tree as it stands now, under the ref ^A will write.
 (
   cd "$RB" || exit
@@ -6120,12 +5467,12 @@ is "COCKPIT_REVIEW_BASE=uncommitted narrows it to HEAD" "1" \
   git update-ref refs/cockpit/reviewed/topic "$(GIT_INDEX_FILE=$I git write-tree)"; rm -f "$I"
 ) >/dev/null 2>&1
 is "with a checkpoint at the current tree there is nothing to review" "" \
-   "$("$DIR/scripts/tmux-review" --lines "$RB")"
+   "$(tdiff "$RB" --numstat)"
 printf 'a\nCOMMITTED-ON-FEAT\nUNCOMMITTED\nSINCE\n' > "$RB/f"
-is "and after one more edit only that edit is a row" "SINCE" \
-   "$("$DIR/scripts/tmux-review" --lines "$RB" | cut -f3)"
-is "COCKPIT_REVIEW_BASE=branch still shows the whole branch" "3" \
-   "$(COCKPIT_REVIEW_BASE=branch "$DIR/scripts/tmux-review" --lines "$RB" | grep -c .)"
+is "and after one more edit only that edit is in the diff" "+SINCE" \
+   "$(tdiff "$RB" | grep -x '+[^+].*')"
+is "COCKPIT_REVIEW_BASE=branch still shows the whole branch" "3	0	f" \
+   "$(COCKPIT_REVIEW_BASE=branch tdiff "$RB" --numstat)"
 
 rm -rf "$RB"
 
@@ -6183,11 +5530,12 @@ is "a clears the pane's review state" "" "$("$TMUX_REAL" -L "$RA" show-option -p
 RAREF=$(git -C "$RADIR" rev-parse -q --verify refs/cockpit/reviewed/main 2>/dev/null)
 is "a wrote the checkpoint ref to a tree" "tree" "$(git -C "$RADIR" cat-file -t "$RAREF" 2>/dev/null)"
 is "the tree holds the untracked file too" "1" "$(git -C "$RADIR" ls-tree -r "$RAREF" --name-only 2>/dev/null | grep -c '^new.txt$')"
-is "nothing is left to review" "" "$("$DIR/scripts/tmux-review" --lines "$RADIR")"
+is "nothing is left to review" "" "$(tdiff "$RADIR" --numstat)"
 # --delta asks tmux about the pane, so it runs on THIS server (run-shell), not the suite's.
 is "--delta says so (exit 1)" "D=1" "$("$TMUX_REAL" -L "$RA" run-shell "XDG_STATE_HOME=$(printf '%q' "$RASTATE") '$DIR/scripts/tmux-review' --delta $RAAP; echo D=\$?" 2>/dev/null | tail -1)"
 printf 'brand new\nEDITED\n' > "$RADIR/new.txt"
-is "an edit to the approved untracked file is the only row" "EDITED" "$("$DIR/scripts/tmux-review" --lines "$RADIR" | cut -f3)"
+is "an edit to the approved untracked file is the only change" "1	0	new.txt" \
+   "$(tdiff "$RADIR" --numstat)"
 # --done as a public subcommand: keep_hint()'s own re-delivery command chains
 # into it, so a by-hand delivery has to finish the same way as review_pane()'s
 # own cleanup does.
@@ -6373,10 +5721,10 @@ git -C "$GH/r" diff HEAD </dev/null >/dev/null 2>&1
 case "$(cat "$GHM" 2>/dev/null)" in *fsmon*) ok "the planted config fires under plain git" ;;
     *) bad "the planted config fires under plain git" "fsmon in the marker" "$(cat "$GHM" 2>/dev/null)" ;; esac
 rm -f "$GHM"
-"$DIR/scripts/tmux-review" --lines "$GH/r" </dev/null >/dev/null 2>&1
-is "and nothing it names runs under tmux-review" "" "$(cat "$GHM" 2>/dev/null)"
-case "$("$DIR/scripts/tmux-review" --lines "$GH/r" </dev/null 2>/dev/null)" in *f.txt*) ok "while the review still lists the change" ;;
-    *) bad "while the review still lists the change" "a row for f.txt" "$("$DIR/scripts/tmux-review" --lines "$GH/r" </dev/null 2>&1 | head -3)" ;; esac
+tdiff "$GH/r" </dev/null >/dev/null 2>&1
+is "and nothing it names runs under tree_diff" "" "$(cat "$GHM" 2>/dev/null)"
+is "while tree_diff still counts the change" "1" \
+   "$(tdiff "$GH/r" --numstat </dev/null 2>/dev/null | grep -cxF "1	0	f.txt")"
 
 echo "== a partial clone's lazy fetch cannot run the repo's planted remote config (#217) =="
 # c's HEAD blob is missing, so a diff fetches it through the remote the repo names. The
@@ -6401,8 +5749,6 @@ lf_paths() {
     is "not through git.sh's git$1" "" "$(cat "$LFM" 2>/dev/null)"; rm -f "$LFM"
     ( . "$DIR/scripts/lib/git.sh"; . "$DIR/scripts/lib/review-diff.sh"; tree_diff "$LF/c" --numstat ) >/dev/null 2>&1
     is "nor through tree_diff$1" "" "$(cat "$LFM" 2>/dev/null)"; rm -f "$LFM"
-    "$DIR/scripts/tmux-review" --lines "$LF/c" >/dev/null 2>&1
-    is "nor through tmux-review --lines$1" "" "$(cat "$LFM" 2>/dev/null)"; rm -f "$LFM"
 }
 # foo:: is a remote helper on PATH (hb/), which no protocol.<p>.allow pin can name.
 for lfu in "file://$LF/src" ssh://h/r "ext::$LF/up" foo::x; do
@@ -6436,6 +5782,126 @@ is "deliver, request, delta and -p all refuse it" "1 2 1 2 " "$pwrcs"
 is "and no tmux call ever carries it" "0" "$(grep -c PWNED "$PWD_SHIM/log" 2>/dev/null || true)"
 is "--dir prints nothing for it" "" "$(PATH="$PWD_SHIM:$PATH" TMUX_LOG="$PWD_SHIM/log" "$DIR/scripts/tmux-review" --dir "$PWN" 2>/dev/null)"
 rm -rf "$PWD_SHIM"; unset -f pwrun
+
+echo "== tmux-review: the tree under review is the board's work dir, asked of cockpit-tui (#470) =="
+# An agent pane with no @cockpit_dir, launched in one dir, whose transcript says it works in a
+# repo: the board's row shows the repo, so r reviews the repo. The binary owns the rule
+# (`cockpit-tui workdir %N`); a stub in its place logs each call, so a row can tell "asked and
+# refused" from "never asked".
+if need_tmux "review work dir"; then :; else
+WD=$(mktmpd); WDS="cockpit-wd470-$$"; SOCKS="$SOCKS $WDS"
+# Under the launch dir's slug, where Claude Code keeps it and where the board looks.
+WDT="$WD/home/.claude/projects/$(printf '%s' "$WD/launch" | sed 's/[^A-Za-z0-9-]/-/g')"
+mkdir -p "$WD/launch" "$WD/other" "$WDT" "$WD/repo"
+(
+  cd "$WD/repo" || exit 1
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main . && echo a > f && git add f && git commit -q -m init && echo b >> f
+) >/dev/null 2>&1
+printf '{"type":"user","cwd":"%s","message":{"content":"hi"}}\n' "$WD/repo" \
+    > "$WDT/wd470.jsonl"
+"$TMUX_REAL" -L "$WDS" -f /dev/null new-session -d -s t -c "$WD/launch" 'exec sleep 300' \
+    >/dev/null 2>&1
+"$TMUX_REAL" -L "$WDS" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
+WDSH=$("$TMUX_REAL" -L "$WDS" list-panes -a -F '#{pane_id}' | head -1)
+wd_pane() {                   # wd_pane <argv0> -> a new pane in the launch dir running sleep
+    local p; p=$("$TMUX_REAL" -L "$WDS" new-window -P -F '#{pane_id}' -d -t t: -c "$WD/launch" \
+        "exec -a $1 sleep 300")
+    until_out "$1" "$TMUX_REAL" -L "$WDS" display-message -p -t "$p" '#{pane_current_command}'
+    printf '%s' "$p"
+}
+WDP=$(wd_pane claude)        # an agent with a session: its transcript names the repo
+WDV=$(wd_pane 2.1.246)       # a live Claude renamed to its version, same transcript
+WDN=$(wd_pane claude)        # an agent with no session id: no transcript to read
+for p in "$WDP" "$WDV"; do
+    "$TMUX_REAL" -L "$WDS" set -p -t "$p" @cockpit_session wd470 >/dev/null 2>&1
+done
+WDSP=$("$TMUX_REAL" -L "$WDS" display-message -p '#{socket_path}')
+wd() {                        # wd <args...>: tmux-review on the block's server, from $WD
+    (cd "$WD" && TMUX="$WDSP,0,0" HOME="$WD/home" timeout 20 "$DIR/scripts/tmux-review" "$@" \
+        </dev/null 2>/dev/null)
+}
+# With the binary under test: one that has not `workdir` exits 2 (whatever it says on stderr)
+# and leaves the launch dir; any other binary must name the transcript's tree, so a workdir
+# that refuses this agent pane (exit 1) fails here (#508). Each run asserts one of them.
+wdrc=0; TMUX="$WDSP,0,0" "$COCKPIT_TUI_BIN" workdir "$WDP" >/dev/null 2>&1 || wdrc=$?
+if [ "$wdrc" = 2 ]; then
+    is "a binary without workdir: a transcript-only pane keeps its launch dir" "$WD/launch" \
+       "$(wd --dir "$WDP")"
+else
+    is "a pane with no @cockpit_dir reviews its transcript's cwd, not its launch dir" \
+       "$WD/repo" "$(wd --dir "$WDP")"
+    is "and --delta, the Stop hook's question, sees that tree's change" "0" \
+       "$(wd --delta "$WDP"; echo $?)"
+    is "a pane running as 2.1.246 is an agent too: its transcript's cwd" "$WD/repo" \
+       "$(wd --dir "$WDV")"
+    is "an agent with no session id has no transcript: its launch dir" "$WD/launch" \
+       "$(wd --dir "$WDN")"
+fi
+# The stub's answer is $WD_CT's row; its cwd is $WD, where a relative "repo" is a directory.
+cat > "$WD/ct" <<EOF
+#!/bin/sh
+echo "\$*" >> "$WD/ct.log"
+case \$WD_CT in
+    ok)      printf '%s\n' "$WD/other" ;;
+    rel)     printf 'repo\n' ;;
+    gone)    printf '%s\n' "$WD/no-such" ;;
+    two)     printf '%s\n%s\n' "$WD/other" "$WD/other" ;;
+    empty)   ;;
+    fail)    printf '%s\n' "$WD/other"; exit 1 ;;
+    noagent) exit 1 ;;
+    stale)   echo "cockpit-tui: unknown screen workdir" >&2; exit 2 ;;
+    hang)    exec sleep 30 ;;
+esac
+EOF
+chmod +x "$WD/ct"
+wd_ct() {                     # wd_ct <row> <pane> -> "<calls> <dir>" with the stub as the binary
+    : > "$WD/ct.log"
+    local out; out=$(COCKPIT_TUI_BIN="$WD/ct" WD_CT=$1 wd --dir "$2")
+    printf '%s %s' "$(grep -c . "$WD/ct.log")" "$out"
+}
+is "a stub's absolute directory is taken" "1 $WD/other" "$(wd_ct ok "$WDP")"
+is "and it was asked as workdir <pane>" "workdir $WDP" "$(cat "$WD/ct.log")"
+for row in rel gone two empty fail noagent stale; do
+    is "a binary answering $row is asked once, and the launch dir stands" "1 $WD/launch" \
+       "$(wd_ct "$row" "$WDP")"
+done
+if command -v timeout >/dev/null 2>&1; then
+    is "a binary that hangs is cut off, and the launch dir stands" "1 $WD/launch" \
+       "$(wd_ct hang "$WDP")"
+else
+    skip_ "a binary that hangs is cut off (no timeout)"
+fi
+is "with the stub, then with no binary at all: its dir, then the launch dir" \
+   "$WD/other $WD/launch" \
+   "$(COCKPIT_TUI_BIN="$WD/ct" WD_CT=ok wd --dir "$WDP") $(COCKPIT_TUI_BIN="$WD/none" wd --dir "$WDP")"
+is "a pane that is gone prints nothing and asks nothing" "0 " "$(wd_ct ok %99999)"
+is "a shell pane is not asked: the board does not count it" "0 $WD/launch" \
+   "$(wd_ct ok "$WDSH")"
+# The board's live test, without its ps walk: a live Claude renames itself to its version, and
+# the hooks' @panestate marks a pane whatever it runs. A name with one dot is not a version.
+is "a pane running as 2.1.246 is an agent, so it is asked" "1 $WD/other" "$(wd_ct ok "$WDV")"
+# The board lowercases the command before the glob (#508): Claude and CLAUDE are claude.
+for argv0 in Claude CLAUDE; do
+    is "a pane running as $argv0 is an agent, so it is asked" "1 $WD/other" \
+       "$(wd_ct ok "$(wd_pane "$argv0")")"
+done
+WDV1=$(wd_pane 2.1)
+is "a pane running as 2.1 is not version-shaped, so it is not asked" "0 $WD/launch" \
+   "$(wd_ct ok "$WDV1")"
+WDST=$(wd_pane snooze)
+"$TMUX_REAL" -L "$WDS" set -p -t "$WDST" @panestate running >/dev/null 2>&1
+is "a pane carrying @panestate is an agent whatever it runs, so it is asked" "1 $WD/other" \
+   "$(wd_ct ok "$WDST")"
+"$TMUX_REAL" -L "$WDS" set -p -t "$WDP" @cockpit_dir "$WD/launch" >/dev/null 2>&1
+is "a pane whose @cockpit_dir holds is not asked: that is the binary's first pick" \
+   "0 $WD/launch" "$(wd_ct ok "$WDP")"
+"$TMUX_REAL" -L "$WDS" set -p -t "$WDP" @cockpit_dir launch >/dev/null 2>&1
+is "a relative @cockpit_dir does not hold, so the binary is asked" "1 $WD/other" \
+   "$(wd_ct ok "$WDP")"
+"$TMUX_REAL" -L "$WDS" kill-server >/dev/null 2>&1
+unset -f wd wd_ct wd_pane
+fi
 
 echo "== tmux-review: a temp git index is removed when the run is killed =="
 # tree_diff's mktemp index outlives a TERM unless a trap removes it. The git
@@ -8057,9 +7523,9 @@ done
 TJOUT=$(COCKPIT_TMUX="tmux -L $TJ" "$COCKPIT_TUI_BIN" --json 2>/dev/null)
 is "--json names both agent panes and not the shell pane" "$TJA $TJB" \
    "$(printf '%s\n' "$TJOUT" | sed -n 's/^    "id": "\(%[0-9]*\)".*/\1/p' | tr '\n' ' ' | sed 's/ $//')"
-is "--json carries the 14 frozen keys, in order" \
-   "id where state title doing said asked msg since loc diff review session path" \
-   "$(printf '%s\n' "$TJOUT" | sed -n 's/^    "\([a-z]*\)":.*/\1/p' | head -14 | tr '\n' ' ' | sed 's/ $//')"
+is "--json carries the 16 frozen keys, in order" \
+   "id where state title doing said asked msg since loc diff review session path dir job" \
+   "$(printf '%s\n' "$TJOUT" | sed -n 's/^    "\([a-z]*\)":.*/\1/p' | head -16 | tr '\n' ' ' | sed 's/ $//')"
 is "--json exits 0 and says nothing about $TJSH" "0 no" \
    "$(COCKPIT_TMUX="tmux -L $TJ" "$COCKPIT_TUI_BIN" --json >/dev/null 2>&1; printf '%s ' "$?"; \
       case "$TJOUT" in *"\"$TJSH\""*) printf yes ;; *) printf no ;; esac)"
@@ -8178,9 +7644,9 @@ case "$bw" in *'-e COCKPIT_PANEL_MODE=auto'*) ok "the board popup passes -e COCK
     *) bad "the board popup passes -e COCKPIT_PANEL_MODE" "-e COCKPIT_PANEL_MODE=auto" "$bw" ;;
 esac
 # display-popup expands only -T and -d, so the pane id cannot be a format here
-# (#38): the popup's own sh resolves it.
-case "$bw" in *'display-message -p'*) ok "and the binding resolves the source pane itself" ;;
-    *) bad "and the binding resolves the source pane itself" "-p \$(tmux display-message -p ...)" "$bw" ;;
+# (#38): the key stores it on the session and the popup's own sh reads it back.
+case "$bw" in *'@cockpit_src_pane "#{pane_id}"'*'show-option -qv'*'@cockpit_src_pane'*) ok "and the binding resolves the source pane itself" ;;
+    *) bad "and the binding resolves the source pane itself" "@cockpit_src_pane set by the key, read by the popup" "$bw" ;;
 esac
 case "$(bkey "$B" r)" in *cockpit-board*) ok "prefix r opens the board, with no binary installed" ;;
     *) bad "prefix r opens the board, with no binary installed" "a display-popup running cockpit-board" "$(bkey "$B" r)" ;;
@@ -8820,6 +8286,61 @@ else bad "the busy agent's screen shows" "live · N lines" "$("$TMUX_REAL" -L "$
 "$TMUX_REAL" -L "$PR" kill-server >/dev/null 2>&1
 fi
 
+echo "== cockpit-tui board: a held j recaptures, and fetches only on the tick (#492) =="
+# Each new selection ran a full fetch, list-panes first: j held at 30 Hz was
+# about 20 fetches a second. A selection now recaptures off the last fetch's
+# panes. Each key here waits for its own capture-pane, so the counts are per
+# selection, not per second: 40 selections may cost the tick's few list-panes,
+# never 40. Then the keys go on until a list-panes comes, which a capture that
+# put the tick off again would never let happen.
+if need_tmux "a held j on the board"; then :; else
+PJ="cockpit-pj-$$"; SOCKS="$SOCKS $PJ"; PJD=$(mktmpd)
+printf '#!/bin/sh\nprintf "%%s\\n" "$1" >> %s/calls\nexec %s "$@"\n' \
+    "$PJD" "$TMUX_REAL" > "$PJD/tmux"
+chmod +x "$PJD/tmux"
+"$TMUX_REAL" -L "$PJ" -f /dev/null new-session -d -s t -x 120 -y 30 -c "$PJD" \
+    'exec sleep 3600' >/dev/null 2>&1
+for s in alpha beta; do
+    pjp=$("$TMUX_REAL" -L "$PJ" new-window -d -P -F '#{pane_id}' -t t: -c "$PJD" \
+        "printf 'screen-of-$s\n'; exec -a claude sleep 3600")
+    "$TMUX_REAL" -L "$PJ" set -p -t "$pjp" @panestate running >/dev/null 2>&1
+done
+PJENV="COCKPIT_TMUX=$PJD/tmux XDG_STATE_HOME=$PJD COCKPIT_LOG=$PJD/tui.log"
+PJW=$("$TMUX_REAL" -L "$PJ" new-window -d -P -F '#{pane_id}' -t t: -c "$PJD" \
+    "env $PJENV $COCKPIT_TUI_BIN board")
+pj_n() { local n; n=$(grep -cx "$1" "$PJD/calls" 2>/dev/null); printf '%s' "${n:-0}"; }
+pj_key() {                    # <key>  one press, then poll for one more capture-pane
+    local n i
+    n=$(pj_n capture-pane)
+    "$TMUX_REAL" -L "$PJ" send-keys -t "$PJW" "$1"
+    for i in $(seq 1 "$POLLS"); do
+        [ "$(pj_n capture-pane)" -gt "$n" ] && return 0
+        sleep 0.02
+    done
+    return 1
+}
+if until_cap "$PJ" "$PJW" '*live · *screen-of-alpha*'; then
+    pjl=$(pj_n list-panes); pjmiss=0
+    for i in $(seq 1 20); do
+        pj_key j || pjmiss=$((pjmiss + 1))
+        pj_key k || pjmiss=$((pjmiss + 1))
+    done
+    pjf=$(( $(pj_n list-panes) - pjl ))
+    is "each of 40 held selections gets a capture" 0 "$pjmiss"
+    if [ "$pjf" -le 10 ]; then ok "and 40 selections cost at most 10 full fetches ($pjf)"
+    else bad "and 40 selections cost at most 10 full fetches" "at most 10 list-panes" "$pjf"; fi
+    pjl=$(pj_n list-panes); pjtick=
+    for i in $(seq 1 300); do
+        pj_key j; pj_key k
+        [ "$(pj_n list-panes)" -gt "$pjl" ] && { pjtick=1; break; }
+    done
+    if [ -n "$pjtick" ]; then ok "a held j still gets the tick's fetch (after $i pairs)"
+    else bad "a held j still gets the tick's fetch" "a list-panes within 300 pairs" "none"; fi
+else bad "the board shows alpha's screen" "live · screen-of-alpha" \
+    "$("$TMUX_REAL" -L "$PJ" capture-pane -p -t "$PJW")"; fi
+"$TMUX_REAL" -L "$PJ" kill-server >/dev/null 2>&1
+fi
+
 echo "== cockpit-panel: insert pastes without Enter, send adds it, and the text arrives clean =="
 # The panel is the one wrapper that writes into a pane, so it is driven for real:
 # a fake claude, a target running cat, the panel in a second window, send-keys.
@@ -9088,6 +8609,7 @@ cat "$PND/line" > "\$COCKPIT_ACTION"
 [ -e "$PND/text" ] && cat "$PND/text" > "\$COCKPIT_ACTION.text"
 cat "$PND/cmd" > "\$COCKPIT_ACTION.cmd"
 printf '%s\n' "\$*" >> "$PND/bargv"
+printf '%s\n' "\${COCKPIT_PANEL_HIDE_TAKEN:-}" > "$PND/taken"
 [ -e "$PND/crash" ] && exit 3
 # A state file only on the first run: the resumed one leaves without a way back.
 [ -e "$PND/state" ] && [ "\${3:-}" != --resume ] && printf 'S\n' > "\$COCKPIT_ACTION.state"
@@ -9101,6 +8623,42 @@ pact() {                      # <action-line> <text> [notext] -> every tmux argv
     PATH="$PND/rec:$PATH" COCKPIT_LOG="$PND/tui.log" COCKPIT_TUI_BIN="$PND/p/bin/cockpit-tui" "$PND/p/scripts/cockpit-panel" -p %5 </dev/null >/dev/null 2>&1
     tr '\n' ';' < "$PND/pargv" | sed "s/cockpit-panel-[0-9]*/B/g"
 }
+# --ask (#365): the first run opens on the viewer's question; a run after an
+# action goes back with --resume alone; anything but two line numbers a <= b is refused
+pask() {                      # <args after -p %5> -> the binary's argv, one run a line, and the exit code
+    : > "$PND/bargv"; printf 'paste %%5\n' > "$PND/line"; printf 'hi' > "$PND/text"; printf 'zsh\n' > "$PND/cmd"; printf 'zsh\n' > "$PND/now"
+    PATH="$PND/rec:$PATH" COCKPIT_LOG="$PND/tui.log" COCKPIT_TUI_BIN="$PND/p/bin/cockpit-tui" "$PND/p/scripts/cockpit-panel" -p %5 "$@" </dev/null >/dev/null 2>&1
+    echo "rc=$?"; cat "$PND/bargv"
+}
+is "--ask reaches the binary on the first run" "rc=0"$'\n'"panel %5 --ask /r/x.rs 3 7" "$(pask --ask /r/x.rs 3 7)"
+touch "$PND/state"
+is "and a run after an action resumes without it" "rc=0"$'\n'"panel %5 --ask /r/x.rs 3 7"$'\n'"panel %5 --resume ${PND}/RESUME --last ok" \
+   "$(pask --ask /r/x.rs 3 7 | sed "s#--resume [^ ]*/resume#--resume ${PND}/RESUME#")"
+rm -f "$PND/state"
+for pa in "--ask /r/x.rs 7 3" "--ask /r/x.rs 0 1" "--ask /r/x.rs 01 2" "--ask /r/x.rs 3" "--ask /r/x.rs 3 7 8" "--ask  3 7" "--x /r 1 2"; do
+    # shellcheck disable=SC2086
+    is "cockpit-panel -p %5 $pa is refused before the binary runs" "rc=2" "$(pask $pa)"
+done
+is "--ask with an empty file is refused" "rc=2" "$(pask --ask '' 3 7)"
+# a panel hidden on the pane stays hidden: the ask opens on its question, not on it.
+# `display` answers $PND/now, so 4242 is the server's pid that keys the hidden file.
+mkdir -p "$PND/xdg/tmux-cockpit/panel"; printf 'H\n' > "$PND/xdg/tmux-cockpit/panel/4242-5.state"
+: > "$PND/bargv"; printf '4242\n' > "$PND/now"; printf 'paste %%5\n' > "$PND/line"
+PATH="$PND/rec:$PATH" XDG_STATE_HOME="$PND/xdg" COCKPIT_LOG="$PND/tui.log" COCKPIT_TUI_BIN="$PND/p/bin/cockpit-tui" \
+    "$PND/p/scripts/cockpit-panel" -p %5 --ask /r/x.rs 3 7 </dev/null >/dev/null 2>&1
+is "--ask leaves a panel hidden on the pane where it is" "panel %5 --ask /r/x.rs 3 7|H" \
+   "$(head -1 "$PND/bargv")|$(cat "$PND/xdg/tmux-cockpit/panel/4242-5.state" 2>/dev/null)"
+is "and the binary is told the pane's hidden slot is taken" "1" "$(cat "$PND/taken")"
+# review-464: a stub that does hide (no action line, a state) must not overwrite it
+printf 'H\n' > "$PND/xdg/tmux-cockpit/panel/4242-5.state"; : > "$PND/line"; touch "$PND/state"; : > "$PND/pargv"
+PATH="$PND/rec:$PATH" XDG_STATE_HOME="$PND/xdg" COCKPIT_LOG="$PND/tui.log" COCKPIT_TUI_BIN="$PND/p/bin/cockpit-tui" \
+    "$PND/p/scripts/cockpit-panel" -p %5 --ask /r/x.rs 3 7 </dev/null >/dev/null 2>&1
+is "a hide on an ask leaves the panel hidden before it" "H" "$(cat "$PND/xdg/tmux-cockpit/panel/4242-5.state")"
+is "and says this one is closed" "1" "$(grep -c 'already hidden on %5; this one is closed' "$PND/pargv")"
+rm -f "$PND/state"; rm -rf "$PND/xdg"
+: > "$PND/bargv"; pask >/dev/null
+is "a plain run is not told the slot is taken" "" "$(cat "$PND/taken")"
+unset -f pask
 is "send %5 loads the text, pastes it bracketed, deletes the buffer, presses Enter, says so" \
    "load-buffer -b B -;hi;paste-buffer -p -d -b B -t %5;send-keys -t %5 Enter;display-message -t %5 cockpit: sent to %5;" \
    "$(pact 'send %5' hi)"
@@ -11047,8 +10605,8 @@ git -C "$GD/r" read-tree --empty; rm -f "$GD/PWNED"
 is "git.sh's git add refuses it in one line, status 1" "git.sh: refusing: filter driver name contains '='
 1" "$( ( . "$DIR/scripts/lib/git.sh"; git -C "$GD/r" add x ) 2>&1; printf '%s' "$?")"
 "$DSB" diffstat "$GD/r" >/dev/null 2>&1
-"$DIR/scripts/tmux-review" --lines "$GD/r" >/dev/null 2>&1
-is "and nothing ran: git.sh, diffstat and tmux-review --lines" "" "$(ls "$GD/PWNED" 2>/dev/null)"
+tdiff "$GD/r" >/dev/null 2>&1
+is "and nothing ran: git.sh, diffstat and tree_diff" "" "$(ls "$GD/PWNED" 2>/dev/null)"
 rm -rf "$GD"
 
 # #434: a gitlink's repo has its own config, a clean filter included, and
@@ -11089,9 +10647,10 @@ ds_redirty 203201010000
 is "diffstat runs none either, and counts the same" "$dss|" \
    "$(TMPDIR="$GD/tmp" "$DSB" diffstat "$GD/r")|$(ls "$GD" | grep '^PWNED')"
 ds_redirty 203301010000
-dsl=$(TMPDIR="$GD/tmp" "$DIR/scripts/tmux-review" --lines "$GD/r/d" 2>/dev/null)
-is "nor does tmux-review --lines from a subdir, outside the gitlinks" "" "$(ls "$GD" | grep '^PWNED')"
-is "whose rows still hold the new file at the top" "1" "$(printf '%s\n' "$dsl" | grep -c '^n\.txt	1	n	')"
+dsl=$(TMPDIR="$GD/tmp" tdiff "$GD/r/d" --numstat 2>/dev/null)
+is "nor does tree_diff from a subdir, outside the gitlinks" "" "$(ls "$GD" | grep '^PWNED')"
+is "whose numstat still counts the new file at the top" "1" \
+   "$(printf '%s\n' "$dsl" | grep -cxF "1	0	n.txt")"
 is "a relative TMPDIR: tree_diff counts what an absolute one does" "$dss" "$(cd "$GD" && TMPDIR=tmp ds_shell "$GD/r")"
 is "and neither leaves anything in TMPDIR" "" "$(ls -A "$GD/tmp")"
 # Excludes that never reach their file: while ls-files writes $tmp/staged, the
@@ -11597,6 +11156,13 @@ case "$(pi_rs | grep '^base ')" in 'base      since last review  ('*) ok "the Ru
 printf 'uncommitted\n' > "$PISESS/comments.md.base"
 is "and it is the chosen mode" "base      uncommitted  (HEAD)" "$(pi_rs | grep '^base ')"
 is "a pane that is not there is named, exit 1" "cockpit-tui: no such pane %999 1" "$(pi_rs %999) $(pi_rs %999 >/dev/null 2>&1; echo $?)"
+# #460: a bound job's name is a pane title: a newline in it is a space, as on the board
+"$TMUX_REAL" -L "$PI" set -p -t "$PIAP" @cockpit_job bg_1 >/dev/null 2>&1
+"$TMUX_REAL" -L "$PI" set -p -t "$PIAP" @cockpit_job_name "$(printf 'night\nsweep')" >/dev/null 2>&1
+is "the job row names the bound job, a newline a space" "job       night sweep  (@cockpit_job bg_1)" \
+   "$(pi_rs | grep '^job ')"
+"$TMUX_REAL" -L "$PI" set -pu -t "$PIAP" @cockpit_job >/dev/null 2>&1
+"$TMUX_REAL" -L "$PI" set -pu -t "$PIAP" @cockpit_job_name >/dev/null 2>&1
 is "a word that is not a pane id is refused, exit 2" "2" "$(pi_rs notapane >/dev/null 2>&1; echo $?)"
 "$TMUX_REAL" -L "$PI" kill-server >/dev/null 2>&1
 fi
@@ -11735,7 +11301,8 @@ chmod +x "$KD/shim/tmux"; : > "$KD/race"; KV_SHIM=$KD/shim
 kv_run "kill $C" "$C $CW" >/dev/null
 KV_SHIM=
 is "a pane that moves between the check and the kill takes nothing with it" "alive alive alive" "$(kv_alive "$C") $(kv_alive "$C2") $(kv_alive "$D")"
-is "and the board is told it was not killed" "✕" "$(sed -n '3,$p' "$KD/bargv" | cut -c1-1)"
+# The whole first field, not cut -c1-1: GNU cut counts bytes, and ✕ is three (#482).
+is "and the board is told it was not killed" "✕" "$(awk 'NR >= 3 { print $1 }' "$KD/bargv")"
 
 V=$(kv_win vic-two)
 case "$(kv_run "kill $V" "$V $BW")" in "✕ cockpit: not killed: $V is now in window "*", you confirmed $BW") ok ".expect naming another window's id refuses" ;;
@@ -12364,7 +11931,7 @@ tpsize() {                    # tpsize <answer> <cols> <rows> [--needs] -- "-w W
     local a=$1; shift
     : > "$TP/log"
     env -u TMUX PATH="$TP:$PATH" TP_LOG="$TP/log" TP_ANSWER="$(printf '%s' "$a" | tr '|' '\037')" \
-        "$DIR/scripts/tm" --popup /dev/pts/9 '$3' "$@" >/dev/null 2>&1
+        "$DIR/scripts/tm" --popup /dev/pts/9 '$3' "$1" "$2" %7 "${@:3}" >/dev/null 2>&1
     sed 's/.*\(-w [0-9]* -h [0-9]*\).*/\1/' "$TP/log"
 }
 is "desktop: 70% wide, rows + 5 under the 14-line floor" "-w 140 -h 14" "$(tpsize '7|3||||' 200 50)"
@@ -12380,8 +11947,8 @@ is "the size options are ceilings, percent or cells" "-w 120 -h 10" "$(tpsize '7
 is "and never floors" "-w 140 -h 14" "$(tpsize '7|3||90%|40|' 200 50)"
 tpsize '7|3||||' 200 12 >/dev/null
 case "$(cat "$TP/log")" in
-    "WINDOW -t \$3: -n sessions TM_POPUP=1 TM_SID=\\\$3 TM_CLIENT=/dev/pts/9 "*/tm) ok "but a window of its session, running tm" ;;
-    *) bad "but a window of its session, running tm" "WINDOW -t \$3: -n sessions TM_POPUP=1 ... /tm" "$(cat "$TP/log")" ;;
+    "WINDOW -t \$3: -n sessions TM_POPUP=1 TM_SID=\\\$3 TM_CLIENT=/dev/pts/9 TM_PANE=%7 "*/tm) ok "but a window of its session, running tm" ;;
+    *) bad "but a window of its session, running tm" "WINDOW -t \$3: -n sessions TM_POPUP=1 ... TM_PANE=%7 /tm" "$(cat "$TP/log")" ;;
 esac
 is "a client of 14 lines gets its popup, at the floor and not 70% of 14" "-w 140 -h 14" "$(tpsize '7|3||||' 200 14)"
 tpsize '7|3||||' 200 13 >/dev/null
@@ -12389,14 +11956,18 @@ case "$(cat "$TP/log")" in WINDOW*) ok "and 13 lines is still a window" ;; *) ba
 is "--needs sizes for the needs-you band" "-w 56 -h 14" "$(tpsize '7|4||||' 56 30 --needs)"
 tpsize '7|3||||' 200 50 >/dev/null
 case "$(cat "$TP/log")" in
-    "-c /dev/pts/9 -t \$3 -w 140 -h 14 -T  sessions  -E TM_POPUP=1 TM_SID=\\\$3 TM_CLIENT=/dev/pts/9 "*/tm) ok "the popup goes to that client, in its session" ;;
-    *) bad "the popup goes to that client, in its session" "-c /dev/pts/9 -t \$3 ... TM_SID=\\\$3 TM_CLIENT=/dev/pts/9 .../tm" "$(cat "$TP/log")" ;;
+    "-c /dev/pts/9 -t \$3 -w 140 -h 14 -T  sessions  -E TM_POPUP=1 TM_SID=\\\$3 TM_CLIENT=/dev/pts/9 TM_PANE=%7 "*/tm) ok "the popup goes to that client, in its session" ;;
+    *) bad "the popup goes to that client, in its session" "-c /dev/pts/9 -t \$3 ... TM_SID=\\\$3 TM_CLIENT=/dev/pts/9 TM_PANE=%7 .../tm" "$(cat "$TP/log")" ;;
 esac
 tpsize '7|3||||' 56 30 --needs >/dev/null
 case "$(cat "$TP/log")" in
     *"/tm --needs") ok "--needs rides into the popup" ;;
     *) bad "--needs rides into the popup" "... tm --needs" "$(cat "$TP/log")" ;;
 esac
+: > "$TP/log"
+env -u TMUX PATH="$TP:$PATH" TP_LOG="$TP/log" TP_ANSWER="$(printf '7\0373\037\037\037')" \
+    "$DIR/scripts/tm" --popup /dev/pts/9 '$3' 200 50 'x;y' >/dev/null 2>&1
+is "a pane that is not a pane id opens no popup" "" "$(cat "$TP/log")"
 
 echo "== tm sessions picker: prefix+s popup switches the client, and kill leaves it open (#245) =="
 # The real path: tm --popup opens the picker in a popup of a real client. The
@@ -12445,6 +12016,29 @@ until_cap "$TQO" o: '*session>*2 sessions*' && ok "and the popup stays open on t
 "$TMUX_REAL" -L "$TQO" send-keys -t o: Escape
 "$TMUX_REAL" -L "$TQO" kill-server >/dev/null 2>&1
 "$TMUX_REAL" -L "$TQI" kill-server >/dev/null 2>&1
+fi
+
+echo "== prefix s: a session made in the picker starts in the pressed pane's folder (#494) =="
+# On tmux master the popup is the session's active pane, so the folder must come
+# from the pane the key was pressed in, which the binding passes. The session
+# starts in s and the pane sits in a, so the session's start dir is not an answer.
+if [ ! -x "$DIR/bin/cockpit-tui" ]; then
+    skip_ "prefix s new session (no bin/cockpit-tui; run make tui)"
+elif need_tmux "prefix s new session"; then :; else
+SN="cockpit-sn-$$"; SNO="cockpit-sno-$$"; SOCKS="$SOCKS $SN $SNO"; SND=$(mktmpd); mkdir -p "$SND/s" "$SND/a"
+"$TMUX_REAL" -L "$SN" -f /dev/null new-session -d -s t -x 120 -y 30 -c "$SND/s" 'exec sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$SN" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+"$TMUX_REAL" -L "$SN" new-window -t t: -c "$SND/a" 'exec sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$SNO" -f /dev/null new-session -d -s o -x 120 -y 32 -c "$SND" \
+    "TERM=xterm-256color exec $TMUX_REAL -L $SN attach -t t" >/dev/null 2>&1
+until_out '?*' "$TMUX_REAL" -L "$SN" list-clients -F '#{client_name}'
+"$TMUX_REAL" -L "$SNO" send-keys -t o C-b s
+until_cap "$SNO" o '*session>*'
+"$TMUX_REAL" -L "$SNO" send-keys -t o z z q Enter
+until_out '?*' "$TMUX_REAL" -L "$SN" display-message -p -t '=zzq:' '#{session_path}'
+is "the new session starts in the pane's folder, not the popup's or the session's" "$SND/a" \
+   "$("$TMUX_REAL" -L "$SN" display-message -p -t '=zzq:' '#{session_path}' 2>/dev/null)"
+"$TMUX_REAL" -L "$SNO" kill-server >/dev/null 2>&1; "$TMUX_REAL" -L "$SN" kill-server >/dev/null 2>&1
 fi
 
 echo "== revdiff: the doctor grades it and bootstrap.sh fetches it, verified =="
@@ -12760,6 +12354,33 @@ out=$(cd "${BRR%/*}" && env -u TMUX COCKPIT_TUI_BIN="$BRN/cockpit-tui" "$DIR/scr
 is "a relative directory reaches the binary as its absolute path" "picker for branch -C $BRR" "$out"
 rm -rf "$BRN" "$BRR"
 
+echo "== tmux-branch: an inherited GIT_DIR or its kin never switches another repo =="
+# A dotfiles setup can export GIT_DIR into tmux's environment, and the popup
+# inherits it. The picker lists the pane repo's branches (gitsafe strips the
+# four), so the switch must land there too. FAIL-first: on the old code each
+# variable below switched, or checked out into, the other repo.
+BRE=$(mktmpd)
+# answers once, then leaves like esc: a refused switch cannot loop. conf's `a`
+# differs from main's, so a switch writes the tree it checks out.
+printf '#!/bin/sh\n[ -e "%s/used" ] && exit 1\n: > "%s/used"; echo "switch conf"\n' "$BRE" "$BRE" > "$BRE/cockpit-tui"
+chmod +x "$BRE/cockpit-tui"
+for v in GIT_DIR=@/.git GIT_WORK_TREE=@ GIT_COMMON_DIR=@/.git GIT_INDEX_FILE=@/.git/index; do
+    rm -rf "$BRE/pane" "$BRE/other" "$BRE/used"; br_repo "$BRE/pane" "$BRE/remote-${v%%=*}"
+    (
+      export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+      git init -q -b main "$BRE/other" && cd "$BRE/other" || exit 1
+      echo other > a; git add a; git commit -q -m init; git branch conf
+    ) >/dev/null 2>&1
+    brev=${v#*=}; brev=${brev//@/$BRE/other}
+    ( export "${v%%=*}=$brev"
+      env -u TMUX COCKPIT_TUI_BIN="$BRE/cockpit-tui" timeout 30 "$DIR/scripts/tmux-branch" "$BRE/pane" \
+          </dev/null >/dev/null 2>&1 )
+    is "${v%%=*} naming another repo: the pane repo switches, the other stays (branch, dirty files)" \
+       "conf 0 main 0" "$(br_cur "$BRE/pane") $(git -C "$BRE/pane" status --porcelain | grep -c .) \
+$(br_cur "$BRE/other") $(git -C "$BRE/other" status --porcelain | grep -c .)"
+done
+rm -rf "$BRE"
+
 # --- #303 branch popup: a branch another worktree holds jumps there -----------
 # cockpit-tui is a stub that answers `goto <path>`, once: the binary's half is in
 # tui/tests/branch.rs. Everything here is the script's half, on private servers.
@@ -12970,6 +12591,165 @@ tx kill-server >/dev/null 2>&1
 rm -rf "$BGR" "$BGM" "$BGD"
 fi
 
+echo "== tmux-branch (#348): without worktree list -z, a tree has a .git, a label is a line =="
+# git before 2.36 has no -z, and a path with a newline in it can print any line it likes:
+# `inj<NL>worktree <dir>` forges a record for <dir>, `<dir><NL>barex` hangs a cut on <dir>.
+if need_tmux "branch goto, old git"; then :; else
+# shellcheck source=../scripts/lib/fmt.sh
+. "$DIR/scripts/lib/fmt.sh"
+OGR=$(mktmpd); OGM=$(mktmpd); br_repo "$OGR" "$OGM"
+OGD=$(mktmpd); OGP="$OGD/plain"; mkdir -p "$OGP"
+OGOLD=$(mktmpd); OGGIT=$(command -v git)
+printf '#!/bin/sh\ncase " $* " in *" worktree list "*" -z "*) exit 129 ;; esac\nexec %s "$@"\n' \
+    "$OGGIT" > "$OGOLD/git"
+chmod +x "$OGOLD/git"
+git -C "$OGR" worktree add -q -b forge348 "$OGD/inj"$'\n'"worktree $OGP" >/dev/null 2>&1
+is "the plain porcelain carries the forged line" "worktree $OGP" \
+   "$(PATH="$OGOLD:$PATH" git -C "$OGR" worktree list --porcelain | grep -x -F "worktree $OGP")"
+OGS="cockpit-og348-$$"; SOCKS="$SOCKS $OGS"
+bg_server "$OGS" "$OGD"
+OGO=$("$TMUX_REAL" -L "$OGS" list-panes -a -F '#{pane_id}' | head -1)
+n=$(bg_windows "$OGS")
+BG_SHIM=$OGOLD bg_goto "$OGS" "$OGO" "$OGR" "$OGP"
+case "$BG_ERR" in
+    *"not a worktree"*) ok "a plain dir that a forged line names is refused, by name" ;;
+    *) bad "a plain dir that a forged line names is refused, by name" "not a worktree" "$BG_ERR" ;;
+esac
+is "and opens no window there" "$n" "$(bg_windows "$OGS")"
+BG_SHIM=$OGOLD bg_goto "$OGS" "$OGO" "$OGR" "$OGR"
+is "the main checkout, whose .git is a directory, still opens" "$OGR" \
+   "$("$TMUX_REAL" -L "$OGS" display-message -p -t t: '#{pane_current_path}')"
+
+# A line that only starts with a label cuts the record. The path before the cut names
+# nothing, so a record kept by mistake reads as a gone worktree, not as a refusal (#532).
+for v in barex detachedx lockedx prunablex; do
+    git -C "$OGR" worktree add -q -b "cut-$v" "$OGD/nx-$v"$'\n'"$v" >/dev/null 2>&1
+    BG_SHIM=$OGOLD bg_goto "$OGS" "$OGO" "$OGR" "$OGD/nx-$v"
+    case "$BG_ERR" in
+        *"not a worktree"*) ok "a record cut by a line '$v' is no worktree, not a gone one" ;;
+        *) bad "a record cut by a line '$v' is no worktree, not a gone one" "not a worktree" \
+               "$BG_ERR" ;;
+    esac
+done
+
+# A listed worktree whose directory was deleted is no forgery: goto names it gone, as on new git.
+git -C "$OGR" worktree add -q -b gone348 "$OGD/gone" >/dev/null 2>&1; rm -rf "$OGD/gone"
+BG_SHIM=$OGOLD bg_goto "$OGS" "$OGO" "$OGR" "$OGD/gone"
+case "$BG_ERR" in
+    *"is gone"*) ok "without -z a deleted listed worktree is refused as gone, by name" ;;
+    *) bad "without -z a deleted listed worktree is refused as gone, by name" "is gone" \
+           "$BG_ERR" ;;
+esac
+
+"$TMUX_REAL" -L "$OGS" kill-server >/dev/null 2>&1
+
+# A whole `detached` line is a label: a detached tree nested in main keeps its own panes.
+git -C "$OGR" worktree add -q --detach "$OGR/det" >/dev/null 2>&1
+OGS2="cockpit-og348b-$$"; SOCKS="$SOCKS $OGS2"
+bg_server "$OGS2" "$OGR/det"
+OGO2=$("$TMUX_REAL" -L "$OGS2" list-panes -a -F '#{pane_id}' | head -1)
+BG_SHIM=$OGOLD bg_goto "$OGS2" "$OGO2" "$OGR" "$OGR"
+is "a pane in a detached tree nested in main is not main's: a window opens" "2" \
+   "$(bg_windows "$OGS2")"
+"$TMUX_REAL" -L "$OGS2" kill-server >/dev/null 2>&1
+rm -rf "$OGR" "$OGM" "$OGD"
+fi
+
+echo "== tmux-branch (#532): without worktree list -z, a tree is this repo's and a lock a label =="
+# A forged `worktree <dir>` line may name any checkout with a .git. On the fallback a record
+# is kept only when its .git is this repo's common dir, or a .git file whose gitdir sits in
+# its worktrees/ and links back to that same file.
+if need_tmux "branch goto, old git, this repo"; then :; else
+# shellcheck source=../scripts/lib/fmt.sh
+. "$DIR/scripts/lib/fmt.sh"
+CGR=$(mktmpd); CGM=$(mktmpd); br_repo "$CGR" "$CGM"
+CGD=$(mktmpd); CGOLD=$(mktmpd)
+printf '#!/bin/sh\ncase " $* " in *" worktree list "*" -z "*) exit 129 ;; esac\nexec %s "$@"\n' \
+    "$(command -v git)" > "$CGOLD/git"
+chmod +x "$CGOLD/git"
+CGS="cockpit-cg532-$$"; SOCKS="$SOCKS $CGS"
+bg_server "$CGS" "$CGD"
+CGO=$("$TMUX_REAL" -L "$CGS" list-panes -a -F '#{pane_id}' | head -1)
+cg_goto() { BG_SHIM=${CG_SHIM:-$CGOLD} bg_goto "$CGS" "$CGO" "${CG_DIR:-$CGR}" "$1"; }
+cg_refused() {                # cg_refused <label> <path>  goto names it no worktree, opens none
+    local n; n=$(bg_windows "$CGS")
+    cg_goto "$2"
+    case "$BG_ERR" in
+        *"not a worktree"*) ok "$1" ;;
+        *) bad "$1" "not a worktree" "$BG_ERR" ;;
+    esac
+    is "$1: no window opens" "$n" "$(bg_windows "$CGS")"
+}
+cg_opens() {                  # cg_opens <label> <path>  goto opens or selects a pane in it
+    "$TMUX_REAL" -L "$CGS" select-window -t "$CGO"
+    cg_goto "$2"
+    is "$1" "$2" "$("$TMUX_REAL" -L "$CGS" display-message -p -t t: '#{pane_current_path}')"
+}
+cg_forge() { git -C "$CGR" worktree add -q -b "$1" "$CGD/$1"$'\n'"worktree $2" >/dev/null 2>&1; }
+
+br_repo "$CGD/other" "$CGD/om"
+git -C "$CGD/other" worktree add -q "$CGD/olink" held >/dev/null 2>&1
+cg_forge fo532 "$CGD/other"
+cg_refused "a forged line naming another repo's main checkout is refused" "$CGD/other"
+cg_forge fl532 "$CGD/olink"
+cg_refused "a forged line naming another repo's linked tree is refused" "$CGD/olink"
+
+git -C "$CGR" worktree add -q -b our532 "$CGD/our tree" >/dev/null 2>&1
+mkdir -p "$CGD/plant"; cp "$CGD/our tree/.git" "$CGD/plant/.git"
+cg_forge fp532 "$CGD/plant"
+cg_refused "a .git file copied from this repo's tree does not link back: refused" "$CGD/plant"
+cg_opens "this repo's linked tree, a space in its path, still opens" "$CGD/our tree"
+
+# git 2.7 to 2.12 print `rev-parse --git-common-dir` as the subdirectory prefix plus the
+# path from the top: from sub/deep, `sub/deep/.git`. A pane's cwd is often a subdirectory.
+CG212=$(mktmpd)
+printf '%s\n' '#!/usr/bin/env bash' \
+    'case " $* " in *" worktree list "*" -z "*) exit 129 ;; esac' \
+    'case " $* " in *" rev-parse --git-common-dir ") ;; *) exec '"$(command -v git)"' "$@" ;; esac' \
+    'pre=("${@:1:$#-2}"); real='"$(command -v git)" \
+    'top=$("$real" "${pre[@]}" rev-parse --show-toplevel) || exit' \
+    'px=$("$real" "${pre[@]}" rev-parse --show-prefix)' \
+    'c=$("$real" "${pre[@]}" -C "$top" rev-parse --git-common-dir) || exit' \
+    'case $c in /*) echo "$c" ;; *) echo "$px$c" ;; esac' > "$CG212/git"
+chmod +x "$CG212/git"
+mkdir -p "$CGR/sub/deep"
+is "the 2.12 shim answers from a subdirectory as 2.12 did" "sub/deep/.git" \
+   "$(cd "$CGR/sub/deep" && PATH="$CG212:$PATH" git rev-parse --git-common-dir)"
+CG_SHIM=$CG212 CG_DIR=$CGR/sub/deep \
+    cg_opens "on git 2.12, from a subdirectory, this repo's linked tree still opens" "$CGD/our tree"
+
+# A tree's .git file read as git reads it: whole (git < 2.23 kept a trailing blank in the
+# id), a trailing slash, a symlinked entry, and a .git hard-linked to one of ours.
+cg_entry() { local g; IFS= read -r g < "$1/.git"; printf '%s' "${g#gitdir: }"; }
+git -C "$CGR" worktree add -q -b tsp532 "$CGD/tsp " >/dev/null 2>&1
+mv "$(cg_entry "$CGD/tsp ")" "$CGR/.git/worktrees/tsp "
+printf 'gitdir: %s\n' "$CGR/.git/worktrees/tsp " > "$CGD/tsp /.git"
+cg_opens "a tree whose worktree id ends in a blank opens" "$CGD/tsp "
+git -C "$CGR" worktree add -q -b sl532 "$CGD/sl" >/dev/null 2>&1
+printf 'gitdir: %s/\n' "$(cg_entry "$CGD/sl")" > "$CGD/sl/.git"
+cg_opens "a tree whose gitdir ends in a slash opens" "$CGD/sl"
+git -C "$CGR" worktree add -q -b al532 "$CGD/al" >/dev/null 2>&1
+ln -s "$(cg_entry "$CGD/al")" "$CGD/alias"
+printf 'gitdir: %s\n' "$CGD/alias" > "$CGD/al/.git"
+cg_opens "a tree whose gitdir is a symlink to its entry opens" "$CGD/al"
+mkdir -p "$CGD/hard"; ln "$CGD/our tree/.git" "$CGD/hard/.git"
+cg_forge fh532 "$CGD/hard"
+cg_opens "a dir whose .git is a hard link to one of ours counts, as it does for git" "$CGD/hard"
+
+git -C "$CGR" worktree add -q -b lk532 "$CGD/lk" >/dev/null 2>&1
+git -C "$CGR" worktree lock "$CGD/lk" >/dev/null 2>&1
+cg_opens "a tree whose line is a bare 'locked' still opens" "$CGD/lk"
+git -C "$CGR" worktree add -q -b lr532 "$CGD/lr" >/dev/null 2>&1
+git -C "$CGR" worktree lock --reason "on usb" "$CGD/lr" >/dev/null 2>&1
+cg_opens "a tree locked with a reason still opens" "$CGD/lr"
+
+git -C "$CGR" worktree add -q -b emp532 "$CGD/e"$'\n'"worktree " >/dev/null 2>&1
+cg_refused "an empty worktree path is no worktree" ""
+
+"$TMUX_REAL" -L "$CGS" kill-server >/dev/null 2>&1
+rm -rf "$CGR" "$CGM" "$CGD" "$CGOLD" "$CG212"
+fi
+
 echo "== tmux-branch (#360): a goto moves the client that pressed prefix b, not the busiest one =="
 if need_tmux "branch goto client"; then :; else
 BCR=$(mktmpd); BCM=$(mktmpd); br_repo "$BCR" "$BCM"
@@ -13013,6 +12793,91 @@ esac
 "$TMUX_REAL" -L "$BCS" kill-server >/dev/null 2>&1
 unset -f bc_open bc_where
 rm -rf "$BCR" "$BCM" "$BCD"
+fi
+
+echo "== tmux-branch (#470): goto finds a pane by the work dir the board shows =="
+# An agent launched in the main checkout that works in the worktree is a pane of the worktree,
+# as r reviews it. The stub answers the picker once, and `workdir %N` from $BWD/map (one
+# "<pane> <dir>" line each, exit 1 for a pane not in it), or as a stale binary with
+# $BW_ASK=stale, or as the real binary with $BW_ASK=real. Each workdir call is logged.
+if need_tmux "branch goto work dir"; then :; else
+# shellcheck source=../scripts/lib/fmt.sh
+. "$DIR/scripts/lib/fmt.sh"   # bg_server's fesc
+BWR=$(mktmpd); BWM=$(mktmpd); br_repo "$BWR" "$BWM"
+BWD=$(mktmpd); BWW="$BWD/wt"
+git -C "$BWR" worktree add -q "$BWW" held >/dev/null 2>&1
+: > "$BWD/map"
+BWS="cockpit-bw470-$$"; SOCKS="$SOCKS $BWS"
+bg_server "$BWS" "$BWD"   # the origin pane is in neither tree
+BWO=$("$TMUX_REAL" -L "$BWS" list-panes -a -F '#{pane_id}' | head -1)
+BWA=$(bg_pane "$BWS" "$BWR" 'exec -a claude sleep 300')
+until_out claude "$TMUX_REAL" -L "$BWS" display-message -p -t "$BWA" '#{pane_current_command}'
+printf '%s %s\n' "$BWA" "$BWW" >> "$BWD/map"
+cat > "$BWD/ct" <<EOF
+#!/bin/sh
+case \$1 in
+    branch) [ -e "$BWD/ran" ] && exit 1; : > "$BWD/ran"; echo "goto \$BW_GOTO"; exit 0 ;;
+    workdir)
+        echo "\$2" >> "$BWD/ask.log"
+        case \$BW_ASK in
+            stale) echo "cockpit-tui: unknown screen workdir" >&2; exit 2 ;;
+            real)  exec "$COCKPIT_TUI_BIN" "\$@" ;;
+        esac
+        d=\$(sed -n "s/^\$2 //p" "$BWD/map"); [ -n "\$d" ] || exit 1; printf '%s\n' "\$d"; exit 0 ;;
+esac
+exec "$COCKPIT_TUI_BIN" "\$@"
+EOF
+chmod +x "$BWD/ct"
+bw_goto() {                   # bw_goto <path> -> "<workdir calls> <active pane> <windows>"
+    rm -f "$BWD/ran"; : > "$BWD/ask.log"
+    "$TMUX_REAL" -L "$BWS" select-window -t "$BWO"
+    TMUX="$("$TMUX_REAL" -L "$BWS" display-message -p '#{socket_path}'),0,0" HOME="$BWD/home" \
+        COCKPIT_TUI_BIN="$BWD/ct" BW_GOTO=$1 timeout 30 "$DIR/scripts/tmux-branch" -p "$BWO" "$BWR" \
+        </dev/null >/dev/null 2>&1
+    printf '%s %s %s' "$(grep -c . "$BWD/ask.log")" "$(bg_active "$BWS")" "$(bg_windows "$BWS")"
+}
+# Every agent pane whose @cockpit_dir does not hold is asked; a shell pane is not.
+is "goto the worktree selects the agent the binary puts there, asking it once" \
+   "1 $BWA 2" "$(bw_goto "$BWW")"
+BWSH=$(bg_pane "$BWS" "$BWR" 'exec sleep 300')
+is "and goto main skips that agent for a shell in main" "1 $BWSH 3" "$(bw_goto "$BWR")"
+is "a stale binary is asked, and the cwd rules again" "1 $BWA 3" \
+   "$(BW_ASK=stale bw_goto "$BWR")"
+"$TMUX_REAL" -L "$BWS" set -p -t "$BWA" @cockpit_dir "$BWW" >/dev/null 2>&1
+is "with every agent's @cockpit_dir holding, the binary is not asked" "0 $BWSH 3" \
+   "$(bw_goto "$BWR")"
+# A backslash in the binary's answer reaches goto as it is.
+BWB="$BWD/back\\slash"
+git -C "$BWR" worktree add -q "$BWB" old >/dev/null 2>&1
+BWA2=$(bg_pane "$BWS" "$BWR" 'exec -a claude sleep 300')
+until_out claude "$TMUX_REAL" -L "$BWS" display-message -p -t "$BWA2" '#{pane_current_command}'
+printf '%s %s\n' "$BWA2" "$BWB" >> "$BWD/map"
+is "a path with a backslash finds its agent" "1 $BWA2 4" "$(bw_goto "$BWB")"
+"$TMUX_REAL" -L "$BWS" set -p -t "$BWA2" @cockpit_dir "$BWB" >/dev/null 2>&1
+# End to end with the binary under test: a live Claude renamed to its version, whose
+# transcript works in a third worktree. A binary without workdir leaves its cwd, main.
+BWV="$BWD/ver"
+git -C "$BWR" worktree add -q "$BWV" conf >/dev/null 2>&1
+BWT="$BWD/home/.claude/projects/$(printf '%s' "$BWR" | sed 's/[^A-Za-z0-9-]/-/g')"
+mkdir -p "$BWT"
+printf '{"type":"user","cwd":"%s","message":{"content":"hi"}}\n' "$BWV" > "$BWT/bw470v.jsonl"
+BWA3=$(bg_pane "$BWS" "$BWR" 'exec -a 2.1.246 sleep 300')
+"$TMUX_REAL" -L "$BWS" set -p -t "$BWA3" @cockpit_session bw470v >/dev/null 2>&1
+until_out 2.1.246 "$TMUX_REAL" -L "$BWS" display-message -p -t "$BWA3" '#{pane_current_command}'
+bwrc=0
+TMUX="$("$TMUX_REAL" -L "$BWS" display-message -p '#{socket_path}'),0,0" \
+    "$COCKPIT_TUI_BIN" workdir "$BWA3" >/dev/null 2>&1 || bwrc=$?
+if [ "$bwrc" = 2 ]; then   # no workdir; an exit 1 here is a workdir bug, and asserts below
+    read -r bwn bwp bww <<<"$(BW_ASK=real bw_goto "$BWV")"
+    is "a binary without workdir: goto opens a window, the 2.1.246 pane not taken" "1 6 no" \
+       "$bwn $bww $([ "$bwp" = "$BWA3" ] && echo yes || echo no)"
+else
+    is "goto finds a pane running as 2.1.246 by its transcript's tree" "1 $BWA3 5" \
+       "$(BW_ASK=real bw_goto "$BWV")"
+fi
+"$TMUX_REAL" -L "$BWS" kill-server >/dev/null 2>&1
+unset -f bw_goto
+rm -rf "$BWR" "$BWM" "$BWD"
 fi
 
 echo "== tm: create NAME in the sessions picker starts in ~/NAME when that is a git repo (#304) =="
@@ -13523,8 +13388,8 @@ ROH=$(mktmpd)
   git remote set-head origin develop
   git checkout -q -b topic; printf 'a\nON-TOPIC\n' > f; git commit -q -am topic
 ) >/dev/null 2>&1
-is "origin/HEAD is the base: a branch commit is a review row" "1" \
-   "$("$DIR/scripts/tmux-review" --lines "$ROH/work" | grep -c 'ON-TOPIC')"
+is "origin/HEAD is the base: a branch commit is in the diff" "1" \
+   "$(tdiff "$ROH/work" | grep -cx '+ON-TOPIC')"
 is "and the base names origin/develop" "vs origin/develop" \
    "$(. "$DIR/scripts/lib/review-diff.sh"; review_base "$ROH/work" | cut -f2)"
 # origin/HEAD outranks a local main: main one commit past origin/develop, topic cut from main.
@@ -13568,8 +13433,6 @@ RFL="cockpit: refusing this repo: a git filter driver name contains '=' (see #33
 command git -C "$GD/r" add -A >/dev/null 2>&1
 is "control: unguarded git add fires the plant" "yes" "$([ -e "$GD/PWNED" ] && echo yes)"
 command git -C "$GD/r" read-tree --empty; rm -f "$GD/PWNED"
-is "--lines: the refusal on stderr, no rows, status 1" "$RFL
-|1|" "$(rf "$DIR/scripts/tmux-review" --lines "$GD/r" 2>&1 >"$GD/rows"; printf '|%s|%s' "$?" "$(cat "$GD/rows")")"
 mkdir -p "$RFSESS"; : > "$RFSESS/comments.md"
 rf "$DIR/scripts/tmux-review" --loop "$GD/r" "$RFSESS/comments.md" >"$GD/loop.out" 2>&1 </dev/null; rfrc=$?
 is "--loop: the refusal on stderr, status 125" "$RFL|125" "$(tr '\n' '|' < "$GD/loop.out" | sed 's/|$//')|$rfrc"
@@ -13582,8 +13445,6 @@ mkdir "$GD/plain"
 is "git_refused: false for a repo, a non-repo and a missing dir" "no no no" \
    "$(bash -c '. "$1/git.sh"; for d in "$2" "$3" "$4"; do git_refused "$d" && printf "yes " || printf "no "; done' _ \
       "$DIR/scripts/lib" "$GD/ok" "$GD/plain" "$GD/missing" | sed 's/ $//')"
-rf "$DIR/scripts/tmux-review" --lines "$GD/ok" >"$GD/ok.rows" 2>/dev/null; rfrc=$?
-is "--lines on a dirty clean repo: rows, status 0" "y|0" "$(head -1 "$GD/ok.rows" | cut -f1)|$rfrc"
 git -C "$GD/ok" checkout -q y; : > "$GD/msgs"
 rf "$DIR/scripts/tmux-review" --loop "$GD/ok" "$RFS/ok-store" >"$GD/ok.out" 2>&1 </dev/null; rfrc=$?
 is "--loop on a clean repo: still 'no uncommitted changes', status 0" "cockpit: no uncommitted changes in $GD/ok|0" "$(head -1 "$GD/msgs")|$rfrc"
@@ -14033,6 +13894,13 @@ cat > "$MV/bin/cockpit-tui" <<'STUB'
 if [ "$1" = view ]; then
     { printf 'VIEW'; for a in "$@"; do printf ' [%s]' "$a"; done; echo; } >> "$TMUX_LOG"
     [ -z "${VIEW_ERR:-}" ] || { printf '%s\n' "$VIEW_ERR" >&2; exit "${VIEW_RC:-2}"; }
+    # VIEW_ONCE=N: the viewer prints VIEW_OUT N times, then closes empty (#365's loop back)
+    if [ -n "${VIEW_ONCE:-}" ]; then
+        i=1; while [ -e "$TMUX_LOG.once$i" ]; do i=$((i + 1)); done   # builtins: PATH is bare
+        [ "$i" -gt "$VIEW_ONCE" ] && exit 0
+        : > "$TMUX_LOG.once$i"
+    fi
+    [ -z "${VIEW_ENV:-}" ] || printf 'VIEWENV [%s]\n' "${COCKPIT_VIEW_ASK-unset}" >> "$TMUX_LOG"
     printf '%s\n' "${VIEW_OUT-}"; exit "${VIEW_RC:-0}"
 fi
 while read -r _; do :; done; printf '%s\n' "${PICK_KEY-0}"
@@ -14040,11 +13908,12 @@ STUB
 chmod +x "$MV/bin/tmux" "$MV/bin/cockpit-tui"; ln -s "$(command -v bash)" "$MV/bin/bash"
 for t in mktemp rm cat; do ln -s "$(command -v $t)" "$MV/bin/$t"; done   # the stderr capture
 mvrun() {                     # mvrun <click line> <args...> -- the log after one run
-    : > "$MVL"
+    : > "$MVL"; rm -f "$MVL".once*
     env -i PATH="$MV/bin" HOME="$MV" TMUX_LOG="$MVL" CLICK_DIR="$MV/w" CLICK_LINE="$1" OPEN_EDITOR="${MV_ED:-ed}" TOUCH="${TOUCH:-}" \
         COCKPIT_TUI_BIN="${MV_BIN:-$MV/bin/cockpit-tui}" MD_VIEW="${MD_VIEW:-}" VIEW_OUT="${VIEW_OUT-}" \
         VIEW_ERR="${VIEW_ERR:-}" VIEW_RC="${VIEW_RC:-}" PICK_KEY="${PICK_KEY:-0}" POPUP_RC="${POPUP_RC:-}" NO_CLIENT="${NO_CLIENT:-}" NEWWIN_RC="${NEWWIN_RC:-}" \
-        bash "$DIR/scripts/tmux-open-path" "${@:2}" </dev/null >/dev/null 2>"$MV/err"
+        VIEW_ONCE="${VIEW_ONCE:-}" VIEW_ENV="${VIEW_ENV:-}" ${FUNCNEST:+FUNCNEST="$FUNCNEST"} \
+        bash "${MV_SCRIPT:-$DIR/scripts/tmux-open-path}" "${@:2}" </dev/null >/dev/null 2>"$MV/err"
     cat "$MVL"
 }
 is "a lone .md opens a popup the pane's size over it, which re-enters with --view" \
@@ -14119,6 +13988,36 @@ is "a window tmux refuses to open is a note, from the editor path" \
 is "and from the touch client's terminal editor" \
    "VIEW [view] [--] [$MV/w/a.md]"$'\n'"NEWWIN ed $MV/w/a.md"$'\n'"MSG cockpit: tmux could not open a window for a.md" \
    "$(NEWWIN_RC=1 VIEW_OUT='edit 5' TOUCH=1 mvrun 'x' --view %1 "$MV/w/a.md" '')"
+# #365: the viewer's `ask <a> <b>` opens cockpit-panel --ask, called by its path
+# beside the script, then the viewer again at line a. A copy of the script with
+# a cockpit-panel stub beside it, so the real panel never runs.
+mkdir -p "$MV/s"; cp "$DIR/scripts/tmux-open-path" "$MV/s/"; ln -sfn "$DIR/scripts/lib" "$MV/s/lib"
+cat > "$MV/s/cockpit-panel" <<'STUB'
+#!/bin/sh
+{ printf 'PANEL'; for a in "$@"; do printf ' [%s]' "$a"; done; printf ' env[%s]\n' "${COCKPIT_VIEW_ASK-unset}"; } >> "$TMUX_LOG"
+STUB
+chmod +x "$MV/s/cockpit-panel"
+askrun() { MV_SCRIPT="$MV/s/tmux-open-path" VIEW_ONCE=1 VIEW_OUT="$1" mvrun '' "${@:2}"; }
+is "--view: the viewer's ask 3 7 opens the panel on the pane, the file and the lines, then the viewer at 3" \
+   "VIEW [view] [--line] [7] [--] [$MV/w/a.md]"$'\n'"PANEL [-p] [%1] [--ask] [$MV/w/a.md] [3] [7] env[unset]"$'\n'"VIEW [view] [--line] [3] [--] [$MV/w/a.md]" \
+   "$(askrun 'ask 3 7' --view %1 "$MV/w/a.md" 7)"
+is "--pick: the same, from the picker's own popup" \
+   "VIEW [view] [--] [$MV/w/a.md]"$'\n'"PANEL [-p] [%1] [--ask] [$MV/w/a.md] [1] [1] env[unset]"$'\n'"VIEW [view] [--line] [1] [--] [$MV/w/a.md]" \
+   "$(MV_SCRIPT="$MV/s/tmux-open-path" VIEW_ONCE=1 VIEW_OUT='ask 1 1' PICK_KEY=0 mvrun 'a.md t.txt' --pick %1)"
+# a loop, not a call per ask: under a cap of 12 nested calls, 20 asks in a row
+# reopen the viewer 21 times; a recursion would die at the cap
+is "twenty asks in a row reopen the viewer each time, in a loop" "20 21" \
+   "$(MV_SCRIPT="$MV/s/tmux-open-path" FUNCNEST=12 VIEW_ONCE=20 VIEW_OUT='ask 2 4' mvrun '' --view %1 "$MV/w/a.md" '' \
+      | awk '/^PANEL/ {p++} /^VIEW / {v++} END {print p+0, v+0}')"
+is "the viewer, and only the viewer, runs with COCKPIT_VIEW_ASK=1" "VIEWENV [1]" \
+   "$(VIEW_ENV=1 askrun '' --view %1 "$MV/w/a.md" '' | grep VIEWENV)"
+for o in 'ask 7 3' 'ask 0 1' 'ask 01 2' 'ask 1' 'ask 1 2 3' 'ask a b' 'ask 1234567890 1234567891' \
+         "ask 1 2"$'\n'"ask 3 4" 'ask 1 2; touch x' ' ask 1 2' 'ask  1 2'; do
+    case "$(askrun "$o" --view %1 "$MV/w/a.md" '')" in
+        *PANEL*) bad "the viewer's [$o] is not an ask: no panel" "no PANEL" "a panel" ;;
+        *) ok "the viewer's [$o] is not an ask: no panel" ;;
+    esac
+done
 
 echo "== tmux-open-path (#366): plain_name drops each control and bidi character, keeps the rest =="
 # One table, one row per character: removing any one from the helper fails its row.
@@ -14863,5 +14762,40 @@ is "and the user's own Stop hook and cockpit's done and review-gate are all stil
 is "--check after: all 6" "ok all 6 subagent hooks merged" "$(tisub)"
 fi
 
+echo "== jq filters parse on jq 1.7.x: no postfix after a term's ? (#481) =="
+# jq 1.7.x rejects any postfix written straight after the ? of a call, $var or
+# parenthesised term (f(x)?.c, f(x)?["c"], f(x)?[0], $x?.b); 1.8 accepts them. The
+# suite runs a newer jq, so a shape check stands in: write f(x)? | .c. The regex
+# (review-483) matches the 14 spellings 1.7.1 rejects and none of the 7 it accepts.
+# A line that ends in a term's ? counts too: jq reads the postfix off the next line,
+# so a wrapped filter keeps its | on the line with the ?.
+j17re='([)]|(^|[^.[:alnum:]_$])[$]?[A-Za-z_][A-Za-z0-9_]*)[?][?[:space:]]*([.[]|$)'
+j17=$(grep -nE "$j17re" "$DIR/install.sh" "$DIR/bootstrap.sh" "$DIR/cockpit.tmux" \
+        "$DIR/examples/claude-hooks.json" "$DIR"/scripts/* "$DIR"/scripts/lib/* 2>/dev/null \
+    | grep -vE '^[^:]*:[0-9]+:[[:space:]]*#')
+is "no shipped script writes a postfix after a term's ?" "" "$j17"
+j17n=0
+for f in 'capture("x")?.c' 'capture("x")?["c"]' 'f(.)?[0]' 'first?.b' '$x?.b' 'f(.)? .b' \
+         'capture("x")?'; do
+    printf '%s\n' "$f" | grep -qE "$j17re" && j17n=$((j17n + 1))
+done
+for f in '.a?.b' '.a[]?.b' '.[0]?.b' '.a?[0]' 'capture("x")? | .c' 'capture("x")? |'; do
+    printf '%s\n' "$f" | grep -qE "$j17re" || j17n=$((j17n + 1))
+done
+is "the shape check flags the rejected spellings and passes the accepted ones" "13" "$j17n"
+# A jq that cannot compile a filter exits 3: --check says so, not "0 of 6".
+J3=$(mktmpd); mkdir -p "$J3/home/.claude" "$J3/shim"
+echo '{"hooks":{}}' > "$J3/home/.claude/settings.json"
+printf '#!/bin/sh\n[ "$1" = --version ] && { echo jq-9.9; exit 0; }\nexit 3\n' > "$J3/shim/jq"
+chmod +x "$J3/shim/jq"
+j3rows=$(env -u TMUX -u TMUX_PANE PATH="$J3/shim:$PATH" HOME="$J3/home" \
+        XDG_BIN_HOME="$J3/home/bin" XDG_CONFIG_HOME="$J3/home/cfg" TMUX_TMPDIR="$J3" \
+        "$DIR/install.sh" --check 2>&1 \
+    | sed -n 's/^\[ *\([a-z]*\) *\] *\(hooks\|subhooks\) *\(.*\)/\1 \2 \3/p' \
+    | sed 's/  */ /g; s/ $//' | tr '\n' ';')
+j3msg='jq-9.9 rejected the filter report it: tmux-cockpit issue'
+is "a jq compile error is a fail row, named, for both counts" \
+   "fail hooks $j3msg;fail subhooks $j3msg;" "$j3rows"
+rm -rf "$J3"
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1

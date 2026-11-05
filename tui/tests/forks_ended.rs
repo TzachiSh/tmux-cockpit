@@ -1,14 +1,10 @@
 //! #301: an ended row (a marked pane with no agent in its command) asks `ps`
 //! for its process tree once per cache window, not once per tick. Its own test
 //! binary: the verdict cache is a thread-local and the env is process-wide.
-use cockpit_tui::data::list_panes;
-use std::os::unix::fs::PermissionsExt;
-use std::path::Path;
+mod fake;
 
-fn write_exec(p: &Path, body: &str) {
-    std::fs::write(p, body).unwrap();
-    std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o755)).unwrap();
-}
+use cockpit_tui::data::list_panes;
+use fake::write_exec;
 
 #[test]
 fn two_ticks_on_an_ended_row_fork_ps_once() {
@@ -45,6 +41,8 @@ fn two_ticks_on_an_ended_row_fork_ps_once() {
         std::env::set_var("COCKPIT_TMUX", format!("{d}/bin/tmux"));
         std::env::set_var("HOME", &d);
         std::env::set_var("COCKPIT_READONLY", "1");
+        // #505: no proc under it, so the walk asks the fake ps, not the live pid of the same number
+        std::env::set_var("COCKPIT_PROC_DIR", format!("{d}/proc"));
     }
 
     assert!(list_panes().unwrap()[0].ended, "the first tick reads it ended");

@@ -89,6 +89,13 @@ if [ "$mode" = branch ] && [ "$pid" = --set ]; then
     IFS= read -r -d '' cur < <(tmux display-message -p -t "$arg3" \
         '#{@cockpit_branch}'$'\037''#{pane_current_path}' 2>/dev/null)
     path=${cur#*$'\037'}; path=${path%$'\n'}; cur=${cur%%$'\037'*}
+    # #452: a worktree made by hand leaves the process in the main checkout, so
+    # @cockpit_dir names the tree when it is one. Only an absolute path counts:
+    # a relative one is resolved against this hook's cwd, and git_label's walk up
+    # never ends on a path with no slash. NUL-read like the path above.
+    IFS= read -r -d '' wdir < <(tmux show-option -pqv -t "$arg3" @cockpit_dir 2>/dev/null)
+    wdir=${wdir%$'\n'}
+    case "$wdir" in /*) [ -d "$wdir" ] && path=$wdir ;; esac
     [ -n "$path" ] || exit 0
     b=$(git_label); b=${b# }
     [ "$b" = "$cur" ] && exit 0

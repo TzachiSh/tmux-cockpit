@@ -4,7 +4,7 @@
 //! a text-entry screen, so esc and q both close it.
 use crate::chrome;
 use crate::data::fmt_dur;
-use crate::data::info::{Facts, gather};
+use crate::data::info::{Facts, WorkFrom, gather};
 use crate::panel::view::wrap;
 use crate::theme::{Glyphs, Theme};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
@@ -48,13 +48,18 @@ impl Screen {
 pub fn rows(x: &Facts, g: &Glyphs, w: usize) -> Vec<(String, String)> {
     let dash = g.dash;
     let mut r: Vec<(&str, String)> = vec![("pane", format!("{}  {}  ({})", x.id, x.wher, x.cmd)), ("cwd", x.cwd.clone())];
+    // #452: the transcript's cwd, when the board's stat used it, is its own row
+    let said = x.work_from == WorkFrom::Transcript;
     if let Some(d) = &x.dir {
-        let note = if x.dir_missing {
-            "@cockpit_dir, missing -- using cwd"
-        } else {
-            "@cockpit_dir"
+        let note = match (x.dir_missing, said) {
+            (false, _) => "@cockpit_dir",
+            (true, false) => "@cockpit_dir, missing -- using cwd",
+            (true, true) => "@cockpit_dir, missing -- using transcript cwd",
         };
         r.push(("dir", format!("{d}  ({note})")));
+    }
+    if said {
+        r.push(("dir", format!("{}  (transcript cwd)", crate::data::info::clean(&x.work))));
     }
     r.push(("root", x.root.clone()));
     let msg = if x.msg.is_empty() {
@@ -63,6 +68,9 @@ pub fn rows(x: &Facts, g: &Glyphs, w: usize) -> Vec<(String, String)> {
         format!("  {} {}", g.dot, x.msg)
     };
     r.push(("state", format!("{}{msg}", if x.state.is_empty() { dash } else { &x.state })));
+    if let Some((name, id)) = &x.job {
+        r.push(("job", format!("{name}  (@cockpit_job {id})")));
+    }
     for d in &x.doing {
         let age = |pre: &str| d.age.map(|a| format!(" ({pre}{})", fmt_dur(a))).unwrap_or_default();
         match d.kind.as_str() {
@@ -229,23 +237,28 @@ pub fn text(x: &Facts) -> String {
         .collect()
 }
 
-/// `cockpit-tui info [--text] %N`: the screen alone, until esc or q. Exit 2 for
-/// a bad pane id, 1 for no terminal or no such pane.
+/// `cockpit-tui info [--text|--json] %N`: the screen alone, until esc or q. Exit 2
+/// for a bad pane id, 1 for no terminal or no such pane. `--json` is for scripts:
+/// `{"dir": ...}`, the work dir the board's stat uses (#452), as lossy UTF-8.
 pub fn main(args: &[String]) -> i32 {
-    let (plain, args) = match args.split_first() {
-        Some((f, rest)) if f == "--text" => (true, rest),
-        _ => (false, args),
+    let (flag, args) = match args.split_first() {
+        Some((f, rest)) if f == "--text" || f == "--json" => (f.as_str(), rest),
+        _ => ("", args),
     };
     let Some(pane) = args.first().filter(|p| {
         args.len() == 1
             && p.strip_prefix('%')
                 .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
     }) else {
-        eprintln!("cockpit-tui: info needs one pane id like %3, after an optional --text");
+        eprintln!("cockpit-tui: info needs one pane id like %3, after an optional --text or --json");
         return 2;
     };
-    if plain {
+    if !flag.is_empty() {
         return match gather(pane) {
+            Ok(x) if flag == "--json" => {
+                println!("{}", serde_json::json!({"dir": x.work}));
+                0
+            }
             Ok(x) => {
                 print!("{}", text(&x));
                 0

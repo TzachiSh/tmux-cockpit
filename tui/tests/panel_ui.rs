@@ -1,5 +1,7 @@
 //! The panel's screens and state machine: TestBackend goldens, key sequences,
 //! and the action file. COCKPIT_BLESS=1 cargo test rewrites the goldens.
+mod fake;
+
 use cockpit_tui::panel::action::{read_state, sanitize, write_action, write_state};
 use cockpit_tui::panel::app::{Action, App, InputKind, Level, Resume, Tap, Tile, View, bracketed_ok};
 use cockpit_tui::panel::capture::Capture;
@@ -533,8 +535,7 @@ fn esc_cancels_a_busy_request_and_kills_it() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let fake = dir.join("claude");
-    std::fs::write(&fake, "#!/bin/sh\nexec sleep 1000\n").unwrap();
-    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    fake::write_exec(&fake, "#!/bin/sh\nexec sleep 1000\n");
     let call = Call {
         claude: fake.display().to_string(),
         timeout: Duration::from_secs(60),
@@ -3675,10 +3676,13 @@ fn a_write_asking_at_zero_questions_is_told_once_to_write_now() {
     assert_eq!(a.view, View::Busy, "no error yet: {:?}", a.view);
     assert!(a.pending, "the retry goes out");
     let (_, prompt, _) = a.request_parts().unwrap();
-    let now = "(no questions left: write it now, and state each assumption as an Assumed: line)";
+    let now = concat!(
+        "(no questions left: write it now without guessing what only I know: have Claude Code ",
+        "come back to me with the options for it first, or leave a placeholder for it)"
+    );
     let want = format!("<turn role=\"user\">a3\n\n{now}");
     assert!(prompt.contains(&want), "{prompt}");
-    a.reply(Ok("<prompt>Do it.\nAssumed: a (b)</prompt>".into()));
+    a.reply(Ok("<prompt>Do it.</prompt>".into()));
     assert!(matches!(a.view, View::Result { .. }), "{:?}", a.view);
 }
 

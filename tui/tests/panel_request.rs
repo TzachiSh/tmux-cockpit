@@ -1,5 +1,7 @@
 //! The `claude -p` call against fake claude scripts. Each test builds its own
 //! `Call`, so nothing here touches the process environment.
+mod fake;
+
 use cockpit_tui::panel::request::{Call, Fail, Profile, Request, prompt_file, read_dir_ok};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -62,8 +64,7 @@ impl Rig {
         let p = dir.join("claude");
         let body = script.replace("$D", &dir.display().to_string());
         let _g = FORK.lock().unwrap_or_else(|e| e.into_inner());
-        std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
-        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        fake::write_exec(&p, &format!("#!/bin/sh\n{body}\n"));
         Rig { dir }
     }
 
@@ -727,6 +728,16 @@ fn a_json_error_result_fails_in_claudes_words() {
     let rig = Rig::new("jerror", err);
     let mut req = spawn_with(&rig.call(30), &Profile::read_only(rig.dir.clone(), false, 0.5, CAP), "p");
     assert_eq!(answer(&mut req), Err(Fail::Failed("the API went away".into())));
+}
+
+/// claude's API error comes as a "success" result marked is_error, its text the
+/// error (review-465): a failure, never the answer.
+#[test]
+fn an_api_error_result_is_a_failure_not_the_answer() {
+    let api = r#"echo '[{"type":"result","subtype":"success","is_error":true,"result":"API Error: 400 bad request","errors":null}]'"#;
+    let rig = Rig::new("japi", api);
+    let mut req = spawn_with(&rig.call(30), &Profile::read_only(rig.dir.clone(), false, 0.5, CAP), "p");
+    assert_eq!(answer(&mut req), Err(Fail::Failed("API Error: 400 bad request".into())));
 }
 
 /// A json result with no text is no answer, as an empty stdout is.
