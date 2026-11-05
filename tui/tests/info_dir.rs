@@ -1,45 +1,144 @@
-//! #452: the info screen names the work dir the board's stat used. Its own
-//! binary: `gather` reads COCKPIT_TMUX and CLAUDE_CONFIG_DIR, process-global.
+//! #452: the info screen, `info --json` and the board name one work dir. Its own
+//! binary: `gather` reads COCKPIT_TMUX, CLAUDE_CONFIG_DIR and HOME, process-global,
+//! so every test here holds `ENV`.
 use cockpit_tui::data::info::{Facts, gather};
+use cockpit_tui::data::list_panes;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
+use std::sync::Mutex;
 
-/// Pane %1 runs in `cwd`, `@cockpit_dir` is `opt`, and its transcript says `said`.
-fn facts(d: &PathBuf, cwd: &str, opt: &str, said: &str) -> Facts {
-    std::fs::create_dir_all(d.join("projects/-w")).unwrap();
-    let t = d.join("projects/-w/s1.jsonl");
-    std::fs::write(&t, format!("{}\n", serde_json::json!({"type": "user", "cwd": said, "message": {}}))).unwrap();
-    let f = ["%1", "w:0 win", "claude", cwd, opt, "running", "", "", "", "s1", "", "1", ""];
-    std::fs::write(d.join("display"), f.join("\u{1f}")).unwrap();
-    let shim = d.join("tmux");
-    let sh = format!(
-        "#!/bin/sh\ncase \"$1\" in\ndisplay-message) cat {0}/display ;;\nshow-option) echo {1} ;;\nesac\n",
-        d.display(),
-        t.display()
-    );
-    std::fs::write(&shim, sh).unwrap();
-    std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
-    // SAFETY: the one test in this binary, so no thread reads the environment meanwhile.
-    unsafe {
-        std::env::set_var("COCKPIT_TMUX", &shim);
-        std::env::set_var("CLAUDE_CONFIG_DIR", d);
+static ENV: Mutex<()> = Mutex::new(());
+
+/// A scratch tree, removed on drop: `<tmp>/cockpit-info-dir-<tag>-<pid>`.
+struct Tmp(PathBuf);
+impl Tmp {
+    fn new(tag: &str) -> Tmp {
+        let d = std::env::temp_dir().join(format!("cockpit-info-dir-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        Tmp(d)
     }
+    fn sub(&self, name: &str) -> String {
+        let d = self.0.join(name);
+        std::fs::create_dir_all(&d).unwrap();
+        d.display().to_string()
+    }
+}
+impl Drop for Tmp {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// The board's slug: every byte outside `[A-Za-z0-9-]` is `-`.
+fn slug(p: &str) -> String {
+    p.bytes()
+        .map(|b| if b.is_ascii_alphanumeric() || b == b'-' { b as char } else { '-' })
+        .collect()
+}
+
+/// Pane %1 runs claude in `cwd`, `@cockpit_dir` is `opt`, and its transcript, where
+/// both the board and info look, says `said`. The shim answers list-panes for the
+/// board and display-message and show-option for info. Returns the shim's env.
+fn rig(t: &Tmp, cwd: &str, opt: &str, said: &str) -> Vec<(&'static str, String)> {
+    let d = &t.0;
+    let home = d.join("home");
+    let proj = home.join(".claude/projects").join(slug(cwd));
+    std::fs::create_dir_all(&proj).unwrap();
+    let tr = proj.join("s1.jsonl");
+    std::fs::write(
+        &tr,
+        format!("{}\n", serde_json::json!({"type": "user", "cwd": said, "message": {}})),
+    )
+    .unwrap();
+    let info = ["%1", "w:0 win", "claude", cwd, opt, "running", "", "", "", "s1", "", "1", ""];
+    std::fs::write(d.join("display"), info.join("\u{1f}")).unwrap();
+    let board = [
+        "%1", "w:0", "win", "claude", "running", "-", "-", "s1", cwd, "100", "-", "-", "@1", opt,
+    ];
+    std::fs::write(d.join("rows"), board.join("\u{1f}") + "\n").unwrap();
+    let sh = format!(
+        "#!/bin/sh\ncase \"$1\" in\nlist-panes) cat '{0}/rows' ;;\ndisplay-message) cat '{0}/display' ;;\n\
+         show-option) case \"$*\" in *@cockpit_transcript*) echo '{1}' ;; *) echo '|claude|' ;; esac ;;\nesac\n",
+        d.display(),
+        tr.display()
+    );
+    std::fs::write(d.join("tmux"), sh).unwrap();
+    std::fs::set_permissions(d.join("tmux"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    vec![
+        ("COCKPIT_TMUX", d.join("tmux").display().to_string()),
+        ("CLAUDE_CONFIG_DIR", home.join(".claude").display().to_string()),
+        ("HOME", home.display().to_string()),
+        ("COCKPIT_READONLY", "1".into()),
+    ]
+}
+
+fn set(env: &[(&'static str, String)]) {
+    for (k, v) in env {
+        // SAFETY: every test in this binary holds ENV while it touches the environment.
+        unsafe { std::env::set_var(k, v) };
+    }
+}
+
+fn facts(t: &Tmp, cwd: &str, opt: &str, said: &str) -> Facts {
+    set(&rig(t, cwd, opt, said));
     gather("%1").unwrap()
+}
+
+/// `cockpit-tui info --json <pane>` under `env`: (exit code, stdout).
+fn info_json(env: &[(&'static str, String)], pane: &str) -> (Option<i32>, Vec<u8>) {
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_cockpit-tui"))
+        .args(["info", "--json", pane])
+        .envs(env.iter().map(|(k, v)| (*k, v.as_str())))
+        .output()
+        .unwrap();
+    (out.status.code(), out.stdout)
 }
 
 /// Rows: the transcript's cwd over the pane's; `@cockpit_dir` over both; a
 /// dangling transcript cwd falls to the pane's. `root` stays tmux-review's.
 #[test]
 fn the_work_dir_follows_the_board_order_and_root_does_not() {
-    let d = std::env::temp_dir().join(format!("cockpit-info-dir-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    let (wt, opt) = (d.join("wt"), d.join("opt"));
-    std::fs::create_dir_all(&wt).unwrap();
-    std::fs::create_dir_all(&opt).unwrap();
-    let (wt, opt, cwd) = (wt.display().to_string(), opt.display().to_string(), d.display().to_string());
-    let x = facts(&d, &cwd, "", &wt);
-    assert_eq!((x.work.as_str(), x.root.as_str()), (wt.as_str(), cwd.as_str()));
-    assert_eq!(facts(&d, &cwd, &opt, &wt).work, opt);
-    assert_eq!(facts(&d, &cwd, "", "/no/such/wt").work, cwd);
-    let _ = std::fs::remove_dir_all(&d);
+    let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let t = Tmp::new("order");
+    let (wt, opt, cwd) = (t.sub("wt"), t.sub("opt"), t.sub("cwd"));
+    let x = facts(&t, &cwd, "", &wt);
+    assert_eq!(
+        (x.work.as_str(), x.work_from, x.root.as_str()),
+        (wt.as_str(), "transcript cwd", cwd.as_str())
+    );
+    let x = facts(&t, &cwd, &opt, &wt);
+    assert_eq!((x.work.as_str(), x.work_from), (opt.as_str(), "@cockpit_dir"));
+    let x = facts(&t, &cwd, "", "/no/such/wt");
+    assert_eq!((x.work.as_str(), x.work_from), (cwd.as_str(), "cwd"));
+}
+
+/// The orchestrator's tmux-review will read `info --json %N`'s `dir`: the dir the
+/// board's stat used for the same pane, for each of the three sources.
+#[test]
+fn info_json_dir_is_the_boards_work_dir() {
+    let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let t = Tmp::new("json");
+    let (wt, opt, cwd) = (t.sub("wt"), t.sub("opt"), t.sub("cwd"));
+    for (o, s, want) in [("", &wt, &wt), (opt.as_str(), &wt, &opt), ("", &"/no/such/wt".to_string(), &cwd)] {
+        let env = rig(&t, &cwd, o, s);
+        let (code, stdout) = info_json(&env, "%1");
+        let v: serde_json::Value = serde_json::from_slice(&stdout).unwrap_or_default();
+        set(&env);
+        let board = list_panes().unwrap().into_iter().find(|p| p.id == "%1").unwrap().dir;
+        assert_eq!(
+            (code, v["dir"].as_str(), board.as_str()),
+            (Some(0), Some(want.as_str()), want.as_str())
+        );
+    }
+}
+
+/// A pane that is not there: exit 1, nothing on stdout, as `--text` does.
+#[test]
+fn info_json_for_no_such_pane_is_exit_1_and_silent() {
+    let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let t = Tmp::new("gone");
+    let env = rig(&t, &t.sub("cwd"), "", "");
+    std::fs::write(t.0.join("display"), "").unwrap();
+    assert_eq!(info_json(&env, "%9"), (Some(1), vec![]));
 }

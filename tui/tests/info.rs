@@ -433,3 +433,23 @@ fn review_base_origin_head_outranks_a_local_master() {
         (base.as_str(), "vs origin/develop", "branch")
     );
 }
+
+/// #452: a work dir taken from the transcript gets its own `dir` row naming
+/// that source; one from `@cockpit_dir` or the cwd is already on its row.
+#[test]
+fn a_transcript_work_dir_is_its_own_row_naming_its_source() {
+    let dirs = |from: &'static str, missing: bool| {
+        let f = Facts {
+            work: "/x/wt".into(),
+            work_from: from,
+            dir_missing: missing,
+            ..facts()
+        };
+        let r = info::rows(&f, &Theme::fixed().g, 200);
+        r.into_iter().filter(|(l, _)| l == "dir").map(|(_, v)| v).collect::<Vec<_>>()
+    };
+    assert!(dirs("transcript cwd", false).contains(&"/x/wt  (transcript cwd)".to_string()));
+    assert!(dirs("@cockpit_dir", false).iter().all(|v| !v.contains("transcript")));
+    let gone = dirs("transcript cwd", true);
+    assert!(gone[0].ends_with("(@cockpit_dir, missing -- using transcript cwd)"), "{gone:?}");
+}

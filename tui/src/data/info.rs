@@ -30,8 +30,11 @@ pub struct Facts {
     pub dir: Option<String>,
     pub dir_missing: bool,
     /// the dir the board's git facts use: `@cockpit_dir`, else the transcript's
-    /// newest cwd, else the cwd (#452). `root` keeps tmux-review's rule.
+    /// newest cwd, else the cwd (#452). `root` keeps tmux-review's rule. Raw, not
+    /// cleaned: `info --json` hands it to scripts, and the screen cleans it.
     pub work: String,
+    /// where `work` came from: `@cockpit_dir`, `transcript cwd` or `cwd`
+    pub work_from: &'static str,
     pub root: String,
     pub state: String,
     pub msg: String,
@@ -264,8 +267,15 @@ pub fn gather(pane: &str) -> Result<Facts, String> {
     // `file` can ask `claude agents`: only an agent pane has a transcript to find
     let tr = if x.agent { super::transcript::file(&x.id) } else { None };
     let said = tr.as_deref().and_then(super::transcript::cwd).unwrap_or_default();
-    let mut work = super::fleet::work_dirs(&[[f[4].to_string(), said, f[3].to_string()]]);
-    x.work = clean(&work.pop().unwrap_or_default());
+    let (opt, cwd) = (f[4].to_string(), f[3].to_string());
+    x.work = super::fleet::work_dirs(&[[opt.clone(), said.clone(), cwd]])
+        .pop()
+        .unwrap_or_default();
+    x.work_from = match () {
+        _ if !opt.is_empty() && x.work == opt => "@cockpit_dir",
+        _ if !said.is_empty() && x.work == said => "transcript cwd",
+        _ => "cwd",
+    };
     x.doing = tr.as_deref().map(doing_rows).unwrap_or_default();
     let sess = session_dir(&x.id, &root);
     if !root.is_empty() && !git(&root, &[], None, &["rev-parse", "-q", "--verify", "HEAD"]).trim().is_empty() {

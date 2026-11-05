@@ -1237,3 +1237,13 @@ fn a_rewritten_transcript_keeps_no_cwd_from_the_old_one() {
     assert_eq!(dir_of(&r, "", &(cwd_row(&wt, false) + &turn_output(1))), wt);
     assert_eq!(dir_of(&r, "", BASH_ROW), "/w");
 }
+
+/// #452: `--json` keeps `path`, the launch cwd, and adds `dir`, the work dir.
+#[test]
+fn the_json_rows_carry_the_work_dir_beside_the_launch_path() {
+    let r = Rig::new("dirjson");
+    let wt = r.sub("wt");
+    dir_of(&r, "", &cwd_row(&wt, false));
+    let v: serde_json::Value = serde_json::from_str(&cockpit_tui::fleet::rows_json(&list_panes().unwrap())).unwrap();
+    assert_eq!((v[0]["path"].as_str(), v[0]["dir"].as_str()), (Some("/w"), Some(wt.as_str())));
+}
