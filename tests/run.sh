@@ -10332,6 +10332,7 @@ avj() {                       # avj <pane>: "<job>|<job name>|<state>|<ask>"
 }
 if need_tmux "agent-poll bind"; then :; else
 av_srv bind
+av_tm set -g @cockpit_agents_glob '|claude|codex|'
 av_bind() { av_once bind.json >/dev/null; }
 # A table test: each row is a title, the pane's command, and what the pane shows after one poll.
 av_case() {                   # av_case <label> <title> <want> [command]
@@ -10361,6 +10362,7 @@ av_case "no: ... with a count" "2 awaiting input · claude agents" "|||"
 av_case "no: an empty title" "" "|||"
 av_case "no: the glyph alone" "✳ " "|||"
 av_case "no: the pane is not running claude (a shell with a stale title)" "alpha" "|||" sleep
+av_case "no: another agent from the agents glob is not claude" "alpha" "|||" codex
 AVOFF=$(av_np "alpha"); av_tm set-option -p -t "$AVOFF" allow-set-title off; av_bind
 is "no: allow-set-title is off on the pane, its title is stale for good" "|||" "$(avj "$AVOFF")"
 av_tm set-option -pu -t "$AVOFF" allow-set-title; av_bind
@@ -10377,8 +10379,10 @@ AVMK=$(av_np "alpha"); av_tm set-option -p -t "$AVMK" @cockpit_agentview 1
 AVMU=$(av_np "nothing"); av_tm set-option -p -t "$AVMU" @cockpit_agentview 1
 AVMD=$(av_np "twin"); av_tm set-option -p -t "$AVMD" @cockpit_agentview 1
 av_bind
-is "a marked pane that is bound shows its job, not the worst of all" "aa|alpha|running|" "$(avj "$AVMK")"
-is "a marked pane that is not bound keeps the worst of all" "||needs-input|fix the parser needs you" \
+is "a marked pane that is bound shows its job, not the worst of all" "aa|alpha|running|" \
+   "$(avj "$AVMK")"
+is "a marked pane that is not bound keeps the worst of all" \
+   "||needs-input|fix the parser needs you" \
    "$(avj "$AVMU")"
 is "a marked pane whose title names two jobs keeps the worst of all" \
    "||needs-input|fix the parser needs you" "$(avj "$AVMD")"
@@ -10386,7 +10390,8 @@ is "a marked pane whose title names two jobs keeps the worst of all" \
 AVSETS="$AVREC/bsets"; : > "$AVSETS"
 av_tm set-hook -g after-set-option "run-shell 'echo \"#{hook_arguments}\" >> $AVSETS'"
 av_bind; : > "$AVSETS"; av_bind
-is "a poll that changes nothing writes nothing, bound panes included" "0" "$(wc -l < "$AVSETS" | tr -d ' ')"
+is "a poll that changes nothing writes nothing, bound panes included" "0" \
+   "$(wc -l < "$AVSETS" | tr -d ' ')"
 av_tm set-hook -gu after-set-option
 # The bind ends when the title moves on: the job and its name are cleared with the state.
 AVMV=$(av_np "alpha"); av_bind
@@ -10404,8 +10409,41 @@ is "a pane that left claude unbinds, its stale state taken back" "|||" "$(avj "$
 # A second job taking the name unbinds too, and a marked pane falls back to the worst of all.
 AVMW=$(av_np "alpha"); av_tm set-option -p -t "$AVMW" @cockpit_agentview 1; av_bind
 av_tm select-pane -t "$AVMW" -T "twin"; av_bind
-is "a marked pane that unbinds falls back to the worst of all" "||needs-input|fix the parser needs you" \
+is "a marked pane that unbinds falls back to the worst of all" \
+   "||needs-input|fix the parser needs you" \
    "$(avj "$AVMW")"
+# The unbind takes back only a state the poller wrote.
+AVTB=$(av_np "alpha"); av_bind
+av_tm set-option -p -t "$AVTB" @panestate needs-input
+av_tm select-pane -t "$AVTB" -T "something else"; av_bind
+is "a state someone else wrote since is left when the bind ends" "||needs-input|" "$(avj "$AVTB")"
+AVTC=$(av_np "alpha"); av_bind
+av_tm set-option -p -t "$AVTC" @cockpit_fg 1
+av_tm select-pane -t "$AVTC" -T "something else"; av_bind
+is "a pane a foreground session owns keeps its state when the bind ends" "||running|" \
+   "$(avj "$AVTC")"
+# A foreground session's pane is its hooks', whatever its title says: they write the state,
+# and a job of the same name must not overwrite it.
+av_fg() {                     # av_fg <pane> <notification type> [message]: a hook of that session
+    printf '{"notification_type":"%s","message":"%s"}' "$2" "${3:-}" \
+        | env TMUX="$AVT" TMUX_PANE="$1" PATH="$AVBIN:$PATH" \
+            "$DIR/scripts/agent-state" notify >/dev/null 2>&1
+}
+AVF1=$(av_np "alpha"); av_fg "$AVF1" permission_prompt "perm fg"; av_bind
+is "a foreground pane titled like a job keeps its hooks' state" "||needs-input|perm fg" \
+   "$(avj "$AVF1")"
+AVF2=$(av_np "alpha"); av_tm set-option -p -t "$AVF2" @cockpit_agentview 1; av_bind
+is "a viewer bound to a job..." "aa|alpha|running|" "$(avj "$AVF2")"
+av_fg "$AVF2" permission_prompt "perm fg"; av_bind
+is "...turned foreground session (its hook unmarked it) is no longer the poller's" \
+   "||needs-input|perm fg" "$(avj "$AVF2")"
+av_tm select-pane -t "$AVF2" -T "something else"; av_bind
+is "...and a title change then does not wipe its state" "||needs-input|perm fg" "$(avj "$AVF2")"
+av_tm respawn-pane -k -t "$AVF1" 'exec -a bash sleep 300'; av_bind
+is "the foreground mark goes when the pane leaves the agent" "" "$(avo @cockpit_fg "$AVF1")"
+av_tm respawn-pane -k -t "$AVF1" 'exec -a claude sleep 300'
+av_tm select-pane -t "$AVF1" -T "alpha"; av_bind
+is "...and a viewer later in that pane binds" "aa|alpha|running|" "$(avj "$AVF1")"
 av_tm kill-server >/dev/null 2>&1
 fi
 
@@ -10466,9 +10504,12 @@ av_published() {              # the published pid is a live agent-poll
 av_hook permission_prompt
 is "an ordinary permission prompt is not an agent view: no mark, no poller" "|0" \
    "$(avo @cockpit_agentview)|$(av_runs)"
+is "a foreground hook marks the pane as its session's (#448)" "1" "$(avo @cockpit_fg)"
 av_tm set-option -pu -t "$AVP" @panestate
 av_hook agent_completed
 is "agent_completed marks the pane" "1" "$(avo @cockpit_agentview)"
+is "...and it is no foreground session's pane any more: the agent view relays for it" "" \
+   "$(avo @cockpit_fg)"
 is "...writes no state of its own" "" "$(avo @panestate)"
 is "...and starts the poller, once" "1" "$(av_runs)"
 av_wait av_published
@@ -10726,7 +10767,7 @@ wait "$AVA" "$AVB" 2>/dev/null
 av_tm kill-server >/dev/null 2>&1
 fi
 
-echo "== agent-poll: the sweeps start one poller that stays, and claude is read only when it can matter (#448) =="
+echo "== agent-poll: the sweeps start one poller, which reads claude only when it matters (#448) =="
 av_setup
 if need_tmux "agent-poll lifetime" || [ ! -d /proc/self ]; then :; else
 av_srv up
@@ -10747,7 +10788,10 @@ av_sweep() {                  # av_sweep [env...]: the sweep a window event or t
 av_after() {                  # av_after <n>: n more ticks of the traced poller have run
     local t0; t0=$(av_ticks); av_wait "[ \$(av_ticks) -ge $((t0 + $1)) ]"
 }
-av_published() { local p; p=$(av_pub); [ -n "$p" ] && [ "$(cat "/proc/$p/comm" 2>/dev/null)" = agent-poll ]; }
+av_published() {
+    local p; p=$(av_pub)
+    [ -n "$p" ] && [ "$(cat "/proc/$p/comm" 2>/dev/null)" = agent-poll ]
+}
 # Where a poller starts.
 av_sweep COCKPIT_NO_AUTOSTART=1
 is "the suite's switch keeps a sweep from starting a poller" "0" "$(av_runs)"
@@ -10773,12 +10817,13 @@ kill -TERM "$AVUP"; av_wait '[ -z "$(av_pub)" ]'
 : > "$AVTRACE"; : > "$AVCLOG"
 av_tm set-option -g @cockpit_bg_poll 1
 env -u TMUX_PANE TMUX="$AVT" PATH="$AVBIN:$PATH" AV_JSON="$AVLIVE" AV_CLAUDELOG="$AVCLOG" \
-    bash -x "$DIR/scripts/agent-poll" </dev/null >/dev/null 2>"$AVTRACE" &
+    AV_DELAY=0.3 bash -x "$DIR/scripts/agent-poll" </dev/null >/dev/null 2>"$AVTRACE" &
 AVTP=$!
 av_wait '[ "$(av_pub)" = "$AVTP" ]'
 av_wait '[ "$(av_reads)" -ge 1 ]'
 av_after 4
-is "a box with no viewer and no job pays one read for the panes it found, then none" "1" "$(av_reads)"
+is "a box with no viewer and no job pays one read for the panes it found, then none" "1" \
+   "$(av_reads)"
 av_tm respawn-pane -k -t "$AVP" 'exec -a bash sleep 300'
 av_after 3
 is "no claude pane at all: still no read, and the poller stays" "1 yes" \
@@ -10789,11 +10834,13 @@ av_wait '[ "$(avj "$AVV")" = "aa|alpha|running|" ]'
 is "a viewer pane that appears later is bound, by the poller already running" "aa|alpha|running|" \
    "$(avj "$AVV")"
 is "...still the one poller" "$AVTP" "$(av_pub)"
-n0=$(av_reads); av_after 3
-is "a bound pane is read every tick" "yes" "$([ "$(av_reads)" -ge $((n0 + 3)) ] && echo yes || echo no)"
+n0=$(av_reads)
+av_wait "[ \$(av_reads) -ge $((n0 + 3)) ]" && AVYES=yes || AVYES=no
+is "a bound pane is read every tick" "yes" "$AVYES"
 av_tm select-pane -t "$AVV" -T "gamma"
 av_wait '[ "$(avj "$AVV")" = "cc|gamma|done|" ]'
-is "a title change is seen, and the pane follows it to the other job" "cc|gamma|done|" "$(avj "$AVV")"
+is "a title change is seen, and the pane follows it to the other job" "cc|gamma|done|" \
+   "$(avj "$AVV")"
 av_tm select-pane -t "$AVV" -T "nothing"
 av_wait '[ "$(avj "$AVV")" = "|||" ]'
 is "the bind ends with the title" "|||" "$(avj "$AVV")"
@@ -10802,12 +10849,29 @@ is "...and the reads stop with it" "$n0" "$(av_reads)"
 # A title that named two jobs is watched: the pane binds when one goes, with no title change.
 av_tm select-pane -t "$AVV" -T "twin"
 av_wait '[ "$(av_reads)" -gt "$n0" ]'
-n0=$(av_reads); av_after 3
-is "a title naming two jobs is read every tick, bound to neither" "|||" "$(avj "$AVV")"
-is "...read every tick" "yes" "$([ "$(av_reads)" -ge $((n0 + 3)) ] && echo yes || echo no)"
+n0=$(av_reads)
+av_wait "[ \$(av_reads) -ge $((n0 + 3)) ]" && AVYES=yes || AVYES=no
+is "a title naming two jobs is read every tick" "yes" "$AVYES"
+is "...and is bound to neither" "|||" "$(avj "$AVV")"
 jq '[.[] | select(.id != "ee")]' "$AVF/bind.json" > "$AVLIVE.tmp" && mv "$AVLIVE.tmp" "$AVLIVE"
 av_wait '[ "$(avj "$AVV")" = "dd|twin|running|" ]'
 is "...and binds the tick the other one is gone" "dd|twin|running|" "$(avj "$AVV")"
+# A read nobody waits on that fails is tried once per change of the panes, not every tick.
+av_tm select-pane -t "$AVV" -T "nothing"
+av_wait '[ "$(avj "$AVV")" = "|||" ]'
+kill -TERM "$AVTP"; av_wait "av_gone $AVTP" || kill -9 "$AVTP"; wait "$AVTP" 2>/dev/null
+: > "$AVTRACE"; : > "$AVCLOG"
+env -u TMUX_PANE TMUX="$AVT" PATH="$AVBIN:$PATH" AV_JSON="$AVLIVE" AV_CLAUDELOG="$AVCLOG" \
+    AV_RC=1 bash -x "$DIR/scripts/agent-poll" </dev/null >/dev/null 2>"$AVTRACE" &
+AVTP=$!
+av_wait '[ "$(av_reads)" -ge 1 ]'
+av_after 5
+is "a failing read nobody waits on is not run again every tick" "1" "$(av_reads)"
+av_tm select-pane -t "$AVV" -T "something new"
+av_wait '[ "$(av_reads)" -ge 2 ]' && AVYES=yes || AVYES=no
+is "...but is tried again when a title changes" "yes" "$AVYES"
+is "...and says nothing: no marked pane was waiting" "" \
+   "$(av_tm show-option -gqv @cockpit_poll_err)"
 # The server going takes the poller with it.
 av_tm kill-server >/dev/null 2>&1
 av_wait "av_gone $AVTP" && AVLEFT=yes || AVLEFT=no

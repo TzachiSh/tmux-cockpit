@@ -421,10 +421,16 @@ body="$body ; run-shell -C '#{@cockpit_board_wake}'"
 # notification means the pane is a plain session again: the mark from an earlier agent-view
 # visit would have the poller overwrite its states every tick (#174). The same invocation, and
 # outside `when`, so a pane that is already in the state still loses it.
+# It is a foreground session's pane too (#448): @cockpit_fg tells agent-poll not to bind it to a
+# background job of the same name, which would overwrite what these hooks write. Set once
+# (compare-then-set, in the same invocation), with any bind it had.
 unmark=()
 if [ -z "$poll" ] && [ -z "$view" ] && [ "$pane" = "${TMUX_PANE:-}" ]; then
+    fgset="set-option -p -t $pane @cockpit_fg 1"
+    for o in job job_name job_state; do fgset="$fgset ; set-option -pu -t $pane @cockpit_$o"; done
     unmark=(if-shell -F -t "$pane" '#{@cockpit_agentview}' \
-        "set-option -pu -t $pane @cockpit_agentview" ';')
+        "set-option -pu -t $pane @cockpit_agentview" ';'
+        if-shell -F -t "$pane" '#{!=:#{@cockpit_fg},1}' "$fgset" ';')
 fi
 tmux ${unmark[@]+"${unmark[@]}"} ${subs_cmd[@]+"${subs_cmd[@]}" ';'} \
     if-shell -F -t "$pane" "$when" "${body# ; }" \

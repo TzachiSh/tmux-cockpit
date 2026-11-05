@@ -62,7 +62,8 @@ ensure_poller() {             # <scripts dir>
     local info pid
     # COCKPIT_NO_AUTOSTART: the test suite's servers, which must not run the real claude.
     [ -z "${COCKPIT_NO_AUTOSTART:-}" ] || return 0
-    info=$(tmux display-message -p '#{@cockpit_poll_pid}|#{@cockpit_bg_poll}' 2>/dev/null) || return 0
+    info=$(tmux display-message -p '#{@cockpit_poll_pid}|#{@cockpit_bg_poll}' 2>/dev/null) \
+        || return 0
     pid=${info%%|*}
     [ "${info#*|}" = off ] && return 0
     poll_alive "$pid" && return 0
@@ -74,12 +75,16 @@ ensure_poller() {             # <scripts dir>
 # pane and makes sure one poller runs on this server. Costs one tmux read and, with the
 # poller alive, one /proc read; the start is detached (run-shell -b) so the hook never waits.
 mark_agentview() {            # <pane> <scripts dir>
-    local info view pid every
+    local info view fg pid every
     info=$(tmux display-message -p -t "$1" \
-        '#{@cockpit_agentview}|#{@cockpit_poll_pid}|#{@cockpit_bg_poll}' 2>/dev/null) || return 0
-    view=${info%%|*}; info=${info#*|}; pid=${info%%|*}; every=${info#*|}
+        '#{@cockpit_agentview}|#{@cockpit_fg}|#{@cockpit_poll_pid}|#{@cockpit_bg_poll}' \
+        2>/dev/null) || return 0
+    view=${info%%|*}; info=${info#*|}; fg=${info%%|*}; info=${info#*|}
+    pid=${info%%|*}; every=${info#*|}
     [ "$every" = off ] && return 0
     [ "$view" = 1 ] || tmux set-option -p -t "$1" @cockpit_agentview 1 2>/dev/null
+    # The agent view relays for this pane: it shows jobs now, whatever session ran in it before.
+    [ -z "$fg" ] || tmux set-option -pu -t "$1" @cockpit_fg 2>/dev/null
     poll_alive "$pid" && return 0
     start_poller "$2"
 }

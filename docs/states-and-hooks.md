@@ -365,19 +365,29 @@ read job state from outside, and writes each pane through `agent-state poll`. A 
    agents`), and `allow-set-title` is on for P: with it off, the title goes stale for good.
 
 A bound pane shows J's state, and carries `@cockpit_job` (the id) and `@cockpit_job_name`
-(the name) so a wrong bind is visible. Both are cleared, and the state the poller wrote
-with them, as soon as the rule stops holding: the title changed, the pane left `claude`,
-or a second job took the name. A pane marked `@cockpit_agentview` that is not bound shows
+(the name). Nothing draws the name yet: it shows only in `tmux show-options -p`, and
+drawing it beside the state is a follow-up (#460). Both are cleared, with
+`@cockpit_job_state` (what the poller last wrote), as soon as the rule stops holding:
+the title changed, the pane left `claude`, or a second job took the name. The state is
+taken back only if `@panestate` still holds what the poller wrote, and never on a pane a
+foreground session owns. A pane marked `@cockpit_agentview` that is not bound shows
 the worst state of all background jobs (blocked, then failed, working, done), as before.
 An unmarked pane that is not bound is not the poller's.
 
 **Residual false bind.** The title is set when the viewer's session emits one, not
 on every frame, and a `claude attach Y` on an idle job may emit none. A pane that ran
 `claude attach X` and then runs a live `claude attach Y` shows X's title until Y emits
-one, so it is bound to X, with X's state and X's name beside it. The pane command is
-`claude`, so the rule cannot tell. A foreground session that carries a job's exact
-name binds the same way, and its own hooks and the poller then write the same
-`@panestate`. A second signal, `@cockpit_job` set by a cockpit-run attach, would close the first.
+one, so it is bound to X, with X's state. The pane command is `claude`, so the rule
+cannot tell. A second signal, `@cockpit_job` set by a cockpit-run attach, would close it.
+
+**A foreground session is never bound.** A hook of a pane's own session (one with
+`TMUX_PANE`) sets `@cockpit_fg` on the pane, in the tmux call it makes anyway, and clears
+any bind it had. The poller skips a pane that carries the mark, so a session whose title
+equals a job's name keeps the state its hooks write. The mark goes when the pane stops
+running an agent, and when the agent view relays a notification for the pane (it shows
+jobs now). Until a fresh session's first hook has run, it can be bound for a tick or two. A
+pane that was a foreground session and becomes a viewer without a relayed notification
+stays unbound.
 
 **Start and stop.** One poller runs per server, its pid in `@cockpit_poll_pid`. It
 starts from `agent-state sweep`: the config load runs one, and so does every window or
@@ -389,16 +399,18 @@ nothing a job does can start it again, and an agent that begins a viewer in a sh
 fires no window event. `@cockpit_bg_poll off` never starts it. No foreground hook starts it, so a
 plain `Stop` costs what it did.
 
-Each tick is one `tmux list-panes -a`, a few milliseconds. `claude agents`, about 0.3 s,
+Each tick is two tmux reads (the interval option and `list-panes -a`) and a sleep, a few
+milliseconds. `claude agents`, about 0.3 s,
 runs only when it can matter:
 
 - a marked agent view or a bound pane is waiting for a state;
 - a pane's title named two jobs, and may now name one (the other was removed);
 - the ids and titles of the `claude` panes differ from the last read, which is when a
-  new viewer, or a job's first title, appears.
+  new viewer, or a job's first title, appears. A read nobody waits on that fails is tried
+  once per such change, not every tick.
 
 A box with no background job, or with `claude` panes whose titles do not change,
-pays the `list-panes` and nothing else. A read nobody waits on that cannot run, with no
+pays the two reads and nothing else. A read nobody waits on that cannot run, with no
 `claude` or `jq` on the server's PATH, says nothing; one a marked pane waits on is
 said once in `@cockpit_poll_err`.
 

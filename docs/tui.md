@@ -412,7 +412,7 @@ the list for `v` to come back.
 `claude attach`) takes its state from the job, not from hooks: `scripts/agent-poll`
 binds it when the pane's title names exactly one job, and records the job on the pane
 as `@cockpit_job` (id) and `@cockpit_job_name` (name), both cleared when the bind
-ends. The board does not draw them yet. A row's state is the bound job's, and the
+ends. The board does not draw them yet (#460). A row's state is the bound job's, and the
 rule, its residual false bind and how the poller starts are in
 [states-and-hooks.md](states-and-hooks.md#agent-view-and-background-jobs).
 
