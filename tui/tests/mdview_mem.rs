@@ -61,5 +61,7 @@ fn code_rows_are_small_and_a_relayout_frees_the_old_ones() {
     s.layout(76);
     let (held, _) = mark();
     let per_row = (held - before) / rows;
-    assert!(per_row <= 112, "{per_row} bytes an `ab` row");
+    // measured 112 (x86_64, glibc): the 8 over it are room for another allocator's
+    // rounding; an unshrunk cell vector is 208, so the bound still holds the line
+    assert!(per_row <= 120, "{per_row} bytes an `ab` row");
 }

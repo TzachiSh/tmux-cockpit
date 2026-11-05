@@ -305,9 +305,9 @@ fn u_hides_and_shows_link_addresses() {
 }
 
 #[test]
-fn the_help_opens_on_a_question_mark_and_any_other_key_closes_it() {
+fn the_help_opens_on_h_and_any_other_key_closes_it() {
     let mut s = screen("x");
-    key(&mut s, KeyCode::Char('?'));
+    key(&mut s, KeyCode::Char('h'));
     assert_eq!(s.help, Some(0));
     assert_eq!(key(&mut s, KeyCode::Char('q')), Out::Stay, "q closes the help, not the viewer");
     assert_eq!(s.help, None);

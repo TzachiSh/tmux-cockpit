@@ -77,4 +77,4 @@
 "│                                      │"
 "│                                      │"
 "╰──────────────────────────────────────╯"
-" / find   e edit   ? keys   q close     "
+" / find   v select   h keys   q close   "
