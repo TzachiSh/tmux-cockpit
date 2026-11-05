@@ -383,8 +383,11 @@ what is 15% of 240
 kind: format
 window: bash · bash · /home/u
 out: format
-expect: write
+expect: either
+ask_any: compose; kubernetes; k8s; deployment
 must: 8080; replicas
+out_is: format
+note: fits Docker Compose and Kubernetes alike: asking which, or a valid file of either, both serve
 --- request
 yaml for service web, port 8080, 3 replicas
 
