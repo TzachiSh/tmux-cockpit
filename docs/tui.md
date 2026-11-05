@@ -2205,8 +2205,10 @@ A tree with one is usually left out, since its second line is no worktree attrib
 but a crafted name can print lines that read like git's own, and then its branch shows
 `⑂` beside some other path. That path must still be this repository's: its `.git` is
 the common dir (the main checkout), or a `.git` file naming an entry in the common
-dir's `worktrees/` that names that file back (a linked tree). Another repository's
-checkout, or a directory with no `.git`, is no worktree. A path that is gone is kept,
+dir's `worktrees/` that names that file back (a linked tree). A `.git` that is a
+symlink or hard link to one of these counts, as it does for git, so a directory need
+not be a real checkout to pass. Another repository's checkout, or a directory with no
+`.git`, is no worktree. A path that is gone is kept,
 and `↵` says it is gone and suggests `git worktree prune`; for a line a crafted name
 forged, prune removes nothing, because the tree that printed it still exists. The
 preview is
