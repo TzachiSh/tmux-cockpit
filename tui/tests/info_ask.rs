@@ -63,7 +63,7 @@ fn the_open_question_is_the_info_message_only_while_input_is_needed() {
         .to_string()
         + "\n";
     let generic = "Claude needs your permission";
-    assert_eq!(facts("open", "needs-input", &ask("q1", "Merge\u{202e}?")).1, "Merge? (+1 more)");
+    assert_eq!(facts("open", "needs-input", &ask("q1", "Merge\u{202e}?")).1, "(+1) Merge?");
     assert_eq!(facts("running", "running", &ask("q1", "Merge?")).1, generic);
     assert_eq!(facts("answered", "needs-input", &answered).1, generic);
 }

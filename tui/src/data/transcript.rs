@@ -147,13 +147,15 @@ fn last_lines(path: &Path) -> Option<String> {
 }
 
 /// jq's `clean`: the first line holding a non-blank char, TAB to a space, C0, DEL
-/// and C1 dropped, leading blanks trimmed, 160 chars.
+/// and C1 dropped, leading blanks trimmed, 160 chars. Bidi controls are dropped
+/// too (#453), which jq's never did: tool details, `said` and `asked` are model-
+/// or human-written and reach the info screen.
 fn clean(s: &str) -> String {
     let line = s.split('\n').find(|l| l.chars().any(|c| !c.is_whitespace())).unwrap_or("");
     let kept: String = line
         .chars()
         .map(|c| if c == '\t' { ' ' } else { c })
-        .filter(|&c| c >= ' ' && !('\u{7f}'..='\u{9f}').contains(&c))
+        .filter(|&c| c >= ' ' && !('\u{7f}'..='\u{9f}').contains(&c) && !crate::pick::is_bidi(c))
         .collect();
     kept.trim_start().chars().take(160).collect()
 }
@@ -333,9 +335,10 @@ pub(crate) fn pick<'a>(name: &str, input: &'a Value) -> Option<(&'static str, &'
         })
 }
 
-/// An AskUserQuestion's row text (#453): the first non-blank line of its first
-/// question, made safe to draw, then how many questions follow it. `None` when
-/// the input names no question.
+/// An AskUserQuestion's row text (#453): how many questions follow the first,
+/// then the first non-blank line of the first, made safe to draw. The count
+/// leads because the board cuts a long line's end. `None` when the input names
+/// no question.
 pub(crate) fn question(input: &Value) -> Option<String> {
     let qs = input["questions"].as_array()?;
     let line = qs.first()?["question"]
@@ -345,7 +348,7 @@ pub(crate) fn question(input: &Value) -> Option<String> {
         .find(|l| !l.is_empty())?;
     Some(match qs.len() - 1 {
         0 => line,
-        n => format!("{line} (+{n} more)"),
+        n => format!("(+{n}) {line}"),
     })
 }
 
@@ -461,14 +464,20 @@ pub fn doing(path: &Path) -> Option<String> {
     if let Some((p, r)) = asked {
         out += &format!("asked\t{p}\t{}\n", secs(r, now));
     }
-    let open = |i: &&Value| !closed.iter().any(|c| jq_eq(c, i.get("id").unwrap_or(&Value::Null)));
-    let ask = assistant()
-        .flat_map(items)
-        .filter(|i| kind(i) == "tool_use" && i["name"] == "AskUserQuestion")
-        .filter(open)
-        .filter_map(|i| question(&i["input"]))
-        .last();
-    if let Some(q) = ask {
+    // Only the newest tool_use's ask is what the agent waits on, and a prompt
+    // typed after it means the human moved on from it.
+    let typed_after = |r: &Value| {
+        let at = t.iter().position(|x| std::ptr::eq(x, r));
+        t.iter()
+            .enumerate()
+            .any(|(k, x)| Some(k) > at && human(x).is_some_and(|c| !prompt(c).is_empty()))
+    };
+    if let Some((i, r)) = tu
+        && i["name"] == "AskUserQuestion"
+        && !closed.iter().any(|c| jq_eq(c, i.get("id").unwrap_or(&Value::Null)))
+        && !typed_after(r)
+        && let Some(q) = question(&i["input"])
+    {
         out += &format!("ask\t{q}\n");
     }
     (!out.is_empty()).then_some(out)
@@ -588,7 +597,7 @@ mod tests {
     fn question_reads_the_first_question_and_counts_the_rest() {
         let rows = [
             (serde_json::json!({"questions": [{"question": "a?"}]}), Some("a?")),
-            (serde_json::json!({"questions": [{"question": "a?"}, {}]}), Some("a? (+1 more)")),
+            (serde_json::json!({"questions": [{"question": "a?"}, {}]}), Some("(+1) a?")),
             (
                 serde_json::json!({"questions": [{"question": " \n\u{2066}b\u{7}?\nc"}]}),
                 Some("b?"),

@@ -257,10 +257,12 @@ fn tail(f: &mut File, len: u64, cap: u64) -> Vec<String> {
 }
 
 /// The one place doing/said/asked are built, so the one place to sanitise them:
-/// a control character such as TAB would split a `--rows` record.
+/// a control character such as TAB would split a `--rows` record, and a bidi
+/// control in model-written text would reorder the row (#453).
 fn first_line(s: &str) -> String {
     let one = s.trim().lines().next().unwrap_or("");
     one.chars()
+        .filter(|&c| !crate::pick::is_bidi(c))
         .map(|c| if c.is_control() { ' ' } else { c })
         .collect::<String>()
         .trim()
@@ -380,8 +382,10 @@ fn parse(lines: Vec<String>) -> Facts {
     let mut fa = Facts::default();
     // An AskUserQuestion is open until a user row carries its tool_result:
     // answers, dismissals and denials write one, an interrupt does not.
-    // (tool_use id, its question): the newest still open is the row's message (#453)
-    let mut asks: Vec<(String, Option<String>)> = vec![];
+    let mut asks: Vec<String> = vec![];
+    // #453: the newest tool_use's id and, for an AskUserQuestion, its question:
+    // the row's message only while that ask is the one still open
+    let mut newest: Option<(String, Option<String>)> = None;
     let (mut turn_over, mut saw) = (false, false);
     for raw in lines {
         let Ok(v) = serde_json::from_str::<Value>(&raw) else { continue };
@@ -407,12 +411,14 @@ fn parse(lines: Vec<String>) -> Facts {
                         fa.user = first_line(t);
                         fa.user_at = ts;
                         turn_over = false;
+                        // a typed prompt means the human moved on from an interrupted ask
+                        asks.clear();
                     }
                     None => {
                         let (mut interrupted, mut result, mut typed) = (false, false, None);
                         for b in c.as_array().into_iter().flatten() {
                             if let Some(id) = b["tool_use_id"].as_str() {
-                                asks.retain(|(a, _)| a != id);
+                                asks.retain(|a| a != id);
                                 result = true;
                             }
                             // safe beside the tool_results: they carry no `text`
@@ -434,6 +440,7 @@ fn parse(lines: Vec<String>) -> Facts {
                         {
                             fa.user = first_line(t);
                             fa.user_at = ts;
+                            asks.clear();
                         }
                     }
                 }
@@ -452,17 +459,16 @@ fn parse(lines: Vec<String>) -> Facts {
                         Some("tool_use") => {
                             let name = b["name"].as_str().unwrap_or("");
                             // The name alone when no field says more: never a bare `name:`.
-                            // model-written, so bidi controls go too (#453)
-                            let pick = transcript::pick(name, &b["input"]);
-                            fa.tool = match pick.map(|(p, s)| (p, crate::pick::clean(&first_line(s)))) {
+                            fa.tool = match transcript::pick(name, &b["input"]).map(|(p, s)| (p, first_line(s))) {
                                 Some((p, d)) if !d.is_empty() => format!("{name}: {p}{d}"),
                                 _ => name.to_string(),
                             };
-                            if name == "AskUserQuestion"
-                                && let Some(id) = b["id"].as_str()
-                            {
-                                asks.push((id.to_string(), transcript::question(&b["input"])));
+                            let id = b["id"].as_str().unwrap_or_default().to_string();
+                            let ask = name == "AskUserQuestion";
+                            if ask && !id.is_empty() {
+                                asks.push(id.clone());
                             }
+                            newest = Some((id, ask.then(|| transcript::question(&b["input"])).flatten()));
                         }
                         Some("text") => {
                             let t = first_line(b["text"].as_str().unwrap_or(""));
@@ -477,7 +483,7 @@ fn parse(lines: Vec<String>) -> Facts {
             _ => {}
         }
     }
-    fa.ask = asks.iter().rev().find_map(|(_, q)| q.clone()).unwrap_or_default();
+    fa.ask = newest.filter(|(id, _)| asks.contains(id)).and_then(|(_, q)| q).unwrap_or_default();
     // An open question outranks a finished turn: the interrupt that ended the
     // turn left the picker's tool_use open, and the human still owes an answer.
     fa.state = match () {

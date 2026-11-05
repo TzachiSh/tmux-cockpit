@@ -1214,7 +1214,7 @@ fn an_open_question_is_the_message_and_its_header_the_doing() {
     assert_eq!(get(&ps, "%1").doing, "AskUserQuestion: Merge");
 }
 
-/// #453: the count of the questions after the first rides on the message.
+/// #453: the count of the questions after the first leads the message: the board cuts its end.
 #[test]
 fn more_questions_than_one_are_counted_on_the_message() {
     let r = Rig::new("askmore");
@@ -1223,7 +1223,7 @@ fn more_questions_than_one_are_counted_on_the_message() {
     r.transcript("s2", &ask_row("tu1", serde_json::json!([q("Only?", "One")])));
     r.rows(&[hooked("%1", "needs-input", "s1"), hooked("%2", "needs-input", "s2")]);
     let ps = list_panes().unwrap();
-    assert_eq!(get(&ps, "%1").msg, "Which runner? (+2 more)");
+    assert_eq!(get(&ps, "%1").msg, "(+2) Which runner?");
     assert_eq!(get(&ps, "%2").msg, "Only?", "one question carries no count");
 }
 
@@ -1252,7 +1252,8 @@ fn an_answered_question_leaves_the_hooks_message() {
     assert_eq!(get(&list_panes().unwrap(), "%1").msg, "Claude needs your permission");
 }
 
-/// #453: of two open questions the newer is shown; an answered one never is.
+/// #453: only the newest tool_use's question shows: of two open asks the newer;
+/// none when the newest was answered, though an older ask is still open.
 #[test]
 fn the_newest_open_question_is_the_one_shown() {
     let r = Rig::new("asknewest");
@@ -1264,7 +1265,8 @@ fn the_newest_open_question_is_the_one_shown() {
     r.transcript("s2", &(new + &old.replace("Old?", "Last?") + &answer_row("tu1")));
     r.rows(&[hooked("%1", "needs-input", "s1"), hooked("%2", "needs-input", "s2")]);
     let ps = list_panes().unwrap();
-    assert_eq!((get(&ps, "%1").msg.as_str(), get(&ps, "%2").msg.as_str()), ("New?", "New?"));
+    let msgs = (get(&ps, "%1").msg.as_str(), get(&ps, "%2").msg.as_str());
+    assert_eq!(msgs, ("New?", "Claude needs your permission"));
 }
 
 /// #453: the hooks said `running`, so nothing is owed: the message is left alone.
@@ -1325,4 +1327,96 @@ fn the_json_rows_carry_the_question_and_its_header() {
         (v[0]["msg"].as_str(), v[0]["doing"].as_str()),
         (Some("Merge?"), Some("AskUserQuestion: Merge"))
     );
+}
+
+fn typed_row(text: &str) -> String {
+    format!(
+        "{}\n",
+        serde_json::json!({"type": "user", "timestamp": "2026-08-27T00:00:05.000Z", "message": {"content": text}})
+    )
+}
+
+fn interrupt_row() -> String {
+    let c = serde_json::json!([{"type": "text", "text": "[Request interrupted by user for tool use]"}]);
+    format!(
+        "{}\n",
+        serde_json::json!({"type": "user", "timestamp": "2026-08-27T00:00:04.000Z", "message": {"content": c}})
+    )
+}
+
+fn bash_row(cmd: &str) -> String {
+    let v = serde_json::json!({"type": "assistant", "timestamp": "2026-08-27T00:00:06.000Z",
+        "message": {"stop_reason": "tool_use", "content": [{"type": "tool_use", "id": "b1", "name": "Bash",
+        "input": {"command": cmd}}]}});
+    format!("{v}\n")
+}
+
+/// #453 review: an interrupted ask, then a typed prompt and a Bash permission.
+/// The pane waits on the Bash, so the hook's text stays and the old question never shows.
+#[test]
+fn a_question_the_agent_moved_on_from_is_not_the_message() {
+    let r = Rig::new("askstale");
+    let body = ask_row("tu1", serde_json::json!([q("Old question?", "Old")]))
+        + &interrupt_row()
+        + &typed_row("do something else")
+        + &bash_row("rm -rf build");
+    r.transcript("s1", &body);
+    r.rows(&[hooked("%1", "needs-input", "s1")]);
+    let p = list_panes().unwrap().into_iter().find(|p| p.id == "%1").unwrap();
+    assert_eq!(
+        (p.msg.as_str(), p.doing.as_str()),
+        ("Claude needs your permission", "Bash: rm -rf build")
+    );
+}
+
+/// #453 review: a typed prompt closes an interrupted ask, so a pane the hooks
+/// never marked is running its new turn, not waiting on the old question.
+#[test]
+fn a_typed_prompt_closes_an_interrupted_question() {
+    let r = Rig::new("askprompt");
+    r.ps("100 1 claude\n");
+    let body = ask_row("tu1", serde_json::json!([q("Old?", "Old")])) + &interrupt_row() + &typed_row("go on");
+    r.transcript("s1", &body);
+    r.rows(&[row("%1", "node", "-", "s1", "100")]);
+    let p = list_panes().unwrap().into_iter().find(|p| p.id == "%1").unwrap();
+    assert_eq!((p.state.as_str(), p.msg.as_str()), ("running", ""));
+}
+
+/// #453 review: the newest tool_use is an open ask with no readable question:
+/// no older open question stands in for it.
+#[test]
+fn an_unreadable_newest_question_does_not_fall_back_to_an_older_one() {
+    let r = Rig::new("asknofall");
+    let body = ask_row("tu1", serde_json::json!([q("Old?", "O")])) + &ask_row("tu2", serde_json::json!([]));
+    r.transcript("s1", &body);
+    r.rows(&[hooked("%1", "needs-input", "s1")]);
+    assert_eq!(get(&list_panes().unwrap(), "%1").msg, "Claude needs your permission");
+}
+
+/// #453 review: what the model said and the human asked are drawn too: their
+/// bidi controls go, as the question's do.
+#[test]
+fn said_and_asked_drop_bidi_controls() {
+    let r = Rig::new("askbidi");
+    let said = serde_json::json!({"type": "assistant", "timestamp": "2026-08-27T00:00:06.000Z",
+        "message": {"stop_reason": "end_turn", "content": [{"type": "text", "text": "do\u{202e}ne"}]}});
+    r.transcript("s1", &(typed_row("fi\u{2066}x it") + &format!("{said}\n")));
+    r.rows(&[hooked("%1", "done", "s1")]);
+    let p = list_panes().unwrap().into_iter().find(|p| p.id == "%1").unwrap();
+    assert_eq!((p.said.as_str(), p.asked.as_str()), ("done", "fix it"));
+}
+
+/// #453 review: the question shows only while its ask is the newest tool_use.
+/// One turn asking and then running a Bash that waits on a permission: the hook's
+/// text is about the Bash, so it stays.
+#[test]
+fn a_tool_use_after_the_open_question_keeps_the_hooks_message() {
+    let r = Rig::new("askthenbash");
+    let v = serde_json::json!({"type": "assistant", "timestamp": "2026-08-27T00:00:01.000Z",
+        "message": {"stop_reason": "tool_use", "content": [
+            {"type": "tool_use", "id": "tu1", "name": "AskUserQuestion", "input": {"questions": [q("Merge?", "M")]}},
+            {"type": "tool_use", "id": "b1", "name": "Bash", "input": {"command": "rm -rf build"}}]}});
+    r.transcript("s1", &format!("{v}\n"));
+    r.rows(&[hooked("%1", "needs-input", "s1")]);
+    assert_eq!(get(&list_panes().unwrap(), "%1").msg, "Claude needs your permission");
 }
