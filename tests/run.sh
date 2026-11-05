@@ -5699,11 +5699,11 @@ wd() {                        # wd <args...>: tmux-review on the block's server,
     (cd "$WD" && TMUX="$WDSP,0,0" HOME="$WD/home" timeout 20 "$DIR/scripts/tmux-review" "$@" \
         </dev/null 2>/dev/null)
 }
-# With the binary under test: one that has `workdir` answers this agent pane with exit 0 and
-# names the transcript's tree; one that has not (exit 2, whatever it says on stderr) leaves the
-# launch dir. Each run asserts one of them.
+# With the binary under test: one that has not `workdir` exits 2 (whatever it says on stderr)
+# and leaves the launch dir; any other binary must name the transcript's tree, so a workdir
+# that refuses this agent pane (exit 1) fails here (#508). Each run asserts one of them.
 wdrc=0; TMUX="$WDSP,0,0" "$COCKPIT_TUI_BIN" workdir "$WDP" >/dev/null 2>&1 || wdrc=$?
-if [ "$wdrc" != 0 ]; then
+if [ "$wdrc" = 2 ]; then
     is "a binary without workdir: a transcript-only pane keeps its launch dir" "$WD/launch" \
        "$(wd --dir "$WDP")"
 else
@@ -5759,6 +5759,11 @@ is "a shell pane is not asked: the board does not count it" "0 $WD/launch" \
 # The board's live test, without its ps walk: a live Claude renames itself to its version, and
 # the hooks' @panestate marks a pane whatever it runs. A name with one dot is not a version.
 is "a pane running as 2.1.246 is an agent, so it is asked" "1 $WD/other" "$(wd_ct ok "$WDV")"
+# The board lowercases the command before the glob (#508): Claude and CLAUDE are claude.
+for argv0 in Claude CLAUDE; do
+    is "a pane running as $argv0 is an agent, so it is asked" "1 $WD/other" \
+       "$(wd_ct ok "$(wd_pane "$argv0")")"
+done
 WDV1=$(wd_pane 2.1)
 is "a pane running as 2.1 is not version-shaped, so it is not asked" "0 $WD/launch" \
    "$(wd_ct ok "$WDV1")"
@@ -12435,7 +12440,7 @@ until_out 2.1.246 "$TMUX_REAL" -L "$BWS" display-message -p -t "$BWA3" '#{pane_c
 bwrc=0
 TMUX="$("$TMUX_REAL" -L "$BWS" display-message -p '#{socket_path}'),0,0" \
     "$COCKPIT_TUI_BIN" workdir "$BWA3" >/dev/null 2>&1 || bwrc=$?
-if [ "$bwrc" != 0 ]; then
+if [ "$bwrc" = 2 ]; then   # no workdir; an exit 1 here is a workdir bug, and asserts below
     read -r bwn bwp bww <<<"$(BW_ASK=real bw_goto "$BWV")"
     is "a binary without workdir: goto opens a window, the 2.1.246 pane not taken" "1 6 no" \
        "$bwn $bww $([ "$bwp" = "$BWA3" ] && echo yes || echo no)"
