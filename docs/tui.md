@@ -2313,6 +2313,45 @@ window) or a symlink, or if the pane is gone. The `✓` note and the log carry
 the pane and the `session:index` and name of its window.
 The board key waits on the board's verb hook (not shipped).
 
+## The agents cache (#492)
+
+`claude agents --json` maps an agent's pid to its session id, for panes whose
+hooks never set `@cockpit_session`. It takes 170-210 ms, so the fetch never
+waits on it. A pane with no session asks the cache; the fetch's end starts the
+call on a thread of its own, one at a time, under the 2.5 s deadline (#294) that
+kills its process group. Until the first answer lands that pane shows what it
+shows when the call fails, no session; the next fetch has it. A pid the call
+did not list is cached as a negative for 60 s, so it is not asked again; the
+call runs only for an agent pid that is neither a known positive nor a fresh
+negative.
+
+The answer is kept in memory and in
+`${XDG_CACHE_HOME:-~/.cache}/tmux-cockpit/agents.json`, mode 600 in a mode 700
+directory, written to a temp file in that directory and renamed over:
+
+```json
+{"v":1,"at":1790000000,
+ "by_pid":{"4242:81234567":{"session":"<id>","cwd":"/abs/launch/dir","kind":"interactive"}},
+ "none":["4300:81234999"]}
+```
+
+- `at` is the epoch second of the write. `kind` is `interactive` or `background`.
+- A key is `<pid>:<start>`, `start` being field 22 of `/proc/<pid>/stat`, in
+  clock ticks. A reused pid has another start, so it never matches.
+- `none` holds the negatives, keyed the same way.
+- `cwd` is the session's LAUNCH dir, not where it works now (#448). A reader
+  prefers the transcript's newest main-thread cwd, as the board does, and uses
+  this only when it finds no transcript.
+- A reader treats the file as absent when `at` is more than 90 s old, `v` is not
+  1, or it does not parse. It drops a key whose pid's start differs from the
+  key's. On macOS there is no `/proc`, so every entry is absent there and the
+  board keeps its answer in memory for 60 s instead.
+- The board stamps `at` again every 60 s while it holds an answer, so a file in
+  use stays under the 90 s. A second board starts from a fresh file.
+
+`data::agents::cached(pid)` is the read-only reader (`read_file` takes the path,
+proc root and clock, for a test).
+
 ## Sessions
 
 <!-- sessions view (#245) -->

@@ -40,6 +40,15 @@ fn two_ticks_inside_the_ttl_fork_claude_once() {
     }
 
     list_panes().unwrap();
+    // the lookup runs on a thread of its own (#492): wait for its answer file
+    let cache = dir.join(".cache/tmux-cockpit/agents.json");
+    for _ in 0..2000 {
+        if cache.exists() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    list_panes().unwrap();
     list_panes().unwrap();
 
     let forks = std::fs::read_to_string(dir.join("forks")).map(|s| s.lines().count()).unwrap_or(0);

@@ -935,7 +935,13 @@ fn a_hanging_claude_agents_does_not_hang_the_read() {
     assert_eq!(ids(&ps), ["%1"]);
     assert_eq!(get(&ps, "%1").sess, "");
     assert!(took < std::time::Duration::from_secs(8), "the read took {took:?}");
-    // the fake ran, so the deadline was what ended it
+    // the fake ran (on its own thread, #492), so the deadline was what ended it
+    for _ in 0..2000 {
+        if r.dir.join("claude.pid").exists() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
     assert!(r.dir.join("claude.pid").exists());
 }
 
