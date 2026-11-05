@@ -63,6 +63,11 @@ fn connected(pid: u32) -> bool {
     })
 }
 
+/// The probe has entered `wait-for <chan>` and connected, or has already exited.
+fn probe_in(chan: &str, probe: &mut Child) -> bool {
+    (waiters(chan) == 1 && connected(probe.id())) || probe.try_wait().unwrap().is_some()
+}
+
 /// The process environment: `q_unlists...` sets COCKPIT_TMUX in-process, and a
 /// set_var racing a spawn that reads environ is undefined. That test holds it
 /// for writing; every test that spawns holds it for reading.
@@ -301,13 +306,16 @@ fn q_unlists_its_own_channel_and_only_its_own() {
     let mut probe = Command::new("tmux")
         .args(["-L", &rig.sock, "wait-for", &me])
         .env_remove("TMUX")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .spawn()
         .unwrap();
-    // A vacuous pass is a probe that has not reached the server yet: wait until
-    // it is in /proc as `wait-for <chan>` and holds a connected socket, then
-    // until the server has answered a round trip.
-    let pid = probe.id();
-    let entered = until(|| (waiters(&me) == 1 && connected(pid)) || probe.try_wait().unwrap().is_some());
+    // A vacuous pass is a probe that has not reached the server yet. A connected
+    // socket proves it has (stdio is null above, so it cannot be an inherited
+    // one); the `display-message` round trip then covers the server running the
+    // probe's `wait-for`.
+    let entered = until(|| probe_in(&me, &mut probe));
     rig.tmux(&["display-message", "-p", "sync"]);
     let latched = probe.try_wait().unwrap().is_some();
     let _ = probe.kill();
