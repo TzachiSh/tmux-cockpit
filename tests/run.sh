@@ -5089,6 +5089,50 @@ for v in GIT_DIR=@/.git GIT_WORK_TREE=@ GIT_COMMON_DIR=@/.git GIT_INDEX_FILE=@/.
 done
 rm -rf "$RVENV"
 
+echo "== tmux-review --request: an inherited GIT_DIR or its kin never opens another repo's review (#475) =="
+# --request sources no diff engine: its git_root runs before any lib could
+# unset the four. The pane sits in a subfolder, so a GIT_DIR alone (the cwd as
+# the tree) moves the root too. A tmux shim records the popup's command.
+# FAIL-first: on the old code GIT_DIR and GIT_WORK_TREE opened --loop on
+# another root. GIT_COMMON_DIR and GIT_INDEX_FILE do not move a --show-toplevel.
+if need_tmux "tmux-review --request under GIT_DIR"; then :; else
+RQE="cockpit-rqe-$$"; SOCKS="$SOCKS $RQE"; RQED=$(mktmpd); RQES=$(mktmpd)
+(
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  for r in pane other; do
+    mkdir -p "$RQED/$r/sub" && cd "$RQED/$r" || exit
+    git init -q -b main .; printf 'a\n' > sub/f; git add -A; git commit -q -m init
+  done
+) >/dev/null 2>&1
+"$TMUX_REAL" -L "$RQE" -f /dev/null new-session -d -s t -x 100 -y 30 -c "$RQED/pane/sub" 'exec -a claude bash' \
+    >/dev/null 2>&1
+RQEP=$("$TMUX_REAL" -L "$RQE" list-panes -t t: -F '#{pane_id}')
+RQESHIM=$(mktmpd)
+cat > "$RQESHIM/tmux" <<SHIMEOF
+#!/bin/sh
+case "\$1" in
+    display-popup) for a; do :; done; printf '%s' "\$a" > "$RQES/cmd"; exit 0 ;;
+    display-message) for a; do :; done; case "\$a" in *session_attached*) echo 1; exit 0 ;; esac ;;
+esac
+exec "$TMUX_REAL" -L "$RQE" "\$@"
+SHIMEOF
+chmod +x "$RQESHIM/tmux"
+rqe_cmd() {                   # [VAR=value] -> the --loop root the popup was given
+    rm -f "$RQES/cmd"
+    ( [ $# -eq 0 ] || export "$1"
+      PATH="$RQESHIM:$PATH" XDG_STATE_HOME=$RQES "$DIR/scripts/tmux-review" --request "$RQEP" >/dev/null 2>&1 )
+    sed -n 's/.* --loop \([^ ]*\) .*/\1/p' "$RQES/cmd" 2>/dev/null
+}
+rqewant=$(printf '%q' "$(git -C "$RQED/pane" rev-parse --show-toplevel)")
+is "the popup reviews the pane repo's root, nothing inherited" "$rqewant" "$(rqe_cmd)"
+for v in GIT_DIR=@/.git GIT_WORK_TREE=@ GIT_COMMON_DIR=@/.git GIT_INDEX_FILE=@/.git/index; do
+    rqev=${v#*=}; rqev=${rqev//@/$RQED/other}
+    is "${v%%=*} naming another repo: the popup still reviews the pane repo" "$rqewant" "$(rqe_cmd "${v%%=*}=$rqev")"
+done
+unset -f rqe_cmd
+"$TMUX_REAL" -L "$RQE" kill-server >/dev/null 2>&1
+fi
+
 echo "== tmux-review --lines is gone: an unknown option, status 2 (#390) =="
 TDL=$(mktmpd)
 "$DIR/scripts/tmux-review" --lines "$TDL" >"$TDL.out" 2>"$TDL.err"; tdlrc=$?

@@ -22,6 +22,12 @@ if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
     exit 1
 fi
 
+# Every git call, revdiff's too, is about the pane's own repo: a popup inherits
+# tmux's environment, where a dotfiles setup's GIT_DIR would point all of them
+# at another. Here, before any mode runs, so a new mode cannot miss it.
+# GIT_CEILING_DIRECTORIES stays: it can only stop the search lower.
+unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE
+
 # Not `$0`: through install.sh's symlink or a PATH lookup this must still
 # find its siblings and re-invoke itself.
 # shellcheck disable=SC2034  # read by the libs
