@@ -675,8 +675,7 @@ fn procs() -> Procs {
             continue;
         }
         let comm: String = it.collect::<Vec<_>>().join(" ");
-        let base = comm.rsplit('/').next().unwrap_or(&comm);
-        t.comm.insert(pid.into(), base.trim_start_matches('-').to_ascii_lowercase());
+        t.comm.insert(pid.into(), comm_norm(&comm));
         t.kids.entry(ppid.into()).or_default().push(pid.into());
     }
     t
@@ -703,6 +702,70 @@ fn tree(pid: &str, t: &Procs) -> Vec<String> {
     out
 }
 
+/// `ps comm=` and a `/proc/<pid>/comm` read both give the kernel's 15-char
+/// name, so one normalisation serves both: basename, no login dash, lowercase.
+fn comm_norm(comm: &str) -> String {
+    let comm = comm.split_whitespace().collect::<Vec<_>>().join(" ");
+    let base = comm.rsplit('/').next().unwrap_or(&comm);
+    base.trim_start_matches('-').to_ascii_lowercase()
+}
+
+/// #492: the pids under `pid` (itself first off the stack, as [`tree`] orders
+/// them) from `<root>/<pid>/task/<tid>/children`, reading only that subtree,
+/// where `ps -axww` lists every process on the box. `None` when `root` is not a
+/// proc with `children` (macOS, or a kernel without CONFIG_PROC_CHILDREN) or a
+/// process vanished mid-walk: the caller then asks `ps`, which is always right.
+fn proc_tree(root: &std::path::Path, pid: &str) -> Option<Vec<String>> {
+    if !root.join("self/task").is_dir() {
+        return None;
+    }
+    let mut seen = std::collections::HashSet::new();
+    let mut out = vec![];
+    let mut q = vec![(pid.to_string(), 0usize)];
+    while let Some((p, d)) = q.pop() {
+        if !seen.insert(p.clone()) {
+            continue;
+        }
+        if d < MAX_DEPTH {
+            let tasks = root.join(&p).join("task");
+            let mut kids = vec![];
+            for t in std::fs::read_dir(&tasks).ok()? {
+                let s = std::fs::read_to_string(t.ok()?.path().join("children")).ok()?;
+                kids.extend(s.split_whitespace().map(str::to_string));
+            }
+            // ps lists siblings by pid, the kernel by creation: find_session takes the first hit
+            kids.sort_by_key(|k| k.parse::<u64>().unwrap_or(0));
+            q.extend(kids.into_iter().map(|c| (c, d + 1)));
+        }
+        out.push(p);
+    }
+    Some(out)
+}
+
+/// `pid` and everything under it with each name, in [`tree`] order: from
+/// `procs_t` when `ps` already ran this refresh, else a [`proc_tree`] walk,
+/// else one `ps` kept in `procs_t` for the next ask. `COCKPIT_PROC_DIR` moves
+/// the proc root, so a test can aim the walk at a fake one or at none.
+fn lineage(pid: &str, procs_t: &mut Option<Procs>) -> Vec<(String, String)> {
+    let root = std::env::var_os("COCKPIT_PROC_DIR").map_or_else(|| "/proc".into(), std::path::PathBuf::from);
+    if procs_t.is_none()
+        && let Some(ps) = proc_tree(&root, pid)
+    {
+        return ps
+            .into_iter()
+            .map(|p| {
+                let c = std::fs::read_to_string(root.join(&p).join("comm")).unwrap_or_default();
+                (p, comm_norm(&c))
+            })
+            .collect();
+    }
+    let t = procs_t.get_or_insert_with(procs);
+    tree(pid, t)
+        .into_iter()
+        .map(|p| (p.clone(), t.comm.get(&p).cloned().unwrap_or_default()))
+        .collect()
+}
+
 /// A live Claude renames itself to its version, so `2.1.246` and `2_1_246` are
 /// agent names too.
 pub(crate) fn agentish(comm: &str) -> bool {
@@ -715,8 +778,11 @@ fn version_shaped(s: &str) -> bool {
     seps >= 2 && s.starts_with(|c: char| c.is_ascii_digit()) && s.chars().all(|c| c.is_ascii_digit() || c == '.' || c == '_')
 }
 
-fn find_session(pid: &str, t: &Procs, agents: &HashMap<String, String>) -> String {
-    tree(pid, t).iter().find_map(|p| agents.get(p).cloned()).unwrap_or_default()
+fn find_session(pid: &str, procs_t: &mut Option<Procs>, agents: &HashMap<String, String>) -> String {
+    lineage(pid, procs_t)
+        .iter()
+        .find_map(|(p, _)| agents.get(p).cloned())
+        .unwrap_or_default()
 }
 
 /// repo⑂branch, the `±` string and the repo root, for one path.
@@ -726,12 +792,28 @@ pub fn git_facts(path: &str) -> (String, String, String) {
 
 const GIT_TTL: Duration = Duration::from_secs(10);
 
+/// #492: a pane changing state refetches its dir, but not twice inside this
+/// gap. The flip waits for the gap to pass, so a burst of flips costs one fetch.
+const GIT_FLIP_GAP: Duration = Duration::from_secs(3);
+
+struct GitEntry {
+    at: Instant,
+    /// when the entry expires: [`GIT_TTL`] after a refetch, a spread of
+    /// 2 s to [`GIT_TTL`] for a dir seen the first time (see [`first_life`])
+    due: Instant,
+    /// a pane here changed state since `at`
+    flip: bool,
+    facts: fleet::Facts,
+}
+
 #[derive(Default)]
 struct GitCache {
     /// by path
-    facts: HashMap<String, (Instant, (String, String, String))>,
+    facts: HashMap<String, GitEntry>,
     /// each pane's state at the last fetch, by pane id
     seen: HashMap<String, State>,
+    /// dirs met for the first time so far, the jitter's salt
+    firsts: u64,
 }
 
 thread_local! {
@@ -740,33 +822,83 @@ thread_local! {
     static GIT: std::cell::RefCell<GitCache> = std::cell::RefCell::default();
 }
 
+/// #492: how long a dir met for the first time lives: 2, 4, 6, 8 or 10 s,
+/// fixed by its path and arrival order. Fifty dirs met in one tick would
+/// otherwise expire in one tick, every 10 s, and fork 300 git processes at once;
+/// in five slots a refresh is about a fifth of them, still big enough to run
+/// in parallel, and the period stays 10 s so forks per window do not grow.
+fn first_life(path: &str, n: u64) -> Duration {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    (path, n).hash(&mut h);
+    GIT_TTL / 5 * (1 + (h.finish() % 5) as u32)
+}
+
 /// `dirs` is each pane's work dir candidates (`fleet::work_dirs`), in `ps` order.
 fn fill_git(ps: &mut [Pane], dirs: &[[String; 3]]) {
     // the tree each pane works in: @cockpit_dir, the transcript's cwd, the cwd (#253, #452)
     let dirs = fleet::work_dirs(dirs);
-    GIT.with(|c| {
-        let GitCache { facts, seen } = &mut *c.borrow_mut();
-        let stale: HashSet<&String> = ps
-            .iter()
-            .zip(&dirs)
-            .filter(|(p, _)| seen.get(&p.id) != Some(&p.state))
-            .map(|(_, d)| d)
-            .collect();
-        *seen = ps.iter().map(|p| (p.id.clone(), p.state)).collect();
-        facts.retain(|_, (t, _)| t.elapsed() < GIT_TTL);
-        for d in stale {
-            facts.remove(d);
+    GIT.with(|c| fill_git_at(&mut c.borrow_mut(), ps, &dirs, Instant::now(), &|m| fleet::scan(m).facts));
+}
+
+/// [`fill_git`] at time `now`, asking `scan` for the dirs that need facts. An
+/// entry is refetched when it is past its `due`, or when a pane in it changed
+/// state and the entry is at least [`GIT_FLIP_GAP`] old. Nothing else is
+/// refetched, so no entry is ever older than [`GIT_TTL`] plus one tick: the
+/// unstaged edits and untracked files of the diff stat show up within the
+/// same bound as before the stagger.
+fn fill_git_at(
+    c: &mut GitCache,
+    ps: &mut [Pane],
+    dirs: &[String],
+    now: Instant,
+    scan: &dyn Fn(&[String]) -> HashMap<String, fleet::Facts>,
+) {
+    for (p, d) in ps.iter().zip(dirs) {
+        if c.seen.get(&p.id) != Some(&p.state)
+            && let Some(e) = c.facts.get_mut(d)
+        {
+            e.flip = true;
         }
-        // one scan per distinct root, in parallel, however many dirs share it
-        let missing: Vec<String> = dirs.iter().filter(|d| !facts.contains_key(*d)).cloned().collect();
-        for (d, f) in fleet::scan(&missing).facts {
-            facts.insert(d, (Instant::now(), f));
-        }
-        for (p, d) in ps.iter_mut().zip(&dirs) {
-            let (_, (loc, pm, root)) = &facts[d];
-            (p.loc, p.pm, p.root, p.dir) = (loc.clone(), pm.clone(), root.clone(), d.clone());
-        }
-    });
+    }
+    c.seen = ps.iter().map(|p| (p.id.clone(), p.state)).collect();
+    let mut missing: Vec<String> = dirs
+        .iter()
+        .filter(|d| {
+            c.facts
+                .get(*d)
+                .is_none_or(|e| now >= e.due || (e.flip && now.duration_since(e.at) >= GIT_FLIP_GAP))
+        })
+        .cloned()
+        .collect();
+    missing.sort();
+    missing.dedup();
+    // one scan per distinct root, in parallel, however many dirs share it
+    let mut found = scan(&missing);
+    for d in missing {
+        let life = if c.facts.contains_key(&d) {
+            GIT_TTL
+        } else {
+            c.firsts += 1;
+            first_life(&d, c.firsts)
+        };
+        let facts = found.remove(&d).unwrap_or_default();
+        c.facts.insert(
+            d,
+            GitEntry {
+                at: now,
+                due: now + life,
+                flip: false,
+                facts,
+            },
+        );
+    }
+    let used: HashSet<&String> = dirs.iter().collect();
+    c.facts.retain(|d, _| used.contains(d));
+    for (p, d) in ps.iter_mut().zip(dirs) {
+        let (loc, pm, root) = &c.facts[d].facts;
+        (p.loc, p.pm, p.root, p.dir) = (loc.clone(), pm.clone(), root.clone(), d.clone());
+    }
 }
 
 /// The review spool's two counts, straight off the directory.
@@ -907,7 +1039,7 @@ pub fn list_fleet() -> Option<(Vec<Pane>, std::collections::BTreeSet<String>)> {
         log_ended_flip(&p, live_by);
         if p.sess.is_empty() {
             let agents = agents.get_or_insert_with(agent_sessions_cached);
-            p.sess = find_session(&p.pid, procs_t.get_or_insert_with(procs), agents);
+            p.sess = find_session(&p.pid, &mut procs_t, agents);
         }
         dirs.push(work_candidates(&mut p, &f));
         (p.pinned, p.delivered) = spool_counts(&p.spool);
@@ -938,10 +1070,7 @@ fn row_pane(f: &[&str], procs_t: &mut Option<Procs>) -> Option<(Pane, &'static s
     let raw = unsentinel(f[4]);
     // The name is a fast path that skips the `ps` fork; the tree decides.
     let by_cmd = agentish(f[3]);
-    let mut in_tree = || {
-        let t = procs_t.get_or_insert_with(procs);
-        tree(f[9], t).iter().any(|p| t.comm.get(p).is_some_and(|c| agentish(c)))
-    };
+    let mut in_tree = || lineage(f[9], procs_t).iter().any(|(_, c)| agentish(c));
     // #301: a marked pane's verdict is cached, or every ended row forks `ps` each tick
     let by_tree = !by_cmd
         && if raw.is_empty() {
@@ -1265,5 +1394,254 @@ mod tests {
                 {"type": "tool_use", "id": "t1", "name": c[0], "input": c[1]}]}});
             assert_eq!(parse(vec![row.to_string()]).tool, c[2].as_str().unwrap(), "{l}");
         }
+    }
+
+    fn pane(id: &str, state: State) -> Pane {
+        Pane {
+            id: id.into(),
+            state,
+            ..Default::default()
+        }
+    }
+
+    /// A scan that answers each path with itself as its root and counts the paths asked.
+    fn counted(n: &std::cell::Cell<usize>) -> impl Fn(&[String]) -> HashMap<String, fleet::Facts> + '_ {
+        move |m| {
+            n.set(n.get() + m.len());
+            m.iter().map(|d| (d.clone(), ("loc".into(), "clean".into(), d.clone()))).collect()
+        }
+    }
+
+    /// 50 dirs met in one tick must not all expire in one tick: over 30 s of
+    /// 1 s ticks no tick fetches more than 20 of them, and no dir waits
+    /// longer than the 10 s TTL (plus the tick) between two fetches.
+    #[test]
+    fn git_first_fetches_spread_and_stay_inside_the_ttl() {
+        let dirs: Vec<String> = (0..50).map(|i| format!("/r/{i}")).collect();
+        let mut ps: Vec<Pane> = (0..50).map(|i| pane(&format!("%{i}"), State::Running)).collect();
+        let (mut c, t0) = (GitCache::default(), Instant::now());
+        let (n, mut last) = (std::cell::Cell::new(0), HashMap::new());
+        let (mut worst_tick, mut worst_gap) = (0, 0);
+        for s in 0..=30u64 {
+            let (before, now) = (n.get(), t0 + Duration::from_secs(s));
+            fill_git_at(&mut c, &mut ps, &dirs, now, &counted(&n));
+            if s > 0 {
+                worst_tick = worst_tick.max(n.get() - before); // tick 0 is the cold fetch of all 50
+            }
+            for d in dirs.iter().filter(|d| c.facts[*d].at == now) {
+                worst_gap = worst_gap.max(s - last.insert(d, s).unwrap_or(s));
+            }
+        }
+        assert!(worst_tick <= 20, "a tick refetched {worst_tick} dirs");
+        assert!(worst_gap <= 10, "a dir waited {worst_gap} s");
+    }
+
+    fn git_ok(dir: &std::path::Path, args: &[&str]) {
+        let st = std::process::Command::new("git").arg("-C").arg(dir).args(args).status().unwrap();
+        assert!(st.success(), "git {args:?}");
+    }
+
+    /// The diff stat counts unstaged edits, which no index or HEAD stamp shows:
+    /// an edit made after a fetch is on the row within the TTL, tick by tick.
+    #[test]
+    fn git_unstaged_edit_shows_within_the_ttl() {
+        let d = std::env::temp_dir().join(format!("cockpit-fillgit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        git_ok(&d, &["init", "-q", "-b", "main"]);
+        std::fs::write(d.join("f"), "a\n").unwrap();
+        git_ok(&d, &["add", "f"]);
+        git_ok(&d, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "x"]);
+        let dir = d.display().to_string();
+        let mut ps = vec![pane("%1", State::Running)];
+        let (mut c, t0) = (GitCache::default(), Instant::now());
+        let real = |m: &[String]| fleet::scan(m).facts;
+        fill_git_at(&mut c, &mut ps, &[dir.clone()], t0, &real);
+        assert_eq!(ps[0].pm, "clean");
+        // past the first (jittered) expiry, so the 10 s period is what is tested
+        let at = |s| t0 + Duration::from_secs(s);
+        (1..=10).for_each(|s| fill_git_at(&mut c, &mut ps, &[dir.clone()], at(s), &real));
+        std::fs::write(d.join("f"), "a\nb\n").unwrap(); // unstaged: index and HEAD stay put
+        let seen = (11..=20)
+            .find(|s| {
+                fill_git_at(&mut c, &mut ps, &[dir.clone()], at(*s), &real);
+                ps[0].pm == "+1 -0"
+            })
+            .expect("the unstaged edit never reached the row")
+            - 10;
+        let _ = std::fs::remove_dir_all(&d);
+        assert!(seen <= 10, "shown after {seen} s");
+    }
+
+    /// Five flips inside the gap cost one fetch, at the gap; a flip on an old
+    /// entry still refetches at once.
+    #[test]
+    fn git_state_flips_debounce_to_one_fetch_per_dir() {
+        let dirs = vec!["/r/a".to_string(), "/r/a".to_string()];
+        let mut ps = vec![pane("%1", State::Running), pane("%2", State::Running)];
+        let (mut c, t0, n) = (GitCache::default(), Instant::now(), std::cell::Cell::new(0));
+        let ms = |m| t0 + Duration::from_millis(m);
+        fill_git_at(&mut c, &mut ps, &dirs, ms(0), &counted(&n));
+        assert_eq!(n.get(), 1, "two panes, one dir, one fetch");
+        c.facts.get_mut("/r/a").unwrap().due = ms(60_000); // only flips can refetch now
+        for (i, m) in [200, 400, 600, 800, 1000].into_iter().enumerate() {
+            let st = if i % 2 == 0 { State::Done } else { State::Running };
+            (ps[0].state, ps[1].state) = (st, st);
+            fill_git_at(&mut c, &mut ps, &dirs, ms(m), &counted(&n));
+        }
+        assert_eq!(n.get(), 1, "flips inside the gap fetched");
+        fill_git_at(&mut c, &mut ps, &dirs, ms(3000), &counted(&n));
+        assert_eq!(n.get(), 2, "the debounced flip is fetched once, at the gap");
+        fill_git_at(&mut c, &mut ps, &dirs, ms(3500), &counted(&n));
+        assert_eq!(n.get(), 2, "and not again");
+        ps[0].state = State::Error; // an entry older than the gap refetches at once
+        fill_git_at(&mut c, &mut ps, &dirs, ms(7000), &counted(&n));
+        assert_eq!(n.get(), 3);
+    }
+
+    /// A fake `/proc`: `kids` maps pid to one `children` string per task.
+    fn fake_proc(kids: &[(&str, &[&str])]) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let root = std::env::temp_dir().join(format!("cockpit-proc-{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
+        std::fs::create_dir_all(root.join("self/task")).unwrap();
+        for (pid, tasks) in kids {
+            for (i, c) in tasks.iter().enumerate() {
+                let d = root
+                    .join(pid)
+                    .join("task")
+                    .join(format!("{}", pid.parse::<u32>().unwrap() + i as u32));
+                std::fs::create_dir_all(&d).unwrap();
+                std::fs::write(d.join("children"), c).unwrap();
+            }
+        }
+        root
+    }
+
+    fn pids(root: &std::path::Path, pid: &str) -> Option<Vec<String>> {
+        let r = proc_tree(root, pid);
+        std::fs::remove_dir_all(root).unwrap();
+        r
+    }
+
+    #[test]
+    fn proc_tree_reaches_a_grandchild() {
+        let r = fake_proc(&[("10", &["11 12 "]), ("11", &["13 "]), ("12", &[""]), ("13", &[""])]);
+        let mut got = pids(&r, "10").unwrap();
+        got.sort();
+        assert_eq!(got, ["10", "11", "12", "13"]);
+    }
+
+    #[test]
+    fn proc_tree_reaches_the_children_of_every_thread() {
+        let r = fake_proc(&[("10", &["11 ", "12 "]), ("11", &[""]), ("12", &[""])]);
+        let mut got = pids(&r, "10").unwrap();
+        got.sort();
+        assert_eq!(got, ["10", "11", "12"]);
+    }
+
+    #[test]
+    fn proc_tree_orders_like_tree() {
+        let r = fake_proc(&[
+            ("10", &["11 12 "]),
+            ("11", &["13 14 "]),
+            ("12", &[""]),
+            ("13", &[""]),
+            ("14", &[""]),
+        ]);
+        let mut t = Procs::default();
+        t.kids.insert("10".into(), vec!["11".into(), "12".into()]);
+        t.kids.insert("11".into(), vec!["13".into(), "14".into()]);
+        assert_eq!(pids(&r, "10").unwrap(), tree("10", &t));
+    }
+
+    #[test]
+    fn proc_tree_lists_siblings_by_pid_as_ps_does() {
+        let r = fake_proc(&[("10", &["13 11 12 "]), ("11", &[""]), ("12", &[""]), ("13", &[""])]);
+        let mut t = Procs::default();
+        t.kids.insert("10".into(), vec!["11".into(), "12".into(), "13".into()]);
+        assert_eq!(pids(&r, "10").unwrap(), tree("10", &t));
+    }
+
+    #[test]
+    fn proc_tree_survives_a_cycle() {
+        let r = fake_proc(&[("10", &["11 "]), ("11", &["10 "])]);
+        assert_eq!(pids(&r, "10").unwrap(), ["10", "11"]);
+    }
+
+    #[test]
+    fn proc_tree_stops_at_the_depth_cap() {
+        let chain: Vec<(String, String)> = (0..MAX_DEPTH + 3).map(|i| ((10 + i).to_string(), format!("{} ", 11 + i))).collect();
+        let kids: Vec<(&str, Vec<&str>)> = chain.iter().map(|(p, c)| (p.as_str(), vec![c.as_str()])).collect();
+        let kids: Vec<(&str, &[&str])> = kids.iter().map(|(p, c)| (*p, c.as_slice())).collect();
+        let r = fake_proc(&kids);
+        assert_eq!(pids(&r, "10").unwrap().len(), MAX_DEPTH + 1);
+    }
+
+    #[test]
+    fn proc_tree_is_none_without_a_children_file() {
+        let r = fake_proc(&[("10", &["11 "])]);
+        std::fs::create_dir_all(r.join("11/task/11")).unwrap();
+        assert_eq!(pids(&r, "10"), None);
+    }
+
+    #[test]
+    fn proc_tree_is_none_when_the_pane_pid_is_gone() {
+        assert_eq!(pids(&fake_proc(&[]), "10"), None);
+    }
+
+    #[test]
+    fn proc_tree_is_none_without_a_proc() {
+        assert_eq!(proc_tree(std::path::Path::new("/nonexistent-proc"), "1"), None);
+    }
+
+    #[test]
+    fn comm_norm_matches_what_procs_stored() {
+        for (raw, want) in [
+            ("claude", "claude"),
+            ("-Bash", "bash"),
+            ("/usr/bin/Node", "node"),
+            ("2.1.318", "2.1.318"),
+            ("a  b", "a b"),
+        ] {
+            assert_eq!(comm_norm(raw), want, "{raw}");
+        }
+        // agentish("claude") reads the tmux agent list, so only the pure half is pinned here
+        assert!(version_shaped(&comm_norm("2.1.318\n")) && !version_shaped(&comm_norm("bash\n")));
+    }
+
+    /// Kills the child on drop, so a failed assert cannot leave it running.
+    #[cfg(target_os = "linux")]
+    struct Reap(std::process::Child);
+    #[cfg(target_os = "linux")]
+    impl Drop for Reap {
+        fn drop(&mut self) {
+            let _ = Command::new("pkill").args(["-KILL", "-P", &self.0.id().to_string()]).status();
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    /// A child named past 15 chars: the walk and `ps` agree on pids and on the
+    /// truncated name.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn lineage_on_the_real_proc_matches_ps() {
+        let dir = std::env::temp_dir().join(format!("cockpit-lin-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let py = Command::new("sh").args(["-c", "command -v python3"]).output().unwrap().stdout;
+        let long = dir.join("claude-with-a-very-long-name");
+        std::os::unix::fs::symlink(String::from_utf8(py).unwrap().trim(), &long).unwrap();
+        let cmd = format!("{} -c 'import time; time.sleep(30)' & wait", long.display());
+        let sh = Reap(Command::new("sh").arg("-c").arg(cmd).spawn().unwrap());
+        let pid = sh.0.id().to_string();
+        let mut t = procs();
+        while tree(&pid, &t).len() < 2 {
+            t = procs();
+        }
+        let want: Vec<_> = tree(&pid, &t).into_iter().map(|p| (p.clone(), t.comm[&p].clone())).collect();
+        assert_eq!(lineage(&pid, &mut None), want);
+        assert_eq!(want[1].1.len(), 15);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

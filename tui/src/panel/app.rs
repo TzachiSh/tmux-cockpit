@@ -248,6 +248,9 @@ pub struct App {
     pub resume: Option<Resume>,
     /// ^Z: out with no action, and the whole state in `<action>.state` (#278).
     pub hide: bool,
+    /// A panel is hidden on this pane already (an ask left it so): ^Z cannot hide
+    /// this one too, as the pane keeps one.
+    pub hide_taken: bool,
     pub quit: bool,
     /// The step this run was resumed for, and its verb: the mark says what was done.
     pub last_step: Option<(usize, &'static str)>,
@@ -304,6 +307,7 @@ impl App {
             action: None,
             resume: None,
             hide: false,
+            hide_taken: false,
             reopened: false,
             quit: false,
             last_step: None,
@@ -660,6 +664,10 @@ impl App {
         if self.view == View::Busy {
             return self.say(Level::Warn, "a call is out: esc cancels it, then ^Z hides");
         }
+        if self.hide_taken {
+            let why = "a panel is already hidden on this pane: q closes this one";
+            return self.say(Level::Warn, why);
+        }
         // u64::MAX: the longest timestamp the file can carry
         if hide_body(self, u64::MAX).is_none() {
             return self.say(Level::Warn, "too much to keep hidden: q closes the panel");
@@ -861,10 +869,13 @@ impl App {
     }
 
     /// What the call for `flow` may use: [`Profile::TEXT`], or for an exploring
-    /// write a read-only one on the pane's folder under the explore caps, per call.
+    /// write a read-only one on the pane's folder under the explore caps, per call;
+    /// the viewer's ask reads its repo and the web under the owner's caps (#365 D7).
     pub fn profile_for(&self, flow: &Flow) -> Profile {
-        match self.explores(flow).then(|| self.explore_dir()) {
-            Some(Ok(dir)) => Profile::read_only(dir, false, EXPLORE_BUDGET_USD, EXPLORE_TIMEOUT),
+        use super::ask::{BUDGET_USD, TIMEOUT};
+        match (flow, self.explores(flow).then(|| self.explore_dir())) {
+            (Flow::Ask(a), _) => Profile::read_only(a.repo.clone(), true, BUDGET_USD, TIMEOUT),
+            (_, Some(Ok(d))) => Profile::read_only(d, false, EXPLORE_BUDGET_USD, EXPLORE_TIMEOUT),
             _ => Profile::TEXT,
         }
     }
@@ -966,6 +977,7 @@ impl App {
             }
             Flow::Fix { .. } => prompts::fix_noted(),
             Flow::Explain => prompts::explain_noted(),
+            Flow::Ask(_) => prompts::ask_code_noted(),
         };
         Some(((system, self.envelope(r).0, r.model.clone()), note))
     }
@@ -986,6 +998,21 @@ impl App {
         }
     }
 
+    /// The viewer's `?` (#365): a Q&A about `a`, opened on the question's box.
+    /// Nothing is sent until the question is.
+    pub fn ask_open(&mut self, a: super::ask::AskCode) {
+        let back = View::Home { sel: 0 };
+        self.start(Flow::Ask(a), vec![], vec![], 0, back.clone());
+        self.pending = false;
+        self.busy_back = None;
+        self.view = View::Input {
+            kind: InputKind::FollowUp,
+            text: String::new(),
+            cur: 0,
+            back: Box::new(back),
+        };
+    }
+
     /// Takes a finished call's answer, if one has arrived.
     pub fn poll(&mut self) -> bool {
         let Some(a) = self.req.as_mut().and_then(Request::poll) else {
@@ -1000,13 +1027,18 @@ impl App {
         true
     }
 
-    /// The files an exploring call read, relative to the pane's folder, on the
-    /// view its answer opened: after a warning there, never in its place.
+    /// The files a reading call read, relative to the pane's folder (an exploring
+    /// write) or the repo (an ask), on the view its answer opened: after a warning
+    /// there, never in its place.
     fn note_reads(&mut self, read: Option<Vec<String>>) {
         let Some(read) = read else { return };
-        let root = self
-            .explore_dir()
-            .map_or_else(|_| self.cap.path.clone(), |d| d.display().to_string());
+        let root = match self.run.as_ref().map(|r| &r.flow) {
+            Some(Flow::Ask(a)) => a.repo.display().to_string(),
+            _ => match self.explore_dir() {
+                Ok(d) => d.display().to_string(),
+                Err(_) => self.cap.path.clone(),
+            },
+        };
         let root = format!("{}/", root.trim_end_matches('/'));
         // the model names the files: a bidi or control character in one is not drawn
         let names: Vec<String> = read
@@ -1094,8 +1126,9 @@ impl App {
             }
             Flow::Fix { .. } => parse::fix(&out),
             Flow::Explain => parse::explain(&out),
+            Flow::Ask(_) => parse::explain(&out),
         };
-        let explain = matches!(r.flow, Flow::Explain);
+        let explain = r.flow.is_qa();
         if let Some(t) = cut {
             self.say(Level::Warn, format!("the reply looks cut off (no </{t}>): check it, or r retries"));
         }
@@ -1228,7 +1261,7 @@ impl App {
 
     fn pick(&mut self, answer: String) {
         let Some(r) = self.run.as_mut() else { return };
-        if matches!(r.flow, Flow::Explain) {
+        if r.flow.is_qa() {
             r.log.push((true, answer.clone()));
         }
         r.turns.push(Turn {
@@ -1243,8 +1276,9 @@ impl App {
     pub fn leave_to(&self) -> &'static str {
         let answered = self.run.as_ref().is_some_and(|r| r.log.iter().any(|(you, _)| !you));
         match self.run.as_ref().map(|r| &r.flow) {
-            Some(Flow::Explain) if answered => "answer",
-            Some(Flow::Explain) | None => "home",
+            Some(f) if f.is_qa() && answered => "answer",
+            Some(f) if f.is_qa() => "home",
+            None => "home",
             Some(_) => "draft",
         }
     }
@@ -1361,6 +1395,15 @@ impl App {
                         InputKind::Explain => self.explain(&t, &t, back),
                         InputKind::Correct(i) => self.correct(i, t, back),
                         InputKind::FollowUp => {
+                            // an ask's first question: esc on its call comes back to it
+                            let first_ask = self.run.as_ref().is_some_and(first_ask);
+                            let back = if first_ask {
+                                let (text, cur) = (t.clone(), t.len());
+                                let back = Box::new(back);
+                                View::Input { kind, text, cur, back }
+                            } else {
+                                back
+                            };
                             if let Some(r) = self.run.as_mut() {
                                 r.log.push((true, t.clone()));
                                 r.turns.push(Turn { role: Role::User, text: t });
@@ -1754,6 +1797,11 @@ pub fn hint(f: &Fail) -> Option<&'static str> {
     } else {
         None
     }
+}
+
+/// An ask not answered yet: esc on its call goes back to the question.
+fn first_ask(r: &Run) -> bool {
+    matches!(r.flow, Flow::Ask(_)) && r.log.iter().all(|(you, _)| *you)
 }
 
 /// A send of more than one line wants a `y`: a pasted block runs line by line

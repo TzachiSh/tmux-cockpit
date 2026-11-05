@@ -45,6 +45,8 @@ fn two_ticks_on_an_ended_row_fork_ps_once() {
         std::env::set_var("COCKPIT_TMUX", format!("{d}/bin/tmux"));
         std::env::set_var("HOME", &d);
         std::env::set_var("COCKPIT_READONLY", "1");
+        // #505: no proc under it, so the walk asks the fake ps, not the live pid of the same number
+        std::env::set_var("COCKPIT_PROC_DIR", format!("{d}/proc"));
     }
 
     assert!(list_panes().unwrap()[0].ended, "the first tick reads it ended");

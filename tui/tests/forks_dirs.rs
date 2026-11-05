@@ -44,6 +44,8 @@ fn one_fetch_is_one_tmux_call_and_cockpit_dir_comes_off_it() {
         std::env::set_var("COCKPIT_TMUX", format!("{d}/bin/tmux"));
         std::env::set_var("HOME", &d);
         std::env::set_var("COCKPIT_READONLY", "1");
+        // #505: no proc under it, so the walk asks the fake ps, not the live pid of the same number
+        std::env::set_var("COCKPIT_PROC_DIR", format!("{d}/proc"));
     }
 
     assert_eq!(list_panes().unwrap().len(), 3);

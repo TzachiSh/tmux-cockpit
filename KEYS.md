@@ -77,10 +77,12 @@ file browser's `↵` picks (`@cockpit_md_view off` sends both to the editor).
 `cockpit-tui view` shows a markdown file rendered, and any other text file whole
 as numbered code highlighted by its extension or `#!` line; the keys are the
 same for both: `/` finds, `n` `N` move between matches, `e` opens the editor at
-the top line. `v` selects lines (a tap drops an anchor, a second tap or a drag
-ends it); the move keys and `n` `N` move its end, `?` asks about the selection
-or the top line, `esc` clears the selection, then the matches, and `h` or `F1`
-lists the rest. See
+the selection's end, or at the top line when there is none. `v` selects lines
+(a tap drops an anchor, a second tap or a drag ends it); the move keys and `n`
+`N` move its end. `?` asks about the selection, or the top line: the launcher
+opens the panel on the pane with the question box, and the viewer comes back
+after. `esc` clears the selection, then the matches, and `h` or `F1` lists the
+rest. See
 [docs/tui.md](docs/tui.md#the-markdown-viewer-283) and
 [a code file](docs/tui.md#a-code-file-365).
 
