@@ -799,7 +799,7 @@ const GIT_FLIP_GAP: Duration = Duration::from_secs(3);
 struct GitEntry {
     at: Instant,
     /// when the entry expires: [`GIT_TTL`] after a refetch, a spread of
-    /// 1 s to [`GIT_TTL`] for a dir seen the first time (see [`first_life`])
+    /// 2 s to [`GIT_TTL`] for a dir seen the first time (see [`first_life`])
     due: Instant,
     /// a pane here changed state since `at`
     flip: bool,
@@ -822,16 +822,16 @@ thread_local! {
     static GIT: std::cell::RefCell<GitCache> = std::cell::RefCell::default();
 }
 
-/// #492: how long a dir met for the first time lives, 1 s to [`GIT_TTL`],
+/// #492: how long a dir met for the first time lives: 2, 4, 6, 8 or 10 s,
 /// fixed by its path and arrival order. Fifty dirs met in one tick would
 /// otherwise expire in one tick, every 10 s, and fork 300 git processes at once;
-/// spread over the window they keep the same 10 s period and never outlive it.
+/// in five slots a refresh is about a fifth of them, still big enough to run
+/// in parallel, and the period stays 10 s so forks per window do not grow.
 fn first_life(path: &str, n: u64) -> Duration {
     use std::hash::{DefaultHasher, Hash, Hasher};
     let mut h = DefaultHasher::new();
     (path, n).hash(&mut h);
-    let span = GIT_TTL.as_millis() as u64 - 1000;
-    Duration::from_millis(1000 + h.finish() % (span + 1))
+    GIT_TTL / 5 * (1 + (h.finish() % 5) as u32)
 }
 
 /// `dirs` is each pane's work dir candidates (`fleet::work_dirs`), in `ps` order.
@@ -1413,7 +1413,7 @@ mod tests {
     }
 
     /// 50 dirs met in one tick must not all expire in one tick: over 30 s of
-    /// 1 s ticks no tick fetches more than a quarter of them, and no dir waits
+    /// 1 s ticks no tick fetches more than 20 of them, and no dir waits
     /// longer than the 10 s TTL (plus the tick) between two fetches.
     #[test]
     fn git_first_fetches_spread_and_stay_inside_the_ttl() {
@@ -1432,7 +1432,7 @@ mod tests {
                 worst_gap = worst_gap.max(s - last.insert(d, s).unwrap_or(s));
             }
         }
-        assert!(worst_tick <= 12, "a tick refetched {worst_tick} dirs");
+        assert!(worst_tick <= 20, "a tick refetched {worst_tick} dirs");
         assert!(worst_gap <= 10, "a dir waited {worst_gap} s");
     }
 
