@@ -2199,7 +2199,10 @@ Rows are local branches by most recent commit, then remote-only branches. `●` 
 the current branch. `⑂` marks a branch checked out in another worktree: git refuses
 to switch to it, so `↵` prints `goto <worktree path>` and the script selects the pane
 working in that tree (an agent's first), or opens a window there; a path with a newline
-in it gives a `✕` note and prints nothing. The preview is
+in it gives a `✕` note and prints nothing. That needs git 2.36 or later, for
+`worktree list -z`. Older git prints a newline path across two lines, so a tree with one
+is left out: its branch shows no `⑂`, and a line that names a directory with no `.git`
+is no worktree. The preview is
 `git log --graph --oneline -30` of the selection, read on a worker thread and cached
 per branch; it shows `loading…` until it arrives, and below 60 columns it is hidden.
 
