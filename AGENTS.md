@@ -34,6 +34,21 @@ stock bindings immediately afterward.
 Branch work goes in a `~/.cache/cockpit-wt/<branch>` worktree; the main checkout
 stays on `master`.
 
+## Touch only your own worktree and branch
+
+Several Claude sessions work on this repo at once, each with its own lanes.
+A worktree, and the branch checked out in it, belong to the agent that created
+it. Never `reset`, `merge`, `rebase`, commit or push in a worktree or on a branch
+you did not create, even to "help". If its owner needs master merged in, or a fix
+made, message that session. Unpushed commits live only in the owner's worktree,
+and a `git reset` there loses them: that happened once already. The same goes
+for a PR's branch: one owner pushes to it.
+
+The main checkout's `.omc/notepad.md` and project memory are shared by every
+session. Start each entry with your session's name. After a `/clear` or a
+compaction, trust only entries that carry your name. Another session's notes
+are not your state: one session once took over another's PRs that way.
+
 ## Never signal a pid the hook has not verified
 
 A pid published in a tmux option (`@cockpit_tui_pid`) outlives the process that
