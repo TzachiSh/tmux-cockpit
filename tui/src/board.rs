@@ -3661,6 +3661,8 @@ fn preview_on(argv: &[String], id: &str, n: usize) -> Option<String> {
 /// forks once per tile. A pane gone mid-call stops tmux there: it reads
 /// `None`, as its own capture would, and the panes after it go again in one
 /// more call. A split that does not add up falls back to a call per pane.
+/// The result is not in `caps` order: zero-row panes come first, then the
+/// rest in `caps` order. The worker reads it into a map by pane id.
 pub fn previews(argv: &[String], caps: &[(String, usize)]) -> Vec<(String, Option<String>)> {
     let (mut rest, none): (Vec<_>, Vec<_>) = caps.iter().cloned().partition(|c| c.1 > 0);
     let mut got: Vec<_> = none.into_iter().map(|(id, _)| (id, Some(String::new()))).collect();
