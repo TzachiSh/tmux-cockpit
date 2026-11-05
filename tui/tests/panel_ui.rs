@@ -129,6 +129,30 @@ fn golden_compose() {
     goldens("compose", &a, 0);
 }
 
+/// ^R on (#416): the head says so.
+#[test]
+fn golden_compose_explore() {
+    let mut a = app("work", "bash", "$ make test\nFAIL tests/api.rs");
+    ch(&mut a, '1');
+    ctrl(&mut a, 'r');
+    typ(&mut a, "fix the flaky api test then rerun it");
+    assert!(a.explore);
+    goldens("compose-explore", &a, 0);
+}
+
+/// An exploring write's Busy names the read and its 90 s limit.
+#[test]
+fn golden_busy_explore() {
+    let mut a = app("work", "bash", "$ ls");
+    ch(&mut a, '1');
+    ctrl(&mut a, 'r');
+    typ(&mut a, "list big files");
+    ctrl(&mut a, 's');
+    assert_eq!(a.view, View::Busy);
+    a.timeout = Duration::from_secs(90);
+    goldens("busy-explore", &a, 37);
+}
+
 #[test]
 fn golden_busy() {
     let mut a = app("work", "bash", "$ ls\nexport T=ghp_abcdefghijABCDEFGHIJ12");
@@ -1693,14 +1717,14 @@ fn help_lists_every_key_of_the_view_and_any_key_closes_it() {
     ch(&mut a, 's');
     assert_eq!((a.help, &a.view, a.quit), (None, &view, false), "the key only closes it");
 
-    // ? is text in a box: F1 is the way in there, and the overlay names ^N, ⇥ and F2
+    // ? is text in a box: F1 is the way in there, and the overlay names ^N, ^R, ⇥ and F2
     let mut a = app("work", "bash", "$ ");
     ch(&mut a, '1');
     ch(&mut a, '?');
     assert_eq!((a.help, a.draft.as_str()), (None, "?"));
     key(&mut a, KeyCode::F(1));
-    let f = shown(&mut a, 60, 16);
-    for k in ["^N", "next model", "⇥", "^S F2", "back to home"] {
+    let f = shown(&mut a, 60, 17);
+    for k in ["^N", "next model", "^R", "explore first", "⇥", "^S F2", "back to home"] {
         assert!(f.contains(k), "{k}:\n{f}");
     }
     ctrl(&mut a, 'c');
@@ -1714,14 +1738,14 @@ fn a_short_help_scrolls() {
     key(&mut a, KeyCode::F(1));
     let f = shown(&mut a, 40, 9);
     assert!(
-        f.contains("1-7 of 15") && f.contains("any other key closes") && !f.contains("close the panel"),
+        f.contains("1-7 of 16") && f.contains("any other key closes") && !f.contains("close the panel"),
         "{f}"
     );
-    for _ in 0..8 {
+    for _ in 0..9 {
         key(&mut a, KeyCode::Down);
     }
     let f = shown(&mut a, 40, 9);
-    assert!(f.contains("9-15 of 15") && f.contains("close the panel"), "{f}");
+    assert!(f.contains("10-16 of 16") && f.contains("close the panel"), "{f}");
     key(&mut a, KeyCode::Char('x'));
     assert_eq!((a.help, a.draft.as_str()), (None, ""), "the closing key types nothing");
 }
@@ -1736,9 +1760,9 @@ fn an_overscrolled_help_moves_back_at_once() {
         key(&mut a, KeyCode::Down);
         shown(&mut a, 40, 9);
     }
-    assert_eq!(a.help, Some(8), "15 keys in 7 rows: 8 is the last offset");
+    assert_eq!(a.help, Some(9), "16 keys in 7 rows: 9 is the last offset");
     key(&mut a, KeyCode::Up);
-    assert!(shown(&mut a, 40, 9).contains("8-14 of 15"), "the first Up moves");
+    assert!(shown(&mut a, 40, 9).contains("9-15 of 16"), "the first Up moves");
 }
 
 #[test]
@@ -2020,6 +2044,21 @@ fn golden_tablet_compose() {
     ch(&mut a, '1');
     typ(&mut a, "fix the flaky api test then rerun it");
     tablet_goldens("compose", &a);
+}
+
+/// The ^R button, tapped: explore on, and the head says so.
+#[test]
+fn golden_tablet_compose_explore() {
+    let mut a = tablet(app("work", "bash", "$ "));
+    ch(&mut a, '1');
+    typ(&mut a, "fix it");
+    let (f, _, hits) = drawn(&a, 40, 20, &Theme::fixed(), 0);
+    let r = Tap::Key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
+    assert!(hits.iter().any(|h| h.tap == r), "an explore button:\n{f}");
+    a.frame(0);
+    a.tap(r, 10_000);
+    assert!(a.explore, "the tap is ^R");
+    tablet_goldens("compose-explore", &a);
 }
 
 fn tablet_steps() -> App {

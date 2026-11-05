@@ -537,14 +537,21 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
             let head = format!("type: {}   model: {}", app.out.as_str(), MODELS[app.model]);
             let mut top = styled(th.g.trunc(&head, w), label);
             let n = app.draft.chars().count();
+            // each on the head line while it fits, else on a line of its own
+            let mut extra = vec![];
+            if app.explore {
+                extra.push(Span::styled("explore: on", Style::new().fg(th.accent)));
+            }
             if n > DRAFT_COUNT {
                 let fg = if n >= MAX_DRAFT { th.needs } else { th.meta };
-                let count = Span::styled(format!("{n}/{MAX_DRAFT}"), Style::new().fg(fg));
-                if top.width() + 3 + count.width() <= w {
-                    top.spans.extend([Span::raw("   "), count]);
+                extra.push(Span::styled(format!("{n}/{MAX_DRAFT}"), Style::new().fg(fg)));
+            }
+            for x in extra {
+                if top.width() + 3 + x.width() <= w {
+                    top.spans.extend([Span::raw("   "), x]);
                 } else {
                     b.head.push(top);
-                    top = Line::from(count);
+                    top = Line::from(x);
                 }
             }
             b.head.push(top);
@@ -579,6 +586,7 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
                 ("^T", "insert as typed"),
                 (g.key_tab, "type"),
                 ("^N", "model"),
+                ("^R", "explore"),
                 ("F1", "keys"),
                 ("esc", "home"),
             ]);
@@ -587,6 +595,10 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
             let frames = g.spin;
             let (model, why) = run.map_or(("", ""), |r| (r.model.as_str(), r.why.as_str()));
             let (what, flow) = match run.map(|r| &r.flow) {
+                Some(f @ Flow::Write { out, .. }) if app.explores(f) => (
+                    "reading the folder, then writing",
+                    format!("write ({}), explore first", out.as_str()),
+                ),
                 Some(Flow::Write { out, .. }) => ("writing", format!("write ({})", out.as_str())),
                 Some(Flow::Fix { .. }) => ("fixing the spelling", "fix spelling".into()),
                 _ => ("reading the screen", "explain".into()),
@@ -964,6 +976,7 @@ pub fn keys(app: &App, g: &Glyphs) -> Vec<(String, String)> {
             s("^T", "insert as typed"),
             s(g.key_tab, "next output type"),
             s("^N", "next model"),
+            s("^R", "explore first: the write may read this folder"),
             s(ret, "new line"),
             s(&format!("{bksp} ^W ^U"), "delete a char, a word, all before"),
             s(&lr, &format!("move; ^{} ^{} by a word", g.key_left, g.key_right)),
