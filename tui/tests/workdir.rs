@@ -1,7 +1,8 @@
 //! #500: `cockpit-tui workdir %N` prints the board's `Pane.dir` for one pane, and
 //! never asks `claude agents`. Both binaries run under one shimmed tmux, so the
 //! board's `--json` and `workdir` read the same fixture.
-use std::os::unix::fs::PermissionsExt;
+mod fake;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -14,8 +15,7 @@ impl Drop for Tmp {
 }
 
 fn exec(p: &Path, body: &str) {
-    std::fs::write(p, body).unwrap();
-    std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    fake::write_exec(p, body);
 }
 
 /// The board's FIELDS row: id, cmd, @panestate, @cockpit_session, cwd, pid, @cockpit_dir.

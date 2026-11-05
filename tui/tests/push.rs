@@ -4,6 +4,8 @@
 //! A board waits in a `tmux wait-for` child on a channel of its own. That
 //! child must go with the board on every exit path -- `q`, SIGTERM and SIGHUP
 //! from a torn-down popup, and SIGKILL -- or it lingers on the server.
+mod fake;
+
 use cockpit_tui::push::{OPTION, channel, entry, register_args};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -380,19 +382,16 @@ fn a_start_drops_dead_entries_and_keeps_its_own_and_live_ones() {
 #[test]
 fn a_cockpit_tui_survives_sigusr1() {
     let _env = env_read();
-    use std::os::unix::fs::PermissionsExt;
     use std::os::unix::process::ExitStatusExt;
     let dir = std::env::temp_dir().join(format!("cockpit-tui-usr1-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let stub = dir.join("tmux");
     let d = dir.display();
-    std::fs::write(
+    fake::write_exec(
         &stub,
-        format!("#!/bin/sh\n: > {d}/ready\nwhile [ ! -e {d}/go ]; do sleep 0.05; done\nexit 1\n"),
-    )
-    .unwrap();
-    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        &format!("#!/bin/sh\n: > {d}/ready\nwhile [ ! -e {d}/go ]; do sleep 0.05; done\nexit 1\n"),
+    );
     let mut child = Command::new(env!("CARGO_BIN_EXE_cockpit-tui"))
         .args(["info", "--text", "%1"])
         .env("COCKPIT_TMUX", &stub)

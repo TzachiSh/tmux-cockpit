@@ -1,6 +1,8 @@
 //! `Theme::load` reads the plugin's palette roles, and the light set when the
 //! server's `theme` option says `light` or, under `detect`, when the client
 //! reports a light theme (#240), through a fake tmux.
+mod fake;
+
 use cockpit_tui::theme::Theme;
 use ratatui::style::Color;
 use std::sync::Mutex;
@@ -14,9 +16,7 @@ fn load(options: &str) -> Theme {
     let out = dir.join("options");
     std::fs::write(&out, options).unwrap();
     let bin = dir.join("tmux");
-    std::fs::write(&bin, format!("#!/bin/sh\ncat '{}'\n", out.display())).unwrap();
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    fake::write_exec(&bin, &format!("#!/bin/sh\ncat '{}'\n", out.display()));
     // SAFETY: every test here takes ENV first, so no other thread reads these.
     unsafe {
         std::env::remove_var("NO_COLOR");
@@ -123,9 +123,7 @@ fn a_failed_client_theme_read_keeps_the_roles() {
         "#!/bin/sh\ncat '{}'\ncase \"$*\" in *display-message*) exit 1 ;; esac\n",
         out.display()
     );
-    std::fs::write(&bin, script).unwrap();
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    fake::write_exec(&bin, &script);
     // SAFETY: ENV is held, so no other test thread reads these.
     unsafe {
         std::env::remove_var("NO_COLOR");

@@ -1,5 +1,7 @@
 //! The panel's screens and state machine: TestBackend goldens, key sequences,
 //! and the action file. COCKPIT_BLESS=1 cargo test rewrites the goldens.
+mod fake;
+
 use cockpit_tui::panel::action::{read_state, sanitize, write_action, write_state};
 use cockpit_tui::panel::app::{Action, App, InputKind, Level, Resume, Tap, Tile, View, bracketed_ok};
 use cockpit_tui::panel::capture::Capture;
@@ -533,8 +535,7 @@ fn esc_cancels_a_busy_request_and_kills_it() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let fake = dir.join("claude");
-    std::fs::write(&fake, "#!/bin/sh\nexec sleep 1000\n").unwrap();
-    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    fake::write_exec(&fake, "#!/bin/sh\nexec sleep 1000\n");
     let call = Call {
         claude: fake.display().to_string(),
         timeout: Duration::from_secs(60),
