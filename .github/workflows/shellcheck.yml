@@ -2,19 +2,30 @@ name: shellcheck
 
 on:
   push:
+    branches: [master, 'scratch/**']
   pull_request:
+
+permissions:
+  contents: read
+
+# Each commit is checked once. A PR runs on the pull_request event only (its
+# branch is not in the push list), because a fork's pushes run in the fork and a
+# public repo's fork PRs get no CI from push alone. master and scratch/* run on
+# push, so every merge is checked and a lane's fail-first branch without a PR
+# still gets CI. The group is the commit for those two, so no run there is ever
+# cancelled: a newer push to master must not cancel a running check on the
+# merge before it, and a fail-first commit still reports red after the restored
+# one is pushed. A PR's group is its merge ref, so a newer push cancels only the
+# superseded run of the same PR.
+concurrency:
+  group: >-
+    ${{ github.workflow }}-${{ (github.ref == 'refs/heads/master'
+    || startsWith(github.ref, 'refs/heads/scratch/')) && github.sha || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   lint:
-    # ci-cockpit, TzachiSh/ci-box#367. The job container brings make, which the
-    # runner image lacks. It runs as the runner's uid: a root job
-    # leaves root-owned files in the shared checkout that the next job, on the
-    # runner itself, cannot clean.
-    runs-on: [self-hosted, cockpit]
-    container:
-      image: rust:1-bookworm
-      options: --user 1000:1000
-    timeout-minutes: 30
+    runs-on: ubuntu-24.04 # pin: bump on purpose, ubuntu-latest moved to 26 (#401)
     steps:
       - uses: actions/checkout@v4
       # Pinned: apt's 0.9.0 has no --extended-analysis, and without it the
@@ -22,12 +33,11 @@ jobs:
       - name: Install shellcheck
         run: |
           v=v0.11.0
-          t=$RUNNER_TEMP
-          curl -fsSL -o "$t/sc.tar.xz" "https://github.com/koalaman/shellcheck/releases/download/$v/shellcheck-$v.linux.x86_64.tar.xz"
-          echo "8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198  $t/sc.tar.xz" | sha256sum -c -
-          tar -xJf "$t/sc.tar.xz" -C "$t"
-          echo "$t/shellcheck-$v" >> "$GITHUB_PATH"
-          "$t/shellcheck-$v/shellcheck" --version
+          curl -fsSL -o /tmp/sc.tar.xz "https://github.com/koalaman/shellcheck/releases/download/$v/shellcheck-$v.linux.x86_64.tar.xz"
+          echo "8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198  /tmp/sc.tar.xz" | sha256sum -c -
+          tar -xJf /tmp/sc.tar.xz -C /tmp
+          sudo install -m 0755 "/tmp/shellcheck-$v/shellcheck" /usr/local/bin/shellcheck
+          shellcheck --version
       # make lint skips without shellcheck, so the --version above is what
       # makes a failed install fail the job instead of linting nothing.
       - run: make lint
