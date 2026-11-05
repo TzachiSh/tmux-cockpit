@@ -300,11 +300,45 @@ fn opts_out(os: &[Opt]) -> Value {
     os.iter().map(|o| json!([o.label, o.recommended])).collect()
 }
 
+fn ask_out(a: &super::ask::AskCode) -> String {
+    json!({
+        "at": a.at,
+        "path": a.path,
+        "repo": a.repo.to_string_lossy(),
+        "code": a.code,
+        "asked": [a.asked.0, a.asked.1],
+        "shown": [a.shown.0, a.shown.1],
+    })
+    .to_string()
+}
+
+fn ask_in(s: &str) -> Result<super::ask::AskCode, String> {
+    let v: Value = serde_json::from_str(s).map_err(|_| "a bad ask".to_string())?;
+    let mut o = Obj::of(v)?;
+    let pair = |v: Value| -> Result<(u32, u32), String> {
+        let [a, b] = tuple(v)?;
+        let n = |x: Value| x.as_u64().and_then(|n| u32::try_from(n).ok()).ok_or("a bad line");
+        Ok((n(a)?, n(b)?))
+    };
+    let a = super::ask::AskCode {
+        at: o.text("at")?,
+        path: o.text("path")?,
+        repo: o.text("repo")?.into(),
+        code: o.text("code")?,
+        asked: pair(o.take("asked")?)?,
+        shown: pair(o.take("shown")?)?,
+    };
+    o.done()?;
+    Ok(a)
+}
+
 fn run_out(r: &Run) -> Value {
     let (flow, draft, out) = match &r.flow {
-        Flow::Write { draft, out } => ("write", Some(draft), Some(out.as_str())),
-        Flow::Fix { draft } => ("fix", Some(draft), None),
+        Flow::Write { draft, out } => ("write", Some(draft.clone()), Some(out.as_str())),
+        Flow::Fix { draft } => ("fix", Some(draft.clone()), None),
         Flow::Explain => ("explain", None, None),
+        // an ask's code and ref ride in `draft`, one JSON string (#365)
+        Flow::Ask(a) => ("ask", Some(ask_out(a)), None),
     };
     let qstack: Vec<Value> = r.qstack.iter().map(|(q, o, t)| json!([q, opts_out(o), turns_out(t)])).collect();
     let log: Vec<Value> = r.log.iter().map(|(you, t)| json!([you, t])).collect();
@@ -516,6 +550,7 @@ fn run_in(v: Value) -> Result<Run, String> {
         ("write", Some(draft), Some(out)) => Flow::Write { draft, out: out_in(&out)? },
         ("fix", Some(draft), None) => Flow::Fix { draft },
         ("explain", None, None) => Flow::Explain,
+        ("ask", Some(a), None) => Flow::Ask(ask_in(&a)?),
         _ => return Err("a bad flow".into()),
     };
     let turns = turns_in(o.take("turns")?)?;

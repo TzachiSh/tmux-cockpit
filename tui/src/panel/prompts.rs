@@ -6,6 +6,7 @@ pub const WRITE: &str = include_str!("../../prompts/write.txt");
 pub const WRITE_EXAMPLES: &str = include_str!("../../prompts/write.examples.txt");
 pub const EXPLAIN: &str = include_str!("../../prompts/explain.txt");
 pub const FIX: &str = include_str!("../../prompts/fix.txt");
+pub const ASK_CODE: &str = include_str!("../../prompts/ask-code.txt");
 
 /// The core examples always go; the rest of the 9 come from `when`, then `fill`.
 const SENT: usize = 9;
@@ -50,6 +51,12 @@ pub fn explain_noted() -> (String, Option<String>) {
 
 pub fn fix_noted() -> (String, Option<String>) {
     let (t, note) = load("fix", FIX);
+    (render(&t, None), note)
+}
+
+/// The viewer's ask (#365); `ask-code.txt` under the config dir overrides it.
+pub fn ask_code_noted() -> (String, Option<String>) {
+    let (t, note) = load("ask-code", ASK_CODE);
     (render(&t, None), note)
 }
 

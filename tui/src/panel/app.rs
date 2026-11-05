@@ -875,6 +875,7 @@ impl App {
             }),
             Flow::Fix { .. } => prompts::fix_noted(),
             Flow::Explain => prompts::explain_noted(),
+            Flow::Ask(_) => prompts::ask_code_noted(),
         };
         Some(((system, self.envelope(r).0, r.model.clone()), note))
     }
@@ -888,9 +889,34 @@ impl App {
             if let Some(n) = note {
                 self.say(Level::Warn, n);
             }
-            self.timeout = call.timeout;
-            self.req = Some(Request::spawn(call, &system, &prompt, &model));
+            let p = self.request_profile();
+            self.timeout = p.timeout.unwrap_or(call.timeout);
+            self.req = Some(Request::spawn_with(call, &p, &system, &prompt, &model));
             self.started = Some(Instant::now());
+        }
+    }
+
+    /// The viewer's `?` (#365): a Q&A about `a`, opened on the question's box.
+    /// Nothing is sent until the question is.
+    pub fn ask_open(&mut self, a: super::ask::AskCode) {
+        let back = View::Home { sel: 0 };
+        self.start(Flow::Ask(a), vec![], vec![], 0, back.clone());
+        self.pending = false;
+        self.busy_back = None;
+        self.view = View::Input {
+            kind: InputKind::FollowUp,
+            text: String::new(),
+            cur: 0,
+            back: Box::new(back),
+        };
+    }
+
+    /// What the pending call may use: an ask reads its repo and the web, under
+    /// the owner's caps (D7); every other call is the panel's text call.
+    pub fn request_profile(&self) -> super::request::Profile {
+        match self.run.as_ref().map(|r| &r.flow) {
+            Some(Flow::Ask(a)) => super::request::Profile::read_only(a.repo.clone(), true, super::ask::BUDGET_USD, super::ask::TIMEOUT),
+            _ => super::request::Profile::TEXT,
         }
     }
 
@@ -972,8 +998,9 @@ impl App {
             }
             Flow::Fix { .. } => parse::fix(&out),
             Flow::Explain => parse::explain(&out),
+            Flow::Ask(_) => parse::explain(&out),
         };
-        let explain = matches!(r.flow, Flow::Explain);
+        let explain = r.flow.is_qa();
         if let Some(t) = cut {
             self.say(Level::Warn, format!("the reply looks cut off (no </{t}>): check it, or r retries"));
         }
@@ -1106,7 +1133,7 @@ impl App {
 
     fn pick(&mut self, answer: String) {
         let Some(r) = self.run.as_mut() else { return };
-        if matches!(r.flow, Flow::Explain) {
+        if r.flow.is_qa() {
             r.log.push((true, answer.clone()));
         }
         r.turns.push(Turn {
@@ -1121,8 +1148,9 @@ impl App {
     pub fn leave_to(&self) -> &'static str {
         let answered = self.run.as_ref().is_some_and(|r| r.log.iter().any(|(you, _)| !you));
         match self.run.as_ref().map(|r| &r.flow) {
-            Some(Flow::Explain) if answered => "answer",
-            Some(Flow::Explain) | None => "home",
+            Some(f) if f.is_qa() && answered => "answer",
+            Some(f) if f.is_qa() => "home",
+            None => "home",
             Some(_) => "draft",
         }
     }

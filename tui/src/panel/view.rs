@@ -589,6 +589,7 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
             let (what, flow) = match run.map(|r| &r.flow) {
                 Some(Flow::Write { out, .. }) => ("writing", format!("write ({})", out.as_str())),
                 Some(Flow::Fix { .. }) => ("fixing the spelling", "fix spelling".into()),
+                Some(Flow::Ask(a)) => ("reading the code", format!("ask about {}", a.at)),
                 _ => ("reading the screen", "explain".into()),
             };
             let spin = frames[(tick as usize) % frames.len()];
@@ -666,7 +667,11 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
             let title = match kind {
                 InputKind::Other => format!("your answer: {}", run.map_or("", |r| r.question.as_str())),
                 InputKind::Explain => "what do you want to know about this screen?".into(),
-                InputKind::FollowUp => "your follow-up question".into(),
+                // the first question of an ask names what it is about (#365)
+                InputKind::FollowUp => match run.map(|r| (&r.flow, r.log.is_empty())) {
+                    Some((Flow::Ask(a), true)) => format!("ask about {}", a.at),
+                    _ => "your follow-up question".into(),
+                },
                 InputKind::Correct(i) => format!("your correction to: {}", assumption(back, *i).0),
             };
             b.head.extend(many(&title, w, "", label));

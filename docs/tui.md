@@ -237,7 +237,7 @@ benchmarks.
 
 **The panel's prompts.** A file at
 `${XDG_CONFIG_HOME:-$HOME/.config}/tmux-cockpit/prompts/<name>.txt`, with
-`<name>` one of `write`, `write.examples`, `explain` or `fix`, replaces the
+`<name>` one of `write`, `write.examples`, `explain`, `fix` or `ask-code` (#365), replaces the
 shipped prompt of that name; the `{{platform}}`, `{{home}}`, `{{about_user}}`
 and `{{examples}}` placeholders are filled in it the same way. A missing file
 means the shipped prompt. A file that exists but cannot be read (permissions,
@@ -786,6 +786,31 @@ cluster as the buffer draws it, so `❤️` and `1️⃣` take 2 columns, not 1.
 - An empty Compose shows a dim `type what you want…`; it is drawn, never typed.
 - Over 6000 characters the head counts `N/8000`, the cap; at the cap a typed
   or pasted character is turned away and a note says how many.
+
+### Asking about code (#365)
+
+`cockpit-tui panel %N --ask <file> <a> <b>`, which `cockpit-panel --ask` passes
+on the first run only, opens the panel on a question box titled with the
+reference (`ask about src/auth.rs:40-72`). Nothing is sent until the question
+is.
+
+- **What is read.** The panel reads the lines itself, as the viewer would show
+  them: a file the viewer refuses (binary, over 1 MB, not UTF-8) is an error,
+  and an end past the file's last line is held to it. At most 400 lines and
+  32 KB go inline, each behind its number; the call is told what was left out,
+  and reads the rest with its own Read. The code is redacted as the screen is,
+  and the screen itself is never sent.
+- **The call.** `request::Profile::read_only(repo, research = true)`: Read,
+  Grep, Glob, WebSearch, WebFetch and skills, with no hooks and the secret
+  paths denied (see the rule on actions above). The repo is the nearest folder
+  above the file with a `.git`, found by looking, never by running git, else
+  the file's folder. USD 0.50 and 300 s cap one ask; `esc` on the busy line
+  cancels it. The model is the panel's routing's, sonnet unless one is chosen.
+- **The answer** is the Explain answer view: `f` asks a follow-up in the same
+  thread (the code and every turn are sent again; nothing is kept between
+  panels), and a `<prompt>` the answer ends with can be inserted into or sent
+  to the pane's agent. `^Z` hides it like any other panel.
+- **The prompt** is `ask-code.txt`, overridden like the others.
 
 ### Code in the panel (#282)
 

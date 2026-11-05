@@ -1,4 +1,5 @@
 //! The user prompt sent on stdin: tagged parts joined by blank lines.
+use super::ask::AskCode;
 use super::capture::{Capture, session_state};
 use super::redact::redact;
 
@@ -31,9 +32,24 @@ impl OutType {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Flow {
-    Write { draft: String, out: OutType },
-    Fix { draft: String },
+    Write {
+        draft: String,
+        out: OutType,
+    },
+    Fix {
+        draft: String,
+    },
     Explain,
+    /// the viewer's `?` (#365): a question about lines of a file
+    Ask(AskCode),
+}
+
+impl Flow {
+    /// A question and its answers, the thread kept for follow-ups: Explain, and
+    /// the viewer's ask. Write and Fix make text to paste instead.
+    pub fn is_qa(&self) -> bool {
+        matches!(self, Flow::Explain | Flow::Ask(_))
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -107,6 +123,21 @@ pub fn build_parts(flow: &Flow, cap: &Capture, turns: &[Turn], questions_left: u
         Flow::Fix { draft } => {
             parts.push(format!("<screen window=\"{window}\">\n{screen}\n</screen>"));
             parts.push(format!("<text>{}</text>", esc(draft)));
+        }
+        // the code, never the screen: the question is about the file (#365)
+        Flow::Ask(a) => {
+            let (code, n) = redact(&a.code);
+            repo_hidden = n;
+            let lines = format!("{}-{}", a.asked.0, a.asked.1);
+            // refs::render cleaned the path of control characters; a `"` would end the attribute
+            let path = a.path.replace('"', "&quot;");
+            parts.push(format!("<code path=\"{}\" lines=\"{lines}\">\n{}\n</code>", esc(&path), esc(&code)));
+            if a.shown != a.asked {
+                parts.push(format!(
+                    "<truncated>lines {}-{} of {lines} are shown; Read the file for the rest</truncated>",
+                    a.shown.0, a.shown.1
+                ));
+            }
         }
         Flow::Explain => {
             parts.push(format!("<screen window=\"{window}\">\n{screen}\n</screen>"));
