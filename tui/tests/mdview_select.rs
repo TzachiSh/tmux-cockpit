@@ -54,8 +54,11 @@ fn mouse(s: &mut Screen, kind: MouseEventKind, row: u16, modifiers: KeyModifiers
     )
 }
 
+/// A tap: the button down and up again on one row.
 fn click(s: &mut Screen, row: u16) -> Out {
-    mouse(s, MouseEventKind::Down(MouseButton::Left), row, KeyModifiers::NONE)
+    let out = mouse(s, MouseEventKind::Down(MouseButton::Left), row, KeyModifiers::NONE);
+    mouse(s, MouseEventKind::Up(MouseButton::Left), row, KeyModifiers::NONE);
+    out
 }
 
 fn draw(s: &mut Screen) -> Vec<String> {
@@ -319,4 +322,123 @@ fn without_the_launchers_word_the_question_mark_stays() {
     s.can_ask = false;
     assert_eq!(key(&mut s, KeyCode::Char('?')), Out::Stay);
     assert!(s.note.as_deref().is_some_and(|n| n.contains("h shows the keys")), "{:?}", s.note);
+}
+
+// ---------------------------------------------------------------- review-438
+
+/// Finding 1: a bare `?` asks about the top line, never a line clicked long ago.
+#[test]
+fn after_esc_and_a_scroll_a_bare_ask_takes_the_top_line() {
+    let mut s = code();
+    click(&mut s, 3);
+    click(&mut s, 6);
+    key(&mut s, KeyCode::Esc);
+    for _ in 0..3 {
+        key(&mut s, KeyCode::PageDown);
+    }
+    let top = s.line();
+    assert_eq!(key(&mut s, KeyCode::Char('?')), Out::Ask(top, top));
+}
+
+/// Finding 2: nothing to ask about is a note, never `ask 1 1`.
+#[test]
+fn an_empty_or_refused_file_has_nothing_to_ask_about() {
+    let docs: [(Result<String, String>, Mode); 3] = [
+        (Ok(String::new()), Mode::Code(None)),
+        (Ok(String::new()), Mode::Markdown),
+        (Err("a binary file".into()), Mode::Code(None)),
+    ];
+    for (doc, m) in docs {
+        let mut s = Screen::new("x", doc, Opts::default()).with_mode(m);
+        s.can_ask = true;
+        s.layout(mdview::body_width(AREA));
+        assert_eq!(key(&mut s, KeyCode::Char('?')), Out::Stay, "{m:?}");
+        assert!(s.note.is_some(), "{m:?}");
+        key(&mut s, KeyCode::Char('v'));
+        assert_eq!(s.sel, None, "no line to select, {m:?}");
+    }
+}
+
+/// Finding 3: under the floor and under the help a tap acts on nothing it can't see.
+#[test]
+fn taps_under_the_floor_or_the_help_do_nothing() {
+    let mut s = code();
+    let tiny = Rect::new(0, 0, 60, 5);
+    for col in 0..60 {
+        for row in 0..5 {
+            let m = MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: col,
+                row,
+                modifiers: KeyModifiers::NONE,
+            };
+            assert_eq!(s.mouse(m, tiny), Out::Stay, "{col},{row}");
+        }
+    }
+    assert_eq!(s.sel, None, "no selection under the floor");
+    key(&mut s, KeyCode::Char('h'));
+    click(&mut s, 4);
+    assert_eq!(s.sel, None, "no selection under the help");
+    let foot = MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: 30,
+        row: 12,
+        modifiers: KeyModifiers::NONE,
+    };
+    assert_eq!(s.mouse(foot, AREA), Out::Stay, "no chip under the help");
+}
+
+/// Finding 4: only `COCKPIT_VIEW_ASK=1` turns the ask on.
+#[test]
+fn the_launchers_word_is_exactly_one() {
+    for (v, want) in [
+        (None, false),
+        (Some("0"), false),
+        (Some("1"), true),
+        (Some("1x"), false),
+        (Some(""), false),
+    ] {
+        assert_eq!(mdview::can_ask(v), want, "{v:?}");
+    }
+}
+
+/// Finding 5: at 40 columns a selection's footer keeps `? ask` and `h keys`.
+#[test]
+fn a_narrow_footer_keeps_the_ask_and_the_keys() {
+    let mut s = code();
+    keys(&mut s, "vj");
+    let a = Rect::new(0, 0, 40, 13);
+    let mut t = Terminal::new(TestBackend::new(a.width, a.height)).unwrap();
+    t.draw(|f| mdview::render(f, f.area(), &Theme::fixed(), &mut s)).unwrap();
+    let b = t.backend().buffer().clone();
+    let foot: String = (0..a.width).map(|x| b[(x, a.height - 1)].symbol()).collect();
+    assert!(foot.contains("? ask") && foot.contains("h keys"), "{foot}");
+}
+
+/// Finding 6: the no-launcher note fits an 80-column footer whole.
+#[test]
+fn the_no_launcher_note_fits_80_columns() {
+    let mut s = code();
+    s.can_ask = false;
+    key(&mut s, KeyCode::Char('?'));
+    let a = Rect::new(0, 0, 80, 13);
+    let mut t = Terminal::new(TestBackend::new(a.width, a.height)).unwrap();
+    t.draw(|f| mdview::render(f, f.area(), &Theme::fixed(), &mut s)).unwrap();
+    let b = t.backend().buffer().clone();
+    let foot: String = (0..a.width).map(|x| b[(x, a.height - 1)].symbol()).collect();
+    let note = s.note.clone().unwrap();
+    assert!(foot.contains(&note), "{foot}");
+}
+
+/// Finding 8: a press and drag after the first tap moves the end, and the
+/// release ends the selection there.
+#[test]
+fn a_press_and_drag_after_the_first_tap_moves_the_end() {
+    let mut s = code();
+    click(&mut s, 3);
+    mouse(&mut s, MouseEventKind::Down(MouseButton::Left), 5, KeyModifiers::NONE);
+    mouse(&mut s, MouseEventKind::Drag(MouseButton::Left), 9, KeyModifiers::NONE);
+    mouse(&mut s, MouseEventKind::Up(MouseButton::Left), 9, KeyModifiers::NONE);
+    assert_eq!(s.selection(), Some((3, 9)));
+    assert!(!s.sel.unwrap().live);
 }

@@ -59,6 +59,12 @@ pub fn load(path: &std::path::Path, cap: u64) -> Result<String, String> {
     Ok(s.strip_prefix('\u{feff}').map(str::to_string).unwrap_or(s))
 }
 
+/// The launcher's word, `COCKPIT_VIEW_ASK`: exactly `1` turns the ask on. A
+/// launcher that reads only `edit` would lose the screen to an `ask` line.
+pub fn can_ask(v: Option<&str>) -> bool {
+    v == Some("1")
+}
+
 /// What the viewer draws a file as.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -203,10 +209,9 @@ pub struct Screen {
     want: Option<usize>,
     /// the line selection, if any (#365)
     pub sel: Option<Sel>,
-    /// the line the last click landed on: where `v` and a bare `?` start
-    pub point: Option<usize>,
-    /// a drag moved the selection's end since the button went down
-    dragged: bool,
+    /// the press that ends a selection (a second tap, or a drag) is down: its
+    /// release ends the selection
+    ending: bool,
     /// the launcher routes `ask <a> <b>` (`COCKPIT_VIEW_ASK=1`); without it `?`
     /// says so and stays, rather than close on a line nothing reads
     pub can_ask: bool,
@@ -231,8 +236,7 @@ impl Screen {
             note: None,
             want: None,
             sel: None,
-            point: None,
-            dragged: false,
+            ending: false,
             can_ask: false,
         }
     }
@@ -274,9 +278,10 @@ impl Screen {
         (a, end)
     }
 
-    /// Where `v` and a bare `?` start: the line last clicked, else the top row's.
+    /// Where `v` and a bare `?` start: the top row's line. A click starts its own
+    /// selection, so no clicked line outlives it (review-438).
     fn start_line(&self) -> usize {
-        self.point.unwrap_or_else(|| self.line())
+        self.line()
     }
 
     /// The source lines the rows carry, each once, in order.
@@ -289,9 +294,11 @@ impl Screen {
     /// The row line `n` steps from line `from` (negative is up), held to the file.
     fn step(&self, from: usize, n: isize) -> usize {
         let ls = self.row_lines();
-        let Some(&last) = ls.last() else { return from };
+        if ls.is_empty() {
+            return from;
+        }
         let i = ls.iter().rposition(|&l| l <= from).unwrap_or(0) as isize;
-        ls[(i + n).clamp(0, ls.len() as isize - 1) as usize].min(last)
+        ls[(i + n).clamp(0, ls.len() as isize - 1) as usize]
     }
 
     /// Moves the selection's end to `l`, keeping its first row on screen.
@@ -510,7 +517,11 @@ impl Screen {
             _ if small => {}
             // `?` asks (#365); the help is on F1 and h
             KeyCode::Char('?') if !self.can_ask => {
-                self.note = Some("asking needs the panel's ask, which this launcher has not wired; h shows the keys".into());
+                self.note = Some("? needs a launcher that routes ask; h shows the keys".into());
+            }
+            // an empty file, or one the viewer refused, has no line to ask about
+            KeyCode::Char('?' | 'v') if self.rows.is_empty() => {
+                self.note = Some("nothing here to select or ask about".into());
             }
             KeyCode::Char('?') => {
                 let (a, b) = self.ask_range();
@@ -545,6 +556,11 @@ impl Screen {
     /// second ends it (two taps, the phone's way), a drag moves its end, and a
     /// shift-click extends it. On the footer, a hint is its key.
     pub fn mouse(&mut self, m: MouseEvent, area: Rect) -> Out {
+        // only what is drawn takes a tap: not the rows under the floor card or
+        // the help, nor footer chips they hide
+        if self.help.is_some() || area.width < MIN_W || area.height < MIN_H {
+            return Out::Stay;
+        }
         let room = body_rows(area);
         let left = MouseEventKind::Down(crossterm::event::MouseButton::Left);
         match m.kind {
@@ -553,19 +569,19 @@ impl Screen {
             k if k == left && m.row + 1 == area.y + area.height => return self.tap_footer(m.column, area),
             k if k == left => {
                 let Some(l) = self.line_at(m.row, area) else { return Out::Stay };
-                self.point = Some(l);
-                self.dragged = false;
+                self.ending = false;
                 self.sel = Some(match self.sel {
                     Some(s) if m.modifiers.contains(KeyModifiers::SHIFT) => Sel {
                         cursor: l,
                         live: false,
                         ..s
                     },
-                    Some(s) if s.live => Sel {
-                        cursor: l,
-                        live: false,
-                        ..s
-                    },
+                    // the second press: a drag from here still moves the end, and
+                    // the release ends the selection
+                    Some(s) if s.live => {
+                        self.ending = true;
+                        Sel { cursor: l, ..s }
+                    }
                     _ => Sel {
                         anchor: l,
                         cursor: l,
@@ -578,11 +594,11 @@ impl Screen {
                     && s.live
                 {
                     s.cursor = l;
-                    self.dragged = true;
+                    self.ending = true;
                 }
             }
-            MouseEventKind::Up(crossterm::event::MouseButton::Left) if self.dragged => {
-                self.dragged = false;
+            MouseEventKind::Up(crossterm::event::MouseButton::Left) if self.ending => {
+                self.ending = false;
                 if let Some(s) = &mut self.sel {
                     s.live = false;
                 }
@@ -718,8 +734,8 @@ fn line(th: &Theme, row: &Row, hits: &[(usize, usize, bool)]) -> Line<'static> {
     Line::from(out)
 }
 
-/// The footer's hints. A selection leads with its lines, as `?` would ask
-/// about them, and says what `v` does next.
+/// The footer's hints. A selection shows its lines, as `?` would ask about
+/// them, and says what `v` does next.
 fn hints(s: &Screen, g: &Glyphs) -> Vec<(String, String)> {
     let kv = |k: &str, v: &str| (k.to_string(), v.to_string());
     let mut h = vec![];
@@ -727,10 +743,12 @@ fn hints(s: &Screen, g: &Glyphs) -> Vec<(String, String)> {
         Some(sel) => {
             let (a, b) = s.ask_range();
             let n = b - a + 1;
-            h.push((format!("{a}-{b}"), format!("{} {n} line{}", g.dot, if n == 1 { "" } else { "s" })));
+            // `?` and the help outrank the range: a narrow footer drops the range first
             if s.can_ask {
                 h.push(kv("?", "ask"));
             }
+            h.push(kv("h", "keys"));
+            h.push((format!("{a}-{b}"), format!("{} {n} line{}", g.dot, if n == 1 { "" } else { "s" })));
             h.push(kv("v", if sel.live { "end" } else { "extend" }));
             h.push(kv("esc", "clear"));
             h.push(kv("e", "edit"));
@@ -748,9 +766,6 @@ fn hints(s: &Screen, g: &Glyphs) -> Vec<(String, String)> {
             h.push(kv("e", "edit"));
             h.push(kv(g.key_updown, "scroll"));
         }
-    }
-    if s.sel.is_some() {
-        h.push(kv("h", "keys"));
     }
     h.push(kv("q", "close"));
     h
@@ -904,7 +919,7 @@ pub fn main(args: &[String]) -> i32 {
     let doc = load(path, MAX_FILE);
     let m = mode(&name, doc.as_deref().unwrap_or(""));
     let mut s = Screen::new(&name, doc, opts).with_mode(m);
-    s.can_ask = std::env::var("COCKPIT_VIEW_ASK").as_deref() == Ok("1");
+    s.can_ask = can_ask(std::env::var("COCKPIT_VIEW_ASK").ok().as_deref());
     if let Some(n) = line {
         s = s.at_line(n);
     }

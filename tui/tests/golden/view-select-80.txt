@@ -13,4 +13,4 @@
 "│ 16     let n = 0x2a + 1_000;                                                 │"
 "│ 17     /* a block                                                            │"
 "╰──────────────────────────────────────────────────────────────────────────────╯"
-" 6-12 · 7 lines   v end   esc clear   e edit   h keys   q close                 "
+" h keys   6-12 · 7 lines   v end   esc clear   e edit   q close                 "

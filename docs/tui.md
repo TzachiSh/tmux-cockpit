@@ -1899,7 +1899,7 @@ or `ask <a> <b>` (#365), goes to stdout.
 | the wheel | three rows |
 | `/` | find: every key but `^C` is text until `↵` keeps the matches or `esc` drops them and goes back |
 | `n` `N` | the next and the previous match, round the end |
-| `v` | select lines from the top row's (or the clicked) line; the move keys, `g` `G` and `n` `N` then move its end, and `v` again ends it |
+| `v` | select lines from the top row's line; the move keys, `g` `G` and `n` `N` then move its end, and `v` again ends it |
 | a tap, a second tap | the first drops a selection's anchor, the second ends it there; a drag selects, a shift-click extends |
 | `?` | ask about the selection, or the top line: close with `ask <a> <b>` (#365) |
 | `e` | close, and open the file in the editor at the selection's end, else the top row's source line |
@@ -1970,6 +1970,11 @@ or a `*ptr` is drawn as written:
   A word a hard wrap splits is not found, as in markdown.
 - **`u`** does nothing in a code file, which has no links, and its help leaves
   it out.
+- **Memory.** A row stores its cells and its line, and the gutter is drawn
+  from the line: 1 MB of empty lines, the most rows the cap allows, peaks at
+  about 77 MB resident (release, measured), under markdown's worst.
+- **What it refuses** is the markdown viewer's: over 1 MB, a NUL byte, invalid
+  UTF-8, not a regular file. The note says so, and `e` still opens the editor.
 
 ### Selecting and asking (#365)
 
@@ -1984,12 +1989,9 @@ offered: without it `?` leaves a note and the viewer stays, so a launcher that
 reads only `edit` never loses the screen to it. `tmux-open-path` routes it to
 the panel's ask in a later change.
 `esc` clears the selection before the matches, and the help moved from `?` to
-`h` and `F1`.
-- **Memory.** A row stores its cells and its line, and the gutter is drawn
-  from the line: 1 MB of empty lines, the most rows the cap allows, peaks at
-  about 77 MB resident (release, measured), under markdown's worst.
-- **What it refuses** is the markdown viewer's: over 1 MB, a NUL byte, invalid
-  UTF-8, not a regular file. The note says so, and `e` still opens the editor.
+`h` and `F1`. A tap and a release, then a press, a drag and a release, select
+from the first line to the drag's end. Under the floor card or the help a tap
+does nothing, and `?` on an empty file, or one the viewer refused, is a note.
 
 ## `cockpit-tui branch` (#246)
 
