@@ -12376,6 +12376,15 @@ is "a --json that fails is asked once, and the cwd rules again" "1 $BWA 3" \
 "$TMUX_REAL" -L "$BWS" set -p -t "$BWA" @cockpit_dir "$BWW" >/dev/null 2>&1
 is "with every agent's @cockpit_dir holding, the binary is not asked" "0 $BWSH 3" \
    "$(bw_goto "$BWR")"
+# A backslash in the transcript's path reaches goto as it is, not as @tsv's escape of it.
+BWB="$BWD/back\\slash"
+git -C "$BWR" worktree add -q "$BWB" old >/dev/null 2>&1
+printf '{"type":"user","cwd":"%s","message":{"content":"hi"}}\n' "${BWB//\\/\\\\}" \
+    > "$BWT/bw470b.jsonl"
+BWA2=$(bg_pane "$BWS" "$BWR" 'exec -a claude sleep 300')
+"$TMUX_REAL" -L "$BWS" set -p -t "$BWA2" @cockpit_session bw470b >/dev/null 2>&1
+until_out claude "$TMUX_REAL" -L "$BWS" display-message -p -t "$BWA2" '#{pane_current_command}'
+is "a transcript path with a backslash finds its agent" "1 $BWA2 4" "$(bw_goto "$BWB")"
 "$TMUX_REAL" -L "$BWS" kill-server >/dev/null 2>&1
 unset -f bw_goto
 rm -rf "$BWR" "$BWM" "$BWD"

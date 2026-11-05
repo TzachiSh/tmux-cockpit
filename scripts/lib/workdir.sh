@@ -68,8 +68,10 @@ declare -A WORKDIRS=()
 pane_workdirs() {
     local id dir
     WORKDIRS=()
-    while IFS=$'\t' read -r id dir; do
+    # NUL after each id and dir: @tsv would escape a backslash, a tab or a newline in a path
+    while IFS= read -r -d '' id && IFS= read -r -d '' dir; do
         # shellcheck disable=SC2034  # read by tmux-branch's goto
         is_pane "$id" && WORKDIRS[$id]=$dir
-    done < <(workdir_ask --json | jq -r '.[]? | [.id, .dir] | @tsv' 2>/dev/null)
+    done < <(workdir_ask --json \
+        | jq -j '.[]? | (.id, .dir) | (strings // "") + "\u0000"' 2>/dev/null)
 }
