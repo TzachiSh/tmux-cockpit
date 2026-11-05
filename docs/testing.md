@@ -23,10 +23,11 @@ make gate               # check-par, skipped via a content-keyed stamp if nothin
 
 `make test` and `make check` are unchanged and stay the merge gate — one
 process, source order. A block marked `# group: serial` runs in its own
-serial shard, alone, before the rest. The mark is for a block held to a CPU
-budget or built on a large fixture: such a block measures the box's spare CPU
-as much as the code, and sharded beside others it flakes under contention. No
-block carries the mark today.
+serial shard, alone, before the rest. The mark is for a block that measured
+green at J=4 and red at J=8 and J=12: one that measures the box's spare CPU as
+much as the code. No block carries the mark today. A `cpu_under` budget needs
+no mark: each is 3x its site's CPU measured under twelve spinners, so it is
+sized for contention already.
 
 ## CI
 

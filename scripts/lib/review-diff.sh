@@ -74,6 +74,8 @@ tree_diff() {
     if [ -n "$br" ]; then
         local base
         base=$(review_base "$dir" "${COCKPIT_REVIEW_BASE:-auto}" "$br" "$head"); base=${base%%$'\t'*}
+        # core.quotePath=false, as tui/src/data/gitsafe.rs's diff: literal non-ASCII
+        # paths. The nonascii and untracked rows in tests/run.sh pin it.
         GIT_INDEX_FILE=$idx git -C "$dir" --no-optional-locks -c core.quotePath=false \
             diff --no-color --no-ext-diff --ignore-submodules=dirty "$base" "$@" "${ex[@]+"${ex[@]}"}" 2>/dev/null
     else
