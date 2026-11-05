@@ -27,11 +27,11 @@ STAMP="$gd/cockpit-green"
 [ -n "$gd" ] && [ -d "$gd" ] || STAMP="$DIR/tests/.cache/green"
 
 manifest() {
-    # tests/fixtures/review/* is in the list because the tests READ it: the
-    # eight .tsv goldens the --lines blocks diff against, and mkfix.sh which
-    # builds the repo they run on. Without them, editing an expectation left
-    # the stamp valid and `make gate` answered "already green ... nothing
-    # changed since the last full gate" on a suite that would now fail.
+    # tests/fixtures/review/* is in the list because the tests READ it:
+    # mkfix.sh builds the repos the tree_diff and diffstat blocks run on.
+    # Without it, editing a fixture left the stamp valid and `make gate`
+    # answered "already green ... nothing changed since the last full gate"
+    # on a suite that would now fail.
     #
     # Regular files only. tests/* globs the fixture DIRECTORIES too, and
     # sha256sum's "Is a directory" went into the manifest through the 2>&1 --

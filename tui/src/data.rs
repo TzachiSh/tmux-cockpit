@@ -1,4 +1,5 @@
 //! tmux and transcript reads. The frozen contract (#61) is "The freeze" in docs/tui.md.
+pub mod agents;
 pub mod fleet;
 pub mod gitsafe;
 pub mod info;
@@ -133,6 +134,9 @@ pub struct Pane {
     pub msg: String,
     pub sess: String,
     pub path: String,
+    /// the dir the git facts came from: `@cockpit_dir`, else the transcript's
+    /// newest cwd, else `path` (#452); `fleet::work_dirs` picks it
+    pub dir: String,
     pub root: String,
     pub spool: String,
     pub pinned: usize,
@@ -159,6 +163,9 @@ pub struct Pane {
     /// #301: @panestate is set but no agent runs in the pane any more (a crash
     /// or a kill that let no hook run). The board draws it dimmed as ended.
     pub ended: bool,
+    /// #460: `@cockpit_job_name`, the background job agent-poll bound this viewer
+    /// pane to by its title; cleaned, since a title is untrusted. `""` when unbound.
+    pub job: String,
 }
 
 /// Skips the three ages, which change every tick and would defeat the redraw
@@ -175,6 +182,7 @@ impl Hash for Pane {
             msg,
             sess,
             path,
+            dir,
             root,
             spool,
             pinned,
@@ -193,9 +201,10 @@ impl Hash for Pane {
             subs_n,
             subs,
             ended,
+            job,
         } = self;
         [
-            id, wher, name, cmd, title, msg, sess, path, root, spool, pid, review, doing, said, asked, loc, pm, win,
+            id, wher, name, cmd, title, msg, sess, path, dir, root, spool, pid, review, doing, said, asked, loc, pm, win, job,
         ]
         .hash(h);
         (state, pinned, delivered, subs_n, ended).hash(h);
@@ -282,14 +291,20 @@ struct Facts {
     newest: Option<SystemTime>,
     /// `Unknown` when the tail said nothing
     state: State,
+    /// the newest main-thread row's `cwd`, else the one the last read kept (#452)
+    cwd: String,
     /// the newest open AskUserQuestion's question, `""` when none is open
     ask: String,
 }
 
+/// A read's (len, mtime), the file's (device, inode), and what it said.
+type Tail = (u64, SystemTime, (u64, u64), Facts);
+
 thread_local! {
     /// Keyed on (len, mtime). The path is re-resolved every tick because
-    /// `/compact` and `--resume` rotate the file.
-    static TAILS: std::cell::RefCell<HashMap<String, (u64, SystemTime, Facts)>> =
+    /// `/compact` and `--resume` rotate the file. The (device, inode) says
+    /// whether a kept cwd is this file's (#452).
+    static TAILS: std::cell::RefCell<HashMap<String, Tail>> =
         std::cell::RefCell::new(HashMap::new());
 }
 
@@ -325,13 +340,20 @@ fn read_facts(path: &str) -> Facts {
     let hit = TAILS.with(|c| {
         c.borrow()
             .get(path)
-            .filter(|(l, m, _)| *l == len && *m == mtime)
-            .map(|(_, _, v)| v.clone())
+            .filter(|(l, m, _, _)| *l == len && *m == mtime)
+            .map(|(_, _, _, v)| v.clone())
     });
     if let Some(fa) = hit {
         return fa;
     }
     let file = (md.dev(), md.ino());
+    // #452: the cwd the last read saw, unless another file stands at the path now
+    // (another inode, or this one rewritten shorter)
+    let seen_cwd = TAILS.with(|c| {
+        let c = c.borrow();
+        let e = c.get(path).filter(|(l, _, id, _)| *id == file && *l <= len);
+        e.map(|(_, _, _, f)| f.cwd.clone())
+    });
     // A gap past what the window can scan may hold a newer prompt: nothing is kept then.
     let kept = PROMPTS.with(|c| {
         let c = c.borrow();
@@ -347,6 +369,10 @@ fn read_facts(path: &str) -> Facts {
     // the window never grows to reach the ask.
     if fa.tool.is_empty() && fa.text.is_empty() && len > first && first < TAIL_MAX {
         fa = parse(tail(&mut f, len, TAIL_MAX));
+    }
+    // A quiet stretch of rows with no cwd must not push it out of the window.
+    if fa.cwd.is_empty() {
+        fa.cwd = seen_cwd.unwrap_or_default();
     }
     if fa.user.is_empty()
         && fa.user_at.is_none()
@@ -370,7 +396,7 @@ fn read_facts(path: &str) -> Facts {
             );
         }
     });
-    TAILS.with(|c| c.borrow_mut().insert(path.to_string(), (len, mtime, fa.clone())));
+    TAILS.with(|c| c.borrow_mut().insert(path.to_string(), (len, mtime, file, fa.clone())));
     fa
 }
 
@@ -396,6 +422,9 @@ fn parse(lines: Vec<String>) -> Facts {
         let ts = v["timestamp"].as_str().and_then(rfc3339);
         if ts.is_some() {
             fa.newest = ts;
+        }
+        if let Some(c) = v["cwd"].as_str().filter(|c| !c.is_empty()) {
+            fa.cwd = c.to_string();
         }
         match v["type"].as_str() {
             Some("user") => {
@@ -497,9 +526,10 @@ fn parse(lines: Vec<String>) -> Facts {
 }
 
 /// doing / said / asked and their ages, from the tail of the session transcript.
-fn read_transcript(p: &mut Pane) {
+/// Returns the transcript's cwd, `""` when it has none.
+fn read_transcript(p: &mut Pane) -> String {
     if p.sess.is_empty() {
-        return;
+        return String::new();
     }
     let fa = read_facts(&transcript_path(&p.sess, &p.path));
     // @panestate wins; the transcript speaks only for panes the hooks never touched.
@@ -516,6 +546,7 @@ fn read_transcript(p: &mut Pane) {
     p.since = fa.at.and_then(age);
     p.asked_since = fa.user_at.and_then(age);
     p.idle_since = fa.newest.and_then(age);
+    fa.cwd
 }
 
 fn age(t: SystemTime) -> Option<u64> {
@@ -539,83 +570,6 @@ fn rfc3339(t: &str) -> Option<SystemTime> {
     let days = era * 146097 + doe - 719468;
     let secs = days * 86400 + h * 3600 + mi * 60 + s as i64;
     Some(SystemTime::UNIX_EPOCH + Duration::from_secs(secs.max(0) as u64))
-}
-
-thread_local! {
-    /// `claude agents --json` dwarfs the rest of a tick and changes only when a
-    /// session starts or ends; a new pane on this path waits up to the TTL.
-    static AGENTS: std::cell::RefCell<Option<(std::time::Instant, HashMap<String, String>)>> = const { std::cell::RefCell::new(None) };
-}
-
-fn agent_sessions_cached() -> HashMap<String, String> {
-    AGENTS.with(|c| {
-        let mut c = c.borrow_mut();
-        if let Some((t, m)) = c.as_ref()
-            && t.elapsed() < Duration::from_secs(60)
-        {
-            return m.clone();
-        }
-        let m = agent_sessions();
-        *c = Some((std::time::Instant::now(), m.clone()));
-        m
-    })
-}
-
-/// `claude agents --json` maps a pid to a session id, for panes whose
-/// @cockpit_session the hooks never set.
-///
-/// #294: on the fetch thread, so a `claude` that hangs must not hang the board.
-/// It gets `AGENTS_DEADLINE`, under the board's 3 s stale threshold (the call
-/// takes about 0.2 s), then its process group is killed and the answer is empty.
-fn agent_sessions() -> HashMap<String, String> {
-    let out = claude_agents_json(AGENTS_DEADLINE).unwrap_or_default();
-    let v: Value = serde_json::from_slice(&out).unwrap_or(Value::Null);
-    v.as_array()
-        .map(|a| {
-            a.iter()
-                .filter_map(|r| Some((r["pid"].as_i64()?.to_string(), r["sessionId"].as_str()?.to_string())))
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-const AGENTS_DEADLINE: Duration = Duration::from_millis(2500);
-
-/// `claude agents --json`'s stdout, or `None` on a spawn failure or when it
-/// has not closed by the deadline.
-fn claude_agents_json(deadline: Duration) -> Option<Vec<u8>> {
-    use std::os::unix::process::CommandExt;
-    use std::process::Stdio;
-    let mut child = Command::new("claude")
-        .args(["agents", "--json"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        // its own group, so the kill takes anything it forked that holds stdout
-        .process_group(0)
-        .spawn()
-        .ok()?;
-    let mut stdout = child.stdout.take()?;
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let mut b = Vec::new();
-        let _ = stdout.read_to_end(&mut b);
-        let _ = tx.send(b);
-    });
-    let end = Instant::now() + deadline;
-    let out = rx.recv_timeout(deadline).ok();
-    // stdout closed is not exited: wait out what is left of the deadline
-    while out.is_some() && Instant::now() < end {
-        if !matches!(child.try_wait(), Ok(None)) {
-            return out;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    // Not reaped yet, so the pid and its group are still this child's.
-    // SAFETY: killpg takes a plain integer and touches no memory.
-    unsafe { libc::killpg(child.id() as libc::pid_t, libc::SIGKILL) };
-    let _ = child.wait();
-    out
 }
 
 /// One `ps` for the whole fleet, serving both the agent classifier and the
@@ -645,8 +599,7 @@ fn procs() -> Procs {
             continue;
         }
         let comm: String = it.collect::<Vec<_>>().join(" ");
-        let base = comm.rsplit('/').next().unwrap_or(&comm);
-        t.comm.insert(pid.into(), base.trim_start_matches('-').to_ascii_lowercase());
+        t.comm.insert(pid.into(), comm_norm(&comm));
         t.kids.entry(ppid.into()).or_default().push(pid.into());
     }
     t
@@ -660,7 +613,8 @@ fn tree(pid: &str, t: &Procs) -> Vec<String> {
     let mut out = vec![];
     let mut q = vec![(pid.to_string(), 0usize)];
     while let Some((p, d)) = q.pop() {
-        if !seen.insert(p.clone()) {
+        // the lookup's child and all under it are the board's, not the pane's agent
+        if !seen.insert(p.clone()) || agents::is_lookup_child(&p) {
             continue;
         }
         if d < MAX_DEPTH
@@ -671,6 +625,71 @@ fn tree(pid: &str, t: &Procs) -> Vec<String> {
         out.push(p);
     }
     out
+}
+
+/// `ps comm=` and a `/proc/<pid>/comm` read both give the kernel's 15-char
+/// name, so one normalisation serves both: basename, no login dash, lowercase.
+fn comm_norm(comm: &str) -> String {
+    let comm = comm.split_whitespace().collect::<Vec<_>>().join(" ");
+    let base = comm.rsplit('/').next().unwrap_or(&comm);
+    base.trim_start_matches('-').to_ascii_lowercase()
+}
+
+/// #492: the pids under `pid` (itself first off the stack, as [`tree`] orders
+/// them) from `<root>/<pid>/task/<tid>/children`, reading only that subtree,
+/// where `ps -axww` lists every process on the box. `None` when `root` is not a
+/// proc with `children` (macOS, or a kernel without CONFIG_PROC_CHILDREN) or a
+/// process vanished mid-walk: the caller then asks `ps`, which is always right.
+fn proc_tree(root: &std::path::Path, pid: &str) -> Option<Vec<String>> {
+    if !root.join("self/task").is_dir() {
+        return None;
+    }
+    let mut seen = std::collections::HashSet::new();
+    let mut out = vec![];
+    let mut q = vec![(pid.to_string(), 0usize)];
+    while let Some((p, d)) = q.pop() {
+        // the lookup's child and all under it are the board's, not the pane's agent
+        if !seen.insert(p.clone()) || agents::is_lookup_child(&p) {
+            continue;
+        }
+        if d < MAX_DEPTH {
+            let tasks = root.join(&p).join("task");
+            let mut kids = vec![];
+            for t in std::fs::read_dir(&tasks).ok()? {
+                let s = std::fs::read_to_string(t.ok()?.path().join("children")).ok()?;
+                kids.extend(s.split_whitespace().map(str::to_string));
+            }
+            // ps lists siblings by pid, the kernel by creation: find_session takes the first hit
+            kids.sort_by_key(|k| k.parse::<u64>().unwrap_or(0));
+            q.extend(kids.into_iter().map(|c| (c, d + 1)));
+        }
+        out.push(p);
+    }
+    Some(out)
+}
+
+/// `pid` and everything under it with each name, in [`tree`] order: from
+/// `procs_t` when `ps` already ran this refresh, else a [`proc_tree`] walk,
+/// else one `ps` kept in `procs_t` for the next ask. `COCKPIT_PROC_DIR` moves
+/// the proc root, so a test can aim the walk at a fake one or at none.
+fn lineage(pid: &str, procs_t: &mut Option<Procs>) -> Vec<(String, String)> {
+    let root = std::env::var_os("COCKPIT_PROC_DIR").map_or_else(|| "/proc".into(), std::path::PathBuf::from);
+    if procs_t.is_none()
+        && let Some(ps) = proc_tree(&root, pid)
+    {
+        return ps
+            .into_iter()
+            .map(|p| {
+                let c = std::fs::read_to_string(root.join(&p).join("comm")).unwrap_or_default();
+                (p, comm_norm(&c))
+            })
+            .collect();
+    }
+    let t = procs_t.get_or_insert_with(procs);
+    tree(pid, t)
+        .into_iter()
+        .map(|p| (p.clone(), t.comm.get(&p).cloned().unwrap_or_default()))
+        .collect()
 }
 
 /// A live Claude renames itself to its version, so `2.1.246` and `2_1_246` are
@@ -685,8 +704,8 @@ fn version_shaped(s: &str) -> bool {
     seps >= 2 && s.starts_with(|c: char| c.is_ascii_digit()) && s.chars().all(|c| c.is_ascii_digit() || c == '.' || c == '_')
 }
 
-fn find_session(pid: &str, t: &Procs, agents: &HashMap<String, String>) -> String {
-    tree(pid, t).iter().find_map(|p| agents.get(p).cloned()).unwrap_or_default()
+fn find_session(pid: &str, procs_t: &mut Option<Procs>) -> String {
+    agents::resolve(&lineage(pid, procs_t))
 }
 
 /// repo⑂branch, the `±` string and the repo root, for one path.
@@ -696,12 +715,28 @@ pub fn git_facts(path: &str) -> (String, String, String) {
 
 const GIT_TTL: Duration = Duration::from_secs(10);
 
+/// #492: a pane changing state refetches its dir, but not twice inside this
+/// gap. The flip waits for the gap to pass, so a burst of flips costs one fetch.
+const GIT_FLIP_GAP: Duration = Duration::from_secs(3);
+
+struct GitEntry {
+    at: Instant,
+    /// when the entry expires: [`GIT_TTL`] after a refetch, a spread of
+    /// 2 s to [`GIT_TTL`] for a dir seen the first time (see [`first_life`])
+    due: Instant,
+    /// a pane here changed state since `at`
+    flip: bool,
+    facts: fleet::Facts,
+}
+
 #[derive(Default)]
 struct GitCache {
     /// by path
-    facts: HashMap<String, (Instant, (String, String, String))>,
+    facts: HashMap<String, GitEntry>,
     /// each pane's state at the last fetch, by pane id
     seen: HashMap<String, State>,
+    /// dirs met for the first time so far, the jitter's salt
+    firsts: u64,
 }
 
 thread_local! {
@@ -710,33 +745,83 @@ thread_local! {
     static GIT: std::cell::RefCell<GitCache> = std::cell::RefCell::default();
 }
 
-/// `dirs` is each pane's `(cwd, @cockpit_dir)`, in `ps` order.
-fn fill_git(ps: &mut [Pane], dirs: &[(String, String)]) {
-    // the tree each pane works in: @cockpit_dir over the cwd (#253)
+/// #492: how long a dir met for the first time lives: 2, 4, 6, 8 or 10 s,
+/// fixed by its path and arrival order. Fifty dirs met in one tick would
+/// otherwise expire in one tick, every 10 s, and fork 300 git processes at once;
+/// in five slots a refresh is about a fifth of them, still big enough to run
+/// in parallel, and the period stays 10 s so forks per window do not grow.
+fn first_life(path: &str, n: u64) -> Duration {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    (path, n).hash(&mut h);
+    GIT_TTL / 5 * (1 + (h.finish() % 5) as u32)
+}
+
+/// `dirs` is each pane's work dir candidates (`fleet::work_dirs`), in `ps` order.
+fn fill_git(ps: &mut [Pane], dirs: &[[String; 3]]) {
+    // the tree each pane works in: @cockpit_dir, the transcript's cwd, the cwd (#253, #452)
     let dirs = fleet::work_dirs(dirs);
-    GIT.with(|c| {
-        let GitCache { facts, seen } = &mut *c.borrow_mut();
-        let stale: HashSet<&String> = ps
-            .iter()
-            .zip(&dirs)
-            .filter(|(p, _)| seen.get(&p.id) != Some(&p.state))
-            .map(|(_, d)| d)
-            .collect();
-        *seen = ps.iter().map(|p| (p.id.clone(), p.state)).collect();
-        facts.retain(|_, (t, _)| t.elapsed() < GIT_TTL);
-        for d in stale {
-            facts.remove(d);
+    GIT.with(|c| fill_git_at(&mut c.borrow_mut(), ps, &dirs, Instant::now(), &|m| fleet::scan(m).facts));
+}
+
+/// [`fill_git`] at time `now`, asking `scan` for the dirs that need facts. An
+/// entry is refetched when it is past its `due`, or when a pane in it changed
+/// state and the entry is at least [`GIT_FLIP_GAP`] old. Nothing else is
+/// refetched, so no entry is ever older than [`GIT_TTL`] plus one tick: the
+/// unstaged edits and untracked files of the diff stat show up within the
+/// same bound as before the stagger.
+fn fill_git_at(
+    c: &mut GitCache,
+    ps: &mut [Pane],
+    dirs: &[String],
+    now: Instant,
+    scan: &dyn Fn(&[String]) -> HashMap<String, fleet::Facts>,
+) {
+    for (p, d) in ps.iter().zip(dirs) {
+        if c.seen.get(&p.id) != Some(&p.state)
+            && let Some(e) = c.facts.get_mut(d)
+        {
+            e.flip = true;
         }
-        // one scan per distinct root, in parallel, however many dirs share it
-        let missing: Vec<String> = dirs.iter().filter(|d| !facts.contains_key(*d)).cloned().collect();
-        for (d, f) in fleet::scan(&missing).facts {
-            facts.insert(d, (Instant::now(), f));
-        }
-        for (p, d) in ps.iter_mut().zip(&dirs) {
-            let (_, (loc, pm, root)) = &facts[d];
-            (p.loc, p.pm, p.root) = (loc.clone(), pm.clone(), root.clone());
-        }
-    });
+    }
+    c.seen = ps.iter().map(|p| (p.id.clone(), p.state)).collect();
+    let mut missing: Vec<String> = dirs
+        .iter()
+        .filter(|d| {
+            c.facts
+                .get(*d)
+                .is_none_or(|e| now >= e.due || (e.flip && now.duration_since(e.at) >= GIT_FLIP_GAP))
+        })
+        .cloned()
+        .collect();
+    missing.sort();
+    missing.dedup();
+    // one scan per distinct root, in parallel, however many dirs share it
+    let mut found = scan(&missing);
+    for d in missing {
+        let life = if c.facts.contains_key(&d) {
+            GIT_TTL
+        } else {
+            c.firsts += 1;
+            first_life(&d, c.firsts)
+        };
+        let facts = found.remove(&d).unwrap_or_default();
+        c.facts.insert(
+            d,
+            GitEntry {
+                at: now,
+                due: now + life,
+                flip: false,
+                facts,
+            },
+        );
+    }
+    let used: HashSet<&String> = dirs.iter().collect();
+    c.facts.retain(|d, _| used.contains(d));
+    for (p, d) in ps.iter_mut().zip(dirs) {
+        let (loc, pm, root) = &c.facts[d].facts;
+        (p.loc, p.pm, p.root, p.dir) = (loc.clone(), pm.clone(), root.clone(), d.clone());
+    }
 }
 
 /// The review spool's two counts, straight off the directory.
@@ -803,6 +888,8 @@ const FIELDS: &str = concat!(
     // #313: 14 the hook's subagent count, 15 the session's transcript, for its subagents/ dir
     "\u{1f}#{s/\n/ /:#{s/\t/ /:#{s/\u{1f}/ /:#{@cockpit_subs}}}}",
     "\u{1f}#{s/\n/ /:#{s/\t/ /:#{s/\u{1f}/ /:#{@cockpit_transcript}}}}",
+    // #460: 16 the background job agent-poll bound a viewer pane to
+    "\u{1f}#{s/\n/ /:#{s/\t/ /:#{s/\u{1f}/ /:#{@cockpit_job_name}}}}",
 );
 
 /// `-` back to empty. A sentinelled option whose real value is a bare `-` would
@@ -859,81 +946,121 @@ pub fn list_panes() -> Option<Vec<Pane>> {
 pub fn list_fleet() -> Option<(Vec<Pane>, std::collections::BTreeSet<String>)> {
     let out = tmux(&["list-panes", "-a", "-F", FIELDS])?;
     let mut sessions = std::collections::BTreeSet::new();
-    let (mut agents, mut procs_t) = (None, None);
+    let mut procs_t = None;
     let (mut ps, mut dirs) = (vec![], vec![]);
     for l in out.lines() {
         let f: Vec<&str> = l.split(SEP).collect();
-        // FIELDS has 16; the 13 before @cockpit_dir are the floor, so an older format reads
+        // FIELDS has 17; the 13 before @cockpit_dir are the floor, so an older format reads
         if f.len() < 13 {
             continue;
         }
         // `session:window`; a session name never holds a `:` (tmux swaps it)
         sessions.insert(f[1].rsplit_once(':').map_or(f[1], |(s, _)| s).to_string());
-        // A pane carrying @panestate counts whatever it runs: the hooks are the
-        // source of truth, and a wrapper hides `claude` behind its own argv0.
-        let raw = unsentinel(f[4]);
-        // The name is a fast path that skips the `ps` fork; the tree decides.
-        let by_cmd = agentish(f[3]);
-        let mut in_tree = || {
-            let t = procs_t.get_or_insert_with(procs);
-            tree(f[9], t).iter().any(|p| t.comm.get(p).is_some_and(|c| agentish(c)))
-        };
-        // #301: a marked pane's verdict is cached, or every ended row forks `ps` each tick
-        let by_tree = !by_cmd
-            && if raw.is_empty() {
-                in_tree()
-            } else {
-                tree_cached((f[0], f[9], f[3]), in_tree)
-            };
-        let live = by_cmd || by_tree;
-        if raw.is_empty() && !live {
+        let Some((mut p, live_by)) = row_pane(&f, &mut procs_t) else {
             continue;
-        }
-        let mut p = Pane {
-            id: f[0].into(),
-            wher: f[1].into(),
-            name: f[2].into(),
-            cmd: f[3].into(),
-            state: raw.as_str().into(),
-            title: unsentinel(f[5]),
-            msg: unsentinel(f[6]),
-            sess: unsentinel(f[7]),
-            path: f[8].into(),
-            pid: f[9].into(),
-            review: unsentinel(f[10]),
-            spool: unsentinel(f[11]),
-            win: f[12].into(),
-            ended: ended(&raw, live, AGENT_GLOB.with(|g| !g.is_empty())),
-            ..Default::default()
         };
-        log_ended_flip(
-            &p,
-            if by_cmd {
-                "command"
-            } else if by_tree {
-                "tree"
-            } else {
-                "none"
-            },
-        );
+        log_ended_flip(&p, live_by);
         if p.sess.is_empty() {
-            let agents = agents.get_or_insert_with(agent_sessions_cached);
-            p.sess = find_session(&p.pid, procs_t.get_or_insert_with(procs), agents);
+            p.sess = find_session(&p.pid, &mut procs_t);
         }
-        read_transcript(&mut p);
+        dirs.push(work_candidates(&mut p, &f));
         (p.pinned, p.delivered) = spool_counts(&p.spool);
-        // @cockpit_dir, @cockpit_subs and @cockpit_transcript come after the 13 a row from an
-        // older format has, so such a row still reads: 13, 14 and 15 are optional
-        dirs.push((p.path.clone(), f.get(13).copied().unwrap_or_default().to_string()));
         p.subs_n = f.get(14).and_then(|n| n.parse().ok()).unwrap_or(0);
+        // a pane title, so untrusted: control and bidi characters go
+        p.job = crate::pick::clean(f.get(16).copied().unwrap_or_default()).trim().to_string();
         if let Some(d) = subagents::dir_of(f.get(15).copied().unwrap_or_default(), &p.sess, &p.path) {
             p.subs = subagents::read(&d, sessions::now());
         }
         ps.push(p);
     }
+    // #492: the answer comes later, from a thread of its own; this fetch never waits on it
+    agents::flush();
     fill_git(&mut ps, &dirs);
     ps.sort_by_key(|p| p.state);
     Some((ps, sessions))
+}
+
+/// One FIELDS row to its Pane, or `None` when the row is not an agent's: the
+/// board's agent test. Shared by the fetch and `workdir` (#500), so the two
+/// cannot disagree on which panes are agents. The second value names what found
+/// the agent, for the ended-flip log.
+fn row_pane(f: &[&str], procs_t: &mut Option<Procs>) -> Option<(Pane, &'static str)> {
+    // the floor list_fleet names
+    if f.len() < 13 {
+        return None;
+    }
+    // A pane carrying @panestate counts whatever it runs: the hooks are the
+    // source of truth, and a wrapper hides `claude` behind its own argv0.
+    let raw = unsentinel(f[4]);
+    // The name is a fast path that skips the `ps` fork; the tree decides.
+    let by_cmd = agentish(f[3]);
+    let mut in_tree = || lineage(f[9], procs_t).iter().any(|(_, c)| agentish(c));
+    // #301: a marked pane's verdict is cached, or every ended row forks `ps` each tick
+    let by_tree = !by_cmd
+        && if raw.is_empty() {
+            in_tree()
+        } else {
+            tree_cached((f[0], f[9], f[3]), in_tree)
+        };
+    let live = by_cmd || by_tree;
+    if raw.is_empty() && !live {
+        return None;
+    }
+    let p = Pane {
+        id: f[0].into(),
+        wher: f[1].into(),
+        name: f[2].into(),
+        cmd: f[3].into(),
+        state: raw.as_str().into(),
+        title: unsentinel(f[5]),
+        msg: unsentinel(f[6]),
+        sess: unsentinel(f[7]),
+        path: f[8].into(),
+        pid: f[9].into(),
+        review: unsentinel(f[10]),
+        spool: unsentinel(f[11]),
+        win: f[12].into(),
+        ended: ended(&raw, live, AGENT_GLOB.with(|g| !g.is_empty())),
+        ..Default::default()
+    };
+    let by = if by_cmd {
+        "command"
+    } else if by_tree {
+        "tree"
+    } else {
+        "none"
+    };
+    Some((p, by))
+}
+
+/// Reads `p`'s transcript into it and returns its work dir's candidates (#452), in
+/// the order `fleet::work_dirs` tries them. @cockpit_dir, @cockpit_subs and
+/// @cockpit_transcript come after the 13 a row from an older format has, so such a
+/// row still reads: 13 to 16 are optional.
+fn work_candidates(p: &mut Pane, f: &[&str]) -> [String; 3] {
+    let said_cwd = read_transcript(p);
+    let opt = f.get(13).copied().unwrap_or_default().to_string();
+    [opt, said_cwd, p.path.clone()]
+}
+
+/// #500: the board's `Pane.dir` for one pane, off one `display-message` of the
+/// board's own FIELDS and the same per-row code as the fetch. `None` for a pane
+/// that is not there, is not an agent's, or whose dir is not on disk (#507). Unlike the fetch it never
+/// runs `claude agents` (hundreds of ms): a pane with no @cockpit_session has no
+/// transcript to read, so its dir is @cockpit_dir, else its launch dir.
+pub fn workdir(pane: &str) -> Option<String> {
+    let out = tmux(&["display-message", "-p", "-t", pane, FIELDS])?;
+    let f: Vec<&str> = out.trim_end_matches('\n').split(SEP).collect();
+    // A missing pane exits 0 with every field empty: the resolved id is the test,
+    // before the agent test can fork `ps` for a pid that is not there.
+    if f[0] != pane {
+        return None;
+    }
+    let (mut p, _) = row_pane(&f, &mut None)?;
+    let cands = work_candidates(&mut p, &f);
+    // #507: a dir that is not on disk (removed, or a name tmux's lossy decode
+    // changed) is no dir: a script must not cd into it
+    fleet::work_dirs(&[cands]).pop().filter(|d| std::path::Path::new(d).is_dir())
 }
 
 /// A pane can hold one multi-megabyte line, and the ANSI parser re-runs over the
@@ -1193,5 +1320,254 @@ mod tests {
                 {"type": "tool_use", "id": "t1", "name": c[0], "input": c[1]}]}});
             assert_eq!(parse(vec![row.to_string()]).tool, c[2].as_str().unwrap(), "{l}");
         }
+    }
+
+    fn pane(id: &str, state: State) -> Pane {
+        Pane {
+            id: id.into(),
+            state,
+            ..Default::default()
+        }
+    }
+
+    /// A scan that answers each path with itself as its root and counts the paths asked.
+    fn counted(n: &std::cell::Cell<usize>) -> impl Fn(&[String]) -> HashMap<String, fleet::Facts> + '_ {
+        move |m| {
+            n.set(n.get() + m.len());
+            m.iter().map(|d| (d.clone(), ("loc".into(), "clean".into(), d.clone()))).collect()
+        }
+    }
+
+    /// 50 dirs met in one tick must not all expire in one tick: over 30 s of
+    /// 1 s ticks no tick fetches more than 20 of them, and no dir waits
+    /// longer than the 10 s TTL (plus the tick) between two fetches.
+    #[test]
+    fn git_first_fetches_spread_and_stay_inside_the_ttl() {
+        let dirs: Vec<String> = (0..50).map(|i| format!("/r/{i}")).collect();
+        let mut ps: Vec<Pane> = (0..50).map(|i| pane(&format!("%{i}"), State::Running)).collect();
+        let (mut c, t0) = (GitCache::default(), Instant::now());
+        let (n, mut last) = (std::cell::Cell::new(0), HashMap::new());
+        let (mut worst_tick, mut worst_gap) = (0, 0);
+        for s in 0..=30u64 {
+            let (before, now) = (n.get(), t0 + Duration::from_secs(s));
+            fill_git_at(&mut c, &mut ps, &dirs, now, &counted(&n));
+            if s > 0 {
+                worst_tick = worst_tick.max(n.get() - before); // tick 0 is the cold fetch of all 50
+            }
+            for d in dirs.iter().filter(|d| c.facts[*d].at == now) {
+                worst_gap = worst_gap.max(s - last.insert(d, s).unwrap_or(s));
+            }
+        }
+        assert!(worst_tick <= 20, "a tick refetched {worst_tick} dirs");
+        assert!(worst_gap <= 10, "a dir waited {worst_gap} s");
+    }
+
+    fn git_ok(dir: &std::path::Path, args: &[&str]) {
+        let st = std::process::Command::new("git").arg("-C").arg(dir).args(args).status().unwrap();
+        assert!(st.success(), "git {args:?}");
+    }
+
+    /// The diff stat counts unstaged edits, which no index or HEAD stamp shows:
+    /// an edit made after a fetch is on the row within the TTL, tick by tick.
+    #[test]
+    fn git_unstaged_edit_shows_within_the_ttl() {
+        let d = std::env::temp_dir().join(format!("cockpit-fillgit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        git_ok(&d, &["init", "-q", "-b", "main"]);
+        std::fs::write(d.join("f"), "a\n").unwrap();
+        git_ok(&d, &["add", "f"]);
+        git_ok(&d, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "x"]);
+        let dir = d.display().to_string();
+        let mut ps = vec![pane("%1", State::Running)];
+        let (mut c, t0) = (GitCache::default(), Instant::now());
+        let real = |m: &[String]| fleet::scan(m).facts;
+        fill_git_at(&mut c, &mut ps, std::slice::from_ref(&dir), t0, &real);
+        assert_eq!(ps[0].pm, "clean");
+        // past the first (jittered) expiry, so the 10 s period is what is tested
+        let at = |s| t0 + Duration::from_secs(s);
+        (1..=10).for_each(|s| fill_git_at(&mut c, &mut ps, std::slice::from_ref(&dir), at(s), &real));
+        std::fs::write(d.join("f"), "a\nb\n").unwrap(); // unstaged: index and HEAD stay put
+        let seen = (11..=20)
+            .find(|s| {
+                fill_git_at(&mut c, &mut ps, std::slice::from_ref(&dir), at(*s), &real);
+                ps[0].pm == "+1 -0"
+            })
+            .expect("the unstaged edit never reached the row")
+            - 10;
+        let _ = std::fs::remove_dir_all(&d);
+        assert!(seen <= 10, "shown after {seen} s");
+    }
+
+    /// Five flips inside the gap cost one fetch, at the gap; a flip on an old
+    /// entry still refetches at once.
+    #[test]
+    fn git_state_flips_debounce_to_one_fetch_per_dir() {
+        let dirs = vec!["/r/a".to_string(), "/r/a".to_string()];
+        let mut ps = vec![pane("%1", State::Running), pane("%2", State::Running)];
+        let (mut c, t0, n) = (GitCache::default(), Instant::now(), std::cell::Cell::new(0));
+        let ms = |m| t0 + Duration::from_millis(m);
+        fill_git_at(&mut c, &mut ps, &dirs, ms(0), &counted(&n));
+        assert_eq!(n.get(), 1, "two panes, one dir, one fetch");
+        c.facts.get_mut("/r/a").unwrap().due = ms(60_000); // only flips can refetch now
+        for (i, m) in [200, 400, 600, 800, 1000].into_iter().enumerate() {
+            let st = if i % 2 == 0 { State::Done } else { State::Running };
+            (ps[0].state, ps[1].state) = (st, st);
+            fill_git_at(&mut c, &mut ps, &dirs, ms(m), &counted(&n));
+        }
+        assert_eq!(n.get(), 1, "flips inside the gap fetched");
+        fill_git_at(&mut c, &mut ps, &dirs, ms(3000), &counted(&n));
+        assert_eq!(n.get(), 2, "the debounced flip is fetched once, at the gap");
+        fill_git_at(&mut c, &mut ps, &dirs, ms(3500), &counted(&n));
+        assert_eq!(n.get(), 2, "and not again");
+        ps[0].state = State::Error; // an entry older than the gap refetches at once
+        fill_git_at(&mut c, &mut ps, &dirs, ms(7000), &counted(&n));
+        assert_eq!(n.get(), 3);
+    }
+
+    /// A fake `/proc`: `kids` maps pid to one `children` string per task.
+    fn fake_proc(kids: &[(&str, &[&str])]) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let root = std::env::temp_dir().join(format!("cockpit-proc-{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
+        std::fs::create_dir_all(root.join("self/task")).unwrap();
+        for (pid, tasks) in kids {
+            for (i, c) in tasks.iter().enumerate() {
+                let d = root
+                    .join(pid)
+                    .join("task")
+                    .join(format!("{}", pid.parse::<u32>().unwrap() + i as u32));
+                std::fs::create_dir_all(&d).unwrap();
+                std::fs::write(d.join("children"), c).unwrap();
+            }
+        }
+        root
+    }
+
+    fn pids(root: &std::path::Path, pid: &str) -> Option<Vec<String>> {
+        let r = proc_tree(root, pid);
+        std::fs::remove_dir_all(root).unwrap();
+        r
+    }
+
+    #[test]
+    fn proc_tree_reaches_a_grandchild() {
+        let r = fake_proc(&[("10", &["11 12 "]), ("11", &["13 "]), ("12", &[""]), ("13", &[""])]);
+        let mut got = pids(&r, "10").unwrap();
+        got.sort();
+        assert_eq!(got, ["10", "11", "12", "13"]);
+    }
+
+    #[test]
+    fn proc_tree_reaches_the_children_of_every_thread() {
+        let r = fake_proc(&[("10", &["11 ", "12 "]), ("11", &[""]), ("12", &[""])]);
+        let mut got = pids(&r, "10").unwrap();
+        got.sort();
+        assert_eq!(got, ["10", "11", "12"]);
+    }
+
+    #[test]
+    fn proc_tree_orders_like_tree() {
+        let r = fake_proc(&[
+            ("10", &["11 12 "]),
+            ("11", &["13 14 "]),
+            ("12", &[""]),
+            ("13", &[""]),
+            ("14", &[""]),
+        ]);
+        let mut t = Procs::default();
+        t.kids.insert("10".into(), vec!["11".into(), "12".into()]);
+        t.kids.insert("11".into(), vec!["13".into(), "14".into()]);
+        assert_eq!(pids(&r, "10").unwrap(), tree("10", &t));
+    }
+
+    #[test]
+    fn proc_tree_lists_siblings_by_pid_as_ps_does() {
+        let r = fake_proc(&[("10", &["13 11 12 "]), ("11", &[""]), ("12", &[""]), ("13", &[""])]);
+        let mut t = Procs::default();
+        t.kids.insert("10".into(), vec!["11".into(), "12".into(), "13".into()]);
+        assert_eq!(pids(&r, "10").unwrap(), tree("10", &t));
+    }
+
+    #[test]
+    fn proc_tree_survives_a_cycle() {
+        let r = fake_proc(&[("10", &["11 "]), ("11", &["10 "])]);
+        assert_eq!(pids(&r, "10").unwrap(), ["10", "11"]);
+    }
+
+    #[test]
+    fn proc_tree_stops_at_the_depth_cap() {
+        let chain: Vec<(String, String)> = (0..MAX_DEPTH + 3).map(|i| ((10 + i).to_string(), format!("{} ", 11 + i))).collect();
+        let kids: Vec<(&str, Vec<&str>)> = chain.iter().map(|(p, c)| (p.as_str(), vec![c.as_str()])).collect();
+        let kids: Vec<(&str, &[&str])> = kids.iter().map(|(p, c)| (*p, c.as_slice())).collect();
+        let r = fake_proc(&kids);
+        assert_eq!(pids(&r, "10").unwrap().len(), MAX_DEPTH + 1);
+    }
+
+    #[test]
+    fn proc_tree_is_none_without_a_children_file() {
+        let r = fake_proc(&[("10", &["11 "])]);
+        std::fs::create_dir_all(r.join("11/task/11")).unwrap();
+        assert_eq!(pids(&r, "10"), None);
+    }
+
+    #[test]
+    fn proc_tree_is_none_when_the_pane_pid_is_gone() {
+        assert_eq!(pids(&fake_proc(&[]), "10"), None);
+    }
+
+    #[test]
+    fn proc_tree_is_none_without_a_proc() {
+        assert_eq!(proc_tree(std::path::Path::new("/nonexistent-proc"), "1"), None);
+    }
+
+    #[test]
+    fn comm_norm_matches_what_procs_stored() {
+        for (raw, want) in [
+            ("claude", "claude"),
+            ("-Bash", "bash"),
+            ("/usr/bin/Node", "node"),
+            ("2.1.318", "2.1.318"),
+            ("a  b", "a b"),
+        ] {
+            assert_eq!(comm_norm(raw), want, "{raw}");
+        }
+        // agentish("claude") reads the tmux agent list, so only the pure half is pinned here
+        assert!(version_shaped(&comm_norm("2.1.318\n")) && !version_shaped(&comm_norm("bash\n")));
+    }
+
+    /// Kills the child on drop, so a failed assert cannot leave it running.
+    #[cfg(target_os = "linux")]
+    struct Reap(std::process::Child);
+    #[cfg(target_os = "linux")]
+    impl Drop for Reap {
+        fn drop(&mut self) {
+            let _ = Command::new("pkill").args(["-KILL", "-P", &self.0.id().to_string()]).status();
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    /// A child named past 15 chars: the walk and `ps` agree on pids and on the
+    /// truncated name.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn lineage_on_the_real_proc_matches_ps() {
+        let dir = std::env::temp_dir().join(format!("cockpit-lin-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let py = Command::new("sh").args(["-c", "command -v python3"]).output().unwrap().stdout;
+        let long = dir.join("claude-with-a-very-long-name");
+        std::os::unix::fs::symlink(String::from_utf8(py).unwrap().trim(), &long).unwrap();
+        let cmd = format!("{} -c 'import time; time.sleep(30)' & wait", long.display());
+        let sh = Reap(Command::new("sh").arg("-c").arg(cmd).spawn().unwrap());
+        let pid = sh.0.id().to_string();
+        let mut t = procs();
+        while tree(&pid, &t).len() < 2 {
+            t = procs();
+        }
+        let want: Vec<_> = tree(&pid, &t).into_iter().map(|p| (p.clone(), t.comm[&p].clone())).collect();
+        assert_eq!(lineage(&pid, &mut None), want);
+        assert_eq!(want[1].1.len(), 15);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

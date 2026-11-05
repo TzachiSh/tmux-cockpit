@@ -1,4 +1,5 @@
 //! The user prompt sent on stdin: tagged parts joined by blank lines.
+use super::ask::AskCode;
 use super::capture::{Capture, session_state};
 use super::redact::redact;
 
@@ -31,9 +32,24 @@ impl OutType {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Flow {
-    Write { draft: String, out: OutType },
-    Fix { draft: String },
+    Write {
+        draft: String,
+        out: OutType,
+    },
+    Fix {
+        draft: String,
+    },
     Explain,
+    /// the viewer's `?` (#365): a question about lines of a file
+    Ask(AskCode),
+}
+
+impl Flow {
+    /// A question and its answers, the thread kept for follow-ups: Explain, and
+    /// the viewer's ask. Write and Fix make text to paste instead.
+    pub fn is_qa(&self) -> bool {
+        matches!(self, Flow::Explain | Flow::Ask(_))
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -107,6 +123,26 @@ pub fn build_parts(flow: &Flow, cap: &Capture, turns: &[Turn], questions_left: u
         Flow::Fix { draft } => {
             parts.push(format!("<screen window=\"{window}\">\n{screen}\n</screen>"));
             parts.push(format!("<text>{}</text>", esc(draft)));
+        }
+        // the code, never the screen: the question is about the file (#365)
+        Flow::Ask(a) => {
+            // ask::load redacted each line before it cut any
+            repo_hidden = a.hidden;
+            let lines = format!("{}-{}", a.asked.0, a.asked.1);
+            // ask::load refused a name with a control character; a `"` would end the attribute
+            let path = a.path.replace('"', "&quot;");
+            let code = esc(&a.code);
+            let path = esc(&path);
+            parts.push(format!("<code path=\"{path}\" lines=\"{lines}\">\n{code}\n</code>"));
+            let (s0, s1) = a.shown;
+            let tail = "Read the file for the rest</truncated>";
+            if a.shown != a.asked {
+                let short = if a.cut { format!(", line {s1} cut short") } else { String::new() };
+                let shown = format!("lines {s0}-{s1} of {lines} are shown{short}");
+                parts.push(format!("<truncated>{shown}; {tail}"));
+            } else if a.cut {
+                parts.push(format!("<truncated>line {s1} is cut short; {tail}"));
+            }
         }
         Flow::Explain => {
             parts.push(format!("<screen window=\"{window}\">\n{screen}\n</screen>"));

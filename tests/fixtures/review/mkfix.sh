@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
-# Builds one of eight deterministic git fixtures whose `tmux-review --lines`
-# output is frozen in the sibling *.tsv goldens. Each case's body is the
-# exact fixture-building subshell from the corresponding tests/run.sh
-# `--lines` block (deterministic author env, `git init -q -b main`), so the
-# fixture and the golden it produced stay reproducible byte for byte.
+# Builds one of eight deterministic git fixtures (deterministic author env,
+# `git init -q -b main`). tests/run.sh diffs each through tree_diff and the
+# board's diffstat, which must agree, and reads tree_diff's numstat on some.
 #
 # Usage: mkfix.sh <basic|mixed|untracked|blank|nonascii|funcname|hunks|spaces> <dir>
 # <dir> must already exist and be empty; it becomes the fixture's repo root.
@@ -64,7 +62,7 @@ nonascii)
     printf 'a\nAA\n' > alpha.txt
     # This fixture also exercises a blank added line, not just a non-ASCII
     # filename, so café.txt's own line 2 goes blank and CC lands as a new
-    # line 3 -- one row proving both seams at once.
+    # line 3.
     printf 'x\n\nCC\n' > café.txt
     ;;
 funcname)
@@ -83,15 +81,12 @@ hunks)
     git add -A
     git commit -q -m init
     # Three edits spaced far enough apart (3, 20, 35) that diff's default
-    # 3-line context keeps them as separate hunks -- the case no other
-    # golden covers: the 5th-field preview offset must keep counting
-    # correctly across a hunk boundary, not reset per hunk.
+    # 3-line context keeps them as separate hunks.
     #
-    # Line 35's replacement is a 220-byte fragment with a literal \x01 (SOH)
-    # at its centre -- the parser's control-char-strip-then-160-byte-cap
-    # case (scripts/tmux-review:348). Do this edit BEFORE deleting line 20,
-    # so "line 35" still names the pre-deletion row; the line-3 change is
-    # addressing-safe either way since it's above both.
+    # Line 35's replacement is a 220-byte line with a literal \x01 (SOH) at
+    # its centre. Do this edit BEFORE deleting line 20, so "line 35" still
+    # names the pre-deletion row; the line-3 change is addressing-safe either
+    # way since it's above both.
     long220=$(printf 'A%.0s' $(seq 1 109))$(printf '\001')$(printf 'B%.0s' $(seq 1 110))
     awk -v ln35="$long220" 'NR==35{print ln35; next} NR==20{next} {print}' nums.txt > nums.txt.new
     mv nums.txt.new nums.txt
@@ -100,12 +95,9 @@ hunks)
     ;;
 spaces)
     # git terminates a header path with a TAB when the path holds a space
-    # ("--- a/has space.txt<TAB>"), which the parser used to carry into every
-    # row of that file. Both sides are covered: a TRACKED path with a space,
-    # which goes through the diff headers (one changed line and one deleted
-    # line, so the deletion rows -- the ones that read as additions when the
-    # tab rode along -- are pinned), and an UNTRACKED one, which has no diff
-    # header at all and is walked straight off the filesystem.
+    # ("--- a/has space.txt<TAB>"). Both sides: a TRACKED path with a space
+    # (one changed line, one deleted) and an UNTRACKED one, which reaches the
+    # diff through the index copy's intent-to-add entry.
     git init -q -b main .
     printf 'alpha\nbravo\ncharlie\n' > 'has space.txt'
     git add -A

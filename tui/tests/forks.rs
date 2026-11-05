@@ -35,8 +35,19 @@ fn two_ticks_inside_the_ttl_fork_claude_once() {
         std::env::set_var("COCKPIT_TMUX", format!("{d}/bin/tmux"));
         std::env::set_var("HOME", &d);
         std::env::set_var("COCKPIT_READONLY", "1");
+        // #505: no proc under it, so the walk asks the fake ps, not the live pid of the same number
+        std::env::set_var("COCKPIT_PROC_DIR", format!("{d}/proc"));
     }
 
+    list_panes().unwrap();
+    // the lookup runs on a thread of its own (#492): wait for its answer file
+    let cache = dir.join(".cache/tmux-cockpit/agents.json");
+    for _ in 0..2000 {
+        if cache.exists() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
     list_panes().unwrap();
     list_panes().unwrap();
 

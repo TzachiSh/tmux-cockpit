@@ -9,11 +9,17 @@ if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
            "${BASH_SOURCE[0]##*/}" "${BASH_VERSION:-unknown}" >&2
     exit 1
 fi
+# The switch lands in the repo the picker listed, the pane's own: a popup
+# inherits tmux's environment, where a dotfiles setup's GIT_DIR would point it
+# at another. GIT_CEILING_DIRECTORIES stays: it can only stop the search lower.
+unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE
 d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")
 # shellcheck source=lib/git.sh
 . "${d%/*}/lib/git.sh" || exit 1
 # shellcheck source=lib/tui.sh
 . "${d%/*}/lib/tui.sh" || exit 1
+# shellcheck source=lib/workdir.sh
+. "${d%/*}/lib/workdir.sh" || exit 1
 # shellcheck source=lib/fmt.sh
 . "${d%/*}/lib/fmt.sh" || exit 1
 
@@ -119,6 +125,10 @@ owner_of() {                  # <dir>  sets OWNER to the worktree path holding i
 # WORKTREES: every worktree path. -z keeps a path with a newline in one record but needs
 # git 2.36; older git rejects it and prints nothing, so the plain porcelain is read, and
 # a record with a line that is no worktree attribute (a path cut by a newline) is dropped.
+# So is one with no .git in it (#348): a newline name can forge a whole `worktree <dir>`
+# line. A main checkout has a .git dir, a linked worktree a .git file; -e takes both.
+# A path that is gone is kept, so goto still says "is gone" as it does on new git.
+wt_real() { [ ! -e "$1" ] || [ -e "$1/.git" ]; }
 wt_list() {
     local rec line cur='' ok=1
     WORKTREES=()
@@ -128,13 +138,13 @@ wt_list() {
     [ ${#WORKTREES[@]} -gt 0 ] && return 0
     while IFS= read -r line || [ -n "$line" ]; do
         if [[ $line == "worktree "* ]]; then
-            [ -n "$cur" ] && [ "$ok" = 1 ] && WORKTREES+=("$cur")
+            [ -n "$cur" ] && [ "$ok" = 1 ] && wt_real "$cur" && WORKTREES+=("$cur")
             cur=${line#worktree }; ok=1
         elif [ -n "$line" ] && [[ ! $line =~ ^(HEAD\ |branch\ |bare$|detached$|locked|prunable) ]]; then
             ok=0
         fi
     done < <(git worktree list --porcelain 2>/dev/null)
-    [ -n "$cur" ] && [ "$ok" = 1 ] && WORKTREES+=("$cur")
+    [ -n "$cur" ] && [ "$ok" = 1 ] && wt_real "$cur" && WORKTREES+=("$cur")
     return 0
 }
 
@@ -142,7 +152,7 @@ wt_list() {
 # one, any pane in it, else a new window there. Never a cd of an existing pane.
 # The path comes off cockpit-tui's line, so it is checked against git's own list.
 goto() {
-    local path=$1 w id agent cdir cwd dir ag='' sh='' found='' sep=$'\037' t=()
+    local path=$1 w id row dir ag='' sh='' found='' t=()
     wt_list
     for w in ${WORKTREES[@]+"${WORKTREES[@]}"}; do [ "$w" = "$path" ] && found=1; done
     if [ -z "$found" ]; then
@@ -151,14 +161,18 @@ goto() {
     if [ ! -d "$path" ]; then
         printf 'cockpit: %s is gone · git worktree prune\n' "$path" >&2; pause; return 1
     fi
-    while IFS="$sep" read -r id agent cdir cwd; do
-        [[ $id =~ ^%[0-9]+$ ]] || continue
-        # one tree per pane, as tmux-review's pane_dir: @cockpit_dir when it is a directory
-        dir=$cwd; [ -n "$cdir" ] && [ -d "$cdir" ] && dir=$cdir
-        owner_of "$dir"
+    # One tree per pane, the one tmux-review reviews (#470): the binary is asked
+    # for each pane whose answer could differ from the rule without it.
+    while IFS= read -r row; do
+        workdir_row "$row"
+        [[ $WD_ID =~ ^%[0-9]+$ ]] || continue
+        dir=''
+        workdir_need "$WD_AGENT" "$WD_OPT" && dir=$(workdir_ask "$WD_ID")
+        workdir_pick "$dir" "$WD_OPT" "$WD_CWD"
+        owner_of "$WORKDIR"
         [ "$OWNER" = "$path" ] || continue
-        if [ "$agent" = 1 ]; then ag=${ag:-$id}; else sh=${sh:-$id}; fi
-    done < <(tmux list-panes -a -F "#{pane_id}$sep#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},1,0}$sep#{@cockpit_dir}$sep#{pane_current_path}" 2>/dev/null)
+        if [ "$WD_AGENT" = 1 ]; then ag=${ag:-$WD_ID}; else sh=${sh:-$WD_ID}; fi
+    done < <(tmux list-panes -a -F "$WORKDIR_FMT" 2>/dev/null)
     id=${ag:-$sh}
     if [ -n "$id" ]; then
         # switch-client fails without a client; the selection below still applies.

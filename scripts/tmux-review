@@ -4,7 +4,6 @@
 #   tmux-review [-p pane_id]               no args: review that pane -- or,
 #                                          without -p, the CLIENT's active
 #                                          pane (what r on a board row runs)
-#   tmux-review --lines <dir>              the diff rows a review anchors to
 #   tmux-review --loop <dir> <store>       the review: revdiff, then a one-key
 #                                          prompt; exits 20 (deliver), 21
 #                                          (approved), 127 (no revdiff), else
@@ -12,7 +11,7 @@
 #   tmux-review --compose <store>          the composed review, ready to deliver
 #   tmux-review --deliver <pane> <store>   one bracketed paste, typed-but-unsent
 #
-# --lines and --compose touch no tmux.
+# --compose touches no tmux.
 set -uo pipefail
 
 # bash 4+: on 3.2 `declare -A` fails and the assignment quietly makes an
@@ -22,6 +21,12 @@ if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
            "${BASH_SOURCE[0]##*/}" "${BASH_VERSION:-unknown}" >&2
     exit 1
 fi
+
+# Every git call, revdiff's too, is about the pane's own repo: a popup inherits
+# tmux's environment, where a dotfiles setup's GIT_DIR would point all of them
+# at another. Here, before any mode runs, so a new mode cannot miss it.
+# GIT_CEILING_DIRECTORIES stays: it can only stop the search lower.
+unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE
 
 # Not `$0`: through install.sh's symlink or a PATH lookup this must still
 # find its siblings and re-invoke itself.
@@ -40,10 +45,8 @@ shq() { printf '%q' "$1"; }
 . "$LIBDIR/pane.sh" || exit 1
 # shellcheck source=lib/fmt.sh
 . "$LIBDIR/fmt.sh" || exit 1
-
-# The path of lines_mode's notice rows ("diff too large"): not a file, no anchor.
-# shellcheck disable=SC2034  # read by the libs
-CAP_SENTINEL='(diff too large)'
+# shellcheck source=lib/workdir.sh
+. "$LIBDIR/workdir.sh" || exit 1
 
 # How a pane names itself in the prompt. An unset pane_title reads as
 # #{host_short}, not empty, so the window name stands in.
@@ -58,23 +61,12 @@ git_root() {
     printf '%s\n' "${root:-$dir}"
 }
 
-# The tree a pane works in: @cockpit_dir when set (a worktree made by hand
-# leaves the cwd in the main checkout, #49), else the cwd; a dangling one too.
-pane_dir() {                  # <pane> -> a directory; empty when the pane is gone
-    local out wt cwd
-    is_pane "$1" || return 0
-    out=$(tmux display-message -p -t "$1" '#{@cockpit_dir}'$'\037''#{pane_current_path}' 2>/dev/null)
-    wt=${out%%$'\037'*}; cwd=${out#*$'\037'}
-    if [ -n "$wt" ] && [ -d "$wt" ]; then printf '%s\n' "$wt"; else printf '%s\n' "$cwd"; fi
-}
-
 usage() {
     cat >&2 <<'USAGE'
 tmux-review — review an agent's uncommitted diff, one comment at a time.
   tmux-review [-p pane_id]                review that pane (or, without -p, the
                                           client's active pane); prefix r opens
                                           the board, where r on a row runs this
-  tmux-review --lines <dir>              the diff rows a review anchors to
   tmux-review --loop <dir> <store>       the review: revdiff, then a one-key prompt
                                           (deliver, approve, review again, base,
                                           discard, leave); needs revdiff
@@ -83,7 +75,7 @@ tmux-review — review an agent's uncommitted diff, one comment at a time.
   tmux-review --done <store>            after a by-hand --deliver: archive the batch, drop the snapshot
   tmux-review --delta <pane>            exit 0 when <pane>'s tree differs from its review base
   tmux-review --request <pane>          the agent asks: one popup on <pane>; the batch on stdout, exit 10
-  tmux-review --dir <pane>              the tree <pane> works in: @cockpit_dir, else its cwd
+  tmux-review --dir <pane>              the tree <pane> works in, as the board shows it
 In revdiff: its own keys (? lists them); q saves the comments, Q discards.
 After it: d deliver   a approve (no comments)   r review again   b base   x discard   l leave
 USAGE
@@ -115,7 +107,7 @@ need() {
     for l; do . "$LIBDIR/$l" || exit 1; done
 }
 case "${1:-}" in
-    --lines|--delta)            need review-diff.sh ;;
+    --delta)                    need review-diff.sh ;;
     --loop)                     need review-diff.sh review-revdiff.sh review-deliver.sh ;;
     --compose|--deliver|--done) need review-deliver.sh ;;
     --request)                  need review-deliver.sh review-fleet.sh ;;
@@ -123,8 +115,6 @@ case "${1:-}" in
 esac
 
 case "${1:-}" in
-    --lines)
-        shift; lines_mode "${1:-}" ;;
     --loop)
         shift; review_loop "${1:-}" "${2:-}" ;;
     --compose)
@@ -138,7 +128,7 @@ case "${1:-}" in
     --request)
         shift; request "${1:-}" ;;
     --dir)
-        shift; pane_dir "${1:-}" ;;
+        shift; pane_workdir "${1:-}" ;;
     -h|--help)
         usage; exit 0 ;;
     "")

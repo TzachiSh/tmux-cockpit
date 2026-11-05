@@ -59,6 +59,8 @@ fn board_pid(chan: &str) -> Option<u32> {
 
 extern "C" fn on_exit_signal(_: libc::c_int) {
     stop_waiter();
+    // an atomic load and a killpg: a lookup in flight must not outlive the board
+    crate::data::agents::kill_lookup();
     unsafe { restore_now() };
     // 0, not 128+sig: a torn-down popup wrote no action, which is exactly what
     // exit 0 with an empty $COCKPIT_ACTION means to the wrapper.

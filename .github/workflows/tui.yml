@@ -26,11 +26,16 @@ concurrency:
 
 jobs:
   tui-test:
-    # Pinned: bump on purpose (#401). 26.04, not 24.04: the shell suite's tools
-    # (cut, jq) are the ones a developer box has, and the two jobs share one cached
-    # tmux per image. The tmux-driven tests run on the 3.8 the tmux action builds
-    # (the README's floor, #471), not the image's 3.6.
-    runs-on: ubuntu-26.04
+    # Pinned: bump on purpose (#401). Both images are required legs, like
+    # shell-suite. The tmux-driven tests run on the 3.8 the tmux action builds
+    # (the README's floor, #471), not the image's own tmux, and the two jobs share
+    # one cached tmux per image.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-26.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     env:
       # A missing tmux must fail the tmux tests, not pass them in 0.00 s (#471).
       COCKPIT_REQUIRE_TMUX: '1'
