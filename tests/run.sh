@@ -12174,6 +12174,33 @@ out=$(cd "${BRR%/*}" && env -u TMUX COCKPIT_TUI_BIN="$BRN/cockpit-tui" "$DIR/scr
 is "a relative directory reaches the binary as its absolute path" "picker for branch -C $BRR" "$out"
 rm -rf "$BRN" "$BRR"
 
+echo "== tmux-branch: an inherited GIT_DIR or its kin never switches another repo =="
+# A dotfiles setup can export GIT_DIR into tmux's environment, and the popup
+# inherits it. The picker lists the pane repo's branches (gitsafe strips the
+# four), so the switch must land there too. FAIL-first: on the old code each
+# variable below switched, or checked out into, the other repo.
+BRE=$(mktmpd)
+# answers once, then leaves like esc: a refused switch cannot loop. conf's `a`
+# differs from main's, so a switch writes the tree it checks out.
+printf '#!/bin/sh\n[ -e "%s/used" ] && exit 1\n: > "%s/used"; echo "switch conf"\n' "$BRE" "$BRE" > "$BRE/cockpit-tui"
+chmod +x "$BRE/cockpit-tui"
+for v in GIT_DIR=@/.git GIT_WORK_TREE=@ GIT_COMMON_DIR=@/.git GIT_INDEX_FILE=@/.git/index; do
+    rm -rf "$BRE/pane" "$BRE/other" "$BRE/used"; br_repo "$BRE/pane" "$BRE/remote-${v%%=*}"
+    (
+      export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+      git init -q -b main "$BRE/other" && cd "$BRE/other" || exit 1
+      echo other > a; git add a; git commit -q -m init; git branch conf
+    ) >/dev/null 2>&1
+    brev=${v#*=}; brev=${brev//@/$BRE/other}
+    ( export "${v%%=*}=$brev"
+      env -u TMUX COCKPIT_TUI_BIN="$BRE/cockpit-tui" timeout 30 "$DIR/scripts/tmux-branch" "$BRE/pane" \
+          </dev/null >/dev/null 2>&1 )
+    is "${v%%=*} naming another repo: the pane repo switches, the other stays (branch, dirty files)" \
+       "conf 0 main 0" "$(br_cur "$BRE/pane") $(git -C "$BRE/pane" status --porcelain | grep -c .) \
+$(br_cur "$BRE/other") $(git -C "$BRE/other" status --porcelain | grep -c .)"
+done
+rm -rf "$BRE"
+
 # --- #303 branch popup: a branch another worktree holds jumps there -----------
 # cockpit-tui is a stub that answers `goto <path>`, once: the binary's half is in
 # tui/tests/branch.rs. Everything here is the script's half, on private servers.
