@@ -575,6 +575,21 @@ note: the staging host is not in the input; the agent may find it in a deploy co
 --- request
 copy the build to the staging server
 
+# Added for the #424 review: a feature with no done-when and no scope.
+
+=== h-feature-done
+kind: feature
+window: claude · claude · /home/u/projects/dashboard
+expect: either
+ask_any: done; email; push; in-app; toast; banner; badge; browser; trigger|triggers; event|events; alert|alerts
+must: notification|notifications
+holdout: yes
+note: what counts as done is the owner's call; asking it, or a prompt that plans first, both serve
+--- screen
+● The dashboard now shows the weekly totals per team.
+--- request
+add notifications to the dashboard
+
 # Added for the #421 review: a bug whose failure Claude Code can run itself.
 
 === runnable-failure
