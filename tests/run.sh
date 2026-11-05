@@ -14860,11 +14860,37 @@ is "and the user's own Stop hook and cockpit's done and review-gate are all stil
 is "--check after: all 6" "ok all 6 subagent hooks merged" "$(tisub)"
 fi
 
-echo "== jq filters parse on jq 1.7 (Ubuntu 24.04): no field access straight after a call's ? (#481) =="
-# jq 1.7 rejects `f(x)?.c` as a syntax error; 1.7.1+ accepts it. The suite runs a newer
-# jq, so a shape check stands in: write `f(x)? | .c` instead.
-j17=$(grep -nE '[)]\?\.[A-Za-z_]' "$DIR/install.sh" "$DIR/cockpit.tmux" "$DIR"/scripts/* "$DIR"/scripts/lib/* 2>/dev/null \
+echo "== jq filters parse on jq 1.7.x: no postfix after a term's ? (#481) =="
+# jq 1.7.x rejects any postfix written straight after the ? of a call, $var or
+# parenthesised term (f(x)?.c, f(x)?["c"], f(x)?[0], $x?.b); 1.8 accepts them. The
+# suite runs a newer jq, so a shape check stands in: write f(x)? | .c. The regex
+# (review-483) matches the 14 spellings 1.7.1 rejects and none of the 7 it accepts.
+j17re='([)]|(^|[^.[:alnum:]_$])[$]?[A-Za-z_][A-Za-z0-9_]*)[?][?[:space:]]*[.[]'
+j17=$(grep -nE "$j17re" "$DIR/install.sh" "$DIR/bootstrap.sh" "$DIR/cockpit.tmux" \
+        "$DIR/examples/claude-hooks.json" "$DIR"/scripts/* "$DIR"/scripts/lib/* 2>/dev/null \
     | grep -vE '^[^:]*:[0-9]+:[[:space:]]*#')
-is "no shipped script writes f(...)?.field" "" "$j17"
+is "no shipped script writes a postfix after a term's ?" "" "$j17"
+j17n=0
+for f in 'capture("x")?.c' 'capture("x")?["c"]' 'f(.)?[0]' 'first?.b' '$x?.b' 'f(.)? .b'; do
+    printf '%s\n' "$f" | grep -qE "$j17re" && j17n=$((j17n + 1))
+done
+for f in '.a?.b' '.a[]?.b' '.[0]?.b' '.a?[0]' 'capture("x")? | .c'; do
+    printf '%s\n' "$f" | grep -qE "$j17re" || j17n=$((j17n + 1))
+done
+is "the shape check flags the rejected spellings and passes the accepted ones" "11" "$j17n"
+# A jq that cannot compile a filter exits 3: --check says so, not "0 of 6".
+J3=$(mktmpd); mkdir -p "$J3/home/.claude" "$J3/shim"
+echo '{"hooks":{}}' > "$J3/home/.claude/settings.json"
+printf '#!/bin/sh\n[ "$1" = --version ] && { echo jq-9.9; exit 0; }\nexit 3\n' > "$J3/shim/jq"
+chmod +x "$J3/shim/jq"
+j3rows=$(env -u TMUX -u TMUX_PANE PATH="$J3/shim:$PATH" HOME="$J3/home" \
+        XDG_BIN_HOME="$J3/home/bin" XDG_CONFIG_HOME="$J3/home/cfg" TMUX_TMPDIR="$J3" \
+        "$DIR/install.sh" --check 2>&1 \
+    | sed -n 's/^\[ *\([a-z]*\) *\] *\(hooks\|subhooks\) *\(.*\)/\1 \2 \3/p' \
+    | sed 's/  */ /g; s/ $//' | tr '\n' ';')
+j3msg='jq-9.9 rejected the filter report it: tmux-cockpit issue'
+is "a jq compile error is a fail row, named, for both counts" \
+   "fail hooks $j3msg;fail subhooks $j3msg;" "$j3rows"
+rm -rf "$J3"
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1
