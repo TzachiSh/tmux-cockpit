@@ -1923,13 +1923,12 @@ Between the two nobody waits, and tmux keeps one bit per channel: the first
 `-S` in the same window frees it again. That refresh then waits for the 1 s
 tick.
 
-A wake pulls the next fetch forward, but never closer than `PUSH_GAP` (250 ms)
-to the end of the last one. Hooks fire on every tool call, and a fetch per wake
-took half a core at ten wakes a second (#492). A wake after a quiet gap fetches
-at once. One inside the gap fetches at its end, so the last wake of a storm is
-always shown, and a steady storm still refreshes about four times a second.
-Keys, and a resize to a new size, fetch at once. Each wake also raises SIGWINCH,
-which crossterm reports as a resize to the same size; that one asks for nothing.
+A wake asks for a fetch no sooner than `PUSH_GAP` (250 ms) after the last one
+ended: at once after a quiet gap, else at the gap's end, so the last wake of a
+storm is always fetched (#492). A new selection, a scroll, `v` and a resize to a
+new size fetch nothing: they recapture what is on screen at once, off the last
+fetch's panes. `^L` fetches at once. Each wake also raises SIGWINCH, which
+crossterm reports as a resize to the same size; that one asks for nothing.
 
 The waiter goes with the board on every exit path:
 

@@ -3562,6 +3562,8 @@ struct Snapshot {
     ok: bool,
     /// every tmux session, agents or not, off the last good read
     sessions: BTreeSet<String>,
+    /// a fetch read tmux for it; else a capture on the last fetch's panes
+    fresh: bool,
 }
 
 /// How long the worker waits, with nothing asked, before it fetches again.
@@ -3572,26 +3574,52 @@ pub const TICK: Duration = Duration::from_secs(1);
 /// the start, so a slow fetch still leaves the box this much rest.
 pub const PUSH_GAP: Duration = Duration::from_millis(250);
 
-/// What the key loop sends the worker.
-pub enum Ask {
-    /// A key or a resize: what is on screen changed, so fetch now.
-    Now(Want),
-    /// A push wake: tmux changed. Fetch at once after a quiet [`PUSH_GAP`],
-    /// else at its end, so the last wake of a storm is always fetched.
-    Push(Want),
+/// What an ask needs from the worker.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Kind {
+    /// The refresh key: a full fetch, now.
+    Now,
+    /// A push wake, or a key after which tmux may have changed: a full fetch,
+    /// at once after a quiet [`PUSH_GAP`], else at its end, so the last wake
+    /// of a storm is always fetched.
+    Soon,
+    /// A new selection, a scroll, the layout key or a new size: only the
+    /// captures of what is on screen, now, off the panes the last fetch read.
+    /// Held j at 30 Hz was 23 full fetches a second (#492).
+    Look,
 }
 
-/// When the worker's next fetch is due, after the fetch that ended at `done`.
+/// What the key loop sends the worker.
+pub struct Ask {
+    pub kind: Kind,
+    pub want: Want,
+}
+
+/// What the worker runs next: a fetch reads tmux and then captures, a
+/// capture reuses the last fetch's panes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Job {
+    Fetch,
+    Capture,
+}
+
+/// When the worker's next job is due, after the fetch that ended at `done`.
 pub struct Pace {
     done: Instant,
     due: Instant,
+    look: bool,
 }
 
 impl Pace {
     pub fn after(done: Instant) -> Self {
-        Pace { done, due: done + TICK }
+        Pace {
+            done,
+            due: done + TICK,
+            look: false,
+        }
     }
 
+    /// When the next fetch is due; a capture asked for is due at once.
     pub fn due(&self) -> Instant {
         self.due
     }
@@ -3599,47 +3627,92 @@ impl Pace {
     /// Takes an ask that came at `now`, and returns what it wants captured.
     /// An ask only ever pulls the fetch forward.
     pub fn take(&mut self, ask: Ask, now: Instant) -> Want {
-        let (at, want) = match ask {
-            Ask::Now(w) => (now, w),
-            Ask::Push(w) => (now.max(self.done + PUSH_GAP), w),
-        };
-        self.due = self.due.min(at);
-        want
+        match ask.kind {
+            Kind::Now => self.due = self.due.min(now),
+            Kind::Soon => self.due = self.due.min(now.max(self.done + PUSH_GAP)),
+            Kind::Look => self.look = true,
+        }
+        ask.want
+    }
+
+    /// The job due at `now`, if any. A due fetch comes first: it captures too.
+    /// A capture leaves the fetch where it was.
+    pub fn job(&mut self, now: Instant) -> Option<Job> {
+        if now >= self.due {
+            self.look = false;
+            return Some(Job::Fetch);
+        }
+        std::mem::take(&mut self.look).then_some(Job::Capture)
     }
 }
 
-/// Blocks until the next fetch is due and returns the newest `Want`, or `None`
-/// once the key loop is gone, so no fetch runs after the board has quit.
-pub fn wait(rx: &Receiver<Ask>, done: Instant, mut want: Want) -> Option<Want> {
-    let mut pace = Pace::after(done);
+/// Blocks until the next job is due, keeping `want` the newest asked for.
+/// `None` once the key loop is gone, checked before every job, so nothing
+/// runs after the board has quit.
+pub fn wait(rx: &Receiver<Ask>, pace: &mut Pace, want: &mut Want) -> Option<Job> {
     loop {
+        loop {
+            match rx.try_recv() {
+                Ok(a) => *want = pace.take(a, Instant::now()),
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => return None,
+            }
+        }
+        if let Some(j) = pace.job(Instant::now()) {
+            return Some(j);
+        }
         match rx.recv_timeout(pace.due().saturating_duration_since(Instant::now())) {
-            Ok(a) => want = pace.take(a, Instant::now()),
-            Err(RecvTimeoutError::Timeout) => return Some(want),
+            Ok(a) => *want = pace.take(a, Instant::now()),
+            Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return None,
         }
     }
 }
 
-/// Whether a resize event brings a new size, which the captures must be cut
-/// to now. Every push wake raises SIGWINCH too (push.rs), and that one comes
-/// with the size unchanged: it is left to the push, or it would skip the gap.
-pub fn resized(last: &mut Rect, here: Rect) -> bool {
-    std::mem::replace(last, here) != here
+/// What one turn of the key loop asks for a push wake and a resize event.
+#[derive(Debug, PartialEq)]
+pub struct Turn {
+    pub asks: Vec<Kind>,
+    /// a resize event redraws, whatever it asks
+    pub redraw: bool,
+}
+
+/// A push asks [`Kind::Soon`]. A resize asks [`Kind::Look`] only when the size
+/// moved: every push wake raises SIGWINCH too (push.rs), and crossterm hands
+/// it over as a resize to the same size. Asking for that one would skip the
+/// gap on every wake; the push flag asks instead.
+pub fn turn(pushed: bool, resize: Option<Rect>, sized: &mut Rect) -> Turn {
+    let mut asks = Vec::new();
+    if pushed {
+        asks.push(Kind::Soon);
+    }
+    if let Some(here) = resize
+        && std::mem::replace(sized, here) != here
+    {
+        asks.push(Kind::Look);
+    }
+    Turn {
+        asks,
+        redraw: resize.is_some(),
+    }
 }
 
 /// The fetch is fork-heavy, so it runs here and never on the key thread. Asks
-/// during a fetch or a wait collapse to one fetch; see [`Pace`] for when.
+/// during a job or a wait collapse; see [`Pace`] for when each runs.
 fn worker(rx: Receiver<Ask>, tx: Sender<Snapshot>, mut want: Want) {
     let (mut panes, mut sessions): (Vec<Pane>, BTreeSet<String>) = Default::default();
+    let (mut ok, mut job, mut pace) = (false, Job::Fetch, Pace::after(Instant::now()));
     loop {
         let t0 = Instant::now();
-        // None is "tmux did not answer"; keep the last good tile list rather
-        // than blanking the board on one failed read
-        let got = list_fleet();
-        let ok = got.is_some();
-        if let Some(got) = got {
-            (panes, sessions) = got;
+        let fresh = job == Job::Fetch;
+        if fresh {
+            // None is "tmux did not answer"; keep the last good tile list
+            // rather than blanking the board on one failed read
+            let got = list_fleet();
+            ok = got.is_some();
+            if let Some(got) = got {
+                (panes, sessions) = got;
+            }
         }
         // the tiles take each pane's newest rows; the list's pane its visible
         // screen, cursor-aware (#284)
@@ -3657,12 +3730,16 @@ fn worker(rx: Receiver<Ask>, tx: Sender<Snapshot>, mut want: Want) {
             took: t0.elapsed(),
             ok,
             sessions: sessions.clone(),
+            fresh,
         };
         if tx.send(snap).is_err() {
             return;
         }
-        match wait(&rx, Instant::now(), want) {
-            Some(w) => want = w,
+        if fresh {
+            pace = Pace::after(Instant::now());
+        }
+        match wait(&rx, &mut pace, &mut want) {
+            Some(j) => job = j,
             None => return,
         }
     }
@@ -3810,19 +3887,14 @@ pub fn run(o: &Opts) -> Option<Exit> {
         tiles: !list,
         pick: pick.clone(),
     };
-    let ask = |a: Rect, sel: usize, top: usize, list: bool, pick: &Option<String>| {
-        let _ = want_tx.send(Ask::Now(want_of(a, sel, top, list, pick)));
+    let ask = |kind: Kind, a: Rect, sel: usize, top: usize, list: bool, pick: &Option<String>| {
+        let want = want_of(a, sel, top, list, pick);
+        let _ = want_tx.send(Ask { kind, want });
     };
     // #284: the agent whose screen the list's right pane shows, as last asked for
     let mut pick: Option<String> = None;
 
     loop {
-        // a push only pulls the next fetch forward, so a missed wake costs
-        // one second and never a hang; the worker spaces them (PUSH_GAP)
-        if push.pending() {
-            let w = want_of(area(term.size().unwrap_or_default()), sel, top, list, &pick);
-            let _ = want_tx.send(Ask::Push(w));
-        }
         if note.as_ref().is_some_and(|n| n.gone(Instant::now())) {
             note = None;
             dirty = true;
@@ -3830,8 +3902,12 @@ pub fn run(o: &Opts) -> Option<Exit> {
         match snap_rx.try_recv() {
             Ok(s) => {
                 let t0 = Instant::now();
-                let s = snap_rx.try_iter().last().unwrap_or(s);
-                reads.got(s.ok, Instant::now());
+                // a capture-only snapshot reads no tmux, so it is no read
+                let mut fresh = s.fresh;
+                let s = snap_rx.try_iter().inspect(|x| fresh |= x.fresh).last().unwrap_or(s);
+                if fresh {
+                    reads.got(s.ok, Instant::now());
+                }
                 dirty |= !s.ok;
                 if s.ok {
                     sessions = s.sessions;
@@ -3872,7 +3948,7 @@ pub fn run(o: &Opts) -> Option<Exit> {
                 (sel, top, _) = fit(here, panes.len(), sel, top);
                 // the restored selection can sit below the first fetch's viewport
                 if top != was && !list {
-                    ask(here, sel, top, list, &pick);
+                    ask(Kind::Look, here, sel, top, list, &pick);
                 }
                 let mut extra = gate_extra(&panes, &pvs);
                 if list {
@@ -3887,7 +3963,7 @@ pub fn run(o: &Opts) -> Option<Exit> {
                 loaded = true;
                 // #291: one line a second filled tui.log; log only a slow fetch
                 // or a read that started or stopped failing
-                if s.took > SLOW_TICK || last_ok != Some(s.ok) {
+                if fresh && (s.took > SLOW_TICK || last_ok != Some(s.ok)) {
                     log(&format!(
                         "board tick {} tiles fetch {:?} apply {:?} redraw={} ok={}",
                         panes.len(),
@@ -3907,7 +3983,7 @@ pub fn run(o: &Opts) -> Option<Exit> {
             let here = area(term.size().unwrap_or_default());
             if repick(&mut pick, pick_of(list, here, &nav, &panes)) {
                 forget(&mut seen, pick.as_deref());
-                ask(here, sel, top, list, &pick);
+                ask(Kind::Look, here, sel, top, list, &pick);
             }
         }
         if dirty && !loaded && stale_shown.is_none() {
@@ -3972,16 +4048,19 @@ pub fn run(o: &Opts) -> Option<Exit> {
             Err(e) if transient(&e) => None,
             Err(_) => break,
         };
-        // a new size needs captures cut to it now; the same size is a push
-        // wake's SIGWINCH, which push.pending() above asks for
-        if let Some(Event::Resize(..)) = &ev {
-            let here = area(term.size().unwrap_or_default());
+        // a push only pulls the next fetch forward, so a missed wake costs one
+        // second and never a hang; a resize to a new size recaptures now
+        let size = || area(term.size().unwrap_or_default());
+        let resize = matches!(ev, Some(Event::Resize(..))).then(size);
+        if let Some(here) = resize {
             nav.settle(&panes, list_room(here));
-            if resized(&mut sized, here) {
-                ask(here, sel, top, list, &pick);
-            }
-            dirty = true;
         }
+        let t = turn(push.pending(), resize, &mut sized);
+        let here = size();
+        for k in t.asks {
+            ask(k, here, sel, top, list, &pick);
+        }
+        dirty |= t.redraw;
         let Some(Event::Key(k)) = ev else { continue };
         if k.kind != KeyEventKind::Press {
             continue;
@@ -4018,8 +4097,9 @@ pub fn run(o: &Opts) -> Option<Exit> {
                     break;
                 }
                 Some(Answer::Back) => {
+                    // the rows the confirm held may be old: a fetch, paced
                     confirm = None;
-                    ask(here, sel, top, list, &pick);
+                    ask(Kind::Soon, here, sel, top, list, &pick);
                 }
                 Some(Answer::Help) if !too_small(here) => help = Some(0),
                 Some(Answer::Close) => break,
@@ -4067,7 +4147,7 @@ pub fn run(o: &Opts) -> Option<Exit> {
             match find_key(k) {
                 Some(FindKey::Close) => break,
                 Some(FindKey::Help) => help = Some(0),
-                Some(FindKey::Refresh) => ask(here, sel, top, list, &pick),
+                Some(FindKey::Refresh) => ask(Kind::Now, here, sel, top, list, &pick),
                 Some(fk) => nav.find_act(fk, &panes, list_room(here)),
                 None => {}
             }
@@ -4079,7 +4159,7 @@ pub fn run(o: &Opts) -> Option<Exit> {
             match a {
                 Act::Quit => break,
                 Act::Help if !too_small(here) => help = Some(0),
-                Act::Refresh => ask(here, sel, top, list, &pick),
+                Act::Refresh => ask(Kind::Now, here, sel, top, list, &pick),
                 _ => {}
             }
             continue;
@@ -4093,7 +4173,7 @@ pub fn run(o: &Opts) -> Option<Exit> {
         match (a, p) {
             (Act::Quit, _) => break,
             (Act::Help, _) => help = Some(0),
-            (Act::Refresh, _) => ask(here, sel, top, list, &pick),
+            (Act::Refresh, _) => ask(Kind::Now, here, sel, top, list, &pick),
             (Act::Find, _) => nav.open_find(&panes, room),
             (Act::Layout, _) => {
                 // the selection crosses over by identity; a header gives its first agent
@@ -4105,7 +4185,7 @@ pub fn run(o: &Opts) -> Option<Exit> {
                     nav.settle(&panes, room);
                 }
                 list = !list;
-                ask(here, sel, top, list, &pick);
+                ask(Kind::Look, here, sel, top, list, &pick);
             }
             // ↵ on a header toggles its fold (D4)
             (Act::Jump, None) => nav.act(Act::Toggle, &panes, room),
@@ -4170,7 +4250,7 @@ pub fn run(o: &Opts) -> Option<Exit> {
                 (sel, top) = moved(a, sel, panes.len(), &g, top, &panes, &ord);
                 // newly visible tiles need a capture now, not at the next second
                 if top != was {
-                    ask(here, sel, top, list, &pick);
+                    ask(Kind::Look, here, sel, top, list, &pick);
                 }
             }
         }
