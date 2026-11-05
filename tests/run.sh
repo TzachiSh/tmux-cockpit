@@ -6165,7 +6165,7 @@ is "the store itself is gone" "absent" "$([ -e "$RASESS/comments.md" ] && echo p
 RACTL2=$(ra_shell)
 "$TMUX_REAL" -L "$RA" send-keys -t "$RACTL2" "$RAENV XDG_STATE_HOME=$(printf '%q' "$RASTATE") '$DIR/scripts/tmux-review' -p $RAAP" Enter
 review_enter "$RA" "$RACTL2"
-# approve() works on a cp -p COPY of the index (tree_diff's own discipline) --
+# approve() works on a COPY of the index (scratch_index, shared with tree_diff) --
 # the agent's real index must read back byte-unchanged mtime-wise.
 RAIDXBEFORE=$(stat -c %Y "$RADIR/.git/index" 2>/dev/null)
 "$TMUX_REAL" -L "$RA" send-keys -t "$RACTL2" a
@@ -10822,7 +10822,166 @@ is "unborn HEAD, a staged embedded repo: its plant fires under plain git status"
 ds_shell "$GD/r" >/dev/null
 is "and tree_diff's unborn path runs it in neither diff" "" "$(ls "$GD" | grep '^PWNED')"
 rm -rf "$GD"
-unset -f ds_subs ds_redirty ds_shell
+unset -f ds_shell
+
+echo "== tmux-review: approve keeps out of every gitlink, in a private temp dir (#441) =="
+# ^A's approve() had tree_diff's two flaws (#434, #435): an add -A that ran
+# status in every gitlink's repo, and a mktemp index cp wrote through. The
+# checkpoint it records must not move: ap_oracle runs the old steps, add -A on
+# a copy of the index then write-tree, and the ref must name that same tree.
+ap_run() {                    # <dir>: approve's status, in a fresh bash
+    bash -c '. "$1/git.sh"; . "$1/review-diff.sh"; approve "$2"; echo "$?"' \
+        _ "$DIR/scripts/lib" "$1" 2>/dev/null
+}
+ap_oracle() {                 # <repo root>: the tree the old approve recorded
+    local i; i=$(mktmpf); cp -p -- "$1/.git/index" "$i"
+    GIT_INDEX_FILE=$i git -C "$1" add -A >/dev/null 2>&1 \
+        && GIT_INDEX_FILE=$i git -C "$1" write-tree
+    rm -f -- "$i"
+}
+ap_ref() { git -C "$1" rev-parse -q --verify refs/cockpit/reviewed/main 2>/dev/null; }
+ap_unref() { git -C "$1" update-ref -d refs/cockpit/reviewed/main 2>/dev/null; }
+GD=$(mktmpd); mkdir "$GD/tmp" "$GD/bin"
+( cd "$GD" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main p && cd p && printf 'a\n' > a && printf 'g\n' > gone
+  mkdir d && printf 'x\n' > d/x && git add -A && git commit -q -m one
+  printf 'b\n' >> a && rm gone && printf 'n\n' > d/n ) >/dev/null 2>&1
+is "no gitlinks: approve exits 0" "0" "$(TMPDIR="$GD/tmp" ap_run "$GD/p")"
+is "and records the old approve's tree, byte for byte" "$(ap_oracle "$GD/p")" "$(ap_ref "$GD/p")"
+is "and leaves nothing in TMPDIR" "" "$(ls -A "$GD/tmp")"
+ap_unref "$GD/p"
+is "a relative TMPDIR: the same tree" "0|$(ap_oracle "$GD/p")" \
+   "$(cd "$GD" && TMPDIR=tmp ap_run "$GD/p")|$(ap_ref "$GD/p")"
+is "and nothing left in it" "" "$(ls -A "$GD/tmp")"
+ap_unref "$GD/p"
+is "an empty dir argument fails, even from inside a repo, and writes no ref" "1|" \
+   "$(cd "$GD/p" && ap_run "")|$(ap_ref "$GD/p")"
+is "a dir that is not a repo fails and leaves nothing" "1|" \
+   "$(TMPDIR="$GD/tmp" ap_run "$GD/tmp")|$(ls -A "$GD/tmp")"
+cat > "$GD/bin/git" <<STUB
+#!/usr/bin/env bash
+case " \$* " in
+    *" add "*) ls -ld "\$(dirname "\$GIT_INDEX_FILE")" | cut -c1-10 > "$GD/mode" ;;
+esac
+exec $(command -v git) "\$@"
+STUB
+chmod +x "$GD/bin/git"; chmod 755 "$GD/tmp"
+PATH="$GD/bin:$PATH" TMPDIR="$GD/tmp" ap_run "$GD/p" >/dev/null
+is "the index copy sits in a dir only the user can open" "drwx------" \
+   "$(cat "$GD/mode" 2>/dev/null)"
+# ds_subs's repo: a filter planted in a submodule and in an embedded repo at a
+# non-UTF-8 path, proven live by plain git status, and a second submodule
+# whose pointer moved.
+is "a gitlink's planted clean filter fires under plain git status: both of them" "2" \
+   "$(ds_subs "$GD")"
+# The mktemp shim plays an agent that won the race: the dir it hands back
+# already holds a symlink to the victim at one of approve's names, and so
+# does the file it would hand back without -d.
+for at in "index staged" pathspec gitlinks; do
+    printf 'keep\n' > "$GD/victim"
+    cat > "$GD/bin/mktemp" <<STUB
+#!/bin/sh
+d=$GD/race; rm -rf "\$d" "\$d.f"; mkdir -m 700 "\$d"
+for n in $at; do ln -s "$GD/victim" "\$d/\$n"; done
+case "\$1" in -d) echo "\$d" ;; *) ln -s "$GD/victim" "\$d.f"; echo "\$d.f" ;; esac
+STUB
+    chmod +x "$GD/bin/mktemp"
+    PATH="$GD/bin:$PATH" ap_run "$GD/r" >/dev/null
+    is "a symlink raced in at $at: the victim keeps its 5 bytes" "5" "$(wc -c < "$GD/victim")"
+done
+rm -rf "$GD/bin/mktemp" "$GD/race" "$GD/race.f"; ap_unref "$GD/r"
+ds_redirty 204001010000
+is "approve exits 0 and runs no gitlink's clean filter" "0|" \
+   "$(TMPDIR="$GD/tmp" ap_run "$GD/r")|$(ls "$GD" | grep '^PWNED')"
+apsub=$(ap_ref "$GD/r")
+is "the checkpoint holds the moved pointer" "$(git -C "$GD/r/bump" rev-parse HEAD)" \
+   "$(git -C "$GD/r" rev-parse "$apsub:bump" 2>/dev/null)"
+is "and is the old approve's tree, byte for byte" "$(ap_oracle "$GD/r")" "$apsub"
+ap_unref "$GD/r"; ds_redirty 204101010000
+is "approve from a subdir: the same tree, no filter run" "0|$apsub|" \
+   "$(TMPDIR="$GD/tmp" ap_run "$GD/r/d")|$(ap_ref "$GD/r")|$(ls "$GD" | grep '^PWNED')"
+ap_unref "$GD/r"; mv "$GD/r/bump" "$GD/bump.away"
+is "a submodule dir gone: dropped from the checkpoint, as the old approve did" \
+   "0|$(ap_oracle "$GD/r")" "$(ap_run "$GD/r")|$(ap_ref "$GD/r")"
+ap_unref "$GD/r"; mv "$GD/bump.away" "$GD/r/bump"
+# A skip-worktree gitlink, as a sparse checkout leaves one: add -A never
+# touches it, dir there with its pointer moved or dir gone, and neither may
+# approve.
+git -C "$GD/r" update-index --skip-worktree bump
+for at in there gone; do
+    [ "$at" = there ] || mv "$GD/r/bump" "$GD/bump.away"
+    is "a skip-worktree submodule, dir $at: the old approve's tree" \
+       "0|$(ap_oracle "$GD/r")" "$(ap_run "$GD/r")|$(ap_ref "$GD/r")"
+    ap_unref "$GD/r"
+done
+mv "$GD/bump.away" "$GD/r/bump"; git -C "$GD/r" update-index --no-skip-worktree bump
+is "and nothing left in TMPDIR" "" "$(ls -A "$GD/tmp")"
+# A list that never reaches its file: while ls-files writes $tmp/staged, the
+# shim points AP_NAME beside it at AP_SINK. Each way approve fails, adds
+# nothing and writes no ref; the shim logs every add it sees.
+cat > "$GD/bin/git" <<STUB
+#!/usr/bin/env bash
+case " \$* " in
+    *" ls-files "*) o=\$(readlink "/proc/\$\$/fd/1"); ln -s "\$AP_SINK" "\${o%/*}/\$AP_NAME" ;;
+    *" add "*) echo add >> "$GD/adds" ;;
+esac
+exec $(command -v git) "\$@"
+STUB
+n=2042; printf 'keep\n' > "$GD/victim"
+for row in pathspec:/dev/full pathspec:/dev/null pathspec:file \
+           gitlinks:/dev/full gitlinks:/dev/null gitlinks:file; do
+    ds_redirty "${n}01010000"; n=$((n + 1)); rm -f "$GD/adds"
+    sink=${row#*:}; [ "$sink" != file ] || sink=$GD/victim
+    is "the ${row%%:*} list sent to ${row#*:}: approve fails, adds nothing, writes no ref" "1|||" \
+       "$(AP_NAME=${row%%:*} AP_SINK=$sink PATH="$GD/bin:$PATH" TMPDIR="$GD/tmp" ap_run "$GD/r"
+          )|$(cat "$GD/adds" 2>/dev/null)|$(ap_ref "$GD/r")|$(ls "$GD" | grep '^PWNED')"
+    ap_unref "$GD/r"
+done
+is "and the victim keeps its 5 bytes" "5" "$(wc -c < "$GD/victim")"
+is "and a failed approve leaves nothing in TMPDIR" "" "$(ls -A "$GD/tmp")"
+# The agent's index moves between the copy and the listing. The add runs on
+# the copy, so the gitlink list must come from it too: the shim drops sub
+# from the real index while the list is read, and sub is still in the copy.
+cat > "$GD/bin/git" <<STUB
+#!/usr/bin/env bash
+case " \$* " in
+    *" ls-files -s "*)
+        env -u GIT_INDEX_FILE $(command -v git) -C "$GD/r" \$AP_RACE >/dev/null 2>&1 ;;
+esac
+exec $(command -v git) "\$@"
+STUB
+ds_redirty 205001010000
+is "sub dropped from the real index mid-listing: approve runs no filter" "0|" \
+   "$(AP_RACE="update-index --force-remove sub" PATH="$GD/bin:$PATH" ap_run "$GD/r"
+      )|$(ls "$GD" | grep '^PWNED')"
+git -C "$GD/r" reset -q -- sub; ap_unref "$GD/r"; ds_redirty 205101010000
+is "and tree_diff runs none either" "" \
+   "$(AP_RACE="update-index --force-remove sub" PATH="$GD/bin:$PATH" bash -c '. "$1/git.sh"
+      . "$1/review-diff.sh"; tree_diff "$2" --numstat' _ "$DIR/scripts/lib" "$GD/r" >/dev/null 2>&1
+      git -C "$GD/r" reset -q -- sub; ls "$GD" | grep '^PWNED')"
+# The other way: an embedded repo staged while the list is read is untracked
+# in the copy, and add -A records it at its HEAD, as the old approve did.
+( cd "$GD/r" && git init -q -b main late && printf 'l\n' > late/l && git -C late add l \
+  && git -C late -c user.name=t -c user.email=t@e commit -q -m l ) >/dev/null 2>&1
+is "an embedded repo staged mid-listing: approve records it at its HEAD" \
+   "0|$(git -C "$GD/r/late" rev-parse HEAD)" \
+   "$(AP_RACE="add late" PATH="$GD/bin:$PATH" ap_run "$GD/r"
+      )|$(r=$(ap_ref "$GD/r") && git -C "$GD/r" rev-parse "$r:late" 2>/dev/null)"
+git -C "$GD/r" rm -q --cached late >/dev/null 2>&1; rm -rf "$GD/r/late"; ap_unref "$GD/r"
+# Killed mid-add: the trap takes the whole temp dir. The add runs in a
+# command substitution, so the shim TERMs approve's own shell by its pid.
+cat > "$GD/bin/git" <<STUB
+#!/usr/bin/env bash
+case " \$* " in *" add "*) kill -TERM "\$AP_PID"; exit 0 ;; esac
+exec $(command -v git) "\$@"
+STUB
+is "approve killed mid-add exits 143, its temp dir gone" "143|" \
+   "$(PATH="$GD/bin:$PATH" TMPDIR="$GD/tmp" bash -c 'export AP_PID=$$; . "$1/git.sh"
+      . "$1/review-diff.sh"; approve "$2"' _ "$DIR/scripts/lib" "$GD/p" >/dev/null 2>&1
+      echo "$?")|$(ls -A "$GD/tmp")"
+rm -rf "$GD"
+unset -f ds_subs ds_redirty ap_run ap_oracle ap_ref ap_unref
 
 echo "== tm: picking a session from a real popup switches the client =="
 # A server started from inside another tmux pane keeps that $TMUX_PANE in its
@@ -11061,6 +11220,16 @@ git -C "$RD" update-ref -d refs/cockpit/reviewed/main
 printf '## f:2 (+)\n> B\nkeep\n\n' > "$RDS/comments.md"
 is "a with comments pinned does nothing; l leaves" "0" "$(rd_loop al "$RD" "$RDS/comments.md")"
 is "and no checkpoint was written" "" "$(git -C "$RD" rev-parse -q --verify refs/cockpit/reviewed/main 2>/dev/null)"
+# A failed approve says so in plain words: a stale ref is one cause of many
+# since approve fails closed (#441). The tmux shim logs each argument.
+rd_reset; : > "$RDS/comments.md"; RDTM=$(mktmpd)
+printf '#!/bin/sh\nprintf "%%s\\n" "$@" >> "%s/args"\n' "$RDTM" > "$RDTM/tmux"
+chmod +x "$RDTM/tmux"
+git -C "$RD" update-ref refs/cockpit/reviewed/main/x "$(git -C "$RD" rev-parse 'HEAD^{tree}')"
+is "a failed approve: the loop says it could not mark the branch, and nothing more" "0|1" \
+   "$(rd_loop al "$RD" "$RDS/comments.md" "$RDB:$RDTM:$PATH")|$(grep -cx \
+      'cockpit: could not mark the branch reviewed' "$RDTM/args")"
+git -C "$RD" update-ref -d refs/cockpit/reviewed/main/x; rm -rf "$RDTM"
 # 9. a file-level comment whose first line is a quote keeps it as body.
 rd_reset; mkdir -p "$RDS"; printf '## f (file-level)\n> not a quote\nnote\n\n' > "$RDS/comments.md"
 rd_loop rl "$RD" "$RDS/comments.md" >/dev/null; parse_store "$RDS/comments.md"
