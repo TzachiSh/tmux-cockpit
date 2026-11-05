@@ -682,7 +682,10 @@ fn planted_git_config_never_runs() {
 fn an_inherited_git_variable_never_moves_a_boards_row() {
     let r = Repo::new("redirect");
     // tracked past the cap: only the inherited index makes it look untracked, so big
-    std::fs::File::create(r.dir.join("core")).unwrap().set_len(33 * 1024 * 1024).unwrap();
+    std::fs::File::create(r.dir.join("core"))
+        .unwrap()
+        .set_len(33 * 1024 * 1024)
+        .unwrap();
     r.git(&["add", "core"]);
     r.git(&["-c", "user.name=t", "-c", "user.email=t@e", "commit", "-q", "-m", "core"]);
     let other = r.dir.join(".git/other"); // inside .git: never in the pane repo's tree

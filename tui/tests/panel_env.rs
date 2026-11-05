@@ -415,7 +415,10 @@ fn an_inherited_git_variable_never_moves_the_repo_block() {
         .into_iter()
         .filter(|(var, val)| {
             let mut vars: Vec<_> = REDIRECT.iter().map(|v| (*v, None)).collect();
-            vars.extend([("GIT_CONFIG_GLOBAL", Some("/dev/null".into())), ("GIT_CONFIG_NOSYSTEM", Some("1".into()))]);
+            vars.extend([
+                ("GIT_CONFIG_GLOBAL", Some("/dev/null".into())),
+                ("GIT_CONFIG_NOSYSTEM", Some("1".into())),
+            ]);
             let e = Env::new("repo-redirect", &vars);
             let pane = pane_and_other(&e);
             let want = cockpit_tui::panel::capture::repo_state(&pane, "");
