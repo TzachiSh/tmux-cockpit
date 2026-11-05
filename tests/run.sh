@@ -10929,6 +10929,34 @@ for row in pathspec:/dev/full pathspec:/dev/null pathspec:file \
 done
 is "and the victim keeps its 5 bytes" "5" "$(wc -c < "$GD/victim")"
 is "and a failed approve leaves nothing in TMPDIR" "" "$(ls -A "$GD/tmp")"
+# The agent's index moves between the copy and the listing. The add runs on
+# the copy, so the gitlink list must come from it too: the shim drops sub
+# from the real index while the list is read, and sub is still in the copy.
+cat > "$GD/bin/git" <<STUB
+#!/usr/bin/env bash
+case " \$* " in
+    *" ls-files -s "*) env -u GIT_INDEX_FILE $(command -v git) -C "$GD/r" \$AP_RACE >/dev/null 2>&1 ;;
+esac
+exec $(command -v git) "\$@"
+STUB
+ds_redirty 205001010000
+is "sub dropped from the real index mid-listing: approve runs no filter" "0|" \
+   "$(AP_RACE="update-index --force-remove sub" PATH="$GD/bin:$PATH" ap_run "$GD/r"
+      )|$(ls "$GD" | grep '^PWNED')"
+git -C "$GD/r" reset -q -- sub; ap_unref "$GD/r"; ds_redirty 205101010000
+is "and tree_diff runs none either" "" \
+   "$(AP_RACE="update-index --force-remove sub" PATH="$GD/bin:$PATH" bash -c '. "$1/git.sh"
+      . "$1/review-diff.sh"; tree_diff "$2" --numstat' _ "$DIR/scripts/lib" "$GD/r" >/dev/null 2>&1
+      git -C "$GD/r" reset -q -- sub; ls "$GD" | grep '^PWNED')"
+# The other way: an embedded repo staged while the list is read is untracked
+# in the copy, and add -A records it at its HEAD, as the old approve did.
+( cd "$GD/r" && git init -q -b main late && printf 'l\n' > late/l && git -C late add l \
+  && git -C late -c user.name=t -c user.email=t@e commit -q -m l ) >/dev/null 2>&1
+is "an embedded repo staged mid-listing: approve records it at its HEAD" \
+   "0|$(git -C "$GD/r/late" rev-parse HEAD)" \
+   "$(AP_RACE="add late" PATH="$GD/bin:$PATH" ap_run "$GD/r"
+      )|$(r=$(ap_ref "$GD/r") && git -C "$GD/r" rev-parse "$r:late" 2>/dev/null)"
+git -C "$GD/r" rm -q --cached late >/dev/null 2>&1; rm -rf "$GD/r/late"; ap_unref "$GD/r"
 # Killed mid-add: the trap takes the whole temp dir. The add runs in a
 # command substitution, so the shim TERMs approve's own shell by its pid.
 cat > "$GD/bin/git" <<STUB

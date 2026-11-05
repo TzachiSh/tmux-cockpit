@@ -97,8 +97,10 @@ scratch_done() { rm -rf -- "$tmp"; trap - EXIT HUP INT TERM; }
 # the index. Sets the caller's tmp (the dir), idx (the copy, $tmp/index, absent
 # when there is no index yet), and from (the add's pathspec options, empty when
 # no gitlink is staged), with the traps scratch_done clears. $tmp/staged
-# holds the staged entries. Status 1 when the list or the excludes do not land:
-# the dir is gone, and the caller must run no add.
+# holds the copy's staged entries: read from the copy the add runs on, never
+# from the agent's index, which can drop a gitlink in between and with it
+# its exclude. Status 1 when the list or the excludes do not land: the dir is
+# gone, and the caller must run no add.
 scratch_index() {             # <dir> <gitdir>
     local dir=$1 gd=$2
     tmp=$(mktemp -d) || return 1
@@ -107,8 +109,8 @@ scratch_index() {             # <dir> <gitdir>
     idx=$tmp/index
     { (set -C; cat -- "$gd/index" > "$idx") && touch -r "$gd/index" -- "$idx"; } 2>/dev/null \
         || rm -f -- "$idx"
-    (set -C; git -C "$dir" --no-optional-locks ls-files -s -z --full-name -- ':(top)' \
-        > "$tmp/staged") 2>/dev/null || { scratch_done; return 1; }
+    (set -C; GIT_INDEX_FILE=$idx git -C "$dir" --no-optional-locks ls-files -s -z --full-name \
+        -- ':(top)' > "$tmp/staged") 2>/dev/null || { scratch_done; return 1; }
     # grep's 1: no record holds "160000 ", so there is no gitlink and no loop
     # to run. An error (2) runs the loop all the same.
     grep -q -a -F -e '160000 ' -- "$tmp/staged" 2>/dev/null
