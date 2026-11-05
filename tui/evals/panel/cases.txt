@@ -401,7 +401,7 @@ yaml for service web, port 8080, 3 replicas
 kind: plan
 window: claude · claude · /home/u/projects/tool
 expect: ask
-ask_any: goal; aim; purpose; why; readability|readable; quality; style; behaviour|behavior; performance|faster; testable|testing; maintain|maintainable
+ask_any: goal; aim; purpose; why; readability|readable; easier to read; cleaner; quality; style; behaviour|behavior; performance|faster; testable|testing; maintain|maintainable; new feature
 must_not: autopilot; ralph; ultrawork; ultrathink
 note: #503 (card 5), was write: what the split is for (same behaviour, better quality, something else) is the owner's goal; the agent reads the file itself
 --- request
@@ -752,3 +752,62 @@ ask_any: test|tests; build; deploy; lint; trigger|triggers; push; pull request|p
 note: what the workflow runs and when is the owner's spec; a file would guess it
 --- request
 github actions workflow yaml for this repo
+
+# Added for #503 after its prompt: the same three asks once the owner settled
+# them, and one more refactor plan with no goal.
+
+=== h-review-focus-given
+kind: review
+window: claude · claude · /home/u/projects/auth
+expect: write
+must: bug|bugs; error handling; subagent|subagents
+holdout: yes
+note: the focus and the limit are given, and four files across a branch fit one subagent per focus
+--- repo
+branch: feat/sso...origin/feat/sso [ahead 4]
+root: /home/u/projects/auth
+status: clean
+recent commits:
+  c41d0e2 sso: map groups to roles
+  9a7b3f1 sso: callback handler
+diff --stat:
+  auth/sso.py      | 142 +++++++++++++++++++++++++
+  auth/session.py  |  31 ++++--
+  auth/roles.py    |  44 ++++++++
+  config/auth.yaml |  12 +++
+  4 files changed, 221 insertions(+), 8 deletions(-)
+--- request
+review this branch for bugs and error handling only, just report
+
+=== h-plan-goal-given
+kind: plan
+window: claude · claude · /home/u/projects/tool
+expect: write
+must: server.rs; test|tests|testable
+must_not: Assumed:
+holdout: yes
+note: the goal of the split is given: nothing to ask
+--- request
+plan how to split src/server.rs so each handler can be tested on its own, plan only
+
+=== h-toml-given
+kind: format
+window: bash · bash · /home/u
+out: format
+expect: write
+must: 0.0.0.0; 8080; server
+out_is: format
+holdout: yes
+note: every field is given: a config with nothing to guess is written
+--- request
+toml with a [server] table, host 0.0.0.0 and port 8080
+
+=== h-restructure-db
+kind: refactor
+window: claude · claude · /home/u/projects/shop
+expect: ask
+ask_any: goal; aim; purpose; why; readability|readable; quality; style; behaviour|behavior; performance|faster; testable|testing; maintain|maintainable; new feature
+holdout: yes
+note: no goal for the change: what it is for decides the plan
+--- request
+how should we restructure the db layer
