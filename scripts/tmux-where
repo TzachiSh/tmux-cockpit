@@ -89,6 +89,10 @@ if [ "$mode" = branch ] && [ "$pid" = --set ]; then
     IFS= read -r -d '' cur < <(tmux display-message -p -t "$arg3" \
         '#{@cockpit_branch}'$'\037''#{pane_current_path}' 2>/dev/null)
     path=${cur#*$'\037'}; path=${path%$'\n'}; cur=${cur%%$'\037'*}
+    # #452: a worktree made by hand leaves the process in the main checkout, so
+    # @cockpit_dir names the tree when it is one; a dangling option is ignored.
+    wdir=$(tmux show-option -pqv -t "$arg3" @cockpit_dir 2>/dev/null)
+    [ -n "$wdir" ] && [ -d "$wdir" ] && path=$wdir
     [ -n "$path" ] || exit 0
     b=$(git_label); b=${b# }
     [ "$b" = "$cur" ] && exit 0
