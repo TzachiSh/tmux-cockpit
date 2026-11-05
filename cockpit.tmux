@@ -242,8 +242,10 @@ Q_OPEN=$(sq "$DIR/scripts/tmux-open-path")
 # (#38), so the key stores #{pane_id} on the session first and the popup reads it
 # back by the session id $TMUX ends in. Asking for the session's active pane
 # instead broke on tmux master, where the popup is a pane and the active one.
+# Read once: the popup unsets it in the same call, so a key that forgets SRC_SET
+# gets an empty id rather than the pane an earlier key stored.
 SRC_SET=(set-option -F @cockpit_src_pane '#{pane_id}' '\;')
-SRC_PANE='"$(tmux show-option -qv -t "\$${TMUX##*,}" @cockpit_src_pane)"'
+SRC_PANE='"$(tmux show-option -qv -t "\$${TMUX##*,}" @cockpit_src_pane \; set-option -qu -t "\$${TMUX##*,}" @cockpit_src_pane)"'
 
 if [ "$(tmux show-option -gqv mouse)" != on ]; then
     tmux display-message "tmux-cockpit: the click gestures need 'set -g mouse on'; prefix+b still works"

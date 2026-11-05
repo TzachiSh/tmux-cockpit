@@ -363,6 +363,47 @@ until_cap "$PBO" o '*on beta*' && ok "prefix b opens on the pane's repo (beta), 
 "$TMUX_REAL" -L "$PBO" kill-server >/dev/null 2>&1; "$TMUX_REAL" -L "$PB" kill-server >/dev/null 2>&1
 fi
 
+echo "== prefix i, f and w open on the pane they were pressed in, not one an earlier key stored (#494) =="
+# Each popup key stores #{pane_id} on the session and its popup reads it back. A
+# key that forgot to store it would open on whatever pane the last key left there:
+# live, so nothing complains, but the wrong one. A stub cockpit-tui logs each call.
+if need_tmux "popup source pane"; then :; else
+SP="cockpit-sp-$$"; SPO="cockpit-spo-$$"; SOCKS="$SOCKS $SP $SPO"; SPD=$(mktmpd)
+# The board passes no pane to the binary, so for it the stub logs its caller's -p.
+cat > "$SPD/cockpit-tui" <<STUB
+#!/bin/sh
+[ "\$1" = --version ] && { echo "cockpit-tui 9.9.9"; exit 0; }
+[ "\$1" = board ] && set -- board "\$(ps -o args= -p \$PPID | grep -o -- '-p %[0-9]*')"
+printf '%s\\n' "\$*" >> "$SPD/log"
+STUB
+chmod +x "$SPD/cockpit-tui"
+COCKPIT_TUI_BIN="$SPD/cockpit-tui" XDG_STATE_HOME="$SPD/state" \
+    "$TMUX_REAL" -L "$SP" -f /dev/null new-session -d -s t -x 120 -y 30 -c "$SPD" 'exec sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$SP" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+"$TMUX_REAL" -L "$SP" new-window -t t: -c "$SPD" 'exec sleep 300' >/dev/null 2>&1
+sp0=$("$TMUX_REAL" -L "$SP" display-message -p -t t:0 '#{pane_id}')
+sp1=$("$TMUX_REAL" -L "$SP" display-message -p -t t:1 '#{pane_id}')
+"$TMUX_REAL" -L "$SPO" -f /dev/null new-session -d -s o -x 120 -y 32 -c "$SPD" \
+    "TERM=xterm-256color exec $TMUX_REAL -L $SP attach -t t" >/dev/null 2>&1
+until_out '?*' "$TMUX_REAL" -L "$SP" list-clients -F '#{client_name}'
+spkey() {                     # <window> <key> <log line it must add>: press it there, wait for the popup to close
+    "$TMUX_REAL" -L "$SP" select-window -t "t:$1" >/dev/null 2>&1
+    "$TMUX_REAL" -L "$SPO" send-keys -t o C-b "$2"
+    until_file "$SPD/log" "*$3"
+    until_out 'closed' sh -c "\"$TMUX_REAL\" -L $SPO capture-pane -p -t o | grep -q -e 'info · %' -e 'panel · %' || echo closed"
+}
+spkey 0 i "info $sp0"
+spkey 1 f "panel $sp1"
+spkey 0 i "info $sp0"
+spkey 1 w "board"
+is "f opens on its own pane after i stored another, and i on its own after f" \
+   "info $sp0|panel $sp1|info $sp0" "$(head -3 "$SPD/log" | tr '\n' '|' | sed 's/|$//')"
+is "and the board key (w) passes the pane it was pressed in" "board -p $sp1" "$(sed -n 4p "$SPD/log")"
+is "the popup reads the stored pane once: none is left on the session for a key that forgets to store it" "" \
+   "$("$TMUX_REAL" -L "$SP" show-option -qv -t t: @cockpit_src_pane)"
+"$TMUX_REAL" -L "$SPO" kill-server >/dev/null 2>&1; "$TMUX_REAL" -L "$SP" kill-server >/dev/null 2>&1
+fi
+
 echo "== the menu is not a way for a directory name to run tmux commands =="
 # display-menu expands an item's command as a format and THEN parses it as
 # tmux syntax, so a live #{pane_current_path} inside an item let a directory
