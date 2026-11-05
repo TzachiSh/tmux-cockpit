@@ -582,7 +582,7 @@ kind: feature
 window: claude · claude · /home/u/projects/dashboard
 expect: either
 ask_any: done; trigger|triggers; notify|notified
-must: plan|planning|plans
+must: plan|planning|plans; done
 out_is: prompt
 holdout: yes
 note: what counts as done is the owner's call: a question about it, or a prompt that plans first, both serve; a question about the channel is what to build, not done

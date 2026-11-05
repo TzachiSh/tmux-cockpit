@@ -126,11 +126,11 @@ run_shards() {                       # <parallelism> <shard file>...
     ' _ {}
 }
 
-# `# group: serial` blocks run against a clock or a 50 MB fixture (5 s on a
-# 50-pane fleet scan, 3 s on a 5000-row --lines build, ...), so they measure the
-# box's spare CPU as much as the code. Measured: green at J=4, red at J=8 and
-# J=12. They run first, alone, while nothing competes; the other ~106 blocks
-# then take the machine. Costs about 6 s and is why `make test-par` is green.
+# `# group: serial` blocks run against a clock or a large fixture, so they
+# measure the box's spare CPU as much as the code. Measured on the ones there
+# were: green at J=4, red at J=8 and J=12. They run first, alone, while nothing
+# competes; the other blocks then take the machine. No block carries the mark
+# today; the shard stays for the next one that needs it.
 serial=""; rest=""
 for f in "$SH".*; do
     case " $(printf '%s' "${serial_ids:-}" | tr ' ' '\n' | sort -u | tr '\n' ' ') " in
