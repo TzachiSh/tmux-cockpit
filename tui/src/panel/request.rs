@@ -14,9 +14,13 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Fail {
     Timeout,
+    /// claude stopped at `--max-budget-usd`, in text or json: match this, not words.
+    Budget {
+        limit_usd: f64,
+    },
     /// The first line claude printed, stderr first, or why it could not start.
     Failed(String),
 }
@@ -25,6 +29,7 @@ impl std::fmt::Display for Fail {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
             Fail::Timeout => f.write_str("took too long"),
+            Fail::Budget { limit_usd } => write!(f, "stopped at its budget of USD {limit_usd}"),
             Fail::Failed(s) => f.write_str(s),
         }
     }
@@ -64,8 +69,12 @@ impl Call {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Profile {
     pub tools: &'static [&'static str],
-    pub allow: &'static [&'static str],
+    pub allow: Vec<String>,
     pub deny: &'static [&'static str],
+    /// `--permission-mode`. Unset, the user's `defaultMode` decides what no rule
+    /// covers, and `auto` approves a read outside the read dirs (probed).
+    pub permission_mode: Option<&'static str>,
+    pub output: Output,
     /// skills and slash commands; off is `--disable-slash-commands`
     pub skills: bool,
     /// `--permission-prompts none`
@@ -82,6 +91,15 @@ pub struct Profile {
     /// (review-432); through `--add-dir` only its skills load (probed). The cwd
     /// is always the call's own dir.
     pub read_dirs: Vec<PathBuf>,
+}
+
+/// `--output-format`: a text call's stdout is its answer; a json one's is its
+/// events (`--verbose`), the answer their result, the rest kept for
+/// [`Request::transcript`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Output {
+    Text,
+    Json,
 }
 
 const READ: &[&str] = &["Read", "Grep", "Glob"];
@@ -121,8 +139,10 @@ const DENY: &[&str] = &[
 impl Profile {
     pub const TEXT: Profile = Profile {
         tools: &[],
-        allow: &[],
+        allow: Vec::new(),
         deny: &[],
+        permission_mode: None,
+        output: Output::Text,
         skills: false,
         no_prompts: false,
         budget_usd: None,
@@ -131,20 +151,31 @@ impl Profile {
         read_dirs: Vec::new(),
     };
 
-    /// Read the folder `repo`, added beside the cwd; with `research`, search and
-    /// fetch the web and load skills too. The budget and the timeout are the
-    /// owner's caps (#365 D7), so the type asks for both.
+    /// Read the folder `repo` and nothing outside it, added beside the cwd; with
+    /// `research`, search and fetch the web and load skills too. The budget and
+    /// the timeout are the owner's caps (#365 D7), so the type asks for both.
+    /// The mode is `dontAsk`: the read dirs are readable and any other read is
+    /// refused, no allow rule needed (docs/tui.md, probed).
     pub fn read_only(repo: PathBuf, research: bool, budget_usd: f64, timeout: Duration) -> Profile {
         let tools = if research { RESEARCH } else { READ };
+        // absolute: never read against the cache dir, never a `-` that passes for a flag
+        let repo = std::path::absolute(&repo).unwrap_or(repo);
+        // never Read, Grep or Glob: a bare Grep or Glob here approved reads outside (probed)
+        let allow = if research {
+            ["WebSearch", "WebFetch", "Skill"].map(String::from).to_vec()
+        } else {
+            vec![]
+        };
         Profile {
             tools,
-            allow: tools,
+            allow,
             deny: DENY,
+            permission_mode: Some("dontAsk"),
+            output: Output::Json,
             skills: research,
             no_prompts: true,
             hooks: false,
-            // absolute: never read against the cache dir, never a `-` that passes for a flag
-            read_dirs: vec![std::path::absolute(&repo).unwrap_or(repo)],
+            read_dirs: vec![repo],
             budget_usd: Some(budget_usd),
             timeout: Some(timeout),
         }
@@ -158,7 +189,7 @@ impl Profile {
         let dirs: Vec<String> = self.read_dirs.iter().map(|d| format!("{:?}", d.display().to_string())).collect();
         (!dirs.is_empty()).then(|| {
             format!(
-                "The repository is at {}. Read, Grep and Glob take absolute paths under it; your working directory is not the repository.",
+                "The repository is at {}. Read, Grep and Glob take absolute paths under it, and anything outside it is refused; your working directory is not the repository.",
                 dirs.join(" and ")
             )
         })
@@ -177,6 +208,9 @@ impl Profile {
         if self.no_prompts {
             a.extend(["--permission-prompts".into(), "none".into()]);
         }
+        if let Some(m) = self.permission_mode {
+            a.extend(["--permission-mode".into(), m.into()]);
+        }
         if !self.hooks {
             a.extend(["--settings".into(), r#"{"disableAllHooks":true}"#.into()]);
         }
@@ -185,6 +219,9 @@ impl Profile {
         }
         if let Some(b) = self.budget_usd {
             a.extend(["--max-budget-usd".into(), b.to_string()]);
+        }
+        if self.output == Output::Json {
+            a.extend(["--output-format".into(), "json".into(), "--verbose".into()]);
         }
         a.extend(["--no-session-persistence".into(), "--strict-mcp-config".into()]);
         if !self.skills {
@@ -196,8 +233,12 @@ impl Profile {
 
 type Answer = Result<String, Fail>;
 
+/// An answer, and a json call's stdout.
+type Done = (Answer, Option<String>);
+
 pub struct Request {
-    rx: Receiver<Answer>,
+    rx: Receiver<Done>,
+    raw: Option<String>,
     pid: Option<u32>,
     /// True once the child is reaped: from then on its pid may be someone else's.
     reaped: Arc<Mutex<bool>>,
@@ -219,16 +260,28 @@ impl Request {
         let pid = match start(call, p, system, model) {
             Ok(child) => {
                 let pid = child.id();
-                run(child, prompt.to_string(), p.timeout.unwrap_or(call.timeout), tx, reaped.clone());
+                let reading = Reading {
+                    output: p.output,
+                    budget_usd: p.budget_usd,
+                };
+                run(
+                    child,
+                    prompt.to_string(),
+                    p.timeout.unwrap_or(call.timeout),
+                    reading,
+                    tx,
+                    reaped.clone(),
+                );
                 Some(pid)
             }
             Err(e) => {
-                let _ = tx.send(Err(Fail::Failed(e)));
+                let _ = tx.send((Err(Fail::Failed(e)), None));
                 None
             }
         };
         Request {
             rx,
+            raw: None,
             pid,
             reaped,
             done: false,
@@ -240,9 +293,17 @@ impl Request {
         if self.done {
             return None;
         }
-        let a = self.rx.try_recv().ok()?;
+        let (a, raw) = self.rx.try_recv().ok()?;
         self.done = true;
+        self.raw = raw;
         Some(a)
+    }
+
+    /// A json call's stdout, its events, once [`Request::poll`] gave its answer,
+    /// a failed one too: the input to `parse::files_read`. `None` for a text
+    /// call, and for one that timed out or never started.
+    pub fn raw(&self) -> Option<&str> {
+        self.raw.as_deref()
     }
 
     /// `None` once reaped, when the number may already be someone else's.
@@ -281,18 +342,59 @@ fn kill_group(reaped: &Mutex<bool>, pid: u32) {
     drop(g);
 }
 
+/// The whole check on a read dir, the one [`Request::spawn_with`] runs: a caller
+/// may run it first to refuse up front. The error is a line for the user.
+///
+/// A name goes into the system prompt, so a control or bidi character is refused,
+/// never cleaned, as the call would read some other folder; so is an empty name
+/// and one not UTF-8. `--add-dir` of `/`, home or a folder above home opens all of
+/// home, a link to one included. A glob character is refused though no rule holds
+/// the path today, in case one does again.
+pub fn read_dir_ok(dir: &Path) -> Result<(), String> {
+    let shown = format!("{:?}", dir.display().to_string());
+    let Some(s) = dir.to_str() else {
+        return Err(format!("{shown} is not UTF-8; refused"));
+    };
+    if s.is_empty() {
+        return Err("the folder name is empty; refused".into());
+    }
+    if crate::pick::clean(s) != s {
+        return Err(format!("{shown} holds a control or bidi character; refused"));
+    }
+    if s.contains(['*', '?', '[', ']', '{', '}', '\\']) {
+        return Err(format!("{shown} holds a glob character; refused"));
+    }
+    let both = |p: &Path| [Some(lexical(p)), std::fs::canonicalize(p).ok()].into_iter().flatten();
+    if both(dir).any(|d| d == Path::new("/")) {
+        return Err("the root folder holds every file; refused".into());
+    }
+    let home = std::env::var_os("HOME").filter(|h| !h.is_empty()).map(PathBuf::from);
+    if let Some(h) = home
+        && both(dir).any(|d| both(&h).any(|h| h.starts_with(&d)))
+    {
+        return Err(format!("{shown} is your home folder or holds it; refused"));
+    }
+    Ok(())
+}
+
+/// `p` absolute, `.` and `..` folded without touching the disk.
+fn lexical(p: &Path) -> PathBuf {
+    let mut out = PathBuf::from("/");
+    for c in std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf()).components() {
+        match c {
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            std::path::Component::Normal(n) => out.push(n),
+            _ => {}
+        }
+    }
+    out
+}
+
 fn start(call: &Call, p: &Profile, system: &str, model: &str) -> Result<std::process::Child, String> {
-    // a folder's name goes into the system prompt: a line break or a bidi mark in
-    // it is refused, never cleaned, as the call would read some other folder; so is
-    // an empty name (`--add-dir ""`) and one that is not UTF-8
-    if let Some(d) = p.read_dirs.iter().find(|d| match d.to_str() {
-        Some(s) => s.is_empty() || crate::pick::clean(s) != s,
-        None => true,
-    }) {
-        return Err(format!(
-            "{:?} is empty, not UTF-8, or holds a control or bidi character; refused",
-            d.display().to_string()
-        ));
+    for d in &p.read_dirs {
+        read_dir_ok(d)?;
     }
     let system = match p.where_note() {
         Some(n) => format!("{system}\n\n{n}"),
@@ -357,7 +459,13 @@ pub fn prompt_file(dir: &Path, system: &str) -> std::io::Result<PathBuf> {
     Ok(path)
 }
 
-fn run(mut child: std::process::Child, prompt: String, timeout: Duration, tx: Sender<Answer>, reaped: Arc<Mutex<bool>>) {
+/// What [`answer`] needs of the profile.
+struct Reading {
+    output: Output,
+    budget_usd: Option<f64>,
+}
+
+fn run(mut child: std::process::Child, prompt: String, timeout: Duration, reading: Reading, tx: Sender<Done>, reaped: Arc<Mutex<bool>>) {
     let pid = child.id();
     let (done_tx, done_rx) = channel::<()>();
     {
@@ -367,7 +475,7 @@ fn run(mut child: std::process::Child, prompt: String, timeout: Duration, tx: Se
                 let g = lock(&reaped);
                 if !*g {
                     // Sent before the kill, so the worker's own report of the death comes second.
-                    let _ = tx.send(Err(Fail::Timeout));
+                    let _ = tx.send((Err(Fail::Timeout), None));
                     // SAFETY: as in kill_group, under the same lock.
                     unsafe { libc::killpg(pid as libc::pid_t, libc::SIGKILL) };
                 }
@@ -400,7 +508,12 @@ fn run(mut child: std::process::Child, prompt: String, timeout: Duration, tx: Se
         let mut g = lock(&reaped);
         let status = child.wait();
         *g = true;
-        let _ = tx.send(answer(status.map(|s| s.success()).unwrap_or(false), out, &err));
+        let ok = status.map(|s| s.success()).unwrap_or(false);
+        let done = match reading.output {
+            Output::Json => (answer_json(ok, &out, &err, reading.budget_usd), Some(out)),
+            Output::Text => (answer(ok, out, &err).map_err(|f| budget(f, reading.budget_usd)), None),
+        };
+        let _ = tx.send(done);
         drop(g);
         let _ = done_tx.send(());
     });
@@ -430,4 +543,51 @@ fn answer(ok: bool, out: String, err: &str) -> Answer {
     }
     let why = first_line(err).or_else(|| first_line(&out)).unwrap_or_else(|| "no answer".into());
     Err(Fail::Failed(why))
+}
+
+/// A json call's answer: its result's text, or its error in claude's words. A
+/// budget stop, `"Reached maximum budget ($0.5)"` (probed), is [`Fail::Budget`].
+/// Output that is not claude's json (a stand-in claude) is read as text.
+fn answer_json(ok: bool, out: &str, err: &str, budget_usd: Option<f64>) -> Answer {
+    use serde_json::Value;
+    let r = match serde_json::from_str::<Value>(out.trim()) {
+        Ok(Value::Array(a)) => a.into_iter().rev().find(|e| e["type"] == "result"),
+        Ok(v @ Value::Object(_)) if v["type"] == "result" => Some(v),
+        _ => None,
+    };
+    let Some(r) = r else {
+        return answer(ok, out.to_string(), err);
+    };
+    if r["subtype"] == "error_max_budget_usd" {
+        let said = r["errors"][0].as_str().and_then(limit_in);
+        if let Some(limit_usd) = said.or(budget_usd) {
+            return Err(Fail::Budget { limit_usd });
+        }
+    }
+    let text = r["result"].as_str().filter(|t| !t.trim().is_empty());
+    match text {
+        Some(t) if r["is_error"] != true => Ok(t.to_string()),
+        _ if r["is_error"] != true => Err(Fail::Failed("no answer".into())),
+        _ => {
+            let first = r["errors"][0].as_str().or(text).or(r["subtype"].as_str());
+            Err(Fail::Failed(first.and_then(first_line).unwrap_or_else(|| "no answer".into())))
+        }
+    }
+}
+
+/// A text call's budget stop, `Error: Exceeded USD budget (0.5)` (probed), as
+/// [`Fail::Budget`]; any other failure as it is.
+fn budget(f: Fail, budget_usd: Option<f64>) -> Fail {
+    match &f {
+        Fail::Failed(t) if t.to_ascii_lowercase().contains("exceeded usd budget") => {
+            limit_in(t).or(budget_usd).map_or(f, |limit_usd| Fail::Budget { limit_usd })
+        }
+        _ => f,
+    }
+}
+
+/// The number in the last `(...)` of claude's budget line, `$` or not.
+fn limit_in(line: &str) -> Option<f64> {
+    let (_, tail) = line.rsplit_once('(')?;
+    tail.split_once(')')?.0.trim().trim_start_matches('$').parse().ok()
 }
