@@ -1101,6 +1101,25 @@ fn malformed_stop_and_reconcile_rows_are_skipped() {
 }
 
 #[test]
+fn a_set_renamed_in_with_the_same_length_and_mtime_is_read_again() {
+    let s = session("live-inode");
+    meta(&s.dir, "a", PLAIN);
+    rows(&s.dir, "a", &[FIRST, &tick(5)]);
+    s.log(&[ev(0, "start", "a")]);
+    s.live(&live(30, &["b"], &[]));
+    let p = s.subs.join(format!("{SID}.live"));
+    let at = std::fs::metadata(&p).unwrap().modified().unwrap();
+    assert_eq!(s.one(T0 + 60).state, SubState::Stopped);
+    // as the hook writes it: a temp beside it, renamed over it, in the same mtime tick
+    let tmp = s.subs.join(".live.tmp");
+    std::fs::write(&tmp, live(30, &["a"], &[]) + "\n").unwrap();
+    let f = OpenOptions::new().write(true).open(&tmp).unwrap();
+    f.set_times(FileTimes::new().set_modified(at)).unwrap();
+    std::fs::rename(&tmp, &p).unwrap();
+    assert_eq!(s.one(T0 + 60).state, SubState::Running);
+}
+
+#[test]
 fn a_malformed_live_file_ends_nothing() {
     let s = session("live-junk");
     meta(&s.dir, "a", PLAIN);

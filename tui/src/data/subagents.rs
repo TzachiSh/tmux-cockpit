@@ -105,6 +105,8 @@ const LOG_MAX: u64 = 64 * 1024;
 const LIVE_MAX: u64 = 8 * 1024;
 
 type Stamp = (SystemTime, u64);
+/// A hook file's stamp and inode.
+type FileKey = (Stamp, u64);
 
 #[derive(Clone, Default)]
 struct Meta {
@@ -182,7 +184,7 @@ struct Log {
 thread_local! {
     /// Both files of a session, each on its own stamp: a `.log` holds its fold, a `.live` a
     /// `Log` with only `live` set.
-    static LOGS: RefCell<HashMap<PathBuf, (Stamp, Log)>> = RefCell::default();
+    static LOGS: RefCell<HashMap<PathBuf, (FileKey, Log)>> = RefCell::default();
     static CACHE: RefCell<HashMap<PathBuf, HashMap<String, Cached>>> = RefCell::default();
     static READS: Cell<u64> = const { Cell::new(0) };
 }
@@ -217,8 +219,9 @@ fn unjson(body: &str) -> Option<String> {
 ///   the `stop` a teammate's TaskStop also fires does not.
 /// - `kill-tm <name> <description>`: a TaskStop of a teammate, mapped by the reader.
 ///
-/// Any other line, a `live` row as #405's hook wrote it among them, and a row with a field that does not decode, is skipped. An id is not
-/// checked: only a plain agent id is ever looked up, and the tail bounds the map.
+/// Any other line, a `live` row as #405's hook wrote it among them, and a row with a field
+/// that does not decode, is skipped. An id is not checked: only a plain agent id is ever looked
+/// up, and the tail bounds the map.
 fn fold_log(lines: &[String]) -> Log {
     let mut log = Log::default();
     for (line, l) in lines.iter().enumerate() {
@@ -298,9 +301,13 @@ fn log_of(subs: &Path, sid: Option<&str>) -> Log {
     log
 }
 
-/// `p` folded by `fold` from its last `max` bytes, cached on its stamp.
+/// `p` folded by `fold` from its last `max` bytes, cached on its stamp and inode: the hook
+/// renames each `.live` into place, so a set of the same length in the same mtime tick (a
+/// coarse clock, WSL's) is a new inode all the same.
 fn cached(p: &Path, max: u64, fold: fn(&[String]) -> Log) -> Log {
-    let Some(st) = stamp(p) else {
+    use std::os::unix::fs::MetadataExt;
+    let st = std::fs::metadata(p).ok().filter(|m| m.is_file());
+    let Some(st) = st.map(|m| ((m.modified().unwrap_or(SystemTime::UNIX_EPOCH), m.len()), m.ino())) else {
         LOGS.with(|c| c.borrow_mut().remove(p));
         return Log::default();
     };
@@ -312,7 +319,7 @@ fn cached(p: &Path, max: u64, fold: fn(&[String]) -> Log) -> Log {
         if !c.contains_key(p) && c.len() >= 2 * DIRS_MAX {
             c.clear();
         }
-        let log = open(p).map(|mut f| fold(&super::tail(&mut f, st.1, max))).unwrap_or_default();
+        let log = open(p).map(|mut f| fold(&super::tail(&mut f, st.0.1, max))).unwrap_or_default();
         c.insert(p.to_path_buf(), (st, log.clone()));
         log
     })
