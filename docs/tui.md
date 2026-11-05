@@ -2216,11 +2216,21 @@ close it, `↑↓` `j` `k` `PgUp` `PgDn` scroll, `?` lists the keys.
 
 **`cockpit-tui info --json %N`** (#452) prints one line, `{"dir": "<path>"}`: the
 work dir by the board's rule (`dir` in `--json` above), for scripts. Root, base and
-the review dir keep tmux-review's rule (`@cockpit_dir`, else the cwd), so the
-screen and `prefix r` name the same tree. The path is decoded as lossy UTF-8, as
+the review dir take `@cockpit_dir`, else the cwd; `prefix r` asks `workdir` for its
+tree (#470) instead. The path is decoded as lossy UTF-8, as
 every tmux read is: a byte that is not UTF-8 becomes U+FFFD. Exit 0 with the
 line; exit 1 and nothing on stdout when the pane is not there; exit 2 for a
 missing or malformed pane id.
+
+**`cockpit-tui workdir %N`** (#500) prints the board's `dir` for that pane, the
+path alone on one line, for tmux-review and goto. It reads the pane with one
+`display-message` of the board's own format and runs the fetch's per-row code
+(`row_pane`, `work_candidates`, `fleet::work_dirs`), so its agent test and its
+order are the board's. Unlike the fetch it never runs `claude agents`: a pane
+with no `@cockpit_session` has no transcript to read, so its dir is
+`@cockpit_dir`, else its launch dir. Lossy UTF-8, as above. Exit 0 with the
+line; exit 1 and nothing on stdout when the pane is not there, is not an
+agent's, or has no dir; exit 2 for a missing or malformed pane id.
 
 ## The board as the review queue (#253)
 

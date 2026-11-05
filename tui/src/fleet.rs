@@ -101,3 +101,28 @@ pub fn rows_json(ps: &[Pane]) -> String {
         .collect();
     serde_json::to_string_pretty(&v).unwrap_or_default()
 }
+
+/// `cockpit-tui workdir %N` (#500): the board's `dir` for that pane, alone on one
+/// line, for scripts. Exit 1 and nothing on stdout when the pane is not there,
+/// is not an agent's or has no dir; exit 2 for a missing or malformed id.
+pub fn workdir_main(args: &[String]) -> i32 {
+    let ok = |p: &String| {
+        p.strip_prefix('%')
+            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+    };
+    let [pane] = args else {
+        eprintln!("cockpit-tui: workdir needs one pane id like %3");
+        return 2;
+    };
+    if !ok(pane) {
+        eprintln!("cockpit-tui: workdir needs one pane id like %3");
+        return 2;
+    }
+    match crate::data::workdir(pane) {
+        Some(d) => {
+            println!("{d}");
+            0
+        }
+        None => 1,
+    }
+}

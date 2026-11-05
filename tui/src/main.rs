@@ -14,7 +14,7 @@ fn panes() -> Vec<data::Pane> {
     }
 }
 
-const USAGE: &str = "cockpit-tui board [--select %N] [--note <file>] | pick | files <dir> | branch [-C <dir>] | info [--text] %N | sessions [--needs] [--current $N] | panel %N [--resume <state> --last ok|failed:<why>|hidden] | view [--line N] [--] <file> | --rows | --json | --version | -h";
+const USAGE: &str = "cockpit-tui board [--select %N] [--note <file>] | pick | files <dir> | branch [-C <dir>] | info [--text|--json] %N | workdir %N | sessions [--needs] [--current $N] | panel %N [--resume <state> --last ok|failed:<why>|hidden] | view [--line N] [--] <file> | --rows | --json | --version | -h";
 
 fn unix_now() -> u64 {
     std::time::SystemTime::now()
@@ -134,6 +134,8 @@ fn main() {
             }
         },
         Some("info") => std::process::exit(cockpit_tui::info::main(&args[1..])),
+        // #500: the board's work dir for one pane, for tmux-review and goto
+        Some("workdir") => std::process::exit(fleet::workdir_main(&args[1..])),
         // file browser (#363)
         Some("files") => std::process::exit(cockpit_tui::files::main(&args[1..])),
         Some("pick") => std::process::exit(cockpit_tui::pick::main(&args[1..])),
