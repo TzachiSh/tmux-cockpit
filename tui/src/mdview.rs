@@ -686,7 +686,7 @@ pub fn help_rows(ascii: bool) -> Vec<(String, String)> {
         kv(&format!("{ud} n N"), "while selecting: move its end"),
         kv("tap tap", "tap a line, tap another; or drag"),
         kv("?", "ask about the selection or top line"),
-        kv("a", "add the selection, or the file, to the prompt basket"),
+        kv("a", "add the selection or file to the basket"),
         kv("y", "copy its reference: path:lines"),
         kv("esc", "clear the selection, then the matches"),
         kv("", "the file"),
