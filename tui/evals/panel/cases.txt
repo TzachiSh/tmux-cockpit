@@ -23,10 +23,15 @@
 # (capture.rs repo_state): branch, root, status, recent commits, diff --stat and the
 # screen's paths, each section's lines indented by two.
 #
-# Label rule: ask only when the possible readings lead to different work, or a
-# fact only the owner knows is missing and a wrong guess changes the work. A
-# fact the agent can find (by reading files, running a command) is never a
-# reason to ask. Cases here are not the prompt's own examples on purpose.
+# Label rule (#503): ask when the possible readings lead to different work, or
+# when the reply would otherwise guess something only the owner knows: their
+# intent, the scope, the goal of a plan or refactor, what a review should weigh
+# most, the kind and fields of generated config, a fact outside the repo. A
+# guess written down as an "Assumed:" line is still a guess: such a case is ask.
+# A fact the agent can find (by reading files, running a command) is never a
+# reason to ask; the prompt tells the agent to check it and handle each case.
+# A vague feature may still go plan-first (#451): either. Cases here are not the
+# prompt's own examples on purpose. A case relabelled by #503 says so in note.
 
 === two-services
 kind: feature
@@ -259,7 +264,8 @@ kind: bug
 window: bash · bash · /home/u/projects/shop
 expect: write
 must: cart.py; KeyError; sku
-note: a traceback names the file, line and error
+must_not: Assumed:
+note: a traceback names the file, line and error; #503 (card 16): where the fix goes is the agent's to find, so no Assumed: line
 --- screen
 $ python -m shop.checkout
 Traceback (most recent call last):
@@ -287,7 +293,8 @@ kind: feature
 window: claude · claude · /home/u/projects/prices
 expect: write
 must: fetch_prices; backoff
-note: "do 1" resolves from the screen
+must_not: Assumed:
+note: "do 1" resolves from the screen; #503 (card 14): retry details are the agent's sensible default, so no Assumed: line
 --- screen
 ● The price feed times out about once an hour. Two options:
   1. Add a retry with exponential backoff in fetch_prices()
@@ -353,7 +360,8 @@ kind: refactor
 window: bash · bash · /home/u/projects/tool
 expect: write
 must: parse_cfg; parse_config
-note: a mechanical rename the agent can find every use of
+must_not: Assumed:
+note: a mechanical rename the agent can find every use of; #503 (card 15): whether parse_cfg is a function is the agent's to check, so no Assumed: line
 --- request
 rename parse_cfg to parse_config everywhere, no behaviour change
 
@@ -383,21 +391,19 @@ what is 15% of 240
 kind: format
 window: bash · bash · /home/u
 out: format
-expect: either
-ask_any: compose; kubernetes; k8s; deployment
-must: 8080; replicas
-out_is: format
-note: fits Docker Compose and Kubernetes alike: asking which, or a valid file of either, both serve
+expect: ask
+ask_any: compose; kubernetes; k8s; deployment; image; namespace; label|labels; metadata; spec
+note: #503 (card 2), was either: the kind of file and its metadata and spec are the owner's to give, and a file of either kind guesses them
 --- request
 yaml for service web, port 8080, 3 replicas
 
 === split-module
 kind: plan
 window: claude · claude · /home/u/projects/tool
-expect: write
-must: app.rs
+expect: ask
+ask_any: goal; aim; purpose; why; readability|readable; quality; style; behaviour|behavior; performance|faster; testable|testing; maintain|maintainable
 must_not: autopilot; ralph; ultrawork; ultrathink
-note: plan only, the agent reads the file itself
+note: #503 (card 5), was write: what the split is for (same behaviour, better quality, something else) is the owner's goal; the agent reads the file itself
 --- request
 plan how to split src/app.rs into smaller modules, just the plan
 
@@ -496,10 +502,9 @@ move the whole config loader from yaml to toml, it touches a lot of files
 === review-own-diff
 kind: review
 window: claude · claude · /home/u/projects/tool
-expect: write
-must: diff|staged
-must_not: subagent|subagents
-note: review of uncommitted work: read the diff, report, no edits; "uncommitted" is the request's word, so it is no must
+expect: ask
+ask_any: bug|bugs; quality; flow; comment|comments; test|tests; focus; weigh; most; security; correctness; style
+note: #503 (card 7), was write: what the review should weigh most is the owner's call; what "uncommitted" covers is the agent's to check
 --- request
 review my uncommitted changes before i commit, just report problems
 
@@ -524,9 +529,9 @@ the search results are wrong
 kind: investigate
 window: claude · claude · /home/u/projects/engine
 expect: write
-must: unsafe; subagent|subagents
+must: unsafe; subagent|subagents; skill|skills
 holdout: yes
-note: four independent crates: one subagent each fits
+note: four independent crates: one subagent each fits; #503 (card 8): and a skill that fits, when one is installed
 --- screen
 ● The workspace has four crates: core, io, render and ffi.
 --- request
@@ -535,11 +540,10 @@ check each crate for unsafe code and report what you find, dont change anything
 === h-node-lts
 kind: research
 window: bash · bash · /home/u/projects/api
-expect: write
-must: node; source|sources|cite|nodejs.org
-out_is: prompt
+expect: ask
+ask_any: report; recommend|recommendation; change|update|edit; switch|upgrade; why; reason; constraint|constraints
 holdout: yes
-note: a current fact: web search with sources; a hint from memory can name nodejs.org and still be stale, so only a prompt passes
+note: #503 (card 4), was write: a current fact needs a web search, but whether to only report or also move the Dockerfile, and what decides "should", are the owner's
 --- request
 which node version is the current LTS and should our Dockerfile move to it
 
@@ -548,9 +552,9 @@ kind: refactor
 window: claude · claude · /home/u/projects/tool
 expect: write
 must: 0.5.0|v0.5.0
-must_not: subagent|subagents; skill|skills
+must_not: subagent|subagents; skill|skills; Assumed:
 holdout: yes
-note: a one-line edit: nothing to delegate
+note: a one-line edit: nothing to delegate; #503 (card 9): workspace or one package is the agent's to check, so no Assumed: line
 --- request
 bump the version in Cargo.toml to 0.5.0
 
@@ -584,8 +588,9 @@ expect: either
 ask_any: done; trigger|triggers; notify|notified
 must: plan|planning|plans; done
 out_is: prompt
+must_not: Assumed:
 holdout: yes
-note: what counts as done is the owner's call: a question about it, or a prompt that plans first, both serve; a question about the channel is what to build, not done
+note: what counts as done is the owner's call: a question about it, or a prompt that plans first, both serve; a question about the channel is what to build, not done; #498: the plan-first prompt picks nothing, so no Assumed: line
 --- screen
 ● The dashboard now shows the weekly totals per team.
 --- request
@@ -633,9 +638,9 @@ fix the failing test from my last commit
 === review-my-changes
 kind: review
 window: claude · claude · /home/u/projects/shop
-expect: write
-must: feat/cart-discounts; cart.py
-note: "my changes" are the branch and its changed files, both in the repo block
+expect: ask
+ask_any: bug|bugs; quality; flow; comment|comments; test|tests; focus; weigh; most; security; correctness; style
+note: #503 (card 6), was write: "my changes" are the branch and its changed files in the repo block, but what the review should weigh most is the owner's call
 --- screen
 ● Done. The discount rules are in place and the tests pass.
 --- repo
@@ -701,3 +706,49 @@ diff --stat:
   1 file changed, 40 insertions(+), 12 deletions(-)
 --- request
 what is 15% of 2340
+
+# Added for #503, before its prompt: what only the owner knows about a review,
+# a refactor plan and generated config.
+
+=== review-branch-focus
+kind: review
+window: claude · claude · /home/u/projects/auth
+expect: ask
+ask_any: bug|bugs; quality; flow; comment|comments; test|tests; focus; weigh; most; security; correctness; style
+note: the branch and files are in the repo block; what the review should weigh most is the owner's call
+--- repo
+branch: feat/sso...origin/feat/sso [ahead 4]
+root: /home/u/projects/auth
+status: clean
+recent commits:
+  c41d0e2 sso: map groups to roles
+  9a7b3f1 sso: callback handler
+  51e2c88 session: store the id token
+  0d9e4a7 config: sso settings
+diff --stat:
+  auth/sso.py      | 142 +++++++++++++++++++++++++
+  auth/session.py  |  31 ++++--
+  auth/roles.py    |  44 ++++++++
+  config/auth.yaml |  12 +++
+  4 files changed, 221 insertions(+), 8 deletions(-)
+--- request
+review the sso work on this branch
+
+=== refactor-plan-goal
+kind: plan
+window: claude · claude · /home/u/projects/shop
+expect: ask
+ask_any: goal; aim; purpose; why; readability|readable; quality; style; behaviour|behavior; performance|faster; testable|testing; maintain|maintainable; new feature
+note: a refactor plan with no goal: what it is for decides the plan
+--- request
+make a plan to refactor the payments module
+
+=== ci-workflow-spec
+kind: format
+window: bash · bash · /home/u/projects/site
+out: format
+expect: ask
+ask_any: test|tests; build; deploy; lint; trigger|triggers; push; pull request|pull requests; release; branch|branches; node
+note: what the workflow runs and when is the owner's spec; a file would guess it
+--- request
+github actions workflow yaml for this repo
