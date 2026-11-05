@@ -52,17 +52,19 @@ fn refs(dir: &str, ns: &str) -> Vec<(String, String)> {
 /// (a line that is no worktree attribute) is dropped rather than guessed at. So
 /// is one that is not this repo's (#348, #532): a newline name can forge a whole
 /// `worktree <dir>` line, and `<dir>` may be any checkout. See [`ours`].
-fn worktrees(dir: &str) -> Vec<(String, Option<String>)> {
+fn worktrees(dir: &str, top: &str) -> Vec<(String, Option<String>)> {
     let z = git(dir, &[], None, &["worktree", "list", "--porcelain", "-z"]);
     if !z.is_empty() {
         return records(z.split('\0'), true);
     }
-    let common = git(dir, &[], None, &["rev-parse", "--git-common-dir"]);
+    // Asked from the top: before 2.13 the answer was the cwd's prefix plus a path from the top.
+    let top = if top.is_empty() { dir } else { top };
+    let common = git(top, &[], None, &["rev-parse", "--git-common-dir"]);
     let common = common.trim_end_matches('\n');
     if common.is_empty() {
         return Vec::new();
     }
-    let common = Path::new(dir).join(common);
+    let common = Path::new(top).join(common);
     let plain = git(dir, &[], None, &["worktree", "list", "--porcelain"]);
     let mut v = records(plain.split('\n'), false);
     v.retain(|(p, _)| ours(Path::new(p), &common));
@@ -72,7 +74,8 @@ fn worktrees(dir: &str) -> Vec<(String, Option<String>)> {
 /// True for a worktree of the repo whose common dir is `common`, as tmux-branch's
 /// `wt_ours` decides it. The main checkout's `.git` is the common dir; a linked
 /// tree's `.git` file names a dir in its `worktrees/` whose `gitdir` file names
-/// that `.git` back. A path that is gone is kept: it names no directory to open.
+/// that `.git` back. Links are followed, as git follows them. A path that is gone
+/// is kept: it names no directory to open.
 fn ours(p: &Path, common: &Path) -> bool {
     let dot = p.join(".git");
     if !p.exists() {
@@ -84,13 +87,15 @@ fn ours(p: &Path, common: &Path) -> bool {
     let Some(g) = first_line(&dot).and_then(|l| Some(p.join(l.strip_prefix("gitdir: ")?))) else {
         return false;
     };
-    let home = g.parent().is_some_and(|w| same(w, &common.join("worktrees")));
+    let home = same(&g.join(".."), &common.join("worktrees"));
     home && first_line(&g.join("gitdir")).is_some_and(|b| same(&g.join(b), &dot))
 }
 
-/// Both paths exist and are the same file, however each is spelled.
+/// Both paths exist and are the same file (device and inode), as the shell's `-ef`.
 fn same(a: &Path, b: &Path) -> bool {
-    matches!((std::fs::canonicalize(a), std::fs::canonicalize(b)), (Ok(x), Ok(y)) if x == y)
+    use std::os::unix::fs::MetadataExt;
+    let id = |p: &Path| std::fs::metadata(p).map(|m| (m.dev(), m.ino()));
+    matches!((id(a), id(b)), (Ok(x), Ok(y)) if x == y)
 }
 
 /// The first line of a regular file, read no further than 4 KiB.
@@ -142,7 +147,7 @@ fn records<'a>(fields: impl Iterator<Item = &'a str>, nul: bool) -> Vec<(String,
 fn elsewhere(dir: &str) -> Vec<(String, String)> {
     let top = git(dir, &[], None, &["rev-parse", "--show-toplevel"]);
     let top = top.trim_end_matches('\n');
-    worktrees(dir)
+    worktrees(dir, top)
         .into_iter()
         .filter_map(|(p, b)| if p == top { None } else { Some((b?, p)) })
         .collect()

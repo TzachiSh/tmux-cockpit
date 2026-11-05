@@ -1,7 +1,8 @@
 //! #532: without `-z`, a forged `worktree <dir>` line may name another repo's
 //! checkout, which has a `.git` of its own. A record is kept only as this repo's:
 //! a `.git` dir that is its common dir, or a `.git` file whose gitdir sits in that
-//! dir's `worktrees/` and links back to the same file.
+//! dir's `worktrees/` and links back to the same file. Links are followed, as git
+//! follows them: a `.git` hard-linked to one of ours counts.
 mod oldgit;
 use cockpit_tui::data::branches;
 
@@ -19,7 +20,16 @@ fn without_z_only_this_repos_trees_are_kept() {
     let plant = root.join("plant");
     std::fs::create_dir_all(&plant).unwrap();
     std::fs::copy(ours.join(".git"), plant.join(".git")).unwrap();
-    for (b, d) in [("fo", &other), ("fl", &olink), ("fp", &plant)] {
+    let hard = root.join("hard");
+    std::fs::create_dir_all(&hard).unwrap();
+    std::fs::hard_link(ours.join(".git"), hard.join(".git")).unwrap();
+    let al = root.join("al");
+    oldgit::add(&repo, "al", &al);
+    let entry = std::fs::read_to_string(al.join(".git")).unwrap();
+    let alias = root.join("alias");
+    std::os::unix::fs::symlink(entry.trim_end().trim_start_matches("gitdir: "), &alias).unwrap();
+    std::fs::write(al.join(".git"), format!("gitdir: {}\n", alias.display())).unwrap();
+    for (b, d) in [("fo", &other), ("fl", &olink), ("fp", &plant), ("fh", &hard)] {
         oldgit::add(&repo, b, &root.join(format!("{b}\nworktree {}", d.display())));
     }
     oldgit::shim(&root);
@@ -29,4 +39,6 @@ fn without_z_only_this_repos_trees_are_kept() {
     assert_eq!(oldgit::held(&bs, "fo"), None, "another repo's main checkout");
     assert_eq!(oldgit::held(&bs, "fl"), None, "another repo's linked tree");
     assert_eq!(oldgit::held(&bs, "fp"), None, "a copied .git file that does not link back");
+    assert_eq!(oldgit::held(&bs, "fh"), Some(hard.display().to_string()), "a hard-linked .git");
+    assert_eq!(oldgit::held(&bs, "al"), Some(al.display().to_string()), "a symlinked entry");
 }

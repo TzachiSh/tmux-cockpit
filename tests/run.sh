@@ -12589,7 +12589,7 @@ chmod +x "$CGOLD/git"
 CGS="cockpit-cg532-$$"; SOCKS="$SOCKS $CGS"
 bg_server "$CGS" "$CGD"
 CGO=$("$TMUX_REAL" -L "$CGS" list-panes -a -F '#{pane_id}' | head -1)
-cg_goto() { BG_SHIM=$CGOLD bg_goto "$CGS" "$CGO" "$CGR" "$1"; }
+cg_goto() { BG_SHIM=${CG_SHIM:-$CGOLD} bg_goto "$CGS" "$CGO" "${CG_DIR:-$CGR}" "$1"; }
 cg_refused() {                # cg_refused <label> <path>  goto names it no worktree, opens none
     local n; n=$(bg_windows "$CGS")
     cg_goto "$2"
@@ -12599,7 +12599,8 @@ cg_refused() {                # cg_refused <label> <path>  goto names it no work
     esac
     is "$1: no window opens" "$n" "$(bg_windows "$CGS")"
 }
-cg_opens() {                  # cg_opens <label> <path>  goto opens a window in it
+cg_opens() {                  # cg_opens <label> <path>  goto opens or selects a pane in it
+    "$TMUX_REAL" -L "$CGS" select-window -t "$CGO"
     cg_goto "$2"
     is "$1" "$2" "$("$TMUX_REAL" -L "$CGS" display-message -p -t t: '#{pane_current_path}')"
 }
@@ -12618,6 +12619,42 @@ cg_forge fp532 "$CGD/plant"
 cg_refused "a .git file copied from this repo's tree does not link back: refused" "$CGD/plant"
 cg_opens "this repo's linked tree, a space in its path, still opens" "$CGD/our tree"
 
+# git 2.7 to 2.12 print `rev-parse --git-common-dir` as the subdirectory prefix plus the
+# path from the top: from sub/deep, `sub/deep/.git`. A pane's cwd is often a subdirectory.
+CG212=$(mktmpd)
+printf '%s\n' '#!/usr/bin/env bash' \
+    'case " $* " in *" worktree list "*" -z "*) exit 129 ;; esac' \
+    'case " $* " in *" rev-parse --git-common-dir ") ;; *) exec '"$(command -v git)"' "$@" ;; esac' \
+    'pre=("${@:1:$#-2}"); real='"$(command -v git)" \
+    'top=$("$real" "${pre[@]}" rev-parse --show-toplevel) || exit' \
+    'px=$("$real" "${pre[@]}" rev-parse --show-prefix)' \
+    'c=$("$real" "${pre[@]}" -C "$top" rev-parse --git-common-dir) || exit' \
+    'case $c in /*) echo "$c" ;; *) echo "$px$c" ;; esac' > "$CG212/git"
+chmod +x "$CG212/git"
+mkdir -p "$CGR/sub/deep"
+is "the 2.12 shim answers from a subdirectory as 2.12 did" "sub/deep/.git" \
+   "$(cd "$CGR/sub/deep" && PATH="$CG212:$PATH" git rev-parse --git-common-dir)"
+CG_SHIM=$CG212 CG_DIR=$CGR/sub/deep \
+    cg_opens "on git 2.12, from a subdirectory, this repo's linked tree still opens" "$CGD/our tree"
+
+# A tree's .git file read as git reads it: whole (git < 2.23 kept a trailing blank in the
+# id), a trailing slash, a symlinked entry, and a .git hard-linked to one of ours.
+cg_entry() { local g; IFS= read -r g < "$1/.git"; printf '%s' "${g#gitdir: }"; }
+git -C "$CGR" worktree add -q -b tsp532 "$CGD/tsp " >/dev/null 2>&1
+mv "$(cg_entry "$CGD/tsp ")" "$CGR/.git/worktrees/tsp "
+printf 'gitdir: %s\n' "$CGR/.git/worktrees/tsp " > "$CGD/tsp /.git"
+cg_opens "a tree whose worktree id ends in a blank opens" "$CGD/tsp "
+git -C "$CGR" worktree add -q -b sl532 "$CGD/sl" >/dev/null 2>&1
+printf 'gitdir: %s/\n' "$(cg_entry "$CGD/sl")" > "$CGD/sl/.git"
+cg_opens "a tree whose gitdir ends in a slash opens" "$CGD/sl"
+git -C "$CGR" worktree add -q -b al532 "$CGD/al" >/dev/null 2>&1
+ln -s "$(cg_entry "$CGD/al")" "$CGD/alias"
+printf 'gitdir: %s\n' "$CGD/alias" > "$CGD/al/.git"
+cg_opens "a tree whose gitdir is a symlink to its entry opens" "$CGD/al"
+mkdir -p "$CGD/hard"; ln "$CGD/our tree/.git" "$CGD/hard/.git"
+cg_forge fh532 "$CGD/hard"
+cg_opens "a dir whose .git is a hard link to one of ours counts, as it does for git" "$CGD/hard"
+
 git -C "$CGR" worktree add -q -b lk532 "$CGD/lk" >/dev/null 2>&1
 git -C "$CGR" worktree lock "$CGD/lk" >/dev/null 2>&1
 cg_opens "a tree whose line is a bare 'locked' still opens" "$CGD/lk"
@@ -12629,7 +12666,7 @@ git -C "$CGR" worktree add -q -b emp532 "$CGD/e"$'\n'"worktree " >/dev/null 2>&1
 cg_refused "an empty worktree path is no worktree" ""
 
 "$TMUX_REAL" -L "$CGS" kill-server >/dev/null 2>&1
-rm -rf "$CGR" "$CGM" "$CGD" "$CGOLD"
+rm -rf "$CGR" "$CGM" "$CGD" "$CGOLD" "$CG212"
 fi
 
 echo "== tmux-branch (#360): a goto moves the client that pressed prefix b, not the busiest one =="
