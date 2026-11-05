@@ -951,18 +951,7 @@ pub fn main(args: &[String]) -> i32 {
     // the pane whose basket `a` adds to, named by the launcher (#365 child 5)
     let pane = std::env::var("COCKPIT_BASKET_PANE").ok().filter(|p| crate::panel::is_pane(p));
     s.can_add = pane.is_some();
-    let side = |s: &mut Screen, o: Out| match o {
-        Out::Stay => None,
-        Out::Add(l) => {
-            s.note = Some(add_note(path, l, pane.as_deref()));
-            None
-        }
-        Out::Copy(l) => {
-            s.note = Some(copy_note(path, l, pane.as_deref()));
-            None
-        }
-        o => Some(o),
-    };
+    let side = |s: &mut Screen, o: Out| act(s, o, path, pane.as_deref());
     if let Some(n) = line {
         s = s.at_line(n);
     }
@@ -1002,6 +991,24 @@ pub fn main(args: &[String]) -> i32 {
     0
 }
 
+/// The run loop's half of a key: `a` adds to the basket of `pane` and `y`
+/// copies, each leaving a note, and the viewer stays (`None`); any other way
+/// out is handed back.
+pub fn act(s: &mut Screen, o: Out, path: &std::path::Path, pane: Option<&str>) -> Option<Out> {
+    match o {
+        Out::Stay => None,
+        Out::Add(l) => {
+            s.note = Some(add_note(path, l, pane));
+            None
+        }
+        Out::Copy(l) => {
+            s.note = Some(copy_note(path, l, pane));
+            None
+        }
+        o => Some(o),
+    }
+}
+
 /// The source lines `a` and `y` act on; `None` is the whole file.
 type Lines = Option<(usize, usize)>;
 
@@ -1037,7 +1044,8 @@ fn copy_note(path: &std::path::Path, lines: Lines, pane: Option<&str>) -> String
         Err(e) => return e,
     };
     match crate::backend::copy(&text) {
-        Ok(()) => format!("copied {text}"),
+        // tmux passes OSC 52 on only under set-clipboard on, and says nothing either way
+        Ok(()) => format!("sent {text} to the clipboard (needs tmux set-clipboard on)"),
         Err(e) => format!("could not copy: {e}"),
     }
 }

@@ -2187,18 +2187,23 @@ does nothing, and `?` on an empty file, or one the viewer refused, is a note.
 `a` adds the selection's lines, or the whole file when there is none, to the
 prompt basket of the pane the file came from, and the viewer stays: its note
 says `added src/x.rs:40-72 (3 in the basket)`, or that the ref was there
-already. `y` copies the reference itself (`src/x.rs:40-72`, from the pane's
-folder) to the clipboard. `tmux-open-path` names the pane as
+already. `y` sends the reference itself (`src/x.rs:40-72`, from the pane's
+folder) to the clipboard by OSC 52, which tmux passes on only under
+`set-clipboard on`, so the note says so. `tmux-open-path` names the pane as
 `COCKPIT_BASKET_PANE=<pane>` on the viewer's command alone; without it `a` is a
 note and `a add` is not on the footer.
 
 The basket is the pane option `@cockpit_basket`, so it goes with the pane: one
-`refs::render` line per ref, paths from `/`, each ref once, at most 32 refs and
+`refs::render` line per ref, each an absolute path that `refs::parse` reads back, each ref once, at most 32 refs and
 12 KiB (tmux 3.8 takes one command of about 16 KB). A name the text cannot
 carry, a line break or a control character in it, is refused, and a file gone
 since it was added drops out when the basket is read. `tui/src/basket.rs` writes
 it through `data::tmux_set`, so `COCKPIT_READONLY` keeps it unchanged, and reads
-each write back. The panel's side (showing the basket, removing from it, sending
+each write back. The value ends in a newline: tmux strips a trailing `;` off a
+command's last argument, and a file named `x;` would read back as `x`. A pane
+that is gone says so rather than read as an empty basket. Under `cargo test`,
+`tui/.cargo/config.toml` sets `COCKPIT_TEST_TMUX_GUARD`, and the basket then runs
+tmux only on a private `-L`/`-S` server or a stub, never the user's. The panel's side (showing the basket, removing from it, sending
 it) is the next PR.
 
 ## `cockpit-tui branch` (#246)

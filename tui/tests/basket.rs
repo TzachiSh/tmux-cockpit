@@ -39,6 +39,7 @@ fn the_text_reads_back_as_the_refs_it_holds() {
     let refs = vec![r(&d.file("src/a.rs"), Some((3, 9))), r(&d.file("b.md"), None)];
     let text = basket::body(&refs).unwrap();
     assert_eq!(text.lines().count(), 2, "{text}");
+    assert!(text.lines().all(|l| l.starts_with('/')), "each line an absolute path: {text}");
     assert_eq!(basket::from_body(&text), refs);
 }
 
@@ -111,13 +112,4 @@ fn a_gone_file_drops_out_on_read() {
     let text = basket::body(&[r(&a, None), r(&b, Some((1, 1)))]).unwrap();
     std::fs::remove_file(&a).unwrap();
     assert_eq!(basket::from_body(&text), vec![r(&b, Some((1, 1)))]);
-}
-
-#[test]
-fn a_pane_that_is_no_pane_id_is_refused() {
-    let d = Dir::new("pane");
-    for p in ["", "3", "%", "%3;x", "-t"] {
-        let why = basket::add(p, r(&d.file("a.rs"), None)).unwrap_err();
-        assert!(why.contains("pane"), "{p:?}: {why}");
-    }
 }

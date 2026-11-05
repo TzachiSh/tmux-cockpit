@@ -75,6 +75,36 @@ fn the_basket_round_trips_through_a_pane_option() {
     assert!(why.contains("COCKPIT_READONLY"), "{why}");
     assert_eq!(basket::read(&pane).unwrap().len(), 2, "unchanged under readonly");
 
+    // review-534: tmux strips a trailing `;` off the last argument; the value
+    // carries a closing newline, so a file named `x;` is kept as itself
+    let semi = s.dir.join("x;");
+    std::fs::write(&semi, "x\n").unwrap();
+    let semi = Ref::new(&semi, None, None).unwrap();
+    assert_eq!(basket::add(&pane, semi.clone()), Ok((3, true)));
+    assert!(basket::read(&pane).unwrap().contains(&semi), "x; read back as itself");
+
+    // review-534: a gone pane is said, not read as an empty basket
+    let why = basket::read("%999").unwrap_err();
+    assert!(why.contains("gone"), "{why}");
+
+    // the viewer's run loop: `a` reaches this pane's basket, `y` sends the ref
+    {
+        use cockpit_tui::mdview::{self, Out, Screen, render::Opts};
+        let g = s.dir.join("g.rs");
+        std::fs::write(&g, "one\ntwo\n").unwrap();
+        let mut v = Screen::new("g.rs", Ok("one\ntwo\n".into()), Opts::default());
+        v.can_add = true;
+        assert_eq!(mdview::act(&mut v, Out::Add(Some((2, 2))), &g, Some(&pane)), None, "it stays");
+        let note = v.note.clone().unwrap_or_default();
+        assert_eq!(note, "added g.rs:2 (4 in the basket)", "{note}");
+        let two = Ref::new(&g, Some((2, 2)), None).unwrap();
+        assert!(basket::read(&pane).unwrap().contains(&two));
+        assert_eq!(mdview::act(&mut v, Out::Copy(None), &g, Some(&pane)), None);
+        let note = v.note.clone().unwrap_or_default();
+        assert!(note.starts_with("sent g.rs") && note.contains("set-clipboard on"), "{note}");
+        assert_eq!(mdview::act(&mut v, Out::Close, &g, Some(&pane)), Some(Out::Close));
+    }
+
     basket::write(&pane, &[]).unwrap();
     assert_eq!(
         s.tmux(&["show-options", "-pqv", "-t", &pane, basket::OPTION]),

@@ -1,6 +1,6 @@
 //! The prompt basket (#365 child 5): code references gathered for one pane's
 //! agent. It lives in the pane option `@cockpit_basket`, so it goes with the
-//! pane, as one `refs::render` line per ref, paths taken from `/`.
+//! pane, as one `refs::render` line per ref, each an absolute path.
 //!
 //! The viewer and the browser add to it; the panel shows it, removes from it,
 //! and sends it with a draft. Every write goes through `data::tmux_set`, the
@@ -15,10 +15,16 @@ pub const MAX_REFS: usize = 32;
 /// a 20,000-byte `set-option` failed "command too long"): the text stays under.
 pub const MAX_BYTES: usize = 12 * 1024;
 
-/// The option's text: one line per ref, paths from `/`. Over [`MAX_BYTES`] is
-/// an error, never a cut, as a cut basket would drop refs the user added.
+/// One ref's line: `refs::render` from `/` leaves the leading slash off, so it is
+/// put back, and the line reads as the absolute path it is.
+fn line(r: &Ref) -> String {
+    format!("/{}", refs::render(std::slice::from_ref(r), Path::new("/")))
+}
+
+/// The option's text: one line per ref, each an absolute path. Over
+/// [`MAX_BYTES`] is an error, never a cut, as a cut basket would drop refs.
 pub fn body(refs: &[Ref]) -> Result<String, String> {
-    let text = refs::render(refs, Path::new("/"));
+    let text = refs.iter().map(line).collect::<Vec<_>>().join("\n");
     if text.len() > MAX_BYTES {
         let n = text.len();
         return Err(format!("the basket would be too long ({n} bytes, {MAX_BYTES} at most)"));
@@ -44,7 +50,7 @@ pub fn with_ref(refs: &[Ref], r: Ref) -> Result<(Vec<Ref>, bool), String> {
     if refs.contains(&r) {
         return Ok((refs.to_vec(), false));
     }
-    if from_body(&refs::render(std::slice::from_ref(&r), Path::new("/"))) != [r.clone()] {
+    if from_body(&line(&r)) != [r.clone()] {
         return Err("its name cannot be kept as text; not added".into());
     }
     if refs.len() >= MAX_REFS {
@@ -64,11 +70,38 @@ fn check(pane: &str) -> Result<(), String> {
     }
 }
 
-/// The basket of `pane`, read from tmux.
+/// Under `cargo test` (`tui/.cargo/config.toml` sets `COCKPIT_TEST_TMUX_GUARD`)
+/// the basket runs tmux only on a private server (`-L`, `-S`) or a stub, never
+/// the user's: a test that slips past its own setup refuses instead of writing.
+fn guard() -> Result<(), String> {
+    if std::env::var_os("COCKPIT_TEST_TMUX_GUARD").is_none() {
+        return Ok(());
+    }
+    let argv = crate::data::tmux_argv();
+    let stub = argv.first().is_some_and(|p| Path::new(p).file_name().is_some_and(|n| n != "tmux"));
+    if stub || argv.iter().any(|a| a == "-L" || a == "-S") {
+        Ok(())
+    } else {
+        Err("COCKPIT_TEST_TMUX_GUARD: no private tmux in COCKPIT_TMUX; refused".into())
+    }
+}
+
+/// A tmux read, behind [`guard`].
+fn ask(args: &[&str]) -> Result<Option<String>, String> {
+    guard()?;
+    Ok(crate::data::tmux(args))
+}
+
+/// The basket of `pane`, read from tmux. A pane that is gone is an error, not
+/// an empty basket: tmux reads a gone pane's option as nothing, exit 0.
 pub fn read(pane: &str) -> Result<Vec<Ref>, String> {
     check(pane)?;
+    let id = ask(&["display-message", "-p", "-t", pane, "#{pane_id}"])?;
+    if id.as_deref().map(str::trim) != Some(pane) {
+        return Err(format!("the pane {pane} is gone"));
+    }
     let show = ["show-options", "-pqv", "-t", pane, OPTION];
-    let text = crate::data::tmux(&show).ok_or("tmux did not answer")?;
+    let text = ask(&show)?.ok_or("tmux did not answer")?;
     Ok(from_body(text.trim_end_matches('\n')))
 }
 
@@ -80,10 +113,13 @@ pub fn write(pane: &str, refs: &[Ref]) -> Result<(), String> {
     if crate::data::readonly() {
         return Err("COCKPIT_READONLY is set; the basket is unchanged".into());
     }
+    guard()?;
     if text.is_empty() {
         crate::data::tmux_set(&["set-option", "-pu", "-t", pane, OPTION]);
     } else {
-        crate::data::tmux_set(&["set-option", "-p", "-t", pane, OPTION, &text]);
+        // a closing newline: tmux reads a trailing `;` on the last argument as a
+        // command separator and strips it (review-534); `read` trims the newline
+        crate::data::tmux_set(&["set-option", "-p", "-t", pane, OPTION, &format!("{text}\n")]);
     }
     if read(pane)? != refs {
         return Err("tmux did not keep the basket".into());
@@ -106,15 +142,13 @@ pub fn add(pane: &str, r: Ref) -> Result<(usize, bool), String> {
 pub fn shown(pane: Option<&str>, r: &Ref) -> String {
     let folder = |p: &str| {
         let at = ["display-message", "-p", "-t", p, "#{pane_current_path}"];
-        crate::data::tmux(&at)
+        ask(&at).ok().flatten()
     };
     let dir = pane.filter(|p| is_pane(p)).and_then(folder);
     let dir = dir.map_or_else(String::new, |d| d.trim_end_matches('\n').to_string());
-    let one = std::slice::from_ref(r);
-    // from `/`, render writes the path without its leading slash
     if dir.is_empty() {
-        format!("/{}", refs::render(one, Path::new("/")))
+        line(r)
     } else {
-        refs::render(one, Path::new(&dir))
+        refs::render(std::slice::from_ref(r), Path::new(&dir))
     }
 }
