@@ -68,6 +68,9 @@ pub fn rows(x: &Facts, g: &Glyphs, w: usize) -> Vec<(String, String)> {
         format!("  {} {}", g.dot, x.msg)
     };
     r.push(("state", format!("{}{msg}", if x.state.is_empty() { dash } else { &x.state })));
+    if let Some((name, id)) = &x.job {
+        r.push(("job", format!("{name}  (@cockpit_job {id})")));
+    }
     for d in &x.doing {
         let age = |pre: &str| d.age.map(|a| format!(" ({pre}{})", fmt_dur(a))).unwrap_or_default();
         match d.kind.as_str() {

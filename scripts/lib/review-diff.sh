@@ -190,7 +190,7 @@ next_base() {                 # <dir> <current-mode>
 # question. Reads the mode the pane's own review chose with b, if any.
 delta_mode() {                # <pane>
     local pane=$1 dir root sess mode
-    dir=$(pane_dir "$pane")
+    dir=$(pane_workdir "$pane")
     [ -n "$dir" ] || return 1
     root=$(git_root "$dir")
     git -C "$root" --no-optional-locks rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 1
