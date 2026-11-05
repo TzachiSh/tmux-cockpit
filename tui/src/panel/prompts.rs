@@ -6,6 +6,9 @@ pub const WRITE: &str = include_str!("../../prompts/write.txt");
 pub const WRITE_EXAMPLES: &str = include_str!("../../prompts/write.examples.txt");
 pub const EXPLAIN: &str = include_str!("../../prompts/explain.txt");
 pub const FIX: &str = include_str!("../../prompts/fix.txt");
+/// Appended to the write prompt only for an explore-first write (#416), so the
+/// shipped write prompt, and an owner's override of it, stay as they are.
+pub const WRITE_EXPLORE: &str = include_str!("../../prompts/write.explore.txt");
 
 /// The core examples always go; the rest of the 9 come from `when`, then `fill`.
 const SENT: usize = 9;
@@ -18,7 +21,7 @@ pub struct Ctx {
     pub window: &'static str,
 }
 
-/// `name` is the file stem: write, write.examples, explain or fix. An override
+/// `name` is the file stem: write, write.examples, write.explore, explain or fix. An override
 /// that exists but cannot be read falls back to `shipped`, and the note says why.
 pub fn load(name: &str, shipped: &str) -> (String, Option<String>) {
     let p = super::xdg("XDG_CONFIG_HOME", ".config").join(format!("tmux-cockpit/prompts/{name}.txt"));
@@ -43,6 +46,16 @@ pub fn write_noted(ctx: &Ctx) -> (String, Option<String>) {
     (render(&template, Some(&examples(&pool, ctx))), note)
 }
 
+/// [`write_noted`], then the explore section: the prompt of a write that may
+/// read the repo first. Its own file, `write.explore.txt`, overrides it.
+pub fn write_explore_noted(ctx: &Ctx) -> (String, Option<String>) {
+    let (write, n1) = write_noted(ctx);
+    let (explore, n2) = load("write.explore", WRITE_EXPLORE);
+    let notes: Vec<String> = n1.into_iter().chain(n2).collect();
+    let note = (!notes.is_empty()).then(|| notes.join("; "));
+    (format!("{write}\n\n{}", render(&explore, None)), note)
+}
+
 pub fn explain_noted() -> (String, Option<String>) {
     let (t, note) = load("explain", EXPLAIN);
     (render(&t, None), note)
@@ -55,6 +68,10 @@ pub fn fix_noted() -> (String, Option<String>) {
 
 pub fn write(ctx: &Ctx) -> String {
     write_noted(ctx).0
+}
+
+pub fn write_explore(ctx: &Ctx) -> String {
+    write_explore_noted(ctx).0
 }
 
 pub fn explain() -> String {

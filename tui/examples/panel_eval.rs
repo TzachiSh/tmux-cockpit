@@ -6,27 +6,28 @@
 //! money: run it by hand, never from `make test`.
 //!
 //!     cargo run --example panel_eval -- [--model M] [--runs N] [--jobs J]
-//!         [--only TEXT] [--cases FILE] [--out FILE.jsonl] [--check]
+//!         [--only TEXT] [--cases FILE] [--out FILE.jsonl] [--check] [--no-explore]
 //!     cargo run --example panel_eval -- --compare A.jsonl B.jsonl
 //!
 //! `--check` only reads and validates the cases. To compare a prompt edit, put
 //! it at `$XDG_CONFIG_HOME/tmux-cockpit/prompts/write.txt` (the panel's own
 //! override) and run twice with `--out`, then `--compare` the two files: it
 //! reads them, makes no calls, and pairs the runs by case.
-use cockpit_tui::panel::capture::{Capture, window_kind};
-use cockpit_tui::panel::envelope::{Flow, OutType, build};
-use cockpit_tui::panel::parse::{self, Reply};
-use cockpit_tui::panel::prompts::{self, Ctx};
-use cockpit_tui::panel::request::{Call, Request};
+//!
+//! A case with `explore: <fixture>` (evals/panel/explore.txt, #416) runs on a
+//! temp copy of `evals/panel/fixtures/<fixture>` as the pane's folder, through
+//! the panel's explore-first call; `--no-explore` runs it as a text call instead.
+use cockpit_tui::panel::app::{App, View};
+use cockpit_tui::panel::capture::Capture;
+use cockpit_tui::panel::envelope::{Flow, OutType};
+use cockpit_tui::panel::parse::{self, Reply, files_read};
+use cockpit_tui::panel::request::{Call, Fail, Profile, Request};
 use cockpit_tui::panel::route::route;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::ffi::{OsStr, OsString};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
-
-/// A copy of the panel's private `ROUNDS_WRITE` (app.rs): the first call sees
-/// all of it. Change both together.
-const QUESTIONS: usize = 3;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Expect {
@@ -70,6 +71,8 @@ struct Case {
     /// The `<repo>` block the panel would send; "" for a window outside a repo.
     repo: String,
     request: String,
+    /// A folder under `fixtures/`: the pane's path, read by an explore-first write.
+    explore: Option<String>,
 }
 
 fn out_type(s: &str) -> Option<OutType> {
@@ -123,6 +126,7 @@ fn parse_cases(text: &str) -> Result<Vec<Case>, String> {
             screen: String::new(),
             repo: String::new(),
             request: String::new(),
+            explore: None,
         };
         let mut expect = None;
         let mut seen: Vec<String> = vec![];
@@ -164,6 +168,13 @@ fn parse_cases(text: &str) -> Result<Vec<Case>, String> {
                         "no" => false,
                         _ => return Err(err("holdout is yes or no")),
                     }
+                }
+                "explore" => {
+                    // one folder name: a path would copy something outside fixtures/
+                    if v.is_empty() || v.starts_with('.') || v.contains('/') {
+                        return Err(err("explore is a folder name under fixtures/"));
+                    }
+                    c.explore = Some(v.into())
                 }
                 "note" => {}
                 k => return Err(err(&format!("unknown key {k}"))),
@@ -380,6 +391,8 @@ struct Opts {
     check: bool,
     /// Two `--out` files: compared offline, no calls.
     compare: Option<(PathBuf, PathBuf)>,
+    /// `explore:` cases run as the text call, on the same folder.
+    no_explore: bool,
 }
 
 fn opts(args: impl IntoIterator<Item = String>) -> Result<Opts, String> {
@@ -393,6 +406,7 @@ fn opts(args: impl IntoIterator<Item = String>) -> Result<Opts, String> {
         out: None,
         check: false,
         compare: None,
+        no_explore: false,
     };
     let mut a = args.into_iter();
     while let Some(k) = a.next() {
@@ -405,6 +419,7 @@ fn opts(args: impl IntoIterator<Item = String>) -> Result<Opts, String> {
             "--only" => o.only = Some(val()?),
             "--out" => o.out = Some(val()?.into()),
             "--check" => o.check = true,
+            "--no-explore" => o.no_explore = true,
             "--compare" => {
                 let two = (a.next(), a.next());
                 let (Some(x), Some(y)) = two else {
@@ -421,16 +436,30 @@ fn opts(args: impl IntoIterator<Item = String>) -> Result<Opts, String> {
 }
 
 /// Set in a call's environment to the real claude: the rig, run as that call,
-/// execs it with `--output-format json` first, so the panel's own Request runs
-/// the call unchanged and the reply carries its cost.
+/// execs it with `--output-format json --verbose` first, so the panel's own
+/// Request runs the call unchanged and the reply carries its cost and its reads.
 const AS_CLAUDE: &str = "PANEL_EVAL_AS_CLAUDE";
 
 /// What the rig runs as the call's claude: the real one, json first, then the
 /// call's own argv, with the variable gone so claude's children never see it.
 fn claude_command(real: &OsStr, args: impl IntoIterator<Item = OsString>) -> std::process::Command {
+    let args: Vec<OsString> = args.into_iter().collect();
     let mut c = std::process::Command::new(real);
-    c.args(["--output-format", "json"]).args(args).env_remove(AS_CLAUDE);
+    // a json profile (read_only) asks for it itself: never twice
+    if !args.iter().any(|a| a == "--output-format") {
+        c.args(["--output-format", "json", "--verbose"]);
+    }
+    c.args(args).env_remove(AS_CLAUDE);
     c
+}
+
+/// What a finished call printed, for [`unwrap_json`] and `files_read`: a json
+/// call's events (its answer is only their result's text), else its answer.
+fn call_output(answer: Result<String, Fail>, raw: Option<&str>) -> Result<String, String> {
+    match (answer, raw) {
+        (_, Some(events)) => Ok(events.to_string()),
+        (a, None) => a.map_err(|f| f.to_string()),
+    }
 }
 
 /// The real claude to exec as, when the rig is run as a call's claude. Only for
@@ -452,6 +481,7 @@ fn exec_claude(real: &OsStr) -> ! {
 struct Job {
     case: usize,
     run: usize,
+    explore: bool,
     model: String,
     /// The system prompt's hash.
     system: u64,
@@ -510,7 +540,6 @@ fn main() {
     if o.check {
         return;
     }
-
     let mut call = Call::from_env();
     let mut wrapped = false;
     match std::env::current_exe() {
@@ -528,6 +557,11 @@ fn main() {
             std::process::exit(2);
         })
     });
+    // after the last exit: a Staged is removed when it drops, a panic included
+    let staged = Staged(stage(&cases).unwrap_or_else(|e| {
+        eprintln!("panel_eval: {e}");
+        std::process::exit(2);
+    }));
     let mut hashes: Vec<u64> = vec![];
     let mut todo: Vec<(usize, usize)> = (0..o.runs).flat_map(|r| (0..cases.len()).map(move |c| (c, r))).collect();
     todo.reverse();
@@ -535,37 +569,34 @@ fn main() {
     // (case, ms, grade); no grade for a call that failed (a timeout, an API error).
     let mut done: Vec<(usize, u128, Option<Grade>)> = vec![];
     let mut costs: Vec<Option<f64>> = vec![];
+    let mut reads: Vec<usize> = vec![];
     while !todo.is_empty() || !live.is_empty() {
         while live.len() < o.jobs
             && let Some((ci, run)) = todo.pop()
         {
             let c = &cases[ci];
-            let cap = Capture {
-                name: c.name.clone(),
-                cmd: c.cmd.clone(),
-                path: c.path.clone(),
-                screen: c.screen.clone(),
-                repo: c.repo.as_str().into(),
+            let path = match (&c.explore, &staged.0) {
+                (Some(f), Some(d)) => d.join(f).display().to_string(),
+                _ => c.path.clone(),
             };
+            let explore = c.explore.is_some() && !o.no_explore;
+            let (system, prompt, profile) = panel_call(c, &path, explore);
             let flow = Flow::Write {
                 draft: c.request.clone(),
                 out: c.out,
             };
-            let system = prompts::write(&Ctx {
-                out: c.out,
-                window: window_kind(&c.name, &c.cmd),
-            });
             let h = fnv(&system);
             if !hashes.contains(&h) {
                 hashes.push(h);
             }
+            // --model takes any name, so the route is the rig's, not the App's four
             let model = route(&flow, &o.model).model;
-            let prompt = build(&flow, &cap, &[], QUESTIONS);
             // Spawned here, on the main thread: the child's death signal follows it.
-            let req = Request::spawn(&call, &system, &prompt, &model);
+            let req = Request::spawn_with(&call, &profile, &system, &prompt, &model);
             live.push(Job {
                 case: ci,
                 run,
+                explore,
                 model,
                 system: h,
                 req,
@@ -581,7 +612,10 @@ fn main() {
             let j = live.swap_remove(i);
             let c = &cases[j.case];
             let ms = j.started.elapsed().as_millis();
-            let (raw, usage, err) = match answer.map_err(|f| f.to_string()) {
+            let out = call_output(answer, j.req.raw());
+            // a text call has no tools: its rows say null, not "read none"
+            let read = out.as_ref().ok().and_then(|o| files_read(o)).filter(|_| j.explore);
+            let (raw, usage, err) = match out {
                 Ok(out) => match unwrap_json(&out) {
                     Ok((raw, u)) => (raw, u, None),
                     Err(e) => (String::new(), Usage::default(), Some(e)),
@@ -611,6 +645,10 @@ fn main() {
                 _ => "wrote".into(),
             };
             let want = c.expect.as_str();
+            let what = match &read {
+                Some(r) => format!("[read {}] {what}", r.len()),
+                None => what,
+            };
             println!("{mark} {:<24} {:<13} want {want:<6} {:>6} ms  {what}", c.id, c.kind, ms);
             if let Some(f) = log.as_mut() {
                 let row = serde_json::json!({
@@ -625,11 +663,13 @@ fn main() {
                     "cost_usd": usage.cost_usd,
                     "in_tokens": usage.in_tokens, "out_tokens": usage.out_tokens,
                     "refused": g.as_ref().map(|g| g.refused), "holdout": c.holdout, "reply": raw,
+                    "explore": j.explore, "files_read": read,
                 });
                 let _ = writeln!(f, "{row}");
             }
             done.push((j.case, ms, g));
             costs.push(usage.cost_usd);
+            reads.extend(read.map(|r| r.len()));
         }
         std::thread::sleep(Duration::from_millis(50));
     }
@@ -637,6 +677,77 @@ fn main() {
     if let Some(l) = cost_line(&costs, wrapped) {
         println!("cost            {l}");
     }
+    if !reads.is_empty() {
+        let n: usize = reads.iter().sum();
+        println!(
+            "files read      {n} over {} exploring calls, at most {}",
+            reads.len(),
+            reads.iter().max().unwrap_or(&0)
+        );
+    }
+}
+
+/// The fixture copy, removed on drop.
+struct Staged(Option<PathBuf>);
+
+impl Drop for Staged {
+    fn drop(&mut self) {
+        if let Some(d) = &self.0 {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+}
+
+/// The system prompt, the user prompt and the profile the panel itself sends for
+/// case `c` on `path`: an App in Compose, its ^S, then its own picks.
+fn panel_call(c: &Case, path: &str, explore: bool) -> (String, String, Profile) {
+    let cap = Capture {
+        name: c.name.clone(),
+        cmd: c.cmd.clone(),
+        path: path.into(),
+        screen: c.screen.clone(),
+        repo: c.repo.as_str().into(),
+    };
+    let mut a = App::new("%0", cap);
+    (a.view, a.out, a.explore) = (View::Compose, c.out, explore);
+    (a.draft, a.cur) = (c.request.clone(), c.request.len());
+    a.key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
+    let (system, prompt, _) = a.request_parts().expect("^S on a draft starts a write");
+    let profile = a.run.as_ref().map_or(Profile::TEXT, |r| a.profile_for(&r.flow));
+    (system, prompt, profile)
+}
+
+/// The fixtures the `explore:` cases name, copied to a fresh temp dir of the
+/// rig's own, so a model reading around finds nothing of this repo's.
+fn stage(cases: &[Case]) -> Result<Option<PathBuf>, String> {
+    let names: Vec<&str> = cases.iter().filter_map(|c| c.explore.as_deref()).collect();
+    if names.is_empty() {
+        return Ok(None);
+    }
+    let dir = std::env::temp_dir().join(format!("panel-eval-fixtures-{}", std::process::id()));
+    let from = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("evals/panel/fixtures");
+    std::fs::create_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    for n in names {
+        if !dir.join(n).exists() {
+            copy_tree(&from.join(n), &dir.join(n)).map_err(|e| format!("fixture {n}: {e}"))?;
+        }
+    }
+    Ok(Some(dir))
+}
+
+/// Files and folders only: a fixture has no links.
+fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
+    std::fs::create_dir(to)?;
+    for e in std::fs::read_dir(from)? {
+        let e = e?;
+        let t = e.file_type()?;
+        if t.is_dir() {
+            copy_tree(&e.path(), &to.join(e.file_name()))?;
+        } else if t.is_file() {
+            std::fs::copy(e.path(), to.join(e.file_name()))?;
+        }
+    }
+    Ok(())
 }
 
 /// The panel's config directory, as `panel::xdg` finds it.
@@ -657,6 +768,9 @@ struct Row {
     /// The system prompt's hash; "" in a file written before it was recorded.
     system: String,
     cost_usd: Option<f64>,
+    ms: Option<u64>,
+    /// The files an exploring call read; `None` for a text call or an older file.
+    files_read: Option<usize>,
 }
 
 /// The rows of an `--out` file; `name` heads each error.
@@ -677,6 +791,8 @@ fn read_rows(name: &str, text: &str) -> Result<Vec<Row>, String> {
             pass,
             system: text("system"),
             cost_usd: v["cost_usd"].as_f64(),
+            ms: v["ms"].as_u64(),
+            files_read: v["files_read"].as_array().map(Vec::len),
         });
     }
     if rows.is_empty() {
@@ -779,6 +895,12 @@ fn print_compare(sides: &[(&PathBuf, &[Row]); 2]) {
         if let Some(l) = cost_line(&costs, false) {
             println!("   cost      {l}");
         }
+        if let Some(l) = latency_line(rows) {
+            println!("   latency   {l}");
+        }
+        if let Some(l) = reads_line(rows) {
+            println!("   read      {l}");
+        }
     }
     let (pa, pb) = paired_pass_all(&cmp);
     println!(
@@ -846,6 +968,26 @@ fn unwrap_json(out: &str) -> Result<(String, Usage), String> {
         out_tokens: u["output_tokens"].as_u64(),
     };
     Ok((text.to_string(), usage))
+}
+
+/// Mean and median call time over the rows that recorded one.
+fn latency_line(rows: &[Row]) -> Option<String> {
+    let mut ms: Vec<u64> = rows.iter().filter_map(|r| r.ms).collect();
+    if ms.is_empty() {
+        return None;
+    }
+    ms.sort_unstable();
+    let mean = ms.iter().sum::<u64>() as f64 / ms.len() as f64 / 1000.0;
+    let median = ms[ms.len() / 2] as f64 / 1000.0;
+    Some(format!("{mean:.1} s mean, {median:.1} s median over {} calls", ms.len()))
+}
+
+/// Files read per exploring call, over the rows that recorded them.
+fn reads_line(rows: &[Row]) -> Option<String> {
+    let n: Vec<usize> = rows.iter().filter_map(|r| r.files_read).collect();
+    let max = *n.iter().max()?;
+    let mean = n.iter().sum::<usize>() as f64 / n.len() as f64;
+    Some(format!("{mean:.1} files mean, {max} at most, over {} calls", n.len()))
 }
 
 /// The cost line: total and mean over the calls that reported one.
@@ -1364,6 +1506,8 @@ mod tests {
             pass: Some(true),
             system: "00ff".into(),
             cost_usd: None,
+            ms: None,
+            files_read: None,
         };
         assert_eq!(r[0], want);
         assert_eq!((r[1].cost_usd, r[2].pass), (Some(0.5), None));
@@ -1517,12 +1661,147 @@ mod tests {
     }
 
     #[test]
+    fn an_explore_key_names_one_fixture_folder() {
+        let c = ONE.replace("expect: write", "expect: write\nexplore: invoicer");
+        assert_eq!(parse_cases(&c).unwrap()[0].explore.as_deref(), Some("invoicer"));
+        assert_eq!(parse_cases(ONE).unwrap()[0].explore, None);
+        for bad in ["../etc", "a/b", ".", ".hidden"] {
+            let c = ONE.replace("expect: write", &format!("expect: write\nexplore: {bad}"));
+            assert!(parse_cases(&c).unwrap_err().contains("folder name"), "{bad}");
+        }
+        let empty = ONE.replace("expect: write", "expect: write\nexplore:");
+        assert!(parse_cases(&empty).unwrap_err().contains("folder name"));
+    }
+
+    /// Every explore case needs a read: each `must` is in the fixture and on no
+    /// screen or request, so a text call cannot copy it.
+    #[test]
+    fn each_explore_case_names_what_only_its_fixture_holds() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("evals/panel");
+        let cases = parse_cases(&std::fs::read_to_string(root.join("explore.txt")).unwrap()).unwrap();
+        assert_eq!(cases.len(), 4);
+        for c in &cases {
+            let fx = root.join("fixtures").join(c.explore.as_deref().expect("an explore key"));
+            let mut all = String::new();
+            grep_tree(&fx, &mut all);
+            for m in &c.must {
+                assert!(has(&all, m), "{}: {m} is in the fixture", c.id);
+                assert!(!has(&c.screen, m) && !has(&c.request, m), "{}: {m} is not given", c.id);
+            }
+        }
+    }
+
+    /// Every file's path and text under `d`, appended to `out`.
+    fn grep_tree(d: &Path, out: &mut String) {
+        for e in std::fs::read_dir(d).unwrap().map(Result::unwrap) {
+            out.push_str(&format!("{}\n", e.path().display()));
+            if e.file_type().unwrap().is_dir() {
+                grep_tree(&e.path(), out);
+            } else {
+                out.push_str(&std::fs::read_to_string(e.path()).unwrap());
+            }
+        }
+    }
+
+    /// The rig sends what the panel's own App picks: the prompts, the envelope
+    /// with its three questions, and the profile, for a text and an exploring write.
+    #[test]
+    fn the_rig_sends_the_panels_own_call() {
+        use cockpit_tui::panel::app::{EXPLORE_BUDGET_USD, EXPLORE_TIMEOUT};
+        use cockpit_tui::panel::capture::window_kind;
+        use cockpit_tui::panel::envelope::build;
+        use cockpit_tui::panel::prompts::{self, Ctx};
+        let c = &parse_cases(ONE).unwrap()[0];
+        let ctx = Ctx {
+            out: c.out,
+            window: window_kind(&c.name, &c.cmd),
+        };
+        let cap = Capture {
+            name: c.name.clone(),
+            cmd: c.cmd.clone(),
+            path: "/r".into(),
+            screen: c.screen.clone(),
+            repo: c.repo.as_str().into(),
+        };
+        let flow = Flow::Write {
+            draft: c.request.clone(),
+            out: c.out,
+        };
+        let (system, prompt, profile) = panel_call(c, "/r", false);
+        assert_eq!((system, profile), (prompts::write(&ctx), Profile::TEXT));
+        assert_eq!(prompt, build(&flow, &cap, &[], 3));
+        let (system, _, profile) = panel_call(c, "/r", true);
+        assert_eq!(system, prompts::write_explore(&ctx));
+        assert_eq!(profile, Profile::read_only("/r".into(), false, EXPLORE_BUDGET_USD, EXPLORE_TIMEOUT));
+    }
+
+    #[test]
+    fn stage_copies_each_named_fixture_once_and_nothing_without_one() {
+        assert_eq!(stage(&parse_cases(ONE).unwrap()).unwrap(), None);
+        let one = ONE.replace("expect: write", "expect: write\nexplore: invoicer");
+        let two = format!("{one}{}", one.replace("=== crash", "=== crash2"));
+        let d = stage(&parse_cases(&two).unwrap()).unwrap().expect("a temp dir");
+        struct Gone(PathBuf);
+        impl Drop for Gone {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let d = Gone(d);
+        assert!(d.0.join("invoicer/invoicer/money.py").is_file());
+        assert!(!d.0.starts_with(env!("CARGO_MANIFEST_DIR")), "outside this repo");
+    }
+
+    #[test]
+    fn latency_and_reads_lines_count_only_the_rows_that_have_them() {
+        let row = |ms: Option<u64>, files_read: Option<usize>| Row {
+            ms,
+            files_read,
+            ..Row::default()
+        };
+        let rows = [
+            row(Some(1000), Some(2)),
+            row(Some(3000), None),
+            row(Some(2000), Some(4)),
+            row(None, None),
+        ];
+        assert_eq!(latency_line(&rows).unwrap(), "2.0 s mean, 2.0 s median over 3 calls");
+        assert_eq!(reads_line(&rows).unwrap(), "3.0 files mean, 4 at most, over 2 calls");
+        assert_eq!((latency_line(&[row(None, None)]), reads_line(&[])), (None, None));
+    }
+
+    #[test]
+    fn a_json_call_is_never_given_the_output_flags_twice() {
+        let call = ["-p", "--output-format", "json", "--verbose"].map(OsString::from);
+        let c = claude_command(OsStr::new("/bin/claude"), call);
+        let args: Vec<&OsStr> = c.get_args().collect();
+        assert_eq!(args, ["-p", "--output-format", "json", "--verbose"]);
+    }
+
+    /// A json call's row is read from its events: the cost and the reads are there,
+    /// a failed call's too; a text call's from its answer.
+    #[test]
+    fn a_json_call_is_graded_from_its_events() {
+        let events = r#"[{"type":"result","result":"<prompt>p</prompt>","total_cost_usd":0.02}]"#;
+        let out = call_output(Ok("<prompt>p</prompt>".into()), Some(events)).unwrap();
+        assert_eq!(unwrap_json(&out).unwrap().1.cost_usd, Some(0.02));
+        let spent = call_output(Err(Fail::Budget { limit_usd: 0.15 }), Some(events));
+        assert_eq!(spent.as_deref(), Ok(events), "a stop keeps its events");
+        assert_eq!(call_output(Ok("text".into()), None).as_deref(), Ok("text"));
+        // claude's API error says success in its subtype: is_error decides
+        let api = r#"[{"type":"result","subtype":"success","is_error":true,"result":"API Error: 400 bad request"}]"#;
+        let out = call_output(Err(Fail::Failed("API Error: 400 bad request".into())), Some(api)).unwrap();
+        assert_eq!(unwrap_json(&out).unwrap_err(), "API Error: 400 bad request");
+        assert_eq!(call_output(Err(Fail::Timeout), None), Err("took too long".into()));
+    }
+
+    #[test]
     fn the_wrapped_call_puts_json_first_and_drops_the_variable() {
         let call = ["-p", "--model", "sonnet"].map(OsString::from);
         let c = claude_command(OsStr::new("/bin/claude"), call);
         assert_eq!(c.get_program(), "/bin/claude");
         let args: Vec<&OsStr> = c.get_args().collect();
-        assert_eq!(args, ["--output-format", "json", "-p", "--model", "sonnet"]);
+        assert_eq!(args, ["--output-format", "json", "--verbose", "-p", "--model", "sonnet"]);
         let envs: Vec<_> = c.get_envs().collect();
         assert_eq!(envs, [(OsStr::new(AS_CLAUDE), None)]);
     }

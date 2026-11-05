@@ -7,7 +7,8 @@
 #                                          in-flight set to its .live file (#403, #423)
 #          agent-state session [pane-id]   save the payload's session_id, transcript_path (#302)
 #                                          and cwd as @cockpit_dir (#312)
-#          agent-state sweep [seq]   every window's and session's summaries (tmux hooks)
+#          agent-state sweep [seq]   every window's and session's summaries (tmux hooks), and
+#                                          the agent-poll that serves the server (#448)
 #          agent-state poll <running|needs-input|error|done|off> <pane-id> [ask]   (agent-poll)
 # The pane defaults to $TMUX_PANE; tmux hooks have no TMUX_PANE, so they pass it.
 # Every @panestate write must go through here, or the window/fleet counters go stale.
@@ -134,6 +135,11 @@ if [ "$state" = sweep ]; then
     for s in $(tmux list-sessions -F '#{session_id}' 2>/dev/null); do T="'$s'"; body=""; sess_sums; add; done
     T=$w; body=""; fleet_sums; add
     flush
+    # The one poller per server (#448): the load and every window or pane change make sure it
+    # runs. Only a sweep that walked (a superseded one exited above), so a burst starts one.
+    d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")
+    # shellcheck source=lib/hook.sh
+    if . "${d%/*}/lib/hook.sh" 2>/dev/null; then ensure_poller "${d%/*}"; fi
     exit "$rc"
 fi
 
@@ -405,6 +411,32 @@ case "$state" in
     done|error) [ -z "$poll" ] || body="$body ; set-option -pu -t $pane @panestate_msg" ;;
 esac
 
+# A hook of this pane's own session (TMUX_PANE is its pane) that is not an agent view's relayed
+# notification means the pane is a plain session again: the mark from an earlier agent-view
+# visit would have the poller overwrite its states every tick (#174). The same invocation, and
+# outside `when`, so a pane that is already in the state still loses it.
+# It is a foreground session's pane too (#448): @cockpit_fg, the epoch second of its last state
+# change, tells agent-poll not to bind it to a background job of the same name, which would
+# overwrite what these hooks write. The poller binds it only to a job that started after that
+# second: the session itself, sent to the background with the left arrow (no hook says so).
+# Set when the pane has none (with any bind it had), refreshed with each state change, inside
+# `when`. The session's end (SessionEnd runs `off`) takes it away: the pane may show a job
+# next. The event is read from the payload, a builtin read capped at 4 KB. Without a builtin
+# clock the value is one that no job starts after.
+fgown="" ended="" payload="" fgnow=""
+if [ -z "$poll" ] && [ -z "$view" ] && [ "$pane" = "${TMUX_PANE:-}" ]; then
+    fgown=1
+    if [ "${1:-off}" = off ] && [ ! -t 0 ]; then
+        IFS= read -r -t 2 -n 4096 payload 2>/dev/null
+        case "$payload" in *'"hook_event_name":"SessionEnd"'*|*'"hook_event_name": "SessionEnd"'*)
+            ended=1 ;; esac
+    fi
+    fgnow=${EPOCHSECONDS:-}
+    [ -n "$fgnow" ] || printf -v fgnow '%(%s)T' -1 2>/dev/null
+    case "$fgnow" in ''|*[!0-9]*) fgnow=9999999999 ;; esac
+    [ -n "$ended" ] || body="$body ; set-option -p -t $pane @cockpit_fg $fgnow"
+fi
+
 T=$pane
 body="$body ; $defs"
 win_sums; sess_sums; fleet_sums
@@ -412,14 +444,15 @@ win_sums; sess_sums; fleet_sums
 # (tui/src/push.rs), and run-shell -C runs that list inside this call. No board, an empty list.
 body="$body ; run-shell -C '#{@cockpit_board_wake}'"
 # Fail-open: a hook must never block the agent that fired it.
-# A hook of this pane's own session (TMUX_PANE is its pane) that is not an agent view's relayed
-# notification means the pane is a plain session again: the mark from an earlier agent-view
-# visit would have the poller overwrite its states every tick (#174). The same invocation, and
-# outside `when`, so a pane that is already in the state still loses it.
 unmark=()
-if [ -z "$poll" ] && [ -z "$view" ] && [ "$pane" = "${TMUX_PANE:-}" ]; then
+if [ -n "$fgown" ]; then
+    fgset="set-option -p -t $pane @cockpit_fg $fgnow"
+    for o in job job_name job_state; do fgset="$fgset ; set-option -pu -t $pane @cockpit_$o"; done
+    fgcond='#{?#{@cockpit_fg},0,1}'
+    [ -z "$ended" ] || { fgset="set-option -pu -t $pane @cockpit_fg"; fgcond='#{@cockpit_fg}'; }
     unmark=(if-shell -F -t "$pane" '#{@cockpit_agentview}' \
-        "set-option -pu -t $pane @cockpit_agentview" ';')
+        "set-option -pu -t $pane @cockpit_agentview" ';'
+        if-shell -F -t "$pane" "$fgcond" "$fgset" ';')
 fi
 tmux ${unmark[@]+"${unmark[@]}"} ${subs_cmd[@]+"${subs_cmd[@]}" ';'} \
     if-shell -F -t "$pane" "$when" "${body# ; }" \

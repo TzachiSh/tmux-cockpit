@@ -1,0 +1,68 @@
+# Explore-first cases (#416), in cases.txt's format, run with --cases. Each has
+#   explore: <a folder under fixtures/>
+# which the rig copies to a temp dir and uses as the pane's path; the write then
+# reads it through the read-only profile. --no-explore runs the same cases with
+# the same path and the text call, for the comparison.
+# Each request needs a function name the screen does not show: only a read finds it.
+
+=== explore-vat-cent
+kind: bug
+window: work · bash · .
+explore: invoicer
+expect: write
+must: round_cents; money.py
+must_not: def round_cents; quantize; ROUND_HALF_UP
+note: the truncation is in round_cents; a rounding mode or quantize is the agent's fix
+--- screen
+$ invoicer total --net 19.99 --vat 19
+23.78
+$
+--- request
+the total is a cent short, it should be 23.79. fix it
+
+=== explore-due-date
+kind: bug
+window: work · bash · .
+explore: invoicer
+expect: write
+must: parse_due; dates.py
+must_not: def parse_due
+note: the format is DUE_FORMAT in dates.py, read by parse_due
+--- screen
+$ invoicer import orders-us.csv
+error: bad due date '03/14/2026' on row 12
+$
+--- request
+american dates break the import, make it take both formats
+
+=== explore-double-loyalty
+kind: bug
+window: work · bash · .
+explore: invoicer
+expect: write
+must: stack_offers; discounts.py
+must_not: def stack_offers
+note: stack_offers appends the loyalty line again when there is a coupon
+--- screen
+$ invoicer quote --customer 42 --coupon SPRING10
+subtotal   200.00
+loyalty    -10.00
+loyalty    -10.00
+coupon     -20.00
+total      160.00
+$
+--- request
+loyalty comes off twice when theres a coupon, fix
+
+=== explore-rate-limit
+kind: feature
+window: work · bash · .
+explore: invoicer
+expect: write
+must: post_invoice; throttled
+must_not: def post_invoice
+note: reads use @throttled(READS) in handlers.py; post_invoice has none
+--- screen
+$
+--- request
+add a rate limit to creating invoices, the same way reads are limited

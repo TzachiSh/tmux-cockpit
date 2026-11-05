@@ -49,9 +49,7 @@ pub fn capture(pane: &str) -> Option<Capture> {
         lines.pop();
     }
     let screen = lines.join("\n");
-    // An ssh or container window's path is the local client's, not the shell it shows.
-    let local = LOCAL_CMDS.contains(&cmd.as_str()) || crate::data::agentish(&cmd);
-    let repo = if path.is_empty() || !local {
+    let repo = if path.is_empty() || !is_local(&cmd) {
         Repo::default()
     } else {
         Repo::start(&path, &screen, REPO_BUDGET)
@@ -158,7 +156,15 @@ const PLAIN: [&str; 6] = ["-c", "color.ui=false", "-c", "color.status=false", "-
 /// gitsafe's flags, no lock taken under the user's own git, no prompt, no
 /// transport; its own process group so a timeout kills what it forked.
 fn spawn_git(dir: &str, extra: &[String], args: &[&str]) -> Option<Git> {
+    spawn_git_unset(dir, extra, args, &[])
+}
+
+/// [`spawn_git`] with the variables `unset` taken out of git's environment.
+fn spawn_git_unset(dir: &str, extra: &[String], args: &[&str], unset: &[&str]) -> Option<Git> {
     let mut c = Command::new("git");
+    for v in unset {
+        c.env_remove(v);
+    }
     c.arg("-C")
         .arg(dir)
         .args(SAFE)
@@ -247,6 +253,45 @@ fn finish(g: Option<Git>, end: Instant, part: &str) -> Ran {
     drop(g); // the kill
     eprintln!("cockpit-tui: repo block: git {part} timed out, left out");
     Ran::TimedOut
+}
+
+/// What an inherited environment points git at instead of the repo `dir` is in.
+/// GIT_CEILING_DIRECTORIES stays: it can only stop the search lower.
+const REDIRECT: [&str; 4] = ["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE"];
+
+/// The work tree of the repo `dir` is in, under [`spawn_git`]'s flags, or `None`
+/// outside a repo, past `budget`, or when it is not `dir`'s own (see [`own_tree`]).
+pub fn toplevel(dir: &str, budget: Duration) -> Option<String> {
+    let args = ["rev-parse", "--show-toplevel", "--absolute-git-dir"];
+    let g = spawn_git_unset(dir, &[], &args, &REDIRECT);
+    let out = finish(g, Instant::now() + budget, "rev-parse --show-toplevel").ok()?;
+    let mut lines = out.lines();
+    let (top, gitdir) = (lines.next()?, lines.next()?);
+    own_tree(Path::new(dir), Path::new(top), Path::new(gitdir)).then(|| top.to_string())
+}
+
+/// `top` holds `dir`, and its own `.git` (a folder, or a `gitdir:` file as in a
+/// linked worktree or a submodule) is the repo's git dir: a repo's `core.worktree`
+/// can name any folder as its tree, a parent repo or one outside, and is not trusted.
+fn own_tree(dir: &Path, top: &Path, gitdir: &Path) -> bool {
+    let canon = |p: &Path| std::fs::canonicalize(p).ok();
+    let (Some(dir), Some(top), Some(gitdir)) = (canon(dir), canon(top), canon(gitdir)) else {
+        return false;
+    };
+    if !dir.starts_with(&top) {
+        return false;
+    }
+    let dot = top.join(".git");
+    let own = match std::fs::symlink_metadata(&dot) {
+        Ok(m) if m.is_dir() => canon(&dot),
+        Ok(m) if m.is_file() => {
+            let body = std::fs::read_to_string(&dot).ok();
+            let named = body.as_deref().and_then(|b| b.strip_prefix("gitdir:")).map(|p| top.join(p.trim()));
+            named.and_then(|p| canon(&p))
+        }
+        _ => None,
+    };
+    own == Some(gitdir)
 }
 
 /// `lines` indented under `head`, the first `cap` of them and a count of the rest.
@@ -543,6 +588,13 @@ pub const LOCAL_CMDS: [&str; 30] = [
     "nvim", "vim", "vi", "nano", "emacs", "hx", "kak", "micro",
     "claude", "codex", "gemini", "aider", "opencode", "goose", "crush", "cursor-agent", "node",
 ];
+
+/// A window whose folder is the one tmux reports: [`LOCAL_CMDS`] or an agent
+/// name. An ssh or container window's path is the local client's, not the
+/// shell it shows, so it gets no repo block and no read of its folder.
+pub fn is_local(cmd: &str) -> bool {
+    LOCAL_CMDS.contains(&cmd) || crate::data::agentish(cmd)
+}
 
 /// The window kind the write examples are picked by.
 pub fn window_kind(name: &str, cmd: &str) -> &'static str {

@@ -292,7 +292,12 @@ pub fn gather(pane: &str) -> Result<Facts, String> {
     } else {
         WorkFrom::Cwd
     };
-    x.doing = tr.as_deref().map(doing_rows).unwrap_or_default();
+    let (doing, ask) = tr.as_deref().map(doing_rows).unwrap_or_default();
+    x.doing = doing;
+    // #453: the hook's text is generic; an open question says what is owed
+    if let Some(q) = ask.filter(|_| x.state == "needs-input") {
+        x.msg = q;
+    }
     let sess = session_dir(&x.id, &root);
     if !root.is_empty() && !git(&root, &[], None, &["rev-parse", "-q", "--verify", "HEAD"]).trim().is_empty() {
         let chosen = std::fs::read_to_string(sess.join("comments.md.base")).unwrap_or_default();
@@ -305,12 +310,15 @@ pub fn gather(pane: &str) -> Result<Facts, String> {
     Ok(x)
 }
 
-/// The transcript's doing / said / asked, left out quietly when unreadable.
-fn doing_rows(path: &std::path::Path) -> Vec<Doing> {
+/// The transcript's doing / said / asked, left out quietly when unreadable, and
+/// the open AskUserQuestion's question, cleaned at its source.
+fn doing_rows(path: &std::path::Path) -> (Vec<Doing>, Option<String>) {
     let Some(text) = super::transcript::doing(path) else {
-        return vec![];
+        return (vec![], None);
     };
-    text.lines()
+    let ask = text.lines().find_map(|l| l.strip_prefix("ask\t")).map(String::from);
+    let rows = text
+        .lines()
         .filter_map(|l| {
             let mut f = l.split('\t');
             let (kind, a) = (f.next()?, clean(f.next()?));
@@ -321,7 +329,8 @@ fn doing_rows(path: &std::path::Path) -> Vec<Doing> {
                 age: if kind == "said" { None } else { age },
             })
         })
-        .collect()
+        .collect();
+    (rows, ask)
 }
 
 #[cfg(test)]

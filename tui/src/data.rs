@@ -261,10 +261,12 @@ fn tail(f: &mut File, len: u64, cap: u64) -> Vec<String> {
 }
 
 /// The one place doing/said/asked are built, so the one place to sanitise them:
-/// a control character such as TAB would split a `--rows` record.
+/// a control character such as TAB would split a `--rows` record, and a bidi
+/// control in model-written text would reorder the row (#453).
 fn first_line(s: &str) -> String {
     let one = s.trim().lines().next().unwrap_or("");
     one.chars()
+        .filter(|&c| !crate::pick::is_bidi(c))
         .map(|c| if c.is_control() { ' ' } else { c })
         .collect::<String>()
         .trim()
@@ -286,6 +288,8 @@ struct Facts {
     state: State,
     /// the newest main-thread row's `cwd`, else the one the last read kept (#452)
     cwd: String,
+    /// the newest open AskUserQuestion's question, `""` when none is open
+    ask: String,
 }
 
 /// A read's (len, mtime), the file's (device, inode), and what it said.
@@ -400,6 +404,9 @@ fn parse(lines: Vec<String>) -> Facts {
     // An AskUserQuestion is open until a user row carries its tool_result:
     // answers, dismissals and denials write one, an interrupt does not.
     let mut asks: Vec<String> = vec![];
+    // #453: the newest tool_use's id and, for an AskUserQuestion, its question:
+    // the row's message only while that ask is the one still open
+    let mut newest: Option<(String, Option<String>)> = None;
     let (mut turn_over, mut saw) = (false, false);
     for raw in lines {
         let Ok(v) = serde_json::from_str::<Value>(&raw) else { continue };
@@ -428,6 +435,8 @@ fn parse(lines: Vec<String>) -> Facts {
                         fa.user = first_line(t);
                         fa.user_at = ts;
                         turn_over = false;
+                        // a typed prompt means the human moved on from an interrupted ask
+                        asks.clear();
                     }
                     None => {
                         let (mut interrupted, mut result, mut typed) = (false, false, None);
@@ -455,6 +464,7 @@ fn parse(lines: Vec<String>) -> Facts {
                         {
                             fa.user = first_line(t);
                             fa.user_at = ts;
+                            asks.clear();
                         }
                     }
                 }
@@ -477,11 +487,12 @@ fn parse(lines: Vec<String>) -> Facts {
                                 Some((p, d)) if !d.is_empty() => format!("{name}: {p}{d}"),
                                 _ => name.to_string(),
                             };
-                            if name == "AskUserQuestion"
-                                && let Some(id) = b["id"].as_str()
-                            {
-                                asks.push(id.to_string());
+                            let id = b["id"].as_str().unwrap_or_default().to_string();
+                            let ask = name == "AskUserQuestion";
+                            if ask && !id.is_empty() {
+                                asks.push(id.clone());
                             }
+                            newest = Some((id, ask.then(|| transcript::question(&b["input"])).flatten()));
                         }
                         Some("text") => {
                             let t = first_line(b["text"].as_str().unwrap_or(""));
@@ -496,6 +507,7 @@ fn parse(lines: Vec<String>) -> Facts {
             _ => {}
         }
     }
+    fa.ask = newest.filter(|(id, _)| asks.contains(id)).and_then(|(_, q)| q).unwrap_or_default();
     // An open question outranks a finished turn: the interrupt that ended the
     // turn left the picker's tool_use open, and the human still owes an answer.
     fa.state = match () {
@@ -518,6 +530,10 @@ fn read_transcript(p: &mut Pane) -> String {
     // @panestate wins; the transcript speaks only for panes the hooks never touched.
     if p.state == State::Unknown {
         p.state = fa.state;
+    }
+    // #453: the hook's text is generic; an open question says what is owed
+    if p.state == State::NeedsInput && !fa.ask.is_empty() {
+        p.msg = fa.ask;
     }
     p.doing = fa.tool;
     p.said = fa.text;
