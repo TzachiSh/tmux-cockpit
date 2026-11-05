@@ -13,13 +13,14 @@ shows its diff stat (`+a -d`, `clean`, `no repo`, `?N new`) and branch, so
 
 The tree a row diffs is the pane option `@cockpit_dir` when it names a
 directory, else the session transcript's newest `cwd`, else the pane's cwd.
-`r` reviews that same tree: tmux-review asks `cockpit-tui info --json` for it
-(#470), and when the binary is missing, stale or gives no absolute directory,
-or jq is missing, it takes `@cockpit_dir`, else the cwd. The call is bounded by
-`timeout 3`; on a box without GNU `timeout` (stock macOS) it runs unbounded. Until
-#500 two kinds of pane may still get the launch dir: a Claude running under its
-version as the command name (`2.1.246`), and a pane whose transcript the board and
-`info` find in different files. An agent that made its worktree by hand
+`r` reviews that same tree: tmux-review asks `cockpit-tui workdir %N` for it
+(#470), for every pane whose `@cockpit_dir` does not name a directory. When the
+binary is missing, has no `workdir`, exits non-zero or prints anything but an
+absolute directory, it takes `@cockpit_dir`, else the cwd. The call is bounded by
+`timeout 3`; on a box without GNU `timeout` (stock macOS) it runs unbounded. An
+agent pane with no session id is the one case left apart: `workdir` does not run
+`claude agents` to find its transcript, so it gets its launch dir, where the
+board's row may show the transcript's tree. An agent that made its worktree by hand
 (`git worktree add` from the main checkout) keeps its process, and so its cwd,
 in the main checkout and drives the tree with `git -C`; its row would read
 clean master. One line from the agent fixes that, and every reader (the board,

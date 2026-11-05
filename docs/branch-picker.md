@@ -15,8 +15,7 @@ first and marks the branch you are on with `●`. A branch held by a linked
 worktree carries `⑂name`: git would refuse it, so `↵` goes to that worktree
 instead. It selects the pane already working there (the tree its board row
 shows is inside it), an agent's pane before a shell, and opens a new window in
-the tree when no pane is there. Until #500, `r` may review the launch dir of a
-pane whose transcript the board and `info` find in different files. It never `cd`s a pane. The header says
+the tree when no pane is there. It never `cd`s a pane. The header says
 `detached HEAD` when no branch is checked out. When git refuses a switch (a dirty
 tree, say) you read its message, press a key, and the popup opens again instead
 of closing.

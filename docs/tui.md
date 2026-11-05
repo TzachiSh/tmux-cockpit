@@ -2207,12 +2207,9 @@ close it, `↑↓` `j` `k` `PgUp` `PgDn` scroll, `?` lists the keys.
 `tmux-review --info` is gone.
 
 **`cockpit-tui info --json %N`** (#452) prints one line, `{"dir": "<path>"}`: the
-work dir by the board's rule (`dir` in `--json` above), for scripts. tmux-review
-reads it for `prefix r`, the board's `r` and `--delta` (#470); the branch picker's
-goto reads `--json`'s `dir` once for every pane. Each takes `@cockpit_dir`, else
-the cwd, when the binary is missing or stale, exits non-zero, or names no absolute
-directory, or jq is missing. Root, base and the review dir on the screen still take `@cockpit_dir`,
-else the cwd. The path is decoded as lossy UTF-8, as
+work dir by the board's rule (`dir` in `--json` above), for scripts. Root, base and
+the review dir take `@cockpit_dir`, else the cwd; `prefix r` asks `workdir` for its
+tree (#470) instead. The path is decoded as lossy UTF-8, as
 every tmux read is: a byte that is not UTF-8 becomes U+FFFD. Exit 0 with the
 line; exit 1 and nothing on stdout when the pane is not there; exit 2 for a
 missing or malformed pane id.
