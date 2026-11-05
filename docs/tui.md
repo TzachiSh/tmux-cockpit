@@ -2224,9 +2224,19 @@ the current branch. `⑂` marks a branch checked out in another worktree: git re
 to switch to it, so `↵` prints `goto <worktree path>` and the script selects the pane
 working in that tree (an agent's first), or opens a window there; a path with a newline
 in it gives a `✕` note and prints nothing. That needs git 2.36 or later, for
-`worktree list -z`. Older git prints a newline path across two lines, so a tree with one
-is left out: its branch shows no `⑂`, and a line that names a directory with no `.git`
-is no worktree. The preview is
+`worktree list -z`. Older git (2.7 to 2.35) prints a newline path across two lines.
+A tree with one is usually left out, since its second line is no worktree attribute,
+but a crafted name can print lines that read like git's own and pair its branch with
+some other path. That path must be this repository's: its `.git` is the common dir
+(the main checkout), or a `.git` file naming an entry in the common dir's `worktrees/`
+that names that file back (a linked tree). A `.git` that is a symlink or hard link to
+one of these counts, as it does for git, so a directory need not be a real checkout to
+pass. Another repository's checkout, or a directory with no `.git`, is no worktree. The
+board also wants the branch to be the one that tree's `HEAD` names, so a forged line
+pairing a real tree with another branch gives that branch no `⑂`. A path that is gone
+is kept, since it has no `HEAD` to read: its branch shows `⑂`, `↵` says it is gone and
+suggests `git worktree prune`, and for a line a crafted name forged, prune removes
+nothing, because the tree that printed it still exists. The preview is
 `git log --graph --oneline -30` of the selection, read on a worker thread and cached
 per branch; it shows `loading…` until it arrives, and below 60 columns it is hidden.
 

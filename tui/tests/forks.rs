@@ -2,14 +2,10 @@
 //! rest of a tick, and it used to run on every one. Its cache is a thread-local
 //! with no reset, so this test owns a whole test binary: a second test in this
 //! file would inherit a warm cache and count zero forks.
-use cockpit_tui::data::list_panes;
-use std::os::unix::fs::PermissionsExt;
-use std::path::Path;
+mod fake;
 
-fn write_exec(p: &Path, body: &str) {
-    std::fs::write(p, body).unwrap();
-    std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o755)).unwrap();
-}
+use cockpit_tui::data::list_panes;
+use fake::write_exec;
 
 #[test]
 fn two_ticks_inside_the_ttl_fork_claude_once() {

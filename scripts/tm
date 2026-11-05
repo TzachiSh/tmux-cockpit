@@ -164,8 +164,13 @@ go() {  # go NAME [DIR] -- that session, created first at DIR (else the pane's f
   [ -n "$name" ] || exit 0    # a cancelled prompt, or a name clean() emptied
   id=$(sid_of "$name")
   if [ -z "$id" ]; then
-    # In a popup $PWD is the session's start dir, not the active pane's (#41).
-    [ -z "$dir" ] && [ -n "${TMUX:-}" ] && dir=$(tmux display-message -p -t "\$${TMUX##*,}" '#{pane_current_path}' 2>/dev/null)
+    # In a popup $PWD is the session's start dir, not the active pane's (#41). The
+    # key passes its pane as TM_PANE: on tmux master the popup is the active pane (#494).
+    if [ -z "$dir" ] && [[ ${TM_PANE:-} =~ ^%[0-9]+$ ]]; then
+      dir=$(tmux display-message -p -t "$TM_PANE" '#{pane_current_path}' 2>/dev/null)
+    elif [ -z "$dir" ] && [ -n "${TMUX:-}" ]; then
+      dir=$(tmux display-message -p -t "\$${TMUX##*,}" '#{pane_current_path}' 2>/dev/null)
+    fi
     id=$(tmux new-session -d -P -F '#{session_id}' -s "$(fesc "$name")" -c "$(fesc "${dir:-$PWD}")") && [ -n "$id" ] ||
       die "cockpit: could not create session '$name'"
   fi
@@ -193,11 +198,13 @@ own() {
 }
 
 # prefix+s runs this, as display-popup takes a size, not a format. The client
-# and its session come from the binding: the popup itself knows neither.
-popup() {  # popup CLIENT SESSION_ID CLIENT_WIDTH CLIENT_HEIGHT [--needs]
-  local client=$1 sid=$2 cw=$3 ch=$4 needs=${5:-} st='#{W:#{@cockpit_win_state} }'
+# and its session come from the binding: the popup itself knows neither. Nor the
+# pane: on tmux master the popup is the session's active pane (#494).
+popup() {  # popup CLIENT SESSION_ID CLIENT_WIDTH CLIENT_HEIGHT PANE [--needs]
+  local client=$1 sid=$2 cw=$3 ch=$4 pane=${5:-} needs=${6:-} st='#{W:#{@cockpit_win_state} }'
   local n nneed touch pw ph t=0 rows w h hmax
   num "$cw" && num "$ch" || die "cockpit: tm --popup needs the client's width and height"
+  [ -z "$pane" ] || [[ $pane =~ ^%[0-9]+$ ]] || die "cockpit: tm --popup takes a pane id, not '$pane'"
   IFS=$US read -r n nneed touch pw ph < <(tmux display-message -p \
     "#{server_sessions}$US#{n:#{S:#{?#{m:*needs-input*,$st},x,#{?#{m:*error*,$st},x,}}}}$US#{@cockpit_touch}$US#{@cockpit_popup_width}$US#{@cockpit_popup_height}")
   num "$n" && num "$nneed" || die "cockpit: tm --popup could not count the sessions"
@@ -217,7 +224,7 @@ popup() {  # popup CLIENT SESSION_ID CLIENT_WIDTH CLIENT_HEIGHT [--needs]
     h=$((rows + 5)); clamp h 14 "$hmax"
   fi
   local cmd
-  printf -v cmd 'TM_POPUP=1 TM_SID=%q TM_CLIENT=%q %s%s' "$sid" "$client" "$QSELF" "${needs:+ --needs}"
+  printf -v cmd 'TM_POPUP=1 TM_SID=%q TM_CLIENT=%q TM_PANE=%q %s%s' "$sid" "$client" "$pane" "$QSELF" "${needs:+ --needs}"
   # A client under 14 lines has no room for a popup and its border: a window of
   # the client's session has it all.
   if [ "$ch" -lt 14 ]; then

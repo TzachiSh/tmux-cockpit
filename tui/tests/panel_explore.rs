@@ -1,12 +1,13 @@
 //! Explore first (#416): a Compose toggle that lets a write read the pane's
 //! folder through a read-only profile. Fake claude scripts in temp dirs; no tmux.
+mod fake;
+
 use cockpit_tui::panel::app::{App, EXPLORE_BUDGET_USD, EXPLORE_TIMEOUT, Level, Tile, View};
 use cockpit_tui::panel::capture::{Capture, window_kind};
 use cockpit_tui::panel::envelope::{Flow, OutType};
 use cockpit_tui::panel::prompts::{self, Ctx};
 use cockpit_tui::panel::request::{Call, Fail, Profile, read_dir_ok};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -63,8 +64,7 @@ fn forking() -> std::sync::MutexGuard<'static, ()> {
 /// `body` as an executable at `path`, written under the fork lock.
 fn fake_at(path: &Path, body: &str) {
     let _g = forking();
-    std::fs::write(path, body).unwrap();
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    fake::write_exec(path, body);
 }
 
 fn scratch(tag: &str) -> Scratch {
