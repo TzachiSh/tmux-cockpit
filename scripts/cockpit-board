@@ -8,11 +8,6 @@ DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || exit 1
 LOG=${COCKPIT_LOG:-${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/tui.log}
 # shellcheck source=lib/pane.sh
 . "$DIR/scripts/lib/pane.sh" || exit 1
-# shellcheck source=lib/tui.sh
-. "$DIR/scripts/lib/tui.sh" || exit 1
-# shellcheck source=lib/fmt.sh
-. "$DIR/scripts/lib/fmt.sh" || exit 1
-BIN=$COCKPIT_TUI_BIN
 
 # $EPOCHREALTIME needs bash 5, and no portable `date` flag gives microseconds.
 log() {
@@ -25,8 +20,9 @@ sq() { printf "'%s'" "${1//\'/\'\\\'\'}"; }   # close, escaped quote, reopen
 
 # The client a jump moves: a bare switch-client moves the most recently active
 # one, which may be another (#296). -c (the window forms), or what the popup's
-# key left on the pane, read and cleared now, before the board runs, so a later
-# press from another client cannot take this run's jump.
+# key left on the pane, read and cleared now, before the other libs load (#480)
+# and the board runs. That narrows the window to bash start and pane.sh; a press
+# inside it still takes this run's pin.
 PANE='' CLIENT=''
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -36,10 +32,12 @@ while [ $# -gt 0 ]; do
     esac
     shift
 done
-if [ -z "$CLIENT" ] && is_pane "$PANE"; then
-    CLIENT=$(tmux show-option -pqv -t "$PANE" @cockpit_board_client \; \
-        set-option -pu -t "$PANE" @cockpit_board_client 2>/dev/null)
-fi
+[ -n "$CLIENT" ] || CLIENT=$(take_pane_opt "$PANE" @cockpit_board_client)
+# shellcheck source=lib/tui.sh
+. "$DIR/scripts/lib/tui.sh" || exit 1
+# shellcheck source=lib/fmt.sh
+. "$DIR/scripts/lib/fmt.sh" || exit 1
+BIN=$COCKPIT_TUI_BIN
 # In a popup a bare display-message picks the most recently active client.
 say=(display-message); is_pane "$PANE" && say+=(-t "$PANE")
 
