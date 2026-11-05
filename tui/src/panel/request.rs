@@ -140,8 +140,6 @@ impl Profile {
         }
     }
 
-    /// The flags after the system prompt file. [`Profile::TEXT`]'s are the panel's
-    /// argv from before profiles, byte for byte.
     /// What the system prompt adds for a call with read dirs: its cwd is not the
     /// repo, so the model is told where the repo is and how the tools reach it.
     pub fn where_note(&self) -> Option<String> {
@@ -154,6 +152,8 @@ impl Profile {
         })
     }
 
+    /// The flags after the system prompt file. [`Profile::TEXT`]'s are the panel's
+    /// argv from before profiles, byte for byte.
     pub fn argv(&self) -> Vec<String> {
         let mut a = vec!["--tools".to_string(), self.tools.join(",")];
         if !self.allow.is_empty() {
