@@ -3,7 +3,18 @@ name: tui
 # Unfiltered: the shell scripts call the binary, so every change can break it.
 on:
   push:
-  pull_request:
+
+# One runner (ci-cockpit) takes every job in turn, so each run costs the queue.
+# Push alone: a PR's checks are its head commit's, and a pull_request trigger
+# beside it ran every job twice. On a branch a newer push cancels the older
+# run, pending or running. master and scratch/* get a group per commit, so no
+# run there is ever cancelled: every merge is checked, and a lane's fail-first
+# commit still reports red after the restored one is pushed.
+concurrency:
+  group: >-
+    ${{ github.workflow }}-${{ (github.ref == 'refs/heads/master'
+    || startsWith(github.ref, 'refs/heads/scratch/')) && github.sha || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   tui-test:
