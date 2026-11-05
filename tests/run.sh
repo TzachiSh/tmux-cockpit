@@ -8219,6 +8219,53 @@ else bad "the board shows alpha's screen" "live · screen-of-alpha" \
 "$TMUX_REAL" -L "$PJ" kill-server >/dev/null 2>&1
 fi
 
+echo "== cockpit-tui board: the tiles capture in one tmux call, fetch or capture (#492) =="
+# The tiles forked one capture-pane per tile. Now every visible tile goes in
+# one tmux command list, on a fetch and on a capture-only job (v, a scroll, a
+# new size) alike. The wrapper logs each call's whole argv, one line a call;
+# a capture after a list-panes is a fetch's, any other a capture-only job's.
+if need_tmux "the tiles' batched capture"; then :; else
+PB6="cockpit-pt-$$"; SOCKS="$SOCKS $PB6"; BTD=$(mktmpd)
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> %s/calls\nexec %s "$@"\n' \
+    "$BTD" "$TMUX_REAL" > "$BTD/tmux"
+chmod +x "$BTD/tmux"
+"$TMUX_REAL" -L "$PB6" -f /dev/null new-session -d -s t -x 120 -y 40 -c "$BTD" \
+    'exec sleep 3600' >/dev/null 2>&1
+for s in alpha beta gamma; do
+    btp=$("$TMUX_REAL" -L "$PB6" new-window -d -P -F '#{pane_id}' -t t: -c "$BTD" \
+        "printf 'screen-of-$s\n'; exec -a claude sleep 3600")
+    "$TMUX_REAL" -L "$PB6" set -p -t "$btp" @panestate running >/dev/null 2>&1
+done
+BTENV="COCKPIT_TMUX=$BTD/tmux XDG_STATE_HOME=$BTD COCKPIT_LOG=$BTD/tui.log"
+BTW=$("$TMUX_REAL" -L "$PB6" new-window -d -P -F '#{pane_id}' -t t: -c "$BTD" \
+    "env $BTENV $COCKPIT_TUI_BIN board")
+bt_caps() {                   # each capturing call: fetch|look, then how many it captured
+    awk '/^list-panes/ { f = 1 }
+         /capture-pane/ { print (f ? "fetch" : "look"), gsub(/capture-pane/, "&"); f = 0 }' \
+        "$BTD/calls" 2>/dev/null
+}
+if until_cap "$PB6" "$BTW" '*live · *screen-of-alpha*'; then
+    "$TMUX_REAL" -L "$PB6" send-keys -t "$BTW" v
+    if until_cap "$PB6" "$BTW" '*screen-of-gamma*'; then
+        # a new size is a capture-only job; the tick brings a fetch
+        : > "$BTD/calls"
+        "$TMUX_REAL" -L "$PB6" resize-window -t "$BTW" -x 110 >/dev/null 2>&1
+        for i in $(seq 1 "$POLLS"); do
+            btk=$(bt_caps | cut -d' ' -f1 | sort -u | tr '\n' ' ')
+            [ "$btk" = "fetch look " ] && break
+            sleep 0.05
+        done
+        is "a capture-only job captures the three tiles in one call" "look 3" \
+            "$(bt_caps | grep '^look' | sort -u | tr '\n' ' ' | sed 's/ $//')"
+        is "and so does a fetch" "fetch 3" \
+            "$(bt_caps | grep '^fetch' | sort -u | tr '\n' ' ' | sed 's/ $//')"
+    else bad "v shows every tile" "screen-of-gamma" \
+        "$("$TMUX_REAL" -L "$PB6" capture-pane -p -t "$BTW")"; fi
+else bad "the board shows alpha's screen" "live · screen-of-alpha" \
+    "$("$TMUX_REAL" -L "$PB6" capture-pane -p -t "$BTW")"; fi
+"$TMUX_REAL" -L "$PB6" kill-server >/dev/null 2>&1
+fi
+
 echo "== cockpit-panel: insert pastes without Enter, send adds it, and the text arrives clean =="
 # The panel is the one wrapper that writes into a pane, so it is driven for real:
 # a fake claude, a target running cat, the panel in a second window, send-keys.
