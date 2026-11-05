@@ -383,8 +383,11 @@ what is 15% of 240
 kind: format
 window: bash · bash · /home/u
 out: format
-expect: write
+expect: either
+ask_any: compose; kubernetes; k8s; deployment
 must: 8080; replicas
+out_is: format
+note: fits Docker Compose and Kubernetes alike: asking which, or a valid file of either, both serve
 --- request
 yaml for service web, port 8080, 3 replicas
 
@@ -571,6 +574,22 @@ holdout: yes
 note: the staging host is not in the input; the agent may find it in a deploy config, so asking or a find-it-first prompt both serve
 --- request
 copy the build to the staging server
+
+# Added for the #424 review: a feature with no done-when and no scope.
+
+=== h-feature-done
+kind: feature
+window: claude · claude · /home/u/projects/dashboard
+expect: either
+ask_any: done; trigger|triggers; notify|notified
+must: plan|planning|plans
+out_is: prompt
+holdout: yes
+note: what counts as done is the owner's call: a question about it, or a prompt that plans first, both serve; a question about the channel is what to build, not done
+--- screen
+● The dashboard now shows the weekly totals per team.
+--- request
+add notifications to the dashboard
 
 # Added for the #421 review: a bug whose failure Claude Code can run itself.
 
