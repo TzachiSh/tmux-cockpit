@@ -59,7 +59,8 @@ fn rig(t: &Tmp, cwd: &str, opt: &str, said: &str) -> Vec<(&'static str, String)>
     ];
     std::fs::write(d.join("rows"), board.join("\u{1f}") + "\n").unwrap();
     let sh = format!(
-        "#!/bin/sh\ncase \"$1\" in\nlist-panes) cat '{0}/rows' ;;\ndisplay-message) cat '{0}/display' ;;\n\
+        "#!/bin/sh\ncase \"$1\" in\nlist-panes) cat '{0}/rows' ;;\n\
+         display-message) case \"$5\" in *cockpit_tui_version*) cat '{0}/display' ;; *) cat '{0}/rows' ;; esac ;;\n\
          show-option) case \"$*\" in *@cockpit_transcript*) echo '{1}' ;; *) echo '|claude|' ;; esac ;;\nesac\n",
         d.display(),
         tr.display()

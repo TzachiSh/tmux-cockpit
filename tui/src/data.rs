@@ -1114,6 +1114,23 @@ fn work_candidates(p: &mut Pane, f: &[&str]) -> [String; 3] {
 /// runs `claude agents` (hundreds of ms): a pane with no @cockpit_session has no
 /// transcript to read, so its dir is @cockpit_dir, else its launch dir.
 pub fn workdir(pane: &str) -> Option<String> {
+    let (mut p, f) = one_row(pane)?;
+    let f: Vec<&str> = f.iter().map(String::as_str).collect();
+    let cands = work_candidates(&mut p, &f);
+    fleet::work_dirs(&[cands]).pop().filter(|d| !d.is_empty())
+}
+
+/// #519: the board's agent test for one pane (`row_pane`: @panestate, an agentish
+/// command, a version-shaped name, the process tree), so the info screen cannot
+/// decide differently from the board which panes have a transcript to read.
+pub fn is_agent(pane: &str) -> bool {
+    one_row(pane).is_some()
+}
+
+/// One pane's FIELDS row, read with one `display-message`, through the fetch's
+/// `row_pane`: its Pane and the fields, or `None` when it is not there or not an
+/// agent's.
+fn one_row(pane: &str) -> Option<(Pane, Vec<String>)> {
     let out = tmux(&["display-message", "-p", "-t", pane, FIELDS])?;
     let f: Vec<&str> = out.trim_end_matches('\n').split(SEP).collect();
     // A missing pane exits 0 with every field empty: the resolved id is the test,
@@ -1121,9 +1138,8 @@ pub fn workdir(pane: &str) -> Option<String> {
     if f[0] != pane {
         return None;
     }
-    let (mut p, _) = row_pane(&f, &mut None)?;
-    let cands = work_candidates(&mut p, &f);
-    fleet::work_dirs(&[cands]).pop().filter(|d| !d.is_empty())
+    let (p, _) = row_pane(&f, &mut None)?;
+    Some((p, f.iter().map(|s| s.to_string()).collect()))
 }
 
 /// A pane can hold one multi-megabyte line, and the ANSI parser re-runs over the

@@ -42,7 +42,7 @@ impl Rig {
                 "#!/bin/sh\ncase \"$1\" in\n\
                  list-panes) cat '{s}/rows' ;;\n\
                  display-message) case \"$5\" in *cockpit_tui_version*) cat \"{s}/info$4\" ;;\n\
-                   *) grep \"^$4$(printf '\\037')\" '{s}/rows' ;; esac ;;\n\
+                   *) grep -a \"^$4$(printf '\\037')\" '{s}/rows' ;; esac ;;\n\
                  show-option) case \"$3\" in -t) cat \"{s}/opts/$4.$5\" 2>/dev/null ;;\n\
                    *) printf '|claude|' ;; esac ;;\n\
                  esac\n"
@@ -85,13 +85,20 @@ impl Rig {
 
     /// Pane `id` runs claude in `cwd` with session `sid`, @cockpit_transcript `opt`.
     fn pane(&self, id: &str, sid: &str, cwd: &str, opt: &str) {
-        let row = [
-            id, "w:0", "win", "claude", "running", "-", "-", sid, cwd, "100", "-", "-", "@1", "", "", opt,
-        ];
+        self.pane_as(id, "claude", "running", sid, cwd, opt);
+    }
+
+    /// The same, running `cmd` with @panestate `state` (`-` for none). info's line
+    /// carries what tmux's own glob test, `#{m:*|cmd|*,@cockpit_agents_glob}`,
+    /// would say: 1 only for the exact `claude`, so a test reading it is caught.
+    fn pane_as(&self, id: &str, cmd: &str, state: &str, sid: &str, cwd: &str, opt: &str) {
+        let row = [id, "w:0", "win", cmd, state, "-", "-", sid, cwd, "100", "-", "-", "@1", "", "", opt];
         let mut rows = std::fs::read_to_string(self.d.join("rows")).unwrap();
         rows += &(row.join("\u{1f}") + "\n");
         std::fs::write(self.d.join("rows"), rows).unwrap();
-        let info = [id, "w:0 win", "claude", cwd, "", "running", "", "", "", sid, "", "1", ""];
+        let glob = if cmd == "claude" { "1" } else { "0" };
+        let st = if state == "-" { "" } else { state };
+        let info = [id, "w:0 win", cmd, cwd, "", st, "", "", "", sid, "", glob, ""];
         std::fs::write(self.d.join(format!("info{id}")), info.join("\u{1f}")).unwrap();
         std::fs::write(self.d.join(format!("opts/{id}.@cockpit_transcript")), opt).unwrap();
         std::fs::write(self.d.join(format!("opts/{id}.@cockpit_session")), sid).unwrap();
@@ -140,7 +147,14 @@ fn the_board_workdir_and_info_find_the_same_transcript() {
     r.pane("%2", "s2", &launch, "");
     r.pane("%3", "s3", &launch, "");
     r.pane("%4", "s4", &launch, &format!("{out}/s4.jsonl"));
-    for (id, want) in [("%1", &w1), ("%2", &w2), ("%3", &w3), ("%4", &w4)] {
+    // #519: no @panestate, so the command alone says agent: `exec -a Claude` and a
+    // version-named build, both of which the board's agentish takes
+    let (w5, w6) = (r.dir("w5"), r.dir("w6"));
+    r.transcript(&slug(&launch), "s5", &w5);
+    r.transcript(&slug(&launch), "s6", &w6);
+    r.pane_as("%5", "Claude", "-", "s5", &launch, "");
+    r.pane_as("%6", "2.1.246", "-", "s6", &launch, "");
+    for (id, want) in [("%1", &w1), ("%2", &w2), ("%3", &w3), ("%4", &w4), ("%5", &w5), ("%6", &w6)] {
         assert_eq!(r.three(id), (want.clone(), want.clone(), want.clone()), "{id}");
     }
     assert_eq!(std::fs::read_to_string(r.d.join("claude-calls")).unwrap_or_default(), "");

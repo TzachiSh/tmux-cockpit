@@ -57,6 +57,10 @@ thread_local! {
 
 const GLOB_MISS_TTL: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// Past this many sessions the memory drops what can no longer answer: a miss past
+/// its ttl, a find whose file is gone. A board runs for days; sessions come and go.
+const GLOBBED_MAX: usize = 256;
+
 /// `<projects>/<cwd's slug>/<sid>.jsonl`, where Claude Code writes a session started in
 /// `cwd`; the slug maps every byte outside `[A-Za-z0-9-]` to `-`. None for no cwd.
 pub(crate) fn slug_path(sid: &str, cwd: &str) -> Option<PathBuf> {
@@ -76,7 +80,10 @@ fn slug_in(dir: &Path, sid: &str, cwd: &str) -> Option<PathBuf> {
 /// so they read the same file. In order: `opt` (@cockpit_transcript) when it resolves
 /// to a regular file under [`projects_dir`] ([`under`]: no `..`, no symlink out, since
 /// an agent can set it); else `<projects>/<cwd's slug>/<sid>.jsonl`; else the first
-/// `<projects>/*/<sid>.jsonl`, sorted, dot dirs left out. None for a session id that
+/// `<projects>/*/<sid>.jsonl`, sorted, dot dirs left out. A kept find is used while its
+/// file is there, so a copy of the session that later appears in an earlier-sorting
+/// project dir is not seen until that file goes (a resumed session elsewhere; rare,
+/// and the kept file is still the session's). None for a session id that
 /// could name a path or a glob. The board polls, so its third step keeps what it found
 /// until the file is gone and a miss for [`GLOB_MISS_TTL`].
 pub(crate) fn locate(opt: &str, sid: &str, cwd: &str) -> Option<PathBuf> {
@@ -116,7 +123,16 @@ fn find(dir: &Path, opt: &str, sid: &str, cwd: &str, now: Option<std::time::Inst
         .map(|n| dir.join(n).join(format!("{sid}.jsonl")))
         .find(|p| p.is_file());
     if let Some(now) = now {
-        GLOBBED.with(|c| c.borrow_mut().insert(sid.to_string(), (now, found.clone())));
+        GLOBBED.with(|c| {
+            let mut c = c.borrow_mut();
+            c.insert(sid.to_string(), (now, found.clone()));
+            if c.len() > GLOBBED_MAX {
+                c.retain(|_, (at, p)| match p {
+                    Some(p) => p.is_file(),
+                    None => now.saturating_duration_since(*at) < GLOB_MISS_TTL,
+                });
+            }
+        });
     }
     found
 }
@@ -734,6 +750,20 @@ mod tests {
         assert_eq!(find(&root, "", "s4", "/x", None), None);
         put(&root, "-a", "s4");
         assert!(find(&root, "", "s4", "/x", None).is_some(), "an uncached look keeps no miss");
+    }
+
+    /// #519 review: the memory is bounded: past GLOBBED_MAX sessions, misses past
+    /// their ttl are dropped; a find whose file is there is kept.
+    #[test]
+    fn the_glob_memory_drops_stale_misses_past_its_bound() {
+        let (root, _t) = tree();
+        let t0 = std::time::Instant::now();
+        put(&root, "-k", "keep");
+        assert!(find(&root, "", "keep", "/x", Some(t0)).is_some());
+        (0..GLOBBED_MAX).for_each(|i| assert!(find(&root, "", &format!("m{i}"), "/x", Some(t0)).is_none()));
+        assert!(find(&root, "", "last", "/x", Some(t0 + GLOB_MISS_TTL)).is_none());
+        let (n, keep) = GLOBBED.with(|c| (c.borrow().len(), c.borrow().contains_key("keep")));
+        assert_eq!((n, keep), (2, true), "the stale misses went, the live find and the new miss stayed");
     }
 
     #[test]
