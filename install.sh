@@ -211,8 +211,8 @@ set*\ @catppuccin_window_current_text\ *)
         # The board's subagent tree reads what these six append (#361); sub-taskstop and
         # sub-reconcile came later (#403), so a box set up before them has 4 of 6.
         subs=$(jq '[.hooks[]?[]?.hooks[]?.command? // ""
-                    | capture("agent-state (?<c>sub-(start|stop|idle|end|taskstop|reconcile))$")?
-                    | .c]
+                    | capture("agent-state (?<c>sub-(start|stop|idle|end|taskstop|reconcile))$")? |
+                    .c]
                    | unique | length' \
                  "$HOME/.claude/settings.json" 2>/dev/null); src=$?
         if [ "$src" = 3 ]; then

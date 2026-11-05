@@ -14865,19 +14865,22 @@ echo "== jq filters parse on jq 1.7.x: no postfix after a term's ? (#481) =="
 # parenthesised term (f(x)?.c, f(x)?["c"], f(x)?[0], $x?.b); 1.8 accepts them. The
 # suite runs a newer jq, so a shape check stands in: write f(x)? | .c. The regex
 # (review-483) matches the 14 spellings 1.7.1 rejects and none of the 7 it accepts.
-j17re='([)]|(^|[^.[:alnum:]_$])[$]?[A-Za-z_][A-Za-z0-9_]*)[?][?[:space:]]*[.[]'
+# A line that ends in a term's ? counts too: jq reads the postfix off the next line,
+# so a wrapped filter keeps its | on the line with the ?.
+j17re='([)]|(^|[^.[:alnum:]_$])[$]?[A-Za-z_][A-Za-z0-9_]*)[?][?[:space:]]*([.[]|$)'
 j17=$(grep -nE "$j17re" "$DIR/install.sh" "$DIR/bootstrap.sh" "$DIR/cockpit.tmux" \
         "$DIR/examples/claude-hooks.json" "$DIR"/scripts/* "$DIR"/scripts/lib/* 2>/dev/null \
     | grep -vE '^[^:]*:[0-9]+:[[:space:]]*#')
 is "no shipped script writes a postfix after a term's ?" "" "$j17"
 j17n=0
-for f in 'capture("x")?.c' 'capture("x")?["c"]' 'f(.)?[0]' 'first?.b' '$x?.b' 'f(.)? .b'; do
+for f in 'capture("x")?.c' 'capture("x")?["c"]' 'f(.)?[0]' 'first?.b' '$x?.b' 'f(.)? .b' \
+         'capture("x")?'; do
     printf '%s\n' "$f" | grep -qE "$j17re" && j17n=$((j17n + 1))
 done
-for f in '.a?.b' '.a[]?.b' '.[0]?.b' '.a?[0]' 'capture("x")? | .c'; do
+for f in '.a?.b' '.a[]?.b' '.[0]?.b' '.a?[0]' 'capture("x")? | .c' 'capture("x")? |'; do
     printf '%s\n' "$f" | grep -qE "$j17re" || j17n=$((j17n + 1))
 done
-is "the shape check flags the rejected spellings and passes the accepted ones" "11" "$j17n"
+is "the shape check flags the rejected spellings and passes the accepted ones" "13" "$j17n"
 # A jq that cannot compile a filter exits 3: --check says so, not "0 of 6".
 J3=$(mktmpd); mkdir -p "$J3/home/.claude" "$J3/shim"
 echo '{"hooks":{}}' > "$J3/home/.claude/settings.json"
