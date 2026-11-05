@@ -259,7 +259,12 @@ pub fn gather(pane: &str) -> Result<Facts, String> {
     let root = if path.is_empty() { String::new() } else { git_root(&path) };
     x.root = clean(&root);
     if x.agent {
-        x.doing = doing_rows(&x.id);
+        let ask;
+        (x.doing, ask) = doing_rows(&x.id);
+        // #453: the hook's text is generic; an open question says what is owed
+        if let Some(q) = ask.filter(|_| x.state == "needs-input") {
+            x.msg = q;
+        }
     }
     let sess = session_dir(&x.id, &root);
     if !root.is_empty() && !git(&root, &[], None, &["rev-parse", "-q", "--verify", "HEAD"]).trim().is_empty() {
@@ -273,12 +278,15 @@ pub fn gather(pane: &str) -> Result<Facts, String> {
     Ok(x)
 }
 
-/// The transcript's doing / said / asked, left out quietly when unreadable.
-fn doing_rows(pane: &str) -> Vec<Doing> {
+/// The transcript's doing / said / asked, left out quietly when unreadable, and
+/// the open AskUserQuestion's question, cleaned at its source.
+fn doing_rows(pane: &str) -> (Vec<Doing>, Option<String>) {
     let Some(text) = super::transcript::file(pane).and_then(|p| super::transcript::doing(&p)) else {
-        return vec![];
+        return (vec![], None);
     };
-    text.lines()
+    let ask = text.lines().find_map(|l| l.strip_prefix("ask\t")).map(String::from);
+    let rows = text
+        .lines()
         .filter_map(|l| {
             let mut f = l.split('\t');
             let (kind, a) = (f.next()?, clean(f.next()?));
@@ -289,7 +297,8 @@ fn doing_rows(pane: &str) -> Vec<Doing> {
                 age: if kind == "said" { None } else { age },
             })
         })
-        .collect()
+        .collect();
+    (rows, ask)
 }
 
 #[cfg(test)]
