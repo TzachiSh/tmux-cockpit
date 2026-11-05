@@ -12428,9 +12428,9 @@ bwrc=0
 TMUX="$("$TMUX_REAL" -L "$BWS" display-message -p '#{socket_path}'),0,0" \
     "$COCKPIT_TUI_BIN" workdir "$BWA3" >/dev/null 2>"$BWD/probe.err" || bwrc=$?
 if (. "$DIR/scripts/lib/tui.sh" && tui_stale "$bwrc" "$BWD/probe.err"); then
-    set -- $(BW_ASK=real bw_goto "$BWV")
+    read -r bwn bwp bww <<<"$(BW_ASK=real bw_goto "$BWV")"
     is "a binary without workdir: goto opens a window, the 2.1.246 pane not taken" "1 6 no" \
-       "$1 $3 $([ "$2" = "$BWA3" ] && echo yes || echo no)"
+       "$bwn $bww $([ "$bwp" = "$BWA3" ] && echo yes || echo no)"
 else
     is "goto finds a pane running as 2.1.246 by its transcript's tree" "1 $BWA3 5" \
        "$(BW_ASK=real bw_goto "$BWV")"
