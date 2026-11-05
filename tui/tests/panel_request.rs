@@ -600,3 +600,17 @@ fn a_hostile_folder_name_never_reaches_the_system_prompt() {
     let sent = std::fs::read_to_string(file).unwrap();
     assert!(sent.contains(&format!("{:?}", repo.display().to_string())), "quoted: {sent}");
 }
+
+/// review-432: a read dir that is empty, or not UTF-8, is refused as a control
+/// character is: `--add-dir ""` would name nothing, and a lossy name another folder.
+#[test]
+fn an_empty_or_non_utf8_read_dir_is_refused() {
+    use std::os::unix::ffi::OsStrExt;
+    let rig = Rig::new("baddir", ECHO_ARGV);
+    let bad = rig.dir.join(std::ffi::OsStr::from_bytes(b"repo\xff"));
+    for d in [PathBuf::new(), bad] {
+        let mut req = spawn_with(&rig.call(30), &Profile::read_only(d.clone(), false, 0.5, CAP), "p");
+        assert!(matches!(answer(&mut req), Err(Fail::Failed(_))), "{d:?} ran");
+        assert!(rig.read("argv").is_empty(), "no claude ran for {d:?}");
+    }
+}

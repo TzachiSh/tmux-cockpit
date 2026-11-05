@@ -283,12 +283,16 @@ fn kill_group(reaped: &Mutex<bool>, pid: u32) {
 
 fn start(call: &Call, p: &Profile, system: &str, model: &str) -> Result<std::process::Child, String> {
     // a folder's name goes into the system prompt: a line break or a bidi mark in
-    // it is refused, never cleaned, as the call would read some other folder
-    if let Some(d) = p.read_dirs.iter().find(|d| {
-        let s = d.to_string_lossy();
-        crate::pick::clean(&s) != s
+    // it is refused, never cleaned, as the call would read some other folder; so is
+    // an empty name (`--add-dir ""`) and one that is not UTF-8
+    if let Some(d) = p.read_dirs.iter().find(|d| match d.to_str() {
+        Some(s) => s.is_empty() || crate::pick::clean(s) != s,
+        None => true,
     }) {
-        return Err(format!("{:?} holds a control or bidi character; refused", d.display().to_string()));
+        return Err(format!(
+            "{:?} is empty, not UTF-8, or holds a control or bidi character; refused",
+            d.display().to_string()
+        ));
     }
     let system = match p.where_note() {
         Some(n) => format!("{system}\n\n{n}"),
