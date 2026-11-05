@@ -442,3 +442,15 @@ fn a_press_and_drag_after_the_first_tap_moves_the_end() {
     assert_eq!(s.selection(), Some((3, 9)));
     assert!(!s.sel.unwrap().live);
 }
+
+/// review-438's nit: an empty or refused file offers neither `v select` nor `? ask`.
+#[test]
+fn a_file_with_no_rows_offers_no_select_or_ask() {
+    for doc in [Ok(String::new()), Err("a binary file".to_string())] {
+        let mut s = Screen::new("x.txt", doc, Opts::default()).with_mode(Mode::Code(None));
+        s.can_ask = true;
+        let foot = draw(&mut s)[12].clone();
+        assert!(!foot.contains("v select") && !foot.contains("? ask"), "{foot}");
+        assert!(foot.contains("h keys"), "{foot}");
+    }
+}
