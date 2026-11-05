@@ -2218,8 +2218,8 @@ close it, `↑↓` `j` `k` `PgUp` `PgDn` scroll, `?` lists the keys.
 
 **`cockpit-tui info --json %N`** (#452) prints one line, `{"dir": "<path>"}`: the
 work dir by the board's rule (`dir` in `--json` above), for scripts. Root, base and
-the review dir keep tmux-review's rule (`@cockpit_dir`, else the cwd), so the
-screen and `prefix r` name the same tree. The path is decoded as lossy UTF-8, as
+the review dir take `@cockpit_dir`, else the cwd; `prefix r` asks `workdir` for its
+tree (#470) instead. The path is decoded as lossy UTF-8, as
 every tmux read is: a byte that is not UTF-8 becomes U+FFFD. Exit 0 with the
 line; exit 1 and nothing on stdout when the pane is not there; exit 2 for a
 missing or malformed pane id.
