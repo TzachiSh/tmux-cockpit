@@ -1,6 +1,6 @@
 //! `claude agents --json` off the fetch path and its cache file (#492 fix 5).
 //! Gates use files and polls, never a clock: the stub waits on a `go` file.
-use cockpit_tui::data::agents::{Entry, read_file};
+use cockpit_tui::data::agents::{Background, Entry, read_file, set_background};
 use cockpit_tui::data::list_panes;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -28,6 +28,11 @@ impl Rig {
     /// One agent pane, pid 100, no @cockpit_session, in a fake proc root at start `5`.
     /// `claude` runs `claude_body` and logs one line per call to `forks`.
     fn new(tag: &str, claude_body: &str) -> Rig {
+        Rig::with(tag, claude_body, true)
+    }
+
+    /// `board` false is a one-shot caller (`--json`, `--rows`): it waits for the lookup.
+    fn with(tag: &str, claude_body: &str, board: bool) -> Rig {
         let lock = ENV.lock().unwrap_or_else(|e| e.into_inner());
         let dir = std::env::temp_dir().join(format!("cockpit-agents-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -48,6 +53,7 @@ impl Rig {
         std::fs::write(root.join("100/task/100/children"), "").unwrap();
         std::fs::write(root.join("100/comm"), "claude\n").unwrap();
         std::fs::write(root.join("100/stat"), stat("5")).unwrap();
+        set_background(board);
         let path = std::env::var("PATH").unwrap_or_default();
         let vars = [
             ("PATH", format!("{d}/bin:{path}")),
@@ -373,4 +379,215 @@ fn nor_does_a_claude_under_the_lookup_child() {
 #[test]
 fn the_ps_walk_skips_the_lookup_child_too() {
     own_pane_stays_no_agent("selfrow3", true, true);
+}
+
+fn seeded_at(r: &Rig, age: u64, session: &str) {
+    r.seed(&format!(
+        r#"{{"v":1,"at":{},"by_pid":{{"100:5":{{"session":"{session}","cwd":"/c","kind":"k"}}}},"none":[]}}"#,
+        now() - age
+    ));
+}
+
+fn wait_forks(r: &Rig, n: usize) {
+    for _ in 0..2000 {
+        if r.forks() >= n {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+/// Gone within `polls` x 5 ms. The deadline kill is 2.5 s after the spawn, so a
+/// short window is a kill the code made itself.
+fn wait_gone_within(pid: &str, polls: u32) {
+    for _ in 0..polls {
+        if !Path::new("/proc").join(pid).exists() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    panic!("{pid} is still running");
+}
+
+fn wait_gone(pid: &str) {
+    wait_gone_within(pid, 2000);
+}
+
+/// The mechanism: a positive was served for ever. One 70 s old is served, then
+/// re-asked, and the changed session id shows on the next fetch.
+#[test]
+fn a_session_that_changed_under_the_same_pid_is_picked_up() {
+    let r = Rig::new("stale", ONE);
+    seeded_at(&r, 70, "s-old");
+    assert_eq!(r.sess(), "s-old", "served while the call runs");
+    for _ in 0..2000 {
+        if r.wait_cache()["by_pid"]["100:5"]["session"] == "s-100" {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert_eq!(r.sess(), "s-100");
+    assert_eq!(r.forks(), 1);
+}
+
+/// `at` is the time of an answer: fetches over a fresh file leave it as it is.
+#[test]
+fn fetches_never_restamp_the_file() {
+    let r = Rig::new("nostamp", ONE);
+    seeded_at(&r, 30, "s-seed");
+    let before = std::fs::read_to_string(r.cache()).unwrap();
+    for _ in 0..5 {
+        assert_eq!(r.sess(), "s-seed");
+    }
+    assert_eq!((std::fs::read_to_string(r.cache()).unwrap(), r.forks()), (before, 0));
+}
+
+/// A second case: a stale positive and a stub that fails: asked once, then rests.
+#[test]
+fn a_failed_refresh_of_a_stale_positive_rests_a_minute() {
+    let r = Rig::new("stalefail", "exit 1");
+    seeded_at(&r, 70, "s-old");
+    r.sess();
+    wait_forks(&r, 1);
+    for _ in 0..5 {
+        assert_eq!(r.sess(), "s-old");
+    }
+    assert_eq!(r.forks(), 1);
+}
+
+/// One-shot `--json` and `--rows`: no thread to come back to, so the call is waited for.
+#[test]
+fn a_one_shot_read_waits_for_the_lookup() {
+    let r = Rig::with("oneshot", &format!("sleep 0.2\n{ONE}"), false);
+    assert_eq!(r.sess(), "s-100");
+    assert!(r.cache().exists());
+}
+
+/// Several panes, one call: what the answer did not name is not asked again.
+#[test]
+fn a_one_shot_read_asks_once_for_pids_the_answer_lacks() {
+    let r = Rig::with("oneshot2", "printf '[]'", false);
+    assert_eq!(r.sess(), "");
+    assert_eq!(r.sess(), "");
+    assert_eq!(r.forks(), 1);
+}
+
+/// #294 on the one-shot path: a hung `claude` is killed at the deadline.
+#[test]
+fn a_one_shot_read_kills_a_hung_lookup() {
+    let r = Rig::with("hung", "echo $$ > $HOME/stubpid\nexec sleep 60", false);
+    assert_eq!(r.sess(), "");
+    let pid = std::fs::read_to_string(r.dir.join("stubpid")).unwrap();
+    wait_gone(pid.trim());
+}
+
+/// A board that quits mid-lookup takes the child with it.
+#[test]
+fn the_board_quitting_kills_a_lookup_in_flight() {
+    let r = Rig::new("quit", "echo $$ > $HOME/stubpid\nexec sleep 60");
+    let guard = Background::start();
+    r.sess();
+    let pid = loop {
+        if let Ok(p) = std::fs::read_to_string(r.dir.join("stubpid")) {
+            if !p.is_empty() {
+                break p.trim().to_string();
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    };
+    drop(guard);
+    wait_gone_within(&pid, 200);
+}
+
+/// The file is data from disk: a session that is no id never reaches a path.
+#[test]
+fn a_hostile_session_in_the_file_or_the_answer_is_dropped() {
+    let r = Rig::new("hostile", r#"printf '[{"pid":100,"sessionId":"../../x"}]'"#);
+    let p = r.dir.join("f.json");
+    let at = now();
+    let ent = |s: &str| format!(r#""100:5":{{"session":"{s}"}}"#);
+    for bad in ["../../x", "a b", "", &"a".repeat(65), "x/y"] {
+        std::fs::write(&p, format!(r#"{{"v":1,"at":{at},"by_pid":{{{}}},"none":[]}}"#, ent(bad))).unwrap();
+        assert!(read_file(&p, &r.dir.join("proc"), at).unwrap().by_pid.is_empty(), "{bad:?}");
+    }
+    std::fs::write(
+        &p,
+        format!(r#"{{"v":1,"at":{at},"by_pid":{{{}}},"none":[]}}"#, ent(&"a-1".repeat(21))),
+    )
+    .unwrap();
+    assert_eq!(read_file(&p, &r.dir.join("proc"), at).unwrap().by_pid.len(), 1);
+    r.sess();
+    r.wait_cache();
+    assert_eq!(r.sess(), "", "the answer's hostile id");
+}
+
+/// A FIFO, a symlink and a huge file at the cache path are not read, and the fetch goes on.
+#[test]
+fn a_fifo_a_symlink_or_a_huge_file_at_the_path_is_not_read() {
+    let r = Rig::new("nodes", ONE);
+    let (cache, root) = (r.cache(), r.dir.join("proc"));
+    std::fs::create_dir_all(cache.parent().unwrap()).unwrap();
+    let good = r.dir.join("good.json");
+    let body = format!(r#"{{"v":1,"at":{},"by_pid":{{"100:5":{{"session":"s-seed"}}}},"none":[]}}"#, now());
+    std::fs::write(&good, &body).unwrap();
+    assert!(read_file(&good, &root, now()).is_some(), "the control reads");
+    std::os::unix::fs::symlink(&good, &cache).unwrap();
+    assert_eq!(read_file(&cache, &root, now()), None, "symlink");
+    std::fs::remove_file(&cache).unwrap();
+    std::fs::write(&cache, format!("{body}{}", " ".repeat(2 << 20))).unwrap();
+    assert_eq!(read_file(&cache, &root, now()), None, "2 MiB");
+    std::fs::remove_file(&cache).unwrap();
+    let c = std::ffi::CString::new(cache.to_str().unwrap()).unwrap();
+    // SAFETY: mkfifo takes a path and a mode.
+    assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+    assert_eq!(read_file(&cache, &root, now()), None, "fifo");
+    assert_eq!(r.sess(), "", "the fetch over a fifo");
+}
+
+/// By pid, not by name: a real `claude` beside the lookup child in the board's
+/// pane is still an agent, so the pane stays a row.
+#[test]
+fn a_real_claude_beside_the_lookup_child_keeps_the_pane_an_agent() {
+    let r = Rig::new(
+        "beside",
+        &format!("echo $$ > $HOME/stubpid\nwhile [ ! -f $HOME/go ]; do sleep 0.02; done\n{ONE}"),
+    );
+    let row = ["%2", "w:1", "board", "bash", "-", "-", "-", "-", "/w", "200", "-", "-", "@2"].join("\u{1f}");
+    let rows = std::fs::read_to_string(r.dir.join("rows")).unwrap() + &row + "\n";
+    std::fs::write(r.dir.join("rows"), rows).unwrap();
+    r.proc_dir("200", "bash", "");
+    r.sess();
+    let pid = loop {
+        if let Ok(p) = std::fs::read_to_string(r.dir.join("stubpid")) {
+            if !p.is_empty() {
+                break p.trim().to_string();
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    };
+    std::fs::write(r.dir.join("proc/200/task/200/children"), format!("{pid} 777")).unwrap();
+    r.proc_dir(&pid, "claude", "");
+    r.proc_dir("777", "claude", "");
+    let ids: Vec<_> = list_panes().unwrap().into_iter().map(|p| p.id).collect();
+    assert_eq!(ids, ["%1", "%2"], "a real claude in the board's pane was hidden");
+    std::fs::write(r.dir.join("go"), "").unwrap();
+    r.wait_cache();
+}
+
+/// On the `ps` path a snapshot can be walked after the call ended: its child is
+/// still skipped for a few seconds.
+#[test]
+fn the_ps_walk_still_skips_a_lookup_child_that_has_just_ended() {
+    let r = Rig::new("ghost", &format!("echo $$ > $HOME/stubpid\n{ONE}"));
+    let row = ["%2", "w:1", "board", "bash", "-", "-", "-", "-", "/w", "200", "-", "-", "@2"].join("\u{1f}");
+    let rows = std::fs::read_to_string(r.dir.join("rows")).unwrap() + &row + "\n";
+    std::fs::write(r.dir.join("rows"), rows).unwrap();
+    r.sess();
+    r.wait_cache();
+    let pid = std::fs::read_to_string(r.dir.join("stubpid")).unwrap();
+    std::fs::remove_dir_all(r.dir.join("proc/self")).unwrap();
+    std::fs::write(r.dir.join("ps"), format!("100 1 claude\n200 1 bash\n{} 200 claude\n", pid.trim())).unwrap();
+    write_exec(&r.dir.join("bin/ps"), &format!("#!/bin/sh\ncat {}/ps\n", r.dir.display()));
+    let ids: Vec<_> = list_panes().unwrap().into_iter().map(|p| p.id).collect();
+    assert_eq!(ids, ["%1"]);
 }

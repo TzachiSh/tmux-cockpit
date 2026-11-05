@@ -1,8 +1,10 @@
 //! `claude agents --json` off the fetch path (#492 fix 5), and its cache file.
 //!
-//! The call takes 170-210 ms, so the fetch never waits on it: [`resolve`] only
-//! reads what an earlier call left, [`flush`] starts the next call on a thread
-//! of its own, one at a time. The answer lands in memory and in
+//! The call takes 170-210 ms, so the board's fetch never waits on it: [`resolve`]
+//! only reads what an earlier call left, [`flush`] starts the next call on a
+//! thread of its own, one at a time. A one-shot caller (`--json`, `--rows`) has
+//! nothing to come back to, so without [`Background`] [`resolve`] asks and waits,
+//! under the same deadline and kill. The answer lands in memory and in
 //! `${XDG_CACHE_HOME:-~/.cache}/tmux-cockpit/agents.json` (docs/tui.md "The
 //! agents cache"), which `cockpit-tui workdir` can read through [`cached`].
 use serde_json::{Value, json};
@@ -11,7 +13,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// A reader ignores a file older than this many seconds.
@@ -33,6 +35,8 @@ pub struct Entry {
 /// A file that passed every guard. Keys are pids; the start time already matched.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Snapshot {
+    /// epoch second of the answer
+    pub at: u64,
     pub by_pid: HashMap<String, Entry>,
     pub none: HashSet<String>,
 }
@@ -40,12 +44,55 @@ pub struct Snapshot {
 /// Pid of the `claude agents` child while it runs, else 0.
 static CHILD: AtomicU32 = AtomicU32::new(0);
 
+/// The last child, and when it ended: a `ps` snapshot taken during the call can
+/// be walked after it.
+static RECENT: Mutex<Option<(u32, Instant)>> = Mutex::new(None);
+const RECENT_FOR: Duration = Duration::from_secs(3);
+
+/// The board runs the lookup on a thread; anything else waits for it.
+static BACKGROUND: AtomicBool = AtomicBool::new(false);
+
+/// For a test: the board's mode on or off without the guard.
+pub fn set_background(on: bool) {
+    BACKGROUND.store(on, Ordering::Relaxed);
+}
+
+/// Held by the board for its whole run: it turns the background lookup on, and
+/// dropping it kills a lookup still running, as a quit mid-call must.
+pub struct Background;
+
+impl Background {
+    pub fn start() -> Background {
+        set_background(true);
+        Background
+    }
+}
+
+impl Drop for Background {
+    fn drop(&mut self) {
+        kill_lookup();
+    }
+}
+
+/// SIGKILL the lookup's process group, if one runs. Also the hangup path's.
+pub fn kill_lookup() {
+    let c = CHILD.load(Ordering::Relaxed);
+    if c != 0 {
+        // SAFETY: killpg takes a plain integer and touches no memory.
+        unsafe { libc::killpg(c as libc::pid_t, libc::SIGKILL) };
+    }
+}
+
 /// Whether `pid` is the lookup's own child. The board sits in a pane, so that
 /// child is in the pane's process tree: a walk would find a `claude` there and
 /// show the board's own pane as an agent for as long as the call runs.
 pub fn is_lookup_child(pid: &str) -> bool {
-    let c = CHILD.load(Ordering::Relaxed);
-    c != 0 && pid.parse::<u32>() == Ok(c)
+    let Ok(pid) = pid.parse::<u32>() else { return false };
+    if pid == CHILD.load(Ordering::Relaxed) && pid != 0 {
+        return true;
+    }
+    let r = RECENT.lock().unwrap_or_else(|e| e.into_inner());
+    r.is_some_and(|(c, t)| c == pid && t.elapsed() < RECENT_FOR)
 }
 
 pub fn proc_root() -> PathBuf {
@@ -83,15 +130,39 @@ fn split_key(k: &str) -> Option<(&str, &str)> {
     (all_digits(p) && all_digits(s)).then_some((p, s))
 }
 
+/// A session id is used in a path, so it is dashes and alphanumerics, bounded.
+fn ok_session(s: &str) -> bool {
+    (1..=64).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+}
+
+/// The file's text when it is a regular file under 1 MiB. Not a FIFO or a
+/// symlink, and opened non-blocking, so a planted node cannot hang the fetch.
+fn read_capped(path: &Path) -> Option<String> {
+    use std::os::unix::fs::OpenOptionsExt;
+    const CAP: u64 = 1 << 20;
+    let m = std::fs::symlink_metadata(path).ok()?;
+    if !m.is_file() || m.len() > CAP {
+        return None;
+    }
+    let mut f = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(path)
+        .ok()?;
+    let mut text = String::new();
+    Read::take(&mut f, CAP).read_to_string(&mut text).ok()?;
+    Some(text)
+}
+
 /// The file at `path`, or `None` when it is absent, unparseable, `v` is not 1
 /// or `at` is more than [`FILE_TTL_S`] before `now`. A key whose pid's start
 /// time in `root` differs, or cannot be read, is dropped: a reused pid never
 /// matches, and on macOS nothing does.
 pub fn read_file(path: &Path, root: &Path, now: u64) -> Option<Snapshot> {
-    let mut text = String::new();
-    std::fs::File::open(path).ok()?.take(1 << 20).read_to_string(&mut text).ok()?;
+    let text = read_capped(path)?;
     let v: Value = serde_json::from_str(&text).ok()?;
-    if v["v"].as_u64() != Some(1) || now.saturating_sub(v["at"].as_u64()?) > FILE_TTL_S {
+    let at = v["at"].as_u64()?;
+    if v["v"].as_u64() != Some(1) || now.saturating_sub(at) > FILE_TTL_S {
         return None;
     }
     let live = |k: &str| {
@@ -99,9 +170,9 @@ pub fn read_file(path: &Path, root: &Path, now: u64) -> Option<Snapshot> {
             .filter(|(p, s)| start_of(root, p).as_deref() == Some(*s))
             .map(|(p, _)| p.to_string())
     };
-    let mut snap = Snapshot::default();
+    let mut snap = Snapshot { at, ..Snapshot::default() };
     for (k, e) in v["by_pid"].as_object()? {
-        if let (Some(pid), Some(session)) = (live(k), e["session"].as_str()) {
+        if let (Some(pid), Some(session)) = (live(k), e["session"].as_str().filter(|s| ok_session(s))) {
             let s = |f: &str| e[f].as_str().unwrap_or_default().to_string();
             snap.by_pid.insert(
                 pid,
@@ -161,7 +232,8 @@ struct State {
     pending: HashSet<String>,
     pos: HashMap<String, Pos>,
     neg: HashMap<String, (Option<String>, Instant)>,
-    wrote: Option<Instant>,
+    /// when a call last answered, or failed; stale positives wait a NEG_TTL from it
+    last_ask: Option<Instant>,
 }
 
 static STATE: Mutex<Option<State>> = Mutex::new(None);
@@ -186,28 +258,23 @@ impl State {
             pending: HashSet::new(),
             pos: HashMap::new(),
             neg: HashMap::new(),
-            wrote: None,
+            last_ask: None,
         };
         // another board's answer is as good as ours
         if let Some(snap) = read_file(&s.path, root, epoch()) {
             let now = Instant::now();
+            let seen = now.checked_sub(Duration::from_secs(epoch().saturating_sub(snap.at))).unwrap_or(now);
+            s.last_ask = Some(seen);
             for (pid, entry) in snap.by_pid {
                 let start = start_of(root, &pid);
-                s.pos.insert(pid, Pos { start, entry, seen: now });
+                s.pos.insert(pid, Pos { start, entry, seen });
             }
             for pid in snap.none {
                 let start = start_of(root, &pid);
-                s.neg.insert(pid, (start, now));
+                s.neg.insert(pid, (start, seen));
             }
         }
         s
-    }
-
-    fn pos_of(&self, root: &Path, pid: &str) -> Option<&Entry> {
-        self.pos
-            .get(pid)
-            .filter(|p| same_proc(&p.start, p.seen, root, pid))
-            .map(|p| &p.entry)
     }
 
     fn is_neg(&self, root: &Path, pid: &str) -> bool {
@@ -237,7 +304,6 @@ impl State {
             .iter()
             .filter_map(|(k, (s, _))| Some(format!("{k}:{}", s.as_ref()?)))
             .collect();
-        self.wrote = Some(Instant::now());
         json!({"v": 1, "at": epoch(), "by_pid": by_pid, "none": none})
     }
 }
@@ -251,75 +317,112 @@ fn with_state<R>(root: &Path, f: impl FnOnce(&mut State) -> R) -> R {
     f(g.as_mut().expect("set above"))
 }
 
-/// The session the last answer gave for one of `lineage`'s pids, or empty. Never
-/// waits: a pid the cache does not know goes on the list [`flush`] asks about.
-/// `lineage` is `(pid, comm)`; the agent pids are the ones whose comm is an
-/// agent's, else the first (the pane's own).
-pub fn resolve(lineage: &[(String, String)]) -> String {
-    let root = proc_root();
-    with_state(&root, |s| {
-        if let Some(e) = lineage.iter().find_map(|(p, _)| s.pos_of(&root, p)) {
-            return e.session.clone();
+/// What one pane's lineage needs from the cache.
+enum Look {
+    Found(String),
+    /// the agent pids no positive or fresh negative covers
+    Unknown(Vec<String>),
+}
+
+impl State {
+    /// A positive is served while its pid is the same process, however old; one
+    /// older than [`NEG_TTL`] also puts its pid on `pending`, so a session id that
+    /// changed under the pid is picked up within a minute, as master did.
+    fn look(&mut self, root: &Path, lineage: &[(String, String)]) -> Look {
+        let hit = lineage
+            .iter()
+            .find_map(|(p, _)| Some((p, self.pos.get(p).filter(|x| same_proc(&x.start, x.seen, root, p))?)));
+        if let Some((p, x)) = hit {
+            let stale = x.seen.elapsed() >= NEG_TTL && self.last_ask.is_none_or(|t| t.elapsed() >= NEG_TTL);
+            let sess = x.entry.session.clone();
+            if stale && BACKGROUND.load(Ordering::Relaxed) {
+                self.pending.insert(p.clone());
+            }
+            return Look::Found(sess);
         }
         let agent = |(_, c): &&(String, String)| super::agentish(c);
         let mut ids: Vec<&String> = lineage.iter().filter(agent).map(|(p, _)| p).collect();
         if ids.is_empty() {
             ids.extend(lineage.first().map(|(p, _)| p));
         }
-        for p in ids {
-            if !s.is_neg(&root, p) {
-                s.pending.insert(p.clone());
-            }
-        }
-        String::new()
-    })
+        Look::Unknown(ids.into_iter().filter(|p| !self.is_neg(root, p)).cloned().collect())
+    }
 }
 
-/// End of a fetch: start the call for what [`resolve`] left unknown, unless one
-/// is in flight. With nothing unknown, an answer a minute old is stamped again
-/// (its entries still hold) so a reader sees a file under [`FILE_TTL_S`].
+/// The session the last answer gave for one of `lineage`'s pids, or empty. On the
+/// board it never waits: a pid the cache does not know goes on the list [`flush`]
+/// asks about. Elsewhere it asks now, once a minute at most, and waits.
+/// `lineage` is `(pid, comm)`; the agent pids are the ones whose comm is an
+/// agent's, else the first (the pane's own).
+pub fn resolve(lineage: &[(String, String)]) -> String {
+    let root = proc_root();
+    let ask_now = with_state(&root, |s| match s.look(&root, lineage) {
+        Look::Found(sess) => Err(sess),
+        Look::Unknown(ids) if ids.is_empty() => Err(String::new()),
+        Look::Unknown(ids) if BACKGROUND.load(Ordering::Relaxed) => {
+            s.pending.extend(ids);
+            Err(String::new())
+        }
+        Look::Unknown(ids) if s.last_ask.is_some_and(|t| t.elapsed() < NEG_TTL) => {
+            // this run asked already; the answer did not name them
+            let now = Instant::now();
+            for p in ids {
+                s.neg.insert(p.clone(), (start_of(&root, &p), now));
+            }
+            Err(String::new())
+        }
+        Look::Unknown(ids) => Ok((s.gen_id, s.path.clone(), ids.into_iter().collect::<HashSet<_>>())),
+    });
+    match ask_now {
+        Err(sess) => sess,
+        Ok((gen_id, path, asked)) => {
+            ask(gen_id, &path, asked);
+            with_state(&root, |s| match s.look(&root, lineage) {
+                Look::Found(sess) => sess,
+                Look::Unknown(_) => String::new(),
+            })
+        }
+    }
+}
+
+/// End of a board fetch: start the call for what [`resolve`] left unknown or
+/// stale, unless one is in flight.
 pub fn flush() {
     let root = proc_root();
-    let (spawn, write) = with_state(&root, |s| {
-        if !s.pending.is_empty() && !s.running {
-            s.running = true;
-            return (Some((s.gen_id, s.path.clone(), std::mem::take(&mut s.pending))), None);
+    let spawn = with_state(&root, |s| {
+        let ids: HashSet<String> = s.pending.iter().filter(|p| !s.is_neg(&root, p)).cloned().collect();
+        if ids.is_empty() || s.running {
+            return None;
         }
-        let due = s.wrote.is_none_or(|t| t.elapsed() >= NEG_TTL);
-        if s.pending.is_empty() && !s.pos.is_empty() && due {
-            return (None, Some((s.path.clone(), s.doc(&root))));
-        }
-        (None, None)
+        s.running = true;
+        s.pending.clear();
+        Some((s.gen_id, s.path.clone(), ids))
     });
-    if let Some((path, doc)) = write {
-        let _ = write_file(&path, &doc);
-    }
     if let Some((gen_id, path, asked)) = spawn {
         std::thread::spawn(move || ask(gen_id, &path, asked));
     }
 }
 
 /// `(pid, entry)` rows of the `--json` array; a row with no pid or session is skipped.
-fn parse(out: &[u8]) -> Vec<(String, Entry)> {
+fn parse(out: &[u8]) -> Option<Vec<(String, Entry)>> {
     let v: Value = serde_json::from_slice(out).unwrap_or(Value::Null);
     let s = |r: &Value, f: &str| r[f].as_str().unwrap_or_default().to_string();
-    v.as_array()
-        .map(|a| {
-            a.iter()
-                .filter_map(|r| {
-                    let e = Entry {
-                        session: r["sessionId"].as_str()?.into(),
-                        cwd: s(r, "cwd"),
-                        kind: s(r, "kind"),
-                    };
-                    Some((r["pid"].as_i64()?.to_string(), e))
-                })
-                .collect()
-        })
-        .unwrap_or_default()
+    v.as_array().map(|a| {
+        a.iter()
+            .filter_map(|r| {
+                let e = Entry {
+                    session: r["sessionId"].as_str().filter(|s| ok_session(s))?.into(),
+                    cwd: s(r, "cwd"),
+                    kind: s(r, "kind"),
+                };
+                Some((r["pid"].as_i64()?.to_string(), e))
+            })
+            .collect()
+    })
 }
 
 fn ask(gen_id: u64, path: &Path, asked: HashSet<String>) {
+    let t0 = Instant::now();
     let out = claude_agents_json(AGENTS_DEADLINE);
     let root = proc_root();
     let doc = {
@@ -328,13 +431,20 @@ fn ask(gen_id: u64, path: &Path, asked: HashSet<String>) {
             return;
         };
         s.running = false;
+        s.last_ask = Some(Instant::now());
+        super::log(&format!(
+            "agents lookup ok={} asked={} ms={}",
+            out.is_some(),
+            asked.len(),
+            t0.elapsed().as_millis()
+        ));
         // Pids added while the call ran may predate its answer; the next fetch
         // adds a pane's pid again if the answer still leaves it unknown.
         s.pending.clear();
         let now = Instant::now();
-        let rows = parse(out.as_deref().unwrap_or_default());
-        // a spawn failure or a deadline leaves what is known; the asked pids rest for NEG_TTL
-        if out.is_some() {
+        let rows = out.as_deref().and_then(parse);
+        // a spawn failure, a deadline or no JSON array leaves what is known; the asked pids rest for NEG_TTL
+        if let Some(rows) = rows {
             s.pos = rows
                 .iter()
                 .map(|(p, e)| {
@@ -374,6 +484,7 @@ fn claude_agents_json(deadline: Duration) -> Option<Vec<u8>> {
         .ok()?;
     CHILD.store(child.id(), Ordering::Relaxed);
     let out = lookup_output(&mut child, deadline);
+    *RECENT.lock().unwrap_or_else(|e| e.into_inner()) = Some((child.id(), Instant::now()));
     CHILD.store(0, Ordering::Relaxed);
     out
 }
