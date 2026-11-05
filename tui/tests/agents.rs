@@ -1,17 +1,15 @@
 //! `claude agents --json` off the fetch path and its cache file (#492 fix 5).
 //! Gates use files and polls, never a clock: the stub waits on a `go` file.
+mod fake;
+
 use cockpit_tui::data::agents::{Background, Entry, read_file, set_background};
 use cockpit_tui::data::list_panes;
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use fake::write_exec;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
 static ENV: Mutex<()> = Mutex::new(());
-
-fn write_exec(p: &Path, body: &str) {
-    std::fs::write(p, body).unwrap();
-    std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o755)).unwrap();
-}
 
 /// field 22 of a stat line is `start`
 fn stat(start: &str) -> String {

@@ -1,6 +1,8 @@
 //! The viewer's `?` in the panel (#365 child 4): the lines read for a question,
 //! the envelope, the read-only call it makes, and the Q&A it opens. No tmux,
 //! no claude: files are scratch files, the app is driven by keys.
+mod fake;
+
 use cockpit_tui::panel::ask::{self, AskCode};
 use std::path::{Path, PathBuf};
 
@@ -348,15 +350,12 @@ fn panel_takes_ask_with_a_file_and_two_lines() {
 #[test]
 fn launch_sends_the_read_only_call() {
     use cockpit_tui::panel::request::Call;
-    use std::os::unix::fs::PermissionsExt;
     let (d, mut a) = opened("launch");
     let bin = d.0.join("claude");
-    std::fs::write(
+    fake::write_exec(
         &bin,
-        format!("#!/bin/sh\nprintf '%s\\n' \"$@\" > {}/argv\necho ok\n", d.0.display()),
-    )
-    .unwrap();
-    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        &format!("#!/bin/sh\nprintf '%s\\n' \"$@\" > {}/argv\necho ok\n", d.0.display()),
+    );
     typ(&mut a, "q");
     key(&mut a, KeyCode::Enter);
     let call = Call {
@@ -561,15 +560,13 @@ fn a_second_hide_on_the_pane_is_refused() {
 #[test]
 fn an_answer_notes_the_files_read_from_the_repo() {
     use cockpit_tui::panel::request::Call;
-    use std::os::unix::fs::PermissionsExt;
     let (d, mut a) = opened("reads");
     let file = d.0.join("src/x.rs").display().to_string();
     let events = format!(
         r#"[{{"type":"assistant","message":{{"content":[{{"type":"tool_use","id":"t1","name":"Read","input":{{"file_path":"{file}"}}}}]}}}},{{"type":"result","subtype":"success","is_error":false,"result":"it is"}}]"#
     );
     let bin = d.0.join("claude");
-    std::fs::write(&bin, format!("#!/bin/sh\ncat >/dev/null\necho '{events}'\n")).unwrap();
-    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    fake::write_exec(&bin, &format!("#!/bin/sh\ncat >/dev/null\necho '{events}'\n"));
     typ(&mut a, "q");
     key(&mut a, KeyCode::Enter);
     let dir = d.0.join("cache");
