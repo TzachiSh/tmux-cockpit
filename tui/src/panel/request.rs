@@ -89,7 +89,9 @@ const RESEARCH: &[&str] = &["Read", "Grep", "Glob", "WebSearch", "WebFetch", "Sk
 /// A read-only call's `--disallowedTools`. First the writers, never offered:
 /// Agent too, as the CLI cannot keep it to the read-only Explore type (a rule
 /// can deny an agent type, not allow only one). Then the secret paths, the
-/// owner's call on review-432's finding 6: a Read rule covers Grep and Glob as
+/// owner's call on review-432's finding 6: ssh, aws and gpg keys, Claude's own
+/// credentials, and the token files of gh, git, netrc, docker, kube, npm, pypi
+/// and gcloud: a Read rule covers Grep and Glob as
 /// well and follows symlinks (probed). `~` is the home dir; `//` anchors at `/`,
 /// as a bare `**/.env` is relative to the cwd (the cache dir) and would leave a
 /// repo's `.env` readable. Every `.env` is denied, the repo's and `.env.example`
@@ -104,6 +106,14 @@ const DENY: &[&str] = &[
     "Read(~/.aws/**)",
     "Read(~/.gnupg/**)",
     "Read(~/.claude/.credentials.json)",
+    "Read(~/.config/gh/**)",
+    "Read(~/.git-credentials)",
+    "Read(~/.netrc)",
+    "Read(~/.docker/config.json)",
+    "Read(~/.kube/**)",
+    "Read(~/.npmrc)",
+    "Read(~/.pypirc)",
+    "Read(~/.config/gcloud/**)",
     "Read(//**/.env)",
     "Read(//**/.env.*)",
 ];

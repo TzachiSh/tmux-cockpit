@@ -271,7 +271,9 @@ fn a_bad_byte_does_not_lose_the_answer() {
 /// (#365 finding 6). `//` anchors a pattern at `/`: a bare `**/.env` is relative
 /// to the cwd, the cache dir, and would leave a repo's `.env` readable.
 const DENY: &str = "Bash,Edit,Write,NotebookEdit,Agent,Read(~/.ssh/**),Read(~/.aws/**),Read(~/.gnupg/**),\
-Read(~/.claude/.credentials.json),Read(//**/.env),Read(//**/.env.*)";
+Read(~/.claude/.credentials.json),Read(~/.config/gh/**),Read(~/.git-credentials),Read(~/.netrc),\
+Read(~/.docker/config.json),Read(~/.kube/**),Read(~/.npmrc),Read(~/.pypirc),Read(~/.config/gcloud/**),\
+Read(//**/.env),Read(//**/.env.*)";
 
 /// The ask's cap in these tests: long enough never to fire.
 const CAP: Duration = Duration::from_secs(300);
@@ -480,6 +482,14 @@ fn every_read_only_profile_denies_the_secret_paths() {
         "Read(~/.aws/**)",
         "Read(~/.gnupg/**)",
         "Read(~/.claude/.credentials.json)",
+        "Read(~/.config/gh/**)",
+        "Read(~/.git-credentials)",
+        "Read(~/.netrc)",
+        "Read(~/.docker/config.json)",
+        "Read(~/.kube/**)",
+        "Read(~/.npmrc)",
+        "Read(~/.pypirc)",
+        "Read(~/.config/gcloud/**)",
         "Read(//**/.env)",
         "Read(//**/.env.*)",
     ];
