@@ -317,6 +317,8 @@ fn the_read_only_profile_reads_and_never_writes() {
             "Bash,Edit,Write,NotebookEdit,Agent",
             "--permission-prompts",
             "none",
+            "--settings",
+            "{\"disableAllHooks\":true}",
             "--no-session-persistence",
             "--strict-mcp-config",
             "--disable-slash-commands"
@@ -347,6 +349,8 @@ fn the_research_profile_adds_the_web_and_skills() {
             "Bash,Edit,Write,NotebookEdit,Agent",
             "--permission-prompts",
             "none",
+            "--settings",
+            "{\"disableAllHooks\":true}",
             "--max-budget-usd",
             "0.5",
             "--no-session-persistence",
@@ -411,4 +415,23 @@ fn no_read_only_argv_offers_bash_and_every_one_denies_it() {
         }
         assert!(value("--disallowedTools").contains(&"Bash".to_string()), "research {research}");
     }
+}
+
+/// D11: a read-only call runs no hook, the user's or a plugin's: a hook is a
+/// command, and oh-my-claudecode's wrote `.omc/` into the call's cwd. The panel's
+/// text calls keep theirs, as the owner left them.
+#[test]
+fn read_only_turns_the_hooks_off_and_text_keeps_them() {
+    for research in [false, true] {
+        let p = Profile::read_only(PathBuf::from("/"), research);
+        assert!(!p.hooks, "research {research}");
+    }
+    let text = Profile::TEXT;
+    assert!(text.hooks, "the panel's own calls keep their hooks");
+    let rig = Rig::new("hooks", ECHO_ARGV);
+    let mut req = spawn_with(&rig.call(30), &Profile::read_only(rig.dir.clone(), true), "p");
+    assert_eq!(answer(&mut req), Ok("ok\n".into()));
+    let args = argv_after_prompt(&rig);
+    let at = args.iter().position(|a| a == "--settings").expect("--settings");
+    assert_eq!(args[at + 1], r#"{"disableAllHooks":true}"#);
 }

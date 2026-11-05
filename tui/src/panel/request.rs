@@ -75,6 +75,9 @@ pub struct Profile {
     pub budget_usd: Option<f64>,
     /// over the call's own, for a call that reads before it answers
     pub timeout: Option<Duration>,
+    /// the user's and plugins' hooks; off is `--settings {"disableAllHooks":true}`.
+    /// A hook is a command whatever the tools are, and a plugin's writes into the cwd
+    pub hooks: bool,
 }
 
 const READ: &[&str] = &["Read", "Grep", "Glob"];
@@ -93,6 +96,7 @@ impl Profile {
         cwd: None,
         budget_usd: None,
         timeout: None,
+        hooks: true,
     };
 
     /// Read the repo at `cwd`; with `research`, search and fetch the web and load
@@ -105,6 +109,7 @@ impl Profile {
             deny: WRITERS,
             skills: research,
             no_prompts: true,
+            hooks: false,
             cwd: Some(cwd),
             ..Profile::TEXT
         }
@@ -122,6 +127,9 @@ impl Profile {
         }
         if self.no_prompts {
             a.extend(["--permission-prompts".into(), "none".into()]);
+        }
+        if !self.hooks {
+            a.extend(["--settings".into(), r#"{"disableAllHooks":true}"#.into()]);
         }
         if let Some(b) = self.budget_usd {
             a.extend(["--max-budget-usd".into(), b.to_string()]);
