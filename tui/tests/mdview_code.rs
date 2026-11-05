@@ -287,7 +287,7 @@ fn u_is_markdown_only() {
     assert!(mdview::help_for(false, Mode::Markdown).iter().any(|(k, _)| k == "u"));
     assert_eq!(mdview::help_for(false, Mode::Markdown), mdview::help_rows(false));
     let mut s = code("x.rs", RUST);
-    key(&mut s, KeyCode::Char('?'));
+    key(&mut s, KeyCode::Char('h'));
     let out = draw(60, 30, &Theme::fixed(), &mut s);
     assert!(!out.contains("link addresses"), "{out}");
 }

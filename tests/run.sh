@@ -13858,7 +13858,7 @@ case "$1" in
           *pane_width*)        printf '90 30\n' ;;
           *)                   printf 'MSG %s\n' "${!#}" >> "$TMUX_LOG" ;;
       esac ;;
-  new-window) printf 'NEWWIN %s\n' "${!#}" >> "$TMUX_LOG" ;;
+  new-window) printf 'NEWWIN %s\n' "${!#}" >> "$TMUX_LOG"; exit "${NEWWIN_RC:-0}" ;;
   display-popup) shift; { printf 'POPUP'; printf ' [%s]' "$@"; echo; } >> "$TMUX_LOG"; exit "${POPUP_RC:-0}" ;;
   list-clients) [ -z "${NO_CLIENT:-}" ] && printf 'c\n' ;;
 esac
@@ -13879,7 +13879,7 @@ mvrun() {                     # mvrun <click line> <args...> -- the log after on
     : > "$MVL"
     env -i PATH="$MV/bin" HOME="$MV" TMUX_LOG="$MVL" CLICK_DIR="$MV/w" CLICK_LINE="$1" OPEN_EDITOR="${MV_ED:-ed}" TOUCH="${TOUCH:-}" \
         COCKPIT_TUI_BIN="${MV_BIN:-$MV/bin/cockpit-tui}" MD_VIEW="${MD_VIEW:-}" VIEW_OUT="${VIEW_OUT-}" \
-        VIEW_ERR="${VIEW_ERR:-}" VIEW_RC="${VIEW_RC:-}" PICK_KEY="${PICK_KEY:-0}" POPUP_RC="${POPUP_RC:-}" NO_CLIENT="${NO_CLIENT:-}" \
+        VIEW_ERR="${VIEW_ERR:-}" VIEW_RC="${VIEW_RC:-}" PICK_KEY="${PICK_KEY:-0}" POPUP_RC="${POPUP_RC:-}" NO_CLIENT="${NO_CLIENT:-}" NEWWIN_RC="${NEWWIN_RC:-}" \
         bash "$DIR/scripts/tmux-open-path" "${@:2}" </dev/null >/dev/null 2>"$MV/err"
     cat "$MVL"
 }
@@ -13949,6 +13949,30 @@ esac
 # From the picker's popup the viewer draws in place: tmux has one popup per client.
 is "a .md chosen in the picker opens the viewer in the picker's own popup" \
    "VIEW [view] [--] [$MV/w/a.md]"$'\n'"NEWWIN ed +5 $MV/w/a.md" "$(VIEW_OUT='edit 5' PICK_KEY=0 mvrun 'a.md t.txt' --pick %1)"
+# a refused new-window is said, not swallowed (#366): the editor row and the touch row
+is "a window tmux refuses to open is a note, from the editor path" \
+   "NEWWIN ed  $MV/w/t.txt"$'\n'"MSG cockpit: tmux could not open a window for t.txt" "$(NEWWIN_RC=1 mvrun 'x' --view %1 "$MV/w/t.txt" '')"
+is "and from the touch client's terminal editor" \
+   "VIEW [view] [--] [$MV/w/a.md]"$'\n'"NEWWIN ed $MV/w/a.md"$'\n'"MSG cockpit: tmux could not open a window for a.md" \
+   "$(NEWWIN_RC=1 VIEW_OUT='edit 5' TOUCH=1 mvrun 'x' --view %1 "$MV/w/a.md" '')"
+
+echo "== tmux-open-path (#366): plain_name drops each control and bidi character, keeps the rest =="
+# One table, one row per character: removing any one from the helper fails its row.
+PNO=$(mktmpf)
+( . "$DIR/scripts/lib/fmt.sh"; export LC_ALL=C.UTF-8
+  for row in "U+061C|\xd8\x9c" "U+200E|\xe2\x80\x8e" "U+200F|\xe2\x80\x8f" "U+202A|\xe2\x80\xaa" \
+             "U+202B|\xe2\x80\xab" "U+202C|\xe2\x80\xac" "U+202D|\xe2\x80\xad" "U+202E|\xe2\x80\xae" \
+             "U+2066|\xe2\x81\xa6" "U+2067|\xe2\x81\xa7" "U+2068|\xe2\x81\xa8" "U+2069|\xe2\x81\xa9" \
+             "ESC|\x1b" "BEL|\x07" "C1 U+0085|\xc2\x85" "DEL|\x7f"; do
+      got=$(plain_name "$(printf %b "a${row#*|}b.md")")
+      if [ "$got" = ab.md ]; then echo "ok ${row%%|*}"; else echo "bad ${row%%|*} [$got]"; fi
+  done
+  [ "$(plain_name 'p#(x) é ‌q.md')" = 'p#(x) é ‌q.md' ] && echo "ok kept" || echo "bad kept"
+) > "$PNO" 2>&1
+while IFS= read -r pn; do
+    case $pn in ok\ *) ok "plain_name drops/keeps: ${pn#ok }" ;; *) bad "plain_name drops/keeps: ${pn#bad }" "ab.md" "$pn" ;; esac
+done < "$PNO"
+is "plain_name: seventeen rows ran" "17" "$(grep -c . "$PNO")"
 
 echo "== tmux-open-path (#283): the viewer in a real popup, e to the editor, a hostile name runs nothing =="
 # The real binary in a real popup: an outer server's pane is the inner server's
@@ -14151,6 +14175,31 @@ is "touch, format-looking names: the window name and folder are literal" "#(touc
    "$("$TMUX_REAL" -L "$FBS" list-windows -t t -F '#{window_name} #{pane_start_path}' | grep -Fx "#(touch\${IFS}PWN).txt $FBH")"
 is "touch, format-looking names: nothing ran" "" "$(find "$FB" "$PWD" -maxdepth 3 -name PWN 2>/dev/null)"
 
+# an editor with arguments: the +N decision reads its first word only (#425)
+FBV='edit 7\n' fb on "view $FBD/sub/n.txt\n" 0 "VISUAL=$FB/bin/nvim -u NONE"
+fbwait "$FB/ed.log"
+is "touch: an editor with arguments keeps them and still gets +N" \
+   "$FB/bin/nvim [-u] [NONE] [+7] [$FBD/sub/n.txt]" "$(cat "$FB/ed.log")"
+
+# a name tmux refuses as a window name still opens (#366): the name drops the control
+# characters and the bidi override, the editor gets the real path
+FBC="$FBD/e"$'\e]2;OWNED\a'"x.txt"; : > "$FBC"
+FBB="$FBD/p"$'\xe2\x80\xae'"q.txt"; : > "$FBB"
+for row in "$FBC|e]2;OWNEDx.txt" "$FBB|pq.txt"; do
+    for t in on off; do
+        "$TMUX_REAL" -L "$FBS" set -g @cockpit_editor "$FB/bin/ed-cockpit"
+        for w in $("$TMUX_REAL" -L "$FBS" list-windows -t t -F '#{window_index}' | sed 1d); do
+            "$TMUX_REAL" -L "$FBS" kill-window -t "t:$w"; done
+        fb "$t" "open ${row%%|*}\n" 0
+        fbwait "$FB/ed.log"
+        is "name with control or bidi characters, touch $t: the editor got the real path" \
+           "$FB/bin/ed-cockpit [${row%%|*}]" "$(cat "$FB/ed.log")"
+        is "and the window is named without them" "${row#*|}" \
+           "$("$TMUX_REAL" -L "$FBS" list-windows -t t -F '#{window_name}' | sed 1d)"
+    done
+done
+"$TMUX_REAL" -L "$FBS" set -gu @cockpit_editor
+
 # a touch client with no editor anywhere: one note, no window
 mkdir -p "$FB/nobin"
 for x in bash cat rm mktemp readlink dirname; do ln -sf "$(command -v $x)" "$FB/nobin/$x"; done
@@ -14191,6 +14240,51 @@ env PATH="$FB/bin:$PATH" COCKPIT_TUI_BIN="$FB/bin/cockpit-tui" TMUX="$FBSOCK,0,0
     "$DIR/scripts/tmux-open-path" --browse "$FBP" </dev/null >"$FB/out" 2>&1
 is "a stale cockpit-tui is told apart" "1" "$(grep -c 'older than the plugin' "$FB/calls")"
 "$TMUX_REAL" -L "$FBS" kill-server >/dev/null 2>&1
+fi
+
+echo "== tmux-open-path --browse: the real cockpit-tui files, keys in, the exact path out (#372) =="
+# Each side of the printed-line contract is pinned alone above (the Rust tests,
+# the stub rows). This one runs the whole chain: the real binary in a pane of a
+# private server, keys to pick a file whose name holds spaces and $(touch PWN),
+# alt-e to a stub code on PATH, Enter to the real viewer. Polled, never slept.
+if need_tmux "real browser chain"; then :
+elif [ ! -x "$DIR/bin/cockpit-tui" ]; then skip_ "real browser chain (no bin/cockpit-tui)"
+else
+FR=$(mktmpd); FRS="cockpit-fr-$$"; SOCKS="$SOCKS $FRS"
+FRD="$FR/proj"; mkdir -p "$FR/bin" "$FRD"
+FRF="$FRD/a b \$(touch PWN) c.txt"; printf 'VIEWBODY-%s\n' "$$" > "$FRF"; : > "$FRD/0first.txt"
+printf '#!/bin/sh\nprintf "[%%s]" "$0" "$@" >> "%s/code.log"\n' "$FR" > "$FR/bin/code"
+chmod +x "$FR/bin/code"; : > "$FR/code.log"
+( cd "$FR" && PATH="$FR/bin:$PATH" "$TMUX_REAL" -L "$FRS" -f /dev/null new-session -d -s t -x 100 -y 30 \
+    -c "$FRD" 'exec sleep 3600' >/dev/null 2>&1 )
+"$TMUX_REAL" -L "$FRS" set -g remain-on-exit on >/dev/null 2>&1
+FRP=$("$TMUX_REAL" -L "$FRS" list-panes -t t -F '#{pane_id}')
+# frstart: the browser in the pane, on the folder, until it lists the file
+frstart() {
+    "$TMUX_REAL" -L "$FRS" respawn-pane -k -t "$FRP" -c "$FRD" \
+        "exec '$DIR/scripts/tmux-open-path' --browse '$FRP'" >/dev/null 2>&1
+    until_cap "$FRS" "$FRP" '*0first.txt*'
+}
+if frstart && "$TMUX_REAL" -L "$FRS" send-keys -t "$FRP" -l 'touch PWN' && until_cap "$FRS" "$FRP" '*PWN*'; then
+    "$TMUX_REAL" -L "$FRS" send-keys -t "$FRP" M-e
+    if until_file "$FR/code.log" '*--goto*'; then
+        is "alt-e on the picked name: code gets the exact path, spaces and all" \
+           "[$FR/bin/code][--goto][$FRF:1:1]" "$(cat "$FR/code.log")"
+    else bad "alt-e on the picked name: code gets the exact path, spaces and all" "[--goto][$FRF:1:1]" "$(cat "$FR/code.log")"; fi
+else bad "the real browser lists the folder and takes the filter" "0first.txt, then PWN" "$("$TMUX_REAL" -L "$FRS" capture-pane -p -t "$FRP" | head -12)"; fi
+: > "$FR/code.log"
+if frstart && "$TMUX_REAL" -L "$FRS" send-keys -t "$FRP" -l 'touch PWN' && until_cap "$FRS" "$FRP" '*PWN*'; then
+    "$TMUX_REAL" -L "$FRS" send-keys -t "$FRP" Enter
+    if until_cap "$FRS" "$FRP" "*VIEWBODY-$$*"; then ok "Enter on the picked name opens the real viewer on that file"
+    else bad "Enter on the picked name opens the real viewer on that file" "VIEWBODY-$$" "$("$TMUX_REAL" -L "$FRS" capture-pane -p -t "$FRP" | head -12)"; fi
+    case "$("$TMUX_REAL" -L "$FRS" capture-pane -p -t "$FRP")" in
+        *"$(basename "$FRF")"*) ok "the viewer's title is the file's name" ;;
+        *) bad "the viewer's title is the file's name" "$(basename "$FRF")" "$("$TMUX_REAL" -L "$FRS" capture-pane -p -t "$FRP" | head -4)" ;;
+    esac
+else bad "the real browser lists the folder and takes the filter (view)" "0first.txt, then PWN" "$("$TMUX_REAL" -L "$FRS" capture-pane -p -t "$FRP" | head -12)"; fi
+is "the viewer opened no editor and no code" "" "$(cat "$FR/code.log")"
+is "no PWN appeared in the folder, the server's cwd or the checkout" "" "$(find "$FR" "$DIR" -maxdepth 3 -name PWN -not -path '*/tui/target/*' 2>/dev/null)"
+"$TMUX_REAL" -L "$FRS" kill-server >/dev/null 2>&1
 fi
 
 echo "== agent-state sub-*: the documented subagent hooks append to a per-session log (#361) =="

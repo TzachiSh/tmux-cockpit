@@ -287,12 +287,10 @@ fn help_names_enter_as_view_and_alt_e_as_open_in_the_editor() {
 fn drawn_names_drop_control_and_bidi_characters_but_the_key_keeps_them() {
     let s = Scratch::new();
     let name = "a\x1b[31mb\u{202E}c\u{2066}d\u{061C}\te.txt";
-    let p = s.file(name);
+    s.file(name);
     let f = browser(&s.0);
     assert_eq!(shown(&f), ["a[31mbcd e.txt"]);
     assert_eq!(f.pick.rows[0].key, name.as_bytes(), "the key is the exact name");
-    let mut f = f;
-    assert_eq!(tap(&mut f, KeyCode::Enter), line("view", &p));
 }
 
 #[test]
@@ -318,6 +316,57 @@ fn a_name_with_a_newline_cannot_ride_one_line_so_it_prints_nothing() {
     // the next key clears the note
     tap(&mut f, KeyCode::Down);
     assert!(!f.pick.header.starts_with('✕'));
+}
+
+#[test]
+fn a_name_with_a_control_or_bidi_character_is_refused_for_view_open_and_copy() {
+    let names = [
+        "a\u{1b}b.rs",
+        "a\tb.rs",
+        "a\u{7f}b.rs",
+        "a\u{85}b.rs",
+        "a\u{202e}b.rs",
+        "a\u{2066}b.rs",
+        "a\u{2069}b.rs",
+        "a\u{61c}b.rs",
+        "a\u{200e}b.rs",
+        "a\u{200f}b.rs",
+    ];
+    for name in names {
+        let s = Scratch::new();
+        s.file(name);
+        let mut f = browser(&s.0);
+        for (label, k) in [
+            ("view", (KeyCode::Enter, KeyModifiers::NONE)),
+            ("open", (KeyCode::Char('e'), KeyModifiers::ALT)),
+            ("copy", (KeyCode::Char('c'), KeyModifiers::ALT)),
+        ] {
+            assert_eq!(press(&mut f, k.0, k.1), Outcome::Continue, "{label} {name:?}");
+            assert!(f.pick.header.starts_with('✕'), "{label} {name:?}: {}", f.pick.header);
+        }
+    }
+}
+
+#[test]
+fn a_folder_with_a_control_name_can_still_be_entered_and_left() {
+    let s = Scratch::new();
+    let d = s.dir("d\u{1b}x");
+    let mut f = browser(&s.0);
+    assert_eq!(tap(&mut f, KeyCode::Enter), Outcome::Continue);
+    assert_eq!(f.dir, d);
+    assert!(!f.pick.header.starts_with('✕'), "{}", f.pick.header);
+    tap(&mut f, KeyCode::Left);
+    assert_eq!(f.dir, s.0);
+}
+
+#[test]
+fn a_plain_neighbour_of_a_control_name_still_prints() {
+    let s = Scratch::new();
+    s.file("a\u{1b}b.rs");
+    let p = s.file("ok.rs");
+    let mut f = browser(&s.0);
+    type_str(&mut f, "ok.rs");
+    assert_eq!(tap(&mut f, KeyCode::Enter), line("view", &p));
 }
 
 // --- keys --------------------------------------------------------------------

@@ -13,4 +13,4 @@
 "│  6 pub fn count(text: &str) -> HashM │"
 "│    ap<String, usize> {               │"
 "╰──────────────────────────────────────╯"
-" / find   e edit   ? keys   q close     "
+" / find   v select   h keys   q close   "

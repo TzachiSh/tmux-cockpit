@@ -61,4 +61,4 @@
 "|                                                                              |"
 "|                                                                              |"
 "+------------------------------------------------------------------------------+"
-" / find   e edit   up/dn scroll   ? keys   q close                              "
+" / find   v select   h keys   e edit   up/dn scroll   q close                   "

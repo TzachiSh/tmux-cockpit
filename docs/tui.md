@@ -1751,7 +1751,17 @@ tell the two quiet answers apart: `[]` with exit 0 is "no agents", exit 1 is
   own `NO_COLOR` handling off: it emits an empty SGR, which also drops bold, dim
   and reverse, the three attributes the colourless fallback is built on.
 - **Actions are printed, never executed.** The panel's `claude -p` fork is a
-  read only because it runs with `--tools ""`: adding a tool breaks this rule.
+  read only because of its `request::Profile`: the panel's calls run with
+  `--tools ""`, and a read-only profile (#365) has only Read, Grep and Glob (and,
+  for research, WebSearch, WebFetch and skills), each pre-approved, with Bash,
+  Edit, Write, NotebookEdit and Agent denied by rule as well and every permission
+  prompt refused. A tool that writes or runs a command breaks this rule, and so
+  does a read-only fork that runs with a pane's folder as its cwd or setting
+  source: the repo's settings, hooks and env would load (a hook runs a command,
+  `env` can send the request and the key elsewhere, `apiKeyHelper` runs). The
+  folder goes in by `--add-dir`, which loads its skills and nothing else, and
+  the cwd stays the panel's cache dir. A read-only fork also runs no hook of the
+  user's or a plugin's (`disableAllHooks`).
   Pasting into a pane stays a printed action that a wrapper runs.
 - **Every tmux write goes through one function** that `COCKPIT_READONLY`
   disables, the pid publish included.
@@ -1904,8 +1914,8 @@ board to start drops it.
 any other text file as numbered code (#365). The
 path picker opens it for a lone `.md`, `.markdown`, `.mdown` or `.mkd` file
 (see [the path picker](path-picker.md)); `@cockpit_md_view off` turns that off.
-It draws on /dev/tty, as `pick` does, so its one line of output, `edit <line>`,
-goes to stdout.
+It draws on /dev/tty, as `pick` does, so its one line of output, `edit <line>`
+or `ask <a> <b>` (#365), goes to stdout.
 
 | key | does |
 |---|---|
@@ -1915,10 +1925,13 @@ goes to stdout.
 | the wheel | three rows |
 | `/` | find: every key but `^C` is text until `↵` keeps the matches or `esc` drops them and goes back |
 | `n` `N` | the next and the previous match, round the end |
-| `e` | close, and open the file in the editor at the top row's source line |
-| `u` | show or hide link addresses |
-| `?` | the keys |
-| `q` `esc` `^C` | close; `esc` first clears the matches, and `^C` closes from the find field too |
+| `v` | select lines from the top row's line; the move keys, `g` `G` and `n` `N` then move its end, and `v` again ends it |
+| a tap, a second tap | the first drops a selection's anchor, the second ends it there; a drag selects, a shift-click extends |
+| `?` | ask about the selection, or the top line: close with `ask <a> <b>` (#365) |
+| `e` | close, and open the file in the editor at the selection's end, else the top row's source line |
+| `u` | show or hide link addresses (markdown) |
+| `h` `F1` | the keys |
+| `q` `esc` `^C` | close; `esc` first clears the selection, then the matches, and `^C` closes from the find field too |
 
 - **What it draws.** Headings with their `#`s, paragraphs, emphasis, strong,
   strikethrough, inline code, lists nested to any depth (`•` `◦` `▪`, numbers
@@ -1988,6 +2001,23 @@ or a `*ptr` is drawn as written:
   about 77 MB resident (release, measured), under markdown's worst.
 - **What it refuses** is the markdown viewer's: over 1 MB, a NUL byte, invalid
   UTF-8, not a regular file. The note says so, and `e` still opens the editor.
+
+### Selecting and asking (#365)
+
+`v`, or a tap on a line, starts a line selection; the move keys (or a second
+tap, or a drag) set its other end. The selected rows carry `▎` in the frame's
+padding column, and the footer says which lines an ask would take
+(`6-12 · 7 lines`); the hints there are taps too. `?` closes the viewer with
+`ask <a> <b>`, the selection's lines (or the top line's), widened to the end of
+the last markdown block it touches with blank lines off the end. Only a launcher
+that routes that line sets `COCKPIT_VIEW_ASK=1`, and only then is `? ask`
+offered: without it `?` leaves a note and the viewer stays, so a launcher that
+reads only `edit` never loses the screen to it. `tmux-open-path` routes it to
+the panel's ask in a later change.
+`esc` clears the selection before the matches, and the help moved from `?` to
+`h` and `F1`. A tap and a release, then a press, a drag and a release, select
+from the first line to the drag's end. Under the floor card or the help a tap
+does nothing, and `?` on an empty file, or one the viewer refused, is a note.
 
 ## `cockpit-tui branch` (#246)
 

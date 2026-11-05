@@ -1,5 +1,7 @@
-//! One `claude -p` call, text only, on a thread of its own. A read like data's
-//! `claude agents` fork: it runs no tools and writes nothing to tmux.
+//! One `claude -p` call on a thread of its own, writing nothing to tmux. Its
+//! [`Profile`] says what it may use: [`Profile::TEXT`], the panel's calls, runs
+//! no tools; [`Profile::read_only`] reads the repo (and, for research, the web
+//! and skills) and can never write, run a command or start an agent (#365).
 use std::fs::{DirBuilder, OpenOptions};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::{Read, Write};
@@ -54,6 +56,144 @@ impl Call {
     }
 }
 
+/// What a call may use, and its limits. Every field is a `claude` flag:
+/// `--tools` (the built-in set it has), `--allowedTools` (approved up front, as a
+/// `-p` call cannot be asked), `--disallowedTools` (denied by rule as well, in case
+/// a tool reaches the set some other way), `--permission-prompts none` (anything
+/// that would still ask is refused, never waited on), `--max-budget-usd`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Profile {
+    pub tools: &'static [&'static str],
+    pub allow: &'static [&'static str],
+    pub deny: &'static [&'static str],
+    /// skills and slash commands; off is `--disable-slash-commands`
+    pub skills: bool,
+    /// `--permission-prompts none`
+    pub no_prompts: bool,
+    pub budget_usd: Option<f64>,
+    /// over the call's own, for a call that reads before it answers
+    pub timeout: Option<Duration>,
+    /// the user's and plugins' hooks; off is `--settings {"disableAllHooks":true}`.
+    /// A hook is a command whatever the tools are, and a plugin's writes into the cwd
+    pub hooks: bool,
+    /// Folders the file tools may read, passed as `--add-dir`: readable, never
+    /// the cwd. In its cwd `claude -p` loads a folder's `.claude/settings.json`
+    /// with no trust prompt, and its hooks, `env` and `apiKeyHelper` run
+    /// (review-432); through `--add-dir` only its skills load (probed). The cwd
+    /// is always the call's own dir.
+    pub read_dirs: Vec<PathBuf>,
+}
+
+const READ: &[&str] = &["Read", "Grep", "Glob"];
+const RESEARCH: &[&str] = &["Read", "Grep", "Glob", "WebSearch", "WebFetch", "Skill"];
+/// A read-only call's `--disallowedTools`. First the writers, never offered:
+/// Agent too, as the CLI cannot keep it to the read-only Explore type (a rule
+/// can deny an agent type, not allow only one). Then the secret paths, the
+/// owner's call on review-432's finding 6: ssh, aws and gpg keys, Claude's own
+/// credentials, and the token files of gh, git, netrc, docker, kube, npm, pypi
+/// and gcloud: a Read rule covers Grep and Glob as
+/// well and follows symlinks (probed). `~` is the home dir; `//` anchors at `/`,
+/// as a bare `**/.env` is relative to the cwd (the cache dir) and would leave a
+/// repo's `.env` readable. Every `.env` is denied, the repo's and `.env.example`
+/// included: a code question has no need of them.
+const DENY: &[&str] = &[
+    "Bash",
+    "Edit",
+    "Write",
+    "NotebookEdit",
+    "Agent",
+    "Read(~/.ssh/**)",
+    "Read(~/.aws/**)",
+    "Read(~/.gnupg/**)",
+    "Read(~/.claude/.credentials.json)",
+    "Read(~/.config/gh/**)",
+    "Read(~/.git-credentials)",
+    "Read(~/.netrc)",
+    "Read(~/.docker/config.json)",
+    "Read(~/.kube/**)",
+    "Read(~/.npmrc)",
+    "Read(~/.pypirc)",
+    "Read(~/.config/gcloud/**)",
+    "Read(//**/.env)",
+    "Read(//**/.env.*)",
+];
+
+impl Profile {
+    pub const TEXT: Profile = Profile {
+        tools: &[],
+        allow: &[],
+        deny: &[],
+        skills: false,
+        no_prompts: false,
+        budget_usd: None,
+        timeout: None,
+        hooks: true,
+        read_dirs: Vec::new(),
+    };
+
+    /// Read the folder `repo`, added beside the cwd; with `research`, search and
+    /// fetch the web and load skills too. The budget and the timeout are the
+    /// owner's caps (#365 D7), so the type asks for both.
+    pub fn read_only(repo: PathBuf, research: bool, budget_usd: f64, timeout: Duration) -> Profile {
+        let tools = if research { RESEARCH } else { READ };
+        Profile {
+            tools,
+            allow: tools,
+            deny: DENY,
+            skills: research,
+            no_prompts: true,
+            hooks: false,
+            // absolute: never read against the cache dir, never a `-` that passes for a flag
+            read_dirs: vec![std::path::absolute(&repo).unwrap_or(repo)],
+            budget_usd: Some(budget_usd),
+            timeout: Some(timeout),
+        }
+    }
+
+    /// What the system prompt adds for a call with read dirs: its cwd is not the
+    /// repo, so the model is told where the repo is and how the tools reach it.
+    /// Each path is quoted; one with a control or bidi character never gets here
+    /// (`start` refuses it), as it would put text in the prompt with its trust.
+    pub fn where_note(&self) -> Option<String> {
+        let dirs: Vec<String> = self.read_dirs.iter().map(|d| format!("{:?}", d.display().to_string())).collect();
+        (!dirs.is_empty()).then(|| {
+            format!(
+                "The repository is at {}. Read, Grep and Glob take absolute paths under it; your working directory is not the repository.",
+                dirs.join(" and ")
+            )
+        })
+    }
+
+    /// The flags after the system prompt file. [`Profile::TEXT`]'s are the panel's
+    /// argv from before profiles, byte for byte.
+    pub fn argv(&self) -> Vec<String> {
+        let mut a = vec!["--tools".to_string(), self.tools.join(",")];
+        if !self.allow.is_empty() {
+            a.extend(["--allowedTools".into(), self.allow.join(",")]);
+        }
+        if !self.deny.is_empty() {
+            a.extend(["--disallowedTools".into(), self.deny.join(",")]);
+        }
+        if self.no_prompts {
+            a.extend(["--permission-prompts".into(), "none".into()]);
+        }
+        if !self.hooks {
+            a.extend(["--settings".into(), r#"{"disableAllHooks":true}"#.into()]);
+        }
+        for d in &self.read_dirs {
+            a.extend(["--add-dir".into(), d.display().to_string()]);
+        }
+        if let Some(b) = self.budget_usd {
+            a.extend(["--max-budget-usd".into(), b.to_string()]);
+        }
+        a.extend(["--no-session-persistence".into(), "--strict-mcp-config".into()]);
+        if !self.skills {
+            a.push("--disable-slash-commands".into());
+        }
+        a
+    }
+}
+
 type Answer = Result<String, Fail>;
 
 pub struct Request {
@@ -69,12 +209,17 @@ impl Request {
     /// Call it from the main thread: PR_SET_PDEATHSIG fires when the spawning
     /// thread exits, so a short-lived thread would kill claude with it.
     pub fn spawn(call: &Call, system: &str, prompt: &str, model: &str) -> Request {
+        Request::spawn_with(call, &Profile::TEXT, system, prompt, model)
+    }
+
+    /// [`Request::spawn`] under profile `p`.
+    pub fn spawn_with(call: &Call, p: &Profile, system: &str, prompt: &str, model: &str) -> Request {
         let (tx, rx) = channel();
         let reaped = Arc::new(Mutex::new(false));
-        let pid = match start(call, system, model) {
+        let pid = match start(call, p, system, model) {
             Ok(child) => {
                 let pid = child.id();
-                run(child, prompt.to_string(), call.timeout, tx, reaped.clone());
+                run(child, prompt.to_string(), p.timeout.unwrap_or(call.timeout), tx, reaped.clone());
                 Some(pid)
             }
             Err(e) => {
@@ -136,20 +281,30 @@ fn kill_group(reaped: &Mutex<bool>, pid: u32) {
     drop(g);
 }
 
-fn start(call: &Call, system: &str, model: &str) -> Result<std::process::Child, String> {
-    let file = prompt_file(&call.dir, system).map_err(|e| format!("cannot write the system prompt: {e}"))?;
+fn start(call: &Call, p: &Profile, system: &str, model: &str) -> Result<std::process::Child, String> {
+    // a folder's name goes into the system prompt: a line break or a bidi mark in
+    // it is refused, never cleaned, as the call would read some other folder; so is
+    // an empty name (`--add-dir ""`) and one that is not UTF-8
+    if let Some(d) = p.read_dirs.iter().find(|d| match d.to_str() {
+        Some(s) => s.is_empty() || crate::pick::clean(s) != s,
+        None => true,
+    }) {
+        return Err(format!(
+            "{:?} is empty, not UTF-8, or holds a control or bidi character; refused",
+            d.display().to_string()
+        ));
+    }
+    let system = match p.where_note() {
+        Some(n) => format!("{system}\n\n{n}"),
+        None => system.to_string(),
+    };
+    let file = prompt_file(&call.dir, &system).map_err(|e| format!("cannot write the system prompt: {e}"))?;
     let mut c = Command::new(&call.claude);
     c.arg("-p")
         .args(super::route::model_argv(model))
         .arg("--system-prompt-file")
         .arg(&file)
-        .args([
-            "--tools",
-            "",
-            "--no-session-persistence",
-            "--strict-mcp-config",
-            "--disable-slash-commands",
-        ])
+        .args(p.argv())
         .current_dir(&call.dir)
         // The hooks key off TMUX_PANE: without it this call is no pane's agent.
         .env("COCKPIT_PANEL_CALL", "1")

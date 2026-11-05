@@ -21,4 +21,4 @@
 "│ 19     println!("{} words, {n}", words.len());                               │"
 "│ 20 }                                                                         │"
 "╰──────────────────────────────────────────────────────────────────────────────╯"
-" / find   e edit   ↑↓ scroll   ? keys   q close                                 "
+" / find   v select   h keys   e edit   ↑↓ scroll   q close                      "
