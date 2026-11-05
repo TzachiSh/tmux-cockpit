@@ -154,9 +154,10 @@ struct Git {
 const PLAIN: [&str; 6] = ["-c", "color.ui=false", "-c", "color.status=false", "-c", "color.diff=false"];
 
 /// gitsafe's flags, no lock taken under the user's own git, no prompt, no
-/// transport; its own process group so a timeout kills what it forked.
+/// transport; its own process group so a timeout kills what it forked. The
+/// repo is the one `dir` is in, whatever [`REDIRECT`] the panel inherited.
 fn spawn_git(dir: &str, extra: &[String], args: &[&str]) -> Option<Git> {
-    spawn_git_unset(dir, extra, args, &[])
+    spawn_git_unset(dir, extra, args, &REDIRECT)
 }
 
 /// [`spawn_git`] with the variables `unset` taken out of git's environment.

@@ -376,6 +376,59 @@ fn a_status_that_times_out_keeps_the_log() {
     assert!(got.contains("status: timed out") && got.contains("abc1234 first"), "{got}");
 }
 
+/// What an inherited environment could point git at instead of the pane's repo.
+const REDIRECT: [&str; 4] = ["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE"];
+
+/// git in `dir` as the test's own setup, none of [`REDIRECT`] inherited.
+fn setup_git(dir: &Path, args: &[&str]) {
+    let mut c = std::process::Command::new("git");
+    REDIRECT.iter().for_each(|v| _ = c.env_remove(v));
+    let id = ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"];
+    let ok = c.arg("-C").arg(dir).args(id).args(args).status().unwrap();
+    assert!(ok.success(), "git {args:?}");
+}
+
+/// `$D/pane` on main and `$D/other` on elsewhere, one different commit each.
+fn pane_and_other(e: &Env) -> String {
+    for (name, branch, file) in [("pane", "main", "a"), ("other", "elsewhere", "b")] {
+        let d = e.dir.join(name);
+        std::fs::create_dir_all(&d).unwrap();
+        setup_git(&d, &["init", "-q", "-b", branch]);
+        std::fs::write(d.join(file), "x\n").unwrap();
+        setup_git(&d, &["add", "-A"]);
+        setup_git(&d, &["commit", "-q", "-m", &format!("{name} commit")]);
+    }
+    e.dir.join("pane").display().to_string()
+}
+
+/// The panel may start with a dotfiles setup's GIT_DIR, or one of its kin, in
+/// its environment: the repo block still describes the pane's own repo.
+#[test]
+fn an_inherited_git_variable_never_moves_the_repo_block() {
+    let rows = [
+        ("GIT_DIR", "$D/other/.git"),
+        ("GIT_WORK_TREE", "$D/other"),
+        ("GIT_COMMON_DIR", "$D/other/.git"),
+        ("GIT_INDEX_FILE", "$D/other/.git/index"),
+    ];
+    let moved: Vec<&str> = rows
+        .into_iter()
+        .filter(|(var, val)| {
+            let mut vars: Vec<_> = REDIRECT.iter().map(|v| (*v, None)).collect();
+            vars.extend([("GIT_CONFIG_GLOBAL", Some("/dev/null".into())), ("GIT_CONFIG_NOSYSTEM", Some("1".into()))]);
+            let e = Env::new("repo-redirect", &vars);
+            let pane = pane_and_other(&e);
+            let want = cockpit_tui::panel::capture::repo_state(&pane, "");
+            assert!(want.starts_with(&format!("branch: main\nroot: {pane}\n")), "{want}");
+            // SAFETY: `e` holds ENV, and its drop puts every REDIRECT var back.
+            unsafe { std::env::set_var(var, val.replace("$D", &e.dir.display().to_string())) };
+            cockpit_tui::panel::capture::repo_state(&pane, "") != want
+        })
+        .map(|(var, _)| var)
+        .collect();
+    assert_eq!(moved, Vec::<&str>::new(), "these moved the block");
+}
+
 #[test]
 fn capture_returns_before_git_answers() {
     let path = format!("$D:{}", std::env::var("PATH").unwrap_or_default());
