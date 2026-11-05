@@ -6,7 +6,8 @@
 tests/run.sh
 ```
 
-745 cases. They run against a dedicated scratch pane, never a live one. They skip rather than fail when no tmux server is running.
+745 cases. They run against a dedicated scratch pane, never a live one. They skip
+rather than fail when no tmux server is running.
 
 The path-extraction cases drive `tmux-open-path --dry-run`, so they need neither
 tmux nor an editor. The branch cases build a scratch repo with `git commit-tree`
@@ -30,4 +31,14 @@ CPU as much as the code, and shard them apart and they flake under contention.
 
 ## CI
 
-Three workflows run the tests on every pull request and on master and `scratch/**` pushes. `shell-suite` runs `make tui-bin` and then `J=4 make test-par` on ubuntu-26.04. `tui` runs `make tui-test` on the same image. Both get tmux 3.8, the README's floor, from `.github/actions/tmux`: it builds the official release tarball after checking its SHA-256, and caches the install on the version, the runner image and the checksum, so only the first run on a new image compiles it. Both set `COCKPIT_REQUIRE_TMUX=1`, which says a missing tmux is a failure and not a skip (the tests read it once #471's test-side change lands). The hosted image has no `xterm-ghostty` terminfo, so the two phone-pty rows skip there; the suite's final line counts them.
+Two workflows run the tests on every pull request and on master and `scratch/**`
+pushes, each on both ubuntu-24.04 and ubuntu-26.04, and both legs are required.
+`shell-suite` runs `make tui-bin` and then `J=4 make test-par`, on a full clone
+so the #290 key-notes block runs. `tui` runs `make tui-test`. Both get tmux 3.8,
+the README's floor, from `.github/actions/tmux`: it builds the official release
+tarball after checking its SHA-256, and caches the install on the version, the
+runner image, the checksum and the action's own file, so only the first run on a
+new image or after a recipe change compiles it. Both set `COCKPIT_REQUIRE_TMUX=1`,
+which says a missing tmux is a failure and not a skip (the tests read it once
+#471's test-side change lands). The hosted image has no `xterm-ghostty` terminfo,
+so the two phone-pty rows skip there; the suite's final line counts them.
