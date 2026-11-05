@@ -3564,9 +3564,73 @@ struct Snapshot {
     sessions: BTreeSet<String>,
 }
 
-/// The fetch is fork-heavy, so it runs here and never on the key thread. A wake
-/// during a fetch queues one more, not many.
-fn worker(rx: Receiver<Want>, tx: Sender<Snapshot>, mut want: Want) {
+/// How long the worker waits, with nothing asked, before it fetches again.
+pub const TICK: Duration = Duration::from_secs(1);
+/// The least time from the end of one fetch to a fetch a push asked for (#492).
+/// Hooks fire on every tool call, so ten agents wake the board ten times a
+/// second, and a fetch per wake took half a core. Counted from the end, not
+/// the start, so a slow fetch still leaves the box this much rest.
+pub const PUSH_GAP: Duration = Duration::from_millis(250);
+
+/// What the key loop sends the worker.
+pub enum Ask {
+    /// A key or a resize: what is on screen changed, so fetch now.
+    Now(Want),
+    /// A push wake: tmux changed. Fetch at once after a quiet [`PUSH_GAP`],
+    /// else at its end, so the last wake of a storm is always fetched.
+    Push(Want),
+}
+
+/// When the worker's next fetch is due, after the fetch that ended at `done`.
+pub struct Pace {
+    done: Instant,
+    due: Instant,
+}
+
+impl Pace {
+    pub fn after(done: Instant) -> Self {
+        Pace { done, due: done + TICK }
+    }
+
+    pub fn due(&self) -> Instant {
+        self.due
+    }
+
+    /// Takes an ask that came at `now`, and returns what it wants captured.
+    /// An ask only ever pulls the fetch forward.
+    pub fn take(&mut self, ask: Ask, now: Instant) -> Want {
+        let (at, want) = match ask {
+            Ask::Now(w) => (now, w),
+            Ask::Push(w) => (now.max(self.done + PUSH_GAP), w),
+        };
+        self.due = self.due.min(at);
+        want
+    }
+}
+
+/// Blocks until the next fetch is due and returns the newest `Want`, or `None`
+/// once the key loop is gone, so no fetch runs after the board has quit.
+pub fn wait(rx: &Receiver<Ask>, done: Instant, mut want: Want) -> Option<Want> {
+    let mut pace = Pace::after(done);
+    loop {
+        match rx.recv_timeout(pace.due().saturating_duration_since(Instant::now())) {
+            Ok(a) => want = pace.take(a, Instant::now()),
+            Err(RecvTimeoutError::Timeout) => return Some(want),
+            Err(RecvTimeoutError::Disconnected) => return None,
+        }
+    }
+}
+
+/// Whether a resize event brings a new size, which the captures must be cut
+/// to now. Every push wake raises SIGWINCH too (push.rs), and that one comes
+/// with the size unchanged: it is left to the push, or it would skip the gap.
+pub fn resized(last: &mut Rect, here: Rect) -> bool {
+    std::mem::replace(last, here) != here
+}
+
+/// The fetch is fork-heavy, so it runs here and never on the key thread. Asks
+/// during a fetch or a wait collapse to one fetch; see [`Pace`] for when.
+fn worker(rx: Receiver<Ask>, tx: Sender<Snapshot>, mut want: Want) {
     let (mut panes, mut sessions): (Vec<Pane>, BTreeSet<String>) = Default::default();
     loop {
         let t0 = Instant::now();
@@ -3597,11 +3661,9 @@ fn worker(rx: Receiver<Want>, tx: Sender<Snapshot>, mut want: Want) {
         if tx.send(snap).is_err() {
             return;
         }
-        let due = Instant::now() + Duration::from_secs(1);
-        match rx.recv_timeout(due.saturating_duration_since(Instant::now())) {
-            Ok(w) => want = rx.try_iter().last().unwrap_or(w),
-            Err(RecvTimeoutError::Timeout) => {}
-            Err(RecvTimeoutError::Disconnected) => return,
+        match wait(&rx, Instant::now(), want) {
+            Some(w) => want = w,
+            None => return,
         }
     }
 }
@@ -3728,7 +3790,7 @@ pub fn run(o: &Opts) -> Option<Exit> {
     let mut confirm: Option<Confirm> = None;
     let area = |s: ratatui::layout::Size| Rect::new(0, 0, s.width, s.height);
 
-    let (want_tx, want_rx) = mpsc::channel::<Want>();
+    let (want_tx, want_rx) = mpsc::channel::<Ask>();
     let (snap_tx, snap_rx) = mpsc::channel::<Snapshot>();
     let first = Want {
         area: area(term.size().unwrap_or_default()),
@@ -3737,25 +3799,29 @@ pub fn run(o: &Opts) -> Option<Exit> {
         tiles: !list,
         pick: None,
     };
+    // the size the captures were last cut to, which a resize event may not move
+    let mut sized = first.area;
     std::thread::spawn(move || worker(want_rx, snap_tx, first));
     // a failed send means the worker is gone, which the snapshot arm notices
+    let want_of = |a: Rect, sel: usize, top: usize, list: bool, pick: &Option<String>| Want {
+        area: a,
+        sel,
+        top,
+        tiles: !list,
+        pick: pick.clone(),
+    };
     let ask = |a: Rect, sel: usize, top: usize, list: bool, pick: &Option<String>| {
-        let _ = want_tx.send(Want {
-            area: a,
-            sel,
-            top,
-            tiles: !list,
-            pick: pick.clone(),
-        });
+        let _ = want_tx.send(Ask::Now(want_of(a, sel, top, list, pick)));
     };
     // #284: the agent whose screen the list's right pane shows, as last asked for
     let mut pick: Option<String> = None;
 
     loop {
         // a push only pulls the next fetch forward, so a missed wake costs
-        // one second and never a hang
+        // one second and never a hang; the worker spaces them (PUSH_GAP)
         if push.pending() {
-            ask(area(term.size().unwrap_or_default()), sel, top, list, &pick);
+            let w = want_of(area(term.size().unwrap_or_default()), sel, top, list, &pick);
+            let _ = want_tx.send(Ask::Push(w));
         }
         if note.as_ref().is_some_and(|n| n.gone(Instant::now())) {
             note = None;
@@ -3906,11 +3972,14 @@ pub fn run(o: &Opts) -> Option<Exit> {
             Err(e) if transient(&e) => None,
             Err(_) => break,
         };
-        // a resize is the same request as a push wake: look again
+        // a new size needs captures cut to it now; the same size is a push
+        // wake's SIGWINCH, which push.pending() above asks for
         if let Some(Event::Resize(..)) = &ev {
             let here = area(term.size().unwrap_or_default());
             nav.settle(&panes, list_room(here));
-            ask(here, sel, top, list, &pick);
+            if resized(&mut sized, here) {
+                ask(here, sel, top, list, &pick);
+            }
             dirty = true;
         }
         let Some(Event::Key(k)) = ev else { continue };

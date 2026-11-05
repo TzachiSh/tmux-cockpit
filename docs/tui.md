@@ -1917,10 +1917,19 @@ because tmux latches a `wait-for -S` only when nobody waits: on a shared
 channel the waiter a SIGKILLed board left behind would take a wake that lands
 while a live board is between two waits, and that board would never see it.
 
-When the child returns the board refetches and starts another. Between the two
-nobody waits, and tmux keeps one bit per channel: the first `-S` in that window
-latches it, so the next wait returns at once, and a second `-S` in the same
-window frees it again. That refresh then waits for the 1 s tick.
+When the child returns the board asks for a fetch and starts another wait.
+Between the two nobody waits, and tmux keeps one bit per channel: the first
+`-S` in that window latches it, so the next wait returns at once, and a second
+`-S` in the same window frees it again. That refresh then waits for the 1 s
+tick.
+
+A wake pulls the next fetch forward, but never closer than `PUSH_GAP` (250 ms)
+to the end of the last one. Hooks fire on every tool call, and a fetch per wake
+took half a core at ten wakes a second (#492). A wake after a quiet gap fetches
+at once. One inside the gap fetches at its end, so the last wake of a storm is
+always shown, and a steady storm still refreshes about four times a second.
+Keys, and a resize to a new size, fetch at once. Each wake also raises SIGWINCH,
+which crossterm reports as a resize to the same size; that one asks for nothing.
 
 The waiter goes with the board on every exit path:
 
