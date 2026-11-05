@@ -52,6 +52,17 @@ fn waiters(chan: &str) -> usize {
         .unwrap_or(0)
 }
 
+/// Whether `pid` holds a unix socket: a `socket:[N]` link under /proc/<pid>/fd.
+/// A probe that has exec'd `wait-for` but not yet connected holds none.
+fn connected(pid: u32) -> bool {
+    std::fs::read_dir(format!("/proc/{pid}/fd")).is_ok_and(|d| {
+        d.flatten().any(|e| {
+            let l = std::fs::read_link(e.path());
+            l.is_ok_and(|l| l.to_string_lossy().starts_with("socket:["))
+        })
+    })
+}
+
 /// The process environment: `q_unlists...` sets COCKPIT_TMUX in-process, and a
 /// set_var racing a spawn that reads environ is undefined. That test holds it
 /// for writing; every test that spawns holds it for reading.
@@ -292,9 +303,11 @@ fn q_unlists_its_own_channel_and_only_its_own() {
         .env_remove("TMUX")
         .spawn()
         .unwrap();
-    // A vacuous pass is a probe that has not run yet: wait until it is in /proc
-    // as `wait-for <chan>`, then until the server has answered a round trip.
-    let entered = until(|| waiters(&me) == 1 || probe.try_wait().unwrap().is_some());
+    // A vacuous pass is a probe that has not reached the server yet: wait until
+    // it is in /proc as `wait-for <chan>` and holds a connected socket, then
+    // until the server has answered a round trip.
+    let pid = probe.id();
+    let entered = until(|| (waiters(&me) == 1 && connected(pid)) || probe.try_wait().unwrap().is_some());
     rig.tmux(&["display-message", "-p", "sync"]);
     let latched = probe.try_wait().unwrap().is_some();
     let _ = probe.kill();
