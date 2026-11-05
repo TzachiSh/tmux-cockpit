@@ -1593,6 +1593,21 @@ is "@cockpit_dir's worktree branch, not the cwd's" "fix/wt ⑂wt1" "$(wsb "$WSR"
 "$TMUX_REAL" -L "$WS" set-option -p -t "$WSR" @cockpit_dir "$WSD/gone" >/dev/null 2>&1
 wset "$WSR"
 is "a dangling @cockpit_dir falls back to the cwd" "main" "$(wsb "$WSR")"
+# A relative @cockpit_dir passes -d against the hook's own cwd, and git_label's walk
+# up never ends on a path with no slash: every hook fire left a spinning bash.
+# `timeout` is only the hang guard; the row asserts the exit and the fallback.
+if command -v timeout >/dev/null 2>&1; then
+    mkdir -p "$WSD/sub"
+    for rel in . sub; do
+        "$TMUX_REAL" -L "$WS" set-option -p -t "$WSR" @cockpit_dir "$rel" >/dev/null 2>&1
+        rc=0
+        (cd "$WSD" && TMUX="$SOCKDIR/$WS,0,0" timeout 5 "$DIR/scripts/tmux-where" branch --set "$WSR" \
+            >/dev/null 2>&1) || rc=$?
+        is "a relative @cockpit_dir ($rel) returns and falls back to the cwd" "0 main" "$rc $(wsb "$WSR")"
+    done
+else
+    skip_ "a relative @cockpit_dir returns (no timeout)"
+fi
 "$TMUX_REAL" -L "$WS" kill-server >/dev/null 2>&1
 fi
 
