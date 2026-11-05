@@ -29,6 +29,14 @@ while [ $# -gt 0 ]; do
     esac
 done
 
+# The client that pressed prefix b, left on the pane by the key (#360). Taken and
+# cleared at start, so a second press while this popup is open cannot take the goto.
+CLIENT=""
+if [[ $PANE_ID =~ ^%[0-9]+$ ]] && [ -n "${TMUX:-}" ]; then
+    CLIENT=$(tmux show-option -pqv -t "$PANE_ID" @cockpit_branch_client \; \
+        set-option -pu -t "$PANE_ID" @cockpit_branch_client 2>/dev/null)
+fi
+
 DIR="${1:-}"
 # A popup's $PWD is the session's start dir, and a bare display-message picks
 # the most recently active client. -p pins the pane the popup came from.
@@ -154,7 +162,8 @@ goto() {
     id=${ag:-$sh}
     if [ -n "$id" ]; then
         # switch-client fails without a client; the selection below still applies.
-        tmux switch-client -t "$id" 2>/dev/null || true
+        # Bare, tmux would move the most recently active client (#360).
+        tmux switch-client ${CLIENT:+-c "$CLIENT"} -t "$id" 2>/dev/null || true
         tmux select-window -t "$id" 2>/dev/null
         tmux select-pane   -t "$id" 2>/dev/null
         return 0

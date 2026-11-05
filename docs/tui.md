@@ -196,6 +196,7 @@ Set these before the plugin's `run-shell` line, like every other cockpit option.
 | `@cockpit_md_view` | `on` | `cockpit-tui view` shows markdown rendered, and code and other text files numbered, and highlighted when the language is known (#365). With `off`, a clicked file and the file browser's `↵` go to the editor instead, for every file (the browser's with #408). Read by `scripts/tmux-open-path` at the click |
 | `@cockpit_panel_bound` | (state) | the key the last load bound the panel to. Every cockpit key keeps one (`@cockpit_<name>_bound`, `<name>` as in its `@cockpit_<name>_key`), so a reload that turns a key off or moves it gives the old one back to stock |
 | `@cockpit_board_client` | (state) | a pane option: the client that pressed the board or review key there in its popup form, so the board's jump moves that client and not the most recently active one. Read and cleared when the board starts; the window forms pass `-c` instead |
+| `@cockpit_branch_client` | (state) | a pane option: the client that pressed `prefix b` there, so the branch popup's jump to another worktree moves that client and not the most recently active one. Read and cleared when `tmux-branch` starts |
 | `@cockpit_giveback` | (state) | `<name>:<key>` words: old keys a reload could not give back to stock (tmux's own binding could not be read), retried on the next load |
 
 The popup is `-w 90%`, wider than the 70% the pickers use, because a 70% popup
