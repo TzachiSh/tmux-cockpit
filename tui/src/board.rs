@@ -3570,17 +3570,18 @@ pub fn captures(ps: &[Pane], ok: bool, want: &Want) -> Vec<(String, usize)> {
     shown.map(|k| (ps[ord[k]].id.clone(), rows)).collect()
 }
 
-struct Snapshot {
-    panes: Vec<Pane>,
+/// What the worker hands the key loop after each job.
+pub struct Snapshot {
+    pub panes: Vec<Pane>,
     /// what `captures` chose, by pane id
-    pvs: Vec<(String, Option<String>)>,
-    took: Duration,
+    pub pvs: Vec<(String, Option<String>)>,
+    pub took: Duration,
     /// the list-panes read worked; `panes` is the last good one either way
-    ok: bool,
+    pub ok: bool,
     /// every tmux session, agents or not, off the last good read
-    sessions: BTreeSet<String>,
+    pub sessions: BTreeSet<String>,
     /// a fetch read tmux for it; else a capture on the last fetch's panes
-    fresh: bool,
+    pub fresh: bool,
 }
 
 /// How long the worker waits, with nothing asked, before it fetches again.
@@ -3663,26 +3664,139 @@ impl Pace {
     }
 }
 
+/// The worker's schedule: the job it runs now, and when the next is due.
+pub struct Sched {
+    pace: Pace,
+    job: Job,
+}
+
+impl Sched {
+    /// A board starts on a fetch.
+    pub fn start(now: Instant) -> Self {
+        Sched {
+            pace: Pace::after(now),
+            job: Job::Fetch,
+        }
+    }
+
+    /// Whether the job now reads tmux; a capture reuses the last fetch's panes.
+    pub fn fetches(&self) -> bool {
+        self.job == Job::Fetch
+    }
+
+    /// The job ended at `end`. A fetch starts the pace over; a capture leaves
+    /// it, or held j would push the tick out for good.
+    pub fn ran(&mut self, end: Instant) {
+        if self.fetches() {
+            self.pace = Pace::after(end);
+        }
+    }
+}
+
+/// The key loop has gone: the board is quitting.
+#[derive(Debug)]
+pub struct Gone;
+
+/// Where the worker's asks come from, and its clock: the key loop's channel
+/// and the real clock in the board, a timed list of asks in the tests.
+pub trait Inbox {
+    fn now(&self) -> Instant;
+    /// An ask already waiting, if any.
+    fn ready(&mut self) -> Result<Option<Ask>, Gone>;
+    /// The first ask by `until`; `None` once `until` has come without one.
+    fn until(&mut self, until: Instant) -> Result<Option<Ask>, Gone>;
+}
+
+impl Inbox for Receiver<Ask> {
+    fn now(&self) -> Instant {
+        Instant::now()
+    }
+
+    fn ready(&mut self) -> Result<Option<Ask>, Gone> {
+        match self.try_recv() {
+            Ok(a) => Ok(Some(a)),
+            Err(TryRecvError::Empty) => Ok(None),
+            Err(TryRecvError::Disconnected) => Err(Gone),
+        }
+    }
+
+    fn until(&mut self, until: Instant) -> Result<Option<Ask>, Gone> {
+        match self.recv_timeout(until.saturating_duration_since(Instant::now())) {
+            Ok(a) => Ok(Some(a)),
+            Err(RecvTimeoutError::Timeout) => Ok(None),
+            Err(RecvTimeoutError::Disconnected) => Err(Gone),
+        }
+    }
+}
+
 /// Blocks until the next job is due, keeping `want` the newest asked for.
-/// `None` once the key loop is gone, checked before every job, so nothing
+/// `false` once the key loop is gone, checked before every job, so nothing
 /// runs after the board has quit.
-pub fn wait(rx: &Receiver<Ask>, pace: &mut Pace, want: &mut Want) -> Option<Job> {
+pub fn wait(inbox: &mut impl Inbox, s: &mut Sched, want: &mut Want) -> bool {
     loop {
         loop {
-            match rx.try_recv() {
-                Ok(a) => *want = pace.take(a, Instant::now()),
-                Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Disconnected) => return None,
+            match inbox.ready() {
+                Ok(Some(a)) => *want = s.pace.take(a, inbox.now()),
+                Ok(None) => break,
+                Err(Gone) => return false,
             }
         }
-        if let Some(j) = pace.job(Instant::now()) {
-            return Some(j);
+        if let Some(j) = s.pace.job(inbox.now()) {
+            s.job = j;
+            return true;
         }
-        match rx.recv_timeout(pace.due().saturating_duration_since(Instant::now())) {
-            Ok(a) => *want = pace.take(a, Instant::now()),
-            Err(RecvTimeoutError::Timeout) => {}
-            Err(RecvTimeoutError::Disconnected) => return None,
+        match inbox.until(s.pace.due()) {
+            Ok(Some(a)) => *want = s.pace.take(a, inbox.now()),
+            Ok(None) => {}
+            Err(Gone) => return false,
         }
+    }
+}
+
+/// The worker's loop, which the board and the tests both run: `job` runs
+/// each job, told whether it fetches and what to capture, and says whether
+/// to go on.
+pub fn work(inbox: &mut impl Inbox, mut want: Want, mut job: impl FnMut(bool, &Want) -> bool) {
+    let mut s = Sched::start(inbox.now());
+    loop {
+        if !job(s.fetches(), &want) {
+            return;
+        }
+        s.ran(inbox.now());
+        if !wait(inbox, &mut s, &mut want) {
+            return;
+        }
+    }
+}
+
+/// The snapshots that came since the key loop last looked, as one.
+pub struct Drained {
+    /// the newest
+    pub snap: Snapshot,
+    /// the newest's time if a fetch was among them; `None` if all were captures
+    pub fetched: Option<Duration>,
+}
+
+/// Collapses the waiting snapshots to the newest. `reads` hears of the
+/// newest fetch among them, and of no capture: a capture reads no tmux, so a
+/// failed fetch and two selections are one failure, not three (D16).
+pub fn drain(first: Snapshot, rest: impl Iterator<Item = Snapshot>, reads: &mut Reads, now: Instant) -> Drained {
+    let (mut snap, mut fetched, mut ok) = (first, None::<Duration>, None);
+    for s in rest {
+        if snap.fresh {
+            (fetched, ok) = (fetched.max(Some(snap.took)), Some(snap.ok));
+        }
+        snap = s;
+    }
+    if snap.fresh {
+        (fetched, ok) = (fetched.max(Some(snap.took)), Some(snap.ok));
+    }
+    if let Some(ok) = ok {
+        reads.got(ok, now);
+    }
+    Drained {
+        fetched: fetched.map(|_| snap.took),
+        snap,
     }
 }
 
@@ -3696,8 +3810,8 @@ pub struct Turn {
 
 /// A push asks [`Kind::Soon`]. A resize asks [`Kind::Look`] only when the size
 /// moved: every push wake raises SIGWINCH too (push.rs), and crossterm hands
-/// it over as a resize to the same size. Asking for that one would skip the
-/// gap on every wake; the push flag asks instead.
+/// it over as a resize to the same size. Asking for that one would recapture
+/// every tile on every wake, so the push flag asks instead.
 pub fn turn(pushed: bool, resize: Option<Rect>, sized: &mut Rect) -> Turn {
     let mut asks = Vec::new();
     if pushed {
@@ -3716,12 +3830,11 @@ pub fn turn(pushed: bool, resize: Option<Rect>, sized: &mut Rect) -> Turn {
 
 /// The fetch is fork-heavy, so it runs here and never on the key thread. Asks
 /// during a job or a wait collapse; see [`Pace`] for when each runs.
-fn worker(rx: Receiver<Ask>, tx: Sender<Snapshot>, mut want: Want) {
+fn worker(mut rx: Receiver<Ask>, tx: Sender<Snapshot>, want: Want) {
     let (mut panes, mut sessions): (Vec<Pane>, BTreeSet<String>) = Default::default();
-    let (mut ok, mut job, mut pace) = (false, Job::Fetch, Pace::after(Instant::now()));
-    loop {
+    let mut ok = false;
+    work(&mut rx, want, |fresh, want| {
         let t0 = Instant::now();
-        let fresh = job == Job::Fetch;
         if fresh {
             // None is "tmux did not answer"; keep the last good tile list
             // rather than blanking the board on one failed read
@@ -3734,7 +3847,7 @@ fn worker(rx: Receiver<Ask>, tx: Sender<Snapshot>, mut want: Want) {
         // the tiles take each pane's newest rows; the list's pane its visible
         // screen, cursor-aware (#284)
         let take = if want.tiles { preview } else { crate::data::screen };
-        let pvs = captures(&panes, ok, &want)
+        let pvs = captures(&panes, ok, want)
             .into_iter()
             .map(|(id, rows)| {
                 let pv = take(&id, rows);
@@ -3749,17 +3862,8 @@ fn worker(rx: Receiver<Ask>, tx: Sender<Snapshot>, mut want: Want) {
             sessions: sessions.clone(),
             fresh,
         };
-        if tx.send(snap).is_err() {
-            return;
-        }
-        if fresh {
-            pace = Pace::after(Instant::now());
-        }
-        match wait(&rx, &mut pace, &mut want) {
-            Some(j) => job = j,
-            None => return,
-        }
-    }
+        tx.send(snap).is_ok()
+    });
 }
 
 /// The list's pick, when the read worked, still has it, and the right pane shows:
@@ -3919,12 +4023,7 @@ pub fn run(o: &Opts) -> Option<Exit> {
         match snap_rx.try_recv() {
             Ok(s) => {
                 let t0 = Instant::now();
-                // a capture-only snapshot reads no tmux, so it is no read
-                let mut fresh = s.fresh;
-                let s = snap_rx.try_iter().inspect(|x| fresh |= x.fresh).last().unwrap_or(s);
-                if fresh {
-                    reads.got(s.ok, Instant::now());
-                }
+                let Drained { snap: s, fetched } = drain(s, snap_rx.try_iter(), &mut reads, Instant::now());
                 dirty |= !s.ok;
                 if s.ok {
                     sessions = s.sessions;
@@ -3980,11 +4079,13 @@ pub fn run(o: &Opts) -> Option<Exit> {
                 loaded = true;
                 // #291: one line a second filled tui.log; log only a slow fetch
                 // or a read that started or stopped failing
-                if fresh && (s.took > SLOW_TICK || last_ok != Some(s.ok)) {
+                if let Some(took) = fetched
+                    && (took > SLOW_TICK || last_ok != Some(s.ok))
+                {
                     log(&format!(
                         "board tick {} tiles fetch {:?} apply {:?} redraw={} ok={}",
                         panes.len(),
-                        s.took,
+                        took,
                         t0.elapsed(),
                         dirty,
                         s.ok

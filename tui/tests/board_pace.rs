@@ -2,8 +2,11 @@
 //! wake waits out PUSH_GAP after the last fetch, a new selection recaptures at
 //! once and fetches nothing, and the last wake of a storm is always fetched.
 //! No tmux and no sleep: every instant is an offset from one `Instant::now()`.
-use cockpit_tui::board::{self, Ask, Job, Kind, PUSH_GAP, Pace, TICK, Turn, Want};
+use cockpit_tui::board::{self, Ask, Gone, Inbox, Job, Kind, PUSH_GAP, Pace, Reads, Sched, Snapshot, TICK, Turn, Want};
 use ratatui::layout::Rect;
+use std::cell::Cell;
+use std::collections::BTreeSet;
+use std::rc::Rc;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -101,31 +104,63 @@ fn the_newest_ask_names_what_to_capture() {
     assert_eq!(p.take(ask(Kind::Look, 9), t + ms(20)).top, 9);
 }
 
-/// The worker against `asks` (ms, kind; each wants `top` = its index), a fetch
-/// taking `fetch` ms and a capture 3 ms, until `until` ms: every job it runs,
-/// (start ms, job, the top it captured). The first fetch starts at 0.
-fn sim(asks: &[(u64, Kind)], fetch: u64, until: u64) -> Vec<(u64, Job, usize)> {
-    let t = Instant::now();
-    let at = |n: u64| t + ms(n);
-    let (mut jobs, mut now, mut top) = (vec![(0, Job::Fetch, 0)], fetch, 0);
-    let (mut pace, mut next) = (Pace::after(at(fetch)), 0);
-    while now <= until {
-        // what came during the last job, or by now, is read now
-        while next < asks.len() && asks[next].0 <= now {
-            top = pace.take(ask(asks[next].1, next), at(now)).top;
-            next += 1;
-        }
-        if let Some(j) = pace.job(at(now)) {
-            jobs.push((now, j, top));
-            now += if j == Job::Fetch { fetch } else { 3 };
-            if j == Job::Fetch {
-                pace = Pace::after(at(now));
-            }
-            continue;
-        }
-        let due = pace.due().duration_since(t).as_millis() as u64;
-        now = asks.get(next).map_or(due, |a| a.0.min(due));
+/// The worker's inbox on a fake clock: `asks` (ms, kind) come at their
+/// times, ask k wanting `top` = k + 1. The clock is shared with the job, which
+/// moves it on by what the job costs.
+struct Timeline {
+    t: Instant,
+    clock: Rc<Cell<u64>>,
+    asks: Vec<(u64, Kind)>,
+    next: usize,
+}
+
+impl Timeline {
+    fn pop(&mut self) -> Option<Ask> {
+        let (at, kind) = *self.asks.get(self.next)?;
+        self.clock.set(self.clock.get().max(at));
+        self.next += 1;
+        Some(ask(kind, self.next))
     }
+}
+
+impl Inbox for Timeline {
+    fn now(&self) -> Instant {
+        self.t + ms(self.clock.get())
+    }
+    fn ready(&mut self) -> Result<Option<Ask>, Gone> {
+        let due = self.asks.get(self.next).is_some_and(|a| a.0 <= self.clock.get());
+        Ok(if due { self.pop() } else { None })
+    }
+    fn until(&mut self, until: Instant) -> Result<Option<Ask>, Gone> {
+        let u = until.saturating_duration_since(self.t).as_millis() as u64;
+        if self.asks.get(self.next).is_some_and(|a| a.0 <= u) {
+            return Ok(self.pop());
+        }
+        self.clock.set(self.clock.get().max(u));
+        Ok(None)
+    }
+}
+
+/// The board's own worker loop, [`board::work`], against `asks`, a fetch
+/// taking `fetch` ms and a capture 3 ms, until `until` ms: every job it ran,
+/// (start ms, it fetched, the top it captured). The first fetch starts at 0.
+fn sim(asks: &[(u64, Kind)], fetch: u64, until: u64) -> Vec<(u64, bool, usize)> {
+    let clock = Rc::new(Cell::new(0));
+    let (c, mut jobs) = (clock.clone(), vec![]);
+    let mut inbox = Timeline {
+        t: Instant::now(),
+        clock,
+        asks: asks.to_vec(),
+        next: 0,
+    };
+    board::work(&mut inbox, want(0), |fetches, w| {
+        if c.get() > until {
+            return false;
+        }
+        jobs.push((c.get(), fetches, w.top));
+        c.set(c.get() + if fetches { fetch } else { 3 });
+        true
+    });
     jobs
 }
 
@@ -133,8 +168,8 @@ fn every(step: u64, until: u64, kind: Kind) -> Vec<(u64, Kind)> {
     (1..=until / step).map(|k| (k * step, kind)).collect()
 }
 
-fn fetches(jobs: &[(u64, Job, usize)]) -> Vec<u64> {
-    jobs.iter().filter(|j| j.1 == Job::Fetch).map(|j| j.0).collect()
+fn fetches(jobs: &[(u64, bool, usize)]) -> Vec<u64> {
+    jobs.iter().filter(|j| j.1).map(|j| j.0).collect()
 }
 
 #[test]
@@ -168,11 +203,19 @@ fn a_held_arrow_key_fetches_on_the_tick_only() {
 }
 
 #[test]
+fn a_held_arrow_key_still_fetches_every_tick() {
+    // a capture must not push the tick out, or held j never reads tmux
+    let f = fetches(&sim(&every(33, 3000, Kind::Look), 40, 3000));
+    let most = f.windows(2).map(|w| w[1] - w[0]).max().unwrap_or(u64::MAX);
+    assert!(most <= TICK.as_millis() as u64 + 40 + 3, "a {most} ms gap between fetches: {f:?}");
+}
+
+#[test]
 fn every_held_selection_gets_its_capture_within_a_fetch() {
     let asks = every(33, 3000, Kind::Look);
     let jobs = sim(&asks, 40, 3000);
     for (k, (at, _)) in asks.iter().enumerate() {
-        let seen = jobs.iter().any(|&(s, _, top)| s >= *at && s <= at + 40 && top >= k);
+        let seen = jobs.iter().any(|&(s, _, top)| s >= *at && s <= at + 40 && top > k);
         assert!(seen, "selection {k} at {at} ms is not captured by {} ms", at + 40);
     }
 }
@@ -182,22 +225,23 @@ fn a_wait_whose_key_loop_is_gone_runs_nothing() {
     // (name, what was queued before the key loop went)
     let rows = [("a push", Kind::Soon), ("a selection", Kind::Look), ("refresh", Kind::Now)];
     for (name, kind) in rows {
-        let (tx, rx) = mpsc::channel();
+        let (tx, mut rx) = mpsc::channel();
         tx.send(ask(kind, 0)).unwrap();
         drop(tx);
         let mut w = want(0);
-        let job = board::wait(&rx, &mut Pace::after(Instant::now()), &mut w);
-        assert_eq!(job, None, "{name}");
+        assert!(!board::wait(&mut rx, &mut Sched::start(Instant::now()), &mut w), "{name}");
     }
 }
 
 #[test]
 fn a_wait_past_its_gap_fetches_the_pushed_want() {
-    let (tx, rx) = mpsc::channel();
+    let (tx, mut rx) = mpsc::channel();
     tx.send(ask(Kind::Soon, 3)).unwrap();
-    let mut p = Pace::after(Instant::now().checked_sub(TICK / 2).unwrap());
+    let mut s = Sched::start(Instant::now().checked_sub(TICK / 2).unwrap());
+    s.ran(Instant::now().checked_sub(TICK / 2).unwrap());
     let mut w = want(0);
-    assert_eq!(board::wait(&rx, &mut p, &mut w), Some(Job::Fetch));
+    assert!(board::wait(&mut rx, &mut s, &mut w));
+    assert!(s.fetches());
     assert_eq!(w.top, 3);
     drop(tx);
 }
@@ -242,4 +286,36 @@ fn a_new_size_recaptures_at_once() {
         p.take(ask(k, 0), t + ms(10));
     }
     assert_eq!(p.job(t + ms(10)), Some(Job::Capture));
+}
+
+#[test]
+fn a_new_size_then_its_wakes_recapture_once() {
+    let (mut sized, wide) = (Rect::new(0, 0, 100, 30), Rect::new(0, 0, 120, 30));
+    let asks: Vec<_> = (0..4).map(|_| board::turn(true, Some(wide), &mut sized).asks).collect();
+    assert_eq!(asks[0], vec![Kind::Soon, Kind::Look], "the resize itself");
+    assert_eq!(asks[1..], [vec![Kind::Soon], vec![Kind::Soon], vec![Kind::Soon]], "its wakes");
+}
+
+fn snap(fresh: bool, ok: bool, took: u64) -> Snapshot {
+    let (panes, pvs, sessions) = (vec![], vec![], BTreeSet::new());
+    Snapshot {
+        panes,
+        pvs,
+        took: ms(took),
+        ok,
+        sessions,
+        fresh,
+    }
+}
+
+#[test]
+fn a_failed_fetch_and_two_selections_are_one_failure() {
+    let t = Instant::now();
+    let mut reads = Reads::new(t);
+    board::drain(snap(true, true, 40), std::iter::empty(), &mut reads, t);
+    board::drain(snap(true, false, 40), std::iter::empty(), &mut reads, t + ms(10));
+    board::drain(snap(false, false, 3), std::iter::empty(), &mut reads, t + ms(20));
+    board::drain(snap(false, false, 3), std::iter::empty(), &mut reads, t + ms(30));
+    assert_eq!(reads.fails, 1);
+    assert!(!reads.lost(t + ms(30)), "no lost card after one failed read");
 }
