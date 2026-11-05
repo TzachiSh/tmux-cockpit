@@ -162,6 +162,9 @@ pub struct Pane {
     /// #301: @panestate is set but no agent runs in the pane any more (a crash
     /// or a kill that let no hook run). The board draws it dimmed as ended.
     pub ended: bool,
+    /// #460: `@cockpit_job_name`, the background job agent-poll bound this viewer
+    /// pane to by its title; cleaned, since a title is untrusted. `""` when unbound.
+    pub job: String,
 }
 
 /// Skips the three ages, which change every tick and would defeat the redraw
@@ -197,9 +200,10 @@ impl Hash for Pane {
             subs_n,
             subs,
             ended,
+            job,
         } = self;
         [
-            id, wher, name, cmd, title, msg, sess, path, dir, root, spool, pid, review, doing, said, asked, loc, pm, win,
+            id, wher, name, cmd, title, msg, sess, path, dir, root, spool, pid, review, doing, said, asked, loc, pm, win, job,
         ]
         .hash(h);
         (state, pinned, delivered, subs_n, ended).hash(h);
@@ -818,6 +822,8 @@ const FIELDS: &str = concat!(
     // #313: 14 the hook's subagent count, 15 the session's transcript, for its subagents/ dir
     "\u{1f}#{s/\n/ /:#{s/\t/ /:#{s/\u{1f}/ /:#{@cockpit_subs}}}}",
     "\u{1f}#{s/\n/ /:#{s/\t/ /:#{s/\u{1f}/ /:#{@cockpit_transcript}}}}",
+    // #460: 16 the background job agent-poll bound a viewer pane to
+    "\u{1f}#{s/\n/ /:#{s/\t/ /:#{s/\u{1f}/ /:#{@cockpit_job_name}}}}",
 );
 
 /// `-` back to empty. A sentinelled option whose real value is a bare `-` would
@@ -878,7 +884,7 @@ pub fn list_fleet() -> Option<(Vec<Pane>, std::collections::BTreeSet<String>)> {
     let (mut ps, mut dirs) = (vec![], vec![]);
     for l in out.lines() {
         let f: Vec<&str> = l.split(SEP).collect();
-        // FIELDS has 16; the 13 before @cockpit_dir are the floor, so an older format reads
+        // FIELDS has 17; the 13 before @cockpit_dir are the floor, so an older format reads
         if f.len() < 13 {
             continue;
         }
@@ -895,6 +901,8 @@ pub fn list_fleet() -> Option<(Vec<Pane>, std::collections::BTreeSet<String>)> {
         dirs.push(work_candidates(&mut p, &f));
         (p.pinned, p.delivered) = spool_counts(&p.spool);
         p.subs_n = f.get(14).and_then(|n| n.parse().ok()).unwrap_or(0);
+        // a pane title, so untrusted: control and bidi characters go
+        p.job = crate::pick::clean(f.get(16).copied().unwrap_or_default()).trim().to_string();
         if let Some(d) = subagents::dir_of(f.get(15).copied().unwrap_or_default(), &p.sess, &p.path) {
             p.subs = subagents::read(&d, sessions::now());
         }
@@ -964,7 +972,7 @@ fn row_pane(f: &[&str], procs_t: &mut Option<Procs>) -> Option<(Pane, &'static s
 /// Reads `p`'s transcript into it and returns its work dir's candidates (#452), in
 /// the order `fleet::work_dirs` tries them. @cockpit_dir, @cockpit_subs and
 /// @cockpit_transcript come after the 13 a row from an older format has, so such a
-/// row still reads: 13, 14 and 15 are optional.
+/// row still reads: 13 to 16 are optional.
 fn work_candidates(p: &mut Pane, f: &[&str]) -> [String; 3] {
     let said_cwd = read_transcript(p, f.get(15).copied().unwrap_or_default());
     let opt = f.get(13).copied().unwrap_or_default().to_string();

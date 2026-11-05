@@ -5699,11 +5699,11 @@ wd() {                        # wd <args...>: tmux-review on the block's server,
     (cd "$WD" && TMUX="$WDSP,0,0" HOME="$WD/home" timeout 20 "$DIR/scripts/tmux-review" "$@" \
         </dev/null 2>/dev/null)
 }
-# With the binary under test: one that has `workdir` answers this agent pane with exit 0 and
-# names the transcript's tree; one that has not (exit 2, whatever it says on stderr) leaves the
-# launch dir. Each run asserts one of them.
+# With the binary under test: one that has not `workdir` exits 2 (whatever it says on stderr)
+# and leaves the launch dir; any other binary must name the transcript's tree, so a workdir
+# that refuses this agent pane (exit 1) fails here (#508). Each run asserts one of them.
 wdrc=0; TMUX="$WDSP,0,0" "$COCKPIT_TUI_BIN" workdir "$WDP" >/dev/null 2>&1 || wdrc=$?
-if [ "$wdrc" != 0 ]; then
+if [ "$wdrc" = 2 ]; then
     is "a binary without workdir: a transcript-only pane keeps its launch dir" "$WD/launch" \
        "$(wd --dir "$WDP")"
 else
@@ -5759,6 +5759,11 @@ is "a shell pane is not asked: the board does not count it" "0 $WD/launch" \
 # The board's live test, without its ps walk: a live Claude renames itself to its version, and
 # the hooks' @panestate marks a pane whatever it runs. A name with one dot is not a version.
 is "a pane running as 2.1.246 is an agent, so it is asked" "1 $WD/other" "$(wd_ct ok "$WDV")"
+# The board lowercases the command before the glob (#508): Claude and CLAUDE are claude.
+for argv0 in Claude CLAUDE; do
+    is "a pane running as $argv0 is an agent, so it is asked" "1 $WD/other" \
+       "$(wd_ct ok "$(wd_pane "$argv0")")"
+done
 WDV1=$(wd_pane 2.1)
 is "a pane running as 2.1 is not version-shaped, so it is not asked" "0 $WD/launch" \
    "$(wd_ct ok "$WDV1")"
@@ -7396,9 +7401,9 @@ done
 TJOUT=$(COCKPIT_TMUX="tmux -L $TJ" "$COCKPIT_TUI_BIN" --json 2>/dev/null)
 is "--json names both agent panes and not the shell pane" "$TJA $TJB" \
    "$(printf '%s\n' "$TJOUT" | sed -n 's/^    "id": "\(%[0-9]*\)".*/\1/p' | tr '\n' ' ' | sed 's/ $//')"
-is "--json carries the 14 frozen keys, in order" \
-   "id where state title doing said asked msg since loc diff review session path" \
-   "$(printf '%s\n' "$TJOUT" | sed -n 's/^    "\([a-z]*\)":.*/\1/p' | head -14 | tr '\n' ' ' | sed 's/ $//')"
+is "--json carries the 16 frozen keys, in order" \
+   "id where state title doing said asked msg since loc diff review session path dir job" \
+   "$(printf '%s\n' "$TJOUT" | sed -n 's/^    "\([a-z]*\)":.*/\1/p' | head -16 | tr '\n' ' ' | sed 's/ $//')"
 is "--json exits 0 and says nothing about $TJSH" "0 no" \
    "$(COCKPIT_TMUX="tmux -L $TJ" "$COCKPIT_TUI_BIN" --json >/dev/null 2>&1; printf '%s ' "$?"; \
       case "$TJOUT" in *"\"$TJSH\""*) printf yes ;; *) printf no ;; esac)"
@@ -10938,6 +10943,13 @@ case "$(pi_rs | grep '^base ')" in 'base      since last review  ('*) ok "the Ru
 printf 'uncommitted\n' > "$PISESS/comments.md.base"
 is "and it is the chosen mode" "base      uncommitted  (HEAD)" "$(pi_rs | grep '^base ')"
 is "a pane that is not there is named, exit 1" "cockpit-tui: no such pane %999 1" "$(pi_rs %999) $(pi_rs %999 >/dev/null 2>&1; echo $?)"
+# #460: a bound job's name is a pane title: a newline in it is a space, as on the board
+"$TMUX_REAL" -L "$PI" set -p -t "$PIAP" @cockpit_job bg_1 >/dev/null 2>&1
+"$TMUX_REAL" -L "$PI" set -p -t "$PIAP" @cockpit_job_name "$(printf 'night\nsweep')" >/dev/null 2>&1
+is "the job row names the bound job, a newline a space" "job       night sweep  (@cockpit_job bg_1)" \
+   "$(pi_rs | grep '^job ')"
+"$TMUX_REAL" -L "$PI" set -pu -t "$PIAP" @cockpit_job >/dev/null 2>&1
+"$TMUX_REAL" -L "$PI" set -pu -t "$PIAP" @cockpit_job_name >/dev/null 2>&1
 is "a word that is not a pane id is refused, exit 2" "2" "$(pi_rs notapane >/dev/null 2>&1; echo $?)"
 "$TMUX_REAL" -L "$PI" kill-server >/dev/null 2>&1
 fi
@@ -12429,7 +12441,7 @@ until_out 2.1.246 "$TMUX_REAL" -L "$BWS" display-message -p -t "$BWA3" '#{pane_c
 bwrc=0
 TMUX="$("$TMUX_REAL" -L "$BWS" display-message -p '#{socket_path}'),0,0" \
     "$COCKPIT_TUI_BIN" workdir "$BWA3" >/dev/null 2>&1 || bwrc=$?
-if [ "$bwrc" != 0 ]; then
+if [ "$bwrc" = 2 ]; then   # no workdir; an exit 1 here is a workdir bug, and asserts below
     read -r bwn bwp bww <<<"$(BW_ASK=real bw_goto "$BWV")"
     is "a binary without workdir: goto opens a window, the 2.1.246 pane not taken" "1 6 no" \
        "$bwn $bww $([ "$bwp" = "$BWA3" ] && echo yes || echo no)"
