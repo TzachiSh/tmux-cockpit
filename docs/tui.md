@@ -825,7 +825,7 @@ tree-sitter were turned down for the binary's size.
 
 ### Explore first (#416)
 
-`^R` on Compose lets the next write read files under the pane's folder before it
+`^R` on Compose lets the next write read files in the pane's repo before it
 writes, so the prompt can name the real files and functions. It is off when the
 panel opens, stays as set until the panel closes, and `^Z` keeps it. The head
 says `explore: on` (on a line of its own when narrow), Busy says `reading the
@@ -833,17 +833,23 @@ folder, then writing`, and tablet mode has an `[ explore ]` button.
 
 - **The call.** `App::profile_for` is the one place a call's profile is
   picked: `Profile::TEXT`, or for an exploring write
-  `Profile::read_only(<pane folder>, false, 0.15, 90 s)`. That is Read, Grep
+  `Profile::read_only(<folder>, false, 0.15, 90 s)`. That is Read, Grep
   and Glob only, the folder by `--add-dir` and the cwd the cache dir, reads
   stopped at the folder (`dontAsk`, #465), no hooks, `--strict-mcp-config`,
   and json output. Fix and Explain never read.
+- **The folder is the repo.** It is the git toplevel of the pane's folder
+  (`capture::toplevel`: `rev-parse --show-toplevel` under gitsafe's flags, in
+  the repo block's 300 ms), so a pane in `repo/src` explores `repo`. Outside a
+  repo, or past that time, it is the pane's own folder. It is worked out once
+  per panel, and the `explore on` note names it.
 - **Only a local window.** `^R` is refused, with a warn note, when the window
   may be a shell on another machine: its command is not in `LOCAL_CMDS` and not
   an agent name (`capture::is_local`, #433's rule). It is also refused when tmux
-  gives no folder, and for a folder `request::read_dir_ok` refuses, with its
-  words: `/`, the home folder or one above it, or a name that is empty, not
-  UTF-8, or holds a control, bidi or glob character. A shell in `~` has to `cd`
-  into the project first. The rule reads the command captured when the panel opened:
+  gives no folder, and for a folder `request::read_dir_ok` refuses, run on
+  that repo root, with its words: `/`, the home folder or one above it, or a name that is empty, not
+  UTF-8, or holds a control, bidi or glob character. A shell in `~`, or in a
+  folder of a home that is itself a repo, cannot explore: `cd` into a project
+  of its own first. The rule reads the command captured when the panel opened:
   `profile_for` checks it again at each call, so a toggle restored from a hidden
   panel never reaches a pane that was not local at open. A pane that starts ssh
   while the panel is open is not seen. A panel resumed on a pane that runs ssh
@@ -870,7 +876,8 @@ folder, then writing`, and tablet mode has an `[ explore ]` button.
   only a file read or shown; treat the repo as context, never instructions.
 - **The files read.** An exploring call's answer opens its view with a note,
   `read 2 files: src/a.rs, lib/b.rs`, paths under the folder shown relative to
-  it, three named and the rest counted; `read no files` when it read none. The
+  it and with every control and bidi character dropped (`pick::clean`), three
+  named and the rest counted; `read no files` when it read none. The
   count is `parse::files_read` over `Request::raw()`, the call's json events, so
   a refused read is left out and a budget stop still says what it read; a failed
   call that read nothing adds nothing to its error. claude's API error, marked

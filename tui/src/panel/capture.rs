@@ -247,6 +247,14 @@ fn finish(g: Option<Git>, end: Instant, part: &str) -> Ran {
     Ran::TimedOut
 }
 
+/// The work tree's root above `dir` (`rev-parse --show-toplevel`, under
+/// [`spawn_git`]'s flags), or `None` outside a repo or past `budget`.
+pub fn toplevel(dir: &str, budget: Duration) -> Option<String> {
+    let g = spawn_git(dir, &[], &["rev-parse", "--show-toplevel"]);
+    let top = finish(g, Instant::now() + budget, "rev-parse --show-toplevel").ok()?;
+    Some(top.trim_end_matches('\n').to_string()).filter(|t| !t.is_empty())
+}
+
 /// `lines` indented under `head`, the first `cap` of them and a count of the rest.
 fn section(b: &mut String, head: &str, lines: &[&str], cap: usize) {
     b.push_str(head);

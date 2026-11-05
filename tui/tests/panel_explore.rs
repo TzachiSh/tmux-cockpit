@@ -564,3 +564,59 @@ fn an_api_error_after_a_read_still_notes_it() {
     assert!(error(&a).0.contains("API Error: 500"), "{:?}", a.view);
     assert_eq!(note(&a).map(|n| n.1), Some("read 1 file: src/a.rs"));
 }
+
+// ---------------------------------------------------------------- the repo, not the pane's folder
+
+fn git_init(dir: &Path) {
+    let ok = std::process::Command::new("git")
+        .args(["-c", "init.defaultBranch=main", "init", "-q"])
+        .arg(dir)
+        .status()
+        .unwrap();
+    assert!(ok.success());
+}
+
+/// The folder the explore call would add, from its argv.
+fn added(a: &App) -> Option<String> {
+    let argv = a.profile_for(&write_flow()).argv();
+    let i = argv.iter().position(|x| x == "--add-dir")?;
+    Some(argv[i + 1].clone())
+}
+
+#[test]
+fn a_pane_in_a_repos_subfolder_explores_the_repo() {
+    let g = scratch("sub");
+    let repo = g.0.join("repo");
+    std::fs::create_dir_all(repo.join("src/deep")).unwrap();
+    git_init(&repo);
+    let mut a = app("bash", &repo.join("src/deep").display().to_string());
+    compose(&mut a);
+    ctrl(&mut a, 'r');
+    assert!(a.explore, "{:?}", note(&a));
+    let root = std::fs::canonicalize(&repo).unwrap().display().to_string();
+    assert_eq!(added(&a), Some(root.clone()));
+    assert!(
+        note(&a).unwrap().1.contains(&root),
+        "the note names what it may read: {:?}",
+        note(&a)
+    );
+}
+
+#[test]
+fn a_folder_outside_any_repo_keeps_the_pane_folder() {
+    let g = scratch("norepo");
+    let dir = g.0.join("notes");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut a = app("bash", &dir.display().to_string());
+    a.explore = true;
+    assert_eq!(added(&a), Some(dir.display().to_string()));
+}
+
+/// A file name is the model's to report: a bidi or control character in it never reaches the screen.
+#[test]
+fn a_read_path_with_a_bidi_mark_is_noted_clean() {
+    let out = format!("[{},{},{OK}]", read("a", "$R/src/a\\u202eb\\u0007.rs"), result("a", false));
+    let (_g, call, repo) = faked("bidi", &out, 0);
+    let a = answered(&call, &repo, true);
+    assert_eq!(note(&a).map(|n| n.1), Some("read 1 file: src/ab.rs"));
+}

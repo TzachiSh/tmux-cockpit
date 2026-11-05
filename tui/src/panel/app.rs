@@ -1,7 +1,7 @@
 //! The panel's state machine: views, keys, and the request round trip. No
 //! terminal here, so every transition is a unit test away.
 use super::action::{Hidden, hide_body, sanitize, state_body};
-use super::capture::{Capture, SSH_LIKE, Session, is_local, session_state, window_kind};
+use super::capture::{Capture, REPO_BUDGET, SSH_LIKE, Session, is_local, session_state, toplevel, window_kind};
 use super::envelope::{Flow, OutType, Role, Turn, build_counted};
 use super::parse::{self, Opt, Reply, Step};
 use super::prompts::{self, Ctx};
@@ -224,6 +224,8 @@ pub struct App {
     /// The pane, as captured when the panel opened, runs where its folder is:
     /// [`is_local`]. A resume's older command does not change it.
     local: bool,
+    /// [`App::explore_dir`]'s answer, worked out once: Busy asks it every frame.
+    explore_root: std::cell::OnceCell<Result<PathBuf, String>>,
     pub run: Option<Run>,
     /// Set by a transition, cleared by [`App::launch`], which owns the fork.
     pub pending: bool,
@@ -288,6 +290,7 @@ impl App {
             model: 0,
             explore: false,
             local,
+            explore_root: std::cell::OnceCell::new(),
             run: None,
             pending: false,
             req: None,
@@ -823,16 +826,17 @@ impl App {
             return self.say(Level::Info, "explore off: the write reads the screen only");
         }
         match self.explore_dir() {
-            Ok(_) => {
+            Ok(dir) => {
                 self.explore = true;
-                self.say(Level::Info, "explore on: the write may read files under this folder first")
+                self.say(Level::Info, format!("explore on: the write may read files under {}", dir.display()))
             }
             Err(why) => self.say(Level::Warn, format!("explore refused: {why}")),
         }
     }
 
-    /// The folder an exploring write may read: the pane's, in a local window, and
-    /// one request.rs would start a call on; else why not, for the user.
+    /// The folder an exploring write may read: the pane's repo, or its folder
+    /// outside one, in a local window and one request.rs would start a call on;
+    /// else why not, for the user.
     fn explore_dir(&self) -> Result<PathBuf, String> {
         if !self.local {
             return Err(format!(
@@ -843,8 +847,12 @@ impl App {
         if self.cap.path.is_empty() {
             return Err("tmux gives no folder for this pane".into());
         }
-        let dir = PathBuf::from(&self.cap.path);
-        read_dir_ok(&dir).map(|()| dir)
+        let root = self.explore_root.get_or_init(|| {
+            let dir = toplevel(&self.cap.path, REPO_BUDGET).unwrap_or_else(|| self.cap.path.clone());
+            let dir = PathBuf::from(dir);
+            read_dir_ok(&dir).map(|()| dir)
+        });
+        root.clone()
     }
 
     /// A write with the toggle on, in a window local when the panel opened. Fix and Explain never read.
@@ -855,8 +863,8 @@ impl App {
     /// What the call for `flow` may use: [`Profile::TEXT`], or for an exploring
     /// write a read-only one on the pane's folder under the explore caps, per call.
     pub fn profile_for(&self, flow: &Flow) -> Profile {
-        match self.explore_dir() {
-            Ok(dir) if self.explores(flow) => Profile::read_only(dir, false, EXPLORE_BUDGET_USD, EXPLORE_TIMEOUT),
+        match self.explores(flow).then(|| self.explore_dir()) {
+            Some(Ok(dir)) => Profile::read_only(dir, false, EXPLORE_BUDGET_USD, EXPLORE_TIMEOUT),
             _ => Profile::TEXT,
         }
     }
@@ -996,8 +1004,15 @@ impl App {
     /// view its answer opened: after a warning there, never in its place.
     fn note_reads(&mut self, read: Option<Vec<String>>) {
         let Some(read) = read else { return };
-        let root = format!("{}/", self.cap.path.trim_end_matches('/'));
-        let names: Vec<&str> = read.iter().map(|p| p.strip_prefix(&root).unwrap_or(p)).collect();
+        let root = self
+            .explore_dir()
+            .map_or_else(|_| self.cap.path.clone(), |d| d.display().to_string());
+        let root = format!("{}/", root.trim_end_matches('/'));
+        // the model names the files: a bidi or control character in one is not drawn
+        let names: Vec<String> = read
+            .iter()
+            .map(|p| crate::pick::clean(p.strip_prefix(&root).unwrap_or(p)))
+            .collect();
         let text = match names.len() {
             0 => "read no files".to_string(),
             1 => format!("read 1 file: {}", names[0]),
