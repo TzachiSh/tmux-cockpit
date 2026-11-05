@@ -3780,7 +3780,10 @@ pub struct Drained {
 /// Collapses the waiting snapshots to the newest. `reads` hears of the
 /// newest fetch among them, and of no capture: a capture reads no tmux, so a
 /// failed fetch and two selections are one failure, not three (D16).
-pub fn drain(first: Snapshot, rest: impl Iterator<Item = Snapshot>, reads: &mut Reads, now: Instant) -> Drained {
+pub fn drain<I>(first: Snapshot, rest: I, reads: &mut Reads, now: Instant) -> Drained
+where
+    I: Iterator<Item = Snapshot>,
+{
     let (mut snap, mut fetched, mut ok) = (first, None::<Duration>, None);
     for s in rest {
         if snap.fresh {
@@ -4020,7 +4023,8 @@ pub fn run(o: &Opts) -> Option<Exit> {
         match snap_rx.try_recv() {
             Ok(s) => {
                 let t0 = Instant::now();
-                let Drained { snap: s, fetched } = drain(s, snap_rx.try_iter(), &mut reads, Instant::now());
+                let d = drain(s, snap_rx.try_iter(), &mut reads, Instant::now());
+                let (s, fetched) = (d.snap, d.fetched);
                 dirty |= !s.ok;
                 if s.ok {
                     sessions = s.sessions;

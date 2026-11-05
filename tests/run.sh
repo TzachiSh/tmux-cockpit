@@ -8173,16 +8173,19 @@ echo "== cockpit-tui board: a held j recaptures, and fetches only on the tick (#
 # put the tick off again would never let happen.
 if need_tmux "a held j on the board"; then :; else
 PJ="cockpit-pj-$$"; SOCKS="$SOCKS $PJ"; PJD=$(mktmpd)
-printf '#!/bin/sh\nprintf "%%s\\n" "$1" >> %s/calls\nexec %s "$@"\n' "$PJD" "$TMUX_REAL" > "$PJD/tmux"
+printf '#!/bin/sh\nprintf "%%s\\n" "$1" >> %s/calls\nexec %s "$@"\n' \
+    "$PJD" "$TMUX_REAL" > "$PJD/tmux"
 chmod +x "$PJD/tmux"
-"$TMUX_REAL" -L "$PJ" -f /dev/null new-session -d -s t -x 120 -y 30 -c "$PJD" 'exec sleep 3600' >/dev/null 2>&1
+"$TMUX_REAL" -L "$PJ" -f /dev/null new-session -d -s t -x 120 -y 30 -c "$PJD" \
+    'exec sleep 3600' >/dev/null 2>&1
 for s in alpha beta; do
     pjp=$("$TMUX_REAL" -L "$PJ" new-window -d -P -F '#{pane_id}' -t t: -c "$PJD" \
         "printf 'screen-of-$s\n'; exec -a claude sleep 3600")
     "$TMUX_REAL" -L "$PJ" set -p -t "$pjp" @panestate running >/dev/null 2>&1
 done
+PJENV="COCKPIT_TMUX=$PJD/tmux XDG_STATE_HOME=$PJD COCKPIT_LOG=$PJD/tui.log"
 PJW=$("$TMUX_REAL" -L "$PJ" new-window -d -P -F '#{pane_id}' -t t: -c "$PJD" \
-    "env COCKPIT_TMUX=$PJD/tmux XDG_STATE_HOME=$PJD COCKPIT_LOG=$PJD/tui.log $COCKPIT_TUI_BIN board")
+    "env $PJENV $COCKPIT_TUI_BIN board")
 pj_n() { local n; n=$(grep -cx "$1" "$PJD/calls" 2>/dev/null); printf '%s' "${n:-0}"; }
 pj_key() {                    # <key>  one press, then poll for one more capture-pane
     local n i
@@ -8211,7 +8214,8 @@ if until_cap "$PJ" "$PJW" '*live · *screen-of-alpha*'; then
     done
     if [ -n "$pjtick" ]; then ok "a held j still gets the tick's fetch (after $i pairs)"
     else bad "a held j still gets the tick's fetch" "a list-panes within 300 pairs" "none"; fi
-else bad "the board shows alpha's screen" "live · screen-of-alpha" "$("$TMUX_REAL" -L "$PJ" capture-pane -p -t "$PJW")"; fi
+else bad "the board shows alpha's screen" "live · screen-of-alpha" \
+    "$("$TMUX_REAL" -L "$PJ" capture-pane -p -t "$PJW")"; fi
 "$TMUX_REAL" -L "$PJ" kill-server >/dev/null 2>&1
 fi
 

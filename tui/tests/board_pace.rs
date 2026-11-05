@@ -2,7 +2,8 @@
 //! wake waits out PUSH_GAP after the last fetch, a new selection recaptures at
 //! once and fetches nothing, and the last wake of a storm is always fetched.
 //! No tmux and no sleep: every instant is an offset from one `Instant::now()`.
-use cockpit_tui::board::{self, Ask, Gone, Inbox, Job, Kind, PUSH_GAP, Pace, Reads, Sched, Snapshot, TICK, Turn, Want};
+use cockpit_tui::board::{self, Ask, Gone, Inbox, Job, Kind, PUSH_GAP, Pace, Reads, Sched};
+use cockpit_tui::board::{Snapshot, TICK, Turn, Want};
 use ratatui::layout::Rect;
 use std::cell::Cell;
 use std::collections::BTreeSet;
