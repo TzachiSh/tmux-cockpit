@@ -555,3 +555,35 @@ fn a_second_hide_on_the_pane_is_refused() {
     let n = a.note.as_ref().map(|n| n.text.clone()).unwrap_or_default();
     assert!(n.contains("already hidden"), "{n}");
 }
+
+/// The ask's answer notes the files the call read, named from the ask's repo,
+/// as an exploring write's names them from the pane's folder (#416's note).
+#[test]
+fn an_answer_notes_the_files_read_from_the_repo() {
+    use cockpit_tui::panel::request::Call;
+    use std::os::unix::fs::PermissionsExt;
+    let (d, mut a) = opened("reads");
+    let file = d.0.join("src/x.rs").display().to_string();
+    let events = format!(
+        r#"[{{"type":"assistant","message":{{"content":[{{"type":"tool_use","id":"t1","name":"Read","input":{{"file_path":"{file}"}}}}]}}}},{{"type":"result","subtype":"success","is_error":false,"result":"it is"}}]"#
+    );
+    let bin = d.0.join("claude");
+    std::fs::write(&bin, format!("#!/bin/sh\ncat >/dev/null\necho '{events}'\n")).unwrap();
+    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    typ(&mut a, "q");
+    key(&mut a, KeyCode::Enter);
+    let dir = d.0.join("cache");
+    a.launch(&Call {
+        claude: bin.display().to_string(),
+        timeout: std::time::Duration::from_secs(30),
+        dir,
+    });
+    for _ in 0..1000 {
+        if a.poll() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let n = a.note.as_ref().map(|n| n.text.clone()).unwrap_or_default();
+    assert!(n.ends_with("read 1 file: src/x.rs"), "{n}");
+}

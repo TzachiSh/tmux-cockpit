@@ -875,7 +875,7 @@ impl App {
         use super::ask::{BUDGET_USD, TIMEOUT};
         match (flow, self.explores(flow).then(|| self.explore_dir())) {
             (Flow::Ask(a), _) => Profile::read_only(a.repo.clone(), true, BUDGET_USD, TIMEOUT),
-            (_, Some(Ok(dir))) => Profile::read_only(dir, false, EXPLORE_BUDGET_USD, EXPLORE_TIMEOUT),
+            (_, Some(Ok(d))) => Profile::read_only(d, false, EXPLORE_BUDGET_USD, EXPLORE_TIMEOUT),
             _ => Profile::TEXT,
         }
     }
@@ -1027,13 +1027,18 @@ impl App {
         true
     }
 
-    /// The files an exploring call read, relative to the pane's folder, on the
-    /// view its answer opened: after a warning there, never in its place.
+    /// The files a reading call read, relative to the pane's folder (an exploring
+    /// write) or the repo (an ask), on the view its answer opened: after a warning
+    /// there, never in its place.
     fn note_reads(&mut self, read: Option<Vec<String>>) {
         let Some(read) = read else { return };
-        let root = self
-            .explore_dir()
-            .map_or_else(|_| self.cap.path.clone(), |d| d.display().to_string());
+        let root = match self.run.as_ref().map(|r| &r.flow) {
+            Some(Flow::Ask(a)) => a.repo.display().to_string(),
+            _ => match self.explore_dir() {
+                Ok(d) => d.display().to_string(),
+                Err(_) => self.cap.path.clone(),
+            },
+        };
         let root = format!("{}/", root.trim_end_matches('/'));
         // the model names the files: a bidi or control character in one is not drawn
         let names: Vec<String> = read
