@@ -22,11 +22,6 @@ fn unix_now() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
-fn is_pane(p: &str) -> bool {
-    p.strip_prefix('%')
-        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
-}
-
 /// Never lists a wake channel in @cockpit_board_wake: those are the board's.
 fn panel(args: &[String]) {
     let (pane, start) = match cockpit_tui::panel::start_args(args) {
@@ -59,7 +54,7 @@ fn panel(args: &[String]) {
     a.termux = cockpit_tui::panel::is_termux();
     // other panes' hidden panels the wrapper dropped: their panes are gone
     if let Ok(gone) = std::env::var("COCKPIT_PANEL_DROPPED") {
-        let gone: Vec<&str> = gone.split(' ').filter(|p| is_pane(p)).take(8).collect();
+        let gone: Vec<&str> = gone.split(' ').filter(|p| cockpit_tui::panel::is_pane(p)).take(8).collect();
         if !gone.is_empty() {
             a.say(
                 app::Level::Info,

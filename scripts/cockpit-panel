@@ -167,12 +167,12 @@ resume=() last=
 # Moved, not read in place: the run that takes it owns it, and a second client's
 # prefix f on the same pane finds nothing.
 # an ask opens on its own question: a panel hidden on this pane stays hidden for later
-if [ "${#ask[@]}" -eq 0 ] && [ -n "$saved" ] && { [ -e "$saved" ] || [ -L "$saved" ]; } && mv -f "$saved" "$d/resume" 2>/dev/null; then
+kept=''; [ -n "$saved" ] && { [ -e "$saved" ] || [ -L "$saved" ]; } && kept=1
+if [ "${#ask[@]}" -eq 0 ] && [ -n "$kept" ] && mv -f "$saved" "$d/resume" 2>/dev/null; then
     resume=(--resume "$d/resume" --last hidden)
 fi
 # the pane keeps one hidden panel: an ask opened beside it is told, so its ^Z refuses
-taken=''
-if [ "${#ask[@]}" -gt 0 ] && [ -n "$saved" ] && { [ -e "$saved" ] || [ -L "$saved" ]; }; then taken=1; fi
+taken=''; [ "${#ask[@]}" -gt 0 ] && [ -n "$kept" ] && taken=1
 glyphs=$(tmux show-option -gqv @cockpit_glyphs 2>/dev/null)   # #293: the binary reads only the env
 while :; do
     rm -f "$f" "$f.text" "$f.cmd" "$f.state"

@@ -132,12 +132,14 @@ pub fn build_parts(flow: &Flow, cap: &Capture, turns: &[Turn], questions_left: u
             // ask::load refused a name with a control character; a `"` would end the attribute
             let path = a.path.replace('"', "&quot;");
             let code = esc(&a.code);
-            parts.push(format!("<code path=\"{}\" lines=\"{lines}\">\n{code}\n</code>", esc(&path)));
+            let path = esc(&path);
+            parts.push(format!("<code path=\"{path}\" lines=\"{lines}\">\n{code}\n</code>"));
             let (s0, s1) = a.shown;
             let tail = "Read the file for the rest</truncated>";
             if a.shown != a.asked {
                 let short = if a.cut { format!(", line {s1} cut short") } else { String::new() };
-                parts.push(format!("<truncated>lines {s0}-{s1} of {lines} are shown{short}; {tail}"));
+                let shown = format!("lines {s0}-{s1} of {lines} are shown{short}");
+                parts.push(format!("<truncated>{shown}; {tail}"));
             } else if a.cut {
                 parts.push(format!("<truncated>line {s1} is cut short; {tail}"));
             }

@@ -644,7 +644,8 @@ impl App {
             return self.say(Level::Warn, "a call is out: esc cancels it, then ^Z hides");
         }
         if self.hide_taken {
-            return self.say(Level::Warn, "a panel is already hidden on this pane: q closes this one");
+            let why = "a panel is already hidden on this pane: q closes this one";
+            return self.say(Level::Warn, why);
         }
         // u64::MAX: the longest timestamp the file can carry
         if hide_body(self, u64::MAX).is_none() {
@@ -1280,10 +1281,7 @@ impl App {
                         InputKind::Correct(i) => self.correct(i, t, back),
                         InputKind::FollowUp => {
                             // an ask's first question: esc on its call comes back to it
-                            let first_ask = self
-                                .run
-                                .as_ref()
-                                .is_some_and(|r| matches!(r.flow, Flow::Ask(_)) && r.log.iter().all(|(you, _)| *you));
+                            let first_ask = self.run.as_ref().is_some_and(first_ask);
                             let back = if first_ask {
                                 let (text, cur) = (t.clone(), t.len());
                                 let back = Box::new(back);
@@ -1684,6 +1682,11 @@ pub fn hint(f: &Fail) -> Option<&'static str> {
     } else {
         None
     }
+}
+
+/// An ask not answered yet: esc on its call goes back to the question.
+fn first_ask(r: &Run) -> bool {
+    matches!(r.flow, Flow::Ask(_)) && r.log.iter().all(|(you, _)| *you)
 }
 
 /// A send of more than one line wants a `y`: a pasted block runs line by line

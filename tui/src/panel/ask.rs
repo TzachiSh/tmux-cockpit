@@ -56,6 +56,9 @@ fn home() -> Option<PathBuf> {
     Some(std::fs::canonicalize(&h).unwrap_or(h))
 }
 
+/// The file's name with a control or bidi character, or not UTF-8.
+const BAD_NAME: &str = "a control or bidi character, or no UTF-8, in the file's name; refused";
+
 /// Opens a key's armour, and its body lines until the END line close it.
 fn pem_edge(l: &str, word: &str) -> bool {
     l.contains(&format!("-----{word} ")) && l.contains("PRIVATE KEY-----")
@@ -74,7 +77,7 @@ pub fn load_in(file: &Path, a: u32, b: u32, home: Option<&Path>) -> Result<AskCo
     // the path goes out as the model's to Read: a cleaned one would name no file
     match r.path().to_str() {
         Some(p) if crate::pick::clean(p) == p => {}
-        _ => return Err("the file's name holds a control or bidi character, or is not UTF-8; refused".into()),
+        _ => return Err(BAD_NAME.into()),
     }
     let text = crate::mdview::load(r.path(), crate::mdview::MAX_FILE)?;
     let all: Vec<&str> = text.lines().collect();
@@ -84,12 +87,17 @@ pub fn load_in(file: &Path, a: u32, b: u32, home: Option<&Path>) -> Result<AskCo
         return Err(format!("{name} has {n} lines; line {a} is past its end"));
     }
     let b = b.min(n);
-    let repo = repo_under(r.path(), home).ok_or_else(|| format!("{name} is not in a project folder"))?;
+    let no_project = || format!("{name} is not in a project folder");
+    let repo = repo_under(r.path(), home).ok_or_else(no_project)?;
     super::request::read_dir_ok(&repo)?;
-    let at = refs::render(&[Ref::new(r.path(), Some((a, b)), None).map_err(|e| e.to_string())?], &repo);
-    let path = refs::render(&[Ref::new(r.path(), None, None).map_err(|e| e.to_string())?], &repo);
+    let render = |lines| -> Result<String, String> {
+        let r = Ref::new(r.path(), lines, None).map_err(|e| e.to_string())?;
+        Ok(refs::render(&[r], &repo))
+    };
+    let (at, path) = (render(Some((a, b)))?, render(None)?);
     let w = b.to_string().len();
-    let (mut code, mut last, mut hidden, mut cut, mut pem) = (String::new(), a - 1, 0, false, false);
+    let (mut code, mut last, mut hidden) = (String::new(), a - 1, 0);
+    let (mut cut, mut pem) = (false, false);
     for (i, l) in all[..b as usize].iter().enumerate() {
         let num = i as u32 + 1;
         let open = pem || pem_edge(l, "BEGIN");

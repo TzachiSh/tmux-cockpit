@@ -464,7 +464,7 @@ fn a_file_name_with_a_bidi_mark_is_refused() {
     let (d, _) = repo("bidiname", &lines(3));
     let f = d.file("src/a\u{202e}b.rs", &lines(3));
     let why = ask::load(&f, 1, 1).unwrap_err();
-    assert!(why.contains("control or bidi"), "{why}");
+    assert!(why.contains("control or bidi character"), "{why}");
 }
 
 /// Redaction runs on each line before any cut: a key straddling the cut never

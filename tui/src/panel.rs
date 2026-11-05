@@ -24,22 +24,27 @@ pub enum Start {
     Ask(String, u32, u32),
 }
 
+const START_USAGE: &str = concat!(
+    "panel takes a pane id, then only --resume <state> --last <how>",
+    " or --ask <file> <a> <b>"
+);
+
+/// A pane id: `%` and digits.
+pub fn is_pane(p: &str) -> bool {
+    p.strip_prefix('%')
+        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
 /// A line number as the viewer prints it: digits, no leading zero, from 1.
 fn line_no(s: &str) -> Option<u32> {
-    let ok = !s.is_empty() && !s.starts_with('0') && s.len() <= 9 && s.bytes().all(|b| b.is_ascii_digit());
-    ok.then(|| s.parse().ok()).flatten()
+    let digits = !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    (digits && !s.starts_with('0') && s.len() <= 9).then(|| s.parse().ok()).flatten()
 }
 
 /// The pane, then at most one way to start: `--resume <state> --last <how>`, or
 /// `--ask <file> <a> <b>` with `1 <= a <= b`.
 pub fn start_args(args: &[String]) -> Result<(String, Start), String> {
-    let pane = args
-        .first()
-        .filter(|p| {
-            p.strip_prefix('%')
-                .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
-        })
-        .ok_or("panel needs a pane id like %3")?;
+    let pane = args.first().filter(|p| is_pane(p)).ok_or("panel needs a pane id like %3")?;
     let rest: Vec<&str> = args[1..].iter().map(String::as_str).collect();
     let start = match rest[..] {
         [] => Start::Plain,
@@ -52,7 +57,7 @@ pub fn start_args(args: &[String]) -> Result<(String, Start), String> {
                 ));
             }
         },
-        _ => return Err("panel takes a pane id, then only --resume <state> --last <how> or --ask <file> <a> <b>".into()),
+        _ => return Err(START_USAGE.into()),
     };
     Ok((pane.clone(), start))
 }
