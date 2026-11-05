@@ -400,3 +400,125 @@ fn the_box_and_the_busy_line_name_the_ref() {
     key(&mut a, KeyCode::Enter);
     assert!(draw(&a).contains("reading the code"), "{}", draw(&a));
 }
+
+// ------------------------------------------------- review-464: floor, redaction, cut
+
+/// A scratch home holding `rel`, and the file.
+fn in_home(d: &Dir, rel: &str) -> (PathBuf, PathBuf) {
+    let home = d.0.join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    (home.clone(), d.file(&format!("home/{rel}"), &lines(3)))
+}
+
+/// A file right in home has no project: its folder would be all of home.
+#[test]
+fn a_file_in_home_is_not_in_a_project() {
+    let d = Dir::new("homefile");
+    let (home, f) = in_home(&d, "notes.md");
+    assert_eq!(ask::repo_under(&f, Some(&home)), None);
+    let why = ask::load_in(&f, 1, 2, Some(&home)).unwrap_err();
+    assert!(why.contains("not in a project folder"), "{why}");
+}
+
+/// A `.git` at home (a dotfiles repo) is no project: the file's folder is the repo.
+#[test]
+fn a_dotfiles_git_at_home_is_not_the_repo() {
+    let d = Dir::new("dotfiles");
+    let (home, f) = in_home(&d, "Downloads/x/y.md");
+    std::fs::create_dir_all(home.join(".git")).unwrap();
+    assert_eq!(ask::repo_under(&f, Some(&home)), Some(home.join("Downloads/x")));
+}
+
+/// Nor is a folder above home, nor the root.
+#[test]
+fn above_home_and_the_root_are_not_a_project() {
+    let d = Dir::new("abovehome");
+    let (home, _) = in_home(&d, "src/a/b.rs");
+    let above = d.file("loose.md", "x\n");
+    assert_eq!(ask::repo_under(&above, Some(&home)), None, "above home");
+    assert_eq!(ask::repo_under(Path::new("/x.md"), None), None, "the root");
+}
+
+/// A project under home is still its work tree.
+#[test]
+fn a_repo_under_home_is_its_work_tree() {
+    let d = Dir::new("homerepo");
+    let (home, f) = in_home(&d, "src/app/lib/x.rs");
+    std::fs::create_dir_all(home.join("src/app/.git")).unwrap();
+    assert_eq!(ask::repo_under(&f, Some(&home)), Some(home.join("src/app")));
+}
+
+/// The read dir passes request::read_dir_ok before the box opens: a folder with
+/// a glob character is refused in its words.
+#[test]
+fn a_repo_the_read_check_refuses_cannot_be_asked_about() {
+    let d = Dir::new("globrepo");
+    let f = d.file("a*/x.rs", &lines(3));
+    let why = ask::load(&f, 1, 1).unwrap_err();
+    assert!(why.contains("glob"), "{why}");
+}
+
+/// A name with a control or bidi character would go out cleaned, naming no file.
+#[test]
+fn a_file_name_with_a_bidi_mark_is_refused() {
+    let (d, _) = repo("bidiname", &lines(3));
+    let f = d.file("src/a\u{202e}b.rs", &lines(3));
+    let why = ask::load(&f, 1, 1).unwrap_err();
+    assert!(why.contains("control or bidi"), "{why}");
+}
+
+/// Redaction runs on each line before any cut: a key straddling the cut never
+/// goes out as a prefix too short to match.
+#[test]
+fn a_key_at_the_cut_is_hidden_whole() {
+    let key = format!("sk-ant-{}", "A".repeat(60));
+    let line = format!("{} {key}", "x".repeat(ask::MAX_BYTES - 12));
+    let (_d, f) = repo("keycut", &format!("{line}\n"));
+    let a = ask::load(&f, 1, 1).unwrap();
+    assert!(!a.code.contains("sk-ant"), "a key prefix went out");
+    assert!(a.hidden >= 1);
+}
+
+/// A key's PEM body lines are hidden too, a selection starting inside the block included.
+#[test]
+fn a_private_key_body_is_hidden_line_by_line() {
+    let pem = "a\n-----BEGIN RSA PRIVATE KEY-----\nMIIBOgIBAAJBAKj34GkxFhD90\nQIDAQAB\n-----END RSA PRIVATE KEY-----\nb\n";
+    let (_d, f) = repo("pem", pem);
+    let a = ask::load(&f, 3, 6).unwrap();
+    assert!(!a.code.contains("MIIB") && !a.code.contains("QIDAQAB"), "{}", a.code);
+    assert!(a.code.ends_with("6 b"), "{}", a.code);
+    assert_eq!(a.code.lines().count(), 4, "the numbering holds");
+}
+
+/// One line cut at the cap is tagged, though the lines shown are the lines asked.
+#[test]
+fn a_single_cut_line_is_tagged() {
+    let (_d, f) = repo("onecut", &format!("{}\n", "w".repeat(40_000)));
+    let a = ask::load(&f, 1, 1).unwrap();
+    assert_eq!((a.asked, a.shown, a.cut), ((1, 1), (1, 1), true));
+    let e = build_parts(&Flow::Ask(a), &Capture::default(), &turn("q"), 0);
+    assert!(
+        e.text
+            .contains("<truncated>line 1 is cut short; Read the file for the rest</truncated>"),
+        "{}",
+        e.text
+    );
+}
+
+/// The ^Z state holds the redacted lines, never the secret.
+#[test]
+fn a_hidden_ask_keeps_no_secret() {
+    let (_d, f) = repo("hidesecret", "let token=abcdef123456;\n");
+    let mut a = App::new("%3", Capture::default());
+    a.ask_open(ask::load(&f, 1, 1).unwrap());
+    let body = cockpit_tui::panel::action::hide_body(&a, 0).unwrap();
+    assert!(!body.contains("abcdef123456"), "{body}");
+}
+
+/// #465 confines the ask's reads to its repo: the prompt says so, and never
+/// offers a read outside it.
+#[test]
+fn the_ask_prompt_says_reads_stop_at_the_repo() {
+    let p = cockpit_tui::panel::prompts::ASK_CODE;
+    assert!(p.contains("a read outside the repository is refused"), "{p}");
+}

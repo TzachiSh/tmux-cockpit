@@ -23,24 +23,59 @@ pub struct AskCode {
     pub path: String,
     /// the folder the call may read: the git work tree holding the file, else its folder
     pub repo: PathBuf,
-    /// the lines inlined, each behind its number, right aligned
+    /// the lines inlined, each behind its number, right aligned, secrets hidden
     pub code: String,
+    /// how many secrets `code` had hidden
+    pub hidden: usize,
     /// the lines asked about, the end held to the file's last
     pub asked: (u32, u32),
     /// the lines inlined: `asked`, or its start when the caps cut it
     pub shown: (u32, u32),
+    /// the last line shown was cut short at [`MAX_BYTES`]
+    pub cut: bool,
 }
 
 /// The work tree holding `file`: the nearest folder above it with a `.git` (a
 /// dir, or a worktree's file). Found by looking, never by running git (#428).
-pub fn repo_of(file: &Path) -> PathBuf {
+/// Never home, a folder above it, or `/`: a `.git` there (dotfiles) is no
+/// project, and `--add-dir` of one opens all of home. `None` when the file's own
+/// folder is one of them.
+pub fn repo_under(file: &Path, home: Option<&Path>) -> Option<PathBuf> {
     let dir = file.parent().unwrap_or(Path::new("/"));
-    dir.ancestors().find(|d| d.join(".git").exists()).unwrap_or(dir).to_path_buf()
+    let floor = |d: &Path| d.parent().is_none() || home.is_some_and(|h| h.starts_with(d));
+    if floor(dir) {
+        return None;
+    }
+    let mut up = dir.ancestors().take_while(|d| !floor(d));
+    Some(up.find(|d| d.join(".git").exists()).unwrap_or(dir).to_path_buf())
+}
+
+/// $HOME as the file paths are, canonical.
+fn home() -> Option<PathBuf> {
+    let h = std::env::var_os("HOME").filter(|h| !h.is_empty()).map(PathBuf::from)?;
+    Some(std::fs::canonicalize(&h).unwrap_or(h))
+}
+
+/// Opens a key's armour, and its body lines until the END line close it.
+fn pem_edge(l: &str, word: &str) -> bool {
+    l.contains(&format!("-----{word} ")) && l.contains("PRIVATE KEY-----")
 }
 
 /// Lines `a` to `b` of `file`, for a question.
 pub fn load(file: &Path, a: u32, b: u32) -> Result<AskCode, String> {
+    load_in(file, a, b, home().as_deref())
+}
+
+/// [`load`], with `home` as the home folder. Each line is redacted before it is
+/// numbered or cut, so a key at the cap is hidden whole and the ^Z state holds
+/// no secret; a key's PEM body is hidden line by line, from the file's start.
+pub fn load_in(file: &Path, a: u32, b: u32, home: Option<&Path>) -> Result<AskCode, String> {
     let r = Ref::new(file, Some((a, b)), None).map_err(|e| e.to_string())?;
+    // the path goes out as the model's to Read: a cleaned one would name no file
+    match r.path().to_str() {
+        Some(p) if crate::pick::clean(p) == p => {}
+        _ => return Err("the file's name holds a control or bidi character, or is not UTF-8; refused".into()),
+    }
     let text = crate::mdview::load(r.path(), crate::mdview::MAX_FILE)?;
     let all: Vec<&str> = text.lines().collect();
     let name = r.path().file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
@@ -49,16 +84,27 @@ pub fn load(file: &Path, a: u32, b: u32) -> Result<AskCode, String> {
         return Err(format!("{name} has {n} lines; line {a} is past its end"));
     }
     let b = b.min(n);
-    let repo = repo_of(r.path());
+    let repo = repo_under(r.path(), home).ok_or_else(|| format!("{name} is not in a project folder"))?;
+    super::request::read_dir_ok(&repo)?;
     let at = refs::render(&[Ref::new(r.path(), Some((a, b)), None).map_err(|e| e.to_string())?], &repo);
     let path = refs::render(&[Ref::new(r.path(), None, None).map_err(|e| e.to_string())?], &repo);
     let w = b.to_string().len();
-    let (mut code, mut last) = (String::new(), a - 1);
-    for (i, l) in all[a as usize - 1..b as usize].iter().enumerate() {
-        let num = a + i as u32;
+    let (mut code, mut last, mut hidden, mut cut, mut pem) = (String::new(), a - 1, 0, false, false);
+    for (i, l) in all[..b as usize].iter().enumerate() {
+        let num = i as u32 + 1;
+        let open = pem || pem_edge(l, "BEGIN");
+        pem = open && !pem_edge(l, "END");
+        if num < a {
+            continue;
+        }
+        let (l, n) = if open {
+            (super::redact::HIDDEN.to_string(), 1)
+        } else {
+            super::redact::redact(l)
+        };
         let row = format!("{num:>w$} {l}");
         let sep = usize::from(!code.is_empty());
-        if i >= MAX_LINES || code.len() + sep + row.len() > MAX_BYTES {
+        if (num - a) as usize >= MAX_LINES || code.len() + sep + row.len() > MAX_BYTES {
             // one line past the cap on its own (minified code) goes in cut
             if code.is_empty() {
                 let mut end = MAX_BYTES;
@@ -66,10 +112,12 @@ pub fn load(file: &Path, a: u32, b: u32) -> Result<AskCode, String> {
                     end -= 1;
                 }
                 code.push_str(&row[..end]);
-                last = num;
+                (last, cut) = (num, true);
+                hidden += n;
             }
             break;
         }
+        hidden += n;
         if sep == 1 {
             code.push('\n');
         }
@@ -81,7 +129,9 @@ pub fn load(file: &Path, a: u32, b: u32) -> Result<AskCode, String> {
         path: path.trim_end().to_string(),
         repo,
         code,
+        hidden,
         asked: (a, b),
         shown: (a, last.max(a)),
+        cut,
     })
 }

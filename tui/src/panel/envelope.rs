@@ -126,17 +126,20 @@ pub fn build_parts(flow: &Flow, cap: &Capture, turns: &[Turn], questions_left: u
         }
         // the code, never the screen: the question is about the file (#365)
         Flow::Ask(a) => {
-            let (code, n) = redact(&a.code);
-            repo_hidden = n;
+            // ask::load redacted each line before it cut any
+            repo_hidden = a.hidden;
             let lines = format!("{}-{}", a.asked.0, a.asked.1);
-            // refs::render cleaned the path of control characters; a `"` would end the attribute
+            // ask::load refused a name with a control character; a `"` would end the attribute
             let path = a.path.replace('"', "&quot;");
-            parts.push(format!("<code path=\"{}\" lines=\"{lines}\">\n{}\n</code>", esc(&path), esc(&code)));
+            let code = esc(&a.code);
+            parts.push(format!("<code path=\"{}\" lines=\"{lines}\">\n{code}\n</code>", esc(&path)));
+            let (s0, s1) = a.shown;
+            let tail = "Read the file for the rest</truncated>";
             if a.shown != a.asked {
-                parts.push(format!(
-                    "<truncated>lines {}-{} of {lines} are shown; Read the file for the rest</truncated>",
-                    a.shown.0, a.shown.1
-                ));
+                let short = if a.cut { format!(", line {s1} cut short") } else { String::new() };
+                parts.push(format!("<truncated>lines {s0}-{s1} of {lines} are shown{short}; {tail}"));
+            } else if a.cut {
+                parts.push(format!("<truncated>line {s1} is cut short; {tail}"));
             }
         }
         Flow::Explain => {

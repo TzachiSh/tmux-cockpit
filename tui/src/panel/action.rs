@@ -306,6 +306,8 @@ fn ask_out(a: &super::ask::AskCode) -> String {
         "path": a.path,
         "repo": a.repo.to_string_lossy(),
         "code": a.code,
+        "hidden": a.hidden,
+        "cut": a.cut,
         "asked": [a.asked.0, a.asked.1],
         "shown": [a.shown.0, a.shown.1],
     })
@@ -325,6 +327,12 @@ fn ask_in(s: &str) -> Result<super::ask::AskCode, String> {
         path: o.text("path")?,
         repo: o.text("repo")?.into(),
         code: o.text("code")?,
+        hidden: o
+            .take("hidden")?
+            .as_u64()
+            .and_then(|n| usize::try_from(n).ok())
+            .ok_or("a bad count")?,
+        cut: o.take("cut")?.as_bool().ok_or("a bad cut")?,
         asked: pair(o.take("asked")?)?,
         shown: pair(o.take("shown")?)?,
     };
