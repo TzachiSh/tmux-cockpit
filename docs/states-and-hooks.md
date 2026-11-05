@@ -378,7 +378,7 @@ An unmarked pane that is not bound is not the poller's.
 on every frame, and a `claude attach Y` on an idle job may emit none. A pane that ran
 `claude attach X` and then runs a live `claude attach Y` shows X's title until Y emits
 one, so it is bound to X, with X's state. The pane command is `claude`, so the rule
-cannot tell. A second signal, `@cockpit_job` set by a cockpit-run attach, would close it.
+cannot tell. A second signal, `@cockpit_job` set by a cockpit-run attach, would close it (#461).
 
 **A foreground session is never bound.** A hook of a pane's own session (one with
 `TMUX_PANE`) sets `@cockpit_fg` on the pane, in the tmux call it makes anyway, and clears
