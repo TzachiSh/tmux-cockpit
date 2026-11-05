@@ -3,7 +3,7 @@
 //! tmux, no clock); `run` is the only impure entry.
 use crate::data::fleet as facts;
 use crate::data::subagents::{Sub, SubKind, SubState};
-use crate::data::{Pane, State, fmt_dur, hash_rows, list_fleet, log, preview};
+use crate::data::{Pane, State, fmt_dur, hash_rows, list_fleet, log};
 use crate::panel::view::wrap;
 use crate::push::Push;
 use crate::theme::{Glyphs, Theme};
@@ -3570,6 +3570,116 @@ pub fn captures(ps: &[Pane], ok: bool, want: &Want) -> Vec<(String, usize)> {
     shown.map(|k| (ps[ord[k]].id.clone(), rows)).collect()
 }
 
+/// A batch's stdout cut at its marks (#492): the chunk each finished capture
+/// printed, byte for byte what that capture alone prints.
+#[derive(Debug, PartialEq)]
+pub enum Batch<'a> {
+    /// every capture ran
+    Done(Vec<&'a [u8]>),
+    /// tmux stopped at the capture after these: that pane is gone
+    Cut(Vec<&'a [u8]>),
+    /// more marks than captures, or text after the last: never trust the split
+    Lost,
+}
+
+/// Cuts `out`, the stdout of [`batch_args`] over `n` captures, at the lines
+/// that are exactly `mark`. `ok` is tmux's exit status: tmux stops a command
+/// list at the first command that fails, and prints what ran before it.
+pub fn split_batch<'a>(out: &'a [u8], mark: &str, n: usize, ok: bool) -> Batch<'a> {
+    let line = [mark.as_bytes(), b"\n"].concat();
+    let (mut chunks, mut from, mut at) = (Vec::new(), 0, 0);
+    while at < out.len() {
+        let end = out[at..].iter().position(|&b| b == b'\n').map_or(out.len(), |k| at + k + 1);
+        if out[at..end] == line[..] {
+            chunks.push(&out[from..at]);
+            from = end;
+        }
+        at = end;
+    }
+    match (chunks.len(), ok) {
+        _ if from != out.len() => Batch::Lost,
+        (k, true) if k == n => Batch::Done(chunks),
+        (k, false) if k < n => Batch::Cut(chunks),
+        _ => Batch::Lost,
+    }
+}
+
+/// One tmux command list for every capture: each pane's
+/// [`crate::data::preview_args`], then a `display-message` of `tok##`. tmux
+/// prints that as `tok#`, so the mark never matches the argv a `ps` shows.
+pub fn batch_args(caps: &[(String, usize)], tok: &str) -> Vec<String> {
+    let mark = format!("{tok}##");
+    let mut a = Vec::new();
+    for (id, n) in caps {
+        a.extend(crate::data::preview_args(id, *n));
+        a.extend([";", "display-message", "-p", &mark, ";"].map(String::from));
+    }
+    a.pop();
+    a
+}
+
+/// A fresh mark for each call, off std's per-process random hash keys.
+pub fn token() -> String {
+    use std::hash::{BuildHasher, Hasher};
+    let half = || std::collections::hash_map::RandomState::new().build_hasher().finish();
+    format!("cockpit-{:016x}{:016x}", half(), half())
+}
+
+/// `argv` plus `args`: its stdout and whether it exited 0, `None` when it
+/// did not start.
+fn run_raw(argv: &[String], args: &[String]) -> Option<(Vec<u8>, bool)> {
+    let o = std::process::Command::new(argv.first()?)
+        .args(&argv[1..])
+        .args(args)
+        .output()
+        .ok()?;
+    Some((o.stdout, o.status.success()))
+}
+
+/// One pane's preview on `argv`, as [`crate::data::preview`] takes it on `$COCKPIT_TMUX`.
+fn preview_on(argv: &[String], id: &str, n: usize) -> Option<String> {
+    if n == 0 {
+        return Some(String::new());
+    }
+    let (out, ok) = run_raw(argv, &crate::data::preview_args(id, n))?;
+    ok.then(|| crate::data::shape_preview(&String::from_utf8_lossy(&out), n))
+}
+
+/// The tiles' previews in one tmux call on `argv` (#492), where [`crate::data::preview`]
+/// forks once per tile. A pane gone mid-call stops tmux there: it reads
+/// `None`, as its own capture would, and the panes after it go again in one
+/// more call. A split that does not add up falls back to a call per pane.
+pub fn previews(argv: &[String], caps: &[(String, usize)]) -> Vec<(String, Option<String>)> {
+    let (mut rest, none): (Vec<_>, Vec<_>) = caps.iter().cloned().partition(|c| c.1 > 0);
+    let mut got: Vec<_> = none.into_iter().map(|(id, _)| (id, Some(String::new()))).collect();
+    while !rest.is_empty() {
+        let tok = token();
+        let Some((out, ok)) = run_raw(argv, &batch_args(&rest, &tok)) else {
+            got.extend(rest.drain(..).map(|(id, _)| (id, None)));
+            break;
+        };
+        let chunks = match split_batch(&out, &format!("{tok}#"), rest.len(), ok) {
+            Batch::Done(c) | Batch::Cut(c) => c,
+            Batch::Lost => {
+                got.extend(rest.drain(..).map(|(id, n)| {
+                    let pv = preview_on(argv, &id, n);
+                    (id, pv)
+                }));
+                break;
+            }
+        };
+        let left = rest.split_off(chunks.len());
+        for (c, (id, n)) in chunks.into_iter().zip(rest) {
+            got.push((id, Some(crate::data::shape_preview(&String::from_utf8_lossy(c), n))));
+        }
+        // a Cut: the first pane left is the one tmux stopped at
+        let mut left = left.into_iter();
+        got.extend(left.next().map(|(id, _)| (id, None)));
+        rest = left.collect();
+    }
+    got
+}
+
 /// What the worker hands the key loop after each job.
 pub struct Snapshot {
     pub panes: Vec<Pane>,
@@ -3784,15 +3894,17 @@ pub fn drain<I>(first: Snapshot, rest: I, reads: &mut Reads, now: Instant) -> Dr
 where
     I: Iterator<Item = Snapshot>,
 {
-    let (mut snap, mut fetched, mut ok) = (first, None::<Duration>, None);
-    for s in rest {
-        if snap.fresh {
-            (fetched, ok) = (fetched.max(Some(snap.took)), Some(snap.ok));
+    let (mut fetched, mut ok) = (None::<Duration>, None);
+    let mut note = |s: &Snapshot| {
+        if s.fresh {
+            (fetched, ok) = (fetched.max(Some(s.took)), Some(s.ok));
         }
+    };
+    let mut snap = first;
+    note(&snap);
+    for s in rest {
+        note(&s);
         snap = s;
-    }
-    if snap.fresh {
-        (fetched, ok) = (fetched.max(Some(snap.took)), Some(snap.ok));
     }
     if let Some(ok) = ok {
         reads.got(ok, now);
@@ -3844,16 +3956,16 @@ fn worker(mut rx: Receiver<Ask>, tx: Sender<Snapshot>, want: Want) {
                 (panes, sessions) = got;
             }
         }
-        // the tiles take each pane's newest rows; the list's pane its visible
-        // screen, cursor-aware (#284)
-        let take = if want.tiles { preview } else { crate::data::screen };
-        let pvs = captures(&panes, ok, want)
-            .into_iter()
-            .map(|(id, rows)| {
-                let pv = take(&id, rows);
-                (id, pv)
-            })
-            .collect();
+        // the tiles take each pane's newest rows, all in one tmux call; the
+        // list's pane its visible screen, cursor-aware (#284)
+        let caps = captures(&panes, ok, want);
+        let pvs = if want.tiles {
+            previews(&crate::data::tmux_argv(), &caps)
+        } else {
+            caps.into_iter()
+                .map(|(id, rows)| (id.clone(), crate::data::screen(&id, rows)))
+                .collect()
+        };
         let snap = Snapshot {
             panes: panes.clone(),
             pvs,
