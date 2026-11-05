@@ -125,6 +125,8 @@ owner_of() {                  # <dir>  sets OWNER to the worktree path holding i
 # WORKTREES: every worktree path. -z keeps a path with a newline in one record but needs
 # git 2.36; older git rejects it and prints nothing, so the plain porcelain is read, and
 # a record with a line that is no worktree attribute (a path cut by a newline) is dropped.
+# So is one with no .git in it (#348): a newline name can forge a whole `worktree <dir>`
+# line. A main checkout has a .git dir, a linked worktree a .git file; -e takes both.
 wt_list() {
     local rec line cur='' ok=1
     WORKTREES=()
@@ -134,13 +136,13 @@ wt_list() {
     [ ${#WORKTREES[@]} -gt 0 ] && return 0
     while IFS= read -r line || [ -n "$line" ]; do
         if [[ $line == "worktree "* ]]; then
-            [ -n "$cur" ] && [ "$ok" = 1 ] && WORKTREES+=("$cur")
+            [ -n "$cur" ] && [ "$ok" = 1 ] && [ -e "$cur/.git" ] && WORKTREES+=("$cur")
             cur=${line#worktree }; ok=1
         elif [ -n "$line" ] && [[ ! $line =~ ^(HEAD\ |branch\ |bare$|detached$|locked|prunable) ]]; then
             ok=0
         fi
     done < <(git worktree list --porcelain 2>/dev/null)
-    [ -n "$cur" ] && [ "$ok" = 1 ] && WORKTREES+=("$cur")
+    [ -n "$cur" ] && [ "$ok" = 1 ] && [ -e "$cur/.git" ] && WORKTREES+=("$cur")
     return 0
 }
 
