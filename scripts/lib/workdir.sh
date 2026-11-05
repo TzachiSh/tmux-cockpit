@@ -36,8 +36,26 @@ workdir_ask() {               # <cockpit-tui args...> -> its stdout
     printf '%s' "$out"
 }
 
-# The tmux format that tells an agent pane, as the binary's own reads tell it.
-WORKDIR_AGENT='#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},1,0}'
+# What tells an agent pane, read in one format: the agent glob's verdict, @panestate
+# and the command name. Then the pane's @cockpit_dir and cwd.
+_wd=$'\037'
+WORKDIR_FMT="#{pane_id}$_wd#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},1,0}"
+WORKDIR_FMT+="$_wd#{@panestate}$_wd#{pane_current_command}"
+WORKDIR_FMT+="$_wd#{@cockpit_dir}$_wd#{pane_current_path}"
+unset _wd
+
+# The board's live test (tui/src/data.rs list_fleet, agentish): the glob, a
+# version-shaped name (a live Claude renames itself to one like 2.1.246), or a
+# @panestate the hooks set. The board's walk of the process tree is left out: it
+# forks ps.
+workdir_agent() {             # <glob 1|0> <@panestate> <pane_current_command>
+    local b=${3##*/} s
+    if [ "$1" = 1 ] || [ -n "$2" ]; then return 0; fi
+    b=${b#"${b%%[!-]*}"}
+    [[ $b =~ ^[0-9][0-9._]*$ ]] || return 1
+    s=${b//[0-9]/}
+    [ "${#s}" -ge 2 ]
+}
 
 # Whether the binary's answer can differ from the rule without it: only for an
 # agent pane (it alone has a transcript) whose @cockpit_dir does not hold (one
@@ -46,19 +64,28 @@ workdir_need() {              # <agent 1|0> <@cockpit_dir>
     [ "$1" = 1 ] && ! workdir_ok "$2"
 }
 
+# One WORKDIR_FMT row into WD_ID, WD_AGENT (1|0), WD_OPT and WD_CWD.
+workdir_row() {               # <row>
+    local r=$1 us=$'\037' glob st cmd
+    WD_ID=${r%%"$us"*}; r=${r#*"$us"}
+    glob=${r%%"$us"*}; r=${r#*"$us"}
+    st=${r%%"$us"*}; r=${r#*"$us"}
+    cmd=${r%%"$us"*}; r=${r#*"$us"}
+    WD_OPT=${r%%"$us"*}; WD_CWD=${r#*"$us"}
+    if workdir_agent "$glob" "$st" "$cmd"; then WD_AGENT=1; else WD_AGENT=0; fi
+}
+
 pane_workdir() {              # <pane> -> a directory; nothing when the pane is gone
-    local out id agent wt cwd dir='' us=$'\037'
+    local out dir=''
     is_pane "${1-}" || return 0
     # display-message can exit 0 and expand to nothing for a missing pane: the id tells
-    out=$(tmux display-message -p -t "$1" \
-        "#{pane_id}$us$WORKDIR_AGENT$us#{@cockpit_dir}$us#{pane_current_path}" 2>/dev/null)
-    id=${out%%"$us"*}; out=${out#*"$us"}
-    [ -n "$id" ] || return 0
-    agent=${out%%"$us"*}; out=${out#*"$us"}; wt=${out%%"$us"*}; cwd=${out#*"$us"}
-    if workdir_need "$agent" "$wt"; then
+    out=$(tmux display-message -p -t "$1" "$WORKDIR_FMT" 2>/dev/null)
+    workdir_row "$out"
+    [ -n "$WD_ID" ] || return 0
+    if workdir_need "$WD_AGENT" "$WD_OPT"; then
         dir=$(workdir_ask info --json "$1" | jq -r '.dir | strings' 2>/dev/null)
     fi
-    workdir_pick "$dir" "$wt" "$cwd"; printf '%s\n' "$WORKDIR"
+    workdir_pick "$dir" "$WD_OPT" "$WD_CWD"; printf '%s\n' "$WORKDIR"
 }
 
 # Every agent pane's dir in one call, for a loop over all panes: WORKDIRS[%N].

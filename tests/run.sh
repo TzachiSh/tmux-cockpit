@@ -5735,10 +5735,14 @@ for c in env bash dirname basename readlink timeout sleep cat; do
 done
 ln -s "$SHIM/tmux" "$WDNJ/tmux"
 cp -R "$WDNJ" "$WD/withjq"; ln -s "$(command -v jq)" "$WD/withjq/jq"
-is "the stub with jq on PATH, then without: its dir, then the launch dir" \
-   "$WD/other $WD/launch" \
-   "$(PATH="$WD/withjq" COCKPIT_TUI_BIN="$WD/ct" WD_CT=ok wd --dir "$WDP") \
-$(PATH="$WDNJ" COCKPIT_TUI_BIN="$WD/ct" WD_CT=ok wd --dir "$WDP")"
+# grep runs outside the PATH under test: <calls> <dir> for each.
+wd_path() {                   # wd_path <PATH> -> "<calls> <dir>" with the ok stub
+    local out; : > "$WD/ct.log"
+    out=$(PATH="$1" COCKPIT_TUI_BIN="$WD/ct" WD_CT=ok wd --dir "$WDP")
+    printf '%s %s' "$(grep -c . "$WD/ct.log")" "$out"
+}
+is "the stub with jq on PATH, then without: asked and taken, then not asked at all" \
+   "1 $WD/other | 0 $WD/launch" "$(wd_path "$WD/withjq") | $(wd_path "$WDNJ")"
 is "a pane that is gone prints nothing and asks nothing" "0 " "$(wd_ct ok %99999)"
 is "a shell pane is not asked: it has no transcript" "0 $WD/launch" "$(wd_ct ok "$WDSH")"
 "$TMUX_REAL" -L "$WDS" set -p -t "$WDP" @cockpit_dir "$WD/launch" >/dev/null 2>&1
@@ -5747,8 +5751,34 @@ is "an agent pane whose @cockpit_dir holds is not asked: that is the binary's fi
 "$TMUX_REAL" -L "$WDS" set -p -t "$WDP" @cockpit_dir launch >/dev/null 2>&1
 is "a relative @cockpit_dir does not hold, so the binary is asked" "1 $WD/other" \
    "$(wd_ct ok "$WDP")"
+# The board's live test: a live Claude renames itself to its version, and the hooks' @panestate
+# marks a pane whatever it runs. Each is an agent, so each is asked; a name with one dot is not.
+wd_pane() {                   # wd_pane <argv0> -> a new pane in the launch dir running sleep
+    local p; p=$("$TMUX_REAL" -L "$WDS" new-window -P -F '#{pane_id}' -d -t t: -c "$WD/launch" \
+        "exec -a $1 sleep 300")
+    until_out "$1" "$TMUX_REAL" -L "$WDS" display-message -p -t "$p" '#{pane_current_command}'
+    printf '%s' "$p"
+}
+WDV=$(wd_pane 2.1.246)
+is "a pane running as 2.1.246 is an agent, so it is asked" "1 $WD/other" "$(wd_ct ok "$WDV")"
+WDV1=$(wd_pane 2.1)
+is "a pane running as 2.1 is not version-shaped, so it is not asked" "0 $WD/launch" \
+   "$(wd_ct ok "$WDV1")"
+WDST=$(wd_pane snooze)
+"$TMUX_REAL" -L "$WDS" set -p -t "$WDST" @panestate running >/dev/null 2>&1
+is "a pane carrying @panestate is an agent whatever it runs, so it is asked" "1 $WD/other" \
+   "$(wd_ct ok "$WDST")"
+# End to end, the binary's info must take the same test. Pending #500 (info's gather matches
+# the glob only): until then it names the launch dir, and the row says so as a skip.
+"$TMUX_REAL" -L "$WDS" set -p -t "$WDV" @cockpit_session wd470 >/dev/null 2>&1
+if [ "$(TMUX="$WDSP,0,0" HOME="$WD/home" "$COCKPIT_TUI_BIN" info --json "$WDV" 2>/dev/null \
+        | jq -r '.dir')" = "$WD/launch" ]; then
+    skip_ "a 2.1.246 pane reviews its transcript's cwd (pending #500: info's agent test)"
+else
+    is "a 2.1.246 pane reviews its transcript's cwd" "$WD/repo" "$(wd --dir "$WDV")"
+fi
 "$TMUX_REAL" -L "$WDS" kill-server >/dev/null 2>&1
-unset -f wd wd_ct
+unset -f wd wd_ct wd_path wd_pane
 fi
 
 echo "== tmux-review: a temp git index is removed when the run is killed =="
@@ -12385,6 +12415,16 @@ BWA2=$(bg_pane "$BWS" "$BWR" 'exec -a claude sleep 300')
 "$TMUX_REAL" -L "$BWS" set -p -t "$BWA2" @cockpit_session bw470b >/dev/null 2>&1
 until_out claude "$TMUX_REAL" -L "$BWS" display-message -p -t "$BWA2" '#{pane_current_command}'
 is "a transcript path with a backslash finds its agent" "1 $BWA2 4" "$(bw_goto "$BWB")"
+# A live Claude renamed to its version is an agent to the board's --json: with no other pane
+# needing the binary, goto still asks for it.
+"$TMUX_REAL" -L "$BWS" set -p -t "$BWA2" @cockpit_dir "$BWB" >/dev/null 2>&1
+BWV="$BWD/ver"
+git -C "$BWR" worktree add -q "$BWV" conf >/dev/null 2>&1
+printf '{"type":"user","cwd":"%s","message":{"content":"hi"}}\n' "$BWV" > "$BWT/bw470v.jsonl"
+BWA3=$(bg_pane "$BWS" "$BWR" 'exec -a 2.1.246 sleep 300')
+"$TMUX_REAL" -L "$BWS" set -p -t "$BWA3" @cockpit_session bw470v >/dev/null 2>&1
+until_out 2.1.246 "$TMUX_REAL" -L "$BWS" display-message -p -t "$BWA3" '#{pane_current_command}'
+is "goto finds a pane running as 2.1.246 by its transcript's tree" "1 $BWA3 5" "$(bw_goto "$BWV")"
 "$TMUX_REAL" -L "$BWS" kill-server >/dev/null 2>&1
 unset -f bw_goto
 rm -rf "$BWR" "$BWM" "$BWD"
