@@ -21,5 +21,4 @@ fn the_batch_and_preview_read_the_same_tiles_off_the_same_captures() {
         assert_eq!(board::previews(&argv, caps), want, "{name}");
         assert_eq!(stub::calls(&dir) - before, calls, "{name}");
     }
-    let _ = std::fs::remove_dir_all(dir);
 }

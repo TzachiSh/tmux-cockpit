@@ -54,8 +54,24 @@ pub fn screens() -> Vec<(&'static str, Vec<u8>)> {
     ]
 }
 
+/// The stub's dir, removed on drop, so a failing test leaves nothing behind.
+pub struct Dir(pub PathBuf);
+
+impl Drop for Dir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+impl std::ops::Deref for Dir {
+    type Target = std::path::Path;
+    fn deref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
 /// Writes the stub and its screens under a fresh dir; its argv.
-pub fn stub(tag: &str) -> (PathBuf, Vec<String>) {
+pub fn stub(tag: &str) -> (Dir, Vec<String>) {
     let dir = std::env::temp_dir().join(format!("cockpit-tiles-stub-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("screens")).unwrap();
@@ -66,7 +82,7 @@ pub fn stub(tag: &str) -> (PathBuf, Vec<String>) {
     std::fs::write(&sh, SH).unwrap();
     std::fs::set_permissions(&sh, std::fs::Permissions::from_mode(0o755)).unwrap();
     let argv = vec![sh.display().to_string()];
-    (dir, argv)
+    (Dir(dir), argv)
 }
 
 /// How many times the stub under `dir` ran.

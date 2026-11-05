@@ -8,7 +8,7 @@ use cockpit_tui::data::preview;
 
 #[test]
 fn preview_reads_what_it_read_before_the_split() {
-    let (dir, argv) = stub::stub("shape");
+    let (_dir, argv) = stub::stub("shape");
     // SAFETY: this test binary holds exactly one test, so nothing runs beside it.
     unsafe { std::env::set_var("COCKPIT_TMUX", &argv[0]) };
     let got: Vec<_> = stub::screens().iter().map(|(id, _)| preview(id, 5)).collect();
@@ -23,5 +23,4 @@ fn preview_reads_what_it_read_before_the_split() {
     ];
     assert_eq!(got, want.map(|s| Some(s.to_string())));
     assert_eq!(preview("%9", 5), None, "a gone pane");
-    let _ = std::fs::remove_dir_all(dir);
 }
