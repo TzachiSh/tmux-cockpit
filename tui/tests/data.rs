@@ -1520,3 +1520,24 @@ fn a_tool_use_after_the_open_question_keeps_the_hooks_message() {
     r.rows(&[hooked("%1", "needs-input", "s1")]);
     assert_eq!(get(&list_panes().unwrap(), "%1").msg, "Claude needs your permission");
 }
+
+/// #460: `@cockpit_job_name`, field 16, is the bound job's name, cleaned: it comes
+/// from a pane title. A row without it (an older format) has no job.
+#[test]
+fn the_bound_job_name_is_read_cleaned_and_absent_is_none() {
+    let r = Rig::new("jobname");
+    let base = row("%1", "claude", "running", "-", "100");
+    let job = "night\u{202e}ly\u{1b}[31m sweep";
+    r.rows(&[
+        format!("{base}\u{1f}\u{1f}\u{1f}\u{1f}{job}"),
+        row("%2", "claude", "running", "-", "101"),
+    ]);
+    let ps = list_panes().unwrap();
+    assert_eq!(
+        (get(&ps, "%1").job.as_str(), get(&ps, "%2").job.as_str()),
+        ("nightly[31m sweep", "")
+    );
+    let v: serde_json::Value = serde_json::from_str(&cockpit_tui::fleet::rows_json(&ps)).unwrap();
+    let job_of = |id: &str| v.as_array().unwrap().iter().find(|o| o["id"] == id).unwrap()["job"].clone();
+    assert_eq!((job_of("%1"), job_of("%2")), ("nightly[31m sweep".into(), "".into()));
+}

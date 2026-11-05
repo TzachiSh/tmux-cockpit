@@ -7396,9 +7396,9 @@ done
 TJOUT=$(COCKPIT_TMUX="tmux -L $TJ" "$COCKPIT_TUI_BIN" --json 2>/dev/null)
 is "--json names both agent panes and not the shell pane" "$TJA $TJB" \
    "$(printf '%s\n' "$TJOUT" | sed -n 's/^    "id": "\(%[0-9]*\)".*/\1/p' | tr '\n' ' ' | sed 's/ $//')"
-is "--json carries the 14 frozen keys, in order" \
-   "id where state title doing said asked msg since loc diff review session path" \
-   "$(printf '%s\n' "$TJOUT" | sed -n 's/^    "\([a-z]*\)":.*/\1/p' | head -14 | tr '\n' ' ' | sed 's/ $//')"
+is "--json carries the 16 frozen keys, in order" \
+   "id where state title doing said asked msg since loc diff review session path dir job" \
+   "$(printf '%s\n' "$TJOUT" | sed -n 's/^    "\([a-z]*\)":.*/\1/p' | head -16 | tr '\n' ' ' | sed 's/ $//')"
 is "--json exits 0 and says nothing about $TJSH" "0 no" \
    "$(COCKPIT_TMUX="tmux -L $TJ" "$COCKPIT_TUI_BIN" --json >/dev/null 2>&1; printf '%s ' "$?"; \
       case "$TJOUT" in *"\"$TJSH\""*) printf yes ;; *) printf no ;; esac)"
@@ -10937,6 +10937,13 @@ case "$(pi_rs | grep '^base ')" in 'base      since last review  ('*) ok "the Ru
 printf 'uncommitted\n' > "$PISESS/comments.md.base"
 is "and it is the chosen mode" "base      uncommitted  (HEAD)" "$(pi_rs | grep '^base ')"
 is "a pane that is not there is named, exit 1" "cockpit-tui: no such pane %999 1" "$(pi_rs %999) $(pi_rs %999 >/dev/null 2>&1; echo $?)"
+# #460: a bound job's name is a pane title: a newline in it is a space, as on the board
+"$TMUX_REAL" -L "$PI" set -p -t "$PIAP" @cockpit_job bg_1 >/dev/null 2>&1
+"$TMUX_REAL" -L "$PI" set -p -t "$PIAP" @cockpit_job_name "$(printf 'night\nsweep')" >/dev/null 2>&1
+is "the job row names the bound job, a newline a space" "job       night sweep  (@cockpit_job bg_1)" \
+   "$(pi_rs | grep '^job ')"
+"$TMUX_REAL" -L "$PI" set -pu -t "$PIAP" @cockpit_job >/dev/null 2>&1
+"$TMUX_REAL" -L "$PI" set -pu -t "$PIAP" @cockpit_job_name >/dev/null 2>&1
 is "a word that is not a pane id is refused, exit 2" "2" "$(pi_rs notapane >/dev/null 2>&1; echo $?)"
 "$TMUX_REAL" -L "$PI" kill-server >/dev/null 2>&1
 fi
