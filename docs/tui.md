@@ -2192,6 +2192,33 @@ closes, the viewer opens again at line `a`. See
 from the first line to the drag's end. Under the floor card or the help a tap
 does nothing, and `?` on an empty file, or one the viewer refused, is a note.
 
+### The prompt basket (#365 child 5)
+
+`a` adds the selection's lines, or the whole file when there is none, to the
+prompt basket of the pane the file came from, and the viewer stays: its note
+says `added src/x.rs:40-72 (3 in the basket)`, or that the ref was there
+already. `y` sends the reference itself (`src/x.rs:40-72`, from the pane's
+folder) to the clipboard by OSC 52, which tmux passes on only under
+`set-clipboard on`, so the note says so. `tmux-open-path` names the pane as
+`COCKPIT_BASKET_PANE=<pane>` on the viewer's command alone; without it `a` is a
+note and `a add` is not on the footer.
+
+The basket is the pane option `@cockpit_basket`, so it goes with the pane: one
+`refs::render` line per ref, each an absolute path that `refs::parse` reads
+back, each ref once, at most 32 refs and 12 KiB (tmux 3.8 takes one command of
+about 16 KB). A name the text cannot carry, a line break or a control character
+in it, is refused, and a file gone since it was added drops out when the basket
+is read. `tui/src/basket.rs` writes it through `data::tmux_set`, so
+`COCKPIT_READONLY` keeps it unchanged, and reads each write back. The value ends
+in a newline: tmux strips a trailing `;` off a command's last argument, and a
+file named `x;` would read back as `x`. A pane that is gone says so rather than
+read as an empty basket. In any debug build, and so under `cargo test` from any
+directory, the basket runs tmux only on a private `-L`/`-S` server or a stub,
+never the user's; the repo root's `.cargo/config.toml` sets
+`COCKPIT_TEST_TMUX_GUARD` for a release test run too, and
+`COCKPIT_TEST_TMUX_GUARD=0` lifts it by hand. The panel's side (showing the
+basket, removing from it, sending it) is the next PR.
+
 ## `cockpit-tui branch` (#246)
 
 The branch popup behind `prefix b` and the status-bar branch click, built on the

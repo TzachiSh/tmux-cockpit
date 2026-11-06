@@ -14104,6 +14104,7 @@ if [ "$1" = view ]; then
         : > "$TMUX_LOG.once$i"
     fi
     [ -z "${VIEW_ENV:-}" ] || printf 'VIEWENV [%s]\n' "${COCKPIT_VIEW_ASK-unset}" >> "$TMUX_LOG"
+    [ -z "${VIEW_ENV:-}" ] || printf 'VIEWPANE [%s]\n' "${COCKPIT_BASKET_PANE-unset}" >> "$TMUX_LOG"
     printf '%s\n' "${VIEW_OUT-}"; exit "${VIEW_RC:-0}"
 fi
 while read -r _; do :; done; printf '%s\n' "${PICK_KEY-0}"
@@ -14197,15 +14198,15 @@ is "and from the touch client's terminal editor" \
 mkdir -p "$MV/s"; cp "$DIR/scripts/tmux-open-path" "$MV/s/"; ln -sfn "$DIR/scripts/lib" "$MV/s/lib"
 cat > "$MV/s/cockpit-panel" <<'STUB'
 #!/bin/sh
-{ printf 'PANEL'; for a in "$@"; do printf ' [%s]' "$a"; done; printf ' env[%s]\n' "${COCKPIT_VIEW_ASK-unset}"; } >> "$TMUX_LOG"
+{ printf 'PANEL'; for a in "$@"; do printf ' [%s]' "$a"; done; printf ' env[%s]' "${COCKPIT_VIEW_ASK-unset}"; printf ' pane[%s]\n' "${COCKPIT_BASKET_PANE-unset}"; } >> "$TMUX_LOG"
 STUB
 chmod +x "$MV/s/cockpit-panel"
 askrun() { MV_SCRIPT="$MV/s/tmux-open-path" VIEW_ONCE=1 VIEW_OUT="$1" mvrun '' "${@:2}"; }
 is "--view: the viewer's ask 3 7 opens the panel on the pane, the file and the lines, then the viewer at 3" \
-   "VIEW [view] [--line] [7] [--] [$MV/w/a.md]"$'\n'"PANEL [-p] [%1] [--ask] [$MV/w/a.md] [3] [7] env[unset]"$'\n'"VIEW [view] [--line] [3] [--] [$MV/w/a.md]" \
+   "VIEW [view] [--line] [7] [--] [$MV/w/a.md]"$'\n'"PANEL [-p] [%1] [--ask] [$MV/w/a.md] [3] [7] env[unset] pane[unset]"$'\n'"VIEW [view] [--line] [3] [--] [$MV/w/a.md]" \
    "$(askrun 'ask 3 7' --view %1 "$MV/w/a.md" 7)"
 is "--pick: the same, from the picker's own popup" \
-   "VIEW [view] [--] [$MV/w/a.md]"$'\n'"PANEL [-p] [%1] [--ask] [$MV/w/a.md] [1] [1] env[unset]"$'\n'"VIEW [view] [--line] [1] [--] [$MV/w/a.md]" \
+   "VIEW [view] [--] [$MV/w/a.md]"$'\n'"PANEL [-p] [%1] [--ask] [$MV/w/a.md] [1] [1] env[unset] pane[unset]"$'\n'"VIEW [view] [--line] [1] [--] [$MV/w/a.md]" \
    "$(MV_SCRIPT="$MV/s/tmux-open-path" VIEW_ONCE=1 VIEW_OUT='ask 1 1' PICK_KEY=0 mvrun 'a.md t.txt' --pick %1)"
 # a loop, not a call per ask: under a cap of 12 nested calls, 20 asks in a row
 # reopen the viewer 21 times; a recursion would die at the cap
@@ -14214,6 +14215,13 @@ is "twenty asks in a row reopen the viewer each time, in a loop" "20 21" \
       | awk '/^PANEL/ {p++} /^VIEW / {v++} END {print p+0, v+0}')"
 is "the viewer, and only the viewer, runs with COCKPIT_VIEW_ASK=1" "VIEWENV [1]" \
    "$(VIEW_ENV=1 askrun '' --view %1 "$MV/w/a.md" '' | grep VIEWENV)"
+# #365 child 5: the viewer's `a` adds to this pane's basket; the launcher names it
+is "the viewer, and only the viewer, is told the pane its basket is" "VIEWPANE [%1]" \
+   "$(VIEW_ENV=1 askrun '' --view %1 "$MV/w/a.md" '' | grep VIEWPANE)"
+for bp in 'x' '%' '%1;x' '%1 %2' '-t'; do
+    is "a pane [$bp] that is no %N id reaches the viewer as none" "VIEWPANE []" \
+       "$(VIEW_ENV=1 askrun '' --view "$bp" "$MV/w/a.md" '' | grep VIEWPANE)"
+done
 for o in 'ask 7 3' 'ask 0 1' 'ask 01 2' 'ask 1' 'ask 1 2 3' 'ask a b' 'ask 1234567890 1234567891' \
          "ask 1 2"$'\n'"ask 3 4" 'ask 1 2; touch x' ' ask 1 2' 'ask  1 2'; do
     case "$(askrun "$o" --view %1 "$MV/w/a.md" '')" in
