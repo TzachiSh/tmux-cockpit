@@ -143,6 +143,18 @@ act() {
         return 0
     fi
     last=ok
+    # #365 child 5: the refs went with this text, so the basket is spent; cleared
+    # only when it still holds what was sent (a viewer may have added since)
+    if [ -s "$f.basket" ]; then
+        local held sent
+        held=$(tmux show-options -pqv -t "$target" @cockpit_basket 2>/dev/null)
+        sent=$(cat "$f.basket")
+        if [ "$held" = "$sent" ]; then
+            tmux set-option -pu -t "$target" @cockpit_basket 2>/dev/null
+        else
+            log "the basket of $target changed since the send; kept"
+        fi
+    fi
     if [ "$verb" != send ]; then
         n=$(strip | wc -m)
         said ok "cockpit: inserted $((n)) chars into $target" "${say[@]}"
@@ -175,7 +187,7 @@ fi
 taken=''; [ "${#ask[@]}" -gt 0 ] && [ -n "$kept" ] && taken=1
 glyphs=$(tmux show-option -gqv @cockpit_glyphs 2>/dev/null)   # #293: the binary reads only the env
 while :; do
-    rm -f "$f" "$f.text" "$f.cmd" "$f.state"
+    rm -f "$f" "$f.text" "$f.cmd" "$f.state" "$f.basket"
     # CLAUDECODE leaks in from the agent's environment and must not mark the call as its child.
     env -u CLAUDECODE COCKPIT_ACTION="$f" COCKPIT_LOG="$LOG" COCKPIT_PANEL_DROPPED="${dropped# }" \
         ${glyphs:+"COCKPIT_GLYPHS=$glyphs"} ${taken:+COCKPIT_PANEL_HIDE_TAKEN=1} \
