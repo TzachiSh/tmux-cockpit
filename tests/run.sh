@@ -10510,6 +10510,29 @@ wait "$AVA" "$AVB" 2>/dev/null
 av_tm kill-server >/dev/null 2>&1
 fi
 
+echo "== agent-poll: a bind is set before the wake, so a woken board reads it (#502) =="
+# agent-state poll wakes every board inside its own tmux call (run-shell -C on
+# @cockpit_board_wake). The bound job and its name were set after that call, so a
+# board woken by it read the old name and showed the bind a poll late. The wake
+# here records the pane's job and name the moment it runs, in the same server
+# command: the earliest any board could read them.
+av_setup
+if need_tmux "agent-poll bind before wake"; then :; else
+av_srv wake
+av_tm set -g @cockpit_agents_glob '|claude|codex|'
+AVWK="$AVREC/woke"; : > "$AVWK"
+AVWP=$(av_np "alpha")
+av_tm set -g @cockpit_board_wake \
+    "run-shell -t $AVWP \"printf '%s|%s\\\\n' '#{@cockpit_job}' '#{@cockpit_job_name}' >> $AVWK\" ; "
+av_once bind.json >/dev/null
+is "a new bind's wake already sees its job and name" "aa|alpha" "$(sed -n 1p "$AVWK")"
+av_tm select-pane -t "$AVWP" -T "fix the parser"
+av_once bind.json >/dev/null
+is "a bind that moves to another job: its wake sees the new one" "bb|fix the parser" \
+    "$(sed -n 2p "$AVWK")"
+av_tm kill-server >/dev/null 2>&1
+fi
+
 echo "== agent-poll: the sweeps start one poller, which reads claude only when it matters (#448) =="
 av_setup
 if need_tmux "agent-poll lifetime" || [ ! -d /proc/self ]; then :; else

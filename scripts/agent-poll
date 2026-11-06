@@ -253,7 +253,8 @@ EOT
         bound_now="$bound_now $bpane"; watched="$watched $bpane"
         pane_row "$bpane"
         st=$(job_state "$bstate")
-        "$here/agent-state" poll "$st" "$bpane" "$bname needs you" >/dev/null 2>&1
+        # The job first: the state write below wakes every board (#502), and a board woken
+        # before the name is set shows the bind a poll late.
         if [ "$row_job" != "$bid" ] || [ "$row_name" != "$bname" ] \
             || [ "$row_jstate" != "$st" ]; then
             # tmux takes an argument's trailing `;` for a separator; `\;` is a literal one.
@@ -264,6 +265,7 @@ EOT
                 set-option -p -t "$bpane" @cockpit_job_state "$st" \; \
                 set-option -pu -t "$bpane" @cockpit_fg 2>/dev/null
         fi
+        "$here/agent-state" poll "$st" "$bpane" "$bname needs you" >/dev/null 2>&1
     done <<EOT
 $new
 EOT
