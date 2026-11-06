@@ -1,0 +1,30 @@
+ board · 6 agents · 2 needs you               1-5 of 6   ▼1
+┏ 1 ▲  api:0 · server ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃Do you want to run npm test?                              ┃
+┃                                                          ┃
+┃                                                          ┃
+┃                                                          ┃
+┗ ↵ answer ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+┌ 2 ▲  web:2 · docs ───────────────────────────────────────┐
+│plan ready: approve?                                      │
+╭ keys ────────────────────────────────────────────────────╮
+│ move                       act                           │
+│ h l  ← →  column           ↵   jump to this pane, close  │
+│ j k  ↑ ↓  row              a   answer / ask this agent   │
+│ ⇥ ⇧⇥      next / previous  r   review its diff           │
+│ 1-9       tile by number   f   panel for this pane       │
+│ g G       first / last     i   info for this pane        │
+│ u         next blocked                                   │
+│ [ ]       page             view                          │
+│                            ?   this help                 │
+│                            ^L  refresh now               │
+│                            q   close   ·   esc close ove │
+╰ any key closes ──────────────────────────────────────────╯
+└──────────────────────────────────────────────────────────┘
+┌ 5 ●  web:0 · ui ─────────────────────────────────────────┐
+│—                                                         │
+│                                                          │
+│                                                          │
+│                                                          │
+└──────────────────────────────────────────────────────────┘
+ ↵ jump   ? help   q close
