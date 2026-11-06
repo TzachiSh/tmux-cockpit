@@ -168,12 +168,13 @@ wt_list() {
     local rec line top common cur='' ok=1 z=0
     WORKTREES=()
     # The main record comes first. When the main checkout's .git is a file (separate-git-dir,
-    # a submodule), git prints the git dir there, which is no tree: dropped (#537), as
-    # wt_ours drops it on the fallback.
+    # a submodule) or the repo is bare, git prints the git dir there, which is no tree and
+    # holds no .git: dropped (#537), as wt_ours drops it on the fallback. A first record
+    # with a .git, a dir or a linked tree's file, is a tree and kept (#560).
     while IFS= read -r -d '' rec; do
         [[ $rec == "worktree "* ]] || continue
         rec=${rec#worktree }
-        [ "$z" = 0 ] && { z=1; [ -d "$rec/.git" ] || continue; }
+        [ "$z" = 0 ] && { z=1; [ -e "$rec/.git" ] || continue; }
         WORKTREES+=("$rec")
     done < <(git worktree list --porcelain -z 2>/dev/null)
     [ "$z" = 1 ] && return 0

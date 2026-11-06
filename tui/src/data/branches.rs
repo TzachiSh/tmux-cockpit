@@ -53,13 +53,14 @@ fn refs(dir: &str, ns: &str) -> Vec<(String, String)> {
 /// is one that is not this repo's (#348, #532): a newline name can forge a whole
 /// `worktree <dir>` line, and `<dir>` may be any checkout. See [`ours`].
 /// When the main checkout's `.git` is a file (`--separate-git-dir`, a submodule), git
-/// prints the git dir as the main record's path. That is no tree, so the record is
-/// dropped (#537); the fallback's [`ours`] drops it too.
+/// prints the git dir as the main record's path. That is no tree and holds no `.git`,
+/// so the record is dropped (#537); the fallback's [`ours`] drops it too. A first
+/// record with a `.git`, a linked tree's file included, is a tree and kept (#560).
 fn worktrees(dir: &str, top: &str) -> Vec<(String, Option<String>)> {
     let z = git(dir, &[], None, &["worktree", "list", "--porcelain", "-z"]);
     if !z.is_empty() {
         let mut v = records(z.split('\0'), true);
-        if v.first().is_some_and(|(p, _)| !Path::new(p).join(".git").is_dir()) {
+        if v.first().is_some_and(|(p, _)| !Path::new(p).join(".git").exists()) {
             v.remove(0);
         }
         return v;
