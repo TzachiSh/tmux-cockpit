@@ -1615,3 +1615,33 @@ fn the_bound_job_name_is_read_cleaned_and_absent_is_none() {
     let job_of = |id: &str| v.as_array().unwrap().iter().find(|o| o["id"] == id).unwrap()["job"].clone();
     assert_eq!((job_of("%1"), job_of("%2")), ("nightly[31m sweep".into(), "".into()));
 }
+
+/// #477: the board's message and the info screen's ask row agree on whether a
+/// row after an open question was the human moving on. Rows: the interrupt string,
+/// which is not a prompt, so the question still shows on both; an image prompt,
+/// which is one, so neither shows it.
+#[test]
+fn the_board_and_info_agree_on_what_closes_an_open_question() {
+    let r = Rig::new("askagree");
+    let image = serde_json::json!({"type": "user", "timestamp": "2026-08-27T00:00:05.000Z", "message": {"content": [
+        {"type": "image", "source": {"type": "base64", "data": "AA=="}}, {"type": "text", "text": "look at this"}]}});
+    let cases = [
+        ("s1", typed_row("[Request interrupted by user]"), true),
+        ("s2", format!("{image}\n"), false),
+    ];
+    let mut rows = vec![];
+    for (sess, after, _) in &cases {
+        r.transcript(sess, &(ask_row("tu1", serde_json::json!([q("Merge?", "M")])) + after));
+        rows.push(hooked(&format!("%{}", &sess[1..]), "needs-input", sess));
+    }
+    r.rows(&rows);
+    let ps = list_panes().unwrap();
+    for (sess, _, shown) in cases {
+        let board = get(&ps, &format!("%{}", &sess[1..])).msg == "Merge?";
+        let file = r.dir.join(format!(".claude/projects/-w/{sess}.jsonl"));
+        let info = cockpit_tui::data::transcript::doing(&file)
+            .unwrap_or_default()
+            .contains("ask\tMerge?");
+        assert_eq!((board, info), (shown, shown), "{sess}: (board shows it, info shows it)");
+    }
+}
