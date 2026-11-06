@@ -102,10 +102,11 @@ fn heads(head: &Path, b: &str) -> bool {
 
 /// True when some `<common>/worktrees/*/gitdir` names `<p>/.git`, as git decides that
 /// a gone tree is prunable. The file is read whole, as git reads it, and a relative one
-/// is taken from its entry. A text compare, since a missing path has no inode.
+/// is taken from its entry. A text compare, since a missing path has no inode, after
+/// [`lexical`] on both sides: `--relative-paths` writes `../../../../<tree>/.git` (#555).
 fn prunable(p: &Path, common: &Path) -> bool {
     use std::io::Read;
-    let want = p.join(".git");
+    let want = lexical(&p.join(".git"));
     let Ok(dir) = std::fs::read_dir(common.join("worktrees")) else {
         return false;
     };
@@ -114,8 +115,25 @@ fn prunable(p: &Path, common: &Path) -> bool {
         let f = std::fs::File::open(d.path().join("gitdir"));
         let read = f.and_then(|f| f.take(4096).read_to_string(&mut s)).is_ok();
         let b = s.trim_end_matches(['\n', '\r']);
-        read && !b.is_empty() && d.path().join(b).as_os_str() == want.as_os_str()
+        read && !b.is_empty() && lexical(&d.path().join(b)) == want
     })
+}
+
+/// `p` with `.` dropped and each `..` taking off the part before it, as text, so a path
+/// that is gone resolves too: no canonicalize. `/..` is `/`, as for git.
+fn lexical(p: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for c in p.components() {
+        match c {
+            Component::ParentDir => {
+                out.pop();
+            }
+            Component::CurDir => {}
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 /// The git dir of the tree at `p` when the tree is this repo's. The main checkout's
