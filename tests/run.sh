@@ -8339,9 +8339,13 @@ echo "== cockpit-tui board: a held j recaptures, and fetches only on the tick (#
 # Each new selection ran a full fetch, list-panes first: j held at 30 Hz was
 # about 20 fetches a second. A selection now recaptures off the last fetch's
 # panes. Each key here waits for its own capture-pane, so the counts are per
-# selection, not per second: 40 selections may cost the tick's few list-panes,
-# never 40. Then the keys go on until a list-panes comes, which a capture that
-# put the tick off again would never let happen.
+# selection, not per second: 40 selections may cost the tick's list-panes,
+# one per second they take, never one each. The bound is the window's own
+# ticks, ceil(elapsed / 1 s) + 2, since a loaded box stretches the window
+# (12 fetches once at load 90). A box so slow that bound reaches 40 cannot
+# tell a fetch per key from the tick, and SKIPs. Then the keys go on until a
+# list-panes comes, which a capture that put the tick off again would never
+# let happen.
 if need_tmux "a held j on the board"; then :; else
 PJ="cockpit-pj-$$"; SOCKS="$SOCKS $PJ"; PJD=$(mktmpd)
 printf '#!/bin/sh\nprintf "%%s\\n" "$1" >> %s/calls\nexec %s "$@"\n' \
@@ -8369,15 +8373,24 @@ pj_key() {                    # <key>  one press, then poll for one more capture
     return 1
 }
 if until_cap "$PJ" "$PJW" '*live · *screen-of-alpha*'; then
+    # timed from before the count, so no fetch is counted without being timed
+    pjt0=$(date +%s%N)
     pjl=$(pj_n list-panes); pjmiss=0
     for i in $(seq 1 20); do
         pj_key j || pjmiss=$((pjmiss + 1))
         pj_key k || pjmiss=$((pjmiss + 1))
     done
     pjf=$(( $(pj_n list-panes) - pjl ))
+    pjms=$(( ($(date +%s%N) - pjt0) / 1000000 ))
+    # the board's TICK is 1 s, counted from each fetch's end
+    pjmax=$(( (pjms + 999) / 1000 + 2 ))
     is "each of 40 held selections gets a capture" 0 "$pjmiss"
-    if [ "$pjf" -le 10 ]; then ok "and 40 selections cost at most 10 full fetches ($pjf)"
-    else bad "and 40 selections cost at most 10 full fetches" "at most 10 list-panes" "$pjf"; fi
+    if [ "$pjmax" -ge 40 ]; then
+        skip_ "40 selections took ${pjms} ms: too slow to tell a fetch per key from the tick"
+    elif [ "$pjf" -le "$pjmax" ]; then
+        ok "and 40 selections cost only the tick's fetches ($pjf in ${pjms} ms, at most $pjmax)"
+    else bad "and 40 selections cost only the tick's fetches" \
+        "at most $pjmax list-panes in ${pjms} ms" "$pjf"; fi
     pjl=$(pj_n list-panes); pjtick=
     for i in $(seq 1 300); do
         pj_key j; pj_key k
