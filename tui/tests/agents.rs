@@ -2,7 +2,7 @@
 //! Gates use files and polls, never a clock: the stub waits on a `go` file.
 mod fake;
 
-use cockpit_tui::data::agents::{Background, Entry, lookup_pid, read_file, set_background};
+use cockpit_tui::data::agents::{Background, Entry, lookup_pid, lookups, read_file, set_background};
 use cockpit_tui::data::list_panes;
 use fake::write_exec;
 use std::os::unix::fs::MetadataExt;
@@ -147,11 +147,37 @@ impl Drop for Rig {
             // SAFETY: a plain signal to a pid whose cmdline names this rig's own dir.
             unsafe { libc::kill(p, libc::SIGKILL) };
         }
+        // A board's lookup writes its cache after this rig is gone, and the write makes
+        // the dir again (#608): wait for it first. No panic in a drop: the dir goes anyway.
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while lookups() > 0 && std::time::Instant::now() < end {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
 
 const ONE: &str = r#"printf '[{"pid":100,"sessionId":"s-100","cwd":"/launch","kind":"interactive"}]'"#;
+
+/// A board's lookup that answers only once the rig is dropped (Drop writes `go`)
+/// writes the cache after that: the rig must still leave no dir behind (#608).
+#[test]
+fn a_rig_leaves_no_dir_behind_a_background_lookup() {
+    // it answers once Drop says go, or once Drop has removed the dir: either way it writes
+    let body = format!("while [ ! -f $HOME/go ] && [ -d $HOME ]; do sleep 0.02; done\n{ONE}");
+    let dir = {
+        let r = Rig::new("leak", &body);
+        r.sess();
+        wait_forks(&r, 1);
+        r.dir.clone()
+    };
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while lookups() > 0 {
+        assert!(std::time::Instant::now() < end, "the lookup never finished");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(!dir.exists(), "{} was left behind", dir.display());
+}
 
 fn now() -> u64 {
     std::time::SystemTime::now()

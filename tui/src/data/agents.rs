@@ -13,7 +13,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// A reader ignores a file older than this many seconds.
@@ -48,6 +48,24 @@ static CHILD: AtomicU32 = AtomicU32::new(0);
 /// what `kill_lookup` reads. The tests wait for it before they hang up.
 pub fn lookup_pid() -> Option<u32> {
     Some(CHILD.load(Ordering::Relaxed)).filter(|&c| c != 0)
+}
+
+/// Lookup threads started and not yet done, the cache write included.
+static LOOKUPS: AtomicUsize = AtomicUsize::new(0);
+
+/// How many lookup threads are still running, their cache write included: a
+/// test waits for 0 before it removes the dir that write lands in (#608).
+pub fn lookups() -> usize {
+    LOOKUPS.load(Ordering::SeqCst)
+}
+
+/// Counts one lookup thread down when it ends, whichever way it returns.
+struct Running;
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        LOOKUPS.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 /// The last child, and when it ended: a `ps` snapshot taken during the call can
@@ -406,7 +424,12 @@ pub fn flush() {
         Some((s.gen_id, s.path.clone(), ids))
     });
     if let Some((gen_id, path, asked)) = spawn {
-        std::thread::spawn(move || ask(gen_id, &path, asked));
+        // counted before the spawn, so no wait can see 0 while it starts
+        LOOKUPS.fetch_add(1, Ordering::SeqCst);
+        std::thread::spawn(move || {
+            let _running = Running;
+            ask(gen_id, &path, asked)
+        });
     }
 }
 
