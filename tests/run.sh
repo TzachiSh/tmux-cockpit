@@ -12648,6 +12648,37 @@ BGO5=$("$TMUX_REAL" -L "$BGS5" list-panes -a -F '#{pane_id}' | head -1)
 BG_SHIM=$BGSH bg_goto "$BGS5" "$BGO5" "$BGR" "$BGQ/par"
 is "a pane in a tree nested in a linked worktree is not a pane of it, nested listed first" "2" "$(bg_windows "$BGS5")"
 "$TMUX_REAL" -L "$BGS5" kill-server >/dev/null 2>&1
+# #560: which tree the reverse put first hung on mktemp's names. This shim moves the records
+# named in BG_FRONT, one path a line, to the front in that order, so a linked tree is first.
+cat > "$BGSH/front.py" <<'EOF'
+import os, sys
+f = [b"worktree " + p.encode() for p in os.environ["BG_FRONT"].split("\n")]
+r = [x for x in sys.stdin.buffer.read().split(b"\0\0") if x]
+def rank(rec):  # a record's place: its worktree line's index in BG_FRONT, else after them
+    w = rec.split(b"\0")[0]
+    return f.index(w) if w in f else len(f)
+sys.stdout.buffer.write(b"\0\0".join(sorted(r, key=rank)) + b"\0\0")
+EOF
+printf '#!/bin/sh\ncase " $* " in\n *" worktree list "*) %s "$@" | python3 %s ;;\n' \
+    "$BGGIT" "$BGSH/front.py" > "$BGSH/git"
+printf ' *) exec %s "$@" ;;\nesac\n' "$BGGIT" >> "$BGSH/git"
+is "the front shim lists nest, then par, first" "$BGQ/par/nest $BGQ/par" \
+   "$(BG_FRONT="$BGQ/par/nest"$'\n'"$BGQ/par" PATH="$BGSH:$PATH" \
+      git -C "$BGR" worktree list --porcelain -z \
+      | tr '\0' '\n' | sed -n 's/^worktree //p' | head -2 | paste -sd' ')"
+bg_front() {                  # bg_front <n> <label> <front paths>  goto par from a pane in nest
+    local s="cockpit-bg560$1-$$" o; SOCKS="$SOCKS $s"
+    bg_server "$s" "$BGQ/par/nest"
+    o=$("$TMUX_REAL" -L "$s" list-panes -a -F '#{pane_id}' | head -1)
+    BG_FRONT=$3 BG_SHIM=$BGSH bg_goto "$s" "$o" "$BGR" "$BGQ/par"
+    is "$2: says nothing on stderr" "" "$BG_ERR"
+    is "$2: opens a window in it" "2" "$(bg_windows "$s")"
+    "$TMUX_REAL" -L "$s" kill-server >/dev/null 2>&1
+}
+bg_front a "a nested tree listed first, ahead of its parent, keeps its record" \
+    "$BGQ/par/nest"$'\n'"$BGQ/par"
+bg_front b "a linked tree listed first keeps its record" "$BGQ/par"
+unset -f bg_front
 else skip_ "no python3 for the git shim"; skip_ "nested-first order"; fi
 
 # Across sessions: the point of the feature. A control-mode client sits on s1; the
@@ -12895,17 +12926,54 @@ pg_says "a gone tree whose id starts with a dot is named gone" "is gone" "$PGR" 
     git init -q -b main "$PGD/src"; git -C "$PGD/src" commit -q --allow-empty -m s
     git -C "$PGR" -c protocol.file.allow=always submodule add -q "$PGD/src" sm
     git -C "$PGR/sm" worktree add -q -b sl "$PGD/sl"
+    git clone -q --bare "$PGD/src" "$PGD/bare.git"
+    git -C "$PGD/bare.git" worktree add -q -b bl "$PGD/bl"
+    for k in junk gitdir dir; do
+        git clone -q --bare "$PGD/src" "$PGD/$k.git"
+        git -C "$PGD/$k.git" worktree add -q -b "b$k" "$PGD/b$k"
+    done
+    # #560: a bare repo whose git dir is <proj>/.git, and core.bare on a normal repo: git
+    # prints <proj> and nb with bare, and neither path is the common dir.
+    git clone -q --bare "$PGD/src" "$PGD/proj/.git"
+    git -C "$PGD/proj" worktree add -q -b pw "$PGD/proj/wa"
+    git init -q -b main "$PGD/nb"; git -C "$PGD/nb" commit -q --allow-empty -m n
+    git -C "$PGD/nb" worktree add -q -b nw "$PGD/nb-wc"
+    git -C "$PGD/nb" config core.bare true
 ) >/dev/null 2>&1
+# #560: whatever sits in a bare repo, its record is the git dir: junk, a gitdir: line, a dir.
+echo junk > "$PGD/junk.git/.git"
+printf 'gitdir: %s\n' "$PGD/gitdir.git/worktrees/bgitdir" > "$PGD/gitdir.git/.git"
+mkdir "$PGD/dir.git/.git"
 PGSM=$(git -C "$PGR/sm" rev-parse --path-format=absolute --git-common-dir)
 is "git lists the separate git dir as the main record" "worktree $PGD/store.git" \
    "$(git -C "$PGD/l1" worktree list --porcelain | head -1)"
 is "and a submodule's git dir" "worktree $PGSM" "$(git -C "$PGD/sl" worktree list --porcelain | head -1)"
+is "and a bare repo" "worktree $PGD/bare.git" \
+   "$(git -C "$PGD/bl" worktree list --porcelain | head -1)"
+is "and a bare repo in proj/.git as proj, bare" "worktree $PGD/proj bare" \
+   "$(git -C "$PGD/proj/wa" worktree list --porcelain | head -2 | paste -sd' ')"
+is "and a repo set core.bare as itself, bare" "worktree $PGD/nb bare" \
+   "$(git -C "$PGD/nb-wc" worktree list --porcelain | head -2 | paste -sd' ')"
 for v in "" "$PGOLD"; do
     w=${v:+without -z}; w=${w:-with -z}
     pg_says "$w, a separate git dir listed as the main checkout is no worktree" \
         "not a worktree" "$PGD/l1" "$PGD/store.git" "$v"
     pg_says "$w, a submodule's git dir listed as its main checkout is no worktree" \
         "not a worktree" "$PGD/sl" "$PGSM" "$v"
+    pg_says "$w, a bare repo listed as its main checkout is no worktree" \
+        "not a worktree" "$PGD/bl" "$PGD/bare.git" "$v"
+    for k in junk gitdir dir; do
+        pg_says "$w, a bare repo holding a .git $k is no worktree" \
+            "not a worktree" "$PGD/b$k" "$PGD/$k.git" "$v"
+    done
+    pg_says "$w, a bare repo in proj/.git, listed as proj, is no worktree" \
+        "not a worktree" "$PGD/proj/wa" "$PGD/proj" "$v"
+    pg_says "$w, a repo set core.bare, listed as its main checkout, is no worktree" \
+        "not a worktree" "$PGD/nb-wc" "$PGD/nb" "$v"
+    "$TMUX_REAL" -L "$PGS" select-window -t "$PGO"
+    BG_SHIM=$v bg_goto "$PGS" "$PGO" "$PGD/proj/wa" "$PGD/proj/wa"
+    is "$w, a tree linked to a bare repo in proj/.git still opens" "$PGD/proj/wa" \
+       "$("$TMUX_REAL" -L "$PGS" display-message -p -t t: '#{pane_current_path}')"
     "$TMUX_REAL" -L "$PGS" select-window -t "$PGO"
     BG_SHIM=$v bg_goto "$PGS" "$PGO" "$PGD/wk" "$PGD/l1"
     is "$w, a tree linked to a separate git dir still opens" "$PGD/l1" \
