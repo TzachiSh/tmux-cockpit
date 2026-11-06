@@ -870,3 +870,70 @@ note: #558 (card 33): a small addition to existing code: check that the json exp
 --- request
 add csv to the export as well
 
+
+# #558 holdouts, written after the prompt change.
+=== h-rate-limit
+kind: feature
+window: claude · claude · /home/u/projects/public-api
+expect: either
+ask_any: user|users; key|keys; ip; limit|limits; requests; minute|second|hour; endpoint|endpoints; 429; reject|rejected
+must: rate; requirements; AskUserQuestion|interview; plan|planning|plans
+out_is: prompt
+must_not: Assumed:
+holdout: yes
+note: a big feature in one service: one question on what changes the work most, or a prompt that checks today's flow, interviews the owner and plans, both serve
+--- screen
+● The API serves /v1/orders and /v1/search behind one Express app.
+--- request
+add rate limiting to the api
+
+=== h-jest-vitest
+kind: refactor
+window: claude · claude · /home/u/projects/web
+expect: write
+must: vitest; jest; test|tests; baseline|today|currently; again|rerun|re-run|compare; plan|planning|plans
+must_not: Assumed:
+holdout: yes
+note: a migration across every test file, with the goal in the request: run the suite for a baseline, plan, wait, then run it again and compare
+--- request
+switch our tests from jest to vitest, all of them
+
+=== h-verbose-flag
+kind: feature
+window: claude · claude · /home/u/projects/cli
+expect: write
+must: --verbose; sync; fetch; first|before
+must_not: AskUserQuestion; requirements; Assumed:
+holdout: yes
+note: a small addition next to one that exists: check fetch --verbose works first, add it to sync, test both
+--- screen
+● `cli fetch --verbose` now prints each request it makes. tests/test_fetch.py passes.
+--- request
+sync should get the same verbose flag
+
+=== h-search-answered
+kind: feature
+window: claude · claude · /home/u/projects/docs-site
+expect: either
+ask_any: typo|typos; fuzzy; title|titles; page|pages; content; instant|live; index|indexed; offline; server|client
+must: search; requirements; AskUserQuestion|interview; plan|planning|plans
+out_is: prompt
+must_not: Assumed:
+holdout: yes
+note: a big feature after one answer: one more question on what changes the work most, or a prompt that interviews the owner for the rest and plans, both serve
+--- conversation
+assistant: Where should search live? Options: The docs site header | A separate search page
+user: The docs site header
+--- request
+add search to the docs
+
+=== h-readme-typo
+kind: bug
+window: bash · bash · /home/u/projects/tool
+expect: write
+must: recieve; receive
+must_not: baseline; AskUserQuestion; requirements; plan
+holdout: yes
+note: a trivial edit: no baseline, interview or plan
+--- request
+fix the typo recieve in README.md
