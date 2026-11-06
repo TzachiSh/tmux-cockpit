@@ -12799,6 +12799,77 @@ cg_refused "an empty worktree path is no worktree" ""
 rm -rf "$CGR" "$CGM" "$CGD" "$CGOLD" "$CG212"
 fi
 
+echo "== tmux-branch (#537): a gone path is a prunable tree, and a git dir is no tree =="
+# On the fallback a missing path is kept only when some worktrees/*/gitdir names
+# <path>/.git, as git tests a tree for prunable. And when a main checkout's .git is a file,
+# git prints the git dir as its path, on either git: that is never a tree to open.
+if need_tmux "branch goto, gone paths and git dirs"; then :; else
+# shellcheck source=../scripts/lib/fmt.sh
+. "$DIR/scripts/lib/fmt.sh"
+PGR=$(mktmpd); PGM=$(mktmpd); br_repo "$PGR" "$PGM"
+PGD=$(mktmpd); PGOLD=$(mktmpd)
+printf '#!/bin/sh\ncase " $* " in *" worktree list "*" -z "*) exit 129 ;; esac\nexec %s "$@"\n' \
+    "$(command -v git)" > "$PGOLD/git"
+chmod +x "$PGOLD/git"
+PGS="cockpit-pg537-$$"; SOCKS="$SOCKS $PGS"
+bg_server "$PGS" "$PGD"
+PGO=$("$TMUX_REAL" -L "$PGS" list-panes -a -F '#{pane_id}' | head -1)
+pg_says() {                   # pg_says <label> <want> <repo> <path> [shim]  goto's error names <want>
+    local n; n=$(bg_windows "$PGS")
+    BG_SHIM=${5-} bg_goto "$PGS" "$PGO" "$3" "$4"
+    case "$BG_ERR" in
+        *"$2"*) ok "$1" ;;
+        *) bad "$1" "$2" "$BG_ERR" ;;
+    esac
+    is "$1: no window opens" "$n" "$(bg_windows "$PGS")"
+}
+pg_x() { git -C "$PGR" worktree add -q -b "$1" "$PGD/$1"$'\n'"worktree $2" >/dev/null 2>&1; }
+
+git -C "$PGR" worktree add -q -b gone537 "$PGD/gone" >/dev/null 2>&1; rm -rf "$PGD/gone"
+pg_x fn537 "$PGD/nothere"
+pg_says "a forged line naming a missing path is no worktree" "not a worktree" \
+    "$PGR" "$PGD/nothere" "$PGOLD"
+pg_x fg537 "$PGD/gonex"
+pg_says "nor is one naming a path one letter off a gone tree" "not a worktree" \
+    "$PGR" "$PGD/gonex" "$PGOLD"
+pg_says "the gone tree itself is still named gone" "is gone" "$PGR" "$PGD/gone" "$PGOLD"
+# git before 2.24 kept a leading dot in the id; a glob of * skips such an entry.
+git -C "$PGR" worktree add -q -b dot537 "$PGD/.dg" >/dev/null 2>&1
+mv "$PGR/.git/worktrees/-dg" "$PGR/.git/worktrees/.dg"
+printf 'gitdir: %s\n' "$PGR/.git/worktrees/.dg" > "$PGD/.dg/.git"; rm -rf "$PGD/.dg"
+pg_says "a gone tree whose id starts with a dot is named gone" "is gone" "$PGR" "$PGD/.dg" "$PGOLD"
+
+# A separate git dir and a submodule's: git lists P/store.git and P/sup/.git/modules/sm.
+(
+    export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+    git init -q -b main --separate-git-dir "$PGD/store.git" "$PGD/wk"
+    git -C "$PGD/wk" commit -q --allow-empty -m i
+    git -C "$PGD/wk" worktree add -q -b l1 "$PGD/l1"
+    git init -q -b main "$PGD/src"; git -C "$PGD/src" commit -q --allow-empty -m s
+    git -C "$PGR" -c protocol.file.allow=always submodule add -q "$PGD/src" sm
+    git -C "$PGR/sm" worktree add -q -b sl "$PGD/sl"
+) >/dev/null 2>&1
+PGSM=$(git -C "$PGR/sm" rev-parse --path-format=absolute --git-common-dir)
+is "git lists the separate git dir as the main record" "worktree $PGD/store.git" \
+   "$(git -C "$PGD/l1" worktree list --porcelain | head -1)"
+is "and a submodule's git dir" "worktree $PGSM" "$(git -C "$PGD/sl" worktree list --porcelain | head -1)"
+for v in "" "$PGOLD"; do
+    w=${v:+without -z}; w=${w:-with -z}
+    pg_says "$w, a separate git dir listed as the main checkout is no worktree" \
+        "not a worktree" "$PGD/l1" "$PGD/store.git" "$v"
+    pg_says "$w, a submodule's git dir listed as its main checkout is no worktree" \
+        "not a worktree" "$PGD/sl" "$PGSM" "$v"
+    "$TMUX_REAL" -L "$PGS" select-window -t "$PGO"
+    BG_SHIM=$v bg_goto "$PGS" "$PGO" "$PGD/wk" "$PGD/l1"
+    is "$w, a tree linked to a separate git dir still opens" "$PGD/l1" \
+       "$("$TMUX_REAL" -L "$PGS" display-message -p -t t: '#{pane_current_path}')"
+done
+
+"$TMUX_REAL" -L "$PGS" kill-server >/dev/null 2>&1
+unset -f pg_says pg_x
+rm -rf "$PGR" "$PGM" "$PGD" "$PGOLD"
+fi
+
 echo "== tmux-branch (#360): a goto moves the client that pressed prefix b, not the busiest one =="
 if need_tmux "branch goto client"; then :; else
 BCR=$(mktmpd); BCM=$(mktmpd); br_repo "$BCR" "$BCM"
