@@ -1,6 +1,9 @@
 //! The batched tiles read byte for byte what `data::preview` reads, one fork
 //! per pane, as the board did before #492. Its own binary: `preview` reads
 //! COCKPIT_TMUX, which this sets.
+// rig.rs writes its counting wrapper with it, which this binary never asks for
+#[allow(dead_code)]
+mod fake;
 #[path = "tiles/rig.rs"]
 mod rig;
 

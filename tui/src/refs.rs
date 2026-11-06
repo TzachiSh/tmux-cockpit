@@ -19,7 +19,7 @@ use crate::pick::clean;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Ref {
     path: PathBuf,
     lines: Option<(u32, u32)>,
@@ -27,6 +27,7 @@ pub struct Ref {
 }
 
 #[derive(Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum RefError {
     /// The path does not exist (or is empty).
     NotFound(PathBuf),
@@ -66,6 +67,8 @@ impl Ref {
             std::io::ErrorKind::NotFound => RefError::NotFound(path.to_path_buf()),
             k => RefError::Io(path.to_path_buf(), k),
         })?;
+        // an all-whitespace symbol names nothing (#381's NIT)
+        let symbol = symbol.filter(|s| !s.trim().is_empty());
         Ok(Ref { path: canon, lines, symbol })
     }
 

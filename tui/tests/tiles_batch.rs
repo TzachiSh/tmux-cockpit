@@ -1,5 +1,6 @@
 //! The tiles' previews in one tmux call (#492): the split at the marks, and
 //! the batch against a private server, on an explicit argv (no env read).
+mod fake;
 #[path = "tiles/rig.rs"]
 mod rig;
 
@@ -24,37 +25,54 @@ fn alone(argv: &[String], id: &str) -> Option<String> {
 
 #[test]
 fn the_split_cuts_at_whole_mark_lines_only() {
-    let m = "tok#";
-    // (name, stdout, captures, tmux exit 0, the split)
-    let rows: [(&str, &[u8], usize, bool, Batch); 10] = [
+    // (name, stdout under the token `tok`, captures, tmux exit 0, the split)
+    let rows: [(&str, &[u8], usize, bool, Batch); 15] = [
         (
             "two captures",
-            b"a\nb\ntok#\nc\ntok#\n",
+            b"a\nb\ntok-0#\nc\ntok-1#\n",
             2,
             true,
             Batch::Done(vec![b"a\nb\n", b"c\n"]),
         ),
-        ("an empty capture", b"tok#\nc\ntok#\n", 2, true, Batch::Done(vec![b"", b"c\n"])),
-        ("the mark inside a line", b"x tok#\ntok#\n", 1, true, Batch::Done(vec![b"x tok#\n"])),
-        ("the argv's spelling", b"tok##\ntok#\n", 1, true, Batch::Done(vec![b"tok##\n"])),
-        ("tmux stopped at the second", b"a\ntok#\n", 3, false, Batch::Cut(vec![b"a\n"])),
+        ("an empty capture", b"tok-0#\nc\ntok-1#\n", 2, true, Batch::Done(vec![b"", b"c\n"])),
+        (
+            "the mark inside a line",
+            b"x tok-0#\ntok-0#\n",
+            1,
+            true,
+            Batch::Done(vec![b"x tok-0#\n"]),
+        ),
+        ("the argv's spelling", b"tok-0##\ntok-0#\n", 1, true, Batch::Lost),
+        ("the token with no dash", b"tok#\ntok-0#\n", 1, true, Batch::Done(vec![b"tok#\n"])),
+        ("tmux stopped at the second", b"a\ntok-0#\n", 3, false, Batch::Cut(vec![b"a\n"])),
         ("tmux stopped at the first", b"", 2, false, Batch::Cut(vec![])),
-        ("a mark too many", b"tok#\ntok#\ntok#\n", 2, true, Batch::Lost),
-        ("text after the last mark", b"a\ntok#\nb\n", 1, true, Batch::Lost),
-        ("exit 0 but a mark short", b"a\ntok#\n", 2, true, Batch::Lost),
-        ("a failure with every mark", b"tok#\ntok#\n", 2, false, Batch::Lost),
+        ("a mark too many", b"tok-0#\ntok-1#\ntok-2#\n", 2, true, Batch::Lost),
+        ("text after the last mark", b"a\ntok-0#\nb\n", 1, true, Batch::Lost),
+        ("exit 0 but a mark short", b"a\ntok-0#\n", 2, true, Batch::Lost),
+        ("a failure with every mark", b"tok-0#\ntok-1#\n", 2, false, Batch::Lost),
+        // review-510's probe: pane 0 prints its own mark, then a pane is gone
+        (
+            "a forged mark, then a cut",
+            b"a\ntok-0#\nb\ntok-0#\nc\ntok-1#\n",
+            4,
+            false,
+            Batch::Lost,
+        ),
+        ("a mark ahead of its place", b"a\ntok-1#\n", 2, false, Batch::Lost),
+        ("a mark repeated", b"tok-0#\ntok-0#\n", 2, true, Batch::Lost),
+        ("a line that only starts as a mark", b"tok-x\ntok-0#\n", 1, true, Batch::Lost),
     ];
     for (name, out, n, ok, want) in rows {
-        assert_eq!(board::split_batch(out, m, n, ok), want, "{name}");
+        assert_eq!(board::split_batch(out, "tok", n, ok), want, "{name}");
     }
 }
 
 #[test]
 fn the_batch_is_each_capture_then_its_mark() {
     let mut want: Vec<String> = preview_args("%1", N).into();
-    want.extend([";", "display-message", "-p", "tok##", ";"].map(String::from));
+    want.extend([";", "display-message", "-p", "tok-0##", ";"].map(String::from));
     want.extend(preview_args("%2", N));
-    want.extend([";", "display-message", "-p", "tok##"].map(String::from));
+    want.extend([";", "display-message", "-p", "tok-1##"].map(String::from));
     assert_eq!(board::batch_args(&caps(&["%1", "%2"]), "tok"), want);
 }
 

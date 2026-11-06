@@ -1,6 +1,7 @@
 //! `data::preview` reads the same bytes after #492 split it into
 //! `preview_args` and `shape_preview`. The literals are what it read before.
 //! Its own binary: `preview` reads COCKPIT_TMUX, which this sets.
+mod fake;
 #[path = "tiles/stub.rs"]
 mod stub;
 

@@ -30,9 +30,13 @@ fn facts(tag: &str, state: &str, body: &str) -> (String, String) {
         "",
     ];
     std::fs::write(d.join("display"), f.join(&us.to_string())).unwrap();
+    // the board's FIELDS row, which the agent test (#519) reads: @panestate makes it one
+    let board = ["%1", "w:0", "win", "claude", state, "-", "-", "s1", "/", "100", "-", "-", "@1"];
+    std::fs::write(d.join("rows"), board.join(&us.to_string())).unwrap();
     let shim = d.join("tmux");
     let sh = format!(
-        "#!/bin/sh\ncase \"$1\" in\ndisplay-message) cat {0}/display ;;\nshow-option) echo {1} ;;\nesac\n",
+        "#!/bin/sh\ncase \"$1\" in\ndisplay-message) case \"$5\" in *cockpit_tui_version*) cat {0}/display ;; \
+         *) cat {0}/rows ;; esac ;;\nshow-option) echo {1} ;;\nesac\n",
         d.display(),
         t.display()
     );

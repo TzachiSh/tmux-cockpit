@@ -1,0 +1,4 @@
+# Processes cargo runs from here or below (tests, `cargo run`) get this: the prompt basket then runs
+# tmux only on a private server or a stub, never the user's (AGENTS.md).
+[env]
+COCKPIT_TEST_TMUX_GUARD = "1"

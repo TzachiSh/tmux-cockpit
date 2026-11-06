@@ -2,22 +2,26 @@
 //! on every call: `capture-pane ... -t ID` prints `screens/ID`, a missing one
 //! fails as a gone pane does, and `display-message -p F` prints F with `##`
 //! as `#`, as tmux does. `;` separates commands, and the first failure stops
-//! the list. A screen line `@MARK@` becomes the mark of the call it is in, so
-//! a pane can hold the very text a batch cuts at; a call with no mark (one
+//! the list. A screen line `@MARK@` becomes the mark that follows that very
+//! capture in the call, the n-th `##` argument for the n-th capture, so a
+//! pane can hold the exact text a batch cuts at; a call with no mark (one
 //! pane's own capture) prints it as nothing.
 #![allow(dead_code)]
-use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
 const SH: &str = r#"#!/bin/sh
 D=$(dirname "$0")
 echo call >> "$D/calls"
-mark=""
-for a; do case $a in *'##') mark=${a%#} ;; esac; done
+marks=""
+for a; do case $a in *'##') marks="$marks${a%#}
+" ;; esac; done
+k=0
 run() {
     case $cmd in
         capture-pane)
             [ -f "$D/screens/$id" ] || { echo "can't find pane: $id" >&2; exit 1; }
+            k=$((k + 1))
+            mark=$(printf '%s' "$marks" | sed -n "${k}p")
             sed "s/^@MARK@\$/$mark/" "$D/screens/$id" ;;
         display-message) printf '%s\n' "$fmt" | sed 's/##/#/g' ;;
     esac
@@ -84,8 +88,7 @@ pub fn stub(tag: &str) -> (Dir, Vec<String>) {
         std::fs::write(dir.join("screens").join(id), s).unwrap();
     }
     let sh = dir.join("tmux");
-    std::fs::write(&sh, SH).unwrap();
-    std::fs::set_permissions(&sh, std::fs::Permissions::from_mode(0o755)).unwrap();
+    crate::fake::write_exec(&sh, SH);
     let argv = vec![sh.display().to_string()];
     (Dir(dir), argv)
 }
