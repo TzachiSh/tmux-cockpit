@@ -509,7 +509,7 @@ use the brainstorming skill to work out how the board should show subagents
 kind: plan
 window: claude · claude · /home/u/projects/tool
 expect: write
-must: plan|planning|plans; before; test|tests; baseline|today|currently; again|rerun|re-run|compare
+must: plan|planning|plans; before; test|tests; baseline|today|currently; again|rerun|re-run|compare|match|matches
 must_not: autopilot; ralph; ultrawork; ultrathink; Assumed:
 note: a large change: plan and wait for an OK before editing (explore, plan, code); #558 (card 22): facts first, so it runs the tests or the tool for a baseline first and runs them again after, to compare
 --- request
@@ -558,7 +558,7 @@ kind: research
 window: bash · bash · /home/u/projects/api
 expect: either
 ask_any: report; recommend|recommendation; change|update|edit; switch|upgrade; why; reason; constraint|constraints
-must: node; Dockerfile; source|sources|nodejs.org|cite; OK|approval|approve|confirm|go-ahead
+must: node; Dockerfile; source|sources|nodejs.org|cite; list|lists; do not edit|not edit|do not change|OK|approval|approve|confirm
 out_is: prompt
 must_not: Assumed:
 holdout: yes
@@ -891,7 +891,7 @@ add rate limiting to the api
 kind: refactor
 window: claude · claude · /home/u/projects/web
 expect: write
-must: vitest; jest; test|tests; baseline|today|currently; again|rerun|re-run|compare; plan|planning|plans
+must: vitest; jest; test|tests; baseline|today|currently; again|rerun|re-run|compare|match|matches; plan|planning|plans
 must_not: Assumed:
 holdout: yes
 note: a migration across every test file, with the goal in the request: run the suite for a baseline, plan, wait, then run it again and compare
