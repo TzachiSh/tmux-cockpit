@@ -12939,14 +12939,18 @@ chmod +x "$PGOLD/git"
 PGS="cockpit-pg537-$$"; SOCKS="$SOCKS $PGS"
 bg_server "$PGS" "$PGD"
 PGO=$("$TMUX_REAL" -L "$PGS" list-panes -a -F '#{pane_id}' | head -1)
+pg_ids() { "$TMUX_REAL" -L "$PGS" list-windows -t t: -F '#{window_id}' | tr '\n' ' '; }
 pg_says() {                   # pg_says <label> <want> <repo> <path> [shim]  goto's error names <want>
-    local n; n=$(bg_windows "$PGS")
+    local was id new=''
+    was=$(pg_ids)
     BG_SHIM=${5-} bg_goto "$PGS" "$PGO" "$3" "$4"
     case "$BG_ERR" in
         *"$2"*) ok "$1" ;;
         *) bad "$1" "$2" "$BG_ERR" ;;
     esac
-    is "$1: no window opens" "$n" "$(bg_windows "$PGS")"
+    # Ids, not a count (#579): a window closing meanwhile would hide one goto opened.
+    for id in $(pg_ids); do case " $was " in *" $id "*) ;; *) new="$new$id " ;; esac; done
+    is "$1: no window opens" "" "$new"
 }
 pg_x() { git -C "$PGR" worktree add -q -b "$1" "$PGD/$1"$'\n'"worktree $2" >/dev/null 2>&1; }
 
@@ -13047,7 +13051,7 @@ for v in "" "$PGOLD"; do
 done
 
 "$TMUX_REAL" -L "$PGS" kill-server >/dev/null 2>&1
-unset -f pg_says pg_x
+unset -f pg_ids pg_says pg_x
 rm -rf "$PGR" "$PGM" "$PGD" "$PGOLD"
 fi
 
