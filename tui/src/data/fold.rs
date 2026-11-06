@@ -189,7 +189,20 @@ struct Track {
     pos: u64,
     /// the bytes from `pos` to the next newline end a row that started before `base`
     skip: bool,
+    /// (length, hash) of the up to `PRINT` bytes before `pos`: another file
+    /// written in place under the same inode, longer, differs there
+    print: (u64, u64),
     fold: Fold,
+}
+
+/// The bytes before `pos` a read checks again, as a hash.
+const PRINT: u64 = 1024;
+
+fn hash(b: &[u8]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    b.hash(&mut h);
+    h.finish()
 }
 
 thread_local! {
@@ -215,32 +228,39 @@ impl Track {
             base,
             pos: base,
             skip,
+            print: (0, 0),
             fold,
         }
     }
 
     /// Reads `[pos, len)`, folds each whole row and returns the partial last one.
-    /// None when the byte before `pos` is no longer the newline the last read
-    /// ended on: the file was rewritten.
+    /// None when the bytes before `pos` are not the ones the last read ended on, or
+    /// the byte before it is no longer a newline: the file was rewritten.
     fn advance(&mut self, f: &mut File) -> Option<Vec<u8>> {
-        let from = self.pos.saturating_sub(1);
+        let back = if self.print.0 > 0 { self.print.0 } else { self.pos.min(1) };
+        let from = self.pos - back;
         f.seek(SeekFrom::Start(from)).ok()?;
         let mut buf = Vec::new();
         f.take(self.len - from).read_to_end(&mut buf).ok()?;
         READ.with(|r| r.set(r.get() + buf.len() as u64));
-        let mut rest = &buf[..];
-        if self.pos > 0 {
-            let (b, r) = rest.split_first()?;
+        if (buf.len() as u64) < back {
+            return None;
+        }
+        let (head, mut rest) = buf.split_at(back as usize);
+        if self.print.0 > 0 && hash(head) != self.print.1 {
+            return None;
+        }
+        if let Some(b) = head.last() {
             match (*b == b'\n', self.skip) {
                 (true, _) => self.skip = false,
                 (false, false) => return None,
                 (false, true) => {}
             }
-            rest = r;
         }
         if self.skip {
             let Some(i) = rest.iter().position(|b| *b == b'\n') else {
                 self.pos = self.len;
+                self.mark(&buf);
                 return Some(vec![]);
             };
             (self.pos, rest, self.skip) = (self.pos + i as u64 + 1, &rest[i + 1..], false);
@@ -250,7 +270,14 @@ impl Track {
             self.fold.step(self.pos, line.strip_suffix('\r').unwrap_or(&line));
             (self.pos, rest) = (self.pos + i as u64 + 1, &rest[i + 1..]);
         }
+        self.mark(&buf[..(self.pos - from) as usize]);
         Some(rest.to_vec())
+    }
+
+    /// Remembers the up to `PRINT` bytes at the end of `upto`, which ends at `pos`.
+    fn mark(&mut self, upto: &[u8]) {
+        let tail = &upto[upto.len().saturating_sub(PRINT as usize)..];
+        self.print = (tail.len() as u64, hash(tail));
     }
 
     /// The window from `ws`, the partial row counted as `tail` counts it.
@@ -458,6 +485,20 @@ mod tests {
         same(&p, "replaced");
     }
 
+    /// The same inode rewritten longer in place, a newline still where the last read
+    /// ended: the bytes before that offset are another file's. Rows: the change in
+    /// the last row read, and one row further back.
+    #[test]
+    fn delta_starts_over_when_rewritten_longer_in_place() {
+        for (name, tail) in [("last row", String::new()), ("a row back", result(2, "u1", 0))] {
+            let (_d, p) = tmp(&format!("longer-{}", name.replace(' ', "-")));
+            add(&p, &(prompt(0, "/w/a") + &tool(1, "Bash") + &tail));
+            same(&p, &format!("{name}, before"));
+            std::fs::write(&p, prompt(0, "/w/b") + &tool(1, "Read") + &tail + &done(3)).unwrap();
+            same(&p, &format!("{name}, rewritten longer"));
+        }
+    }
+
     /// The same length with a new mtime is a rewrite in place.
     #[test]
     fn delta_starts_over_when_rewritten_at_the_same_length() {
@@ -483,7 +524,7 @@ mod tests {
         let before = read_bytes();
         delta(&p, TAIL_FIRST);
         let read = read_bytes() - before;
-        assert_eq!(read, r.len() as u64 + 1, "the row and the newline before it");
+        assert_eq!(read, r.len() as u64 + PRINT, "the row and the bytes checked before it");
     }
 
     /// One append past 256 KB, an open ask, then only tool_results: the first read
