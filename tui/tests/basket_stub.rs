@@ -61,4 +61,7 @@ fn the_basket_never_reaches_a_tmux_it_was_not_given() {
     let why = basket::read("%1").unwrap_err();
     assert!(why.contains("COCKPIT_TEST_TMUX_GUARD"), "{why}");
     assert_eq!(n(), before, "the guard ran tmux");
+    // is_claude too: is_agent's read is data's own, so the guard comes first (review-534)
+    assert!(!basket::is_claude("%1"));
+    assert_eq!(n(), before, "is_claude ran tmux past the guard");
 }

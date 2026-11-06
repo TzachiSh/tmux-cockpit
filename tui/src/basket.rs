@@ -32,11 +32,20 @@ pub fn body(refs: &[Ref]) -> Result<String, String> {
     Ok(text)
 }
 
-/// The refs the option's text holds, each once; a file gone since is dropped.
+/// A line or paragraph separator (U+2028, U+2029: Unicode's Zl and Zp, the
+/// whole of both) in a name: cockpit-panel's strip keeps it, and inside an
+/// `@"…"` mention it reads as a line break, so a crafted name could forge a
+/// line of its own (review-534). Such a name never goes in the basket.
+fn breaks_lines(r: &Ref) -> bool {
+    r.path().to_string_lossy().contains(['\u{2028}', '\u{2029}'])
+}
+
+/// The refs the option's text holds, each once; a file gone since is dropped,
+/// and so is a name [`breaks_lines`] refuses.
 pub fn from_body(text: &str) -> Vec<Ref> {
     let mut out: Vec<Ref> = vec![];
     for r in refs::parse(text, Path::new("/")) {
-        if !out.contains(&r) {
+        if !out.contains(&r) && !breaks_lines(&r) {
             out.push(r);
         }
     }
@@ -50,7 +59,7 @@ pub fn with_ref(refs: &[Ref], r: Ref) -> Result<(Vec<Ref>, bool), String> {
     if refs.contains(&r) {
         return Ok((refs.to_vec(), false));
     }
-    if from_body(&line(&r)) != [r.clone()] {
+    if breaks_lines(&r) || from_body(&line(&r)) != [r.clone()] {
         return Err("its name cannot be kept as text; not added".into());
     }
     if refs.len() >= MAX_REFS {
@@ -106,6 +115,12 @@ fn ask(args: &[&str]) -> Result<Option<String>, String> {
 /// The basket of `pane`, read from tmux. A pane that is gone is an error, not
 /// an empty basket: tmux reads a gone pane's option as nothing, exit 0.
 pub fn read(pane: &str) -> Result<Vec<Ref>, String> {
+    Ok(from_body(&read_text(pane)?))
+}
+
+/// The option's text itself, gone files' lines included: what a send that
+/// carries the basket leaves for cockpit-panel to compare (review-534).
+pub fn read_text(pane: &str) -> Result<String, String> {
     check(pane)?;
     let id = ask(&["display-message", "-p", "-t", pane, "#{pane_id}"])?;
     if id.as_deref().map(str::trim) != Some(pane) {
@@ -113,7 +128,7 @@ pub fn read(pane: &str) -> Result<Vec<Ref>, String> {
     }
     let show = ["show-options", "-pqv", "-t", pane, OPTION];
     let text = ask(&show)?.ok_or("tmux did not answer")?;
-    Ok(from_body(text.trim_end_matches('\n')))
+    Ok(text.trim_end_matches('\n').to_string())
 }
 
 /// Sets the basket of `pane` to `refs` (unsets it when empty), then reads it
@@ -193,4 +208,78 @@ pub fn main(args: &[String]) -> i32 {
     let (code, line) = cli(args);
     println!("{line}");
     code
+}
+
+/// A command that is Claude Code's: `claude`, or its version-shaped process
+/// title (`2.1.318`), as data's agentish reads them; the one agent that inlines
+/// `@path#La-b`.
+pub fn claude_cmd(comm: &str) -> bool {
+    let b = comm.rsplit('/').next().unwrap_or(comm).trim_start_matches('-').to_ascii_lowercase();
+    let version = b.starts_with(|c: char| c.is_ascii_digit())
+        && b.chars().filter(|c| *c == '.' || *c == '_').count() >= 2
+        && b.chars().all(|c| c.is_ascii_digit() || c == '.' || c == '_');
+    b == "claude" || version
+}
+
+/// An agent's pane (#519's `data::is_agent`) that runs Claude Code
+/// ([`claude_cmd`]). @panestate alone is not enough: it outlives the claude
+/// that set it, and @ refs sent to a shell would be noise. A miss sends bare refs.
+pub fn is_claude(pane: &str) -> bool {
+    // the guard first: is_agent's own read is data's, outside the basket's
+    if check(pane).is_err() || guard().is_err() || !crate::data::is_agent(pane) {
+        return false;
+    }
+    let cmd = ask(&["display-message", "-p", "-t", pane, "#{pane_current_command}"]);
+    cmd.ok().flatten().is_some_and(|c| claude_cmd(c.trim_end_matches('\n')))
+}
+
+/// The send's cap (#365 child 5): the whole text, the draft and its refs. Over it
+/// the send is refused, never cut, as a cut text would drop refs the user saw.
+pub const MAX_SEND: usize = 16 * 1024;
+
+/// One ref as the pane's agent reads it (owner's D4). For Claude Code, which
+/// inlines the lines a mention names (probed on 2.1.318): `@path#La-b`,
+/// `@path#La`, `@path` for a whole file; a path with whitespace quoted whole,
+/// `@"path#La-b"`, the one quoted form that keeps the range. A path holding `"`
+/// cannot be quoted, and goes bare. Any other agent gets `refs::render`'s bare
+/// `path:a-b`. Relative to `base`, the pane's folder, when inside it.
+pub fn ref_line(r: &Ref, base: &Path, claude: bool) -> String {
+    let bare = refs::render(std::slice::from_ref(r), base);
+    if !claude {
+        return bare;
+    }
+    let Ok(whole) = Ref::new(r.path(), None, None) else { return bare };
+    let path = refs::render(std::slice::from_ref(&whole), base);
+    let at = match r.lines() {
+        Some((a, b)) if a == b => format!("#L{a}"),
+        Some((a, b)) => format!("#L{a}-{b}"),
+        None => String::new(),
+    };
+    // a `"` cannot be quoted, and a `#` could read as the range's start
+    if path.contains(['"', '#']) {
+        bare
+    } else if path.contains(char::is_whitespace) {
+        format!("@\"{path}{at}\"")
+    } else {
+        format!("@{path}{at}")
+    }
+}
+
+/// What a send with `refs` puts in the pane: the draft, a blank line, then one
+/// ref per line ([`ref_line`]); with none, the draft as it is. This exact text is
+/// what the confirm shows. Over [`MAX_SEND`] is an error.
+pub fn expand(draft: &str, refs: &[Ref], base: &Path, claude: bool) -> Result<String, String> {
+    let text = if refs.is_empty() {
+        draft.to_string()
+    } else {
+        let lines: Vec<String> = refs.iter().map(|r| ref_line(r, base, claude)).collect();
+        format!("{}\n\n{}", draft.trim_end_matches('\n'), lines.join("\n"))
+    };
+    if text.len() > MAX_SEND {
+        let n = text.len();
+        return Err(format!(
+            "too long to send ({n} bytes, {MAX_SEND} at most): remove refs or shorten the draft"
+        ));
+    }
+    Ok(text)
 }

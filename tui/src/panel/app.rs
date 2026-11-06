@@ -2,7 +2,7 @@
 //! terminal here, so every transition is a unit test away.
 use super::action::{Hidden, hide_body, sanitize, state_body};
 use super::capture::{Capture, REPO_BUDGET, SSH_LIKE, Session, is_local, session_state, toplevel, window_kind};
-use super::envelope::{Flow, OutType, Role, Turn, build_counted};
+use super::envelope::{Flow, OutType, RefItem, Role, Turn, build_refs, ref_items};
 use super::parse::{self, Opt, Reply, Step};
 use super::prompts::{self, Ctx};
 use super::redact::redact;
@@ -10,7 +10,7 @@ use super::request::{Call, Fail, Profile, Request, read_dir_ok};
 use super::route::{Route, route};
 use super::view::{TABLET_MIN_H, TABLET_MIN_W};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use unicode_segmentation::{GraphemeCursor, UnicodeSegmentation};
 
@@ -25,6 +25,10 @@ pub const OUT_CYCLE: [OutType; 7] = [
     OutType::Hint,
 ];
 pub const MAX_DRAFT: usize = 8000;
+/// An ask's `c` prefills at most this many characters, the `…` included, cut
+/// on whole graphemes (#365 child 5): a quarter of the draft, so the user has
+/// room to make it an instruction.
+pub const PREFILL_MAX: usize = 2000;
 /// Past this the Compose head counts the draft against MAX_DRAFT.
 pub const DRAFT_COUNT: usize = 6000;
 /// tmux 3.8 drops, silently, an OSC 52 whose base64 tops `input-buffer-size`
@@ -140,6 +144,10 @@ pub enum View {
         back: Box<View>,
         scroll: usize,
     },
+    /// ^B from Compose (#365 child 5): the prompt basket's refs, one a row
+    Basket {
+        sel: usize,
+    },
     Error {
         line: String,
         /// One line on what to do about it, when the failure is a known one.
@@ -252,6 +260,23 @@ pub struct App {
     /// A panel is hidden on this pane already (an ask left it so): ^Z cannot hide
     /// this one too, as the pane keeps one.
     pub hide_taken: bool,
+    /// The pane's prompt basket (#365 child 5), read at open: the refs a send
+    /// from Compose carries, expanded after the draft.
+    pub basket: Vec<crate::refs::Ref>,
+    /// The basket's option text as last read or written: what a send leaves in
+    /// `.basket`, so the clear matches even when a gone file's ref was dropped
+    /// on read (review-534); empty when the App holds no basket of the pane's.
+    pub basket_raw: String,
+    /// The pane runs Claude Code (`basket::is_claude`): refs go as `@path#La-b`.
+    pub claude: bool,
+    /// The basket as the confirm on screen would send it, until it acts.
+    basket_body: Option<String>,
+    /// The basket as sent with the action, for cockpit-panel to clear once the
+    /// paste lands (`<action>.basket`).
+    pub sent_basket: Option<String>,
+    /// Where esc in Compose goes when an ask's `c` opened it (#365, owner's D3):
+    /// the answer, its thread kept. A write or a fix from there ends it.
+    compose_back: Option<View>,
     pub quit: bool,
     /// The step this run was resumed for, and its verb: the mark says what was done.
     pub last_step: Option<(usize, &'static str)>,
@@ -309,6 +334,12 @@ impl App {
             resume: None,
             hide: false,
             hide_taken: false,
+            basket: vec![],
+            basket_raw: String::new(),
+            claude: false,
+            basket_body: None,
+            sent_basket: None,
+            compose_back: None,
             reopened: false,
             quit: false,
             last_step: None,
@@ -463,7 +494,8 @@ impl App {
             return;
         }
         match &mut self.view {
-            View::Home { sel } | View::ExplainAsk { sel } | View::Steps { sel, .. } => *sel = i,
+            View::Home { sel } | View::ExplainAsk { sel } => *sel = i,
+            View::Steps { sel, .. } | View::Basket { sel } => *sel = i,
             View::Question { sel, scroll } => (*sel, *scroll) = (i, None),
             _ => return,
         }
@@ -571,6 +603,7 @@ impl App {
         match &self.view {
             View::Home { sel } => self.home_key(k, *sel),
             View::Compose => self.compose_key(k, ctrl),
+            View::Basket { sel } => self.basket_key(k, *sel),
             View::Busy => {
                 if k.code == KeyCode::Esc {
                     self.cancel();
@@ -723,6 +756,7 @@ impl App {
                 eprintln!("cockpit-tui: the steps are too long to keep open");
             }
         }
+        self.sent_basket = self.basket_body.take().or_else(|| self.written_basket(&back, &text));
         self.view = back;
         self.action = Some(Action { verb, text });
         self.exit();
@@ -730,6 +764,15 @@ impl App {
 
     fn confirm_key(&mut self, k: KeyEvent, text: String, send: bool, warn: Vec<String>, back: Box<View>, scroll: usize) {
         let verb = if send { "send" } else { "paste" };
+        // a send with the basket's refs (#365, D2): `s` sends, `i` inserts
+        if self.basket_body.is_some() {
+            match k.code {
+                KeyCode::Char('s') => return self.act("send", text, *back),
+                KeyCode::Char('i') => return self.act("paste", text, *back),
+                KeyCode::Esc | KeyCode::Char('n' | 'q') => self.basket_body = None,
+                _ => {}
+            }
+        }
         match k.code {
             KeyCode::Char('y') => return self.act(verb, text, *back),
             KeyCode::Enter if !needs_y(&text, send) => return self.act(verb, text, *back),
@@ -790,25 +833,128 @@ impl App {
         }
     }
 
+    /// The confirm on screen is a basket send's, which `s` sends and `i`, `y`
+    /// or Enter insert (#365, owner's D2).
+    pub fn basket_confirm(&self) -> bool {
+        self.basket_body.is_some() && matches!(self.view, View::Confirm { .. })
+    }
+
+    /// ^T with refs in the basket (#365 child 5): the draft and its refs as the
+    /// pane's agent reads them (owner's D4), always through a confirm that shows
+    /// that exact text, even into a program that brackets its paste.
+    fn send_basket(&mut self) {
+        let base = std::path::Path::new(&self.cap.path);
+        let text = crate::basket::expand(&self.draft, &self.basket, base, self.claude);
+        match (text, self.basket_text()) {
+            (Ok(text), Ok(body)) => {
+                self.basket_body = Some(body);
+                self.confirm(text, false, View::Compose);
+            }
+            (Err(e), _) | (_, Err(e)) => self.say(Level::Warn, e),
+        }
+    }
+
+    /// ^B's list: ↑↓ move, d or Del removes the ref, D empties the basket, esc
+    /// is back to Compose. Each change is written to the pane's basket first.
+    fn basket_key(&mut self, k: KeyEvent, sel: usize) {
+        let n = self.basket.len();
+        let keep = match k.code {
+            KeyCode::Esc | KeyCode::Char('q') => return self.view = View::Compose,
+            KeyCode::Up | KeyCode::Char('k') => {
+                return self.view = View::Basket {
+                    sel: sel.saturating_sub(1),
+                };
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                return self.view = View::Basket {
+                    sel: (sel + 1).min(n.saturating_sub(1)),
+                };
+            }
+            KeyCode::Char('d') | KeyCode::Delete if sel < n => {
+                let mut keep = self.basket.clone();
+                keep.remove(sel);
+                keep
+            }
+            KeyCode::Char('D') if n > 0 => vec![],
+            _ => return,
+        };
+        match crate::basket::write(&self.pane, &keep) {
+            Ok(()) => {
+                self.basket_raw = crate::basket::body(&keep).unwrap_or_default();
+                self.basket = keep;
+                let sel = sel.min(self.basket.len().saturating_sub(1));
+                self.view = View::Basket { sel };
+            }
+            Err(e) => self.say(Level::Warn, format!("the basket is unchanged: {e}")),
+        }
+    }
+
     fn compose(&mut self, out: OutType) {
         self.out = out;
+        self.compose_back = None;
+        self.view = View::Compose;
+    }
+
+    /// The run is the viewer's ask (#365): its answer can become a draft.
+    fn asking(&self) -> bool {
+        self.run.as_ref().is_some_and(|r| matches!(r.flow, Flow::Ask(_)))
+    }
+
+    /// `c` on an ask's answer (#365 child 5, flow A): Compose with the answer's
+    /// `<prompt>`, or the owner's D8 template, cut to [`PREFILL_MAX`], and the
+    /// ask's lines in the basket, so the send carries them as a ref. Esc there
+    /// is back at the answer, the thread kept (D3).
+    fn prefill(&mut self, scroll: usize) {
+        let Some(r) = self.run.as_ref() else { return };
+        let Flow::Ask(a) = &r.flow else { return };
+        let text = match &r.ready {
+            Some(p) => p.clone(),
+            None => {
+                let q = r.log.iter().find(|(you, _)| *you).map_or("", |l| l.1.trim());
+                let last = r.log.iter().rfind(|(you, _)| !you).map_or("", |l| l.1.as_str());
+                let first = last.trim().split("\n\n").next().unwrap_or("").trim();
+                format!("About {}: {q}\n{first}", a.at)
+            }
+        };
+        let ask_ref = crate::refs::Ref::new(a.repo.join(&a.path), Some(a.asked), None);
+        (self.draft, self.cur) = (String::new(), 0);
+        // the model's text: no control, OSC or bidi character goes in the draft (review-510)
+        let bidi = crate::pick::is_bidi;
+        let plain = pasted(&strip_escapes(&text), true);
+        let clean: String = plain.chars().filter(|&c| !bidi(c)).collect();
+        let n = put(&mut self.draft, &mut self.cur, &cut_prefill(clean.trim_end()));
+        self.cap_note(n);
+        if let Ok(rf) = ask_ref
+            && !self.basket.contains(&rf)
+        {
+            self.basket.push(rf.clone());
+            if let Err(e) = crate::basket::add(&self.pane, rf) {
+                let why = format!("the ref is in this draft's basket, not the pane's: {e}");
+                self.say(Level::Warn, why);
+            }
+        }
+        self.out = OutType::Prompt;
+        self.compose_back = Some(View::Answer { scroll, armed: false });
         self.view = View::Compose;
     }
 
     fn compose_key(&mut self, k: KeyEvent, ctrl: bool) {
         self.note = None;
         match k.code {
-            KeyCode::Esc => self.view = View::Home { sel: 0 },
+            KeyCode::Esc => self.view = self.compose_back.take().unwrap_or(View::Home { sel: 0 }),
             KeyCode::Char('s') if ctrl => self.write(),
             KeyCode::F(2) => self.write(),
             KeyCode::Char('f') if ctrl => self.fix(),
             KeyCode::Char('t') if ctrl => {
                 if self.draft.trim().is_empty() {
                     self.say(Level::Warn, "nothing to insert yet");
+                } else if !self.basket.is_empty() {
+                    self.send_basket();
                 } else {
                     self.insert(self.draft.clone(), View::Compose);
                 }
             }
+            KeyCode::Char('b') if ctrl => self.view = View::Basket { sel: 0 },
             KeyCode::Char('n') if ctrl => self.model = (self.model + 1) % MODELS.len(),
             KeyCode::Char('r') if ctrl => self.toggle_explore(),
             // by row as drawn, so the box's width as `render` wraps it; before a frame, unwrapped
@@ -902,6 +1048,8 @@ impl App {
 
     fn write(&mut self) {
         if self.need_draft() {
+            // a write is a run of its own: the thread an ask's `c` kept ends here
+            self.compose_back = None;
             let flow = Flow::Write {
                 draft: self.draft.clone(),
                 out: self.out,
@@ -912,6 +1060,7 @@ impl App {
 
     fn fix(&mut self) {
         if self.need_draft() {
+            self.compose_back = None;
             self.start(Flow::Fix { draft: self.draft.clone() }, vec![], vec![], 0, View::Compose);
         }
     }
@@ -953,7 +1102,50 @@ impl App {
     }
 
     fn envelope(&self, r: &Run) -> (String, usize) {
-        build_counted(&r.flow, &self.cap, &r.turns, r.max.saturating_sub(r.rounds))
+        let refs = self.write_refs(&r.flow);
+        let e = build_refs(&r.flow, &self.cap, &r.turns, r.max.saturating_sub(r.rounds), &refs);
+        let n = e.hidden();
+        (e.text, n)
+    }
+
+    /// The basket's refs as a Write names them (#365 child 5): as the pane's
+    /// agent reads them (D4), and while the write explores, those outside the
+    /// folder it may read marked as not read. Any other flow carries none.
+    pub fn write_refs(&self, flow: &Flow) -> Vec<RefItem> {
+        if !matches!(flow, Flow::Write { .. }) {
+            return vec![];
+        }
+        let root = self.explores(flow).then(|| self.explore_dir().ok()).flatten();
+        ref_items(&self.basket, Path::new(&self.cap.path), self.claude, root.as_deref())
+    }
+
+    /// The basket, for `.basket`, when the text acted on is a written result
+    /// that names every ref the write carried: the refs went with it, so
+    /// cockpit-panel clears the basket once the paste lands, as after ^T. A
+    /// result that leaves one out, a step, or a failed or cancelled write
+    /// carries none, and the basket stays.
+    fn written_basket(&self, back: &View, text: &str) -> Option<String> {
+        let flow = &self.run.as_ref()?.flow;
+        let refs = self.write_refs(flow);
+        if refs.is_empty() || !matches!(back, View::Result { .. }) {
+            return None;
+        }
+        if let Some(i) = unnamed(text, &refs) {
+            // by its place: the basket's contents are never logged
+            let n = refs.len();
+            eprintln!("cockpit-tui: the written result does not name ref {i} of {n} as given; the basket is kept");
+            return None;
+        }
+        self.basket_text().ok()
+    }
+
+    /// The basket as a send carries it in `.basket`: the option's text, a gone
+    /// ref's line included (review-534), else the refs held.
+    fn basket_text(&self) -> Result<String, String> {
+        match self.basket_raw.is_empty() {
+            true => crate::basket::body(&self.basket),
+            false => Ok(self.basket_raw.clone()),
+        }
     }
 
     /// The system prompt, the user prompt and the model for the pending call.
@@ -1618,6 +1810,7 @@ impl App {
                     back,
                 };
             }
+            KeyCode::Char('c') if self.asking() => self.prefill(scroll),
             KeyCode::Char(c @ ('i' | 's')) => {
                 let Some(text) = ready else {
                     return self.say(Level::Info, "no prompt for the agent in this answer");
@@ -1810,3 +2003,84 @@ fn first_ask(r: &Run) -> bool {
 pub fn needs_y(text: &str, send: bool) -> bool {
     send && text.trim_end_matches('\n').contains('\n')
 }
+
+/// The first of `refs` that `text` does not name ([`names`]), by its place,
+/// 1-based; `None` when it names them all.
+pub fn unnamed(text: &str, refs: &[RefItem]) -> Option<usize> {
+    refs.iter().position(|r| !names(text, &r.text)).map(|i| i + 1)
+}
+
+/// `text` names `form` as given, as a whole token: before the match the
+/// start, whitespace, a backtick or one of `(`, `[`, `'`, `"`; after it the
+/// end, whitespace, a backtick, one of `)`, `]`, `'`, `"`, `,`, `;`, or one of
+/// `.`, `:`, `!`, `?` that the end or whitespace follows (review-534's rule). So `@a.rs#L1` is not in `@a.rs#L1-2`, a whole `@b.md`
+/// not in `@b.md#L5` or `@b.md.bak`, a bare `a.rs:1-2` not in `lib/a.rs:1-2`
+/// or `@a.rs:1-2`; a sentence's full stop or comma after it still ends it.
+pub fn names(text: &str, form: &str) -> bool {
+    let opens = |c: char| c.is_whitespace() || matches!(c, '(' | '[' | '`' | '\'' | '"');
+    let closes = |c: char| c.is_whitespace() || matches!(c, ')' | ']' | '`' | '\'' | '"' | ',' | ';');
+    text.match_indices(form).any(|(i, _)| {
+        let starts = text[..i].chars().next_back().is_none_or(opens);
+        let mut after = text[i + form.len()..].chars();
+        let ends = match after.next() {
+            None => true,
+            Some('.' | ':' | '!' | '?') => after.next().is_none_or(char::is_whitespace),
+            Some(c) => closes(c),
+        };
+        starts && ends
+    })
+}
+
+/// `text` cut to [`PREFILL_MAX`] characters, the `…` included, on whole
+/// graphemes only (an e and its accent, a family emoji's seven chars, stay
+/// together). It backs off to a space only within the last [`PREFILL_BACK`]
+/// graphemes: a text with none near the cap (CJK) is cut there (review-510).
+fn cut_prefill(text: &str) -> String {
+    if text.chars().count() <= PREFILL_MAX {
+        return text.to_string();
+    }
+    let (mut head, mut n): (Vec<&str>, usize) = (vec![], 0);
+    for g in text.graphemes(true) {
+        let c = g.chars().count();
+        if n + c > PREFILL_MAX - 1 {
+            break;
+        }
+        n += c;
+        head.push(g);
+    }
+    let space = head
+        .iter()
+        .rev()
+        .take(PREFILL_BACK)
+        .position(|x| x.chars().all(char::is_whitespace));
+    let keep = space.map_or(head.len(), |k| head.len() - 1 - k);
+    format!("{}…", head[..keep].concat().trim_end())
+}
+
+/// A terminal's escape sequences out whole, not only their ESC: a CSI
+/// (`ESC [` to its final byte) and an OSC (`ESC ]` to BEL or `ESC \`), and any
+/// other `ESC x` pair (review-510's NIT). What is left is text.
+fn strip_escapes(s: &str) -> String {
+    let (mut out, mut it) = (String::new(), s.chars().peekable());
+    while let Some(c) = it.next() {
+        if c != '\u{1b}' {
+            out.push(c);
+            continue;
+        }
+        match it.next() {
+            Some('[') => while it.next().is_some_and(|x| !('@'..='~').contains(&x)) {},
+            Some(']') => {
+                while let Some(x) = it.next() {
+                    if x == '\u{7}' || (x == '\u{1b}' && it.next_if_eq(&'\\').is_some()) {
+                        break;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// How far back [`cut_prefill`] looks for a space.
+const PREFILL_BACK: usize = 40;

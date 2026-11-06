@@ -98,7 +98,9 @@ fn past_the_byte_cap_an_add_is_refused() {
 #[test]
 fn a_name_the_text_cannot_carry_is_refused() {
     let d = Dir::new("name");
-    for name in ["a\nb.rs", "a\u{1b}b.rs"] {
+    // U+2028 and U+2029 (Unicode's Zl and Zp, the whole of both) read as a line
+    // break inside an @"…" mention: a crafted name could forge a line (review-534)
+    for name in ["a\nb.rs", "a\u{1b}b.rs", "a\u{2028}b.rs", "a\u{2029}b.rs"] {
         let why = basket::with_ref(&[], r(&d.file(name), None)).unwrap_err();
         assert!(why.contains("cannot"), "{name:?}: {why}");
     }
@@ -112,4 +114,17 @@ fn a_gone_file_drops_out_on_read() {
     let text = basket::body(&[r(&a, None), r(&b, Some((1, 1)))]).unwrap();
     std::fs::remove_file(&a).unwrap();
     assert_eq!(basket::from_body(&text), vec![r(&b, Some((1, 1)))]);
+}
+
+/// review-534: a basket written before the separator check (or by hand) can
+/// hold a U+2028 or U+2029 name: the read drops it, and keeps the others.
+#[test]
+fn a_stored_separator_name_is_dropped_on_read() {
+    let d = Dir::new("storedsep");
+    let ok = d.file("a.rs");
+    for c in ['\u{2028}', '\u{2029}'] {
+        let odd = d.file(&format!("x{c}y.rs"));
+        let text = format!("{}\n{}", odd.display(), ok.display());
+        assert_eq!(basket::from_body(&text), vec![r(&ok, None)], "{c:?}");
+    }
 }
