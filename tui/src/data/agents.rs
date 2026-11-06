@@ -59,11 +59,14 @@ pub enum Stage {
     Reaping,
 }
 
-/// A test's hook, run at each [`Stage`] with the child's pid. None in a board.
-static STAGE_HOOK: Mutex<Option<fn(Stage, u32)>> = Mutex::new(None);
+/// A function run at each [`Stage`] with the child's pid.
+pub type StageHook = fn(Stage, u32);
+
+/// A test's hook. None in a board.
+static STAGE_HOOK: Mutex<Option<StageHook>> = Mutex::new(None);
 
 /// For a test: a function run at each [`Stage`] of every lookup, or none.
-pub fn set_stage_hook(hook: Option<fn(Stage, u32)>) {
+pub fn set_stage_hook(hook: Option<StageHook>) {
     *STAGE_HOOK.lock().unwrap_or_else(|e| e.into_inner()) = hook;
 }
 
