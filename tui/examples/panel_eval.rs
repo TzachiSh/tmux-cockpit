@@ -2151,4 +2151,102 @@ mod tests {
         assert!(grade(&c, report).pass, "report-only");
         assert!(!grade(&c, edit).pass, "editing");
     }
+
+    /// Rows of (row name, case, reply, should pass) graded against the shipped
+    /// cases: the names of the rows graded the other way.
+    fn graded_wrong<'a>(rows: &[(&'a str, &str, String, bool)]) -> Vec<&'a str> {
+        rows.iter()
+            .filter(|(_, id, reply, want)| grade(&shipped(id), reply).pass != *want)
+            .map(|(row, ..)| *row)
+            .collect()
+    }
+
+    /// #587 (card 2): generated config asks its kind before any field.
+    #[test]
+    fn a_config_case_passes_a_kind_question_and_fails_a_field_question() {
+        let fmt = "<format lang=\"yaml\">services:\n  web:\n    ports: [\"8080:8080\"]</format>";
+        let rows = [
+            (
+                "format",
+                "yaml-service",
+                ask("Which YAML format do you need?", "Kubernetes", "Docker Compose"),
+                true,
+            ),
+            (
+                "platform",
+                "yaml-service",
+                ask("Where will it run?", "Kubernetes cluster", "Docker host"),
+                true,
+            ),
+            (
+                "image",
+                "yaml-service",
+                ask("Which image should the web service run?", "nginx", "node:20"),
+                false,
+            ),
+            (
+                "labels",
+                "yaml-service",
+                ask("Which labels should it carry?", "app: web", "tier: frontend"),
+                false,
+            ),
+            (
+                "spec",
+                "yaml-service",
+                ask("Which namespace and metadata should the Deployment spec use?", "default", "web"),
+                false,
+            ),
+            ("written", "yaml-service", fmt.to_string(), false),
+        ];
+        assert_eq!(graded_wrong(&rows), Vec::<&str>::new(), "rows graded the wrong way");
+    }
+
+    /// #587 (card 10): a message asks for the fact its reader needs, never
+    /// promises it later.
+    #[test]
+    fn a_slip_message_passes_a_date_question_and_fails_a_date_to_follow() {
+        let later = "<text>Hi Dana, the release slips. I'll let you know the new date once it's set.</text>";
+        let rows = [
+            (
+                "date",
+                "release-slips",
+                ask("Is there a new release date to put in the message?", "Yes", "Not yet"),
+                true,
+            ),
+            ("later", "release-slips", later.to_string(), false),
+            ("tone", "release-slips", ask("How formal should it be?", "Casual", "Formal"), false),
+            (
+                "send time",
+                "release-slips",
+                ask("When should I send it?", "Now", "Tomorrow"),
+                false,
+            ),
+        ];
+        assert_eq!(graded_wrong(&rows), Vec::<&str>::new(), "rows graded the wrong way");
+    }
+
+    /// #587 (cards 58, 59): a prompt that adds or fixes a test breaks the code on
+    /// purpose, sees the test fail and undoes the break.
+    #[test]
+    fn a_test_prompt_passes_with_the_mutation_step_and_fails_without_it() {
+        let add = "Add a test for slugify in src/text/slugify.ts that covers the trimmed title and run it.";
+        let fix = "Fix parser::tests::parses_negative in src/parser.rs from 9f3c2a1, then run cargo test.";
+        let step = " Then break the code on purpose, confirm the test fails, and undo the break.";
+        let half = " Then break the code on purpose and confirm the test fails.";
+        let flip = " Then flip one condition in the code, confirm the test fails, then undo that change.";
+        let loose = " Make sure it does not break other tests, keep it a small change, and revert unrelated edits.";
+        let p = |s: String| format!("<prompt>{s}</prompt>");
+        let rows = [
+            ("add", "test-the-changed-function", p(format!("{add}{step}")), true),
+            ("add bare", "test-the-changed-function", p(add.into()), false),
+            ("add no undo", "test-the-changed-function", p(format!("{add}{half}")), false),
+            ("add flip", "test-the-changed-function", p(format!("{add}{flip}")), true),
+            ("add loose", "test-the-changed-function", p(format!("{add}{loose}")), false),
+            ("fix", "last-commit-test", p(format!("{fix}{step}")), true),
+            ("fix bare", "last-commit-test", p(fix.into()), false),
+            ("fix no undo", "last-commit-test", p(format!("{fix}{half}")), false),
+            ("fix loose", "last-commit-test", p(format!("{fix}{loose}")), false),
+        ];
+        assert_eq!(graded_wrong(&rows), Vec::<&str>::new(), "rows graded the wrong way");
+    }
 }
