@@ -18,8 +18,12 @@
 # A key or a section given twice is an error. A screen cannot hold a line that
 # starts with "--- " or "=== ": those start a section or a case.
 #   note:    why the label is what it is
-# then "--- screen" (optional), "--- repo" (optional), "--- conversation" (optional)
-# and "--- request".
+# then "--- screen" (optional), "--- repo" (optional), "--- conversation" (optional),
+# "--- refs" (optional) and "--- request".
+# A refs body is the prompt basket (#365 child 5), one "path", "path:a" or
+# "path:a-b" line a ref, from the pane's folder; "../x" is a file outside it. The
+# case then runs in a temp folder of its own that holds those files, named as the
+# window's path ends; an explore case's refs inside its fixture must exist there.
 # A conversation body is the panel's earlier rounds, one "assistant: <question>
 # Options: a | b" or "user: <answer>" line each, oldest first: the case is then
 # its next call, with one question fewer left for each one asked.
@@ -967,3 +971,61 @@ holdout: yes
 note: a big feature: one question on what changes the work most, or a prompt that checks today's flow, interviews the owner for the requirements and plans, both serve
 --- request
 add audit logging to the admin app
+
+# #365 child 5, PR 5: the prompt basket in a write. The prompt names every ref
+# as <refs> gives it: @path#La-b for a claude window, bare path:a-b otherwise,
+# and a small task stays small.
+=== refs-claude-bug
+kind: bug
+window: claude · claude · /home/u/shop
+expect: write
+out_is: prompt
+must: @src/cart/total.go#L40-72; @src/cart/total_test.go
+must_not: Assumed:
+note: the example settles expected versus actual; the refs are the material, named as given
+--- refs
+src/cart/total.go:40-72
+src/cart/total_test.go
+--- request
+3 x 9.99 with 10% off shows 26.98, it should be 26.97. fix it
+
+=== refs-bare-rename
+kind: refactor
+window: dev · zsh · /home/u/api
+out: prompt
+expect: write
+must: internal/db/pool.go:10-30
+must_not: @internal/db/pool.go; subagent|subagents; baseline; AskUserQuestion
+note: a shell pane gets bare refs, and a rename is a small task
+--- refs
+internal/db/pool.go:10-30
+--- request
+rename newPool to openPool in these lines and update its callers
+
+=== refs-typo
+kind: bug
+window: claude · claude · /home/u/site
+expect: write
+out_is: prompt
+must: @README.md#L12; receive
+must_not: subagent|subagents; plan|planning; baseline; AskUserQuestion; Assumed:
+note: a one-line typo with one ref: one or two sentences, nothing more
+--- refs
+README.md:12
+--- request
+fix the typo recieve in this line
+
+=== refs-explore-outside
+kind: refactor
+window: claude · claude · /home/u/invoicer
+explore: invoicer
+expect: write
+out_is: prompt
+must: @invoicer/money.py#L4-6; shared/rates.py#L3-9
+must_not: Assumed:
+note: the second ref is outside the explored folder, so it was not read; both are named
+--- refs
+invoicer/money.py:4-6
+../shared/rates.py:3-9
+--- request
+make round_cents round the way the rates helper does
