@@ -18,7 +18,11 @@
 # A key or a section given twice is an error. A screen cannot hold a line that
 # starts with "--- " or "=== ": those start a section or a case.
 #   note:    why the label is what it is
-# then "--- screen" (optional), "--- repo" (optional) and "--- request".
+# then "--- screen" (optional), "--- repo" (optional), "--- conversation" (optional)
+# and "--- request".
+# A conversation body is the panel's earlier rounds, one "assistant: <question>
+# Options: a | b" or "user: <answer>" line each, oldest first: the case is then
+# its next call, with one question fewer left for each one asked.
 # A repo body is the <repo> block the panel sends for a window in a git repo
 # (capture.rs repo_state): branch, root, status, recent commits, diff --stat and the
 # screen's paths, each section's lines indented by two.
@@ -32,13 +36,25 @@
 # reason to ask; the prompt tells the agent to check it and handle each case.
 # A vague feature may still go plan-first (#451): either. Cases here are not the
 # prompt's own examples on purpose. A case relabelled by #503 says so in note.
+#
+# Big tasks (#558): a big feature, a migration or a refactor across many files
+# gets the facts first. The prompt has the agent read the current flow and run
+# the tests or the tool for a baseline, plan, wait for the OK, then run the same
+# checks again and compare. For a big feature, the panel asks only the one or two
+# points that change the work most; the prompt has the agent interview the owner
+# for the rest with its question tool and get an OK on a requirements list
+# before the plan. A small addition to existing code checks that what exists
+# works, adds, then tests both. A trivial edit gets none of this. A prompt that
+# reports and lists the edits for the owner's approval answers "should we move
+# to X" (#514). The prompt asks for no installed skill: the agent picks one from
+# its description (#513). A case relabelled by #558 says so in note.
 
 === two-services
 kind: feature
 window: bash · bash · /home/u/projects/shop
 expect: ask
 ask_any: gateway; billing
-note: subject: two candidate APIs on screen
+note: subject: two candidate APIs on screen; #558 (cards 20, 28): which API is the question that changes the work most, so it is asked first; the big-task prompt after the answer is two-services-answered's
 --- screen
 $ ls
 api-gateway  billing-api  docs  web
@@ -464,8 +480,8 @@ kind: bug
 window: claude · claude · /home/u/projects/web
 expect: write
 must: Recieve; Receive
-must_not: subagent|subagents; plan; skill|skills
-note: a trivial edit: nothing to delegate
+must_not: subagent|subagents; plan; skill|skills; baseline; AskUserQuestion; requirements
+note: a trivial edit: nothing to delegate; #558: and no baseline or interview, which are for big tasks
 --- screen
 ● The button label in src/Checkout.tsx reads "Recieve order".
 --- request
@@ -493,9 +509,9 @@ use the brainstorming skill to work out how the board should show subagents
 kind: plan
 window: claude · claude · /home/u/projects/tool
 expect: write
-must: plan|planning|plans; before
-must_not: autopilot; ralph; ultrawork; ultrathink
-note: a large change: plan and wait for an OK before editing (explore, plan, code)
+must: plan|planning|plans; before; test|tests; baseline|today|currently; again|rerun|re-run|compare|match|matches
+must_not: autopilot; ralph; ultrawork; ultrathink; Assumed:
+note: a large change: plan and wait for an OK before editing (explore, plan, code); #558 (card 22): facts first, so it runs the tests or the tool for a baseline first and runs them again after, to compare
 --- request
 move the whole config loader from yaml to toml, it touches a lot of files
 
@@ -529,9 +545,9 @@ the search results are wrong
 kind: investigate
 window: claude · claude · /home/u/projects/engine
 expect: write
-must: unsafe; subagent|subagents; skill|skills
+must: unsafe; subagent|subagents
 holdout: yes
-note: four independent crates: one subagent each fits; #503 (card 8): and a skill that fits, when one is installed
+note: four independent crates: one subagent each fits; #513, was must skill|skills: Claude Code picks an installed skill from its description by itself, and card 8 passed without the line, so the prompt no longer asks for it
 --- screen
 ● The workspace has four crates: core, io, render and ffi.
 --- request
@@ -540,10 +556,13 @@ check each crate for unsafe code and report what you find, dont change anything
 === h-node-lts
 kind: research
 window: bash · bash · /home/u/projects/api
-expect: ask
+expect: either
 ask_any: report; recommend|recommendation; change|update|edit; switch|upgrade; why; reason; constraint|constraints
+must: node; Dockerfile; source|sources|nodejs.org|cite; list|lists|lines to change|line changes|would use|would change|would make; do not edit|not edit|do not change|do not modify|approval|approve
+out_is: prompt
+must_not: Assumed:
 holdout: yes
-note: #503 (card 4), was write: a current fact needs a web search, but whether to only report or also move the Dockerfile, and what decides "should", are the owner's
+note: #503 (card 4), was write: a current fact needs a web search, but whether to only report or also move the Dockerfile, and what decides "should", are the owner's; #514, was ask: card 4 passed a report-only prompt that cites a source and lists the edits for the owner's approval, so that serves too; #558 review: the must matches proposed edits (list, lines to change, would change) and a report-only line (do not edit, approval), set after the runs; a report with no proposed edits, or a prompt that edits, is a miss
 --- request
 which node version is the current LTS and should our Dockerfile move to it
 
@@ -585,12 +604,12 @@ copy the build to the staging server
 kind: feature
 window: claude · claude · /home/u/projects/dashboard
 expect: either
-ask_any: done; trigger|triggers; notify|notified
+ask_any: done; trigger|triggers; notify|notified; for?; purpose; goal; about?
 must: plan|planning|plans; done
 out_is: prompt
 must_not: Assumed:
-holdout: yes
-note: what counts as done is the owner's call: a question about it, or a prompt that plans first, both serve; a question about the channel is what to build, not done; #498: the plan-first prompt picks nothing, so no Assumed: line
+holdout: no
+note: what counts as done is the owner's call: a question about it, or a prompt that plans first, both serve; a question about the channel is what to build, not done; #498: the plan-first prompt picks nothing, so no Assumed: line; #558 review: not a holdout, since the interview line names notifications and was tuned on this case; "what is it for / about" was ruled on target after the runs, so the goal words were added to ask_any
 --- screen
 ● The dashboard now shows the weekly totals per team.
 --- request
@@ -811,3 +830,140 @@ holdout: yes
 note: no goal for the change: what it is for decides the plan
 --- request
 how should we restructure the db layer
+
+# Added for #558, before the prompt change: big tasks get facts first.
+=== two-services-answered
+kind: feature
+window: bash · bash · /home/u/projects/shop
+expect: either
+ask_any: endpoint|endpoints; response|responses; fresh|freshness|stale; ttl|expire|expiry|expiration; redis|memcached|memory; invalidate|invalidation; load|traffic
+must: billing-api; requirements; AskUserQuestion|interview; baseline|today|currently; plan|planning|plans
+out_is: prompt
+must_not: Assumed:
+note: #558 (cards 20, 28): the subject is answered; caching is a big feature, so one more question on what changes the work most, or a prompt that checks the current flow, interviews the owner for the requirements and plans, both serve
+--- screen
+$ ls
+api-gateway  billing-api  docs  web
+--- repo
+branch: main...origin/main
+root: /home/u/projects/shop
+status: clean
+recent commits:
+  2f8a1c9 billing-api: invoice export
+  e40b6d7 api-gateway: rate limit per key
+  9c1d3e5 web: cart page
+--- conversation
+assistant: Which API should get caching? Options: api-gateway | billing-api
+user: billing-api
+--- request
+add caching to the api
+
+=== small-add-format
+kind: feature
+window: claude · claude · /home/u/projects/report
+expect: write
+must: csv; json; test|tests; first|before
+must_not: AskUserQuestion; requirements; Assumed:
+note: #558 (card 33): a small addition to existing code: check that the json export works first, add csv, then test both; no interview
+--- screen
+● Added `report export --format json`. tests/test_export.py passes.
+--- request
+add csv to the export as well
+
+
+# #558 holdouts, written after the prompt change.
+=== h-rate-limit
+kind: feature
+window: claude · claude · /home/u/projects/public-api
+expect: either
+ask_any: user|users; key|keys; ip; limit|limits; requests; minute|second|hour; endpoint|endpoints; 429; reject|rejected; for?; purpose; goal; about?; abuse|quota|quotas
+must: rate; requirements; AskUserQuestion|interview; plan|planning|plans
+out_is: prompt
+must_not: Assumed:
+holdout: no
+note: a big feature in one service: one question on what changes the work most, or a prompt that checks today's flow, interviews the owner and plans, both serve; #558 review: not a holdout, since the interview line names rate limiting and was tuned after this case ran; "what is it for" was ruled on target after the runs, so the goal words were added to ask_any
+--- screen
+● The API serves /v1/orders and /v1/search behind one Express app.
+--- request
+add rate limiting to the api
+
+=== h-jest-vitest
+kind: refactor
+window: claude · claude · /home/u/projects/web
+expect: write
+must: vitest; jest; test|tests; baseline|today|currently; again|rerun|re-run|compare|match|matches; plan|planning|plans
+must_not: Assumed:
+holdout: yes
+note: a migration across every test file, with the goal in the request: run the suite for a baseline, plan, wait, then run it again and compare
+--- request
+switch our tests from jest to vitest, all of them
+
+=== h-verbose-flag
+kind: feature
+window: claude · claude · /home/u/projects/cli
+expect: write
+must: --verbose; sync; fetch; first|before
+must_not: AskUserQuestion; requirements; Assumed:
+holdout: yes
+note: a small addition next to one that exists: check fetch --verbose works first, add it to sync, test both
+--- screen
+● `cli fetch --verbose` now prints each request it makes. tests/test_fetch.py passes.
+--- request
+sync should get the same verbose flag
+
+=== h-search-answered
+kind: feature
+window: claude · claude · /home/u/projects/docs-site
+expect: either
+ask_any: typo|typos; fuzzy; title|titles; page|pages; content; instant|live; index|indexed; offline; server|client
+must: search; requirements; AskUserQuestion|interview; plan|planning|plans
+out_is: prompt
+must_not: Assumed:
+holdout: no
+note: a big feature after one answer: one more question on what changes the work most, or a prompt that interviews the owner for the rest and plans, both serve; #558 review: not a holdout, since the interview line names search and was tuned after this case ran
+--- conversation
+assistant: Where should search live? Options: The docs site header | A separate search page
+user: The docs site header
+--- request
+add search to the docs
+
+=== h-readme-typo
+kind: bug
+window: bash · bash · /home/u/projects/tool
+expect: write
+must: recieve; receive
+must_not: baseline; AskUserQuestion; requirements; plan
+holdout: yes
+note: a trivial edit: no baseline, interview or plan
+--- request
+fix the typo recieve in README.md
+
+# #558 review holdouts, written after the final prompt commit, on features the
+# prompt does not name.
+=== h-webhooks
+kind: feature
+window: claude · claude · /home/u/projects/store
+expect: either
+ask_any: event|events; order|orders; retry|retries; sign|signed|signature; secret; url|urls; payload; for?; purpose; goal; about?
+must: webhook|webhooks; requirements; AskUserQuestion|interview; plan|planning|plans
+out_is: prompt
+must_not: Assumed:
+holdout: yes
+note: a big feature: one question on what changes the work most, or a prompt that checks today's flow, interviews the owner for the requirements and plans, both serve
+--- screen
+● Orders are created and updated in src/orders/service.ts.
+--- request
+add webhooks so customers hear about order changes
+
+=== h-audit-log
+kind: feature
+window: bash · bash · /home/u/projects/admin
+expect: either
+ask_any: action|actions; who; event|events; retention|kept|keep; store|stored|storage; export; compliance; for?; purpose; goal; about?
+must: audit; requirements; AskUserQuestion|interview; plan|planning|plans
+out_is: prompt
+must_not: Assumed:
+holdout: yes
+note: a big feature: one question on what changes the work most, or a prompt that checks today's flow, interviews the owner for the requirements and plans, both serve
+--- request
+add audit logging to the admin app

@@ -19,7 +19,7 @@
 //! the panel's explore-first call; `--no-explore` runs it as a text call instead.
 use cockpit_tui::panel::app::{App, View};
 use cockpit_tui::panel::capture::Capture;
-use cockpit_tui::panel::envelope::{Flow, OutType};
+use cockpit_tui::panel::envelope::{Flow, OutType, Role, Turn};
 use cockpit_tui::panel::parse::{self, Reply, files_read};
 use cockpit_tui::panel::request::{Call, Fail, Profile, Request};
 use cockpit_tui::panel::route::route;
@@ -71,6 +71,8 @@ struct Case {
     /// The `<repo>` block the panel would send; "" for a window outside a repo.
     repo: String,
     request: String,
+    /// The panel's earlier rounds, oldest first: its questions and the answers.
+    turns: Vec<Turn>,
     /// A folder under `fixtures/`: the pane's path, read by an explore-first write.
     explore: Option<String>,
 }
@@ -126,6 +128,7 @@ fn parse_cases(text: &str) -> Result<Vec<Case>, String> {
             screen: String::new(),
             repo: String::new(),
             request: String::new(),
+            turns: vec![],
             explore: None,
         };
         let mut expect = None;
@@ -209,6 +212,10 @@ fn parse_cases(text: &str) -> Result<Vec<Case>, String> {
                     dup(!c.request.is_empty())?;
                     c.request = text.trim().into()
                 }
+                "conversation" => {
+                    dup(!c.turns.is_empty())?;
+                    c.turns = turns(&text).map_err(|m| err(&m))?
+                }
                 x => return Err(err(&format!("unknown section {x}"))),
             }
         }
@@ -236,6 +243,26 @@ fn parse_cases(text: &str) -> Result<Vec<Case>, String> {
         return Err("no cases".into());
     }
     Ok(cases)
+}
+
+/// `assistant: ...` and `user: ...` lines, one turn each, as the panel keeps them.
+fn turns(text: &str) -> Result<Vec<Turn>, String> {
+    let mut out = Vec::new();
+    for line in text.lines().filter(|l| !l.trim().is_empty()) {
+        let (role, t) = match line.split_once(": ") {
+            Some(("user", t)) => (Role::User, t),
+            Some(("assistant", t)) => (Role::Assistant, t),
+            _ => return Err(format!("a conversation line must start with user: or assistant: (got {line})")),
+        };
+        out.push(Turn {
+            role,
+            text: t.trim().into(),
+        });
+    }
+    if out.is_empty() {
+        return Err("empty conversation".into());
+    }
+    Ok(out)
 }
 
 /// The comments that head the next case trail the last body: a `#` block that a
@@ -712,6 +739,11 @@ fn panel_call(c: &Case, path: &str, explore: bool) -> (String, String, Profile) 
     (a.view, a.out, a.explore) = (View::Compose, c.out, explore);
     (a.draft, a.cur) = (c.request.clone(), c.request.len());
     a.key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
+    if let Some(r) = a.run.as_mut() {
+        // each question the panel asked used one of its rounds
+        r.rounds = c.turns.iter().filter(|t| t.role == Role::Assistant).count();
+        r.turns = c.turns.clone();
+    }
     let (system, prompt, _) = a.request_parts().expect("^S on a draft starts a write");
     let profile = a.run.as_ref().map_or(Profile::TEXT, |r| a.profile_for(&r.flow));
     (system, prompt, profile)
@@ -1735,6 +1767,49 @@ mod tests {
         assert_eq!(profile, Profile::read_only("/r".into(), false, EXPLORE_BUDGET_USD, EXPLORE_TIMEOUT));
     }
 
+    const ANSWERED: &str = "=== cache\nkind: feature\nwindow: bash · bash · /home/u\nexpect: write\n\
+                            --- conversation\nassistant: Which API? Options: gateway | billing\n\
+                            user: billing\n--- request\nadd caching\n";
+
+    #[test]
+    fn reads_a_conversation_as_turns_in_order() {
+        let c = &parse_cases(ANSWERED).unwrap()[0];
+        let roles: Vec<Role> = c.turns.iter().map(|t| t.role).collect();
+        assert_eq!(roles, [Role::Assistant, Role::User]);
+        assert_eq!(c.turns[1].text, "billing");
+        assert_eq!(c.request, "add caching");
+    }
+
+    #[test]
+    fn refuses_a_conversation_line_without_a_role() {
+        let bad = ANSWERED.replace("user: billing", "billing");
+        let e = parse_cases(&bad).unwrap_err();
+        assert!(e.starts_with("case cache: ") && e.contains("user: or assistant:"), "{e}");
+        let empty = ANSWERED.replace("assistant: Which API? Options: gateway | billing\nuser: billing\n", "");
+        assert!(parse_cases(&empty).unwrap_err().contains("empty conversation"));
+    }
+
+    /// An answered case is sent as the panel sends its next round: the turns,
+    /// and one question fewer for each one asked.
+    #[test]
+    fn the_rig_sends_a_conversation_with_the_questions_it_used() {
+        use cockpit_tui::panel::envelope::build;
+        let c = &parse_cases(ANSWERED).unwrap()[0];
+        let cap = Capture {
+            name: c.name.clone(),
+            cmd: c.cmd.clone(),
+            path: "/r".into(),
+            screen: String::new(),
+            repo: "".into(),
+        };
+        let flow = Flow::Write {
+            draft: c.request.clone(),
+            out: c.out,
+        };
+        let (_, prompt, _) = panel_call(c, "/r", false);
+        assert_eq!(prompt, build(&flow, &cap, &c.turns, 2));
+    }
+
     #[test]
     fn stage_copies_each_named_fixture_once_and_nothing_without_one() {
         assert_eq!(stage(&parse_cases(ONE).unwrap()).unwrap(), None);
@@ -1851,5 +1926,58 @@ mod tests {
             .map(|c| c.id.as_str())
             .collect();
         assert!(tail.is_empty(), "a request ends in a # line: {tail:?}");
+    }
+
+    fn shipped(id: &str) -> Case {
+        let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("evals/panel/cases.txt");
+        let cases = parse_cases(&std::fs::read_to_string(p).unwrap()).unwrap();
+        cases.into_iter().find(|c| c.id == id).unwrap_or_else(|| panic!("no case {id}"))
+    }
+
+    fn ask(q: &str, a: &str, b: &str) -> String {
+        format!("<question>{q}</question>\n<option>{a}</option>\n<option>{b}</option>")
+    }
+
+    /// #558: a big feature's goal question is on target; a question on how to
+    /// build it ("which store", "which library", "which channel") is not.
+    #[test]
+    fn a_goal_question_passes_the_big_feature_cases_and_an_approach_question_does_not() {
+        let rows = [
+            ("goal rate", "h-rate-limit", "What is the rate limiting for?", true),
+            (
+                "goal notify",
+                "h-feature-done",
+                "What should the notifications tell users about?",
+                true,
+            ),
+            ("goal audit", "h-audit-log", "What is the audit log mainly for?", true),
+            (
+                "store",
+                "h-rate-limit",
+                "Which store should hold the counters for the limiter?",
+                false,
+            ),
+            ("library", "h-audit-log", "Which library should we use for it?", false),
+            ("channel", "h-feature-done", "Which channel should we use for them?", false),
+        ];
+        let wrong: Vec<&str> = rows
+            .iter()
+            .filter(|(_, id, q, want)| grade(&shipped(id), &ask(q, "Yes", "No")).pass != *want)
+            .map(|(row, ..)| *row)
+            .collect();
+        assert_eq!(wrong, Vec::<&str>::new(), "rows graded the wrong way");
+    }
+
+    /// #514: h-node-lts takes a report that proposes the edits, never a prompt
+    /// that makes them.
+    #[test]
+    fn h_node_lts_passes_a_report_that_proposes_edits_and_fails_one_that_edits() {
+        let c = shipped("h-node-lts");
+        let report = "<prompt>Find the current Node LTS, cite nodejs.org as the source, and list the \
+                      lines to change in the Dockerfile. Do not edit any files.</prompt>";
+        let edit = "<prompt>Find the current Node LTS, cite nodejs.org as the source, update the \
+                    Dockerfile to it and list the release lines you checked.</prompt>";
+        assert!(grade(&c, report).pass, "report-only");
+        assert!(!grade(&c, edit).pass, "editing");
     }
 }
