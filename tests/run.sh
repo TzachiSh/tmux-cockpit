@@ -2716,6 +2716,18 @@ is "vnum: a letter suffix is not a component (3.7c)" "3007000" "$(vnum 3.7c 2>/d
 is "vnum: 0.73.0 is not below itself" "yes" "$(dcge 0.73.0 0.73.0)"
 is "vnum: 1.12.9 is below the 1.13.0 floor, and only that way" "no yes" \
    "$(dcge 1.12.9 1.13.0) $(dcge 1.13.0 1.12.9)"
+# vnum_ge grades the tmux floor at all three sites (#545). A master build says
+# next-X.Y, X.Y being the release it leads to; a word with no number passes.
+for r in 3.7:no 3.8:yes next-3.7:no next-3.8:yes next-3.9:yes master:yes openbsd-7.5:yes :yes; do
+    tv=${r%:*}
+    is "vnum_ge: tmux '$tv' against the 3.8 floor" "${r##*:}" \
+       "$(vnum_ge "$tv" 3.8 2>&1 && echo yes || echo no)"
+done
+dcerr=$(vnum_ge 3.8 2>&1); dcrc=$?
+is "vnum_ge: no floor is an error naming it" "2 vnum_ge: <floor> is not a version: ''" \
+   "$dcrc $dcerr"
+is "vnum_ge: a floor with no number is an error too" "2" \
+   "$(vnum_ge 3.8 dev 2>/dev/null; echo "$?")"
 
 DCP="$DBIN:$DSH:$SHIM:/usr/bin:/bin"
 before=$(find "$DH" "$DBIN" | sort)
@@ -2732,8 +2744,7 @@ is "no client means truecolor skips"        "1" "$(dcrow "$dcout" "skip truecolo
 is "no server means popup-border skips"     "1" "$(dcrow "$dcout" "skip popup-border")"
 is "the suite's cockpit-tui is an ok row"   "1" "$(dcrow "$dcout" "ok cockpit-tui")"
 dctv=$(tmux -V 2>/dev/null); dctv=${dctv#tmux }
-case "$dctv" in [0-9]*) ;; *) dctv=99 ;; esac   # next-3.9, master: newer than any release
-if [ "$(dcge "$dctv" 3.8)" = no ]; then
+if ! vnum_ge "$dctv" 3.8; then
     skip_ "install.sh --check exits 0 on a wired box (this tmux is below 3.8)"
 else
     is "and the whole run exits 0"          "0" "$dcrc"
@@ -2750,13 +2761,19 @@ is "one below TUI_MIN is a fail row too"    "1" "$(dcrow "$dcout" "fail cockpit-
 mkdir -p "$DC/oldrd"; dshim revdiff "version: 1.12.0" "$DC/oldrd"
 dcout=$(dc "$DBIN:$DC/oldrd:$SHIM:$DNO"); dcrc=$?
 is "an older revdiff is a warn row" "1" "$(dcrow "$dcout" "warn revdiff")"
-[ "$(dcge "$dctv" 3.8)" = no ] || is "and warnings exit 1" "1" "$dcrc"
+vnum_ge "$dctv" 3.8 && is "and warnings exit 1" "1" "$dcrc"
 dcout=$(dc "$DBIN:$DSH:$DNO"); dcrc=$?
 is "no tmux on PATH is a fail row"          "1" "$(dcrow "$dcout" "fail tmux")"
 is "and a failure exits 2"                  "2" "$dcrc"
 mkdir -p "$DC/nexttmux"; dshim tmux "tmux next-3.9" "$DC/nexttmux"
 dcout=$(dc "$DC/nexttmux:$DBIN:$DSH:$DNO")
 is "a tmux built from master (next-3.9) is an ok row" "1" "$(dcrow "$dcout" "ok tmux")"
+# A master build before 3.7 shipped says next-3.7: older than 3.7, so a fail (#545).
+for r in next-3.7:fail next-3.8:ok master:ok 3.7:fail 3.8:ok; do
+    tv=${r%:*}; dshim tmux "tmux $tv" "$DC/nexttmux"
+    dcout=$(dc "$DC/nexttmux:$DBIN:$DSH:$DNO")
+    is "tmux $tv: the doctor marks the tmux row ${r#*:}" "1" "$(dcrow "$dcout" "${r#*:} tmux")"
+done
 # tmux loads both files, so the run-shell line in either one wires the box.
 mkdir -p "$DH/.config/tmux"; printf 'set -g @unrelated 1\n' > "$DH/.config/tmux/tmux.conf"
 dcout=$(dc "$DCP")
@@ -2903,6 +2920,20 @@ bsout=$(bs --latest --dry-run); is "--latest is a no-op too (exit 0)" "0" "$?"
 bsclear_check=$(bs --check --yes); is "--check runs alone" "2" "$?"
 bssaid "and says so" "--check runs alone" "$bsclear_check"
 is "no run reached for sudo" "absent" "$([ -e "$BS/SUDO_RAN" ] && echo present || echo absent)"
+# The tmux step: a master build says next-X.Y, X.Y being the release it leads
+# to, so next-3.7 is older than 3.7 and gets the build; master has no number (#545).
+mkdir -p "$BS/tv"; bspath=$BPATH; BPATH="$BS/tv:$bspath"
+for r in next-3.7:builds next-3.8:keeps next-3.9:keeps master:keeps 3.7:builds 3.8:keeps; do
+    tv=${r%:*}; printf '#!/bin/sh\necho "tmux %s"\n' "$tv" > "$BS/tv/tmux"; chmod +x "$BS/tv/tmux"
+    bsout=$(bs --dry-run | awk '/^== /{ f = ($0 == "== tmux version ==") } f')
+    case "$bsout" in
+        *"would: "*) got=builds ;;
+        *"found  tmux $tv"*) got=keeps ;;
+        *) got="$bsout" ;;
+    esac
+    is "bootstrap.sh: tmux $tv ${r#*:}" "${r#*:}" "$got"
+done
+BPATH=$bspath
 
 # The re-append: the run-shell line was removed, so bootstrap appends again --
 # and the pristine backup taken the first time must survive it.
@@ -7746,6 +7777,20 @@ case "$(cat "$BD/argv" 2>/dev/null)" in *'tmux-cockpit needs tmux 3.8 or newer (
     *) bad "and says which tmux it needs" "needs tmux 3.8 or newer (found 3.7)" \
          "$(grep display-message "$BD/argv" 2>/dev/null)" ;;
 esac
+# A master build says next-X.Y, X.Y being the release it leads to, so next-3.7
+# is older than 3.7 (#545). The same server, a new answer to -V each load.
+for r in next-3.7:refuses next-3.8:loads next-3.9:loads master:loads 3.8:loads; do
+    tv=${r%:*}; bshim "$BD/s4" "$B4" "$tv"; rm -f "$BD/argv"
+    "$TMUX_REAL" -L "$B4" run-shell "$BD/p/cockpit.tmux" >/dev/null 2>&1
+    nm=$(grep -c 'needs tmux 3.8 or newer' "$BD/argv" 2>/dev/null)
+    nb=$(grep -c bind-key "$BD/argv" 2>/dev/null)
+    case "${nm:-0} ${nb:-0}" in
+        "1 0") got=refuses ;;
+        "0 "[1-9]*) got=loads ;;
+        *) got="message $nm, binds $nb" ;;
+    esac
+    is "cockpit.tmux: tmux $tv ${r#*:}" "${r#*:}" "$got"
+done
 "$TMUX_REAL" -L "$B4" kill-server >/dev/null 2>&1
 
 # --- the wrapper: one action line, one script ----------------------------------
