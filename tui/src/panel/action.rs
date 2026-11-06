@@ -22,12 +22,13 @@ pub const HIDE_MAX: u64 = 1024 * 1024;
 pub const HIDE_AGE: u64 = 24 * 60 * 60;
 
 /// Control characters out, `\t` and `\n` kept, `\r\n` folded: a stray ESC or
-/// C1 byte pasted into a pane is a keystroke, not text.
+/// C1 byte pasted into a pane is a keystroke, not text. Bidi controls and the
+/// line and paragraph separators (U+2028, U+2029) go too (review-510): they
+/// reorder or break what the agent reads, and nothing shows them.
 pub fn sanitize(s: &str) -> String {
-    s.replace("\r\n", "\n")
-        .chars()
-        .filter(|&c| c == '\t' || c == '\n' || !c.is_control())
-        .collect()
+    let kept = |c: char| c == '\t' || c == '\n' || !c.is_control();
+    let shown = |c: char| !crate::pick::is_bidi(c) && !matches!(c, '\u{2028}' | '\u{2029}');
+    s.replace("\r\n", "\n").chars().filter(|&c| kept(c) && shown(c)).collect()
 }
 
 /// `<path>.text` first, then the action line, so the wrapper never reads a
