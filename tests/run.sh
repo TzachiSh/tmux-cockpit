@@ -3979,7 +3979,9 @@ mv_until() {                  # <pattern> against the client's session:window
     return 1
 }
 "$TMUX_REAL" -L "$MVO" send-keys -t "$OP" C-b M
-if until_cap "$MVO" "$OP" '*agents*'; then
+# The menu's own title, as mv_open waits for: a bare "agents" is on screen before the menu
+# whenever the status line shows a branch named *agents* (fix/608-agents-dir-leak did).
+if until_cap "$MVO" "$OP" '*move [0-9]*:* to *agents*'; then
     ok "the menu opens with the other sessions"
     cap=$("$TMUX_REAL" -L "$MVO" capture-pane -p -t "$OP")
     case "$cap" in *"move 0:editor to"*) ok "and names the window it moves" ;;
