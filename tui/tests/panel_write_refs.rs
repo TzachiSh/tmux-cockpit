@@ -356,23 +356,78 @@ fn a_written_prompt_missing_a_ref_leaves_the_basket() {
     }
 }
 
-/// A ref is named only as itself: a longer ref that holds it (a range on a
-/// whole file, a longer range, a deeper path) is another ref; punctuation that
-/// ends a sentence after it is not.
+/// A ref is named only as a whole token, as given: a longer ref that holds it
+/// (a range on a whole file, a longer range, a deeper path, another name) is
+/// another ref, while quotes, brackets and a sentence's punctuation around it
+/// are not. Each row is a basket and a written result: does it clear (every
+/// ref named) or keep the basket? Rows from both reviews of #581.
 #[test]
-fn a_ref_is_named_only_as_itself() {
-    use cockpit_tui::panel::app::names;
-    let rows = [
-        ("whole file in a ranged ref", "fix @b.md#L1-3", "@b.md", false),
-        ("one line in a range", "fix @a.rs#L1-2", "@a.rs#L1", false),
-        ("bare ref in a deeper path", "fix lib/a.rs:1-2", "a.rs:1-2", false),
-        ("a longer name", "see @b.md.bak", "@b.md", false),
-        ("a colon then more range", "see a.rs:1-2:9", "a.rs:1-2", false),
-        ("a colon ending a clause", "in @a.rs#L1-2: fix it", "@a.rs#L1-2", true),
-        ("a full stop ending a sentence", "as per @b.md.", "@b.md", true),
-        ("at the very end", "see @b.md", "@b.md", true),
+fn a_ref_is_named_only_as_a_whole_token() {
+    use cockpit_tui::panel::app::unnamed;
+    const CLEAR: bool = true;
+    const KEEP: bool = false;
+    let rows: &[(&str, &[&str], &str, bool)] = &[
+        (
+            "whole file rewritten to a range",
+            &["@a.rs#L1-2", "@b.md"],
+            "Fix @a.rs#L1-2 per @b.md#L5.",
+            KEEP,
+        ),
+        (
+            "whole file in a longer name",
+            &["@a.rs#L1-2", "@b.md"],
+            "Fix @a.rs#L1-2 per @b.md.bak.",
+            KEEP,
+        ),
+        (
+            "bare refs inside other names",
+            &["a.rs:1-2", "b.md"],
+            "Fix data.rs:1-2 per web.md.",
+            KEEP,
+        ),
+        ("bare whole, a longer name", &["a.rs"], "Fix a.rs.bak now.", KEEP),
+        ("bare whole, another name", &["a.rs"], "Fix data.rs now.", KEEP),
+        ("bare whole, a deeper path", &["a.rs"], "Fix lib/a.rs now.", KEEP),
+        ("bare whole, given a line", &["a.rs"], "Fix a.rs:5 now.", KEEP),
+        ("mention whole, a longer name", &["@a.rs"], "Fix @a.rs.bak now.", KEEP),
+        ("mention whole, given a line", &["@a.rs"], "Fix @a.rs#L5 now.", KEEP),
+        ("bare range, more range after", &["a.rs:1-2"], "Fix a.rs:1-2-3 now.", KEEP),
+        ("bare range, a longer range", &["a.rs:1-2"], "Fix a.rs:1-20 now.", KEEP),
+        ("mention range, a longer range", &["@a.rs#L1-2"], "Fix @a.rs#L1-20 now.", KEEP),
+        ("mention range, another range", &["@a.rs#L1-2"], "Fix @a.rs#L1-3 now.", KEEP),
+        ("one line in a range", &["@a.rs#L1"], "Fix @a.rs#L1-2 now.", KEEP),
+        ("a # name rewritten as a mention", &["a#b.rs:1-2"], "Fix @a#b.rs#L1-2 now.", KEEP),
+        ("a colon then more range", &["a.rs:1-2"], "see a.rs:1-2:9", KEEP),
+        ("refs reordered", &["@a.rs#L1-2", "@b.md"], "Per @b.md, fix @a.rs#L1-2", CLEAR),
+        (
+            "a quoted mention as given",
+            &["@\"a b.rs#L1-2\""],
+            "Fix @\"a b.rs#L1-2\" now.",
+            CLEAR,
+        ),
+        ("a bare name with a quote", &["a\"b.rs:1-2"], "Fix a\"b.rs:1-2 now.", CLEAR),
+        ("a bare name with a #", &["a#b.rs:1-2"], "Fix a#b.rs:1-2 now.", CLEAR),
+        ("a trailing full stop", &["a.rs:1-2"], "Fix a.rs:1-2.", CLEAR),
+        ("a trailing comma", &["@a.rs#L1-2", "@b.md"], "Fix @a.rs#L1-2, per @b.md.", CLEAR),
+        ("a colon ending a clause", &["@a.rs#L1-2"], "in @a.rs#L1-2: fix it", CLEAR),
+        (
+            "in backticks and brackets",
+            &["@a.rs#L1-2", "b.md"],
+            "Fix `@a.rs#L1-2` (see [b.md])",
+            CLEAR,
+        ),
+        ("named as given", &["@a.rs#L1-2"], "Fix @a.rs#L1-2", CLEAR),
+        ("a bare ref given an @", &["a.rs:1-2"], "Fix @a.rs:1-2 now.", KEEP),
+        ("in double quotes", &["@a.rs#L1-2"], "Fix \"@a.rs#L1-2\".", CLEAR),
     ];
-    let wrong: Vec<&str> = rows.iter().filter(|(_, t, f, want)| names(t, f) != *want).map(|r| r.0).collect();
+    let wrong: Vec<&str> = rows
+        .iter()
+        .filter(|(_, forms, text, clears)| {
+            let refs: Vec<RefItem> = forms.iter().map(|f| item(f, false, false)).collect();
+            unnamed(text, &refs).is_none() != *clears
+        })
+        .map(|r| r.0)
+        .collect();
     assert_eq!(wrong, [] as [&str; 0]);
 }
 

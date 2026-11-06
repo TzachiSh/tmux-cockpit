@@ -2010,24 +2010,24 @@ pub fn unnamed(text: &str, refs: &[RefItem]) -> Option<usize> {
     refs.iter().position(|r| !names(text, &r.text)).map(|i| i + 1)
 }
 
-/// `text` names `form` as given, as itself and not as part of a longer ref:
-/// `@a.rs#L1` is not in `@a.rs#L1-2`, a whole `@b.md` not in `@b.md#L1-3` or
-/// `@b.md.bak`, a bare `a.rs:1-2` not in `lib/a.rs:1-2`. A path character
-/// before the match, or `#`, `-`, `_`, `/` or a letter or digit after it,
-/// continues another ref; a `.` or `:` after it does only when a path
-/// character follows, so a sentence's full stop or colon still ends it.
+/// `text` names `form` as given, as a whole token: before the match the
+/// start, whitespace, a backtick or one of `(`, `[`, `'`, `"`; after it the
+/// end, whitespace, a backtick, one of `)`, `]`, `'`, `"`, `,`, `;`, or one of
+/// `.`, `:`, `!`, `?` that the end or whitespace follows (review-534's rule). So `@a.rs#L1` is not in `@a.rs#L1-2`, a whole `@b.md`
+/// not in `@b.md#L5` or `@b.md.bak`, a bare `a.rs:1-2` not in `lib/a.rs:1-2`
+/// or `@a.rs:1-2`; a sentence's full stop or comma after it still ends it.
 pub fn names(text: &str, form: &str) -> bool {
-    let path = |c: char| c.is_alphanumeric() || matches!(c, '/' | '.' | '_' | '-' | '~');
+    let opens = |c: char| c.is_whitespace() || matches!(c, '(' | '[' | '`' | '\'' | '"');
+    let closes = |c: char| c.is_whitespace() || matches!(c, ')' | ']' | '`' | '\'' | '"' | ',' | ';');
     text.match_indices(form).any(|(i, _)| {
-        let before = text[..i].chars().next_back();
+        let starts = text[..i].chars().next_back().is_none_or(opens);
         let mut after = text[i + form.len()..].chars();
         let ends = match after.next() {
             None => true,
-            Some(c) if c.is_alphanumeric() || matches!(c, '#' | '-' | '_' | '/') => false,
-            Some('.' | ':') => !after.next().is_some_and(path),
-            Some(_) => true,
+            Some('.' | ':' | '!' | '?') => after.next().is_none_or(char::is_whitespace),
+            Some(c) => closes(c),
         };
-        ends && !before.is_some_and(path)
+        starts && ends
     })
 }
 
