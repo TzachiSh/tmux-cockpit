@@ -269,3 +269,26 @@ fn accessors_read_the_fields() {
     let r = mk(&f, Some((1, 2)), Some("s"));
     assert_eq!((r.path(), r.lines(), r.symbol()), (f.as_path(), Some((1, 2)), Some("s")));
 }
+
+// ---------------------------------------------------------------- #381's NITs
+
+/// An all-whitespace symbol is no symbol.
+#[test]
+fn a_blank_symbol_is_none() {
+    let t = Tree::new("blanksym");
+    let f = t.file("a.rs");
+    for s in ["", " ", "\t \n"] {
+        assert_eq!(mk(&f, None, Some(s)).symbol(), None, "{s:?}");
+    }
+    assert_eq!(mk(&f, None, Some(" x ")).symbol(), Some(" x "));
+}
+
+/// A Ref can go in a set (#365 child 5's basket).
+#[test]
+fn a_ref_hashes() {
+    let t = Tree::new("hash");
+    let f = t.file("a.rs");
+    let (whole, line) = (mk(&f, None, None), mk(&f, Some((1, 1)), None));
+    let set: std::collections::HashSet<Ref> = [whole.clone(), whole, line].into();
+    assert_eq!(set.len(), 2);
+}
