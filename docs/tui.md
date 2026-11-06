@@ -2202,10 +2202,12 @@ is read. `tui/src/basket.rs` writes it through `data::tmux_set`, so
 `COCKPIT_READONLY` keeps it unchanged, and reads each write back. The value ends
 in a newline: tmux strips a trailing `;` off a command's last argument, and a
 file named `x;` would read back as `x`. A pane that is gone says so rather than
-read as an empty basket. Under `cargo test`, the repo root's
-`.cargo/config.toml` sets `COCKPIT_TEST_TMUX_GUARD`, and the basket then runs
-tmux only on a private `-L`/`-S` server or a stub, never the user's. The panel's
-side (showing the basket, removing from it, sending it) is the next PR.
+read as an empty basket. In any debug build, and so under `cargo test` from any
+directory, the basket runs tmux only on a private `-L`/`-S` server or a stub,
+never the user's; the repo root's `.cargo/config.toml` sets
+`COCKPIT_TEST_TMUX_GUARD` for a release test run too, and
+`COCKPIT_TEST_TMUX_GUARD=0` lifts it by hand. The panel's side (showing the
+basket, removing from it, sending it) is the next PR.
 
 ## `cockpit-tui branch` (#246)
 
