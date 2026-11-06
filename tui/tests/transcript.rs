@@ -1,9 +1,10 @@
 //! The transcript reader against outputs frozen from the jq reader it
 //! replaced, plus #193's cases. Seconds are normalised to N.
 use cockpit_tui::data::transcript::{doing, file, tail};
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
+
+mod fake;
 
 const FIX: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../tests/fixtures/transcript-reader");
 
@@ -135,10 +136,7 @@ impl Rig {
             std::fs::create_dir_all(dir.join(".claude/projects").join(p)).unwrap();
         }
         let bin = dir.join(".claude/projects/bin");
-        let exec = |name: &str, body: String| {
-            std::fs::write(bin.join(name), body).unwrap();
-            std::fs::set_permissions(bin.join(name), std::fs::Permissions::from_mode(0o755)).unwrap();
-        };
+        let exec = |name: &str, body: String| fake::write_exec(&bin.join(name), &body);
         exec(
             "tmux",
             format!("#!/bin/sh\ncase \"$1\" in show-option) printf '%s\\n' '{sid}' ;; display-message) echo {pane_pid} ;; esac\n"),
