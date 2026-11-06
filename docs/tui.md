@@ -1846,9 +1846,14 @@ Neither returns an empty string for a failure. A `None` from `preview` renders
 as one line, `capture failed`, never a blank tile: an empty preview and a dead
 pane are different facts and a blank tile tells you which one it is.
 
-**CLI:** `cockpit-tui board [--select %N] [--note <file>] | panel %N [--resume <state> --last ok|failed:<why>|hidden] |
---rows | --json | --version | -h | --help`. There is no `fleet`, `info` or `ask` subcommand: the
-board reaches those through the action file and the shell scripts.
+**CLI:** `cockpit-tui board [--select %N] [--note <file>] | pick | files <dir> | branch [-C <dir>] |
+info [--text|--json] %N | workdir %N | sessions [--needs] [--current $N] | panel %N [--resume <state>
+--last ok|failed:<why>|hidden | --ask <file> <a> <b>] | view [--line N] [--] <file> | basket add %N <file> |
+--rows | --json | --version | -h | --help`, the usage `-h` prints. `info %N` is the info screen,
+`info --text %N` its rows as text, and `info --json %N` the work dir as JSON (see "The info screen
+(#252)" below); `workdir %N` prints the board's dir for one pane. There is no `fleet` or `ask`
+subcommand (an unknown word exits 2 with the usage): the board reaches those through the action
+file and the shell scripts.
 
 **The transcript reader (#199):** `data::transcript` (`file`, `doing`, `tail`) is a library
 module the board and the info screen read in-process; there is no `transcript`
