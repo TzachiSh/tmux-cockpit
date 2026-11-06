@@ -36,13 +36,25 @@
 # reason to ask; the prompt tells the agent to check it and handle each case.
 # A vague feature may still go plan-first (#451): either. Cases here are not the
 # prompt's own examples on purpose. A case relabelled by #503 says so in note.
+#
+# Big tasks (#558): a big feature, a migration or a refactor across many files
+# gets the facts first. The prompt has the agent read the current flow and run
+# the tests or the tool for a baseline, plan, wait for the OK, then run the same
+# checks again and compare. For a big feature, the panel asks only the one or two
+# points that change the work most; the prompt has the agent interview the owner
+# for the rest with its question tool and get an OK on a requirements list
+# before the plan. A small addition to existing code checks that what exists
+# works, adds, then tests both. A trivial edit gets none of this. A prompt that
+# reports and lists the edits for the owner's approval answers "should we move
+# to X" (#514). The prompt asks for no installed skill: the agent picks one from
+# its description (#513). A case relabelled by #558 says so in note.
 
 === two-services
 kind: feature
 window: bash · bash · /home/u/projects/shop
 expect: ask
 ask_any: gateway; billing
-note: subject: two candidate APIs on screen
+note: subject: two candidate APIs on screen; #558 (cards 20, 28): which API is the question that changes the work most, so it is asked first; the big-task prompt after the answer is two-services-answered's
 --- screen
 $ ls
 api-gateway  billing-api  docs  web
@@ -468,8 +480,8 @@ kind: bug
 window: claude · claude · /home/u/projects/web
 expect: write
 must: Recieve; Receive
-must_not: subagent|subagents; plan; skill|skills
-note: a trivial edit: nothing to delegate
+must_not: subagent|subagents; plan; skill|skills; baseline; AskUserQuestion; requirements
+note: a trivial edit: nothing to delegate; #558: and no baseline or interview, which are for big tasks
 --- screen
 ● The button label in src/Checkout.tsx reads "Recieve order".
 --- request
@@ -497,9 +509,9 @@ use the brainstorming skill to work out how the board should show subagents
 kind: plan
 window: claude · claude · /home/u/projects/tool
 expect: write
-must: plan|planning|plans; before
-must_not: autopilot; ralph; ultrawork; ultrathink
-note: a large change: plan and wait for an OK before editing (explore, plan, code)
+must: plan|planning|plans; before; test|tests; baseline|today|currently; again|rerun|re-run|compare
+must_not: autopilot; ralph; ultrawork; ultrathink; Assumed:
+note: a large change: plan and wait for an OK before editing (explore, plan, code); #558 (card 22): facts first, so it runs the tests or the tool for a baseline first and runs them again after, to compare
 --- request
 move the whole config loader from yaml to toml, it touches a lot of files
 
@@ -533,9 +545,9 @@ the search results are wrong
 kind: investigate
 window: claude · claude · /home/u/projects/engine
 expect: write
-must: unsafe; subagent|subagents; skill|skills
+must: unsafe; subagent|subagents
 holdout: yes
-note: four independent crates: one subagent each fits; #503 (card 8): and a skill that fits, when one is installed
+note: four independent crates: one subagent each fits; #513, was must skill|skills: Claude Code picks an installed skill from its description by itself, and card 8 passed without the line, so the prompt no longer asks for it
 --- screen
 ● The workspace has four crates: core, io, render and ffi.
 --- request
@@ -544,10 +556,13 @@ check each crate for unsafe code and report what you find, dont change anything
 === h-node-lts
 kind: research
 window: bash · bash · /home/u/projects/api
-expect: ask
+expect: either
 ask_any: report; recommend|recommendation; change|update|edit; switch|upgrade; why; reason; constraint|constraints
+must: node; Dockerfile; source|sources|nodejs.org|cite; OK|approval|approve|confirm|go-ahead
+out_is: prompt
+must_not: Assumed:
 holdout: yes
-note: #503 (card 4), was write: a current fact needs a web search, but whether to only report or also move the Dockerfile, and what decides "should", are the owner's
+note: #503 (card 4), was write: a current fact needs a web search, but whether to only report or also move the Dockerfile, and what decides "should", are the owner's; #514, was ask: card 4 passed a report-only prompt that cites a source and lists the edits for the owner's approval, so that serves too
 --- request
 which node version is the current LTS and should our Dockerfile move to it
 
@@ -815,3 +830,43 @@ holdout: yes
 note: no goal for the change: what it is for decides the plan
 --- request
 how should we restructure the db layer
+
+# Added for #558, before the prompt change: big tasks get facts first.
+=== two-services-answered
+kind: feature
+window: bash · bash · /home/u/projects/shop
+expect: either
+ask_any: endpoint|endpoints; response|responses; fresh|freshness|stale; ttl|expire|expiry|expiration; redis|memcached|memory; invalidate|invalidation; load|traffic
+must: billing-api; requirements; AskUserQuestion|interview; baseline|today|currently; plan|planning|plans
+out_is: prompt
+must_not: Assumed:
+note: #558 (cards 20, 28): the subject is answered; caching is a big feature, so one more question on what changes the work most, or a prompt that checks the current flow, interviews the owner for the requirements and plans, both serve
+--- screen
+$ ls
+api-gateway  billing-api  docs  web
+--- repo
+branch: main...origin/main
+root: /home/u/projects/shop
+status: clean
+recent commits:
+  2f8a1c9 billing-api: invoice export
+  e40b6d7 api-gateway: rate limit per key
+  9c1d3e5 web: cart page
+--- conversation
+assistant: Which API should get caching? Options: api-gateway | billing-api
+user: billing-api
+--- request
+add caching to the api
+
+=== small-add-format
+kind: feature
+window: claude · claude · /home/u/projects/report
+expect: write
+must: csv; json; test|tests; first|before
+must_not: AskUserQuestion; requirements; Assumed:
+note: #558 (card 33): a small addition to existing code: check that the json export works first, add csv, then test both; no interview
+--- screen
+● Added `report export --format json`. tests/test_export.py passes.
+--- request
+add csv to the export as well
+
