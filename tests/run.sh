@@ -2718,7 +2718,8 @@ is "vnum: 1.12.9 is below the 1.13.0 floor, and only that way" "no yes" \
    "$(dcge 1.12.9 1.13.0) $(dcge 1.13.0 1.12.9)"
 # vnum_ge grades the tmux floor at all three sites (#545). A master build says
 # next-X.Y, X.Y being the release it leads to; a word with no number passes.
-for r in 3.7:no 3.8:yes next-3.7:no next-3.8:yes next-3.9:yes master:yes openbsd-7.5:yes :yes; do
+for r in 3.7:no 3.7a:no v3.7:no 3.8:yes next-3.7:no next-3.8:yes next-3.9:yes next-3.10:yes \
+         master:yes openbsd-7.5:yes :yes; do
     tv=${r%:*}
     is "vnum_ge: tmux '$tv' against the 3.8 floor" "${r##*:}" \
        "$(vnum_ge "$tv" 3.8 2>&1 && echo yes || echo no)"
@@ -2769,7 +2770,7 @@ mkdir -p "$DC/nexttmux"; dshim tmux "tmux next-3.9" "$DC/nexttmux"
 dcout=$(dc "$DC/nexttmux:$DBIN:$DSH:$DNO")
 is "a tmux built from master (next-3.9) is an ok row" "1" "$(dcrow "$dcout" "ok tmux")"
 # A master build before 3.7 shipped says next-3.7: older than 3.7, so a fail (#545).
-for r in next-3.7:fail next-3.8:ok master:ok 3.7:fail 3.8:ok; do
+for r in next-3.7:fail next-3.8:ok master:ok 3.7:fail v3.7:fail 3.8:ok; do
     tv=${r%:*}; dshim tmux "tmux $tv" "$DC/nexttmux"
     dcout=$(dc "$DC/nexttmux:$DBIN:$DSH:$DNO")
     is "tmux $tv: the doctor marks the tmux row ${r#*:}" "1" "$(dcrow "$dcout" "${r#*:} tmux")"
@@ -2923,7 +2924,8 @@ is "no run reached for sudo" "absent" "$([ -e "$BS/SUDO_RAN" ] && echo present |
 # The tmux step: a master build says next-X.Y, X.Y being the release it leads
 # to, so next-3.7 is older than 3.7 and gets the build; master has no number (#545).
 mkdir -p "$BS/tv"; bspath=$BPATH; BPATH="$BS/tv:$bspath"
-for r in next-3.7:builds next-3.8:keeps next-3.9:keeps master:keeps 3.7:builds 3.8:keeps; do
+for r in next-3.7:builds next-3.8:keeps next-3.9:keeps master:keeps 3.7:builds v3.7:builds \
+         3.8:keeps; do
     tv=${r%:*}; printf '#!/bin/sh\necho "tmux %s"\n' "$tv" > "$BS/tv/tmux"; chmod +x "$BS/tv/tmux"
     bsout=$(bs --dry-run | awk '/^== /{ f = ($0 == "== tmux version ==") } f')
     case "$bsout" in
@@ -7779,7 +7781,7 @@ case "$(cat "$BD/argv" 2>/dev/null)" in *'tmux-cockpit needs tmux 3.8 or newer (
 esac
 # A master build says next-X.Y, X.Y being the release it leads to, so next-3.7
 # is older than 3.7 (#545). The same server, a new answer to -V each load.
-for r in next-3.7:refuses next-3.8:loads next-3.9:loads master:loads 3.8:loads; do
+for r in next-3.7:refuses v3.7:refuses next-3.8:loads next-3.9:loads master:loads 3.8:loads; do
     tv=${r%:*}; bshim "$BD/s4" "$B4" "$tv"; rm -f "$BD/argv"
     "$TMUX_REAL" -L "$B4" run-shell "$BD/p/cockpit.tmux" >/dev/null 2>&1
     nm=$(grep -c 'needs tmux 3.8 or newer' "$BD/argv" 2>/dev/null)
