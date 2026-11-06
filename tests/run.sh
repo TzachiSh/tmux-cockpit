@@ -8797,8 +8797,10 @@ printf '/r/a.rs:1-2\n/r/b.rs\n' > "$PND/bopt"
 is "a send with the basket's refs clears it" "1" "$(pact 'send %5' hi | grep -c 'set-option -pu -t %5 @cockpit_basket')"
 # the owner's call: an insert (i, y or Enter) spends the basket too
 is "an insert with the basket's refs clears it too" "1" "$(pact 'paste %5' hi | grep -c 'set-option -pu -t %5 @cockpit_basket')"
-printf '/r/a.rs:1-2\n/r/b.rs\n/r/c.rs\n' > "$PND/bopt"
-is "a basket that changed since is kept" "0" "$(pact 'send %5' hi | grep -c '@cockpit_basket')"
+# #582: the compare and the unset are one if-shell -F the server runs; whether it
+# keeps a changed basket is the "(#582)" block's, on a real server
+is "the clear is one tmux call holding an if-shell, never a separate unset" "1|0" \
+   "$(pact 'send %5' hi >/dev/null; grep -c ' if-shell -F -t %5 ' "$PND/pargv")|$(grep -c '^set-option -pu' "$PND/pargv")"
 printf '/r/a.rs:1-2\n/r/b.rs\n' > "$PND/bopt"; touch "$PND/fail-paste-buffer"
 is "a paste that failed keeps the basket" "0" "$(pact 'send %5' hi | grep -c '@cockpit_basket')"
 rm -f "$PND/fail-paste-buffer"
@@ -14414,6 +14416,52 @@ for o in 'ask 7 3' 'ask 0 1' 'ask 01 2' 'ask 1' 'ask 1 2 3' 'ask a b' 'ask 12345
         *) ok "the viewer's [$o] is not an ask: no panel" ;;
     esac
 done
+
+echo "== cockpit-panel (#582): the basket clear keeps a ref added just before it =="
+# A private server and a shim tmux in PATH that forwards every call to it. Just
+# before the call that would clear the basket (an unset, or an if-shell) it adds a
+# ref, as a viewer's `a` does from another client. A compare and an unset split
+# over two calls loses that ref; one server-side compare-and-clear keeps it.
+if need_tmux "basket clear"; then :; else
+BK="cockpit-bk-$$"; SOCKS="$SOCKS $BK"; BKD=$(mktmpd); mkdir -p "$BKD/bin" "$BKD/w"
+"$TMUX_REAL" -L "$BK" -f /dev/null new-session -d -c "$BKD/w" 'exec sleep 300' >/dev/null 2>&1
+BKP=$("$TMUX_REAL" -L "$BK" display -p '#{pane_id}')
+cat > "$BKD/bin/tmux" <<BKSHIM
+#!/bin/sh
+case "\$*" in *"set-option -pu"*|if-shell*)
+    if [ -e "$BKD/inject" ]; then
+        rm -f "$BKD/inject"
+        "$TMUX_REAL" -L "$BK" set-option -p -t "$BKP" @cockpit_basket "\$(cat "$BKD/added")"
+    fi ;;
+esac
+exec "$TMUX_REAL" -L "$BK" "\$@"
+BKSHIM
+chmod +x "$BKD/bin/tmux"
+bkrun() {                     # <stored> <sent> [inject] -> basket_clear's rc, then the option
+    "$TMUX_REAL" -L "$BK" set-option -p -t "$BKP" @cockpit_basket "$1"
+    printf '%s' "$2" > "$BKD/sent"; rm -f "$BKD/inject"; [ -z "${3:-}" ] || : > "$BKD/inject"
+    ( PATH="$BKD/bin:$PATH"; . "$DIR/scripts/lib/pane.sh"; . "$DIR/scripts/lib/basket.sh"
+      basket_clear "$BKP" "$BKD/sent"; echo "rc=$?" )
+    "$TMUX_REAL" -L "$BK" show-options -pqv -t "$BKP" @cockpit_basket
+}
+printf '/r/a.rs\n/r/new.rs\n' > "$BKD/added"
+is "the basket as sent is cleared" "rc=0" "$(bkrun $'/r/a.rs\n' '/r/a.rs')"
+is "a ref added just before the clear is kept" "rc=1"$'\n'"/r/a.rs"$'\n'"/r/new.rs" \
+   "$(bkrun $'/r/a.rs\n' '/r/a.rs' inject)"
+is "a basket that changed since the send is kept" "rc=1"$'\n'"/r/b.rs" "$(bkrun $'/r/b.rs\n' '/r/a.rs')"
+BKN=$'/r/a#b.rs:1-2\n/r/c,d}.rs (s {x})\n/r/x#{pane_id}.rs'
+is "names holding #, a comma, braces or a format are compared as text" "rc=0" "$(bkrun "$BKN"$'\n' "$BKN")"
+is "and a format in a name is not its expansion" "rc=1"$'\n'"/r/x$BKP.rs" "$(bkrun "/r/x$BKP.rs"$'\n' '/r/x#{pane_id}.rs')"
+# review-510: tmux keeps `##[` as `##[` in a format, so an escaped compare never
+# matched a name with `#[`; the option-to-option compare escapes nothing
+is "a name with #[ is cleared when it is the basket as sent" "rc=0" "$(bkrun $'/r/a#[x.rs\n' '/r/a#[x.rs')"
+BKH=$(i=0; while [ $i -lt 125 ]; do printf '/r/%090d%03d.rs\n' 0 $i | tr 0 '#'; i=$((i + 1)); done)
+is "a full #-heavy basket of $(printf '%s' "$BKH" | wc -c | tr -d ' ') bytes is cleared" "rc=0" \
+   "$(bkrun "$BKH"$'\n' "$BKH" | head -1)"
+is "the compare's own option is gone after, kept basket or cleared" "|" \
+   "$(bkrun $'/r/b.rs\n' '/r/a.rs' >/dev/null; "$TMUX_REAL" -L "$BK" show-options -pqv -t "$BKP" @cockpit_basket_sent)|$(bkrun $'/r/a.rs\n' '/r/a.rs' >/dev/null; "$TMUX_REAL" -L "$BK" show-options -pqv -t "$BKP" @cockpit_basket_sent)"
+is "a pane that is no %N runs no tmux" "rc=2" "$(PATH="$BKD/bin:$PATH" bash -c ". '$DIR/scripts/lib/pane.sh'; . '$DIR/scripts/lib/basket.sh'; basket_clear 'x' '$BKD/sent'; echo rc=\$?")"
+fi
 
 echo "== tmux-open-path (#366): plain_name drops each control and bidi character, keeps the rest =="
 # One table, one row per character: removing any one from the helper fails its row.
