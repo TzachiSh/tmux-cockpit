@@ -130,7 +130,7 @@ download() {                  # 0 installed · 1 refused · 2 nothing for this p
 }
 
 build() {                     # 0 built · 2 skipped
-    local rv log
+    local rv log td
     [ -f "$DIR/tui/Cargo.toml" ] || { say "no source tree at $DIR/tui to build from"; return 2; }
     command -v cargo >/dev/null 2>&1 || { say "no cargo either -- install rustup (https://rustup.rs) or wait for a release build"; return 2; }
     rv=$(rustc --version 2>/dev/null | awk '{print $2}')
@@ -143,7 +143,13 @@ build() {                     # 0 built · 2 skipped
     trap 'rm -f "$log"' RETURN
     cargo build --release --locked --manifest-path "$DIR/tui/Cargo.toml" > "$log" 2>&1 || {
         BUILD_FAILED=1; say "cargo build failed, last 5 lines:" >&2; tail -5 "$log" >&2; return 2; }
-    install -m 755 "$DIR/tui/target/release/cockpit-tui" "$COCKPIT_TUI_BIN" || { BUILD_FAILED=1; return 2; }
+    # Not tui/target: CARGO_TARGET_DIR or a config's build.target-dir moves it (#546).
+    td=$(cargo metadata --format-version 1 --no-deps --offline \
+            --manifest-path "$DIR/tui/Cargo.toml" 2>/dev/null |
+        sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')
+    [ -n "$td" ] || {
+        BUILD_FAILED=1; say "cargo metadata named no target_directory" >&2; return 2; }
+    install -m 755 "$td/release/cockpit-tui" "$COCKPIT_TUI_BIN" || { BUILD_FAILED=1; return 2; }
     say "cockpit-tui built from source -> $COCKPIT_TUI_BIN"
 }
 

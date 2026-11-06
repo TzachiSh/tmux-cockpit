@@ -7475,6 +7475,40 @@ esac
 unset -f nw
 rm -rf "$NW"
 
+# tests: scripts/tui-fetch
+echo "== cockpit-tui builds install from cargo's target dir, not tui/target (#546) =="
+# CARGO_TARGET_DIR or a config's build.target-dir moves the build out of
+# tui/target. This fake cargo reports and builds into a dir outside the tree,
+# with CARGO_TARGET_DIR unset, so only asking cargo can find the binary.
+if ! command -v make >/dev/null 2>&1; then skip_ "target dir (no make)"
+elif ! command -v curl >/dev/null 2>&1; then skip_ "target dir (no curl)"; else
+TD=$(mktmpd); mkdir -p "$TD/p/tui" "$TD/p/scripts/lib" "$TD/shim"
+cp "$DIR/Makefile" "$TD/p/"; cp "$DIR/tui/Cargo.toml" "$TD/p/tui/"
+cp "$DIR/scripts/tui-fetch" "$TD/p/scripts/"
+cp "$DIR/scripts/lib/vnum.sh" "$DIR/scripts/lib/tui.sh" "$TD/p/scripts/lib/"
+cat > "$TD/shim/cargo" <<EOF
+#!/bin/sh
+o="$TD/out/release/cockpit-tui"
+case "\$1" in
+    metadata) printf '{"packages":[],"target_directory":"%s","version":1}\n' "$TD/out" ;;
+    build) mkdir -p "\${o%/*}" &&
+        printf '#!/bin/sh\necho "cockpit-tui 9.9.9"\n' > "\$o" && chmod +x "\$o" ;;
+    *) exit 1 ;;
+esac
+EOF
+printf '#!/bin/sh\necho "rustc 1.99.0 (0000000 2026-01-01)"\n' > "$TD/shim/rustc"
+chmod +x "$TD/shim/cargo" "$TD/shim/rustc"
+PATH="$TD/shim:$PATH" env -u CARGO_TARGET_DIR make -C "$TD/p" tui-bin >/dev/null 2>&1; tdrc=$?
+is "make tui-bin installs from the target dir cargo reports" "0 cockpit-tui 9.9.9" \
+    "$tdrc $("$TD/p/bin/cockpit-tui" --version 2>&1)"
+rm -f "$TD/p/bin/cockpit-tui"
+PATH="$TD/shim:$PATH" env -u CARGO_TARGET_DIR -u COCKPIT_TUI_OFFLINE -u COCKPIT_TUI_BIN \
+    COCKPIT_TUI_RELEASES="file://$TD/no-such-host" \
+    "$TD/p/scripts/tui-fetch" --required --version cockpit-tui-v9.9.9 >/dev/null 2>&1; tdrc=$?
+is "tui-fetch's source build installs from the target dir cargo reports" "0 cockpit-tui 9.9.9" \
+    "$tdrc $("$TD/p/bin/cockpit-tui" --version 2>&1)"
+fi
+
 echo "== cockpit-tui: docs name only real options =="
 # Three README lines went stale on review phase 3 and cost a round; this asserts
 # every @cockpit_* / COCKPIT_* name in docs/tui.md is one some code answers to.
