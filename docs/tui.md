@@ -827,6 +827,16 @@ is.
   to the pane's agent. `^Z` hides it like any other panel, unless a panel is
   hidden on the pane already: the pane keeps one, so the ask's `^Z` says so,
   and `cockpit-panel` never moves a state over the one kept.
+- **`c`, a draft for the agent** (#365 child 5, flow A). The answer's `c` opens
+  Compose with the answer's `<prompt>`, or else, per the owner's D8, a template:
+  `About <ref>: <question>`, then the answer's first paragraph. It is cleaned
+  (escape sequences, control and bidi characters out), then cut to 2000
+  characters, the `…` included, on whole graphemes, backing off to a space only
+  within the last 40; no model is called for it. The ask's lines go in the
+  pane's prompt basket, so `^T` sends them as a ref ([the prompt
+  basket](#the-prompt-basket-365-child-5)). Esc there is back at the answer with
+  its thread kept (D3); `^S` or `^F` from there is a run of its own and ends the
+  thread, so esc after it goes to the board.
 - **The prompt** is `ask-code.txt`, overridden like the others.
 
 ### Code in the panel (#282)
@@ -2206,25 +2216,75 @@ note and `a add` is not on the footer.
 The basket is the pane option `@cockpit_basket`, so it goes with the pane: one
 `refs::render` line per ref, each an absolute path that `refs::parse` reads
 back, each ref once, at most 32 refs and 12 KiB (tmux 3.8 takes one command of
-about 16 KB). A name the text cannot carry, a line break or a control character
-in it, is refused, and a file gone since it was added drops out when the basket
-is read. `tui/src/basket.rs` writes it through `data::tmux_set`, so
-`COCKPIT_READONLY` keeps it unchanged, and reads each write back. The value ends
-in a newline: tmux strips a trailing `;` off a command's last argument, and a
-file named `x;` would read back as `x`. A pane that is gone says so rather than
-read as an empty basket. In any debug build, and so under `cargo test` from any
-directory, the basket runs tmux only on a private `-L`/`-S` server or a stub,
-never the user's; the repo root's `.cargo/config.toml` sets
-`COCKPIT_TEST_TMUX_GUARD` for a release test run too, and
-`COCKPIT_TEST_TMUX_GUARD=0` lifts it by hand.
+about 16 KB). A name the text cannot carry, a line break, a control character,
+or a line or paragraph separator (U+2028, U+2029) in it, is refused, and a file
+gone since it was added drops out when the basket is read. `tui/src/basket.rs`
+writes it through `data::tmux_set`, so `COCKPIT_READONLY` keeps it unchanged,
+and reads each write back. The value ends in a newline: tmux strips a trailing
+`;` off a command's last argument, and a file named `x;` would read back as `x`.
+A pane that is gone says so rather than read as an empty basket. In any debug
+build, and so under `cargo test` from any directory, the basket runs tmux only
+on a private `-L`/`-S` server or a stub, never the user's; the repo root's
+`.cargo/config.toml` sets `COCKPIT_TEST_TMUX_GUARD` for a release test run too,
+and `COCKPIT_TEST_TMUX_GUARD=0` lifts it by hand.
 
 The file browser's `alt-a` prints `add <path>` for a file (a folder is a note).
 `tmux-open-path` takes it only as it takes `view`: one line, an absolute path to
 an existing regular file, and no control character in it. It then runs
 `cockpit-tui basket add <pane> <file>` with its own pane, only one that reads
 `%N`, and shows the line that prints (`added sub/n.txt (1 in the basket)`). The
-basket's contents are never logged. The panel's side (showing the basket,
-removing from it, sending it) is the next PR.
+basket's contents are never logged.
+
+The panel shows the basket in Compose: `refs: N` on the head line, then a row a
+ref, three at most and a count past them, each from the pane's folder, drawn
+clean, a whole file marked `(whole file)`. `^B` lists them all: `d` or Del
+removes the selected one, `D` empties the basket, esc is back to the draft; each
+change is written to the pane's basket before the list shows it.
+
+`^T` with refs in the basket always goes through the confirm, even into a
+program that brackets its paste, and the confirm shows the exact text that goes
+out: the draft, a blank line, then one ref per line (owner's D4). For a pane
+that runs Claude Code (an agent's pane, #519's `is_agent`, whose command is
+`claude` or its version title, `2.1.318`) a ref is a mention Claude Code
+inlines: `@path#La-b`, `@path#La` for one line, `@path` for a whole file, and
+`@"path#La-b"` for a path with a space; a path holding `"` or `#` goes bare, so
+a `#` cannot read as the range. Any other agent, and any other pane, gets bare
+`path:a-b`. The confirm says what Enter does: `s` sends it (Enter after), and
+`i`, `y` or Enter insert it (owner's D2), on its footer, in its help and, on a
+tablet, as `send`, `insert` and `no` buttons. Over 16 KiB the send is refused,
+never cut. Two caveats, from the probes: lines a mention inlines reach the model
+without a Read, so no PreToolUse hook fires for them (a Read deny rule still
+blocks them), and a whole-file `@path` can inline up to 25,000 tokens.
+
+A send or an insert that carried the basket leaves `<action>.basket`, the
+option's text as the panel read it (a gone file's line included, so a gone ref
+cannot pin the basket), and `cockpit-panel` unsets `@cockpit_basket` once the
+paste lands, and only while the option still holds exactly that, so a ref a
+viewer added meanwhile stays (owner's D7). The compare and the unset are one
+tmux command list (`scripts/lib/basket.sh`), which the server runs with no other
+client's command between them, so a ref added from another client is never lost
+between the check and the clear (#582): the sent text goes into a second option,
+set without `-F` so it stays literal, `if-shell -F` compares the two options,
+and the second option goes again either way. Nothing is escaped, so a name
+holding `#[` or `#{` compares as text. A failed paste or `COCKPIT_READONLY`
+leaves it.
+
+`^S` (Write) with refs in the basket sends them to the write in a `<refs>` block
+before `<request>`, one `<ref>` a line in the form the pane's agent reads (D4),
+a whole file noted `whole file`, never refused. `write.txt` has the write name
+every ref as given. While the write explores (`^R`), a ref whose file is outside
+the folder it may read is noted `outside the repo, not read`, so the written
+prompt never claims a read the call could not make; it stays in the block, as
+the pane's agent can still read it. A ref is its file's canonical path, so a
+symlink in the folder that leads out is outside, as the read would be refused,
+and a link outside that leads in is inside; the folder is compared canonical
+too. A ref inside the folder that the read-only profile denies by rule (a
+`.env` or `.env.*`, a key under `~/.ssh`, the rest of `request.rs`'s list, read
+by `request::read_denied` from that same list) is noted `a secret the write may
+not read, not read`. The written result, sent or inserted from its view, carries the basket as
+`^T` does, and cockpit-panel clears it once the paste lands, but only when the
+result names every ref as given: a result that leaves one out, a command or
+steps, and a failed or cancelled write leave the basket as it was.
 
 ## `cockpit-tui branch` (#246)
 

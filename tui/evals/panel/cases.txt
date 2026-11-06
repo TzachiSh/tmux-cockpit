@@ -18,8 +18,12 @@
 # A key or a section given twice is an error. A screen cannot hold a line that
 # starts with "--- " or "=== ": those start a section or a case.
 #   note:    why the label is what it is
-# then "--- screen" (optional), "--- repo" (optional), "--- conversation" (optional)
-# and "--- request".
+# then "--- screen" (optional), "--- repo" (optional), "--- conversation" (optional),
+# "--- refs" (optional) and "--- request".
+# A refs body is the prompt basket (#365 child 5), one "path", "path:a" or
+# "path:a-b" line a ref, from the pane's folder; "../x" is a file outside it. The
+# case then runs in a temp folder of its own that holds those files, named as the
+# window's path ends; an explore case's refs inside its fixture must exist there.
 # A conversation body is the panel's earlier rounds, one "assistant: <question>
 # Options: a | b" or "user: <answer>" line each, oldest first: the case is then
 # its next call, with one question fewer left for each one asked.
@@ -177,10 +181,9 @@ invoice totals are off for some customers
 === release-slips
 kind: message
 window: bash · bash · /home/u
-expect: either
+expect: ask
 ask_any: date; how long; until
-must: Dana; slip|slips|slipping|delayed|late
-note: the new date is the owner's to give, but they may not have one: asking or "date to follow" both serve
+note: the new date is the owner's to give; #587 (card 10), was either: the reader needs it, so the panel asks first, even though the owner may not have one yet ("date to follow" no longer passes)
 --- request
 write to dana that the release slips
 
@@ -376,8 +379,8 @@ kind: refactor
 window: bash · bash · /home/u/projects/tool
 expect: write
 must: parse_cfg; parse_config
-must_not: Assumed:
-note: a mechanical rename the agent can find every use of; #503 (card 15): whether parse_cfg is a function is the agent's to check, so no Assumed: line
+must_not: Assumed:; mutate|mutation|mutant|mutants|on purpose
+note: #587: no mutation step, since no test is added or fixed; a mechanical rename the agent can find every use of; #503 (card 15): whether parse_cfg is a function is the agent's to check, so no Assumed: line
 --- request
 rename parse_cfg to parse_config everywhere, no behaviour change
 
@@ -408,8 +411,8 @@ kind: format
 window: bash · bash · /home/u
 out: format
 expect: ask
-ask_any: compose; kubernetes; k8s; deployment; image; namespace; label|labels; metadata; spec
-note: #503 (card 2), was either: the kind of file and its metadata and spec are the owner's to give, and a file of either kind guesses them
+ask_any: compose; docker compose; kubernetes; k8s; helm; swarm; format; platform
+note: #503 (card 2), was either: the kind of file and its metadata and spec are the owner's to give, and a file of either kind guesses them; #587 (card 2): the kind comes first, since it changes the whole file, so a question on the image, labels or spec no longer passes
 --- request
 yaml for service web, port 8080, 3 replicas
 
@@ -480,8 +483,8 @@ kind: bug
 window: claude · claude · /home/u/projects/web
 expect: write
 must: Recieve; Receive
-must_not: subagent|subagents; plan; skill|skills; baseline; AskUserQuestion; requirements
-note: a trivial edit: nothing to delegate; #558: and no baseline or interview, which are for big tasks
+must_not: subagent|subagents; plan; skill|skills; baseline; AskUserQuestion; requirements; mutate|mutation|mutant|mutants|on purpose
+note: a trivial edit: nothing to delegate; #558: and no baseline or interview, which are for big tasks; #587: and no mutation step, which is for a test
 --- screen
 ● The button label in src/Checkout.tsx reads "Recieve order".
 --- request
@@ -633,8 +636,8 @@ cargo test fails on main since the merge, fix it
 kind: bug
 window: bash · bash · /home/u/projects/calc
 expect: write
-must: parses_negative; src/parser.rs; leading minus|9f3c2a1
-note: the repo block names the last commit; the screen names the test and its file
+must: parses_negative; src/parser.rs; leading minus|9f3c2a1; on purpose|deliberately|mutate|mutation|mutant|mutants|break the code|flip|flipping; undo|undoing|revert|reverting|restore|put back|put it back
+note: the repo block names the last commit; the screen names the test and its file; #587 (card 59): after the fix the prompt breaks the code on purpose, sees the test fail and undoes the break; the break words were widened after a probe, then narrowed by the #589 review, since "break" and "small change" also pass "does not break other tests" and "keep it a small change"
 --- screen
 $ cargo test -q
 running 42 tests
@@ -683,8 +686,8 @@ review my changes
 kind: feature
 window: bash · bash · /home/u/projects/site
 expect: write
-must: slugify
-note: without the repo block "which function" is open; the diff names the one file changed, and Claude Code can read the diff
+must: slugify; on purpose|deliberately|mutate|mutation|mutant|mutants|break the code|flip|flipping; undo|undoing|revert|reverting|restore|put back|put it back
+note: without the repo block "which function" is open; the diff names the one file changed, and Claude Code can read the diff; #587 (card 58): the prompt breaks the code on purpose, sees the new test fail and undoes the break; the break words were widened after a probe, then narrowed by the #589 review, since "break" and "small change" also pass "does not break other tests" and "keep it a small change"
 --- screen
 $ npm test
 Tests: 18 passed, 18 total
@@ -967,3 +970,293 @@ holdout: yes
 note: a big feature: one question on what changes the work most, or a prompt that checks today's flow, interviews the owner for the requirements and plans, both serve
 --- request
 add audit logging to the admin app
+
+# #365 child 5, PR 5: the prompt basket in a write. The prompt names every ref
+# as <refs> gives it: @path#La-b for a claude window, bare path:a-b otherwise,
+# and a small task stays small.
+=== refs-claude-bug
+kind: bug
+window: claude · claude · /home/u/shop
+expect: write
+out_is: prompt
+must: @src/cart/total.go#L40-72; @src/cart/total_test.go
+must_not: Assumed:
+note: the example settles expected versus actual; the refs are the material, named as given
+--- refs
+src/cart/total.go:40-72
+src/cart/total_test.go
+--- request
+3 x 9.99 with 10% off shows 26.98, it should be 26.97. fix it
+
+=== refs-bare-rename
+kind: refactor
+window: dev · zsh · /home/u/api
+out: prompt
+expect: write
+must: internal/db/pool.go:10-30
+must_not: @internal/db/pool.go; subagent|subagents; baseline; AskUserQuestion
+note: a shell pane gets bare refs, and a rename is a small task
+--- refs
+internal/db/pool.go:10-30
+--- request
+rename newPool to openPool in these lines and update its callers
+
+=== refs-typo
+kind: bug
+window: claude · claude · /home/u/site
+expect: write
+out_is: prompt
+must: @README.md#L12; receive
+must_not: subagent|subagents; plan|planning; baseline; AskUserQuestion; Assumed:
+note: a one-line typo with one ref: one or two sentences, nothing more
+--- refs
+README.md:12
+--- request
+fix the typo recieve in this line
+
+=== refs-explore-outside
+kind: refactor
+window: claude · claude · /home/u/invoicer
+explore: invoicer
+expect: write
+out_is: prompt
+must: @invoicer/money.py#L4-6; shared/rates.py#L3-9
+must_not: Assumed:
+note: the second ref is outside the explored folder, so it was not read; both are named
+--- refs
+invoicer/money.py:4-6
+../shared/rates.py:3-9
+--- request
+make round_cents round the way the rates helper does
+
+# #365 child 5 holdouts, written after the final prompt commit.
+=== h-refs-review
+kind: review
+window: claude · claude · /home/u/web
+expect: write
+out_is: prompt
+must: @lib/auth/token.ts#L20-58; @lib/auth/token.test.ts
+must_not: Assumed:
+holdout: yes
+note: the review's focus (bugs) and report-only are given; both refs named as given
+--- refs
+lib/auth/token.ts:20-58
+lib/auth/token.test.ts
+--- request
+review this for bugs, only report, don't change anything
+
+=== h-refs-codex-flag
+kind: feature
+window: codex · codex · /home/u/cli
+out: prompt
+expect: write
+must: src/main.rs:5-40; Cargo.toml; --verbose
+must_not: @src/main.rs; #L5; AskUserQuestion
+holdout: yes
+note: codex is not Claude Code: bare refs; a flag next to an existing one is a small addition
+--- refs
+src/main.rs:5-40
+Cargo.toml
+--- request
+add a --verbose flag next to --quiet
+
+# #587, written before its prompt change: config asks its kind first, a message
+# asks for the fact its reader needs, a test gets the mutation step, and a
+# change with no test stays lean.
+=== nightly-job-yaml
+kind: format
+window: bash · bash · /home/u/projects/reports
+out: format
+expect: ask
+ask_any: compose; docker compose; kubernetes; k8s; cronjob; github actions; workflow; helm; format; platform; systemd
+note: a nightly job's yaml is a Kubernetes CronJob, a GitHub Actions schedule or something else, and each is a different file, so the kind is asked before the image or the command
+--- request
+yaml for a job that runs the report script every night at 2am
+
+=== compose-postgres-given
+kind: format
+window: bash · bash · /home/u/projects/api
+out: format
+expect: write
+out_is: format
+must: postgres:16|postgres; 5432; pgdata; POSTGRES_PASSWORD
+note: the kind (Docker Compose) and every field are given: nothing to ask
+--- request
+docker compose yaml for postgres 16, port 5432, volume pgdata, password from env POSTGRES_PASSWORD
+
+=== demo-moves
+kind: message
+window: bash · bash · /home/u
+expect: ask
+ask_any: date; day; time; when; how long; until
+note: the client needs the new date or time of the demo, which only the owner has
+--- request
+let the client know the demo moves
+
+=== deploy-cancelled-given
+kind: message
+window: bash · bash · /home/u
+expect: write
+out_is: text
+must: Friday; cancel|cancelled|canceled|called off; Monday
+note: every fact the reader needs is given, the next date too: a message with nothing missing is written
+--- request
+tell the team the friday deploy is cancelled because of the billing bug, next one is monday
+
+=== one-on-one-cancelled
+kind: message
+window: bash · bash · /home/u
+expect: write
+out_is: text
+must: Dana; cancel|cancelled|canceled|called off
+note: #589 review: a plain cancellation leaves the reader nothing new to act on, so it is written, not asked about
+--- request
+tell dana tomorrow's 1:1 is cancelled
+
+=== pnpm-switch
+kind: message
+window: bash · bash · /home/u/projects/web
+expect: write
+out_is: text
+must: pnpm; npm
+note: #589 review control: a change the request states in full is written
+--- request
+let the team know we switched from npm to pnpm
+
+=== stryker-in-project
+kind: feature
+window: bash · bash · /home/u/projects/shop
+expect: write
+out_is: prompt
+must: discount.ts; stryker|test:mutation
+note: the project has a mutation tool (Stryker, in package.json), so the prompt runs it on the changed code rather than a break by hand
+--- screen
+$ grep -n '"test' package.json
+12:    "test": "vitest run",
+13:    "test:mutation": "stryker run",
+--- repo
+branch: fix/discount-rounding
+root: /home/u/projects/shop
+status:
+   M src/cart/discount.ts
+recent commits:
+  5d1e0a7 cart: round discounts half up
+diff --stat:
+  src/cart/discount.ts | 4 ++--
+  1 file changed, 2 insertions(+), 2 deletions(-)
+--- request
+add a test for the rounding fix I just made
+
+=== pagination-bug
+kind: bug
+window: bash · bash · /home/u/projects/blog
+expect: write
+out_is: prompt
+must: page 2|second page; reproduce|reproduces|confirm the bug|fail|fails|failing; again|after the fix
+note: a regression guard (#589 review): the bug line asks to reproduce, fix and run the check again; the prompt keeps that without the "failing before, passing after" clause, which was dropped for adding a baseline to a rename; widened after the first probe, which reproduced with the two commands and ran them again but never wrote "fail"
+--- screen
+$ curl -s 'localhost:3000/api/posts?page=1' | jq '.[-1].id'
+40
+$ curl -s 'localhost:3000/api/posts?page=2' | jq '.[0].id'
+40
+--- request
+fix this, page 2 starts with the last post of page 1
+
+# #587: written after daa0820 as holdouts; the bug line changed after they ran
+# (a failing test to fix gets the break-it step), so they are holdouts no more.
+=== h-rent-late
+kind: message
+window: bash · bash · /home/u
+expect: ask
+ask_any: date; day; when; how late; how long; until
+holdout: no
+note: the landlord needs the day the rent will come, which only the owner has
+--- request
+let my landlord know the rent will be late this month
+
+=== h-api-run-config
+kind: format
+window: bash · bash · /home/u/projects/api
+out: format
+expect: ask
+ask_any: systemd; pm2; compose; docker compose; kubernetes; k8s; procfile; supervisor; helm; format; platform
+holdout: no
+note: a run config for a service is a systemd unit, a pm2 file, a compose file or a Kubernetes manifest, each a different file: the kind comes first
+--- request
+config to run the api with 2 workers and PORT=3000
+
+=== h-pytest-new-helper
+kind: feature
+window: bash · bash · /home/u/projects/shop
+expect: write
+out_is: prompt
+must: parse_price; on purpose|deliberately|mutate|mutation|mutant|mutants|break the code|flip|flipping; undo|undoing|revert|reverting|restore|put back|put it back
+holdout: no
+note: a new test gets the mutation step: break the helper on purpose, see the test fail, undo the break
+--- screen
+$ pytest -q
+........................                                   [100%]
+24 passed in 0.41s
+--- repo
+branch: feat/price-parse
+root: /home/u/projects/shop
+status:
+   M shop/prices.py
+recent commits:
+  b71c0de prices: currency symbols in the cart
+diff --stat:
+  shop/prices.py | 21 +++++++++++++++++++++
+  1 file changed, 21 insertions(+)
+--- request
+write tests for the parse_price helper I added
+
+# #587 holdouts, written after the final prompt commit (d598bd2), on requests
+# the prompt does not name.
+=== h-flight-delayed
+kind: message
+window: bash · bash · /home/u
+expect: ask
+ask_any: time; when; land|lands|landing; arrive|arrives|arrival; how long; how late; hour|hours
+holdout: yes
+note: the reader needs the new arrival time, which only the owner has
+--- request
+text my mom that my flight is delayed
+
+=== h-bucket-expiry
+kind: format
+window: bash · bash · /home/u/projects/infra
+out: format
+expect: ask
+ask_any: terraform; aws; s3; gcs; google cloud; azure; cloudformation; pulumi; provider; cloud; format; platform
+holdout: yes
+note: a bucket rule is a Terraform resource, an S3 lifecycle JSON or a GCS one, each a different file: the kind comes first
+--- request
+config for a bucket named logs-archive that deletes objects after 30 days
+
+=== h-go-header-test
+kind: bug
+window: bash · bash · /home/u/projects/proxy
+expect: write
+out_is: prompt
+must: TestParseHeader; on purpose|deliberately|mutate|mutation|mutant|mutants|break the code|flip|flipping; undo|undoing|revert|reverting|restore|put back|put it back
+holdout: yes
+note: a failing test to fix gets the break-it step after it passes
+--- screen
+$ go test -run TestParseHeader ./header
+    header_test.go:41: got "x-id", want "X-Id"
+FAIL
+FAIL	example.com/proxy/header	0.004s
+--- request
+fix the failing test
+
+# #589 review holdout, written after the final prompt commit (49d7a24): a change
+# notice whose next fact is not a date, time or place.
+=== h-support-number
+kind: message
+window: bash · bash · /home/u
+expect: ask
+ask_any: number; phone
+holdout: yes
+note: customers need the new number to call, which only the owner has
+--- request
+email our customers that the support phone number changed

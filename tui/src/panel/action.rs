@@ -22,12 +22,13 @@ pub const HIDE_MAX: u64 = 1024 * 1024;
 pub const HIDE_AGE: u64 = 24 * 60 * 60;
 
 /// Control characters out, `\t` and `\n` kept, `\r\n` folded: a stray ESC or
-/// C1 byte pasted into a pane is a keystroke, not text.
+/// C1 byte pasted into a pane is a keystroke, not text. Bidi controls and the
+/// line and paragraph separators (U+2028, U+2029) go too (review-510): they
+/// reorder or break what the agent reads, and nothing shows them.
 pub fn sanitize(s: &str) -> String {
-    s.replace("\r\n", "\n")
-        .chars()
-        .filter(|&c| c == '\t' || c == '\n' || !c.is_control())
-        .collect()
+    let kept = |c: char| c == '\t' || c == '\n' || !c.is_control();
+    let shown = |c: char| !crate::pick::is_bidi(c) && !matches!(c, '\u{2028}' | '\u{2029}');
+    s.replace("\r\n", "\n").chars().filter(|&c| kept(c) && shown(c)).collect()
 }
 
 /// `<path>.text` first, then the action line, so the wrapper never reads a
@@ -41,6 +42,13 @@ pub fn write_action(path: &Path, pane: &str, cmd: &str, a: &Action) -> std::io::
         &format!("{}\n", sanitize(cmd).replace('\n', " ")),
     )?;
     fresh(path, &format!("{} {pane}\n", a.verb))
+}
+
+/// `<path>.basket` (#365 child 5): the pane's basket as the send carried it, for
+/// the wrapper to clear once the paste lands and only while the option still
+/// holds this. Written fresh, never followed, mode 0600, as `.text` is.
+pub fn write_basket(path: &Path, body: &str) -> std::io::Result<()> {
+    fresh(Path::new(&format!("{}.basket", path.display())), body)
 }
 
 /// The longest `.expect` written: far over a tmux name, and the wrapper reads one line.
@@ -263,6 +271,8 @@ fn view_out(v: &View) -> Option<Value> {
     Some(match v {
         View::Busy => return None,
         View::Confirm { back, .. } => return view_out(back),
+        // the basket is the pane's, so a hidden panel comes back on the draft
+        View::Basket { .. } => json!({"v": "compose"}),
         View::Home { sel } => json!({"v": "home", "sel": sel}),
         View::Compose => json!({"v": "compose"}),
         View::Question { sel, .. } => json!({"v": "question", "sel": sel}),

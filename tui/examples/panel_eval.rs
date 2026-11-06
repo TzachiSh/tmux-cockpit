@@ -23,10 +23,11 @@ use cockpit_tui::panel::envelope::{Flow, OutType, Role, Turn};
 use cockpit_tui::panel::parse::{self, Reply, files_read};
 use cockpit_tui::panel::request::{Call, Fail, Profile, Request};
 use cockpit_tui::panel::route::route;
+use cockpit_tui::refs::Ref;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::ffi::{OsStr, OsString};
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -75,7 +76,13 @@ struct Case {
     turns: Vec<Turn>,
     /// A folder under `fixtures/`: the pane's path, read by an explore-first write.
     explore: Option<String>,
+    /// The prompt basket (#365 child 5): paths from the pane's folder and their
+    /// lines, `None` for a whole file; a leading `../` is a file outside it.
+    refs: Vec<CaseRef>,
 }
+
+/// One `--- refs` line: a path from the pane's folder, and its lines.
+type CaseRef = (String, Option<(u32, u32)>);
 
 fn out_type(s: &str) -> Option<OutType> {
     Some(match s {
@@ -130,6 +137,7 @@ fn parse_cases(text: &str) -> Result<Vec<Case>, String> {
             request: String::new(),
             turns: vec![],
             explore: None,
+            refs: vec![],
         };
         let mut expect = None;
         let mut seen: Vec<String> = vec![];
@@ -216,6 +224,10 @@ fn parse_cases(text: &str) -> Result<Vec<Case>, String> {
                     dup(!c.turns.is_empty())?;
                     c.turns = turns(&text).map_err(|m| err(&m))?
                 }
+                "refs" => {
+                    dup(!c.refs.is_empty())?;
+                    c.refs = case_refs(&text).map_err(|m| err(&m))?
+                }
                 x => return Err(err(&format!("unknown section {x}"))),
             }
         }
@@ -261,6 +273,36 @@ fn turns(text: &str) -> Result<Vec<Turn>, String> {
     }
     if out.is_empty() {
         return Err("empty conversation".into());
+    }
+    Ok(out)
+}
+
+/// `path`, `path:a` or `path:a-b` lines, one ref each: a path from the pane's
+/// folder, plain names only, or one `../` first for a file outside it.
+fn case_refs(text: &str) -> Result<Vec<CaseRef>, String> {
+    let mut out = vec![];
+    for line in text.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        let bad = || format!("a ref is path, path:a or path:a-b from the pane's folder (got {line})");
+        let (path, lines) = match line.rsplit_once(':') {
+            Some((p, r)) => {
+                let n = |t: &str| t.parse::<u32>().ok().filter(|n| *n > 0);
+                let (a, b) = r.split_once('-').unwrap_or((r, r));
+                match (n(a), n(b)) {
+                    (Some(a), Some(b)) if a <= b => (p, Some((a, b))),
+                    _ => return Err(bad()),
+                }
+            }
+            None => (line, None),
+        };
+        let rest = path.strip_prefix("../").unwrap_or(path);
+        let plain = |c: Component| matches!(c, Component::Normal(_));
+        if rest.is_empty() || !Path::new(rest).components().all(plain) {
+            return Err(bad());
+        }
+        out.push((path.to_string(), lines));
+    }
+    if out.is_empty() {
+        return Err("empty refs".into());
     }
     Ok(out)
 }
@@ -602,10 +644,7 @@ fn main() {
             && let Some((ci, run)) = todo.pop()
         {
             let c = &cases[ci];
-            let path = match (&c.explore, &staged.0) {
-                (Some(f), Some(d)) => d.join(f).display().to_string(),
-                _ => c.path.clone(),
-            };
+            let path = pane_path(c, staged.0.as_deref());
             let explore = c.explore.is_some() && !o.no_explore;
             let (system, prompt, profile) = panel_call(c, &path, explore);
             let flow = Flow::Write {
@@ -737,6 +776,13 @@ fn panel_call(c: &Case, path: &str, explore: bool) -> (String, String, Profile) 
     };
     let mut a = App::new("%0", cap);
     (a.view, a.out, a.explore) = (View::Compose, c.out, explore);
+    // the basket as main reads it, the claude check by the window's command alone
+    a.claude = cockpit_tui::basket::claude_cmd(&c.cmd);
+    for (f, lines) in &c.refs {
+        let r = Ref::new(Path::new(path).join(f), *lines, None);
+        a.basket
+            .push(r.unwrap_or_else(|e| panic!("case {}: ref {f}: {e} (not staged?)", c.id)));
+    }
     (a.draft, a.cur) = (c.request.clone(), c.request.len());
     a.key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
     if let Some(r) = a.run.as_mut() {
@@ -750,21 +796,66 @@ fn panel_call(c: &Case, path: &str, explore: bool) -> (String, String, Profile) 
 }
 
 /// The fixtures the `explore:` cases name, copied to a fresh temp dir of the
-/// rig's own, so a model reading around finds nothing of this repo's.
+/// rig's own, so a model reading around finds nothing of this repo's; and the
+/// files of each case's refs (#365 child 5), which the basket needs to exist.
 fn stage(cases: &[Case]) -> Result<Option<PathBuf>, String> {
     let names: Vec<&str> = cases.iter().filter_map(|c| c.explore.as_deref()).collect();
-    if names.is_empty() {
+    if names.is_empty() && cases.iter().all(|c| c.refs.is_empty()) {
         return Ok(None);
     }
-    let dir = std::env::temp_dir().join(format!("panel-eval-fixtures-{}", std::process::id()));
+    static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("panel-eval-fixtures-{}-{n}", std::process::id()));
     let from = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("evals/panel/fixtures");
     std::fs::create_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    // removed on an error below, kept once all of it is staged
+    let mut kept = Staged(Some(dir.clone()));
     for n in names {
         if !dir.join(n).exists() {
             copy_tree(&from.join(n), &dir.join(n)).map_err(|e| format!("fixture {n}: {e}"))?;
         }
     }
-    Ok(Some(dir))
+    for c in cases.iter().filter(|c| !c.refs.is_empty()) {
+        stage_refs(c, Path::new(&pane_path(c, Some(&dir))))?;
+    }
+    Ok(kept.0.take())
+}
+
+/// A refs case's files under `pane`, a few lines each. A fixture is shared by
+/// every case that names it, so a ref inside one is a file it has, never made.
+fn stage_refs(c: &Case, pane: &Path) -> Result<(), String> {
+    let err = |f: &str, e: std::io::Error| format!("case {}: ref {f}: {e}", c.id);
+    std::fs::create_dir_all(pane).map_err(|e| err(".", e))?;
+    for (f, lines) in &c.refs {
+        let p = pane.join(f);
+        if c.explore.is_some() && !f.starts_with("../") {
+            if !p.is_file() {
+                return Err(format!("case {}: ref {f} is not in its fixture", c.id));
+            }
+            continue;
+        }
+        let n = lines.map_or(3, |(_, b)| b);
+        let body: String = (1..=n).map(|i| format!("// line {i}\n")).collect();
+        std::fs::create_dir_all(p.parent().unwrap_or(pane)).map_err(|e| err(f, e))?;
+        std::fs::write(&p, body).map_err(|e| err(f, e))?;
+    }
+    Ok(())
+}
+
+/// The pane's folder for case `c`: its fixture copy when it explores; for a
+/// case with refs, a folder of its own under the stage, named as its window's
+/// path ends, so the refs are files; else the window's path as written.
+fn pane_path(c: &Case, staged: Option<&Path>) -> String {
+    match (&c.explore, staged) {
+        (Some(f), Some(d)) => d.join(f).display().to_string(),
+        (None, Some(d)) if !c.refs.is_empty() => {
+            let name = Path::new(&c.path)
+                .file_name()
+                .map_or("pane".into(), |n| n.to_string_lossy().into_owned());
+            d.join(format!("case-{}", c.id)).join(name).display().to_string()
+        }
+        _ => c.path.clone(),
+    }
 }
 
 /// Files and folders only: a fixture has no links.
@@ -1810,6 +1901,86 @@ mod tests {
         assert_eq!(prompt, build(&flow, &cap, &c.turns, 2));
     }
 
+    // ------------------------------------------- #365 child 5: `--- refs`
+
+    const REFS: &str = "=== picked\nkind: bug\nwindow: claude · claude · /home/u/shop\nexpect: write\n\
+                        --- refs\nsrc/cart.go:40-72\nREADME.md\n../shared/money.go:3\n--- request\nfix the total\n";
+
+    /// A stage dir, removed on drop.
+    struct Gone(PathBuf);
+
+    impl Drop for Gone {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn reads_a_refs_section_as_paths_and_lines() {
+        let c = &parse_cases(REFS).unwrap()[0];
+        let want = [
+            ("src/cart.go", Some((40, 72))),
+            ("README.md", None),
+            ("../shared/money.go", Some((3, 3))),
+        ];
+        assert_eq!(c.refs, want.map(|(p, l)| (p.to_string(), l)));
+        assert!(parse_cases(ONE).unwrap()[0].refs.is_empty());
+    }
+
+    #[test]
+    fn refuses_a_ref_that_is_absolute_climbs_inside_or_has_a_bad_range() {
+        for bad in ["/etc/hosts", "src/../x.go", "../../x.go", "a.go:9-3", "a.go:0", "a.go:", "a.go:1-x"] {
+            let t = REFS.replace("README.md\n", &format!("{bad}\n"));
+            let e = parse_cases(&t).map(|_| ()).expect_err(bad);
+            assert!(e.starts_with("case picked: ") && e.contains("ref"), "{bad:?}: {e}");
+        }
+        let twice = REFS.replace("--- request", "--- refs\nb.go\n--- request");
+        assert!(parse_cases(&twice).unwrap_err().contains("refs given twice"));
+    }
+
+    /// A refs case runs in a folder of its own holding the files, so the panel's
+    /// own ^S renders them: mentions for claude, bare refs for another window.
+    #[test]
+    fn the_rig_sends_refs_as_the_panel_does() {
+        let cases = parse_cases(REFS).unwrap();
+        let d = Gone(stage(&cases).unwrap().expect("a stage"));
+        let path = pane_path(&cases[0], Some(&d.0));
+        assert!(Path::new(&path).join("src/cart.go").is_file() && path.ends_with("/shop"), "{path}");
+        let (_, prompt, _) = panel_call(&cases[0], &path, false);
+        let block = "<refs>\n<ref>@src/cart.go#L40-72</ref>\n<ref note=\"whole file\">@README.md</ref>\n<ref>@/";
+        assert!(
+            prompt.contains(block) && prompt.contains("/shared/money.go#L3</ref>\n</refs>"),
+            "{prompt}"
+        );
+        let mut bash = cases[0].clone();
+        (bash.name, bash.cmd) = ("bash".into(), "bash".into());
+        assert!(panel_call(&bash, &path, false).1.contains("<ref>src/cart.go:40-72</ref>"));
+    }
+
+    const OUT: &str = "=== out\nkind: bug\nwindow: bash · bash · /home/u/inv\nexpect: write\nexplore: invoicer\n\
+                       --- refs\ninvoicer/money.py:1-5\n../shared/rates.py\n--- request\nround like rates.py\n";
+
+    #[test]
+    fn an_exploring_refs_case_marks_a_ref_outside_its_fixture() {
+        let cases = parse_cases(OUT).unwrap();
+        let d = Gone(stage(&cases).unwrap().expect("a stage"));
+        let path = pane_path(&cases[0], Some(&d.0));
+        let (_, prompt, _) = panel_call(&cases[0], &path, true);
+        assert!(prompt.contains("<ref>invoicer/money.py:1-5</ref>"), "{prompt}");
+        assert!(
+            prompt.contains("outside the repo, not read\">/") && prompt.contains("shared/rates.py</ref>"),
+            "{prompt}"
+        );
+    }
+
+    /// A fixture is shared by its cases: a ref inside one must be a file it has.
+    #[test]
+    fn stage_refuses_a_ref_an_explore_fixture_lacks() {
+        let bad = OUT.replace("invoicer/money.py:1-5", "invoicer/nope.py");
+        let e = stage(&parse_cases(&bad).unwrap()).unwrap_err();
+        assert!(e.contains("invoicer/nope.py"), "{e}");
+    }
+
     #[test]
     fn stage_copies_each_named_fixture_once_and_nothing_without_one() {
         assert_eq!(stage(&parse_cases(ONE).unwrap()).unwrap(), None);
@@ -1979,5 +2150,103 @@ mod tests {
                     Dockerfile to it and list the release lines you checked.</prompt>";
         assert!(grade(&c, report).pass, "report-only");
         assert!(!grade(&c, edit).pass, "editing");
+    }
+
+    /// Rows of (row name, case, reply, should pass) graded against the shipped
+    /// cases: the names of the rows graded the other way.
+    fn graded_wrong<'a>(rows: &[(&'a str, &str, String, bool)]) -> Vec<&'a str> {
+        rows.iter()
+            .filter(|(_, id, reply, want)| grade(&shipped(id), reply).pass != *want)
+            .map(|(row, ..)| *row)
+            .collect()
+    }
+
+    /// #587 (card 2): generated config asks its kind before any field.
+    #[test]
+    fn a_config_case_passes_a_kind_question_and_fails_a_field_question() {
+        let fmt = "<format lang=\"yaml\">services:\n  web:\n    ports: [\"8080:8080\"]</format>";
+        let rows = [
+            (
+                "format",
+                "yaml-service",
+                ask("Which YAML format do you need?", "Kubernetes", "Docker Compose"),
+                true,
+            ),
+            (
+                "platform",
+                "yaml-service",
+                ask("Where will it run?", "Kubernetes cluster", "Docker host"),
+                true,
+            ),
+            (
+                "image",
+                "yaml-service",
+                ask("Which image should the web service run?", "nginx", "node:20"),
+                false,
+            ),
+            (
+                "labels",
+                "yaml-service",
+                ask("Which labels should it carry?", "app: web", "tier: frontend"),
+                false,
+            ),
+            (
+                "spec",
+                "yaml-service",
+                ask("Which namespace and metadata should the Deployment spec use?", "default", "web"),
+                false,
+            ),
+            ("written", "yaml-service", fmt.to_string(), false),
+        ];
+        assert_eq!(graded_wrong(&rows), Vec::<&str>::new(), "rows graded the wrong way");
+    }
+
+    /// #587 (card 10): a message asks for the fact its reader needs, never
+    /// promises it later.
+    #[test]
+    fn a_slip_message_passes_a_date_question_and_fails_a_date_to_follow() {
+        let later = "<text>Hi Dana, the release slips. I'll let you know the new date once it's set.</text>";
+        let rows = [
+            (
+                "date",
+                "release-slips",
+                ask("Is there a new release date to put in the message?", "Yes", "Not yet"),
+                true,
+            ),
+            ("later", "release-slips", later.to_string(), false),
+            ("tone", "release-slips", ask("How formal should it be?", "Casual", "Formal"), false),
+            (
+                "send time",
+                "release-slips",
+                ask("When should I send it?", "Now", "Tomorrow"),
+                false,
+            ),
+        ];
+        assert_eq!(graded_wrong(&rows), Vec::<&str>::new(), "rows graded the wrong way");
+    }
+
+    /// #587 (cards 58, 59): a prompt that adds or fixes a test breaks the code on
+    /// purpose, sees the test fail and undoes the break.
+    #[test]
+    fn a_test_prompt_passes_with_the_mutation_step_and_fails_without_it() {
+        let add = "Add a test for slugify in src/text/slugify.ts that covers the trimmed title and run it.";
+        let fix = "Fix parser::tests::parses_negative in src/parser.rs from 9f3c2a1, then run cargo test.";
+        let step = " Then break the code on purpose, confirm the test fails, and undo the break.";
+        let half = " Then break the code on purpose and confirm the test fails.";
+        let flip = " Then flip one condition in the code, confirm the test fails, then undo that change.";
+        let loose = " Make sure it does not break other tests, keep it a small change, and revert unrelated edits.";
+        let p = |s: String| format!("<prompt>{s}</prompt>");
+        let rows = [
+            ("add", "test-the-changed-function", p(format!("{add}{step}")), true),
+            ("add bare", "test-the-changed-function", p(add.into()), false),
+            ("add no undo", "test-the-changed-function", p(format!("{add}{half}")), false),
+            ("add flip", "test-the-changed-function", p(format!("{add}{flip}")), true),
+            ("add loose", "test-the-changed-function", p(format!("{add}{loose}")), false),
+            ("fix", "last-commit-test", p(format!("{fix}{step}")), true),
+            ("fix bare", "last-commit-test", p(fix.into()), false),
+            ("fix no undo", "last-commit-test", p(format!("{fix}{half}")), false),
+            ("fix loose", "last-commit-test", p(format!("{fix}{loose}")), false),
+        ];
+        assert_eq!(graded_wrong(&rows), Vec::<&str>::new(), "rows graded the wrong way");
     }
 }

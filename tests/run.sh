@@ -2716,6 +2716,19 @@ is "vnum: a letter suffix is not a component (3.7c)" "3007000" "$(vnum 3.7c 2>/d
 is "vnum: 0.73.0 is not below itself" "yes" "$(dcge 0.73.0 0.73.0)"
 is "vnum: 1.12.9 is below the 1.13.0 floor, and only that way" "no yes" \
    "$(dcge 1.12.9 1.13.0) $(dcge 1.13.0 1.12.9)"
+# vnum_ge grades the tmux floor at all three sites (#545). A master build says
+# next-X.Y, X.Y being the release it leads to; a word with no number passes.
+for r in 3.7:no 3.7a:no v3.7:no 3.8:yes next-3.7:no next-3.8:yes next-3.9:yes next-3.10:yes \
+         master:yes openbsd-7.5:yes :yes; do
+    tv=${r%:*}
+    is "vnum_ge: tmux '$tv' against the 3.8 floor" "${r##*:}" \
+       "$(vnum_ge "$tv" 3.8 2>&1 && echo yes || echo no)"
+done
+dcerr=$(vnum_ge 3.8 2>&1); dcrc=$?
+is "vnum_ge: no floor is an error naming it" "2 vnum_ge: <floor> is not a version: ''" \
+   "$dcrc $dcerr"
+is "vnum_ge: a floor with no number is an error too" "2" \
+   "$(vnum_ge 3.8 dev 2>/dev/null; echo "$?")"
 
 DCP="$DBIN:$DSH:$SHIM:/usr/bin:/bin"
 before=$(find "$DH" "$DBIN" | sort)
@@ -2732,8 +2745,7 @@ is "no client means truecolor skips"        "1" "$(dcrow "$dcout" "skip truecolo
 is "no server means popup-border skips"     "1" "$(dcrow "$dcout" "skip popup-border")"
 is "the suite's cockpit-tui is an ok row"   "1" "$(dcrow "$dcout" "ok cockpit-tui")"
 dctv=$(tmux -V 2>/dev/null); dctv=${dctv#tmux }
-case "$dctv" in [0-9]*) ;; *) dctv=99 ;; esac   # next-3.9, master: newer than any release
-if [ "$(dcge "$dctv" 3.8)" = no ]; then
+if ! vnum_ge "$dctv" 3.8; then
     skip_ "install.sh --check exits 0 on a wired box (this tmux is below 3.8)"
 else
     is "and the whole run exits 0"          "0" "$dcrc"
@@ -2750,13 +2762,19 @@ is "one below TUI_MIN is a fail row too"    "1" "$(dcrow "$dcout" "fail cockpit-
 mkdir -p "$DC/oldrd"; dshim revdiff "version: 1.12.0" "$DC/oldrd"
 dcout=$(dc "$DBIN:$DC/oldrd:$SHIM:$DNO"); dcrc=$?
 is "an older revdiff is a warn row" "1" "$(dcrow "$dcout" "warn revdiff")"
-[ "$(dcge "$dctv" 3.8)" = no ] || is "and warnings exit 1" "1" "$dcrc"
+vnum_ge "$dctv" 3.8 && is "and warnings exit 1" "1" "$dcrc"
 dcout=$(dc "$DBIN:$DSH:$DNO"); dcrc=$?
 is "no tmux on PATH is a fail row"          "1" "$(dcrow "$dcout" "fail tmux")"
 is "and a failure exits 2"                  "2" "$dcrc"
 mkdir -p "$DC/nexttmux"; dshim tmux "tmux next-3.9" "$DC/nexttmux"
 dcout=$(dc "$DC/nexttmux:$DBIN:$DSH:$DNO")
 is "a tmux built from master (next-3.9) is an ok row" "1" "$(dcrow "$dcout" "ok tmux")"
+# A master build before 3.7 shipped says next-3.7: older than 3.7, so a fail (#545).
+for r in next-3.7:fail next-3.8:ok master:ok 3.7:fail v3.7:fail 3.8:ok; do
+    tv=${r%:*}; dshim tmux "tmux $tv" "$DC/nexttmux"
+    dcout=$(dc "$DC/nexttmux:$DBIN:$DSH:$DNO")
+    is "tmux $tv: the doctor marks the tmux row ${r#*:}" "1" "$(dcrow "$dcout" "${r#*:} tmux")"
+done
 # tmux loads both files, so the run-shell line in either one wires the box.
 mkdir -p "$DH/.config/tmux"; printf 'set -g @unrelated 1\n' > "$DH/.config/tmux/tmux.conf"
 dcout=$(dc "$DCP")
@@ -2903,6 +2921,21 @@ bsout=$(bs --latest --dry-run); is "--latest is a no-op too (exit 0)" "0" "$?"
 bsclear_check=$(bs --check --yes); is "--check runs alone" "2" "$?"
 bssaid "and says so" "--check runs alone" "$bsclear_check"
 is "no run reached for sudo" "absent" "$([ -e "$BS/SUDO_RAN" ] && echo present || echo absent)"
+# The tmux step: a master build says next-X.Y, X.Y being the release it leads
+# to, so next-3.7 is older than 3.7 and gets the build; master has no number (#545).
+mkdir -p "$BS/tv"; bspath=$BPATH; BPATH="$BS/tv:$bspath"
+for r in next-3.7:builds next-3.8:keeps next-3.9:keeps master:keeps 3.7:builds v3.7:builds \
+         3.8:keeps; do
+    tv=${r%:*}; printf '#!/bin/sh\necho "tmux %s"\n' "$tv" > "$BS/tv/tmux"; chmod +x "$BS/tv/tmux"
+    bsout=$(bs --dry-run | awk '/^== /{ f = ($0 == "== tmux version ==") } f')
+    case "$bsout" in
+        *"would: "*) got=builds ;;
+        *"found  tmux $tv"*) got=keeps ;;
+        *) got="$bsout" ;;
+    esac
+    is "bootstrap.sh: tmux $tv ${r#*:}" "${r#*:}" "$got"
+done
+BPATH=$bspath
 
 # The re-append: the run-shell line was removed, so bootstrap appends again --
 # and the pristine backup taken the first time must survive it.
@@ -7813,6 +7846,20 @@ case "$(cat "$BD/argv" 2>/dev/null)" in *'tmux-cockpit needs tmux 3.8 or newer (
     *) bad "and says which tmux it needs" "needs tmux 3.8 or newer (found 3.7)" \
          "$(grep display-message "$BD/argv" 2>/dev/null)" ;;
 esac
+# A master build says next-X.Y, X.Y being the release it leads to, so next-3.7
+# is older than 3.7 (#545). The same server, a new answer to -V each load.
+for r in next-3.7:refuses v3.7:refuses next-3.8:loads next-3.9:loads master:loads 3.8:loads; do
+    tv=${r%:*}; bshim "$BD/s4" "$B4" "$tv"; rm -f "$BD/argv"
+    "$TMUX_REAL" -L "$B4" run-shell "$BD/p/cockpit.tmux" >/dev/null 2>&1
+    nm=$(grep -c 'needs tmux 3.8 or newer' "$BD/argv" 2>/dev/null)
+    nb=$(grep -c bind-key "$BD/argv" 2>/dev/null)
+    case "${nm:-0} ${nb:-0}" in
+        "1 0") got=refuses ;;
+        "0 "[1-9]*) got=loads ;;
+        *) got="message $nm, binds $nb" ;;
+    esac
+    is "cockpit.tmux: tmux $tv ${r#*:}" "${r#*:}" "$got"
+done
 "$TMUX_REAL" -L "$B4" kill-server >/dev/null 2>&1
 
 # --- the wrapper: one action line, one script ----------------------------------
@@ -8359,9 +8406,13 @@ echo "== cockpit-tui board: a held j recaptures, and fetches only on the tick (#
 # Each new selection ran a full fetch, list-panes first: j held at 30 Hz was
 # about 20 fetches a second. A selection now recaptures off the last fetch's
 # panes. Each key here waits for its own capture-pane, so the counts are per
-# selection, not per second: 40 selections may cost the tick's few list-panes,
-# never 40. Then the keys go on until a list-panes comes, which a capture that
-# put the tick off again would never let happen.
+# selection, not per second: 40 selections may cost the tick's list-panes,
+# one per second they take, never one each. The bound is the window's own
+# ticks, ceil(elapsed / 1 s) + 2, since a loaded box stretches the window
+# (12 fetches once at load 90). A box so slow that bound reaches 40 cannot
+# tell a fetch per key from the tick, and SKIPs. Then the keys go on until a
+# list-panes comes, which a capture that put the tick off again would never
+# let happen.
 if need_tmux "a held j on the board"; then :; else
 PJ="cockpit-pj-$$"; SOCKS="$SOCKS $PJ"; PJD=$(mktmpd)
 printf '#!/bin/sh\nprintf "%%s\\n" "$1" >> %s/calls\nexec %s "$@"\n' \
@@ -8389,15 +8440,24 @@ pj_key() {                    # <key>  one press, then poll for one more capture
     return 1
 }
 if until_cap "$PJ" "$PJW" '*live · *screen-of-alpha*'; then
+    # timed from before the count, so no fetch is counted without being timed
+    pjt0=$(date +%s%N)
     pjl=$(pj_n list-panes); pjmiss=0
     for i in $(seq 1 20); do
         pj_key j || pjmiss=$((pjmiss + 1))
         pj_key k || pjmiss=$((pjmiss + 1))
     done
     pjf=$(( $(pj_n list-panes) - pjl ))
+    pjms=$(( ($(date +%s%N) - pjt0) / 1000000 ))
+    # the board's TICK is 1 s, counted from each fetch's end
+    pjmax=$(( (pjms + 999) / 1000 + 2 ))
     is "each of 40 held selections gets a capture" 0 "$pjmiss"
-    if [ "$pjf" -le 10 ]; then ok "and 40 selections cost at most 10 full fetches ($pjf)"
-    else bad "and 40 selections cost at most 10 full fetches" "at most 10 list-panes" "$pjf"; fi
+    if [ "$pjmax" -ge 40 ]; then
+        skip_ "40 selections took ${pjms} ms: too slow to tell a fetch per key from the tick"
+    elif [ "$pjf" -le "$pjmax" ]; then
+        ok "and 40 selections cost only the tick's fetches ($pjf in ${pjms} ms, at most $pjmax)"
+    else bad "and 40 selections cost only the tick's fetches" \
+        "at most $pjmax list-panes in ${pjms} ms" "$pjf"; fi
     pjl=$(pj_n list-panes); pjtick=
     for i in $(seq 1 300); do
         pj_key j; pj_key k
@@ -8700,6 +8760,8 @@ cp -r "$DIR/scripts/lib" "$PND/p/scripts/"
 cat > "$PND/rec/tmux" <<PNREC
 #!/bin/sh
 [ "\$1" = display ] && { cat "$PND/now"; exit 0; }
+# #365 child 5: the basket option's value, as the case set it in bopt
+[ "\$1" = show-options ] && { cat "$PND/bopt" 2>/dev/null; exit 0; }
 # the @cockpit_glyphs read (#293) is not an action: unset, unrecorded
 [ "\$*" = "show-option -gqv @cockpit_glyphs" ] && exit 0
 # capture-pane counts its calls; "still" mode answers the same screen each time.
@@ -8721,6 +8783,7 @@ cat > "$PND/p/bin/cockpit-tui" <<PNSTUB
 dir=\${COCKPIT_ACTION%/*}
 { stat -c %a "\$dir" 2>/dev/null || stat -f %Lp "\$dir"; } > "$PND/dmode"
 printf evil > "\$COCKPIT_ACTION.clean"
+[ -e "$PND/basket" ] && cp "$PND/basket" "\$COCKPIT_ACTION.basket"
 cat "$PND/line" > "\$COCKPIT_ACTION"
 [ -e "$PND/text" ] && cat "$PND/text" > "\$COCKPIT_ACTION.text"
 cat "$PND/cmd" > "\$COCKPIT_ACTION.cmd"
@@ -8794,6 +8857,24 @@ is "a failed paste-buffer drops the buffer, sends no Enter and says so" \
 rm -f "$PND/fail-paste-buffer"
 is "and logs tmux's error" "1" "$(grep -c 'paste-buffer failed for %5: boom paste-buffer' "$PND/tui.log")"
 is "an empty text pastes nothing" "" "$(pact 'paste %5' '')"
+# #365 child 5: a send that carried the basket's refs clears @cockpit_basket,
+# only after the paste landed and only if the basket is still what was sent
+printf '/r/a.rs:1-2\n/r/b.rs' > "$PND/basket"
+printf '/r/a.rs:1-2\n/r/b.rs\n' > "$PND/bopt"
+is "a send with the basket's refs clears it" "1" "$(pact 'send %5' hi | grep -c 'set-option -pu -t %5 @cockpit_basket')"
+# the owner's call: an insert (i, y or Enter) spends the basket too
+is "an insert with the basket's refs clears it too" "1" "$(pact 'paste %5' hi | grep -c 'set-option -pu -t %5 @cockpit_basket')"
+# #582: the compare and the unset are one if-shell -F the server runs; whether it
+# keeps a changed basket is the "(#582)" block's, on a real server
+is "the clear is one tmux call holding an if-shell, never a separate unset" "1|0" \
+   "$(pact 'send %5' hi >/dev/null; grep -c ' if-shell -F -t %5 ' "$PND/pargv")|$(grep -c '^set-option -pu' "$PND/pargv")"
+printf '/r/a.rs:1-2\n/r/b.rs\n' > "$PND/bopt"; touch "$PND/fail-paste-buffer"
+is "a paste that failed keeps the basket" "0" "$(pact 'send %5' hi | grep -c '@cockpit_basket')"
+rm -f "$PND/fail-paste-buffer"
+is "COCKPIT_READONLY keeps the basket" "0" "$(COCKPIT_READONLY=1 pact 'send %5' hi | grep -c '@cockpit_basket')"
+rm -f "$PND/basket"
+is "a send with no basket touches none" "0" "$(pact 'send %5' hi | grep -c '@cockpit_basket')"
+rm -f "$PND/bopt"
 is "a line for another pane than the one opened on pastes nothing" "" "$(pact 'paste %9' hi)"
 is "a board verb pastes nothing" "" "$(pact 'jump %5' hi)"
 is "a third field pastes nothing" "" "$(pact 'paste %5 x' hi)"
@@ -11740,11 +11821,18 @@ sv_server() {                 # sv_server <tag> -- alpha, beta (waiting), gamma;
     SVG=$("$TMUX_REAL" -L "$SVS" display-message -p -t gamma: '#{session_id}')
 }
 sv_pane() {                   # sv_pane <dir> <cmd...> -- <cmd> in a pty of SVO; its rc lands in <dir>/rc, stderr in <dir>/err
-    local d=$1; shift
+    local d=$1 i; shift
     "$TMUX_REAL" -L "$SVO" kill-server >/dev/null 2>&1
     { printf '#!/bin/sh\n'; printf '%q ' "$@"; printf '2> "%s/err"\necho $? > "%s/rc"\nexec sleep 30\n' "$d" "$d"; } > "$d/run"
     chmod +x "$d/run"; : > "$d/err"; rm -f "$d/rc"
-    "$TMUX_REAL" -L "$SVO" -f /dev/null new-session -d -s t -x "${SVCOLS:-100}" -y "${SVROWS:-24}" "TERM=xterm-256color $d/run" >/dev/null 2>&1
+    # The server kill-server stopped can still hold the socket: a new-session that
+    # reaches it fails "server exited unexpectedly" and no pane runs (#547).
+    for i in $(seq 1 "$POLLS"); do
+        "$TMUX_REAL" -L "$SVO" -f /dev/null new-session -d -s t -x "${SVCOLS:-100}" -y "${SVROWS:-24}" \
+            "TERM=xterm-256color $d/run" >/dev/null 2>&1 && return 0
+        sleep 0.1
+    done
+    return 1
 }
 sv_ui() {                     # sv_ui <dir> [tui args...] -- cockpit-tui sessions, the action files under <dir>/act
     local d=$1; shift
@@ -11784,6 +11872,14 @@ if [ ! -x "$DIR/bin/cockpit-tui" ]; then
     skip_ "cockpit-tui sessions (no bin/cockpit-tui; run make tui)"
 elif need_tmux "cockpit-tui sessions"; then :; else
 sv_server a; SVD=$(mktmpd)
+# A new-session that reaches the server kill-server just stopped fails "server
+# exited unexpectedly" under load (#547): this tmux fails the first one that way.
+printf '#!/bin/sh\ncase " $* " in *" new-session "*) [ -e "%s/flopped" ] || { : > "%s/flopped"
+echo "server exited unexpectedly" >&2; exit 1; } ;; esac\nexec "%s" "$@"\n' \
+    "$SVD" "$SVD" "$TMUX_REAL" > "$SVD/flop-tmux"; chmod +x "$SVD/flop-tmux"
+TMUX_REAL="$SVD/flop-tmux" sv_pane "$SVD" sh -c 'echo pane-up; exec sleep 30'
+sv_cap '*pane-up*' && ok "a new-session refused by a dying server is retried until the pane runs" \
+    || bad "a new-session refused by a dying server is retried until the pane runs" "pane-up" "$("$TMUX_REAL" -L "$SVO" capture-pane -p -t t 2>&1 | head -3)"
 sv_ui "$SVD" --current "$SVA"
 sv_cap '*beta*gamma*alpha*(here)*' && ok "the rows are drawn: waiting first, your own session last and marked" \
     || bad "the rows are drawn: waiting first, your own session last and marked" "beta, gamma, alpha (here)" "$("$TMUX_REAL" -L "$SVO" capture-pane -p -t t | head -6)"
@@ -12668,6 +12764,37 @@ BGO5=$("$TMUX_REAL" -L "$BGS5" list-panes -a -F '#{pane_id}' | head -1)
 BG_SHIM=$BGSH bg_goto "$BGS5" "$BGO5" "$BGR" "$BGQ/par"
 is "a pane in a tree nested in a linked worktree is not a pane of it, nested listed first" "2" "$(bg_windows "$BGS5")"
 "$TMUX_REAL" -L "$BGS5" kill-server >/dev/null 2>&1
+# #560: which tree the reverse put first hung on mktemp's names. This shim moves the records
+# named in BG_FRONT, one path a line, to the front in that order, so a linked tree is first.
+cat > "$BGSH/front.py" <<'EOF'
+import os, sys
+f = [b"worktree " + p.encode() for p in os.environ["BG_FRONT"].split("\n")]
+r = [x for x in sys.stdin.buffer.read().split(b"\0\0") if x]
+def rank(rec):  # a record's place: its worktree line's index in BG_FRONT, else after them
+    w = rec.split(b"\0")[0]
+    return f.index(w) if w in f else len(f)
+sys.stdout.buffer.write(b"\0\0".join(sorted(r, key=rank)) + b"\0\0")
+EOF
+printf '#!/bin/sh\ncase " $* " in\n *" worktree list "*) %s "$@" | python3 %s ;;\n' \
+    "$BGGIT" "$BGSH/front.py" > "$BGSH/git"
+printf ' *) exec %s "$@" ;;\nesac\n' "$BGGIT" >> "$BGSH/git"
+is "the front shim lists nest, then par, first" "$BGQ/par/nest $BGQ/par" \
+   "$(BG_FRONT="$BGQ/par/nest"$'\n'"$BGQ/par" PATH="$BGSH:$PATH" \
+      git -C "$BGR" worktree list --porcelain -z \
+      | tr '\0' '\n' | sed -n 's/^worktree //p' | head -2 | paste -sd' ')"
+bg_front() {                  # bg_front <n> <label> <front paths>  goto par from a pane in nest
+    local s="cockpit-bg560$1-$$" o; SOCKS="$SOCKS $s"
+    bg_server "$s" "$BGQ/par/nest"
+    o=$("$TMUX_REAL" -L "$s" list-panes -a -F '#{pane_id}' | head -1)
+    BG_FRONT=$3 BG_SHIM=$BGSH bg_goto "$s" "$o" "$BGR" "$BGQ/par"
+    is "$2: says nothing on stderr" "" "$BG_ERR"
+    is "$2: opens a window in it" "2" "$(bg_windows "$s")"
+    "$TMUX_REAL" -L "$s" kill-server >/dev/null 2>&1
+}
+bg_front a "a nested tree listed first, ahead of its parent, keeps its record" \
+    "$BGQ/par/nest"$'\n'"$BGQ/par"
+bg_front b "a linked tree listed first keeps its record" "$BGQ/par"
+unset -f bg_front
 else skip_ "no python3 for the git shim"; skip_ "nested-first order"; fi
 
 # Across sessions: the point of the feature. A control-mode client sits on s1; the
@@ -12881,14 +13008,18 @@ chmod +x "$PGOLD/git"
 PGS="cockpit-pg537-$$"; SOCKS="$SOCKS $PGS"
 bg_server "$PGS" "$PGD"
 PGO=$("$TMUX_REAL" -L "$PGS" list-panes -a -F '#{pane_id}' | head -1)
+pg_ids() { "$TMUX_REAL" -L "$PGS" list-windows -t t: -F '#{window_id}' | tr '\n' ' '; }
 pg_says() {                   # pg_says <label> <want> <repo> <path> [shim]  goto's error names <want>
-    local n; n=$(bg_windows "$PGS")
+    local was id new=''
+    was=$(pg_ids)
     BG_SHIM=${5-} bg_goto "$PGS" "$PGO" "$3" "$4"
     case "$BG_ERR" in
         *"$2"*) ok "$1" ;;
         *) bad "$1" "$2" "$BG_ERR" ;;
     esac
-    is "$1: no window opens" "$n" "$(bg_windows "$PGS")"
+    # Ids, not a count (#579): a window closing meanwhile would hide one goto opened.
+    for id in $(pg_ids); do case " $was " in *" $id "*) ;; *) new="$new$id " ;; esac; done
+    is "$1: no window opens" "" "$new"
 }
 pg_x() { git -C "$PGR" worktree add -q -b "$1" "$PGD/$1"$'\n'"worktree $2" >/dev/null 2>&1; }
 
@@ -12905,6 +13036,25 @@ git -C "$PGR" worktree add -q -b dot537 "$PGD/.dg" >/dev/null 2>&1
 mv "$PGR/.git/worktrees/-dg" "$PGR/.git/worktrees/.dg"
 printf 'gitdir: %s\n' "$PGR/.git/worktrees/.dg" > "$PGD/.dg/.git"; rm -rf "$PGD/.dg"
 pg_says "a gone tree whose id starts with a dot is named gone" "is gone" "$PGR" "$PGD/.dg" "$PGOLD"
+# #555: --relative-paths writes the gitdir as ../../../../rel/.git, from the entry. git
+# resolves . and .. before it compares with <path>/.git, and so does the fallback, as text.
+PGRR="$PGD/rr"
+if (
+    export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+    git init -q -b main "$PGRR" && git -C "$PGRR" commit -q --allow-empty -m i &&
+        git -C "$PGRR" worktree add -q --relative-paths -b rel555 "$PGD/rel" &&
+        git -C "$PGRR" worktree add -q -b dots555 "$PGD/dots"
+) >/dev/null 2>&1; then
+    rm -rf "$PGD/rel"
+    pg_says "a gone tree whose gitdir is relative is named gone" "is gone" \
+        "$PGRR" "$PGD/rel" "$PGOLD"
+    printf '%s\n' .././../../../x/../dots/.git > "$PGRR/.git/worktrees/dots/gitdir"
+    rm -rf "$PGD/dots"
+    pg_says "a gone tree whose relative gitdir holds . and x/.. is named gone" "is gone" \
+        "$PGRR" "$PGD/dots" "$PGOLD"
+else
+    skip_ "a gone tree whose gitdir is relative: this git has no worktree add --relative-paths"
+fi
 
 # A separate git dir and a submodule's: git lists P/store.git and P/sup/.git/modules/sm.
 (
@@ -12915,17 +13065,54 @@ pg_says "a gone tree whose id starts with a dot is named gone" "is gone" "$PGR" 
     git init -q -b main "$PGD/src"; git -C "$PGD/src" commit -q --allow-empty -m s
     git -C "$PGR" -c protocol.file.allow=always submodule add -q "$PGD/src" sm
     git -C "$PGR/sm" worktree add -q -b sl "$PGD/sl"
+    git clone -q --bare "$PGD/src" "$PGD/bare.git"
+    git -C "$PGD/bare.git" worktree add -q -b bl "$PGD/bl"
+    for k in junk gitdir dir; do
+        git clone -q --bare "$PGD/src" "$PGD/$k.git"
+        git -C "$PGD/$k.git" worktree add -q -b "b$k" "$PGD/b$k"
+    done
+    # #560: a bare repo whose git dir is <proj>/.git, and core.bare on a normal repo: git
+    # prints <proj> and nb with bare, and neither path is the common dir.
+    git clone -q --bare "$PGD/src" "$PGD/proj/.git"
+    git -C "$PGD/proj" worktree add -q -b pw "$PGD/proj/wa"
+    git init -q -b main "$PGD/nb"; git -C "$PGD/nb" commit -q --allow-empty -m n
+    git -C "$PGD/nb" worktree add -q -b nw "$PGD/nb-wc"
+    git -C "$PGD/nb" config core.bare true
 ) >/dev/null 2>&1
+# #560: whatever sits in a bare repo, its record is the git dir: junk, a gitdir: line, a dir.
+echo junk > "$PGD/junk.git/.git"
+printf 'gitdir: %s\n' "$PGD/gitdir.git/worktrees/bgitdir" > "$PGD/gitdir.git/.git"
+mkdir "$PGD/dir.git/.git"
 PGSM=$(git -C "$PGR/sm" rev-parse --path-format=absolute --git-common-dir)
 is "git lists the separate git dir as the main record" "worktree $PGD/store.git" \
    "$(git -C "$PGD/l1" worktree list --porcelain | head -1)"
 is "and a submodule's git dir" "worktree $PGSM" "$(git -C "$PGD/sl" worktree list --porcelain | head -1)"
+is "and a bare repo" "worktree $PGD/bare.git" \
+   "$(git -C "$PGD/bl" worktree list --porcelain | head -1)"
+is "and a bare repo in proj/.git as proj, bare" "worktree $PGD/proj bare" \
+   "$(git -C "$PGD/proj/wa" worktree list --porcelain | head -2 | paste -sd' ')"
+is "and a repo set core.bare as itself, bare" "worktree $PGD/nb bare" \
+   "$(git -C "$PGD/nb-wc" worktree list --porcelain | head -2 | paste -sd' ')"
 for v in "" "$PGOLD"; do
     w=${v:+without -z}; w=${w:-with -z}
     pg_says "$w, a separate git dir listed as the main checkout is no worktree" \
         "not a worktree" "$PGD/l1" "$PGD/store.git" "$v"
     pg_says "$w, a submodule's git dir listed as its main checkout is no worktree" \
         "not a worktree" "$PGD/sl" "$PGSM" "$v"
+    pg_says "$w, a bare repo listed as its main checkout is no worktree" \
+        "not a worktree" "$PGD/bl" "$PGD/bare.git" "$v"
+    for k in junk gitdir dir; do
+        pg_says "$w, a bare repo holding a .git $k is no worktree" \
+            "not a worktree" "$PGD/b$k" "$PGD/$k.git" "$v"
+    done
+    pg_says "$w, a bare repo in proj/.git, listed as proj, is no worktree" \
+        "not a worktree" "$PGD/proj/wa" "$PGD/proj" "$v"
+    pg_says "$w, a repo set core.bare, listed as its main checkout, is no worktree" \
+        "not a worktree" "$PGD/nb-wc" "$PGD/nb" "$v"
+    "$TMUX_REAL" -L "$PGS" select-window -t "$PGO"
+    BG_SHIM=$v bg_goto "$PGS" "$PGO" "$PGD/proj/wa" "$PGD/proj/wa"
+    is "$w, a tree linked to a bare repo in proj/.git still opens" "$PGD/proj/wa" \
+       "$("$TMUX_REAL" -L "$PGS" display-message -p -t t: '#{pane_current_path}')"
     "$TMUX_REAL" -L "$PGS" select-window -t "$PGO"
     BG_SHIM=$v bg_goto "$PGS" "$PGO" "$PGD/wk" "$PGD/l1"
     is "$w, a tree linked to a separate git dir still opens" "$PGD/l1" \
@@ -12933,7 +13120,7 @@ for v in "" "$PGOLD"; do
 done
 
 "$TMUX_REAL" -L "$PGS" kill-server >/dev/null 2>&1
-unset -f pg_says pg_x
+unset -f pg_ids pg_says pg_x
 rm -rf "$PGR" "$PGM" "$PGD" "$PGOLD"
 fi
 
@@ -14296,6 +14483,52 @@ for o in 'ask 7 3' 'ask 0 1' 'ask 01 2' 'ask 1' 'ask 1 2 3' 'ask a b' 'ask 12345
         *) ok "the viewer's [$o] is not an ask: no panel" ;;
     esac
 done
+
+echo "== cockpit-panel (#582): the basket clear keeps a ref added just before it =="
+# A private server and a shim tmux in PATH that forwards every call to it. Just
+# before the call that would clear the basket (an unset, or an if-shell) it adds a
+# ref, as a viewer's `a` does from another client. A compare and an unset split
+# over two calls loses that ref; one server-side compare-and-clear keeps it.
+if need_tmux "basket clear"; then :; else
+BK="cockpit-bk-$$"; SOCKS="$SOCKS $BK"; BKD=$(mktmpd); mkdir -p "$BKD/bin" "$BKD/w"
+"$TMUX_REAL" -L "$BK" -f /dev/null new-session -d -c "$BKD/w" 'exec sleep 300' >/dev/null 2>&1
+BKP=$("$TMUX_REAL" -L "$BK" display -p '#{pane_id}')
+cat > "$BKD/bin/tmux" <<BKSHIM
+#!/bin/sh
+case "\$*" in *"set-option -pu"*|if-shell*)
+    if [ -e "$BKD/inject" ]; then
+        rm -f "$BKD/inject"
+        "$TMUX_REAL" -L "$BK" set-option -p -t "$BKP" @cockpit_basket "\$(cat "$BKD/added")"
+    fi ;;
+esac
+exec "$TMUX_REAL" -L "$BK" "\$@"
+BKSHIM
+chmod +x "$BKD/bin/tmux"
+bkrun() {                     # <stored> <sent> [inject] -> basket_clear's rc, then the option
+    "$TMUX_REAL" -L "$BK" set-option -p -t "$BKP" @cockpit_basket "$1"
+    printf '%s' "$2" > "$BKD/sent"; rm -f "$BKD/inject"; [ -z "${3:-}" ] || : > "$BKD/inject"
+    ( PATH="$BKD/bin:$PATH"; . "$DIR/scripts/lib/pane.sh"; . "$DIR/scripts/lib/basket.sh"
+      basket_clear "$BKP" "$BKD/sent"; echo "rc=$?" )
+    "$TMUX_REAL" -L "$BK" show-options -pqv -t "$BKP" @cockpit_basket
+}
+printf '/r/a.rs\n/r/new.rs\n' > "$BKD/added"
+is "the basket as sent is cleared" "rc=0" "$(bkrun $'/r/a.rs\n' '/r/a.rs')"
+is "a ref added just before the clear is kept" "rc=1"$'\n'"/r/a.rs"$'\n'"/r/new.rs" \
+   "$(bkrun $'/r/a.rs\n' '/r/a.rs' inject)"
+is "a basket that changed since the send is kept" "rc=1"$'\n'"/r/b.rs" "$(bkrun $'/r/b.rs\n' '/r/a.rs')"
+BKN=$'/r/a#b.rs:1-2\n/r/c,d}.rs (s {x})\n/r/x#{pane_id}.rs'
+is "names holding #, a comma, braces or a format are compared as text" "rc=0" "$(bkrun "$BKN"$'\n' "$BKN")"
+is "and a format in a name is not its expansion" "rc=1"$'\n'"/r/x$BKP.rs" "$(bkrun "/r/x$BKP.rs"$'\n' '/r/x#{pane_id}.rs')"
+# review-510: tmux keeps `##[` as `##[` in a format, so an escaped compare never
+# matched a name with `#[`; the option-to-option compare escapes nothing
+is "a name with #[ is cleared when it is the basket as sent" "rc=0" "$(bkrun $'/r/a#[x.rs\n' '/r/a#[x.rs')"
+BKH=$(i=0; while [ $i -lt 125 ]; do printf '/r/%090d%03d.rs\n' 0 $i | tr 0 '#'; i=$((i + 1)); done)
+is "a full #-heavy basket of $(printf '%s' "$BKH" | wc -c | tr -d ' ') bytes is cleared" "rc=0" \
+   "$(bkrun "$BKH"$'\n' "$BKH" | head -1)"
+is "the compare's own option is gone after, kept basket or cleared" "|" \
+   "$(bkrun $'/r/b.rs\n' '/r/a.rs' >/dev/null; "$TMUX_REAL" -L "$BK" show-options -pqv -t "$BKP" @cockpit_basket_sent)|$(bkrun $'/r/a.rs\n' '/r/a.rs' >/dev/null; "$TMUX_REAL" -L "$BK" show-options -pqv -t "$BKP" @cockpit_basket_sent)"
+is "a pane that is no %N runs no tmux" "rc=2" "$(PATH="$BKD/bin:$PATH" bash -c ". '$DIR/scripts/lib/pane.sh'; . '$DIR/scripts/lib/basket.sh'; basket_clear 'x' '$BKD/sent'; echo rc=\$?")"
+fi
 
 echo "== tmux-open-path (#366): plain_name drops each control and bidi character, keeps the rest =="
 # One table, one row per character: removing any one from the helper fails its row.

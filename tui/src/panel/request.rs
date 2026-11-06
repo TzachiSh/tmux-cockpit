@@ -136,6 +136,56 @@ const DENY: &[&str] = &[
     "Read(//**/.env.*)",
 ];
 
+/// `path` matches one of the read-only profile's Read denies ([`DENY`]), so a
+/// read-only call refuses to read it. `~` is `home`, `//` anchors at `/`, `**`
+/// is any run of folders and `*` any run of characters in one name. A rule
+/// relative to the cwd (none today) never matches: the cwd is the cache dir.
+pub fn read_denied(path: &Path, home: Option<&Path>) -> bool {
+    let names = |p: &Path| -> Vec<String> {
+        let normal = |c: std::path::Component<'_>| match c {
+            std::path::Component::Normal(n) => Some(n.to_string_lossy().into_owned()),
+            _ => None,
+        };
+        p.components().filter_map(normal).collect()
+    };
+    let path = names(path);
+    let mut rules = DENY.iter().filter_map(|d| d.strip_prefix("Read(")?.strip_suffix(')'));
+    rules.any(|rule| {
+        let full = match (rule.strip_prefix("//"), rule.strip_prefix("~/"), home) {
+            (Some(r), ..) => Path::new("/").join(r),
+            (_, Some(r), Some(h)) => h.join(r),
+            _ => return false,
+        };
+        let rule = names(&full);
+        let rule: Vec<&str> = rule.iter().map(String::as_str).collect();
+        let path: Vec<&str> = path.iter().map(String::as_str).collect();
+        glob_names(&rule, &path)
+    })
+}
+
+/// Name by name: `**` takes any run of names, none included.
+fn glob_names(rule: &[&str], path: &[&str]) -> bool {
+    match rule.split_first() {
+        None => path.is_empty(),
+        Some((&"**", rest)) => (0..=path.len()).any(|i| glob_names(rest, &path[i..])),
+        Some((r, rest)) => path
+            .split_first()
+            .is_some_and(|(n, more)| glob_name(r, n) && glob_names(rest, more)),
+    }
+}
+
+/// One name: `*` takes any run of characters, none included.
+fn glob_name(rule: &str, name: &str) -> bool {
+    match rule.split_once('*') {
+        None => rule == name,
+        Some((head, tail)) => name.strip_prefix(head).is_some_and(|rest| {
+            (0..=rest.len())
+                .filter(|i| rest.is_char_boundary(*i))
+                .any(|i| glob_name(tail, &rest[i..]))
+        }),
+    }
+}
+
 impl Profile {
     pub const TEXT: Profile = Profile {
         tools: &[],
