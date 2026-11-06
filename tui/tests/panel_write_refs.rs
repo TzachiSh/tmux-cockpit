@@ -158,8 +158,8 @@ fn a_ref_through_a_symlink_is_where_the_link_leads() {
 #[test]
 fn a_denied_file_in_the_root_is_noted_not_read() {
     let d = tree("denied");
-    for f in [".env", ".env.local", "envy.rs"] {
-        std::fs::write(d.0.join("repo").join(f), "K=v\n").unwrap();
+    for f in ["repo/.env", "repo/.env.local", "repo/envy.rs", "other/.env"] {
+        std::fs::write(d.0.join(f), "K=v\n").unwrap();
     }
     let base = d.0.join("repo");
     let refs = [
@@ -170,6 +170,9 @@ fn a_denied_file_in_the_root_is_noted_not_read() {
     let denied = |root: Option<&Path>| ref_items(&refs, &base, false, root).iter().map(|i| i.denied).collect::<Vec<_>>();
     assert_eq!(denied(Some(&base)), [true, true, false]);
     assert_eq!(denied(None), [false, false, false]);
+    // outside the root it is noted outside only: one "not read" note a ref
+    let out = ref_items(&[r(&d, "other/.env", None)], &base, false, Some(&base));
+    assert_eq!((out[0].outside, out[0].denied), (true, false));
 }
 
 #[test]
