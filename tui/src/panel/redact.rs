@@ -147,12 +147,26 @@ fn joined(s: &str, i: usize) -> bool {
     s[..i].ends_with('_')
 }
 
+/// A key word that starts a camelCase hump: `myApiKey`, `dbPassword` (#600).
+fn camel(s: &str, i: usize) -> bool {
+    let up = s[i..].starts_with(|c: char| c.is_ascii_uppercase());
+    up && s[..i].ends_with(|c: char| c.is_ascii_lowercase() || c.is_ascii_digit())
+}
+
 /// `bearer x` and `token = x` style pairs: the name stays, the value goes. A key
-/// word starts at a word boundary or after a `_` that joins it to a prefix;
-/// either way `=` or `:` must follow it, so `password_hint` stays.
+/// word starts at a word boundary, after a `_` that joins it to a prefix, or at
+/// a camelCase hump; `=` or `:` must follow it, a closing quote between allowed
+/// (JSON's `"password":`), so `password_hint` and `passwordHint` stay. A quoted
+/// value is hidden inside its quotes, whole.
+///
+/// The tradeoff (#593, #600): recall over precision. A name in code that is
+/// only named for a secret loses what follows it too: `user_password: String,`
+/// hides `String,`. Two gaps stay, decided: a key word first in a name
+/// (`PASSWORD_DB=`, as `password_hint =` must stay) and one joined with no
+/// separator (`mypassword=`, as `OLDPWD=` is a folder).
 fn key_value(s: &str, i: usize) -> Option<(usize, usize)> {
     let at_word = boundary_before(s, i);
-    if !at_word && !joined(s, i) {
+    if !at_word && !joined(s, i) && !camel(s, i) {
         return None;
     }
     let keep = if let Some(j) = ci(s, i, "bearer").filter(|_| at_word) {
@@ -160,15 +174,24 @@ fn key_value(s: &str, i: usize) -> Option<(usize, usize)> {
         (k > j).then_some(k)?
     } else {
         let j = KEYS.iter().find_map(|k| ci(s, i, k))?;
+        let j = if s[j..].starts_with(['"', '\'']) { j + 1 } else { j };
         let j = skip_ws(s, j);
         if !s[j..].starts_with(['=', ':']) {
             return None;
         }
         skip_ws(s, j + 1)
     };
-    let (chars, len) = s[keep..]
-        .chars()
-        .take_while(|c| !c.is_whitespace())
-        .fold((0, 0), |(n, l), c| (n + 1, l + c.len_utf8()));
-    (chars >= 4).then_some((keep, keep + len))
+    let (from, to) = match s[keep..].chars().next() {
+        // a quoted value: inside its quotes, whole
+        Some(q @ ('"' | '\'')) => {
+            let body = &s[keep + 1..];
+            (keep + 1, keep + 1 + body.find(q).unwrap_or(body.len()))
+        }
+        _ => {
+            let word = s[keep..].chars().take_while(|c| !c.is_whitespace());
+            let len: usize = word.map(char::len_utf8).sum();
+            (keep, keep + len)
+        }
+    };
+    (s[from..to].chars().count() >= 4).then_some((from, to))
 }

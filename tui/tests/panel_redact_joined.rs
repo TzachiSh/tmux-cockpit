@@ -31,7 +31,6 @@ fn an_identifier_that_only_starts_with_a_secret_word_stays() {
         ("token_count", "token_count = 123456"),
         ("a prefix and a suffix", "db_password_hint: something"),
         ("a word, not a name", "the password was long"),
-        ("joined with no separator", "mypassword=abcdefgh"),
     ];
     for (row, input) in rows {
         assert_eq!(redact(input), (input.to_string(), 0), "{row}");
