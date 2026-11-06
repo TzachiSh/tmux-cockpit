@@ -153,11 +153,25 @@ fn camel(s: &str, i: usize) -> bool {
     up && s[..i].ends_with(|c: char| c.is_ascii_lowercase() || c.is_ascii_digit())
 }
 
+/// Where a quoted value ends: at its closing quote, or at the line's end when it
+/// has none. A quote after an odd run of backslashes is escaped and does not
+/// close it; after an even run (`\\"`) it does (review-534 on #606).
+fn quoted_len(body: &str, q: char) -> usize {
+    let mut slashes = 0;
+    for (k, c) in body.char_indices() {
+        if c == '\n' || (c == q && slashes % 2 == 0) {
+            return k;
+        }
+        slashes = if c == '\\' { slashes + 1 } else { 0 };
+    }
+    body.len()
+}
+
 /// `bearer x` and `token = x` style pairs: the name stays, the value goes. A key
 /// word starts at a word boundary, after a `_` that joins it to a prefix, or at
 /// a camelCase hump; `=` or `:` must follow it, a closing quote between allowed
 /// (JSON's `"password":`), so `password_hint` and `passwordHint` stay. A quoted
-/// value is hidden inside its quotes, whole.
+/// value is hidden inside its quotes, whole, to the line's end if unclosed.
 ///
 /// The tradeoff (#593, #600): recall over precision. A name in code that is
 /// only named for a secret loses what follows it too: `user_password: String,`
@@ -183,10 +197,7 @@ fn key_value(s: &str, i: usize) -> Option<(usize, usize)> {
     };
     let (from, to) = match s[keep..].chars().next() {
         // a quoted value: inside its quotes, whole
-        Some(q @ ('"' | '\'')) => {
-            let body = &s[keep + 1..];
-            (keep + 1, keep + 1 + body.find(q).unwrap_or(body.len()))
-        }
+        Some(q @ ('"' | '\'')) => (keep + 1, keep + 1 + quoted_len(&s[keep + 1..], q)),
         _ => {
             let word = s[keep..].chars().take_while(|c| !c.is_whitespace());
             let len: usize = word.map(char::len_utf8).sum();

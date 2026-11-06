@@ -47,3 +47,43 @@ fn known_gaps_key_first_and_unseparated() {
         assert_eq!(redact(input), (input.to_string(), 0), "{input}");
     }
 }
+
+/// review-534 on #606: an escaped quote does not end a quoted value, so a JSON
+/// secret holding `\"` is hidden whole; `\\"` still ends it.
+#[test]
+fn an_escaped_quote_stays_inside_the_hidden_value() {
+    let rows = [
+        (
+            "tail after \\\"",
+            r#""password": "abcd\"secretsecret""#,
+            r#""password": "[hidden]""#,
+        ),
+        ("short head", r#""password": "ab\"secretsecret""#, r#""password": "[hidden]""#),
+        ("two escapes", r#"{"token": "x\"y\"zzzzzzzz"}"#, r#"{"token": "[hidden]"}"#),
+        (
+            "\\\\ ends it",
+            r#""password": "abcdefgh\\", "user": "bob""#,
+            r#""password": "[hidden]", "user": "bob""#,
+        ),
+    ];
+    for (row, input, want) in rows {
+        assert_eq!(redact(input), (want.to_string(), 1), "{row}: {input}");
+    }
+}
+
+/// review-534 on #606: a quoted value never closed ends at the line, so the
+/// lines after it stay on screen.
+#[test]
+fn an_unclosed_quoted_value_ends_at_the_line() {
+    let input = "\"password\": \"abcdefgh\nnext line\nthird line";
+    let want = "\"password\": \"[hidden]\nnext line\nthird line";
+    assert_eq!(redact(input), (want.to_string(), 1));
+}
+
+/// review-534 on #606: a hump needs a lowercase letter or digit before it, so an
+/// all-caps name holding a key word is no hump: `OLDPWD` is a folder.
+#[test]
+fn an_all_caps_name_is_not_a_camel_hump() {
+    let input = "OLDPWD=/home/user";
+    assert_eq!(redact(input), (input.to_string(), 0));
+}
