@@ -11,15 +11,13 @@ DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
 # COCKPIT_TUI_BIN, TUI_MIN and vnum, before anything reads them.
 # shellcheck source=scripts/lib/tui.sh
 . "$DIR/scripts/lib/tui.sh" || exit 1
-# tpm hides plugin output, so an old tmux only hears this message. A version
-# with no leading digit (next-3.9, master) is a build newer than any release.
+# tpm hides plugin output, so an old tmux only hears this message. vnum_ge
+# grades a master build (next-3.9) by its number and lets a bare word through.
 tmux_version=$(tmux -V 2>/dev/null); tmux_version=${tmux_version#tmux }
-case "$tmux_version" in [0-9]*)
-    if [ "$(vnum "$tmux_version")" -lt "$(vnum 3.8)" ]; then
-        tmux display-message "tmux-cockpit needs tmux 3.8 or newer (found $tmux_version); bootstrap.sh builds it"
-        exit 0
-    fi ;;
-esac
+if ! vnum_ge "$tmux_version" 3.8; then
+    tmux display-message "tmux-cockpit needs tmux 3.8 or newer (found $tmux_version); bootstrap.sh builds it"
+    exit 0
+fi
 
 # Single quotes, not printf %q: inside a tmux double-quoted string tmux eats
 # %q's backslashes before sh sees them.

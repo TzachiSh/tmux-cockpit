@@ -52,18 +52,12 @@ fn refs(dir: &str, ns: &str) -> Vec<(String, String)> {
 /// (a line that is no worktree attribute) is dropped rather than guessed at. So
 /// is one that is not this repo's (#348, #532): a newline name can forge a whole
 /// `worktree <dir>` line, and `<dir>` may be any checkout. See [`ours`].
-/// When the main checkout's `.git` is a file (`--separate-git-dir`, a submodule), git
-/// prints the git dir as the main record's path. That is no tree, so the record is
-/// dropped (#537); the fallback's [`ours`] drops it too.
+/// git's main record is no tree when it is the common git dir (`--separate-git-dir`, a
+/// submodule's, a bare repo's) or carries `bare` (a bare repo in `<proj>/.git`, listed
+/// as `<proj>`, or `core.bare` on a normal repo). Either is dropped, whatever sits in it
+/// (#537, #560): [`records`] drops a bare record, `-z` a common dir, and the fallback's
+/// [`ours`] any git dir. A main checkout or a linked tree is neither, wherever listed.
 fn worktrees(dir: &str, top: &str) -> Vec<(String, Option<String>)> {
-    let z = git(dir, &[], None, &["worktree", "list", "--porcelain", "-z"]);
-    if !z.is_empty() {
-        let mut v = records(z.split('\0'), true);
-        if v.first().is_some_and(|(p, _)| !Path::new(p).join(".git").is_dir()) {
-            v.remove(0);
-        }
-        return v;
-    }
     // Asked from the top: before 2.13 the answer was the cwd's prefix plus a path from the top.
     let top = if top.is_empty() { dir } else { top };
     let common = git(top, &[], None, &["rev-parse", "--git-common-dir"]);
@@ -72,6 +66,12 @@ fn worktrees(dir: &str, top: &str) -> Vec<(String, Option<String>)> {
         return Vec::new();
     }
     let common = Path::new(top).join(common);
+    let z = git(dir, &[], None, &["worktree", "list", "--porcelain", "-z"]);
+    if !z.is_empty() {
+        let mut v = records(z.split('\0'), true);
+        v.retain(|(p, _)| !same(Path::new(p), &common));
+        return v;
+    }
     let plain = git(dir, &[], None, &["worktree", "list", "--porcelain"]);
     let mut v = records(plain.split('\n'), false);
     v.retain(|(p, b)| ours(Path::new(p), b.as_deref(), &common));
@@ -159,10 +159,11 @@ fn records<'a>(fields: impl Iterator<Item = &'a str>, nul: bool) -> Vec<(String,
     const PREFIXES: [&str; 4] = ["HEAD ", "branch ", "locked ", "prunable "];
     let attr = |f: &str| LABELS.contains(&f) || PREFIXES.iter().any(|a| f.starts_with(a));
     let mut out = Vec::new();
-    let mut cur: Option<(String, Option<String>, bool)> = None;
-    let mut flush = |cur: &mut Option<(String, Option<String>, bool)>| {
-        // An empty path names nothing; tmux-branch drops it too.
-        if let Some((p, b, true)) = cur.take()
+    // (path, branch, not cut, carries bare)
+    let mut cur: Option<(String, Option<String>, bool, bool)> = None;
+    let mut flush = |cur: &mut Option<(String, Option<String>, bool, bool)>| {
+        // An empty path names nothing, and a bare record is a git dir; tmux-branch drops both.
+        if let Some((p, b, true, false)) = cur.take()
             && !p.is_empty()
         {
             out.push((p, b));
@@ -171,10 +172,12 @@ fn records<'a>(fields: impl Iterator<Item = &'a str>, nul: bool) -> Vec<(String,
     for f in fields {
         if let Some(p) = f.strip_prefix("worktree ") {
             flush(&mut cur);
-            cur = Some((p.to_string(), None, true));
-        } else if let Some((_, b, ok)) = cur.as_mut() {
+            cur = Some((p.to_string(), None, true, false));
+        } else if let Some((_, b, ok, bare)) = cur.as_mut() {
             if let Some(r) = f.strip_prefix("branch refs/heads/") {
                 *b = Some(r.to_string());
+            } else if f == "bare" {
+                *bare = true;
             } else if !nul && !f.is_empty() && !attr(f) {
                 *ok = false;
             }
@@ -248,18 +251,52 @@ pub fn valid_name(dir: &str, name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{records, same};
+    use super::{records, same, worktrees};
+    use std::path::Path;
+    use std::process::Command;
 
     fn plain(s: &str) -> Vec<(String, Option<String>)> {
         records(s.split('\n'), false)
     }
 
     #[test]
-    fn a_whole_bare_or_detached_line_is_a_label_that_keeps_the_record() {
-        for l in ["bare", "detached"] {
-            let got = plain(&format!("worktree /none/d\nHEAD 0\n{l}\n"));
-            assert_eq!(got, [("/none/d".to_string(), None)], "{l}");
-        }
+    fn a_whole_detached_line_is_a_label_that_keeps_the_record() {
+        let got = plain("worktree /none/d\nHEAD 0\ndetached\n");
+        assert_eq!(got, [("/none/d".to_string(), None)]);
+    }
+
+    #[test]
+    fn a_record_carrying_bare_is_a_git_dir_and_dropped_with_z_and_without() {
+        let z = "worktree /p\0bare\0\0worktree /p/wa\0HEAD 0\0branch refs/heads/wa\0\0";
+        let want = [("/p/wa".to_string(), Some("wa".to_string()))];
+        assert_eq!(records(z.split('\0'), true), want, "-z");
+        assert_eq!(plain(&z.replace('\0', "\n")), want, "plain");
+    }
+
+    fn git(dir: &Path, args: &[&str]) {
+        let mut c = Command::new("git");
+        c.arg("-C").arg(dir).args(args);
+        let c = c.env("GIT_AUTHOR_NAME", "t").env("GIT_AUTHOR_EMAIL", "t@e");
+        let c = c.env("GIT_COMMITTER_NAME", "t").env("GIT_COMMITTER_EMAIL", "t@e");
+        assert!(c.status().unwrap().success(), "git {args:?}");
+    }
+
+    #[test]
+    fn a_bare_main_record_that_is_not_the_common_dir_is_dropped() {
+        let d = std::env::temp_dir().join(format!("cockpit-bare560-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let d = std::fs::canonicalize(&d).unwrap();
+        let s = |p: &str| d.join(p).to_str().unwrap().to_string();
+        git(&d, &["init", "-q", "-b", "main", "src"]);
+        git(&d.join("src"), &["commit", "-q", "--allow-empty", "-m", "i"]);
+        git(&d, &["clone", "-q", "--bare", &s("src"), &s("proj/.git")]);
+        git(&d.join("proj"), &["worktree", "add", "-q", "-b", "pw", &s("proj/wa")]);
+        git(&d.join("src"), &["worktree", "add", "-q", "-b", "nw", &s("nb-wc")]);
+        git(&d.join("src"), &["config", "core.bare", "true"]);
+        let got = [s("proj/wa"), s("nb-wc")].map(|w| worktrees(&w, &w));
+        let _ = std::fs::remove_dir_all(&d);
+        let want = [s("proj/wa"), s("nb-wc")].map(|w| vec![w.clone()]);
+        assert_eq!(got.map(|v| v.into_iter().map(|(p, _)| p).collect::<Vec<_>>()), want);
     }
 
     #[test]
