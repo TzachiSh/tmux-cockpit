@@ -194,3 +194,53 @@ pub fn main(args: &[String]) -> i32 {
     println!("{line}");
     code
 }
+
+/// The send's cap (#365 child 5): the whole text, the draft and its refs. Over it
+/// the send is refused, never cut, as a cut text would drop refs the user saw.
+pub const MAX_SEND: usize = 16 * 1024;
+
+/// One ref as the pane's agent reads it (owner's D4). For Claude Code, which
+/// inlines the lines a mention names (probed on 2.1.318): `@path#La-b`,
+/// `@path#La`, `@path` for a whole file; a path with whitespace quoted whole,
+/// `@"path#La-b"`, the one quoted form that keeps the range. A path holding `"`
+/// cannot be quoted, and goes bare. Any other agent gets `refs::render`'s bare
+/// `path:a-b`. Relative to `base`, the pane's folder, when inside it.
+pub fn ref_line(r: &Ref, base: &Path, claude: bool) -> String {
+    let bare = refs::render(std::slice::from_ref(r), base);
+    if !claude {
+        return bare;
+    }
+    let Ok(whole) = Ref::new(r.path(), None, None) else { return bare };
+    let path = refs::render(std::slice::from_ref(&whole), base);
+    let at = match r.lines() {
+        Some((a, b)) if a == b => format!("#L{a}"),
+        Some((a, b)) => format!("#L{a}-{b}"),
+        None => String::new(),
+    };
+    if path.contains('"') {
+        bare
+    } else if path.contains(char::is_whitespace) {
+        format!("@\"{path}{at}\"")
+    } else {
+        format!("@{path}{at}")
+    }
+}
+
+/// What a send with `refs` puts in the pane: the draft, a blank line, then one
+/// ref per line ([`ref_line`]); with none, the draft as it is. This exact text is
+/// what the confirm shows. Over [`MAX_SEND`] is an error.
+pub fn expand(draft: &str, refs: &[Ref], base: &Path, claude: bool) -> Result<String, String> {
+    let text = if refs.is_empty() {
+        draft.to_string()
+    } else {
+        let lines: Vec<String> = refs.iter().map(|r| ref_line(r, base, claude)).collect();
+        format!("{}\n\n{}", draft.trim_end_matches('\n'), lines.join("\n"))
+    };
+    if text.len() > MAX_SEND {
+        let n = text.len();
+        return Err(format!(
+            "too long to send ({n} bytes, {MAX_SEND} at most): remove refs or shorten the draft"
+        ));
+    }
+    Ok(text)
+}
