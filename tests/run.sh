@@ -12963,6 +12963,25 @@ git -C "$PGR" worktree add -q -b dot537 "$PGD/.dg" >/dev/null 2>&1
 mv "$PGR/.git/worktrees/-dg" "$PGR/.git/worktrees/.dg"
 printf 'gitdir: %s\n' "$PGR/.git/worktrees/.dg" > "$PGD/.dg/.git"; rm -rf "$PGD/.dg"
 pg_says "a gone tree whose id starts with a dot is named gone" "is gone" "$PGR" "$PGD/.dg" "$PGOLD"
+# #555: --relative-paths writes the gitdir as ../../../../rel/.git, from the entry. git
+# resolves . and .. before it compares with <path>/.git, and so does the fallback, as text.
+PGRR="$PGD/rr"
+if (
+    export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+    git init -q -b main "$PGRR" && git -C "$PGRR" commit -q --allow-empty -m i &&
+        git -C "$PGRR" worktree add -q --relative-paths -b rel555 "$PGD/rel" &&
+        git -C "$PGRR" worktree add -q -b dots555 "$PGD/dots"
+) >/dev/null 2>&1; then
+    rm -rf "$PGD/rel"
+    pg_says "a gone tree whose gitdir is relative is named gone" "is gone" \
+        "$PGRR" "$PGD/rel" "$PGOLD"
+    printf '%s\n' .././../../../x/../dots/.git > "$PGRR/.git/worktrees/dots/gitdir"
+    rm -rf "$PGD/dots"
+    pg_says "a gone tree whose relative gitdir holds . and x/.. is named gone" "is gone" \
+        "$PGRR" "$PGD/dots" "$PGOLD"
+else
+    skip_ "a gone tree whose gitdir is relative: this git has no worktree add --relative-paths"
+fi
 
 # A separate git dir and a submodule's: git lists P/store.git and P/sup/.git/modules/sm.
 (
