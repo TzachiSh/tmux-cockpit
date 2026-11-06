@@ -397,8 +397,8 @@ kind: refactor
 window: bash · bash · /home/u/projects/tool
 expect: write
 must: parse_cfg; parse_config
-must_not: Assumed:; mutate|mutation|mutant|mutants|on purpose
-note: #587: no mutation step, since no test is added or fixed; a mechanical rename the agent can find every use of; #503 (card 15): whether parse_cfg is a function is the agent's to check, so no Assumed: line
+must_not: Assumed:; mutate|mutation|mutant|mutants|break the code on purpose|on purpose, confirm|on purpose and confirm; baseline
+note: #587: no mutation step, since no test is added or fixed; a mechanical rename the agent can find every use of; #503 (card 15): whether parse_cfg is a function is the agent's to check, so no Assumed: line; #590: a rename is not a big refactor (write.txt), so no baseline, as in refs-bare-rename; the mutation words name the step's wording, so "kept on purpose and why" passes (a bare "on purpose and" would hit it)
 --- request
 rename parse_cfg to parse_config everywhere, no behaviour change
 
