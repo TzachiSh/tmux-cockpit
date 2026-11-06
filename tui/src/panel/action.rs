@@ -43,6 +43,13 @@ pub fn write_action(path: &Path, pane: &str, cmd: &str, a: &Action) -> std::io::
     fresh(path, &format!("{} {pane}\n", a.verb))
 }
 
+/// `<path>.basket` (#365 child 5): the pane's basket as the send carried it, for
+/// the wrapper to clear once the paste lands and only while the option still
+/// holds this. Written fresh, never followed, mode 0600, as `.text` is.
+pub fn write_basket(path: &Path, body: &str) -> std::io::Result<()> {
+    fresh(Path::new(&format!("{}.basket", path.display())), body)
+}
+
 /// The longest `.expect` written: far over a tmux name, and the wrapper reads one line.
 pub const EXPECT_MAX: usize = 1024;
 
@@ -263,6 +270,8 @@ fn view_out(v: &View) -> Option<Value> {
     Some(match v {
         View::Busy => return None,
         View::Confirm { back, .. } => return view_out(back),
+        // the basket is the pane's, so a hidden panel comes back on the draft
+        View::Basket { .. } => json!({"v": "compose"}),
         View::Home { sel } => json!({"v": "home", "sel": sel}),
         View::Compose => json!({"v": "compose"}),
         View::Question { sel, .. } => json!({"v": "question", "sel": sel}),

@@ -546,6 +546,10 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
                 let fg = if n >= MAX_DRAFT { th.needs } else { th.meta };
                 extra.push(Span::styled(format!("{n}/{MAX_DRAFT}"), Style::new().fg(fg)));
             }
+            if !app.basket.is_empty() {
+                let refs = format!("refs: {}", app.basket.len());
+                extra.push(Span::styled(refs, Style::new().fg(th.accent)));
+            }
             for x in extra {
                 if top.width() + 3 + x.width() <= w {
                     top.spans.extend([Span::raw("   "), x]);
@@ -555,6 +559,14 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
                 }
             }
             b.head.push(top);
+            // the prompt basket's refs (#365 child 5): three rows, then a count
+            for (i, r) in app.basket.iter().take(3).enumerate() {
+                b.head.push(styled(th.g.trunc(&basket_row(app, r, i), w), meta));
+            }
+            if app.basket.len() > 3 {
+                let more = format!("+{} more {d} ^B lists them", app.basket.len() - 3);
+                b.head.push(styled(th.g.trunc(&more, w), meta));
+            }
             let at;
             if app.draft.is_empty() {
                 // drawn, never typed: the draft stays empty
@@ -580,16 +592,21 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
                 ));
             }
             b.scroll = usize::MAX;
-            b.footer = pills(&[
-                ("^S", "write"),
-                ("^F", "fix spelling"),
-                ("^T", "insert as typed"),
+            // with refs, ^T sends them after a confirm, and ^B lists them (#365)
+            let refs = !app.basket.is_empty();
+            let t = if refs { "send with refs" } else { "insert as typed" };
+            let mut pill = vec![("^S", "write"), ("^F", "fix spelling"), ("^T", t)];
+            if refs {
+                pill.push(("^B", "refs"));
+            }
+            pill.extend([
                 (g.key_tab, "type"),
                 ("^N", "model"),
                 ("^R", "explore"),
                 ("F1", "keys"),
                 ("esc", "home"),
             ]);
+            b.footer = pills(&pill);
         }
         View::Busy => {
             let frames = g.spin;
@@ -774,6 +791,23 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
                 help,
                 ("esc", &back),
             ]);
+        }
+        View::Basket { sel } => {
+            let n = app.basket.len();
+            let what = format!("the prompt basket {d} {n} ref{}", if n == 1 { "" } else { "s" });
+            b.head.push(styled(th.g.trunc(&what, w), bold));
+            b.head.push(plain(""));
+            if app.basket.is_empty() {
+                b.lines.push(styled(th.g.trunc("empty: the viewer's a adds a ref", w), meta));
+            }
+            for (i, r) in app.basket.iter().enumerate() {
+                let rows = tile(th, i == *sel, i + 1, "", &basket_row(app, r, i), "", tw);
+                let t = push_entry(&mut b, th, tall, i == *sel, rows, w, Tap::Pick(i));
+                if i == *sel {
+                    b.sel = Some(t);
+                }
+            }
+            b.footer = pills(&[("d", "remove"), ("D", "all"), help, ("esc", "back")]);
         }
         View::ExplainAsk { sel } => {
             let what = match app.session {
@@ -975,23 +1009,14 @@ pub fn keys(app: &App, g: &Glyphs) -> Vec<(String, String)> {
             help,
             s("esc q ^C", "close the panel"),
         ],
-        View::Compose => vec![
-            s("^S F2", "write it with Claude"),
-            s("^F", "fix the spelling"),
-            s("^T", "insert as typed"),
-            s(g.key_tab, "next output type"),
-            s("^N", "next model"),
-            s("^R", "explore first: the write may read this folder"),
-            s(ret, "new line"),
-            s(&format!("{bksp} ^W ^U"), "delete a char, a word, all before"),
-            s(&lr, &format!("move; ^{} ^{} by a word", g.key_left, g.key_right)),
-            s(g.key_updown, "the row above, below"),
-            s("Home End", "line start, end; ^A ^E too"),
-            s("Del", "delete the char after"),
-            s("F1", "this help"),
-            s("esc", "back to home"),
-            s("^C", "close the panel"),
-        ],
+        View::Compose if !app.basket.is_empty() => {
+            // with refs (#365 child 5): ^T sends them after a confirm, ^B lists them
+            let mut v = compose_help(g, ret, bksp, &lr);
+            v[2] = s("^T", "send the draft with its refs, after a confirm");
+            v.insert(3, s("^B", "the prompt basket: list and remove its refs"));
+            v
+        }
+        View::Compose => compose_help(g, ret, bksp, &lr),
         View::Busy => vec![
             help,
             s("esc", &format!("cancel, back to {}", named(app.busy_back.as_ref()))),
@@ -1049,6 +1074,14 @@ pub fn keys(app: &App, g: &Glyphs) -> Vec<(String, String)> {
             s("r", "ask again"),
             help,
             s("esc", &left),
+            quit,
+        ],
+        View::Basket { .. } => vec![
+            move_,
+            s("d Del", "remove the selected ref from the pane's basket"),
+            s("D", "empty the basket"),
+            help,
+            s("esc", "back to the draft"),
             quit,
         ],
         View::ExplainAsk { .. } => vec![
@@ -1400,6 +1433,38 @@ pub fn run(app: &mut App) {
     }
     // the SIGHUP/SIGTERM path breaks out of the loop above and lands here too
     crate::backend::restore(true);
+}
+
+/// One basket row as Compose and ^B draw it: the ref from the pane's folder,
+/// bare, drawn clean (a bidi mark or a control character in a name is not
+/// drawn), a whole file marked.
+fn basket_row(app: &App, r: &crate::refs::Ref, i: usize) -> String {
+    let base = std::path::Path::new(&app.cap.path);
+    let text = crate::pick::clean(&crate::basket::ref_line(r, base, false));
+    let whole = if r.lines().is_none() { "  (whole file)" } else { "" };
+    format!("[{}] {text}{whole}", i + 1)
+}
+
+/// Compose's help rows, the ones with an empty basket.
+fn compose_help(g: &Glyphs, ret: &str, bksp: &str, lr: &str) -> Vec<(String, String)> {
+    let s = |k: &str, v: &str| (k.to_string(), v.to_string());
+    vec![
+        s("^S F2", "write it with Claude"),
+        s("^F", "fix the spelling"),
+        s("^T", "insert as typed"),
+        s(g.key_tab, "next output type"),
+        s("^N", "next model"),
+        s("^R", "explore first: the write may read this folder"),
+        s(ret, "new line"),
+        s(&format!("{bksp} ^W ^U"), "delete a char, a word, all before"),
+        s(lr, &format!("move; ^{} ^{} by a word", g.key_left, g.key_right)),
+        s(g.key_updown, "the row above, below"),
+        s("Home End", "line start, end; ^A ^E too"),
+        s("Del", "delete the char after"),
+        s("F1", "this help"),
+        s("esc", "back to home"),
+        s("^C", "close the panel"),
+    ]
 }
 
 #[cfg(test)]

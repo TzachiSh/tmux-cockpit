@@ -83,6 +83,9 @@ fn panel(args: &[String]) {
     }
     // cockpit-panel says when an ask opens with a panel already hidden on the pane
     a.hide_taken = std::env::var_os("COCKPIT_PANEL_HIDE_TAKEN").is_some_and(|v| v == "1");
+    // the pane's prompt basket (#365 child 5): a send from Compose carries its refs
+    a.basket = cockpit_tui::basket::read(pane).unwrap_or_default();
+    a.claude = !a.basket.is_empty() && cockpit_tui::basket::is_claude(pane);
     // the viewer's `?` (#365): the lines are read here, as the viewer showed them
     if let cockpit_tui::panel::Start::Ask(f, l1, l2) = &start {
         match cockpit_tui::panel::ask::load(std::path::Path::new(f), *l1, *l2) {
@@ -120,6 +123,13 @@ fn panel(args: &[String]) {
     {
         // the action still goes: only the way back to the steps is lost
         eprintln!("cockpit-tui: cannot write the steps to resume: {e}");
+    }
+    // before the action line: cockpit-panel clears the basket only when this says
+    // the send carried it, and only after the paste lands
+    if let Some(b) = &a.sent_basket
+        && let Err(e) = action::write_basket(f, b)
+    {
+        eprintln!("cockpit-tui: the basket will not be cleared after the send: {e}");
     }
     if let Err(e) = action::write_action(f, pane, &a.cap.cmd, &act) {
         eprintln!("cockpit-tui: cannot write the action: {e}");
