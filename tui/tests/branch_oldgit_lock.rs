@@ -1,5 +1,6 @@
 //! #532: without `-z`, `locked` and `prunable` are attributes only alone or before a
 //! space and a reason, as git prints them; `<path><NL>lockedx` cuts a path.
+mod fake;
 mod oldgit;
 use cockpit_tui::data::branches;
 

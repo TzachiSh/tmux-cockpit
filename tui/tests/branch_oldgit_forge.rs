@@ -1,5 +1,6 @@
 //! #348: without `-z`, a worktree named `inj<NL>worktree <dir>` prints a line that
 //! reads as a worktree at `<dir>`. A record is a worktree only with a `.git` in it.
+mod fake;
 mod oldgit;
 use cockpit_tui::data::branches;
 

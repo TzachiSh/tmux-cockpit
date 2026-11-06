@@ -2732,6 +2732,7 @@ is "no client means truecolor skips"        "1" "$(dcrow "$dcout" "skip truecolo
 is "no server means popup-border skips"     "1" "$(dcrow "$dcout" "skip popup-border")"
 is "the suite's cockpit-tui is an ok row"   "1" "$(dcrow "$dcout" "ok cockpit-tui")"
 dctv=$(tmux -V 2>/dev/null); dctv=${dctv#tmux }
+case "$dctv" in [0-9]*) ;; *) dctv=99 ;; esac   # next-3.9, master: newer than any release
 if [ "$(dcge "$dctv" 3.8)" = no ]; then
     skip_ "install.sh --check exits 0 on a wired box (this tmux is below 3.8)"
 else
@@ -2753,6 +2754,9 @@ is "an older revdiff is a warn row" "1" "$(dcrow "$dcout" "warn revdiff")"
 dcout=$(dc "$DBIN:$DSH:$DNO"); dcrc=$?
 is "no tmux on PATH is a fail row"          "1" "$(dcrow "$dcout" "fail tmux")"
 is "and a failure exits 2"                  "2" "$dcrc"
+mkdir -p "$DC/nexttmux"; dshim tmux "tmux next-3.9" "$DC/nexttmux"
+dcout=$(dc "$DC/nexttmux:$DBIN:$DSH:$DNO")
+is "a tmux built from master (next-3.9) is an ok row" "1" "$(dcrow "$dcout" "ok tmux")"
 # tmux loads both files, so the run-shell line in either one wires the box.
 mkdir -p "$DH/.config/tmux"; printf 'set -g @unrelated 1\n' > "$DH/.config/tmux/tmux.conf"
 dcout=$(dc "$DCP")
@@ -3492,7 +3496,8 @@ sc_run env COCKPIT_TUI_BIN="$SCD/tui" "$DIR/scripts/cockpit-board" -p "$SCS"
 is "the board takes the pin at start, so a later press cannot take its jump" "A=z B=a :" \
    "$(sc_where):$(cat "$SCD/seen")"
 sc_home
-"$TMUX_REAL" -L "$SC" set -pu -t "$SCS" @cockpit_board_client >/dev/null 2>&1
+# B's pin on the pane: -c names A, so A moves and the pin does not override it.
+"$TMUX_REAL" -L "$SC" set -p -t "$SCS" @cockpit_board_client "$SCB" >/dev/null 2>&1
 sc_run env COCKPIT_TUI_BIN="$SCD/tui" "$DIR/scripts/cockpit-board" -p "$SCS" -c "$SCA"
 is "cockpit-board -c moves that client, whatever the pane holds" "A=z B=a " "$(sc_where)"
 # The bindings hand the pressing client over: run-shell expands it at the press.
@@ -8337,6 +8342,53 @@ else bad "the board shows alpha's screen" "live · screen-of-alpha" \
 "$TMUX_REAL" -L "$PJ" kill-server >/dev/null 2>&1
 fi
 
+echo "== cockpit-tui board: the tiles capture in one tmux call, fetch or capture (#492) =="
+# The tiles forked one capture-pane per tile. Now every visible tile goes in
+# one tmux command list, on a fetch and on a capture-only job (v, a scroll, a
+# new size) alike. The wrapper logs each call's whole argv, one line a call;
+# a capture after a list-panes is a fetch's, any other a capture-only job's.
+if need_tmux "the tiles' batched capture"; then :; else
+PB6="cockpit-pt-$$"; SOCKS="$SOCKS $PB6"; BTD=$(mktmpd)
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> %s/calls\nexec %s "$@"\n' \
+    "$BTD" "$TMUX_REAL" > "$BTD/tmux"
+chmod +x "$BTD/tmux"
+"$TMUX_REAL" -L "$PB6" -f /dev/null new-session -d -s t -x 120 -y 40 -c "$BTD" \
+    'exec sleep 3600' >/dev/null 2>&1
+for s in alpha beta gamma; do
+    btp=$("$TMUX_REAL" -L "$PB6" new-window -d -P -F '#{pane_id}' -t t: -c "$BTD" \
+        "printf 'screen-of-$s\n'; exec -a claude sleep 3600")
+    "$TMUX_REAL" -L "$PB6" set -p -t "$btp" @panestate running >/dev/null 2>&1
+done
+BTENV="COCKPIT_TMUX=$BTD/tmux XDG_STATE_HOME=$BTD COCKPIT_LOG=$BTD/tui.log"
+BTW=$("$TMUX_REAL" -L "$PB6" new-window -d -P -F '#{pane_id}' -t t: -c "$BTD" \
+    "env $BTENV $COCKPIT_TUI_BIN board")
+bt_caps() {                   # each capturing call: fetch|look, then how many it captured
+    awk '/^list-panes/ { f = 1 }
+         /capture-pane/ { print (f ? "fetch" : "look"), gsub(/capture-pane/, "&"); f = 0 }' \
+        "$BTD/calls" 2>/dev/null
+}
+if until_cap "$PB6" "$BTW" '*live · *screen-of-alpha*'; then
+    "$TMUX_REAL" -L "$PB6" send-keys -t "$BTW" v
+    if until_cap "$PB6" "$BTW" '*screen-of-gamma*'; then
+        # a new size is a capture-only job; the tick brings a fetch
+        : > "$BTD/calls"
+        "$TMUX_REAL" -L "$PB6" resize-window -t "$BTW" -x 110 >/dev/null 2>&1
+        for i in $(seq 1 "$POLLS"); do
+            btk=$(bt_caps | cut -d' ' -f1 | sort -u | tr '\n' ' ')
+            [ "$btk" = "fetch look " ] && break
+            sleep 0.05
+        done
+        is "a capture-only job captures the three tiles in one call" "look 3" \
+            "$(bt_caps | grep '^look' | sort -u | tr '\n' ' ' | sed 's/ $//')"
+        is "and so does a fetch" "fetch 3" \
+            "$(bt_caps | grep '^fetch' | sort -u | tr '\n' ' ' | sed 's/ $//')"
+    else bad "v shows every tile" "screen-of-gamma" \
+        "$("$TMUX_REAL" -L "$PB6" capture-pane -p -t "$BTW")"; fi
+else bad "the board shows alpha's screen" "live · screen-of-alpha" \
+    "$("$TMUX_REAL" -L "$PB6" capture-pane -p -t "$BTW")"; fi
+"$TMUX_REAL" -L "$PB6" kill-server >/dev/null 2>&1
+fi
+
 echo "== cockpit-panel: insert pastes without Enter, send adds it, and the text arrives clean =="
 # The panel is the one wrapper that writes into a pane, so it is driven for real:
 # a fake claude, a target running cat, the panel in a second window, send-keys.
@@ -12789,6 +12841,89 @@ esac
 "$TMUX_REAL" -L "$BCS" kill-server >/dev/null 2>&1
 unset -f bc_open bc_where
 rm -rf "$BCR" "$BCM" "$BCD"
+fi
+
+echo "== client pins (#480): one take-and-clear helper, taken before the libs load =="
+# The popup keys leave the pressing client on the pane; the script takes it with
+# take_pane_opt (lib/pane.sh) before any other lib loads. That narrows the window
+# to bash start and pane.sh; a press inside it still takes this run's pin.
+if need_tmux "client pin take"; then :; else
+PTS="cockpit-pt480-$$"; SOCKS="$SOCKS $PTS"; PTD=$(mktmpd)
+"$TMUX_REAL" -L "$PTS" -f /dev/null new-session -d -s a -c "$PTD" 'exec sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$PTS" new-session -d -s z -c "$PTD" 'exec -a claude sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$PTS" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
+PTP=$("$TMUX_REAL" -L "$PTS" list-panes -t a -F '#{pane_id}')
+PTZ=$("$TMUX_REAL" -L "$PTS" list-panes -t z -F '#{pane_id}')
+"$TMUX_REAL" -L "$PTS" set -p -t "$PTZ" @panestate needs-input >/dev/null 2>&1
+pt_get() { "$TMUX_REAL" -L "$PTS" show-option -pqv -t "$PTP" "$1" 2>/dev/null; }
+pt_set() { "$TMUX_REAL" -L "$PTS" set -p -t "$PTP" "$1" "$2" >/dev/null 2>&1; }
+# Every tmux the helper runs is logged to $PTD/calls, one line per call.
+mkdir "$PTD/rec"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s/calls"\nexec "%s" "$@"\n' "$PTD" "$TMUX_REAL" \
+    > "$PTD/rec/tmux"
+chmod +x "$PTD/rec/tmux"
+pt_take() {                   # -> "<stdout>:<status>:<tmux calls>", stderr in $PTD/err
+    local out rc; : > "$PTD/calls"
+    out=$(export TMUX="$SOCKDIR/$PTS,0,0" PATH="$PTD/rec:$PATH"
+        . "$DIR/scripts/lib/pane.sh"; take_pane_opt "$@" 2>"$PTD/err"); rc=$?
+    printf '%s:%s:%s' "$out" "$rc" "$(grep -c . "$PTD/calls")"
+}
+pt_set @pt_pin client-a
+is "take_pane_opt prints the option's value, in one tmux call" "client-a:0:1" \
+   "$(pt_take "$PTP" @pt_pin)"
+is "and the option is unset after it" "" "$(pt_get @pt_pin)"
+is "an option that is not set prints nothing and succeeds" ":0:1" "$(pt_take "$PTP" @pt_pin)"
+is "with no arguments it fails and runs no tmux" ":1:0" "$(pt_take)"
+for id in '' '%' '%1x' 1 -t; do
+    is "a pane id that is not %<digits> fails and runs no tmux: '$id'" ":1:0" \
+       "$(pt_take "$id" @pt_pin)"
+done
+for opt in '' pt_pin '@'; do
+    is "an option that is not @<name> fails, naming the argument: '$opt'" ":2:0:option" \
+       "$(pt_take "$PTP" "$opt"):$(grep -o option "$PTD/err" | head -1)"
+done
+# A copy of the scripts whose every lib but pane.sh, the helper's own, first
+# notes the pin as it stands on the pane. A pin taken before the libs load
+# leaves each note empty; one taken after shows in the first note.
+mkdir -p "$PTD/p"; cp -r "$DIR/scripts" "$PTD/p/"
+for f in "$PTD"/p/scripts/lib/*.sh; do
+    [ "${f##*/}" = pane.sh ] && continue
+    { printf 'printf "%%s=%%s\\n" "${BASH_SOURCE[0]##*/}" '\
+'"$("%s" -L %s show-option -pqv -t %s "$PT_OPT" 2>/dev/null)" >> "%s/loads"\n' \
+          "$TMUX_REAL" "$PTS" "$PTP" "$PTD"; cat "$f"; } > "$f.new" && mv "$f.new" "$f"
+done
+printf '#!/bin/sh\nexit 0\n' > "$PTD/tui"; chmod +x "$PTD/tui"
+pt_run() {                    # <option> <script> <args...>  -> the libs' notes with a pin set
+    local opt=$1; shift; : > "$PTD/loads"; pt_set "$opt" client-a
+    env TMUX="$SOCKDIR/$PTS,0,0" COCKPIT_LOG="$PTD/log" COCKPIT_TUI_BIN="$PTD/tui" PT_OPT="$opt" \
+        timeout 30 "$@" </dev/null >/dev/null 2>&1
+    printf 'loaded=%s pinned:%s' "$([ -s "$PTD/loads" ] && echo yes)" \
+        "$(grep -v '=$' "$PTD/loads" | tr '\n' ' ')"
+}
+is "tmux-branch takes its pin before any lib but pane.sh loads" "loaded=yes pinned:" \
+   "$(pt_run @cockpit_branch_client "$PTD/p/scripts/tmux-branch" -p "$PTP" "$PTD/none")"
+is "cockpit-board takes its pin before any lib but pane.sh loads" "loaded=yes pinned:" \
+   "$(pt_run @cockpit_board_client "$PTD/p/scripts/cockpit-board" -p "$PTP")"
+# Two control clients on a; B attaches last, so a bare switch-client moves B.
+pt_open() {
+    mkfifo "$PTD/$1" && "$TMUX_REAL" -L "$PTS" -C attach -t a <> "$PTD/$1" >/dev/null 2>&1 &
+}
+pt_open A; PTPA=$!
+until_out '?*' "$TMUX_REAL" -L "$PTS" list-clients -F '#{client_name}'
+PTA=$("$TMUX_REAL" -L "$PTS" list-clients -F '#{client_name}')
+pt_open B; PTPB=$!
+until_out "*"$'\n'"*" "$TMUX_REAL" -L "$PTS" list-clients -F '#{client_name}'
+printf '#!/bin/sh\necho "jump %s" > "$COCKPIT_ACTION"\n' "$PTZ" > "$PTD/jump"; chmod +x "$PTD/jump"
+"$TMUX_REAL" -L "$PTS" set -pu -t "$PTP" @cockpit_board_client >/dev/null 2>&1
+env TMUX="$SOCKDIR/$PTS,0,0" COCKPIT_LOG="$PTD/log" COCKPIT_TUI_BIN="$PTD/jump" \
+    timeout 30 "$DIR/scripts/cockpit-board" -p "$PTP" </dev/null >/dev/null 2>&1
+is "with no pin and no -c the board's jump is a bare switch-client: B moves" "A=a B=z " \
+   "$("$TMUX_REAL" -L "$PTS" list-clients -F '#{client_name} #{client_session}' 2>/dev/null \
+      | awk -v a="$PTA" '{ print ($1 == a ? "A" : "B") "=" $2 }' | sort | tr '\n' ' ')"
+"$TMUX_REAL" -L "$PTS" kill-server >/dev/null 2>&1
+wait "$PTPA" "$PTPB" 2>/dev/null
+unset -f pt_get pt_set pt_take pt_run pt_open
+rm -rf "$PTD"
 fi
 
 echo "== tmux-branch (#470): goto finds a pane by the work dir the board shows =="
