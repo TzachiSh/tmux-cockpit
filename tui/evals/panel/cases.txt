@@ -937,3 +937,33 @@ holdout: yes
 note: a trivial edit: no baseline, interview or plan
 --- request
 fix the typo recieve in README.md
+
+# #558 review holdouts, written after the final prompt commit, on features the
+# prompt does not name.
+=== h-webhooks
+kind: feature
+window: claude · claude · /home/u/projects/store
+expect: either
+ask_any: event|events; order|orders; retry|retries; sign|signed|signature; secret; url|urls; payload; for; purpose; goal; about
+must: webhook|webhooks; requirements; AskUserQuestion|interview; plan|planning|plans
+out_is: prompt
+must_not: Assumed:
+holdout: yes
+note: a big feature: one question on what changes the work most, or a prompt that checks today's flow, interviews the owner for the requirements and plans, both serve
+--- screen
+● Orders are created and updated in src/orders/service.ts.
+--- request
+add webhooks so customers hear about order changes
+
+=== h-audit-log
+kind: feature
+window: bash · bash · /home/u/projects/admin
+expect: either
+ask_any: action|actions; who; event|events; retention|kept|keep; store|stored|storage; export; compliance; for; purpose; goal; about
+must: audit; requirements; AskUserQuestion|interview; plan|planning|plans
+out_is: prompt
+must_not: Assumed:
+holdout: yes
+note: a big feature: one question on what changes the work most, or a prompt that checks today's flow, interviews the owner for the requirements and plans, both serve
+--- request
+add audit logging to the admin app
