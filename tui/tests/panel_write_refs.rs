@@ -321,16 +321,17 @@ fn a_fixed_draft_does_not_carry_the_basket() {
     assert!(a.action.is_some() && a.sent_basket.is_none(), "{:?}", a.sent_basket);
 }
 
-/// A command run from Steps is not the prompt the refs were picked for.
+/// A command run from Steps is not the prompt the refs were picked for, even
+/// one that names them all.
 #[test]
 fn a_step_does_not_carry_the_basket() {
     let d = tree("steps");
-    let mut a = compose(&d, true);
+    let mut a = compose(&d, false);
     ctrl(&mut a, 's');
-    a.reply(Ok("<command lang=\"bash\">cat a.rs b.md</command>".into()));
+    a.reply(Ok("<command lang=\"bash\">wc -l a.rs:1-2 b.md</command>".into()));
     assert!(matches!(a.view, View::Steps { .. }), "{:?}", a.view);
     a.key(KeyEvent::from(KeyCode::Char('i')));
-    assert!(a.action.is_some() && a.sent_basket.is_none());
+    assert!(a.action.is_some() && a.sent_basket.is_none(), "{:?} {:?}", a.view, a.sent_basket);
 }
 
 /// ^S from an answer's Compose is a run of its own (the thread ends) and its
