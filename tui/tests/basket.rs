@@ -115,3 +115,16 @@ fn a_gone_file_drops_out_on_read() {
     std::fs::remove_file(&a).unwrap();
     assert_eq!(basket::from_body(&text), vec![r(&b, Some((1, 1)))]);
 }
+
+/// review-534: a basket written before the separator check (or by hand) can
+/// hold a U+2028 or U+2029 name: the read drops it, and keeps the others.
+#[test]
+fn a_stored_separator_name_is_dropped_on_read() {
+    let d = Dir::new("storedsep");
+    let ok = d.file("a.rs");
+    for c in ['\u{2028}', '\u{2029}'] {
+        let odd = d.file(&format!("x{c}y.rs"));
+        let text = format!("{}\n{}", odd.display(), ok.display());
+        assert_eq!(basket::from_body(&text), vec![r(&ok, None)], "{c:?}");
+    }
+}
