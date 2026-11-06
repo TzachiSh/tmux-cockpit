@@ -12885,6 +12885,13 @@ pg_says "a gone tree whose id starts with a dot is named gone" "is gone" "$PGR" 
         git clone -q --bare "$PGD/src" "$PGD/$k.git"
         git -C "$PGD/$k.git" worktree add -q -b "b$k" "$PGD/b$k"
     done
+    # #560: a bare repo whose git dir is <proj>/.git, and core.bare on a normal repo: git
+    # prints <proj> and nb with bare, and neither path is the common dir.
+    git clone -q --bare "$PGD/src" "$PGD/proj/.git"
+    git -C "$PGD/proj" worktree add -q -b pw "$PGD/proj/wa"
+    git init -q -b main "$PGD/nb"; git -C "$PGD/nb" commit -q --allow-empty -m n
+    git -C "$PGD/nb" worktree add -q -b nw "$PGD/nb-wc"
+    git -C "$PGD/nb" config core.bare true
 ) >/dev/null 2>&1
 # #560: whatever sits in a bare repo, its record is the git dir: junk, a gitdir: line, a dir.
 echo junk > "$PGD/junk.git/.git"
@@ -12896,6 +12903,10 @@ is "git lists the separate git dir as the main record" "worktree $PGD/store.git"
 is "and a submodule's git dir" "worktree $PGSM" "$(git -C "$PGD/sl" worktree list --porcelain | head -1)"
 is "and a bare repo" "worktree $PGD/bare.git" \
    "$(git -C "$PGD/bl" worktree list --porcelain | head -1)"
+is "and a bare repo in proj/.git as proj, bare" "worktree $PGD/proj bare" \
+   "$(git -C "$PGD/proj/wa" worktree list --porcelain | head -2 | paste -sd' ')"
+is "and a repo set core.bare as itself, bare" "worktree $PGD/nb bare" \
+   "$(git -C "$PGD/nb-wc" worktree list --porcelain | head -2 | paste -sd' ')"
 for v in "" "$PGOLD"; do
     w=${v:+without -z}; w=${w:-with -z}
     pg_says "$w, a separate git dir listed as the main checkout is no worktree" \
@@ -12908,6 +12919,14 @@ for v in "" "$PGOLD"; do
         pg_says "$w, a bare repo holding a .git $k is no worktree" \
             "not a worktree" "$PGD/b$k" "$PGD/$k.git" "$v"
     done
+    pg_says "$w, a bare repo in proj/.git, listed as proj, is no worktree" \
+        "not a worktree" "$PGD/proj/wa" "$PGD/proj" "$v"
+    pg_says "$w, a repo set core.bare, listed as its main checkout, is no worktree" \
+        "not a worktree" "$PGD/nb-wc" "$PGD/nb" "$v"
+    "$TMUX_REAL" -L "$PGS" select-window -t "$PGO"
+    BG_SHIM=$v bg_goto "$PGS" "$PGO" "$PGD/proj/wa" "$PGD/proj/wa"
+    is "$w, a tree linked to a bare repo in proj/.git still opens" "$PGD/proj/wa" \
+       "$("$TMUX_REAL" -L "$PGS" display-message -p -t t: '#{pane_current_path}')"
     "$TMUX_REAL" -L "$PGS" select-window -t "$PGO"
     BG_SHIM=$v bg_goto "$PGS" "$PGO" "$PGD/wk" "$PGD/l1"
     is "$w, a tree linked to a separate git dir still opens" "$PGD/l1" \
