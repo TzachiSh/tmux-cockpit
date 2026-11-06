@@ -636,8 +636,8 @@ cargo test fails on main since the merge, fix it
 kind: bug
 window: bash · bash · /home/u/projects/calc
 expect: write
-must: parses_negative; src/parser.rs; leading minus|9f3c2a1; break|breaking|mutate|mutation|mutant|mutants; undo|undoing|revert|reverting|restore|put back|put it back
-note: the repo block names the last commit; the screen names the test and its file; #587 (card 59): after the fix the prompt breaks the code on purpose, sees the test fail and undoes the break
+must: parses_negative; src/parser.rs; leading minus|9f3c2a1; break|breaking|mutate|mutation|mutant|mutants|on purpose|flip|flipping|small change; undo|undoing|revert|reverting|restore|put back|put it back
+note: the repo block names the last commit; the screen names the test and its file; #587 (card 59): after the fix the prompt breaks the code on purpose, sees the test fail and undoes the break; "on purpose", "flip" and "small change" widened after a probe wrote "make one small change ... then undo that change"
 --- screen
 $ cargo test -q
 running 42 tests
@@ -686,8 +686,8 @@ review my changes
 kind: feature
 window: bash · bash · /home/u/projects/site
 expect: write
-must: slugify; break|breaking|mutate|mutation|mutant|mutants; undo|undoing|revert|reverting|restore|put back|put it back
-note: without the repo block "which function" is open; the diff names the one file changed, and Claude Code can read the diff; #587 (card 58): the prompt breaks the code on purpose, sees the new test fail and undoes the break
+must: slugify; break|breaking|mutate|mutation|mutant|mutants|on purpose|flip|flipping|small change; undo|undoing|revert|reverting|restore|put back|put it back
+note: without the repo block "which function" is open; the diff names the one file changed, and Claude Code can read the diff; #587 (card 58): the prompt breaks the code on purpose, sees the new test fail and undoes the break; "on purpose", "flip" and "small change" widened after a probe wrote "make one small change ... then undo that change"
 --- screen
 $ npm test
 Tests: 18 passed, 18 total
@@ -1132,8 +1132,8 @@ kind: bug
 window: bash · bash · /home/u/projects/blog
 expect: write
 out_is: prompt
-must: page 2|second page; fail|fails|failing; before
-note: a bug fix shows the reproducing test failing before the fix and passing after
+must: page 2|second page; reproduce|reproduces|confirm the bug|fail|fails|failing; again|after the fix
+note: a bug fix shows the check failing before the fix and passing after; widened after the first probe, which reproduced with the two commands and ran them again but never wrote "fail"
 --- screen
 $ curl -s 'localhost:3000/api/posts?page=1' | jq '.[-1].id'
 40

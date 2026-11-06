@@ -2227,11 +2227,13 @@ mod tests {
         let fix = "Fix parser::tests::parses_negative in src/parser.rs from 9f3c2a1, then run cargo test.";
         let step = " Then break the code on purpose, confirm the test fails, and undo the break.";
         let half = " Then break the code on purpose and confirm the test fails.";
+        let small = " Then make one small change to the code, confirm the test fails, then undo that change.";
         let p = |s: String| format!("<prompt>{s}</prompt>");
         let rows = [
             ("add", "test-the-changed-function", p(format!("{add}{step}")), true),
             ("add bare", "test-the-changed-function", p(add.into()), false),
             ("add no undo", "test-the-changed-function", p(format!("{add}{half}")), false),
+            ("add small", "test-the-changed-function", p(format!("{add}{small}")), true),
             ("fix", "last-commit-test", p(format!("{fix}{step}")), true),
             ("fix bare", "last-commit-test", p(fix.into()), false),
         ];
