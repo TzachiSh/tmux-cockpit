@@ -201,6 +201,9 @@ impl Files {
         self.show_ignored |= e.ignored;
         let dir = self.dir.clone();
         self.go(dir, Some(name.to_vec()), Rect::default());
+        // laid out for no screen, `go` put the file on the top row: start from
+        // the top and let the first draw's clamp scroll only as far as it needs
+        self.pick.top = 0;
     }
 
     /// The selected row's entry as a path, and whether it is a folder.

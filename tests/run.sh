@@ -14330,10 +14330,18 @@ printf '%s\n' "\$*" >> "$FB/tui.calls"
 cat "$FB/errtext" >&2
 # the viewer prints what vout holds (an \`edit N\` for its e key), the browser its answer
 if [ "\$1" = view ]; then
-    printf '%s\n' "\${COCKPIT_VIEW_BACK-unset}" >> "$FB/vback"; cat "$FB/vout"; exit 0
+    printf '%s\n' "\${COCKPIT_VIEW_BACK-unset}" >> "$FB/vback"; cat "$FB/vout"
+    # FBVONCE: vout is the first viewer's only; FBRM: a folder gone while it is open
+    [ ! -e "$FB/vonce" ] || : > "$FB/vout"
+    [ ! -s "$FB/rmdir" ] || rm -r "\$(cat "$FB/rmdir")"
+    exit 0
 fi
 # #365 child 5: alt-a's add, routed to \`basket add <pane> <file>\`
 [ "\$1" = basket ] && { printf '%s\n' "\$*" > "$FB/basket.args"; echo "added it (1 in the basket)"; exit 0; }
+# a folder that is not there is exit 2, as the real binary's "cannot read"
+if [ "\$1" = files ] && [ ! -d "\$2" ]; then
+    echo "cockpit-tui: files: cannot read \$2" >&2; exit 2
+fi
 # a binary from before --select (the file "old") refuses it as it did
 if [ -e "$FB/old" ] && [ "\$3" = --select ]; then
     echo 'cockpit-tui: files: needs exactly one folder' >&2; exit 2
@@ -14341,7 +14349,9 @@ fi
 # the browser gives its answer "reps" times (FBR, default 1), then esc
 n=\$(cat "$FB/reps"); [ "\$n" -gt 0 ] || exit 1
 echo \$((n - 1)) > "$FB/reps"
-cat "$FB/answer"
+# FBA2: the second browser's answer, when it differs from the first's
+k=\$((\$(cat "$FB/nfiles") + 1)); echo "\$k" > "$FB/nfiles"
+if [ "\$k" = 2 ] && [ -e "$FB/answer.2" ]; then cat "$FB/answer.2"; else cat "$FB/answer"; fi
 exit \$(cat "$FB/rc")
 STUB
 chmod +x "$FB"/bin/*
@@ -14358,9 +14368,11 @@ fb() {
     "$TMUX_REAL" -L "$FBS" set -g remain-on-exit on    # the shim editors exit at once
     printf %b "$ans" > "$FB/answer"; echo "$rc" > "$FB/rc"; : > "$FB/errtext"
     : > "$FB/calls"; : > "$FB/code.log"; : > "$FB/ed.log"; printf %b "${FBV:-}" > "$FB/vout"
-    : > "$FB/tui.calls"; : > "$FB/vback"; echo "${FBR:-1}" > "$FB/reps"
+    : > "$FB/tui.calls"; : > "$FB/vback"; echo "${FBR:-1}" > "$FB/reps"; echo 0 > "$FB/nfiles"
+    rm -f "$FB/answer.2" "$FB/vonce"; [ -z "${FBA2:-}" ] || printf %b "$FBA2" > "$FB/answer.2"
+    [ -z "${FBVONCE:-}" ] || : > "$FB/vonce"; printf '%s' "${FBRM:-}" > "$FB/rmdir"
     ( cd "$FB" && env PATH="$FB/bin:$PATH" COCKPIT_TUI_BIN="$FB/bin/cockpit-tui" TMUX="$FBSOCK,0,0" "$@" \
-        "$DIR/scripts/tmux-open-path" --browse "$FBP" </dev/null >"$FB/out" 2>&1 )
+        "${FBSCRIPT:-$DIR/scripts/tmux-open-path}" --browse "$FBP" </dev/null >"$FB/out" 2>&1 )
 }
 fbn() { grep -c "^$1 " "$FB/calls"; }          # calls of one tmux subcommand
 fbwait() { local n=0; until [ -s "$1" ] || [ "$n" -ge 50 ]; do sleep 0.1; n=$((n + 1)); done; }
@@ -14479,6 +14491,32 @@ is "an older binary: --select refused, the folder comes back without it" \
    "$FBVIEW|files $FBD/sub" "$(fbtui)"
 is "and nothing is said about it, no stale note, no exit line" "0|0" \
    "$(fbnotes)|$(grep -c 'files exited' "$FB/out")"
+# the viewed file's folder deleted while the viewer is open: back in the
+# folder the browser started in, on its first row, never an error page
+mkdir -p "$FBD/gone"; : > "$FBD/gone/x.txt"
+FBRM="$FBD/gone" fb off "view $FBD/gone/x.txt\n" 0
+is "the viewed file's folder gone: the browser comes back in the start folder" \
+   "files $FBD|view -- $FBD/gone/x.txt|files $FBD" "$(fbtui)"
+is "and no error page: no exit line, no key waited for" "0" "$(grep -c 'files exited' "$FB/out")"
+# back from a view, alt-e's editor window still starts in the pane's folder:
+# the loop's folder is its own, never the script's
+"$TMUX_REAL" -L "$FBS" set -g @cockpit_editor "$FB/bin/ed-cockpit"
+for w in $("$TMUX_REAL" -L "$FBS" list-windows -t t -F '#{window_index}' | sed 1d); do
+    "$TMUX_REAL" -L "$FBS" kill-window -t "t:$w"; done
+FBR=2 FBA2="open $FBF\n" fb off "view $FBD/sub/n.txt\n" 0
+fbwait "$FB/ed.log"
+is "view, q, then alt-e: the editor window starts in the pane's folder" "$FBD" \
+   "$("$TMUX_REAL" -L "$FBS" list-windows -t t -F '#{pane_start_path}' | sed 1d)"
+is "and the editor got the file" "$FB/bin/ed-cockpit [$FBF]" "$(cat "$FB/ed.log")"
+"$TMUX_REAL" -L "$FBS" set -gu @cockpit_editor
+# ? in the viewer: the ask panel, the viewer again, and its q goes back to the browser
+mkdir -p "$FB/s"; cp "$DIR/scripts/tmux-open-path" "$FB/s/"; ln -sfn "$DIR/scripts/lib" "$FB/s/lib"
+printf '#!/bin/sh\nprintf "panel %%s\\n" "$*" >> "%s/tui.calls"\n' "$FB" > "$FB/s/cockpit-panel"
+chmod +x "$FB/s/cockpit-panel"
+FBSCRIPT="$FB/s/tmux-open-path" FBVONCE=1 FBV='ask 1 1\n' fb off "view $FBD/sub/n.txt\n" 0
+FBASK="panel -p $FBP --ask $FBD/sub/n.txt 1 1|view --line 1 -- $FBD/sub/n.txt"
+is "ask, then q in the viewer it reopens: back to the browser, on the file" \
+   "files $FBD|view -- $FBD/sub/n.txt|$FBASK|files $FBD/sub --select n.txt" "$(fbtui)"
 # open on a markdown file on a touch client is a terminal editor, never the viewer
 fb on "open $FBD/sub/n.md\n" 0 "VISUAL=$FB/bin/ed-visual"
 fbwait "$FB/ed.log"

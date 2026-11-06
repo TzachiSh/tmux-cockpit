@@ -127,3 +127,30 @@ fn a_refused_name_names_the_argument() {
     let e = files::parse_args(&["/d".into(), "--select".into(), "a/b".into()]).unwrap_err();
     assert!(e.contains("--select") && e.contains("one name"), "{e}");
 }
+
+/// Back on a file inside the first screen, the list keeps its natural scroll:
+/// the rows above the file stay on screen, the top row is the folder's first.
+#[test]
+fn a_selection_on_the_first_screen_keeps_the_rows_above_it() {
+    let names: Vec<String> = (10..40).map(|i| format!("f{i}.txt")).collect();
+    let s = Scratch::new(&names.iter().map(String::as_str).collect::<Vec<_>>());
+    let mut f = opened(&s, b"f12.txt");
+    f.pick.clamp(Rect::new(0, 0, 80, 24));
+    assert_eq!(f.pick.top, 0);
+    assert_eq!(enter(&mut f), view(&s.0.join("f12.txt")));
+}
+
+/// A file past the first screen scrolls the list only as far as it takes to
+/// show it: it lands on the last row shown, not the top.
+#[test]
+fn a_selection_past_the_first_screen_scrolls_only_as_far_as_needed() {
+    let names: Vec<String> = (10..90).map(|i| format!("f{i}.txt")).collect();
+    let s = Scratch::new(&names.iter().map(String::as_str).collect::<Vec<_>>());
+    let mut f = opened(&s, b"f60.txt");
+    let area = Rect::new(0, 0, 80, 24);
+    f.pick.clamp(area);
+    let sel = f.pick.sel;
+    assert!(f.pick.top > 0 && f.pick.top < sel, "top {} sel {sel}", f.pick.top);
+    f.pick.clamp(Rect::new(0, 0, 80, 200));
+    assert_eq!(f.pick.top, 0, "with room for all, nothing scrolls");
+}
