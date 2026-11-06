@@ -369,11 +369,12 @@ pub(crate) fn typed_text(v: &Value) -> Option<String> {
             if texts().any(|t| t.trim_start().starts_with(INTERRUPT)) {
                 return None;
             }
-            texts().find(|t| pasted(t) || !t.trim_start().starts_with('<'))?
+            texts().find(|t| paste_led(t) || !t.trim_start().starts_with('<'))?
         }
     };
     let t = text.trim_start();
-    if t.starts_with(INTERRUPT) || (t.starts_with('<') && !pasted(t)) {
+    // a harness row that merely quotes a paste is still the harness's (#477 review)
+    if t.starts_with(INTERRUPT) || (t.starts_with('<') && !paste_led(t)) {
         return None;
     }
     let typed = unpasted(text);
@@ -383,22 +384,43 @@ pub(crate) fn typed_text(v: &Value) -> Option<String> {
     Some(typed)
 }
 
-/// Whether `t` holds a paste block.
-fn pasted(t: &str) -> bool {
-    t.contains("<pasted_content")
+/// Whether `t` starts with a paste block: the only `<`-led row the human typed.
+fn paste_led(t: &str) -> bool {
+    t.trim_start().starts_with(PASTE)
 }
 
-/// `t` without its `<pasted_content ...>...</pasted_content>` blocks; an unclosed
-/// one runs to the end.
-fn unpasted(t: &str) -> String {
-    let (mut out, mut rest) = (String::new(), t);
-    while let Some(i) = rest.find("<pasted_content") {
-        out += &rest[..i];
-        rest = rest[i..]
-            .find("</pasted_content>")
-            .map_or("", |j| &rest[i + j + "</pasted_content>".len()..]);
+/// Whether `t` holds a paste block anywhere, for the `[pasted text]` fallback.
+fn pasted(t: &str) -> bool {
+    paste_at(t, 0).is_some()
+}
+
+const PASTE: &str = "<pasted_content";
+const PASTE_END: &str = "</pasted_content>";
+
+/// The next paste block's start at or after `from`: an opening tag that begins its
+/// line, blanks aside, as Claude Code writes one. A tag typed inside a sentence is
+/// the human's text, not a block.
+fn paste_at(t: &str, from: usize) -> Option<usize> {
+    let mut at = from;
+    while let Some(i) = t[at..].find(PASTE).map(|i| at + i) {
+        let line_start = t[..i].rfind('\n').map_or(0, |n| n + 1);
+        if t[line_start..i].trim().is_empty() {
+            return Some(i);
+        }
+        at = i + PASTE.len();
     }
-    out + rest
+    None
+}
+
+/// `t` without its paste blocks, each from its opening tag to its closing one; an
+/// unclosed one runs to the end.
+fn unpasted(t: &str) -> String {
+    let (mut out, mut from) = (String::new(), 0);
+    while let Some(i) = paste_at(t, from) {
+        out += &t[from..i];
+        from = t[i..].find(PASTE_END).map_or(t.len(), |j| i + j + PASTE_END.len());
+    }
+    out + &t[from..]
 }
 
 /// [`typed_text`]'s first line, as the board shows it.
@@ -815,7 +837,7 @@ mod tests {
         let image = serde_json::json!({"type": "image", "source": {"type": "base64", "data": "AA=="}});
         let meta = serde_json::json!({"type": "user", "isMeta": true, "message": {"content": "Caveat: generated"}});
         let res = serde_json::json!({"type": "tool_result", "tool_use_id": "t1", "content": "ok"});
-        let rows: [(&str, Value, Option<&str>); 16] = [
+        let rows: [(&str, Value, Option<&str>); 21] = [
             ("a string prompt", user("fix the build\nsecond line".into()), Some("fix the build")),
             (
                 "an image prompt",
@@ -862,10 +884,38 @@ mod tests {
             ),
             (
                 "typed words, then a paste",
-                user("look: <pasted_content>x</pasted_content>".into()),
+                user("look:\n<pasted_content>x</pasted_content>".into()),
                 Some("look:"),
             ),
             ("an unclosed paste", user("\n <pasted_content x>".into()), Some("[pasted text]")),
+            (
+                "a harness row quoting a paste: bash-stdout",
+                user("<bash-stdout>grep: a.jsonl: <pasted_content>x</bash-stdout>".into()),
+                None,
+            ),
+            (
+                "a harness row quoting a paste: task-notification",
+                user("<task-notification>agent said <pasted_content>x</pasted_content></task-notification>".into()),
+                None,
+            ),
+            (
+                "a harness block quoting a paste",
+                user(serde_json::json!([text("<command-name>/x</command-name> <pasted_content>y")])),
+                None,
+            ),
+            (
+                "a harness block quoting a paste, then typed text",
+                user(serde_json::json!([
+                    text("<bash-stdout>a <pasted_content>y</bash-stdout>"),
+                    text("and now?")
+                ])),
+                Some("and now?"),
+            ),
+            (
+                "a typed mention of the tag",
+                user("why is <pasted_content> in the log? and after".into()),
+                Some("why is <pasted_content> in the log? and after"),
+            ),
             ("an empty prompt", user(" \n ".into()), None),
             (
                 "an assistant row",

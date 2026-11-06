@@ -440,6 +440,8 @@ mod tests {
             row("user", 4, json!({"content": [image, text("look")]})),
             tool(5, "AskUserQuestion"),
             row("user", 6, json!({"content": "<pasted_content>long</pasted_content>"})),
+            tool(7, "AskUserQuestion"),
+            row("user", 8, json!({"content": "<bash-stdout>a <pasted_content>x</bash-stdout>"})),
         ];
         for (n, r) in rows.iter().enumerate() {
             add(&p, r);
