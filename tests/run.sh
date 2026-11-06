@@ -11720,11 +11720,18 @@ sv_server() {                 # sv_server <tag> -- alpha, beta (waiting), gamma;
     SVG=$("$TMUX_REAL" -L "$SVS" display-message -p -t gamma: '#{session_id}')
 }
 sv_pane() {                   # sv_pane <dir> <cmd...> -- <cmd> in a pty of SVO; its rc lands in <dir>/rc, stderr in <dir>/err
-    local d=$1; shift
+    local d=$1 i; shift
     "$TMUX_REAL" -L "$SVO" kill-server >/dev/null 2>&1
     { printf '#!/bin/sh\n'; printf '%q ' "$@"; printf '2> "%s/err"\necho $? > "%s/rc"\nexec sleep 30\n' "$d" "$d"; } > "$d/run"
     chmod +x "$d/run"; : > "$d/err"; rm -f "$d/rc"
-    "$TMUX_REAL" -L "$SVO" -f /dev/null new-session -d -s t -x "${SVCOLS:-100}" -y "${SVROWS:-24}" "TERM=xterm-256color $d/run" >/dev/null 2>&1
+    # The server kill-server stopped can still hold the socket: a new-session that
+    # reaches it fails "server exited unexpectedly" and no pane runs (#547).
+    for i in $(seq 1 "$POLLS"); do
+        "$TMUX_REAL" -L "$SVO" -f /dev/null new-session -d -s t -x "${SVCOLS:-100}" -y "${SVROWS:-24}" \
+            "TERM=xterm-256color $d/run" >/dev/null 2>&1 && return 0
+        sleep 0.1
+    done
+    return 1
 }
 sv_ui() {                     # sv_ui <dir> [tui args...] -- cockpit-tui sessions, the action files under <dir>/act
     local d=$1; shift
@@ -11764,6 +11771,14 @@ if [ ! -x "$DIR/bin/cockpit-tui" ]; then
     skip_ "cockpit-tui sessions (no bin/cockpit-tui; run make tui)"
 elif need_tmux "cockpit-tui sessions"; then :; else
 sv_server a; SVD=$(mktmpd)
+# A new-session that reaches the server kill-server just stopped fails "server
+# exited unexpectedly" under load (#547): this tmux fails the first one that way.
+printf '#!/bin/sh\ncase " $* " in *" new-session "*) [ -e "%s/flopped" ] || { : > "%s/flopped"
+echo "server exited unexpectedly" >&2; exit 1; } ;; esac\nexec "%s" "$@"\n' \
+    "$SVD" "$SVD" "$TMUX_REAL" > "$SVD/flop-tmux"; chmod +x "$SVD/flop-tmux"
+TMUX_REAL="$SVD/flop-tmux" sv_pane "$SVD" sh -c 'echo pane-up; exec sleep 30'
+sv_cap '*pane-up*' && ok "a new-session refused by a dying server is retried until the pane runs" \
+    || bad "a new-session refused by a dying server is retried until the pane runs" "pane-up" "$("$TMUX_REAL" -L "$SVO" capture-pane -p -t t 2>&1 | head -3)"
 sv_ui "$SVD" --current "$SVA"
 sv_cap '*beta*gamma*alpha*(here)*' && ok "the rows are drawn: waiting first, your own session last and marked" \
     || bad "the rows are drawn: waiting first, your own session last and marked" "beta, gamma, alpha (here)" "$("$TMUX_REAL" -L "$SVO" capture-pane -p -t t | head -6)"
