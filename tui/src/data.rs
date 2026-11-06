@@ -1,6 +1,8 @@
 //! tmux and transcript reads. The frozen contract (#61) is "The freeze" in docs/tui.md.
 pub mod agents;
 pub mod fleet;
+// the board's transcript fold (#492)
+mod fold;
 pub mod gitsafe;
 pub mod info;
 pub mod sessions;
@@ -8,7 +10,6 @@ pub mod sessions;
 pub mod subagents;
 pub mod transcript;
 
-use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -230,20 +231,9 @@ pub fn hash_rows(ps: &[Pane], extra: &str) -> u64 {
     h.finish()
 }
 
-/// `~/.claude/projects/<slug>/<uuid>.jsonl`; the slug maps every byte outside
-/// `[A-Za-z0-9-]` to `-`. `<uuid>/subagents/` holds only sidechains.
-fn transcript_path(sess: &str, path: &str) -> String {
-    let home = std::env::var("HOME").unwrap_or_default();
-    // Per byte, not per char: a two-byte glyph in the cwd becomes two dashes.
-    let slug: String = path
-        .bytes()
-        .map(|b| if b.is_ascii_alphanumeric() || b == b'-' { b as char } else { '-' })
-        .collect();
-    format!("{home}/.claude/projects/{slug}/{sess}.jsonl")
-}
-
 /// The last `cap` bytes as whole rows, decoded lossily: the window can open
-/// mid-codepoint. Every line returned is a complete record.
+/// mid-codepoint. Every line returned is a complete record. The board's own
+/// transcript reads the delta instead (`fold::windowed`), which must equal this.
 fn tail(f: &mut File, len: u64, cap: u64) -> Vec<String> {
     let off = len.saturating_sub(cap);
     if f.seek(SeekFrom::Start(off.saturating_sub(1))).is_err() {
@@ -280,7 +270,7 @@ fn first_line(s: &str) -> String {
 
 /// What the tail says, held as timestamps rather than ages: the ages move every
 /// second, these do not, so only these are worth caching.
-#[derive(Clone, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 struct Facts {
     tool: String,
     text: String,
@@ -364,12 +354,9 @@ fn read_facts(path: &str) -> Facts {
     // The window reaches back to the last read, so a prompt written and buried
     // between two reads is seen, not the older one that was kept.
     let first = kept.as_ref().map_or(TAIL_FIRST, |p| (len - p.len).clamp(TAIL_FIRST, TAIL_MAX));
-    let mut fa = parse(tail(&mut f, len, first));
     // Known gap: over 256 KB written after an open ask still finds a row, so
     // the window never grows to reach the ask.
-    if fa.tool.is_empty() && fa.text.is_empty() && len > first && first < TAIL_MAX {
-        fa = parse(tail(&mut f, len, TAIL_MAX));
-    }
+    let mut fa = fold::windowed(path, &mut f, &md, first, TAIL_MAX);
     // A quiet stretch of rows with no cwd must not push it out of the window.
     if fa.cwd.is_empty() {
         fa.cwd = seen_cwd.unwrap_or_default();
@@ -400,138 +387,22 @@ fn read_facts(path: &str) -> Facts {
     fa
 }
 
-/// Ends the turn without closing anything: neither a prompt nor an answer.
-/// It arrives as a `text` block in the array form.
-const INTERRUPT: &str = "[Request interrupted by user";
-
+/// The facts of whole rows, oldest first.
+#[cfg(test)]
 fn parse(lines: Vec<String>) -> Facts {
-    let mut fa = Facts::default();
-    // An AskUserQuestion is open until a user row carries its tool_result:
-    // answers, dismissals and denials write one, an interrupt does not.
-    let mut asks: Vec<String> = vec![];
-    // #453: the newest tool_use's id and, for an AskUserQuestion, its question:
-    // the row's message only while that ask is the one still open
-    let mut newest: Option<(String, Option<String>)> = None;
-    let (mut turn_over, mut saw) = (false, false);
-    for raw in lines {
-        let Ok(v) = serde_json::from_str::<Value>(&raw) else { continue };
-        // In case a future version inlines subagent rows.
-        if v["isSidechain"].as_bool() == Some(true) || !v["agentId"].is_null() {
-            continue;
-        }
-        let ts = v["timestamp"].as_str().and_then(rfc3339);
-        if ts.is_some() {
-            fa.newest = ts;
-        }
-        if let Some(c) = v["cwd"].as_str().filter(|c| !c.is_empty()) {
-            fa.cwd = c.to_string();
-        }
-        match v["type"].as_str() {
-            Some("user") => {
-                saw = true;
-                let c = &v["message"]["content"];
-                match c.as_str() {
-                    // a tool_result arrives as an array, a human turn as a string
-                    Some(t) if t.starts_with(INTERRUPT) => turn_over = true,
-                    // <task-notification, <command-name, <local-command-*: the
-                    // harness wrote these, so not a new turn and not `asked`.
-                    Some(t) if t.starts_with('<') => {}
-                    Some(t) => {
-                        fa.user = first_line(t);
-                        fa.user_at = ts;
-                        turn_over = false;
-                        // a typed prompt means the human moved on from an interrupted ask
-                        asks.clear();
-                    }
-                    None => {
-                        let (mut interrupted, mut result, mut typed) = (false, false, None);
-                        for b in c.as_array().into_iter().flatten() {
-                            if let Some(id) = b["tool_use_id"].as_str() {
-                                asks.retain(|a| a != id);
-                                result = true;
-                            }
-                            // safe beside the tool_results: they carry no `text`
-                            if let Some(t) = b["text"].as_str() {
-                                interrupted |= t.starts_with(INTERRUPT);
-                                if typed.is_none() && !t.starts_with(INTERRUPT) && !t.starts_with('<') {
-                                    typed = Some(t);
-                                }
-                            }
-                        }
-                        turn_over = interrupted;
-                        // A prompt with an image is an array too: its text block is the
-                        // human's, unless the row is a tool_result or one the harness wrote.
-                        if let Some(t) = typed
-                            && !result
-                            && !interrupted
-                            && v["isMeta"].as_bool() != Some(true)
-                            && !first_line(t).is_empty()
-                        {
-                            fa.user = first_line(t);
-                            fa.user_at = ts;
-                            asks.clear();
-                        }
-                    }
-                }
-            }
-            Some("assistant") => {
-                saw = true;
-                fa.at = ts.or(fa.at);
-                // end_turn rides the text row; attachment and custom-title rows
-                // land after it and must not reopen the turn.
-                turn_over = v["message"]["stop_reason"].as_str() == Some("end_turn");
-                let Some(blocks) = v["message"]["content"].as_array() else {
-                    continue;
-                };
-                for b in blocks {
-                    match b["type"].as_str() {
-                        Some("tool_use") => {
-                            let name = b["name"].as_str().unwrap_or("");
-                            // The name alone when no field says more: never a bare `name:`.
-                            fa.tool = match transcript::pick(name, &b["input"]).map(|(p, s)| (p, first_line(s))) {
-                                Some((p, d)) if !d.is_empty() => format!("{name}: {p}{d}"),
-                                _ => name.to_string(),
-                            };
-                            let id = b["id"].as_str().unwrap_or_default().to_string();
-                            let ask = name == "AskUserQuestion";
-                            if ask && !id.is_empty() {
-                                asks.push(id.clone());
-                            }
-                            newest = Some((id, ask.then(|| transcript::question(&b["input"])).flatten()));
-                        }
-                        Some("text") => {
-                            let t = first_line(b["text"].as_str().unwrap_or(""));
-                            if !t.is_empty() {
-                                fa.text = t;
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    fa.ask = newest.filter(|(id, _)| asks.contains(id)).and_then(|(_, q)| q).unwrap_or_default();
-    // An open question outranks a finished turn: the interrupt that ended the
-    // turn left the picker's tool_use open, and the human still owes an answer.
-    fa.state = match () {
-        _ if !asks.is_empty() => State::NeedsInput,
-        // an unknown state is unknown, never idle
-        _ if !saw => State::Unknown,
-        _ if turn_over => State::Done,
-        _ => State::Running,
-    };
-    fa
+    let mut f = fold::Fold::default();
+    lines.iter().for_each(|l| f.step(0, l));
+    f.view(0)
 }
 
-/// doing / said / asked and their ages, from the tail of the session transcript.
-/// Returns the transcript's cwd, `""` when it has none.
-fn read_transcript(p: &mut Pane) -> String {
-    if p.sess.is_empty() {
+/// doing / said / asked and their ages, from the tail of the session transcript,
+/// which `transcript::locate` finds from `opt` (@cockpit_transcript), the session id
+/// and the cwd. Returns the transcript's cwd, `""` when it has none.
+fn read_transcript(p: &mut Pane, opt: &str) -> String {
+    let Some(t) = transcript::locate(opt, &p.sess, &p.path) else {
         return String::new();
-    }
-    let fa = read_facts(&transcript_path(&p.sess, &p.path));
+    };
+    let fa = read_facts(&t.to_string_lossy());
     // @panestate wins; the transcript speaks only for panes the hooks never touched.
     if p.state == State::Unknown {
         p.state = fa.state;
@@ -1038,7 +909,7 @@ fn row_pane(f: &[&str], procs_t: &mut Option<Procs>) -> Option<(Pane, &'static s
 /// @cockpit_transcript come after the 13 a row from an older format has, so such a
 /// row still reads: 13 to 16 are optional.
 fn work_candidates(p: &mut Pane, f: &[&str]) -> [String; 3] {
-    let said_cwd = read_transcript(p);
+    let said_cwd = read_transcript(p, f.get(15).copied().unwrap_or_default());
     let opt = f.get(13).copied().unwrap_or_default().to_string();
     [opt, said_cwd, p.path.clone()]
 }
@@ -1049,6 +920,25 @@ fn work_candidates(p: &mut Pane, f: &[&str]) -> [String; 3] {
 /// runs `claude agents` (hundreds of ms): a pane with no @cockpit_session has no
 /// transcript to read, so its dir is @cockpit_dir, else its launch dir.
 pub fn workdir(pane: &str) -> Option<String> {
+    let (mut p, f) = one_row(pane)?;
+    let f: Vec<&str> = f.iter().map(String::as_str).collect();
+    let cands = work_candidates(&mut p, &f);
+    // #507: a dir that is not on disk (removed, or a name tmux's lossy decode
+    // changed) is no dir: a script must not cd into it
+    fleet::work_dirs(&[cands]).pop().filter(|d| std::path::Path::new(d).is_dir())
+}
+
+/// #519: the board's agent test for one pane (`row_pane`: @panestate, an agentish
+/// command, a version-shaped name, the process tree), so the info screen cannot
+/// decide differently from the board which panes have a transcript to read.
+pub fn is_agent(pane: &str) -> bool {
+    one_row(pane).is_some()
+}
+
+/// One pane's FIELDS row, read with one `display-message`, through the fetch's
+/// `row_pane`: its Pane and the fields, or `None` when it is not there or not an
+/// agent's.
+fn one_row(pane: &str) -> Option<(Pane, Vec<String>)> {
     let out = tmux(&["display-message", "-p", "-t", pane, FIELDS])?;
     let f: Vec<&str> = out.trim_end_matches('\n').split(SEP).collect();
     // A missing pane exits 0 with every field empty: the resolved id is the test,
@@ -1056,11 +946,8 @@ pub fn workdir(pane: &str) -> Option<String> {
     if f[0] != pane {
         return None;
     }
-    let (mut p, _) = row_pane(&f, &mut None)?;
-    let cands = work_candidates(&mut p, &f);
-    // #507: a dir that is not on disk (removed, or a name tmux's lossy decode
-    // changed) is no dir: a script must not cd into it
-    fleet::work_dirs(&[cands]).pop().filter(|d| std::path::Path::new(d).is_dir())
+    let (p, _) = row_pane(&f, &mut None)?;
+    Some((p, f.iter().map(|s| s.to_string()).collect()))
 }
 
 /// A pane can hold one multi-megabyte line, and the ANSI parser re-runs over the
@@ -1319,6 +1206,7 @@ pub mod branches;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
 
     /// The board's doing line for each tool shape must equal the history reader's
     /// label (tlabel), save for the 160-char cap and control handling: the cases

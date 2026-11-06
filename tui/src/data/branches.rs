@@ -52,10 +52,17 @@ fn refs(dir: &str, ns: &str) -> Vec<(String, String)> {
 /// (a line that is no worktree attribute) is dropped rather than guessed at. So
 /// is one that is not this repo's (#348, #532): a newline name can forge a whole
 /// `worktree <dir>` line, and `<dir>` may be any checkout. See [`ours`].
+/// When the main checkout's `.git` is a file (`--separate-git-dir`, a submodule), git
+/// prints the git dir as the main record's path. That is no tree, so the record is
+/// dropped (#537); the fallback's [`ours`] drops it too.
 fn worktrees(dir: &str, top: &str) -> Vec<(String, Option<String>)> {
     let z = git(dir, &[], None, &["worktree", "list", "--porcelain", "-z"]);
     if !z.is_empty() {
-        return records(z.split('\0'), true);
+        let mut v = records(z.split('\0'), true);
+        if v.first().is_some_and(|(p, _)| !Path::new(p).join(".git").is_dir()) {
+            v.remove(0);
+        }
+        return v;
     }
     // Asked from the top: before 2.13 the answer was the cwd's prefix plus a path from the top.
     let top = if top.is_empty() { dir } else { top };
@@ -74,14 +81,41 @@ fn worktrees(dir: &str, top: &str) -> Vec<(String, Option<String>)> {
 /// True for a worktree of the repo whose common dir is `common`, as tmux-branch's
 /// `wt_ours` decides it, and holding `branch` if it names one. A forged record can
 /// pair a real tree's path with a cut tree's branch line; that tree's own HEAD names
-/// its real branch. A path that is gone is kept: it names no directory to open.
+/// its real branch. A path that is gone is kept only as git would call it prunable.
 fn ours(p: &Path, branch: Option<&str>, common: &Path) -> bool {
     if !p.exists() {
-        return true;
+        return prunable(p, common);
     }
     let Some(e) = entry(p, common) else { return false };
-    let head = || first_line(&e.join("HEAD"));
-    branch.is_none_or(|b| head().is_some_and(|h| h.strip_prefix("ref: refs/heads/") == Some(b)))
+    branch.is_none_or(|b| heads(&e.join("HEAD"), b))
+}
+
+/// True when the HEAD file `head` names `refs/heads/<b>`: as a `ref:` line, or as a
+/// symlink to that ref, which `core.preferSymlinkRefs` writes.
+fn heads(head: &Path, b: &str) -> bool {
+    let want = format!("refs/heads/{b}");
+    match std::fs::read_link(head) {
+        Ok(t) => t.as_os_str() == want.as_str(),
+        Err(_) => first_line(head).is_some_and(|h| h.strip_prefix("ref: ") == Some(want.as_str())),
+    }
+}
+
+/// True when some `<common>/worktrees/*/gitdir` names `<p>/.git`, as git decides that
+/// a gone tree is prunable. The file is read whole, as git reads it, and a relative one
+/// is taken from its entry. A text compare, since a missing path has no inode.
+fn prunable(p: &Path, common: &Path) -> bool {
+    use std::io::Read;
+    let want = p.join(".git");
+    let Ok(dir) = std::fs::read_dir(common.join("worktrees")) else {
+        return false;
+    };
+    dir.flatten().any(|d| {
+        let mut s = String::new();
+        let f = std::fs::File::open(d.path().join("gitdir"));
+        let read = f.and_then(|f| f.take(4096).read_to_string(&mut s)).is_ok();
+        let b = s.trim_end_matches(['\n', '\r']);
+        read && !b.is_empty() && d.path().join(b).as_os_str() == want.as_os_str()
+    })
 }
 
 /// The git dir of the tree at `p` when the tree is this repo's. The main checkout's
