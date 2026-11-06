@@ -16,6 +16,8 @@ LOG=${COCKPIT_LOG:-${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/tui.log}
 . "$DIR/scripts/lib/tui.sh" || exit 1
 # shellcheck source=lib/fmt.sh
 . "$DIR/scripts/lib/fmt.sh" || exit 1
+# shellcheck source=lib/basket.sh
+. "$DIR/scripts/lib/basket.sh" || exit 1
 BIN=$COCKPIT_TUI_BIN
 
 # $EPOCHREALTIME needs bash 5, and no portable `date` flag gives microseconds.
@@ -145,15 +147,8 @@ act() {
     last=ok
     # #365 child 5: the refs went with this text, so the basket is spent; cleared
     # only when it still holds what was sent (a viewer may have added since)
-    if [ -s "$f.basket" ]; then
-        local held sent
-        held=$(tmux show-options -pqv -t "$target" @cockpit_basket 2>/dev/null)
-        sent=$(cat "$f.basket")
-        if [ "$held" = "$sent" ]; then
-            tmux set-option -pu -t "$target" @cockpit_basket 2>/dev/null
-        else
-            log "the basket of $target changed since the send; kept"
-        fi
+    if [ -s "$f.basket" ] && ! basket_clear "$target" "$f.basket"; then
+        log "the basket of $target changed since the send; kept"
     fi
     if [ "$verb" != send ]; then
         n=$(strip | wc -m)
