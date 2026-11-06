@@ -7,6 +7,7 @@
 //!
 //!     cargo run --example panel_eval -- [--model M] [--runs N] [--jobs J]
 //!         [--only TEXT] [--cases FILE] [--out FILE.jsonl] [--check] [--no-explore]
+//!         [--no-hermetic]
 //!     cargo run --example panel_eval -- --compare A.jsonl B.jsonl
 //!
 //! `--check` only reads and validates the cases. To compare a prompt edit, put
@@ -17,6 +18,16 @@
 //! A case with `explore: <fixture>` (evals/panel/explore.txt, #416) runs on a
 //! temp copy of `evals/panel/fixtures/<fixture>` as the pane's folder, through
 //! the panel's explore-first call; `--no-explore` runs it as a text call instead.
+//!
+//! Each call is hermetic by default (#598): `claude --setting-sources ""`, so
+//! no user, project or local settings load, and with them no CLAUDE.md, no
+//! plugin hooks and no user skills; and a fresh temp dir per call as its cwd.
+//! Without it, a call under `$HOME` loads `~/.claude/CLAUDE.md` (as the user's
+//! memory and again as an ancestor's `.claude/CLAUDE.md`) and the user's
+//! SessionStart hooks, which differ per machine. `--no-hermetic` runs the call
+//! as the panel does, in its cache dir with the user's settings. The summary's
+//! `environment` line says which, with the claude version and the HOME and XDG
+//! variables.
 use cockpit_tui::panel::app::{App, View};
 use cockpit_tui::panel::capture::Capture;
 use cockpit_tui::panel::envelope::{Flow, OutType, Role, Turn};
@@ -462,6 +473,8 @@ struct Opts {
     compare: Option<(PathBuf, PathBuf)>,
     /// `explore:` cases run as the text call, on the same folder.
     no_explore: bool,
+    /// No user settings or CLAUDE.md, and a fresh cwd per call (#598).
+    hermetic: bool,
 }
 
 fn opts(args: impl IntoIterator<Item = String>) -> Result<Opts, String> {
@@ -476,6 +489,7 @@ fn opts(args: impl IntoIterator<Item = String>) -> Result<Opts, String> {
         check: false,
         compare: None,
         no_explore: false,
+        hermetic: true,
     };
     let mut a = args.into_iter();
     while let Some(k) = a.next() {
@@ -489,6 +503,7 @@ fn opts(args: impl IntoIterator<Item = String>) -> Result<Opts, String> {
             "--out" => o.out = Some(val()?.into()),
             "--check" => o.check = true,
             "--no-explore" => o.no_explore = true,
+            "--no-hermetic" => o.hermetic = false,
             "--compare" => {
                 let two = (a.next(), a.next());
                 let (Some(x), Some(y)) = two else {
@@ -509,16 +524,28 @@ fn opts(args: impl IntoIterator<Item = String>) -> Result<Opts, String> {
 /// Request runs the call unchanged and the reply carries its cost and its reads.
 const AS_CLAUDE: &str = "PANEL_EVAL_AS_CLAUDE";
 
+/// Set beside [`AS_CLAUDE`] to `1`: the wrapped call is hermetic.
+const HERMETIC: &str = "PANEL_EVAL_HERMETIC";
+
+/// What a hermetic call adds: no setting source at all. `user` alone is not
+/// enough: under `$HOME`, `project` finds `~/.claude/CLAUDE.md` as an ancestor's
+/// `.claude/CLAUDE.md` (probed with claude 2.1.319, #598).
+const HERMETIC_FLAGS: [&str; 2] = ["--setting-sources", ""];
+
 /// What the rig runs as the call's claude: the real one, json first, then the
-/// call's own argv, with the variable gone so claude's children never see it.
-fn claude_command(real: &OsStr, args: impl IntoIterator<Item = OsString>) -> std::process::Command {
+/// call's own argv, with the variables gone so claude's children never see them.
+/// A hermetic call loads no setting source.
+fn claude_command(real: &OsStr, args: impl IntoIterator<Item = OsString>, hermetic: bool) -> std::process::Command {
     let args: Vec<OsString> = args.into_iter().collect();
     let mut c = std::process::Command::new(real);
     // a json profile (read_only) asks for it itself: never twice
     if !args.iter().any(|a| a == "--output-format") {
         c.args(["--output-format", "json", "--verbose"]);
     }
-    c.args(args).env_remove(AS_CLAUDE);
+    if hermetic && !args.iter().any(|a| a == HERMETIC_FLAGS[0]) {
+        c.args(HERMETIC_FLAGS);
+    }
+    c.args(args).env_remove(AS_CLAUDE).env_remove(HERMETIC);
     c
 }
 
@@ -542,7 +569,8 @@ fn as_claude(var: Option<OsString>, first: Option<&OsStr>) -> Option<OsString> {
 /// death signal stay the ones Request set up.
 fn exec_claude(real: &OsStr) -> ! {
     use std::os::unix::process::CommandExt;
-    let e = claude_command(real, std::env::args_os().skip(1)).exec();
+    let hermetic = std::env::var_os(HERMETIC).is_some_and(|v| v == "1");
+    let e = claude_command(real, std::env::args_os().skip(1), hermetic).exec();
     eprintln!("panel_eval: {}: {e}", real.to_string_lossy());
     std::process::exit(127);
 }
@@ -610,16 +638,35 @@ fn main() {
         return;
     }
     let mut call = Call::from_env();
+    let version = claude_version(&call.claude);
     let mut wrapped = false;
     match std::env::current_exe() {
         Ok(me) => {
             wrapped = true;
             // SAFETY: no other thread runs yet: no call has been spawned.
             unsafe { std::env::set_var(AS_CLAUDE, &call.claude) };
+            if o.hermetic {
+                // SAFETY: as above
+                unsafe { std::env::set_var(HERMETIC, "1") };
+            }
             call.claude = me.display().to_string();
+        }
+        Err(e) if o.hermetic => {
+            eprintln!("panel_eval: a hermetic run needs the rig's own binary ({e}); --no-hermetic runs without");
+            std::process::exit(2);
         }
         Err(e) => eprintln!("panel_eval: no cost recorded, cannot find the rig's own binary: {e}"),
     }
+    // removed after the last call, a panic included
+    let cwds = Staged(o.hermetic.then(|| {
+        let d = std::env::temp_dir().join(format!("panel-eval-cwd-{}", std::process::id()));
+        std::fs::create_dir(&d).unwrap_or_else(|e| {
+            eprintln!("panel_eval: {}: {e}", d.display());
+            std::process::exit(2);
+        });
+        d
+    }));
+    let env = fingerprint(&version, cwds.0.as_deref(), &call.dir, |k| std::env::var(k).ok());
     let mut log = o.out.as_ref().map(|p| {
         std::fs::File::create(p).unwrap_or_else(|e| {
             eprintln!("panel_eval: {}: {e}", p.display());
@@ -657,6 +704,10 @@ fn main() {
             }
             // --model takes any name, so the route is the rig's, not the App's four
             let model = route(&flow, &o.model).model;
+            let call = call_in(&call, cwds.0.as_deref(), ci, run).unwrap_or_else(|e| {
+                eprintln!("panel_eval: {e}");
+                std::process::exit(2);
+            });
             // Spawned here, on the main thread: the child's death signal follows it.
             let req = Request::spawn_with(&call, &profile, &system, &prompt, &model);
             live.push(Job {
@@ -729,7 +780,7 @@ fn main() {
                     "cost_usd": usage.cost_usd,
                     "in_tokens": usage.in_tokens, "out_tokens": usage.out_tokens,
                     "refused": g.as_ref().map(|g| g.refused), "holdout": c.holdout, "reply": raw,
-                    "explore": j.explore, "files_read": read,
+                    "explore": j.explore, "files_read": read, "env": env.json(),
                 });
                 let _ = writeln!(f, "{row}");
             }
@@ -740,6 +791,7 @@ fn main() {
         std::thread::sleep(Duration::from_millis(50));
     }
     summary(&cases, &done, &hashes, o.runs);
+    println!("environment     {env}");
     if let Some(l) = cost_line(&costs, wrapped) {
         println!("cost            {l}");
     }
@@ -761,6 +813,83 @@ impl Drop for Staged {
         if let Some(d) = &self.0 {
             let _ = std::fs::remove_dir_all(d);
         }
+    }
+}
+
+/// The call for run `run` of case `ci`: under a hermetic run's `root`, a fresh
+/// folder of its own as the cwd, which then holds only the prompt file; else
+/// `base`, the panel's cache dir.
+fn call_in(base: &Call, root: Option<&Path>, ci: usize, run: usize) -> Result<Call, String> {
+    let Some(root) = root else {
+        return Ok(base.clone());
+    };
+    let dir = root.join(format!("case{ci}-run{run}"));
+    std::fs::create_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    Ok(Call { dir, ..base.clone() })
+}
+
+/// `claude --version`'s first line, or why there is none.
+fn claude_version(claude: &str) -> String {
+    match std::process::Command::new(claude).arg("--version").output() {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).lines().next().unwrap_or("").trim().into(),
+        Ok(o) => format!("unknown ({})", o.status),
+        Err(e) => format!("unknown ({e})"),
+    }
+}
+
+/// What a call saw besides its prompt (#598): the same system prompt hash can
+/// score apart on two machines when these differ.
+#[derive(Debug, PartialEq)]
+struct Fingerprint {
+    claude: String,
+    /// The calls' cwd: a hermetic run's root, each call a fresh folder under it.
+    cwd: String,
+    hermetic: bool,
+    /// The setting sources the calls load: `None` is claude's default, all of them.
+    setting_sources: Option<String>,
+    /// HOME, XDG_CONFIG_HOME, XDG_CACHE_HOME and CLAUDE_CONFIG_DIR, `None` unset.
+    vars: Vec<(&'static str, Option<String>)>,
+}
+
+const ENV_VARS: [&str; 4] = ["HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "CLAUDE_CONFIG_DIR"];
+
+fn fingerprint(claude: &str, root: Option<&Path>, dir: &Path, var: impl Fn(&str) -> Option<String>) -> Fingerprint {
+    let cwd = match root {
+        Some(r) => format!("{}/<case>-<run>", r.display()),
+        None => dir.display().to_string(),
+    };
+    Fingerprint {
+        claude: claude.into(),
+        cwd,
+        hermetic: root.is_some(),
+        setting_sources: root.map(|_| HERMETIC_FLAGS[1].into()),
+        vars: ENV_VARS.iter().map(|k| (*k, var(k))).collect(),
+    }
+}
+
+impl Fingerprint {
+    fn json(&self) -> serde_json::Value {
+        let vars: serde_json::Map<String, serde_json::Value> =
+            self.vars.iter().map(|(k, v)| (k.to_string(), serde_json::json!(v))).collect();
+        serde_json::json!({
+            "claude": self.claude, "cwd": self.cwd, "hermetic": self.hermetic,
+            "setting_sources": self.setting_sources, "vars": vars,
+        })
+    }
+}
+
+impl std::fmt::Display for Fingerprint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let memory = if self.hermetic {
+            "user memory and settings off (--setting-sources \"\")"
+        } else {
+            "user memory and settings loaded"
+        };
+        write!(f, "claude {}; {memory}; cwd {}", self.claude, self.cwd)?;
+        for (k, v) in &self.vars {
+            write!(f, "; {k}={}", v.as_deref().unwrap_or("(unset)"))?;
+        }
+        Ok(())
     }
 }
 
@@ -2025,7 +2154,7 @@ mod tests {
     #[test]
     fn a_json_call_is_never_given_the_output_flags_twice() {
         let call = ["-p", "--output-format", "json", "--verbose"].map(OsString::from);
-        let c = claude_command(OsStr::new("/bin/claude"), call);
+        let c = claude_command(OsStr::new("/bin/claude"), call, false);
         let args: Vec<&OsStr> = c.get_args().collect();
         assert_eq!(args, ["-p", "--output-format", "json", "--verbose"]);
     }
@@ -2050,12 +2179,115 @@ mod tests {
     #[test]
     fn the_wrapped_call_puts_json_first_and_drops_the_variable() {
         let call = ["-p", "--model", "sonnet"].map(OsString::from);
-        let c = claude_command(OsStr::new("/bin/claude"), call);
+        let c = claude_command(OsStr::new("/bin/claude"), call, false);
         assert_eq!(c.get_program(), "/bin/claude");
         let args: Vec<&OsStr> = c.get_args().collect();
         assert_eq!(args, ["--output-format", "json", "--verbose", "-p", "--model", "sonnet"]);
         let envs: Vec<_> = c.get_envs().collect();
-        assert_eq!(envs, [(OsStr::new(AS_CLAUDE), None)]);
+        assert_eq!(envs, [(OsStr::new(AS_CLAUDE), None), (OsStr::new(HERMETIC), None)]);
+    }
+
+    /// #598: a hermetic call loads no setting source, so no CLAUDE.md and no hooks.
+    #[test]
+    fn a_hermetic_call_loads_no_setting_source() {
+        let call = ["-p", "--model", "sonnet"].map(OsString::from);
+        let c = claude_command(OsStr::new("/bin/claude"), call, true);
+        let args: Vec<&OsStr> = c.get_args().collect();
+        assert_eq!(args[..3], ["--output-format", "json", "--verbose"]);
+        assert_eq!(args[3..5], ["--setting-sources", ""], "an empty list: no source at all");
+        assert_eq!(args[5..], ["-p", "--model", "sonnet"]);
+        let envs: Vec<_> = c.get_envs().collect();
+        assert_eq!(envs, [(OsStr::new(AS_CLAUDE), None), (OsStr::new(HERMETIC), None)]);
+    }
+
+    #[test]
+    fn a_call_that_names_its_setting_sources_keeps_them() {
+        let call = ["-p", "--setting-sources", "user"].map(OsString::from);
+        let c = claude_command(OsStr::new("/bin/claude"), call, true);
+        let n = c.get_args().filter(|a| *a == "--setting-sources").count();
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn hermetic_is_the_default_and_no_hermetic_turns_it_off() {
+        assert!(opts(args("")).unwrap().hermetic);
+        assert!(!opts(args("--no-hermetic")).unwrap().hermetic);
+        assert!(opts(args("--no-hermetic --runs 2")).unwrap().runs == 2);
+        assert!(opts(args("--hermetic=no")).unwrap_err().contains("unknown argument --hermetic=no"));
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("panel-eval-{name}.{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn base_call(dir: &Path) -> Call {
+        let timeout = Duration::from_secs(30);
+        Call {
+            claude: "claude".into(),
+            timeout,
+            dir: dir.into(),
+        }
+    }
+
+    /// #598: each hermetic call gets an empty folder of its own; a plain one the panel's.
+    #[test]
+    fn a_hermetic_call_runs_in_a_fresh_folder_of_its_own() {
+        let root = scratch("cwds");
+        let base = base_call(Path::new("/panel/cache"));
+        let a = call_in(&base, Some(&root), 0, 0).unwrap();
+        let b = call_in(&base, Some(&root), 0, 1).unwrap();
+        assert_ne!(a.dir, b.dir);
+        assert!(a.dir.starts_with(&root) && b.dir.starts_with(&root));
+        assert_eq!(std::fs::read_dir(&a.dir).unwrap().count(), 0, "a fresh folder is empty");
+        let again = call_in(&base, Some(&root), 0, 0).unwrap_err();
+        assert!(again.contains("case0-run0"), "never reused: {again}");
+        assert_eq!(call_in(&base, None, 0, 0).unwrap().dir, base.dir);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// The round trip: the panel's own Request, run on a hermetic call, starts
+    /// claude in that call's folder (a stand-in claude that prints its cwd).
+    #[test]
+    fn the_panels_request_runs_claude_in_the_hermetic_folder() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = scratch("cwd-trip");
+        let fake = root.join("fake-claude");
+        std::fs::write(&fake, "#!/bin/sh\ncat >/dev/null\npwd -P\n").unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let base = Call {
+            claude: fake.display().to_string(),
+            ..base_call(&root)
+        };
+        let call = call_in(&base, Some(&root), 3, 1).unwrap();
+        let mut req = Request::spawn_with(&call, &Profile::TEXT, "sys", "hi", "sonnet");
+        let got = loop {
+            match req.poll() {
+                Some(a) => break a,
+                None => std::thread::yield_now(),
+            }
+        };
+        let want = std::fs::canonicalize(root.join("case3-run1")).unwrap();
+        assert_eq!(got.unwrap().trim(), want.display().to_string());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn the_fingerprint_names_the_version_the_cwd_the_sources_and_the_vars() {
+        let var = |k: &str| (k == "HOME").then(|| "/home/u".to_string());
+        let f = fingerprint("2.1.319 (Claude Code)", Some(Path::new("/t/cwd")), Path::new("/c"), var);
+        assert_eq!(
+            (f.claude.as_str(), f.cwd.as_str()),
+            ("2.1.319 (Claude Code)", "/t/cwd/<case>-<run>")
+        );
+        assert_eq!((f.hermetic, f.setting_sources.as_deref()), (true, Some("")));
+        assert_eq!(f.vars[0], ("HOME", Some("/home/u".into())));
+        assert_eq!(f.vars[3], ("CLAUDE_CONFIG_DIR", None));
+        let plain = fingerprint("v", None, Path::new("/c"), var);
+        assert_eq!((plain.hermetic, plain.setting_sources, plain.cwd.as_str()), (false, None, "/c"));
+        assert_eq!(f.json()["vars"]["XDG_CONFIG_HOME"], serde_json::Value::Null);
     }
 
     #[test]
