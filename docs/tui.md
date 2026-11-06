@@ -827,6 +827,14 @@ is.
   to the pane's agent. `^Z` hides it like any other panel, unless a panel is
   hidden on the pane already: the pane keeps one, so the ask's `^Z` says so,
   and `cockpit-panel` never moves a state over the one kept.
+- **`c`, a draft for the agent** (#365 child 5, flow A). The answer's `c` opens
+  Compose with the answer's `<prompt>`, or else, per the owner's D8, a template:
+  `About <ref>: <question>`, then the answer's first paragraph. It is cut to
+  2000 characters at a space, with a visible `…`, and no model is called for
+  it. The ask's lines go in the pane's prompt basket, so `^T` sends them as a
+  ref ([the prompt basket](#the-prompt-basket-365-child-5)). Esc there is back
+  at the answer with its thread kept (D3); `^S` or `^F` from there is a run of
+  its own and ends the thread, so esc after it goes to the board.
 - **The prompt** is `ask-code.txt`, overridden like the others.
 
 ### Code in the panel (#282)
