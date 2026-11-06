@@ -594,11 +594,17 @@ fn wrapped_command(real: &OsStr, args: impl IntoIterator<Item = OsString>, var: 
     claude_command(real, args, hermetic_wanted(var))
 }
 
+/// The call the wrapper runs for `args`, hermetic as [`HERMETIC`] in this
+/// process's environment says: what [`exec_claude`] execs.
+fn from_env(real: &OsStr, args: impl IntoIterator<Item = OsString>) -> std::process::Command {
+    wrapped_command(real, args, std::env::var_os(HERMETIC))
+}
+
 /// The rig as the call's claude: exec, so the pid, its process group and its
 /// death signal stay the ones Request set up.
 fn exec_claude(real: &OsStr) -> ! {
     use std::os::unix::process::CommandExt;
-    let e = wrapped_command(real, std::env::args_os().skip(1), std::env::var_os(HERMETIC)).exec();
+    let e = from_env(real, std::env::args_os().skip(1)).exec();
     eprintln!("panel_eval: {}: {e}", real.to_string_lossy());
     std::process::exit(127);
 }
@@ -1136,6 +1142,12 @@ fn envs_of(rows: &[Row]) -> Vec<Option<&serde_json::Value>> {
     es
 }
 
+/// The two sides ran in different environments: worth a warning, as cost and
+/// pass rates may differ for that alone.
+fn envs_differ(a: &[Row], b: &[Row]) -> bool {
+    envs_of(a) != envs_of(b)
+}
+
 /// A side's (passed, graded, failed calls) for one case.
 type Side = (usize, usize, usize);
 
@@ -1207,7 +1219,7 @@ fn print_compare(sides: &[(&PathBuf, &[Row]); 2]) {
             println!("   env       {}", e.map_or("not recorded (before #598)".into(), |e| e.to_string()));
         }
     }
-    if envs_of(sides[0].1) != envs_of(sides[1].1) {
+    if envs_differ(sides[0].1, sides[1].1) {
         println!("warning: A and B ran in different environments (env above): cost and pass rates may differ for that alone");
     }
     let (pa, pb) = paired_pass_all(&cmp);
@@ -2354,7 +2366,7 @@ mod tests {
             assert_eq!(unsafe { hand_off("/bin/claude", hermetic) }, want);
             let real = as_claude(std::env::var_os(AS_CLAUDE), Some(OsStr::new("-p"))).unwrap();
             assert_eq!(real, "/bin/claude");
-            let c = wrapped_command(&real, [OsString::from("-p")], std::env::var_os(HERMETIC));
+            let c = from_env(&real, [OsString::from("-p")]);
             assert_eq!(flag(&c), want, "hermetic {hermetic}");
         }
     }
@@ -2370,7 +2382,7 @@ mod tests {
         assert_eq!(envs_of(&rows).len(), 1, "one environment for the whole run");
         let old = read_rows("O", "{\"id\":\"a\",\"pass\":true}\n").unwrap();
         assert_eq!(envs_of(&old), [None]);
-        assert_ne!(envs_of(&old), envs_of(&rows));
+        assert!(envs_differ(&old, &rows) && !envs_differ(&rows, &rows));
     }
 
     #[test]
