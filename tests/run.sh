@@ -9859,6 +9859,9 @@ av_setup() {                  # the fixtures every agent-view block needs; each 
     # and bash cannot trap a signal it started with ignored: a poller's HUP trap never runs, and
     # its HUP rows fail with nothing wrong (#524). Those pollers start with the default back.
     AVDFL=(env); env --default-signal=HUP true 2>/dev/null && AVDFL=(env --default-signal=HUP)
+    # Where env cannot reset it, the HUP rows below go red: say why, once, above them.
+    [ "${AVDFL[*]}" = env ] && [ -n "$(trap -p HUP)" ] \
+        && skip_ "the poller HUP rows: SIGHUP is ignored (nohup?) and env cannot reset it (#524)"
     AVF="$DIR/tests/fixtures/agent-view"
     AVBIN=$(mktmpd); ln -s "$AVF/claude" "$AVBIN/claude"
     AVREC=$(mktmpd); AVLOG="$AVREC/calls"; : > "$AVLOG"
