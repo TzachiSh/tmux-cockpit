@@ -16,6 +16,8 @@ vnum() {
 # from master says next-X.Y, X.Y being the release it leads to, so it is graded
 # as X.Y. A word with no number left (master, openbsd-7.5, empty) passes: no
 # floor can grade it, and refusing to load over it would lock a user out.
+# next-<floor> passes on purpose: an early next-3.8 may lack a 3.8 feature, but
+# refusing it would lock out the late master builds that have them all.
 vnum_ge() {                   # vnum_ge <have> <floor>
     case "${2-}" in [0-9]*) ;; *)
         printf "vnum_ge: <floor> is not a version: '%s'\n" "${2-}" >&2; return 2 ;;
