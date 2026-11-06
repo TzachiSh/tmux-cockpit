@@ -1142,14 +1142,14 @@ $ curl -s 'localhost:3000/api/posts?page=2' | jq '.[0].id'
 --- request
 fix this, page 2 starts with the last post of page 1
 
-# #587 holdouts, written after the final prompt commit, on requests the prompt
-# does not name.
+# #587: written after daa0820 as holdouts; the bug line changed after they ran
+# (a failing test to fix gets the break-it step), so they are holdouts no more.
 === h-rent-late
 kind: message
 window: bash · bash · /home/u
 expect: ask
 ask_any: date; day; when; how late; how long; until
-holdout: yes
+holdout: no
 note: the landlord needs the day the rent will come, which only the owner has
 --- request
 let my landlord know the rent will be late this month
@@ -1160,7 +1160,7 @@ window: bash · bash · /home/u/projects/api
 out: format
 expect: ask
 ask_any: systemd; pm2; compose; docker compose; kubernetes; k8s; procfile; supervisor; helm; format; platform
-holdout: yes
+holdout: no
 note: a run config for a service is a systemd unit, a pm2 file, a compose file or a Kubernetes manifest, each a different file: the kind comes first
 --- request
 config to run the api with 2 workers and PORT=3000
@@ -1171,7 +1171,7 @@ window: bash · bash · /home/u/projects/shop
 expect: write
 out_is: prompt
 must: parse_price; break|breaking|mutate|mutation|mutant|mutants|on purpose|flip|flipping|small change; undo|undoing|revert|reverting|restore|put back|put it back
-holdout: yes
+holdout: no
 note: a new test gets the mutation step: break the helper on purpose, see the test fail, undo the break
 --- screen
 $ pytest -q
@@ -1189,3 +1189,42 @@ diff --stat:
   1 file changed, 21 insertions(+)
 --- request
 write tests for the parse_price helper I added
+
+# #587 holdouts, written after the final prompt commit (d598bd2), on requests
+# the prompt does not name.
+=== h-flight-delayed
+kind: message
+window: bash · bash · /home/u
+expect: ask
+ask_any: time; when; land|lands|landing; arrive|arrives|arrival; how long; how late; hour|hours
+holdout: yes
+note: the reader needs the new arrival time, which only the owner has
+--- request
+text my mom that my flight is delayed
+
+=== h-bucket-expiry
+kind: format
+window: bash · bash · /home/u/projects/infra
+out: format
+expect: ask
+ask_any: terraform; aws; s3; gcs; google cloud; azure; cloudformation; pulumi; provider; cloud; format; platform
+holdout: yes
+note: a bucket rule is a Terraform resource, an S3 lifecycle JSON or a GCS one, each a different file: the kind comes first
+--- request
+config for a bucket named logs-archive that deletes objects after 30 days
+
+=== h-go-header-test
+kind: bug
+window: bash · bash · /home/u/projects/proxy
+expect: write
+out_is: prompt
+must: TestParseHeader; break|breaking|mutate|mutation|mutant|mutants|on purpose|flip|flipping|small change; undo|undoing|revert|reverting|restore|put back|put it back
+holdout: yes
+note: a failing test to fix gets the break-it step after it passes
+--- screen
+$ go test -run TestParseHeader ./header
+    header_test.go:41: got "x-id", want "X-Id"
+FAIL
+FAIL	example.com/proxy/header	0.004s
+--- request
+fix the failing test
