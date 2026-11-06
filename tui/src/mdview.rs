@@ -204,6 +204,8 @@ pub struct Screen {
     pub top: usize,
     /// the `?` help's scroll offset while it is open
     pub help: Option<usize>,
+    /// the file browser opened the viewer (`COCKPIT_VIEW_BACK=1`): q goes back to it
+    pub back: bool,
     /// the find field's text while it is open, and the top it opened at
     pub field: Option<(String, usize)>,
     pub query: String,
@@ -237,6 +239,7 @@ impl Screen {
             width: 0,
             top: 0,
             help: None,
+            back: false,
             field: None,
             query: String::new(),
             hits: vec![],
@@ -796,7 +799,7 @@ fn hints(s: &Screen, g: &Glyphs) -> Vec<(String, String)> {
             h.push(kv(g.key_updown, "scroll"));
         }
     }
-    h.push(kv("q", "close"));
+    h.push(kv("q", if s.back { "back" } else { "close" }));
     h
 }
 
@@ -824,7 +827,11 @@ pub fn render(f: &mut Frame, area: Rect, th: &Theme, s: &mut Screen) {
         return;
     }
     if let Some(top) = s.help {
-        chrome::help(f, area, th, &help_for(th.g.ascii, s.mode), top);
+        let mut rows = help_for(th.g.ascii, s.mode);
+        if s.back {
+            rows.iter_mut().filter(|r| r.1 == "close").for_each(|r| r.1 = "back".into());
+        }
+        chrome::help(f, area, th, &rows, top);
         return;
     }
     s.layout(body_width(area));
@@ -949,6 +956,7 @@ pub fn main(args: &[String]) -> i32 {
     let m = mode(&name, doc.as_deref().unwrap_or(""));
     let mut s = Screen::new(&name, doc, opts).with_mode(m);
     s.can_ask = can_ask(std::env::var("COCKPIT_VIEW_ASK").ok().as_deref());
+    s.back = std::env::var("COCKPIT_VIEW_BACK").as_deref() == Ok("1");
     // the pane whose basket `a` adds to, named by the launcher (#365 child 5)
     let pane = std::env::var("COCKPIT_BASKET_PANE").ok().filter(|p| crate::panel::is_pane(p));
     s.can_add = pane.is_some();

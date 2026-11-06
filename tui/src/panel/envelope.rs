@@ -117,6 +117,8 @@ pub fn build_parts(flow: &Flow, cap: &Capture, turns: &[Turn], questions_left: u
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RefItem {
     pub text: String,
+    /// `text` is a Claude Code `@` mention; else a bare path (#590)
+    pub mention: bool,
     pub whole: bool,
     pub outside: bool,
     /// inside the root, but a file the read-only profile denies (a secret)
@@ -137,17 +139,23 @@ pub fn ref_items(refs: &[Ref], base: &Path, claude: bool, root: Option<&Path>) -
     let home = std::env::var_os("HOME").filter(|h| !h.is_empty()).map(|h| canon(Path::new(&h)));
     let inside = |r: &Ref| root.as_ref().is_some_and(|root| r.path().starts_with(root));
     refs.iter()
-        .map(|r| RefItem {
-            text: crate::basket::ref_line(r, base, claude),
-            whole: r.lines().is_none(),
-            outside: root.is_some() && !inside(r),
-            denied: inside(r) && read_denied(r.path(), home.as_deref()),
+        .map(|r| {
+            let text = crate::basket::ref_line(r, base, claude);
+            RefItem {
+                // ref_line falls back to the bare form for a path a mention cannot carry
+                mention: claude && text != crate::refs::render(std::slice::from_ref(r), base),
+                text,
+                whole: r.lines().is_none(),
+                outside: root.is_some() && !inside(r),
+                denied: inside(r) && read_denied(r.path(), home.as_deref()),
+            }
         })
         .collect()
 }
 
-/// The `<refs>` block: one `<ref>` a line, its note saying a whole file or
-/// one outside the folder the write may read. Cleaned as a send is
+/// The `<refs>` block: one `<ref>` a line, its form (`mention` or `bare`, #590:
+/// the model copies it rather than turning a bare ref into a mention), its note
+/// saying a whole file or one outside the folder the write may read. Cleaned as a send is
 /// (`action::sanitize`), and escaped, so a name cannot close the tag.
 fn refs_part(refs: &[RefItem]) -> String {
     let lines: Vec<String> = refs
@@ -166,7 +174,8 @@ fn refs_part(refs: &[RefItem]) -> String {
             } else {
                 format!(" note=\"{}\"", notes.join("; "))
             };
-            format!("<ref{note}>{}</ref>", esc(&sanitize(&r.text)))
+            let form = if r.mention { "mention" } else { "bare" };
+            format!("<ref form=\"{form}\"{note}>{}</ref>", esc(&sanitize(&r.text)))
         })
         .collect();
     format!("<refs>\n{}\n</refs>", lines.join("\n"))

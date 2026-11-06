@@ -44,6 +44,12 @@ pub struct Snapshot {
 /// Pid of the `claude agents` child while it runs, else 0.
 static CHILD: AtomicU32 = AtomicU32::new(0);
 
+/// The lookup's child while one runs, once the board holds its pid, which is
+/// what `kill_lookup` reads. The tests wait for it before they hang up.
+pub fn lookup_pid() -> Option<u32> {
+    Some(CHILD.load(Ordering::Relaxed)).filter(|&c| c != 0)
+}
+
 /// The last child, and when it ended: a `ps` snapshot taken during the call can
 /// be walked after it.
 static RECENT: Mutex<Option<(u32, Instant)>> = Mutex::new(None);

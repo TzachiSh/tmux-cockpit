@@ -140,12 +140,22 @@ const KEYS: [&str; 9] = [
     "session?token",
 ];
 
-/// `bearer x` and `token = x` style pairs: the name stays, the value goes.
+/// A key word joined to a prefix by `_`: `DB_PASSWORD`, `MY_API_KEY` (#468). `_` is
+/// a word character, so the word boundary missed it; `-` and `.` are not, so
+/// `x-api-key` and `db.password` were already caught.
+fn joined(s: &str, i: usize) -> bool {
+    s[..i].ends_with('_')
+}
+
+/// `bearer x` and `token = x` style pairs: the name stays, the value goes. A key
+/// word starts at a word boundary or after a `_` that joins it to a prefix;
+/// either way `=` or `:` must follow it, so `password_hint` stays.
 fn key_value(s: &str, i: usize) -> Option<(usize, usize)> {
-    if !boundary_before(s, i) {
+    let at_word = boundary_before(s, i);
+    if !at_word && !joined(s, i) {
         return None;
     }
-    let keep = if let Some(j) = ci(s, i, "bearer") {
+    let keep = if let Some(j) = ci(s, i, "bearer").filter(|_| at_word) {
         let k = skip_ws(s, j);
         (k > j).then_some(k)?
     } else {

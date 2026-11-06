@@ -1161,6 +1161,7 @@ impl App {
                 let ctx = Ctx {
                     out: *out,
                     window: window_kind(&self.cap.name, &self.cap.cmd),
+                    bare_refs: self.write_refs(&r.flow).iter().any(|i| !i.mention),
                 };
                 if self.explores(&r.flow) {
                     prompts::write_explore_noted(&ctx)
@@ -2058,7 +2059,8 @@ fn cut_prefill(text: &str) -> String {
 }
 
 /// A terminal's escape sequences out whole, not only their ESC: a CSI
-/// (`ESC [` to its final byte) and an OSC (`ESC ]` to BEL or `ESC \`), and any
+/// (`ESC [` to its final byte) and an OSC (`ESC ]` to BEL or `ESC \`; one
+/// never terminated ends at the next newline, which stays, #588), and any
 /// other `ESC x` pair (review-510's NIT). What is left is text.
 fn strip_escapes(s: &str) -> String {
     let (mut out, mut it) = (String::new(), s.chars().peekable());
@@ -2072,6 +2074,11 @@ fn strip_escapes(s: &str) -> String {
             Some(']') => {
                 while let Some(x) = it.next() {
                     if x == '\u{7}' || (x == '\u{1b}' && it.next_if_eq(&'\\').is_some()) {
+                        break;
+                    }
+                    // never terminated: it ends at the line, which stays (#588)
+                    if x == '\n' {
+                        out.push(x);
                         break;
                     }
                 }
