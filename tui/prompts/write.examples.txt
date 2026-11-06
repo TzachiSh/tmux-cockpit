@@ -1,6 +1,6 @@
 <!-- Example pool for prompts/write.txt. The panel sends the 7 "core" examples, then up to 2 more whose
-     "when" matches the request (first match wins, in this order: out = the output type picked in the panel,
-     window = claude/shell/ssh), and
+     "when" matches the request (first match wins, in this order: refs:bare = the write carries a bare ref,
+     out = the output type picked in the panel, window = claude/shell/ssh), and
      fills any free place from the "fill" order. {{home}} becomes the user's home folder. This comment and
      the attributes are removed before sending. -->
 <example id="crash" core="1"><screen>$ net-proxy
@@ -16,6 +16,11 @@ so a line in the map it reads does not have two fields. Make `load_map` cope wit
 </prompt></reply></example>
 <example id="investigate" core="1"><screen>(empty)</screen><window>bash in {{home}}</window><request>check why tmux is slow when i open new window, dont change nothing</request><reply><prompt>
 Find out why opening a new tmux window is slow. Investigate only and do not change any files. Report the likely causes, most likely first, each with its evidence (a measured time, a config line or a command output) and the change you would suggest.
+</prompt></reply></example>
+<example id="bare-ref" when="refs:bare"><screen>(empty)</screen><window>bash in {{home}}/projects/cli</window><refs>
+<ref form="bare">cmd/root.go:22-31</ref>
+</refs><request>rename the --dry flag to --dry-run here and in the docs</request><reply><prompt>
+In cmd/root.go:22-31, rename the `--dry` flag to `--dry-run` and update every place that reads it or documents it, the docs included. Done when `go build ./...` passes and `--help` lists `--dry-run`.
 </prompt></reply></example>
 <example id="plan" when="window:claude" fill="1"><screen>● The workspace runs on the old server until Friday.</screen><window>claude in {{home}}/projects/web-app</window><request>help me plan moving the coder workspace to the new server, no downtime</request><reply><prompt>
 Help me plan moving the Coder workspace to the new server without downtime; it runs on the old server until Friday. Before changing anything, look at the current setup and check what works today (the workspace starts, a user can open a project in it) as the baseline. Then propose a short plan: ordered steps, what to check after each one, how to roll back, and what you need from me. Wait for my OK before you start, and after the move run the same checks and compare them with the baseline.

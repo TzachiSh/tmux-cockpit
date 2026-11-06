@@ -303,6 +303,25 @@ fn ctrl_s_with_a_basket_sends_the_refs() {
     assert!(!prompt(&a).contains("<refs>"), "an empty basket sends no block");
 }
 
+/// #590: a write with a bare ref carries the example that keeps one bare and
+/// keeps a rename small; a write with mentions only, or no refs, does not.
+#[test]
+fn a_bare_ref_brings_the_bare_ref_example() {
+    let d = tree("bareex");
+    let system = |claude: bool, basket: bool| {
+        let mut a = compose(&d, claude);
+        if !basket {
+            a.basket.clear();
+        }
+        ctrl(&mut a, 's');
+        a.request_parts().expect("a write is pending").0
+    };
+    let example = "rename the --dry flag to --dry-run";
+    assert!(system(false, true).contains(example), "a bare ref");
+    assert!(!system(true, true).contains(example), "mentions only");
+    assert!(!system(false, false).contains(example), "no refs");
+}
+
 #[test]
 fn an_exploring_write_marks_a_ref_outside_its_folder() {
     let d = tree("explore");

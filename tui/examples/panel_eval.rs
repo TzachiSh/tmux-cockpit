@@ -1838,6 +1838,7 @@ mod tests {
         let ctx = Ctx {
             out: c.out,
             window: window_kind(&c.name, &c.cmd),
+            ..Ctx::default()
         };
         let cap = Capture {
             name: c.name.clone(),
