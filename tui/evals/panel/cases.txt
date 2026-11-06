@@ -1278,3 +1278,48 @@ holdout: yes
 note: customers need the new number to call, which only the owner has
 --- request
 email our customers that the support phone number changed
+
+# #590 holdouts, written after the final prompt commit, on requests the prompt
+# does not name: bare refs in a shell pane stay bare, and a small edit stays small.
+=== h-refs-bare-vat
+kind: bug
+window: dev · bash · /home/u/shop
+expect: write
+out_is: prompt
+must: src/billing/tax.py:12-40; 121
+must_not: @src/billing/tax.py; #L12; Assumed:
+holdout: yes
+note: the request settles actual versus expected; the ref is bare in a bash pane
+--- refs
+src/billing/tax.py:12-40
+--- request
+an order of 100 shows 142 with vat but it should be 121, vat is added twice in here. fix it
+
+=== h-refs-bare-docs
+kind: feature
+window: work · zsh · /home/u/tool
+out: prompt
+expect: write
+must: docs/setup.md; scripts/install.sh:5-9
+must_not: @docs/setup.md; @scripts/install.sh; #L5
+holdout: yes
+note: a whole file and a range, both bare in a zsh pane
+--- refs
+docs/setup.md
+scripts/install.sh:5-9
+--- request
+update the install section of the doc so it matches what the script does
+
+=== h-refs-bare-port
+kind: ops
+window: srv · fish · /home/u/svc
+out: prompt
+expect: write
+must: config/app.yaml:3; 8081
+must_not: @config/app.yaml; #L3; baseline; subagent|subagents; AskUserQuestion
+holdout: yes
+note: a one-line change with a bare ref: no baseline, subagent or interview
+--- refs
+config/app.yaml:3
+--- request
+change the port here to 8081
