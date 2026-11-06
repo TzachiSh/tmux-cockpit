@@ -1846,9 +1846,17 @@ Neither returns an empty string for a failure. A `None` from `preview` renders
 as one line, `capture failed`, never a blank tile: an empty preview and a dead
 pane are different facts and a blank tile tells you which one it is.
 
-**CLI:** `cockpit-tui board [--select %N] [--note <file>] | panel %N [--resume <state> --last ok|failed:<why>|hidden] |
---rows | --json | --version | -h | --help`. There is no `fleet`, `info` or `ask` subcommand: the
-board reaches those through the action file and the shell scripts.
+**CLI:** `-h` or `--help` prints the usage:
+
+```
+cockpit-tui board [--select %N] [--note <file>] | pick | files <dir> | branch [-C <dir>] | info [--text|--json] %N | workdir %N | sessions [--needs] [--current $N] | panel %N [--resume <state> --last ok|failed:<why>|hidden | --ask <file> <a> <b>] | view [--line N] [--] <file> | basket add %N <file> | --rows | --json | --version | -h
+```
+
+`info %N` is the info screen, `info --text %N` its rows as text, and
+`info --json %N` the work dir as JSON (see "The info screen (#252)" below);
+`workdir %N` prints the board's dir for one pane. There is no `fleet` or `ask`
+subcommand (an unknown word exits 2 with the usage): the board reaches those
+through the action file and the shell scripts.
 
 **The transcript reader (#199):** `data::transcript` (`file`, `doing`, `tail`) is a library
 module the board and the info screen read in-process; there is no `transcript`
@@ -1898,8 +1906,11 @@ tell the two quiet answers apart: `[]` with exit 0 is "no agents", exit 1 is
 - **No mouse on the board; on the panel only in tablet mode,** which turns it
   off on every exit path. Capture takes the terminal's text selection away.
 - **No tokio, no `notify`, no clap, no anyhow, no color-eyre, no chrono, no
-  git2.** One input source, one timer, about four forks a tick. Five
-  subcommands parse from `args[0..2]`.
+  git2.** One input source, one timer, about four forks a tick. `main`
+  matches `args[0]` against ten screens (`board`, `pick`, `files`, `branch`,
+  `info`, `workdir`, `sessions`, `panel`, `view`, `basket`), the `git-flags`
+  and `diffstat` helpers and the `--rows`, `--json`, `--version` and `-h`
+  flags; each screen parses its own few arguments by hand.
 - **`ratatui::init()` paired with `panic = "abort"`**, never a Drop-based
   terminal guard with abort: no unwinding means Drop never runs. `init()`'s
   panic hook runs before the abort and restores the terminal.
@@ -2394,7 +2405,7 @@ characters before it is drawn. It is not a text-entry screen: `esc` and `q`
 close it, `↑↓` `j` `k` `PgUp` `PgDn` scroll, `?` lists the keys.
 `tmux-review --info` is gone.
 
-**`cockpit-tui info --json %N`** (#452) prints one line, `{"dir": "<path>"}`: the
+**`cockpit-tui info --json %N`** (#452) prints one line, `{"dir":"<path>"}`: the
 work dir by the board's rule (`dir` in `--json` above), for scripts. The screen's
 root, base and review dir follow that work dir (#500), as `prefix r` does since it
 asks `workdir` for its tree (#470), so the two name the same tree again, with one
