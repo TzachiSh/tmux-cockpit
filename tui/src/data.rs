@@ -1,6 +1,8 @@
 //! tmux and transcript reads. The frozen contract (#61) is "The freeze" in docs/tui.md.
 pub mod agents;
 pub mod fleet;
+// the board's transcript fold (#492)
+mod fold;
 pub mod gitsafe;
 pub mod info;
 pub mod sessions;
@@ -8,7 +10,6 @@ pub mod sessions;
 pub mod subagents;
 pub mod transcript;
 
-use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -388,129 +389,11 @@ fn read_facts(path: &str) -> Facts {
     fa
 }
 
-/// Ends the turn without closing anything: neither a prompt nor an answer.
-/// It arrives as a `text` block in the array form.
-const INTERRUPT: &str = "[Request interrupted by user";
-
+/// The facts of whole rows, oldest first.
 fn parse(lines: Vec<String>) -> Facts {
-    let mut fa = Facts::default();
-    // An AskUserQuestion is open until a user row carries its tool_result:
-    // answers, dismissals and denials write one, an interrupt does not.
-    let mut asks: Vec<String> = vec![];
-    // #453: the newest tool_use's id and, for an AskUserQuestion, its question:
-    // the row's message only while that ask is the one still open
-    let mut newest: Option<(String, Option<String>)> = None;
-    let (mut turn_over, mut saw) = (false, false);
-    for raw in lines {
-        let Ok(v) = serde_json::from_str::<Value>(&raw) else { continue };
-        // In case a future version inlines subagent rows.
-        if v["isSidechain"].as_bool() == Some(true) || !v["agentId"].is_null() {
-            continue;
-        }
-        let ts = v["timestamp"].as_str().and_then(rfc3339);
-        if ts.is_some() {
-            fa.newest = ts;
-        }
-        if let Some(c) = v["cwd"].as_str().filter(|c| !c.is_empty()) {
-            fa.cwd = c.to_string();
-        }
-        match v["type"].as_str() {
-            Some("user") => {
-                saw = true;
-                let c = &v["message"]["content"];
-                match c.as_str() {
-                    // a tool_result arrives as an array, a human turn as a string
-                    Some(t) if t.starts_with(INTERRUPT) => turn_over = true,
-                    // <task-notification, <command-name, <local-command-*: the
-                    // harness wrote these, so not a new turn and not `asked`.
-                    Some(t) if t.starts_with('<') => {}
-                    Some(t) => {
-                        fa.user = first_line(t);
-                        fa.user_at = ts;
-                        turn_over = false;
-                        // a typed prompt means the human moved on from an interrupted ask
-                        asks.clear();
-                    }
-                    None => {
-                        let (mut interrupted, mut result, mut typed) = (false, false, None);
-                        for b in c.as_array().into_iter().flatten() {
-                            if let Some(id) = b["tool_use_id"].as_str() {
-                                asks.retain(|a| a != id);
-                                result = true;
-                            }
-                            // safe beside the tool_results: they carry no `text`
-                            if let Some(t) = b["text"].as_str() {
-                                interrupted |= t.starts_with(INTERRUPT);
-                                if typed.is_none() && !t.starts_with(INTERRUPT) && !t.starts_with('<') {
-                                    typed = Some(t);
-                                }
-                            }
-                        }
-                        turn_over = interrupted;
-                        // A prompt with an image is an array too: its text block is the
-                        // human's, unless the row is a tool_result or one the harness wrote.
-                        if let Some(t) = typed
-                            && !result
-                            && !interrupted
-                            && v["isMeta"].as_bool() != Some(true)
-                            && !first_line(t).is_empty()
-                        {
-                            fa.user = first_line(t);
-                            fa.user_at = ts;
-                            asks.clear();
-                        }
-                    }
-                }
-            }
-            Some("assistant") => {
-                saw = true;
-                fa.at = ts.or(fa.at);
-                // end_turn rides the text row; attachment and custom-title rows
-                // land after it and must not reopen the turn.
-                turn_over = v["message"]["stop_reason"].as_str() == Some("end_turn");
-                let Some(blocks) = v["message"]["content"].as_array() else {
-                    continue;
-                };
-                for b in blocks {
-                    match b["type"].as_str() {
-                        Some("tool_use") => {
-                            let name = b["name"].as_str().unwrap_or("");
-                            // The name alone when no field says more: never a bare `name:`.
-                            fa.tool = match transcript::pick(name, &b["input"]).map(|(p, s)| (p, first_line(s))) {
-                                Some((p, d)) if !d.is_empty() => format!("{name}: {p}{d}"),
-                                _ => name.to_string(),
-                            };
-                            let id = b["id"].as_str().unwrap_or_default().to_string();
-                            let ask = name == "AskUserQuestion";
-                            if ask && !id.is_empty() {
-                                asks.push(id.clone());
-                            }
-                            newest = Some((id, ask.then(|| transcript::question(&b["input"])).flatten()));
-                        }
-                        Some("text") => {
-                            let t = first_line(b["text"].as_str().unwrap_or(""));
-                            if !t.is_empty() {
-                                fa.text = t;
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    fa.ask = newest.filter(|(id, _)| asks.contains(id)).and_then(|(_, q)| q).unwrap_or_default();
-    // An open question outranks a finished turn: the interrupt that ended the
-    // turn left the picker's tool_use open, and the human still owes an answer.
-    fa.state = match () {
-        _ if !asks.is_empty() => State::NeedsInput,
-        // an unknown state is unknown, never idle
-        _ if !saw => State::Unknown,
-        _ if turn_over => State::Done,
-        _ => State::Running,
-    };
-    fa
+    let mut f = fold::Fold::default();
+    lines.iter().for_each(|l| f.step(0, l));
+    f.view(0)
 }
 
 /// doing / said / asked and their ages, from the tail of the session transcript,
@@ -1324,6 +1207,7 @@ pub mod branches;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
 
     /// The board's doing line for each tool shape must equal the history reader's
     /// label (tlabel), save for the 160-char cap and control handling: the cases
