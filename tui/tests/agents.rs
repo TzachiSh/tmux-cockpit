@@ -2,7 +2,7 @@
 //! Gates use files and polls, never a clock: the stub waits on a `go` file.
 mod fake;
 
-use cockpit_tui::data::agents::{Background, Entry, read_file, set_background};
+use cockpit_tui::data::agents::{Background, Entry, lookup_pid, read_file, set_background};
 use cockpit_tui::data::list_panes;
 use fake::write_exec;
 use std::os::unix::fs::MetadataExt;
@@ -466,20 +466,34 @@ fn wait_forks(r: &Rig, n: usize) {
     }
 }
 
-/// Gone within `polls` x 5 ms. The deadline kill is 2.5 s after the spawn, so a
-/// short window is a kill the code made itself.
-fn wait_gone_within(pid: &str, polls: u32) {
-    for _ in 0..polls {
-        if !Path::new("/proc").join(pid).exists() {
+/// How long a killed stub may take to leave /proc. The stubs sleep 60 s, so a
+/// stub gone within this was killed, however loaded the box: a deadline, not a
+/// count of polls, which a busy scheduler stretches past any window (#564).
+const GONE_BY: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// In a child test process: waits until the stub runs and the board holds its
+/// pid. The stub writes its pid before the board has stored it, and a hangup in
+/// that gap finds no child to kill: the old tests raced it under load (#564).
+fn wait_in_flight() {
+    let stub = Path::new(&std::env::var("HOME").unwrap()).join("stubpid");
+    let end = std::time::Instant::now() + GONE_BY;
+    loop {
+        let pid = std::fs::read_to_string(&stub).unwrap_or_default().trim().parse::<u32>().ok();
+        if pid.is_some() && pid == lookup_pid() {
             return;
         }
+        assert!(std::time::Instant::now() < end, "the lookup never started: {pid:?}");
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
-    panic!("{pid} is still running");
 }
 
+/// Polls until `pid` has left /proc, failing once [`GONE_BY`] has passed.
 fn wait_gone(pid: &str) {
-    wait_gone_within(pid, 2000);
+    let end = std::time::Instant::now() + GONE_BY;
+    while Path::new("/proc").join(pid).exists() {
+        assert!(std::time::Instant::now() < end, "{pid} is still running after {GONE_BY:?}");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
 }
 
 /// The mechanism: a positive was served for ever. One 70 s old is served, then
@@ -550,22 +564,36 @@ fn a_one_shot_read_kills_a_hung_lookup() {
     wait_gone(pid.trim());
 }
 
-/// A board that quits mid-lookup takes the child with it.
+/// The child half of the quit test: a board with a lookup in flight that quits,
+/// and then exits as a board does, so no deadline of its own is left to kill the
+/// lookup for it.
+#[test]
+fn quit_child() {
+    if std::env::var_os("QUIT_CHILD").is_none() {
+        return;
+    }
+    let board = Background::start();
+    list_panes();
+    wait_in_flight();
+    drop(board);
+    std::process::exit(0);
+}
+
+/// A board that quits mid-lookup takes the child with it. Quit in a process of its
+/// own: in this one the lookup's 2.5 s deadline would kill the stub anyway.
 #[test]
 fn the_board_quitting_kills_a_lookup_in_flight() {
     let r = Rig::new("quit", "echo $$ > $HOME/stubpid\nexec $HOME/bin/sleep 60");
-    let guard = Background::start();
-    r.sess();
-    let pid = loop {
-        if let Ok(p) = std::fs::read_to_string(r.dir.join("stubpid"))
-            && !p.is_empty()
-        {
-            break p.trim().to_string();
-        }
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    };
-    drop(guard);
-    wait_gone_within(&pid, 200);
+    let me = std::env::current_exe().unwrap();
+    let st = std::process::Command::new(me)
+        .args(["--exact", "quit_child", "--test-threads=1"])
+        .env("QUIT_CHILD", "1")
+        .stdout(std::process::Stdio::null())
+        .status()
+        .unwrap();
+    assert_eq!(st.code(), Some(0), "the child quit");
+    let pid = std::fs::read_to_string(r.dir.join("stubpid")).unwrap();
+    wait_gone(pid.trim());
 }
 
 /// The file is data from disk: a session that is no id never reaches a path.
@@ -708,10 +736,7 @@ fn hup_child() {
     let _board = Background::start();
     let _push = cockpit_tui::push::Push::start();
     list_panes();
-    let stub = Path::new(&std::env::var("HOME").unwrap()).join("stubpid");
-    while std::fs::read_to_string(&stub).unwrap_or_default().is_empty() {
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
+    wait_in_flight();
     // SAFETY: raises the signal the board's handler is installed for.
     unsafe { libc::raise(libc::SIGHUP) };
     std::thread::sleep(std::time::Duration::from_secs(5));
@@ -731,5 +756,5 @@ fn a_signalled_board_kills_a_lookup_in_flight() {
         .unwrap();
     assert_eq!(st.code(), Some(0), "the handler's _exit(0), not the child's own exit");
     let pid = std::fs::read_to_string(r.dir.join("stubpid")).unwrap();
-    wait_gone_within(pid.trim(), 200);
+    wait_gone(pid.trim());
 }
