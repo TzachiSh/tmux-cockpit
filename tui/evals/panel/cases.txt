@@ -1248,3 +1248,15 @@ FAIL
 FAIL	example.com/proxy/header	0.004s
 --- request
 fix the failing test
+
+# #589 review holdout, written after the final prompt commit (49d7a24): a change
+# notice whose next fact is not a date, time or place.
+=== h-support-number
+kind: message
+window: bash · bash · /home/u
+expect: ask
+ask_any: number; phone
+holdout: yes
+note: customers need the new number to call, which only the owner has
+--- request
+email our customers that the support phone number changed
