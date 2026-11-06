@@ -565,12 +565,40 @@ fn as_claude(var: Option<OsString>, first: Option<&OsStr>) -> Option<OsString> {
     var.filter(|_| first == Some(OsStr::new("-p")))
 }
 
+/// Whether the wrapped call is hermetic, from [`HERMETIC`]: only `1` is.
+fn hermetic_wanted(var: Option<OsString>) -> bool {
+    var.is_some_and(|v| v == "1")
+}
+
+/// Sets what the wrapped call reads, [`AS_CLAUDE`] and [`HERMETIC`], and
+/// returns whether a call will now run hermetic, read back from the
+/// environment: what the calls get, which the fingerprint reports.
+///
+/// # Safety
+/// No other thread may read or write the environment meanwhile.
+unsafe fn hand_off(real: &str, hermetic: bool) -> bool {
+    // SAFETY: the caller's
+    unsafe {
+        std::env::set_var(AS_CLAUDE, real);
+        if hermetic {
+            std::env::set_var(HERMETIC, "1");
+        } else {
+            std::env::remove_var(HERMETIC);
+        }
+    }
+    hermetic_wanted(std::env::var_os(HERMETIC))
+}
+
+/// The call the wrapper runs for `args`, hermetic as `var` says.
+fn wrapped_command(real: &OsStr, args: impl IntoIterator<Item = OsString>, var: Option<OsString>) -> std::process::Command {
+    claude_command(real, args, hermetic_wanted(var))
+}
+
 /// The rig as the call's claude: exec, so the pid, its process group and its
 /// death signal stay the ones Request set up.
 fn exec_claude(real: &OsStr) -> ! {
     use std::os::unix::process::CommandExt;
-    let hermetic = std::env::var_os(HERMETIC).is_some_and(|v| v == "1");
-    let e = claude_command(real, std::env::args_os().skip(1), hermetic).exec();
+    let e = wrapped_command(real, std::env::args_os().skip(1), std::env::var_os(HERMETIC)).exec();
     eprintln!("panel_eval: {}: {e}", real.to_string_lossy());
     std::process::exit(127);
 }
@@ -640,15 +668,13 @@ fn main() {
     let mut call = Call::from_env();
     let version = claude_version(&call.claude);
     let mut wrapped = false;
+    // what the calls get, read back: false when the rig cannot wrap them
+    let mut hermetic = false;
     match std::env::current_exe() {
         Ok(me) => {
             wrapped = true;
             // SAFETY: no other thread runs yet: no call has been spawned.
-            unsafe { std::env::set_var(AS_CLAUDE, &call.claude) };
-            if o.hermetic {
-                // SAFETY: as above
-                unsafe { std::env::set_var(HERMETIC, "1") };
-            }
+            hermetic = unsafe { hand_off(&call.claude, o.hermetic) };
             call.claude = me.display().to_string();
         }
         Err(e) if o.hermetic => {
@@ -657,27 +683,29 @@ fn main() {
         }
         Err(e) => eprintln!("panel_eval: no cost recorded, cannot find the rig's own binary: {e}"),
     }
-    // removed after the last call, a panic included
-    let cwds = Staged(o.hermetic.then(|| {
-        let d = std::env::temp_dir().join(format!("panel-eval-cwd-{}", std::process::id()));
-        std::fs::create_dir(&d).unwrap_or_else(|e| {
-            eprintln!("panel_eval: {}: {e}", d.display());
-            std::process::exit(2);
-        });
-        d
-    }));
-    let env = fingerprint(&version, cwds.0.as_deref(), &call.dir, |k| std::env::var(k).ok());
     let mut log = o.out.as_ref().map(|p| {
         std::fs::File::create(p).unwrap_or_else(|e| {
             eprintln!("panel_eval: {}: {e}", p.display());
             std::process::exit(2);
         })
     });
-    // after the last exit: a Staged is removed when it drops, a panic included
+    // A Staged is removed when it drops, so after the last exit: `exit` skips
+    // drops, and so does a panic in a release build (`panic = "abort"`).
     let staged = Staged(stage(&cases).unwrap_or_else(|e| {
         eprintln!("panel_eval: {e}");
         std::process::exit(2);
     }));
+    let root = std::env::temp_dir().join(format!("panel-eval-cwd-{}", std::process::id()));
+    let cwds = match o.hermetic.then(|| std::fs::create_dir(&root)) {
+        Some(Err(e)) => {
+            eprintln!("panel_eval: {}: {e}", root.display());
+            drop(staged);
+            std::process::exit(2);
+        }
+        Some(Ok(())) => Staged(Some(root)),
+        None => Staged(None),
+    };
+    let env = fingerprint(&version, hermetic, cwds.0.as_deref(), &call.dir, |k| std::env::var(k).ok());
     let mut hashes: Vec<u64> = vec![];
     let mut todo: Vec<(usize, usize)> = (0..o.runs).flat_map(|r| (0..cases.len()).map(move |c| (c, r))).collect();
     todo.reverse();
@@ -805,7 +833,8 @@ fn main() {
     }
 }
 
-/// The fixture copy, removed on drop.
+/// A temp dir of the rig's own, removed on drop: the fixture copy, or a
+/// hermetic run's root of call folders.
 struct Staged(Option<PathBuf>);
 
 impl Drop for Staged {
@@ -853,7 +882,8 @@ struct Fingerprint {
 
 const ENV_VARS: [&str; 4] = ["HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "CLAUDE_CONFIG_DIR"];
 
-fn fingerprint(claude: &str, root: Option<&Path>, dir: &Path, var: impl Fn(&str) -> Option<String>) -> Fingerprint {
+/// `hermetic` is what the calls get (see [`hand_off`]); `root` where they run.
+fn fingerprint(claude: &str, hermetic: bool, root: Option<&Path>, dir: &Path, var: impl Fn(&str) -> Option<String>) -> Fingerprint {
     let cwd = match root {
         Some(r) => format!("{}/<case>-<run>", r.display()),
         None => dir.display().to_string(),
@@ -861,8 +891,8 @@ fn fingerprint(claude: &str, root: Option<&Path>, dir: &Path, var: impl Fn(&str)
     Fingerprint {
         claude: claude.into(),
         cwd,
-        hermetic: root.is_some(),
-        setting_sources: root.map(|_| HERMETIC_FLAGS[1].into()),
+        hermetic,
+        setting_sources: hermetic.then(|| HERMETIC_FLAGS[1].into()),
         vars: ENV_VARS.iter().map(|k| (*k, var(k))).collect(),
     }
 }
@@ -1023,6 +1053,9 @@ struct Row {
     ms: Option<u64>,
     /// The files an exploring call read; `None` for a text call or an older file.
     files_read: Option<usize>,
+    /// The row's `env` (#598) less its cwd, which names a pid; `None` in a file
+    /// written before it was recorded.
+    env: Option<serde_json::Value>,
 }
 
 /// The rows of an `--out` file; `name` heads each error.
@@ -1045,6 +1078,11 @@ fn read_rows(name: &str, text: &str) -> Result<Vec<Row>, String> {
             cost_usd: v["cost_usd"].as_f64(),
             ms: v["ms"].as_u64(),
             files_read: v["files_read"].as_array().map(Vec::len),
+            env: v["env"].as_object().map(|e| {
+                let mut e = e.clone();
+                e.remove("cwd");
+                serde_json::Value::Object(e)
+            }),
         });
     }
     if rows.is_empty() {
@@ -1084,6 +1122,18 @@ fn prompts_of(rows: &[Row]) -> Vec<&str> {
         }
     }
     hs
+}
+
+/// The distinct environments of a file's rows, in first-seen order; `None` for
+/// rows that recorded none.
+fn envs_of(rows: &[Row]) -> Vec<Option<&serde_json::Value>> {
+    let mut es = vec![];
+    for e in rows.iter().map(|r| r.env.as_ref()) {
+        if !es.contains(&e) {
+            es.push(e);
+        }
+    }
+    es
 }
 
 /// A side's (passed, graded, failed calls) for one case.
@@ -1153,6 +1203,12 @@ fn print_compare(sides: &[(&PathBuf, &[Row]); 2]) {
         if let Some(l) = reads_line(rows) {
             println!("   read      {l}");
         }
+        for e in envs_of(rows) {
+            println!("   env       {}", e.map_or("not recorded (before #598)".into(), |e| e.to_string()));
+        }
+    }
+    if envs_of(sides[0].1) != envs_of(sides[1].1) {
+        println!("warning: A and B ran in different environments (env above): cost and pass rates may differ for that alone");
     }
     let (pa, pb) = paired_pass_all(&cmp);
     println!(
@@ -1760,6 +1816,7 @@ mod tests {
             cost_usd: None,
             ms: None,
             files_read: None,
+            env: None,
         };
         assert_eq!(r[0], want);
         assert_eq!((r[1].cost_usd, r[2].pass), (Some(0.5), None));
@@ -2275,9 +2332,51 @@ mod tests {
     }
 
     #[test]
+    fn only_a_1_makes_the_wrapped_call_hermetic() {
+        let rows = [
+            ("set to 1", Some("1"), true),
+            ("unset", None, false),
+            ("set to 0", Some("0"), false),
+            ("empty", Some(""), false),
+        ];
+        for (name, var, want) in rows {
+            assert_eq!(hermetic_wanted(var.map(OsString::from)), want, "{name}");
+        }
+    }
+
+    /// #598 review: what main sets is what the wrapped call reads. The only test
+    /// that touches AS_CLAUDE and HERMETIC in this process's environment.
+    #[test]
+    fn the_hand_off_reaches_the_wrapped_call() {
+        let flag = |c: &std::process::Command| c.get_args().any(|a| a == HERMETIC_FLAGS[0]);
+        for (hermetic, want) in [(true, true), (false, false), (true, true)] {
+            // SAFETY: no other test reads or writes these variables
+            assert_eq!(unsafe { hand_off("/bin/claude", hermetic) }, want);
+            let real = as_claude(std::env::var_os(AS_CLAUDE), Some(OsStr::new("-p"))).unwrap();
+            assert_eq!(real, "/bin/claude");
+            let c = wrapped_command(&real, [OsString::from("-p")], std::env::var_os(HERMETIC));
+            assert_eq!(flag(&c), want, "hermetic {hermetic}");
+        }
+    }
+
+    /// #598 review: a baseline from before the env field, compared with a hermetic run.
+    #[test]
+    fn compare_reads_each_rows_env_without_its_cwd_and_tells_them_apart() {
+        let row =
+            |id: &str, cwd: &str| format!(r#"{{"id":"{id}","pass":true,"env":{{"claude":"2.1.319","cwd":"{cwd}","hermetic":true}}}}"#);
+        let herm = [row("a", "/t/cwd-7/case0-run0"), row("b", "/t/cwd-7/case1-run0")].join("\n");
+        let rows = read_rows("H", &herm).unwrap();
+        assert_eq!(rows[0].env.as_ref().unwrap()["cwd"], serde_json::Value::Null, "the cwd names a pid");
+        assert_eq!(envs_of(&rows).len(), 1, "one environment for the whole run");
+        let old = read_rows("O", "{\"id\":\"a\",\"pass\":true}\n").unwrap();
+        assert_eq!(envs_of(&old), [None]);
+        assert_ne!(envs_of(&old), envs_of(&rows));
+    }
+
+    #[test]
     fn the_fingerprint_names_the_version_the_cwd_the_sources_and_the_vars() {
         let var = |k: &str| (k == "HOME").then(|| "/home/u".to_string());
-        let f = fingerprint("2.1.319 (Claude Code)", Some(Path::new("/t/cwd")), Path::new("/c"), var);
+        let f = fingerprint("2.1.319 (Claude Code)", true, Some(Path::new("/t/cwd")), Path::new("/c"), var);
         assert_eq!(
             (f.claude.as_str(), f.cwd.as_str()),
             ("2.1.319 (Claude Code)", "/t/cwd/<case>-<run>")
@@ -2285,7 +2384,7 @@ mod tests {
         assert_eq!((f.hermetic, f.setting_sources.as_deref()), (true, Some("")));
         assert_eq!(f.vars[0], ("HOME", Some("/home/u".into())));
         assert_eq!(f.vars[3], ("CLAUDE_CONFIG_DIR", None));
-        let plain = fingerprint("v", None, Path::new("/c"), var);
+        let plain = fingerprint("v", false, None, Path::new("/c"), var);
         assert_eq!((plain.hermetic, plain.setting_sources, plain.cwd.as_str()), (false, None, "/c"));
         assert_eq!(f.json()["vars"]["XDG_CONFIG_HOME"], serde_json::Value::Null);
     }

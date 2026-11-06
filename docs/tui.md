@@ -267,7 +267,21 @@ both sides over the cases both graded in full, and each side's own (unpaired)
 `must`, `must_not`, `out_is` and `holdout` keys, is described at the top of
 the cases file; holdout cases are written after the prompt they run on, so a
 gain there is not overfitting. `--model`, `--runs`, `--jobs`, `--only <id or
-kind>` and `--out <file.jsonl>` are the knobs.
+kind>`, `--out <file.jsonl>` and `--no-hermetic` are the knobs.
+
+Calls are hermetic by default, so the rig's call differs from the panel's in
+two ways. It adds `claude --setting-sources ""`: no user, project or local
+settings load, and with them no `CLAUDE.md`, no plugin hooks and no
+`effortLevel`. And each call runs in a fresh empty temp folder, not the panel's
+cache folder. Dropping only the `user` source is not enough: under `$HOME`, the
+`project` source finds `~/.claude/CLAUDE.md` as `$HOME`'s `.claude/CLAUDE.md`.
+Those settings differ per machine, so without this two machines score the same
+prompt apart (#598). `--no-hermetic` runs the call as the panel does. The
+summary's `environment` line names the claude version, the cwd, whether user
+settings loaded, and `HOME`, `XDG_CONFIG_HOME`, `XDG_CACHE_HOME` and
+`CLAUDE_CONFIG_DIR`; each `--out` row carries the same as `env`. `--compare`
+prints each side's `env` and warns when they differ, as a run from before #598
+has none.
 
 **The panel's cache.** `claude -p` reads its system prompt from a file, so each
 distinct prompt is written once to
