@@ -2235,6 +2235,11 @@ mod tests {
         let half = " Then break the code on purpose and confirm the test fails.";
         let flip = " Then flip one condition in the code, confirm the test fails, then undo that change.";
         let loose = " Make sure it does not break other tests, keep it a small change, and revert unrelated edits.";
+        // #590: valid steps the #589 words missed
+        let bug = " Then introduce a small bug in the code, confirm the test fails, and revert it.";
+        let one_bug = " Then introduce a bug, see the test fail, and revert it.";
+        let invert = " Then temporarily invert the trim check, confirm the test fails, and put it back.";
+        let inverting = " Then try inverting the sign check: the test must fail; then restore it.";
         let p = |s: String| format!("<prompt>{s}</prompt>");
         let rows = [
             ("add", "test-the-changed-function", p(format!("{add}{step}")), true),
@@ -2246,6 +2251,10 @@ mod tests {
             ("fix bare", "last-commit-test", p(fix.into()), false),
             ("fix no undo", "last-commit-test", p(format!("{fix}{half}")), false),
             ("fix loose", "last-commit-test", p(format!("{fix}{loose}")), false),
+            ("add small bug", "test-the-changed-function", p(format!("{add}{bug}")), true),
+            ("add invert", "test-the-changed-function", p(format!("{add}{invert}")), true),
+            ("fix a bug", "last-commit-test", p(format!("{fix}{one_bug}")), true),
+            ("fix inverting", "last-commit-test", p(format!("{fix}{inverting}")), true),
         ];
         assert_eq!(graded_wrong(&rows), Vec::<&str>::new(), "rows graded the wrong way");
     }

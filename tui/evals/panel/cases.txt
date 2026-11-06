@@ -187,6 +187,24 @@ note: the new date is the owner's to give; #587 (card 10), was either: the reade
 --- request
 write to dana that the release slips
 
+=== release-slips-none-left
+kind: message
+window: bash · bash · /home/u
+expect: write
+out_is: text
+must: Dana; v2.4; <date>|<new date>|<release date>|<new release date>|[date]|[new date]|[release date]|[new release date]|{date}|{new date}
+must_not: let you know; to follow; once it's set|once it is set
+note: #590: release-slips with no question left; the message still needs the new date (write.txt, a change's new value), so the text holds a placeholder for it rather than a guess or a promise to send it later
+--- conversation
+assistant: Which release slips? Options: v2.4 | The mobile app
+user: v2.4
+assistant: Why does it slip? Options: A blocking bug | Waiting on review
+user: a payments bug
+assistant: How should it sound? Options: Casual | Formal
+user: casual
+--- request
+write to dana that the release slips
+
 === old-containers
 kind: command
 window: bash · bash · /home/u
@@ -636,8 +654,8 @@ cargo test fails on main since the merge, fix it
 kind: bug
 window: bash · bash · /home/u/projects/calc
 expect: write
-must: parses_negative; src/parser.rs; leading minus|9f3c2a1; on purpose|deliberately|mutate|mutation|mutant|mutants|break the code|flip|flipping; undo|undoing|revert|reverting|restore|put back|put it back
-note: the repo block names the last commit; the screen names the test and its file; #587 (card 59): after the fix the prompt breaks the code on purpose, sees the test fail and undoes the break; the break words were widened after a probe, then narrowed by the #589 review, since "break" and "small change" also pass "does not break other tests" and "keep it a small change"
+must: parses_negative; src/parser.rs; leading minus|9f3c2a1; on purpose|deliberately|mutate|mutation|mutant|mutants|break the code|flip|flipping|introduce a bug|introduce a small bug|invert|inverting; undo|undoing|revert|reverting|restore|put back|put it back
+note: the repo block names the last commit; the screen names the test and its file; #587 (card 59): after the fix the prompt breaks the code on purpose, sees the test fail and undoes the break; the break words were widened after a probe, then narrowed by the #589 review, since "break" and "small change" also pass "does not break other tests" and "keep it a small change"; #590 added "introduce a (small) bug" and "invert", valid steps the narrow words failed
 --- screen
 $ cargo test -q
 running 42 tests
@@ -686,8 +704,8 @@ review my changes
 kind: feature
 window: bash · bash · /home/u/projects/site
 expect: write
-must: slugify; on purpose|deliberately|mutate|mutation|mutant|mutants|break the code|flip|flipping; undo|undoing|revert|reverting|restore|put back|put it back
-note: without the repo block "which function" is open; the diff names the one file changed, and Claude Code can read the diff; #587 (card 58): the prompt breaks the code on purpose, sees the new test fail and undoes the break; the break words were widened after a probe, then narrowed by the #589 review, since "break" and "small change" also pass "does not break other tests" and "keep it a small change"
+must: slugify; on purpose|deliberately|mutate|mutation|mutant|mutants|break the code|flip|flipping|introduce a bug|introduce a small bug|invert|inverting; undo|undoing|revert|reverting|restore|put back|put it back
+note: without the repo block "which function" is open; the diff names the one file changed, and Claude Code can read the diff; #587 (card 58): the prompt breaks the code on purpose, sees the new test fail and undoes the break; the break words were widened after a probe, then narrowed by the #589 review, since "break" and "small change" also pass "does not break other tests" and "keep it a small change"; #590 added "introduce a (small) bug" and "invert", valid steps the narrow words failed
 --- screen
 $ npm test
 Tests: 18 passed, 18 total
@@ -1190,7 +1208,7 @@ kind: feature
 window: bash · bash · /home/u/projects/shop
 expect: write
 out_is: prompt
-must: parse_price; on purpose|deliberately|mutate|mutation|mutant|mutants|break the code|flip|flipping; undo|undoing|revert|reverting|restore|put back|put it back
+must: parse_price; on purpose|deliberately|mutate|mutation|mutant|mutants|break the code|flip|flipping|introduce a bug|introduce a small bug|invert|inverting; undo|undoing|revert|reverting|restore|put back|put it back
 holdout: no
 note: a new test gets the mutation step: break the helper on purpose, see the test fail, undo the break
 --- screen
@@ -1238,7 +1256,7 @@ kind: bug
 window: bash · bash · /home/u/projects/proxy
 expect: write
 out_is: prompt
-must: TestParseHeader; on purpose|deliberately|mutate|mutation|mutant|mutants|break the code|flip|flipping; undo|undoing|revert|reverting|restore|put back|put it back
+must: TestParseHeader; on purpose|deliberately|mutate|mutation|mutant|mutants|break the code|flip|flipping|introduce a bug|introduce a small bug|invert|inverting; undo|undoing|revert|reverting|restore|put back|put it back
 holdout: yes
 note: a failing test to fix gets the break-it step after it passes
 --- screen
