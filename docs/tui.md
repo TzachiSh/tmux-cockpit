@@ -2272,7 +2272,10 @@ prompt never claims a read the call could not make; it stays in the block, as
 the pane's agent can still read it. A ref is its file's canonical path, so a
 symlink in the folder that leads out is outside, as the read would be refused,
 and a link outside that leads in is inside; the folder is compared canonical
-too. The written result, sent or inserted from its view, carries the basket as
+too. A ref inside the folder that the read-only profile denies by rule (a
+`.env` or `.env.*`, a key under `~/.ssh`, the rest of `request.rs`'s list, read
+by `request::read_denied` from that same list) is noted `a secret the write may
+not read, not read`. The written result, sent or inserted from its view, carries the basket as
 `^T` does, and cockpit-panel clears it once the paste lands, but only when the
 result names every ref as given: a result that leaves one out, a command or
 steps, and a failed or cancelled write leave the basket as it was.

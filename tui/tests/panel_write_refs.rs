@@ -42,6 +42,7 @@ fn item(text: &str, whole: bool, outside: bool) -> RefItem {
         text: text.into(),
         whole,
         outside,
+        denied: false,
     }
 }
 
@@ -150,6 +151,64 @@ fn a_ref_through_a_symlink_is_where_the_link_leads() {
     let (base, refs) = (d.0.join("repo"), [r(&d, "repo/out.rs", None), r(&d, "other/in.rs", None)]);
     let marks: Vec<bool> = ref_items(&refs, &base, false, Some(&base)).iter().map(|i| i.outside).collect();
     assert_eq!(marks, [true, false]);
+}
+
+/// The read-only profile denies secret files by rule (request.rs DENY): a ref
+/// to one inside the root is noted as not read, as an outside one is.
+#[test]
+fn a_denied_file_in_the_root_is_noted_not_read() {
+    let d = tree("denied");
+    for f in [".env", ".env.local", "envy.rs"] {
+        std::fs::write(d.0.join("repo").join(f), "K=v\n").unwrap();
+    }
+    let base = d.0.join("repo");
+    let refs = [
+        r(&d, "repo/.env", None),
+        r(&d, "repo/.env.local", Some((1, 1))),
+        r(&d, "repo/envy.rs", None),
+    ];
+    let denied = |root: Option<&Path>| ref_items(&refs, &base, false, root).iter().map(|i| i.denied).collect::<Vec<_>>();
+    assert_eq!(denied(Some(&base)), [true, true, false]);
+    assert_eq!(denied(None), [false, false, false]);
+}
+
+#[test]
+fn a_denied_ref_says_it_was_not_read() {
+    let d = tree("deniednote");
+    let items = [RefItem {
+        denied: true,
+        ..item(".env", true, false)
+    }];
+    let got = build_refs(&write(), &cap(&d.0.join("repo")), &[], 3, &items).text;
+    assert!(
+        got.contains("<ref note=\"whole file; a secret the write may not read, not read\">.env</ref>"),
+        "{got}"
+    );
+}
+
+/// The rows of the profile's own deny list, read as the profile reads them.
+#[test]
+fn read_denied_follows_the_profiles_read_denies() {
+    use cockpit_tui::panel::request::read_denied;
+    let home = Some(Path::new("/h/u"));
+    let rows = [
+        ("/r/.env", true),
+        ("/r/a/b/.env.prod", true),
+        ("/r/.envrc", false),
+        ("/r/env", false),
+        ("/h/u/.ssh/id_ed25519", true),
+        ("/h/u/.sshx/id", false),
+        ("/h/u/.claude/.credentials.json", true),
+        ("/h/u/.claude/settings.json", false),
+        ("/other/.ssh/id_ed25519", false),
+    ];
+    let wrong: Vec<&str> = rows
+        .iter()
+        .filter(|(p, want)| read_denied(Path::new(p), home) != *want)
+        .map(|r| r.0)
+        .collect();
+    assert_eq!(wrong, [] as [&str; 0]);
+    assert!(!read_denied(Path::new("/h/u/.ssh/id"), None), "no home, no ~ rule");
 }
 
 #[test]

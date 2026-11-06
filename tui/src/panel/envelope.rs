@@ -3,6 +3,7 @@ use super::action::sanitize;
 use super::ask::AskCode;
 use super::capture::{Capture, session_state};
 use super::redact::redact;
+use super::request::read_denied;
 use crate::refs::Ref;
 use std::path::Path;
 
@@ -118,6 +119,8 @@ pub struct RefItem {
     pub text: String,
     pub whole: bool,
     pub outside: bool,
+    /// inside the root, but a file the read-only profile denies (a secret)
+    pub denied: bool,
 }
 
 /// `refs` as [`RefItem`]s, from `base` (the pane's folder). `root` is the
@@ -126,13 +129,19 @@ pub struct RefItem {
 /// was added: one inside the root that leads out is outside, as the read would
 /// be refused, and one outside that leads in is inside. The root is compared
 /// canonical too, so a pane reached through a link is the folder it names.
+/// A ref inside the root that the read-only profile denies by rule (a `.env`,
+/// a key under `~/.ssh`: `request::read_denied`) is noted as not read too.
 pub fn ref_items(refs: &[Ref], base: &Path, claude: bool, root: Option<&Path>) -> Vec<RefItem> {
-    let root = root.map(|r| r.canonicalize().unwrap_or_else(|_| r.to_path_buf()));
+    let canon = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    let root = root.map(canon);
+    let home = std::env::var_os("HOME").filter(|h| !h.is_empty()).map(|h| canon(Path::new(&h)));
+    let inside = |r: &Ref| root.as_ref().is_some_and(|root| r.path().starts_with(root));
     refs.iter()
         .map(|r| RefItem {
             text: crate::basket::ref_line(r, base, claude),
             whole: r.lines().is_none(),
-            outside: root.as_ref().is_some_and(|root| !r.path().starts_with(root)),
+            outside: root.is_some() && !inside(r),
+            denied: inside(r) && read_denied(r.path(), home.as_deref()),
         })
         .collect()
 }
@@ -144,10 +153,14 @@ fn refs_part(refs: &[RefItem]) -> String {
     let lines: Vec<String> = refs
         .iter()
         .map(|r| {
-            let notes: Vec<&str> = [(r.whole, "whole file"), (r.outside, "outside the repo, not read")]
-                .into_iter()
-                .filter_map(|(on, n)| on.then_some(n))
-                .collect();
+            let notes: Vec<&str> = [
+                (r.whole, "whole file"),
+                (r.outside, "outside the repo, not read"),
+                (r.denied, "a secret the write may not read, not read"),
+            ]
+            .into_iter()
+            .filter_map(|(on, n)| on.then_some(n))
+            .collect();
             let note = if notes.is_empty() {
                 String::new()
             } else {
