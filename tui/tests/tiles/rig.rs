@@ -44,8 +44,8 @@ impl Rig {
             d = self.dir.display(),
             s = self.sock
         );
-        std::fs::write(&sh, body).unwrap();
-        vec!["sh".into(), sh.display().to_string()]
+        crate::fake::write_exec(&sh, &body);
+        vec![sh.display().to_string()]
     }
 
     pub fn calls(&self) -> usize {
