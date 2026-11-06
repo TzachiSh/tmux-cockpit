@@ -1130,7 +1130,10 @@ impl App {
         if refs.is_empty() || !matches!(back, View::Result { .. }) {
             return None;
         }
-        if !refs.iter().all(|r| names(text, &r.text)) {
+        if let Some(i) = unnamed(text, &refs) {
+            // by its place: the basket's contents are never logged
+            let n = refs.len();
+            eprintln!("cockpit-tui: the written result does not name ref {i} of {n} as given; the basket is kept");
             return None;
         }
         self.basket_text().ok()
@@ -1999,6 +2002,12 @@ fn first_ask(r: &Run) -> bool {
 /// as it arrives, and an Enter held over from the last view must not fire it.
 pub fn needs_y(text: &str, send: bool) -> bool {
     send && text.trim_end_matches('\n').contains('\n')
+}
+
+/// The first of `refs` that `text` does not name ([`names`]), by its place,
+/// 1-based; `None` when it names them all.
+pub fn unnamed(text: &str, refs: &[RefItem]) -> Option<usize> {
+    refs.iter().position(|r| !names(text, &r.text)).map(|i| i + 1)
 }
 
 /// `text` names `form` as given, as itself and not as part of a longer ref:

@@ -373,6 +373,18 @@ fn a_ref_is_named_only_as_itself() {
     assert_eq!(wrong, [] as [&str; 0]);
 }
 
+/// Why a written result kept the basket, for the log: the first ref it does
+/// not name, by its place in the basket, 1-based; `None` when it names them all.
+#[test]
+fn the_first_ref_not_named_is_found_by_its_place() {
+    use cockpit_tui::panel::app::unnamed;
+    let refs = [item("@a.rs#L1-2", false, false), item("@b.md", true, false)];
+    assert_eq!(unnamed("fix @a.rs#L1-2 per @b.md", &refs), None);
+    assert_eq!(unnamed("fix @a.rs#L1-2", &refs), Some(2));
+    assert_eq!(unnamed("fix it", &refs), Some(1));
+    assert_eq!(unnamed("fix it", &[]), None);
+}
+
 #[test]
 fn a_failed_or_cancelled_write_leaves_the_basket() {
     let d = tree("failed");
