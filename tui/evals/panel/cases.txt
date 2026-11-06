@@ -193,8 +193,8 @@ window: bash · bash · /home/u
 expect: write
 out_is: text
 must: Dana; v2.4; <date>|<new date>|<release date>|<new release date>|[date]|[new date]|[release date]|[new release date]|{date}|{new date}
-must_not: let you know; to follow; once it's set|once it is set
-note: #590: release-slips with no question left; the message still needs the new date (write.txt, a change's new value), so the text holds a placeholder for it rather than a guess or a promise to send it later
+must_not: date to follow; once it's set|once it is set; let you know the date|let you know the new date|let you know when
+note: #590: release-slips with no question left; the message still needs the new date (write.txt, a change's new value), so the text holds a placeholder for it rather than a guess or a promise to send it later; must_not names a promise of the date only, since "I'll let you know as soon as the fix is in" next to the placeholder is fine (narrowed after the first full run, where that line failed a bare "let you know")
 --- conversation
 assistant: Which release slips? Options: v2.4 | The mobile app
 user: v2.4
