@@ -70,7 +70,7 @@ fn check(pane: &str) -> Result<(), String> {
     }
 }
 
-/// Under `cargo test` (`tui/.cargo/config.toml` sets `COCKPIT_TEST_TMUX_GUARD`)
+/// Under `cargo test` (the repo root's `.cargo/config.toml` sets `COCKPIT_TEST_TMUX_GUARD`)
 /// the basket runs tmux only on a private server (`-L`, `-S`) or a stub, never
 /// the user's: a test that slips past its own setup refuses instead of writing.
 fn guard() -> Result<(), String> {

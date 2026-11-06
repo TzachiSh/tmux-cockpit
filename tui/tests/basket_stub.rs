@@ -57,7 +57,7 @@ fn the_basket_never_reaches_a_tmux_it_was_not_given() {
     unsafe { std::env::set_var("COCKPIT_TMUX", bin.join("tmux").display().to_string()) };
     assert!(
         std::env::var_os("COCKPIT_TEST_TMUX_GUARD").is_some(),
-        "tui/.cargo/config.toml sets it"
+        "the repo root's .cargo/config.toml sets it"
     );
     let why = basket::read("%1").unwrap_err();
     assert!(why.contains("COCKPIT_TEST_TMUX_GUARD"), "{why}");
