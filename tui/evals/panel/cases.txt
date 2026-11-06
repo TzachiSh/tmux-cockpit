@@ -1323,3 +1323,35 @@ note: a one-line change with a bare ref: no baseline, subagent or interview
 config/app.yaml:3
 --- request
 change the port here to 8081
+
+# #590 review holdouts, written after 00fe620, the final prompt commit: a
+# mention in an exploring claude write stays as given, and a bare rename of a
+# constant stays small.
+=== h-refs-explore-mention
+kind: bug
+window: claude · claude · /home/u/invoicer
+explore: invoicer
+expect: write
+out_is: prompt
+must: @invoicer/money.py#L9-11; 11.90
+must_not: (lines 9-11); lines 9-11; Assumed:
+holdout: yes
+note: an explored claude ref is copied as its mention, never as a line count
+--- refs
+invoicer/money.py:9-11
+--- request
+add_vat(10, 19) gives 11.9 but should print 11.90. fix it
+
+=== h-refs-bare-const
+kind: refactor
+window: dev · bash · /home/u/web
+out: prompt
+expect: write
+must: src/config.ts:8; MAX_RETRIES
+must_not: @src/config.ts; #L8; baseline; subagent|subagents; AskUserQuestion
+holdout: yes
+note: a rename of one constant with a bare ref: no @, no baseline
+--- refs
+src/config.ts:8
+--- request
+rename RETRIES to MAX_RETRIES here and wherever it is used
