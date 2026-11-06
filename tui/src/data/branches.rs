@@ -52,19 +52,12 @@ fn refs(dir: &str, ns: &str) -> Vec<(String, String)> {
 /// (a line that is no worktree attribute) is dropped rather than guessed at. So
 /// is one that is not this repo's (#348, #532): a newline name can forge a whole
 /// `worktree <dir>` line, and `<dir>` may be any checkout. See [`ours`].
-/// When the main checkout's `.git` is a file (`--separate-git-dir`, a submodule), git
-/// prints the git dir as the main record's path. That is no tree, so the record is
-/// dropped (#537); the fallback's [`ours`] drops it too. A first record that holds a
-/// tree's `.git`, a linked tree's `gitdir:` file included, is kept (#560). See [`tree`].
+/// When the main checkout's `.git` is a file (`--separate-git-dir`, a submodule) or the
+/// repo is bare, git prints the common git dir as the main record's path. That is no
+/// tree, whatever sits in it, so the record is dropped (#537, #560); the fallback's
+/// [`ours`] drops it too. A main checkout or a linked tree listed first is never that
+/// dir, and is kept.
 fn worktrees(dir: &str, top: &str) -> Vec<(String, Option<String>)> {
-    let z = git(dir, &[], None, &["worktree", "list", "--porcelain", "-z"]);
-    if !z.is_empty() {
-        let mut v = records(z.split('\0'), true);
-        if v.first().is_some_and(|(p, _)| !tree(Path::new(p))) {
-            v.remove(0);
-        }
-        return v;
-    }
     // Asked from the top: before 2.13 the answer was the cwd's prefix plus a path from the top.
     let top = if top.is_empty() { dir } else { top };
     let common = git(top, &[], None, &["rev-parse", "--git-common-dir"]);
@@ -73,18 +66,19 @@ fn worktrees(dir: &str, top: &str) -> Vec<(String, Option<String>)> {
         return Vec::new();
     }
     let common = Path::new(top).join(common);
+    let z = git(dir, &[], None, &["worktree", "list", "--porcelain", "-z"]);
+    if !z.is_empty() {
+        let mut v = records(z.split('\0'), true);
+        let bare = z.split("\0\0").next().is_some_and(|r| r.split('\0').any(|l| l == "bare"));
+        if v.first().is_some_and(|(p, _)| bare || same(Path::new(p), &common)) {
+            v.remove(0);
+        }
+        return v;
+    }
     let plain = git(dir, &[], None, &["worktree", "list", "--porcelain"]);
     let mut v = records(plain.split('\n'), false);
     v.retain(|(p, b)| ours(Path::new(p), b.as_deref(), &common));
     v
-}
-
-/// `p` holds a tree's `.git`: a dir, as a main checkout's, or a file whose first line
-/// starts `gitdir: `, as a linked tree's. A git dir that git prints as the main record
-/// holds none, or a stray file that is not git's (#537, #560).
-fn tree(p: &Path) -> bool {
-    let dot = p.join(".git");
-    dot.is_dir() || first_line(&dot).is_some_and(|l| l.len() > 8 && l.starts_with("gitdir: "))
 }
 
 /// True for a worktree of the repo whose common dir is `common`, as tmux-branch's
@@ -257,38 +251,10 @@ pub fn valid_name(dir: &str, name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{records, same, tree};
+    use super::{records, same};
 
     fn plain(s: &str) -> Vec<(String, Option<String>)> {
         records(s.split('\n'), false)
-    }
-
-    #[test]
-    fn a_tree_has_a_git_dir_or_a_gitdir_file_and_nothing_else_is_one() {
-        let d = std::env::temp_dir().join(format!("cockpit-tree560-{}", std::process::id()));
-        // What `.git` is: "/" a dir, "->" a dangling link, None absent, else a file's text.
-        let rows = [
-            ("main checkout", Some("/"), true),
-            ("linked tree", Some("gitdir: /x\n"), true),
-            ("stray file", Some("not git\n"), false),
-            ("empty gitdir: line", Some("gitdir: \n"), false),
-            ("dangling link", Some("->"), false),
-            ("no .git", None, false),
-        ];
-        let mut got = Vec::new();
-        for (i, (row, git, _)) in rows.iter().enumerate() {
-            let (p, dot) = (d.join(i.to_string()), d.join(i.to_string()).join(".git"));
-            std::fs::create_dir_all(&p).unwrap();
-            match git {
-                Some("/") => std::fs::create_dir(&dot).unwrap(),
-                Some("->") => std::os::unix::fs::symlink(d.join("none"), &dot).unwrap(),
-                Some(text) => std::fs::write(&dot, text).unwrap(),
-                None => {}
-            }
-            got.push((*row, tree(&p)));
-        }
-        let _ = std::fs::remove_dir_all(&d);
-        assert_eq!(got, rows.map(|(row, _, want)| (row, want)));
     }
 
     #[test]
