@@ -1029,3 +1029,34 @@ invoicer/money.py:4-6
 ../shared/rates.py:3-9
 --- request
 make round_cents round the way the rates helper does
+
+# #365 child 5 holdouts, written after the final prompt commit.
+=== h-refs-review
+kind: review
+window: claude · claude · /home/u/web
+expect: write
+out_is: prompt
+must: @lib/auth/token.ts#L20-58; @lib/auth/token.test.ts
+must_not: Assumed:
+holdout: yes
+note: the review's focus (bugs) and report-only are given; both refs named as given
+--- refs
+lib/auth/token.ts:20-58
+lib/auth/token.test.ts
+--- request
+review this for bugs, only report, don't change anything
+
+=== h-refs-codex-flag
+kind: feature
+window: codex · codex · /home/u/cli
+out: prompt
+expect: write
+must: src/main.rs:5-40; Cargo.toml; --verbose
+must_not: @src/main.rs; #L5; AskUserQuestion
+holdout: yes
+note: codex is not Claude Code: bare refs; a flag next to an existing one is a small addition
+--- refs
+src/main.rs:5-40
+Cargo.toml
+--- request
+add a --verbose flag next to --quiet
