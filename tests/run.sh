@@ -2718,7 +2718,8 @@ is "vnum: 1.12.9 is below the 1.13.0 floor, and only that way" "no yes" \
    "$(dcge 1.12.9 1.13.0) $(dcge 1.13.0 1.12.9)"
 # vnum_ge grades the tmux floor at all three sites (#545). A master build says
 # next-X.Y, X.Y being the release it leads to; a word with no number passes.
-for r in 3.7:no v3.7:no 3.8:yes next-3.7:no next-3.8:yes next-3.9:yes master:yes openbsd-7.5:yes :yes; do
+for r in 3.7:no 3.7a:no v3.7:no 3.8:yes next-3.7:no next-3.8:yes next-3.9:yes next-3.10:yes \
+         master:yes openbsd-7.5:yes :yes; do
     tv=${r%:*}
     is "vnum_ge: tmux '$tv' against the 3.8 floor" "${r##*:}" \
        "$(vnum_ge "$tv" 3.8 2>&1 && echo yes || echo no)"
