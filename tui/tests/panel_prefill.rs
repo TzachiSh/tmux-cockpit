@@ -152,6 +152,11 @@ fn the_prefill_is_cleaned() {
     for (row, c) in [("ESC", '\u{1b}'), ("BEL", '\u{7}'), ("U+202E", '\u{202e}')] {
         assert!(!a.draft.contains(c), "{row} survived: {:?}", a.draft);
     }
+    // the whole sequence goes, not only its ESC and BEL (review-510's NIT)
+    for body in ["[31m", "]52;c;aGk="] {
+        assert!(!a.draft.contains(body), "{body} survived: {:?}", a.draft);
+    }
+    assert_eq!(a.draft, "ab  cd");
 }
 
 /// A long answer with no space near the cap (CJK) is cut at the cap, never
@@ -184,4 +189,22 @@ fn a_fix_from_that_compose_ends_the_thread() {
     key(&mut a, KeyCode::Esc);
     key(&mut a, KeyCode::Esc);
     assert!(matches!(a.view, View::Home { .. }), "{:?}", a.view);
+}
+
+/// review-510: the cap is 2000 characters, on whole graphemes. A family emoji is
+/// seven chars and one grapheme; 2100 of them would be an 8000-char draft that
+/// meets MAX_DRAFT and loses its ellipsis.
+#[test]
+fn the_cap_counts_chars_and_keeps_whole_emoji() {
+    use unicode_segmentation::UnicodeSegmentation;
+    let family = "\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}\u{200d}\u{1f466}";
+    let (_d, mut a) = answered("emoji", &format!("<prompt>{}</prompt>\n", family.repeat(2100)));
+    key(&mut a, KeyCode::Char('c'));
+    assert!(
+        a.draft.chars().count() <= 2000 && a.draft.ends_with('…'),
+        "{}",
+        a.draft.chars().count()
+    );
+    let head = a.draft.trim_end_matches('…');
+    assert!(head.graphemes(true).all(|g| g == family), "a family cut in two");
 }

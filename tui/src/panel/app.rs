@@ -25,8 +25,9 @@ pub const OUT_CYCLE: [OutType; 7] = [
     OutType::Hint,
 ];
 pub const MAX_DRAFT: usize = 8000;
-/// An ask's `c` prefills at most this many characters (#365 child 5): a quarter
-/// of the draft, so the user has room to make it an instruction.
+/// An ask's `c` prefills at most this many characters, the `…` included, cut
+/// on whole graphemes (#365 child 5): a quarter of the draft, so the user has
+/// room to make it an instruction.
 pub const PREFILL_MAX: usize = 2000;
 /// Past this the Compose head counts the draft against MAX_DRAFT.
 pub const DRAFT_COUNT: usize = 6000;
@@ -924,7 +925,8 @@ impl App {
         (self.draft, self.cur) = (String::new(), 0);
         // the model's text: no control, OSC or bidi character goes in the draft (review-510)
         let bidi = crate::pick::is_bidi;
-        let clean: String = pasted(&text, true).chars().filter(|&c| !bidi(c)).collect();
+        let plain = pasted(&strip_escapes(&text), true);
+        let clean: String = plain.chars().filter(|&c| !bidi(c)).collect();
         let n = put(&mut self.draft, &mut self.cur, &cut_prefill(clean.trim_end()));
         self.cap_note(n);
         if let Ok(rf) = ask_ref
@@ -1964,16 +1966,23 @@ pub fn needs_y(text: &str, send: bool) -> bool {
     send && text.trim_end_matches('\n').contains('\n')
 }
 
-/// `text` cut to [`PREFILL_MAX`] graphemes with a visible `…`, never inside one
-/// (an e and its combining accent stay together). It backs off to a space only
-/// within the last [`PREFILL_BACK`]: a text with none near the cap (CJK) is cut
-/// there, not back to its head line (review-510).
+/// `text` cut to [`PREFILL_MAX`] characters, the `…` included, on whole
+/// graphemes only (an e and its accent, a family emoji's seven chars, stay
+/// together). It backs off to a space only within the last [`PREFILL_BACK`]
+/// graphemes: a text with none near the cap (CJK) is cut there (review-510).
 fn cut_prefill(text: &str) -> String {
-    let g: Vec<&str> = text.graphemes(true).collect();
-    if g.len() <= PREFILL_MAX {
+    if text.chars().count() <= PREFILL_MAX {
         return text.to_string();
     }
-    let head = &g[..PREFILL_MAX - 1];
+    let (mut head, mut n): (Vec<&str>, usize) = (vec![], 0);
+    for g in text.graphemes(true) {
+        let c = g.chars().count();
+        if n + c > PREFILL_MAX - 1 {
+            break;
+        }
+        n += c;
+        head.push(g);
+    }
     let space = head
         .iter()
         .rev()
@@ -1981,6 +1990,31 @@ fn cut_prefill(text: &str) -> String {
         .position(|x| x.chars().all(char::is_whitespace));
     let keep = space.map_or(head.len(), |k| head.len() - 1 - k);
     format!("{}…", head[..keep].concat().trim_end())
+}
+
+/// A terminal's escape sequences out whole, not only their ESC: a CSI
+/// (`ESC [` to its final byte) and an OSC (`ESC ]` to BEL or `ESC \`), and any
+/// other `ESC x` pair (review-510's NIT). What is left is text.
+fn strip_escapes(s: &str) -> String {
+    let (mut out, mut it) = (String::new(), s.chars().peekable());
+    while let Some(c) = it.next() {
+        if c != '\u{1b}' {
+            out.push(c);
+            continue;
+        }
+        match it.next() {
+            Some('[') => while it.next().is_some_and(|x| !('@'..='~').contains(&x)) {},
+            Some(']') => {
+                while let Some(x) = it.next() {
+                    if x == '\u{7}' || (x == '\u{1b}' && it.next_if_eq(&'\\').is_some()) {
+                        break;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 /// How far back [`cut_prefill`] looks for a space.
