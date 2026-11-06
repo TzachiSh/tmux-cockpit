@@ -8326,8 +8326,9 @@ pj_key() {                    # <key>  one press, then poll for one more capture
     return 1
 }
 if until_cap "$PJ" "$PJW" '*live · *screen-of-alpha*'; then
-    pjl=$(pj_n list-panes); pjmiss=0
+    # timed from before the count, so no fetch is counted without being timed
     pjt0=$(date +%s%N)
+    pjl=$(pj_n list-panes); pjmiss=0
     for i in $(seq 1 20); do
         pj_key j || pjmiss=$((pjmiss + 1))
         pj_key k || pjmiss=$((pjmiss + 1))
