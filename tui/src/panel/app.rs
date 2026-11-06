@@ -140,6 +140,10 @@ pub enum View {
         back: Box<View>,
         scroll: usize,
     },
+    /// ^B from Compose (#365 child 5): the prompt basket's refs, one a row
+    Basket {
+        sel: usize,
+    },
     Error {
         line: String,
         /// One line on what to do about it, when the failure is a known one.
@@ -252,6 +256,20 @@ pub struct App {
     /// A panel is hidden on this pane already (an ask left it so): ^Z cannot hide
     /// this one too, as the pane keeps one.
     pub hide_taken: bool,
+    /// The pane's prompt basket (#365 child 5), read at open: the refs a send
+    /// from Compose carries, expanded after the draft.
+    pub basket: Vec<crate::refs::Ref>,
+    /// The basket's option text as last read or written: what a send leaves in
+    /// `.basket`, so the clear matches even when a gone file's ref was dropped
+    /// on read (review-534); empty when the App holds no basket of the pane's.
+    pub basket_raw: String,
+    /// The pane runs Claude Code (`basket::is_claude`): refs go as `@path#La-b`.
+    pub claude: bool,
+    /// The basket as the confirm on screen would send it, until it acts.
+    basket_body: Option<String>,
+    /// The basket as sent with the action, for cockpit-panel to clear once the
+    /// paste lands (`<action>.basket`).
+    pub sent_basket: Option<String>,
     pub quit: bool,
     /// The step this run was resumed for, and its verb: the mark says what was done.
     pub last_step: Option<(usize, &'static str)>,
@@ -309,6 +327,11 @@ impl App {
             resume: None,
             hide: false,
             hide_taken: false,
+            basket: vec![],
+            basket_raw: String::new(),
+            claude: false,
+            basket_body: None,
+            sent_basket: None,
             reopened: false,
             quit: false,
             last_step: None,
@@ -463,7 +486,8 @@ impl App {
             return;
         }
         match &mut self.view {
-            View::Home { sel } | View::ExplainAsk { sel } | View::Steps { sel, .. } => *sel = i,
+            View::Home { sel } | View::ExplainAsk { sel } => *sel = i,
+            View::Steps { sel, .. } | View::Basket { sel } => *sel = i,
             View::Question { sel, scroll } => (*sel, *scroll) = (i, None),
             _ => return,
         }
@@ -571,6 +595,7 @@ impl App {
         match &self.view {
             View::Home { sel } => self.home_key(k, *sel),
             View::Compose => self.compose_key(k, ctrl),
+            View::Basket { sel } => self.basket_key(k, *sel),
             View::Busy => {
                 if k.code == KeyCode::Esc {
                     self.cancel();
@@ -724,12 +749,22 @@ impl App {
             }
         }
         self.view = back;
+        self.sent_basket = self.basket_body.take();
         self.action = Some(Action { verb, text });
         self.exit();
     }
 
     fn confirm_key(&mut self, k: KeyEvent, text: String, send: bool, warn: Vec<String>, back: Box<View>, scroll: usize) {
         let verb = if send { "send" } else { "paste" };
+        // a send with the basket's refs (#365, D2): `s` sends, `i` inserts
+        if self.basket_body.is_some() {
+            match k.code {
+                KeyCode::Char('s') => return self.act("send", text, *back),
+                KeyCode::Char('i') => return self.act("paste", text, *back),
+                KeyCode::Esc | KeyCode::Char('n' | 'q') => self.basket_body = None,
+                _ => {}
+            }
+        }
         match k.code {
             KeyCode::Char('y') => return self.act(verb, text, *back),
             KeyCode::Enter if !needs_y(&text, send) => return self.act(verb, text, *back),
@@ -790,6 +825,67 @@ impl App {
         }
     }
 
+    /// The confirm on screen is a basket send's, which `s` sends and `i`, `y`
+    /// or Enter insert (#365, owner's D2).
+    pub fn basket_confirm(&self) -> bool {
+        self.basket_body.is_some() && matches!(self.view, View::Confirm { .. })
+    }
+
+    /// ^T with refs in the basket (#365 child 5): the draft and its refs as the
+    /// pane's agent reads them (owner's D4), always through a confirm that shows
+    /// that exact text, even into a program that brackets its paste.
+    fn send_basket(&mut self) {
+        let base = std::path::Path::new(&self.cap.path);
+        let text = crate::basket::expand(&self.draft, &self.basket, base, self.claude);
+        // the option's text, a gone ref's line included, else the refs held
+        let body = match self.basket_raw.is_empty() {
+            true => crate::basket::body(&self.basket),
+            false => Ok(self.basket_raw.clone()),
+        };
+        match (text, body) {
+            (Ok(text), Ok(body)) => {
+                self.basket_body = Some(body);
+                self.confirm(text, false, View::Compose);
+            }
+            (Err(e), _) | (_, Err(e)) => self.say(Level::Warn, e),
+        }
+    }
+
+    /// ^B's list: ↑↓ move, d or Del removes the ref, D empties the basket, esc
+    /// is back to Compose. Each change is written to the pane's basket first.
+    fn basket_key(&mut self, k: KeyEvent, sel: usize) {
+        let n = self.basket.len();
+        let keep = match k.code {
+            KeyCode::Esc | KeyCode::Char('q') => return self.view = View::Compose,
+            KeyCode::Up | KeyCode::Char('k') => {
+                return self.view = View::Basket {
+                    sel: sel.saturating_sub(1),
+                };
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                return self.view = View::Basket {
+                    sel: (sel + 1).min(n.saturating_sub(1)),
+                };
+            }
+            KeyCode::Char('d') | KeyCode::Delete if sel < n => {
+                let mut keep = self.basket.clone();
+                keep.remove(sel);
+                keep
+            }
+            KeyCode::Char('D') if n > 0 => vec![],
+            _ => return,
+        };
+        match crate::basket::write(&self.pane, &keep) {
+            Ok(()) => {
+                self.basket_raw = crate::basket::body(&keep).unwrap_or_default();
+                self.basket = keep;
+                let sel = sel.min(self.basket.len().saturating_sub(1));
+                self.view = View::Basket { sel };
+            }
+            Err(e) => self.say(Level::Warn, format!("the basket is unchanged: {e}")),
+        }
+    }
+
     fn compose(&mut self, out: OutType) {
         self.out = out;
         self.view = View::Compose;
@@ -805,10 +901,13 @@ impl App {
             KeyCode::Char('t') if ctrl => {
                 if self.draft.trim().is_empty() {
                     self.say(Level::Warn, "nothing to insert yet");
+                } else if !self.basket.is_empty() {
+                    self.send_basket();
                 } else {
                     self.insert(self.draft.clone(), View::Compose);
                 }
             }
+            KeyCode::Char('b') if ctrl => self.view = View::Basket { sel: 0 },
             KeyCode::Char('n') if ctrl => self.model = (self.model + 1) % MODELS.len(),
             KeyCode::Char('r') if ctrl => self.toggle_explore(),
             // by row as drawn, so the box's width as `render` wraps it; before a frame, unwrapped

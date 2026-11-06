@@ -8693,6 +8693,8 @@ cp -r "$DIR/scripts/lib" "$PND/p/scripts/"
 cat > "$PND/rec/tmux" <<PNREC
 #!/bin/sh
 [ "\$1" = display ] && { cat "$PND/now"; exit 0; }
+# #365 child 5: the basket option's value, as the case set it in bopt
+[ "\$1" = show-options ] && { cat "$PND/bopt" 2>/dev/null; exit 0; }
 # the @cockpit_glyphs read (#293) is not an action: unset, unrecorded
 [ "\$*" = "show-option -gqv @cockpit_glyphs" ] && exit 0
 # capture-pane counts its calls; "still" mode answers the same screen each time.
@@ -8714,6 +8716,7 @@ cat > "$PND/p/bin/cockpit-tui" <<PNSTUB
 dir=\${COCKPIT_ACTION%/*}
 { stat -c %a "\$dir" 2>/dev/null || stat -f %Lp "\$dir"; } > "$PND/dmode"
 printf evil > "\$COCKPIT_ACTION.clean"
+[ -e "$PND/basket" ] && cp "$PND/basket" "\$COCKPIT_ACTION.basket"
 cat "$PND/line" > "\$COCKPIT_ACTION"
 [ -e "$PND/text" ] && cat "$PND/text" > "\$COCKPIT_ACTION.text"
 cat "$PND/cmd" > "\$COCKPIT_ACTION.cmd"
@@ -8787,6 +8790,22 @@ is "a failed paste-buffer drops the buffer, sends no Enter and says so" \
 rm -f "$PND/fail-paste-buffer"
 is "and logs tmux's error" "1" "$(grep -c 'paste-buffer failed for %5: boom paste-buffer' "$PND/tui.log")"
 is "an empty text pastes nothing" "" "$(pact 'paste %5' '')"
+# #365 child 5: a send that carried the basket's refs clears @cockpit_basket,
+# only after the paste landed and only if the basket is still what was sent
+printf '/r/a.rs:1-2\n/r/b.rs' > "$PND/basket"
+printf '/r/a.rs:1-2\n/r/b.rs\n' > "$PND/bopt"
+is "a send with the basket's refs clears it" "1" "$(pact 'send %5' hi | grep -c 'set-option -pu -t %5 @cockpit_basket')"
+# the owner's call: an insert (i, y or Enter) spends the basket too
+is "an insert with the basket's refs clears it too" "1" "$(pact 'paste %5' hi | grep -c 'set-option -pu -t %5 @cockpit_basket')"
+printf '/r/a.rs:1-2\n/r/b.rs\n/r/c.rs\n' > "$PND/bopt"
+is "a basket that changed since is kept" "0" "$(pact 'send %5' hi | grep -c '@cockpit_basket')"
+printf '/r/a.rs:1-2\n/r/b.rs\n' > "$PND/bopt"; touch "$PND/fail-paste-buffer"
+is "a paste that failed keeps the basket" "0" "$(pact 'send %5' hi | grep -c '@cockpit_basket')"
+rm -f "$PND/fail-paste-buffer"
+is "COCKPIT_READONLY keeps the basket" "0" "$(COCKPIT_READONLY=1 pact 'send %5' hi | grep -c '@cockpit_basket')"
+rm -f "$PND/basket"
+is "a send with no basket touches none" "0" "$(pact 'send %5' hi | grep -c '@cockpit_basket')"
+rm -f "$PND/bopt"
 is "a line for another pane than the one opened on pastes nothing" "" "$(pact 'paste %9' hi)"
 is "a board verb pastes nothing" "" "$(pact 'jump %5' hi)"
 is "a third field pastes nothing" "" "$(pact 'paste %5 x' hi)"
