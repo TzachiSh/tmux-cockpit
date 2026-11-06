@@ -464,7 +464,8 @@ fn a_fixed_draft_does_not_carry_the_basket() {
     let mut a = compose(&d, true);
     a.draft = "fix it in @a.rs#L1-2 per @b.md".into();
     ctrl(&mut a, 'f');
-    a.reply(Ok("<text>Fix it in @a.rs#L1-2, per @b.md.</text>".into()));
+    // a fix comes back as plain text, the draft corrected
+    a.reply(Ok("Fix it in @a.rs#L1-2, per @b.md.".into()));
     assert!(matches!(a.view, View::Result { .. }), "{:?}", a.view);
     a.key(KeyEvent::from(KeyCode::Char('i')));
     assert!(a.action.is_some() && a.sent_basket.is_none(), "{:?}", a.sent_basket);
