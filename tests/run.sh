@@ -7508,6 +7508,90 @@ esac
 unset -f nw
 rm -rf "$NW"
 
+# tests: scripts/tui-fetch
+echo "== cockpit-tui builds install from cargo's target dir, not tui/target (#546) =="
+# CARGO_TARGET_DIR or a config's build.target-dir moves the build out of
+# tui/target. The fake cargo builds into TD_OUT and its metadata reports
+# TD_JSON (JSON-escaped, empty: fail) only when called with the arguments the
+# real one needs. CARGO_TARGET_DIR stays unset, so only asking cargo finds it.
+if ! command -v make >/dev/null 2>&1; then skip_ "target dir (no make)"
+elif ! command -v curl >/dev/null 2>&1; then skip_ "target dir (no curl)"; else
+TD=$(mktmpd); mkdir -p "$TD/p/tui" "$TD/p/scripts/lib" "$TD/shim"
+cp "$DIR/Makefile" "$TD/p/"; cp "$DIR/tui/Cargo.toml" "$TD/p/tui/"
+cp "$DIR/scripts/tui-fetch" "$TD/p/scripts/"; cp "$DIR"/scripts/lib/*.sh "$TD/p/scripts/lib/"
+cat > "$TD/shim/cargo" <<'EOF'
+#!/bin/sh
+case "$1 $*" in
+    "metadata "*"--format-version 1 "*"--manifest-path "*tui/Cargo.toml*)
+        [ -n "${TD_JSON:-}" ] || { echo "error: fake metadata failed" >&2; exit 101; }
+        printf '{"packages":[],"target_directory":"%s","version":1}\n' "$TD_JSON" ;;
+    "build "*) o="$TD_OUT/release/cockpit-tui"; mkdir -p "${o%/*}" &&
+        printf '#!/bin/sh\necho "cockpit-tui 9.9.9"\n' > "$o" && chmod +x "$o" ;;
+    *) echo "error: fake cargo: unexpected arguments: $*" >&2; exit 1 ;;
+esac
+EOF
+printf '#!/bin/sh\necho "rustc 1.99.0 (0000000 2026-01-01)"\n' > "$TD/shim/rustc"
+# install records each call, so "never reached install" is a count.
+printf '#!/bin/sh\necho x >> "%s"\nexec %s "$@"\n' "$TD/installs" "$(command -v install)" \
+    > "$TD/shim/install"
+chmod +x "$TD/shim/cargo" "$TD/shim/rustc" "$TD/shim/install"
+td_make() {                   # <out-dir> <its JSON spelling>: rc and the installed version
+    rm -f "$TD/p/bin/cockpit-tui"
+    PATH="$TD/shim:$PATH" TD_OUT="$1" TD_JSON="$2" env -u CARGO_TARGET_DIR \
+        make -C "$TD/p" tui-bin >/dev/null 2>&1
+    printf '%s %s' "$?" "$("$TD/p/bin/cockpit-tui" --version 2>/dev/null)"
+}
+td_fetch() {                  # <out-dir> <its JSON spelling> [env...]: tui-fetch's source build
+    local o=$1 j=$2; shift 2; rm -f "$TD/p/bin/cockpit-tui"
+    PATH="$TD/shim:$PATH" TD_OUT="$o" TD_JSON="$j" env -u CARGO_TARGET_DIR \
+        -u COCKPIT_TUI_OFFLINE -u COCKPIT_TUI_BIN \
+        COCKPIT_TUI_RELEASES="file://$TD/no-such-host" "$@" \
+        "$TD/p/scripts/tui-fetch" --required --version cockpit-tui-v9.9.9 > "$TD/fetch.out" 2>&1
+    printf '%s %s' "$?" "$("$TD/p/bin/cockpit-tui" --version 2>/dev/null)"
+}
+td_dir() {                    # <its JSON spelling> [env...]: the helper's rc and answer
+    local j=$1 out; shift
+    out=$(cd "$TD/p" && PATH="$TD/shim:$PATH" TD_JSON="$j" env -u CARGO_TARGET_DIR "$@" \
+        bash -c '. scripts/lib/cargo-target.sh && cargo_target_dir tui/Cargo.toml' 2>/dev/null)
+    printf '%s %s' "$?" "$out"
+}
+is "make tui-bin installs from the target dir cargo reports" "0 cockpit-tui 9.9.9" \
+    "$(td_make "$TD/out" "$TD/out")"
+is "tui-fetch's source build installs from the target dir cargo reports" "0 cockpit-tui 9.9.9" \
+    "$(td_fetch "$TD/out" "$TD/out")"
+# serde_json escapes " and \ in a path: a checkout under one must still install.
+q="$TD/q\"x\\y/out"
+is "make tui-bin installs from a target dir whose path holds \" and \\" "0 cockpit-tui 9.9.9" \
+    "$(td_make "$q" "$(printf '%s' "$q" | sed 's/[\\"]/\\&/g')")"
+is "tui-fetch installs from a target dir whose path holds \" and \\" "0 cockpit-tui 9.9.9" \
+    "$(td_fetch "$q" "$(printf '%s' "$q" | sed 's/[\\"]/\\&/g')")"
+# A literal backslash before a letter is \\ then the letter: decodable, never refused.
+is "a path holding a literal \\n is read, not refused" "0 $TD/lit\\nx" "$(td_dir "$TD/lit\\\\nx")"
+# An answer it cannot read: CARGO_TARGET_DIR wins over any config, so it is
+# right when set. Unset, any guess may be a stale build, so it refuses.
+is "metadata failing falls back to CARGO_TARGET_DIR" "0 $TD/env" \
+    "$(td_dir '' CARGO_TARGET_DIR="$TD/env")"
+is "an escape it cannot undo (\\u0001) falls back to it too" "0 $TD/env" \
+    "$(td_dir '/a\u0001b' CARGO_TARGET_DIR="$TD/env")"
+is "metadata failing with it unset refuses to guess" "1 " "$(td_dir '')"
+is "an escape it cannot undo with it unset refuses to guess" "1 " "$(td_dir '/a\u0001b')"
+is "tui-fetch installs from the fallback when metadata fails" "0 cockpit-tui 9.9.9" \
+    "$(td_fetch "$TD/env" '' CARGO_TARGET_DIR="$TD/env")"
+case "$(cat "$TD/fetch.out")" in
+    *"error: fake metadata failed"*) ok "and shows cargo's own error" ;;
+    *) bad "and shows cargo's own error" "error: fake metadata failed" "$(cat "$TD/fetch.out")" ;;
+esac
+# The stale build the guess would have installed: neither entry point takes it.
+tds=$TD/p/tui/target/release/cockpit-tui; mkdir -p "${tds%/*}"
+printf '#!/bin/sh\necho "cockpit-tui 0.0.1-STALE"\n' > "$tds"; chmod +x "$tds"
+is "make tui-bin fails rather than install tui/target's stale build" "2 " "$(td_make "$TD/out" '')"
+: > "$TD/installs"
+is "tui-fetch fails rather than install tui/target's stale build" "1 " "$(td_fetch "$TD/out" '')"
+is "and never reaches install with no dir to install from" "0" \
+    "$(wc -l < "$TD/installs" | tr -d ' ')"
+unset -f td_make td_fetch td_dir
+fi
+
 echo "== cockpit-tui: docs name only real options =="
 # Three README lines went stale on review phase 3 and cost a round; this asserts
 # every @cockpit_* / COCKPIT_* name in docs/tui.md is one some code answers to.
