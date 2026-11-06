@@ -296,6 +296,9 @@ fn the_footer_and_the_help_offer_alt_a() {
     assert!(h.iter().any(|(k, v)| k == "alt-a" && v == "add"), "{h:?}");
     let rows = files::help(&g);
     assert!(rows.iter().any(|(k, v)| k == "alt-a" && v.contains("basket")), "{rows:?}");
+    // the help lists it where the footer does, right after alt-c
+    let at = |k: &str| rows.iter().position(|(key, _)| key == k);
+    assert_eq!(at("alt-a"), at("alt-c").map(|i| i + 1), "{rows:?}");
 }
 
 #[test]

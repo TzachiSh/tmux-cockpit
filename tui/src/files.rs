@@ -344,7 +344,9 @@ pub fn help(g: &Glyphs) -> Vec<(String, String)> {
         r.1 = "copy: print this row's path, exit".into();
     }
     let add = "add the file to the pane's prompt basket: print its path, exit";
-    rows.insert(at + 4, ("alt-a".into(), add.into()));
+    // after alt-c, as the footer has it (the lead's NIT on #557)
+    let after_copy = rows.iter().position(|(k, _)| k == "alt-c").map_or(rows.len(), |i| i + 1);
+    rows.insert(after_copy, ("alt-a".into(), add.into()));
     rows
 }
 
