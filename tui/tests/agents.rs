@@ -2,7 +2,8 @@
 //! Gates use files and polls, never a clock: the stub waits on a `go` file.
 mod fake;
 
-use cockpit_tui::data::agents::{Background, Entry, Stage, lookup_pid, lookups, read_file};
+use cockpit_tui::data::agents::{Background, Entry, Stage, flush, lookup_pid, lookups};
+use cockpit_tui::data::agents::{read_file, resolve};
 use cockpit_tui::data::agents::{set_background, set_stage_hook};
 use cockpit_tui::data::list_panes;
 use fake::write_exec;
@@ -826,6 +827,55 @@ fn the_end_clears_the_child_before_the_reap() {
     let seen = SEEN.lock().unwrap().clone();
     assert_eq!(seen.len(), 1, "one lookup: {seen:?}");
     assert_eq!(seen[0].1, None, "CHILD at the reap of {}", seen[0].0);
+}
+
+/// The child half of the failed-spawn test: no thread can start (RLIMIT_NPROC 0),
+/// so the board's lookup spawn fails, and the count must come back to 0.
+#[test]
+fn failed_spawn_child() {
+    if std::env::var_os("FAILED_SPAWN_CHILD").is_none() {
+        return;
+    }
+    let _board = Background::start();
+    resolve(&[("100".into(), "claude".into())]);
+    let mut lim = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+    // SAFETY: get/setrlimit read and write one struct; this child process only lowers
+    // its own soft limit, under the hard one it has.
+    unsafe {
+        libc::getrlimit(libc::RLIMIT_NPROC, &mut lim);
+        lim.rlim_cur = 0;
+        assert_eq!(libc::setrlimit(libc::RLIMIT_NPROC, &lim), 0, "lower RLIMIT_NPROC");
+    }
+    // root, CAP_SYS_RESOURCE or macOS (NPROC counts processes there): the spawn works
+    let got = match std::panic::catch_unwind(flush) {
+        Ok(()) => "skip".to_string(),
+        Err(_) => format!("false {}", lookups()),
+    };
+    let home = std::env::var("HOME").unwrap();
+    std::fs::write(Path::new(&home).join("counted"), got).unwrap();
+    std::process::exit(0);
+}
+
+/// #616's nit: a lookup spawn that fails takes its count back down, or every
+/// later wait for no lookups (the rig's Drop) would wait out its deadline.
+#[test]
+fn a_failed_lookup_spawn_leaves_no_count() {
+    let r = Rig::new("nospawn", ONE);
+    let me = std::env::current_exe().unwrap();
+    let st = std::process::Command::new(me)
+        .args(["--exact", "failed_spawn_child", "--test-threads=1"])
+        .env("FAILED_SPAWN_CHILD", "1")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .unwrap();
+    assert_eq!(st.code(), Some(0), "the child ran to its end");
+    let got = std::fs::read_to_string(r.dir.join("counted")).unwrap();
+    if got == "skip" {
+        eprintln!("RLIMIT_NPROC did not stop the spawn (root or macOS?) -- skipping");
+        return;
+    }
+    assert_eq!(got, "false 0", "(the spawn failed, lookups left counted)");
 }
 
 /// SIGHUP (a `kill-pane`) and SIGTERM end the board with `_exit`: the lookup child goes too.
