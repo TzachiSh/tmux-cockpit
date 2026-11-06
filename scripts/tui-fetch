@@ -145,7 +145,8 @@ build() {                     # 0 built · 2 skipped
         BUILD_FAILED=1; say "cargo build failed, last 5 lines:" >&2; tail -5 "$log" >&2; return 2; }
     # Not tui/target (#546); cargo's own error, if any, shows on stderr.
     # shellcheck source=lib/cargo-target.sh
-    td=$(. "$DIR/scripts/lib/cargo-target.sh" && cargo_target_dir "$DIR/tui/Cargo.toml")
+    td=$(. "$DIR/scripts/lib/cargo-target.sh" && cargo_target_dir "$DIR/tui/Cargo.toml") ||
+        { BUILD_FAILED=1; return 2; }
     install -m 755 "$td/release/cockpit-tui" "$COCKPIT_TUI_BIN" || { BUILD_FAILED=1; return 2; }
     say "cockpit-tui built from source -> $COCKPIT_TUI_BIN"
 }

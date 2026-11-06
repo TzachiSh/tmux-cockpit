@@ -7531,12 +7531,15 @@ case "$1 $*" in
 esac
 EOF
 printf '#!/bin/sh\necho "rustc 1.99.0 (0000000 2026-01-01)"\n' > "$TD/shim/rustc"
-chmod +x "$TD/shim/cargo" "$TD/shim/rustc"
+# install records each call, so "never reached install" is a count.
+printf '#!/bin/sh\necho x >> "%s"\nexec %s "$@"\n' "$TD/installs" "$(command -v install)" \
+    > "$TD/shim/install"
+chmod +x "$TD/shim/cargo" "$TD/shim/rustc" "$TD/shim/install"
 td_make() {                   # <out-dir> <its JSON spelling>: rc and the installed version
     rm -f "$TD/p/bin/cockpit-tui"
     PATH="$TD/shim:$PATH" TD_OUT="$1" TD_JSON="$2" env -u CARGO_TARGET_DIR \
         make -C "$TD/p" tui-bin >/dev/null 2>&1
-    printf '%s %s' "$?" "$("$TD/p/bin/cockpit-tui" --version 2>&1)"
+    printf '%s %s' "$?" "$("$TD/p/bin/cockpit-tui" --version 2>/dev/null)"
 }
 td_fetch() {                  # <out-dir> <its JSON spelling> [env...]: tui-fetch's source build
     local o=$1 j=$2; shift 2; rm -f "$TD/p/bin/cockpit-tui"
@@ -7544,12 +7547,13 @@ td_fetch() {                  # <out-dir> <its JSON spelling> [env...]: tui-fetc
         -u COCKPIT_TUI_OFFLINE -u COCKPIT_TUI_BIN \
         COCKPIT_TUI_RELEASES="file://$TD/no-such-host" "$@" \
         "$TD/p/scripts/tui-fetch" --required --version cockpit-tui-v9.9.9 > "$TD/fetch.out" 2>&1
-    printf '%s %s' "$?" "$("$TD/p/bin/cockpit-tui" --version 2>&1)"
+    printf '%s %s' "$?" "$("$TD/p/bin/cockpit-tui" --version 2>/dev/null)"
 }
-td_dir() {                    # <its JSON spelling> [env...]: what the helper answers
-    local j=$1; shift
-    (cd "$TD/p" && PATH="$TD/shim:$PATH" TD_JSON="$j" env -u CARGO_TARGET_DIR "$@" \
+td_dir() {                    # <its JSON spelling> [env...]: the helper's rc and answer
+    local j=$1 out; shift
+    out=$(cd "$TD/p" && PATH="$TD/shim:$PATH" TD_JSON="$j" env -u CARGO_TARGET_DIR "$@" \
         bash -c '. scripts/lib/cargo-target.sh && cargo_target_dir tui/Cargo.toml' 2>/dev/null)
+    printf '%s %s' "$?" "$out"
 }
 is "make tui-bin installs from the target dir cargo reports" "0 cockpit-tui 9.9.9" \
     "$(td_make "$TD/out" "$TD/out")"
@@ -7561,17 +7565,30 @@ is "make tui-bin installs from a target dir whose path holds \" and \\" "0 cockp
     "$(td_make "$q" "$(printf '%s' "$q" | sed 's/[\\"]/\\&/g')")"
 is "tui-fetch installs from a target dir whose path holds \" and \\" "0 cockpit-tui 9.9.9" \
     "$(td_fetch "$q" "$(printf '%s' "$q" | sed 's/[\\"]/\\&/g')")"
-# Never worse than master: an answer it cannot read falls back to master's.
-is "metadata failing falls back to CARGO_TARGET_DIR" "$TD/env" \
+# A literal backslash before a letter is \\ then the letter: decodable, never refused.
+is "a path holding a literal \\n is read, not refused" "0 $TD/lit\\nx" "$(td_dir "$TD/lit\\\\nx")"
+# An answer it cannot read: CARGO_TARGET_DIR wins over any config, so it is
+# right when set. Unset, any guess may be a stale build, so it refuses.
+is "metadata failing falls back to CARGO_TARGET_DIR" "0 $TD/env" \
     "$(td_dir '' CARGO_TARGET_DIR="$TD/env")"
-is "and with it unset, to tui/target" "tui/target" "$(td_dir '')"
-is "an escape it cannot undo (\\u0001) falls back too" "tui/target" "$(td_dir '/a\u0001b')"
+is "an escape it cannot undo (\\u0001) falls back to it too" "0 $TD/env" \
+    "$(td_dir '/a\u0001b' CARGO_TARGET_DIR="$TD/env")"
+is "metadata failing with it unset refuses to guess" "1 " "$(td_dir '')"
+is "an escape it cannot undo with it unset refuses to guess" "1 " "$(td_dir '/a\u0001b')"
 is "tui-fetch installs from the fallback when metadata fails" "0 cockpit-tui 9.9.9" \
     "$(td_fetch "$TD/env" '' CARGO_TARGET_DIR="$TD/env")"
 case "$(cat "$TD/fetch.out")" in
     *"error: fake metadata failed"*) ok "and shows cargo's own error" ;;
     *) bad "and shows cargo's own error" "error: fake metadata failed" "$(cat "$TD/fetch.out")" ;;
 esac
+# The stale build the guess would have installed: neither entry point takes it.
+tds=$TD/p/tui/target/release/cockpit-tui; mkdir -p "${tds%/*}"
+printf '#!/bin/sh\necho "cockpit-tui 0.0.1-STALE"\n' > "$tds"; chmod +x "$tds"
+is "make tui-bin fails rather than install tui/target's stale build" "2 " "$(td_make "$TD/out" '')"
+: > "$TD/installs"
+is "tui-fetch fails rather than install tui/target's stale build" "1 " "$(td_fetch "$TD/out" '')"
+is "and never reaches install with no dir to install from" "0" \
+    "$(wc -l < "$TD/installs" | tr -d ' ')"
 unset -f td_make td_fetch td_dir
 fi
 
