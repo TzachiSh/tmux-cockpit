@@ -2,7 +2,8 @@
 //! Gates use files and polls, never a clock: the stub waits on a `go` file.
 mod fake;
 
-use cockpit_tui::data::agents::{Background, Entry, Stage, flush, lookup_pid, lookups, read_file, resolve};
+use cockpit_tui::data::agents::{Background, Entry, Stage, flush, lookup_pid, lookups};
+use cockpit_tui::data::agents::{read_file, resolve};
 use cockpit_tui::data::agents::{set_background, set_stage_hook};
 use cockpit_tui::data::list_panes;
 use fake::write_exec;
