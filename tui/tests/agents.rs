@@ -846,9 +846,13 @@ fn failed_spawn_child() {
         lim.rlim_cur = 0;
         assert_eq!(libc::setrlimit(libc::RLIMIT_NPROC, &lim), 0, "lower RLIMIT_NPROC");
     }
-    let spawned = std::panic::catch_unwind(flush).is_ok();
+    // root, CAP_SYS_RESOURCE or macOS (NPROC counts processes there): the spawn works
+    let got = match std::panic::catch_unwind(flush) {
+        Ok(()) => "skip".to_string(),
+        Err(_) => format!("false {}", lookups()),
+    };
     let home = std::env::var("HOME").unwrap();
-    std::fs::write(Path::new(&home).join("counted"), format!("{spawned} {}", lookups())).unwrap();
+    std::fs::write(Path::new(&home).join("counted"), got).unwrap();
     std::process::exit(0);
 }
 
@@ -867,7 +871,11 @@ fn a_failed_lookup_spawn_leaves_no_count() {
         .unwrap();
     assert_eq!(st.code(), Some(0), "the child ran to its end");
     let got = std::fs::read_to_string(r.dir.join("counted")).unwrap();
-    assert_eq!(got, "false 0", "(the spawn worked, lookups left counted)");
+    if got == "skip" {
+        eprintln!("RLIMIT_NPROC did not stop the spawn (root or macOS?) -- skipping");
+        return;
+    }
+    assert_eq!(got, "false 0", "(the spawn failed, lookups left counted)");
 }
 
 /// SIGHUP (a `kill-pane`) and SIGTERM end the board with `_exit`: the lookup child goes too.
