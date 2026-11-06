@@ -9855,6 +9855,10 @@ is "and says who found no sessions" "1" \
 
 av_setup() {                  # the fixtures every agent-view block needs; each calls it first
     [ -n "${AVBIN:-}" ] && return 0
+    # A suite started with SIGHUP ignored (nohup, some job runners) hands that to every child,
+    # and bash cannot trap a signal it started with ignored: a poller's HUP trap never runs, and
+    # its HUP rows fail with nothing wrong (#524). Those pollers start with the default back.
+    AVDFL=(env); env --default-signal=HUP true 2>/dev/null && AVDFL=(env --default-signal=HUP)
     AVF="$DIR/tests/fixtures/agent-view"
     AVBIN=$(mktmpd); ln -s "$AVF/claude" "$AVBIN/claude"
     AVREC=$(mktmpd); AVLOG="$AVREC/calls"; : > "$AVLOG"
@@ -10300,7 +10304,7 @@ av_tm set-environment -g AV_JSON "$AVF/done.json"
 av_tm set-option -g @cockpit_bg_poll 1
 av_tm set-option -p -t "$AVP" @cockpit_agentview 1
 av_start() {                  # a poller outside the hook path; its pid in AVPID
-    env -u TMUX_PANE TMUX="$AVT" PATH="$AVBIN:$PATH" AV_JSON="$AVF/done.json" \
+    "${AVDFL[@]}" -u TMUX_PANE TMUX="$AVT" PATH="$AVBIN:$PATH" AV_JSON="$AVF/done.json" \
         "$DIR/scripts/agent-poll" </dev/null >/dev/null 2>&1 &
     AVPID=$!
 }
@@ -10478,7 +10482,7 @@ AVHUP='case "$BASH_COMMAND" in "[ \"\$(tmux show-option -gqv @cockpit_poll_pid"*
 AVHUP="$AVHUP kill -HUP \$\$ ;; esac"
 av_tm set-option -g @cockpit_bg_poll 3600
 av_tm set-option -gu @cockpit_poll_pid
-env -u TMUX_PANE TMUX="$AVT" PATH="$AVBIN:$PATH" AV_JSON="$AVF/done.json" \
+"${AVDFL[@]}" -u TMUX_PANE TMUX="$AVT" PATH="$AVBIN:$PATH" AV_JSON="$AVF/done.json" \
     bash -c 'set -T; trap "$1" DEBUG; . "$0"' "$DIR/scripts/agent-poll" "$AVHUP" \
     </dev/null >/dev/null 2>&1 &
 AVA=$!
