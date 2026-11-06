@@ -86,8 +86,16 @@ pub fn lookups() -> usize {
     LOOKUPS.load(Ordering::SeqCst)
 }
 
-/// Counts one lookup thread down when it ends, whichever way it returns.
+/// One lookup thread in [`LOOKUPS`], from before its spawn until it ends,
+/// whichever way it returns, or until a spawn that failed drops it.
 struct Running;
+
+impl Running {
+    fn start() -> Running {
+        LOOKUPS.fetch_add(1, Ordering::SeqCst);
+        Running
+    }
+}
 
 impl Drop for Running {
     fn drop(&mut self) {
@@ -451,10 +459,12 @@ pub fn flush() {
         Some((s.gen_id, s.path.clone(), ids))
     });
     if let Some((gen_id, path, asked)) = spawn {
-        // counted before the spawn, so no wait can see 0 while it starts
-        LOOKUPS.fetch_add(1, Ordering::SeqCst);
+        // counted before the spawn, so no wait can see 0 while it starts; the guard
+        // goes into the closure, so a spawn that fails drops it with the closure and
+        // the count comes back down
+        let running = Running::start();
         std::thread::spawn(move || {
-            let _running = Running;
+            let _running = running;
             ask(gen_id, &path, asked)
         });
     }
