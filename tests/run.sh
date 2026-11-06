@@ -9974,12 +9974,22 @@ av_gone() {                   # av_gone <pid>: dead; no pid, or no /proc entry t
 }
 
 av_kill() {                   # av_kill <pid>: SIGKILL a poller of ours, and the sleep it waits in
-    # A red row's poller was SIGKILLed alone, and its `sleep 3600` lived on (#613). It is our own
-    # unreaped job, so its pid is still its own. It is stopped first, so it starts no child while
-    # they are read, and each child is killed only if it is still the process that was read:
-    # the same pid with the same start time (AGENTS.md: never signal an unverified pid).
-    local k kids=""
+    # A red row's poller was SIGKILLed alone, and its `sleep 3600` lived on (#613). Bash reaps a
+    # job that exits on its own during any later command, and its pid can then be handed on: the
+    # poller is signalled only while it is still this shell's child (AGENTS.md: never signal an
+    # unverified pid). Not here (no /proc and no ps): left alone. It is stopped first, and read
+    # once it shows stopped, so it starts no child while they are read. Each child is killed only
+    # if it is still the process that was read: the same pid with the same start time.
+    local k kids="" me=$BASHPID pp i
+    pp=$(awk '{sub(/.*\) /, ""); print $2}' "/proc/$1/stat" 2>/dev/null) \
+        || pp=$(ps -o ppid= -p "$1" 2>/dev/null)
+    [ "${pp// /}" = "$me" ] || return 0
     kill -STOP "$1" 2>/dev/null
+    for i in $(seq 1 100); do
+        pp=$(awk '{sub(/.*\) /, ""); print $1}' "/proc/$1/stat" 2>/dev/null)
+        case "$pp" in T|t|"") break ;; esac
+        sleep 0.01
+    done
     for k in $(pgrep -P "$1" 2>/dev/null); do
         kids="$kids $k:$(awk '{sub(/.*\) /, ""); print $20}' "/proc/$k/stat" 2>/dev/null)"
     done
@@ -10417,6 +10427,17 @@ av_start() {                  # a poller outside the hook path; its pid in AVPID
     AVPID=$!
 }
 av_pub() { av_tm show-option -gqv @cockpit_poll_pid; }
+# av_kill signals only this shell's own child: a pid bash has reaped may be someone else's by
+# then (#622). A sleep whose parent is gone is no child of ours, and must be left running.
+AVNC="$AVREC/notchild"; (sleep 300 & echo $! > "$AVNC")
+AVNP=$(cat "$AVNC")
+av_nst() { awk '{sub(/.*\) /, ""); print $1, $20}' "/proc/$1/stat" 2>/dev/null; }
+AVNS=$(av_nst "$AVNP"); av_kill "$AVNP"
+# the same process (its start time), and neither stopped nor dead
+case "$(av_nst "$AVNP")" in "S ${AVNS#* }"|"R ${AVNS#* }") AVYES=yes ;; *) AVYES=no ;; esac
+is "av_kill leaves a pid that is not this shell's child alone" "yes" "$AVYES"
+# ours to clean: the sleep from just above, checked by name before the signal
+[ "$(cat "/proc/$AVNP/comm" 2>/dev/null)" = sleep ] && kill "$AVNP" 2>/dev/null
 av_start; AVA=$AVPID
 av_wait '[ "$(av_pub)" = "$AVA" ]'
 is "a poller publishes its own pid" "$AVA" "$(av_pub)"
