@@ -20,6 +20,8 @@ const EXTRA: usize = 2;
 pub struct Ctx {
     pub out: OutType,
     pub window: &'static str,
+    /// the write carries a bare ref (#590): its example goes first
+    pub bare_refs: bool,
 }
 
 /// `name` is the file stem: write, write.examples, write.explore, explain or fix. An override
@@ -194,6 +196,7 @@ pub fn examples(pool_text: &str, ctx: &Ctx) -> String {
         .filter(|&i| pool[i].get("core").is_some_and(|v| !v.is_empty()))
         .collect();
     let want: Vec<String> = [
+        ctx.bare_refs.then(|| "refs:bare".to_string()),
         (ctx.out != OutType::Auto).then(|| format!("out:{}", ctx.out.as_str())),
         Some(format!("window:{}", ctx.window)),
     ]

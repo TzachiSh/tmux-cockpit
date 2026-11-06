@@ -172,6 +172,7 @@ fn explore_off_sends_the_write_prompt_unchanged() {
     let ctx = Ctx {
         out: OutType::Auto,
         window: window_kind("work", "bash"),
+        ..Ctx::default()
     };
     assert_eq!(system, prompts::write(&ctx));
 }
@@ -187,6 +188,7 @@ fn an_exploring_write_appends_the_explore_section() {
     let ctx = Ctx {
         out: OutType::Auto,
         window: window_kind("work", "bash"),
+        ..Ctx::default()
     };
     assert_eq!(system, prompts::write_explore(&ctx));
     assert_eq!(system, format!("{}\n\n{}", prompts::write(&ctx), prompts::WRITE_EXPLORE.trim_end()));

@@ -2282,8 +2282,13 @@ leaves it.
 
 `^S` (Write) with refs in the basket sends them to the write in a `<refs>` block
 before `<request>`, one `<ref>` a line in the form the pane's agent reads (D4),
-a whole file noted `whole file`, never refused. `write.txt` has the write name
-every ref as given. While the write explores (`^R`), a ref whose file is outside
+a whole file noted `whole file`, never refused. Each `<ref>` says its form,
+`form="mention"` for Claude Code's `@path#L` or `form="bare"` for a plain
+`path:lines`, and `write.txt` has the write name every ref as given (#590: the
+model turned a bare ref into a mention when unrelated lines of the prompt
+changed). A write with a bare ref also gets the `bare-ref` example first
+(`when="refs:bare"` in `write.examples.txt`): a rename with a bare ref, kept
+bare and kept small. While the write explores (`^R`), a ref whose file is outside
 the folder it may read is noted `outside the repo, not read`, so the written
 prompt never claims a read the call could not make; it stays in the block, as
 the pane's agent can still read it. A ref is its file's canonical path, so a

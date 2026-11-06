@@ -321,6 +321,7 @@ fn picked(ctx: Ctx) -> Vec<&'static str> {
         ("no-expected", "the export is broken"),
         ("command", "the 10 biggest files"),
         ("steps", "set up an ssh key"),
+        ("bare-ref", "rename the --dry flag"),
     ];
     assert_eq!(block.matches("<example>").count(), 9);
     ids.iter().filter(|(_, needle)| block.contains(needle)).map(|(id, _)| *id).collect()
@@ -389,17 +390,48 @@ fn the_examples_follow_the_picked_type_then_the_window() {
     assert_eq!(
         picked(Ctx {
             out: OutType::Command,
-            window: "claude"
+            window: "claude",
+            ..Ctx::default()
         }),
         want
     );
     assert_eq!(
         picked(Ctx {
             out: OutType::Command,
-            window: "other"
+            window: "other",
+            ..Ctx::default()
         }),
         want
     );
+}
+
+/// #590: a bare ref in the write brings the bare-ref example first, before the
+/// window's; the core examples still all go.
+#[test]
+fn a_bare_ref_picks_the_bare_ref_example_first() {
+    let got = picked(Ctx {
+        window: "shell",
+        bare_refs: true,
+        ..Ctx::default()
+    });
+    let want = [
+        "crash",
+        "investigate",
+        "plan",
+        "message",
+        "which-file",
+        "unclear",
+        "no-expected",
+        "steps",
+        "bare-ref",
+    ];
+    assert_eq!(got, want);
+    let hint = picked(Ctx {
+        out: OutType::Hint,
+        window: "shell",
+        bare_refs: true,
+    });
+    assert!(hint.contains(&"bare-ref") && hint.contains(&"math"), "{hint:?}");
 }
 
 #[test]

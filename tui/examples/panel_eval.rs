@@ -1838,6 +1838,7 @@ mod tests {
         let ctx = Ctx {
             out: c.out,
             window: window_kind(&c.name, &c.cmd),
+            ..Ctx::default()
         };
         let cap = Capture {
             name: c.name.clone(),
@@ -1947,14 +1948,19 @@ mod tests {
         let path = pane_path(&cases[0], Some(&d.0));
         assert!(Path::new(&path).join("src/cart.go").is_file() && path.ends_with("/shop"), "{path}");
         let (_, prompt, _) = panel_call(&cases[0], &path, false);
-        let block = "<refs>\n<ref>@src/cart.go#L40-72</ref>\n<ref note=\"whole file\">@README.md</ref>\n<ref>@/";
+        let block = "<refs>\n<ref form=\"mention\">@src/cart.go#L40-72</ref>\n\
+                     <ref form=\"mention\" note=\"whole file\">@README.md</ref>\n<ref form=\"mention\">@/";
         assert!(
             prompt.contains(block) && prompt.contains("/shared/money.go#L3</ref>\n</refs>"),
             "{prompt}"
         );
         let mut bash = cases[0].clone();
         (bash.name, bash.cmd) = ("bash".into(), "bash".into());
-        assert!(panel_call(&bash, &path, false).1.contains("<ref>src/cart.go:40-72</ref>"));
+        assert!(
+            panel_call(&bash, &path, false)
+                .1
+                .contains("<ref form=\"bare\">src/cart.go:40-72</ref>")
+        );
     }
 
     const OUT: &str = "=== out\nkind: bug\nwindow: bash · bash · /home/u/inv\nexpect: write\nexplore: invoicer\n\
@@ -1966,7 +1972,7 @@ mod tests {
         let d = Gone(stage(&cases).unwrap().expect("a stage"));
         let path = pane_path(&cases[0], Some(&d.0));
         let (_, prompt, _) = panel_call(&cases[0], &path, true);
-        assert!(prompt.contains("<ref>invoicer/money.py:1-5</ref>"), "{prompt}");
+        assert!(prompt.contains("<ref form=\"bare\">invoicer/money.py:1-5</ref>"), "{prompt}");
         assert!(
             prompt.contains("outside the repo, not read\">/") && prompt.contains("shared/rates.py</ref>"),
             "{prompt}"
@@ -2225,6 +2231,37 @@ mod tests {
         assert_eq!(graded_wrong(&rows), Vec::<&str>::new(), "rows graded the wrong way");
     }
 
+    /// #590: a baseline run on a rename passes both rename cases (the owner
+    /// passed one), and rename-fn's mutation words miss "kept on purpose".
+    #[test]
+    fn a_rename_passes_with_a_baseline_and_a_kept_on_purpose() {
+        let fn_rename = "Rename parse_cfg to parse_config everywhere and run the tests.";
+        let bare = "In internal/db/pool.go:10-30, rename newPool to openPool and update its callers.";
+        let baseline = " Run the tests first as a baseline and compare after.";
+        let kept = " List any parse_cfg you kept on purpose and why.";
+        let p = |s: String| format!("<prompt>{s}</prompt>");
+        let rows = [
+            ("fn plain", "rename-fn", p(fn_rename.into()), true),
+            ("fn baseline", "rename-fn", p(format!("{fn_rename}{baseline}")), true),
+            ("fn kept on purpose", "rename-fn", p(format!("{fn_rename}{kept}")), true),
+            (
+                "fn mutation step",
+                "rename-fn",
+                p(format!("{fn_rename} Break the code on purpose, see a test fail, undo it.")),
+                false,
+            ),
+            ("bare plain", "refs-bare-rename", p(bare.into()), true),
+            (
+                "bare given an @",
+                "refs-bare-rename",
+                p(bare.replace("In internal", "In @internal")),
+                false,
+            ),
+            ("bare baseline", "refs-bare-rename", p(format!("{bare}{baseline}")), true),
+        ];
+        assert_eq!(graded_wrong(&rows), Vec::<&str>::new(), "rows graded the wrong way");
+    }
+
     /// #587 (cards 58, 59): a prompt that adds or fixes a test breaks the code on
     /// purpose, sees the test fail and undoes the break.
     #[test]
@@ -2235,6 +2272,11 @@ mod tests {
         let half = " Then break the code on purpose and confirm the test fails.";
         let flip = " Then flip one condition in the code, confirm the test fails, then undo that change.";
         let loose = " Make sure it does not break other tests, keep it a small change, and revert unrelated edits.";
+        // #590: valid steps the #589 words missed
+        let bug = " Then introduce a small bug in the code, confirm the test fails, and revert it.";
+        let one_bug = " Then introduce a bug, see the test fail, and revert it.";
+        let invert = " Then temporarily invert the trim check, confirm the test fails, and put it back.";
+        let inverting = " Then try inverting the sign check: the test must fail; then restore it.";
         let p = |s: String| format!("<prompt>{s}</prompt>");
         let rows = [
             ("add", "test-the-changed-function", p(format!("{add}{step}")), true),
@@ -2246,6 +2288,10 @@ mod tests {
             ("fix bare", "last-commit-test", p(fix.into()), false),
             ("fix no undo", "last-commit-test", p(format!("{fix}{half}")), false),
             ("fix loose", "last-commit-test", p(format!("{fix}{loose}")), false),
+            ("add small bug", "test-the-changed-function", p(format!("{add}{bug}")), true),
+            ("add invert", "test-the-changed-function", p(format!("{add}{invert}")), true),
+            ("fix a bug", "last-commit-test", p(format!("{fix}{one_bug}")), true),
+            ("fix inverting", "last-commit-test", p(format!("{fix}{inverting}")), true),
         ];
         assert_eq!(graded_wrong(&rows), Vec::<&str>::new(), "rows graded the wrong way");
     }
