@@ -1947,14 +1947,19 @@ mod tests {
         let path = pane_path(&cases[0], Some(&d.0));
         assert!(Path::new(&path).join("src/cart.go").is_file() && path.ends_with("/shop"), "{path}");
         let (_, prompt, _) = panel_call(&cases[0], &path, false);
-        let block = "<refs>\n<ref>@src/cart.go#L40-72</ref>\n<ref note=\"whole file\">@README.md</ref>\n<ref>@/";
+        let block = "<refs>\n<ref form=\"mention\">@src/cart.go#L40-72</ref>\n\
+                     <ref form=\"mention\" note=\"whole file\">@README.md</ref>\n<ref form=\"mention\">@/";
         assert!(
             prompt.contains(block) && prompt.contains("/shared/money.go#L3</ref>\n</refs>"),
             "{prompt}"
         );
         let mut bash = cases[0].clone();
         (bash.name, bash.cmd) = ("bash".into(), "bash".into());
-        assert!(panel_call(&bash, &path, false).1.contains("<ref>src/cart.go:40-72</ref>"));
+        assert!(
+            panel_call(&bash, &path, false)
+                .1
+                .contains("<ref form=\"bare\">src/cart.go:40-72</ref>")
+        );
     }
 
     const OUT: &str = "=== out\nkind: bug\nwindow: bash · bash · /home/u/inv\nexpect: write\nexplore: invoicer\n\
@@ -1966,7 +1971,7 @@ mod tests {
         let d = Gone(stage(&cases).unwrap().expect("a stage"));
         let path = pane_path(&cases[0], Some(&d.0));
         let (_, prompt, _) = panel_call(&cases[0], &path, true);
-        assert!(prompt.contains("<ref>invoicer/money.py:1-5</ref>"), "{prompt}");
+        assert!(prompt.contains("<ref form=\"bare\">invoicer/money.py:1-5</ref>"), "{prompt}");
         assert!(
             prompt.contains("outside the repo, not read\">/") && prompt.contains("shared/rates.py</ref>"),
             "{prompt}"
