@@ -1,7 +1,10 @@
 //! The user prompt sent on stdin: tagged parts joined by blank lines.
+use super::action::sanitize;
 use super::ask::AskCode;
 use super::capture::{Capture, session_state};
 use super::redact::redact;
+use crate::refs::Ref;
+use std::path::Path;
 
 /// What Write is asked to make; `Auto` lets Claude choose and sends no tag.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -96,6 +99,61 @@ pub struct Envelope {
 
 /// [`build_counted`] with the count split. Only a Write waits for the repo block.
 pub fn build_parts(flow: &Flow, cap: &Capture, turns: &[Turn], questions_left: usize) -> Envelope {
+    build_refs(flow, cap, turns, questions_left, &[])
+}
+
+/// One basket ref as a Write request names it (#365 child 5): `text` in the
+/// form the pane's agent reads ([`crate::basket::ref_line`]), whether it names
+/// a whole file, and whether it is outside the folder an exploring write may read.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RefItem {
+    pub text: String,
+    pub whole: bool,
+    pub outside: bool,
+}
+
+/// `refs` as [`RefItem`]s, from `base` (the pane's folder). `root` is the
+/// folder an exploring write may read, `None` for a write that reads nothing.
+/// A ref's path is canonical (`Ref::new`), so a symlink was followed when it
+/// was added: one inside the root that leads out is outside, as the read would
+/// be refused, and one outside that leads in is inside. The root is compared
+/// canonical too, so a pane reached through a link is the folder it names.
+pub fn ref_items(refs: &[Ref], base: &Path, claude: bool, root: Option<&Path>) -> Vec<RefItem> {
+    let root = root.map(|r| r.canonicalize().unwrap_or_else(|_| r.to_path_buf()));
+    refs.iter()
+        .map(|r| RefItem {
+            text: crate::basket::ref_line(r, base, claude),
+            whole: r.lines().is_none(),
+            outside: root.as_ref().is_some_and(|root| !r.path().starts_with(root)),
+        })
+        .collect()
+}
+
+/// The `<refs>` block: one `<ref>` a line, its note saying a whole file or
+/// one outside the folder the write may read. Cleaned as a send is
+/// (`action::sanitize`), and escaped, so a name cannot close the tag.
+fn refs_part(refs: &[RefItem]) -> String {
+    let lines: Vec<String> = refs
+        .iter()
+        .map(|r| {
+            let notes: Vec<&str> = [(r.whole, "whole file"), (r.outside, "outside the repo, not read")]
+                .into_iter()
+                .filter_map(|(on, n)| on.then_some(n))
+                .collect();
+            let note = if notes.is_empty() {
+                String::new()
+            } else {
+                format!(" note=\"{}\"", notes.join("; "))
+            };
+            format!("<ref{note}>{}</ref>", esc(&sanitize(&r.text)))
+        })
+        .collect();
+    format!("<refs>\n{}\n</refs>", lines.join("\n"))
+}
+
+/// [`build_parts`], and for a Write with the basket's refs (#365 child 5) a
+/// `<refs>` block before the request. No other flow carries it.
+pub fn build_refs(flow: &Flow, cap: &Capture, turns: &[Turn], questions_left: usize, refs: &[RefItem]) -> Envelope {
     let (screen, screen_hidden) = redact(&cap.screen);
     let (mut repo_hidden, mut turns_hidden) = (0, 0);
     let screen = esc(&screen);
@@ -114,6 +172,9 @@ pub fn build_parts(flow: &Flow, cap: &Capture, turns: &[Turn], questions_left: u
                 let (repo, n) = redact(repo);
                 repo_hidden = n;
                 parts.push(format!("<repo>\n{}\n</repo>", esc(&repo)));
+            }
+            if !refs.is_empty() {
+                parts.push(refs_part(refs));
             }
             parts.push(format!("<request>{}</request>", esc(draft)));
             if *out != OutType::Auto {

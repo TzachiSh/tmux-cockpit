@@ -2,7 +2,7 @@
 //! terminal here, so every transition is a unit test away.
 use super::action::{Hidden, hide_body, sanitize, state_body};
 use super::capture::{Capture, REPO_BUDGET, SSH_LIKE, Session, is_local, session_state, toplevel, window_kind};
-use super::envelope::{Flow, OutType, Role, Turn, build_counted};
+use super::envelope::{Flow, OutType, RefItem, Role, Turn, build_refs, ref_items};
 use super::parse::{self, Opt, Reply, Step};
 use super::prompts::{self, Ctx};
 use super::redact::redact;
@@ -10,7 +10,7 @@ use super::request::{Call, Fail, Profile, Request, read_dir_ok};
 use super::route::{Route, route};
 use super::view::{TABLET_MIN_H, TABLET_MIN_W};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use unicode_segmentation::{GraphemeCursor, UnicodeSegmentation};
 
@@ -756,8 +756,8 @@ impl App {
                 eprintln!("cockpit-tui: the steps are too long to keep open");
             }
         }
+        self.sent_basket = self.basket_body.take().or_else(|| self.written_basket(&back, &text));
         self.view = back;
-        self.sent_basket = self.basket_body.take();
         self.action = Some(Action { verb, text });
         self.exit();
     }
@@ -1107,7 +1107,41 @@ impl App {
     }
 
     fn envelope(&self, r: &Run) -> (String, usize) {
-        build_counted(&r.flow, &self.cap, &r.turns, r.max.saturating_sub(r.rounds))
+        let refs = self.write_refs(&r.flow);
+        let e = build_refs(&r.flow, &self.cap, &r.turns, r.max.saturating_sub(r.rounds), &refs);
+        (e.text, e.screen_hidden + e.repo_hidden + e.turns_hidden)
+    }
+
+    /// The basket's refs as a Write names them (#365 child 5): as the pane's
+    /// agent reads them (D4), and while the write explores, those outside the
+    /// folder it may read marked as not read. Any other flow carries none.
+    pub fn write_refs(&self, flow: &Flow) -> Vec<RefItem> {
+        if !matches!(flow, Flow::Write { .. }) {
+            return vec![];
+        }
+        let root = self.explores(flow).then(|| self.explore_dir().ok()).flatten();
+        ref_items(&self.basket, Path::new(&self.cap.path), self.claude, root.as_deref())
+    }
+
+    /// The basket, for `.basket`, when the text acted on is a written result
+    /// that names every ref the write carried: the refs went with it, so
+    /// cockpit-panel clears the basket once the paste lands, as after ^T. A
+    /// result that leaves one out, a step, or a failed or cancelled write
+    /// carries none, and the basket stays.
+    fn written_basket(&self, back: &View, text: &str) -> Option<String> {
+        let flow = &self.run.as_ref()?.flow;
+        let refs = self.write_refs(flow);
+        if refs.is_empty() || !matches!(back, View::Result { .. }) {
+            return None;
+        }
+        if !refs.iter().all(|r| names(text, &r.text)) {
+            return None;
+        }
+        // the option's text, a gone ref's line included, else the refs held
+        match self.basket_raw.is_empty() {
+            true => crate::basket::body(&self.basket).ok(),
+            false => Some(self.basket_raw.clone()),
+        }
     }
 
     /// The system prompt, the user prompt and the model for the pending call.
@@ -1964,6 +1998,13 @@ fn first_ask(r: &Run) -> bool {
 /// as it arrives, and an Enter held over from the last view must not fire it.
 pub fn needs_y(text: &str, send: bool) -> bool {
     send && text.trim_end_matches('\n').contains('\n')
+}
+
+/// `text` names `form` as given: `@a.rs#L1-2` is not in `@a.rs#L1-20`, nor
+/// `@b.md` in `@b.mdx`.
+fn names(text: &str, form: &str) -> bool {
+    text.match_indices(form)
+        .any(|(i, _)| !text[i + form.len()..].starts_with(char::is_alphanumeric))
 }
 
 /// `text` cut to [`PREFILL_MAX`] characters, the `…` included, on whole
