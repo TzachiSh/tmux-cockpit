@@ -12607,8 +12607,10 @@ cat > "$BGSH/front.py" <<'EOF'
 import os, sys
 f = [b"worktree " + p.encode() for p in os.environ["BG_FRONT"].split("\n")]
 r = [x for x in sys.stdin.buffer.read().split(b"\0\0") if x]
-k = lambda x: f.index(x.split(b"\0")[0]) if x.split(b"\0")[0] in f else len(f)
-sys.stdout.buffer.write(b"\0\0".join(sorted(r, key=k)) + b"\0\0")
+def rank(rec):  # a record's place: its worktree line's index in BG_FRONT, else after them
+    w = rec.split(b"\0")[0]
+    return f.index(w) if w in f else len(f)
+sys.stdout.buffer.write(b"\0\0".join(sorted(r, key=rank)) + b"\0\0")
 EOF
 printf '#!/bin/sh\ncase " $* " in\n *" worktree list "*) %s "$@" | python3 %s ;;\n' \
     "$BGGIT" "$BGSH/front.py" > "$BGSH/git"

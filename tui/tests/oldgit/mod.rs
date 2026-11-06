@@ -34,6 +34,7 @@ pub fn add(repo: &Path, branch: &str, path: &Path) {
 }
 
 /// Puts the shim first on PATH. The caller's file must hold no other test.
+#[allow(dead_code)] // the files that run on the installed git, which takes -z, use no shim
 pub fn shim(root: &Path) {
     let out = Command::new("sh").args(["-c", "command -v git"]).output().unwrap();
     let real = String::from_utf8(out.stdout).unwrap();
@@ -70,6 +71,30 @@ pub fn shim_212(root: &Path) {
          case $c in /*) echo \"$c\" ;; *) echo \"$px$c\" ;; esac\n"
     );
     crate::fake::write_exec(&dir.join("git"), &script);
+}
+
+/// A git whose `worktree list -z` prints git's own list with `first`'s record moved to
+/// the front; every other call is the installed git's. Puts it first on PATH, as [`shim`].
+#[allow(dead_code)] // one test file uses it; the others share this module
+pub fn shim_first(root: &Path, repo: &Path, first: &Path) {
+    let args = ["-C", repo.to_str().unwrap(), "worktree", "list", "--porcelain", "-z"];
+    let z = String::from_utf8(Command::new("git").args(args).output().unwrap().stdout).unwrap();
+    let head = format!("worktree {}\0", first.display());
+    let mut recs: Vec<&str> = z.split("\0\0").filter(|r| !r.is_empty()).collect();
+    recs.sort_by_key(|r| !r.starts_with(&head));
+    assert!(recs[0].starts_with(&head), "{} is listed: {recs:?}", first.display());
+    let list = root.join("list.z");
+    std::fs::write(&list, recs.join("\0\0") + "\0\0").unwrap();
+    shim(root);
+    let git = root.join("shim").join("git");
+    let real = std::fs::read_to_string(&git).unwrap();
+    let real = real.lines().last().unwrap();
+    let script = format!(
+        "#!/bin/sh\ncase \" $* \" in *\" worktree list \"*\" -z \"*) exec cat '{}' ;; esac\n\
+         {real}\n",
+        list.display()
+    );
+    crate::fake::write_exec(&git, &script);
 }
 
 pub fn held(bs: &[cockpit_tui::data::branches::Branch], name: &str) -> Option<String> {
