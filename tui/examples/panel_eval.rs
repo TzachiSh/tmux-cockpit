@@ -7,8 +7,10 @@
 //!
 //!     cargo run --example panel_eval -- [--model M] [--runs N] [--jobs J]
 //!         [--only TEXT] [--cases FILE] [--out FILE.jsonl] [--check] [--no-explore]
-//!         [--no-hermetic]
+//!         [--no-hermetic] [--judge] [--judge-model M]
 //!     cargo run --example panel_eval -- --compare A.jsonl B.jsonl
+//!     cargo run --example panel_eval -- --calibrate LABELS.jsonl
+//!         [--judge-model M] [--split all|tune|holdout] [--jobs J] [--out FILE.jsonl]
 //!
 //! `--check` only reads and validates the cases. To compare a prompt edit, put
 //! it at `$XDG_CONFIG_HOME/tmux-cockpit/prompts/write.txt` (the panel's own
@@ -40,6 +42,9 @@ use std::ffi::{OsStr, OsString};
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant};
+
+#[path = "panel_eval/judge.rs"]
+mod judge;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Expect {
@@ -475,6 +480,12 @@ struct Opts {
     no_explore: bool,
     /// No user settings or CLAUDE.md, and a fresh cwd per call (#598).
     hermetic: bool,
+    /// Also grade each reply with the LLM judge (#419), beside the keyword checks.
+    judge: bool,
+    judge_model: String,
+    /// A labelled file: run the judge on it and print its agreement with the owner.
+    calibrate: Option<PathBuf>,
+    split: judge::Split,
 }
 
 fn opts(args: impl IntoIterator<Item = String>) -> Result<Opts, String> {
@@ -490,6 +501,10 @@ fn opts(args: impl IntoIterator<Item = String>) -> Result<Opts, String> {
         compare: None,
         no_explore: false,
         hermetic: true,
+        judge: false,
+        judge_model: judge::DEFAULT_MODEL.into(),
+        calibrate: None,
+        split: judge::Split::All,
     };
     let mut a = args.into_iter();
     while let Some(k) = a.next() {
@@ -504,6 +519,10 @@ fn opts(args: impl IntoIterator<Item = String>) -> Result<Opts, String> {
             "--check" => o.check = true,
             "--no-explore" => o.no_explore = true,
             "--no-hermetic" => o.hermetic = false,
+            "--judge" => o.judge = true,
+            "--judge-model" => o.judge_model = val()?,
+            "--calibrate" => o.calibrate = Some(val()?.into()),
+            "--split" => o.split = judge::Split::parse(&val()?)?,
             "--compare" => {
                 let two = (a.next(), a.next());
                 let (Some(x), Some(y)) = two else {
@@ -647,6 +666,13 @@ fn main() {
         }
         return;
     }
+    if let Some(file) = &o.calibrate {
+        if let Err(e) = judge::calibrate(file, &o.judge_model, o.split, o.jobs, o.out.as_deref()) {
+            eprintln!("panel_eval: {e}");
+            std::process::exit(2);
+        }
+        return;
+    }
     let text = std::fs::read_to_string(&o.cases).unwrap_or_else(|e| {
         eprintln!("panel_eval: {}: {e}", o.cases.display());
         std::process::exit(2);
@@ -720,6 +746,8 @@ fn main() {
     let mut done: Vec<(usize, u128, Option<Grade>)> = vec![];
     let mut costs: Vec<Option<f64>> = vec![];
     let mut reads: Vec<usize> = vec![];
+    // with --judge: each row, and what the judge reads of it
+    let mut rows: Vec<(serde_json::Value, judge::Input)> = vec![];
     while !todo.is_empty() || !live.is_empty() {
         while live.len() < o.jobs
             && let Some((ci, run)) = todo.pop()
@@ -801,7 +829,7 @@ fn main() {
                 None => what,
             };
             println!("{mark} {:<24} {:<13} want {want:<6} {:>6} ms  {what}", c.id, c.kind, ms);
-            if let Some(f) = log.as_mut() {
+            if log.is_some() || o.judge {
                 let row = serde_json::json!({
                     "id": c.id, "kind": c.kind, "expect": want, "run": j.run, "model": j.model,
                     "system": format!("{:016x}", j.system),
@@ -816,7 +844,13 @@ fn main() {
                     "refused": g.as_ref().map(|g| g.refused), "holdout": c.holdout, "reply": raw,
                     "explore": j.explore, "files_read": read, "env": env.json(),
                 });
-                let _ = writeln!(f, "{row}");
+                // with --judge, written once the judge has graded the reply
+                match log.as_mut() {
+                    Some(f) if !o.judge => {
+                        let _ = writeln!(f, "{row}");
+                    }
+                    _ => rows.push((row, judge_input(c, &raw))),
+                }
             }
             done.push((j.case, ms, g));
             costs.push(usage.cost_usd);
@@ -825,6 +859,9 @@ fn main() {
         std::thread::sleep(Duration::from_millis(50));
     }
     summary(&cases, &done, &hashes, o.runs);
+    if o.judge {
+        judge_rows(&mut rows, &o, &call.claude, wrapped, log.as_mut());
+    }
     println!("environment     {env}");
     if let Some(l) = cost_line(&costs, wrapped) {
         println!("cost            {l}");
@@ -837,6 +874,87 @@ fn main() {
             reads.iter().max().unwrap_or(&0)
         );
     }
+}
+
+/// What the judge reads of case `c`'s reply `raw`.
+fn judge_input(c: &Case, raw: &str) -> judge::Input {
+    judge::Input {
+        window: format!("{} · {} · {}", c.name, c.cmd, c.path),
+        out: out_name(c.out).into(),
+        screen: c.screen.clone(),
+        repo: c.repo.clone(),
+        request: c.request.clone(),
+        reply: raw.into(),
+    }
+}
+
+/// `--judge`: grades every answered row, prints each verdict and the summary
+/// line, and writes the rows with `judge` and `critique` added. A failed call
+/// (`error` set) is not judged: it has no reply.
+fn judge_rows(rows: &mut [(serde_json::Value, judge::Input)], o: &Opts, claude: &str, wrapped: bool, mut log: Option<&mut std::fs::File>) {
+    // the rig wraps calls by naming itself as claude: the judge calls the real one
+    let real = match wrapped {
+        true => std::env::var(AS_CLAUDE).unwrap_or_else(|_| claude.into()),
+        false => claude.into(),
+    };
+    let todo: Vec<usize> = (0..rows.len()).filter(|&i| rows[i].0["error"].is_null()).collect();
+    let inputs: Vec<judge::Input> = todo.iter().map(|&i| rows[i].1.clone()).collect();
+    let judged = match judge::Scratch::new() {
+        Ok(root) => judge::judge_all(&real, &o.judge_model, &inputs, o.jobs, &root.0),
+        Err(e) => inputs
+            .iter()
+            .map(|_| judge::Judged {
+                verdict: Err(e.clone()),
+                cost_usd: None,
+            })
+            .collect(),
+    };
+    println!();
+    let mut cost = vec![];
+    for (&i, j) in todo.iter().zip(&judged) {
+        let (row, _) = &mut rows[i];
+        let (pass, critique) = match &j.verdict {
+            Ok(v) => (Some(v.pass), v.critique.clone()),
+            Err(e) => (None, e.clone()),
+        };
+        let mark = match pass {
+            Some(true) => "ok  ",
+            Some(false) => "FAIL",
+            None => "ERR ",
+        };
+        println!("judge {mark} {:<24} {critique}", row["id"].as_str().unwrap_or(""));
+        row["judge"] = pass.into();
+        row["critique"] = critique.into();
+        row["judge_model"] = o.judge_model.clone().into();
+        row["judge_cost_usd"] = j.cost_usd.into();
+        cost.push(j.cost_usd);
+    }
+    let pairs: Vec<(Option<bool>, Option<bool>)> = rows.iter().map(|(r, _)| (r["pass"].as_bool(), r["judge"].as_bool())).collect();
+    if let Some(l) = judge_line(&pairs) {
+        println!("judge           {l}  ({})", o.judge_model);
+    }
+    if let Some(l) = cost_line(&cost, true) {
+        println!("judge cost      {l}");
+    }
+    if let Some(f) = log.as_mut() {
+        for (row, _) in rows.iter() {
+            let _ = writeln!(f, "{row}");
+        }
+    }
+}
+
+/// The judge's summary over `(keyword pass, judge pass)` per row: its pass
+/// rate with a Wilson interval, and how often it agrees with the keyword
+/// checks; rows either side left ungraded count in neither.
+fn judge_line(pairs: &[(Option<bool>, Option<bool>)]) -> Option<String> {
+    let judged: Vec<bool> = pairs.iter().filter_map(|(_, j)| *j).collect();
+    if judged.is_empty() {
+        return None;
+    }
+    let pass = Of(judged.iter().filter(|p| **p).count(), judged.len());
+    let both: Vec<(bool, bool)> = pairs.iter().filter_map(|(k, j)| Some(((*k)?, (*j)?))).collect();
+    let agree = Of(both.iter().filter(|(k, j)| k == j).count(), both.len());
+    Some(format!("pass {}, agrees with the keyword checks {}", pct_ci(pass), pct(agree)))
 }
 
 /// A temp dir of the rig's own, removed on drop: the fixture copy, or a
@@ -2283,6 +2401,80 @@ mod tests {
         assert!(!opts(args("--no-hermetic")).unwrap().hermetic);
         assert!(opts(args("--no-hermetic --runs 2")).unwrap().runs == 2);
         assert!(opts(args("--hermetic=no")).unwrap_err().contains("unknown argument --hermetic=no"));
+    }
+
+    #[test]
+    fn judge_is_off_by_default_and_judge_turns_it_on() {
+        let o = opts(args("")).unwrap();
+        assert!(!o.judge);
+        assert_eq!(o.judge_model, judge::DEFAULT_MODEL);
+        let o = opts(args("--judge --judge-model opus")).unwrap();
+        assert!(o.judge);
+        assert_eq!(o.judge_model, "opus");
+        assert_eq!(opts(args("--judge-model")).unwrap_err(), "--judge-model needs a value");
+    }
+
+    #[test]
+    fn calibrate_takes_a_file_and_a_split() {
+        let o = opts(args("--calibrate l.jsonl --split holdout")).unwrap();
+        assert_eq!(o.calibrate, Some(PathBuf::from("l.jsonl")));
+        assert_eq!(o.split, judge::Split::Holdout);
+        assert_eq!(opts(args("--calibrate l.jsonl")).unwrap().split, judge::Split::All);
+        assert_eq!(opts(args("--calibrate")).unwrap_err(), "--calibrate needs a value");
+        assert!(opts(args("--split half")).unwrap_err().contains("want all, tune or holdout"));
+    }
+
+    #[test]
+    fn judge_line_counts_agreement_only_where_both_graded() {
+        let rows = [
+            (Some(true), Some(true)),
+            (Some(false), Some(true)),
+            (None, Some(false)),
+            (Some(true), None),
+        ];
+        let l = judge_line(&rows).unwrap();
+        assert!(l.starts_with("pass 67% (2/3)"), "{l}");
+        assert!(l.ends_with("agrees with the keyword checks 50% (1/2)"), "{l}");
+        assert_eq!(judge_line(&[(Some(true), None)]), None);
+    }
+
+    #[test]
+    fn judge_input_carries_the_case_window_and_output_type() {
+        let c = &parse_cases(ONE).unwrap()[0];
+        let i = judge_input(c, "<prompt>x</prompt>");
+        assert_eq!(i.window, format!("{} · {} · {}", c.name, c.cmd, c.path));
+        assert_eq!((i.out.as_str(), i.request.as_str()), (out_name(c.out), c.request.as_str()));
+        assert_eq!(i.reply, "<prompt>x</prompt>");
+    }
+
+    #[test]
+    fn the_checked_in_labels_read_as_118_rows_20_of_them_fails() {
+        let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("evals/panel/owner-labels.jsonl");
+        let l = judge::read_labels("owner-labels", &std::fs::read_to_string(p).unwrap()).unwrap();
+        assert_eq!((l.len(), l.iter().filter(|l| !l.pass).count()), (118, 20));
+    }
+
+    /// The round trip: judge_all hands a stand-in claude the rubric as its
+    /// system prompt file and the case on stdin, and reads its verdict back.
+    #[test]
+    fn judge_all_reads_back_a_stand_in_verdict() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = scratch("judge-trip");
+        let fake = root.join("fake-claude");
+        let script = "#!/bin/sh\nwhile [ \"$1\" != --system-prompt-file ]; do shift; done\n\
+            grep -q 'exactly 2 options' \"$2\" || exit 3\n\
+            grep -q 'deploy it' && echo 'CRITIQUE: saw it' && echo 'VERDICT: FAIL'\n";
+        std::fs::write(&fake, script).unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let i = judge::Input {
+            request: "deploy it".into(),
+            reply: "r".into(),
+            ..Default::default()
+        };
+        let got = judge::judge_all(&fake.display().to_string(), "haiku", &[i], 1, &root);
+        let v = got[0].verdict.clone().unwrap();
+        assert_eq!((v.pass, v.critique.as_str()), (false, "saw it"));
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     fn scratch(name: &str) -> PathBuf {
