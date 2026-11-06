@@ -244,7 +244,8 @@ pub fn gather(pane: &str) -> Result<Facts, String> {
         q("#{@cockpit_review_spool}"),
         q("#{@cockpit_session}"),
         q("#{@cockpit_title}"),
-        "#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},1,0}".to_string(),
+        // 11 was a glob test of the command; the board's own test decides now (#519)
+        String::new(),
         q("#{@cockpit_tui_version}"),
         // #460: 13 and 14, optional, so a shorter row still reads
         q("#{@cockpit_job}"),
@@ -268,7 +269,7 @@ pub fn gather(pane: &str) -> Result<Facts, String> {
         spool: clean(f[8]),
         sid: clean(f[9]),
         title: clean(f[10]),
-        agent: f[11] == "1",
+        agent: super::is_agent(f[0]),
         tui: tui_row(f[12]),
         // the name is a pane title, so control and bidi characters go
         job: match (
@@ -294,7 +295,7 @@ pub fn gather(pane: &str) -> Result<Facts, String> {
     let root = if path.is_empty() { String::new() } else { git_root(&path) };
     x.root = clean(&root);
     // `file` can ask `claude agents`: only an agent pane has a transcript to find
-    let tr = if x.agent { super::transcript::file(&x.id) } else { None };
+    let tr = if x.agent { super::transcript::file(&x.id, f[3]) } else { None };
     let said = tr.as_deref().and_then(super::transcript::cwd).unwrap_or_default();
     let (opt, cwd) = (f[4].to_string(), f[3].to_string());
     x.work = super::fleet::work_dirs(&[[opt.clone(), said.clone(), cwd]])

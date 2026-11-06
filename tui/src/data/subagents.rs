@@ -438,18 +438,12 @@ fn read_rows(p: &Path, len: u64, old: Option<&Rows>) -> Rows {
     r
 }
 
-/// The session's `subagents/` dir: beside `@cockpit_transcript` (`<sid>.jsonl` -> `<sid>/`)
-/// when that still resolves to a file in the projects tree, as the hook checked it, else
-/// beside the transcript the board reads for `@cockpit_session` and the pane's cwd. None for
-/// a session id that could name another path.
+/// The session's `subagents/` dir: `<sid>/` beside the transcript the board reads
+/// (`transcript::locate`), else beside where the cwd's transcript would be. None for a
+/// session id that could name another path.
 pub fn dir_of(transcript: &str, sess: &str, cwd: &str) -> Option<PathBuf> {
-    if let Some(t) = super::transcript::under(&super::transcript::projects_dir(), transcript) {
-        return Some(t.with_extension("").join("subagents"));
-    }
-    if !plain(sess) {
-        return None;
-    }
-    let t = PathBuf::from(super::transcript_path(sess, cwd));
+    let t = super::transcript::locate(transcript, sess, cwd)
+        .or_else(|| plain(sess).then(|| super::transcript::slug_path(sess, cwd)).flatten())?;
     Some(t.with_extension("").join("subagents"))
 }
 

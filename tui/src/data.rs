@@ -230,18 +230,6 @@ pub fn hash_rows(ps: &[Pane], extra: &str) -> u64 {
     h.finish()
 }
 
-/// `~/.claude/projects/<slug>/<uuid>.jsonl`; the slug maps every byte outside
-/// `[A-Za-z0-9-]` to `-`. `<uuid>/subagents/` holds only sidechains.
-fn transcript_path(sess: &str, path: &str) -> String {
-    let home = std::env::var("HOME").unwrap_or_default();
-    // Per byte, not per char: a two-byte glyph in the cwd becomes two dashes.
-    let slug: String = path
-        .bytes()
-        .map(|b| if b.is_ascii_alphanumeric() || b == b'-' { b as char } else { '-' })
-        .collect();
-    format!("{home}/.claude/projects/{slug}/{sess}.jsonl")
-}
-
 /// The last `cap` bytes as whole rows, decoded lossily: the window can open
 /// mid-codepoint. Every line returned is a complete record.
 fn tail(f: &mut File, len: u64, cap: u64) -> Vec<String> {
@@ -525,13 +513,14 @@ fn parse(lines: Vec<String>) -> Facts {
     fa
 }
 
-/// doing / said / asked and their ages, from the tail of the session transcript.
-/// Returns the transcript's cwd, `""` when it has none.
-fn read_transcript(p: &mut Pane) -> String {
-    if p.sess.is_empty() {
+/// doing / said / asked and their ages, from the tail of the session transcript,
+/// which `transcript::locate` finds from `opt` (@cockpit_transcript), the session id
+/// and the cwd. Returns the transcript's cwd, `""` when it has none.
+fn read_transcript(p: &mut Pane, opt: &str) -> String {
+    let Some(t) = transcript::locate(opt, &p.sess, &p.path) else {
         return String::new();
-    }
-    let fa = read_facts(&transcript_path(&p.sess, &p.path));
+    };
+    let fa = read_facts(&t.to_string_lossy());
     // @panestate wins; the transcript speaks only for panes the hooks never touched.
     if p.state == State::Unknown {
         p.state = fa.state;
@@ -1038,7 +1027,7 @@ fn row_pane(f: &[&str], procs_t: &mut Option<Procs>) -> Option<(Pane, &'static s
 /// @cockpit_transcript come after the 13 a row from an older format has, so such a
 /// row still reads: 13 to 16 are optional.
 fn work_candidates(p: &mut Pane, f: &[&str]) -> [String; 3] {
-    let said_cwd = read_transcript(p);
+    let said_cwd = read_transcript(p, f.get(15).copied().unwrap_or_default());
     let opt = f.get(13).copied().unwrap_or_default().to_string();
     [opt, said_cwd, p.path.clone()]
 }
@@ -1049,6 +1038,25 @@ fn work_candidates(p: &mut Pane, f: &[&str]) -> [String; 3] {
 /// runs `claude agents` (hundreds of ms): a pane with no @cockpit_session has no
 /// transcript to read, so its dir is @cockpit_dir, else its launch dir.
 pub fn workdir(pane: &str) -> Option<String> {
+    let (mut p, f) = one_row(pane)?;
+    let f: Vec<&str> = f.iter().map(String::as_str).collect();
+    let cands = work_candidates(&mut p, &f);
+    // #507: a dir that is not on disk (removed, or a name tmux's lossy decode
+    // changed) is no dir: a script must not cd into it
+    fleet::work_dirs(&[cands]).pop().filter(|d| std::path::Path::new(d).is_dir())
+}
+
+/// #519: the board's agent test for one pane (`row_pane`: @panestate, an agentish
+/// command, a version-shaped name, the process tree), so the info screen cannot
+/// decide differently from the board which panes have a transcript to read.
+pub fn is_agent(pane: &str) -> bool {
+    one_row(pane).is_some()
+}
+
+/// One pane's FIELDS row, read with one `display-message`, through the fetch's
+/// `row_pane`: its Pane and the fields, or `None` when it is not there or not an
+/// agent's.
+fn one_row(pane: &str) -> Option<(Pane, Vec<String>)> {
     let out = tmux(&["display-message", "-p", "-t", pane, FIELDS])?;
     let f: Vec<&str> = out.trim_end_matches('\n').split(SEP).collect();
     // A missing pane exits 0 with every field empty: the resolved id is the test,
@@ -1056,11 +1064,8 @@ pub fn workdir(pane: &str) -> Option<String> {
     if f[0] != pane {
         return None;
     }
-    let (mut p, _) = row_pane(&f, &mut None)?;
-    let cands = work_candidates(&mut p, &f);
-    // #507: a dir that is not on disk (removed, or a name tmux's lossy decode
-    // changed) is no dir: a script must not cd into it
-    fleet::work_dirs(&[cands]).pop().filter(|d| std::path::Path::new(d).is_dir())
+    let (p, _) = row_pane(&f, &mut None)?;
+    Some((p, f.iter().map(|s| s.to_string()).collect()))
 }
 
 /// A pane can hold one multi-megabyte line, and the ANSI parser re-runs over the
