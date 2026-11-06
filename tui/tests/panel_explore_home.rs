@@ -1,18 +1,12 @@
 //! Explore first (#416) with HOME itself a git repo: the one test that sets HOME,
 //! alone in its own binary so no other test reads it changed.
+#[allow(dead_code)] // for its Scratch guard only, not write_exec
+mod fake;
+
 use cockpit_tui::panel::app::{App, Level, Tile, View};
 use cockpit_tui::panel::capture::Capture;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use std::path::PathBuf;
-
-/// A fresh temp dir, removed on drop: a failed `git init` or assert leaves nothing.
-struct Scratch(PathBuf);
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
+use fake::Scratch;
 
 /// A pane in a plain folder under a HOME that is a repo: the repo is HOME, so it is refused.
 #[test]

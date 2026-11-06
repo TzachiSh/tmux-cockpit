@@ -280,37 +280,56 @@ fn a_shell_pane_with_no_window_name_keeps_its_fields() {
     assert!(std::fs::read_to_string(e.dir.join("args")).unwrap().contains("-S -80"));
 }
 
-/// A thread outside ENV forks, as capture()'s repo worker does after its test
-/// returns. The child holds a copy of every fd the parent had open, a fake being
-/// written among them, until it execs; the fake's own exec meanwhile is ETXTBSY.
-/// 200 rewrites of one fake, each run at once, under four threads of such forks.
+/// `n` threads outside ENV that fork until [`ForkStorm::stop`], as capture()'s
+/// repo worker does after its test returns (#544 moved it out of the test).
+struct ForkStorm {
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    threads: Vec<std::thread::JoinHandle<()>>,
+}
+
+impl ForkStorm {
+    fn start(n: usize) -> Self {
+        use std::os::unix::process::CommandExt;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let stop = std::sync::Arc::new(AtomicBool::new(false));
+        let threads = (0..n)
+            .map(|_| {
+                let stop = stop.clone();
+                std::thread::spawn(move || {
+                    while !stop.load(Ordering::Relaxed) {
+                        let mut c = std::process::Command::new("true");
+                        // SAFETY: the closure does nothing; it only makes std fork,
+                        // not posix_spawn.
+                        unsafe { c.pre_exec(|| Ok(())) };
+                        let _ = c.status();
+                    }
+                })
+            })
+            .collect();
+        ForkStorm { stop, threads }
+    }
+
+    fn stop(self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.threads.into_iter().for_each(|t| t.join().unwrap());
+    }
+}
+
+/// The child of a fork holds a copy of every fd the parent had open, a fake
+/// being written among them, until it execs; the fake's own exec meanwhile is
+/// ETXTBSY. 200 rewrites of one fake, each run at once, under four threads of
+/// such forks.
 #[test]
 fn a_fresh_fake_execs_while_another_thread_forks() {
-    use std::os::unix::process::CommandExt;
-    use std::sync::atomic::{AtomicBool, Ordering};
     let e = Env::new("busy", &[]);
-    let stop = std::sync::Arc::new(AtomicBool::new(false));
-    let storm: Vec<_> = (0..4)
-        .map(|_| {
-            let stop = stop.clone();
-            std::thread::spawn(move || {
-                while !stop.load(Ordering::Relaxed) {
-                    let mut c = std::process::Command::new("true");
-                    // SAFETY: the closure does nothing; it only makes std fork, not posix_spawn.
-                    unsafe { c.pre_exec(|| Ok(())) };
-                    let _ = c.status();
-                }
-            })
-        })
-        .collect();
+    let storm = ForkStorm::start(4);
     let busy: Vec<String> = (0..200)
         .filter_map(|i| {
             let p = e.exec("fake", &format!("exit {}", i % 2));
             std::process::Command::new(&p).status().err().map(|err| format!("{i}: {err}"))
         })
         .collect();
-    stop.store(true, Ordering::Relaxed);
-    storm.into_iter().for_each(|t| t.join().unwrap());
+    storm.stop();
     assert_eq!(busy, Vec::<String>::new(), "these execs failed");
 }
 

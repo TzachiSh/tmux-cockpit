@@ -169,10 +169,13 @@ fn an_empty_answer_is_a_failure_even_on_exit_0() {
 
 #[test]
 fn a_missing_binary_fails_through_poll() {
+    // the request writes its system prompt file here; the shared guard removes it (#544)
+    let d = std::env::temp_dir().join(format!("cockpit-panel-missing-{}", std::process::id()));
+    let d = fake::Scratch::fresh(d);
     let call = Call {
         claude: "/nonexistent/claude".into(),
         timeout: Duration::from_secs(5),
-        dir: std::env::temp_dir().join("cockpit-panel-missing"),
+        dir: d.to_path_buf(),
     };
     let mut req = spawn(&call, "S", "p", "haiku");
     assert_eq!(req.pid(), None);

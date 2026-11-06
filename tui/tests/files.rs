@@ -2,10 +2,14 @@
 //! which line each leaf key prints. Scratch directories only; no tmux, no tty.
 //!
 //! COCKPIT_BLESS=1 cargo test  rewrites the goldens.
+#[allow(dead_code)] // for its Scratch guard only, not write_exec
+mod fake;
+
 use cockpit_tui::files::{self, Files};
 use cockpit_tui::pick::{self, Outcome};
 use cockpit_tui::theme::Theme;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use fake::Scratch;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;
@@ -16,12 +20,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 static N: AtomicUsize = AtomicUsize::new(0);
 
-struct Scratch(PathBuf);
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
 impl Scratch {
     fn new() -> Self {
         let p = std::env::temp_dir().join(format!(

@@ -3,10 +3,14 @@
 //! built by hand, so a failure means the layout moved and nothing else.
 //!
 //! COCKPIT_BLESS=1 cargo test  rewrites the goldens.
+#[allow(dead_code)] // for its Scratch guard only, not write_exec
+mod fake;
+
 use cockpit_tui::board::{self, Act, EXTRAS, Focus, Grid, KEYS, Nav, Row, Sel, View};
 use cockpit_tui::data::Pane;
 use cockpit_tui::theme::{Glyphs, Theme};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use fake::Scratch;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
@@ -1260,28 +1264,11 @@ fn board_flags_parse_strictly() {
     }
 }
 
-/// A private scratch dir per test (cargo runs tests on threads), removed when the
-/// guard drops: on a pass, and on a failing assert's unwind too (#543).
-struct Scratch(std::path::PathBuf);
-
-impl std::ops::Deref for Scratch {
-    type Target = std::path::Path;
-    fn deref(&self) -> &std::path::Path {
-        &self.0
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
+/// A private scratch dir per test (cargo runs tests on threads), the shared
+/// guard: removed on a pass and on a failing assert's unwind (#543).
 fn scratch(tag: &str) -> Scratch {
-    let d = std::env::temp_dir().join(format!("cockpit-board-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    Scratch(d)
+    let name = format!("cockpit-board-{tag}-{}", std::process::id());
+    Scratch::fresh(std::env::temp_dir().join(name))
 }
 
 /// #543: the scratch dir goes on every exit path, a failing assert's unwind included.

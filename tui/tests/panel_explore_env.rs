@@ -2,30 +2,24 @@
 //! process env, so they run in a binary of their own. Its tests still run in
 //! parallel threads, and only `with_env` takes `ENV`: setup outside it sees
 //! whatever another test has set at that moment.
+#[allow(dead_code)] // for its Scratch guard only, not write_exec
+mod fake;
+
 use cockpit_tui::data::gitsafe::REDIRECT;
 use cockpit_tui::panel::app::App;
 use cockpit_tui::panel::capture::Capture;
 use cockpit_tui::panel::envelope::{Flow, OutType};
+use fake::Scratch;
 use std::ffi::OsString;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Mutex;
 
 static ENV: Mutex<()> = Mutex::new(());
 
-/// A fresh temp dir, removed on drop.
-struct Scratch(PathBuf);
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
+/// A fresh temp dir in the shared guard, removed on drop.
 fn scratch(tag: &str) -> Scratch {
-    let d = std::env::temp_dir().join(format!("cockpit-panel-explore-env-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    Scratch(d)
+    let name = format!("cockpit-panel-explore-env-{tag}-{}", std::process::id());
+    Scratch::fresh(std::env::temp_dir().join(name))
 }
 
 /// A repo at `dir` whatever another test's [`with_env`] has set: [`REDIRECT`],

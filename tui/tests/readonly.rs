@@ -45,28 +45,11 @@ fn shim(dir: &std::path::Path) -> (String, std::path::PathBuf) {
     (bin.display().to_string(), log)
 }
 
-/// A private scratch dir, removed when the guard drops: on a pass, and on a
-/// failing assert's unwind too (#543).
-struct Scratch(std::path::PathBuf);
-
-impl std::ops::Deref for Scratch {
-    type Target = std::path::Path;
-    fn deref(&self) -> &std::path::Path {
-        &self.0
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
-fn scratch(tag: &str) -> Scratch {
-    let d = std::env::temp_dir().join(format!("cockpit-tui-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    Scratch(d)
+/// A private scratch dir, the shared guard: removed on a pass and on a failing
+/// assert's unwind (#543).
+fn scratch(tag: &str) -> fake::Scratch {
+    let name = format!("cockpit-tui-{tag}-{}", std::process::id());
+    fake::Scratch::fresh(std::env::temp_dir().join(name))
 }
 
 /// #543: the scratch dir goes on every exit path, a failing assert's unwind included.
