@@ -2270,6 +2270,14 @@ Exit 2 is a bad argument, a folder that cannot be read or no terminal.
 On a touch client the script opens a file in a terminal editor window instead of
 VS Code; see [path-picker.md](path-picker.md).
 
+`cockpit-tui files <dir> --select <name>` starts on the entry `name` of the
+folder: the dotfiles on when it is a dotfile, the ignored entries on when the
+ignore files hide it, the first row when the folder does not hold it. The name is
+one entry, never a path: an empty name, a `/` or a control character is exit 2.
+The script passes it when the viewer it opened closes with nothing printed, and
+runs that viewer with `COCKPIT_VIEW_BACK=1`, which makes its `q` hint and help
+say `back` instead of `close`.
+
 ## The info screen (#252)
 
 `cockpit-tui info %N` is what `prefix i` opens, in a popup (`@cockpit_info_key`

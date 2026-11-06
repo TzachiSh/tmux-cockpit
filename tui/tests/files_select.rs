@@ -1,0 +1,129 @@
+//! `cockpit-tui files <dir> --select <name>`: the browser reopened after the
+//! viewer closes starts on the file that was viewed. Scratch folders only; no
+//! tmux, no tty.
+use cockpit_tui::files::{self, Files};
+use cockpit_tui::pick::Outcome;
+use cockpit_tui::theme::Theme;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::layout::Rect;
+use std::os::unix::ffi::OsStrExt;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+static N: AtomicUsize = AtomicUsize::new(0);
+
+struct Scratch(PathBuf);
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+impl Scratch {
+    fn new(files: &[&str]) -> Self {
+        let p = std::env::temp_dir().join(format!(
+            "cockpit-files-select-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&p).unwrap();
+        let s = Self(std::fs::canonicalize(&p).unwrap());
+        for f in files {
+            std::fs::write(s.0.join(f), b"x").unwrap();
+        }
+        s
+    }
+}
+
+/// What Enter prints: the selected row, as the browser would hand it on.
+fn enter(f: &mut Files) -> Outcome {
+    f.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), Rect::new(0, 0, 80, 24))
+}
+
+fn view(p: &Path) -> Outcome {
+    Outcome::Choose([b"view ", p.as_os_str().as_bytes()].concat())
+}
+
+fn opened(s: &Scratch, name: &[u8]) -> Files {
+    let mut f = Files::new(&s.0, &Theme::fixed().g).unwrap();
+    f.select(name);
+    f
+}
+
+#[test]
+fn select_starts_on_the_named_file() {
+    let s = Scratch::new(&["a.txt", "b.txt", "c.txt"]);
+    let mut f = opened(&s, b"c.txt");
+    assert_eq!(enter(&mut f), view(&s.0.join("c.txt")));
+}
+
+#[test]
+fn a_name_not_in_the_folder_starts_on_the_first_row() {
+    let s = Scratch::new(&["a.txt", "b.txt"]);
+    let mut f = opened(&s, b"gone.txt");
+    assert_eq!(enter(&mut f), view(&s.0.join("a.txt")));
+}
+
+#[test]
+fn a_dotfile_turns_the_dotfiles_on_to_select_it() {
+    let s = Scratch::new(&["a.txt", ".env"]);
+    let mut f = opened(&s, b".env");
+    assert!(f.hidden);
+    assert_eq!(enter(&mut f), view(&s.0.join(".env")));
+}
+
+#[test]
+fn an_ignored_file_turns_the_ignored_on_to_select_it() {
+    let s = Scratch::new(&["a.txt", "run.log"]);
+    let git = std::process::Command::new("git").args(["init", "-q"]).arg(&s.0).status();
+    assert!(git.unwrap().success());
+    std::fs::write(s.0.join(".gitignore"), "*.log\n").unwrap();
+    let mut f = opened(&s, b"run.log");
+    assert!(f.show_ignored);
+    assert_eq!(enter(&mut f), view(&s.0.join("run.log")));
+}
+
+#[test]
+fn a_plain_name_leaves_the_dotfiles_and_the_ignored_off() {
+    let s = Scratch::new(&["a.txt", "b.txt"]);
+    let f = opened(&s, b"b.txt");
+    assert_eq!((f.hidden, f.show_ignored), (false, false));
+}
+
+/// What `parse_args` gives for a row: the folder and the name, or a refusal.
+type Parsed = Result<(String, Option<String>), ()>;
+
+/// The arguments `main` takes, each row named: the old one-folder form still
+/// parses, and `--select` takes one entry name, never a path or a control.
+#[test]
+fn the_arguments_table() {
+    let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    let ok = |d: &str, n: Option<&str>| Ok((d.to_string(), n.map(str::to_string)));
+    let rows: &[(&str, Vec<String>, Parsed)] = &[
+        ("one folder, the old form", a(&["/d"]), ok("/d", None)),
+        ("a folder and a name", a(&["/d", "--select", "x.md"]), ok("/d", Some("x.md"))),
+        ("a dotfile name", a(&["/d", "--select", ".env"]), ok("/d", Some(".env"))),
+        ("no argument", a(&[]), Err(())),
+        ("--select without a name", a(&["/d", "--select"]), Err(())),
+        ("an empty name", a(&["/d", "--select", ""]), Err(())),
+        ("a slash in the name", a(&["/d", "--select", "a/b"]), Err(())),
+        ("a bare slash", a(&["/d", "--select", "/"]), Err(())),
+        ("an escape in the name", a(&["/d", "--select", "a\x1bb"]), Err(())),
+        ("a newline in the name", a(&["/d", "--select", "a\nb"]), Err(())),
+        ("a C1 control in the name", a(&["/d", "--select", "a\u{85}b"]), Err(())),
+        ("another flag", a(&["/d", "--pick", "x"]), Err(())),
+        ("two folders", a(&["/d", "/e"]), Err(())),
+        ("a name and more", a(&["/d", "--select", "x", "y"]), Err(())),
+    ];
+    for (name, args, want) in rows {
+        let got = files::parse_args(args).map_err(|_| ());
+        assert_eq!(&got, want, "{name}");
+    }
+}
+
+/// A refused name is named in the error: `--select` and what it takes. (`main`
+/// exits 2 on it, as it does for no terminal, so its code alone proves nothing.)
+#[test]
+fn a_refused_name_names_the_argument() {
+    let e = files::parse_args(&["/d".into(), "--select".into(), "a/b".into()]).unwrap_err();
+    assert!(e.contains("--select") && e.contains("one name"), "{e}");
+}

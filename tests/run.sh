@@ -14262,6 +14262,11 @@ mvcap() { "$TMUX_REAL" -L "$MDO" capture-pane -p -t o; }
 mvclick
 if until_cap "$MDO" o '*# Heading*p1*'; then ok "a click on a .md shows it rendered in a popup"
 else bad "a click on a .md shows it rendered in a popup" "# Heading, then p1" "$(mvcap | head -8)"; fi
+case "$(mvcap)" in
+    *"q close"*) ok "the viewer from a click says q close: no browser to go back to" ;;
+    *) bad "the viewer from a click says q close: no browser to go back to" "q close" \
+           "$(mvcap | tail -2)" ;;
+esac
 # The client's top row is the popup's border, so the -T title is what is
 # read here; the viewer's own frame title is a row lower and is not the gate.
 case "$(mvcap | head -1)" in
@@ -14313,9 +14318,19 @@ STUB
 cat > "$FB/bin/cockpit-tui" <<STUB
 #!/bin/sh
 printf '%s\n' "\$*" > "$FB/tui.args"
+printf '%s\n' "\$*" >> "$FB/tui.calls"
 cat "$FB/errtext" >&2
 # the viewer prints what vout holds (an \`edit N\` for its e key), the browser its answer
-[ "\$1" = view ] && { cat "$FB/vout"; exit 0; }
+if [ "\$1" = view ]; then
+    printf '%s\n' "\${COCKPIT_VIEW_BACK-unset}" >> "$FB/vback"; cat "$FB/vout"; exit 0
+fi
+# a binary from before --select (the file "old") refuses it as it did
+if [ -e "$FB/old" ] && [ "\$3" = --select ]; then
+    echo 'cockpit-tui: files: needs exactly one folder' >&2; exit 2
+fi
+# the browser gives its answer "reps" times (FBR, default 1), then esc
+n=\$(cat "$FB/reps"); [ "\$n" -gt 0 ] || exit 1
+echo \$((n - 1)) > "$FB/reps"
 cat "$FB/answer"
 exit \$(cat "$FB/rc")
 STUB
@@ -14333,6 +14348,7 @@ fb() {
     "$TMUX_REAL" -L "$FBS" set -g remain-on-exit on    # the shim editors exit at once
     printf %b "$ans" > "$FB/answer"; echo "$rc" > "$FB/rc"; : > "$FB/errtext"
     : > "$FB/calls"; : > "$FB/code.log"; : > "$FB/ed.log"; printf %b "${FBV:-}" > "$FB/vout"
+    : > "$FB/tui.calls"; : > "$FB/vback"; echo "${FBR:-1}" > "$FB/reps"
     ( cd "$FB" && env PATH="$FB/bin:$PATH" COCKPIT_TUI_BIN="$FB/bin/cockpit-tui" TMUX="$FBSOCK,0,0" "$@" \
         "$DIR/scripts/tmux-open-path" --browse "$FBP" </dev/null >"$FB/out" 2>&1 )
 }
@@ -14396,7 +14412,8 @@ is "touch: the window is named for the file and starts in its folder" "n.txt $FB
 for fbt in on off; do
     for fbv in n.md n.txt; do
         fb "$fbt" "view $FBD/sub/$fbv\n" 0 "VISUAL=$FB/bin/ed-visual"
-        is "$fbt: view $fbv opens the viewer on the exact path" "view -- $FBD/sub/$fbv" "$(cat "$FB/tui.args" 2>/dev/null)"
+        is "$fbt: view $fbv opens the viewer on the exact path" "view -- $FBD/sub/$fbv" \
+           "$(grep '^view' "$FB/tui.calls")"
         is "$fbt: and no editor, no code, no window opens for $fbv" "0|0" \
            "$(fbn run-shell)|$(fbn new-window)"
     done
@@ -14415,6 +14432,43 @@ case "$(cat "$FB/code.log")" in
     *"[--goto][$FBD/sub/n.txt:7:1]"*) ok "non-touch: the viewer's e still goes to code at the line" ;;
     *) bad "non-touch: the viewer's e still goes to code at the line" "--goto n.txt:7:1" "$(cat "$FB/code.log")" ;;
 esac
+# lane-back: the viewer closed with q or esc (it prints nothing) brings the
+# browser back, in the viewed file's folder, on that file; esc there ends it
+fbtui() { paste -sd'|' "$FB/tui.calls"; }                # every cockpit-tui call, in order
+fbtn() { grep -c "^$1" "$FB/tui.calls"; }               # cockpit-tui calls of one screen
+FBVIEW="files $FBD|view -- $FBD/sub/n.txt|files $FBD/sub --select n.txt"
+fb off "view $FBD/sub/n.txt\n" 0
+is "view, then a bare close: the browser comes back in the file's folder, on the file" \
+   "$FBVIEW" "$(fbtui)"
+is "and nothing else opened, nothing was said" "0|0|0" \
+   "$(fbn run-shell)|$(fbn new-window)|$(fbnotes)"
+is "the viewer opened from the browser runs with COCKPIT_VIEW_BACK=1" "1" "$(cat "$FB/vback")"
+# an action in the viewer keeps today's end: the popup closes, the browser stays shut
+FBV='edit 7\n' fb off "view $FBD/sub/n.txt\n" 0
+fbwait "$FB/code.log"
+is "the viewer's e: the editor opens, the browser does not come back" "1|1" \
+   "$(fbtn files)|$(grep -c 'n.txt:7' "$FB/code.log")"
+FBV='edit 7\n' fb on "view $FBD/sub/n.txt\n" 0 "VISUAL=$FB/bin/ed-visual"
+fbwait "$FB/ed.log"
+is "touch, the viewer's e: the editor window opens, the browser does not come back" "1|1" \
+   "$(fbtn files)|$(fbn new-window)"
+FBV='edit x\n' fb off "view $FBD/sub/n.txt\n" 0
+is "a viewer line that is not an edit is not a close either: no browser" "1" "$(fbtn files)"
+fb off "copy $FBF\n" 0
+is "copy from the browser: no viewer, no second browser" "1" "$(fbtn files)"
+# a loop, not a call per view: under a cap of 8 nested calls, 15 views closed in a row
+# bring the browser back 15 times; a recursion would die at the cap
+FBR=15 fb off "view $FBD/sub/n.txt\n" 0 FUNCNEST=8
+is "fifteen view-and-close cycles in a row stay a loop" "16 15 0" \
+   "$(fbtn files) $(fbtn view) $(grep -c 'maximum function nesting' "$FB/out")"
+# a binary without --select still brings the folder back, on its first row, and is not called stale
+: > "$FB/old"
+fb off "view $FBD/sub/n.txt\n" 0
+rm -f "$FB/old"
+is "an older binary: --select refused, the folder comes back without it" \
+   "$FBVIEW|files $FBD/sub" "$(fbtui)"
+is "and nothing is said about it, no stale note, no exit line" "0|0" \
+   "$(fbnotes)|$(grep -c 'files exited' "$FB/out")"
 # open on a markdown file on a touch client is a terminal editor, never the viewer
 fb on "open $FBD/sub/n.md\n" 0 "VISUAL=$FB/bin/ed-visual"
 fbwait "$FB/ed.log"
@@ -14501,7 +14555,7 @@ done
 
 # a tui from before this screen existed
 fb on "" 2
-printf 'cockpit-tui: unknown screen files\n' > "$FB/errtext"
+printf 'cockpit-tui: unknown screen files\n' > "$FB/errtext"; echo 1 > "$FB/reps"
 env PATH="$FB/bin:$PATH" COCKPIT_TUI_BIN="$FB/bin/cockpit-tui" TMUX="$FBSOCK,0,0" \
     "$DIR/scripts/tmux-open-path" --browse "$FBP" </dev/null >"$FB/out" 2>&1
 is "a stale cockpit-tui is told apart" "1" "$(grep -c 'older than the plugin' "$FB/calls")"
@@ -14547,6 +14601,27 @@ if frstart && "$TMUX_REAL" -L "$FRS" send-keys -t "$FRP" -l 'touch PWN' && until
         *"$(basename "$FRF")"*) ok "the viewer's title is the file's name" ;;
         *) bad "the viewer's title is the file's name" "$(basename "$FRF")" "$("$TMUX_REAL" -L "$FRS" capture-pane -p -t "$FRP" | head -4)" ;;
     esac
+    # lane-back: from the browser the viewer's q says back and goes back, on the
+    # file it showed (0first.txt sorts first: a second Enter shows the body only
+    # if the file is still selected); esc in the browser then ends it
+    case "$("$TMUX_REAL" -L "$FRS" capture-pane -p -t "$FRP")" in
+        *"q back"*) ok "the viewer opened from the browser says q back" ;;
+        *) bad "the viewer opened from the browser says q back" "q back" \
+               "$("$TMUX_REAL" -L "$FRS" capture-pane -p -t "$FRP" | tail -2)" ;;
+    esac
+    "$TMUX_REAL" -L "$FRS" send-keys -t "$FRP" q
+    if until_cap "$FRS" "$FRP" '*0first.txt*' && "$TMUX_REAL" -L "$FRS" send-keys -t "$FRP" Enter \
+       && until_cap "$FRS" "$FRP" "*VIEWBODY-$$*"; then
+        ok "q in the viewer goes back to the browser, on the file it showed"
+    else bad "q in the viewer goes back to the browser, on the file it showed" \
+         "the list, then VIEWBODY-$$ again" \
+         "$("$TMUX_REAL" -L "$FRS" capture-pane -p -t "$FRP" | head -12)"; fi
+    "$TMUX_REAL" -L "$FRS" send-keys -t "$FRP" Escape
+    if until_cap "$FRS" "$FRP" '*0first.txt*' && "$TMUX_REAL" -L "$FRS" send-keys -t "$FRP" Escape \
+       && until_out 1 "$TMUX_REAL" -L "$FRS" display-message -p -t "$FRP" '#{pane_dead}'; then
+        ok "esc in the viewer goes back too, and esc in the browser then ends it"
+    else bad "esc in the viewer goes back too, and esc in the browser then ends it" "pane_dead 1" \
+         "$("$TMUX_REAL" -L "$FRS" capture-pane -p -t "$FRP" | head -12)"; fi
 else bad "the real browser lists the folder and takes the filter (view)" "0first.txt, then PWN" "$("$TMUX_REAL" -L "$FRS" capture-pane -p -t "$FRP" | head -12)"; fi
 is "the viewer opened no editor and no code" "" "$(cat "$FR/code.log")"
 is "no PWN appeared in the folder, the server's cwd or the checkout" "" "$(find "$FR" "$DIR" -maxdepth 3 -name PWN -not -path '*/tui/target/*' 2>/dev/null)"
