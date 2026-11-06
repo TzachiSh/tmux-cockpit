@@ -1,6 +1,9 @@
 //! The markdown viewer's screen (#283): loading, search, scrolling, the keys
 //! and the goldens. No tmux and no tty: keys are literals, the theme is
 //! `Theme::fixed()`, files are scratch files. COCKPIT_BLESS=1 rewrites goldens.
+#[allow(dead_code)] // for its Scratch guard only, not write_exec
+mod fake;
+
 use cockpit_tui::mdview::render::Opts;
 use cockpit_tui::mdview::{self, Hit, MAX_FILE, Out, Screen, find, load};
 use cockpit_tui::theme::{Glyphs, Theme};
@@ -54,51 +57,47 @@ fn paras(n: usize) -> String {
     (0..n).map(|i| format!("p{i}\n\n")).collect()
 }
 
-/// A scratch file under the crate's own target dir, removed on drop.
-struct Scratch(PathBuf);
+/// A scratch file under the crate's own target dir, and the shared guard on the
+/// dir that holds it, removed on drop. The guard is held for its drop alone.
+struct Doc(PathBuf, #[allow(dead_code)] fake::Scratch);
 
-impl Scratch {
+impl Doc {
     fn new(name: &str, body: &[u8]) -> Self {
-        let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("mdview-{}-{name}", std::process::id()));
+        let tmp = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
+        let dir = tmp.join(format!("mdview-{}-{name}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join(name);
         std::fs::write(&p, body).unwrap();
-        Scratch(p)
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(self.0.parent().unwrap());
+        Doc(p, fake::Scratch(dir))
     }
 }
 
 #[test]
 fn load_reads_text_and_strips_a_bom() {
-    let f = Scratch::new("a.md", "\u{feff}# hi\n".as_bytes());
+    let f = Doc::new("a.md", "\u{feff}# hi\n".as_bytes());
     assert_eq!(load(&f.0, MAX_FILE), Ok("# hi\n".into()));
-    let e = Scratch::new("e.md", b"");
+    let e = Doc::new("e.md", b"");
     assert_eq!(load(&e.0, MAX_FILE), Ok(String::new()));
 }
 
 #[test]
 fn load_refuses_a_file_over_the_cap() {
-    let f = Scratch::new("big.md", &vec![b'a'; 2049]);
+    let f = Doc::new("big.md", &vec![b'a'; 2049]);
     assert_eq!(load(&f.0, 2048), Err("too large to show: over 2 KB".into()));
     assert!(load(&f.0, 2049).is_ok(), "the cap itself is allowed");
 }
 
 #[test]
 fn load_refuses_binary_and_invalid_utf8() {
-    let b = Scratch::new("b.md", b"PK\x03\x04\0\0");
+    let b = Doc::new("b.md", b"PK\x03\x04\0\0");
     assert_eq!(load(&b.0, MAX_FILE), Err("a binary file".into()));
-    let u = Scratch::new("u.md", b"caf\xe9");
+    let u = Doc::new("u.md", b"caf\xe9");
     assert_eq!(load(&u.0, MAX_FILE), Err("not UTF-8 text".into()));
 }
 
 #[test]
 fn load_refuses_what_is_not_a_regular_file_without_waiting() {
-    let d = Scratch::new("d.md", b"");
+    let d = Doc::new("d.md", b"");
     let fifo = d.0.with_file_name("fifo.md");
     let c = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
     // SAFETY: a fresh path in our own scratch dir.

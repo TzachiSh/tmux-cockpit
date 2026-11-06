@@ -3,8 +3,7 @@
 //! built by hand, so a failure means the layout moved and nothing else.
 //!
 //! COCKPIT_BLESS=1 cargo test  rewrites the goldens.
-// for its Scratch guard only, not write_exec
-#[allow(dead_code)]
+#[allow(dead_code)] // for its Scratch guard only, not write_exec
 mod fake;
 
 use cockpit_tui::board::{self, Act, EXTRAS, Focus, Grid, KEYS, Nav, Row, Sel, View};

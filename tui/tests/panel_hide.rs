@@ -1,5 +1,8 @@
 //! The panel's hide and resume (#278): ^Z keeps the whole state in a version 2
 //! state file, and `--resume <file> --last hidden` brings it back as it was.
+#[allow(dead_code)] // for its Scratch guard only, not write_exec
+mod fake;
+
 use cockpit_tui::panel::action::{HIDE_AGE, HIDE_MAX, read_hidden, read_state, write_hidden};
 use cockpit_tui::panel::app::{App, InputKind, Level, Tap, View};
 use cockpit_tui::panel::capture::Capture;
@@ -7,10 +10,11 @@ use cockpit_tui::panel::envelope::OutType;
 use cockpit_tui::panel::view::render;
 use cockpit_tui::theme::Theme;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use fake::Scratch;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 const NOW: u64 = 1_800_000_000;
 
@@ -43,28 +47,11 @@ fn note(a: &App) -> Option<&str> {
     a.note.as_ref().map(|n| n.text.as_str())
 }
 
-/// A test's directory, removed when the guard drops: on return and on a
-/// failed assert's unwind alike, so a run leaves nothing in the temp dir.
-struct Scratch(PathBuf);
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
-impl std::ops::Deref for Scratch {
-    type Target = Path;
-    fn deref(&self) -> &Path {
-        &self.0
-    }
-}
-
+/// A test's directory in the shared guard: removed on return and on a failed
+/// assert's unwind alike, so a run leaves nothing in the temp dir.
 fn dir(tag: &str) -> Scratch {
-    let d = std::env::temp_dir().join(format!("cockpit-panel-hide-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    Scratch(d)
+    let name = format!("cockpit-panel-hide-{tag}-{}", std::process::id());
+    Scratch::fresh(std::env::temp_dir().join(name))
 }
 
 /// The body a hide at `NOW` writes, as `act.state` in a fresh directory; the

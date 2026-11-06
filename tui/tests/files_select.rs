@@ -1,25 +1,23 @@
 //! `cockpit-tui files <dir> --select <name>`: the browser reopened after the
 //! viewer closes starts on the file that was viewed. Scratch folders only; no
 //! tmux, no tty.
+#[allow(dead_code)] // for its Scratch guard only, not write_exec
+mod fake;
+
 use cockpit_tui::files::{self, Files};
 use cockpit_tui::pick::Outcome;
 use cockpit_tui::theme::Theme;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use fake::Scratch;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;
 use std::os::unix::ffi::OsStrExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 static N: AtomicUsize = AtomicUsize::new(0);
 
-struct Scratch(PathBuf);
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
 impl Scratch {
     fn new(files: &[&str]) -> Self {
         let p = std::env::temp_dir().join(format!(

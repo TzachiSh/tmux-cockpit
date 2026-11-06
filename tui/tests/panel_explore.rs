@@ -8,7 +8,8 @@ use cockpit_tui::panel::envelope::{Flow, OutType};
 use cockpit_tui::panel::prompts::{self, Ctx};
 use cockpit_tui::panel::request::{Call, Fail, Profile, read_dir_ok};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use std::path::{Path, PathBuf};
+use fake::Scratch;
+use std::path::Path;
 use std::time::Duration;
 
 fn app(cmd: &str, path: &str) -> App {
@@ -44,15 +45,6 @@ fn write_flow() -> Flow {
     }
 }
 
-/// A fresh temp dir, removed on drop, so a failed assert leaves nothing behind.
-struct Scratch(PathBuf);
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
 /// A fork made while another test holds a fake open for writing carries that fd
 /// to its exec, which then fails ETXTBSY: writes and spawns take turns, as in panel_request.
 static FORK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -67,11 +59,10 @@ fn fake_at(path: &Path, body: &str) {
     fake::write_exec(path, body);
 }
 
+/// A fresh temp dir in the shared guard: a failed assert leaves nothing behind.
 fn scratch(tag: &str) -> Scratch {
-    let d = std::env::temp_dir().join(format!("cockpit-panel-explore-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    Scratch(d)
+    let name = format!("cockpit-panel-explore-{tag}-{}", std::process::id());
+    Scratch::fresh(std::env::temp_dir().join(name))
 }
 
 #[test]

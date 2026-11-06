@@ -3,15 +3,19 @@
 //! tmux, no tty, no clock -- commit dates are fixed and goldens use literal ages.
 //!
 //! COCKPIT_BLESS=1 cargo test  rewrites the goldens.
+#[allow(dead_code)] // for its Scratch guard only, not write_exec
+mod fake;
+
 use cockpit_tui::branch::{self, Ui};
 use cockpit_tui::data::branches::{self, Branch};
 use cockpit_tui::pick::Outcome;
 use cockpit_tui::theme::Theme;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use fake::Scratch;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -28,12 +32,6 @@ fn golden(name: &str, got: &str) {
 
 static N: AtomicUsize = AtomicUsize::new(0);
 
-struct Scratch(PathBuf);
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
 impl Scratch {
     fn new() -> Self {
         let p = std::env::temp_dir().join(format!(
