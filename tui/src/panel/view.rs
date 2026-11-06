@@ -876,7 +876,13 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
             for x in ws {
                 b.head.extend(many(&tiered(g, x), w, "", Style::new().fg(th.error)));
             }
-            let ask = if *send {
+            let ask = if app.basket_confirm() {
+                // the basket's send (#365, D2): both ways are offered, Enter's named
+                format!(
+                    "this goes to {} ({}): {} or i inserts it, no Enter; s sends it with Enter",
+                    app.pane, app.cap.cmd, g.key_enter
+                )
+            } else if *send {
                 format!("send this to {} ({}) and press Enter?", app.pane, app.cap.cmd)
             } else {
                 format!("insert this into {} ({}), no Enter?", app.pane, app.cap.cmd)
@@ -887,7 +893,16 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
             b.scroll = *scroll;
             b.count = true;
             b.more = true;
-            b.footer = if app.tablet {
+            let key = |c| Tap::Key(KeyEvent::from(KeyCode::Char(c)));
+            b.footer = if app.basket_confirm() && app.tablet {
+                let (send, ins, no) = (key('s'), key('i'), key('n'));
+                b.big = vec![("send".into(), send), ("insert".into(), ins), ("no".into(), no)];
+                pills(&[help])
+            } else if app.basket_confirm() {
+                let ins = format!("i {}", g.key_enter);
+                let ud = g.key_updown;
+                pills(&[("s", "send"), (&ins, "insert"), (ud, "scroll"), help, ("esc n", "cancel")])
+            } else if app.tablet {
                 // yes is y, never Enter: a tap held over must not fire a multi-line send
                 let yes = if *send { "yes, send" } else { "yes, insert" };
                 let y = |c| Tap::Key(KeyEvent::from(KeyCode::Char(c)));
@@ -1101,6 +1116,15 @@ pub fn keys(app: &App, g: &Glyphs) -> Vec<(String, String)> {
             scroll,
             help,
             s("esc q", "twice: drop it, back to home"),
+            s("^C", "close the panel"),
+        ],
+        View::Confirm { back, .. } if app.basket_confirm() => vec![
+            s("s", "send it, then Enter"),
+            s(&format!("i y {ret}"), "insert it, no Enter"),
+            s(&ud, "scroll"),
+            scroll,
+            help,
+            s("esc n q", &format!("cancel, back to {}", named(Some(back)))),
             s("^C", "close the panel"),
         ],
         View::Confirm { back, .. } => vec![

@@ -8735,6 +8735,8 @@ is "an empty text pastes nothing" "" "$(pact 'paste %5' '')"
 printf '/r/a.rs:1-2\n/r/b.rs' > "$PND/basket"
 printf '/r/a.rs:1-2\n/r/b.rs\n' > "$PND/bopt"
 is "a send with the basket's refs clears it" "1" "$(pact 'send %5' hi | grep -c 'set-option -pu -t %5 @cockpit_basket')"
+# the owner's call: an insert (i, y or Enter) spends the basket too
+is "an insert with the basket's refs clears it too" "1" "$(pact 'paste %5' hi | grep -c 'set-option -pu -t %5 @cockpit_basket')"
 printf '/r/a.rs:1-2\n/r/b.rs\n/r/c.rs\n' > "$PND/bopt"
 is "a basket that changed since is kept" "0" "$(pact 'send %5' hi | grep -c '@cockpit_basket')"
 printf '/r/a.rs:1-2\n/r/b.rs\n' > "$PND/bopt"; touch "$PND/fail-paste-buffer"

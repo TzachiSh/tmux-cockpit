@@ -32,11 +32,20 @@ pub fn body(refs: &[Ref]) -> Result<String, String> {
     Ok(text)
 }
 
-/// The refs the option's text holds, each once; a file gone since is dropped.
+/// A line or paragraph separator (U+2028, U+2029: Unicode's Zl and Zp, the
+/// whole of both) in a name: cockpit-panel's strip keeps it, and inside an
+/// `@"…"` mention it reads as a line break, so a crafted name could forge a
+/// line of its own (review-534). Such a name never goes in the basket.
+fn breaks_lines(r: &Ref) -> bool {
+    r.path().to_string_lossy().contains(['\u{2028}', '\u{2029}'])
+}
+
+/// The refs the option's text holds, each once; a file gone since is dropped,
+/// and so is a name [`breaks_lines`] refuses.
 pub fn from_body(text: &str) -> Vec<Ref> {
     let mut out: Vec<Ref> = vec![];
     for r in refs::parse(text, Path::new("/")) {
-        if !out.contains(&r) {
+        if !out.contains(&r) && !breaks_lines(&r) {
             out.push(r);
         }
     }
@@ -50,7 +59,7 @@ pub fn with_ref(refs: &[Ref], r: Ref) -> Result<(Vec<Ref>, bool), String> {
     if refs.contains(&r) {
         return Ok((refs.to_vec(), false));
     }
-    if from_body(&line(&r)) != [r.clone()] {
+    if breaks_lines(&r) || from_body(&line(&r)) != [r.clone()] {
         return Err("its name cannot be kept as text; not added".into());
     }
     if refs.len() >= MAX_REFS {
@@ -106,6 +115,12 @@ fn ask(args: &[&str]) -> Result<Option<String>, String> {
 /// The basket of `pane`, read from tmux. A pane that is gone is an error, not
 /// an empty basket: tmux reads a gone pane's option as nothing, exit 0.
 pub fn read(pane: &str) -> Result<Vec<Ref>, String> {
+    Ok(from_body(&read_text(pane)?))
+}
+
+/// The option's text itself, gone files' lines included: what a send that
+/// carries the basket leaves for cockpit-panel to compare (review-534).
+pub fn read_text(pane: &str) -> Result<String, String> {
     check(pane)?;
     let id = ask(&["display-message", "-p", "-t", pane, "#{pane_id}"])?;
     if id.as_deref().map(str::trim) != Some(pane) {
@@ -113,7 +128,7 @@ pub fn read(pane: &str) -> Result<Vec<Ref>, String> {
     }
     let show = ["show-options", "-pqv", "-t", pane, OPTION];
     let text = ask(&show)?.ok_or("tmux did not answer")?;
-    Ok(from_body(text.trim_end_matches('\n')))
+    Ok(text.trim_end_matches('\n').to_string())
 }
 
 /// Sets the basket of `pane` to `refs` (unsets it when empty), then reads it
@@ -210,7 +225,8 @@ pub fn claude_cmd(comm: &str) -> bool {
 /// ([`claude_cmd`]). @panestate alone is not enough: it outlives the claude
 /// that set it, and @ refs sent to a shell would be noise. A miss sends bare refs.
 pub fn is_claude(pane: &str) -> bool {
-    if check(pane).is_err() || !crate::data::is_agent(pane) {
+    // the guard first: is_agent's own read is data's, outside the basket's
+    if check(pane).is_err() || guard().is_err() || !crate::data::is_agent(pane) {
         return false;
     }
     let cmd = ask(&["display-message", "-p", "-t", pane, "#{pane_current_command}"]);
@@ -239,7 +255,8 @@ pub fn ref_line(r: &Ref, base: &Path, claude: bool) -> String {
         Some((a, b)) => format!("#L{a}-{b}"),
         None => String::new(),
     };
-    if path.contains('"') {
+    // a `"` cannot be quoted, and a `#` could read as the range's start
+    if path.contains(['"', '#']) {
         bare
     } else if path.contains(char::is_whitespace) {
         format!("@\"{path}{at}\"")

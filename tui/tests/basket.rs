@@ -98,7 +98,9 @@ fn past_the_byte_cap_an_add_is_refused() {
 #[test]
 fn a_name_the_text_cannot_carry_is_refused() {
     let d = Dir::new("name");
-    for name in ["a\nb.rs", "a\u{1b}b.rs"] {
+    // U+2028 and U+2029 (Unicode's Zl and Zp, the whole of both) read as a line
+    // break inside an @"…" mention: a crafted name could forge a line (review-534)
+    for name in ["a\nb.rs", "a\u{1b}b.rs", "a\u{2028}b.rs", "a\u{2029}b.rs"] {
         let why = basket::with_ref(&[], r(&d.file(name), None)).unwrap_err();
         assert!(why.contains("cannot"), "{name:?}: {why}");
     }
