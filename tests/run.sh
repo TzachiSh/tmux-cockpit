@@ -14575,6 +14575,8 @@ fi
 if [ "\$1" = files ] && [ ! -d "\$2" ]; then
     echo "cockpit-tui: files: cannot read \$2" >&2; exit 2
 fi
+# a --select that dies (the file "panic"): a Rust panic's exit 101
+if [ -e "$FB/panic" ] && [ "\$3" = --select ]; then exit 101; fi
 # a binary from before --select (the file "old") refuses it as it did
 if [ -e "$FB/old" ] && [ "\$3" = --select ]; then
     echo 'cockpit-tui: files: needs exactly one folder' >&2; exit 2
@@ -14724,6 +14726,14 @@ is "an older binary: --select refused, the folder comes back without it" \
    "$FBVIEW|files $FBD/sub" "$(fbtui)"
 is "and nothing is said about it, no stale note, no exit line" "0|0" \
    "$(fbnotes)|$(grep -c 'files exited' "$FB/out")"
+# a --select call that dies (101 and up) leaves its line on stderr, then the
+# folder comes back without it, as for an older binary
+: > "$FB/panic"
+fb off "view $FBD/sub/n.txt\n" 0
+rm -f "$FB/panic"
+is "a --select that dies: its exit is said on stderr" "1" \
+   "$(grep -c '^cockpit: files --select exited 101$' "$FB/out")"
+is "and the folder comes back without --select" "$FBVIEW|files $FBD/sub" "$(fbtui)"
 # the viewed file's folder deleted while the viewer is open: back in the
 # folder the browser started in, on its first row, never an error page
 mkdir -p "$FBD/gone"; : > "$FBD/gone/x.txt"

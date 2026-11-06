@@ -302,6 +302,14 @@ impl Files {
         self.pick.mouse(m, area);
     }
 
+    /// Lays the screen out for a frame of `area`, the way the run loop draws it:
+    /// the header first, as the rows' room depends on it, then the scroll.
+    pub fn layout(&mut self, area: Rect) {
+        let g = self.g;
+        self.fit(area.width, &g);
+        self.pick.clamp(area);
+    }
+
     /// Sets the header for a screen `w` wide: the path cut on the left, so the
     /// folder's own name stays, or a note until the next key.
     pub fn fit(&mut self, w: u16, g: &Glyphs) {
@@ -435,8 +443,7 @@ pub fn main(args: &[String]) -> i32 {
     };
     let out = loop {
         let area = pick::screen(&term);
-        f.pick.clamp(area);
-        f.fit(area.width, &th.g);
+        f.layout(area);
         if term.draw(|fr| draw(fr, fr.area(), &f, &th)).is_err() {
             break Outcome::Cancel;
         }

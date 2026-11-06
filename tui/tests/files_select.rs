@@ -5,6 +5,8 @@ use cockpit_tui::files::{self, Files};
 use cockpit_tui::pick::Outcome;
 use cockpit_tui::theme::Theme;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::Terminal;
+use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
@@ -128,29 +130,43 @@ fn a_refused_name_names_the_argument() {
     assert!(e.contains("--select") && e.contains("one name"), "{e}");
 }
 
+/// The rows the first frame draws for a screen `w` by `h`, laid out as the
+/// run loop does it: the header first, then the scroll.
+fn first_frame(f: &mut Files, w: u16, h: u16) -> Vec<String> {
+    f.layout(Rect::new(0, 0, w, h));
+    let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
+    t.draw(|fr| files::draw(fr, fr.area(), f, &Theme::fixed())).unwrap();
+    let b = t.backend().buffer().clone();
+    (0..h).map(|y| (0..w).map(|x| b[(x, y)].symbol()).collect()).collect()
+}
+
+fn names(r: std::ops::Range<u32>) -> Vec<String> {
+    r.map(|i| format!("f{i}.txt")).collect()
+}
+
 /// Back on a file inside the first screen, the list keeps its natural scroll:
-/// the rows above the file stay on screen, the top row is the folder's first.
+/// the folder's first row is drawn, and so is the file.
 #[test]
 fn a_selection_on_the_first_screen_keeps_the_rows_above_it() {
-    let names: Vec<String> = (10..40).map(|i| format!("f{i}.txt")).collect();
-    let s = Scratch::new(&names.iter().map(String::as_str).collect::<Vec<_>>());
+    let n = names(10..40);
+    let s = Scratch::new(&n.iter().map(String::as_str).collect::<Vec<_>>());
     let mut f = opened(&s, b"f12.txt");
-    f.pick.clamp(Rect::new(0, 0, 80, 24));
-    assert_eq!(f.pick.top, 0);
+    let rows = first_frame(&mut f, 80, 24);
+    assert!(rows.iter().any(|r| r.contains("f10.txt")), "{rows:#?}");
+    assert!(rows.iter().any(|r| r.contains("f12.txt")), "{rows:#?}");
     assert_eq!(enter(&mut f), view(&s.0.join("f12.txt")));
 }
 
 /// A file past the first screen scrolls the list only as far as it takes to
-/// show it: it lands on the last row shown, not the top.
+/// show it: the first frame draws it, on the last list row, not the top.
 #[test]
-fn a_selection_past_the_first_screen_scrolls_only_as_far_as_needed() {
-    let names: Vec<String> = (10..90).map(|i| format!("f{i}.txt")).collect();
-    let s = Scratch::new(&names.iter().map(String::as_str).collect::<Vec<_>>());
+fn a_selection_past_the_first_screen_is_drawn_on_the_first_frame() {
+    let n = names(10..90);
+    let s = Scratch::new(&n.iter().map(String::as_str).collect::<Vec<_>>());
     let mut f = opened(&s, b"f60.txt");
-    let area = Rect::new(0, 0, 80, 24);
-    f.pick.clamp(area);
-    let sel = f.pick.sel;
-    assert!(f.pick.top > 0 && f.pick.top < sel, "top {} sel {sel}", f.pick.top);
-    f.pick.clamp(Rect::new(0, 0, 80, 200));
-    assert_eq!(f.pick.top, 0, "with room for all, nothing scrolls");
+    let rows = first_frame(&mut f, 80, 24);
+    let at = rows.iter().position(|r| r.contains("f60.txt"));
+    let last = rows.iter().rposition(|r| r.contains(".txt"));
+    assert!(at.is_some() && at == last, "f60 at {at:?}, last row {last:?}: {rows:#?}");
+    assert!(!rows.iter().any(|r| r.contains("f10.txt")), "scrolled: {rows:#?}");
 }
