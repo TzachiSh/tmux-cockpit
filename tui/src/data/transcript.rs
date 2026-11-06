@@ -237,29 +237,6 @@ fn clean(s: &str) -> String {
     kept.trim_start().chars().take(160).collect()
 }
 
-/// What the harness injected is "", never a prompt. The bash-* tags are #193's,
-/// added after the jq reader was frozen.
-const INJECTED: [&str; 7] = [
-    "<task-notification",
-    "<system-reminder",
-    "<local-command-",
-    "<command-",
-    "<bash-input",
-    "<bash-stdout",
-    "<bash-stderr",
-];
-
-fn prompt(s: &str) -> String {
-    let t = s.trim_start();
-    if t.starts_with("<pasted_content") {
-        "[pasted text]".into()
-    } else if INJECTED.iter().any(|p| t.starts_with(p)) {
-        String::new()
-    } else {
-        clean(s)
-    }
-}
-
 /// C's isspace: unlike `is_ascii_whitespace` it takes the vertical tab.
 fn c_space(c: &u8) -> bool {
     matches!(c, b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r')
@@ -369,12 +346,13 @@ fn kind(v: &Value) -> &str {
 pub(crate) const INTERRUPT: &str = "[Request interrupted by user";
 
 /// #477: the one rule for "the human typed a prompt", which the board's fold and
-/// the info screen both use to tell whether an open question was moved on from.
-/// A user row, not isMeta, that is a string or an array with a text block and no
-/// tool_result. Not a prompt: the interrupt (string or block), a harness row (a
-/// leading `<`: `<task-notification>`, `<command-name>`...), an empty first line.
-/// A paste is one, shown as `[pasted text]`. Returns the prompt's first line.
-pub(crate) fn typed_prompt(v: &Value) -> Option<String> {
+/// the info screen both use to tell whether an open question was moved on from,
+/// and what was asked. A user row, not isMeta, that is a string or an array with a
+/// text block and no tool_result. Not a prompt: the interrupt (string or block), a
+/// harness row (a leading `<`: `<task-notification>`, `<command-name>`...), a blank
+/// one. A paste is one: its text is what was typed beside the paste blocks, else
+/// `[pasted text]`. Returns that text, each caller taking its own first line.
+pub(crate) fn typed_text(v: &Value) -> Option<String> {
     let meta = !matches!(v.get("isMeta"), None | Some(Value::Null) | Some(Value::Bool(false)));
     if kind(v) != "user" || meta {
         return None;
@@ -391,28 +369,42 @@ pub(crate) fn typed_prompt(v: &Value) -> Option<String> {
             if texts().any(|t| t.trim_start().starts_with(INTERRUPT)) {
                 return None;
             }
-            let pasted = |t: &str| t.trim_start().starts_with("<pasted_content");
             texts().find(|t| pasted(t) || !t.trim_start().starts_with('<'))?
         }
     };
     let t = text.trim_start();
-    if t.starts_with(INTERRUPT) {
+    if t.starts_with(INTERRUPT) || (t.starts_with('<') && !pasted(t)) {
         return None;
     }
-    if t.starts_with("<pasted_content") {
-        return Some("[pasted text]".into());
+    let typed = unpasted(text);
+    if typed.trim().is_empty() {
+        return pasted(text).then(|| "[pasted text]".to_string());
     }
-    if t.starts_with('<') {
-        return None;
-    }
-    let line = super::first_line(text);
-    (!line.is_empty()).then_some(line)
+    Some(typed)
 }
 
-/// A string prompt from the human: not isMeta, content a string.
-fn human(v: &Value) -> Option<&str> {
-    let meta = !matches!(v.get("isMeta"), None | Some(Value::Null) | Some(Value::Bool(false)));
-    (kind(v) == "user" && !meta).then(|| v["message"]["content"].as_str()).flatten()
+/// Whether `t` holds a paste block.
+fn pasted(t: &str) -> bool {
+    t.contains("<pasted_content")
+}
+
+/// `t` without its `<pasted_content ...>...</pasted_content>` blocks; an unclosed
+/// one runs to the end.
+fn unpasted(t: &str) -> String {
+    let (mut out, mut rest) = (String::new(), t);
+    while let Some(i) = rest.find("<pasted_content") {
+        out += &rest[..i];
+        rest = rest[i..]
+            .find("</pasted_content>")
+            .map_or("", |j| &rest[i + j + "</pasted_content>".len()..]);
+    }
+    out + rest
+}
+
+/// [`typed_text`]'s first line, as the board shows it.
+pub(crate) fn typed_prompt(v: &Value) -> Option<String> {
+    let line = super::first_line(&typed_text(v)?);
+    (!line.is_empty()).then_some(line)
 }
 
 /// Which input field says what a tool is doing, in preference order: the
@@ -584,7 +576,7 @@ pub fn doing(path: &Path) -> Option<String> {
     let said = assistant().filter_map(said_of).next_back();
     let asked = t
         .iter()
-        .filter_map(|r| human(r).map(|c| (prompt(c), r)))
+        .filter_map(|r| typed_text(r).map(|c| (clean(&c), r)))
         .rfind(|(p, _)| !p.is_empty());
     let mut out = String::new();
     if let Some((i, r)) = tu
@@ -621,7 +613,12 @@ pub fn tail(path: &Path, max: i64) -> Option<String> {
     let mut lines: Vec<String> = vec![];
     for r in turns(path)? {
         if kind(&r) == "user" {
-            lines.extend(human(&r).map(prompt).filter(|p| !p.is_empty()).map(|p| format!("USER: {p}")));
+            lines.extend(
+                typed_text(&r)
+                    .map(|c| clean(&c))
+                    .filter(|p| !p.is_empty())
+                    .map(|p| format!("USER: {p}")),
+            );
             continue;
         }
         for i in items(&r) {
@@ -818,7 +815,7 @@ mod tests {
         let image = serde_json::json!({"type": "image", "source": {"type": "base64", "data": "AA=="}});
         let meta = serde_json::json!({"type": "user", "isMeta": true, "message": {"content": "Caveat: generated"}});
         let res = serde_json::json!({"type": "tool_result", "tool_use_id": "t1", "content": "ok"});
-        let rows: [(&str, Value, Option<&str>); 13] = [
+        let rows: [(&str, Value, Option<&str>); 16] = [
             ("a string prompt", user("fix the build\nsecond line".into()), Some("fix the build")),
             (
                 "an image prompt",
@@ -854,10 +851,21 @@ mod tests {
                 None,
             ),
             (
-                "a paste",
+                "a paste alone",
                 user("<pasted_content>long</pasted_content>".into()),
                 Some("[pasted text]"),
             ),
+            (
+                "a paste, then typed words",
+                user("<pasted_content>long\nlines</pasted_content>\n\nplease fix this\nmore".into()),
+                Some("please fix this"),
+            ),
+            (
+                "typed words, then a paste",
+                user("look: <pasted_content>x</pasted_content>".into()),
+                Some("look:"),
+            ),
+            ("an unclosed paste", user("\n <pasted_content x>".into()), Some("[pasted text]")),
             ("an empty prompt", user(" \n ".into()), None),
             (
                 "an assistant row",

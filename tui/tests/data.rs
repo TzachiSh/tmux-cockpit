@@ -1645,3 +1645,35 @@ fn the_board_and_info_agree_on_what_closes_an_open_question() {
         assert_eq!((board, info), (shown, shown), "{sess}: (board shows it, info shows it)");
     }
 }
+
+/// #477 review: the board's `asked` and the info screen's `asked` row are the same
+/// prompt after an open question: the interrupt string is not one, so both keep the
+/// first prompt; an image prompt is one, so both name its text.
+#[test]
+fn the_board_and_info_agree_on_the_asked_prompt() {
+    let r = Rig::new("askedagree");
+    let image = serde_json::json!({"type": "user", "timestamp": "2026-08-27T00:00:05.000Z", "message": {"content": [
+        {"type": "image", "source": {"type": "base64", "data": "AA=="}}, {"type": "text", "text": "look at this"}]}});
+    let cases = [
+        ("s1", typed_row("[Request interrupted by user]"), "first prompt"),
+        ("s2", format!("{image}\n"), "look at this"),
+    ];
+    let mut rows = vec![];
+    for (sess, after, _) in &cases {
+        let body = typed_row("first prompt") + &ask_row("tu1", serde_json::json!([q("Merge?", "M")])) + after;
+        r.transcript(sess, &body);
+        rows.push(hooked(&format!("%{}", &sess[1..]), "needs-input", sess));
+    }
+    r.rows(&rows);
+    let ps = list_panes().unwrap();
+    for (sess, _, want) in cases {
+        let board = get(&ps, &format!("%{}", &sess[1..])).asked.clone();
+        let file = r.dir.join(format!(".claude/projects/-w/{sess}.jsonl"));
+        let doing = cockpit_tui::data::transcript::doing(&file).unwrap_or_default();
+        let info = doing
+            .lines()
+            .find_map(|l| l.strip_prefix("asked\t"))
+            .and_then(|l| l.split('\t').next());
+        assert_eq!((board.as_str(), info), (want, Some(want)), "{sess}: (board, info)");
+    }
+}

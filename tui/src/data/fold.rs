@@ -15,8 +15,6 @@ use std::io::{Read, Seek, SeekFrom};
 use std::os::unix::fs::MetadataExt;
 use std::time::SystemTime;
 
-/// Ends the turn without closing anything: neither a prompt nor an answer.
-/// It arrives as a `text` block in the array form.
 use super::transcript::INTERRUPT;
 
 /// A value and the offset of the row that set it.
@@ -70,7 +68,8 @@ impl Fold {
                 for id in c.as_array().into_iter().flatten().filter_map(|b| b["tool_use_id"].as_str()) {
                     self.asks.retain(|(_, a)| a != id);
                 }
-                let interrupt = |t: &str| t.starts_with(INTERRUPT);
+                // trimmed as transcript::typed_text trims it, so the two agree
+                let interrupt = |t: &str| t.trim_start().starts_with(INTERRUPT);
                 let interrupted = match c.as_str() {
                     Some(t) => interrupt(t),
                     None => c.as_array().into_iter().flatten().filter_map(|b| b["text"].as_str()).any(interrupt),
@@ -412,6 +411,16 @@ mod tests {
             same(&p, &format!("row {n}"));
         }
         assert_eq!(full(&p, TAIL_FIRST).state, State::Done, "the fixture ends the turn");
+    }
+
+    /// #477 review: an interrupt with blanks before it still ends the turn, as
+    /// typed_text, which trims, says it is not a prompt.
+    #[test]
+    fn an_interrupt_after_blanks_still_ends_the_turn() {
+        let (_d, p) = tmp("blanks");
+        add(&p, &(prompt(0, "/w") + &tool(1, "Bash")));
+        add(&p, &row("user", 2, json!({"content": "\n [Request interrupted by user]"})));
+        assert_eq!(full(&p, TAIL_FIRST).state, State::Done);
     }
 
     /// #477: each kind of user row the shared typed-prompt rule weighs, after an
