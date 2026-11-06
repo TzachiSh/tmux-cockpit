@@ -1141,3 +1141,51 @@ $ curl -s 'localhost:3000/api/posts?page=2' | jq '.[0].id'
 40
 --- request
 fix this, page 2 starts with the last post of page 1
+
+# #587 holdouts, written after the final prompt commit, on requests the prompt
+# does not name.
+=== h-rent-late
+kind: message
+window: bash · bash · /home/u
+expect: ask
+ask_any: date; day; when; how late; how long; until
+holdout: yes
+note: the landlord needs the day the rent will come, which only the owner has
+--- request
+let my landlord know the rent will be late this month
+
+=== h-api-run-config
+kind: format
+window: bash · bash · /home/u/projects/api
+out: format
+expect: ask
+ask_any: systemd; pm2; compose; docker compose; kubernetes; k8s; procfile; supervisor; helm; format; platform
+holdout: yes
+note: a run config for a service is a systemd unit, a pm2 file, a compose file or a Kubernetes manifest, each a different file: the kind comes first
+--- request
+config to run the api with 2 workers and PORT=3000
+
+=== h-pytest-new-helper
+kind: feature
+window: bash · bash · /home/u/projects/shop
+expect: write
+out_is: prompt
+must: parse_price; break|breaking|mutate|mutation|mutant|mutants|on purpose|flip|flipping|small change; undo|undoing|revert|reverting|restore|put back|put it back
+holdout: yes
+note: a new test gets the mutation step: break the helper on purpose, see the test fail, undo the break
+--- screen
+$ pytest -q
+........................                                   [100%]
+24 passed in 0.41s
+--- repo
+branch: feat/price-parse
+root: /home/u/projects/shop
+status:
+   M shop/prices.py
+recent commits:
+  b71c0de prices: currency symbols in the cart
+diff --stat:
+  shop/prices.py | 21 +++++++++++++++++++++
+  1 file changed, 21 insertions(+)
+--- request
+write tests for the parse_price helper I added
