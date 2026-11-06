@@ -9941,6 +9941,13 @@ is "and says who found no sessions" "1" \
 
 av_setup() {                  # the fixtures every agent-view block needs; each calls it first
     [ -n "${AVBIN:-}" ] && return 0
+    # A suite started with SIGHUP ignored (nohup, some job runners) hands that to every child,
+    # and bash cannot trap a signal it started with ignored: a poller's HUP trap never runs, and
+    # its HUP rows fail with nothing wrong (#524). Those pollers start with the default back.
+    AVDFL=(env); env --default-signal=HUP true 2>/dev/null && AVDFL=(env --default-signal=HUP)
+    # Where env cannot reset it, the HUP rows below go red: say why, once, above them.
+    [ "${AVDFL[*]}" = env ] && [ -n "$(trap -p HUP)" ] \
+        && skip_ "the poller HUP rows: SIGHUP is ignored (nohup?) and env cannot reset it (#524)"
     AVF="$DIR/tests/fixtures/agent-view"
     AVBIN=$(mktmpd); ln -s "$AVF/claude" "$AVBIN/claude"
     AVREC=$(mktmpd); AVLOG="$AVREC/calls"; : > "$AVLOG"
@@ -10386,7 +10393,7 @@ av_tm set-environment -g AV_JSON "$AVF/done.json"
 av_tm set-option -g @cockpit_bg_poll 1
 av_tm set-option -p -t "$AVP" @cockpit_agentview 1
 av_start() {                  # a poller outside the hook path; its pid in AVPID
-    env -u TMUX_PANE TMUX="$AVT" PATH="$AVBIN:$PATH" AV_JSON="$AVF/done.json" \
+    "${AVDFL[@]}" -u TMUX_PANE TMUX="$AVT" PATH="$AVBIN:$PATH" AV_JSON="$AVF/done.json" \
         "$DIR/scripts/agent-poll" </dev/null >/dev/null 2>&1 &
     AVPID=$!
 }
@@ -10564,7 +10571,7 @@ AVHUP='case "$BASH_COMMAND" in "[ \"\$(tmux show-option -gqv @cockpit_poll_pid"*
 AVHUP="$AVHUP kill -HUP \$\$ ;; esac"
 av_tm set-option -g @cockpit_bg_poll 3600
 av_tm set-option -gu @cockpit_poll_pid
-env -u TMUX_PANE TMUX="$AVT" PATH="$AVBIN:$PATH" AV_JSON="$AVF/done.json" \
+"${AVDFL[@]}" -u TMUX_PANE TMUX="$AVT" PATH="$AVBIN:$PATH" AV_JSON="$AVF/done.json" \
     bash -c 'set -T; trap "$1" DEBUG; . "$0"' "$DIR/scripts/agent-poll" "$AVHUP" \
     </dev/null >/dev/null 2>&1 &
 AVA=$!
@@ -10593,6 +10600,29 @@ av_wait "av_gone $AVCH" && AVLEFT=yes || AVLEFT=no
 av_gone "$AVCH" || kill "$AVCH" 2>/dev/null
 is "a poller stopped by a signal leaves no child behind" "yes" "$AVLEFT"
 wait "$AVA" "$AVB" 2>/dev/null
+av_tm kill-server >/dev/null 2>&1
+fi
+
+echo "== agent-poll: a bind is set before the wake, so a woken board reads it (#502) =="
+# agent-state poll wakes every board inside its own tmux call (run-shell -C on
+# @cockpit_board_wake). The bound job and its name were set after that call, so a
+# board woken by it read the old name and showed the bind a poll late. The wake
+# here records the pane's job and name the moment it runs, in the same server
+# command: the earliest any board could read them.
+av_setup
+if need_tmux "agent-poll bind before wake"; then :; else
+av_srv wake
+av_tm set -g @cockpit_agents_glob '|claude|codex|'
+AVWK="$AVREC/woke"; : > "$AVWK"
+AVWP=$(av_np "alpha")
+AVWF="'#{@cockpit_job}' '#{@cockpit_job_name}'"   # the pane's job and name, at the wake
+av_tm set -g @cockpit_board_wake "run-shell -t $AVWP \"printf '%s|%s\\\\n' $AVWF >> $AVWK\" ; "
+av_once bind.json >/dev/null
+is "a new bind's wake already sees its job and name" "aa|alpha" "$(sed -n 1p "$AVWK")"
+av_tm select-pane -t "$AVWP" -T "fix the parser"
+av_once bind.json >/dev/null
+is "a bind that moves to another job: its wake sees the new one" "bb|fix the parser" \
+    "$(sed -n 2p "$AVWK")"
 av_tm kill-server >/dev/null 2>&1
 fi
 
