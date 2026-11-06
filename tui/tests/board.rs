@@ -1260,12 +1260,50 @@ fn board_flags_parse_strictly() {
     }
 }
 
-/// A private scratch dir per test: cargo runs tests on threads.
-fn scratch(tag: &str) -> std::path::PathBuf {
+/// A private scratch dir per test (cargo runs tests on threads), removed when the
+/// guard drops: on a pass, and on a failing assert's unwind too (#543).
+struct Scratch(std::path::PathBuf);
+
+impl std::ops::Deref for Scratch {
+    type Target = std::path::Path;
+    fn deref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn scratch(tag: &str) -> Scratch {
     let d = std::env::temp_dir().join(format!("cockpit-board-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
-    d
+    Scratch(d)
+}
+
+/// #543: the scratch dir goes on every exit path, a failing assert's unwind included.
+#[test]
+fn a_scratch_dir_is_removed_on_a_pass_and_on_a_panic() {
+    let kept = {
+        let d = scratch("guard-pass");
+        d.to_path_buf()
+    };
+    let p = std::thread::spawn(|| {
+        let d = scratch("guard-panic");
+        let p = d.to_path_buf();
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let _d = d;
+            panic!("an assert failed");
+        }))
+        .unwrap_err();
+        p
+    })
+    .join()
+    .unwrap();
+    assert!(!kept.exists() && !p.exists(), "{kept:?} {p:?}");
 }
 
 #[test]
@@ -1282,7 +1320,6 @@ fn board_state_round_trips_and_a_missing_file_is_a_fresh_board() {
     assert_eq!(board::read_state(&p), Ok(Some(s)));
     use std::os::unix::fs::PermissionsExt;
     assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600);
-    let _ = std::fs::remove_dir_all(&d);
 }
 
 #[test]
@@ -1323,7 +1360,6 @@ fn board_state_is_read_strictly() {
     .unwrap();
     assert_eq!(std::fs::read_to_string(&real).unwrap(), "cockpit-board-state 1\nsel %1\n");
     assert!(!std::fs::symlink_metadata(&p).unwrap().file_type().is_symlink());
-    let _ = std::fs::remove_dir_all(&d);
 }
 
 #[test]
@@ -1368,7 +1404,6 @@ fn the_note_file_is_one_line_under_the_same_rules() {
     std::fs::remove_file(&p).unwrap();
     std::os::unix::fs::symlink(&real, &p).unwrap();
     assert!(board::read_note(&p).is_err(), "a symlink");
-    let _ = std::fs::remove_dir_all(&d);
 }
 
 #[test]
@@ -1932,7 +1967,6 @@ fn board_state_keeps_the_folds() {
         })),
         "folds with no selection"
     );
-    let _ = std::fs::remove_dir_all(&d);
 }
 
 /// D5 on open reads the first ▲ in the list's order, not the tiles'.
@@ -2561,7 +2595,6 @@ fn board_state_keeps_the_filter() {
         })),
         "a filter alone"
     );
-    let _ = std::fs::remove_dir_all(&d);
 }
 
 /// The field, its rule and the no-match text never run past the area, in
