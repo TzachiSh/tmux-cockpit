@@ -19,7 +19,7 @@
 //! the panel's explore-first call; `--no-explore` runs it as a text call instead.
 use cockpit_tui::panel::app::{App, View};
 use cockpit_tui::panel::capture::Capture;
-use cockpit_tui::panel::envelope::{Flow, OutType};
+use cockpit_tui::panel::envelope::{Flow, OutType, Role, Turn};
 use cockpit_tui::panel::parse::{self, Reply, files_read};
 use cockpit_tui::panel::request::{Call, Fail, Profile, Request};
 use cockpit_tui::panel::route::route;
@@ -71,6 +71,8 @@ struct Case {
     /// The `<repo>` block the panel would send; "" for a window outside a repo.
     repo: String,
     request: String,
+    /// The panel's earlier rounds, oldest first: its questions and the answers.
+    turns: Vec<Turn>,
     /// A folder under `fixtures/`: the pane's path, read by an explore-first write.
     explore: Option<String>,
 }
@@ -126,6 +128,7 @@ fn parse_cases(text: &str) -> Result<Vec<Case>, String> {
             screen: String::new(),
             repo: String::new(),
             request: String::new(),
+            turns: vec![],
             explore: None,
         };
         let mut expect = None;
@@ -209,6 +212,10 @@ fn parse_cases(text: &str) -> Result<Vec<Case>, String> {
                     dup(!c.request.is_empty())?;
                     c.request = text.trim().into()
                 }
+                "conversation" => {
+                    dup(!c.turns.is_empty())?;
+                    c.turns = turns(&text).map_err(|m| err(&m))?
+                }
                 x => return Err(err(&format!("unknown section {x}"))),
             }
         }
@@ -236,6 +243,26 @@ fn parse_cases(text: &str) -> Result<Vec<Case>, String> {
         return Err("no cases".into());
     }
     Ok(cases)
+}
+
+/// `assistant: ...` and `user: ...` lines, one turn each, as the panel keeps them.
+fn turns(text: &str) -> Result<Vec<Turn>, String> {
+    let mut out = Vec::new();
+    for line in text.lines().filter(|l| !l.trim().is_empty()) {
+        let (role, t) = match line.split_once(": ") {
+            Some(("user", t)) => (Role::User, t),
+            Some(("assistant", t)) => (Role::Assistant, t),
+            _ => return Err(format!("a conversation line must start with user: or assistant: (got {line})")),
+        };
+        out.push(Turn {
+            role,
+            text: t.trim().into(),
+        });
+    }
+    if out.is_empty() {
+        return Err("empty conversation".into());
+    }
+    Ok(out)
 }
 
 /// The comments that head the next case trail the last body: a `#` block that a
@@ -712,6 +739,11 @@ fn panel_call(c: &Case, path: &str, explore: bool) -> (String, String, Profile) 
     (a.view, a.out, a.explore) = (View::Compose, c.out, explore);
     (a.draft, a.cur) = (c.request.clone(), c.request.len());
     a.key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
+    if let Some(r) = a.run.as_mut() {
+        // each question the panel asked used one of its rounds
+        r.rounds = c.turns.iter().filter(|t| t.role == Role::Assistant).count();
+        r.turns = c.turns.clone();
+    }
     let (system, prompt, _) = a.request_parts().expect("^S on a draft starts a write");
     let profile = a.run.as_ref().map_or(Profile::TEXT, |r| a.profile_for(&r.flow));
     (system, prompt, profile)
@@ -1733,6 +1765,49 @@ mod tests {
         let (system, _, profile) = panel_call(c, "/r", true);
         assert_eq!(system, prompts::write_explore(&ctx));
         assert_eq!(profile, Profile::read_only("/r".into(), false, EXPLORE_BUDGET_USD, EXPLORE_TIMEOUT));
+    }
+
+    const ANSWERED: &str = "=== cache\nkind: feature\nwindow: bash · bash · /home/u\nexpect: write\n\
+                            --- conversation\nassistant: Which API? Options: gateway | billing\n\
+                            user: billing\n--- request\nadd caching\n";
+
+    #[test]
+    fn reads_a_conversation_as_turns_in_order() {
+        let c = &parse_cases(ANSWERED).unwrap()[0];
+        let roles: Vec<Role> = c.turns.iter().map(|t| t.role).collect();
+        assert_eq!(roles, [Role::Assistant, Role::User]);
+        assert_eq!(c.turns[1].text, "billing");
+        assert_eq!(c.request, "add caching");
+    }
+
+    #[test]
+    fn refuses_a_conversation_line_without_a_role() {
+        let bad = ANSWERED.replace("user: billing", "billing");
+        let e = parse_cases(&bad).unwrap_err();
+        assert!(e.starts_with("case cache: ") && e.contains("user: or assistant:"), "{e}");
+        let empty = ANSWERED.replace("assistant: Which API? Options: gateway | billing\nuser: billing\n", "");
+        assert!(parse_cases(&empty).unwrap_err().contains("empty conversation"));
+    }
+
+    /// An answered case is sent as the panel sends its next round: the turns,
+    /// and one question fewer for each one asked.
+    #[test]
+    fn the_rig_sends_a_conversation_with_the_questions_it_used() {
+        use cockpit_tui::panel::envelope::build;
+        let c = &parse_cases(ANSWERED).unwrap()[0];
+        let cap = Capture {
+            name: c.name.clone(),
+            cmd: c.cmd.clone(),
+            path: "/r".into(),
+            screen: String::new(),
+            repo: "".into(),
+        };
+        let flow = Flow::Write {
+            draft: c.request.clone(),
+            out: c.out,
+        };
+        let (_, prompt, _) = panel_call(c, "/r", false);
+        assert_eq!(prompt, build(&flow, &cap, &c.turns, 2));
     }
 
     #[test]

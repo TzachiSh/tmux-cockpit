@@ -18,7 +18,11 @@
 # A key or a section given twice is an error. A screen cannot hold a line that
 # starts with "--- " or "=== ": those start a section or a case.
 #   note:    why the label is what it is
-# then "--- screen" (optional), "--- repo" (optional) and "--- request".
+# then "--- screen" (optional), "--- repo" (optional), "--- conversation" (optional)
+# and "--- request".
+# A conversation body is the panel's earlier rounds, one "assistant: <question>
+# Options: a | b" or "user: <answer>" line each, oldest first: the case is then
+# its next call, with one question fewer left for each one asked.
 # A repo body is the <repo> block the panel sends for a window in a git repo
 # (capture.rs repo_state): branch, root, status, recent commits, diff --stat and the
 # screen's paths, each section's lines indented by two.
