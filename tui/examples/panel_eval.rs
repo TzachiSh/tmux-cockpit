@@ -2231,10 +2231,10 @@ mod tests {
         assert_eq!(graded_wrong(&rows), Vec::<&str>::new(), "rows graded the wrong way");
     }
 
-    /// #590: a rename is not a big refactor, so neither rename case takes a
-    /// baseline, and rename-fn's mutation words miss "kept on purpose".
+    /// #590: a baseline run on a rename passes both rename cases (the owner
+    /// passed one), and rename-fn's mutation words miss "kept on purpose".
     #[test]
-    fn a_rename_fails_with_a_baseline_and_passes_a_kept_on_purpose() {
+    fn a_rename_passes_with_a_baseline_and_a_kept_on_purpose() {
         let fn_rename = "Rename parse_cfg to parse_config everywhere and run the tests.";
         let bare = "In internal/db/pool.go:10-30, rename newPool to openPool and update its callers.";
         let baseline = " Run the tests first as a baseline and compare after.";
@@ -2242,7 +2242,7 @@ mod tests {
         let p = |s: String| format!("<prompt>{s}</prompt>");
         let rows = [
             ("fn plain", "rename-fn", p(fn_rename.into()), true),
-            ("fn baseline", "rename-fn", p(format!("{fn_rename}{baseline}")), false),
+            ("fn baseline", "rename-fn", p(format!("{fn_rename}{baseline}")), true),
             ("fn kept on purpose", "rename-fn", p(format!("{fn_rename}{kept}")), true),
             (
                 "fn mutation step",
@@ -2251,7 +2251,13 @@ mod tests {
                 false,
             ),
             ("bare plain", "refs-bare-rename", p(bare.into()), true),
-            ("bare baseline", "refs-bare-rename", p(format!("{bare}{baseline}")), false),
+            (
+                "bare given an @",
+                "refs-bare-rename",
+                p(bare.replace("In internal", "In @internal")),
+                false,
+            ),
+            ("bare baseline", "refs-bare-rename", p(format!("{bare}{baseline}")), true),
         ];
         assert_eq!(graded_wrong(&rows), Vec::<&str>::new(), "rows graded the wrong way");
     }
