@@ -208,3 +208,12 @@ fn the_cap_counts_chars_and_keeps_whole_emoji() {
     let head = a.draft.trim_end_matches('…');
     assert!(head.graphemes(true).all(|g| g == family), "a family cut in two");
 }
+
+/// #588: an OSC that is never terminated ends at the next newline, so the text
+/// after it is kept, not swallowed to the end.
+#[test]
+fn an_unterminated_osc_ends_at_the_newline() {
+    let (_d, mut a) = answered("osc", "<prompt>keep this \u{1b}]0;a title\nand the rest</prompt>\n");
+    key(&mut a, KeyCode::Char('c'));
+    assert_eq!(a.draft, "keep this \nand the rest");
+}
