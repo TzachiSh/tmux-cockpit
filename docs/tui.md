@@ -291,16 +291,31 @@ notes, plus the case's window, screen, repo, request and output type, and
 answers with its reasoning, a one-line critique and PASS or FAIL. Each row then
 prints `judge ok|FAIL <id> <critique>`, the summary adds the judge's pass rate
 and how often it agrees with the keyword checks, and each `--out` row gains
-`judge`, `critique`, `judge_model` and `judge_cost_usd`. The keyword checks
-still decide `pass`: the judge sits beside them, never in place of them.
+`judge`, `critique`, `judge_model`, `judge_cost_usd` and `rubric` (the
+rubric's hash). The keyword checks still decide `pass`: the judge sits beside
+them, never in place of them. A judge call that gives no verdict leaves `judge`
+null and is counted as an error, and a run whose every judge call failed exits
+1. Each call is capped with `--max-budget-usd 0.05`. With `--judge` the `--out`
+rows are written once the judge is done, so a sweep killed before then writes
+none.
 `--calibrate FILE.jsonl` runs the judge on owner-labelled replies
 (`tui/evals/panel/owner-labels.jsonl`: one row a reply, with `verdict` pass or
 fail) and prints TPR (judge pass when the owner passed), TNR (judge fail when
 the owner failed), Cohen's kappa with a 95% interval, per round and per split,
 then every disagreement with the owner's note and the judge's critique.
-`--split tune|holdout|all` picks the rows: holdout is a third of each verdict,
-by a hash of the key, and the rubric is tuned on the tune rows only. With 20
-owner fails in the file, a TNR interval spans about 30 points.
+`--split tune|holdout|all` picks the rows: the holdout takes whole cases (the
+label's `case`), about a third of the rows of the cases with an owner fail and a
+third of the rest, by a hash of the case name; tune the rubric on the tune rows
+only. On the 118 labels, haiku with the shipped rubric scored TPR 90/98, TNR
+14/20 (95% CI 48%-85%, 37 points wide) and kappa 0.59 (95% CI 0.40-0.79)
+against the owner. Two sweeps on the rubric before its skill rule changed gave
+TNR 16/20 with kappa 0.67, and 6/7 on the holdout with kappa 0.69: one sweep
+moves kappa by about 0.1. Quote the full set: the first split was by row,
+every owner note was read before it, the break-on-purpose rule came from two of
+its held-out fails, and three of its seven held-out fails shared a case with
+tuned rows, so no holdout number from this file is clean. The kappa
+interval treats rows as independent, but several rows answer one case, so it
+is narrower than a case-clustered interval would be.
 
 **The panel's cache.** `claude -p` reads its system prompt from a file, so each
 distinct prompt is written once to

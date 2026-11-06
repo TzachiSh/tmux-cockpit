@@ -859,8 +859,9 @@ fn main() {
         std::thread::sleep(Duration::from_millis(50));
     }
     summary(&cases, &done, &hashes, o.runs);
+    let mut judged_nothing = false;
     if o.judge {
-        judge_rows(&mut rows, &o, &call.claude, wrapped, log.as_mut());
+        judged_nothing = judge_rows(&mut rows, &o, &call.claude, wrapped, log.as_mut());
     }
     println!("environment     {env}");
     if let Some(l) = cost_line(&costs, wrapped) {
@@ -873,6 +874,12 @@ fn main() {
             reads.len(),
             reads.iter().max().unwrap_or(&0)
         );
+    }
+    if judged_nothing {
+        eprintln!("panel_eval: --judge: every judge call failed");
+        // exit skips drops: remove the temp dirs first
+        drop((staged, cwds));
+        std::process::exit(1);
     }
 }
 
@@ -889,9 +896,16 @@ fn judge_input(c: &Case, raw: &str) -> judge::Input {
 }
 
 /// `--judge`: grades every answered row, prints each verdict and the summary
-/// line, and writes the rows with `judge` and `critique` added. A failed call
-/// (`error` set) is not judged: it has no reply.
-fn judge_rows(rows: &mut [(serde_json::Value, judge::Input)], o: &Opts, claude: &str, wrapped: bool, mut log: Option<&mut std::fs::File>) {
+/// line, and writes the rows with the judge's fields added. A failed call
+/// (`error` set) is not judged: it has no reply. Returns whether every judge
+/// call failed.
+fn judge_rows(
+    rows: &mut [(serde_json::Value, judge::Input)],
+    o: &Opts,
+    claude: &str,
+    wrapped: bool,
+    mut log: Option<&mut std::fs::File>,
+) -> bool {
     // the rig wraps calls by naming itself as claude: the judge calls the real one
     let real = match wrapped {
         true => std::env::var(AS_CLAUDE).unwrap_or_else(|_| claude.into()),
@@ -910,29 +924,15 @@ fn judge_rows(rows: &mut [(serde_json::Value, judge::Input)], o: &Opts, claude: 
             .collect(),
     };
     println!();
-    let mut cost = vec![];
-    for (&i, j) in todo.iter().zip(&judged) {
-        let (row, _) = &mut rows[i];
-        let (pass, critique) = match &j.verdict {
-            Ok(v) => (Some(v.pass), v.critique.clone()),
-            Err(e) => (None, e.clone()),
-        };
-        let mark = match pass {
-            Some(true) => "ok  ",
-            Some(false) => "FAIL",
-            None => "ERR ",
-        };
-        println!("judge {mark} {:<24} {critique}", row["id"].as_str().unwrap_or(""));
-        row["judge"] = pass.into();
-        row["critique"] = critique.into();
-        row["judge_model"] = o.judge_model.clone().into();
-        row["judge_cost_usd"] = j.cost_usd.into();
-        cost.push(j.cost_usd);
-    }
+    let errors = judge_apply(rows, &todo, &judged, &o.judge_model);
     let pairs: Vec<(Option<bool>, Option<bool>)> = rows.iter().map(|(r, _)| (r["pass"].as_bool(), r["judge"].as_bool())).collect();
     if let Some(l) = judge_line(&pairs) {
         println!("judge           {l}  ({})", o.judge_model);
     }
+    if errors > 0 {
+        println!("judge errors    {errors} of {} calls gave no verdict", judged.len());
+    }
+    let cost: Vec<Option<f64>> = judged.iter().map(|j| j.cost_usd).collect();
     if let Some(l) = cost_line(&cost, true) {
         println!("judge cost      {l}");
     }
@@ -941,6 +941,27 @@ fn judge_rows(rows: &mut [(serde_json::Value, judge::Input)], o: &Opts, claude: 
             let _ = writeln!(f, "{row}");
         }
     }
+    judge::every_failed(&judged)
+}
+
+/// Puts `judged[n]` on row `todo[n]` and prints its line; returns the calls
+/// that gave no verdict. Those rows keep `judge` null, and `pass` stays the
+/// keyword checks' on every row.
+fn judge_apply(rows: &mut [(serde_json::Value, judge::Input)], todo: &[usize], judged: &[judge::Judged], model: &str) -> usize {
+    let mut errors = 0;
+    for (&i, j) in todo.iter().zip(judged) {
+        let (row, _) = &mut rows[i];
+        let (pass, critique) = j.outcome();
+        let mark = match pass {
+            Some(true) => "ok  ",
+            Some(false) => "FAIL",
+            None => "ERR ",
+        };
+        errors += usize::from(pass.is_none());
+        println!("judge {mark} {:<24} {critique}", row["id"].as_str().unwrap_or(""));
+        judge::annotate(row, j, model);
+    }
+    errors
 }
 
 /// The judge's summary over `(keyword pass, judge pass)` per row: its pass
@@ -2436,6 +2457,24 @@ mod tests {
         assert!(l.starts_with("pass 67% (2/3)"), "{l}");
         assert!(l.ends_with("agrees with the keyword checks 50% (1/2)"), "{l}");
         assert_eq!(judge_line(&[(Some(true), None)]), None);
+    }
+
+    /// #419: the judge sits beside the keyword checks: an answer either way,
+    /// or none, leaves `pass` as they set it; a call with no verdict is counted.
+    #[test]
+    fn judge_apply_keeps_the_keyword_pass_and_counts_failed_calls() {
+        let row = |pass: bool| (serde_json::json!({"id": "a", "pass": pass}), judge::Input::default());
+        let mut rows = vec![row(false), row(true), row(true)];
+        let v = |pass: bool| {
+            Ok(judge::Verdict {
+                pass,
+                critique: "c".into(),
+            })
+        };
+        let judged = [v(true), Err("exit 1".to_string()), v(false)].map(|verdict| judge::Judged { verdict, cost_usd: None });
+        assert_eq!(judge_apply(&mut rows, &[0, 1, 2], &judged, "haiku"), 1);
+        let got: Vec<_> = rows.iter().map(|(r, _)| (r["pass"].as_bool(), r["judge"].as_bool())).collect();
+        assert_eq!(got, [(Some(false), Some(true)), (Some(true), None), (Some(true), Some(false))]);
     }
 
     #[test]

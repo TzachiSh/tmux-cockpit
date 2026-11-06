@@ -55,8 +55,8 @@ Prompts for a coding agent
 11. A rename or a small refactor needs no plan and no wait for the OK; a
     baseline step there (run the tests or build before the change) is fine,
     never a reason to fail.
-12. The prompt asks for no specific installed skill by name; the agent picks
-    its own.
+12. The prompt names no skill the user did not name; a skill the request
+    names is kept exactly.
 13. A small, clear request (a version bump, a one-line command, a sum) needs
     none of the above: grade only that it is correct and does what was asked.
 

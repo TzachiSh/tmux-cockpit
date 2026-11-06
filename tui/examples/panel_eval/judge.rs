@@ -14,6 +14,16 @@ pub const RUBRIC: &str = include_str!("../../evals/panel/judge-rubric.txt");
 /// The judge's default model: not sonnet, which writes the replies.
 pub const DEFAULT_MODEL: &str = "haiku";
 
+/// Each judge call's cap, `--max-budget-usd`: a haiku call costs about
+/// $0.0003 and an opus one about $0.013, so only a runaway call reaches it.
+pub const BUDGET_USD: &str = "0.05";
+
+/// The rubric's hash, carried on every judged row so two runs on different
+/// rubrics are never read as one.
+pub fn rubric_hash() -> String {
+    format!("{:016x}", fnv(RUBRIC))
+}
+
 /// What the judge sees of one reply: the case's input and the reply.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Input {
@@ -92,6 +102,7 @@ pub fn argv(model: &str, system: &Path) -> Vec<OsString> {
     ];
     let mut a: Vec<OsString> = s.iter().map(OsString::from).collect();
     a.push("--disable-slash-commands".into());
+    a.extend(["--max-budget-usd".into(), BUDGET_USD.into()]);
     a.push("--system-prompt-file".into());
     a.push(system.into());
     a
@@ -102,6 +113,35 @@ pub fn argv(model: &str, system: &Path) -> Vec<OsString> {
 pub struct Judged {
     pub verdict: Result<Verdict, String>,
     pub cost_usd: Option<f64>,
+}
+
+impl Judged {
+    /// The judge's verdict, `None` for a call that gave none, and the critique
+    /// or the error.
+    pub fn outcome(&self) -> (Option<bool>, String) {
+        match &self.verdict {
+            Ok(v) => (Some(v.pass), v.critique.clone()),
+            Err(e) => (None, e.clone()),
+        }
+    }
+}
+
+/// Whether there were calls and every one of them failed: a run that judged
+/// nothing must not exit as one that did.
+pub fn every_failed(judged: &[Judged]) -> bool {
+    !judged.is_empty() && judged.iter().all(|j| j.verdict.is_err())
+}
+
+/// Adds the judge's fields to a rig row: `judge` (null for a failed call),
+/// `critique`, `judge_model`, `judge_cost_usd` and `rubric`. It never writes
+/// `pass`, which stays the keyword checks' verdict.
+pub fn annotate(row: &mut serde_json::Value, j: &Judged, model: &str) {
+    let (pass, critique) = j.outcome();
+    row["judge"] = pass.into();
+    row["critique"] = critique.into();
+    row["judge_model"] = model.into();
+    row["judge_cost_usd"] = j.cost_usd.into();
+    row["rubric"] = rubric_hash().into();
 }
 
 /// Grades `inputs` with `model`, `jobs` calls at a time, each hermetic in a
@@ -178,6 +218,8 @@ fn judge_one(claude: &str, model: &str, i: &Input, system: &Path, cwd: &Path) ->
 #[derive(Clone, Debug, PartialEq)]
 pub struct Label {
     pub key: String,
+    /// The eval case the reply answers: the holdout keeps a case on one side.
+    pub case: String,
     pub round: String,
     pub pass: bool,
     pub note: String,
@@ -185,8 +227,9 @@ pub struct Label {
 }
 
 /// The labelled rows of a calibration file: one json object a line, with
-/// `key`, `verdict` (`pass` or `fail`) and `reply`; `round`, `note`, `window`,
-/// `out`, `screen`, `repo` and `request` may be absent.
+/// `key`, `verdict` (`pass` or `fail`) and `reply`; `case` (the key when
+/// absent), `round`, `note`, `window`, `out`, `screen`, `repo` and `request`
+/// may be absent.
 pub fn read_labels(name: &str, text: &str) -> Result<Vec<Label>, String> {
     let mut v = vec![];
     for (n, line) in text.lines().enumerate().filter(|(_, l)| !l.trim().is_empty()) {
@@ -207,8 +250,10 @@ pub fn read_labels(name: &str, text: &str) -> Result<Vec<Label>, String> {
             request: s("request"),
             reply: need("reply")?,
         };
+        let key = need("key")?;
         v.push(Label {
-            key: need("key")?,
+            case: j["case"].as_str().unwrap_or(&key).to_string(),
+            key,
             round: s("round"),
             pass,
             note: s("note"),
@@ -239,20 +284,51 @@ impl Split {
     }
 }
 
-/// Whether each label is in the holdout: a third of the passes and a third of
-/// the fails, rounded up, picked by the hash of the key so a new row does not
-/// reshuffle the others.
+/// Whether each label is in the holdout. Whole cases go to one side, so no
+/// reply to a held-out case is tuned on. Cases with an owner fail and cases
+/// without are two strata; from each, cases are taken in the order of their
+/// name's hash until a third of the stratum's rows, rounded up, is held. A
+/// new case shifts the cut by at most one case.
 pub fn holdout(labels: &[Label]) -> Vec<bool> {
-    let mut held = vec![false; labels.len()];
-    for verdict in [true, false] {
-        let mut idx: Vec<usize> = (0..labels.len()).filter(|&i| labels[i].pass == verdict).collect();
-        idx.sort_by_key(|&i| (fnv(&labels[i].key), i));
-        let take = idx.len().div_ceil(3);
-        for &i in &idx[..take] {
-            held[i] = true;
+    let mut cases: Vec<&str> = labels.iter().map(|l| l.case.as_str()).collect();
+    cases.sort_unstable();
+    cases.dedup();
+    let rows = |c: &str| labels.iter().filter(|l| l.case == c).count();
+    let has_fail = |c: &str| labels.iter().any(|l| l.case == c && !l.pass);
+    let mut held_cases: Vec<&str> = vec![];
+    for fails in [false, true] {
+        let mut stratum: Vec<&str> = cases.iter().copied().filter(|c| has_fail(c) == fails).collect();
+        stratum.sort_by_key(|c| (fnv(c), *c));
+        let want = stratum.iter().map(|c| rows(c)).sum::<usize>().div_ceil(3);
+        let mut got = 0;
+        for c in stratum {
+            if got >= want {
+                break;
+            }
+            got += rows(c);
+            held_cases.push(c);
         }
     }
-    held
+    labels.iter().map(|l| held_cases.contains(&l.case.as_str())).collect()
+}
+
+/// A calibration's graded rows, as indices into its labels with the judge's
+/// verdict, and the calls that gave no verdict: those stay out of every table.
+#[derive(Debug, Default, PartialEq)]
+pub struct Scored {
+    pub graded: Vec<(usize, bool)>,
+    pub errors: usize,
+}
+
+pub fn score(judged: &[Judged]) -> Scored {
+    let mut s = Scored::default();
+    for (i, j) in judged.iter().enumerate() {
+        match j.outcome().0 {
+            Some(p) => s.graded.push((i, p)),
+            None => s.errors += 1,
+        }
+    }
+    s
 }
 
 /// Owner against judge, PASS as the positive class.
@@ -376,30 +452,25 @@ pub fn calibrate(file: &Path, model: &str, split: Split, jobs: usize, out: Optio
         Some(p) => Some(std::fs::File::create(p).map_err(|e| format!("{}: {e}", p.display()))?),
         None => None,
     };
-    let mut graded: Vec<(&Label, bool, bool)> = vec![];
-    let (mut cost, mut errors) = (0.0, 0);
+    let mut cost = 0.0;
     for ((l, h), j) in pick.iter().zip(&judged) {
         cost += j.cost_usd.unwrap_or(0.0);
-        let (judge, critique) = match &j.verdict {
-            Ok(v) => (Some(v.pass), v.critique.clone()),
-            Err(e) => {
-                errors += 1;
-                println!("ERR  {:<36} {e}", l.key);
-                (None, e.clone())
-            }
-        };
+        let (judge, critique) = j.outcome();
+        if judge.is_none() {
+            println!("ERR  {:<36} {critique}", l.key);
+        }
         if let Some(f) = log.as_mut() {
             use std::io::Write;
             let row = serde_json::json!({
-                "key": l.key, "round": l.round, "holdout": h, "owner": l.pass, "judge": judge,
-                "critique": critique, "note": l.note, "model": model, "cost_usd": j.cost_usd,
+                "key": l.key, "case": l.case, "round": l.round, "holdout": h, "owner": l.pass,
+                "judge": judge, "critique": critique, "note": l.note, "model": model,
+                "cost_usd": j.cost_usd, "rubric": rubric_hash(),
             });
             let _ = writeln!(f, "{row}");
         }
-        if let Some(p) = judge {
-            graded.push((l, *h, p));
-        }
     }
+    let Scored { graded, errors } = score(&judged);
+    let graded: Vec<(&Label, bool, bool)> = graded.iter().map(|&(i, p)| (&pick[i].0, pick[i].1, p)).collect();
     let table =
         |keep: &dyn Fn(&Label, bool) -> bool| Confusion::of(graded.iter().filter(|(l, h, _)| keep(l, *h)).map(|(l, _, j)| (l.pass, *j)));
     println!("\nall graded\n{}", metrics(&table(&|_, _| true)));
@@ -427,6 +498,9 @@ pub fn calibrate(file: &Path, model: &str, split: Split, jobs: usize, out: Optio
         }
     }
     println!("\ncost  ${cost:.4} over {} calls, {errors} failed", judged.len());
+    if every_failed(&judged) {
+        return Err(format!("every one of the {} judge calls failed", judged.len()));
+    }
     Ok(())
 }
 
@@ -554,6 +628,7 @@ mod tests {
         };
         Label {
             key: key.into(),
+            case: key.into(),
             round: "r1".into(),
             pass,
             note: String::new(),
@@ -625,5 +700,82 @@ mod tests {
         assert_eq!(at("--tools"), Some("".into()));
         assert_eq!(at("--system-prompt-file"), Some("/r/rubric.txt".into()));
         assert_eq!(a[0], "-p");
+        assert_eq!(at("--max-budget-usd"), Some(BUDGET_USD.into()));
+    }
+
+    fn judged(v: Result<bool, &str>) -> Judged {
+        let verdict = v
+            .map(|pass| Verdict {
+                pass,
+                critique: "c".into(),
+            })
+            .map_err(String::from);
+        Judged {
+            verdict,
+            cost_usd: Some(0.001),
+        }
+    }
+
+    #[test]
+    fn annotate_never_writes_pass() {
+        let mut row = serde_json::json!({"id": "a", "pass": false});
+        annotate(&mut row, &judged(Ok(true)), "haiku");
+        assert_eq!((row["pass"].as_bool(), row["judge"].as_bool()), (Some(false), Some(true)));
+        assert_eq!(row["rubric"].as_str(), Some(rubric_hash().as_str()));
+        assert_eq!(row["judge_model"].as_str(), Some("haiku"));
+    }
+
+    #[test]
+    fn annotate_leaves_judge_null_for_a_failed_call() {
+        let mut row = serde_json::json!({"id": "a", "pass": true});
+        annotate(&mut row, &judged(Err("exit 1")), "haiku");
+        assert!(row["judge"].is_null());
+        assert_eq!(row["critique"].as_str(), Some("exit 1"));
+        assert_eq!(row["pass"].as_bool(), Some(true));
+    }
+
+    #[test]
+    fn score_keeps_a_failed_call_out_of_the_table_and_counts_it() {
+        let s = score(&[judged(Ok(true)), judged(Err("no VERDICT line")), judged(Ok(false))]);
+        assert_eq!(
+            s,
+            Scored {
+                graded: vec![(0, true), (2, false)],
+                errors: 1
+            }
+        );
+    }
+
+    #[test]
+    fn every_failed_only_when_there_were_calls_and_none_gave_a_verdict() {
+        assert!(!every_failed(&[]));
+        assert!(every_failed(&[judged(Err("x")), judged(Err("y"))]));
+        assert!(!every_failed(&[judged(Err("x")), judged(Ok(false))]));
+    }
+
+    #[test]
+    fn holdout_keeps_each_case_on_one_side() {
+        let mut ls = vec![];
+        for c in 0..30 {
+            for r in 0..3 {
+                let mut l = label(&format!("c{c}.r{r}"), !(c % 5 == 0 && r == 0));
+                l.case = format!("c{c}");
+                ls.push(l);
+            }
+        }
+        let h = holdout(&ls);
+        for c in ls.chunks(3).zip(h.chunks(3)) {
+            assert!(c.1.iter().all(|x| *x == c.1[0]), "case {} split", c.0[0].case);
+        }
+        let held_fails = ls.iter().zip(&h).filter(|(l, h)| !l.pass && **h).count();
+        assert_eq!(held_fails, 2, "a third of the 6 fail cases");
+    }
+
+    #[test]
+    fn read_labels_takes_the_case_or_falls_back_to_the_key() {
+        let t = "{\"key\":\"a.r0\",\"case\":\"a\",\"verdict\":\"pass\",\"reply\":\"r\"}\n\
+                 {\"key\":\"b.r0\",\"verdict\":\"pass\",\"reply\":\"r\"}";
+        let l = read_labels("f", t).unwrap();
+        assert_eq!((l[0].case.as_str(), l[1].case.as_str()), ("a", "b.r0"));
     }
 }
