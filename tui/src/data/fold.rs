@@ -15,9 +15,7 @@ use std::io::{Read, Seek, SeekFrom};
 use std::os::unix::fs::MetadataExt;
 use std::time::SystemTime;
 
-/// Ends the turn without closing anything: neither a prompt nor an answer.
-/// It arrives as a `text` block in the array form.
-const INTERRUPT: &str = "[Request interrupted by user";
+use super::transcript::INTERRUPT;
 
 /// A value and the offset of the row that set it.
 type At<T> = Option<(u64, T)>;
@@ -66,46 +64,26 @@ impl Fold {
             Some("user") => {
                 self.saw = Some(off);
                 let c = &v["message"]["content"];
-                match c.as_str() {
-                    // a tool_result arrives as an array, a human turn as a string
-                    Some(t) if t.starts_with(INTERRUPT) => self.turn_over = Some((off, true)),
-                    // <task-notification, <command-name, <local-command-*: the
-                    // harness wrote these, so not a new turn and not `asked`.
-                    Some(t) if t.starts_with('<') => {}
-                    Some(t) => {
-                        self.user = Some((off, (first_line(t), ts)));
-                        self.turn_over = Some((off, false));
-                        // a typed prompt means the human moved on from an interrupted ask
-                        self.asks.clear();
-                    }
-                    None => {
-                        let (mut interrupted, mut result, mut typed) = (false, false, None);
-                        for b in c.as_array().into_iter().flatten() {
-                            if let Some(id) = b["tool_use_id"].as_str() {
-                                self.asks.retain(|(_, a)| a != id);
-                                result = true;
-                            }
-                            // safe beside the tool_results: they carry no `text`
-                            if let Some(t) = b["text"].as_str() {
-                                interrupted |= t.starts_with(INTERRUPT);
-                                if typed.is_none() && !t.starts_with(INTERRUPT) && !t.starts_with('<') {
-                                    typed = Some(t);
-                                }
-                            }
-                        }
-                        self.turn_over = Some((off, interrupted));
-                        // A prompt with an image is an array too: its text block is the
-                        // human's, unless the row is a tool_result or one the harness wrote.
-                        if let Some(t) = typed
-                            && !result
-                            && !interrupted
-                            && v["isMeta"].as_bool() != Some(true)
-                            && !first_line(t).is_empty()
-                        {
-                            self.user = Some((off, (first_line(t), ts)));
-                            self.asks.clear();
-                        }
-                    }
+                // a tool_result closes its ask, whatever else the row is
+                for id in c.as_array().into_iter().flatten().filter_map(|b| b["tool_use_id"].as_str()) {
+                    self.asks.retain(|(_, a)| a != id);
+                }
+                // trimmed as transcript::typed_text trims it, so the two agree
+                let interrupt = |t: &str| t.trim_start().starts_with(INTERRUPT);
+                let interrupted = match c.as_str() {
+                    Some(t) => interrupt(t),
+                    None => c.as_array().into_iter().flatten().filter_map(|b| b["text"].as_str()).any(interrupt),
+                };
+                // #477: one rule with the info screen for a typed prompt, which means
+                // the human moved on from an interrupted ask
+                if let Some(p) = transcript::typed_prompt(&v) {
+                    self.user = Some((off, (p, ts)));
+                    self.turn_over = Some((off, false));
+                    self.asks.clear();
+                } else if interrupted || c.is_array() {
+                    // the interrupt ends the turn; a tool_result keeps it going.
+                    // Any other string is the harness's: not a turn and not `asked`.
+                    self.turn_over = Some((off, interrupted));
                 }
             }
             Some("assistant") => {
@@ -433,6 +411,42 @@ mod tests {
             same(&p, &format!("row {n}"));
         }
         assert_eq!(full(&p, TAIL_FIRST).state, State::Done, "the fixture ends the turn");
+    }
+
+    /// #477 review: an interrupt with blanks before it still ends the turn, as
+    /// typed_text, which trims, says it is not a prompt.
+    #[test]
+    fn an_interrupt_after_blanks_still_ends_the_turn() {
+        let (_d, p) = tmp("blanks");
+        add(&p, &(prompt(0, "/w") + &tool(1, "Bash")));
+        add(&p, &row("user", 2, json!({"content": "\n [Request interrupted by user]"})));
+        assert_eq!(full(&p, TAIL_FIRST).state, State::Done);
+    }
+
+    /// #477: each kind of user row the shared typed-prompt rule weighs, after an
+    /// open ask: the delta view equals a full read after every row.
+    #[test]
+    fn delta_equals_a_full_read_for_each_kind_of_user_row() {
+        let (_d, p) = tmp("kinds");
+        let image = json!({"type": "image", "source": {"type": "base64", "data": "AA=="}});
+        let text = |t: &str| json!({"type": "text", "text": t});
+        let meta = json!({"type": "user", "isMeta": true, "timestamp": ts(9), "message": {"content": "Caveat"}});
+        let rows = [
+            prompt(0, "/w"),
+            tool(1, "AskUserQuestion"),
+            row("user", 2, json!({"content": "[Request interrupted by user]"})),
+            row("user", 3, json!({"content": "<task-notification>done</task-notification>"})),
+            meta.to_string() + "\n",
+            row("user", 4, json!({"content": [image, text("look")]})),
+            tool(5, "AskUserQuestion"),
+            row("user", 6, json!({"content": "<pasted_content>long</pasted_content>"})),
+            tool(7, "AskUserQuestion"),
+            row("user", 8, json!({"content": "<bash-stdout>a <pasted_content>x</bash-stdout>"})),
+        ];
+        for (n, r) in rows.iter().enumerate() {
+            add(&p, r);
+            same(&p, &format!("row {n}"));
+        }
     }
 
     /// A row read before its newline lands counts as `tail` counts it, then the

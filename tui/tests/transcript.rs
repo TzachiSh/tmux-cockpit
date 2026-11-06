@@ -291,3 +291,24 @@ fn the_ask_row_is_the_newest_tool_uses_and_labels_drop_bidi() {
     let open = Tmp::new("askbidi", &ask("q1", "Merge?", "Mer\u{202e}ge"));
     assert!(doing(&open.0).unwrap().starts_with("doing\tAskUserQuestion: Merge\t"));
 }
+
+/// #477 review: the tail's USER lines are the same typed prompts: an image prompt
+/// is one, the interrupt string and a harness row are not, a paste shows its words.
+#[test]
+fn the_tail_names_the_typed_prompts_only() {
+    let user = |c: serde_json::Value| {
+        format!(
+            "{}\n",
+            serde_json::json!({"type": "user", "version": "2.1.316", "message": {"content": c}})
+        )
+    };
+    let image =
+        serde_json::json!([{"type": "image", "source": {"type": "base64", "data": "AA=="}}, {"type": "text", "text": "look at this"}]);
+    let body = user("first".into())
+        + &user("[Request interrupted by user]".into())
+        + &user(image)
+        + &user("<task-notification>done</task-notification>".into())
+        + &user("<pasted_content>x</pasted_content>\nfix it".into());
+    let t = Tmp::new("tailtyped", &body);
+    assert_eq!(tail(&t.0, 4096).unwrap(), "USER: first\nUSER: look at this\nUSER: fix it\n");
+}

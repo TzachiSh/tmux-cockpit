@@ -237,29 +237,6 @@ fn clean(s: &str) -> String {
     kept.trim_start().chars().take(160).collect()
 }
 
-/// What the harness injected is "", never a prompt. The bash-* tags are #193's,
-/// added after the jq reader was frozen.
-const INJECTED: [&str; 7] = [
-    "<task-notification",
-    "<system-reminder",
-    "<local-command-",
-    "<command-",
-    "<bash-input",
-    "<bash-stdout",
-    "<bash-stderr",
-];
-
-fn prompt(s: &str) -> String {
-    let t = s.trim_start();
-    if t.starts_with("<pasted_content") {
-        "[pasted text]".into()
-    } else if INJECTED.iter().any(|p| t.starts_with(p)) {
-        String::new()
-    } else {
-        clean(s)
-    }
-}
-
 /// C's isspace: unlike `is_ascii_whitespace` it takes the vertical tab.
 fn c_space(c: &u8) -> bool {
     matches!(c, b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r')
@@ -364,10 +341,92 @@ fn kind(v: &Value) -> &str {
     v["type"].as_str().unwrap_or("")
 }
 
-/// A string prompt from the human: not isMeta, content a string.
-fn human(v: &Value) -> Option<&str> {
+/// Ends the turn without being a prompt: the harness writes it as a user row, as a
+/// string or as a text block of the array form.
+pub(crate) const INTERRUPT: &str = "[Request interrupted by user";
+
+/// #477: the one rule for "the human typed a prompt", which the board's fold and
+/// the info screen both use to tell whether an open question was moved on from,
+/// and what was asked. A user row, not isMeta, that is a string or an array with a
+/// text block and no tool_result. Not a prompt: the interrupt (string or block), a
+/// harness row (a leading `<`: `<task-notification>`, `<command-name>`...), a blank
+/// one. A paste is one: its text is what was typed beside the paste blocks, else
+/// `[pasted text]`. Returns that text, each caller taking its own first line.
+pub(crate) fn typed_text(v: &Value) -> Option<String> {
     let meta = !matches!(v.get("isMeta"), None | Some(Value::Null) | Some(Value::Bool(false)));
-    (kind(v) == "user" && !meta).then(|| v["message"]["content"].as_str()).flatten()
+    if kind(v) != "user" || meta {
+        return None;
+    }
+    let c = &v["message"]["content"];
+    let text = match c.as_str() {
+        Some(s) => s,
+        None => {
+            let blocks = c.as_array()?;
+            if blocks.iter().any(|b| kind(b) == "tool_result" || b.get("tool_use_id").is_some()) {
+                return None;
+            }
+            let texts = || blocks.iter().filter_map(|b| b["text"].as_str());
+            if texts().any(|t| t.trim_start().starts_with(INTERRUPT)) {
+                return None;
+            }
+            texts().find(|t| paste_led(t) || !t.trim_start().starts_with('<'))?
+        }
+    };
+    let t = text.trim_start();
+    // a harness row that merely quotes a paste is still the harness's (#477 review)
+    if t.starts_with(INTERRUPT) || (t.starts_with('<') && !paste_led(t)) {
+        return None;
+    }
+    let typed = unpasted(text);
+    if typed.trim().is_empty() {
+        return pasted(text).then(|| "[pasted text]".to_string());
+    }
+    Some(typed)
+}
+
+/// Whether `t` starts with a paste block: the only `<`-led row the human typed.
+fn paste_led(t: &str) -> bool {
+    t.trim_start().starts_with(PASTE)
+}
+
+/// Whether `t` holds a paste block anywhere, for the `[pasted text]` fallback.
+fn pasted(t: &str) -> bool {
+    paste_at(t, 0).is_some()
+}
+
+const PASTE: &str = "<pasted_content";
+const PASTE_END: &str = "</pasted_content>";
+
+/// The next paste block's start at or after `from`: an opening tag that begins its
+/// line, blanks aside, as Claude Code writes one. A tag typed inside a sentence is
+/// the human's text, not a block.
+fn paste_at(t: &str, from: usize) -> Option<usize> {
+    let mut at = from;
+    while let Some(i) = t[at..].find(PASTE).map(|i| at + i) {
+        let line_start = t[..i].rfind('\n').map_or(0, |n| n + 1);
+        if t[line_start..i].trim().is_empty() {
+            return Some(i);
+        }
+        at = i + PASTE.len();
+    }
+    None
+}
+
+/// `t` without its paste blocks, each from its opening tag to its closing one; an
+/// unclosed one runs to the end.
+fn unpasted(t: &str) -> String {
+    let (mut out, mut from) = (String::new(), 0);
+    while let Some(i) = paste_at(t, from) {
+        out += &t[from..i];
+        from = t[i..].find(PASTE_END).map_or(t.len(), |j| i + j + PASTE_END.len());
+    }
+    out + &t[from..]
+}
+
+/// [`typed_text`]'s first line, as the board shows it.
+pub(crate) fn typed_prompt(v: &Value) -> Option<String> {
+    let line = super::first_line(&typed_text(v)?);
+    (!line.is_empty()).then_some(line)
 }
 
 /// Which input field says what a tool is doing, in preference order: the
@@ -539,7 +598,7 @@ pub fn doing(path: &Path) -> Option<String> {
     let said = assistant().filter_map(said_of).next_back();
     let asked = t
         .iter()
-        .filter_map(|r| human(r).map(|c| (prompt(c), r)))
+        .filter_map(|r| typed_text(r).map(|c| (clean(&c), r)))
         .rfind(|(p, _)| !p.is_empty());
     let mut out = String::new();
     if let Some((i, r)) = tu
@@ -557,9 +616,7 @@ pub fn doing(path: &Path) -> Option<String> {
     // typed after it means the human moved on from it.
     let typed_after = |r: &Value| {
         let at = t.iter().position(|x| std::ptr::eq(x, r));
-        t.iter()
-            .enumerate()
-            .any(|(k, x)| Some(k) > at && human(x).is_some_and(|c| !prompt(c).is_empty()))
+        t.iter().enumerate().any(|(k, x)| Some(k) > at && typed_prompt(x).is_some())
     };
     if let Some((i, r)) = tu
         && i["name"] == "AskUserQuestion"
@@ -578,7 +635,12 @@ pub fn tail(path: &Path, max: i64) -> Option<String> {
     let mut lines: Vec<String> = vec![];
     for r in turns(path)? {
         if kind(&r) == "user" {
-            lines.extend(human(&r).map(prompt).filter(|p| !p.is_empty()).map(|p| format!("USER: {p}")));
+            lines.extend(
+                typed_text(&r)
+                    .map(|c| clean(&c))
+                    .filter(|p| !p.is_empty())
+                    .map(|p| format!("USER: {p}")),
+            );
             continue;
         }
         for i in items(&r) {
@@ -764,6 +826,106 @@ mod tests {
         assert!(find(&root, "", "last", "/x", Some(t0 + GLOB_MISS_TTL)).is_none());
         let (n, keep) = GLOBBED.with(|c| (c.borrow().len(), c.borrow().contains_key("keep")));
         assert_eq!((n, keep), (2, true), "the stale misses went, the live find and the new miss stayed");
+    }
+
+    /// #477: one rule for "the human typed a prompt", shared by the board's fold
+    /// and the info screen. Rows: [name, row, the prompt it counts as or None].
+    #[test]
+    fn typed_prompt_is_one_rule_for_the_board_and_info() {
+        let user = |c: Value| serde_json::json!({"type": "user", "message": {"content": c}});
+        let text = |t: &str| serde_json::json!({"type": "text", "text": t});
+        let image = serde_json::json!({"type": "image", "source": {"type": "base64", "data": "AA=="}});
+        let meta = serde_json::json!({"type": "user", "isMeta": true, "message": {"content": "Caveat: generated"}});
+        let res = serde_json::json!({"type": "tool_result", "tool_use_id": "t1", "content": "ok"});
+        let rows: [(&str, Value, Option<&str>); 21] = [
+            ("a string prompt", user("fix the build\nsecond line".into()), Some("fix the build")),
+            (
+                "an image prompt",
+                user(serde_json::json!([image.clone(), text("what is this?")])),
+                Some("what is this?"),
+            ),
+            ("the interrupt string", user("[Request interrupted by user]".into()), None),
+            (
+                "the interrupt array",
+                user(serde_json::json!([text("[Request interrupted by user for tool use]")])),
+                None,
+            ),
+            (
+                "an interrupt beside text",
+                user(serde_json::json!([text("[Request interrupted by user]"), text("x")])),
+                None,
+            ),
+            ("a tool_result", user(serde_json::json!([res.clone()])), None),
+            (
+                "a tool_result beside text",
+                user(serde_json::json!([res, text("and a note")])),
+                None,
+            ),
+            ("an isMeta string", meta, None),
+            (
+                "a task notification",
+                user("<task-notification>done</task-notification>".into()),
+                None,
+            ),
+            (
+                "a harness text block",
+                user(serde_json::json!([text("<command-name>/clear</command-name>")])),
+                None,
+            ),
+            (
+                "a paste alone",
+                user("<pasted_content>long</pasted_content>".into()),
+                Some("[pasted text]"),
+            ),
+            (
+                "a paste, then typed words",
+                user("<pasted_content>long\nlines</pasted_content>\n\nplease fix this\nmore".into()),
+                Some("please fix this"),
+            ),
+            (
+                "typed words, then a paste",
+                user("look:\n<pasted_content>x</pasted_content>".into()),
+                Some("look:"),
+            ),
+            ("an unclosed paste", user("\n <pasted_content x>".into()), Some("[pasted text]")),
+            (
+                "a harness row quoting a paste: bash-stdout",
+                user("<bash-stdout>grep: a.jsonl: <pasted_content>x</bash-stdout>".into()),
+                None,
+            ),
+            (
+                "a harness row quoting a paste: task-notification",
+                user("<task-notification>agent said <pasted_content>x</pasted_content></task-notification>".into()),
+                None,
+            ),
+            (
+                "a harness block quoting a paste",
+                user(serde_json::json!([text("<command-name>/x</command-name> <pasted_content>y")])),
+                None,
+            ),
+            (
+                "a harness block quoting a paste, then typed text",
+                user(serde_json::json!([
+                    text("<bash-stdout>a <pasted_content>y</bash-stdout>"),
+                    text("and now?")
+                ])),
+                Some("and now?"),
+            ),
+            (
+                "a typed mention of the tag",
+                user("why is <pasted_content> in the log? and after".into()),
+                Some("why is <pasted_content> in the log? and after"),
+            ),
+            ("an empty prompt", user(" \n ".into()), None),
+            (
+                "an assistant row",
+                serde_json::json!({"type": "assistant", "message": {"content": "hi"}}),
+                None,
+            ),
+        ];
+        for (name, row, want) in rows {
+            assert_eq!(typed_prompt(&row).as_deref(), want, "{name}");
+        }
     }
 
     #[test]
