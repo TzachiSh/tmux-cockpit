@@ -98,13 +98,13 @@ fn info_json(env: &[(&'static str, String)], pane: &str) -> (Option<i32>, Vec<u8
 }
 
 /// Rows: the transcript's cwd over the pane's; `@cockpit_dir` over both; a
-/// dangling transcript cwd falls to the pane's. `root` stays tmux-review's.
+/// dangling transcript cwd falls to the pane's. `root` follows the work dir (#500).
 #[test]
-fn the_work_dir_follows_the_board_order_and_root_does_not() {
+fn the_work_dir_follows_the_board_order_and_root_follows_it() {
     let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
     let t = Tmp::new("order");
     let (wt, opt, cwd) = (t.sub("wt"), t.sub("opt"), t.sub("cwd"));
-    // wt its own repo: had root followed the work dir, it would be wt itself
+    // wt its own repo, so a root off the cwd would be the checkout's, not wt
     let git = std::process::Command::new("git")
         .args(["init", "-q", &wt])
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
@@ -112,8 +112,9 @@ fn the_work_dir_follows_the_board_order_and_root_does_not() {
     assert!(git.unwrap().success());
     let x = facts(&t, &cwd, "", &wt);
     assert_eq!((x.work.as_str(), x.work_from), (wt.as_str(), WorkFrom::Transcript));
-    assert_eq!(x.root, git_root(&cwd), "root keeps tmux-review's rule, off the cwd");
-    assert_ne!(x.root, wt);
+    // #500: root follows the work dir, as `prefix r` does once it reads `workdir`
+    assert_eq!(x.root, git_root(&wt), "root follows the work dir");
+    assert_ne!(x.root, git_root(&cwd));
     let x = facts(&t, &cwd, &opt, &wt);
     assert_eq!((x.work.as_str(), x.work_from), (opt.as_str(), WorkFrom::Opt));
     let x = facts(&t, &cwd, "", "/no/such/wt");
