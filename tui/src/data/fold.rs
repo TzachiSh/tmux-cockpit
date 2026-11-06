@@ -6,6 +6,11 @@
 
 use super::{Facts, State, first_line, rfc3339, transcript};
 use serde_json::Value;
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
+use std::fs::{File, Metadata};
+use std::io::{Read, Seek, SeekFrom};
+use std::os::unix::fs::MetadataExt;
 use std::time::SystemTime;
 
 /// Ends the turn without closing anything: neither a prompt nor an answer.
@@ -169,5 +174,315 @@ impl Fold {
             cwd: since(&self.cwd, ws).cloned().unwrap_or_default(),
             ask: ask.and_then(|(_, q)| q.clone()).unwrap_or_default(),
         }
+    }
+}
+
+/// One transcript's fold and where it stands in the file.
+struct Track {
+    /// (device, inode): another file at the path starts the fold over
+    file: (u64, u64),
+    len: u64,
+    mtime: SystemTime,
+    /// the fold holds every row that starts at or after `base`
+    base: u64,
+    /// just past the last newline folded: a partial row starts here
+    pos: u64,
+    /// the bytes from `pos` to the next newline end a row that started before `base`
+    skip: bool,
+    fold: Fold,
+}
+
+thread_local! {
+    /// One per transcript path, like `TAILS`.
+    static TRACKS: RefCell<HashMap<String, Track>> = RefCell::new(HashMap::new());
+    static READ: Cell<u64> = const { Cell::new(0) };
+}
+
+/// Transcript bytes read on this thread so far: the delta read's audit.
+#[cfg(test)]
+pub(super) fn read_bytes() -> u64 {
+    READ.with(Cell::get)
+}
+
+impl Track {
+    fn new(file: (u64, u64), len: u64, mtime: SystemTime, base: u64) -> Self {
+        let fold = Fold::default();
+        let skip = base > 0;
+        Track {
+            file,
+            len,
+            mtime,
+            base,
+            pos: base,
+            skip,
+            fold,
+        }
+    }
+
+    /// Reads `[pos, len)`, folds each whole row and returns the partial last one.
+    /// None when the byte before `pos` is no longer the newline the last read
+    /// ended on: the file was rewritten.
+    fn advance(&mut self, f: &mut File) -> Option<Vec<u8>> {
+        let from = self.pos.saturating_sub(1);
+        f.seek(SeekFrom::Start(from)).ok()?;
+        let mut buf = Vec::new();
+        f.take(self.len - from).read_to_end(&mut buf).ok()?;
+        READ.with(|r| r.set(r.get() + buf.len() as u64));
+        let mut rest = &buf[..];
+        if self.pos > 0 {
+            let (b, r) = rest.split_first()?;
+            match (*b == b'\n', self.skip) {
+                (true, _) => self.skip = false,
+                (false, false) => return None,
+                (false, true) => {}
+            }
+            rest = r;
+        }
+        if self.skip {
+            let Some(i) = rest.iter().position(|b| *b == b'\n') else {
+                self.pos = self.len;
+                return Some(vec![]);
+            };
+            (self.pos, rest, self.skip) = (self.pos + i as u64 + 1, &rest[i + 1..], false);
+        }
+        while let Some(i) = rest.iter().position(|b| *b == b'\n') {
+            let line = String::from_utf8_lossy(&rest[..i]);
+            self.fold.step(self.pos, line.strip_suffix('\r').unwrap_or(&line));
+            (self.pos, rest) = (self.pos + i as u64 + 1, &rest[i + 1..]);
+        }
+        Some(rest.to_vec())
+    }
+
+    /// The window from `ws`, the partial row counted as `tail` counts it.
+    fn view(&self, ws: u64, partial: &[u8]) -> Facts {
+        if partial.is_empty() {
+            return self.fold.view(ws);
+        }
+        let mut f = self.fold.clone();
+        f.step(self.pos, &String::from_utf8_lossy(partial));
+        f.view(ws)
+    }
+}
+
+/// What `parse(tail(f, len, first))` says, widened to `max` when that window holds
+/// no assistant row, from the bytes appended since the last call (#492). The fold
+/// starts over when another file stands at the path, the file shrank, it was
+/// rewritten at the same length, or the window reaches back past the fold.
+pub(super) fn windowed(path: &str, f: &mut File, md: &Metadata, first: u64, max: u64) -> Facts {
+    let (file, len) = ((md.dev(), md.ino()), md.len());
+    let mtime = md.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+    let ws = |cap: u64| len.saturating_sub(cap);
+    let fresh = |cap: u64| Track::new(file, len, mtime, ws(cap));
+    let kept = TRACKS.with(|c| c.borrow_mut().remove(path)).filter(|t| {
+        let grew = len > t.len || (len == t.len && mtime == t.mtime);
+        let near = len.checked_sub(t.pos).is_some_and(|d| d <= max);
+        t.file == file && grew && near && t.base <= ws(first)
+    });
+    let mut t = kept.map(|t| Track { len, mtime, ..t }).unwrap_or_else(|| fresh(first));
+    let mut partial = match t.advance(f) {
+        Some(p) => p,
+        None => {
+            t = fresh(first);
+            let Some(p) = t.advance(f) else { return Facts::default() };
+            p
+        }
+    };
+    let mut fa = t.view(ws(first), &partial);
+    if fa.tool.is_empty() && fa.text.is_empty() && len > first && first < max {
+        if t.base > ws(max) {
+            t = fresh(max);
+            let Some(p) = t.advance(f) else { return Facts::default() };
+            partial = p;
+        }
+        fa = t.view(ws(max), &partial);
+    }
+    // No window starts before `len - max`: an ask older than that is never seen again.
+    t.fold.asks.retain(|(o, _)| *o >= ws(max));
+    TRACKS.with(|c| c.borrow_mut().insert(path.to_string(), t));
+    fa
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::{TAIL_FIRST, TAIL_MAX, parse, tail};
+    use super::*;
+    use serde_json::json;
+    use std::io::Write;
+    use std::path::PathBuf;
+
+    /// A scratch dir removed on drop.
+    struct Tmp(PathBuf);
+    impl Drop for Tmp {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    fn tmp(name: &str) -> (Tmp, String) {
+        let d = std::env::temp_dir().join(format!("cockpit-fold-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let p = d.join("t.jsonl").display().to_string();
+        std::fs::write(&p, "").unwrap();
+        (Tmp(d), p)
+    }
+
+    /// Today's read: the window, widened to `TAIL_MAX` when it holds no assistant row.
+    fn full(p: &str, first: u64) -> Facts {
+        let mut f = File::open(p).unwrap();
+        let len = f.metadata().unwrap().len();
+        let mut fa = parse(tail(&mut f, len, first));
+        if fa.tool.is_empty() && fa.text.is_empty() && len > first && first < TAIL_MAX {
+            fa = parse(tail(&mut f, len, TAIL_MAX));
+        }
+        fa
+    }
+    fn delta(p: &str, first: u64) -> Facts {
+        let mut f = File::open(p).unwrap();
+        let md = f.metadata().unwrap();
+        windowed(p, &mut f, &md, first, TAIL_MAX)
+    }
+    /// The delta read equals a full read, for the board's first window and a wider one.
+    fn same(p: &str, what: &str) {
+        for first in [TAIL_FIRST, TAIL_MAX / 2] {
+            assert_eq!(delta(p, first), full(p, first), "{what}, first {first}");
+        }
+    }
+    fn add(p: &str, s: &str) {
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(p)
+            .unwrap()
+            .write_all(s.as_bytes())
+            .unwrap();
+    }
+
+    fn ts(n: usize) -> String {
+        format!("2026-11-06T10:{:02}:{:02}.000Z", n / 60 % 60, n % 60)
+    }
+    /// One row of type `kind` with timestamp `n`, its message `msg`.
+    fn row(kind: &str, n: usize, msg: Value) -> String {
+        json!({"type": kind, "timestamp": ts(n), "message": msg}).to_string() + "\n"
+    }
+    fn prompt(n: usize, cwd: &str) -> String {
+        let msg = json!({"content": format!("prompt {n}")});
+        json!({"type": "user", "timestamp": ts(n), "cwd": cwd, "message": msg}).to_string() + "\n"
+    }
+    /// A text block and a tool_use `u<n>`; an AskUserQuestion asks "q?".
+    fn tool(n: usize, name: &str) -> String {
+        let input = json!({"command": format!("cmd {n}"), "questions": [{"question": "q?"}]});
+        let text = json!({"type": "text", "text": format!("said {n}")});
+        let call = json!({"type": "tool_use", "id": format!("u{n}"), "name": name, "input": input});
+        row("assistant", n, json!({"content": [text, call]}))
+    }
+    /// A tool_result of `kb` KB that closes `id`.
+    fn result(n: usize, id: &str, kb: usize) -> String {
+        let body = "x".repeat(kb * 1024);
+        let block = json!({"type": "tool_result", "tool_use_id": id, "content": body});
+        row("user", n, json!({"content": [block]}))
+    }
+    fn done(n: usize) -> String {
+        let text = json!({"type": "text", "text": format!("done {n}")});
+        row("assistant", n, json!({"content": [text], "stop_reason": "end_turn"}))
+    }
+
+    /// Row by row, from empty past `TAIL_MAX`: an open ask, then big results that
+    /// push it, the tool and the prompt out of the 256 KB window (the 2 MB read
+    /// finds them), then out of the 2 MB one too, then a new turn.
+    #[test]
+    fn delta_equals_a_full_read_as_rows_are_appended() {
+        let (_d, p) = tmp("append");
+        same(&p, "empty");
+        let ask = tool(3, "AskUserQuestion");
+        let mut rows = vec![prompt(0, "/w/a"), tool(1, "Bash"), result(2, "u1", 1), ask];
+        rows.extend((4..40).map(|n| result(n, "other", 64)));
+        rows.extend([prompt(40, "/w/b"), tool(41, "Read"), result(42, "u41", 1), done(43)]);
+        for (n, r) in rows.iter().enumerate() {
+            add(&p, r);
+            same(&p, &format!("row {n}"));
+        }
+        assert_eq!(full(&p, TAIL_FIRST).state, State::Done, "the fixture ends the turn");
+    }
+
+    /// A row read before its newline lands counts as `tail` counts it, then the
+    /// rest of it arrives.
+    #[test]
+    fn delta_equals_a_full_read_through_a_partial_row() {
+        let (_d, p) = tmp("partial");
+        add(&p, &(prompt(0, "/w") + &tool(1, "Bash")));
+        same(&p, "whole rows");
+        let r = done(2);
+        let (a, b) = r.split_at(r.len() / 2);
+        add(&p, a);
+        same(&p, "half a row");
+        add(&p, b.trim_end_matches('\n'));
+        same(&p, "a whole row with no newline");
+        add(&p, &("\n".to_string() + &tool(3, "Grep")));
+        same(&p, "its newline and another row");
+    }
+
+    /// A shorter file at the same inode is a rewrite, not an append: here one cut
+    /// inside the partial row, so the byte before it is still a newline.
+    #[test]
+    fn delta_starts_over_when_the_file_shrinks() {
+        let (_d, p) = tmp("shrink");
+        let r = done(2);
+        add(&p, &(prompt(0, "/w/a") + &tool(1, "Bash") + &r[..r.len() / 2]));
+        same(&p, "before");
+        std::fs::OpenOptions::new().write(true).open(&p).unwrap().set_len(0).unwrap();
+        add(&p, &(prompt(0, "/w/b") + &tool(1, "Read") + &r[..r.len() / 4]));
+        same(&p, "rewritten shorter");
+    }
+
+    /// Cut below what was read, then rewritten.
+    #[test]
+    fn delta_starts_over_when_the_file_is_truncated() {
+        let (_d, p) = tmp("truncate");
+        add(&p, &(prompt(0, "/w/a") + &tool(1, "AskUserQuestion") + &result(2, "x", 4)));
+        same(&p, "before");
+        std::fs::OpenOptions::new().write(true).open(&p).unwrap().set_len(0).unwrap();
+        add(&p, &(prompt(5, "/w/b") + &tool(6, "Bash")));
+        same(&p, "rewritten shorter");
+    }
+
+    /// Another file renamed over the path, longer and with its newlines where the
+    /// old one had them: only the inode says it is another file.
+    #[test]
+    fn delta_starts_over_on_a_new_inode() {
+        let (_d, p) = tmp("inode");
+        add(&p, &(prompt(0, "/w/a") + &tool(1, "Bash")));
+        same(&p, "before");
+        let next = format!("{p}.new");
+        let body = prompt(0, "/w/b") + &tool(1, "Read") + &done(2);
+        std::fs::write(&next, &body).unwrap();
+        std::fs::rename(&next, &p).unwrap();
+        same(&p, "replaced");
+    }
+
+    /// The same length with a new mtime is a rewrite in place.
+    #[test]
+    fn delta_starts_over_when_rewritten_at_the_same_length() {
+        let (_d, p) = tmp("same-len");
+        add(&p, &(prompt(0, "/w/a") + &tool(1, "Bash")));
+        same(&p, "before");
+        let f = std::fs::OpenOptions::new().write(true).open(&p).unwrap();
+        let body = prompt(0, "/w/b") + &tool(1, "Read");
+        (&f).write_all(body.as_bytes()).unwrap();
+        f.set_modified(SystemTime::UNIX_EPOCH).unwrap();
+        same(&p, "rewritten");
+    }
+
+    /// A 4 KB append to a 1 MB transcript reads the appended row, not the window.
+    #[test]
+    fn delta_reads_only_the_appended_bytes() {
+        let (_d, p) = tmp("cost");
+        add(&p, &(prompt(0, "/w") + &tool(1, "Bash")));
+        (2..18).for_each(|n| add(&p, &result(n, "u1", 64)));
+        delta(&p, TAIL_FIRST);
+        let r = tool(18, "Read");
+        add(&p, &r);
+        let before = read_bytes();
+        delta(&p, TAIL_FIRST);
+        let read = read_bytes() - before;
+        assert_eq!(read, r.len() as u64 + 1, "the row and the newline before it");
     }
 }

@@ -232,7 +232,8 @@ pub fn hash_rows(ps: &[Pane], extra: &str) -> u64 {
 }
 
 /// The last `cap` bytes as whole rows, decoded lossily: the window can open
-/// mid-codepoint. Every line returned is a complete record.
+/// mid-codepoint. Every line returned is a complete record. The board's own
+/// transcript reads the delta instead (`fold::windowed`), which must equal this.
 fn tail(f: &mut File, len: u64, cap: u64) -> Vec<String> {
     let off = len.saturating_sub(cap);
     if f.seek(SeekFrom::Start(off.saturating_sub(1))).is_err() {
@@ -269,7 +270,7 @@ fn first_line(s: &str) -> String {
 
 /// What the tail says, held as timestamps rather than ages: the ages move every
 /// second, these do not, so only these are worth caching.
-#[derive(Clone, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 struct Facts {
     tool: String,
     text: String,
@@ -353,12 +354,9 @@ fn read_facts(path: &str) -> Facts {
     // The window reaches back to the last read, so a prompt written and buried
     // between two reads is seen, not the older one that was kept.
     let first = kept.as_ref().map_or(TAIL_FIRST, |p| (len - p.len).clamp(TAIL_FIRST, TAIL_MAX));
-    let mut fa = parse(tail(&mut f, len, first));
     // Known gap: over 256 KB written after an open ask still finds a row, so
     // the window never grows to reach the ask.
-    if fa.tool.is_empty() && fa.text.is_empty() && len > first && first < TAIL_MAX {
-        fa = parse(tail(&mut f, len, TAIL_MAX));
-    }
+    let mut fa = fold::windowed(path, &mut f, &md, first, TAIL_MAX);
     // A quiet stretch of rows with no cwd must not push it out of the window.
     if fa.cwd.is_empty() {
         fa.cwd = seen_cwd.unwrap_or_default();
@@ -390,6 +388,7 @@ fn read_facts(path: &str) -> Facts {
 }
 
 /// The facts of whole rows, oldest first.
+#[cfg(test)]
 fn parse(lines: Vec<String>) -> Facts {
     let mut f = fold::Fold::default();
     lines.iter().for_each(|l| f.step(0, l));
