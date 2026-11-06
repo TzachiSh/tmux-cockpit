@@ -10522,8 +10522,8 @@ av_srv wake
 av_tm set -g @cockpit_agents_glob '|claude|codex|'
 AVWK="$AVREC/woke"; : > "$AVWK"
 AVWP=$(av_np "alpha")
-av_tm set -g @cockpit_board_wake \
-    "run-shell -t $AVWP \"printf '%s|%s\\\\n' '#{@cockpit_job}' '#{@cockpit_job_name}' >> $AVWK\" ; "
+AVWF="'#{@cockpit_job}' '#{@cockpit_job_name}'"   # the pane's job and name, at the wake
+av_tm set -g @cockpit_board_wake "run-shell -t $AVWP \"printf '%s|%s\\\\n' $AVWF >> $AVWK\" ; "
 av_once bind.json >/dev/null
 is "a new bind's wake already sees its job and name" "aa|alpha" "$(sed -n 1p "$AVWK")"
 av_tm select-pane -t "$AVWP" -T "fix the parser"
