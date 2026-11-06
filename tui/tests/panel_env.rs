@@ -280,7 +280,7 @@ fn a_shell_pane_with_no_window_name_keeps_its_fields() {
     assert!(std::fs::read_to_string(e.dir.join("args")).unwrap().contains("-S -80"));
 }
 
-/// `n` threads outside ENV that fork until [`ForkStorm::stop`], as capture()'s
+/// `n` threads outside ENV that fork until the storm is stopped or dropped, as capture()'s
 /// repo worker does after its test returns (#544 moved it out of the test).
 struct ForkStorm {
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -309,10 +309,37 @@ impl ForkStorm {
         ForkStorm { stop, threads }
     }
 
-    fn stop(self) {
+    /// The storm's end, said where a test means it; the work is in Drop.
+    fn stop(self) {}
+}
+
+/// Stops and joins the threads on every exit path, a failed assert's unwind
+/// included, so a panicking test does not leave forks running (review-510).
+impl Drop for ForkStorm {
+    fn drop(&mut self) {
         self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
-        self.threads.into_iter().for_each(|t| t.join().unwrap());
+        for t in self.threads.drain(..) {
+            let joined = t.join();
+            // a storm thread's own panic fails the test, unless one is unwinding
+            if !std::thread::panicking() {
+                joined.unwrap();
+            }
+        }
     }
+}
+
+/// A test that panics before [`ForkStorm::stop`] still stops its storm: each
+/// thread holds a clone of `stop`, so the count is back to 1 once all are joined.
+#[test]
+fn a_panic_before_stop_still_ends_the_storm() {
+    let storm = ForkStorm::start(4);
+    let stop = storm.stop.clone();
+    let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        let _storm = storm;
+        panic!("an assert failed");
+    }));
+    assert!(unwound.is_err());
+    assert_eq!(std::sync::Arc::strong_count(&stop), 1, "a storm thread outlived the panic");
 }
 
 /// The child of a fork holds a copy of every fd the parent had open, a fake
