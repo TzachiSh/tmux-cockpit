@@ -1,10 +1,15 @@
 //! The info screen (#252): the rows, the keys, the goldens, and the two ports
 //! the shell used to own -- git root and review base. Fixtures are literals and
 //! scratch repos; no tmux. COCKPIT_BLESS=1 cargo test rewrites the goldens.
+// for its Scratch guard only, not write_exec
+#[allow(dead_code)]
+mod fake;
+
 use cockpit_tui::data::info::{Base, Doing, Facts, WorkFrom, cksum, clean, git_root, review_base};
 use cockpit_tui::info::{self, Out, Screen};
 use cockpit_tui::theme::Theme;
 use crossterm::event::KeyCode;
+use fake::Scratch;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;
@@ -201,14 +206,6 @@ fn sh(dir: &Path, args: &[&str]) {
         .output()
         .unwrap();
     assert!(st.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&st.stderr));
-}
-
-/// Removes the scratch dir when the test ends, passed or not.
-struct Scratch(PathBuf);
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
 }
 
 fn repo(tag: &str) -> PathBuf {
