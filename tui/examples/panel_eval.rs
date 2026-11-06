@@ -1927,4 +1927,57 @@ mod tests {
             .collect();
         assert!(tail.is_empty(), "a request ends in a # line: {tail:?}");
     }
+
+    fn shipped(id: &str) -> Case {
+        let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("evals/panel/cases.txt");
+        let cases = parse_cases(&std::fs::read_to_string(p).unwrap()).unwrap();
+        cases.into_iter().find(|c| c.id == id).unwrap_or_else(|| panic!("no case {id}"))
+    }
+
+    fn ask(q: &str, a: &str, b: &str) -> String {
+        format!("<question>{q}</question>\n<option>{a}</option>\n<option>{b}</option>")
+    }
+
+    /// #558: a big feature's goal question is on target; a question on how to
+    /// build it ("which store", "which library", "which channel") is not.
+    #[test]
+    fn a_goal_question_passes_the_big_feature_cases_and_an_approach_question_does_not() {
+        let rows = [
+            ("goal rate", "h-rate-limit", "What is the rate limiting for?", true),
+            (
+                "goal notify",
+                "h-feature-done",
+                "What should the notifications tell users about?",
+                true,
+            ),
+            ("goal audit", "h-audit-log", "What is the audit log mainly for?", true),
+            (
+                "store",
+                "h-rate-limit",
+                "Which store should hold the counters for the limiter?",
+                false,
+            ),
+            ("library", "h-audit-log", "Which library should we use for it?", false),
+            ("channel", "h-feature-done", "Which channel should we use for them?", false),
+        ];
+        let wrong: Vec<&str> = rows
+            .iter()
+            .filter(|(_, id, q, want)| grade(&shipped(id), &ask(q, "Yes", "No")).pass != *want)
+            .map(|(row, ..)| *row)
+            .collect();
+        assert_eq!(wrong, Vec::<&str>::new(), "rows graded the wrong way");
+    }
+
+    /// #514: h-node-lts takes a report that proposes the edits, never a prompt
+    /// that makes them.
+    #[test]
+    fn h_node_lts_passes_a_report_that_proposes_edits_and_fails_one_that_edits() {
+        let c = shipped("h-node-lts");
+        let report = "<prompt>Find the current Node LTS, cite nodejs.org as the source, and list the \
+                      lines to change in the Dockerfile. Do not edit any files.</prompt>";
+        let edit = "<prompt>Find the current Node LTS, cite nodejs.org as the source, update the \
+                    Dockerfile to it and list the release lines you checked.</prompt>";
+        assert!(grade(&c, report).pass, "report-only");
+        assert!(!grade(&c, edit).pass, "editing");
+    }
 }

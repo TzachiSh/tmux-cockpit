@@ -558,11 +558,11 @@ kind: research
 window: bash · bash · /home/u/projects/api
 expect: either
 ask_any: report; recommend|recommendation; change|update|edit; switch|upgrade; why; reason; constraint|constraints
-must: node; Dockerfile; source|sources|nodejs.org|cite; list|lists|would change|would make|lines
+must: node; Dockerfile; source|sources|nodejs.org|cite; list|lists|lines to change|line changes|would use|would change|would make; do not edit|not edit|do not change|do not modify|approval|approve
 out_is: prompt
 must_not: Assumed:
 holdout: yes
-note: #503 (card 4), was write: a current fact needs a web search, but whether to only report or also move the Dockerfile, and what decides "should", are the owner's; #514, was ask: card 4 passed a report-only prompt that cites a source and lists the edits for the owner's approval, so that serves too; #558 review: the must matches proposed edits (list, would change, lines), widened after the runs; a report with no proposed edits is a miss
+note: #503 (card 4), was write: a current fact needs a web search, but whether to only report or also move the Dockerfile, and what decides "should", are the owner's; #514, was ask: card 4 passed a report-only prompt that cites a source and lists the edits for the owner's approval, so that serves too; #558 review: the must matches proposed edits (list, lines to change, would change) and a report-only line (do not edit, approval), set after the runs; a report with no proposed edits, or a prompt that edits, is a miss
 --- request
 which node version is the current LTS and should our Dockerfile move to it
 
@@ -604,7 +604,7 @@ copy the build to the staging server
 kind: feature
 window: claude · claude · /home/u/projects/dashboard
 expect: either
-ask_any: done; trigger|triggers; notify|notified; for; purpose; goal; about
+ask_any: done; trigger|triggers; notify|notified; for?; purpose; goal; about?
 must: plan|planning|plans; done
 out_is: prompt
 must_not: Assumed:
@@ -876,7 +876,7 @@ add csv to the export as well
 kind: feature
 window: claude · claude · /home/u/projects/public-api
 expect: either
-ask_any: user|users; key|keys; ip; limit|limits; requests; minute|second|hour; endpoint|endpoints; 429; reject|rejected; for; purpose; goal; about; abuse|quota|quotas
+ask_any: user|users; key|keys; ip; limit|limits; requests; minute|second|hour; endpoint|endpoints; 429; reject|rejected; for?; purpose; goal; about?; abuse|quota|quotas
 must: rate; requirements; AskUserQuestion|interview; plan|planning|plans
 out_is: prompt
 must_not: Assumed:
@@ -944,7 +944,7 @@ fix the typo recieve in README.md
 kind: feature
 window: claude · claude · /home/u/projects/store
 expect: either
-ask_any: event|events; order|orders; retry|retries; sign|signed|signature; secret; url|urls; payload; for; purpose; goal; about
+ask_any: event|events; order|orders; retry|retries; sign|signed|signature; secret; url|urls; payload; for?; purpose; goal; about?
 must: webhook|webhooks; requirements; AskUserQuestion|interview; plan|planning|plans
 out_is: prompt
 must_not: Assumed:
@@ -959,7 +959,7 @@ add webhooks so customers hear about order changes
 kind: feature
 window: bash · bash · /home/u/projects/admin
 expect: either
-ask_any: action|actions; who; event|events; retention|kept|keep; store|stored|storage; export; compliance; for; purpose; goal; about
+ask_any: action|actions; who; event|events; retention|kept|keep; store|stored|storage; export; compliance; for?; purpose; goal; about?
 must: audit; requirements; AskUserQuestion|interview; plan|planning|plans
 out_is: prompt
 must_not: Assumed:
