@@ -50,6 +50,33 @@ pub fn lookup_pid() -> Option<u32> {
     Some(CHILD.load(Ordering::Relaxed)).filter(|&c| c != 0)
 }
 
+/// Where a lookup is, for a test that has to act inside one of its windows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stage {
+    /// forked, and its pid not yet in `CHILD`
+    Spawned,
+    /// exited, `CHILD` cleared, and not yet reaped
+    Reaping,
+}
+
+/// A function run at each [`Stage`] with the child's pid.
+pub type StageHook = fn(Stage, u32);
+
+/// A test's hook. None in a board.
+static STAGE_HOOK: Mutex<Option<StageHook>> = Mutex::new(None);
+
+/// For a test: a function run at each [`Stage`] of every lookup, or none.
+pub fn set_stage_hook(hook: Option<StageHook>) {
+    *STAGE_HOOK.lock().unwrap_or_else(|e| e.into_inner()) = hook;
+}
+
+fn stage(at: Stage, pid: u32) {
+    let hook = *STAGE_HOOK.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(h) = hook {
+        h(at, pid);
+    }
+}
+
 /// Lookup threads started and not yet done, the cache write included.
 static LOOKUPS: AtomicUsize = AtomicUsize::new(0);
 
@@ -507,24 +534,72 @@ fn ask(gen_id: u64, path: &Path, asked: HashSet<String>) {
 fn claude_agents_json(deadline: Duration) -> Option<Vec<u8>> {
     use std::os::unix::process::CommandExt;
     use std::process::Stdio;
-    let mut child = Command::new("claude")
-        .args(["agents", "--json"])
+    let mut cmd = Command::new("claude");
+    cmd.args(["agents", "--json"])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         // its own group, so the kill takes anything it forked that holds stdout
-        .process_group(0)
-        .spawn()
-        .ok()?;
+        .process_group(0);
+    // From the fork to the store in CHILD a hang-up finds no child to kill (#607):
+    // a board that dies there takes the child along. The check after the prctl is
+    // for a board already gone by the time the child runs it.
+    #[cfg(target_os = "linux")]
+    {
+        let me = std::process::id();
+        // SAFETY: prctl, getppid and _exit are async-signal-safe.
+        unsafe {
+            cmd.pre_exec(move || {
+                libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
+                if libc::getppid() as u32 != me {
+                    libc::_exit(0);
+                }
+                Ok(())
+            });
+        }
+    }
+    let mut child = cmd.spawn().ok()?;
+    stage(Stage::Spawned, child.id());
     CHILD.store(child.id(), Ordering::Relaxed);
-    let out = lookup_output(&mut child, deadline);
+    lookup_output(&mut child, deadline)
+}
+
+/// Whether the child has exited, seen without reaping it: its pid stays ours.
+fn exited(child: &std::process::Child) -> bool {
+    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    let flags = libc::WEXITED | libc::WNOHANG | libc::WNOWAIT;
+    // SAFETY: waitid writes only into `info`.
+    let r = unsafe { libc::waitid(libc::P_PID, child.id() as libc::id_t, &mut info, flags) };
+    // Under WNOHANG a child with nothing to report leaves `info` zeroed: si_signo is 0
+    // (POSIX), and SIGCHLD once it has exited.
+    r != 0 || info.si_signo != 0
+}
+
+/// The end of a lookup: wait for the exit without reaping, clear `CHILD` while
+/// the pid is still ours, and only then reap. A `kill_lookup` that read `CHILD`
+/// just before hits an unreaped child at worst, never a reused pid (#607).
+fn finish(child: &mut std::process::Child, out: Option<Vec<u8>>) -> Option<Vec<u8>> {
+    let (pid, flags) = (child.id() as libc::id_t, libc::WEXITED | libc::WNOWAIT);
+    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    // SAFETY: waitid writes only into `info`.
+    while unsafe { libc::waitid(libc::P_PID, pid, &mut info, flags) } != 0 {
+        if std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
+            break;
+        }
+    }
     *RECENT.lock().unwrap_or_else(|e| e.into_inner()) = Some((child.id(), Instant::now()));
     CHILD.store(0, Ordering::Relaxed);
+    stage(Stage::Reaping, child.id());
+    let _ = child.wait();
     out
 }
 
 fn lookup_output(child: &mut std::process::Child, deadline: Duration) -> Option<Vec<u8>> {
-    let mut stdout = child.stdout.take()?;
+    let Some(mut stdout) = child.stdout.take() else {
+        // SAFETY: killpg takes a plain integer and touches no memory; not reaped yet.
+        unsafe { libc::killpg(child.id() as libc::pid_t, libc::SIGKILL) };
+        return finish(child, None);
+    };
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let mut b = Vec::new();
@@ -535,14 +610,13 @@ fn lookup_output(child: &mut std::process::Child, deadline: Duration) -> Option<
     let out = rx.recv_timeout(deadline).ok();
     // stdout closed is not exited: wait out what is left of the deadline
     while out.is_some() && Instant::now() < end {
-        if !matches!(child.try_wait(), Ok(None)) {
-            return out;
+        if exited(child) {
+            return finish(child, out);
         }
         std::thread::sleep(Duration::from_millis(10));
     }
     // Not reaped yet, so the pid and its group are still this child's.
     // SAFETY: killpg takes a plain integer and touches no memory.
     unsafe { libc::killpg(child.id() as libc::pid_t, libc::SIGKILL) };
-    let _ = child.wait();
-    out
+    finish(child, out)
 }

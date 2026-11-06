@@ -2,7 +2,8 @@
 //! Gates use files and polls, never a clock: the stub waits on a `go` file.
 mod fake;
 
-use cockpit_tui::data::agents::{Background, Entry, lookup_pid, lookups, read_file, set_background};
+use cockpit_tui::data::agents::{Background, Entry, Stage, lookup_pid, lookups, read_file};
+use cockpit_tui::data::agents::{set_background, set_stage_hook};
 use cockpit_tui::data::list_panes;
 use fake::write_exec;
 use std::os::unix::fs::MetadataExt;
@@ -767,6 +768,64 @@ fn hup_child() {
     unsafe { libc::raise(libc::SIGHUP) };
     std::thread::sleep(std::time::Duration::from_secs(5));
     std::process::exit(3);
+}
+
+/// The child half of the start-window test: the board is hung up on right after
+/// the fork, before the child's pid is in `CHILD`, so `kill_lookup` finds none.
+#[test]
+fn spawned_hup_child() {
+    if std::env::var_os("SPAWNED_HUP_CHILD").is_none() {
+        return;
+    }
+    fn hang_up(at: Stage, pid: u32) {
+        if at == Stage::Spawned {
+            let home = std::env::var("HOME").unwrap();
+            std::fs::write(Path::new(&home).join("spawnedpid"), pid.to_string()).unwrap();
+            // SAFETY: raises the signal the board's handler is installed for.
+            unsafe { libc::raise(libc::SIGHUP) };
+        }
+    }
+    let _board = Background::start();
+    let _push = cockpit_tui::push::Push::start();
+    set_stage_hook(Some(hang_up));
+    list_panes();
+    std::thread::sleep(std::time::Duration::from_secs(5));
+    std::process::exit(3);
+}
+
+/// #607: a hang-up between the fork and the store in `CHILD` still takes the child.
+#[test]
+fn a_hang_up_before_the_child_is_stored_still_takes_it() {
+    let r = Rig::new("spawned", "exec $HOME/bin/sleep 60");
+    let me = std::env::current_exe().unwrap();
+    let st = std::process::Command::new(me)
+        .args(["--exact", "spawned_hup_child", "--test-threads=1"])
+        .env("SPAWNED_HUP_CHILD", "1")
+        .stdout(std::process::Stdio::null())
+        .status()
+        .unwrap();
+    assert_eq!(st.code(), Some(0), "the handler's _exit(0), not the child's own exit");
+    let pid = std::fs::read_to_string(r.dir.join("spawnedpid")).unwrap();
+    wait_gone(pid.trim());
+}
+
+/// #607: the lookup's end clears `CHILD` before it reaps, so a `kill_lookup` can
+/// never name a pid the kernel may have handed on.
+#[test]
+fn the_end_clears_the_child_before_the_reap() {
+    static SEEN: std::sync::Mutex<Vec<(u32, Option<u32>)>> = std::sync::Mutex::new(Vec::new());
+    fn record(at: Stage, pid: u32) {
+        if at == Stage::Reaping {
+            SEEN.lock().unwrap().push((pid, lookup_pid()));
+        }
+    }
+    let r = Rig::with("reaping", ONE, false);
+    set_stage_hook(Some(record));
+    r.sess();
+    set_stage_hook(None);
+    let seen = SEEN.lock().unwrap().clone();
+    assert_eq!(seen.len(), 1, "one lookup: {seen:?}");
+    assert_eq!(seen[0].1, None, "CHILD at the reap of {}", seen[0].0);
 }
 
 /// SIGHUP (a `kill-pane`) and SIGTERM end the board with `_exit`: the lookup child goes too.
