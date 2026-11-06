@@ -837,7 +837,7 @@ mod tests {
         let image = serde_json::json!({"type": "image", "source": {"type": "base64", "data": "AA=="}});
         let meta = serde_json::json!({"type": "user", "isMeta": true, "message": {"content": "Caveat: generated"}});
         let res = serde_json::json!({"type": "tool_result", "tool_use_id": "t1", "content": "ok"});
-        let rows: [(&str, Value, Option<&str>); 21] = [
+        let rows: [(&str, Value, Option<&str>); 23] = [
             ("a string prompt", user("fix the build\nsecond line".into()), Some("fix the build")),
             (
                 "an image prompt",
@@ -883,7 +883,7 @@ mod tests {
                 Some("please fix this"),
             ),
             (
-                "typed words, then a paste",
+                "typed words, then a paste on its own line",
                 user("look:\n<pasted_content>x</pasted_content>".into()),
                 Some("look:"),
             ),
@@ -910,6 +910,21 @@ mod tests {
                     text("and now?")
                 ])),
                 Some("and now?"),
+            ),
+            (
+                "a harness row with a line-start paste inside it",
+                user(
+                    "<task-notification>\n<result>agent said\n<pasted_content>y</pasted_content>\ndone</result>\n</task-notification>"
+                        .into(),
+                ),
+                None,
+            ),
+            (
+                "a harness block with a line-start paste inside it",
+                user(serde_json::json!([text(
+                    "<bash-stdout>out\n<pasted_content>y</pasted_content>\n</bash-stdout>"
+                )])),
+                None,
             ),
             (
                 "a typed mention of the tag",
