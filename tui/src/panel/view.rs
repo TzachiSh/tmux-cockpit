@@ -852,6 +852,10 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
             } else {
                 b.footer = pills(&[("f", "follow up"), (g.key_updown, "scroll"), help, ("esc", "home")]);
             }
+            // an ask's answer can go to the agent as a draft (#365 child 5, flow A)
+            if matches!(r.flow, Flow::Ask(_)) {
+                b.footer.insert(0, ("c".to_string(), "compose".to_string()));
+            }
             if *armed && app.tablet {
                 // the esc chip becomes keep it in place, so a second tap on home keeps;
                 // n is a key Answer leaves unbound, and discard is up top, away from it
@@ -1107,17 +1111,24 @@ pub fn keys(app: &App, g: &Glyphs) -> Vec<(String, String)> {
             s("esc", "back to home"),
             quit,
         ],
-        View::Answer { .. } => vec![
-            s("i", "insert the prompt, no Enter"),
-            s("s", "send the prompt with Enter"),
-            s("f", "ask a follow-up"),
-            s("x", "copy the prompt, else the answer"),
-            s(&ud, "scroll"),
-            scroll,
-            help,
-            s("esc q", "twice: drop it, back to home"),
-            s("^C", "close the panel"),
-        ],
+        View::Answer { .. } => {
+            let mut v = vec![
+                s("i", "insert the prompt, no Enter"),
+                s("s", "send the prompt with Enter"),
+                s("f", "ask a follow-up"),
+                s("x", "copy the prompt, else the answer"),
+                s(&ud, "scroll"),
+                scroll,
+                help,
+                s("esc q", "twice: drop it, back to home"),
+                s("^C", "close the panel"),
+            ];
+            // an ask's answer can go to the agent as a draft (#365 child 5, flow A)
+            if app.run.as_ref().is_some_and(|r| matches!(r.flow, Flow::Ask(_))) {
+                v.insert(0, s("c", "a draft for the agent: its prompt, or the Q and A"));
+            }
+            v
+        }
         View::Confirm { back, .. } if app.basket_confirm() => vec![
             s("s", "send it, then Enter"),
             s(&format!("i y {ret}"), "insert it, no Enter"),

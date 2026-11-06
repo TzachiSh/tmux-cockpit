@@ -25,6 +25,10 @@ pub const OUT_CYCLE: [OutType; 7] = [
     OutType::Hint,
 ];
 pub const MAX_DRAFT: usize = 8000;
+/// An ask's `c` prefills at most this many characters, the `…` included, cut
+/// on whole graphemes (#365 child 5): a quarter of the draft, so the user has
+/// room to make it an instruction.
+pub const PREFILL_MAX: usize = 2000;
 /// Past this the Compose head counts the draft against MAX_DRAFT.
 pub const DRAFT_COUNT: usize = 6000;
 /// tmux 3.8 drops, silently, an OSC 52 whose base64 tops `input-buffer-size`
@@ -270,6 +274,9 @@ pub struct App {
     /// The basket as sent with the action, for cockpit-panel to clear once the
     /// paste lands (`<action>.basket`).
     pub sent_basket: Option<String>,
+    /// Where esc in Compose goes when an ask's `c` opened it (#365, owner's D3):
+    /// the answer, its thread kept. A write or a fix from there ends it.
+    compose_back: Option<View>,
     pub quit: bool,
     /// The step this run was resumed for, and its verb: the mark says what was done.
     pub last_step: Option<(usize, &'static str)>,
@@ -332,6 +339,7 @@ impl App {
             claude: false,
             basket_body: None,
             sent_basket: None,
+            compose_back: None,
             reopened: false,
             quit: false,
             last_step: None,
@@ -888,13 +896,57 @@ impl App {
 
     fn compose(&mut self, out: OutType) {
         self.out = out;
+        self.compose_back = None;
+        self.view = View::Compose;
+    }
+
+    /// The run is the viewer's ask (#365): its answer can become a draft.
+    fn asking(&self) -> bool {
+        self.run.as_ref().is_some_and(|r| matches!(r.flow, Flow::Ask(_)))
+    }
+
+    /// `c` on an ask's answer (#365 child 5, flow A): Compose with the answer's
+    /// `<prompt>`, or the owner's D8 template, cut to [`PREFILL_MAX`], and the
+    /// ask's lines in the basket, so the send carries them as a ref. Esc there
+    /// is back at the answer, the thread kept (D3).
+    fn prefill(&mut self, scroll: usize) {
+        let Some(r) = self.run.as_ref() else { return };
+        let Flow::Ask(a) = &r.flow else { return };
+        let text = match &r.ready {
+            Some(p) => p.clone(),
+            None => {
+                let q = r.log.iter().find(|(you, _)| *you).map_or("", |l| l.1.trim());
+                let last = r.log.iter().rfind(|(you, _)| !you).map_or("", |l| l.1.as_str());
+                let first = last.trim().split("\n\n").next().unwrap_or("").trim();
+                format!("About {}: {q}\n{first}", a.at)
+            }
+        };
+        let ask_ref = crate::refs::Ref::new(a.repo.join(&a.path), Some(a.asked), None);
+        (self.draft, self.cur) = (String::new(), 0);
+        // the model's text: no control, OSC or bidi character goes in the draft (review-510)
+        let bidi = crate::pick::is_bidi;
+        let plain = pasted(&strip_escapes(&text), true);
+        let clean: String = plain.chars().filter(|&c| !bidi(c)).collect();
+        let n = put(&mut self.draft, &mut self.cur, &cut_prefill(clean.trim_end()));
+        self.cap_note(n);
+        if let Ok(rf) = ask_ref
+            && !self.basket.contains(&rf)
+        {
+            self.basket.push(rf.clone());
+            if let Err(e) = crate::basket::add(&self.pane, rf) {
+                let why = format!("the ref is in this draft's basket, not the pane's: {e}");
+                self.say(Level::Warn, why);
+            }
+        }
+        self.out = OutType::Prompt;
+        self.compose_back = Some(View::Answer { scroll, armed: false });
         self.view = View::Compose;
     }
 
     fn compose_key(&mut self, k: KeyEvent, ctrl: bool) {
         self.note = None;
         match k.code {
-            KeyCode::Esc => self.view = View::Home { sel: 0 },
+            KeyCode::Esc => self.view = self.compose_back.take().unwrap_or(View::Home { sel: 0 }),
             KeyCode::Char('s') if ctrl => self.write(),
             KeyCode::F(2) => self.write(),
             KeyCode::Char('f') if ctrl => self.fix(),
@@ -1001,6 +1053,8 @@ impl App {
 
     fn write(&mut self) {
         if self.need_draft() {
+            // a write is a run of its own: the thread an ask's `c` kept ends here
+            self.compose_back = None;
             let flow = Flow::Write {
                 draft: self.draft.clone(),
                 out: self.out,
@@ -1011,6 +1065,7 @@ impl App {
 
     fn fix(&mut self) {
         if self.need_draft() {
+            self.compose_back = None;
             self.start(Flow::Fix { draft: self.draft.clone() }, vec![], vec![], 0, View::Compose);
         }
     }
@@ -1717,6 +1772,7 @@ impl App {
                     back,
                 };
             }
+            KeyCode::Char('c') if self.asking() => self.prefill(scroll),
             KeyCode::Char(c @ ('i' | 's')) => {
                 let Some(text) = ready else {
                     return self.say(Level::Info, "no prompt for the agent in this answer");
@@ -1909,3 +1965,57 @@ fn first_ask(r: &Run) -> bool {
 pub fn needs_y(text: &str, send: bool) -> bool {
     send && text.trim_end_matches('\n').contains('\n')
 }
+
+/// `text` cut to [`PREFILL_MAX`] characters, the `…` included, on whole
+/// graphemes only (an e and its accent, a family emoji's seven chars, stay
+/// together). It backs off to a space only within the last [`PREFILL_BACK`]
+/// graphemes: a text with none near the cap (CJK) is cut there (review-510).
+fn cut_prefill(text: &str) -> String {
+    if text.chars().count() <= PREFILL_MAX {
+        return text.to_string();
+    }
+    let (mut head, mut n): (Vec<&str>, usize) = (vec![], 0);
+    for g in text.graphemes(true) {
+        let c = g.chars().count();
+        if n + c > PREFILL_MAX - 1 {
+            break;
+        }
+        n += c;
+        head.push(g);
+    }
+    let space = head
+        .iter()
+        .rev()
+        .take(PREFILL_BACK)
+        .position(|x| x.chars().all(char::is_whitespace));
+    let keep = space.map_or(head.len(), |k| head.len() - 1 - k);
+    format!("{}…", head[..keep].concat().trim_end())
+}
+
+/// A terminal's escape sequences out whole, not only their ESC: a CSI
+/// (`ESC [` to its final byte) and an OSC (`ESC ]` to BEL or `ESC \`), and any
+/// other `ESC x` pair (review-510's NIT). What is left is text.
+fn strip_escapes(s: &str) -> String {
+    let (mut out, mut it) = (String::new(), s.chars().peekable());
+    while let Some(c) = it.next() {
+        if c != '\u{1b}' {
+            out.push(c);
+            continue;
+        }
+        match it.next() {
+            Some('[') => while it.next().is_some_and(|x| !('@'..='~').contains(&x)) {},
+            Some(']') => {
+                while let Some(x) = it.next() {
+                    if x == '\u{7}' || (x == '\u{1b}' && it.next_if_eq(&'\\').is_some()) {
+                        break;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// How far back [`cut_prefill`] looks for a space.
+const PREFILL_BACK: usize = 40;
