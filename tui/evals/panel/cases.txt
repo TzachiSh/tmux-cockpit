@@ -1348,9 +1348,9 @@ window: dev · bash · /home/u/web
 out: prompt
 expect: write
 must: src/config.ts:8; MAX_RETRIES
-must_not: @src/config.ts; #L8; baseline; subagent|subagents; AskUserQuestion
+must_not: @src/config.ts; #L8; subagent|subagents; AskUserQuestion
 holdout: yes
-note: a rename of one constant with a bare ref: no @, no baseline
+note: a rename of one constant with a bare ref: the ref stays bare, with no @ or #L; a baseline run is allowed, as the owner passed one on rename-fn
 --- refs
 src/config.ts:8
 --- request
