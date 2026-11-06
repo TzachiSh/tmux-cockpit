@@ -2194,25 +2194,27 @@ folder) to the clipboard by OSC 52, which tmux passes on only under
 note and `a add` is not on the footer.
 
 The basket is the pane option `@cockpit_basket`, so it goes with the pane: one
-`refs::render` line per ref, each an absolute path that `refs::parse` reads back, each ref once, at most 32 refs and
-12 KiB (tmux 3.8 takes one command of about 16 KB). A name the text cannot
-carry, a line break or a control character in it, is refused, and a file gone
-since it was added drops out when the basket is read. `tui/src/basket.rs` writes
-it through `data::tmux_set`, so `COCKPIT_READONLY` keeps it unchanged, and reads
-each write back. The value ends in a newline: tmux strips a trailing `;` off a
-command's last argument, and a file named `x;` would read back as `x`. A pane
-that is gone says so rather than read as an empty basket. Under `cargo test`,
-the repo root's `.cargo/config.toml` sets `COCKPIT_TEST_TMUX_GUARD`, and the
-basket then runs tmux only on a private `-L`/`-S` server or a stub, never the
-user's.
+`refs::render` line per ref, each an absolute path that `refs::parse` reads
+back, each ref once, at most 32 refs and 12 KiB (tmux 3.8 takes one command of
+about 16 KB). A name the text cannot carry, a line break or a control character
+in it, is refused, and a file gone since it was added drops out when the basket
+is read. `tui/src/basket.rs` writes it through `data::tmux_set`, so
+`COCKPIT_READONLY` keeps it unchanged, and reads each write back. The value ends
+in a newline: tmux strips a trailing `;` off a command's last argument, and a
+file named `x;` would read back as `x`. A pane that is gone says so rather than
+read as an empty basket. In any debug build, and so under `cargo test` from any
+directory, the basket runs tmux only on a private `-L`/`-S` server or a stub,
+never the user's; the repo root's `.cargo/config.toml` sets
+`COCKPIT_TEST_TMUX_GUARD` for a release test run too, and
+`COCKPIT_TEST_TMUX_GUARD=0` lifts it by hand.
 
 The file browser's `alt-a` prints `add <path>` for a file (a folder is a note).
 `tmux-open-path` takes it only as it takes `view`: one line, an absolute path to
 an existing regular file, and no control character in it. It then runs
 `cockpit-tui basket add <pane> <file>` with its own pane, only one that reads
 `%N`, and shows the line that prints (`added sub/n.txt (1 in the basket)`). The
-basket's contents are never logged. The panel's side (showing the basket, removing from it, sending
-it) is the next PR.
+basket's contents are never logged. The panel's side (showing the basket,
+removing from it, sending it) is the next PR.
 
 ## `cockpit-tui branch` (#246)
 

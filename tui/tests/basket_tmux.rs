@@ -94,15 +94,27 @@ fn the_basket_round_trips_through_a_pane_option() {
         std::fs::write(&g, "one\ntwo\n").unwrap();
         let mut v = Screen::new("g.rs", Ok("one\ntwo\n".into()), Opts::default());
         v.can_add = true;
-        assert_eq!(mdview::act(&mut v, Out::Add(Some((2, 2))), &g, Some(&pane)), None, "it stays");
+        // review-534: a copier that records, never OSC 52 on the test's own stdout,
+        // which reaches the tmux the suite runs under
+        let sent = std::cell::RefCell::new(vec![]);
+        let copy = |t: &str| -> std::io::Result<()> {
+            sent.borrow_mut().push(t.to_string());
+            Ok(())
+        };
+        assert_eq!(
+            mdview::act(&mut v, Out::Add(Some((2, 2))), &g, Some(&pane), &copy),
+            None,
+            "it stays"
+        );
         let note = v.note.clone().unwrap_or_default();
         assert_eq!(note, "added g.rs:2 (4 in the basket)", "{note}");
         let two = Ref::new(&g, Some((2, 2)), None).unwrap();
         assert!(basket::read(&pane).unwrap().contains(&two));
-        assert_eq!(mdview::act(&mut v, Out::Copy(None), &g, Some(&pane)), None);
+        assert_eq!(mdview::act(&mut v, Out::Copy(None), &g, Some(&pane), &copy), None);
+        assert_eq!(*sent.borrow(), ["g.rs"], "y hands the ref to the copier");
         let note = v.note.clone().unwrap_or_default();
         assert!(note.starts_with("sent g.rs") && note.contains("set-clipboard on"), "{note}");
-        assert_eq!(mdview::act(&mut v, Out::Close, &g, Some(&pane)), Some(Out::Close));
+        assert_eq!(mdview::act(&mut v, Out::Close, &g, Some(&pane), &copy), Some(Out::Close));
     }
 
     basket::write(&pane, &[]).unwrap();

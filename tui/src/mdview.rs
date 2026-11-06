@@ -18,6 +18,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use render::{Ink, Kind, Opts, Row};
 use std::io::Read;
+use std::path::Path;
 
 /// The largest file shown. A markdown file past it is not documentation, and
 /// its rows would cost a few hundred bytes each in memory.
@@ -951,7 +952,7 @@ pub fn main(args: &[String]) -> i32 {
     // the pane whose basket `a` adds to, named by the launcher (#365 child 5)
     let pane = std::env::var("COCKPIT_BASKET_PANE").ok().filter(|p| crate::panel::is_pane(p));
     s.can_add = pane.is_some();
-    let side = |s: &mut Screen, o: Out| act(s, o, path, pane.as_deref());
+    let side = |s: &mut Screen, o: Out| act(s, o, path, pane.as_deref(), &crate::backend::copy);
     if let Some(n) = line {
         s = s.at_line(n);
     }
@@ -991,10 +992,14 @@ pub fn main(args: &[String]) -> i32 {
     0
 }
 
+/// What `y` copies with: OSC 52 to the terminal in the viewer, a recorder in a
+/// test, as an escape on a test's stdout reaches the tmux it runs under.
+pub type Copier<'a> = &'a dyn Fn(&str) -> std::io::Result<()>;
+
 /// The run loop's half of a key: `a` adds to the basket of `pane` and `y`
-/// copies, each leaving a note, and the viewer stays (`None`); any other way
-/// out is handed back.
-pub fn act(s: &mut Screen, o: Out, path: &std::path::Path, pane: Option<&str>) -> Option<Out> {
+/// copies with `copy`, each leaving a note, and the viewer stays (`None`); any
+/// other way out is handed back.
+pub fn act(s: &mut Screen, o: Out, path: &Path, pane: Option<&str>, copy: Copier) -> Option<Out> {
     match o {
         Out::Stay => None,
         Out::Add(l) => {
@@ -1002,7 +1007,7 @@ pub fn act(s: &mut Screen, o: Out, path: &std::path::Path, pane: Option<&str>) -
             None
         }
         Out::Copy(l) => {
-            s.note = Some(copy_note(path, l, pane));
+            s.note = Some(copy_note(path, l, pane, copy));
             None
         }
         o => Some(o),
@@ -1013,7 +1018,7 @@ pub fn act(s: &mut Screen, o: Out, path: &std::path::Path, pane: Option<&str>) -
 type Lines = Option<(usize, usize)>;
 
 /// The ref `a` and `y` act on: these lines of `path`, or the whole file.
-fn ref_of(path: &std::path::Path, lines: Lines) -> Result<crate::refs::Ref, String> {
+fn ref_of(path: &Path, lines: Lines) -> Result<crate::refs::Ref, String> {
     let n = |x: usize| u32::try_from(x).map_err(|_| "a line past the counter".to_string());
     let lines = match lines {
         Some((a, b)) => Some((n(a)?, n(b)?)),
@@ -1023,7 +1028,7 @@ fn ref_of(path: &std::path::Path, lines: Lines) -> Result<crate::refs::Ref, Stri
 }
 
 /// `a`: add to the pane's basket, and the note that says how it went.
-fn add_note(path: &std::path::Path, lines: Lines, pane: Option<&str>) -> String {
+fn add_note(path: &Path, lines: Lines, pane: Option<&str>) -> String {
     let Some(pane) = pane else { return "no pane to add for".into() };
     let r = match ref_of(path, lines) {
         Ok(r) => r,
@@ -1038,12 +1043,12 @@ fn add_note(path: &std::path::Path, lines: Lines, pane: Option<&str>) -> String 
 }
 
 /// `y`: the ref's text to the clipboard, and the note.
-fn copy_note(path: &std::path::Path, lines: Lines, pane: Option<&str>) -> String {
+fn copy_note(path: &Path, lines: Lines, pane: Option<&str>, copy: Copier) -> String {
     let text = match ref_of(path, lines) {
         Ok(r) => crate::basket::shown(pane, &r),
         Err(e) => return e,
     };
-    match crate::backend::copy(&text) {
+    match copy(&text) {
         // tmux passes OSC 52 on only under set-clipboard on, and says nothing either way
         Ok(()) => format!("sent {text} to the clipboard (needs tmux set-clipboard on)"),
         Err(e) => format!("could not copy: {e}"),

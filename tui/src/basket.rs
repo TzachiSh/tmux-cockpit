@@ -70,11 +70,22 @@ fn check(pane: &str) -> Result<(), String> {
     }
 }
 
-/// Under `cargo test` (`tui/.cargo/config.toml` sets `COCKPIT_TEST_TMUX_GUARD`)
-/// the basket runs tmux only on a private server (`-L`, `-S`) or a stub, never
-/// the user's: a test that slips past its own setup refuses instead of writing.
+/// Under test the basket runs tmux only on a private server (`-L`, `-S`) or a
+/// stub, never the user's: a test that slips past its own setup refuses
+/// instead of writing. On in any debug build, so whatever cwd `cargo test` runs
+/// from (cargo reads `.cargo/config.toml` from the cwd up: review-510), and
+/// wherever `COCKPIT_TEST_TMUX_GUARD` is set (the repo root's config sets it,
+/// for a release test run); `COCKPIT_TEST_TMUX_GUARD=0` lifts it by hand.
+fn guarded() -> bool {
+    match std::env::var("COCKPIT_TEST_TMUX_GUARD").as_deref() {
+        Ok("0") => false,
+        Ok(_) => true,
+        Err(_) => cfg!(debug_assertions),
+    }
+}
+
 fn guard() -> Result<(), String> {
-    if std::env::var_os("COCKPIT_TEST_TMUX_GUARD").is_none() {
+    if !guarded() {
         return Ok(());
     }
     let argv = crate::data::tmux_argv();

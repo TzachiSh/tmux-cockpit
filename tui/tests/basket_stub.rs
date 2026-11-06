@@ -55,10 +55,9 @@ fn the_basket_never_reaches_a_tmux_it_was_not_given() {
     fake::write_exec(&bin.join("tmux"), &body);
     let before = n();
     unsafe { std::env::set_var("COCKPIT_TMUX", bin.join("tmux").display().to_string()) };
-    assert!(
-        std::env::var_os("COCKPIT_TEST_TMUX_GUARD").is_some(),
-        "tui/.cargo/config.toml sets it"
-    );
+    // on in a debug build whatever the cwd (review-510: cargo reads .cargo from the
+    // cwd up, so a run from outside the repo had no guard); only an explicit 0 lifts it
+    assert_ne!(std::env::var("COCKPIT_TEST_TMUX_GUARD").as_deref(), Ok("0"));
     let why = basket::read("%1").unwrap_err();
     assert!(why.contains("COCKPIT_TEST_TMUX_GUARD"), "{why}");
     assert_eq!(n(), before, "the guard ran tmux");
