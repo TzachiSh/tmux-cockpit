@@ -27,6 +27,10 @@ fn a_folder_or_a_missing_file_is_refused_before_tmux() {
 
 #[test]
 fn a_bad_pane_is_refused() {
-    let (code, line) = cli(&["add", "x", "/etc/hostname"]);
+    // a file of its own, not /etc/hostname, which macOS does not have (review-510)
+    let f = std::env::temp_dir().join(format!("cockpit-basket-cli-{}.rs", std::process::id()));
+    std::fs::write(&f, "x\n").unwrap();
+    let (code, line) = cli(&["add", "x", &f.display().to_string()]);
+    let _ = std::fs::remove_file(&f);
     assert_eq!((code, line.contains("pane")), (1, true), "{line}");
 }
