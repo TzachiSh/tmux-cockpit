@@ -2209,10 +2209,15 @@ that names that file back (a linked tree). A `.git` that is a symlink or hard li
 one of these counts, as it does for git, so a directory need not be a real checkout to
 pass. Another repository's checkout, or a directory with no `.git`, is no worktree. The
 board also wants the branch to be the one that tree's `HEAD` names, so a forged line
-pairing a real tree with another branch gives that branch no `⑂`. A path that is gone
-is kept, since it has no `HEAD` to read: its branch shows `⑂`, `↵` says it is gone and
-suggests `git worktree prune`, and for a line a crafted name forged, prune removes
-nothing, because the tree that printed it still exists. The preview is
+pairing a real tree with another branch gives that branch no `⑂`. A `HEAD` that is a
+symlink to `refs/heads/<branch>` (written under `core.preferSymlinkRefs`) names that
+branch too. A path that is gone is kept only when some `worktrees/*/gitdir` in the
+common dir names `<path>/.git`, the test git uses to call a tree prunable: its branch
+shows `⑂`, and `↵` says it is gone and suggests `git worktree prune`. A forged line
+naming a missing path names no such entry, so it is no worktree. When the main
+checkout's `.git` is a file (`git init --separate-git-dir`, or a submodule), git lists
+the git dir as the main checkout's path, on any version. That dir is no tree, so its
+branch gets no `⑂`, and `↵` reaches `git switch`, which refuses it. The preview is
 `git log --graph --oneline -30` of the selection, read on a worker thread and cached
 per branch; it shows `loading…` until it arrives, and below 60 columns it is hidden.
 
