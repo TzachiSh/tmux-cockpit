@@ -9973,6 +9973,25 @@ av_gone() {                   # av_gone <pid>: dead; no pid, or no /proc entry t
     st=${st##*) }; [ "${st:0:1}" = Z ]
 }
 
+av_kill() {                   # av_kill <pid>: SIGKILL a poller of ours, and the sleep it waits in
+    # A red row's poller was SIGKILLed alone, and its `sleep 3600` lived on (#613). It is our own
+    # unreaped job, so its pid is still its own. It is stopped first, so it starts no child while
+    # they are read, and each child is killed only if it is still the process that was read:
+    # the same pid with the same start time (AGENTS.md: never signal an unverified pid).
+    local k kids=""
+    kill -STOP "$1" 2>/dev/null
+    for k in $(pgrep -P "$1" 2>/dev/null); do
+        kids="$kids $k:$(awk '{sub(/.*\) /, ""); print $20}' "/proc/$k/stat" 2>/dev/null)"
+    done
+    kill -9 "$1" 2>/dev/null
+    for k in $kids; do
+        [ "${k#*:}" != "" ] || continue
+        [ "$(awk '{sub(/.*\) /, ""); print $20}' "/proc/${k%%:*}/stat" 2>/dev/null)" = "${k#*:}" ] \
+            && kill -9 "${k%%:*}" 2>/dev/null
+    done
+    return 0
+}
+
 echo "== agent-view: a background worker's hooks touch nothing (#174) =="
 av_setup
 # A hook in an agent-view background worker (CLAUDE_CODE_SESSION_KIND=bg) has no TMUX_PANE and
@@ -10404,31 +10423,31 @@ is "a poller publishes its own pid" "$AVA" "$(av_pub)"
 av_wait '[ "$(avo @panestate)" = done ]'
 is "...and its first tick has already written" "done" "$(avo @panestate)"
 av_start; AVB=$AVPID
-av_wait "av_gone \$AVB" || kill -9 "$AVB"; wait "$AVB" 2>/dev/null
+av_wait "av_gone \$AVB" || av_kill "$AVB"; wait "$AVB" 2>/dev/null
 is "a second poller finds the slot taken and exits" "$AVA" "$(av_pub)"
 is "...without unpublishing the first one's pid on its way out" "yes" \
    "$(kill -0 "$AVA" 2>/dev/null && echo yes || echo no)"
 # The slot is released only if it is still ours: a poller whose slot was taken over lets go
 # of nothing (the number written here stands for the later poller's).
 av_tm set-option -g @cockpit_poll_pid 999999
-kill -TERM "$AVA"; av_wait "av_gone \$AVA" || kill -9 "$AVA"; wait "$AVA" 2>/dev/null
+kill -TERM "$AVA"; av_wait "av_gone \$AVA" || av_kill "$AVA"; wait "$AVA" 2>/dev/null
 is "a poller whose slot was taken over does not release the new owner's pid" "999999" "$(av_pub)"
 av_tm set-option -gu @cockpit_poll_pid
 av_start; AVA=$AVPID
 av_wait '[ "$(av_pub)" = "$AVA" ]'
 # (The poller no longer leaves when no marked pane is an agent: see the #448 blocks below.)
-kill -TERM "$AVA"; av_wait "av_gone \$AVA" || kill -9 "$AVA"; wait "$AVA" 2>/dev/null
+kill -TERM "$AVA"; av_wait "av_gone \$AVA" || av_kill "$AVA"; wait "$AVA" 2>/dev/null
 av_start; AVC=$AVPID
 av_wait '[ "$(av_pub)" = "$AVC" ]'
-kill -TERM "$AVC"; av_wait "av_gone \$AVC" || kill -9 "$AVC"; wait "$AVC" 2>/dev/null
+kill -TERM "$AVC"; av_wait "av_gone \$AVC" || av_kill "$AVC"; wait "$AVC" 2>/dev/null
 is "SIGTERM unpublishes" "" "$(av_pub)"
 av_start; AVC=$AVPID
 av_wait '[ "$(av_pub)" = "$AVC" ]'
-kill -HUP "$AVC"; av_wait "av_gone \$AVC" || kill -9 "$AVC"; wait "$AVC" 2>/dev/null
+kill -HUP "$AVC"; av_wait "av_gone \$AVC" || av_kill "$AVC"; wait "$AVC" 2>/dev/null
 is "SIGHUP unpublishes" "" "$(av_pub)"
 av_tm set-option -g @cockpit_bg_poll off
 av_start; AVC=$AVPID
-av_wait "av_gone \$AVC" || kill -9 "$AVC"; wait "$AVC" 2>/dev/null
+av_wait "av_gone \$AVC" || av_kill "$AVC"; wait "$AVC" 2>/dev/null
 is "@cockpit_bg_poll off: the poller never publishes" "" "$(av_pub)"
 av_tm kill-server >/dev/null 2>&1
 fi
@@ -10503,7 +10522,7 @@ av_startx() {                 # av_startx [NAME=value...]: a poller of our own; 
 av_pub() { av_tm show-option -gqv @cockpit_poll_pid; }
 av_reap() {                   # av_reap <pid>: 0 if it left by itself; else kills it and returns 1
     local rc=0
-    av_wait "av_gone $1" || { rc=1; kill -9 "$1" 2>/dev/null; }
+    av_wait "av_gone $1" || { rc=1; av_kill "$1" 2>/dev/null; }
     wait "$1" 2>/dev/null
     return $rc
 }
@@ -10718,7 +10737,7 @@ is "...and binds the tick the other one is gone" "dd|twin|running|" "$(avj "$AVV
 # A read nobody waits on that fails is tried once per change of the panes, not every tick.
 av_tm select-pane -t "$AVV" -T "nothing"
 av_wait '[ "$(avj "$AVV")" = "|||" ]'
-kill -TERM "$AVTP"; av_wait "av_gone $AVTP" || kill -9 "$AVTP"; wait "$AVTP" 2>/dev/null
+kill -TERM "$AVTP"; av_wait "av_gone $AVTP" || av_kill "$AVTP"; wait "$AVTP" 2>/dev/null
 : > "$AVTRACE"; : > "$AVCLOG"
 env -u TMUX_PANE TMUX="$AVT" PATH="$AVBIN:$PATH" AV_JSON="$AVLIVE" AV_CLAUDELOG="$AVCLOG" \
     AV_RC=1 bash -x "$DIR/scripts/agent-poll" </dev/null >/dev/null 2>"$AVTRACE" &
@@ -10734,7 +10753,7 @@ is "...and says nothing: no marked pane was waiting" "" \
 # The server going takes the poller with it.
 av_tm kill-server >/dev/null 2>&1
 av_wait "av_gone $AVTP" && AVLEFT=yes || AVLEFT=no
-av_gone "$AVTP" || kill -9 "$AVTP" 2>/dev/null
+av_gone "$AVTP" || av_kill "$AVTP" 2>/dev/null
 wait "$AVTP" 2>/dev/null
 is "the poller leaves when its server does" "yes" "$AVLEFT"
 fi
