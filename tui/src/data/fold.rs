@@ -453,15 +453,16 @@ mod tests {
     }
 
     /// A shorter file at the same inode is a rewrite, not an append: here one cut
-    /// inside the partial row, so the byte before it is still a newline.
+    /// inside the partial row, the `PRINT` bytes before the offset (a 2 KB result)
+    /// as they were.
     #[test]
     fn delta_starts_over_when_the_file_shrinks() {
         let (_d, p) = tmp("shrink");
-        let r = done(2);
-        add(&p, &(prompt(0, "/w/a") + &tool(1, "Bash") + &r[..r.len() / 2]));
+        let (r, pad) = (done(3), result(2, "u1", 2));
+        add(&p, &(prompt(0, "/w/a") + &tool(1, "Bash") + &pad + &r[..r.len() / 2]));
         same(&p, "before");
         std::fs::OpenOptions::new().write(true).open(&p).unwrap().set_len(0).unwrap();
-        add(&p, &(prompt(0, "/w/b") + &tool(1, "Read") + &r[..r.len() / 4]));
+        add(&p, &(prompt(0, "/w/b") + &tool(1, "Read") + &pad + &r[..r.len() / 4]));
         same(&p, "rewritten shorter");
     }
 
@@ -476,15 +477,17 @@ mod tests {
         same(&p, "rewritten shorter");
     }
 
-    /// Another file renamed over the path, longer and with its newlines where the
-    /// old one had them: only the inode says it is another file.
+    /// Another file renamed over the path, longer, its newlines and the `PRINT`
+    /// bytes before the offset (a 2 KB result) where the old one had them: only the
+    /// inode says it is another file.
     #[test]
     fn delta_starts_over_on_a_new_inode() {
         let (_d, p) = tmp("inode");
-        add(&p, &(prompt(0, "/w/a") + &tool(1, "Bash")));
+        let pad = result(2, "u1", 2);
+        add(&p, &(prompt(0, "/w/a") + &tool(1, "Bash") + &pad));
         same(&p, "before");
         let next = format!("{p}.new");
-        let body = prompt(0, "/w/b") + &tool(1, "Read") + &done(2);
+        let body = prompt(0, "/w/b") + &tool(1, "Read") + &pad + &done(3);
         std::fs::write(&next, &body).unwrap();
         std::fs::rename(&next, &p).unwrap();
         same(&p, "replaced");
@@ -504,14 +507,16 @@ mod tests {
         }
     }
 
-    /// The same length with a new mtime is a rewrite in place.
+    /// The same length with a new mtime is a rewrite in place, the `PRINT` bytes
+    /// before the offset (a 2 KB result) as they were.
     #[test]
     fn delta_starts_over_when_rewritten_at_the_same_length() {
         let (_d, p) = tmp("same-len");
-        add(&p, &(prompt(0, "/w/a") + &tool(1, "Bash")));
+        let pad = result(2, "u1", 2);
+        add(&p, &(prompt(0, "/w/a") + &tool(1, "Bash") + &pad));
         same(&p, "before");
         let f = std::fs::OpenOptions::new().write(true).open(&p).unwrap();
-        let body = prompt(0, "/w/b") + &tool(1, "Read");
+        let body = prompt(0, "/w/b") + &tool(1, "Read") + &pad;
         (&f).write_all(body.as_bytes()).unwrap();
         f.set_modified(SystemTime::UNIX_EPOCH).unwrap();
         same(&p, "rewritten");
