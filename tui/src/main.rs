@@ -84,7 +84,8 @@ fn panel(args: &[String]) {
     // cockpit-panel says when an ask opens with a panel already hidden on the pane
     a.hide_taken = std::env::var_os("COCKPIT_PANEL_HIDE_TAKEN").is_some_and(|v| v == "1");
     // the pane's prompt basket (#365 child 5): a send from Compose carries its refs
-    a.basket = cockpit_tui::basket::read(pane).unwrap_or_default();
+    a.basket_raw = cockpit_tui::basket::read_text(pane).unwrap_or_default();
+    a.basket = cockpit_tui::basket::from_body(&a.basket_raw);
     a.claude = !a.basket.is_empty() && cockpit_tui::basket::is_claude(pane);
     // the viewer's `?` (#365): the lines are read here, as the viewer showed them
     if let cockpit_tui::panel::Start::Ask(f, l1, l2) = &start {

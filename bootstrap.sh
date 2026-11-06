@@ -56,8 +56,7 @@ sha_c() { if have sha256sum; then sha256sum -c -; else shasum -a 256 -c -; fi; }
 . "$DIR/scripts/lib/vnum.sh" || exit 1
 ver_ge() {  # ver_ge <have> <maj> <min>
     local v=${1#tmux }; v=${v#v}                      # v1.13.0-abc1234-date: x.y.z leads
-    case "$v" in [0-9]*) ;; *) return 0 ;; esac       # unparseable: assume modern
-    [ "$(vnum "$v")" -ge "$(vnum "$2.$3")" ]
+    vnum_ge "$v" "$2.$3"                              # next-3.9 is 3.9; no number: modern
 }
 
 # ---------------------------------------------------------------- packages ---

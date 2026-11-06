@@ -2,7 +2,6 @@
 //! submodule), git prints the git dir as the main record's path. That dir is no
 //! tree to open, so the record is dropped, with `-z` as without it.
 mod fake;
-#[allow(dead_code)] // no shim: these run on the installed git, which takes -z
 mod oldgit;
 use cockpit_tui::data::branches;
 

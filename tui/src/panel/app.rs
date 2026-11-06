@@ -262,6 +262,10 @@ pub struct App {
     /// The pane's prompt basket (#365 child 5), read at open: the refs a send
     /// from Compose carries, expanded after the draft.
     pub basket: Vec<crate::refs::Ref>,
+    /// The basket's option text as last read or written: what a send leaves in
+    /// `.basket`, so the clear matches even when a gone file's ref was dropped
+    /// on read (review-534); empty when the App holds no basket of the pane's.
+    pub basket_raw: String,
     /// The pane runs Claude Code (`basket::is_claude`): refs go as `@path#La-b`.
     pub claude: bool,
     /// The basket as the confirm on screen would send it, until it acts.
@@ -330,6 +334,7 @@ impl App {
             hide: false,
             hide_taken: false,
             basket: vec![],
+            basket_raw: String::new(),
             claude: false,
             basket_body: None,
             sent_basket: None,
@@ -827,13 +832,24 @@ impl App {
         }
     }
 
+    /// The confirm on screen is a basket send's, which `s` sends and `i`, `y`
+    /// or Enter insert (#365, owner's D2).
+    pub fn basket_confirm(&self) -> bool {
+        self.basket_body.is_some() && matches!(self.view, View::Confirm { .. })
+    }
+
     /// ^T with refs in the basket (#365 child 5): the draft and its refs as the
     /// pane's agent reads them (owner's D4), always through a confirm that shows
     /// that exact text, even into a program that brackets its paste.
     fn send_basket(&mut self) {
         let base = std::path::Path::new(&self.cap.path);
         let text = crate::basket::expand(&self.draft, &self.basket, base, self.claude);
-        match (text, crate::basket::body(&self.basket)) {
+        // the option's text, a gone ref's line included, else the refs held
+        let body = match self.basket_raw.is_empty() {
+            true => crate::basket::body(&self.basket),
+            false => Ok(self.basket_raw.clone()),
+        };
+        match (text, body) {
             (Ok(text), Ok(body)) => {
                 self.basket_body = Some(body);
                 self.confirm(text, false, View::Compose);
@@ -868,6 +884,7 @@ impl App {
         };
         match crate::basket::write(&self.pane, &keep) {
             Ok(()) => {
+                self.basket_raw = crate::basket::body(&keep).unwrap_or_default();
                 self.basket = keep;
                 let sel = sel.min(self.basket.len().saturating_sub(1));
                 self.view = View::Basket { sel };

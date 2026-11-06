@@ -183,3 +183,52 @@ fn b_is_offered_only_with_refs() {
     a.basket.clear();
     assert!(!has_b(&a) && !frame(&a, 120, 20).contains("^B"));
 }
+
+// ------------------------------------- review-534 on #570: D2's s is on screen
+
+/// The basket's confirm says what Enter does, and offers s and i on its footer.
+#[test]
+fn the_basket_confirm_offers_s_and_i_and_says_what_enter_does() {
+    let (_d, mut a) = compose("offer", true);
+    ctrl(&mut a, 't');
+    let f = frame(&a, 120, 20);
+    assert!(f.contains("inserts it, no Enter") && f.contains("s sends it with Enter"), "{f}");
+    // the footer row itself, not the prompt line above it
+    let foot = f.lines().rev().find(|l| l.contains("cancel")).unwrap_or("");
+    assert!(foot.contains("s send") && foot.contains("insert"), "{foot}");
+    let g = Theme::fixed().g;
+    let keys = cockpit_tui::panel::view::keys(&a, &g);
+    for k in ["s", "i"] {
+        assert!(keys.iter().any(|(key, _)| key.split(' ').any(|w| w == k)), "F1 lacks {k}: {keys:?}");
+    }
+}
+
+/// On a tablet the send is a button too, and a tap on it sends.
+#[test]
+fn a_tablet_can_tap_send() {
+    let (_d, mut a) = compose("tablet", true);
+    a.tablet = true;
+    ctrl(&mut a, 't');
+    let mut t = Terminal::new(TestBackend::new(80, 20)).unwrap();
+    let mut hits = vec![];
+    t.draw(|f| hits = render(f, f.area(), &a, &Theme::fixed(), 0).2).unwrap();
+    let s = KeyEvent::from(KeyCode::Char('s'));
+    assert!(hits.iter().any(|h| h.tap == cockpit_tui::panel::app::Tap::Key(s)), "no send button");
+    a.key(s);
+    assert_eq!(a.action.as_ref().map(|x| x.verb), Some("send"));
+}
+
+/// review-534: the option can hold a ref whose file is gone, which the read
+/// drops; `.basket` is the option's text as read, so the clear still matches
+/// and a gone ref cannot pin the basket forever.
+#[test]
+fn a_gone_ref_does_not_pin_the_basket() {
+    let (d, mut a) = compose("gone", true);
+    let raw = format!("{}/a.rs:1-2\n{}/gone.rs", d.0.display(), d.0.display());
+    a.basket = cockpit_tui::basket::from_body(&raw);
+    a.basket_raw = raw.clone();
+    assert_eq!(a.basket.len(), 1, "the gone ref is dropped on read");
+    ctrl(&mut a, 't');
+    key(&mut a, KeyCode::Char('s'));
+    assert_eq!(a.sent_basket.as_deref(), Some(raw.as_str()));
+}

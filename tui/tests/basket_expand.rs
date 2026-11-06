@@ -53,6 +53,8 @@ fn each_form_for_claude_and_for_another_agent() {
             "my dir/a b.rs:1-2",
         ),
         ("a quote", r(&d.file("q\"x.rs"), Some((3, 4))), "q\"x.rs:3-4", "q\"x.rs:3-4"),
+        // a `#` could read as the range's start: bare, never a mention (review-534)
+        ("a hash", r(&d.file("a#b.rs"), Some((1, 2))), "a#b.rs:1-2", "a#b.rs:1-2"),
     ];
     for (row, x, claude, other) in rows {
         assert_eq!(basket::ref_line(&x, &d.0, true), claude, "claude, {row}");
