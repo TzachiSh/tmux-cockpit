@@ -1957,7 +1957,7 @@ workspace, no crate split.
 | `info` | the pane info screen (`cockpit-tui info %N`, the board's `i` overlay) and `data::info`, its facts: git root, review base, the transcript rows |
 | `mdview` | the `cockpit-tui view` viewer (#283, #365): loading with its cap, the find, the keys and its screen on `pick`'s /dev/tty; `mdview::render` lays markdown out as rows, `mdview::code` any other text file as numbered highlighted rows, both pure |
 | `pick` | the `cockpit-tui pick` list: row parsing, the case-insensitive filter, selection, click and wheel, and its screen; draws on /dev/tty |
-| `files` | the `cockpit-tui files <dir>` browser (#363) on `pick`'s list and screen: one folder, folders first, `↵` in or view, `alt-e` edit, `←` up, `.` hidden, `alt-i` ignored, `alt-c` copy; prints `view <path>`, `open <path>` or `copy <path>` |
+| `files` | the `cockpit-tui files <dir>` browser (#363) on `pick`'s list and screen: one folder, folders first, `↵` in or view, `alt-e` edit, `←` up, `.` hidden, `alt-i` ignored, `alt-c` copy, `alt-a` add; prints `view <path>`, `open <path>`, `copy <path>` or `add <path>` |
 | `sessions` | the `cockpit-tui sessions` view (#245) on `pick`'s screen; `data::sessions` the one `list-panes -a` read, the order and the freeze |
 | `panel` | the type-panel port: capture, redaction, prompt envelope, the `claude -p` request, reply parsing; `panel::action` the action, text, cmd and state files |
 | `highlight` | the code lexer (#282) and `split`, the one fence rule the panel's view and its reply parsing share (#283) |
@@ -2192,6 +2192,40 @@ closes, the viewer opens again at line `a`. See
 from the first line to the drag's end. Under the floor card or the help a tap
 does nothing, and `?` on an empty file, or one the viewer refused, is a note.
 
+### The prompt basket (#365 child 5)
+
+`a` adds the selection's lines, or the whole file when there is none, to the
+prompt basket of the pane the file came from, and the viewer stays: its note
+says `added src/x.rs:40-72 (3 in the basket)`, or that the ref was there
+already. `y` sends the reference itself (`src/x.rs:40-72`, from the pane's
+folder) to the clipboard by OSC 52, which tmux passes on only under
+`set-clipboard on`, so the note says so. `tmux-open-path` names the pane as
+`COCKPIT_BASKET_PANE=<pane>` on the viewer's command alone; without it `a` is a
+note and `a add` is not on the footer.
+
+The basket is the pane option `@cockpit_basket`, so it goes with the pane: one
+`refs::render` line per ref, each an absolute path that `refs::parse` reads
+back, each ref once, at most 32 refs and 12 KiB (tmux 3.8 takes one command of
+about 16 KB). A name the text cannot carry, a line break or a control character
+in it, is refused, and a file gone since it was added drops out when the basket
+is read. `tui/src/basket.rs` writes it through `data::tmux_set`, so
+`COCKPIT_READONLY` keeps it unchanged, and reads each write back. The value ends
+in a newline: tmux strips a trailing `;` off a command's last argument, and a
+file named `x;` would read back as `x`. A pane that is gone says so rather than
+read as an empty basket. In any debug build, and so under `cargo test` from any
+directory, the basket runs tmux only on a private `-L`/`-S` server or a stub,
+never the user's; the repo root's `.cargo/config.toml` sets
+`COCKPIT_TEST_TMUX_GUARD` for a release test run too, and
+`COCKPIT_TEST_TMUX_GUARD=0` lifts it by hand.
+
+The file browser's `alt-a` prints `add <path>` for a file (a folder is a note).
+`tmux-open-path` takes it only as it takes `view`: one line, an absolute path to
+an existing regular file, and no control character in it. It then runs
+`cockpit-tui basket add <pane> <file>` with its own pane, only one that reads
+`%N`, and shows the line that prints (`added sub/n.txt (1 in the basket)`). The
+basket's contents are never logged. The panel's side (showing the basket,
+removing from it, sending it) is the next PR.
+
 ## `cockpit-tui branch` (#246)
 
 The branch popup behind `prefix b` and the status-bar branch click, built on the
@@ -2219,10 +2253,15 @@ that names that file back (a linked tree). A `.git` that is a symlink or hard li
 one of these counts, as it does for git, so a directory need not be a real checkout to
 pass. Another repository's checkout, or a directory with no `.git`, is no worktree. The
 board also wants the branch to be the one that tree's `HEAD` names, so a forged line
-pairing a real tree with another branch gives that branch no `⑂`. A path that is gone
-is kept, since it has no `HEAD` to read: its branch shows `⑂`, `↵` says it is gone and
-suggests `git worktree prune`, and for a line a crafted name forged, prune removes
-nothing, because the tree that printed it still exists. The preview is
+pairing a real tree with another branch gives that branch no `⑂`. A `HEAD` that is a
+symlink to `refs/heads/<branch>` (written under `core.preferSymlinkRefs`) names that
+branch too. A path that is gone is kept only when some `worktrees/*/gitdir` in the
+common dir names `<path>/.git`, the test git uses to call a tree prunable: its branch
+shows `⑂`, and `↵` says it is gone and suggests `git worktree prune`. A forged line
+naming a missing path names no such entry, so it is no worktree. When the main
+checkout's `.git` is a file (`git init --separate-git-dir`, or a submodule), git lists
+the git dir as the main checkout's path, on any version. That dir is no tree, so its
+branch gets no `⑂`, and `↵` reaches `git switch`, which refuses it. The preview is
 `git log --graph --oneline -30` of the selection, read on a worker thread and cached
 per branch; it shows `loading…` until it arrives, and below 60 columns it is hidden.
 
@@ -2253,13 +2292,14 @@ acts on the one line it prints; the binary never mutates.
 | `.` on an empty filter | shows or hides dotfiles; elsewhere it is a letter of the filter |
 | `alt-i` | shows or hides what `.gitignore`, `.ignore` and git's global excludes hide (the `ignore` crate, one level); shown entries are dim; `.git` is never listed |
 | `alt-c` | prints `copy <path>` for the row, a folder included |
+| `alt-a` | on a file, prints `add <path>`: the pane's prompt basket (#365 child 5); on a folder, a `✕` note and nothing |
 | `esc` `^C` | cancels, prints nothing, exit 1 |
 
 Folders come first, then names without regard to case; a symlink to a folder is a
 folder, a broken one a file. A folder over 20000 entries lists the first 20000 and
 says so in the header. The path printed is the folder as `realpath` sees it joined to
 the row's own bytes, so a name that is not UTF-8 still prints exactly. A name with a
-newline cannot ride one line: `↵` and `alt-c` give a `✕` note and print nothing.
+newline cannot ride one line: `↵`, `alt-c` and `alt-a` give a `✕` note and print nothing.
 Exit 2 is a bad argument, a folder that cannot be read or no terminal.
 
 On a touch client the script opens a file in a terminal editor window instead of
@@ -2295,9 +2335,13 @@ close it, `↑↓` `j` `k` `PgUp` `PgDn` scroll, `?` lists the keys.
 `tmux-review --info` is gone.
 
 **`cockpit-tui info --json %N`** (#452) prints one line, `{"dir": "<path>"}`: the
-work dir by the board's rule (`dir` in `--json` above), for scripts. Root, base and
-the review dir take `@cockpit_dir`, else the cwd; `prefix r` asks `workdir` for its
-tree (#470) instead. The path is decoded as lossy UTF-8, as
+work dir by the board's rule (`dir` in `--json` above), for scripts. The screen's
+root, base and review dir follow that work dir (#500), as `prefix r` does since it
+asks `workdir` for its tree (#470), so the two name the same tree again, with one
+exception: a pane with no `@cockpit_session` has no transcript `workdir` will read
+(it never runs `claude agents`), so its `prefix r` tree is `@cockpit_dir`, else the
+launch dir, while the screen, which may ask `claude agents`, can follow the
+transcript to a worktree (#508 finding 10). The path is decoded as lossy UTF-8, as
 every tmux read is: a byte that is not UTF-8 becomes U+FFFD. Exit 0 with the
 line; exit 1 and nothing on stdout when the pane is not there; exit 2 for a
 missing or malformed pane id.

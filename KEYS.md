@@ -63,7 +63,7 @@ Taps on the bar act on release.
 |---------|------|
 | tap `≡` (top left of the border) | the menu |
 | tap the session name, or `▲ elsewhere` beside it | sessions screen, waiting sessions first |
-| tap the path on the border | browse the pane's working directory (`↵` views a file, `alt-e` edits it) |
+| tap the path on the border | browse the pane's working directory (`↵` views a file, `alt-e` edits it, `alt-a` adds it to the pane's prompt basket) |
 | tap the branch on the border | the branch popup |
 | tap `[z]` / `[u]` (split windows) | zoom / unzoom the pane |
 | tap a window tab | that window |
@@ -81,8 +81,9 @@ the selection's end, or at the top line when there is none. `v` selects lines
 (a tap drops an anchor, a second tap or a drag ends it); the move keys and `n`
 `N` move its end. `?` asks about the selection, or the top line: the launcher
 opens the panel on the pane with the question box, and the viewer comes back
-after. `esc` clears the selection, then the matches, and `h` or `F1` lists the
-rest. See
+after. `a` adds the selection, or the whole file, to the pane's prompt basket,
+and `y` copies its reference (`src/x.rs:40-72`). `esc` clears the selection,
+then the matches, and `h` or `F1` lists the rest. See
 [docs/tui.md](docs/tui.md#the-markdown-viewer-283) and
 [a code file](docs/tui.md#a-code-file-365).
 

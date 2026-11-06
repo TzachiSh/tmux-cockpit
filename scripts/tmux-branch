@@ -131,10 +131,11 @@ owner_of() {                  # <dir>  sets OWNER to the worktree path holding i
 # common dir; a linked tree's .git file names a dir in its worktrees/ whose gitdir file
 # names that .git back. Each file is read whole, as git reads it. -ef compares inodes, so
 # a symlinked, hard-linked or relative path matches, as it does for git, and nothing
-# forks. A path that is gone is kept, so goto still says "is gone".
+# forks. A path that is gone is kept only as git would call it prunable, so goto still
+# says "is gone" of a deleted tree and refuses a forged one (#537).
 wt_ours() {                   # <path> <common-dir>  true for a tree of the repo at <common-dir>
     local g='' b=''
-    [ -e "$1" ] || return 0
+    [ -e "$1" ] || { wt_prunable "$1" "$2"; return; }
     [ -d "$1/.git" ] && { [ "$1/.git" -ef "$2" ]; return; }
     [ -f "$1/.git" ] || return 1
     IFS= read -r g 2>/dev/null < "$1/.git"
@@ -146,15 +147,36 @@ wt_ours() {                   # <path> <common-dir>  true for a tree of the repo
     [[ $b == /* ]] || b=$g/$b
     [ "$b" -ef "$1/.git" ]
 }
+# Some <common>/worktrees/*/gitdir names <path>/.git, as git decides a gone tree is
+# prunable. Each file is read whole, trailing newlines off, and a relative one is taken
+# from its entry. A text compare: -ef needs both paths to exist, and this one does not.
+wt_prunable() {               # <path> <common-dir>
+    local f b
+    for f in "$2"/worktrees/*/gitdir "$2"/worktrees/.[!.]*/gitdir "$2"/worktrees/..?*/gitdir; do
+        b=''
+        IFS= read -r -d '' b 2>/dev/null < "$f"
+        b=${b%"${b##*[!$'\n\r']}"}
+        [ -n "$b" ] || continue
+        [[ $b == /* ]] || b=${f%/gitdir}/$b
+        [ "$b" = "$1/.git" ] && return 0
+    done
+    return 1
+}
 wt_list() {
     # git's attribute lines: a label is a whole line, locked and prunable may add a reason
     local attr='^(HEAD |branch |bare$|detached$|(locked|prunable)( |$))'
-    local rec line top common cur='' ok=1
+    local rec line top common cur='' ok=1 z=0
     WORKTREES=()
+    # The main record comes first. When the main checkout's .git is a file (separate-git-dir,
+    # a submodule), git prints the git dir there, which is no tree: dropped (#537), as
+    # wt_ours drops it on the fallback.
     while IFS= read -r -d '' rec; do
-        [[ $rec == "worktree "* ]] && WORKTREES+=("${rec#worktree }")
+        [[ $rec == "worktree "* ]] || continue
+        rec=${rec#worktree }
+        [ "$z" = 0 ] && { z=1; [ -d "$rec/.git" ] || continue; }
+        WORKTREES+=("$rec")
     done < <(git worktree list --porcelain -z 2>/dev/null)
-    [ ${#WORKTREES[@]} -gt 0 ] && return 0
+    [ "$z" = 1 ] && return 0
     # Asked from the top: before 2.13 the answer was the cwd's prefix plus a path from the top.
     top=$(git rev-parse --show-toplevel 2>/dev/null); top=${top:-$PWD}
     common=$(git -C "$top" rev-parse --git-common-dir 2>/dev/null)

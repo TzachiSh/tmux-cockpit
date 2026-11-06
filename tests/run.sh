@@ -12833,6 +12833,77 @@ cg_refused "an empty worktree path is no worktree" ""
 rm -rf "$CGR" "$CGM" "$CGD" "$CGOLD" "$CG212"
 fi
 
+echo "== tmux-branch (#537): a gone path is a prunable tree, and a git dir is no tree =="
+# On the fallback a missing path is kept only when some worktrees/*/gitdir names
+# <path>/.git, as git tests a tree for prunable. And when a main checkout's .git is a file,
+# git prints the git dir as its path, on either git: that is never a tree to open.
+if need_tmux "branch goto, gone paths and git dirs"; then :; else
+# shellcheck source=../scripts/lib/fmt.sh
+. "$DIR/scripts/lib/fmt.sh"
+PGR=$(mktmpd); PGM=$(mktmpd); br_repo "$PGR" "$PGM"
+PGD=$(mktmpd); PGOLD=$(mktmpd)
+printf '#!/bin/sh\ncase " $* " in *" worktree list "*" -z "*) exit 129 ;; esac\nexec %s "$@"\n' \
+    "$(command -v git)" > "$PGOLD/git"
+chmod +x "$PGOLD/git"
+PGS="cockpit-pg537-$$"; SOCKS="$SOCKS $PGS"
+bg_server "$PGS" "$PGD"
+PGO=$("$TMUX_REAL" -L "$PGS" list-panes -a -F '#{pane_id}' | head -1)
+pg_says() {                   # pg_says <label> <want> <repo> <path> [shim]  goto's error names <want>
+    local n; n=$(bg_windows "$PGS")
+    BG_SHIM=${5-} bg_goto "$PGS" "$PGO" "$3" "$4"
+    case "$BG_ERR" in
+        *"$2"*) ok "$1" ;;
+        *) bad "$1" "$2" "$BG_ERR" ;;
+    esac
+    is "$1: no window opens" "$n" "$(bg_windows "$PGS")"
+}
+pg_x() { git -C "$PGR" worktree add -q -b "$1" "$PGD/$1"$'\n'"worktree $2" >/dev/null 2>&1; }
+
+git -C "$PGR" worktree add -q -b gone537 "$PGD/gone" >/dev/null 2>&1; rm -rf "$PGD/gone"
+pg_x fn537 "$PGD/nothere"
+pg_says "a forged line naming a missing path is no worktree" "not a worktree" \
+    "$PGR" "$PGD/nothere" "$PGOLD"
+pg_x fg537 "$PGD/gonex"
+pg_says "nor is one naming a path one letter off a gone tree" "not a worktree" \
+    "$PGR" "$PGD/gonex" "$PGOLD"
+pg_says "the gone tree itself is still named gone" "is gone" "$PGR" "$PGD/gone" "$PGOLD"
+# git before 2.24 kept a leading dot in the id; a glob of * skips such an entry.
+git -C "$PGR" worktree add -q -b dot537 "$PGD/.dg" >/dev/null 2>&1
+mv "$PGR/.git/worktrees/-dg" "$PGR/.git/worktrees/.dg"
+printf 'gitdir: %s\n' "$PGR/.git/worktrees/.dg" > "$PGD/.dg/.git"; rm -rf "$PGD/.dg"
+pg_says "a gone tree whose id starts with a dot is named gone" "is gone" "$PGR" "$PGD/.dg" "$PGOLD"
+
+# A separate git dir and a submodule's: git lists P/store.git and P/sup/.git/modules/sm.
+(
+    export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+    git init -q -b main --separate-git-dir "$PGD/store.git" "$PGD/wk"
+    git -C "$PGD/wk" commit -q --allow-empty -m i
+    git -C "$PGD/wk" worktree add -q -b l1 "$PGD/l1"
+    git init -q -b main "$PGD/src"; git -C "$PGD/src" commit -q --allow-empty -m s
+    git -C "$PGR" -c protocol.file.allow=always submodule add -q "$PGD/src" sm
+    git -C "$PGR/sm" worktree add -q -b sl "$PGD/sl"
+) >/dev/null 2>&1
+PGSM=$(git -C "$PGR/sm" rev-parse --path-format=absolute --git-common-dir)
+is "git lists the separate git dir as the main record" "worktree $PGD/store.git" \
+   "$(git -C "$PGD/l1" worktree list --porcelain | head -1)"
+is "and a submodule's git dir" "worktree $PGSM" "$(git -C "$PGD/sl" worktree list --porcelain | head -1)"
+for v in "" "$PGOLD"; do
+    w=${v:+without -z}; w=${w:-with -z}
+    pg_says "$w, a separate git dir listed as the main checkout is no worktree" \
+        "not a worktree" "$PGD/l1" "$PGD/store.git" "$v"
+    pg_says "$w, a submodule's git dir listed as its main checkout is no worktree" \
+        "not a worktree" "$PGD/sl" "$PGSM" "$v"
+    "$TMUX_REAL" -L "$PGS" select-window -t "$PGO"
+    BG_SHIM=$v bg_goto "$PGS" "$PGO" "$PGD/wk" "$PGD/l1"
+    is "$w, a tree linked to a separate git dir still opens" "$PGD/l1" \
+       "$("$TMUX_REAL" -L "$PGS" display-message -p -t t: '#{pane_current_path}')"
+done
+
+"$TMUX_REAL" -L "$PGS" kill-server >/dev/null 2>&1
+unset -f pg_says pg_x
+rm -rf "$PGR" "$PGM" "$PGD" "$PGOLD"
+fi
+
 echo "== tmux-branch (#360): a goto moves the client that pressed prefix b, not the busiest one =="
 if need_tmux "branch goto client"; then :; else
 BCR=$(mktmpd); BCM=$(mktmpd); br_repo "$BCR" "$BCM"
@@ -14067,6 +14138,7 @@ if [ "$1" = view ]; then
         : > "$TMUX_LOG.once$i"
     fi
     [ -z "${VIEW_ENV:-}" ] || printf 'VIEWENV [%s]\n' "${COCKPIT_VIEW_ASK-unset}" >> "$TMUX_LOG"
+    [ -z "${VIEW_ENV:-}" ] || printf 'VIEWPANE [%s]\n' "${COCKPIT_BASKET_PANE-unset}" >> "$TMUX_LOG"
     printf '%s\n' "${VIEW_OUT-}"; exit "${VIEW_RC:-0}"
 fi
 while read -r _; do :; done; printf '%s\n' "${PICK_KEY-0}"
@@ -14160,15 +14232,15 @@ is "and from the touch client's terminal editor" \
 mkdir -p "$MV/s"; cp "$DIR/scripts/tmux-open-path" "$MV/s/"; ln -sfn "$DIR/scripts/lib" "$MV/s/lib"
 cat > "$MV/s/cockpit-panel" <<'STUB'
 #!/bin/sh
-{ printf 'PANEL'; for a in "$@"; do printf ' [%s]' "$a"; done; printf ' env[%s]\n' "${COCKPIT_VIEW_ASK-unset}"; } >> "$TMUX_LOG"
+{ printf 'PANEL'; for a in "$@"; do printf ' [%s]' "$a"; done; printf ' env[%s]' "${COCKPIT_VIEW_ASK-unset}"; printf ' pane[%s]\n' "${COCKPIT_BASKET_PANE-unset}"; } >> "$TMUX_LOG"
 STUB
 chmod +x "$MV/s/cockpit-panel"
 askrun() { MV_SCRIPT="$MV/s/tmux-open-path" VIEW_ONCE=1 VIEW_OUT="$1" mvrun '' "${@:2}"; }
 is "--view: the viewer's ask 3 7 opens the panel on the pane, the file and the lines, then the viewer at 3" \
-   "VIEW [view] [--line] [7] [--] [$MV/w/a.md]"$'\n'"PANEL [-p] [%1] [--ask] [$MV/w/a.md] [3] [7] env[unset]"$'\n'"VIEW [view] [--line] [3] [--] [$MV/w/a.md]" \
+   "VIEW [view] [--line] [7] [--] [$MV/w/a.md]"$'\n'"PANEL [-p] [%1] [--ask] [$MV/w/a.md] [3] [7] env[unset] pane[unset]"$'\n'"VIEW [view] [--line] [3] [--] [$MV/w/a.md]" \
    "$(askrun 'ask 3 7' --view %1 "$MV/w/a.md" 7)"
 is "--pick: the same, from the picker's own popup" \
-   "VIEW [view] [--] [$MV/w/a.md]"$'\n'"PANEL [-p] [%1] [--ask] [$MV/w/a.md] [1] [1] env[unset]"$'\n'"VIEW [view] [--line] [1] [--] [$MV/w/a.md]" \
+   "VIEW [view] [--] [$MV/w/a.md]"$'\n'"PANEL [-p] [%1] [--ask] [$MV/w/a.md] [1] [1] env[unset] pane[unset]"$'\n'"VIEW [view] [--line] [1] [--] [$MV/w/a.md]" \
    "$(MV_SCRIPT="$MV/s/tmux-open-path" VIEW_ONCE=1 VIEW_OUT='ask 1 1' PICK_KEY=0 mvrun 'a.md t.txt' --pick %1)"
 # a loop, not a call per ask: under a cap of 12 nested calls, 20 asks in a row
 # reopen the viewer 21 times; a recursion would die at the cap
@@ -14177,6 +14249,13 @@ is "twenty asks in a row reopen the viewer each time, in a loop" "20 21" \
       | awk '/^PANEL/ {p++} /^VIEW / {v++} END {print p+0, v+0}')"
 is "the viewer, and only the viewer, runs with COCKPIT_VIEW_ASK=1" "VIEWENV [1]" \
    "$(VIEW_ENV=1 askrun '' --view %1 "$MV/w/a.md" '' | grep VIEWENV)"
+# #365 child 5: the viewer's `a` adds to this pane's basket; the launcher names it
+is "the viewer, and only the viewer, is told the pane its basket is" "VIEWPANE [%1]" \
+   "$(VIEW_ENV=1 askrun '' --view %1 "$MV/w/a.md" '' | grep VIEWPANE)"
+for bp in 'x' '%' '%1;x' '%1 %2' '-t'; do
+    is "a pane [$bp] that is no %N id reaches the viewer as none" "VIEWPANE []" \
+       "$(VIEW_ENV=1 askrun '' --view "$bp" "$MV/w/a.md" '' | grep VIEWPANE)"
+done
 for o in 'ask 7 3' 'ask 0 1' 'ask 01 2' 'ask 1' 'ask 1 2 3' 'ask a b' 'ask 1234567890 1234567891' \
          "ask 1 2"$'\n'"ask 3 4" 'ask 1 2; touch x' ' ask 1 2' 'ask  1 2'; do
     case "$(askrun "$o" --view %1 "$MV/w/a.md" '')" in
@@ -14279,6 +14358,8 @@ printf '%s\n' "\$*" > "$FB/tui.args"
 cat "$FB/errtext" >&2
 # the viewer prints what vout holds (an \`edit N\` for its e key), the browser its answer
 [ "\$1" = view ] && { cat "$FB/vout"; exit 0; }
+# #365 child 5: alt-a's add, routed to \`basket add <pane> <file>\`
+[ "\$1" = basket ] && { printf '%s\n' "\$*" > "$FB/basket.args"; echo "added it (1 in the basket)"; exit 0; }
 cat "$FB/answer"
 exit \$(cat "$FB/rc")
 STUB
@@ -14393,6 +14474,19 @@ is "open on a markdown file goes to code, not the viewer" "files $FBD|1" \
 fb off "view $FBD/sub/n.txt\n" 0
 fbwait "$FB/code.log"
 is "view with the viewer off falls back to code" "1|1" "$(fbn run-shell)|$(grep -c 'n.txt' "$FB/code.log")"
+
+# #365 child 5: the browser's alt-a prints `add <abs path>`; only a regular file
+# goes on, to the binary's `basket add <pane> <file>`, with the script's own pane
+FBC="$FBD/c"$'\x1b'"d.txt"; : > "$FBC"
+rm -f "$FB/basket.args"; fb off "add $FBD/sub/n.txt\n" 0
+is "add a file: the binary adds it to the pane's basket" "basket add $FBP $FBD/sub/n.txt" "$(cat "$FB/basket.args" 2>/dev/null)"
+is "and says what it did" "1" "$(grep -c 'added it (1 in the basket)' "$FB/calls")"
+for fba in "a folder|add $FBD/sub\n" "a FIFO|add $FBD/fifo\n" "a relative path|add sub/n.txt\n" \
+           "a second line|add $FBD/sub/n.txt\nadd $FBD/sub/n.md\n" "a control-character name|add $FBC\n"; do
+    rm -f "$FB/basket.args"; fb off "${fba#*|}" 0
+    is "add refused for ${fba%%|*}: nothing is added" "no" "$([ -e "$FB/basket.args" ] && echo yes || echo no)"
+done
+rm -f "$FBC"
 "$TMUX_REAL" -L "$FBS" set -gu @cockpit_md_view
 
 # names that are tmux formats: -n and -c expand #(), so term_edit escapes both

@@ -42,7 +42,7 @@ pub struct Facts {
     pub dir: Option<String>,
     pub dir_missing: bool,
     /// the dir the board's git facts use: `@cockpit_dir`, else the transcript's
-    /// newest cwd, else the cwd (#452). `root` keeps tmux-review's rule. Not
+    /// newest cwd, else the cwd (#452). `root` follows it (#500). Not
     /// cleaned, since `info --json` hands it to scripts and the screen cleans it,
     /// but decoded as lossy UTF-8 like every tmux read.
     pub work: String,
@@ -282,18 +282,10 @@ pub fn gather(pane: &str) -> Result<Facts, String> {
         },
         ..Default::default()
     };
-    let mut path = f[3].to_string();
     if !f[4].is_empty() {
         x.dir = Some(clean(f[4]));
-        if std::path::Path::new(f[4]).is_dir() {
-            path = f[4].to_string();
-        } else {
-            x.dir_missing = true;
-        }
+        x.dir_missing = !std::path::Path::new(f[4]).is_dir();
     }
-    // No cwd at all: git_root("") would describe the caller's repo, not this pane's.
-    let root = if path.is_empty() { String::new() } else { git_root(&path) };
-    x.root = clean(&root);
     // `file` can ask `claude agents`: only an agent pane has a transcript to find
     let tr = if x.agent { super::transcript::file(&x.id, f[3]) } else { None };
     let said = tr.as_deref().and_then(super::transcript::cwd).unwrap_or_default();
@@ -309,6 +301,11 @@ pub fn gather(pane: &str) -> Result<Facts, String> {
     } else {
         WorkFrom::Cwd
     };
+    // #500: root, base and the review dir follow the work dir, as `prefix r` does
+    // once it reads `cockpit-tui workdir` (#499). No dir at all: git_root("") would
+    // describe the caller's repo, not this pane's.
+    let root = if x.work.is_empty() { String::new() } else { git_root(&x.work) };
+    x.root = clean(&root);
     let (doing, ask) = tr.as_deref().map(doing_rows).unwrap_or_default();
     x.doing = doing;
     // #453: the hook's text is generic; an open question says what is owed

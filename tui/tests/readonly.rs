@@ -45,11 +45,42 @@ fn shim(dir: &std::path::Path) -> (String, std::path::PathBuf) {
     (bin.display().to_string(), log)
 }
 
-fn scratch(tag: &str) -> std::path::PathBuf {
+/// A private scratch dir, removed when the guard drops: on a pass, and on a
+/// failing assert's unwind too (#543).
+struct Scratch(std::path::PathBuf);
+
+impl std::ops::Deref for Scratch {
+    type Target = std::path::Path;
+    fn deref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn scratch(tag: &str) -> Scratch {
     let d = std::env::temp_dir().join(format!("cockpit-tui-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
-    d
+    Scratch(d)
+}
+
+/// #543: the scratch dir goes on every exit path, a failing assert's unwind included.
+#[test]
+fn a_scratch_dir_is_removed_on_a_pass_and_on_a_panic() {
+    let passed = scratch("guard-pass").to_path_buf();
+    let d = scratch("guard-panic");
+    let panicked = d.to_path_buf();
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        let _d = d;
+        panic!("an assert failed");
+    }))
+    .unwrap_err();
+    assert!(!passed.exists() && !panicked.exists(), "{passed:?} {panicked:?}");
 }
 
 #[test]
@@ -63,7 +94,6 @@ fn readonly_writes_nothing_not_even_the_wake_channel() {
     drop(Push::start()); // start lists its channel, Drop unlists it; neither may run
 
     assert!(!log.exists(), "COCKPIT_READONLY still wrote: {:?}", std::fs::read_to_string(&log));
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// The negative half: without it the same call does reach tmux, so the test
@@ -81,5 +111,4 @@ fn without_readonly_the_write_reaches_tmux() {
         std::fs::read_to_string(&log).unwrap().trim(),
         "set-option -g @cockpit_board_wake 1234"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
