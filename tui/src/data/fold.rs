@@ -485,4 +485,51 @@ mod tests {
         let read = read_bytes() - before;
         assert_eq!(read, r.len() as u64 + 1, "the row and the newline before it");
     }
+
+    /// One append past 256 KB, an open ask, then only tool_results: the first read
+    /// finds no assistant row in its window and starts over at 2 MB.
+    #[test]
+    fn a_window_with_no_assistant_row_widens_to_tail_max() {
+        let (_d, p) = tmp("widen");
+        let results: String = (2..7).map(|n| result(n, "other", 64)).collect();
+        add(&p, &(prompt(0, "/w/a") + &tool(1, "AskUserQuestion") + &results));
+        assert_eq!(full(&p, TAIL_FIRST).state, State::NeedsInput, "the full read finds the ask");
+        same(&p, "first read");
+    }
+
+    /// The fold starts at the 256 KB window; a 1 MB window reaches back past it.
+    #[test]
+    fn a_window_wider_than_the_fold_starts_over() {
+        let (_d, p) = tmp("wider");
+        let results: String = (2..12).map(|n| result(n, "u1", 64)).collect();
+        add(&p, &(prompt(0, "/w/a") + &tool(1, "Read") + &results + &done(12)));
+        assert_eq!(full(&p, TAIL_MAX / 2).cwd, "/w/a", "the wider window holds the prompt");
+        same(&p, "256 KB, then 1 MB");
+    }
+
+    /// A 1 MB assistant row with no newline yet, starting before the 256 KB window:
+    /// the full read drops it from that window and reads it, with the prompt before
+    /// it, in the 2 MB one.
+    #[test]
+    fn a_long_partial_row_counts_from_where_it_starts() {
+        let (_d, p) = tmp("long-partial");
+        let mut r: Value = serde_json::from_str(&done(1)).unwrap();
+        r["pad"] = "x".repeat(1 << 20).into();
+        add(&p, &(prompt(0, "/w/a") + &r.to_string()));
+        assert_eq!(full(&p, TAIL_FIRST).cwd, "/w/a", "the 2 MB read holds the prompt");
+        same(&p, "no newline");
+    }
+
+    /// More than 2 MB appended at once: the read is the window, not the append.
+    #[test]
+    fn an_append_past_tail_max_reads_the_window() {
+        let (_d, p) = tmp("cap");
+        add(&p, &(prompt(0, "/w") + &tool(1, "Bash")));
+        delta(&p, TAIL_FIRST);
+        let results: String = (2..36).map(|n| result(n, "u1", 64)).collect();
+        add(&p, &(results + &tool(36, "Read")));
+        let before = read_bytes();
+        delta(&p, TAIL_FIRST);
+        assert_eq!(read_bytes() - before, TAIL_FIRST + 1, "the window and the byte before it");
+    }
 }
