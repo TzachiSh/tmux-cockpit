@@ -46,6 +46,14 @@ a terminal editor window next to the pane. The editor is `@cockpit_editor`, else
 `$VISUAL`, else `$EDITOR`, else `nvim`, else `vim`; the window is named for the
 file and starts in its folder. With none of them found the status line says so.
 
+`q` or `esc` in a viewer opened from the browser goes back to the browser, in the
+viewed file's folder with that file selected; its footer says `q back`. `esc` in
+the browser then closes the popup. `e` in the viewer ends the popup as before,
+with the editor open. `?` opens the ask panel and then the viewer again, whose
+`q` goes back to the browser too. When the file's folder is gone by then, the
+browser comes back in the folder it started in. A `cockpit-tui` without
+`--select` still reopens the folder, on its first row.
+
 The browser prints one line and `tmux-open-path --folder` checks it before acting:
 one line, the verb `view`, `open` or `copy`, an absolute path that exists (a regular file for `view`). A file name
 with a newline in it cannot be sent, so the browser says so and prints nothing.
