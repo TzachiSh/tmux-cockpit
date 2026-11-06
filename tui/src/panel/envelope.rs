@@ -85,7 +85,8 @@ pub fn build(flow: &Flow, cap: &Capture, turns: &[Turn], questions_left: usize) 
 /// [`build`], and how many secrets the screen, the repo block and the turns had hidden.
 pub fn build_counted(flow: &Flow, cap: &Capture, turns: &[Turn], questions_left: usize) -> (String, usize) {
     let e = build_parts(flow, cap, turns, questions_left);
-    (e.text, e.screen_hidden + e.repo_hidden + e.turns_hidden)
+    let n = e.hidden();
+    (e.text, n)
 }
 
 /// The envelope and its hidden secrets, counted by where they were.
@@ -95,6 +96,13 @@ pub struct Envelope {
     pub screen_hidden: usize,
     pub repo_hidden: usize,
     pub turns_hidden: usize,
+}
+
+impl Envelope {
+    /// The secrets hidden, wherever they were.
+    pub fn hidden(&self) -> usize {
+        self.screen_hidden + self.repo_hidden + self.turns_hidden
+    }
 }
 
 /// [`build_counted`] with the count split. Only a Write waits for the repo block.

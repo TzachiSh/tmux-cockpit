@@ -845,12 +845,7 @@ impl App {
     fn send_basket(&mut self) {
         let base = std::path::Path::new(&self.cap.path);
         let text = crate::basket::expand(&self.draft, &self.basket, base, self.claude);
-        // the option's text, a gone ref's line included, else the refs held
-        let body = match self.basket_raw.is_empty() {
-            true => crate::basket::body(&self.basket),
-            false => Ok(self.basket_raw.clone()),
-        };
-        match (text, body) {
+        match (text, self.basket_text()) {
             (Ok(text), Ok(body)) => {
                 self.basket_body = Some(body);
                 self.confirm(text, false, View::Compose);
@@ -1109,7 +1104,8 @@ impl App {
     fn envelope(&self, r: &Run) -> (String, usize) {
         let refs = self.write_refs(&r.flow);
         let e = build_refs(&r.flow, &self.cap, &r.turns, r.max.saturating_sub(r.rounds), &refs);
-        (e.text, e.screen_hidden + e.repo_hidden + e.turns_hidden)
+        let n = e.hidden();
+        (e.text, n)
     }
 
     /// The basket's refs as a Write names them (#365 child 5): as the pane's
@@ -1137,10 +1133,15 @@ impl App {
         if !refs.iter().all(|r| names(text, &r.text)) {
             return None;
         }
-        // the option's text, a gone ref's line included, else the refs held
+        self.basket_text().ok()
+    }
+
+    /// The basket as a send carries it in `.basket`: the option's text, a gone
+    /// ref's line included (review-534), else the refs held.
+    fn basket_text(&self) -> Result<String, String> {
         match self.basket_raw.is_empty() {
-            true => crate::basket::body(&self.basket).ok(),
-            false => Some(self.basket_raw.clone()),
+            true => crate::basket::body(&self.basket),
+            false => Ok(self.basket_raw.clone()),
         }
     }
 
