@@ -195,6 +195,28 @@ pub fn main(args: &[String]) -> i32 {
     code
 }
 
+/// A command that is Claude Code's: `claude`, or its version-shaped process
+/// title (`2.1.318`), as data's agentish reads them; the one agent that inlines
+/// `@path#La-b`.
+pub fn claude_cmd(comm: &str) -> bool {
+    let b = comm.rsplit('/').next().unwrap_or(comm).trim_start_matches('-').to_ascii_lowercase();
+    let version = b.starts_with(|c: char| c.is_ascii_digit())
+        && b.chars().filter(|c| *c == '.' || *c == '_').count() >= 2
+        && b.chars().all(|c| c.is_ascii_digit() || c == '.' || c == '_');
+    b == "claude" || version
+}
+
+/// An agent's pane (#519's `data::is_agent`) that runs Claude Code
+/// ([`claude_cmd`]). @panestate alone is not enough: it outlives the claude
+/// that set it, and @ refs sent to a shell would be noise. A miss sends bare refs.
+pub fn is_claude(pane: &str) -> bool {
+    if check(pane).is_err() || !crate::data::is_agent(pane) {
+        return false;
+    }
+    let cmd = ask(&["display-message", "-p", "-t", pane, "#{pane_current_command}"]);
+    cmd.ok().flatten().is_some_and(|c| claude_cmd(c.trim_end_matches('\n')))
+}
+
 /// The send's cap (#365 child 5): the whole text, the draft and its refs. Over it
 /// the send is refused, never cut, as a cut text would drop refs the user saw.
 pub const MAX_SEND: usize = 16 * 1024;
