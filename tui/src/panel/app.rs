@@ -2001,11 +2001,25 @@ pub fn needs_y(text: &str, send: bool) -> bool {
     send && text.trim_end_matches('\n').contains('\n')
 }
 
-/// `text` names `form` as given: `@a.rs#L1-2` is not in `@a.rs#L1-20`, nor
-/// `@b.md` in `@b.mdx`.
-fn names(text: &str, form: &str) -> bool {
-    text.match_indices(form)
-        .any(|(i, _)| !text[i + form.len()..].starts_with(char::is_alphanumeric))
+/// `text` names `form` as given, as itself and not as part of a longer ref:
+/// `@a.rs#L1` is not in `@a.rs#L1-2`, a whole `@b.md` not in `@b.md#L1-3` or
+/// `@b.md.bak`, a bare `a.rs:1-2` not in `lib/a.rs:1-2`. A path character
+/// before the match, or `#`, `-`, `_`, `/` or a letter or digit after it,
+/// continues another ref; a `.` or `:` after it does only when a path
+/// character follows, so a sentence's full stop or colon still ends it.
+pub fn names(text: &str, form: &str) -> bool {
+    let path = |c: char| c.is_alphanumeric() || matches!(c, '/' | '.' | '_' | '-' | '~');
+    text.match_indices(form).any(|(i, _)| {
+        let before = text[..i].chars().next_back();
+        let mut after = text[i + form.len()..].chars();
+        let ends = match after.next() {
+            None => true,
+            Some(c) if c.is_alphanumeric() || matches!(c, '#' | '-' | '_' | '/') => false,
+            Some('.' | ':') => !after.next().is_some_and(path),
+            Some(_) => true,
+        };
+        ends && !before.is_some_and(path)
+    })
 }
 
 /// `text` cut to [`PREFILL_MAX`] characters, the `…` included, on whole

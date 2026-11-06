@@ -294,6 +294,26 @@ fn a_written_prompt_missing_a_ref_leaves_the_basket() {
     }
 }
 
+/// A ref is named only as itself: a longer ref that holds it (a range on a
+/// whole file, a longer range, a deeper path) is another ref; punctuation that
+/// ends a sentence after it is not.
+#[test]
+fn a_ref_is_named_only_as_itself() {
+    use cockpit_tui::panel::app::names;
+    let rows = [
+        ("whole file in a ranged ref", "fix @b.md#L1-3", "@b.md", false),
+        ("one line in a range", "fix @a.rs#L1-2", "@a.rs#L1", false),
+        ("bare ref in a deeper path", "fix lib/a.rs:1-2", "a.rs:1-2", false),
+        ("a longer name", "see @b.md.bak", "@b.md", false),
+        ("a colon then more range", "see a.rs:1-2:9", "a.rs:1-2", false),
+        ("a colon ending a clause", "in @a.rs#L1-2: fix it", "@a.rs#L1-2", true),
+        ("a full stop ending a sentence", "as per @b.md.", "@b.md", true),
+        ("at the very end", "see @b.md", "@b.md", true),
+    ];
+    let wrong: Vec<&str> = rows.iter().filter(|(_, t, f, want)| names(t, f) != *want).map(|r| r.0).collect();
+    assert_eq!(wrong, [] as [&str; 0]);
+}
+
 #[test]
 fn a_failed_or_cancelled_write_leaves_the_basket() {
     let d = tree("failed");
