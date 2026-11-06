@@ -153,8 +153,9 @@ md_view() {
     while :; do
         err=$(mktemp 2>/dev/null) || err=/dev/null
         # on the viewer alone: this launcher routes its `ask` (#365), and its `a`
-        # adds to the basket of the pane the file came from (#365 child 5)
-        out=$(COCKPIT_VIEW_ASK=1 COCKPIT_BASKET_PANE="$bp" \
+        # adds to the basket of the pane the file came from (#365 child 5);
+        # COCKPIT_VIEW_BACK=1 from the browser, whose popup comes back on its close
+        out=$(COCKPIT_VIEW_ASK=1 COCKPIT_BASKET_PANE="$bp" COCKPIT_VIEW_BACK=$BROWSE \
             "$COCKPIT_TUI_BIN" view ${ln:+--line "$ln"} -- "$file" 2>"$err"); rc=$?
         [ ! -s "$err" ] || cat "$err" >&2
         if tui_stale "$rc" "$err"; then rc=stale; fi
@@ -174,7 +175,8 @@ md_view() {
         # a file gone meanwhile ends it, as the gates above would
         [ -f "$file" ] || return 0
     done
-    [[ $out =~ ^edit\ ([0-9]+)$ ]] || return 0
+    # nothing printed is a plain close (q, esc): the browser takes that as back
+    [[ $out =~ ^edit\ ([0-9]+)$ ]] || { [ -n "$out" ] || VIEW_CLOSED=1; return 0; }
     # a touch client has no use for VS Code: a terminal editor, at the line
     if touch_client; then term_edit "$file" "${BASH_REMATCH[1]}"; return 0; fi
     MD_EDIT=1 open_one "$file" "${BASH_REMATCH[1]}" ""
@@ -246,8 +248,11 @@ browse_act() {
 }
 
 # --folder asks for a popup, which re-enters as --browse: run-shell has no terminal.
+# A viewer closed with nothing done (VIEW_CLOSED) brings the browser back in the
+# file's folder, on the file; a loop, not a call per view. The loop's folder is
+# `at`: `dir` stays the pane's, the editor window's -c in open_one.
 browse_folder() {
-    local pw ph err key rc
+    local pw ph err key rc sel='' path at=$dir
     # shellcheck source=lib/tui.sh
     . "${d%/*}/lib/tui.sh" 2>/dev/null && [ -x "$COCKPIT_TUI_BIN" ] \
         || { note "cockpit: cockpit-tui is missing · run scripts/tui-fetch"; return 1; }
@@ -258,21 +263,38 @@ browse_folder() {
             -T " files · #{b:pane_current_path} " "$(shq "$0") --browse $(shq "$pane")"
         return 0
     fi
-    # stderr to a file: a cockpit-tui older than this script is told apart from a crash
-    err=$(mktemp 2>/dev/null) || err=/dev/null
-    key=$("$COCKPIT_TUI_BIN" files "$dir" 2>"$err"); rc=$?
-    [ ! -s "$err" ] || cat "$err" >&2
-    if tui_stale "$rc" "$err"; then
-        [ "$err" = /dev/null ] || rm -f -- "$err"
-        note "cockpit: $TUI_STALE_MSG"; return 1
-    fi
-    [ "$err" = /dev/null ] || rm -f -- "$err"
-    case "$rc" in
-        0) browse_act "$key" ;;
-        1) return 0 ;;
-        *) printf 'cockpit: files exited %s · see the lines above\n' "$rc" >&2
-           read -rsn1 -p '[any key]'; return 1 ;;
-    esac
+    while :; do
+        # the viewed file's folder gone meanwhile: back where the browser started
+        [ -d "$at" ] || { at=$dir; sel=''; }
+        # back from the viewer: a binary without --select, or a name it cannot
+        # take (not UTF-8), still reopens the folder, on its first row
+        if [ -n "$sel" ]; then
+            key=$("$COCKPIT_TUI_BIN" files "$at" --select "$sel" 2>/dev/null); rc=$?
+            # 101 and up is a panic or a signal, not an old binary: leave a trace
+            [ "$rc" -lt 101 ] || printf 'cockpit: files --select exited %s\n' "$rc" >&2
+            [ "$rc" -le 1 ] || sel=''
+        fi
+        if [ -z "$sel" ]; then
+            # stderr to a file: a cockpit-tui older than this script is told apart from a crash
+            err=$(mktemp 2>/dev/null) || err=/dev/null
+            key=$("$COCKPIT_TUI_BIN" files "$at" 2>"$err"); rc=$?
+            [ ! -s "$err" ] || cat "$err" >&2
+            if tui_stale "$rc" "$err"; then
+                [ "$err" = /dev/null ] || rm -f -- "$err"
+                note "cockpit: $TUI_STALE_MSG"; return 1
+            fi
+            [ "$err" = /dev/null ] || rm -f -- "$err"
+        fi
+        case "$rc" in
+            0) VIEW_CLOSED=''; browse_act "$key"; rc=$?
+               [ -n "$VIEW_CLOSED" ] || return "$rc"
+               # browse_act took the line: one line, `view <an existing abs path>`
+               path=${key#* }; at=${path%/*}; at=${at:-/}; sel=${path##*/} ;;
+            1) return 0 ;;
+            *) printf 'cockpit: files exited %s · see the lines above\n' "$rc" >&2
+               read -rsn1 -p '[any key]'; return 1 ;;
+        esac
+    done
 }
 
 if [ "$DRY" -eq 1 ]; then

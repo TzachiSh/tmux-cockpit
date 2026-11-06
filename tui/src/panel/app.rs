@@ -1161,6 +1161,7 @@ impl App {
                 let ctx = Ctx {
                     out: *out,
                     window: window_kind(&self.cap.name, &self.cap.cmd),
+                    bare_refs: self.write_refs(&r.flow).iter().any(|i| !i.mention),
                 };
                 if self.explores(&r.flow) {
                     prompts::write_explore_noted(&ctx)

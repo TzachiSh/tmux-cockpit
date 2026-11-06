@@ -1,4 +1,4 @@
-//! `cockpit-tui files <dir>`: the file browser (#363). It lists one folder in the
+//! `cockpit-tui files <dir> [--select <name>]`: the file browser (#363). It lists one folder in the
 //! shared picker, walks the tree and prints one line: `view <path>`,
 //! `open <path>` (the editor) or `copy <path>`. It never mutates;
 //! `scripts/tmux-open-path --folder` checks the line again and acts.
@@ -191,6 +191,21 @@ impl Files {
         }
     }
 
+    /// Starts on the entry `name` of the folder shown: the dotfiles on when it
+    /// is one, the ignored entries on when the ignore files hide it. A name the
+    /// folder does not hold leaves the first row selected.
+    pub fn select(&mut self, name: &[u8]) {
+        let Ok(all) = list_dir(&self.dir, true, true) else { return };
+        let Some(e) = all.iter().find(|e| e.name == name) else { return };
+        self.hidden |= name.first() == Some(&b'.');
+        self.show_ignored |= e.ignored;
+        let dir = self.dir.clone();
+        self.go(dir, Some(name.to_vec()), Rect::default());
+        // laid out for no screen, `go` put the file on the top row: start from
+        // the top and let the first draw's clamp scroll only as far as it needs
+        self.pick.top = 0;
+    }
+
     /// The selected row's entry as a path, and whether it is a folder.
     fn selected(&self) -> Option<(PathBuf, bool)> {
         let r = &self.pick.rows[*self.pick.shown.get(self.pick.sel)?];
@@ -287,6 +302,14 @@ impl Files {
         self.pick.mouse(m, area);
     }
 
+    /// Lays the screen out for a frame of `area`, the way the run loop draws it:
+    /// the header first, as the rows' room depends on it, then the scroll.
+    pub fn layout(&mut self, area: Rect) {
+        let g = self.g;
+        self.fit(area.width, &g);
+        self.pick.clamp(area);
+    }
+
     /// Sets the header for a screen `w` wide: the path cut on the left, so the
     /// folder's own name stays, or a note until the next key.
     pub fn fit(&mut self, w: u16, g: &Glyphs) {
@@ -376,31 +399,51 @@ pub fn draw(f: &mut ratatui::Frame, area: Rect, u: &Files, th: &Theme) {
     pick::render_with(f, area, &u.pick, th, &look);
 }
 
-const USAGE: &str = "cockpit-tui files <dir>";
+const USAGE: &str = "cockpit-tui files <dir> [--select <name>]";
+
+/// The folder, and the entry to start on: one name in it, never a path, never
+/// empty, no control character. The one-folder form is the old one, kept.
+pub fn parse_args(args: &[String]) -> Result<(String, Option<String>), String> {
+    match args {
+        [dir] => Ok((dir.clone(), None)),
+        [dir, flag, name] if flag == "--select" => {
+            if name.is_empty() || name.contains('/') || name.chars().any(char::is_control) {
+                return Err("--select takes one name: no /, no control character".into());
+            }
+            Ok((dir.clone(), Some(name.clone())))
+        }
+        _ => Err("needs exactly one folder".into()),
+    }
+}
 
 /// Exit 0 with `view <path>`, `open <path>` or `copy <path>` on stdout, 1 for esc, 2 for a bad
 /// argument, a folder that cannot be read or no terminal.
 pub fn main(args: &[String]) -> i32 {
-    let [dir] = args else {
-        eprintln!("cockpit-tui: files: needs exactly one folder\n{USAGE}");
-        return 2;
+    let (dir, select) = match parse_args(args) {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("cockpit-tui: files: {e}\n{USAGE}");
+            return 2;
+        }
     };
     let th = Theme::load();
-    let mut f = match Files::new(Path::new(dir), &th.g) {
+    let mut f = match Files::new(Path::new(&dir), &th.g) {
         Ok(f) => f,
         Err(e) => {
             eprintln!("cockpit-tui: files: {e}\n{USAGE}");
             return 2;
         }
     };
+    if let Some(name) = select {
+        f.select(name.as_bytes());
+    }
     let mut term = match pick::open_screen("files") {
         Ok(t) => t,
         Err(c) => return c,
     };
     let out = loop {
         let area = pick::screen(&term);
-        f.pick.clamp(area);
-        f.fit(area.width, &th.g);
+        f.layout(area);
         if term.draw(|fr| draw(fr, fr.area(), &f, &th)).is_err() {
             break Outcome::Cancel;
         }

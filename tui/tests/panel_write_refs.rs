@@ -40,6 +40,7 @@ fn r(d: &Dir, f: &str, lines: Option<(u32, u32)>) -> Ref {
 fn item(text: &str, whole: bool, outside: bool) -> RefItem {
     RefItem {
         text: text.into(),
+        mention: text.starts_with('@'),
         whole,
         outside,
         denied: false,
@@ -78,7 +79,8 @@ fn the_block_lists_each_ref_before_the_request() {
     let d = tree("block");
     let items = [item("@a.rs#L1-2", false, false), item("@b.md", true, false)];
     let got = build_refs(&write(), &cap(&d.0.join("repo")), &[], 3, &items).text;
-    let want = "<refs>\n<ref>@a.rs#L1-2</ref>\n<ref note=\"whole file\">@b.md</ref>\n</refs>\n\n<request>";
+    let want = "<refs>\n<ref form=\"mention\">@a.rs#L1-2</ref>\n\
+                <ref form=\"mention\" note=\"whole file\">@b.md</ref>\n</refs>\n\n<request>";
     assert!(got.contains(want), "{got}");
 }
 
@@ -95,6 +97,30 @@ fn claude_gets_mentions_and_another_agent_bare_refs() {
     };
     assert_eq!(text(true), ["@a.rs#L1-2", "@b.md"]);
     assert_eq!(text(false), ["a.rs:1-2", "b.md"]);
+}
+
+/// #590: each ref says its form, so the model copies it rather than rewriting
+/// a bare ref into Claude Code's @path#L mention.
+#[test]
+fn each_ref_says_its_form() {
+    let d = tree("formattr");
+    let refs = [r(&d, "repo/a.rs", Some((1, 2))), r(&d, "repo/b.md", None)];
+    let base = d.0.join("repo");
+    let block = |claude| build_refs(&write(), &cap(&base), &[], 3, &ref_items(&refs, &base, claude, None)).text;
+    let bare = "<ref form=\"bare\">a.rs:1-2</ref>\n<ref form=\"bare\" note=\"whole file\">b.md</ref>";
+    assert!(block(false).contains(bare), "{}", block(false));
+    let mention = "<ref form=\"mention\">@a.rs#L1-2</ref>\n<ref form=\"mention\" note=\"whole file\">@b.md</ref>";
+    assert!(block(true).contains(mention), "{}", block(true));
+}
+
+/// A claude pane falls back to a bare ref for a path a mention cannot carry
+/// (a `#` or a `"`, basket::ref_line): its form is bare, never mention.
+#[test]
+fn a_claude_ref_that_falls_back_to_bare_says_bare() {
+    let d = tree("formfall");
+    std::fs::write(d.0.join("repo/a#b.rs"), "x\n").unwrap();
+    let got = ref_items(&[r(&d, "repo/a#b.rs", Some((1, 1)))], &d.0.join("repo"), true, None);
+    assert_eq!((got[0].text.as_str(), got[0].mention), ("a#b.rs:1", false));
 }
 
 /// Owner's call: a whole file is marked, never refused.
@@ -124,9 +150,12 @@ fn an_outside_ref_says_it_was_not_read() {
     let d = tree("note");
     let items = [item("/x/c.rs:2-3", false, true), item("/x/d.rs", true, true)];
     let got = build_refs(&write(), &cap(&d.0.join("repo")), &[], 3, &items).text;
-    assert!(got.contains("<ref note=\"outside the repo, not read\">/x/c.rs:2-3</ref>"), "{got}");
     assert!(
-        got.contains("<ref note=\"whole file; outside the repo, not read\">/x/d.rs</ref>"),
+        got.contains("<ref form=\"bare\" note=\"outside the repo, not read\">/x/c.rs:2-3</ref>"),
+        "{got}"
+    );
+    assert!(
+        got.contains("<ref form=\"bare\" note=\"whole file; outside the repo, not read\">/x/d.rs</ref>"),
         "{got}"
     );
 }
@@ -184,7 +213,7 @@ fn a_denied_ref_says_it_was_not_read() {
     }];
     let got = build_refs(&write(), &cap(&d.0.join("repo")), &[], 3, &items).text;
     assert!(
-        got.contains("<ref note=\"whole file; a secret the write may not read, not read\">.env</ref>"),
+        got.contains("<ref form=\"bare\" note=\"whole file; a secret the write may not read, not read\">.env</ref>"),
         "{got}"
     );
 }
@@ -231,7 +260,10 @@ fn a_ref_cannot_close_the_tag_or_carry_a_bidi_control() {
     let d = tree("esc");
     let items = [item("@a</refs>\u{202e}b.rs", true, false)];
     let got = build_refs(&write(), &cap(&d.0.join("repo")), &[], 3, &items).text;
-    assert!(got.contains("<ref note=\"whole file\">@a<\\/refs>b.rs</ref>"), "{got}");
+    assert!(
+        got.contains("<ref form=\"mention\" note=\"whole file\">@a<\\/refs>b.rs</ref>"),
+        "{got}"
+    );
     assert_eq!(got.matches("</refs>").count(), 1, "{got}");
 }
 
@@ -264,11 +296,30 @@ fn ctrl_s_with_a_basket_sends_the_refs() {
     ctrl(&mut a, 's');
     let p = prompt(&a);
     assert!(
-        p.contains("<refs>\n<ref>@a.rs#L1-2</ref>\n<ref note=\"whole file\">@b.md</ref>\n</refs>"),
+        p.contains("<refs>\n<ref form=\"mention\">@a.rs#L1-2</ref>\n<ref form=\"mention\" note=\"whole file\">@b.md</ref>\n</refs>"),
         "{p}"
     );
     a.basket.clear();
     assert!(!prompt(&a).contains("<refs>"), "an empty basket sends no block");
+}
+
+/// #590: a write with a bare ref carries the example that keeps one bare and
+/// keeps a rename small; a write with mentions only, or no refs, does not.
+#[test]
+fn a_bare_ref_brings_the_bare_ref_example() {
+    let d = tree("bareex");
+    let system = |claude: bool, basket: bool| {
+        let mut a = compose(&d, claude);
+        if !basket {
+            a.basket.clear();
+        }
+        ctrl(&mut a, 's');
+        a.request_parts().expect("a write is pending").0
+    };
+    let example = "rename the --dry flag to --dry-run";
+    assert!(system(false, true).contains(example), "a bare ref");
+    assert!(!system(true, true).contains(example), "mentions only");
+    assert!(!system(false, false).contains(example), "no refs");
 }
 
 #[test]
@@ -281,10 +332,10 @@ fn an_exploring_write_marks_a_ref_outside_its_folder() {
     ctrl(&mut a, 's');
     let p = prompt(&a);
     let out = format!(
-        "<ref note=\"outside the repo, not read\">{}:2-3</ref>",
+        "<ref form=\"bare\" note=\"outside the repo, not read\">{}:2-3</ref>",
         d.0.join("other/c.rs").display()
     );
-    assert!(p.contains(&out) && p.contains("<ref>a.rs:1-2</ref>"), "{p}");
+    assert!(p.contains(&out) && p.contains("<ref form=\"bare\">a.rs:1-2</ref>"), "{p}");
 }
 
 #[test]
@@ -498,5 +549,5 @@ fn ctrl_s_from_an_answer_carries_the_asks_ref() {
     a.key(KeyEvent::from(KeyCode::Char('c')));
     ctrl(&mut a, 's');
     assert!(matches!(a.run.as_ref().map(|r| &r.flow), Some(Flow::Write { .. })));
-    assert!(prompt(&a).contains("<ref>@a.rs#L2-3</ref>"), "{}", prompt(&a));
+    assert!(prompt(&a).contains("<ref form=\"mention\">@a.rs#L2-3</ref>"), "{}", prompt(&a));
 }
