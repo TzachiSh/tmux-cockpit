@@ -12881,7 +12881,10 @@ pg_says "a gone tree whose id starts with a dot is named gone" "is gone" "$PGR" 
     git -C "$PGR/sm" worktree add -q -b sl "$PGD/sl"
     git clone -q --bare "$PGD/src" "$PGD/bare.git"
     git -C "$PGD/bare.git" worktree add -q -b bl "$PGD/bl"
+    git clone -q --bare "$PGD/src" "$PGD/stray.git"
+    git -C "$PGD/stray.git" worktree add -q -b bs "$PGD/bs"
 ) >/dev/null 2>&1
+printf 'not git\n' > "$PGD/stray.git/.git"   # #560: a .git that is no gitdir: file
 PGSM=$(git -C "$PGR/sm" rev-parse --path-format=absolute --git-common-dir)
 is "git lists the separate git dir as the main record" "worktree $PGD/store.git" \
    "$(git -C "$PGD/l1" worktree list --porcelain | head -1)"
@@ -12896,6 +12899,8 @@ for v in "" "$PGOLD"; do
         "not a worktree" "$PGD/sl" "$PGSM" "$v"
     pg_says "$w, a bare repo listed as its main checkout is no worktree" \
         "not a worktree" "$PGD/bl" "$PGD/bare.git" "$v"
+    pg_says "$w, a bare repo holding a stray .git file is no worktree" \
+        "not a worktree" "$PGD/bs" "$PGD/stray.git" "$v"
     "$TMUX_REAL" -L "$PGS" select-window -t "$PGO"
     BG_SHIM=$v bg_goto "$PGS" "$PGO" "$PGD/wk" "$PGD/l1"
     is "$w, a tree linked to a separate git dir still opens" "$PGD/l1" \

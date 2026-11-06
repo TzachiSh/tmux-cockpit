@@ -162,19 +162,29 @@ wt_prunable() {               # <path> <common-dir>
     done
     return 1
 }
+# <path> holds a tree's .git: a dir, as a main checkout's, or a file whose first line starts
+# "gitdir: ", as a linked tree's. A git dir git prints as the main record holds none, or a
+# stray file that is not git's (#537, #560).
+wt_tree() {
+    local g=''
+    [ -d "$1/.git" ] && return 0
+    [ -f "$1/.git" ] || return 1
+    IFS= read -r g 2>/dev/null < "$1/.git"
+    [[ $g == "gitdir: "?* ]]
+}
 wt_list() {
     # git's attribute lines: a label is a whole line, locked and prunable may add a reason
     local attr='^(HEAD |branch |bare$|detached$|(locked|prunable)( |$))'
     local rec line top common cur='' ok=1 z=0
     WORKTREES=()
     # The main record comes first. When the main checkout's .git is a file (separate-git-dir,
-    # a submodule) or the repo is bare, git prints the git dir there, which is no tree and
-    # holds no .git: dropped (#537), as wt_ours drops it on the fallback. A first record
-    # with a .git, a dir or a linked tree's file, is a tree and kept (#560).
+    # a submodule) or the repo is bare, git prints the git dir there, which is no tree:
+    # dropped (#537), as wt_ours drops it on the fallback. A first record that holds a
+    # tree's .git, a linked tree's gitdir: file included, is kept (#560). See wt_tree.
     while IFS= read -r -d '' rec; do
         [[ $rec == "worktree "* ]] || continue
         rec=${rec#worktree }
-        [ "$z" = 0 ] && { z=1; [ -e "$rec/.git" ] || continue; }
+        [ "$z" = 0 ] && { z=1; wt_tree "$rec" || continue; }
         WORKTREES+=("$rec")
     done < <(git worktree list --porcelain -z 2>/dev/null)
     [ "$z" = 1 ] && return 0
