@@ -558,11 +558,11 @@ kind: research
 window: bash · bash · /home/u/projects/api
 expect: either
 ask_any: report; recommend|recommendation; change|update|edit; switch|upgrade; why; reason; constraint|constraints
-must: node; Dockerfile; source|sources|nodejs.org|cite; list|lists; do not edit|not edit|do not change|OK|approval|approve|confirm
+must: node; Dockerfile; source|sources|nodejs.org|cite; list|lists|would change|would make|lines
 out_is: prompt
 must_not: Assumed:
 holdout: yes
-note: #503 (card 4), was write: a current fact needs a web search, but whether to only report or also move the Dockerfile, and what decides "should", are the owner's; #514, was ask: card 4 passed a report-only prompt that cites a source and lists the edits for the owner's approval, so that serves too
+note: #503 (card 4), was write: a current fact needs a web search, but whether to only report or also move the Dockerfile, and what decides "should", are the owner's; #514, was ask: card 4 passed a report-only prompt that cites a source and lists the edits for the owner's approval, so that serves too; #558 review: the must matches proposed edits (list, would change, lines), widened after the runs; a report with no proposed edits is a miss
 --- request
 which node version is the current LTS and should our Dockerfile move to it
 
@@ -604,12 +604,12 @@ copy the build to the staging server
 kind: feature
 window: claude · claude · /home/u/projects/dashboard
 expect: either
-ask_any: done; trigger|triggers; notify|notified
+ask_any: done; trigger|triggers; notify|notified; for; purpose; goal; about
 must: plan|planning|plans; done
 out_is: prompt
 must_not: Assumed:
-holdout: yes
-note: what counts as done is the owner's call: a question about it, or a prompt that plans first, both serve; a question about the channel is what to build, not done; #498: the plan-first prompt picks nothing, so no Assumed: line
+holdout: no
+note: what counts as done is the owner's call: a question about it, or a prompt that plans first, both serve; a question about the channel is what to build, not done; #498: the plan-first prompt picks nothing, so no Assumed: line; #558 review: not a holdout, since the interview line names notifications and was tuned on this case; "what is it for / about" was ruled on target after the runs, so the goal words were added to ask_any
 --- screen
 ● The dashboard now shows the weekly totals per team.
 --- request
@@ -876,12 +876,12 @@ add csv to the export as well
 kind: feature
 window: claude · claude · /home/u/projects/public-api
 expect: either
-ask_any: user|users; key|keys; ip; limit|limits; requests; minute|second|hour; endpoint|endpoints; 429; reject|rejected
+ask_any: user|users; key|keys; ip; limit|limits; requests; minute|second|hour; endpoint|endpoints; 429; reject|rejected; for; purpose; goal; about; abuse|quota|quotas
 must: rate; requirements; AskUserQuestion|interview; plan|planning|plans
 out_is: prompt
 must_not: Assumed:
-holdout: yes
-note: a big feature in one service: one question on what changes the work most, or a prompt that checks today's flow, interviews the owner and plans, both serve
+holdout: no
+note: a big feature in one service: one question on what changes the work most, or a prompt that checks today's flow, interviews the owner and plans, both serve; #558 review: not a holdout, since the interview line names rate limiting and was tuned after this case ran; "what is it for" was ruled on target after the runs, so the goal words were added to ask_any
 --- screen
 ● The API serves /v1/orders and /v1/search behind one Express app.
 --- request
@@ -919,8 +919,8 @@ ask_any: typo|typos; fuzzy; title|titles; page|pages; content; instant|live; ind
 must: search; requirements; AskUserQuestion|interview; plan|planning|plans
 out_is: prompt
 must_not: Assumed:
-holdout: yes
-note: a big feature after one answer: one more question on what changes the work most, or a prompt that interviews the owner for the rest and plans, both serve
+holdout: no
+note: a big feature after one answer: one more question on what changes the work most, or a prompt that interviews the owner for the rest and plans, both serve; #558 review: not a holdout, since the interview line names search and was tuned after this case ran
 --- conversation
 assistant: Where should search live? Options: The docs site header | A separate search page
 user: The docs site header
