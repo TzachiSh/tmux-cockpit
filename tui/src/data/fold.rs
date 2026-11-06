@@ -6,7 +6,9 @@
 
 use super::{Facts, State, first_line, rfc3339, transcript};
 use serde_json::Value;
-use std::cell::{Cell, RefCell};
+#[cfg(test)]
+use std::cell::Cell;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs::{File, Metadata};
 use std::io::{Read, Seek, SeekFrom};
@@ -206,8 +208,10 @@ fn hash(b: &[u8]) -> u64 {
 }
 
 thread_local! {
-    /// One per transcript path, like `TAILS`.
+    /// One per transcript path, like `TAILS`, and like it never evicted: a Track
+    /// is small, its asks pruned to the 2 MB window.
     static TRACKS: RefCell<HashMap<String, Track>> = RefCell::new(HashMap::new());
+    #[cfg(test)]
     static READ: Cell<u64> = const { Cell::new(0) };
 }
 
@@ -242,6 +246,7 @@ impl Track {
         f.seek(SeekFrom::Start(from)).ok()?;
         let mut buf = Vec::new();
         f.take(self.len - from).read_to_end(&mut buf).ok()?;
+        #[cfg(test)]
         READ.with(|r| r.set(r.get() + buf.len() as u64));
         if (buf.len() as u64) < back {
             return None;
