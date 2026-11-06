@@ -86,8 +86,16 @@ pub fn lookups() -> usize {
     LOOKUPS.load(Ordering::SeqCst)
 }
 
-/// Counts one lookup thread down when it ends, whichever way it returns.
+/// One lookup thread counted: up when made, down when dropped, whichever way the
+/// thread returns, and also when a spawn that panicked drops it unrun (#619).
 struct Running;
+
+impl Running {
+    fn start() -> Running {
+        LOOKUPS.fetch_add(1, Ordering::SeqCst);
+        Running
+    }
+}
 
 impl Drop for Running {
     fn drop(&mut self) {
@@ -451,10 +459,11 @@ pub fn flush() {
         Some((s.gen_id, s.path.clone(), ids))
     });
     if let Some((gen_id, path, asked)) = spawn {
-        // counted before the spawn, so no wait can see 0 while it starts
-        LOOKUPS.fetch_add(1, Ordering::SeqCst);
+        // counted before the spawn, so no wait can see 0 while it starts; the
+        // guard rides in the closure, so a spawn that fails drops it uncounted
+        let running = Running::start();
         std::thread::spawn(move || {
-            let _running = Running;
+            let _running = running;
             ask(gen_id, &path, asked)
         });
     }
@@ -541,9 +550,12 @@ fn claude_agents_json(deadline: Duration) -> Option<Vec<u8>> {
         .stderr(Stdio::null())
         // its own group, so the kill takes anything it forked that holds stdout
         .process_group(0);
-    // From the fork to the store in CHILD a hang-up finds no child to kill (#607):
-    // a board that dies there takes the child along. The check after the prctl is
-    // for a board already gone by the time the child runs it.
+    // From the fork to the store in CHILD a hang-up finds no child to kill (#607).
+    // On Linux a board that dies there takes the child along. The check after the
+    // prctl is for a board already gone by the time the child runs it. No test
+    // can reach that check on purpose. PR_SET_PDEATHSIG is Linux-only: on macOS
+    // the window stays open, and a child forked just before the board dies keeps
+    // running until it answers or exits (#619).
     #[cfg(target_os = "linux")]
     {
         let me = std::process::id();
@@ -570,14 +582,19 @@ fn exited(child: &std::process::Child) -> bool {
     let flags = libc::WEXITED | libc::WNOHANG | libc::WNOWAIT;
     // SAFETY: waitid writes only into `info`.
     let r = unsafe { libc::waitid(libc::P_PID, child.id() as libc::id_t, &mut info, flags) };
-    // Under WNOHANG a child with nothing to report leaves `info` zeroed: si_signo is 0
-    // (POSIX), and SIGCHLD once it has exited.
+    // Under WNOHANG a child with nothing to report leaves si_signo 0, and SIGCHLD
+    // once it has exited. POSIX says to zero it; Linux does, and xnu's waitid
+    // leaves `info` untouched instead, which is why it is zeroed above. Darwin's
+    // copyout sets si_signo to SIGCHLD whenever it reports an exit (#619).
     r != 0 || info.si_signo != 0
 }
 
 /// The end of a lookup: wait for the exit without reaping, clear `CHILD` while
 /// the pid is still ours, and only then reap. A `kill_lookup` that read `CHILD`
-/// just before hits an unreaped child at worst, never a reused pid (#607).
+/// just before mostly hits an unreaped child. Practically never a reused pid,
+/// not never: its load and its killpg are two steps on the main thread, and a
+/// preemption between them that outlasts this reap and a pid reuse would still
+/// hit a stranger (#607, #619). push.rs's waiter has the same bound.
 fn finish(child: &mut std::process::Child, out: Option<Vec<u8>>) -> Option<Vec<u8>> {
     let (pid, flags) = (child.id() as libc::id_t, libc::WEXITED | libc::WNOWAIT);
     let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
