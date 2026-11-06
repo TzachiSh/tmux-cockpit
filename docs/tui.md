@@ -886,12 +886,18 @@ folder, then writing`, and tablet mode has an `[ explore ]` button.
   can name any folder as its tree (`core.worktree`, relative or absolute), and
   an inherited `GIT_DIR` or `GIT_WORK_TREE` can point git at another repo, so
   the root is checked: `GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR` and
-  `GIT_INDEX_FILE` are taken out of that git call's environment (a ceiling
-  stays: it only stops the search lower). Then the root is kept only if it
-  holds the pane's folder and its own `.git`, a folder or a `gitdir:` file, is
-  the repo's git dir. Otherwise it is the pane's folder. A linked worktree, a
-  submodule and a separate git dir pass. It is worked out once per panel, and
-  the `explore on` note names it.
+  `GIT_INDEX_FILE` are taken out of the environment of every git call the
+  panel and the board make (`gitsafe::REDIRECT`, #475), and `tmux-review`
+  and `tmux-branch` unset them too (a ceiling stays: it only stops the
+  search lower). The cost: a pane whose only repo is reached through an
+  exported `GIT_DIR` or `GIT_WORK_TREE`, such as a bare dotfiles repo with
+  `GIT_WORK_TREE=$HOME`, shows no repo on the board, the panel, the review
+  and the branch popup. The usual alias form,
+  `git --git-dir=… --work-tree=…`, sets no variable and is unaffected. Then
+  the root is kept only if it holds the pane's folder and its own `.git`, a
+  folder or a `gitdir:` file, is the repo's git dir. Otherwise it is the
+  pane's folder. A linked worktree, a submodule and a separate git dir pass.
+  It is worked out once per panel, and the `explore on` note names it.
 - **Only a local window.** `^R` is refused, with a warn note, when the window
   may be a shell on another machine: its command is not in `LOCAL_CMDS` and not
   an agent name (`capture::is_local`, #433's rule). It is also refused when tmux
@@ -1704,6 +1710,16 @@ reader keeps the last cwd it saw per transcript path, for the same file only
 (device and inode, and not shorter than at the last read), so a stretch of rows
 without one does not lose it.
 
+**Which transcript (#500):** the board, `workdir %N` and the info screen share one
+lookup, `transcript::locate`: `@cockpit_transcript` when it resolves to a regular
+file under the projects dir (`$CLAUDE_CONFIG_DIR/projects`, else
+`~/.claude/projects`; no `..`, no symlink out, since an agent can set the option),
+else `<projects>/<cwd's slug>/<session>.jsonl`, else the first
+`<projects>/*/<session>.jsonl`, sorted. The board polls, so it keeps that last step's
+find until the file is gone and a miss for 10 s; the info screen looks once. How the
+session id is found is each one's own: `@cockpit_session`, else `claude agents` on
+the board and the info screen, and never for `workdir`.
+
 **`job` (#460):** `@cockpit_job_name`, the background job agent-poll bound this
 viewer pane to by its title (docs/states-and-hooks.md), with control and bidi
 characters dropped since it comes from a pane title; `""` when unbound. The board
@@ -1962,10 +1978,18 @@ because tmux latches a `wait-for -S` only when nobody waits: on a shared
 channel the waiter a SIGKILLed board left behind would take a wake that lands
 while a live board is between two waits, and that board would never see it.
 
-When the child returns the board refetches and starts another. Between the two
-nobody waits, and tmux keeps one bit per channel: the first `-S` in that window
-latches it, so the next wait returns at once, and a second `-S` in the same
-window frees it again. That refresh then waits for the 1 s tick.
+When the child returns the board asks for a fetch and starts another wait.
+Between the two nobody waits, and tmux keeps one bit per channel: the first
+`-S` in that window latches it, so the next wait returns at once, and a second
+`-S` in the same window frees it again. That refresh then waits for the 1 s
+tick.
+
+A wake asks for a fetch no sooner than `PUSH_GAP` (250 ms) after the last one
+ended: at once after a quiet gap, else at the gap's end, so the last wake of a
+storm is always fetched (#492). A new selection, a scroll, `v` and a resize to a
+new size fetch nothing: they recapture what is on screen at once, off the last
+fetch's panes. `^L` fetches at once. Each wake also raises SIGWINCH, which
+crossterm reports as a resize to the same size; that one asks for nothing.
 
 The waiter goes with the board on every exit path:
 
@@ -2185,7 +2209,20 @@ Rows are local branches by most recent commit, then remote-only branches. `●` 
 the current branch. `⑂` marks a branch checked out in another worktree: git refuses
 to switch to it, so `↵` prints `goto <worktree path>` and the script selects the pane
 working in that tree (an agent's first), or opens a window there; a path with a newline
-in it gives a `✕` note and prints nothing. The preview is
+in it gives a `✕` note and prints nothing. That needs git 2.36 or later, for
+`worktree list -z`. Older git (2.7 to 2.35) prints a newline path across two lines.
+A tree with one is usually left out, since its second line is no worktree attribute,
+but a crafted name can print lines that read like git's own and pair its branch with
+some other path. That path must be this repository's: its `.git` is the common dir
+(the main checkout), or a `.git` file naming an entry in the common dir's `worktrees/`
+that names that file back (a linked tree). A `.git` that is a symlink or hard link to
+one of these counts, as it does for git, so a directory need not be a real checkout to
+pass. Another repository's checkout, or a directory with no `.git`, is no worktree. The
+board also wants the branch to be the one that tree's `HEAD` names, so a forged line
+pairing a real tree with another branch gives that branch no `⑂`. A path that is gone
+is kept, since it has no `HEAD` to read: its branch shows `⑂`, `↵` says it is gone and
+suggests `git worktree prune`, and for a line a crafted name forged, prune removes
+nothing, because the tree that printed it still exists. The preview is
 `git log --graph --oneline -30` of the selection, read on a worker thread and cached
 per branch; it shows `loading…` until it arrives, and below 60 columns it is hidden.
 
@@ -2274,7 +2311,10 @@ order are the board's. Unlike the fetch it never runs `claude agents`: a pane
 with no `@cockpit_session` has no transcript to read, so its dir is
 `@cockpit_dir`, else its launch dir. Lossy UTF-8, as above. Exit 0 with the
 line; exit 1 and nothing on stdout when the pane is not there, is not an
-agent's, or has no dir; exit 2 for a missing or malformed pane id.
+agent's, or its dir is not on disk (#507): a removed launch dir, or a name that is
+not UTF-8, which the lossy decode turns into a path that does not exist. The board
+still draws that path; a script gets no dir to cd into. Exit 2 for a missing or
+malformed pane id, with the usage on stderr only.
 
 ## The board as the review queue (#253)
 
@@ -2313,6 +2353,55 @@ pane, is a bare `@<digits>` (an older binary's, whose confirm promised the
 window) or a symlink, or if the pane is gone. The `✓` note and the log carry
 the pane and the `session:index` and name of its window.
 The board key waits on the board's verb hook (not shipped).
+
+## The agents cache (#492)
+
+`claude agents --json` maps an agent's pid to its session id, for panes whose
+hooks never set `@cockpit_session`. It takes 170-210 ms, so the board's fetch
+never waits on it. A pane with no session asks the cache; the fetch's end starts
+the call on a thread of its own, one at a time, under the 2.5 s deadline (#294)
+that kills its process group. A session the cache holds is served whatever its
+age, and asked about again once the answer is 60 s old, so an id that changed
+under its pid shows within a minute. The one-shot `--json` and `--rows` have no
+later fetch: they ask and wait, under the same deadline and kill. A board that
+quits, or is hung up on or signalled, mid-call kills the call's process group.
+Until the first answer lands that pane shows what it
+shows when the call fails, no session; the next fetch has it. A pid the call
+did not list is cached as a negative for 60 s, so it is not asked again; the
+call runs only for an agent pid that is neither a known positive nor a fresh
+negative.
+
+The answer is kept in memory and in
+`${XDG_CACHE_HOME:-~/.cache}/tmux-cockpit/agents.json`, mode 600 in a mode 700
+directory, written to a temp file in that directory and renamed over:
+
+```json
+{"v":1,"at":1790000000,
+ "by_pid":{"4242:81234567":{"session":"<id>","cwd":"/abs/launch/dir","kind":"interactive"}},
+ "none":["4300:81234999"]}
+```
+
+- `at` is the epoch second of the write. `kind` is `interactive` or `background`.
+- A key is `<pid>:<start>`, `start` being field 22 of `/proc/<pid>/stat`, in
+  clock ticks. A reused pid has another start, so it never matches.
+- `none` holds the negatives, keyed the same way.
+- `cwd` is the session's LAUNCH dir, not where it works now (#448). A reader
+  prefers the transcript's newest main-thread cwd, as the board does, and uses
+  this only when it finds no transcript.
+- `at` is when a `claude agents --json` call answered with a JSON array, and
+  nothing else moves it: a failed or empty-handed call writes nothing.
+- A reader treats the file as absent when `at` is more than 90 s old, `v` is not
+  1, it does not parse, it is not a regular file (a FIFO, a symlink) or it is over
+  1 MiB. It drops an entry whose session is not 1 to 64 letters, digits and
+  dashes. It drops a key whose pid's start differs from the key's. On macOS
+  there is no `/proc`, so every entry is absent there and the board keeps its
+  answer in memory for 60 s instead.
+- While any agent pane lacks `@cockpit_session` the board asks at most once a
+  minute, so the file is under 90 s old for as long as it matters. A second board
+  starts from a fresh file.
+
+`data::agents::cached(pid)` is the read-only reader (`read_file` takes the path,
+proc root and clock, for a test).
 
 ## Sessions
 

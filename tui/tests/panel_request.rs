@@ -1,5 +1,7 @@
 //! The `claude -p` call against fake claude scripts. Each test builds its own
 //! `Call`, so nothing here touches the process environment.
+mod fake;
+
 use cockpit_tui::panel::request::{Call, Fail, Profile, Request, prompt_file, read_dir_ok};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -62,8 +64,7 @@ impl Rig {
         let p = dir.join("claude");
         let body = script.replace("$D", &dir.display().to_string());
         let _g = FORK.lock().unwrap_or_else(|e| e.into_inner());
-        std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
-        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        fake::write_exec(&p, &format!("#!/bin/sh\n{body}\n"));
         Rig { dir }
     }
 

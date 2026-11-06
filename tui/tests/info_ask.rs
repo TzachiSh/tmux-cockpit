@@ -1,8 +1,9 @@
 //! #453: the info screen reads the open AskUserQuestion's question as the
 //! state's message. Its own binary: `gather` reads COCKPIT_TMUX and
 //! CLAUDE_CONFIG_DIR, process-global, so no other test shares them.
+mod fake;
+
 use cockpit_tui::data::info::gather;
-use std::os::unix::fs::PermissionsExt;
 
 /// A shimmed tmux whose pane %1 is in `state` with the hook's generic text, its
 /// transcript `body`. Returns the gathered (state, msg).
@@ -29,14 +30,17 @@ fn facts(tag: &str, state: &str, body: &str) -> (String, String) {
         "",
     ];
     std::fs::write(d.join("display"), f.join(&us.to_string())).unwrap();
+    // the board's FIELDS row, which the agent test (#519) reads: @panestate makes it one
+    let board = ["%1", "w:0", "win", "claude", state, "-", "-", "s1", "/", "100", "-", "-", "@1"];
+    std::fs::write(d.join("rows"), board.join(&us.to_string())).unwrap();
     let shim = d.join("tmux");
     let sh = format!(
-        "#!/bin/sh\ncase \"$1\" in\ndisplay-message) cat {0}/display ;;\nshow-option) echo {1} ;;\nesac\n",
+        "#!/bin/sh\ncase \"$1\" in\ndisplay-message) case \"$5\" in *cockpit_tui_version*) cat {0}/display ;; \
+         *) cat {0}/rows ;; esac ;;\nshow-option) echo {1} ;;\nesac\n",
         d.display(),
         t.display()
     );
-    std::fs::write(&shim, sh).unwrap();
-    std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
+    fake::write_exec(&shim, &sh);
     // SAFETY: the one test in this binary, so no thread reads the environment meanwhile.
     unsafe {
         std::env::set_var("COCKPIT_TMUX", &shim);

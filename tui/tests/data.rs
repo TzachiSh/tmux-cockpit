@@ -1,10 +1,12 @@
 //! The data layer's caches, classifier and pane reads, driven through PATH
 //! shims: no real tmux, no real ps, no clock assertion and no sleep. Every
 //! fixture is a literal, so a failure names one behaviour and not the box.
+mod fake;
+
 use cockpit_tui::data::gitsafe::{SAFE, no_filters, tree_stat};
 use cockpit_tui::data::{Pane, git_facts, list_panes, preview, screen, split_cursor, view};
+use fake::write_exec;
 use std::fs::{FileTimes, OpenOptions};
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
@@ -37,11 +39,6 @@ impl Drop for Env {
             }
         }
     }
-}
-
-fn write_exec(p: &Path, body: &str) {
-    std::fs::write(p, body).unwrap();
-    std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o755)).unwrap();
 }
 
 pub struct Rig {
@@ -676,6 +673,45 @@ fn planted_git_config_never_runs() {
     assert_eq!(pm, "+5 -1  ?1 new", "the hardened diff still measures the tree");
 }
 
+/// The board may start with a dotfiles setup's GIT_DIR, or one of its kin, in
+/// its environment: a row's name, branch, diff count and root stay the pane repo's.
+#[test]
+fn an_inherited_git_variable_never_moves_a_boards_row() {
+    let r = Repo::new("redirect");
+    // tracked past the cap: only the inherited index makes it look untracked, so big
+    std::fs::File::create(r.dir.join("core"))
+        .unwrap()
+        .set_len(33 * 1024 * 1024)
+        .unwrap();
+    r.git(&["add", "core"]);
+    r.git(&["-c", "user.name=t", "-c", "user.email=t@e", "commit", "-q", "-m", "core"]);
+    let other = r.dir.join(".git/other"); // inside .git: never in the pane repo's tree
+    let o = other.display().to_string();
+    let git = |args: &[&str]| assert!(r.git(&[&["-C", o.as_str()][..], args].concat()).status.success());
+    std::fs::create_dir_all(&other).unwrap();
+    git(&["init", "-q", "-b", "elsewhere"]);
+    std::fs::write(other.join("g"), "x\n").unwrap();
+    git(&["add", "-A"]);
+    git(&["-c", "user.name=t", "-c", "user.email=t@e", "commit", "-q", "-m", "other"]);
+    let want = git_facts(&r.path());
+    assert_eq!(want.1, "clean", "{want:?}");
+    let rows = [
+        ("GIT_DIR", format!("{o}/.git")),
+        ("GIT_WORK_TREE", o.clone()),
+        ("GIT_COMMON_DIR", format!("{o}/.git")),
+        ("GIT_INDEX_FILE", format!("{o}/.git/index")),
+    ];
+    let moved: Vec<&str> = rows
+        .into_iter()
+        .filter(|(var, val)| {
+            let _e = Env::set(&[(var, val.clone())]); // `r` holds ENV
+            git_facts(&r.path()) != want
+        })
+        .map(|(var, _)| var)
+        .collect();
+    assert_eq!(moved, Vec::<&str>::new(), "these moved the row");
+}
+
 fn stat(r: &Repo, base: Option<&str>) -> Option<(u64, u64, u64, String)> {
     tree_stat(&r.path(), &r.dir.join(".git").display().to_string(), base)
 }
@@ -935,7 +971,13 @@ fn a_hanging_claude_agents_does_not_hang_the_read() {
     assert_eq!(ids(&ps), ["%1"]);
     assert_eq!(get(&ps, "%1").sess, "");
     assert!(took < std::time::Duration::from_secs(8), "the read took {took:?}");
-    // the fake ran, so the deadline was what ended it
+    // the fake ran (on its own thread, #492), so the deadline was what ended it
+    for _ in 0..2000 {
+        if r.dir.join("claude.pid").exists() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
     assert!(r.dir.join("claude.pid").exists());
 }
 

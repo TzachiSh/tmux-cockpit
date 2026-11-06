@@ -1,7 +1,8 @@
 //! #500: `cockpit-tui workdir %N` prints the board's `Pane.dir` for one pane, and
 //! never asks `claude agents`. Both binaries run under one shimmed tmux, so the
 //! board's `--json` and `workdir` read the same fixture.
-use std::os::unix::fs::PermissionsExt;
+mod fake;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -14,8 +15,7 @@ impl Drop for Tmp {
 }
 
 fn exec(p: &Path, body: &str) {
-    std::fs::write(p, body).unwrap();
-    std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    fake::write_exec(p, body);
 }
 
 /// The board's FIELDS row: id, cmd, @panestate, @cockpit_session, cwd, pid, @cockpit_dir.
@@ -40,7 +40,7 @@ impl Rig {
             &format!(
                 "#!/bin/sh\ncase \"$1\" in\n\
                  list-panes) cat '{s}/rows' ;;\n\
-                 display-message) grep \"^$4$(printf '\\037')\" '{s}/rows' || printf '\\037%.0s' $(seq 15) ;;\n\
+                 display-message) grep -a \"^$4$(printf '\\037')\" '{s}/rows' || printf '\\037%.0s' $(seq 15) ;;\n\
                  show-option) printf '|claude|codex|' ;;\n\
                  esac\n"
             ),
@@ -158,6 +158,29 @@ fn workdir_exits_1_for_no_pane_or_no_agent_and_2_for_a_bad_id() {
     assert_eq!(r.run(&["workdir", "%9"]), (Some(1), String::new()), "no such pane");
     assert!(!r.t.0.join("ps-calls").exists(), "a missing pane forks no ps");
     for bad in [&["workdir"][..], &["workdir", "6"], &["workdir", "%"], &["workdir", "%6", "%7"]] {
-        assert_eq!(r.run(bad).0, Some(2), "{bad:?}");
+        assert_eq!(r.run(bad), (Some(2), String::new()), "{bad:?}: the usage goes to stderr");
     }
+}
+
+/// #507: a dir that is not on disk is no dir: exit 1 and nothing on stdout, not a
+/// path a script would cd into. Rows: a launch dir since removed, and one whose
+/// name is not UTF-8, which tmux's lossy decode turns into a path that is not there.
+#[test]
+fn workdir_exits_1_for_a_dir_that_is_not_on_disk() {
+    use std::os::unix::ffi::OsStrExt;
+    let r = Rig::new("gone");
+    let gone = r.dir("gone");
+    std::fs::remove_dir(&gone).unwrap();
+    let mut raw = r.t.0.as_os_str().as_bytes().to_vec();
+    raw.extend_from_slice(b"/bad\xffname");
+    std::fs::create_dir(std::ffi::OsStr::from_bytes(&raw)).unwrap();
+    let mut rows = (row("%1", "claude", "running", "-", &gone, "101", "") + "\n").into_bytes();
+    let bad = row("%2", "claude", "running", "-", "@BAD@", "102", "") + "\n";
+    let at = bad.find("@BAD@").unwrap();
+    rows.extend_from_slice(&bad.as_bytes()[..at]);
+    rows.extend_from_slice(&raw);
+    rows.extend_from_slice(&bad.as_bytes()[at + 5..]);
+    std::fs::write(r.t.0.join("rows"), rows).unwrap();
+    assert_eq!(r.run(&["workdir", "%1"]), (Some(1), String::new()), "a removed dir");
+    assert_eq!(r.run(&["workdir", "%2"]), (Some(1), String::new()), "a non-UTF-8 dir");
 }

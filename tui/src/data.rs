@@ -1,4 +1,5 @@
 //! tmux and transcript reads. The frozen contract (#61) is "The freeze" in docs/tui.md.
+pub mod agents;
 pub mod fleet;
 pub mod gitsafe;
 pub mod info;
@@ -227,18 +228,6 @@ pub fn hash_rows(ps: &[Pane], extra: &str) -> u64 {
     ps.hash(&mut h);
     extra.hash(&mut h);
     h.finish()
-}
-
-/// `~/.claude/projects/<slug>/<uuid>.jsonl`; the slug maps every byte outside
-/// `[A-Za-z0-9-]` to `-`. `<uuid>/subagents/` holds only sidechains.
-fn transcript_path(sess: &str, path: &str) -> String {
-    let home = std::env::var("HOME").unwrap_or_default();
-    // Per byte, not per char: a two-byte glyph in the cwd becomes two dashes.
-    let slug: String = path
-        .bytes()
-        .map(|b| if b.is_ascii_alphanumeric() || b == b'-' { b as char } else { '-' })
-        .collect();
-    format!("{home}/.claude/projects/{slug}/{sess}.jsonl")
 }
 
 /// The last `cap` bytes as whole rows, decoded lossily: the window can open
@@ -524,13 +513,14 @@ fn parse(lines: Vec<String>) -> Facts {
     fa
 }
 
-/// doing / said / asked and their ages, from the tail of the session transcript.
-/// Returns the transcript's cwd, `""` when it has none.
-fn read_transcript(p: &mut Pane) -> String {
-    if p.sess.is_empty() {
+/// doing / said / asked and their ages, from the tail of the session transcript,
+/// which `transcript::locate` finds from `opt` (@cockpit_transcript), the session id
+/// and the cwd. Returns the transcript's cwd, `""` when it has none.
+fn read_transcript(p: &mut Pane, opt: &str) -> String {
+    let Some(t) = transcript::locate(opt, &p.sess, &p.path) else {
         return String::new();
-    }
-    let fa = read_facts(&transcript_path(&p.sess, &p.path));
+    };
+    let fa = read_facts(&t.to_string_lossy());
     // @panestate wins; the transcript speaks only for panes the hooks never touched.
     if p.state == State::Unknown {
         p.state = fa.state;
@@ -569,83 +559,6 @@ fn rfc3339(t: &str) -> Option<SystemTime> {
     let days = era * 146097 + doe - 719468;
     let secs = days * 86400 + h * 3600 + mi * 60 + s as i64;
     Some(SystemTime::UNIX_EPOCH + Duration::from_secs(secs.max(0) as u64))
-}
-
-thread_local! {
-    /// `claude agents --json` dwarfs the rest of a tick and changes only when a
-    /// session starts or ends; a new pane on this path waits up to the TTL.
-    static AGENTS: std::cell::RefCell<Option<(std::time::Instant, HashMap<String, String>)>> = const { std::cell::RefCell::new(None) };
-}
-
-fn agent_sessions_cached() -> HashMap<String, String> {
-    AGENTS.with(|c| {
-        let mut c = c.borrow_mut();
-        if let Some((t, m)) = c.as_ref()
-            && t.elapsed() < Duration::from_secs(60)
-        {
-            return m.clone();
-        }
-        let m = agent_sessions();
-        *c = Some((std::time::Instant::now(), m.clone()));
-        m
-    })
-}
-
-/// `claude agents --json` maps a pid to a session id, for panes whose
-/// @cockpit_session the hooks never set.
-///
-/// #294: on the fetch thread, so a `claude` that hangs must not hang the board.
-/// It gets `AGENTS_DEADLINE`, under the board's 3 s stale threshold (the call
-/// takes about 0.2 s), then its process group is killed and the answer is empty.
-fn agent_sessions() -> HashMap<String, String> {
-    let out = claude_agents_json(AGENTS_DEADLINE).unwrap_or_default();
-    let v: Value = serde_json::from_slice(&out).unwrap_or(Value::Null);
-    v.as_array()
-        .map(|a| {
-            a.iter()
-                .filter_map(|r| Some((r["pid"].as_i64()?.to_string(), r["sessionId"].as_str()?.to_string())))
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-const AGENTS_DEADLINE: Duration = Duration::from_millis(2500);
-
-/// `claude agents --json`'s stdout, or `None` on a spawn failure or when it
-/// has not closed by the deadline.
-fn claude_agents_json(deadline: Duration) -> Option<Vec<u8>> {
-    use std::os::unix::process::CommandExt;
-    use std::process::Stdio;
-    let mut child = Command::new("claude")
-        .args(["agents", "--json"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        // its own group, so the kill takes anything it forked that holds stdout
-        .process_group(0)
-        .spawn()
-        .ok()?;
-    let mut stdout = child.stdout.take()?;
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let mut b = Vec::new();
-        let _ = stdout.read_to_end(&mut b);
-        let _ = tx.send(b);
-    });
-    let end = Instant::now() + deadline;
-    let out = rx.recv_timeout(deadline).ok();
-    // stdout closed is not exited: wait out what is left of the deadline
-    while out.is_some() && Instant::now() < end {
-        if !matches!(child.try_wait(), Ok(None)) {
-            return out;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    // Not reaped yet, so the pid and its group are still this child's.
-    // SAFETY: killpg takes a plain integer and touches no memory.
-    unsafe { libc::killpg(child.id() as libc::pid_t, libc::SIGKILL) };
-    let _ = child.wait();
-    out
 }
 
 /// One `ps` for the whole fleet, serving both the agent classifier and the
@@ -689,7 +602,8 @@ fn tree(pid: &str, t: &Procs) -> Vec<String> {
     let mut out = vec![];
     let mut q = vec![(pid.to_string(), 0usize)];
     while let Some((p, d)) = q.pop() {
-        if !seen.insert(p.clone()) {
+        // the lookup's child and all under it are the board's, not the pane's agent
+        if !seen.insert(p.clone()) || agents::is_lookup_child(&p) {
             continue;
         }
         if d < MAX_DEPTH
@@ -723,7 +637,8 @@ fn proc_tree(root: &std::path::Path, pid: &str) -> Option<Vec<String>> {
     let mut out = vec![];
     let mut q = vec![(pid.to_string(), 0usize)];
     while let Some((p, d)) = q.pop() {
-        if !seen.insert(p.clone()) {
+        // the lookup's child and all under it are the board's, not the pane's agent
+        if !seen.insert(p.clone()) || agents::is_lookup_child(&p) {
             continue;
         }
         if d < MAX_DEPTH {
@@ -778,11 +693,8 @@ fn version_shaped(s: &str) -> bool {
     seps >= 2 && s.starts_with(|c: char| c.is_ascii_digit()) && s.chars().all(|c| c.is_ascii_digit() || c == '.' || c == '_')
 }
 
-fn find_session(pid: &str, procs_t: &mut Option<Procs>, agents: &HashMap<String, String>) -> String {
-    lineage(pid, procs_t)
-        .iter()
-        .find_map(|(p, _)| agents.get(p).cloned())
-        .unwrap_or_default()
+fn find_session(pid: &str, procs_t: &mut Option<Procs>) -> String {
+    agents::resolve(&lineage(pid, procs_t))
 }
 
 /// repo⑂branch, the `±` string and the repo root, for one path.
@@ -1023,7 +935,7 @@ pub fn list_panes() -> Option<Vec<Pane>> {
 pub fn list_fleet() -> Option<(Vec<Pane>, std::collections::BTreeSet<String>)> {
     let out = tmux(&["list-panes", "-a", "-F", FIELDS])?;
     let mut sessions = std::collections::BTreeSet::new();
-    let (mut agents, mut procs_t) = (None, None);
+    let mut procs_t = None;
     let (mut ps, mut dirs) = (vec![], vec![]);
     for l in out.lines() {
         let f: Vec<&str> = l.split(SEP).collect();
@@ -1038,8 +950,7 @@ pub fn list_fleet() -> Option<(Vec<Pane>, std::collections::BTreeSet<String>)> {
         };
         log_ended_flip(&p, live_by);
         if p.sess.is_empty() {
-            let agents = agents.get_or_insert_with(agent_sessions_cached);
-            p.sess = find_session(&p.pid, &mut procs_t, agents);
+            p.sess = find_session(&p.pid, &mut procs_t);
         }
         dirs.push(work_candidates(&mut p, &f));
         (p.pinned, p.delivered) = spool_counts(&p.spool);
@@ -1051,6 +962,8 @@ pub fn list_fleet() -> Option<(Vec<Pane>, std::collections::BTreeSet<String>)> {
         }
         ps.push(p);
     }
+    // #492: the answer comes later, from a thread of its own; this fetch never waits on it
+    agents::flush();
     fill_git(&mut ps, &dirs);
     ps.sort_by_key(|p| p.state);
     Some((ps, sessions))
@@ -1114,17 +1027,36 @@ fn row_pane(f: &[&str], procs_t: &mut Option<Procs>) -> Option<(Pane, &'static s
 /// @cockpit_transcript come after the 13 a row from an older format has, so such a
 /// row still reads: 13 to 16 are optional.
 fn work_candidates(p: &mut Pane, f: &[&str]) -> [String; 3] {
-    let said_cwd = read_transcript(p);
+    let said_cwd = read_transcript(p, f.get(15).copied().unwrap_or_default());
     let opt = f.get(13).copied().unwrap_or_default().to_string();
     [opt, said_cwd, p.path.clone()]
 }
 
 /// #500: the board's `Pane.dir` for one pane, off one `display-message` of the
 /// board's own FIELDS and the same per-row code as the fetch. `None` for a pane
-/// that is not there, is not an agent's, or has no dir. Unlike the fetch it never
+/// that is not there, is not an agent's, or whose dir is not on disk (#507). Unlike the fetch it never
 /// runs `claude agents` (hundreds of ms): a pane with no @cockpit_session has no
 /// transcript to read, so its dir is @cockpit_dir, else its launch dir.
 pub fn workdir(pane: &str) -> Option<String> {
+    let (mut p, f) = one_row(pane)?;
+    let f: Vec<&str> = f.iter().map(String::as_str).collect();
+    let cands = work_candidates(&mut p, &f);
+    // #507: a dir that is not on disk (removed, or a name tmux's lossy decode
+    // changed) is no dir: a script must not cd into it
+    fleet::work_dirs(&[cands]).pop().filter(|d| std::path::Path::new(d).is_dir())
+}
+
+/// #519: the board's agent test for one pane (`row_pane`: @panestate, an agentish
+/// command, a version-shaped name, the process tree), so the info screen cannot
+/// decide differently from the board which panes have a transcript to read.
+pub fn is_agent(pane: &str) -> bool {
+    one_row(pane).is_some()
+}
+
+/// One pane's FIELDS row, read with one `display-message`, through the fetch's
+/// `row_pane`: its Pane and the fields, or `None` when it is not there or not an
+/// agent's.
+fn one_row(pane: &str) -> Option<(Pane, Vec<String>)> {
     let out = tmux(&["display-message", "-p", "-t", pane, FIELDS])?;
     let f: Vec<&str> = out.trim_end_matches('\n').split(SEP).collect();
     // A missing pane exits 0 with every field empty: the resolved id is the test,
@@ -1132,9 +1064,8 @@ pub fn workdir(pane: &str) -> Option<String> {
     if f[0] != pane {
         return None;
     }
-    let (mut p, _) = row_pane(&f, &mut None)?;
-    let cands = work_candidates(&mut p, &f);
-    fleet::work_dirs(&[cands]).pop().filter(|d| !d.is_empty())
+    let (p, _) = row_pane(&f, &mut None)?;
+    Some((p, f.iter().map(|s| s.to_string()).collect()))
 }
 
 /// A pane can hold one multi-megabyte line, and the ANSI parser re-runs over the
@@ -1147,13 +1078,24 @@ pub fn preview(id: &str, n: usize) -> Option<String> {
     if n == 0 {
         return Some(String::new());
     }
-    // -J so a wrap point cannot split an ANSI sequence and hand the parser halves.
-    let out = tmux(&["capture-pane", "-ep", "-J", "-t", id, "-S", &format!("-{n}")])?;
+    let a = preview_args(id, n);
+    let out = tmux(&a.iter().map(String::as_str).collect::<Vec<_>>())?;
+    Some(shape_preview(&out, n))
+}
+
+/// The tmux argv of one preview's capture, the newest `n` rows of `id`. -J so
+/// a wrap point cannot split an ANSI sequence and hand the parser halves.
+pub fn preview_args(id: &str, n: usize) -> [String; 7] {
+    ["capture-pane", "-ep", "-J", "-t", id, "-S", &format!("-{n}")].map(String::from)
+}
+
+/// A preview off the stdout of [`preview_args`]: its newest `n` lines, capped.
+pub fn shape_preview(out: &str, n: usize) -> String {
     // #284: ansi-to-tui drops the rest of a line after an OSC 8 link that ends
     // in `ESC \`, the form tmux emits; no OSC draws anything in a preview
-    let out = strip_osc(&out);
+    let out = strip_osc(out);
     let lines: Vec<&str> = out.trim_end().lines().collect();
-    Some(cap(&lines[lines.len().saturating_sub(n)..].join("\n")))
+    cap(&lines[lines.len().saturating_sub(n)..].join("\n"))
 }
 
 /// The newest [`PREVIEW_MAX`] bytes of `text`. A cut can land inside an escape,

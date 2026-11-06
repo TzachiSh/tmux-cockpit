@@ -49,9 +49,9 @@ pub fn par_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec
 /// an absolute path naming a directory wins, else the last. A relative one would
 /// be read against the board's own cwd, so it never counts. A worktree made by
 /// hand keeps the process in the main checkout, so the cwd comes last; a dangling
-/// option (the tree was removed) falls through. tmux-review's `pane_dir` rule,
-/// extended. Every candidate is off a read the fetch already made, so this forks
-/// nothing.
+/// option (the tree was removed) falls through. `cockpit-tui workdir %N` prints
+/// this for one pane, for scripts (#500). Every candidate is off a read the fetch
+/// already made, so this forks nothing.
 pub fn work_dirs(panes: &[[String; 3]]) -> Vec<String> {
     panes
         .iter()

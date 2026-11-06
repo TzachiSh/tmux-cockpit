@@ -1,9 +1,10 @@
 //! #452: the info screen, `info --json` and the board name one work dir. Its own
 //! binary: `gather` reads COCKPIT_TMUX, CLAUDE_CONFIG_DIR and HOME, process-global,
 //! so every test here holds `ENV`.
+mod fake;
+
 use cockpit_tui::data::info::{Facts, WorkFrom, gather, git_root};
 use cockpit_tui::data::list_panes;
-use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -59,13 +60,13 @@ fn rig(t: &Tmp, cwd: &str, opt: &str, said: &str) -> Vec<(&'static str, String)>
     ];
     std::fs::write(d.join("rows"), board.join("\u{1f}") + "\n").unwrap();
     let sh = format!(
-        "#!/bin/sh\ncase \"$1\" in\nlist-panes) cat '{0}/rows' ;;\ndisplay-message) cat '{0}/display' ;;\n\
+        "#!/bin/sh\ncase \"$1\" in\nlist-panes) cat '{0}/rows' ;;\n\
+         display-message) case \"$5\" in *cockpit_tui_version*) cat '{0}/display' ;; *) cat '{0}/rows' ;; esac ;;\n\
          show-option) case \"$*\" in *@cockpit_transcript*) echo '{1}' ;; *) echo '|claude|' ;; esac ;;\nesac\n",
         d.display(),
         tr.display()
     );
-    std::fs::write(d.join("tmux"), sh).unwrap();
-    std::fs::set_permissions(d.join("tmux"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    fake::write_exec(&d.join("tmux"), &sh);
     vec![
         ("COCKPIT_TMUX", d.join("tmux").display().to_string()),
         ("CLAUDE_CONFIG_DIR", home.join(".claude").display().to_string()),
