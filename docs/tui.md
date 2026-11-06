@@ -1957,7 +1957,7 @@ workspace, no crate split.
 | `info` | the pane info screen (`cockpit-tui info %N`, the board's `i` overlay) and `data::info`, its facts: git root, review base, the transcript rows |
 | `mdview` | the `cockpit-tui view` viewer (#283, #365): loading with its cap, the find, the keys and its screen on `pick`'s /dev/tty; `mdview::render` lays markdown out as rows, `mdview::code` any other text file as numbered highlighted rows, both pure |
 | `pick` | the `cockpit-tui pick` list: row parsing, the case-insensitive filter, selection, click and wheel, and its screen; draws on /dev/tty |
-| `files` | the `cockpit-tui files <dir>` browser (#363) on `pick`'s list and screen: one folder, folders first, `↵` in or view, `alt-e` edit, `←` up, `.` hidden, `alt-i` ignored, `alt-c` copy; prints `view <path>`, `open <path>` or `copy <path>` |
+| `files` | the `cockpit-tui files <dir>` browser (#363) on `pick`'s list and screen: one folder, folders first, `↵` in or view, `alt-e` edit, `←` up, `.` hidden, `alt-i` ignored, `alt-c` copy, `alt-a` add; prints `view <path>`, `open <path>`, `copy <path>` or `add <path>` |
 | `sessions` | the `cockpit-tui sessions` view (#245) on `pick`'s screen; `data::sessions` the one `list-panes -a` read, the order and the freeze |
 | `panel` | the type-panel port: capture, redaction, prompt envelope, the `claude -p` request, reply parsing; `panel::action` the action, text, cmd and state files |
 | `highlight` | the code lexer (#282) and `split`, the one fence rule the panel's view and its reply parsing share (#283) |
@@ -2216,8 +2216,15 @@ read as an empty basket. In any debug build, and so under `cargo test` from any
 directory, the basket runs tmux only on a private `-L`/`-S` server or a stub,
 never the user's; the repo root's `.cargo/config.toml` sets
 `COCKPIT_TEST_TMUX_GUARD` for a release test run too, and
-`COCKPIT_TEST_TMUX_GUARD=0` lifts it by hand. The panel's side (showing the
-basket, removing from it, sending it) is the next PR.
+`COCKPIT_TEST_TMUX_GUARD=0` lifts it by hand.
+
+The file browser's `alt-a` prints `add <path>` for a file (a folder is a note).
+`tmux-open-path` takes it only as it takes `view`: one line, an absolute path to
+an existing regular file, and no control character in it. It then runs
+`cockpit-tui basket add <pane> <file>` with its own pane, only one that reads
+`%N`, and shows the line that prints (`added sub/n.txt (1 in the basket)`). The
+basket's contents are never logged. The panel's side (showing the basket,
+removing from it, sending it) is the next PR.
 
 ## `cockpit-tui branch` (#246)
 
@@ -2285,13 +2292,14 @@ acts on the one line it prints; the binary never mutates.
 | `.` on an empty filter | shows or hides dotfiles; elsewhere it is a letter of the filter |
 | `alt-i` | shows or hides what `.gitignore`, `.ignore` and git's global excludes hide (the `ignore` crate, one level); shown entries are dim; `.git` is never listed |
 | `alt-c` | prints `copy <path>` for the row, a folder included |
+| `alt-a` | on a file, prints `add <path>`: the pane's prompt basket (#365 child 5); on a folder, a `✕` note and nothing |
 | `esc` `^C` | cancels, prints nothing, exit 1 |
 
 Folders come first, then names without regard to case; a symlink to a folder is a
 folder, a broken one a file. A folder over 20000 entries lists the first 20000 and
 says so in the header. The path printed is the folder as `realpath` sees it joined to
 the row's own bytes, so a name that is not UTF-8 still prints exactly. A name with a
-newline cannot ride one line: `↵` and `alt-c` give a `✕` note and print nothing.
+newline cannot ride one line: `↵`, `alt-c` and `alt-a` give a `✕` note and print nothing.
 Exit 2 is a bad argument, a folder that cannot be read or no terminal.
 
 On a touch client the script opens a file in a terminal editor window instead of

@@ -14324,6 +14324,8 @@ printf '%s\n' "\$*" > "$FB/tui.args"
 cat "$FB/errtext" >&2
 # the viewer prints what vout holds (an \`edit N\` for its e key), the browser its answer
 [ "\$1" = view ] && { cat "$FB/vout"; exit 0; }
+# #365 child 5: alt-a's add, routed to \`basket add <pane> <file>\`
+[ "\$1" = basket ] && { printf '%s\n' "\$*" > "$FB/basket.args"; echo "added it (1 in the basket)"; exit 0; }
 cat "$FB/answer"
 exit \$(cat "$FB/rc")
 STUB
@@ -14438,6 +14440,19 @@ is "open on a markdown file goes to code, not the viewer" "files $FBD|1" \
 fb off "view $FBD/sub/n.txt\n" 0
 fbwait "$FB/code.log"
 is "view with the viewer off falls back to code" "1|1" "$(fbn run-shell)|$(grep -c 'n.txt' "$FB/code.log")"
+
+# #365 child 5: the browser's alt-a prints `add <abs path>`; only a regular file
+# goes on, to the binary's `basket add <pane> <file>`, with the script's own pane
+FBC="$FBD/c"$'\x1b'"d.txt"; : > "$FBC"
+rm -f "$FB/basket.args"; fb off "add $FBD/sub/n.txt\n" 0
+is "add a file: the binary adds it to the pane's basket" "basket add $FBP $FBD/sub/n.txt" "$(cat "$FB/basket.args" 2>/dev/null)"
+is "and says what it did" "1" "$(grep -c 'added it (1 in the basket)' "$FB/calls")"
+for fba in "a folder|add $FBD/sub\n" "a FIFO|add $FBD/fifo\n" "a relative path|add sub/n.txt\n" \
+           "a second line|add $FBD/sub/n.txt\nadd $FBD/sub/n.md\n" "a control-character name|add $FBC\n"; do
+    rm -f "$FB/basket.args"; fb off "${fba#*|}" 0
+    is "add refused for ${fba%%|*}: nothing is added" "no" "$([ -e "$FB/basket.args" ] && echo yes || echo no)"
+done
+rm -f "$FBC"
 "$TMUX_REAL" -L "$FBS" set -gu @cockpit_md_view
 
 # names that are tmux formats: -n and -c expand #(), so term_edit escapes both
