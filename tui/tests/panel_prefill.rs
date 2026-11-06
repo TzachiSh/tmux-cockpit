@@ -121,10 +121,9 @@ fn c_on_an_explain_answer_does_nothing() {
     a.view = View::ExplainAsk { sel: 0 };
     key(&mut a, KeyCode::Enter);
     a.reply(Ok("an answer\n".into()));
-    if matches!(a.view, View::Answer { .. }) {
-        key(&mut a, KeyCode::Char('c'));
-        assert!(matches!(a.view, View::Answer { .. }), "{:?}", a.view);
-    }
+    assert!(matches!(a.view, View::Answer { .. }), "the explain answered: {:?}", a.view);
+    key(&mut a, KeyCode::Char('c'));
+    assert!(matches!(a.view, View::Answer { .. }), "{:?}", a.view);
 }
 
 /// An ask's answer offers `c` on its footer and in its help.
@@ -139,4 +138,50 @@ fn an_asks_answer_offers_c() {
     })
     .unwrap();
     assert!(t.backend().to_string().contains("c compose"), "{}", t.backend());
+}
+
+// ------------------------------------------------- review-510 on #575
+
+/// The answer's text is the model's: an ESC sequence, an OSC 52 and a bidi
+/// control never reach the draft, which a send would paste.
+#[test]
+fn the_prefill_is_cleaned() {
+    let dirty = "<prompt>a\u{1b}[31mb \u{1b}]52;c;aGk=\u{7} c\u{202e}d</prompt>";
+    let (_d, mut a) = answered("dirty", &format!("x\n{dirty}\n"));
+    key(&mut a, KeyCode::Char('c'));
+    for (row, c) in [("ESC", '\u{1b}'), ("BEL", '\u{7}'), ("U+202E", '\u{202e}')] {
+        assert!(!a.draft.contains(c), "{row} survived: {:?}", a.draft);
+    }
+}
+
+/// A long answer with no space near the cap (CJK) is cut at the cap, never
+/// backed off to its head line.
+#[test]
+fn a_long_answer_with_no_spaces_keeps_its_length() {
+    let (_d, mut a) = answered("cjk", &format!("{}\n", "漢".repeat(3000)));
+    key(&mut a, KeyCode::Char('c'));
+    let n = a.draft.chars().count();
+    assert!((1950..=2000).contains(&n) && a.draft.ends_with('…'), "{n}");
+}
+
+/// The cut is on whole graphemes: an e and its combining acute stay together.
+#[test]
+fn the_cut_keeps_whole_graphemes() {
+    use unicode_segmentation::UnicodeSegmentation;
+    let (_d, mut a) = answered("graph", &format!("{}\n", "e\u{301}".repeat(2500)));
+    key(&mut a, KeyCode::Char('c'));
+    let head = a.draft.trim_end_matches('…');
+    assert!(head.ends_with('\u{301}'), "a lone e at the cut");
+    assert!(a.draft.graphemes(true).count() <= 2000);
+}
+
+/// ^F from that Compose ends the thread as ^S does: esc after it is the board.
+#[test]
+fn a_fix_from_that_compose_ends_the_thread() {
+    let (_d, mut a) = answered("fix", "It is.\n");
+    key(&mut a, KeyCode::Char('c'));
+    ctrl(&mut a, 'f');
+    key(&mut a, KeyCode::Esc);
+    key(&mut a, KeyCode::Esc);
+    assert!(matches!(a.view, View::Home { .. }), "{:?}", a.view);
 }

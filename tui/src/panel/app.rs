@@ -922,7 +922,10 @@ impl App {
         };
         let ask_ref = crate::refs::Ref::new(a.repo.join(&a.path), Some(a.asked), None);
         (self.draft, self.cur) = (String::new(), 0);
-        let n = put(&mut self.draft, &mut self.cur, &cut_prefill(text.trim_end()));
+        // the model's text: no control, OSC or bidi character goes in the draft (review-510)
+        let bidi = crate::pick::is_bidi;
+        let clean: String = pasted(&text, true).chars().filter(|&c| !bidi(c)).collect();
+        let n = put(&mut self.draft, &mut self.cur, &cut_prefill(clean.trim_end()));
         self.cap_note(n);
         if let Ok(rf) = ask_ref
             && !self.basket.contains(&rf)
@@ -1961,12 +1964,24 @@ pub fn needs_y(text: &str, send: bool) -> bool {
     send && text.trim_end_matches('\n').contains('\n')
 }
 
-/// `text` cut to [`PREFILL_MAX`] characters, at a space, with a visible `…`.
+/// `text` cut to [`PREFILL_MAX`] graphemes with a visible `…`, never inside one
+/// (an e and its combining accent stay together). It backs off to a space only
+/// within the last [`PREFILL_BACK`]: a text with none near the cap (CJK) is cut
+/// there, not back to its head line (review-510).
 fn cut_prefill(text: &str) -> String {
-    if text.chars().count() <= PREFILL_MAX {
+    let g: Vec<&str> = text.graphemes(true).collect();
+    if g.len() <= PREFILL_MAX {
         return text.to_string();
     }
-    let head: String = text.chars().take(PREFILL_MAX - 1).collect();
-    let at = head.rfind(char::is_whitespace).unwrap_or(head.len());
-    format!("{}…", head[..at].trim_end())
+    let head = &g[..PREFILL_MAX - 1];
+    let space = head
+        .iter()
+        .rev()
+        .take(PREFILL_BACK)
+        .position(|x| x.chars().all(char::is_whitespace));
+    let keep = space.map_or(head.len(), |k| head.len() - 1 - k);
+    format!("{}…", head[..keep].concat().trim_end())
 }
+
+/// How far back [`cut_prefill`] looks for a space.
+const PREFILL_BACK: usize = 40;
