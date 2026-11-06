@@ -2261,10 +2261,13 @@ option's text as the panel read it (a gone file's line included, so a gone ref
 cannot pin the basket), and `cockpit-panel` unsets `@cockpit_basket` once the
 paste lands, and only while the option still holds exactly that, so a ref a
 viewer added meanwhile stays (owner's D7). The compare and the unset are one
-`if-shell -F` (`scripts/lib/basket.sh`), which the server evaluates and runs
-with no other client's command between them, so a ref added from another client
-is never lost between the check and the clear (#582). A failed paste or
-`COCKPIT_READONLY` leaves it.
+tmux command list (`scripts/lib/basket.sh`), which the server runs with no other
+client's command between them, so a ref added from another client is never lost
+between the check and the clear (#582): the sent text goes into a second option,
+set without `-F` so it stays literal, `if-shell -F` compares the two options,
+and the second option goes again either way. Nothing is escaped, so a name
+holding `#[` or `#{` compares as text. A failed paste or `COCKPIT_READONLY`
+leaves it.
 
 ## `cockpit-tui branch` (#246)
 

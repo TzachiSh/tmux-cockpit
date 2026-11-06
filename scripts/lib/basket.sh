@@ -3,17 +3,21 @@
 
 # Unsets <pane>'s @cockpit_basket when it still holds the text in <sent-file>,
 # the basket a send or insert carried (`.basket` beside the action, D7): a ref a
-# viewer added since stays. The compare and the unset are one if-shell -F, which
-# the server evaluates and runs with no other client's command in between, so no
-# add can fall between them (#582). The sent text goes into the format literal:
-# `#`, `,` and `}` escaped, and the newline basket.rs ends the value with put
-# back, as $(...) drops it. 0: cleared. 1: kept, as the basket changed.
-# 2: <pane> is not %<digits>, and no tmux runs.
+# viewer added since stays. One tmux command list, which the server runs with no
+# other client's command in between (#582): the sent text goes into a second
+# option, set without -F so it stays literal; if-shell -F compares the two
+# options, so nothing is escaped (a `##[` in a format stays `##[`, review-510);
+# the second option goes again whether or not the basket was cleared. The
+# newline basket.rs ends the value with is put back, as $(...) drops it.
+# 0: cleared. 1: kept, as the basket changed. 2: <pane> is not %<digits>, and no
+# tmux runs.
 basket_clear() {              # <pane> <sent-file>
     is_pane "${1-}" || return 2
     local sent
-    sent=$(sed -e 's/#/##/g' -e 's/,/#,/g' -e 's/}/#}/g' "$2")
-    tmux if-shell -F -t "$1" "#{==:#{@cockpit_basket},$sent"$'\n'"}" \
-        "set-option -pu -t $1 @cockpit_basket" 2>/dev/null
+    sent=$(cat "$2")
+    tmux set-option -p -t "$1" @cockpit_basket_sent "$sent"$'\n' \; \
+        if-shell -F -t "$1" '#{==:#{@cockpit_basket},#{@cockpit_basket_sent}}' \
+            "set-option -pu -t $1 @cockpit_basket" \; \
+        set-option -pu -t "$1" @cockpit_basket_sent 2>/dev/null
     [ -z "$(tmux show-options -pqv -t "$1" @cockpit_basket 2>/dev/null)" ]
 }

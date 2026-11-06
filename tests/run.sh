@@ -8799,8 +8799,8 @@ is "a send with the basket's refs clears it" "1" "$(pact 'send %5' hi | grep -c 
 is "an insert with the basket's refs clears it too" "1" "$(pact 'paste %5' hi | grep -c 'set-option -pu -t %5 @cockpit_basket')"
 # #582: the compare and the unset are one if-shell -F the server runs; whether it
 # keeps a changed basket is the "(#582)" block's, on a real server
-is "the clear is one if-shell, never a separate unset" "1|0" \
-   "$(pact 'send %5' hi >/dev/null; grep -c '^if-shell -F -t %5 ' "$PND/pargv")|$(grep -c '^set-option -pu' "$PND/pargv")"
+is "the clear is one tmux call holding an if-shell, never a separate unset" "1|0" \
+   "$(pact 'send %5' hi >/dev/null; grep -c ' if-shell -F -t %5 ' "$PND/pargv")|$(grep -c '^set-option -pu' "$PND/pargv")"
 printf '/r/a.rs:1-2\n/r/b.rs\n' > "$PND/bopt"; touch "$PND/fail-paste-buffer"
 is "a paste that failed keeps the basket" "0" "$(pact 'send %5' hi | grep -c '@cockpit_basket')"
 rm -f "$PND/fail-paste-buffer"
@@ -14429,6 +14429,14 @@ is "a basket that changed since the send is kept" "rc=1"$'\n'"/r/b.rs" "$(bkrun 
 BKN=$'/r/a#b.rs:1-2\n/r/c,d}.rs (s {x})\n/r/x#{pane_id}.rs'
 is "names holding #, a comma, braces or a format are compared as text" "rc=0" "$(bkrun "$BKN"$'\n' "$BKN")"
 is "and a format in a name is not its expansion" "rc=1"$'\n'"/r/x$BKP.rs" "$(bkrun "/r/x$BKP.rs"$'\n' '/r/x#{pane_id}.rs')"
+# review-510: tmux keeps `##[` as `##[` in a format, so an escaped compare never
+# matched a name with `#[`; the option-to-option compare escapes nothing
+is "a name with #[ is cleared when it is the basket as sent" "rc=0" "$(bkrun $'/r/a#[x.rs\n' '/r/a#[x.rs')"
+BKH=$(i=0; while [ $i -lt 125 ]; do printf '/r/%090d%03d.rs\n' 0 $i | tr 0 '#'; i=$((i + 1)); done)
+is "a full #-heavy basket of $(printf '%s' "$BKH" | wc -c | tr -d ' ') bytes is cleared" "rc=0" \
+   "$(bkrun "$BKH"$'\n' "$BKH" | head -1)"
+is "the compare's own option is gone after, kept basket or cleared" "|" \
+   "$(bkrun $'/r/b.rs\n' '/r/a.rs' >/dev/null; "$TMUX_REAL" -L "$BK" show-options -pqv -t "$BKP" @cockpit_basket_sent)|$(bkrun $'/r/a.rs\n' '/r/a.rs' >/dev/null; "$TMUX_REAL" -L "$BK" show-options -pqv -t "$BKP" @cockpit_basket_sent)"
 is "a pane that is no %N runs no tmux" "rc=2" "$(PATH="$BKD/bin:$PATH" bash -c ". '$DIR/scripts/lib/pane.sh'; . '$DIR/scripts/lib/basket.sh'; basket_clear 'x' '$BKD/sent'; echo rc=\$?")"
 fi
 
