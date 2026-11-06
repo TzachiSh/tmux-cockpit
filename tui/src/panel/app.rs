@@ -2059,9 +2059,10 @@ fn cut_prefill(text: &str) -> String {
 }
 
 /// A terminal's escape sequences out whole, not only their ESC: a CSI
-/// (`ESC [` to its final byte) and an OSC (`ESC ]` to BEL or `ESC \`; one
-/// never terminated ends at the next newline, which stays, #588), and any
-/// other `ESC x` pair (review-510's NIT). What is left is text.
+/// (`ESC [` to its final byte), a string (OSC `ESC ]`, DCS `ESC P`, APC `ESC _`,
+/// PM `ESC ^`, SOS `ESC X`) to BEL or `ESC \` with its payload (#603; one
+/// never terminated ends at the next newline or CR, which stays, #588), and
+/// any other `ESC x` pair (review-510's NIT). What is left is text.
 fn strip_escapes(s: &str) -> String {
     let (mut out, mut it) = (String::new(), s.chars().peekable());
     while let Some(c) = it.next() {
@@ -2071,13 +2072,13 @@ fn strip_escapes(s: &str) -> String {
         }
         match it.next() {
             Some('[') => while it.next().is_some_and(|x| !('@'..='~').contains(&x)) {},
-            Some(']') => {
+            Some(']' | 'P' | '_' | '^' | 'X') => {
                 while let Some(x) = it.next() {
                     if x == '\u{7}' || (x == '\u{1b}' && it.next_if_eq(&'\\').is_some()) {
                         break;
                     }
                     // never terminated: it ends at the line, which stays (#588)
-                    if x == '\n' {
+                    if x == '\n' || x == '\r' {
                         out.push(x);
                         break;
                     }
