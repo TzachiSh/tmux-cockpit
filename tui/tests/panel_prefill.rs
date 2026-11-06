@@ -217,3 +217,28 @@ fn an_unterminated_osc_ends_at_the_newline() {
     key(&mut a, KeyCode::Char('c'));
     assert_eq!(a.draft, "keep this \nand the rest");
 }
+
+/// #603: a lone CR ends an unterminated OSC as a newline does; `pasted` then
+/// makes it the line break, so `b` is kept.
+#[test]
+fn an_unterminated_osc_ends_at_a_lone_cr() {
+    let (_d, mut a) = answered("osc-cr", "<prompt>a \u{1b}]0;title\rb\nc</prompt>\n");
+    key(&mut a, KeyCode::Char('c'));
+    assert_eq!(a.draft, "a \nb\nc");
+}
+
+/// #603: DCS, APC, PM and SOS (`ESC P`, `ESC _`, `ESC ^`, `ESC X`) go out with
+/// their payload, to ST or BEL, or to a newline or CR when never terminated.
+#[test]
+fn string_escapes_go_out_with_their_payload() {
+    let ends = [("st", "\u{1b}\\y", "x y"), ("bel", "\u{7}y", "x y"), ("lf", "\ny", "x \ny")];
+    let ends = ends.into_iter().chain([("cr", "\ry", "x \ny")]);
+    for (end, tail, want) in ends {
+        for (name, intro) in [("dcs", 'P'), ("apc", '_'), ("pm", '^'), ("sos", 'X')] {
+            let reply = format!("<prompt>x \u{1b}{intro}q;payload{tail}</prompt>\n");
+            let (_d, mut a) = answered(&format!("str-{name}-{end}"), &reply);
+            key(&mut a, KeyCode::Char('c'));
+            assert_eq!(a.draft, want, "{name} ended by {end}");
+        }
+    }
+}
