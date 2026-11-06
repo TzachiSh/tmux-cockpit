@@ -636,8 +636,8 @@ cargo test fails on main since the merge, fix it
 kind: bug
 window: bash · bash · /home/u/projects/calc
 expect: write
-must: parses_negative; src/parser.rs; leading minus|9f3c2a1; break|breaking|mutate|mutation|mutant|mutants|on purpose|flip|flipping|small change; undo|undoing|revert|reverting|restore|put back|put it back
-note: the repo block names the last commit; the screen names the test and its file; #587 (card 59): after the fix the prompt breaks the code on purpose, sees the test fail and undoes the break; "on purpose", "flip" and "small change" widened after a probe wrote "make one small change ... then undo that change"
+must: parses_negative; src/parser.rs; leading minus|9f3c2a1; on purpose|deliberately|mutate|mutation|mutant|mutants|break the code|flip|flipping; undo|undoing|revert|reverting|restore|put back|put it back
+note: the repo block names the last commit; the screen names the test and its file; #587 (card 59): after the fix the prompt breaks the code on purpose, sees the test fail and undoes the break; the break words were widened after a probe, then narrowed by the #589 review, since "break" and "small change" also pass "does not break other tests" and "keep it a small change"
 --- screen
 $ cargo test -q
 running 42 tests
@@ -686,8 +686,8 @@ review my changes
 kind: feature
 window: bash · bash · /home/u/projects/site
 expect: write
-must: slugify; break|breaking|mutate|mutation|mutant|mutants|on purpose|flip|flipping|small change; undo|undoing|revert|reverting|restore|put back|put it back
-note: without the repo block "which function" is open; the diff names the one file changed, and Claude Code can read the diff; #587 (card 58): the prompt breaks the code on purpose, sees the new test fail and undoes the break; "on purpose", "flip" and "small change" widened after a probe wrote "make one small change ... then undo that change"
+must: slugify; on purpose|deliberately|mutate|mutation|mutant|mutants|break the code|flip|flipping; undo|undoing|revert|reverting|restore|put back|put it back
+note: without the repo block "which function" is open; the diff names the one file changed, and Claude Code can read the diff; #587 (card 58): the prompt breaks the code on purpose, sees the new test fail and undoes the break; the break words were widened after a probe, then narrowed by the #589 review, since "break" and "small change" also pass "does not break other tests" and "keep it a small change"
 --- screen
 $ npm test
 Tests: 18 passed, 18 total
@@ -1103,6 +1103,26 @@ note: every fact the reader needs is given, the next date too: a message with no
 --- request
 tell the team the friday deploy is cancelled because of the billing bug, next one is monday
 
+=== one-on-one-cancelled
+kind: message
+window: bash · bash · /home/u
+expect: write
+out_is: text
+must: Dana; cancel|cancelled|canceled|called off
+note: #589 review: a plain cancellation leaves the reader nothing new to act on, so it is written, not asked about
+--- request
+tell dana tomorrow's 1:1 is cancelled
+
+=== pnpm-switch
+kind: message
+window: bash · bash · /home/u/projects/web
+expect: write
+out_is: text
+must: pnpm; npm
+note: #589 review control: a change the request states in full is written
+--- request
+let the team know we switched from npm to pnpm
+
 === stryker-in-project
 kind: feature
 window: bash · bash · /home/u/projects/shop
@@ -1133,7 +1153,7 @@ window: bash · bash · /home/u/projects/blog
 expect: write
 out_is: prompt
 must: page 2|second page; reproduce|reproduces|confirm the bug|fail|fails|failing; again|after the fix
-note: a bug fix shows the check failing before the fix and passing after; widened after the first probe, which reproduced with the two commands and ran them again but never wrote "fail"
+note: a regression guard (#589 review): the bug line asks to reproduce, fix and run the check again; the prompt keeps that without the "failing before, passing after" clause, which was dropped for adding a baseline to a rename; widened after the first probe, which reproduced with the two commands and ran them again but never wrote "fail"
 --- screen
 $ curl -s 'localhost:3000/api/posts?page=1' | jq '.[-1].id'
 40
@@ -1170,7 +1190,7 @@ kind: feature
 window: bash · bash · /home/u/projects/shop
 expect: write
 out_is: prompt
-must: parse_price; break|breaking|mutate|mutation|mutant|mutants|on purpose|flip|flipping|small change; undo|undoing|revert|reverting|restore|put back|put it back
+must: parse_price; on purpose|deliberately|mutate|mutation|mutant|mutants|break the code|flip|flipping; undo|undoing|revert|reverting|restore|put back|put it back
 holdout: no
 note: a new test gets the mutation step: break the helper on purpose, see the test fail, undo the break
 --- screen
@@ -1218,7 +1238,7 @@ kind: bug
 window: bash · bash · /home/u/projects/proxy
 expect: write
 out_is: prompt
-must: TestParseHeader; break|breaking|mutate|mutation|mutant|mutants|on purpose|flip|flipping|small change; undo|undoing|revert|reverting|restore|put back|put it back
+must: TestParseHeader; on purpose|deliberately|mutate|mutation|mutant|mutants|break the code|flip|flipping; undo|undoing|revert|reverting|restore|put back|put it back
 holdout: yes
 note: a failing test to fix gets the break-it step after it passes
 --- screen
