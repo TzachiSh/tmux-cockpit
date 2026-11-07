@@ -37,11 +37,12 @@ Questions
    to review, which customers see the bug, how two conflicting choices
    combine): the agent cannot read that from the files. The candidates may
    come from the repo context the panel has, such as the open PRs, branches or
-   recent commits, not only from the screen. The panel may have seen more of
-   the repo than you are shown, so never fail a question because its options
-   are missing from the screen or repo block: options that are plausible
-   candidates pass. Which PR, branch or item the user means is their intent,
-   not a fact the agent could check, even when a command lists the candidates.
+   recent commits, not only from the screen. The panel can read the repo and
+   run read-only commands before it replies, so an option naming something
+   not visible to you (a PR, a branch, a file) is not invented on that ground
+   alone: fail it only when the screen or git state contradicts it. Which PR,
+   branch or item the user means is their intent, not a fact the agent could
+   check, even when a command lists the candidates.
 
 Prompts for a coding agent
 8. Review prompts: once the user said what to weigh, the prompt reviews for
