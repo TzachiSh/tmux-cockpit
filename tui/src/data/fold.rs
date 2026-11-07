@@ -442,6 +442,8 @@ mod tests {
             row("user", 6, json!({"content": "<pasted_content>long</pasted_content>"})),
             tool(7, "AskUserQuestion"),
             row("user", 8, json!({"content": "<bash-stdout>a <pasted_content>x</bash-stdout>"})),
+            row("user", 9, json!({"content": "Another Claude session sent a message:\nhi"})),
+            row("user", 10, json!({"content": "Your claude.ai usage limit has reset. Continue."})),
         ];
         for (n, r) in rows.iter().enumerate() {
             add(&p, r);

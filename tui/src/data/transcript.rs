@@ -374,7 +374,7 @@ pub(crate) fn typed_text(v: &Value) -> Option<String> {
     };
     let t = text.trim_start();
     // a harness row that merely quotes a paste is still the harness's (#477 review)
-    if t.starts_with(INTERRUPT) || (t.starts_with('<') && !paste_led(t)) {
+    if t.starts_with(INTERRUPT) || (t.starts_with('<') && !paste_led(t)) || HARNESS_SAYS.iter().any(|h| t.starts_with(h)) {
         return None;
     }
     let typed = unpasted(text);
@@ -383,6 +383,10 @@ pub(crate) fn typed_text(v: &Value) -> Option<String> {
     }
     Some(typed)
 }
+
+/// User rows Claude Code writes in plain text, not the human (#454): a message from
+/// another session, and the notice that the usage limit reset.
+const HARNESS_SAYS: [&str; 2] = ["Another Claude session sent a message", "Your claude.ai usage limit has reset"];
 
 /// Whether `t` starts with a paste block: the only `<`-led row the human typed.
 fn paste_led(t: &str) -> bool {
@@ -837,7 +841,7 @@ mod tests {
         let image = serde_json::json!({"type": "image", "source": {"type": "base64", "data": "AA=="}});
         let meta = serde_json::json!({"type": "user", "isMeta": true, "message": {"content": "Caveat: generated"}});
         let res = serde_json::json!({"type": "tool_result", "tool_use_id": "t1", "content": "ok"});
-        let rows: [(&str, Value, Option<&str>); 23] = [
+        let rows: [(&str, Value, Option<&str>); 26] = [
             ("a string prompt", user("fix the build\nsecond line".into()), Some("fix the build")),
             (
                 "an image prompt",
@@ -932,6 +936,21 @@ mod tests {
                 Some("why is <pasted_content> in the log? and after"),
             ),
             ("an empty prompt", user(" \n ".into()), None),
+            (
+                "a message from another session",
+                user("Another Claude session sent a message:\n<message>hi</message>".into()),
+                None,
+            ),
+            (
+                "the usage limit reset",
+                user("Your claude.ai usage limit has reset. Continue the task you were doing.".into()),
+                None,
+            ),
+            (
+                "a prompt that quotes the header",
+                user("why does Another Claude session sent... show?".into()),
+                Some("why does Another Claude session sent... show?"),
+            ),
             (
                 "an assistant row",
                 serde_json::json!({"type": "assistant", "message": {"content": "hi"}}),
