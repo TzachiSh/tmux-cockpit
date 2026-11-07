@@ -6,7 +6,7 @@ use cockpit_tui::panel::app::{App, EXPLORE_BUDGET_USD, EXPLORE_TIMEOUT, Level, T
 use cockpit_tui::panel::capture::{Capture, window_kind};
 use cockpit_tui::panel::envelope::{Flow, OutType};
 use cockpit_tui::panel::prompts::{self, Ctx};
-use cockpit_tui::panel::request::{Call, Fail, Profile, read_dir_ok};
+use cockpit_tui::panel::request::{Call, Effort, Fail, Profile, read_dir_ok};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use fake::Scratch;
 use std::path::Path;
@@ -116,7 +116,7 @@ fn an_exploring_write_runs_read_only_on_the_pane_folder() {
     let p = a.profile_for(&write_flow());
     assert_eq!(p, Profile::read_only("/home/u/proj".into(), false, 0.15, Duration::from_secs(90)));
     // what read_only passes is request.rs's to pin; this PR owns the folder and the caps
-    let argv = p.argv();
+    let argv = p.argv(Effort::Medium);
     let at = |flag: &str| argv.iter().position(|x| x == flag).map(|i| argv[i + 1].as_str());
     assert_eq!(at("--add-dir"), Some("/home/u/proj"));
     assert_eq!(at("--max-budget-usd"), Some("0.15"));
@@ -221,6 +221,7 @@ fn launch_sends_an_exploring_write_through_the_read_only_argv() {
         claude: fake.display().to_string(),
         timeout: Duration::from_secs(60),
         dir: d.join("cache"),
+        effort: Effort::Medium,
     };
     let mut a = app("bash", &repo.display().to_string());
     compose(&mut a);
@@ -253,7 +254,8 @@ fn launch_sends_an_exploring_write_through_the_read_only_argv() {
         .iter()
         .position(|x| *x == "--system-prompt-file")
         .expect("a system prompt file");
-    let want = Profile::read_only(repo.clone(), false, EXPLORE_BUDGET_USD, EXPLORE_TIMEOUT).argv();
+    let want = Profile::read_only(repo.clone(), false, EXPLORE_BUDGET_USD, EXPLORE_TIMEOUT);
+    let want = want.argv(Effort::Medium);
     assert_eq!(args[at + 2..], want.iter().map(String::as_str).collect::<Vec<_>>()[..], "{argv}");
     a.stop();
 }
@@ -411,6 +413,7 @@ fn faked(tag: &str, out: &str, code: i32) -> (Scratch, Call, String) {
         claude: fake.display().to_string(),
         timeout: Duration::from_secs(30),
         dir: d.join("cache"),
+        effort: Effort::Medium,
     };
     (g, call, repo.display().to_string())
 }
@@ -571,7 +574,7 @@ fn git_init(dir: &Path) {
 
 /// The folder the explore call would add, from its argv.
 fn added(a: &App) -> Option<String> {
-    let argv = a.profile_for(&write_flow()).argv();
+    let argv = a.profile_for(&write_flow()).argv(Effort::Medium);
     let i = argv.iter().position(|x| x == "--add-dir")?;
     Some(argv[i + 1].clone())
 }

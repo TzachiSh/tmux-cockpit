@@ -140,6 +140,7 @@ None is required.
 | `@cockpit_board_window` | `off` | `on`: the board opens in a window, not a popup |
 | `@cockpit_board_return` | `on` | `off`: `r` and `f` leave the board instead of coming back to it |
 | `@cockpit_panel_mode` | `auto` | `pc` or `tablet` forces the panel's mode |
+| `@cockpit_panel_effort` | `medium` | the panel's `claude --effort`: `low`, `medium`, `high`, `xhigh` or `max`. The panel's calls load no Claude settings files, so auth from one (`apiKeyHelper`, an `env` block) does not reach them |
 | `@cockpit_statusbar` | on | `off` keeps your own status line and borders |
 | `@cockpit_touch` | `auto` | the touch layout (bar and sessions screen) below 100 columns |
 | `@cockpit_icons` | unset | `ascii` or `nerd` for the menu and branch icons |

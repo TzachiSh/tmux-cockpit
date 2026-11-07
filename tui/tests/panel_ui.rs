@@ -7,7 +7,7 @@ use cockpit_tui::panel::app::{Action, App, InputKind, Level, Resume, Tap, Tile, 
 use cockpit_tui::panel::capture::Capture;
 use cockpit_tui::panel::envelope::OutType;
 use cockpit_tui::panel::parse::Step;
-use cockpit_tui::panel::request::Call;
+use cockpit_tui::panel::request::{Call, Effort};
 use cockpit_tui::panel::view::{Hit, mouse, render};
 use cockpit_tui::theme::Theme;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
@@ -540,6 +540,7 @@ fn esc_cancels_a_busy_request_and_kills_it() {
         claude: fake.display().to_string(),
         timeout: Duration::from_secs(60),
         dir: dir.join("cache"),
+        effort: Effort::Medium,
     };
 
     let mut a = app("w", "zsh", "$ ");

@@ -16,7 +16,7 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
-use render::{Ink, Kind, Opts, Row};
+use render::{Ink, Join, Kind, Opts, Row};
 use std::io::Read;
 use std::path::Path;
 
@@ -115,37 +115,102 @@ fn shebang(text: &str) -> Option<crate::highlight::Lang> {
     crate::highlight::lang(tag)
 }
 
-/// A search match: a row and a byte range of its text.
+/// A search match: from byte `from` of row `row`'s text to byte `to` of row
+/// `last`'s. `last` is past `row` when the match crosses a wrap (#422).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Hit {
     pub row: usize,
     pub from: usize,
+    pub last: usize,
     pub to: usize,
 }
 
-/// Every match of `q` in the rows, in order. Case-insensitive unless `q` has
-/// a capital in it, as less and vim's smartcase read it.
-pub fn find(texts: &[String], q: &str) -> Vec<Hit> {
+impl Hit {
+    /// The bytes of row `r`'s text the hit covers, if any: `body` is where a
+    /// wrapped row's own text starts, `len` the length of that row's text.
+    pub fn on(&self, r: usize, body: usize, len: usize) -> Option<(usize, usize)> {
+        (self.row <= r && r <= self.last).then(|| {
+            let from = if r == self.row { self.from } else { body.min(len) };
+            (from, if r == self.last { self.to } else { len })
+        })
+    }
+}
+
+/// Every match of `q` in the rows, in order, a line wrapped over rows searched
+/// as the one line it is. Case-insensitive unless `q` has a capital in it, as
+/// less and vim's smartcase read it.
+pub fn find(rows: &[Row], q: &str) -> Vec<Hit> {
+    let texts: Vec<String> = rows.iter().map(Row::text).collect();
+    find_in(rows, &texts, q)
+}
+
+/// A byte of a joined line: where it sits in its row's text. The space a soft
+/// wrap dropped sits at the end of the row before, and is in neither row.
+#[derive(Clone, Copy)]
+struct At {
+    row: usize,
+    byte: usize,
+    put_back: bool,
+}
+
+/// [`find`] over `texts`, each row's [`Row::text`], kept by the screen.
+fn find_in(rows: &[Row], texts: &[String], q: &str) -> Vec<Hit> {
     if q.is_empty() {
         return vec![];
     }
     let fold = !q.chars().any(char::is_uppercase);
     let (q, _) = folded(q, fold);
     let mut out = Vec::new();
-    for (row, t) in texts.iter().enumerate() {
-        let (f, back) = folded(t, fold);
-        let mut at = 0;
-        while let Some(i) = f[at..].find(&q) {
-            let (a, b) = (at + i, at + i + q.len());
+    let mut first = 0;
+    while first < texts.len() {
+        let end = (first + 1..texts.len())
+            .find(|&r| rows.get(r).is_none_or(|x| x.join == Join::Start))
+            .unwrap_or(texts.len());
+        let (line, at) = joined(rows, texts, first..end);
+        let (f, back) = folded(&line, fold);
+        let mut from = 0;
+        while let Some(i) = f[from..].find(&q) {
+            let (a, b) = (back[from + i], back[from + i + q.len()]);
+            from += i + q.len();
+            // a match of nothing but a put-back space draws on neither row
+            let Some(s) = at[a..b].iter().find(|x| !x.put_back) else { continue };
+            let e = at[a..b].iter().rev().find(|x| !x.put_back).expect("one real byte");
             out.push(Hit {
-                row,
-                from: back[a],
-                to: back[b],
+                row: s.row,
+                from: s.byte,
+                last: e.row,
+                to: e.byte + 1,
             });
-            at = b;
         }
+        first = end;
     }
     out
+}
+
+/// Rows `rs`, one line wrapped, as that line: a later row without the prefix
+/// it starts with, and a soft wrap's dropped space put back. Each byte's place.
+fn joined(rows: &[Row], texts: &[String], rs: std::ops::Range<usize>) -> (String, Vec<At>) {
+    let (mut line, mut at) = (String::new(), Vec::new());
+    for r in rs.clone() {
+        let t = &texts[r];
+        let (join, body) = rows.get(r).map_or((Join::Start, 0), |x| (x.join, x.body as usize));
+        let skip = if r == rs.start { 0 } else { body.min(t.len()) };
+        if r > rs.start && join == Join::Space {
+            line.push(' ');
+            at.push(At {
+                row: r - 1,
+                byte: texts[r - 1].len(),
+                put_back: true,
+            });
+        }
+        line.push_str(&t[skip..]);
+        at.extend((skip..t.len()).map(|byte| At {
+            row: r,
+            byte,
+            put_back: false,
+        }));
+    }
+    (line, at)
 }
 
 /// `s` lowercased where a char lowers to one char, and each folded byte's
@@ -409,7 +474,7 @@ impl Screen {
     }
 
     fn refind(&mut self) {
-        self.hits = find(&self.texts, &self.query);
+        self.hits = find_in(&self.rows, &self.texts, &self.query);
         self.cur = self.cur.filter(|c| *c < self.hits.len());
     }
 
@@ -869,13 +934,18 @@ pub fn render(f: &mut Frame, area: Rect, th: &Theme, s: &mut Screen) {
         Ok(_) if total == 0 => vec![Line::styled("an empty file", Style::new().fg(th.meta))],
         Ok(_) => (s.top..last)
             .map(|r| {
-                // hits are in row order: the row's run of them
-                let from = s.hits.partition_point(|h| h.row < r);
+                // hits are in order, of where they start and of where they end:
+                // the run of them that starts or ends on the row, or crosses it
+                let (body, len) = (s.rows[r].body as usize, s.texts[r].len());
+                let from = s.hits.partition_point(|h| h.last < r);
                 let hs: Vec<(usize, usize, bool)> = s.hits[from..]
                     .iter()
-                    .take_while(|h| h.row == r)
+                    .take_while(|h| h.row <= r)
                     .enumerate()
-                    .map(|(i, h)| (h.from, h.to, s.cur == Some(from + i)))
+                    .filter_map(|(i, h)| {
+                        let cur = s.cur == Some(from + i);
+                        h.on(r, body, len).map(|(a, b)| (a, b, cur))
+                    })
                     .collect();
                 let mut l = line(th, &s.rows[r], &hs);
                 if let Some(g) = code::gutter(&s.rows, r) {

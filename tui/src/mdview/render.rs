@@ -62,6 +62,23 @@ pub struct Row {
     /// drawn by `code::gutter`, never in `cells`, so never searched). 0 for
     /// markdown.
     pub lead: usize,
+    /// how the row goes on from the one above: a new line, or that line wrapped
+    pub join: Join,
+    /// the bytes of `text()` a wrapped row starts with that are not the line's:
+    /// a quote's bar, a list's indent, a code block's pad
+    pub body: u16,
+}
+
+/// How a row goes on from the row above it (#422).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Join {
+    /// a line of its own: a block, a source line, a `\n`
+    #[default]
+    Start,
+    /// the same line, wrapped at a space the wrap dropped
+    Space,
+    /// the same line, cut inside a word: nothing dropped
+    Glued,
 }
 
 impl Row {
@@ -128,7 +145,9 @@ fn width_of(cells: &[(String, Ink)]) -> usize {
 /// spaces and the word waiting to go on it.
 struct Wrap {
     w: usize,
-    rows: Vec<Cells>,
+    rows: Vec<(Cells, Join)>,
+    /// how the row being filled goes on from the last one pushed
+    join: Join,
     row: Cells,
     rw: usize,
     space: Cells,
@@ -151,14 +170,15 @@ impl Wrap {
             self.rw += self.sw + self.ww;
         } else {
             if self.rw > 0 {
-                self.rows.push(std::mem::take(&mut self.row));
+                let at = if self.sw > 0 { Join::Space } else { Join::Glued };
+                self.next(at);
             }
             self.rw = 0;
             for (t, ink) in std::mem::take(&mut self.word) {
                 for g in t.graphemes(true) {
                     let gw = cols(g);
                     if self.rw + gw > self.w && self.rw > 0 {
-                        self.rows.push(std::mem::take(&mut self.row));
+                        self.next(Join::Glued);
                         self.rw = 0;
                     }
                     push(&mut self.row, g, ink);
@@ -170,11 +190,17 @@ impl Wrap {
         (self.sw, self.ww) = (0, 0);
     }
 
+    /// The row so far out, the next one joined to it by `join`.
+    fn next(&mut self, join: Join) {
+        let j = std::mem::replace(&mut self.join, join);
+        self.rows.push((std::mem::take(&mut self.row), j));
+    }
+
     fn feed(&mut self, t: &str, ink: Ink) {
         for g in t.graphemes(true) {
             if g == "\n" {
                 self.place();
-                self.rows.push(std::mem::take(&mut self.row));
+                self.next(Join::Start);
                 self.space.clear();
                 (self.rw, self.sw) = (0, 0);
             } else if g == " " {
@@ -192,9 +218,15 @@ impl Wrap {
 /// Greedy word wrap into rows `w` wide. A space at a break is dropped, a word
 /// wider than a row is cut between graphemes, and a `\n` cell breaks the row.
 fn wrap(spans: &[(String, Ink)], w: usize) -> Vec<Cells> {
+    wrap_joined(spans, w).into_iter().map(|(c, _)| c).collect()
+}
+
+/// [`wrap`], each row with how it goes on from the one above.
+fn wrap_joined(spans: &[(String, Ink)], w: usize) -> Vec<(Cells, Join)> {
     let mut s = Wrap {
         w: w.max(2),
         rows: Vec::new(),
+        join: Join::Start,
         row: Cells::new(),
         rw: 0,
         space: Cells::new(),
@@ -207,9 +239,17 @@ fn wrap(spans: &[(String, Ink)], w: usize) -> Vec<Cells> {
     }
     s.place();
     if !s.row.is_empty() || s.rows.is_empty() {
-        s.rows.push(s.row);
+        s.rows.push((s.row, s.join));
     }
     s.rows
+}
+
+/// [`hard`]'s rows: the first starts the line, the rest are cut from it.
+pub(super) fn hard_joined(spans: &[(String, Ink)], w: usize) -> Vec<(Cells, Join)> {
+    let rows = hard(spans, w).into_iter();
+    rows.enumerate()
+        .map(|(i, c)| (c, if i == 0 { Join::Start } else { Join::Glued }))
+        .collect()
 }
 
 /// Rows `w` wide cut between graphemes, every space kept: a code line.
@@ -380,21 +420,39 @@ impl Build {
                 }
                 cells.pop();
             }
-            self.out.push(Row { cells, line, lead: 0 });
+            self.out.push(Row {
+                cells,
+                line,
+                ..Row::default()
+            });
         }
     }
 
     /// Content rows, each under the prefix, after the blank row a block owes.
-    fn emit(&mut self, rows: Vec<Cells>, line: usize) {
+    /// `pad` is how many bytes of each row's cells come before its text.
+    fn emit(&mut self, rows: Vec<(Cells, Join)>, line: usize, pad: usize) {
         if rows.is_empty() {
             return;
         }
         self.settle();
-        for (i, r) in rows.into_iter().enumerate() {
+        for (i, (r, join)) in rows.into_iter().enumerate() {
             let mut cells = self.prefix(i == 0);
+            let body = cells.iter().map(|(t, _)| t.len()).sum::<usize>() + pad;
             cells.extend(r);
-            self.out.push(Row { cells, line, lead: 0 });
+            let body = u16::try_from(body).unwrap_or(u16::MAX);
+            self.out.push(Row {
+                cells,
+                line,
+                lead: 0,
+                join,
+                body,
+            });
         }
+    }
+
+    /// Rows that each start a line of their own.
+    fn emit_lines(&mut self, rows: Vec<Cells>, line: usize) {
+        self.emit(rows.into_iter().map(|c| (c, Join::Start)).collect(), line, 0);
     }
 
     /// The paragraph so far, wrapped and drawn.
@@ -403,8 +461,8 @@ impl Build {
         if spans.iter().all(|(t, _)| t.trim().is_empty()) {
             return;
         }
-        let rows = wrap(&spans, self.w - self.indent());
-        self.emit(rows, self.line);
+        let rows = wrap_joined(&spans, self.w - self.indent());
+        self.emit(rows, self.line, 0);
     }
 
     fn code(&mut self) {
@@ -424,16 +482,16 @@ impl Build {
                     c.1 = Ink::of(Kind::Meta);
                 }
             }
-            let rows: Vec<Cells> = hard(&cells, room - pad.len())
+            let rows: Vec<(Cells, Join)> = hard_joined(&cells, room - pad.len())
                 .into_iter()
-                .map(|r| {
+                .map(|(r, join)| {
                     let mut c = Cells::new();
                     push(&mut c, pad, Ink::default());
                     c.extend(r);
-                    c
+                    (c, join)
                 })
                 .collect();
-            self.emit(rows, first + i);
+            self.emit(rows, first + i, pad.len());
         }
         self.gap = true;
     }
@@ -443,7 +501,7 @@ impl Build {
         let dash = if self.o.ascii { "-" } else { "─" };
         let mut c = Cells::new();
         push(&mut c, &dash.repeat(room), Ink::of(Kind::Frame));
-        self.emit(vec![c], line);
+        self.emit_lines(vec![c], line);
         self.gap = true;
     }
 
@@ -504,7 +562,7 @@ impl Build {
                 push(&mut sep, &line, frame);
                 rows.push(sep);
             }
-            self.emit(rows, *line);
+            self.emit_lines(rows, *line);
         }
         self.gap = true;
     }
@@ -522,9 +580,9 @@ impl Build {
                 }
                 push(&mut spans, ": ", Ink::of(Kind::Meta));
                 spans.extend(c);
-                out.extend(wrap(&spans, room));
+                out.extend(wrap_joined(&spans, room));
             }
-            self.emit(out, line);
+            self.emit(out, line, 0);
             self.gap = true;
         }
     }

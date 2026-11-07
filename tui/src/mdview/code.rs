@@ -2,7 +2,7 @@
 //! lexer in `highlight`, with no markdown read into it. Pure, as `render` is:
 //! a row is one source line, or one piece of a line wider than the body, and
 //! carries that line's number for `e` and for the selection to come.
-use super::render::{Row, hard, untab};
+use super::render::{Row, hard_joined, untab};
 use crate::highlight::{self, Lang, Role, State};
 
 /// The rows of `src` at `w` columns, the gutter's room left over: `lead`
@@ -25,10 +25,16 @@ pub fn render(src: &str, lang: Option<Lang>, w: usize) -> Vec<Row> {
             Some(lg) => highlight::line(lg, &mut st, l),
             None => vec![(Role::Plain, *l)],
         };
-        for mut cells in hard(&untab(&spans), w.saturating_sub(lead)) {
+        for (mut cells, join) in hard_joined(&untab(&spans), w.saturating_sub(lead)) {
             // a row lives as long as the screen: no room spare for pushes to come
             cells.shrink_to_fit();
-            out.push(Row { cells, line: i + 1, lead });
+            out.push(Row {
+                cells,
+                line: i + 1,
+                lead,
+                join,
+                body: 0,
+            });
         }
     }
     out
