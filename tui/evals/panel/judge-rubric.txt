@@ -32,10 +32,16 @@ Questions
    most. For a message announcing a change, ask for the fact the reader will
    act on (a new date, a new time) unless the request gives it.
 7. A question that only repeats the request's own words, or picks between
-   things the agent could tell apart itself, fails. Picking between candidates
-   the screen or git state lists is fine when the unknown is which one the
-   user means (which PR to review, which customers see the bug, how two
-   conflicting choices combine): the agent cannot read that from the files.
+   things the agent could tell apart itself, fails. Picking between likely
+   candidates is fine when the unknown is which one the user means (which PR
+   to review, which customers see the bug, how two conflicting choices
+   combine): the agent cannot read that from the files. The candidates may
+   come from the repo context the panel has, such as the open PRs, branches or
+   recent commits, not only from the screen. The panel may have seen more of
+   the repo than you are shown, so never fail a question because its options
+   are missing from the screen or repo block: options that are plausible
+   candidates pass. Which PR, branch or item the user means is their intent,
+   not a fact the agent could check, even when a command lists the candidates.
 
 Prompts for a coding agent
 8. Review prompts: once the user said what to weigh, the prompt reviews for
