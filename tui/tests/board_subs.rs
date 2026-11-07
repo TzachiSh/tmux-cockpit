@@ -1128,3 +1128,19 @@ fn a_rewoken_teammate_ages_from_its_newest_start() {
     let line = text(&cells_of(&one(vec![mate]), &Theme::fixed(), "lane-313"));
     assert!(line.contains("8m") && !line.contains("17h"), "{line}");
 }
+
+/// #454 item 8: idle teammates list newest-active first, so the ones that just
+/// spoke stay when the tree is cut, not the ones quiet for hours.
+#[test]
+fn idle_teammates_list_newest_active_first() {
+    let idle = |k: u64, quiet: u64| with(sub("mate", &format!("i{k}"), SubState::Idle, 9000 - k, 1), None, Some(quiet));
+    let ps = one(vec![
+        idle(0, 16 * 3600),
+        idle(1, 15 * 3600),
+        idle(2, 1200),
+        idle(3, 600),
+        idle(4, 14 * 3600),
+    ]);
+    let n = nav(&ps, "%4", &["%4"], 12);
+    assert_eq!(tree_of(&ps, &n, "%4"), ["%4/i3", "%4/i2", "%4/i4", "%4/i1", "%4/i0"]);
+}

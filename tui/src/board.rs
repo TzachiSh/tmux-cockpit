@@ -1462,11 +1462,13 @@ fn tree_lines(ps: &[Pane], i: usize, seen: &Seen) -> Vec<Row> {
             out.push(row(i, n));
         }
     }
-    out.extend(
-        (0..p.subs.len())
-            .filter(|&j| place(p, &p.subs[j], seen) == Place::Line)
-            .map(|j| Row::Sub(i, j)),
-    );
+    let lines = (0..p.subs.len()).filter(|&j| place(p, &p.subs[j], seen) == Place::Line);
+    // #454: idle teammates after the rest, newest-active first, so a cut keeps the
+    // ones that just spoke; the rest stay oldest first
+    let (idle, rest): (Vec<usize>, Vec<usize>) = lines.partition(|&j| p.subs[j].state == SubState::Idle);
+    let mut idle = idle;
+    idle.sort_by_key(|&j| std::cmp::Reverse(p.subs[j].active_at.or(p.subs[j].started)));
+    out.extend(rest.into_iter().chain(idle).map(|j| Row::Sub(i, j)));
     out
 }
 
