@@ -200,6 +200,32 @@ until_out() {                 # <pattern> <cmd...>
     done
     return 1
 }
+# A fresh server on a name that may still be live. kill-server returns before the
+# server is gone, and a new-session that reaches the dying one fails "server
+# exited unexpectedly" with no session made (#547, #573). So it is retried, $POLLS
+# tries 0.1 s apart. Out of tries is a bad row carrying the last stderr: a quiet
+# return 1 reads like the race itself, in whichever row looks next.
+fresh_server() {              # -L|-S <socket> [tmux flags...] -- <new-session args...>
+    local g=() err='' i
+    while [ $# -gt 0 ] && [ "$1" != -- ]; do g+=("$1"); shift; done
+    case "${g[0]:-}" in -L|-S) [ -n "${g[1]:-}" ] ;; *) false ;; esac || {
+        bad "fresh_server: -L or -S <socket> first, never the default server" \
+            "-L|-S <socket> [flags] -- <new-session args>" "${g[*]:-no arguments}"
+        return 1
+    }
+    [ "${1:-}" = -- ] || {
+        bad "fresh_server: -- before the new-session args" "${g[*]} -- <new-session args>" "${g[*]}"
+        return 1
+    }
+    shift
+    "$TMUX_REAL" "${g[@]}" kill-server >/dev/null 2>&1
+    for ((i = 1; i <= POLLS; i++)); do
+        err=$("$TMUX_REAL" "${g[@]}" new-session "$@" 2>&1 >/dev/null) && return 0
+        [ "$i" -lt "$POLLS" ] && sleep 0.1
+    done
+    bad "fresh_server ${g[*]}: new-session failed $POLLS times" "a session" "${err:-no stderr}"
+    return 1
+}
 # review-gate keys its state files on the pane id AND the server's socket path
 # (issue #88). Spelled out here rather than read back from the script: a test
 # that asks the code under test for its own answer agrees with any answer.
@@ -251,6 +277,53 @@ for f in "$DIR"/cockpit.tmux "$DIR"/install.sh "$DIR"/scripts/* "$DIR"/scripts/l
     if bash -n "$f" 2>/dev/null; then ok "syntax $(basename "$f")"
     else bad "syntax $(basename "$f")" "clean" "parse error"; fi
 done
+
+echo "== fresh_server: a new-session refused by the killed server is retried, then named (#573) =="
+# This tmux fails the first FS_FAILS new-sessions "server exited unexpectedly", as
+# one that reaches the server kill-server just stopped does, and logs every try.
+# A call with no -L or -S is logged and dropped: it would reach the default
+# server, which may be the user's.
+if need_tmux "fresh_server"; then :; else
+FS="cockpit-fresh-$$"; SOCKS="$SOCKS $FS"; FSD=$(mktmpd)
+printf '#!/bin/sh\ncase " $* " in *" -L "*|*" -S "*) ;; *) sock=none ;; esac
+case " $* " in
+*" kill-server "*) echo k >> "%s/kills"; [ -z "$sock" ] || exit 0 ;;
+*" new-session "*) echo n >> "%s/tries"; [ -z "$sock" ] || exit 1
+    [ "$(wc -l < "%s/tries")" -gt "$FS_FAILS" ] || {
+    echo "server exited unexpectedly ($(wc -l < "%s/tries"))" >&2; exit 1; } ;;
+esac\nexec "%s" "$@"\n' "$FSD" "$FSD" "$FSD" "$FSD" "$TMUX_REAL" > "$FSD/tmux"
+chmod +x "$FSD/tmux"
+fs_run() {                    # fs_run <fails> <polls> <fresh_server args...> -> "rc tries kills bads|bad's got"
+    local fails=$1 polls=$2; shift 2
+    rm -f "$FSD/tries" "$FSD/kills"
+    (
+        bads=0 got=
+        bad() { bads=$((bads+1)); got=$3; }
+        export FS_FAILS=$fails; POLLS=$polls TMUX_REAL="$FSD/tmux"
+        fresh_server "$@"; rc=$?
+        printf '%s %s %s %s|%s' "$rc" "$(cat "$FSD/tries" 2>/dev/null | wc -l)" \
+            "$(cat "$FSD/kills" 2>/dev/null | wc -l)" "$bads" "$got"
+    )
+}
+is "three refusals, then the session comes up on the fourth try" "0 4 1 0|" \
+   "$(fs_run 3 100 -L "$FS" -f /dev/null -- -d -s t 'exec sleep 300')"
+is "and the session is there" "t" "$("$TMUX_REAL" -L "$FS" list-sessions -F '#S' 2>/dev/null)"
+is "a server that never comes up: POLLS tries, then one bad carrying the last stderr" \
+   "1 5 1 1|server exited unexpectedly (5)" \
+   "$(fs_run 1000 5 -L "$FS" -f /dev/null -- -d -s t 'exec sleep 300')"
+is "POLLS=0 still says it gave up" "1 0 1 1|no stderr" \
+   "$(fs_run 1000 0 -L "$FS" -f /dev/null -- -d -s t 'exec sleep 300')"
+for row in "no --:-L $FS -d -s t" "no socket:-- -d -s t" "-f before -L:-f /dev/null -L $FS -- -d" \
+           "-L with no name:-L" "no arguments:"; do
+    # shellcheck disable=SC2086  # the row's words are the argv
+    case "$(fs_run 0 5 ${row#*:})" in
+        "1 0 0 1|"?*) ok "fresh_server refuses ${row%%:*}: one bad, no kill, no new-session" ;;
+        *) bad "fresh_server refuses ${row%%:*}: one bad, no kill, no new-session" "1 0 0 1|<why>" \
+               "$(fs_run 0 5 ${row#*:})" ;;
+    esac
+done
+"$TMUX_REAL" -L "$FS" kill-server >/dev/null 2>&1
+fi
 
 echo "== the REPO's shipped config renders correctly =="
 # Load examples/tmux.conf into a throwaway server. Previously these assertions
