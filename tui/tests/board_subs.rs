@@ -1117,3 +1117,14 @@ fn an_ended_agents_idle_teammate_is_drawn_ended() {
     let line = text(&cells_of(&ps, &Theme::fixed(), "orphan"));
     assert!(line.contains("└ ◌ mate") && !line.contains("40s"), "{line}");
 }
+
+/// #454 item 7: a teammate woken again ages from its newest logged start, not its
+/// first: 17 hours beside a `●` reads as a 17-hour run.
+#[test]
+fn a_rewoken_teammate_ages_from_its_newest_start() {
+    let mut mate = sub("mate", "lane-313", SubState::Running, 17 * 3600, 1);
+    mate.kind = SubKind::Teammate;
+    mate.resumed_at = Some(NOW - 8 * 60);
+    let line = text(&cells_of(&one(vec![mate]), &Theme::fixed(), "lane-313"));
+    assert!(line.contains("8m") && !line.contains("17h"), "{line}");
+}

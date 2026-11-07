@@ -99,6 +99,7 @@ fn a_running_subagent_has_its_type_description_start_and_tokens() {
         started: Some(T0),
         finished_at: None,
         active_at: Some(T0 + 9),
+        resumed_at: None,
         tokens: 100,
     };
     assert_eq!(s, want);
@@ -1204,4 +1205,17 @@ fn an_agent_that_wrote_after_the_reconcile_is_not_ended_by_it() {
     s.log(&[ev(0, "start", "a")]);
     s.live(&live(30, &[], &[]));
     assert_eq!(s.one(T0 + 60).state, SubState::Running);
+}
+
+/// #454 item 7: a teammate's `resumed_at` is its newest logged start; a plain
+/// subagent has none, however many starts it logged.
+#[test]
+fn a_teammates_resumed_at_is_its_newest_logged_start() {
+    for (m, want) in [(TEAMMATE, Some(T0 + 30)), (PLAIN, None)] {
+        let s = session("resumed");
+        meta(&s.dir, "a", m);
+        rows(&s.dir, "a", &[FIRST, &tick(5)]);
+        s.log(&[ev(0, "start", "a"), ev(10, "stop", "a"), ev(30, "start", "a")]);
+        assert_eq!(s.one(T0 + 60).resumed_at, want, "{m}");
+    }
 }

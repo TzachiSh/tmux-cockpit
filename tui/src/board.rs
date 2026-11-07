@@ -2326,6 +2326,9 @@ fn age_of(p: &Pane, s: &Sub, now: u64) -> String {
     // an idle teammate and an end nobody recorded (#361) age from their last sign of life
     let from = if matches!(s.state, SubState::Idle | SubState::EndUnknown) {
         s.active_at.or(s.started)
+    } else if s.state == SubState::Running {
+        // #454: a teammate woken again runs since its newest start, not its first
+        s.started.max(s.resumed_at)
     } else {
         s.started
     };
