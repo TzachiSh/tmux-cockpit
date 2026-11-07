@@ -1677,3 +1677,29 @@ fn the_board_and_info_agree_on_the_asked_prompt() {
         assert_eq!((board.as_str(), info), (want, Some(want)), "{sess}: (board, info)");
     }
 }
+
+/// #454 item 5: with no @cockpit_title the label is the pane's own title (field 17,
+/// which the format already strips of `✳ ` and blanks when it is the host name),
+/// else the window name. Rows: a topic, none, and @cockpit_title over a topic.
+#[test]
+fn the_label_falls_back_to_the_pane_title_before_the_window_name() {
+    let r = Rig::new("topic");
+    let base = |id: &str, title: &str| {
+        let mut f: Vec<String> = row(id, "claude", "running", "-", "100").split('\u{1f}').map(String::from).collect();
+        f[5] = title.into();
+        f.extend(["", "", "", ""].map(String::from));
+        f
+    };
+    let with = |mut f: Vec<String>, topic: &str| {
+        f.push(topic.into());
+        f.join("\u{1f}")
+    };
+    r.rows(&[
+        with(base("%1", "-"), "migrate the runner"),
+        with(base("%2", "-"), ""),
+        with(base("%3", "fix it"), "a topic"),
+    ]);
+    let ps = list_panes().unwrap();
+    let labels: Vec<&str> = ["%1", "%2", "%3"].iter().map(|id| get(&ps, id).label()).collect();
+    assert_eq!(labels, ["migrate the runner", "win", "fix it"]);
+}

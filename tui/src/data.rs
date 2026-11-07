@@ -167,6 +167,9 @@ pub struct Pane {
     /// #460: `@cockpit_job_name`, the background job agent-poll bound this viewer
     /// pane to by its title; cleaned, since a title is untrusted. `""` when unbound.
     pub job: String,
+    /// #454: the pane's own title (field 17), `✳ ` off, `""` when it is the host name;
+    /// the label's fallback before the window name
+    pub topic: String,
 }
 
 /// Skips the three ages, which change every tick and would defeat the redraw
@@ -203,9 +206,10 @@ impl Hash for Pane {
             subs,
             ended,
             job,
+            topic,
         } = self;
         [
-            id, wher, name, cmd, title, msg, sess, path, dir, root, spool, pid, review, doing, said, asked, loc, pm, win, job,
+            id, wher, name, cmd, title, msg, sess, path, dir, root, spool, pid, review, doing, said, asked, loc, pm, win, job, topic,
         ]
         .hash(h);
         (state, pinned, delivered, subs_n, ended).hash(h);
@@ -216,11 +220,11 @@ impl Hash for Pane {
 
 impl Pane {
     pub fn label(&self) -> &str {
-        if self.title.is_empty() {
-            if self.name.is_empty() { "(no title)" } else { &self.name }
-        } else {
-            &self.title
-        }
+        // @cockpit_title, else the pane's own title (#454), else the window name
+        [&self.title, &self.topic, &self.name]
+            .into_iter()
+            .find(|s| !s.is_empty())
+            .map_or("(no title)", |s| s.as_str())
     }
 }
 
@@ -761,6 +765,9 @@ const FIELDS: &str = concat!(
     "\u{1f}#{s/\n/ /:#{s/\t/ /:#{s/\u{1f}/ /:#{@cockpit_transcript}}}}",
     // #460: 16 the background job agent-poll bound a viewer pane to
     "\u{1f}#{s/\n/ /:#{s/\t/ /:#{s/\u{1f}/ /:#{@cockpit_job_name}}}}",
+    // #454: 17 the pane's own title, the topic Claude sets, as the status bar reads it:
+    // `✳ ` off, and nothing when it is still tmux's default, the host name
+    "\u{1f}#{?#{==:#{pane_title},#{host_short}},,#{s/\n/ /:#{s/\t/ /:#{s/\u{1f}/ /:#{s/^✳ //:#{pane_title}}}}}}",
 );
 
 /// `-` back to empty. A sentinelled option whose real value is a bare `-` would
@@ -821,7 +828,7 @@ pub fn list_fleet() -> Option<(Vec<Pane>, std::collections::BTreeSet<String>)> {
     let (mut ps, mut dirs) = (vec![], vec![]);
     for l in out.lines() {
         let f: Vec<&str> = l.split(SEP).collect();
-        // FIELDS has 17; the 13 before @cockpit_dir are the floor, so an older format reads
+        // FIELDS has 18; the 13 before @cockpit_dir are the floor, so an older format reads
         if f.len() < 13 {
             continue;
         }
@@ -839,6 +846,8 @@ pub fn list_fleet() -> Option<(Vec<Pane>, std::collections::BTreeSet<String>)> {
         p.subs_n = f.get(14).and_then(|n| n.parse().ok()).unwrap_or(0);
         // a pane title, so untrusted: control and bidi characters go
         p.job = crate::pick::clean(f.get(16).copied().unwrap_or_default()).trim().to_string();
+        // a pane title, so untrusted too
+        p.topic = crate::pick::clean(f.get(17).copied().unwrap_or_default()).trim().to_string();
         if let Some(d) = subagents::dir_of(f.get(15).copied().unwrap_or_default(), &p.sess, &p.path) {
             p.subs = subagents::read(&d, sessions::now());
         }
@@ -907,7 +916,7 @@ fn row_pane(f: &[&str], procs_t: &mut Option<Procs>) -> Option<(Pane, &'static s
 /// Reads `p`'s transcript into it and returns its work dir's candidates (#452), in
 /// the order `fleet::work_dirs` tries them. @cockpit_dir, @cockpit_subs and
 /// @cockpit_transcript come after the 13 a row from an older format has, so such a
-/// row still reads: 13 to 16 are optional.
+/// row still reads: 13 to 17 are optional.
 fn work_candidates(p: &mut Pane, f: &[&str]) -> [String; 3] {
     let said_cwd = read_transcript(p, f.get(15).copied().unwrap_or_default());
     let opt = f.get(13).copied().unwrap_or_default().to_string();

@@ -7649,6 +7649,16 @@ is "--json carries the 16 frozen keys, in order" \
 is "--json exits 0 and says nothing about $TJSH" "0 no" \
    "$(COCKPIT_TMUX="tmux -L $TJ" "$COCKPIT_TUI_BIN" --json >/dev/null 2>&1; printf '%s ' "$?"; \
       case "$TJOUT" in *"\"$TJSH\""*) printf yes ;; *) printf no ;; esac)"
+# #454: with no @cockpit_title the title is the pane's own, `✳ ` off; tmux's default,
+# the host name, is no topic, so the window name stands
+tj_title() { COCKPIT_TMUX="tmux -L $TJ" "$COCKPIT_TUI_BIN" --json 2>/dev/null \
+    | awk -v p="$TJB" '$0 ~ "\"id\": \""p"\"" {f=1} f && /"title"/ {sub(/.*"title": "/, ""); sub(/",$/, ""); print; exit}'; }
+"$TMUX_REAL" -L "$TJ" set -pu -t "$TJB" @cockpit_title >/dev/null 2>&1
+"$TMUX_REAL" -L "$TJ" select-pane -t "$TJB" -T "✳ migrate the runner" >/dev/null 2>&1
+is "--json's title falls back to the pane title, ✳ off" "migrate the runner" "$(tj_title)"
+"$TMUX_REAL" -L "$TJ" select-pane -t "$TJB" -T "$("$TMUX_REAL" -L "$TJ" display -p -t "$TJB" '#{host_short}')" >/dev/null 2>&1
+is "and a pane title that is the host name is no topic" \
+   "$("$TMUX_REAL" -L "$TJ" display -p -t "$TJB" '#{window_name}')" "$(tj_title)"
 
 # F1: a Bash tool_use whose command holds a TAB used to split --rows into 10
 # fields. HOME is redirected so the fixture transcript never touches the real
