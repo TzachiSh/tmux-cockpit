@@ -293,7 +293,8 @@ case " $* " in
     echo "server exited unexpectedly ($(wc -l < "%s/tries"))" >&2; exit 1; } ;;
 esac\nexec "%s" "$@"\n' "$FSD" "$FSD" "$FSD" "$FSD" "$TMUX_REAL" > "$FSD/tmux"
 chmod +x "$FSD/tmux"
-fs_run() {                    # fs_run <fails> <polls> <fresh_server args...> -> "rc tries kills bads|bad's got"
+# fs_run <fails> <polls> <fresh_server args...> -> "rc tries kills bads|bad's got"
+fs_run() {
     local fails=$1 polls=$2; shift 2
     rm -f "$FSD/tries" "$FSD/kills"
     (
