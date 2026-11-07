@@ -5,7 +5,7 @@ mod fake;
 use cockpit_tui::panel::capture::capture;
 use cockpit_tui::panel::envelope::{Flow, OutType};
 use cockpit_tui::panel::prompts::{self, Ctx};
-use cockpit_tui::panel::request::{Call, Request};
+use cockpit_tui::panel::request::{Call, Effort, Request};
 use cockpit_tui::panel::route::route;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -381,6 +381,7 @@ fn an_override_that_cannot_be_read_is_a_warn_note_on_the_busy_view() {
         claude: e.exec("claude", "cat >/dev/null; exec sleep 1000"),
         timeout: Duration::from_secs(77),
         dir: e.dir.join("cache"),
+        effort: Effort::Medium,
     };
     let mut a = App::new("%3", Capture::default());
     a.view = View::ExplainAsk { sel: 0 };
@@ -563,4 +564,60 @@ fn every_ssh_like_command_carries_no_repo_block() {
         fake_tmux(&e, &format!("w\\t{cmd}\\t$D/r\\n"));
         assert_eq!(capture("%9").unwrap().repo.get(), "", "{cmd}");
     }
+}
+
+/// The word after `--effort` in an argv written one per line.
+fn effort_in(argv: &str) -> Option<&str> {
+    let mut lines = argv.lines();
+    lines.position(|l| l == "--effort")?;
+    lines.next()
+}
+
+/// COCKPIT_PANEL_EFFORT (`@cockpit_panel_effort`, passed by cockpit-panel) is
+/// the call's `--effort`.
+#[test]
+fn the_panel_effort_is_the_calls_effort() {
+    let e = Env::new(
+        "effort",
+        &[
+            ("COCKPIT_PANEL_EFFORT", Some("low".into())),
+            ("COCKPIT_CLAUDE", Some("$D/claude".into())),
+            ("XDG_CACHE_HOME", Some("$D/cache".into())),
+        ],
+    );
+    e.exec("claude", "printf '%s\\n' \"$@\" > $D/argv\necho ok");
+    let call = Call::from_env();
+    assert_eq!(call.effort, Effort::Low);
+    let mut req = Request::spawn(&call, "S", "p", "haiku");
+    assert!(until(|| req.poll().is_some()));
+    let argv = std::fs::read_to_string(e.dir.join("argv")).unwrap();
+    assert_eq!(effort_in(&argv), Some("low"), "{argv}");
+}
+
+/// Unset, empty or not one of the CLI's words, the effort is `medium`.
+#[test]
+fn a_missing_or_unknown_panel_effort_is_medium() {
+    let rows = [("unset", None), ("empty", Some("")), ("shell", Some("max$(touch x)"))];
+    for (row, v) in rows {
+        let _e = Env::new("effort-bad", &[("COCKPIT_PANEL_EFFORT", v.map(String::from))]);
+        assert_eq!(Call::from_env().effort, Effort::Medium, "{row}");
+    }
+}
+
+/// claude's CLAUDE_CODE_EFFORT_LEVEL beats `--effort`, so the call goes without it.
+#[test]
+fn claudes_own_effort_variable_never_reaches_the_call() {
+    let e = Env::new(
+        "effort-env",
+        &[
+            ("CLAUDE_CODE_EFFORT_LEVEL", Some("max".into())),
+            ("COCKPIT_CLAUDE", Some("$D/claude".into())),
+            ("XDG_CACHE_HOME", Some("$D/cache".into())),
+        ],
+    );
+    e.exec("claude", "env > $D/env\necho ok");
+    let mut req = Request::spawn(&Call::from_env(), "S", "p", "haiku");
+    assert!(until(|| req.poll().is_some()));
+    let env = std::fs::read_to_string(e.dir.join("env")).unwrap();
+    assert!(!env.lines().any(|l| l.starts_with("CLAUDE_CODE_EFFORT_LEVEL=")), "{env}");
 }

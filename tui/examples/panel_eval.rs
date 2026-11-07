@@ -34,7 +34,7 @@ use cockpit_tui::panel::app::{App, View};
 use cockpit_tui::panel::capture::Capture;
 use cockpit_tui::panel::envelope::{Flow, OutType, Role, Turn};
 use cockpit_tui::panel::parse::{self, Reply, files_read};
-use cockpit_tui::panel::request::{Call, Fail, Profile, Request};
+use cockpit_tui::panel::request::{Call, Effort, Fail, Profile, Request};
 use cockpit_tui::panel::route::route;
 use cockpit_tui::refs::Ref;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -737,7 +737,9 @@ fn main() {
         Some(Ok(())) => Staged(Some(root)),
         None => Staged(None),
     };
-    let env = fingerprint(&version, hermetic, cwds.0.as_deref(), &call.dir, |k| std::env::var(k).ok());
+    let env = fingerprint(&version, hermetic, cwds.0.as_deref(), &call.dir, call.effort, |k| {
+        std::env::var(k).ok()
+    });
     let mut hashes: Vec<u64> = vec![];
     let mut todo: Vec<(usize, usize)> = (0..o.runs).flat_map(|r| (0..cases.len()).map(move |c| (c, r))).collect();
     todo.reverse();
@@ -1021,6 +1023,8 @@ struct Fingerprint {
     hermetic: bool,
     /// The setting sources the calls load: `None` is claude's default, all of them.
     setting_sources: Option<String>,
+    /// The panel's `--effort`, from COCKPIT_PANEL_EFFORT (#623).
+    effort: &'static str,
     /// HOME, XDG_CONFIG_HOME, XDG_CACHE_HOME and CLAUDE_CONFIG_DIR, `None` unset.
     vars: Vec<(&'static str, Option<String>)>,
 }
@@ -1028,7 +1032,18 @@ struct Fingerprint {
 const ENV_VARS: [&str; 4] = ["HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "CLAUDE_CONFIG_DIR"];
 
 /// `hermetic` is what the calls get (see [`hand_off`]); `root` where they run.
-fn fingerprint(claude: &str, hermetic: bool, root: Option<&Path>, dir: &Path, var: impl Fn(&str) -> Option<String>) -> Fingerprint {
+/// A plain call loads what the panel's own argv names (#623).
+fn fingerprint(
+    claude: &str,
+    hermetic: bool,
+    root: Option<&Path>,
+    dir: &Path,
+    effort: Effort,
+    var: impl Fn(&str) -> Option<String>,
+) -> Fingerprint {
+    let panel = Profile::TEXT.argv(effort);
+    let at = panel.iter().position(|a| a == HERMETIC_FLAGS[0]);
+    let panel_sources = at.and_then(|i| panel.get(i + 1));
     let cwd = match root {
         Some(r) => format!("{}/<case>-<run>", r.display()),
         None => dir.display().to_string(),
@@ -1037,7 +1052,12 @@ fn fingerprint(claude: &str, hermetic: bool, root: Option<&Path>, dir: &Path, va
         claude: claude.into(),
         cwd,
         hermetic,
-        setting_sources: hermetic.then(|| HERMETIC_FLAGS[1].into()),
+        setting_sources: if hermetic {
+            Some(HERMETIC_FLAGS[1].into())
+        } else {
+            panel_sources.cloned()
+        },
+        effort: effort.as_str(),
         vars: ENV_VARS.iter().map(|k| (*k, var(k))).collect(),
     }
 }
@@ -1048,19 +1068,19 @@ impl Fingerprint {
             self.vars.iter().map(|(k, v)| (k.to_string(), serde_json::json!(v))).collect();
         serde_json::json!({
             "claude": self.claude, "cwd": self.cwd, "hermetic": self.hermetic,
-            "setting_sources": self.setting_sources, "vars": vars,
+            "setting_sources": self.setting_sources, "effort": self.effort, "vars": vars,
         })
     }
 }
 
 impl std::fmt::Display for Fingerprint {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let memory = if self.hermetic {
+        let memory = if self.setting_sources.as_deref() == Some("") {
             "user memory and settings off (--setting-sources \"\")"
         } else {
             "user memory and settings loaded"
         };
-        write!(f, "claude {}; {memory}; cwd {}", self.claude, self.cwd)?;
+        write!(f, "claude {}; {memory}; effort {}; cwd {}", self.claude, self.effort, self.cwd)?;
         for (k, v) in &self.vars {
             write!(f, "; {k}={}", v.as_deref().unwrap_or("(unset)"))?;
         }
@@ -2529,6 +2549,7 @@ mod tests {
             claude: "claude".into(),
             timeout,
             dir: dir.into(),
+            effort: Effort::Medium,
         }
     }
 
@@ -2619,7 +2640,14 @@ mod tests {
     #[test]
     fn the_fingerprint_names_the_version_the_cwd_the_sources_and_the_vars() {
         let var = |k: &str| (k == "HOME").then(|| "/home/u".to_string());
-        let f = fingerprint("2.1.319 (Claude Code)", true, Some(Path::new("/t/cwd")), Path::new("/c"), var);
+        let f = fingerprint(
+            "2.1.319 (Claude Code)",
+            true,
+            Some(Path::new("/t/cwd")),
+            Path::new("/c"),
+            Effort::Low,
+            var,
+        );
         assert_eq!(
             (f.claude.as_str(), f.cwd.as_str()),
             ("2.1.319 (Claude Code)", "/t/cwd/<case>-<run>")
@@ -2627,9 +2655,23 @@ mod tests {
         assert_eq!((f.hermetic, f.setting_sources.as_deref()), (true, Some("")));
         assert_eq!(f.vars[0], ("HOME", Some("/home/u".into())));
         assert_eq!(f.vars[3], ("CLAUDE_CONFIG_DIR", None));
-        let plain = fingerprint("v", false, None, Path::new("/c"), var);
-        assert_eq!((plain.hermetic, plain.setting_sources, plain.cwd.as_str()), (false, None, "/c"));
+        let plain = fingerprint("v", false, None, Path::new("/c"), Effort::Medium, var);
+        assert_eq!((plain.hermetic, plain.cwd.as_str()), (false, "/c"));
         assert_eq!(f.json()["vars"]["XDG_CONFIG_HOME"], serde_json::Value::Null);
+    }
+
+    /// #623: the panel's own call loads no setting source, so a plain run does not either.
+    #[test]
+    fn a_plain_run_loads_the_setting_sources_the_panel_does() {
+        let plain = fingerprint("v", false, None, Path::new("/c"), Effort::Medium, |_: &str| None);
+        assert_eq!(plain.setting_sources.as_deref(), Some(""));
+    }
+
+    /// The effort the calls get, from COCKPIT_PANEL_EFFORT, is in the fingerprint.
+    #[test]
+    fn the_fingerprint_names_the_effort() {
+        let f = fingerprint("v", true, None, Path::new("/c"), Effort::XHigh, |_: &str| None);
+        assert_eq!(f.json()["effort"], "xhigh");
     }
 
     #[test]
