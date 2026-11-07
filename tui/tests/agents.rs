@@ -197,10 +197,28 @@ fn the_rig_never_kills_a_pid_that_is_not_its_stub() {
         let r = Rig::new("reused", ONE);
         std::fs::write(r.dir.join("stubpid"), other.id().to_string()).unwrap();
     }
-    let alive = other.try_wait().unwrap().is_none();
-    let _ = other.kill();
-    let _ = other.wait();
-    assert!(alive, "the rig's drop killed a process that was not its stub");
+    // Child::kill is a SIGKILL too, so a look right after the drop could not tell a kill
+    // still on its way from none (#527). This ends it with SIGTERM: a SIGKILL already sent
+    // wins, and the exit status says which signal it died of.
+    // SAFETY: a plain signal to this test's own unreaped child.
+    unsafe { libc::kill(other.id() as libc::pid_t, libc::SIGTERM) };
+    let st = other.wait().unwrap();
+    use std::os::unix::process::ExitStatusExt;
+    assert_eq!(
+        st.signal(),
+        Some(libc::SIGTERM),
+        "the rig's drop killed a process that was not its stub"
+    );
+}
+
+/// A stub that has gone, its pid reaped, is no stub of the rig's: nothing is signalled.
+#[test]
+fn a_gone_stub_pid_is_not_the_rigs() {
+    let r = Rig::new("gone", ONE);
+    let mut child = std::process::Command::new(r.dir.join("bin/sleep")).arg("0").spawn().unwrap();
+    let pid = child.id() as i32;
+    child.wait().unwrap();
+    assert!(!stub_of(pid, &r.dir), "pid {pid}, reaped, still read as the rig's stub");
 }
 
 /// The positive path: an exec'd stub (argv[0] under the rig's bin) is reaped by Drop.
