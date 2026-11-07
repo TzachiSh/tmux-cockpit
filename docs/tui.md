@@ -534,8 +534,8 @@ Only running and failed count in the badge. End unknown is 15 minutes with no
 transcript write and no recorded end: a TaskStop mid-turn, or a live agent
 waiting on a permission prompt or a long call. It is never red, and as it is
 past the 2 minutes by its definition it folds at once, into a line of its own
-whose age is the newest sign of life among them. One long session held 16 done,
-51 end unknown and 3 idle subagents: `✓ 16 done`, `◌ 51 quiet` and the three
+whose age is the newest sign of life among them. One long session once held 16
+done, 51 end unknown and 3 idle subagents: `✓ 16 done`, `◌ 51 quiet` and the three
 teammates. `∎` and `◦` are East Asian Width N, one cell everywhere; `■` is A.
 A tree takes at most 5 lines, the last reading `+N more` when it has more.
 
@@ -1631,6 +1631,11 @@ else; `Pick::list_pct` moves the divider when a preview sits beside the list;
 Exact text. All lower case, no exclamation marks. The `cockpit:` prefix appears
 only on `display-message` output, never inside the board, where the frame
 already says who is talking.
+
+**An agent with no state yet:** a pane the board counts as an agent (its
+command, a version-shaped name, its process tree) that no hook has marked and
+whose transcript says nothing draws `○ idle`, with no age: unknown is never
+drawn as done or running.
 
 **No agent panes:** the header says ` board · 0 agents`, and under it this card
 sits centred; on a narrow board it wraps, never cuts.
