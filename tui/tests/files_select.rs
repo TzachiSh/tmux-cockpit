@@ -131,10 +131,13 @@ fn a_refused_name_names_the_argument() {
 /// The rows the first frame draws for a screen `w` by `h`, laid out as the
 /// run loop does it: the header first, then the scroll.
 fn first_frame(f: &mut Files, w: u16, h: u16) -> Vec<String> {
-    f.layout(Rect::new(0, 0, w, h));
     let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
-    t.draw(|fr| files::draw(fr, fr.area(), f, &Theme::fixed())).unwrap();
-    let b = t.backend().buffer().clone();
+    f.frame(&mut t, &Theme::fixed()).unwrap();
+    rows_of(&t, w, h)
+}
+
+fn rows_of(t: &Terminal<TestBackend>, w: u16, h: u16) -> Vec<String> {
+    let b = t.backend().buffer();
     (0..h).map(|y| (0..w).map(|x| b[(x, y)].symbol()).collect()).collect()
 }
 
@@ -163,7 +166,7 @@ fn a_selection_past_the_first_screen_is_drawn_on_the_first_frame() {
     let s = Scratch::new(&n.iter().map(String::as_str).collect::<Vec<_>>());
     let mut f = opened(&s, b"f60.txt");
     let rows = first_frame(&mut f, 80, 24);
-    let at = rows.iter().position(|r| r.contains("f60.txt"));
+    let at = rows.iter().position(|r| r.contains("▎ f60.txt"));
     let last = rows.iter().rposition(|r| r.contains(".txt"));
     assert!(at.is_some() && at == last, "f60 at {at:?}, last row {last:?}: {rows:#?}");
     assert!(!rows.iter().any(|r| r.contains("f10.txt")), "scrolled: {rows:#?}");

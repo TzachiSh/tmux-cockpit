@@ -12,6 +12,8 @@ use crate::pick::{self, Opts, Outcome, Pick, Row};
 use crate::theme::{Glyphs, Theme};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent};
 use ignore::WalkBuilder;
+use ratatui::Terminal;
+use ratatui::backend::Backend;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -310,6 +312,13 @@ impl Files {
         self.pick.clamp(area);
     }
 
+    /// One frame of the run loop: laid out for the terminal's size, then drawn.
+    pub fn frame<B: Backend>(&mut self, t: &mut Terminal<B>, th: &Theme) -> Result<(), B::Error> {
+        let s = t.size().unwrap_or_default();
+        self.layout(Rect::new(0, 0, s.width, s.height));
+        t.draw(|fr| draw(fr, fr.area(), self, th)).map(|_| ())
+    }
+
     /// Sets the header for a screen `w` wide: the path cut on the left, so the
     /// folder's own name stays, or a note until the next key.
     pub fn fit(&mut self, w: u16, g: &Glyphs) {
@@ -442,9 +451,7 @@ pub fn main(args: &[String]) -> i32 {
         Err(c) => return c,
     };
     let out = loop {
-        let area = pick::screen(&term);
-        f.layout(area);
-        if term.draw(|fr| draw(fr, fr.area(), &f, &th)).is_err() {
+        if f.frame(&mut term, &th).is_err() {
             break Outcome::Cancel;
         }
         match event::read() {
