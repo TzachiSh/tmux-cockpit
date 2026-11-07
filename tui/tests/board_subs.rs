@@ -1117,3 +1117,22 @@ fn an_ended_agents_idle_teammate_is_drawn_ended() {
     let line = text(&cells_of(&ps, &Theme::fixed(), "orphan"));
     assert!(line.contains("└ ◌ mate") && !line.contains("40s"), "{line}");
 }
+
+/// #399: the quiet line's age is its newest sign of life, `active_at`, which the
+/// data's hash does not keep: a newer one alone must move the redraw gate.
+#[test]
+fn a_quiet_lines_newer_sign_of_life_moves_the_redraw_gate() {
+    let mut ps = one(vec![with(sub("Explore", "q1", SubState::EndUnknown, 4000, 1), None, Some(3000))]);
+    let n = nav(&ps, "%4", &["%4"], 12);
+    let before = n.tree_gate(&ps);
+    ps[0].subs[0].active_at = ps[0].subs[0].active_at.map(|t| t + 600);
+    assert_ne!(before, n.tree_gate(&ps), "only active_at moved");
+}
+
+/// #399: a quiet subagent with no recorded sign of life ages from its start.
+#[test]
+fn a_quiet_line_with_no_sign_of_life_ages_from_the_start() {
+    let ps = one(vec![with(sub("Explore", "q1", SubState::EndUnknown, 1500, 1), None, None)]);
+    let line = text(&cells_of(&ps, &Theme::fixed(), "1 quiet"));
+    assert!(line.contains("◌ 1 quiet") && line.contains("25m"), "{line}");
+}
