@@ -880,7 +880,7 @@ fn an_open_trees_tokens_move_the_redraw_gate() {
 #[test]
 fn a_one_line_tree_counts_every_subagent() {
     let ps = mock();
-    let n = nav(&ps, "%4", &["%4"], 8);
+    let n = nav(&ps, "%4", &["%4"], 7);
     assert_eq!(tree_of(&ps, &n, "%4"), ["%4:+6"], "2 folded and 4 lines");
 }
 
