@@ -14016,17 +14016,22 @@ if need_tmux "open-at-line via pick"; then :; else
 OL="cockpit-ol-$$"; SOCKS="$SOCKS $OL"
 OLD=$(mktmpd); OLLOG="$OLD/log"; OLED="$OLD/ed"; : > "$OLLOG"
 mkdir -p "$OLD/w/sub"; : > "$OLD/w/one.txt"; : > "$OLD/w/two.txt"; : > "$OLD/w/three.txt"
-printf '#!/bin/sh\necho "OPEN $*" >> %s\n' "$OLLOG" > "$OLED"; chmod +x "$OLED"
+# The editor runs in a new window after the script has exited (#610). The shim
+# waits while $OLD/hold is there, so every row meets that order, the late one.
+printf '#!/bin/sh\nwhile [ -e %s/hold ]; do sleep 0.05; done\necho "OPEN $*" >> %s\n' \
+    "$OLD" "$OLLOG" > "$OLED"; chmod +x "$OLED"
 "$TMUX_REAL" -L "$OL" -f /dev/null new-session -d -s t -x 100 -y 28 -c "$OLD/w" >/dev/null 2>&1
 "$TMUX_REAL" -L "$OL" set -g @cockpit_editor "$OLED" >/dev/null 2>&1
 OLP=$("$TMUX_REAL" -L "$OL" list-panes -t t -F '#{pane_id}' | head -1)
 "$TMUX_REAL" -L "$OL" set-option -p -t "$OLP" @cockpit_click_line \
     "one.txt two.txt:7 sub/ three.txt" >/dev/null 2>&1
 olrun() {                     # olrun <n> -- start the picker; wait for its rows
+    : > "$OLD/hold"
     "$TMUX_REAL" -L "$OL" send-keys -t "$OLP" "clear; '$DIR/scripts/tmux-open-path' --pick '$OLP'; echo OLDONE$1=\$?" Enter
     until_cap "$OL" "$OLP" '*three.txt*'
 }
 oldone() { until_cap "$OL" "$OLP" "*OLDONE$1=[0-9]*"; }
+olgo() { rm -f "$OLD/hold"; until_file "$OLLOG" '*OPEN*'; }   # let the editor write; wait for it
 olcap() { "$TMUX_REAL" -L "$OL" capture-pane -p -J -t "$OLP"; }
 olkey() { "$TMUX_REAL" -L "$OL" send-keys -t "$OLP" "$@"; }
 
@@ -14036,17 +14041,17 @@ case "$(olcap)" in
     *) bad "the list shows each candidate relative to the pane, with its :line" \
          "two.txt:7 then sub/" "$(olcap | head -8)" ;;
 esac
-olkey Down Enter; oldone 1
+olkey Down Enter; oldone 1; olgo
 is "down + enter opens the second candidate at its line" "OPEN +7 $OLD/w/two.txt" "$(cat "$OLLOG")"
 
 : > "$OLLOG"; olrun 2
-olkey -l three; until_cap "$OL" "$OLP" '*open> three*|*three*'
-olkey Enter; oldone 2
+olkey -l three; until_cap "$OL" "$OLP" '*open> three*1/1 of 4*'
+olkey Enter; oldone 2; olgo
 is "typing a filter then enter opens the filtered row, not the first" \
    "OPEN $OLD/w/three.txt" "$(cat "$OLLOG")"
 
 : > "$OLLOG"; olrun 3
-olkey Down Down Enter; oldone 3
+olkey Down Down Enter; oldone 3; olgo
 is "a directory candidate is handed to the editor whole" "OPEN $OLD/w/sub/" "$(cat "$OLLOG")"
 
 : > "$OLLOG"; olrun 4
