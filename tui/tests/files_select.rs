@@ -92,6 +92,11 @@ fn a_plain_name_leaves_the_dotfiles_and_the_ignored_off() {
 /// What `parse_args` gives for a row: the folder and the name, or a refusal.
 type Parsed = Result<(String, Option<String>), ()>;
 
+/// The folder and the name `parse_args` took, the parts this table is about.
+fn dir_and_name(a: files::Args) -> (String, Option<String>) {
+    (a.dir, a.select)
+}
+
 /// The arguments `main` takes, each row named: the old one-folder form still
 /// parses, and `--select` takes one entry name, never a path or a control.
 #[test]
@@ -115,7 +120,7 @@ fn the_arguments_table() {
         ("a name and more", a(&["/d", "--select", "x", "y"]), Err(())),
     ];
     for (name, args, want) in rows {
-        let got = files::parse_args(args).map_err(|_| ());
+        let got = files::parse_args(args).map(dir_and_name).map_err(|_| ());
         assert_eq!(&got, want, "{name}");
     }
 }
