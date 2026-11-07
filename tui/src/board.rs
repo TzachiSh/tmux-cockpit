@@ -775,7 +775,7 @@ pub fn help_rows(g: &Glyphs, list: bool) -> Vec<(String, String)> {
         (g.running, "running"),
         (g.done, "done"),
         (g.idle, "idle"),
-        (g.ended, "ended: its agent is gone"),
+        (g.ended, "ended, or a subagent with no recorded end (may still run)"),
         (g.review_pending, "review pending"),
         (g.review_sent, "review sent"),
     ];
@@ -784,6 +784,8 @@ pub fn help_rows(g: &Glyphs, list: bool) -> Vec<(String, String)> {
             (fold_mark(g, false), "an open group"),
             (fold_mark(g, true), "a folded group"),
             (g.sub, "subagents running, failed; s opens the tree"),
+            (if g.ascii { SUB_STOP.1 } else { SUB_STOP.0 }, "stopped by you"),
+            (if g.ascii { SUB_IDLE.1 } else { SUB_IDLE.0 }, "an idle teammate (between turns)"),
         ]);
     }
     legend.extend([(g.active, "the selection"), (pane_mark(g), "tmux's active pane")]);
@@ -1273,8 +1275,9 @@ pub enum Row {
     Agent(usize),
     /// #313: a subagent line under agent `.0`, `.1` indexing its `subs`
     Sub(usize, usize),
-    /// the `✓ N done` line: agent `.0`'s `.1` done subagents past [`SUB_FOLD`]
-    Done(usize, usize),
+    /// the `✓ N done` line: agent `.0`'s `.1` done or stopped subagents past
+    /// [`SUB_FOLD`], `.2` of them stopped by the user (#399)
+    Done(usize, usize, usize),
     /// the `◌ N quiet` line (#361): agent `.0`'s `.1` subagents whose end is unknown
     Quiet(usize, usize),
     /// the `+N more` line: `.1` of agent `.0`'s subagents on no line
@@ -1429,7 +1432,7 @@ pub fn sub_counts(p: &Pane, seen: &Seen) -> (usize, usize) {
 
 /// A stopped subagent's mark (#336), and an idle teammate's (#361): both East
 /// Asian Width N, so one cell in every terminal (`■` is A). Local, as `PANE_MARK` is.
-const SUB_STOP: (&str, &str) = ("∎", "#");
+const SUB_STOP: (&str, &str) = ("∎", "=");
 const SUB_IDLE: (&str, &str) = ("◦", "o");
 
 /// A tree line's state glyph and role. Exhaustive, as every match on
@@ -1456,11 +1459,23 @@ fn tree_lines(ps: &[Pane], i: usize, seen: &Seen) -> Vec<Row> {
     let p = &ps[i];
     let count = |k: Place| p.subs.iter().filter(|s| place(p, s, seen) == k).count();
     let mut out = vec![];
-    for (k, row) in [(Place::Old, Row::Done as fn(usize, usize) -> Row), (Place::Quiet, Row::Quiet)] {
-        let n = count(k);
-        if n > 0 {
-            out.push(row(i, n));
-        }
+    let old = count(Place::Old);
+    if old > 0 {
+        // exhaustive, so a new state is placed here too (#399)
+        let stopped = |st: SubState| match st {
+            SubState::Stopped => true,
+            SubState::Running | SubState::Idle | SubState::Failed | SubState::Done | SubState::EndUnknown => false,
+        };
+        let n = p
+            .subs
+            .iter()
+            .filter(|s| place(p, s, seen) == Place::Old && stopped(s.state))
+            .count();
+        out.push(Row::Done(i, old, n));
+    }
+    let quiet = count(Place::Quiet);
+    if quiet > 0 {
+        out.push(Row::Quiet(i, quiet));
     }
     out.extend(
         (0..p.subs.len())
@@ -1471,18 +1486,19 @@ fn tree_lines(ps: &[Pane], i: usize, seen: &Seen) -> Vec<Row> {
 }
 
 /// `lines` in `k` rows: when they do not fit, the last says how many subagents got none.
-fn cut(mut lines: Vec<Row>, i: usize, k: usize) -> Vec<Row> {
+/// The fold rows give way first (#399): a live line outranks a count of old ones,
+/// so the fold rows' counts join `+N more` before any live line is cut.
+fn cut(lines: Vec<Row>, i: usize, k: usize) -> Vec<Row> {
     if lines.len() <= k {
         return lines;
     }
-    let keep = k.saturating_sub(1);
-    let more = lines[keep..]
-        .iter()
-        .map(|r| if let Row::Done(_, n) | Row::Quiet(_, n) = r { *n } else { 1 })
-        .sum();
-    lines.truncate(keep);
-    lines.push(Row::More(i, more));
-    lines
+    let weight = |r: &Row| if let Row::Done(_, n, _) | Row::Quiet(_, n) = r { *n } else { 1 };
+    let (folds, mut live): (Vec<Row>, Vec<Row>) = lines.into_iter().partition(|r| matches!(r, Row::Done(..) | Row::Quiet(..)));
+    let keep = k.saturating_sub(1).min(live.len());
+    let more = folds.iter().chain(&live[keep..]).map(weight).sum();
+    live.truncate(keep);
+    live.push(Row::More(i, more));
+    live
 }
 
 /// The selectable row at or above `r`: a tree line gives way to its agent.
@@ -1756,7 +1772,7 @@ impl Nav {
         trees.insert(id.to_string());
         self.rows_for(ps, self.room, &trees)
             .iter()
-            .any(|r| matches!(r, Row::Sub(i, _) | Row::Done(i, _) | Row::Quiet(i, _) | Row::More(i, _) if ps[*i].id == id))
+            .any(|r| matches!(r, Row::Sub(i, _) | Row::Done(i, ..) | Row::Quiet(i, _) | Row::More(i, _) if ps[*i].id == id))
     }
 
     /// The rows in `room`, net of the field. Tree lines take only the rows the list
@@ -1900,7 +1916,7 @@ impl Nav {
         let Some(row) = rows.get(r) else { return };
         self.sel = match row {
             Row::Head(s) => Sel::Head(s.clone()),
-            Row::Agent(i) | Row::Sub(i, _) | Row::Done(i, _) | Row::Quiet(i, _) | Row::More(i, _) => Sel::Pane(ps[*i].id.clone()),
+            Row::Agent(i) | Row::Sub(i, _) | Row::Done(i, ..) | Row::Quiet(i, _) | Row::More(i, _) => Sel::Pane(ps[*i].id.clone()),
         };
         let h = rows[..=r].iter().rposition(|r| matches!(r, Row::Head(_))).unwrap_or(0);
         if let Row::Head(s) = &rows[h] {
@@ -1942,7 +1958,7 @@ impl Nav {
     fn group_of(&self, rows: &[Row], ps: &[Pane], r: usize) -> Option<(String, bool)> {
         match rows.get(r)? {
             Row::Head(s) => Some((s.clone(), true)),
-            Row::Agent(i) | Row::Sub(i, _) | Row::Done(i, _) | Row::Quiet(i, _) | Row::More(i, _) => {
+            Row::Agent(i) | Row::Sub(i, _) | Row::Done(i, ..) | Row::Quiet(i, _) | Row::More(i, _) => {
                 Some((session(&ps[*i]).to_string(), false))
             }
         }
@@ -2398,13 +2414,15 @@ fn tree_row(ps: &[Pane], row: &Row, last: bool, tcol: usize, w: usize, now: u64,
     // `     ├ ● ` + text + ` ` + rail + the mark column
     let avail = w.saturating_sub(9 + 1 + RAIL_W + 1);
     let (text, age) = match *row {
-        Row::Done(_, n) => {
+        Row::Done(_, n, stopped) => {
             spans.push(Span::styled(g.done, Style::new().fg(th.done)));
+            // a stop is the user's (#336), not a finish: named apart when there is one
+            let label = match stopped {
+                0 => format!(" {n} done"),
+                m => format!(" {n} done {} {m} stopped", g.dot),
+            };
             (
-                vec![Span::styled(
-                    pad(g.trunc(&format!(" {n} done"), avail + 1), avail + 1),
-                    Style::new().fg(th.value),
-                )],
+                vec![Span::styled(pad(g.trunc(&label, avail + 1), avail + 1), Style::new().fg(th.value))],
                 String::new(),
             )
         }
@@ -2603,7 +2621,7 @@ fn list_board(f: &mut Frame, area: Rect, v: &View, nav: &Nav) {
                         let p = &v.panes[*i];
                         agent_row(p, num, sel, p.id == v.active, ww, w, &nav.seen, th)
                     }
-                    Row::Sub(i, _) | Row::Done(i, _) | Row::Quiet(i, _) | Row::More(i, _) => {
+                    Row::Sub(i, _) | Row::Done(i, ..) | Row::Quiet(i, _) | Row::More(i, _) => {
                         let last = !rows.get(top + k + 1).is_some_and(Row::tree);
                         // the type column: the widest type among the tree's lines
                         let tcol = rows
