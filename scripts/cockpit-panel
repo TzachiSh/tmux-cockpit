@@ -181,11 +181,14 @@ fi
 # the pane keeps one hidden panel: an ask opened beside it is told, so its ^Z refuses
 taken=''; [ "${#ask[@]}" -gt 0 ] && [ -n "$kept" ] && taken=1
 glyphs=$(tmux show-option -gqv @cockpit_glyphs 2>/dev/null)   # #293: the binary reads only the env
+# #623: as it is; the binary keeps only the CLI's effort words, medium for the rest
+effort=$(tmux show-option -gqv @cockpit_panel_effort 2>/dev/null)
 while :; do
     rm -f "$f" "$f.text" "$f.cmd" "$f.state" "$f.basket"
     # CLAUDECODE leaks in from the agent's environment and must not mark the call as its child.
     env -u CLAUDECODE COCKPIT_ACTION="$f" COCKPIT_LOG="$LOG" COCKPIT_PANEL_DROPPED="${dropped# }" \
-        ${glyphs:+"COCKPIT_GLYPHS=$glyphs"} ${taken:+COCKPIT_PANEL_HIDE_TAKEN=1} \
+        ${glyphs:+"COCKPIT_GLYPHS=$glyphs"} ${effort:+"COCKPIT_PANEL_EFFORT=$effort"} \
+        ${taken:+COCKPIT_PANEL_HIDE_TAKEN=1} \
         "$BIN" panel "$PANE" ${resume[@]+"${resume[@]}"} ${ask[@]+"${ask[@]}"} 2>>"$LOG" || {
         rc=$?
         tell "cockpit: the panel exited $rc — see $LOG"
