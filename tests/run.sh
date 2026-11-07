@@ -14700,9 +14700,22 @@ FB=$(mktmpd); FBS="cockpit-fb-$$"; SOCKS="$SOCKS $FBS"
 FBD="$FB/proj"; mkdir -p "$FB/bin" "$FBD/sub"
 FBF="$FBD/a b's.txt"; : > "$FBF"; mkfifo "$FBD/fifo"; ln -s /dev/null "$FBD/devnull"; : > "$FBD/sub/n.md"; : > "$FBD/sub/n.txt"
 FBNL="$FBD/two"$'\n'"lines.txt"; : > "$FBNL"     # a real file whose name is two lines
-printf '#!/bin/sh\nprintf "[%%s]" "$0" "$@" >> "%s/code.log"\n' "$FB" > "$FB/bin/code"
+# The shims build their line in a file of their own and rename it onto the log,
+# so fbwait's non-empty log is a whole line, never the program without its
+# arguments (#577). While $FB/edhold is there an editor shim stops mid-line.
+cat > "$FB/bin/code" <<STUB
+#!/bin/sh
+{ cat "$FB/code.log"; printf '[%s]' "\$0" "\$@"; } > "$FB/code.log.\$\$"
+mv -f "$FB/code.log.\$\$" "$FB/code.log"
+STUB
 for e in ed-cockpit ed-visual ed-editor nvim; do
-    printf '#!/bin/sh\nprintf "%%s" "$0" >> "%s/ed.log"; printf " [%%s]" "$@" >> "%s/ed.log"; echo >> "%s/ed.log"\n' "$FB" "$FB" "$FB" > "$FB/bin/$e"
+    cat > "$FB/bin/$e" <<STUB
+#!/bin/sh
+{ cat "$FB/ed.log"; printf '%s' "\$0"
+  [ ! -e "$FB/edhold" ] || { : > "$FB/edat"; while [ -e "$FB/edhold" ]; do sleep 0.05; done; }
+  printf ' [%s]' "\$@"; echo; } > "$FB/ed.log.\$\$"
+mv -f "$FB/ed.log.\$\$" "$FB/ed.log"
+STUB
 done
 cat > "$FB/bin/tmux" <<STUB
 #!/bin/sh
@@ -14769,6 +14782,20 @@ fbn() { grep -c "^$1 " "$FB/calls"; }          # calls of one tmux subcommand
 fbwait() { local n=0; until [ -s "$1" ] || [ "$n" -ge 50 ]; do sleep 0.1; n=$((n + 1)); done; }
 fbnotes() { grep '^display-message' "$FB/calls" | grep -vc '\[-p\]'; }   # notes shown, not queries
 fbwin() { "$TMUX_REAL" -L "$FBS" list-windows -t t | grep -c .; }
+
+# #577: an editor shim held between its first write and its last leaves the log
+# empty, so fbwait cannot hand a reader the program without its arguments
+fbheld() {                    # fbheld <shim> <args...> -- "<log mid-line>|<log after>"
+    local mid; : > "$FB/ed.log"; rm -f "$FB/edat"; : > "$FB/edhold"
+    "$FB/bin/$1" "${@:2}" & local p=$!
+    until_out yes sh -c '[ -e "$1" ] && echo yes' sh "$FB/edat"
+    mid=$(cat "$FB/ed.log"); rm -f "$FB/edhold"; wait "$p"
+    printf '%s|%s' "$mid" "$(cat "$FB/ed.log")"
+}
+is "a shim held mid-line: the log is empty, then the whole line (one argument)" \
+   "|$FB/bin/ed-cockpit [$FBF]" "$(fbheld ed-cockpit "$FBF")"
+is "a shim held mid-line: the log is empty, then the whole line (+N and a file)" \
+   "|$FB/bin/nvim [+7] [$FBF]" "$(fbheld nvim +7 "$FBF")"
 
 # --folder: the tap opens the browser popup and nothing else
 : > "$FB/calls"
