@@ -2320,21 +2320,25 @@ fn sub_type(s: &Sub) -> &str {
 /// A subagent's age off its start, as the rail prints it; empty before its first row.
 /// An ended agent's (#301) running or idle subagent has none: nothing runs to age.
 fn age_of(p: &Pane, s: &Sub, now: u64) -> String {
-    if p.ended && matches!(s.state, SubState::Running | SubState::Idle) {
-        return String::new();
-    }
-    // an idle teammate and an end nobody recorded (#361) age from their last sign of life
-    let from = if matches!(s.state, SubState::Idle | SubState::EndUnknown) {
-        s.active_at.or(s.started)
-    } else {
-        s.started
+    // exhaustive, as sub_glyph is: a new state fails to compile until it is aged (#399)
+    let from = match s.state {
+        SubState::Running | SubState::Idle if p.ended => return String::new(),
+        // an idle teammate ages from its last sign of life
+        SubState::Idle => s.active_at.or(s.started),
+        SubState::Running | SubState::Failed | SubState::Done | SubState::Stopped => s.started,
+        // an end nobody recorded (#361) is a quiet row, never a line: quiet_age ages it
+        SubState::EndUnknown => s.active_at.or(s.started),
     };
     from.map(|t| fmt_dur(now.saturating_sub(t))).unwrap_or_default()
 }
 
 /// The `◌ N quiet` line's age: its newest sign of life.
 fn quiet_age(p: &Pane, now: u64) -> String {
-    let q = p.subs.iter().filter(|s| s.state == SubState::EndUnknown);
+    let quiet = |st: SubState| match st {
+        SubState::EndUnknown => true,
+        SubState::Running | SubState::Idle | SubState::Failed | SubState::Done | SubState::Stopped => false,
+    };
+    let q = p.subs.iter().filter(|s| quiet(s.state));
     q.filter_map(|s| s.active_at.or(s.started))
         .max()
         .map(|t| fmt_dur(now.saturating_sub(t)))
@@ -2427,11 +2431,11 @@ fn tree_row(ps: &[Pane], row: &Row, last: bool, tcol: usize, w: usize, now: u64,
             let s = &ps[i].subs[j];
             let (gl, c) = sub_glyph(th, &ps[i], s.state);
             // a user's stop (#336) dims, as an ended agent's tree does
-            let dim = if ps[i].ended || s.state == SubState::Stopped {
-                Modifier::DIM
-            } else {
-                Modifier::empty()
+            let stopped = match s.state {
+                SubState::Stopped => true,
+                SubState::Running | SubState::Idle | SubState::Failed | SubState::Done | SubState::EndUnknown => false,
             };
+            let dim = if ps[i].ended || stopped { Modifier::DIM } else { Modifier::empty() };
             spans.push(Span::styled(gl, Style::new().fg(c).add_modifier(dim)));
             let (tw, dw, tok) = tree_cols(avail, tcol);
             let mut t = vec![Span::styled(
