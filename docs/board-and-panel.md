@@ -96,6 +96,20 @@ tile's pane. The key replaces stock `find-window`:
 set -g @cockpit_panel_key f    # the default; off restores stock find-window
 ```
 
+The panel's own `claude -p` calls load none of your Claude settings files: no
+user, project or local `settings.json`, and with them no `CLAUDE.md`, hooks,
+plugins or `effortLevel` (#623). A login made with `/login` keeps working, but
+auth set up in a settings file does not reach these calls: an `apiKeyHelper`,
+or an `env` block that picks Bedrock or Vertex or sets a custom base URL. Those
+variables still work when they are in the environment tmux runs with. The
+effort is the panel's own option, read each time the panel opens:
+
+```sh
+set -g @cockpit_panel_effort medium    # the default; low, high, xhigh or max
+```
+
+Any other value is `medium`.
+
 It needs the `cockpit-tui` binary, like the board. The binary never writes to
 the pane: it leaves `paste %N` or `send %N` and the text in the action files,
 and `scripts/cockpit-panel` does the paste and says what it did. Options,
