@@ -4274,7 +4274,7 @@ echo "== first-run: no theme installed, still works =="
 # plugin's styles name tmux 3.8's theme slots, which always resolve; this block
 # sources the config bare.
 if need_tmux "bare first run"; then :; else
-FR="cockpit-fr-$$"; SOCKS="$SOCKS $FR"
+FR="cockpit-fr2-$$"; SOCKS="$SOCKS $FR"
 "$TMUX_REAL" -L "$FR" -f /dev/null new-session -d -s t 'exec -a claude sleep 300' >/dev/null 2>&1
 "$TMUX_REAL" -L "$FR" source-file "$DIR/examples/tmux.conf" >/dev/null 2>&1
 FP=$("$TMUX_REAL" -L "$FR" list-panes -a -F '#{pane_id}' | head -1)
@@ -6492,7 +6492,7 @@ echo "== tmux-review --deliver: the paste is gated atomically, so a pane that st
 # load-buffer + atomic if-shell that deliver() now runs, once against the shell
 # that outlived the agent and once against a live agent.
 if need_tmux "tmux-review --deliver atomic gate"; then :; else
-RG="cockpit-rg-$$"; SOCKS="$SOCKS $RG"
+RG="cockpit-rgz-$$"; SOCKS="$SOCKS $RG"
 "$TMUX_REAL" -L "$RG" -f /dev/null new-session -d -s t -x 100 -y 30 \
     'exec -a claude bash' >/dev/null 2>&1
 "$TMUX_REAL" -L "$RG" split-window -t t 'exec bash' >/dev/null 2>&1
@@ -7808,7 +7808,7 @@ bloaded() {
 }
 
 # --- the shipped default -------------------------------------------------------
-B="cockpit-bw-$$"; SOCKS="$SOCKS $B"; bshim "$BD/s1" "$B" ""
+B="cockpit-bwz-$$"; SOCKS="$SOCKS $B"; bshim "$BD/s1" "$B" ""
 # -u: the server's environment is what cockpit.tmux reads, and this copy has no binary.
 env -u COCKPIT_TUI_BIN PATH="$BD/s1:$PATH" "$TMUX_REAL" -L "$B" -f /dev/null new-session -d -s t 'exec -a claude sleep 300' >/dev/null 2>&1
 "$TMUX_REAL" -L "$B" run-shell "$BD/p/cockpit.tmux" >/dev/null 2>&1; bloaded "$B"
@@ -8128,7 +8128,7 @@ echo "== cockpit-board: the return trip lands on the same pane, and a ✕ note s
 # The real binary in a real window: the loop, --select and board.state end to
 # end. tmux-review is a stub that records its argv; the panel is the real one.
 if need_tmux "the board's return trip"; then :; else
-RB="cockpit-rb-$$"; SOCKS="$SOCKS $RB"; RBD=$(mktmpd)
+RB="cockpit-rbz-$$"; SOCKS="$SOCKS $RB"; RBD=$(mktmpd)
 mkdir -p "$RBD/p" "$RBD/state"
 cp -r "$DIR"/scripts "$RBD/p/"
 printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> %s/rv\n' "$RBD" > "$RBD/p/scripts/tmux-review"
@@ -8453,7 +8453,7 @@ echo "== cockpit-tui board: a blank first capture replaces reading the screen (#
 # redraw gate must carry whether the pick was read (read_gate). Its own fresh
 # server, the blank agent first so the board opens on it, no earlier board.
 if need_tmux "the right pane's blank first capture"; then :; else
-PB="cockpit-pb-$$"; SOCKS="$SOCKS $PB"; PBD=$(mktmpd)
+PB="cockpit-pb2-$$"; SOCKS="$SOCKS $PB"; PBD=$(mktmpd)
 "$TMUX_REAL" -L "$PB" -f /dev/null new-session -d -s t -x 120 -y 30 -c "$PBD" 'exec sleep 3600' >/dev/null 2>&1
 # -n: a window tmux renames as its command execs would redraw the board itself
 for cmd in "printf '\\033[2J\\033[H'" 'echo other'; do
@@ -9243,7 +9243,7 @@ echo "== cockpit-panel: a tap in the popup acts once, and x copies by OSC 52 =="
 # an SGR click written there is what a touch screen sends. Coordinates are read
 # off the outer capture, 1-based as the wire wants them.
 if need_tmux "taps in the popup"; then :; else
-TI="cockpit-tapi-$$"; TO="cockpit-tapo-$$"; SOCKS="$SOCKS $TI $TO"; TPD=$(mktmpd)
+TI="cockpit-tapi2-$$"; TO="cockpit-tapo2-$$"; SOCKS="$SOCKS $TI $TO"; TPD=$(mktmpd)
 mkdir -p "$TPD/bin"
 printf '#!/bin/sh\ncat >/dev/null\nprintf "<text>copied by tap</text>"\n' > "$TPD/bin/claude"
 chmod +x "$TPD/bin/claude"
@@ -9748,7 +9748,7 @@ echo "== the menu's What is each agent doing? lists every pane with its state (#
 # The row replays the cockpit table's t, a popup over one tmux list-panes. Its
 # -F format is resolved here on a server, the same pass the popup's shell runs.
 if need_tmux "the agents popup"; then :; else
-AGS="cockpit-agents-$$"; SOCKS="$SOCKS $AGS"
+AGS="cockpit-agents2-$$"; SOCKS="$SOCKS $AGS"
 "$TMUX_REAL" -L "$AGS" -f /dev/null new-session -d -s ag -x 200 -y 50 'exec -a claude sleep 300' >/dev/null 2>&1
 "$TMUX_REAL" -L "$AGS" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
 "$TMUX_REAL" -L "$AGS" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
@@ -11523,7 +11523,7 @@ fi
 
 echo "== cockpit-tui info: prefix i opens the popup =="
 if need_tmux "prefix i popup"; then :; else
-PK="cockpit-pk-$$"; SOCKS="$SOCKS $PK"
+PK="cockpit-pk2-$$"; SOCKS="$SOCKS $PK"
 "$TMUX_REAL" -L "$PK" -f /dev/null new-session -d -s t -x 100 -y 30 'exec bash' >/dev/null 2>&1
 "$TMUX_REAL" -L "$PK" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
 pk_i() { "$TMUX_REAL" -L "$PK" list-keys -T prefix 2>/dev/null | awk '$4=="i"'; }
@@ -11544,7 +11544,7 @@ fi
 
 echo "== cockpit-tui info: values from outside cannot move a field or reach the terminal =="
 if need_tmux "cockpit-tui info hostile values"; then :; else
-PH="cockpit-ph-$$"; SOCKS="$SOCKS $PH"; PHDIR=$(mktmpd)
+PH="cockpit-ph2-$$"; SOCKS="$SOCKS $PH"; PHDIR=$(mktmpd)
 "$TMUX_REAL" -L "$PH" -f /dev/null new-session -d -s t -n w -x 100 -y 30 -c "$PHDIR" 'exec bash' >/dev/null 2>&1
 PHP=$("$TMUX_REAL" -L "$PH" list-panes -t t: -F '#{pane_id}')
 "$TMUX_REAL" -L "$PH" set-option -p -t "$PHP" @cockpit_title "$(printf 'a\037b')" >/dev/null 2>&1
@@ -14253,7 +14253,7 @@ fi
 echo "== git.sh refusal is shown by tmux-branch (#330) =="
 # The fixture of the tmux-review block above, on its own private socket and shim.
 if need_tmux "git.sh refusal in tmux-branch"; then :; else
-BQ="cockpit-bq-$$"; SOCKS="$SOCKS $BQ"; GD=$(mktmpd)
+BQ="cockpit-bq2-$$"; SOCKS="$SOCKS $BQ"; GD=$(mktmpd)
 ( git init -q "$GD/r" && cd "$GD/r" && printf 'hi\n' > x && printf 'x filter=a=b\n' > .gitattributes \
   && git config 'filter.a=b.clean' "touch $GD/PWNED" ) >/dev/null 2>&1
 ( git init -q -b main "$GD/ok" && cd "$GD/ok" && printf 'a\n' > y && git add y \
@@ -14336,7 +14336,7 @@ echo "== a burst of window events runs a few sweeps, and the counts are right af
 # Each hook event ran its own full sweep, O(N²) over a resurrect restore or a
 # kill-session. Debounced: the counts must still be right after the burst's last event.
 if need_tmux "sweep debounce"; then :; else
-DB="cockpit-db-$$"; SOCKS="$SOCKS $DB"; DBD=$(mktmpd)
+DB="cockpit-db2-$$"; SOCKS="$SOCKS $DB"; DBD=$(mktmpd)
 dbt() { "$TMUX_REAL" -L "$DB" "$@"; }
 dbt -f /dev/null new-session -d -s a -c "$DBD" 'exec -a claude sleep 300' >/dev/null 2>&1
 dbt set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
@@ -14387,7 +14387,7 @@ echo "== a key the plugin lets go of gets its stock binding back, letter or not 
 # give_back knew stock bindings for prefix letters only, so moving the menu off
 # Space, ?, a digit or " left that key unbound.
 if need_tmux "non-letter give-back"; then :; else
-GB="cockpit-gb-$$"; SOCKS="$SOCKS $GB"; GBD=$(mktmpd)
+GB="cockpit-gb2-$$"; SOCKS="$SOCKS $GB"; GBD=$(mktmpd)
 gbt() { "$TMUX_REAL" -L "$GB" "$@"; }
 # The reference: a configless server's own prefix table, with notes.
 gbstock() { "$TMUX_REAL" -S "$GBD/ref" -f /dev/null start-server \; list-keys -N -T prefix -- "$1" 2>/dev/null; rm -f "$GBD/ref"; }
@@ -14435,7 +14435,7 @@ echo "== cockpit-tui with no client attached keeps the @thm_* roles (#240) =="
 if [ ! -x "$DIR/bin/cockpit-tui" ]; then
     skip_ "no-client theme roles (no bin/cockpit-tui; run make tui)"
 elif need_tmux "no-client theme roles"; then :; else
-NC="cockpit-nc-$$"; SOCKS="$SOCKS $NC"; NCD=$(mktmpd)
+NC="cockpit-nc2-$$"; SOCKS="$SOCKS $NC"; NCD=$(mktmpd)
 "$TMUX_REAL" -L "$NC" -f /dev/null new-session -d -s base -c "$NCD" 'exec sleep 300' >/dev/null 2>&1
 "$TMUX_REAL" -L "$NC" set -g @thm_fg '#123456'
 "$TMUX_REAL" -L "$NC" set -g @thm_fg_light '#654321'
