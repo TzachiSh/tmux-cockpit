@@ -14717,6 +14717,16 @@ cat > "$FB/bin/cockpit-tui" <<STUB
 printf '%s\n' "\$*" > "$FB/tui.args"
 printf '%s\n' "\$*" >> "$FB/tui.calls"
 cat "$FB/errtext" >&2
+# #574: each browser's argv one bracket an argument, and whether it was asked for its state
+if [ "\$1" = files ]; then
+    printf '[%s]' "\$@" >> "$FB/argv"; echo >> "$FB/argv"
+    printf '%s\n' "\${COCKPIT_FILES_STATE-unset}" >> "$FB/fstate"
+fi
+# a binary from #569 (the file "old569") has --select but not the state flags
+if [ -e "$FB/old569" ]; then
+    for a in "\$@"; do case \$a in --hidden|--ignored|--filter)
+        echo 'cockpit-tui: files: needs exactly one folder' >&2; exit 2 ;; esac; done
+fi
 # the viewer prints what vout holds (an \`edit N\` for its e key), the browser its answer
 if [ "\$1" = view ]; then
     printf '%s\n' "\${COCKPIT_VIEW_BACK-unset}" >> "$FB/vback"; cat "$FB/vout"
@@ -14760,6 +14770,7 @@ fb() {
     printf %b "$ans" > "$FB/answer"; echo "$rc" > "$FB/rc"; : > "$FB/errtext"
     : > "$FB/calls"; : > "$FB/code.log"; : > "$FB/ed.log"; printf %b "${FBV:-}" > "$FB/vout"
     : > "$FB/tui.calls"; : > "$FB/vback"; echo "${FBR:-1}" > "$FB/reps"; echo 0 > "$FB/nfiles"
+    : > "$FB/argv"; : > "$FB/fstate"
     rm -f "$FB/answer.2" "$FB/vonce"; [ -z "${FBA2:-}" ] || printf %b "$FBA2" > "$FB/answer.2"
     [ -z "${FBVONCE:-}" ] || : > "$FB/vonce"; printf '%s' "${FBRM:-}" > "$FB/rmdir"
     ( cd "$FB" && env PATH="$FB/bin:$PATH" COCKPIT_TUI_BIN="$FB/bin/cockpit-tui" TMUX="$FBSOCK,0,0" "$@" \
@@ -14890,6 +14901,45 @@ rm -f "$FB/panic"
 is "a --select that dies: its exit is said on stderr" "1" \
    "$(grep -c '^cockpit: files --select exited 101$' "$FB/out")"
 is "and the folder comes back without --select" "$FBVIEW|files $FBD/sub" "$(fbtui)"
+# #574: the browser's second line, `state <dotfiles> <ignored> <filter>`, comes
+# back as its flags when the viewer goes back; a line that is not a state line
+# is refused as before, and an older binary still reopens
+fbargv() { sed -n "${1}p" "$FB/argv"; }                  # the Nth browser's argv
+FBSEL="[files][$FBD/sub][--select][n.txt]"
+fb off "view $FBD/sub/n.txt\nstate 1 1 a b\n" 0
+is "view and back: the dotfiles, the ignored and the filter come back as flags" \
+   "${FBSEL}[--hidden][--ignored][--filter][a b]" "$(fbargv 2)"
+is "every browser is asked for its state" "1|1" "$(paste -sd'|' "$FB/fstate")"
+fb off "view $FBD/sub/n.txt\nstate 0 0 \n" 0
+is "both toggles off and no filter: --select alone, as before" "$FBSEL" "$(fbargv 2)"
+fb off "view $FBD/sub/n.txt\nstate 0 1 x\n" 0
+is "the ignored toggle alone" "${FBSEL}[--ignored][--filter][x]" "$(fbargv 2)"
+fb off "view $FBD/sub/n.txt\nstate 1 0 \$(touch FBPWN) *\n" 0
+is "a filter with \$( ) and a glob is one literal argument" "${FBSEL}[--hidden][--filter][\$(touch FBPWN) *]" "$(fbargv 2)"
+is "and nothing ran it" "" "$(find "$FB" "$DIR" -maxdepth 3 -name FBPWN 2>/dev/null)"
+for row in "an escape|a\\033[2Jb" "a tab|a\\tb" "a DEL|a\\177b" "201 characters|$(printf 'x%.0s' $(seq 201))"; do
+    fb off "view $FBD/sub/n.txt\nstate 1 0 ${row#*|}\n" 0
+    is "a filter with ${row%%|*} is dropped, the toggles kept" "${FBSEL}[--hidden]" "$(fbargv 2)"
+done
+fb off "view $FBD/sub/n.txt\nstate 0 0 $(printf 'x%.0s' $(seq 200))\n" 0
+is "a filter of 200 characters is kept" "${FBSEL}[--filter][$(printf 'x%.0s' $(seq 200))]" "$(fbargv 2)"
+for row in "a toggle that is not 0 or 1|state 2 0 x" "no state word|hidden 1 0 x" "a third line|state 1 0 x\njunk"; do
+    fb off "view $FBD/sub/n.txt\n${row#*|}\n" 0
+    is "a second line with ${row%%|*}: refused, no viewer, no browser back" "1|0|1" \
+       "$(fbnotes)|$(fbtn view)|$(fbtn files)"
+done
+fb off "copy $FBF\nstate 1 0 x\n" 0
+is "copy with its state line: copied, no second browser" "1|1" "$(grep -c 'copied' "$FB/calls")|$(fbtn files)"
+# the state is the last browser's: one that says none reopens fresh
+FBR=2 FBA2="view $FBD/sub/n.txt\n" fb off "view $FBD/sub/n.txt\nstate 1 0 x\n" 0
+is "a browser that prints no state line: the next one starts fresh" "$FBSEL" "$(fbargv 3)"
+# a binary from #569 refuses the flags: the folder comes back without them, no note
+: > "$FB/old569"
+fb off "view $FBD/sub/n.txt\nstate 1 0 x\n" 0
+rm -f "$FB/old569"
+is "a binary without the state flags: the folder still comes back" \
+   "$FBVIEW --hidden --filter x|files $FBD/sub" "$(fbtui)"
+is "and nothing is said about it" "0|0" "$(fbnotes)|$(grep -c 'files exited' "$FB/out")"
 # the viewed file's folder deleted while the viewer is open: back in the
 # folder the browser started in, on its first row, never an error page
 mkdir -p "$FBD/gone"; : > "$FBD/gone/x.txt"
@@ -15053,7 +15103,10 @@ if frstart && "$TMUX_REAL" -L "$FRS" send-keys -t "$FRP" -l 'touch PWN' && until
     else bad "alt-e on the picked name: code gets the exact path, spaces and all" "[--goto][$FRF:1:1]" "$(cat "$FR/code.log")"; fi
 else bad "the real browser lists the folder and takes the filter" "0first.txt, then PWN" "$("$TMUX_REAL" -L "$FRS" capture-pane -p -t "$FRP" | head -12)"; fi
 : > "$FR/code.log"
-if frstart && "$TMUX_REAL" -L "$FRS" send-keys -t "$FRP" -l 'touch PWN' && until_cap "$FRS" "$FRP" '*PWN*'; then
+# the filter "txt" keeps both files, and the browser now keeps the filter (#574):
+# the file is the second row, so the second Enter below proves the selection
+if frstart && "$TMUX_REAL" -L "$FRS" send-keys -t "$FRP" -l 'txt' && until_cap "$FRS" "$FRP" '*files> txt*' \
+   && "$TMUX_REAL" -L "$FRS" send-keys -t "$FRP" Down; then
     "$TMUX_REAL" -L "$FRS" send-keys -t "$FRP" Enter
     if until_cap "$FRS" "$FRP" "*VIEWBODY-$$*"; then ok "Enter on the picked name opens the real viewer on that file"
     else bad "Enter on the picked name opens the real viewer on that file" "VIEWBODY-$$" "$("$TMUX_REAL" -L "$FRS" capture-pane -p -t "$FRP" | head -12)"; fi
@@ -15082,7 +15135,26 @@ if frstart && "$TMUX_REAL" -L "$FRS" send-keys -t "$FRP" -l 'touch PWN' && until
         ok "esc in the viewer goes back too, and esc in the browser then ends it"
     else bad "esc in the viewer goes back too, and esc in the browser then ends it" "pane_dead 1" \
          "$("$TMUX_REAL" -L "$FRS" capture-pane -p -t "$FRP" | head -12)"; fi
-else bad "the real browser lists the folder and takes the filter (view)" "0first.txt, then PWN" "$("$TMUX_REAL" -L "$FRS" capture-pane -p -t "$FRP" | head -12)"; fi
+else bad "the real browser lists the folder and takes the filter (view)" "0first.txt, then files> txt" "$("$TMUX_REAL" -L "$FRS" capture-pane -p -t "$FRP" | head -12)"; fi
+# #574: the dotfiles toggle and the typed filter survive a view and back
+if frstart && "$TMUX_REAL" -L "$FRS" send-keys -t "$FRP" . && until_cap "$FRS" "$FRP" '*files +.>*' \
+   && "$TMUX_REAL" -L "$FRS" send-keys -t "$FRP" -l 'touch PWN' && until_cap "$FRS" "$FRP" '*+.> touch PWN*' \
+   && "$TMUX_REAL" -L "$FRS" send-keys -t "$FRP" Enter && until_cap "$FRS" "$FRP" "*VIEWBODY-$$*"; then
+    "$TMUX_REAL" -L "$FRS" send-keys -t "$FRP" q
+    if until_cap "$FRS" "$FRP" '*files +.> touch PWN*'; then
+        ok "q in the viewer: the browser keeps its dotfiles on and its filter"
+    else bad "q in the viewer: the browser keeps its dotfiles on and its filter" "files +.> touch PWN" \
+         "$("$TMUX_REAL" -L "$FRS" capture-pane -p -t "$FRP" | head -3)"; fi
+else bad "the real browser takes . and the filter, then views" "files +.> touch PWN, then VIEWBODY-$$" \
+     "$("$TMUX_REAL" -L "$FRS" capture-pane -p -t "$FRP" | head -12)"; fi
+# not asked for its state (a script older than the binary), the answer stays one line
+"$TMUX_REAL" -L "$FRS" respawn-pane -k -t "$FRP" -c "$FRD" \
+    "exec '$DIR/bin/cockpit-tui' files '$FRD' > '$FR/plain.out'" >/dev/null 2>&1
+if until_cap "$FRS" "$FRP" '*0first.txt*' && "$TMUX_REAL" -L "$FRS" send-keys -t "$FRP" Enter \
+   && until_out 1 "$TMUX_REAL" -L "$FRS" display-message -p -t "$FRP" '#{pane_dead}'; then
+    is "without COCKPIT_FILES_STATE the browser prints its one line only" "view $FRD/0first.txt" "$(cat "$FR/plain.out")"
+else bad "without COCKPIT_FILES_STATE the browser prints its one line only" "pane_dead 1" \
+     "$("$TMUX_REAL" -L "$FRS" capture-pane -p -t "$FRP" | head -12)"; fi
 is "the viewer opened no editor and no code" "" "$(cat "$FR/code.log")"
 is "no PWN appeared in the folder, the server's cwd or the checkout" "" "$(find "$FR" "$DIR" -maxdepth 3 -name PWN -not -path '*/tui/target/*' 2>/dev/null)"
 "$TMUX_REAL" -L "$FRS" kill-server >/dev/null 2>&1

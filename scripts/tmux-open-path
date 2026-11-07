@@ -247,12 +247,29 @@ browse_act() {
     if [ ! -d "$path" ] && touch_client; then term_edit "$path"; else MD_EDIT=1 open_one "$path" "" ""; fi
 }
 
+# The browser's second line, `state <h> <i> <filter>` (COCKPIT_FILES_STATE=1,
+# #574), as the flags that start it that way again, in STATE. A filter with a
+# control character or over 200 characters is dropped: the binary never prints
+# one, so it is not the browser's. 1 when the line is not a state line.
+browse_state() {
+    local re='^state ([01]) ([01]) (.*)$' f
+    STATE=()
+    case $1 in *$'\n'*) return 1 ;; esac
+    [[ $1 =~ $re ]] || return 1
+    [ "${BASH_REMATCH[1]}" = 0 ] || STATE+=(--hidden)
+    [ "${BASH_REMATCH[2]}" = 0 ] || STATE+=(--ignored)
+    f=${BASH_REMATCH[3]}
+    [ -z "$f" ] || [[ $f == *[[:cntrl:]]* ]] || [ "${#f}" -gt 200 ] || STATE+=(--filter "$f")
+}
+
 # --folder asks for a popup, which re-enters as --browse: run-shell has no terminal.
 # A viewer closed with nothing done (VIEW_CLOSED) brings the browser back in the
-# file's folder, on the file; a loop, not a call per view. The loop's folder is
-# `at`: `dir` stays the pane's, the editor window's -c in open_one.
+# file's folder, on the file, with its toggles and filter; a loop, not a call per
+# view. The loop's folder is `at`: `dir` stays the pane's, the editor window's -c
+# in open_one.
 browse_folder() {
     local pw ph err key rc sel='' path at=$dir
+    local -a STATE=()
     # shellcheck source=lib/tui.sh
     . "${d%/*}/lib/tui.sh" 2>/dev/null && [ -x "$COCKPIT_TUI_BIN" ] \
         || { note "cockpit: cockpit-tui is missing · run scripts/tui-fetch"; return 1; }
@@ -266,10 +283,12 @@ browse_folder() {
     while :; do
         # the viewed file's folder gone meanwhile: back where the browser started
         [ -d "$at" ] || { at=$dir; sel=''; }
-        # back from the viewer: a binary without --select, or a name it cannot
-        # take (not UTF-8), still reopens the folder, on its first row
+        # back from the viewer: a binary without --select or the state flags, or
+        # a name it cannot take (not UTF-8), still reopens the folder, on its
+        # first row, fresh
         if [ -n "$sel" ]; then
-            key=$("$COCKPIT_TUI_BIN" files "$at" --select "$sel" 2>/dev/null); rc=$?
+            key=$(COCKPIT_FILES_STATE=1 "$COCKPIT_TUI_BIN" files "$at" --select "$sel" \
+                ${STATE[@]+"${STATE[@]}"} 2>/dev/null); rc=$?
             # 101 and up is a panic or a signal, not an old binary: leave a trace
             [ "$rc" -lt 101 ] || printf 'cockpit: files --select exited %s\n' "$rc" >&2
             [ "$rc" -le 1 ] || sel=''
@@ -277,7 +296,7 @@ browse_folder() {
         if [ -z "$sel" ]; then
             # stderr to a file: a cockpit-tui older than this script is told apart from a crash
             err=$(mktemp 2>/dev/null) || err=/dev/null
-            key=$("$COCKPIT_TUI_BIN" files "$at" 2>"$err"); rc=$?
+            key=$(COCKPIT_FILES_STATE=1 "$COCKPIT_TUI_BIN" files "$at" 2>"$err"); rc=$?
             [ ! -s "$err" ] || cat "$err" >&2
             if tui_stale "$rc" "$err"; then
                 [ "$err" = /dev/null ] || rm -f -- "$err"
@@ -285,6 +304,10 @@ browse_folder() {
             fi
             [ "$err" = /dev/null ] || rm -f -- "$err"
         fi
+        # a second line is the state; anything else after the answer stays in
+        # it, and browse_act refuses a line that is not one
+        STATE=()
+        case $key in *$'\n'*) browse_state "${key#*$'\n'}" && key=${key%%$'\n'*} ;; esac
         case "$rc" in
             0) VIEW_CLOSED=''; browse_act "$key"; rc=$?
                [ -n "$VIEW_CLOSED" ] || return "$rc"
