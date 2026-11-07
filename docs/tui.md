@@ -193,6 +193,7 @@ Set these before the plugin's `run-shell` line, like every other cockpit option.
 | `@cockpit_board_wake` | (state) | read-only: one `wait-for -S cockpit-board-<pid> ; ` per running board, the command that wakes it. Appended at start, removed on `q`; an entry a signal or a crash leaves is dropped by the next board's start |
 | `@cockpit_panel_key` | `f` | binds the panel (`cockpit-tui panel %N` through `scripts/cockpit-panel`) to a prefix key. `off`, or an unset key with the old `@cockpit_fixer_key off`, leaves stock `find-window` on `f` |
 | `@cockpit_panel_mode` | `auto` | `pc`, `tablet` or `auto`: how the panel is shown. `auto` is tablet under Termux (`TERMUX_VERSION` set, or `PREFIX` under `com.termux`), pc elsewhere. Read at load and handed to the popup as `COCKPIT_PANEL_MODE`; any other word shows a message and binds `auto` |
+| `@cockpit_panel_effort` | `medium` | the panel's `claude -p --effort`: `low`, `medium`, `high`, `xhigh` or `max` (#623). Read by `scripts/cockpit-panel` at each open, so setting it needs no reload, and handed to the binary as `COCKPIT_PANEL_EFFORT`. Which levels a model takes depends on the model |
 | `@cockpit_md_view` | `on` | `cockpit-tui view` shows markdown rendered, and code and other text files numbered, and highlighted when the language is known (#365). With `off`, a clicked file and the file browser's `↵` go to the editor instead, for every file (the browser's with #408). Read by `scripts/tmux-open-path` at the click |
 | `@cockpit_panel_bound` | (state) | the key the last load bound the panel to. Every cockpit key keeps one (`@cockpit_<name>_bound`, `<name>` as in its `@cockpit_<name>_key`), so a reload that turns a key off or moves it gives the old one back to stock |
 | `@cockpit_board_client` | (state) | a pane option: the client that pressed the board or review key there in its popup form, so the board's jump moves that client and not the most recently active one. Read and cleared when the board starts; the window forms pass `-c` instead |
@@ -226,6 +227,7 @@ Read-only, and owned by bash: `@cockpit_session`, `@cockpit_dir`, `@panestate`,
 | `COCKPIT_PANEL_TIMEOUT` | seconds before the panel kills its `claude -p` call. Default 120 |
 | `COCKPIT_PANEL_MODEL` | forces the panel's model, over the rules and the model picked on screen |
 | `COCKPIT_PANEL_MODE` | `auto`, `pc` or `tablet`, from `@cockpit_panel_mode`. Unset or empty is `auto`. Any other value: the panel exits 2 before it draws. The board's popup passes it too, so a panel opened from the board gets the same mode |
+| `COCKPIT_PANEL_EFFORT` | the `--effort` of every panel call, from `@cockpit_panel_effort`. One of `low`, `medium`, `high`, `xhigh`, `max`; unset, empty or any other value is `medium`, so the text itself never reaches claude's argv. The call goes without `CLAUDE_CODE_EFFORT_LEVEL`, which claude ranks over `--effort` |
 | `COCKPIT_PANEL_NOTE` | set by `scripts/cockpit-board` for `scripts/cockpit-panel`: the file the panel wrapper writes its last line to instead of a `display-message`, a failure starting with `✕`. Unset (`prefix f`), the message goes to the status line as before |
 | `COCKPIT_PANEL_DROPPED` | set by `scripts/cockpit-panel` for the binary: the pane ids, space-separated, whose hidden panels it just dropped because the pane is gone. The binary shows them in an info note; anything but `%N` words is ignored |
 | `COCKPIT_PANEL_CALL` | set to `1` in the panel's `claude -p` child, never read by the binary: a hook can skip the call by it |
@@ -269,17 +271,18 @@ the cases file; holdout cases are written after the prompt they run on, so a
 gain there is not overfitting. `--model`, `--runs`, `--jobs`, `--only <id or
 kind>`, `--out <file.jsonl>` and `--no-hermetic` are the knobs.
 
-Calls are hermetic by default, so the rig's call differs from the panel's in
-two ways. It adds `claude --setting-sources ""`: no user, project or local
-settings load, and with them no `CLAUDE.md`, no plugin hooks and no
-`effortLevel`. And each call runs in a fresh empty temp folder, not the panel's
-cache folder. Dropping only the `user` source is not enough: under `$HOME`, the
-`project` source finds `~/.claude/CLAUDE.md` as `$HOME`'s `.claude/CLAUDE.md`.
-Those settings differ per machine, so without this two machines score the same
-prompt apart (#598). `--no-hermetic` runs the call as the panel does. The
-summary's `environment` line names the claude version, the cwd, whether user
-settings loaded, and `HOME`, `XDG_CONFIG_HOME`, `XDG_CACHE_HOME` and
-`CLAUDE_CONFIG_DIR`; each `--out` row carries the same as `env`. `--compare`
+Calls are hermetic by default (#598): `claude --setting-sources ""`, so no
+user, project or local settings load, and with them no `CLAUDE.md`, no plugin
+hooks and no `effortLevel`; and each call runs in a fresh empty temp folder, not
+the panel's cache folder. Dropping only the `user` source is not enough: under
+`$HOME`, the `project` source finds `~/.claude/CLAUDE.md` as `$HOME`'s
+`.claude/CLAUDE.md`. Since #623 the panel's own call loads no setting source
+either, so the folder is the one difference left. `--no-hermetic` runs the call
+as the panel does. The effort is the panel's: set `COCKPIT_PANEL_EFFORT` to
+measure another. The summary's `environment` line names the claude version, the
+cwd, whether user settings loaded, the effort, and `HOME`, `XDG_CONFIG_HOME`,
+`XDG_CACHE_HOME` and `CLAUDE_CONFIG_DIR`; each `--out` row carries the same as
+`env`. `--compare`
 prints each side's `env` and warns when they differ, as a run from before #598
 has none.
 
@@ -999,8 +1002,9 @@ folder, then writing`, and tablet mode has an `[ explore ]` button.
   place. A text call has no events and gets no note.
 - **Accepted risks** (#416):
   - Reads stop at the folder (`dontAsk`, #465), with the deny list as a second
-    wall. The limit is #465's: a user `settings.json` with a broad `Read` allow
-    or an `additionalDirectories` entry reopens outside reads.
+    wall. #465's limit, a user `settings.json` whose broad `Read` allow or
+    `additionalDirectories` entry reopened outside reads, is gone: no user,
+    project or local settings load (#623). Managed settings still do.
   - A file that is read skips the screen's redaction: the denies cover the key
     files, not a secret inside a source file.
   - Repo text can carry an injection into the written result. The section calls
@@ -1988,8 +1992,12 @@ tell the two quiet answers apart: `[]` with exit 0 is "no agents", exit 1 is
   `request::read_dir_ok`, refuses a read dir that is `/`, home or above it, or
   whose name is empty, not UTF-8, or holds a control, bidi or glob character;
   a caller runs it to refuse up front. The secret denies stay as a second wall.
-  The limit: rules merge, so a user `settings.json` with a broad `Read` allow
-  or an `additionalDirectories` entry reopens outside reads.
+  Every panel call loads no setting source (`--setting-sources ""`, #623), so a
+  user's or a repo's `settings.json` adds no allow rule, `additionalDirectories`
+  entry, hook or `env`; only managed settings, which sit above every source,
+  still apply. Auth set in a settings file (`apiKeyHelper`, an `env` block for
+  Bedrock or a base URL) does not reach the calls either; a `/login` and the
+  environment tmux runs with do.
   Pasting into a pane stays a printed action that a wrapper runs.
 - **Every tmux write goes through one function** that `COCKPIT_READONLY`
   disables, the pid publish included.
