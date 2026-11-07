@@ -294,9 +294,7 @@ impl Files {
                 _ => Outcome::Continue,
             },
         };
-        self.pick.clamp(area);
-        let g = self.g;
-        self.fit(area.width, &g);
+        self.layout(area);
         out
     }
 

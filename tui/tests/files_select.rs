@@ -171,3 +171,17 @@ fn a_selection_past_the_first_screen_is_drawn_on_the_first_frame() {
     assert!(at.is_some() && at == last, "f60 at {at:?}, last row {last:?}: {rows:#?}");
     assert!(!rows.iter().any(|r| r.contains("f10.txt")), "scrolled: {rows:#?}");
 }
+
+/// A key leaves the screen laid out for its frame (#601): the header first,
+/// then the scroll, so a draw straight after it still shows the selection.
+#[test]
+fn a_key_leaves_the_selection_on_the_screen_it_drew() {
+    let n = names(10..90);
+    let s = Scratch::new(&n.iter().map(String::as_str).collect::<Vec<_>>());
+    let mut f = opened(&s, b"f60.txt");
+    f.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), Rect::new(0, 0, 80, 24));
+    let mut t = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    t.draw(|fr| files::draw(fr, fr.area(), &f, &Theme::fixed())).unwrap();
+    let rows = rows_of(&t, 80, 24);
+    assert!(rows.iter().any(|r| r.contains("▎ f61.txt")), "{rows:#?}");
+}
