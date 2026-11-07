@@ -3548,8 +3548,7 @@ case "$(pk S)" in *--popup*) ok "@cockpit_sessions_key S brings the old key back
     *) bad "@cockpit_sessions_key S brings the old key back" "the popup on S" "$(pk S)" ;; esac
 case "$(pk J)" in *tmux-jump*) ok "@cockpit_jump_key J brings the old key back" ;;
     *) bad "@cockpit_jump_key J brings the old key back" "tmux-jump on J" "$(pk J)" ;; esac
-"$TMUX_REAL" -L "$PS" kill-server >/dev/null 2>&1
-"$TMUX_REAL" -L "$PS" -f /dev/null new-session -d -s t >/dev/null 2>&1
+fresh_server -L "$PS" -f /dev/null -- -d -s t
 "$TMUX_REAL" -L "$PS" set -g @cockpit_sessions_key off >/dev/null 2>&1
 ps_stock=$(pk s)
 "$TMUX_REAL" -L "$PS" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
@@ -3991,8 +3990,7 @@ case "$("$TMUX_REAL" -L "$PM" list-keys -T prefix 2>/dev/null | awk '$4=="W"')" 
     *) bad "@cockpit_move_key rebinds it" "the menu on W" \
          "$("$TMUX_REAL" -L "$PM" list-keys -T prefix | awk '$4=="W"')" ;;
 esac
-"$TMUX_REAL" -L "$PM" kill-server >/dev/null 2>&1
-"$TMUX_REAL" -L "$PM" -f /dev/null new-session -d -s t >/dev/null 2>&1
+fresh_server -L "$PM" -f /dev/null -- -d -s t
 "$TMUX_REAL" -L "$PM" set -g @cockpit_move_key off >/dev/null 2>&1
 "$TMUX_REAL" -L "$PM" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
 case "$("$TMUX_REAL" -L "$PM" list-keys -T prefix 2>/dev/null | awk '$4=="M"')" in
@@ -9350,11 +9348,11 @@ is "pressing it again brings the status line back" "on" \
    "$("$TMUX_REAL" -L "$FI" display-message -p -t t '#{status}')"
 is "and restores the border the config had, not a hardcoded top" "bottom" \
    "$("$TMUX_REAL" -L "$FI" display-message -p -t t:0 '#{pane-border-status}')"
-"$TMUX_REAL" -L "$FO" kill-server >/dev/null 2>&1; "$TMUX_REAL" -L "$FI" kill-server >/dev/null 2>&1
+"$TMUX_REAL" -L "$FO" kill-server >/dev/null 2>&1
 # A fresh server: nothing unbinds a key already bound, so `off` can only be
 # read on a server that has not loaded the plugin yet -- the same shape as the
 # sessions-key block above.
-"$TMUX_REAL" -L "$FI" -f /dev/null new-session -d -s t >/dev/null 2>&1
+fresh_server -L "$FI" -f /dev/null -- -d -s t
 "$TMUX_REAL" -L "$FI" set -g @cockpit_fullscreen_key off >/dev/null 2>&1
 "$TMUX_REAL" -L "$FI" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
 is "@cockpit_fullscreen_key off binds nothing" "" \
@@ -11236,8 +11234,12 @@ is "the popup's own client moved to two and is the only client" "$tpc two" \
 "$TMUX_REAL" -L "$TPI" kill-server >/dev/null 2>&1
 fi
 
-pick_pane() {                 # <socket> <dir> <cols> <rows> <rows-text> [pick args...]  runs `pick` in a fresh pane
-    local sock=$1 d=$2 cols=$3 height=$4 text=$5 args; shift 5
+# --fresh: kill <socket>'s server and start a new one for the pane (fresh_server);
+# without it the pane is a new session on whatever server <socket> runs.
+pick_pane() {                 # [--fresh] <socket> <dir> <cols> <rows> <rows-text> [pick args...]
+    local fresh='' sock d cols height text args
+    [ "$1" = --fresh ] && { fresh=1; shift; }
+    sock=$1 d=$2 cols=$3 height=$4 text=$5; shift 5
     args=; [ $# -eq 0 ] || args=$(printf '%q ' "$@")
     printf '%s' "$text" > "$d/rows"
     {
@@ -11246,8 +11248,9 @@ pick_pane() {                 # <socket> <dir> <cols> <rows> <rows-text> [pick a
         printf 'echo $? > "$d/rc"\nexec sleep 30\n'
     } > "$d/run"
     chmod +x "$d/run"
-    "$TMUX_REAL" -L "$sock" -f /dev/null new-session -d -s t -x "$cols" -y "$height" \
-        "$d/run '$DIR/bin/cockpit-tui' '$d' $args" >/dev/null 2>&1
+    set -- -d -s t -x "$cols" -y "$height" "$d/run '$DIR/bin/cockpit-tui' '$d' $args"
+    if [ -n "$fresh" ]; then fresh_server -L "$sock" -f /dev/null -- "$@"
+    else "$TMUX_REAL" -L "$sock" -f /dev/null new-session "$@" >/dev/null 2>&1; fi
 }
 
 echo "== cockpit-tui pick: filter, choose and cancel through a pty =="
@@ -11269,58 +11272,50 @@ until_cap "$PKS" t '*1/1 of 4*' && ok "typing REL filters case-insensitively to 
 until_file "$PKD/rc" '?*'
 is "enter prints the key of the filtered row and nothing else" "release" "$(cat "$PKD/out" 2>/dev/null)"
 is "enter exits 0" "0" "$(cat "$PKD/rc" 2>/dev/null)"
-"$TMUX_REAL" -L "$PKS" kill-server >/dev/null 2>&1
 
-PKD=$(mktmpd); pick_pane "$PKS" "$PKD" 80 20 "$PKROWS"
+PKD=$(mktmpd); pick_pane --fresh "$PKS" "$PKD" 80 20 "$PKROWS"
 until_cap "$PKS" t '*pick>*1/4*'
 "$TMUX_REAL" -L "$PKS" send-keys -t t Down Enter
 until_file "$PKD/rc" '?*'
 is "down then enter chooses the second row's key" "feat/237" "$(cat "$PKD/out" 2>/dev/null)"
-"$TMUX_REAL" -L "$PKS" kill-server >/dev/null 2>&1
 
-PKD=$(mktmpd); pick_pane "$PKS" "$PKD" 80 20 "$PKROWS"
+PKD=$(mktmpd); pick_pane --fresh "$PKS" "$PKD" 80 20 "$PKROWS"
 until_cap "$PKS" t '*pick>*1/4*'
 "$TMUX_REAL" -L "$PKS" send-keys -t t Escape
 until_file "$PKD/rc" '?*'
 is "esc exits 1" "1" "$(cat "$PKD/rc" 2>/dev/null)"
 is "esc prints nothing on stdout" "0" "$(wc -c < "$PKD/out" | tr -d ' ')"
-"$TMUX_REAL" -L "$PKS" kill-server >/dev/null 2>&1
 
-PKD=$(mktmpd); pick_pane "$PKS" "$PKD" 80 20 "" 
+PKD=$(mktmpd); pick_pane --fresh "$PKS" "$PKD" 80 20 "" 
 until_file "$PKD/rc" '?*'
 is "no rows exits 1 without opening a screen" "1" "$(cat "$PKD/rc" 2>/dev/null)"
 is "no rows prints nothing on stdout" "0" "$(wc -c < "$PKD/out" | tr -d ' ')"
-"$TMUX_REAL" -L "$PKS" kill-server >/dev/null 2>&1
 
-PKD=$(mktmpd); pick_pane "$PKS" "$PKD" 27 11 "$PKROWS"
+PKD=$(mktmpd); pick_pane --fresh "$PKS" "$PKD" 27 11 "$PKROWS"
 until_cap "$PKS" t '*make the window larger*' && ok "under 28x12 the floor card is drawn" \
     || bad "under 28x12 the floor card is drawn" "make the window larger" "$("$TMUX_REAL" -L "$PKS" capture-pane -p -t t | head -3)"
 "$TMUX_REAL" -L "$PKS" send-keys -t t Enter Escape
 until_file "$PKD/rc" '?*'
 is "under the floor enter chooses nothing and esc exits 1" "1:0" "$(cat "$PKD/rc" 2>/dev/null):$(wc -c < "$PKD/out" | tr -d ' ')"
-"$TMUX_REAL" -L "$PKS" kill-server >/dev/null 2>&1
 
-PKD=$(mktmpd); pick_pane "$PKS" "$PKD" 80 20 "$PKROWS"
+PKD=$(mktmpd); pick_pane --fresh "$PKS" "$PKD" 80 20 "$PKROWS"
 until_cap "$PKS" t '*pick>*1/4*'
 "$TMUX_REAL" -L "$PKS" send-keys -t t q u e u e Enter
 until_file "$PKD/rc" '?*'
 is "typing queue is a filter: q is a letter, and enter prints the row's key" "queue:0" "$(cat "$PKD/out" 2>/dev/null):$(cat "$PKD/rc" 2>/dev/null)"
-"$TMUX_REAL" -L "$PKS" kill-server >/dev/null 2>&1
 
-PKD=$(mktmpd); pick_pane "$PKS" "$PKD" 80 20 "$(printf '\tx\nk\tok\n')"
+PKD=$(mktmpd); pick_pane --fresh "$PKS" "$PKD" 80 20 "$(printf '\tx\nk\tok\n')"
 until_cap "$PKS" t '*pick>*1/1*'
 "$TMUX_REAL" -L "$PKS" send-keys -t t Enter
 until_file "$PKD/rc" '?*'
 is "a keyless row is skipped and the key of the next one is printed" "k:0" "$(cat "$PKD/out" 2>/dev/null):$(cat "$PKD/rc" 2>/dev/null)"
 is "stderr says once how many rows had no key" "cockpit-tui: pick: skipped 1 row with no key" "$(cat "$PKD/err" 2>/dev/null)"
-"$TMUX_REAL" -L "$PKS" kill-server >/dev/null 2>&1
 
-PKD=$(mktmpd); pick_pane "$PKS" "$PKD" 80 20 "$PKROWS" --prompt 'two words'
+PKD=$(mktmpd); pick_pane --fresh "$PKS" "$PKD" 80 20 "$PKROWS" --prompt 'two words'
 until_cap "$PKS" t '*two words>*' && ok "an argument with a space reaches the picker whole" \
     || bad "an argument with a space reaches the picker whole" "two words>" "$("$TMUX_REAL" -L "$PKS" capture-pane -p -t t | head -1)"
-"$TMUX_REAL" -L "$PKS" kill-server >/dev/null 2>&1
 
-PKD=$(mktmpd); pick_pane "$PKS" "$PKD" 80 20 "$PKROWS" --bogus
+PKD=$(mktmpd); pick_pane --fresh "$PKS" "$PKD" 80 20 "$PKROWS" --bogus
 until_file "$PKD/rc" '?*'
 is "an unknown flag exits 2 and names it" "2:1" "$(cat "$PKD/rc" 2>/dev/null):$(grep -c -- '--bogus' "$PKD/err")"
 "$TMUX_REAL" -L "$PKS" kill-server >/dev/null 2>&1
@@ -11540,8 +11535,7 @@ case "$(pk_i)" in *tmux-review*|*--info*) bad "prefix i no longer runs tmux-revi
 # #293: the binary reads $COCKPIT_GLYPHS only, so the popup passes the option on
 case "$(pk_i)" in *@cockpit_glyphs*COCKPIT_GLYPHS*) ok "prefix i passes @cockpit_glyphs to the binary as COCKPIT_GLYPHS" ;;
     *) bad "prefix i passes @cockpit_glyphs to the binary as COCKPIT_GLYPHS" "COCKPIT_GLYPHS from @cockpit_glyphs" "$(pk_i)" ;; esac
-"$TMUX_REAL" -L "$PK" kill-server >/dev/null 2>&1
-"$TMUX_REAL" -L "$PK" -f /dev/null new-session -d -s t -x 100 -y 30 'exec bash' >/dev/null 2>&1
+fresh_server -L "$PK" -f /dev/null -- -d -s t -x 100 -y 30 'exec bash'
 "$TMUX_REAL" -L "$PK" set -g @cockpit_info_key off >/dev/null 2>&1
 "$TMUX_REAL" -L "$PK" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
 case "$(pk_i)" in *cockpit-tui*) bad "@cockpit_info_key off leaves i unbound" "stock i" "$(pk_i)" ;; *) ok "@cockpit_info_key off leaves i unbound" ;; esac
@@ -11983,18 +11977,15 @@ sv_server() {                 # sv_server <tag> -- alpha, beta (waiting), gamma;
     SVG=$("$TMUX_REAL" -L "$SVS" display-message -p -t gamma: '#{session_id}')
 }
 sv_pane() {                   # sv_pane <dir> <cmd...> -- <cmd> in a pty of SVO; its rc lands in <dir>/rc, stderr in <dir>/err
-    local d=$1 i; shift
+    local d=$1; shift
+    # The old pane is told to go before its rc and err are cleared. fresh_server
+    # kills again, harmless whether the old server is gone or still going, then
+    # retries the new-session that can reach it (#547, #573).
     "$TMUX_REAL" -L "$SVO" kill-server >/dev/null 2>&1
     { printf '#!/bin/sh\n'; printf '%q ' "$@"; printf '2> "%s/err"\necho $? > "%s/rc"\nexec sleep 30\n' "$d" "$d"; } > "$d/run"
     chmod +x "$d/run"; : > "$d/err"; rm -f "$d/rc"
-    # The server kill-server stopped can still hold the socket: a new-session that
-    # reaches it fails "server exited unexpectedly" and no pane runs (#547).
-    for i in $(seq 1 "$POLLS"); do
-        "$TMUX_REAL" -L "$SVO" -f /dev/null new-session -d -s t -x "${SVCOLS:-100}" -y "${SVROWS:-24}" \
-            "TERM=xterm-256color $d/run" >/dev/null 2>&1 && return 0
-        sleep 0.1
-    done
-    return 1
+    fresh_server -L "$SVO" -f /dev/null -- -d -s t -x "${SVCOLS:-100}" -y "${SVROWS:-24}" \
+        "TERM=xterm-256color $d/run"
 }
 sv_ui() {                     # sv_ui <dir> [tui args...] -- cockpit-tui sessions, the action files under <dir>/act
     local d=$1; shift
