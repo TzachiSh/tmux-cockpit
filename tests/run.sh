@@ -12526,8 +12526,12 @@ case "$(br_cap)" in
 esac
 br_key Enter; br_done
 # #303: not a note any more; with no pane in that worktree, a window opens there.
-is "↵ on it opens a window in that worktree (#303)" "$BRW" \
-   "$("$TMUX_REAL" -L "$BRS" list-panes -a -F '#{window_index} #{pane_current_path}' | sed -n 's/^1 //p')"
+# #566: its path reads empty until tmux finds its shell, so wait for it.
+br_win1_path() {
+    "$TMUX_REAL" -L "$BRS" list-panes -a -F '#{window_index} #{pane_current_path}' | sed -n 's/^1 //p'
+}
+until_out "$(printf '%q' "$BRW")" br_win1_path
+is "↵ on it opens a window in that worktree (#303)" "$BRW" "$(br_win1_path)"
 "$TMUX_REAL" -L "$BRS" kill-window -t t:1; "$TMUX_REAL" -L "$BRS" select-window -t "$BRP"
 is "and nothing was switched" "main" "$(br_cur "$BRR")"
 
@@ -12702,6 +12706,11 @@ bg_goto() {                   # bg_goto <socket> <origin-pane> <repo> <path>  ->
     BG_ERR=$(cat "$mark/err")
 }
 bg_active() { "$TMUX_REAL" -L "$1" display-message -p -t t: '#{pane_id}'; }
+# #566: a new pane's path reads empty until tmux finds its shell. Wait for <want>, then read.
+bg_waitpath() {               # bg_waitpath <socket> <want>
+    until_out "$(printf '%q' "$2")" \
+        "$TMUX_REAL" -L "$1" display-message -p -t t: '#{pane_current_path}'
+}
 bg_windows() { "$TMUX_REAL" -L "$1" list-windows -t t: 2>/dev/null | grep -c .; }
 
 echo "== tmux-branch (#303): ↵ on a branch another worktree holds goes to that worktree =="
@@ -12746,6 +12755,7 @@ is "a pane whose @cockpit_dir is the worktree counts, whatever its cwd" "$BGC" "
 before=$("$TMUX_REAL" -L "$BGS" list-panes -a -F '#{pane_id} #{pane_current_path}')
 bg_goto "$BGS" "$BGO" "$BGR" "$BGW"
 is "with no pane there it opens one more window" "2" "$(bg_windows "$BGS")"
+bg_waitpath "$BGS" "$BGW"
 is "starting in the worktree, space and #( ) intact" "$BGW" \
    "$("$TMUX_REAL" -L "$BGS" display-message -p -t t: '#{pane_current_path}')"
 is "and no #( ) in the path ran" "none" "$([ -e "$BGF" ] && echo ran || echo none)"
@@ -12772,6 +12782,7 @@ bg_server "$BGS2" "$BGN"
 BGO2=$("$TMUX_REAL" -L "$BGS2" list-panes -a -F '#{pane_id}' | head -1)
 bg_goto "$BGS2" "$BGO2" "$BGN" "$BGR"
 is "a pane in a nested worktree is not a pane of the enclosing checkout" "2" "$(bg_windows "$BGS2")"
+bg_waitpath "$BGS2" "$BGR"
 is "and the new window is the checkout" "$BGR" "$("$TMUX_REAL" -L "$BGS2" display-message -p -t t: '#{pane_current_path}')"
 "$TMUX_REAL" -L "$BGS2" kill-server >/dev/null 2>&1
 
@@ -12806,6 +12817,7 @@ is "and opens no window" "1" "$(bg_windows "$BGS4")"
 BGX="$BGD/a#[b]c"; mkdir -p "$BGD/a##[b]c"
 git -C "$BGR" worktree add -q -b brk303 "$BGX" >/dev/null 2>&1
 bg_goto "$BGS4" "$BGO4" "$BGR" "$BGX"
+bg_waitpath "$BGS4" "$BGX"
 is "a worktree named a#[b]c opens in that directory, not in a##[b]c" "$BGX" \
    "$("$TMUX_REAL" -L "$BGS4" display-message -p -t t: '#{pane_current_path}')"
 
@@ -12830,6 +12842,7 @@ BGW3="$BGD/third"; git -C "$BGR" worktree add -q -b third303 "$BGW3" >/dev/null 
 n=$(bg_windows "$BGS4")
 bg_goto "$BGS4" "%99" "$BGR" "$BGW3"
 is "an origin pane that is gone still gets a window in the worktree" "$((n+1))" "$(bg_windows "$BGS4")"
+bg_waitpath "$BGS4" "$BGW3"
 is "and it starts there" "$BGW3" "$("$TMUX_REAL" -L "$BGS4" display-message -p -t t: '#{pane_current_path}')"
 git -C "$BGR" worktree add -q -b fourth303 "$BGD/fourth" >/dev/null 2>&1
 bg_goto "$BGS4" "" "$BGR" "$BGD/fourth"
@@ -12949,6 +12962,7 @@ case "$BG_ERR" in
 esac
 is "and opens no window there" "$n" "$(bg_windows "$OGS")"
 BG_SHIM=$OGOLD bg_goto "$OGS" "$OGO" "$OGR" "$OGR"
+bg_waitpath "$OGS" "$OGR"
 is "the main checkout, whose .git is a directory, still opens" "$OGR" \
    "$("$TMUX_REAL" -L "$OGS" display-message -p -t t: '#{pane_current_path}')"
 
@@ -13015,6 +13029,7 @@ cg_refused() {                # cg_refused <label> <path>  goto names it no work
 cg_opens() {                  # cg_opens <label> <path>  goto opens or selects a pane in it
     "$TMUX_REAL" -L "$CGS" select-window -t "$CGO"
     cg_goto "$2"
+    bg_waitpath "$CGS" "$2"
     is "$1" "$2" "$("$TMUX_REAL" -L "$CGS" display-message -p -t t: '#{pane_current_path}')"
 }
 cg_forge() { git -C "$CGR" worktree add -q -b "$1" "$CGD/$1"$'\n'"worktree $2" >/dev/null 2>&1; }
@@ -13200,10 +13215,12 @@ for v in "" "$PGOLD"; do
         "not a worktree" "$PGD/nb-wc" "$PGD/nb" "$v"
     "$TMUX_REAL" -L "$PGS" select-window -t "$PGO"
     BG_SHIM=$v bg_goto "$PGS" "$PGO" "$PGD/proj/wa" "$PGD/proj/wa"
+    bg_waitpath "$PGS" "$PGD/proj/wa"
     is "$w, a tree linked to a bare repo in proj/.git still opens" "$PGD/proj/wa" \
        "$("$TMUX_REAL" -L "$PGS" display-message -p -t t: '#{pane_current_path}')"
     "$TMUX_REAL" -L "$PGS" select-window -t "$PGO"
     BG_SHIM=$v bg_goto "$PGS" "$PGO" "$PGD/wk" "$PGD/l1"
+    bg_waitpath "$PGS" "$PGD/l1"
     is "$w, a tree linked to a separate git dir still opens" "$PGD/l1" \
        "$("$TMUX_REAL" -L "$PGS" display-message -p -t t: '#{pane_current_path}')"
 done
