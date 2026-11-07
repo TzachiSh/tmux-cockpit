@@ -1144,3 +1144,26 @@ fn idle_teammates_list_newest_active_first() {
     let n = nav(&ps, "%4", &["%4"], 12);
     assert_eq!(tree_of(&ps, &n, "%4"), ["%4/i3", "%4/i2", "%4/i4", "%4/i1", "%4/i0"]);
 }
+
+/// #454 item 9: a lead whose turn is done while a teammate or subagent still runs
+/// draws `●` and undimmed, as the work goes on; with none running it is `✓`, dimmed.
+/// Display only: its @panestate stays done. Read off the pane's frame title, where
+/// the glyph sits beside the name, in the value role undimmed and meta dimmed.
+#[test]
+fn a_done_lead_with_running_work_draws_running() {
+    let th = Theme::fixed();
+    for (st, want, name_c) in [(SubState::Running, th.g.running, th.value), (SubState::Idle, th.g.done, th.meta)] {
+        let mut ps = one(vec![sub("mate", "lane-313", st, 600, 1)]);
+        ps[0].state = "done".into();
+        let c = cells_of(&ps, &th, "api:1 · tests");
+        assert!(c.iter().any(|c| c.symbol() == want), "{st:?}: {}", text(&c));
+        let at = text(&c).find("tests").unwrap();
+        let name = c
+            .iter()
+            .filter(|c| !c.symbol().is_empty())
+            .nth(text(&c)[..at].chars().count())
+            .unwrap();
+        assert_eq!(name.fg, name_c, "{st:?}: {}", text(&c));
+        assert_eq!(ps[0].state, "done", "{st:?}");
+    }
+}

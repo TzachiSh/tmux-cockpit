@@ -430,7 +430,19 @@ fn tiles(f: &mut Frame, area: Rect, v: &View, ord: &[usize], g: &Grid) {
 }
 
 fn dimmed(p: &Pane) -> bool {
-    p.ended || p.state >= State::Done
+    p.ended || drawn(p) >= State::Done
+}
+
+/// #454: the state the row draws. A lead whose turn is done while a teammate or
+/// subagent still runs draws running, as its work goes on; display only, so
+/// @panestate, the row's doing and its age stay the lead's.
+fn drawn(p: &Pane) -> State {
+    let working = p.subs.iter().any(|s| s.state == SubState::Running);
+    if p.state == State::Done && working {
+        State::Running
+    } else {
+        p.state
+    }
 }
 
 /// #301: an ended agent waits on nobody, whatever @panestate it was left with.
@@ -440,7 +452,7 @@ fn needs(p: &Pane) -> bool {
 
 /// The row's state glyph: an ended agent has its own, never the `▲` it died on.
 fn glyph(th: &Theme, p: &Pane) -> (&'static str, ratatui::style::Color) {
-    if p.ended { (th.g.ended, th.meta) } else { th.glyph(p.state) }
+    if p.ended { (th.g.ended, th.meta) } else { th.glyph(drawn(p)) }
 }
 
 /// The word an ended agent shows where the doing line goes.
