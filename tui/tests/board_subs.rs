@@ -111,7 +111,7 @@ fn shown(ps: &[Pane], n: &Nav) -> Vec<String> {
             Row::Head(s) => format!("[{s}]"),
             Row::Agent(i) => ps[i].id.clone(),
             Row::Sub(i, j) => format!("{}/{}", ps[i].id, ps[i].subs[j].desc),
-            Row::Done(i, k) => format!("{}:done {k}", ps[i].id),
+            Row::Done(i, k, _) => format!("{}:done {k}", ps[i].id),
             Row::Quiet(i, k) => format!("{}:quiet {k}", ps[i].id),
             Row::More(i, k) => format!("{}:+{k}", ps[i].id),
         })
@@ -480,7 +480,7 @@ fn the_selected_agent_gets_lines_first_then_blocked_then_board_order() {
         .rows(&ps)
         .iter()
         .filter_map(|r| match r {
-            Row::Sub(i, _) | Row::More(i, _) | Row::Done(i, _) | Row::Quiet(i, _) => Some(ps[*i].id.clone()),
+            Row::Sub(i, _) | Row::More(i, _) | Row::Done(i, ..) | Row::Quiet(i, _) => Some(ps[*i].id.clone()),
             _ => None,
         })
         .collect();
@@ -501,7 +501,7 @@ fn the_crowd_selected_first() {
         .rows(&ps)
         .iter()
         .filter_map(|r| match r {
-            Row::Sub(i, _) | Row::More(i, _) | Row::Done(i, _) | Row::Quiet(i, _) => Some(ps[*i].id.clone()),
+            Row::Sub(i, _) | Row::More(i, _) | Row::Done(i, ..) | Row::Quiet(i, _) => Some(ps[*i].id.clone()),
             _ => None,
         })
         .collect();
@@ -998,7 +998,8 @@ fn text(cells: &[ratatui::buffer::Cell]) -> String {
     cells.iter().map(|c| c.symbol()).collect()
 }
 
-/// Stopped (#336) has its own mark, `∎` (`#` in ascii), in meta and dim.
+/// Stopped (#336) has its own mark, `∎` (`=` in ascii since #399: `#` is review
+/// pending's), in meta and dim.
 #[test]
 fn a_stopped_sub_has_its_own_dim_mark() {
     let ps = one(vec![with(sub("Plan", "halted", SubState::Stopped, 30, 1), Some(10), None)]);
@@ -1008,7 +1009,7 @@ fn a_stopped_sub_has_its_own_dim_mark() {
     assert_eq!(mark.fg, th.meta);
     assert!(mark.modifier.contains(ratatui::style::Modifier::DIM));
     assert!(
-        text(&cells_of(&ps, &ascii(), "halted")).contains("|- # Plan") || text(&cells_of(&ps, &ascii(), "halted")).contains("`- # Plan")
+        text(&cells_of(&ps, &ascii(), "halted")).contains("|- = Plan") || text(&cells_of(&ps, &ascii(), "halted")).contains("`- = Plan")
     );
 }
 
@@ -1073,9 +1074,53 @@ fn the_owners_session_fits_its_five_lines() {
     let ps = one(subs);
     let n = nav(&ps, "%4", &["%4"], 12);
     assert_eq!(tree_of(&ps, &n, "%4"), ["%4:done 16", "%4:quiet 51", "%4/i0", "%4/i1", "%4/i2"]);
-    // in 2 rows the quiet fold is cut, its 51 counted in the `+N more`
+}
+
+/// #399: when the tree's room is short, its fold rows give way first and their
+/// counts join `+N more`: the owner's three idle teammates stay, the 16 done and
+/// 51 quiet are counted. Two rows keep one teammate.
+#[test]
+fn a_short_tree_keeps_its_live_lines_before_its_folds() {
+    let mut subs = vec![];
+    for k in 0..16 {
+        subs.push(with(
+            sub("Explore", &format!("d{k}"), SubState::Done, 5000 + k, 1),
+            Some(4000),
+            None,
+        ));
+    }
+    for k in 0..51 {
+        subs.push(with(
+            sub("Explore", &format!("u{k}"), SubState::EndUnknown, 4000 + k, 1),
+            None,
+            Some(2000),
+        ));
+    }
+    for k in 0..3 {
+        subs.push(with(sub("mate", &format!("i{k}"), SubState::Idle, 3000 + k, 1), None, Some(30)));
+    }
+    let ps = one(subs);
+    let n = nav(&ps, "%4", &["%4"], 8);
+    assert_eq!(tree_of(&ps, &n, "%4"), ["%4/i0", "%4/i1", "%4/i2", "%4:+67"]);
     let n = nav(&ps, "%4", &["%4"], 4);
-    assert_eq!(tree_of(&ps, &n, "%4"), ["%4:done 16", "%4:+54"]);
+    assert_eq!(tree_of(&ps, &n, "%4"), ["%4/i0", "%4:+69"]);
+}
+
+/// #399: the done fold names what the user stopped apart from what finished,
+/// `✓ 16 done · 2 stopped`, and says nothing of stops when there were none.
+#[test]
+fn the_done_fold_names_the_stopped_apart() {
+    let old = |st, k: u64| with(sub("Explore", &format!("x{k}"), st, 5000 + k, 1), Some(4000), None);
+    let mut subs: Vec<_> = (0..16).map(|k| old(SubState::Done, k)).collect();
+    subs.extend((16..18).map(|k| old(SubState::Stopped, k)));
+    let line = text(&cells_of(&one(subs), &Theme::fixed(), "done"));
+    assert!(line.contains("✓ 16 done · 2 stopped"), "{line}");
+    let line = text(&cells_of(
+        &one((0..16).map(|k| old(SubState::Done, k)).collect()),
+        &Theme::fixed(),
+        "done",
+    ));
+    assert!(line.contains("✓ 16 done") && !line.contains("stopped"), "{line}");
 }
 
 /// With a finish time, a done sub folds 2 minutes after it, whatever the first sight says.
@@ -1166,4 +1211,23 @@ fn a_done_lead_with_running_work_draws_running() {
         assert_eq!(name.fg, name_c, "{st:?}: {}", text(&c));
         assert_eq!(ps[0].state, "done", "{st:?}");
     }
+}
+
+/// #399: the quiet line's age is its newest sign of life, `active_at`, which the
+/// data's hash does not keep: a newer one alone must move the redraw gate.
+#[test]
+fn a_quiet_lines_newer_sign_of_life_moves_the_redraw_gate() {
+    let mut ps = one(vec![with(sub("Explore", "q1", SubState::EndUnknown, 4000, 1), None, Some(3000))]);
+    let n = nav(&ps, "%4", &["%4"], 12);
+    let before = n.tree_gate(&ps);
+    ps[0].subs[0].active_at = ps[0].subs[0].active_at.map(|t| t + 600);
+    assert_ne!(before, n.tree_gate(&ps), "only active_at moved");
+}
+
+/// #399: a quiet subagent with no recorded sign of life ages from its start.
+#[test]
+fn a_quiet_line_with_no_sign_of_life_ages_from_the_start() {
+    let ps = one(vec![with(sub("Explore", "q1", SubState::EndUnknown, 1500, 1), None, None)]);
+    let line = text(&cells_of(&ps, &Theme::fixed(), "1 quiet"));
+    assert!(line.contains("◌ 1 quiet") && line.contains("25m"), "{line}");
 }
