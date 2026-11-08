@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Builds one of eight deterministic git fixtures (deterministic author env,
+# Builds one of ten deterministic git fixtures (deterministic author env,
 # `git init -q -b main`). tests/run.sh diffs each through tree_diff and the
 # board's diffstat, which must agree, and reads tree_diff's numstat on some.
 #
-# Usage: mkfix.sh <basic|mixed|untracked|blank|nonascii|funcname|hunks|spaces> <dir>
+# Usage: mkfix.sh <basic|mixed|untracked|blank|nonascii|funcname|hunks|spaces|mv|gitmv> <dir>
 # <dir> must already exist and be empty; it becomes the fixture's repo root.
 
 set -euo pipefail
@@ -37,6 +37,23 @@ mixed)
     printf 'a\nSTAGED-CHANGE\n' > staged.txt
     git add staged.txt
     printf 'a\nUNSTAGED-CHANGE\n' > unstaged.txt
+    ;;
+mv)
+    # a plain mv (#657 review): the old name gone, the new one untracked, a line added
+    git init -q -b main .
+    printf '1\n2\n3\n4\n5\n6\n' > g.txt
+    git add -A
+    git commit -q -m init
+    mv g.txt h.txt
+    printf '7\n' >> h.txt
+    ;;
+gitmv)
+    # a staged git mv: a rename of a tracked file, no lines
+    git init -q -b main .
+    printf '1\n2\n3\n' > g.txt
+    git add -A
+    git commit -q -m init
+    git mv g.txt h.txt
     ;;
 untracked)
     git init -q -b main .

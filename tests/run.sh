@@ -10961,30 +10961,44 @@ fi
 
 echo "== cockpit-tui diffstat and git-flags match the shell they will replace (#199) =="
 DSB=$COCKPIT_TUI_BIN
-# tree_diff's rows summed the way the board's scan sums them, as diffstat's four
-# columns; review_base forced to HEAD, which is what diffstat with no --base reads.
-# #454, the owner's pick: `+a -d` counts tracked lines only, and `?N new` the files
-# the real index does not hold (ls-files -o), whose lines count nowhere.
+# The board's count from git itself, through the safe wrapper, as diffstat's four
+# columns: the tracked tree's numstat against HEAD (an unborn tree: the index, then
+# the worktree's change to it), and `?N new` for every file the index does not hold.
+# #454/#657, the owner's pick: tracked lines only. tree_diff is the review diff, and
+# prefix r prints no count, so the count no longer goes through it.
 ds_shell() {
-    local untracked
-    untracked=$(git -C "$1" -c core.quotePath=false ls-files -o --exclude-standard 2>/dev/null)
-    ( . "$DIR/scripts/lib/git.sh"; . "$DIR/scripts/lib/review-diff.sh"
-      COCKPIT_REVIEW_BASE=uncommitted tree_diff "$1" --numstat --summary ) \
-    | awk -F'\t' -v untracked="$untracked" '
-          BEGIN {k = split(untracked, u, "\n"); for (i = 1; i <= k; i++) U[u[i]] = 1}
-          /^ create mode /{rows++; p = $0; sub(/^ create mode [0-7]+ /, "", p); if (p in U) n++; next}
-          $1 != "" {rows++; if ($3 in U) next
-                    a += ($1 ~ /^[0-9]+$/) ? $1 : 0; d += ($2 ~ /^[0-9]+$/) ? $2 : 0}
-          END {pm = rows ? sprintf("+%d -%d", a, d) : "clean"; if (n) pm = pm "  ?" n " new"
-               printf "%d\t%d\t%d\t%s\n", a, d, n, pm}'
+    ( . "$DIR/scripts/lib/git.sh"
+      local d=$1 n
+      local -a q=(-c core.quotePath=false) o=(--no-color --no-ext-diff --no-textconv --ignore-submodules=dirty --numstat)
+      n=$(git -C "$d" "${q[@]}" ls-files -o --exclude-standard -z | tr -cd '\0' | wc -c)
+      if git -C "$d" rev-parse --verify -q HEAD >/dev/null; then
+          git -C "$d" "${q[@]}" diff "${o[@]}" HEAD
+      else
+          git -C "$d" "${q[@]}" diff "${o[@]}" --cached; git -C "$d" "${q[@]}" diff "${o[@]}"
+      fi | awk -F'\t' -v n="$n" '$1 != "" {rows++; a += ($1 ~ /^[0-9]+$/) ? $1 : 0; d += ($2 ~ /^[0-9]+$/) ? $2 : 0}
+              END {pm = (rows || n) ? sprintf("+%d -%d", a, d) : "clean"; if (n) pm = pm "  ?" n " new"
+                   printf "%d\t%d\t%d\t%s\n", a, d, n, pm}' ) 2>/dev/null
 }
-for gf in basic mixed untracked blank nonascii funcname hunks spaces; do
+for gf in basic mixed untracked blank nonascii funcname hunks spaces mv gitmv; do
     GD=$(mktmpd); "$DIR/tests/fixtures/review/mkfix.sh" "$gf" "$GD" >/dev/null 2>&1
-    is "diffstat $gf: tree_diff's totals" "$(ds_shell "$GD")" "$("$DSB" diffstat "$GD")"
+    is "diffstat $gf: git's own tracked totals" "$(ds_shell "$GD")" "$("$DSB" diffstat "$GD")"
+    rm -rf "$GD"
+done
+# #657 review: the two renames as literals, so one fault on both sides still shows
+for gf in "mv|0	6	1	+0 -6  ?1 new" "gitmv|0	0	0	+0 -0"; do
+    GD=$(mktmpd); "$DIR/tests/fixtures/review/mkfix.sh" "${gf%%|*}" "$GD" >/dev/null 2>&1
+    is "diffstat ${gf%%|*}: a rename's lines as the owner chose" "${gf#*|}" "$("$DSB" diffstat "$GD")"
     rm -rf "$GD"
 done
 GD=$(mktmpd); ( cd "$GD" && git init -q -b main . && printf 'a\nb\n' > x && printf 'c\n' > y ) >/dev/null 2>&1
-is "diffstat on an unborn HEAD: tree_diff's totals, not clean" "$(ds_shell "$GD")" "$("$DSB" diffstat "$GD")"
+is "diffstat on an unborn HEAD: git's own tracked totals, not clean" "$(ds_shell "$GD")" "$("$DSB" diffstat "$GD")"
+# #657 review: an unborn tree with x staged then changed and y untracked; the index's
+# lines and the worktree's change to them both count
+( cd "$GD" && git add x && printf 'z\n' >> x ) >/dev/null 2>&1
+is "diffstat on an unborn HEAD, one staged, one untracked: git's own totals" \
+   "$(ds_shell "$GD")" "$("$DSB" diffstat "$GD")"
+is "diffstat on an unborn HEAD, one staged, one untracked: the staged lines" \
+   "3	0	1	+3 -0  ?1 new" "$("$DSB" diffstat "$GD")"
 is "diffstat on a dir that is not a repo: nothing, status 1" "1" \
    "$(rm -rf "$GD/.git"; "$DSB" diffstat "$GD"; printf '%s' "$?")"
 rm -rf "$GD"
@@ -11057,6 +11071,8 @@ ds_subs() {                   # <dir>: $1/r, a.txt changed, n.txt new, submodule
 GD=$(mktmpd)
 is "a gitlink's planted clean filter fires under plain git status: both of them" "2" "$(ds_subs "$GD")"
 mkdir "$GD/tmp"
+( . "$DIR/scripts/lib/git.sh"; . "$DIR/scripts/lib/review-diff.sh"
+  TMPDIR="$GD/tmp" COCKPIT_REVIEW_BASE=uncommitted tree_diff "$GD/r" --numstat >/dev/null ) 2>/dev/null
 dss=$(TMPDIR="$GD/tmp" ds_shell "$GD/r")
 is "tree_diff runs no gitlink's own clean filter" "" "$(ls "$GD" | grep '^PWNED')"
 # #454: the untracked file is `?1 new`, its line out of `+a`
