@@ -334,10 +334,17 @@ then every disagreement with the owner's note and the judge's critique.
 `--split tune|holdout|all` picks the rows: the holdout takes whole cases (the
 label's `case`), about a third of the rows of the cases with an owner fail and a
 third of the rest, by a hash of the case name; tune the rubric on the tune rows
-only. On the 118 labels, haiku with the shipped rubric and the section escape
-(#646) scored, in two sweeps the same day, TPR 91/98 and 94/98 (95% CI 86%-96%
-and 90%-98%), TNR 15/20 twice (95% CI 53%-89%, 36 points wide) and kappa 0.65
-and 0.72 (95% CI 0.47-0.84 and 0.55-0.90) against the owner. The escape
+only. Each label's screen, repo and request are its case's, as the rig parses
+them, and a test holds them there (#691). Five rows had drifted:
+`review-which-pr`'s two later rows had lost their screen's `#91` and `#88` lines,
+and three round-1 rows carried the next case's heading comment at the end of
+their request, which is what the owner saw when marking them. On the 118
+repaired labels, haiku with the shipped rubric and the section escape (#646)
+scored, in two sweeps the same day, TPR 93/98 twice (95% CI 89%-98%), TNR 15/20
+twice (95% CI 53%-89%, 36 points wide) and kappa 0.70 twice (95% CI 0.52-0.88)
+against the owner, and graded all five repaired rows as the owner did in both.
+Before the repair the same rubric scored TPR 91/98 and 94/98, TNR 15/20 twice
+and kappa 0.65 and 0.72. The escape
 changed one label's prompt, a reply ending in a stray `</reply>`. Escaping every
 `</`, as the reads do, changed 117 of them and scored kappa 0.55 and 0.53: the
 judge failed correct replies for "stray escaped closing tags" such as
