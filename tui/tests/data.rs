@@ -607,7 +607,9 @@ fn the_diff_counts_untracked_files_like_prefix_r() {
     r.write("new1.txt", "x\n");
     r.write("new2.txt", "y\n");
     r.write("new3.txt", "z\n");
-    assert_eq!(git_facts(&r.path()).1, "+4 -0  ?3 new");
+    // #454, the owner's pick: tracked lines only; prefix r's shell tree_diff still
+    // counts the untracked lines, so the two differ here by design
+    assert_eq!(git_facts(&r.path()).1, "+1 -0  ?3 new");
     let st = String::from_utf8_lossy(&r.git(&["status", "--porcelain"]).stdout).into_owned();
     assert!(st.contains("?? new1.txt"), "the stat touched the real index: {st}");
 }
@@ -663,14 +665,16 @@ fn planted_git_config_never_runs() {
     touch(200); // the control's diff may have refreshed the real index
 
     let (_, pm, _) = git_facts(&r.path());
-    assert_eq!(diffstat(&[&r.path()]).0, "5\t1\t1\t+5 -1  ?1 new\n");
+    // #454: tracked lines only; the untracked file is `?1 new`
+    assert_eq!(diffstat(&[&r.path()]).0, "2\t1\t1\t+2 -1  ?1 new\n");
     assert!(
         !marker.exists(),
         "a fetch ran planted config: {:?}",
         std::fs::read_to_string(&marker)
     );
-    // f gains a line, g changes one, and the untracked .gitattributes is the one new file
-    assert_eq!(pm, "+5 -1  ?1 new", "the hardened diff still measures the tree");
+    // f gains a line, g changes one, and the untracked .gitattributes is the one new
+    // file, its lines no longer counted (#454)
+    assert_eq!(pm, "+2 -1  ?1 new", "the hardened diff still measures the tree");
 }
 
 /// The board may start with a dotfiles setup's GIT_DIR, or one of its kin, in
@@ -733,11 +737,13 @@ fn an_unborn_repo_with_new_files_is_not_clean() {
     std::fs::remove_dir_all(r.dir.join(".git")).unwrap();
     r.git(&["init", "-q", "-b", "main", "."]);
     r.write("g", "x\ny\n");
-    assert_eq!(stat(&r, None), Some((3, 0, 2, "+3 -0  ?2 new".into())));
-    assert_eq!(git_facts(&r.path()).1, "+3 -0  ?2 new");
+    // #454: in an unborn repo every file is untracked: `?2 new`, no lines
+    assert_eq!(stat(&r, None), Some((0, 0, 2, "+0 -0  ?2 new".into())));
+    assert_eq!(git_facts(&r.path()).1, "+0 -0  ?2 new");
     // staged and otherwise untouched: only the index has it, tree_diff's --cached leg
     r.git(&["add", "-A"]);
-    assert_eq!(stat(&r, None), Some((3, 0, 2, "+3 -0  ?2 new".into())));
+    // #454: staged, they are tracked: their lines count, and nothing is untracked
+    assert_eq!(stat(&r, None), Some((3, 0, 0, "+3 -0".into())));
 }
 
 /// Past BIGCAP a file is never hashed, but it is still a change.
@@ -776,7 +782,8 @@ fn diffstat_reads_a_linked_worktree_and_refuses_a_non_repo() {
     let wt = r.dir.join("wt");
     r.git(&["worktree", "add", "-q", "-b", "side", &wt.display().to_string()]);
     std::fs::write(wt.join("n"), "x\n").unwrap();
-    assert_eq!(diffstat(&[&wt.display().to_string()]), ("1\t0\t1\t+1 -0  ?1 new\n".into(), 0));
+    // #454: an untracked file is `?1 new`, its line no `+1`
+    assert_eq!(diffstat(&[&wt.display().to_string()]), ("0\t0\t1\t+0 -0  ?1 new\n".into(), 0));
     assert_eq!(diffstat(&[&r.dir.join(".git").display().to_string()]), (String::new(), 1));
 }
 

@@ -168,7 +168,8 @@ fn the_superprojects_own_change_is_still_counted_beside_a_submodule() {
     r.write("a.txt", "b\n");
     r.write("n.txt", "n\n");
     r.write("sub/f.txt", "y\n");
-    assert_eq!(r.stat(), Some((2, 1, 1, "+2 -1  ?1 new".into())));
+    // #454: n.txt is untracked: `?1 new`, its line not in `+1`
+    assert_eq!(r.stat(), Some((1, 1, 1, "+1 -1  ?1 new".into())));
 }
 
 #[test]
@@ -407,7 +408,8 @@ fn a_relative_tmpdir_counts_what_an_absolute_one_does() {
     r.write("n.txt", "n\n");
     let cwd = Repo::plain("reltmp-cwd");
     std::fs::create_dir(cwd.0.join("t")).unwrap();
-    let want = "2\t1\t1\t+2 -1  ?1 new\n";
+    // #454: tracked lines only, the untracked file `?1 new`
+    let want = "1\t1\t1\t+1 -1  ?1 new\n";
     let got = [Path::new("t").to_path_buf(), cwd.0.join("t")].map(|t| diffstat_in(&r, &cwd.0, &t));
     assert_eq!(got, [want, want]);
 }

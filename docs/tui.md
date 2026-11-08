@@ -1934,7 +1934,7 @@ Every failure is `None`.
   that blank every filter driver `<dir>`'s config names.
 - `cockpit-tui diffstat <root> [--base <rev>]` prints
   `<add>\t<del>\t<new>\t<pm>`, the board's diff count against `<rev>` (default
-  HEAD; an unborn HEAD counts the tree as new). Exit 1 when `<root>` is not a
+  HEAD; an unborn HEAD counts the tree as new; `+a -d` are tracked lines only, as on the board). Exit 1 when `<root>` is not a
   repo, the diff fails or the base starts with `-`; 2 on a usage error.
 
 **Log format:** one line per event, `<unix_micros> <text>`, append-only, only
@@ -2510,7 +2510,10 @@ malformed pane id, with the usage on stderr only.
 `tmux-review --fleet` went with it. `r` on a row opens the review loop as before.
 
 **Row cells.** The list draws, between the message and the age: the diff stat
-(`+a -d`, `clean`, `no repo`, `?N new` for untracked files) and the branch
+and the branch. The stat is `+a -d`, the lines added and deleted in tracked files
+(a staged new file is tracked), then `?N new` for untracked files, whose lines
+count nowhere (#454); `?N new` alone when only untracked files changed, `clean`,
+or `no repo`. `prefix r`'s review still diffs untracked files in full. The branch
 (`⑂name`, or `⑂@<short sha>` on a detached HEAD). The review mark stays in the
 row's leading column. A cell that does not fit is dropped with every cell to its
 right; the cells take at most a third of the width the name and message share,

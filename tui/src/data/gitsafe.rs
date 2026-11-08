@@ -297,16 +297,29 @@ pub fn tree_stat_with(
     if !ok {
         return None;
     }
-    let (mut add, mut del, mut new) = (0u64, 0u64, 0u64);
-    for l in out.lines() {
-        if l.starts_with(" create mode ") {
-            new += 1;
+    // #454: `+a -d` counts tracked changes only. A file the real index does not hold
+    // is untracked: the intent-to-add above only lets the diff see it, and it shows
+    // as `?N new`, its lines nowhere. A staged new file is tracked and counts.
+    let tracked: std::collections::HashSet<&[u8]> = staged
+        .split(|b| *b == 0)
+        .filter_map(|r| r.iter().position(|b| *b == b'\t').map(|t| &r[t + 1..]))
+        .collect();
+    let untracked: std::collections::HashSet<&str> = out
+        .lines()
+        .filter_map(|l| l.strip_prefix(" create mode ")?.split_once(' ').map(|(_, path)| path))
+        .filter(|path| !tracked.contains(path.as_bytes()))
+        .collect();
+    let (mut add, mut del) = (0u64, 0u64);
+    for l in out.lines().filter(|l| !l.starts_with(' ')) {
+        let mut f = l.splitn(3, '\t');
+        let (a, d, path) = (f.next(), f.next(), f.next().unwrap_or(""));
+        if untracked.contains(path) {
             continue;
         }
-        let mut f = l.split('\t');
-        add += f.next().and_then(|x| x.parse::<u64>().ok()).unwrap_or(0);
-        del += f.next().and_then(|x| x.parse::<u64>().ok()).unwrap_or(0);
+        add += a.and_then(|x| x.parse::<u64>().ok()).unwrap_or(0);
+        del += d.and_then(|x| x.parse::<u64>().ok()).unwrap_or(0);
     }
+    let new = untracked.len() as u64;
     if out.trim().is_empty() && big.is_empty() {
         return Some((0, 0, 0, "clean".into()));
     }
