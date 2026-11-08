@@ -453,6 +453,14 @@ if [ -n "$fgown" ]; then
     unmark=(if-shell -F -t "$pane" '#{@cockpit_agentview}' \
         "set-option -pu -t $pane @cockpit_agentview" ';'
         if-shell -F -t "$pane" "$fgcond" "$fgset" ';')
+    # The config dir this session's claude uses, from the hook's own env, in this same call: a
+    # pane the poller may bind is polled against that dir's agents (#194). Argv, so no quoting.
+    if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
+        unmark+=(set-option -p -t "$pane" @cockpit_cfg "$CLAUDE_CONFIG_DIR" ';'
+            set-option -g @cockpit_cfg_any 1 ';')
+    else
+        unmark+=(set-option -pu -t "$pane" @cockpit_cfg ';')
+    fi
 fi
 tmux ${unmark[@]+"${unmark[@]}"} ${subs_cmd[@]+"${subs_cmd[@]}" ';'} \
     if-shell -F -t "$pane" "$when" "${body# ; }" \

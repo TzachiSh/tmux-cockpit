@@ -433,6 +433,19 @@ nothing a job does can start it again, and an agent that begins a viewer in a sh
 fires no window event. `@cockpit_bg_poll off` never starts it. No foreground hook starts it, so a
 plain `Stop` costs what it did.
 
+**One poller per config dir.** A pane's hooks run with the `CLAUDE_CONFIG_DIR` its
+`claude` uses, so each hook records it on the pane as `@cockpit_cfg`, and a pane on
+another dir is polled against that dir's agents by a poller of its own, in
+`@cockpit_poll_pid_<cksum>` beside `@cockpit_poll_dir_<cksum>`. The dir is compared as
+`claude` got it, never normalised or resolved: two spellings of one dir give two
+pollers, which is harmless. A dir's poller leaves after three ticks with none of its
+panes, and a sweep takes back the slot of one that is gone. Two dirs on one cksum never
+share a slot: the second starts none, and says so in `@cockpit_poll_err`. With no
+`CLAUDE_CONFIG_DIR` anywhere nothing changes: one poller, `@cockpit_poll_pid`, the same
+tmux calls. One thing does: a pane whose hook saw no `CLAUDE_CONFIG_DIR` is polled
+against the default dir, never the tmux server's own value, which is what that pane's
+`claude` reads (#194).
+
 Each tick is two tmux reads (the interval option and `list-panes -a`) and a sleep, a few
 milliseconds. `claude agents`, about 0.3 s,
 runs only when it can matter:

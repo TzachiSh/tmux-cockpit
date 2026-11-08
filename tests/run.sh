@@ -16045,6 +16045,154 @@ is "another process at the pid is not the poller" "no" "$(pa_alive 'sleep 300')"
 is "a name that only ends like it is not the poller" "no" "$(pa_alive 'bash /x/not-agent-poller')"
 rm -rf "$PA"
 
+# --- #194 one poller per Claude config dir -----------------------------------
+
+echo "== agent-poll: a pane on another CLAUDE_CONFIG_DIR is polled against that dir (#194) =="
+av_setup
+if need_tmux "agent-poll config dirs" || [ ! -d /proc/self ]; then :; else
+PD=$(mktmpd); PDS="cockpit-pd-$$"; SOCKS="$SOCKS $PDS"
+PDA="$PD/cfg a #1 'q'"; mkdir -p "$PDA" "$PD/S" "$PD/bin" "$PD/cks"
+cp "$AVF/blocked.json" "$PDA/agents.json"; cp "$AVF/working.json" "$PD/S/agents.json"
+cp "$AVF/working.json" "$PD/default.json"; PDLOG="$PD/claude.log"; : > "$PDLOG"
+# claude: the agents of the dir it was given, or of the default; it logs which it saw.
+cat > "$PD/bin/claude" <<PDEOF
+#!/bin/sh
+printf 'cfg=%s\n' "\${CLAUDE_CONFIG_DIR-<unset>}" >> "$PDLOG"
+if [ -n "\${CLAUDE_CONFIG_DIR:-}" ]; then cat "\$CLAUDE_CONFIG_DIR/agents.json"
+else cat "$PD/default.json"; fi
+PDEOF
+chmod +x "$PD/bin/claude"
+pd_tm() { "$TMUX_REAL" -L "$PDS" "$@"; }
+fresh_server -L "$PDS" -f /dev/null -- -d -s t -x 80 -y 24 -c "$PD" 'exec -a claude bash'
+PDT="$SOCKDIR/$PDS,0,0"
+pd_tm set -g @cockpit_agents_glob '|claude|'
+pd_tm set -g @cockpit_bg_poll 1
+pd_tm set-environment -g PATH "$PD/bin:$AVBIN:$PATH"
+# The server's own dir: the default poller must not take it for the panes with none (#194).
+pd_tm set-environment -g CLAUDE_CONFIG_DIR "$PD/S"
+PD1=$(pd_tm list-panes -t t -F '#{pane_id}')
+PD2=$(pd_tm new-window -d -P -F '#{pane_id}' -c "$PD" 'exec -a claude bash')
+pd_hook() {                   # pd_hook <pane> [env...]: a relayed agent_needs_input from <pane>
+    printf '{"notification_type":"agent_needs_input","message":"m"}' \
+        | env -u CLAUDE_CONFIG_DIR "${@:2}" TMUX="$PDT" TMUX_PANE="$1" PATH="$PD/cks:$AVREC:$PATH" \
+            "$DIR/scripts/agent-state" notify >/dev/null 2>&1
+}
+pd_key() { printf '%s' "$1" | cksum | cut -d' ' -f1; }
+pd_live() {                   # pd_live <slot option>: a live agent-poll holds it
+    local p; p=$(pd_tm show-option -gqv "$1")
+    [ -n "$p" ] && [ "$(cat "/proc/$p/comm" 2>/dev/null)" = agent-poll ]
+}
+pd_yn() { "$@" && echo yes || echo no; }
+pd_opt() { pd_tm show-option -gqv "$1"; }
+pd_st() { pd_tm show-option -pqv -t "$1" @panestate; }
+PDK=$(pd_key "$PDA")
+pd_hook "$PD1" CLAUDE_CONFIG_DIR="$PDA"
+pd_hook "$PD2"
+av_wait 'pd_live @cockpit_poll_pid_$PDK && pd_live @cockpit_poll_pid'
+is "a pane on another config dir gets a poller of its own, beside the default one" "yes yes" \
+   "$(pd_yn pd_live "@cockpit_poll_pid_$PDK") $(pd_yn pd_live @cockpit_poll_pid)"
+is "...the dir is recorded on its pane, as claude got it" "$PDA" \
+   "$(pd_tm show-option -pqv -t "$PD1" @cockpit_cfg)"
+av_wait '[ "$(pd_st "$PD1") $(pd_st "$PD2")" = "needs-input running" ]'
+is "each pane shows its own dir's agents" "needs-input running" "$(pd_st "$PD1") $(pd_st "$PD2")"
+is "the dir reaches claude intact: a space, a # and a quote" "yes" \
+   "$(pd_yn grep -qxF "cfg=$PDA" "$PDLOG")"
+is "a pane whose hook saw no dir is polled on the default, not the server's" "yes no" \
+   "$(pd_yn grep -qx 'cfg=<unset>' "$PDLOG") $(pd_yn grep -qxF "cfg=$PD/S" "$PDLOG")"
+# The pane goes: the dir's poller counts three ticks with none of its panes, then leaves.
+pd_tm kill-pane -t "$PD1"
+av_wait '[ -z "$(pd_tm show-option -gqv @cockpit_poll_pid_$PDK)" ]'
+is "a dir poller whose last pane went leaves and unpublishes, its dir too" "|" \
+   "$(pd_opt "@cockpit_poll_pid_$PDK")|$(pd_opt "@cockpit_poll_dir_$PDK")"
+is "...and the default poller stays" "yes" "$(pd_yn pd_live @cockpit_poll_pid)"
+# A dir slot whose poller is gone and whose dir no pane holds: the sweep takes it back, by
+# compare-and-set, and the process at that pid is not signalled.
+sleep 300 & PDSLEEP=$!
+pd_tm set -g @cockpit_poll_pid_99 "$PDSLEEP" \; set -g @cockpit_poll_dir_99 "$PD/gone"
+env -u COCKPIT_NO_AUTOSTART -u TMUX_PANE TMUX="$PDT" PATH="$AVREC:$PATH" \
+    "$DIR/scripts/agent-state" sweep </dev/null >/dev/null 2>&1
+is "a sweep takes back a dead dir slot no pane holds, and signals nothing" "|yes" \
+   "$(pd_opt @cockpit_poll_pid_99)|$(pd_yn kill -0 "$PDSLEEP")"
+kill "$PDSLEEP" 2>/dev/null; wait "$PDSLEEP" 2>/dev/null
+# Two dirs on one cksum never share a slot: a stubbed cksum gives both the key 7.
+printf '#!/bin/sh\necho "7 1"\n' > "$PD/cks/cksum"; chmod +x "$PD/cks/cksum"
+pd_tm set -g @cockpit_poll_dir_7 "$PD/first" \; set -gu @cockpit_poll_err
+: > "$AVLOG"
+pd_hook "$PD2" CLAUDE_CONFIG_DIR="$PD/second"
+is "a second dir on a key another dir holds starts nothing and says why" \
+   "0|$PD/first|config dirs share a poller key: 7" \
+   "$(grep -c '^run-shell -b ' "$AVLOG")|$(pd_opt @cockpit_poll_dir_7)|$(pd_opt @cockpit_poll_err)"
+pd_tm set -gu @cockpit_poll_err
+env -u TMUX_PANE TMUX="$PDT" PATH="$PD/bin:$AVBIN:$PATH" COCKPIT_POLL_KEY=7 \
+    CLAUDE_CONFIG_DIR="$PD/second" timeout 20 "$DIR/scripts/agent-poll" </dev/null >/dev/null 2>&1
+is "...and a poller for it refuses the slot at its claim" "|config dirs share a poller key: 7" \
+   "$(pd_opt @cockpit_poll_pid_7)|$(pd_opt @cockpit_poll_err)"
+rm -f "$PD/cks/cksum"
+pd_tm kill-server
+pd_polls() {                  # live agent-poll processes on this block's server
+    local d n=0
+    for d in /proc/[0-9]*; do
+        [ "$(cat "$d/comm" 2>/dev/null)" = agent-poll ] || continue
+        tr '\0' '\n' < "$d/environ" 2>/dev/null | grep -q "^TMUX=$SOCKDIR/$PDS," && n=$((n + 1))
+    done
+    echo "$n"
+}
+av_wait '[ "$(pd_polls)" = 0 ]'
+is "the pollers leave with their server" "0" "$(pd_polls)"
+rm -rf "$PD"
+fi
+
+echo "== agent-state: a session's own hook records its config dir on the pane (#194) =="
+if need_tmux "agent-state config dir"; then :; else
+PE=$(mktmpd); PES="cockpit-pe-$$"; SOCKS="$SOCKS $PES"
+fresh_server -L "$PES" -f /dev/null -- -d -s t -x 80 -y 24 -c "$PE" 'sleep 300'
+PEP=$("$TMUX_REAL" -L "$PES" list-panes -t t -F '#{pane_id}')
+pe_hook() {                   # pe_hook [env...]: this pane's own session goes to running
+    env -u CLAUDE_CONFIG_DIR "$@" TMUX="$SOCKDIR/$PES,0,0" TMUX_PANE="$PEP" COCKPIT_NO_AUTOSTART=1 \
+        "$DIR/scripts/agent-state" running </dev/null >/dev/null 2>&1
+}
+pe_cfg() { "$TMUX_REAL" -L "$PES" show-option -pqv -t "$PEP" @cockpit_cfg; }
+pe_hook CLAUDE_CONFIG_DIR="$PE/b c"
+is "a foreground hook with a dir records it, and the server notes a dir is in use" "$PE/b c|1" \
+   "$(pe_cfg)|$("$TMUX_REAL" -L "$PES" show-option -gqv @cockpit_cfg_any)"
+pe_hook
+is "...and one with none clears it" "" "$(pe_cfg)"
+"$TMUX_REAL" -L "$PES" kill-server
+rm -rf "$PE"
+fi
+
+echo "== agent-poll: with no config dir anywhere, a sweep reads no pane's dir (#194) =="
+av_setup
+if need_tmux "agent-poll default dir" || [ ! -d /proc/self ]; then :; else
+PF=$(mktmpd); PFS="cockpit-pf-$$"; SOCKS="$SOCKS $PFS"
+fresh_server -L "$PFS" -f /dev/null -- -d -s t -x 80 -y 24 -c "$PF" 'sleep 300'
+# A recorder that logs every tmux call and runs none of the run-shells: the sweep's starts are
+# counted, and no poller runs from this block.
+mkdir -p "$PF/rec"; PFLOG="$PF/rec/calls"
+cat > "$PF/rec/tmux" <<PFEOF
+#!/bin/sh
+printf '%s\n' "\$*" >> "$PFLOG"
+[ "\$1" = run-shell ] && exit 0
+exec "$TMUX_REAL" "\$@"
+PFEOF
+chmod +x "$PF/rec/tmux"
+"$TMUX_REAL" -L "$PFS" set -g @cockpit_bg_poll 3600
+pf_sweep() {
+    : > "$PFLOG"
+    env -u COCKPIT_NO_AUTOSTART -u TMUX_PANE TMUX="$SOCKDIR/$PFS,0,0" PATH="$PF/rec:$PATH" \
+        "$DIR/scripts/agent-state" sweep </dev/null >/dev/null 2>&1
+}
+pf_sweep
+is "no dir recorded: the sweep lists no pane's dir, and starts the default poller" "0 1" \
+   "$(grep -c 'cockpit_cfg}' "$PFLOG") $(grep -c '^run-shell -b env -u CLAUDE_CONFIG_DIR ' \
+      "$PFLOG")"
+"$TMUX_REAL" -L "$PFS" set -g @cockpit_cfg_any 1
+pf_sweep
+is "...a dir recorded: it lists them once" "1" "$(grep -c 'cockpit_cfg}' "$PFLOG")"
+"$TMUX_REAL" -L "$PFS" kill-server
+rm -rf "$PF"
+fi
+
 # --- #400 tui-test-clean: the gate that fails on what a test left ------------
 
 echo "== tests/clean-run.sh: a run in private TMPDIR and TMUX_TMPDIR fails, naming what it left (#400) =="
