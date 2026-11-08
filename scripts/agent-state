@@ -454,12 +454,21 @@ if [ -n "$fgown" ]; then
         "set-option -pu -t $pane @cockpit_agentview" ';'
         if-shell -F -t "$pane" "$fgcond" "$fgset" ';')
     # The config dir this session's claude uses, from the hook's own env, in this same call: a
-    # pane the poller may bind is polled against that dir's agents (#194). Argv, so no quoting.
+    # pane the poller may bind is polled against that dir's agents (#194). Argv, escaped by
+    # cfg_arg for tmux's own parse; one it refuses is not recorded, and said.
+    cfgarg=""
     if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
-        unmark+=(set-option -p -t "$pane" @cockpit_cfg "$CLAUDE_CONFIG_DIR" ';'
+        d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")
+        # shellcheck source=lib/hook.sh
+        . "${d%/*}/lib/hook.sh" 2>/dev/null && cfgarg=$(cfg_arg "$CLAUDE_CONFIG_DIR") || cfgarg=""
+    fi
+    if [ -n "$cfgarg" ]; then
+        unmark+=(set-option -p -t "$pane" @cockpit_cfg "$cfgarg" ';'
             set-option -g @cockpit_cfg_any 1 ';')
     else
         unmark+=(set-option -pu -t "$pane" @cockpit_cfg ';')
+        [ -z "${CLAUDE_CONFIG_DIR:-}" ] \
+            || unmark+=(set-option -g @cockpit_poll_err "${CFG_BAD:-}" ';')
     fi
 fi
 tmux ${unmark[@]+"${unmark[@]}"} ${subs_cmd[@]+"${subs_cmd[@]}" ';'} \

@@ -16106,11 +16106,19 @@ is "the dir reaches claude intact: a space, a # and a quote" "yes" \
    "$(pd_yn grep -qxF "cfg=$PDA" "$PDLOG")"
 is "a pane whose hook saw no dir is polled on the default, not the server's" "yes no" \
    "$(pd_yn grep -qx 'cfg=<unset>' "$PDLOG") $(pd_yn grep -qxF "cfg=$PD/S" "$PDLOG")"
+# claude restarts in the pane on another dir: the pane is recorded anew, that dir's poller
+# serves it, and the old dir's, with no pane left, leaves.
+PDB="$PD/cfg b"; mkdir -p "$PDB"; cp "$AVF/working.json" "$PDB/agents.json"; PDKB=$(pd_key "$PDB")
+pd_hook "$PD1" CLAUDE_CONFIG_DIR="$PDB"
+av_wait 'pd_live @cockpit_poll_pid_$PDKB && [ -z "$(pd_opt @cockpit_poll_pid_$PDK)" ] && [ "$(pd_st "$PD1")" = running ]'
+is "a pane whose dir changes mid-run is served by the new dir, and the old dir's poller leaves" \
+   "$PDB|running|yes|" \
+   "$(pd_tm show-option -pqv -t "$PD1" @cockpit_cfg)|$(pd_st "$PD1")|$(pd_yn pd_live "@cockpit_poll_pid_$PDKB")|$(pd_opt "@cockpit_poll_pid_$PDK")"
 # The pane goes: the dir's poller counts three ticks with none of its panes, then leaves.
 pd_tm kill-pane -t "$PD1"
-av_wait '[ -z "$(pd_tm show-option -gqv @cockpit_poll_pid_$PDK)" ]'
-is "a dir poller whose last pane went leaves and unpublishes, its dir too" "|" \
-   "$(pd_opt "@cockpit_poll_pid_$PDK")|$(pd_opt "@cockpit_poll_dir_$PDK")"
+av_wait '[ -z "$(pd_tm show-option -gqv @cockpit_poll_pid_$PDKB)" ]'
+is "a dir poller whose last pane went leaves and unpublishes, its dir too" "||" \
+   "$(pd_opt "@cockpit_poll_pid_$PDKB")|$(pd_opt "@cockpit_poll_dir_$PDKB")|$(pd_opt "@cockpit_poll_dir_$PDK")"
 is "...and the default poller stays" "yes" "$(pd_yn pd_live @cockpit_poll_pid)"
 # A dir slot whose poller is gone and whose dir no pane holds: the sweep takes it back, by
 # compare-and-set, and the process at that pid is not signalled.
@@ -16159,11 +16167,32 @@ pe_hook() {                   # pe_hook [env...]: this pane's own session goes t
         "$DIR/scripts/agent-state" running </dev/null >/dev/null 2>&1
 }
 pe_cfg() { "$TMUX_REAL" -L "$PES" show-option -pqv -t "$PEP" @cockpit_cfg; }
+pe_mark() {                   # pe_mark [env...]: mark_agentview for the pane, its start a no-op
+    env -u CLAUDE_CONFIG_DIR "$@" TMUX="$SOCKDIR/$PES,0,0" bash -c \
+        '. "$1/scripts/lib/hook.sh"; start_poller() { :; }; mark_agentview "$2" /x' _ "$DIR" "$PEP" \
+        </dev/null >/dev/null 2>&1
+}
 pe_hook CLAUDE_CONFIG_DIR="$PE/b c"
 is "a foreground hook with a dir records it, and the server notes a dir is in use" "$PE/b c|1" \
    "$(pe_cfg)|$("$TMUX_REAL" -L "$PES" show-option -gqv @cockpit_cfg_any)"
 pe_hook
 is "...and one with none clears it" "" "$(pe_cfg)"
+# tmux reads an argument ending in ; as a separator, and a control character would split the
+# sweep's list-panes rows and PANE_FMT's: the first is escaped, the second not recorded (#194).
+pe_err() { "$TMUX_REAL" -L "$PES" show-option -gqv @cockpit_poll_err; }
+PENL=$'\n' PETAB=$'\t'
+for pesite in pe_hook pe_mark; do
+    "$TMUX_REAL" -L "$PES" set-option -pu -t "$PEP" @cockpit_cfg
+    $pesite CLAUDE_CONFIG_DIR="$PE/c;"
+    is "$pesite: a dir ending in ; is recorded whole" "$PE/c;" "$(pe_cfg)"
+    for pebad in "newline:$PENL" "tab:$PETAB"; do
+        "$TMUX_REAL" -L "$PES" set-option -p -t "$PEP" @cockpit_cfg "$PE/old" \; \
+            set-option -gu @cockpit_poll_err
+        $pesite CLAUDE_CONFIG_DIR="$PE/a${pebad#*:}b"
+        is "$pesite: a dir with a ${pebad%%:*} in it is not recorded, and said" \
+           "|a config dir with a control character cannot be polled" "$(pe_cfg)|$(pe_err)"
+    done
+done
 "$TMUX_REAL" -L "$PES" kill-server
 rm -rf "$PE"
 fi

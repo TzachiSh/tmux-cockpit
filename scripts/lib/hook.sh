@@ -67,6 +67,16 @@ poll_key() {                  # <dir> -> "" for the default dir, else its cksum
 }
 poll_slot() { printf '@cockpit_poll_pid%s' "${1:+_$1}"; }    # <key>
 
+# The config dir as a tmux argument to record on a pane, or 1 when it cannot be one. A control
+# character would split the sweep's list-panes rows and PANE_FMT's tab-separated ones, so such
+# a dir is not recorded (start_poller refuses it too). tmux reads an argument that ends in ;
+# as a separator: a trailing ; goes as \;, which tmux reads back as ; (#194).
+cfg_arg() {                   # <dir>
+    case "$1" in *[[:cntrl:]]*) return 1 ;; esac
+    case "$1" in *\;) printf '%s\\;' "${1%;}" ;; *) printf '%s' "$1" ;; esac
+}
+CFG_BAD="a config dir with a control character cannot be polled"
+
 # A single-quoted word for /bin/sh, which run-shell runs: %q can print $'...', which sh does not
 # read.
 shq() { printf "'%s'" "${1//\'/\'\\\'\'}"; }
@@ -146,7 +156,7 @@ EOT
 # pane and makes sure one poller runs on this server. Costs one tmux read and, with the
 # poller alive, one /proc read; the start is detached (run-shell -b) so the hook never waits.
 mark_agentview() {            # <pane> <scripts dir>
-    local info view fg pid every cfg key dir=${CLAUDE_CONFIG_DIR:-}
+    local info view fg pid every cfg key arg dir=${CLAUDE_CONFIG_DIR:-}
     key=$(poll_key "$dir") || return 0
     info="#{@cockpit_agentview}|#{@cockpit_fg}|#{$(poll_slot "$key")}|#{@cockpit_bg_poll}"
     info=$(tmux display-message -p -t "$1" "$info|#{@cockpit_cfg}" 2>/dev/null) || return 0
@@ -156,12 +166,18 @@ mark_agentview() {            # <pane> <scripts dir>
     [ "$view" = 1 ] || tmux set-option -p -t "$1" @cockpit_agentview 1 2>/dev/null
     # The agent view relays for this pane: it shows jobs now, whatever session ran in it before.
     [ -z "$fg" ] || tmux set-option -pu -t "$1" @cockpit_fg 2>/dev/null
-    # The config dir this pane's claude uses, written only when it changed (#194).
+    # The config dir this pane's claude uses, written only when it changed (#194). One that
+    # cannot be recorded leaves the pane on none, and says why.
     if [ "$cfg" != "$dir" ]; then
-        if [ -n "$dir" ]; then
-            tmux set-option -p -t "$1" @cockpit_cfg "$dir" \; set-option -g @cockpit_cfg_any 1 \
+        if [ -z "$dir" ]; then tmux set-option -pu -t "$1" @cockpit_cfg 2>/dev/null
+        elif arg=$(cfg_arg "$dir"); then
+            tmux set-option -p -t "$1" @cockpit_cfg "$arg" \; set-option -g @cockpit_cfg_any 1 \
                 2>/dev/null
-        else tmux set-option -pu -t "$1" @cockpit_cfg 2>/dev/null; fi
+        else
+            tmux set-option -pu -t "$1" @cockpit_cfg \; set-option -g @cockpit_poll_err "$CFG_BAD" \
+                2>/dev/null
+            return 0
+        fi
     fi
     poll_alive "$pid" && return 0
     start_poller "$2" "$dir"
