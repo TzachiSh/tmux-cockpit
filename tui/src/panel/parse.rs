@@ -504,6 +504,25 @@ fn tool_uses(out: &str) -> Option<Vec<serde_json::Value>> {
     Some(used.filter(|u| u["type"] == "tool_use" && !refused.contains(&u["id"])).collect())
 }
 
+/// Each tool call a `claude -p --output-format json --verbose` call made and
+/// was not refused, as one line, in order and each once: the tool's name and
+/// its arguments (`Read /r/a.rs`, `Grep fn main /r`). `None` for any other
+/// output.
+pub fn tool_calls(out: &str) -> Option<Vec<String>> {
+    const ARGS: [&str; 7] = ["file_path", "pattern", "path", "glob", "query", "url", "skill"];
+    let mut calls: Vec<String> = vec![];
+    for u in tool_uses(out)? {
+        let mut line = u["name"].as_str().unwrap_or("?").to_string();
+        for v in ARGS.iter().filter_map(|k| u["input"][k].as_str()) {
+            line = format!("{line} {v}");
+        }
+        if !calls.contains(&line) {
+            calls.push(line);
+        }
+    }
+    Some(calls)
+}
+
 /// The files a `claude -p --output-format json --verbose` call read, in order and
 /// each once; a Read the call refused is not one. `None` for any other output.
 pub fn files_read(out: &str) -> Option<Vec<String>> {
