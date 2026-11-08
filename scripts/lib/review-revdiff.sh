@@ -141,10 +141,14 @@ review_loop() {
     fi
 
     local rc n key choice to errf="${store%/*}/revdiff.err"
-    local -a args
+    local -a args rdx
     while :; do
+        # Big files stay out of revdiff's git: revdiff_files in review-diff.sh.
+        revdiff_files "$dir" || tmux display-message \
+            "cockpit: untracked files hidden: a big file's name starts or ends with whitespace" \
+            2>/dev/null
         # The default view is the uncommitted one; any other base is a ref.
-        args=(--untracked --exit-code-on-annotations -o "$store.rdout"
+        args=(${rdx[@]+"${rdx[@]}"} --exit-code-on-annotations -o "$store.rdout"
               --history-dir "${store%/*}/history")
         write_preload "$store" "$store.rdin" && args+=(--annotations "$store.rdin")
         [ "$mode" = uncommitted ] || args+=("$rev")

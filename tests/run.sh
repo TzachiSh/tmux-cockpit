@@ -5877,7 +5877,8 @@ is "and named as a binary row" "1" "$(tdiff "$RB" --numstat | grep -cxF -- "-	-	
 rm -rf "$RB"
 
 # A stand-in for revdiff, which is interactive and so cannot be driven here. Each
-# launch is call N: it logs its argv and the --annotations file it was handed
+# launch is call N: it logs its argv (one line, and one arg a line in args.N)
+# and the --annotations file it was handed
 # (and that file's mode) under $FAKE_RD_DIR, then plays back out.N into the -o
 # file and exits with rc.N (default 0) -- revdiff's own contract, exit 10 when
 # comments were written. out.N is revdiff's real format: "## path:N (+)" headers,
@@ -5889,6 +5890,7 @@ fake_revdiff() {              # <bin-dir> -> <bin-dir>/revdiff
 d=${FAKE_RD_DIR:?}
 n=$(cat "$d/n" 2>/dev/null || echo 0); n=$((n + 1)); printf '%s\n' "$n" > "$d/n"
 printf '%s\n' "$*" > "$d/argv.$n"
+printf '%s\n' "$@" > "$d/args.$n"
 out=; pre=; prev=
 for a in "$@"; do
     case "$prev" in -o) out=$a ;; --annotations) pre=$a ;; esac
@@ -5913,6 +5915,83 @@ rd_loop() {                   # <keys> <repo> <store> [PATH]
 }
 rd_reset() { rm -rf "$RDW"; mkdir -p "$RDW"; }
 rd_last() { awk '{print $NF}' "$RDW/argv.$1"; }
+
+echo "== review: a big file reaches git through neither revdiff nor a (#693) =="
+# revdiff --untracked runs `git add -N` on every untracked file and diffs the
+# one it shows in full; a's add -A hashes every file and writes its blob. A big
+# file must reach neither. FAIL-first: on the old code revdiff got no --exclude,
+# the whitespace-named one still got --untracked, and approve wrote each blob.
+# Sparse files: past BIGCAP on disk for nothing. Each starts with its own line,
+# so no two share a blob.
+RBF=$(mktmpd); RBFB=$(mktmpd); fake_revdiff "$RBFB"
+(
+  cd "$RBF" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .; printf 'a\n' > f.c; git add -A; git commit -q -m init
+  printf 'small\n' > small.txt; printf 'glob twin\n' > '-big x.log'; mkdir sub
+  for b in big.log '-big [x]*.log' f.c; do
+      printf '%s\n' "$b" >> "$b"; truncate -s 33M -- "$b"
+  done
+) >/dev/null 2>&1
+rbf_args() {                  # [VAR=value]: one revdiff launch, its args one a line
+    RDW=$(mktmpd)
+    ( [ $# -eq 0 ] || export "${1%%=*}=${1#*=}"
+      rd_loop l "$RBF" "$RDW/comments.md" "$RBFB:$PATH" >/dev/null )
+    cat "$RDW/args.1"
+}
+rbfa=$(rbf_args)
+is "revdiff: an untracked big file is excluded" "1" \
+   "$(grep -cxF -- '--exclude=big.log' <<<"$rbfa")"
+is "and a big one named '-big [x]*.log', one arg, the = form" "1" \
+   "$(grep -cxF -- '--exclude=-big [x]*.log' <<<"$rbfa")"
+is "and a tracked file grown past the cap" "1" "$(grep -cxF -- '--exclude=f.c' <<<"$rbfa")"
+is "and nothing else: small files stay in revdiff's tree" "3" \
+   "$(grep -c -- '^--exclude=' <<<"$rbfa")"
+is "--untracked is still passed" "1" "$(grep -cxF -- '--untracked' <<<"$rbfa")"
+is "a REVDIFF_EXCLUDE the -X would replace is passed on" "1" \
+   "$(rbf_args REVDIFF_EXCLUDE=a,b | grep -cxF -e '--exclude=b')"
+printf 'sp\n' > "$RBF/big.log "; truncate -s 33M -- "$RBF/big.log "
+is "a big name ending in a space cannot be excluded: no --untracked" "0" \
+   "$(rbf_args | grep -cxF -- '--untracked')"
+rm -f -- "$RBF/big.log "
+rbf_blob() { git -C "$RBF" hash-object -- "$RBF/$1"; }
+rbf_has() { git -C "$RBF" cat-file -e "$1" 2>/dev/null && echo written || echo absent; }
+rbf_ap() { bash -c '. "$1/git.sh"; . "$1/review-diff.sh"; approve "$2"; echo "$?"' \
+             _ "$DIR/scripts/lib" "$1" 2>/dev/null; }
+is "a: approves" "0" "$(rbf_ap "$RBF")"
+RBFREF=$(git -C "$RBF" rev-parse -q --verify refs/cockpit/reviewed/main)
+for b in big.log '-big [x]*.log' f.c; do
+    is "a: the blob of big '$b' is not written" "absent" "$(rbf_has "$(rbf_blob "$b")")"
+done
+is "a: small files are in the tree, the one the glob '-big [x]*.log' matches too" "2" \
+   "$(git -C "$RBF" ls-tree -r --name-only "$RBFREF" | grep -cxF -e small.txt -e '-big x.log')"
+is "a: the tracked big file keeps its committed blob" "$(git -C "$RBF" rev-parse HEAD:f.c)" \
+   "$(git -C "$RBF" rev-parse "$RBFREF:f.c")"
+# From a subdir big_files names '../big.log': still excluded, and the add stays tree-wide.
+printf 'later\n' > "$RBF/later.txt"; rbf_ap "$RBF/sub" >/dev/null
+is "a from a subdir: a new file at the root is in the tree" "1" \
+   "$(git -C "$RBF" ls-tree -r --name-only refs/cockpit/reviewed/main | grep -cxF later.txt)"
+is "and the big one at the root is still not written" "absent" "$(rbf_has "$(rbf_blob big.log)")"
+# A gitlink's excludes and the big file's share one pathspec file: both hold.
+RBFG=$(mktmpd)
+is "a gitlink's planted clean filter fires under plain git status" "1" "$( (
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  cd "$RBFG" || exit
+  git init -q -b main in && printf 'x\n' > in/f.txt && git -C in add -A && git -C in commit -q -m i
+  git init -q -b main r && cd r && printf '1\n' > a && git add -A && git commit -q -m first
+  git -c protocol.file.allow=always submodule add -q "$RBFG/in" sub && git commit -q -m sub
+  printf 'gl\n' > big.log; truncate -s 33M big.log
+  git config -f .git/modules/sub/config filter.mark.clean "touch $RBFG/PWNED; cat"
+  printf '* filter=mark\n' > .git/modules/sub/info/attributes
+  touch -t 203001010000 sub/f.txt; git status --porcelain >/dev/null
+  ls "$RBFG" | grep -c '^PWNED$'; rm -f "$RBFG/PWNED"; touch -t 203101010000 sub/f.txt
+) 2>/dev/null | tail -n 1)"
+rm -rf "$RBF"; RBF=$RBFG/r; rbf_ap "$RBF" >/dev/null
+is "a with a gitlink and a big file: the big blob is not written" "absent" \
+   "$(rbf_has "$(rbf_blob big.log)")"
+is "and the gitlink's clean filter never runs" "" "$(ls "$RBFG" | grep '^PWNED$')"
+unset -f rbf_args rbf_blob rbf_has rbf_ap
+rm -rf "$RBFB" "$RBFG"
 
 echo "== tmux-review: the review base is since-last-review, else the branch, else uncommitted =="
 # revdiff's auto-detect, one function: a checkpoint ref wins, then the

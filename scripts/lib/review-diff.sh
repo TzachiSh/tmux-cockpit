@@ -25,6 +25,33 @@ big_files() {                 # <dir>
     | awk -F'\t' -v cap="$BIGCAP" 'NF == 2 && $1 + 0 > cap'
 }
 
+# revdiff runs its own git (#693): `add -N` on every untracked file it lists,
+# then `diff -U1000000` on the one it shows. A 400 MB log hung it at 5.4 GB.
+# Its -X drops a path from that list before either runs. Sets the caller's rdx
+# to revdiff's file options: --untracked, an --exclude=<path> per big file (the
+# = form, so a leading dash is no option), and the user's REVDIFF_EXCLUDE, which
+# a command-line -X replaces. -X matches a whole path once revdiff has trimmed
+# whitespace off its ends, so a big path with whitespace at an end cannot be
+# named: then --untracked is left out and the status is 1. DIR is the root:
+# revdiff's paths are from it.
+revdiff_files() {             # <dir>
+    local line bp e cut=0
+    local -a env=()
+    rdx=()
+    while IFS= read -r line; do
+        bp=${line#*$'\t'}
+        [ -n "$bp" ] || continue
+        case $bp in [[:space:]]*|*[[:space:]]) cut=1 ;; esac
+        rdx+=("--exclude=$bp")
+    done < <(big_files "$1")
+    if [ "${#rdx[@]}" -gt 0 ] && [ -n "${REVDIFF_EXCLUDE:-}" ]; then
+        IFS=, read -r -a env <<<"$REVDIFF_EXCLUDE"
+        for e in "${env[@]}"; do [ -z "$e" ] || rdx+=("--exclude=$e"); done
+    fi
+    [ "$cut" -eq 0 ] || return 1
+    rdx+=(--untracked)
+}
+
 # One `<prefix><path>` NUL record per gitlink in STAGED (the `ls-files -s -z
 # --full-name` output) written to OUT, the path byte for byte. PREFIX defaults
 # to `:(top,exclude,literal)`, the pathspec that keeps an add out of it.
@@ -234,6 +261,20 @@ approve() {                   # <dir>
             || { scratch_done; return 1; }
         links=(-C "$top" update-index -z --remove --ignore-skip-worktree-entries --stdin)
     fi
+    # Big files stay out of the add as they stay out of tree_diff's (#693): add
+    # -A would hash each in full and write it as a blob. One pathspec file, as
+    # --pathspec-from-file takes no pathspec beside it. Excludes alone leave the
+    # add tree-wide, from a subdir too: git applies them to a pathspec-less add.
+    local line bp nbig=0
+    {
+        [ ! -s "$tmp/pathspec" ] || cat -- "$tmp/pathspec"
+        while IFS= read -r line; do
+            bp=${line#*$'\t'}
+            [ -n "$bp" ] || continue
+            printf ':(exclude,literal)%s\0' "$bp"; nbig=$((nbig + 1))
+        done < <(big_files "$dir")
+    } > "$tmp/addspec" 2>/dev/null || { scratch_done; return 1; }
+    [ "$nbig" -eq 0 ] || from=(--pathspec-from-file="$tmp/addspec" --pathspec-file-nul)
     br=$(git -C "$dir" --no-optional-locks rev-parse --abbrev-ref HEAD 2>/dev/null)
     tree=$(GIT_INDEX_FILE=$idx git -C "$dir" add -A ${from[@]+"${from[@]}"} 2>/dev/null \
            && { [ "${#links[@]}" -eq 0 ] \
