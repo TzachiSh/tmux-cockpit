@@ -273,10 +273,11 @@ fresh_server() {              # -L|-S <socket> [tmux flags...] -- <new-session a
 # never ran on, and list-keys on a dead socket starts a stock server that answers
 # for it (#643). So such a row runs as `loaded_on <socket> <row name> && <row>`.
 # The marker is C-MouseDown3Pane: stock leaves it unbound, cockpit.tmux binds it
-# whatever the options say, near its end, and bloaded polls the same key.
+# whatever the options say, near its end, and bloaded polls the same key. -f /dev/null:
+# on a dead socket the server list-keys starts must not read a config that loads cockpit.
 # Not loaded is the row's own bad, with the row's name.
 loaded_on() {                 # <-L socket name> <row name> -> 0, or a bad row and 1
-    case "$("$TMUX_REAL" -L "$1" list-keys -T root C-MouseDown3Pane 2>/dev/null)" in
+    case "$("$TMUX_REAL" -L "$1" -f /dev/null list-keys -T root C-MouseDown3Pane 2>/dev/null)" in
         *@cockpit_click_line*) return 0 ;;
     esac
     bad "$2" "cockpit.tmux loaded on $1 first (#643)" "no C-MouseDown3Pane binding there"
@@ -396,6 +397,13 @@ case "$("$TMUX_REAL" -L "$LOD" list-keys -T prefix s 2>/dev/null)" in
          "$("$TMUX_REAL" -L "$LOD" list-keys -T prefix s 2>&1)" ;;
 esac
 is "a socket with no server: loaded_on is the row's bad" "1 1|the row" "$(lo_run "$LOD")"
+# The server list-keys starts there reads the default config chain, and $HOME is not
+# all of it: a config under $XDG_CONFIG_HOME that loads cockpit binds the marker.
+LOX="cockpit-lox-$$"; SOCKS="$SOCKS $LOX"; LOXD=$(mktmpd); mkdir -p "$LOXD/tmux"
+printf "run-shell '%s'\n" "$DIR/cockpit.tmux" > "$LOXD/tmux/tmux.conf"
+is "and so is one whose default config would load cockpit" "1 1|the row" \
+   "$(XDG_CONFIG_HOME="$LOXD" lo_run "$LOX")"
+rm -rf "$LOXD"
 "$TMUX_REAL" -L "$LO" -f /dev/null new-session -d -s t >/dev/null 2>&1
 is "a live server cockpit.tmux never ran on: the same" "1 1|the row" "$(lo_run "$LO")"
 "$TMUX_REAL" -L "$LO" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
