@@ -49,14 +49,17 @@ jobs:
 
       # The key carries the pinned commit, so a bump builds once, and the runner
       # image for the reason .github/actions/tmux gives (#478): the binary links
-      # the image's libevent and ncurses. r1 is the build recipe below: bump it
-      # when the recipe changes, or the old build is restored.
+      # the image's libevent and ncurses. The hash of this file is in it too, as
+      # .github/actions/tmux hashes its own: a changed recipe never restores the
+      # old build (any edit here rebuilds once, about 35 s).
       - id: key
         name: Cache key
+        env:
+          RECIPE: ${{ hashFiles('.github/workflows/shell-suite-tmux-master.yml') }}
         run: |
           . /etc/os-release
-          echo "key=tmux-master-r1-$TMUX_MASTER_SHA-$RUNNER_OS-$RUNNER_ARCH-$ID-$VERSION_ID" \
-            >> "$GITHUB_OUTPUT"
+          k="tmux-master-$TMUX_MASTER_SHA-$RUNNER_OS-$RUNNER_ARCH-$ID-$VERSION_ID-$RECIPE"
+          echo "key=$k" >> "$GITHUB_OUTPUT"
 
       - id: cache
         uses: actions/cache/restore@v6

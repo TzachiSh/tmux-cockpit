@@ -43,3 +43,18 @@ new image or after a recipe change compiles it. Both set `COCKPIT_REQUIRE_TMUX=1
 which says a missing tmux is a failure and not a skip (the tests read it once
 #471's test-side change lands). The hosted image has no `xterm-ghostty` terminfo,
 so the two phone-pty rows skip there; the suite's final line counts them.
+
+A third workflow, `shell-suite-tmux-master`, runs the same `J=4 make test-par`
+on tmux built from tmux's master branch (next-3.9), on ubuntu-24.04 only. On
+that tmux a popup is a pane and the session's active one (#494), which 3.8
+cannot show. It builds the commit named by `TMUX_MASTER_SHA` at the top of the
+workflow and caches the install on that commit, the runner image and the
+workflow file's hash. To bump it, paste a newer full sha from tmux's master
+there and push: the first run builds it (about 35 s), later runs reuse it.
+
+That job is not required. It carries `continue-on-error`, so a red run leaves
+the workflow green, but its check still reads `fail` in `gh pr checks`. The
+agents' merge script (`.omc/safe-merge.sh`, outside the repo) lists the check
+as optional, so a red or still-running tmux master job never holds a merge. A
+red run is still worth reading: it is tmux master breaking the scripts, or
+tmux breaking itself, before a release ships it.
