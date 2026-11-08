@@ -3,7 +3,7 @@
 "│permission: Bash(sudo openvpn --config     4m12s│┃Bash: shellcheck on c…mux and tests/run.sh   32s┃"
 "│/etc/openvpn/work.conf --daemon --log /var/log/…│┃While the suite and rig run: shellcheck on the …┃"
 "│Bash command                                    │┃$ make check                                    ┃"
-"│sudo openvpn --config /etc/openvpn/work.conf --d│┃1001 assertions, 0 failures                     ┃"
+"│sudo openvpn --config /etc/openvpn/work.conf --›│┃1001 assertions, 0 failures                     ┃"
 "│Do you want to proceed?                         │┃$ shellcheck cockpit.tmux tests/run.sh          ┃"
 "│❯ 1. Yes   2. Yes, don't ask again   3. No      │┃                                                ┃"
 "│                                                │┃                                                ┃"

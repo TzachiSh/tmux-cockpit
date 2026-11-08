@@ -3,7 +3,7 @@
 "│permission: Bash(sudo openvpn --config        4m12s│┃Bash: shellcheck on coc….tmux and tests/run.sh   32s┃│Agent: whole-branch review of phase 1         4m12s│"
 "│/etc/openvpn/work.conf --daemon --log /var/log/ovp…│┃While the suite and rig run: shellcheck on the two …┃│Dispatched the review agent; waiting on its report…│"
 "│Bash command                                       │┃$ make check                                        ┃│⏺ Agent (fleet-gate-review)                        │"
-"│sudo openvpn --config /etc/openvpn/work.conf --daem│┃1001 assertions, 0 failures                         ┃│  Read tests/fleet.sh, 214 lines                   │"
+"│sudo openvpn --config /etc/openvpn/work.conf --dae›│┃1001 assertions, 0 failures                         ┃│  Read tests/fleet.sh, 214 lines                   │"
 "│Do you want to proceed?                            │┃$ shellcheck cockpit.tmux tests/run.sh              ┃│  Read scripts/agent-state, 412 lines              │"
 "│❯ 1. Yes   2. Yes, don't ask again   3. No         │┃                                                    ┃│                                                   │"
 "│                                                   │┃                                                    ┃│                                                   │"
