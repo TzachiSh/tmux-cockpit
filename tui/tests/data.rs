@@ -755,7 +755,8 @@ fn a_file_over_the_cap_counts_dirty() {
         .unwrap()
         .set_len(33 * 1024 * 1024)
         .unwrap();
-    assert_eq!(stat(&r, None), Some((0, 0, 0, "+0 -0".into())));
+    // #657 review: untracked, it is `?1 new` whatever its size
+    assert_eq!(stat(&r, None), Some((0, 0, 1, "+0 -0  ?1 new".into())));
 }
 
 #[test]
@@ -1738,4 +1739,98 @@ fn the_last_tool_uses_error_flag_is_read() {
     let ps = list_panes().unwrap();
     let got: Vec<bool> = ids.iter().map(|id| get(&ps, id).doing_failed).collect();
     assert_eq!(got, [false, true, false, false], "ok, is_error, unanswered, an older failure");
+}
+
+/// #657 review (review657g): the tracked-only stat over each shape a tree can take.
+/// `g` is committed with six lines; each row is (name, setup, diffstat's line).
+#[test]
+fn the_tracked_only_stat_over_renames_staging_and_odd_names() {
+    let six = "1\n2\n3\n4\n5\n6\n";
+    type Setup = fn(&Repo);
+    let rows: [(&str, Setup, &str); 9] = [
+        (
+            "a plain mv: g gone, h untracked",
+            |r| {
+                std::fs::rename(r.dir.join("g"), r.dir.join("h")).unwrap();
+            },
+            "0\t6\t1\t+0 -6  ?1 new\n",
+        ),
+        (
+            "a plain mv and a new line",
+            |r| {
+                std::fs::rename(r.dir.join("g"), r.dir.join("h")).unwrap();
+                r.write("h", "1\n2\n3\n4\n5\n6\n7\n");
+            },
+            "0\t6\t1\t+0 -6  ?1 new\n",
+        ),
+        (
+            "a staged git mv is a rename",
+            |r| {
+                r.git(&["mv", "g", "h"]);
+            },
+            "0\t0\t0\t+0 -0\n",
+        ),
+        (
+            "git rm --cached: g deleted, untracked again",
+            |r| {
+                r.git(&["rm", "-q", "--cached", "g"]);
+            },
+            "0\t6\t1\t+0 -6  ?1 new\n",
+        ),
+        (
+            "a staged new file",
+            |r| {
+                r.write("n", "x\ny\n");
+                r.git(&["add", "n"]);
+            },
+            "2\t0\t0\t+2 -0\n",
+        ),
+        (
+            "a staged new file with a tab, a quote and a non-UTF-8 byte",
+            |r| {
+                use std::os::unix::ffi::OsStrExt;
+                let name = std::ffi::OsStr::from_bytes(b"n\t\"\\\xff");
+                std::fs::write(r.dir.join(name), "x\ny\n").unwrap();
+                r.git(&["add", "-A"]);
+            },
+            "2\t0\t0\t+2 -0\n",
+        ),
+        ("a staged q\"x.txt", |r| stage_one(r, b"q\"x.txt"), "1\t0\t0\t+1 -0\n"),
+        ("a staged t<TAB>b.txt", |r| stage_one(r, b"t\tb.txt"), "1\t0\t0\t+1 -0\n"),
+        ("a staged b\\377n.txt", |r| stage_one(r, b"b\xffn.txt"), "1\t0\t0\t+1 -0\n"),
+    ];
+    let mut bad = Vec::new();
+    for (name, setup, want) in rows {
+        let r = Repo::new("shapes");
+        r.write("g", six);
+        r.git(&["add", "g"]);
+        r.git(&["-c", "user.name=t", "-c", "user.email=t@e", "commit", "-q", "-m", "g"]);
+        setup(&r);
+        let got = diffstat(&[&r.path()]);
+        if got != (want.to_string(), 0) {
+            bad.push((name, got));
+        }
+    }
+    assert!(bad.is_empty(), "{bad:?}");
+}
+
+/// Writes one line to a file named by raw bytes and stages it.
+fn stage_one(r: &Repo, name: &[u8]) {
+    use std::os::unix::ffi::OsStrExt;
+    std::fs::write(r.dir.join(std::ffi::OsStr::from_bytes(name)), "x\n").unwrap();
+    r.git(&["add", "-A"]);
+}
+
+/// #657 review: an unborn repo with one staged file and one untracked one: the
+/// staged lines count, the untracked file is `?1 new`.
+#[test]
+fn an_unborn_repo_counts_its_staged_lines_beside_an_untracked_file() {
+    let r = Repo::new("unborn2");
+    std::fs::remove_dir_all(r.dir.join(".git")).unwrap();
+    std::fs::remove_file(r.dir.join("f")).unwrap();
+    r.git(&["init", "-q", "-b", "main", "."]);
+    r.write("s", "x\ny\n");
+    r.git(&["add", "s"]);
+    r.write("u", "z\n");
+    assert_eq!(diffstat(&[&r.path()]), ("2\t0\t1\t+2 -0  ?1 new\n".into(), 0));
 }

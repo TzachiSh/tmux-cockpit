@@ -263,7 +263,9 @@ pub fn tree_stat_with(
     }
     run_raw(root, &filters, Some(&idx), &intent);
     let ex: Vec<String> = big.iter().map(|b| format!(":(exclude,literal){b}")).collect();
-    let diff = |rev: Option<&str>| {
+    // -z: paths raw, as ls-files gives them, so a name with a tab, a quote or a
+    // non-UTF-8 byte compares as itself (#657 review)
+    let diff = |rev: &[&str]| {
         let mut args = vec![
             "-c",
             "core.quotePath=false",
@@ -275,52 +277,87 @@ pub fn tree_stat_with(
             // its dirt, which takes a status inside it, does not
             "--ignore-submodules=dirty",
             "--numstat",
-            "--summary",
+            "-z",
         ];
         args.extend(rev);
         if !ex.is_empty() {
             args.push("--");
             args.extend(ex.iter().map(String::as_str));
         }
-        run(root, &filters, Some(&idx), &args)
+        run_raw(root, &filters, Some(&idx), &args)
     };
-    let (mut ok, mut out) = diff(Some(base.unwrap_or("HEAD")));
-    let unborn = || !run(root, &[], None, &["rev-parse", "--verify", "-q", "HEAD"]).0;
-    if !ok && base.is_none() && unborn() {
-        // tree_diff's no-branch path: the worktree, then the index.
-        (ok, out) = diff(None);
-        if ok && out.trim().is_empty() {
-            (ok, out) = diff(Some("--cached"));
-        }
+    let unborn = base.is_none() && !run(root, &[], None, &["rev-parse", "--verify", "-q", "HEAD"]).0;
+    // An unborn tree has no commit to diff: the staged lines (the index against
+    // nothing) and the worktree's change to them, both, every time (#657 review).
+    let outs: Vec<(bool, Vec<u8>)> = if unborn {
+        vec![diff(&[]), diff(&["--cached"])]
+    } else {
+        vec![diff(&[base.unwrap_or("HEAD")])]
+    };
+    if outs.iter().any(|(ok, _)| !ok) {
+        return None;
     }
-    drop(scratch);
+    // #454, the owner's pick: `+a -d` counts tracked changes only. A file the real
+    // index does not hold is untracked: the intent-to-add above only lets the diff
+    // see it, and it counts once, in `?N new`, its lines nowhere. A staged new
+    // file is tracked and counts.
+    let (ok, others) = run_raw(root, &filters, None, &["ls-files", "-o", "--exclude-standard", "-z"]);
     if !ok {
         return None;
     }
-    // #454: `+a -d` counts tracked changes only. A file the real index does not hold
-    // is untracked: the intent-to-add above only lets the diff see it, and it shows
-    // as `?N new`, its lines nowhere. A staged new file is tracked and counts.
-    let tracked: std::collections::HashSet<&[u8]> = staged
-        .split(|b| *b == 0)
-        .filter_map(|r| r.iter().position(|b| *b == b'\t').map(|t| &r[t + 1..]))
-        .collect();
-    let untracked: std::collections::HashSet<&str> = out
-        .lines()
-        .filter_map(|l| l.strip_prefix(" create mode ")?.split_once(' ').map(|(_, path)| path))
-        .filter(|path| !tracked.contains(path.as_bytes()))
-        .collect();
-    let (mut add, mut del) = (0u64, 0u64);
-    for l in out.lines().filter(|l| !l.starts_with(' ')) {
-        let mut f = l.splitn(3, '\t');
-        let (a, d, path) = (f.next(), f.next(), f.next().unwrap_or(""));
-        if untracked.contains(path) {
-            continue;
-        }
-        add += a.and_then(|x| x.parse::<u64>().ok()).unwrap_or(0);
-        del += d.and_then(|x| x.parse::<u64>().ok()).unwrap_or(0);
+    let untracked: std::collections::HashSet<&[u8]> = others.split(|b| *b == 0).filter(|p| !p.is_empty()).collect();
+    let num = |x: &[u8]| std::str::from_utf8(x).ok().and_then(|x| x.parse::<u64>().ok()).unwrap_or(0);
+    let (mut add, mut del, mut rows) = (0u64, 0u64, false);
+    // a tracked file whose lines left the tree for an untracked one: a plain `mv`
+    // (rename detection pairs it with the new name's intent-to-add copy), or
+    // `git rm --cached` (the copy re-adds it unchanged, so no row shows at all)
+    let mut gone: Vec<&[u8]> = vec![];
+    // `git rm --cached`: deleted from the real index against the base, and in the
+    // tree still, untracked; the intent-to-add copy hides it from the diff
+    let (ok, dropped) = if unborn {
+        (true, vec![])
+    } else {
+        let args = [
+            "diff",
+            "--cached",
+            "--name-only",
+            "-z",
+            "--no-renames",
+            "--diff-filter=D",
+            base.unwrap_or("HEAD"),
+        ];
+        run_raw(root, &filters, None, &args)
+    };
+    if !ok {
+        return None;
     }
+    gone.extend(dropped.split(|b| *b == 0).filter(|p| untracked.contains(p)));
+    for (_, out) in &outs {
+        let mut t = out.split(|b| *b == 0);
+        while let Some(rec) = t.next() {
+            let mut f = rec.splitn(3, |b| *b == b'\t');
+            let (Some(a), Some(d), Some(path)) = (f.next(), f.next(), f.next()) else {
+                continue;
+            };
+            rows = true;
+            if path.is_empty() {
+                // a rename: its source and destination follow, NUL-ended
+                let (Some(src), Some(dst)) = (t.next(), t.next()) else { break };
+                if untracked.contains(dst) {
+                    gone.push(src);
+                    continue;
+                }
+            } else if untracked.contains(path) {
+                continue;
+            }
+            add += num(a);
+            del += num(d);
+        }
+    }
+    del += base_lines(root, &filters, base, unborn, &gone)?;
+    drop(scratch);
     let new = untracked.len() as u64;
-    if out.trim().is_empty() && big.is_empty() {
+    if !rows && new == 0 && del == 0 && big.is_empty() {
         return Some((0, 0, 0, "clean".into()));
     }
     let mut pm = format!("+{add} -{del}");
@@ -328,6 +365,50 @@ pub fn tree_stat_with(
         pm.push_str(&format!("  ?{new} new"));
     }
     Some((add, del, new, pm))
+}
+
+/// The lines `paths` held at `base` (HEAD when None): the empty tree diffed
+/// against it, so each path's lines are its additions. 0 in an unborn tree or
+/// with no paths, which is the usual case: these are only the files a plain `mv`
+/// or `git rm --cached` took out of the tracked tree.
+fn base_lines(root: &str, filters: &[String], base: Option<&str>, unborn: bool, paths: &[&[u8]]) -> Option<u64> {
+    use std::os::unix::ffi::OsStrExt;
+    if unborn || paths.is_empty() {
+        return Some(0);
+    }
+    let (ok, empty) = run(root, &[], None, &["hash-object", "-t", "tree", "/dev/null"]);
+    let empty = empty.trim();
+    if !ok || empty.is_empty() {
+        return None;
+    }
+    let mut args: Vec<OsString> = [
+        "diff",
+        "--no-color",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--no-renames",
+        "--numstat",
+        "-z",
+    ]
+    .map(OsString::from)
+    .into();
+    args.extend([OsString::from(empty), OsString::from(base.unwrap_or("HEAD")), OsString::from("--")]);
+    for p in paths {
+        let mut spec = OsString::from(":(literal)");
+        spec.push(std::ffi::OsStr::from_bytes(p));
+        args.push(spec);
+    }
+    let (ok, out) = run_raw(root, filters, None, &args);
+    if !ok {
+        return None;
+    }
+    let num = |x: &[u8]| std::str::from_utf8(x).ok().and_then(|x| x.parse::<u64>().ok()).unwrap_or(0);
+    Some(
+        out.split(|b| *b == 0)
+            .filter_map(|r| r.split(|b| *b == b'\t').next())
+            .map(num)
+            .sum(),
+    )
 }
 
 /// A NUL-separated exclusion pathspec for each gitlink in `git ls-files -s -z`
