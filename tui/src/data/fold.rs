@@ -463,11 +463,34 @@ mod tests {
                 json!({"content": [{"type": "tool_result", "tool_use_id": "u11", "is_error": true, "content": "denied"}]}),
             ),
             tool(13, "Bash"),
+            compact(14),
         ];
         for (n, r) in rows.iter().enumerate() {
             add(&p, r);
             same(&p, &format!("row {n}"));
         }
+    }
+
+    /// #351: the summary row Claude Code writes after /compact.
+    fn compact(n: usize) -> String {
+        let text = "This session is being continued from a previous one.";
+        let msg = json!({"role": "user", "content": text});
+        let v = json!({"type": "user", "isCompactSummary": true, "isVisibleInTranscriptOnly": true,
+            "timestamp": ts(n), "message": msg});
+        v.to_string() + "\n"
+    }
+
+    /// #351: the compact summary is no prompt. The newest one stays the prompt typed
+    /// before the /compact, with its time, read whole or as a delta.
+    #[test]
+    fn a_compact_summary_is_not_the_newest_prompt() {
+        let (_d, p) = tmp("compact");
+        add(&p, &(prompt(0, "/w") + &done(1)));
+        let before = full(&p, TAIL_FIRST);
+        add(&p, &compact(2));
+        same(&p, "after the summary");
+        let after = full(&p, TAIL_FIRST);
+        assert_eq!((after.user.as_str(), after.user_at), ("prompt 0", before.user_at));
     }
 
     /// A row read before its newline lands counts as `tail` counts it, then the
