@@ -41,12 +41,13 @@ Questions
    run read-only commands before it replies. When a <panel_reads> section is
    given, it lists every file the panel read and every search it ran, without
    their contents: fail an option naming something (a PR, a branch, a file)
-   with no basis in the screen, the git state or the panel's reads, or one
-   they contradict. A read is a basis when it names the thing or the file read
-   could hold it (a PR number in a changelog); "(none)" means the panel read
-   nothing. With no <panel_reads> section, what the panel read is unknown, so
-   an option naming something not visible to you is not invented on that
-   ground alone: fail it only when the screen or git state contradicts it.
+   with no basis in the request, the screen, the git state, the earlier
+   rounds or the panel's reads, or one they contradict. A read is a basis
+   when it names the thing or the file read could hold it (a PR number in a
+   changelog); "(none)" means the panel read nothing. With no <panel_reads>
+   section, what the panel read is unknown, so an option naming something
+   not visible to you is not invented on that ground alone: fail it only
+   when the screen or git state contradicts it.
    Which PR, branch or item the user means is their intent, not a fact the
    agent could check, even when a command lists the candidates.
 

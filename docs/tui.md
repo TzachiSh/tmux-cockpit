@@ -295,12 +295,16 @@ answers with its reasoning, a one-line critique and PASS or FAIL. For an
 exploring call it also reads what the panel read, in a `<panel_reads>` section:
 `parse::tool_calls` over the call's json events, one line a call the panel was
 not refused (`Read /r/a.rs`, `Grep fn main /r`), each once, at most 40 lines
-of at most 200 chars and then a count of the rest. Each `--out` row keeps that
-list as `reads`. A text call, a failed call and an owner label have no reads
-(`null`), and their judge prompt has no such section; rule 7 then fails a
-repo-context option only when the screen or git state contradicts it, as
-before. With reads given, it fails an option with no basis in the screen, the
-git state or the reads (#628). Each row then
+of at most 200 chars and then a count of the rest. Each line has its control
+chars made spaces and its `</` escaped (`envelope::esc`), so a path or pattern
+cannot close the section. Each `--out` row keeps the list as `reads`. A text
+call, a failed call and an owner label have no reads (`null`), and their judge
+prompt has no such section. Neither does a case with refs or earlier rounds:
+the judge sees neither the basket nor those rounds, so it could not tell an
+option drawn from them from an invented one. Without the section rule 7 fails
+a repo-context option only when the screen or git state contradicts it, as
+before. With it, rule 7 fails an option with no basis in the request, the
+screen, the git state, the earlier rounds or the reads (#628). Each row then
 prints `judge ok|FAIL <id> <critique>`, the summary adds the judge's pass rate
 and how often it agrees with the keyword checks, and each `--out` row gains
 `judge`, `critique`, `judge_model`, `judge_cost_usd` and `rubric` (the
@@ -319,15 +323,20 @@ then every disagreement with the owner's note and the judge's critique.
 label's `case`), about a third of the rows of the cases with an owner fail and a
 third of the rest, by a hash of the case name; tune the rubric on the tune rows
 only. On the 118 labels, haiku with the shipped rubric scored, in two sweeps,
-TPR 91/98 and 93/98 (95% CI 86%-96% and 89%-98%), TNR 15/20 and 14/20 (95% CI
-53%-89% and 48%-85%, about 37 points wide) and kappa 0.65 and 0.66 (95% CI
-0.47-0.84 and 0.47-0.85) against the owner. The rubric before rule 7 weighed
-the panel's reads (#628) scored, in two sweeps the same day, TPR 93/98 twice,
-TNR 15/20 and 14/20 and kappa 0.70 and 0.66, and in an earlier pair TPR 92/98
-and 94/98, TNR 15/20 and 14/20 and kappa 0.68 and 0.69. No owner label carries
-reads, so these numbers show only that the change leaves a reply with no
-reads graded as before; no owner label yet fails an invented option, so none
-measures the new clause. The rubric before rule 10 was
+TPR 89/98 and 94/98 (95% CI 83%-95% and 90%-98%), TNR 15/20 twice (95% CI
+53%-89%, 36 points wide) and kappa 0.61 and 0.72 (95% CI 0.42-0.80 and
+0.55-0.90) against the owner. The rubric before rule 7 weighed the panel's
+reads (#628) scored, in two sweeps the same day, TPR 93/98 twice, TNR 15/20 and
+14/20 and kappa 0.70 and 0.66, and in an earlier pair TPR 92/98 and 94/98, TNR
+15/20 and 14/20 and kappa 0.68 and 0.69. No owner label carries reads, so these
+numbers show only that the change leaves a reply with no reads graded as
+before; no owner label yet fails an invented option, so none measures the new
+clause. Four scratch rows, three runs each, did: the judge failed a PR option
+found in no read 6 of 6 times and passed the same option with no reads given 3
+of 3, but passed it beside a changelog read and a matching search only 2 of 3.
+That is the clause's cost: it sees paths, not contents, so it can fail an
+option the panel did ground, and a later sweep should count such false fails
+once labels with reads exist. The rubric before rule 10 was
 narrowed to requests only about a test scored kappa 0.65 in two sweeps the same
 day, and failed one `json-flag` row the owner passed in each; the narrowed one
 failed none. Rule 10 now counts a failing test named on the screen, not only in
