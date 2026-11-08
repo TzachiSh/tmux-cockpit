@@ -866,7 +866,7 @@ mod tests {
         let p = prompt(&i);
         let last = format!("Read /r/f{}.rs\n", MAX_READS - 1);
         assert!(p.contains(&format!("{last}(7 more reads not shown)\n</panel_reads>")), "{p}");
-        assert!(!p.contains(&format!("/r/f{}.rs", MAX_READS)), "{p}");
+        assert!(!p.contains(&format!("/r/f{MAX_READS}.rs")), "{p}");
     }
 
     #[test]
