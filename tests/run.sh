@@ -16020,6 +16020,31 @@ is "a jq compile error is a fail row, named, for both counts" \
    "fail hooks $j3msg;fail subhooks $j3msg;" "$j3rows"
 rm -rf "$J3"
 
+# --- #194 poll_alive's macOS branch, run on Linux ----------------------------
+
+echo "== poll_alive: with no /proc, the poller is known by ps -o args= (#194) =="
+# macOS has no /proc: poll_alive asks ps for the command line, since comm is the interpreter
+# there. COCKPIT_PROC_DIR points it at an empty dir so that branch runs here, and a ps shim
+# answers. The negative row keeps the positive one from passing on any answer at all.
+PA=$(mktmpd); mkdir -p "$PA/proc" "$PA/bin"
+cat > "$PA/bin/ps" <<'PSEOF'
+#!/bin/sh
+printf '%s\n' "$*" >> "${0%/*}/../argv"
+printf '%s\n' "$PA_ARGS"
+PSEOF
+chmod +x "$PA/bin/ps"
+pa_alive() {                  # <ps answer> -> yes | no, poll_alive on pid 4242
+    PA_ARGS=$1 COCKPIT_PROC_DIR="$PA/proc" PATH="$PA/bin:$PATH" bash -c \
+        '. "$1/scripts/lib/hook.sh" && poll_alive 4242 && echo yes || echo no' _ "$DIR"
+}
+export PA_ARGS
+is "an agent-poll run by its interpreter is alive" "yes" "$(pa_alive 'bash /x/agent-poll')"
+is "...with its arguments too" "yes" "$(pa_alive '/bin/bash /x/agent-poll --once')"
+is "...and ps was asked for that pid's command line" "-o args= -p 4242" "$(head -1 "$PA/argv")"
+is "another process at the pid is not the poller" "no" "$(pa_alive 'sleep 300')"
+is "a name that only ends like it is not the poller" "no" "$(pa_alive 'bash /x/not-agent-poller')"
+rm -rf "$PA"
+
 # --- #400 tui-test-clean: the gate that fails on what a test left ------------
 
 echo "== tests/clean-run.sh: a run in private TMPDIR and TMUX_TMPDIR fails, naming what it left (#400) =="
