@@ -14061,7 +14061,10 @@ olrun() {                     # olrun <n> -- start the picker; wait for its rows
     until_cap "$OL" "$OLP" '*three.txt*'
 }
 oldone() { until_cap "$OL" "$OLP" "*OLDONE$1=[0-9]*"; }
-olgo() { rm -f "$OLD/hold"; until_file "$OLLOG" '*OPEN*'; }   # let the editor write; wait for it
+olnwin() { "$TMUX_REAL" -L "$OL" list-windows -t t | grep -c .; }
+olgo() {                      # let the editor write; wait for its line and its window to close
+    rm -f "$OLD/hold"; until_file "$OLLOG" '*OPEN*'; until_out 1 olnwin
+}
 olcap() { "$TMUX_REAL" -L "$OL" capture-pane -p -J -t "$OLP"; }
 olkey() { "$TMUX_REAL" -L "$OL" send-keys -t "$OLP" "$@"; }
 
@@ -14087,9 +14090,8 @@ is "a directory candidate is handed to the editor whole" "OPEN $OLD/w/sub/" "$(c
 : > "$OLLOG"; olrun 4
 olkey Escape; oldone 4
 # the hold keeps a wrongly opened editor's window alive, so one window means none opened
-olwin=$("$TMUX_REAL" -L "$OL" list-windows -t t | grep -c .)
 is "esc opens nothing and exits 0" "0 |1" \
-   "$(olcap | sed -n 's/.*OLDONE4=//p' | tail -1) $(cat "$OLLOG")|$olwin"
+   "$(olcap | sed -n 's/.*OLDONE4=//p' | tail -1) $(cat "$OLLOG")|$(olnwin)"
 rm -f "$OLD/hold"
 "$TMUX_REAL" -L "$OL" kill-server >/dev/null 2>&1
 fi
