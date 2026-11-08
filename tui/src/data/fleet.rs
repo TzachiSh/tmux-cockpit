@@ -2,7 +2,7 @@
 //! branch and its diff stat. Runs on the fetch thread, never on the render path.
 //! One diff scan per distinct repo root however many panes share it, at most
 //! `PARALLEL` git processes in flight (the old `COCKPIT_FLEET_PARALLEL=8`).
-use super::gitsafe::{board_stat, git};
+use super::gitsafe::{git, tree_stat};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Mutex;
@@ -97,7 +97,7 @@ pub fn scan(paths: &[String]) -> Scan {
     let mut roots: Vec<(&str, &str)> = probes.iter().flatten().map(|(r, g, _)| (r.as_str(), g.as_str())).collect();
     roots.sort();
     roots.dedup_by_key(|r| r.0);
-    let stats = par_map(&roots, |(r, g)| board_stat(r, g).map(|s| s.3).unwrap_or_default());
+    let stats = par_map(&roots, |(r, g)| tree_stat(r, g, None).map(|s| s.3).unwrap_or_default());
     let by_root: HashMap<&str, &String> = roots.iter().map(|r| r.0).zip(&stats).collect();
     let facts = uniq
         .into_iter()

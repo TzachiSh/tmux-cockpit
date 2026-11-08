@@ -1968,8 +1968,7 @@ Every failure is `None`.
   that blank every filter driver `<dir>`'s config names.
 - `cockpit-tui diffstat <root> [--base <rev>]` prints
   `<add>\t<del>\t<new>\t<pm>`, the board's diff count against `<rev>` (default
-  HEAD; an unborn HEAD counts the tree as new). It is the shell `tree_diff`'s count, an untracked
-  file's lines in `<add>`; the board's own stat leaves them out (#454). Exit 1 when `<root>` is not a
+  HEAD; an unborn HEAD counts the tree as new; `+a -d` are tracked lines only, as on the board). Exit 1 when `<root>` is not a
   repo, the diff fails or the base starts with `-`; 2 on a usage error.
 
 **Log format:** one line per event, `<unix_micros> <text>`, append-only, only
