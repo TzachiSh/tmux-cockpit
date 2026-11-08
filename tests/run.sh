@@ -66,7 +66,7 @@ chmod +x "$SHIM/tmux"
 # The race of #573, made certain: a new-session that follows kill-server on the
 # same server can reach the dying one and fail "server exited unexpectedly". So
 # "$TMUX_REAL" refuses the first new-session after each kill-server on a server,
-# keyed on the -L name or the whole -S path before the command word, and writes
+# keyed on the socket path that -L or -S before the command word names, and writes
 # that call's argv to r.<key>. Only a later new-session with the same argv that
 # succeeds clears it, and flop_left fails the run for each r.* left. A kill-server
 # then a bare new-session goes red on every run, not one run in ten under load;
@@ -95,7 +95,13 @@ for a do
     *) v=\$a; break ;;
     esac
 done
-case \$n in */*|*_*) n=\$(printf '%s' "\$n" | sed 's/_/__/g; s|/|_.|g') ;; esac
+case \$v in kill-server|new-session) ;; *) exec "$2" "\$@" ;; esac
+# The key is the socket's path, the one tmux uses, so -L x and -S <dir>/x meet.
+case \$n in
+L.*) n=\${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/\${n#L.} ;;
+*) n=\${n#S.} ;;
+esac
+n=\$(printf '%s' "\$n" | sed 's/_/__/g; s|/|_.|g')
 case \$v in
 kill-server) : > "$1/k.\$n" ;;
 new-session)
@@ -402,6 +408,22 @@ is "a refusal another new-session on that name follows is still left" "0 1 0 |1"
 rm -f "$GD"/w/[kr].*
 is "a refusal its identical retry follows is cleared" "0 1 0 |0" \
    "$(gt -L s kill-server; gt -L s new-session -d -s a; gt -L s new-session -d -s a)|$(gleft)"
+rm -f "$GD"/w/[kr].*
+is "fresh_server's shape, attached -L and -f: the identical retry clears" "0 1 0 |0" \
+   "$(gt -L s -f /dev/null kill-server; gt -Ls -f/dev/null new-session -d -s a
+      gt -Ls -f/dev/null new-session -d -s a)|$(gleft)"
+rm -f "$GD"/w/[kr].*
+is "-T and -c take a word before the command" "0 1 |1" \
+   "$(gt -T RGB -L s kill-server; gt -L s -c sh new-session -d)|$(gleft)"
+rm -f "$GD"/w/[kr].*
+is "an attached -S keys like a separate one" "0 1 |1" \
+   "$(gt -S"$GD/a/s" kill-server; gt -S "$GD/a/s" new-session -d)|$(gleft)"
+rm -f "$GD"/w/[kr].*
+is "-L x and -S on x's socket path are one server" "0 1 |1" \
+   "$(export TMUX_TMPDIR="$GD/t"
+      gt -L x kill-server; gt -S "$GD/t/tmux-$(id -u)/x" new-session -d)|$(gleft)"
+rm -f "$GD"/w/[kr].*
+is "no -L is -L default" "0 1 |1" "$(gt kill-server; gt -L default new-session -d)|$(gleft)"
 rm -f "$GD"/w/[kr].*
 is "a retry that fails clears nothing" "0 1 1 |1" \
    "$(gt -L s kill-server; gt -L s new-session -d; GUARD_RC=1 gt -L s new-session -d)|$(gleft)"
