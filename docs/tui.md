@@ -584,8 +584,8 @@ Only running and failed count in the badge. End unknown is 15 minutes with no
 transcript write and no recorded end: a TaskStop mid-turn, or a live agent
 waiting on a permission prompt or a long call. It is never red, and as it is
 past the 2 minutes by its definition it folds at once, into a line of its own
-whose age is the newest sign of life among them. One long session held 16 done,
-51 end unknown and 3 idle subagents: `✓ 16 done`, `◌ 51 quiet` and the three
+whose age is the newest sign of life among them. One long session once held 16
+done, 51 end unknown and 3 idle subagents: `✓ 16 done`, `◌ 51 quiet` and the three
 teammates. `∎` and `◦` are East Asian Width N, one cell everywhere; `■` is A.
 A tree takes at most 5 lines, the last reading `+N more` when it has more.
 
@@ -1683,6 +1683,11 @@ Exact text. All lower case, no exclamation marks. The `cockpit:` prefix appears
 only on `display-message` output, never inside the board, where the frame
 already says who is talking.
 
+**An agent with no state yet:** a pane the board counts as an agent (its
+command, a version-shaped name, its process tree) that no hook has marked and
+whose transcript says nothing draws `○ idle`, with no age: unknown is never
+drawn as done or running.
+
 **No agent panes:** the header says ` board · 0 agents`, and under it this card
 sits centred; on a narrow board it wraps, never cuts.
 
@@ -1976,7 +1981,7 @@ Every failure is `None`.
   that blank every filter driver `<dir>`'s config names.
 - `cockpit-tui diffstat <root> [--base <rev>]` prints
   `<add>\t<del>\t<new>\t<pm>`, the board's diff count against `<rev>` (default
-  HEAD; an unborn HEAD counts the tree as new). Exit 1 when `<root>` is not a
+  HEAD; an unborn HEAD counts the tree as new; `+a -d` are tracked lines only, as on the board). Exit 1 when `<root>` is not a
   repo, the diff fails or the base starts with `-`; 2 on a usage error.
 
 **Log format:** one line per event, `<unix_micros> <text>`, append-only, only
@@ -2567,7 +2572,10 @@ malformed pane id, with the usage on stderr only.
 `tmux-review --fleet` went with it. `r` on a row opens the review loop as before.
 
 **Row cells.** The list draws, between the message and the age: the diff stat
-(`+a -d`, `clean`, `no repo`, `?N new` for untracked files) and the branch
+and the branch. The stat is `+a -d`, the lines added and deleted in tracked files
+(a staged new file is tracked), then `?N new` for untracked files, whose lines
+count nowhere (#454); `?N new` alone when only untracked files changed, `clean`,
+or `no repo`. `prefix r`'s review still diffs untracked files in full. The branch
 (`⑂name`, or `⑂@<short sha>` on a detached HEAD). The review mark stays in the
 row's leading column. A cell that does not fit is dropped with every cell to its
 right; the cells take at most a third of the width the name and message share,

@@ -607,7 +607,9 @@ fn the_diff_counts_untracked_files_like_prefix_r() {
     r.write("new1.txt", "x\n");
     r.write("new2.txt", "y\n");
     r.write("new3.txt", "z\n");
-    assert_eq!(git_facts(&r.path()).1, "+4 -0  ?3 new");
+    // #454, the owner's pick: tracked lines only; prefix r's shell tree_diff still
+    // counts the untracked lines, so the two differ here by design
+    assert_eq!(git_facts(&r.path()).1, "+1 -0  ?3 new");
     let st = String::from_utf8_lossy(&r.git(&["status", "--porcelain"]).stdout).into_owned();
     assert!(st.contains("?? new1.txt"), "the stat touched the real index: {st}");
 }
@@ -663,14 +665,16 @@ fn planted_git_config_never_runs() {
     touch(200); // the control's diff may have refreshed the real index
 
     let (_, pm, _) = git_facts(&r.path());
-    assert_eq!(diffstat(&[&r.path()]).0, "5\t1\t1\t+5 -1  ?1 new\n");
+    // #454: tracked lines only; the untracked file is `?1 new`
+    assert_eq!(diffstat(&[&r.path()]).0, "2\t1\t1\t+2 -1  ?1 new\n");
     assert!(
         !marker.exists(),
         "a fetch ran planted config: {:?}",
         std::fs::read_to_string(&marker)
     );
-    // f gains a line, g changes one, and the untracked .gitattributes is the one new file
-    assert_eq!(pm, "+5 -1  ?1 new", "the hardened diff still measures the tree");
+    // f gains a line, g changes one, and the untracked .gitattributes is the one new
+    // file, its lines no longer counted (#454)
+    assert_eq!(pm, "+2 -1  ?1 new", "the hardened diff still measures the tree");
 }
 
 /// The board may start with a dotfiles setup's GIT_DIR, or one of its kin, in
@@ -733,11 +737,13 @@ fn an_unborn_repo_with_new_files_is_not_clean() {
     std::fs::remove_dir_all(r.dir.join(".git")).unwrap();
     r.git(&["init", "-q", "-b", "main", "."]);
     r.write("g", "x\ny\n");
-    assert_eq!(stat(&r, None), Some((3, 0, 2, "+3 -0  ?2 new".into())));
-    assert_eq!(git_facts(&r.path()).1, "+3 -0  ?2 new");
+    // #454: in an unborn repo every file is untracked: `?2 new`, no lines
+    assert_eq!(stat(&r, None), Some((0, 0, 2, "+0 -0  ?2 new".into())));
+    assert_eq!(git_facts(&r.path()).1, "+0 -0  ?2 new");
     // staged and otherwise untouched: only the index has it, tree_diff's --cached leg
     r.git(&["add", "-A"]);
-    assert_eq!(stat(&r, None), Some((3, 0, 2, "+3 -0  ?2 new".into())));
+    // #454: staged, they are tracked: their lines count, and nothing is untracked
+    assert_eq!(stat(&r, None), Some((3, 0, 0, "+3 -0".into())));
 }
 
 /// Past BIGCAP a file is never hashed, but it is still a change.
@@ -749,7 +755,8 @@ fn a_file_over_the_cap_counts_dirty() {
         .unwrap()
         .set_len(33 * 1024 * 1024)
         .unwrap();
-    assert_eq!(stat(&r, None), Some((0, 0, 0, "+0 -0".into())));
+    // #657 review: untracked, it is `?1 new` whatever its size
+    assert_eq!(stat(&r, None), Some((0, 0, 1, "+0 -0  ?1 new".into())));
 }
 
 #[test]
@@ -776,7 +783,8 @@ fn diffstat_reads_a_linked_worktree_and_refuses_a_non_repo() {
     let wt = r.dir.join("wt");
     r.git(&["worktree", "add", "-q", "-b", "side", &wt.display().to_string()]);
     std::fs::write(wt.join("n"), "x\n").unwrap();
-    assert_eq!(diffstat(&[&wt.display().to_string()]), ("1\t0\t1\t+1 -0  ?1 new\n".into(), 0));
+    // #454: an untracked file is `?1 new`, its line no `+1`
+    assert_eq!(diffstat(&[&wt.display().to_string()]), ("0\t0\t1\t+0 -0  ?1 new\n".into(), 0));
     assert_eq!(diffstat(&[&r.dir.join(".git").display().to_string()]), (String::new(), 1));
 }
 
@@ -1676,4 +1684,161 @@ fn the_board_and_info_agree_on_the_asked_prompt() {
             .and_then(|l| l.split('\t').next());
         assert_eq!((board.as_str(), info), (want, Some(want)), "{sess}: (board, info)");
     }
+}
+
+/// #454 item 5: with no @cockpit_title the label is the pane's own title (field 17,
+/// which the format already strips of `✳ ` and blanks when it is the host name),
+/// else the window name. Rows: a topic, none, and @cockpit_title over a topic.
+#[test]
+fn the_label_falls_back_to_the_pane_title_before_the_window_name() {
+    let r = Rig::new("topic");
+    let base = |id: &str, title: &str| {
+        let mut f: Vec<String> = row(id, "claude", "running", "-", "100").split('\u{1f}').map(String::from).collect();
+        f[5] = title.into();
+        f.extend(["", "", "", ""].map(String::from));
+        f
+    };
+    let with = |mut f: Vec<String>, topic: &str| {
+        f.push(topic.into());
+        f.join("\u{1f}")
+    };
+    r.rows(&[
+        with(base("%1", "-"), "migrate the runner"),
+        with(base("%2", "-"), ""),
+        with(base("%3", "fix it"), "a topic"),
+    ]);
+    let ps = list_panes().unwrap();
+    let labels: Vec<&str> = ["%1", "%2", "%3"].iter().map(|id| get(&ps, id).label()).collect();
+    assert_eq!(labels, ["migrate the runner", "win", "fix it"]);
+}
+
+/// #454 item 12, the owner's pick: a pane knows when its last tool_use came back
+/// with `is_error` (a denial or a failed command alike), the flag only. Rows: an
+/// ok result, an error result, an unanswered tool_use (an interrupt), and an
+/// older failure before a newer tool that came back fine.
+#[test]
+fn the_last_tool_uses_error_flag_is_read() {
+    let r = Rig::new("toolerr");
+    let call = serde_json::json!({"type": "assistant", "timestamp": "2026-08-27T00:00:01.000Z", "message": {"content": [
+        {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "ssh nuc"}}]}});
+    let result = |err: bool| {
+        let v = serde_json::json!({"type": "user", "timestamp": "2026-08-27T00:00:02.000Z", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "t1", "is_error": err, "content": "x"}]}});
+        format!("{v}\n")
+    };
+    let end = "{\"type\":\"assistant\",\"timestamp\":\"2026-08-27T00:00:03.000Z\",\"message\":{\"stop_reason\":\"end_turn\",\"content\":[{\"type\":\"text\",\"text\":\"The permission check blocked it.\"}]}}\n";
+    r.transcript("s1", &(format!("{call}\n") + &result(false) + end));
+    r.transcript("s2", &(format!("{call}\n") + &result(true) + end));
+    r.transcript("s3", &(format!("{call}\n") + &typed_row("[Request interrupted by user]")));
+    // an earlier failure, then a newer tool that came back fine
+    let later = call.to_string().replace("\"t1\"", "\"t2\"");
+    let ok2 = result(false).replace("\"t1\"", "\"t2\"");
+    r.transcript("s4", &(format!("{call}\n") + &result(true) + &later + "\n" + &ok2 + end));
+    let ids = ["%1", "%2", "%3", "%4"];
+    r.rows(&ids.map(|id| hooked(id, "done", &format!("s{}", &id[1..]))));
+    let ps = list_panes().unwrap();
+    let got: Vec<bool> = ids.iter().map(|id| get(&ps, id).doing_failed).collect();
+    assert_eq!(got, [false, true, false, false], "ok, is_error, unanswered, an older failure");
+}
+
+/// #657 review (review657g): the tracked-only stat over each shape a tree can take.
+/// `g` is committed with six lines; each row is (name, setup, diffstat's line).
+#[test]
+fn the_tracked_only_stat_over_renames_staging_and_odd_names() {
+    let six = "1\n2\n3\n4\n5\n6\n";
+    type Setup = fn(&Repo);
+    let rows: [(&str, Setup, &str); 10] = [
+        (
+            "a plain mv: g gone, h untracked",
+            |r| {
+                std::fs::rename(r.dir.join("g"), r.dir.join("h")).unwrap();
+            },
+            "0\t6\t1\t+0 -6  ?1 new\n",
+        ),
+        (
+            "a plain mv and a new line",
+            |r| {
+                std::fs::rename(r.dir.join("g"), r.dir.join("h")).unwrap();
+                r.write("h", "1\n2\n3\n4\n5\n6\n7\n");
+            },
+            "0\t6\t1\t+0 -6  ?1 new\n",
+        ),
+        (
+            "a staged git mv is a rename",
+            |r| {
+                r.git(&["mv", "g", "h"]);
+            },
+            "0\t0\t0\t+0 -0\n",
+        ),
+        (
+            "a git mv under diff.renames=false is still a rename",
+            |r| {
+                r.git(&["config", "diff.renames", "false"]);
+                r.git(&["mv", "g", "h"]);
+            },
+            "0\t0\t0\t+0 -0\n",
+        ),
+        (
+            "git rm --cached: g deleted, untracked again",
+            |r| {
+                r.git(&["rm", "-q", "--cached", "g"]);
+            },
+            "0\t6\t1\t+0 -6  ?1 new\n",
+        ),
+        (
+            "a staged new file",
+            |r| {
+                r.write("n", "x\ny\n");
+                r.git(&["add", "n"]);
+            },
+            "2\t0\t0\t+2 -0\n",
+        ),
+        (
+            "a staged new file with a tab, a quote and a non-UTF-8 byte",
+            |r| {
+                use std::os::unix::ffi::OsStrExt;
+                let name = std::ffi::OsStr::from_bytes(b"n\t\"\\\xff");
+                std::fs::write(r.dir.join(name), "x\ny\n").unwrap();
+                r.git(&["add", "-A"]);
+            },
+            "2\t0\t0\t+2 -0\n",
+        ),
+        ("a staged q\"x.txt", |r| stage_one(r, b"q\"x.txt"), "1\t0\t0\t+1 -0\n"),
+        ("a staged t<TAB>b.txt", |r| stage_one(r, b"t\tb.txt"), "1\t0\t0\t+1 -0\n"),
+        ("a staged b\\377n.txt", |r| stage_one(r, b"b\xffn.txt"), "1\t0\t0\t+1 -0\n"),
+    ];
+    let mut bad = Vec::new();
+    for (name, setup, want) in rows {
+        let r = Repo::new("shapes");
+        r.write("g", six);
+        r.git(&["add", "g"]);
+        r.git(&["-c", "user.name=t", "-c", "user.email=t@e", "commit", "-q", "-m", "g"]);
+        setup(&r);
+        let got = diffstat(&[&r.path()]);
+        if got != (want.to_string(), 0) {
+            bad.push((name, got));
+        }
+    }
+    assert!(bad.is_empty(), "{bad:?}");
+}
+
+/// Writes one line to a file named by raw bytes and stages it.
+fn stage_one(r: &Repo, name: &[u8]) {
+    use std::os::unix::ffi::OsStrExt;
+    std::fs::write(r.dir.join(std::ffi::OsStr::from_bytes(name)), "x\n").unwrap();
+    r.git(&["add", "-A"]);
+}
+
+/// #657 review: an unborn repo with one staged file and one untracked one: the
+/// staged lines count, the untracked file is `?1 new`.
+#[test]
+fn an_unborn_repo_counts_its_staged_lines_beside_an_untracked_file() {
+    let r = Repo::new("unborn2");
+    std::fs::remove_dir_all(r.dir.join(".git")).unwrap();
+    std::fs::remove_file(r.dir.join("f")).unwrap();
+    r.git(&["init", "-q", "-b", "main", "."]);
+    r.write("s", "x\ny\n");
+    r.git(&["add", "s"]);
+    r.write("u", "z\n");
+    assert_eq!(diffstat(&[&r.path()]), ("2\t0\t1\t+2 -0  ?1 new\n".into(), 0));
 }

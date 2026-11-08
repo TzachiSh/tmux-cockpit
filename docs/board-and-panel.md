@@ -28,6 +28,12 @@ selection, the folds and a kept filter are kept in
 `${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/board.state`, so the next
 `prefix + w` opens the same way.
 
+A pane that shows a background job (the agent view, `claude attach`) runs no
+hooks of its own: `scripts/agent-poll` gives it the job's state, and the board
+draws the bound job's name in place of its title (#460). `@cockpit_bg_poll off`
+turns the poller off; [docs/states-and-hooks.md](states-and-hooks.md) has the
+bind rule.
+
 Keys, options, the screens, the states and the engineering rules:
 [docs/tui.md](tui.md).
 

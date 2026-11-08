@@ -164,6 +164,12 @@ it likes. Holding on work with no sure wake risks a pane stuck "working"; not
 holding only shows `done` early. A subagent that never stops is listed by
 every `Stop` until the session ends, and `SessionEnd` clears the pane.
 
+The board softens that early `done` in what it draws, not in the state (#454): a
+lead whose @panestate is `done` while one of its subagents or teammates is
+running draws `●` and undimmed, since its work goes on. @panestate stays `done`,
+the status bar and `--json` say `done`, and the row's doing line and age stay
+the lead's.
+
 There is no running subagent counter, so there is nothing to drift, lock or
 reset. Counting `SubagentStart` against `SubagentStop` would drift:
 `SubagentStart` also fires on a resumed subagent and on every message an

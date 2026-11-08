@@ -1163,6 +1163,56 @@ fn an_ended_agents_idle_teammate_is_drawn_ended() {
     assert!(line.contains("└ ◌ mate") && !line.contains("40s"), "{line}");
 }
 
+/// #454 item 7: a teammate woken again ages from its newest logged start, not its
+/// first: 17 hours beside a `●` reads as a 17-hour run.
+#[test]
+fn a_rewoken_teammate_ages_from_its_newest_start() {
+    let mut mate = sub("mate", "lane-313", SubState::Running, 17 * 3600, 1);
+    mate.kind = SubKind::Teammate;
+    mate.resumed_at = Some(NOW - 8 * 60);
+    let line = text(&cells_of(&one(vec![mate]), &Theme::fixed(), "lane-313"));
+    assert!(line.contains("8m") && !line.contains("17h"), "{line}");
+}
+
+/// #454 item 8: idle teammates list newest-active first, so the ones that just
+/// spoke stay when the tree is cut, not the ones quiet for hours.
+#[test]
+fn idle_teammates_list_newest_active_first() {
+    let idle = |k: u64, quiet: u64| with(sub("mate", &format!("i{k}"), SubState::Idle, 9000 - k, 1), None, Some(quiet));
+    let ps = one(vec![
+        idle(0, 16 * 3600),
+        idle(1, 15 * 3600),
+        idle(2, 1200),
+        idle(3, 600),
+        idle(4, 14 * 3600),
+    ]);
+    let n = nav(&ps, "%4", &["%4"], 12);
+    assert_eq!(tree_of(&ps, &n, "%4"), ["%4/i3", "%4/i2", "%4/i4", "%4/i1", "%4/i0"]);
+}
+
+/// #454 item 9: a lead whose turn is done while a teammate or subagent still runs
+/// draws `●` and undimmed, as the work goes on; with none running it is `✓`, dimmed.
+/// Display only: its @panestate stays done. Read off the pane's frame title, where
+/// the glyph sits beside the name, in the value role undimmed and meta dimmed.
+#[test]
+fn a_done_lead_with_running_work_draws_running() {
+    let th = Theme::fixed();
+    for (st, want, name_c) in [(SubState::Running, th.g.running, th.value), (SubState::Idle, th.g.done, th.meta)] {
+        let mut ps = one(vec![sub("mate", "lane-313", st, 600, 1)]);
+        ps[0].state = "done".into();
+        let c = cells_of(&ps, &th, "api:1 · tests");
+        assert!(c.iter().any(|c| c.symbol() == want), "{st:?}: {}", text(&c));
+        let at = text(&c).find("tests").unwrap();
+        let name = c
+            .iter()
+            .filter(|c| !c.symbol().is_empty())
+            .nth(text(&c)[..at].chars().count())
+            .unwrap();
+        assert_eq!(name.fg, name_c, "{st:?}: {}", text(&c));
+        assert_eq!(ps[0].state, "done", "{st:?}");
+    }
+}
+
 /// #399: the quiet line's age is its newest sign of life, `active_at`, which the
 /// data's hash does not keep: a newer one alone must move the redraw gate.
 #[test]
@@ -1180,4 +1230,16 @@ fn a_quiet_line_with_no_sign_of_life_ages_from_the_start() {
     let ps = one(vec![with(sub("Explore", "q1", SubState::EndUnknown, 1500, 1), None, None)]);
     let line = text(&cells_of(&ps, &Theme::fixed(), "1 quiet"));
     assert!(line.contains("◌ 1 quiet") && line.contains("25m"), "{line}");
+}
+
+/// #399, the owner's pick: when every old subagent was stopped by the user, the
+/// fold drops the done part and takes the stopped mark: `∎ 2 stopped` (`= 2
+/// stopped` in ascii), never `✓ 0 done · 2 stopped`.
+#[test]
+fn a_fold_of_stops_only_names_them_with_the_stopped_mark() {
+    let old = |k: u64| with(sub("Explore", &format!("x{k}"), SubState::Stopped, 5000 + k, 1), Some(4000), None);
+    for (th, mark) in [(Theme::fixed(), "∎"), (ascii(), "=")] {
+        let line = text(&cells_of(&one(vec![old(0), old(1)]), &th, "stopped"));
+        assert!(line.contains(&format!("{mark} 2 stopped")) && !line.contains("done"), "{line}");
+    }
 }

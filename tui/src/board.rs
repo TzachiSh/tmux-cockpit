@@ -430,7 +430,19 @@ fn tiles(f: &mut Frame, area: Rect, v: &View, ord: &[usize], g: &Grid) {
 }
 
 fn dimmed(p: &Pane) -> bool {
-    p.ended || p.state >= State::Done
+    p.ended || drawn(p) >= State::Done
+}
+
+/// #454: the state the row draws. A lead whose turn is done while a teammate or
+/// subagent still runs draws running, as its work goes on; display only, so
+/// @panestate, the row's doing and its age stay the lead's.
+fn drawn(p: &Pane) -> State {
+    let working = p.subs.iter().any(|s| s.state == SubState::Running);
+    if p.state == State::Done && working {
+        State::Running
+    } else {
+        p.state
+    }
 }
 
 /// #301: an ended agent waits on nobody, whatever @panestate it was left with.
@@ -440,7 +452,7 @@ fn needs(p: &Pane) -> bool {
 
 /// The row's state glyph: an ended agent has its own, never the `▲` it died on.
 fn glyph(th: &Theme, p: &Pane) -> (&'static str, ratatui::style::Color) {
-    if p.ended { (th.g.ended, th.meta) } else { th.glyph(p.state) }
+    if p.ended { (th.g.ended, th.meta) } else { th.glyph(drawn(p)) }
 }
 
 /// The word an ended agent shows where the doing line goes.
@@ -1478,11 +1490,13 @@ fn tree_lines(ps: &[Pane], i: usize, seen: &Seen) -> Vec<Row> {
     if quiet > 0 {
         out.push(Row::Quiet(i, quiet));
     }
-    out.extend(
-        (0..p.subs.len())
-            .filter(|&j| place(p, &p.subs[j], seen) == Place::Line)
-            .map(|j| Row::Sub(i, j)),
-    );
+    let lines = (0..p.subs.len()).filter(|&j| place(p, &p.subs[j], seen) == Place::Line);
+    // #454: idle teammates after the rest, newest-active first, so a cut keeps the
+    // ones that just spoke; the rest stay oldest first
+    let (idle, rest): (Vec<usize>, Vec<usize>) = lines.partition(|&j| p.subs[j].state == SubState::Idle);
+    let mut idle = idle;
+    idle.sort_by_key(|&j| std::cmp::Reverse(p.subs[j].active_at.or(p.subs[j].started)));
+    out.extend(rest.into_iter().chain(idle).map(|j| Row::Sub(i, j)));
     out
 }
 
@@ -2261,6 +2275,9 @@ fn agent_row(p: &Pane, num: Option<usize>, sel: bool, active: bool, ww: usize, w
         _ if p.ended => ENDED.to_string(),
         State::Unknown => "idle".to_string(),
         State::NeedsInput | State::Error if !p.msg.is_empty() => g.trunc(&p.msg, msg_w),
+        // #454: a done row whose last tool came back with an error says what the
+        // agent said of it, not the tool
+        State::Done if p.doing_failed && !p.said.is_empty() => g.trunc(&p.said, msg_w),
         _ if p.doing.is_empty() => g.trunc(g.dash, msg_w),
         _ => g.trunc_middle(&p.doing, msg_w),
     };
@@ -2342,7 +2359,9 @@ fn age_of(p: &Pane, s: &Sub, now: u64) -> String {
         SubState::Running | SubState::Idle if p.ended => return String::new(),
         // an idle teammate ages from its last sign of life
         SubState::Idle => s.active_at.or(s.started),
-        SubState::Running | SubState::Failed | SubState::Done | SubState::Stopped => s.started,
+        // #454: a teammate woken again runs since its newest start, not its first
+        SubState::Running => s.started.max(s.resumed_at),
+        SubState::Failed | SubState::Done | SubState::Stopped => s.started,
         // an end nobody recorded (#361) is a quiet row, never a line: quiet_age ages it
         SubState::EndUnknown => s.active_at.or(s.started),
     };
@@ -2415,11 +2434,18 @@ fn tree_row(ps: &[Pane], row: &Row, last: bool, tcol: usize, w: usize, now: u64,
     // `     ├ ● ` + text + ` ` + rail + the mark column
     let avail = w.saturating_sub(9 + 1 + RAIL_W + 1);
     let (text, age) = match *row {
-        Row::Done(_, n, stopped) => {
-            spans.push(Span::styled(g.done, Style::new().fg(th.done)));
-            // a stop is the user's (#336), not a finish: named apart when there is one
+        Row::Done(i, n, stopped) => {
+            // a stop is the user's (#336), not a finish: named apart when there is one,
+            // and alone, with the stopped mark, when nothing finished on its own (#399)
+            let (gl, c) = if n == stopped {
+                sub_glyph(th, &ps[i], SubState::Stopped)
+            } else {
+                (g.done, th.done)
+            };
+            spans.push(Span::styled(gl, Style::new().fg(c)));
             let label = match stopped {
                 0 => format!(" {n} done"),
+                m if m == n => format!(" {m} stopped"),
                 // the done count leaves the stops out: they are named on their own
                 m => format!(" {} done {} {m} stopped", n - m, g.dot),
             };

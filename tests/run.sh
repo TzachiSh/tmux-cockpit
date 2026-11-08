@@ -7834,6 +7834,16 @@ is "--json carries the 16 frozen keys, in order" \
 is "--json exits 0 and says nothing about $TJSH" "0 no" \
    "$(COCKPIT_TMUX="tmux -L $TJ" "$COCKPIT_TUI_BIN" --json >/dev/null 2>&1; printf '%s ' "$?"; \
       case "$TJOUT" in *"\"$TJSH\""*) printf yes ;; *) printf no ;; esac)"
+# #454: with no @cockpit_title the title is the pane's own, `✳ ` off; tmux's default,
+# the host name, is no topic, so the window name stands
+tj_title() { COCKPIT_TMUX="tmux -L $TJ" "$COCKPIT_TUI_BIN" --json 2>/dev/null \
+    | awk -v p="$TJB" '$0 ~ "\"id\": \""p"\"" {f=1} f && /"title"/ {sub(/.*"title": "/, ""); sub(/",$/, ""); print; exit}'; }
+"$TMUX_REAL" -L "$TJ" set -pu -t "$TJB" @cockpit_title >/dev/null 2>&1
+"$TMUX_REAL" -L "$TJ" select-pane -t "$TJB" -T "✳ migrate the runner" >/dev/null 2>&1
+is "--json's title falls back to the pane title, ✳ off" "migrate the runner" "$(tj_title)"
+"$TMUX_REAL" -L "$TJ" select-pane -t "$TJB" -T "$("$TMUX_REAL" -L "$TJ" display -p -t "$TJB" '#{host_short}')" >/dev/null 2>&1
+is "and a pane title that is the host name is no topic" \
+   "$("$TMUX_REAL" -L "$TJ" display -p -t "$TJB" '#{window_name}')" "$(tj_title)"
 
 # F1: a Bash tool_use whose command holds a TAB used to split --rows into 10
 # fields. HOME is redirected so the fixture transcript never touches the real
@@ -11034,23 +11044,44 @@ fi
 
 echo "== cockpit-tui diffstat and git-flags match the shell they will replace (#199) =="
 DSB=$COCKPIT_TUI_BIN
-# tree_diff's rows summed the way the board's scan sums them, as diffstat's four
-# columns; review_base forced to HEAD, which is what diffstat with no --base reads.
+# The board's count from git itself, through the safe wrapper, as diffstat's four
+# columns: the tracked tree's numstat against HEAD (an unborn tree: the index, then
+# the worktree's change to it), and `?N new` for every file the index does not hold.
+# #454/#657, the owner's pick: tracked lines only. tree_diff is the review diff, and
+# prefix r prints no count, so the count no longer goes through it.
 ds_shell() {
-    ( . "$DIR/scripts/lib/git.sh"; . "$DIR/scripts/lib/review-diff.sh"
-      COCKPIT_REVIEW_BASE=uncommitted tree_diff "$1" --numstat --summary ) \
-    | awk -F'\t' '/^ create mode /{n++; rows++; next}
-                  $1 != "" {rows++; a += ($1 ~ /^[0-9]+$/) ? $1 : 0; d += ($2 ~ /^[0-9]+$/) ? $2 : 0}
-                  END {pm = rows ? sprintf("+%d -%d", a, d) : "clean"; if (n) pm = pm "  ?" n " new"
-                       printf "%d\t%d\t%d\t%s\n", a, d, n, pm}'
+    ( . "$DIR/scripts/lib/git.sh"
+      local d=$1 n
+      local -a q=(-c core.quotePath=false) o=(--no-color --no-ext-diff --no-textconv --ignore-submodules=dirty -M --numstat)
+      n=$(git -C "$d" "${q[@]}" ls-files -o --exclude-standard -z | tr -cd '\0' | wc -c)
+      if git -C "$d" rev-parse --verify -q HEAD >/dev/null; then
+          git -C "$d" "${q[@]}" diff "${o[@]}" HEAD
+      else
+          git -C "$d" "${q[@]}" diff "${o[@]}" --cached; git -C "$d" "${q[@]}" diff "${o[@]}"
+      fi | awk -F'\t' -v n="$n" '$1 != "" {rows++; a += ($1 ~ /^[0-9]+$/) ? $1 : 0; d += ($2 ~ /^[0-9]+$/) ? $2 : 0}
+              END {pm = (rows || n) ? sprintf("+%d -%d", a, d) : "clean"; if (n) pm = pm "  ?" n " new"
+                   printf "%d\t%d\t%d\t%s\n", a, d, n, pm}' ) 2>/dev/null
 }
-for gf in basic mixed untracked blank nonascii funcname hunks spaces; do
+for gf in basic mixed untracked blank nonascii funcname hunks spaces mv gitmv; do
     GD=$(mktmpd); "$DIR/tests/fixtures/review/mkfix.sh" "$gf" "$GD" >/dev/null 2>&1
-    is "diffstat $gf: tree_diff's totals" "$(ds_shell "$GD")" "$("$DSB" diffstat "$GD")"
+    is "diffstat $gf: git's own tracked totals" "$(ds_shell "$GD")" "$("$DSB" diffstat "$GD")"
+    rm -rf "$GD"
+done
+# #657 review: the two renames as literals, so one fault on both sides still shows
+for gf in "mv|0	6	1	+0 -6  ?1 new" "gitmv|0	0	0	+0 -0"; do
+    GD=$(mktmpd); "$DIR/tests/fixtures/review/mkfix.sh" "${gf%%|*}" "$GD" >/dev/null 2>&1
+    is "diffstat ${gf%%|*}: a rename's lines as the owner chose" "${gf#*|}" "$("$DSB" diffstat "$GD")"
     rm -rf "$GD"
 done
 GD=$(mktmpd); ( cd "$GD" && git init -q -b main . && printf 'a\nb\n' > x && printf 'c\n' > y ) >/dev/null 2>&1
-is "diffstat on an unborn HEAD: tree_diff's totals, not clean" "$(ds_shell "$GD")" "$("$DSB" diffstat "$GD")"
+is "diffstat on an unborn HEAD: git's own tracked totals, not clean" "$(ds_shell "$GD")" "$("$DSB" diffstat "$GD")"
+# #657 review: an unborn tree with x staged then changed and y untracked; the index's
+# lines and the worktree's change to them both count
+( cd "$GD" && git add x && printf 'z\n' >> x ) >/dev/null 2>&1
+is "diffstat on an unborn HEAD, one staged, one untracked: git's own totals" \
+   "$(ds_shell "$GD")" "$("$DSB" diffstat "$GD")"
+is "diffstat on an unborn HEAD, one staged, one untracked: the staged lines" \
+   "3	0	1	+3 -0  ?1 new" "$("$DSB" diffstat "$GD")"
 is "diffstat on a dir that is not a repo: nothing, status 1" "1" \
    "$(rm -rf "$GD/.git"; "$DSB" diffstat "$GD"; printf '%s' "$?")"
 rm -rf "$GD"
@@ -11123,9 +11154,12 @@ ds_subs() {                   # <dir>: $1/r, a.txt changed, n.txt new, submodule
 GD=$(mktmpd)
 is "a gitlink's planted clean filter fires under plain git status: both of them" "2" "$(ds_subs "$GD")"
 mkdir "$GD/tmp"
+( . "$DIR/scripts/lib/git.sh"; . "$DIR/scripts/lib/review-diff.sh"
+  TMPDIR="$GD/tmp" COCKPIT_REVIEW_BASE=uncommitted tree_diff "$GD/r" --numstat >/dev/null ) 2>/dev/null
 dss=$(TMPDIR="$GD/tmp" ds_shell "$GD/r")
 is "tree_diff runs no gitlink's own clean filter" "" "$(ls "$GD" | grep '^PWNED')"
-is "and counts the submodule's moved pointer, as diffstat does" "3	2	1	+3 -2  ?1 new" "$dss"
+# #454: the untracked file is `?1 new`, its line out of `+a`
+is "and counts the submodule's moved pointer, as diffstat does" "2	2	1	+2 -2  ?1 new" "$dss"
 # Each run after a fresh mtime, so a run that refreshed a gitlink's index
 # cannot leave the next one nothing to hash.
 ds_redirty() { rm -f "$GD"/PWNED.*; touch -t "$1" "$GD/r/sub/f.txt" "$GD/r/$(printf 'bad\377name')/e.txt"; }

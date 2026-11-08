@@ -61,12 +61,16 @@ fn a_dirty_repo_reads_added_and_deleted() {
     assert_eq!(row(&r.path()), "+2 -0");
 }
 
+/// #454 item 10b, the owner's pick: `+a -d` counts tracked changes only; an
+/// untracked file shows only in `?N new`, its lines nowhere.
 #[test]
-fn untracked_files_count_in_the_stat_and_are_named_new() {
+fn untracked_files_are_named_new_and_never_counted_in_the_lines() {
     let r = Repo::new("untracked");
     r.write("n1", "x\n");
-    r.write("n2", "y\n");
-    assert_eq!(row(&r.path()), "+2 -0 ?2 new");
+    r.write("n2", "y\nz\n");
+    assert_eq!(row(&r.path()), "?2 new", "untracked only");
+    r.write("f", "a\nb\nc\n");
+    assert_eq!(row(&r.path()), "+2 -0 ?2 new", "beside a tracked change: its +2 alone");
 }
 
 #[test]

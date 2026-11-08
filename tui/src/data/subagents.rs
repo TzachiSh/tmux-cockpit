@@ -78,6 +78,9 @@ pub struct Sub {
     /// (else the transcript's mtime) and its last hook event. The age of an `EndUnknown` or
     /// `Idle` agent. Not hashed.
     pub active_at: Option<u64>,
+    /// #454: a teammate's newest logged `start`, a resume's; the age of a running one.
+    /// None for a plain subagent and before any start is logged. Not hashed.
+    pub resumed_at: Option<u64>,
     /// the newest usage row's input, output and cache tokens summed: the figure Claude Code
     /// reports as `totalTokens`, the context of its last request, not a sum over turns
     pub tokens: u64,
@@ -611,6 +614,10 @@ pub fn read_in(dir: &Path, now: u64, subs: &Path) -> Vec<Sub> {
                 started: r.started,
                 finished_at,
                 active_at,
+                // a teammate is woken again with a new `start`; a plain subagent never is
+                resumed_at: (m.kind == SubKind::Teammate)
+                    .then(|| log.ids.get(&id).and_then(|r| r.start).map(|(t, _)| t))
+                    .flatten(),
                 tokens: r.tokens,
             });
             kept.insert(id, e);

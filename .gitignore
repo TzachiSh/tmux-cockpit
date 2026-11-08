@@ -11,3 +11,5 @@ tests/.cache/
 # scripts/tui-fetch writes bin/cockpit-tui there on prefix U.
 bin/
 tui/target/
+# rust-analyzer's own build dir at the root (#454): untracked, it was counted as a diff
+/target/
