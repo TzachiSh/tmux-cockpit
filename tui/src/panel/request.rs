@@ -182,6 +182,8 @@ const DENY: &[&str] = &[
 /// A rule that matches a folder on the path denies the file too: `x/.env/key`
 /// is refused under `Read(//**/.env)` ("File is in a directory that is denied",
 /// probed, #586), so each folder is held against the rule, the file last.
+/// `path` must be canonical, as a ref's is: a `..` is dropped, not followed, so
+/// `/r/.env/../key` would read as denied when it is not.
 pub fn read_denied(path: &Path, home: Option<&Path>) -> bool {
     let names = |p: &Path| -> Vec<String> {
         let normal = |c: std::path::Component<'_>| match c {

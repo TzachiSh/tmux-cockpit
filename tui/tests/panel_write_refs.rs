@@ -218,6 +218,20 @@ fn a_denied_ref_says_it_was_not_read() {
     );
 }
 
+/// #586: a file under a folder named `.env` is refused by `Read(//**/.env)`
+/// (probed), so its ref says it was not read, in the text the write sends.
+#[test]
+fn a_ref_under_a_denied_folder_says_it_was_not_read() {
+    let d = tree("denieddir");
+    std::fs::create_dir_all(d.0.join("repo/x/.env")).unwrap();
+    std::fs::write(d.0.join("repo/x/.env/key"), "K=v\n").unwrap();
+    let base = d.0.join("repo");
+    let items = ref_items(&[r(&d, "repo/x/.env/key", None)], &base, false, Some(&base));
+    let got = build_refs(&write(), &cap(&base), &[], 3, &items).text;
+    let note = "note=\"whole file; a secret the write may not read, not read\">x/.env/key</ref>";
+    assert!(got.contains(note), "{got}");
+}
+
 /// The rows of the profile's own deny list, read as the profile reads them.
 #[test]
 fn read_denied_follows_the_profiles_read_denies() {
