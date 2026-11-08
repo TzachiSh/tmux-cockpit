@@ -51,7 +51,9 @@ jobs:
           rustup toolchain install "$floor" --profile minimal --component clippy,rustfmt
           rustup default "$floor"
           rustc --version
-      - run: make tui-test
+      # tui-test in private, empty TMPDIR and TMUX_TMPDIR: a test that leaves a
+      # file, dir or tmux socket behind fails the job, named (#400)
+      - run: make tui-test-clean
       # The release build is a separate failure mode from the test build: LTO,
       # panic=abort and the dist profile only compile here.
       - run: make tui
