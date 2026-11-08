@@ -1424,3 +1424,268 @@ must_not: existing parser|parse_cases
 note: #701 control: nothing in the input shows a parser, so the reply names none to reuse
 --- request
 write a script that converts data.csv to json
+
+# Held out for #701: written without seeing the prompt, never tuned on.
+# Held-out cases for the write prompt, written without reading the prompt or its
+# examples. Format: tui/evals/panel/cases.txt lines 1-54.
+
+# Bugs with the failure on screen: reproduce first, check again after the fix.
+
+=== ho-pytest-keyerror
+kind: bug
+window: claude · claude · /home/u/projects/storefront
+expect: write
+must: test_refund|tests/test_orders.py; reproduce|reproduces|run it first|first run|fail|fails|failing|failure; again|after the fix|rerun|re-run
+must_not: AskUserQuestion; requirements
+holdout: yes
+note: the failing test, its file and the error are on screen, so the agent can run it; a careful brief runs that test first to see the KeyError, fixes it, then runs the test (and the suite) again; nothing is left for the owner
+--- screen
+$ pytest tests/test_orders.py -q
+..F.
+FAILED tests/test_orders.py::test_refund - KeyError: 'currency'
+  orders/refunds.py:41: in build_refund
+      amount = Money(order.total, payload["currency"])
+1 failed, 3 passed in 0.42s
+--- request
+fix this
+
+=== ho-go-importer-panic
+kind: bug
+window: bash · bash · /home/u/projects/ledger
+expect: write
+must: parse.go|cmd/importer|sample.csv; reproduce|reproduces|run it first|first run|fail|fails|failing|failure|crash|crashes|panic|panics; again|after the fix|rerun|re-run
+must_not: AskUserQuestion; requirements
+holdout: yes
+note: the command, the input file and the panic site are all on screen; the brief should rerun that exact command to see the panic, fix the bounds check, then run it again on the same file (plus go test); the owner has nothing to add
+--- screen
+$ go run ./cmd/importer data/sample.csv
+panic: runtime error: index out of range [3] with length 3
+
+goroutine 1 [running]:
+github.com/u/ledger/internal/csv.parseRow(...)
+        /home/u/projects/ledger/internal/csv/parse.go:57
+exit status 2
+--- request
+it crashes on this file, fix it
+
+# Big features whose requirements only the owner can settle.
+
+=== ho-multi-currency
+kind: feature
+window: claude · claude · /home/u/projects/shop
+expect: either
+ask_any: currency|currencies; display|displayed|show; charge|charged|settle|settlement|pay; exchange|rate|rates; which; local
+must: plan|planning|plans; requirements; AskUserQuestion|interview
+out_is: prompt
+must_not: Assumed:
+holdout: yes
+note: whether prices are only shown in other currencies or customers are charged in them, which currencies, and where rates come from change the whole design (pricing, payments, refunds, reporting); only the owner knows; a question on that, or a prompt that interviews for the requirements and plans before code, both serve
+--- screen
+$ ls shop
+cart  checkout  payments  pricing  orders  settings.py
+--- repo
+branch: main...origin/main
+root: /home/u/projects/shop
+status: clean
+recent commits:
+  8c1e2d0 checkout: stripe payment intents
+  41aa9f3 pricing: tiered discounts
+  0e7b5c2 orders: invoice pdf
+--- request
+add multi-currency support to checkout
+
+=== ho-offline-mode
+kind: feature
+window: claude · claude · /home/u/projects/field-app
+expect: either
+ask_any: read|read-only|view; edit|edits|write|create; sync|syncing|synchronize; conflict|conflicts; screen|screens|which; offline
+must: plan|planning|plans; requirements; AskUserQuestion|interview
+out_is: prompt
+must_not: Assumed:
+holdout: yes
+note: offline mode can mean cached read-only screens or full offline edits with sync and conflict handling; that choice, and which screens matter, decide the storage and sync design; the owner must settle it, so a question on it or a prompt that interviews and plans first both serve
+--- screen
+$ ls src
+api  components  navigation  screens  store  App.tsx
+--- repo
+branch: main...origin/main
+root: /home/u/projects/field-app
+status: clean
+recent commits:
+  2b9d4e1 screens: job detail photos
+  a0c37f8 api: retry on 503
+  6f12e9d store: redux toolkit
+--- request
+add an offline mode to the mobile app
+
+# Small additions next to an existing feature: no interview.
+
+=== ho-quiet-flag
+kind: feature
+window: claude · claude · /home/u/projects/dbtool
+expect: write
+must: --quiet|quiet; export
+must_not: AskUserQuestion; requirements
+holdout: yes
+note: one flag beside an existing one in the same command; what quiet means (suppress the progress output that --verbose adds to) is clear from the code; a brief that checks the command works, adds the flag and tests both is enough, an interview would be overkill
+--- screen
+$ dbtool export --help
+Usage: dbtool export [OPTIONS] TABLE
+
+Options:
+  --format [json|csv]  Output format
+  --verbose            Print progress for each batch
+  --help               Show this message and exit.
+--- request
+add a --quiet flag to the export command that hides the progress output
+
+=== ho-serializer-field
+kind: feature
+window: claude · claude · /home/u/projects/crm
+expect: write
+must: last_login|last_login_at; serializer|serializers|UserSerializer
+must_not: AskUserQuestion; requirements
+holdout: yes
+note: the model already has the field and the serializer lists the others; adding one read-only field and a test is a small edit with nothing to settle
+--- screen
+● accounts/serializers.py:
+  class UserSerializer(serializers.ModelSerializer):
+      class Meta:
+          model = User
+          fields = ["id", "email", "full_name", "date_joined"]
+--- request
+also return last_login in the user API response, the model already has it
+
+# The owner names a limit with an allowed alternative.
+
+=== ho-staging-not-prod
+kind: ops
+window: bash · bash · /home/u/projects/payments-infra
+expect: write
+must: staging|staging-eu
+must_not: --context prod-eu|--context=prod-eu|use-context prod-eu
+holdout: yes
+note: the owner forbids prod and names staging; both contexts are on screen, so the brief should target staging-eu explicitly; any command aimed at the prod-eu context breaks the limit (must_not names the context switch, not the word prod, since "do not touch prod" is fine)
+--- screen
+$ kubectl config get-contexts
+CURRENT   NAME         CLUSTER      AUTHINFO
+*         prod-eu      prod-eu      admin
+          staging-eu   staging-eu   admin
+$ ls k8s
+deployment.yaml  hpa.yaml  service.yaml
+--- request
+apply the new hpa.yaml but don't touch prod, try it on staging
+
+=== ho-new-column-not-rename
+kind: refactor
+window: claude · claude · /home/u/projects/members
+expect: write
+must: normalized_email
+must_not: AskUserQuestion
+holdout: yes
+note: the owner rules out renaming email and names the alternative, a new normalized_email column; the brief must carry that name, backfill and lookup steps are the agent's to work out
+--- screen
+● db/schema.rb:
+  create_table "members" do |t|
+    t.string "email", null: false
+    t.index ["email"], unique: true
+--- request
+logins fail when people type their email with capitals. don't rename or change the email column, add a new normalized_email column and look up by that instead
+
+# Report only.
+
+=== ho-backup-slow-why
+kind: investigate
+window: claude · claude · /home/u/projects/ops-scripts
+expect: write
+must: backup|backups; do not change|don't change|not change|report only|investigate only|no changes|do not modify|don't modify|not modify|without changing|read-only|read only
+holdout: yes
+note: the owner wants a cause, not a fix, and says so; the brief must keep the agent from editing the job or its cron while it looks at the logs and the script
+--- screen
+$ grep duration /var/log/backup/nightly.log | tail -3
+2026-11-06 nightly backup duration=00:41:12
+2026-11-07 nightly backup duration=02:58:40
+2026-11-08 nightly backup duration=03:04:05
+--- request
+why did the nightly backup jump from 40 minutes to 3 hours? just tell me why, don't change anything
+
+# Subagents: several independent parts fit them, one small edit does not.
+
+=== ho-lambdas-runtime-audit
+kind: investigate
+window: claude · claude · /home/u/projects/serverless
+expect: write
+must: subagent|subagents; nodejs16|nodejs16.x|runtime; v2|aws-sdk
+holdout: yes
+note: five separate functions, each its own package, checked for the same two things; one subagent per function keeps the work parallel and the contexts small; the owner wants a report, nothing to ask
+--- screen
+$ ls functions
+image-resize  invoice-mailer  order-webhook  report-export  user-cleanup
+--- request
+check each of these lambdas for the nodejs16.x runtime and aws-sdk v2 imports, and list what each one needs to move to node 20 and sdk v3
+
+=== ho-timeout-one-edit
+kind: plan
+window: claude · claude · /home/u/projects/fetcher
+expect: write
+must: 60; timeout
+must_not: subagent|subagents
+holdout: yes
+note: worded as a plan, but it is one constant and its docstring in one file; delegating would cost more than the edit
+--- request
+plan: raise DEFAULT_TIMEOUT in fetcher/config.py from 30 to 60 seconds and update its docstring to match
+
+# Style or naming is the only open point: pick a default.
+
+=== ho-cents-helper-name
+kind: feature
+window: claude · claude · /home/u/projects/billing-web
+expect: write
+must: money.ts; cents
+must_not: AskUserQuestion
+holdout: yes
+note: the behaviour is fully given (integer cents in, "$1,234.56" out); only the name is open and the owner hands it over; the brief should tell the agent to follow the file's existing naming, not ask
+--- screen
+● src/utils/money.ts exports parseAmount and roundToCents.
+--- request
+add a helper to src/utils/money.ts that turns integer cents into a string like $1,234.56. name it whatever fits the file
+
+# Data derivation where the project already has the generator.
+
+=== ho-currency-json-generator
+kind: feature
+window: claude · claude · /home/u/projects/geo-data
+expect: write
+out_is: prompt
+must: gen_countries.py|gen_countries; compare|diff|match|matches|same as
+must_not: AskUserQuestion
+holdout: yes
+note: the screen shows the repo already turns an ISO csv into JSON with scripts/gen_countries.py, and the request gives the output shape; the brief should reuse or extend that script rather than hand-write the data, then check the result matches the shape of countries.json; nothing is left to ask
+--- screen
+$ ls scripts data out
+scripts:
+gen_countries.py
+data:
+iso3166.csv  iso4217.csv
+out:
+countries.json
+$ head -3 out/countries.json
+{
+  "DE": {"name": "Germany", "numeric": "276"},
+  "FR": {"name": "France", "numeric": "250"},
+--- request
+make out/currencies.json from data/iso4217.csv, same layout as countries.json: code -> {name, minor_units}
+
+# Config for a named format with every field given.
+
+=== ho-editorconfig-given
+kind: format
+window: bash · bash · /home/u/projects/site
+out: format
+expect: write
+out_is: format
+must: indent_size; utf-8; lf
+holdout: yes
+note: the format and every value are given; a file with nothing to guess is written
+--- request
+.editorconfig for all files: spaces, indent size 2, lf line endings, utf-8, final newline, trim trailing whitespace
