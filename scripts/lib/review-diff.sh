@@ -6,6 +6,10 @@
 # for a caller that sources it on its own: its git is about the dir it is
 # given, never a repo an inherited GIT_DIR names. The ceiling stays.
 unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE
+# And the pathspec ones (#673): with GIT_LITERAL_PATHSPECS set, ':(top)' names
+# a file called that, so no gitlink is found to keep out of the add and its
+# repo's own clean filter runs. ICASE widens each ':(exclude,literal)'.
+unset GIT_LITERAL_PATHSPECS GIT_GLOB_PATHSPECS GIT_NOGLOB_PATHSPECS GIT_ICASE_PATHSPECS
 
 # Files git would have to hash in full: 100 ms at 32 MB, 26 s at 1 GB, measured.
 BIGCAP=$(( 32 * 1024 * 1024 ))
