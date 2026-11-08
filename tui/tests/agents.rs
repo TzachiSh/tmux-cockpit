@@ -192,15 +192,37 @@ fn now() -> u64 {
 /// signals a pid whose cmdline still names its own dir (AGENTS.md).
 #[test]
 fn the_rig_never_kills_a_pid_that_is_not_its_stub() {
-    let mut other = std::process::Command::new("sleep").arg("30").spawn().unwrap();
-    {
+    let mut other = {
         let r = Rig::new("reused", ONE);
+        // After Rig::new, which can wait on the ENV lock behind other rigs: a sleep started
+        // before it could end on its own and be blamed on the drop. An absolute path, since
+        // a bare `sleep` is the rig's bin/sleep, whose cmdline names the rig's dir.
+        let other = std::process::Command::new("/bin/sleep").arg("30").spawn().unwrap();
         std::fs::write(r.dir.join("stubpid"), other.id().to_string()).unwrap();
-    }
-    let alive = other.try_wait().unwrap().is_none();
-    let _ = other.kill();
-    let _ = other.wait();
-    assert!(alive, "the rig's drop killed a process that was not its stub");
+        other
+    };
+    // Child::kill is a SIGKILL too, so a look right after the drop could not tell a kill
+    // still on its way from none (#527). This ends it with SIGTERM: a SIGKILL already sent
+    // wins, and the exit status says which signal it died of.
+    // SAFETY: a plain signal to this test's own unreaped child.
+    unsafe { libc::kill(other.id() as libc::pid_t, libc::SIGTERM) };
+    let st = other.wait().unwrap();
+    use std::os::unix::process::ExitStatusExt;
+    assert_eq!(
+        st.signal(),
+        Some(libc::SIGTERM),
+        "the rig's drop killed a process that was not its stub"
+    );
+}
+
+/// A stub that has gone, its pid reaped, is no stub of the rig's: nothing is signalled.
+#[test]
+fn a_gone_stub_pid_is_not_the_rigs() {
+    let r = Rig::new("gone", ONE);
+    let mut child = std::process::Command::new(r.dir.join("bin/sleep")).arg("0").spawn().unwrap();
+    let pid = child.id() as i32;
+    child.wait().unwrap();
+    assert!(!stub_of(pid, &r.dir), "pid {pid}, reaped, still read as the rig's stub");
 }
 
 /// The positive path: an exec'd stub (argv[0] under the rig's bin) is reaped by Drop.

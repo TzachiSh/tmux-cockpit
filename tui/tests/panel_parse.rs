@@ -1,6 +1,6 @@
 //! Reply parsing: one literal reply per behaviour, pure functions only.
 use cockpit_tui::panel::envelope::OutType;
-use cockpit_tui::panel::parse::{Opt, Parsed, Reply, Step, cut_off, explain, files_read, fix, write};
+use cockpit_tui::panel::parse::{Opt, Parsed, Reply, Step, cut_off, explain, files_read, fix, tool_calls, write};
 
 fn opt(label: &str, recommended: bool) -> Opt {
     Opt {
@@ -371,4 +371,49 @@ fn files_read_skips_malformed_entries() {
         {"type":"assistant","message":{"content":[{"type":"tool_use","id":"a","name":"Read","input":{"file_path":7}}]}},
         {"type":"assistant"}, 3]"#;
     assert_eq!(files_read(bad), Some(vec![]));
+}
+
+// ---------------------------------------------------------------- tool calls (#628)
+
+/// One assistant turn with one tool call of this name and json input.
+fn call(id: &str, name: &str, input: &str) -> String {
+    let u = format!(r#"{{"type":"tool_use","id":"{id}","name":"{name}","input":{input}}}"#);
+    format!(r#"{{"type":"assistant","message":{{"content":[{u}]}}}}"#)
+}
+
+#[test]
+fn tool_calls_name_each_read_and_search_with_its_arguments() {
+    let out = format!(
+        "[{},{},{},{RESULT}]",
+        call("a", "Read", r#"{"file_path":"/r/a.rs"}"#),
+        call("b", "Grep", r#"{"pattern":"fn main","path":"/r","output_mode":"content"}"#),
+        call("c", "Glob", r#"{"pattern":"**/*.toml"}"#),
+    );
+    let want = ["Read /r/a.rs", "Grep fn main /r", "Glob **/*.toml"];
+    assert_eq!(tool_calls(&out), Some(want.map(String::from).to_vec()));
+}
+
+#[test]
+fn tool_calls_leave_out_a_refused_call_and_a_repeat() {
+    let out = format!(
+        "[{},{},{},{RESULT}]",
+        uses(&[("a", "Read", "/r/.env"), ("b", "Read", "/r/main.rs")]),
+        results(&[("a", true), ("b", false)]),
+        uses(&[("c", "Read", "/r/main.rs")]),
+    );
+    assert_eq!(tool_calls(&out), Some(vec!["Read /r/main.rs x".to_string()]));
+}
+
+#[test]
+fn tool_calls_of_a_call_that_ran_none_is_empty_and_of_other_output_none() {
+    assert_eq!(tool_calls(&format!("[{RESULT}]")), Some(vec![]));
+    for out in ["", "<prompt>p</prompt>", RESULT, "{", "null"] {
+        assert_eq!(tool_calls(out), None, "{out:?}");
+    }
+}
+
+#[test]
+fn tool_calls_keep_a_call_with_no_string_argument_by_its_name() {
+    let out = format!("[{}]", call("a", "Glob", r#"{"pattern":7}"#));
+    assert_eq!(tool_calls(&out), Some(vec!["Glob".to_string()]));
 }

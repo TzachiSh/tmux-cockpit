@@ -2891,3 +2891,26 @@ fn find_matches_the_bound_job_a_row_draws() {
         "the row reads -> nightlysweep, find misses it"
     );
 }
+
+/// #399: the list's legend names the stopped and idle-teammate marks, and each is
+/// listed once: stopped's ascii mark is not review pending's `#`.
+#[test]
+fn the_list_legend_names_each_sub_mark_once() {
+    for (g, stop, idle) in [(Glyphs::unicode(), "∎", "◦"), (Glyphs::ascii(), "=", "o")] {
+        let rows = board::help_rows(&g, true);
+        let at = rows.iter().position(|(k, v)| k.is_empty() && v == "on a row").unwrap();
+        let legend = &rows[at + 1..];
+        let has = |k: &str, v: &str| legend.iter().any(|(a, b)| a == k && b == v);
+        assert!(
+            has(stop, "stopped by you") && has(idle, "an idle teammate (between turns)"),
+            "{legend:?}"
+        );
+        assert!(
+            has(g.ended, "ended, or a subagent with no recorded end (may still run)"),
+            "{legend:?}"
+        );
+        for m in [stop, idle] {
+            assert_eq!(legend.iter().filter(|(k, _)| k == m).count(), 1, "{m} twice: {legend:?}");
+        }
+    }
+}

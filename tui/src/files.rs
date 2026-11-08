@@ -1,7 +1,12 @@
-//! `cockpit-tui files <dir> [--select <name>]`: the file browser (#363). It lists one folder in the
-//! shared picker, walks the tree and prints one line: `view <path>`,
-//! `open <path>` (the editor) or `copy <path>`. It never mutates;
+//! `cockpit-tui files <dir> [--select <name>] [--hidden] [--ignored] [--filter <text>]`: the file
+//! browser (#363). It lists one folder in the shared picker, walks the tree and prints one line:
+//! `view <path>`, `open <path>` (the editor) or `copy <path>`. It never mutates;
 //! `scripts/tmux-open-path --folder` checks the line again and acts.
+//!
+//! With `COCKPIT_FILES_STATE=1` a second line follows the answer, `state <h> <i> <filter>`:
+//! the dotfiles and ignored toggles as 0 or 1 and the typed filter. The script hands them back
+//! as the flags when the viewer goes back to the browser (#574). Without it the answer stays
+//! one line, for a script older than the binary.
 //!
 //! The row's key is the file's own name, as bytes, so the printed path is exact
 //! whatever the name holds; the row's text is for the eye and drops control and
@@ -12,6 +17,8 @@ use crate::pick::{self, Opts, Outcome, Pick, Row};
 use crate::theme::{Glyphs, Theme};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent};
 use ignore::WalkBuilder;
+use ratatui::Terminal;
+use ratatui::backend::Backend;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -22,6 +29,15 @@ use std::path::{Path, PathBuf};
 
 /// A folder with more entries than this lists its first ones and says so.
 const MAX_ENTRIES: usize = 20_000;
+
+/// The longest filter `--filter` takes and the state line carries, in characters.
+pub const FILTER_MAX: usize = 200;
+
+/// A filter that can ride the state line and come back as `--filter`: one
+/// line, no control or bidi character, at most FILTER_MAX characters.
+pub fn filter_ok(s: &str) -> bool {
+    s.chars().count() <= FILTER_MAX && !s.chars().any(|c| c.is_control() || pick::is_bidi(c))
+}
 
 pub struct Entry {
     pub name: Vec<u8>,
@@ -193,10 +209,12 @@ impl Files {
 
     /// Starts on the entry `name` of the folder shown: the dotfiles on when it
     /// is one, the ignored entries on when the ignore files hide it. A name the
-    /// folder does not hold leaves the first row selected.
-    pub fn select(&mut self, name: &[u8]) {
-        let Ok(all) = list_dir(&self.dir, true, true) else { return };
-        let Some(e) = all.iter().find(|e| e.name == name) else { return };
+    /// folder does not hold leaves the first row selected and returns false.
+    pub fn select(&mut self, name: &[u8]) -> bool {
+        let Ok(all) = list_dir(&self.dir, true, true) else { return false };
+        let Some(e) = all.iter().find(|e| e.name == name) else {
+            return false;
+        };
         self.hidden |= name.first() == Some(&b'.');
         self.show_ignored |= e.ignored;
         let dir = self.dir.clone();
@@ -204,6 +222,37 @@ impl Files {
         // laid out for no screen, `go` put the file on the top row: start from
         // the top and let the first draw's clamp scroll only as far as it needs
         self.pick.top = 0;
+        true
+    }
+
+    /// Starts where `a` says: the toggles on, the entry selected, the filter
+    /// typed. The selection stays on the entry when the filter shows it. A
+    /// name gone from the folder still lists what the toggles show.
+    pub fn restore(&mut self, a: &Args) {
+        let toggled = (a.hidden && !self.hidden) || (a.ignored && !self.show_ignored);
+        self.hidden |= a.hidden;
+        self.show_ignored |= a.ignored;
+        let found = a.select.as_ref().is_some_and(|n| self.select(n.as_bytes()));
+        if toggled && !found {
+            self.reload(Rect::default());
+        }
+        if a.filter.is_empty() {
+            return;
+        }
+        let p = &mut self.pick;
+        let kept = p.shown.get(p.sel).map(|&i| p.rows[i].key.clone());
+        p.query = a.filter.clone();
+        p.shown = pick::filter(&p.rows, &p.query);
+        p.sel = kept.and_then(|k| p.shown.iter().position(|&i| p.rows[i].key == k)).unwrap_or(0);
+        p.top = 0;
+    }
+
+    /// `state <h> <i> <filter>`: the toggles as 0 or 1 and the filter, left
+    /// out when `--filter` would refuse it. No newline.
+    pub fn state_line(&self) -> Vec<u8> {
+        let q = &self.pick.query;
+        let q = if filter_ok(q) { q.as_str() } else { "" };
+        format!("state {} {} {q}", u8::from(self.hidden), u8::from(self.show_ignored)).into_bytes()
     }
 
     /// The selected row's entry as a path, and whether it is a folder.
@@ -292,9 +341,7 @@ impl Files {
                 _ => Outcome::Continue,
             },
         };
-        self.pick.clamp(area);
-        let g = self.g;
-        self.fit(area.width, &g);
+        self.layout(area);
         out
     }
 
@@ -308,6 +355,13 @@ impl Files {
         let g = self.g;
         self.fit(area.width, &g);
         self.pick.clamp(area);
+    }
+
+    /// One frame of the run loop: laid out for the terminal's size, then drawn.
+    pub fn frame<B: Backend>(&mut self, t: &mut Terminal<B>, th: &Theme) -> Result<(), B::Error> {
+        let s = t.size().unwrap_or_default();
+        self.layout(Rect::new(0, 0, s.width, s.height));
+        t.draw(|fr| draw(fr, fr.area(), self, th)).map(|_| ())
     }
 
     /// Sets the header for a screen `w` wide: the path cut on the left, so the
@@ -399,27 +453,70 @@ pub fn draw(f: &mut ratatui::Frame, area: Rect, u: &Files, th: &Theme) {
     pick::render_with(f, area, &u.pick, th, &look);
 }
 
-const USAGE: &str = "cockpit-tui files <dir> [--select <name>]";
+const USAGE: &str = "cockpit-tui files <dir> [--select <name>] [--hidden] [--ignored] [--filter <text>]";
 
-/// The folder, and the entry to start on: one name in it, never a path, never
-/// empty, no control character. The one-folder form is the old one, kept.
-pub fn parse_args(args: &[String]) -> Result<(String, Option<String>), String> {
-    match args {
-        [dir] => Ok((dir.clone(), None)),
-        [dir, flag, name] if flag == "--select" => {
-            if name.is_empty() || name.contains('/') || name.chars().any(char::is_control) {
-                return Err("--select takes one name: no /, no control character".into());
-            }
-            Ok((dir.clone(), Some(name.clone())))
+/// What `main` starts on.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Args {
+    pub dir: String,
+    /// One name in the folder, never a path, never empty, no control character.
+    pub select: Option<String>,
+    pub hidden: bool,
+    pub ignored: bool,
+    /// Empty for none; else what [`filter_ok`] takes.
+    pub filter: String,
+}
+
+/// The folder first, then each flag at most once, in any order. The
+/// one-folder form is the old one, kept.
+pub fn parse_args(args: &[String]) -> Result<Args, String> {
+    let Some((dir, rest)) = args.split_first().filter(|(d, _)| !d.starts_with("--")) else {
+        return Err("needs exactly one folder".into());
+    };
+    let mut a = Args {
+        dir: dir.clone(),
+        ..Args::default()
+    };
+    let mut seen = HashSet::new();
+    let mut it = rest.iter();
+    while let Some(flag) = it.next() {
+        if !seen.insert(flag.as_str()) {
+            return Err(format!("{flag} is given twice"));
         }
-        _ => Err("needs exactly one folder".into()),
+        match flag.as_str() {
+            "--hidden" => a.hidden = true,
+            "--ignored" => a.ignored = true,
+            "--select" => {
+                let name = it
+                    .next()
+                    .filter(|n| !n.is_empty() && !n.contains('/') && !n.chars().any(char::is_control));
+                let name = name.ok_or("--select takes one name: no /, no control character")?;
+                a.select = Some(name.clone());
+            }
+            "--filter" => {
+                let text = it.next().filter(|t| filter_ok(t)).ok_or(format!(
+                    "--filter takes one line of up to {FILTER_MAX} characters: no control or bidi character"
+                ))?;
+                a.filter = text.clone();
+            }
+            _ => return Err("needs exactly one folder".into()),
+        }
+    }
+    Ok(a)
+}
+
+/// The answer, and the state line after it when there is one to print.
+pub fn with_state(o: Outcome, f: &Files) -> Outcome {
+    match o {
+        Outcome::Choose(k) => Outcome::Choose([k, b"\n".to_vec(), f.state_line()].concat()),
+        o => o,
     }
 }
 
 /// Exit 0 with `view <path>`, `open <path>` or `copy <path>` on stdout, 1 for esc, 2 for a bad
 /// argument, a folder that cannot be read or no terminal.
 pub fn main(args: &[String]) -> i32 {
-    let (dir, select) = match parse_args(args) {
+    let a = match parse_args(args) {
         Ok(a) => a,
         Err(e) => {
             eprintln!("cockpit-tui: files: {e}\n{USAGE}");
@@ -427,24 +524,20 @@ pub fn main(args: &[String]) -> i32 {
         }
     };
     let th = Theme::load();
-    let mut f = match Files::new(Path::new(&dir), &th.g) {
+    let mut f = match Files::new(Path::new(&a.dir), &th.g) {
         Ok(f) => f,
         Err(e) => {
             eprintln!("cockpit-tui: files: {e}\n{USAGE}");
             return 2;
         }
     };
-    if let Some(name) = select {
-        f.select(name.as_bytes());
-    }
+    f.restore(&a);
     let mut term = match pick::open_screen("files") {
         Ok(t) => t,
         Err(c) => return c,
     };
     let out = loop {
-        let area = pick::screen(&term);
-        f.layout(area);
-        if term.draw(|fr| draw(fr, fr.area(), &f, &th)).is_err() {
+        if f.frame(&mut term, &th).is_err() {
             break Outcome::Cancel;
         }
         match event::read() {
@@ -460,5 +553,10 @@ pub fn main(args: &[String]) -> i32 {
     };
     drop(term);
     pick::restore_tty();
+    let out = if std::env::var_os("COCKPIT_FILES_STATE").is_some_and(|v| v == "1") {
+        with_state(out, &f)
+    } else {
+        out
+    };
     pick::answer(&mut std::io::stdout().lock(), &out)
 }

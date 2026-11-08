@@ -11,6 +11,8 @@ x=$(mktemp -d) || { rmdir "$t"; exit 1; }
 TMPDIR=$t TMUX_TMPDIR=$x "$@"
 rc=$?
 rmdir "$x/tmux-$(id -u)" 2>/dev/null
+# a test that made a dir unreadable must not hide it from the scan or the rm
+chmod -R u+rwx "$t" "$x" 2>/dev/null
 # files and empty dirs: a dir that holds something is named by what it holds
 leaves() { (cd "$1" && find . -mindepth 1 \( ! -type d -o -empty \) | sed "s|^\\.|$2|"); }
 left=$( (leaves "$t" TMPDIR; leaves "$x" TMUX_TMPDIR) | sort | tr '\n' ' ')

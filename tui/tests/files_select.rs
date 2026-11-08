@@ -92,6 +92,11 @@ fn a_plain_name_leaves_the_dotfiles_and_the_ignored_off() {
 /// What `parse_args` gives for a row: the folder and the name, or a refusal.
 type Parsed = Result<(String, Option<String>), ()>;
 
+/// The folder and the name `parse_args` took, the parts this table is about.
+fn dir_and_name(a: files::Args) -> (String, Option<String>) {
+    (a.dir, a.select)
+}
+
 /// The arguments `main` takes, each row named: the old one-folder form still
 /// parses, and `--select` takes one entry name, never a path or a control.
 #[test]
@@ -115,7 +120,7 @@ fn the_arguments_table() {
         ("a name and more", a(&["/d", "--select", "x", "y"]), Err(())),
     ];
     for (name, args, want) in rows {
-        let got = files::parse_args(args).map_err(|_| ());
+        let got = files::parse_args(args).map(dir_and_name).map_err(|_| ());
         assert_eq!(&got, want, "{name}");
     }
 }
@@ -131,10 +136,13 @@ fn a_refused_name_names_the_argument() {
 /// The rows the first frame draws for a screen `w` by `h`, laid out as the
 /// run loop does it: the header first, then the scroll.
 fn first_frame(f: &mut Files, w: u16, h: u16) -> Vec<String> {
-    f.layout(Rect::new(0, 0, w, h));
     let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
-    t.draw(|fr| files::draw(fr, fr.area(), f, &Theme::fixed())).unwrap();
-    let b = t.backend().buffer().clone();
+    f.frame(&mut t, &Theme::fixed()).unwrap();
+    rows_of(&t, w, h)
+}
+
+fn rows_of(t: &Terminal<TestBackend>, w: u16, h: u16) -> Vec<String> {
+    let b = t.backend().buffer();
     (0..h).map(|y| (0..w).map(|x| b[(x, y)].symbol()).collect()).collect()
 }
 
@@ -163,8 +171,22 @@ fn a_selection_past_the_first_screen_is_drawn_on_the_first_frame() {
     let s = Scratch::new(&n.iter().map(String::as_str).collect::<Vec<_>>());
     let mut f = opened(&s, b"f60.txt");
     let rows = first_frame(&mut f, 80, 24);
-    let at = rows.iter().position(|r| r.contains("f60.txt"));
+    let at = rows.iter().position(|r| r.contains("▎ f60.txt"));
     let last = rows.iter().rposition(|r| r.contains(".txt"));
     assert!(at.is_some() && at == last, "f60 at {at:?}, last row {last:?}: {rows:#?}");
     assert!(!rows.iter().any(|r| r.contains("f10.txt")), "scrolled: {rows:#?}");
+}
+
+/// A key leaves the screen laid out for its frame (#601): the header first,
+/// then the scroll, so a draw straight after it still shows the selection.
+#[test]
+fn a_key_leaves_the_selection_on_the_screen_it_drew() {
+    let n = names(10..90);
+    let s = Scratch::new(&n.iter().map(String::as_str).collect::<Vec<_>>());
+    let mut f = opened(&s, b"f60.txt");
+    f.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), Rect::new(0, 0, 80, 24));
+    let mut t = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    t.draw(|fr| files::draw(fr, fr.area(), &f, &Theme::fixed())).unwrap();
+    let rows = rows_of(&t, 80, 24);
+    assert!(rows.iter().any(|r| r.contains("▎ f61.txt")), "{rows:#?}");
 }

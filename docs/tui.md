@@ -54,6 +54,8 @@ rather than dumping a compiler error, and keeps any binary you already have.
 `make check` builds the binary first; the suite needs cargo. `make tui-test`
 runs cargo's tests, clippy and fmt on the `rust-version` toolchain through
 rustup (CI's, so the lints match); `make tui-test TUI_TOOLCHAIN=` skips that.
+`make tui-test-clean` runs it in a private TMPDIR and TMUX_TMPDIR and fails,
+naming them, on any file, dir or socket a test left there (#400).
 
 The binary lives in the plugin's own `bin/` and is gitignored. `install.sh`
 runs `scripts/tui-fetch --required` and exits 1 when no working binary is
@@ -291,7 +293,20 @@ hermetic `claude -p` call, on haiku by default (`--judge-model` picks another;
 the writer routes to sonnet, so the judge is a different model). It reads the
 rubric in `tui/evals/panel/judge-rubric.txt`, drawn from the owner's labels and
 notes, plus the case's window, screen, repo, request and output type, and
-answers with its reasoning, a one-line critique and PASS or FAIL. Each row then
+answers with its reasoning, a one-line critique and PASS or FAIL. For an
+exploring call it also reads what the panel read, in a `<panel_reads>` section:
+`parse::tool_calls` over the call's json events, one line a call the panel was
+not refused (`Read /r/a.rs`, `Grep fn main /r`), each once, at most 40 lines
+of at most 200 chars and then a count of the rest. Each line has its control
+chars made spaces and its `</` escaped (`envelope::esc`), so a path or pattern
+cannot close the section. Each `--out` row keeps the list as `reads`. A text
+call, a failed call and an owner label have no reads (`null`), and their judge
+prompt has no such section. Neither does a case with refs or earlier rounds:
+the judge sees neither the basket nor those rounds, so it could not tell an
+option drawn from them from an invented one. Without the section rule 7 fails
+a repo-context option only when the screen or git state contradicts it, as
+before. With it, rule 7 fails an option with no basis in the request, the
+screen, the git state, the earlier rounds or the reads (#628). Each row then
 prints `judge ok|FAIL <id> <critique>`, the summary adds the judge's pass rate
 and how often it agrees with the keyword checks, and each `--out` row gains
 `judge`, `critique`, `judge_model`, `judge_cost_usd` and `rubric` (the
@@ -309,15 +324,36 @@ then every disagreement with the owner's note and the judge's critique.
 `--split tune|holdout|all` picks the rows: the holdout takes whole cases (the
 label's `case`), about a third of the rows of the cases with an owner fail and a
 third of the rest, by a hash of the case name; tune the rubric on the tune rows
-only. On the 118 labels, haiku with the shipped rubric scored TPR 93/98, TNR
-15/20 (95% CI 53%-89%, 36 points wide) and kappa 0.70 (95% CI 0.52-0.88)
-against the owner. Earlier rubrics gave kappa 0.59 to 0.69 from one sweep to
-the next, so a single sweep moves kappa by about 0.1. Quote the full set: the first split was by row,
-every owner note was read before it, the break-on-purpose rule came from two of
-its held-out fails, and three of its seven held-out fails shared a case with
-tuned rows, so no holdout number from this file is clean. The kappa
-interval treats rows as independent, but several rows answer one case, so it
-is narrower than a case-clustered interval would be.
+only. On the 118 labels, haiku with the shipped rubric scored, in two sweeps,
+TPR 89/98 and 94/98 (95% CI 83%-95% and 90%-98%), TNR 15/20 twice (95% CI
+53%-89%, 36 points wide) and kappa 0.61 and 0.72 (95% CI 0.42-0.80 and
+0.55-0.90) against the owner. The rubric before rule 7 weighed the panel's
+reads (#628) scored, in two sweeps the same day, TPR 93/98 twice, TNR 15/20 and
+14/20 and kappa 0.70 and 0.66, and in an earlier pair TPR 92/98 and 94/98, TNR
+15/20 and 14/20 and kappa 0.68 and 0.69. No owner label carries reads, so these
+numbers show only that the change leaves a reply with no reads graded as
+before; no owner label yet fails an invented option, so none measures the new
+clause. Four scratch rows, three runs each, did: the judge failed a PR option
+found in no read 6 of 6 times and passed the same option with no reads given 3
+of 3, but passed it beside a changelog read and a matching search only 2 of 3.
+That is the clause's cost: it sees paths, not contents, so it can fail an
+option the panel did ground, and a later sweep should count such false fails
+once labels with reads exist. The rubric before rule 10 was
+narrowed to requests only about a test scored kappa 0.65 in two sweeps the same
+day, and failed one `json-flag` row the owner passed in each; the narrowed one
+failed none. Rule 10 now counts a failing test named on the screen, not only in
+the request. The judge passed the owner-failed `last-commit-test` row, which has
+no break step, in all four sweeps of the earlier wording, and failed it in one
+of these two. A sweep at the rule-7 rubric gave TPR 93/98, TNR 15/20 and kappa
+0.70. Narrowing rule 7 (fail a repo-context option only when the screen or git
+state contradicts it) left these counts unchanged. Older rubrics gave kappa 0.59
+to 0.69 from one sweep to the next, so a single sweep moves kappa by about 0.1.
+Quote the full set: the first split was by row, every owner note was read before
+it, the break-on-purpose rule came from two of its held-out fails, and three of
+its seven held-out fails shared a case with tuned rows, so no holdout number
+from this file is clean. The kappa interval treats rows as independent, but
+several rows answer one case, so it is narrower than a case-clustered interval
+would be.
 
 **The panel's cache.** `claude -p` reads its system prompt from a file, so each
 distinct prompt is written once to
@@ -1900,7 +1936,7 @@ pane are different facts and a blank tile tells you which one it is.
 **CLI:** `-h` or `--help` prints the usage:
 
 ```
-cockpit-tui board [--select %N] [--note <file>] | pick | files <dir> | branch [-C <dir>] | info [--text|--json] %N | workdir %N | sessions [--needs] [--current $N] | panel %N [--resume <state> --last ok|failed:<why>|hidden | --ask <file> <a> <b>] | view [--line N] [--] <file> | basket add %N <file> | --rows | --json | --version | -h
+cockpit-tui board [--select %N] [--note <file>] | pick | files <dir> [--select <name>] [--hidden] [--ignored] [--filter <text>] | branch [-C <dir>] | info [--text|--json] %N | workdir %N | sessions [--needs] [--current $N] | panel %N [--resume <state> --last ok|failed:<why>|hidden | --ask <file> <a> <b>] | view [--line N] [--] <file> | basket add %N <file> | --rows | --json | --version | -h
 ```
 
 `info %N` is the info screen, `info --text %N` its rows as text, and
@@ -2443,6 +2479,21 @@ one entry, never a path: an empty name, a `/` or a control character is exit 2.
 The script passes it when the viewer it opened closes with nothing printed, and
 runs that viewer with `COCKPIT_VIEW_BACK=1`, which makes its `q` hint and help
 say `back` instead of `close`.
+
+The browser keeps its state across a view and back (#574). `--hidden` turns the
+dotfiles on, `--ignored` the ignored entries, and `--filter <text>` types the
+filter in; the selection stays on `--select`'s entry when the filter shows it.
+Each flag comes at most once, in any order after the folder. The filter is one
+line of up to 200 characters with no control or bidi character, else exit 2
+naming `--filter`. With `COCKPIT_FILES_STATE=1` the browser prints a second line
+after its answer, `state <dotfiles 0|1> <ignored 0|1> <filter>`, and leaves out a
+filter the flag would refuse. Without the variable the answer stays one line.
+`tmux-open-path`'s browse loop sets the variable, turns the state line back into
+the flags when it reopens the browser, and drops a filter with a control
+or bidi character or over 200 characters, counted as characters in any locale.
+A second line that is not a state line is
+refused with the answer. A binary that refuses the flags reopens the folder
+fresh, as one without `--select` does.
 
 ## The info screen (#252)
 
