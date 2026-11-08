@@ -121,7 +121,8 @@ FLOPEOF
 }
 FLOP="$STATE/flop"; mkdir -p "$FLOP"
 if [ -x "$TMUX_BIN" ]; then flop_write "$FLOP" "$TMUX_BIN"; TMUX_REAL="$FLOP/tmux"; fi
-flop_left() {                 # [dir] -> a bad row for each r.* whose call was never retried
+flop_left() {                 # [dir] -> a bad row for each r.* whose call was never retried, and
+                              # with no dir each socket refusal a subshell made (#195)
     local r a k
     for r in "${1:-$FLOP}"/r.*; do
         [ -e "$r" ] || continue
@@ -130,6 +131,8 @@ flop_left() {                 # [dir] -> a bad row for each r.* whose call was n
         bad "new-session after kill-server on $k goes through fresh_server (#573)" \
             "a retry with the same argv" "${a%.}, refused and never retried"
     done
+    # the run's own tail (no dir): refusals a subshell made, whose count was lost (#195)
+    [ $# -gt 0 ] || sock_left
 }
 # The suite itself runs inside the user's tmux, so its own $TMUX would send
 # every bare call straight back to the live server. Drop it.
@@ -276,9 +279,23 @@ until_out() {                 # <pattern> <cmd...>
 # failed to start once left its socket empty and wrote there. So a helper handed a
 # socket refuses an empty one with a bad row naming it, and a socket path the suite
 # reads back for TMUX= comes through sock_path, never as an empty string.
+# A refusal made inside $(...) runs in a subshell: its `bad` prints a row, but the count it
+# bumps is the subshell's and the run never sees it. So that one is written to $SOCKBAD too,
+# and the tail's flop_left turns each line into a bad row of the run's own.
+SOCKBAD="$STATE/sock-refused"
+sock_bad() {                  # <row> <want> <got>: bad, and counted from inside $(...) too
+    bad "$@"
+    [ "$BASHPID" = "$$" ] || printf '%s\n' "$1" >> "$SOCKBAD"
+}
+sock_left() {                 # a bad row for each refusal a subshell made
+    local l
+    [ -s "$SOCKBAD" ] || return 0
+    while IFS= read -r l; do bad "$l, inside \$(...)" "no refusal" "refused"; done < "$SOCKBAD"
+    : > "$SOCKBAD"
+}
 need_sock() {                 # <socket name> <who>: 0, or a bad row and 1 when it is empty
     [ -n "$1" ] && return 0
-    bad "$2: an empty socket name, which can reach the user's default server (#195)" \
+    sock_bad "$2: an empty socket name, which can reach the user's default server (#195)" \
         "a private socket name" "''"
     return 1
 }
@@ -289,7 +306,8 @@ sock_path() {                 # <-L socket name> <var>: the server's socket path
     need_sock "$1" sock_path \
         && p=$("$TMUX_REAL" -L "$1" display-message -p '#{socket_path}' 2>/dev/null)
     if [ -z "$p" ]; then
-        [ -z "$1" ] || bad "sock_path $1: no server answered (#195)" "its socket path" "nothing"
+        [ -z "$1" ] \
+            || sock_bad "sock_path $1: no server answered (#195)" "its socket path" "nothing"
         p="$SOCKDIR/"
     fi
     printf -v "$2" '%s' "$p"
@@ -446,7 +464,8 @@ printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s/argv"\nexit 1\n' "$SKD" > "$SKD/t
 chmod +x "$SKD/tmux"
 sk_try() {                    # <call...> -> "<exit> <bad rows naming #195>", with the stub as tmux
     (
-        TMUX_REAL="$SKD/tmux" POLLS=2 nb=0
+        # the refusals here are the test's own: kept off the run's tail
+        TMUX_REAL="$SKD/tmux" POLLS=2 nb=0 SOCKBAD="$SKD/sockbad-try"
         bad() { case $1 in *'(#195)'*) nb=$((nb + 1)) ;; esac; }
         "$@" >/dev/null 2>&1; rc=$?
         printf '%s %s' "$rc" "$nb"
@@ -458,13 +477,23 @@ for call in "until_cap '' %0 *x*" "review_enter '' %0" "loaded_on '' a-row" "gat
 done
 is "and none of them ran tmux" "" "$(cat "$SKD/argv" 2>/dev/null)"
 sk_path() {                   # <name> -> "<bad rows naming #195>|<the path>", the stub as tmux
-    ( TMUX_REAL="$SKD/tmux" nb=0; bad() { case $1 in *'(#195)'*) nb=$((nb + 1)) ;; esac; }
+    ( TMUX_REAL="$SKD/tmux" nb=0 SOCKBAD="$SKD/sockbad-path"
+      bad() { case $1 in *'(#195)'*) nb=$((nb + 1)) ;; esac; }
       skp=x; sock_path "$1" skp 2>/dev/null; printf '%s|%s' "$nb" "$skp" )
 }
 is "sock_path of '' is a bad row and a path no server answers" "1|$SOCKDIR/" "$(sk_path '')"
 is "...and it ran no tmux" "" "$(cat "$SKD/argv" 2>/dev/null)"
 is "sock_path of a server that never started: the same, not an empty path" \
     "1|$SOCKDIR/" "$(sk_path "cockpit-sk-none-$$")"
+# A refusal inside $(...) runs in a subshell, where `bad` bumps a count the run never sees:
+# `k=$(gate_key '' %0)` alone ended "0 passed, 0 failed". The refusal is written down too, and
+# the tail's flop_left check turns each one into a bad row of the run's own.
+is "a refusal inside \$(...) still reaches the run's tail as a bad row" "1" "$(
+    SOCKBAD="$SKD/sockbad" TMUX_REAL="$SKD/tmux"
+    _=$(gate_key '' %0)
+    nb=0; bad() { nb=$((nb + 1)); }
+    flop_left; printf '%s' "$nb"
+)"
 
 echo "== the kill/new guard clears a refusal only on its retry, keyed on the server (#644) =="
 # A second guard, in front of a stub that exits $GUARD_RC, so no server is involved.
