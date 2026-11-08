@@ -2774,6 +2774,34 @@ mod tests {
         assert!(!grade(&c, edit).pass, "editing");
     }
 
+    /// The reply of the checked-in owner label `key`.
+    fn owner_reply(key: &str) -> String {
+        let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("evals/panel/owner-labels.jsonl");
+        let l = judge::read_labels("owner-labels", &std::fs::read_to_string(p).unwrap()).unwrap();
+        l.into_iter()
+            .find(|l| l.key == key)
+            .map(|l| l.input.reply)
+            .unwrap_or_else(|| panic!("no label {key}"))
+    }
+
+    /// #626: a feature that comes with its test fails on a break-it step, in any
+    /// of its wordings; the owner-passed replies still pass.
+    #[test]
+    fn a_feature_with_its_test_fails_on_a_break_it_step() {
+        let brk = "\nMake one small change to the code on purpose so the new test fails, then undo the change.";
+        let with = |r: &str| r.replacen("\n</prompt>", &format!("{brk}\n</prompt>"), 1);
+        let (v2, v3) = (owner_reply("json-flag.r0.v2"), owner_reply("json-flag.r0.v3"));
+        let csv = "<prompt>\nFirst check that the json export works, then add csv next to it and test both.\n</prompt>";
+        let rows = [
+            ("owner json-flag.r0.v2", "json-flag", v2, true),
+            ("owner json-flag.r0.v3", "json-flag", v3.clone(), true),
+            ("json-flag.r0.v3 plus a break", "json-flag", with(&v3), false),
+            ("csv first", "small-add-format", csv.to_string(), true),
+            ("csv first plus a break", "small-add-format", with(csv), false),
+        ];
+        assert_eq!(graded_wrong(&rows), Vec::<&str>::new(), "rows graded the wrong way");
+    }
+
     /// Rows of (row name, case, reply, should pass) graded against the shipped
     /// cases: the names of the rows graded the other way.
     fn graded_wrong<'a>(rows: &[(&'a str, &str, String, bool)]) -> Vec<&'a str> {

@@ -372,7 +372,7 @@ kind: feature
 window: claude · claude · /home/u/projects/tool
 expect: write
 must: --json; show
-must_not: mutate|mutation|mutant|mutants|break the code on purpose|on purpose, confirm|on purpose and confirm|on purpose with one small change|undo the break
+must_not: mutate|mutation|mutant|mutants|on purpose|undo the break
 note: "the same" resolves from the screen, and the request names the check; #626: a feature that comes with its test gets no break-it step, which is for a request only about a test
 --- screen
 ● Added a --json flag to `tool list`: it prints one JSON object per item.
@@ -885,7 +885,7 @@ kind: feature
 window: claude · claude · /home/u/projects/report
 expect: write
 must: csv; json; test|tests; first|before
-must_not: AskUserQuestion; requirements; Assumed:; mutate|mutation|mutant|mutants|break the code on purpose|on purpose, confirm|on purpose and confirm|on purpose with one small change|undo the break
+must_not: AskUserQuestion; requirements; Assumed:; mutate|mutation|mutant|mutants|on purpose|undo the break
 note: #558 (card 33): a small addition to existing code: check that the json export works first, add csv, then test both; no interview; #626: and no break-it step, since the tests come with a feature
 --- screen
 ● Added `report export --format json`. tests/test_export.py passes.
