@@ -57,8 +57,14 @@ FNR == NR {                                       # pass 1: the top-level helper
 t == "" { next }
 { for (k in pend) f[k] = 1; delete pend
   note(f, $0)
-  for (hn in H) if ($0 ~ ("(^|[^A-Za-z_0-9])" hn "([^A-Za-z_0-9]|$)")) {
-      m = split(H[hn], P, " "); for (i = 1; i <= m; i++) if (P[i] != "") f[P[i]] = 1 } }
+  # Each word of the line looked up in H, rather than every helper name tried
+  # as a regex against the line: the same matches, without compiling hundreds of
+  # regexes per line of run.sh.
+  w = split($0, W, /[^A-Za-z_0-9]+/)
+  for (j = 1; j <= w; j++) if ((W[j] in H) && !(W[j] in seen)) {
+      seen[W[j]] = 1
+      m = split(H[W[j]], P, " "); for (i = 1; i <= m; i++) if (P[i] != "") f[P[i]] = 1 }
+  delete seen }
 function emit(   k, s) { s = ""; for (k in f) s = s " " k; printf "%d\t%s\t%s\n", n, t, substr(s, 2) }
 END { emit() }
 ' "$RUN" "$RUN" > "$TBL"
