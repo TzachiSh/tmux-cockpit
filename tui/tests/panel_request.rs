@@ -2,7 +2,7 @@
 //! `Call`, so nothing here touches the process environment.
 mod fake;
 
-use cockpit_tui::panel::request::{Call, Fail, Profile, Request, prompt_file, read_dir_ok};
+use cockpit_tui::panel::request::{Call, Effort, Fail, Profile, Request, prompt_file, read_dir_ok};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -73,6 +73,7 @@ impl Rig {
             claude: self.dir.join("claude").display().to_string(),
             timeout: Duration::from_secs(timeout),
             dir: self.dir.join("cache"),
+            effort: Effort::Medium,
         }
     }
 
@@ -116,7 +117,7 @@ fn the_argv_stdin_and_cwd_follow_the_contract() {
     let argv = rig.read("argv");
     let args: Vec<&str> = argv.lines().collect();
     let file = rig.call(30).dir.join("prompts");
-    assert_eq!(args.len(), 10, "{argv}");
+    assert_eq!(args.len(), 14, "{argv}");
     assert_eq!(args[..4], ["-p", "--model", "sonnet", "--system-prompt-file"]);
     assert!(args[4].starts_with(&file.display().to_string()), "{}", args[4]);
     assert_eq!(
@@ -126,6 +127,10 @@ fn the_argv_stdin_and_cwd_follow_the_contract() {
             "",
             "--no-session-persistence",
             "--strict-mcp-config",
+            "--setting-sources",
+            "",
+            "--effort",
+            "medium",
             "--disable-slash-commands"
         ]
     );
@@ -176,6 +181,7 @@ fn a_missing_binary_fails_through_poll() {
         claude: "/nonexistent/claude".into(),
         timeout: Duration::from_secs(5),
         dir: d.to_path_buf(),
+        effort: Effort::Medium,
     };
     let mut req = spawn(&call, "S", "p", "haiku");
     assert_eq!(req.pid(), None);
@@ -305,6 +311,10 @@ fn the_text_profile_is_todays_argv() {
             "",
             "--no-session-persistence",
             "--strict-mcp-config",
+            "--setting-sources",
+            "",
+            "--effort",
+            "medium",
             "--disable-slash-commands"
         ]
     );
@@ -345,6 +355,10 @@ fn the_read_only_profile_reads_and_never_writes() {
             "--verbose",
             "--no-session-persistence",
             "--strict-mcp-config",
+            "--setting-sources",
+            "",
+            "--effort",
+            "medium",
             "--disable-slash-commands"
         ]
     );
@@ -387,7 +401,11 @@ fn the_research_profile_adds_the_web_and_skills() {
             "json",
             "--verbose",
             "--no-session-persistence",
-            "--strict-mcp-config"
+            "--strict-mcp-config",
+            "--setting-sources",
+            "",
+            "--effort",
+            "medium"
         ]
     );
 }
@@ -651,11 +669,11 @@ fn a_read_only_allow_never_names_a_file_tool() {
 fn a_read_only_call_pins_the_permission_mode() {
     for research in [false, true] {
         let p = Profile::read_only(PathBuf::from("/r"), research, 0.5, CAP);
-        let a = p.argv();
+        let a = p.argv(Effort::Medium);
         let at = a.iter().position(|x| x == "--permission-mode").expect("--permission-mode");
         assert_eq!(a[at + 1], "dontAsk", "research {research}");
     }
-    assert!(!Profile::TEXT.argv().contains(&"--permission-mode".to_string()));
+    assert!(!Profile::TEXT.argv(Effort::Medium).contains(&"--permission-mode".to_string()));
 }
 
 /// A refused read dir starts no claude: the root, home, and a glob character.
@@ -813,4 +831,75 @@ fn read_dir_ok_passes_a_project_folder() {
 #[test]
 fn a_budget_stop_displays_its_cap() {
     assert_eq!(Fail::Budget { limit_usd: 0.15 }.to_string(), "stopped at its budget of USD 0.15");
+}
+
+// ------------------------------------------------ settings and effort (#623)
+
+/// The word after `flag` in `argv`.
+fn value<'a>(argv: &'a [String], flag: &str) -> Option<&'a str> {
+    let i = argv.iter().position(|a| a == flag)?;
+    argv.get(i + 1).map(String::as_str)
+}
+
+/// The five words the CLI takes for `--effort` pass as they are.
+#[test]
+fn an_effort_word_the_cli_takes_passes_as_it_is() {
+    for w in ["low", "medium", "high", "xhigh", "max"] {
+        assert_eq!(Effort::read(w).as_str(), w);
+    }
+}
+
+/// Anything else is `medium`: the user's own text never reaches the argv.
+#[test]
+fn any_other_effort_is_medium() {
+    let rows = [
+        ("empty", ""),
+        ("upper case", "HIGH"),
+        ("padded", " high"),
+        ("a newline", "high\n"),
+        ("unknown", "ultra"),
+        ("a command after", "high; touch x"),
+        ("a substitution", "$(touch x)"),
+        ("a backtick", "max`id`"),
+    ];
+    for (row, w) in rows {
+        assert_eq!(Effort::read(w), Effort::Medium, "{row}");
+    }
+}
+
+/// A refused value is `medium` in the argv, and none of its text is there.
+#[test]
+fn a_raw_effort_never_reaches_the_argv() {
+    let a = Profile::TEXT.argv(Effort::read("high; touch /tmp/x"));
+    assert_eq!(value(&a, "--effort"), Some("medium"));
+    assert!(!a.iter().any(|x| x.contains("touch")), "{a:?}");
+}
+
+/// Every profile at every effort loads no settings source and pins the effort.
+#[test]
+fn every_profile_loads_no_settings_and_pins_the_effort() {
+    let ro = |research| Profile::read_only(PathBuf::from("/r"), research, 0.5, CAP);
+    for (row, p) in [("text", Profile::TEXT), ("read", ro(false)), ("research", ro(true))] {
+        for e in Effort::ALL {
+            let a = p.argv(e);
+            assert_eq!(value(&a, "--setting-sources"), Some(""), "{row} {e:?}");
+            assert_eq!(value(&a, "--effort"), Some(e.as_str()), "{row} {e:?}");
+        }
+    }
+}
+
+/// The read-only confinement stands in full beside the new flags (#365).
+#[test]
+fn the_read_only_confinement_stands_beside_them() {
+    for (research, allow) in [(false, None), (true, Some("WebSearch,WebFetch,Skill"))] {
+        for e in Effort::ALL {
+            let a = Profile::read_only(PathBuf::from("/r"), research, 0.5, CAP).argv(e);
+            assert_eq!(value(&a, "--allowedTools"), allow, "{research} {e:?}");
+            assert_eq!(value(&a, "--disallowedTools"), Some(DENY), "{research} {e:?}");
+            assert_eq!(value(&a, "--permission-prompts"), Some("none"), "{research} {e:?}");
+            assert_eq!(value(&a, "--permission-mode"), Some("dontAsk"), "{research} {e:?}");
+            let hooks_off = Some(r#"{"disableAllHooks":true}"#);
+            assert_eq!(value(&a, "--settings"), hooks_off, "{research} {e:?}");
+        }
+    }
 }

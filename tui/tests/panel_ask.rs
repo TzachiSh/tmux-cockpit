@@ -349,7 +349,7 @@ fn panel_takes_ask_with_a_file_and_two_lines() {
 /// carries the read-only profile, never the text call's `--tools ""`.
 #[test]
 fn launch_sends_the_read_only_call() {
-    use cockpit_tui::panel::request::Call;
+    use cockpit_tui::panel::request::{Call, Effort};
     let (d, mut a) = opened("launch");
     let bin = d.0.join("claude");
     fake::write_exec(
@@ -362,6 +362,7 @@ fn launch_sends_the_read_only_call() {
         claude: bin.display().to_string(),
         timeout: std::time::Duration::from_secs(30),
         dir: d.0.join("cache"),
+        effort: Effort::Medium,
     };
     a.launch(&call);
     for _ in 0..1000 {
@@ -559,7 +560,7 @@ fn a_second_hide_on_the_pane_is_refused() {
 /// as an exploring write's names them from the pane's folder (#416's note).
 #[test]
 fn an_answer_notes_the_files_read_from_the_repo() {
-    use cockpit_tui::panel::request::Call;
+    use cockpit_tui::panel::request::{Call, Effort};
     let (d, mut a) = opened("reads");
     let file = d.0.join("src/x.rs").display().to_string();
     let events = format!(
@@ -574,6 +575,7 @@ fn an_answer_notes_the_files_read_from_the_repo() {
         claude: bin.display().to_string(),
         timeout: std::time::Duration::from_secs(30),
         dir,
+        effort: Effort::Medium,
     });
     for _ in 0..1000 {
         if a.poll() {
