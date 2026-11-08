@@ -395,22 +395,62 @@ fn base_lines(root: &str, filters: &[String], base: Option<&str>, unborn: bool, 
     .map(OsString::from)
     .into();
     args.extend([OsString::from(empty), OsString::from(base.unwrap_or("HEAD")), OsString::from("--")]);
-    for p in paths {
-        let mut spec = OsString::from(":(literal)");
-        spec.push(std::ffi::OsStr::from_bytes(p));
-        args.push(spec);
-    }
-    let (ok, out) = run_raw(root, filters, None, &args);
-    if !ok {
-        return None;
-    }
+    // one pathspec matches a path once: sorted and deduped, no path sits in two batches
+    let mut paths = paths.to_vec();
+    paths.sort_unstable();
+    paths.dedup();
+    let specs: Vec<OsString> = paths
+        .iter()
+        .map(|p| {
+            let mut spec = OsString::from(":(literal)");
+            spec.push(std::ffi::OsStr::from_bytes(p));
+            spec
+        })
+        .collect();
     let num = |x: &[u8]| std::str::from_utf8(x).ok().and_then(|x| x.parse::<u64>().ok()).unwrap_or(0);
-    Some(
-        out.split(|b| *b == 0)
+    let mut lines = 0;
+    for batch in batches(&specs, ARGS_BUDGET) {
+        let (ok, out) = run_raw(root, filters, None, &[&args[..], batch].concat());
+        if !ok {
+            return None;
+        }
+        lines += out
+            .split(|b| *b == 0)
             .filter_map(|r| r.split(|b| *b == b'\t').next())
             .map(num)
-            .sum(),
-    )
+            .sum::<u64>();
+    }
+    Some(lines)
+}
+
+/// Pathspec bytes on one [`base_lines`] diff (#665). A plain `mv` of a big tree
+/// drops thousands of paths, and all of them on one command line passed ARG_MAX:
+/// the spawn failed and the row read `?`. Linux allows at least 128 KiB of
+/// arguments and environment together; half of that leaves the rest to the
+/// environment and the fixed flags. A test lowers it to cross it cheaply.
+#[cfg(not(test))]
+const ARGS_BUDGET: usize = 64 * 1024;
+#[cfg(test)]
+const ARGS_BUDGET: usize = 256;
+
+/// `specs` cut in order into runs costing at most `budget` bytes each, as
+/// execve counts an argument: its bytes, a NUL and a pointer. A spec over the
+/// budget goes alone, so every spec is in exactly one run.
+fn batches(specs: &[OsString], budget: usize) -> Vec<&[OsString]> {
+    let mut out = vec![];
+    let (mut start, mut used) = (0, 0);
+    for (i, s) in specs.iter().enumerate() {
+        let cost = s.len() + 1 + std::mem::size_of::<usize>();
+        if i > start && used + cost > budget {
+            out.push(&specs[start..i]);
+            (start, used) = (i, 0);
+        }
+        used += cost;
+    }
+    if start < specs.len() {
+        out.push(&specs[start..]);
+    }
+    out
 }
 
 /// A NUL-separated exclusion pathspec for each gitlink in `git ls-files -s -z`
@@ -481,5 +521,137 @@ pub fn diffstat(args: &[String]) -> i32 {
             0
         }
         None => 1,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn specs(lens: &[usize]) -> Vec<OsString> {
+        lens.iter().map(|n| OsString::from("p".repeat(*n))).collect()
+    }
+
+    fn sizes(b: &[&[OsString]]) -> Vec<Vec<usize>> {
+        b.iter().map(|r| r.iter().map(|s| s.len()).collect()).collect()
+    }
+
+    /// A table row: its name, the spec lengths, the run lengths wanted.
+    type Row = (&'static str, &'static [usize], &'static [&'static [usize]]);
+
+    #[test]
+    fn batches_cut_in_order_under_the_budget() {
+        // each spec costs its length + 1 + 8 on a 64-bit target: 7 bytes cost 16
+        let rows: [Row; 5] = [
+            ("no specs, no runs", &[], &[]),
+            ("all fit in one", &[7, 7], &[&[7, 7]]),
+            ("exactly the budget", &[7, 7, 7, 7], &[&[7, 7, 7, 7]]),
+            ("one past it starts a run", &[7, 7, 7, 7, 7], &[&[7, 7, 7, 7], &[7]]),
+            ("an oversize spec goes alone", &[7, 100, 7], &[&[7], &[100], &[7]]),
+        ];
+        for (name, lens, want) in rows {
+            let want: Vec<Vec<usize>> = want.iter().map(|r| r.to_vec()).collect();
+            assert_eq!(sizes(&batches(&specs(lens), 64)), want, "{name}");
+        }
+    }
+
+    /// A throwaway repo under the temp dir, removed on drop.
+    struct Repo(PathBuf);
+
+    impl Repo {
+        fn new(tag: &str) -> Repo {
+            let name = format!("cockpit-gitsafe-unit-{tag}-{}", std::process::id());
+            let d = std::env::temp_dir().join(name);
+            let _ = std::fs::remove_dir_all(&d);
+            std::fs::create_dir_all(&d).unwrap();
+            let r = Repo(d);
+            r.git(&["init", "-q", "-b", "main"]);
+            r
+        }
+
+        fn git(&self, args: &[&str]) -> Vec<u8> {
+            let o = Command::new("git")
+                .arg("-C")
+                .arg(&self.0)
+                .args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"])
+                .args(args)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .output()
+                .unwrap();
+            assert!(o.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&o.stderr));
+            o.stdout
+        }
+
+        /// `n` files under `top/`, file i holding i lines, committed.
+        fn committed(tag: &str, n: usize) -> Repo {
+            let r = Repo::new(tag);
+            std::fs::create_dir_all(r.0.join("top")).unwrap();
+            for i in 1..=n {
+                std::fs::write(r.0.join(format!("top/file-{i:03}")), "x\n".repeat(i)).unwrap();
+            }
+            r.git(&["add", "-A"]);
+            r.git(&["commit", "-q", "-m", "one"]);
+            r
+        }
+
+        fn stat(&self) -> Option<Stat> {
+            let root = self.0.display().to_string();
+            tree_stat(&root, &self.0.join(".git").display().to_string(), None)
+        }
+
+        /// What plain git says: deleted lines off `diff HEAD`, files off `ls-files -o`.
+        fn reference(&self) -> (u64, u64, u64) {
+            let numstat = String::from_utf8(self.git(&["diff", "HEAD", "--numstat"])).unwrap();
+            let field = |l: &str, k: usize| l.split('\t').nth(k).unwrap().parse::<u64>().unwrap();
+            let col = |k: usize| numstat.lines().map(|l| field(l, k)).sum();
+            let others = self.git(&["ls-files", "-o", "--exclude-standard", "-z"]);
+            (col(0), col(1), others.split(|b| *b == 0).filter(|p| !p.is_empty()).count() as u64)
+        }
+    }
+
+    impl Drop for Repo {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    // 40 specs of 22 bytes, 31 as execve counts them, against a 256-byte budget: five diffs
+    const FILES: usize = 40;
+
+    #[test]
+    fn the_fixture_crosses_the_lowered_budget() {
+        let spec = OsString::from(":(literal)top/file-001");
+        assert!(FILES * (spec.len() + 9) > 4 * ARGS_BUDGET, "too few files to batch");
+    }
+
+    #[test]
+    fn a_plain_mv_past_the_budget_counts_what_git_does() {
+        let r = Repo::committed("mv", FILES);
+        std::fs::rename(r.0.join("top"), r.0.join("moved")).unwrap();
+        let (add, del, new, _) = r.stat().expect("a stat");
+        assert_eq!((add, del, new), r.reference());
+        assert_eq!(del, (FILES * (FILES + 1) / 2) as u64, "every file's lines, each once");
+    }
+
+    #[test]
+    fn a_path_named_twice_counts_once_as_on_one_command_line() {
+        let r = Repo::committed("dup", FILES);
+        // file-008 twice: sorted, the pair straddles the end of the first
+        // batch of eight, so only the dedup keeps it to one diff
+        let names: Vec<_> = (1..=FILES).chain([8]).map(|i| format!("top/file-{i:03}")).collect();
+        let paths: Vec<&[u8]> = names.iter().map(|s| s.as_bytes()).collect();
+        let root = r.0.display().to_string();
+        let want = (FILES * (FILES + 1) / 2) as u64;
+        assert_eq!(base_lines(&root, &[], None, false, &paths), Some(want));
+    }
+
+    #[test]
+    fn a_rm_cached_past_the_budget_counts_what_git_does() {
+        let r = Repo::committed("rmc", FILES);
+        r.git(&["rm", "-rq", "--cached", "top"]);
+        let (add, del, new, _) = r.stat().expect("a stat");
+        assert_eq!((add, del, new), r.reference());
+        assert_eq!(del, (FILES * (FILES + 1) / 2) as u64, "every file's lines, each once");
     }
 }

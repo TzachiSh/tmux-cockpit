@@ -298,30 +298,34 @@ exploring call it also reads what the panel read, in a `<panel_reads>` section:
 `parse::tool_calls` over the call's json events, one line a call the panel was
 not refused (`Read /r/a.rs`, `Grep fn main /r`), each once, at most 40 lines
 of at most 200 chars and then a count of the rest. Each line has its control
-chars made spaces and its `</` escaped (`envelope::esc`), so a path or pattern
-cannot close the section. In every other section (window, output type, screen,
-repo, request, reply) only a closing tag of one of the prompt's sections is
-escaped, in any case and with blanks before the name, so a field cannot end its
-section or close one it planted (#646). The reply's own tags, such as
-`</question>`, stay as the panel wrote them, and so do newlines and control
-chars: only a tag ends one of these sections. Each `--out` row keeps the list
-as `reads`. A text
+chars made spaces and its `</` escaped (`envelope::esc`), and so is a closer
+with blanks before the `/`, such as `< /panel_reads>`, so a path or pattern
+cannot close the section. Each `--out` row keeps the list as `reads`. A text
 call, a failed call and an owner label have no reads (`null`), and their judge
 prompt has no such section. Neither does a case with refs or earlier rounds:
 the judge sees neither the basket nor those rounds, so it could not tell an
 option drawn from them from an invented one. Without the section rule 7 fails
 a repo-context option only when the screen or git state contradicts it, as
 before. With it, rule 7 fails an option with no basis in the request, the
-screen, the git state, the earlier rounds or the reads (#628). Each row then
-prints `judge ok|FAIL <id> <critique>`, the summary adds the judge's pass rate
-and how often it agrees with the keyword checks, and each `--out` row gains
-`judge`, `critique`, `judge_model`, `judge_cost_usd` and `rubric` (the
+screen, the git state, the earlier rounds or the reads (#628). In the other
+sections (window, output type, screen, repo, request, reply) only a closing tag
+of one of the prompt's sections is escaped, in any case and with blanks before
+the `/` or the name, so a field cannot end its section or close one it planted
+(#646). A name that goes on with a letter, digit, `_`, `-` or `.`, as in
+`</reply-option>`, is another tag. The reply's own tags, such as `</question>`,
+stay as the panel wrote them, and so do newlines and control chars: only a tag
+ends one of these sections. A zero-width char before the name, or a full-width
+name such as `</ＲＥＰＬＹ>`, stays raw (#652): matching them would take a
+Unicode confusables table, and the prompt's own closers are plain ASCII. Each
+row then prints `judge ok|FAIL <id> <critique>`, the summary adds the judge's
+pass rate and how often it agrees with the keyword checks, and each `--out` row
+gains `judge`, `critique`, `judge_model`, `judge_cost_usd` and `rubric` (the
 rubric's hash). The keyword checks still decide `pass`: the judge sits beside
 them, never in place of them. A judge call that gives no verdict leaves `judge`
 null and is counted as an error, and a run whose every judge call failed exits
-1. Each call is capped with `--max-budget-usd 0.05`. With `--judge` the `--out`
-rows are written once the judge is done, so a sweep killed before then writes
-none.
+with 1. Each call is capped with `--max-budget-usd 0.05`. With `--judge` the
+`--out` rows are written once the judge is done, so a sweep killed before then
+writes none.
 `--calibrate FILE.jsonl` runs the judge on owner-labelled replies
 (`tui/evals/panel/owner-labels.jsonl`: one row a reply, with `verdict` pass or
 fail) and prints TPR (judge pass when the owner passed), TNR (judge fail when

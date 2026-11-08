@@ -353,8 +353,9 @@ pub(crate) const INTERRUPT: &str = "[Request interrupted by user";
 /// one. A paste is one: its text is what was typed beside the paste blocks, else
 /// `[pasted text]`. Returns that text, each caller taking its own first line.
 pub(crate) fn typed_text(v: &Value) -> Option<String> {
-    let meta = !matches!(v.get("isMeta"), None | Some(Value::Null) | Some(Value::Bool(false)));
-    if kind(v) != "user" || meta {
+    let flag = |k: &str| !matches!(v.get(k), None | Some(Value::Null | Value::Bool(false)));
+    // #351: the summary Claude Code writes after /compact is a user row, not a prompt
+    if kind(v) != "user" || flag("isMeta") || flag("isCompactSummary") {
         return None;
     }
     let c = &v["message"]["content"];
@@ -841,7 +842,12 @@ mod tests {
         let image = serde_json::json!({"type": "image", "source": {"type": "base64", "data": "AA=="}});
         let meta = serde_json::json!({"type": "user", "isMeta": true, "message": {"content": "Caveat: generated"}});
         let res = serde_json::json!({"type": "tool_result", "tool_use_id": "t1", "content": "ok"});
-        let rows: [(&str, Value, Option<&str>); 26] = [
+        // #351: the summary Claude Code writes after /compact, as a user row
+        let compact = |on: bool, t: &str| {
+            let msg = serde_json::json!({"role": "user", "content": t});
+            serde_json::json!({"type": "user", "isCompactSummary": on, "message": msg})
+        };
+        let rows: [(&str, Value, Option<&str>); 28] = [
             ("a string prompt", user("fix the build\nsecond line".into()), Some("fix the build")),
             (
                 "an image prompt",
@@ -956,6 +962,12 @@ mod tests {
                 serde_json::json!({"type": "assistant", "message": {"content": "hi"}}),
                 None,
             ),
+            (
+                "a compact summary",
+                compact(true, "This session is being continued from a previous one."),
+                None,
+            ),
+            ("isCompactSummary false", compact(false, "go on"), Some("go on")),
         ];
         for (name, row, want) in rows {
             assert_eq!(typed_prompt(&row).as_deref(), want, "{name}");

@@ -30,11 +30,12 @@ json_str() {                  # <key>
 # -r first: the stale pid is the one absent from /proc, so `read || ps` would fork every time.
 # agent-poll is run by its own path (#!/bin/bash), so the kernel names the process after it.
 poll_alive() {                # <pid>
-    local comm=""
+    # COCKPIT_PROC_DIR: the tests point it at an empty dir to run the macOS branch (#194).
+    local comm="" proc=${COCKPIT_PROC_DIR:-/proc}
     case "$1" in ''|*[!0-9]*) return 1 ;; esac
-    if [ -r "/proc/$1/comm" ]; then
-        read -r comm 2>/dev/null < "/proc/$1/comm"
-    elif [ ! -d /proc/self ]; then
+    if [ -r "$proc/$1/comm" ]; then
+        read -r comm 2>/dev/null < "$proc/$1/comm"
+    elif [ ! -d "$proc/self" ]; then
         # macOS: comm is the interpreter for a script, so ask for the command line.
         comm=$(ps -o args= -p "$1" 2>/dev/null)
         case "$comm" in *agent-poll|*agent-poll\ *) comm=agent-poll ;; esac

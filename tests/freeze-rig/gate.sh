@@ -69,7 +69,7 @@ cleanup() {
     return 0
 }
 trap cleanup EXIT
-srv() { tmux -L "$SOCK" "$@"; }
+# srv is lib.sh's, which refuses an empty SOCK (#195)
 
 # status-interval 0: the forced redraw must be the ONLY redraw in the window.
 ( cd "$LOGDIR" && tmux -L "$SOCK" -vv -f /dev/null \

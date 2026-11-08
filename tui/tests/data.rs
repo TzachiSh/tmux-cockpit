@@ -1133,6 +1133,21 @@ fn the_remembered_prompt_belongs_to_its_own_transcript() {
     assert_eq!(asked_of(&r, "%1").0, "mine");
 }
 
+/// Two transcripts, each with its own prompt, each read past the window: each
+/// keeps its own. One slot that remembers its path passes the test above, since a
+/// read with no prompt there clears nothing, and loses one prompt here (#367).
+#[test]
+fn each_transcript_keeps_its_own_prompt() {
+    let r = Rig::new("askedtwo");
+    let p1 = r.transcript("s1", &(prompt("mine") + &turn_output(1)));
+    let p2 = r.transcript("s2", &(prompt("yours") + &turn_output(1)));
+    asked_of(&r, "%1");
+    asked_of(&r, "%2");
+    append(&p1, &turn_output(300));
+    append(&p2, &turn_output(300));
+    assert_eq!((asked_of(&r, "%1").0, asked_of(&r, "%2").0), ("mine".into(), "yours".into()));
+}
+
 /// A gap past what the window can scan may hold a newer prompt, so the older one
 /// is no longer the answer: it reads as master did, with none.
 #[test]
@@ -1662,9 +1677,15 @@ fn the_board_and_info_agree_on_the_asked_prompt() {
     let r = Rig::new("askedagree");
     let image = serde_json::json!({"type": "user", "timestamp": "2026-08-27T00:00:05.000Z", "message": {"content": [
         {"type": "image", "source": {"type": "base64", "data": "AA=="}}, {"type": "text", "text": "look at this"}]}});
+    // #351: the summary Claude Code writes after /compact is no prompt either
+    let text = "This session is being continued from a previous one.";
+    let summary = serde_json::json!({"role": "user", "content": text});
+    let compact = serde_json::json!({"type": "user", "isCompactSummary": true,
+        "timestamp": "2026-08-27T00:00:09.000Z", "message": summary});
     let cases = [
         ("s1", typed_row("[Request interrupted by user]"), "first prompt"),
         ("s2", format!("{image}\n"), "look at this"),
+        ("s3", format!("{compact}\n"), "first prompt"),
     ];
     let mut rows = vec![];
     for (sess, after, _) in &cases {
