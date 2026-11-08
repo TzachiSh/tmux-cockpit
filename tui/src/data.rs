@@ -841,7 +841,7 @@ pub fn list_fleet() -> Option<(Vec<Pane>, std::collections::BTreeSet<String>)> {
         }
         // `session:window`; a session name never holds a `:` (tmux swaps it)
         sessions.insert(f[1].rsplit_once(':').map_or(f[1], |(s, _)| s).to_string());
-        let Some((mut p, live_by)) = row_pane(&f, &mut procs_t) else {
+        let Some((mut p, live_by)) = row_pane(&f, &mut procs_t, true) else {
             continue;
         };
         log_ended_flip(&p, live_by);
@@ -867,11 +867,16 @@ pub fn list_fleet() -> Option<(Vec<Pane>, std::collections::BTreeSet<String>)> {
     Some((ps, sessions))
 }
 
+/// What [`row_pane`] returns: the Pane and what found the agent.
+type RowPane = Option<(Pane, &'static str)>;
+
 /// One FIELDS row to its Pane, or `None` when the row is not an agent's: the
 /// board's agent test. Shared by the fetch and `workdir` (#500), so the two
 /// cannot disagree on which panes are agents. The second value names what found
-/// the agent, for the ended-flip log.
-fn row_pane(f: &[&str], procs_t: &mut Option<Procs>) -> Option<(Pane, &'static str)> {
+/// the agent, for the ended-flip log. `want_ended` false skips what only `ended`
+/// needs (#507): a marked pane is an agent's without its process tree, so a
+/// caller that never reads `ended` forks no `ps` for it, and gets `ended` false.
+fn row_pane(f: &[&str], procs_t: &mut Option<Procs>, want_ended: bool) -> RowPane {
     // the floor list_fleet names
     if f.len() < 13 {
         return None;
@@ -887,7 +892,7 @@ fn row_pane(f: &[&str], procs_t: &mut Option<Procs>) -> Option<(Pane, &'static s
         && if raw.is_empty() {
             in_tree()
         } else {
-            tree_cached((f[0], f[9], f[3]), in_tree)
+            want_ended && tree_cached((f[0], f[9], f[3]), in_tree)
         };
     let live = by_cmd || by_tree;
     if raw.is_empty() && !live {
@@ -907,7 +912,7 @@ fn row_pane(f: &[&str], procs_t: &mut Option<Procs>) -> Option<(Pane, &'static s
         review: unsentinel(f[10]),
         spool: unsentinel(f[11]),
         win: f[12].into(),
-        ended: ended(&raw, live, AGENT_GLOB.with(|g| !g.is_empty())),
+        ended: want_ended && ended(&raw, live, AGENT_GLOB.with(|g| !g.is_empty())),
         ..Default::default()
     };
     let by = if by_cmd {
@@ -962,7 +967,8 @@ fn one_row(pane: &str) -> Option<(Pane, Vec<String>)> {
     if f[0] != pane {
         return None;
     }
-    let (p, _) = row_pane(&f, &mut None)?;
+    // workdir and is_agent never read `ended`
+    let (p, _) = row_pane(&f, &mut None, false)?;
     Some((p, f.iter().map(|s| s.to_string()).collect()))
 }
 

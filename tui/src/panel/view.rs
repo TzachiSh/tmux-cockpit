@@ -27,6 +27,10 @@ fn tiered(g: &Glyphs, s: &str) -> String {
 
 /// Word wrap to `w` columns, splitting a word longer than the line. Widths are
 /// per grapheme cluster, as the buffer draws them: ❤️ is 2 columns, not 1.
+/// Each word is measured once and the line's width kept as it grows, and a
+/// long word is cut in one pass over its graphemes: re-measuring the line for
+/// every word and re-copying a long word's rest for every cut cost a 120 KB
+/// answer tens of milliseconds a frame, and one long word seconds (#352).
 pub fn wrap(text: &str, w: usize) -> Vec<String> {
     let w = w.max(4);
     let width = |s: &str| s.graphemes(true).map(|g| g.width()).sum::<usize>();
@@ -34,31 +38,35 @@ pub fn wrap(text: &str, w: usize) -> Vec<String> {
     for para in text.split('\n') {
         // Indentation is meaning in code and YAML: the first line keeps it.
         let body = para.trim_start_matches(' ');
-        let mut line = " ".repeat((para.len() - body.len()).min(w / 2));
+        let indent = (para.len() - body.len()).min(w / 2);
+        let (mut line, mut used) = (" ".repeat(indent), indent);
         let mut fresh = true;
         for word in body.split(' ') {
-            let cand = if fresh { format!("{line}{word}") } else { format!("{line} {word}") };
-            if width(&cand) <= w {
-                line = cand;
+            let (gap, ww) = (usize::from(!fresh), width(word));
+            if used + gap + ww <= w {
+                if !fresh {
+                    line.push(' ');
+                }
+                line.push_str(word);
+                used += gap + ww;
                 fresh = false;
                 continue;
             }
+            // a word that does not fit starts a row of its own, without the indent
             if !fresh {
                 out.push(std::mem::take(&mut line));
             }
             fresh = false;
-            let mut rest = word.to_string();
-            while width(&rest) > w {
-                let mut used = 0;
-                let cut = rest.grapheme_indices(true).find(|(_, g)| {
-                    used += g.width();
-                    used > w
-                });
-                let at = cut.map_or(rest.len(), |(i, _)| i);
-                out.push(rest[..at].to_string());
-                rest = rest[at..].to_string();
+            let (mut from, mut run) = (0, 0);
+            for (i, g) in word.grapheme_indices(true) {
+                let gw = g.width();
+                if run + gw > w {
+                    out.push(word[from..i].to_string());
+                    (from, run) = (i, 0);
+                }
+                run += gw;
             }
-            line = rest;
+            (line, used) = (word[from..].to_string(), run);
         }
         out.push(line);
     }

@@ -144,13 +144,21 @@ pub fn find(rows: &[Row], q: &str) -> Vec<Hit> {
     find_in(rows, &texts, q)
 }
 
-/// A byte of a joined line: where it sits in its row's text. The space a soft
-/// wrap dropped sits at the end of the row before, and is in neither row.
+/// A row's text in a joined line: line bytes `at..at + len` are row `row`'s
+/// own, from byte `skip` of its text. One a row, not one a byte (#633): the
+/// only bytes in no segment are the spaces a soft wrap dropped, each just
+/// before the next row's segment.
 #[derive(Clone, Copy)]
-struct At {
+struct Seg {
+    at: usize,
     row: usize,
-    byte: usize,
-    put_back: bool,
+    skip: usize,
+    len: usize,
+}
+
+/// The segment line byte `b` falls in or after: the last to start at or before it.
+fn seg_of(segs: &[Seg], b: usize) -> usize {
+    segs.partition_point(|s| s.at <= b).saturating_sub(1)
 }
 
 /// [`find`] over `texts`, each row's [`Row::text`], kept by the screen.
@@ -166,20 +174,34 @@ fn find_in(rows: &[Row], texts: &[String], q: &str) -> Vec<Hit> {
         let end = (first + 1..texts.len())
             .find(|&r| rows.get(r).is_none_or(|x| x.join == Join::Start))
             .unwrap_or(texts.len());
-        let (line, at) = joined(rows, texts, first..end);
+        let (line, segs) = joined(rows, texts, first..end);
         let (f, back) = folded(&line, fold);
         let mut from = 0;
         while let Some(i) = f[from..].find(&q) {
-            let (a, b) = (back[from + i], back[from + i + q.len()]);
+            let at = |k: usize| back.as_ref().map_or(k, |b| b[k]);
+            let (a, b) = (at(from + i), at(from + i + q.len()));
             from += i + q.len();
-            // a match of nothing but a put-back space draws on neither row
-            let Some(s) = at[a..b].iter().find(|x| !x.put_back) else { continue };
-            let e = at[a..b].iter().rev().find(|x| !x.put_back).expect("one real byte");
+            // a start on a put-back space moves to the next row's text
+            let s = segs[seg_of(&segs, a)];
+            let (row, from_b) = if a < s.at + s.len {
+                (s.row, s.skip + a - s.at)
+            } else {
+                // the next row with text of its own: a row that is only its prefix has none
+                let next = segs[seg_of(&segs, a) + 1..].iter().find(|n| n.len > 0);
+                match next.filter(|n| n.at < b) {
+                    Some(n) => (n.row, n.skip),
+                    // a match of nothing but a put-back space draws on neither row
+                    None => continue,
+                }
+            };
+            // an end on a put-back space stops at the end of the row before it
+            let e = segs[seg_of(&segs, b - 1)];
+            let to = e.skip + (b - e.at).min(e.len);
             out.push(Hit {
-                row: s.row,
-                from: s.byte,
+                row,
+                from: from_b,
                 last: e.row,
-                to: e.byte + 1,
+                to,
             });
         }
         first = end;
@@ -188,47 +210,45 @@ fn find_in(rows: &[Row], texts: &[String], q: &str) -> Vec<Hit> {
 }
 
 /// Rows `rs`, one line wrapped, as that line: a later row without the prefix
-/// it starts with, and a soft wrap's dropped space put back. Each byte's place.
-fn joined(rows: &[Row], texts: &[String], rs: std::ops::Range<usize>) -> (String, Vec<At>) {
-    let (mut line, mut at) = (String::new(), Vec::new());
+/// it starts with, and a soft wrap's dropped space put back. Each row's segment.
+fn joined(rows: &[Row], texts: &[String], rs: std::ops::Range<usize>) -> (String, Vec<Seg>) {
+    let (mut line, mut segs) = (String::new(), Vec::with_capacity(rs.len()));
     for r in rs.clone() {
         let t = &texts[r];
         let (join, body) = rows.get(r).map_or((Join::Start, 0), |x| (x.join, x.body as usize));
         let skip = if r == rs.start { 0 } else { body.min(t.len()) };
         if r > rs.start && join == Join::Space {
             line.push(' ');
-            at.push(At {
-                row: r - 1,
-                byte: texts[r - 1].len(),
-                put_back: true,
-            });
         }
+        let (at, len) = (line.len(), t.len() - skip);
+        segs.push(Seg { at, row: r, skip, len });
         line.push_str(&t[skip..]);
-        at.extend((skip..t.len()).map(|byte| At {
-            row: r,
-            byte,
-            put_back: false,
-        }));
     }
-    (line, at)
+    (line, segs)
 }
 
-/// `s` lowercased where a char lowers to one char, and each folded byte's
-/// offset in `s` (plus the end), so a match maps back onto the row.
-fn folded(s: &str, fold: bool) -> (String, Vec<usize>) {
-    let mut out = String::with_capacity(s.len());
-    let mut back = Vec::with_capacity(s.len() + 1);
-    for (i, c) in s.char_indices() {
+/// `s` lowercased where a char lowers to one char, and where each folded
+/// byte came from in `s` (plus the end), so a match maps back onto the row.
+/// `None` when every char kept its length, so each offset is its own (#633):
+/// a table of 8 bytes for every byte of a long paragraph is most of a find.
+fn folded(s: &str, fold: bool) -> (String, Option<Vec<usize>>) {
+    let one = |c: char| {
         let mut low = c.to_lowercase();
-        let one = match (low.next(), low.next()) {
+        match (low.next(), low.next()) {
             (Some(l), None) if fold => l,
             _ => c,
-        };
-        out.push(one);
-        back.extend(std::iter::repeat_n(i, one.len_utf8()));
+        }
+    };
+    let out: String = s.chars().map(one).collect();
+    if out.len() == s.len() && s.chars().all(|c| one(c).len_utf8() == c.len_utf8()) {
+        return (out, None);
+    }
+    let mut back = Vec::with_capacity(out.len() + 1);
+    for (i, c) in s.char_indices() {
+        back.extend(std::iter::repeat_n(i, one(c).len_utf8()));
     }
     back.push(s.len());
-    (out, back)
+    (out, Some(back))
 }
 
 #[derive(Debug, PartialEq, Eq)]
