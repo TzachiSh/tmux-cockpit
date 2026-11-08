@@ -63,6 +63,48 @@ cat > "$SHIM/tmux" <<SHIMEOF
 exec "$TMUX_REAL" -L "$SUITE_SOCK" "\$@"
 SHIMEOF
 chmod +x "$SHIM/tmux"
+# The race of #573, made certain: a new-session that follows kill-server on the
+# same name can reach the dying server and fail "server exited unexpectedly". So
+# every block's "$TMUX_REAL" refuses the first new-session after each kill-server
+# on a name and leaves r.<name> until a later new-session there succeeds, and
+# flop_left fails the run for each r.* left. A kill-server then a bare
+# new-session goes red on every run, not one run in ten under load; fresh_server
+# retries and clears it. The shim above keeps the real binary: the scripts under
+# test are not blocks. TMUX_BIN is the real one, for a stub that counts its calls.
+TMUX_BIN=$TMUX_REAL
+FLOP="$STATE/flop"; mkdir -p "$FLOP"
+if [ -x "$TMUX_BIN" ]; then
+cat > "$FLOP/tmux" <<FLOPEOF
+#!/bin/sh
+n=default v= p=
+for a do
+    case \$p in -L) n=\$a ;; -S) n=\${a##*/} ;; esac
+    [ -n "\$v" ] || case \$a in kill-server|new-session) v=\$a ;; esac
+    p=\$a
+done
+case \$v in
+kill-server) : > "$FLOP/k.\$n" ;;
+new-session)
+    if [ -e "$FLOP/k.\$n" ]; then
+        rm -f "$FLOP/k.\$n"; : > "$FLOP/r.\$n"
+        echo "server exited unexpectedly (refused by tests/run.sh, #573)" >&2; exit 1
+    fi
+    if [ -e "$FLOP/r.\$n" ]; then
+        "$TMUX_BIN" "\$@"; rc=\$?; [ \$rc -ne 0 ] || rm -f "$FLOP/r.\$n"; exit \$rc
+    fi ;;
+esac
+exec "$TMUX_BIN" "\$@"
+FLOPEOF
+chmod +x "$FLOP/tmux"; TMUX_REAL="$FLOP/tmux"
+fi
+flop_left() {                 # a bad row for each name whose refused new-session nothing retried
+    local r
+    for r in "$FLOP"/r.*; do
+        [ -e "$r" ] || continue
+        bad "new-session after kill-server on ${r##*/r.} goes through fresh_server (#573)" \
+            "a later new-session there" "refused once, never retried"
+    done
+}
 # The suite itself runs inside the user's tmux, so its own $TMUX would send
 # every bare call straight back to the live server. Drop it.
 unset TMUX TMUX_PANE
@@ -292,7 +334,7 @@ case " $* " in
 *" new-session "*) echo n >> "%s/tries"; [ -z "$sock" ] || exit 1
     [ "$(wc -l < "%s/tries")" -gt "$FS_FAILS" ] || {
     echo "server exited unexpectedly ($(wc -l < "%s/tries"))" >&2; exit 1; } ;;
-esac\nexec "%s" "$@"\n' "$FSD" "$FSD" "$FSD" "$FSD" "$TMUX_REAL" > "$FSD/tmux"
+esac\nexec "%s" "$@"\n' "$FSD" "$FSD" "$FSD" "$FSD" "$TMUX_BIN" > "$FSD/tmux"
 chmod +x "$FSD/tmux"
 # fs_run <fails> <polls> <fresh_server args...> -> "rc tries kills bads|bad's got"
 fs_run() {
@@ -15631,5 +15673,6 @@ j3msg='jq-9.9 rejected the filter report it: tmux-cockpit issue'
 is "a jq compile error is a fail row, named, for both counts" \
    "fail hooks $j3msg;fail subhooks $j3msg;" "$j3rows"
 rm -rf "$J3"
+flop_left
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1

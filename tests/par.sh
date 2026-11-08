@@ -100,11 +100,13 @@ for f in "$WORK"/list/*; do
                next }
         # run.sh prints its own totals and exits; the shard reports to the
         # merger instead, so drop them wherever the last block lands.
+        /^flop_left$/ { next }             # the tail below calls it once
         /^printf .  %d passed/ { next }
         /^\[ "\$fail" -eq 0 \]/ { next }
         /^echo "== / { n++; keep = (index(want, "," n ",") > 0) }
         keep { print }
-        END { print "printf %d,%d,%d\\\\n \"$pass\" \"$fail\" \"$skipped\" > \"$PAR_COUNT\""
+        END { print "flop_left"
+              print "printf %d,%d,%d\\\\n \"$pass\" \"$fail\" \"$skipped\" > \"$PAR_COUNT\""
               print "[ \"$fail\" -eq 0 ] || exit 1" }
     ' "$WORK/run.snap" > "$SH.$id"
     # A block whose `if`/`fi` straddles the next block's title does not stand
