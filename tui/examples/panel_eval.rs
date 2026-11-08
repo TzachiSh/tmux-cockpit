@@ -894,6 +894,7 @@ fn judge_input(c: &Case, raw: &str) -> judge::Input {
         repo: c.repo.clone(),
         request: c.request.clone(),
         reply: raw.into(),
+        reads: None,
     }
 }
 
