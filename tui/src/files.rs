@@ -209,10 +209,12 @@ impl Files {
 
     /// Starts on the entry `name` of the folder shown: the dotfiles on when it
     /// is one, the ignored entries on when the ignore files hide it. A name the
-    /// folder does not hold leaves the first row selected.
-    pub fn select(&mut self, name: &[u8]) {
-        let Ok(all) = list_dir(&self.dir, true, true) else { return };
-        let Some(e) = all.iter().find(|e| e.name == name) else { return };
+    /// folder does not hold leaves the first row selected and returns false.
+    pub fn select(&mut self, name: &[u8]) -> bool {
+        let Ok(all) = list_dir(&self.dir, true, true) else { return false };
+        let Some(e) = all.iter().find(|e| e.name == name) else {
+            return false;
+        };
         self.hidden |= name.first() == Some(&b'.');
         self.show_ignored |= e.ignored;
         let dir = self.dir.clone();
@@ -220,18 +222,19 @@ impl Files {
         // laid out for no screen, `go` put the file on the top row: start from
         // the top and let the first draw's clamp scroll only as far as it needs
         self.pick.top = 0;
+        true
     }
 
     /// Starts where `a` says: the toggles on, the entry selected, the filter
-    /// typed. The selection stays on the entry when the filter shows it.
+    /// typed. The selection stays on the entry when the filter shows it. A
+    /// name gone from the folder still lists what the toggles show.
     pub fn restore(&mut self, a: &Args) {
         let toggled = (a.hidden && !self.hidden) || (a.ignored && !self.show_ignored);
         self.hidden |= a.hidden;
         self.show_ignored |= a.ignored;
-        match &a.select {
-            Some(name) => self.select(name.as_bytes()),
-            None if toggled => self.reload(Rect::default()),
-            None => {}
+        let found = a.select.as_ref().is_some_and(|n| self.select(n.as_bytes()));
+        if toggled && !found {
+            self.reload(Rect::default());
         }
         if a.filter.is_empty() {
             return;

@@ -103,6 +103,14 @@ fn a_selected_name_the_filter_hides_starts_on_the_first_filtered_row() {
     assert_eq!(tap(&mut f, KeyCode::Enter, KeyModifiers::NONE), Outcome::Choose(want));
 }
 
+/// The viewed file deleted meanwhile: the toggles still list what they show.
+#[test]
+fn a_selected_name_gone_from_the_folder_still_lists_the_dotfiles() {
+    let s = Scratch::new(&["a.txt", ".env"]);
+    let f = started(&s, &["--select", "gone.txt", "--hidden"]);
+    assert_eq!((f.hidden, shown(&f)), (true, vec![".env".to_string(), "a.txt".to_string()]));
+}
+
 #[test]
 fn no_flag_is_the_fresh_browser() {
     let s = Scratch::new(&["a.txt", ".env"]);
