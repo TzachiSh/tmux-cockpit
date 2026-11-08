@@ -1,6 +1,6 @@
 //! The write call's `<repo>` block (#413): plain git in the pane's folder, and
 //! which paths on the screen exist there. Each test makes its own temp repo.
-use cockpit_tui::panel::capture::{repo_state, screen_paths};
+use cockpit_tui::panel::capture::{repo_state_within, screen_paths};
 use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
 use std::process::Command;
@@ -72,19 +72,28 @@ fn line<'a>(block: &'a str, key: &str) -> Option<&'a str> {
     block.lines().find_map(|l| l.strip_prefix(key))
 }
 
+/// What a test waits for the block. The product's 300 ms `REPO_BUDGET` leaves a
+/// part out on a loaded box, and these tests check the parts (#596).
+const BUDGET: Duration = Duration::from_secs(10);
+
+/// The block under [`BUDGET`].
+fn block(dir: &str, screen: &str) -> String {
+    repo_state_within(dir, screen, BUDGET)
+}
+
 #[test]
 fn a_folder_outside_any_repo_gives_nothing() {
     let d = std::env::temp_dir().join(format!("cockpit-panel-repo-none-{}", std::process::id()));
     std::fs::create_dir_all(&d).unwrap();
-    let got = repo_state(&d.display().to_string(), "see ./a.rs");
+    let got = block(&d.display().to_string(), "see ./a.rs");
     let _ = std::fs::remove_dir_all(&d);
     assert_eq!(got, "");
 }
 
 #[test]
 fn an_empty_or_missing_folder_gives_nothing() {
-    assert_eq!(repo_state("", ""), "");
-    assert_eq!(repo_state("/nonexistent/cockpit-panel-repo", ""), "");
+    assert_eq!(block("", ""), "");
+    assert_eq!(block("/nonexistent/cockpit-panel-repo", ""), "");
 }
 
 #[test]
@@ -92,7 +101,7 @@ fn the_branch_is_named() {
     let r = Repo::new("branch");
     r.commit("a.txt", "a\n", "first");
     r.git(&["checkout", "-q", "-b", "feat/x"]);
-    assert_eq!(line(&repo_state(&r.dir(), ""), "branch: "), Some("feat/x"));
+    assert_eq!(line(&block(&r.dir(), ""), "branch: "), Some("feat/x"));
 }
 
 #[test]
@@ -102,17 +111,15 @@ fn a_detached_head_is_named_by_its_sha() {
     r.commit("a.txt", "b\n", "second");
     let sha = r.git(&["rev-parse", "--short", "HEAD~1"]);
     r.git(&["checkout", "-q", "--detach", "HEAD~1"]);
-    assert_eq!(
-        line(&repo_state(&r.dir(), ""), "branch: "),
-        Some(format!("detached at {sha}").as_str())
-    );
+    let want = format!("detached at {sha}");
+    assert_eq!(line(&block(&r.dir(), ""), "branch: "), Some(want.as_str()));
 }
 
 #[test]
 fn a_clean_tree_says_so() {
     let r = Repo::new("clean");
     r.commit("a.txt", "a\n", "first");
-    assert_eq!(line(&repo_state(&r.dir(), ""), "status: "), Some("clean"));
+    assert_eq!(line(&block(&r.dir(), ""), "status: "), Some("clean"));
 }
 
 #[test]
@@ -122,7 +129,7 @@ fn status_is_capped_at_15_lines_with_the_rest_counted() {
         let r = Repo::new(&format!("cap{n}"));
         r.commit("a.txt", "a\n", "first");
         (0..n).for_each(|i| r.write(&format!("f{i:02}.txt"), "x"));
-        let s = section(&repo_state(&r.dir(), ""), "status:");
+        let s = section(&block(&r.dir(), ""), "status:");
         let files = s.iter().filter(|l| l.starts_with("?? ")).count();
         assert_eq!(
             (files, s.iter().find(|l| l.starts_with("and ")).map(String::as_str)),
@@ -136,7 +143,7 @@ fn status_is_capped_at_15_lines_with_the_rest_counted() {
 fn the_log_holds_the_last_five_commits() {
     let r = Repo::new("log");
     (1..=7).for_each(|i| r.commit("a.txt", &format!("{i}\n"), &format!("commit number {i}")));
-    let s = section(&repo_state(&r.dir(), ""), "recent commits:");
+    let s = section(&block(&r.dir(), ""), "recent commits:");
     let msgs: Vec<&str> = s.iter().map(|l| l.split_once(' ').unwrap().1).collect();
     assert_eq!(
         msgs,
@@ -155,7 +162,7 @@ fn the_diff_stat_names_the_changed_file_and_its_summary() {
     let r = Repo::new("diff");
     r.commit("src/lib.rs", "a\nb\n", "first");
     r.write("src/lib.rs", "a\nc\nd\n");
-    let s = section(&repo_state(&r.dir(), ""), "diff --stat:");
+    let s = section(&block(&r.dir(), ""), "diff --stat:");
     assert!(s.iter().any(|l| l.starts_with("src/lib.rs |")), "{s:?}");
     assert_eq!(s.last().map(String::as_str), Some("1 file changed, 2 insertions(+), 1 deletion(-)"));
 }
@@ -166,7 +173,7 @@ fn a_staged_change_is_in_the_diff_stat() {
     r.commit("a.txt", "a\n", "first");
     r.write("a.txt", "b\n");
     r.git(&["add", "a.txt"]);
-    let s = section(&repo_state(&r.dir(), ""), "diff --stat:");
+    let s = section(&block(&r.dir(), ""), "diff --stat:");
     assert!(s.iter().any(|l| l.starts_with("a.txt |")), "{s:?}");
 }
 
@@ -176,7 +183,7 @@ fn paths_on_the_screen_are_reported_as_there_or_missing() {
     r.commit("src/main.rs", "fn main() {}\n", "first");
     let abs = format!("{}/src/main.rs", r.dir());
     let screen = format!("error at src/main.rs:3:5\n  see ./docs/gone.md, lib/none.rs and @{abs}");
-    let s = section(&repo_state(&r.dir(), &screen), "paths on screen:");
+    let s = section(&block(&r.dir(), &screen), "paths on screen:");
     assert_eq!(
         s,
         [
@@ -191,7 +198,7 @@ fn paths_on_the_screen_are_reported_as_there_or_missing() {
 fn a_screen_without_paths_has_no_paths_section() {
     let r = Repo::new("nopaths");
     r.commit("a.txt", "a\n", "first");
-    assert!(!repo_state(&r.dir(), "$ ls\nhello world").contains("paths on screen:"));
+    assert!(!block(&r.dir(), "$ ls\nhello world").contains("paths on screen:"));
 }
 
 #[test]
@@ -229,7 +236,7 @@ fn a_stat_dirty_file_never_makes_git_rewrite_the_index() {
     r.stat_dirty("a.txt");
     let idx = |r: &Repo| std::fs::metadata(r.0.join(".git/index")).map(|m| (m.ino(), m.mtime())).unwrap();
     let before = idx(&r);
-    assert_eq!(line(&repo_state(&r.dir(), ""), "status: "), Some("clean"));
+    assert_eq!(line(&block(&r.dir(), ""), "status: "), Some("clean"));
     assert_eq!(idx(&r), before, "the index was rewritten");
 }
 
@@ -252,7 +259,7 @@ fn a_submodules_own_clean_filter_never_runs() {
     ]);
     r.write(".git/modules/sub/info/attributes", "* filter=mark\n");
     r.stat_dirty("sub/f.txt");
-    let _ = repo_state(&r.dir(), "");
+    let _ = block(&r.dir(), "");
     assert!(!marker.exists(), "the submodule's clean filter ran");
 }
 
@@ -263,7 +270,7 @@ fn color_config_in_the_repo_is_ignored() {
     r.git(&["config", "color.ui", "always"]);
     r.write("a.txt", "b\n");
     r.write("new.txt", "n");
-    let got = repo_state(&r.dir(), "");
+    let got = block(&r.dir(), "");
     assert!(got.contains("a.txt |") && !got.contains('\x1b'), "{got:?}");
 }
 
@@ -272,7 +279,7 @@ fn a_pane_in_a_subfolder_sees_repo_paths_and_the_root() {
     let r = Repo::new("subdir");
     r.commit("src/a.rs", "a\n", "first");
     r.write("src/a.rs", "b\n");
-    let got = repo_state(&format!("{}/src", r.dir()), "");
+    let got = block(&format!("{}/src", r.dir()), "");
     let root = std::fs::canonicalize(&r.0).unwrap().display().to_string();
     assert_eq!(line(&got, "root: "), Some(root.as_str()));
     assert_eq!(section(&got, "status:"), ["M src/a.rs"]);
