@@ -49,9 +49,10 @@ The review diffs the **git root of that tree**. `prefix + i` on the pane shows
 that root, a review the agent requested names it in the popup title, and a
 delivered batch says `Paths are relative to <root>.` An agent that edits another
 worktree by absolute path from a main-checkout pane is reviewed on the wrong
-tree, and those are how you notice. The fix is workflow, not the plugin: an agent that
-works on a branch lives in that worktree, which is what the `WorktreeCreate`
-hook above arranges for `claude --worktree` and `EnterWorktree`.
+tree, and each of those shows the root, so a wrong one is how you notice. The
+fix is workflow, not the plugin: an agent that works on a branch lives in that
+worktree, which is what the `WorktreeCreate` hook above arranges for
+`claude --worktree` and `EnterWorktree`.
 
 The board opens in a popup. `set -g @cockpit_review_window on` opens it as a
 real window (`new-window -n board`) instead.
@@ -75,14 +76,18 @@ with `a`. The same step marks the window's tab with `◆` and recounts `◆N` in
 `#{E:@cockpit_fleet}`, which tells you how many finished agents nobody has read
 across every session, attached or not. Nothing polls, and a redraw still runs no shell.
 
-The review is revdiff on the tree, untracked files included, against the base
-in force (see `b` below). revdiff's own keys apply there, and `?` lists them: you
-comment on a line, a range or a whole file, `q` quits and keeps what you wrote,
-`Q` quits without it. Comments pinned in an earlier round are loaded into it, so
-it shows what is already pinned. When revdiff exits 10 (it wrote comments),
-what it wrote replaces the pinned set. When it exits 0 (no comments, or `Q`),
-the pinned set stays as it was. Any other exit ends the review with
-`cockpit: revdiff exited N: <its first stderr line>`, and the pinned set stays.
+The review is revdiff on the tree, untracked files included, against the base in
+force (see `b` below). revdiff's own keys apply there, and `?` lists them: you
+comment on a line, a whole hunk (put the word `hunk` in the comment) or a whole
+file (`A`), `q` quits and keeps what you wrote, `Q` quits without it. Comments
+pinned in an earlier round are loaded into it, so it shows what is already
+pinned. When revdiff exits 10 (it wrote comments), what it wrote replaces the
+pinned set. When it exits 0 (no comments, or `Q`), the pinned set stays as it
+was. So deleting every pinned comment in revdiff and pressing `q` unpins
+nothing: with no comments left revdiff exits 0. Deleting some of them works,
+since that exits 10. `x` at the prompt unpins them all. Any other exit ends the
+review with `cockpit: revdiff exited N: <its first stderr line>`, and the pinned
+set stays.
 
 Each comment is stored with the line it points at quoted: the quote it already
 had for that anchor, else the line as the tree has it now (a `-` line: as the
@@ -135,9 +140,10 @@ before, and so does the `Stop` hook's `◆`.
 
 **`a` approves what you just read.** It writes that tree, untracked files
 included, to `refs/cockpit/reviewed/<branch>`, clears the pane's review mark and
-removes the review directory: `cockpit: review approved · the next one shows
-only what changed`. The next review of the branch diffs against it, so it shows
-only what the agent changed after you looked. `a` is offered only with nothing
+removes the review directory:
+`cockpit: review approved · the next one shows only what changed`. The next
+review of the branch diffs against it, so it shows only what the agent changed
+after you looked. `a` is offered only with nothing
 pinned, since approving a batch nobody sent would throw it away: deliver it with
 `d` or discard it with `x` first. Before the repo's first commit there is
 nothing to approve against, and `a` says so.
@@ -237,8 +243,9 @@ What this deliberately does **not** do, and why:
   (`delivered.md`) and any queued spool. It exists so a dropped SSH client,
   which tears down a client-owned popup, cannot take a twenty-comment review
   with it: `prefix + r` on the same pane resumes it, pinned comments and all.
-  It lives until `a` approves the review or you discard it with `x`; a
-  delivered batch leaves `delivered.md` standing in it, and a refused delivery
+  It lives until `a` approves the review or you discard it with `x`. `x` drops
+  the comments, and the directory goes with them unless an earlier batch's
+  `delivered.md` is in it; a delivered batch leaves `delivered.md` standing, and a refused delivery
   keeps the store and names it in the message. `prefix + i` prints the
   directory for the pane you are on, with how many comments are pinned and
   delivered.

@@ -81,7 +81,7 @@ request() {                   # <pane>
             # paste path sets it.
             tmux set-option -p -t "$pane" @cockpit_review sent 2>/dev/null
             compose "$store" "$root"; done_store "$store"; exit 10 ;;
-        21) # ^A: review_pane's clean-up.
+        21) # a, approved: review_pane's clean-up.
             tmux set-option -pu -t "$pane" @cockpit_review 2>/dev/null
             "$(dirname "$SELF")/agent-state" recount "$pane"
             clear_sess "$sess"

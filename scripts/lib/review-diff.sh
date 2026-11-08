@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tmux-review's diff engine: the base, the diff, ^A's checkpoint.
+# tmux-review's diff engine: the base, the diff, the approve checkpoint.
 # Sourced by tmux-review, never run. Bash 4+.
 
 # tmux-review unsets these at its top for every mode. The engine does it again
@@ -133,7 +133,7 @@ scratch_index() {             # <dir> <gitdir>
 
 # --- which base ---------------------------------------------------------------
 # The first case that holds:
-#   since-review  refs/cockpit/reviewed/<branch> exists (^A wrote it)  -> only what moved since
+#   since-review  refs/cockpit/reviewed/<branch> exists (a wrote it)   -> only what moved since
 #   branch        merge-base of the upstream (else origin/HEAD, else main/master) and HEAD,
 #                 when that is not HEAD itself                          -> the branch + uncommitted
 #   uncommitted   HEAD                                                  -> today's view

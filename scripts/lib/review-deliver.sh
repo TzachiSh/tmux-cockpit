@@ -18,7 +18,7 @@ done_store() {                # <store>
     return 0
 }
 
-# What ^A ends: the session dir's files by name, not `rm -rf`. The dir may hold
+# What approving (a) ends: the session dir's files by name, not `rm -rf`. The dir may hold
 # comments.md.deliver, a review queued for a busy pane's next Stop
 # (@cockpit_review_spool); review-gate rmdirs the dir after it drains.
 clear_sess() {                # <sess dir>

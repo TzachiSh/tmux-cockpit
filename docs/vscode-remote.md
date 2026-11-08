@@ -17,8 +17,9 @@ Two caveats. A dead socket refuses in about 150 ms, so the walk stops at the 8
 newest rather than spending six seconds on a home full of stale ones, and a
 window whose socket is older than those 8 is missed. And a closed window's
 socket keeps listening through VS Code's reconnection grace, so answering is
-not proof of a live window: the file can go to a window that is no longer
-there.
+not proof of a live window. As the code reads (not tested against VS Code): the
+shim reports success there, the walk stops, and the file can go to a window
+that is no longer there.
 
 From a plain ssh session, with no VS Code on the far end, nothing can reach
 the laptop's editor. Use a terminal editor there.
