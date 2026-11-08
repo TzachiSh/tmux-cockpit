@@ -109,24 +109,17 @@ fn the_named_cases_match_the_old_wrap() {
 
 /// #658: a word whose first grapheme is wider than the line starts its own row,
 /// with no empty row before it. Literal rows: the old wrap above hangs on these.
-/// `काााा` is one grapheme, 5 cells wide.
-#[test]
-fn an_over_wide_first_grapheme_gets_no_empty_row() {
-    // (name, text, width, rows)
-    let rows: [(&str, &str, usize, &[&str]); 4] = [
-        ("alone", "काााा", 4, &["काााा"]),
-        ("after a short word", "ab काााा", 4, &["ab", "काााा"]),
-        ("with a grapheme after it", "कााााx", 4, &["काााा", "x"]),
-        ("twice", "काााा काााा", 4, &["काााा", "काााा"]),
-    ];
-    for (name, t, w, want) in rows {
-        assert_eq!(wrap(t, w), want, "{name}");
-    }
-}
+/// `काााा` is one grapheme, 5 cells wide. (name, text, width, rows)
+const OVER_WIDE: [(&str, &str, usize, &[&str]); 4] = [
+    ("alone", "काााा", 4, &["काााा"]),
+    ("after a short word", "ab काााा", 4, &["ab", "काााा"]),
+    ("with a grapheme after it", "कााााx", 4, &["काााा", "x"]),
+    ("twice", "काााा काााा", 4, &["काााा", "काााा"]),
+];
 
-/// The child half of the hang test: the wrap that hung before #656, in a process
-/// whose address space is capped, so a loop that pushes rows forever runs out of
-/// memory rather than out of the box's.
+/// The child half: each OVER_WIDE row wrapped, in a process whose address space
+/// is capped, so a loop that pushes rows forever (the wrap before #656) runs out
+/// of its own memory rather than the box's. One `ROW\t<name>\t<rows>` line each.
 #[test]
 fn hang_child() {
     if std::env::var_os("WRAP_HANG_CHILD").is_none() {
@@ -138,15 +131,17 @@ fn hang_child() {
     };
     // SAFETY: setrlimit reads one struct; it lowers this child's own address space.
     unsafe { libc::setrlimit(libc::RLIMIT_AS, &cap) };
-    print!("{:?}", wrap("काााा", 4));
+    // a line of its own: libtest's "test hang_child ... " ends without one
+    println!();
+    for (name, t, w, _) in OVER_WIDE {
+        println!("ROW\t{name}\t{:?}", wrap(t, w));
+    }
     std::process::exit(0);
 }
 
-/// Before #656 the wrap looped forever on an over-wide grapheme (#658): it cut
-/// at the grapheme itself, an empty row, and never moved on. The same input,
-/// in a child bounded by a 10 s deadline and a memory cap, returns its one row.
-#[test]
-fn the_over_wide_grapheme_that_hung_the_old_wrap_returns() {
+/// The OVER_WIDE rows as the capped child wrapped them, by name. A child that has
+/// not returned in 10 s is killed and fails the test: no wrap runs in this process.
+fn over_wide_in_a_child() -> Vec<(String, String)> {
     let mut child = std::process::Command::new(std::env::current_exe().unwrap())
         .args(["--exact", "hang_child", "--test-threads=1", "--nocapture"])
         .env("WRAP_HANG_CHILD", "1")
@@ -165,5 +160,27 @@ fn the_over_wide_grapheme_that_hung_the_old_wrap_returns() {
     }
     let mut out = String::new();
     std::io::Read::read_to_string(&mut child.stdout.take().unwrap(), &mut out).unwrap();
-    assert!(out.contains(r#"["काााा"]"#), "the child printed {out:?}");
+    let row = |l: &str| {
+        l.strip_prefix("ROW\t")?
+            .split_once('\t')
+            .map(|(n, r)| (n.to_string(), r.to_string()))
+    };
+    out.lines().filter_map(row).collect()
+}
+
+#[test]
+fn an_over_wide_first_grapheme_gets_no_empty_row() {
+    let got = over_wide_in_a_child();
+    for (name, _, _, want) in OVER_WIDE {
+        let rows = got.iter().find(|(n, _)| n == name).map(|(_, r)| r.as_str());
+        assert_eq!(rows, Some(format!("{want:?}").as_str()), "{name}");
+    }
+}
+
+/// Before #656 the wrap looped forever on an over-wide grapheme (#658): it cut
+/// at the grapheme itself, an empty row, and never moved on. In the capped child
+/// every row comes back, within the deadline.
+#[test]
+fn the_over_wide_grapheme_that_hung_the_old_wrap_returns() {
+    assert_eq!(over_wide_in_a_child().len(), OVER_WIDE.len(), "every row came back");
 }
