@@ -14154,17 +14154,25 @@ if need_tmux "open-at-line via pick"; then :; else
 OL="cockpit-ol-$$"; SOCKS="$SOCKS $OL"
 OLD=$(mktmpd); OLLOG="$OLD/log"; OLED="$OLD/ed"; : > "$OLLOG"
 mkdir -p "$OLD/w/sub"; : > "$OLD/w/one.txt"; : > "$OLD/w/two.txt"; : > "$OLD/w/three.txt"
-printf '#!/bin/sh\necho "OPEN $*" >> %s\n' "$OLLOG" > "$OLED"; chmod +x "$OLED"
+# The editor runs in a new window after the script has exited (#610). The shim
+# waits while $OLD/hold is there, so every row meets that order, the late one.
+printf '#!/bin/sh\nwhile [ -e %s/hold ]; do sleep 0.05; done\necho "OPEN $*" >> %s\n' \
+    "$OLD" "$OLLOG" > "$OLED"; chmod +x "$OLED"
 "$TMUX_REAL" -L "$OL" -f /dev/null new-session -d -s t -x 100 -y 28 -c "$OLD/w" >/dev/null 2>&1
 "$TMUX_REAL" -L "$OL" set -g @cockpit_editor "$OLED" >/dev/null 2>&1
 OLP=$("$TMUX_REAL" -L "$OL" list-panes -t t -F '#{pane_id}' | head -1)
 "$TMUX_REAL" -L "$OL" set-option -p -t "$OLP" @cockpit_click_line \
     "one.txt two.txt:7 sub/ three.txt" >/dev/null 2>&1
 olrun() {                     # olrun <n> -- start the picker; wait for its rows
+    : > "$OLD/hold"
     "$TMUX_REAL" -L "$OL" send-keys -t "$OLP" "clear; '$DIR/scripts/tmux-open-path' --pick '$OLP'; echo OLDONE$1=\$?" Enter
     until_cap "$OL" "$OLP" '*three.txt*'
 }
 oldone() { until_cap "$OL" "$OLP" "*OLDONE$1=[0-9]*"; }
+olnwin() { "$TMUX_REAL" -L "$OL" list-windows -t t | grep -c .; }
+olgo() {                      # let the editor write; wait for its line and its window to close
+    rm -f "$OLD/hold"; until_file "$OLLOG" '*OPEN*'; until_out 1 olnwin
+}
 olcap() { "$TMUX_REAL" -L "$OL" capture-pane -p -J -t "$OLP"; }
 olkey() { "$TMUX_REAL" -L "$OL" send-keys -t "$OLP" "$@"; }
 
@@ -14174,22 +14182,26 @@ case "$(olcap)" in
     *) bad "the list shows each candidate relative to the pane, with its :line" \
          "two.txt:7 then sub/" "$(olcap | head -8)" ;;
 esac
-olkey Down Enter; oldone 1
+olkey Down Enter; oldone 1; olgo
 is "down + enter opens the second candidate at its line" "OPEN +7 $OLD/w/two.txt" "$(cat "$OLLOG")"
 
 : > "$OLLOG"; olrun 2
-olkey -l three; until_cap "$OL" "$OLP" '*open> three*|*three*'
-olkey Enter; oldone 2
+olkey -l three; until_cap "$OL" "$OLP" '*open> three*1/1 of 4*' ||
+    bad "the filter narrows the list to one row" "1/1 of 4" "$(olcap)"
+olkey Enter; oldone 2; olgo
 is "typing a filter then enter opens the filtered row, not the first" \
    "OPEN $OLD/w/three.txt" "$(cat "$OLLOG")"
 
 : > "$OLLOG"; olrun 3
-olkey Down Down Enter; oldone 3
+olkey Down Down Enter; oldone 3; olgo
 is "a directory candidate is handed to the editor whole" "OPEN $OLD/w/sub/" "$(cat "$OLLOG")"
 
 : > "$OLLOG"; olrun 4
 olkey Escape; oldone 4
-is "esc opens nothing and exits 0" "0 " "$(olcap | sed -n 's/.*OLDONE4=//p' | tail -1) $(cat "$OLLOG")"
+# the hold keeps a wrongly opened editor's window alive, so one window means none opened
+is "esc opens nothing and exits 0" "0 |1" \
+   "$(olcap | sed -n 's/.*OLDONE4=//p' | tail -1) $(cat "$OLLOG")|$(olnwin)"
+rm -f "$OLD/hold"
 "$TMUX_REAL" -L "$OL" kill-server >/dev/null 2>&1
 fi
 
@@ -14838,9 +14850,22 @@ FB=$(mktmpd); FBS="cockpit-fb-$$"; SOCKS="$SOCKS $FBS"
 FBD="$FB/proj"; mkdir -p "$FB/bin" "$FBD/sub"
 FBF="$FBD/a b's.txt"; : > "$FBF"; mkfifo "$FBD/fifo"; ln -s /dev/null "$FBD/devnull"; : > "$FBD/sub/n.md"; : > "$FBD/sub/n.txt"
 FBNL="$FBD/two"$'\n'"lines.txt"; : > "$FBNL"     # a real file whose name is two lines
-printf '#!/bin/sh\nprintf "[%%s]" "$0" "$@" >> "%s/code.log"\n' "$FB" > "$FB/bin/code"
+# The shims build their line in a file of their own and rename it onto the log,
+# so fbwait's non-empty log is a whole line, never the program without its
+# arguments (#577). While $FB/edhold is there an editor shim stops mid-line.
+cat > "$FB/bin/code" <<STUB
+#!/bin/sh
+{ cat "$FB/code.log"; printf '[%s]' "\$0" "\$@"; } > "$FB/code.log.\$\$"
+mv -f "$FB/code.log.\$\$" "$FB/code.log"
+STUB
 for e in ed-cockpit ed-visual ed-editor nvim; do
-    printf '#!/bin/sh\nprintf "%%s" "$0" >> "%s/ed.log"; printf " [%%s]" "$@" >> "%s/ed.log"; echo >> "%s/ed.log"\n' "$FB" "$FB" "$FB" > "$FB/bin/$e"
+    cat > "$FB/bin/$e" <<STUB
+#!/bin/sh
+{ cat "$FB/ed.log"; printf '%s' "\$0"
+  [ ! -e "$FB/edhold" ] || { : > "$FB/edat"; while [ -e "$FB/edhold" ]; do sleep 0.05; done; }
+  printf ' [%s]' "\$@"; echo; } > "$FB/ed.log.\$\$"
+mv -f "$FB/ed.log.\$\$" "$FB/ed.log"
+STUB
 done
 cat > "$FB/bin/tmux" <<STUB
 #!/bin/sh
@@ -14919,6 +14944,20 @@ fbwait() { local n=0; until [ -s "$1" ] || [ "$n" -ge 50 ]; do sleep 0.1; n=$((n
 fbnotes() { grep '^display-message' "$FB/calls" | grep -vc '\[-p\]'; }   # notes shown, not queries
 fbwin() { "$TMUX_REAL" -L "$FBS" list-windows -t t | grep -c .; }
 
+# #577: an editor shim held between its first write and its last leaves the log
+# empty, so fbwait cannot hand a reader the program without its arguments
+fbheld() {                    # fbheld <shim> <args...> -- "<log mid-line>|<log after>"
+    local mid; : > "$FB/ed.log"; rm -f "$FB/edat"; : > "$FB/edhold"
+    "$FB/bin/$1" "${@:2}" & local p=$!
+    until_out yes sh -c '[ -e "$1" ] && echo yes' sh "$FB/edat"
+    mid=$(cat "$FB/ed.log"); rm -f "$FB/edhold"; wait "$p"
+    printf '%s|%s' "$mid" "$(cat "$FB/ed.log")"
+}
+is "a shim held mid-line: the log is empty, then the whole line (one argument)" \
+   "|$FB/bin/ed-cockpit [$FBF]" "$(fbheld ed-cockpit "$FBF")"
+is "a shim held mid-line: the log is empty, then the whole line (+N and a file)" \
+   "|$FB/bin/nvim [+7] [$FBF]" "$(fbheld nvim +7 "$FBF")"
+
 # --folder: the tap opens the browser popup and nothing else
 : > "$FB/calls"
 env PATH="$FB/bin:$PATH" COCKPIT_TUI_BIN="$FB/bin/cockpit-tui" TMUX="$FBSOCK,0,0" \
@@ -14938,6 +14977,9 @@ is "--folder without cockpit-tui says so and opens no popup" "1|0" \
 # --browse hands the browser the pane's folder
 fb off "open $FBF\n" 0
 is "the browser is started on the pane's folder" "files $FBD" "$(cat "$FB/tui.args")"
+# code starts late, by run-shell -b: wait, or it writes into the next row's log (#577)
+fbwait "$FB/code.log"
+is "and code got the file, in this row" "1" "$(grep -c -- '\[--goto\]' "$FB/code.log")"
 
 # a non-touch client: open <file> goes the usual way, to VS Code
 fb off "open $FBF\n" 0
@@ -14970,6 +15012,10 @@ is "touch: @cockpit_editor beats \$VISUAL" "$FB/bin/ed-cockpit [$FBF]" "$(cat "$
 fb on "open $FBD/sub/n.txt\n" 0 "VISUAL=$FB/bin/ed-visual"
 is "touch: the window is named for the file and starts in its folder" "n.txt $FBD/sub" \
    "$("$TMUX_REAL" -L "$FBS" list-windows -t t -F '#{window_name} #{pane_start_path}' | grep -Fx "n.txt $FBD/sub")"
+# wait for this window's editor: a late one writes into the next row's log (#577)
+fbwait "$FB/ed.log"
+is "touch: and that window's editor got the file" \
+   "$FB/bin/ed-visual [$FBD/sub/n.txt]" "$(cat "$FB/ed.log")"
 # view: any regular file goes to the viewer, drawn in the browser's popup, touch or not (#406)
 for fbt in on off; do
     for fbv in n.md n.txt; do
