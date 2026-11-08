@@ -60,7 +60,9 @@ pub fn wrap(text: &str, w: usize) -> Vec<String> {
             let (mut from, mut run) = (0, 0);
             for (i, g) in word.grapheme_indices(true) {
                 let gw = g.width();
-                if run + gw > w {
+                // a grapheme wider than the line takes a row of its own, with no
+                // empty one before it (#658)
+                if run + gw > w && i > from {
                     out.push(word[from..i].to_string());
                     (from, run) = (i, 0);
                 }
