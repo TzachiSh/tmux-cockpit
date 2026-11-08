@@ -2598,6 +2598,72 @@ mod tests {
         assert_eq!((l.len(), l.iter().filter(|l| !l.pass).count()), (118, 20));
     }
 
+    /// Each field where a label's input is not its case's, as (key, field): the
+    /// screen, repo and request, each only where the case has one. A label whose
+    /// case is in neither list is not compared.
+    fn label_drift(cases: &[Case], labels: &[judge::Label]) -> Vec<(String, &'static str)> {
+        let mut out = vec![];
+        for l in labels {
+            let Some(c) = cases.iter().find(|c| c.id == l.case) else {
+                continue;
+            };
+            let i = &l.input;
+            for (f, want, got) in [
+                ("screen", &c.screen, &i.screen),
+                ("repo", &c.repo, &i.repo),
+                ("request", &c.request, &i.request),
+            ] {
+                if !want.is_empty() && want != got {
+                    out.push((l.key.clone(), f));
+                }
+            }
+        }
+        out
+    }
+
+    /// One label row on the case `crash` of ONE (screen "$ net-proxy\nboom",
+    /// request "fix this", no repo).
+    fn crash_label(case: &str, screen: &str, repo: &str, request: &str) -> judge::Label {
+        let j = serde_json::json!({"key": "k", "case": case, "verdict": "pass", "reply": "r",
+            "screen": screen, "repo": repo, "request": request});
+        judge::read_labels("t", &j.to_string()).unwrap().remove(0)
+    }
+
+    #[test]
+    fn label_drift_names_each_field_that_differs_from_a_field_the_case_has() {
+        let cases = parse_cases(ONE).unwrap();
+        let s = "$ net-proxy\nboom";
+        let rows: [(&str, judge::Label, &[&str]); 6] = [
+            ("same", crash_label("crash", s, "", "fix this"), &[]),
+            ("lost a # line", crash_label("crash", "$ net-proxy", "", "fix this"), &["screen"]),
+            ("request", crash_label("crash", s, "", "fix it"), &["request"]),
+            ("repo the case lacks", crash_label("crash", s, "x", "fix this"), &[]),
+            ("both", crash_label("crash", "", "", ""), &["screen", "request"]),
+            ("no such case", crash_label("gone", "", "", ""), &[]),
+        ];
+        for (name, l, want) in rows {
+            let got: Vec<&str> = label_drift(&cases, &[l]).into_iter().map(|(_, f)| f).collect();
+            assert_eq!(got, want, "{name}");
+        }
+        assert_eq!(label_drift(&cases, &[]), vec![]);
+    }
+
+    /// The judge's calibration grades each owner label against the screen,
+    /// repo and request the row stores, so each must be its case's, read by
+    /// the rig's own parser: a builder that took `#91 ...` for a comment once
+    /// dropped review-which-pr's PR list.
+    #[test]
+    fn each_owner_label_carries_its_cases_screen_repo_and_request() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("evals/panel");
+        let read = |f: &str| std::fs::read_to_string(root.join(f)).unwrap();
+        let mut cases = parse_cases(&read("cases.txt")).unwrap();
+        cases.extend(parse_cases(&read("explore.txt")).unwrap());
+        let labels = judge::read_labels("owner-labels", &read("owner-labels.jsonl")).unwrap();
+        let unmatched = labels.iter().filter(|l| !cases.iter().any(|c| c.id == l.case)).count();
+        assert_eq!(unmatched, 0, "every label's case is in cases.txt or explore.txt");
+        assert_eq!(label_drift(&cases, &labels), vec![]);
+    }
+
     /// The round trip: judge_all hands a stand-in claude the rubric as its
     /// system prompt file and the case on stdin, and reads its verdict back.
     #[test]
