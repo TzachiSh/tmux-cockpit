@@ -35,8 +35,10 @@ sized for contention already.
 Two workflows run the tests on every pull request and on master and `scratch/**`
 pushes, each on both ubuntu-24.04 and ubuntu-26.04, and both legs are required.
 `shell-suite` runs `make tui-bin` and then `J=4 make test-par`, on a full clone
-so the #290 key-notes block runs. `tui` runs `make tui-test`. Both get tmux 3.8,
-the README's floor, from `.github/actions/tmux`: it builds the official release
+so the #290 key-notes block runs. `tui` runs `make tui-test-clean`: tui-test
+in a private TMPDIR and TMUX_TMPDIR, failing on a leftover (#400). Both get tmux
+3.8, the README's floor, from `.github/actions/tmux`: it builds the official
+release
 tarball after checking its SHA-256, and caches the install on the version, the
 runner image, the checksum and the action's own file, so only the first run on a
 new image or after a recipe change compiles it. Both set `COCKPIT_REQUIRE_TMUX=1`,

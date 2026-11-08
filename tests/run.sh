@@ -15879,6 +15879,44 @@ j3msg='jq-9.9 rejected the filter report it: tmux-cockpit issue'
 is "a jq compile error is a fail row, named, for both counts" \
    "fail hooks $j3msg;fail subhooks $j3msg;" "$j3rows"
 rm -rf "$J3"
+
+# --- #400 tui-test-clean: the gate that fails on what a test left ------------
+
+echo "== tests/clean-run.sh: a run in private TMPDIR and TMUX_TMPDIR fails, naming what it left (#400) =="
+# Each row runs the gate on a stand-in for tui-test: a sh -c that leaves what the row names.
+# The stand-in exits 97 unless both dirs are fresh ones, so a gate that hands it the outer
+# TMPDIR or no TMUX_TMPDIR fails its rows instead of writing there.
+CRG='case "$TMPDIR" in "$CR_T"|"") exit 97 ;; esac; '
+CRG=$CRG'case "$TMUX_TMPDIR" in "$CR_X"|"") exit 97 ;; esac; '
+cr() {
+    local o r
+    o=$(CR_T="${TMPDIR:-/tmp}" CR_X="${TMUX_TMPDIR:-/tmp}" \
+        "$DIR/tests/clean-run.sh" sh -c "$CRG$1" 2>&1)
+    r=$?; printf '%s rc=%s' "$o" "$r"
+}
+CRO=$(mktmpd)
+is "nothing left: it passes and says nothing" " rc=0" "$(cr 'true')"
+is "a file left in TMPDIR fails, named" \
+   "clean-run: left behind: TMPDIR/stray rc=1" "$(cr 'touch "$TMPDIR/stray"')"
+is "tmux's own per-uid dir, empty, is allowed" " rc=0" "$(cr 'mkdir "$TMUX_TMPDIR/tmux-$(id -u)"')"
+is "a socket left in it is a server nobody killed: it fails, named" \
+   "clean-run: left behind: TMUX_TMPDIR/tmux-$(id -u)/probe rc=1" \
+   "$(cr 'mkdir "$TMUX_TMPDIR/tmux-$(id -u)" && touch "$TMUX_TMPDIR/tmux-$(id -u)/probe"')"
+is "the command's own failure is its exit code" " rc=3" "$(cr 'exit 3')"
+cr "printf '%s %s' \"\$TMPDIR\" \"\$TMUX_TMPDIR\" > '$CRO/dirs'" > /dev/null
+read -r crt crx < "$CRO/dirs"
+is "both private dirs are gone after the run" "gone gone" \
+   "$([ -e "$crt" ] && echo kept || echo gone) $([ -e "$crx" ] && echo kept || echo gone)"
+rm -rf "$CRO"
+# A test that chmods a dir 000 and fails before it puts the mode back (files.rs does) must not
+# hide what the dir holds from the scan, or keep the gate's own rm from taking it (review-636).
+CRL=$(mktmpd)
+is "a dir a test made unreadable is named, and nothing of the run is left outside" \
+   "clean-run: left behind: TMPDIR/locked/f rc=1 left=0" \
+   "$(TMPDIR=$CRL cr 'mkdir "$TMPDIR/locked" && touch "$TMPDIR/locked/f" &&
+       chmod 000 "$TMPDIR/locked"') left=$(ls -A "$CRL" | wc -l)"
+chmod -R u+rwx "$CRL" 2>/dev/null; rm -rf "$CRL"
+
 flop_left
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1
