@@ -295,6 +295,20 @@ fresh_server() {              # -L|-S <socket> [tmux flags...] -- <new-session a
     bad "fresh_server ${g[*]}: new-session failed $POLLS times" "a session" "${err:-no stderr}"
     return 1
 }
+# A row that wants a key unbound, or back at stock, passes on a server cockpit.tmux
+# never ran on, and list-keys on a dead socket starts a stock server that answers
+# for it (#643). So such a row runs as `loaded_on <socket> <row name> && <row>`.
+# The marker is C-MouseDown3Pane: stock leaves it unbound, cockpit.tmux binds it
+# whatever the options say, near its end, and bloaded polls the same key. -f /dev/null:
+# on a dead socket the server list-keys starts must not read a config that loads cockpit.
+# Not loaded is the row's own bad, with the row's name.
+loaded_on() {                 # <-L socket name> <row name> -> 0, or a bad row and 1
+    case "$("$TMUX_REAL" -L "$1" -f /dev/null list-keys -T root C-MouseDown3Pane 2>/dev/null)" in
+        *@cockpit_click_line*) return 0 ;;
+    esac
+    bad "$2" "cockpit.tmux loaded on $1 first (#643)" "no C-MouseDown3Pane binding there"
+    return 1
+}
 # review-gate keys its state files on the pane id AND the server's socket path
 # (issue #88). Spelled out here rather than read back from the script: a test
 # that asks the code under test for its own answer agrees with any answer.
@@ -444,6 +458,41 @@ is "-L after the command word is the pane's, not the server's" "0 0 1 " \
 rm -f "$GD"/w/[kr].*
 is "kill-server after the command word kills nothing" "0 0 |0" \
    "$(gt -L q display-message kill-server; gt -L q new-session -d)|$(gleft)"
+rm -f "$GD"/w/[kr].*
+gname() { ( bad() { printf '%s' "$1"; }; flop_left "$GD/w" ) }
+is "flop_left names the socket path, not its escaped key" \
+   "new-session after kill-server on $GD/x_.y/s goes through fresh_server (#573)" \
+   "$(gt -S "$GD/x_.y/s" kill-server >/dev/null
+      gt -S "$GD/x_.y/s" new-session -d >/dev/null; gname)"
+
+echo "== loaded_on: a row on a server cockpit.tmux never loaded is a bad row (#643) =="
+if need_tmux "loaded_on"; then :; else
+LO="cockpit-lo-$$"; LOD="cockpit-lod-$$"; SOCKS="$SOCKS $LO $LOD"
+# lo_run <socket> -> "rc bads|bad's row name"
+lo_run() {
+    ( bads=0 got=; bad() { bads=$((bads+1)); got=$1; }
+      loaded_on "$1" "the row"; printf '%s %s|%s' "$?" "$bads" "$got" )
+}
+case "$("$TMUX_REAL" -L "$LOD" list-keys -T prefix s 2>/dev/null)" in
+    *choose-tree*) ok "list-keys on a socket with no server answers with stock keys" ;;
+    *) bad "list-keys on a socket with no server answers with stock keys" "choose-tree on s" \
+         "$("$TMUX_REAL" -L "$LOD" list-keys -T prefix s 2>&1)" ;;
+esac
+is "a socket with no server: loaded_on is the row's bad" "1 1|the row" "$(lo_run "$LOD")"
+# The server list-keys starts there reads the default config chain, and $HOME is not
+# all of it: a config under $XDG_CONFIG_HOME that loads cockpit binds the marker.
+LOX="cockpit-lox-$$"; SOCKS="$SOCKS $LOX"; LOXD=$(mktmpd); mkdir -p "$LOXD/tmux"
+printf "run-shell '%s'\n" "$DIR/cockpit.tmux" > "$LOXD/tmux/tmux.conf"
+is "and so is one whose default config would load cockpit" "1 1|the row" \
+   "$(XDG_CONFIG_HOME="$LOXD" lo_run "$LOX")"
+rm -rf "$LOXD"
+"$TMUX_REAL" -L "$LO" -f /dev/null new-session -d -s t >/dev/null 2>&1
+is "a live server cockpit.tmux never ran on: the same" "1 1|the row" "$(lo_run "$LO")"
+"$TMUX_REAL" -L "$LO" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+is "once cockpit.tmux ran there, the row runs" "0 0|" "$(lo_run "$LO")"
+unset -f lo_run
+"$TMUX_REAL" -L "$LO" kill-server >/dev/null 2>&1
+fi
 
 echo "== the REPO's shipped config renders correctly =="
 # Load examples/tmux.conf into a throwaway server. Previously these assertions
@@ -3653,14 +3702,15 @@ case "$(pk s)" in
         ok "prefix s is bound to the sessions popup" ;;
     *) bad "prefix s is bound to the sessions popup" "run-shell -b tm --popup <client> <session> <w> <h> <pane>" "$(pk s)" ;;
 esac
-case "$(pk g)" in *--popup*) bad "and g is left to tmux" "no sessions popup on g" "$(pk g)" ;;
+loaded_on "$PS" "and g is left to tmux" && case "$(pk g)" in
+    *--popup*) bad "and g is left to tmux" "no sessions popup on g" "$(pk g)" ;;
     *) ok "and g is left to tmux" ;; esac
-is "and S is no longer taken" "" "$(pk S)"
+loaded_on "$PS" "and S is no longer taken" && is "and S is no longer taken" "" "$(pk S)"
 case "$(pk u)" in
     *tmux-jump*) ok "prefix u is bound to jump" ;;
     *) bad "prefix u is bound to jump" "run-shell tmux-jump" "$(pk u)" ;;
 esac
-is "and J is no longer taken" "" "$(pk J)"
+loaded_on "$PS" "and J is no longer taken" && is "and J is no longer taken" "" "$(pk J)"
 "$TMUX_REAL" -L "$PS" set -g @cockpit_sessions_key S >/dev/null 2>&1
 "$TMUX_REAL" -L "$PS" set -g @cockpit_jump_key J >/dev/null 2>&1
 "$TMUX_REAL" -L "$PS" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
@@ -3672,7 +3722,8 @@ fresh_server -L "$PS" -f /dev/null -- -d -s t
 "$TMUX_REAL" -L "$PS" set -g @cockpit_sessions_key off >/dev/null 2>&1
 ps_stock=$(pk s)
 "$TMUX_REAL" -L "$PS" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
-is "@cockpit_sessions_key off keeps stock prefix s" "$ps_stock" "$(pk s)"
+loaded_on "$PS" "@cockpit_sessions_key off keeps stock prefix s" &&
+    is "@cockpit_sessions_key off keeps stock prefix s" "$ps_stock" "$(pk s)"
 "$TMUX_REAL" -L "$PS" kill-server >/dev/null 2>&1
 fi
 
@@ -3767,7 +3818,7 @@ esac
 "$TMUX_REAL" -L "$PA" set -g @cockpit_review_key off >/dev/null 2>&1
 "$TMUX_REAL" -L "$PA" set -g @cockpit_move_key W >/dev/null 2>&1
 "$TMUX_REAL" -L "$PA" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
-case "$(ak)" in
+loaded_on "$PA" "a review key of off drops the review row" && case "$(ak)" in
     *"send-keys -K r"*) bad "a review key of off drops the review row" "no send-keys -K r" "$(ak | grep -o 'send-keys -K [^ ]*' | tr '\n' ' ')" ;;
     *) ok "a review key of off drops the review row" ;;
 esac
@@ -3782,7 +3833,8 @@ PA="cockpit-pa1-$$"; SOCKS="$SOCKS $PA"
 "$TMUX_REAL" -L "$PA" -f /dev/null new-session -d -s t >/dev/null 2>&1
 "$TMUX_REAL" -L "$PA" set -g @cockpit_menu_key off >/dev/null 2>&1
 "$TMUX_REAL" -L "$PA" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
-is "@cockpit_menu_key off binds nothing" "" "$(ak)"
+loaded_on "$PA" "@cockpit_menu_key off binds nothing" &&
+    is "@cockpit_menu_key off binds nothing" "" "$(ak)"
 # A reload that moves the key or turns it off gives the old key back.
 "$TMUX_REAL" -L "$PA" set -gu @cockpit_menu_key >/dev/null 2>&1
 "$TMUX_REAL" -L "$PA" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
@@ -3790,19 +3842,21 @@ is "@cockpit_menu_key off binds nothing" "" "$(ak)"
 "$TMUX_REAL" -L "$PA" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
 case "$(ak n)" in *display-menu*) ok "a moved menu key binds the new key" ;;
     *) bad "a moved menu key binds the new key" "the menu on n" "$(ak n)" ;; esac
-is "and gives a back" "" "$(ak a)"
+loaded_on "$PA" "and gives a back" && is "and gives a back" "" "$(ak a)"
 "$TMUX_REAL" -L "$PA" set -g @cockpit_menu_key off >/dev/null 2>&1
 "$TMUX_REAL" -L "$PA" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
-is "turning it off on a reload gives n back, as stock next-window" "next-window" \
-   "$(ak n | awk '{print $5}')"
+loaded_on "$PA" "turning it off on a reload gives n back, as stock next-window" &&
+    is "turning it off on a reload gives n back, as stock next-window" "next-window" \
+       "$(ak n | awk '{print $5}')"
 # m is stock mark-pane: moving the menu off it must put mark-pane back, not unbind m.
 "$TMUX_REAL" -L "$PA" set -g @cockpit_menu_key m >/dev/null 2>&1
 "$TMUX_REAL" -L "$PA" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
 case "$(ak m)" in *display-menu*) ok "the menu can take m" ;; *) bad "the menu can take m" "the menu on m" "$(ak m)" ;; esac
 "$TMUX_REAL" -L "$PA" set -gu @cockpit_menu_key >/dev/null 2>&1
 "$TMUX_REAL" -L "$PA" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
-case "$(ak m)" in *"select-pane -m"*) ok "and moving it off m gives stock mark-pane back" ;;
-    *) bad "and moving it off m gives stock mark-pane back" "select-pane -m" "$(ak m)" ;; esac
+loaded_on "$PA" "and moving it off m gives stock mark-pane back" &&
+    case "$(ak m)" in *"select-pane -m"*) ok "and moving it off m gives stock mark-pane back" ;;
+        *) bad "and moving it off m gives stock mark-pane back" "select-pane -m" "$(ak m)" ;; esac
 # A key this load binds is never given back: the menu moving from r to a must not
 # unbind the review key that this same load binds to r.
 "$TMUX_REAL" -L "$PA" set -g @cockpit_menu_key r >/dev/null 2>&1
@@ -3862,12 +3916,12 @@ gb_load
 for row in $GB_ROWS; do
     n=${row%%:*} k=${row#*:}
     before=$(gb_state "$k"); gb_set "$n" off; gb_load
-    is "@cockpit_${n}_key off on a reload gives $k back to stock" "cockpit>stock" \
-       "$before>$(gb_state "$k")"
+    gbr="@cockpit_${n}_key off on a reload gives $k back to stock"
+    loaded_on "$GB" "$gbr" && is "$gbr" "cockpit>stock" "$before>$(gb_state "$k")"
     gb_set "$n" unset; gb_load
 done
 gb_set board off; gb_load
-is "an off key leaves no bound record" "" \
+loaded_on "$GB" "an off key leaves no bound record" && is "an off key leaves no bound record" "" \
    "$("$TMUX_REAL" -L "$GB" show-option -gqv @cockpit_board_bound)"
 gb_set board unset; gb_load
 for row in $GB_ROWS; do
@@ -3876,7 +3930,8 @@ for row in $GB_ROWS; do
     is "@cockpit_${n}_key moved to F12 gives $k back and binds F12" "stock>cockpit" \
        "$(gb_state "$k")>$(gb_state F12)"
     gb_set "$n" unset; gb_load
-    is "and @cockpit_${n}_key moved back frees F12" "stock" "$(gb_state F12)"
+    gbr="and @cockpit_${n}_key moved back frees F12"
+    loaded_on "$GB" "$gbr" && is "$gbr" "stock" "$(gb_state F12)"
 done
 # A key the user bound after cockpit let go of it is theirs, not cockpit's to give back.
 "$TMUX_REAL" -L "$GB" bind-key w display-message mine >/dev/null 2>&1
@@ -3892,9 +3947,11 @@ is "a user's key running cockpit's own scripts is never given back" "1" \
 gb_set board unset; gb_load
 # The stock binding itself, not read back through the same probe the fix uses.
 gb_set board off; gb_load
-is "board off gives w back as tmux's own choose-tree -Zw, with its note" \
-   "choose-tree -Zw|Choose a window from a list" \
-   "$(gb_live w | grep -o 'choose-tree -Zw')|$(gb_live w | grep -o 'Choose a window from a list')"
+loaded_on "$GB" "board off gives w back as tmux's own choose-tree -Zw, with its note" &&
+    is "board off gives w back as tmux's own choose-tree -Zw, with its note" \
+       "choose-tree -Zw|Choose a window from a list" \
+       "$(gb_live w | grep -o 'choose-tree -Zw')|$(
+          gb_live w | grep -o 'Choose a window from a list')"
 gb_set board unset; gb_load
 # A TMPDIR over 100 characters would make the stock server's socket path too long
 # to bind; the read sits on a short base of its own, so w still comes back.
@@ -3903,8 +3960,9 @@ gb_note() { "$TMUX_REAL" -L "$GB" list-keys -T prefix -F '#{key_note}' "$1" 2>/d
 gb_left() { "$TMUX_REAL" -L "$GB" show-option -gqv @cockpit_giveback; }
 gb_set board off
 "$TMUX_REAL" -L "$GB" run-shell "TMPDIR='$GBL' '$DIR/cockpit.tmux'" >/dev/null 2>&1
-is "a long TMPDIR still gives w back to stock, nothing pending" "choose-tree -Zw|" \
-   "$(gb_live w | grep -o 'choose-tree -Zw')|$(gb_left)"
+loaded_on "$GB" "a long TMPDIR still gives w back to stock, nothing pending" &&
+    is "a long TMPDIR still gives w back to stock, nothing pending" "choose-tree -Zw|" \
+       "$(gb_live w | grep -o 'choose-tree -Zw')|$(gb_left)"
 gb_set board unset; gb_load
 # A stock read that fails is not "binds nothing": here a stock server that will
 # not start, as a socket path past the limit did. The key stays, the record waits.
@@ -3919,15 +3977,17 @@ is "a failed stock read leaves w cockpit's and the give-back pending" "cockpit: 
 is "and says which key and why" "1" "$("$TMUX_REAL" -L "$GB" show-messages 2>/dev/null \
    | grep -v ' command: ' | grep -c "own binding for w (.*too long")"
 gb_load
-is "the next load gives w back to stock and clears the pending record" \
-   "choose-tree -Zw|" "$(gb_live w | grep -o 'choose-tree -Zw')|$(gb_left)"
+loaded_on "$GB" "the next load gives w back to stock and clears the pending record" &&
+    is "the next load gives w back to stock and clears the pending record" \
+       "choose-tree -Zw|" "$(gb_live w | grep -o 'choose-tree -Zw')|$(gb_left)"
 # Moved, not off: the board's record moves on to F12, the pending one keeps w.
 gb_set board unset; gb_load; gb_set board F12; gb_nostock
 is "a move whose stock read fails binds F12 and keeps w pending" \
    "cockpit: board|cockpit: board|board:w" "$(gb_note F12)|$(gb_note w)|$(gb_left)"
 gb_load
-is "and the next load gives w back" "choose-tree -Zw|" \
-   "$(gb_live w | grep -o 'choose-tree -Zw')|$(gb_left)"
+loaded_on "$GB" "and the next load gives w back" &&
+    is "and the next load gives w back" "choose-tree -Zw|" \
+       "$(gb_live w | grep -o 'choose-tree -Zw')|$(gb_left)"
 gb_set board unset; gb_load
 # A stock server that starts and answers nothing is a failed read too, never an
 # empty binding.
@@ -3941,8 +4001,9 @@ is "a silent stock server leaves w cockpit's, pending, and says no answer" \
    "cockpit: board|board:w|1" "$(gb_note w)|$(gb_left)|$("$TMUX_REAL" -L "$GB" show-messages \
    2>/dev/null | grep -v ' command: ' | grep -c 'own binding for w (no answer)')"
 gb_load
-is "and the next load gives w back" "choose-tree -Zw|" \
-   "$(gb_live w | grep -o 'choose-tree -Zw')|$(gb_left)"
+loaded_on "$GB" "and the next load gives w back" &&
+    is "and the next load gives w back" "choose-tree -Zw|" \
+       "$(gb_live w | grep -o 'choose-tree -Zw')|$(gb_left)"
 gb_set board unset; gb_load
 # /tmp read-only and TMPDIR writable (Termux): the read falls back to TMPDIR.
 mkdir -p "$GBD/ro" "$GBD/tt"
@@ -3953,15 +4014,18 @@ chmod +x "$GBD/ro/mktemp"
 gb_set board off
 "$TMUX_REAL" -L "$GB" run-shell \
     "PATH='$GBD/ro':\"\$PATH\" TMPDIR='$GBD/tt' '$DIR/cockpit.tmux'" >/dev/null 2>&1
-is "with /tmp unwritable the stock read uses TMPDIR: w back, nothing pending" "choose-tree -Zw|" \
-   "$(gb_live w | grep -o 'choose-tree -Zw')|$(gb_left)"
+loaded_on "$GB" "with /tmp unwritable the stock read uses TMPDIR: w back, nothing pending" &&
+    is "with /tmp unwritable the stock read uses TMPDIR: w back, nothing pending" \
+       "choose-tree -Zw|" \
+       "$(gb_live w | grep -o 'choose-tree -Zw')|$(gb_left)"
 gb_set board unset; gb_load
 # ; is a command separator to tmux: the tmux-fixer sweep must still give it back.
 "$TMUX_REAL" -L "$GB" bind-key -T prefix '\;' display-popup -E "/old/scripts/tmux-fixer -p %1" \
     >/dev/null 2>&1
 gb_load
-is "a dead tmux-fixer binding on ; is given back as stock last-pane" "last-pane" \
-   "$(gb_live ';' | grep -o last-pane)"
+loaded_on "$GB" "a dead tmux-fixer binding on ; is given back as stock last-pane" &&
+    is "a dead tmux-fixer binding on ; is given back as stock last-pane" "last-pane" \
+       "$(gb_live ';' | grep -o last-pane)"
 unset -f gb_nostock gb_note gb_left
 # Two keys trading places: each is taken this load, so neither is given back.
 gb_set sessions u; gb_set jump s; gb_load
@@ -4004,8 +4068,9 @@ is "the old load bound a and f, with no note" "1:1:" \
 "$TMUX_REAL" -L "$GU" set -g @cockpit_menu_key n >/dev/null 2>&1
 "$TMUX_REAL" -L "$GU" set -g @cockpit_panel_key F11 >/dev/null 2>&1
 gu_up "$GUD"; gu_load "$GU" "$GUD"
-is "the old menu key a is free again and the old panel key f is find-window" \
-   "|find-window" "$(gu_key "$GU" a)|$(gu_key "$GU" f | grep -o find-window)"
+loaded_on "$GU" "the old menu key a is free again and the old panel key f is find-window" &&
+    is "the old menu key a is free again and the old panel key f is find-window" \
+       "|find-window" "$(gu_key "$GU" a)|$(gu_key "$GU" f | grep -o find-window)"
 is "and each says so once, and the load marks every key noted" "2:1" \
    "$(gu_said):$("$TMUX_REAL" -L "$GU" show-option -gqv @cockpit_notes)"
 gu_load "$GU" "$GUD"
@@ -4042,6 +4107,8 @@ is "the failed upgrade load leaves panel:f pending and the marker unset" "panel:
    "$("$TMUX_REAL" -L "$GU3" show-option -gqv @cockpit_giveback)|$(
       "$TMUX_REAL" -L "$GU3" show-option -gqv @cockpit_notes)"
 gu_load "$GU3" "$GUD3"
+loaded_on "$GU3" \
+    "a failed upgrade give-back is retried: f is find-window and nothing is pending" &&
 is "a failed upgrade give-back is retried: f is find-window and nothing is pending" \
    "find-window|" "$(gu_key "$GU3" f | grep -o find-window)|$(
       "$TMUX_REAL" -L "$GU3" show-option -gqv @cockpit_giveback)"
@@ -4060,12 +4127,18 @@ EM="cockpit-em-$$"; EMO="cockpit-emo-$$"; SOCKS="$SOCKS $EM $EMO"
 "$TMUX_REAL" -L "$EM" -f "$DIR/examples/full.tmux.conf" new-session -d -s work -n editor -x 120 -y 30 'exec sleep 300' >/dev/null 2>&1
 "$TMUX_REAL" -L "$EM" new-session -d -s agents 'exec sleep 300' >/dev/null 2>&1
 "$TMUX_REAL" -L "$EM" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
-case "$("$TMUX_REAL" -L "$EM" list-keys -T prefix 2>/dev/null | awk '$4=="m"')" in
-    *select-pane\ -m*) ok "prefix m is stock mark-pane again" ;;
-    *) bad "prefix m is stock mark-pane again" "select-pane -m" "$("$TMUX_REAL" -L "$EM" list-keys -T prefix | awk '$4=="m"' | cut -c1-120)" ;;
-esac
-is "prefix V is gone from the example" "" "$("$TMUX_REAL" -L "$EM" list-keys -T prefix 2>/dev/null | awk '$4=="V"')"
-is "prefix B is gone from the example" "" "$("$TMUX_REAL" -L "$EM" list-keys -T prefix 2>/dev/null | awk '$4=="B"')"
+loaded_on "$EM" "prefix m is stock mark-pane again" &&
+    case "$("$TMUX_REAL" -L "$EM" list-keys -T prefix 2>/dev/null | awk '$4=="m"')" in
+        *select-pane\ -m*) ok "prefix m is stock mark-pane again" ;;
+        *) bad "prefix m is stock mark-pane again" "select-pane -m" \
+             "$("$TMUX_REAL" -L "$EM" list-keys -T prefix | awk '$4=="m"' | cut -c1-120)" ;;
+    esac
+loaded_on "$EM" "prefix V is gone from the example" &&
+    is "prefix V is gone from the example" "" \
+       "$("$TMUX_REAL" -L "$EM" list-keys -T prefix 2>/dev/null | awk '$4=="V"')"
+loaded_on "$EM" "prefix B is gone from the example" &&
+    is "prefix B is gone from the example" "" \
+       "$("$TMUX_REAL" -L "$EM" list-keys -T prefix 2>/dev/null | awk '$4=="B"')"
 case "$("$TMUX_REAL" -L "$EM" list-keys -T prefix 2>/dev/null | awk '$4=="v"')" in
     *even-horizontal*even-vertical*) ok "prefix v toggles stacked and side-by-side" ;;
     *) bad "prefix v toggles stacked and side-by-side" "if-shell over both layouts" "$("$TMUX_REAL" -L "$EM" list-keys -T prefix | awk '$4=="v"')" ;;
@@ -4113,11 +4186,12 @@ esac
 fresh_server -L "$PM" -f /dev/null -- -d -s t
 "$TMUX_REAL" -L "$PM" set -g @cockpit_move_key off >/dev/null 2>&1
 "$TMUX_REAL" -L "$PM" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
-case "$("$TMUX_REAL" -L "$PM" list-keys -T prefix 2>/dev/null | awk '$4=="M"')" in
-    *"select-pane -M"*) ok "off keeps stock select-pane -M" ;;
-    *) bad "off keeps stock select-pane -M" "select-pane -M" \
-         "$("$TMUX_REAL" -L "$PM" list-keys -T prefix | awk '$4=="M"')" ;;
-esac
+loaded_on "$PM" "off keeps stock select-pane -M" &&
+    case "$("$TMUX_REAL" -L "$PM" list-keys -T prefix 2>/dev/null | awk '$4=="M"')" in
+        *"select-pane -M"*) ok "off keeps stock select-pane -M" ;;
+        *) bad "off keeps stock select-pane -M" "select-pane -M" \
+             "$("$TMUX_REAL" -L "$PM" list-keys -T prefix | awk '$4=="M"')" ;;
+    esac
 "$TMUX_REAL" -L "$PM" kill-server >/dev/null 2>&1
 fi
 
@@ -7069,13 +7143,15 @@ RB2="cockpit-rb2-$$"; SOCKS="$SOCKS $RB2"
 # "off" cannot make r EMPTY: stock tmux binds prefix r to refresh-client, and
 # not binding ours simply leaves the stock binding standing. Unbound-from-review
 # is the real contract.
-case "$("$TMUX_REAL" -L "$RB2" list-keys -T prefix 2>/dev/null | awk '$4=="r"')" in
-    *cockpit-board*) bad "@cockpit_review_key off leaves r to stock tmux" \
-         "no cockpit-board in the binding" \
-         "$("$TMUX_REAL" -L "$RB2" list-keys -T prefix | awk '$4=="r"')" ;;
-    *) ok "@cockpit_review_key off leaves r to stock tmux" ;;
-esac
-is "@cockpit_reload_key off leaves R unbound" "" \
+loaded_on "$RB2" "@cockpit_review_key off leaves r to stock tmux" &&
+    case "$("$TMUX_REAL" -L "$RB2" list-keys -T prefix 2>/dev/null | awk '$4=="r"')" in
+        *cockpit-board*) bad "@cockpit_review_key off leaves r to stock tmux" \
+             "no cockpit-board in the binding" \
+             "$("$TMUX_REAL" -L "$RB2" list-keys -T prefix | awk '$4=="r"')" ;;
+        *) ok "@cockpit_review_key off leaves r to stock tmux" ;;
+    esac
+loaded_on "$RB2" "@cockpit_reload_key off leaves R unbound" &&
+    is "@cockpit_reload_key off leaves R unbound" "" \
    "$("$TMUX_REAL" -L "$RB2" list-keys -T prefix 2>/dev/null | awk '$4=="R"')"
 "$TMUX_REAL" -L "$RB2" kill-server >/dev/null 2>&1
 
@@ -7966,9 +8042,12 @@ esac
 case "$(bkey "$B" a)" in *'Board of every agent'*) ok "the prefix a menu carries a board row that replays w" ;;
     *) bad "the prefix a menu carries a board row that replays w" "a 'Board of every agent' item" "$(bkey "$B" a)" ;;
 esac
-case "$(bkey "$B" a)" in *'Review its diff'*) bad "the menu has no review row beside the board's" "no 'Review its diff' item" "$(bkey "$B" a)" ;;
-    *) ok "the menu has no review row beside the board's" ;;
-esac
+loaded_on "$B" "the menu has no review row beside the board's" &&
+    case "$(bkey "$B" a)" in
+        *'Review its diff'*) bad "the menu has no review row beside the board's" \
+            "no 'Review its diff' item" "$(bkey "$B" a)" ;;
+        *) ok "the menu has no review row beside the board's" ;;
+    esac
 is "and a plain load fetches nothing" "no" "$([ -e "$BD/fetched" ] && echo yes || echo no)"
 # Required since #199: the load says so, offline, and names the fix.
 case "$(grep 'display-message tmux-cockpit: cockpit-tui' "$BD/argv" 2>/dev/null)" in
@@ -8006,14 +8085,18 @@ B2="cockpit-bw2-$$"; SOCKS="$SOCKS $B2"; bshim "$BD/s2" "$B2" ""
 PATH="$BD/s2:$PATH" "$TMUX_REAL" -L "$B2" -f /dev/null new-session -d -s t 'exec -a claude sleep 300' >/dev/null 2>&1
 "$TMUX_REAL" -L "$B2" set -g @cockpit_board_key off >/dev/null 2>&1
 "$TMUX_REAL" -L "$B2" run-shell "$BD/p/cockpit.tmux" >/dev/null 2>&1; bloaded "$B2"
-case "$(bkey "$B2" w)" in *cockpit-board*) bad "@cockpit_board_key off leaves w to stock tmux" \
-        "no cockpit-board in the binding" "$(bkey "$B2" w)" ;;
-    *) ok "@cockpit_board_key off leaves w to stock tmux" ;;
-esac
-case "$(bkey "$B2" a)" in *'Board of every agent'*) bad "and the agents menu drops its row with it" \
-        "no board row" "$(bkey "$B2" a)" ;;
-    *) ok "and the agents menu drops its row with it" ;;
-esac
+loaded_on "$B2" "@cockpit_board_key off leaves w to stock tmux" &&
+    case "$(bkey "$B2" w)" in
+        *cockpit-board*) bad "@cockpit_board_key off leaves w to stock tmux" \
+            "no cockpit-board in the binding" "$(bkey "$B2" w)" ;;
+        *) ok "@cockpit_board_key off leaves w to stock tmux" ;;
+    esac
+loaded_on "$B2" "and the agents menu drops its row with it" &&
+    case "$(bkey "$B2" a)" in
+        *'Board of every agent'*) bad "and the agents menu drops its row with it" \
+            "no board row" "$(bkey "$B2" a)" ;;
+        *) ok "and the agents menu drops its row with it" ;;
+    esac
 "$TMUX_REAL" -L "$B2" kill-server >/dev/null 2>&1
 
 B3="cockpit-bw3-$$"; SOCKS="$SOCKS $B3"; bshim "$BD/s3" "$B3" ""
@@ -8921,15 +9004,17 @@ case "$("$TMUX_REAL" -L "$PN" list-keys -T prefix F9 2>/dev/null)" in
     *) bad "@cockpit_panel_key F9 opens the panel in a popup on the pressed pane" "display-popup ... cockpit-panel -p" \
          "$("$TMUX_REAL" -L "$PN" list-keys -T prefix F9 2>/dev/null)" ;;
 esac
-is "moving the key takes f back" "0" \
+loaded_on "$PN" "moving the key takes f back" && is "moving the key takes f back" "0" \
    "$("$TMUX_REAL" -L "$PN" list-keys -T prefix f 2>/dev/null | grep -c cockpit-panel)"
 "$TMUX_REAL" -L "$PN" set -g @cockpit_panel_key off >/dev/null 2>&1
 "$TMUX_REAL" -L "$PN" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
-is "turning the key off on a reload takes the old binding back" "0:" \
+loaded_on "$PN" "turning the key off on a reload takes the old binding back" &&
+    is "turning the key off on a reload takes the old binding back" "0:" \
    "$("$TMUX_REAL" -L "$PN" list-keys -T prefix F9 2>/dev/null | grep -c cockpit-panel):$("$TMUX_REAL" -L "$PN" show-option -gqv @cockpit_panel_bound)"
 pn_keys() { "$TMUX_REAL" -L "$PN" list-keys -T prefix "$1" 2>/dev/null; }
 pn_load() { "$TMUX_REAL" -L "$PN" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1; }
 pn_stock_f() {                # <label>  f is tmux's own find-window prompt again
+    loaded_on "$PN" "$1" || return
     case "$(pn_keys f)" in *cockpit*) bad "$1" "command-prompt find-window" "$(pn_keys f)" ;;
         *'command-prompt'*'find-window -Z'*) ok "$1" ;; *) bad "$1" "command-prompt find-window" "$(pn_keys f)" ;; esac
 }
@@ -8941,15 +9026,18 @@ pn_stock_f "turning the panel off on f gives f back to stock find-window"
 "$TMUX_REAL" -L "$PN" bind-key -T prefix f display-popup -E "/old/scripts/tmux-fixer -p %1" >/dev/null 2>&1
 pn_load
 # give_back restores tmux's own binding: g is stock 3.8's switch-client -T move.
-case "$(pn_keys g)" in *tmux-fixer*) bad "a reload drops a dead tmux-fixer binding on another key, for stock" "switch-client -T move" "$(pn_keys g)" ;;
-    *'switch-client -T move'*) ok "a reload drops a dead tmux-fixer binding on another key, for stock" ;;
-    *) bad "a reload drops a dead tmux-fixer binding on another key, for stock" "switch-client -T move" "$(pn_keys g)" ;; esac
+pnr="a reload drops a dead tmux-fixer binding on another key, for stock"
+loaded_on "$PN" "$pnr" &&
+    case "$(pn_keys g)" in *tmux-fixer*) bad "$pnr" "switch-client -T move" "$(pn_keys g)" ;;
+        *'switch-client -T move'*) ok "$pnr" ;;
+        *) bad "$pnr" "switch-client -T move" "$(pn_keys g)" ;; esac
 pn_stock_f "and gives f back to stock find-window"
 # @cockpit_fixer_key off was how a user kept stock f; the panel honours it.
 "$TMUX_REAL" -L "$PN" set -gu @cockpit_panel_key >/dev/null 2>&1
 "$TMUX_REAL" -L "$PN" set -g @cockpit_fixer_key off >/dev/null 2>&1; pn_load
 pn_stock_f "@cockpit_fixer_key off with no panel key keeps stock f"
-is "and binds no panel key" "" "$("$TMUX_REAL" -L "$PN" list-keys -T prefix 2>/dev/null | grep cockpit-panel)"
+loaded_on "$PN" "and binds no panel key" && is "and binds no panel key" "" \
+    "$("$TMUX_REAL" -L "$PN" list-keys -T prefix 2>/dev/null | grep cockpit-panel)"
 "$TMUX_REAL" -L "$PN" set -g @cockpit_panel_key f >/dev/null 2>&1; pn_load
 is "an explicit @cockpit_panel_key still wins over it" "1" "$(pn_keys f | grep -c cockpit-panel)"
 pn_mode() { pn_keys f | grep -o 'COCKPIT_PANEL_MODE=[a-z]*'; }
@@ -9477,7 +9565,8 @@ is "and restores the border the config had, not a hardcoded top" "bottom" \
 fresh_server -L "$FI" -f /dev/null -- -d -s t
 "$TMUX_REAL" -L "$FI" set -g @cockpit_fullscreen_key off >/dev/null 2>&1
 "$TMUX_REAL" -L "$FI" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
-is "@cockpit_fullscreen_key off binds nothing" "" \
+loaded_on "$FI" "@cockpit_fullscreen_key off binds nothing" &&
+    is "@cockpit_fullscreen_key off binds nothing" "" \
    "$("$TMUX_REAL" -L "$FI" list-keys -T prefix 2>/dev/null | awk '$4=="e"')"
 "$TMUX_REAL" -L "$FI" kill-server >/dev/null 2>&1
 fi
@@ -11653,14 +11742,23 @@ case "$(pk_i)" in
     *display-popup*"cockpit-tui'"*" info "*) ok "prefix i is bound to a popup running cockpit-tui info" ;;
     *) bad "prefix i is bound to a popup running cockpit-tui info" "display-popup ... cockpit-tui info" "$(pk_i)" ;;
 esac
-case "$(pk_i)" in *tmux-review*|*--info*) bad "prefix i no longer runs tmux-review --info" "no tmux-review" "$(pk_i)" ;; *) ok "prefix i no longer runs tmux-review --info" ;; esac
+loaded_on "$PK" "prefix i no longer runs tmux-review --info" &&
+    case "$(pk_i)" in
+        *tmux-review*|*--info*)
+            bad "prefix i no longer runs tmux-review --info" "no tmux-review" "$(pk_i)" ;;
+        *) ok "prefix i no longer runs tmux-review --info" ;;
+    esac
 # #293: the binary reads $COCKPIT_GLYPHS only, so the popup passes the option on
 case "$(pk_i)" in *@cockpit_glyphs*COCKPIT_GLYPHS*) ok "prefix i passes @cockpit_glyphs to the binary as COCKPIT_GLYPHS" ;;
     *) bad "prefix i passes @cockpit_glyphs to the binary as COCKPIT_GLYPHS" "COCKPIT_GLYPHS from @cockpit_glyphs" "$(pk_i)" ;; esac
 fresh_server -L "$PK" -f /dev/null -- -d -s t -x 100 -y 30 'exec bash'
 "$TMUX_REAL" -L "$PK" set -g @cockpit_info_key off >/dev/null 2>&1
 "$TMUX_REAL" -L "$PK" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
-case "$(pk_i)" in *cockpit-tui*) bad "@cockpit_info_key off leaves i unbound" "stock i" "$(pk_i)" ;; *) ok "@cockpit_info_key off leaves i unbound" ;; esac
+loaded_on "$PK" "@cockpit_info_key off leaves i unbound" &&
+    case "$(pk_i)" in
+        *cockpit-tui*) bad "@cockpit_info_key off leaves i unbound" "stock i" "$(pk_i)" ;;
+        *) ok "@cockpit_info_key off leaves i unbound" ;;
+    esac
 "$TMUX_REAL" -L "$PK" kill-server >/dev/null 2>&1
 fi
 
@@ -14563,19 +14661,24 @@ for gbk in Space '?' 1 '"' '$' ','; do
     # A second load on the same key: the stock given back later is still tmux's, not this binding.
     gbload @cockpit_menu_key "$gbk"
     gbload @cockpit_menu_key a
-    is "moving the menu off [$gbk] gives its stock binding back" "$(gbline "$gbk")" "$(gbt list-keys -T prefix -- "$gbk")"
-    is "with its note" "$(gbstock "$gbk")" "$(gbt list-keys -N -T prefix -- "$gbk")"
+    gbr="moving the menu off [$gbk] gives its stock binding back"
+    loaded_on "$GB" "$gbr" && is "$gbr" "$(gbline "$gbk")" "$(gbt list-keys -T prefix -- "$gbk")"
+    loaded_on "$GB" "with its note" &&
+        is "with its note" "$(gbstock "$gbk")" "$(gbt list-keys -N -T prefix -- "$gbk")"
 done
 # A repeatable stock key keeps its -r; the panel key gives back the same way.
 gbload @cockpit_panel_key Up
 case "$(gbt list-keys -T prefix Up)" in *cockpit-panel*) ok "the panel takes Up" ;;
     *) bad "the panel takes Up" "cockpit-panel" "$(gbt list-keys -T prefix Up)" ;; esac
 gbload @cockpit_panel_key off
-is "turning the panel off gives Up back, repeat flag and all" "$(gbline Up)" "$(gbt list-keys -T prefix Up)"
+loaded_on "$GB" "turning the panel off gives Up back, repeat flag and all" &&
+    is "turning the panel off gives Up back, repeat flag and all" "$(gbline Up)" \
+       "$(gbt list-keys -T prefix Up)"
 # A key stock leaves unbound is unbound again.
 gbload @cockpit_menu_key F5
 gbload @cockpit_menu_key a
-is "a key stock does not bind is unbound again" "" "$(gbt list-keys -T prefix F5 2>/dev/null)"
+loaded_on "$GB" "a key stock does not bind is unbound again" &&
+    is "a key stock does not bind is unbound again" "" "$(gbt list-keys -T prefix F5 2>/dev/null)"
 # A lookup that cannot run (here a stock server that will not start, as a socket
 # path past the limit did) leaves the key alone: unbinding it would lose stock.
 mkdir "$GBD/bin"
