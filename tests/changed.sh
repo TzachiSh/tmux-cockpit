@@ -10,6 +10,10 @@
 # 5 blocks; mapping by block title would need one on 59.
 #
 # Prints "ALL" when it cannot be sure. Every unknown path takes that branch.
+#
+#   tests/changed.sh            the files tests/green.sh reports as changed
+#   tests/changed.sh FILE...    these files instead, as paths from the repo root
+#   tests/changed.sh --each FILE...   each file's own blocks, one line per file
 set -u
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUN="$DIR/tests/run.sh"
@@ -21,7 +25,7 @@ SCRIPTS='agent-context agent-state cockpit-board cockpit-panel review-gate tm tm
 
 # ordinal <TAB> title <TAB> files-it-uses
 awk -v scripts="$SCRIPTS" '
-function note(arr, line,   i, n, S) {
+function note(arr, line,   i, n, S, s, p) {
     n = split(scripts, S, " ")
     # The trailing class matters: scripts/tm must not match scripts/tmux-where.
     for (i = 1; i <= n; i++) if (line ~ ("scripts/" S[i] "([^A-Za-z0-9_-]|$)")) arr["scripts/" S[i]] = 1
@@ -31,6 +35,13 @@ function note(arr, line,   i, n, S) {
     # the libs tmux-review sources: run.sh greps some of them by path
     if (match(line, /scripts\/lib\/review-[a-z]+\.sh/)) arr[substr(line, RSTART, RLENGTH)] = 1
     if (line ~ /examples\//)     arr["examples"] = 1
+    # Any file named from the repo root, "$DIR/docs/tui.md" or "$DIR"/Makefile:
+    # docs and the Makefile are read by blocks too, not only scripts (#672).
+    s = line
+    while (match(s, /[$][{]?DIR[}]?["]?\/[A-Za-z0-9_.\/-]+/)) {
+        p = substr(s, RSTART, RLENGTH); sub(/^[^\/]*\//, "", p); arr[p] = 1
+        s = substr(s, RSTART + RLENGTH)
+    }
 }
 FNR == NR {                                       # pass 1: the top-level helpers
     if ($0 ~ /^[A-Za-z_][A-Za-z_0-9]*\(\) *\{/) { fn = $0; sub(/\(\).*/, "", fn); infn = 1; d = 0 }
@@ -57,8 +68,14 @@ FNR == NR {                                       # pass 1: the top-level helper
 t == "" { next }
 { for (k in pend) f[k] = 1; delete pend
   note(f, $0)
-  for (hn in H) if ($0 ~ ("(^|[^A-Za-z_0-9])" hn "([^A-Za-z_0-9]|$)")) {
-      m = split(H[hn], P, " "); for (i = 1; i <= m; i++) if (P[i] != "") f[P[i]] = 1 } }
+  # Each word of the line looked up in H, rather than every helper name tried
+  # as a regex against the line: the same matches, without compiling hundreds of
+  # regexes per line of run.sh.
+  w = split($0, W, /[^A-Za-z_0-9]+/)
+  for (j = 1; j <= w; j++) if ((W[j] in H) && !(W[j] in seen)) {
+      seen[W[j]] = 1
+      m = split(H[W[j]], P, " "); for (i = 1; i <= m; i++) if (P[i] != "") f[P[i]] = 1 }
+  delete seen }
 function emit(   k, s) { s = ""; for (k in f) s = s " " k; printf "%d\t%s\t%s\n", n, t, substr(s, 2) }
 END { emit() }
 ' "$RUN" "$RUN" > "$TBL"
@@ -84,25 +101,48 @@ runsh_blocks() {
     printf '%s\n' "$out"
 }
 
-want=1                                            # the syntax block, always
-for f in $(bash "$DIR/tests/green.sh" changed); do
-    case "$f" in
-    tests/run.sh)
-        b=$(runsh_blocks)
-        case "$b" in *ALL*) echo ALL; exit 0 ;; esac
-        want="$want $b" ;;
+# pick FILE: the ordinals of the blocks FILE could break, one per line, or ALL.
+pick() {
+    local s
+    case "$1" in
+    tests/run.sh) runsh_blocks ;;
+    # Not run by the suite, but a block may read one by path: the docs-options
+    # block greps docs/tui.md (#672). Only the blocks that name it.
     tests/only.sh|tests/par.sh|tests/green.sh|tests/changed.sh|Makefile|README.md|LICENSE|.*|docs/*)
-        ;;                                        # nothing an assertion reads
+        blocks_for "$1" ;;
     scripts/lib/*)                                # reaches every script sourcing it
         for s in scripts/*; do
-            [ -f "$s" ] && grep -q "${f##*/}" "$s" && want="$want $(blocks_for "$s")"
+            [ -f "$s" ] && grep -q "${1##*/}" "$s" && blocks_for "$s"
         done
-        want="$want $(blocks_for "$f")" ;;
-    examples/*)  want="$want $(blocks_for examples)" ;;
+        blocks_for "$1" ;;
+    examples/*)  blocks_for examples ;;
     cockpit.tmux|install.sh|scripts/*)
-        want="$want $(blocks_for "$f")" ;;
-    *)  echo ALL; exit 0 ;;                       # anything unrecognised
+        blocks_for "$1" ;;
+    *)  echo ALL ;;                               # anything unrecognised
     esac
+}
+
+# --each FILE...: one line per file, "FILE<TAB>ordinals", without the syntax
+# block every selection carries. The table is built once for all of them.
+if [ "${1:-}" = --each ]; then
+    shift
+    for f in "$@"; do
+        b=$(pick "$f")
+        case "$b" in *ALL*) b=ALL ;; esac
+        # shellcheck disable=SC2086  # deliberate word splitting: a list of ordinals
+        printf '%s\t%s\n' "$f" "$(printf '%s\n' $b | sort -un | paste -sd,)"
+    done
+    exit 0
+fi
+
+# No arguments: ask the green stamp. Its paths hold no spaces (the repo has none).
+# shellcheck disable=SC2046  # deliberate word splitting: one path per line
+[ $# -gt 0 ] || set -- $(bash "$DIR/tests/green.sh" changed)
+want=1                                            # the syntax block, always
+for f in "$@"; do
+    b=$(pick "$f")
+    case "$b" in *ALL*) echo ALL; exit 0 ;; esac
+    want="$want $b"
 done
 # shellcheck disable=SC2086  # deliberate word splitting: a list of ordinals
 printf '%s\n' $want | sort -un | paste -sd,

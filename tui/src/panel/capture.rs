@@ -27,6 +27,12 @@ pub fn is_claude(name: &str, cmd: &str) -> bool {
 
 /// `None` when tmux cannot answer for the pane.
 pub fn capture(pane: &str) -> Option<Capture> {
+    capture_within(pane, REPO_BUDGET)
+}
+
+/// [`capture`] with the repo block under `budget`: a test checking the block's
+/// parts waits longer than the panel would.
+pub fn capture_within(pane: &str, budget: Duration) -> Option<Capture> {
     let info = tmux(&[
         "display",
         "-p",
@@ -52,7 +58,7 @@ pub fn capture(pane: &str) -> Option<Capture> {
     let repo = if path.is_empty() || !is_local(&cmd) {
         Repo::default()
     } else {
-        Repo::start(&path, &screen, REPO_BUDGET)
+        Repo::start(&path, &screen, budget)
     };
     Some(Capture {
         name,

@@ -2,7 +2,7 @@
 //! the capture. Env vars are process-global, so every test holds `ENV`.
 mod fake;
 
-use cockpit_tui::panel::capture::capture;
+use cockpit_tui::panel::capture::{capture, capture_within, repo_state_within};
 use cockpit_tui::panel::envelope::{Flow, OutType};
 use cockpit_tui::panel::prompts::{self, Ctx};
 use cockpit_tui::panel::request::{Call, Effort, Request};
@@ -13,6 +13,14 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
 static ENV: Mutex<()> = Mutex::new(());
+
+/// What a row checking the repo block's parts waits for it. The panel's 300 ms
+/// `REPO_BUDGET` leaves a part out on a loaded box (#596).
+const BUDGET: Duration = Duration::from_secs(10);
+/// The time-out rows' budget. Their hung part runs to it every time, so it stays
+/// short; 2 s, about 7 times the panel's, gives the parts that do answer, and a
+/// fake git's shell start-up, room on a loaded box.
+const HUNG_BUDGET: Duration = Duration::from_secs(2);
 
 struct Env {
     old: Vec<(&'static str, Option<String>)>,
@@ -408,7 +416,7 @@ fn a_shell_pane_in_a_repo_carries_its_repo_block() {
     let e = Env::new("capture-repo", &[("COCKPIT_TMUX", None)]);
     git_init(&e.dir.join("r"));
     fake_tmux(&e, "w\\tbash\\t$D/r\\n");
-    let c = capture("%8").unwrap();
+    let c = capture_within("%8", BUDGET).unwrap();
     assert!(c.repo.get().starts_with("branch: main (no commits yet)"), "{:?}", c.repo);
 }
 
@@ -429,7 +437,8 @@ fn a_hung_git_is_killed_with_what_it_forked_at_the_budget() {
     let e = Env::new("repo-hung", &[("PATH", Some(path))]);
     // every call hangs: the rev-parse started beside the config read must die too
     e.exec("git", "[ \"$2\" = $D ] || exit 1; sleep 1000 & echo $! >> $D/kids; wait");
-    let got = cockpit_tui::panel::capture::repo_state(&e.dir.display().to_string(), "");
+    // the kill comes at the budget: both fake gits must have written their pid by then
+    let got = repo_state_within(&e.dir.display().to_string(), "", HUNG_BUDGET);
     assert_eq!(got, "");
     let kids = std::fs::read_to_string(e.dir.join("kids")).unwrap();
     assert_eq!(kids.lines().count(), 2, "rev-parse and config ran");
@@ -458,7 +467,7 @@ fn a_status_that_times_out_keeps_the_log() {
     let path = format!("$D:{}", std::env::var("PATH").unwrap_or_default());
     let e = Env::new("repo-status-hung", &[("PATH", Some(path))]);
     fake_git(&e, "status", "exec sleep 1000");
-    let got = cockpit_tui::panel::capture::repo_state(&e.dir.display().to_string(), "");
+    let got = repo_state_within(&e.dir.display().to_string(), "", HUNG_BUDGET);
     assert!(got.contains("status: timed out") && got.contains("abc1234 first"), "{got}");
 }
 
@@ -507,11 +516,12 @@ fn an_inherited_git_variable_never_moves_the_repo_block() {
             ]);
             let e = Env::new("repo-redirect", &vars);
             let pane = pane_and_other(&e);
-            let want = cockpit_tui::panel::capture::repo_state(&pane, "");
+            let block = |p: &str| repo_state_within(p, "", BUDGET);
+            let want = block(&pane);
             assert!(want.starts_with(&format!("branch: main\nroot: {pane}\n")), "{want}");
             // SAFETY: `e` holds ENV, and its drop puts every REDIRECT var back.
             unsafe { std::env::set_var(var, val.replace("$D", &e.dir.display().to_string())) };
-            cockpit_tui::panel::capture::repo_state(&pane, "") != want
+            block(&pane) != want
         })
         .map(|(var, _)| var)
         .collect();
@@ -525,7 +535,7 @@ fn capture_returns_before_git_answers() {
     // git waits for a file the test writes only once capture() is back
     fake_git(&e, "config", "while [ ! -e $D/go ]; do sleep 0.01; done");
     fake_tmux(&e, "w\\tbash\\t$D\\n");
-    let c = capture("%4").unwrap();
+    let c = capture_within("%4", BUDGET).unwrap();
     std::fs::write(e.dir.join("go"), "").unwrap();
     assert!(c.repo.get().starts_with("branch: main"), "{:?}", c.repo);
 }
@@ -551,7 +561,7 @@ fn a_local_shell_editor_or_agent_pane_keeps_its_repo_block() {
     // rows: pane_current_command; 2.1.246 is a live Claude renamed to its version
     for cmd in ["zsh", "fish", "nvim", "vim", "claude", "codex", "2.1.246", "cursor-agent"] {
         fake_tmux(&e, &format!("w\\t{cmd}\\t$D/r\\n"));
-        let c = capture("%9").unwrap();
+        let c = capture_within("%9", BUDGET).unwrap();
         assert!(c.repo.get().starts_with("branch: main (no commits yet)"), "{cmd}: {:?}", c.repo);
     }
 }
