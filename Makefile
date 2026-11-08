@@ -10,6 +10,7 @@
 #   make tui-bin      build the required cockpit-tui into bin/ (the tests run it first)
 #   make tui          the same, then print its version
 #   make tui-test     its tests, clippy -D warnings and fmt --check, on CI's rust-version
+#   make tui-test-clean  tui-test in a private TMPDIR and TMUX_TMPDIR; fails on a leftover
 #   make install      symlink the commands into ~/.local/bin
 #   make uninstall    remove only the symlinks pointing back here
 #   make bootstrap    full setup from nothing: packages, plugins, config, hooks
@@ -21,14 +22,14 @@ SHELL := /bin/bash
 
 # Every executable shell file, whatever its extension. Listed once so a new
 # script cannot be added to the repo and quietly skipped by the linter.
-SOURCES := cockpit.tmux install.sh bootstrap.sh tests/run.sh tests/only.sh tests/par.sh tests/green.sh tests/changed.sh tests/fixtures/review/mkfix.sh $(filter-out scripts/lib,$(wildcard scripts/*)) $(wildcard scripts/lib/*)
+SOURCES := cockpit.tmux install.sh bootstrap.sh tests/run.sh tests/only.sh tests/par.sh tests/green.sh tests/changed.sh tests/clean-run.sh tests/fixtures/review/mkfix.sh $(filter-out scripts/lib,$(wildcard scripts/*)) $(wildcard scripts/lib/*)
 
-.PHONY: all check test test-par check-par gate test-changed lint fmt tui tui-bin tui-test install uninstall bootstrap help
+.PHONY: all check test test-par check-par gate test-changed lint fmt tui tui-bin tui-test tui-test-clean install uninstall bootstrap help
 
 all: help
 
 help:
-	@sed -n '2,18p' $(MAKEFILE_LIST) | sed 's/^# \{0,1\}//'
+	@sed -n '2,19p' $(MAKEFILE_LIST) | sed 's/^# \{0,1\}//'
 
 test: tui-bin
 	@tests/run.sh
@@ -79,6 +80,11 @@ tui-test:
 	@$(TUI_ENV) cargo test --locked --manifest-path tui/Cargo.toml
 	@$(TUI_ENV) cargo clippy --locked --manifest-path tui/Cargo.toml --all-targets -- -D warnings
 	@$(TUI_ENV) cargo fmt --manifest-path tui/Cargo.toml --check
+
+# tui-test with TMPDIR and TMUX_TMPDIR on private empty dirs, failing on any
+# file, dir or socket a test left behind there (#400).
+tui-test-clean:
+	@tests/clean-run.sh $(MAKE) -s tui-test
 
 # lint and test-par are independent, so `make -j2 check-par` runs them
 # concurrently and the 17s of lint disappears into the tests' wall clock.

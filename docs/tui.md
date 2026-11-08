@@ -54,6 +54,8 @@ rather than dumping a compiler error, and keeps any binary you already have.
 `make check` builds the binary first; the suite needs cargo. `make tui-test`
 runs cargo's tests, clippy and fmt on the `rust-version` toolchain through
 rustup (CI's, so the lints match); `make tui-test TUI_TOOLCHAIN=` skips that.
+`make tui-test-clean` runs it in a private TMPDIR and TMUX_TMPDIR and fails,
+naming them, on any file, dir or socket a test left there (#400).
 
 The binary lives in the plugin's own `bin/` and is gitignored. `install.sh`
 runs `scripts/tui-fetch --required` and exits 1 when no working binary is
