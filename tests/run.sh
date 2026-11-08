@@ -5571,6 +5571,43 @@ for v in GIT_DIR=@/.git GIT_WORK_TREE=@ GIT_COMMON_DIR=@/.git GIT_INDEX_FILE=@/.
 done
 rm -rf "$RVENV"
 
+echo "== tree_diff: an inherited GIT_*_PATHSPECS changes nothing it counts or runs (#673) =="
+# The engine's pathspecs are ':(top)', ':(exclude,literal)<big file>' and
+# ':(top,exclude,literal)<gitlink>'. FAIL-first: on the old code LITERAL found
+# no gitlink to keep out, so the add ran the submodule's planted clean filter;
+# ICASE's exclude of the big Core dropped core's change; GLOB with NOGLOB made
+# git refuse every pathspec. No tmux: tree_diff never calls it.
+RVPS=$(mktmpd)
+rvpsplant=$( (
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  cd "$RVPS" || exit
+  git init -q -b main in && printf 'x\n' > in/f.txt && git -C in add -A && git -C in commit -q -m i
+  git init -q -b main r && cd r && printf '1\n' > core && git add -A && git commit -q -m first
+  git -c protocol.file.allow=always submodule add -q "$RVPS/in" sub && git commit -q -m sub
+  printf '1\n2\n' > core; dd if=/dev/null of=Core bs=1048576 seek=33
+  git config -f .git/modules/sub/config filter.mark.clean "touch $RVPS/PWNED; cat"
+  printf '* filter=mark\n' > .git/modules/sub/info/attributes
+  touch -t 203001010000 sub/f.txt; git status --porcelain >/dev/null
+  ls "$RVPS" | grep -c '^PWNED$'
+) 2>/dev/null | tail -n 1)
+is "the gitlink's planted clean filter fires under plain git status" "1" "$rvpsplant"
+rvpsn=0
+for vs in "" GIT_LITERAL_PATHSPECS GIT_GLOB_PATHSPECS GIT_NOGLOB_PATHSPECS GIT_ICASE_PATHSPECS \
+          "GIT_GLOB_PATHSPECS GIT_NOGLOB_PATHSPECS"; do
+    # a fresh mtime each run, so one that refreshed the gitlink's index leaves the next one dirt
+    rvpsn=$((rvpsn + 1)); rm -f "$RVPS/PWNED"
+    touch -t "$((2030 + rvpsn))01010000" "$RVPS/r/sub/f.txt"
+    # shellcheck disable=SC2086  # $vs is a list of names
+    rvpsout=$(for v in $vs; do export "$v=1"; done
+              COCKPIT_REVIEW_BASE=uncommitted tdiff "$RVPS/r" --numstat)
+    is "${vs:-nothing} inherited: core's line and the big Core, as git counts them" \
+       "1	0	core
+-	-	Core" "$rvpsout"
+    is "${vs:-nothing} inherited: the gitlink's planted clean filter never runs" "" \
+       "$(ls "$RVPS" | grep '^PWNED$')"
+done
+rm -rf "$RVPS"
+
 echo "== tmux-review --request: an inherited GIT_DIR or its kin never opens another repo's review (#475) =="
 # --request sources no diff engine: its git_root runs before any lib could
 # unset the four. The pane sits in a subfolder, so a GIT_DIR alone (the cwd as

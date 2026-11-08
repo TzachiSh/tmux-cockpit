@@ -1006,7 +1006,11 @@ folder, then writing`, and tablet mode has an `[ explore ]` button.
   exported `GIT_DIR` or `GIT_WORK_TREE`, such as a bare dotfiles repo with
   `GIT_WORK_TREE=$HOME`, shows no repo on the board, the panel, the review
   and the branch popup. The usual alias form,
-  `git --git-dir=… --work-tree=…`, sets no variable and is unaffected. Then
+  `git --git-dir=… --work-tree=…`, sets no variable and is unaffected. The
+  board's diff count and `tmux-review` also drop `GIT_LITERAL_PATHSPECS`,
+  `GIT_GLOB_PATHSPECS`, `GIT_NOGLOB_PATHSPECS` and `GIT_ICASE_PATHSPECS`
+  (`gitsafe::PATHSPEC`, #673): each changes what a `:(literal)` or
+  `:(exclude,literal)` pathspec matches. Then
   the root is kept only if it holds the pane's folder and its own `.git`, a
   folder or a `gitdir:` file, is the repo's git dir. Otherwise it is the
   pane's folder. A linked worktree, a submodule and a separate git dir pass.

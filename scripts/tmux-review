@@ -27,6 +27,8 @@ fi
 # at another. Here, before any mode runs, so a new mode cannot miss it.
 # GIT_CEILING_DIRECTORIES stays: it can only stop the search lower.
 unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE
+# Nor may an inherited pathspec mode change what this script's pathspecs match (#673).
+unset GIT_LITERAL_PATHSPECS GIT_GLOB_PATHSPECS GIT_NOGLOB_PATHSPECS GIT_ICASE_PATHSPECS
 
 # Not `$0`: through install.sh's symlink or a PATH lookup this must still
 # find its siblings and re-invoke itself.

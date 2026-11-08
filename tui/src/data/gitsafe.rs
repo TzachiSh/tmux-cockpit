@@ -44,6 +44,16 @@ pub const SAFE: [&str; 23] = [
 /// only stop the search lower.
 pub const REDIRECT: [&str; 4] = ["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE"];
 
+/// What an inherited environment changes every pathspec's meaning with (#673):
+/// LITERAL reads `:(literal)A` as a file of that name, ICASE has it match `a`
+/// too, and GLOB with NOGLOB makes git refuse any pathspec at all.
+pub const PATHSPEC: [&str; 4] = [
+    "GIT_LITERAL_PATHSPECS",
+    "GIT_GLOB_PATHSPECS",
+    "GIT_NOGLOB_PATHSPECS",
+    "GIT_ICASE_PATHSPECS",
+];
+
 /// stdout, and whether git exited 0: a failed diff must not read as clean.
 fn run(dir: &str, extra: &[String], index: Option<&Path>, args: &[&str]) -> (bool, String) {
     let (ok, out) = run_raw(dir, extra, index, args);
@@ -53,7 +63,7 @@ fn run(dir: &str, extra: &[String], index: Option<&Path>, args: &[&str]) -> (boo
 /// [`run`] with stdout as git wrote it: a path need not be UTF-8.
 fn run_raw<S: AsRef<OsStr>>(dir: &str, extra: &[String], index: Option<&Path>, args: &[S]) -> (bool, Vec<u8>) {
     let mut c = Command::new("git");
-    for v in REDIRECT {
+    for v in REDIRECT.iter().chain(&PATHSPEC) {
         c.env_remove(v);
     }
     c.arg("-C")
