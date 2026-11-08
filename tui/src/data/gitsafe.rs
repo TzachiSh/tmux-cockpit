@@ -208,7 +208,14 @@ pub type Stat = (u64, u64, u64, String);
 /// keeps its mtime, or git's racy check trusts a same-second edit as clean.
 /// `base` None is HEAD; None back means git failed (a bad base, not a repo).
 pub fn tree_stat(root: &str, gitdir: &str, base: Option<&str>) -> Option<Stat> {
-    tree_stat_with(root, gitdir, base, &write_new)
+    tree_stat_with(root, gitdir, base, &write_new, false)
+}
+
+/// The board's stat (#454, the owner's pick): [`tree_stat`] with `+a -d` counting
+/// tracked lines only, an untracked file only in `?N new`. `diffstat` keeps
+/// [`tree_stat`]'s count, the shell `tree_diff`'s it must match (#199).
+pub fn board_stat(root: &str, gitdir: &str) -> Option<Stat> {
+    tree_stat_with(root, gitdir, None, &write_new, true)
 }
 
 /// A file at `p` holding `bytes`, never one that was already there.
@@ -224,6 +231,7 @@ pub fn tree_stat_with(
     gitdir: &str,
     base: Option<&str>,
     write_excludes: &dyn Fn(&Path, &[u8]) -> std::io::Result<()>,
+    tracked_only: bool,
 ) -> Option<Stat> {
     if base.is_some_and(|b| b.starts_with('-')) {
         return None; // git would read it as an option: `--output=<file>` writes
@@ -297,9 +305,11 @@ pub fn tree_stat_with(
     if !ok {
         return None;
     }
-    // #454: `+a -d` counts tracked changes only. A file the real index does not hold
-    // is untracked: the intent-to-add above only lets the diff see it, and it shows
-    // as `?N new`, its lines nowhere. A staged new file is tracked and counts.
+    // #454, `tracked_only` (the board): `+a -d` counts tracked changes only. A file
+    // the real index does not hold is untracked: the intent-to-add above only lets
+    // the diff see it, and it shows as `?N new`, its lines nowhere. A staged new
+    // file is tracked and counts. Without it, as tree_diff: every created file is
+    // new and its lines count.
     let tracked: std::collections::HashSet<&[u8]> = staged
         .split(|b| *b == 0)
         .filter_map(|r| r.iter().position(|b| *b == b'\t').map(|t| &r[t + 1..]))
@@ -313,13 +323,17 @@ pub fn tree_stat_with(
     for l in out.lines().filter(|l| !l.starts_with(' ')) {
         let mut f = l.splitn(3, '\t');
         let (a, d, path) = (f.next(), f.next(), f.next().unwrap_or(""));
-        if untracked.contains(path) {
+        if tracked_only && untracked.contains(path) {
             continue;
         }
         add += a.and_then(|x| x.parse::<u64>().ok()).unwrap_or(0);
         del += d.and_then(|x| x.parse::<u64>().ok()).unwrap_or(0);
     }
-    let new = untracked.len() as u64;
+    let new = if tracked_only {
+        untracked.len() as u64
+    } else {
+        out.lines().filter(|l| l.starts_with(" create mode ")).count() as u64
+    };
     if out.trim().is_empty() && big.is_empty() {
         return Some((0, 0, 0, "clean".into()));
     }
