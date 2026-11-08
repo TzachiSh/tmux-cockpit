@@ -36,9 +36,21 @@ poll_alive() {                # <pid>
     if [ -r "$proc/$1/comm" ]; then
         read -r comm 2>/dev/null < "$proc/$1/comm"
     elif [ ! -d "$proc/self" ]; then
-        # macOS: comm is the interpreter for a script, so ask for the command line.
+        # macOS: comm is the interpreter for a script, so ask for the command line, and take
+        # only the shebang's form: bash, then the script as its first argument, named exactly
+        # agent-poll. A path may hold a space; a space then / or - is the next argument.
         comm=$(ps -o args= -p "$1" 2>/dev/null)
-        case "$comm" in *agent-poll|*agent-poll\ *) comm=agent-poll ;; esac
+        local interp=${comm%% *} rest
+        rest=${comm#"$interp"}; rest=${rest# }; comm=""
+        if [ "${interp##*/}" = bash ]; then
+            case "$rest" in
+                agent-poll|agent-poll\ *|*/agent-poll|*/agent-poll\ *)
+                    case "${rest%%agent-poll*}" in
+                        -*|*' /'*|*' -'*) ;;
+                        *) comm=agent-poll ;;
+                    esac ;;
+            esac
+        fi
     fi
     [ "${comm##*/}" = agent-poll ]
 }

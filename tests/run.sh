@@ -16041,8 +16041,15 @@ export PA_ARGS
 is "an agent-poll run by its interpreter is alive" "yes" "$(pa_alive 'bash /x/agent-poll')"
 is "...with its arguments too" "yes" "$(pa_alive '/bin/bash /x/agent-poll --once')"
 is "...and ps was asked for that pid's command line" "-o args= -p 4242" "$(head -1 "$PA/argv")"
+is "...and from an install path with a space in it" "yes" \
+   "$(pa_alive '/bin/bash /x/my plugins/agent-poll')"
 is "another process at the pid is not the poller" "no" "$(pa_alive 'sleep 300')"
-is "a name that only ends like it is not the poller" "no" "$(pa_alive 'bash /x/not-agent-poller')"
+is "a longer name that holds it is not the poller" "no" "$(pa_alive 'bash /x/not-agent-poller')"
+# The script must be the interpreter's first argument, named exactly agent-poll (review-534).
+for pa in 'bash /x/not-agent-poll' 'bash /x/my-agent-poll' 'less /x/scripts/agent-poll' \
+          'tail -f /x/agent-poll' 'bash /x/other /y/agent-poll'; do
+    is "a name that ends like it, or it as another program's argument: $pa" "no" "$(pa_alive "$pa")"
+done
 rm -rf "$PA"
 
 # --- #194 one poller per Claude config dir -----------------------------------
