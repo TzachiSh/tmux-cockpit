@@ -7445,6 +7445,46 @@ printf 'a\nb\n' > "$GROOT/scripts/foo"
 is "one changed byte: check misses" "1" "$?"
 is "changed lists exactly the file that moved" "scripts/foo" "$(cd "$GROOT" && bash tests/green.sh changed)"
 
+echo "== tests/changed.sh: each block reading a file runs when it changes (#672) =="
+# `make test-changed` runs the blocks changed.sh picks for the files green.sh
+# reports. A block that reads "$DIR/<file>" is lost if changed.sh does not pick
+# it for that file, or if green.sh does not hash the file, since a green stamp
+# then hides the edit from both. docs/tui.md was filed as "nothing an assertion
+# reads" while the docs-options block read it (#672).
+chg_ord() {                                      # the ordinal of the block titled $1
+    awk -v t="$1" '/^echo "== /{ n++ } index($0, t) == 10 { print n }' "$DIR/tests/run.sh"; }
+CHG_DOCS=$(chg_ord 'cockpit-tui: docs name only real options ==')
+CHG_MAKE=$(chg_ord "cockpit-tui builds install from cargo's target dir, not tui/target (#546) ==")
+is "a docs/tui.md edit alone runs the syntax block and the docs-options block" \
+    "1,$CHG_DOCS" "$(bash "$DIR/tests/changed.sh" docs/tui.md)"
+CHG_TRACKED=$(git -C "$DIR" ls-files 2>/dev/null)
+if [ -z "$CHG_TRACKED" ]; then skip_ "changed.sh read map (not a git checkout)"; else
+# block <TAB> path, for every tracked file a block names as "$DIR/<path>"
+CHG_READS=$(awk '/^echo "== /{ n++ } n { s = $0
+    while (match(s, /[$][{]?DIR[}]?["]?\/[A-Za-z0-9_.\/-]+/)) {
+        p = substr(s, RSTART, RLENGTH); sub(/^[^\/]*\//, "", p); print n "\t" p
+        s = substr(s, RSTART + RLENGTH) } }' "$DIR/tests/run.sh" | sort -u |
+    awk -F'\t' 'NR == FNR { t[$0] = 1; next } ($2 in t) && $2 != "tests/run.sh"' \
+        <(printf '%s\n' "$CHG_TRACKED") -)
+# shellcheck disable=SC2046  # deliberate word splitting: one path per line
+CHG_EACH=$(bash "$DIR/tests/changed.sh" --each \
+    $({ printf 'Makefile\nLICENSE\n'; cut -f2 <<< "$CHG_READS"; } | sort -u))
+chg_pick() { awk -F'\t' -v f="$1" '$1 == f { print $2 }' <<< "$CHG_EACH"; }
+is "a Makefile edit runs the target-dir block that copies it" "$CHG_MAKE" "$(chg_pick Makefile)"
+is "a file no block names selects nothing beyond the syntax block" "" "$(chg_pick LICENSE)"
+chg_miss=""
+while IFS=$'\t' read -r n p; do
+    case ",1,$(chg_pick "$p")," in *",ALL,"*|*",$n,"*) ;; *) chg_miss="$chg_miss $p:$n" ;; esac
+done <<< "$CHG_READS"
+is "changed.sh picks every block for each file it reads (file:block missed)" "" "$chg_miss"
+CHG_STAMP=$(bash "$DIR/tests/green.sh" files)
+is "the green stamp hashes every file a block reads" "" "$(cut -f2 <<< "$CHG_READS" | sort -u |
+    awk 'NR == FNR { s[$0] = 1; next } !($0 in s) { printf " %s", $0 }' \
+        <(printf '%s\n' "$CHG_STAMP") -)"
+unset -f chg_pick
+fi
+unset -f chg_ord
+
 echo "== review-gate: a queued review is the Stop's whole additionalContext, once, and drains on a rewake too =="
 if need_tmux "review-gate spool"; then :; else
 RH="cockpit-rh-$$"; SOCKS="$SOCKS $RH"; RHSTATE=$(mktmpd); RHDIR=$(mktmpd)
