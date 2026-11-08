@@ -533,13 +533,14 @@ fn tile(f: &mut Frame, cell: Rect, p: &Pane, num: usize, pv: Option<Option<&str>
     let [hd, body] = Layout::vertical([Constraint::Length(hdr), Constraint::Min(0)]).areas(inner);
     f.render_widget(Paragraph::new(head_lines(p, inner.width as usize, hdr as usize, needs, th)), hd);
 
-    let mut para = match pv {
-        Some(Some(text)) => Paragraph::new(text.as_bytes().into_text().unwrap_or_default()),
-        // capture-pane failed: never leave the body blank, or a gone pane and a
-        // quiet one look the same
-        Some(None) => Paragraph::new(Line::from(Span::styled("capture failed", Style::new().fg(th.error)))),
-        None => return,
-    };
+    // the right pane's screen rules (#354, #284): the newest rows, the last on
+    // the bottom row, and a line cut at the edge marked. A failed capture says
+    // so, never a blank body, or a gone pane and a quiet one look the same.
+    if pv.is_none() {
+        return;
+    }
+    let (screen, _) = screen_lines(pv, body.height as usize, body.width as usize, th);
+    let mut para = Paragraph::new(screen);
     if dimmed(p) {
         // expressed twice: a terminal that ignores DIM still gets the meta title
         para = para.style(Style::new().add_modifier(Modifier::DIM));

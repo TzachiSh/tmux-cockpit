@@ -683,7 +683,10 @@ the screen starts at the next one, so no escape is cut in half (one line
 longer than the cap keeps the cut). Both apply to the tiles' previews too.
 A line cut at the pane's edge ends in `›` (`>` in ascii), measured per
 grapheme as it is drawn; blanks a TUI pads its lines with are not a cut. A
-wide TUI still shows its left part only, marked.
+wide TUI still shows its left part only, marked. A tile's preview (`v`) is
+drawn by the same code (#354): a line cut at the tile's edge ends in the same
+mark, and a preview taller than the tile keeps its newest rows, the last on the
+tile's bottom row.
 A done, idle or ended agent's screen is dim, as its tile is. A capture that
 failed says `capture failed` in the error role, which is a gone pane; a blank
 screen is `live · blank`; and before the first capture of a newly selected

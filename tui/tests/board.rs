@@ -226,6 +226,43 @@ fn sorts_needs_first_then_by_pane_id() {
     assert_eq!(ord, ["%9", "%3", "%14", "%21", "%30", "%31"]);
 }
 
+// ------------------------------------------------- the tile's screen (#354)
+
+/// One running tile, 72x10, its preview `pv`, in glyph tier `g`: the rows drawn.
+fn one_tile(pv: &str, g: Glyphs) -> Vec<String> {
+    let mut th = Theme::fixed();
+    th.g = g;
+    let one = [fixture()[2].clone()];
+    let pvs = [Some(pv.to_string())];
+    let v = view(&one, &pvs, &th, 0, 0);
+    rows(&draw(72, 10, |f| board::render(f, f.area(), &v)))
+        .iter()
+        .map(|r| r.to_string())
+        .collect()
+}
+
+/// #354, as the right pane (#284): a preview taller than the tile keeps its
+/// newest rows, so the last line sits on the row above the bottom border.
+#[test]
+fn a_tile_shows_its_newest_lines_with_the_last_on_the_bottom_row() {
+    let pv: Vec<String> = (1..=20).map(|k| format!("L{k:02}")).collect();
+    let r = one_tile(&pv.join("\n"), Glyphs::unicode());
+    let bottom = r.iter().position(|l| l.starts_with(['└', '┗'])).unwrap();
+    assert!(r[bottom - 1].contains("L20"), "{r:#?}");
+    assert!(!r.iter().any(|l| l.contains("L01")), "{r:#?}");
+}
+
+/// #354, as the right pane (#284): a line cut at the tile's edge ends in the
+/// clip mark, `›` in unicode and `>` in ascii, in the last inner cell.
+#[test]
+fn a_tile_marks_a_line_cut_at_its_edge() {
+    for (g, mark) in [(Glyphs::unicode(), '›'), (Glyphs::ascii(), '>')] {
+        let r = one_tile(&"x".repeat(200), g);
+        let row: Vec<char> = r.iter().find(|l| l.contains("xxxx")).unwrap().chars().collect();
+        assert_eq!(row[row.len() - 2], mark, "{row:?}");
+    }
+}
+
 // ------------------------------------------------------------- needs-input
 
 #[test]
