@@ -1374,3 +1374,54 @@ note: a rename of one constant with a bare ref: the ref stays bare, with no @ or
 src/config.ts:8
 --- request
 rename RETRIES to MAX_RETRIES here and wherever it is used
+
+# #701: data derived from project files, added before the prompt change they
+# measure. The reply should have Claude Code reuse the parser or generator the
+# project already has, and check the result against its source; the last case
+# is the control, with nothing on screen that shows a parser to reuse.
+=== derived-cards-parser
+kind: feature
+window: claude · claude · /home/u/projects/tool
+expect: write
+out_is: prompt
+must: parse_cases; compare|diff|match|matches|same as
+note: #701: the screen shows the project's own case parser; a script that reads the cases file itself drifts from it, as the owner-label builder of #691 did
+--- screen
+$ grep -n "fn parse_cases" tui/examples/panel_eval.rs
+122:fn parse_cases(text: &str) -> Result<Vec<Case>, String> {
+--- request
+write a script that makes one labeling card per eval case from the cases file
+
+=== regen-golden
+kind: ops
+window: bash · bash · /home/u/projects/fmt
+expect: write
+out_is: prompt
+must: -update|update flag
+must_not: by hand
+note: #701: the test already regenerates its golden files through its -update flag; writing them by hand is a second producer of the same files
+--- screen
+$ grep -n "update" format_test.go
+14:var update = flag.Bool("update", false, "update .golden files")
+--- request
+regenerate the golden files for the formatter tests
+
+=== regen-config-from-yaml
+kind: format
+window: bash · bash · /home/u/projects/svc
+expect: write
+out_is: prompt
+must: config.yaml; config.json
+note: #701: the panel cannot read config.yaml, so a format reply would invent its contents; a prompt has Claude Code read the file and regenerate config.json
+--- request
+regenerate config.json from config.yaml
+
+=== convert-csv-no-parser
+kind: feature
+window: bash · bash · /home/u/projects/data
+expect: write
+must: csv; json
+must_not: existing parser|parse_cases
+note: #701 control: nothing in the input shows a parser, so the reply names none to reuse
+--- request
+write a script that converts data.csv to json
