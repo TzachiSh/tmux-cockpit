@@ -157,6 +157,29 @@ fn find_maps_back_past_a_char_that_lowers_shorter() {
     assert_eq!(&t[0][hs[0].from..hs[0].to], "\u{212A}elvin");
 }
 
+/// Lengths that change and cancel out: the Kelvin sign lowers 3 bytes to 1, each
+/// Ⱥ 2 bytes to 3, so the folded text is as long as the row. The map is still
+/// needed: equal totals are not equal chars (review-534 on #647).
+#[test]
+fn find_maps_back_when_changed_lengths_cancel_out() {
+    let t = ["a \u{212A}ȺȺx b".to_string()];
+    let hs = find(&rows(&[&t[0]]), "ⱥx");
+    assert_eq!(hs.len(), 1);
+    assert_eq!((hs[0].from, hs[0].to), (7, 10));
+    assert_eq!(&t[0][hs[0].from..hs[0].to], "Ⱥx");
+}
+
+/// A match that starts on a soft wrap's put-back space starts on the next row
+/// with text, past a row that is only its prefix (review-534 on #647, as #631).
+#[test]
+fn a_match_from_a_put_back_space_skips_a_prefix_only_row() {
+    use cockpit_tui::mdview::render::Join;
+    let mut t = rows(&["foo", "> ", "> bar"]);
+    (t[1].join, t[1].body, t[2].join, t[2].body) = (Join::Space, 2, Join::Glued, 2);
+    let h = find(&t, " bar");
+    assert_eq!((h[0].row, h[0].from, h[0].last, h[0].to), (2, 2, 2, 5));
+}
+
 #[test]
 fn search_jumps_to_the_first_match_and_n_cycles_round() {
     let mut s = screen(&format!("{}needle\n\n{}needle", paras(20), paras(20)));

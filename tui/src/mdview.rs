@@ -186,7 +186,9 @@ fn find_in(rows: &[Row], texts: &[String], q: &str) -> Vec<Hit> {
             let (row, from_b) = if a < s.at + s.len {
                 (s.row, s.skip + a - s.at)
             } else {
-                match segs.get(seg_of(&segs, a) + 1).filter(|n| n.at < b) {
+                // the next row with text of its own: a row that is only its prefix has none
+                let next = segs[seg_of(&segs, a) + 1..].iter().find(|n| n.len > 0);
+                match next.filter(|n| n.at < b) {
                     Some(n) => (n.row, n.skip),
                     // a match of nothing but a put-back space draws on neither row
                     None => continue,
