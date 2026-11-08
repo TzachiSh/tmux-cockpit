@@ -2434,11 +2434,18 @@ fn tree_row(ps: &[Pane], row: &Row, last: bool, tcol: usize, w: usize, now: u64,
     // `     ├ ● ` + text + ` ` + rail + the mark column
     let avail = w.saturating_sub(9 + 1 + RAIL_W + 1);
     let (text, age) = match *row {
-        Row::Done(_, n, stopped) => {
-            spans.push(Span::styled(g.done, Style::new().fg(th.done)));
-            // a stop is the user's (#336), not a finish: named apart when there is one
+        Row::Done(i, n, stopped) => {
+            // a stop is the user's (#336), not a finish: named apart when there is one,
+            // and alone, with the stopped mark, when nothing finished on its own (#399)
+            let (gl, c) = if n == stopped {
+                sub_glyph(th, &ps[i], SubState::Stopped)
+            } else {
+                (g.done, th.done)
+            };
+            spans.push(Span::styled(gl, Style::new().fg(c)));
             let label = match stopped {
                 0 => format!(" {n} done"),
+                m if m == n => format!(" {m} stopped"),
                 // the done count leaves the stops out: they are named on their own
                 m => format!(" {} done {} {m} stopped", n - m, g.dot),
             };

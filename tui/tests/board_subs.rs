@@ -1231,3 +1231,15 @@ fn a_quiet_line_with_no_sign_of_life_ages_from_the_start() {
     let line = text(&cells_of(&ps, &Theme::fixed(), "1 quiet"));
     assert!(line.contains("◌ 1 quiet") && line.contains("25m"), "{line}");
 }
+
+/// #399, the owner's pick: when every old subagent was stopped by the user, the
+/// fold drops the done part and takes the stopped mark: `∎ 2 stopped` (`= 2
+/// stopped` in ascii), never `✓ 0 done · 2 stopped`.
+#[test]
+fn a_fold_of_stops_only_names_them_with_the_stopped_mark() {
+    let old = |k: u64| with(sub("Explore", &format!("x{k}"), SubState::Stopped, 5000 + k, 1), Some(4000), None);
+    for (th, mark) in [(Theme::fixed(), "∎"), (ascii(), "=")] {
+        let line = text(&cells_of(&one(vec![old(0), old(1)]), &th, "stopped"));
+        assert!(line.contains(&format!("{mark} 2 stopped")) && !line.contains("done"), "{line}");
+    }
+}
