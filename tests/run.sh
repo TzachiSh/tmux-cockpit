@@ -214,7 +214,8 @@ fresh_server() {              # -L|-S <socket> [tmux flags...] -- <new-session a
         return 1
     }
     [ "${1:-}" = -- ] || {
-        bad "fresh_server: -- before the new-session args" "${g[*]} -- <new-session args>" "${g[*]}"
+        bad "fresh_server: -- before the new-session args" \
+            "${g[*]} -- <new-session args>" "${g[*]}"
         return 1
     }
     shift
@@ -317,10 +318,10 @@ is "POLLS=0 still says it gave up" "1 0 1 1|no stderr" \
 for row in "no --:-L $FS -d -s t" "no socket:-- -d -s t" "-f before -L:-f /dev/null -L $FS -- -d" \
            "-L with no name:-L" "no arguments:"; do
     # shellcheck disable=SC2086  # the row's words are the argv
+    fsr="fresh_server refuses ${row%%:*}: one bad, no kill, no new-session"
     case "$(fs_run 0 5 ${row#*:})" in
-        "1 0 0 1|"?*) ok "fresh_server refuses ${row%%:*}: one bad, no kill, no new-session" ;;
-        *) bad "fresh_server refuses ${row%%:*}: one bad, no kill, no new-session" "1 0 0 1|<why>" \
-               "$(fs_run 0 5 ${row#*:})" ;;
+        "1 0 0 1|"?*) ok "$fsr" ;;
+        *) bad "$fsr" "1 0 0 1|<why>" "$(fs_run 0 5 ${row#*:})" ;;
     esac
 done
 "$TMUX_REAL" -L "$FS" kill-server >/dev/null 2>&1
