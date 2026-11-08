@@ -64,32 +64,49 @@ exec "$TMUX_REAL" -L "$SUITE_SOCK" "\$@"
 SHIMEOF
 chmod +x "$SHIM/tmux"
 # The race of #573, made certain: a new-session that follows kill-server on the
-# same name can reach the dying server and fail "server exited unexpectedly". So
-# every block's "$TMUX_REAL" refuses the first new-session after each kill-server
-# on a name and leaves r.<name> until a later new-session there succeeds, and
-# flop_left fails the run for each r.* left. A kill-server then a bare
-# new-session goes red on every run, not one run in ten under load; fresh_server
-# retries and clears it. The shim above keeps the real binary: the scripts under
-# test are not blocks. TMUX_BIN is the real one, for a stub that counts its calls.
+# same server can reach the dying one and fail "server exited unexpectedly". So
+# "$TMUX_REAL" refuses the first new-session after each kill-server on a server,
+# keyed on the -L name or the whole -S path before the command word, and writes
+# that call's argv to r.<key>. Only a later new-session with the same argv that
+# succeeds clears it, and flop_left fails the run for each r.* left. A kill-server
+# then a bare new-session goes red on every run, not one run in ten under load;
+# fresh_server retries and clears it.
+# A bare `tmux` goes through the shim above, which keeps the real binary. Anything
+# handed "$TMUX_REAL" reaches the guard, scripts under test included: the two
+# COCKPIT_TMUX="$TMUX_REAL -L ..." settings and the per-block stubs that exec it.
+# They pass through unchanged unless they kill a server and start one on it.
+# TMUX_BIN is the real one, for a stub that counts its calls.
 TMUX_BIN=$TMUX_REAL
 flop_write() {                # <dir> <real tmux> -> <dir>/tmux, the guard in front of that tmux
     cat > "$1/tmux" <<FLOPEOF
 #!/bin/sh
-n=default v= p=
+n=L.default v= p=
 for a do
-    case \$p in -L) n=\$a ;; -S) n=\${a##*/} ;; esac
-    [ -n "\$v" ] || case \$a in kill-server|new-session) v=\$a ;; esac
-    p=\$a
+    case \$p in
+    -L) n=L.\$a; p=; continue ;;
+    -S) n=S.\$a; p=; continue ;;
+    -c|-f|-T) p=; continue ;;
+    esac
+    case \$a in
+    -c|-f|-L|-S|-T) p=\$a ;;
+    -L?*) n=L.\${a#-L} ;;
+    -S?*) n=S.\${a#-S} ;;
+    -*) ;;
+    *) v=\$a; break ;;
+    esac
 done
+case \$n in */*|*_*) n=\$(printf '%s' "\$n" | sed 's/_/__/g; s|/|_.|g') ;; esac
 case \$v in
 kill-server) : > "$1/k.\$n" ;;
 new-session)
     if [ -e "$1/k.\$n" ]; then
-        rm -f "$1/k.\$n"; : > "$1/r.\$n"
+        rm -f "$1/k.\$n"; [ -e "$1/r.\$n" ] || printf '%s.' "\$*" > "$1/r.\$n"
         echo "server exited unexpectedly (refused by tests/run.sh, #573)" >&2; exit 1
     fi
     if [ -e "$1/r.\$n" ]; then
-        "$2" "\$@"; rc=\$?; [ \$rc -ne 0 ] || rm -f "$1/r.\$n"; exit \$rc
+        "$2" "\$@"; rc=\$?
+        [ \$rc -ne 0 ] || [ "\$(cat "$1/r.\$n")" != "\$*." ] || rm -f "$1/r.\$n"
+        exit \$rc
     fi ;;
 esac
 exec "$2" "\$@"
@@ -98,12 +115,13 @@ FLOPEOF
 }
 FLOP="$STATE/flop"; mkdir -p "$FLOP"
 if [ -x "$TMUX_BIN" ]; then flop_write "$FLOP" "$TMUX_BIN"; TMUX_REAL="$FLOP/tmux"; fi
-flop_left() {                 # [dir] -> a bad row for each name whose refused new-session nothing retried
-    local r
+flop_left() {                 # [dir] -> a bad row for each r.* whose call was never retried
+    local r a
     for r in "${1:-$FLOP}"/r.*; do
         [ -e "$r" ] || continue
+        a=$(cat "$r")
         bad "new-session after kill-server on ${r##*/r.} goes through fresh_server (#573)" \
-            "a later new-session there" "refused once, never retried"
+            "a retry with the same argv" "${a%.}, refused and never retried"
     done
 }
 # The suite itself runs inside the user's tmux, so its own $TMUX would send
@@ -369,6 +387,40 @@ for row in "no --:-L $FS -d -s t" "no socket:-- -d -s t" "-f before -L:-f /dev/n
 done
 "$TMUX_REAL" -L "$FS" kill-server >/dev/null 2>&1
 fi
+
+echo "== the kill/new guard clears a refusal only on its retry, keyed on the server (#644) =="
+# A second guard, in front of a stub that exits $GUARD_RC, so no server is involved.
+# gt prints one call's exit code; gleft counts the bad rows flop_left would print.
+GD=$(mktmpd); mkdir "$GD/w"
+printf '#!/bin/sh\nexit "${GUARD_RC:-0}"\n' > "$GD/real"; chmod +x "$GD/real"
+flop_write "$GD/w" "$GD/real"
+gt()    { "$GD/w/tmux" "$@" >/dev/null 2>&1; printf '%s ' "$?"; }
+gleft() { ( bads=0; bad() { bads=$((bads+1)); }; flop_left "$GD/w"; printf '%s' "$bads" ); }
+rm -f "$GD"/w/[kr].*
+is "a refusal another new-session on that name follows is still left" "0 1 0 |1" \
+   "$(gt -L s kill-server; gt -L s new-session -d -s a; gt -L s new-session -d -s b)|$(gleft)"
+rm -f "$GD"/w/[kr].*
+is "a refusal its identical retry follows is cleared" "0 1 0 |0" \
+   "$(gt -L s kill-server; gt -L s new-session -d -s a; gt -L s new-session -d -s a)|$(gleft)"
+rm -f "$GD"/w/[kr].*
+is "a retry that fails clears nothing" "0 1 1 |1" \
+   "$(gt -L s kill-server; gt -L s new-session -d; GUARD_RC=1 gt -L s new-session -d)|$(gleft)"
+rm -f "$GD"/w/[kr].*
+is "a second refusal keeps the first, unretried one" "0 1 0 1 0 |1" \
+   "$(gt -L s kill-server; gt -L s new-session -d -s a
+      gt -L s kill-server; gt -L s new-session -d -s b; gt -L s new-session -d -s b)|$(gleft)"
+rm -f "$GD"/w/[kr].*
+is "-S keys on the whole path: a kill on /a/s leaves /b/s alone" "0 0 1 " \
+   "$(gt -S "$GD/a/s" kill-server; gt -S "$GD/b/s" new-session -d; gt -S "$GD/a/s" new-session -d)"
+rm -f "$GD"/w/[kr].*
+is "-S keys a path holding _. apart from one holding /" "0 0 1 " \
+   "$(gt -S "$GD/x_.y" kill-server; gt -S "$GD/x/y" new-session -d; gt -S "$GD/x_.y" new-session -d)"
+rm -f "$GD"/w/[kr].*
+is "-L after the command word is the pane's, not the server's" "0 0 1 " \
+   "$(gt -L in kill-server; gt -L out new-session -d sh -c x _ -L in; gt -L in new-session -d)"
+rm -f "$GD"/w/[kr].*
+is "kill-server after the command word kills nothing" "0 0 |0" \
+   "$(gt -L q display-message kill-server; gt -L q new-session -d)|$(gleft)"
 
 echo "== the REPO's shipped config renders correctly =="
 # Load examples/tmux.conf into a throwaway server. Previously these assertions
