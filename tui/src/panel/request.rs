@@ -179,6 +179,9 @@ const DENY: &[&str] = &[
 /// read-only call refuses to read it. `~` is `home`, `//` anchors at `/`, `**`
 /// is any run of folders and `*` any run of characters in one name. A rule
 /// relative to the cwd (none today) never matches: the cwd is the cache dir.
+/// A rule that matches a folder on the path denies the file too: `x/.env/key`
+/// is refused under `Read(//**/.env)` ("File is in a directory that is denied",
+/// probed, #586), so each folder is held against the rule, the file last.
 pub fn read_denied(path: &Path, home: Option<&Path>) -> bool {
     let names = |p: &Path| -> Vec<String> {
         let normal = |c: std::path::Component<'_>| match c {
@@ -198,7 +201,7 @@ pub fn read_denied(path: &Path, home: Option<&Path>) -> bool {
         let rule = names(&full);
         let rule: Vec<&str> = rule.iter().map(String::as_str).collect();
         let path: Vec<&str> = path.iter().map(String::as_str).collect();
-        glob_names(&rule, &path)
+        (1..=path.len()).any(|k| glob_names(&rule, &path[..k]))
     })
 }
 
