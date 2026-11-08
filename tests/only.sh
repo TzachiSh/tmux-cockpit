@@ -28,10 +28,12 @@ PAT="$1" awk '
         if (depth <= 0) infn = 0
         next
     }
+    /^flop_left$/ { next }                            # the tail below calls it once
     /^echo "== / { title = $0; sub(/^echo "== /, "", title); sub(/ =="$/, "", title)
                    want = (title ~ ENVIRON["PAT"]); nblk += want }
     want { print }
     END { if (!nblk) exit 3
+          print "flop_left"
           print "printf '"'"'  %d passed, %d failed, %d skipped\\n'"'"' \"$pass\" \"$fail\" \"$skipped\""
           print "[ \"$fail\" -eq 0 ] || exit 1" }
 ' "$RUN" > "$OUT"

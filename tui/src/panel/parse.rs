@@ -483,9 +483,9 @@ pub fn split_shell(body: &str, lang: &str) -> Vec<Step> {
     steps
 }
 
-/// The files a `claude -p --output-format json --verbose` call read, in order and
-/// each once; a Read the call refused is not one. `None` for any other output.
-pub fn files_read(out: &str) -> Option<Vec<String>> {
+/// The tool calls of a `claude -p --output-format json --verbose` call that
+/// the call did not refuse, in order. `None` for any other output.
+fn tool_uses(out: &str) -> Option<Vec<serde_json::Value>> {
     use serde_json::Value;
     let Ok(Value::Array(events)) = serde_json::from_str::<Value>(out.trim()) else {
         return None;
@@ -500,9 +500,35 @@ pub fn files_read(out: &str) -> Option<Vec<String>> {
         .filter(|r| r["type"] == "tool_result" && r["is_error"] == true)
         .map(|r| r["tool_use_id"].clone())
         .collect();
+    let used = events.iter().flat_map(|e| content(e, "assistant"));
+    Some(used.filter(|u| u["type"] == "tool_use" && !refused.contains(&u["id"])).collect())
+}
+
+/// Each tool call a `claude -p --output-format json --verbose` call made and
+/// was not refused, as one line, in order and each once: the tool's name and
+/// its arguments (`Read /r/a.rs`, `Grep fn main /r`). `None` for any other
+/// output.
+pub fn tool_calls(out: &str) -> Option<Vec<String>> {
+    const ARGS: [&str; 7] = ["file_path", "pattern", "path", "glob", "query", "url", "skill"];
+    let mut calls: Vec<String> = vec![];
+    for u in tool_uses(out)? {
+        let mut line = u["name"].as_str().unwrap_or("?").to_string();
+        for v in ARGS.iter().filter_map(|k| u["input"][k].as_str()) {
+            line = format!("{line} {v}");
+        }
+        if !calls.contains(&line) {
+            calls.push(line);
+        }
+    }
+    Some(calls)
+}
+
+/// The files a `claude -p --output-format json --verbose` call read, in order and
+/// each once; a Read the call refused is not one. `None` for any other output.
+pub fn files_read(out: &str) -> Option<Vec<String>> {
     let mut paths: Vec<String> = vec![];
-    for u in events.iter().flat_map(|e| content(e, "assistant")) {
-        if u["type"] != "tool_use" || u["name"] != "Read" || refused.contains(&u["id"]) {
+    for u in tool_uses(out)? {
+        if u["name"] != "Read" {
             continue;
         }
         if let Some(p) = u["input"]["file_path"].as_str()
