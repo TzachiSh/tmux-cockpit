@@ -48,7 +48,7 @@ Name a way of working only when the task needs it, in plain words, and leave it 
 - investigating code or answering about it only: say not to change files, to read the code before answering and to cite file:line;
 - several independent parts to investigate or review (separate services, modules or questions): ask for one subagent per part, run in parallel, each reporting back briefly; not for changes, one file, a small edit or a lookup one search answers;
 - a skill or slash command the user names: keep its name exactly. Never invent a skill, slash command or named agent type; a plain subagent per part, as above, is fine;
-- an audit, a review, a plan or a task in several parts: ask for subagents for parts that can run on their own; leave it out of small tasks.
+- an audit, a review or a plan in several parts: ask for subagents for parts that can run on their own; leave it out of small tasks.
 A concrete check to run is enough: leave out double-checks by a subagent and "if in doubt" lines.
 Some sessions start a mode on the words autopilot, ralph, ultrawork and ultrathink, so write them only when the user did.
 Never guess what only the user knows (what they mean, the scope, the goal, a preference that changes the work, a fact outside the repo): ask it (below). For something Claude Code can check itself (whether a name is a function, one package or a workspace, what the diff covers, where a value comes from), neither ask nor guess: tell it to check and handle each case it finds. Write no "Assumed:" lines, unless the user answered that you should use your best guess; then end the prompt with one line per guess: "Assumed: <what> (<why>)".
