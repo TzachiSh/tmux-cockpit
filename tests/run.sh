@@ -13697,6 +13697,12 @@ git -C "$PGR" worktree add -q -b dot537 "$PGD/.dg" >/dev/null 2>&1
 mv "$PGR/.git/worktrees/-dg" "$PGR/.git/worktrees/.dg"
 printf 'gitdir: %s\n' "$PGR/.git/worktrees/.dg" > "$PGD/.dg/.git"; rm -rf "$PGD/.dg"
 pg_says "a gone tree whose id starts with a dot is named gone" "is gone" "$PGR" "$PGD/.dg" "$PGOLD"
+# #584: git lists an absolute gitdir as written, x/.. and all, so the fallback resolves
+# the wanted <path>/.git as text too, not only the gitdir it compares with.
+git -C "$PGR" worktree add -q -b want584 "$PGD/want" >/dev/null 2>&1
+printf '%s\n' "$PGD/x/../want/.git" > "$PGR/.git/worktrees/want/gitdir"; rm -rf "$PGD/want"
+pg_says "a gone tree whose absolute gitdir holds x/.. is named gone" "is gone" \
+    "$PGR" "$PGD/x/../want" "$PGOLD"
 # #555: --relative-paths writes the gitdir as ../../../../rel/.git, from the entry. git
 # resolves . and .. before it compares with <path>/.git, and so does the fallback, as text.
 PGRR="$PGD/rr"

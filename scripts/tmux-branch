@@ -150,8 +150,11 @@ wt_ours() {                   # <path> <common-dir>  true for a tree of the repo
 # Some <common>/worktrees/*/gitdir names <path>/.git, as git decides a gone tree is
 # prunable. Each file is read whole, trailing newlines off, and a relative one is taken
 # from its entry. A text compare: -ef needs both paths to exist, and this one does not.
-# So . and .. are resolved as text on both sides first, as git does for a missing path
-# (#555): --relative-paths writes ../../../../<tree>/.git.
+# So . and .. are resolved as text on both sides first (#555): --relative-paths writes
+# ../../../../<tree>/.git, and git lists an absolute gitdir as written, x/.. and all
+# (#584). As text, not through the filesystem: git resolves a relative gitdir with
+# realpath, so a symlink before a .. (only a hand-edited file holds one) makes git list
+# a path this compare does not find, and goto says "not a worktree" of that gone tree.
 wt_prunable() {               # <path> <common-dir>
     local f b want
     wt_norm "$1/.git"; want=$REPLY
@@ -167,7 +170,9 @@ wt_prunable() {               # <path> <common-dir>
     return 1
 }
 # An absolute path with . and empty parts dropped and .. taking off the part before it,
-# as text, so a path that is gone resolves too (no realpath). /.. is /, as for git.
+# as text, so a path that is gone resolves too (no realpath). /.. is /, as for git. A
+# symlink is a name like any other: link/.. drops it. The input must be absolute: a
+# relative one comes back absolute, where Rust's lexical keeps it relative.
 wt_norm() {                   # <absolute-path>  -> REPLY
     local s=$1/ c
     REPLY=''
