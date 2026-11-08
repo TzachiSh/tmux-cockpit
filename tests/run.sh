@@ -10969,7 +10969,7 @@ DSB=$COCKPIT_TUI_BIN
 ds_shell() {
     ( . "$DIR/scripts/lib/git.sh"
       local d=$1 n
-      local -a q=(-c core.quotePath=false) o=(--no-color --no-ext-diff --no-textconv --ignore-submodules=dirty --numstat)
+      local -a q=(-c core.quotePath=false) o=(--no-color --no-ext-diff --no-textconv --ignore-submodules=dirty -M --numstat)
       n=$(git -C "$d" "${q[@]}" ls-files -o --exclude-standard -z | tr -cd '\0' | wc -c)
       if git -C "$d" rev-parse --verify -q HEAD >/dev/null; then
           git -C "$d" "${q[@]}" diff "${o[@]}" HEAD

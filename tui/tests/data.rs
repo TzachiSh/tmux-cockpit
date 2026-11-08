@@ -1747,7 +1747,7 @@ fn the_last_tool_uses_error_flag_is_read() {
 fn the_tracked_only_stat_over_renames_staging_and_odd_names() {
     let six = "1\n2\n3\n4\n5\n6\n";
     type Setup = fn(&Repo);
-    let rows: [(&str, Setup, &str); 9] = [
+    let rows: [(&str, Setup, &str); 10] = [
         (
             "a plain mv: g gone, h untracked",
             |r| {
@@ -1766,6 +1766,14 @@ fn the_tracked_only_stat_over_renames_staging_and_odd_names() {
         (
             "a staged git mv is a rename",
             |r| {
+                r.git(&["mv", "g", "h"]);
+            },
+            "0\t0\t0\t+0 -0\n",
+        ),
+        (
+            "a git mv under diff.renames=false is still a rename",
+            |r| {
+                r.git(&["config", "diff.renames", "false"]);
                 r.git(&["mv", "g", "h"]);
             },
             "0\t0\t0\t+0 -0\n",

@@ -276,6 +276,8 @@ pub fn tree_stat_with(
             // a gitlink's commit still counts (`1 1 sub`, as prefix r has it);
             // its dirt, which takes a status inside it, does not
             "--ignore-submodules=dirty",
+            // renames on whatever diff.renames says: a staged `git mv` is a rename
+            "-M",
             "--numstat",
             "-z",
         ];
