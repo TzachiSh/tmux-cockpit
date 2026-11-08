@@ -709,8 +709,7 @@ width, not the board's. Under 96 columns the board is the list alone, byte for
 byte what it was.
 
 Not built here: the panel docked in the right pane at 164 columns and over
-(D10); `f` still opens it full-area. The tiles' previews keep their own rules:
-top-aligned, and a cut line unmarked.
+(D10); `f` still opens it full-area.
 
 ### The tiles (`v`)
 
