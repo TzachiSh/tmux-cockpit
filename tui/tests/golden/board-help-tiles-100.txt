@@ -29,7 +29,7 @@
 "│ ●         running                                                                                │"
 "│ ✓         done                                                                                   │"
 "│ ○         idle                                                                                   │"
-"│ ◌         ended: its agent is gone                                                               │"
+"│ ◌         ended, or a subagent with no recorded end (may still run)                              │"
 "│ ◆         review pending                                                                         │"
 "│ ↵         review sent                                                                            │"
 "│ ▎         the selection                                                                          │"
