@@ -309,17 +309,25 @@ then every disagreement with the owner's note and the judge's critique.
 `--split tune|holdout|all` picks the rows: the holdout takes whole cases (the
 label's `case`), about a third of the rows of the cases with an owner fail and a
 third of the rest, by a hash of the case name; tune the rubric on the tune rows
-only. On the 118 labels, haiku with the shipped rubric scored TPR 93/98 (95%
-CI 89%-98%), TNR 15/20 (95% CI 53%-89%, 36 points wide) and kappa 0.70 (95%
-CI 0.52-0.88) against the owner. The rubric before rule 7 was narrowed to
-fail a repo-context option only when the screen or git state contradicts it
-scored the same table. Earlier rubrics gave kappa 0.59 to 0.69 from one sweep to
-the next, so a single sweep moves kappa by about 0.1. Quote the full set: the first split was by row,
-every owner note was read before it, the break-on-purpose rule came from two of
-its held-out fails, and three of its seven held-out fails shared a case with
-tuned rows, so no holdout number from this file is clean. The kappa
-interval treats rows as independent, but several rows answer one case, so it
-is narrower than a case-clustered interval would be.
+only. On the 118 labels, haiku with the shipped rubric scored, in two sweeps,
+TPR 92/98 and 94/98 (95% CI 87%-97% and 90%-98%), TNR 15/20 and 14/20 (95% CI
+53%-89% and 48%-85%, about 37 points wide) and kappa 0.68 and 0.69 (95% CI
+0.49-0.86 and 0.50-0.87) against the owner. The rubric before rule 10 was
+narrowed to requests only about a test scored kappa 0.65 in two sweeps the same
+day, and failed one `json-flag` row the owner passed in each; the narrowed one
+failed none. Rule 10 now counts a failing test named on the screen, not only in
+the request. The judge passed the owner-failed `last-commit-test` row, which has
+no break step, in all four sweeps of the earlier wording, and failed it in one
+of these two. A sweep at the rule-7 rubric gave TPR 93/98, TNR 15/20 and kappa
+0.70. Narrowing rule 7 (fail a repo-context option only when the screen or git
+state contradicts it) left these counts unchanged. Older rubrics gave kappa 0.59
+to 0.69 from one sweep to the next, so a single sweep moves kappa by about 0.1.
+Quote the full set: the first split was by row, every owner note was read before
+it, the break-on-purpose rule came from two of its held-out fails, and three of
+its seven held-out fails shared a case with tuned rows, so no holdout number
+from this file is clean. The kappa interval treats rows as independent, but
+several rows answer one case, so it is narrower than a case-clustered interval
+would be.
 
 **The panel's cache.** `claude -p` reads its system prompt from a file, so each
 distinct prompt is written once to
