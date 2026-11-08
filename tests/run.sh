@@ -72,9 +72,8 @@ chmod +x "$SHIM/tmux"
 # retries and clears it. The shim above keeps the real binary: the scripts under
 # test are not blocks. TMUX_BIN is the real one, for a stub that counts its calls.
 TMUX_BIN=$TMUX_REAL
-FLOP="$STATE/flop"; mkdir -p "$FLOP"
-if [ -x "$TMUX_BIN" ]; then
-cat > "$FLOP/tmux" <<FLOPEOF
+flop_write() {                # <dir> <real tmux> -> <dir>/tmux, the guard in front of that tmux
+    cat > "$1/tmux" <<FLOPEOF
 #!/bin/sh
 n=default v= p=
 for a do
@@ -83,23 +82,25 @@ for a do
     p=\$a
 done
 case \$v in
-kill-server) : > "$FLOP/k.\$n" ;;
+kill-server) : > "$1/k.\$n" ;;
 new-session)
-    if [ -e "$FLOP/k.\$n" ]; then
-        rm -f "$FLOP/k.\$n"; : > "$FLOP/r.\$n"
+    if [ -e "$1/k.\$n" ]; then
+        rm -f "$1/k.\$n"; : > "$1/r.\$n"
         echo "server exited unexpectedly (refused by tests/run.sh, #573)" >&2; exit 1
     fi
-    if [ -e "$FLOP/r.\$n" ]; then
-        "$TMUX_BIN" "\$@"; rc=\$?; [ \$rc -ne 0 ] || rm -f "$FLOP/r.\$n"; exit \$rc
+    if [ -e "$1/r.\$n" ]; then
+        "$2" "\$@"; rc=\$?; [ \$rc -ne 0 ] || rm -f "$1/r.\$n"; exit \$rc
     fi ;;
 esac
-exec "$TMUX_BIN" "\$@"
+exec "$2" "\$@"
 FLOPEOF
-chmod +x "$FLOP/tmux"; TMUX_REAL="$FLOP/tmux"
-fi
-flop_left() {                 # a bad row for each name whose refused new-session nothing retried
+    chmod +x "$1/tmux"
+}
+FLOP="$STATE/flop"; mkdir -p "$FLOP"
+if [ -x "$TMUX_BIN" ]; then flop_write "$FLOP" "$TMUX_BIN"; TMUX_REAL="$FLOP/tmux"; fi
+flop_left() {                 # [dir] -> a bad row for each name whose refused new-session nothing retried
     local r
-    for r in "$FLOP"/r.*; do
+    for r in "${1:-$FLOP}"/r.*; do
         [ -e "$r" ] || continue
         bad "new-session after kill-server on ${r##*/r.} goes through fresh_server (#573)" \
             "a later new-session there" "refused once, never retried"
