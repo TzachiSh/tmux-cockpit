@@ -344,23 +344,55 @@ fn strip_trailing_comments(lines: &mut Vec<&str>) {
 /// `/code-review`) needs no boundary there.
 fn has(hay: &str, needle: &str) -> bool {
     let hay = hay.to_lowercase();
-    needle
-        .split('|')
-        .map(|n| n.trim().to_lowercase())
-        .filter(|n| !n.is_empty())
-        .any(|n| {
-            let word = |c: Option<char>| c.is_some_and(char::is_alphanumeric);
-            let (first, last) = (n.chars().next(), n.chars().last());
-            let starts = !word(first);
-            let ends = !word(last);
-            // Every start, overlapping ones too: match_indices skips "ab ab" at 4 in "xab ab ab".
-            (0..hay.len())
-                .filter(|i| hay.is_char_boundary(*i) && hay[*i..].starts_with(n.as_str()))
-                .any(|i| {
-                    let (before, after) = (hay[..i].chars().last(), hay[i + n.len()..].chars().next());
-                    (starts || !word(before)) && (ends || !word(after))
-                })
+    alternatives(needle).any(|n| !starts(&hay, &n).is_empty())
+}
+
+/// [`has`], but a match with a negator shortly before it in its clause does not
+/// count: "do not write the files by hand" names "by hand" only to forbid it. A
+/// `must_not` reads its words this way (#701).
+fn has_unnegated(hay: &str, needle: &str) -> bool {
+    let hay = hay.to_lowercase();
+    alternatives(needle).any(|n| starts(&hay, &n).into_iter().any(|i| !negated(&hay[..i])))
+}
+
+/// The `|` alternatives of `needle`, trimmed and lowercased.
+fn alternatives(needle: &str) -> impl Iterator<Item = String> + '_ {
+    needle.split('|').map(|n| n.trim().to_lowercase()).filter(|n| !n.is_empty())
+}
+
+/// Each byte offset where `n` starts in `hay` as a whole word, both lowercase.
+fn starts(hay: &str, n: &str) -> Vec<usize> {
+    let word = |c: Option<char>| c.is_some_and(char::is_alphanumeric);
+    let (first, last) = (n.chars().next(), n.chars().last());
+    let starts = !word(first);
+    let ends = !word(last);
+    // Every start, overlapping ones too: match_indices skips "ab ab" at 4 in "xab ab ab".
+    (0..hay.len())
+        .filter(|i| hay.is_char_boundary(*i) && hay[*i..].starts_with(n))
+        .filter(|i| {
+            let (before, after) = (hay[..*i].chars().last(), hay[*i + n.len()..].chars().next());
+            (starts || !word(before)) && (ends || !word(after))
         })
+        .collect()
+}
+
+/// Words a negator may sit before the match it cancels: "do not write the
+/// golden files by hand" puts "not" five words before "by hand".
+const NEGATION_WINDOW: usize = 6;
+
+/// Whether the text just before a match negates it: a negator among the last
+/// [`NEGATION_WINDOW`] words of its clause (a clause ends at `.;:!?` or a line).
+fn negated(before: &str) -> bool {
+    let clause = before.rsplit(|c| ".;:!?\n".contains(c)).next().unwrap_or("");
+    let words: Vec<String> = clause
+        .split(|c: char| !(c.is_alphanumeric() || c == '\'' || c == '\u{2019}'))
+        .filter(|w| !w.is_empty())
+        .map(|w| w.replace('\u{2019}', "'"))
+        .collect();
+    let from = words.len().saturating_sub(NEGATION_WINDOW);
+    let single = ["not", "never", "don't", "no", "without"];
+    let pair = |a: &str, b: &str| matches!((a, b), ("rather", "than") | ("instead", "of"));
+    words[from..].iter().any(|w| single.contains(&w.as_str())) || words[from.saturating_sub(1)..].windows(2).any(|p| pair(&p[0], &p[1]))
 }
 
 /// What the panel shows for a reply, the text a `must` is looked for in; `None`
@@ -453,7 +485,7 @@ fn grade(c: &Case, raw: &str) -> Grade {
         g.missing = c.must.iter().filter(|m| !has(&text, m)).cloned().collect();
     }
     g.wrong_type = c.out_is.and_then(|want| reply_type(&reply).filter(|t| *t != out_name(want)));
-    g.forbidden = c.must_not.iter().filter(|m| has(&text, m)).cloned().collect();
+    g.forbidden = c.must_not.iter().filter(|m| has_unnegated(&text, m)).cloned().collect();
     let asked_well = g.asked && g.on_target;
     let wrote_well = !g.asked && g.missing.is_empty() && g.wrong_type.is_none();
     g.pass = g.forbidden.is_empty()
@@ -1717,6 +1749,36 @@ mod tests {
         assert!(g.pass && g.on_target, "{g:?}");
         c.ask_any = vec!["which file".into()];
         assert!(!grade(&c, q).pass);
+    }
+
+    #[test]
+    fn must_not_skips_a_mention_a_negator_cancels() {
+        let mut c = parse_cases(ONE).unwrap().remove(0);
+        c.must_not = vec!["by hand".into()];
+        for r in [
+            "<prompt>Do not write the golden files by hand, and use the project's own flag.</prompt>",
+            "<prompt>The test defines an update flag, so use it rather than writing the files by hand.</prompt>",
+        ] {
+            assert_eq!(grade(&c, r).forbidden, Vec::<String>::new(), "{r}");
+        }
+    }
+
+    #[test]
+    fn must_not_still_trips_on_a_plain_mention() {
+        let mut c = parse_cases(ONE).unwrap().remove(0);
+        c.must_not = vec!["by hand".into()];
+        let g = grade(&c, "<prompt>Write them by hand. Do not run the generator.</prompt>");
+        assert_eq!(g.forbidden, ["by hand"]);
+    }
+
+    #[test]
+    fn a_negator_cancels_only_inside_its_clause_and_window() {
+        assert!(has_unnegated("Do not edit. Write the files by hand.", "by hand"));
+        assert!(has_unnegated("not a b c d e f write by hand", "by hand"));
+        assert!(!has_unnegated("never write it by hand", "by hand"));
+        assert!(!has_unnegated("Don\u{2019}t use a subagent", "subagent"));
+        assert!(!has_unnegated("use the flag instead of editing by hand", "by hand"));
+        assert!(has_unnegated("a subagent, not a skill, and a subagent", "subagent"));
     }
 
     #[test]

@@ -14,7 +14,9 @@
 #   must_not: the reply, a question included, carries none of these
 #   holdout: yes for a case written after the prompt it is run on (default no)
 # Words match whole and in any case ("plan" is not in "explanation"); "a|b" is
-# any of them. A must_not cannot tell "no subagent" from "a subagent".
+# any of them. A must_not skips a match negated in its clause within six words
+# before it (not, never, don't, no, without, rather than, instead of): "do not
+# write it by hand" does not trip "by hand" (#701).
 # A key or a section given twice is an error. A screen cannot hold a line that
 # starts with "--- " or "=== ": those start a section or a case.
 #   note:    why the label is what it is
