@@ -893,7 +893,8 @@ fn panel_reads(out: Option<&str>, explore: bool) -> Option<Vec<String>> {
 }
 
 /// What the judge reads of case `c`'s reply `raw`, and what the panel read
-/// before it (`None` when unknown).
+/// before it: `None` when unknown, and for a case with refs or earlier rounds,
+/// which the judge does not see.
 fn judge_input(c: &Case, raw: &str, reads: Option<Vec<String>>) -> judge::Input {
     judge::Input {
         window: format!("{} · {} · {}", c.name, c.cmd, c.path),
@@ -902,7 +903,9 @@ fn judge_input(c: &Case, raw: &str, reads: Option<Vec<String>>) -> judge::Input 
         repo: c.repo.clone(),
         request: c.request.clone(),
         reply: raw.into(),
-        reads,
+        // the judge sees neither the basket nor the earlier rounds: rule 7
+        // can weigh the reads only when it sees the rest of what the panel saw
+        reads: reads.filter(|_| c.refs.is_empty() && c.turns.is_empty()),
     }
 }
 
@@ -2566,6 +2569,17 @@ mod tests {
         let v = got[0].verdict.clone().unwrap();
         assert_eq!((v.pass, v.critique.as_str()), (false, "#871 invented"));
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// The judge sees neither a case's basket nor its earlier rounds, so it
+    /// gets no reads there and rule 7 stays lenient (review645).
+    #[test]
+    fn judge_input_withholds_reads_for_a_case_with_refs_or_earlier_rounds() {
+        for (name, text) in [("refs", REFS), ("rounds", ANSWERED)] {
+            let c = &parse_cases(text).unwrap()[0];
+            let i = judge_input(c, "r", panel_reads(Some(EXPLORED), true));
+            assert_eq!(i.reads, None, "{name}");
+        }
     }
 
     #[test]
