@@ -317,11 +317,11 @@ is "POLLS=0 still says it gave up" "1 0 1 1|no stderr" \
    "$(fs_run 1000 0 -L "$FS" -f /dev/null -- -d -s t 'exec sleep 300')"
 for row in "no --:-L $FS -d -s t" "no socket:-- -d -s t" "-f before -L:-f /dev/null -L $FS -- -d" \
            "-L with no name:-L" "no arguments:"; do
-    # shellcheck disable=SC2086  # the row's words are the argv
     fsr="fresh_server refuses ${row%%:*}: one bad, no kill, no new-session"
-    case "$(fs_run 0 5 ${row#*:})" in
+    fsgot=$(fs_run 0 5 ${row#*:})   # unquoted: the row's words are the argv
+    case "$fsgot" in
         "1 0 0 1|"?*) ok "$fsr" ;;
-        *) bad "$fsr" "1 0 0 1|<why>" "$(fs_run 0 5 ${row#*:})" ;;
+        *) bad "$fsr" "1 0 0 1|<why>" "$fsgot" ;;
     esac
 done
 "$TMUX_REAL" -L "$FS" kill-server >/dev/null 2>&1
