@@ -68,13 +68,63 @@ pub struct Turn {
     pub text: String,
 }
 
-/// User and screen text must not be able to close one of our tags.
+/// The tags the envelope wraps text in.
+const SECTIONS: [&str; 14] = [
+    "screen",
+    "window",
+    "repo",
+    "refs",
+    "ref",
+    "request",
+    "output_type",
+    "text",
+    "code",
+    "truncated",
+    "session",
+    "conversation",
+    "turn",
+    "questions_left",
+];
+
+/// User and screen text must not be able to close one of our tags: every `</`
+/// is escaped, and so is a closer of a [`SECTIONS`] name with blanks before or
+/// after its `/` (`< /screen>`, #671). A spaced closer of any other name stays,
+/// as does a `<` and `/` in ordinary text: escaping every `< /` would change
+/// screen text that closes nothing of ours.
 pub fn esc(s: &str) -> String {
-    s.replace("</", "<\\/")
+    swap_closers(&s.replace("</", "<\\/"), "/", "\\/")
 }
 
+/// [`esc`] undone, for text the model copied from the envelope.
 pub fn unesc(s: &str) -> String {
-    s.replace("<\\/", "</")
+    swap_closers(s, "\\/", "/").replace("<\\/", "</")
+}
+
+/// `s` with `from` made `to` where it follows a `<` and blanks and comes before
+/// blanks and a [`SECTIONS`] name, in any case. A name going on with a letter,
+/// digit, `_`, `-` or `.` is another tag.
+fn swap_closers(s: &str, from: &str, to: &str) -> String {
+    let name_char = |c: &u8| c.is_ascii_alphanumeric() || b"_-.".contains(c);
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(at) = rest.find('<') {
+        out.push_str(&rest[..=at]);
+        rest = &rest[at + 1..];
+        let slash = rest.trim_start();
+        let Some(after) = slash.strip_prefix(from) else {
+            continue;
+        };
+        let name = after.trim_start().as_bytes();
+        let ours = SECTIONS.iter().any(|t| {
+            let t = t.as_bytes();
+            let at_end = !name.get(t.len()).is_some_and(name_char);
+            name.len() >= t.len() && name[..t.len()].eq_ignore_ascii_case(t) && at_end
+        });
+        out.push_str(&rest[..rest.len() - slash.len()]);
+        out.push_str(if ours { to } else { from });
+        rest = after;
+    }
+    out + rest
 }
 
 /// The draft is not redacted: Fix types its answer back, so a blanked draft
