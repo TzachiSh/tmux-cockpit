@@ -25,7 +25,7 @@ SCRIPTS='agent-context agent-state cockpit-board cockpit-panel review-gate tm tm
 
 # ordinal <TAB> title <TAB> files-it-uses
 awk -v scripts="$SCRIPTS" '
-function note(arr, line,   i, n, S) {
+function note(arr, line,   i, n, S, s, p) {
     n = split(scripts, S, " ")
     # The trailing class matters: scripts/tm must not match scripts/tmux-where.
     for (i = 1; i <= n; i++) if (line ~ ("scripts/" S[i] "([^A-Za-z0-9_-]|$)")) arr["scripts/" S[i]] = 1
@@ -35,6 +35,13 @@ function note(arr, line,   i, n, S) {
     # the libs tmux-review sources: run.sh greps some of them by path
     if (match(line, /scripts\/lib\/review-[a-z]+\.sh/)) arr[substr(line, RSTART, RLENGTH)] = 1
     if (line ~ /examples\//)     arr["examples"] = 1
+    # Any file named from the repo root, "$DIR/docs/tui.md" or "$DIR"/Makefile:
+    # docs and the Makefile are read by blocks too, not only scripts (#672).
+    s = line
+    while (match(s, /[$][{]?DIR[}]?["]?\/[A-Za-z0-9_.\/-]+/)) {
+        p = substr(s, RSTART, RLENGTH); sub(/^[^\/]*\//, "", p); arr[p] = 1
+        s = substr(s, RSTART + RLENGTH)
+    }
 }
 FNR == NR {                                       # pass 1: the top-level helpers
     if ($0 ~ /^[A-Za-z_][A-Za-z_0-9]*\(\) *\{/) { fn = $0; sub(/\(\).*/, "", fn); infn = 1; d = 0 }
@@ -99,8 +106,10 @@ pick() {
     local s
     case "$1" in
     tests/run.sh) runsh_blocks ;;
+    # Not run by the suite, but a block may read one by path: the docs-options
+    # block greps docs/tui.md (#672). Only the blocks that name it.
     tests/only.sh|tests/par.sh|tests/green.sh|tests/changed.sh|Makefile|README.md|LICENSE|.*|docs/*)
-        ;;                                        # nothing an assertion reads
+        blocks_for "$1" ;;
     scripts/lib/*)                                # reaches every script sourcing it
         for s in scripts/*; do
             [ -f "$s" ] && grep -q "${1##*/}" "$s" && blocks_for "$s"

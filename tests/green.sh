@@ -29,7 +29,7 @@ STAMP="$gd/cockpit-green"
 
 # The files the tests run against, one per line: the manifest's key set.
 tracked() {
-    # tests/fixtures/review/* is in the list because the tests READ it:
+    # tests/fixtures is in the list because the tests READ it, review/ too:
     # mkfix.sh builds the repos the tree_diff and diffstat blocks run on.
     # Without it, editing a fixture left the stamp valid and `make gate`
     # answered "already green ... nothing changed since the last full gate"
@@ -41,14 +41,15 @@ tracked() {
     # literal. The `case` keeps the old grep's job: a stamp must not depend on
     # tests/.par.* or tests/.cache, which only exist mid-run.
     local f
-    # tui/ too, since the suite runs the binary built from it (#199).
-    { for f in cockpit.tmux install.sh bootstrap.sh \
-               scripts/* scripts/lib/* tests/* \
-               tests/fixtures/review/* examples/*; do
+    # tui/ too, since the suite runs the binary built from it (#199). And every
+    # other file a block reads by path: docs/tui.md, the Makefile, all of
+    # tests/fixtures. The #672 block in run.sh fails on one missing here.
+    { for f in cockpit.tmux install.sh bootstrap.sh Makefile docs/tui.md \
+               scripts/* scripts/lib/* tests/* examples/*; do
           case $f in tests/.*) continue ;; esac
           [ -f "$f" ] && printf '%s\n' "$f"
       done
-      find tui -path tui/target -prune -o -type f -print; } | sort
+      find tests/fixtures tui -path tui/target -prune -o -type f -print; } | sort
 }
 
 manifest() {
