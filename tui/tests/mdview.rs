@@ -4,7 +4,7 @@
 #[allow(dead_code)] // for its Scratch guard only, not write_exec
 mod fake;
 
-use cockpit_tui::mdview::render::Opts;
+use cockpit_tui::mdview::render::{Ink, Opts, Row};
 use cockpit_tui::mdview::{self, Hit, MAX_FILE, Out, Screen, find, load};
 use cockpit_tui::theme::{Glyphs, Theme};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
@@ -111,19 +111,36 @@ fn load_refuses_what_is_not_a_regular_file_without_waiting() {
     );
 }
 
+/// One row a line, each its own text.
+fn rows(t: &[&str]) -> Vec<Row> {
+    let row = |s: &&str| Row {
+        cells: vec![(s.to_string(), Ink::default())],
+        ..Row::default()
+    };
+    t.iter().map(row).collect()
+}
+
 #[test]
 fn find_ignores_case_unless_the_query_has_a_capital() {
-    let t = vec!["Rust rust RUST".to_string()];
+    let t = rows(&["Rust rust RUST"]);
     assert_eq!(find(&t, "rust").len(), 3);
-    assert_eq!(find(&t, "Rust"), vec![Hit { row: 0, from: 0, to: 4 }]);
+    assert_eq!(
+        find(&t, "Rust"),
+        vec![Hit {
+            row: 0,
+            from: 0,
+            last: 0,
+            to: 4
+        }]
+    );
     assert!(find(&t, "").is_empty());
     assert!(find(&t, "go").is_empty());
 }
 
 #[test]
 fn find_maps_a_match_back_past_multibyte_text() {
-    let t = vec!["日本 ÉCOLE école".to_string()];
-    let hs = find(&t, "école");
+    let t = ["日本 ÉCOLE école".to_string()];
+    let hs = find(&rows(&[&t[0]]), "école");
     assert_eq!(hs.len(), 2);
     assert_eq!(&t[0][hs[0].from..hs[0].to], "ÉCOLE");
     assert_eq!(&t[0][hs[1].from..hs[1].to], "école");
