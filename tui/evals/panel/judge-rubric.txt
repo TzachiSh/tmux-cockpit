@@ -56,10 +56,11 @@ Prompts for a coding agent
    most, or writes a plan-first prompt that has the agent look at the code,
    lay out the options, gather the requirements and wait for the OK.
 10. When the request is only about a test (add a test for existing code, or
-    fix one named failing test), the prompt includes a break-on-purpose check:
-    break the code under test (a mutation), show the test fails, then restore
-    it. A feature, a feature that comes with its test, or a "the suite fails,
-    fix it" request needs no such check. A request that adds a flag, a field
+    fix a failing test, named in the request or on the screen), the prompt
+    includes a break-on-purpose check: break the code under test (a mutation),
+    show the test fails, then restore it. A feature, a feature that comes with
+    its test, or a "the suite fails, fix it" request where no single failing
+    test is named needs no such check. A request that adds a flag, a field
     or any other behaviour and also says "add a test" is a feature that comes
     with its test: never fail it for a missing break-on-purpose check.
 11. A rename or a small refactor needs no plan and no wait for the OK; a
