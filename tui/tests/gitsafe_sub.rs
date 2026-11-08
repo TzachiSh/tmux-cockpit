@@ -413,3 +413,36 @@ fn a_relative_tmpdir_counts_what_an_absolute_one_does() {
     let got = [Path::new("t").to_path_buf(), cwd.0.join("t")].map(|t| diffstat_in(&r, &cwd.0, &t));
     assert_eq!(got, [want, want]);
 }
+
+/// `n` one-line files committed under `top/` behind eight 250-byte
+/// components, so each path is ~2 KB and `n` of them pass ARG_MAX by 100 files.
+fn past_arg_max(r: &Repo) -> usize {
+    let deep: PathBuf = (b'a'..b'i').map(|c| String::from(c as char).repeat(250)).collect();
+    let max = usize::try_from(unsafe { libc::sysconf(libc::_SC_ARG_MAX) }).unwrap();
+    let n = max / deep.as_os_str().len() + 100;
+    assert!(n < 10_000, "ARG_MAX {max}: too big to pass cheaply");
+    let dir = r.0.join("top").join(&deep);
+    std::fs::create_dir_all(&dir).unwrap();
+    for i in 0..n {
+        std::fs::write(dir.join(i.to_string()), format!("{i}\n")).unwrap();
+    }
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-q", "-m", "big"]);
+    n
+}
+
+/// #665: a plain `mv` of a tree whose old paths, one pathspec each, pass
+/// ARG_MAX. On one command line the spawn failed and the stat was None.
+#[test]
+fn a_plain_mv_past_arg_max_counts_what_git_does() {
+    let r = Repo::new("argmax");
+    let n = past_arg_max(&r) as u64;
+    std::fs::rename(r.0.join("top"), r.0.join("moved")).unwrap();
+    let numstat = r.git(&["diff", "HEAD", "--numstat"]);
+    let field = |l: &str| l.split('\t').nth(1).unwrap().parse::<u64>().unwrap();
+    let del: u64 = numstat.lines().map(field).sum();
+    let new = r.git(&["ls-files", "-o", "--exclude-standard"]).lines().count() as u64;
+    assert_eq!((del, new), (n, n), "the reference: one line gone per file, each new");
+    let s = r.stat().expect("a stat, not a failed spawn");
+    assert_eq!((s.0, s.1, s.2), (0, del, new));
+}
