@@ -3006,6 +3006,19 @@ mod tests {
         let one_bug = " Then introduce a bug, see the test fail, and revert it.";
         let invert = " Then temporarily invert the trim check, confirm the test fails, and put it back.";
         let inverting = " Then try inverting the sign check: the test must fail; then restore it.";
+        // #599: a bug described, or a bug the fix must not bring, is no break step
+        let described = format!(" The parser is inverting the leading minus.{loose}");
+        let was = " slugify was inverting the trim check; revert unrelated edits.";
+        let do_not = " Make sure the fix does not introduce a bug, and revert unrelated edits.";
+        let without = " Keep it small, without introducing a bug, and revert unrelated edits.";
+        // #678 review: a do-not phrase or a description that runs into the act's words
+        let do_not_and = " Make sure the fix does not introduce a bug and confirm the full suite \
+                          passes, and revert unrelated edits.";
+        let flipping = " The parser is flipping the leading minus; revert unrelated edits.";
+        let flip_the = " The bug makes the parser flip the sign; revert unrelated edits.";
+        let we_invert = " We invert the sign twice in the parser; revert unrelated edits.";
+        let no_invert = " Do not invert the logic, and revert unrelated edits.";
+        let bug_in = " Then introduce a bug in parse_negative, confirm the test fails, and revert it.";
         let p = |s: String| format!("<prompt>{s}</prompt>");
         let rows = [
             ("add", "test-the-changed-function", p(format!("{add}{step}")), true),
@@ -3021,6 +3034,52 @@ mod tests {
             ("add invert", "test-the-changed-function", p(format!("{add}{invert}")), true),
             ("fix a bug", "last-commit-test", p(format!("{fix}{one_bug}")), true),
             ("fix inverting", "last-commit-test", p(format!("{fix}{inverting}")), true),
+            ("fix describes inverting", "last-commit-test", p(format!("{fix}{described}")), false),
+            (
+                "add describes inverting",
+                "test-the-changed-function",
+                p(format!("{add}{was}")),
+                false,
+            ),
+            ("fix does not introduce", "last-commit-test", p(format!("{fix}{do_not}")), false),
+            // a guard row: master's words fail it too
+            (
+                "add without introducing (guard)",
+                "test-the-changed-function",
+                p(format!("{add}{without}")),
+                false,
+            ),
+            (
+                "fix does not introduce and confirm",
+                "last-commit-test",
+                p(format!("{fix}{do_not_and}")),
+                false,
+            ),
+            ("fix is flipping", "last-commit-test", p(format!("{fix}{flipping}")), false),
+            ("fix flip the sign", "last-commit-test", p(format!("{fix}{flip_the}")), false),
+            ("fix we invert the", "last-commit-test", p(format!("{fix}{we_invert}")), false),
+            ("fix do not invert", "last-commit-test", p(format!("{fix}{no_invert}")), false),
+            ("fix then a bug in", "last-commit-test", p(format!("{fix}{bug_in}")), true),
+        ];
+        assert_eq!(graded_wrong(&rows), Vec::<&str>::new(), "rows graded the wrong way");
+    }
+
+    /// #599: the holdouts that share the break words take a break step and
+    /// refuse a described bug or a do-not phrase.
+    #[test]
+    fn a_holdout_test_prompt_takes_only_a_break_on_purpose() {
+        let py = "Write tests for parse_price in shop/prices.py and run pytest -q.";
+        let go = "Fix TestParseHeader in header/header_test.go and run go test ./header.";
+        let invert = " Then invert the currency check, confirm a test fails, and put it back.";
+        let bug = " Then introduce a small bug in it, confirm the test fails, and revert it.";
+        let described = " The header code is inverting the key case; revert unrelated edits.";
+        let do_not = " Make sure the fix does not introduce a bug, and revert unrelated edits.";
+        let p = |s: String| format!("<prompt>{s}</prompt>");
+        let rows = [
+            ("py invert", "h-pytest-new-helper", p(format!("{py}{invert}")), true),
+            ("py does not introduce", "h-pytest-new-helper", p(format!("{py}{do_not}")), false),
+            ("go small bug", "h-go-header-test", p(format!("{go}{bug}")), true),
+            ("go describes inverting", "h-go-header-test", p(format!("{go}{described}")), false),
         ];
         assert_eq!(graded_wrong(&rows), Vec::<&str>::new(), "rows graded the wrong way");
     }
