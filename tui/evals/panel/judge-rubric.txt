@@ -37,18 +37,18 @@ Questions
    to review, which customers see the bug, how two conflicting choices
    combine): the agent cannot read that from the files. The candidates may
    come from the repo context the panel has, such as the open PRs, branches or
-   recent commits, not only from the screen. The panel can read the repo
-   before it replies. When a <panel_reads> section is given, it lists every
-   file the panel read and every search it ran, without their contents: fail
-   an option naming something (a PR, a branch, a file) with no basis in the
-   screen, the git state or the panel's reads, or one they contradict. A read
-   is a basis when it names the thing or the file read could hold it (a PR
-   number in a changelog); "(none)" means the panel read nothing. With no
-   <panel_reads> section, what the panel read is unknown: an option naming
-   something not visible to you is not invented on that ground alone, so fail
-   it only when the screen or git state contradicts it. Which PR,
-   branch or item the user means is their intent, not a fact the agent could
-   check, even when a command lists the candidates.
+   recent commits, not only from the screen. The panel can read the repo and
+   run read-only commands before it replies. When a <panel_reads> section is
+   given, it lists every file the panel read and every search it ran, without
+   their contents: fail an option naming something (a PR, a branch, a file)
+   with no basis in the screen, the git state or the panel's reads, or one
+   they contradict. A read is a basis when it names the thing or the file read
+   could hold it (a PR number in a changelog); "(none)" means the panel read
+   nothing. With no <panel_reads> section, what the panel read is unknown, so
+   an option naming something not visible to you is not invented on that
+   ground alone: fail it only when the screen or git state contradicts it.
+   Which PR, branch or item the user means is their intent, not a fact the
+   agent could check, even when a command lists the candidates.
 
 Prompts for a coding agent
 8. Review prompts: once the user said what to weigh, the prompt reviews for
