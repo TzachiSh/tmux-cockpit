@@ -16,10 +16,11 @@ vscode_open() {               # <code args...> -> 0 when a window took it
     local shim s
     shim=$(vscode_shim) || return 1
     # Newest socket first, capped at 8 since each dead one costs a refusal.
-    # fd 3: the shim reads stdin, which must stay the terminal for --wait.
+    # fd 3: the socket list stays off stdin, which the shim may read.
     while IFS= read -r s <&3; do
         VSCODE_IPC_HOOK_CLI=$s "$shim" "$@" 2>/dev/null && return 0
     done 3< <(ls -t "${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}"/vscode-ipc-*.sock 2>/dev/null | head -8)
     return 1
 }
-# Known gap: a closed window's socket can listen for hours; --wait then hangs.
+# Known gap: a closed window's socket can listen for hours; the shim then
+# exits 0 there, and the walk stops at a window nobody sees.

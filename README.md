@@ -134,7 +134,7 @@ None is required.
 | `@cockpit_agents` | `^(claude\|codex\|aider\|cursor\|opencode\|gemini\|crush)$` | which commands count as an agent |
 | `@cockpit_<name>_key` | see [configuration](docs/configuration.md) | rebind a key; `off` restores stock tmux |
 | `@cockpit_popup_width`, `@cockpit_popup_height` | `70%` | popup size |
-| `@cockpit_editor` | unset | editor for click-to-open and the review's `^E`; a terminal editor |
+| `@cockpit_editor` | unset | editor for click-to-open, opened in a new tmux window; a terminal editor |
 | `@cockpit_md_view` | `on` | `off`: a clicked markdown file opens in the editor, not the viewer; the file browser's `↵` then opens every file in the editor too |
 | `@cockpit_review_window` | `off` | `on`: `prefix + r` opens the board in a window, not a popup |
 | `@cockpit_board_window` | `off` | `on`: the board opens in a window, not a popup |

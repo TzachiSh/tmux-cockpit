@@ -74,7 +74,7 @@ tmux-review — review an agent's uncommitted diff, one comment at a time.
                                           discard, leave); needs revdiff
   tmux-review --compose <store>          the composed review, ready to deliver
   tmux-review --deliver <pane> <store>   paste it typed-but-unsent into <pane>; a busy pane gets it queued for its next Stop
-  tmux-review --done <store>            after a by-hand --deliver: archive the batch, drop the snapshot
+  tmux-review --done <store>            after a by-hand --deliver: archive the batch, drop the scratch
   tmux-review --delta <pane>            exit 0 when <pane>'s tree differs from its review base
   tmux-review --request <pane>          the agent asks: one popup on <pane>; the batch on stdout, exit 10
   tmux-review --dir <pane>              the tree <pane> works in, as the board shows it

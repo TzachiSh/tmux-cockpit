@@ -2,8 +2,8 @@
 # tmux-review's hand-back: compose the batch, deliver it into the pane, archive it.
 # Sourced by tmux-review, never run. Bash 4+.
 
-# After a delivery: the batch joins delivered.md (the next round's ↺ marks read
-# it), the store and its snapshot go. Public as --done for keep_hint's command.
+# After a delivery: the batch joins delivered.md, and the store and revdiff's
+# scratch beside it go. Public as --done for keep_hint's command.
 done_store() {                # <store>
     local st=$1 d=${1%/*}
     [ "$d" = "$1" ] && d=.
@@ -13,20 +13,20 @@ done_store() {                # <store>
         cat -- "$st" >> "$d/delivered.md" || return 1
     fi
     rm -rf -- "$d/history"
-    rm -f -- "$st" "$st.rows" "$st.rdin" "$st.rdout" "$st.base"
+    rm -f -- "$st" "$st.rdin" "$st.rdout" "$st.base"
     rmdir -- "$d" 2>/dev/null
     return 0
 }
 
-# What ^A ends: the session dir's files by name, not `rm -rf`. The dir may hold
+# What approving (a) ends: the session dir's files by name, not `rm -rf`. The dir may hold
 # comments.md.deliver, a review queued for a busy pane's next Stop
 # (@cockpit_review_spool); review-gate rmdirs the dir after it drains.
 clear_sess() {                # <sess dir>
     local s=$1
     [ -d "$s" ] && [ ! -L "$s" ] || return 0
     rm -rf -- "$s/history"
-    rm -f -- "$s/comments.md" "$s/comments.md.rows" "$s/comments.md.rdin" \
-             "$s/comments.md.rdout" "$s/comments.md.base" "$s/delivered.md" "$s/rc"
+    rm -f -- "$s/comments.md" "$s/comments.md.rdin" "$s/comments.md.rdout" \
+             "$s/comments.md.base" "$s/delivered.md" "$s/rc"
     rmdir -- "$s" 2>/dev/null
     return 0
 }

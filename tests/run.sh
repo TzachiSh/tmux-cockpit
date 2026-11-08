@@ -16020,6 +16020,38 @@ is "and nothing ran" "no" "$([ -e "$RD9D/MARK" ] || [ -e "$DIR/MARK" ] || [ -e M
 rm -f "$DIR/MARK" MARK
 fi
 
+echo "== tmux-review: a refused rc 20 delivery leaves every pane out of mode (#493) =="
+# The run-shell job review_pane starts must exit 0 when --deliver refuses: tmux
+# shows a failed -b job's command in view-mode on a pane. A plain bash pane is
+# not an agent, so --deliver refuses it and keeps the store.
+if need_tmux "tmux-review refused delivery"; then :; else
+RRF="cockpit-rrf-$$"; SOCKS="$SOCKS $RRF"; RRFR=$(mktmpd); RRFS=$(mktmpd)
+( cd "$RRFR" && git init -q -b main . && printf 'a\n' > f && git add f \
+  && git -c user.name=t -c user.email=t@t commit -qm i && printf 'a\nb\n' > f ) >/dev/null 2>&1
+RRFB=$(mktmpd); RRFW=$(mktmpd); fake_revdiff "$RRFB"
+printf '## f:2 (+)\nRRF-MARKER\n' > "$RRFW/out.1"; echo 10 > "$RRFW/rc.1"
+"$TMUX_REAL" -L "$RRF" -f /dev/null new-session -d -s t -x 200 -y 50 -c "$RRFR" bash >/dev/null 2>&1
+"$TMUX_REAL" -L "$RRF" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
+RRFP=$("$TMUX_REAL" -L "$RRF" list-panes -t t: -F '#{pane_id}')
+RRFSHIM=$(mktmpd)
+printf '#!/bin/sh\nexec "%s" -L "%s" "$@"\n' "$TMUX_REAL" "$RRF" > "$RRFSHIM/tmux"; chmod +x "$RRFSHIM/tmux"
+printf d | PATH="$RRFSHIM:$RRFB:$PATH" FAKE_RD_DIR="$RRFW" XDG_STATE_HOME=$RRFS \
+    "$DIR/scripts/tmux-review" -p "$RRFP" >/dev/null 2>&1
+# run-shell -b forks the job before the client returns, so it has started by now.
+rrf_job() {
+    pgrep -P "$("$TMUX_REAL" -L "$RRF" display-message -p '#{pid}')" -f 'tmux-review --deliver' \
+        >/dev/null && echo running || echo gone
+}
+until_out gone rrf_job >/dev/null || bad "the delivery job ends" "gone" "$(rrf_job)"
+is "the refusal keeps the store" "RRF-MARKER" \
+    "$(cat "$RRFS"/tmux-cockpit/review/*/comments.md 2>/dev/null | grep -o RRF-MARKER)"
+# Three round trips after the job is gone: tmux has handled its exit by then.
+for i in 1 2 3; do "$TMUX_REAL" -L "$RRF" display-message -p '#{pid}' >/dev/null 2>&1; done
+is "no pane is put in view-mode by the refused delivery's job" "0" \
+    "$("$TMUX_REAL" -L "$RRF" list-panes -a -F '#{pane_in_mode}' | sort -u | tr -d '\n')"
+"$TMUX_REAL" -L "$RRF" kill-server >/dev/null 2>&1
+fi
+
 echo "== tmux-review: review_base, origin/HEAD outranks a local master when there is no main (#328) =="
 # The master arm moved above origin/HEAD answered "vs master" and stayed green.
 RLM=$(mktmpd)
