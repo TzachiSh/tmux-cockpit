@@ -6,9 +6,10 @@ name: shell-suite-tmux-master
 # #495); on 3.8 only the rows pinning the command's shape guard that fix.
 #
 # Non-blocking: the job carries continue-on-error, so a red run never fails the
-# workflow, and .omc/safe-merge.sh skips this check name. Make it required once
-# it has stayed green: drop continue-on-error and the name from safe-merge's
-# optional list.
+# workflow. Its check run still concludes failure (bucket "fail" in `gh pr
+# checks`), so a merge script that reads the checks must list this name as
+# optional. Make it required once it has stayed green: drop continue-on-error
+# and the name from that list.
 on:
   push:
     branches: [master, 'scratch/**']
@@ -48,11 +49,13 @@ jobs:
 
       # The key carries the pinned commit, so a bump builds once, and the runner
       # image for the reason .github/actions/tmux gives (#478): the binary links
-      # the image's libevent and ncurses.
+      # the image's libevent and ncurses. r1 is the build recipe below: bump it
+      # when the recipe changes, or the old build is restored.
       - id: key
+        name: Cache key
         run: |
           . /etc/os-release
-          echo "key=tmux-master-$TMUX_MASTER_SHA-$RUNNER_OS-$RUNNER_ARCH-$ID-$VERSION_ID" \
+          echo "key=tmux-master-r1-$TMUX_MASTER_SHA-$RUNNER_OS-$RUNNER_ARCH-$ID-$VERSION_ID" \
             >> "$GITHUB_OUTPUT"
 
       - id: cache
