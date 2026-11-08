@@ -170,6 +170,9 @@ pub struct Pane {
     /// #454: the pane's own title (field 17), `✳ ` off, `""` when it is the host name;
     /// the label's fallback before the window name
     pub topic: String,
+    /// #454: the last tool_use (`doing`) came back with `is_error`: a denial or a
+    /// failed command. A done row then shows `said` instead.
+    pub doing_failed: bool,
 }
 
 /// Skips the three ages, which change every tick and would defeat the redraw
@@ -207,12 +210,13 @@ impl Hash for Pane {
             ended,
             job,
             topic,
+            doing_failed,
         } = self;
         [
             id, wher, name, cmd, title, msg, sess, path, dir, root, spool, pid, review, doing, said, asked, loc, pm, win, job, topic,
         ]
         .hash(h);
-        (state, pinned, delivered, subs_n, ended).hash(h);
+        (state, pinned, delivered, subs_n, ended, doing_failed).hash(h);
         // Sub hashes only what changes its drawing: never `started`, tokens by the thousand.
         subs.hash(h);
     }
@@ -289,6 +293,8 @@ struct Facts {
     cwd: String,
     /// the newest open AskUserQuestion's question, `""` when none is open
     ask: String,
+    /// #454: the newest tool_use's result came back with `is_error`
+    tool_failed: bool,
 }
 
 /// A read's (len, mtime), the file's (device, inode), and what it said.
@@ -416,6 +422,7 @@ fn read_transcript(p: &mut Pane, opt: &str) -> String {
         p.msg = fa.ask;
     }
     p.doing = fa.tool;
+    p.doing_failed = fa.tool_failed;
     p.said = fa.text;
     p.asked = fa.user;
     p.since = fa.at.and_then(age);

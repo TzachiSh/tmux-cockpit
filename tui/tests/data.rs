@@ -1710,3 +1710,32 @@ fn the_label_falls_back_to_the_pane_title_before_the_window_name() {
     let labels: Vec<&str> = ["%1", "%2", "%3"].iter().map(|id| get(&ps, id).label()).collect();
     assert_eq!(labels, ["migrate the runner", "win", "fix it"]);
 }
+
+/// #454 item 12, the owner's pick: a pane knows when its last tool_use came back
+/// with `is_error` (a denial or a failed command alike), the flag only. Rows: an
+/// ok result, an error result, an unanswered tool_use (an interrupt), and an
+/// older failure before a newer tool that came back fine.
+#[test]
+fn the_last_tool_uses_error_flag_is_read() {
+    let r = Rig::new("toolerr");
+    let call = serde_json::json!({"type": "assistant", "timestamp": "2026-08-27T00:00:01.000Z", "message": {"content": [
+        {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "ssh nuc"}}]}});
+    let result = |err: bool| {
+        let v = serde_json::json!({"type": "user", "timestamp": "2026-08-27T00:00:02.000Z", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "t1", "is_error": err, "content": "x"}]}});
+        format!("{v}\n")
+    };
+    let end = "{\"type\":\"assistant\",\"timestamp\":\"2026-08-27T00:00:03.000Z\",\"message\":{\"stop_reason\":\"end_turn\",\"content\":[{\"type\":\"text\",\"text\":\"The permission check blocked it.\"}]}}\n";
+    r.transcript("s1", &(format!("{call}\n") + &result(false) + end));
+    r.transcript("s2", &(format!("{call}\n") + &result(true) + end));
+    r.transcript("s3", &(format!("{call}\n") + &typed_row("[Request interrupted by user]")));
+    // an earlier failure, then a newer tool that came back fine
+    let later = call.to_string().replace("\"t1\"", "\"t2\"");
+    let ok2 = result(false).replace("\"t1\"", "\"t2\"");
+    r.transcript("s4", &(format!("{call}\n") + &result(true) + &later + "\n" + &ok2 + end));
+    let ids = ["%1", "%2", "%3", "%4"];
+    r.rows(&ids.map(|id| hooked(id, "done", &format!("s{}", &id[1..]))));
+    let ps = list_panes().unwrap();
+    let got: Vec<bool> = ids.iter().map(|id| get(&ps, id).doing_failed).collect();
+    assert_eq!(got, [false, true, false, false], "ok, is_error, unanswered, an older failure");
+}

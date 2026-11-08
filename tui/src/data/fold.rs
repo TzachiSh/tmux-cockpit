@@ -39,6 +39,9 @@ pub(super) struct Fold {
     /// #453: the newest tool_use's id and, for an AskUserQuestion, its question:
     /// the row's message only while that ask is the one still open
     last_use: At<(String, Option<String>)>,
+    /// #454: the id of the newest tool_use whose tool_result came back with
+    /// `is_error` (a denial or a failed command alike), at that result's row
+    failed: At<String>,
 }
 
 fn since<T>(a: &At<T>, ws: u64) -> Option<&T> {
@@ -65,8 +68,12 @@ impl Fold {
                 self.saw = Some(off);
                 let c = &v["message"]["content"];
                 // a tool_result closes its ask, whatever else the row is
-                for id in c.as_array().into_iter().flatten().filter_map(|b| b["tool_use_id"].as_str()) {
+                for b in c.as_array().into_iter().flatten() {
+                    let Some(id) = b["tool_use_id"].as_str() else { continue };
                     self.asks.retain(|(_, a)| a != id);
+                    if b["is_error"].as_bool() == Some(true) {
+                        self.failed = Some((off, id.to_string()));
+                    }
                 }
                 // trimmed as transcript::typed_text trims it, so the two agree
                 let interrupt = |t: &str| t.trim_start().starts_with(INTERRUPT);
@@ -135,6 +142,10 @@ impl Fold {
         let saw = self.saw.is_some_and(|o| o >= ws);
         let turn_over = since(&self.turn_over, ws).copied().unwrap_or(false);
         let ask = since(&self.last_use, ws).filter(|(id, _)| asks.contains(&id.as_str()));
+        // the newest tool_use is the one that failed: its result was an error (#454)
+        let failed = since(&self.last_use, ws)
+            .zip(since(&self.failed, ws))
+            .is_some_and(|((u, _), f)| u == f);
         Facts {
             tool: since(&self.tool, ws).cloned().unwrap_or_default(),
             text: since(&self.text, ws).cloned().unwrap_or_default(),
@@ -153,6 +164,7 @@ impl Fold {
             },
             cwd: since(&self.cwd, ws).cloned().unwrap_or_default(),
             ask: ask.and_then(|(_, q)| q.clone()).unwrap_or_default(),
+            tool_failed: failed,
         }
     }
 }
@@ -444,6 +456,13 @@ mod tests {
             row("user", 8, json!({"content": "<bash-stdout>a <pasted_content>x</bash-stdout>"})),
             row("user", 9, json!({"content": "Another Claude session sent a message:\nhi"})),
             row("user", 10, json!({"content": "Your claude.ai usage limit has reset. Continue."})),
+            tool(11, "Bash"),
+            row(
+                "user",
+                12,
+                json!({"content": [{"type": "tool_result", "tool_use_id": "u11", "is_error": true, "content": "denied"}]}),
+            ),
+            tool(13, "Bash"),
         ];
         for (n, r) in rows.iter().enumerate() {
             add(&p, r);

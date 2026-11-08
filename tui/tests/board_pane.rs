@@ -649,3 +649,24 @@ fn the_confirm_title_names_the_bound_job() {
     let title = board::Confirm::open(&board::EXTRAS[0], &ps[1]).unwrap().title;
     assert!(title.ends_with(" · sweep") && !title.contains("tests"), "{title:?}");
 }
+
+/// #454 item 12: a done row whose last tool came back with an error shows what the
+/// agent said, not the tool; any other row keeps its tool.
+#[test]
+fn a_done_row_whose_last_tool_failed_shows_what_was_said() {
+    let th = th();
+    for (failed, state, want, not) in [
+        (true, "done", "The permission check", "Bash: carg"),
+        (false, "done", "Bash: carg", "The permission check"),
+        (true, "running", "Bash: carg", "The permission check"),
+    ] {
+        let mut ps = trio();
+        ps[1].state = state.into();
+        ps[1].said = "The permission check blocked it.".into();
+        ps[1].doing_failed = failed;
+        let n = nav(&ps, Sel::Pane("%3".into()));
+        let rows = list_part(&buf(140, 30, &list(&ps, &[], &th, &n)), 70).join("\n");
+        let row = rows.lines().find(|l| l.contains("tests")).unwrap_or_default().to_string();
+        assert!(row.contains(want) && !row.contains(not), "{failed} {state}: {row}");
+    }
+}

@@ -2258,6 +2258,9 @@ fn agent_row(p: &Pane, num: Option<usize>, sel: bool, active: bool, ww: usize, w
         _ if p.ended => ENDED.to_string(),
         State::Unknown => "idle".to_string(),
         State::NeedsInput | State::Error if !p.msg.is_empty() => g.trunc(&p.msg, msg_w),
+        // #454: a done row whose last tool came back with an error says what the
+        // agent said of it, not the tool
+        State::Done if p.doing_failed && !p.said.is_empty() => g.trunc(&p.said, msg_w),
         _ if p.doing.is_empty() => g.trunc(g.dash, msg_w),
         _ => g.trunc_middle(&p.doing, msg_w),
     };
