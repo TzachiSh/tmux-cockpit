@@ -218,6 +218,22 @@ fn a_denied_ref_says_it_was_not_read() {
     );
 }
 
+/// #586: a file under a folder named `.env` is refused by `Read(//**/.env)`
+/// (probed), so a basket ref to it is noted as not read in the prompt a write
+/// sends, end to end through the panel (review-534's test on #659).
+#[test]
+fn a_ref_under_a_denied_folder_is_noted_not_read() {
+    let d = tree("deniedfolder");
+    std::fs::create_dir_all(d.0.join("repo/x/.env")).unwrap();
+    std::fs::write(d.0.join("repo/x/.env/key"), "K=v\n").unwrap();
+    let mut a = compose(&d, false);
+    a.basket = vec![r(&d, "repo/x/.env/key", None)];
+    ctrl(&mut a, 'r');
+    ctrl(&mut a, 's');
+    let p = prompt(&a);
+    assert!(p.lines().any(|l| l.contains("x/.env/key") && l.contains("not read")), "{p}");
+}
+
 /// The rows of the profile's own deny list, read as the profile reads them.
 #[test]
 fn read_denied_follows_the_profiles_read_denies() {
