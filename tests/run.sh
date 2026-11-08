@@ -4000,8 +4000,10 @@ reload_on "$PA"
 "$TMUX_REAL" -L "$PA" set -gu @cockpit_menu_key >/dev/null 2>&1
 "$TMUX_REAL" -L "$PA" set -gu @cockpit_review_key >/dev/null 2>&1
 reload_on "$PA"
-case "$(ak r)" in *cockpit-board*) ok "giving r back does not undo the review key bound in the same load" ;;
-    *) bad "giving r back does not undo the review key bound in the same load" "cockpit-board on r" "$(ak r)" ;; esac
+par="giving r back does not undo the review key bound in the same load"
+loaded_on "$PA" "$par" &&
+    case "$(ak r)" in *cockpit-board*) ok "$par" ;;
+        *) bad "$par" "cockpit-board on r" "$(ak r)" ;; esac
 "$TMUX_REAL" -L "$PA" kill-server >/dev/null 2>&1
 # The old name still works, and says it was renamed.
 PA="cockpit-pa2-$$"; SOCKS="$SOCKS $PA"
@@ -14969,8 +14971,10 @@ chmod +x "$GBD/bin/tmux"
 gbload @cockpit_menu_key Space
 gbt set-environment -g PATH "$GBD/bin:$PATH" >/dev/null 2>&1
 gbload @cockpit_menu_key a
-case "$(gbt list-keys -T prefix Space)" in *display-menu*) ok "a failed stock lookup leaves the old key bound, not unbound" ;;
-    *) bad "a failed stock lookup leaves the old key bound, not unbound" "display-menu still on Space" "$(gbt list-keys -T prefix Space 2>&1)" ;; esac
+gbr="a failed stock lookup leaves the old key bound, not unbound"
+loaded_on "$GB" "$gbr" &&
+    case "$(gbt list-keys -T prefix Space)" in *display-menu*) ok "$gbr" ;;
+        *) bad "$gbr" "display-menu still on Space" "$(gbt list-keys -T prefix Space 2>&1)" ;; esac
 gbt kill-server >/dev/null 2>&1
 fi
 
