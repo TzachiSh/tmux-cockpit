@@ -1386,8 +1386,8 @@ kind: feature
 window: claude · claude · /home/u/projects/tool
 expect: write
 out_is: prompt
-must: parse_cases; compare|diff|match|matches|same as
-note: #701: the screen shows the project's own case parser; a script that reads the cases file itself drifts from it, as the owner-label builder of #691 did; owner ruling on #701: the request now gives the card's format and fields, since the first one left that open and the panel rightly asked
+must: parse_cases; compare|diff|match|matches|same as|equals|against
+note: #701: the screen shows the project's own case parser; a script that reads the cases file itself drifts from it, as the owner-label builder of #691 did; owner ruling on #701: the request now gives the card's format and fields, since the first one left that open and the panel rightly asked; #701 owner OK: equals|against added to the compare term, since replies checked the count against the source with those words
 --- screen
 $ grep -n "fn parse_cases" tui/examples/panel_eval.rs
 122:fn parse_cases(text: &str) -> Result<Vec<Case>, String> {
@@ -1659,10 +1659,10 @@ kind: feature
 window: claude · claude · /home/u/projects/geo-data
 expect: write
 out_is: prompt
-must: gen_countries.py|gen_countries; compare|diff|match|matches|same as
+must: gen_countries.py|gen_countries; compare|diff|match|matches|same as|equals|against
 must_not: AskUserQuestion
 holdout: yes
-note: the screen shows the repo already turns an ISO csv into JSON with scripts/gen_countries.py, and the request gives the output shape; the brief should reuse or extend that script rather than hand-write the data, then check the result matches the shape of countries.json; nothing is left to ask
+note: the screen shows the repo already turns an ISO csv into JSON with scripts/gen_countries.py, and the request gives the output shape; the brief should reuse or extend that script rather than hand-write the data, then check the result matches the shape of countries.json; nothing is left to ask; widened for #701, the second sanctioned held-out edit (owner OK): equals|against added to the compare term
 --- screen
 $ ls scripts data out
 scripts:
