@@ -2,10 +2,12 @@
 
 ## Review the agent's changes
 
-`prefix + r` opens the board; `r` on a row opens a popup review of that agent's
-uncommitted diff. Comments attach to individual lines, and nothing reaches the
-agent until you say so — there is deliberately no key that approves the whole
-thing at once.
+`prefix + r` opens the board; `r` on a row opens that agent's diff in
+[revdiff](https://github.com/umputun/revdiff), inside the board's popup. You
+comment on lines there, and nothing reaches the agent until you press `d` at the
+prompt that follows. revdiff is required: without it `r` says
+`cockpit: revdiff not found: install it, see #233` and opens nothing
+([install](install.md) has the steps).
 
 The board lists every agent pane, on every session, blocked ones first. Each row
 shows its diff stat (`+a -d`, `clean`, `no repo`, `?N new`) and branch, so
@@ -43,10 +45,11 @@ From an **agent pane** the board opens with that pane selected, so `prefix + r`
 there is one `r` from its review. Finishing a review returns to the board, on
 the pane you just left; `q` is the way out.
 
-The review diffs the **git root of that tree**, and the header names it
-(`root: ~/.cache/cockpit-wt/api-work`). An agent that edits another worktree
-by absolute path from a main-checkout pane is reviewed on the wrong tree, and
-that line is how you notice. The fix is workflow, not the plugin: an agent that
+The review diffs the **git root of that tree**. `prefix + i` on the pane shows
+that root, a review the agent requested names it in the popup title, and a
+delivered batch says `Paths are relative to <root>.` An agent that edits another
+worktree by absolute path from a main-checkout pane is reviewed on the wrong
+tree, and those are how you notice. The fix is workflow, not the plugin: an agent that
 works on a branch lives in that worktree, which is what the `WorktreeCreate`
 hook above arranges for `claude --worktree` and `EnterWorktree`.
 
@@ -68,83 +71,44 @@ have already been through.
 where the agent finishes: it sets `@cockpit_review = pending` when the pane's
 tree still differs from its review base. The mark clears when the agent starts
 working again, when that diff goes empty at a later `Stop`, or when you approve
-with `^A`. The same step marks the window's tab with `◆` and recounts `◆N` in
+with `a`. The same step marks the window's tab with `◆` and recounts `◆N` in
 `#{E:@cockpit_fleet}`, which tells you how many finished agents nobody has read
 across every session, attached or not. Nothing polls, and a redraw still runs no shell.
 
-The comment loop's typed text *is* a comment, so the keys that would collide with
-typing it move elsewhere:
+The review is revdiff on the tree, untracked files included, against the base
+in force (see `b` below). revdiff's own keys apply there, and `?` lists them: you
+comment on a line, a range or a whole file, `q` quits and keeps what you wrote,
+`Q` quits without it. Comments pinned in an earlier round are loaded into it, so
+it shows what is already pinned. When revdiff exits 10 (it wrote comments),
+what it wrote replaces the pinned set. When it exits 0 (no comments, or `Q`),
+the pinned set stays as it was. Any other exit ends the review with
+`cockpit: revdiff exited N: <its first stderr line>`, and the pinned set stays.
 
-| key | comment loop |
-|-----|--------------|
-| `↵` | pin the typed comment (empty: nothing) |
-| `alt-↵` | alias for `↵` |
-| `^/` | toggle the preview |
-| `^U` / `^D` | — (would edit the comment instead) |
-| `alt-↑` / `alt-↓`, `alt-u` / `alt-d` | scroll the preview a line, half a page (the mouse wheel over it scrolls too) |
-| `^R` | re-snapshot the diff; names any comment the agent moved (it still delivers, quoted) |
-| `^X` | delete the comment(s) on the row under the cursor |
-| `^L` | show every pinned comment in the terminal |
-| `^E` | open your editor on the typed text; with nothing typed on a commented row, on that comment (save empty to delete it) |
-| `⇥` | mark the row (any number) |
-| `^Y` | copy the file under the cursor, then its diff, to the tmux buffer and the clipboard |
-| `alt-y` | copy the whole review's diff |
-| `alt-c` | copy the marked rows' lines as the file has them, tabs and all (a `-` row: HEAD's line; or the row under the cursor), to the tmux buffer and the clipboard |
-| `^B` | cycle the base the diff is taken against |
-| `^A` | approve what you just read (only with nothing pinned) |
-| `^S` | deliver the whole batch; asks first |
-| `esc` | leave — the batch stays pinned (asks first) |
+Each comment is stored with the line it points at quoted: the quote it already
+had for that anchor, else the line as the tree has it now (a `-` line: as the
+base has it). The quote, not the line number, is what the agent finds the spot
+by after it edits again.
 
-Inside the review: `↵` pins whatever you typed as a comment on the diff line
-under the cursor — `alt-↵` does the same thing, kept as an alias for
-terminals where the plain chord doesn't land. `^E` hands what you have typed
-to your editor and pins the file that comes back, so a comment that needs three
-lines costs no more than one — an empty file pins nothing, so deleting
-everything and saving is the cancel. With nothing typed on a row that already
-carries a comment, `^E` opens that comment instead and replaces it; saving an
-empty file deletes it. Several comments on one row open as one buffer and
-save back as one: the agent reads them as paragraphs under one anchor either
-way. `^E` uses `@cockpit_editor` when set
-(`set -g @cockpit_editor nano`; a **terminal** editor, because it opens in
-the review's own terminal), else `$VISUAL`, else `$EDITOR`. With
-none of the three set it tries VS Code's remote shim, and falls back to `vi`.
-A GUI editor goes in `VISUAL`: `tmux set-environment -g VISUAL 'code --wait'`.
-The popup's children see the tmux *server's* environment, so a shell `export`
-made after the server started is not seen. That shim arm is for the Remote-SSH
-or Coder host where there is no `code` on the `PATH` and usually no `$EDITOR`
-either, and where `vi` in a popup is the wrong answer next to the VS Code
-window the diff is being read in. It takes `--wait`, so the buffer comes back
-the way `vi`'s does, and `^S`'s confirm offers
-`edit the batch in VS Code first`. From a plain ssh session nothing can reach
-the laptop's VS Code. The review marks the row `●` (the digit instead, when more than one comment
-sits there), so five comments cost one popup, not five.
-`^S` delivers the whole batch, and asks first: it names the count and the
-target pane by its title, and offers the batch to your editor as text before it
-goes (`deliver N comment(s) to fix the parser (%7)` /
-`edit the batch in nano first` /
-`keep reviewing`). `esc` asks the same way once anything is pinned
-(`leave — N comment(s) stay pinned` / `keep reviewing` / `discard N
-comment(s)`), because one reflexive escape should not throw away a
-twenty-comment review. `leave` keeps them on disk: `prefix + r` on that pane
-picks the review up where you left it.
-**`↵` pins a comment — it never approves.** With nothing typed it does
-nothing: there is no accept-all key on purpose, a review whose only exit is
-one Enter on the whole diff is the rubber stamp this replaces.
+When revdiff closes, the popup asks for one key. Its first line names the base
+(`review · base since last review`), the next says how many comments are
+pinned, and the last lists the keys that apply:
 
-The rows are a **snapshot** taken when the popup opens, so an agent that
-keeps editing cannot move a `●` onto a line you never touched. When you do
-want its newest lines, `^R` takes a fresh snapshot on purpose and names the
-comments that no longer sit on a changed line — they still deliver, because
-the quoted fragment is what the agent finds them by. A resumed review says the
-same thing on open: `resumed 5 pinned comment(s), 2 no longer anchor`.
+| key | when | what it does |
+|-----|------|--------------|
+| `d` | comments are pinned | deliver the batch to the agent's pane, which the prompt names |
+| `a` | nothing is pinned | approve what you just read (below) |
+| `r` | always | open revdiff again, on the tree as it is now |
+| `b` | another base holds | switch to the next base and open revdiff again against it |
+| `x` | comments are pinned | discard them, after a `y/N` |
+| any other key | always | leave; the pinned comments stay |
 
-To copy a piece of the preview, hold **shift** and drag: a tmux popup has no
-copy mode, so the terminal's own selection is the one that works there. `^Y`
-copies the whole file plus its diff, `alt-y` every file's diff, for pasting
-into another agent. `⇥` marks rows and `alt-c` copies their lines as the file has them, one per
-row, when what you want is a handful of lines rather than a file. All three go
-out as OSC 52, so they reach the system clipboard only if your terminal accepts
-clipboard writes; some disable them by default.
+A key from the table pressed outside its "when" does nothing. With comments
+pinned the prompt names `l` for leave. Leaving keeps the comments on disk:
+`prefix + r` and `r` on that pane pick the review up where you left it and say
+`cockpit: resumed N pinned comment(s)`. A review opened on a tree that does not
+differ from its base never starts revdiff: it ends with
+`cockpit: no uncommitted changes in <dir>`, and drops any comments pinned for
+that tree.
 
 **Big files are counted, not hashed.** To tell whether a file changed at all
 git hashes the whole of it, about 100 ms at 32 MB and 26 s at 1 GB. So when the
@@ -153,25 +117,30 @@ is kept away from git and counted as one binary change instead, though a
 tracked file whose size did not change is still hashed once, so git can tell it
 changed. The file itself is untouched, and the tree still counts as dirty
 because of it, so a pane whose only change is a big file stays on the board and
-its review still opens. Put core dumps in `.gitignore`, as git's own templates
-do, and the review never sees them at all.
+its review still opens. revdiff is not covered by this: it runs its own git, and
+an untracked big file is diffed in full when revdiff shows it. Put core dumps in
+`.gitignore`, as git's own templates do, and the review never sees them at all.
 
-**`^B` picks what the diff is taken against.** The base is the first of three
+**`b` picks what the diff is taken against.** The base is the first of three
 that holds: the checkpoint `refs/cockpit/reviewed/<branch>` when a review of
 this branch was approved (only what moved since), the merge-base with the
 upstream (else `origin/HEAD`'s branch, else `main`, else `master`) when that is
 not `HEAD` itself (the branch plus its uncommitted work),
 else `HEAD` (today's uncommitted view). An agent that commits as it goes stays
-on the board that way instead of dropping out of it the moment it commits. `^B`
-cycles the bases that hold, the prompt's header names the one in force
-(`base: since last review`), and the choice is remembered beside the comments,
-so a resumed review reads the same diff it did before.
+on the board that way instead of dropping out of it the moment it commits. `b`
+at the prompt cycles the bases that hold, the prompt's first line names the one
+in force (`review · base since last review`), and the choice is kept beside the
+comments (`comments.md.base`), so a resumed review reads the same diff it did
+before, and so does the `Stop` hook's `◆`.
 
-**`^A` approves what you just read.** It writes that tree, untracked files
-included, to `refs/cockpit/reviewed/<branch>` and removes the review directory.
-The next review of the branch diffs against it, so it shows only what the agent
-changed after you looked. With comments pinned `^A` refuses and says to deliver
-or discard them first: approving a batch nobody sent would throw it away.
+**`a` approves what you just read.** It writes that tree, untracked files
+included, to `refs/cockpit/reviewed/<branch>`, clears the pane's review mark and
+removes the review directory: `cockpit: review approved · the next one shows
+only what changed`. The next review of the branch diffs against it, so it shows
+only what the agent changed after you looked. `a` is offered only with nothing
+pinned, since approving a batch nobody sent would throw it away: deliver it with
+`d` or discard it with `x` first. Before the repo's first commit there is
+nothing to approve against, and `a` says so.
 
 That ref outlives the branch. `git branch -D` and `git worktree remove` both
 leave it standing, so a branch deleted and recreated under the same name
@@ -180,10 +149,6 @@ inherits the old checkpoint. Nothing collects them; the purge is:
 ```sh
 git for-each-ref --format='%(refname)' refs/cockpit/reviewed | xargs -n1 git update-ref -d
 ```
-
-**`↺` marks a row you commented on in an earlier round** of the same review:
-delivered already, with nothing pinned on it now. It reads "you said this last
-time and the line is still here", which a fresh diff on its own cannot tell you.
 
 A comment lands as:
 
@@ -234,11 +199,11 @@ A `Stop` hook does not fire on a user interrupt (Esc). A review queued for an
 agent you interrupted therefore waits: nothing hands it over early, and it
 lands at the end of the agent's *next* turn — after whatever you prompt next
 has already run. `prefix + r` on that pane does not paste it; it opens a fresh
-review of the same rows.
+review of the same tree.
 
 A second review delivered to the same pane before the agent stops replaces the
 queued one: the spool is a single file, so the agent is handed the newer batch.
-Both are in `delivered.md`. `^A` on a later round ends the review directory but
+Both are in `delivered.md`. `a` on a later round ends the review directory but
 leaves a still-queued spool alone — the review you already sent is in flight,
 and it still lands at the agent's next `Stop`.
 
@@ -257,10 +222,9 @@ for the by-hand re-delivery.
 
 What this deliberately does **not** do, and why:
 
-- **No whole-diff, one-Enter approval.** The unit of review is the line or
-  the hunk, never "the changes" — whole-diff review launders a change as
-  reviewed without anyone actually reading it, and skimming has a measured
-  ceiling of around 400 lines past which defect detection collapses.
+- **Nothing approves by default.** Closing revdiff never approves, and Enter
+  at the prompt leaves. Approval is its own key, `a`, offered only when nothing
+  is pinned, after you have been through the diff in revdiff.
 - **Never sends Esc to the agent, never auto-submits.** Esc kills whatever
   the agent is mid-tool on, destroying in-flight work; typed text plus a
   human's own Enter lands at the next turn boundary instead
@@ -268,14 +232,16 @@ What this deliberately does **not** do, and why:
 - **No review daemon, server, or port.** What *does* outlive the popup is
   one directory per review under
   `${XDG_STATE_HOME:-~/.local/state}/tmux-cockpit/review/<pane>-<root>/`,
-  created `0700`, holding `comments.md`, its row snapshot, the base `^B` chose,
-  the batches already delivered and any queued spool. It exists so a
-  dropped SSH client — which tears down a client-owned popup — cannot take a
-  twenty-comment review with it: `prefix + r` on the same pane resumes it,
-  marks and all. It lives until `^A` approves the review or you discard it; a
-  delivered batch leaves `delivered.md` standing in it, which is what the next
-  round's `↺` marks read, and a refused delivery keeps the store and names it
-  in the message. `prefix + i` prints the directory for the pane you are on.
+  created `0700`, holding `comments.md`, the base `b` chose
+  (`comments.md.base`), revdiff's history, the batches already delivered
+  (`delivered.md`) and any queued spool. It exists so a dropped SSH client,
+  which tears down a client-owned popup, cannot take a twenty-comment review
+  with it: `prefix + r` on the same pane resumes it, pinned comments and all.
+  It lives until `a` approves the review or you discard it with `x`; a
+  delivered batch leaves `delivered.md` standing in it, and a refused delivery
+  keeps the store and names it in the message. `prefix + i` prints the
+  directory for the pane you are on, with how many comments are pinned and
+  delivered.
   There is no garbage collector; `rm -rf ~/.local/state/tmux-cockpit/review`
   is the purge.
   The spillover file an oversized review lands in is the delivery vehicle,
@@ -286,7 +252,7 @@ What this deliberately does **not** do, and why:
   again — the same staleness that makes a GitHub review comment "outdated"
   the moment the diff it anchored to moves.
 - **Delivery is a batch, never a comment at a time.** Nothing reaches the
-  agent's pane until `^S` — one paste per review, not a stream of small
+  agent's pane until `d`: one paste per review, not a stream of small
   interruptions while you are still deciding what you think.
 - **Never selects, creates, or focuses a pane as a side effect.** Delivery
   targets `-t <pane>` and leaves focus alone; tmux focus-stealing has raced
@@ -294,15 +260,13 @@ What this deliberately does **not** do, and why:
 - **Never `send-keys` for the review's own text.** The body goes through
   `load-buffer`/`paste-buffer` only — `send-keys` is reserved for the Enter a
   **human**, never this script, presses.
-- **Test files sort first, never last** in the diff-line list — a change to
-  the tests is read before the change it tests, not after.
 
 **The agent can ask.** `install.sh` links every `skills/*` dir into
 `~/.claude/skills`, so `/cockpit-review` (or "get this reviewed") runs
 `tmux-review --request` from the agent's own pane: one popup, the same
 loop, and the batch comes back as the tool's result (exit 10) instead of a
-paste — revdiff's contract. `^A` there approves as anywhere else.
+paste. `a` there approves as anywhere else.
 
-You can also leave a requested review for later: `esc → leave` keeps the
+You can also leave a requested review for later: `l` at the prompt keeps the
 comments pinned and `--request` returns 0, so the agent carries on with nothing
 in hand. Running `/cockpit-review` again resumes exactly those comments.
