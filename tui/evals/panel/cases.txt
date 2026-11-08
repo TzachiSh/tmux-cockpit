@@ -1689,3 +1689,25 @@ holdout: yes
 note: the format and every value are given; a file with nothing to guess is written
 --- request
 .editorconfig for all files: spaces, indent size 2, lf line endings, utf-8, final newline, trim trailing whitespace
+
+# #701 change 7, written before the prompt change: work that repeats until a
+# check passes gets a stop condition; a one-shot fix gets none.
+=== iterate-until-green
+kind: bug
+window: claude · claude · /home/u/projects/api
+expect: write
+out_is: prompt
+must: attempts|tries|at most|up to|no more than; report|best result|what still fails|still failing
+note: #701 change 7, written before the prompt change: "keep going until it's green" needs a limit on attempts and a report of the best result
+--- request
+the flaky test in tests/test_orders.py keeps failing, fix it and keep going until it's green
+
+=== one-shot-no-stop
+kind: bug
+window: claude · claude · /home/u/projects/api
+expect: write
+must: recieve; receive
+must_not: attempts|at most|up to|no more than|stop if|best result
+note: #701 change 7, written before the prompt change: the control, a one-shot fix that needs no stop condition
+--- request
+fix the typo recieve in the error message in api/errors.py
