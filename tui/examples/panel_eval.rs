@@ -33,7 +33,7 @@
 use cockpit_tui::panel::app::{App, View};
 use cockpit_tui::panel::capture::Capture;
 use cockpit_tui::panel::envelope::{Flow, OutType, Role, Turn};
-use cockpit_tui::panel::parse::{self, Reply, files_read};
+use cockpit_tui::panel::parse::{self, Reply, files_read, tool_calls};
 use cockpit_tui::panel::request::{Call, Effort, Fail, Profile, Request};
 use cockpit_tui::panel::route::route;
 use cockpit_tui::refs::Ref;
@@ -796,6 +796,7 @@ fn main() {
             let out = call_output(answer, j.req.raw());
             // a text call has no tools: its rows say null, not "read none"
             let read = out.as_ref().ok().and_then(|o| files_read(o)).filter(|_| j.explore);
+            let calls = panel_reads(out.as_deref().ok(), j.explore);
             let (raw, usage, err) = match out {
                 Ok(out) => match unwrap_json(&out) {
                     Ok((raw, u)) => (raw, u, None),
@@ -844,14 +845,14 @@ fn main() {
                     "cost_usd": usage.cost_usd,
                     "in_tokens": usage.in_tokens, "out_tokens": usage.out_tokens,
                     "refused": g.as_ref().map(|g| g.refused), "holdout": c.holdout, "reply": raw,
-                    "explore": j.explore, "files_read": read, "env": env.json(),
+                    "explore": j.explore, "files_read": read, "reads": calls, "env": env.json(),
                 });
                 // with --judge, written once the judge has graded the reply
                 match log.as_mut() {
                     Some(f) if !o.judge => {
                         let _ = writeln!(f, "{row}");
                     }
-                    _ => rows.push((row, judge_input(c, &raw))),
+                    _ => rows.push((row, judge_input(c, &raw, calls))),
                 }
             }
             done.push((j.case, ms, g));
@@ -885,8 +886,16 @@ fn main() {
     }
 }
 
-/// What the judge reads of case `c`'s reply `raw`.
-fn judge_input(c: &Case, raw: &str) -> judge::Input {
+/// What an exploring call read and searched, from its output `out`; `None` for
+/// a text call, which has no tools, and for output that is not the json events.
+fn panel_reads(out: Option<&str>, explore: bool) -> Option<Vec<String>> {
+    out.and_then(tool_calls).filter(|_| explore)
+}
+
+/// What the judge reads of case `c`'s reply `raw`, and what the panel read
+/// before it: `None` when unknown, and for a case with refs or earlier rounds,
+/// which the judge does not see.
+fn judge_input(c: &Case, raw: &str, reads: Option<Vec<String>>) -> judge::Input {
     judge::Input {
         window: format!("{} · {} · {}", c.name, c.cmd, c.path),
         out: out_name(c.out).into(),
@@ -894,6 +903,9 @@ fn judge_input(c: &Case, raw: &str) -> judge::Input {
         repo: c.repo.clone(),
         request: c.request.clone(),
         reply: raw.into(),
+        // the judge sees neither the basket nor the earlier rounds: rule 7
+        // can weigh the reads only when it sees the rest of what the panel saw
+        reads: reads.filter(|_| c.refs.is_empty() && c.turns.is_empty()),
     }
 }
 
@@ -2497,10 +2509,83 @@ mod tests {
         assert_eq!(got, [(Some(false), Some(true)), (Some(true), None), (Some(true), Some(false))]);
     }
 
+    const EXPLORED: &str = r##"[{"type":"assistant","message":{"content":[
+        {"type":"tool_use","id":"a","name":"Read","input":{"file_path":"/r/CHANGELOG.md"}},
+        {"type":"tool_use","id":"b","name":"Grep","input":{"pattern":"#87","path":"/r"}}]}},
+        {"type":"result","subtype":"success","result":"<prompt>x</prompt>"}]"##;
+
+    #[test]
+    fn panel_reads_lists_an_exploring_calls_reads_and_searches() {
+        let want = ["Read /r/CHANGELOG.md", "Grep #87 /r"].map(String::from).to_vec();
+        assert_eq!(panel_reads(Some(EXPLORED), true), Some(want));
+    }
+
+    #[test]
+    fn panel_reads_is_none_for_a_text_call_a_failed_one_or_plain_output() {
+        assert_eq!(panel_reads(Some(EXPLORED), false), None, "a text call");
+        assert_eq!(panel_reads(None, true), None, "a failed call");
+        assert_eq!(panel_reads(Some("<prompt>x</prompt>"), true), None, "not the json events");
+    }
+
+    #[test]
+    fn judge_input_carries_the_panel_reads_into_the_prompt() {
+        let c = &parse_cases(ONE).unwrap()[0];
+        let i = judge_input(c, "r", panel_reads(Some(EXPLORED), true));
+        let want = "<panel_reads>\nRead /r/CHANGELOG.md\nGrep #87 /r\n</panel_reads>";
+        assert!(judge::prompt(&i).contains(want));
+        assert!(!judge::prompt(&judge_input(c, "r", None)).contains("<panel_reads>"));
+    }
+
+    /// The checked-in labels carry no reads: their judge prompts stay as before #628.
+    #[test]
+    fn no_owner_label_carries_reads() {
+        let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("evals/panel/owner-labels.jsonl");
+        let l = judge::read_labels("owner-labels", &std::fs::read_to_string(p).unwrap()).unwrap();
+        assert!(l.iter().all(|l| l.input.reads.is_none()));
+        assert!(!l.iter().any(|l| judge::prompt(&l.input).contains("<panel_reads>")));
+    }
+
+    /// #628 round trip: a stand-in judge that fails an option naming a PR found
+    /// in neither the screen nor the panel's reads, given a rubric whose rule 7
+    /// weighs those reads. The real judge's grading is the calibration's job.
+    #[test]
+    fn a_stand_in_judge_fails_a_pr_named_in_neither_the_screen_nor_the_reads() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = scratch("judge-reads");
+        let fake = root.join("fake-claude");
+        let script = "#!/bin/sh\nwhile [ \"$1\" != --system-prompt-file ]; do shift; done\n\
+            grep -q \"the panel's reads\" \"$2\" || exit 3\n\
+            p=$(cat); r=$(printf '%s' \"$p\" | sed -n '/^<panel_reads>$/,/^<\\/panel_reads>$/p')\n\
+            case \"$p\" in *'<reply>'*'#871'*) ;; *) exit 4;; esac\n\
+            case \"$r\" in *Read*) ;; *) exit 5;; esac\n\
+            case \"$r\" in *'#871'*) echo 'CRITIQUE: read it'; echo 'VERDICT: PASS';;\n\
+            *) echo 'CRITIQUE: #871 invented'; echo 'VERDICT: FAIL';; esac\n";
+        std::fs::write(&fake, script).unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let c = &parse_cases(ONE).unwrap()[0];
+        let reply = "<question>Which PR?</question>\n<option>#871</option>\n<option>#872</option>";
+        let i = judge_input(c, reply, panel_reads(Some(EXPLORED), true));
+        let got = judge::judge_all(&fake.display().to_string(), "haiku", &[i], 1, &root);
+        let v = got[0].verdict.clone().unwrap();
+        assert_eq!((v.pass, v.critique.as_str()), (false, "#871 invented"));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// The judge sees neither a case's basket nor its earlier rounds, so it
+    /// gets no reads there and rule 7 stays lenient (review645).
+    #[test]
+    fn judge_input_withholds_reads_for_a_case_with_refs_or_earlier_rounds() {
+        for (name, text) in [("refs", REFS), ("rounds", ANSWERED)] {
+            let c = &parse_cases(text).unwrap()[0];
+            let i = judge_input(c, "r", panel_reads(Some(EXPLORED), true));
+            assert_eq!(i.reads, None, "{name}");
+        }
+    }
+
     #[test]
     fn judge_input_carries_the_case_window_and_output_type() {
         let c = &parse_cases(ONE).unwrap()[0];
-        let i = judge_input(c, "<prompt>x</prompt>");
+        let i = judge_input(c, "<prompt>x</prompt>", None);
         assert_eq!(i.window, format!("{} · {} · {}", c.name, c.cmd, c.path));
         assert_eq!((i.out.as_str(), i.request.as_str()), (out_name(c.out), c.request.as_str()));
         assert_eq!(i.reply, "<prompt>x</prompt>");

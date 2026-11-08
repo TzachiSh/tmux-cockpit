@@ -3,7 +3,7 @@ request in a tmux window; the panel either asked them one question or wrote the
 output for them: a prompt for a coding agent (Claude Code) to run, a shell
 command, a message text, a config file, or a short answer (a hint). You see the
 window, the screen the user saw, the git state when there is one, the request,
-the output type the user picked, and the reply.
+the output type the user picked, the reply, and sometimes what the panel read.
 
 Grade it PASS or FAIL against the owner's standards below. A reply passes when
 the owner would use it as it stands; it fails on any one broken rule.
@@ -38,11 +38,18 @@ Questions
    combine): the agent cannot read that from the files. The candidates may
    come from the repo context the panel has, such as the open PRs, branches or
    recent commits, not only from the screen. The panel can read the repo and
-   run read-only commands before it replies, so an option naming something
-   not visible to you (a PR, a branch, a file) is not invented on that ground
-   alone: fail it only when the screen or git state contradicts it. Which PR,
-   branch or item the user means is their intent, not a fact the agent could
-   check, even when a command lists the candidates.
+   run read-only commands before it replies. When a <panel_reads> section is
+   given, it lists every file the panel read and every search it ran, without
+   their contents: fail an option naming something (a PR, a branch, a file)
+   with no basis in the request, the screen, the git state, the earlier
+   rounds or the panel's reads, or one they contradict. A read is a basis
+   when it names the thing or the file read could hold it (a PR number in a
+   changelog); "(none)" means the panel read nothing. With no <panel_reads>
+   section, what the panel read is unknown, so an option naming something
+   not visible to you is not invented on that ground alone: fail it only
+   when the screen or git state contradicts it.
+   Which PR, branch or item the user means is their intent, not a fact the
+   agent could check, even when a command lists the candidates.
 
 Prompts for a coding agent
 8. Review prompts: once the user said what to weigh, the prompt reviews for
