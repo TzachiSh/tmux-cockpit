@@ -14855,6 +14855,9 @@ is "--folder without cockpit-tui says so and opens no popup" "1|0" \
 # --browse hands the browser the pane's folder
 fb off "open $FBF\n" 0
 is "the browser is started on the pane's folder" "files $FBD" "$(cat "$FB/tui.args")"
+# code starts late, by run-shell -b: wait, or it writes into the next row's log (#577)
+fbwait "$FB/code.log"
+is "and code got the file, in this row" "1" "$(grep -c -- '\[--goto\]' "$FB/code.log")"
 
 # a non-touch client: open <file> goes the usual way, to VS Code
 fb off "open $FBF\n" 0
@@ -14887,6 +14890,10 @@ is "touch: @cockpit_editor beats \$VISUAL" "$FB/bin/ed-cockpit [$FBF]" "$(cat "$
 fb on "open $FBD/sub/n.txt\n" 0 "VISUAL=$FB/bin/ed-visual"
 is "touch: the window is named for the file and starts in its folder" "n.txt $FBD/sub" \
    "$("$TMUX_REAL" -L "$FBS" list-windows -t t -F '#{window_name} #{pane_start_path}' | grep -Fx "n.txt $FBD/sub")"
+# wait for this window's editor: a late one writes into the next row's log (#577)
+fbwait "$FB/ed.log"
+is "touch: and that window's editor got the file" \
+   "$FB/bin/ed-visual [$FBD/sub/n.txt]" "$(cat "$FB/ed.log")"
 # view: any regular file goes to the viewer, drawn in the browser's popup, touch or not (#406)
 for fbt in on off; do
     for fbv in n.md n.txt; do
