@@ -1385,21 +1385,20 @@ window: claude · claude · /home/u/projects/tool
 expect: write
 out_is: prompt
 must: parse_cases; compare|diff|match|matches|same as
-note: #701: the screen shows the project's own case parser; a script that reads the cases file itself drifts from it, as the owner-label builder of #691 did
+note: #701: the screen shows the project's own case parser; a script that reads the cases file itself drifts from it, as the owner-label builder of #691 did; owner ruling on #701: the request now gives the card's format and fields, since the first one left that open and the panel rightly asked
 --- screen
 $ grep -n "fn parse_cases" tui/examples/panel_eval.rs
 122:fn parse_cases(text: &str) -> Result<Vec<Case>, String> {
 --- request
-write a script that makes one labeling card per eval case from the cases file
+write a script that makes one markdown labeling card per eval case from the cases file, with the request, the screen and the reply
 
 === regen-golden
 kind: ops
 window: bash · bash · /home/u/projects/fmt
 expect: write
-out_is: prompt
 must: -update|update flag
 must_not: by hand
-note: #701: the test already regenerates its golden files through its -update flag; writing them by hand is a second producer of the same files
+note: #701: the test already regenerates its golden files through its -update flag; writing them by hand is a second producer of the same files; owner ruling on #701: out_is prompt dropped, since a command that runs the -update flag is a right reply
 --- screen
 $ grep -n "update" format_test.go
 14:var update = flag.Bool("update", false, "update .golden files")
