@@ -14086,7 +14086,11 @@ is "a directory candidate is handed to the editor whole" "OPEN $OLD/w/sub/" "$(c
 
 : > "$OLLOG"; olrun 4
 olkey Escape; oldone 4
-is "esc opens nothing and exits 0" "0 " "$(olcap | sed -n 's/.*OLDONE4=//p' | tail -1) $(cat "$OLLOG")"
+# the hold keeps a wrongly opened editor's window alive, so one window means none opened
+olwin=$("$TMUX_REAL" -L "$OL" list-windows -t t | grep -c .)
+is "esc opens nothing and exits 0" "0 |1" \
+   "$(olcap | sed -n 's/.*OLDONE4=//p' | tail -1) $(cat "$OLLOG")|$olwin"
+rm -f "$OLD/hold"
 "$TMUX_REAL" -L "$OL" kill-server >/dev/null 2>&1
 fi
 
