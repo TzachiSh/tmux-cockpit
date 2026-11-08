@@ -10963,13 +10963,20 @@ echo "== cockpit-tui diffstat and git-flags match the shell they will replace (#
 DSB=$COCKPIT_TUI_BIN
 # tree_diff's rows summed the way the board's scan sums them, as diffstat's four
 # columns; review_base forced to HEAD, which is what diffstat with no --base reads.
+# #454, the owner's pick: `+a -d` counts tracked lines only, and `?N new` the files
+# the real index does not hold (ls-files -o), whose lines count nowhere.
 ds_shell() {
+    local untracked
+    untracked=$(git -C "$1" -c core.quotePath=false ls-files -o --exclude-standard 2>/dev/null)
     ( . "$DIR/scripts/lib/git.sh"; . "$DIR/scripts/lib/review-diff.sh"
       COCKPIT_REVIEW_BASE=uncommitted tree_diff "$1" --numstat --summary ) \
-    | awk -F'\t' '/^ create mode /{n++; rows++; next}
-                  $1 != "" {rows++; a += ($1 ~ /^[0-9]+$/) ? $1 : 0; d += ($2 ~ /^[0-9]+$/) ? $2 : 0}
-                  END {pm = rows ? sprintf("+%d -%d", a, d) : "clean"; if (n) pm = pm "  ?" n " new"
-                       printf "%d\t%d\t%d\t%s\n", a, d, n, pm}'
+    | awk -F'\t' -v untracked="$untracked" '
+          BEGIN {k = split(untracked, u, "\n"); for (i = 1; i <= k; i++) U[u[i]] = 1}
+          /^ create mode /{rows++; p = $0; sub(/^ create mode [0-7]+ /, "", p); if (p in U) n++; next}
+          $1 != "" {rows++; if ($3 in U) next
+                    a += ($1 ~ /^[0-9]+$/) ? $1 : 0; d += ($2 ~ /^[0-9]+$/) ? $2 : 0}
+          END {pm = rows ? sprintf("+%d -%d", a, d) : "clean"; if (n) pm = pm "  ?" n " new"
+               printf "%d\t%d\t%d\t%s\n", a, d, n, pm}'
 }
 for gf in basic mixed untracked blank nonascii funcname hunks spaces; do
     GD=$(mktmpd); "$DIR/tests/fixtures/review/mkfix.sh" "$gf" "$GD" >/dev/null 2>&1
@@ -11052,7 +11059,8 @@ is "a gitlink's planted clean filter fires under plain git status: both of them"
 mkdir "$GD/tmp"
 dss=$(TMPDIR="$GD/tmp" ds_shell "$GD/r")
 is "tree_diff runs no gitlink's own clean filter" "" "$(ls "$GD" | grep '^PWNED')"
-is "and counts the submodule's moved pointer, as diffstat does" "3	2	1	+3 -2  ?1 new" "$dss"
+# #454: the untracked file is `?1 new`, its line out of `+a`
+is "and counts the submodule's moved pointer, as diffstat does" "2	2	1	+2 -2  ?1 new" "$dss"
 # Each run after a fresh mtime, so a run that refreshed a gitlink's index
 # cannot leave the next one nothing to hash.
 ds_redirty() { rm -f "$GD"/PWNED.*; touch -t "$1" "$GD/r/sub/f.txt" "$GD/r/$(printf 'bad\377name')/e.txt"; }
