@@ -155,7 +155,10 @@ review_loop() {
             10) if [ -f "$store.rdout" ] && [ ! -L "$store.rdout" ]; then
                     ingest_revdiff "$dir" "$store" "$store.rdout" "$rev"
                 fi ;;
-            0)  ;;                      # no comments, or Q: nothing changes
+            # revdiff writes no -o and exits 0 both when every comment it loaded
+            # was deleted and on Q, which discards them: none is left either way.
+            # Untouched ones come back with 10. Nothing loaded: nothing changes.
+            0)  [ -s "$store.rdin" ] && [ ! -L "$store.rdin" ] && rm -f -- "$store" ;;
             *)  # Kept, for --request to print once the popup is gone.
                 tmux display-message \
                     "$(fesc "cockpit: revdiff exited $rc: $(head -n 1 -- "$errf" 2>/dev/null)")" 2>/dev/null

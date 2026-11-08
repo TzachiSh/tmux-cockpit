@@ -11849,11 +11849,12 @@ is "revdiff gets --untracked, the exit code, -o, --history-dir and --annotations
 is "the uncommitted view passes no ref: the last argument is the preload" "$RDS/comments.md.rdin" "$(rd_last 1)"
 is "nothing but the store is left beside it" "comments.md" "$(ls -A "$RDS")"
 
-# 2. exit 0 with a store already pinned (Q, or no comments): nothing changes.
+# 2. the pinned set untouched: revdiff hands all of it back with exit 10 (#700).
 RDK=$(mktmpf); cp "$RDS/comments.md" "$RDK"; rd_reset
-is "revdiff exit 0 (Q discard): the loop leaves, exit 0" "0" "$(rd_loop l "$RD" "$RDS/comments.md")"
+printf '%s' "$RDOUT" > "$RDW/out.1"; echo 10 > "$RDW/rc.1"
+is "revdiff hands the pinned set back (exit 10): the loop leaves, exit 0" "0" "$(rd_loop l "$RD" "$RDS/comments.md")"
 cmp -s "$RDS/comments.md" "$RDK" && ok "and the store is byte-identical" || bad "and the store is byte-identical" "unchanged" "$(cat "$RDS/comments.md")"
-rd_reset
+rd_reset; printf '%s' "$RDOUT" > "$RDW/out.1"; echo 10 > "$RDW/rc.1"
 is "d at the prompt delivers: exit 20" "20" "$(rd_loop d "$RD" "$RDS/comments.md")"
 cmp -s "$RDS/comments.md" "$RDK" && ok "and the store is still what was pinned" || bad "and the store is still what was pinned" "unchanged" "$(cat "$RDS/comments.md")"
 
@@ -11868,6 +11869,7 @@ is "and is born 0600" "600" "$(cat "$RDW/premode.1")"
 
 # 4. the preload name is derivable: a planted symlink is not written through.
 rd_reset; RDV=$(mktmpf); printf 'victim\n' > "$RDV"; rm -f "$RDS/comments.md.rdin"; ln -s "$RDV" "$RDS/comments.md.rdin"
+printf '## f:2 (+)\nfix this, edited\n' > "$RDW/out.1"; echo 10 > "$RDW/rc.1"
 rd_loop l "$RD" "$RDS/comments.md" >/dev/null
 is "a symlink planted at the preload name is left alone" "victim" "$(cat "$RDV")"
 
@@ -11909,6 +11911,7 @@ is "a at the prompt approves: exit 21" "21" "$(rd_loop a "$RD" "$RDS/comments.md
 is "and the checkpoint ref is a tree" "tree" "$(git -C "$RD" cat-file -t refs/cockpit/reviewed/main 2>/dev/null)"
 git -C "$RD" update-ref -d refs/cockpit/reviewed/main
 printf '## f:2 (+)\n> B\nkeep\n\n' > "$RDS/comments.md"
+rd_reset; printf '## f:2 (+)\nkeep\n' > "$RDW/out.1"; echo 10 > "$RDW/rc.1"
 is "a with comments pinned does nothing; l leaves" "0" "$(rd_loop al "$RD" "$RDS/comments.md")"
 is "and no checkpoint was written" "" "$(git -C "$RD" rev-parse -q --verify refs/cockpit/reviewed/main 2>/dev/null)"
 # A failed approve says so in plain words: a stale ref is one cause of many
@@ -11923,6 +11926,7 @@ is "a failed approve: the loop says it could not mark the branch, and nothing mo
 git -C "$RD" update-ref -d refs/cockpit/reviewed/main/x; rm -rf "$RDTM"
 # 9. a file-level comment whose first line is a quote keeps it as body.
 rd_reset; mkdir -p "$RDS"; printf '## f (file-level)\n> not a quote\nnote\n\n' > "$RDS/comments.md"
+for i in 1 2; do printf '## f (file-level)\n> not a quote\nnote\n' > "$RDW/out.$i"; echo 10 > "$RDW/rc.$i"; done
 rd_loop rl "$RD" "$RDS/comments.md" >/dev/null; parse_store "$RDS/comments.md"
 is "the preload keeps a file-level body's first > line" "1" "$(grep -c '^> not a quote$' "$RDW/pre.1")"
 is "and relaunching (r) does not empty the comment" "> not a quote"$'\n'"note" "${STORE[0.body]:-}"
@@ -11934,6 +11938,26 @@ is "revdiff exit 3: the loop exits 126, not 'left for later'" "126" "$(rd_loop l
 is "revdiff's stderr is kept for the caller" "boom: bad flag" "$(cat "$RDS/revdiff.err" 2>/dev/null)"
 is "and the loop says it failed" "revdiff exited 3" "$(head -1 "$RDW/stderr")"
 rm -f "$RDS/revdiff.err"
+
+# 11. what revdiff 1.13.0 does with pinned comments loaded (#700), one row per
+# case: every one deleted then q exits 0 and writes no -o; untouched then q
+# exits 10 and writes them back; some deleted exits 10 with the rest.
+RD2=$'## f:2 (+)\n> B\nfix this\n\n## f:4 (+)\n> d\nand this\n\n'
+rd_reset; printf '%s' "$RD2" > "$RDS/comments.md"
+is "all pinned deleted (exit 0, no -o): the loop leaves, exit 0" "0" \
+   "$(rd_loop l "$RD" "$RDS/comments.md")"
+parse_store "$RDS/comments.md"
+is "and nothing is pinned any more" "0" "$STORE_N"
+rd_reset; printf '%s' "$RD2" > "$RDS/comments.md"
+printf '## f:2 (+)\nfix this\n\n## f:4 (+)\nand this\n' > "$RDW/out.1"; echo 10 > "$RDW/rc.1"
+rd_loop l "$RD" "$RDS/comments.md" >/dev/null
+is "untouched (exit 10, the same two): the store is byte-identical" "${RD2}x" \
+   "$(cat "$RDS/comments.md"; printf x)" # x keeps the trailing blank line
+rd_reset; printf '%s' "$RD2" > "$RDS/comments.md"
+printf '## f:4 (+)\nand this\n' > "$RDW/out.1"; echo 10 > "$RDW/rc.1"
+rd_loop l "$RD" "$RDS/comments.md" >/dev/null; parse_store "$RDS/comments.md"
+is "one of two deleted (exit 10): the one left stays pinned" "1/and this" \
+   "$STORE_N/${STORE[0.body]:-}"
 rm -rf "$RDK" "$RDB" "$RDW" "$RD" "$RDS" "$RDT" "$RDWT" "$RDV"
 unset RDB RDW RD RDS RDT RDWT RDV
 
