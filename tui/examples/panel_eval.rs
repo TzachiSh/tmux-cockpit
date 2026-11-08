@@ -510,6 +510,8 @@ struct Opts {
     compare: Option<(PathBuf, PathBuf)>,
     /// `--compare` pairs a case whose rows on one side carry two prompt hashes.
     allow_mixed: bool,
+    /// The cost ledger; default `cost.tsv` next to `--out`.
+    ledger: Option<PathBuf>,
     /// `explore:` cases run as the text call, on the same folder.
     no_explore: bool,
     /// No user settings or CLAUDE.md, and a fresh cwd per call (#598).
@@ -534,6 +536,7 @@ fn opts(args: impl IntoIterator<Item = String>) -> Result<Opts, String> {
         check: false,
         compare: None,
         allow_mixed: false,
+        ledger: None,
         no_explore: false,
         hermetic: true,
         judge: false,
@@ -555,6 +558,7 @@ fn opts(args: impl IntoIterator<Item = String>) -> Result<Opts, String> {
             "--no-explore" => o.no_explore = true,
             "--no-hermetic" => o.hermetic = false,
             "--allow-mixed" => o.allow_mixed = true,
+            "--ledger" => o.ledger = Some(val()?.into()),
             "--judge" => o.judge = true,
             "--judge-model" => o.judge_model = val()?,
             "--calibrate" => o.calibrate = Some(val()?.into()),
@@ -912,6 +916,20 @@ fn main() {
         std::thread::sleep(Duration::from_millis(50));
     }
     summary(&cases, &done, &hashes, o.runs);
+    if let Some(l) = o.ledger.clone().or_else(|| o.out.as_ref().map(|p| p.with_file_name("cost.tsv"))) {
+        let label = o
+            .out
+            .as_ref()
+            .and_then(|p| p.file_name())
+            .map_or("-".into(), |n| n.to_string_lossy().into_owned());
+        let total: f64 = costs.iter().flatten().sum();
+        let secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        if let Err(e) = ledger_append(&l, &ledger_row(secs, &label, cases.len(), o.runs, total, &prompt)) {
+            eprintln!("panel_eval: ledger {}: {e}", l.display());
+        }
+    }
     let mut judged_nothing = false;
     if o.judge {
         judged_nothing = judge_rows(&mut rows, &o, &call.claude, wrapped, log.as_mut());
@@ -1601,6 +1619,21 @@ fn mixed_prompts(rows: &[Row]) -> Vec<String> {
     ids
 }
 
+/// One cost ledger line: unix time, the `--out` label, cases, runs, dollars, prompt hash.
+fn ledger_row(secs: u64, label: &str, cases: usize, runs: usize, total: f64, prompt: &str) -> String {
+    format!("{secs}\t{label}\t{cases}\t{runs}\t{total:.4}\t{prompt}")
+}
+
+/// Appends `line` to the ledger at `path`, with a header when the file is new.
+fn ledger_append(path: &Path, line: &str) -> std::io::Result<()> {
+    let new = !path.exists();
+    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
+    if new {
+        writeln!(f, "time\tout\tcases\truns\tusd\tprompt")?;
+    }
+    writeln!(f, "{line}")
+}
+
 /// `n` of `d`, and what a summary line counts.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Of(usize, usize);
@@ -2101,6 +2134,26 @@ mod tests {
         assert_eq!(mixed_prompts(&rows), ["x"]);
         assert!(opts(args("--compare a b --allow-mixed")).unwrap().allow_mixed);
         assert!(!opts(args("--compare a b")).unwrap().allow_mixed);
+    }
+
+    #[test]
+    fn the_ledger_appends_one_row_a_run_under_a_header() {
+        let d = std::env::temp_dir().join(format!("panel-eval-ledger-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let p = d.join("cost.tsv");
+        ledger_append(&p, &ledger_row(7, "a.jsonl", 4, 5, 0.25, "ff")).unwrap();
+        ledger_append(&p, &ledger_row(8, "b.jsonl", 1, 3, 0.1, "ee")).unwrap();
+        let t = std::fs::read_to_string(&p).unwrap();
+        std::fs::remove_dir_all(&d).unwrap();
+        let lines: Vec<&str> = t.lines().collect();
+        assert_eq!(
+            lines,
+            [
+                "time\tout\tcases\truns\tusd\tprompt",
+                "7\ta.jsonl\t4\t5\t0.2500\tff",
+                "8\tb.jsonl\t1\t3\t0.1000\tee"
+            ]
+        );
     }
 
     #[test]
