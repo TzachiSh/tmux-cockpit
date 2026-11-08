@@ -1276,7 +1276,8 @@ pub enum Row {
     /// #313: a subagent line under agent `.0`, `.1` indexing its `subs`
     Sub(usize, usize),
     /// the `✓ N done` line: agent `.0`'s `.1` done or stopped subagents past
-    /// [`SUB_FOLD`], `.2` of them stopped by the user (#399)
+    /// [`SUB_FOLD`], `.2` of them stopped by the user (#399); the line says
+    /// `.1 - .2` done and `.2` stopped
     Done(usize, usize, usize),
     /// the `◌ N quiet` line (#361): agent `.0`'s `.1` subagents whose end is unknown
     Quiet(usize, usize),
@@ -2419,7 +2420,8 @@ fn tree_row(ps: &[Pane], row: &Row, last: bool, tcol: usize, w: usize, now: u64,
             // a stop is the user's (#336), not a finish: named apart when there is one
             let label = match stopped {
                 0 => format!(" {n} done"),
-                m => format!(" {n} done {} {m} stopped", g.dot),
+                // the done count leaves the stops out: they are named on their own
+                m => format!(" {} done {} {m} stopped", n - m, g.dot),
             };
             (
                 vec![Span::styled(pad(g.trunc(&label, avail + 1), avail + 1), Style::new().fg(th.value))],

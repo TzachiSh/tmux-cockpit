@@ -1114,7 +1114,7 @@ fn the_done_fold_names_the_stopped_apart() {
     let mut subs: Vec<_> = (0..16).map(|k| old(SubState::Done, k)).collect();
     subs.extend((16..18).map(|k| old(SubState::Stopped, k)));
     let line = text(&cells_of(&one(subs), &Theme::fixed(), "done"));
-    assert!(line.contains("✓ 18 done · 2 stopped"), "{line}");
+    assert!(line.contains("✓ 16 done · 2 stopped"), "{line}");
     let line = text(&cells_of(
         &one((0..16).map(|k| old(SubState::Done, k)).collect()),
         &Theme::fixed(),
