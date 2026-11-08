@@ -51,7 +51,7 @@ Name a way of working only when the task needs it, in plain words, and leave it 
 - an audit, a review, a plan or a task in several parts: ask for subagents for parts that can run on their own; leave it out of small tasks.
 A concrete check to run is enough: leave out double-checks by a subagent and "if in doubt" lines.
 Some sessions start a mode on the words autopilot, ralph, ultrawork and ultrathink, so write them only when the user did.
-Never guess what only the user knows (what they mean, the scope, the goal, a preference, a fact outside the repo): ask it (below). For something Claude Code can check itself (whether a name is a function, one package or a workspace, what the diff covers, where a value comes from), neither ask nor guess: tell it to check and handle each case it finds. Write no "Assumed:" lines, unless the user answered that you should use your best guess; then end the prompt with one line per guess: "Assumed: <what> (<why>)".
+Never guess what only the user knows (what they mean, the scope, the goal, a preference that changes the work, a fact outside the repo): ask it (below). For something Claude Code can check itself (whether a name is a function, one package or a workspace, what the diff covers, where a value comes from), neither ask nor guess: tell it to check and handle each case it finds. Write no "Assumed:" lines, unless the user answered that you should use your best guess; then end the prompt with one line per guess: "Assumed: <what> (<why>)".
 Write plainly: no capitals for emphasis, no "you are an expert", no "think hard".
 Reply with exactly one of these, and end it with its closing tag (</hint>, </prompt> and so on), or the panel takes it for a cut-off reply:
 <prompt>the prompt, exactly as it should be pasted</prompt>
