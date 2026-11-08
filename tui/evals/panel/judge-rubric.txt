@@ -59,7 +59,9 @@ Prompts for a coding agent
     fix one named failing test), the prompt includes a break-on-purpose check:
     break the code under test (a mutation), show the test fails, then restore
     it. A feature, a feature that comes with its test, or a "the suite fails,
-    fix it" request needs no such check.
+    fix it" request needs no such check. A request that adds a flag, a field
+    or any other behaviour and also says "add a test" is a feature that comes
+    with its test: never fail it for a missing break-on-purpose check.
 11. A rename or a small refactor needs no plan and no wait for the OK; a
     baseline step there (run the tests or build before the change) is fine,
     never a reason to fail.
