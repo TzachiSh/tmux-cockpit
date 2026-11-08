@@ -8944,9 +8944,11 @@ pn_stock_f "turning the panel off on f gives f back to stock find-window"
 "$TMUX_REAL" -L "$PN" bind-key -T prefix f display-popup -E "/old/scripts/tmux-fixer -p %1" >/dev/null 2>&1
 pn_load
 # give_back restores tmux's own binding: g is stock 3.8's switch-client -T move.
-case "$(pn_keys g)" in *tmux-fixer*) bad "a reload drops a dead tmux-fixer binding on another key, for stock" "switch-client -T move" "$(pn_keys g)" ;;
-    *'switch-client -T move'*) ok "a reload drops a dead tmux-fixer binding on another key, for stock" ;;
-    *) bad "a reload drops a dead tmux-fixer binding on another key, for stock" "switch-client -T move" "$(pn_keys g)" ;; esac
+pnr="a reload drops a dead tmux-fixer binding on another key, for stock"
+loaded_on "$PN" "$pnr" &&
+    case "$(pn_keys g)" in *tmux-fixer*) bad "$pnr" "switch-client -T move" "$(pn_keys g)" ;;
+        *'switch-client -T move'*) ok "$pnr" ;;
+        *) bad "$pnr" "switch-client -T move" "$(pn_keys g)" ;; esac
 pn_stock_f "and gives f back to stock find-window"
 # @cockpit_fixer_key off was how a user kept stock f; the panel honours it.
 "$TMUX_REAL" -L "$PN" set -gu @cockpit_panel_key >/dev/null 2>&1
