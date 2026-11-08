@@ -28,14 +28,14 @@ pane_label() {                # <pane-id>
 }
 
 # The scratch beside a store, by name: the dir may also hold a queued delivery.
-drop_rows() {
+drop_scratch() {
     [ -n "${1:-}" ] || return 0
     rm -rf -- "$1.rdin" "$1.rdout" "${1%/*}/history"
 }
 
 drop_store() {
     [ -n "${1:-}" ] || return 0
-    drop_rows "$1"
+    drop_scratch "$1"
     rm -f -- "$1" "$1.base"
 }
 
@@ -160,7 +160,7 @@ review_loop() {
                 tmux display-message \
                     "$(fesc "cockpit: revdiff exited $rc: $(head -n 1 -- "$errf" 2>/dev/null)")" 2>/dev/null
                 printf 'revdiff exited %s\n' "$rc" >&2; cat -- "$errf" >&2 2>/dev/null
-                drop_rows "$store"; exit 126 ;;
+                drop_scratch "$store"; exit 126 ;;
         esac
         rm -f -- "$errf"
         rm -f -- "$store.rdout" "$store.rdin"
@@ -180,7 +180,7 @@ review_loop() {
             printf '\n'
             case "$key" in
                 d) [ "$n" -gt 0 ] || continue
-                   drop_rows "$store"; exit 20 ;;
+                   drop_scratch "$store"; exit 20 ;;
                 a) [ "$n" -eq 0 ] || continue
                    git -C "$dir" --no-optional-locks rev-parse -q --verify HEAD >/dev/null 2>&1 || {
                        tmux display-message \
@@ -203,7 +203,7 @@ review_loop() {
                    choice=$(ask_key); printf '\n'
                    [ "$choice" = y ] || continue
                    drop_store "$store"; exit 0 ;;
-                *) drop_rows "$store"; exit 0 ;;   # leave: the store stays; prefix r resumes it
+                *) drop_scratch "$store"; exit 0 ;;   # leave: the store stays; prefix r resumes it
             esac
         done
     done
