@@ -63,6 +63,48 @@ cat > "$SHIM/tmux" <<SHIMEOF
 exec "$TMUX_REAL" -L "$SUITE_SOCK" "\$@"
 SHIMEOF
 chmod +x "$SHIM/tmux"
+# The race of #573, made certain: a new-session that follows kill-server on the
+# same name can reach the dying server and fail "server exited unexpectedly". So
+# every block's "$TMUX_REAL" refuses the first new-session after each kill-server
+# on a name and leaves r.<name> until a later new-session there succeeds, and
+# flop_left fails the run for each r.* left. A kill-server then a bare
+# new-session goes red on every run, not one run in ten under load; fresh_server
+# retries and clears it. The shim above keeps the real binary: the scripts under
+# test are not blocks. TMUX_BIN is the real one, for a stub that counts its calls.
+TMUX_BIN=$TMUX_REAL
+FLOP="$STATE/flop"; mkdir -p "$FLOP"
+if [ -x "$TMUX_BIN" ]; then
+cat > "$FLOP/tmux" <<FLOPEOF
+#!/bin/sh
+n=default v= p=
+for a do
+    case \$p in -L) n=\$a ;; -S) n=\${a##*/} ;; esac
+    [ -n "\$v" ] || case \$a in kill-server|new-session) v=\$a ;; esac
+    p=\$a
+done
+case \$v in
+kill-server) : > "$FLOP/k.\$n" ;;
+new-session)
+    if [ -e "$FLOP/k.\$n" ]; then
+        rm -f "$FLOP/k.\$n"; : > "$FLOP/r.\$n"
+        echo "server exited unexpectedly (refused by tests/run.sh, #573)" >&2; exit 1
+    fi
+    if [ -e "$FLOP/r.\$n" ]; then
+        "$TMUX_BIN" "\$@"; rc=\$?; [ \$rc -ne 0 ] || rm -f "$FLOP/r.\$n"; exit \$rc
+    fi ;;
+esac
+exec "$TMUX_BIN" "\$@"
+FLOPEOF
+chmod +x "$FLOP/tmux"; TMUX_REAL="$FLOP/tmux"
+fi
+flop_left() {                 # a bad row for each name whose refused new-session nothing retried
+    local r
+    for r in "$FLOP"/r.*; do
+        [ -e "$r" ] || continue
+        bad "new-session after kill-server on ${r##*/r.} goes through fresh_server (#573)" \
+            "a later new-session there" "refused once, never retried"
+    done
+}
 # The suite itself runs inside the user's tmux, so its own $TMUX would send
 # every bare call straight back to the live server. Drop it.
 unset TMUX TMUX_PANE
@@ -200,6 +242,33 @@ until_out() {                 # <pattern> <cmd...>
     done
     return 1
 }
+# A fresh server on a name that may still be live. kill-server returns before the
+# server is gone, and a new-session that reaches the dying one fails "server
+# exited unexpectedly" with no session made (#547, #573). So it is retried, $POLLS
+# tries 0.1 s apart. Out of tries is a bad row carrying the last stderr: a quiet
+# return 1 reads like the race itself, in whichever row looks next.
+fresh_server() {              # -L|-S <socket> [tmux flags...] -- <new-session args...>
+    local g=() err='' i
+    while [ $# -gt 0 ] && [ "$1" != -- ]; do g+=("$1"); shift; done
+    case "${g[0]:-}" in -L|-S) [ -n "${g[1]:-}" ] ;; *) false ;; esac || {
+        bad "fresh_server: -L or -S <socket> first, never the default server" \
+            "-L|-S <socket> [flags] -- <new-session args>" "${g[*]:-no arguments}"
+        return 1
+    }
+    [ "${1:-}" = -- ] || {
+        bad "fresh_server: -- before the new-session args" \
+            "${g[*]} -- <new-session args>" "${g[*]}"
+        return 1
+    }
+    shift
+    "$TMUX_REAL" "${g[@]}" kill-server >/dev/null 2>&1
+    for ((i = 1; i <= POLLS; i++)); do
+        err=$("$TMUX_REAL" "${g[@]}" new-session "$@" 2>&1 >/dev/null) && return 0
+        [ "$i" -lt "$POLLS" ] && sleep 0.1
+    done
+    bad "fresh_server ${g[*]}: new-session failed $POLLS times" "a session" "${err:-no stderr}"
+    return 1
+}
 # review-gate keys its state files on the pane id AND the server's socket path
 # (issue #88). Spelled out here rather than read back from the script: a test
 # that asks the code under test for its own answer agrees with any answer.
@@ -251,6 +320,54 @@ for f in "$DIR"/cockpit.tmux "$DIR"/install.sh "$DIR"/scripts/* "$DIR"/scripts/l
     if bash -n "$f" 2>/dev/null; then ok "syntax $(basename "$f")"
     else bad "syntax $(basename "$f")" "clean" "parse error"; fi
 done
+
+echo "== fresh_server: a new-session refused by the killed server is retried, then named (#573) =="
+# This tmux fails the first FS_FAILS new-sessions "server exited unexpectedly", as
+# one that reaches the server kill-server just stopped does, and logs every try.
+# A call with no -L or -S is logged and dropped: it would reach the default
+# server, which may be the user's.
+if need_tmux "fresh_server"; then :; else
+FS="cockpit-fresh-$$"; SOCKS="$SOCKS $FS"; FSD=$(mktmpd)
+printf '#!/bin/sh\ncase " $* " in *" -L "*|*" -S "*) ;; *) sock=none ;; esac
+case " $* " in
+*" kill-server "*) echo k >> "%s/kills"; [ -z "$sock" ] || exit 0 ;;
+*" new-session "*) echo n >> "%s/tries"; [ -z "$sock" ] || exit 1
+    [ "$(wc -l < "%s/tries")" -gt "$FS_FAILS" ] || {
+    echo "server exited unexpectedly ($(wc -l < "%s/tries"))" >&2; exit 1; } ;;
+esac\nexec "%s" "$@"\n' "$FSD" "$FSD" "$FSD" "$FSD" "$TMUX_BIN" > "$FSD/tmux"
+chmod +x "$FSD/tmux"
+# fs_run <fails> <polls> <fresh_server args...> -> "rc tries kills bads|bad's got"
+fs_run() {
+    local fails=$1 polls=$2; shift 2
+    rm -f "$FSD/tries" "$FSD/kills"
+    (
+        bads=0 got=
+        bad() { bads=$((bads+1)); got=$3; }
+        export FS_FAILS=$fails; POLLS=$polls TMUX_REAL="$FSD/tmux"
+        fresh_server "$@"; rc=$?
+        printf '%s %s %s %s|%s' "$rc" "$(cat "$FSD/tries" 2>/dev/null | wc -l)" \
+            "$(cat "$FSD/kills" 2>/dev/null | wc -l)" "$bads" "$got"
+    )
+}
+is "three refusals, then the session comes up on the fourth try" "0 4 1 0|" \
+   "$(fs_run 3 100 -L "$FS" -f /dev/null -- -d -s t 'exec sleep 300')"
+is "and the session is there" "t" "$("$TMUX_REAL" -L "$FS" list-sessions -F '#S' 2>/dev/null)"
+is "a server that never comes up: POLLS tries, then one bad carrying the last stderr" \
+   "1 5 1 1|server exited unexpectedly (5)" \
+   "$(fs_run 1000 5 -L "$FS" -f /dev/null -- -d -s t 'exec sleep 300')"
+is "POLLS=0 still says it gave up" "1 0 1 1|no stderr" \
+   "$(fs_run 1000 0 -L "$FS" -f /dev/null -- -d -s t 'exec sleep 300')"
+for row in "no --:-L $FS -d -s t" "no socket:-- -d -s t" "-f before -L:-f /dev/null -L $FS -- -d" \
+           "-L with no name:-L" "no arguments:"; do
+    fsr="fresh_server refuses ${row%%:*}: one bad, no kill, no new-session"
+    fsgot=$(fs_run 0 5 ${row#*:})   # unquoted: the row's words are the argv
+    case "$fsgot" in
+        "1 0 0 1|"?*) ok "$fsr" ;;
+        *) bad "$fsr" "1 0 0 1|<why>" "$fsgot" ;;
+    esac
+done
+"$TMUX_REAL" -L "$FS" kill-server >/dev/null 2>&1
+fi
 
 echo "== the REPO's shipped config renders correctly =="
 # Load examples/tmux.conf into a throwaway server. Previously these assertions
@@ -3475,8 +3592,7 @@ case "$(pk S)" in *--popup*) ok "@cockpit_sessions_key S brings the old key back
     *) bad "@cockpit_sessions_key S brings the old key back" "the popup on S" "$(pk S)" ;; esac
 case "$(pk J)" in *tmux-jump*) ok "@cockpit_jump_key J brings the old key back" ;;
     *) bad "@cockpit_jump_key J brings the old key back" "tmux-jump on J" "$(pk J)" ;; esac
-"$TMUX_REAL" -L "$PS" kill-server >/dev/null 2>&1
-"$TMUX_REAL" -L "$PS" -f /dev/null new-session -d -s t >/dev/null 2>&1
+fresh_server -L "$PS" -f /dev/null -- -d -s t
 "$TMUX_REAL" -L "$PS" set -g @cockpit_sessions_key off >/dev/null 2>&1
 ps_stock=$(pk s)
 "$TMUX_REAL" -L "$PS" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
@@ -3918,8 +4034,7 @@ case "$("$TMUX_REAL" -L "$PM" list-keys -T prefix 2>/dev/null | awk '$4=="W"')" 
     *) bad "@cockpit_move_key rebinds it" "the menu on W" \
          "$("$TMUX_REAL" -L "$PM" list-keys -T prefix | awk '$4=="W"')" ;;
 esac
-"$TMUX_REAL" -L "$PM" kill-server >/dev/null 2>&1
-"$TMUX_REAL" -L "$PM" -f /dev/null new-session -d -s t >/dev/null 2>&1
+fresh_server -L "$PM" -f /dev/null -- -d -s t
 "$TMUX_REAL" -L "$PM" set -g @cockpit_move_key off >/dev/null 2>&1
 "$TMUX_REAL" -L "$PM" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
 case "$("$TMUX_REAL" -L "$PM" list-keys -T prefix 2>/dev/null | awk '$4=="M"')" in
@@ -4203,7 +4318,7 @@ echo "== first-run: no theme installed, still works =="
 # plugin's styles name tmux 3.8's theme slots, which always resolve; this block
 # sources the config bare.
 if need_tmux "bare first run"; then :; else
-FR="cockpit-fr-$$"; SOCKS="$SOCKS $FR"
+FR="cockpit-fr2-$$"; SOCKS="$SOCKS $FR"
 "$TMUX_REAL" -L "$FR" -f /dev/null new-session -d -s t 'exec -a claude sleep 300' >/dev/null 2>&1
 "$TMUX_REAL" -L "$FR" source-file "$DIR/examples/tmux.conf" >/dev/null 2>&1
 FP=$("$TMUX_REAL" -L "$FR" list-panes -a -F '#{pane_id}' | head -1)
@@ -6421,7 +6536,7 @@ echo "== tmux-review --deliver: the paste is gated atomically, so a pane that st
 # load-buffer + atomic if-shell that deliver() now runs, once against the shell
 # that outlived the agent and once against a live agent.
 if need_tmux "tmux-review --deliver atomic gate"; then :; else
-RG="cockpit-rg-$$"; SOCKS="$SOCKS $RG"
+RG="cockpit-rgz-$$"; SOCKS="$SOCKS $RG"
 "$TMUX_REAL" -L "$RG" -f /dev/null new-session -d -s t -x 100 -y 30 \
     'exec -a claude bash' >/dev/null 2>&1
 "$TMUX_REAL" -L "$RG" split-window -t t 'exec bash' >/dev/null 2>&1
@@ -7737,7 +7852,7 @@ bloaded() {
 }
 
 # --- the shipped default -------------------------------------------------------
-B="cockpit-bw-$$"; SOCKS="$SOCKS $B"; bshim "$BD/s1" "$B" ""
+B="cockpit-bwz-$$"; SOCKS="$SOCKS $B"; bshim "$BD/s1" "$B" ""
 # -u: the server's environment is what cockpit.tmux reads, and this copy has no binary.
 env -u COCKPIT_TUI_BIN PATH="$BD/s1:$PATH" "$TMUX_REAL" -L "$B" -f /dev/null new-session -d -s t 'exec -a claude sleep 300' >/dev/null 2>&1
 "$TMUX_REAL" -L "$B" run-shell "$BD/p/cockpit.tmux" >/dev/null 2>&1; bloaded "$B"
@@ -8057,7 +8172,7 @@ echo "== cockpit-board: the return trip lands on the same pane, and a ✕ note s
 # The real binary in a real window: the loop, --select and board.state end to
 # end. tmux-review is a stub that records its argv; the panel is the real one.
 if need_tmux "the board's return trip"; then :; else
-RB="cockpit-rb-$$"; SOCKS="$SOCKS $RB"; RBD=$(mktmpd)
+RB="cockpit-rbz-$$"; SOCKS="$SOCKS $RB"; RBD=$(mktmpd)
 mkdir -p "$RBD/p" "$RBD/state"
 cp -r "$DIR"/scripts "$RBD/p/"
 printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> %s/rv\n' "$RBD" > "$RBD/p/scripts/tmux-review"
@@ -8382,7 +8497,7 @@ echo "== cockpit-tui board: a blank first capture replaces reading the screen (#
 # redraw gate must carry whether the pick was read (read_gate). Its own fresh
 # server, the blank agent first so the board opens on it, no earlier board.
 if need_tmux "the right pane's blank first capture"; then :; else
-PB="cockpit-pb-$$"; SOCKS="$SOCKS $PB"; PBD=$(mktmpd)
+PB="cockpit-pb2-$$"; SOCKS="$SOCKS $PB"; PBD=$(mktmpd)
 "$TMUX_REAL" -L "$PB" -f /dev/null new-session -d -s t -x 120 -y 30 -c "$PBD" 'exec sleep 3600' >/dev/null 2>&1
 # -n: a window tmux renames as its command execs would redraw the board itself
 for cmd in "printf '\\033[2J\\033[H'" 'echo other'; do
@@ -9174,7 +9289,7 @@ echo "== cockpit-panel: a tap in the popup acts once, and x copies by OSC 52 =="
 # an SGR click written there is what a touch screen sends. Coordinates are read
 # off the outer capture, 1-based as the wire wants them.
 if need_tmux "taps in the popup"; then :; else
-TI="cockpit-tapi-$$"; TO="cockpit-tapo-$$"; SOCKS="$SOCKS $TI $TO"; TPD=$(mktmpd)
+TI="cockpit-tapi2-$$"; TO="cockpit-tapo2-$$"; SOCKS="$SOCKS $TI $TO"; TPD=$(mktmpd)
 mkdir -p "$TPD/bin"
 printf '#!/bin/sh\ncat >/dev/null\nprintf "<text>copied by tap</text>"\n' > "$TPD/bin/claude"
 chmod +x "$TPD/bin/claude"
@@ -9279,11 +9394,11 @@ is "pressing it again brings the status line back" "on" \
    "$("$TMUX_REAL" -L "$FI" display-message -p -t t '#{status}')"
 is "and restores the border the config had, not a hardcoded top" "bottom" \
    "$("$TMUX_REAL" -L "$FI" display-message -p -t t:0 '#{pane-border-status}')"
-"$TMUX_REAL" -L "$FO" kill-server >/dev/null 2>&1; "$TMUX_REAL" -L "$FI" kill-server >/dev/null 2>&1
+"$TMUX_REAL" -L "$FO" kill-server >/dev/null 2>&1
 # A fresh server: nothing unbinds a key already bound, so `off` can only be
 # read on a server that has not loaded the plugin yet -- the same shape as the
 # sessions-key block above.
-"$TMUX_REAL" -L "$FI" -f /dev/null new-session -d -s t >/dev/null 2>&1
+fresh_server -L "$FI" -f /dev/null -- -d -s t
 "$TMUX_REAL" -L "$FI" set -g @cockpit_fullscreen_key off >/dev/null 2>&1
 "$TMUX_REAL" -L "$FI" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
 is "@cockpit_fullscreen_key off binds nothing" "" \
@@ -9679,7 +9794,7 @@ echo "== the menu's What is each agent doing? lists every pane with its state (#
 # The row replays the cockpit table's t, a popup over one tmux list-panes. Its
 # -F format is resolved here on a server, the same pass the popup's shell runs.
 if need_tmux "the agents popup"; then :; else
-AGS="cockpit-agents-$$"; SOCKS="$SOCKS $AGS"
+AGS="cockpit-agents2-$$"; SOCKS="$SOCKS $AGS"
 "$TMUX_REAL" -L "$AGS" -f /dev/null new-session -d -s ag -x 200 -y 50 'exec -a claude sleep 300' >/dev/null 2>&1
 "$TMUX_REAL" -L "$AGS" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
 "$TMUX_REAL" -L "$AGS" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
@@ -11165,8 +11280,12 @@ is "the popup's own client moved to two and is the only client" "$tpc two" \
 "$TMUX_REAL" -L "$TPI" kill-server >/dev/null 2>&1
 fi
 
-pick_pane() {                 # <socket> <dir> <cols> <rows> <rows-text> [pick args...]  runs `pick` in a fresh pane
-    local sock=$1 d=$2 cols=$3 height=$4 text=$5 args; shift 5
+# --fresh: kill <socket>'s server and start a new one for the pane (fresh_server);
+# without it the pane is a new session on whatever server <socket> runs.
+pick_pane() {                 # [--fresh] <socket> <dir> <cols> <rows> <rows-text> [pick args...]
+    local fresh='' sock d cols height text args
+    [ "$1" = --fresh ] && { fresh=1; shift; }
+    sock=$1 d=$2 cols=$3 height=$4 text=$5; shift 5
     args=; [ $# -eq 0 ] || args=$(printf '%q ' "$@")
     printf '%s' "$text" > "$d/rows"
     {
@@ -11175,8 +11294,9 @@ pick_pane() {                 # <socket> <dir> <cols> <rows> <rows-text> [pick a
         printf 'echo $? > "$d/rc"\nexec sleep 30\n'
     } > "$d/run"
     chmod +x "$d/run"
-    "$TMUX_REAL" -L "$sock" -f /dev/null new-session -d -s t -x "$cols" -y "$height" \
-        "$d/run '$DIR/bin/cockpit-tui' '$d' $args" >/dev/null 2>&1
+    set -- -d -s t -x "$cols" -y "$height" "$d/run '$DIR/bin/cockpit-tui' '$d' $args"
+    if [ -n "$fresh" ]; then fresh_server -L "$sock" -f /dev/null -- "$@"
+    else "$TMUX_REAL" -L "$sock" -f /dev/null new-session "$@" >/dev/null 2>&1; fi
 }
 
 echo "== cockpit-tui pick: filter, choose and cancel through a pty =="
@@ -11198,58 +11318,50 @@ until_cap "$PKS" t '*1/1 of 4*' && ok "typing REL filters case-insensitively to 
 until_file "$PKD/rc" '?*'
 is "enter prints the key of the filtered row and nothing else" "release" "$(cat "$PKD/out" 2>/dev/null)"
 is "enter exits 0" "0" "$(cat "$PKD/rc" 2>/dev/null)"
-"$TMUX_REAL" -L "$PKS" kill-server >/dev/null 2>&1
 
-PKD=$(mktmpd); pick_pane "$PKS" "$PKD" 80 20 "$PKROWS"
+PKD=$(mktmpd); pick_pane --fresh "$PKS" "$PKD" 80 20 "$PKROWS"
 until_cap "$PKS" t '*pick>*1/4*'
 "$TMUX_REAL" -L "$PKS" send-keys -t t Down Enter
 until_file "$PKD/rc" '?*'
 is "down then enter chooses the second row's key" "feat/237" "$(cat "$PKD/out" 2>/dev/null)"
-"$TMUX_REAL" -L "$PKS" kill-server >/dev/null 2>&1
 
-PKD=$(mktmpd); pick_pane "$PKS" "$PKD" 80 20 "$PKROWS"
+PKD=$(mktmpd); pick_pane --fresh "$PKS" "$PKD" 80 20 "$PKROWS"
 until_cap "$PKS" t '*pick>*1/4*'
 "$TMUX_REAL" -L "$PKS" send-keys -t t Escape
 until_file "$PKD/rc" '?*'
 is "esc exits 1" "1" "$(cat "$PKD/rc" 2>/dev/null)"
 is "esc prints nothing on stdout" "0" "$(wc -c < "$PKD/out" | tr -d ' ')"
-"$TMUX_REAL" -L "$PKS" kill-server >/dev/null 2>&1
 
-PKD=$(mktmpd); pick_pane "$PKS" "$PKD" 80 20 "" 
+PKD=$(mktmpd); pick_pane --fresh "$PKS" "$PKD" 80 20 "" 
 until_file "$PKD/rc" '?*'
 is "no rows exits 1 without opening a screen" "1" "$(cat "$PKD/rc" 2>/dev/null)"
 is "no rows prints nothing on stdout" "0" "$(wc -c < "$PKD/out" | tr -d ' ')"
-"$TMUX_REAL" -L "$PKS" kill-server >/dev/null 2>&1
 
-PKD=$(mktmpd); pick_pane "$PKS" "$PKD" 27 11 "$PKROWS"
+PKD=$(mktmpd); pick_pane --fresh "$PKS" "$PKD" 27 11 "$PKROWS"
 until_cap "$PKS" t '*make the window larger*' && ok "under 28x12 the floor card is drawn" \
     || bad "under 28x12 the floor card is drawn" "make the window larger" "$("$TMUX_REAL" -L "$PKS" capture-pane -p -t t | head -3)"
 "$TMUX_REAL" -L "$PKS" send-keys -t t Enter Escape
 until_file "$PKD/rc" '?*'
 is "under the floor enter chooses nothing and esc exits 1" "1:0" "$(cat "$PKD/rc" 2>/dev/null):$(wc -c < "$PKD/out" | tr -d ' ')"
-"$TMUX_REAL" -L "$PKS" kill-server >/dev/null 2>&1
 
-PKD=$(mktmpd); pick_pane "$PKS" "$PKD" 80 20 "$PKROWS"
+PKD=$(mktmpd); pick_pane --fresh "$PKS" "$PKD" 80 20 "$PKROWS"
 until_cap "$PKS" t '*pick>*1/4*'
 "$TMUX_REAL" -L "$PKS" send-keys -t t q u e u e Enter
 until_file "$PKD/rc" '?*'
 is "typing queue is a filter: q is a letter, and enter prints the row's key" "queue:0" "$(cat "$PKD/out" 2>/dev/null):$(cat "$PKD/rc" 2>/dev/null)"
-"$TMUX_REAL" -L "$PKS" kill-server >/dev/null 2>&1
 
-PKD=$(mktmpd); pick_pane "$PKS" "$PKD" 80 20 "$(printf '\tx\nk\tok\n')"
+PKD=$(mktmpd); pick_pane --fresh "$PKS" "$PKD" 80 20 "$(printf '\tx\nk\tok\n')"
 until_cap "$PKS" t '*pick>*1/1*'
 "$TMUX_REAL" -L "$PKS" send-keys -t t Enter
 until_file "$PKD/rc" '?*'
 is "a keyless row is skipped and the key of the next one is printed" "k:0" "$(cat "$PKD/out" 2>/dev/null):$(cat "$PKD/rc" 2>/dev/null)"
 is "stderr says once how many rows had no key" "cockpit-tui: pick: skipped 1 row with no key" "$(cat "$PKD/err" 2>/dev/null)"
-"$TMUX_REAL" -L "$PKS" kill-server >/dev/null 2>&1
 
-PKD=$(mktmpd); pick_pane "$PKS" "$PKD" 80 20 "$PKROWS" --prompt 'two words'
+PKD=$(mktmpd); pick_pane --fresh "$PKS" "$PKD" 80 20 "$PKROWS" --prompt 'two words'
 until_cap "$PKS" t '*two words>*' && ok "an argument with a space reaches the picker whole" \
     || bad "an argument with a space reaches the picker whole" "two words>" "$("$TMUX_REAL" -L "$PKS" capture-pane -p -t t | head -1)"
-"$TMUX_REAL" -L "$PKS" kill-server >/dev/null 2>&1
 
-PKD=$(mktmpd); pick_pane "$PKS" "$PKD" 80 20 "$PKROWS" --bogus
+PKD=$(mktmpd); pick_pane --fresh "$PKS" "$PKD" 80 20 "$PKROWS" --bogus
 until_file "$PKD/rc" '?*'
 is "an unknown flag exits 2 and names it" "2:1" "$(cat "$PKD/rc" 2>/dev/null):$(grep -c -- '--bogus' "$PKD/err")"
 "$TMUX_REAL" -L "$PKS" kill-server >/dev/null 2>&1
@@ -11457,7 +11569,7 @@ fi
 
 echo "== cockpit-tui info: prefix i opens the popup =="
 if need_tmux "prefix i popup"; then :; else
-PK="cockpit-pk-$$"; SOCKS="$SOCKS $PK"
+PK="cockpit-pk2-$$"; SOCKS="$SOCKS $PK"
 "$TMUX_REAL" -L "$PK" -f /dev/null new-session -d -s t -x 100 -y 30 'exec bash' >/dev/null 2>&1
 "$TMUX_REAL" -L "$PK" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
 pk_i() { "$TMUX_REAL" -L "$PK" list-keys -T prefix 2>/dev/null | awk '$4=="i"'; }
@@ -11469,8 +11581,7 @@ case "$(pk_i)" in *tmux-review*|*--info*) bad "prefix i no longer runs tmux-revi
 # #293: the binary reads $COCKPIT_GLYPHS only, so the popup passes the option on
 case "$(pk_i)" in *@cockpit_glyphs*COCKPIT_GLYPHS*) ok "prefix i passes @cockpit_glyphs to the binary as COCKPIT_GLYPHS" ;;
     *) bad "prefix i passes @cockpit_glyphs to the binary as COCKPIT_GLYPHS" "COCKPIT_GLYPHS from @cockpit_glyphs" "$(pk_i)" ;; esac
-"$TMUX_REAL" -L "$PK" kill-server >/dev/null 2>&1
-"$TMUX_REAL" -L "$PK" -f /dev/null new-session -d -s t -x 100 -y 30 'exec bash' >/dev/null 2>&1
+fresh_server -L "$PK" -f /dev/null -- -d -s t -x 100 -y 30 'exec bash'
 "$TMUX_REAL" -L "$PK" set -g @cockpit_info_key off >/dev/null 2>&1
 "$TMUX_REAL" -L "$PK" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
 case "$(pk_i)" in *cockpit-tui*) bad "@cockpit_info_key off leaves i unbound" "stock i" "$(pk_i)" ;; *) ok "@cockpit_info_key off leaves i unbound" ;; esac
@@ -11479,7 +11590,7 @@ fi
 
 echo "== cockpit-tui info: values from outside cannot move a field or reach the terminal =="
 if need_tmux "cockpit-tui info hostile values"; then :; else
-PH="cockpit-ph-$$"; SOCKS="$SOCKS $PH"; PHDIR=$(mktmpd)
+PH="cockpit-ph2-$$"; SOCKS="$SOCKS $PH"; PHDIR=$(mktmpd)
 "$TMUX_REAL" -L "$PH" -f /dev/null new-session -d -s t -n w -x 100 -y 30 -c "$PHDIR" 'exec bash' >/dev/null 2>&1
 PHP=$("$TMUX_REAL" -L "$PH" list-panes -t t: -F '#{pane_id}')
 "$TMUX_REAL" -L "$PH" set-option -p -t "$PHP" @cockpit_title "$(printf 'a\037b')" >/dev/null 2>&1
@@ -11940,18 +12051,15 @@ sv_server() {                 # sv_server <tag> -- alpha, beta (waiting), gamma;
     SVG=$("$TMUX_REAL" -L "$SVS" display-message -p -t gamma: '#{session_id}')
 }
 sv_pane() {                   # sv_pane <dir> <cmd...> -- <cmd> in a pty of SVO; its rc lands in <dir>/rc, stderr in <dir>/err
-    local d=$1 i; shift
+    local d=$1; shift
+    # The old pane is told to go before its rc and err are cleared. fresh_server
+    # kills again, harmless whether the old server is gone or still going, then
+    # retries the new-session that can reach it (#547, #573).
     "$TMUX_REAL" -L "$SVO" kill-server >/dev/null 2>&1
     { printf '#!/bin/sh\n'; printf '%q ' "$@"; printf '2> "%s/err"\necho $? > "%s/rc"\nexec sleep 30\n' "$d" "$d"; } > "$d/run"
     chmod +x "$d/run"; : > "$d/err"; rm -f "$d/rc"
-    # The server kill-server stopped can still hold the socket: a new-session that
-    # reaches it fails "server exited unexpectedly" and no pane runs (#547).
-    for i in $(seq 1 "$POLLS"); do
-        "$TMUX_REAL" -L "$SVO" -f /dev/null new-session -d -s t -x "${SVCOLS:-100}" -y "${SVROWS:-24}" \
-            "TERM=xterm-256color $d/run" >/dev/null 2>&1 && return 0
-        sleep 0.1
-    done
-    return 1
+    fresh_server -L "$SVO" -f /dev/null -- -d -s t -x "${SVCOLS:-100}" -y "${SVROWS:-24}" \
+        "TERM=xterm-256color $d/run"
 }
 sv_ui() {                     # sv_ui <dir> [tui args...] -- cockpit-tui sessions, the action files under <dir>/act
     local d=$1; shift
@@ -14219,7 +14327,7 @@ fi
 echo "== git.sh refusal is shown by tmux-branch (#330) =="
 # The fixture of the tmux-review block above, on its own private socket and shim.
 if need_tmux "git.sh refusal in tmux-branch"; then :; else
-BQ="cockpit-bq-$$"; SOCKS="$SOCKS $BQ"; GD=$(mktmpd)
+BQ="cockpit-bq2-$$"; SOCKS="$SOCKS $BQ"; GD=$(mktmpd)
 ( git init -q "$GD/r" && cd "$GD/r" && printf 'hi\n' > x && printf 'x filter=a=b\n' > .gitattributes \
   && git config 'filter.a=b.clean' "touch $GD/PWNED" ) >/dev/null 2>&1
 ( git init -q -b main "$GD/ok" && cd "$GD/ok" && printf 'a\n' > y && git add y \
@@ -14302,7 +14410,7 @@ echo "== a burst of window events runs a few sweeps, and the counts are right af
 # Each hook event ran its own full sweep, O(N²) over a resurrect restore or a
 # kill-session. Debounced: the counts must still be right after the burst's last event.
 if need_tmux "sweep debounce"; then :; else
-DB="cockpit-db-$$"; SOCKS="$SOCKS $DB"; DBD=$(mktmpd)
+DB="cockpit-db2-$$"; SOCKS="$SOCKS $DB"; DBD=$(mktmpd)
 dbt() { "$TMUX_REAL" -L "$DB" "$@"; }
 dbt -f /dev/null new-session -d -s a -c "$DBD" 'exec -a claude sleep 300' >/dev/null 2>&1
 dbt set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
@@ -14353,7 +14461,7 @@ echo "== a key the plugin lets go of gets its stock binding back, letter or not 
 # give_back knew stock bindings for prefix letters only, so moving the menu off
 # Space, ?, a digit or " left that key unbound.
 if need_tmux "non-letter give-back"; then :; else
-GB="cockpit-gb-$$"; SOCKS="$SOCKS $GB"; GBD=$(mktmpd)
+GB="cockpit-gb2-$$"; SOCKS="$SOCKS $GB"; GBD=$(mktmpd)
 gbt() { "$TMUX_REAL" -L "$GB" "$@"; }
 # The reference: a configless server's own prefix table, with notes.
 gbstock() { "$TMUX_REAL" -S "$GBD/ref" -f /dev/null start-server \; list-keys -N -T prefix -- "$1" 2>/dev/null; rm -f "$GBD/ref"; }
@@ -14401,7 +14509,7 @@ echo "== cockpit-tui with no client attached keeps the @thm_* roles (#240) =="
 if [ ! -x "$DIR/bin/cockpit-tui" ]; then
     skip_ "no-client theme roles (no bin/cockpit-tui; run make tui)"
 elif need_tmux "no-client theme roles"; then :; else
-NC="cockpit-nc-$$"; SOCKS="$SOCKS $NC"; NCD=$(mktmpd)
+NC="cockpit-nc2-$$"; SOCKS="$SOCKS $NC"; NCD=$(mktmpd)
 "$TMUX_REAL" -L "$NC" -f /dev/null new-session -d -s base -c "$NCD" 'exec sleep 300' >/dev/null 2>&1
 "$TMUX_REAL" -L "$NC" set -g @thm_fg '#123456'
 "$TMUX_REAL" -L "$NC" set -g @thm_fg_light '#654321'
@@ -15565,5 +15673,6 @@ j3msg='jq-9.9 rejected the filter report it: tmux-cockpit issue'
 is "a jq compile error is a fail row, named, for both counts" \
    "fail hooks $j3msg;fail subhooks $j3msg;" "$j3rows"
 rm -rf "$J3"
+flop_left
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1
