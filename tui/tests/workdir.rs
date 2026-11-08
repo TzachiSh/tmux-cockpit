@@ -165,17 +165,23 @@ fn workdir_exits_1_for_no_pane_or_no_agent_and_2_for_a_bad_id() {
 /// #507: a wrapper pane the hooks marked (@panestate, a command that is not an
 /// agent's) is an agent without its process tree, and the tree only decides
 /// `ended`, which workdir never reads: workdir forks no `ps` for it. The board
-/// still does (tests/forks_ended.rs).
+/// still does (tests/forks_ended.rs). An unmarked `node` pane first: its tree is
+/// the agent test itself, so it must reach the stub, or a count of 0 below would
+/// prove nothing.
 #[test]
 fn workdir_forks_no_ps_for_a_marked_wrapper_pane() {
     let r = Rig::new("wrapper");
     let launch = r.dir("main");
+    let forks = || std::fs::read_to_string(r.t.0.join("ps-calls")).map_or(0, |s| s.lines().count());
+    let unmarked = row("%6", "node", "-", "-", &launch, "106", "");
     let wrapper = row("%7", "node", "running", "-", &launch, "107", "");
-    std::fs::write(r.t.0.join("rows"), wrapper + "\n").unwrap();
-    std::fs::write(r.t.0.join("ps"), "107 1 node\n").unwrap();
+    std::fs::write(r.t.0.join("rows"), format!("{unmarked}\n{wrapper}\n")).unwrap();
+    std::fs::write(r.t.0.join("ps"), "106 1 node\n107 1 node\n").unwrap();
+    assert_eq!(r.run(&["workdir", "%6"]), (Some(1), String::new()), "an unmarked node pane");
+    assert!(forks() >= 1, "the unmarked pane's tree never reached the ps stub");
+    let _ = std::fs::remove_file(r.t.0.join("ps-calls"));
     assert_eq!(r.run(&["workdir", "%7"]), (Some(0), format!("{launch}\n")));
-    let forks = std::fs::read_to_string(r.t.0.join("ps-calls")).map_or(0, |s| s.lines().count());
-    assert_eq!(forks, 0, "workdir forked ps for a pane it already knows is an agent's");
+    assert_eq!(forks(), 0, "workdir forked ps for a pane it already knows is an agent's");
 }
 
 /// #507: a dir that is not on disk is no dir: exit 1 and nothing on stdout, not a
