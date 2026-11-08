@@ -2859,7 +2859,8 @@ for o in status-right status-left window-status-format pane-border-format; do
         is "$o is left as it was" "mine $o" "$(tmux -L "$SOCK2" show-option -gqv "$o")"
 done
 loaded_on "$SOCK2" "status-style is left as it was" &&
-    is "status-style is left as it was" "bg=red" "$(tmux -L "$SOCK2" show-option -gqv status-style)"
+    is "status-style is left as it was" "bg=red" \
+       "$(tmux -L "$SOCK2" show-option -gqv status-style)"
 loaded_on "$SOCK2" "and so are tmux's theme slots" &&
     is "and so are tmux's theme slots" "#{?#{e|>=:#{client_colours},256},indianred,red}" \
        "$(tmux -L "$SOCK2" show-option -sv dark-theme-red)"
