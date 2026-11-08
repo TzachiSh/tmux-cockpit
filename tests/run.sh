@@ -122,11 +122,12 @@ FLOPEOF
 FLOP="$STATE/flop"; mkdir -p "$FLOP"
 if [ -x "$TMUX_BIN" ]; then flop_write "$FLOP" "$TMUX_BIN"; TMUX_REAL="$FLOP/tmux"; fi
 flop_left() {                 # [dir] -> a bad row for each r.* whose call was never retried
-    local r a
+    local r a k
     for r in "${1:-$FLOP}"/r.*; do
         [ -e "$r" ] || continue
-        a=$(cat "$r")
-        bad "new-session after kill-server on ${r##*/r.} goes through fresh_server (#573)" \
+        a=$(cat "$r") k=${r##*/r.}
+        k=${k//__/$'\1'}; k=${k//_./\/}; k=${k//$'\1'/_}   # the key back to its socket path
+        bad "new-session after kill-server on $k goes through fresh_server (#573)" \
             "a retry with the same argv" "${a%.}, refused and never retried"
     done
 }
