@@ -14074,8 +14074,9 @@ is "the plant never ran" "" "$(ls "$GD/PWNED" 2>/dev/null)"
 printf 'goto %s\n' "$GD/ok-wt" > "$GD/answer"
 bq "$GD/ok" >"$GD/ok.out"
 is "normal repo: the picker ran, no refusal" "yes|" "$([ -e "$GD/picker-ran" ] && echo yes)|$(grep -c refusing "$GD/ok.out" | sed 's/^0$//')"
-is "and its worktree got a window" "$GD/ok-wt" \
-   "$("$TMUX_REAL" -L "$BQ" list-panes -a -F '#{pane_current_path}' | grep -Fx "$GD/ok-wt" | head -1)"
+bq_okwt() { "$TMUX_REAL" -L "$BQ" list-panes -a -F '#{pane_current_path}' | grep -Fx "$GD/ok-wt" | head -1; }
+until_out "$(printf '%q' "$GD/ok-wt")" bq_okwt
+is "and its worktree got a window" "$GD/ok-wt" "$(bq_okwt)"
 "$TMUX_REAL" -L "$BQ" kill-server >/dev/null 2>&1
 fi
 rm -rf "${GD:-/nonexistent-gd}"
