@@ -1133,6 +1133,21 @@ fn the_remembered_prompt_belongs_to_its_own_transcript() {
     assert_eq!(asked_of(&r, "%1").0, "mine");
 }
 
+/// Two transcripts, each with its own prompt, each read past the window: each
+/// keeps its own. One slot that remembers its path passes the test above, since a
+/// read with no prompt there clears nothing, and loses one prompt here (#367).
+#[test]
+fn each_transcript_keeps_its_own_prompt() {
+    let r = Rig::new("askedtwo");
+    let p1 = r.transcript("s1", &(prompt("mine") + &turn_output(1)));
+    let p2 = r.transcript("s2", &(prompt("yours") + &turn_output(1)));
+    asked_of(&r, "%1");
+    asked_of(&r, "%2");
+    append(&p1, &turn_output(300));
+    append(&p2, &turn_output(300));
+    assert_eq!((asked_of(&r, "%1").0, asked_of(&r, "%2").0), ("mine".into(), "yours".into()));
+}
+
 /// A gap past what the window can scan may hold a newer prompt, so the older one
 /// is no longer the answer: it reads as master did, with none.
 #[test]
