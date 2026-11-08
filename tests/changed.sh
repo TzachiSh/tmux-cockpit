@@ -10,6 +10,10 @@
 # 5 blocks; mapping by block title would need one on 59.
 #
 # Prints "ALL" when it cannot be sure. Every unknown path takes that branch.
+#
+#   tests/changed.sh            the files tests/green.sh reports as changed
+#   tests/changed.sh FILE...    these files instead, as paths from the repo root
+#   tests/changed.sh --each FILE...   each file's own blocks, one line per file
 set -u
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUN="$DIR/tests/run.sh"
@@ -90,25 +94,46 @@ runsh_blocks() {
     printf '%s\n' "$out"
 }
 
-want=1                                            # the syntax block, always
-for f in $(bash "$DIR/tests/green.sh" changed); do
-    case "$f" in
-    tests/run.sh)
-        b=$(runsh_blocks)
-        case "$b" in *ALL*) echo ALL; exit 0 ;; esac
-        want="$want $b" ;;
+# pick FILE: the ordinals of the blocks FILE could break, one per line, or ALL.
+pick() {
+    local s
+    case "$1" in
+    tests/run.sh) runsh_blocks ;;
     tests/only.sh|tests/par.sh|tests/green.sh|tests/changed.sh|Makefile|README.md|LICENSE|.*|docs/*)
         ;;                                        # nothing an assertion reads
     scripts/lib/*)                                # reaches every script sourcing it
         for s in scripts/*; do
-            [ -f "$s" ] && grep -q "${f##*/}" "$s" && want="$want $(blocks_for "$s")"
+            [ -f "$s" ] && grep -q "${1##*/}" "$s" && blocks_for "$s"
         done
-        want="$want $(blocks_for "$f")" ;;
-    examples/*)  want="$want $(blocks_for examples)" ;;
+        blocks_for "$1" ;;
+    examples/*)  blocks_for examples ;;
     cockpit.tmux|install.sh|scripts/*)
-        want="$want $(blocks_for "$f")" ;;
-    *)  echo ALL; exit 0 ;;                       # anything unrecognised
+        blocks_for "$1" ;;
+    *)  echo ALL ;;                               # anything unrecognised
     esac
+}
+
+# --each FILE...: one line per file, "FILE<TAB>ordinals", without the syntax
+# block every selection carries. The table is built once for all of them.
+if [ "${1:-}" = --each ]; then
+    shift
+    for f in "$@"; do
+        b=$(pick "$f")
+        case "$b" in *ALL*) b=ALL ;; esac
+        # shellcheck disable=SC2086  # deliberate word splitting: a list of ordinals
+        printf '%s\t%s\n' "$f" "$(printf '%s\n' $b | sort -un | paste -sd,)"
+    done
+    exit 0
+fi
+
+# No arguments: ask the green stamp. Its paths hold no spaces (the repo has none).
+# shellcheck disable=SC2046  # deliberate word splitting: one path per line
+[ $# -gt 0 ] || set -- $(bash "$DIR/tests/green.sh" changed)
+want=1                                            # the syntax block, always
+for f in "$@"; do
+    b=$(pick "$f")
+    case "$b" in *ALL*) echo ALL; exit 0 ;; esac
+    want="$want $b"
 done
 # shellcheck disable=SC2086  # deliberate word splitting: a list of ordinals
 printf '%s\n' $want | sort -un | paste -sd,
