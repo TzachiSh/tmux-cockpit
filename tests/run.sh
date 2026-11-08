@@ -3939,12 +3939,14 @@ case "$("$TMUX_REAL" -L "$PA" list-keys -T cockpit 2>/dev/null | awk '$4=="m"')"
     *"display-menu"*"-x M -y M"*) ok "the ≡ tap opens it at the pointer" ;;
     *) bad "the ≡ tap opens it at the pointer" "display-menu -x M -y M" "$("$TMUX_REAL" -L "$PA" list-keys -T cockpit | awk '$4=="m"' | cut -c1-120)" ;;
 esac
-"$TMUX_REAL" -L "$PA" set -g @cockpit_review_key off >/dev/null 2>&1
+# The menu has had no review row since #263, so the off key is one with a row.
+"$TMUX_REAL" -L "$PA" set -g @cockpit_info_key off >/dev/null 2>&1
 "$TMUX_REAL" -L "$PA" set -g @cockpit_move_key W >/dev/null 2>&1
 reload_on "$PA"
-loaded_on "$PA" "a review key of off drops the review row" && case "$(ak)" in
-    *"send-keys -K r"*) bad "a review key of off drops the review row" "no send-keys -K r" "$(ak | grep -o 'send-keys -K [^ ]*' | tr '\n' ' ')" ;;
-    *) ok "a review key of off drops the review row" ;;
+loaded_on "$PA" "an info key of off drops the Pane info row" && case "$(ak)" in
+    *"send-keys -K i"*) bad "an info key of off drops the Pane info row" "no send-keys -K i" \
+        "$(ak | grep -o 'send-keys -K [^ ]*' | tr '\n' ' ')" ;;
+    *) ok "an info key of off drops the Pane info row" ;;
 esac
 case "$(ak)" in
     *"send-keys -K W"*) ok "a rebound move key moves the row with it" ;;
@@ -8177,11 +8179,13 @@ esac
 case "$(bkey "$B" a)" in *'Board of every agent'*) ok "the prefix a menu carries a board row that replays w" ;;
     *) bad "the prefix a menu carries a board row that replays w" "a 'Board of every agent' item" "$(bkey "$B" a)" ;;
 esac
-loaded_on "$B" "the menu has no review row beside the board's" &&
+# prefix r opens the board too, so a row replaying r would be the board's twice
+# (#263), whatever its label says.
+loaded_on "$B" "the menu replays no r beside the board's w" &&
     case "$(bkey "$B" a)" in
-        *'Review its diff'*) bad "the menu has no review row beside the board's" \
-            "no 'Review its diff' item" "$(bkey "$B" a)" ;;
-        *) ok "the menu has no review row beside the board's" ;;
+        *"send-keys -K r"*) bad "the menu replays no r beside the board's w" \
+            "no send-keys -K r" "$(bkey "$B" a | grep -o 'send-keys -K [^ ]*' | tr '\n' ' ')" ;;
+        *) ok "the menu replays no r beside the board's w" ;;
     esac
 is "and a plain load fetches nothing" "no" "$([ -e "$BD/fetched" ] && echo yes || echo no)"
 # Required since #199: the load says so, offline, and names the fix.
