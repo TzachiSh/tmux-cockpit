@@ -52,25 +52,31 @@ pub struct Verdict {
 /// The tags of the judge prompt's sections.
 const SECTIONS: [&str; 7] = ["window", "output_type", "screen", "repo", "panel_reads", "request", "reply"];
 
-/// `s` with each closing tag of a [`SECTIONS`] name escaped (`</` to `<\/`), in
-/// any case and with blanks before the name, so a field cannot end its section
-/// or close one it planted. Every other `</` stays: the reply's own
+/// `s` with each closing tag of a [`SECTIONS`] name escaped (`/` to `\/`), in
+/// any case and with blanks before the `/` or the name, so a field cannot end
+/// its section or close one it planted. A name going on with a letter, digit,
+/// `_`, `-` or `.` is another tag. Every other `</` stays: the reply's own
 /// `</question>` is what the panel wrote, and escaping it made the judge fail
 /// correct replies for broken markup (#646).
 fn esc_sections(s: &str) -> String {
+    let name_char = |c: &u8| c.is_ascii_alphanumeric() || b"_-.".contains(c);
     let mut out = String::with_capacity(s.len());
     let mut rest = s;
-    while let Some(at) = rest.find("</") {
-        out.push_str(&rest[..at]);
-        rest = &rest[at + 2..];
+    while let Some(at) = rest.find('<') {
+        out.push_str(&rest[..=at]);
+        rest = &rest[at + 1..];
+        let Some(after) = rest.trim_start().strip_prefix('/') else {
+            continue;
+        };
+        out.push_str(&rest[..rest.len() - after.len() - 1]);
+        rest = after;
         let name = rest.trim_start().as_bytes();
         let ours = SECTIONS.iter().any(|t| {
             let t = t.as_bytes();
-            name.len() >= t.len()
-                && name[..t.len()].eq_ignore_ascii_case(t)
-                && name.get(t.len()).is_none_or(|&c| !(c.is_ascii_alphanumeric() || c == b'_'))
+            let at_end = !name.get(t.len()).is_some_and(name_char);
+            name.len() >= t.len() && name[..t.len()].eq_ignore_ascii_case(t) && at_end
         });
-        out.push_str(if ours { "<\\/" } else { "</" });
+        out.push_str(if ours { "\\/" } else { "/" });
     }
     out + rest
 }
@@ -1033,6 +1039,47 @@ mod tests {
             ("empty", "", ""),
         ] {
             assert_eq!(esc_sections(field), want, "{name}");
+        }
+    }
+
+    #[test]
+    fn a_name_going_on_with_a_dash_or_dot_is_another_tag() {
+        for (name, field, want) in [
+            ("dash", "</reply-option>", "</reply-option>"),
+            ("dot", "</screen.x>", "</screen.x>"),
+            ("dash after the real close", "</reply></reply-x>", "<\\/reply></reply-x>"),
+        ] {
+            assert_eq!(esc_sections(field), want, "{name}");
+        }
+    }
+
+    #[test]
+    fn a_section_close_with_blanks_before_the_slash_is_escaped() {
+        for (name, field, want) in [
+            ("blank", "< /reply>", "< \\/reply>"),
+            ("newline and tab", "<\n\t/ REPLY >", "<\n\t\\/ REPLY >"),
+            ("another tag kept", "< /question>", "< /question>"),
+            ("lone < kept", "a < b <", "a < b <"),
+        ] {
+            assert_eq!(esc_sections(field), want, "{name}");
+        }
+    }
+
+    /// Every closing tag `prompt()` writes, with each section present: the
+    /// names come from the prompt itself, so a section added later is in it.
+    #[test]
+    fn every_section_closer_the_prompt_writes_is_escaped() {
+        // an empty field still gets its section; empty reads get theirs
+        let i = Input {
+            reads: Some(vec![]),
+            ..Default::default()
+        };
+        let p = prompt(&i);
+        let tail = p.split("</").skip(1);
+        let names: Vec<&str> = tail.filter_map(|s| s.split_once('>')).map(|(n, _)| n).collect();
+        assert!(names.contains(&"panel_reads"), "{p}");
+        for n in names {
+            assert_eq!(esc_sections(&format!("</{n}>")), format!("<\\/{n}>"), "{n}");
         }
     }
 
