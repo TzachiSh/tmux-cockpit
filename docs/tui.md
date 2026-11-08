@@ -1910,7 +1910,7 @@ pane are different facts and a blank tile tells you which one it is.
 **CLI:** `-h` or `--help` prints the usage:
 
 ```
-cockpit-tui board [--select %N] [--note <file>] | pick | files <dir> | branch [-C <dir>] | info [--text|--json] %N | workdir %N | sessions [--needs] [--current $N] | panel %N [--resume <state> --last ok|failed:<why>|hidden | --ask <file> <a> <b>] | view [--line N] [--] <file> | basket add %N <file> | --rows | --json | --version | -h
+cockpit-tui board [--select %N] [--note <file>] | pick | files <dir> [--select <name>] [--hidden] [--ignored] [--filter <text>] | branch [-C <dir>] | info [--text|--json] %N | workdir %N | sessions [--needs] [--current $N] | panel %N [--resume <state> --last ok|failed:<why>|hidden | --ask <file> <a> <b>] | view [--line N] [--] <file> | basket add %N <file> | --rows | --json | --version | -h
 ```
 
 `info %N` is the info screen, `info --text %N` its rows as text, and
@@ -2453,6 +2453,21 @@ one entry, never a path: an empty name, a `/` or a control character is exit 2.
 The script passes it when the viewer it opened closes with nothing printed, and
 runs that viewer with `COCKPIT_VIEW_BACK=1`, which makes its `q` hint and help
 say `back` instead of `close`.
+
+The browser keeps its state across a view and back (#574). `--hidden` turns the
+dotfiles on, `--ignored` the ignored entries, and `--filter <text>` types the
+filter in; the selection stays on `--select`'s entry when the filter shows it.
+Each flag comes at most once, in any order after the folder. The filter is one
+line of up to 200 characters with no control or bidi character, else exit 2
+naming `--filter`. With `COCKPIT_FILES_STATE=1` the browser prints a second line
+after its answer, `state <dotfiles 0|1> <ignored 0|1> <filter>`, and leaves out a
+filter the flag would refuse. Without the variable the answer stays one line.
+`tmux-open-path`'s browse loop sets the variable, turns the state line back into
+the flags when it reopens the browser, and drops a filter with a control
+or bidi character or over 200 characters, counted as characters in any locale.
+A second line that is not a state line is
+refused with the answer. A binary that refuses the flags reopens the folder
+fresh, as one without `--select` does.
 
 ## The info screen (#252)
 
