@@ -146,6 +146,17 @@ fn find_maps_a_match_back_past_multibyte_text() {
     assert_eq!(&t[0][hs[1].from..hs[1].to], "école");
 }
 
+/// A char that lowers to fewer bytes (the Kelvin sign's 3 to `k`'s 1) still maps
+/// a match back onto the row's own bytes (#633 skips the map only when no char
+/// changes length).
+#[test]
+fn find_maps_back_past_a_char_that_lowers_shorter() {
+    let t = ["a \u{212A}elvin b".to_string()];
+    let hs = find(&rows(&[&t[0]]), "kelvin");
+    assert_eq!(hs.len(), 1);
+    assert_eq!(&t[0][hs[0].from..hs[0].to], "\u{212A}elvin");
+}
+
 #[test]
 fn search_jumps_to_the_first_match_and_n_cycles_round() {
     let mut s = screen(&format!("{}needle\n\n{}needle", paras(20), paras(20)));
