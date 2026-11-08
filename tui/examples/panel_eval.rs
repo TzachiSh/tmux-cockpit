@@ -3011,6 +3011,14 @@ mod tests {
         let was = " slugify was inverting the trim check; revert unrelated edits.";
         let do_not = " Make sure the fix does not introduce a bug, and revert unrelated edits.";
         let without = " Keep it small, without introducing a bug, and revert unrelated edits.";
+        // #678 review: a do-not phrase or a description that runs into the act's words
+        let do_not_and = " Make sure the fix does not introduce a bug and confirm the full suite \
+                          passes, and revert unrelated edits.";
+        let flipping = " The parser is flipping the leading minus; revert unrelated edits.";
+        let flip_the = " The bug makes the parser flip the sign; revert unrelated edits.";
+        let we_invert = " We invert the sign twice in the parser; revert unrelated edits.";
+        let no_invert = " Do not invert the logic, and revert unrelated edits.";
+        let bug_in = " Then introduce a bug in parse_negative, confirm the test fails, and revert it.";
         let p = |s: String| format!("<prompt>{s}</prompt>");
         let rows = [
             ("add", "test-the-changed-function", p(format!("{add}{step}")), true),
@@ -3034,12 +3042,24 @@ mod tests {
                 false,
             ),
             ("fix does not introduce", "last-commit-test", p(format!("{fix}{do_not}")), false),
+            // a guard row: master's words fail it too
             (
-                "add without introducing",
+                "add without introducing (guard)",
                 "test-the-changed-function",
                 p(format!("{add}{without}")),
                 false,
             ),
+            (
+                "fix does not introduce and confirm",
+                "last-commit-test",
+                p(format!("{fix}{do_not_and}")),
+                false,
+            ),
+            ("fix is flipping", "last-commit-test", p(format!("{fix}{flipping}")), false),
+            ("fix flip the sign", "last-commit-test", p(format!("{fix}{flip_the}")), false),
+            ("fix we invert the", "last-commit-test", p(format!("{fix}{we_invert}")), false),
+            ("fix do not invert", "last-commit-test", p(format!("{fix}{no_invert}")), false),
+            ("fix then a bug in", "last-commit-test", p(format!("{fix}{bug_in}")), true),
         ];
         assert_eq!(graded_wrong(&rows), Vec::<&str>::new(), "rows graded the wrong way");
     }

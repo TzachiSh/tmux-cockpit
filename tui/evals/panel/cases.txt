@@ -673,8 +673,8 @@ cargo test fails on main since the merge, fix it
 kind: bug
 window: bash · bash · /home/u/projects/calc
 expect: write
-must: parses_negative; src/parser.rs; leading minus|9f3c2a1; on purpose|deliberately|mutate|mutation|mutant|mutants|break the code|flip|flipping|introduce a small bug|introduce a bug, see|introduce a bug, confirm|introduce a bug and see|introduce a bug and confirm|introduce a bug to see|introduce a bug to confirm|invert the|invert one|invert a|by inverting|try inverting; undo|undoing|revert|reverting|restore|put back|put it back
-note: the repo block names the last commit; the screen names the test and its file; #587 (card 59): after the fix the prompt breaks the code on purpose, sees the test fail and undoes the break; the break words were widened after a probe, then narrowed by the #589 review, since "break" and "small change" also pass "does not break other tests" and "keep it a small change"; #590 added "introduce a (small) bug" and "invert", valid steps the narrow words failed; #599 narrowed those to the act ("introduce a bug, see", "invert the", "try inverting"), since "introduce a bug" and "inverting" also pass "does not introduce a bug" and "the parser is inverting the leading minus"
+must: parses_negative; src/parser.rs; leading minus|9f3c2a1; on purpose|deliberately|mutate|mutation|mutant|mutants|break the code|then flip|temporarily flip|flip one|try flipping|introduce a small bug|then introduce a bug|temporarily introduce a bug|then invert|temporarily invert|invert one|try inverting; undo|undoing|revert|reverting|restore|put back|put it back
+note: the repo block names the last commit; the screen names the test and its file; #587 (card 59): after the fix the prompt breaks the code on purpose, sees the test fail and undoes the break; the break words were widened after a probe, then narrowed by the #589 review, since "break" and "small change" also pass "does not break other tests" and "keep it a small change"; #590 added "introduce a (small) bug" and "invert", valid steps the narrow words failed; #599 narrowed those and "flip" to the act ("then introduce a bug", "then flip", "then invert", "try inverting"), since the bare words also pass "does not introduce a bug and confirm", "the parser is flipping the minus" and "we invert the sign"
 --- screen
 $ cargo test -q
 running 42 tests
@@ -723,8 +723,8 @@ review my changes
 kind: feature
 window: bash · bash · /home/u/projects/site
 expect: write
-must: slugify; on purpose|deliberately|mutate|mutation|mutant|mutants|break the code|flip|flipping|introduce a small bug|introduce a bug, see|introduce a bug, confirm|introduce a bug and see|introduce a bug and confirm|introduce a bug to see|introduce a bug to confirm|invert the|invert one|invert a|by inverting|try inverting; undo|undoing|revert|reverting|restore|put back|put it back
-note: without the repo block "which function" is open; the diff names the one file changed, and Claude Code can read the diff; #587 (card 58): the prompt breaks the code on purpose, sees the new test fail and undoes the break; the break words were widened after a probe, then narrowed by the #589 review, since "break" and "small change" also pass "does not break other tests" and "keep it a small change"; #590 added "introduce a (small) bug" and "invert", valid steps the narrow words failed; #599 narrowed those to the act ("introduce a bug, see", "invert the", "try inverting"), since "introduce a bug" and "inverting" also pass "does not introduce a bug" and "the parser is inverting the leading minus"
+must: slugify; on purpose|deliberately|mutate|mutation|mutant|mutants|break the code|then flip|temporarily flip|flip one|try flipping|introduce a small bug|then introduce a bug|temporarily introduce a bug|then invert|temporarily invert|invert one|try inverting; undo|undoing|revert|reverting|restore|put back|put it back
+note: without the repo block "which function" is open; the diff names the one file changed, and Claude Code can read the diff; #587 (card 58): the prompt breaks the code on purpose, sees the new test fail and undoes the break; the break words were widened after a probe, then narrowed by the #589 review, since "break" and "small change" also pass "does not break other tests" and "keep it a small change"; #590 added "introduce a (small) bug" and "invert", valid steps the narrow words failed; #599 narrowed those and "flip" to the act ("then introduce a bug", "then flip", "then invert", "try inverting"), since the bare words also pass "does not introduce a bug and confirm", "the parser is flipping the minus" and "we invert the sign"
 --- screen
 $ npm test
 Tests: 18 passed, 18 total
@@ -1227,7 +1227,7 @@ kind: feature
 window: bash · bash · /home/u/projects/shop
 expect: write
 out_is: prompt
-must: parse_price; on purpose|deliberately|mutate|mutation|mutant|mutants|break the code|flip|flipping|introduce a small bug|introduce a bug, see|introduce a bug, confirm|introduce a bug and see|introduce a bug and confirm|introduce a bug to see|introduce a bug to confirm|invert the|invert one|invert a|by inverting|try inverting; undo|undoing|revert|reverting|restore|put back|put it back
+must: parse_price; on purpose|deliberately|mutate|mutation|mutant|mutants|break the code|then flip|temporarily flip|flip one|try flipping|introduce a small bug|then introduce a bug|temporarily introduce a bug|then invert|temporarily invert|invert one|try inverting; undo|undoing|revert|reverting|restore|put back|put it back
 holdout: no
 note: a new test gets the mutation step: break the helper on purpose, see the test fail, undo the break; #599: the break words name the act, as in last-commit-test
 --- screen
@@ -1275,7 +1275,7 @@ kind: bug
 window: bash · bash · /home/u/projects/proxy
 expect: write
 out_is: prompt
-must: TestParseHeader; on purpose|deliberately|mutate|mutation|mutant|mutants|break the code|flip|flipping|introduce a small bug|introduce a bug, see|introduce a bug, confirm|introduce a bug and see|introduce a bug and confirm|introduce a bug to see|introduce a bug to confirm|invert the|invert one|invert a|by inverting|try inverting; undo|undoing|revert|reverting|restore|put back|put it back
+must: TestParseHeader; on purpose|deliberately|mutate|mutation|mutant|mutants|break the code|then flip|temporarily flip|flip one|try flipping|introduce a small bug|then introduce a bug|temporarily introduce a bug|then invert|temporarily invert|invert one|try inverting; undo|undoing|revert|reverting|restore|put back|put it back
 holdout: yes
 note: a failing test to fix gets the break-it step after it passes; #599: the break words name the act, as in last-commit-test
 --- screen
