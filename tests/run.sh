@@ -653,11 +653,17 @@ case "$(tmux -L "$SOCK4" show-option -gqv pane-border-format)" in
     *cockpit_corner*) ok "sourcing it draws the plugin's border" ;;
     *) bad "sourcing it draws the plugin's border" "the corner format" "$(tmux -L "$SOCK4" show-option -gqv pane-border-format | cut -c1-80)" ;;
 esac
+# A reload that never ran leaves one marker and one hook too, so the load marker
+# goes first: only this source-file's load binds it again (#689).
+"$TMUX_REAL" -L "$SOCK4" unbind-key -q -n C-MouseDown3Pane >/dev/null 2>&1
 tmux -L "$SOCK4" source-file "$DIR/examples/tmux.conf" >/dev/null 2>&1
-is "reloading rewrites the overflow markers once" "1" \
-   "$(tmux -L "$SOCK4" show-option -gqv 'status-format[0]' | grep -o '#{?#{E:@cockpit_is_touch},,< }' | wc -l)"
-is "reloading does not stack the branch hook" "1" \
-   "$(tmux -L "$SOCK4" show-hooks -gw window-pane-changed | grep -c 'branch --set')"
+loaded_on "$SOCK4" "reloading rewrites the overflow markers once" &&
+    is "reloading rewrites the overflow markers once" "1" \
+       "$(tmux -L "$SOCK4" show-option -gqv 'status-format[0]' \
+          | grep -o '#{?#{E:@cockpit_is_touch},,< }' | wc -l)"
+loaded_on "$SOCK4" "reloading does not stack the branch hook" &&
+    is "reloading does not stack the branch hook" "1" \
+       "$(tmux -L "$SOCK4" show-hooks -gw window-pane-changed | grep -c 'branch --set')"
 # pane_title defaults to the HOSTNAME. Claude sets a title; aider, codex, gemini
 # and crush generally do not, so without a guard every one of those tabs reads
 # the same hostname instead of its window name.
@@ -1957,9 +1963,10 @@ HBD=$(mktmpd); mkdir -p "$HBD/al/b" "$HBD/alice"
 "$TMUX_REAL" -L "$HB" new-window -d -n home -c "$HBD/al" >/dev/null 2>&1
 hb_path() { "$TMUX_REAL" -L "$HB" display -p -t "t:$1" '#{E:@cockpit_where_path}' 2>/dev/null; }
 for h in "$HBD/al" "$HBD/al/"; do
-    "$TMUX_REAL" -L "$HB" run-shell "HOME='$h' '$DIR/cockpit.tmux'" >/dev/null 2>&1
-    is "HOME=$h: a sibling sharing the prefix, a subdir, HOME itself" \
-       "$HBD/alice|~/b|~" "$(hb_path alice)|$(hb_path b)|$(hb_path home)"
+    reload_on "$HB" "HOME='$h' '$DIR/cockpit.tmux'"
+    hbr="HOME=$h: a sibling sharing the prefix, a subdir, HOME itself"
+    loaded_on "$HB" "$hbr" &&
+        is "$hbr" "$HBD/alice|~/b|~" "$(hb_path alice)|$(hb_path b)|$(hb_path home)"
 done
 unset -f hb_path
 "$TMUX_REAL" -L "$HB" kill-server >/dev/null 2>&1
@@ -3908,8 +3915,9 @@ sc_keys() { for k in u w r; do "$TMUX_REAL" -L "$SC" list-keys -T prefix "$k" 2>
 is "prefix u, w and r pass #{client_name}" "1 1 1 " "$(sc_keys)"
 "$TMUX_REAL" -L "$SC" set -g @cockpit_board_window on >/dev/null 2>&1
 "$TMUX_REAL" -L "$SC" set -g @cockpit_review_window on >/dev/null 2>&1
-"$TMUX_REAL" -L "$SC" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
-is "and so do their window forms" "1 1 1 " "$(sc_keys)"
+reload_on "$SC"
+loaded_on "$SC" "and so do their window forms" &&
+    is "and so do their window forms" "1 1 1 " "$(sc_keys)"
 unset -f sc_open sc_where sc_run sc_keys sc_home
 "$TMUX_REAL" -L "$SC" kill-server >/dev/null 2>&1
 wait "$SCPA" "$SCPB" 2>/dev/null
@@ -4179,7 +4187,7 @@ GUD=$(mktmpd); GUD2=$(mktmpd)
 for d in "$GUD" "$GUD2"; do
     git -C "$DIR" archive "$GU_REV" cockpit.tmux scripts | tar -x -C "$d"
 done
-gu_load() { "$TMUX_REAL" -L "$1" run-shell "$2/cockpit.tmux" >/dev/null 2>&1; }
+gu_load() { reload_on "$1" "$2/cockpit.tmux"; }
 gu_key() { "$TMUX_REAL" -L "$1" list-keys -T prefix "$2" 2>/dev/null; }
 # Upgraded in place, as a pull does: the same directory, the new files.
 gu_up() { rm -rf "$1/scripts"; cp -r "$DIR/cockpit.tmux" "$DIR/scripts" "$1/"; }
@@ -4202,13 +4210,15 @@ loaded_on "$GU" "the old menu key a is free again and the old panel key f is fin
 is "and each says so once, and the load marks every key noted" "2:1" \
    "$(gu_said):$("$TMUX_REAL" -L "$GU" show-option -gqv @cockpit_notes)"
 gu_load "$GU" "$GUD"
-is "a later load says nothing more" "2" "$(gu_said)"
+loaded_on "$GU" "a later load says nothing more" &&
+    is "a later load says nothing more" "2" "$(gu_said)"
 # Past the marker no command is a guess: a user's own centred menu on n stays.
 "$TMUX_REAL" -L "$GU" bind-key n display-menu -T '#[align=centre]mine' x x '' >/dev/null 2>&1
 "$TMUX_REAL" -L "$GU" set -g @cockpit_menu_key off >/dev/null 2>&1
 gu_load "$GU" "$GUD"
-is "after the marker a user's centred menu on the old menu key stays" "1" \
-   "$(gu_key "$GU" n | grep -c 'align=centre]mine')"
+loaded_on "$GU" "after the marker a user's centred menu on the old menu key stays" &&
+    is "after the marker a user's centred menu on the old menu key stays" "1" \
+       "$(gu_key "$GU" n | grep -c 'align=centre]mine')"
 # The guess is the panel's own command: a user's key on f running another of
 # cockpit's scripts stays the user's, even on that first load.
 "$TMUX_REAL" -L "$GU2" -f /dev/null new-session -d -s t -c "$GUD2" >/dev/null 2>&1
