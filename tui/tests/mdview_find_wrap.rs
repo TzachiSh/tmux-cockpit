@@ -96,3 +96,16 @@ fn a_match_over_three_rows_draws_on_each() {
     let b = buffer(&mut s);
     assert!(reversed(&b, TOP + 1, &"c".repeat(56)) && reversed(&b, TOP + 2, "cccccccc"));
 }
+
+/// The put-back space at a soft wrap: a match that ends on it stops at the end of
+/// the row before, one that starts on it starts on the next row, and a search
+/// for a space alone finds only the real ones (#633 maps them by row).
+#[test]
+fn a_match_at_the_put_back_space_lands_on_a_real_row() {
+    let src = format!("{} find me", "x".repeat(50));
+    let mut s = screen(&src, Mode::Markdown);
+    assert_eq!(search(&mut s, "find "), [(0, 51)]);
+    assert_eq!((s.hits[0].last, s.hits[0].to), (0, 55));
+    assert_eq!(search(&mut screen(&src, Mode::Markdown), " me"), [(1, 0)]);
+    assert_eq!(search(&mut screen(&src, Mode::Markdown), " "), [(0, 50)]);
+}
