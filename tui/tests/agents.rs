@@ -192,11 +192,15 @@ fn now() -> u64 {
 /// signals a pid whose cmdline still names its own dir (AGENTS.md).
 #[test]
 fn the_rig_never_kills_a_pid_that_is_not_its_stub() {
-    let mut other = std::process::Command::new("sleep").arg("30").spawn().unwrap();
-    {
+    let mut other = {
         let r = Rig::new("reused", ONE);
+        // After Rig::new, which can wait on the ENV lock behind other rigs: a sleep started
+        // before it could end on its own and be blamed on the drop. An absolute path, since
+        // a bare `sleep` is the rig's bin/sleep, whose cmdline names the rig's dir.
+        let other = std::process::Command::new("/bin/sleep").arg("30").spawn().unwrap();
         std::fs::write(r.dir.join("stubpid"), other.id().to_string()).unwrap();
-    }
+        other
+    };
     // Child::kill is a SIGKILL too, so a look right after the drop could not tell a kill
     // still on its way from none (#527). This ends it with SIGTERM: a SIGKILL already sent
     // wins, and the exit status says which signal it died of.
