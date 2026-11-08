@@ -8783,6 +8783,8 @@ cat > "$PND/rec/tmux" <<PNREC
 [ "\$1" = show-options ] && { cat "$PND/bopt" 2>/dev/null; exit 0; }
 # the @cockpit_glyphs read (#293) is not an action: unset, unrecorded
 [ "\$*" = "show-option -gqv @cockpit_glyphs" ] && exit 0
+# nor the @cockpit_panel_effort read (#623)
+[ "\$*" = "show-option -gqv @cockpit_panel_effort" ] && exit 0
 # capture-pane counts its calls; "still" mode answers the same screen each time.
 if [ "\$1" = capture-pane ]; then
     echo x >> "$PND/caps"
@@ -11892,6 +11894,34 @@ is "and unset passes nothing" "[] D=[%9999]" "$(gp_run)"
 is "a value with spaces reaches the panel as one word" "[ascii touch $GPD/ran] D=[%9999]" "$(gp_run)"
 [ -e "$GPD/ran" ] && bad "and runs nothing" "no $GPD/ran" "it exists" || ok "and runs nothing"
 "$TMUX_REAL" -L "$GP" kill-server >/dev/null 2>&1
+fi
+
+echo "== cockpit-panel: @cockpit_panel_effort reaches the binary as COCKPIT_PANEL_EFFORT (#623) =="
+# Read at open, as the glyphs are: setting it needs no reload. The binary keeps
+# only the CLI's words, so the wrapper passes the value as it is, as one word.
+if need_tmux "the panel's effort"; then :; else
+GE="cockpit-ge-$$"; SOCKS="$SOCKS $GE"; GED=$(mktmpd)
+printf '#!/bin/sh\nprintf "[%%s]" "${COCKPIT_PANEL_EFFORT-unset}" > %s/e\n' "$GED" > "$GED/bin"
+chmod +x "$GED/bin"
+"$TMUX_REAL" -L "$GE" -f /dev/null new-session -d -s t -x 100 -y 30 -c "$GED" 'exec sleep 3600' \
+    >/dev/null 2>&1
+GEP=$("$TMUX_REAL" -L "$GE" list-panes -t t -F '#{pane_id}')
+ge_run() {
+    rm -f "$GED/e"
+    "$TMUX_REAL" -L "$GE" new-window -d -t t: -c "$GED" \
+        "env -u COCKPIT_PANEL_EFFORT COCKPIT_TUI_BIN=$GED/bin XDG_STATE_HOME=$GED \
+COCKPIT_LOG=$GED/tui.log $DIR/scripts/cockpit-panel -p $GEP"
+    until_file "$GED/e" '\[*\]'
+    cat "$GED/e" 2>/dev/null
+}
+"$TMUX_REAL" -L "$GE" set -g @cockpit_panel_effort low
+is "@cockpit_panel_effort low reaches the panel as COCKPIT_PANEL_EFFORT" "[low]" "$(ge_run)"
+"$TMUX_REAL" -L "$GE" set -gu @cockpit_panel_effort
+is "and unset passes nothing" "[unset]" "$(ge_run)"
+"$TMUX_REAL" -L "$GE" set -g @cockpit_panel_effort "high; touch $GED/ran"
+is "a value with spaces reaches the panel as one word" "[high; touch $GED/ran]" "$(ge_run)"
+[ -e "$GED/ran" ] && bad "and runs nothing" "no $GED/ran" "it exists" || ok "and runs nothing"
+"$TMUX_REAL" -L "$GE" kill-server >/dev/null 2>&1
 fi
 
 # --- sessions view (#245): cockpit-tui sessions and the tm that runs it -------

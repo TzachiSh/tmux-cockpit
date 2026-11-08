@@ -9,6 +9,7 @@ use cockpit_tui::data::gitsafe::REDIRECT;
 use cockpit_tui::panel::app::App;
 use cockpit_tui::panel::capture::Capture;
 use cockpit_tui::panel::envelope::{Flow, OutType};
+use cockpit_tui::panel::request::Effort;
 use fake::Scratch;
 use std::ffi::OsString;
 use std::path::Path;
@@ -57,7 +58,7 @@ fn root_of(pane: &Path) -> Option<String> {
         draft: "fix it".into(),
         out: OutType::Auto,
     };
-    let argv = a.profile_for(&flow).argv();
+    let argv = a.profile_for(&flow).argv(Effort::Medium);
     let i = argv.iter().position(|x| x == "--add-dir")?;
     Some(argv[i + 1].clone())
 }

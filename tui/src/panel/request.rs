@@ -42,6 +42,44 @@ pub struct Call {
     pub timeout: Duration,
     /// The child's cwd, and the parent of the system prompt files.
     pub dir: PathBuf,
+    /// `--effort`, from `COCKPIT_PANEL_EFFORT` (#623).
+    pub effort: Effort,
+}
+
+/// `--effort`: one of the CLI's words, so the user's own text never reaches the
+/// argv. The panel passes one on every call, as none of the user's settings
+/// load, their `effortLevel` included (#623).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Effort {
+    Low,
+    #[default]
+    Medium,
+    High,
+    XHigh,
+    Max,
+}
+
+impl Effort {
+    pub const ALL: [Effort; 5] = {
+        use Effort::*;
+        [Low, Medium, High, XHigh, Max]
+    };
+
+    /// The word as the CLI spells it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Effort::Low => "low",
+            Effort::Medium => "medium",
+            Effort::High => "high",
+            Effort::XHigh => "xhigh",
+            Effort::Max => "max",
+        }
+    }
+
+    /// `word` if it is one of the CLI's, exactly; anything else is `medium`.
+    pub fn read(word: &str) -> Effort {
+        Effort::ALL.into_iter().find(|e| e.as_str() == word).unwrap_or_default()
+    }
 }
 
 impl Call {
@@ -57,6 +95,7 @@ impl Call {
                 .unwrap_or_else(|| "claude".into()),
             timeout: Duration::from_secs(secs.unwrap_or(120)),
             dir: super::xdg("XDG_CACHE_HOME", ".cache").join("tmux-cockpit/panel"),
+            effort: Effort::read(&std::env::var("COCKPIT_PANEL_EFFORT").unwrap_or_default()),
         }
     }
 }
@@ -245,9 +284,11 @@ impl Profile {
         })
     }
 
-    /// The flags after the system prompt file. [`Profile::TEXT`]'s are the panel's
-    /// argv from before profiles, byte for byte.
-    pub fn argv(&self) -> Vec<String> {
+    /// The flags after the system prompt file, at `effort`. Every profile loads
+    /// no settings source (`--setting-sources ""`): no user, project or local
+    /// settings, and with them no CLAUDE.md, hooks, plugins or `effortLevel`.
+    /// Managed settings and `--settings` still apply (#623).
+    pub fn argv(&self, effort: Effort) -> Vec<String> {
         let mut a = vec!["--tools".to_string(), self.tools.join(",")];
         if !self.allow.is_empty() {
             a.extend(["--allowedTools".into(), self.allow.join(",")]);
@@ -274,6 +315,8 @@ impl Profile {
             a.extend(["--output-format".into(), "json".into(), "--verbose".into()]);
         }
         a.extend(["--no-session-persistence".into(), "--strict-mcp-config".into()]);
+        a.extend(["--setting-sources".into(), String::new()]);
+        a.extend(["--effort".into(), effort.as_str().into()]);
         if !self.skills {
             a.push("--disable-slash-commands".into());
         }
@@ -456,11 +499,13 @@ fn start(call: &Call, p: &Profile, system: &str, model: &str) -> Result<std::pro
         .args(super::route::model_argv(model))
         .arg("--system-prompt-file")
         .arg(&file)
-        .args(p.argv())
+        .args(p.argv(call.effort))
         .current_dir(&call.dir)
         // The hooks key off TMUX_PANE: without it this call is no pane's agent.
         .env("COCKPIT_PANEL_CALL", "1")
         .env_remove("CLAUDECODE")
+        // claude ranks it over --effort: the panel's own option decides (#623)
+        .env_remove("CLAUDE_CODE_EFFORT_LEVEL")
         .env_remove("TMUX_PANE")
         .env_remove("TMUX")
         .stdin(Stdio::piped())
