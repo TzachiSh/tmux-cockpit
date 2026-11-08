@@ -309,9 +309,11 @@ then every disagreement with the owner's note and the judge's critique.
 `--split tune|holdout|all` picks the rows: the holdout takes whole cases (the
 label's `case`), about a third of the rows of the cases with an owner fail and a
 third of the rest, by a hash of the case name; tune the rubric on the tune rows
-only. On the 118 labels, haiku with the shipped rubric scored TPR 93/98, TNR
-15/20 (95% CI 53%-89%, 36 points wide) and kappa 0.70 (95% CI 0.52-0.88)
-against the owner. Earlier rubrics gave kappa 0.59 to 0.69 from one sweep to
+only. On the 118 labels, haiku with the shipped rubric scored TPR 93/98 (95%
+CI 89%-98%), TNR 15/20 (95% CI 53%-89%, 36 points wide) and kappa 0.70 (95%
+CI 0.52-0.88) against the owner. The rubric before rule 7 was narrowed to
+fail a repo-context option only when the screen or git state contradicts it
+scored the same table. Earlier rubrics gave kappa 0.59 to 0.69 from one sweep to
 the next, so a single sweep moves kappa by about 0.1. Quote the full set: the first split was by row,
 every owner note was read before it, the break-on-purpose rule came from two of
 its held-out fails, and three of its seven held-out fails shared a case with
