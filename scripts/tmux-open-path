@@ -249,17 +249,28 @@ browse_act() {
 
 # The browser's second line, `state <h> <i> <filter>` (COCKPIT_FILES_STATE=1,
 # #574), as the flags that start it that way again, in STATE. A filter with a
-# control character or over 200 characters is dropped: the binary never prints
-# one, so it is not the browser's. 1 when the line is not a state line.
+# control or bidi character or over 200 characters is dropped: the binary never
+# prints one, so it is not the browser's. 1 when the line is not a state line.
+# Characters, not bytes: a UTF-8 locale for the checks, whatever the caller's.
+# With none to be had, a non-ASCII filter counts long and is dropped.
 browse_state() {
-    local re='^state ([01]) ([01]) (.*)$' f
+    local re='^state ([01]) ([01]) (.*)$' f u bidi
+    for u in C.UTF-8 en_US.UTF-8; do
+        { local LC_ALL=$u; } 2>/dev/null
+        f=$'\xc3\xa9'; [ "${#f}" != 1 ] || break     # é, one character
+    done
+    # U+061C, U+200E-200F, U+202A-202E, U+2066-2069 as UTF-8 bytes: $'\u' would
+    # be turned into text in the locale the script was read in
+    bidi=$'\xd8\x9c\xe2\x80\x8e\xe2\x80\x8f\xe2\x80\xaa\xe2\x80\xab\xe2\x80\xac'
+    bidi+=$'\xe2\x80\xad\xe2\x80\xae\xe2\x81\xa6\xe2\x81\xa7\xe2\x81\xa8\xe2\x81\xa9'
     STATE=()
     case $1 in *$'\n'*) return 1 ;; esac
     [[ $1 =~ $re ]] || return 1
     [ "${BASH_REMATCH[1]}" = 0 ] || STATE+=(--hidden)
     [ "${BASH_REMATCH[2]}" = 0 ] || STATE+=(--ignored)
     f=${BASH_REMATCH[3]}
-    [ -z "$f" ] || [[ $f == *[[:cntrl:]]* ]] || [ "${#f}" -gt 200 ] || STATE+=(--filter "$f")
+    [ -z "$f" ] || [[ $f == *[[:cntrl:]]* || $f == *["$bidi"]* ]] || [ "${#f}" -gt 200 ] \
+        || STATE+=(--filter "$f")
 }
 
 # --folder asks for a popup, which re-enters as --browse: run-shell has no terminal.

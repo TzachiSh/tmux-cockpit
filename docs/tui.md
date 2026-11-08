@@ -2456,7 +2456,8 @@ after its answer, `state <dotfiles 0|1> <ignored 0|1> <filter>`, and leaves out 
 filter the flag would refuse. Without the variable the answer stays one line.
 `tmux-open-path`'s browse loop sets the variable, turns the state line back into
 the flags when it reopens the browser, and drops a filter with a control
-character or over 200 characters. A second line that is not a state line is
+or bidi character or over 200 characters, counted as characters in any locale.
+A second line that is not a state line is
 refused with the answer. A binary that refuses the flags reopens the folder
 fresh, as one without `--select` does.
 

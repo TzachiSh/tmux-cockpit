@@ -14947,13 +14947,19 @@ is "the ignored toggle alone" "${FBSEL}[--ignored][--filter][x]" "$(fbargv 2)"
 fb off "view $FBD/sub/n.txt\nstate 1 0 \$(touch FBPWN) *\n" 0
 is "a filter with \$( ) and a glob is one literal argument" "${FBSEL}[--hidden][--filter][\$(touch FBPWN) *]" "$(fbargv 2)"
 is "and nothing ran it" "" "$(find "$FB" "$DIR" -maxdepth 3 -name FBPWN 2>/dev/null)"
-for row in "an escape|a\\033[2Jb" "a tab|a\\tb" "a DEL|a\\177b" "201 characters|$(printf 'x%.0s' $(seq 201))"; do
+for row in "an escape|a\\033[2Jb" "a tab|a\\tb" "a DEL|a\\177b" "a bidi override|a"$'\u202e'"b" \
+           "an LRI|a"$'\u2066'"b" "201 characters|$(printf 'x%.0s' $(seq 201))"; do
     fb off "view $FBD/sub/n.txt\nstate 1 0 ${row#*|}\n" 0
     is "a filter with ${row%%|*} is dropped, the toggles kept" "${FBSEL}[--hidden]" "$(fbargv 2)"
 done
 fb off "view $FBD/sub/n.txt\nstate 0 0 $(printf 'x%.0s' $(seq 200))\n" 0
 is "a filter of 200 characters is kept" "${FBSEL}[--filter][$(printf 'x%.0s' $(seq 200))]" "$(fbargv 2)"
-for row in "a toggle that is not 0 or 1|state 2 0 x" "no state word|hidden 1 0 x" "a third line|state 1 0 x\njunk"; do
+# characters, not bytes, whatever the locale the script runs in: 150 é is 300 bytes
+FBE=$(printf 'é%.0s' $(seq 150))
+LC_ALL=C fb off "view $FBD/sub/n.txt\nstate 0 0 $FBE\n" 0
+is "under LC_ALL=C a filter of 150 é is kept" "${FBSEL}[--filter][$FBE]" "$(fbargv 2)"
+for row in "a toggle that is not 0 or 1|state 2 0 x" "no state word|hidden 1 0 x" \
+           "a prefix before the state word|xstate 1 0 x" "a third line|state 1 0 x\njunk"; do
     fb off "view $FBD/sub/n.txt\n${row#*|}\n" 0
     is "a second line with ${row%%|*}: refused, no viewer, no browser back" "1|0|1" \
        "$(fbnotes)|$(fbtn view)|$(fbtn files)"
