@@ -1677,9 +1677,15 @@ fn the_board_and_info_agree_on_the_asked_prompt() {
     let r = Rig::new("askedagree");
     let image = serde_json::json!({"type": "user", "timestamp": "2026-08-27T00:00:05.000Z", "message": {"content": [
         {"type": "image", "source": {"type": "base64", "data": "AA=="}}, {"type": "text", "text": "look at this"}]}});
+    // #351: the summary Claude Code writes after /compact is no prompt either
+    let text = "This session is being continued from a previous one.";
+    let summary = serde_json::json!({"role": "user", "content": text});
+    let compact = serde_json::json!({"type": "user", "isCompactSummary": true,
+        "timestamp": "2026-08-27T00:00:09.000Z", "message": summary});
     let cases = [
         ("s1", typed_row("[Request interrupted by user]"), "first prompt"),
         ("s2", format!("{image}\n"), "look at this"),
+        ("s3", format!("{compact}\n"), "first prompt"),
     ];
     let mut rows = vec![];
     for (sess, after, _) in &cases {
