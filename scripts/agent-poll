@@ -6,7 +6,8 @@
 #     that job's state, and carries @cockpit_job <id> and @cockpit_job_name <name> while bound;
 #   - any other pane marked @cockpit_agentview (by agent-state notify) shows the worst background
 #     session, blocked > failed > working > done; none or stopped is idle.
-# One poller per tmux server, its pid in the global @cockpit_poll_pid, started by the load
+# One poller per tmux server and Claude config dir (#194), its pid in the global
+# @cockpit_poll_pid (or @cockpit_poll_pid_<key> for a dir, see KEY below), started by the load
 # and window-event sweeps (agent-state sweep) and by a relayed agent notification. It stays for
 # the life of the server: nothing a background job does may touch tmux (#174), so no hook could
 # start it when a job appears. A tick is a list-panes; claude is read only when it can matter.
@@ -24,6 +25,15 @@ here=${d%/*}
 # shellcheck source=lib/fmt.sh
 . "$here/lib/fmt.sh" 2>/dev/null || exit 0
 
+# One poller per Claude config dir (#194). COCKPIT_POLL_KEY is the dir's cksum, empty for the
+# default dir: this poller's slot, @cockpit_poll_pid or @cockpit_poll_pid_<key>, and the panes it
+# serves, those whose @cockpit_cfg (the dir their hooks saw) is the CLAUDE_CONFIG_DIR it runs with.
+KEY=${COCKPIT_POLL_KEY:-}
+case "$KEY" in *[!0-9]*) exit 0 ;; esac
+SLOT=@cockpit_poll_pid${KEY:+_$KEY}
+MYDIR=${CLAUDE_CONFIG_DIR:-}
+idle=0                        # ticks in a row with no pane of this dir; a dir poller leaves at 3
+
 interval() {                  # -> seconds, or "off"
     local v; v=$(tmux show-option -gqv @cockpit_bg_poll 2>/dev/null)
     case "$v" in off) echo off ;; ''|*[!0-9]*|0) echo 10 ;; *) echo "$v" ;; esac
@@ -34,17 +44,27 @@ interval() {                  # -> seconds, or "off"
 # nothing or a dead poller's pid, so two pollers racing for it cannot both win. A poller also
 # rechecks the slot every tick (tick below), so a wrong answer from poll_alive costs one tick.
 claim() {
-    local cur; cur=$(tmux show-option -gqv @cockpit_poll_pid 2>/dev/null)
+    local cur have
+    # A dir's slot is that dir's alone: two dirs on one cksum never share it (#194).
+    if [ -n "$KEY" ]; then
+        have=$(tmux show-option -gqv "@cockpit_poll_dir_$KEY" 2>/dev/null)
+        if [ "$have" != "$MYDIR" ]; then
+            tmux set-option -g @cockpit_poll_err "config dirs share a poller key: $KEY" 2>/dev/null
+            return 1
+        fi
+    fi
+    cur=$(tmux show-option -gqv "$SLOT" 2>/dev/null)
     if [ -n "$cur" ] && [ "$cur" != "$$" ] && poll_alive "$cur"; then return 1; fi
     # Not a pid: clear it, then compete for the empty slot like everyone else.
-    case "$cur" in *[!0-9]*) tmux set-option -gu @cockpit_poll_pid 2>/dev/null; cur="" ;; esac
-    tmux if-shell -F "#{==:#{@cockpit_poll_pid},$cur}" \
-        "set-option -g @cockpit_poll_pid $$" 2>/dev/null
-    [ "$(tmux show-option -gqv @cockpit_poll_pid 2>/dev/null)" = "$$" ]
+    case "$cur" in *[!0-9]*) tmux set-option -gu "$SLOT" 2>/dev/null; cur="" ;; esac
+    tmux if-shell -F "#{==:#{$SLOT},$cur}" "set-option -g $SLOT $$" 2>/dev/null
+    [ "$(tmux show-option -gqv "$SLOT" 2>/dev/null)" = "$$" ]
 }
 # Our own pid only (a later poller's stays), and a sleep child still running goes with us.
 release() {
-    tmux if-shell -F "#{==:#{@cockpit_poll_pid},$$}" "set-option -gu @cockpit_poll_pid" 2>/dev/null
+    local drop="set-option -gu $SLOT"
+    [ -z "$KEY" ] || drop="$drop ; set-option -gu @cockpit_poll_dir_$KEY"
+    tmux if-shell -F "#{==:#{$SLOT},$$}" "$drop" 2>/dev/null
     [ -n "$sleeper" ] && kill "$sleeper" 2>/dev/null
     # A signal between `sleep &` and `sleeper=$!` leaves the pid unsaved; the sleep is still a
     # live job of ours. A loop, not `kill $(jobs -p)`: with no job that would still run kill.
@@ -71,7 +91,7 @@ PANE_FMT=".#{pane_id}$T.#{pane_current_command}$T.#{allow-set-title}"
 PANE_FMT="$PANE_FMT$T.#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},1,0}"
 PANE_FMT="$PANE_FMT$T.#{@cockpit_agentview}$T.#{@cockpit_fg}"
 PANE_FMT="$PANE_FMT$T.#{@cockpit_job}$T.#{@cockpit_job_name}$T.#{@cockpit_job_state}"
-PANE_FMT="$PANE_FMT$T.#{@panestate}$T.#{@cockpit_poll_pid}$T.#{pane_title}"
+PANE_FMT="$PANE_FMT$T.#{@panestate}$T.#{$SLOT}$T.#{@cockpit_cfg}$T.#{pane_title}"
 
 # jq program. Input: claude's JSON. $panes: "<pane id> TAB <@cockpit_fg> TAB <title>" lines of
 # the panes that may be bound. Output, tab-separated: `W worst blockedname` (today's worst of
@@ -142,16 +162,20 @@ S_LIVE="" S_BOUND="" S_CAND="" S_SIG="" S_ROWS=$'\n' S_SERIOUS="" S_OWN="" R_OUT
 # S_SERIOUS set when a pane is waiting on a read. Panes that cannot hold what they carry
 # are cleaned here. 1: no server and no pane.
 scan_panes() {
-    local rows id cmd allow glob view fg job jname jstate pstate owner title marked
+    local rows id cmd allow glob view fg job jname jstate pstate owner cfg title marked
     local seen=0 job_kept="" fgc
-    S_LIVE="" S_BOUND="" S_CAND="" S_SIG="" S_ROWS=$'\n' S_SERIOUS="" S_OWN=""
+    S_LIVE="" S_BOUND="" S_CAND="" S_SIG="" S_ROWS=$'\n' S_SERIOUS="" S_OWN="" S_MINE=""
     rows=$(tmux list-panes -a -F "$PANE_FMT" 2>/dev/null) || return 1
-    while IFS=$T read -r id cmd allow glob view fg job jname jstate pstate owner title; do
+    while IFS=$T read -r id cmd allow glob view fg job jname jstate pstate owner cfg title; do
         [ -n "$id" ] || continue
         seen=1
+        S_OWN=${owner#.}
+        # Another config dir's pane is another poller's: not read, cleaned or written here (#194).
+        [ "${cfg#.}" = "$MYDIR" ] || continue
+        S_MINE=1
         id=${id#.}; cmd=${cmd#.}; allow=${allow#.}; glob=${glob#.}; view=${view#.}
         fg=${fg#.}; job=${job#.}; jname=${jname#.}; jstate=${jstate#.}; pstate=${pstate#.}
-        S_OWN=${owner#.}; title=${title#.}
+        title=${title#.}
         marked=""; [ "$view" = 1 ] && marked=1
         if [ "$marked" = 1 ] && [ "$glob" != 1 ]; then
             tmux set-option -pu -t "$id" @cockpit_agentview 2>/dev/null   # claude left: not ours
@@ -289,6 +313,13 @@ tick() {
     scan_panes || return 1
     # Someone else holds the slot (it was taken over): leave it to them.
     [ "$once" = 1 ] || [ "$S_OWN" = "$$" ] || return 1
+    # A dir poller with no pane of its dir for three ticks in a row leaves: a count, not a clock.
+    # The default one stays, as nothing a job does could start it again (#194).
+    if [ -n "$KEY" ] && [ -z "$S_MINE" ]; then
+        idle=$((idle + 1)); [ "$idle" -lt 3 ] || return 1
+        return 0
+    fi
+    idle=0
     read_jobs && apply_jobs
     return 0
 }
