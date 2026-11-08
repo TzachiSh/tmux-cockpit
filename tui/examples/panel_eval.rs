@@ -508,6 +508,8 @@ struct Opts {
     check: bool,
     /// Two `--out` files: compared offline, no calls.
     compare: Option<(PathBuf, PathBuf)>,
+    /// `--compare` pairs a case whose rows on one side carry two prompt hashes.
+    allow_mixed: bool,
     /// `explore:` cases run as the text call, on the same folder.
     no_explore: bool,
     /// No user settings or CLAUDE.md, and a fresh cwd per call (#598).
@@ -531,6 +533,7 @@ fn opts(args: impl IntoIterator<Item = String>) -> Result<Opts, String> {
         out: None,
         check: false,
         compare: None,
+        allow_mixed: false,
         no_explore: false,
         hermetic: true,
         judge: false,
@@ -551,6 +554,7 @@ fn opts(args: impl IntoIterator<Item = String>) -> Result<Opts, String> {
             "--check" => o.check = true,
             "--no-explore" => o.no_explore = true,
             "--no-hermetic" => o.hermetic = false,
+            "--allow-mixed" => o.allow_mixed = true,
             "--judge" => o.judge = true,
             "--judge-model" => o.judge_model = val()?,
             "--calibrate" => o.calibrate = Some(val()?.into()),
@@ -690,7 +694,20 @@ fn main() {
                 .and_then(|t| read_rows(&name, &t))
         };
         match read(a).and_then(|ra| Ok((ra, read(b)?))) {
-            Ok((ra, rb)) => print_compare(&[(a, &ra), (b, &rb)]),
+            Ok((ra, rb)) => {
+                let mixed: Vec<String> = [(a, &ra), (b, &rb)]
+                    .iter()
+                    .flat_map(|(p, rows)| mixed_prompts(rows).into_iter().map(move |id| format!("{id} in {}", p.display())))
+                    .collect();
+                if !mixed.is_empty() && !o.allow_mixed {
+                    eprintln!(
+                        "panel_eval: rows with two prompt hashes for one case: {}; --allow-mixed pairs them anyway",
+                        mixed.join(", ")
+                    );
+                    std::process::exit(2);
+                }
+                print_compare(&[(a, &ra), (b, &rb)])
+            }
             Err(e) => {
                 eprintln!("panel_eval: {e}");
                 std::process::exit(2);
@@ -747,6 +764,7 @@ fn main() {
         }
         Err(e) => eprintln!("panel_eval: no cost recorded, cannot find the rig's own binary: {e}"),
     }
+    let prompt = prompt_hash();
     let mut log = o.out.as_ref().map(|p| {
         std::fs::File::create(p).unwrap_or_else(|e| {
             eprintln!("panel_eval: {}: {e}", p.display());
@@ -867,7 +885,7 @@ fn main() {
             if log.is_some() || o.judge {
                 let row = serde_json::json!({
                     "id": c.id, "kind": c.kind, "expect": want, "run": j.run, "model": j.model,
-                    "system": format!("{:016x}", j.system),
+                    "system": format!("{:016x}", j.system), "prompt": prompt,
                     "ms": ms as u64, "error": err,
                     "asked": g.as_ref().map(|g| g.asked), "pass": g.as_ref().map(|g| g.pass),
                     "question": g.as_ref().map(|g| g.question.clone()),
@@ -1258,6 +1276,8 @@ struct Row {
     pass: Option<bool>,
     /// The system prompt's hash; "" in a file written before it was recorded.
     system: String,
+    /// The hash of write.txt and its examples as loaded; "" in an older file.
+    prompt: String,
     cost_usd: Option<f64>,
     ms: Option<u64>,
     /// The files an exploring call read; `None` for a text call or an older file.
@@ -1284,6 +1304,7 @@ fn read_rows(name: &str, text: &str) -> Result<Vec<Row>, String> {
             expect: text("expect"),
             pass,
             system: text("system"),
+            prompt: text("prompt"),
             cost_usd: v["cost_usd"].as_f64(),
             ms: v["ms"].as_u64(),
             files_read: v["files_read"].as_array().map(Vec::len),
@@ -1554,6 +1575,30 @@ fn prompt_source(base: &Path) -> String {
 fn fnv(s: &str) -> u64 {
     s.bytes()
         .fold(0xcbf2_9ce4_8422_2325, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3))
+}
+
+/// The hash of the write prompt and its example pool as the panel loads them,
+/// overrides included: one value per prompt set, whatever the case (#701).
+fn prompt_hash() -> String {
+    use cockpit_tui::panel::prompts;
+    let (w, _) = prompts::load("write", prompts::WRITE);
+    let (e, _) = prompts::load("write.examples", prompts::WRITE_EXAMPLES);
+    format!("{:016x}", fnv(&format!("{w}\0{e}")))
+}
+
+/// The ids whose rows carry more than one prompt hash; rows with none are
+/// older files and do not count.
+fn mixed_prompts(rows: &[Row]) -> Vec<String> {
+    let mut ids: Vec<String> = vec![];
+    for r in rows {
+        let two = rows
+            .iter()
+            .any(|o| o.id == r.id && !o.prompt.is_empty() && !r.prompt.is_empty() && o.prompt != r.prompt);
+        if two && !ids.contains(&r.id) {
+            ids.push(r.id.clone());
+        }
+    }
+    ids
 }
 
 /// `n` of `d`, and what a summary line counts.
@@ -2036,6 +2081,29 @@ mod tests {
     }
 
     #[test]
+    fn compare_names_a_case_whose_rows_carry_two_prompt_hashes() {
+        let rows = read_rows(
+            "a",
+            concat!(
+                r#"{"id":"x","expect":"write","run":0,"pass":true,"prompt":"aa"}"#,
+                "\n",
+                r#"{"id":"x","expect":"write","run":1,"pass":true,"prompt":"bb"}"#,
+                "\n",
+                r#"{"id":"y","expect":"write","run":0,"pass":true,"prompt":"aa"}"#,
+                "\n",
+                r#"{"id":"z","expect":"write","run":0,"pass":true}"#,
+                "\n",
+                r#"{"id":"z","expect":"write","run":1,"pass":true,"prompt":"aa"}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+        assert_eq!(mixed_prompts(&rows), ["x"]);
+        assert!(opts(args("--compare a b --allow-mixed")).unwrap().allow_mixed);
+        assert!(!opts(args("--compare a b")).unwrap().allow_mixed);
+    }
+
+    #[test]
     fn compare_takes_two_files() {
         let o = opts(args("--compare a.jsonl b.jsonl")).unwrap();
         assert_eq!(o.compare, Some(("a.jsonl".into(), "b.jsonl".into())));
@@ -2058,6 +2126,7 @@ mod tests {
             expect: "ask".into(),
             pass: Some(true),
             system: "00ff".into(),
+            prompt: String::new(),
             cost_usd: None,
             ms: None,
             files_read: None,
