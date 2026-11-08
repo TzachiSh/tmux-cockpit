@@ -1,0 +1,116 @@
+name: shell-suite-tmux-master
+
+# The shell suite on tmux built from tmux's master branch (next-3.9), not only
+# on the 3.8 floor (#535). On master a popup is a pane and the session's active
+# one, which broke every popup that asked for the active pane (#494, fixed in
+# #495); on 3.8 only the rows pinning the command's shape guard that fix.
+#
+# Non-blocking: the job carries continue-on-error, so a red run never fails the
+# workflow, and .omc/safe-merge.sh skips this check name. Make it required once
+# it has stayed green: drop continue-on-error and the name from safe-merge's
+# optional list.
+on:
+  push:
+    branches: [master, 'scratch/**']
+  pull_request:
+
+permissions:
+  contents: read
+
+# Same group rule as shell-suite.yml.
+concurrency:
+  group: >-
+    ${{ github.workflow }}-${{ (github.ref == 'refs/heads/master'
+    || startsWith(github.ref, 'refs/heads/scratch/')) && github.sha || github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The tmux master commit under test. To bump: take a newer commit from
+  # https://github.com/tmux/tmux/commits/master, paste its full sha here and
+  # push. The cache key carries the sha, so the next run builds that commit once
+  # and later runs reuse it.
+  TMUX_MASTER_SHA: a73616d781f2af13085691c741cfb0780d365328
+
+jobs:
+  shell-suite-tmux-master:
+    # Pinned like shell-suite (#401). One image: this leg tests tmux, not the
+    # box, and shell-suite already covers both images on 3.8.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    continue-on-error: true
+    env:
+      COCKPIT_REQUIRE_TMUX: '1'
+    steps:
+      # Full history, as in shell-suite: the #290 key-notes block needs it.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # The key carries the pinned commit, so a bump builds once, and the runner
+      # image for the reason .github/actions/tmux gives (#478): the binary links
+      # the image's libevent and ncurses.
+      - id: key
+        run: |
+          . /etc/os-release
+          echo "key=tmux-master-$TMUX_MASTER_SHA-$RUNNER_OS-$RUNNER_ARCH-$ID-$VERSION_ID" \
+            >> "$GITHUB_OUTPUT"
+
+      - id: cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.cache/ci-tmux/master
+          key: ${{ steps.key.outputs.key }}
+
+      # Built against the image's glibc: a musl build empties format strings
+      # that carry a % strftime does not know (#494).
+      - name: Build tmux master at the pinned commit
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            autoconf automake pkg-config bison libevent-dev libncurses-dev
+          src=$(mktemp -d)
+          git -C "$src" init -q
+          url=https://github.com/tmux/tmux.git
+          git -C "$src" fetch -q --depth 1 "$url" "$TMUX_MASTER_SHA"
+          git -C "$src" checkout -q FETCH_HEAD
+          got=$(git -C "$src" rev-parse HEAD)
+          [ "$got" = "$TMUX_MASTER_SHA" ] || { echo "fetched $got" >&2; exit 1; }
+          cd "$src"
+          sh autogen.sh >/dev/null
+          ./configure --prefix="$HOME/.cache/ci-tmux/master" >/dev/null
+          make -j"$(nproc)" >/dev/null
+          make install >/dev/null
+
+      # Saved here, not by actions/cache's post step, so a red suite does not
+      # rebuild tmux on every retry (as in .github/actions/tmux).
+      - name: Save the build
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.cache/ci-tmux/master
+          key: ${{ steps.cache.outputs.cache-primary-key }}
+
+      # tests/run.sh takes the real tmux from `command -v tmux`, so this binary
+      # goes first on PATH. A cache hit installs nothing: add the runtime
+      # libraries only if the image lacks them.
+      - name: Put tmux master on PATH
+        run: |
+          set -euo pipefail
+          bin="$HOME/.cache/ci-tmux/master/bin"
+          if ldd "$bin/tmux" | grep 'not found'; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq --no-install-recommends libevent-dev libncurses-dev
+          fi
+          echo "$bin" >> "$GITHUB_PATH"
+
+      - name: Show what the suite sees
+        run: |
+          set -euo pipefail
+          command -v tmux
+          [ "$(command -v tmux)" = "$HOME/.cache/ci-tmux/master/bin/tmux" ]
+          tmux -V
+
+      - run: make tui-bin
+      - run: J=4 make test-par
