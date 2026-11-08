@@ -297,7 +297,13 @@ exploring call it also reads what the panel read, in a `<panel_reads>` section:
 not refused (`Read /r/a.rs`, `Grep fn main /r`), each once, at most 40 lines
 of at most 200 chars and then a count of the rest. Each line has its control
 chars made spaces and its `</` escaped (`envelope::esc`), so a path or pattern
-cannot close the section. Each `--out` row keeps the list as `reads`. A text
+cannot close the section. In every other section (window, output type, screen,
+repo, request, reply) only a closing tag of one of the prompt's sections is
+escaped, in any case and with blanks before the name, so a field cannot end its
+section or close one it planted (#646). The reply's own tags, such as
+`</question>`, stay as the panel wrote them, and so do newlines and control
+chars: only a tag ends one of these sections. Each `--out` row keeps the list
+as `reads`. A text
 call, a failed call and an owner label have no reads (`null`), and their judge
 prompt has no such section. Neither does a case with refs or earlier rounds:
 the judge sees neither the basket nor those rounds, so it could not tell an
@@ -322,10 +328,15 @@ then every disagreement with the owner's note and the judge's critique.
 `--split tune|holdout|all` picks the rows: the holdout takes whole cases (the
 label's `case`), about a third of the rows of the cases with an owner fail and a
 third of the rest, by a hash of the case name; tune the rubric on the tune rows
-only. On the 118 labels, haiku with the shipped rubric scored, in two sweeps,
-TPR 89/98 and 94/98 (95% CI 83%-95% and 90%-98%), TNR 15/20 twice (95% CI
-53%-89%, 36 points wide) and kappa 0.61 and 0.72 (95% CI 0.42-0.80 and
-0.55-0.90) against the owner. The rubric before rule 7 weighed the panel's
+only. On the 118 labels, haiku with the shipped rubric and the section escape
+(#646) scored, in two sweeps the same day, TPR 91/98 and 94/98 (95% CI 86%-96%
+and 90%-98%), TNR 15/20 twice (95% CI 53%-89%, 36 points wide) and kappa 0.65
+and 0.72 (95% CI 0.47-0.84 and 0.55-0.90) against the owner. The escape
+changed one label's prompt, a reply ending in a stray `</reply>`. Escaping every
+`</`, as the reads do, changed 117 of them and scored kappa 0.55 and 0.53: the
+judge failed correct replies for "stray escaped closing tags" such as
+`<\/question>`. Before the escape the rubric scored TPR 89/98 and 94/98, TNR
+15/20 twice and kappa 0.61 and 0.72. The rubric before rule 7 weighed the panel's
 reads (#628) scored, in two sweeps the same day, TPR 93/98 twice, TNR 15/20 and
 14/20 and kappa 0.70 and 0.66, and in an earlier pair TPR 92/98 and 94/98, TNR
 15/20 and 14/20 and kappa 0.68 and 0.69. No owner label carries reads, so these

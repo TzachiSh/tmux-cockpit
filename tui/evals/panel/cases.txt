@@ -193,13 +193,31 @@ window: bash · bash · /home/u
 expect: write
 out_is: text
 must: Dana; v2.4; <date>|<new date>|<release date>|<new release date>|[date]|[new date]|[release date]|[new release date]|{date}|{new date}
-must_not: date to follow; once it's set|once it is set; let you know the date|let you know the new date|let you know when
-note: #590: release-slips with no question left; the message still needs the new date (write.txt, a change's new value), so the text holds a placeholder for it rather than a guess or a promise to send it later; must_not names a promise of the date only, since "I'll let you know as soon as the fix is in" next to the placeholder is fine (narrowed after the first full run, where that line failed a bare "let you know")
+must_not: date to follow; once it's set|once it is set; let you know the date|let you know the new date|let you know when|new date as soon|as soon as I have|as soon as we have|as soon as we know
+note: #590: release-slips with no question left; the message still needs the new date (write.txt, a change's new value), so the text holds a placeholder for it rather than a guess or a promise to send it later; must_not names a promise of the date only, since "I'll let you know as soon as the fix is in" next to the placeholder is fine (narrowed after the first full run, where that line failed a bare "let you know"); #653 adds the reworded promises the first fix still passed ("I'll share the new date as soon as I have it, <new date>")
 --- conversation
 assistant: Which release slips? Options: v2.4 | The mobile app
 user: v2.4
 assistant: Why does it slip? Options: A blocking bug | Waiting on review
 user: a payments bug
+assistant: How should it sound? Options: Casual | Formal
+user: casual
+--- request
+write to dana that the release slips
+
+=== release-slips-no-date-yet
+kind: message
+window: bash · bash · /home/u
+expect: write
+out_is: text
+must: Dana; v2.4
+must_not: <date>|<new date>|<release date>|<new release date>|[date]|[new date]|[release date]|[new release date]|{date}|{new date}
+note: #653: the user answered the date question with "no date yet", so the message says the date will follow, the reply release-slips-none-left forbids; a placeholder here would override the user's answer
+--- conversation
+assistant: Which release slips? Options: v2.4 | The mobile app
+user: v2.4
+assistant: When is the new release date? Options: Give a new date | Date not decided yet
+user: Date not decided yet
 assistant: How should it sound? Options: Casual | Formal
 user: casual
 --- request
