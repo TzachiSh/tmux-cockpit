@@ -167,9 +167,10 @@ Opens in VS Code at the line. For a terminal editor instead:
 set -g @cockpit_editor nvim   # new window next to the one you clicked, at +LINE
 ```
 
-Keep it a **terminal** editor: the review's `^E` reads the same option, and
-opens it in the popup's own terminal. A GUI editor belongs in `VISUAL`
-instead.
+Keep it a **terminal** editor: it runs inside that new tmux window. A touch
+client (`@cockpit_is_touch`) never gets VS Code: a click there opens
+`@cockpit_editor`, else `$VISUAL` or `$EDITOR`, else nvim or vim, in a window of
+its own.
 
 `@cockpit_editor` wins. After it comes VS Code, either as `code` on the `PATH`
 or as the remote shim Remote-SSH and Coder install under `~/.vscode-server`,
