@@ -121,7 +121,8 @@ FLOPEOF
 }
 FLOP="$STATE/flop"; mkdir -p "$FLOP"
 if [ -x "$TMUX_BIN" ]; then flop_write "$FLOP" "$TMUX_BIN"; TMUX_REAL="$FLOP/tmux"; fi
-flop_left() {                 # [dir] -> a bad row for each r.* whose call was never retried
+flop_left() {                 # [dir] -> a bad row for each r.* whose call was never retried, and
+                              # with no dir each socket refusal a subshell made (#195)
     local r a k
     for r in "${1:-$FLOP}"/r.*; do
         [ -e "$r" ] || continue
@@ -130,6 +131,8 @@ flop_left() {                 # [dir] -> a bad row for each r.* whose call was n
         bad "new-session after kill-server on $k goes through fresh_server (#573)" \
             "a retry with the same argv" "${a%.}, refused and never retried"
     done
+    # the run's own tail (no dir): refusals a subshell made, whose count was lost (#195)
+    [ $# -gt 0 ] || sock_left
 }
 # The suite itself runs inside the user's tmux, so its own $TMUX would send
 # every bare call straight back to the live server. Drop it.
@@ -227,6 +230,7 @@ mktmpf() { local f; f=$(mktemp)    || return 1; printf '%s\n' "$f" >> "$TMPS"; p
 POLLS=100
 until_cap() {                 # <socket> <pane> <pattern>
     local i
+    need_sock "$1" until_cap || return 1
     for i in $(seq 1 "$POLLS"); do
         # shellcheck disable=SC2254  # $3 is meant as a glob, not a literal
         case "$("$TMUX_REAL" -L "$1" capture-pane -p -J -t "$2" 2>/dev/null)" in $3) return 0 ;; esac
@@ -245,6 +249,7 @@ optui_setup() {
     chmod +x "$OPTUI"
 }
 review_enter() {              # <socket> <ctl-pane>  tmux-review -p opens the pane's review loop at once
+    need_sock "$1" review_enter || return 1
     until_cap "$1" "$2" '*review · base*'
 }
 until_file() {                # <file> <pattern>
@@ -267,6 +272,45 @@ until_out() {                 # <pattern> <cmd...>
         sleep 0.1
     done
     return 1
+}
+# #195: an empty socket name never reaches tmux. `-L ''` itself errors, but TMUX=
+# takes the socket path before its first comma, and an empty path there, ",0,0" or
+# "", is the DEFAULT socket: the user's live server. A probe whose private server
+# failed to start once left its socket empty and wrote there. So a helper handed a
+# socket refuses an empty one with a bad row naming it, and a socket path the suite
+# reads back for TMUX= comes through sock_path, never as an empty string.
+# A refusal made inside $(...) runs in a subshell: its `bad` prints a row, but the count it
+# bumps is the subshell's and the run never sees it. So that one is written to $SOCKBAD too,
+# and the tail's flop_left turns each line into a bad row of the run's own.
+SOCKBAD="$STATE/sock-refused"
+sock_bad() {                  # <row> <want> <got>: bad, and counted from inside $(...) too
+    bad "$@"
+    [ "$BASHPID" = "$$" ] || printf '%s\n' "$1" >> "$SOCKBAD"
+}
+sock_left() {                 # a bad row for each refusal a subshell made
+    local l
+    [ -s "$SOCKBAD" ] || return 0
+    while IFS= read -r l; do bad "$l, inside \$(...)" "no refusal" "refused"; done < "$SOCKBAD"
+    : > "$SOCKBAD"
+}
+need_sock() {                 # <socket name> <who>: 0, or a bad row and 1 when it is empty
+    [ -n "$1" ] && return 0
+    sock_bad "$2: an empty socket name, which can reach the user's default server (#195)" \
+        "a private socket name" "''"
+    return 1
+}
+sock_path() {                 # <-L socket name> <var>: the server's socket path into <var>
+    # Never empty: no name, or no server answering (it failed to start), is a bad row,
+    # and <var> becomes $SOCKDIR/, which no server answers, so TMUX="$var,0,0" errors.
+    local p=""
+    need_sock "$1" sock_path \
+        && p=$("$TMUX_REAL" -L "$1" display-message -p '#{socket_path}' 2>/dev/null)
+    if [ -z "$p" ]; then
+        [ -z "$1" ] \
+            || sock_bad "sock_path $1: no server answered (#195)" "its socket path" "nothing"
+        p="$SOCKDIR/"
+    fi
+    printf -v "$2" '%s' "$p"
 }
 # A fresh server on a name that may still be live. kill-server returns before the
 # server is gone, and a new-session that reaches the dying one fails "server
@@ -303,6 +347,7 @@ fresh_server() {              # -L|-S <socket> [tmux flags...] -- <new-session a
 # on a dead socket the server list-keys starts must not read a config that loads cockpit.
 # Not loaded is the row's own bad, with the row's name.
 loaded_on() {                 # <-L socket name> <row name> -> 0, or a bad row and 1
+    need_sock "$1" loaded_on || return 1
     case "$("$TMUX_REAL" -L "$1" -f /dev/null list-keys -T root C-MouseDown3Pane 2>/dev/null)" in
         *@cockpit_click_line*) return 0 ;;
     esac
@@ -313,6 +358,7 @@ loaded_on() {                 # <-L socket name> <row name> -> 0, or a bad row a
 # (issue #88). Spelled out here rather than read back from the script: a test
 # that asks the code under test for its own answer agrees with any answer.
 gate_key() {                  # <socket> <pane-id>
+    need_sock "$1" gate_key || return 1
     local s; s=$("$TMUX_REAL" -L "$1" display-message -p '#{socket_path}' 2>/dev/null)
     s=${s//_/__}; printf '%s-%s' "${s//\//_.}" "${2#%}"
 }
@@ -408,6 +454,46 @@ for row in "no --:-L $FS -d -s t" "no socket:-- -d -s t" "-f before -L:-f /dev/n
 done
 "$TMUX_REAL" -L "$FS" kill-server >/dev/null 2>&1
 fi
+
+echo "== an empty socket name never reaches tmux, nor a socket path read back as empty (#195) =="
+# TMUX= with an empty path before its comma is the default socket: the user's live server.
+# Each helper that takes a socket is handed '' while $TMUX_REAL is a stub that logs its argv:
+# the stub must not run, and the helper must say why in a bad row of its own.
+SKD=$(mktmpd)
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s/argv"\nexit 1\n' "$SKD" > "$SKD/tmux"
+chmod +x "$SKD/tmux"
+sk_try() {                    # <call...> -> "<exit> <bad rows naming #195>", with the stub as tmux
+    (
+        # the refusals here are the test's own: kept off the run's tail
+        TMUX_REAL="$SKD/tmux" POLLS=2 nb=0 SOCKBAD="$SKD/sockbad-try"
+        bad() { case $1 in *'(#195)'*) nb=$((nb + 1)) ;; esac; }
+        "$@" >/dev/null 2>&1; rc=$?
+        printf '%s %s' "$rc" "$nb"
+    )
+}
+for call in "until_cap '' %0 *x*" "review_enter '' %0" "loaded_on '' a-row" "gate_key '' %0"; do
+    eval "set -- $call"
+    is "$1 refuses an empty socket with a bad row" "1 1" "$(sk_try "$@")"
+done
+is "and none of them ran tmux" "" "$(cat "$SKD/argv" 2>/dev/null)"
+sk_path() {                   # <name> -> "<bad rows naming #195>|<the path>", the stub as tmux
+    ( TMUX_REAL="$SKD/tmux" nb=0 SOCKBAD="$SKD/sockbad-path"
+      bad() { case $1 in *'(#195)'*) nb=$((nb + 1)) ;; esac; }
+      skp=x; sock_path "$1" skp 2>/dev/null; printf '%s|%s' "$nb" "$skp" )
+}
+is "sock_path of '' is a bad row and a path no server answers" "1|$SOCKDIR/" "$(sk_path '')"
+is "...and it ran no tmux" "" "$(cat "$SKD/argv" 2>/dev/null)"
+is "sock_path of a server that never started: the same, not an empty path" \
+    "1|$SOCKDIR/" "$(sk_path "cockpit-sk-none-$$")"
+# A refusal inside $(...) runs in a subshell, where `bad` bumps a count the run never sees:
+# `k=$(gate_key '' %0)` alone ended "0 passed, 0 failed". The refusal is written down too, and
+# the tail's flop_left check turns each one into a bad row of the run's own.
+is "a refusal inside \$(...) still reaches the run's tail as a bad row" "1" "$(
+    SOCKBAD="$SKD/sockbad" TMUX_REAL="$SKD/tmux"
+    _=$(gate_key '' %0)
+    nb=0; bad() { nb=$((nb + 1)); }
+    flop_left; printf '%s' "$nb"
+)"
 
 echo "== the kill/new guard clears a refusal only on its retry, keyed on the server (#644) =="
 # A second guard, in front of a stub that exits $GUARD_RC, so no server is involved.
@@ -1595,7 +1681,7 @@ RGKEY=$(gate_key "$RG" "$RGAP")
 RGLOOP="$RGSTATE/tmux-cockpit/review/loop-$RGKEY"; RGCF="$RGSTATE/tmux-cockpit/review/concede-$RGKEY"
 # --concede runs as the agent's own Bash call, inside the pane: $TMUX is what
 # tells it which server's key to write under, and the suite unsets it.
-RGTMUX="$("$TMUX_REAL" -L "$RG" display-message -p '#{socket_path}'),0,0"
+RGSP=""; sock_path "$RG" RGSP; RGTMUX="$RGSP,0,0"
 "$TMUX_REAL" -L "$RG" set -g @cockpit_rewake_cap 3 >/dev/null 2>&1
 rg_run "$RGACT"; rg_run "$RGACT"
 is "two rewakes under a cap of 3 pass through silently" "" "$(cat "$RGSTATE/out")"
@@ -2523,7 +2609,7 @@ tmux -L "$OUTERB" -f /dev/null new-session -d -s o -x 80 -y 24 \
     "$TMUX_REAL -L $INNER attach -t cliB" >/dev/null 2>&1
 until_out 2 bp_clients
 paneA=$(tmux -L "$INNER" list-panes -t cliA -F '#{pane_id}')
-SOCKPATH=$(tmux -L "$INNER" display-message -p '#{socket_path}')
+sock_path "$INNER" SOCKPATH
 NOCOLD=$(mktmpd)
 for c in git bash tmux; do ln -s "$(command -v $c)" "$NOCOLD/$c"; done
 # The picker is cockpit-tui's now (#246); this block is about which directory the
@@ -6117,7 +6203,7 @@ WDN=$(wd_pane claude)        # an agent with no session id: no transcript to rea
 for p in "$WDP" "$WDV"; do
     "$TMUX_REAL" -L "$WDS" set -p -t "$p" @cockpit_session wd470 >/dev/null 2>&1
 done
-WDSP=$("$TMUX_REAL" -L "$WDS" display-message -p '#{socket_path}')
+sock_path "$WDS" WDSP
 wd() {                        # wd <args...>: tmux-review on the block's server, from $WD
     (cd "$WD" && TMUX="$WDSP,0,0" HOME="$WD/home" timeout 20 "$DIR/scripts/tmux-review" "$@" \
         </dev/null 2>/dev/null)
@@ -13039,7 +13125,7 @@ bg_pane() {                   # bg_pane <socket> <dir> <cmd>  a new window in <d
     "$TMUX_REAL" -L "$1" new-window -P -F '#{pane_id}' -t t: -c "$(fesc "$2")" "$3" 2>/dev/null   # -c is a format
 }
 bg_goto() {                   # bg_goto <socket> <origin-pane> <repo> <path>  -> the script's exit code
-    local sp mark; sp=$("$TMUX_REAL" -L "$1" display-message -p '#{socket_path}')
+    local sp mark; sock_path "$1" sp
     mark=$(mktmpd)
     printf '#!/bin/sh\n[ -e "%s/ran" ] && exit 1\n: > "%s/ran"\nprintf "goto %%s\\n" "$BG_GOTO"\n' "$mark" "$mark" > "$mark/cockpit-tui"
     chmod +x "$mark/cockpit-tui"
@@ -13723,7 +13809,8 @@ chmod +x "$BWD/ct"
 bw_goto() {                   # bw_goto <path> -> "<workdir calls> <active pane> <windows>"
     rm -f "$BWD/ran"; : > "$BWD/ask.log"
     "$TMUX_REAL" -L "$BWS" select-window -t "$BWO"
-    TMUX="$("$TMUX_REAL" -L "$BWS" display-message -p '#{socket_path}'),0,0" HOME="$BWD/home" \
+    local sp; sock_path "$BWS" sp
+    TMUX="$sp,0,0" HOME="$BWD/home" \
         COCKPIT_TUI_BIN="$BWD/ct" BW_GOTO=$1 timeout 30 "$DIR/scripts/tmux-branch" -p "$BWO" "$BWR" \
         </dev/null >/dev/null 2>&1
     printf '%s %s %s' "$(grep -c . "$BWD/ask.log")" "$(bg_active "$BWS")" "$(bg_windows "$BWS")"
@@ -13757,7 +13844,8 @@ BWA3=$(bg_pane "$BWS" "$BWR" 'exec -a 2.1.246 sleep 300')
 "$TMUX_REAL" -L "$BWS" set -p -t "$BWA3" @cockpit_session bw470v >/dev/null 2>&1
 until_out 2.1.246 "$TMUX_REAL" -L "$BWS" display-message -p -t "$BWA3" '#{pane_current_command}'
 bwrc=0
-TMUX="$("$TMUX_REAL" -L "$BWS" display-message -p '#{socket_path}'),0,0" \
+sock_path "$BWS" BWSP
+TMUX="$BWSP,0,0" \
     "$COCKPIT_TUI_BIN" workdir "$BWA3" >/dev/null 2>&1 || bwrc=$?
 if [ "$bwrc" = 2 ]; then   # no workdir; an exit 1 here is a workdir bug, and asserts below
     read -r bwn bwp bww <<<"$(BW_ASK=real bw_goto "$BWV")"
@@ -14553,7 +14641,7 @@ BQ="cockpit-bq2-$$"; SOCKS="$SOCKS $BQ"; GD=$(mktmpd)
 ( git init -q -b main "$GD/ok" && cd "$GD/ok" && printf 'a\n' > y && git add y \
   && git -c user.name=t -c user.email=t@t commit -qm i && git branch other && git worktree add -q "$GD/ok-wt" other ) >/dev/null 2>&1
 "$TMUX_REAL" -L "$BQ" -f /dev/null new-session -d -s t -x 100 -y 30 -c "$GD/r" >/dev/null 2>&1
-BQSOCK=$("$TMUX_REAL" -L "$BQ" display-message -p '#{socket_path}')
+sock_path "$BQ" BQSOCK
 mkdir "$GD/bin"
 printf '#!/bin/sh\nexec "%s" -L "%s" "$@"\n' "$TMUX_REAL" "$BQ" > "$GD/bin/tmux"
 # A picker stub: records that it ran and answers with the action line in $GD/answer.
@@ -15135,7 +15223,7 @@ chmod +x "$FB"/bin/*
 # from $FB: a #() that ran would drop its file in the server's cwd, never the checkout
 ( cd "$FB" && PATH="$FB/bin:$PATH" "$TMUX_REAL" -L "$FBS" -f /dev/null new-session -d -s t -x 100 -y 30 -c "$FBD" 'exec sleep 3600' >/dev/null 2>&1 )
 FBP=$("$TMUX_REAL" -L "$FBS" list-panes -t t -F '#{pane_id}')
-FBSOCK=$("$TMUX_REAL" -L "$FBS" display-message -p '#{socket_path}')
+sock_path "$FBS" FBSOCK
 "$TMUX_REAL" -L "$FBS" set -g @cockpit_is_touch \
     "$(sed -n 's/^set -g @cockpit_is_touch "\(.*\)"$/\1/p' "$DIR/scripts/lib/statusbar.conf")"
 # fb <on|off> <printf-format of the answer> [rc] [env...]: one --browse run
