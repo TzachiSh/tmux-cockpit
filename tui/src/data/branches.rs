@@ -103,7 +103,11 @@ fn heads(head: &Path, b: &str) -> bool {
 /// True when some `<common>/worktrees/*/gitdir` names `<p>/.git`, as git decides that
 /// a gone tree is prunable. The file is read whole, as git reads it, and a relative one
 /// is taken from its entry. A text compare, since a missing path has no inode, after
-/// [`lexical`] on both sides: `--relative-paths` writes `../../../../<tree>/.git` (#555).
+/// [`lexical`] on both sides: `--relative-paths` writes `../../../../<tree>/.git` (#555),
+/// and git lists an absolute `gitdir` as written, `x/..` and all (#584). As text, not
+/// through the filesystem: git resolves a relative `gitdir` with realpath, so a symlink
+/// before a `..` (only a hand-edited file holds one) makes git list a path this compare
+/// does not find, and the gone tree is dropped.
 fn prunable(p: &Path, common: &Path) -> bool {
     use std::io::Read;
     let want = lexical(&p.join(".git"));
@@ -120,7 +124,9 @@ fn prunable(p: &Path, common: &Path) -> bool {
 }
 
 /// `p` with `.` dropped and each `..` taking off the part before it, as text, so a path
-/// that is gone resolves too: no canonicalize. `/..` is `/`, as for git.
+/// that is gone resolves too: no canonicalize. `/..` is `/`, as for git. A symlink is a
+/// name like any other: `link/..` drops it. `p` must be absolute: a relative one stays
+/// relative, where the shell's `wt_norm` makes it absolute.
 fn lexical(p: &Path) -> PathBuf {
     use std::path::Component;
     let mut out = PathBuf::new();
