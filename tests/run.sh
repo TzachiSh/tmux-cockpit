@@ -10898,8 +10898,8 @@ is "...and did not outlive it" "yes" "$AVLEFT"
 av_tm set-option -g @cockpit_bg_poll 1
 # A HUP that lands right after the claim has published the pid must not leave it there: the
 # traps are in place before the claim. The DEBUG trap sends it at the claim's read-back, the
-# first command after the set.
-AVHUP='case "$BASH_COMMAND" in "[ \"\$(tmux show-option -gqv @cockpit_poll_pid"*)'
+# first command after the set: its text names the slot as $SLOT since #194.
+AVHUP='case "$BASH_COMMAND" in "[ \"\$(tmux show-option -gqv \"\$SLOT\""*)'
 AVHUP="$AVHUP kill -HUP \$\$ ;; esac"
 av_tm set-option -g @cockpit_bg_poll 3600
 av_tm set-option -gu @cockpit_poll_pid
