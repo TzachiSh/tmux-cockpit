@@ -14078,7 +14078,8 @@ olkey Down Enter; oldone 1; olgo
 is "down + enter opens the second candidate at its line" "OPEN +7 $OLD/w/two.txt" "$(cat "$OLLOG")"
 
 : > "$OLLOG"; olrun 2
-olkey -l three; until_cap "$OL" "$OLP" '*open> three*1/1 of 4*'
+olkey -l three; until_cap "$OL" "$OLP" '*open> three*1/1 of 4*' ||
+    bad "the filter narrows the list to one row" "1/1 of 4" "$(olcap)"
 olkey Enter; oldone 2; olgo
 is "typing a filter then enter opens the filtered row, not the first" \
    "OPEN $OLD/w/three.txt" "$(cat "$OLLOG")"
