@@ -30,7 +30,7 @@ pane_label() {                # <pane-id>
 # The scratch beside a store, by name: the dir may also hold a queued delivery.
 drop_rows() {
     [ -n "${1:-}" ] || return 0
-    rm -rf -- "$1.rows" "$1.rdin" "$1.rdout" "${1%/*}/history"
+    rm -rf -- "$1.rdin" "$1.rdout" "${1%/*}/history"
 }
 
 drop_store() {

@@ -6,7 +6,7 @@
 # --deliver via `run-shell -b` because a popup kills its children as it closes.
 review_pane() {
     local pane=$1 dir=$2 store rc
-    local sess cleanup
+    local sess
     sess=$(session_dir "$pane" "$dir"); store="$sess/comments.md"
     # umask in the subshell, so the parents and the store are born private.
     # [ ! -L ]: a store path is derivable, so a planted symlink is refused.
@@ -18,13 +18,10 @@ review_pane() {
     rc=$?
     if [ "$rc" -eq 20 ]; then
         # The store goes only when --deliver succeeds: a refusal comes after the
-        # popup is gone, and the store is the only copy. The snapshot goes either
-        # way. run-shell hands this to `sh -c`, hence the escaped \$; every path
-        # is shq-quoted and the whole string fesc'd.
-        cleanup="rc=\$?; if [ \$rc -eq 0 ]; then $(shq "$SELF") --done $(shq "$store");"
-        cleanup="$cleanup else rm -f -- $(shq "$store.rows"); fi"
+        # popup is gone, and the store is the only copy. run-shell hands this to
+        # `sh -c`; every path is shq-quoted and the whole string fesc'd.
         tmux run-shell -b "$(fesc "$(shq "$SELF") --deliver $(shq "$pane") $(shq "$store") \
-$(shq "$dir"); $cleanup")"
+$(shq "$dir") && $(shq "$SELF") --done $(shq "$store")")"
     elif [ "$rc" -eq 21 ]; then
         # Approved (the loop wrote the ref). clear_sess, not rm -rf: a review
         # already queued for a busy pane must survive the approval.
