@@ -64,45 +64,71 @@ exec "$TMUX_REAL" -L "$SUITE_SOCK" "\$@"
 SHIMEOF
 chmod +x "$SHIM/tmux"
 # The race of #573, made certain: a new-session that follows kill-server on the
-# same name can reach the dying server and fail "server exited unexpectedly". So
-# every block's "$TMUX_REAL" refuses the first new-session after each kill-server
-# on a name and leaves r.<name> until a later new-session there succeeds, and
-# flop_left fails the run for each r.* left. A kill-server then a bare
-# new-session goes red on every run, not one run in ten under load; fresh_server
-# retries and clears it. The shim above keeps the real binary: the scripts under
-# test are not blocks. TMUX_BIN is the real one, for a stub that counts its calls.
+# same server can reach the dying one and fail "server exited unexpectedly". So
+# "$TMUX_REAL" refuses the first new-session after each kill-server on a server,
+# keyed on the socket path that -L or -S before the command word names, and writes
+# that call's argv to r.<key>. Only a later new-session with the same argv that
+# succeeds clears it, and flop_left fails the run for each r.* left. A kill-server
+# then a bare new-session goes red on every run, not one run in ten under load;
+# fresh_server retries and clears it.
+# A bare `tmux` goes through the shim above, which keeps the real binary. Anything
+# handed "$TMUX_REAL" reaches the guard, scripts under test included: the two
+# COCKPIT_TMUX="$TMUX_REAL -L ..." settings and the per-block stubs that exec it.
+# They pass through unchanged unless they kill a server and start one on it.
+# TMUX_BIN is the real one, for a stub that counts its calls.
 TMUX_BIN=$TMUX_REAL
-FLOP="$STATE/flop"; mkdir -p "$FLOP"
-if [ -x "$TMUX_BIN" ]; then
-cat > "$FLOP/tmux" <<FLOPEOF
+flop_write() {                # <dir> <real tmux> -> <dir>/tmux, the guard in front of that tmux
+    cat > "$1/tmux" <<FLOPEOF
 #!/bin/sh
-n=default v= p=
+n=L.default v= p=
 for a do
-    case \$p in -L) n=\$a ;; -S) n=\${a##*/} ;; esac
-    [ -n "\$v" ] || case \$a in kill-server|new-session) v=\$a ;; esac
-    p=\$a
+    case \$p in
+    -L) n=L.\$a; p=; continue ;;
+    -S) n=S.\$a; p=; continue ;;
+    -c|-f|-T) p=; continue ;;
+    esac
+    case \$a in
+    -c|-f|-L|-S|-T) p=\$a ;;
+    -L?*) n=L.\${a#-L} ;;
+    -S?*) n=S.\${a#-S} ;;
+    -*) ;;
+    *) v=\$a; break ;;
+    esac
 done
+case \$v in kill-server|new-session) ;; *) exec "$2" "\$@" ;; esac
+# The key is the socket's path, the one tmux uses, so -L x and -S <dir>/x meet.
+case \$n in
+L.*) n=\${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/\${n#L.} ;;
+*) n=\${n#S.} ;;
+esac
+n=\$(printf '%s' "\$n" | sed 's/_/__/g; s|/|_.|g')
 case \$v in
-kill-server) : > "$FLOP/k.\$n" ;;
+kill-server) : > "$1/k.\$n" ;;
 new-session)
-    if [ -e "$FLOP/k.\$n" ]; then
-        rm -f "$FLOP/k.\$n"; : > "$FLOP/r.\$n"
+    if [ -e "$1/k.\$n" ]; then
+        rm -f "$1/k.\$n"; [ -e "$1/r.\$n" ] || printf '%s.' "\$*" > "$1/r.\$n"
         echo "server exited unexpectedly (refused by tests/run.sh, #573)" >&2; exit 1
     fi
-    if [ -e "$FLOP/r.\$n" ]; then
-        "$TMUX_BIN" "\$@"; rc=\$?; [ \$rc -ne 0 ] || rm -f "$FLOP/r.\$n"; exit \$rc
+    if [ -e "$1/r.\$n" ]; then
+        "$2" "\$@"; rc=\$?
+        [ \$rc -ne 0 ] || [ "\$(cat "$1/r.\$n")" != "\$*." ] || rm -f "$1/r.\$n"
+        exit \$rc
     fi ;;
 esac
-exec "$TMUX_BIN" "\$@"
+exec "$2" "\$@"
 FLOPEOF
-chmod +x "$FLOP/tmux"; TMUX_REAL="$FLOP/tmux"
-fi
-flop_left() {                 # a bad row for each name whose refused new-session nothing retried
-    local r
-    for r in "$FLOP"/r.*; do
+    chmod +x "$1/tmux"
+}
+FLOP="$STATE/flop"; mkdir -p "$FLOP"
+if [ -x "$TMUX_BIN" ]; then flop_write "$FLOP" "$TMUX_BIN"; TMUX_REAL="$FLOP/tmux"; fi
+flop_left() {                 # [dir] -> a bad row for each r.* whose call was never retried
+    local r a k
+    for r in "${1:-$FLOP}"/r.*; do
         [ -e "$r" ] || continue
-        bad "new-session after kill-server on ${r##*/r.} goes through fresh_server (#573)" \
-            "a later new-session there" "refused once, never retried"
+        a=$(cat "$r") k=${r##*/r.}
+        k=${k//__/$'\1'}; k=${k//_./\/}; k=${k//$'\1'/_}   # the key back to its socket path
+        bad "new-session after kill-server on $k goes through fresh_server (#573)" \
+            "a retry with the same argv" "${a%.}, refused and never retried"
     done
 }
 # The suite itself runs inside the user's tmux, so its own $TMUX would send
@@ -382,6 +408,62 @@ for row in "no --:-L $FS -d -s t" "no socket:-- -d -s t" "-f before -L:-f /dev/n
 done
 "$TMUX_REAL" -L "$FS" kill-server >/dev/null 2>&1
 fi
+
+echo "== the kill/new guard clears a refusal only on its retry, keyed on the server (#644) =="
+# A second guard, in front of a stub that exits $GUARD_RC, so no server is involved.
+# gt prints one call's exit code; gleft counts the bad rows flop_left would print.
+GD=$(mktmpd); mkdir "$GD/w"
+printf '#!/bin/sh\nexit "${GUARD_RC:-0}"\n' > "$GD/real"; chmod +x "$GD/real"
+flop_write "$GD/w" "$GD/real"
+gt()    { "$GD/w/tmux" "$@" >/dev/null 2>&1; printf '%s ' "$?"; }
+gleft() { ( bads=0; bad() { bads=$((bads+1)); }; flop_left "$GD/w"; printf '%s' "$bads" ); }
+rm -f "$GD"/w/[kr].*
+is "a refusal another new-session on that name follows is still left" "0 1 0 |1" \
+   "$(gt -L s kill-server; gt -L s new-session -d -s a; gt -L s new-session -d -s b)|$(gleft)"
+rm -f "$GD"/w/[kr].*
+is "a refusal its identical retry follows is cleared" "0 1 0 |0" \
+   "$(gt -L s kill-server; gt -L s new-session -d -s a; gt -L s new-session -d -s a)|$(gleft)"
+rm -f "$GD"/w/[kr].*
+is "fresh_server's shape, attached -L and -f: the identical retry clears" "0 1 0 |0" \
+   "$(gt -L s -f /dev/null kill-server; gt -Ls -f/dev/null new-session -d -s a
+      gt -Ls -f/dev/null new-session -d -s a)|$(gleft)"
+rm -f "$GD"/w/[kr].*
+is "-T and -c take a word before the command" "0 1 |1" \
+   "$(gt -T RGB -L s kill-server; gt -L s -c sh new-session -d)|$(gleft)"
+rm -f "$GD"/w/[kr].*
+is "an attached -S keys like a separate one" "0 1 |1" \
+   "$(gt -S"$GD/a/s" kill-server; gt -S "$GD/a/s" new-session -d)|$(gleft)"
+rm -f "$GD"/w/[kr].*
+is "-L x and -S on x's socket path are one server" "0 1 |1" \
+   "$(export TMUX_TMPDIR="$GD/t"
+      gt -L x kill-server; gt -S "$GD/t/tmux-$(id -u)/x" new-session -d)|$(gleft)"
+rm -f "$GD"/w/[kr].*
+is "no -L is -L default" "0 1 |1" "$(gt kill-server; gt -L default new-session -d)|$(gleft)"
+rm -f "$GD"/w/[kr].*
+is "a retry that fails clears nothing" "0 1 1 |1" \
+   "$(gt -L s kill-server; gt -L s new-session -d; GUARD_RC=1 gt -L s new-session -d)|$(gleft)"
+rm -f "$GD"/w/[kr].*
+is "a second refusal keeps the first, unretried one" "0 1 0 1 0 |1" \
+   "$(gt -L s kill-server; gt -L s new-session -d -s a
+      gt -L s kill-server; gt -L s new-session -d -s b; gt -L s new-session -d -s b)|$(gleft)"
+rm -f "$GD"/w/[kr].*
+is "-S keys on the whole path: a kill on /a/s leaves /b/s alone" "0 0 1 " \
+   "$(gt -S "$GD/a/s" kill-server; gt -S "$GD/b/s" new-session -d; gt -S "$GD/a/s" new-session -d)"
+rm -f "$GD"/w/[kr].*
+is "-S keys a path holding _. apart from one holding /" "0 0 1 " \
+   "$(gt -S "$GD/x_.y" kill-server; gt -S "$GD/x/y" new-session -d; gt -S "$GD/x_.y" new-session -d)"
+rm -f "$GD"/w/[kr].*
+is "-L after the command word is the pane's, not the server's" "0 0 1 " \
+   "$(gt -L in kill-server; gt -L out new-session -d sh -c x _ -L in; gt -L in new-session -d)"
+rm -f "$GD"/w/[kr].*
+is "kill-server after the command word kills nothing" "0 0 |0" \
+   "$(gt -L q display-message kill-server; gt -L q new-session -d)|$(gleft)"
+rm -f "$GD"/w/[kr].*
+gname() { ( bad() { printf '%s' "$1"; }; flop_left "$GD/w" ) }
+is "flop_left names the socket path, not its escaped key" \
+   "new-session after kill-server on $GD/x_.y/s goes through fresh_server (#573)" \
+   "$(gt -S "$GD/x_.y/s" kill-server >/dev/null
+      gt -S "$GD/x_.y/s" new-session -d >/dev/null; gname)"
 
 echo "== loaded_on: a row on a server cockpit.tmux never loaded is a bad row (#643) =="
 if need_tmux "loaded_on"; then :; else
