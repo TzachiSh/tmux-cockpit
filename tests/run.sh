@@ -15185,6 +15185,15 @@ if until_cap "$FRS" "$FRP" '*0first.txt*' && "$TMUX_REAL" -L "$FRS" send-keys -t
     is "without COCKPIT_FILES_STATE the browser prints its one line only" "view $FRD/0first.txt" "$(cat "$FR/plain.out")"
 else bad "without COCKPIT_FILES_STATE the browser prints its one line only" "pane_dead 1" \
      "$("$TMUX_REAL" -L "$FRS" capture-pane -p -t "$FRP" | head -12)"; fi
+# #601: the run loop lays the frame out before it draws. 80 files, --select the
+# 51st, an 80x24 pane: only the first frame is drawn, as no key comes, so the
+# selection shows only if that frame was scrolled to it.
+mkdir -p "$FR/many"; for i in $(seq 10 89); do : > "$FR/many/f$i.txt"; done
+"$TMUX_REAL" -L "$FRS" new-session -d -s t601 -x 80 -y 24 -c "$FR/many" \
+    "exec '$DIR/bin/cockpit-tui' files '$FR/many' --select f60.txt" >/dev/null 2>&1
+if until_cap "$FRS" t601 '*▎ f60.txt*'; then ok "the first frame of a long folder shows the --select entry"
+else bad "the first frame of a long folder shows the --select entry" "▎ f60.txt" \
+     "$("$TMUX_REAL" -L "$FRS" capture-pane -p -t t601 | head -24)"; fi
 is "the viewer opened no editor and no code" "" "$(cat "$FR/code.log")"
 is "no PWN appeared in the folder, the server's cwd or the checkout" "" "$(find "$FR" "$DIR" -maxdepth 3 -name PWN -not -path '*/tui/target/*' 2>/dev/null)"
 "$TMUX_REAL" -L "$FRS" kill-server >/dev/null 2>&1
