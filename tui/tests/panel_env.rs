@@ -507,11 +507,14 @@ fn an_inherited_git_variable_never_moves_the_repo_block() {
             ]);
             let e = Env::new("repo-redirect", &vars);
             let pane = pane_and_other(&e);
-            let want = cockpit_tui::panel::capture::repo_state(&pane, "");
+            // a content check: the product's 300 ms would drop parts on a loaded box (#596)
+            let budget = Duration::from_secs(10);
+            let block = |p: &str| cockpit_tui::panel::capture::repo_state_within(p, "", budget);
+            let want = block(&pane);
             assert!(want.starts_with(&format!("branch: main\nroot: {pane}\n")), "{want}");
             // SAFETY: `e` holds ENV, and its drop puts every REDIRECT var back.
             unsafe { std::env::set_var(var, val.replace("$D", &e.dir.display().to_string())) };
-            cockpit_tui::panel::capture::repo_state(&pane, "") != want
+            block(&pane) != want
         })
         .map(|(var, _)| var)
         .collect();
