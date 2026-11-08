@@ -757,8 +757,10 @@ spkey 1 w "board"
 is "f opens on its own pane after i stored another, and i on its own after f" \
    "info $sp0|panel $sp1|info $sp0" "$(head -3 "$SPD/log" | tr '\n' '|' | sed 's/|$//')"
 is "and the board key (w) passes the pane it was pressed in" "board -p $sp1" "$(sed -n 4p "$SPD/log")"
-is "the popup reads the stored pane once: none is left on the session for a key that forgets to store it" "" \
-   "$("$TMUX_REAL" -L "$SP" show-option -qv -t t: @cockpit_src_pane)"
+sprow="the popup reads the stored pane once: none is left on the session"
+sprow="$sprow for a key that forgets to store it"
+loaded_on "$SP" "$sprow" &&
+    is "$sprow" "" "$("$TMUX_REAL" -L "$SP" show-option -qv -t t: @cockpit_src_pane)"
 "$TMUX_REAL" -L "$SPO" kill-server >/dev/null 2>&1; "$TMUX_REAL" -L "$SP" kill-server >/dev/null 2>&1
 fi
 
@@ -2851,12 +2853,16 @@ for o in status-right status-left window-status-format pane-border-format; do
 done
 tmux -L "$SOCK2" set -g status-style "bg=red" >/dev/null 2>&1
 tmux -L "$SOCK2" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+# Each row wants an option left alone, which a load that never ran also does.
 for o in status-right status-left window-status-format pane-border-format; do
-    is "$o is left as it was" "mine $o" "$(tmux -L "$SOCK2" show-option -gqv "$o")"
+    loaded_on "$SOCK2" "$o is left as it was" &&
+        is "$o is left as it was" "mine $o" "$(tmux -L "$SOCK2" show-option -gqv "$o")"
 done
-is "status-style is left as it was" "bg=red" "$(tmux -L "$SOCK2" show-option -gqv status-style)"
-is "and so are tmux's theme slots" "#{?#{e|>=:#{client_colours},256},indianred,red}" \
-   "$(tmux -L "$SOCK2" show-option -sv dark-theme-red)"
+loaded_on "$SOCK2" "status-style is left as it was" &&
+    is "status-style is left as it was" "bg=red" "$(tmux -L "$SOCK2" show-option -gqv status-style)"
+loaded_on "$SOCK2" "and so are tmux's theme slots" &&
+    is "and so are tmux's theme slots" "#{?#{e|>=:#{client_colours},256},indianred,red}" \
+       "$(tmux -L "$SOCK2" show-option -sv dark-theme-red)"
 for o in @cockpit_where_path @cockpit_where_branch; do
     case "$(tmux -L "$SOCK2" show-option -gqv "$o")" in
         *pane_current_command*) ok "$o is published" ;;
@@ -2864,8 +2870,10 @@ for o in @cockpit_where_path @cockpit_where_branch; do
     esac
 done
 tmux -L "$SOCK2" set -g status-right "L #{agent_where_path} R" >/dev/null 2>&1
-tmux -L "$SOCK2" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
-is "an old token is not rewritten any more" "L #{agent_where_path} R" "$(tmux -L "$SOCK2" show-option -gqv status-right)"
+reload_on "$SOCK2"
+loaded_on "$SOCK2" "an old token is not rewritten any more" &&
+    is "an old token is not rewritten any more" "L #{agent_where_path} R" \
+       "$(tmux -L "$SOCK2" show-option -gqv status-right)"
 tmux -L "$SOCK2" kill-server >/dev/null 2>&1
 fi
 
@@ -4052,14 +4060,16 @@ done
 # A key the user bound after cockpit let go of it is theirs, not cockpit's to give back.
 "$TMUX_REAL" -L "$GB" bind-key w display-message mine >/dev/null 2>&1
 gb_set board off; gb_load
-is "a reload never gives back a key the user rebound" "display-message mine" \
-   "$(gb_live w | grep -o 'display-message mine')"
+loaded_on "$GB" "a reload never gives back a key the user rebound" &&
+    is "a reload never gives back a key the user rebound" "display-message mine" \
+       "$(gb_live w | grep -o 'display-message mine')"
 gb_set board unset; gb_load
 # Even one that runs cockpit's own scripts: a key without a note is the user's.
 "$TMUX_REAL" -L "$GB" bind-key w run-shell "$DIR/scripts/tm --popup x" >/dev/null 2>&1
 gb_set board off; gb_load
-is "a user's key running cockpit's own scripts is never given back" "1" \
-   "$(gb_live w | grep -c 'scripts/tm --popup x')"
+loaded_on "$GB" "a user's key running cockpit's own scripts is never given back" &&
+    is "a user's key running cockpit's own scripts is never given back" "1" \
+       "$(gb_live w | grep -c 'scripts/tm --popup x')"
 gb_set board unset; gb_load
 # The stock binding itself, not read back through the same probe the fix uses.
 gb_set board off; gb_load
@@ -9968,10 +9978,12 @@ TMUX="$SOCKDIR/$FM,0,0" "$DIR/scripts/tmux-where" branch --set \
 until_cap "$FMO" o '*⎇ main*'
 "$TMUX_REAL" -L "$FMO" send-keys -t o C-b a
 until_cap "$FMO" o '*New window*'
-case "$("$TMUX_REAL" -L "$FMO" capture-pane -p -t o)" in
-    *"Browse folder"*|*"Switch branch"*) bad "with the border on, neither row is offered" "no row" "a row" ;;
-    *) ok "with the border on, neither row is offered" ;;
-esac
+loaded_on "$FM" "with the border on, neither row is offered" &&
+    case "$("$TMUX_REAL" -L "$FMO" capture-pane -p -t o)" in
+        *"Browse folder"*|*"Switch branch"*) bad "with the border on, neither row is offered" \
+            "no row" "a row" ;;
+        *) ok "with the border on, neither row is offered" ;;
+    esac
 "$TMUX_REAL" -L "$FMO" send-keys -t o Escape
 "$TMUX_REAL" -L "$FMO" send-keys -t o C-b e
 until_out 1 "$TMUX_REAL" -L "$FM" show-options -t t -qv @cockpit_fs >/dev/null
@@ -10165,8 +10177,10 @@ FZNS="cockpit-fzfnotice-$$"; SOCKS="$SOCKS $FZNS"
 env -u TMUX -u TMUX_PANE PATH="$fzold:$PATH" "$TMUX_REAL" -L "$FZNS" -f /dev/null \
     new-session -d 'sleep 300' >/dev/null 2>&1
 "$TMUX_REAL" -L "$FZNS" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
-is "an old fzf on PATH draws no notice and sets no option" "0 " \
-   "$("$TMUX_REAL" -L "$FZNS" show-messages 2>/dev/null | grep -c fzf) $("$TMUX_REAL" -L "$FZNS" show-option -gqv @cockpit_fzf_notice)"
+loaded_on "$FZNS" "an old fzf on PATH draws no notice and sets no option" &&
+    is "an old fzf on PATH draws no notice and sets no option" "0 " \
+       "$("$TMUX_REAL" -L "$FZNS" show-messages 2>/dev/null | grep -c fzf) $(
+          "$TMUX_REAL" -L "$FZNS" show-option -gqv @cockpit_fzf_notice)"
 "$TMUX_REAL" -L "$FZNS" kill-server >/dev/null 2>&1
 rm -rf "$FZTD"
 # --- #105 review rows ---------------------------------------------------------
