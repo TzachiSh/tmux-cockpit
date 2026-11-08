@@ -18,10 +18,12 @@ review_pane() {
     rc=$?
     if [ "$rc" -eq 20 ]; then
         # The store goes only when --deliver succeeds: a refusal comes after the
-        # popup is gone, and the store is the only copy. run-shell hands this to
-        # `sh -c`; every path is shq-quoted and the whole string fesc'd.
-        tmux run-shell -b "$(fesc "$(shq "$SELF") --deliver $(shq "$pane") $(shq "$store") \
-$(shq "$dir") && $(shq "$SELF") --done $(shq "$store")")"
+        # popup is gone, and the store is the only copy. An `if`, not `&&`: the
+        # job exits 0 on a refusal, which tmux would otherwise show in view-mode.
+        # run-shell hands this to `sh -c`; every path is shq-quoted and the
+        # whole string fesc'd.
+        tmux run-shell -b "$(fesc "if $(shq "$SELF") --deliver $(shq "$pane") $(shq "$store") \
+$(shq "$dir"); then $(shq "$SELF") --done $(shq "$store"); fi")"
     elif [ "$rc" -eq 21 ]; then
         # Approved (the loop wrote the ref). clear_sess, not rm -rf: a review
         # already queued for a busy pane must survive the approval.
