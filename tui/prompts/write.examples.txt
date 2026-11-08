@@ -12,7 +12,7 @@ Fix the crash in @{{home}}/bin/net-proxy: running `net-proxy` fails in `load_map
 ```
 ValueError: not enough values to unpack (expected 2, got 1)
 ```
-so a line in the map it reads does not have two fields. Make `load_map` cope with such lines and keep the behaviour for valid ones. Done when `net-proxy` starts without the traceback; show the command you ran to check it.
+so a line in the map it reads does not have two fields. Run `net-proxy` first to see the error, then make `load_map` cope with such lines and keep the behaviour for valid ones. Run it again: done when it starts without the traceback; show the command and its output.
 </prompt></reply></example>
 <example id="investigate" core="1"><screen>(empty)</screen><window>bash in {{home}}</window><request>check why tmux is slow when i open new window, dont change nothing</request><reply><prompt>
 Find out why opening a new tmux window is slow. Investigate only and do not change any files. Report the likely causes, most likely first, each with its evidence (a measured time, a config line or a command output) and the change you would suggest.
