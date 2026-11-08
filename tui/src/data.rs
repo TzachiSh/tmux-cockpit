@@ -851,13 +851,16 @@ pub fn list_fleet() -> Option<(Vec<Pane>, std::collections::BTreeSet<String>)> {
     Some((ps, sessions))
 }
 
+/// What [`row_pane`] returns: the Pane and what found the agent.
+type RowPane = Option<(Pane, &'static str)>;
+
 /// One FIELDS row to its Pane, or `None` when the row is not an agent's: the
 /// board's agent test. Shared by the fetch and `workdir` (#500), so the two
 /// cannot disagree on which panes are agents. The second value names what found
 /// the agent, for the ended-flip log. `want_ended` false skips what only `ended`
 /// needs (#507): a marked pane is an agent's without its process tree, so a
 /// caller that never reads `ended` forks no `ps` for it, and gets `ended` false.
-fn row_pane(f: &[&str], procs_t: &mut Option<Procs>, want_ended: bool) -> Option<(Pane, &'static str)> {
+fn row_pane(f: &[&str], procs_t: &mut Option<Procs>, want_ended: bool) -> RowPane {
     // the floor list_fleet names
     if f.len() < 13 {
         return None;
