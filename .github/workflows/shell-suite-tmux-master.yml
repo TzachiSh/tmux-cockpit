@@ -29,7 +29,7 @@ env:
   # https://github.com/tmux/tmux/commits/master, paste its full sha here and
   # push. The cache key carries the sha, so the next run builds that commit once
   # and later runs reuse it.
-  TMUX_MASTER_SHA: a73616d781f2af13085691c741cfb0780d365328
+  TMUX_MASTER_SHA: deadbeefdeadbeefdeadbeefdeadbeefdeadbeef
 
 jobs:
   shell-suite-tmux-master:
