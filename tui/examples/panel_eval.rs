@@ -3034,22 +3034,26 @@ mod tests {
         assert_eq!((l.len(), l.iter().filter(|l| !l.pass).count()), (118, 20));
     }
 
-    /// Each field where a label's input is not its case's, as (key, field): the
-    /// screen, repo and request, each only where the case has one. A label whose
-    /// case is in neither list is not compared.
+    /// Each field where a label's input is not its case's as `judge_input`
+    /// builds it, as (key, field): window, out, screen, repo and request. An
+    /// empty field is compared too, so a label that gained a screen or repo its
+    /// case lacks is named. A label whose case is in neither list is not
+    /// compared.
     fn label_drift(cases: &[Case], labels: &[judge::Label]) -> Vec<(String, &'static str)> {
         let mut out = vec![];
         for l in labels {
             let Some(c) = cases.iter().find(|c| c.id == l.case) else {
                 continue;
             };
-            let i = &l.input;
-            for (f, want, got) in [
-                ("screen", &c.screen, &i.screen),
-                ("repo", &c.repo, &i.repo),
-                ("request", &c.request, &i.request),
+            let (want, got) = (judge_input(c, "", None), &l.input);
+            for (f, w, g) in [
+                ("window", &want.window, &got.window),
+                ("out", &want.out, &got.out),
+                ("screen", &want.screen, &got.screen),
+                ("repo", &want.repo, &got.repo),
+                ("request", &want.request, &got.request),
             ] {
-                if !want.is_empty() && want != got {
+                if w != g {
                     out.push((l.key.clone(), f));
                 }
             }
@@ -3057,25 +3061,37 @@ mod tests {
         out
     }
 
-    /// One label row on the case `crash` of ONE (screen "$ net-proxy\nboom",
-    /// request "fix this", no repo).
-    fn crash_label(case: &str, screen: &str, repo: &str, request: &str) -> judge::Label {
-        let j = serde_json::json!({"key": "k", "case": case, "verdict": "pass", "reply": "r",
-            "screen": screen, "repo": repo, "request": request});
+    /// One label row on `case` carrying ONE's crash case's input as the rig
+    /// builds it (window "bash · bash · /home/u", out "auto", screen
+    /// "$ net-proxy\nboom", request "fix this", no repo), each `set` field
+    /// replaced.
+    fn crash_label(case: &str, set: &[(&str, &str)]) -> judge::Label {
+        let i = judge_input(&parse_cases(ONE).unwrap()[0], "r", None);
+        let mut j = serde_json::json!({"key": "k", "case": case, "verdict": "pass", "reply": "r",
+            "window": i.window, "out": i.out, "screen": i.screen, "repo": i.repo,
+            "request": i.request});
+        for (k, v) in set {
+            j[*k] = (*v).into();
+        }
         judge::read_labels("t", &j.to_string()).unwrap().remove(0)
     }
 
     #[test]
-    fn label_drift_names_each_field_that_differs_from_a_field_the_case_has() {
+    fn label_drift_names_each_field_that_differs_from_the_case() {
         let cases = parse_cases(ONE).unwrap();
-        let s = "$ net-proxy\nboom";
-        let rows: [(&str, judge::Label, &[&str]); 6] = [
-            ("same", crash_label("crash", s, "", "fix this"), &[]),
-            ("lost a # line", crash_label("crash", "$ net-proxy", "", "fix this"), &["screen"]),
-            ("request", crash_label("crash", s, "", "fix it"), &["request"]),
-            ("repo the case lacks", crash_label("crash", s, "x", "fix this"), &[]),
-            ("both", crash_label("crash", "", "", ""), &["screen", "request"]),
-            ("no such case", crash_label("gone", "", "", ""), &[]),
+        let rows: [(&str, judge::Label, &[&str]); 8] = [
+            ("same", crash_label("crash", &[]), &[]),
+            ("lost a # line", crash_label("crash", &[("screen", "$ net-proxy")]), &["screen"]),
+            ("request", crash_label("crash", &[("request", "fix it")]), &["request"]),
+            ("repo the case lacks", crash_label("crash", &[("repo", "x")]), &["repo"]),
+            ("window", crash_label("crash", &[("window", "zsh · zsh · /home/u")]), &["window"]),
+            ("out", crash_label("crash", &[("out", "text")]), &["out"]),
+            (
+                "all empty",
+                crash_label("crash", &[("window", ""), ("out", ""), ("screen", ""), ("request", "")]),
+                &["window", "out", "screen", "request"],
+            ),
+            ("no such case", crash_label("gone", &[("screen", "")]), &[]),
         ];
         for (name, l, want) in rows {
             let got: Vec<&str> = label_drift(&cases, &[l]).into_iter().map(|(_, f)| f).collect();
@@ -3084,12 +3100,12 @@ mod tests {
         assert_eq!(label_drift(&cases, &[]), vec![]);
     }
 
-    /// The judge's calibration grades each owner label against the screen,
-    /// repo and request the row stores, so each must be its case's, read by
-    /// the rig's own parser: a builder that took `#91 ...` for a comment once
-    /// dropped review-which-pr's PR list.
+    /// The judge's calibration grades each owner label against the window,
+    /// output type, screen, repo and request the row stores, so each must be
+    /// its case's, read by the rig's own parser: a builder that took `#91 ...`
+    /// for a comment once dropped review-which-pr's PR list.
     #[test]
-    fn each_owner_label_carries_its_cases_screen_repo_and_request() {
+    fn each_owner_label_carries_its_cases_input() {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("evals/panel");
         let read = |f: &str| std::fs::read_to_string(root.join(f)).unwrap();
         let mut cases = parse_cases(&read("cases.txt")).unwrap();
