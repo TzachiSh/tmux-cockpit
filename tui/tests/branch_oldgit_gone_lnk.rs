@@ -1,6 +1,7 @@
-//! #696: a gone tree's absolute `gitdir` holding a symlink before `..` is resolved as
-//! text, as git lists it: `<root>/lnk/../lw` is `<root>/lw`, not where `lnk/..` leads
-//! through the link. A forged line naming that place names no entry, so it is dropped.
+//! #696: a gone tree's absolute `gitdir` can hold a symlink before `..`. git lists it as
+//! written, `<root>/lnk/../lw`; resolved as text, that path is `<root>/lw`, not where
+//! `lnk/..` leads through the link. A forged line naming that place names no entry, so it
+//! is dropped.
 mod fake;
 mod oldgit;
 use cockpit_tui::data::branches;
