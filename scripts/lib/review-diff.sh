@@ -14,27 +14,46 @@ unset GIT_LITERAL_PATHSPECS GIT_GLOB_PATHSPECS GIT_NOGLOB_PATHSPECS GIT_ICASE_PA
 # Files git would have to hash in full: 100 ms at 32 MB, 26 s at 1 GB, measured.
 BIGCAP=$(( 32 * 1024 * 1024 ))
 
-# Untracked and stat-modified files over BIGCAP, "<bytes>\t<path>". ':(top)':
+# Every list below is NUL-ended records, end to end (#716): a big path may hold
+# a newline, and a split one is two wrong excludes that leave git its blob.
+
+# Untracked and stat-modified files over BIGCAP, "w<path>" from DIR. ':(top)':
 # ls-files stops at the cwd, git diff does not. One stat for the whole list.
+# GNU stat ends each record with a NUL, and the tr swap makes the awk's lines
+# of them, with a NUL where a name had a newline. The path is all after the
+# size's tab, tabs included. The probe is the flag the call uses: BusyBox has
+# -c but no --printf, and a failed stat lists nothing. BusyBox's -c and BSD's
+# -f end records with a newline only, so there a big name holding one is still
+# split.
 big_files() {                 # <dir>
     local dir=$1
-    local -a sz=(-c $'%s\t%n')          # GNU; BSD spells the same two fields -f '%z\t%N'
-    stat -c %s -- "$dir" >/dev/null 2>&1 || sz=(-f $'%z\t%N')
+    local -a sz=(--printf $'%s\t%n\\0') swap=(tr '\n\0' '\0\n')
+    if ! stat --printf %s -- "$dir" >/dev/null 2>&1; then
+        swap=(cat); sz=(-c $'%s\t%n')
+        stat -c %s -- "$dir" >/dev/null 2>&1 || sz=(-f $'%z\t%N')
+    fi
     git -C "$dir" --no-optional-locks ls-files -o -m --exclude-standard -z -- ':(top)' 2>/dev/null \
     | ( cd "$dir" 2>/dev/null || exit; xargs -0 -r stat "${sz[@]}" -- 2>/dev/null ) \
-    | awk -F'\t' -v cap="$BIGCAP" 'NF == 2 && $1 + 0 > cap'
+    | "${swap[@]}" \
+    | awk -F'\t' -v cap="$BIGCAP" \
+          'NF >= 2 && $1 + 0 > cap { print "w" substr($0, index($0, "\t") + 1) }' \
+    | tr '\n\0' '\0\n'
 }
 
-# big_files' paths alone, one a line. Its awk keeps two-field lines only, so no
-# path holds a tab and the second field is the whole path.
-big_paths() { big_files "$1" | cut -f2-; }    # <dir>
-
-# Paths that differ between REV and HEAD with a blob over BIGCAP on either side,
-# one a line, from the root (#708). big_files sees the worktree only, and a
-# branch or since-review base also diffs what the branch committed or deleted.
-# The sizes are cat-file's object headers: no blob is read. No renames: pairing
-# them reads both blobs. A gitlink's sha names no blob here.
-big_range_paths() {           # <dir> <rev>
+# Tracked paths whose diff can read a blob over BIGCAP, "t<path>" from the
+# root. Three sets, sized together: what differs between REV and HEAD with a
+# big blob on either side (#708: a branch or since-review base also diffs what
+# the branch committed or deleted), what differs between HEAD and the worktree
+# with a big HEAD blob (#716: deleted or shrunk in the worktree reads it), and
+# what differs between HEAD and the index with a big blob on either side
+# (revdiff's uncommitted view reads the index blob with `git show :path`, a
+# staged copy the worktree then shrank or deleted too). big_files sees none of
+# them: it sizes worktree files. diff-index on a stat-dirty file prints no sha
+# and hashes nothing, so the index needs --cached. The sizes are cat-file's
+# object headers: no blob is
+# read. No renames: pairing them reads both blobs. A gitlink's sha names no blob,
+# and =all keeps diff-index out of its repo: a status there runs its filters.
+big_tree_paths() {            # <dir> <rev>
     local m p om nm os ns i
     local -a olds=() news=() paths=()
     local -A blobsz=()
@@ -42,7 +61,12 @@ big_range_paths() {           # <dir> <rev>
         read -r om nm os ns _ <<<"$m"                  # ":<mode> <mode> <sha> <sha> <status>"
         [ "$om" != :160000 ] && [ "$nm" != 160000 ] || continue
         olds+=("$os"); news+=("$ns"); paths+=("$p")
-    done < <(git -C "$1" --no-optional-locks diff-tree -r -z --no-renames "$2" HEAD -- 2>/dev/null)
+    done < <({ [ "$2" = HEAD ] \
+               || git -C "$1" --no-optional-locks diff-tree -r -z --no-renames "$2" HEAD --
+               git -C "$1" --no-optional-locks diff-index -z --no-renames \
+                   --ignore-submodules=all HEAD --
+               git -C "$1" --no-optional-locks diff-index -z --no-renames --cached \
+                   --ignore-submodules=all HEAD --; } 2>/dev/null)
     [ "${#paths[@]}" -gt 0 ] || return 0
     while read -r m p; do
         case $p in ''|*[!0-9]*) ;; *) blobsz[$m]=$p ;; esac       # "<sha> missing" for 000...
@@ -52,9 +76,34 @@ big_range_paths() {           # <dir> <rev>
     for i in "${!paths[@]}"; do
         if [ "${blobsz[${olds[i]}]:-0}" -gt "$BIGCAP" ] \
             || [ "${blobsz[${news[i]}]:-0}" -gt "$BIGCAP" ]; then
-            printf '%s\n' "${paths[i]}"
+            printf 't%s\0' "${paths[i]}"
         fi
     done
+}
+
+# The one list every reader takes: big_files' records, then with REV
+# big_tree_paths', a path once. "w" paths are from DIR, "t" ones from the root,
+# and each is printed as it came: the key that finds a twin is from the root,
+# or a subdir's untracked "a.bin" hides the root's deleted one.
+big_list() {                  # <dir> [rev]
+    local r k pre up=-
+    local -A seen=()
+    while IFS= read -r -d '' r; do
+        k=${r#?}
+        [ -n "$k" ] || continue
+        case $r in w*)                       # DIR's prefix, asked once
+            [ "$up" != - ] \
+                || up=$(git -C "$1" --no-optional-locks rev-parse --show-prefix 2>/dev/null)
+            pre=$up
+            while case $k in ../*) ;; *) false ;; esac; do      # ls-files' ../ from DIR
+                k=${k#../}; pre=${pre%/}
+                case $pre in */*) pre=${pre%/*}/ ;; *) pre="" ;; esac
+            done
+            k=$pre$k ;;
+        esac
+        [ -z "${seen[$k]+x}" ] || continue
+        seen[$k]=1; printf '%s\0' "$r"
+    done < <(big_files "$1"; [ -z "${2:-}" ] || big_tree_paths "$1" "$2")
 }
 
 # Sets the caller's rcx to the exclude entries of revdiff's own config file
@@ -67,8 +116,9 @@ big_range_paths() {           # <dir> <rev>
 # skipped one: revdiff then ignores REVDIFF_EXCLUDE. A line revdiff cannot parse
 # makes it skip the whole file: status 1 and no entries. A quoted value is
 # unquoted when it holds no backslash; one that does is skipped, since Go's
-# escapes are not undone here, and so is one too long for one exec arg
-# (--exclude=<it> past 128 KiB fails the exec). awk parses: a bash trim of a
+# escapes are not undone here, and so is one past PATH_MAX (4096 bytes): it
+# matches no path, and longer ones fill the exec's argv (16 of 128 KiB fail it,
+# E2BIG), but still names an exclude. awk parses: a bash trim of a
 # long line is seconds per MB. It prints N per exclude key, E<value> per entry,
 # R to reject.
 revdiff_config_excludes() {
@@ -99,8 +149,8 @@ revdiff_config_excludes() {
             }
             if (sec != "" && sec != "application options") next
             if (tolower(k) != "exclude" && k != "X") next
-            print "N"                                  # Linux caps one exec arg at 128 KiB
-            if (!esc && v != "" && length(v) <= 131061) print "E" v
+            print "N"                                  # PATH_MAX: no longer path to match
+            if (!esc && v != "" && length(v) <= 4096) print "E" v
         }' "$f"); } 2>/dev/null
     mapfile -t rows <<<"$out"
     for r in "${rows[@]}"; do
@@ -118,9 +168,10 @@ revdiff_config_excludes() {
 # Its -X drops a path from that list before either runs. Sets the caller's rdx
 # to revdiff's file options: --untracked, an --exclude=<path> per big file (the
 # = form, so a leading dash is no option), and the user's own excludes, which a
-# command-line -X replaces: the config file's, else REVDIFF_EXCLUDE (#706). With
-# REV, the base revdiff diffs against, the big files of REV..HEAD count too.
-# -X matches a whole path once revdiff has trimmed
+# command-line -X replaces: the config file's, else REVDIFF_EXCLUDE (#706). REV
+# is the base revdiff diffs against, HEAD when empty: big_tree_paths' files
+# count too. -X matches a whole path, a newline in it included (revdiff lists
+# files with -z and trims only the ends), once revdiff has trimmed
 # whitespace off its ends, so a big path with whitespace at an end cannot be
 # named. Untracked, it is shown only under --untracked: that is left out, and
 # the status is 1. Tracked or committed, revdiff may diff it in full whatever
@@ -128,26 +179,20 @@ revdiff_config_excludes() {
 # 2, and the caller must not start revdiff. DIR is the root:
 # revdiff's paths are from it.
 revdiff_files() {             # <dir> [rev]
-    local bp e cut=0
+    local r bp e cut=0
     local -a env=() rcx=()
-    local -A seen=()
     rdx=()
-    while IFS= read -r bp; do
-        [ -n "$bp" ] || continue
-        seen[$bp]=1
-        case $bp in [[:space:]]*|*[[:space:]])
-            [ "$cut" -eq 2 ] || cut=1        # one tracked is enough: no more ls-files
-            [ "$cut" -eq 2 ] || [ -z "$(git -C "$1" --no-optional-locks ls-files \
-                -- ":(literal)$bp" 2>/dev/null)" ] || cut=2 ;;
+    while IFS= read -r -d '' r; do
+        bp=${r#?}
+        case $r in
+            t[[:space:]]*|t*[[:space:]]) cut=2 ;;
+            w[[:space:]]*|w*[[:space:]])
+                [ "$cut" -eq 2 ] || cut=1        # one tracked is enough: no more ls-files
+                [ "$cut" -eq 2 ] || [ -z "$(git -C "$1" --no-optional-locks ls-files \
+                    -- ":(literal)$bp" 2>/dev/null)" ] || cut=2 ;;
         esac
         rdx+=("--exclude=$bp")
-    done < <(big_paths "$1")
-    while IFS= read -r bp; do
-        [ -n "$bp" ] && [ -z "${seen[$bp]+x}" ] || continue
-        seen[$bp]=1
-        case $bp in [[:space:]]*|*[[:space:]]) cut=2 ;; esac
-        rdx+=("--exclude=$bp")
-    done < <([ -z "${2:-}" ] || big_range_paths "$1" "$2")
+    done < <(big_list "$1" "${2:-HEAD}")
     if [ "${#rdx[@]}" -gt 0 ]; then
         if revdiff_config_excludes; then
             for e in ${rcx[@]+"${rcx[@]}"}; do rdx+=("--exclude=$e"); done
@@ -210,20 +255,18 @@ tree_diff() {
         base=${base%%$'\t'*}
     fi
     # Only a pathspec stops git hashing the big files. Exclusions alone still
-    # leave the diff whole-worktree wide. A base's own big blobs too (#708):
-    # their paths are from the root, so :(top).
+    # leave the diff whole-worktree wide. Big blobs too (#708, #716): their
+    # paths are from the root, so :(top).
     local -a ex=() bigp=()
     case " $* " in *' -- '*) ;; *)
-        local bp
-        local -A seen=()
-        while IFS= read -r bp; do
-            [ -n "$bp" ] || continue
-            seen[$bp]=1; bigp+=("$bp"); ex+=(":(exclude,literal)$bp")
-        done < <(big_paths "$dir")
-        while IFS= read -r bp; do
-            [ -n "$bp" ] && [ -z "${seen[$bp]+x}" ] || continue
-            seen[$bp]=1; bigp+=("$bp"); ex+=(":(top,exclude,literal)$bp")
-        done < <([ -z "$base" ] || big_range_paths "$dir" "$base")
+        local r
+        while IFS= read -r -d '' r; do
+            bigp+=("${r#?}")
+            case $r in
+                w*) ex+=(":(exclude,literal)${r#?}") ;;
+                *)  ex+=(":(top,exclude,literal)${r#?}") ;;
+            esac
+        done < <(big_list "$dir" "$base")
         [ "${#ex[@]}" -gt 0 ] && ex=(-- "${ex[@]}") ;;
     esac
     if [ -n "$br" ]; then
@@ -383,13 +426,14 @@ approve() {                   # <dir>
     # --pathspec-from-file takes no pathspec beside it. Excludes alone leave the
     # add tree-wide, from a subdir too: git applies them to a pathspec-less add.
     # A failed cat stops the add: it would run without the gitlink excludes.
-    local bp nbig=0 lost=0
+    # The worktree's big files only: add -A reads no HEAD blob, and excluding a
+    # deleted one would keep it in the checkpoint.
+    local r nbig=0 lost=0
     {
         [ ! -s "$tmp/pathspec" ] || cat -- "$tmp/pathspec" || lost=1
-        while IFS= read -r bp; do
-            [ -n "$bp" ] || continue
-            printf ':(exclude,literal)%s\0' "$bp"; nbig=$((nbig + 1))
-        done < <(big_paths "$dir")
+        while IFS= read -r -d '' r; do
+            printf ':(exclude,literal)%s\0' "${r#w}"; nbig=$((nbig + 1))
+        done < <(big_list "$dir")
     } > "$tmp/addspec" 2>/dev/null && [ "$lost" -eq 0 ] || { scratch_done; return 1; }
     [ "$nbig" -eq 0 ] || from=(--pathspec-from-file="$tmp/addspec" --pathspec-file-nul)
     br=$(git -C "$dir" --no-optional-locks rev-parse --abbrev-ref HEAD 2>/dev/null)

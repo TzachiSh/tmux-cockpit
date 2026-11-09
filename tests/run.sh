@@ -6205,23 +6205,120 @@ printf '%s\n' 'exclude = "a\tb"' > "$RBCH/other"
 rbca=$(rbr_args "$RBC" "" REVDIFF_CONFIG="$RBCH/other" REVDIFF_EXCLUDE=a,envb)
 is "an escaped entry alone: skipped, and REVDIFF_EXCLUDE is still not passed" "1|0" \
    "$(grep -c -- '^--exclude=' <<<"$rbca")|$(grep -cxF -- '--exclude=envb' <<<"$rbca")"
-# A long line, trimmed whole (100 KB: one exec arg stops at 128 KiB).
-{ printf 'exclude =  '; head -c 100000 /dev/zero | tr '\0' a; printf '  \n'; } > "$RBCH/other"
-is "a 100 KB entry is passed on whole, trimmed" "100011" \
+# A 100 KB line, trimmed whole to a 4096-byte entry.
+{ printf 'exclude ='; head -c 50000 /dev/zero | tr '\0' ' '; head -c 4096 /dev/zero | tr '\0' a
+  head -c 50000 /dev/zero | tr '\0' ' '; printf '\n'; } > "$RBCH/other"
+is "a 100 KB line holding a 4096-byte entry: the entry is passed on, trimmed" "4107" \
    "$(rbr_args "$RBC" "" REVDIFF_CONFIG="$RBCH/other" | grep -- '^--exclude=a' \
       | wc -c | tr -d ' ')"
-# Linux caps one exec arg at 128 KiB, its NUL included: --exclude= and 131061 fit.
+# PATH_MAX caps an entry: no longer path matches, and 16 of 128 KiB fill the argv.
 rbc_len() {                   # <entry length>: lengths of the --exclude=a... args revdiff got
     { printf 'exclude = '; head -c "$1" /dev/zero | tr '\0' a; printf '\n'; } > "$RBCH/other"
     rbr_args "$RBC" "" REVDIFF_CONFIG="$RBCH/other" REVDIFF_EXCLUDE=envb \
         | awk '/^--exclude=a/ { print length($0) } /^--exclude=envb$/ { print "envb" }
                /^--untracked$/ { print "started" }' | paste -sd " " -
 }
-is "an entry that fits one exec arg reaches revdiff" "131071 started" "$(rbc_len 131061)"
+is "an entry of PATH_MAX (4096 bytes) reaches revdiff" "4106 started" "$(rbc_len 4096)"
 is "one byte longer is skipped, and REVDIFF_EXCLUDE still not passed" \
-   "started" "$(rbc_len 131062)"
+   "started" "$(rbc_len 4097)"
 unset -f rbr_args rbc_len
 rm -rf "$RBC" "$RBCH" "$RBRB"
+
+echo "== review: a big HEAD blob deleted or shrunk, or a big newline name, stays out (#716) =="
+# big_files sizes worktree files, so a big HEAD file deleted or shrunk in the
+# worktree was in no list and git diff read its HEAD blob. A newline split a big
+# path into two wrong excludes, and a tab dropped it. FAIL-first: on the old
+# code revdiff got no --exclude for the first three, the newline names were two
+# args, and tree_diff's full diff named every file below.
+RBN=$(mktmpd); RBNB=$(mktmpd); fake_revdiff "$RBNB"        # a shard runs it alone
+( cd "$RBN" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main . && printf 'a\n' > f.c
+  for b in del.bin shr.bin stg.bin; do printf '%s\n' "$b" > "$b"; truncate -s 33M "$b"; done
+  git add -A && git commit -q -m init
+  rm del.bin; printf 'small\n' > shr.bin; printf 'small2\n' > stg.bin; git add stg.bin
+  for b in $'wnl\nw.bin' $'tab\there.bin'; do
+      printf 'x%s\n' "$b" > "$b"; truncate -s 33M "$b"
+  done
+) >/dev/null 2>&1
+rbn_args() {                  # <repo>: one revdiff launch, its args one a line
+    RDW=$(mktmpd); rd_loop l "$1" "$RDW/comments.md" "$RBNB:$PATH" >/dev/null
+    cat "$RDW/args.1" 2>/dev/null
+}
+rbna=$(rbn_args "$RBN")
+for b in del.bin shr.bin stg.bin $'tab\there.bin'; do
+    is "revdiff, uncommitted base: big at HEAD or on disk, '$b' is excluded" "1" \
+       "$(grep -cxF -- "--exclude=$b" <<<"$rbna")"
+done
+is "a big name with a newline is one --exclude arg" "w.bin" \
+   "$(awk 'p == "--exclude=wnl" { print } { p = $0 }' <<<"$rbna")"
+is "and nothing else is excluded" "5" "$(grep -c -- '^--exclude=' <<<"$rbna")"
+is "tree_diff's full diff names none of them: no blob read" "0" \
+   "$(tdiff "$RBN" | grep -c '^diff --git .*\.bin')"
+is "and numstat still names the deleted one" "1" \
+   "$(tdiff "$RBN" --numstat | grep -cxF -- "-	-	del.bin")"
+rbn_ap() { bash -c '. "$1/git.sh"; . "$1/review-diff.sh"; approve "$2"; echo "$?"' \
+             _ "$DIR/scripts/lib" "$1" 2>/dev/null; }
+is "a: approves" "0" "$(rbn_ap "$RBN")"
+RBNREF=$(git -C "$RBN" rev-parse -q --verify refs/cockpit/reviewed/main)
+is "a: the newline-named big file's blob is not written" "absent" \
+   "$(git -C "$RBN" cat-file -e "$(git -C "$RBN" hash-object -- $'wnl\nw.bin')" 2>/dev/null \
+      && echo written || echo absent)"
+is "a: the deleted big file is out of the checkpoint, the shrunk one is its small blob" \
+   "|$(git -C "$RBN" hash-object shr.bin)" \
+   "$(git -C "$RBN" rev-parse -q --verify "$RBNREF:del.bin")|$(
+      git -C "$RBN" rev-parse "$RBNREF:shr.bin")"
+# Under a branch base: a big file the branch never touched, deleted in the
+# worktree, and a big newline name the branch committed.
+RBNR=$(mktmpd)
+( cd "$RBNR" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main . && printf 'a\n' > f.c && printf 'k\n' > keep.bin
+  truncate -s 33M keep.bin && git add -A && git commit -q -m init
+  git checkout -q -b feat && printf 'b\n' >> f.c && printf 'c\n' > $'cnl\nc.bin'
+  truncate -s 33M $'cnl\nc.bin' && git add -A && git commit -q -m feat && rm keep.bin
+) >/dev/null 2>&1
+rbna=$(rbn_args "$RBNR")
+is "branch base: the base is main's" "$(git -C "$RBNR" rev-parse main)" "$(tail -n 1 <<<"$rbna")"
+is "a big file deleted in the worktree only is excluded" "1" \
+   "$(grep -cxF -- '--exclude=keep.bin' <<<"$rbna")"
+is "a committed big name with a newline is one --exclude arg" "c.bin" \
+   "$(awk 'p == "--exclude=cnl" { print } { p = $0 }' <<<"$rbna")"
+is "tree_diff's full diff names neither" "0" "$(tdiff "$RBNR" | grep -c '^diff --git .*\.bin')"
+# A big blob only the index holds: revdiff's uncommitted view reads it with
+# `git show :path`. A 33 MB copy staged, then the worktree shrunk; a new 33 MB
+# file staged, then deleted. diff-index without --cached sees neither.
+RBNI=$(mktmpd)
+( cd "$RBNI" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main . && printf 'cp\n' > cp.bin && git add -A && git commit -q -m init
+  truncate -s 33M cp.bin && printf 'new\n' > new.bin && truncate -s 33M new.bin
+  git add -A && printf 'shrunk\n' > cp.bin && rm new.bin
+) >/dev/null 2>&1
+rbna=$(rbn_args "$RBNI")
+is "a staged big copy the worktree then shrank is excluded" "1" \
+   "$(grep -cxF -- '--exclude=cp.bin' <<<"$rbna")"
+is "and a staged big new file the worktree then deleted" "1" \
+   "$(grep -cxF -- '--exclude=new.bin' <<<"$rbna")"
+# From a subdir: an untracked big sub/a.bin ("a.bin" from there) and the root's
+# big a.bin, deleted, are two paths. One key for both left the root's blob to git.
+RBNS=$(mktmpd)
+( cd "$RBNS" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main . && mkdir sub && printf 'root\n' > a.bin && truncate -s 33M a.bin
+  printf 'k\n' > sub/keep && git add -A && git commit -q -m init && rm a.bin
+  printf 'sub\n' > sub/a.bin && truncate -s 33M sub/a.bin
+) >/dev/null 2>&1
+is "tree_diff from sub: neither a.bin reaches git" "0" \
+   "$(tdiff "$RBNS/sub" | grep -c '^diff --git .*a\.bin')"
+# A stat with -c but no --printf (BusyBox): the probe asks for the flag it uses.
+RBNT=$(mktmpd); mkdir "$RBNT/bin"
+printf '#!/bin/sh\ncase "$1" in --printf*) exit 1 ;; esac\nexec %s "$@"\n' \
+    "$(command -v stat)" > "$RBNT/bin/stat"; chmod +x "$RBNT/bin/stat"
+is "with a stat that has no --printf, tree_diff still keeps the big files out" "0" \
+   "$(PATH="$RBNT/bin:$PATH" tdiff "$RBNS/sub" | grep -c '^diff --git .*a\.bin')"
+unset -f rbn_args rbn_ap
+rm -rf "$RBN" "$RBNR" "$RBNB" "$RBNI" "$RBNS" "$RBNT"
 
 echo "== tmux-review: the review base is since-last-review, else the branch, else uncommitted =="
 # revdiff's auto-detect, one function: a checkpoint ref wins, then the
