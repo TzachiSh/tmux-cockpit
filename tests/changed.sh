@@ -39,7 +39,7 @@ function note(arr, line,   i, n, S, s, p) {
     # docs and the Makefile are read by blocks too, not only scripts (#672).
     s = line
     while (match(s, /[$][{]?DIR[}]?["]?\/[A-Za-z0-9_.\/-]+/)) {
-        p = substr(s, RSTART, RLENGTH); sub(/^[^\/]*\//, "", p); arr[p] = 1
+        p = substr(s, RSTART, RLENGTH); sub(/^[^\/]*\//, "", p); sub(/\/+$/, "", p); arr[p] = 1
         s = substr(s, RSTART + RLENGTH)
     }
 }
@@ -80,7 +80,13 @@ function emit(   k, s) { s = ""; for (k in f) s = s " " k; printf "%d\t%s\t%s\n"
 END { emit() }
 ' "$RUN" "$RUN" > "$TBL"
 
-blocks_for() { awk -F'\t' -v f="$1" '{ n = split($3, D, " "); for (i = 1; i <= n; i++) if (D[i] == f) { print $1; break } }' "$TBL"; }
+# A dependency may name a directory: "$DIR/scripts/lib" handed to a helper, or
+# "$DIR"/scripts/lib/*.sh cut at the glob. It stands for every file under it (#688).
+blocks_for() {
+    awk -F'\t' -v f="$1" '{ n = split($3, D, " ")
+        for (i = 1; i <= n; i++)
+            if (D[i] == f || index(f, D[i] "/") == 1) { print $1; break } }' "$TBL"
+}
 
 # tests/run.sh: a hunk above the first block is the prelude or a helper and can
 # affect anything. A hunk inside a block runs that block.

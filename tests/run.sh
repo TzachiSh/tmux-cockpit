@@ -7835,19 +7835,39 @@ is "a docs/tui.md edit alone runs the syntax block and the docs-options block" \
     "1,$CHG_DOCS" "$(bash "$DIR/tests/changed.sh" docs/tui.md)"
 CHG_TRACKED=$(git -C "$DIR" ls-files 2>/dev/null)
 if [ -z "$CHG_TRACKED" ]; then skip_ "changed.sh read map (not a git checkout)"; else
-# block <TAB> path, for every tracked file a block names as "$DIR/<path>"
+# block <TAB> path, for every tracked file a block names as "$DIR/<path>". A
+# directory read ("$DIR/scripts/lib" passed to tdiff, "$DIR"/scripts/lib/*.sh)
+# stands for every tracked file under it, so it is checked file by file (#688).
+# The regex is a copy of the one in note() in tests/changed.sh: change both.
 CHG_READS=$(awk '/^echo "== /{ n++ } n { s = $0
     while (match(s, /[$][{]?DIR[}]?["]?\/[A-Za-z0-9_.\/-]+/)) {
         p = substr(s, RSTART, RLENGTH); sub(/^[^\/]*\//, "", p); print n "\t" p
-        s = substr(s, RSTART + RLENGTH) } }' "$DIR/tests/run.sh" | sort -u |
-    awk -F'\t' 'NR == FNR { t[$0] = 1; next } ($2 in t) && $2 != "tests/run.sh"' \
-        <(printf '%s\n' "$CHG_TRACKED") -)
+        s = substr(s, RSTART + RLENGTH) } }' "$DIR/tests/run.sh" |
+    awk -F'\t' 'NR == FNR { t[$0] = 1; T[++nt] = $0; next }
+        { p = $2; sub(/\/+$/, "", p) }
+        p in t { print $1 "\t" p; next }
+        { for (i = 1; i <= nt; i++) if (index(T[i], p "/") == 1) print $1 "\t" T[i] }' \
+        <(printf '%s\n' "$CHG_TRACKED") - | awk -F'\t' '$2 != "tests/run.sh"' | sort -u)
+CHG_TD=$(chg_ord 'tree_diff: staged, unstaged and untracked changes are one diff (#390) ==')
+CHG_SPC=$(chg_ord 'the click bindings survive a plugin path with a quote and a space ==')
+CHG_PA=$(chg_ord 'poll_alive: with no /proc, the poller is known by ps -o args= (#194) ==')
 # shellcheck disable=SC2046  # deliberate word splitting: one path per line
-CHG_EACH=$(bash "$DIR/tests/changed.sh" --each \
-    $({ printf 'Makefile\nLICENSE\n'; cut -f2 <<< "$CHG_READS"; } | sort -u))
+CHG_EACH=$(bash "$DIR/tests/changed.sh" --each $({ printf '%s\n' Makefile LICENSE \
+    scripts/lib/review-diff.sh scripts/lib/vnum.sh scripts/lib/hook.sh scripts/tmux-where
+    cut -f2 <<< "$CHG_READS"; } | sort -u))
 chg_pick() { awk -F'\t' -v f="$1" '$1 == f { print $2 }' <<< "$CHG_EACH"; }
+chg_has() { case ",$(chg_pick "$1")," in *",$2,"*|*",ALL,"*) echo yes ;; *) echo no ;; esac; }
 is "a Makefile edit runs the target-dir block that copies it" "$CHG_MAKE" "$(chg_pick Makefile)"
 is "a file no block names selects nothing beyond the syntax block" "" "$(chg_pick LICENSE)"
+is "a lib edit runs the tree_diff block, which reads \$DIR/scripts/lib (#688)" \
+    yes "$(chg_has scripts/lib/review-diff.sh "$CHG_TD")"
+is "a lib edit runs the block that copies \$DIR\"/scripts/lib/*.sh (#688)" \
+    yes "$(chg_has scripts/lib/vnum.sh "$CHG_MAKE")"
+is "a scripts/ edit runs the block that copies \$DIR/scripts whole (#688)" \
+    yes "$(chg_has scripts/tmux-where "$CHG_SPC")"
+# "$1/scripts/lib/hook.sh" with _ "$DIR" names no "$DIR/" path: the block's marker
+is "a hook.sh edit runs the poll_alive block, which sources it as \$1/... (#688)" \
+    yes "$(chg_has scripts/lib/hook.sh "$CHG_PA")"
 chg_miss=""
 while IFS=$'\t' read -r n p; do
     case ",1,$(chg_pick "$p")," in *",ALL,"*|*",$n,"*) ;; *) chg_miss="$chg_miss $p:$n" ;; esac
@@ -7857,7 +7877,7 @@ CHG_STAMP=$(bash "$DIR/tests/green.sh" files)
 is "the green stamp hashes every file a block reads" "" "$(cut -f2 <<< "$CHG_READS" | sort -u |
     awk 'NR == FNR { s[$0] = 1; next } !($0 in s) { printf " %s", $0 }' \
         <(printf '%s\n' "$CHG_STAMP") -)"
-unset -f chg_pick
+unset -f chg_pick chg_has
 fi
 unset -f chg_ord
 
@@ -16689,6 +16709,7 @@ rm -rf "$J3"
 
 # --- #194 poll_alive's macOS branch, run on Linux ----------------------------
 
+# tests: scripts/lib/hook.sh
 echo "== poll_alive: with no /proc, the poller is known by ps -o args= (#194) =="
 # macOS has no /proc: poll_alive asks ps for the command line, since comm is the interpreter
 # there. COCKPIT_PROC_DIR points it at an empty dir so that branch runs here, and a ps shim
