@@ -1,6 +1,7 @@
-//! `cockpit-tui diffstat` with a GIT_*_PATHSPECS variable inherited (#673). The
-//! diff count builds `:(literal)` and `:(exclude,literal)` pathspecs, and these
-//! variables change what those match: each test sets one on the child alone,
+//! `cockpit-tui diffstat` with a git variable inherited. The diff count builds
+//! `:(literal)` and `:(exclude,literal)` pathspecs, and the GIT_*_PATHSPECS
+//! variables change what those match (#673); others move the object store or
+//! the attributes git reads (#683). Each test sets one on the child alone,
 //! never on this process, and wants the count plain git gives with none set.
 use std::path::PathBuf;
 use std::process::Command;
@@ -174,4 +175,53 @@ fn glob_and_noglob_inherited_together_still_count() {
     let r = moved_capital_a("both-mv");
     let both = ["GIT_GLOB_PATHSPECS", "GIT_NOGLOB_PATHSPECS"];
     assert_eq!(r.diffstat(&both), (0, Some(r.reference())));
+}
+
+/// `f` committed with one line and given a second: plain git counts `+1 -0`.
+fn one_line_added(tag: &str) -> Repo {
+    let r = Repo::new(tag);
+    r.write("f", "1\n");
+    r.commit();
+    r.write("f", "1\n2\n");
+    r
+}
+
+/// GIT_OBJECT_DIRECTORY naming no dir: git finds no repo and the row read `?`.
+#[test]
+fn an_object_directory_inherited_that_is_missing_still_counts() {
+    let r = one_line_added("objdir-missing");
+    let gone = r.0.join("no-such-objects");
+    let env = [("GIT_OBJECT_DIRECTORY", gone.to_str().unwrap())];
+    assert_eq!(r.diffstat_with(&env), (0, Some(r.reference())));
+}
+
+/// GIT_OBJECT_DIRECTORY naming an empty dir: HEAD's commit is not in it.
+#[test]
+fn an_object_directory_inherited_that_is_empty_still_counts() {
+    let r = one_line_added("objdir-empty");
+    let empty = r.0.join(".git/empty-objects");
+    std::fs::create_dir(&empty).unwrap();
+    let env = [("GIT_OBJECT_DIRECTORY", empty.to_str().unwrap())];
+    assert_eq!(r.diffstat_with(&env), (0, Some(r.reference())));
+}
+
+/// GIT_ATTR_SOURCE naming no rev: every diff is fatal and the row read `?`.
+#[test]
+fn an_attr_source_inherited_that_is_no_rev_still_counts() {
+    let r = one_line_added("attr-norev");
+    assert_eq!(r.diffstat_with(&[("GIT_ATTR_SOURCE", "no-such-rev")]), (0, Some(r.reference())));
+}
+
+/// GIT_ATTR_SOURCE naming a tree whose `.gitattributes` says `f -diff`: f's
+/// lines would read as binary, `-` for each count, and add up to nothing.
+#[test]
+fn an_attr_source_inherited_from_another_tree_still_counts() {
+    let r = one_line_added("attr-tree");
+    r.write(".gitattributes", "f -diff\n");
+    r.git(&["add", ".gitattributes"]);
+    let tree = String::from_utf8(r.git(&["write-tree"])).unwrap();
+    r.git(&["rm", "-q", "--cached", ".gitattributes"]);
+    std::fs::remove_file(r.0.join(".gitattributes")).unwrap();
+    assert_eq!(r.reference(), (1, 0, 0), "f's one new line, nothing untracked");
+    assert_eq!(r.diffstat_with(&[("GIT_ATTR_SOURCE", tree.trim())]), (0, Some(r.reference())));
 }
