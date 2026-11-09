@@ -1150,30 +1150,40 @@ impl App {
 
     /// The system prompt, the user prompt and the model for the pending call.
     pub fn request_parts(&self) -> Option<(String, String, String)> {
-        self.request_noted().map(|(parts, _)| parts)
+        self.request_noted().map(|(parts, ..)| parts)
     }
 
-    /// [`App::request_parts`], and why a prompt override was not used.
-    fn request_noted(&self) -> Option<((String, String, String), Option<String>)> {
+    /// [`App::request_parts`], and for a write the [`prompts::files_hash`] of
+    /// the prompt files this same call read, so a file edited after it does not
+    /// change the hash (#711). `None` for any other flow.
+    pub fn request_hashed(&self) -> Option<((String, String, String), Option<String>)> {
+        self.request_noted().map(|(parts, _, hash)| (parts, hash))
+    }
+
+    /// [`App::request_parts`], why a prompt override was not used, and the hash.
+    #[allow(clippy::type_complexity)]
+    fn request_noted(&self) -> Option<((String, String, String), Option<String>, Option<String>)> {
         let r = self.run.as_ref()?;
-        let (system, note) = match &r.flow {
+        let noted = |(t, n): (String, Option<String>)| (t, n, None);
+        let (system, note, hash) = match &r.flow {
             Flow::Write { out, .. } => {
                 let ctx = Ctx {
                     out: *out,
                     window: window_kind(&self.cap.name, &self.cap.cmd),
                     bare_refs: self.write_refs(&r.flow).iter().any(|i| !i.mention),
                 };
-                if self.explores(&r.flow) {
+                let (t, n, h) = if self.explores(&r.flow) {
                     prompts::write_explore_noted(&ctx)
                 } else {
                     prompts::write_noted(&ctx)
-                }
+                };
+                (t, n, Some(h))
             }
-            Flow::Fix { .. } => prompts::fix_noted(),
-            Flow::Explain => prompts::explain_noted(),
-            Flow::Ask(_) => prompts::ask_code_noted(),
+            Flow::Fix { .. } => noted(prompts::fix_noted()),
+            Flow::Explain => noted(prompts::explain_noted()),
+            Flow::Ask(_) => noted(prompts::ask_code_noted()),
         };
-        Some(((system, self.envelope(r).0, r.model.clone()), note))
+        Some(((system, self.envelope(r).0, r.model.clone()), note, hash))
     }
 
     /// Forks the pending call, if there is one.
@@ -1181,7 +1191,7 @@ impl App {
         if !std::mem::take(&mut self.pending) {
             return;
         }
-        if let Some(((system, prompt, model), note)) = self.request_noted() {
+        if let Some(((system, prompt, model), note, _)) = self.request_noted() {
             if let Some(n) = note {
                 self.say(Level::Warn, n);
             }

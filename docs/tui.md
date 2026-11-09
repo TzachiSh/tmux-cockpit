@@ -290,12 +290,14 @@ fresh runs per side, and a drop that holds at p < 0.05 on those alone reverts
 the change. The flagging runs never count: they were picked because they
 failed, so pooling them biases the test toward a drop. A change gets at most 3
 wordings, then the stop rule applies. Each `--out` row carries `prompt`, the
-hash of `write.txt`, its examples and `write.explore.txt` as loaded, taken when
-each job starts; `--compare` refuses a case whose rows on one side carry two
-hashes unless given `--allow-mixed`. Each run appends its cost to `--ledger
-<file>`, else to `cost.tsv` next to `--out`, else to
+hash of `write.txt` and its examples, plus `write.explore.txt` for an exploring
+write, from the read the job's own call made (#711); `--compare` refuses a case
+whose rows on one side carry two hashes unless given `--allow-mixed`. Each run
+appends its cost to `--ledger <file>`, else to `cost.tsv` next to `--out`, else to
 `${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/panel-eval-cost.tsv`; a
-`--judge` run adds a second row for the judge's spend.
+`--judge` run adds a second row for the judge's spend. The ledger's `prompt`
+column lists every prompt hash the run saw, so a run mixing plain and exploring
+writes shows two with no file edited.
 
 Calls are hermetic by default (#598): `claude --setting-sources ""`, so no
 user, project or local settings load, and with them no `CLAUDE.md`, no plugin

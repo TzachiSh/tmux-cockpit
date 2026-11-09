@@ -40,23 +40,45 @@ pub fn load(name: &str, shipped: &str) -> (String, Option<String>) {
     (text.trim_end_matches('\n').to_string(), note)
 }
 
-/// The write prompt, and a note for each override that could not be read.
-pub fn write_noted(ctx: &Ctx) -> (String, Option<String>) {
+/// FNV-1a: stable across Rust releases, unlike `DefaultHasher`, so hashes from
+/// two toolchains compare.
+pub fn fnv(s: &str) -> u64 {
+    s.bytes()
+        .fold(0xcbf2_9ce4_8422_2325, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3))
+}
+
+/// The hash of prompt texts as [`load`] returned them, in the order given:
+/// [`fnv`] over the texts joined by NUL, as 16 hex digits.
+pub fn files_hash(texts: &[&str]) -> String {
+    format!("{:016x}", fnv(&texts.join("\0")))
+}
+
+/// The write prompt, a note for each override that could not be read, and
+/// [`files_hash`] of the template and example pool this call read (#711).
+pub fn write_noted(ctx: &Ctx) -> (String, Option<String>, String) {
+    let (w, note, (template, pool)) = write_loaded(ctx);
+    (w, note, files_hash(&[&template, &pool]))
+}
+
+/// [`write_noted`], with the template and pool it rendered.
+fn write_loaded(ctx: &Ctx) -> (String, Option<String>, (String, String)) {
     let (pool, n1) = load("write.examples", WRITE_EXAMPLES);
     let (template, n2) = load("write", WRITE);
     let notes: Vec<String> = n2.into_iter().chain(n1).collect();
     let note = (!notes.is_empty()).then(|| notes.join("; "));
-    (render(&template, Some(&examples(&pool, ctx))), note)
+    (render(&template, Some(&examples(&pool, ctx))), note, (template, pool))
 }
 
 /// [`write_noted`], then the explore section: the prompt of a write that may
-/// read the repo first. Its own file, `write.explore.txt`, overrides it.
-pub fn write_explore_noted(ctx: &Ctx) -> (String, Option<String>) {
-    let (write, n1) = write_noted(ctx);
+/// read the repo first. Its own file, `write.explore.txt`, overrides it. The
+/// hash covers the explore text too.
+pub fn write_explore_noted(ctx: &Ctx) -> (String, Option<String>, String) {
+    let (write, n1, (template, pool)) = write_loaded(ctx);
     let (explore, n2) = load("write.explore", WRITE_EXPLORE);
     let notes: Vec<String> = n1.into_iter().chain(n2).collect();
     let note = (!notes.is_empty()).then(|| notes.join("; "));
-    (format!("{write}\n\n{}", render(&explore, None)), note)
+    let hash = files_hash(&[&template, &pool, &explore]);
+    (format!("{write}\n\n{}", render(&explore, None)), note, hash)
 }
 
 pub fn explain_noted() -> (String, Option<String>) {
