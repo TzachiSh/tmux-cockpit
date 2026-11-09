@@ -1191,8 +1191,8 @@ kind: bug
 window: bash · bash · /home/u/projects/blog
 expect: write
 out_is: prompt
-must: page 2|second page; reproduce|reproduces|reproducing|confirm the bug|run it first|first run|first to see|first to confirm|to see the failure|to see the panic|see it fail|before fixing|before you fix|before changing; again|after the fix
-note: a regression guard (#589 review): the bug line asks to reproduce, fix and run the check again; the prompt keeps that without the "failing before, passing after" clause, which was dropped for adding a baseline to a rename; widened after the first probe, which reproduced with the two commands and ran them again but never wrote "fail"; mutation test: fail|failing|failure|crash|panic named the symptom, not a repro step, so a brief that never reran the bug passed; the repro term now takes only a repro step; tightened for mutation survivor, #701
+must: page 2|second page; reproduce|reproduces|reproducing|confirm the bug|run it first|first run|first to see|first to confirm|to see the failure|to see the panic|see it fail|before fixing|before you fix|reproduce it before changing; again|after the fix
+note: a regression guard (#589 review): the bug line asks to reproduce, fix and run the check again; the prompt keeps that without the "failing before, passing after" clause, which was dropped for adding a baseline to a rename; widened after the first probe, which reproduced with the two commands and ran them again but never wrote "fail"; mutation test: fail|failing|failure|crash|panic named the symptom, not a repro step, so a brief that never reran the bug passed; the repro term now takes only a repro step; tightened for mutation survivor, #701; #702 review label fix: the repro term takes "reproduce it before changing" for "before changing"
 --- screen
 $ curl -s 'localhost:3000/api/posts?page=1' | jq '.[-1].id'
 40
@@ -1437,10 +1437,10 @@ write a script that converts data.csv to json
 kind: bug
 window: claude · claude · /home/u/projects/storefront
 expect: write
-must: test_refund|tests/test_orders.py; reproduce|reproduces|reproducing|confirm the bug|run it first|first run|first to see|first to confirm|to see the failure|to see the panic|see it fail|before fixing|before you fix|before changing; again|after the fix|rerun|re-run
-must_not: AskUserQuestion; requirements
+must: test_refund|tests/test_orders.py; reproduce|reproduces|reproducing|confirm the bug|run it first|first run|first to see|first to confirm|to see the failure|to see the panic|see it fail|before fixing|before you fix|reproduce it before changing; again|after the fix|rerun|re-run
+must_not: AskUserQuestion; requirements list|list of requirements
 holdout: yes
-note: the failing test, its file and the error are on screen, so the agent can run it; a careful brief runs that test first to see the KeyError, fixes it, then runs the test (and the suite) again; nothing is left for the owner; mutation test: fail|failing|failure|crash|panic named the symptom, not a repro step, so a brief that never reran the bug passed; the repro term now takes only a repro step; tightened for mutation survivor, #701
+note: the failing test, its file and the error are on screen, so the agent can run it; a careful brief runs that test first to see the KeyError, fixes it, then runs the test (and the suite) again; nothing is left for the owner; mutation test: fail|failing|failure|crash|panic named the symptom, not a repro step, so a brief that never reran the bug passed; the repro term now takes only a repro step; tightened for mutation survivor, #701; #702 review label fix: must_not "requirements" became "requirements list|list of requirements", which requirements.txt does not hit; the repro term takes "reproduce it before changing" for "before changing"
 --- screen
 $ pytest tests/test_orders.py -q
 ..F.
@@ -1455,10 +1455,10 @@ fix this
 kind: bug
 window: bash · bash · /home/u/projects/ledger
 expect: write
-must: parse.go|cmd/importer|sample.csv; reproduce|reproduces|reproducing|confirm the bug|run it first|first run|first to see|first to confirm|to see the failure|to see the panic|see it fail|before fixing|before you fix|before changing; again|after the fix|rerun|re-run
-must_not: AskUserQuestion; requirements
+must: parse.go|cmd/importer|sample.csv; reproduce|reproduces|reproducing|confirm the bug|run it first|first run|first to see|first to confirm|to see the failure|to see the panic|see it fail|before fixing|before you fix|reproduce it before changing; again|after the fix|rerun|re-run
+must_not: AskUserQuestion; requirements list|list of requirements
 holdout: yes
-note: the command, the input file and the panic site are all on screen; the brief should rerun that exact command to see the panic, fix the bounds check, then run it again on the same file (plus go test); the owner has nothing to add; mutation test: fail|failing|failure|crash|panic named the symptom, not a repro step, so a brief that never reran the bug passed; the repro term now takes only a repro step; tightened for mutation survivor, #701
+note: the command, the input file and the panic site are all on screen; the brief should rerun that exact command to see the panic, fix the bounds check, then run it again on the same file (plus go test); the owner has nothing to add; mutation test: fail|failing|failure|crash|panic named the symptom, not a repro step, so a brief that never reran the bug passed; the repro term now takes only a repro step; tightened for mutation survivor, #701; #702 review label fix: must_not "requirements" became "requirements list|list of requirements", which requirements.txt does not hit; the repro term takes "reproduce it before changing" for "before changing"
 --- screen
 $ go run ./cmd/importer data/sample.csv
 panic: runtime error: index out of range [3] with length 3
@@ -1476,12 +1476,12 @@ it crashes on this file, fix it
 kind: feature
 window: claude · claude · /home/u/projects/shop
 expect: either
-ask_any: currency|currencies; display|displayed|show; charge|charged|settle|settlement|pay; exchange|rate|rates; which; local
+ask_any: currency|currencies; display|displayed|show; charge|charged|settle|settlement|pay; exchange|rate|rates; local
 must: plan|planning|plans; requirements; AskUserQuestion|interview
 out_is: prompt
 must_not: Assumed:
 holdout: no
-note: whether prices are only shown in other currencies or customers are charged in them, which currencies, and where rates come from change the whole design (pricing, payments, refunds, reporting); only the owner knows; a question on that, or a prompt that interviews for the requirements and plans before code, both serve; demoted: prompt lines 31/34 reused this section's wording (#702 review)
+note: whether prices are only shown in other currencies or customers are charged in them, which currencies, and where rates come from change the whole design (pricing, payments, refunds, reporting); only the owner knows; a question on that, or a prompt that interviews for the requirements and plans before code, both serve; demoted: prompt lines 31/34 reused this section's wording (#702 review); #702 review label fix: ask_any drops which
 --- screen
 $ ls shop
 cart  checkout  payments  pricing  orders  settings.py
@@ -1527,9 +1527,9 @@ kind: feature
 window: claude · claude · /home/u/projects/dbtool
 expect: write
 must: --quiet|quiet; export
-must_not: AskUserQuestion; requirements
+must_not: AskUserQuestion; requirements list|list of requirements
 holdout: yes
-note: one flag beside an existing one in the same command; what quiet means (suppress the progress output that --verbose adds to) is clear from the code; a brief that checks the command works, adds the flag and tests both is enough, an interview would be overkill
+note: one flag beside an existing one in the same command; what quiet means (suppress the progress output that --verbose adds to) is clear from the code; a brief that checks the command works, adds the flag and tests both is enough, an interview would be overkill; #702 review label fix: must_not "requirements" became "requirements list|list of requirements", which requirements.txt does not hit
 --- screen
 $ dbtool export --help
 Usage: dbtool export [OPTIONS] TABLE
@@ -1546,9 +1546,9 @@ kind: feature
 window: claude · claude · /home/u/projects/crm
 expect: write
 must: last_login|last_login_at; serializer|serializers|UserSerializer
-must_not: AskUserQuestion; requirements
+must_not: AskUserQuestion; requirements list|list of requirements
 holdout: yes
-note: the model already has the field and the serializer lists the others; adding one read-only field and a test is a small edit with nothing to settle
+note: the model already has the field and the serializer lists the others; adding one read-only field and a test is a small edit with nothing to settle; #702 review label fix: must_not "requirements" became "requirements list|list of requirements", which requirements.txt does not hit
 --- screen
 ● accounts/serializers.py:
   class UserSerializer(serializers.ModelSerializer):
@@ -1699,8 +1699,8 @@ kind: bug
 window: claude · claude · /home/u/projects/api
 expect: write
 out_is: prompt
-must: attempts|tries|at most|up to|no more than; report|best result|what still fails|still failing
-note: #701 change 7, written before the prompt change: "keep going until it's green" needs a limit on attempts and a report of the best result
+must: attempts|tries|at most|up to|no more than; best result|what still fails|still failing
+note: #701 change 7, written before the prompt change: "keep going until it's green" needs a limit on attempts and a report of the best result; #702 review label fix: must drops report
 --- request
 the flaky test in tests/test_orders.py keeps failing, fix it and keep going until it's green
 
@@ -1718,11 +1718,11 @@ fix the typo recieve in the error message in api/errors.py
 # overwriting anything" limit.
 === delete-thumbs-ask-first
 kind: ops
-window: bash · bash · /home/u/projects/shop
+window: claude · claude · /home/u/projects/shop
 expect: write
 out_is: prompt
 must: thumbs; ask before deleting|ask before overwriting|before deleting|before overwriting|ask before removing|confirm before
-note: mutation test: no case checked the prompt's "ask before deleting or overwriting anything" limit, so deleting it changed no verdict; the folder and the script are on screen, so nothing is left to ask
+note: mutation test: no case checked the prompt's "ask before deleting or overwriting anything" limit, so deleting it changed no verdict; the folder and the script are on screen, so nothing is left to ask; #702 review label fix: moved to a claude window, since a steps reply in a bash window is right
 --- screen
 $ ls public/thumbs | head -3
 a1f3_200.jpg
