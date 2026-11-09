@@ -29,24 +29,112 @@ big_files() {                 # <dir>
 # path holds a tab and the second field is the whole path.
 big_paths() { big_files "$1" | cut -f2-; }    # <dir>
 
+# Paths that differ between REV and HEAD with a blob over BIGCAP on either side,
+# one a line, from the root (#708). big_files sees the worktree only, and a
+# branch or since-review base also diffs what the branch committed or deleted.
+# The sizes are cat-file's object headers: no blob is read. No renames: pairing
+# them reads both blobs. A gitlink's sha names no blob here.
+big_range_paths() {           # <dir> <rev>
+    local m p om nm os ns i
+    local -a olds=() news=() paths=()
+    local -A blobsz=()
+    while IFS= read -r -d '' m && IFS= read -r -d '' p; do
+        read -r om nm os ns _ <<<"$m"                  # ":<mode> <mode> <sha> <sha> <status>"
+        [ "$om" != :160000 ] && [ "$nm" != 160000 ] || continue
+        olds+=("$os"); news+=("$ns"); paths+=("$p")
+    done < <(git -C "$1" --no-optional-locks diff-tree -r -z --no-renames "$2" HEAD -- 2>/dev/null)
+    [ "${#paths[@]}" -gt 0 ] || return 0
+    while read -r m p; do
+        case $p in ''|*[!0-9]*) ;; *) blobsz[$m]=$p ;; esac       # "<sha> missing" for 000...
+    done < <(printf '%s\n' "${olds[@]}" "${news[@]}" | sort -u |
+             git -C "$1" --no-optional-locks cat-file \
+                 --batch-check='%(objectname) %(objectsize)' 2>/dev/null)
+    for i in "${!paths[@]}"; do
+        if [ "${blobsz[${olds[i]}]:-0}" -gt "$BIGCAP" ] \
+            || [ "${blobsz[${news[i]}]:-0}" -gt "$BIGCAP" ]; then
+            printf '%s\n' "${paths[i]}"
+        fi
+    done
+}
+
+# Sets the caller's rcx to the exclude entries of revdiff's own config file
+# (#706): $REVDIFF_CONFIG, else ~/.config/revdiff/config, no XDG lookup
+# (revdiff v1.13.0, app/config.go). The format is go-flags' INI: each line
+# trimmed, ; and # comments, [section] headers, `key = value` with both sides
+# trimmed, one line per entry. The key is `exclude` in any case, or `X`, in no
+# section or [Application Options], a name go-flags matches lowercased. Read as
+# text, never sourced. Status 0 when the file names an exclude, even an empty or
+# skipped one: revdiff then ignores REVDIFF_EXCLUDE. A line revdiff cannot parse
+# makes it skip the whole file: status 1 and no entries. A quoted value is
+# unquoted when it holds no backslash; one that does is skipped, since Go's
+# escapes are not undone here, and so is one too long for one exec arg
+# (--exclude=<it> past 128 KiB fails the exec). awk parses: a bash trim of a
+# long line is seconds per MB. It prints N per exclude key, E<value> per entry,
+# R to reject.
+revdiff_config_excludes() {
+    local f=${REVDIFF_CONFIG:-} r out named=1
+    local -a rows=()
+    rcx=()
+    [ -n "$f" ] || [ -z "${HOME:-}" ] || f=$HOME/.config/revdiff/config
+    [ -n "$f" ] && [ -f "$f" ] && [ -r "$f" ] || return 1
+    # Captured whole, then split: a read from a pipe takes a byte a syscall.
+    { out=$(LC_ALL=C awk '
+        function trim(s) { sub(/^[[:space:]]+/, "", s); sub(/[[:space:]]+$/, "", s); return s }
+        {
+            line = trim($0)
+            if (line == "" || line ~ /^[;#]/) next
+            if (substr(line, 1, 1) == "[") {          # no closing ]: revdiff errors
+                if (substr(line, length(line)) != "]") { print "R"; exit }
+                sec = tolower(trim(substr(line, 2, length(line) - 2)))
+                if (sec == "") { print "R"; exit }
+                next
+            }
+            i = index(line, "=")
+            if (!i) { print "R"; exit }
+            k = trim(substr(line, 1, i - 1)); v = trim(substr(line, i + 1)); esc = 0
+            if (substr(v, 1, 1) == "\"") {
+                if (v ~ /^"[^"\\]*"$/) v = substr(v, 2, length(v) - 2)
+                else if (!index(v, "\\")) { print "R"; exit }   # Go Unquote fails too
+                else esc = 1
+            }
+            if (sec != "" && sec != "application options") next
+            if (tolower(k) != "exclude" && k != "X") next
+            print "N"                                  # Linux caps one exec arg at 128 KiB
+            if (!esc && v != "" && length(v) <= 131061) print "E" v
+        }' "$f"); } 2>/dev/null
+    mapfile -t rows <<<"$out"
+    for r in "${rows[@]}"; do
+        case $r in
+            R) rcx=(); return 1 ;;
+            N) named=0 ;;
+            E*) rcx+=("${r#E}") ;;
+        esac
+    done
+    return "$named"
+}
+
 # revdiff runs its own git (#693): `add -N` on every untracked file it lists,
 # then `diff -U1000000` on the one it shows. A 400 MB log hung it at 5.4 GB.
 # Its -X drops a path from that list before either runs. Sets the caller's rdx
 # to revdiff's file options: --untracked, an --exclude=<path> per big file (the
-# = form, so a leading dash is no option), and the user's REVDIFF_EXCLUDE, which
-# a command-line -X replaces. -X matches a whole path once revdiff has trimmed
+# = form, so a leading dash is no option), and the user's own excludes, which a
+# command-line -X replaces: the config file's, else REVDIFF_EXCLUDE (#706). With
+# REV, the base revdiff diffs against, the big files of REV..HEAD count too.
+# -X matches a whole path once revdiff has trimmed
 # whitespace off its ends, so a big path with whitespace at an end cannot be
 # named. Untracked, it is shown only under --untracked: that is left out, and
-# the status is 1. Tracked, revdiff may diff it in full whatever the options
-# say (at startup if it is first, or when selected): the status is 2, and the
-# caller must not start revdiff. DIR is the root:
+# the status is 1. Tracked or committed, revdiff may diff it in full whatever
+# the options say (at startup if it is first, or when selected): the status is
+# 2, and the caller must not start revdiff. DIR is the root:
 # revdiff's paths are from it.
-revdiff_files() {             # <dir>
+revdiff_files() {             # <dir> [rev]
     local bp e cut=0
-    local -a env=()
+    local -a env=() rcx=()
+    local -A seen=()
     rdx=()
     while IFS= read -r bp; do
         [ -n "$bp" ] || continue
+        seen[$bp]=1
         case $bp in [[:space:]]*|*[[:space:]])
             [ "$cut" -eq 2 ] || cut=1        # one tracked is enough: no more ls-files
             [ "$cut" -eq 2 ] || [ -z "$(git -C "$1" --no-optional-locks ls-files \
@@ -54,9 +142,19 @@ revdiff_files() {             # <dir>
         esac
         rdx+=("--exclude=$bp")
     done < <(big_paths "$1")
-    if [ "${#rdx[@]}" -gt 0 ] && [ -n "${REVDIFF_EXCLUDE:-}" ]; then
-        IFS=, read -r -a env <<<"$REVDIFF_EXCLUDE"
-        for e in "${env[@]}"; do [ -z "$e" ] || rdx+=("--exclude=$e"); done
+    while IFS= read -r bp; do
+        [ -n "$bp" ] && [ -z "${seen[$bp]+x}" ] || continue
+        seen[$bp]=1
+        case $bp in [[:space:]]*|*[[:space:]]) cut=2 ;; esac
+        rdx+=("--exclude=$bp")
+    done < <([ -z "${2:-}" ] || big_range_paths "$1" "$2")
+    if [ "${#rdx[@]}" -gt 0 ]; then
+        if revdiff_config_excludes; then
+            for e in ${rcx[@]+"${rcx[@]}"}; do rdx+=("--exclude=$e"); done
+        elif [ -n "${REVDIFF_EXCLUDE:-}" ]; then
+            IFS=, read -r -a env <<<"$REVDIFF_EXCLUDE"
+            for e in "${env[@]}"; do [ -z "$e" ] || rdx+=("--exclude=$e"); done
+        fi
     fi
     [ "$cut" -eq 0 ] || return "$cut"
     rdx+=(--untracked)
@@ -106,20 +204,29 @@ tree_diff() {
     local -a from=()
     scratch_index "$dir" "$gd" || return 1
     GIT_INDEX_FILE=$idx git -C "$dir" --no-optional-locks add -N -A ${from[@]+"${from[@]}"} 2>/dev/null
+    local base=""
+    if [ -n "$br" ]; then
+        base=$(review_base "$dir" "${COCKPIT_REVIEW_BASE:-auto}" "$br" "$head")
+        base=${base%%$'\t'*}
+    fi
     # Only a pathspec stops git hashing the big files. Exclusions alone still
-    # leave the diff whole-worktree wide.
+    # leave the diff whole-worktree wide. A base's own big blobs too (#708):
+    # their paths are from the root, so :(top).
     local -a ex=() bigp=()
     case " $* " in *' -- '*) ;; *)
         local bp
+        local -A seen=()
         while IFS= read -r bp; do
             [ -n "$bp" ] || continue
-            bigp+=("$bp"); ex+=(":(exclude,literal)$bp")
+            seen[$bp]=1; bigp+=("$bp"); ex+=(":(exclude,literal)$bp")
         done < <(big_paths "$dir")
+        while IFS= read -r bp; do
+            [ -n "$bp" ] && [ -z "${seen[$bp]+x}" ] || continue
+            seen[$bp]=1; bigp+=("$bp"); ex+=(":(top,exclude,literal)$bp")
+        done < <([ -z "$base" ] || big_range_paths "$dir" "$base")
         [ "${#ex[@]}" -gt 0 ] && ex=(-- "${ex[@]}") ;;
     esac
     if [ -n "$br" ]; then
-        local base
-        base=$(review_base "$dir" "${COCKPIT_REVIEW_BASE:-auto}" "$br" "$head"); base=${base%%$'\t'*}
         # core.quotePath=false, as tui/src/data/gitsafe.rs's diff: literal non-ASCII
         # paths. The nonascii and untracked rows in tests/run.sh pin it.
         GIT_INDEX_FILE=$idx git -C "$dir" --no-optional-locks -c core.quotePath=false \

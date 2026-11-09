@@ -147,8 +147,10 @@ review_loop() {
         # Big files stay out of revdiff's git: revdiff_files in review-diff.sh.
         # Its 2 starts no revdiff: 124, never 0, which --request reads as a
         # review. The reason goes where --request prints it, the scratch as l's.
-        local why=""
-        revdiff_files "$dir"
+        # A ref base hands revdiff the branch's commits too: their big files (#708).
+        local why="" rrev=""
+        [ "$mode" = uncommitted ] || rrev=$rev
+        revdiff_files "$dir" "$rrev"
         case $? in
             1) why="untracked files hidden: a big file's name starts or ends with whitespace" ;;
             2) why="no review: a big tracked file's name starts or ends with whitespace"
