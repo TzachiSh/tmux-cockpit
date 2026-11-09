@@ -459,9 +459,9 @@ yaml for service web, port 8080, 3 replicas
 kind: plan
 window: claude · claude · /home/u/projects/tool
 expect: ask
-ask_any: goal; aim; purpose; why; readability|readable; easier to read; cleaner; quality; behaviour|behavior; performance|faster; maintain|maintainable; new feature
+ask_any: goal; aim; purpose; why; readability|readable; easier to read; cleaner; quality; behaviour|behavior; performance|faster; maintain|maintainable; new feature; @purpose
 must_not: autopilot; ralph; ultrawork; ultrathink
-note: #503 (card 5), was write: what the split is for (same behaviour, better quality, something else) is the owner's goal; the agent reads the file itself
+note: #503 (card 5), was write: what the split is for (same behaviour, better quality, something else) is the owner's goal; the agent reads the file itself; #702 H3: @purpose added as a uniform rule from this note, owner-approved
 --- request
 plan how to split src/app.rs into smaller modules, just the plan
 
@@ -646,12 +646,12 @@ copy the build to the staging server
 kind: feature
 window: claude · claude · /home/u/projects/dashboard
 expect: either
-ask_any: done; trigger|triggers; notify|notified; for?; purpose; goal; about?
+ask_any: done; trigger|triggers; notify|notified; for?; purpose; goal; about?; @purpose
 must: plan|planning|plans; done
 out_is: prompt
 must_not: Assumed:
 holdout: no
-note: what counts as done is the owner's call: a question about it, or a prompt that plans first, both serve; a question about the channel is what to build, not done; #498: the plan-first prompt picks nothing, so no Assumed: line; #558 review: not a holdout, since the interview line names notifications and was tuned on this case; "what is it for / about" was ruled on target after the runs, so the goal words were added to ask_any
+note: what counts as done is the owner's call: a question about it, or a prompt that plans first, both serve; a question about the channel is what to build, not done; #498: the plan-first prompt picks nothing, so no Assumed: line; #558 review: not a holdout, since the interview line names notifications and was tuned on this case; "what is it for / about" was ruled on target after the runs, so the goal words were added to ask_any; #702 H3: @purpose added as a uniform rule from this note, owner-approved
 --- screen
 ● The dashboard now shows the weekly totals per team.
 --- request
@@ -799,8 +799,8 @@ review the sso work on this branch
 kind: plan
 window: claude · claude · /home/u/projects/shop
 expect: ask
-ask_any: goal; aim; purpose; why; readability|readable; quality; behaviour|behavior; performance|faster; maintain|maintainable; new feature
-note: a refactor plan with no goal: what it is for decides the plan
+ask_any: goal; aim; purpose; why; readability|readable; quality; behaviour|behavior; performance|faster; maintain|maintainable; new feature; @purpose
+note: a refactor plan with no goal: what it is for decides the plan; #702 H3: @purpose added as a uniform rule from this note, owner-approved
 --- request
 make a plan to refactor the payments module
 
@@ -867,9 +867,9 @@ toml with a [server] table, host 0.0.0.0 and port 8080
 kind: refactor
 window: claude · claude · /home/u/projects/shop
 expect: ask
-ask_any: goal; aim; purpose; why; readability|readable; quality; behaviour|behavior; performance|faster; maintain|maintainable; new feature
+ask_any: goal; aim; purpose; why; readability|readable; quality; behaviour|behavior; performance|faster; maintain|maintainable; new feature; @purpose
 holdout: yes
-note: no goal for the change: what it is for decides the plan
+note: no goal for the change: what it is for decides the plan; #702 H3: @purpose added as a uniform rule from this note, owner-approved
 --- request
 how should we restructure the db layer
 
@@ -918,12 +918,12 @@ add csv to the export as well
 kind: feature
 window: claude · claude · /home/u/projects/public-api
 expect: either
-ask_any: user|users; key|keys; ip; limit|limits; requests; minute|second|hour; endpoint|endpoints; 429; reject|rejected; for?; purpose; goal; about?; abuse|quota|quotas
+ask_any: user|users; key|keys; ip; limit|limits; requests; minute|second|hour; endpoint|endpoints; 429; reject|rejected; for?; purpose; goal; about?; abuse|quota|quotas; @purpose
 must: rate; requirements; AskUserQuestion|interview; plan|planning|plans
 out_is: prompt
 must_not: Assumed:
 holdout: no
-note: a big feature in one service: one question on what changes the work most, or a prompt that checks today's flow, interviews the owner and plans, both serve; #558 review: not a holdout, since the interview line names rate limiting and was tuned after this case ran; "what is it for" was ruled on target after the runs, so the goal words were added to ask_any
+note: a big feature in one service: one question on what changes the work most, or a prompt that checks today's flow, interviews the owner and plans, both serve; #558 review: not a holdout, since the interview line names rate limiting and was tuned after this case ran; "what is it for" was ruled on target after the runs, so the goal words were added to ask_any; #702 H3: @purpose added as a uniform rule from this note, owner-approved
 --- screen
 ● The API serves /v1/orders and /v1/search behind one Express app.
 --- request
@@ -1739,10 +1739,10 @@ the thumbnails are stale, clear out public/thumbs and regenerate them
 kind: feature
 window: bash · bash · /home/u/work/clinic-booking
 expect: ask
-ask_any: no-show; no-shows; front desk; receptionist; reception; success; goal; who will use; who uses
+ask_any: no-show; no-shows; front desk; receptionist; reception; success; goal; who will use; who uses; @purpose
 must_not: twilio; sendgrid; cron; library; framework; provider
 holdout: no
-note: several parts (reminders, a desk view, cancellations) whose purpose and done-criteria only the owner knows; a delivery-mechanism question is implementation flavour; demoted: V2 chosen by measuring on this case (#702)
+note: several parts (reminders, a desk view, cancellations) whose purpose and done-criteria only the owner knows; a delivery-mechanism question is implementation flavour; demoted: V2 chosen by measuring on this case (#702); #702 H3: @purpose added as a uniform rule from this note, owner-approved
 --- screen
 $ ls
 cmd  go.mod  internal  migrations  web
@@ -1760,10 +1760,10 @@ we need reminders for appointments, plus something for the front desk to see who
 kind: feature
 window: bash · bash · /home/u/work/plant-telemetry
 expect: ask
-ask_any: false alarms; false positives; false positive; on-call; operators; success; goal; acceptable
+ask_any: false alarms; false positives; false positive; on-call; operators; success; goal; acceptable; @purpose
 must_not: algorithm; isolation forest; z-score; library; framework; scikit-learn; prophet
 holdout: no
-note: a big multi-part feature; purpose and what counts as done are the owner's; a question on the detection method is implementation flavour; demoted: V2 chosen by measuring on this case (#702); ask_any gains for?|purpose, added after seeing replies, allowed because the case is now tune; #702 M3: the term added after seeing replies is reverted (owner ruling)
+note: a big multi-part feature; purpose and what counts as done are the owner's; a question on the detection method is implementation flavour; demoted: V2 chosen by measuring on this case (#702); ask_any gains for?|purpose, added after seeing replies, allowed because the case is now tune; #702 M3: the term added after seeing replies is reverted (owner ruling); #702 H3: @purpose added as a uniform rule from this note, owner-approved
 --- screen
 $ ls
 ingest  notebooks  pyproject.toml  tests
@@ -1850,9 +1850,9 @@ this test fails, fix it
 kind: feature
 window: claude · claude · /home/u/projects/toolshed
 expect: ask
-ask_any: purpose; goal; so that; who uses; who is it for; who it serves; what is it for; what is this for; what problem
+ask_any: purpose; goal; so that; who uses; who is it for; who it serves; what is it for; what is this for; what problem; @purpose
 holdout: yes
-note: names four parts (catalogue, checkout, waitlist, steward screen) and says nothing of what the lending is for or who borrows; a question about purpose is the one that changes the work most; ask_any holds purpose words only, so a question about the stack or the database does not pass
+note: names four parts (catalogue, checkout, waitlist, steward screen) and says nothing of what the lending is for or who borrows; a question about purpose is the one that changes the work most; ask_any holds purpose words only, so a question about the stack or the database does not pass; #702 H3: @purpose added as a uniform rule from this note, owner-approved
 --- repo
 branch: main...origin/main
 root: /home/u/projects/toolshed
