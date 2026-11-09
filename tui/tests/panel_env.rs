@@ -631,3 +631,70 @@ fn claudes_own_effort_variable_never_reaches_the_call() {
     let env = std::fs::read_to_string(e.dir.join("env")).unwrap();
     assert!(!env.lines().any(|l| l.starts_with("CLAUDE_CODE_EFFORT_LEVEL=")), "{env}");
 }
+
+// --- #711: a write's prompt hash is of the text it loaded ---
+
+/// An override folder under `e` holding `files`, each `(name, text)`.
+fn overrides(e: &Env, files: &[(&str, &str)]) -> PathBuf {
+    let d = e.dir.join("cfg/tmux-cockpit/prompts");
+    std::fs::create_dir_all(&d).unwrap();
+    for (name, text) in files {
+        std::fs::write(d.join(format!("{name}.txt")), text).unwrap();
+    }
+    d
+}
+
+fn shipped_examples() -> &'static str {
+    prompts::WRITE_EXAMPLES.trim_end_matches('\n')
+}
+
+/// The hash covers the files the write read, as read: trimmed, and the explore
+/// file only for a write that explores.
+#[test]
+fn a_write_hashes_the_prompt_files_it_loaded() {
+    let e = Env::new("hash-loaded", &[("XDG_CONFIG_HOME", Some("$D/cfg".into()))]);
+    overrides(&e, &[("write", "mine\n"), ("write.explore", "look\n")]);
+    let ex = shipped_examples();
+    let (_, _, plain) = prompts::write_noted(&Ctx::default());
+    assert_eq!(plain, prompts::files_hash(&["mine", ex]));
+    let (_, _, explore) = prompts::write_explore_noted(&Ctx::default());
+    assert_eq!(explore, prompts::files_hash(&["mine", ex, "look"]));
+}
+
+/// Each read of the kernel's uuid file differs, as a file edited between two
+/// reads would: the hash must come from the read the prompt was built from.
+#[test]
+fn the_hash_is_of_the_read_the_prompt_came_from() {
+    let uuid = Path::new("/proc/sys/kernel/random/uuid");
+    if !uuid.exists() {
+        eprintln!("SKIP the_hash_is_of_the_read_the_prompt_came_from: no {}", uuid.display());
+        return;
+    }
+    let e = Env::new("hash-one-read", &[("XDG_CONFIG_HOME", Some("$D/cfg".into()))]);
+    let d = overrides(&e, &[]);
+    std::os::unix::fs::symlink(uuid, d.join("write.txt")).unwrap();
+    // the uuid has no {{examples}}, so the system prompt is the text read
+    let (system, _, h) = prompts::write_noted(&Ctx::default());
+    assert_eq!(h, prompts::files_hash(&[&system, shipped_examples()]));
+}
+
+#[test]
+fn a_plain_write_hash_ignores_the_explore_file() {
+    let e = Env::new("hash-plain", &[("XDG_CONFIG_HOME", Some("$D/cfg".into()))]);
+    let before = prompts::write_noted(&Ctx::default()).2;
+    overrides(&e, &[("write.explore", "edited")]);
+    assert_eq!(prompts::write_noted(&Ctx::default()).2, before);
+}
+
+/// Was the rig's `the_prompt_hash_follows_each_override_explore_included`.
+#[test]
+fn each_override_file_moves_an_exploring_writes_hash() {
+    let e = Env::new("hash-each", &[("XDG_CONFIG_HOME", Some("$D/cfg".into()))]);
+    let mut seen = vec![prompts::write_explore_noted(&Ctx::default()).2];
+    for name in ["write", "write.examples", "write.explore"] {
+        overrides(&e, &[(name, &format!("{name} edited"))]);
+        let h = prompts::write_explore_noted(&Ctx::default()).2;
+        assert!(!seen.contains(&h), "{name}.txt did not change the hash");
+        seen.push(h);
+    }
+}

@@ -730,7 +730,7 @@ struct Job {
     model: String,
     /// The system prompt's hash.
     system: u64,
-    /// [`prompt_hash`] when the job started.
+    /// The hash of the prompt files the job's call read (`prompts::files_hash`).
     prompt: String,
     req: Request,
     started: Instant,
@@ -867,7 +867,8 @@ fn main() {
     let mut reads: Vec<usize> = vec![];
     // with --judge: each row, and what the judge reads of it
     let mut rows: Vec<(serde_json::Value, judge::Input)> = vec![];
-    // each prompt hash the jobs saw, in order: two means an override changed mid-run
+    // each prompt hash the jobs saw, in order. A plain and an exploring write read
+    // different files, so each has its own; more than that means an override changed mid-run.
     let mut prompt_sets: Vec<String> = vec![];
     while !todo.is_empty() || !live.is_empty() {
         while live.len() < o.jobs
@@ -876,9 +877,8 @@ fn main() {
             let c = &cases[ci];
             let path = pane_path(c, staged.0.as_deref());
             let explore = c.explore.is_some() && !o.no_explore;
-            let (system, prompt, profile) = panel_call(c, &path, explore);
-            // per job, next to the call: an override edited mid-run shows in the rows
-            let prompt_files = prompt_hash();
+            // per job, from the call's own read: an override edited mid-run shows in the rows
+            let (system, prompt, profile, prompt_files) = panel_call(c, &path, explore);
             if !prompt_sets.contains(&prompt_files) {
                 prompt_sets.push(prompt_files.clone());
             }
@@ -1255,7 +1255,7 @@ impl std::fmt::Display for Fingerprint {
 
 /// The system prompt, the user prompt and the profile the panel itself sends for
 /// case `c` on `path`: an App in Compose, its ^S, then its own picks.
-fn panel_call(c: &Case, path: &str, explore: bool) -> (String, String, Profile) {
+fn panel_call(c: &Case, path: &str, explore: bool) -> (String, String, Profile, String) {
     let cap = Capture {
         name: c.name.clone(),
         cmd: c.cmd.clone(),
@@ -1279,9 +1279,9 @@ fn panel_call(c: &Case, path: &str, explore: bool) -> (String, String, Profile) 
         r.rounds = c.turns.iter().filter(|t| t.role == Role::Assistant).count();
         r.turns = c.turns.clone();
     }
-    let (system, prompt, _) = a.request_parts().expect("^S on a draft starts a write");
+    let ((system, prompt, _), hash) = a.request_hashed().expect("^S on a draft starts a write");
     let profile = a.run.as_ref().map_or(Profile::TEXT, |r| a.profile_for(&r.flow));
-    (system, prompt, profile)
+    (system, prompt, profile, hash.expect("a write's call carries its prompt hash"))
 }
 
 /// The fixtures the `explore:` cases name, copied to a fresh temp dir of the
@@ -1678,30 +1678,6 @@ fn prompt_source(base: &Path) -> String {
 fn fnv(s: &str) -> u64 {
     s.bytes()
         .fold(0xcbf2_9ce4_8422_2325, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3))
-}
-
-/// The hash of the write prompt and its example pool as the panel loads them,
-/// overrides included: one value per prompt set, whatever the case (#701).
-fn prompt_hash() -> String {
-    prompt_hash_in(&config_home())
-}
-
-/// [`prompt_hash`] over the override folder under `base`: each of write.txt, its
-/// example pool and write.explore.txt as `prompts::load` reads it (the file, or
-/// the shipped text when it is missing or unreadable, less trailing newlines).
-/// Keep in step with `prompts::load` in tui/src/panel/prompts.rs: a change to
-/// how it finds or trims a prompt must change this too.
-fn prompt_hash_in(base: &Path) -> String {
-    use cockpit_tui::panel::prompts;
-    let load = |name: &str, shipped: &str| {
-        let p = base.join("tmux-cockpit/prompts").join(format!("{name}.txt"));
-        let t = std::fs::read_to_string(p).unwrap_or_else(|_| shipped.to_string());
-        t.trim_end_matches('\n').to_string()
-    };
-    let w = load("write", prompts::WRITE);
-    let e = load("write.examples", prompts::WRITE_EXAMPLES);
-    let x = load("write.explore", prompts::WRITE_EXPLORE);
-    format!("{:016x}", fnv(&format!("{w}\0{e}\0{x}")))
 }
 
 /// The ids whose rows carry more than one prompt hash. A row with none, from an
@@ -2366,23 +2342,6 @@ mod tests {
     }
 
     #[test]
-    fn the_prompt_hash_follows_each_override_explore_included() {
-        let d = std::env::temp_dir().join(format!("panel-eval-hash-{}", std::process::id()));
-        let dir = d.join("tmux-cockpit/prompts");
-        std::fs::create_dir_all(&dir).unwrap();
-        let shipped = prompt_hash_in(&d);
-        let mut seen = vec![shipped.clone()];
-        for name in ["write", "write.examples", "write.explore"] {
-            std::fs::write(dir.join(format!("{name}.txt")), format!("{name} edited")).unwrap();
-            let h = prompt_hash_in(&d);
-            assert!(!seen.contains(&h), "{name}.txt did not change the hash");
-            seen.push(h);
-        }
-        std::fs::remove_dir_all(&d).unwrap();
-        assert_eq!(prompt_hash_in(&d), shipped);
-    }
-
-    #[test]
     fn compare_names_a_case_whose_rows_carry_two_prompt_hashes() {
         let rows = read_rows(
             "a",
@@ -2687,12 +2646,28 @@ mod tests {
             draft: c.request.clone(),
             out: c.out,
         };
-        let (system, prompt, profile) = panel_call(c, "/r", false);
+        let (system, prompt, profile, _) = panel_call(c, "/r", false);
         assert_eq!((system, profile), (prompts::write(&ctx), Profile::TEXT));
         assert_eq!(prompt, build(&flow, &cap, &[], 3));
-        let (system, _, profile) = panel_call(c, "/r", true);
+        let (system, _, profile, _) = panel_call(c, "/r", true);
         assert_eq!(system, prompts::write_explore(&ctx));
         assert_eq!(profile, Profile::read_only("/r".into(), false, EXPLORE_BUDGET_USD, EXPLORE_TIMEOUT));
+    }
+
+    /// The row's prompt hash is the one the panel's call read (#711), not one
+    /// from a second read of the override folder.
+    #[test]
+    fn the_rows_prompt_hash_is_the_calls_own() {
+        use cockpit_tui::panel::capture::window_kind;
+        use cockpit_tui::panel::prompts::{self, Ctx};
+        let c = &parse_cases(ONE).unwrap()[0];
+        let ctx = Ctx {
+            out: c.out,
+            window: window_kind(&c.name, &c.cmd),
+            ..Ctx::default()
+        };
+        assert_eq!(panel_call(c, "/r", false).3, prompts::write_noted(&ctx).2);
+        assert_eq!(panel_call(c, "/r", true).3, prompts::write_explore_noted(&ctx).2);
     }
 
     const ANSWERED: &str = "=== cache\nkind: feature\nwindow: bash · bash · /home/u\nexpect: write\n\
@@ -2734,7 +2709,7 @@ mod tests {
             draft: c.request.clone(),
             out: c.out,
         };
-        let (_, prompt, _) = panel_call(c, "/r", false);
+        let (_, prompt, ..) = panel_call(c, "/r", false);
         assert_eq!(prompt, build(&flow, &cap, &c.turns, 2));
     }
 
@@ -2783,7 +2758,7 @@ mod tests {
         let d = Gone(stage(&cases).unwrap().expect("a stage"));
         let path = pane_path(&cases[0], Some(&d.0));
         assert!(Path::new(&path).join("src/cart.go").is_file() && path.ends_with("/shop"), "{path}");
-        let (_, prompt, _) = panel_call(&cases[0], &path, false);
+        let (_, prompt, ..) = panel_call(&cases[0], &path, false);
         let block = "<refs>\n<ref form=\"mention\">@src/cart.go#L40-72</ref>\n\
                      <ref form=\"mention\" note=\"whole file\">@README.md</ref>\n<ref form=\"mention\">@/";
         assert!(
@@ -2807,7 +2782,7 @@ mod tests {
         let cases = parse_cases(OUT).unwrap();
         let d = Gone(stage(&cases).unwrap().expect("a stage"));
         let path = pane_path(&cases[0], Some(&d.0));
-        let (_, prompt, _) = panel_call(&cases[0], &path, true);
+        let (_, prompt, ..) = panel_call(&cases[0], &path, true);
         assert!(prompt.contains("<ref form=\"bare\">invoicer/money.py:1-5</ref>"), "{prompt}");
         assert!(
             prompt.contains("outside the repo, not read\">/") && prompt.contains("shared/rates.py</ref>"),
