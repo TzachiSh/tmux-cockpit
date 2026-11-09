@@ -1996,7 +1996,7 @@ mod tests {
         let text = std::fs::read_to_string(path).unwrap();
         let terms = ["for?", "purpose", "goal", "about?"];
         let (mut hit, mut ones, mut false_hits) = (0, 0, vec![]);
-        for line in text.lines() {
+        for line in text.lines().filter(|l| !l.starts_with('#')) {
             let (q, label) = line.split_once('\t').unwrap();
             let m = terms.iter().any(|t| has(q, t));
             match label {

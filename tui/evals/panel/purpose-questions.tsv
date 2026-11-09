@@ -1,3 +1,6 @@
+# Panel questions, each marked 1 (asks what the work is for) or 0 (asks something
+# else) by two independent blind labellers; only rows both agreed on, the 8 rows
+# either marked unsure left out (#702 M2). Format: question TAB label.
 Can you give an example of a wrong total? [Yes, I have an example | No, investigate to find it]	0
 How are the dates wrong? [Off by one day | Wrong format or month]	0
 How should prices in other currencies be set? [Convert from base currency with rates | Fixed price per currency]	0
