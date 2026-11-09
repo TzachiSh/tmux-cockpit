@@ -92,18 +92,19 @@ const SECTIONS: [&str; 14] = [
 /// as does a `<` and `/` in ordinary text: escaping every `< /` would change
 /// screen text that closes nothing of ours.
 pub fn esc(s: &str) -> String {
-    swap_closers(&s.replace("</", "<\\/"), "/", "\\/")
+    swap_closers(&s.replace("</", "<\\/"), &SECTIONS, "/", "\\/")
 }
 
 /// [`esc`] undone, for text the model copied from the envelope.
 pub fn unesc(s: &str) -> String {
-    swap_closers(s, "\\/", "/").replace("<\\/", "</")
+    swap_closers(s, &SECTIONS, "\\/", "/").replace("<\\/", "</")
 }
 
 /// `s` with `from` made `to` where it follows a `<` and blanks and comes before
-/// blanks and a [`SECTIONS`] name, in any case. A name going on with a letter,
-/// digit, `_`, `-` or `.` is another tag.
-fn swap_closers(s: &str, from: &str, to: &str) -> String {
+/// blanks and one of `names`, in any case. A name going on with a letter,
+/// digit, `_`, `-` or `.` is another tag. [`esc`] and the eval judge's prompt
+/// share it, each with its own section names.
+pub fn swap_closers(s: &str, names: &[&str], from: &str, to: &str) -> String {
     let name_char = |c: &u8| c.is_ascii_alphanumeric() || b"_-.".contains(c);
     let mut out = String::with_capacity(s.len());
     let mut rest = s;
@@ -115,7 +116,7 @@ fn swap_closers(s: &str, from: &str, to: &str) -> String {
             continue;
         };
         let name = after.trim_start().as_bytes();
-        let ours = SECTIONS.iter().any(|t| {
+        let ours = names.iter().any(|t| {
             let t = t.as_bytes();
             let at_end = !name.get(t.len()).is_some_and(name_char);
             name.len() >= t.len() && name[..t.len()].eq_ignore_ascii_case(t) && at_end
