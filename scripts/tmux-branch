@@ -172,7 +172,8 @@ wt_prunable() {               # <path> <common-dir>
 # An absolute path with . and empty parts dropped and .. taking off the part before it,
 # as text, so a path that is gone resolves too (no realpath). /.. is /, as for git. A
 # symlink is a name like any other: link/.. drops it. The input must be absolute: a
-# relative one comes back absolute, where Rust's lexical keeps it relative.
+# relative one comes back rooted at /, not at the cwd (a/b is /a/b, ../x is /x), where
+# Rust's lexical keeps it relative.
 wt_norm() {                   # <absolute-path>  -> REPLY
     local s=$1/ c
     REPLY=''

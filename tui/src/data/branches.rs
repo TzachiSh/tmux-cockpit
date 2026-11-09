@@ -126,7 +126,7 @@ fn prunable(p: &Path, common: &Path) -> bool {
 /// `p` with `.` dropped and each `..` taking off the part before it, as text, so a path
 /// that is gone resolves too: no canonicalize. `/..` is `/`, as for git. A symlink is a
 /// name like any other: `link/..` drops it. `p` must be absolute: a relative one stays
-/// relative, where the shell's `wt_norm` makes it absolute.
+/// relative, where the shell's `wt_norm` roots it at `/`, not at the cwd.
 fn lexical(p: &Path) -> PathBuf {
     use std::path::Component;
     let mut out = PathBuf::new();
