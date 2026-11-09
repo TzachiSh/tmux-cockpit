@@ -1843,3 +1843,76 @@ FAILED tests/test_pricing.py::test_discount_rounding - assert 9.99 == 10.0
 1 failed, 1 passed in 0.08s
 --- request
 this test fails, fix it
+
+# Third blind set (#702, purpose question): written without seeing the prompt.
+
+=== ho3-tool-lending-parts
+kind: feature
+window: claude · claude · /home/u/projects/toolshed
+expect: ask
+ask_any: purpose; goal; so that; who uses; who is it for; who it serves; what is it for; what is this for; what problem
+holdout: yes
+note: names four parts (catalogue, checkout, waitlist, steward screen) and says nothing of what the lending is for or who borrows; a question about purpose is the one that changes the work most; ask_any holds purpose words only, so a question about the stack or the database does not pass
+--- repo
+branch: main...origin/main
+root: /home/u/projects/toolshed
+status:
+recent commits:
+  c41f0aa members: profile page
+  7be2d19 flask: app factory
+  1a90e3c db: members table
+diff --stat:
+--- request
+add tool lending: a catalogue page, a checkout and return form, a waitlist for tools that are out, and a steward screen
+
+=== ho3-practice-rooms-stated
+kind: feature
+window: claude · claude · /home/u/projects/musicdept
+expect: write
+holdout: yes
+must: teachers; grid
+must_not: what is this for|what is it for|who will use|who uses it|who is this for|what is the goal|what is the purpose|what's the purpose
+note: same size of feature as the lending case, but the request says it is for the school's music teachers to book practice rooms and that students never book, so no purpose question; the reply must carry the two things the owner stated
+--- repo
+branch: main...origin/main
+root: /home/u/projects/musicdept
+status:
+recent commits:
+  8d2e6b1 staff: login
+  f03a7c9 rooms: seed the six practice rooms
+diff --stat:
+--- request
+add practice-room booking so our music teachers can reserve a room for a lesson: a weekly grid of the six rooms, a booking form, a check that refuses a double booking, and a cancel link. Students never book, only teachers do.
+
+=== ho3-trail-markers-go-ahead
+kind: feature
+window: claude · claude · /home/u/projects/trailkeeper
+expect: write
+holdout: yes
+must: rangers; repair
+must_not: what is it for|what is this for|who will use|who uses it|who is it for|what is the goal|what is the purpose|what's the purpose
+note: second turn through the rig's conversation section: the panel already asked what the trail-marker map is for and the owner answered, so "go ahead" gets a prompt that uses the answer and no second purpose question; the first request is on the screen so the reply knows the parts
+--- screen
+> add a trail marker map: a map view of the markers, a detail panel for one marker, a repair log form, and a filter by trail
+--- conversation
+assistant: What is the trail marker map for? Options: Hikers planning routes | Rangers logging repairs
+user: Rangers logging repairs, so crews know which markers are broken before they set out
+--- request
+go ahead
+
+=== ho3-rsync-site-to-web2
+kind: ops
+window: bash · bash · /home/u/site
+expect: either
+out_is: command
+ask_any: delete; trailing slash; dry run; dry-run; exclude
+must: rsync; web2
+holdout: yes
+note: the source, the host and the target folder are all in the request, so the reply writes the rsync command (a question about --delete or a dry run is also fine); no purpose question applies to a file sync
+--- screen
+$ ls
+build  node_modules  package.json  src
+$ ls build
+index.html  app.js  style.css  img
+--- request
+copy the contents of ./build to deploy@web2.example.net:/var/www/site/ and remove files there that are no longer in build
