@@ -678,6 +678,28 @@ fn the_hash_is_of_the_read_the_prompt_came_from() {
     assert_eq!(h, prompts::files_hash(&[&system, shipped_examples()]));
 }
 
+/// As above, for the explore text: an exploring write's hash covers the explore
+/// read its prompt ends with, not a second one.
+#[test]
+fn an_exploring_writes_hash_is_of_the_explore_read_it_sent() {
+    let uuid = Path::new("/proc/sys/kernel/random/uuid");
+    if !uuid.exists() {
+        eprintln!(
+            "SKIP an_exploring_writes_hash_is_of_the_explore_read_it_sent: no {}",
+            uuid.display()
+        );
+        return;
+    }
+    let e = Env::new("hash-explore-read", &[("XDG_CONFIG_HOME", Some("$D/cfg".into()))]);
+    let d = overrides(&e, &[]);
+    std::os::unix::fs::symlink(uuid, d.join("write.explore.txt")).unwrap();
+    let (system, _, h) = prompts::write_explore_noted(&Ctx::default());
+    // the explore section follows the write prompt's last blank line
+    let (_, explore) = system.rsplit_once("\n\n").unwrap();
+    let write = prompts::WRITE.trim_end_matches('\n');
+    assert_eq!(h, prompts::files_hash(&[write, shipped_examples(), explore]));
+}
+
 #[test]
 fn a_plain_write_hash_ignores_the_explore_file() {
     let e = Env::new("hash-plain", &[("XDG_CONFIG_HOME", Some("$D/cfg".into()))]);
