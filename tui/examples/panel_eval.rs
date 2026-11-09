@@ -347,6 +347,33 @@ fn has(hay: &str, needle: &str) -> bool {
     alternatives(needle).any(|n| !starts(&hay, &n).is_empty())
 }
 
+/// An `ask_any` term against a question: `@purpose` is [`asks_purpose`], any
+/// other term is [`has`].
+fn ask_term(question: &str, term: &str) -> bool {
+    match term.trim() {
+        "@purpose" => asks_purpose(question),
+        t => has(question, t),
+    }
+}
+
+/// Whether a question asks what the work is for (#702 H1). Its patterns, built on
+/// the dev half of `evals/panel/purpose-questions.tsv` only, read the question
+/// before its ` [options]`:
+/// - a what or who question whose "for" ends a clause ("What is it mainly for?");
+/// - a what question whose "about" ends a clause ("What should it tell users about?");
+/// - "purpose" or "goal" anywhere;
+/// - "problem" with "solve" ("What problem should it solve?");
+/// - "what should ... achieve" or "what should ... catch".
+fn asks_purpose(question: &str) -> bool {
+    let stem = question.split(" [").next().unwrap_or(question).to_lowercase();
+    let what = stem.starts_with("what");
+    ((what || stem.starts_with("who")) && has(&stem, "for?"))
+        || (what && has(&stem, "about?"))
+        || has(&stem, "purpose|goal")
+        || (has(&stem, "problem") && has(&stem, "solve"))
+        || (stem.starts_with("what should") && has(&stem, "achieve|catch"))
+}
+
 /// [`has`], but a match with a negator shortly before it in its clause does not
 /// count: "do not write the files by hand" names "by hand" only to forbid it. A
 /// `must_not` reads its words this way (#701).
@@ -488,7 +515,7 @@ fn grade(c: &Case, raw: &str) -> Grade {
         } else {
             format!("{text} [{}]", opts.join(" | "))
         };
-        g.on_target = c.ask_any.is_empty() || c.ask_any.iter().any(|w| has(&g.question, w));
+        g.on_target = c.ask_any.is_empty() || c.ask_any.iter().any(|w| ask_term(&g.question, w));
     }
     if !g.asked {
         g.missing = c.must.iter().filter(|m| !has(&text, m)).cloned().collect();
@@ -2010,6 +2037,36 @@ mod tests {
         // recall: the misses ask the purpose in other words ("what problem
         // should it solve"), which the terms do not name; no label is changed
         assert_eq!((hit, ones), (213, 227));
+    }
+
+    #[test]
+    fn an_at_purpose_ask_any_takes_a_question_about_what_the_work_is_for() {
+        let mut c = parse_cases(ONE).unwrap().remove(0);
+        c.expect = Expect::Ask;
+        c.ask_any = vec!["@purpose".into()];
+        let on = |q: &str| grade(&c, &format!("<question>{q}</question><option>a</option><option>b</option>")).on_target;
+        assert!(on("What is the main problem these features should solve?"));
+        assert!(on("What is the audit log mainly for?"));
+        assert!(!on("What kind of notifications do you want?"));
+        assert!(!on("Is this for the dashboard?"));
+    }
+
+    #[test]
+    fn at_purpose_on_each_half_of_the_fixture_accepts_no_non_purpose_question() {
+        // halves by the question's hash: the patterns were built on dev (even) only
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("evals/panel/purpose-questions.tsv");
+        let text = std::fs::read_to_string(path).unwrap();
+        let mut seen = [(0, 0, 0); 2]; // (hits on 1-rows, 1-rows, hits on 0-rows)
+        for line in text.lines().filter(|l| !l.starts_with('#')) {
+            let (q, label) = line.split_once('\t').unwrap();
+            let h = &mut seen[(fnv(q) % 2) as usize];
+            let m = asks_purpose(q);
+            match label {
+                "1" => (h.0, h.1) = (h.0 + usize::from(m), h.1 + 1),
+                _ => h.2 += usize::from(m),
+            }
+        }
+        assert_eq!(seen, [(100, 100, 0), (126, 127, 0)], "[dev, test]");
     }
 
     #[test]
