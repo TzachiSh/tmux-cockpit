@@ -50,8 +50,8 @@ agent='#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}}'
 
 # Worst state in the window: needs-input > error > running > done > idle ("A" = agent with no state).
 fmt_state="#{?#{m:*needs-input*,#{P:#{?$agent,#{@panestate},} }},needs-input,#{?#{m:*error*,#{P:#{?$agent,#{@panestate},} }},error,#{?#{m:*running*,#{P:#{?$agent,#{@panestate},} }},running,#{?#{m:*done*,#{P:#{?$agent,#{@panestate},} }},done,#{?#{m:*A*,#{P:#{?$agent,A,}}},idle,}}}}}"
-# An agent in the window holds an unread review: the tab's ◆.
-fmt_review="#{m:*pending*,#{P:#{?$agent,#{@cockpit_review},} }}"
+# An agent in the window holds an unread review: the tab's ◆. 1 or empty, as stored.
+fmt_review="#{?#{m:*pending*,#{P:#{?$agent,#{@cockpit_review},} }},1,}"
 
 # Counts of agents waiting (nb) and failed (ne) in this session and in every session.
 # The bar's "elsewhere" mark is fleet minus session, so no redraw walks the sessions.
@@ -86,20 +86,32 @@ for ((k = 0; k < ${#fmts[@]}; k += 2)); do
 done
 defs="$defs set-option -g @cockpit_fmt_v $stamp }"
 
-# set_if <scope flag> <option> <fmt name>: compare-then-set on target $T, since even an
-# identical set-option forces a redraw.
-set_if() { body="$body ; if -F -t $T '#{!=:#{E:@cockpit_fmt_$3},#{$2}}' { set-option $1F -t $T $2 '#{E:@cockpit_fmt_$3}' }"; }
+# put <scope> <option> <fmt name> [e]: <option> on target $T becomes the expansion of
+# @cockpit_fmt_<fmt name>, or is unset when that is empty in window scope; e compares as
+# numbers (unset reads 0). Written only when it differs: even an identical set redraws.
+# tmux 3.7+ cuts a format that runs past 100 ms of wall time from that point on (#707): each
+# later expansion reads "". A server descheduled mid-compare on a loaded box read two empty
+# strings as equal and kept a stale count, or wrote a cut value. So the test reads 1 only
+# when the compare is equal and whole: a cut before the 1 is expanded leaves it empty, and
+# the cut never lifts. Anything but 1 writes, in the else branch. A write is tested again
+# and made once more if that fails, so a cut costs one more write; only two in a hook stay.
+put() {
+    local test set
+    test="#{?#{${4:+e|}==:#{E:@cockpit_fmt_$3},#{$2}},1,0}"
+    set="set $1F -t $T $2 '#{E:@cockpit_fmt_$3}'"
+    [ "$1" = -w ] && set="if -F -t $T '#{E:@cockpit_fmt_$3}' { $set } { set -wu -t $T $2 }"
+    body="$body ; if -F -t $T '$test' {} { $set ; if -F -t $T '$test' {} { $set } }"
+}
 # Only closed-set values reach these strings.
-win_sums() {
-    body="$body ; if -F -t $T '#{!=:#{E:@cockpit_fmt_state},#{@cockpit_win_state}}' { if -F -t $T '#{E:@cockpit_fmt_state}' { set-option -wF -t $T @cockpit_win_state '#{E:@cockpit_fmt_state}' } { set-option -wu -t $T @cockpit_win_state } }"
-    body="$body ; if -F -t $T '#{E:@cockpit_fmt_review}' { if -F -t $T '#{!=:#{@cockpit_win_review},1}' { set-option -w -t $T @cockpit_win_review 1 } } { if -F -t $T '#{@cockpit_win_review}' { set-option -wu -t $T @cockpit_win_review } }"
-}
+win_sums() { put -w @cockpit_win_state state; put -w @cockpit_win_review review; }
 sess_sums() {
-    set_if - @cockpit_sess_nb snb; set_if - @cockpit_sess_ne sne
-    # e|!=: an unset sum reads 0, so a session with no gauge is never written.
-    body="$body ; if -F -t $T '#{e|!=:#{E:@cockpit_fmt_cells},#{@cockpit_ctx_all}}' { set-option -F -t $T @cockpit_ctx_all '#{E:@cockpit_fmt_cells}' }"
+    put - @cockpit_sess_nb snb; put - @cockpit_sess_ne sne
+    # e: an unset sum reads 0, so a session with no gauge is never written.
+    put - @cockpit_ctx_all cells e
 }
-fleet_sums() { set_if -g @cockpit_fleet_nb nb; set_if -g @cockpit_fleet_ne ne; set_if -gq @cockpit_fleet fleet; }
+fleet_sums() {
+    put -g @cockpit_fleet_nb nb; put -g @cockpit_fleet_ne ne; put -gq @cockpit_fleet fleet
+}
 
 # sweep: every window, session and the fleet, from the hooks for what moves or ends
 # panes without a transition (move-window, kill-pane, a pane exiting, a session closing).
