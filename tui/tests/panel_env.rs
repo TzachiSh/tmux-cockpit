@@ -19,8 +19,8 @@ static ENV: Mutex<()> = Mutex::new(());
 const BUDGET: Duration = Duration::from_secs(10);
 /// The time-out rows' budget. Their hung part runs to it every time, so it stays
 /// short; 2 s, about 7 times the panel's, gives the parts that do answer, and a
-/// fake git's shell start-up, room on most boxes; [`growing`] doubles it for the
-/// status row on a box loaded past that.
+/// fake git's shell start-up, room on most boxes; [`growing`] doubles it for a box
+/// loaded past that.
 const HUNG_BUDGET: Duration = Duration::from_secs(2);
 
 struct Env {
@@ -439,10 +439,16 @@ fn a_hung_git_is_killed_with_what_it_forked_at_the_budget() {
     // every call hangs: the rev-parse started beside the config read must die too
     e.exec("git", "[ \"$2\" = $D ] || exit 1; sleep 1000 & echo $! >> $D/kids; wait");
     // the kill comes at the budget: both fake gits must have written their pid by then
-    let got = repo_state_within(&e.dir.display().to_string(), "", HUNG_BUDGET);
-    assert_eq!(got, "");
-    let kids = std::fs::read_to_string(e.dir.join("kids")).unwrap();
-    assert_eq!(kids.lines().count(), 2, "rev-parse and config ran");
+    let (dir, file) = (e.dir.display().to_string(), e.dir.join("kids"));
+    let run = |b| {
+        let _ = std::fs::remove_file(&file);
+        (repo_state_within(&dir, "", b), std::fs::read_to_string(&file).unwrap_or_default())
+    };
+    // rev-parse and config ran
+    let both = |(got, kids): &(String, String)| got.is_empty() && kids.lines().count() == 2;
+    let got = growing(HUNG_BUDGET, run, both);
+    assert!(got.is_ok(), "every budget missed: {got:?}");
+    let (_, kids) = got.unwrap();
     // gone, or a zombie its new parent has not reaped yet
     let dead = |k: &str| std::fs::read_to_string(format!("/proc/{k}/stat")).map_or(true, |s| s.contains(") Z "));
     assert!(until(|| kids.lines().all(dead)), "{kids} lives");
@@ -469,7 +475,7 @@ fn a_status_that_times_out_keeps_the_log() {
     let e = Env::new("repo-status-hung", &[("PATH", Some(path))]);
     fake_git(&e, "status", "exec sleep 1000");
     let dir = e.dir.display().to_string();
-    let kept = |got: &str| got.contains("status: timed out") && got.contains("abc1234 first");
+    let kept = |got: &String| got.contains("status: timed out") && got.contains("abc1234 first");
     let got = growing(HUNG_BUDGET, |b| repo_state_within(&dir, "", b), kept);
     assert!(got.is_ok(), "every budget missed: {got:?}");
 }
@@ -478,7 +484,7 @@ fn a_status_that_times_out_keeps_the_log() {
 /// times it, or all three misses. A hung part costs each try its whole budget, so
 /// one `first` is the usual cost; a box too loaded for the parts that do answer
 /// to answer within it gets the larger ones before the row fails (#717).
-fn growing(first: Duration, run: impl Fn(Duration) -> String, ok: impl Fn(&str) -> bool) -> Result<String, Vec<String>> {
+fn growing<T>(first: Duration, run: impl Fn(Duration) -> T, ok: impl Fn(&T) -> bool) -> Result<T, Vec<T>> {
     let mut misses = Vec::new();
     for budget in [first, first * 2, first * 4] {
         let got = run(budget);
