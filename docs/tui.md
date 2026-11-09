@@ -273,8 +273,9 @@ the cases file; holdout cases are written after the prompt they run on, so a
 gain there is not overfitting. `--model`, `--runs`, `--jobs`, `--only <id or
 kind>`, `--out <file.jsonl>` and `--no-hermetic` are the knobs.
 
-A prompt change aims at 100% on the old and held-out cases together (#701).
-Stop after at most 3 fix iterations, or sooner when an iteration gains nothing
+A prompt change aims at 100% on the tune cases (#701). A significant drop on a
+held-out case blocks it, no edit may aim at a particular held-out case, and a
+held-out case that fails gets a new blind case written for its class. Stop after at most 3 fix iterations, or sooner when an iteration gains nothing
 or a fix breaks a case that passed before. Then `git revert` back to the best
 commit, report its pass rate on old and held-out cases apart, and name each
 blocking case with its failing reply and its cause: prompt, label or noise.
