@@ -6201,8 +6201,40 @@ is "a big file deleted in the worktree only is excluded" "1" \
 is "a committed big name with a newline is one --exclude arg" "c.bin" \
    "$(awk 'p == "--exclude=cnl" { print } { p = $0 }' <<<"$rbna")"
 is "tree_diff's full diff names neither" "0" "$(tdiff "$RBNR" | grep -c '^diff --git .*\.bin')"
+# A big blob only the index holds: revdiff's uncommitted view reads it with
+# `git show :path`. A 33 MB copy staged, then the worktree shrunk; a new 33 MB
+# file staged, then deleted. diff-index without --cached sees neither.
+RBNI=$(mktmpd)
+( cd "$RBNI" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main . && printf 'cp\n' > cp.bin && git add -A && git commit -q -m init
+  truncate -s 33M cp.bin && printf 'new\n' > new.bin && truncate -s 33M new.bin
+  git add -A && printf 'shrunk\n' > cp.bin && rm new.bin
+) >/dev/null 2>&1
+rbna=$(rbn_args "$RBNI")
+is "a staged big copy the worktree then shrank is excluded" "1" \
+   "$(grep -cxF -- '--exclude=cp.bin' <<<"$rbna")"
+is "and a staged big new file the worktree then deleted" "1" \
+   "$(grep -cxF -- '--exclude=new.bin' <<<"$rbna")"
+# From a subdir: an untracked big sub/a.bin ("a.bin" from there) and the root's
+# big a.bin, deleted, are two paths. One key for both left the root's blob to git.
+RBNS=$(mktmpd)
+( cd "$RBNS" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main . && mkdir sub && printf 'root\n' > a.bin && truncate -s 33M a.bin
+  printf 'k\n' > sub/keep && git add -A && git commit -q -m init && rm a.bin
+  printf 'sub\n' > sub/a.bin && truncate -s 33M sub/a.bin
+) >/dev/null 2>&1
+is "tree_diff from sub: neither a.bin reaches git" "0" \
+   "$(tdiff "$RBNS/sub" | grep -c '^diff --git .*a\.bin')"
+# A stat with -c but no --printf (BusyBox): the probe asks for the flag it uses.
+RBNT=$(mktmpd); mkdir "$RBNT/bin"
+printf '#!/bin/sh\ncase "$1" in --printf*) exit 1 ;; esac\nexec %s "$@"\n' \
+    "$(command -v stat)" > "$RBNT/bin/stat"; chmod +x "$RBNT/bin/stat"
+is "with a stat that has no --printf, tree_diff still keeps the big files out" "0" \
+   "$(PATH="$RBNT/bin:$PATH" tdiff "$RBNS/sub" | grep -c '^diff --git .*a\.bin')"
 unset -f rbn_args rbn_ap
-rm -rf "$RBN" "$RBNR" "$RBNB"
+rm -rf "$RBN" "$RBNR" "$RBNB" "$RBNI" "$RBNS" "$RBNT"
 
 echo "== tmux-review: the review base is since-last-review, else the branch, else uncommitted =="
 # revdiff's auto-detect, one function: a checkpoint ref wins, then the
