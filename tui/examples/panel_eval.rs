@@ -361,20 +361,33 @@ fn ask_term(question: &str, term: &str) -> bool {
 /// Whether a question asks what the work is for (#702 H1). Its patterns, built on
 /// the dev half of `evals/panel/purpose-questions.tsv` only, read the question
 /// before its ` [options]`:
-/// - a what or who question whose "for" ends a clause ("What is it mainly for?");
-/// - a what question whose "about" ends a clause ("What should it tell users about?");
-/// - "purpose" or "goal" anywhere;
+/// - "what" or "who" then a verb ([`WH_VERBS`]) and a "for" that ends a clause
+///   ("What is it mainly for?"); "What platform is it for?" asks which target;
+/// - the same opening and an "about" that ends a clause ("What should it tell
+///   users about?");
+/// - "purpose" anywhere, or "goal" as a purpose: "main goal", "goal of", "goal
+///   for", "the goal" ("Which goal in the Makefile?" is not one);
 /// - "problem" with "solve" ("What problem should it solve?");
 /// - "what should ... achieve" or "what should ... catch".
+///
+/// Known limit: a scope question in the same form still matches ("What is the
+/// backfill for: all history or the last 30 days?").
 fn asks_purpose(question: &str) -> bool {
     let stem = question.split(" [").next().unwrap_or(question).to_lowercase();
-    let what = stem.starts_with("what");
-    ((what || stem.starts_with("who")) && has(&stem, "for?"))
-        || (what && has(&stem, "about?"))
-        || has(&stem, "purpose|goal")
+    let mut words = stem.split_whitespace();
+    let wh_verb = match (words.next(), words.next()) {
+        (Some("what" | "who"), Some(v)) => WH_VERBS.contains(&v),
+        (Some(w), _) => matches!(w, "what's" | "who's"),
+        _ => false,
+    };
+    (wh_verb && has(&stem, "for?|about?"))
+        || has(&stem, "purpose|main goal|goal of|goal for|the goal")
         || (has(&stem, "problem") && has(&stem, "solve"))
         || (stem.starts_with("what should") && has(&stem, "achieve|catch"))
 }
+
+/// The verbs that may follow "what" or "who" in a purpose question.
+const WH_VERBS: [&str; 8] = ["is", "are", "was", "will", "would", "should", "does", "do"];
 
 /// [`has`], but a match with a negator shortly before it in its clause does not
 /// count: "do not write the files by hand" names "by hand" only to forbid it. A
@@ -2119,6 +2132,25 @@ mod tests {
             }
         }
         assert_eq!(seen, [(100, 100, 0), (126, 127, 0)], "[dev, test]");
+    }
+
+    #[test]
+    fn at_purpose_rejects_a_which_target_question() {
+        for q in [
+            "What platform is it for?",
+            "What time zone is the reminder for?",
+            "Which goal in the Makefile?",
+        ] {
+            assert!(!asks_purpose(q), "{q}");
+        }
+        assert!(!asks_purpose("Is this for the dashboard?"));
+        assert!(!asks_purpose("What should the button say about errors?"));
+    }
+
+    #[test]
+    fn at_purpose_known_limit_a_scope_question_with_a_verb_still_matches() {
+        // "is" follows "What", so the for? rule takes it, though it asks the scope
+        assert!(asks_purpose("What is the backfill for: all history or the last 30 days?"));
     }
 
     #[test]
