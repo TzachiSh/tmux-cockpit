@@ -9,7 +9,7 @@
 #   make check        lint + test, the merge gate
 #   make tui-bin      build the required cockpit-tui into bin/ (the tests run it first)
 #   make tui          the same, then print its version
-#   make tui-test     its tests, clippy -D warnings, fmt and rustdoc -D warnings, on CI's rust-version
+#   make tui-test     its tests, fmt, clippy and rustdoc -D warnings, on CI's rust-version
 #   make tui-test-clean  tui-test in a private TMPDIR and TMUX_TMPDIR; fails on a leftover
 #   make install      symlink the commands into ~/.local/bin
 #   make uninstall    remove only the symlinks pointing back here
