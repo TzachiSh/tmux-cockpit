@@ -19,7 +19,8 @@ static ENV: Mutex<()> = Mutex::new(());
 const BUDGET: Duration = Duration::from_secs(10);
 /// The time-out rows' budget. Their hung part runs to it every time, so it stays
 /// short; 2 s, about 7 times the panel's, gives the parts that do answer, and a
-/// fake git's shell start-up, room on a loaded box.
+/// fake git's shell start-up, room on most boxes; [`growing`] doubles it for a box
+/// loaded past that.
 const HUNG_BUDGET: Duration = Duration::from_secs(2);
 
 struct Env {
@@ -435,16 +436,35 @@ fn an_ssh_pane_or_no_path_carries_no_repo_block() {
 fn a_hung_git_is_killed_with_what_it_forked_at_the_budget() {
     let path = format!("$D:{}", std::env::var("PATH").unwrap_or_default());
     let e = Env::new("repo-hung", &[("PATH", Some(path))]);
-    // every call hangs: the rev-parse started beside the config read must die too
-    e.exec("git", "[ \"$2\" = $D ] || exit 1; sleep 1000 & echo $! >> $D/kids; wait");
-    // the kill comes at the budget: both fake gits must have written their pid by then
-    let got = repo_state_within(&e.dir.display().to_string(), "", HUNG_BUDGET);
-    assert_eq!(got, "");
-    let kids = std::fs::read_to_string(e.dir.join("kids")).unwrap();
-    assert_eq!(kids.lines().count(), 2, "rev-parse and config ran");
+    // every call hangs: the rev-parse started beside the config read must die too.
+    // Each try has its own repo dir, so a late git from a missed try writes its pid
+    // to that try's file, never to the next one's (#727).
+    e.exec(
+        "git",
+        "case \"$2\" in \"$D\"/*) ;; *) exit 1 ;; esac; sleep 1000 & echo $! >> \"$2/kids\"; wait",
+    );
+    let tries = std::cell::Cell::new(0);
+    let run = |b| {
+        let r = e.dir.join(tries.replace(tries.get() + 1).to_string());
+        std::fs::create_dir(&r).unwrap();
+        let got = repo_state_within(&r.display().to_string(), "", b);
+        (got, std::fs::read_to_string(r.join("kids")).unwrap_or_default())
+    };
+    // the kill comes at the budget: rev-parse and config must have written their pid by then
+    let both = |(got, kids): &(String, String)| got.is_empty() && kids.lines().count() == 2;
+    let got = growing(HUNG_BUDGET, run, both);
+    // every try's pids, the missed ones too. Each poll reads the files again, and the
+    // first poll that finds every listed pid dead ends the check: a pid written after
+    // that poll is not checked.
+    let kids = || (0..tries.get()).map(|t| std::fs::read_to_string(e.dir.join(format!("{t}/kids"))).unwrap_or_default());
     // gone, or a zombie its new parent has not reaped yet
     let dead = |k: &str| std::fs::read_to_string(format!("/proc/{k}/stat")).map_or(true, |s| s.contains(") Z "));
-    assert!(until(|| kids.lines().all(dead)), "{kids} lives");
+    assert!(
+        until(|| kids().collect::<String>().lines().all(dead)),
+        "{:?} lives",
+        kids().collect::<Vec<_>>()
+    );
+    assert!(got.is_ok(), "every budget missed: {got:?}");
 }
 
 /// A fake git on PATH: `body` runs for `sub`, the other subcommands answer as a
@@ -467,8 +487,26 @@ fn a_status_that_times_out_keeps_the_log() {
     let path = format!("$D:{}", std::env::var("PATH").unwrap_or_default());
     let e = Env::new("repo-status-hung", &[("PATH", Some(path))]);
     fake_git(&e, "status", "exec sleep 1000");
-    let got = repo_state_within(&e.dir.display().to_string(), "", HUNG_BUDGET);
-    assert!(got.contains("status: timed out") && got.contains("abc1234 first"), "{got}");
+    let dir = e.dir.display().to_string();
+    let kept = |got: &String| got.contains("status: timed out") && got.contains("abc1234 first");
+    let got = growing(HUNG_BUDGET, |b| repo_state_within(&dir, "", b), kept);
+    assert!(got.is_ok(), "every budget missed: {got:?}");
+}
+
+/// The first of `run`'s results that `ok` takes, from `first` and twice and four
+/// times it, or all three misses. A hung part costs each try its whole budget, so
+/// one `first` is the usual cost; a box too loaded for the parts that do answer
+/// to answer within it gets the larger ones before the row fails (#717).
+fn growing<T>(first: Duration, run: impl Fn(Duration) -> T, ok: impl Fn(&T) -> bool) -> Result<T, Vec<T>> {
+    let mut misses = Vec::new();
+    for budget in [first, first * 2, first * 4] {
+        let got = run(budget);
+        if ok(&got) {
+            return Ok(got);
+        }
+        misses.push(got);
+    }
+    Err(misses)
 }
 
 /// What an inherited environment could point git at instead of the pane's repo.

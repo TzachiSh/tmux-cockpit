@@ -6,6 +6,7 @@
 //! `--calibrate FILE.jsonl` runs it on owner-labelled replies and prints TPR,
 //! TNR and Cohen's kappa against the owner's verdicts.
 use super::{claude_command, fnv, unwrap_json, wilson};
+use cockpit_tui::panel::envelope::{Closer, shift_closers};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
@@ -59,28 +60,9 @@ const SECTIONS: [&str; 7] = ["window", "output_type", "screen", "repo", "panel_r
 /// `</question>` is what the panel wrote, and escaping it made the judge fail
 /// correct replies for broken markup (#646).
 fn esc_sections(s: &str) -> String {
-    let name_char = |c: &u8| c.is_ascii_alphanumeric() || b"_-.".contains(c);
-    let mut out = String::with_capacity(s.len());
-    let mut rest = s;
-    while let Some(at) = rest.find('<') {
-        out.push_str(&rest[..=at]);
-        rest = &rest[at + 1..];
-        let slash = rest.trim_start();
-        let Some(after) = slash.strip_prefix('/') else {
-            continue;
-        };
-        let blanks = &rest[..rest.len() - slash.len()];
-        out.push_str(blanks);
-        rest = after;
-        let name = rest.trim_start().as_bytes();
-        let ours = SECTIONS.iter().any(|t| {
-            let t = t.as_bytes();
-            let at_end = !name.get(t.len()).is_some_and(name_char);
-            name.len() >= t.len() && name[..t.len()].eq_ignore_ascii_case(t) && at_end
-        });
-        out.push_str(if ours { "\\/" } else { "/" });
-    }
-    out + rest
+    // a closer the field had escaped already stays as it was
+    let to = |c: Closer| if c.ours && c.backslashes == 0 { 1 } else { c.backslashes };
+    shift_closers(s, &SECTIONS, to)
 }
 
 /// The user prompt of one judge call; the rubric is its system prompt. No
