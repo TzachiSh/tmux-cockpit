@@ -1133,7 +1133,18 @@ BGT='{"id":"a1","type":"subagent","status":"running","description":"lane",'
 BGT=$BGT'"agent_type":"general-purpose"}'
 BGSH='{"id":"b1","type":"shell","status":"running"'
 BGU='{"hook_event_name":"UserPromptSubmit","prompt":"go"}'
+# A 1 MB payload is read from a file, not a pipe: through a 64 KiB pipe it takes 16
+# hand-offs between writer and reader, each waiting for a CPU, and a loaded box pushed that
+# past subs_count's 2 s deadline, which fails open to done (#721).
+BGPF="${BGCFG%/claude}/payload"
+bgbig() {                     # <state> <payload> [env...]: bgst, its payload from a file
+    printf '%s\n' "$2" > "$BGPF"
+    env HOME="$HOME" CLAUDE_CONFIG_DIR="$BGCFG" TMUX="$SOCKDIR/$BG,0,0" "${@:3}" \
+        "$DIR/scripts/agent-state" "$1" "$BGP" < "$BGPF" >/dev/null 2>&1; }
 
+# The pane is an agent only once it reads claude: a hook before that sets no window sum (#721).
+until_out claude "$TMUX_REAL" -L "$BG" display-message -p -t "$BGP" '#{pane_current_command}' \
+    >/dev/null
 bgst running "$BGU"
 for a in a1 a2 a3; do
     bgst running "{\"hook_event_name\":\"SubagentStart\",\"agent_id\":\"$a\"}"
@@ -1192,9 +1203,7 @@ if locale -a 2>/dev/null | grep -qix 'c\.utf-\?8'; then
         "$(grep -o '"type":"shell"' <<< "$BGARR" | wc -l | tr -d ' ')"
     for bgw in done running; do
         bgx=${BGARR%,}; [ "$bgw" = running ] && bgx="$BGARR$BGT"
-        bgst running "$BGU"
-        printf '%s\n' "$(bgstop "$bgx")" | LC_ALL=C.UTF-8 TMUX="$SOCKDIR/$BG,0,0" \
-            "$DIR/scripts/agent-state" done "$BGP" >/dev/null 2>&1
+        bgst running "$BGU"; bgbig done "$(bgstop "$bgx")" LC_ALL=C.UTF-8
         is "a 1 MB array under C.UTF-8 ends $bgw" "$bgw" "$(bgo @panestate)"
     done
 else
@@ -1206,8 +1215,10 @@ fi
 # A long final message comes before the key and is read whole: no cap cuts the array off.
 BGBIG=$(printf '%01048576d' 0)
 is "the long message is 1 MB" 1048576 "${#BGBIG}"
-bgcase "a subagent after a 1 MB message still holds it" running "$(bgstop "$BGT" "$BGBIG")"
-bgcase "an empty array after a 1 MB message is done" done "$(bgstop "" "$BGBIG")"
+bgst running "$BGU"; bgbig done "$(bgstop "$BGT" "$BGBIG")"
+is "a subagent after a 1 MB message still holds it" running "$(bgo @panestate)"
+bgst running "$BGU"; bgbig done "$(bgstop "" "$BGBIG")"
+is "an empty array after a 1 MB message is done" done "$(bgo @panestate)"
 # stdin held open past the payload: the writer's read -t is a hang guard, released once
 # agent-state exits (opened read-write, so a writer gone at its guard cannot block the
 # release). Past the newline, head returns there and the whole line is matched.
