@@ -63,8 +63,11 @@ fmt_nr="#{n:#{S:#{W:#{P:#{?#{==:#{@cockpit_review},pending},#{?$agent,x,},}}}}}"
 
 # Theme slots, not hex: the colours follow each client's light or dark theme. Spaces,
 # not commas, inside #[]: a comma would end the #{?} branch.
-fmt_fleet="#{?#{e|>:$fmt_nb,0},#[fg=themered bold]▲$fmt_nb#[default] ,}"
-fmt_fleet="$fmt_fleet#{?#{e|>:$fmt_ne,0},#[fg=themecyan]✕$fmt_ne#[default] ,}"
+# ▲ and ✕ read the counts fleet_sums writes just before the fleet: they walk no pane, where
+# each walked every pane twice.
+fnb='#{@cockpit_fleet_nb}' fne='#{@cockpit_fleet_ne}'
+fmt_fleet="#{?#{e|>:$fnb,0},#[fg=themered bold]▲$fnb#[default] ,}"
+fmt_fleet="$fmt_fleet#{?#{e|>:$fne,0},#[fg=themecyan]✕$fne#[default] ,}"
 fmt_fleet="$fmt_fleet#{?#{e|>:$fmt_nr,0},#[fg=thememagenta]◆$fmt_nr#[default] ,}"
 # ✦N, last: background subagents running, the sum of every agent pane's @cockpit_subs (#R
 # repeats a mark N times, #n counts them). Touch mode is a client's, so its test is stored
