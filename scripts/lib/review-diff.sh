@@ -25,6 +25,10 @@ big_files() {                 # <dir>
     | awk -F'\t' -v cap="$BIGCAP" 'NF == 2 && $1 + 0 > cap'
 }
 
+# big_files' paths alone, one a line. Its awk keeps two-field lines only, so no
+# path holds a tab and the second field is the whole path.
+big_paths() { big_files "$1" | cut -f2-; }    # <dir>
+
 # revdiff runs its own git (#693): `add -N` on every untracked file it lists,
 # then `diff -U1000000` on the one it shows. A 400 MB log hung it at 5.4 GB.
 # Its -X drops a path from that list before either runs. Sets the caller's rdx
@@ -35,15 +39,14 @@ big_files() {                 # <dir>
 # named: then --untracked is left out and the status is 1. DIR is the root:
 # revdiff's paths are from it.
 revdiff_files() {             # <dir>
-    local line bp e cut=0
+    local bp e cut=0
     local -a env=()
     rdx=()
-    while IFS= read -r line; do
-        bp=${line#*$'\t'}
+    while IFS= read -r bp; do
         [ -n "$bp" ] || continue
         case $bp in [[:space:]]*|*[[:space:]]) cut=1 ;; esac
         rdx+=("--exclude=$bp")
-    done < <(big_files "$1")
+    done < <(big_paths "$1")
     if [ "${#rdx[@]}" -gt 0 ] && [ -n "${REVDIFF_EXCLUDE:-}" ]; then
         IFS=, read -r -a env <<<"$REVDIFF_EXCLUDE"
         for e in "${env[@]}"; do [ -z "$e" ] || rdx+=("--exclude=$e"); done
@@ -101,10 +104,10 @@ tree_diff() {
     local -a ex=() bigp=()
     case " $* " in *' -- '*) ;; *)
         local bp
-        while IFS=$'\t' read -r _ bp; do
+        while IFS= read -r bp; do
             [ -n "$bp" ] || continue
             bigp+=("$bp"); ex+=(":(exclude,literal)$bp")
-        done < <(big_files "$dir")
+        done < <(big_paths "$dir")
         [ "${#ex[@]}" -gt 0 ] && ex=(-- "${ex[@]}") ;;
     esac
     if [ -n "$br" ]; then
@@ -265,14 +268,13 @@ approve() {                   # <dir>
     # -A would hash each in full and write it as a blob. One pathspec file, as
     # --pathspec-from-file takes no pathspec beside it. Excludes alone leave the
     # add tree-wide, from a subdir too: git applies them to a pathspec-less add.
-    local line bp nbig=0
+    local bp nbig=0
     {
         [ ! -s "$tmp/pathspec" ] || cat -- "$tmp/pathspec"
-        while IFS= read -r line; do
-            bp=${line#*$'\t'}
+        while IFS= read -r bp; do
             [ -n "$bp" ] || continue
             printf ':(exclude,literal)%s\0' "$bp"; nbig=$((nbig + 1))
-        done < <(big_files "$dir")
+        done < <(big_paths "$dir")
     } > "$tmp/addspec" 2>/dev/null || { scratch_done; return 1; }
     [ "$nbig" -eq 0 ] || from=(--pathspec-from-file="$tmp/addspec" --pathspec-file-nul)
     br=$(git -C "$dir" --no-optional-locks rev-parse --abbrev-ref HEAD 2>/dev/null)
