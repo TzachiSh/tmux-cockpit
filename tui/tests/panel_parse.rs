@@ -276,6 +276,12 @@ fn replies_are_unescaped() {
 }
 
 #[test]
+fn a_reply_quoting_an_escaped_closer_gives_back_the_users_text() {
+    // the user wrote `<\/div>`; the envelope showed the model `<\\/div>`
+    assert_eq!(fix("keep <\\\\/div> as is"), Reply::Text("keep <\\/div> as is".into()));
+}
+
+#[test]
 fn explain_splits_the_prompt_for_the_agent_out() {
     assert_eq!(
         explain("Run the tests.\n<prompt>Fix <\\/div> in a.html</prompt>"),

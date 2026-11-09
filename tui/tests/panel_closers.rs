@@ -165,3 +165,54 @@ fn sections_names_every_tag_the_envelope_opens() {
     tags.extend(opened(&build(&Flow::Explain, &claude, &turns, 3)));
     assert_eq!(tags, SECTIONS.iter().map(|s| s.to_string()).collect());
 }
+
+/// `n` strings of up to 12 pieces drawn with a fixed seed, so a failure
+/// reproduces: closer parts, section and other names, blanks, plain text.
+fn closer_shaped(n: usize) -> Vec<String> {
+    const PIECES: [&str; 14] = [
+        "<", "\\", "/", " ", "\n", "\t", "screen", "TURN", "div", "_x", "2", ">", "a", "\\\\",
+    ];
+    let mut x: u64 = 0x681;
+    let mut next = move || {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        x
+    };
+    (0..n)
+        .map(|_| (0..next() % 13).map(|_| PIECES[(next() % 14) as usize]).collect())
+        .collect()
+}
+
+#[test]
+fn unesc_undoes_esc_on_any_string() {
+    let broken: Vec<String> = closer_shaped(200_000).into_iter().filter(|s| unesc(&esc(s)) != *s).collect();
+    assert_eq!(broken.len(), 0, "first: {:?}", broken.first());
+}
+
+#[test]
+fn a_closer_the_text_had_escaped_gets_one_more_backslash() {
+    let cases = [
+        ("unspaced, any name", "<\\/div>", "<\\\\/div>"),
+        ("spaced, a section", "< \\/screen>", "< \\\\/screen>"),
+        ("two already", "<\\\\/x>", "<\\\\\\/x>"),
+        ("spaced, another name", "< \\/div>", "< \\/div>"),
+    ];
+    for (row, s, want) in cases {
+        assert_eq!(esc(s), want, "{row}");
+    }
+}
+
+#[test]
+fn unesc_leaves_a_backslash_outside_a_closer() {
+    for s in ["C:\\\\x", "a \\/ b", "re \\\\d+/", "<\\ /screen>", "< \\/div>"] {
+        assert_eq!(unesc(s), s, "{s:?}");
+    }
+}
+
+#[test]
+fn unesc_keeps_a_closer_the_model_wrote_without_a_backslash() {
+    for s in ["</div>", "< /screen>", "x </TURN> y"] {
+        assert_eq!(unesc(s), s, "{s:?}");
+    }
+}

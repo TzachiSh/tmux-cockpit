@@ -91,14 +91,17 @@ pub const SECTIONS: [&str; 14] = [
 /// is escaped, and so is a closer of a [`SECTIONS`] name with blanks before or
 /// after its `/` (`< /screen>`, #671). A spaced closer of any other name stays,
 /// as does a `<` and `/` in ordinary text: escaping every `< /` would change
-/// screen text that closes nothing of ours.
+/// screen text that closes nothing of ours. The escape is one more `\` before
+/// the `/`, so a closer the text had already escaped (`<\/div>`) gets two and
+/// [`unesc`] gives back what the text had (#681).
 pub fn esc(s: &str) -> String {
-    shift_closers(s, &SECTIONS, |c| c.backslashes + usize::from(c.escaped() && c.backslashes == 0))
+    shift_closers(s, &SECTIONS, |c| c.backslashes + usize::from(c.escaped()))
 }
 
-/// [`esc`] undone, for text the model copied from the envelope.
+/// [`esc`] undone, for text the model copied from the envelope: one `\` fewer
+/// before the slash of a closer [`esc`] escapes. No other `\` changes.
 pub fn unesc(s: &str) -> String {
-    shift_closers(s, &SECTIONS, |c| c.backslashes - usize::from(c.escaped() && c.backslashes == 1))
+    shift_closers(s, &SECTIONS, |c| c.backslashes - usize::from(c.escaped() && c.backslashes > 0))
 }
 
 /// A closing tag's slash: after a `<`, blanks and `\`s, before blanks and a name.
