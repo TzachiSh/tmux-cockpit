@@ -1628,6 +1628,95 @@ sgt kill-server
 trap cleanup EXIT; trap - INT TERM
 fi
 
+echo "== the gauge cells' focus hook and agent-context, stopped mid-format, stay exact (#713) =="
+# The same cut as #707's, at the two other writers of @cockpit_ctx_all: cockpit.tmux's
+# window-pane-changed hook and scripts/agent-context, which also writes @panestate_ctx. Each
+# call gets one 150 ms SIGSTOP at a random point of the server CPU such a call costs, read
+# from schedstat as #707's block does. Window 1 holds C (gauge 12) and D (gauge 345), so a
+# focus change moves the cells by one; agent-context writes C's gauge, 7 or 88, in turn.
+# A heavy @cockpit_ctx_on (it reads 1) over 20 windows makes the cells walk most of that
+# CPU, or the stop rarely lands in it. A read of the result can be cut too, by a box that
+# pauses the server on its own: it ends in a literal mark and is made again until it does.
+if need_tmux "ctx_all stalled mid-format"; then :
+elif [ ! -r /proc/self/schedstat ]; then skip_ "ctx_all stalled mid-format (no schedstat)"
+elif ! command -v jq >/dev/null 2>&1; then skip_ "ctx_all stalled mid-format (no jq)"
+else
+SC="cockpit-stallctx-$$"; SOCKS="$SOCKS $SC"; SCD=$(mktmpd)
+sct() { "$TMUX_REAL" -L "$SC" "$@" 2>/dev/null; }
+sct -f /dev/null new-session -d -s c -x 80 -y 24 -c "$SCD" 'exec -a claude sleep 300'
+sct run-shell "$DIR/cockpit.tmux"
+until_out '*cells*' "$TMUX_REAL" -L "$SC" show-options -g @cockpit_fmt_cells >/dev/null
+# Only the hook under test: the others fork or sweep, which is not this block's server CPU.
+for f in g gw gp; do
+    for h in $(sct show-hooks "-$f" | sed -n 's/^\([a-z-]*\)\[9\].*/\1/p'); do
+        sct set-hook "-${f}u" "${h}[9]"
+    done
+done
+for i in $(seq 2 20); do sct new-window -d -t c: -c "$SCD" 'exec -a claude sleep 300'; done
+SCC=$(sct display-message -p -t c:1 '#{pane_id}')
+SCX=$(sct split-window -d -P -F '#{pane_id}' -t c:1 -c "$SCD" 'exec -a claude sleep 300')
+sct set -p -t "$SCC" @panestate_ctx 12; sct set -p -t "$SCX" @panestate_ctx 345
+sct set -gw @cockpit_ctx_on '#{?#{m:*q*,#{R:xxxxxxxxxx,2000}},,1}'
+SCP=$(sct display-message -p '#{pid}') SCN=""; read -r SCN 2>/dev/null < "/proc/$SCP/comm"
+case "$SCN" in
+    tmux*) trap 'kill -CONT "$SCP" 2>/dev/null; cleanup' EXIT; trap 'exit 130' INT
+           trap 'exit 143' TERM ;;
+    *) SCP="" ;;
+esac
+sc_ctx() {                    # <percent>: agent-context on C
+    printf '{"context_window":{"used_percentage":%s}}' "$1" \
+        | TMUX="$SOCKDIR/$SC,0,0" TMUX_PANE="$SCC" "$DIR/scripts/agent-context" >/dev/null 2>&1
+}
+sc_stall() {                  # <command...>: run it, with one stop at a random point of its CPU
+    local x c0 c hp
+    x=$(( SCPER * (RANDOM % 100) / 100 )); read -r c0 _ < "/proc/$SCP/schedstat"
+    "$@" & hp=$!
+    while read -r c _ < "/proc/$SCP/schedstat"; [ $((c - c0)) -lt "$x" ] \
+        && kill -0 "$hp" 2>/dev/null; do :; done
+    if kill -0 "$hp" 2>/dev/null; then kill -STOP "$SCP"; sleep 0.15; kill -CONT "$SCP"; fi
+    wait "$hp"
+}
+sc_per() {                    # SCPER <- the server CPU of one call, from 8 of <command...>
+    local c0 c i
+    read -r c0 _ < "/proc/$SCP/schedstat"
+    for i in 1 2 3 4; do "$@" "$SCC" "$SCX" 7; "$@" "$SCX" "$SCC" 88; done
+    read -r c _ < "/proc/$SCP/schedstat"; SCPER=$(( (c - c0) / 8 ))
+}
+sc_focus() { sct select-pane -t "$1"; }            # <to> <from> <pct>: the focus hook
+sc_call() { sc_ctx "$3"; }                         # <to> <from> <pct>: agent-context
+SCF='#{@panestate_ctx}|#{@cockpit_ctx_all}|#{l:.}'
+sc_read() {                   # <pane>: its gauge and the cells, from a read that ends whole
+    local g n=0
+    while g=$(sct display-message -p -t "$1" "$SCF"); [ "${g%|.}" = "$g" ] \
+        && [ $((n += 1)) -lt 50 ]; do :; done
+    printf '%s' "${g%|.}"
+}
+if [ -n "$SCP" ]; then
+    sc_per sc_focus; scf=0 scf1=""
+    for i in $(seq 1 32); do
+        to=$SCC w=12; [ $((i % 2)) = 0 ] && to=$SCX w=345
+        sc_stall sc_focus "$to"
+        g=$(sc_read "$to") w="$w|$((57 + 3 + ${#w}))"
+        [ "$g" = "$w" ] || { scf=$((scf + 1)); [ -n "$scf1" ] || scf1="change $i: [$g]"; }
+    done
+    is "32 focus changes, each with the server stopped 150 ms mid-hook, leave the cells exact" \
+        "0" "$scf${scf1:+, first $scf1}"
+    sc_focus "$SCC"; sc_per sc_call; scf=0 scf1=""
+    for i in $(seq 1 32); do
+        w=7; [ $((i % 2)) = 0 ] && w=88
+        sc_stall sc_ctx "$w"
+        g=$(sc_read "$SCC") w="$w|$((57 + 3 + ${#w}))"
+        [ "$g" = "$w" ] || { scf=$((scf + 1)); [ -n "$scf1" ] || scf1="call $i: [$g]"; }
+    done
+    is "and 32 agent-context calls stopped the same way leave C's gauge and the cells exact" \
+        "0" "$scf${scf1:+, first $scf1}"
+else
+    bad "the stalled server is the private one" "tmux*" "$SCN"
+fi
+sct kill-server
+trap cleanup EXIT; trap - INT TERM
+fi
+
 echo "== agent-state recount: ◆N counts panes with a pending review, off clears them =="
 if need_tmux "agent-state recount"; then :; else
 tmux set-option -p -t "$PANE" @cockpit_review pending >/dev/null 2>&1
