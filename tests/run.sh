@@ -1544,6 +1544,90 @@ is "and 20 ending at once clear it" "" "$("$TMUX_REAL" -L "$PT" show-option -gqv
 "$TMUX_REAL" -L "$PT" kill-server >/dev/null 2>&1
 fi
 
+echo "== agent-state: a server stopped mid-format still leaves the counters exact (#707) =="
+# tmux 3.7+ cuts a format that runs past 100 ms of wall time to "" from there on, so a loaded
+# box that descheduled the server mid-hook had agent-state read two empty strings as equal
+# and keep a stale ✕1, or write a cut value. Each hook here gets one SIGSTOP of 150 ms at a
+# random point of the server's own CPU time for a hook, read from /proc/<pid>/schedstat (a
+# count, not a clock). The padded agents glob makes the fleet's walks most of that time.
+# Pane A sits alone in session u, walked last, and the other 19 in t, so each session counts
+# its own. A cycles needs-input (with a pending review), off, error, off, and its gauge cells
+# change every hook, so every sum a transition writes changes and is checked: the fleet's
+# string, ▲ and ✕ counts, session u's ▲ ✕ and cells, A's window state and ◆. A race row:
+# master's script left about 1 hook in 4 wrong, so 32 hooks miss it in under 0.1% of runs.
+if need_tmux "agent-state stalled mid-format"; then :
+elif [ ! -r /proc/self/schedstat ]; then skip_ "agent-state stalled mid-format (no schedstat)"
+else
+SG="cockpit-stall-$$"; SOCKS="$SOCKS $SG"; SGD=$(mktmpd)
+sgt() { "$TMUX_REAL" -L "$SG" "$@" 2>/dev/null; }
+sgt -f /dev/null new-session -d -s t -x 80 -y 24 -c "$SGD" 'exec -a claude sleep 300'
+for i in $(seq 2 19); do sgt new-window -d -t t: -c "$SGD" 'exec -a claude sleep 300'; done
+sgt new-session -d -s u -x 80 -y 24 -c "$SGD" 'exec -a claude sleep 300'
+sgt set -gF @cockpit_agents_glob '#{R:xxxxxxxxxx,2000}|claude|'
+until_out 20 sh -c \
+    "'$TMUX_REAL' -L '$SG' list-panes -a -F '#{pane_current_command}' | grep -c claude" >/dev/null
+SGA=$(sgt list-panes -t u: -F '#{pane_id}') SGP=$(sgt display-message -p '#{pid}')
+sgt set -w -t "$SGA" @cockpit_ctx_on 1
+SGN=""; read -r SGN 2>/dev/null < "/proc/$SGP/comm"
+# Only the private server's own pid is ever stopped: its comm names the tmux server. A run
+# that dies inside a stop must not leave it stopped: every client of it, the suite's own
+# cleanup too, would wait on it for good.
+case "$SGN" in
+    tmux*) trap 'kill -CONT "$SGP" 2>/dev/null; cleanup' EXIT; trap 'exit 130' INT
+           trap 'exit 143' TERM ;;
+    *) SGP="" ;;
+esac
+sg_hook() {
+    TMUX="$SOCKDIR/$SG,0,0" "$DIR/scripts/agent-state" "$1" "$SGA" </dev/null >/dev/null 2>&1
+}
+sg_stall() {                  # <state>: the hook, with one stop at a random point of its CPU
+    local x c0 c hp
+    x=$(( SGPER * (RANDOM % 100) / 100 )); read -r c0 _ < "/proc/$SGP/schedstat"
+    sg_hook "$1" & hp=$!
+    while read -r c _ < "/proc/$SGP/schedstat"; [ $((c - c0)) -lt "$x" ] \
+        && kill -0 "$hp" 2>/dev/null; do :; done
+    if kill -0 "$hp" 2>/dev/null; then kill -STOP "$SGP"; sleep 0.15; kill -CONT "$SGP"; fi
+    wait "$hp"
+}
+# One read per hook: the fleet's, then A's session's and window's sums.
+SGF='#{@cockpit_fleet}|#{@cockpit_fleet_nb}|#{@cockpit_fleet_ne}'
+SGS='#{@cockpit_sess_nb}|#{@cockpit_sess_ne}|#{@cockpit_win_state}|#{@cockpit_win_review}'
+SGS="$SGS|#{@cockpit_ctx_all}"
+sgf=0 sgs=0 sgf1="" sgs1=""
+if [ -n "$SGP" ]; then
+    read -r SGC0 _ < "/proc/$SGP/schedstat"
+    for i in 1 2 3 4; do sg_hook running; sg_hook off; done
+    read -r SGC _ < "/proc/$SGP/schedstat"; SGPER=$(( (SGC - SGC0) / 8 ))
+    for i in $(seq 1 32); do
+        ctx=12; [ $((i % 2)) = 0 ] && ctx=345
+        sgt set -p -t "$SGA" @panestate_ctx "$ctx"
+        case $((i % 4)) in
+            1) st=needs-input; sgt set -p -t "$SGA" @cockpit_review pending
+               wf='#[fg=themered bold]▲1#[default] #[fg=thememagenta]◆1#[default] |1|0'
+               ws="1|0|needs-input|1" ;;
+            3) st=error; wf='#[fg=themecyan]✕1#[default] |0|1' ws="0|1|error|" ;;
+            *) st=off; wf='|0|0' ws="0|0|idle|" ;;
+        esac
+        ws="$ws|$((3 + ${#ctx}))"
+        sg_stall "$st"
+        g=$(sgt display-message -p -t "$SGA" "$SGF//$SGS")
+        gf=${g%%//*} gs=${g#*//}
+        [ "$gf" = "$wf" ] || { sgf=$((sgf + 1)); [ -n "$sgf1" ] || sgf1="hook $i ($st): [$gf]"; }
+        [ "$gs" = "$ws" ] || { sgs=$((sgs + 1)); [ -n "$sgs1" ] || sgs1="hook $i ($st): [$gs]"; }
+    done
+    is "32 hooks, each with the server stopped 150 ms mid-hook, leave the fleet counts exact" \
+        "0" "$sgf${sgf1:+, first $sgf1}"
+    is "and A's session's ▲ ✕ and cells and its window's state and ◆ exact" \
+        "0" "$sgs${sgs1:+, first $sgs1}"
+    is "and session t's sums, which no hook of A's touches, are never written" "|" \
+        "$(sgt display-message -p -t t: '#{@cockpit_sess_nb}|#{@cockpit_sess_ne}')"
+else
+    bad "the stalled server is the private one" "tmux*" "$SGN"
+fi
+sgt kill-server
+trap cleanup EXIT; trap - INT TERM
+fi
+
 echo "== agent-state recount: ◆N counts panes with a pending review, off clears them =="
 if need_tmux "agent-state recount"; then :; else
 tmux set-option -p -t "$PANE" @cockpit_review pending >/dev/null 2>&1
@@ -15192,7 +15276,7 @@ dbt run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
 until_out 60 dbt show-option -gqv @cockpit_fleet_nb >/dev/null
 # Every full sweep's first batch carries the format stamp; the shim counts those.
 mkdir "$DBD/bin"
-printf '#!/bin/sh\n[ "$1 $2 $3" = "if-shell -F 1" ] && case "$4" in "if -F %s#{!=:#{@cockpit_fmt_v}"*) echo x >> "%s/swept" ;; esac\nexec "%s" "$@"\n' \
+printf '#!/bin/sh\n[ "$1 $2 $3" = "if-shell -F 1" ] && case "$4" in "if -F %s#{?#{==:#{@cockpit_fmt_v}"*) echo x >> "%s/swept" ;; esac\nexec "%s" "$@"\n' \
     "'" "$DBD" "$TMUX_REAL" > "$DBD/bin/tmux"
 chmod +x "$DBD/bin/tmux"
 dbt set-environment -g PATH "$DBD/bin:$PATH" >/dev/null 2>&1
