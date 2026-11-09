@@ -50,9 +50,9 @@ big_files() {                 # <dir>
 # staged copy the worktree then shrank or deleted too). big_files sees none of
 # them: it sizes worktree files. diff-index on a stat-dirty file prints no sha
 # and hashes nothing, so the index needs --cached. The sizes are cat-file's
-# object headers: no blob is
-# read. No renames: pairing them reads both blobs. A gitlink's sha names no blob,
-# and =all keeps diff-index out of its repo: a status there runs its filters.
+# object headers: no blob is read. No renames: pairing them reads both blobs. A
+# gitlink's sha names no blob, and =all keeps diff-index out of its repo: a
+# status there runs its filters.
 big_tree_paths() {            # <dir> <rev>
     local m p om nm os ns i
     local -a olds=() news=() paths=()

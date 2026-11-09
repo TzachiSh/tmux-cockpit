@@ -15232,8 +15232,9 @@ git -C "$PGR" worktree add -q -b want584 "$PGD/want" >/dev/null 2>&1
 printf '%s\n' "$PGD/x/../want/.git" > "$PGR/.git/worktrees/want/gitdir"; rm -rf "$PGD/want"
 pg_says "a gone tree whose absolute gitdir holds x/.. is named gone" "is gone" \
     "$PGR" "$PGD/x/../want" "$PGOLD"
-# #696: a symlink before the .. is a name too, so lnk/../lw is $PGD/lw, as git lists it,
-# not $PGD/sub/lw, where the link leads. A forged line naming that place names no entry.
+# #696: a symlink before the .. is a name too. git lists $PGD/lnk/../lw as written, and
+# resolved as text that is $PGD/lw, not $PGD/sub/lw, where the link leads. A forged line
+# naming that place names no entry.
 mkdir -p "$PGD/sub/deep"; ln -s "$PGD/sub/deep" "$PGD/lnk"
 git -C "$PGR" worktree add -q -b lnk696 "$PGD/lw" >/dev/null 2>&1
 printf '%s\n' "$PGD/lnk/../lw/.git" > "$PGR/.git/worktrees/lw/gitdir"; rm -rf "$PGD/lw"
