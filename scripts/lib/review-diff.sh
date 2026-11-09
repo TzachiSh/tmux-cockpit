@@ -92,8 +92,9 @@ big_list() {                  # <dir> [rev]
 # skipped one: revdiff then ignores REVDIFF_EXCLUDE. A line revdiff cannot parse
 # makes it skip the whole file: status 1 and no entries. A quoted value is
 # unquoted when it holds no backslash; one that does is skipped, since Go's
-# escapes are not undone here, and so is one too long for one exec arg
-# (--exclude=<it> past 128 KiB fails the exec). awk parses: a bash trim of a
+# escapes are not undone here, and so is one past PATH_MAX (4096 bytes): it
+# matches no path, and longer ones fill the exec's argv (16 of 128 KiB fail it,
+# E2BIG), but still names an exclude. awk parses: a bash trim of a
 # long line is seconds per MB. It prints N per exclude key, E<value> per entry,
 # R to reject.
 revdiff_config_excludes() {
@@ -124,8 +125,8 @@ revdiff_config_excludes() {
             }
             if (sec != "" && sec != "application options") next
             if (tolower(k) != "exclude" && k != "X") next
-            print "N"                                  # Linux caps one exec arg at 128 KiB
-            if (!esc && v != "" && length(v) <= 131061) print "E" v
+            print "N"                                  # PATH_MAX: no longer path to match
+            if (!esc && v != "" && length(v) <= 4096) print "E" v
         }' "$f"); } 2>/dev/null
     mapfile -t rows <<<"$out"
     for r in "${rows[@]}"; do

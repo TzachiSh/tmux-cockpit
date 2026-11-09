@@ -6121,21 +6121,22 @@ printf '%s\n' 'exclude = "a\tb"' > "$RBCH/other"
 rbca=$(rbr_args "$RBC" "" REVDIFF_CONFIG="$RBCH/other" REVDIFF_EXCLUDE=a,envb)
 is "an escaped entry alone: skipped, and REVDIFF_EXCLUDE is still not passed" "1|0" \
    "$(grep -c -- '^--exclude=' <<<"$rbca")|$(grep -cxF -- '--exclude=envb' <<<"$rbca")"
-# A long line, trimmed whole (100 KB: one exec arg stops at 128 KiB).
-{ printf 'exclude =  '; head -c 100000 /dev/zero | tr '\0' a; printf '  \n'; } > "$RBCH/other"
-is "a 100 KB entry is passed on whole, trimmed" "100011" \
+# A 100 KB line, trimmed whole to a 4096-byte entry.
+{ printf 'exclude ='; head -c 50000 /dev/zero | tr '\0' ' '; head -c 4096 /dev/zero | tr '\0' a
+  head -c 50000 /dev/zero | tr '\0' ' '; printf '\n'; } > "$RBCH/other"
+is "a 100 KB line holding a 4096-byte entry: the entry is passed on, trimmed" "4107" \
    "$(rbr_args "$RBC" "" REVDIFF_CONFIG="$RBCH/other" | grep -- '^--exclude=a' \
       | wc -c | tr -d ' ')"
-# Linux caps one exec arg at 128 KiB, its NUL included: --exclude= and 131061 fit.
+# PATH_MAX caps an entry: no longer path matches, and 16 of 128 KiB fill the argv.
 rbc_len() {                   # <entry length>: lengths of the --exclude=a... args revdiff got
     { printf 'exclude = '; head -c "$1" /dev/zero | tr '\0' a; printf '\n'; } > "$RBCH/other"
     rbr_args "$RBC" "" REVDIFF_CONFIG="$RBCH/other" REVDIFF_EXCLUDE=envb \
         | awk '/^--exclude=a/ { print length($0) } /^--exclude=envb$/ { print "envb" }
                /^--untracked$/ { print "started" }' | paste -sd " " -
 }
-is "an entry that fits one exec arg reaches revdiff" "131071 started" "$(rbc_len 131061)"
+is "an entry of PATH_MAX (4096 bytes) reaches revdiff" "4106 started" "$(rbc_len 4096)"
 is "one byte longer is skipped, and REVDIFF_EXCLUDE still not passed" \
-   "started" "$(rbc_len 131062)"
+   "started" "$(rbc_len 4097)"
 unset -f rbr_args rbc_len
 rm -rf "$RBC" "$RBCH" "$RBRB"
 
