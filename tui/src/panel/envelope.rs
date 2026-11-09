@@ -68,8 +68,9 @@ pub struct Turn {
     pub text: String,
 }
 
-/// The tags the envelope wraps text in.
-const SECTIONS: [&str; 14] = [
+/// The tags the envelope wraps text in: every tag [`build_refs`] opens, so
+/// [`esc`] escapes a spaced closer of each (`tests/panel_closers.rs`).
+pub const SECTIONS: [&str; 14] = [
     "screen",
     "window",
     "repo",
@@ -90,20 +91,41 @@ const SECTIONS: [&str; 14] = [
 /// is escaped, and so is a closer of a [`SECTIONS`] name with blanks before or
 /// after its `/` (`< /screen>`, #671). A spaced closer of any other name stays,
 /// as does a `<` and `/` in ordinary text: escaping every `< /` would change
-/// screen text that closes nothing of ours.
+/// screen text that closes nothing of ours. The escape is one more `\` before
+/// the `/`, so a closer the text had already escaped (`<\/div>`) gets two and
+/// [`unesc`] gives back what the text had (#681).
 pub fn esc(s: &str) -> String {
-    swap_closers(&s.replace("</", "<\\/"), "/", "\\/")
+    shift_closers(s, &SECTIONS, |c| c.backslashes + usize::from(c.escaped()))
 }
 
-/// [`esc`] undone, for text the model copied from the envelope.
+/// [`esc`] undone, for text the model copied from the envelope: one `\` fewer
+/// before the slash of a closer [`esc`] escapes. No other `\` changes.
 pub fn unesc(s: &str) -> String {
-    swap_closers(s, "\\/", "/").replace("<\\/", "</")
+    shift_closers(s, &SECTIONS, |c| c.backslashes - usize::from(c.escaped() && c.backslashes > 0))
 }
 
-/// `s` with `from` made `to` where it follows a `<` and blanks and comes before
-/// blanks and a [`SECTIONS`] name, in any case. A name going on with a letter,
-/// digit, `_`, `-` or `.` is another tag.
-fn swap_closers(s: &str, from: &str, to: &str) -> String {
+/// A closing tag's slash: after a `<`, blanks and `\`s, before blanks and a name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Closer {
+    /// blanks between the `<` and the `\`s or the `/`
+    pub spaced: bool,
+    /// the name is one of the names [`shift_closers`] was given, in any case
+    pub ours: bool,
+    /// the `\`s just before the `/`
+    pub backslashes: usize,
+}
+
+impl Closer {
+    /// The ones [`esc`] escapes: every `</`, and a spaced closer of a section.
+    fn escaped(self) -> bool {
+        self.ours || !self.spaced
+    }
+}
+
+/// `s` with the `\`s before each closer's slash made as many as `to` says. A
+/// name going on with a letter, digit, `_`, `-` or `.` is another tag. [`esc`],
+/// [`unesc`] and the eval judge's prompt share it, each with its own names.
+pub fn shift_closers(s: &str, names: &[&str], to: impl Fn(Closer) -> usize) -> String {
     let name_char = |c: &u8| c.is_ascii_alphanumeric() || b"_-.".contains(c);
     let mut out = String::with_capacity(s.len());
     let mut rest = s;
@@ -111,17 +133,20 @@ fn swap_closers(s: &str, from: &str, to: &str) -> String {
         out.push_str(&rest[..=at]);
         rest = &rest[at + 1..];
         let slash = rest.trim_start();
-        let Some(after) = slash.strip_prefix(from) else {
+        let backslashes = slash.bytes().take_while(|&b| b == b'\\').count();
+        let Some(after) = slash[backslashes..].strip_prefix('/') else {
             continue;
         };
         let name = after.trim_start().as_bytes();
-        let ours = SECTIONS.iter().any(|t| {
+        let ours = names.iter().any(|t| {
             let t = t.as_bytes();
             let at_end = !name.get(t.len()).is_some_and(name_char);
             name.len() >= t.len() && name[..t.len()].eq_ignore_ascii_case(t) && at_end
         });
+        let spaced = slash.len() < rest.len();
         out.push_str(&rest[..rest.len() - slash.len()]);
-        out.push_str(if ours { to } else { from });
+        out.push_str(&"\\".repeat(to(Closer { spaced, ours, backslashes })));
+        out.push('/');
         rest = after;
     }
     out + rest
