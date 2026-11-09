@@ -1826,3 +1826,20 @@ recent commits:
   4ab7c16 tests: pay with saved card
 --- request
 the checkout test is flaky. don't edit anything under src/, only the tests; adding waits or retries in checkout.spec.ts is fine
+
+# #702 review D1b, written before the prompt change: fixing a failing test
+# keeps the break-it step.
+=== failing-test-keeps-break-it
+kind: bug
+window: claude · claude · /home/u/projects/api
+expect: write
+out_is: prompt
+must: test_discount_rounding|tests/test_pricing.py; on purpose|deliberately|mutate|mutation|mutant|mutants|break the code|then flip|temporarily flip|flip one|try flipping|introduce a small bug|then introduce a bug|temporarily introduce a bug|then invert|temporarily invert|invert one|try inverting; undo|undoing|revert|reverting|restore|put back|put it back
+note: #702 review D1b, written before the prompt change: a failing test to fix gets the break-it step; the "also adds or changes code" exclusion must not drop it
+--- screen
+$ pytest tests/test_pricing.py -q
+.F
+FAILED tests/test_pricing.py::test_discount_rounding - assert 9.99 == 10.0
+1 failed, 1 passed in 0.08s
+--- request
+this test fails, fix it
