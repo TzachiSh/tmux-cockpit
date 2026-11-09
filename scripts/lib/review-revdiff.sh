@@ -155,7 +155,16 @@ review_loop() {
             10) if [ -f "$store.rdout" ] && [ ! -L "$store.rdout" ]; then
                     ingest_revdiff "$dir" "$store" "$store.rdout" "$rev"
                 fi ;;
-            0)  ;;                      # no comments, or Q: nothing changes
+            # revdiff exits 0 and writes no -o both when every pinned comment it
+            # loaded was deleted and on Q, so ask which: y unpins, any other
+            # key keeps them. Untouched ones come back with 10. Nothing loaded:
+            # nothing to ask.
+            0)  if [ -s "$store.rdin" ] && [ ! -L "$store.rdin" ]; then
+                    n=$(grep -c '^## ' -- "$store.rdin")
+                    printf '\n revdiff returned no comments · unpin %d? y/N ' "$n"
+                    choice=$(ask_key); printf '\n'
+                    [ "$choice" = y ] && rm -f -- "$store"
+                fi ;;
             *)  # Kept, for --request to print once the popup is gone.
                 tmux display-message \
                     "$(fesc "cockpit: revdiff exited $rc: $(head -n 1 -- "$errf" 2>/dev/null)")" 2>/dev/null
