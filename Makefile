@@ -9,7 +9,7 @@
 #   make check        lint + test, the merge gate
 #   make tui-bin      build the required cockpit-tui into bin/ (the tests run it first)
 #   make tui          the same, then print its version
-#   make tui-test     its tests, clippy -D warnings, fmt and doc-link checks, on CI's rust-version
+#   make tui-test     its tests, clippy -D warnings, fmt and rustdoc -D warnings, on CI's rust-version
 #   make tui-test-clean  tui-test in a private TMPDIR and TMUX_TMPDIR; fails on a leftover
 #   make install      symlink the commands into ~/.local/bin
 #   make uninstall    remove only the symlinks pointing back here
@@ -80,8 +80,9 @@ tui-test:
 	@$(TUI_ENV) cargo test --locked --manifest-path tui/Cargo.toml
 	@$(TUI_ENV) cargo clippy --locked --manifest-path tui/Cargo.toml --all-targets -- -D warnings
 	@$(TUI_ENV) cargo fmt --manifest-path tui/Cargo.toml --check
-	@# A doc link to a name that does not resolve fails the target (#726).
-	@$(TUI_ENV) RUSTDOCFLAGS='-D rustdoc::broken_intra_doc_links' cargo doc -q --locked \
+	@# Any rustdoc warning fails the target: a doc link to a name that does not
+	@# resolve (#726), an unclosed HTML tag (#739).
+	@$(TUI_ENV) RUSTDOCFLAGS='-D warnings' cargo doc -q --locked \
 		--manifest-path tui/Cargo.toml --no-deps --document-private-items
 
 # tui-test with TMPDIR and TMUX_TMPDIR on private empty dirs, failing on any

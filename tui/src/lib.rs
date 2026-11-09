@@ -1,5 +1,9 @@
 //! cockpit-tui, tmux-cockpit's optional board. The module list is frozen (#61):
 //! see "Contracts" in docs/tui.md.
+// The lib serves only the cockpit-tui binary and its docs are built with
+// --document-private-items (make tui-test), so a pub item's doc may link the
+// private helper it leans on (#739).
+#![allow(rustdoc::private_intra_doc_links)]
 pub mod backend;
 pub mod basket;
 pub mod board;
