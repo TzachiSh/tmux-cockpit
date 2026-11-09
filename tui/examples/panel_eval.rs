@@ -45,6 +45,8 @@ use std::time::{Duration, Instant};
 
 #[path = "panel_eval/judge.rs"]
 mod judge;
+#[path = "panel_eval/purpose.rs"]
+mod purpose;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Expect {
@@ -557,6 +559,8 @@ struct Opts {
     judge_model: String,
     /// A labelled file: run the judge on it and print its agreement with the owner.
     calibrate: Option<PathBuf>,
+    /// A purpose-question fixture: calibrate the `@purpose` judge on it (#702 H2).
+    purpose_calibrate: Option<PathBuf>,
     split: judge::Split,
 }
 
@@ -570,6 +574,7 @@ fn opts(args: impl IntoIterator<Item = String>) -> Result<Opts, String> {
         only: None,
         out: None,
         check: false,
+        purpose_calibrate: None,
         compare: None,
         allow_mixed: false,
         ledger: None,
@@ -598,6 +603,7 @@ fn opts(args: impl IntoIterator<Item = String>) -> Result<Opts, String> {
             "--judge" => o.judge = true,
             "--judge-model" => o.judge_model = val()?,
             "--calibrate" => o.calibrate = Some(val()?.into()),
+            "--purpose-calibrate" => o.purpose_calibrate = Some(val()?.into()),
             "--split" => o.split = judge::Split::parse(&val()?)?,
             "--compare" => {
                 let two = (a.next(), a.next());
@@ -754,6 +760,13 @@ fn main() {
                 eprintln!("panel_eval: {e}");
                 std::process::exit(2);
             }
+        }
+        return;
+    }
+    if let Some(file) = &o.purpose_calibrate {
+        if let Err(e) = purpose_calibrate(file, &o) {
+            eprintln!("panel_eval: {e}");
+            std::process::exit(2);
         }
         return;
     }
@@ -1687,6 +1700,45 @@ fn mixed_prompts(rows: &[Row]) -> Vec<String> {
         }
     }
     ids
+}
+
+/// Calibrates the `@purpose` judge on a fixture: each row's verdict from the
+/// cache next to the ledger or one call, then agreement, false accepts and
+/// misses, and whether the fallback may be used. The spend goes to the ledger.
+fn purpose_calibrate(file: &Path, o: &Opts) -> Result<(), String> {
+    let text = std::fs::read_to_string(file).map_err(|e| format!("{}: {e}", file.display()))?;
+    let rows = purpose::read_fixture(&text)?;
+    let claude = std::env::var("COCKPIT_CLAUDE")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .unwrap_or("claude".into());
+    let ledger = ledger_path(o);
+    let mut cache = purpose::Cache::open(&ledger.with_file_name("purpose-cache.tsv"));
+    let qs: Vec<String> = rows.iter().map(|(q, _)| q.clone()).collect();
+    let (verdicts, usd) = purpose::judge_all(&claude, &o.judge_model, &qs, o.jobs, &mut cache);
+    let c = purpose::tally(&rows, &verdicts);
+    println!(
+        "purpose judge {} on {} rows, rubric {}",
+        o.judge_model,
+        rows.len(),
+        purpose::rubric_hash()
+    );
+    println!("agreement       {}/{} judged, {} failed calls", c.agree, c.judged, c.failed);
+    println!("false accepts   {}/{} 0-rows", c.false_accepts.0, c.false_accepts.1);
+    println!("misses          {}/{} 1-rows", c.misses.0, c.misses.1);
+    println!("fallback        {}", if purpose::usable(&c) { "usable" } else { "not usable" });
+    println!("cost            ${usd:.4}");
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    ledger_append(&ledger, &ledger_row(secs, "purpose-calibrate", rows.len(), 1, usd, &o.judge_model))
+        .map_err(|e| format!("ledger {}: {e}", ledger.display()))?;
+    for ((q, want), got) in rows.iter().zip(&verdicts) {
+        if got.is_some_and(|g| g != *want) {
+            println!("DISAGREE want {} judge {}  {q}", u8::from(*want), u8::from(got.unwrap_or(false)));
+        }
+    }
+    Ok(())
 }
 
 /// Where a run's cost goes: `--ledger`, else `cost.tsv` next to `--out`, else
