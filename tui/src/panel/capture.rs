@@ -17,7 +17,7 @@ pub struct Capture {
     pub path: String,
     /// Raw, not redacted: the envelope redacts it on the way out.
     pub screen: String,
-    /// [`repo_state`] of `path`, raw like the screen; "" outside a repo.
+    /// [`repo_state_within`] of `path`, raw like the screen; "" outside a repo.
     pub repo: Repo,
 }
 
@@ -306,13 +306,11 @@ fn section(b: &mut String, head: &str, lines: &[&str], cap: usize) {
 
 /// The git state of `dir` for the write call's `<repo>` block: branch, the
 /// work tree's root, short status, the last five commits, the diff stat
-/// against HEAD, and which paths on `screen` exist. "" when `dir` is not in a
-/// work tree. Plain git under [`REPO_BUDGET`]; a part that runs out of time is
-/// left out and the rest kept.
-pub fn repo_state(dir: &str, screen: &str) -> String {
-    repo_state_within(dir, screen, REPO_BUDGET)
-}
-
+/// against HEAD, and the paths on `screen` that exist, plus the `@/`, `~/` and
+/// `./` ones that do not. "" when `dir` is not in a work tree. Plain git under
+/// `budget` (the panel's is [`REPO_BUDGET`]): "" when the root or the filter
+/// config is not read in time, `status: timed out` for a late status, and any
+/// other part that runs out of time is left out and the rest kept.
 pub fn repo_state_within(dir: &str, screen: &str, budget: Duration) -> String {
     Repo::start(dir, screen, budget).get().to_string()
 }

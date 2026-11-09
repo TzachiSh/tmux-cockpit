@@ -35,8 +35,8 @@
 # Options: a | b" or "user: <answer>" line each, oldest first: the case is then
 # its next call, with one question fewer left for each one asked.
 # A repo body is the <repo> block the panel sends for a window in a git repo
-# (capture.rs repo_state): branch, root, status, recent commits, diff --stat and the
-# screen's paths, each section's lines indented by two.
+# (capture.rs repo_state_within): branch, root, status, recent commits, diff --stat
+# and the screen's paths, each section's lines indented by two.
 #
 # Label rule (#503): ask when the possible readings lead to different work, or
 # when the reply would otherwise guess something only the owner knows: their
