@@ -68,8 +68,9 @@ pub struct Turn {
     pub text: String,
 }
 
-/// The tags the envelope wraps text in.
-const SECTIONS: [&str; 14] = [
+/// The tags the envelope wraps text in: every tag [`build_refs`] opens, so
+/// [`esc`] escapes a spaced closer of each (`tests/panel_closers.rs`).
+pub const SECTIONS: [&str; 14] = [
     "screen",
     "window",
     "repo",

@@ -1,7 +1,9 @@
 //! A closer with blanks before or after its slash (`< /screen>`) cannot end an
 //! envelope section (#671), and text that closes nothing of ours goes as it was.
+use cockpit_tui::panel::ask::AskCode;
 use cockpit_tui::panel::capture::Capture;
-use cockpit_tui::panel::envelope::{Flow, OutType, RefItem, Role, Turn, build, build_refs, esc, unesc};
+use cockpit_tui::panel::envelope::{Flow, OutType, RefItem, Role, SECTIONS, Turn, build, build_refs, esc, unesc};
+use std::collections::BTreeSet;
 
 fn cap(screen: &str, repo: &str) -> Capture {
     Capture {
@@ -67,26 +69,9 @@ fn a_ref_cannot_close_the_refs_block_with_a_blank_before_the_slash() {
     holds_escaped(&env, "< /refs>", "a < \\/refs> b");
 }
 
-const NAMES: [&str; 14] = [
-    "screen",
-    "window",
-    "repo",
-    "refs",
-    "ref",
-    "request",
-    "output_type",
-    "text",
-    "code",
-    "truncated",
-    "session",
-    "conversation",
-    "turn",
-    "questions_left",
-];
-
 #[test]
 fn every_section_name_is_escaped_in_any_case() {
-    for n in NAMES {
+    for n in SECTIONS {
         let up = n.to_uppercase();
         assert_eq!(esc(&format!("< /{n}>")), format!("< \\/{n}>"), "{n}");
         assert_eq!(esc(&format!("< /{up}>")), format!("< \\/{up}>"), "{n}");
@@ -95,7 +80,7 @@ fn every_section_name_is_escaped_in_any_case() {
 
 #[test]
 fn a_newline_or_tab_around_the_slash_is_still_a_closer() {
-    for n in NAMES {
+    for n in SECTIONS {
         assert_eq!(esc(&format!("<\n\t/ {n}>")), format!("<\n\t\\/ {n}>"), "{n}");
         assert_eq!(esc(&format!("</\n{n}>")), format!("<\\/\n{n}>"), "{n}");
     }
@@ -125,4 +110,58 @@ fn unesc_restores_a_spaced_closer() {
     for s in ["a < /screen> b", "<\n/ TURN>", "x </repo> < /div> y"] {
         assert_eq!(unesc(&esc(s)), s, "{s:?}");
     }
+}
+
+/// The name of every tag `env` opens: `<` then a name of lowercase letters and
+/// `_`, then a blank or `>`.
+fn opened(env: &str) -> BTreeSet<String> {
+    let name = |r: &str| r.split(|c: char| !(c.is_ascii_lowercase() || c == '_')).next().map(String::from);
+    let tags = env
+        .split('<')
+        .skip(1)
+        .filter_map(|r| name(r).filter(|n| r[n.len()..].starts_with([' ', '>'])));
+    tags.filter(|n| !n.is_empty()).collect()
+}
+
+fn ask_cut_short() -> Flow {
+    Flow::Ask(AskCode {
+        at: "src/x.rs:1-9".into(),
+        path: "src/x.rs".into(),
+        repo: "/r".into(),
+        code: "1 fn x() {}".into(),
+        hidden: 0,
+        asked: (1, 9),
+        shown: (1, 1),
+        cut: true,
+    })
+}
+
+#[test]
+fn sections_names_every_tag_the_envelope_opens() {
+    let r = RefItem {
+        text: "src/x.rs".into(),
+        mention: false,
+        whole: true,
+        outside: false,
+        denied: false,
+    };
+    let turns = [Turn {
+        role: Role::User,
+        text: "q".into(),
+    }];
+    let write = Flow::Write {
+        draft: "d".into(),
+        out: OutType::Prompt,
+    };
+    let fix = Flow::Fix { draft: "d".into() };
+    let claude = Capture {
+        name: "claude".into(),
+        cmd: "claude".into(),
+        ..cap("● Shall I?", "")
+    };
+    let mut tags = opened(&build_refs(&write, &cap("$ ls", "commit 1"), &turns, 3, &[r]).text);
+    tags.extend(opened(&build(&fix, &cap("$ ls", ""), &[], 3)));
+    tags.extend(opened(&build(&ask_cut_short(), &cap("", ""), &[], 3)));
+    tags.extend(opened(&build(&Flow::Explain, &claude, &turns, 3)));
+    assert_eq!(tags, SECTIONS.iter().map(|s| s.to_string()).collect());
 }
