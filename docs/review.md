@@ -79,16 +79,18 @@ across every session, attached or not. Nothing polls, and a redraw still runs no
 The review is revdiff on the tree, untracked files included, against the base in
 force (see `b` below). revdiff's own keys apply there, and `?` lists them: you
 comment on a line, a whole hunk (put the word `hunk` in the comment) or a whole
-file (`A`), `q` quits and keeps what you wrote, `Q` quits without it. Comments
+file (`A`), `q` quits and keeps what you wrote, `Q` quits without it, and
+the pinned set stays unless you unpin it at the question below. Comments
 pinned in an earlier round are loaded into it, so it shows what is already
 pinned. When revdiff exits 10 (comments are left), what it wrote replaces the
-pinned set, so deleting some of them unpins those. When it exits 0 after
-pinned comments were loaded, none is pinned any more: revdiff exits 0 when you
-delete every comment and press `q`, and also on `Q`, which discards what it
-shows, the pinned comments included (revdiff asks first by default). With
-nothing pinned, exit 0 changes nothing. `x` at the prompt unpins them all too.
-Any other exit ends the review with `cockpit: revdiff exited N: <its first
-stderr line>`, and the pinned set stays.
+pinned set, so deleting some of them unpins those. revdiff exits 0 both when
+you delete every pinned comment and press `q` and on `Q`, and it cannot say
+which, so when comments were pinned the popup asks
+`revdiff returned no comments · unpin N? y/N`: `y` unpins them all, any other
+key keeps them and goes on to the prompt below. With nothing pinned, exit 0
+asks nothing. `x` at the prompt unpins them all too. Any other exit ends the
+review with `cockpit: revdiff exited N: <its first stderr line>`, and the
+pinned set stays.
 
 Each comment is stored with the line it points at quoted: the quote it already
 had for that anchor, else the line as the tree has it now (a `-` line: as the

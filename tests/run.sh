@@ -11849,13 +11849,12 @@ is "revdiff gets --untracked, the exit code, -o, --history-dir and --annotations
 is "the uncommitted view passes no ref: the last argument is the preload" "$RDS/comments.md.rdin" "$(rd_last 1)"
 is "nothing but the store is left beside it" "comments.md" "$(ls -A "$RDS")"
 
-# 2. the pinned set untouched: revdiff hands all of it back with exit 10 (#700).
+# 2. exit 0 with a store already pinned (Q): n at "unpin N?" changes nothing (#700).
 RDK=$(mktmpf); cp "$RDS/comments.md" "$RDK"; rd_reset
-printf '%s' "$RDOUT" > "$RDW/out.1"; echo 10 > "$RDW/rc.1"
-is "revdiff hands the pinned set back (exit 10): the loop leaves, exit 0" "0" "$(rd_loop l "$RD" "$RDS/comments.md")"
+is "revdiff exit 0 (Q discard), n: the loop leaves, exit 0" "0" "$(rd_loop nl "$RD" "$RDS/comments.md")"
 cmp -s "$RDS/comments.md" "$RDK" && ok "and the store is byte-identical" || bad "and the store is byte-identical" "unchanged" "$(cat "$RDS/comments.md")"
-rd_reset; printf '%s' "$RDOUT" > "$RDW/out.1"; echo 10 > "$RDW/rc.1"
-is "d at the prompt delivers: exit 20" "20" "$(rd_loop d "$RD" "$RDS/comments.md")"
+rd_reset
+is "n, then d at the prompt delivers: exit 20" "20" "$(rd_loop nd "$RD" "$RDS/comments.md")"
 cmp -s "$RDS/comments.md" "$RDK" && ok "and the store is still what was pinned" || bad "and the store is still what was pinned" "unchanged" "$(cat "$RDS/comments.md")"
 
 # 3. a pinned quote survives the round trip; the preload carries no quote lines and is 0600.
@@ -11940,17 +11939,26 @@ is "and the loop says it failed" "revdiff exited 3" "$(head -1 "$RDW/stderr")"
 rm -f "$RDS/revdiff.err"
 
 # 11. what revdiff 1.13.0 does with pinned comments loaded (#700), one row per
-# case: every one deleted then q exits 0 and writes no -o; untouched then q
-# exits 10 and writes them back; some deleted exits 10 with the rest.
+# case: every one deleted then q exits 0 and writes no -o (as Q does), so the
+# loop asks "unpin N? y/N"; untouched then q exits 10 and writes them back;
+# some deleted exits 10 with the rest.
 RD2=$'## f:2 (+)\n> B\nfix this\n\n## f:4 (+)\n> d\nand this\n\n'
 rd_reset; printf '%s' "$RD2" > "$RDS/comments.md"
-is "all pinned deleted (exit 0, no -o): the loop leaves, exit 0" "0" \
-   "$(rd_loop l "$RD" "$RDS/comments.md")"
+is "all pinned deleted (exit 0, no -o), y: the loop leaves, exit 0" "0" \
+   "$(rd_loop yl "$RD" "$RDS/comments.md")"
 parse_store "$RDS/comments.md"
 is "and nothing is pinned any more" "0" "$STORE_N"
 rd_reset; printf '%s' "$RD2" > "$RDS/comments.md"
+rd_loop nl "$RD" "$RDS/comments.md" >/dev/null; parse_store "$RDS/comments.md"
+is "all pinned deleted, n: both stay pinned" "2" "$STORE_N"
+rd_reset; : > "$RDS/comments.md"
+is "nothing pinned, exit 0: no unpin question, a approves at once" "21" \
+   "$(rd_loop a "$RD" "$RDS/comments.md")"
+git -C "$RD" update-ref -d refs/cockpit/reviewed/main
+rd_reset; printf '%s' "$RD2" > "$RDS/comments.md"
 printf '## f:2 (+)\nfix this\n\n## f:4 (+)\nand this\n' > "$RDW/out.1"; echo 10 > "$RDW/rc.1"
-rd_loop l "$RD" "$RDS/comments.md" >/dev/null
+is "untouched (exit 10): no unpin question, d delivers at once" "20" \
+   "$(rd_loop d "$RD" "$RDS/comments.md")"
 is "untouched (exit 10, the same two): the store is byte-identical" "${RD2}x" \
    "$(cat "$RDS/comments.md"; printf x)" # x keeps the trailing blank line
 rd_reset; printf '%s' "$RD2" > "$RDS/comments.md"
