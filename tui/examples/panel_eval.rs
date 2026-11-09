@@ -1689,6 +1689,8 @@ fn prompt_hash() -> String {
 /// [`prompt_hash`] over the override folder under `base`: each of write.txt, its
 /// example pool and write.explore.txt as `prompts::load` reads it (the file, or
 /// the shipped text when it is missing or unreadable, less trailing newlines).
+/// Keep in step with `prompts::load` in tui/src/panel/prompts.rs: a change to
+/// how it finds or trims a prompt must change this too.
 fn prompt_hash_in(base: &Path) -> String {
     use cockpit_tui::panel::prompts;
     let load = |name: &str, shipped: &str| {
