@@ -79,15 +79,18 @@ across every session, attached or not. Nothing polls, and a redraw still runs no
 The review is revdiff on the tree, untracked files included, against the base in
 force (see `b` below). revdiff's own keys apply there, and `?` lists them: you
 comment on a line, a whole hunk (put the word `hunk` in the comment) or a whole
-file (`A`), `q` quits and keeps what you wrote, `Q` quits without it. Comments
+file (`A`), `q` quits and keeps what you wrote, `Q` quits without it, and
+the pinned set stays unless you unpin it at the question below. Comments
 pinned in an earlier round are loaded into it, so it shows what is already
-pinned. When revdiff exits 10 (it wrote comments), what it wrote replaces the
-pinned set. When it exits 0 (no comments, or `Q`), the pinned set stays as it
-was. So deleting every pinned comment in revdiff and pressing `q` unpins
-nothing: with no comments left revdiff exits 0. Deleting some of them works,
-since that exits 10. `x` at the prompt unpins them all. Any other exit ends the
-review with `cockpit: revdiff exited N: <its first stderr line>`, and the pinned
-set stays.
+pinned. When revdiff exits 10 (comments are left), what it wrote replaces the
+pinned set, so deleting some of them unpins those. revdiff exits 0 both when
+you delete every pinned comment and press `q` and on `Q`, and it cannot say
+which, so when comments were pinned the popup asks
+`revdiff returned no comments · unpin N? y/N`: `y` unpins them all, any other
+key keeps them and goes on to the prompt below. With nothing pinned, exit 0
+asks nothing. `x` at the prompt unpins them all too. Any other exit ends the
+review with `cockpit: revdiff exited N: <its first stderr line>`, and the
+pinned set stays.
 
 Each comment is stored with the line it points at quoted: the quote it already
 had for that anchor, else the line as the tree has it now (a `-` line: as the
@@ -122,9 +125,18 @@ is kept away from git and counted as one binary change instead, though a
 tracked file whose size did not change is still hashed once, so git can tell it
 changed. The file itself is untouched, and the tree still counts as dirty
 because of it, so a pane whose only change is a big file stays on the board and
-its review still opens. revdiff is not covered by this: it runs its own git, and
-an untracked big file is diffed in full when revdiff shows it. Put core dumps in
-`.gitignore`, as git's own templates do, and the review never sees them at all.
+its review still opens. revdiff runs its own git, so each such file is passed to
+it as `--exclude=<path>` and is not in its file list; `a` leaves it out of the
+checkpoint, which keeps the version already in the index, and writes no copy of
+it into the object store. revdiff cannot exclude a big file whose name begins
+or ends with whitespace. If that file is untracked, the review shows no
+untracked files at all. If it is tracked, revdiff may diff it in full (at
+startup if it is first, or when selected), so revdiff is not started: the popup
+says `cockpit: no review: a big tracked file's name starts or ends with
+whitespace` and closes with any pinned comments kept. An agent's `--request`
+then exits 1 with that reason on stderr, not the 0 of a finished review. Put
+core dumps in `.gitignore`, as git's own templates do, and the review never
+sees them at all.
 
 **`b` picks what the diff is taken against.** The base is the first of three
 that holds: the checkpoint `refs/cockpit/reviewed/<branch>` when a review of

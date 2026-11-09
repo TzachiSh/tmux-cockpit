@@ -5935,7 +5935,8 @@ is "and named as a binary row" "1" "$(tdiff "$RB" --numstat | grep -cxF -- "-	-	
 rm -rf "$RB"
 
 # A stand-in for revdiff, which is interactive and so cannot be driven here. Each
-# launch is call N: it logs its argv and the --annotations file it was handed
+# launch is call N: it logs its argv (one line, and one arg a line in args.N)
+# and the --annotations file it was handed
 # (and that file's mode) under $FAKE_RD_DIR, then plays back out.N into the -o
 # file and exits with rc.N (default 0) -- revdiff's own contract, exit 10 when
 # comments were written. out.N is revdiff's real format: "## path:N (+)" headers,
@@ -5947,6 +5948,7 @@ fake_revdiff() {              # <bin-dir> -> <bin-dir>/revdiff
 d=${FAKE_RD_DIR:?}
 n=$(cat "$d/n" 2>/dev/null || echo 0); n=$((n + 1)); printf '%s\n' "$n" > "$d/n"
 printf '%s\n' "$*" > "$d/argv.$n"
+printf '%s\n' "$@" > "$d/args.$n"
 out=; pre=; prev=
 for a in "$@"; do
     case "$prev" in -o) out=$a ;; --annotations) pre=$a ;; esac
@@ -5971,6 +5973,112 @@ rd_loop() {                   # <keys> <repo> <store> [PATH]
 }
 rd_reset() { rm -rf "$RDW"; mkdir -p "$RDW"; }
 rd_last() { awk '{print $NF}' "$RDW/argv.$1"; }
+
+echo "== review: a big file reaches git through neither revdiff nor a (#693) =="
+# revdiff --untracked runs `git add -N` on every untracked file and diffs the
+# one it shows in full; a's add -A hashes every file and writes its blob. A big
+# file must reach neither. FAIL-first: on the old code revdiff got no --exclude,
+# the whitespace-named one still got --untracked, and approve wrote each blob.
+# Sparse files: past BIGCAP on disk for nothing. Each starts with its own line,
+# so no two share a blob.
+RBF=$(mktmpd); RBFB=$(mktmpd); fake_revdiff "$RBFB"
+(
+  cd "$RBF" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .; printf 'a\n' > f.c; git add -A; git commit -q -m init
+  printf 'small\n' > small.txt; printf 'glob twin\n' > '-big x.log'; mkdir sub
+  for b in big.log '-big [x]*.log' f.c; do
+      printf '%s\n' "$b" >> "$b"; truncate -s 33M -- "$b"
+  done
+) >/dev/null 2>&1
+rbf_args() {                  # [VAR=value]: one revdiff launch, its args one a line
+    RDW=$(mktmpd)
+    ( [ $# -eq 0 ] || export "${1%%=*}=${1#*=}"
+      rd_loop l "$RBF" "$RDW/comments.md" "$RBFB:$PATH" >/dev/null )
+    cat "$RDW/args.1"
+}
+rbfa=$(rbf_args)
+is "revdiff: an untracked big file is excluded" "1" \
+   "$(grep -cxF -- '--exclude=big.log' <<<"$rbfa")"
+is "and a big one named '-big [x]*.log', one arg, the = form" "1" \
+   "$(grep -cxF -- '--exclude=-big [x]*.log' <<<"$rbfa")"
+is "and a tracked file grown past the cap" "1" "$(grep -cxF -- '--exclude=f.c' <<<"$rbfa")"
+is "and nothing else: small files stay in revdiff's tree" "3" \
+   "$(grep -c -- '^--exclude=' <<<"$rbfa")"
+is "--untracked is still passed" "1" "$(grep -cxF -- '--untracked' <<<"$rbfa")"
+is "a REVDIFF_EXCLUDE the -X would replace is passed on" "1" \
+   "$(rbf_args REVDIFF_EXCLUDE=a,b | grep -cxF -e '--exclude=b')"
+printf 'sp\n' > "$RBF/big.log "; truncate -s 33M -- "$RBF/big.log "
+is "a big name ending in a space cannot be excluded: no --untracked" "0" \
+   "$(rbf_args | grep -cxF -- '--untracked')"
+rm -f -- "$RBF/big.log "
+# A TRACKED one revdiff may diff in full whatever --untracked says: no revdiff,
+# and a status of its own. A pinned comment and an earlier round's scratch.
+RBFT=$(mktmpd); RDW=$(mktmpd)
+( cd "$RBFT" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main . && printf 'tb\n' > ' tb.log' && git add -A && git commit -q -m i
+  truncate -s 33M ' tb.log' ) >/dev/null 2>&1
+printf '## f:1 (+)\nKEEP-MARKER\n\n' > "$RDW/comments.md"
+mkdir "$RDW/history"; : > "$RDW/comments.md.rdin"
+is "a tracked big ' tb.log': the loop exits 124, no review" "124" \
+   "$(rd_loop l "$RBFT" "$RDW/comments.md" "$RBFB:$PATH")"
+is "and revdiff is never started" "not started" \
+   "$([ -e "$RDW/n" ] && echo started || echo 'not started')"
+is "and revdiff.err, for --request, says why" \
+   "cockpit: no review: a big tracked file's name starts or ends with whitespace" \
+   "$(cat "$RDW/revdiff.err" 2>/dev/null)"
+is "and the pinned comment stays" "1" "$(grep -c KEEP-MARKER "$RDW/comments.md")"
+is "and the scratch goes as l's does: history, preload" "gone|gone" \
+   "$([ -e "$RDW/history" ] && echo kept || echo gone)|$([ -e "$RDW/comments.md.rdin" ] \
+     && echo kept || echo gone)"
+rm -rf "$RBFT"
+rbf_blob() { git -C "$RBF" hash-object -- "$RBF/$1"; }
+rbf_has() { git -C "$RBF" cat-file -e "$1" 2>/dev/null && echo written || echo absent; }
+rbf_ap() { bash -c '. "$1/git.sh"; . "$1/review-diff.sh"; approve "$2"; echo "$?"' \
+             _ "$DIR/scripts/lib" "$1" 2>/dev/null; }
+is "a: approves" "0" "$(rbf_ap "$RBF")"
+RBFREF=$(git -C "$RBF" rev-parse -q --verify refs/cockpit/reviewed/main)
+for b in big.log '-big [x]*.log' f.c; do
+    is "a: the blob of big '$b' is not written" "absent" "$(rbf_has "$(rbf_blob "$b")")"
+done
+is "a: small files are in the tree, the one the glob '-big [x]*.log' matches too" "2" \
+   "$(git -C "$RBF" ls-tree -r --name-only "$RBFREF" | grep -cxF -e small.txt -e '-big x.log')"
+is "a: the tracked big file keeps its committed blob" "$(git -C "$RBF" rev-parse HEAD:f.c)" \
+   "$(git -C "$RBF" rev-parse "$RBFREF:f.c")"
+# From a subdir big_files names '../big.log': still excluded, and the add stays tree-wide.
+printf 'later\n' > "$RBF/later.txt"; rbf_ap "$RBF/sub" >/dev/null
+is "a from a subdir: a new file at the root is in the tree" "1" \
+   "$(git -C "$RBF" ls-tree -r --name-only refs/cockpit/reviewed/main | grep -cxF later.txt)"
+is "and the big one at the root is still not written" "absent" "$(rbf_has "$(rbf_blob big.log)")"
+# A gitlink's excludes and the big file's share one pathspec file: both hold.
+RBFG=$(mktmpd)
+is "a gitlink's planted clean filter fires under plain git status" "1" "$( (
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  cd "$RBFG" || exit
+  git init -q -b main in && printf 'x\n' > in/f.txt && git -C in add -A && git -C in commit -q -m i
+  git init -q -b main r && cd r && printf '1\n' > a && git add -A && git commit -q -m first
+  git -c protocol.file.allow=always submodule add -q "$RBFG/in" sub && git commit -q -m sub
+  printf 'gl\n' > big.log; truncate -s 33M big.log
+  git config -f .git/modules/sub/config filter.mark.clean "touch $RBFG/PWNED; cat"
+  printf '* filter=mark\n' > .git/modules/sub/info/attributes
+  touch -t 203001010000 sub/f.txt; git status --porcelain >/dev/null
+  ls "$RBFG" | grep -c '^PWNED$'; rm -f "$RBFG/PWNED"; touch -t 203101010000 sub/f.txt
+) 2>/dev/null | tail -n 1)"
+rm -rf "$RBF"; RBF=$RBFG/r
+# A cat of the gitlink excludes that fails must stop a, not add without them.
+RBFC=$(mktmpd)
+printf '#!/bin/sh\ncase "$*" in */pathspec) exit 1 ;; esac\nexec %s "$@"\n' \
+    "$(command -v cat)" > "$RBFC/cat"; chmod +x "$RBFC/cat"
+is "a whose cat of the gitlink excludes fails: status 1" "1" "$(PATH="$RBFC:$PATH" rbf_ap "$RBF")"
+is "and no checkpoint" "" "$(git -C "$RBF" rev-parse -q --verify refs/cockpit/reviewed/main)"
+is "and no clean filter" "" "$(ls "$RBFG" | grep '^PWNED$')"
+rm -f "$RBFG/PWNED"; rbf_ap "$RBF" >/dev/null
+is "a with a gitlink and a big file: the big blob is not written" "absent" \
+   "$(rbf_has "$(rbf_blob big.log)")"
+is "and the gitlink's clean filter never runs" "" "$(ls "$RBFG" | grep '^PWNED$')"
+unset -f rbf_args rbf_blob rbf_has rbf_ap
+rm -rf "$RBFB" "$RBFG" "$RBFC"
 
 echo "== tmux-review: the review base is since-last-review, else the branch, else uncommitted =="
 # revdiff's auto-detect, one function: a checkpoint ref wins, then the
@@ -6232,6 +6340,19 @@ rq_err=$(PATH="$RQSHIM:$RQB:$PATH" FAKE_RD_DIR="$RQW" XDG_STATE_HOME=$RQSTATE "$
 is "a revdiff that fails: --request exits 1, not 0" "1" "$rq_rc"
 is "and prints revdiff's own stderr after the popup" "tmux-review: revdiff failed"$'\n'"boom: bad flag" "$rq_err"
 is "and leaves no revdiff.err behind" "no" "$([ -e "$RQSESS/revdiff.err" ] && echo yes || echo no)"
+# A tracked big file revdiff cannot exclude: no review, which --request must not
+# report as one (0). FAIL-first: the loop exited 0 and --request with it (#693).
+( cd "$RQDIR" && printf 'tb\n' > ' tb.log' && git add -- ' tb.log' \
+  && git -c user.name=t -c user.email=t@e commit -q -m tb \
+  && truncate -s 33M ' tb.log' ) >/dev/null 2>&1
+rm -rf "$RQW"; mkdir -p "$RQW"; rm -f "$RQSESS/comments.md"
+rq_err=$(PATH="$RQSHIM:$RQB:$PATH" FAKE_RD_DIR="$RQW" XDG_STATE_HOME=$RQSTATE \
+         "$DIR/scripts/tmux-review" --request "$RQAP" 2>&1 >/dev/null); rq_rc=$?
+is "a tracked big ' tb.log': --request exits 1, not a review's 0" "1" "$rq_rc"
+is "and stderr gives the reason" "tmux-review: no review opened"$'\n'"cockpit: no review: \
+a big tracked file's name starts or ends with whitespace" "$rq_err"
+is "and revdiff never started" "no" "$([ -e "$RQW/n" ] && echo yes || echo no)"
+is "and no revdiff.err left" "no" "$([ -e "$RQSESS/revdiff.err" ] && echo yes || echo no)"
 "$TMUX_REAL" -L "$RQ" kill-server >/dev/null 2>&1
 fi
 
@@ -11907,12 +12028,12 @@ is "revdiff gets --untracked, the exit code, -o, --history-dir and --annotations
 is "the uncommitted view passes no ref: the last argument is the preload" "$RDS/comments.md.rdin" "$(rd_last 1)"
 is "nothing but the store is left beside it" "comments.md" "$(ls -A "$RDS")"
 
-# 2. exit 0 with a store already pinned (Q, or no comments): nothing changes.
+# 2. exit 0 with a store already pinned (Q): n at "unpin N?" changes nothing (#700).
 RDK=$(mktmpf); cp "$RDS/comments.md" "$RDK"; rd_reset
-is "revdiff exit 0 (Q discard): the loop leaves, exit 0" "0" "$(rd_loop l "$RD" "$RDS/comments.md")"
+is "revdiff exit 0 (Q discard), n: the loop leaves, exit 0" "0" "$(rd_loop nl "$RD" "$RDS/comments.md")"
 cmp -s "$RDS/comments.md" "$RDK" && ok "and the store is byte-identical" || bad "and the store is byte-identical" "unchanged" "$(cat "$RDS/comments.md")"
 rd_reset
-is "d at the prompt delivers: exit 20" "20" "$(rd_loop d "$RD" "$RDS/comments.md")"
+is "n, then d at the prompt delivers: exit 20" "20" "$(rd_loop nd "$RD" "$RDS/comments.md")"
 cmp -s "$RDS/comments.md" "$RDK" && ok "and the store is still what was pinned" || bad "and the store is still what was pinned" "unchanged" "$(cat "$RDS/comments.md")"
 
 # 3. a pinned quote survives the round trip; the preload carries no quote lines and is 0600.
@@ -11926,6 +12047,7 @@ is "and is born 0600" "600" "$(cat "$RDW/premode.1")"
 
 # 4. the preload name is derivable: a planted symlink is not written through.
 rd_reset; RDV=$(mktmpf); printf 'victim\n' > "$RDV"; rm -f "$RDS/comments.md.rdin"; ln -s "$RDV" "$RDS/comments.md.rdin"
+printf '## f:2 (+)\nfix this, edited\n' > "$RDW/out.1"; echo 10 > "$RDW/rc.1"
 rd_loop l "$RD" "$RDS/comments.md" >/dev/null
 is "a symlink planted at the preload name is left alone" "victim" "$(cat "$RDV")"
 
@@ -11967,6 +12089,7 @@ is "a at the prompt approves: exit 21" "21" "$(rd_loop a "$RD" "$RDS/comments.md
 is "and the checkpoint ref is a tree" "tree" "$(git -C "$RD" cat-file -t refs/cockpit/reviewed/main 2>/dev/null)"
 git -C "$RD" update-ref -d refs/cockpit/reviewed/main
 printf '## f:2 (+)\n> B\nkeep\n\n' > "$RDS/comments.md"
+rd_reset; printf '## f:2 (+)\nkeep\n' > "$RDW/out.1"; echo 10 > "$RDW/rc.1"
 is "a with comments pinned does nothing; l leaves" "0" "$(rd_loop al "$RD" "$RDS/comments.md")"
 is "and no checkpoint was written" "" "$(git -C "$RD" rev-parse -q --verify refs/cockpit/reviewed/main 2>/dev/null)"
 # A failed approve says so in plain words: a stale ref is one cause of many
@@ -11981,6 +12104,7 @@ is "a failed approve: the loop says it could not mark the branch, and nothing mo
 git -C "$RD" update-ref -d refs/cockpit/reviewed/main/x; rm -rf "$RDTM"
 # 9. a file-level comment whose first line is a quote keeps it as body.
 rd_reset; mkdir -p "$RDS"; printf '## f (file-level)\n> not a quote\nnote\n\n' > "$RDS/comments.md"
+for i in 1 2; do printf '## f (file-level)\n> not a quote\nnote\n' > "$RDW/out.$i"; echo 10 > "$RDW/rc.$i"; done
 rd_loop rl "$RD" "$RDS/comments.md" >/dev/null; parse_store "$RDS/comments.md"
 is "the preload keeps a file-level body's first > line" "1" "$(grep -c '^> not a quote$' "$RDW/pre.1")"
 is "and relaunching (r) does not empty the comment" "> not a quote"$'\n'"note" "${STORE[0.body]:-}"
@@ -11992,6 +12116,55 @@ is "revdiff exit 3: the loop exits 126, not 'left for later'" "126" "$(rd_loop l
 is "revdiff's stderr is kept for the caller" "boom: bad flag" "$(cat "$RDS/revdiff.err" 2>/dev/null)"
 is "and the loop says it failed" "revdiff exited 3" "$(head -1 "$RDW/stderr")"
 rm -f "$RDS/revdiff.err"
+
+# 11. what revdiff 1.13.0 does with pinned comments loaded (#700), one row per
+# case: every one deleted then q exits 0 and writes no -o (as Q does), so the
+# loop asks "unpin N? y/N"; untouched then q exits 10 and writes them back;
+# some deleted exits 10 with the rest.
+RD2=$'## f:2 (+)\n> B\nfix this\n\n## f:4 (+)\n> d\nand this\n\n'
+rd_reset; printf '%s' "$RD2" > "$RDS/comments.md"
+is "all pinned deleted (exit 0, no -o), y: the loop leaves, exit 0" "0" \
+   "$(rd_loop yl "$RD" "$RDS/comments.md")"
+parse_store "$RDS/comments.md"
+is "and nothing is pinned any more" "0" "$STORE_N"
+rd_reset; printf '%s' "$RD2" > "$RDS/comments.md"
+rd_loop nl "$RD" "$RDS/comments.md" >/dev/null; parse_store "$RDS/comments.md"
+is "all pinned deleted, n: both stay pinned" "2" "$STORE_N"
+# Only y unpins: every other answer, no answer included, keeps both.
+for k in empty:'' enter:$'\n' esc:$'\e' Q:Q; do
+    rd_reset; printf '%s' "$RD2" > "$RDS/comments.md"
+    rd_loop "${k#*:}" "$RD" "$RDS/comments.md" >/dev/null; parse_store "$RDS/comments.md"
+    is "all pinned deleted, ${k%%:*} at unpin N?: both stay pinned" "2" "$STORE_N"
+done
+# N counts records, not lines: the preload of two records is six lines.
+rd_reset; printf '%s' "$RD2" > "$RDS/comments.md"
+printf 'nl' | PATH="$RDB:$PATH" FAKE_RD_DIR="$RDW" \
+    "$DIR/scripts/tmux-review" --loop "$RD" "$RDS/comments.md" >"$RDW/stdout" 2>/dev/null
+is "the question counts the records: unpin 2?" "1" "$(grep -c 'unpin 2? y/N' "$RDW/stdout")"
+# A preload swapped for a symlink while revdiff ran is not trusted: no question.
+RDLB=$(mktmpd); RDLV=$(mktmpf); printf 'victim\n' > "$RDLV"
+printf '#!/bin/sh\np=; for a; do [ "$p" = --annotations ] && rm -f "$a" && ln -s "%s" "$a"; p=$a; done\n' \
+    "$RDLV" > "$RDLB/revdiff"; chmod +x "$RDLB/revdiff"
+rd_reset; printf '%s' "$RD2" > "$RDS/comments.md"
+rd_loop yl "$RD" "$RDS/comments.md" "$RDLB:$PATH" >/dev/null; parse_store "$RDS/comments.md"
+is "exit 0 with the preload a symlink: no question, y unpins nothing" "2/victim" \
+   "$STORE_N/$(cat "$RDLV")"
+rm -rf "$RDLB" "$RDLV"
+rd_reset; : > "$RDS/comments.md"
+is "nothing pinned, exit 0: no unpin question, a approves at once" "21" \
+   "$(rd_loop a "$RD" "$RDS/comments.md")"
+git -C "$RD" update-ref -d refs/cockpit/reviewed/main
+rd_reset; printf '%s' "$RD2" > "$RDS/comments.md"
+printf '## f:2 (+)\nfix this\n\n## f:4 (+)\nand this\n' > "$RDW/out.1"; echo 10 > "$RDW/rc.1"
+is "untouched (exit 10): no unpin question, d delivers at once" "20" \
+   "$(rd_loop d "$RD" "$RDS/comments.md")"
+is "untouched (exit 10, the same two): the store is byte-identical" "${RD2}x" \
+   "$(cat "$RDS/comments.md"; printf x)" # x keeps the trailing blank line
+rd_reset; printf '%s' "$RD2" > "$RDS/comments.md"
+printf '## f:4 (+)\nand this\n' > "$RDW/out.1"; echo 10 > "$RDW/rc.1"
+rd_loop l "$RD" "$RDS/comments.md" >/dev/null; parse_store "$RDS/comments.md"
+is "one of two deleted (exit 10): the one left stays pinned" "1/and this" \
+   "$STORE_N/${STORE[0.body]:-}"
 rm -rf "$RDK" "$RDB" "$RDW" "$RD" "$RDS" "$RDT" "$RDWT" "$RDV"
 unset RDB RDW RD RDS RDT RDWT RDV
 
@@ -13773,6 +13946,16 @@ git -C "$PGR" worktree add -q -b want584 "$PGD/want" >/dev/null 2>&1
 printf '%s\n' "$PGD/x/../want/.git" > "$PGR/.git/worktrees/want/gitdir"; rm -rf "$PGD/want"
 pg_says "a gone tree whose absolute gitdir holds x/.. is named gone" "is gone" \
     "$PGR" "$PGD/x/../want" "$PGOLD"
+# #696: a symlink before the .. is a name too, so lnk/../lw is $PGD/lw, as git lists it,
+# not $PGD/sub/lw, where the link leads. A forged line naming that place names no entry.
+mkdir -p "$PGD/sub/deep"; ln -s "$PGD/sub/deep" "$PGD/lnk"
+git -C "$PGR" worktree add -q -b lnk696 "$PGD/lw" >/dev/null 2>&1
+printf '%s\n' "$PGD/lnk/../lw/.git" > "$PGR/.git/worktrees/lw/gitdir"; rm -rf "$PGD/lw"
+pg_says "a gone tree whose absolute gitdir holds lnk/.. is named gone" "is gone" \
+    "$PGR" "$PGD/lnk/../lw" "$PGOLD"
+pg_x fs696 "$PGD/sub/lw"
+pg_says "a forged line naming where lnk/.. leads is no worktree" "not a worktree" \
+    "$PGR" "$PGD/sub/lw" "$PGOLD"
 # #555: --relative-paths writes the gitdir as ../../../../rel/.git, from the entry. git
 # resolves . and .. before it compares with <path>/.git, and so does the fallback, as text.
 PGRR="$PGD/rr"
