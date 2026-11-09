@@ -127,11 +127,13 @@ it as `--exclude=<path>` and is not in its file list; `a` leaves it out of the
 checkpoint, which keeps the version already in the index, and writes no copy of
 it into the object store. revdiff cannot exclude a big file whose name begins
 or ends with whitespace. If that file is untracked, the review shows no
-untracked files at all. If it is tracked, revdiff would diff it in full as it
-starts, so it is not started: the popup says `cockpit: no review: a big tracked
-file's name starts or ends with whitespace` and closes as `l` would, with any
-pinned comments kept. Put core dumps in `.gitignore`, as git's own templates
-do, and the review never sees them at all.
+untracked files at all. If it is tracked, revdiff may diff it in full (at
+startup if it is first, or when selected), so revdiff is not started: the popup
+says `cockpit: no review: a big tracked file's name starts or ends with
+whitespace` and closes with any pinned comments kept. An agent's `--request`
+then exits 1 with that reason on stderr, not the 0 of a finished review. Put
+core dumps in `.gitignore`, as git's own templates do, and the review never
+sees them at all.
 
 **`b` picks what the diff is taken against.** The base is the first of three
 that holds: the checkpoint `refs/cockpit/reviewed/<branch>` when a review of

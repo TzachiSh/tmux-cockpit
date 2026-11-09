@@ -37,8 +37,9 @@ big_paths() { big_files "$1" | cut -f2-; }    # <dir>
 # a command-line -X replaces. -X matches a whole path once revdiff has trimmed
 # whitespace off its ends, so a big path with whitespace at an end cannot be
 # named. Untracked, it is shown only under --untracked: that is left out, and
-# the status is 1. Tracked, revdiff diffs it at startup whatever the options
-# say: the status is 2, and the caller must not start revdiff. DIR is the root:
+# the status is 1. Tracked, revdiff may diff it in full whatever the options
+# say (at startup if it is first, or when selected): the status is 2, and the
+# caller must not start revdiff. DIR is the root:
 # revdiff's paths are from it.
 revdiff_files() {             # <dir>
     local bp e cut=0
