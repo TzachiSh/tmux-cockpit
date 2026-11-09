@@ -13888,6 +13888,16 @@ git -C "$PGR" worktree add -q -b want584 "$PGD/want" >/dev/null 2>&1
 printf '%s\n' "$PGD/x/../want/.git" > "$PGR/.git/worktrees/want/gitdir"; rm -rf "$PGD/want"
 pg_says "a gone tree whose absolute gitdir holds x/.. is named gone" "is gone" \
     "$PGR" "$PGD/x/../want" "$PGOLD"
+# #696: a symlink before the .. is a name too, so lnk/../lw is $PGD/lw, as git lists it,
+# not $PGD/sub/lw, where the link leads. A forged line naming that place names no entry.
+mkdir -p "$PGD/sub/deep"; ln -s "$PGD/sub/deep" "$PGD/lnk"
+git -C "$PGR" worktree add -q -b lnk696 "$PGD/lw" >/dev/null 2>&1
+printf '%s\n' "$PGD/lnk/../lw/.git" > "$PGR/.git/worktrees/lw/gitdir"; rm -rf "$PGD/lw"
+pg_says "a gone tree whose absolute gitdir holds lnk/.. is named gone" "is gone" \
+    "$PGR" "$PGD/lnk/../lw" "$PGOLD"
+pg_x fs696 "$PGD/sub/lw"
+pg_says "a forged line naming where lnk/.. leads is no worktree" "not a worktree" \
+    "$PGR" "$PGD/sub/lw" "$PGOLD"
 # #555: --relative-paths writes the gitdir as ../../../../rel/.git, from the entry. git
 # resolves . and .. before it compares with <path>/.git, and so does the fallback, as text.
 PGRR="$PGD/rr"
