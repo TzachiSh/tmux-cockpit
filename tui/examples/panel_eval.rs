@@ -1989,6 +1989,30 @@ mod tests {
     }
 
     #[test]
+    fn purpose_terms_match_no_question_two_labellers_marked_not_about_purpose() {
+        // Panel questions, each marked 1 (asks what the work is for) or 0 by two
+        // blind labellers (#702 M2). The ask_any purpose terms of the cases.
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("evals/panel/purpose-questions.tsv");
+        let text = std::fs::read_to_string(path).unwrap();
+        let terms = ["for?", "purpose", "goal", "about?"];
+        let (mut hit, mut ones, mut false_hits) = (0, 0, vec![]);
+        for line in text.lines() {
+            let (q, label) = line.split_once('\t').unwrap();
+            let m = terms.iter().any(|t| has(q, t));
+            match label {
+                "1" => (ones, hit) = (ones + 1, hit + usize::from(m)),
+                "0" if m => false_hits.push(q),
+                "0" => {}
+                l => panic!("label {l}"),
+            }
+        }
+        assert_eq!(false_hits, Vec::<&str>::new());
+        // recall: the misses ask the purpose in other words ("what problem
+        // should it solve"), which the terms do not name; no label is changed
+        assert_eq!((hit, ones), (213, 227));
+    }
+
+    #[test]
     fn words_match_whole_and_any_of() {
         assert!(!has("Before editing, write an explanation", "plan"));
         assert!(has("Make a plan first.", "plan"));
