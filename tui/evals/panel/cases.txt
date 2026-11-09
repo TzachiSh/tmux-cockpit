@@ -1741,8 +1741,8 @@ window: bash · bash · /home/u/work/clinic-booking
 expect: ask
 ask_any: no-show; no-shows; front desk; receptionist; reception; success; goal; who will use; who uses
 must_not: twilio; sendgrid; cron; library; framework; provider
-holdout: yes
-note: several parts (reminders, a desk view, cancellations) whose purpose and done-criteria only the owner knows; a delivery-mechanism question is implementation flavour
+holdout: no
+note: several parts (reminders, a desk view, cancellations) whose purpose and done-criteria only the owner knows; a delivery-mechanism question is implementation flavour; demoted: V2 chosen by measuring on this case (#702)
 --- screen
 $ ls
 cmd  go.mod  internal  migrations  web
@@ -1760,10 +1760,10 @@ we need reminders for appointments, plus something for the front desk to see who
 kind: feature
 window: bash · bash · /home/u/work/plant-telemetry
 expect: ask
-ask_any: false alarms; false positives; false positive; on-call; operators; success; goal; acceptable
+ask_any: false alarms; false positives; false positive; on-call; operators; success; goal; acceptable; for?|purpose
 must_not: algorithm; isolation forest; z-score; library; framework; scikit-learn; prophet
-holdout: yes
-note: a big multi-part feature; purpose and what counts as done are the owner's; a question on the detection method is implementation flavour
+holdout: no
+note: a big multi-part feature; purpose and what counts as done are the owner's; a question on the detection method is implementation flavour; demoted: V2 chosen by measuring on this case (#702); ask_any gains for?|purpose, added after seeing replies, allowed because the case is now tune
 --- screen
 $ ls
 ingest  notebooks  pyproject.toml  tests
@@ -1784,8 +1784,8 @@ out: prompt
 out_is: prompt
 expect: write
 must: live|real; dump|restore|restored
-holdout: yes
-note: the limit (the live database stays untouched) and the allowed way (restore the dump locally and run there) are both given; no question
+holdout: no
+note: the limit (the live database stays untouched) and the allowed way (restore the dump locally and run there) are both given; no question; demoted: line 31's example paraphrases this request; can't rule out exposure (#702, practice: report the clean subset)
 --- screen
 $ ls
 docker-compose.yml  dumps  migrations  src
