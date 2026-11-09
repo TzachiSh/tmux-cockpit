@@ -313,9 +313,11 @@ fn section(b: &mut String, head: &str, lines: &[&str], cap: usize) {
 /// "" when `dir` is not in a work tree, when the root or the filter config is
 /// not read in time, when a filter name holds `=` ([`filter_flags`] gives None,
 /// so no git that could run a filter is started), and when status fails.
-/// A late status shows as `status: timed out`, a late log or diff stat is left
-/// out, and a path scan that runs out of time keeps the paths it checked by
-/// then.
+/// A late status shows as `status: timed out`. A log or diff stat that is late
+/// or fails (a repo with no commits yet has neither) is left out. A path scan
+/// that runs out of time keeps the paths it checked by then, but one stat that
+/// hangs past `budget` plus `REPO_SLACK` loses every path: the scan checks the
+/// time only between paths, and the block holding them comes too late.
 pub fn repo_state_within(dir: &str, screen: &str, budget: Duration) -> String {
     Repo::start(dir, screen, budget).get().to_string()
 }
