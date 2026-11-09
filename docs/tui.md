@@ -285,10 +285,12 @@ The decision rule for each prompt change: before running, the commit message
 names the target cases and the direction expected; a move nobody predicted is
 noise. A target below 100% gets 30 runs per side, and the change stays only if
 a one-sided Fisher test gives p < 0.05 (computed by hand: the rig prints pass
-counts, not p-values). Guards get 3 full runs; a case at 1/3 or worse gets 15
-more, and a drop that holds at p < 0.05 reverts the change. A change gets at
-most 3 wordings, then the stop rule applies. Each `--out` row carries `prompt`,
-the hash of `write.txt` and its examples as loaded; `--compare` refuses a case
+counts, not p-values). Guards get 3 full runs; a case at 1/3 or worse gets 30
+fresh runs per side, and a drop that holds at p < 0.05 on those alone reverts
+the change. The flagging runs never count: they were picked because they
+failed, so pooling them biases the test toward a drop. A change gets at most 3
+wordings, then the stop rule applies. Each `--out` row carries `prompt`, the
+hash of `write.txt` and its examples as loaded; `--compare` refuses a case
 whose rows on one side carry two hashes unless given `--allow-mixed`. Each run
 appends its cost to `--ledger <file>`, else to `cost.tsv` next to `--out`, else
 to `${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/panel-eval-cost.tsv`; a
