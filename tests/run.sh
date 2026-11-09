@@ -11951,6 +11951,26 @@ is "and nothing is pinned any more" "0" "$STORE_N"
 rd_reset; printf '%s' "$RD2" > "$RDS/comments.md"
 rd_loop nl "$RD" "$RDS/comments.md" >/dev/null; parse_store "$RDS/comments.md"
 is "all pinned deleted, n: both stay pinned" "2" "$STORE_N"
+# Only y unpins: every other answer, no answer included, keeps both.
+for k in empty:'' enter:$'\n' esc:$'\e' Q:Q; do
+    rd_reset; printf '%s' "$RD2" > "$RDS/comments.md"
+    rd_loop "${k#*:}" "$RD" "$RDS/comments.md" >/dev/null; parse_store "$RDS/comments.md"
+    is "all pinned deleted, ${k%%:*} at unpin N?: both stay pinned" "2" "$STORE_N"
+done
+# N counts records, not lines: the preload of two records is six lines.
+rd_reset; printf '%s' "$RD2" > "$RDS/comments.md"
+printf 'nl' | PATH="$RDB:$PATH" FAKE_RD_DIR="$RDW" \
+    "$DIR/scripts/tmux-review" --loop "$RD" "$RDS/comments.md" >"$RDW/stdout" 2>/dev/null
+is "the question counts the records: unpin 2?" "1" "$(grep -c 'unpin 2? y/N' "$RDW/stdout")"
+# A preload swapped for a symlink while revdiff ran is not trusted: no question.
+RDLB=$(mktmpd); RDLV=$(mktmpf); printf 'victim\n' > "$RDLV"
+printf '#!/bin/sh\np=; for a; do [ "$p" = --annotations ] && rm -f "$a" && ln -s "%s" "$a"; p=$a; done\n' \
+    "$RDLV" > "$RDLB/revdiff"; chmod +x "$RDLB/revdiff"
+rd_reset; printf '%s' "$RD2" > "$RDS/comments.md"
+rd_loop yl "$RD" "$RDS/comments.md" "$RDLB:$PATH" >/dev/null; parse_store "$RDS/comments.md"
+is "exit 0 with the preload a symlink: no question, y unpins nothing" "2/victim" \
+   "$STORE_N/$(cat "$RDLV")"
+rm -rf "$RDLB" "$RDLV"
 rd_reset; : > "$RDS/comments.md"
 is "nothing pinned, exit 0: no unpin question, a approves at once" "21" \
    "$(rd_loop a "$RD" "$RDS/comments.md")"
