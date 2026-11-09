@@ -452,7 +452,7 @@ const DETAIL: [&str; 12] = [
 ];
 
 /// The raw detail of a tool_use as (prefix, text): the first DETAIL field holding
-/// a non-blank string; else SendMessage's `to` as "to <to>"; else an
+/// a non-blank string; else SendMessage's `to` as `"to <to>"`; else an
 /// AskUserQuestion's first `header` (#453); else, for an `mcp__*` tool, the first
 /// string-valued input field by key order. Other nested objects and arrays never
 /// count. None gives the bare tool name.
