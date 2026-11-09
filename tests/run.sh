@@ -5954,6 +5954,19 @@ printf 'sp\n' > "$RBF/big.log "; truncate -s 33M -- "$RBF/big.log "
 is "a big name ending in a space cannot be excluded: no --untracked" "0" \
    "$(rbf_args | grep -cxF -- '--untracked')"
 rm -f -- "$RBF/big.log "
+# A TRACKED one revdiff diffs at startup whatever --untracked says: no revdiff.
+RBFT=$(mktmpd); RDW=$(mktmpd)
+( cd "$RBFT" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main . && printf 'tb\n' > ' tb.log' && git add -A && git commit -q -m i
+  truncate -s 33M ' tb.log' ) >/dev/null 2>&1
+is "a tracked big ' tb.log': the loop leaves, status 0" "0" \
+   "$(rd_loop l "$RBFT" "$RDW/comments.md" "$RBFB:$PATH")"
+is "and revdiff is never started" "not started" \
+   "$([ -e "$RDW/n" ] && echo started || echo 'not started')"
+is "and it says why" "1" "$(grep -cxF -- \
+   "cockpit: no review: a big tracked file's name starts or ends with whitespace" "$RDW/stderr")"
+rm -rf "$RBFT"
 rbf_blob() { git -C "$RBF" hash-object -- "$RBF/$1"; }
 rbf_has() { git -C "$RBF" cat-file -e "$1" 2>/dev/null && echo written || echo absent; }
 rbf_ap() { bash -c '. "$1/git.sh"; . "$1/review-diff.sh"; approve "$2"; echo "$?"' \
@@ -5986,12 +5999,20 @@ is "a gitlink's planted clean filter fires under plain git status" "1" "$( (
   touch -t 203001010000 sub/f.txt; git status --porcelain >/dev/null
   ls "$RBFG" | grep -c '^PWNED$'; rm -f "$RBFG/PWNED"; touch -t 203101010000 sub/f.txt
 ) 2>/dev/null | tail -n 1)"
-rm -rf "$RBF"; RBF=$RBFG/r; rbf_ap "$RBF" >/dev/null
+rm -rf "$RBF"; RBF=$RBFG/r
+# A cat of the gitlink excludes that fails must stop a, not add without them.
+RBFC=$(mktmpd)
+printf '#!/bin/sh\ncase "$*" in */pathspec) exit 1 ;; esac\nexec %s "$@"\n' \
+    "$(command -v cat)" > "$RBFC/cat"; chmod +x "$RBFC/cat"
+is "a whose cat of the gitlink excludes fails: status 1" "1" "$(PATH="$RBFC:$PATH" rbf_ap "$RBF")"
+is "and no checkpoint" "" "$(git -C "$RBF" rev-parse -q --verify refs/cockpit/reviewed/main)"
+is "and no clean filter" "" "$(ls "$RBFG" | grep '^PWNED$')"
+rm -f "$RBFG/PWNED"; rbf_ap "$RBF" >/dev/null
 is "a with a gitlink and a big file: the big blob is not written" "absent" \
    "$(rbf_has "$(rbf_blob big.log)")"
 is "and the gitlink's clean filter never runs" "" "$(ls "$RBFG" | grep '^PWNED$')"
 unset -f rbf_args rbf_blob rbf_has rbf_ap
-rm -rf "$RBFB" "$RBFG"
+rm -rf "$RBFB" "$RBFG" "$RBFC"
 
 echo "== tmux-review: the review base is since-last-review, else the branch, else uncommitted =="
 # revdiff's auto-detect, one function: a checkpoint ref wins, then the

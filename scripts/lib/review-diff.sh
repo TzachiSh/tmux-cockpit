@@ -36,7 +36,9 @@ big_paths() { big_files "$1" | cut -f2-; }    # <dir>
 # = form, so a leading dash is no option), and the user's REVDIFF_EXCLUDE, which
 # a command-line -X replaces. -X matches a whole path once revdiff has trimmed
 # whitespace off its ends, so a big path with whitespace at an end cannot be
-# named: then --untracked is left out and the status is 1. DIR is the root:
+# named. Untracked, it is shown only under --untracked: that is left out, and
+# the status is 1. Tracked, revdiff diffs it at startup whatever the options
+# say: the status is 2, and the caller must not start revdiff. DIR is the root:
 # revdiff's paths are from it.
 revdiff_files() {             # <dir>
     local bp e cut=0
@@ -44,14 +46,18 @@ revdiff_files() {             # <dir>
     rdx=()
     while IFS= read -r bp; do
         [ -n "$bp" ] || continue
-        case $bp in [[:space:]]*|*[[:space:]]) cut=1 ;; esac
+        case $bp in [[:space:]]*|*[[:space:]])
+            [ "$cut" -eq 2 ] || cut=1        # one tracked is enough: no more ls-files
+            [ "$cut" -eq 2 ] || [ -z "$(git -C "$1" --no-optional-locks ls-files \
+                -- ":(literal)$bp" 2>/dev/null)" ] || cut=2 ;;
+        esac
         rdx+=("--exclude=$bp")
     done < <(big_paths "$1")
     if [ "${#rdx[@]}" -gt 0 ] && [ -n "${REVDIFF_EXCLUDE:-}" ]; then
         IFS=, read -r -a env <<<"$REVDIFF_EXCLUDE"
         for e in "${env[@]}"; do [ -z "$e" ] || rdx+=("--exclude=$e"); done
     fi
-    [ "$cut" -eq 0 ] || return 1
+    [ "$cut" -eq 0 ] || return "$cut"
     rdx+=(--untracked)
 }
 
@@ -268,14 +274,15 @@ approve() {                   # <dir>
     # -A would hash each in full and write it as a blob. One pathspec file, as
     # --pathspec-from-file takes no pathspec beside it. Excludes alone leave the
     # add tree-wide, from a subdir too: git applies them to a pathspec-less add.
-    local bp nbig=0
+    # A failed cat stops the add: it would run without the gitlink excludes.
+    local bp nbig=0 lost=0
     {
-        [ ! -s "$tmp/pathspec" ] || cat -- "$tmp/pathspec"
+        [ ! -s "$tmp/pathspec" ] || cat -- "$tmp/pathspec" || lost=1
         while IFS= read -r bp; do
             [ -n "$bp" ] || continue
             printf ':(exclude,literal)%s\0' "$bp"; nbig=$((nbig + 1))
         done < <(big_paths "$dir")
-    } > "$tmp/addspec" 2>/dev/null || { scratch_done; return 1; }
+    } > "$tmp/addspec" 2>/dev/null && [ "$lost" -eq 0 ] || { scratch_done; return 1; }
     [ "$nbig" -eq 0 ] || from=(--pathspec-from-file="$tmp/addspec" --pathspec-file-nul)
     br=$(git -C "$dir" --no-optional-locks rev-parse --abbrev-ref HEAD 2>/dev/null)
     tree=$(GIT_INDEX_FILE=$idx git -C "$dir" add -A ${from[@]+"${from[@]}"} 2>/dev/null \

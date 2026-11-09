@@ -125,10 +125,13 @@ because of it, so a pane whose only change is a big file stays on the board and
 its review still opens. revdiff runs its own git, so each such file is passed to
 it as `--exclude=<path>` and is not in its file list; `a` leaves it out of the
 checkpoint, which keeps the version already in the index, and writes no copy of
-it into the object store. If a big file's name begins or ends with whitespace,
-revdiff cannot exclude it, so that review shows no untracked files at all. Put
-core dumps in `.gitignore`, as git's own templates do, and the review never sees
-them at all.
+it into the object store. revdiff cannot exclude a big file whose name begins
+or ends with whitespace. If that file is untracked, the review shows no
+untracked files at all. If it is tracked, revdiff would diff it in full as it
+starts, so it is not started: the popup says `cockpit: no review: a big tracked
+file's name starts or ends with whitespace` and closes as `l` would, with any
+pinned comments kept. Put core dumps in `.gitignore`, as git's own templates
+do, and the review never sees them at all.
 
 **`b` picks what the diff is taken against.** The base is the first of three
 that holds: the checkpoint `refs/cockpit/reviewed/<branch>` when a review of

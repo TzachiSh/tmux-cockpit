@@ -144,9 +144,16 @@ review_loop() {
     local -a args rdx
     while :; do
         # Big files stay out of revdiff's git: revdiff_files in review-diff.sh.
-        revdiff_files "$dir" || tmux display-message \
-            "cockpit: untracked files hidden: a big file's name starts or ends with whitespace" \
-            2>/dev/null
+        # Its 2 starts no revdiff: the loop leaves as "l" does, the store kept.
+        local why=""
+        revdiff_files "$dir"
+        case $? in
+            1) why="untracked files hidden: a big file's name starts or ends with whitespace" ;;
+            2) why="no review: a big tracked file's name starts or ends with whitespace"
+               tmux display-message "cockpit: $why" 2>/dev/null
+               printf 'cockpit: %s\n' "$why" >&2; exit 0 ;;
+        esac
+        [ -z "$why" ] || tmux display-message "cockpit: $why" 2>/dev/null
         # The default view is the uncommitted one; any other base is a ref.
         args=(${rdx[@]+"${rdx[@]}"} --exit-code-on-annotations -o "$store.rdout"
               --history-dir "${store%/*}/history")
