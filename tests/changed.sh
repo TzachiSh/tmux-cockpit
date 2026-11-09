@@ -39,7 +39,8 @@ function note(arr, line,   i, n, S, s, p) {
     # docs and the Makefile are read by blocks too, not only scripts (#672).
     s = line
     while (match(s, /[$][{]?DIR[}]?["]?\/[A-Za-z0-9_.\/-]+/)) {
-        p = substr(s, RSTART, RLENGTH); sub(/^[^\/]*\//, "", p); sub(/\/+$/, "", p); arr[p] = 1
+        p = substr(s, RSTART, RLENGTH); sub(/^[^\/]*\//, "", p)
+        sub(/(\/\.?)+$/, "", p); arr[p] = 1          # "scripts/" and "scripts/." are "scripts"
         s = substr(s, RSTART + RLENGTH)
     }
 }

@@ -7844,13 +7844,15 @@ CHG_READS=$(awk '/^echo "== /{ n++ } n { s = $0
         p = substr(s, RSTART, RLENGTH); sub(/^[^\/]*\//, "", p); print n "\t" p
         s = substr(s, RSTART + RLENGTH) } }' "$DIR/tests/run.sh" |
     awk -F'\t' 'NR == FNR { t[$0] = 1; T[++nt] = $0; next }
-        { p = $2; sub(/\/+$/, "", p) }
+        { p = $2; sub(/(\/\.?)+$/, "", p) }
         p in t { print $1 "\t" p; next }
         { for (i = 1; i <= nt; i++) if (index(T[i], p "/") == 1) print $1 "\t" T[i] }' \
         <(printf '%s\n' "$CHG_TRACKED") - | awk -F'\t' '$2 != "tests/run.sh"' | sort -u)
 CHG_TD=$(chg_ord 'tree_diff: staged, unstaged and untracked changes are one diff (#390) ==')
 CHG_SPC=$(chg_ord 'the click bindings survive a plugin path with a quote and a space ==')
 CHG_PA=$(chg_ord 'poll_alive: with no /proc, the poller is known by ps -o args= (#194) ==')
+CHG_RB=$(chg_ord 'prefix r opens the board, prefix R reloads; off unbinds each ==')
+CHG_PW=$(chg_ord 'prefix w: the board binds, off keeps stock, below 3.8 refuses,')
 # shellcheck disable=SC2046  # deliberate word splitting: one path per line
 CHG_EACH=$(bash "$DIR/tests/changed.sh" --each $({ printf '%s\n' Makefile LICENSE \
     scripts/lib/review-diff.sh scripts/lib/vnum.sh scripts/lib/hook.sh scripts/tmux-where
@@ -7865,6 +7867,10 @@ is "a lib edit runs the block that copies \$DIR\"/scripts/lib/*.sh (#688)" \
     yes "$(chg_has scripts/lib/vnum.sh "$CHG_MAKE")"
 is "a scripts/ edit runs the block that copies \$DIR/scripts whole (#688)" \
     yes "$(chg_has scripts/tmux-where "$CHG_SPC")"
+is "a scripts/ edit runs the prefix r block, which copies \$DIR\"/scripts/. (#688)" \
+    yes "$(chg_has scripts/tmux-where "$CHG_RB")"
+is "a scripts/ edit runs the prefix w block, which copies \$DIR\"/scripts/. (#688)" \
+    yes "$(chg_has scripts/tmux-where "$CHG_PW")"
 # "$1/scripts/lib/hook.sh" with _ "$DIR" names no "$DIR/" path: the block's marker
 is "a hook.sh edit runs the poll_alive block, which sources it as \$1/... (#688)" \
     yes "$(chg_has scripts/lib/hook.sh "$CHG_PA")"
