@@ -1,6 +1,7 @@
-//! `cockpit-tui diffstat` with a GIT_*_PATHSPECS variable inherited (#673). The
-//! diff count builds `:(literal)` and `:(exclude,literal)` pathspecs, and these
-//! variables change what those match: each test sets one on the child alone,
+//! `cockpit-tui diffstat` with a git variable inherited. The diff count builds
+//! `:(literal)` and `:(exclude,literal)` pathspecs, and the GIT_*_PATHSPECS
+//! variables change what those match (#673); others move the object store or
+//! the attributes git reads (#683). Each test sets one on the child alone,
 //! never on this process, and wants the count plain git gives with none set.
 use std::path::PathBuf;
 use std::process::Command;
@@ -64,15 +65,21 @@ impl Repo {
         (col(0), col(1), others.split(|b| *b == 0).filter(|p| !p.is_empty()).count() as u64)
     }
 
-    /// diffstat's exit status and its first three fields, with `env` set on the child only.
+    /// diffstat's exit status and its first three fields, with each of `env` set to 1.
     fn diffstat(&self, env: &[&str]) -> (i32, Option<(u64, u64, u64)>) {
+        let pairs: Vec<(&str, &str)> = env.iter().map(|v| (*v, "1")).collect();
+        self.diffstat_with(&pairs)
+    }
+
+    /// [`Repo::diffstat`] with `env` set on the child only, and the runner's own
+    /// git config kept out, as [`Repo::git`] keeps it out of the reference.
+    fn diffstat_with(&self, env: &[(&str, &str)]) -> (i32, Option<(u64, u64, u64)>) {
         let mut c = Command::new(env!("CARGO_BIN_EXE_cockpit-tui"));
         for v in PATHSPEC_VARS {
             c.env_remove(v);
         }
-        for v in env {
-            c.env(v, "1");
-        }
+        c.env("GIT_CONFIG_GLOBAL", "/dev/null").env("GIT_CONFIG_NOSYSTEM", "1");
+        c.envs(env.iter().copied());
         let o = c.arg("diffstat").arg(&self.0).output().unwrap();
         let out = String::from_utf8_lossy(&o.stdout).into_owned();
         let n: Vec<u64> = out.split('\t').take(3).filter_map(|f| f.parse().ok()).collect();
@@ -168,4 +175,95 @@ fn glob_and_noglob_inherited_together_still_count() {
     let r = moved_capital_a("both-mv");
     let both = ["GIT_GLOB_PATHSPECS", "GIT_NOGLOB_PATHSPECS"];
     assert_eq!(r.diffstat(&both), (0, Some(r.reference())));
+}
+
+/// `f` committed with one line and given a second: plain git counts `+1 -0`.
+fn one_line_added(tag: &str) -> Repo {
+    let r = Repo::new(tag);
+    r.write("f", "1\n");
+    r.commit();
+    r.write("f", "1\n2\n");
+    r
+}
+
+/// GIT_OBJECT_DIRECTORY naming no dir: git finds no repo and the row read `?`.
+#[test]
+fn an_object_directory_inherited_that_is_missing_still_counts() {
+    let r = one_line_added("objdir-missing");
+    let gone = r.0.join("no-such-objects");
+    let env = [("GIT_OBJECT_DIRECTORY", gone.to_str().unwrap())];
+    assert_eq!(r.diffstat_with(&env), (0, Some(r.reference())));
+}
+
+/// GIT_OBJECT_DIRECTORY naming an empty dir: HEAD's commit is not in it.
+#[test]
+fn an_object_directory_inherited_that_is_empty_still_counts() {
+    let r = one_line_added("objdir-empty");
+    let empty = r.0.join(".git/empty-objects");
+    std::fs::create_dir(&empty).unwrap();
+    let env = [("GIT_OBJECT_DIRECTORY", empty.to_str().unwrap())];
+    assert_eq!(r.diffstat_with(&env), (0, Some(r.reference())));
+}
+
+/// GIT_ATTR_SOURCE naming no rev: every diff is fatal and the row read `?`.
+#[test]
+fn an_attr_source_inherited_that_is_no_rev_still_counts() {
+    let r = one_line_added("attr-norev");
+    assert_eq!(r.diffstat_with(&[("GIT_ATTR_SOURCE", "no-such-rev")]), (0, Some(r.reference())));
+}
+
+/// GIT_ATTR_SOURCE naming a tree whose `.gitattributes` says `f -diff`: f's
+/// lines would read as binary, `-` for each count, and add up to nothing.
+#[test]
+fn an_attr_source_inherited_from_another_tree_still_counts() {
+    let r = one_line_added("attr-tree");
+    r.write(".gitattributes", "f -diff\n");
+    r.git(&["add", ".gitattributes"]);
+    let tree = String::from_utf8(r.git(&["write-tree"])).unwrap();
+    r.git(&["rm", "-q", "--cached", ".gitattributes"]);
+    std::fs::remove_file(r.0.join(".gitattributes")).unwrap();
+    assert_eq!(r.reference(), (1, 0, 0), "f's one new line, nothing untracked");
+    assert_eq!(r.diffstat_with(&[("GIT_ATTR_SOURCE", tree.trim())]), (0, Some(r.reference())));
+}
+
+/// An executable at `.git/<name>` that touches `.git/<name>.ran` when run:
+/// in the git dir, so neither the count nor plain git's reference sees it.
+fn marker_script(r: &Repo, name: &str, tail: &str) -> (String, PathBuf) {
+    use std::os::unix::fs::PermissionsExt;
+    let p = r.0.join(".git").join(name);
+    std::fs::write(&p, format!("#!/bin/sh\ntouch \"$0.ran\"\n{tail}")).unwrap();
+    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let ran = r.0.join(".git").join(format!("{name}.ran"));
+    (p.display().to_string(), ran)
+}
+
+/// An fsmonitor hook injected by GIT_CONFIG_COUNT: SAFE's own
+/// `core.fsmonitor=false` comes later on git's list and wins.
+#[test]
+fn an_fsmonitor_from_config_count_inherited_never_runs() {
+    let r = one_line_added("cfgcount-fsm");
+    let (hook, ran) = marker_script(&r, "fsm", "");
+    let env = [
+        ("GIT_CONFIG_COUNT", "1"),
+        ("GIT_CONFIG_KEY_0", "core.fsmonitor"),
+        ("GIT_CONFIG_VALUE_0", hook.as_str()),
+    ];
+    assert_eq!(r.diffstat_with(&env), (0, Some(r.reference())));
+    assert!(!ran.exists(), "the injected fsmonitor hook ran");
+}
+
+/// A clean filter injected by GIT_CONFIG_PARAMETERS for a tracked file the
+/// repo's attributes route through it: the no_filters scan reads env config
+/// too, and blanks it.
+#[test]
+fn a_filter_from_config_parameters_inherited_never_runs() {
+    let r = Repo::new("cfgparams-filter");
+    r.write(".gitattributes", "f filter=envf\n");
+    r.write("f", "1\n");
+    r.commit();
+    r.write("f", "1\n2\n");
+    let (clean, ran) = marker_script(&r, "clean", "cat\n");
+    let params = format!("'filter.envf.clean'='{clean}'");
+    assert_eq!(r.diffstat_with(&[("GIT_CONFIG_PARAMETERS", &params)]), (0, Some(r.reference())));
+    assert!(!ran.exists(), "the injected clean filter ran");
 }

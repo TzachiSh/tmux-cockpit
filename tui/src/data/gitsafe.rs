@@ -40,9 +40,20 @@ pub const SAFE: [&str; 23] = [
 ];
 
 /// What an inherited environment points git at instead of the repo `-C dir` is
-/// in: a dotfiles setup's GIT_DIR, say. GIT_CEILING_DIRECTORIES stays: it can
-/// only stop the search lower.
-pub const REDIRECT: [&str; 4] = ["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE"];
+/// in: a dotfiles setup's GIT_DIR, say, or an object store or attributes tree
+/// that is not the repo's (#683). A missing object dir is no repo at all, and an
+/// attribute source that is no rev makes every diff fatal. GIT_CEILING_DIRECTORIES
+/// stays: it can only stop the search lower. GIT_ALTERNATE_OBJECT_DIRECTORIES
+/// stays: it only adds stores to read, and an object's id fixes its content.
+/// GIT_NAMESPACE stays: it scopes refs for a transport, not a local rev lookup.
+pub const REDIRECT: [&str; 6] = [
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ATTR_SOURCE",
+];
 
 /// What an inherited environment changes every pathspec's meaning with (#673):
 /// LITERAL reads `:(literal)A` as a file of that name, ICASE has it match `a`
@@ -80,6 +91,10 @@ fn run_raw<S: AsRef<OsStr>>(dir: &str, extra: &[String], index: Option<&Path>, a
     if let Some(i) = index {
         c.env("GIT_INDEX_FILE", i);
     }
+    // a unit test compares with git run on no user or system config: the
+    // runner's core.excludesFile must not hide a file from one side only
+    #[cfg(test)]
+    c.env("GIT_CONFIG_GLOBAL", "/dev/null").env("GIT_CONFIG_NOSYSTEM", "1");
     c.output().map(|o| (o.status.success(), o.stdout)).unwrap_or_default()
 }
 
