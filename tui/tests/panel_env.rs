@@ -441,7 +441,7 @@ fn a_hung_git_is_killed_with_what_it_forked_at_the_budget() {
     // to that try's file, never to the next one's (#727).
     e.exec(
         "git",
-        "case $2 in $D/*) ;; *) exit 1 ;; esac; sleep 1000 & echo $! >> $2/kids; wait",
+        "case \"$2\" in \"$D\"/*) ;; *) exit 1 ;; esac; sleep 1000 & echo $! >> \"$2/kids\"; wait",
     );
     let tries = std::cell::Cell::new(0);
     let run = |b| {
@@ -453,7 +453,9 @@ fn a_hung_git_is_killed_with_what_it_forked_at_the_budget() {
     // the kill comes at the budget: rev-parse and config must have written their pid by then
     let both = |(got, kids): &(String, String)| got.is_empty() && kids.lines().count() == 2;
     let got = growing(HUNG_BUDGET, run, both);
-    // every try's pids, the missed ones too, read again on each poll for a late writer
+    // every try's pids, the missed ones too. Each poll reads the files again, and the
+    // first poll that finds every listed pid dead ends the check: a pid written after
+    // that poll is not checked.
     let kids = || (0..tries.get()).map(|t| std::fs::read_to_string(e.dir.join(format!("{t}/kids"))).unwrap_or_default());
     // gone, or a zombie its new parent has not reaped yet
     let dead = |k: &str| std::fs::read_to_string(format!("/proc/{k}/stat")).map_or(true, |s| s.contains(") Z "));
