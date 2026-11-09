@@ -307,10 +307,17 @@ fn section(b: &mut String, head: &str, lines: &[&str], cap: usize) {
 /// The git state of `dir` for the write call's `<repo>` block: branch, the
 /// work tree's root, short status, the last five commits, the diff stat
 /// against HEAD, and the paths on `screen` that exist, plus the `@/`, `~/` and
-/// `./` ones that do not. "" when `dir` is not in a work tree. Plain git under
-/// `budget` (the panel's is [`REPO_BUDGET`]): "" when the root or the filter
-/// config is not read in time, `status: timed out` for a late status, and any
-/// other part that runs out of time is left out and the rest kept.
+/// `./` ones that do not. Plain git under `budget` (the panel's is
+/// [`REPO_BUDGET`]).
+///
+/// "" when `dir` is not in a work tree, when the root or the filter config is
+/// not read in time, when a filter name holds `=` ([`filter_flags`] gives None,
+/// so no git that could run a filter is started), and when status fails.
+/// A late status shows as `status: timed out`. A log or diff stat that is late
+/// or fails (a repo with no commits yet has neither) is left out. A path scan
+/// that runs out of time keeps the paths it checked by then, but one stat that
+/// hangs past `budget` plus `REPO_SLACK` loses every path: the scan checks the
+/// time only between paths, and the block holding them comes too late.
 pub fn repo_state_within(dir: &str, screen: &str, budget: Duration) -> String {
     Repo::start(dir, screen, budget).get().to_string()
 }

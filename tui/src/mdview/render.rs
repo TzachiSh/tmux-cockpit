@@ -375,8 +375,8 @@ impl Build {
         full.min(self.w / 2)
     }
 
-    /// The prefix for the next row, clamped to [`indent`]. `first` takes each
-    /// pending bullet; a blank row shows only the bars.
+    /// The prefix for the next row, clamped to [`indent`](Self::indent). `first`
+    /// takes each pending bullet; a blank row shows only the bars.
     fn prefix(&mut self, first: bool) -> Cells {
         let (ascii, max) = (self.o.ascii, self.indent());
         let mut out = Cells::new();
