@@ -28,8 +28,9 @@ Read the exit code:
 - **0** — the human pinned nothing, or left the review for later (their
   comments stay pinned; running this again resumes them), discarded, or
   approved. Say so in one line and continue with what you were doing.
-- **1** — the popup could not open (no attached client, the pane is gone), or
-  revdiff is not installed or failed (its message is on stderr).
+- **1** — the popup could not open (no attached client, the pane is gone),
+  revdiff is not installed or failed, or no review could be opened (the reason
+  is on stderr).
   Report stderr verbatim. Do not retry.
 
 If the command timed out, the popup is still open and nothing is lost: wait

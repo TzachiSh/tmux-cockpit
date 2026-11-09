@@ -2,7 +2,8 @@
 # tmux-review's review loop: revdiff reads and comments; this launches it,
 # ingests what it wrote, and asks what next. Sourced by tmux-review. Bash 4+.
 # Exit codes, the contract with review_pane and --request: 20 deliver,
-# 21 approved, 125 refused by git.sh (#330), 126 revdiff failed (stderr in
+# 21 approved, 124 no review opened (the reason in <session dir>/revdiff.err),
+# 125 refused by git.sh (#330), 126 revdiff failed (stderr in
 # <session dir>/revdiff.err), 127 no revdiff, anything else leave.
 
 # The line as the tree (+, context) or the base rev (-) has it, control
@@ -141,10 +142,24 @@ review_loop() {
     fi
 
     local rc n key choice to errf="${store%/*}/revdiff.err"
-    local -a args
+    local -a args rdx
     while :; do
+        # Big files stay out of revdiff's git: revdiff_files in review-diff.sh.
+        # Its 2 starts no revdiff: 124, never 0, which --request reads as a
+        # review. The reason goes where --request prints it, the scratch as l's.
+        local why=""
+        revdiff_files "$dir"
+        case $? in
+            1) why="untracked files hidden: a big file's name starts or ends with whitespace" ;;
+            2) why="no review: a big tracked file's name starts or ends with whitespace"
+               tmux display-message "cockpit: $why" 2>/dev/null
+               printf 'cockpit: %s\n' "$why" > "$errf"
+               if [ -s "$store" ]; then drop_scratch "$store"; else drop_store "$store"; fi
+               exit 124 ;;
+        esac
+        [ -z "$why" ] || tmux display-message "cockpit: $why" 2>/dev/null
         # The default view is the uncommitted one; any other base is a ref.
-        args=(--untracked --exit-code-on-annotations -o "$store.rdout"
+        args=(${rdx[@]+"${rdx[@]}"} --exit-code-on-annotations -o "$store.rdout"
               --history-dir "${store%/*}/history")
         write_preload "$store" "$store.rdin" && args+=(--annotations "$store.rdin")
         [ "$mode" = uncommitted ] || args+=("$rev")

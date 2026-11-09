@@ -125,9 +125,18 @@ is kept away from git and counted as one binary change instead, though a
 tracked file whose size did not change is still hashed once, so git can tell it
 changed. The file itself is untouched, and the tree still counts as dirty
 because of it, so a pane whose only change is a big file stays on the board and
-its review still opens. revdiff is not covered by this: it runs its own git, and
-an untracked big file is diffed in full when revdiff shows it. Put core dumps in
-`.gitignore`, as git's own templates do, and the review never sees them at all.
+its review still opens. revdiff runs its own git, so each such file is passed to
+it as `--exclude=<path>` and is not in its file list; `a` leaves it out of the
+checkpoint, which keeps the version already in the index, and writes no copy of
+it into the object store. revdiff cannot exclude a big file whose name begins
+or ends with whitespace. If that file is untracked, the review shows no
+untracked files at all. If it is tracked, revdiff may diff it in full (at
+startup if it is first, or when selected), so revdiff is not started: the popup
+says `cockpit: no review: a big tracked file's name starts or ends with
+whitespace` and closes with any pinned comments kept. An agent's `--request`
+then exits 1 with that reason on stderr, not the 0 of a finished review. Put
+core dumps in `.gitignore`, as git's own templates do, and the review never
+sees them at all.
 
 **`b` picks what the diff is taken against.** The base is the first of three
 that holds: the checkpoint `refs/cockpit/reviewed/<branch>` when a review of

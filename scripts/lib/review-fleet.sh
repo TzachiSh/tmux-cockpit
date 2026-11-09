@@ -74,6 +74,9 @@ request() {                   # <pane>
         126) printf 'tmux-review: revdiff failed\n' >&2
              cat -- "$sess/revdiff.err" >&2 2>/dev/null; rm -f -- "$sess/revdiff.err"
              exit 1 ;;
+        124) printf 'tmux-review: no review opened\n' >&2   # the loop's reason follows
+             cat -- "$sess/revdiff.err" >&2 2>/dev/null; rm -f -- "$sess/revdiff.err"
+             rmdir -- "$sess" 2>/dev/null; exit 1 ;;
         125) printf '%s\n' "$GIT_REFUSAL" >&2; rmdir -- "$sess" 2>/dev/null; exit 1 ;;
         127) printf 'tmux-review: revdiff not found: install it, see #233\n' >&2; exit 1 ;;
         20) [ -s "$store" ] || exit 0
