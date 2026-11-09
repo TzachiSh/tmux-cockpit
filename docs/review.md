@@ -135,8 +135,10 @@ command-line `--exclude` replaces revdiff's own exclude list, so while a big
 file is present the cockpit passes that list on too, taken where revdiff would
 take it: the `exclude =` lines of its config file (`$REVDIFF_CONFIG`, else
 `~/.config/revdiff/config`), and only when that file names none,
-`REVDIFF_EXCLUDE`. A config file revdiff would reject adds nothing, and a quoted
-entry holding a backslash escape is skipped. revdiff cannot exclude a big file
+`REVDIFF_EXCLUDE`. A config file revdiff would reject adds nothing. A quoted
+entry holding a backslash escape is skipped, and so is an entry too long for
+one command-line argument (128 KiB on Linux); either still keeps
+`REVDIFF_EXCLUDE` out, as in revdiff. revdiff cannot exclude a big file
 whose name begins or ends with whitespace. If that file is untracked, the review
 shows no untracked files at all. If it is tracked or committed on the branch,
 revdiff may diff it in full (at startup if it is first, or when selected), so

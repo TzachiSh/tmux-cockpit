@@ -62,39 +62,54 @@ big_range_paths() {           # <dir> <rev>
 # (revdiff v1.13.0, app/config.go). The format is go-flags' INI: each line
 # trimmed, ; and # comments, [section] headers, `key = value` with both sides
 # trimmed, one line per entry. The key is `exclude` in any case, or `X`, in no
-# section or [Application Options]. Read as text, never sourced. Status 0 when
-# the file names an exclude, even an empty one: revdiff then ignores
-# REVDIFF_EXCLUDE. A line revdiff cannot parse makes it skip the whole file:
-# status 1 and no entries. A quoted value is unquoted when it holds no
-# backslash; one that does is skipped, since Go's escapes are not undone here.
+# section or [Application Options], a name go-flags matches lowercased. Read as
+# text, never sourced. Status 0 when the file names an exclude, even an empty or
+# skipped one: revdiff then ignores REVDIFF_EXCLUDE. A line revdiff cannot parse
+# makes it skip the whole file: status 1 and no entries. A quoted value is
+# unquoted when it holds no backslash; one that does is skipped, since Go's
+# escapes are not undone here, and so is one too long for one exec arg
+# (--exclude=<it> past 128 KiB fails the exec). awk parses: a bash trim of a
+# long line is seconds per MB. It prints N per exclude key, E<value> per entry,
+# R to reject.
 revdiff_config_excludes() {
-    local f=${REVDIFF_CONFIG:-} line k v sec="" named=1
+    local f=${REVDIFF_CONFIG:-} r out named=1
+    local -a rows=()
     rcx=()
     [ -n "$f" ] || [ -z "${HOME:-}" ] || f=$HOME/.config/revdiff/config
     [ -n "$f" ] && [ -f "$f" ] && [ -r "$f" ] || return 1
-    while IFS= read -r line || [ -n "$line" ]; do
-        line=${line#"${line%%[![:space:]]*}"}; line=${line%"${line##*[![:space:]]}"}
-        case $line in
-            ''|';'*|'#'*) continue ;;
-            '['*']') sec=${line:1:${#line}-2}
-                     sec=${sec#"${sec%%[![:space:]]*}"}; sec=${sec%"${sec##*[![:space:]]}"}
-                     [ -n "$sec" ] && continue; rcx=(); return 1 ;;
-            '['*) rcx=(); return 1 ;;                  # a malformed header: revdiff's error
-            *=*) ;;
-            *) rcx=(); return 1 ;;
+    # Captured whole, then split: a read from a pipe takes a byte a syscall.
+    { out=$(LC_ALL=C awk '
+        function trim(s) { sub(/^[[:space:]]+/, "", s); sub(/[[:space:]]+$/, "", s); return s }
+        {
+            line = trim($0)
+            if (line == "" || line ~ /^[;#]/) next
+            if (substr(line, 1, 1) == "[") {          # no closing ]: revdiff errors
+                if (substr(line, length(line)) != "]") { print "R"; exit }
+                sec = tolower(trim(substr(line, 2, length(line) - 2)))
+                if (sec == "") { print "R"; exit }
+                next
+            }
+            i = index(line, "=")
+            if (!i) { print "R"; exit }
+            k = trim(substr(line, 1, i - 1)); v = trim(substr(line, i + 1)); esc = 0
+            if (substr(v, 1, 1) == "\"") {
+                if (v ~ /^"[^"\\]*"$/) v = substr(v, 2, length(v) - 2)
+                else if (!index(v, "\\")) { print "R"; exit }   # Go Unquote fails too
+                else esc = 1
+            }
+            if (sec != "" && sec != "application options") next
+            if (tolower(k) != "exclude" && k != "X") next
+            print "N"                                  # Linux caps one exec arg at 128 KiB
+            if (!esc && v != "" && length(v) <= 131061) print "E" v
+        }' "$f"); } 2>/dev/null
+    mapfile -t rows <<<"$out"
+    for r in "${rows[@]}"; do
+        case $r in
+            R) rcx=(); return 1 ;;
+            N) named=0 ;;
+            E*) rcx+=("${r#E}") ;;
         esac
-        k=${line%%=*}; k=${k%"${k##*[![:space:]]}"}      # the line's own ends are trimmed
-        v=${line#*=}; v=${v#"${v%%[![:space:]]*}"}
-        case $v in '"'*)
-            if [[ $v =~ ^\"([^\"\\]*)\"$ ]]; then v=${BASH_REMATCH[1]}
-            elif [[ $v != *\\* ]]; then rcx=(); return 1    # Go's Unquote fails too
-            else continue
-            fi ;;
-        esac
-        case $sec in ''|'Application Options') ;; *) continue ;; esac
-        [ "${k,,}" = exclude ] || [ "$k" = X ] || continue
-        named=0; [ -z "$v" ] || rcx+=("$v")
-    done < "$f"
+    done
     return "$named"
 }
 

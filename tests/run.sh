@@ -6107,8 +6107,36 @@ is "a config revdiff cannot parse adds nothing, and REVDIFF_EXCLUDE holds" "0|1"
    "$(grep -cxF -- '--exclude=vendor/' <<<"$rbca")|$(grep -cxF -- '--exclude=envb' <<<"$rbca")"
 printf '[a=b\nexclude=other\n' > "$RBCH/other"         # a header with no ], as go-flags reads it
 is "and so does an unclosed [ header" "0" \
-   "$(rbr_args "$RBC" "" HOME="$RBCH" REVDIFF_CONFIG="$RBCH/other" | grep -cxF -- '--exclude=other')"
-unset -f rbr_args
+   "$(rbr_args "$RBC" "" HOME="$RBCH" REVDIFF_CONFIG="$RBCH/other" \
+      | grep -cxF -- '--exclude=other')"
+# go-flags finds a section by its lowercased name (Group.Find).
+printf '%s\n' '[application options]' 'exclude = lc' '[APPLICATION OPTIONS]' 'exclude = uc' \
+    > "$RBCH/other"
+rbca=$(rbr_args "$RBC" "" REVDIFF_CONFIG="$RBCH/other" REVDIFF_EXCLUDE=a,envb)
+is "a section named in any case: its excludes are passed on, REVDIFF_EXCLUDE's not" "1|1|0" \
+   "$(grep -cxF -- '--exclude=lc' <<<"$rbca")|$(grep -cxF -- '--exclude=uc' <<<"$rbca")|$(
+      grep -cxF -- '--exclude=envb' <<<"$rbca")"
+# The one entry an escape: skipped, yet still an exclude revdiff reads.
+printf '%s\n' 'exclude = "a\tb"' > "$RBCH/other"
+rbca=$(rbr_args "$RBC" "" REVDIFF_CONFIG="$RBCH/other" REVDIFF_EXCLUDE=a,envb)
+is "an escaped entry alone: skipped, and REVDIFF_EXCLUDE is still not passed" "1|0" \
+   "$(grep -c -- '^--exclude=' <<<"$rbca")|$(grep -cxF -- '--exclude=envb' <<<"$rbca")"
+# A long line, trimmed whole (100 KB: one exec arg stops at 128 KiB).
+{ printf 'exclude =  '; head -c 100000 /dev/zero | tr '\0' a; printf '  \n'; } > "$RBCH/other"
+is "a 100 KB entry is passed on whole, trimmed" "100011" \
+   "$(rbr_args "$RBC" "" REVDIFF_CONFIG="$RBCH/other" | grep -- '^--exclude=a' \
+      | wc -c | tr -d ' ')"
+# Linux caps one exec arg at 128 KiB, its NUL included: --exclude= and 131061 fit.
+rbc_len() {                   # <entry length>: lengths of the --exclude=a... args revdiff got
+    { printf 'exclude = '; head -c "$1" /dev/zero | tr '\0' a; printf '\n'; } > "$RBCH/other"
+    rbr_args "$RBC" "" REVDIFF_CONFIG="$RBCH/other" REVDIFF_EXCLUDE=envb \
+        | awk '/^--exclude=a/ { print length($0) } /^--exclude=envb$/ { print "envb" }
+               /^--untracked$/ { print "started" }' | paste -sd " " -
+}
+is "an entry that fits one exec arg reaches revdiff" "131071 started" "$(rbc_len 131061)"
+is "one byte longer is skipped, and REVDIFF_EXCLUDE still not passed" \
+   "started" "$(rbc_len 131062)"
+unset -f rbr_args rbc_len
 rm -rf "$RBC" "$RBCH" "$RBRB"
 
 echo "== tmux-review: the review base is since-last-review, else the branch, else uncommitted =="
