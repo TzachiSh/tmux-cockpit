@@ -14,7 +14,14 @@
 #   must_not: the reply, a question included, carries none of these
 #   holdout: yes for a case written after the prompt it is run on (default no)
 # Words match whole and in any case ("plan" is not in "explanation"); "a|b" is
-# any of them. A must_not cannot tell "no subagent" from "a subagent".
+# any of them. A must_not skips a match negated in its clause within six words
+# before it (not, never, don't, no, without, rather than, instead of); a clause
+# ends at . , ; : ! ? or a line: "do not write it by hand" does not trip "by
+# hand" (#701). A term ending in ? ("for?") is its word at the end of a clause:
+# followed by ? , ; : . ) ] or the end, never by another word (#702).
+# The ask_any term @purpose takes a question that asks what the work is for, by
+# the patterns documented at asks_purpose in tui/examples/panel_eval.rs. It
+# reads only the question's text, not its options (#702).
 # A key or a section given twice is an error. A screen cannot hold a line that
 # starts with "--- " or "=== ": those start a section or a case.
 #   note:    why the label is what it is
@@ -457,9 +464,9 @@ yaml for service web, port 8080, 3 replicas
 kind: plan
 window: claude · claude · /home/u/projects/tool
 expect: ask
-ask_any: goal; aim; purpose; why; readability|readable; easier to read; cleaner; quality; behaviour|behavior; performance|faster; maintain|maintainable; new feature
+ask_any: goal; aim; purpose; why; readability|readable; easier to read; cleaner; quality; behaviour|behavior; performance|faster; maintain|maintainable; new feature; @purpose
 must_not: autopilot; ralph; ultrawork; ultrathink
-note: #503 (card 5), was write: what the split is for (same behaviour, better quality, something else) is the owner's goal; the agent reads the file itself
+note: #503 (card 5), was write: what the split is for (same behaviour, better quality, something else) is the owner's goal; the agent reads the file itself; #702 H3: @purpose added as a uniform rule from this note, owner-approved
 --- request
 plan how to split src/app.rs into smaller modules, just the plan
 
@@ -644,12 +651,12 @@ copy the build to the staging server
 kind: feature
 window: claude · claude · /home/u/projects/dashboard
 expect: either
-ask_any: done; trigger|triggers; notify|notified; for?; purpose; goal; about?
+ask_any: done; trigger|triggers; notify|notified; for?; purpose; goal; about?; @purpose
 must: plan|planning|plans; done
 out_is: prompt
 must_not: Assumed:
 holdout: no
-note: what counts as done is the owner's call: a question about it, or a prompt that plans first, both serve; a question about the channel is what to build, not done; #498: the plan-first prompt picks nothing, so no Assumed: line; #558 review: not a holdout, since the interview line names notifications and was tuned on this case; "what is it for / about" was ruled on target after the runs, so the goal words were added to ask_any
+note: what counts as done is the owner's call: a question about it, or a prompt that plans first, both serve; a question about the channel is what to build, not done; #498: the plan-first prompt picks nothing, so no Assumed: line; #558 review: not a holdout, since the interview line names notifications and was tuned on this case; "what is it for / about" was ruled on target after the runs, so the goal words were added to ask_any; #702 H3: @purpose added as a uniform rule from this note, owner-approved
 --- screen
 ● The dashboard now shows the weekly totals per team.
 --- request
@@ -797,8 +804,8 @@ review the sso work on this branch
 kind: plan
 window: claude · claude · /home/u/projects/shop
 expect: ask
-ask_any: goal; aim; purpose; why; readability|readable; quality; behaviour|behavior; performance|faster; maintain|maintainable; new feature
-note: a refactor plan with no goal: what it is for decides the plan
+ask_any: goal; aim; purpose; why; readability|readable; quality; behaviour|behavior; performance|faster; maintain|maintainable; new feature; @purpose
+note: a refactor plan with no goal: what it is for decides the plan; #702 H3: @purpose added as a uniform rule from this note, owner-approved
 --- request
 make a plan to refactor the payments module
 
@@ -865,9 +872,9 @@ toml with a [server] table, host 0.0.0.0 and port 8080
 kind: refactor
 window: claude · claude · /home/u/projects/shop
 expect: ask
-ask_any: goal; aim; purpose; why; readability|readable; quality; behaviour|behavior; performance|faster; maintain|maintainable; new feature
+ask_any: goal; aim; purpose; why; readability|readable; quality; behaviour|behavior; performance|faster; maintain|maintainable; new feature; @purpose
 holdout: yes
-note: no goal for the change: what it is for decides the plan
+note: no goal for the change: what it is for decides the plan; #702 H3: @purpose added as a uniform rule from this note, owner-approved
 --- request
 how should we restructure the db layer
 
@@ -916,12 +923,12 @@ add csv to the export as well
 kind: feature
 window: claude · claude · /home/u/projects/public-api
 expect: either
-ask_any: user|users; key|keys; ip; limit|limits; requests; minute|second|hour; endpoint|endpoints; 429; reject|rejected; for?; purpose; goal; about?; abuse|quota|quotas
+ask_any: user|users; key|keys; ip; limit|limits; requests; minute|second|hour; endpoint|endpoints; 429; reject|rejected; for?; purpose; goal; about?; abuse|quota|quotas; @purpose
 must: rate; requirements; AskUserQuestion|interview; plan|planning|plans
 out_is: prompt
 must_not: Assumed:
 holdout: no
-note: a big feature in one service: one question on what changes the work most, or a prompt that checks today's flow, interviews the owner and plans, both serve; #558 review: not a holdout, since the interview line names rate limiting and was tuned after this case ran; "what is it for" was ruled on target after the runs, so the goal words were added to ask_any
+note: a big feature in one service: one question on what changes the work most, or a prompt that checks today's flow, interviews the owner and plans, both serve; #558 review: not a holdout, since the interview line names rate limiting and was tuned after this case ran; "what is it for" was ruled on target after the runs, so the goal words were added to ask_any; #702 H3: @purpose added as a uniform rule from this note, owner-approved
 --- screen
 ● The API serves /v1/orders and /v1/search behind one Express app.
 --- request
@@ -1189,8 +1196,8 @@ kind: bug
 window: bash · bash · /home/u/projects/blog
 expect: write
 out_is: prompt
-must: page 2|second page; reproduce|reproduces|confirm the bug|fail|fails|failing; again|after the fix
-note: a regression guard (#589 review): the bug line asks to reproduce, fix and run the check again; the prompt keeps that without the "failing before, passing after" clause, which was dropped for adding a baseline to a rename; widened after the first probe, which reproduced with the two commands and ran them again but never wrote "fail"
+must: page 2|second page; reproduce|reproduces|reproducing|confirm the bug|run it first|first run|first to see|first to confirm|to see the failure|to see the panic|see it fail|before fixing|before you fix; again|after the fix
+note: a regression guard (#589 review): the bug line asks to reproduce, fix and run the check again; the prompt keeps that without the "failing before, passing after" clause, which was dropped for adding a baseline to a rename; widened after the first probe, which reproduced with the two commands and ran them again but never wrote "fail"; mutation test: fail|failing|failure|crash|panic named the symptom, not a repro step, so a brief that never reran the bug passed; the repro term now takes only a repro step; tightened for mutation survivor, #701; #702 review label fix: the repro term takes "reproduce it before changing" for "before changing"; #702 review F3: "reproduce it before changing" dropped, since "reproduce" already matches it
 --- screen
 $ curl -s 'localhost:3000/api/posts?page=1' | jq '.[-1].id'
 40
@@ -1374,3 +1381,543 @@ note: a rename of one constant with a bare ref: the ref stays bare, with no @ or
 src/config.ts:8
 --- request
 rename RETRIES to MAX_RETRIES here and wherever it is used
+
+# #701: data derived from project files, added before the prompt change they
+# measure. The reply should have Claude Code reuse the parser or generator the
+# project already has, and check the result against its source; the last case
+# is the control, with nothing on screen that shows a parser to reuse.
+=== derived-cards-parser
+kind: feature
+window: claude · claude · /home/u/projects/tool
+expect: write
+out_is: prompt
+must: parse_cases; compare|diff|match|matches|same as
+note: #701: the screen shows the project's own case parser; a script that reads the cases file itself drifts from it, as the owner-label builder of #691 did; owner ruling on #701: the request now gives the card's format and fields, since the first one left that open and the panel rightly asked; #701 owner OK: equals|against added to the compare term, since replies checked the count against the source with those words; #702 M3: the term added after seeing replies is reverted (owner ruling)
+--- screen
+$ grep -n "fn parse_cases" tui/examples/panel_eval.rs
+122:fn parse_cases(text: &str) -> Result<Vec<Case>, String> {
+--- request
+write a script that makes one markdown labeling card per eval case from the cases file, with the request, the screen and the reply
+
+=== regen-golden
+kind: ops
+window: bash · bash · /home/u/projects/fmt
+expect: write
+must: -update|update flag
+must_not: by hand
+note: #701: the test already regenerates its golden files through its -update flag; writing them by hand is a second producer of the same files; owner ruling on #701: out_is prompt dropped, since a command that runs the -update flag is a right reply
+--- screen
+$ grep -n "update" format_test.go
+14:var update = flag.Bool("update", false, "update .golden files")
+--- request
+regenerate the golden files for the formatter tests
+
+=== regen-config-from-yaml
+kind: format
+window: bash · bash · /home/u/projects/svc
+expect: write
+out_is: prompt
+must: config.yaml; config.json
+note: #701: the panel cannot read config.yaml, so a format reply would invent its contents; a prompt has Claude Code read the file and regenerate config.json
+--- request
+regenerate config.json from config.yaml
+
+=== convert-csv-no-parser
+kind: feature
+window: bash · bash · /home/u/projects/data
+expect: write
+must: csv; json
+must_not: existing parser|parse_cases
+note: #701 control: nothing in the input shows a parser, so the reply names none to reuse
+--- request
+write a script that converts data.csv to json
+
+# Held out for #701: written without seeing the prompt, never tuned on.
+# Held-out cases for the write prompt, written without reading the prompt or its
+# examples. Format: tui/evals/panel/cases.txt lines 1-54.
+
+# Bugs with the failure on screen: reproduce first, check again after the fix.
+
+=== ho-pytest-keyerror
+kind: bug
+window: claude · claude · /home/u/projects/storefront
+expect: write
+must: test_refund|tests/test_orders.py; reproduce|reproduces|reproducing|confirm the bug|run it first|first run|first to see|first to confirm|to see the failure|to see the panic|see it fail|before fixing|before you fix; again|after the fix|rerun|re-run
+must_not: AskUserQuestion; requirements list|list of requirements
+holdout: yes
+note: the failing test, its file and the error are on screen, so the agent can run it; a careful brief runs that test first to see the KeyError, fixes it, then runs the test (and the suite) again; nothing is left for the owner; mutation test: fail|failing|failure|crash|panic named the symptom, not a repro step, so a brief that never reran the bug passed; the repro term now takes only a repro step; tightened for mutation survivor, #701; #702 review label fix: must_not "requirements" became "requirements list|list of requirements", which requirements.txt does not hit; the repro term takes "reproduce it before changing" for "before changing"; #702 review F3: "reproduce it before changing" dropped, since "reproduce" already matches it
+--- screen
+$ pytest tests/test_orders.py -q
+..F.
+FAILED tests/test_orders.py::test_refund - KeyError: 'currency'
+  orders/refunds.py:41: in build_refund
+      amount = Money(order.total, payload["currency"])
+1 failed, 3 passed in 0.42s
+--- request
+fix this
+
+=== ho-go-importer-panic
+kind: bug
+window: bash · bash · /home/u/projects/ledger
+expect: write
+must: parse.go|cmd/importer|sample.csv; reproduce|reproduces|reproducing|confirm the bug|run it first|first run|first to see|first to confirm|to see the failure|to see the panic|see it fail|before fixing|before you fix; again|after the fix|rerun|re-run
+must_not: AskUserQuestion; requirements list|list of requirements
+holdout: yes
+note: the command, the input file and the panic site are all on screen; the brief should rerun that exact command to see the panic, fix the bounds check, then run it again on the same file (plus go test); the owner has nothing to add; mutation test: fail|failing|failure|crash|panic named the symptom, not a repro step, so a brief that never reran the bug passed; the repro term now takes only a repro step; tightened for mutation survivor, #701; #702 review label fix: must_not "requirements" became "requirements list|list of requirements", which requirements.txt does not hit; the repro term takes "reproduce it before changing" for "before changing"; #702 review F3: "reproduce it before changing" dropped, since "reproduce" already matches it
+--- screen
+$ go run ./cmd/importer data/sample.csv
+panic: runtime error: index out of range [3] with length 3
+
+goroutine 1 [running]:
+github.com/u/ledger/internal/csv.parseRow(...)
+        /home/u/projects/ledger/internal/csv/parse.go:57
+exit status 2
+--- request
+it crashes on this file, fix it
+
+# Big features whose requirements only the owner can settle.
+
+=== ho-multi-currency
+kind: feature
+window: claude · claude · /home/u/projects/shop
+expect: either
+ask_any: currency|currencies; display|displayed|show; charge|charged|settle|settlement|pay; exchange|rate|rates; local
+must: plan|planning|plans; requirements; AskUserQuestion|interview
+out_is: prompt
+must_not: Assumed:
+holdout: no
+note: whether prices are only shown in other currencies or customers are charged in them, which currencies, and where rates come from change the whole design (pricing, payments, refunds, reporting); only the owner knows; a question on that, or a prompt that interviews for the requirements and plans before code, both serve; demoted: prompt lines 31/34 reused this section's wording (#702 review); #702 review label fix: ask_any drops which
+--- screen
+$ ls shop
+cart  checkout  payments  pricing  orders  settings.py
+--- repo
+branch: main...origin/main
+root: /home/u/projects/shop
+status: clean
+recent commits:
+  8c1e2d0 checkout: stripe payment intents
+  41aa9f3 pricing: tiered discounts
+  0e7b5c2 orders: invoice pdf
+--- request
+add multi-currency support to checkout
+
+=== ho-offline-mode
+kind: feature
+window: claude · claude · /home/u/projects/field-app
+expect: either
+ask_any: read|read-only|view; edit|edits|write|create; sync|syncing|synchronize; conflict|conflicts; screen|screens|which; offline
+must: plan|planning|plans; requirements; AskUserQuestion|interview
+out_is: prompt
+must_not: Assumed:
+holdout: no
+note: offline mode can mean cached read-only screens or full offline edits with sync and conflict handling; that choice, and which screens matter, decide the storage and sync design; the owner must settle it, so a question on it or a prompt that interviews and plans first both serve; demoted: prompt lines 31/34 reused this section's wording (#702 review)
+--- screen
+$ ls src
+api  components  navigation  screens  store  App.tsx
+--- repo
+branch: main...origin/main
+root: /home/u/projects/field-app
+status: clean
+recent commits:
+  2b9d4e1 screens: job detail photos
+  a0c37f8 api: retry on 503
+  6f12e9d store: redux toolkit
+--- request
+add an offline mode to the mobile app
+
+# Small additions next to an existing feature: no interview.
+
+=== ho-quiet-flag
+kind: feature
+window: claude · claude · /home/u/projects/dbtool
+expect: write
+must: --quiet|quiet; export
+must_not: AskUserQuestion; requirements list|list of requirements
+holdout: yes
+note: one flag beside an existing one in the same command; what quiet means (suppress the progress output that --verbose adds to) is clear from the code; a brief that checks the command works, adds the flag and tests both is enough, an interview would be overkill; #702 review label fix: must_not "requirements" became "requirements list|list of requirements", which requirements.txt does not hit
+--- screen
+$ dbtool export --help
+Usage: dbtool export [OPTIONS] TABLE
+
+Options:
+  --format [json|csv]  Output format
+  --verbose            Print progress for each batch
+  --help               Show this message and exit.
+--- request
+add a --quiet flag to the export command that hides the progress output
+
+=== ho-serializer-field
+kind: feature
+window: claude · claude · /home/u/projects/crm
+expect: write
+must: last_login|last_login_at; serializer|serializers|UserSerializer
+must_not: AskUserQuestion; requirements list|list of requirements
+holdout: yes
+note: the model already has the field and the serializer lists the others; adding one read-only field and a test is a small edit with nothing to settle; #702 review label fix: must_not "requirements" became "requirements list|list of requirements", which requirements.txt does not hit
+--- screen
+● accounts/serializers.py:
+  class UserSerializer(serializers.ModelSerializer):
+      class Meta:
+          model = User
+          fields = ["id", "email", "full_name", "date_joined"]
+--- request
+also return last_login in the user API response, the model already has it
+
+# The owner names a limit with an allowed alternative.
+
+=== ho-staging-not-prod
+kind: ops
+window: bash · bash · /home/u/projects/payments-infra
+expect: write
+must: staging|staging-eu
+must_not: --context prod-eu|--context=prod-eu|use-context prod-eu
+holdout: no
+note: the owner forbids prod and names staging; both contexts are on screen, so the brief should target staging-eu explicitly; any command aimed at the prod-eu context breaks the limit (must_not names the context switch, not the word prod, since "do not touch prod" is fine); demoted: prompt lines 31/34 reused this section's wording (#702 review)
+--- screen
+$ kubectl config get-contexts
+CURRENT   NAME         CLUSTER      AUTHINFO
+*         prod-eu      prod-eu      admin
+          staging-eu   staging-eu   admin
+$ ls k8s
+deployment.yaml  hpa.yaml  service.yaml
+--- request
+apply the new hpa.yaml but don't touch prod, try it on staging
+
+=== ho-new-column-not-rename
+kind: refactor
+window: claude · claude · /home/u/projects/members
+expect: write
+must: normalized_email
+must_not: AskUserQuestion
+holdout: no
+note: the owner rules out renaming email and names the alternative, a new normalized_email column; the brief must carry that name, backfill and lookup steps are the agent's to work out; demoted: prompt lines 31/34 reused this section's wording (#702 review)
+--- screen
+● db/schema.rb:
+  create_table "members" do |t|
+    t.string "email", null: false
+    t.index ["email"], unique: true
+--- request
+logins fail when people type their email with capitals. don't rename or change the email column, add a new normalized_email column and look up by that instead
+
+# Report only.
+
+=== ho-backup-slow-why
+kind: investigate
+window: claude · claude · /home/u/projects/ops-scripts
+expect: write
+must: backup|backups; do not change|don't change|not change|report only|investigate only|no changes|do not modify|don't modify|not modify|without changing|read-only|read only
+holdout: yes
+note: the owner wants a cause, not a fix, and says so; the brief must keep the agent from editing the job or its cron while it looks at the logs and the script
+--- screen
+$ grep duration /var/log/backup/nightly.log | tail -3
+2026-11-06 nightly backup duration=00:41:12
+2026-11-07 nightly backup duration=02:58:40
+2026-11-08 nightly backup duration=03:04:05
+--- request
+why did the nightly backup jump from 40 minutes to 3 hours? just tell me why, don't change anything
+
+# Subagents: several independent parts fit them, one small edit does not.
+
+=== ho-lambdas-runtime-audit
+kind: investigate
+window: claude · claude · /home/u/projects/serverless
+expect: write
+must: subagent|subagents; nodejs16|nodejs16.x|runtime; v2|aws-sdk
+holdout: yes
+note: five separate functions, each its own package, checked for the same two things; one subagent per function keeps the work parallel and the contexts small; the owner wants a report, nothing to ask
+--- screen
+$ ls functions
+image-resize  invoice-mailer  order-webhook  report-export  user-cleanup
+--- request
+check each of these lambdas for the nodejs16.x runtime and aws-sdk v2 imports, and list what each one needs to move to node 20 and sdk v3
+
+=== ho-timeout-one-edit
+kind: plan
+window: claude · claude · /home/u/projects/fetcher
+expect: write
+must: 60; timeout
+must_not: subagent|subagents
+holdout: yes
+note: worded as a plan, but it is one constant and its docstring in one file; delegating would cost more than the edit
+--- request
+plan: raise DEFAULT_TIMEOUT in fetcher/config.py from 30 to 60 seconds and update its docstring to match
+
+# Style or naming is the only open point: pick a default.
+
+=== ho-cents-helper-name
+kind: feature
+window: claude · claude · /home/u/projects/billing-web
+expect: write
+must: money.ts; cents
+must_not: AskUserQuestion
+holdout: yes
+note: the behaviour is fully given (integer cents in, "$1,234.56" out); only the name is open and the owner hands it over; the brief should tell the agent to follow the file's existing naming, not ask
+--- screen
+● src/utils/money.ts exports parseAmount and roundToCents.
+--- request
+add a helper to src/utils/money.ts that turns integer cents into a string like $1,234.56. name it whatever fits the file
+
+# Data derivation where the project already has the generator.
+
+=== ho-currency-json-generator
+kind: feature
+window: claude · claude · /home/u/projects/geo-data
+expect: write
+out_is: prompt
+must: gen_countries.py|gen_countries; compare|diff|match|matches|same as
+must_not: AskUserQuestion
+holdout: yes
+note: the screen shows the repo already turns an ISO csv into JSON with scripts/gen_countries.py, and the request gives the output shape; the brief should reuse or extend that script rather than hand-write the data, then check the result matches the shape of countries.json; nothing is left to ask; widened for #701, the second sanctioned held-out edit (owner OK): equals|against added to the compare term; #702 M3: the term added after seeing replies is reverted (owner ruling)
+--- screen
+$ ls scripts data out
+scripts:
+gen_countries.py
+data:
+iso3166.csv  iso4217.csv
+out:
+countries.json
+$ head -3 out/countries.json
+{
+  "DE": {"name": "Germany", "numeric": "276"},
+  "FR": {"name": "France", "numeric": "250"},
+--- request
+make out/currencies.json from data/iso4217.csv, same layout as countries.json: code -> {name, minor_units}
+
+# Config for a named format with every field given.
+
+=== ho-editorconfig-given
+kind: format
+window: bash · bash · /home/u/projects/site
+out: format
+expect: write
+out_is: format
+must: indent_size; utf-8; lf
+holdout: yes
+note: the format and every value are given; a file with nothing to guess is written
+--- request
+.editorconfig for all files: spaces, indent size 2, lf line endings, utf-8, final newline, trim trailing whitespace
+
+# #701 change 7, written before the prompt change: work that repeats until a
+# check passes gets a stop condition; a one-shot fix gets none.
+=== iterate-until-green
+kind: bug
+window: claude · claude · /home/u/projects/api
+expect: write
+out_is: prompt
+must: attempts|tries|at most|up to|no more than; best result|what still fails|still failing
+note: #701 change 7, written before the prompt change: "keep going until it's green" needs a limit on attempts and a report of the best result; #702 review label fix: must drops report
+--- request
+the flaky test in tests/test_orders.py keeps failing, fix it and keep going until it's green
+
+=== one-shot-no-stop
+kind: bug
+window: claude · claude · /home/u/projects/api
+expect: write
+must: recieve; receive
+must_not: attempts|at most|up to|no more than|stop if|best result
+note: #701 change 7, written before the prompt change: the control, a one-shot fix that needs no stop condition
+--- request
+fix the typo recieve in the error message in api/errors.py
+
+# #701 mutation survivors: no case checked the "ask before deleting or
+# overwriting anything" limit.
+=== delete-thumbs-ask-first
+kind: ops
+window: claude · claude · /home/u/projects/shop
+expect: write
+out_is: prompt
+must: thumbs; ask before deleting|ask before overwriting|before deleting|before overwriting|ask before removing|confirm before
+note: mutation test: no case checked the prompt's "ask before deleting or overwriting anything" limit, so deleting it changed no verdict; the folder and the script are on screen, so nothing is left to ask; #702 review label fix: moved to a claude window, since a steps reply in a bash window is right
+--- screen
+$ ls public/thumbs | head -3
+a1f3_200.jpg
+a1f3_400.jpg
+b7c2_200.jpg
+$ cat package.json | grep thumbs
+    "thumbs": "node scripts/make-thumbs.js"
+--- request
+the thumbnails are stale, clear out public/thumbs and regenerate them
+
+# Second blind set (#701 review): written without seeing the prompt.
+
+=== ho2-clinic-reminders
+kind: feature
+window: bash · bash · /home/u/work/clinic-booking
+expect: ask
+ask_any: no-show; no-shows; front desk; receptionist; reception; success; goal; who will use; who uses; @purpose
+must_not: twilio; sendgrid; cron; library; framework; provider
+holdout: no
+note: several parts (reminders, a desk view, cancellations) whose purpose and done-criteria only the owner knows; a delivery-mechanism question is implementation flavour; demoted: V2 chosen by measuring on this case (#702); #702 H3: @purpose added as a uniform rule from this note, owner-approved
+--- screen
+$ ls
+cmd  go.mod  internal  migrations  web
+--- repo
+branch: main...origin/main
+root: /home/u/work/clinic-booking
+status: clean
+recent commits:
+  7c1d2ea internal/booking: cancel by slot id
+  b30fa94 web: day calendar
+--- request
+we need reminders for appointments, plus something for the front desk to see who confirmed, and handling when people cancel
+
+=== ho2-sensor-anomalies
+kind: feature
+window: bash · bash · /home/u/work/plant-telemetry
+expect: ask
+ask_any: false alarms; false positives; false positive; on-call; operators; success; goal; acceptable; @purpose
+must_not: algorithm; isolation forest; z-score; library; framework; scikit-learn; prophet
+holdout: no
+note: a big multi-part feature; purpose and what counts as done are the owner's; a question on the detection method is implementation flavour; demoted: V2 chosen by measuring on this case (#702); ask_any gains for?|purpose, added after seeing replies, allowed because the case is now tune; #702 M3: the term added after seeing replies is reverted (owner ruling); #702 H3: @purpose added as a uniform rule from this note, owner-approved
+--- screen
+$ ls
+ingest  notebooks  pyproject.toml  tests
+--- repo
+branch: main...origin/main
+root: /home/u/work/plant-telemetry
+status: clean
+recent commits:
+  1d4e9b0 ingest: parquet writer
+  88a07c3 tests: replay fixture
+--- request
+add anomaly detection on the sensor stream, with alerts, a page to review what it flagged, and a backfill over the old data
+
+=== ho2-dump-not-live
+kind: ops
+window: bash · bash · /home/u/work/ledger-api
+out: prompt
+out_is: prompt
+expect: write
+must: live|real; dump|restore|restored
+holdout: no
+note: the limit (the live database stays untouched) and the allowed way (restore the dump locally and run there) are both given; no question; demoted: line 31's example paraphrases this request; can't rule out exposure (#702, practice: report the clean subset)
+--- screen
+$ ls
+docker-compose.yml  dumps  migrations  src
+$ ls dumps migrations | tail -4
+nightly.sql.gz
+0041_split_accounts.sql
+0042_add_ledger_index.sql
+--- repo
+branch: main...origin/main
+root: /home/u/work/ledger-api
+status: clean
+recent commits:
+  e5f20c8 migrations: 0041 split accounts
+--- request
+check that migration 0042 runs cleanly, but don't touch the live db, restore last night's dump into a local container and run it there
+
+=== ho2-tests-only
+kind: bug
+window: bash · bash · /home/u/work/webshop
+out: prompt
+out_is: prompt
+expect: write
+must: src; wait|waits|retry|retries
+holdout: yes
+note: the limit (no edits under src/) and the allowed change (waits or retries in the spec) are both given; no question
+--- screen
+$ npx playwright test checkout
+  1) checkout.spec.ts:31 › pays with a saved card
+     Error: locator('#pay-button') not found
+     Retry #1 ... failed
+  1 failed, 12 passed
+--- repo
+branch: fix/flaky-checkout...origin/main
+root: /home/u/work/webshop
+status:
+  M tests/checkout.spec.ts
+recent commits:
+  4ab7c16 tests: pay with saved card
+--- request
+the checkout test is flaky. don't edit anything under src/, only the tests; adding waits or retries in checkout.spec.ts is fine
+
+# #702 review D1b, written before the prompt change: fixing a failing test
+# keeps the break-it step.
+=== failing-test-keeps-break-it
+kind: bug
+window: claude · claude · /home/u/projects/api
+expect: write
+out_is: prompt
+must: test_discount_rounding|tests/test_pricing.py; on purpose|deliberately|mutate|mutation|mutant|mutants|break the code|then flip|temporarily flip|flip one|try flipping|introduce a small bug|then introduce a bug|temporarily introduce a bug|then invert|temporarily invert|invert one|try inverting; undo|undoing|revert|reverting|restore|put back|put it back
+note: #702 review D1b, written before the prompt change: a failing test to fix gets the break-it step; the "also adds or changes code" exclusion must not drop it
+--- screen
+$ pytest tests/test_pricing.py -q
+.F
+FAILED tests/test_pricing.py::test_discount_rounding - assert 9.99 == 10.0
+1 failed, 1 passed in 0.08s
+--- request
+this test fails, fix it
+
+# Third blind set (#702, purpose question): written without seeing the prompt.
+
+=== ho3-tool-lending-parts
+kind: feature
+window: claude · claude · /home/u/projects/toolshed
+expect: ask
+ask_any: purpose; goal; so that; who uses; who is it for; who it serves; what is it for; what is this for; what problem; @purpose
+holdout: yes
+note: names four parts (catalogue, checkout, waitlist, steward screen) and says nothing of what the lending is for or who borrows; a question about purpose is the one that changes the work most; ask_any holds purpose words only, so a question about the stack or the database does not pass; #702 H3: @purpose added as a uniform rule from this note, owner-approved
+--- repo
+branch: main...origin/main
+root: /home/u/projects/toolshed
+status:
+recent commits:
+  c41f0aa members: profile page
+  7be2d19 flask: app factory
+  1a90e3c db: members table
+diff --stat:
+--- request
+add tool lending: a catalogue page, a checkout and return form, a waitlist for tools that are out, and a steward screen
+
+=== ho3-practice-rooms-stated
+kind: feature
+window: claude · claude · /home/u/projects/musicdept
+expect: write
+holdout: yes
+must: teachers; grid
+must_not: what is this for|what is it for|who will use|who uses it|who is this for|what is the goal|what is the purpose|what's the purpose
+note: same size of feature as the lending case, but the request says it is for the school's music teachers to book practice rooms and that students never book, so no purpose question; the reply must carry the two things the owner stated
+--- repo
+branch: main...origin/main
+root: /home/u/projects/musicdept
+status:
+recent commits:
+  8d2e6b1 staff: login
+  f03a7c9 rooms: seed the six practice rooms
+diff --stat:
+--- request
+add practice-room booking so our music teachers can reserve a room for a lesson: a weekly grid of the six rooms, a booking form, a check that refuses a double booking, and a cancel link. Students never book, only teachers do.
+
+=== ho3-trail-markers-go-ahead
+kind: feature
+window: claude · claude · /home/u/projects/trailkeeper
+expect: write
+holdout: yes
+must: rangers; repair
+must_not: what is it for|what is this for|who will use|who uses it|who is it for|what is the goal|what is the purpose|what's the purpose
+note: second turn through the rig's conversation section: the panel already asked what the trail-marker map is for and the owner answered, so "go ahead" gets a prompt that uses the answer and no second purpose question; the first request is on the screen so the reply knows the parts
+--- screen
+> add a trail marker map: a map view of the markers, a detail panel for one marker, a repair log form, and a filter by trail
+--- conversation
+assistant: What is the trail marker map for? Options: Hikers planning routes | Rangers logging repairs
+user: Rangers logging repairs, so crews know which markers are broken before they set out
+--- request
+go ahead
+
+=== ho3-rsync-site-to-web2
+kind: ops
+window: bash · bash · /home/u/site
+expect: either
+out_is: command
+ask_any: delete; trailing slash; dry run; dry-run; exclude
+must: rsync; web2
+holdout: yes
+note: the source, the host and the target folder are all in the request, so the reply writes the rsync command (a question about --delete or a dry run is also fine); no purpose question applies to a file sync
+--- screen
+$ ls
+build  node_modules  package.json  src
+$ ls build
+index.html  app.js  style.css  img
+--- request
+copy the contents of ./build to deploy@web2.example.net:/var/www/site/ and remove files there that are no longer in build

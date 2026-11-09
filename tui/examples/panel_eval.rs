@@ -7,8 +7,8 @@
 //!
 //!     cargo run --example panel_eval -- [--model M] [--runs N] [--jobs J]
 //!         [--only TEXT] [--cases FILE] [--out FILE.jsonl] [--check] [--no-explore]
-//!         [--no-hermetic] [--judge] [--judge-model M]
-//!     cargo run --example panel_eval -- --compare A.jsonl B.jsonl
+//!         [--no-hermetic] [--judge] [--judge-model M] [--ledger FILE]
+//!     cargo run --example panel_eval -- --compare A.jsonl B.jsonl [--allow-mixed]
 //!     cargo run --example panel_eval -- --calibrate LABELS.jsonl
 //!         [--judge-model M] [--split all|tune|holdout] [--jobs J] [--out FILE.jsonl]
 //!
@@ -45,6 +45,8 @@ use std::time::{Duration, Instant};
 
 #[path = "panel_eval/judge.rs"]
 mod judge;
+#[path = "panel_eval/purpose.rs"]
+mod purpose;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Expect {
@@ -344,23 +346,104 @@ fn strip_trailing_comments(lines: &mut Vec<&str>) {
 /// `/code-review`) needs no boundary there.
 fn has(hay: &str, needle: &str) -> bool {
     let hay = hay.to_lowercase();
-    needle
-        .split('|')
-        .map(|n| n.trim().to_lowercase())
-        .filter(|n| !n.is_empty())
-        .any(|n| {
-            let word = |c: Option<char>| c.is_some_and(char::is_alphanumeric);
-            let (first, last) = (n.chars().next(), n.chars().last());
-            let starts = !word(first);
-            let ends = !word(last);
-            // Every start, overlapping ones too: match_indices skips "ab ab" at 4 in "xab ab ab".
-            (0..hay.len())
-                .filter(|i| hay.is_char_boundary(*i) && hay[*i..].starts_with(n.as_str()))
-                .any(|i| {
-                    let (before, after) = (hay[..i].chars().last(), hay[i + n.len()..].chars().next());
-                    (starts || !word(before)) && (ends || !word(after))
-                })
+    alternatives(needle).any(|n| !starts(&hay, &n).is_empty())
+}
+
+/// An `ask_any` term against a question: `@purpose` is [`asks_purpose`], any
+/// other term is [`has`].
+fn ask_term(question: &str, term: &str) -> bool {
+    match term.trim() {
+        "@purpose" => asks_purpose(question),
+        t => has(question, t),
+    }
+}
+
+/// Whether a question asks what the work is for (#702 H1). Its patterns, built on
+/// the dev half of `evals/panel/purpose-questions.tsv` only, read the question
+/// before its ` [options]`:
+/// - "what" or "who" then a verb ([`WH_VERBS`]) and a "for" that ends a clause
+///   ("What is it mainly for?"); "What platform is it for?" asks which target;
+/// - the same opening and an "about" that ends a clause ("What should it tell
+///   users about?");
+/// - "purpose" anywhere, or "goal" as a purpose: "main goal", "goal of", "goal
+///   for", "the goal" ("Which goal in the Makefile?" is not one);
+/// - "problem" with "solve" ("What problem should it solve?");
+/// - "what should ... achieve" or "what should ... catch".
+///
+/// Known limit: a scope question in the same form still matches ("What is the
+/// backfill for: all history or the last 30 days?").
+fn asks_purpose(question: &str) -> bool {
+    let stem = question.split(" [").next().unwrap_or(question).to_lowercase();
+    let mut words = stem.split_whitespace();
+    let wh_verb = match (words.next(), words.next()) {
+        (Some("what" | "who"), Some(v)) => WH_VERBS.contains(&v),
+        (Some(w), _) => matches!(w, "what's" | "who's"),
+        _ => false,
+    };
+    (wh_verb && has(&stem, "for?|about?"))
+        || has(&stem, "purpose|main goal|goal of|goal for|the goal")
+        || (has(&stem, "problem") && has(&stem, "solve"))
+        || (stem.starts_with("what should") && has(&stem, "achieve|catch"))
+}
+
+/// The verbs that may follow "what" or "who" in a purpose question.
+const WH_VERBS: [&str; 8] = ["is", "are", "was", "will", "would", "should", "does", "do"];
+
+/// [`has`], but a match with a negator shortly before it in its clause does not
+/// count: "do not write the files by hand" names "by hand" only to forbid it. A
+/// `must_not` reads its words this way (#701).
+fn has_unnegated(hay: &str, needle: &str) -> bool {
+    let hay = hay.to_lowercase();
+    alternatives(needle).any(|n| starts(&hay, &n).into_iter().any(|i| !negated(&hay[..i])))
+}
+
+/// The `|` alternatives of `needle`, trimmed and lowercased.
+fn alternatives(needle: &str) -> impl Iterator<Item = String> + '_ {
+    needle.split('|').map(|n| n.trim().to_lowercase()).filter(|n| !n.is_empty())
+}
+
+/// Each byte offset where `n` starts in `hay` as a whole word, both lowercase.
+/// A term ending in `?` ("for?") is its word at the end of a clause: followed by
+/// `?,;:.`, a closing `)` or `]`, or the end of the text, never by another word.
+fn starts(hay: &str, n: &str) -> Vec<usize> {
+    if let Some(w) = n.strip_suffix('?').filter(|w| !w.is_empty()) {
+        return starts(hay, w)
+            .into_iter()
+            .filter(|i| hay[*i + w.len()..].chars().next().is_none_or(|c| "?,;:.)]".contains(c)))
+            .collect();
+    }
+    let word = |c: Option<char>| c.is_some_and(char::is_alphanumeric);
+    let (first, last) = (n.chars().next(), n.chars().last());
+    let starts = !word(first);
+    let ends = !word(last);
+    // Every start, overlapping ones too: match_indices skips "ab ab" at 4 in "xab ab ab".
+    (0..hay.len())
+        .filter(|i| hay.is_char_boundary(*i) && hay[*i..].starts_with(n))
+        .filter(|i| {
+            let (before, after) = (hay[..*i].chars().last(), hay[*i + n.len()..].chars().next());
+            (starts || !word(before)) && (ends || !word(after))
         })
+        .collect()
+}
+
+/// Words a negator may sit before the match it cancels: "do not write the
+/// golden files by hand" puts "not" five words before "by hand".
+const NEGATION_WINDOW: usize = 6;
+
+/// Whether the text just before a match negates it: a negator among the last
+/// [`NEGATION_WINDOW`] words of its clause (a clause ends at `.,;:!?` or a line):
+/// "if there is no flag, write them by hand" negates nothing.
+fn negated(before: &str) -> bool {
+    let clause = before.rsplit(|c| ".,;:!?\n".contains(c)).next().unwrap_or("");
+    let words: Vec<String> = clause
+        .split(|c: char| !(c.is_alphanumeric() || c == '\'' || c == '\u{2019}'))
+        .filter(|w| !w.is_empty())
+        .map(|w| w.replace('\u{2019}', "'"))
+        .collect();
+    let from = words.len().saturating_sub(NEGATION_WINDOW);
+    let single = ["not", "never", "don't", "no", "without"];
+    let pair = |a: &str, b: &str| matches!((a, b), ("rather", "than") | ("instead", "of"));
+    words[from..].iter().any(|w| single.contains(&w.as_str())) || words[from.saturating_sub(1)..].windows(2).any(|p| pair(&p[0], &p[1]))
 }
 
 /// What the panel shows for a reply, the text a `must` is looked for in; `None`
@@ -447,13 +530,13 @@ fn grade(c: &Case, raw: &str) -> Grade {
         } else {
             format!("{text} [{}]", opts.join(" | "))
         };
-        g.on_target = c.ask_any.is_empty() || c.ask_any.iter().any(|w| has(&g.question, w));
+        g.on_target = c.ask_any.is_empty() || c.ask_any.iter().any(|w| ask_term(&g.question, w));
     }
     if !g.asked {
         g.missing = c.must.iter().filter(|m| !has(&text, m)).cloned().collect();
     }
     g.wrong_type = c.out_is.and_then(|want| reply_type(&reply).filter(|t| *t != out_name(want)));
-    g.forbidden = c.must_not.iter().filter(|m| has(&text, m)).cloned().collect();
+    g.forbidden = c.must_not.iter().filter(|m| has_unnegated(&text, m)).cloned().collect();
     let asked_well = g.asked && g.on_target;
     let wrote_well = !g.asked && g.missing.is_empty() && g.wrong_type.is_none();
     g.pass = g.forbidden.is_empty()
@@ -476,6 +559,10 @@ struct Opts {
     check: bool,
     /// Two `--out` files: compared offline, no calls.
     compare: Option<(PathBuf, PathBuf)>,
+    /// `--compare` pairs a case whose rows on one side carry two prompt hashes.
+    allow_mixed: bool,
+    /// The cost ledger; default `cost.tsv` next to `--out`.
+    ledger: Option<PathBuf>,
     /// `explore:` cases run as the text call, on the same folder.
     no_explore: bool,
     /// No user settings or CLAUDE.md, and a fresh cwd per call (#598).
@@ -485,6 +572,8 @@ struct Opts {
     judge_model: String,
     /// A labelled file: run the judge on it and print its agreement with the owner.
     calibrate: Option<PathBuf>,
+    /// A purpose-question fixture: calibrate the `@purpose` judge on it (#702 H2).
+    purpose_calibrate: Option<PathBuf>,
     split: judge::Split,
 }
 
@@ -498,7 +587,10 @@ fn opts(args: impl IntoIterator<Item = String>) -> Result<Opts, String> {
         only: None,
         out: None,
         check: false,
+        purpose_calibrate: None,
         compare: None,
+        allow_mixed: false,
+        ledger: None,
         no_explore: false,
         hermetic: true,
         judge: false,
@@ -519,9 +611,12 @@ fn opts(args: impl IntoIterator<Item = String>) -> Result<Opts, String> {
             "--check" => o.check = true,
             "--no-explore" => o.no_explore = true,
             "--no-hermetic" => o.hermetic = false,
+            "--allow-mixed" => o.allow_mixed = true,
+            "--ledger" => o.ledger = Some(val()?.into()),
             "--judge" => o.judge = true,
             "--judge-model" => o.judge_model = val()?,
             "--calibrate" => o.calibrate = Some(val()?.into()),
+            "--purpose-calibrate" => o.purpose_calibrate = Some(val()?.into()),
             "--split" => o.split = judge::Split::parse(&val()?)?,
             "--compare" => {
                 let two = (a.next(), a.next());
@@ -635,6 +730,8 @@ struct Job {
     model: String,
     /// The system prompt's hash.
     system: u64,
+    /// [`prompt_hash`] when the job started.
+    prompt: String,
     req: Request,
     started: Instant,
 }
@@ -658,11 +755,31 @@ fn main() {
                 .and_then(|t| read_rows(&name, &t))
         };
         match read(a).and_then(|ra| Ok((ra, read(b)?))) {
-            Ok((ra, rb)) => print_compare(&[(a, &ra), (b, &rb)]),
+            Ok((ra, rb)) => {
+                let mixed: Vec<String> = [(a, &ra), (b, &rb)]
+                    .iter()
+                    .flat_map(|(p, rows)| mixed_prompts(rows).into_iter().map(move |id| format!("{id} in {}", p.display())))
+                    .collect();
+                if !mixed.is_empty() && !o.allow_mixed {
+                    eprintln!(
+                        "panel_eval: rows with two prompt hashes for one case: {}; --allow-mixed pairs them anyway",
+                        mixed.join(", ")
+                    );
+                    std::process::exit(2);
+                }
+                print_compare(&[(a, &ra), (b, &rb)])
+            }
             Err(e) => {
                 eprintln!("panel_eval: {e}");
                 std::process::exit(2);
             }
+        }
+        return;
+    }
+    if let Some(file) = &o.purpose_calibrate {
+        if let Err(e) = purpose_calibrate(file, &o) {
+            eprintln!("panel_eval: {e}");
+            std::process::exit(2);
         }
         return;
     }
@@ -750,6 +867,8 @@ fn main() {
     let mut reads: Vec<usize> = vec![];
     // with --judge: each row, and what the judge reads of it
     let mut rows: Vec<(serde_json::Value, judge::Input)> = vec![];
+    // each prompt hash the jobs saw, in order: two means an override changed mid-run
+    let mut prompt_sets: Vec<String> = vec![];
     while !todo.is_empty() || !live.is_empty() {
         while live.len() < o.jobs
             && let Some((ci, run)) = todo.pop()
@@ -758,6 +877,11 @@ fn main() {
             let path = pane_path(c, staged.0.as_deref());
             let explore = c.explore.is_some() && !o.no_explore;
             let (system, prompt, profile) = panel_call(c, &path, explore);
+            // per job, next to the call: an override edited mid-run shows in the rows
+            let prompt_files = prompt_hash();
+            if !prompt_sets.contains(&prompt_files) {
+                prompt_sets.push(prompt_files.clone());
+            }
             let flow = Flow::Write {
                 draft: c.request.clone(),
                 out: c.out,
@@ -780,6 +904,7 @@ fn main() {
                 explore,
                 model,
                 system: h,
+                prompt: prompt_files,
                 req,
                 started: Instant::now(),
             });
@@ -835,7 +960,7 @@ fn main() {
             if log.is_some() || o.judge {
                 let row = serde_json::json!({
                     "id": c.id, "kind": c.kind, "expect": want, "run": j.run, "model": j.model,
-                    "system": format!("{:016x}", j.system),
+                    "system": format!("{:016x}", j.system), "prompt": j.prompt,
                     "ms": ms as u64, "error": err,
                     "asked": g.as_ref().map(|g| g.asked), "pass": g.as_ref().map(|g| g.pass),
                     "question": g.as_ref().map(|g| g.question.clone()),
@@ -863,8 +988,36 @@ fn main() {
     }
     summary(&cases, &done, &hashes, o.runs);
     let mut judged_nothing = false;
+    let mut judge_usd = None;
     if o.judge {
-        judged_nothing = judge_rows(&mut rows, &o, &call.claude, wrapped, log.as_mut());
+        let (none, usd) = judge_rows(&mut rows, &o, &call.claude, wrapped, log.as_mut());
+        (judged_nothing, judge_usd) = (none, Some(usd));
+    }
+    let ledger = ledger_path(&o);
+    let label = o
+        .out
+        .as_ref()
+        .and_then(|p| p.file_name())
+        .map_or("-".into(), |n| n.to_string_lossy().into_owned());
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let total: f64 = costs.iter().flatten().sum();
+    let mut lines = vec![ledger_row(secs, &label, cases.len(), o.runs, total, &prompt_sets.join(","))];
+    if let Some(usd) = judge_usd {
+        lines.push(ledger_row(
+            secs,
+            &format!("{label} judge"),
+            cases.len(),
+            o.runs,
+            usd,
+            &o.judge_model,
+        ));
+    }
+    for line in lines {
+        if let Err(e) = ledger_append(&ledger, &line) {
+            eprintln!("panel_eval: ledger {}: {e}", ledger.display());
+        }
     }
     println!("environment     {env}");
     if let Some(l) = cost_line(&costs, wrapped) {
@@ -919,7 +1072,7 @@ fn judge_rows(
     claude: &str,
     wrapped: bool,
     mut log: Option<&mut std::fs::File>,
-) -> bool {
+) -> (bool, f64) {
     // the rig wraps calls by naming itself as claude: the judge calls the real one
     let real = match wrapped {
         true => std::env::var(AS_CLAUDE).unwrap_or_else(|_| claude.into()),
@@ -955,7 +1108,7 @@ fn judge_rows(
             let _ = writeln!(f, "{row}");
         }
     }
-    judge::every_failed(&judged)
+    (judge::every_failed(&judged), cost.iter().flatten().sum())
 }
 
 /// Puts `judged[n]` on row `todo[n]` and prints its line; returns the calls
@@ -1226,6 +1379,8 @@ struct Row {
     pass: Option<bool>,
     /// The system prompt's hash; "" in a file written before it was recorded.
     system: String,
+    /// The hash of write.txt and its examples as loaded; "" in an older file.
+    prompt: String,
     cost_usd: Option<f64>,
     ms: Option<u64>,
     /// The files an exploring call read; `None` for a text call or an older file.
@@ -1252,6 +1407,7 @@ fn read_rows(name: &str, text: &str) -> Result<Vec<Row>, String> {
             expect: text("expect"),
             pass,
             system: text("system"),
+            prompt: text("prompt"),
             cost_usd: v["cost_usd"].as_f64(),
             ms: v["ms"].as_u64(),
             files_read: v["files_read"].as_array().map(Vec::len),
@@ -1524,6 +1680,116 @@ fn fnv(s: &str) -> u64 {
         .fold(0xcbf2_9ce4_8422_2325, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3))
 }
 
+/// The hash of the write prompt and its example pool as the panel loads them,
+/// overrides included: one value per prompt set, whatever the case (#701).
+fn prompt_hash() -> String {
+    prompt_hash_in(&config_home())
+}
+
+/// [`prompt_hash`] over the override folder under `base`: each of write.txt, its
+/// example pool and write.explore.txt as `prompts::load` reads it (the file, or
+/// the shipped text when it is missing or unreadable, less trailing newlines).
+/// Keep in step with `prompts::load` in tui/src/panel/prompts.rs: a change to
+/// how it finds or trims a prompt must change this too.
+fn prompt_hash_in(base: &Path) -> String {
+    use cockpit_tui::panel::prompts;
+    let load = |name: &str, shipped: &str| {
+        let p = base.join("tmux-cockpit/prompts").join(format!("{name}.txt"));
+        let t = std::fs::read_to_string(p).unwrap_or_else(|_| shipped.to_string());
+        t.trim_end_matches('\n').to_string()
+    };
+    let w = load("write", prompts::WRITE);
+    let e = load("write.examples", prompts::WRITE_EXAMPLES);
+    let x = load("write.explore", prompts::WRITE_EXPLORE);
+    format!("{:016x}", fnv(&format!("{w}\0{e}\0{x}")))
+}
+
+/// The ids whose rows carry more than one prompt hash. A row with none, from an
+/// older file, counts as one more value when another row of its case has one.
+fn mixed_prompts(rows: &[Row]) -> Vec<String> {
+    let mut ids: Vec<String> = vec![];
+    for r in rows {
+        let two = rows.iter().any(|o| o.id == r.id && o.prompt != r.prompt);
+        if two && !ids.contains(&r.id) {
+            ids.push(r.id.clone());
+        }
+    }
+    ids
+}
+
+/// Calibrates the `@purpose` judge on a fixture: each row's verdict from the
+/// cache next to the ledger or one call, then agreement, false accepts and
+/// misses, and whether the fallback may be used. The spend goes to the ledger.
+fn purpose_calibrate(file: &Path, o: &Opts) -> Result<(), String> {
+    let text = std::fs::read_to_string(file).map_err(|e| format!("{}: {e}", file.display()))?;
+    let rows = purpose::read_fixture(&text)?;
+    let claude = std::env::var("COCKPIT_CLAUDE")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .unwrap_or("claude".into());
+    let ledger = ledger_path(o);
+    let mut cache = purpose::Cache::open(&ledger.with_file_name("purpose-cache.tsv"));
+    let qs: Vec<String> = rows.iter().map(|(q, _)| q.clone()).collect();
+    let (verdicts, usd) = purpose::judge_all(&claude, &o.judge_model, &qs, o.jobs, &mut cache);
+    let c = purpose::tally(&rows, &verdicts);
+    println!(
+        "purpose judge {} on {} rows, rubric {}",
+        o.judge_model,
+        rows.len(),
+        purpose::rubric_hash()
+    );
+    println!("agreement       {}/{} judged, {} failed calls", c.agree, c.judged, c.failed);
+    println!("false accepts   {}/{} 0-rows", c.false_accepts.0, c.false_accepts.1);
+    println!("misses          {}/{} 1-rows", c.misses.0, c.misses.1);
+    println!("fallback        {}", if purpose::usable(&c) { "usable" } else { "not usable" });
+    println!("cost            ${usd:.4}");
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    ledger_append(&ledger, &ledger_row(secs, "purpose-calibrate", rows.len(), 1, usd, &o.judge_model))
+        .map_err(|e| format!("ledger {}: {e}", ledger.display()))?;
+    for ((q, want), got) in rows.iter().zip(&verdicts) {
+        if got.is_some_and(|g| g != *want) {
+            println!("DISAGREE want {} judge {}  {q}", u8::from(*want), u8::from(got.unwrap_or(false)));
+        }
+    }
+    Ok(())
+}
+
+/// Where a run's cost goes: `--ledger`, else `cost.tsv` next to `--out`, else
+/// `panel-eval-cost.tsv` in `${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit`.
+fn ledger_path(o: &Opts) -> PathBuf {
+    if let Some(l) = &o.ledger {
+        return l.clone();
+    }
+    if let Some(out) = &o.out {
+        return out.with_file_name("cost.tsv");
+    }
+    let state = match std::env::var("XDG_STATE_HOME") {
+        Ok(v) if v.starts_with('/') => PathBuf::from(v),
+        _ => PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".local/state"),
+    };
+    state.join("tmux-cockpit/panel-eval-cost.tsv")
+}
+
+/// One cost ledger line: unix time, the `--out` label, cases, runs, dollars, prompt hash.
+fn ledger_row(secs: u64, label: &str, cases: usize, runs: usize, total: f64, prompt: &str) -> String {
+    format!("{secs}\t{label}\t{cases}\t{runs}\t{total:.4}\t{prompt}")
+}
+
+/// Appends `line` to the ledger at `path`, with a header when the file is new.
+fn ledger_append(path: &Path, line: &str) -> std::io::Result<()> {
+    if let Some(d) = path.parent() {
+        std::fs::create_dir_all(d)?;
+    }
+    let new = !path.exists();
+    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
+    if new {
+        writeln!(f, "time\tout\tcases\truns\tusd\tprompt")?;
+    }
+    writeln!(f, "{line}")
+}
+
 /// `n` of `d`, and what a summary line counts.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Of(usize, usize);
@@ -1720,6 +1986,48 @@ mod tests {
     }
 
     #[test]
+    fn must_not_skips_a_mention_a_negator_cancels() {
+        let mut c = parse_cases(ONE).unwrap().remove(0);
+        c.must_not = vec!["by hand".into()];
+        for r in [
+            "<prompt>Do not write the golden files by hand, and use the project's own flag.</prompt>",
+            "<prompt>The test defines an update flag, so use it rather than writing the files by hand.</prompt>",
+        ] {
+            assert_eq!(grade(&c, r).forbidden, Vec::<String>::new(), "{r}");
+        }
+    }
+
+    #[test]
+    fn must_not_still_trips_on_a_plain_mention() {
+        let mut c = parse_cases(ONE).unwrap().remove(0);
+        c.must_not = vec!["by hand".into()];
+        let g = grade(&c, "<prompt>Write them by hand. Do not run the generator.</prompt>");
+        assert_eq!(g.forbidden, ["by hand"]);
+    }
+
+    #[test]
+    fn a_negator_before_a_comma_does_not_cancel() {
+        for r in [
+            "If the tests do not pass, edit the golden files by hand",
+            "If there is no flag, write the golden files by hand",
+            "It is a no-op flag, so write them by hand",
+            "Do it without the flag, regenerate them by hand",
+        ] {
+            assert!(has_unnegated(r, "by hand"), "{r}");
+        }
+    }
+
+    #[test]
+    fn a_negator_cancels_only_inside_its_clause_and_window() {
+        assert!(has_unnegated("Do not edit. Write the files by hand.", "by hand"));
+        assert!(has_unnegated("not a b c d e f write by hand", "by hand"));
+        assert!(!has_unnegated("never write it by hand", "by hand"));
+        assert!(!has_unnegated("Don\u{2019}t use a subagent", "subagent"));
+        assert!(!has_unnegated("use the flag instead of editing by hand", "by hand"));
+        assert!(has_unnegated("a subagent, not a skill, and a subagent", "subagent"));
+    }
+
+    #[test]
     fn either_takes_a_good_question_or_a_good_prompt_and_must_not_fails_both() {
         let mut c = parse_cases(ONE).unwrap().remove(0);
         c.expect = Expect::Either;
@@ -1761,6 +2069,90 @@ mod tests {
         assert_eq!(parse_cases(ONE).unwrap()[0].repo, "");
         let twice = t.replace("--- request", "--- repo\nx\n--- request");
         assert!(parse_cases(&twice).unwrap_err().contains("repo given twice"));
+    }
+
+    #[test]
+    fn a_question_term_matches_its_word_at_the_end_of_a_clause() {
+        assert!(has("What is the anomaly detection for, mainly?", "for?"));
+        assert!(has("What are the reminders for: who gets them", "for?"));
+        assert!(has("Who is it for?", "for?"));
+        assert!(has("(and what is it for)", "for?"));
+        assert!(has("what is it for", "for?"), "the end of the text ends the clause");
+        assert!(!has("Is this for the dashboard?", "for?"));
+        assert!(!has("Is this format right?", "for?"));
+    }
+
+    #[test]
+    fn purpose_terms_match_no_question_two_labellers_marked_not_about_purpose() {
+        // Panel questions, each marked 1 (asks what the work is for) or 0 by two
+        // blind labellers (#702 M2). The ask_any purpose terms of the cases.
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("evals/panel/purpose-questions.tsv");
+        let text = std::fs::read_to_string(path).unwrap();
+        let terms = ["for?", "purpose", "goal", "about?"];
+        let (mut hit, mut ones, mut false_hits) = (0, 0, vec![]);
+        for line in text.lines().filter(|l| !l.starts_with('#')) {
+            let (q, label) = line.split_once('\t').unwrap();
+            let m = terms.iter().any(|t| has(q, t));
+            match label {
+                "1" => (ones, hit) = (ones + 1, hit + usize::from(m)),
+                "0" if m => false_hits.push(q),
+                "0" => {}
+                l => panic!("label {l}"),
+            }
+        }
+        assert_eq!(false_hits, Vec::<&str>::new());
+        // recall: the misses ask the purpose in other words ("what problem
+        // should it solve"), which the terms do not name; no label is changed
+        assert_eq!((hit, ones), (213, 227));
+    }
+
+    #[test]
+    fn an_at_purpose_ask_any_takes_a_question_about_what_the_work_is_for() {
+        let mut c = parse_cases(ONE).unwrap().remove(0);
+        c.expect = Expect::Ask;
+        c.ask_any = vec!["@purpose".into()];
+        let on = |q: &str| grade(&c, &format!("<question>{q}</question><option>a</option><option>b</option>")).on_target;
+        assert!(on("What is the main problem these features should solve?"));
+        assert!(on("What is the audit log mainly for?"));
+        assert!(!on("What kind of notifications do you want?"));
+        assert!(!on("Is this for the dashboard?"));
+    }
+
+    #[test]
+    fn at_purpose_on_each_half_of_the_fixture_accepts_no_non_purpose_question() {
+        // halves by the question's hash: the patterns were built on dev (even) only
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("evals/panel/purpose-questions.tsv");
+        let text = std::fs::read_to_string(path).unwrap();
+        let mut seen = [(0, 0, 0); 2]; // (hits on 1-rows, 1-rows, hits on 0-rows)
+        for line in text.lines().filter(|l| !l.starts_with('#')) {
+            let (q, label) = line.split_once('\t').unwrap();
+            let h = &mut seen[(fnv(q) % 2) as usize];
+            let m = asks_purpose(q);
+            match label {
+                "1" => (h.0, h.1) = (h.0 + usize::from(m), h.1 + 1),
+                _ => h.2 += usize::from(m),
+            }
+        }
+        assert_eq!(seen, [(100, 100, 0), (126, 127, 0)], "[dev, test]");
+    }
+
+    #[test]
+    fn at_purpose_rejects_a_which_target_question() {
+        for q in [
+            "What platform is it for?",
+            "What time zone is the reminder for?",
+            "Which goal in the Makefile?",
+        ] {
+            assert!(!asks_purpose(q), "{q}");
+        }
+        assert!(!asks_purpose("Is this for the dashboard?"));
+        assert!(!asks_purpose("What should the button say about errors?"));
+    }
+
+    #[test]
+    fn at_purpose_known_limit_a_scope_question_with_a_verb_still_matches() {
+        // "is" follows "What", so the for? rule takes it, though it asks the scope
+        assert!(asks_purpose("What is the backfill for: all history or the last 30 days?"));
     }
 
     #[test]
@@ -1974,6 +2366,80 @@ mod tests {
     }
 
     #[test]
+    fn the_prompt_hash_follows_each_override_explore_included() {
+        let d = std::env::temp_dir().join(format!("panel-eval-hash-{}", std::process::id()));
+        let dir = d.join("tmux-cockpit/prompts");
+        std::fs::create_dir_all(&dir).unwrap();
+        let shipped = prompt_hash_in(&d);
+        let mut seen = vec![shipped.clone()];
+        for name in ["write", "write.examples", "write.explore"] {
+            std::fs::write(dir.join(format!("{name}.txt")), format!("{name} edited")).unwrap();
+            let h = prompt_hash_in(&d);
+            assert!(!seen.contains(&h), "{name}.txt did not change the hash");
+            seen.push(h);
+        }
+        std::fs::remove_dir_all(&d).unwrap();
+        assert_eq!(prompt_hash_in(&d), shipped);
+    }
+
+    #[test]
+    fn compare_names_a_case_whose_rows_carry_two_prompt_hashes() {
+        let rows = read_rows(
+            "a",
+            concat!(
+                r#"{"id":"x","expect":"write","run":0,"pass":true,"prompt":"aa"}"#,
+                "\n",
+                r#"{"id":"x","expect":"write","run":1,"pass":true,"prompt":"bb"}"#,
+                "\n",
+                r#"{"id":"y","expect":"write","run":0,"pass":true,"prompt":"aa"}"#,
+                "\n",
+                r#"{"id":"z","expect":"write","run":0,"pass":true}"#,
+                "\n",
+                r#"{"id":"z","expect":"write","run":1,"pass":true,"prompt":"aa"}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+        assert_eq!(mixed_prompts(&rows), ["x", "z"], "z: a row with no hash beside one with a hash");
+        assert!(opts(args("--compare a b --allow-mixed")).unwrap().allow_mixed);
+        assert!(!opts(args("--compare a b")).unwrap().allow_mixed);
+    }
+
+    #[test]
+    fn the_ledger_goes_to_ledger_then_next_to_out_then_the_state_folder() {
+        let o = opts(args("--ledger /l/c.tsv --out /o/a.jsonl")).unwrap();
+        assert_eq!(ledger_path(&o), PathBuf::from("/l/c.tsv"));
+        let o = opts(args("--out /o/a.jsonl")).unwrap();
+        assert_eq!(ledger_path(&o), PathBuf::from("/o/cost.tsv"));
+        let o = opts(args("")).unwrap();
+        assert!(
+            ledger_path(&o).ends_with("tmux-cockpit/panel-eval-cost.tsv"),
+            "{:?}",
+            ledger_path(&o)
+        );
+    }
+
+    #[test]
+    fn the_ledger_appends_one_row_a_run_under_a_header() {
+        let d = std::env::temp_dir().join(format!("panel-eval-ledger-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let p = d.join("cost.tsv");
+        ledger_append(&p, &ledger_row(7, "a.jsonl", 4, 5, 0.25, "ff")).unwrap();
+        ledger_append(&p, &ledger_row(8, "b.jsonl", 1, 3, 0.1, "ee")).unwrap();
+        let t = std::fs::read_to_string(&p).unwrap();
+        std::fs::remove_dir_all(&d).unwrap();
+        let lines: Vec<&str> = t.lines().collect();
+        assert_eq!(
+            lines,
+            [
+                "time\tout\tcases\truns\tusd\tprompt",
+                "7\ta.jsonl\t4\t5\t0.2500\tff",
+                "8\tb.jsonl\t1\t3\t0.1000\tee"
+            ]
+        );
+    }
+
+    #[test]
     fn compare_takes_two_files() {
         let o = opts(args("--compare a.jsonl b.jsonl")).unwrap();
         assert_eq!(o.compare, Some(("a.jsonl".into(), "b.jsonl".into())));
@@ -1996,6 +2462,7 @@ mod tests {
             expect: "ask".into(),
             pass: Some(true),
             system: "00ff".into(),
+            prompt: String::new(),
             cost_usd: None,
             ms: None,
             files_read: None,

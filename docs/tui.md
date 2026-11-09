@@ -273,6 +273,30 @@ the cases file; holdout cases are written after the prompt they run on, so a
 gain there is not overfitting. `--model`, `--runs`, `--jobs`, `--only <id or
 kind>`, `--out <file.jsonl>` and `--no-hermetic` are the knobs.
 
+A prompt change aims at 100% on the tune cases (#701). A significant drop on a
+held-out case blocks it, no edit may aim at a particular held-out case, and a
+held-out case that fails gets a new blind case written for its class. Stop
+after at most 3 fix iterations, or sooner when an iteration gains nothing or a
+fix breaks a case that passed before. Then `git revert` back to the best
+commit, report its pass rate on old and held-out cases apart, and name each
+blocking case with its failing reply and its cause: prompt, label or noise.
+
+The decision rule for each prompt change: before running, the commit message
+names the target cases and the direction expected; a move nobody predicted is
+noise. A target below 100% gets 30 runs per side, and the change stays only if
+a one-sided Fisher test gives p < 0.05 (computed by hand: the rig prints pass
+counts, not p-values). Guards get 3 full runs; a case at 1/3 or worse gets 30
+fresh runs per side, and a drop that holds at p < 0.05 on those alone reverts
+the change. The flagging runs never count: they were picked because they
+failed, so pooling them biases the test toward a drop. A change gets at most 3
+wordings, then the stop rule applies. Each `--out` row carries `prompt`, the
+hash of `write.txt`, its examples and `write.explore.txt` as loaded, taken when
+each job starts; `--compare` refuses a case whose rows on one side carry two
+hashes unless given `--allow-mixed`. Each run appends its cost to `--ledger
+<file>`, else to `cost.tsv` next to `--out`, else to
+`${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/panel-eval-cost.tsv`; a
+`--judge` run adds a second row for the judge's spend.
+
 Calls are hermetic by default (#598): `claude --setting-sources ""`, so no
 user, project or local settings load, and with them no `CLAUDE.md`, no plugin
 hooks and no `effortLevel`; and each call runs in a fresh empty temp folder, not

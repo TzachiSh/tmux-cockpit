@@ -1,0 +1,347 @@
+# Panel questions, each marked 1 (asks what the work is for) or 0 (asks something
+# else) by two independent blind labellers; only rows both agreed on, the 8 rows
+# either marked unsure left out (#702 M2). Format: question TAB label.
+Can you give an example of a wrong total? [Yes, I have an example | No, investigate to find it]	0
+How are the dates wrong? [Off by one day | Wrong format or month]	0
+How should prices in other currencies be set? [Convert from base currency with rates | Fixed price per currency]	0
+How should reminders be sent to patients? [SMS | Email]	0
+How should reminders reach patients? [SMS messages | Email messages]	0
+How should reminders reach patients? [SMS | Email]	0
+How should the three commits be undone? [Keep changes, uncommit (reset --soft) | Discard commits and changes (reset --hard)]	0
+Should customers be charged in their own currency, or only shown converted prices? [Charge in their currency | Show converted prices only]	0
+Undo all three commits, or just the last one? [All three commits | Only the last commit]	0
+What are the notifications for? [Alert on team weekly totals | General app events for users]	1
+What are the notifications for? [Alert users to data changes | Show system/status messages]	1
+What are the reminders and confirmations mainly for? [Cut patient no-shows | Help front desk manage the schedule]	1
+What are the reminders and confirmations mainly for? [Cut patient no-shows | Reduce front desk phone work]	1
+What are the reminders and confirmations mainly for? [Reduce no-shows | Front desk workload]	1
+What are the reminders and the front desk view mainly for? [Cut down patient no-shows | Free up cancelled slots quickly]	1
+What are the reminders for: who gets them and how? [Patients, to cut no-shows | Front desk staff, as a to-do]	1
+What are the reminders mainly for? [Reduce patient no-shows | Let patients confirm or cancel]	1
+What do the wrong totals look like? [Too high or too low by a discount | Off by a few cents (rounding)]	0
+What do the wrong totals look like? [Too high or too low by an amount | Rounding off by a cent]	0
+What do you mean by "clean up" the logs? [Delete old rotated logs | Clean up the logging code]	0
+What do you mean by "clean up" the logs? [Delete old rotated logs | Tidy the logging code]	0
+What do you mean by cleaning up the logs? [Delete old rotated logs | Tidy the logging code]	0
+What do you see that is wrong with the totals? [Total is too high or too low | Rounding off by cents]	0
+What does "off" look like for those customers? [Total is wrong by a discount | Total is wrong by tax]	0
+What form should each labeling card take? [One markdown file per case | One HTML page with all cards]	0
+What is multi-currency checkout for? [Sell to customers abroad in their currency | Show prices converted, charge in one currency]	1
+What is the anomaly detection for, mainly? [Catch equipment faults early | Flag bad sensor data quality]	1
+What is the anomaly detection for, mainly? [Catching sensor faults early | Spotting process problems in the plant]	1
+What is the anomaly detection for? [Catch equipment faults early | Catch bad or faulty sensor data]	1
+What is the anomaly detection for? [Catch equipment faults early | Flag bad sensor data quality]	1
+What is the anomaly detection for? [Catch equipment faults early | Flag bad sensor data]	1
+What is the anomaly detection for? [Catching equipment faults early | Catching bad sensor data]	1
+What is the anomaly detection for? [Catching equipment faults early | Spotting bad sensor data]	1
+What is the anomaly detection for? [Catching equipment or process faults early | Catching bad sensor data quality]	1
+What is the anomaly detection mainly for? [Catch equipment faults early | Flag bad or faulty sensor data]	1
+What is the anomaly detection mainly for? [Catch equipment faults early | Flag bad sensor data quality]	1
+What is the anomaly detection mainly for? [Catch equipment faults early | Flag bad sensor data]	1
+What is the anomaly detection mainly for? [Catch equipment faults early | Spot bad sensor data quality]	1
+What is the anomaly detection mainly for? [Catching equipment faults early | Catching bad sensor data]	1
+What is the anomaly detection mainly for? [Catching equipment faults early | Finding bad sensor data]	1
+What is the anomaly detection mainly for? [Catching equipment faults early | Flagging bad sensor data]	1
+What is the anomaly detection mainly for? [Catching equipment faults early | Spotting bad sensor data]	1
+What is the audit log mainly for? [Compliance: who changed what | Security incident investigation]	1
+What is the audit log mainly for? [Security and compliance trail | Debugging admin actions]	1
+What is the audit log mainly for? [Security and compliance trail | Tracking who changed what]	1
+What is the audit logging for? [Compliance and security trail | Track who changed what]	1
+What is the audit logging for? [Security and compliance trail | Debugging and support]	1
+What is the audit logging for? [Track admin actions for accountability | Compliance or security requirements]	1
+What is the audit logging for? [Track who changed what (compliance) | Debug and security monitoring]	1
+What is the audit logging mainly for? [Compliance and accountability | Security and incident investigation]	1
+What is the audit logging mainly for? [Security and compliance trail | Debugging and support]	1
+What is the audit logging mainly for? [Who changed what (compliance trail) | Security monitoring of logins and access]	1
+What is the caching for? [Faster responses | Less load on database]	1
+What is the hostname or IP of the new build box? [I'll give a hostname | I'll give an IP address]	0
+What is the hostname or IP of the new build box? [I'll give an IP address | I'll give a DNS hostname]	0
+What is the main goal of splitting src/app.rs? [Cleaner structure, easier to read | Room to add a new feature]	1
+What is the main goal of these reminders and confirmations? [Cut patient no-shows | Reduce front desk phone calls]	1
+What is the main goal of these reminders and confirmations? [Reduce patient no-shows | Free up cancelled slots quickly]	1
+What is the main goal of these reminders and confirmations? [Reduce patient no-shows | Give front desk a clear daily view]	1
+What is the main goal of these reminders and confirmations? [Reduce patient no-shows | Help front desk manage the schedule]	1
+What is the main goal of these reminders and the cancel handling? [Cut down patient no-shows | Help front desk fill cancelled slots]	1
+What is the main goal of these reminders and the confirmation view? [Cut down patient no-shows | Help front desk manage the schedule]	1
+What is the main goal of these reminders and the confirmation view? [Cut down patient no-shows | Let front desk manage the day's schedule]	1
+What is the main goal of these reminders and the confirmation view? [Cut no-shows and empty slots | Give front desk visibility only]	1
+What is the main goal of these reminders and the confirmation view? [Cut patient no-shows | Refill cancelled slots quickly]	1
+What is the main goal of these reminders and the confirmation view? [Reduce no-shows for patients | Help front desk manage the schedule]	1
+What is the main goal of these reminders and the confirmation view? [Reduce patient no-shows | Fill cancelled slots quickly]	1
+What is the main goal of these reminders, confirmations and cancel handling? [Reduce patient no-shows | Fill cancelled slots quickly]	1
+What is the main goal of these reminders, confirmations and cancellation handling? [Cut down patient no-shows | Save front desk phone time]	1
+What is the main goal of these reminders, confirmations and cancellation handling? [Cut no-shows | Refill cancelled slots quickly]	1
+What is the main goal of these reminders, confirmations and cancellation handling? [Cut no-shows, refill cancelled slots | Keep patients informed, less phone work]	1
+What is the main goal of these reminders, confirmations and cancellation handling? [Cut patient no-shows | Give front desk a clear view]	1
+What is the main goal of these reminders, confirmations and cancellation handling? [Cut patient no-shows | Reduce front desk phone work]	1
+What is the main goal of these reminders, confirmations and cancellation handling? [Reduce patient no-shows | Cut front desk phone work]	1
+What is the main goal of these reminders, confirmations and cancellation handling? [Reduce patient no-shows | Help front desk manage the schedule]	1
+What is the main goal of these reminders, confirmations and cancellation handling? [Reduce patient no-shows | Let the front desk refill cancelled slots]	1
+What is the main goal of these reminders, confirmations and cancellation handling? [Reduce patient no-shows | Refill cancelled slots quickly]	1
+What is the main goal of these reminders? [Cut down patient no-shows | Give the front desk a clear schedule]	1
+What is the main goal of these reminders? [Cut patient no-shows | Fill cancelled slots quickly]	1
+What is the main goal of these reminders? [Reduce patient no-shows | Free cancelled slots for others]	1
+What is the main goal of these three features? [Reduce patient no-shows | Front desk can manage cancelled slots]	1
+What is the main problem these features should solve? [Reduce patient no-shows | Give front desk better visibility]	1
+What is the main problem these reminders should solve? [Cut patient no-shows | Reduce front desk phone work]	1
+What is the main purpose of the anomaly detection? [Catch equipment faults early | Flag bad sensor data quality]	1
+What is the main purpose of the anomaly detection? [Catch equipment faults early | Flag bad sensor data]	1
+What is the main purpose of these reminders and the confirmation view? [Cut down patient no-shows | Help front desk fill cancelled slots]	1
+What is the main purpose of these reminders and the confirmation view? [Reduce patient no-shows | Free up cancelled slots]	1
+What is the main purpose of these reminders and the confirmation view? [Reduce patient no-shows | Help front desk manage schedule]	1
+What is the main purpose of these reminders, confirmations and cancellation handling? [Reduce patient no-shows | Refill cancelled slots quickly]	1
+What is the new date for the demo? [I have a new date | No new date yet]	0
+What is the new release date? [I don't have a new date yet | I'll type the new date]	0
+What is the new release date? [I have a new date | No new date yet]	0
+What is the new release date? [Not decided yet | I'll give a date]	0
+What is the new release date? [Not known yet | I'll type the new date]	0
+What is the new support phone number? [I'll give the number now | Use a placeholder for now]	0
+What is the new support phone number? [I'll type the new number | Not decided yet]	0
+What is the notification feature for? [Alert users to data changes | Show system/app status messages]	1
+What is the rate limiting for? [Protect against abuse and overload | Fair usage quotas per client]	1
+What is the rate limiting mainly for? [Protect against abuse and overload | Fair per-client usage quotas]	1
+What is the rate limiting mainly for? [Stop abuse and overload | Enforce per-customer quotas]	1
+What is the refactor for? [Cleaner structure, easier to maintain | Make room for a new feature]	1
+What is the refactor of the payments module for? [Cleaner structure, easier to maintain | Make room for a new feature]	1
+What is the staging server's address and the build folder? [I'll give host and path | Staging host is in my ssh config]	0
+What is wrong with the dates? [Off by one day or timezone | Wrong format or wrong month]	0
+What is wrong with the results for "tmux"? [Expected pages are missing | Wrong order or irrelevant ones]	0
+What is wrong with the results for "tmux"? [Wrong pages, missing expected ones | Right pages, wrong order]	0
+What is wrong with the search results for "tmux"? [Wrong or irrelevant pages listed | Right pages, wrong order]	0
+What kind of YAML job is this? [Kubernetes CronJob | GitHub Actions workflow]	0
+What kind of config should this be? [Docker Compose | .env file]	0
+What kind of notifications do you mean? [In-app alerts in the dashboard | Email or Slack messages]	0
+What kind of notifications do you mean? [In-app alerts in the dashboard | Email or push messages]	0
+What kind of notifications do you mean? [In-app alerts in the dashboard | Email or push notifications]	0
+What kind of notifications do you mean? [In-app alerts on the dashboard | Email or Slack messages]	0
+What kind of notifications do you mean? [In-app alerts on the page | Email or Slack messages]	0
+What kind of notifications do you mean? [In-app alerts on the page | Email or push messages]	0
+What kind of notifications do you want on the dashboard? [In-app alerts (bell/toasts) | Email or push alerts]	0
+What kind of notifications do you want on the dashboard? [In-app alerts in the UI | Email or push messages]	0
+What kind of notifications do you want on the dashboard? [In-app alerts on the page | Email or push messages]	0
+What kind of notifications do you want? [In-app alerts in the UI | Email or push messages]	0
+What kind of notifications do you want? [In-app alerts in the dashboard | Email or Slack alerts]	0
+What kind of notifications do you want? [In-app alerts in the dashboard | Email or Slack messages]	0
+What kind of notifications do you want? [In-app alerts in the dashboard | Email or push messages]	0
+What kind of notifications do you want? [In-app alerts in the dashboard | Email or push notifications]	0
+What kind of notifications do you want? [In-app alerts on the dashboard | Email or Slack messages]	0
+What kind of notifications do you want? [In-app alerts on the dashboard | Email or push messages]	0
+What kind of notifications do you want? [In-app alerts on the dashboard | Email or push notifications]	0
+What kind of notifications do you want? [In-app alerts on the page | Email or push messages]	0
+What kind of notifications do you want? [In-app alerts on the page | Email or push notifications]	0
+What kind of notifications do you want? [In-app notifications (bell icon) | Email or push alerts]	0
+What kind of notifications should the dashboard get? [In-app alerts (bell/toasts) | Email or push notifications]	0
+What kind of notifications should the dashboard get? [In-app alerts in the UI | Email or Slack messages]	0
+What kind of notifications should the dashboard get? [In-app alerts in the UI | Email or push messages]	0
+What kind of notifications should the dashboard get? [In-app alerts in the UI | Email or push notifications]	0
+What kind of notifications should the dashboard get? [In-app alerts in the dashboard | Email or push messages]	0
+What kind of notifications should the dashboard get? [In-app alerts inside the dashboard | Email or push messages]	0
+What kind of notifications should the dashboard get? [In-app alerts inside the dashboard | Email or push notifications]	0
+What kind of notifications should the dashboard get? [In-app alerts on the page | Email or Slack messages]	0
+What kind of notifications should the dashboard get? [In-app alerts on the page | Email or push messages]	0
+What kind of notifications should the dashboard get? [In-app alerts on the page | Email or push notifications]	0
+What kind of notifications should the dashboard have? [In-app alerts (bell icon) | Email or push notifications]	0
+What kind of notifications should the dashboard have? [In-app alerts (bell/toast) | Email or push notifications]	0
+What kind of notifications should the dashboard have? [In-app alerts (bell/toasts) | Email or Slack alerts]	0
+What kind of notifications should the dashboard have? [In-app alerts (bell/toasts) | Email or push notifications]	0
+What kind of notifications should the dashboard have? [In-app alerts in the UI | Email or Slack messages]	0
+What kind of notifications should the dashboard have? [In-app alerts in the UI | Email or push alerts]	0
+What kind of notifications should the dashboard have? [In-app alerts in the UI | Email or push messages]	0
+What kind of notifications should the dashboard have? [In-app alerts in the UI | Email or push notifications]	0
+What kind of notifications should the dashboard have? [In-app alerts in the dashboard | Email or push notifications]	0
+What kind of notifications should the dashboard have? [In-app alerts inside the dashboard | Email or Slack messages]	0
+What kind of notifications should the dashboard have? [In-app alerts inside the dashboard | Email or push messages]	0
+What kind of notifications should the dashboard have? [In-app alerts inside the dashboard | Email or push notifications]	0
+What kind of notifications should the dashboard have? [In-app alerts inside the page | Email or push messages]	0
+What kind of notifications should the dashboard have? [In-app alerts on the page | Email or push messages]	0
+What kind of notifications should the dashboard have? [In-app alerts on the page | Email or push notifications]	0
+What kind of notifications should the dashboard have? [In-app notifications (bell icon) | Email or push alerts]	0
+What kind of notifications should the dashboard have? [In-app notifications (bell, list) | Email or push alerts]	0
+What kind of notifications should the dashboard have? [In-app notifications (bell/toasts) | Email or push alerts]	0
+What kind of notifications should the dashboard show? [In-app alerts (bell, toasts) | Email or push notifications]	0
+What kind of notifications should the dashboard show? [In-app alerts in the UI | Email or push messages]	0
+What kind of notifications should the dashboard show? [In-app alerts in the page | Email or push notifications]	0
+What kind of notifications should the dashboard show? [In-app alerts inside the dashboard | Email or push notifications]	0
+What kind of notifications should the dashboard show? [In-app alerts inside the page | Email or push messages]	0
+What kind of notifications should the dashboard show? [In-app alerts on the page | Email or push messages]	0
+What kind of notifications should the dashboard show? [In-app alerts on the page | Email or push notifications]	0
+What should a labeling card be? [One Markdown file per case | One HTML page per case]	0
+What should a labeling card be? [One markdown file per case | One printable HTML page]	0
+What should a notification tell the user about? [Team totals crossing a threshold | New weekly data is ready]	1
+What should multi-currency mean for checkout? [Charge in customer's currency | Only show converted prices]	0
+What should offline mode be for? [Work in the field without signal | Faster app on a weak connection]	1
+What should the anomaly detection be for? [Catch equipment faults early | Flag bad sensor data quality]	1
+What should the anomaly detection catch? [Equipment faults and process issues | Bad sensor data (data quality)]	1
+What should the anomaly detection catch? [Equipment or process faults | Bad sensor data (data quality)]	1
+What should the anomaly detection catch? [Equipment or process problems | Faulty sensors or bad data]	1
+What should the anomaly detection mainly catch? [Equipment faults and process drift | Bad sensor data (dropouts, spikes)]	1
+What should the anomaly detection mainly catch? [Equipment faults and process issues | Bad sensor data quality]	1
+What should the anomaly detection mainly catch? [Equipment faults and process problems | Bad sensor data (data quality)]	1
+What should the anomaly detection mainly catch? [Equipment faults and process problems | Bad sensor data (drift, dropouts)]	1
+What should the anomaly detection mainly catch? [Equipment faults and process problems | Bad sensor data and dropouts]	1
+What should the anomaly detection mainly catch? [Equipment faults and process problems | Bad sensor data and gaps]	1
+What should the audit log record and where should it go? [Admin actions, stored in database | Admin actions, written to log file]	0
+What should the audit log record? [Admin actions (create, update, delete) | Logins and permission changes too]	0
+What should the audit log record? [Admin actions (create, update, delete) | Logins and permission changes]	0
+What should the audit log record? [Admin actions (create/update/delete) | Logins and access events too]	0
+What should the audit log record? [Admin actions (create/update/delete) | Logins and permission changes]	0
+What should the audit log record? [Admin actions (who changed what) | All requests to the admin app]	0
+What should the audit log record? [Admin actions (who changed what) | Logins and access events]	0
+What should the audit log record? [Admin actions: who changed what | Logins and access events too]	0
+What should the caching in billing-api mainly achieve? [Faster responses (lower latency) | Less load on database or services]	1
+What should the notifications be about? [Alerts on data changes | Messages or system events]	1
+What should the notifications be about? [Alerts on the team totals | General app events]	1
+What should the notifications be about? [Alerts on the team totals | General in-app events]	1
+What should the notifications be about? [Alerts on the team totals | General in-app notifications]	1
+What should the notifications be about? [Alerts on the weekly team totals | General in-app notifications]	1
+What should the notifications be about? [Changes in team totals data | App events, like errors or user activity]	1
+What should the notifications be about? [Changes in team totals | System or data errors]	1
+What should the notifications be about? [Changes in team weekly totals | Errors or data problems]	1
+What should the notifications be about? [Changes in team weekly totals | System alerts or errors]	1
+What should the notifications be about? [Changes in the team totals | Errors or system alerts]	1
+What should the notifications be about? [Changes in the team totals | System or app events]	1
+What should the notifications be about? [Changes in the team weekly totals | Dashboard system events and errors]	1
+What should the notifications be about? [Changes in the weekly team totals | System events like errors or data refresh]	1
+What should the notifications be about? [Changes in weekly team totals | System events and errors]	1
+What should the notifications be about? [Events in the dashboard data | System or app alerts]	1
+What should the notifications be about? [Team totals and thresholds | General app events and alerts]	1
+What should the notifications be about? [Weekly totals changes or alerts | Team activity or events]	1
+What should the notifications be about? [Weekly totals changes or thresholds | System alerts and errors]	1
+What should the notifications be about? [Weekly totals changes or thresholds | System alerts or errors]	1
+What should the notifications be about? [Weekly totals changes per team | System alerts and errors]	1
+What should the notifications be for? [Alert on data changes or thresholds | Show app or system messages]	1
+What should the notifications be for? [Alert on data changes or thresholds | Show system or app announcements]	1
+What should the notifications be for? [Alert on data changes or thresholds | Show system or app messages]	1
+What should the notifications be for? [Alert on data changes or thresholds | Show system or team announcements]	1
+What should the notifications be for? [Alert on data changes or thresholds | Tell users about system events]	1
+What should the notifications be for? [Alert on data changes or thresholds | Tell users about team activity]	1
+What should the notifications be for? [Alert on data changes/thresholds | Show system/app announcements]	1
+What should the notifications be for? [Alert on events or thresholds | Show team activity updates]	1
+What should the notifications be for? [Alert on team totals changes | General in-app notification center]	1
+What should the notifications be for? [Alert on team totals changes | General in-app notifications]	1
+What should the notifications be for? [Alert on team totals changes | General user messages and events]	1
+What should the notifications be for? [Alert on team totals changes | Notify about system events]	1
+What should the notifications be for? [Alert on team totals changes | Tell users about system events]	1
+What should the notifications be for? [Alert on team weekly totals | General app events for users]	1
+What should the notifications be for? [Alert on team weekly totals | Notify about dashboard/system events]	1
+What should the notifications be for? [Alert on team weekly totals | Show system/app events]	1
+What should the notifications be for? [Alert on weekly team totals | General in-app events and messages]	1
+What should the notifications be for? [Alert on weekly totals changes | General in-app announcements]	1
+What should the notifications be for? [Alert on weekly totals changes | General in-app messages]	1
+What should the notifications be for? [Alert on weekly totals changes | General in-app notifications]	1
+What should the notifications be for? [Alert on weekly totals changes | Notify users of system events]	1
+What should the notifications be for? [Alert on weekly totals changes | Show system or team announcements]	1
+What should the notifications be for? [Alert users about data changes | Show system/app messages]	1
+What should the notifications be for? [Alert users to changes in data | Tell users about team activity]	1
+What should the notifications be for? [Alert users to changes in the data | Show system or app messages]	1
+What should the notifications be for? [Alert users to data changes or thresholds | Show system or team announcements]	1
+What should the notifications be for? [Alert users to data changes | Send weekly totals reports to teams]	1
+What should the notifications be for? [Alert users to data changes | Show system or admin announcements]	1
+What should the notifications be for? [Alert users to data changes | Show system or team announcements]	1
+What should the notifications be for? [Alert users to data changes | Show system/app messages]	1
+What should the notifications be for? [Alert users to data changes | Show system/app status messages]	1
+What should the notifications be for? [Alert when team totals change | General in-app messages for users]	1
+What should the notifications be for? [Alerts about the team totals | General app events/updates]	1
+What should the notifications be for? [Alerts on data changes | Messages or events for users]	1
+What should the notifications be for? [Alerts on data changes | Messages to team members]	1
+What should the notifications be for? [Alerts on team totals changes | General in-app notifications]	1
+What should the notifications be for? [Alerts on team totals changes | General in-app user messages]	1
+What should the notifications be for? [Alerts when team totals change or pass a limit | Updates on new activity for users]	1
+What should the notifications be for? [Alerts when team totals change | General in-app messages for users]	1
+What should the notifications be for? [Alerts when team totals change | General in-app messages to users]	1
+What should the notifications be for? [Alerts when team totals change | General in-app notifications]	1
+What should the notifications be for? [Alerts when team totals change | General user messages and updates]	1
+What should the notifications be for? [Alerts when team totals change | In-app messages for users]	1
+What should the notifications tell people about? [Alerts when team totals change | Messages and updates from other users]	1
+What should the notifications tell the user about? [Alerts on team weekly totals | App events like errors or updates]	1
+What should the notifications tell the user about? [Alerts on team weekly totals | General app events/updates]	1
+What should the notifications tell the user about? [Alerts on the team totals | General app events]	1
+What should the notifications tell the user about? [Alerts on the weekly team totals | General app events and updates]	1
+What should the notifications tell the user about? [Changes in team weekly totals | System events (errors, failed jobs)]	1
+What should the notifications tell the user about? [Changes in team weekly totals | System events or errors]	1
+What should the notifications tell the user about? [Changes in team weekly totals | System or data problems]	1
+What should the notifications tell the user about? [Changes in the team totals | Errors or data problems]	1
+What should the notifications tell the user about? [Weekly team totals changes | System alerts and errors]	1
+What should the notifications tell the user about? [Weekly team totals changes | System or app alerts]	1
+What should the notifications tell the user about? [Weekly team totals changes | System or data errors]	1
+What should the notifications tell the user about? [Weekly totals changes per team | Errors and system alerts]	1
+What should the notifications tell the user about? [Weekly totals changes per team | System alerts and errors]	1
+What should the notifications tell the user about? [Weekly totals changes per team | System alerts or errors]	1
+What should the notifications tell the user about? [Weekly totals changes per team | System or app events]	1
+What should the notifications tell the user about? [Weekly totals changes per team | System or data alerts]	1
+What should the notifications tell the user about? [Weekly totals changes per team | System or data errors]	1
+What should the notifications tell the user about? [Weekly totals/team data changes | System or app events]	1
+What should the notifications tell users about? [Alerts when team totals change | General app activity events]	1
+What should the notifications tell users about? [Changes in team data | Dashboard or system events]	1
+What should the notifications tell users about? [Changes in team data | System or app events]	1
+What should the notifications tell users about? [Changes in team totals | Data or system problems]	1
+What should the notifications tell users about? [Changes in team totals | System events and errors]	1
+What should the notifications tell users about? [Changes in team totals | System or app events]	1
+What should the notifications tell users about? [Changes in team totals | System or data errors]	1
+What should the notifications tell users about? [Changes in team totals | System or data events]	1
+What should the notifications tell users about? [Changes in team totals | System or data problems]	1
+What should the notifications tell users about? [Changes in team totals | System or data-load events]	1
+What should the notifications tell users about? [Changes in team weekly totals | Alerts when a metric crosses a limit]	1
+What should the notifications tell users about? [Changes in team weekly totals | Alerts when data fails or is stale]	1
+What should the notifications tell users about? [Changes in team weekly totals | Data or system errors]	1
+What should the notifications tell users about? [Changes in team weekly totals | Events like errors or failed jobs]	1
+What should the notifications tell users about? [Changes in team weekly totals | General messages from admins]	1
+What should the notifications tell users about? [Changes in team weekly totals | System errors and alerts]	1
+What should the notifications tell users about? [Changes in team weekly totals | System errors or alerts]	1
+What should the notifications tell users about? [Changes in team weekly totals | System events (errors, data sync)]	1
+What should the notifications tell users about? [Changes in team weekly totals | System events and errors]	1
+What should the notifications tell users about? [Changes in team weekly totals | System events like errors or failed data loads]	1
+What should the notifications tell users about? [Changes in team weekly totals | System events like failed data loads]	1
+What should the notifications tell users about? [Changes in team weekly totals | System events, like errors or data updates]	1
+What should the notifications tell users about? [Changes in team weekly totals | System or data errors]	1
+What should the notifications tell users about? [Changes in team weekly totals | System or data-load alerts]	1
+What should the notifications tell users about? [Changes in team weekly totals]	1
+What should the notifications tell users about? [Changes in the dashboard data | App events, like new users or errors]	1
+What should the notifications tell users about? [Changes in the team totals | Dashboard or system events]	1
+What should the notifications tell users about? [Changes in the team totals | System events (errors, jobs)]	1
+What should the notifications tell users about? [Changes in the team totals | System events and errors]	1
+What should the notifications tell users about? [Changes in the team totals | System events like errors or failed data loads]	1
+What should the notifications tell users about? [Changes in the team totals | System events like errors or failed updates]	1
+What should the notifications tell users about? [Changes in the team totals | System events like errors or sync]	1
+What should the notifications tell users about? [Changes in the team totals | System or activity events]	1
+What should the notifications tell users about? [Changes in the team totals | System or data problems]	1
+What should the notifications tell users about? [Changes in the team totals]	1
+What should the notifications tell users about? [Changes in the weekly team totals | General app or system events]	1
+What should the notifications tell users about? [Changes in the weekly team totals | System alerts and errors]	1
+What should the notifications tell users about? [Changes in the weekly team totals | System events (errors, data refresh)]	1
+What should the notifications tell users about? [Changes in the weekly team totals | System events and errors]	1
+What should the notifications tell users about? [Changes in the weekly team totals | System events like errors and updates]	1
+What should the notifications tell users about? [Changes in the weekly team totals | System events like errors or failed data loads]	1
+What should the notifications tell users about? [Changes in the weekly team totals | System events like errors or failed jobs]	1
+What should the notifications tell users about? [Changes in the weekly team totals | System events like failed data loads]	1
+What should the notifications tell users about? [Changes in the weekly team totals | System or data errors]	1
+What should the notifications tell users about? [Changes in the weekly team totals]	1
+What should the notifications tell users about? [Team totals hitting a threshold | Data updates or system errors]	1
+What should the notifications tell users about? [Team totals passing a limit | New weekly totals available]	1
+What should the notifications tell users about? [Weekly team totals changes | System errors or failed jobs]	1
+What should the notifications tell users about? [Weekly team totals changes | System events and errors]	1
+What should the notifications tell users about? [Weekly team totals changes | System or data errors]	1
+What should the notifications tell users about? [Weekly totals / team data changes | System events (errors, jobs)]	1
+What should the notifications tell users about? [Weekly totals changes per team | System alerts and errors]	1
+What should the notifications tell users about? [Weekly totals per team changes | System or data errors]	1
+What should the notifications tell users about? [Weekly totals/team changes | System events like errors]	1
+What should the rate limit apply to? [All routes, per client IP | Only /v1/search]	0
+What should the rate limiting mainly protect against? [Abuse and overload | Fair per-client usage quotas]	1
+What should the restructure of the db layer achieve? [Cleaner structure, easier to maintain | Better speed or scaling]	1
+What should work offline first? [View and edit jobs, sync later | Only view cached jobs]	0
+When will the rent be paid? [I don't have a date yet | I'll give the new date]	0
+When will you be able to pay the rent? [I have a specific date | I don't know yet]	0
+Where does the reply on each card come from? [Stored in the cases file | Generated by running the panel]	0
+Where is the staging server and the build folder? [Host in ssh config, build in ./dist | I'll type host and path]	0
+Where is the staging server and the build? [Host in my ssh config | I'll type host and path]	0
+Which containers count as "old"? [All stopped (Exited) ones | Only cron-old]	0
+Which containers count as "old"? [Only the exited ones | Only cron-old and migrate]	0
+Which host and folder should the build go to? [Host in my ssh config | I'll type user@host:path]	0
+Which kind of YAML job do you need? [GitHub Actions workflow | Kubernetes CronJob]	0
+Which kind of bucket config do you need? [AWS S3 lifecycle JSON | Terraform S3 resource]	0
+Which kind of config do you need? [AWS S3 lifecycle JSON | Terraform resource]	0
+Which kind of config do you need? [Docker Compose | systemd service]	0
+Which staging server and build folder should be copied? [Host in my ssh config | I'll type host and path]	0
+Which staging server and build folder? [Host in my ssh config | I'll type host and path]	0
+Who receives the webhooks? [Customers' own registered URLs | One fixed internal URL]	0
+Who sets the webhook URLs that receive the order events? [Customers register their own URLs | Store configures fixed URLs]	0
