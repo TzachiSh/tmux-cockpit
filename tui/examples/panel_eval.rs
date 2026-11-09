@@ -381,9 +381,10 @@ fn starts(hay: &str, n: &str) -> Vec<usize> {
 const NEGATION_WINDOW: usize = 6;
 
 /// Whether the text just before a match negates it: a negator among the last
-/// [`NEGATION_WINDOW`] words of its clause (a clause ends at `.;:!?` or a line).
+/// [`NEGATION_WINDOW`] words of its clause (a clause ends at `.,;:!?` or a line):
+/// "if there is no flag, write them by hand" negates nothing.
 fn negated(before: &str) -> bool {
-    let clause = before.rsplit(|c| ".;:!?\n".contains(c)).next().unwrap_or("");
+    let clause = before.rsplit(|c| ".,;:!?\n".contains(c)).next().unwrap_or("");
     let words: Vec<String> = clause
         .split(|c: char| !(c.is_alphanumeric() || c == '\'' || c == '\u{2019}'))
         .filter(|w| !w.is_empty())
@@ -1867,6 +1868,18 @@ mod tests {
         c.must_not = vec!["by hand".into()];
         let g = grade(&c, "<prompt>Write them by hand. Do not run the generator.</prompt>");
         assert_eq!(g.forbidden, ["by hand"]);
+    }
+
+    #[test]
+    fn a_negator_before_a_comma_does_not_cancel() {
+        for r in [
+            "If the tests do not pass, edit the golden files by hand",
+            "If there is no flag, write the golden files by hand",
+            "It is a no-op flag, so write them by hand",
+            "Do it without the flag, regenerate them by hand",
+        ] {
+            assert!(has_unnegated(r, "by hand"), "{r}");
+        }
     }
 
     #[test]
