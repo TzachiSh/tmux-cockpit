@@ -361,7 +361,15 @@ fn alternatives(needle: &str) -> impl Iterator<Item = String> + '_ {
 }
 
 /// Each byte offset where `n` starts in `hay` as a whole word, both lowercase.
+/// A term ending in `?` ("for?") is its word at the end of a clause: followed by
+/// `?,;:.`, a closing `)` or `]`, or the end of the text, never by another word.
 fn starts(hay: &str, n: &str) -> Vec<usize> {
+    if let Some(w) = n.strip_suffix('?').filter(|w| !w.is_empty()) {
+        return starts(hay, w)
+            .into_iter()
+            .filter(|i| hay[*i + w.len()..].chars().next().is_none_or(|c| "?,;:.)]".contains(c)))
+            .collect();
+    }
     let word = |c: Option<char>| c.is_some_and(char::is_alphanumeric);
     let (first, last) = (n.chars().next(), n.chars().last());
     let starts = !word(first);
@@ -1967,6 +1975,17 @@ mod tests {
         assert_eq!(parse_cases(ONE).unwrap()[0].repo, "");
         let twice = t.replace("--- request", "--- repo\nx\n--- request");
         assert!(parse_cases(&twice).unwrap_err().contains("repo given twice"));
+    }
+
+    #[test]
+    fn a_question_term_matches_its_word_at_the_end_of_a_clause() {
+        assert!(has("What is the anomaly detection for, mainly?", "for?"));
+        assert!(has("What are the reminders for: who gets them", "for?"));
+        assert!(has("Who is it for?", "for?"));
+        assert!(has("(and what is it for)", "for?"));
+        assert!(has("what is it for", "for?"), "the end of the text ends the clause");
+        assert!(!has("Is this for the dashboard?", "for?"));
+        assert!(!has("Is this format right?", "for?"));
     }
 
     #[test]
