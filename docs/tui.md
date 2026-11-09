@@ -295,7 +295,9 @@ write, from the read the job's own call made (#711); `--compare` refuses a case
 whose rows on one side carry two hashes unless given `--allow-mixed`. Each run
 appends its cost to `--ledger <file>`, else to `cost.tsv` next to `--out`, else to
 `${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/panel-eval-cost.tsv`; a
-`--judge` run adds a second row for the judge's spend.
+`--judge` run adds a second row for the judge's spend. The ledger's `prompt`
+column lists every prompt hash the run saw, so a run mixing plain and exploring
+writes shows two with no file edited.
 
 Calls are hermetic by default (#598): `claude --setting-sources ""`, so no
 user, project or local settings load, and with them no `CLAUDE.md`, no plugin
