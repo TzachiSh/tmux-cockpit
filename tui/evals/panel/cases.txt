@@ -1386,8 +1386,8 @@ kind: feature
 window: claude · claude · /home/u/projects/tool
 expect: write
 out_is: prompt
-must: parse_cases; compare|diff|match|matches|same as|equals|against
-note: #701: the screen shows the project's own case parser; a script that reads the cases file itself drifts from it, as the owner-label builder of #691 did; owner ruling on #701: the request now gives the card's format and fields, since the first one left that open and the panel rightly asked; #701 owner OK: equals|against added to the compare term, since replies checked the count against the source with those words
+must: parse_cases; compare|diff|match|matches|same as
+note: #701: the screen shows the project's own case parser; a script that reads the cases file itself drifts from it, as the owner-label builder of #691 did; owner ruling on #701: the request now gives the card's format and fields, since the first one left that open and the panel rightly asked; #701 owner OK: equals|against added to the compare term, since replies checked the count against the source with those words; #702 M3: the term added after seeing replies is reverted (owner ruling)
 --- screen
 $ grep -n "fn parse_cases" tui/examples/panel_eval.rs
 122:fn parse_cases(text: &str) -> Result<Vec<Case>, String> {
@@ -1659,10 +1659,10 @@ kind: feature
 window: claude · claude · /home/u/projects/geo-data
 expect: write
 out_is: prompt
-must: gen_countries.py|gen_countries; compare|diff|match|matches|same as|equals|against
+must: gen_countries.py|gen_countries; compare|diff|match|matches|same as
 must_not: AskUserQuestion
 holdout: yes
-note: the screen shows the repo already turns an ISO csv into JSON with scripts/gen_countries.py, and the request gives the output shape; the brief should reuse or extend that script rather than hand-write the data, then check the result matches the shape of countries.json; nothing is left to ask; widened for #701, the second sanctioned held-out edit (owner OK): equals|against added to the compare term
+note: the screen shows the repo already turns an ISO csv into JSON with scripts/gen_countries.py, and the request gives the output shape; the brief should reuse or extend that script rather than hand-write the data, then check the result matches the shape of countries.json; nothing is left to ask; widened for #701, the second sanctioned held-out edit (owner OK): equals|against added to the compare term; #702 M3: the term added after seeing replies is reverted (owner ruling)
 --- screen
 $ ls scripts data out
 scripts:
@@ -1760,10 +1760,10 @@ we need reminders for appointments, plus something for the front desk to see who
 kind: feature
 window: bash · bash · /home/u/work/plant-telemetry
 expect: ask
-ask_any: false alarms; false positives; false positive; on-call; operators; success; goal; acceptable; for?|purpose
+ask_any: false alarms; false positives; false positive; on-call; operators; success; goal; acceptable
 must_not: algorithm; isolation forest; z-score; library; framework; scikit-learn; prophet
 holdout: no
-note: a big multi-part feature; purpose and what counts as done are the owner's; a question on the detection method is implementation flavour; demoted: V2 chosen by measuring on this case (#702); ask_any gains for?|purpose, added after seeing replies, allowed because the case is now tune
+note: a big multi-part feature; purpose and what counts as done are the owner's; a question on the detection method is implementation flavour; demoted: V2 chosen by measuring on this case (#702); ask_any gains for?|purpose, added after seeing replies, allowed because the case is now tune; #702 M3: the term added after seeing replies is reverted (owner ruling)
 --- screen
 $ ls
 ingest  notebooks  pyproject.toml  tests
