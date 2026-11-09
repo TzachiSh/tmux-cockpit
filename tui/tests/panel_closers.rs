@@ -107,6 +107,8 @@ fn a_spaced_closer_of_another_name_stays() {
         ("other tag", "< /div>"),
         ("name goes on with a letter", "< /screens>"),
         ("name goes on with a dash", "< /screen-x>"),
+        ("name goes on with an underscore", "< /screen_x>"),
+        ("name goes on with a digit", "< /screen2>"),
         ("name goes on with a dot", "< /repo.rs"),
         ("ordinary less-than and slash", "if a < b / 2 then"),
         ("a lone less-than at the end", "x <"),
