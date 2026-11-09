@@ -225,3 +225,45 @@ fn an_attr_source_inherited_from_another_tree_still_counts() {
     assert_eq!(r.reference(), (1, 0, 0), "f's one new line, nothing untracked");
     assert_eq!(r.diffstat_with(&[("GIT_ATTR_SOURCE", tree.trim())]), (0, Some(r.reference())));
 }
+
+/// An executable at `.git/<name>` that touches `.git/<name>.ran` when run:
+/// in the git dir, so neither the count nor plain git's reference sees it.
+fn marker_script(r: &Repo, name: &str, tail: &str) -> (String, PathBuf) {
+    use std::os::unix::fs::PermissionsExt;
+    let p = r.0.join(".git").join(name);
+    std::fs::write(&p, format!("#!/bin/sh\ntouch \"$0.ran\"\n{tail}")).unwrap();
+    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let ran = r.0.join(".git").join(format!("{name}.ran"));
+    (p.display().to_string(), ran)
+}
+
+/// An fsmonitor hook injected by GIT_CONFIG_COUNT: SAFE's own
+/// `core.fsmonitor=false` comes later on git's list and wins.
+#[test]
+fn an_fsmonitor_from_config_count_inherited_never_runs() {
+    let r = one_line_added("cfgcount-fsm");
+    let (hook, ran) = marker_script(&r, "fsm", "");
+    let env = [
+        ("GIT_CONFIG_COUNT", "1"),
+        ("GIT_CONFIG_KEY_0", "core.fsmonitor"),
+        ("GIT_CONFIG_VALUE_0", hook.as_str()),
+    ];
+    assert_eq!(r.diffstat_with(&env), (0, Some(r.reference())));
+    assert!(!ran.exists(), "the injected fsmonitor hook ran");
+}
+
+/// A clean filter injected by GIT_CONFIG_PARAMETERS for a tracked file the
+/// repo's attributes route through it: the no_filters scan reads env config
+/// too, and blanks it.
+#[test]
+fn a_filter_from_config_parameters_inherited_never_runs() {
+    let r = Repo::new("cfgparams-filter");
+    r.write(".gitattributes", "f filter=envf\n");
+    r.write("f", "1\n");
+    r.commit();
+    r.write("f", "1\n2\n");
+    let (clean, ran) = marker_script(&r, "clean", "cat\n");
+    let params = format!("'filter.envf.clean'='{clean}'");
+    assert_eq!(r.diffstat_with(&[("GIT_CONFIG_PARAMETERS", &params)]), (0, Some(r.reference())));
+    assert!(!ran.exists(), "the injected clean filter ran");
+}
