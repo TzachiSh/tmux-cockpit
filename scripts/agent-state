@@ -83,7 +83,9 @@ fmt_cells='#{n:#{W:#{?#{E:@cockpit_ctx_on},xx#{@panestate_ctx}x,}}}'
 fmts=(state "$fmt_state" review "$fmt_review" snb "$fmt_snb" sne "$fmt_sne"
       nb "$fmt_nb" ne "$fmt_ne" fleet "$fmt_fleet" cells "$fmt_cells")
 stamp=$(printf '%s' "${fmts[*]}" | cksum); stamp=${stamp%% *}
-defs="if -F '#{!=:#{@cockpit_fmt_v},$stamp}' {"
+# A test whose cut (see put) must not skip the work reads 1 only when nothing is to do, and
+# the work is its else branch.
+defs="if -F '#{?#{==:#{@cockpit_fmt_v},$stamp},1,0}' {} {"
 for ((k = 0; k < ${#fmts[@]}; k += 2)); do
     defs="$defs set-option -g @cockpit_fmt_${fmts[k]} '${fmts[k + 1]}' ;"
 done
@@ -389,7 +391,7 @@ fi
 
 if [ "$state" = off ]; then
     # No early exit when already clear: a fresh agent's SessionStart must still light its ○ dot.
-    body="if -F -t $pane '$cur' { set-option -pu -t $pane @panestate }"
+    body="if -F -t $pane '#{?$cur,0,1}' {} { set-option -pu -t $pane @panestate }"
     # An ended session takes its review marks with it; an idle one keeps them. And its subagent
     # count (#313): SessionStart's off is a new process, which runs none. Not at idle: the lead
     # idles while its subagents work, and a report-back's UserPromptSubmit leaves the others.
@@ -417,7 +419,8 @@ if [ "$state" = needs-input ]; then
     case "$now" in ''|*[!0-9]*) now=$(date +%s 2>/dev/null) ;; esac
     case "$now" in ''|*[!0-9]*) ;; *) body="$body ; set-option -p -t $pane @panestate_since $now" ;; esac
 elif [ "$state" != recount ]; then
-    body="$body ; if -F -t $pane '#{@panestate_since}' { set-option -pu -t $pane @panestate_since }"
+    body="$body ; if -F -t $pane '#{?#{@panestate_since},0,1}' {}"
+    body="$body { set-option -pu -t $pane @panestate_since }"
 fi
 
 case "$state" in
@@ -486,6 +489,17 @@ if [ -n "$fgown" ]; then
             || unmark+=(set-option -g @cockpit_poll_err "${CFG_BAD:-}" ';')
     fi
 fi
+# The guard must not skip the transition on a cut either (see put). So it reads 1 only for a
+# refusal read whole, which runs nothing and parses no body: the hooks that fire most
+# (PreToolUse, PostToolUse) are refused. Anything else tests it again, in the else branch,
+# and runs the body unless that reads a whole refusal. The body rides there as a quoted
+# string, parsed once when it runs (in braces tmux parsed it twice).
+skip="#{?#{==:$when,1},0,1}"
+# Escaped for tmux's double quotes; no body has any of the three today, so no pass is made.
+q=${body# ; } bs=\\ dq='"' dl='$'
+case $q in *[\\\"\$]*)
+    q=${q//"$bs"/"$bs$bs"}; q=${q//"$dq"/"$bs$dq"}; q=${q//"$dl"/"$bs$dl"} ;;
+esac
 tmux ${unmark[@]+"${unmark[@]}"} ${subs_cmd[@]+"${subs_cmd[@]}" ';'} \
-    if-shell -F -t "$pane" "$when" "${body# ; }" \
+    if-shell -F -t "$pane" "$skip" "" "if -F -t $pane '$skip' '' \"$q\"" \
     >/dev/null 2>&1 || true

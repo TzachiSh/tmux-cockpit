@@ -14950,7 +14950,7 @@ dbt run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
 until_out 60 dbt show-option -gqv @cockpit_fleet_nb >/dev/null
 # Every full sweep's first batch carries the format stamp; the shim counts those.
 mkdir "$DBD/bin"
-printf '#!/bin/sh\n[ "$1 $2 $3" = "if-shell -F 1" ] && case "$4" in "if -F %s#{!=:#{@cockpit_fmt_v}"*) echo x >> "%s/swept" ;; esac\nexec "%s" "$@"\n' \
+printf '#!/bin/sh\n[ "$1 $2 $3" = "if-shell -F 1" ] && case "$4" in "if -F %s#{?#{==:#{@cockpit_fmt_v}"*) echo x >> "%s/swept" ;; esac\nexec "%s" "$@"\n' \
     "'" "$DBD" "$TMUX_REAL" > "$DBD/bin/tmux"
 chmod +x "$DBD/bin/tmux"
 dbt set-environment -g PATH "$DBD/bin:$PATH" >/dev/null 2>&1
