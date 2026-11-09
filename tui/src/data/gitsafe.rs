@@ -80,6 +80,10 @@ fn run_raw<S: AsRef<OsStr>>(dir: &str, extra: &[String], index: Option<&Path>, a
     if let Some(i) = index {
         c.env("GIT_INDEX_FILE", i);
     }
+    // a unit test compares with git run on no user or system config: the
+    // runner's core.excludesFile must not hide a file from one side only
+    #[cfg(test)]
+    c.env("GIT_CONFIG_GLOBAL", "/dev/null").env("GIT_CONFIG_NOSYSTEM", "1");
     c.output().map(|o| (o.status.success(), o.stdout)).unwrap_or_default()
 }
 

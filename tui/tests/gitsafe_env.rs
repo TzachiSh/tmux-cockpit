@@ -64,15 +64,21 @@ impl Repo {
         (col(0), col(1), others.split(|b| *b == 0).filter(|p| !p.is_empty()).count() as u64)
     }
 
-    /// diffstat's exit status and its first three fields, with `env` set on the child only.
+    /// diffstat's exit status and its first three fields, with each of `env` set to 1.
     fn diffstat(&self, env: &[&str]) -> (i32, Option<(u64, u64, u64)>) {
+        let pairs: Vec<(&str, &str)> = env.iter().map(|v| (*v, "1")).collect();
+        self.diffstat_with(&pairs)
+    }
+
+    /// [`Repo::diffstat`] with `env` set on the child only, and the runner's own
+    /// git config kept out, as [`Repo::git`] keeps it out of the reference.
+    fn diffstat_with(&self, env: &[(&str, &str)]) -> (i32, Option<(u64, u64, u64)>) {
         let mut c = Command::new(env!("CARGO_BIN_EXE_cockpit-tui"));
         for v in PATHSPEC_VARS {
             c.env_remove(v);
         }
-        for v in env {
-            c.env(v, "1");
-        }
+        c.env("GIT_CONFIG_GLOBAL", "/dev/null").env("GIT_CONFIG_NOSYSTEM", "1");
+        c.envs(env.iter().copied());
         let o = c.arg("diffstat").arg(&self.0).output().unwrap();
         let out = String::from_utf8_lossy(&o.stdout).into_owned();
         let n: Vec<u64> = out.split('\t').take(3).filter_map(|f| f.parse().ok()).collect();
