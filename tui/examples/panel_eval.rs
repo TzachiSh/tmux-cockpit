@@ -675,6 +675,8 @@ struct Job {
     model: String,
     /// The system prompt's hash.
     system: u64,
+    /// [`prompt_hash`] when the job started.
+    prompt: String,
     req: Request,
     started: Instant,
 }
@@ -768,7 +770,6 @@ fn main() {
         }
         Err(e) => eprintln!("panel_eval: no cost recorded, cannot find the rig's own binary: {e}"),
     }
-    let prompt = prompt_hash();
     let mut log = o.out.as_ref().map(|p| {
         std::fs::File::create(p).unwrap_or_else(|e| {
             eprintln!("panel_eval: {}: {e}", p.display());
@@ -804,6 +805,8 @@ fn main() {
     let mut reads: Vec<usize> = vec![];
     // with --judge: each row, and what the judge reads of it
     let mut rows: Vec<(serde_json::Value, judge::Input)> = vec![];
+    // each prompt hash the jobs saw, in order: two means an override changed mid-run
+    let mut prompt_sets: Vec<String> = vec![];
     while !todo.is_empty() || !live.is_empty() {
         while live.len() < o.jobs
             && let Some((ci, run)) = todo.pop()
@@ -812,6 +815,11 @@ fn main() {
             let path = pane_path(c, staged.0.as_deref());
             let explore = c.explore.is_some() && !o.no_explore;
             let (system, prompt, profile) = panel_call(c, &path, explore);
+            // per job, next to the call: an override edited mid-run shows in the rows
+            let prompt_files = prompt_hash();
+            if !prompt_sets.contains(&prompt_files) {
+                prompt_sets.push(prompt_files.clone());
+            }
             let flow = Flow::Write {
                 draft: c.request.clone(),
                 out: c.out,
@@ -834,6 +842,7 @@ fn main() {
                 explore,
                 model,
                 system: h,
+                prompt: prompt_files,
                 req,
                 started: Instant::now(),
             });
@@ -889,7 +898,7 @@ fn main() {
             if log.is_some() || o.judge {
                 let row = serde_json::json!({
                     "id": c.id, "kind": c.kind, "expect": want, "run": j.run, "model": j.model,
-                    "system": format!("{:016x}", j.system), "prompt": prompt,
+                    "system": format!("{:016x}", j.system), "prompt": j.prompt,
                     "ms": ms as u64, "error": err,
                     "asked": g.as_ref().map(|g| g.asked), "pass": g.as_ref().map(|g| g.pass),
                     "question": g.as_ref().map(|g| g.question.clone()),
@@ -926,7 +935,7 @@ fn main() {
         let secs = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_secs());
-        if let Err(e) = ledger_append(&l, &ledger_row(secs, &label, cases.len(), o.runs, total, &prompt)) {
+        if let Err(e) = ledger_append(&l, &ledger_row(secs, &label, cases.len(), o.runs, total, &prompt_sets.join(","))) {
             eprintln!("panel_eval: ledger {}: {e}", l.display());
         }
     }
@@ -1598,20 +1607,31 @@ fn fnv(s: &str) -> u64 {
 /// The hash of the write prompt and its example pool as the panel loads them,
 /// overrides included: one value per prompt set, whatever the case (#701).
 fn prompt_hash() -> String {
-    use cockpit_tui::panel::prompts;
-    let (w, _) = prompts::load("write", prompts::WRITE);
-    let (e, _) = prompts::load("write.examples", prompts::WRITE_EXAMPLES);
-    format!("{:016x}", fnv(&format!("{w}\0{e}")))
+    prompt_hash_in(&config_home())
 }
 
-/// The ids whose rows carry more than one prompt hash; rows with none are
-/// older files and do not count.
+/// [`prompt_hash`] over the override folder under `base`: each of write.txt, its
+/// example pool and write.explore.txt as `prompts::load` reads it (the file, or
+/// the shipped text when it is missing or unreadable, less trailing newlines).
+fn prompt_hash_in(base: &Path) -> String {
+    use cockpit_tui::panel::prompts;
+    let load = |name: &str, shipped: &str| {
+        let p = base.join("tmux-cockpit/prompts").join(format!("{name}.txt"));
+        let t = std::fs::read_to_string(p).unwrap_or_else(|_| shipped.to_string());
+        t.trim_end_matches('\n').to_string()
+    };
+    let w = load("write", prompts::WRITE);
+    let e = load("write.examples", prompts::WRITE_EXAMPLES);
+    let x = load("write.explore", prompts::WRITE_EXPLORE);
+    format!("{:016x}", fnv(&format!("{w}\0{e}\0{x}")))
+}
+
+/// The ids whose rows carry more than one prompt hash. A row with none, from an
+/// older file, counts as one more value when another row of its case has one.
 fn mixed_prompts(rows: &[Row]) -> Vec<String> {
     let mut ids: Vec<String> = vec![];
     for r in rows {
-        let two = rows
-            .iter()
-            .any(|o| o.id == r.id && !o.prompt.is_empty() && !r.prompt.is_empty() && o.prompt != r.prompt);
+        let two = rows.iter().any(|o| o.id == r.id && o.prompt != r.prompt);
         if two && !ids.contains(&r.id) {
             ids.push(r.id.clone());
         }
@@ -2114,6 +2134,23 @@ mod tests {
     }
 
     #[test]
+    fn the_prompt_hash_follows_each_override_explore_included() {
+        let d = std::env::temp_dir().join(format!("panel-eval-hash-{}", std::process::id()));
+        let dir = d.join("tmux-cockpit/prompts");
+        std::fs::create_dir_all(&dir).unwrap();
+        let shipped = prompt_hash_in(&d);
+        let mut seen = vec![shipped.clone()];
+        for name in ["write", "write.examples", "write.explore"] {
+            std::fs::write(dir.join(format!("{name}.txt")), format!("{name} edited")).unwrap();
+            let h = prompt_hash_in(&d);
+            assert!(!seen.contains(&h), "{name}.txt did not change the hash");
+            seen.push(h);
+        }
+        std::fs::remove_dir_all(&d).unwrap();
+        assert_eq!(prompt_hash_in(&d), shipped);
+    }
+
+    #[test]
     fn compare_names_a_case_whose_rows_carry_two_prompt_hashes() {
         let rows = read_rows(
             "a",
@@ -2131,7 +2168,7 @@ mod tests {
             ),
         )
         .unwrap();
-        assert_eq!(mixed_prompts(&rows), ["x"]);
+        assert_eq!(mixed_prompts(&rows), ["x", "z"], "z: a row with no hash beside one with a hash");
         assert!(opts(args("--compare a b --allow-mixed")).unwrap().allow_mixed);
         assert!(!opts(args("--compare a b")).unwrap().allow_mixed);
     }
