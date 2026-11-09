@@ -157,7 +157,8 @@ impl Drop for Rig {
         }
         self.tmux(&["kill-server"]);
         // kill-server never unlinks the socket, by any exit path; the suite
-        // learned that after ~850 dead inodes piled up (tests/run.sh:59-63).
+        // learned that after ~850 dead inodes piled up (tests/run.sh, the note above
+        // kill_socks).
         let uid = unsafe { libc::getuid() };
         let tmp = std::env::var("TMUX_TMPDIR").unwrap_or_else(|_| "/tmp".into());
         let _ = std::fs::remove_file(PathBuf::from(tmp).join(format!("tmux-{uid}")).join(&self.sock));

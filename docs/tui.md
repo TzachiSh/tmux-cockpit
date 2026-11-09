@@ -52,8 +52,9 @@ Ubuntu 24.04 ships 1.75). On an older toolchain the fetch path refuses by name
 rather than dumping a compiler error, and keeps any binary you already have.
 
 `make check` builds the binary first; the suite needs cargo. `make tui-test`
-runs cargo's tests, clippy and fmt on the `rust-version` toolchain through
-rustup (CI's, so the lints match); `make tui-test TUI_TOOLCHAIN=` skips that.
+runs cargo's tests, clippy, fmt and a rustdoc pass that fails on a doc link
+naming nothing, on the `rust-version` toolchain through rustup (CI's, so the
+lints match); `make tui-test TUI_TOOLCHAIN=` skips that.
 `make tui-test-clean` runs it in a private TMPDIR and TMUX_TMPDIR and fails,
 naming them, on any file, dir or socket a test left there (#400).
 

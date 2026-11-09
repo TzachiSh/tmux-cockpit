@@ -436,22 +436,35 @@ fn an_ssh_pane_or_no_path_carries_no_repo_block() {
 fn a_hung_git_is_killed_with_what_it_forked_at_the_budget() {
     let path = format!("$D:{}", std::env::var("PATH").unwrap_or_default());
     let e = Env::new("repo-hung", &[("PATH", Some(path))]);
-    // every call hangs: the rev-parse started beside the config read must die too
-    e.exec("git", "[ \"$2\" = $D ] || exit 1; sleep 1000 & echo $! >> $D/kids; wait");
-    // the kill comes at the budget: both fake gits must have written their pid by then
-    let (dir, file) = (e.dir.display().to_string(), e.dir.join("kids"));
+    // every call hangs: the rev-parse started beside the config read must die too.
+    // Each try has its own repo dir, so a late git from a missed try writes its pid
+    // to that try's file, never to the next one's (#727).
+    e.exec(
+        "git",
+        "case \"$2\" in \"$D\"/*) ;; *) exit 1 ;; esac; sleep 1000 & echo $! >> \"$2/kids\"; wait",
+    );
+    let tries = std::cell::Cell::new(0);
     let run = |b| {
-        let _ = std::fs::remove_file(&file);
-        (repo_state_within(&dir, "", b), std::fs::read_to_string(&file).unwrap_or_default())
+        let r = e.dir.join(tries.replace(tries.get() + 1).to_string());
+        std::fs::create_dir(&r).unwrap();
+        let got = repo_state_within(&r.display().to_string(), "", b);
+        (got, std::fs::read_to_string(r.join("kids")).unwrap_or_default())
     };
-    // rev-parse and config ran
+    // the kill comes at the budget: rev-parse and config must have written their pid by then
     let both = |(got, kids): &(String, String)| got.is_empty() && kids.lines().count() == 2;
     let got = growing(HUNG_BUDGET, run, both);
-    assert!(got.is_ok(), "every budget missed: {got:?}");
-    let (_, kids) = got.unwrap();
+    // every try's pids, the missed ones too. Each poll reads the files again, and the
+    // first poll that finds every listed pid dead ends the check: a pid written after
+    // that poll is not checked.
+    let kids = || (0..tries.get()).map(|t| std::fs::read_to_string(e.dir.join(format!("{t}/kids"))).unwrap_or_default());
     // gone, or a zombie its new parent has not reaped yet
     let dead = |k: &str| std::fs::read_to_string(format!("/proc/{k}/stat")).map_or(true, |s| s.contains(") Z "));
-    assert!(until(|| kids.lines().all(dead)), "{kids} lives");
+    assert!(
+        until(|| kids().collect::<String>().lines().all(dead)),
+        "{:?} lives",
+        kids().collect::<Vec<_>>()
+    );
+    assert!(got.is_ok(), "every budget missed: {got:?}");
 }
 
 /// A fake git on PATH: `body` runs for `sub`, the other subcommands answer as a
