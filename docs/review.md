@@ -128,10 +128,19 @@ because of it, so a pane whose only change is a big file stays on the board and
 its review still opens. revdiff runs its own git, so each such file is passed to
 it as `--exclude=<path>` and is not in its file list; `a` leaves it out of the
 checkpoint, which keeps the version already in the index, and writes no copy of
-it into the object store. revdiff cannot exclude a big file whose name begins
-or ends with whitespace. If that file is untracked, the review shows no
-untracked files at all. If it is tracked, revdiff may diff it in full (at
-startup if it is first, or when selected), so revdiff is not started: the popup
+it into the object store. Under a branch or since-last-review base the same
+goes for a file the branch committed or deleted whose blob on either side is
+over 32 MB, changed in the worktree or not; git reads only its size. A
+command-line `--exclude` replaces revdiff's own exclude list, so while a big
+file is present the cockpit passes that list on too, taken where revdiff would
+take it: the `exclude =` lines of its config file (`$REVDIFF_CONFIG`, else
+`~/.config/revdiff/config`), and only when that file names none,
+`REVDIFF_EXCLUDE`. A config file revdiff would reject adds nothing, and a quoted
+entry holding a backslash escape is skipped. revdiff cannot exclude a big file
+whose name begins or ends with whitespace. If that file is untracked, the review
+shows no untracked files at all. If it is tracked or committed on the branch,
+revdiff may diff it in full (at startup if it is first, or when selected), so
+revdiff is not started: the popup
 says `cockpit: no review: a big tracked file's name starts or ends with
 whitespace` and closes with any pinned comments kept. An agent's `--request`
 then exits 1 with that reason on stderr, not the 0 of a finished review. Put

@@ -6022,6 +6022,95 @@ is "and the gitlink's clean filter never runs" "" "$(ls "$RBFG" | grep '^PWNED$'
 unset -f rbf_args rbf_blob rbf_has rbf_ap
 rm -rf "$RBFB" "$RBFG" "$RBFC"
 
+echo "== review: a big file committed on the branch is excluded too (#708) =="
+# big_files sees the worktree only. Under a branch or since-review base revdiff
+# also diffs what the branch committed, and tree_diff does the same. FAIL-first:
+# on the old code neither file below got an --exclude, the whitespace-named one
+# started revdiff, and tree_diff's full diff named big.bin.
+RBR=$(mktmpd); RBRB=$(mktmpd); fake_revdiff "$RBRB"
+rbr_repo() {                  # <dir> <big name>: main holds old.bin; branch feat adds NAME
+    ( cd "$1" || exit
+      export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+      git init -q -b main . && printf 'a\n' > f.c && printf 'old\n' > old.bin
+      truncate -s 33M old.bin && git add -A && git commit -q -m init
+      git checkout -q -b feat && printf 'b\n' >> f.c && git rm -q old.bin
+      printf '%s\n' "$2" > "$2" && truncate -s 33M -- "$2" && git add -A && git commit -q -m feat
+    ) >/dev/null 2>&1
+}
+rbr_args() {                  # <repo> <base or ""> [VAR=value]...: one launch, its args
+    local repo=$1 base=$2; shift 2
+    RDW=$(mktmpd); [ -z "$base" ] || printf '%s\n' "$base" > "$RDW/comments.md.base"
+    ( for kv in "$@"; do export "${kv%%=*}=${kv#*=}"; done
+      rd_loop l "$repo" "$RDW/comments.md" "$RBRB:$PATH" >/dev/null )
+    cat "$RDW/args.1" 2>/dev/null
+}
+rbr_repo "$RBR" big.bin
+rbra=$(rbr_args "$RBR" "")
+is "the base is the branch's: revdiff got main's sha" "$(git -C "$RBR" rev-parse main)" \
+   "$(tail -n 1 <<<"$rbra")"
+is "a big file the branch committed, unchanged in the worktree, is excluded" "1" \
+   "$(grep -cxF -- '--exclude=big.bin' <<<"$rbra")"
+is "and one the branch deleted, big at the base" "1" \
+   "$(grep -cxF -- '--exclude=old.bin' <<<"$rbra")"
+is "and nothing else: the small change stays" "2" "$(grep -c -- '^--exclude=' <<<"$rbra")"
+is "--untracked is still passed" "1" "$(grep -cxF -- '--untracked' <<<"$rbra")"
+is "under the uncommitted base the committed one is not excluded" "0" \
+   "$(rbr_args "$RBR" uncommitted | grep -c -- '^--exclude=')"
+# Both files are 33 MB of zeros: unexcluded, git pairs them as one rename.
+is "tree_diff's full diff names neither big file" "0" \
+   "$(tdiff "$RBR" | grep -c '^diff --git .*\.bin')"
+is "and numstat names it once as a binary row" "1" \
+   "$(tdiff "$RBR" --numstat | grep -cxF -- "-	-	big.bin")"
+printf 'more\n' >> "$RBR/big.bin"                     # also changed in the worktree
+is "a big file both committed and changed: one --exclude" "1" \
+   "$(rbr_args "$RBR" "" | grep -cxF -- '--exclude=big.bin')"
+is "and one numstat row" "1" "$(tdiff "$RBR" --numstat | grep -cxF -- "-	-	big.bin")"
+# A committed name revdiff cannot exclude: no review, as for a tracked one.
+RBRW=$(mktmpd); RDW=$(mktmpd); rbr_repo "$RBRW" ' tb.bin'
+is "a committed big ' tb.bin' under the branch base: the loop exits 124" "124" \
+   "$(rd_loop l "$RBRW" "$RDW/comments.md" "$RBRB:$PATH")"
+is "and revdiff is never started" "not started" \
+   "$([ -e "$RDW/n" ] && echo started || echo 'not started')"
+unset -f rbr_repo
+rm -rf "$RBR" "$RBRW" "$RBRB"
+
+echo "== review: revdiff's config-file excludes are passed on with a big file (#706) =="
+# A command-line -X replaces the config file's `exclude =` lines too. revdiff
+# reads $REVDIFF_CONFIG, else ~/.config/revdiff/config, and ignores
+# REVDIFF_EXCLUDE when the file names an exclude. FAIL-first: on the old code
+# no config entry reached revdiff and REVDIFF_EXCLUDE always did.
+RBC=$(mktmpd); RBCH=$(mktmpd); RBRB=$(mktmpd); fake_revdiff "$RBRB"   # a shard runs it alone
+( cd "$RBC" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main . && printf 'a\n' > f.c && git add -A && git commit -q -m init
+  printf 'big\n' > big.log && truncate -s 33M big.log ) >/dev/null 2>&1
+mkdir -p "$RBCH/.config/revdiff"
+printf '%s\n' '; a comment' '# another' 'X = top' '[Application Options]' \
+    '  exclude = vendor/  ' 'EXCLUDE = "docs dir"' 'exclude =' 'theme = x' \
+    > "$RBCH/.config/revdiff/config"
+rbca=$(rbr_args "$RBC" "" HOME="$RBCH" REVDIFF_CONFIG=)
+is "an exclude from ~/.config/revdiff/config is passed on, trimmed" "1" \
+   "$(grep -cxF -- '--exclude=vendor/' <<<"$rbca")"
+is "and a quoted one" "1" "$(grep -cxF -- '--exclude=docs dir' <<<"$rbca")"
+is "and one before any section, by the short name" "1" "$(grep -cxF -- '--exclude=top' <<<"$rbca")"
+is "and the empty one is no --exclude=" "0" "$(grep -cxF -- '--exclude=' <<<"$rbca")"
+is "the big file is still excluded" "1" "$(grep -cxF -- '--exclude=big.log' <<<"$rbca")"
+printf 'exclude=other\n' > "$RBCH/other"
+rbca=$(rbr_args "$RBC" "" HOME="$RBCH" REVDIFF_CONFIG="$RBCH/other")
+is "REVDIFF_CONFIG names the file instead" "1|0" \
+   "$(grep -cxF -- '--exclude=other' <<<"$rbca")|$(grep -cxF -- '--exclude=vendor/' <<<"$rbca")"
+is "a config exclude makes revdiff ignore REVDIFF_EXCLUDE: not passed" "0" \
+   "$(rbr_args "$RBC" "" HOME="$RBCH" REVDIFF_EXCLUDE=a,envb | grep -cxF -- '--exclude=envb')"
+printf 'garbage\n' >> "$RBCH/.config/revdiff/config"
+rbca=$(rbr_args "$RBC" "" HOME="$RBCH" REVDIFF_EXCLUDE=a,envb)
+is "a config revdiff cannot parse adds nothing, and REVDIFF_EXCLUDE holds" "0|1" \
+   "$(grep -cxF -- '--exclude=vendor/' <<<"$rbca")|$(grep -cxF -- '--exclude=envb' <<<"$rbca")"
+printf '[a=b\nexclude=other\n' > "$RBCH/other"         # a header with no ], as go-flags reads it
+is "and so does an unclosed [ header" "0" \
+   "$(rbr_args "$RBC" "" HOME="$RBCH" REVDIFF_CONFIG="$RBCH/other" | grep -cxF -- '--exclude=other')"
+unset -f rbr_args
+rm -rf "$RBC" "$RBCH" "$RBRB"
+
 echo "== tmux-review: the review base is since-last-review, else the branch, else uncommitted =="
 # revdiff's auto-detect, one function: a checkpoint ref wins, then the
 # merge-base with the upstream/default branch when it is not HEAD itself,
