@@ -1191,8 +1191,8 @@ kind: bug
 window: bash · bash · /home/u/projects/blog
 expect: write
 out_is: prompt
-must: page 2|second page; reproduce|reproduces|reproducing|confirm the bug|run it first|first run|first to see|first to confirm|to see the failure|to see the panic|see it fail|before fixing|before you fix|reproduce it before changing; again|after the fix
-note: a regression guard (#589 review): the bug line asks to reproduce, fix and run the check again; the prompt keeps that without the "failing before, passing after" clause, which was dropped for adding a baseline to a rename; widened after the first probe, which reproduced with the two commands and ran them again but never wrote "fail"; mutation test: fail|failing|failure|crash|panic named the symptom, not a repro step, so a brief that never reran the bug passed; the repro term now takes only a repro step; tightened for mutation survivor, #701; #702 review label fix: the repro term takes "reproduce it before changing" for "before changing"
+must: page 2|second page; reproduce|reproduces|reproducing|confirm the bug|run it first|first run|first to see|first to confirm|to see the failure|to see the panic|see it fail|before fixing|before you fix; again|after the fix
+note: a regression guard (#589 review): the bug line asks to reproduce, fix and run the check again; the prompt keeps that without the "failing before, passing after" clause, which was dropped for adding a baseline to a rename; widened after the first probe, which reproduced with the two commands and ran them again but never wrote "fail"; mutation test: fail|failing|failure|crash|panic named the symptom, not a repro step, so a brief that never reran the bug passed; the repro term now takes only a repro step; tightened for mutation survivor, #701; #702 review label fix: the repro term takes "reproduce it before changing" for "before changing"; #702 review F3: "reproduce it before changing" dropped, since "reproduce" already matches it
 --- screen
 $ curl -s 'localhost:3000/api/posts?page=1' | jq '.[-1].id'
 40
@@ -1437,10 +1437,10 @@ write a script that converts data.csv to json
 kind: bug
 window: claude · claude · /home/u/projects/storefront
 expect: write
-must: test_refund|tests/test_orders.py; reproduce|reproduces|reproducing|confirm the bug|run it first|first run|first to see|first to confirm|to see the failure|to see the panic|see it fail|before fixing|before you fix|reproduce it before changing; again|after the fix|rerun|re-run
+must: test_refund|tests/test_orders.py; reproduce|reproduces|reproducing|confirm the bug|run it first|first run|first to see|first to confirm|to see the failure|to see the panic|see it fail|before fixing|before you fix; again|after the fix|rerun|re-run
 must_not: AskUserQuestion; requirements list|list of requirements
 holdout: yes
-note: the failing test, its file and the error are on screen, so the agent can run it; a careful brief runs that test first to see the KeyError, fixes it, then runs the test (and the suite) again; nothing is left for the owner; mutation test: fail|failing|failure|crash|panic named the symptom, not a repro step, so a brief that never reran the bug passed; the repro term now takes only a repro step; tightened for mutation survivor, #701; #702 review label fix: must_not "requirements" became "requirements list|list of requirements", which requirements.txt does not hit; the repro term takes "reproduce it before changing" for "before changing"
+note: the failing test, its file and the error are on screen, so the agent can run it; a careful brief runs that test first to see the KeyError, fixes it, then runs the test (and the suite) again; nothing is left for the owner; mutation test: fail|failing|failure|crash|panic named the symptom, not a repro step, so a brief that never reran the bug passed; the repro term now takes only a repro step; tightened for mutation survivor, #701; #702 review label fix: must_not "requirements" became "requirements list|list of requirements", which requirements.txt does not hit; the repro term takes "reproduce it before changing" for "before changing"; #702 review F3: "reproduce it before changing" dropped, since "reproduce" already matches it
 --- screen
 $ pytest tests/test_orders.py -q
 ..F.
@@ -1455,10 +1455,10 @@ fix this
 kind: bug
 window: bash · bash · /home/u/projects/ledger
 expect: write
-must: parse.go|cmd/importer|sample.csv; reproduce|reproduces|reproducing|confirm the bug|run it first|first run|first to see|first to confirm|to see the failure|to see the panic|see it fail|before fixing|before you fix|reproduce it before changing; again|after the fix|rerun|re-run
+must: parse.go|cmd/importer|sample.csv; reproduce|reproduces|reproducing|confirm the bug|run it first|first run|first to see|first to confirm|to see the failure|to see the panic|see it fail|before fixing|before you fix; again|after the fix|rerun|re-run
 must_not: AskUserQuestion; requirements list|list of requirements
 holdout: yes
-note: the command, the input file and the panic site are all on screen; the brief should rerun that exact command to see the panic, fix the bounds check, then run it again on the same file (plus go test); the owner has nothing to add; mutation test: fail|failing|failure|crash|panic named the symptom, not a repro step, so a brief that never reran the bug passed; the repro term now takes only a repro step; tightened for mutation survivor, #701; #702 review label fix: must_not "requirements" became "requirements list|list of requirements", which requirements.txt does not hit; the repro term takes "reproduce it before changing" for "before changing"
+note: the command, the input file and the panic site are all on screen; the brief should rerun that exact command to see the panic, fix the bounds check, then run it again on the same file (plus go test); the owner has nothing to add; mutation test: fail|failing|failure|crash|panic named the symptom, not a repro step, so a brief that never reran the bug passed; the repro term now takes only a repro step; tightened for mutation survivor, #701; #702 review label fix: must_not "requirements" became "requirements list|list of requirements", which requirements.txt does not hit; the repro term takes "reproduce it before changing" for "before changing"; #702 review F3: "reproduce it before changing" dropped, since "reproduce" already matches it
 --- screen
 $ go run ./cmd/importer data/sample.csv
 panic: runtime error: index out of range [3] with length 3

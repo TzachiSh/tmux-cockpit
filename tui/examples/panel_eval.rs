@@ -7,8 +7,8 @@
 //!
 //!     cargo run --example panel_eval -- [--model M] [--runs N] [--jobs J]
 //!         [--only TEXT] [--cases FILE] [--out FILE.jsonl] [--check] [--no-explore]
-//!         [--no-hermetic] [--judge] [--judge-model M]
-//!     cargo run --example panel_eval -- --compare A.jsonl B.jsonl
+//!         [--no-hermetic] [--judge] [--judge-model M] [--ledger FILE]
+//!     cargo run --example panel_eval -- --compare A.jsonl B.jsonl [--allow-mixed]
 //!     cargo run --example panel_eval -- --calibrate LABELS.jsonl
 //!         [--judge-model M] [--split all|tune|holdout] [--jobs J] [--out FILE.jsonl]
 //!
@@ -926,23 +926,37 @@ fn main() {
         std::thread::sleep(Duration::from_millis(50));
     }
     summary(&cases, &done, &hashes, o.runs);
-    if let Some(l) = o.ledger.clone().or_else(|| o.out.as_ref().map(|p| p.with_file_name("cost.tsv"))) {
-        let label = o
-            .out
-            .as_ref()
-            .and_then(|p| p.file_name())
-            .map_or("-".into(), |n| n.to_string_lossy().into_owned());
-        let total: f64 = costs.iter().flatten().sum();
-        let secs = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs());
-        if let Err(e) = ledger_append(&l, &ledger_row(secs, &label, cases.len(), o.runs, total, &prompt_sets.join(","))) {
-            eprintln!("panel_eval: ledger {}: {e}", l.display());
-        }
-    }
     let mut judged_nothing = false;
+    let mut judge_usd = None;
     if o.judge {
-        judged_nothing = judge_rows(&mut rows, &o, &call.claude, wrapped, log.as_mut());
+        let (none, usd) = judge_rows(&mut rows, &o, &call.claude, wrapped, log.as_mut());
+        (judged_nothing, judge_usd) = (none, Some(usd));
+    }
+    let ledger = ledger_path(&o);
+    let label = o
+        .out
+        .as_ref()
+        .and_then(|p| p.file_name())
+        .map_or("-".into(), |n| n.to_string_lossy().into_owned());
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let total: f64 = costs.iter().flatten().sum();
+    let mut lines = vec![ledger_row(secs, &label, cases.len(), o.runs, total, &prompt_sets.join(","))];
+    if let Some(usd) = judge_usd {
+        lines.push(ledger_row(
+            secs,
+            &format!("{label} judge"),
+            cases.len(),
+            o.runs,
+            usd,
+            &o.judge_model,
+        ));
+    }
+    for line in lines {
+        if let Err(e) = ledger_append(&ledger, &line) {
+            eprintln!("panel_eval: ledger {}: {e}", ledger.display());
+        }
     }
     println!("environment     {env}");
     if let Some(l) = cost_line(&costs, wrapped) {
@@ -997,7 +1011,7 @@ fn judge_rows(
     claude: &str,
     wrapped: bool,
     mut log: Option<&mut std::fs::File>,
-) -> bool {
+) -> (bool, f64) {
     // the rig wraps calls by naming itself as claude: the judge calls the real one
     let real = match wrapped {
         true => std::env::var(AS_CLAUDE).unwrap_or_else(|_| claude.into()),
@@ -1033,7 +1047,7 @@ fn judge_rows(
             let _ = writeln!(f, "{row}");
         }
     }
-    judge::every_failed(&judged)
+    (judge::every_failed(&judged), cost.iter().flatten().sum())
 }
 
 /// Puts `judged[n]` on row `todo[n]` and prints its line; returns the calls
@@ -1640,6 +1654,22 @@ fn mixed_prompts(rows: &[Row]) -> Vec<String> {
     ids
 }
 
+/// Where a run's cost goes: `--ledger`, else `cost.tsv` next to `--out`, else
+/// `panel-eval-cost.tsv` in `${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit`.
+fn ledger_path(o: &Opts) -> PathBuf {
+    if let Some(l) = &o.ledger {
+        return l.clone();
+    }
+    if let Some(out) = &o.out {
+        return out.with_file_name("cost.tsv");
+    }
+    let state = match std::env::var("XDG_STATE_HOME") {
+        Ok(v) if v.starts_with('/') => PathBuf::from(v),
+        _ => PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".local/state"),
+    };
+    state.join("tmux-cockpit/panel-eval-cost.tsv")
+}
+
 /// One cost ledger line: unix time, the `--out` label, cases, runs, dollars, prompt hash.
 fn ledger_row(secs: u64, label: &str, cases: usize, runs: usize, total: f64, prompt: &str) -> String {
     format!("{secs}\t{label}\t{cases}\t{runs}\t{total:.4}\t{prompt}")
@@ -1647,6 +1677,9 @@ fn ledger_row(secs: u64, label: &str, cases: usize, runs: usize, total: f64, pro
 
 /// Appends `line` to the ledger at `path`, with a header when the file is new.
 fn ledger_append(path: &Path, line: &str) -> std::io::Result<()> {
+    if let Some(d) = path.parent() {
+        std::fs::create_dir_all(d)?;
+    }
     let new = !path.exists();
     let mut f = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
     if new {
@@ -2184,6 +2217,20 @@ mod tests {
         assert_eq!(mixed_prompts(&rows), ["x", "z"], "z: a row with no hash beside one with a hash");
         assert!(opts(args("--compare a b --allow-mixed")).unwrap().allow_mixed);
         assert!(!opts(args("--compare a b")).unwrap().allow_mixed);
+    }
+
+    #[test]
+    fn the_ledger_goes_to_ledger_then_next_to_out_then_the_state_folder() {
+        let o = opts(args("--ledger /l/c.tsv --out /o/a.jsonl")).unwrap();
+        assert_eq!(ledger_path(&o), PathBuf::from("/l/c.tsv"));
+        let o = opts(args("--out /o/a.jsonl")).unwrap();
+        assert_eq!(ledger_path(&o), PathBuf::from("/o/cost.tsv"));
+        let o = opts(args("")).unwrap();
+        assert!(
+            ledger_path(&o).ends_with("tmux-cockpit/panel-eval-cost.tsv"),
+            "{:?}",
+            ledger_path(&o)
+        );
     }
 
     #[test]

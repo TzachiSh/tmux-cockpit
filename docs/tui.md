@@ -283,14 +283,16 @@ blocking case with its failing reply and its cause: prompt, label or noise.
 
 The decision rule for each prompt change: before running, the commit message
 names the target cases and the direction expected; a move nobody predicted is
-noise. A target below 100% gets 30 runs per side, and the change stays only
-if a one-sided Fisher test gives p < 0.05. Guards get 3 full runs; a case at
-1/3 or worse gets 15 more, and a drop that holds at p < 0.05 reverts the
-change. A change gets at most 3 wordings, then the stop rule applies. Each
-`--out` row carries `prompt`, the hash of `write.txt` and its examples as
-loaded; `--compare` refuses a case whose rows on one side carry two hashes
-unless given `--allow-mixed`. Each run appends its cost to `cost.tsv` next to
-`--out`, or to `--ledger <file>`.
+noise. A target below 100% gets 30 runs per side, and the change stays only if
+a one-sided Fisher test gives p < 0.05 (computed by hand: the rig prints pass
+counts, not p-values). Guards get 3 full runs; a case at 1/3 or worse gets 15
+more, and a drop that holds at p < 0.05 reverts the change. A change gets at
+most 3 wordings, then the stop rule applies. Each `--out` row carries `prompt`,
+the hash of `write.txt` and its examples as loaded; `--compare` refuses a case
+whose rows on one side carry two hashes unless given `--allow-mixed`. Each run
+appends its cost to `--ledger <file>`, else to `cost.tsv` next to `--out`, else
+to `${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/panel-eval-cost.tsv`; a
+`--judge` run adds a second row for the judge's spend.
 
 Calls are hermetic by default (#598): `claude --setting-sources ""`, so no
 user, project or local settings load, and with them no `CLAUDE.md`, no plugin
