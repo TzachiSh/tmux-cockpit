@@ -130,7 +130,9 @@ it as `--exclude=<path>` and is not in its file list; `a` leaves it out of the
 checkpoint, which keeps the version already in the index, and writes no copy of
 it into the object store. Under a branch or since-last-review base the same
 goes for a file the branch committed or deleted whose blob on either side is
-over 32 MB, changed in the worktree or not; git reads only its size. A
+over 32 MB, changed in the worktree or not; git reads only its size. Under
+any base, so does a tracked file whose committed or staged blob is over 32 MB
+when the worktree deletes it, shrinks it or stages a smaller one. A
 command-line `--exclude` replaces revdiff's own exclude list, so while a big
 file is present the cockpit passes that list on too, taken where revdiff would
 take it: the `exclude =` lines of its config file (`$REVDIFF_CONFIG`, else

@@ -6139,6 +6139,70 @@ is "one byte longer is skipped, and REVDIFF_EXCLUDE still not passed" \
 unset -f rbr_args rbc_len
 rm -rf "$RBC" "$RBCH" "$RBRB"
 
+echo "== review: a big HEAD blob deleted or shrunk, or a big newline name, stays out (#716) =="
+# big_files sizes worktree files, so a big HEAD file deleted or shrunk in the
+# worktree was in no list and git diff read its HEAD blob. A newline split a big
+# path into two wrong excludes, and a tab dropped it. FAIL-first: on the old
+# code revdiff got no --exclude for the first three, the newline names were two
+# args, and tree_diff's full diff named every file below.
+RBN=$(mktmpd); RBNB=$(mktmpd); fake_revdiff "$RBNB"        # a shard runs it alone
+( cd "$RBN" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main . && printf 'a\n' > f.c
+  for b in del.bin shr.bin stg.bin; do printf '%s\n' "$b" > "$b"; truncate -s 33M "$b"; done
+  git add -A && git commit -q -m init
+  rm del.bin; printf 'small\n' > shr.bin; printf 'small2\n' > stg.bin; git add stg.bin
+  for b in $'wnl\nw.bin' $'tab\there.bin'; do
+      printf 'x%s\n' "$b" > "$b"; truncate -s 33M "$b"
+  done
+) >/dev/null 2>&1
+rbn_args() {                  # <repo>: one revdiff launch, its args one a line
+    RDW=$(mktmpd); rd_loop l "$1" "$RDW/comments.md" "$RBNB:$PATH" >/dev/null
+    cat "$RDW/args.1" 2>/dev/null
+}
+rbna=$(rbn_args "$RBN")
+for b in del.bin shr.bin stg.bin $'tab\there.bin'; do
+    is "revdiff, uncommitted base: big at HEAD or on disk, '$b' is excluded" "1" \
+       "$(grep -cxF -- "--exclude=$b" <<<"$rbna")"
+done
+is "a big name with a newline is one --exclude arg" "w.bin" \
+   "$(awk 'p == "--exclude=wnl" { print } { p = $0 }' <<<"$rbna")"
+is "and nothing else is excluded" "5" "$(grep -c -- '^--exclude=' <<<"$rbna")"
+is "tree_diff's full diff names none of them: no blob read" "0" \
+   "$(tdiff "$RBN" | grep -c '^diff --git .*\.bin')"
+is "and numstat still names the deleted one" "1" \
+   "$(tdiff "$RBN" --numstat | grep -cxF -- "-	-	del.bin")"
+rbn_ap() { bash -c '. "$1/git.sh"; . "$1/review-diff.sh"; approve "$2"; echo "$?"' \
+             _ "$DIR/scripts/lib" "$1" 2>/dev/null; }
+is "a: approves" "0" "$(rbn_ap "$RBN")"
+RBNREF=$(git -C "$RBN" rev-parse -q --verify refs/cockpit/reviewed/main)
+is "a: the newline-named big file's blob is not written" "absent" \
+   "$(git -C "$RBN" cat-file -e "$(git -C "$RBN" hash-object -- $'wnl\nw.bin')" 2>/dev/null \
+      && echo written || echo absent)"
+is "a: the deleted big file is out of the checkpoint, the shrunk one is its small blob" \
+   "|$(git -C "$RBN" hash-object shr.bin)" \
+   "$(git -C "$RBN" rev-parse -q --verify "$RBNREF:del.bin")|$(
+      git -C "$RBN" rev-parse "$RBNREF:shr.bin")"
+# Under a branch base: a big file the branch never touched, deleted in the
+# worktree, and a big newline name the branch committed.
+RBNR=$(mktmpd)
+( cd "$RBNR" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main . && printf 'a\n' > f.c && printf 'k\n' > keep.bin
+  truncate -s 33M keep.bin && git add -A && git commit -q -m init
+  git checkout -q -b feat && printf 'b\n' >> f.c && printf 'c\n' > $'cnl\nc.bin'
+  truncate -s 33M $'cnl\nc.bin' && git add -A && git commit -q -m feat && rm keep.bin
+) >/dev/null 2>&1
+rbna=$(rbn_args "$RBNR")
+is "branch base: the base is main's" "$(git -C "$RBNR" rev-parse main)" "$(tail -n 1 <<<"$rbna")"
+is "a big file deleted in the worktree only is excluded" "1" \
+   "$(grep -cxF -- '--exclude=keep.bin' <<<"$rbna")"
+is "a committed big name with a newline is one --exclude arg" "c.bin" \
+   "$(awk 'p == "--exclude=cnl" { print } { p = $0 }' <<<"$rbna")"
+is "tree_diff's full diff names neither" "0" "$(tdiff "$RBNR" | grep -c '^diff --git .*\.bin')"
+unset -f rbn_args rbn_ap
+rm -rf "$RBN" "$RBNR" "$RBNB"
+
 echo "== tmux-review: the review base is since-last-review, else the branch, else uncommitted =="
 # revdiff's auto-detect, one function: a checkpoint ref wins, then the
 # merge-base with the upstream/default branch when it is not HEAD itself,
