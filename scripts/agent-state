@@ -494,6 +494,10 @@ fi
 # (PreToolUse, PostToolUse) are refused. Anything else tests it again, in the else branch,
 # and runs the body unless that reads a whole refusal. The body rides there as a quoted
 # string, parsed once when it runs (in braces tmux parsed it twice).
+# The cost: when both reads are cut, a refused transition runs. A Stop or idle then drops a
+# sticky needs-input or error, and a refused running clears @cockpit_review. Running only
+# on a whole 1 the second time would fail closed there, but then one cut there skips a
+# transition that is due, and one cut is far likelier than two; master skipped on one cut.
 skip="#{?#{==:$when,1},0,1}"
 # Escaped for tmux's double quotes; no body has any of the three today, so no pass is made.
 q=${body# ; } bs=\\ dq='"' dl='$'
