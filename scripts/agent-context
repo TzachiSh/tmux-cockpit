@@ -37,9 +37,15 @@ case "$pct" in
         # $pane and $pct are validated, safe in a command string. The session's
         # gauge cells (the bar's tab budget counts them) are summed here, once per
         # change, so no redraw walks the windows; written only when the sum moves.
+        # Each test reads 1 only for an equal compare read whole (#713): tmux 3.7+ cuts a
+        # format past 100 ms to "", which must write, not skip. The cells are tested again
+        # after a write, as agent-state's put does; the gauge is a literal, never cut.
         cells='#{n:#{W:#{?#{E:@cockpit_ctx_on},xx#{@panestate_ctx}x,}}}'
-        tmux if-shell -F -t "$pane" "#{!=:#{@panestate_ctx},$pct}" \
-            "set-option -p -t $pane @panestate_ctx $pct ; if-shell -F -t $pane '#{e|!=:$cells,#{@cockpit_ctx_all}}' { set-option -F -t $pane @cockpit_ctx_all '$cells' }" 2>/dev/null
+        ct="#{?#{e|==:$cells,#{@cockpit_ctx_all}},1,0}"
+        cs="set-option -F -t $pane @cockpit_ctx_all '$cells'"
+        cs="if -F -t $pane '$ct' {} { $cs ; if -F -t $pane '$ct' {} { $cs } }"
+        tmux if-shell -F -t "$pane" "#{?#{==:#{@panestate_ctx},$pct},1,0}" "" \
+            "set-option -p -t $pane @panestate_ctx $pct ; $cs" 2>/dev/null
         ;;
 esac
 printf '%s · ctx %s%%\n' "${model:-claude}" "$pct"
