@@ -40,15 +40,17 @@ pub fn load(name: &str, shipped: &str) -> (String, Option<String>) {
     (text.trim_end_matches('\n').to_string(), note)
 }
 
+/// FNV-1a: stable across Rust releases, unlike `DefaultHasher`, so hashes from
+/// two toolchains compare.
+pub fn fnv(s: &str) -> u64 {
+    s.bytes()
+        .fold(0xcbf2_9ce4_8422_2325, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3))
+}
+
 /// The hash of prompt texts as [`load`] returned them, in the order given:
-/// FNV-1a over the texts joined by NUL, as 16 hex digits. Stable across Rust
-/// releases, unlike `DefaultHasher`, so two toolchains' hashes compare.
+/// [`fnv`] over the texts joined by NUL, as 16 hex digits.
 pub fn files_hash(texts: &[&str]) -> String {
-    let h = texts
-        .join("\0")
-        .bytes()
-        .fold(0xcbf2_9ce4_8422_2325_u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3));
-    format!("{h:016x}")
+    format!("{:016x}", fnv(&texts.join("\0")))
 }
 
 /// The write prompt, a note for each override that could not be read, and

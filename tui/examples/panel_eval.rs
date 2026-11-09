@@ -34,6 +34,7 @@ use cockpit_tui::panel::app::{App, View};
 use cockpit_tui::panel::capture::Capture;
 use cockpit_tui::panel::envelope::{Flow, OutType, Role, Turn};
 use cockpit_tui::panel::parse::{self, Reply, files_read, tool_calls};
+use cockpit_tui::panel::prompts::fnv;
 use cockpit_tui::panel::request::{Call, Effort, Fail, Profile, Request};
 use cockpit_tui::panel::route::route;
 use cockpit_tui::refs::Ref;
@@ -1671,13 +1672,6 @@ fn prompt_source(base: &Path) -> String {
         }
     }
     if from.is_empty() { "shipped".into() } else { from.join(", ") }
-}
-
-/// FNV-1a: stable across Rust releases, unlike DefaultHasher, so hashes from
-/// two toolchains compare.
-fn fnv(s: &str) -> u64 {
-    s.bytes()
-        .fold(0xcbf2_9ce4_8422_2325, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3))
 }
 
 /// The ids whose rows carry more than one prompt hash. A row with none, from an
