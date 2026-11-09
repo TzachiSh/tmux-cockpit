@@ -1732,3 +1732,97 @@ $ cat package.json | grep thumbs
     "thumbs": "node scripts/make-thumbs.js"
 --- request
 the thumbnails are stale, clear out public/thumbs and regenerate them
+
+# Second blind set (#701 review): written without seeing the prompt.
+
+=== ho2-clinic-reminders
+kind: feature
+window: bash · bash · /home/u/work/clinic-booking
+expect: ask
+ask_any: no-show; no-shows; front desk; receptionist; reception; success; goal; who will use; who uses
+must_not: twilio; sendgrid; cron; library; framework; provider
+holdout: yes
+note: several parts (reminders, a desk view, cancellations) whose purpose and done-criteria only the owner knows; a delivery-mechanism question is implementation flavour
+--- screen
+$ ls
+cmd  go.mod  internal  migrations  web
+--- repo
+branch: main...origin/main
+root: /home/u/work/clinic-booking
+status: clean
+recent commits:
+  7c1d2ea internal/booking: cancel by slot id
+  b30fa94 web: day calendar
+--- request
+we need reminders for appointments, plus something for the front desk to see who confirmed, and handling when people cancel
+
+=== ho2-sensor-anomalies
+kind: feature
+window: bash · bash · /home/u/work/plant-telemetry
+expect: ask
+ask_any: false alarms; false positives; false positive; on-call; operators; success; goal; acceptable
+must_not: algorithm; isolation forest; z-score; library; framework; scikit-learn; prophet
+holdout: yes
+note: a big multi-part feature; purpose and what counts as done are the owner's; a question on the detection method is implementation flavour
+--- screen
+$ ls
+ingest  notebooks  pyproject.toml  tests
+--- repo
+branch: main...origin/main
+root: /home/u/work/plant-telemetry
+status: clean
+recent commits:
+  1d4e9b0 ingest: parquet writer
+  88a07c3 tests: replay fixture
+--- request
+add anomaly detection on the sensor stream, with alerts, a page to review what it flagged, and a backfill over the old data
+
+=== ho2-dump-not-live
+kind: ops
+window: bash · bash · /home/u/work/ledger-api
+out: prompt
+out_is: prompt
+expect: write
+must: live|real; dump|restore|restored
+holdout: yes
+note: the limit (the live database stays untouched) and the allowed way (restore the dump locally and run there) are both given; no question
+--- screen
+$ ls
+docker-compose.yml  dumps  migrations  src
+$ ls dumps migrations | tail -4
+nightly.sql.gz
+0041_split_accounts.sql
+0042_add_ledger_index.sql
+--- repo
+branch: main...origin/main
+root: /home/u/work/ledger-api
+status: clean
+recent commits:
+  e5f20c8 migrations: 0041 split accounts
+--- request
+check that migration 0042 runs cleanly, but don't touch the live db, restore last night's dump into a local container and run it there
+
+=== ho2-tests-only
+kind: bug
+window: bash · bash · /home/u/work/webshop
+out: prompt
+out_is: prompt
+expect: write
+must: src; wait|waits|retry|retries
+holdout: yes
+note: the limit (no edits under src/) and the allowed change (waits or retries in the spec) are both given; no question
+--- screen
+$ npx playwright test checkout
+  1) checkout.spec.ts:31 › pays with a saved card
+     Error: locator('#pay-button') not found
+     Retry #1 ... failed
+  1 failed, 12 passed
+--- repo
+branch: fix/flaky-checkout...origin/main
+root: /home/u/work/webshop
+status:
+  M tests/checkout.spec.ts
+recent commits:
+  4ab7c16 tests: pay with saved card
+--- request
+the checkout test is flaky. don't edit anything under src/, only the tests; adding waits or retries in checkout.spec.ts is fine
