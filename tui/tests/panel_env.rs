@@ -19,7 +19,8 @@ static ENV: Mutex<()> = Mutex::new(());
 const BUDGET: Duration = Duration::from_secs(10);
 /// The time-out rows' budget. Their hung part runs to it every time, so it stays
 /// short; 2 s, about 7 times the panel's, gives the parts that do answer, and a
-/// fake git's shell start-up, room on a loaded box.
+/// fake git's shell start-up, room on most boxes; [`growing`] doubles it for the
+/// status row on a box loaded past that.
 const HUNG_BUDGET: Duration = Duration::from_secs(2);
 
 struct Env {
@@ -467,8 +468,26 @@ fn a_status_that_times_out_keeps_the_log() {
     let path = format!("$D:{}", std::env::var("PATH").unwrap_or_default());
     let e = Env::new("repo-status-hung", &[("PATH", Some(path))]);
     fake_git(&e, "status", "exec sleep 1000");
-    let got = repo_state_within(&e.dir.display().to_string(), "", HUNG_BUDGET);
-    assert!(got.contains("status: timed out") && got.contains("abc1234 first"), "{got}");
+    let dir = e.dir.display().to_string();
+    let kept = |got: &str| got.contains("status: timed out") && got.contains("abc1234 first");
+    let got = growing(HUNG_BUDGET, |b| repo_state_within(&dir, "", b), kept);
+    assert!(got.is_ok(), "every budget missed: {got:?}");
+}
+
+/// The first of `run`'s results that `ok` takes, from `first` and twice and four
+/// times it, or all three misses. A hung part costs each try its whole budget, so
+/// one `first` is the usual cost; a box too loaded for the parts that do answer
+/// to answer within it gets the larger ones before the row fails (#717).
+fn growing(first: Duration, run: impl Fn(Duration) -> String, ok: impl Fn(&str) -> bool) -> Result<String, Vec<String>> {
+    let mut misses = Vec::new();
+    for budget in [first, first * 2, first * 4] {
+        let got = run(budget);
+        if ok(&got) {
+            return Ok(got);
+        }
+        misses.push(got);
+    }
+    Err(misses)
 }
 
 /// What an inherited environment could point git at instead of the pane's repo.
