@@ -39,8 +39,8 @@ workdir_ask() {               # <pane> -> its dir
 }
 
 # What tells an agent pane, read in one format: the agent glob's verdict, @panestate
-# and the command name. Then the pane's @cockpit_dir and cwd. m/i: the board
-# lowercases the command before the glob, so Claude is claude (#508).
+# and the command name. Then the pane's @cockpit_dir and cwd. m/i, as at every
+# agent-glob site and on the board: names match in any case, Claude is claude (#508).
 _wd=$'\037'
 WORKDIR_FMT="#{pane_id}$_wd#{?#{m/i:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},1,0}"
 WORKDIR_FMT+="$_wd#{@panestate}$_wd#{pane_current_command}"

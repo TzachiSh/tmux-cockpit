@@ -8048,13 +8048,14 @@ esac
 sleep 0.2
 
 # The gate deliver() actually ships, in one string so this block cannot drift
-# from it again: the #{m:...} command test AND #{!=:#{@panestate},needs-input},
+# from it again: the #{m/i:...} command test AND #{!=:#{@panestate},needs-input},
 # joined with #{&&:...} so tmux evaluates BOTH inside the same command-queue
 # item as the paste. This block used to hand-build the single-condition form
 # under the "byte-for-byte" comment below, which stopped being true the moment
 # guard 3 was folded into the format -- and a typo inside the compound would
 # evaluate false and silently never deliver, with nothing here to catch it.
-RGGATE='#{&&:#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},#{!=:#{@panestate},needs-input}}'
+RGGATE='#{&&:#{m/i:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},'
+RGGATE+='#{!=:#{@panestate},needs-input}}'
 
 # The fix, byte-for-byte as deliver() runs it: stage the buffer, then let tmux
 # re-check #{pane_current_command} in the SAME command-queue item as the paste.
@@ -8152,7 +8153,7 @@ rc_from_buffer() {
 # report a race-refusal as success.
 printf 'OLD-RACE\n' | "$TMUX_REAL" -L "$RG" load-buffer -b rg-old -
 "$TMUX_REAL" -L "$RG" if-shell -F -t "$NPG" \
-    '#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}}' \
+    '#{m/i:*|#{pane_current_command}|*,#{@cockpit_agents_glob}}' \
     "paste-buffer -p -r -d -b rg-old -t $NPG ; display-message pasted" \
     "delete-buffer -b rg-old ; display-message 'not delivered'"
 is "the old inline delete on refusal hides the refusal from an RC check (the hazard is real)" \
@@ -8162,7 +8163,7 @@ is "the old inline delete on refusal hides the refusal from an RC check (the haz
 # find and clean up -- the same RC=1 contract the early guards already use.
 printf 'NEW-RACE\n' | "$TMUX_REAL" -L "$RG" load-buffer -b rg-new -
 "$TMUX_REAL" -L "$RG" if-shell -F -t "$NPG" \
-    '#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}}' \
+    '#{m/i:*|#{pane_current_command}|*,#{@cockpit_agents_glob}}' \
     "paste-buffer -p -r -d -b rg-new -t $NPG ; display-message pasted" \
     "display-message 'tmux-review: $NPG is no longer an agent — not delivered'"
 is "the fixed refused branch's surviving buffer reports the same RC=1 the early guards use" \
@@ -8179,7 +8180,7 @@ fi
 # item, since a read after the client returns can already say claude again.
 printf 'NEW-OK\n' | "$TMUX_REAL" -L "$RG" load-buffer -b rg-newok -
 "$TMUX_REAL" -L "$RG" if-shell -F -t "$APG" \
-    '#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}}' \
+    '#{m/i:*|#{pane_current_command}|*,#{@cockpit_agents_glob}}' \
     "paste-buffer -p -r -d -b rg-newok -t $APG ; display-message pasted" \
     "set -p -t $APG -F @rg_seen '#{pane_current_command}' ; \
 display-message 'tmux-review: $APG is no longer an agent — not delivered'"
@@ -18694,6 +18695,151 @@ is "--hooks twice: sub-taskstop once under PostToolUse TaskStop, sub-reconcile o
 is "and the user's own Stop hook and cockpit's done and review-gate are all still there" "1 1 1" \
    "$(jq '[.. | strings | select(. == "my-own-stop-hook")] | length' "$TIH/.claude/settings.json") $(tin Stop '' done) $(jq '[.hooks.Stop[].hooks[].command | select(test("review-gate$"))] | length' "$TIH/.claude/settings.json")"
 is "--check after: all 6" "ok all 6 subagent hooks merged" "$(tisub)"
+fi
+
+echo "== agent names match in any case (#508) =="
+# One rule at every site: an @cockpit_agents entry matches the pane's command in any case. The
+# entries are Cursor (a leading capital), OpenCode (mixed) and claude; the commands are cursor,
+# OPENCODE and CLAUDE, each in a window of its own, and a snooze pane is the non-agent control.
+# First the guard against a case-sensitive site coming back: in what the plugin ships, every
+# #{@cockpit_agents_glob} is the string side of a #{m/i:}. Counted per match, not per line:
+# tmux-jump holds two on one line.
+# The pattern lives outside the function: tests/par.sh ends a function where its braces balance.
+AC_RE='#[{]m/i:[^,]*,#[{]@cockpit_agents_glob[}]'
+ac_unfolded() {               # -> each shipped file holding a glob match that is not m/i
+    local f n m
+    while IFS= read -r f; do
+        n=$(grep -oF '#{@cockpit_agents_glob}' "$f" | wc -l)
+        m=$(grep -oE "$AC_RE" "$f" | wc -l)
+        [ "$n" = "$m" ] || printf '%s ' "${f#"$DIR"/}"
+    done < <(grep -rlF '#{@cockpit_agents_glob}' "$DIR/cockpit.tmux" "$DIR/examples" \
+        "$DIR/scripts" "$DIR/tui/src")
+}
+is "every agent-glob site matches in any case: no file holds a bare #{m:}" "" "$(ac_unfolded)"
+is "and the sweep reads the files that hold a site: 9 or more" "yes" \
+    "$([ "$(grep -rlF '#{@cockpit_agents_glob}' "$DIR/cockpit.tmux" "$DIR/examples" \
+        "$DIR/scripts" "$DIR/tui/src" | wc -l)" -ge 9 ] && echo yes)"
+unset -f ac_unfolded; unset AC_RE
+if need_tmux "agent names in any case"; then :; else
+AC="cockpit-ac508-$$"; SOCKS="$SOCKS $AC"; ACD=$(mktmpd)
+ac() { "$TMUX_REAL" -L "$AC" "$@"; }
+ac -f /dev/null new-session -d -s t -x 100 -y 30 -c "$ACD" 'exec sleep 300' >/dev/null 2>&1
+ac set -g @cockpit_agents_glob '|Cursor|OpenCode|claude|' >/dev/null 2>&1
+ACH=$(ac display -p -t t: '#{pane_id}')
+ac_pane() {                   # ac_pane <argv0> -> a new window's pane running sleep as <argv0>
+    local p
+    p=$(ac new-window -d -P -F '#{pane_id}' -t t: -c "$ACD" "exec -a $1 sleep 300")
+    until_out "$1" ac display -p -t "$p" '#{pane_current_command}'
+    printf '%s' "$p"
+}
+ACU=$(ac_pane cursor); ACO=$(ac_pane OPENCODE); ACL=$(ac_pane CLAUDE); ACS=$(ac_pane snooze)
+sock_path "$AC" ACSP
+ac_each() {                   # ac_each <format> -> its value on cursor, OPENCODE, CLAUDE, snooze
+    local p
+    for p in "$ACU" "$ACO" "$ACL" "$ACS"; do printf '%s ' "$(ac display -p -t "$p" "$1")"; done
+}
+# cockpit.tmux keeps a glob already set, and sources statusbar.conf
+ac run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+is "the glob is the one set, not the default" "|Cursor|OpenCode|claude|" \
+    "$(ac show -gqv @cockpit_agents_glob)"
+is "statusbar.conf: @cockpit_is_agent on cursor, OPENCODE, CLAUDE, snooze" "1 1 1 0 " \
+    "$(ac_each '#{E:@cockpit_is_agent}')"
+
+# The board: cockpit-tui workdir exits 1 for a pane that is no agent (#470).
+ac_wd() {                     # ac_wd <pane> -> cockpit-tui workdir's exit code
+    local rc=0
+    TMUX="$ACSP,0,0" "$COCKPIT_TUI_BIN" workdir "$1" </dev/null >/dev/null 2>&1 || rc=$?
+    printf '%s' "$rc"
+}
+is "the board: cursor, OPENCODE, CLAUDE are agents, snooze is not" "0 0 0 1" \
+    "$(ac_wd "$ACU") $(ac_wd "$ACO") $(ac_wd "$ACL") $(ac_wd "$ACS")"
+
+# prefix t's popup: its list-panes command, as the binding holds it, run on this server.
+ac_t=$(ac list-keys -T cockpit t | sed -n 's/.* "\(tmux list-panes .*\)"$/\1/p')
+for p in "$ACU" "$ACO" "$ACL" "$ACS"; do ac set -p -t "$p" @panestate needs-input; done
+is "prefix t: the state of cursor, OPENCODE, CLAUDE, and - for snooze" \
+    "needs-input needs-input needs-input - " \
+    "$(TMUX="$ACSP,0,0" sh -c "$ac_t" </dev/null 2>/dev/null | sed 1d | awk '{printf "%s ", $2}')"
+
+# tmux-jump: every pane is marked needs-input, so the cycle is the agents' panes alone.
+ac_jump() {                   # ac_jump <from> -> the pane prefix u lands on
+    TMUX="$ACSP,0,0" "$DIR/scripts/tmux-jump" "$1" </dev/null >/dev/null 2>&1
+    ac display -p -t t: '#{pane_id}'
+}
+is "prefix u cycles cursor, OPENCODE, CLAUDE and wraps past snooze" \
+    "$ACU $ACO $ACL $ACU" \
+    "$(ac_jump "$ACH") $(ac_jump "$ACU") $(ac_jump "$ACO") $(ac_jump "$ACL")"
+# agent-state's fleet count of waiting agents (the bar's ▲), written on a state change
+ac set -pu -t "$ACU" @panestate
+TMUX="$ACSP,0,0" "$DIR/scripts/agent-state" needs-input "$ACU" </dev/null >/dev/null 2>&1
+is "agent-state counts cursor, OPENCODE, CLAUDE as waiting agents, not snooze" "3" \
+    "$(ac show -gqv @cockpit_fleet_nb)"
+for p in "$ACU" "$ACO" "$ACL" "$ACS"; do ac set -pu -t "$p" @panestate; done
+ac set -p -t "$ACS" @cockpit_review sent; ac set -p -t "$ACO" @cockpit_review sent
+is "prefix u walks to OPENCODE's unsent review, not snooze's" "$ACO" "$(ac_jump "$ACH")"
+ac set -pu -t "$ACS" @cockpit_review; ac set -pu -t "$ACO" @cockpit_review
+
+# --deliver: the guard (an agent pane, or a refusal) and the paste gate (sent, or queued).
+printf '## a.go:1 (+)\nfix this\n\n' > "$ACD/store"
+ac_deliver() {                # ac_deliver <pane>: one delivery; the store is copied each time
+    cp "$ACD/store" "$ACD/store.$1"
+    TMUX="$ACSP,0,0" "$DIR/scripts/tmux-review" --deliver "$1" "$ACD/store.$1" \
+        </dev/null >/dev/null 2>&1
+}
+for p in "$ACU" "$ACL"; do
+    ac_deliver "$p"
+    is "--deliver to $(ac display -p -t "$p" '#{pane_current_command}'): past the guard" "yes" \
+        "$([ -n "$(ac show -pqv -t "$p" @cockpit_review_spool)" ] \
+            || [ "$(ac show -pqv -t "$p" @cockpit_review)" = sent ] && echo yes)"
+    is "and the gate pasted it: marked sent" "sent" "$(ac show -pqv -t "$p" @cockpit_review)"
+done
+ac_deliver "$ACS"
+is "--deliver to snooze is refused: no spool, no mark" "|" \
+    "$(ac show -pqv -t "$ACS" @cockpit_review_spool)|$(ac show -pqv -t "$ACS" @cockpit_review)"
+
+# agent-poll unmarks an agent view whose pane no longer runs an agent: only snooze's goes.
+av_setup
+for p in "$ACU" "$ACO" "$ACL" "$ACS"; do ac set -p -t "$p" @cockpit_agentview 1; done
+env -u TMUX_PANE -u CLAUDE_CODE_SESSION_KIND TMUX="$ACSP,0,0" PATH="$AVBIN:$PATH" \
+    AV_JSON="$AVF/none.json" "$DIR/scripts/agent-poll" --once </dev/null >/dev/null 2>&1
+is "agent-poll keeps the agent view of cursor, OPENCODE, CLAUDE, drops snooze's" "1 1 1  " \
+    "$(ac_each '#{@cockpit_agentview}')"
+
+# cockpit-board's resume refuses a second copy of a session live in an agent's pane: here
+# OPENCODE holds it. A stub binary writes the action, as in the #301 block.
+SID=0b5e7c1a-3f2d-4e8b-9a6c-1d2e3f4a5b6c
+ac set -p -t "$ACO" @cockpit_session "$SID"
+ac set -p -t "$ACS" @cockpit_session "$SID"; ac set -p -t "$ACS" @panestate needs-input
+cat > "$ACD/bin" <<ACBIN
+#!/bin/sh
+[ "\${5:-}" = "" ] || cat "\$5" >> "$ACD/note"
+[ ! -e "$ACD/once" ] || exit 0
+: > "$ACD/once"
+printf '%s\n' "$SID" > "\$COCKPIT_ACTION.expect"
+printf 'resume %s\n' "$ACS" > "\$COCKPIT_ACTION"
+ACBIN
+chmod +x "$ACD/bin"
+ac new-window -d -t t: -c "$ACD" "env COCKPIT_TUI_BIN=$ACD/bin XDG_STATE_HOME=$ACD/state \
+COCKPIT_LOG=$ACD/tui.log $DIR/scripts/cockpit-board -p $ACH; echo x > $ACD/done"
+until_file "$ACD/done" 'x'
+is "resume: a session live in OPENCODE is not opened twice" \
+    "✕ cockpit: ${SID:0:8} is already running in $ACO" "$(cat "$ACD/note" 2>/dev/null)"
+ac kill-server >/dev/null 2>&1
+unset -f ac ac_pane ac_each ac_wd ac_jump ac_deliver
+
+# The sessions screen: gamma's claude, waiting, is an agent under the entry CLAUDE, so gamma
+# sorts first, the row Enter switches to. Counted as no agent, beta comes first.
+sv_server ac508; SVD=$(mktmpd)
+"$TMUX_REAL" -L "$SVS" set -g @cockpit_agents_glob '|CLAUDE|'
+"$TMUX_REAL" -L "$SVS" set -pu -t beta: @panestate
+"$TMUX_REAL" -L "$SVS" respawn-pane -k -t gamma: 'exec -a claude sleep 300' >/dev/null 2>&1
+until_out claude "$TMUX_REAL" -L "$SVS" display -p -t gamma: '#{pane_current_command}'
+"$TMUX_REAL" -L "$SVS" set -p -t gamma: @panestate needs-input
+sv_ui "$SVD" --current "$SVA"; sv_cap '*gamma*'; sv_key Enter; until_file "$SVD/rc" '?*'
+is "sessions: a claude under the entry CLAUDE waits, so its session is first" "switch $SVG" \
+    "$(cat "$SVD/act" 2>/dev/null)"
+"$TMUX_REAL" -L "$SVO" kill-server >/dev/null 2>&1
+"$TMUX_REAL" -L "$SVS" kill-server >/dev/null 2>&1
 fi
 
 echo "== jq filters parse on jq 1.7.x: no postfix after a term's ? (#481) =="

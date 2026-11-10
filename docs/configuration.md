@@ -52,3 +52,8 @@ path picker re-reads them on every click, so changing them needs no reload.
 The sessions screen (`prefix + s`) reads them as **ceilings**, not sizes: it
 shrinks to fit its sessions, at most 70% of the client on a desktop, 90% wide
 below 160 columns, and full width in touch mode.
+
+## Agent names
+
+An entry in `@cockpit_agents` matches the pane's command in any case: `Cursor` marks a
+`cursor` pane as an agent, and `claude` marks a `CLAUDE` one.
