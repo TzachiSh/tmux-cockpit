@@ -30,10 +30,12 @@ struct Env {
 }
 
 impl Env {
-    /// `None` unsets the variable for the test.
+    /// `None` unsets the variable for the test. The dir's name holds a space, as a
+    /// TMPDIR with one would give it, so a `$D` left unquoted in a fake's body
+    /// fails the row that runs that fake (#757).
     fn new(tag: &str, vars: &[(&'static str, Option<String>)]) -> Env {
         let lock = ENV.lock().unwrap_or_else(|e| e.into_inner());
-        let dir = std::env::temp_dir().join(format!("cockpit-panel-env-{tag}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("cockpit panel-env-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let old = vars.iter().map(|(k, _)| (*k, std::env::var(k).ok())).collect();
@@ -71,6 +73,15 @@ impl Drop for Env {
     }
 }
 
+/// The space in [`Env::new`]'s dir is what makes the other rows check their
+/// fakes' quoting: without it they pass with `$D` unquoted.
+#[test]
+fn every_env_dir_name_holds_a_space() {
+    let e = Env::new("space", &[]);
+    let name = e.dir.file_name().unwrap().to_string_lossy();
+    assert!(name.contains(' '), "{}", e.dir.display());
+}
+
 fn until(mut f: impl FnMut() -> bool) -> bool {
     for _ in 0..1000 {
         if f() {
@@ -95,7 +106,7 @@ fn the_call_is_no_panes_agent_and_marks_itself() {
             ("XDG_CACHE_HOME", Some("$D/cache".into())),
         ],
     );
-    e.exec("claude", "env > $D/env\necho ok");
+    e.exec("claude", "env > \"$D/env\"\necho ok");
     let call = Call::from_env();
     assert_eq!(call.claude, format!("{}/claude", e.dir.display()));
     assert_eq!(call.timeout, Duration::from_secs(7));
@@ -260,16 +271,39 @@ fn a_broken_prompt_file_falls_back_and_says_why() {
 
 fn fake_tmux(e: &Env, display: &str) {
     let body = format!(
-        "case \"$1\" in\ndisplay) printf '{display}' ;;\ncapture-pane) echo \"$@\" > $D/args; printf 'line1\\n\\nline2\\n  \\n\\n' ;;\n*) exit 1 ;;\nesac"
+        ": > \"$D/ran\"\ncase \"$1\" in\ndisplay) printf '{display}' ;;\n\
+         capture-pane) echo \"$@\" > \"$D/args\"; printf 'line1\\n\\nline2\\n  \\n\\n' ;;\n\
+         *) exit 1 ;;\nesac"
     );
-    let t = e.exec("tmux", &body);
-    // SAFETY: ENV is held by `e`.
-    unsafe { std::env::set_var("COCKPIT_TMUX", t) };
+    e.exec("tmux", &body);
+}
+
+/// The vars for a row with a fake tmux: COCKPIT_TMUX is the bare name, the
+/// production default, found first on a PATH that starts with `$D`. The variable
+/// itself is an argv split on whitespace (`data::tmux_argv`), so it cannot hold
+/// the path of a fake in a dir with a space. With no TMUX and TMUX_TMPDIR in `$D`,
+/// a real tmux reached by mistake finds no server, never the user's. [`Env`]
+/// restores all four on drop.
+fn tmux_on_path() -> [(&'static str, Option<String>); 4] {
+    let path = format!("$D:{}", std::env::var("PATH").unwrap_or_default());
+    [
+        ("COCKPIT_TMUX", Some("tmux".into())),
+        ("PATH", Some(path)),
+        ("TMUX", None),
+        ("TMUX_TMPDIR", Some("$D".into())),
+    ]
+}
+
+/// Whether [`fake_tmux`]'s fake ran since the last ask; its marker is taken, so
+/// the next ask in a loop starts fresh. A row whose asserts a real tmux could
+/// also meet (a block that is "") checks it.
+fn ran(e: &Env) -> bool {
+    std::fs::remove_file(e.dir.join("ran")).is_ok()
 }
 
 #[test]
 fn a_claude_pane_is_captured_deeper_and_trimmed() {
-    let e = Env::new("capture", &[("COCKPIT_TMUX", None)]);
+    let e = Env::new("capture", &tmux_on_path());
     fake_tmux(&e, "claude\\tclaude\\t/w\\n");
     let c = capture("%5").unwrap();
     assert_eq!((c.name.as_str(), c.cmd.as_str(), c.path.as_str()), ("claude", "claude", "/w"));
@@ -282,7 +316,7 @@ fn a_claude_pane_is_captured_deeper_and_trimmed() {
 
 #[test]
 fn a_shell_pane_with_no_window_name_keeps_its_fields() {
-    let e = Env::new("capture-shell", &[("COCKPIT_TMUX", None)]);
+    let e = Env::new("capture-shell", &tmux_on_path());
     fake_tmux(&e, "\\tbash\\t/home/u\\n");
     let c = capture("%6").unwrap();
     assert_eq!((c.name.as_str(), c.cmd.as_str(), c.path.as_str()), ("", "bash", "/home/u"));
@@ -371,11 +405,11 @@ fn a_fresh_fake_execs_while_another_thread_forks() {
 
 #[test]
 fn a_dead_pane_captures_nothing() {
-    let e = Env::new("capture-dead", &[("COCKPIT_TMUX", None)]);
-    let t = e.exec("tmux", "exit 1");
-    // SAFETY: ENV is held by `e`.
-    unsafe { std::env::set_var("COCKPIT_TMUX", t) };
+    let e = Env::new("capture-dead", &tmux_on_path());
+    e.exec("tmux", "touch \"$D/ran\"; exit 1");
     assert_eq!(capture("%7"), None);
+    // a tmux that never started is None too: the marker tells the two apart
+    assert!(e.dir.join("ran").exists(), "tmux never started");
     assert!(!Path::new(&e.dir.join("args")).exists());
 }
 
@@ -414,7 +448,7 @@ fn git_init(dir: &Path) {
 
 #[test]
 fn a_shell_pane_in_a_repo_carries_its_repo_block() {
-    let e = Env::new("capture-repo", &[("COCKPIT_TMUX", None)]);
+    let e = Env::new("capture-repo", &tmux_on_path());
     git_init(&e.dir.join("r"));
     fake_tmux(&e, "w\\tbash\\t$D/r\\n");
     let c = capture_within("%8", BUDGET).unwrap();
@@ -423,12 +457,14 @@ fn a_shell_pane_in_a_repo_carries_its_repo_block() {
 
 #[test]
 fn an_ssh_pane_or_no_path_carries_no_repo_block() {
-    let e = Env::new("capture-ssh", &[("COCKPIT_TMUX", None)]);
+    let e = Env::new("capture-ssh", &tmux_on_path());
     git_init(&e.dir.join("r"));
     // rows: the window line tmux prints
     for display in ["w\\tssh\\t$D/r\\n", "w\\tmosh-client\\t$D/r\\n", "w\\tbash\\t\\n"] {
         fake_tmux(&e, display);
-        assert_eq!(capture("%9").unwrap().repo.get(), "", "{display}");
+        let c = capture("%9").unwrap();
+        assert!(ran(&e), "{display}: tmux never started");
+        assert_eq!(c.repo.get(), "", "{display}");
     }
 }
 
@@ -473,7 +509,7 @@ fn fake_git(e: &Env, sub: &str, body: &str) {
     e.exec(
         "git",
         &format!(
-            "[ \"$2\" = $D ] || exit 1\n\
+            "[ \"$2\" = \"$D\" ] || exit 1\n\
              for a; do case $a in config|rev-parse|status|log|diff) s=$a; break ;; esac; done\n\
              if [ \"$s\" = {sub} ]; then {body}; fi\n\
              case $s in\nconfig) exit 1 ;;\nrev-parse) echo /r ;;\nstatus) echo '## main' ;;\n\
@@ -568,10 +604,12 @@ fn an_inherited_git_variable_never_moves_the_repo_block() {
 
 #[test]
 fn capture_returns_before_git_answers() {
-    let path = format!("$D:{}", std::env::var("PATH").unwrap_or_default());
-    let e = Env::new("repo-lazy", &[("PATH", Some(path)), ("COCKPIT_TMUX", None)]);
-    // git waits for a file the test writes only once capture() is back
-    fake_git(&e, "config", "while [ ! -e $D/go ]; do sleep 0.01; done");
+    let e = Env::new("repo-lazy", &tmux_on_path());
+    // git waits for a file the test writes only once capture() is back. `until`, not
+    // `while !`: a `[` that errors, as on an unquoted $D in a spaced dir, keeps it
+    // waiting, so the config read misses BUDGET and the block is "", where a
+    // `while` would end at once and the row would pass without a wait.
+    fake_git(&e, "config", "until [ -e \"$D/go\" ]; do sleep 0.01; done");
     fake_tmux(&e, "w\\tbash\\t$D\\n");
     let c = capture_within("%4", BUDGET).unwrap();
     std::fs::write(e.dir.join("go"), "").unwrap();
@@ -582,19 +620,21 @@ fn capture_returns_before_git_answers() {
 
 #[test]
 fn a_container_or_unknown_command_pane_carries_no_repo_block() {
-    let e = Env::new("capture-container", &[("COCKPIT_TMUX", None)]);
+    let e = Env::new("capture-container", &tmux_on_path());
     git_init(&e.dir.join("r"));
     // rows: pane_current_command, a folder that is only the local client's;
     // toolbox stands for any command not on the list, and "" for none at all
     for cmd in ["docker", "podman", "kubectl", "lxc", "incus", "nerdctl", "toolbox", ""] {
         fake_tmux(&e, &format!("w\\t{cmd}\\t$D/r\\n"));
-        assert_eq!(capture("%9").unwrap().repo.get(), "", "{cmd:?}");
+        let c = capture("%9").unwrap();
+        assert!(ran(&e), "{cmd:?}: tmux never started");
+        assert_eq!(c.repo.get(), "", "{cmd:?}");
     }
 }
 
 #[test]
 fn a_local_shell_editor_or_agent_pane_keeps_its_repo_block() {
-    let e = Env::new("capture-local", &[("COCKPIT_TMUX", None)]);
+    let e = Env::new("capture-local", &tmux_on_path());
     git_init(&e.dir.join("r"));
     // rows: pane_current_command; 2.1.246 is a live Claude renamed to its version
     for cmd in ["zsh", "fish", "nvim", "vim", "claude", "codex", "2.1.246", "cursor-agent"] {
@@ -606,11 +646,13 @@ fn a_local_shell_editor_or_agent_pane_keeps_its_repo_block() {
 
 #[test]
 fn every_ssh_like_command_carries_no_repo_block() {
-    let e = Env::new("capture-ssh-like", &[("COCKPIT_TMUX", None)]);
+    let e = Env::new("capture-ssh-like", &tmux_on_path());
     git_init(&e.dir.join("r"));
     for cmd in cockpit_tui::panel::capture::SSH_LIKE {
         fake_tmux(&e, &format!("w\\t{cmd}\\t$D/r\\n"));
-        assert_eq!(capture("%9").unwrap().repo.get(), "", "{cmd}");
+        let c = capture("%9").unwrap();
+        assert!(ran(&e), "{cmd}: tmux never started");
+        assert_eq!(c.repo.get(), "", "{cmd}");
     }
 }
 
@@ -633,7 +675,7 @@ fn the_panel_effort_is_the_calls_effort() {
             ("XDG_CACHE_HOME", Some("$D/cache".into())),
         ],
     );
-    e.exec("claude", "printf '%s\\n' \"$@\" > $D/argv\necho ok");
+    e.exec("claude", "printf '%s\\n' \"$@\" > \"$D/argv\"\necho ok");
     let call = Call::from_env();
     assert_eq!(call.effort, Effort::Low);
     let mut req = Request::spawn(&call, "S", "p", "haiku");
@@ -663,7 +705,7 @@ fn claudes_own_effort_variable_never_reaches_the_call() {
             ("XDG_CACHE_HOME", Some("$D/cache".into())),
         ],
     );
-    e.exec("claude", "env > $D/env\necho ok");
+    e.exec("claude", "env > \"$D/env\"\necho ok");
     let mut req = Request::spawn(&Call::from_env(), "S", "p", "haiku");
     assert!(until(|| req.poll().is_some()));
     let env = std::fs::read_to_string(e.dir.join("env")).unwrap();
@@ -773,7 +815,7 @@ fn a_claude_command_in_any_case_is_captured_deeper() {
         ("claudex", "-S -80"),
     ];
     for (cmd, want) in rows {
-        let e = Env::new("capture-case", &[("COCKPIT_TMUX", None)]);
+        let e = Env::new("capture-case", &tmux_on_path());
         fake_tmux(&e, &format!("work\\t{cmd}\\t/w\\n"));
         capture("%8").unwrap();
         let args = std::fs::read_to_string(e.dir.join("args")).unwrap();
