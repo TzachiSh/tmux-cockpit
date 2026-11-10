@@ -323,42 +323,40 @@ notes, plus the case's window, screen, repo, request and output type, and
 answers with its reasoning, a one-line critique and PASS or FAIL. For a case
 with earlier rounds it also reads those rounds, after the request, in the
 panel's own shape: a `<conversation>` section with one `<turn role="assistant">`
-or `<turn role="user">` a turn (#628). A first round has no such section, so
-its prompt is the one it was before. For an
-exploring call it also reads what the panel read, in a `<panel_reads>` section:
-`parse::tool_calls` over the call's json events, one line a call the panel was
-not refused (`Read /r/a.rs`, `Grep fn main /r`), each once, at most 40 lines
-of at most 200 chars and then a count of the rest. Each line has its control
-chars made spaces and its `</` escaped (`envelope::esc`), and so is a closer
-with blanks before the `/`, such as `< /panel_reads>`, so a path or pattern
-cannot close the section. Each `--out` row keeps the list as `reads`. A text
-call, a failed call and an owner label have no reads (`null`), and their judge
-prompt has no such section. Neither does a case with refs: the judge does not
-see the basket, so it could not tell an option drawn from it from an invented
-one. A case with earlier rounds keeps its reads, since the judge sees those
-rounds. Without the section rule 7 fails
-a repo-context option only when the screen or git state contradicts it, as
-before. With it, rule 7 fails an option with no basis in the request, the
+or `<turn role="user">` a turn (#628). A first round has no such section, so its
+prompt is the one it was before. For an exploring call it also reads what the
+panel read, in a `<panel_reads>` section: `parse::tool_calls` over the call's
+json events, one line a call the panel was not refused (`Read /r/a.rs`,
+`Grep fn main /r`), each once, at most 40 lines of at most 200 chars and then a
+count of the rest. Each line has its control chars made spaces and its `</`
+escaped (`envelope::esc`), and so is a closer with blanks before the `/`, such
+as `< /panel_reads>`, so a path or pattern cannot close the section. Each
+`--out` row keeps the list as `reads`. A text call, a failed call and an owner
+label have no reads (`null`), and their judge prompt has no such section.
+Neither does a case with refs: the judge does not see the basket, so it could
+not tell an option drawn from it from an invented one. A case with earlier
+rounds keeps its reads, since the judge sees those rounds. Without the section
+rule 7 fails a repo-context option only when the screen or git state contradicts
+it, as before. With it, rule 7 fails an option with no basis in the request, the
 screen, the git state, the earlier rounds or the reads (#628). In the other
 sections (window, output type, screen, repo, request, each turn, reply) only a
 closing tag of one of the prompt's sections is escaped, in any case and with
-blanks before
-the `/` or the name, so a field cannot end its section or close one it planted
-(#646). A name that goes on with a letter, digit, `_`, `-` or `.`, as in
-`</reply-option>`, is another tag. The reply's own tags, such as `</question>`,
-stay as the panel wrote them, and so do newlines and control chars: only a tag
-ends one of these sections. A zero-width char before the name, or a full-width
-name such as `</ＲＥＰＬＹ>`, stays raw (#652): matching them would take a
-Unicode confusables table, and the prompt's own closers are plain ASCII. Each
-row then prints `judge ok|FAIL <id> <critique>`, the summary adds the judge's
-pass rate and how often it agrees with the keyword checks, and each `--out` row
-gains `judge`, `critique`, `judge_model`, `judge_cost_usd` and `rubric` (the
-rubric's hash). The keyword checks still decide `pass`: the judge sits beside
-them, never in place of them. A judge call that gives no verdict leaves `judge`
-null and is counted as an error, and a run whose every judge call failed exits
-with 1. Each call is capped with `--max-budget-usd 0.05`. With `--judge` the
-`--out` rows are written once the judge is done, so a sweep killed before then
-writes none.
+blanks before the `/` or the name, so a field cannot end its section or close
+one it planted (#646). A name that goes on with a letter, digit, `_`, `-` or
+`.`, as in `</reply-option>`, is another tag. The reply's own tags, such as
+`</question>`, stay as the panel wrote them, and so do newlines and control
+chars: only a tag ends one of these sections. A zero-width char before the name,
+or a full-width name such as `</ＲＥＰＬＹ>`, stays raw (#652): matching them would
+take a Unicode confusables table, and the prompt's own closers are plain ASCII.
+Each row then prints `judge ok|FAIL <id> <critique>`, the summary adds the
+judge's pass rate and how often it agrees with the keyword checks, and each
+`--out` row gains `judge`, `critique`, `judge_model`, `judge_cost_usd` and
+`rubric` (the rubric's hash). The keyword checks still decide `pass`: the judge
+sits beside them, never in place of them. A judge call that gives no verdict
+leaves `judge` null and is counted as an error, and a run whose every judge call
+failed exits with 1. Each call is capped with `--max-budget-usd 0.05`. With
+`--judge` the `--out` rows are written once the judge is done, so a sweep killed
+before then writes none.
 `--calibrate FILE.jsonl` runs the judge on owner-labelled replies
 (`tui/evals/panel/owner-labels.jsonl`: one row a reply, with `verdict` pass or
 fail) and prints TPR (judge pass when the owner passed), TNR (judge fail when
@@ -367,16 +365,17 @@ then every disagreement with the owner's note and the judge's critique.
 `--split tune|holdout|all` picks the rows: the holdout takes whole cases (the
 label's `case`), about a third of the rows of the cases with an owner fail and a
 third of the rest, by a hash of the case name; tune the rubric on the tune rows
-only. Each label's window, output type, screen, repo, request and
-`conversation` (a list of `{"role", "text"}` turns, absent for a first round)
-are its case's, as the rig parses them, empty fields included, and a test holds
-them there (#691, #698, #628). Five rows had drifted: `review-which-pr`'s two
-rows had lost their screen's `#91` and `#88` lines, and three round-1 rows
-carried the next case's heading comment at the end of their request, which is what the owner saw
+only. Each label's window, output type, screen, repo, request and `conversation`
+(a list of `{"role", "text"}` turns, absent for a first round) are its case's,
+as the rig parses them, empty fields included, and a test holds them there
+(#691, #698, #628). Five rows had drifted: `review-which-pr`'s two rows had lost
+their screen's `#91` and `#88` lines, and three round-1 rows carried the next
+case's heading comment at the end of their request, which is what the owner saw
 when marking them. On the 118 labels, five of them repaired, haiku with the
 shipped rubric and the section escape (#646) scored, in two sweeps the same day,
 TPR 93/98 twice (95% CI 89%-98%), TNR 15/20 twice (95% CI 53%-89%, 36 points
-wide) and kappa 0.70 twice (95% CI 0.52-0.88) against the owner, and graded all five repaired rows as the owner did in both.
+wide) and kappa 0.70 twice (95% CI 0.52-0.88) against the owner, and graded all
+five repaired rows as the owner did in both.
 Before the repair the same rubric scored TPR 91/98 and 94/98, TNR 15/20 twice
 and kappa 0.65 and 0.72. The escape
 changed one label's prompt, a reply ending in a stray `</reply>`. Escaping every
@@ -432,16 +431,20 @@ passed: h-feature-done.rh.v2 failed 4/30 against master's 0/30 (one-sided Fisher
 p 0.056) and named-skill.r0.v3 4/30 against 1/30 (p 0.18), 8/60 against 1/60
 pooled (p 0.016); no single row drops at p < 0.05.
 With the conversation section and rule 9 pointing at it (#628), one batch of
-haiku sweeps the same day, master's rubric against the new one on the same
-label files: on the 118 owner labels, whose prompts did not change, kappa 0.62
-and 0.64 before, 0.64 and 0.69 after, TPR 91/98 and 92/98 before, 92/98 and
-94/98 after, TNR 14/20 in all four. On the 40 ho2 labels kappa 0.70 and 0.55
-before, 0.60 and 0.50 after, TPR 14/20 and 12/20 before, 12/20 and 11/20 after,
-TNR 20/20 and 19/20 on both sides. On the 15 ho3 labels over 4 sweeps, with the
-trail-markers rows given their case's conversation (master's judge ignores the
-field), trail-markers passed 19/20 before and 20/20 after, practice-rooms 16/20
-and 20/20, and the tool-lending prompts failed 20/20 and 19/20. The ho3 cases
-were measured, not tuned on, and stay in-sample for the judge.
+haiku sweeps the same day, master's rubric against the new one on the same label
+files: on the 118 owner labels, whose user prompts did not change (the judge's
+rubric did), kappa 0.62 and 0.64 before, 0.64 and 0.69 after, TPR 91/98 and
+92/98 before, 92/98 and 94/98 after, TNR 14/20 in all four. On the 40 ho2 labels
+kappa 0.70 and 0.55 before, 0.60 and 0.50 after, TPR 14/20 and 12/20 before,
+12/20 and 11/20 after, TNR 20/20 and 19/20 on both sides. That ho2 dip, TPR
+26/40 before and 23/40 after over the two sweeps, is a watch item: at p 0.32
+(one-sided Fisher) it cannot be told from noise, but kappa fell in both sweeps
+and 5 of the 6 rows that moved are ho2-tests-only. On the 15 ho3 labels over 4
+sweeps, with the trail-markers rows given their case's conversation (master's
+judge ignores the field), trail-markers passed 19/20 before and 20/20 after,
+practice-rooms 16/20 and 20/20, and the tool-lending prompts failed 20/20 and
+19/20. The ho3 cases were measured, not tuned on, and stay in-sample for the
+judge.
 
 **The overlap check** (#710). A prompt line that paraphrases a held-out case
 leaks it: #702's example line "use the test database, not the live one" did,
@@ -450,26 +453,26 @@ a judge model instead, haiku unless `--judge-model` says otherwise. It is
 opt-in and never part of the default run. The changed lines are the ones
 `git diff BASE -- tui/prompts` adds, the working tree against `--base`
 (`HEAD` by default), or with `--from OLD --to NEW` the lines of `NEW` that `OLD`
-lacks, which covers the override file; `--base` beside `--from` is refused. Each changed line goes to the judge
-with each `holdout: yes` case's request (`--only` narrows the cases), and the
-judge answers yes when the line paraphrases the request's specific scenario
-and no when it only shares its topic. The judge sees the request only: a
-line that mirrors a held-out case's screen, repo, refs or earlier rounds (an
-error line, a path) is not judged. A flagged pair prints
+lacks, which covers the override file; `--base` beside `--from` is refused. Each
+changed line goes to the judge with each `holdout: yes` case's request (`--only`
+narrows the cases), and the judge answers yes when the line paraphrases the
+request's specific scenario and no when it only shares its topic. The judge sees
+the request only: a line that mirrors a held-out case's screen, repo, refs or
+earlier rounds (an error line, a path) is not judged. A flagged pair prints
 `FLAG<TAB>case id<TAB>line`; the case's text is never printed or logged, so
-whoever edits the prompt stays blind. Then an `overlap` record gives
-`flagged`, `pairs`, `lines`, `cases`, `cached`, `failed`, `usd`, `model` and
-`question` (the question's hash) as tab-separated `key=value` fields. The run
-exits 1 when a pair is flagged, or unchecked because its call failed (a
-`claude` that cannot start included), so a pre-commit step can gate on it; 2
-when it cannot read its inputs (the cases, the files, the diff), and when there
-are changed lines but no held-out case to check them against, as after a typo
-in `--only`. A failed call's reason
-never carries the judge's answer, which may quote the request. Verdicts are
-cached in `overlap-cache.tsv` next to the ledger, keyed by the hashes of the
-line, the request and the question and by the model, so a rerun calls only for
-new pairs and a reworded question asks again; the cache holds no text. A run that made calls appends an `overlap`
-row to the ledger. Each call is hermetic and capped like the judge's.
+whoever edits the prompt stays blind. Then an `overlap` record gives `flagged`,
+`pairs`, `lines`, `cases`, `cached`, `failed`, `usd`, `model` and `question`
+(the question's hash) as tab-separated `key=value` fields. The run exits 1 when
+a pair is flagged, or unchecked because its call failed (a `claude` that cannot
+start included), so a pre-commit step can gate on it; 2 when it cannot read its
+inputs (the cases, the files, the diff), and when there are changed lines but no
+held-out case to check them against, as after a typo in `--only`. A failed
+call's reason never carries the judge's answer, which may quote the request.
+Verdicts are cached in `overlap-cache.tsv` next to the ledger, keyed by the
+hashes of the line, the request and the question and by the model, so a rerun
+calls only for new pairs and a reworded question asks again; the cache holds no
+text. A run that made calls appends an `overlap` row to the ledger. Each call is
+hermetic and capped like the judge's.
 The question was worded twice, on that one leak against the demoted case's
 request. A first wording, which also answered no for a line fitting the request
 no better than many others, never flagged it in 3 calls. The shipped wording
