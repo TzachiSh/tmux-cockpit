@@ -19323,6 +19323,47 @@ is "...and a version-titled agent view keeps its mark" "1" "$(avo @cockpit_agent
 av_tm kill-server >/dev/null 2>&1
 fi
 
+
+echo "== agent-poll: a claude pane the agents glob leaves out is no agent and does not bind (#774) =="
+# The user's @cockpit_agents_glob says which commands are agents (#508). A claude pane it leaves
+# out lost its foreground mark as "not an agent" and then bound anyway, unmarked. Only a version
+# title counts whatever the glob says, as on the board (#761).
+av_setup
+if need_tmux "agent-poll bind glob"; then :; else
+av_srv bindglob
+av_tm set -g @cockpit_agents_glob '|codex|'
+bg_case() {                   # bg_case <label> <command> <want>: a pane titled alpha, one poll
+    local p
+    p=$(av_tm new-window -d -c "$AVWD" -P -F '#{pane_id}' "exec -a $2 sleep 300")
+    av_tm select-pane -t "$p" -T alpha
+    av_once bind.json >/dev/null
+    is "$1" "$3" "$(printf '%s|%s|%s' "$(avo @cockpit_job "$p")" \
+        "$(avo @cockpit_job_name "$p")" "$(avo @panestate "$p")")"
+    av_tm kill-pane -t "$p"
+}
+bg_case "glob |codex|: a claude pane does not bind" claude "||"
+bg_case "...nor a CLAUDE pane" CLAUDE "||"
+bg_case "...but a version title binds whatever the glob says" 2.1.318 "aa|alpha|running"
+# A claude pane bound while the glob named claude, after the user drops claude from it: it
+# is no agent now, so the bind ends whole (review-787). Job, name, job state and state clear.
+av_tm set -g @cockpit_agents_glob '|claude|codex|'
+BGB=$(av_tm new-window -d -c "$AVWD" -P -F '#{pane_id}' "exec -a claude sleep 300")
+av_tm select-pane -t "$BGB" -T alpha; av_once bind.json >/dev/null
+is "glob |claude|codex|: the claude pane binds" "aa|alpha|running" \
+    "$(avo @cockpit_job "$BGB")|$(avo @cockpit_job_name "$BGB")|$(avo @panestate "$BGB")"
+av_tm set -g @cockpit_agents_glob '|codex|'; av_once bind.json >/dev/null
+is "...and with claude dropped from the glob, its bind ends: job, name, job state, state" \
+    "|||" "$(avo @cockpit_job "$BGB")|$(avo @cockpit_job_name "$BGB")|$(avo @cockpit_job_state "$BGB")|$(avo @panestate "$BGB")"
+av_tm kill-pane -t "$BGB"
+# The glob flag comes from version_cmd, not claude_cmd: a claude pane the glob leaves out is
+# no agent, so its agent-view mark goes. claude_cmd there would keep it.
+BGV=$(av_tm new-window -d -c "$AVWD" -P -F '#{pane_id}' "exec -a claude sleep 300")
+av_tm set-option -p -t "$BGV" @cockpit_agentview 1
+av_once none.json >/dev/null
+is "glob |codex|: a claude pane's agent-view mark is dropped" "" "$(avo @cockpit_agentview "$BGV")"
+av_tm kill-server >/dev/null 2>&1
+fi
+
 flop_left
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1

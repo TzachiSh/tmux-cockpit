@@ -213,8 +213,10 @@ scan_panes() {
             tmux set-option -pu -t "$id" @cockpit_fg 2>/dev/null; fg=""
         fi
         if [ "$marked" = 1 ]; then S_LIVE="$S_LIVE $id"; S_SERIOUS=1; fi
-        # claude_cmd: any case, as every agents-glob test since #508, or a version title (#761)
-        if claude_cmd "$cmd"; then
+        # claude_cmd: any case, as every agents-glob test since #508, or a version title (#761).
+        # Only an agent binds: a claude pane the glob leaves out is the user's "not an agent",
+        # and its foreground mark is already gone above (#774). A version title set glob=1.
+        if [ "$glob" = 1 ] && claude_cmd "$cmd"; then
             S_SIG="$S_SIG$id$T$allow$T$title"$'\n'
             if [ "$allow" = 1 ] && [ -n "$title" ]; then
                 # A session waiting on the user fires no hook, so a ▲ that the poller hid would

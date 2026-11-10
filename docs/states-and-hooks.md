@@ -384,8 +384,10 @@ read job state from outside, and writes each pane through `agent-state poll`. A 
    `2.1.318`: a leading digit, then only digits, dots and underscores, with two or more
    dots or underscores (#761). This is `claude_cmd` in tui/src/basket.rs. A version
    title is an agent whatever `@cockpit_agents_glob` says, as on the board, so its
-   foreground and agent-view marks stay. A shell after Ctrl+Z or `kill -9` keeps the
-   viewer's last title and is never bound.
+   foreground and agent-view marks stay. A plain `claude` pane must also be in the
+   agents glob: with a glob that leaves claude out it is no agent and is never bound
+   (#774). A shell after Ctrl+Z or `kill -9` keeps the viewer's last title and is
+   never bound.
 2. The title, with one optional leading `✳ ` taken off and whitespace runs collapsed,
    is not empty and equals J's `name` collapsed the same way. Exact, whole string, case
    sensitive. Attaching from the agent view sets the bare name, so the glyph is optional.
