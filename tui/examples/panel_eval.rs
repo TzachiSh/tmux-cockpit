@@ -8,6 +8,7 @@
 //!     cargo run --example panel_eval -- [--model M] [--runs N] [--jobs J]
 //!         [--only TEXT] [--cases FILE] [--out FILE.jsonl] [--check] [--no-explore]
 //!         [--no-hermetic] [--judge] [--judge-model M] [--ledger FILE] [--show-holdout]
+//!         [--router-prompt FILE]
 //!     cargo run --example panel_eval -- --compare A.jsonl B.jsonl [--allow-mixed]
 //!     cargo run --example panel_eval -- --calibrate LABELS.jsonl
 //!         [--judge-model M] [--split all|tune|holdout] [--jobs J] [--out FILE.jsonl]
@@ -18,6 +19,10 @@
 //! it at `$XDG_CONFIG_HOME/tmux-cockpit/prompts/write.txt` (the panel's own
 //! override) and run twice with `--out`, then `--compare` the two files: it
 //! reads them, makes no calls, and pairs the runs by case.
+//!
+//! `--router-prompt FILE` sends FILE's text as every call's system prompt in
+//! place of the write prompt (#789). Each row's `prompt` and `system` then hash
+//! FILE's text, so `--compare` tells its rows from a write run's.
 //!
 //! The cases are evals/panel/cases.txt and, beside it, the held-out file
 //! evals/panel/holdout-blind.txt (#783), which tuning sessions do not open:
@@ -42,7 +47,7 @@ use cockpit_tui::panel::app::{App, View};
 use cockpit_tui::panel::capture::Capture;
 use cockpit_tui::panel::envelope::{Flow, OutType, Role, Turn};
 use cockpit_tui::panel::parse::{self, Reply, files_read, tool_calls};
-use cockpit_tui::panel::prompts::fnv;
+use cockpit_tui::panel::prompts::{self, fnv};
 use cockpit_tui::panel::request::{Call, Effort, Fail, Profile, Request};
 use cockpit_tui::panel::route::route;
 use cockpit_tui::refs::Ref;
@@ -722,6 +727,9 @@ struct Opts {
     /// Print a held-out case's failing reply or error, under a warning, for the
     /// owner or a listed reader rerunning one case (#792). Never into `--out`.
     show_holdout: bool,
+    /// `--router-prompt`: the file and its text, sent as every call's system
+    /// prompt in place of the write prompt (#789).
+    router: Option<(PathBuf, String)>,
     judge_model: String,
     /// A labelled file: run the judge on it and print its agreement with the owner.
     calibrate: Option<PathBuf>,
@@ -735,6 +743,17 @@ struct Opts {
     base: String,
     /// `--overlap`'s lines: those of the second file the first lacks.
     from_to: Option<(PathBuf, PathBuf)>,
+}
+
+/// `--router-prompt`'s file and its text, read once at start-up. A file that
+/// cannot be read, is not UTF-8 or holds only blanks is an error naming the flag.
+fn router_prompt(p: PathBuf) -> Result<(PathBuf, String), String> {
+    let err = |why: String| format!("--router-prompt {}: {why}", p.display());
+    let text = std::fs::read_to_string(&p).map_err(|e| err(e.to_string()))?;
+    if text.trim().is_empty() {
+        return Err(err("empty".into()));
+    }
+    Ok((p, text))
 }
 
 /// The held-out file (#783), from the crate's root.
@@ -759,6 +778,7 @@ fn opts(args: impl IntoIterator<Item = String>) -> Result<Opts, String> {
         hermetic: true,
         judge: false,
         show_holdout: false,
+        router: None,
         judge_model: judge::DEFAULT_MODEL.into(),
         calibrate: None,
         split: judge::Split::All,
@@ -788,6 +808,7 @@ fn opts(args: impl IntoIterator<Item = String>) -> Result<Opts, String> {
             "--ledger" => o.ledger = Some(val()?.into()),
             "--judge" => o.judge = true,
             "--show-holdout" => o.show_holdout = true,
+            "--router-prompt" => o.router = Some(router_prompt(val()?.into())?),
             "--judge-model" => o.judge_model = val()?,
             "--calibrate" => o.calibrate = Some(val()?.into()),
             "--purpose-calibrate" => o.purpose_calibrate = Some(val()?.into()),
@@ -1308,6 +1329,7 @@ fn run(o: &Opts, me: std::io::Result<PathBuf>) {
             let explore = c.explore.is_some() && !o.no_explore;
             // per job, from the call's own read: an override edited mid-run shows in the rows
             let (system, prompt, profile, prompt_files) = panel_call(c, &path, explore);
+            let (system, prompt_files) = routed(o.router.as_ref(), system, prompt_files);
             if !prompt_sets.contains(&prompt_files) {
                 prompt_sets.push(prompt_files.clone());
             }
@@ -1397,7 +1419,7 @@ fn run(o: &Opts, me: std::io::Result<PathBuf>) {
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    summary(&cases, &done, &hashes, o.runs);
+    summary(&cases, &done, &hashes, o);
     let mut judged_nothing = false;
     let mut judge_usd = None;
     if o.judge {
@@ -2104,6 +2126,23 @@ fn prompt_source(base: &Path) -> String {
     if from.is_empty() { "shipped".into() } else { from.join(", ") }
 }
 
+/// The call's system prompt and prompt hash: with `--router-prompt`, its text
+/// and [`files_hash`](prompts::files_hash) of it in place of the write prompt's (#789).
+fn routed(router: Option<&(PathBuf, String)>, system: String, files: String) -> (String, String) {
+    match router {
+        Some((_, text)) => (text.clone(), prompts::files_hash(&[text])),
+        None => (system, files),
+    }
+}
+
+/// Where a run's system prompt came from: the `--router-prompt` file, or [`prompt_source`].
+fn prompt_from(o: &Opts) -> String {
+    match &o.router {
+        Some((p, _)) => format!("{} (--router-prompt)", p.display()),
+        None => prompt_source(&config_home()),
+    }
+}
+
 /// The ids whose rows carry more than one prompt hash. A row with none, from an
 /// older file, counts as one more value when another row of its case has one.
 fn mixed_prompts(rows: &[Row]) -> Vec<String> {
@@ -2377,7 +2416,7 @@ fn pct_ci(o: Of) -> String {
     }
 }
 
-fn summary(cases: &[Case], done: &[(usize, u128, Option<Grade>)], hashes: &[u64], runs: usize) {
+fn summary(cases: &[Case], done: &[(usize, u128, Option<Grade>)], hashes: &[u64], o: &Opts) {
     let t = tally(cases, done);
     println!();
     // Per case, over the runs: a flaky case shows as 2/3, not as noise in a total.
@@ -2393,10 +2432,10 @@ fn summary(cases: &[Case], done: &[(usize, u128, Option<Grade>)], hashes: &[u64]
     }
     let hs: Vec<String> = hashes.iter().map(|h| format!("{h:016x}")).collect();
     println!();
-    println!("system prompt   {} ({})", hs.join(" "), prompt_source(&config_home()));
+    println!("system prompt   {} ({})", hs.join(" "), prompt_from(o));
     println!("passed          {}", pct(t.passed));
     // The share of cases that passed all their runs: a flaky case counts as a failure.
-    println!("{:<16}{}", format!("pass^{runs}"), pct_ci(pass_all(&t.per_case)));
+    println!("{:<16}{}", format!("pass^{}", o.runs), pct_ci(pass_all(&t.per_case)));
     if t.holdout.1 > 0 {
         println!("  holdout       {}", pct(t.holdout));
     }
@@ -2849,6 +2888,52 @@ mod tests {
 
     fn args(s: &str) -> Vec<String> {
         s.split_whitespace().map(String::from).collect()
+    }
+
+    // --- #789: --router-prompt, its options ---
+
+    /// `opts` with `--router-prompt` on `p`.
+    fn router_opts(p: &Path) -> Result<Opts, String> {
+        opts(["--router-prompt".to_string(), p.display().to_string()])
+    }
+
+    #[test]
+    fn router_prompt_reads_its_file_whole_at_start_up() {
+        let d = scratch("router-opts");
+        let p = d.0.join("router.txt");
+        std::fs::write(&p, "route it  \n").unwrap();
+        assert_eq!(router_opts(&p).unwrap().router, Some((p, "route it  \n".into())));
+        assert_eq!(opts(args("")).unwrap().router, None);
+    }
+
+    /// Each way the file fails, by row name: the error names the flag and the
+    /// file, and an empty or blank file says `empty`.
+    #[test]
+    fn router_prompt_refuses_a_bad_file_naming_the_flag() {
+        let d = scratch("router-bad");
+        let p = |f: &str| d.0.join(f);
+        let made = [("empty.txt", &b""[..]), ("blank.txt", b" \n\t\n"), ("bin.txt", b"\xff\xfe")];
+        made.iter().for_each(|(f, b)| std::fs::write(p(f), b).unwrap());
+        std::fs::create_dir(p("dir")).unwrap();
+        let rows = [("missing", "gone.txt"), ("empty", "empty.txt"), ("blank", "blank.txt")];
+        let rows = [&rows[..], &[("not utf-8", "bin.txt"), ("a dir", "dir")]].concat();
+        for (name, f) in rows {
+            let e = router_opts(&p(f)).expect_err(name);
+            let want = format!("--router-prompt {}: ", p(f).display());
+            assert!(e.starts_with(&want) && e.len() > want.len(), "{name}: {e}");
+            assert_eq!(e.ends_with(": empty"), ["empty", "blank"].contains(&name), "{name}: {e}");
+        }
+        assert_eq!(opts(args("--router-prompt")).unwrap_err(), "--router-prompt needs a value");
+    }
+
+    #[test]
+    fn the_summary_names_the_router_file_as_the_prompts_source() {
+        let d = scratch("router-src");
+        let p = d.0.join("router.txt");
+        std::fs::write(&p, "route it").unwrap();
+        let want = format!("{} (--router-prompt)", p.display());
+        assert_eq!(prompt_from(&router_opts(&p).unwrap()), want);
+        assert_eq!(prompt_from(&opts(args("")).unwrap()), prompt_source(&config_home()));
     }
 
     #[test]
@@ -5336,9 +5421,14 @@ esac
 
         /// [`rig_run`] on the cases `cases`.
         fn rig_run_on(name: &str, cases: &str, extra: &[&str]) -> Ran {
+            rig_run_with(name, cases, RIG_CLAUDE, extra)
+        }
+
+        /// [`rig_run_on`] with `script` as the stand-in claude.
+        fn rig_run_with(name: &str, cases: &str, script: &str, extra: &[&str]) -> Ran {
             let d = scratch(name);
             std::fs::write(d.0.join("cases.txt"), cases).unwrap();
-            let claude = fake(&d.0, RIG_CLAUDE);
+            let claude = fake(&d.0, script);
             let p = |f: &str| d.0.join(f).display().to_string();
             let (cases, rows, ledger) = (p("cases.txt"), p("rows.jsonl"), p("cost.tsv"));
             let base = ["--cases", &cases, "--no-hermetic", "--runs", "1", "--jobs", "1"];
@@ -5399,6 +5489,58 @@ esac
             let rows = read_rows("out", &lines.join("\n")).unwrap();
             assert_eq!(rows.iter().map(|r| r.files_read).collect::<Vec<_>>(), [Some(2), Some(2)]);
             assert_eq!(reads_line(&rows).unwrap(), "2.0 files mean, 2 at most, over 2 calls");
+        }
+
+        // --- #789: --router-prompt, on a stand-in claude ---
+
+        /// A router prompt with blanks at its ends, which the call must keep.
+        const ROUTER: &str = "ROUTER-789 send each request to one agent.\nNo trim here.  \n";
+
+        /// A stand-in claude that copies each call's system prompt file into `cap`.
+        fn router_claude(cap: &Path) -> String {
+            let head = "#!/bin/sh\n[ \"$1\" = --version ] && { echo 9.9.9; exit 0; }\n\
+                while [ $# -gt 1 ] && [ \"$1\" != --system-prompt-file ]; do shift; done\n\
+                [ \"$1\" = --system-prompt-file ] || exit 3\n";
+            let tail = "cat >/dev/null\nprintf '<prompt>al-beacon</prompt>\\n'\n";
+            format!("{head}cp \"$2\" \"$(mktemp '{}/sys.XXXXXX')\"\n{tail}", cap.display())
+        }
+
+        /// The `field` of each `--out` row in `rows`.
+        fn fields(rows: &str, field: &str) -> Vec<Value> {
+            rows.lines()
+                .map(|l| serde_json::from_str::<Value>(l).unwrap()[field].clone())
+                .collect()
+        }
+
+        #[test]
+        fn a_router_run_hands_every_call_exactly_the_router_text() {
+            let cap = scratch("router-cap");
+            let router = cap.0.join("router.txt");
+            std::fs::write(&router, ROUTER).unwrap();
+            let flags = ["--router-prompt", &router.display().to_string()];
+            let claude = router_claude(&cap.0);
+            let (code, out, err, _) = rig_run_with("router-sys", QUIET, &claude, &flags);
+            assert_eq!(code, Some(0), "{out}{err}");
+            let sent = std::fs::read_dir(&cap.0).unwrap().map(|e| e.unwrap().path());
+            let sent = sent.filter(|p| p != &router).map(|p| std::fs::read_to_string(p).unwrap());
+            assert_eq!(sent.collect::<Vec<_>>(), [ROUTER; 3]);
+        }
+
+        #[test]
+        fn a_router_runs_rows_hash_the_router_file_not_write_txt() {
+            let d = scratch("router-rows");
+            let router = d.0.join("router.txt");
+            std::fs::write(&router, ROUTER).unwrap();
+            let flags = ["--router-prompt", &router.display().to_string()];
+            let (code, out, err, rows) = rig_run("router-on", &flags);
+            assert_eq!(code, Some(0), "{out}{err}");
+            let hash = json!(cockpit_tui::panel::prompts::files_hash(&[ROUTER]));
+            assert_eq!(fields(&rows, "prompt"), vec![hash.clone(); 3]);
+            assert_eq!(fields(&rows, "system"), vec![json!(format!("{:016x}", fnv(ROUTER))); 3]);
+            let (_, _, _, plain) = rig_run("router-off", &[]);
+            let plain = fields(&plain, "prompt");
+            let other = plain.iter().all(|p| p.is_string() && *p != hash);
+            assert!(plain.len() == 3 && other, "{plain:?}");
         }
 
         #[test]
