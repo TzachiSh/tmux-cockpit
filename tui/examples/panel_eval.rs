@@ -3359,14 +3359,15 @@ mod tests {
     /// A test that panics holding a scratch dir still removes it (#757).
     #[test]
     fn a_scratch_dir_is_removed_when_its_test_panics() {
-        let mut dir = PathBuf::new();
+        let (mut dir, mut made) = (PathBuf::new(), false);
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let s = scratch("panics");
             dir = s.0.clone();
-            assert!(dir.is_dir(), "made");
+            made = dir.is_dir(); // an assert here would be caught as the panic
             panic!("a failed assert");
         }));
         assert!(r.is_err(), "the closure panicked");
+        assert!(made, "scratch made {}", dir.display());
         assert!(dir.ends_with(format!("panel-eval-panics.{}", std::process::id())));
         assert!(!dir.exists(), "{} left behind", dir.display());
     }
