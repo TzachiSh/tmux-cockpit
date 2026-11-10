@@ -18713,7 +18713,8 @@ is "a longer name that holds it is not the poller" "no" "$(pa_alive 'bash /x/not
 # The script must be the interpreter's first argument, named exactly agent-poll (review-534).
 for pa in 'bash /x/not-agent-poll' 'bash /x/my-agent-poll' 'less /x/scripts/agent-poll' \
           'tail -f /x/agent-poll' 'bash /x/other /y/agent-poll'; do
-    is "a name that ends like it, or it as another program's argument: $pa" "no" "$(pa_alive "$pa")"
+    is "a name that ends like it, or it as another program's argument: $pa" "no" \
+        "$(pa_alive "$pa")"
 done
 rm -rf "$PA"
 
@@ -18746,8 +18747,8 @@ PD1=$(pd_tm list-panes -t t -F '#{pane_id}')
 PD2=$(pd_tm new-window -d -P -F '#{pane_id}' -c "$PD" 'exec -a claude bash')
 pd_hook() {                   # pd_hook <pane> [env...]: a relayed agent_needs_input from <pane>
     printf '{"notification_type":"agent_needs_input","message":"m"}' \
-        | env -u CLAUDE_CONFIG_DIR "${@:2}" TMUX="$PDT" TMUX_PANE="$1" PATH="$PD/cks:$AVREC:$PATH" \
-            "$DIR/scripts/agent-state" notify >/dev/null 2>&1
+        | env -u CLAUDE_CONFIG_DIR "${@:2}" TMUX="$PDT" TMUX_PANE="$1" \
+            PATH="$PD/cks:$AVREC:$PATH" "$DIR/scripts/agent-state" notify >/dev/null 2>&1
 }
 pd_key() { printf '%s' "$1" | cksum | cut -d' ' -f1; }
 pd_live() {                   # pd_live <slot option>: a live agent-poll holds it
@@ -18829,8 +18830,8 @@ PE=$(mktmpd); PES="cockpit-pe-$$"; SOCKS="$SOCKS $PES"
 fresh_server -L "$PES" -f /dev/null -- -d -s t -x 80 -y 24 -c "$PE" 'sleep 300'
 PEP=$("$TMUX_REAL" -L "$PES" list-panes -t t -F '#{pane_id}')
 pe_hook() {                   # pe_hook [env...]: this pane's own session goes to running
-    env -u CLAUDE_CONFIG_DIR "$@" TMUX="$SOCKDIR/$PES,0,0" TMUX_PANE="$PEP" COCKPIT_NO_AUTOSTART=1 \
-        "$DIR/scripts/agent-state" running </dev/null >/dev/null 2>&1
+    env -u CLAUDE_CONFIG_DIR "$@" TMUX="$SOCKDIR/$PES,0,0" TMUX_PANE="$PEP" \
+        COCKPIT_NO_AUTOSTART=1 "$DIR/scripts/agent-state" running </dev/null >/dev/null 2>&1
 }
 pe_cfg() { "$TMUX_REAL" -L "$PES" show-option -pqv -t "$PEP" @cockpit_cfg; }
 pe_mark() {                   # pe_mark [env...]: mark_agentview for the pane, its start a no-op
