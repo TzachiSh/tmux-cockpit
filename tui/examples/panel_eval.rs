@@ -280,6 +280,27 @@ fn parse_cases(text: &str) -> Result<Vec<Case>, String> {
     Ok(cases)
 }
 
+/// The cases a run read, and how many came from each file, for `--check`.
+struct Loaded {
+    cases: Vec<Case>,
+    from: Vec<(PathBuf, usize)>,
+}
+
+/// Reads and parses the cases file.
+fn load(cases: &Path) -> Result<Loaded, String> {
+    let text = std::fs::read_to_string(cases).map_err(|e| format!("{}: {e}", cases.display()))?;
+    let all = parse_cases(&text)?;
+    let from = vec![(cases.to_path_buf(), all.len())];
+    Ok(Loaded { cases: all, from })
+}
+
+/// Keeps the cases a run takes: those `--only` names.
+fn pick(cases: &mut Vec<Case>, o: &Opts) {
+    if let Some(w) = &o.only {
+        cases.retain(|c| c.id.contains(w.as_str()) || c.kind == *w);
+    }
+}
+
 /// `assistant: ...` and `user: ...` lines, one turn each, as the panel keeps them.
 fn turns(text: &str) -> Result<Vec<Turn>, String> {
     let mut out = Vec::new();
@@ -834,26 +855,21 @@ fn main() {
     if o.overlap {
         std::process::exit(overlap_main(&o));
     }
-    let text = std::fs::read_to_string(&o.cases).unwrap_or_else(|e| {
-        eprintln!("panel_eval: {}: {e}", o.cases.display());
-        std::process::exit(2);
-    });
-    let mut cases = parse_cases(&text).unwrap_or_else(|e| {
+    let Loaded { mut cases, from } = load(&o.cases).unwrap_or_else(|e| {
         eprintln!("panel_eval: {e}");
         std::process::exit(2);
     });
-    if let Some(w) = &o.only {
-        cases.retain(|c| c.id.contains(w.as_str()) || c.kind == *w);
-    }
+    pick(&mut cases, &o);
     let count = |e: Expect| cases.iter().filter(|c| c.expect == e).count();
     let held = cases.iter().filter(|c| c.holdout).count();
+    let files: Vec<String> = from.iter().map(|(p, _)| p.display().to_string()).collect();
     println!(
         "{} cases ({} ask, {} write, {} either; {held} holdout) from {}",
         cases.len(),
         count(Expect::Ask),
         count(Expect::Write),
         count(Expect::Either),
-        o.cases.display()
+        files.join(", ")
     );
     if o.check {
         return;
@@ -1785,7 +1801,7 @@ fn overlap_main(o: &Opts) -> i32 {
 /// Returns 1 when a pair is flagged or left unchecked by a failed call.
 fn overlap_check(o: &Opts) -> Result<i32, String> {
     let read = |p: &Path| std::fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display()));
-    let mut cases = parse_cases(&read(&o.cases)?)?;
+    let mut cases = load(&o.cases)?.cases;
     let only = |c: &Case| o.only.as_ref().is_none_or(|w| c.id.contains(w.as_str()) || c.kind == *w);
     cases.retain(|c| c.holdout && only(c));
     let lines = match &o.from_to {
