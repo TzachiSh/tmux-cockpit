@@ -59,11 +59,11 @@ check: lint test
 # --locked everywhere: a build that silently updates Cargo.lock is not the
 # build the crossterm "=0.29.0" pin was measured against. install, not cp:
 # it replaces the file, where cp's write over a running board is ETXTBSY.
-# The binary's dir comes from cargo, not tui/target (#546): scripts/lib/cargo-target.sh.
+# The binary is the file cargo's build output names, wherever CARGO_TARGET_DIR,
+# build.target-dir or build.target put it (#546, #591): scripts/lib/cargo-build.sh.
 tui-bin:
-	@cargo build --release --locked --manifest-path tui/Cargo.toml
-	@td=$$(. scripts/lib/cargo-target.sh && cargo_target_dir tui/Cargo.toml) && \
-	mkdir -p bin && install -m 755 "$$td/release/cockpit-tui" bin/cockpit-tui
+	@exe=$$(. scripts/lib/cargo-build.sh && cargo_build_exe tui/Cargo.toml) && \
+	mkdir -p bin && install -m 755 "$$exe" bin/cockpit-tui
 
 tui: tui-bin
 	@bin/cockpit-tui --version
