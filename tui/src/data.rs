@@ -740,7 +740,12 @@ thread_local! {
 }
 
 fn is_agent_cmd(cmd: &str) -> bool {
-    AGENT_GLOB.with(|g| g.contains(&format!("|{cmd}|")))
+    AGENT_GLOB.with(|g| glob_has(g, cmd))
+}
+
+/// Whether `cmd` is an entry of `glob`, a `|a|b|` list.
+fn glob_has(glob: &str, cmd: &str) -> bool {
+    glob.contains(&format!("|{cmd}|"))
 }
 
 /// #301: the hooks marked the pane (`raw`, its @panestate) but no process in
