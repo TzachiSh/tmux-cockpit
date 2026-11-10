@@ -98,7 +98,8 @@ per config — and switching to glob matching cut the whole status redraw by
 automatically; anything fancier gets a message asking you to set
 `@cockpit_agents_glob` yourself rather than being silently ignored. The one
 semantic difference: a `pane_current_command` containing a literal `*` would
-false-match under glob — no real process name does.
+false-match under glob — no real process name does. Every match is `#{m/i:}`,
+so an entry matches the command in any case (#508).
 
 Do not set either option to the empty string. tmux treats an empty pattern as
 matching every command, which would paint every pane in the session as an

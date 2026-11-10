@@ -11,7 +11,7 @@ const US: char = '\u{1f}';
 /// a stale `@panestate` on a shell is not believed. `@panestate_since` (#225) is
 /// the epoch second a pane entered needs-input, written by agent-state alone.
 fn format() -> String {
-    let agent = "#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},1,0}";
+    let agent = "#{?#{m/i:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},1,0}";
     let msg = "#{?#{@panestate_msg},#{s/\n/ /:#{s/\t/ /:#{s/\u{1f}/ /:#{@panestate_msg}}}},}";
     [
         "#{session_id}",

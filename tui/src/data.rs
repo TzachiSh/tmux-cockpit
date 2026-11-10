@@ -743,9 +743,10 @@ fn is_agent_cmd(cmd: &str) -> bool {
     AGENT_GLOB.with(|g| glob_has(g, cmd))
 }
 
-/// Whether `cmd` is an entry of `glob`, a `|a|b|` list.
+/// Whether `cmd` is an entry of `glob`, a `|a|b|` list, in any case (#508): the
+/// shell's `#{m/i:}` folds both sides, so an entry `Cursor` is the command `cursor`.
 fn glob_has(glob: &str, cmd: &str) -> bool {
-    glob.contains(&format!("|{cmd}|"))
+    !cmd.is_empty() && glob.split('|').any(|e| e.eq_ignore_ascii_case(cmd))
 }
 
 /// #301: the hooks marked the pane (`raw`, its @panestate) but no process in
@@ -1460,6 +1461,24 @@ mod tests {
         }
         // agentish("claude") reads the tmux agent list, so only the pure half is pinned here
         assert!(version_shaped(&comm_norm("2.1.318\n")) && !version_shaped(&comm_norm("bash\n")));
+    }
+
+    /// #508: an `@cockpit_agents` entry matches the command in any case, both sides folded.
+    #[test]
+    fn glob_entries_match_in_any_case() {
+        let g = "|Cursor|OpenCode|claude|";
+        for (cmd, want) in [
+            ("cursor", true),   // a leading capital in the entry
+            ("opencode", true), // a mixed-case entry
+            ("OPENCODE", true),
+            ("CLAUDE", true), // an upper-case command, a lower-case entry
+            ("open", false),  // a part of an entry is not one
+            ("bash", false),
+            ("", false),
+        ] {
+            assert_eq!(glob_has(g, cmd), want, "{cmd:?}");
+        }
+        assert!(!glob_has("", "claude"), "an empty glob holds nothing");
     }
 
     /// Kills the child on drop, so a failed assert cannot leave it running.
