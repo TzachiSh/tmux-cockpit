@@ -5481,12 +5481,14 @@ esac
             }
         }
 
-        /// [`QUIET`] and two more held-out cases, `hb-1` and `hb-10`, one id
-        /// inside the other.
+        /// [`QUIET`] and two more cases, `hb-1` and `hb-10`, one id inside the
+        /// other. They are tune cases: a held-out id inside another does not
+        /// load (#804).
         fn with_hb() -> String {
             let at = QUIET.find("=== held-q\n").unwrap();
             let held = &QUIET[at..QUIET.find("=== held-ask").unwrap()];
-            let hb = |id: &str| held.replace("=== held-q\n", &format!("=== {id}\n"));
+            let tune = held.replace("holdout: yes\n", "");
+            let hb = |id: &str| tune.replace("=== held-q\n", &format!("=== {id}\n"));
             format!("{QUIET}{}{}", hb("hb-1"), hb("hb-10"))
         }
 
