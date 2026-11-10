@@ -388,10 +388,14 @@ fn load(cases: &Path, blind: Option<&Path>) -> Result<Loaded, String> {
     Ok(Loaded { cases: all, from })
 }
 
-/// Keeps the cases a run takes: those `--only` names.
+/// Keeps the cases a run takes: those `--only` names. Under `--show-holdout`
+/// it names one case by its whole id.
 fn pick(cases: &mut Vec<Case>, o: &Opts) {
-    if let Some(w) = &o.only {
-        cases.retain(|c| c.id.contains(w.as_str()) || c.kind == *w);
+    match &o.only {
+        // --show-holdout reruns one case: its id exactly, never a part of another's
+        Some(w) if o.show_holdout => cases.retain(|c| c.id == *w),
+        Some(w) => cases.retain(|c| c.id.contains(w.as_str()) || c.kind == *w),
+        None => {}
     }
 }
 
@@ -767,13 +771,17 @@ fn opts(args: impl IntoIterator<Item = String>) -> Result<Opts, String> {
         from_to: None,
     };
     let (mut from, mut to, mut base) = (None, None, None);
+    let mut runs_given = false;
     let mut a = args.into_iter();
     while let Some(k) = a.next() {
         let mut val = || a.next().ok_or(format!("{k} needs a value"));
         match k.as_str() {
             "--cases" => (o.cases, o.blind) = (val()?.into(), None),
             "--model" => o.model = val()?,
-            "--runs" => o.runs = val()?.parse().map_err(|e| format!("--runs: {e}"))?,
+            "--runs" => {
+                o.runs = val()?.parse().map_err(|e| format!("--runs: {e}"))?;
+                runs_given = true
+            }
             "--jobs" => o.jobs = val()?.parse().map_err(|e| format!("--jobs: {e}"))?,
             "--only" => o.only = Some(val()?),
             "--out" => o.out = Some(val()?.into()),
@@ -806,6 +814,16 @@ fn opts(args: impl IntoIterator<Item = String>) -> Result<Opts, String> {
     // the flag is for rerunning one case: a sweep with it prints every held-out failure
     if o.show_holdout && o.only.is_none() {
         return Err("--show-holdout needs --only: it reruns a held-out case, never a sweep".into());
+    }
+    // one paid call on one case, as the stop rule in docs/tui.md says
+    if o.show_holdout && o.judge {
+        return Err("--show-holdout makes one call: --judge adds another".into());
+    }
+    if o.show_holdout && runs_given && o.runs != 1 {
+        return Err(format!("--show-holdout makes one call: --runs {}", o.runs));
+    }
+    if o.show_holdout {
+        o.runs = 1;
     }
     o.runs = o.runs.max(1);
     if !o.overlap && (from.is_some() || to.is_some() || base.is_some()) {
@@ -1215,6 +1233,13 @@ fn run(o: &Opts, me: std::io::Result<PathBuf>) {
         eprintln!("panel_eval: {e}");
         std::process::exit(2);
     });
+    if o.show_holdout && cases.len() != 1 {
+        let only = o.only.as_deref().unwrap_or_default();
+        let n = cases.len();
+        let why = format!("--show-holdout reruns exactly one case; --only {only:?} matched {n}");
+        eprintln!("panel_eval: {why}");
+        std::process::exit(2);
+    }
     println!("{}", check_line(&cases, &from));
     if o.show_holdout {
         println!("{SHOW_BANNER}");
@@ -5223,6 +5248,53 @@ esac
             }
         }
 
+        /// [`QUIET`] and a held-out case whose id has `held-q` in it.
+        fn quiet_and_q2() -> String {
+            let at = QUIET.find("=== held-q\n").unwrap();
+            let to = QUIET.find("=== held-ask").unwrap();
+            let q2 = &QUIET[at..to];
+            format!("{QUIET}{}", q2.replace("=== held-q\n", "=== held-q2\n"))
+        }
+
+        #[test]
+        fn show_holdout_reruns_only_the_case_its_only_names_exactly() {
+            let cases = quiet_and_q2();
+            let rows = [
+                ("by substring", "held", 0),
+                ("by kind", "co-kd", 0),
+                ("an id in another", "held-q", 1),
+            ];
+            for (name, only, n) in rows {
+                let flags = ["--show-holdout", "--only", only];
+                let (code, out, err, _) = rig_run_on("quiet-one", &cases, &flags);
+                let warned = out.matches("prints held-out case held-q;").count();
+                match n {
+                    1 => assert_eq!((code, warned), (Some(0), 1), "{name}: {out}{err}"),
+                    _ => {
+                        assert_eq!(code, Some(2), "{name}: {out}{err}");
+                        let quiet = !out.contains(" cases (") && !out.contains("held out");
+                        assert!(quiet, "{name}: {out}");
+                        let want = format!("reruns exactly one case; --only {only:?} matched {n}");
+                        assert!(err.contains(&want) && !err.contains("held-q"), "{name}: {err}");
+                    }
+                }
+            }
+        }
+
+        #[test]
+        fn show_holdout_makes_one_paid_call() {
+            let o = |s: &str| opts(args(s));
+            assert_eq!(o("--show-holdout --only a").unwrap().runs, 1);
+            assert_eq!(o("--show-holdout --only a --runs 1").unwrap().runs, 1);
+            let runs = o("--show-holdout --only a --runs 3").unwrap_err();
+            let judge = o("--show-holdout --only a --judge").unwrap_err();
+            let want = [
+                "--show-holdout makes one call: --runs 3",
+                "--show-holdout makes one call: --judge adds another",
+            ];
+            assert_eq!([runs, judge], want);
+        }
+
         #[test]
         fn show_holdout_is_off_by_default_and_needs_only() {
             assert!(!opts(args("")).unwrap().show_holdout);
@@ -5251,11 +5323,19 @@ esac
             printf 'VERDICT: FAIL\\nCRITIQUE: vi-nail, ze-trap\\n' ;;\n\
             *) printf '<prompt>Use ze-trap, vi-nail, al-beacon and qz-lamp.</prompt>\\n' ;; esac\n";
 
+        /// A child run: its exit code, stdout, stderr and `--out` rows.
+        type Ran = (Option<i32>, String, String, String);
+
         /// Runs [`QUIET`] with `extra` flags in this test binary, re-entered
-        /// at [`rig_child`] on a stand-in claude: (exit, stdout, stderr, rows).
-        fn rig_run(name: &str, extra: &[&str]) -> (Option<i32>, String, String, String) {
+        /// at [`rig_child`] on a stand-in claude.
+        fn rig_run(name: &str, extra: &[&str]) -> Ran {
+            rig_run_on(name, QUIET, extra)
+        }
+
+        /// [`rig_run`] on the cases `cases`.
+        fn rig_run_on(name: &str, cases: &str, extra: &[&str]) -> Ran {
             let d = scratch(name);
-            std::fs::write(d.0.join("cases.txt"), QUIET).unwrap();
+            std::fs::write(d.0.join("cases.txt"), cases).unwrap();
             let claude = fake(&d.0, RIG_CLAUDE);
             let p = |f: &str| d.0.join(f).display().to_string();
             let (cases, rows, ledger) = (p("cases.txt"), p("rows.jsonl"), p("cost.tsv"));
