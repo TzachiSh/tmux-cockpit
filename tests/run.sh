@@ -6136,7 +6136,8 @@ echo "== tree_diff: the object store, attributes or replace refs git reads are t
 # gitsafe strips these from the board's git, so tmux-review must too, or the popup
 # shows other lines than the row counts. FAIL-first: on the old code the two object
 # dirs and the bad rev made tree_diff print nothing, the attr tree read f as binary,
-# and each replace base changed which of f's blobs it diffed.
+# each replace base changed which of f's blobs it diffed, and GIT_NO_REPLACE_OBJECTS
+# hid the repo's own replacement.
 RV730=$(mktmpd)
 (
   export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
@@ -6159,7 +6160,8 @@ for row in "nothing inherited|alt||1	0	f" "nothing inherited, refs/replace/|repl
            "attributes from no rev|alt|GIT_ATTR_SOURCE=no-such-rev|1	0	f" \
            "attributes from another tree|alt|GIT_ATTR_SOURCE=$rv730tree|1	0	f" \
            "replace refs swapping f|alt|GIT_REPLACE_REF_BASE=refs/alt/|1	0	f" \
-           "replace refs hiding the repo's own|replace|GIT_REPLACE_REF_BASE=refs/none/|2	3	f"; do
+           "replace refs hiding the repo's own|replace|GIT_REPLACE_REF_BASE=refs/none/|2	3	f" \
+           "replace refs turned off|replace|GIT_NO_REPLACE_OBJECTS=1|2	3	f"; do
     IFS='|' read -r rvname rvrepo rvvar rvwant <<<"$row"
     rvdir=$RV730/$rvrepo; rvval=${rvvar#*=}; rvval=${rvval//@/$rvdir}
     rvgot=$([ -z "$rvvar" ] || export "${rvvar%%=*}=$rvval"

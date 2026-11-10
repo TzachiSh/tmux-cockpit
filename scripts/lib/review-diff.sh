@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # tmux-review's diff engine: the base, the diff, the approve checkpoint.
-# Sourced by tmux-review, never run. Bash 4+.
+# Sourced by tmux-review, never run. Bash 4+. Source it by a path that names
+# its directory: it finds its sibling git-env.sh through BASH_SOURCE.
 
 # tmux-review sources git-env.sh at its top for every mode. The engine does it
 # again for a caller that sources it on its own: its git is about the dir it

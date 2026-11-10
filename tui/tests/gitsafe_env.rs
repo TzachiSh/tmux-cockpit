@@ -285,7 +285,8 @@ fn blob_replaced_under(tag: &str, base: &str) -> Repo {
 fn a_replace_ref_base_inherited_never_swaps_a_blob() {
     let r = blob_replaced_under("replace-alt", "refs/alt/");
     assert_eq!(r.reference(), (1, 0, 0), "plain git reads the stored blob");
-    assert_eq!(r.diffstat_with(&[("GIT_REPLACE_REF_BASE", "refs/alt/")]), (0, Some(r.reference())));
+    let env = [("GIT_REPLACE_REF_BASE", "refs/alt/")];
+    assert_eq!(r.diffstat_with(&env), (0, Some(r.reference())));
 }
 
 /// GIT_REPLACE_REF_BASE naming an empty base: the repo's own refs/replace/
@@ -294,7 +295,18 @@ fn a_replace_ref_base_inherited_never_swaps_a_blob() {
 fn a_replace_ref_base_inherited_never_hides_the_repos_own_replacement() {
     let r = blob_replaced_under("replace-own", "refs/replace/");
     assert_eq!(r.reference(), (2, 3, 0), "plain git reads the repo's replacement");
-    assert_eq!(r.diffstat_with(&[("GIT_REPLACE_REF_BASE", "refs/none/")]), (0, Some(r.reference())));
+    let env = [("GIT_REPLACE_REF_BASE", "refs/none/")];
+    assert_eq!(r.diffstat_with(&env), (0, Some(r.reference())));
+}
+
+/// GIT_NO_REPLACE_OBJECTS inherited: the repo's own refs/replace/ would stop
+/// applying, so the count would leave git's default view of the repo.
+#[test]
+fn no_replace_objects_inherited_never_hides_the_repos_own_replacement() {
+    let r = blob_replaced_under("noreplace", "refs/replace/");
+    assert_eq!(r.reference(), (2, 3, 0), "plain git reads the repo's replacement");
+    let env = [("GIT_NO_REPLACE_OBJECTS", "1")];
+    assert_eq!(r.diffstat_with(&env), (0, Some(r.reference())));
 }
 
 /// scripts/lib/git-env.sh's copy of the strip list, which tmux-review,
@@ -308,8 +320,9 @@ fn git_env_sh_strips_the_same_variables_as_gitsafe() {
         .output()
         .unwrap();
     assert!(o.status.success(), "sourcing git-env.sh: {}", String::from_utf8_lossy(&o.stderr));
-    let mut got: Vec<String> = String::from_utf8(o.stdout).unwrap().lines().map(String::from).collect();
-    let mut want: Vec<String> = REDIRECT.iter().chain(&PATHSPEC).map(|v| v.to_string()).collect();
+    let out = String::from_utf8(o.stdout).unwrap();
+    let mut got: Vec<&str> = out.lines().collect();
+    let mut want: Vec<&str> = REDIRECT.iter().chain(&PATHSPEC).copied().collect();
     got.sort();
     want.sort();
     assert_eq!(got, want);
