@@ -7368,9 +7368,12 @@ echo "== a partial clone's lazy fetch cannot run the repo's planted remote confi
 # c's HEAD blob is missing, so a diff fetches it through the remote the repo names. The
 # old/git shim drops GIT_NO_LAZY_FETCH as git < 2.44 does, leaving only the protocol pin.
 LF=$(mktmpd); LFM="$LF/marker"; mkdir "$LF/old" "$LF/hb"
-printf '#!/bin/sh\necho up >> %s\nexit 1\n' "$LFM" > "$LF/up"; chmod +x "$LF/up"
+# The paths go into the generated scripts single-quoted: a space in TMPDIR split the marker's
+# path, and the script appended to a file outside the suite's scratch (#820).
+printf "#!/bin/sh\necho up >> '%s'\nexit 1\n" "$LFM" > "$LF/up"; chmod +x "$LF/up"
 ln -s "$LF/up" "$LF/hb/git-remote-foo"
-printf '#!/bin/sh\nunset GIT_NO_LAZY_FETCH\nexec %s "$@"\n' "$(command -v git)" > "$LF/old/git"
+printf '#!/bin/sh\nunset GIT_NO_LAZY_FETCH\nexec '"'%s'"' "$@"\n' "$(command -v git)" \
+    > "$LF/old/git"
 chmod +x "$LF/old/git"
 ( export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
   git init -q -b main "$LF/src" && cd "$LF/src" && git config uploadpack.allowFilter true \
@@ -7381,7 +7384,7 @@ chmod +x "$LF/old/git"
   && git switch -q main && printf 'b\n' >> f.txt && git commit -qam 2 \
   && git clone -q --filter=blob:none "file://$LF/src" "$LF/c2" \
   && cd "$LF/c" && git fetch -q && git reset -q --soft origin/main \
-  && git config remote.origin.uploadpack "$LF/up" && git config core.sshCommand "$LF/up" \
+  && git config remote.origin.uploadpack "'$LF/up'" && git config core.sshCommand "'$LF/up'" \
   && git config protocol.file.allow always && git config protocol.ssh.allow always \
   && git config protocol.ext.allow always && git config protocol.foo.allow always ) >/dev/null 2>&1
 lf_paths() {
@@ -7391,8 +7394,11 @@ lf_paths() {
     tree_diff "$LF/c" --numstat ) >/dev/null 2>&1
     is "nor through tree_diff$1" "" "$(cat "$LFM" 2>/dev/null)"; rm -f "$LFM"
 }
-# foo:: is a remote helper on PATH (hb/), which no protocol.<p>.allow pin can name.
-for lfu in "file://$LF/src" ssh://h/r "ext::$LF/up" foo::x; do
+# foo:: is a remote helper on PATH (hb/), which no protocol.<p>.allow pin can name. git runs
+# uploadpack and sshCommand through a shell, so those hold the path quoted, and ext:: splits
+# its command at spaces, "% " being a space and "%%" a % (#820).
+lfx=${LF//%/%%}; lfx=${lfx// /% }
+for lfu in "file://$LF/src" ssh://h/r "ext::$lfx/up" foo::x; do
     git -C "$LF/c" config remote.origin.url "$lfu"
     PATH="$LF/hb:$PATH" git -C "$LF/c" diff --numstat HEAD >/dev/null 2>&1
     is "the planted remote fires under plain git (${lfu%%:*})" "up" "$(head -1 "$LFM" 2>/dev/null)"
@@ -7409,7 +7415,7 @@ is "while switch --track through it fetches the branch's blob" "g" \
 ( . "$DIR/scripts/lib/git.sh"
 git -C "$LF/c2" worktree add -q --detach "$LF/wt" origin/side2 ) >/dev/null 2>&1
 is "and so does worktree add" "h" "$(cat "$LF/wt/h.txt" 2>/dev/null)"
-rm -rf "$LF"; unset lfu; unset -f lf_paths
+rm -rf "$LF"; unset lfu lfx; unset -f lf_paths
 
 echo "== tmux-review: a pane id that is not %<digits> never reaches tmux =="
 # The glob %[0-9]* let "%1;display-message PWNED" through, and deliver() splices
