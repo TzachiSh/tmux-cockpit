@@ -3532,8 +3532,10 @@ mod tests {
         let text = REFS.replace(refs, "MADE-UP.go\n");
         let said = |held: bool| {
             let c = held_if(held, &text);
-            let r = std::panic::catch_unwind(|| panel_call(&c, &pane, false));
-            *r.err().expect("an unstaged ref panics").downcast::<String>().unwrap()
+            let Err(p) = std::panic::catch_unwind(|| panel_call(&c, &pane, false)) else {
+                panic!("an unstaged ref panics")
+            };
+            *p.downcast::<String>().unwrap()
         };
         assert_eq!(said(true), "case picked: a ref is not staged: not found");
         let tune = said(false);
