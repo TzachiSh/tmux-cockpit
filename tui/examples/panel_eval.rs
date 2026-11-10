@@ -7,7 +7,7 @@
 //!
 //!     cargo run --example panel_eval -- [--model M] [--runs N] [--jobs J]
 //!         [--only TEXT] [--cases FILE] [--out FILE.jsonl] [--check] [--no-explore]
-//!         [--no-hermetic] [--judge] [--judge-model M] [--ledger FILE]
+//!         [--no-hermetic] [--judge] [--judge-model M] [--ledger FILE] [--show-holdout]
 //!     cargo run --example panel_eval -- --compare A.jsonl B.jsonl [--allow-mixed]
 //!     cargo run --example panel_eval -- --calibrate LABELS.jsonl
 //!         [--judge-model M] [--split all|tune|holdout] [--jobs J] [--out FILE.jsonl]
@@ -719,6 +719,9 @@ struct Opts {
     hermetic: bool,
     /// Also grade each reply with the LLM judge (#419), beside the keyword checks.
     judge: bool,
+    /// Print a held-out case's failing reply or error, under a warning, for the
+    /// owner or a listed reader rerunning one case (#792). Never into `--out`.
+    show_holdout: bool,
     judge_model: String,
     /// A labelled file: run the judge on it and print its agreement with the owner.
     calibrate: Option<PathBuf>,
@@ -755,6 +758,7 @@ fn opts(args: impl IntoIterator<Item = String>) -> Result<Opts, String> {
         no_explore: false,
         hermetic: true,
         judge: false,
+        show_holdout: false,
         judge_model: judge::DEFAULT_MODEL.into(),
         calibrate: None,
         split: judge::Split::All,
@@ -779,6 +783,7 @@ fn opts(args: impl IntoIterator<Item = String>) -> Result<Opts, String> {
             "--allow-mixed" => o.allow_mixed = true,
             "--ledger" => o.ledger = Some(val()?.into()),
             "--judge" => o.judge = true,
+            "--show-holdout" => o.show_holdout = true,
             "--judge-model" => o.judge_model = val()?,
             "--calibrate" => o.calibrate = Some(val()?.into()),
             "--purpose-calibrate" => o.purpose_calibrate = Some(val()?.into()),
@@ -949,15 +954,16 @@ struct Ended<'a> {
 /// The one place that decides what a run shows of a case (#792). A tune case
 /// (`held` false) shows what `full` builds. A held-out case shows what `blind`
 /// builds: its id, pass or fail and counts, never its text. That is no must,
-/// must_not or ask_any phrase, kind, question, judge critique, or error text,
-/// which may echo its input.
+/// must_not or ask_any phrase, kind, question, reply, reads, judge critique,
+/// or error text, which may echo its input.
 fn show_case<T>(held: bool, full: impl FnOnce() -> T, blind: impl FnOnce() -> T) -> T {
     if held { blind() } else { full() }
 }
 
 /// The `--out` fields a held-out case's row keeps (#792): none holds its
-/// phrases. Every other field, one added later included, is null on that row.
-const HELD_FIELDS: [&str; 27] = [
+/// phrases. Every other field, one added later included, is null on that row:
+/// the reply holds a passing case's must phrases, and the reads its searches.
+const HELD_FIELDS: [&str; 24] = [
     "id",
     "expect",
     "run",
@@ -974,10 +980,7 @@ const HELD_FIELDS: [&str; 27] = [
     "out_tokens",
     "refused",
     "holdout",
-    "reply",
     "explore",
-    "files_read",
-    "reads",
     "env",
     "missing_n",
     "forbidden_n",
@@ -1041,6 +1044,29 @@ impl Ended<'_> {
             None => what,
         };
         format!("{mark} {:<24} {:<13} want {want:<6} {:>6} ms  {what}", c.id, kind, self.ms)
+    }
+
+    /// What a run prints for this call: its [`line`](Self::line), and with
+    /// `--show-holdout` (`show`) a held-out case's failing reply or error.
+    fn printed(&self, show: bool) -> String {
+        match self.unveiled().filter(|_| show) {
+            Some(text) => format!("{}\n{text}", self.line()),
+            None => self.line(),
+        }
+    }
+
+    /// A held-out case's failing reply or full error under a warning line;
+    /// `None` for a tune case or a pass.
+    fn unveiled(&self) -> Option<String> {
+        let id = &self.case.id;
+        let text = match (&self.err, &self.grade) {
+            _ if !self.case.holdout => return None,
+            (Some(e), _) => format!("error: {e}"),
+            (None, Some(g)) if !g.pass => format!("reply: {}", self.reply),
+            _ => return None,
+        };
+        let warn = "a tuning session must not read it";
+        Some(format!("warning: --show-holdout prints held-out case {id}; {warn}\n{text}"))
     }
 
     /// What a held-out case's line says went wrong: counts, or the class of a
@@ -1310,7 +1336,7 @@ fn main() {
                 read,
                 calls,
             };
-            println!("{}", end.line());
+            println!("{}", end.printed(o.show_holdout));
             if log.is_some() || o.judge {
                 let row = end.row(env.json());
                 // with --judge, written once the judge has graded the reply
@@ -5114,6 +5140,66 @@ esac
             let mut rows = vec![(row, judge::Input::default())];
             judge_apply(&mut rows, &[0], &judged, "haiku");
             assert_eq!(leaked(&rows[0].0.to_string()), Vec::<&str>::new(), "{}", rows[0].0);
+        }
+
+        #[test]
+        fn a_held_out_row_carries_no_phrase_in_any_field() {
+            let cases = parse_cases(QUIET).unwrap();
+            let mut e = ended(&cases, "held-q", LEAKY);
+            let grep = vec!["Grep qz-lamp /r".to_string()];
+            (e.explore, e.read, e.calls) = (true, Some(vec!["/r/vi-nail.rs".into()]), Some(grep));
+            for row in [row_of(&e), row_of(&ended(&cases, "held-ask", ON_TARGET))] {
+                assert_eq!(leaked(&row.to_string()), Vec::<&str>::new(), "{row}");
+            }
+            let row = row_of(&e);
+            assert_eq!(["reply", "reads", "files_read"].map(|k| &row[k]), [&Value::Null; 3]);
+        }
+
+        #[test]
+        fn by_default_a_held_out_failure_prints_no_reply_or_error() {
+            let cases = parse_cases(QUIET).unwrap();
+            for e in [ended(&cases, "held-q", LEAKY), failed(&cases, "held-q", ECHO)] {
+                assert_eq!(e.printed(false), e.line());
+                assert_eq!(leaked(&e.printed(false)), Vec::<&str>::new());
+            }
+        }
+
+        #[test]
+        fn show_holdout_prints_a_held_out_failing_reply_under_a_warning() {
+            let cases = parse_cases(QUIET).unwrap();
+            let e = ended(&cases, "held-q", LEAKY);
+            let p = e.printed(true);
+            let lines: Vec<&str> = p.lines().collect();
+            assert_eq!(lines.len(), 3, "{p}");
+            let warn = "warning: --show-holdout prints held-out case held-q";
+            assert!(lines[1].starts_with(warn), "{p}");
+            assert_eq!(lines[2], format!("reply: {LEAKY}"));
+            assert_eq!(row_of(&e)["reply"], Value::Null, "the flag never reaches --out");
+        }
+
+        #[test]
+        fn show_holdout_prints_a_held_out_full_error_and_the_row_keeps_the_class() {
+            let cases = parse_cases(QUIET).unwrap();
+            let e = failed(&cases, "held-q", ECHO);
+            let p = e.printed(true);
+            assert!(p.contains("\nwarning: --show-holdout "), "{p}");
+            assert!(p.ends_with(&format!("\nerror: {ECHO}")), "{p}");
+            assert_eq!(row_of(&e)["error"], json!("call failed"));
+        }
+
+        #[test]
+        fn show_holdout_adds_nothing_for_a_pass_or_a_tune_case() {
+            let cases = parse_cases(QUIET).unwrap();
+            let tune = [ended(&cases, "tune-q", LEAKY), failed(&cases, "tune-q", ECHO)];
+            for e in tune.into_iter().chain([ended(&cases, "held-ask", ON_TARGET)]) {
+                assert_eq!(e.printed(true), e.line());
+            }
+        }
+
+        #[test]
+        fn show_holdout_is_off_by_default() {
+            assert!(!opts(args("")).unwrap().show_holdout);
+            assert!(opts(args("--show-holdout")).unwrap().show_holdout);
         }
 
         #[test]

@@ -272,7 +272,7 @@ both sides over the cases both graded in full, and each side's own (unpaired)
 `must`, `must_not`, `out_is` and `holdout` keys, is described at the top of
 the cases file; holdout cases are written after the prompt they run on, so a
 gain there is not overfitting. `--model`, `--runs`, `--jobs`, `--only <id or
-kind>`, `--out <file.jsonl>` and `--no-hermetic` are the knobs.
+kind>`, `--out <file.jsonl>`, `--no-hermetic` and `--show-holdout` are the knobs.
 
 Held-out cases written from #783 on live in `tui/evals/panel/holdout-blind.txt`,
 not in the cases file every tuning session reads. Its readers are the owner,
@@ -306,8 +306,10 @@ exploring call. A failed call shows only its class, `held out: took too long`,
 `stopped at its budget` or `call failed`, because claude's error can echo the
 request it was sent. Its `--out` row keeps `missing_n` and `forbidden_n`, the
 error as that class, and only the fields listed in `HELD_FIELDS`; `kind`,
-`question`, `missing`, `forbidden`, `critique` and any field added later are
-null. With `--judge` its line is `judge ok|FAIL <id>` with no critique, or
+`question`, `missing`, `forbidden`, `critique`, `reply`, `reads`, `files_read`
+and any field added later are null. `--show-holdout` prints a held-out case's
+failing reply or full error under a warning line, for the owner or a listed
+reader rerunning one case; it never writes them to `--out`. With `--judge` its line is `judge ok|FAIL <id>` with no critique, or
 `judge ERR <id>  held out: call failed`. A tune case prints and writes all of
 it, as before. `--compare`, `--overlap` and the summary print ids, `want` and
 counts only.
