@@ -803,6 +803,10 @@ fn opts(args: impl IntoIterator<Item = String>) -> Result<Opts, String> {
         }
     }
     o.jobs = o.jobs.max(1);
+    // the flag is for rerunning one case: a sweep with it prints every held-out failure
+    if o.show_holdout && o.only.is_none() {
+        return Err("--show-holdout needs --only: it reruns a held-out case, never a sweep".into());
+    }
     o.runs = o.runs.max(1);
     if !o.overlap && (from.is_some() || to.is_some() || base.is_some()) {
         return Err("--from, --to and --base are for --overlap".into());
@@ -990,6 +994,10 @@ const HELD_FIELDS: [&str; 25] = [
     "judge_cost_usd",
     "rubric",
 ];
+
+/// The line a `--show-holdout` run prints first, before any case (#792).
+const SHOW_BANNER: &str = "warning: --show-holdout is on: this run prints held-out case text; \
+    a tuning session must not read it";
 
 /// What a failed call was, in words of the rig's own: a timeout, a budget
 /// stop, or any other failure.
@@ -1208,6 +1216,9 @@ fn run(o: &Opts, me: std::io::Result<PathBuf>) {
         std::process::exit(2);
     });
     println!("{}", check_line(&cases, &from));
+    if o.show_holdout {
+        println!("{SHOW_BANNER}");
+    }
     if o.check {
         return;
     }
@@ -5213,9 +5224,21 @@ esac
         }
 
         #[test]
-        fn show_holdout_is_off_by_default() {
+        fn show_holdout_is_off_by_default_and_needs_only() {
             assert!(!opts(args("")).unwrap().show_holdout);
-            assert!(opts(args("--show-holdout")).unwrap().show_holdout);
+            assert!(opts(args("--show-holdout --only held-q")).unwrap().show_holdout);
+            let e = opts(args("--show-holdout")).unwrap_err();
+            assert_eq!(e, "--show-holdout needs --only: it reruns a held-out case, never a sweep");
+        }
+
+        #[test]
+        fn a_show_holdout_run_warns_first_and_still_writes_no_text() {
+            let (code, out, err, rows) = rig_run("quiet-show", &["--show-holdout", "--only", "held-q"]);
+            assert_eq!(code, Some(0), "{out}{err}");
+            let mine: Vec<&str> = out.lines().skip_while(|l| !l.starts_with("1 cases")).collect();
+            assert_eq!(mine[1], SHOW_BANNER, "{out}");
+            assert!(out.contains("\nreply: <prompt>Use ze-trap, vi-nail"), "{out}");
+            assert_eq!(leaked(&rows), Vec::<&str>::new(), "{rows}");
         }
 
         /// A stand-in claude for a whole run: its version, a judge's verdict
