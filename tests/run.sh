@@ -2223,14 +2223,17 @@ rg_ms() { local t=${EPOCHREALTIME:-${SECONDS}.000000}; t=${t/[.,]/}; echo $(( 10
 #    Claude Code actually does. Waiting for EOF here would burn the full
 #    deadline on every Stop; the read stops at the fields it wants instead.
 #    The line after the payload is left in the pipe: a read that went on past
-#    the fields would take it, with no clock involved.
-( exec 9>"$RGF"; cat "$RGPAY" >&9; echo RG-TAIL >&9; sleep 8 ) & rg_holder=$!   # a holder
+#    the fields would take it, with no clock involved. Payload and tail go in
+#    one write, under PIPE_BUF so atomic: the fields never arrive without it.
+printf 'RG-TAIL\n' | cat "$RGPAY" - > "$RGSTATE/pay-tail"
+( exec 9>"$RGF"; cat "$RGSTATE/pay-tail" >&9; sleep 8 ) & rg_holder=$!   # a holder
 rg_t0=$(rg_ms)
 TMUX_PANE=%999999 TMUX_TMPDIR="$RGSTATE" XDG_STATE_HOME="$RGSTATE" \
     timeout 6 "$DIR/scripts/review-gate" >/dev/null 2>&1 < "$RGF"
 rg_grc=$?
 rg_dt=$(( $(rg_ms) - rg_t0 ))
-rg_rest=""; IFS= read -r -t 3 rg_rest < "$RGF"
+# <> opens read-write, so open() never waits for a writer the holder may no longer be.
+rg_rest=""; IFS= read -r -t 3 rg_rest <> "$RGF"
 kill "$rg_holder" 2>/dev/null; wait "$rg_holder" 2>/dev/null
 is "a payload whose writer keeps stdin open is not waited out" "0" "$rg_grc"
 [ "$rg_dt" -lt 4000 ] &&
