@@ -3118,7 +3118,8 @@ mod tests {
     #[test]
     fn a_stand_in_judge_fails_a_pr_named_in_neither_the_screen_nor_the_reads() {
         use std::os::unix::fs::PermissionsExt;
-        let root = scratch("judge-reads");
+        let dir = scratch("judge-reads");
+        let root = &dir.0;
         let fake = root.join("fake-claude");
         let script = "#!/bin/sh\nwhile [ \"$1\" != --system-prompt-file ]; do shift; done\n\
             grep -q \"the panel's reads\" \"$2\" || exit 3\n\
@@ -3132,10 +3133,9 @@ mod tests {
         let c = &parse_cases(ONE).unwrap()[0];
         let reply = "<question>Which PR?</question>\n<option>#871</option>\n<option>#872</option>";
         let i = judge_input(c, reply, panel_reads(Some(EXPLORED), true));
-        let got = judge::judge_all(&fake.display().to_string(), "haiku", &[i], 1, &root);
+        let got = judge::judge_all(&fake.display().to_string(), "haiku", &[i], 1, root);
         let v = got[0].verdict.clone().unwrap();
         assert_eq!((v.pass, v.critique.as_str()), (false, "#871 invented"));
-        std::fs::remove_dir_all(&root).unwrap();
     }
 
     /// The judge does not see a case's basket, so it gets no reads there and
@@ -3174,7 +3174,8 @@ mod tests {
     #[test]
     fn a_stand_in_judge_reads_the_users_earlier_answer() {
         use std::os::unix::fs::PermissionsExt;
-        let root = scratch("judge-rounds");
+        let dir = scratch("judge-rounds");
+        let root = &dir.0;
         let fake = root.join("fake-claude");
         let script = "#!/bin/sh\nwhile [ \"$1\" != --system-prompt-file ]; do shift; done\n\
             grep -q 'in the <conversation> section' \"$2\" || exit 3\n\
@@ -3186,10 +3187,9 @@ mod tests {
         std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
         let c = &parse_cases(ANSWERED).unwrap()[0];
         let inputs = ["<prompt>cache the billing API</prompt>", "<prompt>cache the gateway</prompt>"].map(|r| judge_input(c, r, None));
-        let got = judge::judge_all(&fake.display().to_string(), "haiku", &inputs, 1, &root);
+        let got = judge::judge_all(&fake.display().to_string(), "haiku", &inputs, 1, root);
         let got: Vec<(bool, String)> = got.into_iter().map(|j| j.verdict.map(|v| (v.pass, v.critique)).unwrap()).collect();
         assert_eq!(got, [(true, "uses the answer".into()), (false, "ignores the answer".into())]);
-        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
@@ -3330,7 +3330,8 @@ mod tests {
     #[test]
     fn judge_all_reads_back_a_stand_in_verdict() {
         use std::os::unix::fs::PermissionsExt;
-        let root = scratch("judge-trip");
+        let dir = scratch("judge-trip");
+        let root = &dir.0;
         let fake = root.join("fake-claude");
         let script = "#!/bin/sh\nwhile [ \"$1\" != --system-prompt-file ]; do shift; done\n\
             grep -q 'exactly 2 options' \"$2\" || exit 3\n\
@@ -3342,17 +3343,32 @@ mod tests {
             reply: "r".into(),
             ..Default::default()
         };
-        let got = judge::judge_all(&fake.display().to_string(), "haiku", &[i], 1, &root);
+        let got = judge::judge_all(&fake.display().to_string(), "haiku", &[i], 1, root);
         let v = got[0].verdict.clone().unwrap();
         assert_eq!((v.pass, v.critique.as_str()), (false, "saw it"));
-        std::fs::remove_dir_all(&root).unwrap();
     }
 
-    fn scratch(name: &str) -> PathBuf {
+    /// A fresh temp dir, removed when the guard drops, a panicking test included.
+    fn scratch(name: &str) -> judge::Scratch {
         let d = std::env::temp_dir().join(format!("panel-eval-{name}.{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
-        d
+        judge::Scratch(d)
+    }
+
+    /// A test that panics holding a scratch dir still removes it (#757).
+    #[test]
+    fn a_scratch_dir_is_removed_when_its_test_panics() {
+        let mut dir = PathBuf::new();
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let s = scratch("panics");
+            dir = s.0.clone();
+            assert!(dir.is_dir(), "made");
+            panic!("a failed assert");
+        }));
+        assert!(r.is_err(), "the closure panicked");
+        assert!(dir.ends_with(format!("panel-eval-panics.{}", std::process::id())));
+        assert!(!dir.exists(), "{} left behind", dir.display());
     }
 
     fn base_call(dir: &Path) -> Call {
@@ -3368,17 +3384,17 @@ mod tests {
     /// #598: each hermetic call gets an empty folder of its own; a plain one the panel's.
     #[test]
     fn a_hermetic_call_runs_in_a_fresh_folder_of_its_own() {
-        let root = scratch("cwds");
+        let dir = scratch("cwds");
+        let root = &dir.0;
         let base = base_call(Path::new("/panel/cache"));
-        let a = call_in(&base, Some(&root), 0, 0).unwrap();
-        let b = call_in(&base, Some(&root), 0, 1).unwrap();
+        let a = call_in(&base, Some(root), 0, 0).unwrap();
+        let b = call_in(&base, Some(root), 0, 1).unwrap();
         assert_ne!(a.dir, b.dir);
-        assert!(a.dir.starts_with(&root) && b.dir.starts_with(&root));
+        assert!(a.dir.starts_with(root) && b.dir.starts_with(root));
         assert_eq!(std::fs::read_dir(&a.dir).unwrap().count(), 0, "a fresh folder is empty");
-        let again = call_in(&base, Some(&root), 0, 0).unwrap_err();
+        let again = call_in(&base, Some(root), 0, 0).unwrap_err();
         assert!(again.contains("case0-run0"), "never reused: {again}");
         assert_eq!(call_in(&base, None, 0, 0).unwrap().dir, base.dir);
-        std::fs::remove_dir_all(&root).unwrap();
     }
 
     /// The round trip: the panel's own Request, run on a hermetic call, starts
@@ -3386,15 +3402,16 @@ mod tests {
     #[test]
     fn the_panels_request_runs_claude_in_the_hermetic_folder() {
         use std::os::unix::fs::PermissionsExt;
-        let root = scratch("cwd-trip");
+        let dir = scratch("cwd-trip");
+        let root = &dir.0;
         let fake = root.join("fake-claude");
         std::fs::write(&fake, "#!/bin/sh\ncat >/dev/null\npwd -P\n").unwrap();
         std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
         let base = Call {
             claude: fake.display().to_string(),
-            ..base_call(&root)
+            ..base_call(root)
         };
-        let call = call_in(&base, Some(&root), 3, 1).unwrap();
+        let call = call_in(&base, Some(root), 3, 1).unwrap();
         let mut req = Request::spawn_with(&call, &Profile::TEXT, "sys", "hi", "sonnet");
         let got = loop {
             match req.poll() {
@@ -3404,7 +3421,6 @@ mod tests {
         };
         let want = std::fs::canonicalize(root.join("case3-run1")).unwrap();
         assert_eq!(got.unwrap().trim(), want.display().to_string());
-        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
@@ -4128,11 +4144,12 @@ esac
     fn overlap_dir(name: &str) -> judge::Scratch {
         use std::os::unix::fs::PermissionsExt;
         let d = scratch(name);
-        std::fs::write(d.join("cases.txt"), OVERLAP_CASES).unwrap();
-        std::fs::write(d.join("from.txt"), "an old line\n").unwrap();
-        std::fs::write(d.join("claude"), OVERLAP_STUB).unwrap();
-        std::fs::set_permissions(d.join("claude"), std::fs::Permissions::from_mode(0o755)).unwrap();
-        judge::Scratch(d)
+        std::fs::write(d.0.join("cases.txt"), OVERLAP_CASES).unwrap();
+        std::fs::write(d.0.join("from.txt"), "an old line\n").unwrap();
+        std::fs::write(d.0.join("claude"), OVERLAP_STUB).unwrap();
+        let exe = std::fs::Permissions::from_mode(0o755);
+        std::fs::set_permissions(d.0.join("claude"), exe).unwrap();
+        d
     }
 
     /// Runs `--overlap` on `to` as the edited prompt, in this test binary
