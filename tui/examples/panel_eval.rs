@@ -88,6 +88,8 @@ impl Expect {
 #[derive(Clone, Debug, PartialEq)]
 struct Case {
     id: String,
+    /// Its `=== id` line in the file it was read from.
+    line: usize,
     kind: String,
     name: String,
     cmd: String,
@@ -200,6 +202,7 @@ fn parse_some(text: &str, quiet: bool) -> Result<Vec<Case>, String> {
         let (head, bodies) = rest.split_once("\n--- ").unwrap_or((&rest, ""));
         let mut c = Case {
             id: id.clone(),
+            line: line0,
             kind: String::new(),
             name: String::new(),
             cmd: String::new(),
@@ -384,8 +387,7 @@ fn load(cases: &Path, blind: Option<&Path>) -> Result<Loaded, String> {
     let mut from = vec![(cases.to_path_buf(), all.len())];
     if let Some(b) = blind {
         let at = |e: String| format!("{}: {e}", b.display());
-        let text = read(b)?;
-        let held = parse_some(&text, true).map_err(at)?;
+        let held = parse_some(&read(b)?, true).map_err(at)?;
         if let Some(c) = held.iter().find(|c| !c.holdout) {
             return Err(at(format!("case {}: every case in this file needs holdout: yes", c.id)));
         }
@@ -393,13 +395,11 @@ fn load(cases: &Path, blind: Option<&Path>) -> Result<Loaded, String> {
             return Err(at(format!("case {}: already in {}", c.id, cases.display())));
         }
         // `--only` matches by substring, so a held-out id inside another id picks
-        // two cases and `--show-holdout` can never show it (#804). Each `=== `
-        // line opens a case here, so the k-th one is case k's.
-        let opens = text.lines().enumerate().filter(|(_, l)| l.starts_with("=== "));
-        for (c, (i, _)) in held.iter().zip(opens) {
+        // two cases and `--show-holdout` can never show it (#804)
+        for c in &held {
             if all.iter().chain(&held).any(|o| o.id != c.id && o.id.contains(c.id.as_str())) {
                 let rule = "a held-out id is inside another id: --only cannot pick it alone";
-                return Err(at(format!("line {}: {rule}", i + 1)));
+                return Err(at(format!("line {}: {rule}", c.line)));
             }
         }
         from.push((b.to_path_buf(), held.len()));
