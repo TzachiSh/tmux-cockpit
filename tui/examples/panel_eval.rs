@@ -1076,7 +1076,7 @@ impl Ended<'_> {
         let text = match (&self.err, &self.grade) {
             _ if !self.case.holdout => return None,
             (Some(e), _) => format!("error: {e}"),
-            (None, Some(g)) if !g.pass => format!("reply: {}", self.reply),
+            (None, Some(g)) if !g.pass => format!("reply: {}", self.reply.trim_end()),
             _ => return None,
         };
         let warn = "a tuning session must not read it";
@@ -5238,7 +5238,9 @@ esac
             assert_eq!(code, Some(0), "{out}{err}");
             let mine: Vec<&str> = out.lines().skip_while(|l| !l.starts_with("1 cases")).collect();
             assert_eq!(mine[1], SHOW_BANNER, "{out}");
-            assert!(out.contains("\nreply: <prompt>Use ze-trap, vi-nail"), "{out}");
+            let reply = "\nreply: <prompt>Use ze-trap, vi-nail, al-beacon and qz-lamp.</prompt>\n";
+            // the summary opens with one blank line; the reply adds none of its own
+            assert!(out.contains(reply) && !out.contains(&format!("{reply}\n\n")), "{out}");
             assert_eq!(leaked(&rows), Vec::<&str>::new(), "{rows}");
         }
 
