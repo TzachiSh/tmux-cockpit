@@ -1710,14 +1710,24 @@ sg_stall() {                  # <state>: the hook, with one stop at a random poi
 SGF='#{@cockpit_fleet}|#{@cockpit_fleet_nb}|#{@cockpit_fleet_ne}'
 SGS='#{@cockpit_sess_nb}|#{@cockpit_sess_ne}|#{@cockpit_win_state}|#{@cockpit_win_review}'
 SGS="$SGS|#{@cockpit_ctx_all}"
-sgf=0 sgs=0 sgf1="" sgs1=""
+sgf=0 sgs=0 sgf1="" sgs1="" sgu=0 sgu1=""
 if [ -n "$SGP" ]; then
     read -r SGC0 _ < "/proc/$SGP/schedstat"
     for i in 1 2 3 4; do sg_hook running; sg_hook off; done
     read -r SGC _ < "/proc/$SGP/schedstat"; SGPER=$(( (SGC - SGC0) / 8 ))
     for i in $(seq 1 32); do
         ctx=12; [ $((i % 2)) = 0 ] && ctx=345
-        sgt set -p -t "$SGA" @panestate_ctx "$ctx"
+        # The row's own setup, checked (#810): CI twice read A's cells one hook stale with
+        # every other sum exact, which a hook that saw the old @panestate_ctx would do. A
+        # setup that did not land is named in its own row, and that hook is not held
+        # against agent-state. No retry: it would hide the cause.
+        sgt set -p -t "$SGA" @panestate_ctx "$ctx"; sgrc=$?
+        sgrd=$(sgt show-option -pqv -t "$SGA" @panestate_ctx)
+        if [ "$sgrc" != 0 ] || [ "$sgrd" != "$ctx" ]; then
+            sgu=$((sgu + 1))
+            [ -n "$sgu1" ] \
+                || sgu1="setup ctx not applied at hook $i: rc=$sgrc, read [$sgrd], want $ctx"
+        fi
         case $((i % 4)) in
             1) st=needs-input; sgt set -p -t "$SGA" @cockpit_review pending
                wf='#[fg=themered bold]▲1#[default] #[fg=thememagenta]◆1#[default] |1|0'
@@ -1729,9 +1739,12 @@ if [ -n "$SGP" ]; then
         sg_stall "$st"
         g=$(sgt display-message -p -t "$SGA" "$SGF//$SGS")
         gf=${g%%//*} gs=${g#*//}
+        [ "$sgrc" = 0 ] && [ "$sgrd" = "$ctx" ] || continue
         [ "$gf" = "$wf" ] || { sgf=$((sgf + 1)); [ -n "$sgf1" ] || sgf1="hook $i ($st): [$gf]"; }
         [ "$gs" = "$ws" ] || { sgs=$((sgs + 1)); [ -n "$sgs1" ] || sgs1="hook $i ($st): [$gs]"; }
     done
+    is "the row's own setup write of A's @panestate_ctx lands before every hook" \
+        "0" "$sgu${sgu1:+, first $sgu1}"
     is "32 hooks, each with the server stopped 150 ms mid-hook, leave the fleet counts exact" \
         "0" "$sgf${sgf1:+, first $sgf1}"
     is "and A's session's ▲ ✕ and cells and its window's state and ◆ exact" \
