@@ -1191,7 +1191,13 @@ fn main() {
     if o.overlap {
         std::process::exit(overlap_main(&o));
     }
-    let Loaded { cases, from } = run_cases(&o).unwrap_or_else(|e| {
+    run(&o, std::env::current_exe());
+}
+
+/// A run of the cases `o` names: each call, its line and row, the summary.
+/// `me` is the rig's own binary, which wraps each call to read its cost.
+fn run(o: &Opts, me: std::io::Result<PathBuf>) {
+    let Loaded { cases, from } = run_cases(o).unwrap_or_else(|e| {
         eprintln!("panel_eval: {e}");
         std::process::exit(2);
     });
@@ -1204,7 +1210,7 @@ fn main() {
     let mut wrapped = false;
     // what the calls get, read back: false when the rig cannot wrap them
     let mut hermetic = false;
-    match std::env::current_exe() {
+    match me {
         Ok(me) => {
             wrapped = true;
             // SAFETY: no other thread runs yet: no call has been spawned.
@@ -1357,10 +1363,10 @@ fn main() {
     let mut judged_nothing = false;
     let mut judge_usd = None;
     if o.judge {
-        let (none, usd) = judge_rows(&mut rows, &o, &call.claude, wrapped, log.as_mut());
+        let (none, usd) = judge_rows(&mut rows, o, &call.claude, wrapped, log.as_mut());
         (judged_nothing, judge_usd) = (none, Some(usd));
     }
-    let ledger = ledger_path(&o);
+    let ledger = ledger_path(o);
     let label = o
         .out
         .as_ref()
