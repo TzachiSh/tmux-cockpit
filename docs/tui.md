@@ -423,6 +423,41 @@ passed: h-feature-done.rh.v2 failed 4/30 against master's 0/30 (one-sided Fisher
 p 0.056) and named-skill.r0.v3 4/30 against 1/30 (p 0.18), 8/60 against 1/60
 pooled (p 0.016); no single row drops at p < 0.05.
 
+**The overlap check** (#710). A prompt line that paraphrases a held-out case
+leaks it: #702's example line "use the test database, not the live one" did,
+and its case was demoted. N-gram checks miss a paraphrase, so `--overlap` asks
+a judge model instead, haiku unless `--judge-model` says otherwise. It is
+opt-in and never part of the default run. The changed lines are the ones
+`git diff BASE -- tui/prompts` adds, the working tree against `--base`
+(`HEAD` by default), or with `--from OLD --to NEW` the lines of `NEW` that `OLD`
+lacks, which covers the override file; `--base` beside `--from` is refused. Each changed line goes to the judge
+with each `holdout: yes` case's request (`--only` narrows the cases), and the
+judge answers yes when the line paraphrases the request's specific scenario
+and no when it only shares its topic. The judge sees the request only: a
+line that mirrors a held-out case's screen, repo, refs or earlier rounds (an
+error line, a path) is not judged. A flagged pair prints
+`FLAG<TAB>case id<TAB>line`; the case's text is never printed or logged, so
+whoever edits the prompt stays blind. Then an `overlap` record gives
+`flagged`, `pairs`, `lines`, `cases`, `cached`, `failed`, `usd`, `model` and
+`question` (the question's hash) as tab-separated `key=value` fields. The run
+exits 1 when a pair is flagged, or unchecked because its call failed (a
+`claude` that cannot start included), so a pre-commit step can gate on it; 2
+when it cannot read its inputs (the cases, the files, the diff), and when there
+are changed lines but no held-out case to check them against, as after a typo
+in `--only`. A failed call's reason
+never carries the judge's answer, which may quote the request. Verdicts are
+cached in `overlap-cache.tsv` next to the ledger, keyed by the hashes of the
+line, the request and the question and by the model, so a rerun calls only for
+new pairs and a reworded question asks again; the cache holds no text. A run that made calls appends an `overlap`
+row to the ledger. Each call is hermetic and capped like the judge's.
+The question was worded twice, on that one leak against the demoted case's
+request. A first wording, which also answered no for a line fitting the request
+no better than many others, never flagged it in 3 calls. The shipped wording
+flagged it 3 of 3, flagged a line on the same topic 0 of 3 and a neutral line 0
+of 1; the 10 haiku calls cost $0.0025. The leak is the only known positive and
+the question was tuned on it, so these counts are in-sample: no miss rate or
+false-flag rate is measured yet.
+
 **The panel's cache.** `claude -p` reads its system prompt from a file, so each
 distinct prompt is written once to
 `${XDG_CACHE_HOME:-$HOME/.cache}/tmux-cockpit/panel/prompts/<hash>.txt`, mode

@@ -11,6 +11,8 @@
 //!     cargo run --example panel_eval -- --compare A.jsonl B.jsonl [--allow-mixed]
 //!     cargo run --example panel_eval -- --calibrate LABELS.jsonl
 //!         [--judge-model M] [--split all|tune|holdout] [--jobs J] [--out FILE.jsonl]
+//!     cargo run --example panel_eval -- --overlap [--base REV | --from FILE --to FILE]
+//!         [--judge-model M] [--only TEXT] [--jobs J] [--ledger FILE]
 //!
 //! `--check` only reads and validates the cases. To compare a prompt edit, put
 //! it at `$XDG_CONFIG_HOME/tmux-cockpit/prompts/write.txt` (the panel's own
@@ -46,6 +48,8 @@ use std::time::{Duration, Instant};
 
 #[path = "panel_eval/judge.rs"]
 mod judge;
+#[path = "panel_eval/overlap.rs"]
+mod overlap;
 #[path = "panel_eval/purpose.rs"]
 mod purpose;
 
@@ -580,6 +584,13 @@ struct Opts {
     /// A purpose-question fixture: calibrate the `@purpose` judge on it (#702 H2).
     purpose_calibrate: Option<PathBuf>,
     split: judge::Split,
+    /// Ask the judge whether each changed prompt line paraphrases a held-out
+    /// case's request (#710).
+    overlap: bool,
+    /// `--overlap`'s lines: those `git diff BASE -- tui/prompts` adds.
+    base: String,
+    /// `--overlap`'s lines: those of the second file the first lacks.
+    from_to: Option<(PathBuf, PathBuf)>,
 }
 
 fn opts(args: impl IntoIterator<Item = String>) -> Result<Opts, String> {
@@ -602,7 +613,11 @@ fn opts(args: impl IntoIterator<Item = String>) -> Result<Opts, String> {
         judge_model: judge::DEFAULT_MODEL.into(),
         calibrate: None,
         split: judge::Split::All,
+        overlap: false,
+        base: "HEAD".into(),
+        from_to: None,
     };
+    let (mut from, mut to, mut base) = (None, None, None);
     let mut a = args.into_iter();
     while let Some(k) = a.next() {
         let mut val = || a.next().ok_or(format!("{k} needs a value"));
@@ -623,6 +638,10 @@ fn opts(args: impl IntoIterator<Item = String>) -> Result<Opts, String> {
             "--calibrate" => o.calibrate = Some(val()?.into()),
             "--purpose-calibrate" => o.purpose_calibrate = Some(val()?.into()),
             "--split" => o.split = judge::Split::parse(&val()?)?,
+            "--overlap" => o.overlap = true,
+            "--base" => base = Some(val()?),
+            "--from" => from = Some(PathBuf::from(val()?)),
+            "--to" => to = Some(PathBuf::from(val()?)),
             "--compare" => {
                 let two = (a.next(), a.next());
                 let (Some(x), Some(y)) = two else {
@@ -635,6 +654,23 @@ fn opts(args: impl IntoIterator<Item = String>) -> Result<Opts, String> {
     }
     o.jobs = o.jobs.max(1);
     o.runs = o.runs.max(1);
+    if !o.overlap && (from.is_some() || to.is_some() || base.is_some()) {
+        return Err("--from, --to and --base are for --overlap".into());
+    }
+    o.from_to = match (from, to) {
+        (Some(f), Some(t)) => Some((f, t)),
+        (None, None) => None,
+        _ => return Err("--from and --to go together".into()),
+    };
+    if let Some(b) = base {
+        if o.from_to.is_some() {
+            return Err("--base is for git diff, not --from and --to".into());
+        }
+        if b.starts_with('-') {
+            return Err(format!("--base: {b} is not a revision"));
+        }
+        o.base = b;
+    }
     Ok(o)
 }
 
@@ -794,6 +830,9 @@ fn main() {
             std::process::exit(2);
         }
         return;
+    }
+    if o.overlap {
+        std::process::exit(overlap_main(&o));
     }
     let text = std::fs::read_to_string(&o.cases).unwrap_or_else(|e| {
         eprintln!("panel_eval: {}: {e}", o.cases.display());
@@ -1728,6 +1767,93 @@ fn purpose_calibrate(file: &Path, o: &Opts) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// `--overlap` (#710): the exit code of [`overlap_check`], or 2 when it could
+/// not run.
+fn overlap_main(o: &Opts) -> i32 {
+    overlap_check(o).unwrap_or_else(|e| {
+        eprintln!("panel_eval: --overlap: {e}");
+        2
+    })
+}
+
+/// Asks the judge whether each changed prompt line paraphrases a held-out
+/// case's request. Prints a `FLAG` record per flagged pair, with the case id
+/// and the line, never the case's text, then an `overlap` record of counts.
+/// Returns 1 when a pair is flagged or left unchecked by a failed call.
+fn overlap_check(o: &Opts) -> Result<i32, String> {
+    let read = |p: &Path| std::fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display()));
+    let mut cases = parse_cases(&read(&o.cases)?)?;
+    let only = |c: &Case| o.only.as_ref().is_none_or(|w| c.id.contains(w.as_str()) || c.kind == *w);
+    cases.retain(|c| c.holdout && only(c));
+    let lines = match &o.from_to {
+        Some((from, to)) => overlap::new_lines(&read(from)?, &read(to)?),
+        None => overlap::added_lines(&prompt_diff(&o.base)?),
+    };
+    let claude = std::env::var("COCKPIT_CLAUDE")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .unwrap_or("claude".into());
+    let ledger = ledger_path(o);
+    if cases.is_empty() && !lines.is_empty() {
+        return Err(format!("{} changed lines and no held-out case to check them against", lines.len()));
+    }
+    let mut cache = overlap::Cache::open(&ledger.with_file_name("overlap-cache.tsv"), overlap::QUESTION);
+    let pairs: Vec<(&str, &str)> = lines
+        .iter()
+        .flat_map(|l| cases.iter().map(move |c| (l.as_str(), c.request.as_str())))
+        .collect();
+    let r = overlap::judge_all(&claude, &o.judge_model, &pairs, o.jobs, &mut cache);
+    let mut flagged = 0;
+    for (i, v) in r.verdicts.iter().enumerate() {
+        if *v == Some(true) {
+            flagged += 1;
+            println!("FLAG\t{}\t{}", cases[i % cases.len()].id, lines[i / cases.len()]);
+        }
+    }
+    let failed = r.failed.len();
+    println!(
+        "overlap\tflagged={flagged}\tpairs={}\tlines={}\tcases={}\tcached={}\tfailed={failed}\tusd={:.4}\tmodel={}\tquestion={}",
+        pairs.len(),
+        lines.len(),
+        cases.len(),
+        r.cached,
+        r.usd,
+        o.judge_model,
+        overlap::question_hash()
+    );
+    if r.cached < pairs.len() {
+        let secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        let row = ledger_row(secs, "overlap", cases.len(), 1, r.usd, &o.judge_model);
+        if let Err(e) = ledger_append(&ledger, &row) {
+            eprintln!("panel_eval: ledger {}: {e}", ledger.display());
+        }
+    }
+    if failed > 0 {
+        let mut why = r.failed.clone();
+        why.sort();
+        why.dedup();
+        eprintln!("panel_eval: --overlap: {failed} pairs unchecked: {}", why.join("; "));
+    }
+    Ok(i32::from(flagged + failed > 0))
+}
+
+/// What `git diff BASE` changes in `tui/prompts`, the working tree against
+/// `base`, with no context lines.
+fn prompt_diff(base: &str) -> Result<String, String> {
+    let o = std::process::Command::new("git")
+        .arg("-C")
+        .arg(env!("CARGO_MANIFEST_DIR"))
+        .args(["diff", "--no-color", "--no-ext-diff", "--no-textconv", "-U0", base, "--", "prompts"])
+        .output()
+        .map_err(|e| format!("git: {e}"))?;
+    if !o.status.success() {
+        return Err(format!("git diff {base}: {}", String::from_utf8_lossy(&o.stderr).trim()));
+    }
+    Ok(String::from_utf8_lossy(&o.stdout).into_owned())
 }
 
 /// Where a run's cost goes: `--ledger`, else `cost.tsv` next to `--out`, else
@@ -3828,5 +3954,176 @@ mod tests {
             .filter(|i| has(REVIEW_678_SENTENCES[i - 1].0, term) != REVIEW_678_SENTENCES[i - 1].1)
             .collect();
         assert_eq!(wrong, [11, 12, 14, 15, 28, 31], "review sentences graded the wrong way");
+    }
+
+    // --- #710: `--overlap`, on a stand-in claude in a child process ---
+
+    const OVERLAP_CASES: &str = "=== held-a\nkind: ops\nwindow: bash · bash · /home/u\nexpect: write\nholdout: yes\n\
+        --- request\nSECRET-REQUEST-TEXT keep the staging box\n\
+        === tuned-b\nkind: ops\nwindow: bash · bash · /home/u\nexpect: write\n--- request\nTUNED-REQUEST-TEXT other\n";
+
+    /// A stand-in claude: refuses a call without the overlap question as its
+    /// system prompt, logs each call, and says yes to input holding `leaky`.
+    /// Three answers carry the request's text and no verdict: for `garble` a
+    /// reply that is not yes or no, for `errjson` an `is_error` result, for
+    /// `exitcode` a result with a non-zero exit.
+    const OVERLAP_STUB: &str = r#"#!/bin/sh
+while [ "$1" != --system-prompt-file ]; do shift; done
+grep -q paraphrases "$2" || exit 3
+in=$(cat)
+req=$(printf '%s\n' "$in" | sed -n '/^<request>$/{n;p;}')
+echo call >> "$OVERLAP_STUB_LOG"
+case "$in" in
+*garble*) printf 'Maybe: %s\n' "$in" ;;
+*errjson*) printf '{"type":"result","is_error":true,"result":"%s"}\n' "$req" ;;
+*exitcode*) printf '{"type":"result","result":"%s"}\n' "$req"; exit 1 ;;
+*leaky*) echo '{"type":"result","result":"yes","total_cost_usd":0.001}' ;;
+*) echo '{"type":"result","result":"no","total_cost_usd":0.001}' ;;
+esac
+"#;
+
+    /// A scratch dir with the cases, the old prompt and the stand-in claude,
+    /// removed when it drops, a failed assert included.
+    fn overlap_dir(name: &str) -> judge::Scratch {
+        use std::os::unix::fs::PermissionsExt;
+        let d = scratch(name);
+        std::fs::write(d.join("cases.txt"), OVERLAP_CASES).unwrap();
+        std::fs::write(d.join("from.txt"), "an old line\n").unwrap();
+        std::fs::write(d.join("claude"), OVERLAP_STUB).unwrap();
+        std::fs::set_permissions(d.join("claude"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        judge::Scratch(d)
+    }
+
+    /// Runs `--overlap` on `to` as the edited prompt, in this test binary
+    /// re-entered at [`overlap_child`], so its real stdout and stderr are caught.
+    fn overlap_run(d: &Path, to: &str) -> (Option<i32>, String, String) {
+        std::fs::write(d.join("to.txt"), to).unwrap();
+        let p = |f: &str| d.join(f).display().to_string();
+        let args = [
+            "--overlap",
+            "--cases",
+            &p("cases.txt"),
+            "--from",
+            &p("from.txt"),
+            "--to",
+            &p("to.txt"),
+        ];
+        let args = [&args[..], &["--ledger", &p("cost.tsv"), "--jobs", "2"]].concat().join("\n");
+        let o = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "tests::overlap_child", "--nocapture", "--test-threads=1"])
+            .env("PANEL_EVAL_OVERLAP_ARGS", args)
+            .env("COCKPIT_CLAUDE", p("claude"))
+            .env("OVERLAP_STUB_LOG", p("calls.log"))
+            .output()
+            .unwrap();
+        let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
+        (o.status.code(), text(&o.stdout), text(&o.stderr))
+    }
+
+    /// Not a test of its own: the child [`overlap_run`] starts.
+    #[test]
+    fn overlap_child() {
+        if let Ok(args) = std::env::var("PANEL_EVAL_OVERLAP_ARGS") {
+            // libtest's `test ... ` has no newline yet: records start on their own line
+            println!();
+            std::process::exit(overlap_main(&opts(args.split('\n').map(String::from)).unwrap()));
+        }
+    }
+
+    /// The `FLAG` records: (case id, prompt line).
+    fn flags(out: &str) -> Vec<(String, String)> {
+        let rows = out.lines().filter_map(|l| l.strip_prefix("FLAG\t"));
+        rows.filter_map(|r| r.split_once('\t')).map(|(a, b)| (a.into(), b.into())).collect()
+    }
+
+    /// A field of the `overlap` summary record.
+    fn field(out: &str, k: &str) -> Option<String> {
+        let rec = out.lines().find_map(|l| l.strip_prefix("overlap\t"))?;
+        rec.split('\t').find_map(|f| f.strip_prefix(&format!("{k}="))).map(String::from)
+    }
+
+    fn calls(d: &Path) -> usize {
+        std::fs::read_to_string(d.join("calls.log")).map_or(0, |t| t.lines().count())
+    }
+
+    #[test]
+    fn overlap_flags_a_pair_by_case_id_and_line_never_the_case_text() {
+        let d = overlap_dir("ov-flag");
+        let (code, out, err) = overlap_run(&d.0, "an old line\na leaky line\n");
+        assert_eq!(code, Some(1), "a flag fails the run: {out}{err}");
+        assert_eq!(flags(&out), [("held-a".to_string(), "a leaky line".to_string())]);
+        assert!(!out.contains("SECRET-REQUEST") && !err.contains("SECRET-REQUEST"), "{out}{err}");
+    }
+
+    #[test]
+    fn overlap_with_no_flag_exits_0() {
+        let d = overlap_dir("ov-clean");
+        let (code, out, err) = overlap_run(&d.0, "a plain line\n");
+        assert_eq!(code, Some(0), "{out}{err}");
+        assert_eq!((flags(&out).len(), field(&out, "flagged").as_deref()), (0, Some("0")));
+        assert_eq!(field(&out, "pairs").as_deref(), Some("1"));
+    }
+
+    #[test]
+    fn overlap_judges_only_held_out_cases() {
+        let d = overlap_dir("ov-held");
+        overlap_run(&d.0, "a plain line\n");
+        assert_eq!(calls(&d.0), 1, "one line, one held-out case");
+    }
+
+    #[test]
+    fn overlap_rerun_reads_the_cache_which_holds_no_text() {
+        let d = overlap_dir("ov-cache");
+        overlap_run(&d.0, "a plain line\nanother line\n");
+        let (_, out, _) = overlap_run(&d.0, "a plain line\nanother line\n");
+        assert_eq!((calls(&d.0), field(&out, "cached").as_deref()), (2, Some("2")));
+        let cache = std::fs::read_to_string(d.0.join("overlap-cache.tsv")).unwrap();
+        assert!(!cache.contains("SECRET-REQUEST") && !cache.contains("plain"), "{cache}");
+    }
+
+    #[test]
+    fn overlap_failed_call_never_prints_the_answer_and_fails_the_run() {
+        let d = overlap_dir("ov-garble");
+        // no verdict, an is_error result, a non-zero exit: each answer holds the request
+        let (code, out, err) = overlap_run(&d.0, "garble this\nerrjson this\nexitcode this\n");
+        assert_eq!((code, field(&out, "failed").as_deref()), (Some(1), Some("3")), "{out}{err}");
+        assert!(!out.contains("SECRET-REQUEST") && !err.contains("SECRET-REQUEST"), "{out}{err}");
+    }
+
+    #[test]
+    fn overlap_with_no_changed_line_calls_nothing() {
+        let d = overlap_dir("ov-empty");
+        let (code, out, _) = overlap_run(&d.0, "an old line\n\n");
+        assert_eq!((code, calls(&d.0), field(&out, "lines").as_deref()), (Some(0), 0, Some("0")));
+    }
+
+    /// A typo in `--only` leaves nothing to check against: that is no pass.
+    #[test]
+    fn overlap_with_lines_but_no_held_out_case_exits_2() {
+        let d = overlap_dir("ov-nocase");
+        std::fs::write(d.0.join("cases.txt"), OVERLAP_CASES.replace("holdout: yes\n", "")).unwrap();
+        let (code, _, err) = overlap_run(&d.0, "a plain line\n");
+        assert_eq!((code, calls(&d.0)), (Some(2), 0), "{err}");
+    }
+
+    #[test]
+    fn overlap_spend_goes_in_the_ledger() {
+        let d = overlap_dir("ov-ledger");
+        overlap_run(&d.0, "a plain line\n");
+        let ledger = std::fs::read_to_string(d.0.join("cost.tsv")).unwrap();
+        let row: Vec<&str> = ledger.lines().last().unwrap().split('\t').collect();
+        assert_eq!((row[1], row[4]), ("overlap", "0.0010"));
+    }
+
+    #[test]
+    fn overlap_options_refuse_a_lone_or_misplaced_file_and_a_flag_as_base() {
+        let o = |a: &[&str]| opts(a.iter().map(|s| s.to_string())).unwrap_err();
+        assert_eq!(o(&["--overlap", "--from", "a"]), "--from and --to go together");
+        assert_eq!(o(&["--from", "a", "--to", "b"]), "--from, --to and --base are for --overlap");
+        assert_eq!(o(&["--overlap", "--base", "--output=x"]), "--base: --output=x is not a revision");
+        assert_eq!(
+            o(&["--overlap", "--base", "v1", "--from", "a", "--to", "b"]),
+            "--base is for git diff, not --from and --to"
+        );
     }
 }
