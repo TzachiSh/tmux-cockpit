@@ -19276,6 +19276,18 @@ bv_case "a pane whose command is a version title (2.1.318) binds its job" 2.1.31
 bv_case "...and with underscores (2_1_318)" 2_1_318 "aa|alpha|running"
 bv_case "digits with one dot (3.11) are no version title: no bind" 3.11 "||"
 bv_case "...nor a version with a letter in it (2.1.3a)" 2.1.3a "||"
+# The glob (|claude|codex|) never names a version title, so the poller dropped such a pane's
+# marks as "not an agent any more" and then bound it unmarked (review-770). It is an agent,
+# as on the board: a foreground mark newer than the job's start keeps the pane unbound.
+BVF=$(av_tm new-window -d -c "$AVWD" -P -F '#{pane_id}' "exec -a 2.1.318 sleep 300")
+av_tm select-pane -t "$BVF" -T alpha; av_tm set-option -p -t "$BVF" @cockpit_fg 2000000000
+av_once bind.json >/dev/null
+is "a version-titled foreground pane keeps its mark and is not bound to an older job" \
+   "|2000000000" "$(avo @cockpit_job "$BVF")|$(avo @cockpit_fg "$BVF")"
+BVV=$(av_tm new-window -d -c "$AVWD" -P -F '#{pane_id}' "exec -a 2.1.318 sleep 300")
+av_tm set-option -p -t "$BVV" @cockpit_agentview 1
+av_once none.json >/dev/null
+is "...and a version-titled agent view keeps its mark" "1" "$(avo @cockpit_agentview "$BVV")"
 av_tm kill-server >/dev/null 2>&1
 fi
 
