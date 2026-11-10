@@ -2604,7 +2604,7 @@ tcsid=$("$TMUX_REAL" -L "$TC" display-message -p -t here '#{session_id}')
 # cwd is the session's start dir. attach-session fails without a tty; the
 # session is already made by then.
 ( cd "$TCD/a" &&
-    env -u TMUX_PANE TMUX="/tmp/tmux-$(id -u)/$TC,0,${tcsid#\$}" "$DIR/scripts/tm" made \
+    env -u TMUX_PANE TMUX="$SOCKDIR/$TC,0,${tcsid#\$}" "$DIR/scripts/tm" made \
     </dev/null >/dev/null 2>&1 )
 is "the new session starts where the pane was, not where the old session began" "$TCD/b" \
    "$("$TMUX_REAL" -L "$TC" display-message -p -t made: '#{session_path}' 2>/dev/null)"
@@ -2612,7 +2612,7 @@ is "the new session starts where the pane was, not where the old session began" 
 # pane is no longer the one prefix+s was pressed in (#494): the key passes it as
 # TM_PANE. Here a pane in a, with b's window active, stands in for that.
 tcpa=$("$TMUX_REAL" -L "$TC" display-message -p -t here:0 '#{pane_id}')
-( cd "$TCD/b" && env -u TMUX_PANE TM_PANE="$tcpa" TMUX="/tmp/tmux-$(id -u)/$TC,0,${tcsid#\$}" \
+( cd "$TCD/b" && env -u TMUX_PANE TM_PANE="$tcpa" TMUX="$SOCKDIR/$TC,0,${tcsid#\$}" \
     "$DIR/scripts/tm" fromkey </dev/null >/dev/null 2>&1 )
 is "with TM_PANE the new session starts in that pane's folder, not the active pane's" "$TCD/a" \
    "$("$TMUX_REAL" -L "$TC" display-message -p -t fromkey: '#{session_path}' 2>/dev/null)"
@@ -2624,7 +2624,7 @@ TCO="cockpit-tmcwdo-$$"; SOCKS="$SOCKS $TCO"
     "TERM=xterm-256color exec $TMUX_REAL -L $TC attach -t here" >/dev/null 2>&1
 until_out '?*' "$TMUX_REAL" -L "$TC" list-clients -F '#{client_name}'
 ( cd "$TCD/a" &&
-    env -u TMUX_PANE TMUX="/tmp/tmux-$(id -u)/$TC,0,${tcsid#\$}" timeout 3 "$DIR/scripts/tm" made \
+    env -u TMUX_PANE TMUX="$SOCKDIR/$TC,0,${tcsid#\$}" timeout 3 "$DIR/scripts/tm" made \
     </dev/null >/dev/null 2>&1 )
 is "tm from a popup moves the real client to the session" "made" \
    "$("$TMUX_REAL" -L "$TC" list-clients -F '#{session_name}' 2>/dev/null | head -1)"
@@ -2653,6 +2653,12 @@ is "tm attaches with -d so the newest client takes the session" \
 rm -rf "$TMF"
 "$TMUX_REAL" -L "$TCO" kill-server >/dev/null 2>&1
 "$TMUX_REAL" -L "$TC" kill-server >/dev/null 2>&1
+# tm found the server through a hardcoded /tmp path: under TMUX_TMPDIR it started a second
+# server there, on the shared /tmp, that no cleanup killed (#784). Nothing may answer on
+# either path once the block is done.
+tc_up() { "$TMUX_REAL" -S "$1" has-session 2>/dev/null && echo up || echo none; }
+is "no server is left on the block's socket, in SOCKDIR or in /tmp" "none none" \
+   "$(tc_up "$SOCKDIR/$TC") $(tc_up "/tmp/tmux-$(id -u)/$TC")"
 fi
 
 echo "== tmux-branch: local and remote branches =="
