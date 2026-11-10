@@ -5606,6 +5606,36 @@ esac
             assert!(plain.len() == 3 && other, "{plain:?}");
         }
 
+        /// The system prompt files the stand-in claude copied into `cap`.
+        fn sent(cap: &Path, router: &Path) -> Vec<String> {
+            let files = std::fs::read_dir(cap).unwrap().map(|e| e.unwrap().path());
+            files.filter(|p| p != router).map(|p| std::fs::read_to_string(p).unwrap()).collect()
+        }
+
+        /// An `explore:` case under `--no-explore` is a text call, sent the router
+        /// text alone; exploring, the request appends its where-note to it.
+        #[test]
+        fn a_router_explore_case_gets_the_where_note_only_when_it_explores() {
+            let cases = ONE.replace("expect: write", "expect: write\nexplore: invoicer");
+            let rows = [("router-noex", &["--no-explore"][..], true), ("router-ex", &[], false)];
+            for (name, extra, alone) in rows {
+                let cap = scratch(&format!("{name}-cap"));
+                let router = cap.0.join("router.txt");
+                std::fs::write(&router, ROUTER).unwrap();
+                let r = router.display().to_string();
+                let flags = [&["--router-prompt", r.as_str()][..], extra].concat();
+                let claude = router_claude(&cap.0);
+                let (code, out, err, rows) = rig_run_with(name, &cases, &claude, &flags);
+                assert_eq!(code, Some(0), "{name}: {out}{err}");
+                assert_eq!(fields(&rows, "explore"), [json!(!alone)], "{name}");
+                assert!(!alone || fields(&rows, "files_read") == [Value::Null], "{name}: {rows}");
+                let s = sent(&cap.0, &router);
+                assert_eq!((s.len(), s[0] == ROUTER), (1, alone), "{name}: {s:?}");
+                let noted = s[0].starts_with(&format!("{ROUTER}\n\nThe repository is at "));
+                assert_eq!(noted, !alone, "{name}: {s:?}");
+            }
+        }
+
         /// A side holding a write run's rows and a router run's for the same
         /// ids is refused, naming both hashes; one prompt per side pairs.
         #[test]

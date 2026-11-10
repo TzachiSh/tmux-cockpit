@@ -277,7 +277,15 @@ kind>`, `--out <file.jsonl>`, `--no-hermetic` and `--show-holdout` are the knobs
 place of the write prompt (#789); the file is read once at start-up, and a
 missing, unreadable, non-UTF-8 or empty file stops the run before any call.
 `--compare`, `--calibrate`, `--purpose-calibrate` and `--overlap` send no panel
-prompt, so they refuse the flag rather than ignore it.
+prompt, so they refuse the flag rather than ignore it. A call that explores
+still gets the panel's where-note ("The repository is at ...") appended to the
+file's text, as the write prompt does; a text call gets the text alone. The
+#789 router replays so far (probe789b, c and d) ran with `--no-explore`, and
+the tuning runs will too, so the note never reached the router there. Under
+`--no-explore` an `explore:` case, such as `refs-explore-outside` (the one in
+the tune set), goes as a plain text call, with no repo access and no
+`files_read`. Tuning reports list it as a known exception, not a router miss,
+unless it routes like the others.
 
 Held-out cases written from #783 on live in `tui/evals/panel/holdout-blind.txt`,
 not in the cases file every tuning session reads. Its readers are the owner,
