@@ -4317,9 +4317,9 @@ mod tests {
     #[test]
     fn a_held_out_id_inside_another_held_out_id_is_refused_unshown() {
         let rows = [("inner first", ["hb-1", "hb-10"], 2), ("inner last", ["hb-10", "hb-1"], 13)];
-        for (row, [x, y], line) in rows {
+        for (i, (row, [x, y], line)) in rows.into_iter().enumerate() {
             let blind = format!("# readers\n{}{}", held(x), held(y));
-            let (_d, c, b) = two_files(&format!("nest-{}", row.len()), ONE, &blind);
+            let (_d, c, b) = two_files(&format!("nest-{i}"), ONE, &blind);
             let e = load(&c, Some(&b)).err().unwrap_or_else(|| panic!("{row}: loaded"));
             assert_eq!(e, format!("{}: {}", b.display(), nested(line)), "{row}");
         }
@@ -4356,18 +4356,21 @@ mod tests {
     }
 
     /// #804: ids that do not sit inside one another load, a tune id inside a
-    /// held-out id included: `--only` on the held-out id still picks one.
+    /// held-out id included: `--only` on the held-out id still picks one. A
+    /// tune id inside a tune id loads too: the check reads held-out ids only.
     #[test]
     fn held_out_ids_that_do_not_nest_load() {
+        let tune = |id: &str| ONE.replace("=== crash", &format!("=== {id}"));
         let rows = [
-            ("apart", ONE.to_string(), ["hb-01", "hb-02"]),
-            ("tune inside", ONE.replace("=== crash", "=== hb"), ["hb-01", "hb-02"]),
+            ("apart", ONE.to_string(), 1),
+            ("tune inside", tune("hb"), 1),
+            ("tune inside tune", tune("two") + &tune("two-x"), 2),
         ];
-        for (row, cases, [x, y]) in rows {
-            let blind = held(x) + &held(y);
-            let (_d, c, b) = two_files(&format!("apart-{}", row.len()), &cases, &blind);
+        for (i, (row, cases, n)) in rows.into_iter().enumerate() {
+            let blind = held("hb-01") + &held("hb-02");
+            let (_d, c, b) = two_files(&format!("apart-{i}"), &cases, &blind);
             let got = load(&c, Some(&b)).unwrap_or_else(|e| panic!("{row}: {e}"));
-            assert_eq!(got.from, [(c, 1), (b, 2)], "{row}");
+            assert_eq!(got.from, [(c, n), (b, 2)], "{row}");
         }
     }
 
