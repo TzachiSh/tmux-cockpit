@@ -436,14 +436,15 @@ files: on the 118 owner labels, whose user prompts did not change (the judge's
 rubric did), kappa 0.62 and 0.64 before, 0.64 and 0.69 after, TPR 91/98 and
 92/98 before, 92/98 and 94/98 after, TNR 14/20 in all four. On the 40 ho2 labels
 kappa 0.70 and 0.55 before, 0.60 and 0.50 after, TPR 14/20 and 12/20 before,
-12/20 and 11/20 after, TNR 20/20 and 19/20 on both sides. That ho2 dip is a
-watch item, not noise: TPR fell from 26/40 to 23/40 over the two sweeps
-(one-sided Fisher p 0.32), kappa fell in both sweeps, and 5 of the 6 rows that
-moved are ho2-tests-only. On the 15 ho3 labels over 4 sweeps, with the
-trail-markers rows given their case's conversation (master's judge ignores the
-field), trail-markers passed 19/20 before and 20/20 after, practice-rooms 16/20
-and 20/20, and the tool-lending prompts failed 20/20 and 19/20. The ho3 cases
-were measured, not tuned on, and stay in-sample for the judge.
+12/20 and 11/20 after, TNR 20/20 and 19/20 on both sides. That ho2 dip, TPR
+26/40 before and 23/40 after over the two sweeps, is a watch item: at p 0.32
+(one-sided Fisher) it cannot be told from noise, but kappa fell in both sweeps
+and 5 of the 6 rows that moved are ho2-tests-only. On the 15 ho3 labels over 4
+sweeps, with the trail-markers rows given their case's conversation (master's
+judge ignores the field), trail-markers passed 19/20 before and 20/20 after,
+practice-rooms 16/20 and 20/20, and the tool-lending prompts failed 20/20 and
+19/20. The ho3 cases were measured, not tuned on, and stay in-sample for the
+judge.
 
 **The overlap check** (#710). A prompt line that paraphrases a held-out case
 leaks it: #702's example line "use the test database, not the live one" did,
