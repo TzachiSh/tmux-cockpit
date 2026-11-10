@@ -73,7 +73,9 @@ jobs:
         if: success() || failure()
         run: |
           d="/tmp/tmux-$(id -u)"
-          left=$(find "$d" -maxdepth 1 -name 'cockpit-*' 2>/dev/null)
+          # The shell runs with -e: a find on a missing dir would end the step red.
+          [ -d "$d" ] || { echo "nothing of the suite's in $d (no such dir)"; exit 0; }
+          left=$(find "$d" -maxdepth 1 -name 'cockpit-*')
           if [ -n "$left" ]; then
               echo "left in $d after the suite:"
               find "$d" -maxdepth 1 -name 'cockpit-*' -exec ls -la {} +
