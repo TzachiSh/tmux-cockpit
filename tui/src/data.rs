@@ -19,11 +19,12 @@ use std::process::Command;
 use std::time::{Duration, Instant, SystemTime};
 
 pub fn tmux_argv() -> Vec<String> {
-    std::env::var("COCKPIT_TMUX")
-        .unwrap_or_else(|_| "tmux".into())
-        .split_whitespace()
-        .map(String::from)
-        .collect()
+    split_tmux_argv(std::env::var("COCKPIT_TMUX").ok().as_deref())
+}
+
+/// The argv a COCKPIT_TMUX value names; `None` (unset or not UTF-8) is plain `tmux`.
+fn split_tmux_argv(value: Option<&str>) -> Vec<String> {
+    value.unwrap_or("tmux").split_whitespace().map(String::from).collect()
 }
 
 /// `None` on a spawn failure or non-zero exit: "no tmux" is not "no agents".
