@@ -2215,31 +2215,43 @@ rg_run "$RGPAY"                 # a fresh turn: resets the count for the stdin c
 # dir, so every bare tmux call finds nothing, the hook fails open, and its stdin
 # read is the only thing under test -- never the developer's live server.
 RGF="$RGSTATE/gate.fifo"; mkfifo "$RGF"
+# Wall time in ms. $SECONDS counts whole seconds, so a 1.1 s run can read as 2 across a
+# boundary (#720). The bounds sit between the hook's own 2 s deadline and the 6 s timeout,
+# so start-up under heavy load fits and a hook that waits out its writer does not.
+rg_ms() { local t=${EPOCHREALTIME:-${SECONDS}.000000}; t=${t/[.,]/}; echo $(( 10#$t / 1000 )); }
 # 1. The payload arrives and the writer then keeps the pipe open, which is what
 #    Claude Code actually does. Waiting for EOF here would burn the full
 #    deadline on every Stop; the read stops at the fields it wants instead.
-( exec 9>"$RGF"; cat "$RGPAY" >&9; sleep 8 ) & rg_holder=$!   # a holder, not a wait
-rg_t0=$SECONDS
+#    The line after the payload is left in the pipe: a read that went on past
+#    the fields would take it, with no clock involved. Payload and tail go in
+#    one write, under PIPE_BUF so atomic: the fields never arrive without it.
+printf 'RG-TAIL\n' | cat "$RGPAY" - > "$RGSTATE/pay-tail"
+( exec 9>"$RGF"; cat "$RGSTATE/pay-tail" >&9; sleep 8 ) & rg_holder=$!   # a holder
+rg_t0=$(rg_ms)
 TMUX_PANE=%999999 TMUX_TMPDIR="$RGSTATE" XDG_STATE_HOME="$RGSTATE" \
     timeout 6 "$DIR/scripts/review-gate" >/dev/null 2>&1 < "$RGF"
 rg_grc=$?
+rg_dt=$(( $(rg_ms) - rg_t0 ))
+# <> opens read-write, so open() never waits for a writer the holder may no longer be.
+rg_rest=""; IFS= read -r -t 3 rg_rest <> "$RGF"
 kill "$rg_holder" 2>/dev/null; wait "$rg_holder" 2>/dev/null
 is "a payload whose writer keeps stdin open is not waited out" "0" "$rg_grc"
-[ $(( SECONDS - rg_t0 )) -lt 2 ] &&
-    ok "and the read returns as soon as it has both fields ($(( SECONDS - rg_t0 ))s)" ||
-    bad "and the read returns as soon as it has both fields" "under the 2s deadline" \
-    "$(( SECONDS - rg_t0 ))s"
+[ "$rg_dt" -lt 4000 ] &&
+    ok "and the read returns as soon as it has both fields (${rg_dt}ms)" ||
+    bad "and the read returns as soon as it has both fields" "under 4000ms" "${rg_dt}ms"
+is "and it stops reading at those fields" "RG-TAIL" "$rg_rest"
 # 2. Nothing ever arrives: the deadline is the backstop, and it must fire.
 ( exec 9>"$RGF"; sleep 8 ) & rg_holder=$!                     # a holder, not a wait
-rg_t0=$SECONDS
+rg_t0=$(rg_ms)
 TMUX_PANE=%999999 TMUX_TMPDIR="$RGSTATE" XDG_STATE_HOME="$RGSTATE" \
     timeout 6 "$DIR/scripts/review-gate" >/dev/null 2>&1 < "$RGF"
 rg_grc=$?
+rg_dt=$(( $(rg_ms) - rg_t0 ))
 kill "$rg_holder" 2>/dev/null; wait "$rg_holder" 2>/dev/null
 is "a silent stdin does not hang the hook" "0" "$rg_grc"
-[ $(( SECONDS - rg_t0 )) -le 4 ] &&
-    ok "and it gives up inside its own deadline ($(( SECONDS - rg_t0 ))s)" ||
-    bad "and it gives up inside its own deadline" "under 4s" "$(( SECONDS - rg_t0 ))s"
+[ "$rg_dt" -lt 5000 ] &&
+    ok "and it gives up inside its own deadline (${rg_dt}ms)" ||
+    bad "and it gives up inside its own deadline" "under 5000ms" "${rg_dt}ms"
 rm -f "$RGF"
 # Two servers, one state dir, the same pane id on each (issue #88). Keyed on the
 # pane id alone, the second server's first Stop consumed the first server's
