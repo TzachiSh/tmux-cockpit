@@ -163,7 +163,7 @@ S_LIVE="" S_BOUND="" S_CAND="" S_SIG="" S_ROWS=$'\n' S_SERIOUS="" S_OWN="" R_OUT
 # are cleaned here. 1: no server and no pane.
 scan_panes() {
     local rows id cmd allow glob view fg job jname jstate pstate owner cfg title marked
-    local seen=0 job_kept="" fgc
+    local seen=0 job_kept="" fgc iscl
     S_LIVE="" S_BOUND="" S_CAND="" S_SIG="" S_ROWS=$'\n' S_SERIOUS="" S_OWN="" S_MINE=""
     rows=$(tmux list-panes -a -F "$PANE_FMT" 2>/dev/null) || return 1
     while IFS=$T read -r id cmd allow glob view fg job jname jstate pstate owner cfg title; do
@@ -187,7 +187,9 @@ scan_panes() {
             tmux set-option -pu -t "$id" @cockpit_fg 2>/dev/null; fg=""
         fi
         if [ "$marked" = 1 ]; then S_LIVE="$S_LIVE $id"; S_SERIOUS=1; fi
-        if [ "$cmd" = claude ]; then
+        # Any case, as every agents-glob test since #508: a CLAUDE pane is an agent, so it binds.
+        case $cmd in [Cc][Ll][Aa][Uu][Dd][Ee]) iscl=1 ;; *) iscl="" ;; esac
+        if [ -n "$iscl" ]; then
             S_SIG="$S_SIG$id$T$allow$T$title"$'\n'
             if [ "$allow" = 1 ] && [ -n "$title" ]; then
                 # A session waiting on the user fires no hook, so a ▲ that the poller hid would

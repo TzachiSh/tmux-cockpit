@@ -379,7 +379,8 @@ read job state from outside, and writes each pane through `agent-state poll`. A 
 
 **The bind rule (#448).** Pane P is bound to job J only when all of these hold:
 
-1. `pane_current_command` is `claude`. A shell after Ctrl+Z or `kill -9` keeps the
+1. `pane_current_command` is `claude`, in any case (`Claude` and `CLAUDE` too, as the
+   agents glob matches since #508). A shell after Ctrl+Z or `kill -9` keeps the
    viewer's last title and is never bound.
 2. The title, with one optional leading `✳ ` taken off and whitespace runs collapsed,
    is not empty and equals J's `name` collapsed the same way. Exact, whole string, case
