@@ -19191,6 +19191,30 @@ is "a dir a test made unreadable is named, and nothing of the run is left outsid
        chmod 000 "$TMPDIR/locked"') left=$(ls -A "$CRL" | wc -l)"
 chmod -R u+rwx "$CRL" 2>/dev/null; rm -rf "$CRL"
 
+
+echo "== agent-poll: the bind rule's claude check ignores case, as the agents glob does (#756) =="
+# #508 made every @cockpit_agents_glob site match in any case, so a CLAUDE pane is an agent.
+# The bind rule's own "the pane runs claude" check must agree, or such a pane never binds.
+av_setup
+if need_tmux "agent-poll bind case"; then :; else
+av_srv bindcase
+av_tm set -g @cockpit_agents_glob '|claude|codex|'
+bc_case() {                   # bc_case <label> <command> <want>: a pane titled alpha, one poll
+    local p
+    p=$(av_tm new-window -d -c "$AVWD" -P -F '#{pane_id}' "exec -a $2 sleep 300")
+    av_tm select-pane -t "$p" -T alpha
+    av_once bind.json >/dev/null
+    is "$1" "$3" "$(printf '%s|%s|%s' "$(avo @cockpit_job "$p")" \
+        "$(avo @cockpit_job_name "$p")" "$(avo @panestate "$p")")"
+    av_tm kill-pane -t "$p"
+}
+bc_case "a pane running CLAUDE binds its job" CLAUDE "aa|alpha|running"
+bc_case "...and one running Claude" Claude "aa|alpha|running"
+bc_case "a longer name is still not claude: claudex does not bind" claudex "||"
+bc_case "...nor xclaude" xclaude "||"
+av_tm kill-server >/dev/null 2>&1
+fi
+
 flop_left
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1
