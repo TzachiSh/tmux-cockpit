@@ -128,3 +128,18 @@ jobs:
           echo "TMUX_TMPDIR=$d" >> "$GITHUB_ENV"
           printf 'TMUX_TMPDIR=%s (%d bytes)\n' "$d" "${#d}"
       - run: J=4 make test-par
+      # Nothing of the suite's may be left in the default socket dir once it is done (#811).
+      # TMUX_TMPDIR is private above, so a test that hardcodes /tmp/tmux-<uid> leaks there,
+      # and no row would see it unless it looked.
+      - name: No suite socket left in /tmp/tmux-<uid>
+        if: success() || failure()
+        run: |
+          d="/tmp/tmux-$(id -u)"
+          left=$(find "$d" -maxdepth 1 -name 'cockpit-*' 2>/dev/null)
+          if [ -n "$left" ]; then
+              echo "left in $d after the suite:"
+              find "$d" -maxdepth 1 -name 'cockpit-*' -exec ls -la {} +
+              ss -xlp 2>/dev/null | grep -F "$d/cockpit-" || echo "(no listener)"
+              exit 1
+          fi
+          echo "nothing of the suite's in $d"
