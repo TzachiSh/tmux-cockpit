@@ -3898,6 +3898,7 @@ mod tests {
     /// #684 known limit, pinned: a fix step that opens a sentence with "Invert" or
     /// "Flip" passes as a break step. The cost of `. invert` and `. flip`; a row
     /// that turns red here means the term changed and this limit should be rechecked.
+    /// #757: an abbreviation's full stop ("i.e.", "e.g.") opens a sentence too.
     #[test]
     fn a_fix_step_opening_a_sentence_passes_a_known_limit() {
         let rows = [
