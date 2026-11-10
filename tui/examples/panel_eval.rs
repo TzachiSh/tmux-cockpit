@@ -156,7 +156,10 @@ fn parse_some(text: &str, quiet: bool) -> Result<Vec<Case>, String> {
         let block = if n == 0 {
             match block.strip_prefix("=== ") {
                 Some(b) => b,
-                None => continue,
+                None => {
+                    preamble(block, quiet)?;
+                    continue;
+                }
             }
         } else {
             block
@@ -331,6 +334,22 @@ fn parse_some(text: &str, quiet: bool) -> Result<Vec<Case>, String> {
         cases.push(c);
     }
     Ok(cases)
+}
+
+/// The lines before a file's first case are comments or blank (#783): a case
+/// whose `===` line is mistyped is an error, never a case dropped unseen. A
+/// `quiet` error leaves the line's text out.
+fn preamble(block: &str, quiet: bool) -> Result<(), String> {
+    let rule = "before the first case, a line is a comment or blank";
+    let bad = block
+        .lines()
+        .enumerate()
+        .find(|(_, l)| !l.trim().is_empty() && !l.trim().starts_with('#'));
+    match bad {
+        None => Ok(()),
+        Some((i, _)) if quiet => Err(format!("line {}: {rule}", i + 1)),
+        Some((i, l)) => Err(format!("line {}: {rule}: {l}", i + 1)),
+    }
 }
 
 /// The cases a run read, and how many came from each file, for `--check`.
@@ -3772,6 +3791,24 @@ mod tests {
         let (_d, c, b) = two_files("bad-id", ONE, &held("b1").replace(tail, moved));
         let e = load(&c, Some(&b)).err().expect("a screen line made a case");
         assert_eq!(e, format!("{}: line 11: an id is lowercase letters, digits and -", b.display()));
+    }
+
+    /// #783: a line before the first case is a comment or blank, so a case
+    /// whose `===` line is mistyped is an error, never a case quietly lost.
+    /// The held-out file's error leaves the line out; cases.txt's shows it.
+    #[test]
+    fn a_line_before_the_first_case_is_an_error() {
+        let rule = "line 2: before the first case, a line is a comment or blank";
+        let typo = format!("# h\n{}", held("b1").replace("=== b1", "===b1"));
+        let stray = format!("# h\nMADE-UP-PREAMBLE\n{}", held("b1"));
+        for (row, blind) in [("no space", typo), ("stray", stray.clone())] {
+            let (_d, c, b) = two_files(&format!("pre-{}", row.len()), ONE, &blind);
+            let e = load(&c, Some(&b)).err().unwrap_or_else(|| panic!("{row}: loaded"));
+            assert_eq!(e, format!("{}: {rule}", b.display()), "{row}");
+        }
+        let (_d, c, b) = two_files("pre-cases", &stray, "");
+        let e = load(&c, Some(&b)).err().expect("cases.txt: loaded");
+        assert_eq!(e, format!("{}: {rule}: MADE-UP-PREAMBLE", c.display()));
     }
 
     /// #783: a parse error starts with the file it is in, cases.txt or the held-out file.
