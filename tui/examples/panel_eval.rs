@@ -1051,7 +1051,7 @@ impl Ended<'_> {
             _ => "FAIL",
         };
         let full = || (c.kind.as_str(), self.what());
-        let (kind, what) = show_case(c.holdout, full, || ("", self.counts()));
+        let (kind, what) = show_case(c.holdout, full, || ("", self.held_detail()));
         let want = c.expect.as_str();
         let what = match &self.read {
             Some(r) => format!("[read {}] {what}", r.len()),
@@ -1085,7 +1085,7 @@ impl Ended<'_> {
 
     /// What a held-out case's line says went wrong: counts, or the class of a
     /// failed call.
-    fn counts(&self) -> String {
+    fn held_detail(&self) -> String {
         let g = match (&self.err, &self.grade) {
             (None, Some(g)) => g,
             _ => return format!("held out: {}", self.class),
@@ -5233,7 +5233,8 @@ esac
 
         #[test]
         fn a_show_holdout_run_warns_first_and_still_writes_no_text() {
-            let (code, out, err, rows) = rig_run("quiet-show", &["--show-holdout", "--only", "held-q"]);
+            let flags = ["--show-holdout", "--only", "held-q"];
+            let (code, out, err, rows) = rig_run("quiet-show", &flags);
             assert_eq!(code, Some(0), "{out}{err}");
             let mine: Vec<&str> = out.lines().skip_while(|l| !l.starts_with("1 cases")).collect();
             assert_eq!(mine[1], SHOW_BANNER, "{out}");
@@ -5244,7 +5245,8 @@ esac
         /// A stand-in claude for a whole run: its version, a judge's verdict
         /// quoting phrases, and a reply holding phrases of every case.
         const RIG_CLAUDE: &str = "#!/bin/sh\n[ \"$1\" = --version ] && { echo 9.9.9; exit 0; }\n\
-            case \"$(cat)\" in *'Grade the reply.'*) printf 'VERDICT: FAIL\\nCRITIQUE: vi-nail, ze-trap\\n' ;;\n\
+            case \"$(cat)\" in *'Grade the reply.'*)\n\
+            printf 'VERDICT: FAIL\\nCRITIQUE: vi-nail, ze-trap\\n' ;;\n\
             *) printf '<prompt>Use ze-trap, vi-nail, al-beacon and qz-lamp.</prompt>\\n' ;; esac\n";
 
         /// Runs [`QUIET`] with `extra` flags in this test binary, re-entered
@@ -5256,13 +5258,15 @@ esac
             let p = |f: &str| d.0.join(f).display().to_string();
             let (cases, rows, ledger) = (p("cases.txt"), p("rows.jsonl"), p("cost.tsv"));
             let base = ["--cases", &cases, "--no-hermetic", "--runs", "1", "--jobs", "1"];
-            let args = [&base[..], &["--out", &rows, "--ledger", &ledger], extra].concat().join("\n");
+            let out = ["--out", &rows, "--ledger", &ledger];
+            let args = [&base[..], &out, extra].concat().join("\n");
             let mut c = std::process::Command::new(std::env::current_exe().unwrap());
             c.args(["--exact", "tests::quiet::rig_child", "--nocapture", "--test-threads=1"]);
             for (k, v) in [("CACHE", "cache"), ("CONFIG", "config"), ("STATE", "state")] {
                 c.env(format!("XDG_{k}_HOME"), p(v));
             }
-            let o = c.env("PANEL_EVAL_RIG_ARGS", args).env("COCKPIT_CLAUDE", claude).output().unwrap();
+            c.env("PANEL_EVAL_RIG_ARGS", args).env("COCKPIT_CLAUDE", claude);
+            let o = c.output().unwrap();
             let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
             let rows = std::fs::read_to_string(d.0.join("rows.jsonl")).unwrap_or_default();
             (o.status.code(), text(&o.stdout), text(&o.stderr), rows)
@@ -5292,7 +5296,8 @@ esac
                 assert_eq!(code, Some(0), "{name}: {out}{err}");
                 let all = format!("{out}\n{err}\n{rows}");
                 assert_eq!(leaked(&not_tune(&all)), Vec::<&str>::new(), "{name}: {all}");
-                assert!(out.contains("has: ze-trap") && rows.contains("\"ze-trap\""), "{name}: {all}");
+                let tune = out.contains("has: ze-trap") && rows.contains("\"ze-trap\"");
+                assert!(tune, "{name}: {all}");
                 assert_eq!(rows.lines().count(), 3, "{name}: {rows}");
             }
         }
