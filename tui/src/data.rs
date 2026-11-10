@@ -1562,6 +1562,15 @@ mod tests {
         }
     }
 
+    /// The other half of a blank COCKPIT_TMUX: `tmux()` on an empty argv spawns
+    /// nothing and returns `None`, never plain `tmux` (#757 row 21). The control
+    /// runs `echo`, not tmux, so it needs no tmux installed and reaches no server.
+    #[test]
+    fn tmux_on_an_empty_argv_spawns_nothing() {
+        assert_eq!(tmux_on(&[], &["-V"]), None);
+        assert_eq!(tmux_on(&["echo".to_string()], &["-V"]).as_deref(), Some("-V\n"));
+    }
+
     /// Pins the limit docs/tui.md's COCKPIT_TMUX row states (#757 row 20).
     /// Delete or flip this test when a quoting syntax lands.
     #[test]
