@@ -663,6 +663,9 @@ fn opts(args: impl IntoIterator<Item = String>) -> Result<Opts, String> {
         _ => return Err("--from and --to go together".into()),
     };
     if let Some(b) = base {
+        if o.from_to.is_some() {
+            return Err("--base is for git diff, not --from and --to".into());
+        }
         if b.starts_with('-') {
             return Err(format!("--base: {b} is not a revision"));
         }
@@ -1793,7 +1796,10 @@ fn overlap_check(o: &Opts) -> Result<i32, String> {
         .filter(|v| !v.is_empty())
         .unwrap_or("claude".into());
     let ledger = ledger_path(o);
-    let mut cache = overlap::Cache::open(&ledger.with_file_name("overlap-cache.tsv"));
+    if cases.is_empty() && !lines.is_empty() {
+        return Err(format!("{} changed lines and no held-out case to check them against", lines.len()));
+    }
+    let mut cache = overlap::Cache::open(&ledger.with_file_name("overlap-cache.tsv"), overlap::QUESTION);
     let pairs: Vec<(&str, &str)> = lines
         .iter()
         .flat_map(|l| cases.iter().map(move |c| (l.as_str(), c.request.as_str())))
@@ -3957,13 +3963,24 @@ mod tests {
         === tuned-b\nkind: ops\nwindow: bash · bash · /home/u\nexpect: write\n--- request\nTUNED-REQUEST-TEXT other\n";
 
     /// A stand-in claude: refuses a call without the overlap question as its
-    /// system prompt, logs each call, says yes to input holding `leaky`, and
-    /// for `garble` answers with no verdict, echoing its whole input.
-    const OVERLAP_STUB: &str = "#!/bin/sh\nwhile [ \"$1\" != --system-prompt-file ]; do shift; done\n\
-        grep -q paraphrases \"$2\" || exit 3\nin=$(cat)\necho call >> \"$OVERLAP_STUB_LOG\"\ncase \"$in\" in\n\
-        *garble*) printf 'Maybe: %s\\n' \"$in\" ;;\n\
-        *leaky*) echo '{\"type\":\"result\",\"result\":\"yes\",\"total_cost_usd\":0.001}' ;;\n\
-        *) echo '{\"type\":\"result\",\"result\":\"no\",\"total_cost_usd\":0.001}' ;;\nesac\n";
+    /// system prompt, logs each call, and says yes to input holding `leaky`.
+    /// Three answers carry the request's text and no verdict: for `garble` a
+    /// reply that is not yes or no, for `errjson` an `is_error` result, for
+    /// `exitcode` a result with a non-zero exit.
+    const OVERLAP_STUB: &str = r#"#!/bin/sh
+while [ "$1" != --system-prompt-file ]; do shift; done
+grep -q paraphrases "$2" || exit 3
+in=$(cat)
+req=$(printf '%s\n' "$in" | sed -n '/^<request>$/{n;p;}')
+echo call >> "$OVERLAP_STUB_LOG"
+case "$in" in
+*garble*) printf 'Maybe: %s\n' "$in" ;;
+*errjson*) printf '{"type":"result","is_error":true,"result":"%s"}\n' "$req" ;;
+*exitcode*) printf '{"type":"result","result":"%s"}\n' "$req"; exit 1 ;;
+*leaky*) echo '{"type":"result","result":"yes","total_cost_usd":0.001}' ;;
+*) echo '{"type":"result","result":"no","total_cost_usd":0.001}' ;;
+esac
+"#;
 
     /// A scratch dir with the cases, the old prompt and the stand-in claude,
     /// removed when it drops, a failed assert included.
@@ -4067,8 +4084,9 @@ mod tests {
     #[test]
     fn overlap_failed_call_never_prints_the_answer_and_fails_the_run() {
         let d = overlap_dir("ov-garble");
-        let (code, out, err) = overlap_run(&d.0, "garble this\n");
-        assert_eq!((code, field(&out, "failed").as_deref()), (Some(1), Some("1")), "{out}{err}");
+        // no verdict, an is_error result, a non-zero exit: each answer holds the request
+        let (code, out, err) = overlap_run(&d.0, "garble this\nerrjson this\nexitcode this\n");
+        assert_eq!((code, field(&out, "failed").as_deref()), (Some(1), Some("3")), "{out}{err}");
         assert!(!out.contains("SECRET-REQUEST") && !err.contains("SECRET-REQUEST"), "{out}{err}");
     }
 
@@ -4077,6 +4095,15 @@ mod tests {
         let d = overlap_dir("ov-empty");
         let (code, out, _) = overlap_run(&d.0, "an old line\n\n");
         assert_eq!((code, calls(&d.0), field(&out, "lines").as_deref()), (Some(0), 0, Some("0")));
+    }
+
+    /// A typo in `--only` leaves nothing to check against: that is no pass.
+    #[test]
+    fn overlap_with_lines_but_no_held_out_case_exits_2() {
+        let d = overlap_dir("ov-nocase");
+        std::fs::write(d.0.join("cases.txt"), OVERLAP_CASES.replace("holdout: yes\n", "")).unwrap();
+        let (code, _, err) = overlap_run(&d.0, "a plain line\n");
+        assert_eq!((code, calls(&d.0)), (Some(2), 0), "{err}");
     }
 
     #[test]
@@ -4094,5 +4121,9 @@ mod tests {
         assert_eq!(o(&["--overlap", "--from", "a"]), "--from and --to go together");
         assert_eq!(o(&["--from", "a", "--to", "b"]), "--from, --to and --base are for --overlap");
         assert_eq!(o(&["--overlap", "--base", "--output=x"]), "--base: --output=x is not a revision");
+        assert_eq!(
+            o(&["--overlap", "--base", "v1", "--from", "a", "--to", "b"]),
+            "--base is for git diff, not --from and --to"
+        );
     }
 }

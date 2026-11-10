@@ -72,22 +72,25 @@ pub fn new_lines(from: &str, to: &str) -> Vec<String> {
     v
 }
 
-/// A cache line's key: hashes of the line, the request and the question, and
-/// the model. Never the text of a line or a case.
-fn key(line: &str, request: &str, model: &str) -> String {
-    format!("{:016x}\t{:016x}\t{model}\t{}", fnv(line), fnv(request), question_hash())
+/// A cache line's key: hashes of the line and the request, the model, and the
+/// question's hash. Never the text of a line or a case.
+fn key(line: &str, request: &str, model: &str, question: &str) -> String {
+    format!("{:016x}\t{:016x}\t{model}\t{question}", fnv(line), fnv(request))
 }
 
 /// Judge verdicts on disk: one `line hash TAB request hash TAB model TAB
 /// question hash TAB yes|no` line each.
 pub struct Cache {
     path: PathBuf,
+    /// The hash of the question its verdicts answer: another question misses.
+    question: String,
     map: HashMap<String, bool>,
 }
 
 impl Cache {
-    /// The cache at `path`; a missing file is an empty cache.
-    pub fn open(path: &Path) -> Cache {
+    /// The cache at `path` for the judge's `question`; a missing file is an
+    /// empty cache.
+    pub fn open(path: &Path, question: &str) -> Cache {
         let text = std::fs::read_to_string(path).unwrap_or_default();
         let map = text
             .lines()
@@ -98,16 +101,21 @@ impl Cache {
                 _ => None,
             })
             .collect();
-        Cache { path: path.into(), map }
+        let question = format!("{:016x}", fnv(question));
+        Cache {
+            path: path.into(),
+            question,
+            map,
+        }
     }
 
     pub fn get(&self, line: &str, request: &str, model: &str) -> Option<bool> {
-        self.map.get(&key(line, request, model)).copied()
+        self.map.get(&key(line, request, model, &self.question)).copied()
     }
 
     /// Records a verdict, in memory and appended to the file.
     pub fn put(&mut self, line: &str, request: &str, model: &str, yes: bool) -> std::io::Result<()> {
-        let k = key(line, request, model);
+        let k = key(line, request, model, &self.question);
         if let Some(d) = self.path.parent() {
             std::fs::create_dir_all(d)?;
         }
@@ -254,18 +262,19 @@ mod tests {
     }
 
     #[test]
-    fn the_cache_keys_by_line_request_and_model() {
+    fn the_cache_keys_by_line_request_model_and_question() {
         let d = std::env::temp_dir().join(format!("panel-eval-overlap-cache-{}", std::process::id()));
         let p = d.join("c.tsv");
-        Cache::open(&p).put("line", "req", "haiku", true).unwrap();
-        let c = Cache::open(&p);
+        Cache::open(&p, "q1").put("line", "req", "haiku", true).unwrap();
+        let (c, reworded) = (Cache::open(&p, "q1"), Cache::open(&p, "q2"));
         let got = [
             c.get("line", "req", "haiku"),
             c.get("line", "req", "sonnet"),
             c.get("line", "other", "haiku"),
+            reworded.get("line", "req", "haiku"),
         ];
         std::fs::remove_dir_all(&d).unwrap();
-        assert_eq!(got, [Some(true), None, None]);
+        assert_eq!(got, [Some(true), None, None, None]);
     }
 
     #[test]
