@@ -19,11 +19,12 @@ use std::process::Command;
 use std::time::{Duration, Instant, SystemTime};
 
 pub fn tmux_argv() -> Vec<String> {
-    std::env::var("COCKPIT_TMUX")
-        .unwrap_or_else(|_| "tmux".into())
-        .split_whitespace()
-        .map(String::from)
-        .collect()
+    split_tmux_argv(std::env::var("COCKPIT_TMUX").ok().as_deref())
+}
+
+/// The argv a COCKPIT_TMUX value names; `None` (unset or not UTF-8) is plain `tmux`.
+fn split_tmux_argv(value: Option<&str>) -> Vec<String> {
+    value.unwrap_or("tmux").split_whitespace().map(String::from).collect()
 }
 
 /// `None` on a spawn failure or non-zero exit: "no tmux" is not "no agents".
@@ -1536,5 +1537,29 @@ mod tests {
         assert_eq!(lineage(&pid, &mut None), want);
         assert_eq!(want[1].1.len(), 15);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn split_tmux_argv_unset_is_plain_tmux() {
+        assert_eq!(split_tmux_argv(None), ["tmux"]);
+    }
+
+    #[test]
+    fn split_tmux_argv_splits_a_socket_flag_into_words() {
+        assert_eq!(split_tmux_argv(Some("tmux -L sock")), ["tmux", "-L", "sock"]);
+    }
+
+    /// Pins the limit docs/tui.md's COCKPIT_TMUX row states (#757 row 20).
+    /// Delete or flip this test when a quoting syntax lands.
+    #[test]
+    fn known_limit_a_spaced_path_is_split_delete_when_quoting_lands() {
+        assert_eq!(split_tmux_argv(Some("/opt/my tmux/tmux")), ["/opt/my", "tmux/tmux"]);
+    }
+
+    /// The same limit: quotes are not a syntax, so they stay in the words.
+    #[test]
+    fn known_limit_quotes_do_not_group_words_delete_when_quoting_lands() {
+        let got = split_tmux_argv(Some("\"/opt/my tmux/tmux\""));
+        assert_eq!(got, ["\"/opt/my", "tmux/tmux\""]);
     }
 }
