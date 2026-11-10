@@ -4581,3 +4581,18 @@ pub fn run(o: &Opts) -> Option<Exit> {
     }
     action_line.map(|line| Exit { line, expect })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A blank COCKPIT_TMUX gives an empty argv. `run_raw` must then spawn
+    /// nothing and return `None`, never fall back to some program (#757 row
+    /// 22). The control runs `echo`, not tmux, so it reaches no server.
+    #[test]
+    fn run_raw_on_an_empty_argv_spawns_nothing() {
+        let args = ["-V".to_string()];
+        assert_eq!(run_raw(&[], &args), None);
+        assert_eq!(run_raw(&["echo".to_string()], &args), Some((b"-V\n".to_vec(), true)));
+    }
+}
