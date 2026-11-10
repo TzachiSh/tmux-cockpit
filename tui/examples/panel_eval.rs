@@ -3898,6 +3898,7 @@ mod tests {
     /// #684 known limit, pinned: a fix step that opens a sentence with "Invert" or
     /// "Flip" passes as a break step. The cost of `. invert` and `. flip`; a row
     /// that turns red here means the term changed and this limit should be rechecked.
+    /// #757: an abbreviation's full stop ("i.e.", "e.g.") opens a sentence too.
     #[test]
     fn a_fix_step_opening_a_sentence_passes_a_known_limit() {
         let rows = [
@@ -3909,9 +3910,70 @@ mod tests {
                 "Flip opens a fix",
                 "Flip the condition that is backwards, and revert unrelated edits.",
             ),
+            (
+                "i.e. flip is a fix",
+                "Use the narrow fix, i.e. flip the condition that is backwards, and revert \
+                 unrelated edits.",
+            ),
+            (
+                "e.g. invert is a fix",
+                "Check src/parser.rs, e.g. invert the check so the test passes, and revert \
+                 unrelated edits.",
+            ),
         ];
         let rows = rows.map(|(n, s)| (n, "last-commit-test", fix_with(s), true));
         assert_eq!(graded_wrong(&rows), Vec::<&str>::new(), "the known limit moved");
+    }
+
+    /// #757 row 2, a known limit: only a full stop or the text's start opens a
+    /// sentence, so a break step after a colon, a bullet, a newline, a semicolon,
+    /// an open paren or a quote fails. Replies do not use these today; a row that
+    /// turns red means `has` learned that start, and its row goes.
+    #[test]
+    fn a_break_step_after_another_start_fails_a_known_limit() {
+        let rows = [
+            ("a full stop", "Next. Invert the sign check, see the test fail, restore it.", true),
+            ("a colon", "Next: invert the sign check, see the test fail, restore it.", false),
+            ("a bullet", "- Invert the sign check, see the test fail, restore it.", false),
+            ("a newline", "\nInvert the sign check, see the test fail, restore it.", false),
+            ("a semicolon", "Next; invert the sign check, see the test fail, restore it.", false),
+            ("an open paren", "(Invert the sign check, see the test fail, restore it.)", false),
+            ("a quote", "\"Invert the sign check, see the test fail, restore it.\"", false),
+        ];
+        let rows = rows.map(|(n, s, want)| (n, "last-commit-test", fix_with(s), want));
+        assert_eq!(graded_wrong(&rows), Vec::<&str>::new(), "the known limit moved");
+    }
+
+    /// #757 row 3: `mutant` and `mutants` each carry the break step alone.
+    #[test]
+    fn a_mutant_step_passes_on_its_own() {
+        let rows = [
+            ("mutant", "Check that a mutant of the sign check fails the test, and undo it."),
+            ("mutants", "Run the mutants of the sign check, see the test fail, and undo them."),
+        ];
+        let rows = rows.map(|(n, s)| (n, "last-commit-test", fix_with(s), true));
+        assert_eq!(graded_wrong(&rows), Vec::<&str>::new(), "mutant rows graded wrong");
+    }
+
+    /// #757 row 3: the five cases with a break step carry one break term, the
+    /// `must` group with the most alternatives, so a word dropped from one copy
+    /// shows here.
+    #[test]
+    fn the_break_term_is_the_same_in_every_case() {
+        let ids = [
+            "last-commit-test",
+            "test-the-changed-function",
+            "h-pytest-new-helper",
+            "h-go-header-test",
+            "failing-test-keeps-break-it",
+        ];
+        let term = |id: &str| {
+            let must = shipped(id).must;
+            must.into_iter().max_by_key(|g| g.matches('|').count()).unwrap()
+        };
+        let first = term(ids[0]);
+        let differ: Vec<&str> = ids.into_iter().filter(|id| term(id) != first).collect();
+        assert_eq!(differ, Vec::<&str>::new(), "break terms differ from {}'s", ids[0]);
     }
 
     /// #684 item 4: "break the code" and "mutation" need the act, and reverting
@@ -4158,6 +4220,18 @@ esac
         assert_eq!((calls(&d.0), field(&out, "cached").as_deref()), (2, Some("2")));
         let cache = std::fs::read_to_string(d.0.join("overlap-cache.tsv")).unwrap();
         assert!(!cache.contains("SECRET-REQUEST") && !cache.contains("plain"), "{cache}");
+    }
+
+    /// #757 row 10: the cache's question column is the summary's `question=`, so
+    /// the hash a verdict is filed under and the one the run reports cannot drift.
+    #[test]
+    fn overlap_cache_question_column_is_the_summary_question() {
+        let d = overlap_dir("ov-qcol");
+        let (_, out, _) = overlap_run(&d.0, "a plain line\n");
+        let cache = std::fs::read_to_string(d.0.join("overlap-cache.tsv")).unwrap();
+        let cols: Vec<&str> = cache.lines().filter_map(|l| l.split('\t').nth(3)).collect();
+        // one pair, one verdict: an empty cache or a missing field is no match
+        assert_eq!(cols, [field(&out, "question").unwrap_or_default().as_str()], "{out}");
     }
 
     #[test]
