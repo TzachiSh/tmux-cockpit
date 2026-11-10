@@ -1,0 +1,12 @@
+# Held-out cases for the write prompt's evaluation (#783), read by
+# tui/examples/panel_eval.rs beside cases.txt.
+#
+# Who may read this file: the owner, the orchestrator, the re-verify and
+# blindness reviewers, and the lane that commits cases to it. Tuning sessions
+# must not open it: a session that edits a prompt, the judge rubric or a case's
+# wording must not read a case here, and no edit may aim at one.
+#
+# The format is cases.txt's, described at the top of that file. Every case here
+# says holdout: yes, and no id here may also be in cases.txt: either is an
+# error. The file may hold no case. A run reports these cases with the
+# held-out cases in cases.txt. --cases FILE reads only FILE.

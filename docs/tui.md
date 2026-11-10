@@ -274,6 +274,28 @@ the cases file; holdout cases are written after the prompt they run on, so a
 gain there is not overfitting. `--model`, `--runs`, `--jobs`, `--only <id or
 kind>`, `--out <file.jsonl>` and `--no-hermetic` are the knobs.
 
+Held-out cases written from #783 on live in `tui/evals/panel/holdout-blind.txt`,
+not in the cases file every tuning session reads. Its readers are the owner,
+the orchestrator, the re-verify and blindness reviewers, and the lane that
+commits cases to it; a tuning session must not open it, and its header says so.
+The older held-out cases stay in the cases file. The rig loads the file beside
+the cases file: each of its cases must say `holdout: yes`, an id the cases file
+also has is an error, it may hold no case, and a missing file is an error, so a
+lost file cannot quietly drop the held-out cases from a run or from the overlap
+check. A run reports its
+cases with the other held-out cases, apart from the tune cases, and
+`--check` prints each file it read with its case count. `--cases FILE` reads
+only that file. A parse error in the held-out file names the file, the case id,
+the line number and the rule it broke, never the line's text, so held-out text
+stays out of test, build and CI logs. Its case ids must be lowercase letters,
+digits and `-`, so a screen line that opens with `=== ` cannot pass for an id;
+an error in the cases file still quotes the line. In both files a line before
+the first case is a comment or blank. In the held-out file a line that starts
+with `=` is also a case's `=== id` line, so a case whose `===` line is mistyped
+is an error and is never dropped unseen or merged into the case before it. In
+the cases file such a line is body text, as a pytest banner on a screen is, and
+a lost tune case shows in the counts.
+
 A prompt change aims at 100% on the tune cases (#701). A significant drop on a
 held-out case blocks it, no edit may aim at a particular held-out case, and a
 held-out case that fails gets a new blind case written for its class. Stop
@@ -454,8 +476,9 @@ opt-in and never part of the default run. The changed lines are the ones
 `git diff BASE -- tui/prompts` adds, the working tree against `--base`
 (`HEAD` by default), or with `--from OLD --to NEW` the lines of `NEW` that `OLD`
 lacks, which covers the override file; `--base` beside `--from` is refused. Each
-changed line goes to the judge with each `holdout: yes` case's request (`--only`
-narrows the cases), and the judge answers yes when the line paraphrases the
+changed line goes to the judge with each `holdout: yes` case's request, from
+the cases file and from `tui/evals/panel/holdout-blind.txt` (`--only` narrows
+the cases), and the judge answers yes when the line paraphrases the
 request's specific scenario and no when it only shares its topic. The judge sees
 the request only: a line that mirrors a held-out case's screen, repo, refs or
 earlier rounds (an error line, a path) is not judged. A flagged pair prints

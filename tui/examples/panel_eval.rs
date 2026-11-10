@@ -19,6 +19,12 @@
 //! override) and run twice with `--out`, then `--compare` the two files: it
 //! reads them, makes no calls, and pairs the runs by case.
 //!
+//! The cases are evals/panel/cases.txt and, beside it, the held-out file
+//! evals/panel/holdout-blind.txt (#783), which tuning sessions do not open:
+//! every case in it says `holdout: yes`, none shares an id with cases.txt, and
+//! it may hold none. `--check` prints each file with its count; `--cases FILE`
+//! reads only FILE.
+//!
 //! A case with `explore: <fixture>` (evals/panel/explore.txt, #416) runs on a
 //! temp copy of `evals/panel/fixtures/<fixture>` as the pane's folder, through
 //! the panel's explore-first call; `--no-explore` runs it as a text call instead.
@@ -125,21 +131,63 @@ fn list(v: &str) -> Vec<String> {
 }
 
 /// `=== id`, then `key: value` lines, then `--- screen`, `--- repo` and
-/// `--- request` bodies. `#` lines outside a body are comments.
+/// `--- request` bodies. `#` lines outside a body are comments. At least one case.
 fn parse_cases(text: &str) -> Result<Vec<Case>, String> {
+    let cases = parse_some(text, false)?;
+    if cases.is_empty() {
+        return Err("no cases".into());
+    }
+    Ok(cases)
+}
+
+/// [`parse_cases`] for a file that may hold none: the held-out file ships empty.
+/// A `quiet` error (#783) gives the line and the rule it broke, never the
+/// line's text: a held-out case's text stays out of test and build logs. A
+/// rule of the whole case names the case's `===` line. Case ids stay in: a
+/// quiet file's ids must be names (lowercase letters, digits and `-`), so a
+/// body line that opens with `=== ` cannot pass case text off as one.
+fn parse_some(text: &str, quiet: bool) -> Result<Vec<Case>, String> {
+    // a mistyped `=== id` line would join the case before it as text (#783):
+    // in the held-out file only, where a lost case changes no count anyone reads;
+    // elsewhere a pytest banner is a real screen line
+    let rule = "a line that starts with = is a case's === line";
+    let bad = text.lines().position(|l| l.starts_with('=') && !l.starts_with("=== "));
+    if let Some(i) = bad.filter(|_| quiet) {
+        return Err(format!("line {}: {rule}", i + 1));
+    }
     let mut cases = Vec::new();
+    let mut next = 1;
     for (n, block) in text.split("\n=== ").enumerate() {
+        // the block's first line in the file
+        let line0 = next;
+        next += block.matches('\n').count() + 1;
         let block = if n == 0 {
             match block.strip_prefix("=== ") {
                 Some(b) => b,
-                None => continue,
+                None => {
+                    preamble(block, quiet)?;
+                    continue;
+                }
             }
         } else {
             block
         };
         let (id, rest) = block.split_once('\n').unwrap_or((block, ""));
         let id = id.trim().to_string();
+        // a body line opening with `=== ` reads as a case: in the held-out file
+        // its "id" may be case text, so one that is not a name goes unshown
+        let name = |c: char| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-';
+        if quiet && (id.is_empty() || !id.chars().all(name)) {
+            return Err(format!("line {line0}: an id is lowercase letters, digits and -"));
+        }
         let err = |m: &str| format!("case {id}: {m}");
+        // `loud` holds the file's text; a quiet error says only where and why
+        let say = |at: usize, rule: &str, loud: String| {
+            let short = format!("line {}: {rule}", line0 + at);
+            err(if quiet { &short } else { &loud })
+        };
+        // a rule whose message holds no text of the file: quiet adds only the line
+        let broke = |at: usize, rule: &str| say(at, rule, rule.to_string());
         let rest = format!("\n{rest}");
         let (head, bodies) = rest.split_once("\n--- ").unwrap_or((&rest, ""));
         let mut c = Case {
@@ -164,11 +212,16 @@ fn parse_cases(text: &str) -> Result<Vec<Case>, String> {
         };
         let mut expect = None;
         let mut seen: Vec<String> = vec![];
-        for line in head.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
-            let (k, v) = line.split_once(':').ok_or_else(|| err(&format!("not key: value: {line}")))?;
+        for (at, line) in head.lines().enumerate().map(|(at, l)| (at, l.trim())) {
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let (k, v) = line
+                .split_once(':')
+                .ok_or_else(|| say(at, "not key: value", format!("not key: value: {line}")))?;
             let v = v.trim();
             if seen.iter().any(|s| s == k.trim()) {
-                return Err(err(&format!("{} given twice", k.trim())));
+                return Err(broke(at, &format!("{} given twice", k.trim())));
             }
             seen.push(k.trim().into());
             match k.trim() {
@@ -176,21 +229,25 @@ fn parse_cases(text: &str) -> Result<Vec<Case>, String> {
                 "window" => {
                     let f: Vec<&str> = v.split(" · ").collect();
                     let [name, cmd, path] = f[..] else {
-                        return Err(err("window is name · cmd · path"));
+                        return Err(broke(at, "window is name · cmd · path"));
                     };
                     (c.name, c.cmd, c.path) = (name.into(), cmd.into(), path.into());
                 }
-                "out" => c.out = out_type(v).ok_or_else(|| err(&format!("unknown out {v}")))?,
+                "out" => {
+                    let bad = || say(at, "unknown out", format!("unknown out {v}"));
+                    c.out = out_type(v).ok_or_else(bad)?
+                }
                 "out_is" => {
                     let t = out_type(v).filter(|t| *t != OutType::Auto);
-                    c.out_is = Some(t.ok_or_else(|| err(&format!("unknown out_is {v}")))?)
+                    let bad = || say(at, "unknown out_is", format!("unknown out_is {v}"));
+                    c.out_is = Some(t.ok_or_else(bad)?)
                 }
                 "expect" => {
                     expect = Some(match v {
                         "ask" => Expect::Ask,
                         "write" => Expect::Write,
                         "either" => Expect::Either,
-                        _ => return Err(err("expect is ask, write or either")),
+                        _ => return Err(broke(at, "expect is ask, write or either")),
                     })
                 }
                 "ask_any" => c.ask_any = list(v),
@@ -200,23 +257,31 @@ fn parse_cases(text: &str) -> Result<Vec<Case>, String> {
                     c.holdout = match v {
                         "yes" => true,
                         "no" => false,
-                        _ => return Err(err("holdout is yes or no")),
+                        _ => return Err(broke(at, "holdout is yes or no")),
                     }
                 }
                 "explore" => {
                     // one folder name: a path would copy something outside fixtures/
                     if v.is_empty() || v.starts_with('.') || v.contains('/') {
-                        return Err(err("explore is a folder name under fixtures/"));
+                        return Err(broke(at, "explore is a folder name under fixtures/"));
                     }
                     c.explore = Some(v.into())
                 }
                 "note" => {}
-                k => return Err(err(&format!("unknown key {k}"))),
+                k => return Err(say(at, "unknown key", format!("unknown key {k}"))),
             }
         }
-        c.expect = expect.ok_or_else(|| err("no expect"))?;
-        let parts: Vec<&str> = bodies.split("\n--- ").filter(|b| !b.is_empty()).collect();
-        for (i, body) in parts.iter().enumerate() {
+        c.expect = expect.ok_or_else(|| broke(0, "no expect"))?;
+        // each body with its `--- name` line's index in `rest`
+        let mut at = head.matches('\n').count() + 1;
+        let mut parts: Vec<(usize, &str)> = vec![];
+        for b in bodies.split("\n--- ") {
+            if !b.is_empty() {
+                parts.push((at, b));
+            }
+            at += b.matches('\n').count() + 1;
+        }
+        for (i, &(at, body)) in parts.iter().enumerate() {
             let (name, text) = body.split_once('\n').unwrap_or((body, ""));
             let mut lines: Vec<&str> = text.lines().collect();
             if i + 1 == parts.len() {
@@ -225,7 +290,7 @@ fn parse_cases(text: &str) -> Result<Vec<Case>, String> {
             let text = lines.join("\n");
             let dup = |set: bool| {
                 if set {
-                    Err(err(&format!("{} given twice", name.trim())))
+                    Err(broke(at, &format!("{} given twice", name.trim())))
                 } else {
                     Ok(())
                 }
@@ -245,39 +310,113 @@ fn parse_cases(text: &str) -> Result<Vec<Case>, String> {
                 }
                 "conversation" => {
                     dup(!c.turns.is_empty())?;
-                    c.turns = turns(&text).map_err(|m| err(&m))?
+                    let rule = "conversation is user: and assistant: lines";
+                    c.turns = turns(&text).map_err(|m| say(at, rule, m))?
                 }
                 "refs" => {
                     dup(!c.refs.is_empty())?;
-                    c.refs = case_refs(&text).map_err(|m| err(&m))?
+                    let rule = "refs are path, path:a or path:a-b lines";
+                    c.refs = case_refs(&text).map_err(|m| say(at, rule, m))?
                 }
-                x => return Err(err(&format!("unknown section {x}"))),
+                x => return Err(say(at, "unknown section", format!("unknown section {x}"))),
             }
         }
         if c.request.is_empty() {
-            return Err(err("no request"));
+            return Err(broke(0, "no request"));
         }
         if c.kind.is_empty() || c.cmd.is_empty() {
-            return Err(err("needs kind and window"));
+            return Err(broke(0, "needs kind and window"));
         }
         if c.expect == Expect::Ask && !c.must.is_empty() {
-            return Err(err("must is for write cases"));
+            return Err(broke(0, "must is for write cases"));
         }
         if c.expect == Expect::Ask && c.out_is.is_some() {
-            return Err(err("out_is is for write or either cases"));
+            return Err(broke(0, "out_is is for write or either cases"));
         }
         if c.expect == Expect::Write && !c.ask_any.is_empty() {
-            return Err(err("ask_any is for ask cases"));
+            return Err(broke(0, "ask_any is for ask cases"));
         }
         if cases.iter().any(|o: &Case| o.id == c.id) {
-            return Err(err("duplicate id"));
+            return Err(broke(0, "duplicate id"));
         }
         cases.push(c);
     }
-    if cases.is_empty() {
-        return Err("no cases".into());
-    }
     Ok(cases)
+}
+
+/// The lines before a file's first case are comments or blank (#783): a case
+/// whose `===` line is mistyped is an error, never a case dropped unseen. A
+/// `quiet` error leaves the line's text out.
+fn preamble(block: &str, quiet: bool) -> Result<(), String> {
+    let rule = "before the first case, a line is a comment or blank";
+    let bad = block
+        .lines()
+        .enumerate()
+        .find(|(_, l)| !l.trim().is_empty() && !l.trim().starts_with('#'));
+    match bad {
+        None => Ok(()),
+        Some((i, _)) if quiet => Err(format!("line {}: {rule}", i + 1)),
+        Some((i, l)) => Err(format!("line {}: {rule}: {l}", i + 1)),
+    }
+}
+
+/// The cases a run read, and how many came from each file, for `--check`.
+struct Loaded {
+    cases: Vec<Case>,
+    from: Vec<(PathBuf, usize)>,
+}
+
+/// Reads the cases file, then the held-out file when there is one (#783). That
+/// file may hold no case, each of its cases says `holdout: yes`, and none has
+/// an id the cases file has. An error starts with the file it is in.
+fn load(cases: &Path, blind: Option<&Path>) -> Result<Loaded, String> {
+    let read = |p: &Path| std::fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display()));
+    let mut all = parse_cases(&read(cases)?).map_err(|e| format!("{}: {e}", cases.display()))?;
+    let mut from = vec![(cases.to_path_buf(), all.len())];
+    if let Some(b) = blind {
+        let at = |e: String| format!("{}: {e}", b.display());
+        let held = parse_some(&read(b)?, true).map_err(at)?;
+        if let Some(c) = held.iter().find(|c| !c.holdout) {
+            return Err(at(format!("case {}: every case in this file needs holdout: yes", c.id)));
+        }
+        if let Some(c) = held.iter().find(|c| all.iter().any(|a| a.id == c.id)) {
+            return Err(at(format!("case {}: already in {}", c.id, cases.display())));
+        }
+        from.push((b.to_path_buf(), held.len()));
+        all.extend(held);
+    }
+    Ok(Loaded { cases: all, from })
+}
+
+/// Keeps the cases a run takes: those `--only` names.
+fn pick(cases: &mut Vec<Case>, o: &Opts) {
+    if let Some(w) = &o.only {
+        cases.retain(|c| c.id.contains(w.as_str()) || c.kind == *w);
+    }
+}
+
+/// The cases a run, `--check` and `--overlap` take: the files `o` names,
+/// loaded, then those `--only` names.
+fn run_cases(o: &Opts) -> Result<Loaded, String> {
+    let mut l = load(&o.cases, o.blind.as_deref())?;
+    pick(&mut l.cases, o);
+    Ok(l)
+}
+
+/// The line a run prints first and `--check` prints alone: the cases taken,
+/// and each file read with how many cases it held.
+fn check_line(cases: &[Case], from: &[(PathBuf, usize)]) -> String {
+    let count = |e: Expect| cases.iter().filter(|c| c.expect == e).count();
+    let held = cases.iter().filter(|c| c.holdout).count();
+    let files: Vec<String> = from.iter().map(|(p, n)| format!("{} ({n})", p.display())).collect();
+    format!(
+        "{} cases ({} ask, {} write, {} either; {held} holdout) from {}",
+        cases.len(),
+        count(Expect::Ask),
+        count(Expect::Write),
+        count(Expect::Either),
+        files.join(", ")
+    )
 }
 
 /// `assistant: ...` and `user: ...` lines, one turn each, as the panel keeps them.
@@ -560,6 +699,8 @@ fn grade(c: &Case, raw: &str) -> Grade {
 #[derive(Debug)]
 struct Opts {
     cases: PathBuf,
+    /// The held-out file loaded beside `cases` (#783); `--cases` drops it.
+    blind: Option<PathBuf>,
     model: String,
     runs: usize,
     jobs: usize,
@@ -593,9 +734,13 @@ struct Opts {
     from_to: Option<(PathBuf, PathBuf)>,
 }
 
+/// The held-out file (#783), from the crate's root.
+const BLIND: &str = "evals/panel/holdout-blind.txt";
+
 fn opts(args: impl IntoIterator<Item = String>) -> Result<Opts, String> {
     let mut o = Opts {
         cases: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("evals/panel/cases.txt"),
+        blind: Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(BLIND)),
         model: "auto".into(),
         // One run is not enough to judge a change: a case can pass 3/3, then 2/3.
         runs: 3,
@@ -622,7 +767,7 @@ fn opts(args: impl IntoIterator<Item = String>) -> Result<Opts, String> {
     while let Some(k) = a.next() {
         let mut val = || a.next().ok_or(format!("{k} needs a value"));
         match k.as_str() {
-            "--cases" => o.cases = val()?.into(),
+            "--cases" => (o.cases, o.blind) = (val()?.into(), None),
             "--model" => o.model = val()?,
             "--runs" => o.runs = val()?.parse().map_err(|e| format!("--runs: {e}"))?,
             "--jobs" => o.jobs = val()?.parse().map_err(|e| format!("--jobs: {e}"))?,
@@ -834,27 +979,11 @@ fn main() {
     if o.overlap {
         std::process::exit(overlap_main(&o));
     }
-    let text = std::fs::read_to_string(&o.cases).unwrap_or_else(|e| {
-        eprintln!("panel_eval: {}: {e}", o.cases.display());
-        std::process::exit(2);
-    });
-    let mut cases = parse_cases(&text).unwrap_or_else(|e| {
+    let Loaded { cases, from } = run_cases(&o).unwrap_or_else(|e| {
         eprintln!("panel_eval: {e}");
         std::process::exit(2);
     });
-    if let Some(w) = &o.only {
-        cases.retain(|c| c.id.contains(w.as_str()) || c.kind == *w);
-    }
-    let count = |e: Expect| cases.iter().filter(|c| c.expect == e).count();
-    let held = cases.iter().filter(|c| c.holdout).count();
-    println!(
-        "{} cases ({} ask, {} write, {} either; {held} holdout) from {}",
-        cases.len(),
-        count(Expect::Ask),
-        count(Expect::Write),
-        count(Expect::Either),
-        o.cases.display()
-    );
+    println!("{}", check_line(&cases, &from));
     if o.check {
         return;
     }
@@ -1785,9 +1914,8 @@ fn overlap_main(o: &Opts) -> i32 {
 /// Returns 1 when a pair is flagged or left unchecked by a failed call.
 fn overlap_check(o: &Opts) -> Result<i32, String> {
     let read = |p: &Path| std::fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display()));
-    let mut cases = parse_cases(&read(&o.cases)?)?;
-    let only = |c: &Case| o.only.as_ref().is_none_or(|w| c.id.contains(w.as_str()) || c.kind == *w);
-    cases.retain(|c| c.holdout && only(c));
+    let mut cases = run_cases(o)?.cases;
+    cases.retain(|c| c.holdout);
     let lines = match &o.from_to {
         Some((from, to)) => overlap::new_lines(&read(from)?, &read(to)?),
         None => overlap::added_lines(&prompt_diff(&o.base)?),
@@ -3531,10 +3659,272 @@ mod tests {
         assert_eq!(paired_pass_all(&[]), (Of(0, 0), Of(0, 0)));
     }
 
+    /// A made-up held-out case: ONE renamed, with `holdout: yes`.
+    fn held(id: &str) -> String {
+        let c = ONE.replace("# a comment\n", "").replace("=== crash", &format!("=== {id}"));
+        c.replace("expect: write", "expect: write\nholdout: yes")
+    }
+
+    /// A scratch dir holding a cases file and a held-out file, with their paths.
+    fn two_files(name: &str, cases: &str, blind: &str) -> (judge::Scratch, PathBuf, PathBuf) {
+        let d = scratch(name);
+        let (c, b) = (d.0.join("cases.txt"), d.0.join("holdout-blind.txt"));
+        std::fs::write(&c, cases).unwrap();
+        std::fs::write(&b, blind).unwrap();
+        (d, c, b)
+    }
+
+    /// #783: the held-out file loads beside cases.txt; `--cases` loads only its path.
+    #[test]
+    fn the_held_out_file_loads_unless_cases_names_a_file() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("evals/panel");
+        let o = opts(args("")).unwrap();
+        assert_eq!(o.cases, root.join("cases.txt"));
+        assert_eq!(o.blind, Some(root.join("holdout-blind.txt")));
+        let (_d, c, _) = two_files("explicit", ONE, &held("blind-a"));
+        let o = opts(vec!["--cases".into(), c.display().to_string()]).unwrap();
+        assert_eq!(o.blind, None);
+        assert_eq!(run_cases(&o).unwrap().from, [(c, 1)]);
+    }
+
+    /// #783: a plain run, `--check` included, reads both shipped files.
+    #[test]
+    fn a_plain_run_reads_the_held_out_file() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("evals/panel");
+        let from = run_cases(&opts(args("--check")).unwrap()).unwrap().from;
+        let paths: Vec<&PathBuf> = from.iter().map(|(p, _)| p).collect();
+        assert_eq!(paths, [&root.join("cases.txt"), &root.join("holdout-blind.txt")]);
+    }
+
+    /// #783: `--overlap` keeps the held-out file; only `--cases` drops it.
+    #[test]
+    fn overlap_keeps_the_held_out_file() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("evals/panel");
+        let o = opts(args("--overlap --from a --to b")).unwrap();
+        assert_eq!(o.blind, Some(root.join("holdout-blind.txt")));
+    }
+
+    /// #783: the `--check` line names each file read, with its count.
+    #[test]
+    fn the_check_line_names_each_file_with_its_count() {
+        let (_d, c, b) = two_files("line", ONE, &format!("{}{}", held("b1"), held("b2")));
+        let Loaded { cases, from } = load(&c, Some(&b)).unwrap();
+        let want = format!("from {} (1), {} (2)", c.display(), b.display());
+        assert!(check_line(&cases, &from).ends_with(&want), "{}", check_line(&cases, &from));
+    }
+
+    /// #783: `--check` counts each file: the cases read from each, in order.
+    #[test]
+    fn check_counts_both_files() {
+        let blind = format!("# readers\n{}{}", held("b1"), held("b2"));
+        let (_d, c, b) = two_files("counts", ONE, &blind);
+        let got = load(&c, Some(&b)).unwrap();
+        assert_eq!(got.from, [(c, 1), (b, 2)]);
+        assert_eq!(got.cases.len(), 3);
+    }
+
+    /// #783: a plain run counts a case from the held-out file as held out.
+    #[test]
+    fn a_held_out_file_case_counts_as_held_out_in_a_plain_run() {
+        let (_d, c, b) = two_files("grouped", ONE, &held("b1"));
+        let cases = load(&c, Some(&b)).unwrap().cases;
+        let pass = || {
+            Some(Grade {
+                pass: true,
+                ..Grade::default()
+            })
+        };
+        let at = |id: &str| cases.iter().position(|c| c.id == id).unwrap();
+        let t = tally(&cases, &[(at("crash"), 1, pass()), (at("b1"), 1, pass())]);
+        assert_eq!((t.passed, t.holdout), (Of(2, 2), Of(1, 1)));
+    }
+
+    /// #783: every case in the held-out file says `holdout: yes`.
+    #[test]
+    fn a_held_out_file_case_without_holdout_yes_fails() {
+        let rows = [
+            ("no key", held("b1").replace("holdout: yes\n", "")),
+            ("no", held("b1").replace(": yes", ": no")),
+        ];
+        for (row, blind) in rows {
+            let (_d, c, b) = two_files(&format!("nokey-{}", row.replace(' ', "-")), ONE, &blind);
+            let e = load(&c, Some(&b)).err().unwrap_or_else(|| panic!("{row}: loaded"));
+            assert!(
+                e.contains("holdout-blind.txt: case b1: ") && e.contains("holdout: yes"),
+                "{row}: {e}"
+            );
+        }
+    }
+
+    /// #783: a held-out file's parse error gives the line and the rule broken,
+    /// never the line's text; a rule of the whole case gives its `===` line.
+    /// The bad line sits in the file's second case.
+    #[test]
+    fn a_held_out_file_error_never_shows_the_files_text() {
+        let req = "--- request\n";
+        let rows = [
+            (16, "not key: value", "kind: bug\n", "kind: bug\nMADE-UP stray line\n"),
+            (18, "holdout is yes or no", "holdout: yes", "holdout: maybe"),
+            (14, "no expect", "expect: write\n", ""),
+            (16, "unknown key", "kind: bug\n", "kind: bug\nMADE-UP-KEY: x\n"),
+            (16, "unknown out", "kind: bug\n", "kind: bug\nout: MADE-UP\n"),
+            (23, "unknown section", req, "--- MADE-UP\n--- request\n"),
+            (
+                23,
+                "conversation is user: and assistant: lines",
+                req,
+                "--- conversation\nMADE-UP\n--- request\n",
+            ),
+            (
+                23,
+                "refs are path, path:a or path:a-b lines",
+                req,
+                "--- refs\nMADE-UP:x-y\n--- request\n",
+            ),
+        ];
+        for (i, (line, rule, from, to)) in rows.into_iter().enumerate() {
+            let blind = format!("# readers\n#\n{}{}", held("b0"), held("b1").replace(from, to));
+            let (_d, c, b) = two_files(&format!("quiet-{i}"), ONE, &blind);
+            let e = load(&c, Some(&b)).err().unwrap_or_else(|| panic!("{rule}: loaded"));
+            assert_eq!(e, format!("{}: case b1: line {line}: {rule}", b.display()));
+        }
+    }
+
+    /// #783: in the held-out file an id is a name, so a body line opening with
+    /// `=== ` (Go's `=== RUN`) cannot carry the case's text into an error.
+    #[test]
+    fn a_held_out_file_id_that_is_not_a_name_is_refused_unshown() {
+        let tail = "--- screen\n$ net-proxy\nboom\n--- request\nfix this\n";
+        let moved = "--- request\nfix this\n--- screen\nboom\n=== RUN   MADE-UP-SECRET-TestLeak\n";
+        let (_d, c, b) = two_files("bad-id", ONE, &held("b1").replace(tail, moved));
+        let e = load(&c, Some(&b)).err().expect("a screen line made a case");
+        assert_eq!(e, format!("{}: line 11: an id is lowercase letters, digits and -", b.display()));
+    }
+
+    /// #783: a line before the first case is a comment or blank, so a case
+    /// whose `===` line is mistyped is an error, never a case quietly lost.
+    /// The held-out file's error leaves the line out; cases.txt's shows it.
+    #[test]
+    fn a_line_before_the_first_case_is_an_error() {
+        let rule = "line 2: before the first case, a line is a comment or blank";
+        // a mistyped first `=== id` line is caught by its own, nearer rule
+        let eq = "line 2: a line that starts with = is a case's === line";
+        let typo = format!("# h\n{}", held("b1").replace("=== b1", "===b1"));
+        let stray = format!("# h\nMADE-UP-PREAMBLE\n{}", held("b1"));
+        for (row, blind, want) in [("no space", typo, eq), ("stray", stray.clone(), rule)] {
+            let (_d, c, b) = two_files(&format!("pre-{}", row.len()), ONE, &blind);
+            let e = load(&c, Some(&b)).err().unwrap_or_else(|| panic!("{row}: loaded"));
+            assert_eq!(e, format!("{}: {want}", b.display()), "{row}");
+        }
+        let (_d, c, b) = two_files("pre-cases", &stray, "");
+        let e = load(&c, Some(&b)).err().expect("cases.txt: loaded");
+        assert_eq!(e, format!("{}: {rule}: MADE-UP-PREAMBLE", c.display()));
+    }
+
+    /// #783: in the held-out file a line opening with `=` is a case's `=== id`
+    /// line, so a mistyped one is an error giving the line only, never text
+    /// merged into the case before it.
+    #[test]
+    fn a_mistyped_case_line_is_an_error() {
+        let rule = "a line that starts with = is a case's === line";
+        let screen = "--- screen\n$ net-proxy\nboom\n";
+        // silent before: b2 has no request, so b3's text and request join b2
+        let b2 = held("b2").replace("--- request\nfix this\n", "");
+        let merged = format!("{b2}{}", held("b3").replace("=== b3", "===b3").replace(screen, ""));
+        // already an error before, but "request given twice" on a later line
+        let twice = format!("{}{}", held("b1"), held("b2").replace("=== b2", "===b2"));
+        let rows = [(10, merged), (10, held("b1").replace("boom\n", "boom\n== x\n")), (12, twice)];
+        for (i, (line, blind)) in rows.into_iter().enumerate() {
+            let (_d, c, b) = two_files(&format!("eq-{i}"), ONE, &blind);
+            let e = load(&c, Some(&b)).err().unwrap_or_else(|| panic!("row {i}: loaded"));
+            assert_eq!(e, format!("{}: line {line}: {rule}", b.display()), "row {i}");
+        }
+    }
+
+    /// #783: in cases.txt a line opening with `=` is screen text: a pytest
+    /// banner is a real screen line, and a dropped tune case shows in the counts.
+    #[test]
+    fn a_banner_line_stays_screen_text_in_the_cases_file() {
+        let banner = "===== test session starts =====";
+        let cases = ONE.replace("boom\n", &format!("boom\n{banner}\n"));
+        let (_d, c, b) = two_files("eq-cases", &cases, "");
+        let cases = load(&c, Some(&b)).unwrap_or_else(|e| panic!("{e}")).cases;
+        assert_eq!(cases[0].screen, format!("$ net-proxy\nboom\n{banner}"));
+    }
+
+    /// #783: a parse error starts with the file it is in, cases.txt or the held-out file.
+    #[test]
+    fn a_parse_error_names_its_file() {
+        let bad = held("zz").replace("holdout: yes", "holdout: maybe");
+        let rows = [
+            ("cases", format!("{ONE}{bad}"), String::new()),
+            ("held-out", ONE.into(), bad.clone()),
+        ];
+        for (row, cases, blind) in rows {
+            let (_d, c, b) = two_files(&format!("names-{row}"), &cases, &blind);
+            let e = load(&c, Some(&b)).err().unwrap_or_else(|| panic!("{row}: loaded"));
+            let want = match row {
+                "cases" => format!("{}: case zz: holdout is yes or no", c.display()),
+                _ => format!("{}: case zz: line 5: holdout is yes or no", b.display()),
+            };
+            assert_eq!(e, want, "{row}");
+        }
+    }
+
+    /// #783: an id in both files is an error naming the id and the other file.
+    #[test]
+    fn an_id_in_both_files_fails() {
+        let (_d, c, b) = two_files("clash", &format!("{ONE}{}", held("b1")), &held("b1"));
+        let e = load(&c, Some(&b)).err().expect("an id in both files loaded");
+        let other = format!("already in {}", c.display());
+        assert!(e.contains("case b1: ") && e.contains(&other), "{e}");
+    }
+
+    /// #783: a held-out file with no case, a header or nothing at all, loads.
+    #[test]
+    fn a_held_out_file_with_no_case_loads() {
+        for (row, blind) in [("header", "# who may read this\n#\n"), ("empty", "")] {
+            let (_d, c, b) = two_files(&format!("empty-{row}"), ONE, blind);
+            let got = load(&c, Some(&b)).unwrap_or_else(|e| panic!("{row}: {e}"));
+            assert_eq!(got.from, [(c, 1), (b, 0)], "{row}");
+        }
+    }
+
+    /// #783: a missing held-out file is an error, never a run with no held-out case.
+    #[test]
+    fn a_missing_held_out_file_fails() {
+        let (_d, c, b) = two_files("missing", ONE, "");
+        std::fs::remove_file(&b).unwrap();
+        let e = load(&c, Some(&b)).err().expect("a missing file loaded");
+        assert!(e.starts_with(&format!("{}: ", b.display())), "{e}");
+    }
+
+    /// #783: the shipped held-out file loads under its rules, and its header
+    /// names who may read it. Only the header is read here, never a case.
+    #[test]
+    fn the_shipped_held_out_file_loads_and_names_its_readers() {
+        let o = opts(args("")).unwrap();
+        let blind = o.blind.clone().unwrap();
+        load(&o.cases, Some(&blind)).unwrap();
+        let text = std::fs::read_to_string(&blind).unwrap();
+        let header: Vec<&str> = text.lines().take_while(|l| !l.starts_with("=== ")).collect();
+        let header = header.join(" ").replace("# ", "").replace('#', "");
+        for who in [
+            "the owner",
+            "the orchestrator",
+            "re-verify",
+            "blindness",
+            "commits cases",
+            "must not open",
+        ] {
+            assert!(header.contains(who), "the header does not say {who:?}");
+        }
+    }
+
     #[test]
     fn the_shipped_cases_are_valid() {
-        let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("evals/panel/cases.txt");
-        let cases = parse_cases(&std::fs::read_to_string(p).unwrap()).unwrap();
+        // both files a run reads: cases.txt and the held-out file (#783), ids only in a failure
+        let cases = run_cases(&opts(args("")).unwrap()).unwrap().cases;
         assert!(cases.len() >= 25, "{}", cases.len());
         assert!(cases.iter().any(|c| c.expect == Expect::Ask));
         assert!(cases.iter().any(|c| c.expect == Expect::Write));
@@ -4168,7 +4558,12 @@ esac
             &p("to.txt"),
         ];
         let args = [&args[..], &["--ledger", &p("cost.tsv"), "--jobs", "2"]].concat().join("\n");
-        let o = std::process::Command::new(std::env::current_exe().unwrap())
+        let mut c = std::process::Command::new(std::env::current_exe().unwrap());
+        // `--cases` drops the held-out file: the child puts back the dir's own
+        if d.join("holdout-blind.txt").exists() {
+            c.env("PANEL_EVAL_OVERLAP_BLIND", p("holdout-blind.txt"));
+        }
+        let o = c
             .args(["--exact", "tests::overlap_child", "--nocapture", "--test-threads=1"])
             .env("PANEL_EVAL_OVERLAP_ARGS", args)
             .env("COCKPIT_CLAUDE", p("claude"))
@@ -4185,7 +4580,9 @@ esac
         if let Ok(args) = std::env::var("PANEL_EVAL_OVERLAP_ARGS") {
             // libtest's `test ... ` has no newline yet: records start on their own line
             println!();
-            std::process::exit(overlap_main(&opts(args.split('\n').map(String::from)).unwrap()));
+            let mut o = opts(args.split('\n').map(String::from)).unwrap();
+            o.blind = std::env::var_os("PANEL_EVAL_OVERLAP_BLIND").map(PathBuf::from);
+            std::process::exit(overlap_main(&o));
         }
     }
 
@@ -4275,6 +4672,17 @@ esac
         std::fs::write(d.0.join("cases.txt"), OVERLAP_CASES.replace("holdout: yes\n", "")).unwrap();
         let (code, _, err) = overlap_run(&d.0, "a plain line\n");
         assert_eq!((code, calls(&d.0)), (Some(2), 0), "{err}");
+    }
+
+    /// #783: the overlap check judges the held-out file's cases too.
+    #[test]
+    fn overlap_judges_the_held_out_files_cases() {
+        let d = overlap_dir("ov-blind");
+        let (held, tuned) = OVERLAP_CASES.split_at(OVERLAP_CASES.find("=== tuned-b").unwrap());
+        std::fs::write(d.0.join("cases.txt"), tuned).unwrap();
+        std::fs::write(d.0.join("holdout-blind.txt"), held).unwrap();
+        let (code, out, err) = overlap_run(&d.0, "a plain line\n");
+        assert_eq!((code, calls(&d.0)), (Some(0), 1), "{out}{err}");
     }
 
     #[test]
