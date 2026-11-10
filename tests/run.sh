@@ -14,6 +14,9 @@ export COCKPIT_TUI_OFFLINE=1
     exit 1
 }
 STATE=$(mktemp -d)
+# The caller's runtime dir, kept before the suite's own replaces it: a short place for a
+# socket a long TMPDIR would push past 107 bytes (#766).
+SUITE_XRD=${XDG_RUNTIME_DIR:-}
 export XDG_RUNTIME_DIR="$STATE"
 mkdir -p "$STATE/agent-state"
 
@@ -15010,8 +15013,21 @@ printf '#!/bin/sh\necho "$*" >> "%s"\n' "$RV/brew.log" > "$RV/brew/brew"
 chmod +x "$RV/un/uname" "$RV/brew/brew"
 rvshim revdiff "version: v1.13.0-abc1234-20260905T044327" "$RV/rel"
 rvshim revdiff "version: v1.12.0-abc1234-20260905T044327" "$RV/relold"
+# The server row below starts a server under TMUX_TMPDIR, and its socket,
+# <dir>/tmux-<uid>/<SUITE_SOCK>, must fit the 107 bytes a socket path can hold. Past that
+# tmux says "File name too long", no server starts, and the doctor grades the shell's
+# revdiff instead (#766). $RV/tmuxtmp sits under TMPDIR, so a long TMPDIR passes it: then
+# a dir under the caller's XDG_RUNTIME_DIR (SUITE_XRD; the suite's own is $STATE, as long
+# as TMPDIR), removed with the suite's temp dirs; else the row skips.
+rv_sockn() { printf '%s/tmux-%s/%s' "$1" "$(id -u)" "$SUITE_SOCK" | wc -c; }
+RVTT="$RV/tmuxtmp"
+if [ "$(rv_sockn "$RVTT")" -gt 107 ] && [ -n "$SUITE_XRD" ] && [ -d "$SUITE_XRD" ] \
+        && [ -w "$SUITE_XRD" ] && RVX=$(mktemp -d "$SUITE_XRD/crv.XXXXXX"); then
+    printf '%s\n' "$RVX" >> "$TMPS"; RVTT=$RVX
+fi
+RVTN=$(rv_sockn "$RVTT")
 rvdc() {                      # rvdc <dir holding the fake revdiff> -- the doctor's rows
-    env -u TMUX -u TMUX_PANE HOME="$RVH" XDG_BIN_HOME="$RVB" TMUX_TMPDIR="$RV/tmuxtmp" \
+    env -u TMUX -u TMUX_PANE HOME="$RVH" XDG_BIN_HOME="$RVB" TMUX_TMPDIR="$RVTT" \
         PATH="$1:$SHIM:/usr/bin:/bin" "$DIR/install.sh" --check 2>&1
 }
 rvrow() { printf '%s\n' "$1" | sed -n 's/^\[ *\([a-z]*\) *\] *revdiff .*/\1/p'; }
@@ -15028,11 +15044,15 @@ is "and is not called a go install build" "1 0" \
     grep -c 'no version @') $(printf '%s\n' "$out" | grep -c 'go install build')"
 # A server holds the PATH it started with: its revdiff is the one prefix r runs, even when
 # this shell finds a newer one first.
-RVS="env -u TMUX TMUX_TMPDIR=$RV/tmuxtmp $TMUX_REAL -L $SUITE_SOCK -f /dev/null"
+if [ "$RVTN" -gt 107 ]; then
+    skip_ "the revdiff on the server's PATH: its socket path is $RVTN bytes, over 107, and no short XDG_RUNTIME_DIR (#766)"
+else
+RVS="env -u TMUX TMUX_TMPDIR=$RVTT $TMUX_REAL -L $SUITE_SOCK -f /dev/null"
 $RVS new-session -d 'sleep 300' >/dev/null 2>&1
 $RVS set-environment -g PATH "$RV/old:/usr/bin:/bin" >/dev/null 2>&1
 is "the revdiff on the server's PATH is the one graded" "warn" "$(rvrow "$(rvdc "$RV/new")")"
 $RVS kill-server >/dev/null 2>&1
+fi
 out=$(rvdc "$RV/old")
 is "revdiff below the tested version is a warn row" "warn" "$(rvrow "$out")"
 out=$(rvdc "$RV/unk"); is "an unknown version is a warn row" "warn" "$(rvrow "$out")"
