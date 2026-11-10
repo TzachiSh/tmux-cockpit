@@ -2484,7 +2484,10 @@ echo "== status path and branch render the same for every kind of pane =="
 # Only an ssh pane runs tmux-where now; every other pane renders the path from
 # a native format. These are the strings the all-#() version drew.
 if need_tmux "status path/branch rendering"; then :; else
-RW=$(mktmpd); mkdir -p "$HOME/aaaaaaaaaa/bbbbbbbbbb/cccccccccc/dddddddddd" "$RW/plain" "$RW/gone"
+# The pane dirs sit under the suite's private $HOME, so the bar prints them as ~/rw552/...
+# whatever TMPDIR is. Under a long TMPDIR they passed the 30-column cap and printed cut (#552).
+RW="$HOME/rw552"; RWS="~/rw552"
+mkdir -p "$HOME/aaaaaaaaaa/bbbbbbbbbb/cccccccccc/dddddddddd" "$RW/plain" "$RW/gone"
 (
   cd "$RW" || exit
   export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
@@ -2519,11 +2522,11 @@ until_out '?*' "$TMUX_REAL" -L "$RWI" list-clients -F '#{client_name}'
 sha=$(git -C "$RW/det" rev-parse --short HEAD)
 for c in "home|<~|>" \
          "deep|<~/aaaaaaaaaa/bbbbbbbbbb/cccccc…|>" \
-         "plain|<$RW/plain|>" \
-         "repo|<$RW/repo|main>" \
-         "det|<$RW/det|@$sha>" \
+         "plain|<$RWS/plain|>" \
+         "repo|<$RWS/repo|main>" \
+         "det|<$RWS/det|@$sha>" \
          "ssh|< 󰢹 300|>" \
-         "gone|<$(g="$RW/gone (deleted)"; printf '%s' "${g:0:30}…")|>"; do
+         "gone|<$RWS/gone (deleted)|>"; do
     w=${c%%|*}; want=${c#*|}
     tmux -L "$RWI" select-window -t "s:$w" >/dev/null 2>&1
     if until_cap "$RWO" o "*$want*"; then ok "$w pane: $want"
@@ -2531,7 +2534,7 @@ for c in "home|<~|>" \
 done
 tmux -L "$RWO" kill-server >/dev/null 2>&1
 tmux -L "$RWI" kill-server >/dev/null 2>&1
-rm -rf "$HOME/aaaaaaaaaa"
+rm -rf "$HOME/aaaaaaaaaa" "$RW"
 fi
 
 
@@ -3385,7 +3388,9 @@ tmux -L "$INNER" kill-server >/dev/null 2>&1
 
 # A normal cwd must still render, not just fail to execute. A repo, so the
 # branch the hooks push renders too.
-D2=$(mktmpd); git init -q -b main "$D2" >/dev/null 2>&1
+# Under the suite's private $HOME, printed ~/d552: a TMPDIR path is as long as TMPDIR, and a
+# long one passed status-right-length and printed cut (#552).
+D2="$HOME/d552"; D2S="~/d552"; git init -q -b main "$D2" >/dev/null 2>&1
 OUTER2="cockpit-rce-outer2-$$"; INNER2="cockpit-rce-inner2-$$"
 SOCKS="$SOCKS $OUTER2 $INNER2"
 tmux -L "$INNER2" -f /dev/null new-session -d -s s -x 100 -y 24 -c "$D2" \
@@ -3399,14 +3404,15 @@ tmux -L "$OUTER2" -f /dev/null new-session -d -s o -x 100 -y 24 \
     "$TMUX_REAL -L $INNER2 attach -t s" >/dev/null 2>&1
 until_out '?*' "$TMUX_REAL" -L "$INNER2" list-clients -F '#{client_name}'
 tmux -L "$INNER2" refresh-client >/dev/null 2>&1
-until_cap "$OUTER2" o "*$D2 main*"
+until_cap "$OUTER2" o "*$D2S main*"
 scr=$(tmux -L "$OUTER2" capture-pane -p -t o)
 case "$scr" in
-    *"$D2 main"*) ok "a normal cwd still renders its path and branch" ;;
-    *) bad "a normal cwd still renders its path and branch" "$D2 main on the status line" "$scr" ;;
+    *"$D2S main"*) ok "a normal cwd still renders its path and branch" ;;
+    *) bad "a normal cwd still renders its path and branch" "$D2S main on the status line" "$scr" ;;
 esac
 tmux -L "$OUTER2" kill-server >/dev/null 2>&1
 tmux -L "$INNER2" kill-server >/dev/null 2>&1
+rm -rf "$D2"
 fi
 
 echo "== ...and neither can a NEWLINE or TAB, which #{q:} alone does not escape =="
