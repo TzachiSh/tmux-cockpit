@@ -18776,16 +18776,21 @@ is "a pane whose hook saw no dir is polled on the default, not the server's" "ye
 # serves it, and the old dir's, with no pane left, leaves.
 PDB="$PD/cfg b"; mkdir -p "$PDB"; cp "$AVF/working.json" "$PDB/agents.json"; PDKB=$(pd_key "$PDB")
 pd_hook "$PD1" CLAUDE_CONFIG_DIR="$PDB"
-av_wait 'pd_live @cockpit_poll_pid_$PDKB && [ -z "$(pd_opt @cockpit_poll_pid_$PDK)" ] && [ "$(pd_st "$PD1")" = running ]'
+pd_moved() {                  # the new dir's poller serves the pane, and the old dir's left
+    pd_live "@cockpit_poll_pid_$PDKB" && [ -z "$(pd_opt "@cockpit_poll_pid_$PDK")" ] \
+        && [ "$(pd_st "$PD1")" = running ]
+}
+av_wait pd_moved
+PDNOW="$(pd_tm show-option -pqv -t "$PD1" @cockpit_cfg)|$(pd_st "$PD1")"
 is "a pane whose dir changes mid-run is served by the new dir, and the old dir's poller leaves" \
    "$PDB|running|yes|" \
-   "$(pd_tm show-option -pqv \
-       -t "$PD1" @cockpit_cfg)|$(pd_st "$PD1")|$(pd_yn pd_live "@cockpit_poll_pid_$PDKB")|$(pd_opt "@cockpit_poll_pid_$PDK")"
+   "$PDNOW|$(pd_yn pd_live "@cockpit_poll_pid_$PDKB")|$(pd_opt "@cockpit_poll_pid_$PDK")"
 # The pane goes: the dir's poller counts three ticks with none of its panes, then leaves.
 pd_tm kill-pane -t "$PD1"
 av_wait '[ -z "$(pd_tm show-option -gqv @cockpit_poll_pid_$PDKB)" ]'
+PDNOW="$(pd_opt "@cockpit_poll_pid_$PDKB")|$(pd_opt "@cockpit_poll_dir_$PDKB")"
 is "a dir poller whose last pane went leaves and unpublishes, its dir too" "||" \
-   "$(pd_opt "@cockpit_poll_pid_$PDKB")|$(pd_opt "@cockpit_poll_dir_$PDKB")|$(pd_opt "@cockpit_poll_dir_$PDK")"
+   "$PDNOW|$(pd_opt "@cockpit_poll_dir_$PDK")"
 is "...and the default poller stays" "yes" "$(pd_yn pd_live @cockpit_poll_pid)"
 # A dir slot whose poller is gone and whose dir no pane holds: the sweep takes it back, by
 # compare-and-set, and the process at that pid is not signalled.
