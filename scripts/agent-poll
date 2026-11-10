@@ -169,7 +169,8 @@ version_cmd() {
     return 1
 }
 
-# Is this pane command Claude Code's? The shell twin of tui/src/basket.rs claude_cmd: after a
+# Is this pane command Claude Code's? The shell twin of tui/src/basket.rs claude_cmd, which
+# calls data.rs version_shaped as this calls version_cmd (#776): after a
 # path and leading dashes, `claude` in any case (#508, #756), or a version title (#761).
 # Keep the two in step.
 claude_cmd() {

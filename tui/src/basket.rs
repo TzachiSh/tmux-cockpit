@@ -215,10 +215,7 @@ pub fn main(args: &[String]) -> i32 {
 /// `@path#La-b`.
 pub fn claude_cmd(comm: &str) -> bool {
     let b = comm.rsplit('/').next().unwrap_or(comm).trim_start_matches('-').to_ascii_lowercase();
-    let version = b.starts_with(|c: char| c.is_ascii_digit())
-        && b.chars().filter(|c| *c == '.' || *c == '_').count() >= 2
-        && b.chars().all(|c| c.is_ascii_digit() || c == '.' || c == '_');
-    b == "claude" || version
+    b == "claude" || crate::data::version_shaped(&b)
 }
 
 /// An agent's pane (#519's `data::is_agent`) that runs Claude Code
