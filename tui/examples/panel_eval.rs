@@ -151,6 +151,7 @@ fn parse_cases(text: &str) -> Result<Vec<Case>, String> {
 /// [`parse_cases`] for a file that may hold none: the held-out file ships empty.
 /// A `quiet` error (#783) gives the line and the rule it broke, never the
 /// line's text: a held-out case's text stays out of test and build logs. A
+/// case whose keys mark it held out is quiet in any file (#797). A
 /// rule of the whole case names the case's `===` line. Case ids stay in: a
 /// quiet file's ids must be names (lowercase letters, digits and `-`), so a
 /// body line that opens with `=== ` cannot pass case text off as one.
@@ -188,6 +189,11 @@ fn parse_some(text: &str, quiet: bool) -> Result<Vec<Case>, String> {
         if quiet && (id.is_empty() || !id.chars().all(name)) {
             return Err(format!("line {line0}: an id is lowercase letters, digits and -"));
         }
+        let rest = format!("\n{rest}");
+        let (head, bodies) = rest.split_once("\n--- ").unwrap_or((&rest, ""));
+        // a held-out case in a loud file is quiet too (#797), though its
+        // `holdout:` line may come after the bad one
+        let quiet = quiet || held_head(head);
         let err = |m: &str| format!("case {id}: {m}");
         // `loud` holds the file's text; a quiet error says only where and why
         let say = |at: usize, rule: &str, loud: String| {
@@ -196,8 +202,6 @@ fn parse_some(text: &str, quiet: bool) -> Result<Vec<Case>, String> {
         };
         // a rule whose message holds no text of the file: quiet adds only the line
         let broke = |at: usize, rule: &str| say(at, rule, rule.to_string());
-        let rest = format!("\n{rest}");
-        let (head, bodies) = rest.split_once("\n--- ").unwrap_or((&rest, ""));
         let mut c = Case {
             id: id.clone(),
             kind: String::new(),
@@ -350,6 +354,14 @@ fn parse_some(text: &str, quiet: bool) -> Result<Vec<Case>, String> {
         cases.push(c);
     }
     Ok(cases)
+}
+
+/// Whether a case's key lines, `head`, hold a `holdout` key whose value is not
+/// `no` (#797). A value that is neither yes nor no counts as held: it is an
+/// error anyway, and a quoted line from a case meant to be held out leaks.
+fn held_head(head: &str) -> bool {
+    let mut keys = head.lines().filter_map(|l| l.trim().split_once(':'));
+    keys.any(|(k, v)| k.trim() == "holdout" && v.trim() != "no")
 }
 
 /// The lines before a file's first case are comments or blank (#783): a case
@@ -4213,6 +4225,54 @@ mod tests {
         }
     }
 
+    /// #797: a parse error in a `holdout: yes` case in cases.txt gives the line
+    /// and the rule broken, never the line's text, as the held-out file does.
+    #[test]
+    fn a_held_out_case_error_in_the_cases_file_never_shows_its_text() {
+        for (i, (line, rule, from, to)) in quiet_rows().into_iter().enumerate() {
+            let (_d, c, b) = two_files(&format!("quiet-cases-{i}"), &quiet_text(from, to), "");
+            let e = load(&c, Some(&b)).err().unwrap_or_else(|| panic!("{rule}: loaded"));
+            assert_eq!(e, format!("{}: case b1: line {line}: {rule}", c.display()));
+        }
+    }
+
+    /// #797: a case's quietness is known before its keys are read, so a bad
+    /// line above its `holdout: yes` line is unshown too.
+    #[test]
+    fn a_bad_line_above_holdout_yes_in_the_cases_file_is_unshown() {
+        let bad = held("b1").replace("=== b1\n", "=== b1\nMADE-UP stray line\n");
+        let (_d, c, b) = two_files("quiet-above", &bad, "");
+        let e = load(&c, Some(&b)).err().expect("a bad line loaded");
+        assert_eq!(e, format!("{}: case b1: line 2: not key: value", c.display()));
+    }
+
+    /// #797: a tune case in cases.txt, with no `holdout` key or `holdout: no`,
+    /// still quotes its bad line.
+    #[test]
+    fn a_tune_case_error_in_the_cases_file_quotes_the_line() {
+        let stray = "kind: bug\nMADE-UP stray line\n";
+        for (row, mark) in [("no key", ""), ("no", "holdout: no\n")] {
+            let tune = held("b1").replace("holdout: yes\n", mark).replace("kind: bug\n", stray);
+            let (_d, c, b) = two_files(&format!("loud-{}", row.len()), &tune, "");
+            let e = load(&c, Some(&b)).err().unwrap_or_else(|| panic!("{row}: loaded"));
+            let want = format!("{}: case b1: not key: value: MADE-UP stray line", c.display());
+            assert_eq!(e, want, "{row}");
+        }
+    }
+
+    /// #797: each quiet row that hides text in a held-out case shows it in
+    /// the same case without `holdout: yes`.
+    #[test]
+    fn a_tune_case_keeps_the_text_the_quiet_rows_hide() {
+        let rows = quiet_rows().into_iter().filter(|r| r.3.contains("MADE-UP"));
+        for (i, (_, rule, from, to)) in rows.enumerate() {
+            let tune = quiet_text(from, to).replace("holdout: yes\n", "");
+            let (_d, c, b) = two_files(&format!("loud-rows-{i}"), &tune, "");
+            let e = load(&c, Some(&b)).err().unwrap_or_else(|| panic!("{rule}: loaded"));
+            assert!(e.contains("MADE-UP"), "{rule}: {e}");
+        }
+    }
+
     /// #783: in the held-out file an id is a name, so a body line opening with
     /// `=== ` (Go's `=== RUN`) cannot carry the case's text into an error.
     #[test]
@@ -4276,6 +4336,7 @@ mod tests {
     }
 
     /// #783: a parse error starts with the file it is in, cases.txt or the held-out file.
+    /// `holdout: maybe` counts as held out (#797), so cases.txt's error gives the line too.
     #[test]
     fn a_parse_error_names_its_file() {
         let bad = held("zz").replace("holdout: yes", "holdout: maybe");
@@ -4287,7 +4348,7 @@ mod tests {
             let (_d, c, b) = two_files(&format!("names-{row}"), &cases, &blind);
             let e = load(&c, Some(&b)).err().unwrap_or_else(|| panic!("{row}: loaded"));
             let want = match row {
-                "cases" => format!("{}: case zz: holdout is yes or no", c.display()),
+                "cases" => format!("{}: case zz: line 16: holdout is yes or no", c.display()),
                 _ => format!("{}: case zz: line 5: holdout is yes or no", b.display()),
             };
             assert_eq!(e, want, "{row}");
