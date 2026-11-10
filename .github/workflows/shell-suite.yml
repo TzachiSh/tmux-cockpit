@@ -57,4 +57,12 @@ jobs:
           locale -a | grep -ix 'c\.utf-\?8' || echo "no C.UTF-8 locale"
           infocmp xterm-ghostty >/dev/null 2>&1 && echo "xterm-ghostty terminfo: present" || echo "xterm-ghostty terminfo: absent (its rows skip)"
       - run: make tui-bin
+      # A private, short tmux socket dir (#803). With none, SOCKDIR is /tmp/tmux-<uid>, the
+      # same path a test could hardcode, so such a test stayed green here (#784). Short for
+      # the 108-byte socket path limit (#766).
+      - name: Private TMUX_TMPDIR
+        run: |
+          d="$RUNNER_TEMP/tx"; mkdir -p "$d"
+          echo "TMUX_TMPDIR=$d" >> "$GITHUB_ENV"
+          printf 'TMUX_TMPDIR=%s (%d bytes)\n' "$d" "${#d}"
       - run: J=4 make test-par
