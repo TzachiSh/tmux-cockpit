@@ -273,6 +273,21 @@ both sides over the cases both graded in full, and each side's own (unpaired)
 the cases file; holdout cases are written after the prompt they run on, so a
 gain there is not overfitting. `--model`, `--runs`, `--jobs`, `--only <id or
 kind>`, `--out <file.jsonl>`, `--no-hermetic` and `--show-holdout` are the knobs.
+`--router-prompt <file>` sends the file's text as every call's system prompt in
+place of the write prompt (#789); the file is read once at start-up, and a
+missing, unreadable, non-UTF-8 or empty file stops the run before any call.
+`--compare`, `--calibrate`, `--purpose-calibrate` and `--overlap` send no panel
+prompt, so they refuse the flag rather than ignore it. `--check` reads and
+validates the file too, so `--check --router-prompt <file>` is its pre-flight.
+A call that explores
+still gets the panel's where-note ("The repository is at ...") appended to the
+file's text, as the write prompt does; a text call gets the text alone. The
+#789 router replays so far (probe789b, c and d) ran with `--no-explore`, and
+the tuning runs will too, so the note never reached the router there. Under
+`--no-explore` an `explore:` case, such as `refs-explore-outside` (the one in
+the tune set), goes as a plain text call, with no repo access and no
+`files_read`. Tuning reports list it as a known exception, not a router miss,
+unless it routes like the others.
 
 Held-out cases written from #783 on live in `tui/evals/panel/holdout-blind.txt`,
 not in the cases file every tuning session reads. Its readers are the owner,
@@ -345,8 +360,11 @@ the change. The flagging runs never count: they were picked because they
 failed, so pooling them biases the test toward a drop. A change gets at most 3
 wordings, then the stop rule applies. Each `--out` row carries `prompt`, the
 hash of `write.txt` and its examples, plus `write.explore.txt` for an exploring
-write, from the read the job's own call made (#711); `--compare` refuses a case
-whose rows on one side carry two hashes unless given `--allow-mixed`. Each run
+write, from the read the job's own call made (#711), or the hash of the
+`--router-prompt` file's text in a run given one, whose `system` hashes that
+text too and whose summary names that file; `--compare` refuses a case
+whose rows on one side carry two hashes, naming its file and the hashes, unless
+given `--allow-mixed`. Each run
 appends its cost to `--ledger <file>`, else to `cost.tsv` next to `--out`, else to
 `${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/panel-eval-cost.tsv`; a
 `--judge` run adds a second row for the judge's spend. The ledger's `prompt`
