@@ -18848,6 +18848,8 @@ is "...and one with none clears it" "" "$(pe_cfg)"
 # sweep's list-panes rows and PANE_FMT's: the first is escaped, the second not recorded (#194).
 pe_err() { "$TMUX_REAL" -L "$PES" show-option -gqv @cockpit_poll_err; }
 PENL=$'\n' PETAB=$'\t'
+# Not recorded, the pane is the default dir's, and the default poller serves it (#685).
+PEMSG="a config dir with a control character is not used: its pane is polled on the default dir"
 for pesite in pe_hook pe_mark; do
     "$TMUX_REAL" -L "$PES" set-option -pu -t "$PEP" @cockpit_cfg
     $pesite CLAUDE_CONFIG_DIR="$PE/c;"
@@ -18857,7 +18859,7 @@ for pesite in pe_hook pe_mark; do
             set-option -gu @cockpit_poll_err
         $pesite CLAUDE_CONFIG_DIR="$PE/a${pebad#*:}b"
         is "$pesite: a dir with a ${pebad%%:*} in it is not recorded, and said" \
-           "|a config dir with a control character cannot be polled" "$(pe_cfg)|$(pe_err)"
+           "|$PEMSG" "$(pe_cfg)|$(pe_err)"
     done
 done
 "$TMUX_REAL" -L "$PES" kill-server
@@ -18894,6 +18896,62 @@ pf_sweep
 is "...a dir recorded: it lists them once" "1" "$(grep -c 'cockpit_cfg}' "$PFLOG")"
 "$TMUX_REAL" -L "$PFS" kill-server
 rm -rf "$PF"
+fi
+
+# --- #685 a config dir refused for a control character: the default dir polls it ---------
+
+echo "== agent-poll: a refused config dir's pane is polled on the default dir, as said (#685) =="
+av_setup
+if need_tmux "agent-poll refused dir" || [ ! -d /proc/self ]; then :; else
+RD=$(mktmpd); RDS="cockpit-rd-$$"; SOCKS="$SOCKS $RDS"
+RDMSG="a config dir with a control character is not used: its pane is polled on the default dir"
+mkdir -p "$RD/bin"; cp "$AVF/working.json" "$RD/default.json"; RDLOG="$RD/claude.log"
+# claude logs the dir it saw, then holds its answer until the row has read @cockpit_poll_err:
+# the poller's first good read clears that option.
+cat > "$RD/bin/claude" <<RDEOF
+#!/bin/sh
+printf 'cfg=%s\n' "\${CLAUDE_CONFIG_DIR-<unset>}" >> "$RDLOG"
+"$TMUX_REAL" -L "$RDS" wait-for rd-go-$$
+cat "$RD/default.json"
+RDEOF
+chmod +x "$RD/bin/claude"
+rd_tm() { "$TMUX_REAL" -L "$RDS" "$@"; }
+rd_live() {                   # a live agent-poll holds the default dir's slot
+    local p; p=$(rd_tm show-option -gqv @cockpit_poll_pid)
+    [ -n "$p" ] && [ "$(cat "/proc/$p/comm" 2>/dev/null)" = agent-poll ]
+}
+rd_polls() {                  # live agent-poll processes on this block's server
+    local d n=0
+    for d in /proc/[0-9]*; do
+        [ "$(cat "$d/comm" 2>/dev/null)" = agent-poll ] || continue
+        tr '\0' '\n' < "$d/environ" 2>/dev/null | grep -q "^TMUX=$SOCKDIR/$RDS," && n=$((n + 1))
+    done
+    echo "$n"
+}
+for rdbad in "newline:"$'\n' "ESC:"$'\e'; do
+    fresh_server -L "$RDS" -f /dev/null -- -d -s t -x 80 -y 24 -c "$RD" 'exec -a claude bash'
+    rd_tm set -g @cockpit_agents_glob '|claude|' \; set -g @cockpit_bg_poll 1 \; \
+        set-environment -g PATH "$RD/bin:$AVBIN:$PATH" \; \
+        set-environment -g CLAUDE_CONFIG_DIR "$RD/S"
+    RDP=$(rd_tm list-panes -t t -F '#{pane_id}'); : > "$RDLOG"
+    # A relayed agent_completed: mark_agentview, and no state of its own on the pane.
+    printf '{"notification_type":"agent_completed"}' \
+        | env -u CLAUDE_CONFIG_DIR CLAUDE_CONFIG_DIR="$RD/a${rdbad#*:}b" TMUX="$SOCKDIR/$RDS,0,0" \
+            TMUX_PANE="$RDP" PATH="$AVREC:$PATH" "$DIR/scripts/agent-state" notify >/dev/null 2>&1
+    av_wait rd_live
+    is "${rdbad%%:*} in the dir: not recorded, said so, and the default dir's poller started" \
+       "|$RDMSG|yes" \
+       "$(rd_tm show-option -pqv -t "$RDP" @cockpit_cfg)|$(rd_tm show-option -gqv \
+           @cockpit_poll_err)|$(rd_live && echo yes || echo no)"
+    rd_tm wait-for -S "rd-go-$$"
+    av_wait '[ "$(rd_tm show-option -pqv -t "$RDP" @panestate)" = running ]'
+    is "...that poller serves the pane the default dir's agents, not the server's dir" \
+       "running|cfg=<unset>" "$(rd_tm show-option -pqv -t "$RDP" @panestate)|$(head -1 "$RDLOG")"
+    rd_tm kill-server
+    av_wait '[ "$(rd_polls)" = 0 ]'
+done
+is "the pollers leave with their server" "0" "$(rd_polls)"
+rm -rf "$RD"
 fi
 
 # --- #400 tui-test-clean: the gate that fails on what a test left ------------
