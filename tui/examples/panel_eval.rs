@@ -183,17 +183,17 @@ fn parse_some(text: &str, quiet: bool) -> Result<Vec<Case>, String> {
         };
         let (id, rest) = block.split_once('\n').unwrap_or((block, ""));
         let id = id.trim().to_string();
-        // a body line opening with `=== ` reads as a case: in the held-out file
-        // its "id" may be case text, so one that is not a name goes unshown
-        let name = |c: char| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-';
-        if quiet && (id.is_empty() || !id.chars().all(name)) {
-            return Err(format!("line {line0}: an id is lowercase letters, digits and -"));
-        }
         let rest = format!("\n{rest}");
         let (head, bodies) = rest.split_once("\n--- ").unwrap_or((&rest, ""));
         // a held-out case in a loud file is quiet too (#797), though its
         // `holdout:` line may come after the bad one
         let quiet = quiet || held_head(head);
+        // a body line opening with `=== ` reads as a case: in a quiet case its
+        // "id" may be case text, so one that is not a name goes unshown
+        let name = |c: char| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-';
+        if quiet && (id.is_empty() || !id.chars().all(name)) {
+            return Err(format!("line {line0}: an id is lowercase letters, digits and -"));
+        }
         let err = |m: &str| format!("case {id}: {m}");
         // `loud` holds the file's text; a quiet error says only where and why
         let say = |at: usize, rule: &str, loud: String| {
@@ -4234,6 +4234,22 @@ mod tests {
             let e = load(&c, Some(&b)).err().unwrap_or_else(|| panic!("{rule}: loaded"));
             assert_eq!(e, format!("{}: case b1: line {line}: {rule}", c.display()));
         }
+    }
+
+    /// #797: a held-out case's id in cases.txt must be a name, as in the
+    /// held-out file, so an error cannot show case text as its id. A tune
+    /// case's id in cases.txt may be any text.
+    #[test]
+    fn a_held_out_id_in_the_cases_file_that_is_not_a_name_is_refused_unshown() {
+        let odd = held("b1").replace("=== b1", "=== MADE-UP secret id");
+        let (_d, c, b) = two_files("quiet-id", &odd, "");
+        let e = load(&c, Some(&b)).err().expect("a held-out id that is not a name loaded");
+        let rule = "line 1: an id is lowercase letters, digits and -";
+        assert_eq!(e, format!("{}: {rule}", c.display()));
+        let tune = odd.replace("holdout: yes\n", "");
+        let (_d, c, b) = two_files("loud-id", &tune, "");
+        let got = load(&c, Some(&b)).unwrap_or_else(|e| panic!("tune: {e}"));
+        assert_eq!(got.cases[0].id, "MADE-UP secret id");
     }
 
     /// #797: a case's quietness is known before its keys are read, so a bad
