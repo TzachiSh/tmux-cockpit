@@ -1241,11 +1241,11 @@ fn run(o: &Opts, me: std::io::Result<PathBuf>) {
         std::process::exit(2);
     }
     println!("{}", check_line(&cases, &from));
-    if o.show_holdout {
-        println!("{SHOW_BANNER}");
-    }
     if o.check {
         return;
+    }
+    if o.show_holdout {
+        println!("{SHOW_BANNER}");
     }
     let mut call = Call::from_env();
     let version = claude_version(&call.claude);
@@ -5279,6 +5279,14 @@ esac
                     }
                 }
             }
+        }
+
+        #[test]
+        fn check_prints_no_show_holdout_banner() {
+            let flags = ["--check", "--show-holdout", "--only", "held-q"];
+            let (code, out, err, _) = rig_run("quiet-check", &flags);
+            assert_eq!(code, Some(0), "{out}{err}");
+            assert!(out.contains("1 cases (") && !out.contains(SHOW_BANNER), "{out}");
         }
 
         #[test]
