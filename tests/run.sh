@@ -15019,11 +15019,20 @@ rvshim revdiff "version: v1.12.0-abc1234-20260905T044327" "$RV/relold"
 # revdiff instead (#766). $RV/tmuxtmp sits under TMPDIR, so a long TMPDIR passes it: then
 # a dir under the caller's XDG_RUNTIME_DIR (SUITE_XRD; the suite's own is $STATE, as long
 # as TMPDIR), removed with the suite's temp dirs; else the row skips.
-rv_sockn() { printf '%s/tmux-%s/%s' "$1" "$(id -u)" "$SUITE_SOCK" | wc -c; }
+# tmux binds the resolved path, so a short symlink to a long TMPDIR is still long
+# (review-812): measured after `pwd -P`, in bytes. macOS's sun_path holds 104, Linux's 108.
+RVMAX=107; [ "$(uname -s)" = Darwin ] && RVMAX=103
+rv_sockn() {
+    local d; d=$(cd "$1" 2>/dev/null && pwd -P) || d=$1
+    printf '%s/tmux-%s/%s' "$d" "$(id -u)" "$SUITE_SOCK" | wc -c
+}
 RVTT="$RV/tmuxtmp"
-if [ "$(rv_sockn "$RVTT")" -gt 107 ] && [ -n "$SUITE_XRD" ] && [ -d "$SUITE_XRD" ] \
+if [ "$(rv_sockn "$RVTT")" -gt "$RVMAX" ] && [ -n "$SUITE_XRD" ] && [ -d "$SUITE_XRD" ] \
         && [ -w "$SUITE_XRD" ] && RVX=$(mktemp -d "$SUITE_XRD/crv.XXXXXX"); then
     printf '%s\n' "$RVX" >> "$TMPS"; RVTT=$RVX
+    # Outside TMPDIR, so only the cleanup list removes it: it must be on it.
+    is "the short socket dir made in XDG_RUNTIME_DIR is on the suite's cleanup list" "yes" \
+        "$(grep -qxF "$RVX" "$TMPS" && echo yes)"
 fi
 RVTN=$(rv_sockn "$RVTT")
 rvdc() {                      # rvdc <dir holding the fake revdiff> -- the doctor's rows
@@ -15044,8 +15053,9 @@ is "and is not called a go install build" "1 0" \
     grep -c 'no version @') $(printf '%s\n' "$out" | grep -c 'go install build')"
 # A server holds the PATH it started with: its revdiff is the one prefix r runs, even when
 # this shell finds a newer one first.
-if [ "$RVTN" -gt 107 ]; then
-    skip_ "the revdiff on the server's PATH: its socket path is $RVTN bytes, over 107, and no short XDG_RUNTIME_DIR (#766)"
+if [ "$RVTN" -gt "$RVMAX" ]; then
+    rvsk="socket path $RVTN bytes, over $RVMAX, and no short XDG_RUNTIME_DIR (#766)"
+    skip_ "the revdiff on the server's PATH: $rvsk"
 else
 RVS="env -u TMUX TMUX_TMPDIR=$RVTT $TMUX_REAL -L $SUITE_SOCK -f /dev/null"
 $RVS new-session -d 'sleep 300' >/dev/null 2>&1
