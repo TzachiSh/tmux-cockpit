@@ -19344,6 +19344,17 @@ bg_case() {                   # bg_case <label> <command> <want>: a pane titled 
 bg_case "glob |codex|: a claude pane does not bind" claude "||"
 bg_case "...nor a CLAUDE pane" CLAUDE "||"
 bg_case "...but a version title binds whatever the glob says" 2.1.318 "aa|alpha|running"
+# A claude pane bound while the glob named claude, after the user drops claude from it: it
+# is no agent now, so the bind ends whole (review-787). Job, name, job state and state clear.
+av_tm set -g @cockpit_agents_glob '|claude|codex|'
+BGB=$(av_tm new-window -d -c "$AVWD" -P -F '#{pane_id}' "exec -a claude sleep 300")
+av_tm select-pane -t "$BGB" -T alpha; av_once bind.json >/dev/null
+is "glob |claude|codex|: the claude pane binds" "aa|alpha|running" \
+    "$(avo @cockpit_job "$BGB")|$(avo @cockpit_job_name "$BGB")|$(avo @panestate "$BGB")"
+av_tm set -g @cockpit_agents_glob '|codex|'; av_once bind.json >/dev/null
+is "...and with claude dropped from the glob, its bind ends: job, name, job state, state" \
+    "|||" "$(avo @cockpit_job "$BGB")|$(avo @cockpit_job_name "$BGB")|$(avo @cockpit_job_state "$BGB")|$(avo @panestate "$BGB")"
+av_tm kill-pane -t "$BGB"
 # The glob flag comes from version_cmd, not claude_cmd: a claude pane the glob leaves out is
 # no agent, so its agent-view mark goes. claude_cmd there would keep it.
 BGV=$(av_tm new-window -d -c "$AVWD" -P -F '#{pane_id}' "exec -a claude sleep 300")
