@@ -963,7 +963,7 @@ fn show_case<T>(held: bool, full: impl FnOnce() -> T, blind: impl FnOnce() -> T)
 /// The `--out` fields a held-out case's row keeps (#792): none holds its
 /// phrases. Every other field, one added later included, is null on that row:
 /// the reply holds a passing case's must phrases, and the reads its searches.
-const HELD_FIELDS: [&str; 24] = [
+const HELD_FIELDS: [&str; 25] = [
     "id",
     "expect",
     "run",
@@ -984,6 +984,7 @@ const HELD_FIELDS: [&str; 24] = [
     "env",
     "missing_n",
     "forbidden_n",
+    "files_read_n",
     "judge",
     "judge_model",
     "judge_cost_usd",
@@ -1000,13 +1001,18 @@ fn fail_class(answer: &Result<String, Fail>) -> &'static str {
     }
 }
 
-/// A held-out case's `row`: `missing_n` and `forbidden_n` count its lists, and
-/// each field outside [`HELD_FIELDS`] is null.
+/// A held-out case's `row`: `missing_n`, `forbidden_n` and `files_read_n`
+/// count its lists, and each field outside [`HELD_FIELDS`] is null.
 fn blind_row(mut row: serde_json::Value) -> serde_json::Value {
     let Some(m) = row.as_object_mut() else {
         return row;
     };
-    for (list, n) in [("missing", "missing_n"), ("forbidden", "forbidden_n")] {
+    let lists = [
+        ("missing", "missing_n"),
+        ("forbidden", "forbidden_n"),
+        ("files_read", "files_read_n"),
+    ];
+    for (list, n) in lists {
         if let Some(l) = m.get(list).and_then(|l| l.as_array()) {
             let len = l.len();
             m.insert(n.into(), len.into());
@@ -1799,7 +1805,11 @@ fn read_rows(name: &str, text: &str) -> Result<Vec<Row>, String> {
             prompt: text("prompt"),
             cost_usd: v["cost_usd"].as_f64(),
             ms: v["ms"].as_u64(),
-            files_read: v["files_read"].as_array().map(Vec::len),
+            // a held-out row keeps only the count (#792)
+            files_read: v["files_read"]
+                .as_array()
+                .map(Vec::len)
+                .or(v["files_read_n"].as_u64().map(|n| n as usize)),
             env: v["env"].as_object().map(|e| {
                 let mut e = e.clone();
                 e.remove("cwd");
@@ -5262,6 +5272,21 @@ esac
                 assert!(out.contains("has: ze-trap") && rows.contains("\"ze-trap\""), "{name}: {all}");
                 assert_eq!(rows.lines().count(), 3, "{name}: {rows}");
             }
+        }
+
+        #[test]
+        fn compare_reads_a_held_out_rows_file_count_as_a_tune_rows_list() {
+            let cases = parse_cases(QUIET).unwrap();
+            let lines: Vec<String> = ["tune-q", "held-q"]
+                .map(|id| {
+                    let mut e = ended(&cases, id, LEAKY);
+                    (e.explore, e.read) = (true, Some(vec!["/r/a.rs".into(), "/r/b.rs".into()]));
+                    row_of(&e).to_string()
+                })
+                .into();
+            let rows = read_rows("out", &lines.join("\n")).unwrap();
+            assert_eq!(rows.iter().map(|r| r.files_read).collect::<Vec<_>>(), [Some(2), Some(2)]);
+            assert_eq!(reads_line(&rows).unwrap(), "2.0 files mean, 2 at most, over 2 calls");
         }
 
         #[test]
