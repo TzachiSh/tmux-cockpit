@@ -1,0 +1,30 @@
+╭ panel · %0 · server ─────────────────────────────────────╮
+│ ▎1 ★ Write a prompt    a task for Claude Code from your… │
+│  2   Compose           type once: fix spelling, write, … │
+│  3   Explain           what is on this screen, and what… │
+│  4   Tablet mode       big tiles, tap buttons, the mouse │
+│  5   Close                                               │
+│                                                          │
+│ server · claude · /tmp                                   │
+│ will send: screen 4 lines, 0 hidden                      │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+╰ 1-5 pick  ? keys  esc close ─────────────────────────────╯
