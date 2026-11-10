@@ -450,26 +450,26 @@ a judge model instead, haiku unless `--judge-model` says otherwise. It is
 opt-in and never part of the default run. The changed lines are the ones
 `git diff BASE -- tui/prompts` adds, the working tree against `--base`
 (`HEAD` by default), or with `--from OLD --to NEW` the lines of `NEW` that `OLD`
-lacks, which covers the override file; `--base` beside `--from` is refused. Each changed line goes to the judge
-with each `holdout: yes` case's request (`--only` narrows the cases), and the
-judge answers yes when the line paraphrases the request's specific scenario
-and no when it only shares its topic. The judge sees the request only: a
-line that mirrors a held-out case's screen, repo, refs or earlier rounds (an
-error line, a path) is not judged. A flagged pair prints
+lacks, which covers the override file; `--base` beside `--from` is refused. Each
+changed line goes to the judge with each `holdout: yes` case's request (`--only`
+narrows the cases), and the judge answers yes when the line paraphrases the
+request's specific scenario and no when it only shares its topic. The judge sees
+the request only: a line that mirrors a held-out case's screen, repo, refs or
+earlier rounds (an error line, a path) is not judged. A flagged pair prints
 `FLAG<TAB>case id<TAB>line`; the case's text is never printed or logged, so
-whoever edits the prompt stays blind. Then an `overlap` record gives
-`flagged`, `pairs`, `lines`, `cases`, `cached`, `failed`, `usd`, `model` and
-`question` (the question's hash) as tab-separated `key=value` fields. The run
-exits 1 when a pair is flagged, or unchecked because its call failed (a
-`claude` that cannot start included), so a pre-commit step can gate on it; 2
-when it cannot read its inputs (the cases, the files, the diff), and when there
-are changed lines but no held-out case to check them against, as after a typo
-in `--only`. A failed call's reason
-never carries the judge's answer, which may quote the request. Verdicts are
-cached in `overlap-cache.tsv` next to the ledger, keyed by the hashes of the
-line, the request and the question and by the model, so a rerun calls only for
-new pairs and a reworded question asks again; the cache holds no text. A run that made calls appends an `overlap`
-row to the ledger. Each call is hermetic and capped like the judge's.
+whoever edits the prompt stays blind. Then an `overlap` record gives `flagged`,
+`pairs`, `lines`, `cases`, `cached`, `failed`, `usd`, `model` and `question`
+(the question's hash) as tab-separated `key=value` fields. The run exits 1 when
+a pair is flagged, or unchecked because its call failed (a `claude` that cannot
+start included), so a pre-commit step can gate on it; 2 when it cannot read its
+inputs (the cases, the files, the diff), and when there are changed lines but no
+held-out case to check them against, as after a typo in `--only`. A failed
+call's reason never carries the judge's answer, which may quote the request.
+Verdicts are cached in `overlap-cache.tsv` next to the ledger, keyed by the
+hashes of the line, the request and the question and by the model, so a rerun
+calls only for new pairs and a reworded question asks again; the cache holds no
+text. A run that made calls appends an `overlap` row to the ledger. Each call is
+hermetic and capped like the judge's.
 The question was worded twice, on that one leak against the demoted case's
 request. A first wording, which also answered no for a line fitting the request
 no better than many others, never flagged it in 3 calls. The shipped wording
