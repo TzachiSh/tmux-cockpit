@@ -108,9 +108,24 @@ runsh_blocks() {
     printf '%s\n' "$out"
 }
 
+# lib_users LIB: LIB and every lib that names it, directly or through another
+# lib: review-revdiff.sh sources review-store.sh, workdir.sh sources tui.sh,
+# which sources vnum.sh (#748). Names match as text, as in pick. The set only
+# grows and scripts/lib is finite, so it reaches a fixed point even on a cycle
+# (hook.sh sources fmt.sh, whose text names hook.sh).
+lib_users() {
+    local set="$1" prev="" libs=(scripts/lib/*)
+    while [ "$set" != "$prev" ]; do
+        prev=$set
+        set=$({ printf '%s\n' "$set"
+                grep -lF -f - -- "${libs[@]}" <<< "${set//scripts\/lib\//}"; } | sort -u)
+    done
+    printf '%s\n' "$set"
+}
+
 # pick FILE: the ordinals of the blocks FILE could break, one per line, or ALL.
 pick() {
-    local s
+    local s l
     case "$1" in
     tests/run.sh) runsh_blocks ;;
     # Not run by the suite, but a block may read one by path: the docs-options
@@ -119,12 +134,15 @@ pick() {
         blocks_for "$1" ;;
     # Reaches every file that names it: the scripts, and the two entry points
     # that source libs too -- cockpit.tmux runs statusbar.conf, tui.sh and fmt.sh,
-    # install.sh runs vnum.sh and tui.sh (#734).
+    # install.sh runs vnum.sh and tui.sh (#734). The same for each lib that
+    # sources it, at any depth (#748).
     scripts/lib/*)
-        for s in scripts/* cockpit.tmux install.sh; do
-            [ -f "$s" ] && grep -qF -- "${1##*/}" "$s" && blocks_for "$s"
-        done
-        blocks_for "$1" ;;
+        while read -r l; do
+            for s in scripts/* cockpit.tmux install.sh; do
+                [ -f "$s" ] && grep -qF -- "${l##*/}" "$s" && blocks_for "$s"
+            done
+            blocks_for "$l"
+        done < <(lib_users "$1") ;;
     examples/*)  blocks_for examples ;;
     cockpit.tmux|install.sh|scripts/*)
         blocks_for "$1" ;;
