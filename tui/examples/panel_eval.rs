@@ -1091,7 +1091,7 @@ fn panel_reads(out: Option<&str>, explore: bool) -> Option<Vec<String>> {
 
 /// What the judge reads of case `c`'s reply `raw`: the case's input, its
 /// earlier rounds, and what the panel read before it: `None` when unknown, and
-/// for a case with refs or earlier rounds.
+/// for a case with refs, whose basket the judge does not see.
 fn judge_input(c: &Case, raw: &str, reads: Option<Vec<String>>) -> judge::Input {
     judge::Input {
         window: format!("{} · {} · {}", c.name, c.cmd, c.path),
@@ -1102,7 +1102,7 @@ fn judge_input(c: &Case, raw: &str, reads: Option<Vec<String>>) -> judge::Input 
         reply: raw.into(),
         // the judge does not see the basket: rule 7 can weigh the reads only
         // when it sees the rest of what the panel saw
-        reads: reads.filter(|_| c.refs.is_empty() && c.turns.is_empty()),
+        reads: reads.filter(|_| c.refs.is_empty()),
         conversation: c.turns.clone(),
     }
 }
@@ -3138,14 +3138,15 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
     }
 
-    /// The judge sees neither a case's basket nor its earlier rounds, so it
-    /// gets no reads there and rule 7 stays lenient (review645).
+    /// The judge does not see a case's basket, so it gets no reads there and
+    /// rule 7 stays lenient (review645). It sees the earlier rounds (#628), so
+    /// an answered case keeps its reads.
     #[test]
-    fn judge_input_withholds_reads_for_a_case_with_refs_or_earlier_rounds() {
-        for (name, text) in [("refs", REFS), ("rounds", ANSWERED)] {
+    fn judge_input_withholds_reads_only_for_a_case_with_refs() {
+        let want = panel_reads(Some(EXPLORED), true);
+        for (name, text, got) in [("refs", REFS, None), ("rounds", ANSWERED, want.clone())] {
             let c = &parse_cases(text).unwrap()[0];
-            let i = judge_input(c, "r", panel_reads(Some(EXPLORED), true));
-            assert_eq!(i.reads, None, "{name}");
+            assert_eq!(judge_input(c, "r", want.clone()).reads, got, "{name}");
         }
     }
 

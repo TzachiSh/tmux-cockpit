@@ -333,9 +333,10 @@ chars made spaces and its `</` escaped (`envelope::esc`), and so is a closer
 with blanks before the `/`, such as `< /panel_reads>`, so a path or pattern
 cannot close the section. Each `--out` row keeps the list as `reads`. A text
 call, a failed call and an owner label have no reads (`null`), and their judge
-prompt has no such section. Neither does a case with refs or earlier rounds:
-the judge does not see the basket, so it could not tell an option drawn from it
-from an invented one. Without the section rule 7 fails
+prompt has no such section. Neither does a case with refs: the judge does not
+see the basket, so it could not tell an option drawn from it from an invented
+one. A case with earlier rounds keeps its reads, since the judge sees those
+rounds. Without the section rule 7 fails
 a repo-context option only when the screen or git state contradicts it, as
 before. With it, rule 7 fails an option with no basis in the request, the
 screen, the git state, the earlier rounds or the reads (#628). In the other
