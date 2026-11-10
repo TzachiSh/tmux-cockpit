@@ -8880,7 +8880,8 @@ if ! command -v curl >/dev/null 2>&1; then skip_ "tui-fetch (no curl)"
 elif ! command -v sha256sum >/dev/null 2>&1; then skip_ "tui-fetch (no sha256sum)"; else
 TF=$(mktmpd); mkdir -p "$TF/plugin/scripts/lib" "$TF/build" "$TF/curlshim" "$TF/shim"
 cp "$DIR/scripts/tui-fetch" "$TF/plugin/scripts/"
-cp "$DIR/scripts/lib/vnum.sh" "$DIR/scripts/lib/tui.sh" "$TF/plugin/scripts/lib/"
+cp "$DIR/scripts/lib/vnum.sh" "$DIR/scripts/lib/tui.sh" "$DIR/scripts/lib/cargo-build.sh" \
+    "$TF/plugin/scripts/lib/"
 TFB="$TF/plugin/bin/cockpit-tui"; TFR="file://$TF/rel"; TFGONE="file://$TF/no-such-host"
 # Counting curl, not timing it: "a 404 is retried" is a fork count, never a clock.
 printf '#!/bin/sh\necho x >> "%s"\nexec %s "$@"\n' "$TF/curlcount" "$(command -v curl)" \
