@@ -388,14 +388,10 @@ fn load(cases: &Path, blind: Option<&Path>) -> Result<Loaded, String> {
     Ok(Loaded { cases: all, from })
 }
 
-/// Keeps the cases a run takes: those `--only` names. Under `--show-holdout`
-/// it names one case by its whole id.
+/// Keeps the cases a run takes: those `--only` names.
 fn pick(cases: &mut Vec<Case>, o: &Opts) {
-    match &o.only {
-        // --show-holdout reruns one case: its id exactly, never a part of another's
-        Some(w) if o.show_holdout => cases.retain(|c| c.id == *w),
-        Some(w) => cases.retain(|c| c.id.contains(w.as_str()) || c.kind == *w),
-        None => {}
+    if let Some(w) = &o.only {
+        cases.retain(|c| c.id.contains(w.as_str()) || c.kind == *w);
     }
 }
 
@@ -819,11 +815,8 @@ fn opts(args: impl IntoIterator<Item = String>) -> Result<Opts, String> {
     if o.show_holdout && o.judge {
         return Err("--show-holdout makes one call: --judge adds another".into());
     }
-    if o.show_holdout && runs_given && o.runs != 1 {
-        return Err(format!("--show-holdout makes one call: --runs {}", o.runs));
-    }
-    if o.show_holdout {
-        o.runs = 1;
+    if o.show_holdout && !(runs_given && o.runs == 1) {
+        return Err("--show-holdout makes one call: add --runs 1".into());
     }
     o.runs = o.runs.max(1);
     if !o.overlap && (from.is_some() || to.is_some() || base.is_some()) {
@@ -1012,6 +1005,9 @@ const HELD_FIELDS: [&str; 25] = [
     "judge_cost_usd",
     "rubric",
 ];
+
+/// Why a `--show-holdout` run refuses to start, and the fix.
+const SHOW_ONE: &str = "--show-holdout needs --only <exact id> matching one case";
 
 /// The line a `--show-holdout` run prints first, before any case (#792).
 const SHOW_BANNER: &str = "warning: --show-holdout is on: this run prints held-out case text; \
@@ -1233,11 +1229,11 @@ fn run(o: &Opts, me: std::io::Result<PathBuf>) {
         eprintln!("panel_eval: {e}");
         std::process::exit(2);
     });
-    if o.show_holdout && cases.len() != 1 {
-        let only = o.only.as_deref().unwrap_or_default();
+    // --show-holdout reruns one case: its whole id, never a part of others' or a kind
+    let one = matches!(&cases[..], [c] if o.only.as_deref() == Some(c.id.as_str()));
+    if o.show_holdout && !one {
         let n = cases.len();
-        let why = format!("--show-holdout reruns exactly one case; --only {only:?} matched {n}");
-        eprintln!("panel_eval: {why}");
+        eprintln!("panel_eval: {SHOW_ONE}; {n} matched");
         std::process::exit(2);
     }
     println!("{}", check_line(&cases, &from));
@@ -5248,42 +5244,38 @@ esac
             }
         }
 
-        /// [`QUIET`] and a held-out case whose id has `held-q` in it.
-        fn quiet_and_q2() -> String {
+        /// [`QUIET`] and two more held-out cases, `hb-1` and `hb-10`, one id
+        /// inside the other.
+        fn with_hb() -> String {
             let at = QUIET.find("=== held-q\n").unwrap();
-            let to = QUIET.find("=== held-ask").unwrap();
-            let q2 = &QUIET[at..to];
-            format!("{QUIET}{}", q2.replace("=== held-q\n", "=== held-q2\n"))
+            let held = &QUIET[at..QUIET.find("=== held-ask").unwrap()];
+            let hb = |id: &str| held.replace("=== held-q\n", &format!("=== {id}\n"));
+            format!("{QUIET}{}{}", hb("hb-1"), hb("hb-10"))
         }
 
         #[test]
-        fn show_holdout_reruns_only_the_case_its_only_names_exactly() {
-            let cases = quiet_and_q2();
+        fn show_holdout_refuses_unless_only_names_one_case_by_its_whole_id() {
             let rows = [
-                ("by substring", "held", 0),
-                ("by kind", "co-kd", 0),
-                ("an id in another", "held-q", 1),
+                ("many ids", "-", 5),
+                ("a kind", "co-kd", 4),
+                ("in another", "hb-1", 2),
+                ("a part", "ld-as", 1),
             ];
             for (name, only, n) in rows {
-                let flags = ["--show-holdout", "--only", only];
-                let (code, out, err, _) = rig_run_on("quiet-one", &cases, &flags);
-                let warned = out.matches("prints held-out case held-q;").count();
-                match n {
-                    1 => assert_eq!((code, warned), (Some(0), 1), "{name}: {out}{err}"),
-                    _ => {
-                        assert_eq!(code, Some(2), "{name}: {out}{err}");
-                        let quiet = !out.contains(" cases (") && !out.contains("held out");
-                        assert!(quiet, "{name}: {out}");
-                        let want = format!("reruns exactly one case; --only {only:?} matched {n}");
-                        assert!(err.contains(&want) && !err.contains("held-q"), "{name}: {err}");
-                    }
-                }
+                let flags = ["--show-holdout", "--runs", "1", "--only", only];
+                let (code, out, err, _) = rig_run_on("quiet-one", &with_hb(), &flags);
+                assert_eq!(code, Some(2), "{name}: {out}{err}");
+                let silent = [" cases (", "held out", "warning"].iter().all(|w| !out.contains(w));
+                assert!(silent, "{name}: {out}");
+                let want = format!("{SHOW_ONE}; {n} matched");
+                assert!(err.contains(&want), "{name}: {err}");
+                assert!(!err.contains("hb-") && leaked(&err).is_empty(), "{name}: {err}");
             }
         }
 
         #[test]
         fn check_prints_no_show_holdout_banner() {
-            let flags = ["--check", "--show-holdout", "--only", "held-q"];
+            let flags = ["--check", "--show-holdout", "--runs", "1", "--only", "held-q"];
             let (code, out, err, _) = rig_run("quiet-check", &flags);
             assert_eq!(code, Some(0), "{out}{err}");
             assert!(out.contains("1 cases (") && !out.contains(SHOW_BANNER), "{out}");
@@ -5292,32 +5284,34 @@ esac
         #[test]
         fn show_holdout_makes_one_paid_call() {
             let o = |s: &str| opts(args(s));
-            assert_eq!(o("--show-holdout --only a").unwrap().runs, 1);
             assert_eq!(o("--show-holdout --only a --runs 1").unwrap().runs, 1);
-            let runs = o("--show-holdout --only a --runs 3").unwrap_err();
-            let judge = o("--show-holdout --only a --judge").unwrap_err();
+            let flags = ["", "--runs 3", "--runs 1 --judge"];
+            let refused = flags.map(|s| o(&format!("--show-holdout --only a {s}")));
             let want = [
-                "--show-holdout makes one call: --runs 3",
+                "--show-holdout makes one call: add --runs 1",
+                "--show-holdout makes one call: add --runs 1",
                 "--show-holdout makes one call: --judge adds another",
             ];
-            assert_eq!([runs, judge], want);
+            assert_eq!(refused.map(|r| r.unwrap_err()), want);
         }
 
         #[test]
         fn show_holdout_is_off_by_default_and_needs_only() {
             assert!(!opts(args("")).unwrap().show_holdout);
-            assert!(opts(args("--show-holdout --only held-q")).unwrap().show_holdout);
+            assert!(opts(args("--show-holdout --only held-q --runs 1")).unwrap().show_holdout);
             let e = opts(args("--show-holdout")).unwrap_err();
             assert_eq!(e, "--show-holdout needs --only: it reruns a held-out case, never a sweep");
         }
 
         #[test]
         fn a_show_holdout_run_warns_first_and_still_writes_no_text() {
-            let flags = ["--show-holdout", "--only", "held-q"];
+            let flags = ["--show-holdout", "--only", "held-q", "--runs", "1"];
             let (code, out, err, rows) = rig_run("quiet-show", &flags);
             assert_eq!(code, Some(0), "{out}{err}");
             let mine: Vec<&str> = out.lines().skip_while(|l| !l.starts_with("1 cases")).collect();
             assert_eq!(mine[1], SHOW_BANNER, "{out}");
+            let warn = "\nwarning: --show-holdout prints held-out case held-q;";
+            assert!(out.contains(warn), "{out}");
             let reply = "\nreply: <prompt>Use ze-trap, vi-nail, al-beacon and qz-lamp.</prompt>\n";
             // the summary opens with one blank line; the reply adds none of its own
             assert!(out.contains(reply) && !out.contains(&format!("{reply}\n\n")), "{out}");

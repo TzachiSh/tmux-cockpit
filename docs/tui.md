@@ -315,9 +315,10 @@ it, as before. `--compare`, `--overlap` and the summary print ids, `want` and
 counts only.
 
 `--show-holdout` is for the owner or a listed reader rerunning one held-out
-case in one paid call. It needs `--only` with the case's whole id, and a run
-that picks any other number of cases exits 2 before printing, naming only the
-count. It sets `--runs 1`, and refuses another `--runs` and `--judge`. The
+case in one paid call. It needs `--only` with the case's whole id and
+`--runs 1`, given. A run whose `--only` picks other than that one case, by a
+part of an id, a kind or an id inside another, exits 2 before printing any
+case, naming only the count. It refuses any other `--runs`, and `--judge`. The
 run prints a warning before the case (none under `--check`), then the case's
 failing reply or full error under a warning line of its own. It never writes
 them to `--out`.
