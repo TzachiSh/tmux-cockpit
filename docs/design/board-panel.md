@@ -1,8 +1,10 @@
 # Board and panel: combined design
 
-Design for the next version of the board and the panel. Nothing here is
-implemented. It reconciles two drafts, a tablet one and a PC one, against an
-audit of what ships today. The three are kept as appendices:
+Design for the next version of the board and the panel. About half of it is
+built; [Status as of master](#status-as-of-master) says which half. This
+document is the reference for the D-numbers cited in the code, not a to-do
+list. It reconciles two drafts, a tablet one and a PC one, against an
+audit of what shipped when it was written. The three are kept as appendices:
 
 - [audit.md](audit.md): the audit of the current board and panel, with 25 live captures.
 - [tablet.md](tablet.md): the tablet portrait draft, mockups at 60 and 40 columns.
@@ -13,6 +15,52 @@ The appendices are verbatim. Where they mention `gen.py`, `gen_tablet.py` or
 `feed.sh` "next to this file", those scripts were not copied. Where an appendix
 and this document disagree, this document wins. Section 0 lists what
 revision 2 changed and why.
+
+## Status as of master
+
+Checked against master at 2894dcb829def9fe1288459ed78a6ba31793d197. The design
+text below is unchanged and still describes the state before the work. Read
+it with this section. Line numbers are in `tui/src/board.rs` unless a file is
+named, and drift as the code moves; search the D-number instead.
+
+**Built.** Steps 1 to 4 and the right pane of step 7 (built in #284).
+- D1: the split at 96 columns (`SPLIT_W`, 2700 to 2707).
+- D2: tiles behind `v` (1173).
+- D3: the bands (1262). D4: folding (1147 to 1153).
+- D5: the selection is an identity, never an index (1669).
+- D6: `n`, `p` and `u`. D7: find on `/`.
+- D9: `board.state` (`STATE_HEAD`, `STATE_MAX`, 3157 to 3174) and the 5 s note
+  (`NOTE_TTL`, 3073), with D20 (a failure note stays until a key).
+- D14 and D19: the shared chrome and the one key bar (1554 for the row).
+- D16: the stale card (98). D17: the colour roles (`tui/src/theme.rs`).
+- D18: a confirm holds the rows still (3515). D21: find with no match (3013).
+- D22: `^C` closes the board from anywhere (4375).
+
+**Superseded.** D12, section 7.2 and step 9 are superseded by #416. On master
+`^R` in the panel is explore-first (`toggle_explore`, `tui/src/panel/app.rs`
+near 959), while `r` stays retry (near 631) and `g` stays best guess (near
+1551). The text stays as written. The clash between the board's `r` and `i`
+and the panel's keys needs a new answer, because D12's `^R` for retry and `^G`
+for best guess no longer exist.
+
+**Not built.**
+- D8 (quick answer), D11 (the panel knows its agent) and the sheet half of D18,
+  with steps 5 and 6. There is no inline reply: `a` on a blocked agent only
+  jumps (the "there is no inline reply yet" comment near 4537),
+  `scripts/cockpit-board` has a `deliver)` case, and `docs/tui.md` calls the
+  rest "still reserved".
+- D10 (the docked panel) and the docked half of step 7, D13 (the tablet board)
+  and step 8. `docs/tui.md` lists them under "Not built here".
+
+**Overtaken by #228.**
+- D9's info loop: `i` now draws the info screen in-process
+  (`crate::info::Screen`, near 4530), so no loop round trip is needed there.
+- The #228 verbs in open question 12 are built in `tui/src/sessions.rs`:
+  `switch`, `new-session -`, `rename-session` and `kill-session`.
+- `resume` on an ended agent and kill-pane-only (#301) are board actions
+  (near 3372 and 3355).
+- Open question 1 is answered by `PANE_MARK` (`◂`, `@` in ASCII, near 109).
+- Open question 19 is settled by #256.
 
 ## Contents
 
