@@ -45,8 +45,16 @@
 # guess written down as an "Assumed:" line is still a guess: such a case is ask.
 # A fact the agent can find (by reading files, running a command) is never a
 # reason to ask; the prompt tells the agent to check it and handle each case.
-# A vague feature may still go plan-first (#451): either. Cases here are not the
-# prompt's own examples on purpose. A case relabelled by #503 says so in note.
+# That assumes a codebase with patterns to find. In a greenfield or empty repo,
+# where no convention exists yet, asking the owner for the stack or the code
+# format is still a fair move (#782).
+# A vague feature may still go plan-first (#451): either. A feature's size is
+# its architectural scope, not its count of parts (#782). A multi-part feature
+# that touches the foundations, such as billing or authentication, always goes
+# plan-first or gets a clarifying question, however short the request, so it is
+# never write. A small UI or logic addition with a stated purpose is write.
+# Cases here are not the prompt's own examples on purpose. A case relabelled by
+# #503 says so in note.
 #
 # Big tasks (#558): a big feature, a migration or a refactor across many files
 # gets the facts first. The prompt has the agent read the current flow and run
