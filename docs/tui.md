@@ -284,7 +284,10 @@ also has is an error, it may hold no case, and a missing file is an error, so a
 lost file cannot quietly drop the held-out cases from a run. A run reports its
 cases with the other held-out cases, apart from the tune cases, and
 `--check` prints each file it read with its case count. `--cases FILE` reads
-only that file.
+only that file. A parse error in the held-out file names the file, the case id,
+the line number and the rule it broke, never the line's text, so held-out text
+stays out of test, build and CI logs; an error in the cases file still quotes
+the line.
 
 A prompt change aims at 100% on the tune cases (#701). A significant drop on a
 held-out case blocks it, no edit may aim at a particular held-out case, and a

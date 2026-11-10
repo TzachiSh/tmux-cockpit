@@ -133,7 +133,7 @@ fn list(v: &str) -> Vec<String> {
 /// `=== id`, then `key: value` lines, then `--- screen`, `--- repo` and
 /// `--- request` bodies. `#` lines outside a body are comments. At least one case.
 fn parse_cases(text: &str) -> Result<Vec<Case>, String> {
-    let cases = parse_some(text)?;
+    let cases = parse_some(text, false)?;
     if cases.is_empty() {
         return Err("no cases".into());
     }
@@ -141,9 +141,16 @@ fn parse_cases(text: &str) -> Result<Vec<Case>, String> {
 }
 
 /// [`parse_cases`] for a file that may hold none: the held-out file ships empty.
-fn parse_some(text: &str) -> Result<Vec<Case>, String> {
+/// A `quiet` error (#783) gives the line and the rule it broke, never the
+/// line's text: a held-out case's text stays out of test and build logs.
+/// Case ids are names, not case text, and stay in.
+fn parse_some(text: &str, quiet: bool) -> Result<Vec<Case>, String> {
     let mut cases = Vec::new();
+    let mut next = 1;
     for (n, block) in text.split("\n=== ").enumerate() {
+        // the block's first line in the file
+        let line0 = next;
+        next += block.matches('\n').count() + 1;
         let block = if n == 0 {
             match block.strip_prefix("=== ") {
                 Some(b) => b,
@@ -155,6 +162,11 @@ fn parse_some(text: &str) -> Result<Vec<Case>, String> {
         let (id, rest) = block.split_once('\n').unwrap_or((block, ""));
         let id = id.trim().to_string();
         let err = |m: &str| format!("case {id}: {m}");
+        // `loud` holds the file's text; a quiet error says only where and why
+        let say = |at: usize, rule: &str, loud: String| {
+            let short = format!("line {}: {rule}", line0 + at);
+            err(if quiet { &short } else { &loud })
+        };
         let rest = format!("\n{rest}");
         let (head, bodies) = rest.split_once("\n--- ").unwrap_or((&rest, ""));
         let mut c = Case {
@@ -179,8 +191,13 @@ fn parse_some(text: &str) -> Result<Vec<Case>, String> {
         };
         let mut expect = None;
         let mut seen: Vec<String> = vec![];
-        for line in head.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
-            let (k, v) = line.split_once(':').ok_or_else(|| err(&format!("not key: value: {line}")))?;
+        for (at, line) in head.lines().enumerate().map(|(at, l)| (at, l.trim())) {
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let (k, v) = line
+                .split_once(':')
+                .ok_or_else(|| say(at, "not key: value", format!("not key: value: {line}")))?;
             let v = v.trim();
             if seen.iter().any(|s| s == k.trim()) {
                 return Err(err(&format!("{} given twice", k.trim())));
@@ -195,10 +212,14 @@ fn parse_some(text: &str) -> Result<Vec<Case>, String> {
                     };
                     (c.name, c.cmd, c.path) = (name.into(), cmd.into(), path.into());
                 }
-                "out" => c.out = out_type(v).ok_or_else(|| err(&format!("unknown out {v}")))?,
+                "out" => {
+                    let bad = || say(at, "unknown out", format!("unknown out {v}"));
+                    c.out = out_type(v).ok_or_else(bad)?
+                }
                 "out_is" => {
                     let t = out_type(v).filter(|t| *t != OutType::Auto);
-                    c.out_is = Some(t.ok_or_else(|| err(&format!("unknown out_is {v}")))?)
+                    let bad = || say(at, "unknown out_is", format!("unknown out_is {v}"));
+                    c.out_is = Some(t.ok_or_else(bad)?)
                 }
                 "expect" => {
                     expect = Some(match v {
@@ -226,12 +247,20 @@ fn parse_some(text: &str) -> Result<Vec<Case>, String> {
                     c.explore = Some(v.into())
                 }
                 "note" => {}
-                k => return Err(err(&format!("unknown key {k}"))),
+                k => return Err(say(at, "unknown key", format!("unknown key {k}"))),
             }
         }
         c.expect = expect.ok_or_else(|| err("no expect"))?;
-        let parts: Vec<&str> = bodies.split("\n--- ").filter(|b| !b.is_empty()).collect();
-        for (i, body) in parts.iter().enumerate() {
+        // each body with its `--- name` line's index in `rest`
+        let mut at = head.matches('\n').count() + 1;
+        let mut parts: Vec<(usize, &str)> = vec![];
+        for b in bodies.split("\n--- ") {
+            if !b.is_empty() {
+                parts.push((at, b));
+            }
+            at += b.matches('\n').count() + 1;
+        }
+        for (i, &(at, body)) in parts.iter().enumerate() {
             let (name, text) = body.split_once('\n').unwrap_or((body, ""));
             let mut lines: Vec<&str> = text.lines().collect();
             if i + 1 == parts.len() {
@@ -260,13 +289,15 @@ fn parse_some(text: &str) -> Result<Vec<Case>, String> {
                 }
                 "conversation" => {
                     dup(!c.turns.is_empty())?;
-                    c.turns = turns(&text).map_err(|m| err(&m))?
+                    let rule = "conversation is user: and assistant: lines";
+                    c.turns = turns(&text).map_err(|m| say(at, rule, m))?
                 }
                 "refs" => {
                     dup(!c.refs.is_empty())?;
-                    c.refs = case_refs(&text).map_err(|m| err(&m))?
+                    let rule = "refs are path, path:a or path:a-b lines";
+                    c.refs = case_refs(&text).map_err(|m| say(at, rule, m))?
                 }
-                x => return Err(err(&format!("unknown section {x}"))),
+                x => return Err(say(at, "unknown section", format!("unknown section {x}"))),
             }
         }
         if c.request.is_empty() {
@@ -307,7 +338,7 @@ fn load(cases: &Path, blind: Option<&Path>) -> Result<Loaded, String> {
     let mut from = vec![(cases.to_path_buf(), all.len())];
     if let Some(b) = blind {
         let at = |e: String| format!("{}: {e}", b.display());
-        let held = parse_some(&read(b)?).map_err(at)?;
+        let held = parse_some(&read(b)?, true).map_err(at)?;
         if let Some(c) = held.iter().find(|c| !c.holdout) {
             return Err(at(format!("case {}: every case in this file needs holdout: yes", c.id)));
         }
@@ -3685,6 +3716,37 @@ mod tests {
                 e.contains("holdout-blind.txt: case b1: ") && e.contains("holdout: yes"),
                 "{row}: {e}"
             );
+        }
+    }
+
+    /// #783: a held-out file's parse error gives the line and the rule broken,
+    /// never the line's text. The bad line sits in the file's second case.
+    #[test]
+    fn a_held_out_file_error_never_shows_the_files_text() {
+        let req = "--- request\n";
+        let rows = [
+            (16, "not key: value", "kind: bug\n", "kind: bug\nMADE-UP stray line\n"),
+            (16, "unknown key", "kind: bug\n", "kind: bug\nMADE-UP-KEY: x\n"),
+            (16, "unknown out", "kind: bug\n", "kind: bug\nout: MADE-UP\n"),
+            (23, "unknown section", req, "--- MADE-UP\n--- request\n"),
+            (
+                23,
+                "conversation is user: and assistant: lines",
+                req,
+                "--- conversation\nMADE-UP\n--- request\n",
+            ),
+            (
+                23,
+                "refs are path, path:a or path:a-b lines",
+                req,
+                "--- refs\nMADE-UP:x-y\n--- request\n",
+            ),
+        ];
+        for (i, (line, rule, from, to)) in rows.into_iter().enumerate() {
+            let blind = format!("# readers\n#\n{}{}", held("b0"), held("b1").replace(from, to));
+            let (_d, c, b) = two_files(&format!("quiet-{i}"), ONE, &blind);
+            let e = load(&c, Some(&b)).err().unwrap_or_else(|| panic!("{rule}: loaded"));
+            assert_eq!(e, format!("{}: case b1: line {line}: {rule}", b.display()));
         }
     }
 
