@@ -271,7 +271,7 @@ fn a_broken_prompt_file_falls_back_and_says_why() {
 
 fn fake_tmux(e: &Env, display: &str) {
     let body = format!(
-        "case \"$1\" in\ndisplay) printf '{display}' ;;\n\
+        ": > \"$D/ran\"\ncase \"$1\" in\ndisplay) printf '{display}' ;;\n\
          capture-pane) echo \"$@\" > \"$D/args\"; printf 'line1\\n\\nline2\\n  \\n\\n' ;;\n\
          *) exit 1 ;;\nesac"
     );
@@ -281,10 +281,24 @@ fn fake_tmux(e: &Env, display: &str) {
 /// The vars for a row with a fake tmux: COCKPIT_TMUX is the bare name, the
 /// production default, found first on a PATH that starts with `$D`. The variable
 /// itself is an argv split on whitespace (`data::tmux_argv`), so it cannot hold
-/// the path of a fake in a dir with a space. [`Env`] restores both on drop.
-fn tmux_on_path() -> [(&'static str, Option<String>); 2] {
+/// the path of a fake in a dir with a space. With no TMUX and TMUX_TMPDIR in `$D`,
+/// a real tmux reached by mistake finds no server, never the user's. [`Env`]
+/// restores all four on drop.
+fn tmux_on_path() -> [(&'static str, Option<String>); 4] {
     let path = format!("$D:{}", std::env::var("PATH").unwrap_or_default());
-    [("COCKPIT_TMUX", Some("tmux".into())), ("PATH", Some(path))]
+    [
+        ("COCKPIT_TMUX", Some("tmux".into())),
+        ("PATH", Some(path)),
+        ("TMUX", None),
+        ("TMUX_TMPDIR", Some("$D".into())),
+    ]
+}
+
+/// Whether [`fake_tmux`]'s fake ran since the last ask; its marker is taken, so
+/// the next ask in a loop starts fresh. A row whose asserts a real tmux could
+/// also meet (a block that is "") checks it.
+fn ran(e: &Env) -> bool {
+    std::fs::remove_file(e.dir.join("ran")).is_ok()
 }
 
 #[test]
@@ -448,7 +462,9 @@ fn an_ssh_pane_or_no_path_carries_no_repo_block() {
     // rows: the window line tmux prints
     for display in ["w\\tssh\\t$D/r\\n", "w\\tmosh-client\\t$D/r\\n", "w\\tbash\\t\\n"] {
         fake_tmux(&e, display);
-        assert_eq!(capture("%9").unwrap().repo.get(), "", "{display}");
+        let c = capture("%9").unwrap();
+        assert!(ran(&e), "{display}: tmux never started");
+        assert_eq!(c.repo.get(), "", "{display}");
     }
 }
 
@@ -610,7 +626,9 @@ fn a_container_or_unknown_command_pane_carries_no_repo_block() {
     // toolbox stands for any command not on the list, and "" for none at all
     for cmd in ["docker", "podman", "kubectl", "lxc", "incus", "nerdctl", "toolbox", ""] {
         fake_tmux(&e, &format!("w\\t{cmd}\\t$D/r\\n"));
-        assert_eq!(capture("%9").unwrap().repo.get(), "", "{cmd:?}");
+        let c = capture("%9").unwrap();
+        assert!(ran(&e), "{cmd:?}: tmux never started");
+        assert_eq!(c.repo.get(), "", "{cmd:?}");
     }
 }
 
@@ -632,7 +650,9 @@ fn every_ssh_like_command_carries_no_repo_block() {
     git_init(&e.dir.join("r"));
     for cmd in cockpit_tui::panel::capture::SSH_LIKE {
         fake_tmux(&e, &format!("w\\t{cmd}\\t$D/r\\n"));
-        assert_eq!(capture("%9").unwrap().repo.get(), "", "{cmd}");
+        let c = capture("%9").unwrap();
+        assert!(ran(&e), "{cmd}: tmux never started");
+        assert_eq!(c.repo.get(), "", "{cmd}");
     }
 }
 
