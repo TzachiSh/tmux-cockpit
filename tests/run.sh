@@ -1231,14 +1231,14 @@ bgheld() {                    # <payload> <end> [dir first on PATH]: done on a h
     printf 'x\n' 1<> "$BGF"; wait "$w"; }
 bgst running "$BGU"; bgheld "$(bgstop "$BGT")" $'\n'
 is "a Stop with stdin held open past its newline still holds" running "$(bgo @panestate)"
-# No newline and stdin held for 10 s (#320): the read gives up at its 2 s bound and the
-# Stop is done. Polled for half the hold, so an unbounded read is still waiting when it ends.
+# No newline and stdin held for 20 s (#320): the read gives up at its 10 s bound and the
+# Stop is done. Polled for 15 s, so an unbounded read is still waiting when it ends.
 if command -v timeout >/dev/null 2>&1; then
     bgst running "$BGU"
-    { { printf '%s' "$(bgstop "$BGT")"; read -r -t 10 _ <> "$BGF"; } \
+    { { printf '%s' "$(bgstop "$BGT")"; read -r -t 20 _ <> "$BGF"; } \
         | TMUX="$SOCKDIR/$BG,0,0" "$DIR/scripts/agent-state" done "$BGP" >/dev/null 2>&1; } &
     bghold=$!
-    POLLS=50 until_out done bgo @panestate
+    POLLS=150 until_out done bgo @panestate
     is "a Stop with no newline and stdin held open returns within its bound" done \
         "$(bgo @panestate)"
     printf 'x\n' 1<> "$BGF"; wait "$bghold"
@@ -1246,9 +1246,28 @@ if command -v timeout >/dev/null 2>&1; then
     BGHD=$(mktmpd); printf '#!/bin/sh\nexec cat\n' > "$BGHD/head"; chmod +x "$BGHD/head"
     bgst running "$BGU"; bgheld "$(bgstop "$BGT")" "" "$BGHD"
     is "a timed-out read that got part of the payload is done" done "$(bgo @panestate)"
+    # A slow pipe is not a stuck one (#743): a writer that pauses 3 s mid-payload, past the
+    # old 2 s deadline, is read whole and still holds.
+    BGPL=$(bgstop "$BGT")
+    bgst running "$BGU"
+    { printf '%s' "${BGPL:0:40}"; sleep 3; printf '%s\n' "${BGPL:40}"; } \
+        | TMUX="$SOCKDIR/$BG,0,0" "$DIR/scripts/agent-state" done "$BGP" >/dev/null 2>&1
+    is "a writer that pauses 3 s mid-payload still holds" running "$(bgo @panestate)"
+    # A writer that never finishes, 8 KB every 0.2 s and no newline, is still cut at 10 s and
+    # the Stop is done. Polled for 15 s.
+    bgst running "$BGU"
+    { { printf '{"last_assistant_message":"'
+        while ! read -r -t 0.2 _ <> "$BGF"; do printf '%08192d' 0; done; } 2>/dev/null \
+        | TMUX="$SOCKDIR/$BG,0,0" "$DIR/scripts/agent-state" done "$BGP" >/dev/null 2>&1; } &
+    bghold=$!
+    POLLS=150 until_out done bgo @panestate
+    is "a writer that never finishes is done within its bound" done "$(bgo @panestate)"
+    printf 'x\n' 1<> "$BGF"; wait "$bghold"
 else
     skip_ "a Stop with no newline and stdin held open returns within its bound (no timeout)"
     skip_ "a timed-out read that got part of the payload is done (no timeout)"
+    skip_ "a writer that pauses 3 s mid-payload still holds (no timeout)"
+    skip_ "a writer that never finishes is done within its bound (no timeout)"
 fi
 
 # Sticky states stay sticky: a subagent's PermissionRequest lands on the main pane.
