@@ -1549,6 +1549,15 @@ mod tests {
         assert_eq!(split_tmux_argv(Some("tmux -L sock")), ["tmux", "-L", "sock"]);
     }
 
+    /// A blank COCKPIT_TMUX names no program, so `tmux()` fails to spawn and
+    /// reaches no server. It must not fall back to plain `tmux` (#757 row 21).
+    #[test]
+    fn split_tmux_argv_blank_names_no_program() {
+        for blank in ["", " ", " \t", "\n"] {
+            assert!(split_tmux_argv(Some(blank)).is_empty(), "{blank:?}");
+        }
+    }
+
     /// Pins the limit docs/tui.md's COCKPIT_TMUX row states (#757 row 20).
     /// Delete or flip this test when a quoting syntax lands.
     #[test]
