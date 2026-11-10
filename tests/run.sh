@@ -19438,6 +19438,11 @@ fi
 
 
 echo "== an interrupted run leaves no revdiff doctor server behind (#814) =="
+# kill_sock on a path removes only a socket: a SOCKS entry split on a space once named a
+# user's file, and the cleanup's rm took it (#817). Pinned here, with no server involved.
+KSD=$(mktmpd); mkdir -p "$KSD/my tmp"; echo keep > "$KSD/my"
+kill_sock "$KSD/my"
+is "kill_sock on a path that is not a socket leaves that file alone" "keep" "$(cat "$KSD/my")"
 # That block's server runs under its own TMUX_TMPDIR. A run ended mid-block left it up for
 # its 300 s, since the cleanup only walked SOCKDIR. Here the block is run on its own, held
 # with the server up, and ended with TERM: its socket must have no listener after. The
