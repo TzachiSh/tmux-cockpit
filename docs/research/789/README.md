@@ -59,3 +59,4 @@ None. This folder changes no code.
 | Date | Event |
 |---|---|
 | 2026-11-10 | Four read-only lanes reported; three refute lanes graded every load-bearing claim; wording corrected |
+| 2026-11-10 | Decision 1 answered yes by the owner. Probe ran, $2.447. Results in `probe-results.md`: three edits (line 34 widening without the caching example, line 39, line 80) drop `two-services` to 22/30, so the example is not the only cause and the share due to line 34 alone is not isolated; both W2 arms lift `h-rate-limit` to 30/30; master's own spread on h-rate-limit was 19, 23 and 25. Decisions 2 to 4 still open |
