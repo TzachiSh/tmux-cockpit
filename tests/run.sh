@@ -185,13 +185,16 @@ export COCKPIT_NO_AUTOSTART=1
 # Scratch servers are registered here so an interrupted run does not leave them
 # behind. Each block still kills its own; this is the backstop.
 SOCKS=""
+# Socket paths of servers a block made under its own TMUX_TMPDIR, one per line: SOCKS splits
+# on spaces, and a TMPDIR may hold one (#818).
+SOCKP=""
 # kill-server does NOT unlink the socket file -- tmux never removes one, by any
 # exit path (measured: kill-server, last kill-session and a natural exit all
 # leave it). A suite that mints 17 unique -L names per run therefore left 17
 # dead socket inodes in the tmux socket dir every time; ~850 had piled up.
 SOCKDIR="${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)"
-# A SOCKS entry is a -L name under SOCKDIR, or the full path of a socket a block made under
-# its own TMUX_TMPDIR (#814): killed by that socket, never by pid.
+# A -L name under SOCKDIR (SOCKS), or the full path of a socket a block made under its own
+# TMUX_TMPDIR (SOCKP, #814): killed by that socket, never by pid.
 kill_sock() {                 # <-L name | /socket/path>
     case $1 in
         /*) "$TMUX_REAL" -S "$1" kill-server >/dev/null 2>&1; [ ! -S "$1" ] || rm -f "$1" ;;
@@ -199,7 +202,11 @@ kill_sock() {                 # <-L name | /socket/path>
     esac
 }
 kill_socks() {
+    local s
     for s in $SOCKS; do kill_sock "$s"; done
+    while IFS= read -r s; do [ -z "$s" ] || kill_sock "$s"; done <<EOF_SOCKP
+$SOCKP
+EOF_SOCKP
 }
 
 # Several checks need a live tmux server to set per-pane options against. Skip
@@ -232,6 +239,9 @@ fi
 # the moment it returns, so the first version of this registered nothing at all.
 TMPS=$(mktemp)
 mktmpd() { local d; d=$(mktemp -d) || return 1; printf '%s\n' "$d" >> "$TMPS"; printf '%s' "$d"; }
+# A file:// URL for a fixture dir under TMPDIR: curl rejects a raw space, and reads %xx as an
+# escape, so % is encoded first, then the space (#818).
+file_url() { local p=${1//%/%25}; printf 'file://%s' "${p// /%20}"; }
 mktmpf() { local f; f=$(mktemp)    || return 1; printf '%s\n' "$f" >> "$TMPS"; printf '%s' "$f"; }
 # Polled, not slept for. A fixed sleep guesses how long a keystroke takes to
 # land; these wait for the thing the next assertion reads and give up after
@@ -3770,7 +3780,7 @@ printf '# mine\nrun-shell %s/cockpit.tmux\n' "$DIR" > "$BH/.tmux.conf"
 bs() {                        # bs <args...> -- bootstrap.sh on the faked box
     env -u TMUX -u TMUX_PANE HOME="$BH" XDG_BIN_HOME="${BSBIN:-$BB}" \
         XDG_CONFIG_HOME="$BH/.config" TMUX_TMPDIR="$BS/tmuxtmp" \
-        COCKPIT_GITHUB="file://$REL" PATH="$BPATH" "$DIR/bootstrap.sh" "$@" </dev/null 2>&1
+        COCKPIT_GITHUB="$(file_url "$REL")" PATH="$BPATH" "$DIR/bootstrap.sh" "$@" </dev/null 2>&1
 }
 # One tarball per published asset name, so the block never repeats the uname
 # mapping the script under test owns. The binaries are shell scripts: the only
@@ -15084,20 +15094,20 @@ if [ "$RVTN" -gt "$RVMAX" ]; then
     rvsk="socket path $RVTN bytes, over $RVMAX, and no short XDG_RUNTIME_DIR (#766)"
     skip_ "the revdiff on the server's PATH: $rvsk"
 else
-RVS="env -u TMUX TMUX_TMPDIR=$RVTT $TMUX_REAL -L $SUITE_SOCK -f /dev/null"
-# Under its own TMUX_TMPDIR, so the cleanup finds it only by its path (#814). SOCKS is split
-# on spaces: a path with one is not registered, so no piece of it reaches the cleanup's rm.
-RVSP="$RVTT/tmux-$(id -u)/$SUITE_SOCK"
-case $RVSP in *[[:space:]]*) ;; *) SOCKS="$SOCKS $RVSP" ;; esac
-$RVS new-session -d 'sleep 300' >/dev/null 2>&1
-$RVS set-environment -g PATH "$RV/old:/usr/bin:/bin" >/dev/null 2>&1
+# A function, not a string: a path with a space in TMUX_TMPDIR stays one argument (#818).
+rvs() { env -u TMUX TMUX_TMPDIR="$RVTT" "$TMUX_REAL" -L "$SUITE_SOCK" -f /dev/null "$@"; }
+# Under its own TMUX_TMPDIR, so the cleanup finds it only by its path (#814), kept whole in
+# SOCKP even with a space in it (#818).
+RVSP="$RVTT/tmux-$(id -u)/$SUITE_SOCK"; SOCKP="$SOCKP$RVSP"$'\n'
+rvs new-session -d 'sleep 300' >/dev/null 2>&1
+rvs set-environment -g PATH "$RV/old:/usr/bin:/bin" >/dev/null 2>&1
 # A seam for the interrupt block (#814), set only by it: the run stops here with this server
 # up, and names the socket the server bound (resolved, as /proc/net/unix lists it).
 if [ -n "${COCKPIT_TEST_RV_HOLD:-}" ]; then
-    $RVS display-message -p '#{socket_path}' > "$COCKPIT_TEST_RV_HOLD" 2>/dev/null; sleep 60
+    rvs display-message -p '#{socket_path}' > "$COCKPIT_TEST_RV_HOLD" 2>/dev/null; sleep 60
 fi
 is "the revdiff on the server's PATH is the one graded" "warn" "$(rvrow "$(rvdc "$RV/new")")"
-$RVS kill-server >/dev/null 2>&1
+rvs kill-server >/dev/null 2>&1
 fi
 out=$(rvdc "$RV/old")
 is "revdiff below the tested version is a warn row" "warn" "$(rvrow "$out")"
@@ -15129,7 +15139,7 @@ rvrel() {                     # rvrel [flip]
 rvbs() {                      # rvbs <extra PATH dir> <args...> -- bootstrap.sh on the fake box
     local p=$1; shift
     env -u TMUX -u TMUX_PANE HOME="$RVH" XDG_BIN_HOME="$RVB" XDG_CONFIG_HOME="$RVH/.config" \
-        TMUX_TMPDIR="$RV/tmuxtmp" COCKPIT_GITHUB="file://$RVREL" \
+        TMUX_TMPDIR="$RV/tmuxtmp" COCKPIT_GITHUB="$(file_url "$RVREL")" \
         PATH="$p:$SHIM:/usr/bin:/bin" "$DIR/bootstrap.sh" "$@" </dev/null 2>&1
 }
 rvrel
