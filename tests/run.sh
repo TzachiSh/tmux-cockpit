@@ -19437,12 +19437,14 @@ av_tm kill-server >/dev/null 2>&1
 fi
 
 
-echo "== an interrupted run leaves no revdiff doctor server behind (#814) =="
-# kill_sock on a path removes only a socket: a SOCKS entry split on a space once named a
-# user's file, and the cleanup's rm took it (#817). Pinned here, with no server involved.
-KSD=$(mktmpd); mkdir -p "$KSD/my tmp"; echo keep > "$KSD/my"
+echo "== the cleanup's kill_sock removes a path only when it is a socket (#817) =="
+# A SOCKS entry split on a space once named a user's file "my", beside a dir "my tmp", and
+# the cleanup's rm took it. No server is involved.
+KSD=$(mktmpd); echo keep > "$KSD/my"
 kill_sock "$KSD/my"
 is "kill_sock on a path that is not a socket leaves that file alone" "keep" "$(cat "$KSD/my")"
+
+echo "== an interrupted run leaves no revdiff doctor server behind (#814) =="
 # That block's server runs under its own TMUX_TMPDIR. A run ended mid-block left it up for
 # its 300 s, since the cleanup only walked SOCKDIR. Here the block is run on its own, held
 # with the server up, and ended with TERM: its socket must have no listener after. The
@@ -19464,7 +19466,8 @@ irs=$(cat "$IR/held" 2>/dev/null)
 irl=0; [ -z "$irs" ] || irl=$(grep -cF " $irs" /proc/net/unix)
 if [ -z "$irs" ]; then
     wait "$irp" 2>/dev/null
-    if grep -q "SKIP the revdiff on the server's PATH" "$IR/log"; then
+    # skip_ prints a colour code between SKIP and the reason.
+    if grep -q "SKIP.* the revdiff on the server's PATH" "$IR/log"; then
         skip_ "revdiff interrupt (the block skipped its server row, so it never held)"
     else
         bad "the revdiff block, run on its own, held with its server up" "held" \
