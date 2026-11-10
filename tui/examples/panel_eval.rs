@@ -5592,9 +5592,7 @@ esac
             let claude = router_claude(&cap.0);
             let (code, out, err, _) = rig_run_with("router-sys", QUIET, &claude, &flags);
             assert_eq!(code, Some(0), "{out}{err}");
-            let sent = std::fs::read_dir(&cap.0).unwrap().map(|e| e.unwrap().path());
-            let sent = sent.filter(|p| p != &router).map(|p| std::fs::read_to_string(p).unwrap());
-            assert_eq!(sent.collect::<Vec<_>>(), [ROUTER; 3]);
+            assert_eq!(sent(&cap.0, &router), [ROUTER; 3]);
         }
 
         #[test]
@@ -5627,8 +5625,8 @@ esac
         #[test]
         fn a_router_explore_case_gets_the_where_note_only_when_it_explores() {
             let cases = ONE.replace("expect: write", "expect: write\nexplore: invoicer");
-            let rows = [("router-noex", &["--no-explore"][..], true), ("router-ex", &[], false)];
-            for (name, extra, alone) in rows {
+            let rows = [("router-noex", &["--no-explore"][..], false), ("router-ex", &[], true)];
+            for (name, extra, explores) in rows {
                 let cap = scratch(&format!("{name}-cap"));
                 let router = cap.0.join("router.txt");
                 std::fs::write(&router, ROUTER).unwrap();
@@ -5637,12 +5635,13 @@ esac
                 let claude = router_claude(&cap.0);
                 let (code, out, err, rows) = rig_run_with(name, &cases, &claude, &flags);
                 assert_eq!(code, Some(0), "{name}: {out}{err}");
-                assert_eq!(fields(&rows, "explore"), [json!(!alone)], "{name}");
-                assert!(!alone || fields(&rows, "files_read") == [Value::Null], "{name}: {rows}");
+                assert_eq!(fields(&rows, "explore"), [json!(explores)], "{name}");
+                let read = fields(&rows, "files_read");
+                assert!(explores || read == [Value::Null], "{name}: {rows}");
                 let s = sent(&cap.0, &router);
-                assert_eq!((s.len(), s[0] == ROUTER), (1, alone), "{name}: {s:?}");
+                assert_eq!((s.len(), s[0] == ROUTER), (1, !explores), "{name}: {s:?}");
                 let noted = s[0].starts_with(&format!("{ROUTER}\n\nThe repository is at "));
-                assert_eq!(noted, !alone, "{name}: {s:?}");
+                assert_eq!(noted, explores, "{name}: {s:?}");
             }
         }
 
