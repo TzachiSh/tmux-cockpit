@@ -267,3 +267,63 @@ fn a_filter_from_config_parameters_inherited_never_runs() {
     assert_eq!(r.diffstat_with(&[("GIT_CONFIG_PARAMETERS", &params)]), (0, Some(r.reference())));
     assert!(!ran.exists(), "the injected clean filter ran");
 }
+
+/// [`one_line_added`] with `f`'s committed blob replaced under `<base><blob>`
+/// by a three-line one: through it, plain git's `+1 -0` reads `+2 -3` (#730).
+fn blob_replaced_under(tag: &str, base: &str) -> Repo {
+    let r = one_line_added(tag);
+    let old = String::from_utf8(r.git(&["rev-parse", "HEAD:f"])).unwrap();
+    std::fs::write(r.0.join(".git/swap"), "x\ny\nz\n").unwrap();
+    let new = String::from_utf8(r.git(&["hash-object", "-w", ".git/swap"])).unwrap();
+    r.git(&["update-ref", &format!("{base}{}", old.trim()), new.trim()]);
+    r
+}
+
+/// GIT_REPLACE_REF_BASE naming a base that holds a replacement: f's lines
+/// would count from the swapped blob, not the one HEAD stores.
+#[test]
+fn a_replace_ref_base_inherited_never_swaps_a_blob() {
+    let r = blob_replaced_under("replace-alt", "refs/alt/");
+    assert_eq!(r.reference(), (1, 0, 0), "plain git reads the stored blob");
+    let env = [("GIT_REPLACE_REF_BASE", "refs/alt/")];
+    assert_eq!(r.diffstat_with(&env), (0, Some(r.reference())));
+}
+
+/// GIT_REPLACE_REF_BASE naming an empty base: the repo's own refs/replace/
+/// would stop applying, and the count part from what plain git shows.
+#[test]
+fn a_replace_ref_base_inherited_never_hides_the_repos_own_replacement() {
+    let r = blob_replaced_under("replace-own", "refs/replace/");
+    assert_eq!(r.reference(), (2, 3, 0), "plain git reads the repo's replacement");
+    let env = [("GIT_REPLACE_REF_BASE", "refs/none/")];
+    assert_eq!(r.diffstat_with(&env), (0, Some(r.reference())));
+}
+
+/// GIT_NO_REPLACE_OBJECTS inherited: the repo's own refs/replace/ would stop
+/// applying, so the count would leave git's default view of the repo.
+#[test]
+fn no_replace_objects_inherited_never_hides_the_repos_own_replacement() {
+    let r = blob_replaced_under("noreplace", "refs/replace/");
+    assert_eq!(r.reference(), (2, 3, 0), "plain git reads the repo's replacement");
+    let env = [("GIT_NO_REPLACE_OBJECTS", "1")];
+    assert_eq!(r.diffstat_with(&env), (0, Some(r.reference())));
+}
+
+/// scripts/lib/git-env.sh's copy of the strip list, which tmux-review,
+/// tmux-branch and the review diff unset, holds exactly what gitsafe strips (#730).
+#[test]
+fn git_env_sh_strips_the_same_variables_as_gitsafe() {
+    use cockpit_tui::data::gitsafe::{PATHSPEC, REDIRECT};
+    let lib = concat!(env!("CARGO_MANIFEST_DIR"), "/../scripts/lib/git-env.sh");
+    let o = Command::new("bash")
+        .args(["-c", r#". "$1" && printf '%s\n' "${GIT_ENV_STRIP[@]}""#, "_", lib])
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "sourcing git-env.sh: {}", String::from_utf8_lossy(&o.stderr));
+    let out = String::from_utf8(o.stdout).unwrap();
+    let mut got: Vec<&str> = out.lines().collect();
+    let mut want: Vec<&str> = REDIRECT.iter().chain(&PATHSPEC).copied().collect();
+    got.sort();
+    want.sort();
+    assert_eq!(got, want);
+}

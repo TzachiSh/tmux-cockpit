@@ -22,14 +22,6 @@ if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
     exit 1
 fi
 
-# Every git call, revdiff's too, is about the pane's own repo: a popup inherits
-# tmux's environment, where a dotfiles setup's GIT_DIR would point all of them
-# at another. Here, before any mode runs, so a new mode cannot miss it.
-# GIT_CEILING_DIRECTORIES stays: it can only stop the search lower.
-unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE
-# Nor may an inherited pathspec mode change what this script's pathspecs match (#673).
-unset GIT_LITERAL_PATHSPECS GIT_GLOB_PATHSPECS GIT_NOGLOB_PATHSPECS GIT_ICASE_PATHSPECS
-
 # Not `$0`: through install.sh's symlink or a PATH lookup this must still
 # find its siblings and re-invoke itself.
 # shellcheck disable=SC2034  # read by the libs
@@ -37,6 +29,12 @@ SELF="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE
 # lib/ sits beside the REAL script; install.sh links it by absolute path.
 d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")
 LIBDIR=${d%/*}/lib
+# Every git call, revdiff's too, is about the pane's own repo: a popup inherits
+# tmux's environment, where a dotfiles setup's GIT_DIR would point all of them
+# at another, and a pathspec mode would change what this script's pathspecs
+# match (#673). Here, before any mode runs, so a new mode cannot miss it.
+# shellcheck source=lib/git-env.sh
+. "$LIBDIR/git-env.sh" || exit 1
 # shellcheck source=lib/git.sh
 . "$LIBDIR/git.sh" || exit 1
 

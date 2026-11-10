@@ -46,13 +46,22 @@ pub const SAFE: [&str; 23] = [
 /// stays: it can only stop the search lower. GIT_ALTERNATE_OBJECT_DIRECTORIES
 /// stays: it only adds stores to read, and an object's id fixes its content.
 /// GIT_NAMESPACE stays: it scopes refs for a transport, not a local rev lookup.
-pub const REDIRECT: [&str; 6] = [
+/// Replacement refs follow the same rule as GIT_DIR (#730): git's default view
+/// of the repo, whatever replacement setting the environment inherited. So
+/// GIT_REPLACE_REF_BASE goes, which would count a blob HEAD stores as the one a
+/// ref under that base names, and GIT_NO_REPLACE_OBJECTS goes, which would stop
+/// the repo's own `refs/replace/` from applying.
+/// scripts/lib/git-env.sh's GIT_ENV_STRIP copies this list and [`PATHSPEC`] for the
+/// shell commands, and tui/tests/gitsafe_env.rs pins the copy.
+pub const REDIRECT: [&str; 8] = [
     "GIT_DIR",
     "GIT_WORK_TREE",
     "GIT_COMMON_DIR",
     "GIT_INDEX_FILE",
     "GIT_OBJECT_DIRECTORY",
     "GIT_ATTR_SOURCE",
+    "GIT_REPLACE_REF_BASE",
+    "GIT_NO_REPLACE_OBJECTS",
 ];
 
 /// What an inherited environment changes every pathspec's meaning with (#673):
