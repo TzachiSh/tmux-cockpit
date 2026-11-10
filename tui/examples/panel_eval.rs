@@ -376,19 +376,31 @@ struct Loaded {
 
 /// Reads the cases file, then the held-out file when there is one (#783). That
 /// file may hold no case, each of its cases says `holdout: yes`, and none has
-/// an id the cases file has. An error starts with the file it is in.
+/// an id the cases file has or an id inside another. An error starts with the
+/// file it is in.
 fn load(cases: &Path, blind: Option<&Path>) -> Result<Loaded, String> {
     let read = |p: &Path| std::fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display()));
     let mut all = parse_cases(&read(cases)?).map_err(|e| format!("{}: {e}", cases.display()))?;
     let mut from = vec![(cases.to_path_buf(), all.len())];
     if let Some(b) = blind {
         let at = |e: String| format!("{}: {e}", b.display());
-        let held = parse_some(&read(b)?, true).map_err(at)?;
+        let text = read(b)?;
+        let held = parse_some(&text, true).map_err(at)?;
         if let Some(c) = held.iter().find(|c| !c.holdout) {
             return Err(at(format!("case {}: every case in this file needs holdout: yes", c.id)));
         }
         if let Some(c) = held.iter().find(|c| all.iter().any(|a| a.id == c.id)) {
             return Err(at(format!("case {}: already in {}", c.id, cases.display())));
+        }
+        // `--only` matches by substring, so a held-out id inside another id picks
+        // two cases and `--show-holdout` can never show it (#804). Each `=== `
+        // line opens a case here, so the k-th one is case k's.
+        let opens = text.lines().enumerate().filter(|(_, l)| l.starts_with("=== "));
+        for (c, (i, _)) in held.iter().zip(opens) {
+            if all.iter().chain(&held).any(|o| o.id != c.id && o.id.contains(c.id.as_str())) {
+                let rule = "a held-out id is inside another id: --only cannot pick it alone";
+                return Err(at(format!("line {}: {rule}", i + 1)));
+            }
         }
         from.push((b.to_path_buf(), held.len()));
         all.extend(held);
@@ -4291,6 +4303,49 @@ mod tests {
         let e = load(&c, Some(&b)).err().expect("an id in both files loaded");
         let other = format!("already in {}", c.display());
         assert!(e.contains("case b1: ") && e.contains(&other), "{e}");
+    }
+
+    /// #804: the error for a held-out id inside another id, at its `===` line.
+    fn nested(line: usize) -> String {
+        format!("line {line}: a held-out id is inside another id: --only cannot pick it alone")
+    }
+
+    /// #804: a held-out id inside another held-out id is refused at the inner
+    /// case's `===` line, in either order, and the error names no id.
+    #[test]
+    fn a_held_out_id_inside_another_held_out_id_is_refused_unshown() {
+        let rows = [("inner first", ["hb-1", "hb-10"], 2), ("inner last", ["hb-10", "hb-1"], 13)];
+        for (row, [x, y], line) in rows {
+            let blind = format!("# readers\n{}{}", held(x), held(y));
+            let (_d, c, b) = two_files(&format!("nest-{}", row.len()), ONE, &blind);
+            let e = load(&c, Some(&b)).err().unwrap_or_else(|| panic!("{row}: loaded"));
+            assert_eq!(e, format!("{}: {}", b.display(), nested(line)), "{row}");
+        }
+    }
+
+    /// #804: a held-out id inside a cases.txt id is refused the same way.
+    #[test]
+    fn a_held_out_id_inside_a_tune_id_is_refused_unshown() {
+        let tune = ONE.replace("=== crash", "=== xhb-1-tune");
+        let (_d, c, b) = two_files("nest-tune", &tune, &format!("# readers\n{}", held("hb-1")));
+        let e = load(&c, Some(&b)).err().expect("a held-out id inside a tune id loaded");
+        assert_eq!(e, format!("{}: {}", b.display(), nested(2)));
+    }
+
+    /// #804: ids that do not sit inside one another load, a tune id inside a
+    /// held-out id included: `--only` on the held-out id still picks one.
+    #[test]
+    fn held_out_ids_that_do_not_nest_load() {
+        let rows = [
+            ("apart", ONE.to_string(), ["hb-01", "hb-02"]),
+            ("tune inside", ONE.replace("=== crash", "=== hb"), ["hb-01", "hb-02"]),
+        ];
+        for (row, cases, [x, y]) in rows {
+            let blind = held(x) + &held(y);
+            let (_d, c, b) = two_files(&format!("apart-{}", row.len()), &cases, &blind);
+            let got = load(&c, Some(&b)).unwrap_or_else(|e| panic!("{row}: {e}"));
+            assert_eq!(got.from, [(c, 1), (b, 2)], "{row}");
+        }
     }
 
     /// #783: a held-out file with no case, a header or nothing at all, loads.
