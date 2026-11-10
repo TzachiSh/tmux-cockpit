@@ -142,7 +142,8 @@ fn parse_cases(text: &str) -> Result<Vec<Case>, String> {
 
 /// [`parse_cases`] for a file that may hold none: the held-out file ships empty.
 /// A `quiet` error (#783) gives the line and the rule it broke, never the
-/// line's text: a held-out case's text stays out of test and build logs.
+/// line's text: a held-out case's text stays out of test and build logs. A
+/// rule of the whole case names the case's `===` line.
 /// Case ids are names, not case text, and stay in.
 fn parse_some(text: &str, quiet: bool) -> Result<Vec<Case>, String> {
     let mut cases = Vec::new();
@@ -167,6 +168,8 @@ fn parse_some(text: &str, quiet: bool) -> Result<Vec<Case>, String> {
             let short = format!("line {}: {rule}", line0 + at);
             err(if quiet { &short } else { &loud })
         };
+        // a rule whose message holds no text of the file: quiet adds only the line
+        let broke = |at: usize, rule: &str| say(at, rule, rule.to_string());
         let rest = format!("\n{rest}");
         let (head, bodies) = rest.split_once("\n--- ").unwrap_or((&rest, ""));
         let mut c = Case {
@@ -200,7 +203,7 @@ fn parse_some(text: &str, quiet: bool) -> Result<Vec<Case>, String> {
                 .ok_or_else(|| say(at, "not key: value", format!("not key: value: {line}")))?;
             let v = v.trim();
             if seen.iter().any(|s| s == k.trim()) {
-                return Err(err(&format!("{} given twice", k.trim())));
+                return Err(broke(at, &format!("{} given twice", k.trim())));
             }
             seen.push(k.trim().into());
             match k.trim() {
@@ -208,7 +211,7 @@ fn parse_some(text: &str, quiet: bool) -> Result<Vec<Case>, String> {
                 "window" => {
                     let f: Vec<&str> = v.split(" · ").collect();
                     let [name, cmd, path] = f[..] else {
-                        return Err(err("window is name · cmd · path"));
+                        return Err(broke(at, "window is name · cmd · path"));
                     };
                     (c.name, c.cmd, c.path) = (name.into(), cmd.into(), path.into());
                 }
@@ -226,7 +229,7 @@ fn parse_some(text: &str, quiet: bool) -> Result<Vec<Case>, String> {
                         "ask" => Expect::Ask,
                         "write" => Expect::Write,
                         "either" => Expect::Either,
-                        _ => return Err(err("expect is ask, write or either")),
+                        _ => return Err(broke(at, "expect is ask, write or either")),
                     })
                 }
                 "ask_any" => c.ask_any = list(v),
@@ -236,13 +239,13 @@ fn parse_some(text: &str, quiet: bool) -> Result<Vec<Case>, String> {
                     c.holdout = match v {
                         "yes" => true,
                         "no" => false,
-                        _ => return Err(err("holdout is yes or no")),
+                        _ => return Err(broke(at, "holdout is yes or no")),
                     }
                 }
                 "explore" => {
                     // one folder name: a path would copy something outside fixtures/
                     if v.is_empty() || v.starts_with('.') || v.contains('/') {
-                        return Err(err("explore is a folder name under fixtures/"));
+                        return Err(broke(at, "explore is a folder name under fixtures/"));
                     }
                     c.explore = Some(v.into())
                 }
@@ -250,7 +253,7 @@ fn parse_some(text: &str, quiet: bool) -> Result<Vec<Case>, String> {
                 k => return Err(say(at, "unknown key", format!("unknown key {k}"))),
             }
         }
-        c.expect = expect.ok_or_else(|| err("no expect"))?;
+        c.expect = expect.ok_or_else(|| broke(0, "no expect"))?;
         // each body with its `--- name` line's index in `rest`
         let mut at = head.matches('\n').count() + 1;
         let mut parts: Vec<(usize, &str)> = vec![];
@@ -269,7 +272,7 @@ fn parse_some(text: &str, quiet: bool) -> Result<Vec<Case>, String> {
             let text = lines.join("\n");
             let dup = |set: bool| {
                 if set {
-                    Err(err(&format!("{} given twice", name.trim())))
+                    Err(broke(at, &format!("{} given twice", name.trim())))
                 } else {
                     Ok(())
                 }
@@ -301,22 +304,22 @@ fn parse_some(text: &str, quiet: bool) -> Result<Vec<Case>, String> {
             }
         }
         if c.request.is_empty() {
-            return Err(err("no request"));
+            return Err(broke(0, "no request"));
         }
         if c.kind.is_empty() || c.cmd.is_empty() {
-            return Err(err("needs kind and window"));
+            return Err(broke(0, "needs kind and window"));
         }
         if c.expect == Expect::Ask && !c.must.is_empty() {
-            return Err(err("must is for write cases"));
+            return Err(broke(0, "must is for write cases"));
         }
         if c.expect == Expect::Ask && c.out_is.is_some() {
-            return Err(err("out_is is for write or either cases"));
+            return Err(broke(0, "out_is is for write or either cases"));
         }
         if c.expect == Expect::Write && !c.ask_any.is_empty() {
-            return Err(err("ask_any is for ask cases"));
+            return Err(broke(0, "ask_any is for ask cases"));
         }
         if cases.iter().any(|o: &Case| o.id == c.id) {
-            return Err(err("duplicate id"));
+            return Err(broke(0, "duplicate id"));
         }
         cases.push(c);
     }
@@ -3720,12 +3723,15 @@ mod tests {
     }
 
     /// #783: a held-out file's parse error gives the line and the rule broken,
-    /// never the line's text. The bad line sits in the file's second case.
+    /// never the line's text; a rule of the whole case gives its `===` line.
+    /// The bad line sits in the file's second case.
     #[test]
     fn a_held_out_file_error_never_shows_the_files_text() {
         let req = "--- request\n";
         let rows = [
             (16, "not key: value", "kind: bug\n", "kind: bug\nMADE-UP stray line\n"),
+            (18, "holdout is yes or no", "holdout: yes", "holdout: maybe"),
+            (14, "no expect", "expect: write\n", ""),
             (16, "unknown key", "kind: bug\n", "kind: bug\nMADE-UP-KEY: x\n"),
             (16, "unknown out", "kind: bug\n", "kind: bug\nout: MADE-UP\n"),
             (23, "unknown section", req, "--- MADE-UP\n--- request\n"),
