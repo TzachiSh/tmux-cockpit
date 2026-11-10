@@ -147,15 +147,13 @@ fn parse_cases(text: &str) -> Result<Vec<Case>, String> {
 /// quiet file's ids must be names (lowercase letters, digits and `-`), so a
 /// body line that opens with `=== ` cannot pass case text off as one.
 fn parse_some(text: &str, quiet: bool) -> Result<Vec<Case>, String> {
-    // a mistyped `=== id` line would join the case before it as text (#783)
+    // a mistyped `=== id` line would join the case before it as text (#783):
+    // in the held-out file only, where a lost case changes no count anyone reads;
+    // elsewhere a pytest banner is a real screen line
     let rule = "a line that starts with = is a case's === line";
-    let bad = text.lines().enumerate().find(|(_, l)| l.starts_with('=') && !l.starts_with("=== "));
-    if let Some((i, l)) = bad {
-        return Err(if quiet {
-            format!("line {}: {rule}", i + 1)
-        } else {
-            format!("line {}: {rule}: {l}", i + 1)
-        });
+    let bad = text.lines().position(|l| l.starts_with('=') && !l.starts_with("=== "));
+    if let Some(i) = bad.filter(|_| quiet) {
+        return Err(format!("line {}: {rule}", i + 1));
     }
     let mut cases = Vec::new();
     let mut next = 1;
@@ -3823,9 +3821,9 @@ mod tests {
         assert_eq!(e, format!("{}: {rule}: MADE-UP-PREAMBLE", c.display()));
     }
 
-    /// #783: a line opening with `=` is a case's `=== id` line, so a mistyped
-    /// one is an error, never text merged into the case before it. The
-    /// held-out file's error leaves the line out; cases.txt's shows it.
+    /// #783: in the held-out file a line opening with `=` is a case's `=== id`
+    /// line, so a mistyped one is an error giving the line only, never text
+    /// merged into the case before it.
     #[test]
     fn a_mistyped_case_line_is_an_error() {
         let rule = "a line that starts with = is a case's === line";
@@ -3841,9 +3839,17 @@ mod tests {
             let e = load(&c, Some(&b)).err().unwrap_or_else(|| panic!("row {i}: loaded"));
             assert_eq!(e, format!("{}: line {line}: {rule}", b.display()), "row {i}");
         }
-        let (_d, c, b) = two_files("eq-cases", &ONE.replace("boom\n", "boom\n== x\n"), "");
-        let e = load(&c, Some(&b)).err().expect("cases.txt: loaded");
-        assert_eq!(e, format!("{}: line 10: {rule}: == x", c.display()));
+    }
+
+    /// #783: in cases.txt a line opening with `=` is screen text: a pytest
+    /// banner is a real screen line, and a dropped tune case shows in the counts.
+    #[test]
+    fn a_banner_line_stays_screen_text_in_the_cases_file() {
+        let banner = "===== test session starts =====";
+        let cases = ONE.replace("boom\n", &format!("boom\n{banner}\n"));
+        let (_d, c, b) = two_files("eq-cases", &cases, "");
+        let cases = load(&c, Some(&b)).unwrap_or_else(|e| panic!("{e}")).cases;
+        assert_eq!(cases[0].screen, format!("$ net-proxy\nboom\n{banner}"));
     }
 
     /// #783: a parse error starts with the file it is in, cases.txt or the held-out file.
