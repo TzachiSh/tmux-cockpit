@@ -325,7 +325,11 @@ held-out case that fails gets a new blind case written for its class. Stop
 after at most 3 fix iterations, or sooner when an iteration gains nothing or a
 fix breaks a case that passed before. Then `git revert` back to the best
 commit, report its pass rate on old and held-out cases apart, and name each
-blocking case with its failing reply and its cause: prompt, label or noise.
+blocking case with its cause (prompt, label or noise) and its failing reply,
+a tune case's from `--out`. A held-out failing reply is not in `--out`: the
+owner or a listed reader reruns that single case with `--show-holdout --only
+<id>`, which prints a warning first, and that second, paid run may not fail
+the same way.
 
 The decision rule for each prompt change: before running, the commit message
 names the target cases and the direction expected; a move nobody predicted is
