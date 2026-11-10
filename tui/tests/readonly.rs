@@ -55,9 +55,13 @@ fn scratch(tag: &str) -> fake::Scratch {
 /// #543: the scratch dir goes on every exit path, a failing assert's unwind included.
 #[test]
 fn a_scratch_dir_is_removed_on_a_pass_and_on_a_panic() {
-    let passed = scratch("guard-pass").to_path_buf();
+    let kept = scratch("guard-pass");
+    let passed = kept.to_path_buf();
+    assert!(passed.is_dir(), "{passed:?} was never created");
+    drop(kept);
     let d = scratch("guard-panic");
     let panicked = d.to_path_buf();
+    assert!(panicked.is_dir(), "{panicked:?} was never created");
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
         let _d = d;
         panic!("an assert failed");
