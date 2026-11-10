@@ -758,3 +758,28 @@ fn each_override_file_moves_an_exploring_writes_hash() {
         seen.push(h);
     }
 }
+
+/// #760: a Claude pane is Claude whatever case its command reads, as the agents glob
+/// is since #508, in a window not named claude too, and so is a version-shaped process
+/// title. A longer name is not Claude.
+#[test]
+fn a_claude_command_in_any_case_is_captured_deeper() {
+    let mut bad = Vec::new();
+    let rows = [
+        ("CLAUDE", "-S -200"),
+        ("Claude", "-S -200"),
+        // the native install's process title, as basket::claude_cmd reads it
+        ("2.1.318", "-S -200"),
+        ("claudex", "-S -80"),
+    ];
+    for (cmd, want) in rows {
+        let e = Env::new("capture-case", &[("COCKPIT_TMUX", None)]);
+        fake_tmux(&e, &format!("work\\t{cmd}\\t/w\\n"));
+        capture("%8").unwrap();
+        let args = std::fs::read_to_string(e.dir.join("args")).unwrap();
+        if !args.trim().ends_with(want) {
+            bad.push(format!("{cmd}: want {want}, got {}", args.trim()));
+        }
+    }
+    assert!(bad.is_empty(), "{} of {} rows wrong:\n{}", bad.len(), rows.len(), bad.join("\n"));
+}

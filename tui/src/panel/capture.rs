@@ -21,8 +21,10 @@ pub struct Capture {
     pub repo: Repo,
 }
 
+/// The command in any case, or its version-shaped title, as the board reads it
+/// ([`crate::basket::claude_cmd`], #760); or a window named claude.
 pub fn is_claude(name: &str, cmd: &str) -> bool {
-    cmd == "claude" || name.eq_ignore_ascii_case("claude")
+    crate::basket::claude_cmd(cmd) || name.eq_ignore_ascii_case("claude")
 }
 
 /// `None` when tmux cannot answer for the pane.
