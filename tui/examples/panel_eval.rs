@@ -346,7 +346,9 @@ fn strip_trailing_comments(lines: &mut Vec<&str>) {
 /// in "360". `a|b` is any of them. An end that is not a letter or digit (`--json`,
 /// `/code-review`) needs no boundary there. A needle opening with `. ` is a
 /// sentence start, and the start of the text is one too (#684): `. invert` is in
-/// "Invert the check" but not in "We invert the sign".
+/// "Invert the check" but not in "We invert the sign". That rule is this
+/// function's, so a `must` or an `ask_any` term gets it; [`has_unnegated`], which
+/// reads a `must_not`, does not.
 fn has(hay: &str, needle: &str) -> bool {
     let hay = format!(". {}", hay.to_lowercase());
     alternatives(needle).any(|n| !starts(&hay, &n).is_empty())
@@ -3686,6 +3688,25 @@ mod tests {
         ];
         let rows = rows.map(|(n, s, want)| (n, "last-commit-test", fix_with(s), want));
         assert_eq!(graded_wrong(&rows), Vec::<&str>::new(), "fix steps graded the wrong way");
+    }
+
+    /// #684 known limit, pinned: a fix step that opens a sentence with "Invert" or
+    /// "Flip" passes as a break step. The cost of `. invert` and `. flip`; a row
+    /// that turns red here means the term changed and this limit should be rechecked.
+    #[test]
+    fn a_fix_step_opening_a_sentence_passes_a_known_limit() {
+        let rows = [
+            (
+                "Invert opens a fix",
+                "Invert the sign check so the test passes, and revert unrelated edits.",
+            ),
+            (
+                "Flip opens a fix",
+                "Flip the condition that is backwards, and revert unrelated edits.",
+            ),
+        ];
+        let rows = rows.map(|(n, s)| (n, "last-commit-test", fix_with(s), true));
+        assert_eq!(graded_wrong(&rows), Vec::<&str>::new(), "the known limit moved");
     }
 
     /// #684 item 4: "break the code" and "mutation" need the act, and reverting
