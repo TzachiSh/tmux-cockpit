@@ -24,7 +24,8 @@
 //! place of the write prompt (#789). Each row's `prompt` and `system` then hash
 //! FILE's text, so `--compare` tells its rows from a write run's. `--compare`,
 //! `--calibrate`, `--purpose-calibrate` and `--overlap` send no panel prompt
-//! and refuse the flag.
+//! and refuse the flag. `--check` reads and validates FILE too: it is the
+//! flag's pre-flight.
 //!
 //! The cases are evals/panel/cases.txt and, beside it, the held-out file
 //! evals/panel/holdout-blind.txt (#783), which tuning sessions do not open:
@@ -2953,6 +2954,13 @@ mod tests {
             assert_eq!(e.ends_with(": empty"), ["empty", "blank"].contains(&name), "{name}: {e}");
         }
         assert_eq!(opts(args("--router-prompt")).unwrap_err(), "--router-prompt needs a value");
+        // --check is the pre-flight: it refuses a bad file as a run does
+        let check = [
+            "--check".to_string(),
+            "--router-prompt".into(),
+            p("empty.txt").display().to_string(),
+        ];
+        assert!(opts(check).unwrap_err().ends_with(": empty"));
     }
 
     /// Each mode that sends no panel prompt, by row name, refuses the flag

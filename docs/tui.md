@@ -277,7 +277,9 @@ kind>`, `--out <file.jsonl>`, `--no-hermetic` and `--show-holdout` are the knobs
 place of the write prompt (#789); the file is read once at start-up, and a
 missing, unreadable, non-UTF-8 or empty file stops the run before any call.
 `--compare`, `--calibrate`, `--purpose-calibrate` and `--overlap` send no panel
-prompt, so they refuse the flag rather than ignore it. A call that explores
+prompt, so they refuse the flag rather than ignore it. `--check` reads and
+validates the file too, so `--check --router-prompt <file>` is its pre-flight.
+A call that explores
 still gets the panel's where-note ("The repository is at ...") appended to the
 file's text, as the write prompt does; a text call gets the text alone. The
 #789 router replays so far (probe789b, c and d) ran with `--no-explore`, and
