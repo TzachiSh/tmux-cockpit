@@ -922,6 +922,77 @@ struct Job {
     started: Instant,
 }
 
+/// One finished call of a case: what a run prints of it and writes to `--out`.
+struct Ended<'a> {
+    case: &'a Case,
+    run: usize,
+    model: &'a str,
+    /// The system prompt's hash.
+    system: u64,
+    prompt: &'a str,
+    ms: u128,
+    /// Why the call failed; `None` when it answered.
+    err: Option<String>,
+    /// `None` for a failed call.
+    grade: Option<Grade>,
+    usage: Usage,
+    reply: &'a str,
+    explore: bool,
+    /// The files an exploring call read; `None` for a text call.
+    read: Option<Vec<String>>,
+    /// What an exploring call read and searched ([`panel_reads`]).
+    calls: Option<Vec<String>>,
+}
+
+impl Ended<'_> {
+    /// The run's line for this call: mark, id, kind, want, ms, then what went wrong.
+    fn line(&self) -> String {
+        let (c, g) = (self.case, &self.grade);
+        let mark = match (&self.err, g) {
+            (Some(_), _) => "ERR ",
+            (_, Some(g)) if g.pass => "ok  ",
+            _ => "FAIL",
+        };
+        let what = match (&self.err, g) {
+            (Some(e), _) => e.clone(),
+            (_, Some(g)) if g.refused => "refused by the panel (a file edit) or cut off".into(),
+            (_, Some(g)) if !g.forbidden.is_empty() => format!("has: {}", g.forbidden.join("; ")),
+            (_, Some(g)) if g.asked => format!("asked: {}", g.question),
+            (_, Some(g)) if g.wrong_type.is_some() => {
+                let want = c.out_is.map_or("", out_name);
+                format!("wrote a {}, want {want}", g.wrong_type.unwrap_or(""))
+            }
+            (_, Some(g)) if !g.missing.is_empty() => format!("wrote, missing: {}", g.missing.join("; ")),
+            _ => "wrote".into(),
+        };
+        let want = c.expect.as_str();
+        let what = match &self.read {
+            Some(r) => format!("[read {}] {what}", r.len()),
+            None => what,
+        };
+        format!("{mark} {:<24} {:<13} want {want:<6} {:>6} ms  {what}", c.id, c.kind, self.ms)
+    }
+
+    /// The `--out` row for this call, with the run's environment `env`.
+    fn row(&self, env: serde_json::Value) -> serde_json::Value {
+        let (c, g, u) = (self.case, self.grade.as_ref(), &self.usage);
+        serde_json::json!({
+            "id": c.id, "kind": c.kind, "expect": c.expect.as_str(), "run": self.run, "model": self.model,
+            "system": format!("{:016x}", self.system), "prompt": self.prompt,
+            "ms": self.ms as u64, "error": self.err,
+            "asked": g.map(|g| g.asked), "pass": g.map(|g| g.pass),
+            "question": g.map(|g| g.question.clone()),
+            "missing": g.map(|g| g.missing.clone()),
+            "forbidden": g.map(|g| g.forbidden.clone()),
+            "wrong_type": g.and_then(|g| g.wrong_type),
+            "cost_usd": u.cost_usd,
+            "in_tokens": u.in_tokens, "out_tokens": u.out_tokens,
+            "refused": g.map(|g| g.refused), "holdout": c.holdout, "reply": self.reply,
+            "explore": self.explore, "files_read": self.read, "reads": self.calls, "env": env,
+        })
+    }
+}
+
 fn main() {
     if let Some(real) = as_claude(std::env::var_os(AS_CLAUDE), std::env::args_os().nth(1).as_deref()) {
         exec_claude(&real);
@@ -1107,55 +1178,35 @@ fn main() {
                 }
             };
             let g = err.is_none().then(|| grade(c, &raw));
-            let mark = match (&err, &g) {
-                (Some(_), _) => "ERR ",
-                (_, Some(g)) if g.pass => "ok  ",
-                _ => "FAIL",
+            let end = Ended {
+                case: c,
+                run: j.run,
+                model: &j.model,
+                system: j.system,
+                prompt: &j.prompt,
+                ms,
+                err,
+                grade: g,
+                usage,
+                reply: &raw,
+                explore: j.explore,
+                read,
+                calls,
             };
-            let what = match (&err, &g) {
-                (Some(e), _) => e.clone(),
-                (_, Some(g)) if g.refused => "refused by the panel (a file edit) or cut off".into(),
-                (_, Some(g)) if !g.forbidden.is_empty() => format!("has: {}", g.forbidden.join("; ")),
-                (_, Some(g)) if g.asked => format!("asked: {}", g.question),
-                (_, Some(g)) if g.wrong_type.is_some() => {
-                    let want = c.out_is.map_or("", out_name);
-                    format!("wrote a {}, want {want}", g.wrong_type.unwrap_or(""))
-                }
-                (_, Some(g)) if !g.missing.is_empty() => format!("wrote, missing: {}", g.missing.join("; ")),
-                _ => "wrote".into(),
-            };
-            let want = c.expect.as_str();
-            let what = match &read {
-                Some(r) => format!("[read {}] {what}", r.len()),
-                None => what,
-            };
-            println!("{mark} {:<24} {:<13} want {want:<6} {:>6} ms  {what}", c.id, c.kind, ms);
+            println!("{}", end.line());
             if log.is_some() || o.judge {
-                let row = serde_json::json!({
-                    "id": c.id, "kind": c.kind, "expect": want, "run": j.run, "model": j.model,
-                    "system": format!("{:016x}", j.system), "prompt": j.prompt,
-                    "ms": ms as u64, "error": err,
-                    "asked": g.as_ref().map(|g| g.asked), "pass": g.as_ref().map(|g| g.pass),
-                    "question": g.as_ref().map(|g| g.question.clone()),
-                    "missing": g.as_ref().map(|g| g.missing.clone()),
-                    "forbidden": g.as_ref().map(|g| g.forbidden.clone()),
-                    "wrong_type": g.as_ref().and_then(|g| g.wrong_type),
-                    "cost_usd": usage.cost_usd,
-                    "in_tokens": usage.in_tokens, "out_tokens": usage.out_tokens,
-                    "refused": g.as_ref().map(|g| g.refused), "holdout": c.holdout, "reply": raw,
-                    "explore": j.explore, "files_read": read, "reads": calls, "env": env.json(),
-                });
+                let row = end.row(env.json());
                 // with --judge, written once the judge has graded the reply
                 match log.as_mut() {
                     Some(f) if !o.judge => {
                         let _ = writeln!(f, "{row}");
                     }
-                    _ => rows.push((row, judge_input(c, &raw, calls))),
+                    _ => rows.push((row, judge_input(c, &raw, end.calls.clone()))),
                 }
             }
-            done.push((j.case, ms, g));
+            done.push((j.case, ms, end.grade));
             costs.push(usage.cost_usd);
-            reads.extend(read.map(|r| r.len()));
+            reads.extend(end.read.map(|r| r.len()));
         }
         std::thread::sleep(Duration::from_millis(50));
     }
@@ -1292,17 +1343,22 @@ fn judge_apply(rows: &mut [(serde_json::Value, judge::Input)], todo: &[usize], j
     let mut errors = 0;
     for (&i, j) in todo.iter().zip(judged) {
         let (row, _) = &mut rows[i];
-        let (pass, critique) = j.outcome();
-        let mark = match pass {
-            Some(true) => "ok  ",
-            Some(false) => "FAIL",
-            None => "ERR ",
-        };
-        errors += usize::from(pass.is_none());
-        println!("judge {mark} {:<24} {critique}", row["id"].as_str().unwrap_or(""));
+        errors += usize::from(j.outcome().0.is_none());
+        println!("{}", verdict_line(row, j));
         judge::annotate(row, j, model);
     }
     errors
+}
+
+/// The line `--judge` prints for row `row` judged `j`: mark, id, critique.
+fn verdict_line(row: &serde_json::Value, j: &judge::Judged) -> String {
+    let (pass, critique) = j.outcome();
+    let mark = match pass {
+        Some(true) => "ok  ",
+        Some(false) => "FAIL",
+        None => "ERR ",
+    };
+    format!("judge {mark} {:<24} {critique}", row["id"].as_str().unwrap_or(""))
 }
 
 /// The judge's summary over `(keyword pass, judge pass)` per row: its pass
