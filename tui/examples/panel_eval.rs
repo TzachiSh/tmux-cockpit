@@ -3616,7 +3616,33 @@ mod tests {
         let (_d, c, _) = two_files("explicit", ONE, &held("blind-a"));
         let o = opts(vec!["--cases".into(), c.display().to_string()]).unwrap();
         assert_eq!(o.blind, None);
-        assert_eq!(load(&o.cases, o.blind.as_deref()).unwrap().from, [(c, 1)]);
+        assert_eq!(run_cases(&o).unwrap().from, [(c, 1)]);
+    }
+
+    /// #783: a plain run, `--check` included, reads both shipped files.
+    #[test]
+    fn a_plain_run_reads_the_held_out_file() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("evals/panel");
+        let from = run_cases(&opts(args("--check")).unwrap()).unwrap().from;
+        let paths: Vec<&PathBuf> = from.iter().map(|(p, _)| p).collect();
+        assert_eq!(paths, [&root.join("cases.txt"), &root.join("holdout-blind.txt")]);
+    }
+
+    /// #783: `--overlap` keeps the held-out file; only `--cases` drops it.
+    #[test]
+    fn overlap_keeps_the_held_out_file() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("evals/panel");
+        let o = opts(args("--overlap --from a --to b")).unwrap();
+        assert_eq!(o.blind, Some(root.join("holdout-blind.txt")));
+    }
+
+    /// #783: the `--check` line names each file read, with its count.
+    #[test]
+    fn the_check_line_names_each_file_with_its_count() {
+        let (_d, c, b) = two_files("line", ONE, &format!("{}{}", held("b1"), held("b2")));
+        let Loaded { cases, from } = load(&c, Some(&b)).unwrap();
+        let want = format!("from {} (1), {} (2)", c.display(), b.display());
+        assert!(check_line(&cases, &from).ends_with(&want), "{}", check_line(&cases, &from));
     }
 
     /// #783: `--check` counts each file: the cases read from each, in order.
