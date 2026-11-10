@@ -351,7 +351,8 @@ hash of `write.txt` and its examples, plus `write.explore.txt` for an exploring
 write, from the read the job's own call made (#711), or the hash of the
 `--router-prompt` file's text in a run given one, whose `system` hashes that
 text too and whose summary names that file; `--compare` refuses a case
-whose rows on one side carry two hashes unless given `--allow-mixed`. Each run
+whose rows on one side carry two hashes, naming its file and the hashes, unless
+given `--allow-mixed`. Each run
 appends its cost to `--ledger <file>`, else to `cost.tsv` next to `--out`, else to
 `${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/panel-eval-cost.tsv`; a
 `--judge` run adds a second row for the judge's spend. The ledger's `prompt`

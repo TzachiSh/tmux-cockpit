@@ -1203,15 +1203,8 @@ fn main() {
         };
         match read(a).and_then(|ra| Ok((ra, read(b)?))) {
             Ok((ra, rb)) => {
-                let mixed: Vec<String> = [(a, &ra), (b, &rb)]
-                    .iter()
-                    .flat_map(|(p, rows)| mixed_prompts(rows).into_iter().map(move |id| format!("{id} in {}", p.display())))
-                    .collect();
-                if !mixed.is_empty() && !o.allow_mixed {
-                    eprintln!(
-                        "panel_eval: rows with two prompt hashes for one case: {}; --allow-mixed pairs them anyway",
-                        mixed.join(", ")
-                    );
+                if let Some(e) = mixed_error(&[(a, &ra), (b, &rb)]).filter(|_| !o.allow_mixed) {
+                    eprintln!("panel_eval: {e}");
                     std::process::exit(2);
                 }
                 print_compare(&[(a, &ra), (b, &rb)])
@@ -2156,6 +2149,28 @@ fn mixed_prompts(rows: &[Row]) -> Vec<String> {
     ids
 }
 
+/// `--compare`'s refusal: each case whose rows on one side carry two prompt
+/// hashes, with its side's file and those hashes (`none` for a row without one).
+fn mixed_error(sides: &[(&PathBuf, &Vec<Row>)]) -> Option<String> {
+    let named = |p: &PathBuf, rows: &[Row], id: String| {
+        let mut hs: Vec<&str> = vec![];
+        for r in rows.iter().filter(|r| r.id == id) {
+            let h = if r.prompt.is_empty() { "none" } else { r.prompt.as_str() };
+            if !hs.contains(&h) {
+                hs.push(h);
+            }
+        }
+        format!("{id} in {} ({})", p.display(), hs.join(", "))
+    };
+    let mixed: Vec<String> = sides
+        .iter()
+        .flat_map(|(p, rows)| mixed_prompts(rows).into_iter().map(|id| named(p, rows, id)))
+        .collect();
+    let all = mixed.join(", ");
+    let why = "--allow-mixed pairs them anyway";
+    (!mixed.is_empty()).then(|| format!("rows with two prompt hashes for one case: {all}; {why}"))
+}
+
 /// Calibrates the `@purpose` judge on a fixture: each row's verdict from the
 /// cache next to the ledger or one call, then agreement, false accepts and
 /// misses, and whether the fallback may be used. The spend goes to the ledger.
@@ -2957,6 +2972,19 @@ mod tests {
         assert_eq!(mixed_prompts(&rows), ["x", "z"], "z: a row with no hash beside one with a hash");
         assert!(opts(args("--compare a b --allow-mixed")).unwrap().allow_mixed);
         assert!(!opts(args("--compare a b")).unwrap().allow_mixed);
+    }
+
+    /// A row from an older file, without a hash, shows as `none` beside the hash.
+    #[test]
+    fn compare_names_a_row_without_a_prompt_hash_as_none() {
+        let z = concat!(
+            r#"{"id":"z","expect":"write","run":0,"pass":true}"#,
+            "\n",
+            r#"{"id":"z","expect":"write","run":1,"pass":true,"prompt":"aa"}"#,
+        );
+        let e = mixed_error(&[(&PathBuf::from("a"), &read_rows("a", z).unwrap())]).unwrap();
+        let want = "rows with two prompt hashes for one case: z in a (none, aa); ";
+        assert_eq!(e, format!("{want}--allow-mixed pairs them anyway"));
     }
 
     #[test]
@@ -5541,6 +5569,30 @@ esac
             let plain = fields(&plain, "prompt");
             let other = plain.iter().all(|p| p.is_string() && *p != hash);
             assert!(plain.len() == 3 && other, "{plain:?}");
+        }
+
+        /// A side holding a write run's rows and a router run's for the same
+        /// ids is refused, naming both hashes; one prompt per side pairs.
+        #[test]
+        fn compare_refuses_a_side_mixing_router_and_write_rows_naming_both() {
+            let d = scratch("router-mix");
+            let router = d.0.join("router.txt");
+            std::fs::write(&router, ROUTER).unwrap();
+            let flags = ["--router-prompt", &router.display().to_string()];
+            let (_, _, _, routed) = rig_run("router-mix-on", &flags);
+            let (_, _, _, plain) = rig_run("router-mix-off", &[]);
+            let rows = |t: &str| read_rows("rows", t).unwrap();
+            let (m, w) = (PathBuf::from("mixed.jsonl"), PathBuf::from("write.jsonl"));
+            let both = rows(&format!("{plain}{routed}"));
+            let e = mixed_error(&[(&m, &both), (&w, &rows(&plain))]).unwrap();
+            let wh = fields(&plain, "prompt")[0].as_str().unwrap().to_string();
+            let rh = cockpit_tui::panel::prompts::files_hash(&[ROUTER]);
+            for id in ["tune-q", "held-q", "held-ask"] {
+                let want = format!("{id} in mixed.jsonl ({wh}, {rh})");
+                assert!(e.contains(&want), "{id}: {e}");
+            }
+            assert!(!e.contains("write.jsonl"), "{e}");
+            assert_eq!(mixed_error(&[(&w, &rows(&plain)), (&m, &rows(&routed))]), None);
         }
 
         #[test]
