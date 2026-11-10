@@ -221,7 +221,7 @@ Read-only, and owned by bash: `@cockpit_session`, `@cockpit_dir`, `@panestate`,
 | variable | does |
 |----------|------|
 | `COCKPIT_ACTION` | file the one action line is written to. Unset sends it to stdout |
-| `COCKPIT_TMUX` | overrides the tmux argv. Unset follows `$TMUX` to whatever socket the pane is on |
+| `COCKPIT_TMUX` | overrides the tmux argv. The value is split on whitespace, so `tmux -L sock` works, but a tmux path holding a space can't be named here: reach it through a wrapper script or a symlink. Unset follows `$TMUX` to whatever socket the pane is on |
 | `COCKPIT_LOG` | append target. The binding sets it to `${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/tui.log` |
 | `COCKPIT_PROC_DIR` | the proc root the pane-tree walk reads (default `/proc`); a test seam. A root without `self/task` or without `children` files sends the lookup to `ps` |
 | `COCKPIT_READONLY` | any non-empty value: never write to a tmux server, the pid included. The panel wrapper then pastes and sends nothing and logs what it would have done |
