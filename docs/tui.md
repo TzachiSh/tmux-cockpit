@@ -272,7 +272,7 @@ both sides over the cases both graded in full, and each side's own (unpaired)
 `must`, `must_not`, `out_is` and `holdout` keys, is described at the top of
 the cases file; holdout cases are written after the prompt they run on, so a
 gain there is not overfitting. `--model`, `--runs`, `--jobs`, `--only <id or
-kind>`, `--out <file.jsonl>` and `--no-hermetic` are the knobs.
+kind>`, `--out <file.jsonl>`, `--no-hermetic` and `--show-holdout` are the knobs.
 
 Held-out cases written from #783 on live in `tui/evals/panel/holdout-blind.txt`,
 not in the cases file every tuning session reads. Its readers are the owner,
@@ -296,13 +296,44 @@ is an error and is never dropped unseen or merged into the case before it. In
 the cases file such a line is body text, as a pytest banner on a screen is, and
 a lost tune case shows in the counts.
 
+A run prints none of a held-out case's text, whichever file it came from, pass
+or fail (#792). A passing reply holds every must phrase, and an on-target
+question an ask_any term, so the rule covers both. The case's line keeps the
+mark (`ok`, `FAIL` or `ERR`), the id, `want` and the latency, leaves the kind
+column blank, and ends in counts: `held out: has N, missing N` (the must_not
+phrases the reply holds, the must phrases it lacks), after `[read N]` for an
+exploring call. A failed call shows only its class, `held out: took too long`,
+`stopped at its budget` or `call failed`, because claude's error can echo the
+request it was sent. Its `--out` row keeps `missing_n`, `forbidden_n` and
+`files_read_n`, the error as that class, and only the fields listed in
+`HELD_FIELDS`. `kind`, `question`, `missing`, `forbidden`, `critique`,
+`reply`, `reads`, `files_read` and any field added later are null, and
+`--compare` reads `files_read_n` where `files_read` is null. With `--judge`
+its line is `judge ok|FAIL <id>` with no critique, or the line
+`judge ERR <id>  held out: call failed`. A tune case prints and writes all of
+it, as before. `--compare`, `--overlap` and the summary print ids, `want` and
+counts only.
+
+`--show-holdout` is for the owner or a listed reader rerunning one held-out
+case in one paid call. It needs `--only` with the case's whole id and
+`--runs 1`, given. A run whose `--only` picks other than that one case, by a
+part of an id, a kind or an id inside another, exits 2 before printing any
+case, naming only the count. It refuses any other `--runs`, and `--judge`. The
+run prints a warning before the case (none under `--check`), then the case's
+failing reply or full error under a warning line of its own. It never writes
+them to `--out`.
+
 A prompt change aims at 100% on the tune cases (#701). A significant drop on a
 held-out case blocks it, no edit may aim at a particular held-out case, and a
 held-out case that fails gets a new blind case written for its class. Stop
 after at most 3 fix iterations, or sooner when an iteration gains nothing or a
 fix breaks a case that passed before. Then `git revert` back to the best
 commit, report its pass rate on old and held-out cases apart, and name each
-blocking case with its failing reply and its cause: prompt, label or noise.
+blocking case with its cause (prompt, label or noise) and its failing reply,
+a tune case's from `--out`. A held-out failing reply is not in `--out`: the
+owner or a listed reader reruns that single case with `--show-holdout --only
+<id>`, which prints a warning first, and that second, paid run may not fail
+the same way.
 
 The decision rule for each prompt change: before running, the commit message
 names the target cases and the direction expected; a move nobody predicted is
@@ -370,8 +401,9 @@ one it planted (#646). A name that goes on with a letter, digit, `_`, `-` or
 chars: only a tag ends one of these sections. A zero-width char before the name,
 or a full-width name such as `</ＲＥＰＬＹ>`, stays raw (#652): matching them would
 take a Unicode confusables table, and the prompt's own closers are plain ASCII.
-Each row then prints `judge ok|FAIL <id> <critique>`, the summary adds the
-judge's pass rate and how often it agrees with the keyword checks, and each
+Each row then prints `judge ok|FAIL <id> <critique>` (no critique for a
+held-out case), the summary adds the judge's pass rate and how often it agrees
+with the keyword checks, and each
 `--out` row gains `judge`, `critique`, `judge_model`, `judge_cost_usd` and
 `rubric` (the rubric's hash). The keyword checks still decide `pass`: the judge
 sits beside them, never in place of them. A judge call that gives no verdict
