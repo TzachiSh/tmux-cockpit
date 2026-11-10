@@ -587,8 +587,11 @@ fn an_inherited_git_variable_never_moves_the_repo_block() {
 #[test]
 fn capture_returns_before_git_answers() {
     let e = Env::new("repo-lazy", &tmux_on_path());
-    // git waits for a file the test writes only once capture() is back
-    fake_git(&e, "config", "while [ ! -e \"$D/go\" ]; do sleep 0.01; done");
+    // git waits for a file the test writes only once capture() is back. `until`, not
+    // `while !`: a `[` that errors, as on an unquoted $D in a spaced dir, keeps it
+    // waiting, so the config read misses BUDGET and the block is "", where a
+    // `while` would end at once and the row would pass without a wait.
+    fake_git(&e, "config", "until [ -e \"$D/go\" ]; do sleep 0.01; done");
     fake_tmux(&e, "w\\tbash\\t$D\\n");
     let c = capture_within("%4", BUDGET).unwrap();
     std::fs::write(e.dir.join("go"), "").unwrap();
