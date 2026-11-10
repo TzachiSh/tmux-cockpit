@@ -147,6 +147,16 @@ fn parse_cases(text: &str) -> Result<Vec<Case>, String> {
 /// quiet file's ids must be names (lowercase letters, digits and `-`), so a
 /// body line that opens with `=== ` cannot pass case text off as one.
 fn parse_some(text: &str, quiet: bool) -> Result<Vec<Case>, String> {
+    // a mistyped `=== id` line would join the case before it as text (#783)
+    let rule = "a line that starts with = is a case's === line";
+    let bad = text.lines().enumerate().find(|(_, l)| l.starts_with('=') && !l.starts_with("=== "));
+    if let Some((i, l)) = bad {
+        return Err(if quiet {
+            format!("line {}: {rule}", i + 1)
+        } else {
+            format!("line {}: {rule}: {l}", i + 1)
+        });
+    }
     let mut cases = Vec::new();
     let mut next = 1;
     for (n, block) in text.split("\n=== ").enumerate() {
@@ -3799,16 +3809,41 @@ mod tests {
     #[test]
     fn a_line_before_the_first_case_is_an_error() {
         let rule = "line 2: before the first case, a line is a comment or blank";
+        // a mistyped first `=== id` line is caught by its own, nearer rule
+        let eq = "line 2: a line that starts with = is a case's === line";
         let typo = format!("# h\n{}", held("b1").replace("=== b1", "===b1"));
         let stray = format!("# h\nMADE-UP-PREAMBLE\n{}", held("b1"));
-        for (row, blind) in [("no space", typo), ("stray", stray.clone())] {
+        for (row, blind, want) in [("no space", typo, eq), ("stray", stray.clone(), rule)] {
             let (_d, c, b) = two_files(&format!("pre-{}", row.len()), ONE, &blind);
             let e = load(&c, Some(&b)).err().unwrap_or_else(|| panic!("{row}: loaded"));
-            assert_eq!(e, format!("{}: {rule}", b.display()), "{row}");
+            assert_eq!(e, format!("{}: {want}", b.display()), "{row}");
         }
         let (_d, c, b) = two_files("pre-cases", &stray, "");
         let e = load(&c, Some(&b)).err().expect("cases.txt: loaded");
         assert_eq!(e, format!("{}: {rule}: MADE-UP-PREAMBLE", c.display()));
+    }
+
+    /// #783: a line opening with `=` is a case's `=== id` line, so a mistyped
+    /// one is an error, never text merged into the case before it. The
+    /// held-out file's error leaves the line out; cases.txt's shows it.
+    #[test]
+    fn a_mistyped_case_line_is_an_error() {
+        let rule = "a line that starts with = is a case's === line";
+        let screen = "--- screen\n$ net-proxy\nboom\n";
+        // silent before: b2 has no request, so b3's text and request join b2
+        let b2 = held("b2").replace("--- request\nfix this\n", "");
+        let merged = format!("{b2}{}", held("b3").replace("=== b3", "===b3").replace(screen, ""));
+        // already an error before, but "request given twice" on a later line
+        let twice = format!("{}{}", held("b1"), held("b2").replace("=== b2", "===b2"));
+        let rows = [(10, merged), (10, held("b1").replace("boom\n", "boom\n== x\n")), (12, twice)];
+        for (i, (line, blind)) in rows.into_iter().enumerate() {
+            let (_d, c, b) = two_files(&format!("eq-{i}"), ONE, &blind);
+            let e = load(&c, Some(&b)).err().unwrap_or_else(|| panic!("row {i}: loaded"));
+            assert_eq!(e, format!("{}: line {line}: {rule}", b.display()), "row {i}");
+        }
+        let (_d, c, b) = two_files("eq-cases", &ONE.replace("boom\n", "boom\n== x\n"), "");
+        let e = load(&c, Some(&b)).err().expect("cases.txt: loaded");
+        assert_eq!(e, format!("{}: line 10: {rule}: == x", c.display()));
     }
 
     /// #783: a parse error starts with the file it is in, cases.txt or the held-out file.

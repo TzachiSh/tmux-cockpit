@@ -290,8 +290,9 @@ the line number and the rule it broke, never the line's text, so held-out text
 stays out of test, build and CI logs. Its case ids must be lowercase letters,
 digits and `-`, so a screen line that opens with `=== ` cannot pass for an id;
 an error in the cases file still quotes the line. In both files a line before
-the first case is a comment or blank, so a case whose `===` line is mistyped
-is an error and is never dropped unseen.
+the first case is a comment or blank, and a line that starts with `=` is a
+case's `=== id` line, so a case whose `===` line is mistyped is an error and is
+never dropped unseen or merged into the case before it.
 
 A prompt change aims at 100% on the tune cases (#701). A significant drop on a
 held-out case blocks it, no edit may aim at a particular held-out case, and a
