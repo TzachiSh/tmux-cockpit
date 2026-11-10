@@ -379,8 +379,8 @@ struct Loaded {
 
 /// Reads the cases file, then the held-out file when there is one (#783). That
 /// file may hold no case, each of its cases says `holdout: yes`, and none has
-/// an id the cases file has or an id inside another. An error starts with the
-/// file it is in.
+/// an id the cases file has. No held-out id from either file sits inside
+/// another id. An error starts with the file it is in.
 fn load(cases: &Path, blind: Option<&Path>) -> Result<Loaded, String> {
     let read = |p: &Path| std::fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display()));
     let mut all = parse_cases(&read(cases)?).map_err(|e| format!("{}: {e}", cases.display()))?;
@@ -394,16 +394,18 @@ fn load(cases: &Path, blind: Option<&Path>) -> Result<Loaded, String> {
         if let Some(c) = held.iter().find(|c| all.iter().any(|a| a.id == c.id)) {
             return Err(at(format!("case {}: already in {}", c.id, cases.display())));
         }
-        // `--only` matches by substring, so a held-out id inside another id picks
-        // two cases and `--show-holdout` can never show it (#804)
-        for c in &held {
-            if all.iter().chain(&held).any(|o| o.id != c.id && o.id.contains(c.id.as_str())) {
-                let rule = "a held-out id is inside another id: --only cannot pick it alone";
-                return Err(at(format!("line {}: {rule}", c.line)));
-            }
-        }
         from.push((b.to_path_buf(), held.len()));
         all.extend(held);
+    }
+    // `--only` matches by substring, so a held-out id inside another id picks
+    // two cases and `--show-holdout` can never show it (#804): a held-out case
+    // from either file, against every id loaded
+    for (i, c) in all.iter().enumerate().filter(|(_, c)| c.holdout) {
+        if all.iter().any(|o| o.id != c.id && o.id.contains(c.id.as_str())) {
+            let file = &from[usize::from(i >= from[0].1)].0;
+            let rule = "a held-out id is inside another id: --only cannot pick it alone";
+            return Err(format!("{}: line {}: {rule}", file.display(), c.line));
+        }
     }
     Ok(Loaded { cases: all, from })
 }
@@ -4330,6 +4332,27 @@ mod tests {
         let (_d, c, b) = two_files("nest-tune", &tune, &format!("# readers\n{}", held("hb-1")));
         let e = load(&c, Some(&b)).err().expect("a held-out id inside a tune id loaded");
         assert_eq!(e, format!("{}: {}", b.display(), nested(2)));
+    }
+
+    /// #804: a held-out case in cases.txt is checked too, inside a tune id or
+    /// a held-out one, with or without the held-out file; the error names
+    /// cases.txt and the case's line.
+    #[test]
+    fn a_held_out_id_in_the_cases_file_inside_another_id_is_refused_unshown() {
+        let tune = ONE.replace("=== crash", "=== xhb-1-tune");
+        let in_tune = format!("{tune}{}", held("hb-1"));
+        let in_held = format!("# c\n{}{}", held("hb-1"), held("hb-10"));
+        let rows = [
+            ("inside a tune id", &in_tune, true, 12),
+            ("inside a held-out id", &in_held, true, 2),
+            ("no held-out file", &in_tune, false, 12),
+        ];
+        for (i, (row, cases, blind, line)) in rows.into_iter().enumerate() {
+            let (_d, c, b) = two_files(&format!("nest-cases-{i}"), cases, "");
+            let e = load(&c, blind.then_some(b.as_path())).err();
+            let e = e.unwrap_or_else(|| panic!("{row}: loaded"));
+            assert_eq!(e, format!("{}: {}", c.display(), nested(line)), "{row}");
+        }
     }
 
     /// #804: ids that do not sit inside one another load, a tune id inside a
