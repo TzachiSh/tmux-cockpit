@@ -276,6 +276,8 @@ kind>`, `--out <file.jsonl>`, `--no-hermetic` and `--show-holdout` are the knobs
 `--router-prompt <file>` sends the file's text as every call's system prompt in
 place of the write prompt (#789); the file is read once at start-up, and a
 missing, unreadable, non-UTF-8 or empty file stops the run before any call.
+`--compare`, `--calibrate`, `--purpose-calibrate` and `--overlap` send no panel
+prompt, so they refuse the flag rather than ignore it.
 
 Held-out cases written from #783 on live in `tui/evals/panel/holdout-blind.txt`,
 not in the cases file every tuning session reads. Its readers are the owner,

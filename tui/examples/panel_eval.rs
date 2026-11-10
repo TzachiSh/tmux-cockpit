@@ -22,7 +22,9 @@
 //!
 //! `--router-prompt FILE` sends FILE's text as every call's system prompt in
 //! place of the write prompt (#789). Each row's `prompt` and `system` then hash
-//! FILE's text, so `--compare` tells its rows from a write run's.
+//! FILE's text, so `--compare` tells its rows from a write run's. `--compare`,
+//! `--calibrate`, `--purpose-calibrate` and `--overlap` send no panel prompt
+//! and refuse the flag.
 //!
 //! The cases are evals/panel/cases.txt and, beside it, the held-out file
 //! evals/panel/holdout-blind.txt (#783), which tuning sessions do not open:
@@ -856,6 +858,18 @@ fn opts(args: impl IntoIterator<Item = String>) -> Result<Opts, String> {
             return Err(format!("--base: {b} is not a revision"));
         }
         o.base = b;
+    }
+    // a mode that sends no panel prompt would run with the flag silently ignored
+    let offline = [
+        ("--compare", o.compare.is_some()),
+        ("--calibrate", o.calibrate.is_some()),
+        ("--purpose-calibrate", o.purpose_calibrate.is_some()),
+        ("--overlap", o.overlap),
+    ];
+    if o.router.is_some()
+        && let Some((mode, _)) = offline.iter().find(|(_, on)| *on)
+    {
+        return Err(format!("--router-prompt replaces the panel's prompt: {mode} sends none"));
     }
     Ok(o)
 }
@@ -2939,6 +2953,27 @@ mod tests {
             assert_eq!(e.ends_with(": empty"), ["empty", "blank"].contains(&name), "{name}: {e}");
         }
         assert_eq!(opts(args("--router-prompt")).unwrap_err(), "--router-prompt needs a value");
+    }
+
+    /// Each mode that sends no panel prompt, by row name, refuses the flag
+    /// rather than run with it ignored.
+    #[test]
+    fn router_prompt_is_refused_in_each_mode_that_sends_no_panel_prompt() {
+        let d = scratch("router-modes");
+        let p = d.0.join("router.txt");
+        std::fs::write(&p, "route it").unwrap();
+        let rows = [("--compare", "--compare a b"), ("--calibrate", "--calibrate l.jsonl")];
+        let rows = [
+            &rows[..],
+            &[("--purpose-calibrate", "--purpose-calibrate f"), ("--overlap", "--overlap")],
+        ]
+        .concat();
+        for (mode, flags) in rows {
+            let mut a = args(flags);
+            a.extend(["--router-prompt".to_string(), p.display().to_string()]);
+            let want = format!("--router-prompt replaces the panel's prompt: {mode} sends none");
+            assert_eq!(opts(a).expect_err(mode), want, "{mode}");
+        }
     }
 
     #[test]
