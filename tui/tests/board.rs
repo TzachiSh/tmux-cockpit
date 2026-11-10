@@ -1313,11 +1313,13 @@ fn scratch(tag: &str) -> Scratch {
 fn a_scratch_dir_is_removed_on_a_pass_and_on_a_panic() {
     let kept = {
         let d = scratch("guard-pass");
+        assert!(d.is_dir(), "{:?} was never created", d.0);
         d.to_path_buf()
     };
     let p = std::thread::spawn(|| {
         let d = scratch("guard-panic");
         let p = d.to_path_buf();
+        assert!(p.is_dir(), "{p:?} was never created");
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
             let _d = d;
             panic!("an assert failed");
