@@ -563,7 +563,8 @@ pub fn calibrate(file: &Path, model: &str, split: Split, jobs: usize, out: Optio
     let text = std::fs::read_to_string(file).map_err(|e| format!("{name}: {e}"))?;
     let all = read_labels(&name, &text)?;
     let held = holdout(&all);
-    let pick: Vec<(Label, bool)> = all.into_iter().zip(held).filter(|(_, h)| split.keeps(*h)).collect();
+    let rows = all.into_iter().zip(held);
+    let pick: Vec<(Label, bool)> = rows.filter(|(_, h)| split.keeps(*h)).collect();
     let claude = std::env::var("COCKPIT_CLAUDE")
         .ok()
         .filter(|v| !v.is_empty())

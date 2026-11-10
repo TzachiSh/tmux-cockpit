@@ -327,6 +327,30 @@ fn pick(cases: &mut Vec<Case>, o: &Opts) {
     }
 }
 
+/// The cases a run, `--check` and `--overlap` take: the files `o` names,
+/// loaded, then those `--only` names.
+fn run_cases(o: &Opts) -> Result<Loaded, String> {
+    let mut l = load(&o.cases, o.blind.as_deref())?;
+    pick(&mut l.cases, o);
+    Ok(l)
+}
+
+/// The line a run prints first and `--check` prints alone: the cases taken,
+/// and each file read with how many cases it held.
+fn check_line(cases: &[Case], from: &[(PathBuf, usize)]) -> String {
+    let count = |e: Expect| cases.iter().filter(|c| c.expect == e).count();
+    let held = cases.iter().filter(|c| c.holdout).count();
+    let files: Vec<String> = from.iter().map(|(p, n)| format!("{} ({n})", p.display())).collect();
+    format!(
+        "{} cases ({} ask, {} write, {} either; {held} holdout) from {}",
+        cases.len(),
+        count(Expect::Ask),
+        count(Expect::Write),
+        count(Expect::Either),
+        files.join(", ")
+    )
+}
+
 /// `assistant: ...` and `user: ...` lines, one turn each, as the panel keeps them.
 fn turns(text: &str) -> Result<Vec<Turn>, String> {
     let mut out = Vec::new();
@@ -887,22 +911,11 @@ fn main() {
     if o.overlap {
         std::process::exit(overlap_main(&o));
     }
-    let Loaded { mut cases, from } = load(&o.cases, o.blind.as_deref()).unwrap_or_else(|e| {
+    let Loaded { cases, from } = run_cases(&o).unwrap_or_else(|e| {
         eprintln!("panel_eval: {e}");
         std::process::exit(2);
     });
-    pick(&mut cases, &o);
-    let count = |e: Expect| cases.iter().filter(|c| c.expect == e).count();
-    let held = cases.iter().filter(|c| c.holdout).count();
-    let files: Vec<String> = from.iter().map(|(p, n)| format!("{} ({n})", p.display())).collect();
-    println!(
-        "{} cases ({} ask, {} write, {} either; {held} holdout) from {}",
-        cases.len(),
-        count(Expect::Ask),
-        count(Expect::Write),
-        count(Expect::Either),
-        files.join(", ")
-    );
+    println!("{}", check_line(&cases, &from));
     if o.check {
         return;
     }
@@ -1833,9 +1846,8 @@ fn overlap_main(o: &Opts) -> i32 {
 /// Returns 1 when a pair is flagged or left unchecked by a failed call.
 fn overlap_check(o: &Opts) -> Result<i32, String> {
     let read = |p: &Path| std::fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display()));
-    let mut cases = load(&o.cases, o.blind.as_deref())?.cases;
-    let only = |c: &Case| o.only.as_ref().is_none_or(|w| c.id.contains(w.as_str()) || c.kind == *w);
-    cases.retain(|c| c.holdout && only(c));
+    let mut cases = run_cases(o)?.cases;
+    cases.retain(|c| c.holdout);
     let lines = match &o.from_to {
         Some((from, to)) => overlap::new_lines(&read(from)?, &read(to)?),
         None => overlap::added_lines(&prompt_diff(&o.base)?),
