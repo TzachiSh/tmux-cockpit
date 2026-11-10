@@ -296,6 +296,22 @@ is an error and is never dropped unseen or merged into the case before it. In
 the cases file such a line is body text, as a pytest banner on a screen is, and
 a lost tune case shows in the counts.
 
+A run prints none of a held-out case's text, whichever file it came from, pass
+or fail (#792). A passing reply holds every must phrase, and an on-target
+question an ask_any term, so the rule covers both. The case's line keeps the
+mark (`ok`, `FAIL` or `ERR`), the id, `want` and the latency, leaves the kind
+column blank, and ends in counts: `held out: has N, missing N` (the must_not
+phrases the reply holds, the must phrases it lacks), after `[read N]` for an
+exploring call. A failed call shows only its class, `held out: took too long`,
+`stopped at its budget` or `call failed`, because claude's error can echo the
+request it was sent. Its `--out` row keeps `missing_n` and `forbidden_n`, the
+error as that class, and only the fields listed in `HELD_FIELDS`; `kind`,
+`question`, `missing`, `forbidden`, `critique` and any field added later are
+null. With `--judge` its line is `judge ok|FAIL <id>` with no critique, or
+`judge ERR <id>  held out: call failed`. A tune case prints and writes all of
+it, as before. `--compare`, `--overlap` and the summary print ids, `want` and
+counts only.
+
 A prompt change aims at 100% on the tune cases (#701). A significant drop on a
 held-out case blocks it, no edit may aim at a particular held-out case, and a
 held-out case that fails gets a new blind case written for its class. Stop
@@ -370,7 +386,8 @@ one it planted (#646). A name that goes on with a letter, digit, `_`, `-` or
 chars: only a tag ends one of these sections. A zero-width char before the name,
 or a full-width name such as `</ＲＥＰＬＹ>`, stays raw (#652): matching them would
 take a Unicode confusables table, and the prompt's own closers are plain ASCII.
-Each row then prints `judge ok|FAIL <id> <critique>`, the summary adds the
+Each row then prints `judge ok|FAIL <id> <critique>` (no critique for a
+held-out case), the summary adds the
 judge's pass rate and how often it agrees with the keyword checks, and each
 `--out` row gains `judge`, `critique`, `judge_model`, `judge_cost_usd` and
 `rubric` (the rubric's hash). The keyword checks still decide `pass`: the judge

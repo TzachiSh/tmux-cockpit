@@ -933,6 +933,8 @@ struct Ended<'a> {
     ms: u128,
     /// Why the call failed; `None` when it answered.
     err: Option<String>,
+    /// What kind of failure `err` is ([`fail_class`]): all a held-out case shows of it.
+    class: &'static str,
     /// `None` for a failed call.
     grade: Option<Grade>,
     usage: Usage,
@@ -944,16 +946,123 @@ struct Ended<'a> {
     calls: Option<Vec<String>>,
 }
 
+/// The one place that decides what a run shows of a case (#792). A tune case
+/// (`held` false) shows what `full` builds. A held-out case shows what `blind`
+/// builds: its id, pass or fail and counts, never its text. That is no must,
+/// must_not or ask_any phrase, kind, question, judge critique, or error text,
+/// which may echo its input.
+fn show_case<T>(held: bool, full: impl FnOnce() -> T, blind: impl FnOnce() -> T) -> T {
+    if held { blind() } else { full() }
+}
+
+/// The `--out` fields a held-out case's row keeps (#792): none holds its
+/// phrases. Every other field, one added later included, is null on that row.
+const HELD_FIELDS: [&str; 27] = [
+    "id",
+    "expect",
+    "run",
+    "model",
+    "system",
+    "prompt",
+    "ms",
+    "error",
+    "asked",
+    "pass",
+    "wrong_type",
+    "cost_usd",
+    "in_tokens",
+    "out_tokens",
+    "refused",
+    "holdout",
+    "reply",
+    "explore",
+    "files_read",
+    "reads",
+    "env",
+    "missing_n",
+    "forbidden_n",
+    "judge",
+    "judge_model",
+    "judge_cost_usd",
+    "rubric",
+];
+
+/// What a failed call was, in words of the rig's own: a timeout, a budget
+/// stop, or any other failure.
+fn fail_class(answer: &Result<String, Fail>) -> &'static str {
+    match answer {
+        Err(Fail::Timeout) => "took too long",
+        Err(Fail::Budget { .. }) => "stopped at its budget",
+        _ => "call failed",
+    }
+}
+
+/// A held-out case's `row`: `missing_n` and `forbidden_n` count its lists, and
+/// each field outside [`HELD_FIELDS`] is null.
+fn blind_row(mut row: serde_json::Value) -> serde_json::Value {
+    let Some(m) = row.as_object_mut() else {
+        return row;
+    };
+    for (list, n) in [("missing", "missing_n"), ("forbidden", "forbidden_n")] {
+        if let Some(l) = m.get(list).and_then(|l| l.as_array()) {
+            let len = l.len();
+            m.insert(n.into(), len.into());
+        }
+    }
+    for (k, v) in m.iter_mut() {
+        if !HELD_FIELDS.contains(&k.as_str()) {
+            *v = serde_json::Value::Null;
+        }
+    }
+    row
+}
+
+/// Whether an `--out` row is a held-out case's; a row that does not say is.
+fn held_row(row: &serde_json::Value) -> bool {
+    row["holdout"].as_bool() != Some(false)
+}
+
 impl Ended<'_> {
-    /// The run's line for this call: mark, id, kind, want, ms, then what went wrong.
+    /// The run's line for this call: mark, id, kind, want, ms, then what went
+    /// wrong. A held-out case's has no kind, and only counts or the failure's
+    /// class for what.
     fn line(&self) -> String {
-        let (c, g) = (self.case, &self.grade);
-        let mark = match (&self.err, g) {
+        let c = self.case;
+        let mark = match (&self.err, &self.grade) {
             (Some(_), _) => "ERR ",
             (_, Some(g)) if g.pass => "ok  ",
             _ => "FAIL",
         };
-        let what = match (&self.err, g) {
+        let full = || (c.kind.as_str(), self.what());
+        let (kind, what) = show_case(c.holdout, full, || ("", self.counts()));
+        let want = c.expect.as_str();
+        let what = match &self.read {
+            Some(r) => format!("[read {}] {what}", r.len()),
+            None => what,
+        };
+        format!("{mark} {:<24} {:<13} want {want:<6} {:>6} ms  {what}", c.id, kind, self.ms)
+    }
+
+    /// What a held-out case's line says went wrong: counts, or the class of a
+    /// failed call.
+    fn counts(&self) -> String {
+        let g = match (&self.err, &self.grade) {
+            (None, Some(g)) => g,
+            _ => return format!("held out: {}", self.class),
+        };
+        let n = [("has", g.forbidden.len()), ("missing", g.missing.len())];
+        let n = n.iter().filter(|(_, k)| *k > 0).map(|(w, k)| format!("{w} {k}"));
+        let n = n.collect::<Vec<_>>().join(", ");
+        match n.is_empty() {
+            true => "held out".into(),
+            false => format!("held out: {n}"),
+        }
+    }
+
+    /// What a tune case's line says went wrong, its phrases included.
+    fn what(&self) -> String {
+        let (c, g) = (self.case, &self.grade);
+        match (&self.err, g) {
             (Some(e), _) => e.clone(),
             (_, Some(g)) if g.refused => "refused by the panel (a file edit) or cut off".into(),
             (_, Some(g)) if !g.forbidden.is_empty() => format!("has: {}", g.forbidden.join("; ")),
@@ -964,17 +1073,23 @@ impl Ended<'_> {
             }
             (_, Some(g)) if !g.missing.is_empty() => format!("wrote, missing: {}", g.missing.join("; ")),
             _ => "wrote".into(),
-        };
-        let want = c.expect.as_str();
-        let what = match &self.read {
-            Some(r) => format!("[read {}] {what}", r.len()),
-            None => what,
-        };
-        format!("{mark} {:<24} {:<13} want {want:<6} {:>6} ms  {what}", c.id, c.kind, self.ms)
+        }
     }
 
-    /// The `--out` row for this call, with the run's environment `env`.
+    /// The `--out` row for this call, with the run's environment `env`. A
+    /// held-out case's is [`blind_row`], its error only the failure's class.
     fn row(&self, env: serde_json::Value) -> serde_json::Value {
+        let blind = || {
+            let mut r = self.full_row(env.clone());
+            if self.err.is_some() {
+                r["error"] = self.class.into();
+            }
+            blind_row(r)
+        };
+        show_case(self.case.holdout, || self.full_row(env.clone()), blind)
+    }
+
+    fn full_row(&self, env: serde_json::Value) -> serde_json::Value {
         let (c, g, u) = (self.case, self.grade.as_ref(), &self.usage);
         serde_json::json!({
             "id": c.id, "kind": c.kind, "expect": c.expect.as_str(), "run": self.run, "model": self.model,
@@ -1162,6 +1277,7 @@ fn main() {
             let j = live.swap_remove(i);
             let c = &cases[j.case];
             let ms = j.started.elapsed().as_millis();
+            let class = fail_class(&answer);
             let out = call_output(answer, j.req.raw());
             // a text call has no tools: its rows say null, not "read none"
             let read = out.as_ref().ok().and_then(|o| files_read(o)).filter(|_| j.explore);
@@ -1186,6 +1302,7 @@ fn main() {
                 prompt: &j.prompt,
                 ms,
                 err,
+                class,
                 grade: g,
                 usage,
                 reply: &raw,
@@ -1346,11 +1463,16 @@ fn judge_apply(rows: &mut [(serde_json::Value, judge::Input)], todo: &[usize], j
         errors += usize::from(j.outcome().0.is_none());
         println!("{}", verdict_line(row, j));
         judge::annotate(row, j, model);
+        // a held-out row loses the critique annotate wrote, or the judge's error
+        let r = row.take();
+        *row = show_case(held_row(&r), || r.clone(), || blind_row(r.clone()));
     }
     errors
 }
 
-/// The line `--judge` prints for row `row` judged `j`: mark, id, critique.
+/// The line `--judge` prints for row `row` judged `j`: mark, id, critique. A
+/// held-out case's has no critique, and a failed call only its class: the
+/// judge's stderr may echo the case it was sent.
 fn verdict_line(row: &serde_json::Value, j: &judge::Judged) -> String {
     let (pass, critique) = j.outcome();
     let mark = match pass {
@@ -1358,7 +1480,12 @@ fn verdict_line(row: &serde_json::Value, j: &judge::Judged) -> String {
         Some(false) => "FAIL",
         None => "ERR ",
     };
-    format!("judge {mark} {:<24} {critique}", row["id"].as_str().unwrap_or(""))
+    let id = row["id"].as_str().unwrap_or("");
+    let blind = || match pass {
+        Some(_) => format!("judge {mark} {id}"),
+        None => format!("judge {mark} {id}  held out: call failed"),
+    };
+    show_case(held_row(row), || format!("judge {mark} {id:<24} {critique}"), blind)
 }
 
 /// The judge's summary over `(keyword pass, judge pass)` per row: its pass
@@ -4748,6 +4875,257 @@ esac
         let ledger = std::fs::read_to_string(d.0.join("cost.tsv")).unwrap();
         let row: Vec<&str> = ledger.lines().last().unwrap().split('\t').collect();
         assert_eq!((row[1], row[4]), ("overlap", "0.0010"));
+    }
+
+    /// #792: a held-out case's text stays out of every line and row.
+    mod quiet {
+        use super::*;
+        use serde_json::{Value, json};
+
+        /// Made-up cases: one tune, two held out, each with phrases of its own.
+        const QUIET: &str = "=== tune-q\nkind: bug\nwindow: bash · bash · /home/u\n\
+            expect: write\nmust: al-beacon; ga-relay\nmust_not: ze-trap\n\
+            --- request\nfix this\n\
+            === held-q\nkind: co-kd\nwindow: bash · bash · /home/u\n\
+            expect: write\nholdout: yes\nmust: qz-lamp; em-quill\n\
+            must_not: vi-nail\n--- request\nfix that qz-echo\n\
+            === held-ask\nkind: co-kd\nwindow: bash · bash · /home/u\n\
+            expect: ask\nholdout: yes\nask_any: sf-gate\n--- request\ndeploy it\n";
+
+        /// Every phrase of the held-out cases in [`QUIET`], kind and request included.
+        const HELD: [&str; 6] = ["qz-lamp", "em-quill", "vi-nail", "sf-gate", "co-kd", "qz-echo"];
+
+        /// A reply that holds a must_not and some must phrases of every case.
+        const LEAKY: &str = "<prompt>Use ze-trap, vi-nail, al-beacon and qz-lamp.</prompt>";
+
+        /// A question naming the held-out ask case's term: a passing reply.
+        const ON_TARGET: &str = "<question>Which sf-gate?</question>";
+
+        /// The error a failed call may carry: claude's stderr echoing its input.
+        const ECHO: &str = "bad input: fix that qz-echo";
+
+        /// A stand-in claude that echoes its request's phrase on stderr and fails.
+        const ECHOER: &str = "#!/bin/sh\ngrep -o 'fix that qz-echo' | head -n 1 >&2\nexit 1\n";
+
+        /// Case `id` of `cases` answered with `reply`, graded.
+        fn ended<'a>(cases: &'a [Case], id: &str, reply: &'a str) -> Ended<'a> {
+            let c = cases.iter().find(|c| c.id == id).unwrap();
+            Ended {
+                case: c,
+                run: 0,
+                model: "sonnet",
+                system: 1,
+                prompt: "p",
+                ms: 7,
+                err: None,
+                class: "call failed",
+                grade: Some(grade(c, reply)),
+                usage: Usage::default(),
+                reply,
+                explore: false,
+                read: None,
+                calls: None,
+            }
+        }
+
+        /// Case `id` of `cases` as a failed call whose error is `why`.
+        fn failed<'a>(cases: &'a [Case], id: &str, why: &str) -> Ended<'a> {
+            let mut e = ended(cases, id, "");
+            (e.err, e.grade) = (Some(why.into()), None);
+            e
+        }
+
+        /// A write case's line up to its detail, as [`ended`] makes it.
+        fn head(mark: &str, id: &str, kind: &str) -> String {
+            format!("{mark} {id:<24} {kind:<13} want write       7 ms")
+        }
+
+        /// The phrases of [`HELD`] that `text` holds.
+        fn leaked(text: &str) -> Vec<&'static str> {
+            HELD.into_iter().filter(|p| text.contains(p)).collect()
+        }
+
+        fn row_of(e: &Ended) -> Value {
+            e.row(json!({}))
+        }
+
+        /// A stand-in claude at `dir`/fake-claude running `script`.
+        fn fake(dir: &Path, script: &str) -> String {
+            use std::os::unix::fs::PermissionsExt;
+            let f = dir.join("fake-claude");
+            std::fs::write(&f, script).unwrap();
+            std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+            f.display().to_string()
+        }
+
+        /// A judge verdict whose critique quotes the held-out case's phrases.
+        fn quoting() -> judge::Judged {
+            let critique = "says vi-nail, lacks em-quill".to_string();
+            judge::Judged {
+                verdict: Ok(judge::Verdict { pass: false, critique }),
+                cost_usd: None,
+            }
+        }
+
+        #[test]
+        fn a_failing_held_out_line_shows_only_id_want_ms_and_counts() {
+            let cases = parse_cases(QUIET).unwrap();
+            let l = ended(&cases, "held-q", LEAKY).line();
+            assert_eq!(l, format!("{}  held out: has 1, missing 1", head("FAIL", "held-q", "")));
+            assert_eq!(leaked(&l), Vec::<&str>::new(), "{l}");
+        }
+
+        #[test]
+        fn a_passing_held_out_question_stays_unshown() {
+            let cases = parse_cases(QUIET).unwrap();
+            let l = ended(&cases, "held-ask", ON_TARGET).line();
+            assert!(l.starts_with("ok   held-ask ") && l.ends_with(" ms  held out"), "{l}");
+            assert_eq!(leaked(&l), Vec::<&str>::new(), "{l}");
+        }
+
+        #[test]
+        fn a_failing_tune_line_prints_as_before() {
+            let cases = parse_cases(QUIET).unwrap();
+            let want = format!("{}  has: ze-trap", head("FAIL", "tune-q", "bug"));
+            assert_eq!(ended(&cases, "tune-q", LEAKY).line(), want);
+            let l = ended(&cases, "tune-q", "<prompt>Use al-beacon.</prompt>").line();
+            assert!(l.ends_with("  wrote, missing: ga-relay"), "{l}");
+        }
+
+        #[test]
+        fn a_held_out_row_nulls_its_phrases_and_counts_them() {
+            let cases = parse_cases(QUIET).unwrap();
+            let row = row_of(&ended(&cases, "held-q", LEAKY));
+            let text = ["kind", "question", "missing", "forbidden"].map(|k| &row[k]);
+            assert_eq!(text, [&Value::Null; 4], "{row}");
+            assert_eq!([&row["missing_n"], &row["forbidden_n"]], [&json!(1), &json!(1)]);
+            assert_eq!(
+                (&row["id"], &row["holdout"], &row["pass"]),
+                (&json!("held-q"), &json!(true), &json!(false))
+            );
+        }
+
+        #[test]
+        fn a_tune_row_carries_its_phrases_as_before() {
+            let cases = parse_cases(QUIET).unwrap();
+            let row = row_of(&ended(&cases, "tune-q", LEAKY));
+            let got = [&row["forbidden"], &row["missing"], &row["reply"]];
+            assert_eq!(got, [&json!(["ze-trap"]), &json!(["ga-relay"]), &json!(LEAKY)]);
+            assert!(row.get("missing_n").is_none() && row.get("forbidden_n").is_none(), "{row}");
+        }
+
+        /// The round trip: a stand-in claude, sent the held-out case's own
+        /// request, echoes it on stderr and fails; the line and row show the class.
+        #[test]
+        fn a_held_out_failed_call_prints_only_its_class() {
+            let dir = scratch("quiet-err");
+            let cases = parse_cases(QUIET).unwrap();
+            let c = cases.iter().find(|c| c.id == "held-q").unwrap();
+            let (system, prompt, profile, _) = panel_call(c, &c.path, false);
+            let call = Call {
+                claude: fake(&dir.0, ECHOER),
+                ..base_call(&dir.0)
+            };
+            let mut req = Request::spawn_with(&call, &profile, &system, &prompt, "sonnet");
+            let answer = loop {
+                match req.poll() {
+                    Some(a) => break a,
+                    None => std::thread::yield_now(),
+                }
+            };
+            let class = fail_class(&answer);
+            let err = call_output(answer, req.raw()).unwrap_err();
+            assert_eq!(leaked(&err), ["qz-echo"], "the stand-in echoed the request: {err}");
+            let mut e = failed(&cases, "held-q", &err);
+            e.class = class;
+            assert_eq!(e.line(), format!("{}  held out: call failed", head("ERR ", "held-q", "")));
+            assert_eq!(row_of(&e)["error"], json!("call failed"));
+            assert_eq!(leaked(&row_of(&e).to_string()), Vec::<&str>::new());
+        }
+
+        #[test]
+        fn fail_class_names_a_timeout_a_budget_stop_and_any_other_failure() {
+            let answers = [
+                Err(Fail::Timeout),
+                Err(Fail::Budget { limit_usd: 0.5 }),
+                Err(Fail::Failed(ECHO.into())),
+                Ok("{}".into()),
+            ];
+            let want = ["took too long", "stopped at its budget", "call failed", "call failed"];
+            assert_eq!(answers.map(|a| fail_class(&a)), want);
+        }
+
+        #[test]
+        fn a_tune_failed_call_keeps_its_error() {
+            let cases = parse_cases(QUIET).unwrap();
+            let e = failed(&cases, "tune-q", ECHO);
+            assert_eq!(e.line(), format!("{}  {ECHO}", head("ERR ", "tune-q", "bug")));
+            assert_eq!(row_of(&e)["error"], json!(ECHO));
+        }
+
+        #[test]
+        fn a_held_out_explore_keeps_its_read_count() {
+            let cases = parse_cases(QUIET).unwrap();
+            let mut e = ended(&cases, "held-q", LEAKY);
+            (e.explore, e.read) = (true, Some(vec!["/r/a.rs".into()]));
+            let l = e.line();
+            assert!(l.ends_with(" ms  [read 1] held out: has 1, missing 1"), "{l}");
+        }
+
+        #[test]
+        fn a_held_out_row_nulls_a_field_it_does_not_know() {
+            let row = json!({"id": "held-q", "pass": false, "later": "vi-nail", "holdout": true});
+            let want = json!({"id": "held-q", "pass": false, "later": null, "holdout": true});
+            assert_eq!(blind_row(row), want);
+        }
+
+        #[test]
+        fn a_row_that_does_not_say_holdout_no_is_held() {
+            let rows = [json!({"holdout": false}), json!({"holdout": true}), json!({})];
+            assert_eq!(rows.map(|r| held_row(&r)), [false, true, true]);
+        }
+
+        #[test]
+        fn a_held_out_verdict_line_and_row_carry_no_critique() {
+            let cases = parse_cases(QUIET).unwrap();
+            let row = row_of(&ended(&cases, "held-q", LEAKY));
+            assert_eq!(verdict_line(&row, &quoting()), "judge FAIL held-q");
+            let mut rows = vec![(row, judge::Input::default())];
+            judge_apply(&mut rows, &[0], &[quoting()], "haiku");
+            let r = &rows[0].0;
+            assert_eq!((&r["critique"], &r["judge"]), (&Value::Null, &json!(false)));
+        }
+
+        /// The round trip: a stand-in judge, sent the held-out case's request,
+        /// echoes it on stderr and fails; its line and row show none of it.
+        #[test]
+        fn a_held_out_judge_error_prints_only_its_class() {
+            let dir = scratch("quiet-judge");
+            let cases = parse_cases(QUIET).unwrap();
+            let c = cases.iter().find(|c| c.id == "held-q").unwrap();
+            let reply = "<prompt>x</prompt>";
+            let input = [judge_input(c, reply, None)];
+            let echoer = fake(&dir.0, ECHOER);
+            let judged = judge::judge_all(&echoer, "haiku", &input, 1, &dir.0);
+            let why = judged[0].verdict.clone().unwrap_err();
+            assert_eq!(leaked(&why), ["qz-echo"], "the stand-in echoed the request: {why}");
+            let row = row_of(&ended(&cases, "held-q", reply));
+            assert_eq!(verdict_line(&row, &judged[0]), "judge ERR  held-q  held out: call failed");
+            let mut rows = vec![(row, judge::Input::default())];
+            judge_apply(&mut rows, &[0], &judged, "haiku");
+            assert_eq!(leaked(&rows[0].0.to_string()), Vec::<&str>::new(), "{}", rows[0].0);
+        }
+
+        #[test]
+        fn a_tune_verdict_line_and_row_keep_the_critique() {
+            let cases = parse_cases(QUIET).unwrap();
+            let row = row_of(&ended(&cases, "tune-q", LEAKY));
+            let want = format!("judge FAIL {:<24} says vi-nail, lacks em-quill", "tune-q");
+            assert_eq!(verdict_line(&row, &quoting()), want);
+            let mut rows = vec![(row, judge::Input::default())];
+            judge_apply(&mut rows, &[0], &[quoting()], "haiku");
+            assert_eq!(rows[0].0["critique"], json!("says vi-nail, lacks em-quill"));
+        }
     }
 
     #[test]
