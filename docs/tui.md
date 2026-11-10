@@ -309,15 +309,18 @@ request it was sent. Its `--out` row keeps `missing_n`, `forbidden_n` and
 `HELD_FIELDS`. `kind`, `question`, `missing`, `forbidden`, `critique`,
 `reply`, `reads`, `files_read` and any field added later are null, and
 `--compare` reads `files_read_n` where `files_read` is null. With `--judge`
-its line is `judge ok|FAIL <id>` with no critique, or
+its line is `judge ok|FAIL <id>` with no critique, or the line
 `judge ERR <id>  held out: call failed`. A tune case prints and writes all of
-it, as before.
-`--compare`, `--overlap` and the summary print ids, `want` and counts only.
+it, as before. `--compare`, `--overlap` and the summary print ids, `want` and
+counts only.
 
 `--show-holdout` is for the owner or a listed reader rerunning one held-out
-case, so it needs `--only`. The run prints a warning before any case, then
-each held-out case's failing reply or full error under a warning line of its
-own. It never writes them to `--out`.
+case in one paid call. It needs `--only` with the case's whole id, and a run
+that picks any other number of cases exits 2 before printing, naming only the
+count. It sets `--runs 1`, and refuses another `--runs` and `--judge`. The
+run prints a warning before the case (none under `--check`), then the case's
+failing reply or full error under a warning line of its own. It never writes
+them to `--out`.
 
 A prompt change aims at 100% on the tune cases (#701). A significant drop on a
 held-out case blocks it, no edit may aim at a particular held-out case, and a
