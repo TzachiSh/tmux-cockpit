@@ -8711,15 +8711,23 @@ CHG_SPC=$(chg_ord 'the click bindings survive a plugin path with a quote and a s
 CHG_PA=$(chg_ord 'poll_alive: with no /proc, the poller is known by ps -o args= (#194) ==')
 CHG_RB=$(chg_ord 'prefix r opens the board, prefix R reloads; off unbinds each ==')
 CHG_PW=$(chg_ord 'prefix w: the board binds, off keeps stock, below 3.8 refuses,')
-# timeout: a lib_users that never reaches its fixed point (the real libs name each
-# other) would hang here. The ceiling makes it fail the rows below instead (#757).
-# shellcheck disable=SC2046  # deliberate word splitting: one path per line
-CHG_EACH=$(timeout 60 bash "$DIR/tests/changed.sh" --each $({ printf '%s\n' Makefile LICENSE \
+CHG_FILES=$({ printf '%s\n' Makefile LICENSE \
     scripts/lib/review-diff.sh scripts/lib/vnum.sh scripts/lib/hook.sh scripts/tmux-where \
     cockpit.tmux install.sh scripts/lib/pane.sh
     grep -ho 'scripts/lib/[A-Za-z0-9_.-]*' "$DIR/cockpit.tmux" "$DIR/install.sh"
     (cd "$DIR" && grep -lF pane.sh scripts/* cockpit.tmux install.sh 2>/dev/null)
-    cut -f2 <<< "$CHG_READS"; tr '\t' '\n' <<< "$CHG_SRC"; } | sort -u))
+    cut -f2 <<< "$CHG_READS"; tr '\t' '\n' <<< "$CHG_SRC"; } | sort -u)
+# timeout: a lib_users that never reaches its fixed point (the real libs name each
+# other) would hang here. The ceiling makes it fail the rows below instead (#757).
+# The call takes 3.9 to 4.1 s idle (n=5), and 17.0 to 18.8 s with 20 CPU hogs on
+# 10 cores at load 13 to 20 (n=3), so 60 s trips only on a hang or a far worse box.
+# shellcheck disable=SC2086  # deliberate word splitting: one path per line
+CHG_EACH=$(timeout 60 bash "$DIR/tests/changed.sh" --each $CHG_FILES)
+# --each prints one "FILE<TAB>blocks" line per file. Cut short, the rows below
+# read the missing files as picking no block, and two empty lookups compare equal,
+# so the chg_lost rows pass. A short count is named here first (#757).
+is "changed.sh --each prints one line per file asked for (fewer: the 60 s timeout tripped?)" \
+    "$(grep -c . <<< "$CHG_FILES")" "$(grep -c . <<< "$CHG_EACH")"
 chg_pick() { awk -F'\t' -v f="$1" '$1 == f { print $2 }' <<< "$CHG_EACH"; }
 chg_has() { case ",$(chg_pick "$1")," in *",$2,"*|*",ALL,"*) echo yes ;; *) echo no ;; esac; }
 is "a Makefile edit runs the 'builds install the executable cargo built' block that copies it" \
