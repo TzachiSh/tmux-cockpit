@@ -4337,7 +4337,12 @@ esac
             &p("to.txt"),
         ];
         let args = [&args[..], &["--ledger", &p("cost.tsv"), "--jobs", "2"]].concat().join("\n");
-        let o = std::process::Command::new(std::env::current_exe().unwrap())
+        let mut c = std::process::Command::new(std::env::current_exe().unwrap());
+        // `--cases` drops the held-out file: the child puts back the dir's own
+        if d.join("holdout-blind.txt").exists() {
+            c.env("PANEL_EVAL_OVERLAP_BLIND", p("holdout-blind.txt"));
+        }
+        let o = c
             .args(["--exact", "tests::overlap_child", "--nocapture", "--test-threads=1"])
             .env("PANEL_EVAL_OVERLAP_ARGS", args)
             .env("COCKPIT_CLAUDE", p("claude"))
@@ -4354,7 +4359,9 @@ esac
         if let Ok(args) = std::env::var("PANEL_EVAL_OVERLAP_ARGS") {
             // libtest's `test ... ` has no newline yet: records start on their own line
             println!();
-            std::process::exit(overlap_main(&opts(args.split('\n').map(String::from)).unwrap()));
+            let mut o = opts(args.split('\n').map(String::from)).unwrap();
+            o.blind = std::env::var_os("PANEL_EVAL_OVERLAP_BLIND").map(PathBuf::from);
+            std::process::exit(overlap_main(&o));
         }
     }
 
@@ -4444,6 +4451,17 @@ esac
         std::fs::write(d.0.join("cases.txt"), OVERLAP_CASES.replace("holdout: yes\n", "")).unwrap();
         let (code, _, err) = overlap_run(&d.0, "a plain line\n");
         assert_eq!((code, calls(&d.0)), (Some(2), 0), "{err}");
+    }
+
+    /// #783: the overlap check judges the held-out file's cases too.
+    #[test]
+    fn overlap_judges_the_held_out_files_cases() {
+        let d = overlap_dir("ov-blind");
+        let (held, tuned) = OVERLAP_CASES.split_at(OVERLAP_CASES.find("=== tuned-b").unwrap());
+        std::fs::write(d.0.join("cases.txt"), tuned).unwrap();
+        std::fs::write(d.0.join("holdout-blind.txt"), held).unwrap();
+        let (code, out, err) = overlap_run(&d.0, "a plain line\n");
+        assert_eq!((code, calls(&d.0)), (Some(0), 1), "{out}{err}");
     }
 
     #[test]
