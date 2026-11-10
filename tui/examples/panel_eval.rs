@@ -1725,9 +1725,10 @@ fn panel_call(c: &Case, path: &str, explore: bool) -> (String, String, Profile, 
     // the basket as main reads it, the claude check by the window's command alone
     a.claude = cockpit_tui::basket::claude_cmd(&c.cmd);
     for (f, lines) in &c.refs {
-        let r = Ref::new(Path::new(path).join(f), *lines, None);
-        a.basket
-            .push(r.unwrap_or_else(|e| panic!("case {}: ref {f}: {e} (not staged?)", c.id)));
+        match Ref::new(Path::new(path).join(f), *lines, None) {
+            Ok(r) => a.basket.push(r),
+            Err(e) => panic!("{}", ref_error(c, f, &format!(": {e} (not staged?)"))),
+        }
     }
     (a.draft, a.cur) = (c.request.clone(), c.request.len());
     a.key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
@@ -1770,13 +1771,13 @@ fn stage(cases: &[Case]) -> Result<Option<PathBuf>, String> {
 /// A refs case's files under `pane`, a few lines each. A fixture is shared by
 /// every case that names it, so a ref inside one is a file it has, never made.
 fn stage_refs(c: &Case, pane: &Path) -> Result<(), String> {
-    let err = |f: &str, e: std::io::Error| format!("case {}: ref {f}: {e}", c.id);
+    let err = |f: &str, e: std::io::Error| ref_error(c, f, &format!(": {e}"));
     std::fs::create_dir_all(pane).map_err(|e| err(".", e))?;
     for (f, lines) in &c.refs {
         let p = pane.join(f);
         if c.explore.is_some() && !f.starts_with("../") {
             if !p.is_file() {
-                return Err(format!("case {}: ref {f} is not in its fixture", c.id));
+                return Err(ref_error(c, f, " is not in its fixture"));
             }
             continue;
         }
@@ -1786,6 +1787,11 @@ fn stage_refs(c: &Case, pane: &Path) -> Result<(), String> {
         std::fs::write(&p, body).map_err(|e| err(f, e))?;
     }
     Ok(())
+}
+
+/// A failure to stage or read case `c`'s ref `f`: the case, the ref and `what`.
+fn ref_error(c: &Case, f: &str, what: &str) -> String {
+    format!("case {}: ref {f}{what}", c.id)
 }
 
 /// The pane's folder for case `c`: its fixture copy when it explores; for a
