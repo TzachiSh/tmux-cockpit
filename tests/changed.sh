@@ -117,8 +117,11 @@ pick() {
     # block greps docs/tui.md (#672). Only the blocks that name it.
     tests/only.sh|tests/par.sh|tests/green.sh|tests/changed.sh|Makefile|README.md|LICENSE|.*|docs/*)
         blocks_for "$1" ;;
-    scripts/lib/*)                                # reaches every script sourcing it
-        for s in scripts/*; do
+    # Reaches every file that names it: the scripts, and the two entry points
+    # that source libs too -- cockpit.tmux runs statusbar.conf, tui.sh and fmt.sh,
+    # install.sh runs vnum.sh and tui.sh (#734).
+    scripts/lib/*)
+        for s in scripts/* cockpit.tmux install.sh; do
             [ -f "$s" ] && grep -q "${1##*/}" "$s" && blocks_for "$s"
         done
         blocks_for "$1" ;;

@@ -8529,7 +8529,9 @@ CHG_RB=$(chg_ord 'prefix r opens the board, prefix R reloads; off unbinds each =
 CHG_PW=$(chg_ord 'prefix w: the board binds, off keeps stock, below 3.8 refuses,')
 # shellcheck disable=SC2046  # deliberate word splitting: one path per line
 CHG_EACH=$(bash "$DIR/tests/changed.sh" --each $({ printf '%s\n' Makefile LICENSE \
-    scripts/lib/review-diff.sh scripts/lib/vnum.sh scripts/lib/hook.sh scripts/tmux-where
+    scripts/lib/review-diff.sh scripts/lib/vnum.sh scripts/lib/hook.sh scripts/tmux-where \
+    cockpit.tmux install.sh
+    grep -ho 'scripts/lib/[A-Za-z0-9_.-]*' "$DIR/cockpit.tmux" "$DIR/install.sh"
     cut -f2 <<< "$CHG_READS"; } | sort -u))
 chg_pick() { awk -F'\t' -v f="$1" '$1 == f { print $2 }' <<< "$CHG_EACH"; }
 chg_has() { case ",$(chg_pick "$1")," in *",$2,"*|*",ALL,"*) echo yes ;; *) echo no ;; esac; }
@@ -8553,11 +8555,26 @@ while IFS=$'\t' read -r n p; do
     case ",1,$(chg_pick "$p")," in *",ALL,"*|*",$n,"*) ;; *) chg_miss="$chg_miss $p:$n" ;; esac
 done <<< "$CHG_READS"
 is "changed.sh picks every block for each file it reads (file:block missed)" "" "$chg_miss"
+# A block that runs cockpit.tmux or install.sh runs each file it sources too:
+# statusbar.conf, tui.sh, fmt.sh, vnum.sh. An edit to one picks the block (#734).
+chg_lost() {                         # blocks that run $1 which a $2 edit does not pick
+    case ",$(chg_pick "$2")," in *",ALL,"*) return ;; esac
+    comm -23 <(chg_pick "$1" | tr , '\n' | sort) <(chg_pick "$2" | tr , '\n' | sort) |
+        sort -n | paste -sd,; }
+is "a statusbar.conf edit runs every block that runs cockpit.tmux (#734)" "" \
+    "$(chg_lost cockpit.tmux scripts/lib/statusbar.conf)"
+chg_miss=""
+for chg_e in cockpit.tmux install.sh; do
+    while read -r chg_l; do
+        [ -z "$(chg_lost "$chg_e" "$chg_l")" ] || chg_miss="$chg_miss $chg_e<$chg_l"
+    done < <(grep -o 'scripts/lib/[A-Za-z0-9_.-]*' "$DIR/$chg_e" | sort -u)
+done
+is "a lib edit runs every block that runs its sourcer (sourcer<lib missed) (#734)" "" "$chg_miss"
 CHG_STAMP=$(bash "$DIR/tests/green.sh" files)
 is "the green stamp hashes every file a block reads" "" "$(cut -f2 <<< "$CHG_READS" | sort -u |
     awk 'NR == FNR { s[$0] = 1; next } !($0 in s) { printf " %s", $0 }' \
         <(printf '%s\n' "$CHG_STAMP") -)"
-unset -f chg_pick chg_has
+unset -f chg_pick chg_has chg_lost
 fi
 unset -f chg_ord
 
