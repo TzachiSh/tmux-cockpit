@@ -59,9 +59,24 @@ Prompts for a coding agent
    the prompt has the agent read the current flow and run the tests or the
    tool for a baseline before it plans, wait for the user's OK, then run the
    same checks again and compare; a prompt that skips the baseline fails. A
-   vague or big feature: the panel asks the one point that changes the work
-   most, or writes a plan-first prompt that has the agent look at the code,
-   lay out the options, gather the requirements and wait for the OK.
+   vague or big feature named as one thing, with no list of its parts: the
+   panel asks the one point that changes the work most, or writes a
+   plan-first prompt that has the agent look at the code, lay out the
+   options, gather the requirements and wait for the OK; both pass, even
+   when what it is for is unknown.
+   A big new feature whose request lists two or more parts to build (pages,
+   screens, forms, jobs) while neither the request, the screen nor an earlier
+   answer of the user's says what the whole feature is for (the problem it
+   solves, or who uses it and what they get): naming the parts, or what one
+   part shows or who works with it, does not say that, so the panel asks it.
+   Any prompt fails there, even one that meets every big-task step above (plan
+   first, baseline, an interview, a wait for the OK), and so does a question
+   on how to build it (a library, a provider, a method). A prompt that leaves
+   the purpose to the interview has not stated it. You do not see the earlier
+   rounds. When the request only goes on from one (a confirmation, a short
+   answer, an OK to proceed), the purpose may be in an answer you cannot see:
+   a prompt that states what the feature is for as the user's purpose, not as
+   a guess, an option or a topic for the interview, passes this rule.
 10. When the request is only about a test (add a test for existing code, or
     fix a failing test, named in the request or on the screen), the prompt
     includes a break-on-purpose check: break the code under test (a mutation),
