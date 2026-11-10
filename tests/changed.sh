@@ -122,7 +122,7 @@ pick() {
     # install.sh runs vnum.sh and tui.sh (#734).
     scripts/lib/*)
         for s in scripts/* cockpit.tmux install.sh; do
-            [ -f "$s" ] && grep -q "${1##*/}" "$s" && blocks_for "$s"
+            [ -f "$s" ] && grep -qF -- "${1##*/}" "$s" && blocks_for "$s"
         done
         blocks_for "$1" ;;
     examples/*)  blocks_for examples ;;
