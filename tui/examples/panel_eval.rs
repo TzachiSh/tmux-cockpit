@@ -344,9 +344,11 @@ fn strip_trailing_comments(lines: &mut Vec<&str>) {
 
 /// `needle` as a whole word, any case: `plan` is not in "explanation" nor `36`
 /// in "360". `a|b` is any of them. An end that is not a letter or digit (`--json`,
-/// `/code-review`) needs no boundary there.
+/// `/code-review`) needs no boundary there. A needle opening with `. ` is a
+/// sentence start, and the start of the text is one too (#684): `. invert` is in
+/// "Invert the check" but not in "We invert the sign".
 fn has(hay: &str, needle: &str) -> bool {
-    let hay = hay.to_lowercase();
+    let hay = format!(". {}", hay.to_lowercase());
     alternatives(needle).any(|n| !starts(&hay, &n).is_empty())
 }
 
@@ -3600,5 +3602,210 @@ mod tests {
             ("go describes inverting", "h-go-header-test", p(format!("{go}{described}")), false),
         ];
         assert_eq!(graded_wrong(&rows), Vec::<&str>::new(), "rows graded the wrong way");
+    }
+
+    /// #684: the reply on `last-commit-test`, whose prompt fixes a parser test,
+    /// with `then` appended. Each row of the tests below adds one sentence to it.
+    fn fix_with(then: &str) -> String {
+        let fix = "Fix parser::tests::parses_negative in src/parser.rs from 9f3c2a1, then run \
+                   cargo test.";
+        format!("<prompt>{fix} {then}</prompt>")
+    }
+
+    /// #684 item 2: each lead-in of the break term has a row of its own, worded so
+    /// no other alternative of the term matches it.
+    #[test]
+    fn each_break_lead_in_passes_on_its_own() {
+        let rows = [
+            (
+                "temporarily flip",
+                "Next, temporarily flip the sign check, confirm the test fails, and put it back.",
+            ),
+            (
+                "try flipping",
+                "Next, try flipping the sign check: the test must fail; then restore it.",
+            ),
+            (
+                "temporarily introduce a bug",
+                "Next, temporarily introduce a bug, confirm the test fails, and revert it.",
+            ),
+            ("invert one", "Next, invert one condition, confirm the test fails, and restore it."),
+            ("flip one", "Next, flip one condition, confirm the test fails, and put it back."),
+            ("then flip", "Then flip the sign check, confirm the test fails, and put it back."),
+            (
+                "temporarily break the code",
+                "Next, temporarily break the code, confirm the test fails, and undo it.",
+            ),
+            (
+                "temporarily revert the fix",
+                "Next, temporarily revert the fix, confirm the test fails, and reapply it.",
+            ),
+        ];
+        let rows = rows.map(|(name, s)| (name, "last-commit-test", fix_with(s), true));
+        assert_eq!(graded_wrong(&rows), Vec::<&str>::new(), "lead-ins graded the wrong way");
+    }
+
+    /// #684 item 1: a break step may open a sentence with no lead-in, and the
+    /// start of the text opens one too; "We invert" and "Do not invert" stay out.
+    #[test]
+    fn a_break_step_may_open_a_sentence() {
+        let first = "<prompt>Invert the sign check, confirm parser::tests::parses_negative fails \
+                     and restore it. Fix it in src/parser.rs from 9f3c2a1.</prompt>";
+        let rows = [
+            ("invert opens", "Invert the sign check, confirm the test fails, then restore it."),
+            ("flip opens", "Flip the sign check, confirm the test fails, and put it back."),
+            ("introduce opens", "Introduce a bug in it, confirm the test fails, and revert it."),
+        ];
+        let mut rows = rows.map(|(n, s)| (n, "last-commit-test", fix_with(s), true)).to_vec();
+        rows.push(("invert opens the text", "last-commit-test", first.to_string(), true));
+        assert_eq!(graded_wrong(&rows), Vec::<&str>::new(), "sentence starts graded wrong");
+    }
+
+    /// #684 item 3: a mid-sentence "then flip" or "then invert" is a fix step,
+    /// not a break; the same words opening a sentence still pass.
+    #[test]
+    fn a_fix_step_is_no_break_step() {
+        let rows = [
+            (
+                "then invert to pass",
+                "Find where the sign is lost, then invert the check so the test passes. \
+                 Revert unrelated edits.",
+                false,
+            ),
+            (
+                "then flip to pass",
+                "Read the diff, then flip the condition that is backwards, and revert \
+                 unrelated edits.",
+                false,
+            ),
+            (
+                "Then invert opens",
+                "Then invert the sign check, confirm the test fails, and put it back.",
+                true,
+            ),
+        ];
+        let rows = rows.map(|(n, s, want)| (n, "last-commit-test", fix_with(s), want));
+        assert_eq!(graded_wrong(&rows), Vec::<&str>::new(), "fix steps graded the wrong way");
+    }
+
+    /// #684 item 4: "break the code" and "mutation" need the act, and reverting
+    /// the fix is a break step once it opens a sentence.
+    #[test]
+    fn the_older_break_words_need_the_act() {
+        let rows = [
+            (
+                "don't break the code",
+                "Make sure you don't break the code elsewhere, and revert unrelated edits.",
+                false,
+            ),
+            (
+                "mutation of state",
+                "Avoid any mutation of shared state, and revert unrelated edits.",
+                false,
+            ),
+            (
+                "Then break the code",
+                "Then break the code, confirm the test fails, and undo it.",
+                true,
+            ),
+            ("break the code opens", "Break the code, confirm the test fails, and undo it.", true),
+            ("revert the fix", "Revert the fix, confirm the test fails, and reapply it.", true),
+            (
+                "Then revert the fix",
+                "Then revert the fix, confirm the test fails, and reapply it.",
+                true,
+            ),
+            ("if it breaks, revert the fix", "If other tests break, revert the fix.", false),
+        ];
+        let rows = rows.map(|(n, s, want)| (n, "last-commit-test", fix_with(s), want));
+        assert_eq!(graded_wrong(&rows), Vec::<&str>::new(), "break words graded the wrong way");
+    }
+
+    /// #684 item 4: "mutation" passes only as the name of the check, each form on
+    /// its own row.
+    #[test]
+    fn each_mutation_check_word_passes_on_its_own() {
+        let rows = [
+            ("mutation test", "Next, run a quick mutation test on the sign check and revert it."),
+            ("mutation tests", "Next, run the mutation tests on the sign check and revert them."),
+            (
+                "mutation testing",
+                "Next, do some mutation testing on the sign check and revert it.",
+            ),
+            ("mutation check", "Next, a mutation check: change the sign check and revert it."),
+        ];
+        let rows = rows.map(|(name, s)| (name, "last-commit-test", fix_with(s), true));
+        assert_eq!(graded_wrong(&rows), Vec::<&str>::new(), "mutation words graded the wrong way");
+    }
+
+    /// The #678 review's 32 sentences, numbered from 1: 16 break steps, then 16
+    /// with none. The review graded each alone against the break term.
+    const REVIEW_678_SENTENCES: [(&str, bool); 32] = [
+        (
+            "Then introduce a bug in parse_negative, confirm the test fails, and revert it.",
+            true,
+        ),
+        (
+            "Then temporarily invert the check and confirm the test fails, then put it back.",
+            true,
+        ),
+        ("Flip one condition on purpose, watch the test fail, and undo it.", true),
+        ("Invert the check, confirm the test fails, then restore it.", true),
+        ("Introduce a small bug in slugify, confirm the test fails, and revert it.", true),
+        ("Then flip the comparison and confirm the test goes red, then revert.", true),
+        (
+            "After it passes, break the code on purpose and check the test fails, then undo.",
+            true,
+        ),
+        ("Deliberately break the trim and see the test fail; revert it.", true),
+        ("Try inverting the sign check: the test must fail; then restore it.", true),
+        ("Mutate the parser to confirm the test catches it, then revert.", true),
+        (
+            "Next, introduce a bug into the parser and make sure the test fails, then revert it.",
+            true,
+        ),
+        ("Then introduce a deliberate bug, confirm the test fails, and revert.", true),
+        ("Temporarily flip the condition, check the test fails, and put it back.", true),
+        ("Briefly invert the check to confirm the test fails, then restore it.", true),
+        (
+            "Finally, flip the sign in parse_negative, confirm the test fails, and revert.",
+            true,
+        ),
+        ("Then introduce a bug, see the test fail, and revert it.", true),
+        (
+            "Make sure the fix does not introduce a bug and confirm the full suite passes.",
+            false,
+        ),
+        ("The parser is flipping the sign of negative numbers.", false),
+        ("We invert the sign twice in the parser.", false),
+        ("Do not invert the logic.", false),
+        ("Make sure the fix does not introduce a bug.", false),
+        ("The bug makes the parser flip the sign.", false),
+        ("slugify was inverting the trim check.", false),
+        ("Keep it small, without introducing a bug.", false),
+        ("Be careful not to introduce a bug, and confirm the suite passes.", false),
+        ("Check that the fix does not flip the sign of positive numbers.", false),
+        ("The old code would invert a boolean when the flag was missing.", false),
+        ("Avoid any change that could introduce a small bug in the rounding.", false),
+        ("Find where the sign is wrong, then invert it so the test passes.", false),
+        (
+            "Read the diff, then flip the condition that is backwards, and run the tests.",
+            false,
+        ),
+        ("Do not mutate global state in the helper.", false),
+        ("The regression came from a change that inverted the check.", false),
+    ];
+
+    /// #684: the break term gets 6 of the review's 32 sentences wrong (master: 9).
+    /// Left: lead-ins it does not list (11, 14, 15), "a deliberate bug" (12), and
+    /// bare `introduce a small bug` and `mutate` in a forbidding clause (28, 31).
+    #[test]
+    fn the_break_term_gets_six_review_sentences_wrong() {
+        let must = shipped("last-commit-test").must;
+        let term = must.iter().find(|m| m.contains("on purpose")).expect("a break term");
+        let wrong: Vec<usize> = (1..=32)
+            .filter(|i| has(REVIEW_678_SENTENCES[i - 1].0, term) != REVIEW_678_SENTENCES[i - 1].1)
+            .collect();
+        assert_eq!(wrong, [11, 12, 14, 15, 28, 31], "review sentences graded the wrong way");
     }
 }
