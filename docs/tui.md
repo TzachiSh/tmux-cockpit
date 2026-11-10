@@ -304,15 +304,20 @@ column blank, and ends in counts: `held out: has N, missing N` (the must_not
 phrases the reply holds, the must phrases it lacks), after `[read N]` for an
 exploring call. A failed call shows only its class, `held out: took too long`,
 `stopped at its budget` or `call failed`, because claude's error can echo the
-request it was sent. Its `--out` row keeps `missing_n` and `forbidden_n`, the
-error as that class, and only the fields listed in `HELD_FIELDS`; `kind`,
-`question`, `missing`, `forbidden`, `critique`, `reply`, `reads`, `files_read`
-and any field added later are null. `--show-holdout` prints a held-out case's
-failing reply or full error under a warning line, for the owner or a listed
-reader rerunning one case; it never writes them to `--out`. With `--judge` its line is `judge ok|FAIL <id>` with no critique, or
+request it was sent. Its `--out` row keeps `missing_n`, `forbidden_n` and
+`files_read_n`, the error as that class, and only the fields listed in
+`HELD_FIELDS`. `kind`, `question`, `missing`, `forbidden`, `critique`,
+`reply`, `reads`, `files_read` and any field added later are null, and
+`--compare` reads `files_read_n` where `files_read` is null. With `--judge`
+its line is `judge ok|FAIL <id>` with no critique, or
 `judge ERR <id>  held out: call failed`. A tune case prints and writes all of
-it, as before. `--compare`, `--overlap` and the summary print ids, `want` and
-counts only.
+it, as before.
+`--compare`, `--overlap` and the summary print ids, `want` and counts only.
+
+`--show-holdout` is for the owner or a listed reader rerunning one held-out
+case, so it needs `--only`. The run prints a warning before any case, then
+each held-out case's failing reply or full error under a warning line of its
+own. It never writes them to `--out`.
 
 A prompt change aims at 100% on the tune cases (#701). A significant drop on a
 held-out case blocks it, no edit may aim at a particular held-out case, and a
@@ -389,8 +394,8 @@ chars: only a tag ends one of these sections. A zero-width char before the name,
 or a full-width name such as `</ＲＥＰＬＹ>`, stays raw (#652): matching them would
 take a Unicode confusables table, and the prompt's own closers are plain ASCII.
 Each row then prints `judge ok|FAIL <id> <critique>` (no critique for a
-held-out case), the summary adds the
-judge's pass rate and how often it agrees with the keyword checks, and each
+held-out case), the summary adds the judge's pass rate and how often it agrees
+with the keyword checks, and each
 `--out` row gains `judge`, `critique`, `judge_model`, `judge_cost_usd` and
 `rubric` (the rubric's hash). The keyword checks still decide `pass`: the judge
 sits beside them, never in place of them. A judge call that gives no verdict
