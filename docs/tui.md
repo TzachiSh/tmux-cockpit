@@ -431,6 +431,17 @@ is a fail for a missing purpose on single-thing plan-first prompts the owner
 passed: h-feature-done.rh.v2 failed 4/30 against master's 0/30 (one-sided Fisher
 p 0.056) and named-skill.r0.v3 4/30 against 1/30 (p 0.18), 8/60 against 1/60
 pooled (p 0.016); no single row drops at p < 0.05.
+With the conversation section and rule 9 pointing at it (#628), one batch of
+haiku sweeps the same day, master's rubric against the new one on the same
+label files: on the 118 owner labels, whose prompts did not change, kappa 0.62
+and 0.64 before, 0.64 and 0.69 after, TPR 91/98 and 92/98 before, 92/98 and
+94/98 after, TNR 14/20 in all four. On the 40 ho2 labels kappa 0.70 and 0.55
+before, 0.60 and 0.50 after, TPR 14/20 and 12/20 before, 12/20 and 11/20 after,
+TNR 20/20 and 19/20 on both sides. On the 15 ho3 labels over 4 sweeps, with the
+trail-markers rows given their case's conversation (master's judge ignores the
+field), trail-markers passed 19/20 before and 20/20 after, practice-rooms 16/20
+and 20/20, and the tool-lending prompts failed 20/20 and 19/20. The ho3 cases
+were measured, not tuned on, and stay in-sample for the judge.
 
 **The overlap check** (#710). A prompt line that paraphrases a held-out case
 leaks it: #702's example line "use the test database, not the live one" did,
