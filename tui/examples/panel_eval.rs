@@ -4169,13 +4169,11 @@ mod tests {
         }
     }
 
-    /// #783: a held-out file's parse error gives the line and the rule broken,
-    /// never the line's text; a rule of the whole case gives its `===` line.
-    /// The bad line sits in the file's second case.
-    #[test]
-    fn a_held_out_file_error_never_shows_the_files_text() {
+    /// Each row: a parse error in the second of two made-up held-out cases, as
+    /// the line it is on, the rule it breaks, and the text replaced to break it.
+    fn quiet_rows() -> [(usize, &'static str, &'static str, &'static str); 8] {
         let req = "--- request\n";
-        let rows = [
+        [
             (16, "not key: value", "kind: bug\n", "kind: bug\nMADE-UP stray line\n"),
             (18, "holdout is yes or no", "holdout: yes", "holdout: maybe"),
             (14, "no expect", "expect: write\n", ""),
@@ -4194,10 +4192,22 @@ mod tests {
                 req,
                 "--- refs\nMADE-UP:x-y\n--- request\n",
             ),
-        ];
-        for (i, (line, rule, from, to)) in rows.into_iter().enumerate() {
-            let blind = format!("# readers\n#\n{}{}", held("b0"), held("b1").replace(from, to));
-            let (_d, c, b) = two_files(&format!("quiet-{i}"), ONE, &blind);
+        ]
+    }
+
+    /// Two made-up held-out cases under a header, the second, b1, with `from`
+    /// replaced by `to`.
+    fn quiet_text(from: &str, to: &str) -> String {
+        format!("# readers\n#\n{}{}", held("b0"), held("b1").replace(from, to))
+    }
+
+    /// #783: a held-out file's parse error gives the line and the rule broken,
+    /// never the line's text; a rule of the whole case gives its `===` line.
+    /// The bad line sits in the file's second case.
+    #[test]
+    fn a_held_out_file_error_never_shows_the_files_text() {
+        for (i, (line, rule, from, to)) in quiet_rows().into_iter().enumerate() {
+            let (_d, c, b) = two_files(&format!("quiet-{i}"), ONE, &quiet_text(from, to));
             let e = load(&c, Some(&b)).err().unwrap_or_else(|| panic!("{rule}: loaded"));
             assert_eq!(e, format!("{}: case b1: line {line}: {rule}", b.display()));
         }
