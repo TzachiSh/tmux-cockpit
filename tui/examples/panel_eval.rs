@@ -3740,8 +3740,8 @@ mod tests {
 
     #[test]
     fn the_shipped_cases_are_valid() {
-        let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("evals/panel/cases.txt");
-        let cases = parse_cases(&std::fs::read_to_string(p).unwrap()).unwrap();
+        // both files a run reads: cases.txt and the held-out file (#783), ids only in a failure
+        let cases = run_cases(&opts(args("")).unwrap()).unwrap().cases;
         assert!(cases.len() >= 25, "{}", cases.len());
         assert!(cases.iter().any(|c| c.expect == Expect::Ask));
         assert!(cases.iter().any(|c| c.expect == Expect::Write));
