@@ -8678,7 +8678,7 @@ echo "== tests/changed.sh: each block reading a file runs when it changes (#672)
 chg_ord() {                                      # the ordinal of the block titled $1
     awk -v t="$1" '/^echo "== /{ n++ } index($0, t) == 10 { print n }' "$DIR/tests/run.sh"; }
 CHG_DOCS=$(chg_ord 'cockpit-tui: docs name only real options ==')
-CHG_MAKE=$(chg_ord "cockpit-tui builds install from cargo's target dir, not tui/target (#546) ==")
+CHG_MAKE=$(chg_ord 'cockpit-tui builds install the executable cargo built, not a guessed path (#591) ==')
 is "a docs/tui.md edit alone runs the syntax block and the docs-options block" \
     "1,$CHG_DOCS" "$(bash "$DIR/tests/changed.sh" docs/tui.md)"
 CHG_TRACKED=$(git -C "$DIR" ls-files 2>/dev/null)
@@ -9327,24 +9327,44 @@ unset -f nw
 rm -rf "$NW"
 
 # tests: scripts/tui-fetch
-echo "== cockpit-tui builds install from cargo's target dir, not tui/target (#546) =="
+echo "== cockpit-tui builds install the executable cargo built, not a guessed path (#591) =="
 # CARGO_TARGET_DIR or a config's build.target-dir moves the build out of
-# tui/target. The fake cargo builds into TD_OUT and its metadata reports
-# TD_JSON (JSON-escaped, empty: fail) only when called with the arguments the
-# real one needs. CARGO_TARGET_DIR stays unset, so only asking cargo finds it.
-if ! command -v make >/dev/null 2>&1; then skip_ "target dir (no make)"
-elif ! command -v curl >/dev/null 2>&1; then skip_ "target dir (no curl)"; else
+# tui/target (#546), and a build.target puts it under <dir>/<triple>/ (#591),
+# where <dir>/release may hold a stale native build. The fake cargo builds
+# TD_EXE and, asked for json-render-diagnostics, names it in a compiler-artifact
+# line as TD_EXE_JSON (JSON-escaped; empty: no such line), among decoys that
+# name the stale build; TD_TWICE adds a second triple's line. Its metadata
+# reports TD_DIR, whose release/ holds that stale build, as does tui/target:
+# code that builds the path from the target dir, as #546 did, fails these rows.
+if ! command -v make >/dev/null 2>&1; then skip_ "build install path (no make)"
+elif ! command -v curl >/dev/null 2>&1; then skip_ "build install path (no curl)"; else
 TD=$(mktmpd); mkdir -p "$TD/p/tui" "$TD/p/scripts/lib" "$TD/shim"
 cp "$DIR/Makefile" "$TD/p/"; cp "$DIR/tui/Cargo.toml" "$TD/p/tui/"
 cp "$DIR/scripts/tui-fetch" "$TD/p/scripts/"; cp "$DIR"/scripts/lib/*.sh "$TD/p/scripts/lib/"
 cat > "$TD/shim/cargo" <<'EOF'
 #!/bin/sh
-case "$1 $*" in
-    "metadata "*"--format-version 1 "*"--manifest-path "*tui/Cargo.toml*)
-        [ -n "${TD_JSON:-}" ] || { echo "error: fake metadata failed" >&2; exit 101; }
-        printf '{"packages":[],"target_directory":"%s","version":1}\n' "$TD_JSON" ;;
-    "build "*) o="$TD_OUT/release/cockpit-tui"; mkdir -p "${o%/*}" &&
-        printf '#!/bin/sh\necho "cockpit-tui 9.9.9"\n' > "$o" && chmod +x "$o" ;;
+art() {                       # <name> <kind> <executable as JSON>: one compiler-artifact line
+    printf '{"reason":"compiler-artifact","package_id":"path+file:///p/tui#cockpit-tui@9.9.9",'
+    printf '"target":{"kind":["%s"],"crate_types":["%s"],"name":"%s","src_path":"/p/m.rs"},' \
+        "$2" "$2" "$1"
+    printf '"filenames":[],"executable":%s,"fresh":false}\n' "$3"
+}
+case " $* " in
+    " metadata "*"--format-version 1 "*"--manifest-path "*tui/Cargo.toml*)
+        printf '{"packages":[],"target_directory":"%s","version":1}\n' "$TD_DIR" ;;
+    " build --release --locked "*)
+        case " $* " in *" --message-format=json-render-diagnostics "*) j=1 ;; *) j= ;; esac
+        echo "   Compiling cockpit-tui v9.9.9 (/p/tui)" >&2
+        old="\"$TD_DIR/release/cockpit-tui\"" two="\"$TD_DIR/aarch64-x/release/cockpit-tui\""
+        [ -z "$j" ] || { art cockpit-tui-helper bin "$old"; art cockpit-tui example "$old"
+                         art cockpit_tui lib null; }
+        [ -z "${TD_FAIL:-}" ] || { echo "error: fake build failed" >&2; exit 101; }
+        mkdir -p "${TD_EXE%/*}" && printf '#!/bin/sh\necho "cockpit-tui 9.9.9"\n' > "$TD_EXE" &&
+            chmod +x "$TD_EXE" || exit 1
+        [ -z "$j" ] || { [ -z "$TD_EXE_JSON" ] || art cockpit-tui bin "\"$TD_EXE_JSON\""
+                         [ -z "${TD_TWICE:-}" ] || art cockpit-tui bin "$two"
+                         art build-script-build custom-build "$old"
+                         echo '{"reason":"build-finished","success":true}'; } ;;
     *) echo "error: fake cargo: unexpected arguments: $*" >&2; exit 1 ;;
 esac
 EOF
@@ -9353,61 +9373,69 @@ printf '#!/bin/sh\necho "rustc 1.99.0 (0000000 2026-01-01)"\n' > "$TD/shim/rustc
 printf '#!/bin/sh\necho x >> "%s"\nexec %s "$@"\n' "$TD/installs" "$(command -v install)" \
     > "$TD/shim/install"
 chmod +x "$TD/shim/cargo" "$TD/shim/rustc" "$TD/shim/install"
-td_make() {                   # <out-dir> <its JSON spelling>: rc and the installed version
-    rm -f "$TD/p/bin/cockpit-tui"
-    PATH="$TD/shim:$PATH" TD_OUT="$1" TD_JSON="$2" env -u CARGO_TARGET_DIR \
-        make -C "$TD/p" tui-bin >/dev/null 2>&1
+td_stale() {                  # the stale native build, where a guess would look
+    local s
+    for s in "$TD/out/release/cockpit-tui" "$TD/p/tui/target/release/cockpit-tui"; do
+        mkdir -p "${s%/*}" && printf '#!/bin/sh\necho "cockpit-tui 0.0.1-STALE"\n' > "$s" &&
+            chmod +x "$s"
+    done
+}
+td_json() { printf '%s' "$1" | sed 's/[\\"]/\\&/g'; }   # a path as serde_json spells it
+td_make() {                   # <exe> <its JSON spelling> [env...]: rc and the installed version
+    local e=$1 j=$2; shift 2; td_stale; rm -f "$TD/p/bin/cockpit-tui"
+    PATH="$TD/shim:$PATH" TD_DIR="$TD/out" TD_EXE="$e" TD_EXE_JSON="$j" \
+        env -u CARGO_TARGET_DIR "$@" make -C "$TD/p" tui-bin >/dev/null 2>&1
     printf '%s %s' "$?" "$("$TD/p/bin/cockpit-tui" --version 2>/dev/null)"
 }
-td_fetch() {                  # <out-dir> <its JSON spelling> [env...]: tui-fetch's source build
-    local o=$1 j=$2; shift 2; rm -f "$TD/p/bin/cockpit-tui"
-    PATH="$TD/shim:$PATH" TD_OUT="$o" TD_JSON="$j" env -u CARGO_TARGET_DIR \
-        -u COCKPIT_TUI_OFFLINE -u COCKPIT_TUI_BIN \
+td_fetch() {                  # <exe> <its JSON spelling> [env...]: tui-fetch's source build
+    local e=$1 j=$2; shift 2; td_stale; rm -f "$TD/p/bin/cockpit-tui"
+    PATH="$TD/shim:$PATH" TD_DIR="$TD/out" TD_EXE="$e" TD_EXE_JSON="$j" \
+        env -u CARGO_TARGET_DIR -u COCKPIT_TUI_OFFLINE -u COCKPIT_TUI_BIN \
         COCKPIT_TUI_RELEASES="file://$TD/no-such-host" "$@" \
         "$TD/p/scripts/tui-fetch" --required --version cockpit-tui-v9.9.9 > "$TD/fetch.out" 2>&1
     printf '%s %s' "$?" "$("$TD/p/bin/cockpit-tui" --version 2>/dev/null)"
 }
-td_dir() {                    # <its JSON spelling> [env...]: the helper's rc and answer
-    local j=$1 out; shift
-    out=$(cd "$TD/p" && PATH="$TD/shim:$PATH" TD_JSON="$j" env -u CARGO_TARGET_DIR "$@" \
-        bash -c '. scripts/lib/cargo-target.sh && cargo_target_dir tui/Cargo.toml' 2>/dev/null)
-    printf '%s %s' "$?" "$out"
-}
-is "make tui-bin installs from the target dir cargo reports" "0 cockpit-tui 9.9.9" \
-    "$(td_make "$TD/out" "$TD/out")"
-is "tui-fetch's source build installs from the target dir cargo reports" "0 cockpit-tui 9.9.9" \
-    "$(td_fetch "$TD/out" "$TD/out")"
+e=$TD/out/release/cockpit-tui
+is "make tui-bin installs the executable cargo reports" "0 cockpit-tui 9.9.9" \
+    "$(td_make "$e" "$e")"
+is "tui-fetch's source build installs the executable cargo reports" "0 cockpit-tui 9.9.9" \
+    "$(td_fetch "$e" "$e")"
+# A build.target triple: the fresh build is under <dir>/<triple>/release (#591).
+e=$TD/out/x86_64-fake-linux-gnu/release/cockpit-tui
+is "make tui-bin installs a build.target build, not <dir>/release's stale one" \
+    "0 cockpit-tui 9.9.9" "$(td_make "$e" "$e")"
+is "tui-fetch installs a build.target build, not <dir>/release's stale one" \
+    "0 cockpit-tui 9.9.9" "$(td_fetch "$e" "$e")"
 # serde_json escapes " and \ in a path: a checkout under one must still install.
-q="$TD/q\"x\\y/out"
-is "make tui-bin installs from a target dir whose path holds \" and \\" "0 cockpit-tui 9.9.9" \
-    "$(td_make "$q" "$(printf '%s' "$q" | sed 's/[\\"]/\\&/g')")"
-is "tui-fetch installs from a target dir whose path holds \" and \\" "0 cockpit-tui 9.9.9" \
-    "$(td_fetch "$q" "$(printf '%s' "$q" | sed 's/[\\"]/\\&/g')")"
+e="$TD/q\"x\\y/x86_64-fake-linux-gnu/release/cockpit-tui"
+is "make tui-bin installs an executable whose path holds \" and \\" "0 cockpit-tui 9.9.9" \
+    "$(td_make "$e" "$(td_json "$e")")"
+is "tui-fetch installs an executable whose path holds \" and \\" "0 cockpit-tui 9.9.9" \
+    "$(td_fetch "$e" "$(td_json "$e")")"
 # A literal backslash before a letter is \\ then the letter: decodable, never refused.
-is "a path holding a literal \\n is read, not refused" "0 $TD/lit\\nx" "$(td_dir "$TD/lit\\\\nx")"
-# An answer it cannot read: CARGO_TARGET_DIR wins over any config, so it is
-# right when set. Unset, any guess may be a stale build, so it refuses.
-is "metadata failing falls back to CARGO_TARGET_DIR" "0 $TD/env" \
-    "$(td_dir '' CARGO_TARGET_DIR="$TD/env")"
-is "an escape it cannot undo (\\u0001) falls back to it too" "0 $TD/env" \
-    "$(td_dir '/a\u0001b' CARGO_TARGET_DIR="$TD/env")"
-is "metadata failing with it unset refuses to guess" "1 " "$(td_dir '')"
-is "an escape it cannot undo with it unset refuses to guess" "1 " "$(td_dir '/a\u0001b')"
-is "tui-fetch installs from the fallback when metadata fails" "0 cockpit-tui 9.9.9" \
-    "$(td_fetch "$TD/env" '' CARGO_TARGET_DIR="$TD/env")"
-case "$(cat "$TD/fetch.out")" in
-    *"error: fake metadata failed"*) ok "and shows cargo's own error" ;;
-    *) bad "and shows cargo's own error" "error: fake metadata failed" "$(cat "$TD/fetch.out")" ;;
-esac
-# The stale build the guess would have installed: neither entry point takes it.
-tds=$TD/p/tui/target/release/cockpit-tui; mkdir -p "${tds%/*}"
-printf '#!/bin/sh\necho "cockpit-tui 0.0.1-STALE"\n' > "$tds"; chmod +x "$tds"
-is "make tui-bin fails rather than install tui/target's stale build" "2 " "$(td_make "$TD/out" '')"
+e="$TD/lit\\nx/release/cockpit-tui"
+is "a path holding a literal \\n is read, not refused" "0 cockpit-tui 9.9.9" \
+    "$(td_make "$e" "$(td_json "$e")")"
+# What it cannot read, it refuses: any guess may be the stale build.
 : > "$TD/installs"
-is "tui-fetch fails rather than install tui/target's stale build" "1 " "$(td_fetch "$TD/out" '')"
-is "and never reaches install with no dir to install from" "0" \
-    "$(wc -l < "$TD/installs" | tr -d ' ')"
-unset -f td_make td_fetch td_dir
+e=$TD/out/x86_64-fake-linux-gnu/release/cockpit-tui
+is "make tui-bin fails when cargo names no executable" "2 " "$(td_make "$e" '')"
+is "tui-fetch fails when cargo names no executable" "1 " "$(td_fetch "$e" '')"
+is "make tui-bin fails on an escape it cannot undo (\\u0001)" "2 " \
+    "$(td_make "$TD/u/cockpit-tui" "$TD/a\u0001b/cockpit-tui")"
+# A build.target list builds one binary per triple: which to install is a guess.
+is "make tui-bin fails when cargo names two executables" "2 " \
+    "$(td_make "$e" "$e" TD_TWICE=1)"
+is "and none of them reaches install" "0" "$(wc -l < "$TD/installs" | tr -d ' ')"
+# The popup shows the log's tail: cargo's rendered error, never its JSON.
+is "a failed build in tui-fetch exits 1" "1 " "$(td_fetch "$e" "$e" TD_FAIL=1)"
+case "$(cat "$TD/fetch.out")" in
+    *'"reason"'*) bad "and shows cargo's error, not its JSON" "no JSON" "$(cat "$TD/fetch.out")" ;;
+    *"error: fake build failed"*) ok "and shows cargo's error, not its JSON" ;;
+    *) bad "and shows cargo's error, not its JSON" "error: fake build failed" \
+            "$(cat "$TD/fetch.out")" ;;
+esac
+unset -f td_stale td_json td_make td_fetch
 fi
 
 echo "== cockpit-tui: docs name only real options =="
