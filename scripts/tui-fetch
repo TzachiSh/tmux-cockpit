@@ -130,7 +130,7 @@ download() {                  # 0 installed · 1 refused · 2 nothing for this p
 }
 
 build() {                     # 0 built · 2 skipped
-    local rv log td
+    local rv log exe
     [ -f "$DIR/tui/Cargo.toml" ] || { say "no source tree at $DIR/tui to build from"; return 2; }
     command -v cargo >/dev/null 2>&1 || { say "no cargo either -- install rustup (https://rustup.rs) or wait for a release build"; return 2; }
     rv=$(rustc --version 2>/dev/null | awk '{print $2}')
@@ -138,16 +138,17 @@ build() {                     # 0 built · 2 skipped
         say "cockpit-tui needs Rust >= $FLOOR to build from source (found ${rv:-none}); install rustup and run install.sh again"
         return 2
     fi
-    # Captured: only the tail of rustc's output fits the popup.
+    # Captured: only the tail of rustc's output fits the popup. The log takes
+    # stderr, the rendered diagnostics; cargo's JSON on stdout stays with the
+    # helper, which names the file cargo built, never one under a guessed dir (#591).
     log=$(mktemp) || return 2
     trap 'rm -f "$log"' RETURN
-    cargo build --release --locked --manifest-path "$DIR/tui/Cargo.toml" > "$log" 2>&1 || {
-        BUILD_FAILED=1; say "cargo build failed, last 5 lines:" >&2; tail -5 "$log" >&2; return 2; }
-    # Not tui/target (#546); cargo's own error, if any, shows on stderr.
-    # shellcheck source=lib/cargo-target.sh
-    td=$(. "$DIR/scripts/lib/cargo-target.sh" && cargo_target_dir "$DIR/tui/Cargo.toml") ||
-        { BUILD_FAILED=1; return 2; }
-    install -m 755 "$td/release/cockpit-tui" "$COCKPIT_TUI_BIN" || { BUILD_FAILED=1; return 2; }
+    # shellcheck source=lib/cargo-build.sh
+    exe=$(. "$DIR/scripts/lib/cargo-build.sh" &&
+        cargo_build_exe "$DIR/tui/Cargo.toml" 2> "$log") || {
+        BUILD_FAILED=1; say "the source build failed, last 5 lines:" >&2; tail -5 "$log" >&2
+        return 2; }
+    install -m 755 "$exe" "$COCKPIT_TUI_BIN" || { BUILD_FAILED=1; return 2; }
     say "cockpit-tui built from source -> $COCKPIT_TUI_BIN"
 }
 

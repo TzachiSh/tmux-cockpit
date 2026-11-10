@@ -9421,8 +9421,9 @@ is "a path holding a literal \\n is read, not refused" "0 cockpit-tui 9.9.9" \
 e=$TD/out/x86_64-fake-linux-gnu/release/cockpit-tui
 is "make tui-bin fails when cargo names no executable" "2 " "$(td_make "$e" '')"
 is "tui-fetch fails when cargo names no executable" "1 " "$(td_fetch "$e" '')"
-is "make tui-bin fails on an escape it cannot undo (\\u0001)" "2 " \
-    "$(td_make "$TD/u/cockpit-tui" "$TD/a\u0001b/cockpit-tui")"
+# The build sits at the escape's literal spelling, so reading it as text installs.
+u="$TD/a\\u0001b/cockpit-tui"
+is "make tui-bin fails on an escape it cannot undo (\\u0001)" "2 " "$(td_make "$u" "$u")"
 # A build.target list builds one binary per triple: which to install is a guess.
 is "make tui-bin fails when cargo names two executables" "2 " \
     "$(td_make "$e" "$e" TD_TWICE=1)"
