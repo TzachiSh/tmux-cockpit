@@ -8714,7 +8714,8 @@ CHG_EACH=$(bash "$DIR/tests/changed.sh" --each $({ printf '%s\n' Makefile LICENS
     cut -f2 <<< "$CHG_READS"; tr '\t' '\n' <<< "$CHG_SRC"; } | sort -u))
 chg_pick() { awk -F'\t' -v f="$1" '$1 == f { print $2 }' <<< "$CHG_EACH"; }
 chg_has() { case ",$(chg_pick "$1")," in *",$2,"*|*",ALL,"*) echo yes ;; *) echo no ;; esac; }
-is "a Makefile edit runs the target-dir block that copies it" "$CHG_MAKE" "$(chg_pick Makefile)"
+is "a Makefile edit runs the 'builds install the executable cargo built' block that copies it" \
+    "$CHG_MAKE" "$(chg_pick Makefile)"
 is "a file no block names selects nothing beyond the syntax block" "" "$(chg_pick LICENSE)"
 is "a lib edit runs the tree_diff block, which reads \$DIR/scripts/lib (#688)" \
     yes "$(chg_has scripts/lib/review-diff.sh "$CHG_TD")"
@@ -9334,7 +9335,8 @@ echo "== cockpit-tui builds install the executable cargo built, not a guessed pa
 # where <dir>/release may hold a stale native build. The fake cargo builds
 # TD_EXE and, asked for json-render-diagnostics, names it in a compiler-artifact
 # line as TD_EXE_JSON (JSON-escaped; empty: no such line), among decoys that
-# name the stale build; TD_TWICE adds a second triple's line. Its metadata
+# name the stale build; TD_TWICE adds a second triple's line, and TD_FAIL then
+# exits 101, as a build.target list does when one triple fails. Its metadata
 # reports TD_DIR, whose release/ holds that stale build, as does tui/target:
 # code that builds the path from the target dir, as #546 did, fails these rows.
 if ! command -v make >/dev/null 2>&1; then skip_ "build install path (no make)"
@@ -9359,12 +9361,13 @@ case " $* " in
         old="\"$TD_DIR/release/cockpit-tui\"" two="\"$TD_DIR/aarch64-x/release/cockpit-tui\""
         [ -z "$j" ] || { art cockpit-tui-helper bin "$old"; art cockpit-tui example "$old"
                          art cockpit_tui lib null; }
-        [ -z "${TD_FAIL:-}" ] || { echo "error: fake build failed" >&2; exit 101; }
         mkdir -p "${TD_EXE%/*}" && printf '#!/bin/sh\necho "cockpit-tui 9.9.9"\n' > "$TD_EXE" &&
             chmod +x "$TD_EXE" || exit 1
         [ -z "$j" ] || { [ -z "$TD_EXE_JSON" ] || art cockpit-tui bin "\"$TD_EXE_JSON\""
-                         [ -z "${TD_TWICE:-}" ] || art cockpit-tui bin "$two"
-                         art build-script-build custom-build "$old"
+                         [ -z "${TD_TWICE:-}" ] || art cockpit-tui bin "$two"; }
+        # After the bin line: one triple of a build.target list built, another failed.
+        [ -z "${TD_FAIL:-}" ] || { echo "error: fake build failed" >&2; exit 101; }
+        [ -z "$j" ] || { art build-script-build custom-build "$old"
                          echo '{"reason":"build-finished","success":true}'; } ;;
     *) echo "error: fake cargo: unexpected arguments: $*" >&2; exit 1 ;;
 esac
@@ -9429,12 +9432,13 @@ is "make tui-bin fails on an escape it cannot undo (\\u0001)" "2 " "$(td_make "$
 is "make tui-bin fails when cargo names two executables" "2 " \
     "$(td_make "$e" "$e" TD_TWICE=1)"
 is "and none of them reaches install" "0" "$(wc -l < "$TD/installs" | tr -d ' ')"
-# The popup shows the log's tail: cargo's rendered error, never its JSON.
+# A failed build installs nothing, even with a bin line printed. The popup shows
+# the log's tail: cargo's rendered error, never its JSON.
 is "a failed build in tui-fetch exits 1" "1 " "$(td_fetch "$e" "$e" TD_FAIL=1)"
 case "$(cat "$TD/fetch.out")" in
     *'"reason"'*) bad "and shows cargo's error, not its JSON" "no JSON" "$(cat "$TD/fetch.out")" ;;
-    *"error: fake build failed"*) ok "and shows cargo's error, not its JSON" ;;
-    *) bad "and shows cargo's error, not its JSON" "error: fake build failed" \
+    *"last 5 lines:"*"error: fake build failed"*) ok "and shows cargo's error, not its JSON" ;;
+    *) bad "and shows cargo's error, not its JSON" "last 5 lines: ... error: fake build failed" \
             "$(cat "$TD/fetch.out")" ;;
 esac
 unset -f td_stale td_json td_make td_fetch
