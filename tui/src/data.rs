@@ -743,10 +743,11 @@ fn is_agent_cmd(cmd: &str) -> bool {
     AGENT_GLOB.with(|g| glob_has(g, cmd))
 }
 
-/// Whether `cmd` is an entry of `glob`, a `|a|b|` list, in any case (#508): the
-/// shell's `#{m/i:}` folds both sides, so an entry `Cursor` is the command `cursor`.
+/// Whether `cmd` is an entry of `glob`, a `|a|b|` list, in any case (#508). The test
+/// tmux's `#{m/i:*|cmd|*,glob}` makes: `|cmd|` inside the glob, both sides folded, so
+/// an entry `Cursor` is the command `cursor` and a glob with no closing bar has no entry.
 fn glob_has(glob: &str, cmd: &str) -> bool {
-    !cmd.is_empty() && glob.split('|').any(|e| e.eq_ignore_ascii_case(cmd))
+    !cmd.is_empty() && glob.to_lowercase().contains(&format!("|{}|", cmd.to_lowercase()))
 }
 
 /// #301: the hooks marked the pane (`raw`, its @panestate) but no process in
@@ -1479,6 +1480,23 @@ mod tests {
             assert_eq!(glob_has(g, cmd), want, "{cmd:?}");
         }
         assert!(!glob_has("", "claude"), "an empty glob holds nothing");
+    }
+
+    /// #508: a hand-set glob reads as tmux reads it, `#{m/i:*|cmd|*,glob}`. Each `want` is
+    /// what a private tmux 3.8 printed for that pair under a UTF-8 locale.
+    #[test]
+    fn glob_matches_as_tmux_m_i_does() {
+        let rows = [
+            ("claude", "claude", false),      // no bars: no entry
+            ("claude|codex", "codex", false), // the last entry needs its closing bar
+            ("|claude", "claude", false),
+            ("||claude|", "claude", true), // an empty entry is harmless
+            ("|über|", "ÜBER", true),      // non-ASCII folds too
+            ("|ǆ|", "ǅ", true),            // a title-case letter
+        ];
+        // every row that differs, so one red run names them all
+        let wrong: Vec<_> = rows.iter().filter(|(g, c, w)| glob_has(g, c) != *w).collect();
+        assert!(wrong.is_empty(), "differs from tmux: {wrong:?}");
     }
 
     /// Kills the child on drop, so a failed assert cannot leave it running.
