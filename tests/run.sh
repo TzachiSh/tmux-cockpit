@@ -8705,8 +8705,10 @@ CHG_SPC=$(chg_ord 'the click bindings survive a plugin path with a quote and a s
 CHG_PA=$(chg_ord 'poll_alive: with no /proc, the poller is known by ps -o args= (#194) ==')
 CHG_RB=$(chg_ord 'prefix r opens the board, prefix R reloads; off unbinds each ==')
 CHG_PW=$(chg_ord 'prefix w: the board binds, off keeps stock, below 3.8 refuses,')
+# timeout: a lib_users that never reaches its fixed point (the real libs name each
+# other) would hang here. The ceiling makes it fail the rows below instead (#757).
 # shellcheck disable=SC2046  # deliberate word splitting: one path per line
-CHG_EACH=$(bash "$DIR/tests/changed.sh" --each $({ printf '%s\n' Makefile LICENSE \
+CHG_EACH=$(timeout 60 bash "$DIR/tests/changed.sh" --each $({ printf '%s\n' Makefile LICENSE \
     scripts/lib/review-diff.sh scripts/lib/vnum.sh scripts/lib/hook.sh scripts/tmux-where \
     cockpit.tmux install.sh scripts/lib/pane.sh
     grep -ho 'scripts/lib/[A-Za-z0-9_.-]*' "$DIR/cockpit.tmux" "$DIR/install.sh"
@@ -8725,6 +8727,10 @@ is "a scripts/ edit runs the block that copies \$DIR/scripts whole (#688)" \
     yes "$(chg_has scripts/tmux-where "$CHG_SPC")"
 is "a scripts/ edit runs the prefix r block, which copies \$DIR\"/scripts/. (#688)" \
     yes "$(chg_has scripts/tmux-where "$CHG_RB")"
+# The read map strips "scripts/." to "scripts" as note() does, or the prefix r
+# block names no tracked file and the rows above and below never check it (#757).
+is "the read map holds the prefix r block for a scripts/ file, from \$DIR\"/scripts/. (#757)" \
+    yes "$(grep -qxF "$CHG_RB	scripts/tmux-where" <<< "$CHG_READS" && echo yes || echo no)"
 is "a scripts/ edit runs the prefix w block, which copies \$DIR\"/scripts/. (#688)" \
     yes "$(chg_has scripts/tmux-where "$CHG_PW")"
 # "$1/scripts/lib/hook.sh" with _ "$DIR" names no "$DIR/" path: the block's marker
@@ -8760,6 +8766,19 @@ is "some blocks run cockpit.tmux and no file naming pane.sh" yes \
     "$([ -n "$CHG_CKONLY" ] && echo yes || echo no)"
 is "a pane.sh edit picks none of them (#734)" "" "$(comm -12 <(printf '%s\n' "$CHG_CKONLY") \
     <(chg_set scripts/lib/pane.sh) | sort -n | paste -sd,)"
+# A second dotted name, on a scratch tree: as a regex cfg.sh matches tool's
+# "cfg-show", so a cfg.sh edit would pick tool's block 2 too. Only user's
+# block 3, which names cfg.sh, is picked (#757).
+CHG_DOT=$(mktmpd); mkdir -p "$CHG_DOT/tests" "$CHG_DOT/scripts/lib"
+cp "$DIR/tests/changed.sh" "$CHG_DOT/tests/"
+printf '%s\n' 'echo "== syntax =="' '# tests: scripts/tool' 'echo "== tool =="' \
+    '# tests: scripts/user' 'echo "== user =="' > "$CHG_DOT/tests/run.sh"
+echo 'echo cfg-show' > "$CHG_DOT/scripts/tool"
+echo '. "${0%/*}/lib/cfg.sh"' > "$CHG_DOT/scripts/user"
+echo ': a lib' > "$CHG_DOT/scripts/lib/cfg.sh"
+is "a cfg.sh edit picks the block of the file naming it, not of cfg-show (#757)" \
+    "$(printf 'scripts/lib/cfg.sh\t3')" \
+    "$(timeout 20 bash "$CHG_DOT/tests/changed.sh" --each scripts/lib/cfg.sh)"
 # A block that runs a lib runs each lib it sources, and theirs: review-revdiff.sh
 # sources review-store.sh, workdir.sh sources tui.sh, which sources vnum.sh (#748).
 is "review-revdiff.sh sources review-store.sh, so the lib pairs are read (#748)" yes \
@@ -8784,8 +8803,9 @@ echo '. "${BASH_SOURCE[0]%/*}/b.sh"' > "$CHG_CY/scripts/lib/a.sh"
 echo '. "${BASH_SOURCE[0]%/*}/a.sh"' > "$CHG_CY/scripts/lib/b.sh"
 echo '. "${BASH_SOURCE[0]%/*}/subd.sh"' > "$CHG_CY/scripts/lib/c.sh"
 echo ': no lib names me' > "$CHG_CY/scripts/lib/d.sh"
-CHG_CYE=$(bash "$CHG_CY/tests/changed.sh" --each scripts/lib/a.sh scripts/lib/b.sh \
-    scripts/lib/d.sh)
+# timeout: a lib_users that never reaches its fixed point fails the rows, not hangs (#757).
+CHG_CYE=$(timeout 20 bash "$CHG_CY/tests/changed.sh" --each scripts/lib/a.sh \
+    scripts/lib/b.sh scripts/lib/d.sh)
 is "a cycle ends: a.sh and b.sh, naming each other, each pick both blocks (#748)" \
     "$(printf 'scripts/lib/a.sh\t2,3\nscripts/lib/b.sh\t2,3')" "$(head -2 <<< "$CHG_CYE")"
 # Known limit: names match as text, so c.sh sourcing subd.sh counts as naming
