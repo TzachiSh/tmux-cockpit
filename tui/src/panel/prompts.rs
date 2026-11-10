@@ -253,3 +253,16 @@ pub fn examples(pool_text: &str, ctx: &Ctx) -> String {
         .collect();
     format!("<examples>\n{}\n</examples>", bodies.join("\n"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Known answers from the FNV-1a spec, so a wrong offset or prime fails
+    /// here: the other tests build their expected hashes with `fnv` itself.
+    #[test]
+    fn fnv_matches_the_fnv1a_known_answers() {
+        assert_eq!(fnv(""), 0xcbf2_9ce4_8422_2325, "empty input is the offset basis");
+        assert_eq!(fnv("a"), 0xaf63_dc4c_8601_ec8c, "one byte");
+    }
+}
