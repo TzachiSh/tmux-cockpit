@@ -274,6 +274,18 @@ the cases file; holdout cases are written after the prompt they run on, so a
 gain there is not overfitting. `--model`, `--runs`, `--jobs`, `--only <id or
 kind>`, `--out <file.jsonl>` and `--no-hermetic` are the knobs.
 
+Held-out cases written from #783 on live in `tui/evals/panel/holdout-blind.txt`,
+not in the cases file every tuning session reads. Its readers are the owner,
+the orchestrator, the re-verify and blindness reviewers, and the lane that
+commits cases to it; a tuning session must not open it, and its header says so.
+The older held-out cases stay in the cases file. The rig loads the file beside
+the cases file: each of its cases must say `holdout: yes`, an id the cases file
+also has is an error, it may hold no case, and a missing file is an error, so a
+lost file cannot quietly drop the held-out cases from a run. A run reports its
+cases with the other held-out cases, apart from the tune cases, and
+`--check` prints each file it read with its case count. `--cases FILE` reads
+only that file.
+
 A prompt change aims at 100% on the tune cases (#701). A significant drop on a
 held-out case blocks it, no edit may aim at a particular held-out case, and a
 held-out case that fails gets a new blind case written for its class. Stop
