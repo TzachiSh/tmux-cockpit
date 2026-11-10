@@ -327,7 +327,9 @@ request it was sent. Its `--out` row keeps `missing_n`, `forbidden_n` and
 its line is `judge ok|FAIL <id>` with no critique, or the line
 `judge ERR <id>  held out: call failed`. A tune case prints and writes all of
 it, as before. `--compare`, `--overlap` and the summary print ids, `want` and
-counts only.
+counts only. When a held-out case's refs fail to stage, the error line before
+the run and the panic of a call whose ref is missing give its id and the kind
+of failure, never a ref path (#796); a tune case's name the ref.
 
 `--show-holdout` is for the owner or a listed reader rerunning one held-out
 case in one paid call. It needs `--only` with the case's whole id and

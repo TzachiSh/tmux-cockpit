@@ -53,7 +53,7 @@ use cockpit_tui::panel::parse::{self, Reply, files_read, tool_calls};
 use cockpit_tui::panel::prompts::{self, fnv};
 use cockpit_tui::panel::request::{Call, Effort, Fail, Profile, Request};
 use cockpit_tui::panel::route::route;
-use cockpit_tui::refs::Ref;
+use cockpit_tui::refs::{Ref, RefError};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::ffi::{OsStr, OsString};
 use std::io::Write;
@@ -1727,7 +1727,10 @@ fn panel_call(c: &Case, path: &str, explore: bool) -> (String, String, Profile, 
     for (f, lines) in &c.refs {
         match Ref::new(Path::new(path).join(f), *lines, None) {
             Ok(r) => a.basket.push(r),
-            Err(e) => panic!("{}", ref_error(c, f, &format!(": {e} (not staged?)"))),
+            Err(e) => {
+                let kind = format!("is not staged: {}", ref_kind(&e));
+                panic!("{}", ref_error(c, f, &format!(": {e} (not staged?)"), &kind))
+            }
         }
     }
     (a.draft, a.cur) = (c.request.clone(), c.request.len());
@@ -1771,13 +1774,16 @@ fn stage(cases: &[Case]) -> Result<Option<PathBuf>, String> {
 /// A refs case's files under `pane`, a few lines each. A fixture is shared by
 /// every case that names it, so a ref inside one is a file it has, never made.
 fn stage_refs(c: &Case, pane: &Path) -> Result<(), String> {
-    let err = |f: &str, e: std::io::Error| ref_error(c, f, &format!(": {e}"));
+    let err = |f: &str, e: std::io::Error| {
+        let kind = format!("could not be staged: {}", e.kind());
+        ref_error(c, f, &format!(": {e}"), &kind)
+    };
     std::fs::create_dir_all(pane).map_err(|e| err(".", e))?;
     for (f, lines) in &c.refs {
         let p = pane.join(f);
         if c.explore.is_some() && !f.starts_with("../") {
             if !p.is_file() {
-                return Err(ref_error(c, f, " is not in its fixture"));
+                return Err(ref_error(c, f, " is not in its fixture", "is not in its fixture"));
             }
             continue;
         }
@@ -1790,8 +1796,24 @@ fn stage_refs(c: &Case, pane: &Path) -> Result<(), String> {
 }
 
 /// A failure to stage or read case `c`'s ref `f`: the case, the ref and `what`.
-fn ref_error(c: &Case, f: &str, what: &str) -> String {
-    format!("case {}: ref {f}{what}", c.id)
+/// A held-out case's ref path is case text (#796), and `what` may hold it or
+/// the pane's path: its message is the case and `kind`, the kind of failure.
+fn ref_error(c: &Case, f: &str, what: &str, kind: &str) -> String {
+    if c.holdout {
+        format!("case {}: a ref {kind}", c.id)
+    } else {
+        format!("case {}: ref {f}{what}", c.id)
+    }
+}
+
+/// A [`RefError`]'s kind, without the path its message holds.
+fn ref_kind(e: &RefError) -> String {
+    match e {
+        RefError::NotFound(_) => "not found".into(),
+        RefError::Io(_, k) => k.to_string(),
+        RefError::Lines(..) => "bad line range".into(),
+        _ => "cannot resolve".into(),
+    }
 }
 
 /// The pane's folder for case `c`: its fixture copy when it explores; for a
@@ -3468,6 +3490,54 @@ mod tests {
         let bad = OUT.replace("invoicer/money.py:1-5", "invoicer/nope.py");
         let e = stage(&parse_cases(&bad).unwrap()).unwrap_err();
         assert!(e.contains("invoicer/nope.py"), "{e}");
+    }
+
+    /// #796: `text`'s one case, held out when `held`.
+    fn held_if(held: bool, text: &str) -> Case {
+        let mark = if held { "\nholdout: yes" } else { "" };
+        let t = text.replace("expect: write", &format!("expect: write{mark}"));
+        parse_cases(&t).unwrap().remove(0)
+    }
+
+    /// #796: a ref that cannot be written, a file's path under another ref
+    /// that is a file, fails staging. A held-out case's error gives the kind of
+    /// failure, never a ref path; a tune case's names the ref.
+    #[test]
+    fn a_held_out_ref_write_error_shows_no_ref_path() {
+        let refs = "src/cart.go:40-72\nREADME.md\n../shared/money.go:3\n";
+        let text = REFS.replace(refs, "MADE-UP-a.go\nMADE-UP-a.go/b.go\n");
+        let e = stage(&[held_if(true, &text)]).unwrap_err();
+        assert_eq!(e, "case picked: a ref could not be staged: entity already exists");
+        let e = stage(&[held_if(false, &text)]).unwrap_err();
+        assert!(e.starts_with("case picked: ref MADE-UP-a.go/b.go: "), "{e}");
+    }
+
+    /// #796: a ref an explore fixture lacks: the held-out error names no path.
+    #[test]
+    fn a_held_out_ref_a_fixture_lacks_shows_no_ref_path() {
+        let text = OUT.replace("invoicer/money.py:1-5", "invoicer/MADE-UP-nope.py");
+        let e = stage(&[held_if(true, &text)]).unwrap_err();
+        assert_eq!(e, "case out: a ref is not in its fixture");
+        let e = stage(&[held_if(false, &text)]).unwrap_err();
+        assert_eq!(e, "case out: ref invoicer/MADE-UP-nope.py is not in its fixture");
+    }
+
+    /// #796: panel_call panics on a ref that is not staged. A held-out case's
+    /// panic message gives the kind of failure, never a ref path or the pane's.
+    #[test]
+    fn a_held_out_unstaged_ref_panic_shows_no_ref_path() {
+        let d = scratch("unstaged");
+        let pane = d.0.join("MADE-UP-pane").display().to_string();
+        let refs = "src/cart.go:40-72\nREADME.md\n../shared/money.go:3\n";
+        let text = REFS.replace(refs, "MADE-UP.go\n");
+        let said = |held: bool| {
+            let c = held_if(held, &text);
+            let r = std::panic::catch_unwind(|| panel_call(&c, &pane, false));
+            *r.err().expect("an unstaged ref panics").downcast::<String>().unwrap()
+        };
+        assert_eq!(said(true), "case picked: a ref is not staged: not found");
+        let tune = said(false);
+        assert!(tune.starts_with("case picked: ref MADE-UP.go: no such path: "), "{tune}");
     }
 
     #[test]
