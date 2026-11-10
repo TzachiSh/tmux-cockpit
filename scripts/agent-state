@@ -477,7 +477,8 @@ if [ -n "$fgown" ]; then
         if-shell -F -t "$pane" "$fgcond" "$fgset" ';')
     # The config dir this session's claude uses, from the hook's own env, in this same call: a
     # pane the poller may bind is polled against that dir's agents (#194). Argv, escaped by
-    # cfg_arg for tmux's own parse; one it refuses is not recorded, and said.
+    # cfg_arg for tmux's own parse; one it refuses is not recorded, so the pane is the default
+    # dir's, and said (#685).
     cfgarg=""
     if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
         d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")

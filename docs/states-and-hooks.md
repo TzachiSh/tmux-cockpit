@@ -439,8 +439,9 @@ another dir is polled against that dir's agents by a poller of its own, in
 `@cockpit_poll_pid_<cksum>` beside `@cockpit_poll_dir_<cksum>`. The dir is compared as
 `claude` got it, never normalised or resolved: two spellings of one dir give two
 pollers, which is harmless. A dir that ends in `;` is recorded whole; one with a
-control character in it cannot be, and says so in `@cockpit_poll_err`. A dir's poller
-leaves after three ticks with none of its
+control character in it cannot be: its pane is left on the default dir, and the default
+poller polls it, which `@cockpit_poll_err` says. A relayed agent notification starts
+that poller if none runs (#685). A dir's poller leaves after three ticks with none of its
 panes, and a sweep takes back the slot of one that is gone. Two dirs on one cksum never
 share a slot: the second starts none, and says so in `@cockpit_poll_err`. With no
 `CLAUDE_CONFIG_DIR` anywhere nothing changes: one poller, `@cockpit_poll_pid`, the same

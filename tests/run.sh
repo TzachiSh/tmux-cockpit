@@ -18761,7 +18761,8 @@ is "a longer name that holds it is not the poller" "no" "$(pa_alive 'bash /x/not
 # The script must be the interpreter's first argument, named exactly agent-poll (review-534).
 for pa in 'bash /x/not-agent-poll' 'bash /x/my-agent-poll' 'less /x/scripts/agent-poll' \
           'tail -f /x/agent-poll' 'bash /x/other /y/agent-poll'; do
-    is "a name that ends like it, or it as another program's argument: $pa" "no" "$(pa_alive "$pa")"
+    is "a name that ends like it, or it as another program's argument: $pa" "no" \
+        "$(pa_alive "$pa")"
 done
 rm -rf "$PA"
 
@@ -18794,8 +18795,8 @@ PD1=$(pd_tm list-panes -t t -F '#{pane_id}')
 PD2=$(pd_tm new-window -d -P -F '#{pane_id}' -c "$PD" 'exec -a claude bash')
 pd_hook() {                   # pd_hook <pane> [env...]: a relayed agent_needs_input from <pane>
     printf '{"notification_type":"agent_needs_input","message":"m"}' \
-        | env -u CLAUDE_CONFIG_DIR "${@:2}" TMUX="$PDT" TMUX_PANE="$1" PATH="$PD/cks:$AVREC:$PATH" \
-            "$DIR/scripts/agent-state" notify >/dev/null 2>&1
+        | env -u CLAUDE_CONFIG_DIR "${@:2}" TMUX="$PDT" TMUX_PANE="$1" \
+            PATH="$PD/cks:$AVREC:$PATH" "$DIR/scripts/agent-state" notify >/dev/null 2>&1
 }
 pd_key() { printf '%s' "$1" | cksum | cut -d' ' -f1; }
 pd_live() {                   # pd_live <slot option>: a live agent-poll holds it
@@ -18823,16 +18824,21 @@ is "a pane whose hook saw no dir is polled on the default, not the server's" "ye
 # serves it, and the old dir's, with no pane left, leaves.
 PDB="$PD/cfg b"; mkdir -p "$PDB"; cp "$AVF/working.json" "$PDB/agents.json"; PDKB=$(pd_key "$PDB")
 pd_hook "$PD1" CLAUDE_CONFIG_DIR="$PDB"
-av_wait 'pd_live @cockpit_poll_pid_$PDKB && [ -z "$(pd_opt @cockpit_poll_pid_$PDK)" ] && [ "$(pd_st "$PD1")" = running ]'
+pd_moved() {                  # the new dir's poller serves the pane, and the old dir's left
+    pd_live "@cockpit_poll_pid_$PDKB" && [ -z "$(pd_opt "@cockpit_poll_pid_$PDK")" ] \
+        && [ "$(pd_st "$PD1")" = running ]
+}
+av_wait pd_moved
+PDNOW="$(pd_tm show-option -pqv -t "$PD1" @cockpit_cfg)|$(pd_st "$PD1")"
 is "a pane whose dir changes mid-run is served by the new dir, and the old dir's poller leaves" \
    "$PDB|running|yes|" \
-   "$(pd_tm show-option -pqv \
-       -t "$PD1" @cockpit_cfg)|$(pd_st "$PD1")|$(pd_yn pd_live "@cockpit_poll_pid_$PDKB")|$(pd_opt "@cockpit_poll_pid_$PDK")"
+   "$PDNOW|$(pd_yn pd_live "@cockpit_poll_pid_$PDKB")|$(pd_opt "@cockpit_poll_pid_$PDK")"
 # The pane goes: the dir's poller counts three ticks with none of its panes, then leaves.
 pd_tm kill-pane -t "$PD1"
 av_wait '[ -z "$(pd_tm show-option -gqv @cockpit_poll_pid_$PDKB)" ]'
+PDNOW="$(pd_opt "@cockpit_poll_pid_$PDKB")|$(pd_opt "@cockpit_poll_dir_$PDKB")"
 is "a dir poller whose last pane went leaves and unpublishes, its dir too" "||" \
-   "$(pd_opt "@cockpit_poll_pid_$PDKB")|$(pd_opt "@cockpit_poll_dir_$PDKB")|$(pd_opt "@cockpit_poll_dir_$PDK")"
+   "$PDNOW|$(pd_opt "@cockpit_poll_dir_$PDK")"
 is "...and the default poller stays" "yes" "$(pd_yn pd_live @cockpit_poll_pid)"
 # A dir slot whose poller is gone and whose dir no pane holds: the sweep takes it back, by
 # compare-and-set, and the process at that pid is not signalled.
@@ -18877,8 +18883,8 @@ PE=$(mktmpd); PES="cockpit-pe-$$"; SOCKS="$SOCKS $PES"
 fresh_server -L "$PES" -f /dev/null -- -d -s t -x 80 -y 24 -c "$PE" 'sleep 300'
 PEP=$("$TMUX_REAL" -L "$PES" list-panes -t t -F '#{pane_id}')
 pe_hook() {                   # pe_hook [env...]: this pane's own session goes to running
-    env -u CLAUDE_CONFIG_DIR "$@" TMUX="$SOCKDIR/$PES,0,0" TMUX_PANE="$PEP" COCKPIT_NO_AUTOSTART=1 \
-        "$DIR/scripts/agent-state" running </dev/null >/dev/null 2>&1
+    env -u CLAUDE_CONFIG_DIR "$@" TMUX="$SOCKDIR/$PES,0,0" TMUX_PANE="$PEP" \
+        COCKPIT_NO_AUTOSTART=1 "$DIR/scripts/agent-state" running </dev/null >/dev/null 2>&1
 }
 pe_cfg() { "$TMUX_REAL" -L "$PES" show-option -pqv -t "$PEP" @cockpit_cfg; }
 pe_mark() {                   # pe_mark [env...]: mark_agentview for the pane, its start a no-op
@@ -18896,6 +18902,8 @@ is "...and one with none clears it" "" "$(pe_cfg)"
 # sweep's list-panes rows and PANE_FMT's: the first is escaped, the second not recorded (#194).
 pe_err() { "$TMUX_REAL" -L "$PES" show-option -gqv @cockpit_poll_err; }
 PENL=$'\n' PETAB=$'\t'
+# Not recorded, the pane is the default dir's, and the default poller serves it (#685).
+PEMSG="a config dir with a control character is not used: its pane is polled on the default dir"
 for pesite in pe_hook pe_mark; do
     "$TMUX_REAL" -L "$PES" set-option -pu -t "$PEP" @cockpit_cfg
     $pesite CLAUDE_CONFIG_DIR="$PE/c;"
@@ -18905,7 +18913,7 @@ for pesite in pe_hook pe_mark; do
             set-option -gu @cockpit_poll_err
         $pesite CLAUDE_CONFIG_DIR="$PE/a${pebad#*:}b"
         is "$pesite: a dir with a ${pebad%%:*} in it is not recorded, and said" \
-           "|a config dir with a control character cannot be polled" "$(pe_cfg)|$(pe_err)"
+           "|$PEMSG" "$(pe_cfg)|$(pe_err)"
     done
 done
 "$TMUX_REAL" -L "$PES" kill-server
@@ -18942,6 +18950,62 @@ pf_sweep
 is "...a dir recorded: it lists them once" "1" "$(grep -c 'cockpit_cfg}' "$PFLOG")"
 "$TMUX_REAL" -L "$PFS" kill-server
 rm -rf "$PF"
+fi
+
+# --- #685 a config dir refused for a control character: the default dir polls it ---------
+
+echo "== agent-poll: a refused config dir's pane is polled on the default dir, as said (#685) =="
+av_setup
+if need_tmux "agent-poll refused dir" || [ ! -d /proc/self ]; then :; else
+RD=$(mktmpd); RDS="cockpit-rd-$$"; SOCKS="$SOCKS $RDS"
+RDMSG="a config dir with a control character is not used: its pane is polled on the default dir"
+mkdir -p "$RD/bin"; cp "$AVF/working.json" "$RD/default.json"; RDLOG="$RD/claude.log"
+# claude logs the dir it saw, then holds its answer until the row has read @cockpit_poll_err:
+# the poller's first good read clears that option.
+cat > "$RD/bin/claude" <<RDEOF
+#!/bin/sh
+printf 'cfg=%s\n' "\${CLAUDE_CONFIG_DIR-<unset>}" >> "$RDLOG"
+"$TMUX_REAL" -L "$RDS" wait-for rd-go-$$
+cat "$RD/default.json"
+RDEOF
+chmod +x "$RD/bin/claude"
+rd_tm() { "$TMUX_REAL" -L "$RDS" "$@"; }
+rd_live() {                   # a live agent-poll holds the default dir's slot
+    local p; p=$(rd_tm show-option -gqv @cockpit_poll_pid)
+    [ -n "$p" ] && [ "$(cat "/proc/$p/comm" 2>/dev/null)" = agent-poll ]
+}
+rd_polls() {                  # live agent-poll processes on this block's server
+    local d n=0
+    for d in /proc/[0-9]*; do
+        [ "$(cat "$d/comm" 2>/dev/null)" = agent-poll ] || continue
+        tr '\0' '\n' < "$d/environ" 2>/dev/null | grep -q "^TMUX=$SOCKDIR/$RDS," && n=$((n + 1))
+    done
+    echo "$n"
+}
+for rdbad in "newline:"$'\n' "ESC:"$'\e'; do
+    fresh_server -L "$RDS" -f /dev/null -- -d -s t -x 80 -y 24 -c "$RD" 'exec -a claude bash'
+    rd_tm set -g @cockpit_agents_glob '|claude|' \; set -g @cockpit_bg_poll 1 \; \
+        set-environment -g PATH "$RD/bin:$AVBIN:$PATH" \; \
+        set-environment -g CLAUDE_CONFIG_DIR "$RD/S"
+    RDP=$(rd_tm list-panes -t t -F '#{pane_id}'); : > "$RDLOG"
+    # A relayed agent_completed: mark_agentview, and no state of its own on the pane.
+    printf '{"notification_type":"agent_completed"}' \
+        | env -u CLAUDE_CONFIG_DIR CLAUDE_CONFIG_DIR="$RD/a${rdbad#*:}b" TMUX="$SOCKDIR/$RDS,0,0" \
+            TMUX_PANE="$RDP" PATH="$AVREC:$PATH" "$DIR/scripts/agent-state" notify >/dev/null 2>&1
+    av_wait rd_live
+    is "${rdbad%%:*} in the dir: not recorded, said so, and the default dir's poller started" \
+       "|$RDMSG|yes" \
+       "$(rd_tm show-option -pqv -t "$RDP" @cockpit_cfg)|$(rd_tm show-option -gqv \
+           @cockpit_poll_err)|$(rd_live && echo yes || echo no)"
+    rd_tm wait-for -S "rd-go-$$"
+    av_wait '[ "$(rd_tm show-option -pqv -t "$RDP" @panestate)" = running ]'
+    is "...that poller serves the pane the default dir's agents, not the server's dir" \
+       "running|cfg=<unset>" "$(rd_tm show-option -pqv -t "$RDP" @panestate)|$(head -1 "$RDLOG")"
+    rd_tm kill-server
+    av_wait '[ "$(rd_polls)" = 0 ]'
+done
+is "the pollers leave with their server" "0" "$(rd_polls)"
+rm -rf "$RD"
 fi
 
 # --- #400 tui-test-clean: the gate that fails on what a test left ------------
