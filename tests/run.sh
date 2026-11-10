@@ -190,11 +190,16 @@ SOCKS=""
 # leave it). A suite that mints 17 unique -L names per run therefore left 17
 # dead socket inodes in the tmux socket dir every time; ~850 had piled up.
 SOCKDIR="${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)"
+# A SOCKS entry is a -L name under SOCKDIR, or the full path of a socket a block made under
+# its own TMUX_TMPDIR (#814): killed by that socket, never by pid.
+kill_sock() {                 # <-L name | /socket/path>
+    case $1 in
+        /*) "$TMUX_REAL" -S "$1" kill-server >/dev/null 2>&1; [ ! -S "$1" ] || rm -f "$1" ;;
+        *)  tmux -L "$1" kill-server >/dev/null 2>&1; rm -f "$SOCKDIR/$1" ;;
+    esac
+}
 kill_socks() {
-    for s in $SOCKS; do
-        tmux -L "$s" kill-server >/dev/null 2>&1
-        rm -f "$SOCKDIR/$s"
-    done
+    for s in $SOCKS; do kill_sock "$s"; done
 }
 
 # Several checks need a live tmux server to set per-pane options against. Skip
@@ -15042,7 +15047,7 @@ rvshim revdiff "version: v1.12.0-abc1234-20260905T044327" "$RV/relold"
 # a dir under the caller's XDG_RUNTIME_DIR (SUITE_XRD; the suite's own is $STATE, as long
 # as TMPDIR), removed with the suite's temp dirs; else the row skips.
 # tmux binds the resolved path, so a short symlink to a long TMPDIR is still long
-# (review-812): measured after `pwd -P`, in bytes. macOS's sun_path holds 104, Linux's 108.
+# (#812): measured after `pwd -P`, in bytes. macOS's sun_path holds 104, Linux's 108.
 RVMAX=107; [ "$(uname -s)" = Darwin ] && RVMAX=103
 rv_sockn() {
     local d; d=$(cd "$1" 2>/dev/null && pwd -P) || d=$1
@@ -15080,8 +15085,17 @@ if [ "$RVTN" -gt "$RVMAX" ]; then
     skip_ "the revdiff on the server's PATH: $rvsk"
 else
 RVS="env -u TMUX TMUX_TMPDIR=$RVTT $TMUX_REAL -L $SUITE_SOCK -f /dev/null"
+# Under its own TMUX_TMPDIR, so the cleanup finds it only by its path (#814). SOCKS is split
+# on spaces: a path with one is not registered, so no piece of it reaches the cleanup's rm.
+RVSP="$RVTT/tmux-$(id -u)/$SUITE_SOCK"
+case $RVSP in *[[:space:]]*) ;; *) SOCKS="$SOCKS $RVSP" ;; esac
 $RVS new-session -d 'sleep 300' >/dev/null 2>&1
 $RVS set-environment -g PATH "$RV/old:/usr/bin:/bin" >/dev/null 2>&1
+# A seam for the interrupt block (#814), set only by it: the run stops here with this server
+# up, and names the socket the server bound (resolved, as /proc/net/unix lists it).
+if [ -n "${COCKPIT_TEST_RV_HOLD:-}" ]; then
+    $RVS display-message -p '#{socket_path}' > "$COCKPIT_TEST_RV_HOLD" 2>/dev/null; sleep 60
+fi
 is "the revdiff on the server's PATH is the one graded" "warn" "$(rvrow "$(rvdc "$RV/new")")"
 $RVS kill-server >/dev/null 2>&1
 fi
@@ -19420,6 +19434,58 @@ av_tm set-option -p -t "$BGV" @cockpit_agentview 1
 av_once none.json >/dev/null
 is "glob |codex|: a claude pane's agent-view mark is dropped" "" "$(avo @cockpit_agentview "$BGV")"
 av_tm kill-server >/dev/null 2>&1
+fi
+
+
+echo "== the cleanup's kill_sock removes a path only when it is a socket (#817) =="
+# A SOCKS entry split on a space once named a user's file "my", beside a dir "my tmp", and
+# the cleanup's rm took it. No server is involved.
+KSD=$(mktmpd); echo keep > "$KSD/my"
+kill_sock "$KSD/my"
+is "kill_sock on a path that is not a socket leaves that file alone" "keep" "$(cat "$KSD/my")"
+
+echo "== an interrupted run leaves no revdiff doctor server behind (#814) =="
+# That block's server runs under its own TMUX_TMPDIR. A run ended mid-block left it up for
+# its 300 s, since the cleanup only walked SOCKDIR. Here the block is run on its own, held
+# with the server up, and ended with TERM: its socket must have no listener after. The
+# listener is read from /proc/net/unix, which keeps a bound path after the file is removed.
+# The nested run reads the live tests/run.sh, not a par.sh snapshot.
+if need_tmux "revdiff interrupt"; then :
+elif ! command -v jq >/dev/null 2>&1; then skip_ "revdiff interrupt (no jq)"
+elif [ ! -r /proc/net/unix ] || ! command -v setsid >/dev/null 2>&1; then
+    skip_ "revdiff interrupt (no /proc/net/unix or setsid)"
+else
+IR=$(mktmpd)
+# The caller's runtime dir, as the suite itself had it: the block's short-socket fallback.
+( cd "$DIR" && TMPDIR="$IR" XDG_RUNTIME_DIR="$SUITE_XRD" COCKPIT_TEST_RV_HOLD="$IR/held" \
+    exec setsid tests/only.sh '^revdiff: the doctor grades it' ) </dev/null >"$IR/log" 2>&1 &
+irp=$!
+# Held, or the run is over (it never reached the hold): whichever comes first.
+POLLS=600 until_out '?*' sh -c "[ -s '$IR/held' ] && echo held || kill -0 $irp || echo gone"
+irs=$(cat "$IR/held" 2>/dev/null)
+irl=0; [ -z "$irs" ] || irl=$(grep -cF " $irs" /proc/net/unix)
+if [ -z "$irs" ]; then
+    wait "$irp" 2>/dev/null
+    # skip_ prints a colour code between SKIP and the reason.
+    if grep -q "SKIP.* the revdiff on the server's PATH" "$IR/log"; then
+        skip_ "revdiff interrupt (the block skipped its server row, so it never held)"
+    else
+        bad "the revdiff block, run on its own, held with its server up" "held" \
+            "$(tail -3 "$IR/log" | tr '\n' ' ')"
+    fi
+else
+    is "the held run's server listens on the socket it named" "1" "$irl"
+    # Only the group this block started, only while it is held, and only when its leader is
+    # still that run.
+    irc=""; read -r irc 2>/dev/null < "/proc/$irp/comm"
+    case "$irc" in only.sh|bash) kill -TERM -- "-$irp" 2>/dev/null ;; esac
+    wait "$irp" 2>/dev/null
+    # only.sh ends at once; the script it runs ends after its EXIT trap's cleanup: wait for
+    # that, by the listener count, not a clock.
+    until_out 0 grep -cF " $irs" /proc/net/unix
+    is "after TERM no server listens on the revdiff block's socket" "0" \
+       "$(grep -cF " $irs" /proc/net/unix)"
+fi
 fi
 
 flop_left
