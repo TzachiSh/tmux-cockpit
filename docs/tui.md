@@ -320,7 +320,11 @@ hermetic `claude -p` call, on haiku by default (`--judge-model` picks another;
 the writer routes to sonnet, so the judge is a different model). It reads the
 rubric in `tui/evals/panel/judge-rubric.txt`, drawn from the owner's labels and
 notes, plus the case's window, screen, repo, request and output type, and
-answers with its reasoning, a one-line critique and PASS or FAIL. For an
+answers with its reasoning, a one-line critique and PASS or FAIL. For a case
+with earlier rounds it also reads those rounds, after the request, in the
+panel's own shape: a `<conversation>` section with one `<turn role="assistant">`
+or `<turn role="user">` a turn (#628). A first round has no such section, so
+its prompt is the one it was before. For an
 exploring call it also reads what the panel read, in a `<panel_reads>` section:
 `parse::tool_calls` over the call's json events, one line a call the panel was
 not refused (`Read /r/a.rs`, `Grep fn main /r`), each once, at most 40 lines
@@ -329,14 +333,16 @@ chars made spaces and its `</` escaped (`envelope::esc`), and so is a closer
 with blanks before the `/`, such as `< /panel_reads>`, so a path or pattern
 cannot close the section. Each `--out` row keeps the list as `reads`. A text
 call, a failed call and an owner label have no reads (`null`), and their judge
-prompt has no such section. Neither does a case with refs or earlier rounds:
-the judge sees neither the basket nor those rounds, so it could not tell an
-option drawn from them from an invented one. Without the section rule 7 fails
+prompt has no such section. Neither does a case with refs: the judge does not
+see the basket, so it could not tell an option drawn from it from an invented
+one. A case with earlier rounds keeps its reads, since the judge sees those
+rounds. Without the section rule 7 fails
 a repo-context option only when the screen or git state contradicts it, as
 before. With it, rule 7 fails an option with no basis in the request, the
 screen, the git state, the earlier rounds or the reads (#628). In the other
-sections (window, output type, screen, repo, request, reply) only a closing tag
-of one of the prompt's sections is escaped, in any case and with blanks before
+sections (window, output type, screen, repo, request, each turn, reply) only a
+closing tag of one of the prompt's sections is escaped, in any case and with
+blanks before
 the `/` or the name, so a field cannot end its section or close one it planted
 (#646). A name that goes on with a letter, digit, `_`, `-` or `.`, as in
 `</reply-option>`, is another tag. The reply's own tags, such as `</question>`,
@@ -361,11 +367,12 @@ then every disagreement with the owner's note and the judge's critique.
 `--split tune|holdout|all` picks the rows: the holdout takes whole cases (the
 label's `case`), about a third of the rows of the cases with an owner fail and a
 third of the rest, by a hash of the case name; tune the rubric on the tune rows
-only. Each label's window, output type, screen, repo and request are its
-case's, as the rig parses them, empty fields included, and a test holds them
-there (#691, #698). Five rows had drifted: `review-which-pr`'s two rows had lost
-their screen's `#91` and `#88` lines, and three round-1 rows carried the next
-case's heading comment at the end of their request, which is what the owner saw
+only. Each label's window, output type, screen, repo, request and
+`conversation` (a list of `{"role", "text"}` turns, absent for a first round)
+are its case's, as the rig parses them, empty fields included, and a test holds
+them there (#691, #698, #628). Five rows had drifted: `review-which-pr`'s two
+rows had lost their screen's `#91` and `#88` lines, and three round-1 rows
+carried the next case's heading comment at the end of their request, which is what the owner saw
 when marking them. On the 118 labels, five of them repaired, haiku with the
 shipped rubric and the section escape (#646) scored, in two sweeps the same day,
 TPR 93/98 twice (95% CI 89%-98%), TNR 15/20 twice (95% CI 53%-89%, 36 points
@@ -405,9 +412,11 @@ several rows answer one case, so it is narrower than a case-clustered interval
 would be.
 Rule 9 now splits big features (#719). One named as one thing passes a question
 or a plan-first prompt. One whose request lists two or more parts, with nothing
-saying what the whole is for, needs the purpose question; the judge sees no
-earlier rounds, so a prompt passes there only when the request goes on from one
-and the prompt states the purpose as the user's. With haiku, against the case
+saying what the whole is for, needs the purpose question; a prompt passes
+there only when an earlier answer of the user's gives the purpose and the
+prompt states it as theirs. Until #628 the judge saw no earlier rounds and took
+a prompt's word for that answer when the request went on from one; it now reads
+the answer in the `<conversation>` section. With haiku, against the case
 labels of 40 stored ho2 replies, kappa went from -0.45 to 0.65 in one sweep
 each. Rubric wordings 4, 5 and 6 were chosen on 15 stored replies of the
 held-out ho3-trail-markers-go-ahead, ho3-tool-lending-parts and
@@ -422,6 +431,17 @@ is a fail for a missing purpose on single-thing plan-first prompts the owner
 passed: h-feature-done.rh.v2 failed 4/30 against master's 0/30 (one-sided Fisher
 p 0.056) and named-skill.r0.v3 4/30 against 1/30 (p 0.18), 8/60 against 1/60
 pooled (p 0.016); no single row drops at p < 0.05.
+With the conversation section and rule 9 pointing at it (#628), one batch of
+haiku sweeps the same day, master's rubric against the new one on the same
+label files: on the 118 owner labels, whose prompts did not change, kappa 0.62
+and 0.64 before, 0.64 and 0.69 after, TPR 91/98 and 92/98 before, 92/98 and
+94/98 after, TNR 14/20 in all four. On the 40 ho2 labels kappa 0.70 and 0.55
+before, 0.60 and 0.50 after, TPR 14/20 and 12/20 before, 12/20 and 11/20 after,
+TNR 20/20 and 19/20 on both sides. On the 15 ho3 labels over 4 sweeps, with the
+trail-markers rows given their case's conversation (master's judge ignores the
+field), trail-markers passed 19/20 before and 20/20 after, practice-rooms 16/20
+and 20/20, and the tool-lending prompts failed 20/20 and 19/20. The ho3 cases
+were measured, not tuned on, and stay in-sample for the judge.
 
 **The overlap check** (#710). A prompt line that paraphrases a held-out case
 leaks it: #702's example line "use the test database, not the live one" did,

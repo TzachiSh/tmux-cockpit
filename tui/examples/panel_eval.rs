@@ -1089,9 +1089,9 @@ fn panel_reads(out: Option<&str>, explore: bool) -> Option<Vec<String>> {
     out.and_then(tool_calls).filter(|_| explore)
 }
 
-/// What the judge reads of case `c`'s reply `raw`, and what the panel read
-/// before it: `None` when unknown, and for a case with refs or earlier rounds,
-/// which the judge does not see.
+/// What the judge reads of case `c`'s reply `raw`: the case's input, its
+/// earlier rounds, and what the panel read before it: `None` when unknown, and
+/// for a case with refs, whose basket the judge does not see.
 fn judge_input(c: &Case, raw: &str, reads: Option<Vec<String>>) -> judge::Input {
     judge::Input {
         window: format!("{} · {} · {}", c.name, c.cmd, c.path),
@@ -1100,9 +1100,10 @@ fn judge_input(c: &Case, raw: &str, reads: Option<Vec<String>>) -> judge::Input 
         repo: c.repo.clone(),
         request: c.request.clone(),
         reply: raw.into(),
-        // the judge sees neither the basket nor the earlier rounds: rule 7
-        // can weigh the reads only when it sees the rest of what the panel saw
-        reads: reads.filter(|_| c.refs.is_empty() && c.turns.is_empty()),
+        // the judge does not see the basket: rule 7 can weigh the reads only
+        // when it sees the rest of what the panel saw
+        reads: reads.filter(|_| c.refs.is_empty()),
+        conversation: c.turns.clone(),
     }
 }
 
@@ -3137,15 +3138,58 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
     }
 
-    /// The judge sees neither a case's basket nor its earlier rounds, so it
-    /// gets no reads there and rule 7 stays lenient (review645).
+    /// The judge does not see a case's basket, so it gets no reads there and
+    /// rule 7 stays lenient (review645). It sees the earlier rounds (#628), so
+    /// an answered case keeps its reads.
     #[test]
-    fn judge_input_withholds_reads_for_a_case_with_refs_or_earlier_rounds() {
-        for (name, text) in [("refs", REFS), ("rounds", ANSWERED)] {
+    fn judge_input_withholds_reads_only_for_a_case_with_refs() {
+        let want = panel_reads(Some(EXPLORED), true);
+        for (name, text, got) in [("refs", REFS, None), ("rounds", ANSWERED, want.clone())] {
             let c = &parse_cases(text).unwrap()[0];
-            let i = judge_input(c, "r", panel_reads(Some(EXPLORED), true));
-            assert_eq!(i.reads, None, "{name}");
+            assert_eq!(judge_input(c, "r", want.clone()).reads, got, "{name}");
         }
+    }
+
+    #[test]
+    fn judge_input_carries_the_earlier_rounds_into_the_prompt() {
+        let c = &parse_cases(ANSWERED).unwrap()[0];
+        let i = judge_input(c, "r", None);
+        assert_eq!(i.conversation, c.turns);
+        let want = "<conversation>\n<turn role=\"assistant\">Which API? Options: gateway | billing</turn>\n\
+                    <turn role=\"user\">billing</turn>\n</conversation>\n";
+        assert!(judge::prompt(&i).contains(want), "{}", judge::prompt(&i));
+    }
+
+    #[test]
+    fn judge_input_for_a_first_round_has_no_conversation() {
+        let c = &parse_cases(ONE).unwrap()[0];
+        let i = judge_input(c, "r", None);
+        assert!(i.conversation.is_empty());
+        assert!(!judge::prompt(&i).contains("<conversation>"), "{}", judge::prompt(&i));
+    }
+
+    /// The round trip for the earlier rounds: a stand-in judge, given a rubric
+    /// that points at the conversation, passes a prompt for the API the user
+    /// picked in it and fails one for the other.
+    #[test]
+    fn a_stand_in_judge_reads_the_users_earlier_answer() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = scratch("judge-rounds");
+        let fake = root.join("fake-claude");
+        let script = "#!/bin/sh\nwhile [ \"$1\" != --system-prompt-file ]; do shift; done\n\
+            grep -q 'in the <conversation> section' \"$2\" || exit 3\n\
+            p=$(cat); a=$(printf '%s' \"$p\" | sed -n 's/^<turn role=\"user\">\\(.*\\)<\\/turn>$/\\1/p')\n\
+            [ -n \"$a\" ] || exit 4\n\
+            case \"$p\" in *\"<reply>\"*\"$a\"*) echo 'CRITIQUE: uses the answer'; echo 'VERDICT: PASS';;\n\
+            *) echo 'CRITIQUE: ignores the answer'; echo 'VERDICT: FAIL';; esac\n";
+        std::fs::write(&fake, script).unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let c = &parse_cases(ANSWERED).unwrap()[0];
+        let inputs = ["<prompt>cache the billing API</prompt>", "<prompt>cache the gateway</prompt>"].map(|r| judge_input(c, r, None));
+        let got = judge::judge_all(&fake.display().to_string(), "haiku", &inputs, 1, &root);
+        let got: Vec<(bool, String)> = got.into_iter().map(|j| j.verdict.map(|v| (v.pass, v.critique)).unwrap()).collect();
+        assert_eq!(got, [(true, "uses the answer".into()), (false, "ignores the answer".into())]);
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
@@ -3165,7 +3209,8 @@ mod tests {
     }
 
     /// Each field where a label's input is not its case's as `judge_input`
-    /// builds it, as (key, field): window, out, screen, repo and request. An
+    /// builds it, as (key, field): window, out, screen, repo, request and
+    /// conversation. An
     /// empty field is compared too, so a label that gained a screen or repo its
     /// case lacks is named. A label whose case is in neither list is not
     /// compared.
@@ -3186,6 +3231,9 @@ mod tests {
                 if w != g {
                     out.push((l.key.clone(), f));
                 }
+            }
+            if want.conversation != got.conversation {
+                out.push((l.key.clone(), "conversation"));
             }
         }
         out
@@ -3228,6 +3276,37 @@ mod tests {
             assert_eq!(got, want, "{name}");
         }
         assert_eq!(label_drift(&cases, &[]), vec![]);
+    }
+
+    /// A label row on case `c` with `c`'s input as the rig builds it and the
+    /// turns in `conversation` (a json list, or null for none).
+    fn label_on(c: &Case, conversation: serde_json::Value) -> judge::Label {
+        let i = judge_input(c, "r", None);
+        let j = serde_json::json!({"key": "k", "case": c.id, "verdict": "pass", "reply": "r",
+            "window": i.window, "out": i.out, "screen": i.screen, "repo": i.repo,
+            "request": i.request, "conversation": conversation});
+        judge::read_labels("t", &j.to_string()).unwrap().remove(0)
+    }
+
+    #[test]
+    fn label_drift_names_a_conversation_that_differs_from_the_case() {
+        let mut cases = parse_cases(ONE).unwrap();
+        cases.extend(parse_cases(ANSWERED).unwrap());
+        let (crash, cache) = (&cases[0], &cases[1]);
+        let turns = serde_json::json!([{"role": "assistant", "text": "Which API? Options: gateway | billing"},
+            {"role": "user", "text": "billing"}]);
+        let other = serde_json::json!([{"role": "assistant", "text": "Which API? Options: gateway | billing"},
+            {"role": "user", "text": "gateway"}]);
+        let rows: [(&str, judge::Label, &[&str]); 4] = [
+            ("same", label_on(cache, turns.clone()), &[]),
+            ("lost its rounds", label_on(cache, serde_json::Value::Null), &["conversation"]),
+            ("another answer", label_on(cache, other), &["conversation"]),
+            ("rounds the case lacks", label_on(crash, turns), &["conversation"]),
+        ];
+        for (name, l, want) in rows {
+            let got: Vec<&str> = label_drift(&cases, &[l]).into_iter().map(|(_, f)| f).collect();
+            assert_eq!(got, want, "{name}");
+        }
     }
 
     /// The judge's calibration grades each owner label against the window,

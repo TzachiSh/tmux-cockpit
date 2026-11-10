@@ -3,7 +3,8 @@ request in a tmux window; the panel either asked them one question or wrote the
 output for them: a prompt for a coding agent (Claude Code) to run, a shell
 command, a message text, a config file, or a short answer (a hint). You see the
 window, the screen the user saw, the git state when there is one, the request,
-the output type the user picked, the reply, and sometimes what the panel read.
+the output type the user picked, the earlier rounds when the panel asked
+before, the reply, and sometimes what the panel read.
 
 Grade it PASS or FAIL against the owner's standards below. A reply passes when
 the owner would use it as it stands; it fails on any one broken rule.
@@ -72,11 +73,11 @@ Prompts for a coding agent
    Any prompt fails there, even one that meets every big-task step above (plan
    first, baseline, an interview, a wait for the OK), and so does a question
    on how to build it (a library, a provider, a method). A prompt that leaves
-   the purpose to the interview has not stated it. You do not see the earlier
-   rounds. When the request only goes on from one (a confirmation, a short
-   answer, an OK to proceed), the purpose may be in an answer you cannot see:
-   a prompt that states what the feature is for as the user's purpose, not as
-   a guess, an option or a topic for the interview, passes this rule.
+   the purpose to the interview has not stated it. The earlier rounds, when
+   there were any, are in the <conversation> section: when the user's answer
+   there says what the feature is for, a prompt that states that purpose as
+   the user's, not as a guess, an option or a topic for the interview, passes
+   this rule.
 10. When the request is only about a test (add a test for existing code, or
     fix a failing test, named in the request or on the screen), the prompt
     includes a break-on-purpose check: break the code under test (a mutation),
