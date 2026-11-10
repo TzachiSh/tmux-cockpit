@@ -281,7 +281,8 @@ commits cases to it; a tuning session must not open it, and its header says so.
 The older held-out cases stay in the cases file. The rig loads the file beside
 the cases file: each of its cases must say `holdout: yes`, an id the cases file
 also has is an error, it may hold no case, and a missing file is an error, so a
-lost file cannot quietly drop the held-out cases from a run. A run reports its
+lost file cannot quietly drop the held-out cases from a run or from the overlap
+check. A run reports its
 cases with the other held-out cases, apart from the tune cases, and
 `--check` prints each file it read with its case count. `--cases FILE` reads
 only that file. A parse error in the held-out file names the file, the case id,
@@ -469,8 +470,9 @@ opt-in and never part of the default run. The changed lines are the ones
 `git diff BASE -- tui/prompts` adds, the working tree against `--base`
 (`HEAD` by default), or with `--from OLD --to NEW` the lines of `NEW` that `OLD`
 lacks, which covers the override file; `--base` beside `--from` is refused. Each
-changed line goes to the judge with each `holdout: yes` case's request (`--only`
-narrows the cases), and the judge answers yes when the line paraphrases the
+changed line goes to the judge with each `holdout: yes` case's request, from
+the cases file and from `tui/evals/panel/holdout-blind.txt` (`--only` narrows
+the cases), and the judge answers yes when the line paraphrases the
 request's specific scenario and no when it only shares its topic. The judge sees
 the request only: a line that mirrors a held-out case's screen, repo, refs or
 earlier rounds (an error line, a path) is not judged. A flagged pair prints
