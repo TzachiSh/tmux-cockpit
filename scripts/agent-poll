@@ -156,6 +156,21 @@ unbind() {                    # <pane> <marked: 1|""> <fg mark|""> <@panestate> 
 lastsig="" watched=""
 S_LIVE="" S_BOUND="" S_CAND="" S_SIG="" S_ROWS=$'\n' S_SERIOUS="" S_OWN="" R_OUT=""
 
+# Is this pane command Claude Code's? The shell twin of tui/src/basket.rs claude_cmd: after a
+# path and leading dashes, `claude` in any case (#508, #756), or the native install's
+# version-shaped title (2.1.318): a leading digit, then only digits, dots and underscores, two
+# or more of them dots or underscores (#761). Keep the two in step.
+claude_cmd() {
+    local c=${1##*/}
+    c=${c#"${c%%[!-]*}"}
+    case $c in
+        [Cc][Ll][Aa][Uu][Dd][Ee]) return 0 ;;
+        *[!0-9._]*) return 1 ;;
+        [0-9]*[._]*[._]*) return 0 ;;
+    esac
+    return 1
+}
+
 # One list-panes. Fills the S_ variables: S_LIVE the marked agent panes, S_BOUND the panes that
 # carry a job and may keep it, S_CAND "pane TAB title" for the panes that may be bound, S_SIG
 # the claude panes' ids and titles, S_ROWS one line per pane with what it carries,
@@ -163,7 +178,7 @@ S_LIVE="" S_BOUND="" S_CAND="" S_SIG="" S_ROWS=$'\n' S_SERIOUS="" S_OWN="" R_OUT
 # are cleaned here. 1: no server and no pane.
 scan_panes() {
     local rows id cmd allow glob view fg job jname jstate pstate owner cfg title marked
-    local seen=0 job_kept="" fgc iscl
+    local seen=0 job_kept="" fgc
     S_LIVE="" S_BOUND="" S_CAND="" S_SIG="" S_ROWS=$'\n' S_SERIOUS="" S_OWN="" S_MINE=""
     rows=$(tmux list-panes -a -F "$PANE_FMT" 2>/dev/null) || return 1
     while IFS=$T read -r id cmd allow glob view fg job jname jstate pstate owner cfg title; do
@@ -187,9 +202,8 @@ scan_panes() {
             tmux set-option -pu -t "$id" @cockpit_fg 2>/dev/null; fg=""
         fi
         if [ "$marked" = 1 ]; then S_LIVE="$S_LIVE $id"; S_SERIOUS=1; fi
-        # Any case, as every agents-glob test since #508: a CLAUDE pane is an agent, so it binds.
-        case $cmd in [Cc][Ll][Aa][Uu][Dd][Ee]) iscl=1 ;; *) iscl="" ;; esac
-        if [ -n "$iscl" ]; then
+        # claude_cmd: any case, as every agents-glob test since #508, or a version title (#761)
+        if claude_cmd "$cmd"; then
             S_SIG="$S_SIG$id$T$allow$T$title"$'\n'
             if [ "$allow" = 1 ] && [ -n "$title" ]; then
                 # A session waiting on the user fires no hook, so a ▲ that the poller hid would

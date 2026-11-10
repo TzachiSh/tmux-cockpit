@@ -19255,6 +19255,30 @@ bc_case "...nor xclaude" xclaude "||"
 av_tm kill-server >/dev/null 2>&1
 fi
 
+
+echo "== agent-poll: a version-shaped claude command binds too, as basket's claude_cmd reads it (#761) =="
+# The native install can show in pane_current_command as its version (2.1.318). The board
+# counts such a pane as claude (basket::claude_cmd, data's agentish), so the bind rule does too.
+av_setup
+if need_tmux "agent-poll bind version"; then :; else
+av_srv bindver
+av_tm set -g @cockpit_agents_glob '|claude|codex|'
+bv_case() {                   # bv_case <label> <command> <want>: a pane titled alpha, one poll
+    local p
+    p=$(av_tm new-window -d -c "$AVWD" -P -F '#{pane_id}' "exec -a $2 sleep 300")
+    av_tm select-pane -t "$p" -T alpha
+    av_once bind.json >/dev/null
+    is "$1" "$3" "$(printf '%s|%s|%s' "$(avo @cockpit_job "$p")" \
+        "$(avo @cockpit_job_name "$p")" "$(avo @panestate "$p")")"
+    av_tm kill-pane -t "$p"
+}
+bv_case "a pane whose command is a version title (2.1.318) binds its job" 2.1.318 "aa|alpha|running"
+bv_case "...and with underscores (2_1_318)" 2_1_318 "aa|alpha|running"
+bv_case "digits with one dot (3.11) are no version title: no bind" 3.11 "||"
+bv_case "...nor a version with a letter in it (2.1.3a)" 2.1.3a "||"
+av_tm kill-server >/dev/null 2>&1
+fi
+
 flop_left
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1
