@@ -8683,6 +8683,10 @@ CHG_READS=$(awk '/^echo "== /{ n++ } n { s = $0
         p in t { print $1 "\t" p; next }
         { for (i = 1; i <= nt; i++) if (index(T[i], p "/") == 1) print $1 "\t" T[i] }' \
         <(printf '%s\n' "$CHG_TRACKED") - | awk -F'\t' '$2 != "tests/run.sh"' | sort -u)
+# sourcer <TAB> sourced, for each `. ".../x.sh"` line in a lib: libs source libs (#748).
+CHG_SRC=$(cd "$DIR" && grep -oE '^[[:space:]]*(\.|source)[[:space:]]+"[^"]*/[A-Za-z0-9_.-]+"' \
+    scripts/lib/* 2>/dev/null | awk -F: '{ n = split($2, P, "/"); sub(/"$/, "", P[n])
+        print $1 "\tscripts/lib/" P[n] }' | sort -u)
 CHG_TD=$(chg_ord 'tree_diff: staged, unstaged and untracked changes are one diff (#390) ==')
 CHG_SPC=$(chg_ord 'the click bindings survive a plugin path with a quote and a space ==')
 CHG_PA=$(chg_ord 'poll_alive: with no /proc, the poller is known by ps -o args= (#194) ==')
@@ -8694,7 +8698,7 @@ CHG_EACH=$(bash "$DIR/tests/changed.sh" --each $({ printf '%s\n' Makefile LICENS
     cockpit.tmux install.sh scripts/lib/pane.sh
     grep -ho 'scripts/lib/[A-Za-z0-9_.-]*' "$DIR/cockpit.tmux" "$DIR/install.sh"
     (cd "$DIR" && grep -lF pane.sh scripts/* cockpit.tmux install.sh 2>/dev/null)
-    cut -f2 <<< "$CHG_READS"; } | sort -u))
+    cut -f2 <<< "$CHG_READS"; tr '\t' '\n' <<< "$CHG_SRC"; } | sort -u))
 chg_pick() { awk -F'\t' -v f="$1" '$1 == f { print $2 }' <<< "$CHG_EACH"; }
 chg_has() { case ",$(chg_pick "$1")," in *",$2,"*|*",ALL,"*) echo yes ;; *) echo no ;; esac; }
 is "a Makefile edit runs the target-dir block that copies it" "$CHG_MAKE" "$(chg_pick Makefile)"
@@ -8742,6 +8746,38 @@ is "some blocks run cockpit.tmux and no file naming pane.sh" yes \
     "$([ -n "$CHG_CKONLY" ] && echo yes || echo no)"
 is "a pane.sh edit picks none of them (#734)" "" "$(comm -12 <(printf '%s\n' "$CHG_CKONLY") \
     <(chg_set scripts/lib/pane.sh) | sort -n | paste -sd,)"
+# A block that runs a lib runs each lib it sources, and theirs: review-revdiff.sh
+# sources review-store.sh, workdir.sh sources tui.sh, which sources vnum.sh (#748).
+is "review-revdiff.sh sources review-store.sh, so the lib pairs are read (#748)" yes \
+    "$(grep -qxF "scripts/lib/review-revdiff.sh	scripts/lib/review-store.sh" <<< "$CHG_SRC" &&
+        echo yes || echo no)"
+chg_miss=""
+while IFS=$'\t' read -r chg_e chg_l; do
+    [ -z "$(chg_lost "$chg_e" "$chg_l")" ] || chg_miss="$chg_miss $chg_e<$chg_l"
+done <<< "$CHG_SRC"
+is "a lib edit runs every block that runs a lib sourcing it (sourcer<lib missed) (#748)" "" \
+    "$chg_miss"
+is "a vnum.sh edit runs the blocks of workdir.sh, two sources up (#748)" "" \
+    "$(chg_lost scripts/lib/workdir.sh scripts/lib/vnum.sh)"
+# A cycle, on a scratch tree so no comment in the real libs carries the row:
+# a.sh and b.sh name each other, and block 2 runs a.sh, block 3 runs b.sh.
+CHG_CY=$(mktmpd); mkdir -p "$CHG_CY/tests" "$CHG_CY/scripts/lib"
+cp "$DIR/tests/changed.sh" "$CHG_CY/tests/"
+printf '%s\n' 'echo "== syntax =="' '# tests: scripts/lib/a.sh' 'echo "== a =="' \
+    '# tests: scripts/lib/b.sh' 'echo "== b =="' '# tests: scripts/lib/c.sh' \
+    'echo "== c =="' > "$CHG_CY/tests/run.sh"
+echo '. "${BASH_SOURCE[0]%/*}/b.sh"' > "$CHG_CY/scripts/lib/a.sh"
+echo '. "${BASH_SOURCE[0]%/*}/a.sh"' > "$CHG_CY/scripts/lib/b.sh"
+echo '. "${BASH_SOURCE[0]%/*}/subd.sh"' > "$CHG_CY/scripts/lib/c.sh"
+echo ': no lib names me' > "$CHG_CY/scripts/lib/d.sh"
+CHG_CYE=$(bash "$CHG_CY/tests/changed.sh" --each scripts/lib/a.sh scripts/lib/b.sh \
+    scripts/lib/d.sh)
+is "a cycle ends: a.sh and b.sh, naming each other, each pick both blocks (#748)" \
+    "$(printf 'scripts/lib/a.sh\t2,3\nscripts/lib/b.sh\t2,3')" "$(head -2 <<< "$CHG_CYE")"
+# Known limit: names match as text, so c.sh sourcing subd.sh counts as naming
+# d.sh, and a d.sh edit runs c.sh's block. Too many blocks, never too few.
+is "known limit: a d.sh edit picks the block of c.sh, which sources subd.sh (#748)" \
+    "$(printf 'scripts/lib/d.sh\t4')" "$(sed -n 3p <<< "$CHG_CYE")"
 CHG_STAMP=$(bash "$DIR/tests/green.sh" files)
 is "the green stamp hashes every file a block reads" "" "$(cut -f2 <<< "$CHG_READS" | sort -u |
     awk 'NR == FNR { s[$0] = 1; next } !($0 in s) { printf " %s", $0 }' \
