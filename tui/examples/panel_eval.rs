@@ -5208,6 +5208,62 @@ esac
             assert!(opts(args("--show-holdout")).unwrap().show_holdout);
         }
 
+        /// A stand-in claude for a whole run: its version, a judge's verdict
+        /// quoting phrases, and a reply holding phrases of every case.
+        const RIG_CLAUDE: &str = "#!/bin/sh\n[ \"$1\" = --version ] && { echo 9.9.9; exit 0; }\n\
+            case \"$(cat)\" in *'Grade the reply.'*) printf 'VERDICT: FAIL\\nCRITIQUE: vi-nail, ze-trap\\n' ;;\n\
+            *) printf '<prompt>Use ze-trap, vi-nail, al-beacon and qz-lamp.</prompt>\\n' ;; esac\n";
+
+        /// Runs [`QUIET`] with `extra` flags in this test binary, re-entered
+        /// at [`rig_child`] on a stand-in claude: (exit, stdout, stderr, rows).
+        fn rig_run(name: &str, extra: &[&str]) -> (Option<i32>, String, String, String) {
+            let d = scratch(name);
+            std::fs::write(d.0.join("cases.txt"), QUIET).unwrap();
+            let claude = fake(&d.0, RIG_CLAUDE);
+            let p = |f: &str| d.0.join(f).display().to_string();
+            let (cases, rows, ledger) = (p("cases.txt"), p("rows.jsonl"), p("cost.tsv"));
+            let base = ["--cases", &cases, "--no-hermetic", "--runs", "1", "--jobs", "1"];
+            let args = [&base[..], &["--out", &rows, "--ledger", &ledger], extra].concat().join("\n");
+            let mut c = std::process::Command::new(std::env::current_exe().unwrap());
+            c.args(["--exact", "tests::quiet::rig_child", "--nocapture", "--test-threads=1"]);
+            for (k, v) in [("CACHE", "cache"), ("CONFIG", "config"), ("STATE", "state")] {
+                c.env(format!("XDG_{k}_HOME"), p(v));
+            }
+            let o = c.env("PANEL_EVAL_RIG_ARGS", args).env("COCKPIT_CLAUDE", claude).output().unwrap();
+            let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
+            let rows = std::fs::read_to_string(d.0.join("rows.jsonl")).unwrap_or_default();
+            (o.status.code(), text(&o.stdout), text(&o.stderr), rows)
+        }
+
+        /// Not a test of its own: the child [`rig_run`] starts.
+        #[test]
+        fn rig_child() {
+            if let Ok(args) = std::env::var("PANEL_EVAL_RIG_ARGS") {
+                println!();
+                let o = opts(args.split('\n').map(String::from)).unwrap();
+                run(&o, Err(std::io::Error::other("a test child has no rig binary")));
+                std::process::exit(0);
+            }
+        }
+
+        /// The lines of `text` that are not the tune case's own: its reply and
+        /// critique hold phrases of every case.
+        fn not_tune(text: &str) -> String {
+            text.lines().filter(|l| !l.contains("tune-q")).collect::<Vec<_>>().join("\n")
+        }
+
+        #[test]
+        fn a_run_prints_and_writes_no_held_out_phrase_and_every_tune_one() {
+            for (name, extra) in [("quiet-run", &[][..]), ("quiet-judge", &["--judge"][..])] {
+                let (code, out, err, rows) = rig_run(name, extra);
+                assert_eq!(code, Some(0), "{name}: {out}{err}");
+                let all = format!("{out}\n{err}\n{rows}");
+                assert_eq!(leaked(&not_tune(&all)), Vec::<&str>::new(), "{name}: {all}");
+                assert!(out.contains("has: ze-trap") && rows.contains("\"ze-trap\""), "{name}: {all}");
+                assert_eq!(rows.lines().count(), 3, "{name}: {rows}");
+            }
+        }
+
         #[test]
         fn a_tune_verdict_line_and_row_keep_the_critique() {
             let cases = parse_cases(QUIET).unwrap();
