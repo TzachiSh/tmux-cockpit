@@ -8759,10 +8759,25 @@ is "a lib edit runs every block that runs a lib sourcing it (sourcer<lib missed)
     "$chg_miss"
 is "a vnum.sh edit runs the blocks of workdir.sh, two sources up (#748)" "" \
     "$(chg_lost scripts/lib/workdir.sh scripts/lib/vnum.sh)"
-# hook.sh sources fmt.sh, and fmt.sh's text names hook.sh: a cycle, which ends
-# with each edit picking the other's blocks.
-is "a cycle ends: fmt.sh and hook.sh pick the same blocks (#748)" \
-    "$(chg_pick scripts/lib/hook.sh)" "$(chg_pick scripts/lib/fmt.sh)"
+# A cycle, on a scratch tree so no comment in the real libs carries the row:
+# a.sh and b.sh name each other, and block 2 runs a.sh, block 3 runs b.sh.
+CHG_CY=$(mktmpd); mkdir -p "$CHG_CY/tests" "$CHG_CY/scripts/lib"
+cp "$DIR/tests/changed.sh" "$CHG_CY/tests/"
+printf '%s\n' 'echo "== syntax =="' '# tests: scripts/lib/a.sh' 'echo "== a =="' \
+    '# tests: scripts/lib/b.sh' 'echo "== b =="' '# tests: scripts/lib/c.sh' \
+    'echo "== c =="' > "$CHG_CY/tests/run.sh"
+echo '. "${BASH_SOURCE[0]%/*}/b.sh"' > "$CHG_CY/scripts/lib/a.sh"
+echo '. "${BASH_SOURCE[0]%/*}/a.sh"' > "$CHG_CY/scripts/lib/b.sh"
+echo '. "${BASH_SOURCE[0]%/*}/subd.sh"' > "$CHG_CY/scripts/lib/c.sh"
+echo ': no lib names me' > "$CHG_CY/scripts/lib/d.sh"
+CHG_CYE=$(bash "$CHG_CY/tests/changed.sh" --each scripts/lib/a.sh scripts/lib/b.sh \
+    scripts/lib/d.sh)
+is "a cycle ends: a.sh and b.sh, naming each other, each pick both blocks (#748)" \
+    "$(printf 'scripts/lib/a.sh\t2,3\nscripts/lib/b.sh\t2,3')" "$(head -2 <<< "$CHG_CYE")"
+# Known limit: names match as text, so c.sh sourcing subd.sh counts as naming
+# d.sh, and a d.sh edit runs c.sh's block. Too many blocks, never too few.
+is "known limit: a d.sh edit picks the block of c.sh, which sources subd.sh (#748)" \
+    "$(printf 'scripts/lib/d.sh\t4')" "$(sed -n 3p <<< "$CHG_CYE")"
 CHG_STAMP=$(bash "$DIR/tests/green.sh" files)
 is "the green stamp hashes every file a block reads" "" "$(cut -f2 <<< "$CHG_READS" | sort -u |
     awk 'NR == FNR { s[$0] = 1; next } !($0 in s) { printf " %s", $0 }' \
