@@ -143,8 +143,9 @@ fn parse_cases(text: &str) -> Result<Vec<Case>, String> {
 /// [`parse_cases`] for a file that may hold none: the held-out file ships empty.
 /// A `quiet` error (#783) gives the line and the rule it broke, never the
 /// line's text: a held-out case's text stays out of test and build logs. A
-/// rule of the whole case names the case's `===` line.
-/// Case ids are names, not case text, and stay in.
+/// rule of the whole case names the case's `===` line. Case ids stay in: a
+/// quiet file's ids must be names (lowercase letters, digits and `-`), so a
+/// body line that opens with `=== ` cannot pass case text off as one.
 fn parse_some(text: &str, quiet: bool) -> Result<Vec<Case>, String> {
     let mut cases = Vec::new();
     let mut next = 1;
@@ -162,6 +163,12 @@ fn parse_some(text: &str, quiet: bool) -> Result<Vec<Case>, String> {
         };
         let (id, rest) = block.split_once('\n').unwrap_or((block, ""));
         let id = id.trim().to_string();
+        // a body line opening with `=== ` reads as a case: in the held-out file
+        // its "id" may be case text, so one that is not a name goes unshown
+        let name = |c: char| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-';
+        if quiet && (id.is_empty() || !id.chars().all(name)) {
+            return Err(format!("line {line0}: an id is lowercase letters, digits and -"));
+        }
         let err = |m: &str| format!("case {id}: {m}");
         // `loud` holds the file's text; a quiet error says only where and why
         let say = |at: usize, rule: &str, loud: String| {
@@ -3754,6 +3761,17 @@ mod tests {
             let e = load(&c, Some(&b)).err().unwrap_or_else(|| panic!("{rule}: loaded"));
             assert_eq!(e, format!("{}: case b1: line {line}: {rule}", b.display()));
         }
+    }
+
+    /// #783: in the held-out file an id is a name, so a body line opening with
+    /// `=== ` (Go's `=== RUN`) cannot carry the case's text into an error.
+    #[test]
+    fn a_held_out_file_id_that_is_not_a_name_is_refused_unshown() {
+        let tail = "--- screen\n$ net-proxy\nboom\n--- request\nfix this\n";
+        let moved = "--- request\nfix this\n--- screen\nboom\n=== RUN   MADE-UP-SECRET-TestLeak\n";
+        let (_d, c, b) = two_files("bad-id", ONE, &held("b1").replace(tail, moved));
+        let e = load(&c, Some(&b)).err().expect("a screen line made a case");
+        assert_eq!(e, format!("{}: line 11: an id is lowercase letters, digits and -", b.display()));
     }
 
     /// #783: a parse error starts with the file it is in, cases.txt or the held-out file.
