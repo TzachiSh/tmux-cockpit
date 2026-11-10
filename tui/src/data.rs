@@ -30,7 +30,11 @@ fn split_tmux_argv(value: Option<&str>) -> Vec<String> {
 /// `None` on a spawn failure or non-zero exit: "no tmux" is not "no agents".
 /// A blank COCKPIT_TMUX names no program, so it is a spawn failure too.
 pub fn tmux(args: &[&str]) -> Option<String> {
-    let c = tmux_argv();
+    tmux_on(&tmux_argv(), args)
+}
+
+/// `tmux` on a given argv: the program is `c[0]`, so an empty argv spawns nothing.
+fn tmux_on(c: &[String], args: &[&str]) -> Option<String> {
     let out = Command::new(c.first()?).args(&c[1..]).args(args).output().ok()?;
     out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }
@@ -1547,6 +1551,24 @@ mod tests {
     #[test]
     fn split_tmux_argv_splits_a_socket_flag_into_words() {
         assert_eq!(split_tmux_argv(Some("tmux -L sock")), ["tmux", "-L", "sock"]);
+    }
+
+    /// A blank COCKPIT_TMUX names no program, so `tmux()` fails to spawn and
+    /// reaches no server. It must not fall back to plain `tmux` (#757 row 21).
+    #[test]
+    fn split_tmux_argv_blank_names_no_program() {
+        for blank in ["", " ", " \t", "\n"] {
+            assert!(split_tmux_argv(Some(blank)).is_empty(), "{blank:?}");
+        }
+    }
+
+    /// The other half of a blank COCKPIT_TMUX: `tmux()` on an empty argv spawns
+    /// nothing and returns `None`, never plain `tmux` (#757 row 21). The control
+    /// runs `echo`, not tmux, so it needs no tmux installed and reaches no server.
+    #[test]
+    fn tmux_on_an_empty_argv_spawns_nothing() {
+        assert_eq!(tmux_on(&[], &["-V"]), None);
+        assert_eq!(tmux_on(&["echo".to_string()], &["-V"]).as_deref(), Some("-V\n"));
     }
 
     /// Pins the limit docs/tui.md's COCKPIT_TMUX row states (#757 row 20).
