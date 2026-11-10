@@ -29,11 +29,11 @@ Refute pass: three points go beyond the graded findings. (a) "no recovery" and "
 
 - The router outputs a closed label set (for example clear, ask-one-question) with a safe default on parse failure. Each side then carries a smaller prompt with fewer rules, so rewording one side cannot move the other's cases.
 - Main risk is error propagation: a wrong label sends the case to the wrong writer with no recovery. Mitigation: make the writer able to ask too, and bias toward the cheaper wrong answer.
-- Evaluate by replaying the labelled cases through the router alone. Report a confusion matrix per label and name the misrouted cases. Fix the split before tuning and keep a few cases held out. With a small n report counts, not percentages. Run each case several times.
+- Evaluate by replaying the labelled cases through the router alone. Report a confusion matrix per label and name the misrouted cases. The lane's own practice, no source: fix the split before tuning and keep a few cases held out, report counts rather than percentages at a small n, and run each case several times.
 
 ## Not found
 
 - Measured latency of an added Claude CLI call, or of router-then-generate chains.
 - A source on how small a labelled set can be before router evaluation becomes unreliable.
 - Failure studies of prompt-chaining routers, as opposed to model-selection routers.
-- UCCI, RouteNLP, TwinRouterBench and Signed Rescue Routing were only seen in search results. Their numbers are unverified.
+- RouteNLP and Signed Rescue Routing: the abstracts do not support the claims first made (finding 5b). UCCI and TwinRouterBench were confirmed from their abstracts only, not the full papers.

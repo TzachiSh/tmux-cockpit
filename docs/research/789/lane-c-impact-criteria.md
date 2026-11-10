@@ -23,8 +23,8 @@ Read-only lane. All sources accessed 2026-11-10.
 | a. Touches a foundation: auth, money, secrets, personal data, data model or migration | 3 | Yes from request text; partly from file paths |
 | b. Adds a new architectural component (database, worker, service, dependency) | 3 | Partly |
 | c. One-way door: cannot be undone by reverting the commit | 1 | Partly; reversibility often needs reading code |
-| d. Blast radius: crosses more than one module, team or service | 2, 6 | Partly; files touched give a count, nothing before work starts |
-| e. More than one reasonable solution | 6 | Yes from request text |
+| d. Blast radius: crosses more than one module, team or service | 2 (the multi-module part is unsourced) | Partly; files touched give a count, nothing before work starts |
+| e. More than one reasonable solution | none found, the owner's own | Yes from request text |
 | f. Stated purpose present | none found, the owner's own | Yes |
 | g. Architectural significance | 4 | Partly; the judge must infer from wording |
 | h. Skip case: small UI or logic change reusing existing data and auth | 3 | Yes |
