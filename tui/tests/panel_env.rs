@@ -392,8 +392,10 @@ fn a_fresh_fake_execs_while_another_thread_forks() {
 #[test]
 fn a_dead_pane_captures_nothing() {
     let e = Env::new("capture-dead", &tmux_on_path());
-    e.exec("tmux", "exit 1");
+    e.exec("tmux", "touch \"$D/ran\"; exit 1");
     assert_eq!(capture("%7"), None);
+    // a tmux that never started is None too: the marker tells the two apart
+    assert!(e.dir.join("ran").exists(), "tmux never started");
     assert!(!Path::new(&e.dir.join("args")).exists());
 }
 
