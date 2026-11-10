@@ -3756,6 +3756,25 @@ mod tests {
         }
     }
 
+    /// #783: a parse error starts with the file it is in, cases.txt or the held-out file.
+    #[test]
+    fn a_parse_error_names_its_file() {
+        let bad = held("zz").replace("holdout: yes", "holdout: maybe");
+        let rows = [
+            ("cases", format!("{ONE}{bad}"), String::new()),
+            ("held-out", ONE.into(), bad.clone()),
+        ];
+        for (row, cases, blind) in rows {
+            let (_d, c, b) = two_files(&format!("names-{row}"), &cases, &blind);
+            let e = load(&c, Some(&b)).err().unwrap_or_else(|| panic!("{row}: loaded"));
+            let want = match row {
+                "cases" => format!("{}: case zz: holdout is yes or no", c.display()),
+                _ => format!("{}: case zz: line 5: holdout is yes or no", b.display()),
+            };
+            assert_eq!(e, want, "{row}");
+        }
+    }
+
     /// #783: an id in both files is an error naming the id and the other file.
     #[test]
     fn an_id_in_both_files_fails() {
