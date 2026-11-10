@@ -1710,16 +1710,35 @@ sg_stall() {                  # <state>: the hook, with one stop at a random poi
 SGF='#{@cockpit_fleet}|#{@cockpit_fleet_nb}|#{@cockpit_fleet_ne}'
 SGS='#{@cockpit_sess_nb}|#{@cockpit_sess_ne}|#{@cockpit_win_state}|#{@cockpit_win_review}'
 SGS="$SGS|#{@cockpit_ctx_all}"
-sgf=0 sgs=0 sgf1="" sgs1=""
+sgf=0 sgs=0 sgf1="" sgs1="" sgu=0 sgu1=""
 if [ -n "$SGP" ]; then
     read -r SGC0 _ < "/proc/$SGP/schedstat"
     for i in 1 2 3 4; do sg_hook running; sg_hook off; done
     read -r SGC _ < "/proc/$SGP/schedstat"; SGPER=$(( (SGC - SGC0) / 8 ))
     for i in $(seq 1 32); do
         ctx=12; [ $((i % 2)) = 0 ] && ctx=345
-        sgt set -p -t "$SGA" @panestate_ctx "$ctx"
+        # The row's own setup, checked (#810): CI twice read A's cells one hook stale with
+        # every other sum exact, which a hook that saw the old @panestate_ctx would do. A
+        # setup that did not land is named in its own row, with tmux's own words, and its
+        # field (the cells) is not held against agent-state; the hook's other sums still
+        # are (review-816). No retry: it would hide the cause.
+        sgre=$("$TMUX_REAL" -L "$SG" set -p -t "$SGA" @panestate_ctx "$ctx" 2>&1); sgrc=$?
+        sgrd=$(sgt show-option -pqv -t "$SGA" @panestate_ctx)
+        sgok=1
+        if [ "$sgrc" != 0 ] || [ "$sgrd" != "$ctx" ]; then
+            sgok="" sgu=$((sgu + 1))
+            sgm="setup ctx not applied at hook $i: rc=$sgrc, err [$sgre],"
+            [ -n "$sgu1" ] || sgu1="$sgm read [$sgrd], want $ctx"
+        fi
         case $((i % 4)) in
-            1) st=needs-input; sgt set -p -t "$SGA" @cockpit_review pending
+            1) st=needs-input
+               # The ◆ setup, named too; a miss here still shows in the counter rows.
+               sgre=$("$TMUX_REAL" -L "$SG" set -p -t "$SGA" @cockpit_review pending 2>&1)
+               sgrc=$? sgrv=$(sgt show-option -pqv -t "$SGA" @cockpit_review)
+               if [ "$sgrc" != 0 ] || [ "$sgrv" != pending ]; then
+                   sgu=$((sgu + 1)); [ -n "$sgu1" ] \
+                       || sgu1="setup review not applied at hook $i: rc=$sgrc, err [$sgre]"
+               fi
                wf='#[fg=themered bold]▲1#[default] #[fg=thememagenta]◆1#[default] |1|0'
                ws="1|0|needs-input|1" ;;
             3) st=error; wf='#[fg=themecyan]✕1#[default] |0|1' ws="0|1|error|" ;;
@@ -1729,9 +1748,12 @@ if [ -n "$SGP" ]; then
         sg_stall "$st"
         g=$(sgt display-message -p -t "$SGA" "$SGF//$SGS")
         gf=${g%%//*} gs=${g#*//}
+        [ -n "$sgok" ] || { gs=${gs%|*} ws=${ws%|*}; }
         [ "$gf" = "$wf" ] || { sgf=$((sgf + 1)); [ -n "$sgf1" ] || sgf1="hook $i ($st): [$gf]"; }
         [ "$gs" = "$ws" ] || { sgs=$((sgs + 1)); [ -n "$sgs1" ] || sgs1="hook $i ($st): [$gs]"; }
     done
+    is "the row's own setup writes (A's @panestate_ctx, its ◆) land before every hook" \
+        "0" "$sgu${sgu1:+, first $sgu1}"
     is "32 hooks, each with the server stopped 150 ms mid-hook, leave the fleet counts exact" \
         "0" "$sgf${sgf1:+, first $sgf1}"
     is "and A's session's ▲ ✕ and cells and its window's state and ◆ exact" \
