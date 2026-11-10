@@ -6132,6 +6132,43 @@ for vs in "" GIT_LITERAL_PATHSPECS GIT_GLOB_PATHSPECS GIT_NOGLOB_PATHSPECS GIT_I
 done
 rm -rf "$RVPS"
 
+echo "== tree_diff: the object store, attributes or replace refs git reads are the repo's (#730) =="
+# gitsafe strips these from the board's git, so tmux-review must too, or the popup
+# shows other lines than the row counts. FAIL-first: on the old code the two object
+# dirs and the bad rev made tree_diff print nothing, the attr tree read f as binary,
+# and each replace base changed which of f's blobs it diffed.
+RV730=$(mktmpd)
+(
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  # f's blob swapped for a three-line one: plain git reads refs/replace/, not refs/alt/
+  for r in alt replace; do
+    git init -q -b main "$RV730/$r" && cd "$RV730/$r" || exit
+    printf '1\n' > f; git add -A; git commit -q -m one; printf '1\n2\n' > f
+    mkdir .git/empty-objects; printf 'x\ny\nz\n' > .git/swap
+    git update-ref "refs/$r/$(git rev-parse HEAD:f)" "$(git hash-object -w .git/swap)"
+  done
+  cd "$RV730/alt" || exit
+  printf 'f -diff\n' > .gitattributes; git add .gitattributes; git write-tree > .git/attr-tree
+  git rm -q --cached .gitattributes; rm .gitattributes
+) >/dev/null 2>&1
+rv730tree=$(cat "$RV730/alt/.git/attr-tree" 2>/dev/null)
+# <row>|<repo>|<var>=<value, @ the repo>|the numstat plain git prints there
+for row in "nothing inherited|alt||1	0	f" "nothing inherited, refs/replace/|replace||2	3	f" \
+           "objects missing|alt|GIT_OBJECT_DIRECTORY=@/no-objects|1	0	f" \
+           "objects empty|alt|GIT_OBJECT_DIRECTORY=@/.git/empty-objects|1	0	f" \
+           "attributes from no rev|alt|GIT_ATTR_SOURCE=no-such-rev|1	0	f" \
+           "attributes from another tree|alt|GIT_ATTR_SOURCE=$rv730tree|1	0	f" \
+           "replace refs swapping f|alt|GIT_REPLACE_REF_BASE=refs/alt/|1	0	f" \
+           "replace refs hiding the repo's own|replace|GIT_REPLACE_REF_BASE=refs/none/|2	3	f"; do
+    IFS='|' read -r rvname rvrepo rvvar rvwant <<<"$row"
+    rvdir=$RV730/$rvrepo; rvval=${rvvar#*=}; rvval=${rvval//@/$rvdir}
+    rvgot=$([ -z "$rvvar" ] || export "${rvvar%%=*}=$rvval"
+            printf '%s|' "$(tdiff "$rvdir" --numstat)"
+            "$COCKPIT_TUI_BIN" diffstat "$rvdir" | cut -f1,2)
+    is "$rvname: the review's numstat, then the board's count" "$rvwant|${rvwant%	f}" "$rvgot"
+done
+rm -rf "$RV730"
+
 echo "== tmux-review --request: an inherited GIT_DIR or its kin never opens another repo's review (#475) =="
 # --request sources no diff engine: its git_root runs before any lib could
 # unset the four. The pane sits in a subfolder, so a GIT_DIR alone (the cwd as
@@ -6175,6 +6212,9 @@ for v in GIT_DIR=@/.git GIT_WORK_TREE=@ GIT_COMMON_DIR=@/.git GIT_INDEX_FILE=@/.
     is "${v%%=*} naming another repo: the popup still reviews the pane repo" "$rqewant" \
         "$(rqe_cmd "${v%%=*}=$rqev")"
 done
+# #730: an object dir that is missing is no repo at all, so the root was the pane's subfolder
+is "GIT_OBJECT_DIRECTORY naming no dir: the popup still reviews the pane repo" "$rqewant" \
+    "$(rqe_cmd "GIT_OBJECT_DIRECTORY=$RQED/other/no-objects")"
 unset -f rqe_cmd
 "$TMUX_REAL" -L "$RQE" kill-server >/dev/null 2>&1
 fi
@@ -15015,15 +15055,21 @@ echo "== tmux-branch: an inherited GIT_DIR or its kin never switches another rep
 # A dotfiles setup can export GIT_DIR into tmux's environment, and the popup
 # inherits it. The picker lists the pane repo's branches (gitsafe strips the
 # four), so the switch must land there too. FAIL-first: on the old code each
-# variable below switched, or checked out into, the other repo.
+# variable below switched, or checked out into, the other repo. The last three
+# (#730): another object store and a bad attribute source failed the switch, and
+# a replace base held a swapped blob for conf's `a` that the checkout wrote.
 BRE=$(mktmpd)
 # answers once, then leaves like esc: a refused switch cannot loop. conf's `a`
 # differs from main's, so a switch writes the tree it checks out.
 printf '#!/bin/sh\n[ -e "%s/used" ] && exit 1\n: > "%s/used"; echo "switch conf"\n' "$BRE" "$BRE" \
     > "$BRE/cockpit-tui"
 chmod +x "$BRE/cockpit-tui"
-for v in GIT_DIR=@/.git GIT_WORK_TREE=@ GIT_COMMON_DIR=@/.git GIT_INDEX_FILE=@/.git/index; do
+for v in GIT_DIR=@/.git GIT_WORK_TREE=@ GIT_COMMON_DIR=@/.git GIT_INDEX_FILE=@/.git/index \
+         GIT_OBJECT_DIRECTORY=@/.git/objects GIT_ATTR_SOURCE=no-such-rev \
+         GIT_REPLACE_REF_BASE=refs/alt/; do
     rm -rf "$BRE/pane" "$BRE/other" "$BRE/used"; br_repo "$BRE/pane" "$BRE/remote-${v%%=*}"
+    git -C "$BRE/pane" update-ref "refs/alt/$(git -C "$BRE/pane" rev-parse conf:a)" \
+        "$(echo swapped | git -C "$BRE/pane" hash-object -w --stdin)"
     (
       export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
       git init -q -b main "$BRE/other" && cd "$BRE/other" || exit 1
@@ -15034,7 +15080,7 @@ for v in GIT_DIR=@/.git GIT_WORK_TREE=@ GIT_COMMON_DIR=@/.git GIT_INDEX_FILE=@/.
       env -u TMUX COCKPIT_TUI_BIN="$BRE/cockpit-tui" timeout 30 \
           "$DIR/scripts/tmux-branch" "$BRE/pane" \
           </dev/null >/dev/null 2>&1 )
-    is "${v%%=*} naming another repo: the pane repo switches, the other stays (branch, dirty files)" \
+    is "${v%%=*} inherited: the pane repo switches, the other stays (branch, dirty files)" \
        "conf 0 main 0" "$(br_cur "$BRE/pane") $(git -C "$BRE/pane" status --porcelain | grep -c .) \
 $(br_cur "$BRE/other") $(git -C "$BRE/other" status --porcelain | grep -c .)"
 done

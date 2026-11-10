@@ -1043,12 +1043,18 @@ folder, then writing`, and tablet mode has an `[ explore ]` button.
   `git --git-dir=… --work-tree=…`, sets no variable and is unaffected.
   `gitsafe::REDIRECT` also holds `GIT_OBJECT_DIRECTORY` and
   `GIT_ATTR_SOURCE` (#683): a missing object dir is no repo, and an attribute
-  source that is no rev fails every diff, so the row read `?`. The two shell
-  commands do not unset these yet. The
-  board's diff count and `tmux-review` also drop `GIT_LITERAL_PATHSPECS`,
+  source that is no rev fails every diff, so the row read `?`. It holds
+  `GIT_REPLACE_REF_BASE` too (#730): with replacement refs under that base, a
+  file's `+1 -0` counted as `+2 -3`, and the repo's own `refs/replace/`
+  stopped applying. `GIT_NO_REPLACE_OBJECTS` stays: git then reads each
+  object as stored. The
+  board's diff count also drops `GIT_LITERAL_PATHSPECS`,
   `GIT_GLOB_PATHSPECS`, `GIT_NOGLOB_PATHSPECS` and `GIT_ICASE_PATHSPECS`
   (`gitsafe::PATHSPEC`, #673): each changes what a `:(literal)` or
-  `:(exclude,literal)` pathspec matches. Then
+  `:(exclude,literal)` pathspec matches. `tmux-review`, its diff engine and
+  `tmux-branch` unset both lists through `scripts/lib/git-env.sh`, a copy
+  that `tui/tests/gitsafe_env.rs` pins, so a popup reads the repo the row
+  counts (#730). Then
   the root is kept only if it holds the pane's folder and its own `.git`, a
   folder or a `gitdir:` file, is the repo's git dir. Otherwise it is the
   pane's folder. A linked worktree, a submodule and a separate git dir pass.
