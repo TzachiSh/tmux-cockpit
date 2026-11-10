@@ -409,16 +409,19 @@ saying what the whole is for, needs the purpose question; the judge sees no
 earlier rounds, so a prompt passes there only when the request goes on from one
 and the prompt states the purpose as the user's. With haiku, against the case
 labels of 40 stored ho2 replies, kappa went from -0.45 to 0.65 in one sweep
-each. On 15 stored ho3 replies, over 4 sweeps, it passed the trail-markers
-go-ahead prompts 19/20, failed the tool-lending prompts 20/20 and passed the
-practice-rooms prompts 18/20. Both sets are in-sample for the judge: the ho2
-replies tuned the first wordings and the ho3 replies chose among the last three,
-though the ho3 cases are held out for the panel prompt. On the owner labels it
-scored kappa 0.72 and 0.60, against master's 0.75 and 0.70. Its known cost, at
-30 fresh runs per side, is a fail for a missing purpose on single-thing
-plan-first prompts the owner passed: h-feature-done.rh.v2 failed 4/30 against
-master's 0/30 (one-sided Fisher p 0.056) and named-skill.r0.v3 4/30 against 1/30
-(p 0.18), 8/60 against 1/60 pooled (p 0.016).
+each. Rubric wordings 4, 5 and 6 were chosen on 15 stored replies of the
+held-out ho3-trail-markers-go-ahead, ho3-tool-lending-parts and
+ho3-practice-rooms-stated cases; over 4 sweeps the shipped wording 5 passed the
+trail-markers prompts 19/20, failed the tool-lending prompts 20/20 and passed
+the practice-rooms prompts 18/20. Both sets are in-sample for the judge. Those
+three ho3 cases are used for judge tuning: no later judge or rubric result
+counts them as held out, and no further judge tuning uses them; they stay held
+out for the panel prompt. On the owner labels the rubric scored kappa 0.72 and
+0.60, against master's 0.75 and 0.70. Its known cost, at 30 fresh runs per side,
+is a fail for a missing purpose on single-thing plan-first prompts the owner
+passed: h-feature-done.rh.v2 failed 4/30 against master's 0/30 (one-sided Fisher
+p 0.056) and named-skill.r0.v3 4/30 against 1/30 (p 0.18), 8/60 against 1/60
+pooled (p 0.016); no single row drops at p < 0.05.
 
 **The panel's cache.** `claude -p` reads its system prompt from a file, so each
 distinct prompt is written once to
