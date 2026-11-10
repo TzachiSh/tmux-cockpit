@@ -403,6 +403,7 @@ its seven held-out fails shared a case with tuned rows, so no holdout number
 from this file is clean. The kappa interval treats rows as independent, but
 several rows answer one case, so it is narrower than a case-clustered interval
 would be.
+Rule 9 now splits big features (#719). One named as one thing passes a question or a plan-first prompt. One whose request lists two or more parts, with nothing saying what the whole is for, needs the purpose question; the judge sees no earlier rounds, so a prompt passes there only when the request goes on from one and the prompt states the purpose as the user's. With haiku, against the case labels of 40 stored ho2 replies (in-sample: the wording was tuned on them), kappa went from -0.45 to 0.65 in one sweep each. Out of sample, over 4 sweeps of 15 stored ho3 replies, it passed the trail-markers go-ahead prompts 19/20, failed the tool-lending prompts 20/20 and passed the practice-rooms prompts 18/20. On the owner labels it scored kappa 0.72 and 0.60, against master's 0.75 and 0.70; the known cost is 2 owner-passed rows, named-skill.r0.v3 and h-feature-done.rh.v2, failed for a missing purpose across those 2 sweeps.
 
 **The panel's cache.** `claude -p` reads its system prompt from a file, so each
 distinct prompt is written once to
