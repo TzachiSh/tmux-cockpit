@@ -57,3 +57,9 @@ below 160 columns, and full width in touch mode.
 
 An entry in `@cockpit_agents` matches the pane's command in any case: `Cursor` marks a
 `cursor` pane as an agent, and `claude` marks a `CLAUDE` one.
+
+Entries are command names, not patterns: a `*` or `[0-9]` in an entry is plain text
+and matches nothing. The board and the background-job poller also count a
+version-shaped command such as `2.1.318`, which some installs of Claude Code show,
+as an agent on their own. Every other place (the status bar, jump, the work dir,
+review delivery) follows only these names.
