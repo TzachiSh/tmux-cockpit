@@ -5600,10 +5600,12 @@ esac
             let hash = json!(cockpit_tui::panel::prompts::files_hash(&[ROUTER]));
             assert_eq!(fields(&rows, "prompt"), vec![hash.clone(); 3]);
             assert_eq!(fields(&rows, "system"), vec![json!(format!("{:016x}", fnv(ROUTER))); 3]);
+            // without the flag the rows keep the shipped write prompt's hash, as `load` trims it
             let (_, _, _, plain) = rig_run("router-off", &[]);
-            let plain = fields(&plain, "prompt");
-            let other = plain.iter().all(|p| p.is_string() && *p != hash);
-            assert!(plain.len() == 3 && other, "{plain:?}");
+            let ship = [prompts::WRITE, prompts::WRITE_EXAMPLES].map(|t| t.trim_end_matches('\n'));
+            let ship = json!(prompts::files_hash(&ship));
+            assert_eq!(fields(&plain, "prompt"), vec![ship.clone(); 3]);
+            assert_ne!(ship, hash);
         }
 
         /// The system prompt files the stand-in claude copied into `cap`.
