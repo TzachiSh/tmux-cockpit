@@ -1117,6 +1117,13 @@ fn blind_row(mut row: serde_json::Value) -> serde_json::Value {
             *v = serde_json::Value::Null;
         }
     }
+    // `label` is held for router_label's three words only: any other value
+    // a later writer puts there may be case text
+    if let Some(l) = m.get_mut("label")
+        && !matches!(l.as_str(), Some("ask" | "write" | "other"))
+    {
+        *l = serde_json::Value::Null;
+    }
     row
 }
 
@@ -6145,6 +6152,24 @@ esac
                 let mut e = failed(&cases, id, "ask");
                 e.router = true;
                 assert_eq!(row_of(&e)["label"], json!("other"), "{id}");
+            }
+        }
+
+        /// `blind_row` passes a `label` only as one of the three words: any
+        /// other value, case text included, is null on a held-out row.
+        #[test]
+        fn blind_row_keeps_a_label_only_from_the_closed_set() {
+            let rows = [
+                ("case text", json!("wk-secret"), Value::Null),
+                ("a word's case", json!("Ask"), Value::Null),
+                ("a number", json!(1), Value::Null),
+                ("ask", json!("ask"), json!("ask")),
+                ("write", json!("write"), json!("write")),
+                ("other", json!("other"), json!("other")),
+            ];
+            for (name, label, want) in rows {
+                let row = blind_row(json!({"id": "x", "holdout": true, "label": label}));
+                assert_eq!(row["label"], want, "{name}");
             }
         }
 
