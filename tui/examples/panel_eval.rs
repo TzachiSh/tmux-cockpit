@@ -4268,14 +4268,19 @@ mod tests {
     }
 
     /// #853: the fingerprint names the panel call's three variables as the calls
-    /// get them: the rig's own value when it has one, else the panel's.
+    /// get them: the rig's own value when it has one, else the panel's. A
+    /// value set to nothing is one the rig has (#859): the calls get it empty.
     #[test]
     fn the_fingerprint_names_the_call_env_as_the_calls_get_it() {
-        let var = |k: &str| (k == "DISABLE_TELEMETRY").then(|| "0".to_string());
+        let var = |k: &str| match k {
+            "DISABLE_TELEMETRY" => Some("0".to_string()),
+            "DISABLE_AUTOUPDATER" => Some(String::new()),
+            _ => None,
+        };
         let f = fingerprint("v", true, None, Path::new("/c"), Effort::Medium, var);
         let names = ["DISABLE_TELEMETRY", "DISABLE_AUTOUPDATER", "DISABLE_ERROR_REPORTING"];
         let got = names.map(|k| f.json()["vars"][k].clone());
-        assert_eq!(got, ["0", "1", "1"].map(serde_json::Value::from));
+        assert_eq!(got, ["0", "", "1"].map(serde_json::Value::from));
     }
 
     /// The effort the calls get, from COCKPIT_PANEL_EFFORT, is in the fingerprint.
@@ -4536,10 +4541,13 @@ mod tests {
         let id_rule = "an id is lowercase letters, digits and -";
         // #835: a tune case quiet only through the held-out case above has no id rule
         let net = "the case above is held out, and this === line is not a case line";
+        // #859: held out by a line of its screen only, so its `holdout` key is unset
+        let by_body = tune("=== b1").replace("boom\n", "boom\nholdout: yes\n");
         let rows = [
             ("tune, then held", format!("{ONE}{}", typo("=== HB-03")), 12, id_rule),
             ("held first", format!("{}{ONE}", typo("=== hb_03")), 1, id_rule),
             ("held, then tune", format!("{}{}", held("b1"), tune("=== HB-03")), 12, net),
+            ("body-held, then tune", format!("{by_body}{}", tune("=== HB-03")), 12, net),
             ("blank and # lines", format!("{ONE}{}", typo("=== HB-03\n\n# c\n")), 12, id_rule),
         ];
         for (i, (row, cases, line, rule)) in rows.into_iter().enumerate() {
@@ -4901,16 +4909,14 @@ mod tests {
         let two_held = held_kind("hb-k", "ops") + &held_kind("hb-2", "hb-k");
         let in_cases = format!("{ONE}{}", held_kind("bug", "ops"));
         let rows = [
-            ("a tune kind", ONE.to_string(), held_kind("bug", "ops"), Some(true), 1),
-            ("a held-out kind", ONE.to_string(), two_held, Some(true), 1),
-            ("its own kind", ONE.to_string(), held_kind("ops", "ops"), Some(true), 1),
+            ("a tune kind", ONE.to_string(), held_kind("bug", "ops"), 1),
+            ("a held-out kind", ONE.to_string(), two_held, 1),
+            ("its own kind", ONE.to_string(), held_kind("ops", "ops"), 1),
         ];
-        for (i, (row, cases, blind, in_blind, line)) in rows.into_iter().enumerate() {
+        for (i, (row, cases, blind, line)) in rows.into_iter().enumerate() {
             let (_d, c, b) = two_files(&format!("kind-{i}"), &cases, &blind);
-            let e = load(&c, in_blind.map(|_| b.as_path())).err();
-            let e = e.unwrap_or_else(|| panic!("{row}: loaded"));
-            let file = if in_blind == Some(true) { &b } else { &c };
-            assert_eq!(e, format!("{}: {}", file.display(), a_kind(line)), "{row}");
+            let e = load(&c, Some(&b)).err().unwrap_or_else(|| panic!("{row}: loaded"));
+            assert_eq!(e, format!("{}: {}", b.display(), a_kind(line)), "{row}");
         }
         // #861: cases.txt refuses a held-out case first; `--cases` on the
         // held-out file reads it as a loud file, the check included
@@ -4946,7 +4952,8 @@ mod tests {
     /// #861: a loud file refuses a `holdout: yes` case whatever its name:
     /// cases.txt, explore.txt, a `--cases` file whose name only ends as the
     /// held-out file's does. With or without the held-out file beside it, the
-    /// error names the file and the case's `===` line only.
+    /// error names the file, the case's `===` line and `holdout-blind.txt` as
+    /// where the case belongs (#863), no id and no text.
     #[test]
     fn a_loud_file_refuses_a_held_out_case() {
         let (d, _, b) = two_files("loud-held-yes", "", "");
@@ -5801,15 +5808,6 @@ esac
         std::fs::remove_file(d.0.join("holdout-blind.txt")).unwrap();
         let (code, _, err) = overlap_run(&d.0, "a plain line\n");
         assert_eq!((code, calls(&d.0)), (Some(2), 0), "{err}");
-    }
-
-    /// #783: the overlap check judges the held-out file's cases too.
-    /// [`overlap_dir`] writes the one held-out case there (#861).
-    #[test]
-    fn overlap_judges_the_held_out_files_cases() {
-        let d = overlap_dir("ov-blind");
-        let (code, out, err) = overlap_run(&d.0, "a plain line\n");
-        assert_eq!((code, calls(&d.0)), (Some(0), 1), "{out}{err}");
     }
 
     #[test]
