@@ -4669,7 +4669,16 @@ fi
 echo "== a reload that turns a cockpit key off or moves it gives the old key back (#290) =="
 # Every key, not only the menu's and the panel's. "Stock" is what a -f /dev/null
 # server of the same tmux binds there, note included; nothing when it binds nothing.
-if need_tmux "key give-back"; then :; else
+# Its sockets sit in dirs under /tmp, not TMPDIR: a path past 107 bytes cannot be bound,
+# and a long TMPDIR passed it (#858). Socket-bearing dirs only, a few bytes each, as the
+# suite's SOCKDIR is; each is removed in this block, and tagged so a check tells this run's
+# from another's. Production's give_back tries /tmp first for the same reason.
+GBTAG=${COCKPIT_TEST_GBTAG:-$$}
+if need_tmux "key give-back"; then :
+elif ! GBT=$(mktemp -d "/tmp/cockpit-gbt-$GBTAG.XXXXXX" 2>/dev/null); then
+    skip_ "key give-back (no writable /tmp for its stock sockets)"
+else
+printf '%s\n' "$GBT" >> "$TMPS"
 GB="cockpit-gb-$$"; SOCKS="$SOCKS $GB"
 GBD=$(mktmpd)
 "$TMUX_REAL" -L "$GB" -f /dev/null new-session -d -s t -c "$GBD" >/dev/null 2>&1
@@ -4691,7 +4700,7 @@ gb_on() {                     # <tmux argv...> <key>  the binding, then its note
 }
 gb_live()  { gb_on "$TMUX_REAL" -L "$GB" "$1"; }
 gb_stock() {
-    local d; d=$(mktemp -d "$GBD/stock.XXXXXX") || return
+    local d; d=$(mktemp -d "/tmp/cockpit-gbs-$GBTAG.XXXXXX") || return
     gb_on "$TMUX_REAL" -S "$d/s" -f /dev/null "$1"; rm -rf "$d"
 }
 gb_state() { [ "$(gb_live "$1")" = "$(gb_stock "$1")" ] && echo stock || echo cockpit; }
@@ -4794,13 +4803,13 @@ loaded_on "$GB" "and the next load gives w back" &&
        "$(gb_live w | grep -o 'choose-tree -Zw')|$(gb_left)"
 gb_set board unset; gb_load
 # /tmp read-only and TMPDIR writable (Termux): the read falls back to TMPDIR.
-mkdir -p "$GBD/ro" "$GBD/tt"
+mkdir -p "$GBD/ro"
 # The shim refuses the /tmp template only: the suite's own TMPDIR is under /tmp too.
 { printf '#!/bin/sh\nfor a; do case "$a" in /tmp/cockpit-gb.*) exit 1 ;; esac; done\n'
   printf 'exec "%s" "$@"\n' "$(command -v mktemp)"; } > "$GBD/ro/mktemp"
 chmod +x "$GBD/ro/mktemp"
 gb_set board off
-reload_on "$GB" "PATH='$GBD/ro':\"\$PATH\" TMPDIR='$GBD/tt' '$DIR/cockpit.tmux'"
+reload_on "$GB" "PATH='$GBD/ro':\"\$PATH\" TMPDIR='$GBT' '$DIR/cockpit.tmux'"
 loaded_on "$GB" "with /tmp unwritable the stock read uses TMPDIR: w back, nothing pending" &&
     is "with /tmp unwritable the stock read uses TMPDIR: w back, nothing pending" \
        "choose-tree -Zw|" \
@@ -4821,8 +4830,11 @@ is "sessions and jump trading keys keep both bound" "tmux-jump:--popup" \
 unset -f gb_load gb_set gb_on gb_live gb_stock gb_state
 "$TMUX_REAL" -L "$GBO" kill-server >/dev/null 2>&1
 "$TMUX_REAL" -L "$GB" kill-server >/dev/null 2>&1
-rm -rf "$GBD"
+rm -rf "$GBD" "$GBT"
+is "the block leaves no cockpit-gbs or cockpit-gbt dir of its own in /tmp (#858)" "" \
+   "$(ls -d /tmp/cockpit-gb[st]-"$GBTAG".* 2>/dev/null)"
 fi
+unset GBTAG GBT
 
 echo "== the key give-back block passes under a long TMPDIR and leaves nothing in /tmp (#858) =="
 # A socket path past 107 bytes cannot be bound. The #290 block built two under TMPDIR:
