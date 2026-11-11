@@ -24,6 +24,8 @@ here=${d%/*}
 . "$here/lib/hook.sh" 2>/dev/null || exit 0
 # shellcheck source=lib/fmt.sh
 . "$here/lib/fmt.sh" 2>/dev/null || exit 0
+# shellcheck source=lib/cmdname.sh
+. "$here/lib/cmdname.sh" 2>/dev/null || exit 0
 
 # One poller per Claude config dir (#194). COCKPIT_POLL_KEY is the dir's cksum, empty for the
 # default dir: this poller's slot, @cockpit_poll_pid or @cockpit_poll_pid_<key>, and the panes it
@@ -156,28 +158,14 @@ unbind() {                    # <pane> <marked: 1|""> <fg mark|""> <@panestate> 
 lastsig="" watched=""
 S_LIVE="" S_BOUND="" S_CAND="" S_SIG="" S_ROWS=$'\n' S_SERIOUS="" S_OWN="" R_OUT=""
 
-# Is this pane command the native install's version-shaped title (2.1.318)? After a path and
-# leading dashes: a leading digit, then only digits, dots and underscores, two or more of them
-# dots or underscores. The shell twin of version_shaped in tui/src/data.rs (#761).
-version_cmd() {
-    local c=${1##*/}
-    c=${c#"${c%%[!-]*}"}
-    case $c in
-        *[!0-9._]*) return 1 ;;
-        [0-9]*[._]*[._]*) return 0 ;;
-    esac
-    return 1
-}
-
 # Is this pane command Claude Code's? The shell twin of tui/src/basket.rs claude_cmd, which
-# calls data.rs version_shaped as this calls version_cmd (#776): after a
-# path and leading dashes, `claude` in any case (#508, #756), or a version title (#761).
-# Keep the two in step.
+# calls data.rs version_shaped as this calls lib/cmdname.sh's version_cmd (#776): after
+# cmd_base's path and leading dashes, `claude` in any case (#508, #756), or a version title
+# (#761). Keep the two in step.
 claude_cmd() {
-    local c=${1##*/}
-    c=${c#"${c%%[!-]*}"}
-    case $c in [Cc][Ll][Aa][Uu][Dd][Ee]) return 0 ;; esac
-    version_cmd "$c"
+    cmd_base "$1"
+    case $CMD_BASE in [Cc][Ll][Aa][Uu][Dd][Ee]) return 0 ;; esac
+    version_cmd "$CMD_BASE"
 }
 
 # One list-panes. Fills the S_ variables: S_LIVE the marked agent panes, S_BOUND the panes that
