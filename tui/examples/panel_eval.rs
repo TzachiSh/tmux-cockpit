@@ -28,7 +28,8 @@
 //! flag's pre-flight.
 //!
 //! The cases are evals/panel/cases.txt and, beside it, the held-out file
-//! evals/panel/holdout-blind.txt (#783), which tuning sessions do not open:
+//! evals/panel/holdout-blind.txt (#783), where every held-out case lives since
+//! #834, and which tuning sessions do not open:
 //! every case in it says `holdout: yes`, none shares an id with cases.txt, and
 //! it may hold none. `--check` prints each file with its count; `--cases FILE`
 //! reads only FILE.

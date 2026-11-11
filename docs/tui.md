@@ -270,8 +270,9 @@ per case each side's pass count, the cases whose pass rate moved, `pass^k` for
 both sides over the cases both graded in full, and each side's own (unpaired)
 `pass^k` and cost. The case format, with its `expect: ask|write|either`,
 `must`, `must_not`, `out_is` and `holdout` keys, is described at the top of
-the cases file; holdout cases are written after the prompt they run on, so a
-gain there is not overfitting. `--model`, `--runs`, `--jobs`, `--only <id or
+the cases file; held-out cases live in `tui/evals/panel/holdout-blind.txt`
+and are written after the prompt they run on, so a gain there is not
+overfitting. `--model`, `--runs`, `--jobs`, `--only <id or
 kind>`, `--out <file.jsonl>`, `--no-hermetic` and `--show-holdout` are the knobs.
 `--router-prompt <file>` sends the file's text as every call's system prompt in
 place of the write prompt (#789); the file is read once at start-up, and a
@@ -289,11 +290,14 @@ the tune set), goes as a plain text call, with no repo access and no
 `files_read`. Tuning reports list it as a known exception, not a router miss,
 unless it routes like the others.
 
-Held-out cases written from #783 on live in `tui/evals/panel/holdout-blind.txt`,
-not in the cases file every tuning session reads. Its readers are the owner,
+Held-out cases live in `tui/evals/panel/holdout-blind.txt`, not in the cases
+file every tuning session reads. Its readers are the owner,
 the orchestrator, the re-verify and blindness reviewers, and the lane that
 commits cases to it; a tuning session must not open it, and its header says so.
-The older held-out cases stay in the cases file. The rig loads the file beside
+The held-out cases written before #783 moved there from the cases file in
+#834, each block byte for byte, so the cases file holds tune cases only. The
+rig still reads a `holdout: yes` case in the cases file, as it does with
+`--cases FILE`, under the rules below. The rig loads the file beside
 the cases file: each of its cases must say `holdout: yes`, an id the cases file
 also has is an error, it may hold no case, and a missing file is an error, so a
 lost file cannot quietly drop the held-out cases from a run or from the overlap
@@ -550,32 +554,31 @@ opt-in and never part of the default run. The changed lines are the ones
 (`HEAD` by default), or with `--from OLD --to NEW` the lines of `NEW` that `OLD`
 lacks, which covers the override file; `--base` beside `--from` is refused. Each
 changed line goes to the judge with each `holdout: yes` case's request, from
-the cases file and from `tui/evals/panel/holdout-blind.txt` (`--only` narrows
-the cases), and the judge answers yes when the line paraphrases the
-request's specific scenario and no when it only shares its topic. The judge sees
-the request only: a line that mirrors a held-out case's screen, repo, refs or
-earlier rounds (an error line, a path) is not judged. A flagged pair prints
+`tui/evals/panel/holdout-blind.txt` and from any in the cases file (`--only`
+narrows the cases), and the judge answers yes when the line paraphrases the
+request's specific scenario and no when it only shares its topic. The judge
+sees the request only: a line that mirrors a held-out case's screen, repo, refs
+or earlier rounds (an error line, a path) is not judged. A flagged pair prints
 `FLAG<TAB>case id<TAB>line`; the case's text is never printed or logged, so
 whoever edits the prompt stays blind. Then an `overlap` record gives `flagged`,
 `pairs`, `lines`, `cases`, `cached`, `failed`, `usd`, `model` and `question`
 (the question's hash) as tab-separated `key=value` fields. The run exits 1 when
 a pair is flagged, or unchecked because its call failed (a `claude` that cannot
 start included), so a pre-commit step can gate on it; 2 when it cannot read its
-inputs (the cases, the files, the diff), and when there are changed lines but no
-held-out case to check them against, as after a typo in `--only`. A failed
+inputs (the cases, the files, the diff), and when there are changed lines but
+no held-out case to check them against, as after a typo in `--only`. A failed
 call's reason never carries the judge's answer, which may quote the request.
 Verdicts are cached in `overlap-cache.tsv` next to the ledger, keyed by the
 hashes of the line, the request and the question and by the model, so a rerun
 calls only for new pairs and a reworded question asks again; the cache holds no
-text. A run that made calls appends an `overlap` row to the ledger. Each call is
-hermetic and capped like the judge's.
-The question was worded twice, on that one leak against the demoted case's
-request. A first wording, which also answered no for a line fitting the request
-no better than many others, never flagged it in 3 calls. The shipped wording
-flagged it 3 of 3, flagged a line on the same topic 0 of 3 and a neutral line 0
-of 1; the 10 haiku calls cost $0.0025. The leak is the only known positive and
-the question was tuned on it, so these counts are in-sample: no miss rate or
-false-flag rate is measured yet.
+text. A run that made calls appends an `overlap` row to the ledger. Each call
+is hermetic and capped like the judge's. The question was worded twice, on that
+one leak against the demoted case's request. A first wording, which also
+answered no for a line fitting the request no better than many others, never
+flagged it in 3 calls. The shipped wording flagged it 3 of 3, flagged a line on
+the same topic 0 of 3 and a neutral line 0 of 1; the 10 haiku calls cost
+$0.0025. The leak is the only known positive and the question was tuned on it,
+so these counts are in-sample: no miss rate or false-flag rate is measured yet.
 
 **The panel's cache.** `claude -p` reads its system prompt from a file, so each
 distinct prompt is written once to
