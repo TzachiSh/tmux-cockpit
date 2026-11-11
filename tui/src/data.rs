@@ -582,8 +582,13 @@ fn lineage(pid: &str, procs_t: &mut Option<Procs>) -> Vec<(String, String)> {
 /// A live Claude renames itself to its version, so `2.1.246` and `2_1_246` are
 /// agent names too.
 pub(crate) fn agentish(comm: &str) -> bool {
+    AGENT_GLOB.with(|g| agentish_in(g, comm))
+}
+
+/// [`agentish`] against a glob passed in, not the tmux one: the pure half a test pins.
+fn agentish_in(glob: &str, comm: &str) -> bool {
     let b = cmd_base(comm);
-    is_agent_cmd(&b) || version_shaped(&b)
+    glob_has(glob, &b) || version_shaped(&b)
 }
 
 /// A command name as the agent tests read it: the last path part, without its
@@ -753,10 +758,6 @@ thread_local! {
     /// `|claude|codex|…|` from cockpit.tmux, so the user's list is the only copy.
     /// Empty (plugin not loaded) leaves @panestate as the only test.
     static AGENT_GLOB: String = tmux(&["show-option", "-gqv", "@cockpit_agents_glob"]).unwrap_or_default().trim().to_string();
-}
-
-fn is_agent_cmd(cmd: &str) -> bool {
-    AGENT_GLOB.with(|g| glob_has(g, cmd))
 }
 
 /// Whether `cmd` is an entry of `glob`, a `|a|b|` list, in any case (#508). The test
