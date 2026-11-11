@@ -22,8 +22,8 @@
 # The ask_any term @purpose takes a question that asks what the work is for, by
 # the patterns documented at asks_purpose in tui/examples/panel_eval.rs. It
 # reads only the question's text, not its options (#702).
-# A key or a section given twice is an error. A screen cannot hold a line that
-# starts with "--- " (a section) or is "=== " and an id of a-z, 0-9 and - (a case).
+# A key or a section given twice is an error. "--- x" starts a section, "=== <id>" (a-z, 0-9, -) a case;
+# an inner line "=== x" directly followed by a known "key:" line opens a case too.
 #   note:    why the label is what it is
 # then "--- screen" (optional), "--- repo" (optional), "--- conversation" (optional),
 # "--- refs" (optional) and "--- request".

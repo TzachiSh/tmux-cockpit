@@ -306,22 +306,26 @@ cases with the other held-out cases, apart from the tune cases, and
 `--check` prints each file it read with its case count. `--cases FILE` reads
 only that file. A parse error in the held-out file names the file, the case id,
 the line number and the rule it broke, never the line's text, so held-out text
-stays out of test, build and CI logs. In every file a case starts only at a
-line that is exactly `=== ` and an id of lowercase letters, digits and `-`,
-trailing spaces allowed (#825). Any other `=== ` line, as Go's `=== RUN` or a
-pytest banner, is body text in the cases file and an error naming the line only
-in the held-out file. An error in a case of the cases file quotes the line,
-unless the case says `holdout:` with any value but `no`: then it gives the line
-and the rule only, as the held-out file does, even when the bad line comes
-before its `holdout:` line (#797). A case right after a held-out one that has
-no `holdout:` key gives its errors without its id, the line and the rule only:
-a name-shaped `=== ` line in a held-out request opens such a case, and its id
-and lines are held text. In both files a line before the first case is a
-comment or blank. In the held-out file a line that
-starts with `=` is also a case's `=== id` line, so a case whose `===` line is
-mistyped is an error and is never dropped unseen or merged into the case before
-it. In the cases file such a line is body text, as a pytest banner on a screen
-is, and a lost tune case shows in the counts.
+stays out of test, build and CI logs. A case starts at a line that is exactly
+`=== ` and an id of lowercase letters, digits and `-`, trailing spaces allowed
+(#825). In the held-out file any other `=== ` line is an error naming the line
+only. In the cases file a `=== ` line whose rest is not such an id opens a case
+too when the next line that is neither blank nor a `#` comment has a header key
+(`kind:`, `expect:` and the rest), so a mistyped case line never joins the case
+above; otherwise it is body text, as Go's `=== RUN` or a pytest banner followed
+by test output is. The residual limit: an inner line "=== x" directly followed
+by a known "key:" line opens a case. An error in a case of the cases file
+quotes the line, unless the case says `holdout:` with any value but `no`: then
+its id must be a name too, and an error gives the line and the rule only, as
+the held-out file does, even when the bad line comes before its `holdout:` line
+(#797). A case right after a held-out one that has no `holdout:` key is quiet
+the same way and gives its errors without its id: a name-shaped `=== ` line in
+a held-out request opens such a case, and its id and lines are held text. In
+both files a line before the first case is a comment or blank. In the held-out
+file a line that starts with `=` is also a case's `=== id` line, so a case
+whose `===` line is mistyped is an error and is never dropped unseen or merged
+into the case before it. In the cases file such a line is body text, as a
+pytest banner on a screen is, and a lost tune case shows in the counts.
 
 A run prints none of a held-out case's text, whichever file it came from, pass
 or fail (#792). A passing reply holds every must phrase, and an on-target

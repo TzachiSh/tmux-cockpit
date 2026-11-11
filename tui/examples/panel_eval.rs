@@ -184,8 +184,9 @@ fn parse_some(text: &str, quiet: bool) -> Result<Vec<Case>, String> {
     // each line that opens a case: its byte offset in `text` and its line
     let mut opens = vec![];
     let mut at = 0;
-    for (i, l) in text.split_inclusive('\n').enumerate() {
-        if case_line(l).is_some() {
+    let lines: Vec<&str> = text.split_inclusive('\n').collect();
+    for (i, l) in lines.iter().enumerate() {
+        if opens_case(&lines, i) {
             opens.push((at, i + 1));
         }
         at += l.len();
@@ -213,6 +214,11 @@ fn parse_some(text: &str, quiet: bool) -> Result<Vec<Case>, String> {
         let net = !quiet && after_held && !held;
         after_held = held;
         let quiet = quiet || held || net;
+        // a mistyped case line opens a case when a key follows: in a quiet
+        // case its "id" may be case text, so one that is not a name goes unshown
+        if quiet && !is_name(&id) {
+            return Err(format!("line {line0}: an id is lowercase letters, digits and -"));
+        }
         let err = |m: &str| if net { m.to_string() } else { format!("case {id}: {m}") };
         // `loud` holds the file's text; a quiet error says only where and why
         let say = |at: usize, rule: &str, loud: String| {
@@ -391,8 +397,32 @@ fn held_head(head: &str) -> bool {
 /// name, lowercase letters, digits and `-`, with trailing spaces allowed.
 fn case_line(l: &str) -> Option<&str> {
     let id = l.strip_prefix("=== ")?.trim_end();
+    is_name(id).then_some(id)
+}
+
+/// A case id that is a name: lowercase letters, digits and `-`, at least one.
+fn is_name(id: &str) -> bool {
     let name = |c: char| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-';
-    (!id.is_empty() && id.chars().all(name)).then_some(id)
+    !id.is_empty() && id.chars().all(name)
+}
+
+/// Whether line `i` of `lines` opens a case (#825): it is `=== ` and a name,
+/// or `=== ` and anything with the next line that is neither blank nor a `#`
+/// comment a header line with a key of [`KEYS`]. So a mistyped case line
+/// never joins the case above, and Go's `=== RUN` or a pytest banner,
+/// followed by test output, stays body text.
+fn opens_case(lines: &[&str], i: usize) -> bool {
+    let l = lines[i];
+    if case_line(l).is_some() {
+        return true;
+    }
+    if !l.starts_with("=== ") {
+        return false;
+    }
+    let text = |l: &&str| !l.is_empty() && !l.starts_with('#');
+    let next = lines[i + 1..].iter().map(|l| l.trim()).find(text);
+    let key = next.and_then(|l| l.split_once(':')).map(|(k, _)| k.trim());
+    key.is_some_and(|k| KEYS.contains(&k))
 }
 
 /// The lines before a file's first case are comments or blank (#783): a case
@@ -4402,9 +4432,9 @@ mod tests {
     #[test]
     fn a_case_line_that_is_not_a_name_is_request_text_in_the_cases_file() {
         let rows = [
-            "=== RUN   MADE-UP\n",
-            "===== test session starts =====\n",
-            "=== test session starts ===\n",
+            "=== RUN   MADE-UP\n    made_up_test.go:12: boom\n",
+            "===== test session starts =====\nrootdir: /made/up\n",
+            "=== test session starts ===\ncachedir: .made-up\n",
         ];
         for (i, line) in rows.into_iter().enumerate() {
             let tune = held("b1").replace("holdout: yes\n", "");
@@ -4416,6 +4446,59 @@ mod tests {
                 let want = format!("fix this\n{}", line.trim_end());
                 assert_eq!(got.cases[1].request, want, "{mark}");
             }
+        }
+    }
+
+    /// #797: a held-out case's id in cases.txt must be a name, as in the
+    /// held-out file, so an error cannot show case text as its id. A tune
+    /// case's id in cases.txt may be any text.
+    #[test]
+    fn a_held_out_id_in_the_cases_file_that_is_not_a_name_is_refused_unshown() {
+        let odd = held("b1").replace("=== b1", "=== MADE-UP secret id");
+        let (_d, c, b) = two_files("quiet-id", &odd, "");
+        let e = load(&c, Some(&b)).err().expect("a held-out id that is not a name loaded");
+        let rule = "line 1: an id is lowercase letters, digits and -";
+        assert_eq!(e, format!("{}: {rule}", c.display()));
+        let tune = odd.replace("holdout: yes\n", "");
+        let (_d, c, b) = two_files("loud-id", &tune, "");
+        let got = load(&c, Some(&b)).unwrap_or_else(|e| panic!("tune: {e}"));
+        assert_eq!(got.cases[0].id, "MADE-UP secret id");
+    }
+
+    /// #825 ruling: a mistyped case line, its id not a name, still opens a
+    /// case when a known header key follows, so it never joins the case
+    /// above. A held-out one, or one right after a held-out case, is refused
+    /// unshown; a tune one loads, as before #825.
+    #[test]
+    fn a_mistyped_case_line_before_a_key_opens_a_case() {
+        let tune = |id: &str| ONE.replace("# a comment\n", "").replace("=== crash", id);
+        let typo = |id: &str| held("b1").replace("=== b1", id);
+        let rows = [
+            ("tune, then held", format!("{ONE}{}", typo("=== HB-03")), 12),
+            ("held first", format!("{}{ONE}", typo("=== hb_03")), 1),
+            ("held, then tune", format!("{}{}", held("b1"), tune("=== HB-03")), 12),
+        ];
+        let rule = "an id is lowercase letters, digits and -";
+        for (i, (row, cases, line)) in rows.into_iter().enumerate() {
+            let (_d, c, b) = two_files(&format!("typo-{i}"), &cases, "");
+            let e = load(&c, Some(&b)).err().unwrap_or_else(|| panic!("{row}: loaded"));
+            assert_eq!(e, format!("{}: line {line}: {rule}", c.display()), "{row}");
+        }
+        let (_d, c, b) = two_files("typo-tune", &format!("{ONE}{}", tune("=== hb_03")), "");
+        let got = load(&c, Some(&b)).unwrap_or_else(|e| panic!("tune, then tune: {e}"));
+        let ids: Vec<&str> = got.cases.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, ["crash", "hb_03"]);
+    }
+
+    /// #825 ruling, the documented limit: a body line `=== x` directly
+    /// followed by a known `key:` line opens a case, name or not.
+    #[test]
+    fn a_body_case_line_before_a_known_key_opens_a_case() {
+        for (i, x) in ["note", "RUN MADE-UP"].into_iter().enumerate() {
+            let cases = in_request(ONE, &format!("=== {x}\nexpect: write\n"));
+            let (_d, c, b) = two_files(&format!("limit-{i}"), &cases, "");
+            let e = load(&c, Some(&b)).err().unwrap_or_else(|| panic!("{x}: loaded"));
+            assert_eq!(e, format!("{}: case {x}: no request", c.display()));
         }
     }
 
