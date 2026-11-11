@@ -825,3 +825,63 @@ fn a_claude_command_in_any_case_is_captured_deeper() {
     }
     assert!(bad.is_empty(), "{} of {} rows wrong:\n{}", bad.len(), rows.len(), bad.join("\n"));
 }
+
+// --- #853: the panel's calls start with telemetry, updates and error reports off ---
+
+/// The three variables of #853, unset in the panel's env unless a row sets one.
+const QUIET: [&str; 3] = ["DISABLE_TELEMETRY", "DISABLE_AUTOUPDATER", "DISABLE_ERROR_REPORTING"];
+
+/// The env lines of one call made under `set`, with the rest of [`QUIET`] unset,
+/// and the panel's own values of [`QUIET`] once the call is done, read before
+/// [`Env`]'s drop puts the old ones back.
+fn call_env(tag: &str, set: &[(&'static str, &str)]) -> (Vec<String>, Vec<Option<String>>) {
+    let mut vars: Vec<(&'static str, Option<String>)> = QUIET
+        .iter()
+        .map(|k| (*k, set.iter().find(|(s, _)| s == k).map(|(_, v)| v.to_string())))
+        .collect();
+    vars.extend([
+        ("COCKPIT_CLAUDE", Some("$D/claude".into())),
+        ("XDG_CACHE_HOME", Some("$D/cache".into())),
+    ]);
+    let e = Env::new(tag, &vars);
+    e.exec("claude", "env > \"$D/env\"\necho ok");
+    let mut req = Request::spawn(&Call::from_env(), "S", "p", "haiku");
+    assert!(until(|| req.poll().is_some()));
+    let own = QUIET.iter().map(|k| std::env::var(k).ok()).collect();
+    (
+        std::fs::read_to_string(e.dir.join("env"))
+            .unwrap()
+            .lines()
+            .map(String::from)
+            .collect(),
+        own,
+    )
+}
+
+#[test]
+fn the_call_starts_with_the_three_variables_set_when_absent() {
+    let (env, _) = call_env("quiet", &[]);
+    for k in QUIET {
+        assert!(env.contains(&format!("{k}=1")), "{k}=1 missing:\n{}", env.join("\n"));
+    }
+}
+
+/// claude reads an empty DISABLE_TELEMETRY or DISABLE_ERROR_REPORTING as unset,
+/// the documented way to turn either back on, so an empty value is the user's too.
+#[test]
+fn a_value_the_user_set_reaches_the_call_unchanged_and_the_rest_are_set() {
+    let set = [("DISABLE_TELEMETRY", "0"), ("DISABLE_ERROR_REPORTING", "")];
+    let (env, _) = call_env("quiet-user", &set);
+    let want = ["DISABLE_TELEMETRY=0", "DISABLE_ERROR_REPORTING=", "DISABLE_AUTOUPDATER=1"];
+    for w in want {
+        assert!(env.iter().any(|l| l == w), "{w} missing:\n{}", env.join("\n"));
+    }
+}
+
+/// Only the child gets them: the panel's own process, and so the user's shell
+/// and every other process it starts, goes on without them.
+#[test]
+fn the_panels_own_environment_stays_without_the_three() {
+    let (_, own) = call_env("quiet-own", &[]);
+    assert_eq!(own, [None, None, None], "the panel's own env after a call, {QUIET:?}");
+}

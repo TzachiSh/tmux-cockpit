@@ -584,6 +584,18 @@ distinct prompt is written once to
 directory. Nothing prunes it; a new file appears only when a prompt's text
 changes.
 
+**The panel call's environment** (#853). Each `claude -p` call the panel
+starts gets three variables. In the words of
+https://code.claude.com/docs/en/env-vars, `DISABLE_TELEMETRY=1` opts out of
+telemetry and "also disables feature-flag fetching", `DISABLE_AUTOUPDATER=1`
+disables "automatic background updates", and `DISABLE_ERROR_REPORTING=1` opts
+out of "error reporting". Nothing else the panel starts gets them. A variable
+already in the panel's environment reaches the call unchanged, even an empty
+one: claude reads an empty value as unset, which is how a user turns telemetry
+or error reporting back on. `panel_eval`'s panel calls run through the same
+code and inherit the three. Its judge, purpose and overlap calls start claude
+themselves and do not get them.
+
 ## The screens
 
 ### The board
