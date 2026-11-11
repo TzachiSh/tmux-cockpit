@@ -26,6 +26,8 @@ here=${d%/*}
 . "$here/lib/fmt.sh" 2>/dev/null || exit 0
 # shellcheck source=lib/cmdname.sh
 . "$here/lib/cmdname.sh" 2>/dev/null || exit 0
+# shellcheck source=lib/bound.sh
+. "$here/lib/bound.sh" 2>/dev/null || exit 0
 
 # One poller per Claude config dir (#194). COCKPIT_POLL_KEY is the dir's cksum, empty for the
 # default dir: this poller's slot, @cockpit_poll_pid or @cockpit_poll_pid_<key>, and the panes it
@@ -234,7 +236,7 @@ EOT
 # panes' ids and titles differ from the last read (a new viewer, or a job's first title). A
 # box with no background job, or no viewer, pays the scan and nothing else.
 read_jobs() {
-    local out to=""
+    local out
     [ -n "$S_SERIOUS" ] || [ "$S_SIG" != "$lastsig" ] || return 1
     [ -n "$S_SERIOUS" ] || [ -n "$S_SIG" ] || { lastsig=""; return 1; }
     # A read nobody waits on stays quiet when it cannot run, and is tried once per change of
@@ -246,9 +248,8 @@ read_jobs() {
     if ! command -v claude >/dev/null 2>&1; then
         [ -n "$S_SERIOUS" ] && poll_err "no claude on PATH"; return 1
     fi
-    # timeout is GNU coreutils; a box without it still polls, unbounded.
-    command -v timeout >/dev/null 2>&1 && to="timeout 5"
-    out=$($to claude agents --json --all 2>/dev/null) \
+    # timeout, gtimeout, or a watchdog where neither exists (#746).
+    out=$(bound 5 claude agents --json --all 2>/dev/null) \
         || { [ -n "$S_SERIOUS" ] && poll_err "claude agents failed"; return 1; }
     # An unknown state (research preview) is in no bucket; anything but an array is an error,
     # not "no sessions".

@@ -34,12 +34,14 @@ subs_id() {                   # <key> -> REPLY
     return 0
 }
 
-# The payload: the first line, bounded by 2 s where `timeout` exists (#320, #322: a writer
+# shellcheck source=bound.sh
+. "${BASH_SOURCE[0]%/*}/bound.sh" || return 1
+
+# The payload: the first line, bounded by 2 s (#320, #322, #746: a writer
 # that sends neither a newline nor EOF must not hold the hook) and by 256 KB: the second
 # head stops the read, the first gets SIGPIPE. Fails open to an empty payload.
 subs_payload() {
-    local to=""; command -v timeout >/dev/null 2>&1 && to="timeout 2"
-    payload=$($to head -n 1 2>/dev/null | head -c 262144) || payload=""
+    payload=$(bound 2 head -n 1 2>/dev/null | head -c 262144) || payload=""
 }
 
 # subs_desc <key> [text]: a "key": "string" of the text (default: the payload), as the JSON

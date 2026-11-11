@@ -19933,6 +19933,59 @@ done
 unset -f nt_run; unset NT NTS NTP NTK nt_w nt_r nt_f nt_d nt_p nt_c nt_path
 fi
 
+echo "== bound.sh: the watchdog ends only the process it started (#746) =="
+# The watchdog is reached only where neither timeout nor gtimeout exists; BOUND_TO="" forces
+# it here. Its kill checks the pid's start time, read at the fork and again at the deadline
+# (bound_start): a pid the kernel handed to another process is not signalled. Each case runs
+# in its own subshell. $SECONDS counts whole seconds, so a time is a range: the bound itself
+# up to one more, or at most 1 for "at once".
+BW=$(mktmpd)
+bw() {                        # <lo> <hi> <cmd...>: "<status> in" when the time is lo..hi
+    local lo=$1 hi=$2; shift 2
+    ( . "$DIR/scripts/lib/bound.sh"; BOUND_TO=""; s=$SECONDS
+      "$@"; rc=$?; t=$((SECONDS - s))
+      if [ "$t" -ge "$lo" ] && [ "$t" -le "$hi" ]; then printf '%s in' "$rc"
+      else printf '%s after %s s' "$rc" "$t"; fi )
+}
+is "bound uses timeout where it exists, as the four callers did before" "timeout" \
+   "$( . "$DIR/scripts/lib/bound.sh"; printf '%s' "$BOUND_TO")"
+is "a hung command is ended at its 2 s bound with TERM: 143" "143 in" "$(bw 2 3 bound 2 sleep 30)"
+is "a wrapper that execs into another program is ended all the same" "143 in" \
+   "$(bw 2 3 bound 2 sh -c 'exec sleep 30')"
+is "a command that ends first returns its own status at once" "3 in" \
+   "$(bw 0 1 bound 17 sh -c 'exit 3')"
+bw_left=""
+for bw_p in /proc/[0-9]*; do
+    case "$(tr '\0' ' ' 2>/dev/null < "$bw_p/cmdline")" in
+        "sleep 17 "*) bw_left="$bw_left ${bw_p#/proc/}" ;;
+    esac
+done
+is "and leaves no timer behind: no sleep 17 runs" "" "$bw_left"
+is "stdin reaches the command" "hello" \
+   "$(echo hello | ( . "$DIR/scripts/lib/bound.sh"; BOUND_TO=""; bound 2 head -n 1 ))"
+# A reused pid: at the deadline bound_start reads another start time, as for a process the
+# kernel gave that pid after ours ended. The stand-in (still our child) must survive it.
+bw_re() {                     # <what bound_start reads once $BW/flip exists>
+    rm -f "$BW/flip" "$BW/ran"
+    ( . "$DIR/scripts/lib/bound.sh"; BOUND_TO=""
+      eval "bw_real_$(declare -f bound_start)"
+      bw_alt=$1
+      bound_start() {
+          if [ -e "$BW/flip" ]; then printf '%s' "$bw_alt"; else bw_real_bound_start "$1"; fi
+      }
+      s=$SECONDS
+      # The flip comes 1 s in, after bound has read the real start time at the fork.
+      bound 2 sh -c 'sleep 1; : > "$1/flip"; sleep 2; : > "$1/ran"' _ "$BW"
+      rc=$?; t=$((SECONDS - s))
+      [ "$t" -ge 3 ] && [ "$t" -le 4 ] && t=in
+      printf '%s %s %s' "$rc" "$t" "$([ -e "$BW/ran" ] && echo ran)" )
+}
+is "a pid whose start time differs at the deadline is not signalled: the stand-in runs on" \
+   "0 in ran" "$(bw_re 'another start time')"
+is "nor one whose start time cannot be read: no kill is claimed, the command's own status" \
+   "0 in ran" "$(bw_re '')"
+unset -f bw bw_re; unset BW bw_left bw_p
+
 echo "== cmdname.sh: cmd_base cuts a path and leading dashes for the agent tests (#757) =="
 # The functions themselves, beside the pane rows in the agent-poll bind blocks and the #470
 # workdir block. tmux's parse_window_name (format.c) drops leading dashes, then cuts a path
