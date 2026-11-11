@@ -7522,10 +7522,11 @@ printf '%s\n' '#!/usr/bin/env bash' \
     "exec $(lfq "$(command -v git)") \"\${a[@]}\"" > "$LF/keep/git"
 chmod +x "$LF/keep/git"
 git -C "$LF/c" config remote.origin.url "$(file_url "$LF/src")"
-# With every guard stripped the remote fires through git.sh, so the rows after test something.
+# With every guard stripped the remote fires, so the guard rows after test something. The diff
+# runs only when git is git.sh's function, so the row also fails when git.sh did not load (#827).
 ( export LF_KEEP=none PATH="$LF/keep:$LF/hb:$PATH"; . "$DIR/scripts/lib/git.sh"
-  git -C "$LF/c" diff --numstat HEAD ) >/dev/null 2>&1
-is "keep/git with no guard kept: the remote fires through git.sh" "up" \
+  [ "$(type -t git)" = function ] && git -C "$LF/c" diff --numstat HEAD ) >/dev/null 2>&1
+is "keep/git with no guard kept strips every guard: the remote fires through git.sh" "up" \
    "$(head -1 "$LFM" 2>/dev/null)"
 rm -f "$LFM"
 for lfk in lazy proto nofetch; do
@@ -7546,7 +7547,7 @@ is "while switch --track through it fetches the branch's blob" "g" \
 ( . "$DIR/scripts/lib/git.sh"
 git -C "$LF/c2" worktree add -q --detach "$LF/wt" origin/side2 ) >/dev/null 2>&1
 is "and so does worktree add" "h" "$(cat "$LF/wt/h.txt" 2>/dev/null)"
-rm -rf "$LF"; unset lfu lfx lfk; unset -f lf_paths lfq
+rm -rf "$LF"; unset LF LFM lfu lfx lfk; unset -f lf_paths lfq
 
 echo "== tmux-review: a pane id that is not %<digits> never reaches tmux =="
 # The glob %[0-9]* let "%1;display-message PWNED" through, and deliver() splices
