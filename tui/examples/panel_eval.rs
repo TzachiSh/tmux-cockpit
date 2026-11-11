@@ -310,8 +310,8 @@ fn parse_some(text: &str, quiet: bool) -> Result<Vec<Case>, String> {
                     }
                     c.explore = Some(v.into())
                 }
-                // `note`, for people only
-                _ => {}
+                "note" => {}
+                k => unreachable!("KEYS lists {k}, which parse_some does not read"),
             }
         }
         c.expect = expect.ok_or_else(|| broke(0, "no expect"))?;
@@ -4511,6 +4511,37 @@ mod tests {
             let (_d, c, b) = two_files(&format!("joined-{section}"), &cases, "");
             let e = load(&c, Some(&b)).err().unwrap_or_else(|| panic!("{section}: loaded"));
             assert_eq!(e, format!("{}: case crash: line 12: {rule}", c.display()), "{section}");
+        }
+    }
+
+    /// #825 review: every key of KEYS has its own arm in parse_some, so a
+    /// key added to the list alone panics here rather than being ignored.
+    #[test]
+    fn every_header_key_is_read() {
+        let rows = [
+            ("kind", "bug"),
+            ("window", "bash · bash · /home/u"),
+            ("out", "text"),
+            ("out_is", "text"),
+            ("expect", "write"),
+            ("ask_any", "made-up"),
+            ("must", "made-up"),
+            ("must_not", "made-up"),
+            ("holdout", "no"),
+            ("explore", "invoicer"),
+            ("note", "made-up"),
+        ];
+        assert_eq!(rows.map(|r| r.0), KEYS);
+        for (k, v) in rows {
+            let window = ("window", "bash · bash · /home/u");
+            let mut head = vec![("kind", "bug"), window, ("expect", "either")];
+            match head.iter_mut().find(|h| h.0 == k) {
+                Some(h) => h.1 = v,
+                None => head.push((k, v)),
+            }
+            let lines: String = head.iter().map(|(k, v)| format!("{k}: {v}\n")).collect();
+            let case = format!("=== made-up\n{lines}--- request\nfix this\n");
+            parse_cases(&case).unwrap_or_else(|e| panic!("{k}: {e}"));
         }
     }
 
