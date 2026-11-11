@@ -4307,12 +4307,13 @@ mod tests {
     #[test]
     fn a_stand_ins_probe_line_leaves_a_real_start_at_exit_0() {
         let dir = scratch("probe-status");
-        let rows = [("only the shebang", "#!/bin/sh\n"), ("a bare exit", "#!/bin/sh\nexit\n")];
-        for (i, (row, script)) in rows.into_iter().enumerate() {
+        let code = |(i, script): (usize, &str)| {
             let f = stand_in(&dir.0.join(format!("fake-{i}")), script);
-            let code = std::process::Command::new(f).status().unwrap().code();
-            assert_eq!(code, Some(0), "{row}");
-        }
+            std::process::Command::new(f).status().unwrap().code()
+        };
+        let scripts = ["#!/bin/sh\n", "#!/bin/sh\nexit\n"];
+        let codes: Vec<_> = scripts.into_iter().enumerate().map(code).collect();
+        assert_eq!(codes, [Some(0), Some(0)], "only the shebang, then a bare exit");
     }
 
     /// #877: a script is refused unless the probe line can go under `#!/bin/sh`.
