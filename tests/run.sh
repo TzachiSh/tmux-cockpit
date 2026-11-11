@@ -2657,6 +2657,22 @@ if OPLOC=$(utf8_loc); then
            "$(oploc "Write(1$opd,3)")"
     done
     is "in en_US.UTF-8 Write(12,3) is still a location, not a wrapper" "" "$(oploc 'Write(12,3)')"
+    # The location parsers read ASCII digits too. "and bin/tm" proves the run reached its end.
+    for opd in ² ١; do
+        # strip_ends: (1²,3) is no location, so its ")" is stripped like any other
+        : > "$OP/bin/tm(1$opd,3"
+        is "in en_US.UTF-8 bin/tm(1$opd,3) loses its ')': no tsc location" "$OP/bin/tm(1$opd,3::" \
+           "$(oploc "bin/tm(1$opd,3)")"
+        is "in en_US.UTF-8 tm(1$opd,4) is no tsc file(12,3)" "$OP/bin/tm::" \
+           "$(oploc "tm(1$opd,4) and bin/tm")"
+        is "in en_US.UTF-8 README.md:1$opd:3 is no file:line:col" "$OP/bin/tm::" \
+           "$(oploc "README.md:1$opd:3 and bin/tm")"
+        is "in en_US.UTF-8 README.md:1$opd is no file:line" "$OP/bin/tm::" \
+           "$(oploc "README.md:1$opd and bin/tm")"
+    done
+    is "in en_US.UTF-8 the ASCII shapes read as before" \
+       "$OP/bin/tm:12:3"$'\n'"$OP/src/foo-bar.ts:31:5"$'\n'"$OP/README.md:7:" \
+       "$(oploc 'bin/tm(12,3): src/foo-bar.ts:31:5 README.md:7')"
 else
     bad "a UTF-8 locale whose regex [0-9] matches ² and ١ loads (localedef en_US.UTF-8)" \
         "loaded" "none"
@@ -17637,8 +17653,10 @@ STUB
 chmod +x "$MV/bin/tmux" "$MV/bin/cockpit-tui"; ln -s "$(command -v bash)" "$MV/bin/bash"
 for t in mktemp rm cat; do ln -s "$(command -v $t)" "$MV/bin/$t"; done   # the stderr capture
 mvrun() {                     # mvrun <click line> <args...> -- the log after one run
+    # MVLC: a LOCPATH dir to run in its en_US.UTF-8 (#842)
     : > "$MVL"; rm -f "$MVL".once*
-    env -i PATH="$MV/bin" HOME="$MV" TMUX_LOG="$MVL" CLICK_DIR="$MV/w" CLICK_LINE="$1" \
+    env -i ${MVLC:+"LOCPATH=$MVLC"} ${MVLC:+LC_ALL=en_US.UTF-8} \
+        PATH="$MV/bin" HOME="$MV" TMUX_LOG="$MVL" CLICK_DIR="$MV/w" CLICK_LINE="$1" \
         OPEN_EDITOR="${MV_ED:-ed}" TOUCH="${TOUCH:-}" \
         COCKPIT_TUI_BIN="${MV_BIN:-$MV/bin/cockpit-tui}" MD_VIEW="${MD_VIEW:-}" \
             VIEW_OUT="${VIEW_OUT-}" \
@@ -17730,6 +17748,32 @@ is "a window tmux refuses to open is a note, from the editor path" \
 is "and from the touch client's terminal editor" \
    "VIEW [view] [--] [$MV/w/a.md]"$'\n'"NEWWIN ed $MV/w/a.md"$'\n'"MSG cockpit: tmux could not open a window for a.md" \
    "$(NEWWIN_RC=1 VIEW_OUT='edit 5' TOUCH=1 mvrun 'x' --view %1 "$MV/w/a.md" '')"
+# In a UTF-8 locale [0-9] also matches ² and ١. The viewer's `edit ²` is no edit: nothing
+# opens, on a touch client or not (#842). The edit 5 rows above are the ASCII answers.
+if MVLOC=$(utf8_loc); then
+    for mvd in ² ١; do
+        for mvt in 1 0; do
+            is "touch=$mvt, en_US.UTF-8: the viewer's edit $mvd opens nothing" \
+               "VIEW [view] [--] [$MV/w/a.md]" \
+               "$(MVLC=$MVLOC VIEW_OUT="edit $mvd" TOUCH=$mvt mvrun 'x' --view %1 "$MV/w/a.md" '')"
+        done
+    done
+    # term_edit's own check: no caller hands it a line that is not ASCII now, so it runs
+    # alone here, with a stub tmux that prints the window's command.
+    ter() { env LOCPATH="$MVLOC" LC_ALL=en_US.UTF-8 bash -c '
+            eval "$(sed -n "/^term_edit() {/,/^}/p" "$1")"
+            tmux() { case $1 in show-options) echo nvim ;; new-window) printf %s "${!#}" ;; esac; }
+            plain_name() { printf %s "$1"; }; fesc() { printf %s "$1"; }; shq() { printf %s "$1"; }
+            win=@0; term_edit /w/n.txt "$2"' _ "$DIR/scripts/tmux-open-path" "$1"; }
+    for mvd in ² ١; do
+        is "en_US.UTF-8: term_edit at line 1$mvd gives nvim the file and no +1$mvd" \
+           "nvim /w/n.txt" "$(ter "1$mvd")"
+    done
+    is "en_US.UTF-8: term_edit at line 7 gives nvim +7" "nvim +7 /w/n.txt" "$(ter 7)"
+else
+    bad "a UTF-8 locale whose regex [0-9] matches ² and ١ loads (localedef en_US.UTF-8)" \
+        "loaded" "none"
+fi
 # #365: the viewer's `ask <a> <b>` opens cockpit-panel --ask, called by its path
 # beside the script, then the viewer again at line a. A copy of the script with
 # a cockpit-panel stub beside it, so the real panel never runs.
@@ -17769,6 +17813,20 @@ for o in 'ask 7 3' 'ask 0 1' 'ask 01 2' 'ask 1' 'ask 1 2 3' 'ask a b' 'ask 12345
         *) ok "the viewer's [$o] is not an ask: no panel" ;;
     esac
 done
+# In a UTF-8 locale [1-9] and [0-9] also match ² and ١: `ask ² 3` reached [ -gt ], which
+# failed, so the panel opened on line ² (#842). The ask 3 7 row above is the ASCII answer.
+if MVLOC=$(utf8_loc); then
+    for mvd in ² ١; do
+        for o in "ask $mvd 3" "ask 1 1$mvd"; do
+            is "en_US.UTF-8: the viewer's [$o] is not an ask: no panel" \
+               "VIEW [view] [--] [$MV/w/a.md]" \
+               "$(MVLC=$MVLOC askrun "$o" --view %1 "$MV/w/a.md" '')"
+        done
+    done
+else
+    bad "a UTF-8 locale whose regex [0-9] matches ² and ١ loads (localedef en_US.UTF-8)" \
+        "loaded" "none"
+fi
 
 echo "== cockpit-panel (#582): the basket clear keeps a ref added just before it =="
 # A private server and a shim tmux in PATH that forwards every call to it. Just
@@ -18118,20 +18176,6 @@ FBV='edit 7\n' fb on "view $FBD/sub/n.txt\n" 0 "VISUAL=$FB/bin/ed-visual"
 fbwait "$FB/ed.log"
 is "touch: an editor with no +N known gets the file only" "$FB/bin/ed-visual [$FBD/sub/n.txt]" \
     "$(cat "$FB/ed.log")"
-# In a UTF-8 locale the viewer's `edit ²` passes the [0-9] check that reads it. term_edit counts
-# ASCII digits, so nvim gets the file and no +² (#842).
-if FBLOC=$(utf8_loc); then
-    for fbd in ² ١; do
-        FBV="edit $fbd\n" fb on "view $FBD/sub/n.txt\n" 0 "VISUAL=$FB/bin/nvim" \
-            LOCPATH="$FBLOC" LC_ALL=en_US.UTF-8
-        fbwait "$FB/ed.log"
-        is "touch, en_US.UTF-8: the viewer's edit $fbd opens nvim on the file with no +$fbd" \
-           "$FB/bin/nvim [$FBD/sub/n.txt]" "$(cat "$FB/ed.log")"
-    done
-else
-    bad "a UTF-8 locale whose regex [0-9] matches ² and ١ loads (localedef en_US.UTF-8)" \
-        "loaded" "none"
-fi
 FBV='edit 7\n' fb off "view $FBD/sub/n.txt\n" 0
 fbwait "$FB/code.log"
 case "$(cat "$FB/code.log")" in
