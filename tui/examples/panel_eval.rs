@@ -4909,16 +4909,14 @@ mod tests {
         let two_held = held_kind("hb-k", "ops") + &held_kind("hb-2", "hb-k");
         let in_cases = format!("{ONE}{}", held_kind("bug", "ops"));
         let rows = [
-            ("a tune kind", ONE.to_string(), held_kind("bug", "ops"), Some(true), 1),
-            ("a held-out kind", ONE.to_string(), two_held, Some(true), 1),
-            ("its own kind", ONE.to_string(), held_kind("ops", "ops"), Some(true), 1),
+            ("a tune kind", ONE.to_string(), held_kind("bug", "ops"), 1),
+            ("a held-out kind", ONE.to_string(), two_held, 1),
+            ("its own kind", ONE.to_string(), held_kind("ops", "ops"), 1),
         ];
-        for (i, (row, cases, blind, in_blind, line)) in rows.into_iter().enumerate() {
+        for (i, (row, cases, blind, line)) in rows.into_iter().enumerate() {
             let (_d, c, b) = two_files(&format!("kind-{i}"), &cases, &blind);
-            let e = load(&c, in_blind.map(|_| b.as_path())).err();
-            let e = e.unwrap_or_else(|| panic!("{row}: loaded"));
-            let file = if in_blind == Some(true) { &b } else { &c };
-            assert_eq!(e, format!("{}: {}", file.display(), a_kind(line)), "{row}");
+            let e = load(&c, Some(&b)).err().unwrap_or_else(|| panic!("{row}: loaded"));
+            assert_eq!(e, format!("{}: {}", b.display(), a_kind(line)), "{row}");
         }
         // #861: cases.txt refuses a held-out case first; `--cases` on the
         // held-out file reads it as a loud file, the check included
@@ -4954,7 +4952,8 @@ mod tests {
     /// #861: a loud file refuses a `holdout: yes` case whatever its name:
     /// cases.txt, explore.txt, a `--cases` file whose name only ends as the
     /// held-out file's does. With or without the held-out file beside it, the
-    /// error names the file and the case's `===` line only.
+    /// error names the file, the case's `===` line and `holdout-blind.txt` as
+    /// where the case belongs (#863), no id and no text.
     #[test]
     fn a_loud_file_refuses_a_held_out_case() {
         let (d, _, b) = two_files("loud-held-yes", "", "");
