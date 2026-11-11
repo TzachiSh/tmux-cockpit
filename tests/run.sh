@@ -4824,6 +4824,35 @@ unset -f gb_load gb_set gb_on gb_live gb_stock gb_state
 rm -rf "$GBD"
 fi
 
+echo "== the key give-back block passes under a long TMPDIR and leaves nothing in /tmp (#858) =="
+# A socket path past 107 bytes cannot be bound. The #290 block built two under TMPDIR:
+# gb_stock's stock socket (TMPDIR + 30 bytes) and the "/tmp unwritable" row's fallback
+# (TMPDIR + 38), so a TMPDIR of 70 bytes failed one row and one of 78 failed 13. Here that
+# block runs on its own under a 70- and a 90-byte TMPDIR, tagged so its /tmp dirs are told
+# from another run's, and must pass and leave none of them behind. The nested run reads the
+# live tests/run.sh, not a par.sh snapshot.
+if need_tmux "key give-back under a long TMPDIR"; then :; else
+gbl_run() {                   # <TMPDIR length in bytes>
+    local base d tag rc
+    base=$(mktmpd); d="$base/$(printf 'x%.0s' $(seq 1 $(($1 - ${#base} - 1))))"
+    if [ "${#d}" -ne "$1" ]; then
+        skip_ "key give-back under a $1-byte TMPDIR (the suite's own TMPDIR is too long)"
+        return
+    fi
+    mkdir -p "$d"; tag="l$$-$1"
+    ( cd "$DIR" && TMPDIR="$d" COCKPIT_TEST_GBTAG="$tag" \
+        exec tests/only.sh '^a reload that turns a cockpit key off or moves it' ) \
+        </dev/null >"$base/log" 2>&1
+    rc=$?; [ "$rc" = 0 ] || rc="$rc: $(grep -a 'passed,' "$base/log" | tail -1)"
+    is "under a $1-byte TMPDIR the key give-back block passes (#858)" "0" "$rc"
+    is "and leaves no cockpit-gbs or cockpit-gbt dir of its own in /tmp" "" \
+       "$(ls -d /tmp/cockpit-gb[st]-"$tag".* 2>/dev/null)"
+}
+gbl_run 70
+gbl_run 90
+unset -f gbl_run
+fi
+
 echo "== upgrading from a load before the key notes still gives the old keys back (#290) =="
 # The last load before the notes tracked the menu and panel keys and bound them
 # with no note. Its cockpit.tmux and scripts, from history; a shallow clone lacks it.
