@@ -12,7 +12,7 @@
 #   ask_any: for ask or either, the question or one option names one of these (; separated, any case)
 #   must:    for write or either, the reply carries every one of these
 #   must_not: the reply, a question included, carries none of these
-#   holdout: yes for a case written after the prompt it is run on (default no)
+#   holdout: yes for a held-out case (default no); those live in holdout-blind.txt (#834)
 # Words match whole and in any case ("plan" is not in "explanation"); "a|b" is
 # any of them. A must_not skips a match negated in its clause within six words
 # before it (not, never, don't, no, without, rather than, instead of); a clause
@@ -581,80 +581,6 @@ review my uncommitted changes before i commit, just report problems
 
 # Holdout cases: written after the proposed prompt of #411, never tuned on.
 
-=== h-search-wrong
-kind: bug
-window: bash · bash · /home/u/projects/docs-site
-expect: ask
-ask_any: expected; missing; instead; supposed to; should appear; should show; relevant; order
-holdout: yes
-note: bug with no expected behaviour; the results look fine to anyone but the owner
---- screen
-$ ./search "tmux"
-1. Getting started
-2. Keyboard shortcuts
-3. Changelog 0.4
---- request
-the search results are wrong
-
-=== h-crate-audit
-kind: investigate
-window: claude · claude · /home/u/projects/engine
-expect: write
-must: unsafe; subagent|subagents
-holdout: yes
-note: four independent crates: one subagent each fits; #513, was must skill|skills: Claude Code picks an installed skill from its description by itself, and card 8 passed without the line, so the prompt no longer asks for it
---- screen
-● The workspace has four crates: core, io, render and ffi.
---- request
-check each crate for unsafe code and report what you find, dont change anything
-
-=== h-node-lts
-kind: research
-window: bash · bash · /home/u/projects/api
-expect: either
-ask_any: report; recommend|recommendation; change|update|edit; switch|upgrade; why; reason; constraint|constraints
-must: node; Dockerfile; source|sources|nodejs.org|cite; list|lists|lines to change|line changes|would use|would change|would make; do not edit|not edit|do not change|do not modify|approval|approve
-out_is: prompt
-must_not: Assumed:
-holdout: yes
-note: #503 (card 4), was write: a current fact needs a web search, but whether to only report or also move the Dockerfile, and what decides "should", are the owner's; #514, was ask: card 4 passed a report-only prompt that cites a source and lists the edits for the owner's approval, so that serves too; #558 review: the must matches proposed edits (list, lines to change, would change) and a report-only line (do not edit, approval), set after the runs; a report with no proposed edits, or a prompt that edits, is a miss
---- request
-which node version is the current LTS and should our Dockerfile move to it
-
-=== h-bump-version
-kind: refactor
-window: claude · claude · /home/u/projects/tool
-expect: write
-must: 0.5.0|v0.5.0
-must_not: subagent|subagents; skill|skills; Assumed:
-holdout: yes
-note: a one-line edit: nothing to delegate; #503 (card 9): workspace or one package is the agent's to check, so no Assumed: line
---- request
-bump the version in Cargo.toml to 0.5.0
-
-=== h-named-command
-kind: review
-window: claude · claude · /home/u/projects/tool
-expect: write
-must: /code-review
-holdout: yes
-note: the owner names a slash command: keep it as written
---- request
-run /code-review on my branch and fix what it finds
-
-=== h-copy-staging
-kind: ops
-window: bash · bash · /home/u/projects/web
-expect: either
-ask_any: host; hostname; address; ip; path
-must: staging
-holdout: yes
-note: the staging host is not in the input; the agent may find it in a deploy config, so asking or a find-it-first prompt both serve
---- request
-copy the build to the staging server
-
-# Added for the #424 review: a feature with no done-when and no scope.
-
 === h-feature-done
 kind: feature
 window: claude · claude · /home/u/projects/dashboard
@@ -830,63 +756,6 @@ github actions workflow yaml for this repo
 # Added for #503 after its prompt: the same three asks once the owner settled
 # them, and one more refactor plan with no goal.
 
-=== h-review-focus-given
-kind: review
-window: claude · claude · /home/u/projects/auth
-expect: write
-must: bug|bugs; error handling; subagent|subagents
-holdout: yes
-note: the focus and the limit are given, and four files across a branch fit one subagent per focus
---- repo
-branch: feat/sso...origin/feat/sso [ahead 4]
-root: /home/u/projects/auth
-status: clean
-recent commits:
-  c41d0e2 sso: map groups to roles
-  9a7b3f1 sso: callback handler
-diff --stat:
-  auth/sso.py      | 142 +++++++++++++++++++++++++
-  auth/session.py  |  31 ++++--
-  auth/roles.py    |  44 ++++++++
-  config/auth.yaml |  12 +++
-  4 files changed, 221 insertions(+), 8 deletions(-)
---- request
-review this branch for bugs and error handling only, just report
-
-=== h-plan-goal-given
-kind: plan
-window: claude · claude · /home/u/projects/tool
-expect: write
-must: server.rs; test|tests|testable
-must_not: Assumed:
-holdout: yes
-note: the goal of the split is given: nothing to ask
---- request
-plan how to split src/server.rs so each handler can be tested on its own, plan only
-
-=== h-toml-given
-kind: format
-window: bash · bash · /home/u
-out: format
-expect: write
-must: 0.0.0.0; 8080; server
-out_is: format
-holdout: yes
-note: every field is given: a config with nothing to guess is written
---- request
-toml with a [server] table, host 0.0.0.0 and port 8080
-
-=== h-restructure-db
-kind: refactor
-window: claude · claude · /home/u/projects/shop
-expect: ask
-ask_any: goal; aim; purpose; why; readability|readable; quality; behaviour|behavior; performance|faster; maintain|maintainable; new feature; @purpose
-holdout: yes
-note: no goal for the change: what it is for decides the plan; #702 H3: @purpose added as a uniform rule from this note, owner-approved
---- request
-how should we restructure the db layer
-
-# Added for #558, before the prompt change: big tasks get facts first.
 === two-services-answered
 kind: feature
 window: bash · bash · /home/u/projects/shop
@@ -942,30 +811,6 @@ note: a big feature in one service: one question on what changes the work most, 
 --- request
 add rate limiting to the api
 
-=== h-jest-vitest
-kind: refactor
-window: claude · claude · /home/u/projects/web
-expect: write
-must: vitest; jest; test|tests; baseline|today|currently; again|rerun|re-run|compare|match|matches; plan|planning|plans
-must_not: Assumed:
-holdout: yes
-note: a migration across every test file, with the goal in the request: run the suite for a baseline, plan, wait, then run it again and compare
---- request
-switch our tests from jest to vitest, all of them
-
-=== h-verbose-flag
-kind: feature
-window: claude · claude · /home/u/projects/cli
-expect: write
-must: --verbose; sync; fetch; first|before
-must_not: AskUserQuestion; requirements; Assumed:
-holdout: yes
-note: a small addition next to one that exists: check fetch --verbose works first, add it to sync, test both
---- screen
-● `cli fetch --verbose` now prints each request it makes. tests/test_fetch.py passes.
---- request
-sync should get the same verbose flag
-
 === h-search-answered
 kind: feature
 window: claude · claude · /home/u/projects/docs-site
@@ -982,50 +827,6 @@ user: The docs site header
 --- request
 add search to the docs
 
-=== h-readme-typo
-kind: bug
-window: bash · bash · /home/u/projects/tool
-expect: write
-must: recieve; receive
-must_not: baseline; AskUserQuestion; requirements; plan
-holdout: yes
-note: a trivial edit: no baseline, interview or plan
---- request
-fix the typo recieve in README.md
-
-# #558 review holdouts, written after the final prompt commit, on features the
-# prompt does not name.
-=== h-webhooks
-kind: feature
-window: claude · claude · /home/u/projects/store
-expect: either
-ask_any: event|events; order|orders; retry|retries; sign|signed|signature; secret; url|urls; payload; for?; purpose; goal; about?
-must: webhook|webhooks; requirements; AskUserQuestion|interview; plan|planning|plans
-out_is: prompt
-must_not: Assumed:
-holdout: yes
-note: a big feature: one question on what changes the work most, or a prompt that checks today's flow, interviews the owner for the requirements and plans, both serve
---- screen
-● Orders are created and updated in src/orders/service.ts.
---- request
-add webhooks so customers hear about order changes
-
-=== h-audit-log
-kind: feature
-window: bash · bash · /home/u/projects/admin
-expect: either
-ask_any: action|actions; who; event|events; retention|kept|keep; store|stored|storage; export; compliance; for?; purpose; goal; about?
-must: audit; requirements; AskUserQuestion|interview; plan|planning|plans
-out_is: prompt
-must_not: Assumed:
-holdout: yes
-note: a big feature: one question on what changes the work most, or a prompt that checks today's flow, interviews the owner for the requirements and plans, both serve
---- request
-add audit logging to the admin app
-
-# #365 child 5, PR 5: the prompt basket in a write. The prompt names every ref
-# as <refs> gives it: @path#La-b for a claude window, bare path:a-b otherwise,
-# and a small task stays small.
 === refs-claude-bug
 kind: bug
 window: claude · claude · /home/u/shop
@@ -1082,39 +883,6 @@ invoicer/money.py:4-6
 make round_cents round the way the rates helper does
 
 # #365 child 5 holdouts, written after the final prompt commit.
-=== h-refs-review
-kind: review
-window: claude · claude · /home/u/web
-expect: write
-out_is: prompt
-must: @lib/auth/token.ts#L20-58; @lib/auth/token.test.ts
-must_not: Assumed:
-holdout: yes
-note: the review's focus (bugs) and report-only are given; both refs named as given
---- refs
-lib/auth/token.ts:20-58
-lib/auth/token.test.ts
---- request
-review this for bugs, only report, don't change anything
-
-=== h-refs-codex-flag
-kind: feature
-window: codex · codex · /home/u/cli
-out: prompt
-expect: write
-must: src/main.rs:5-40; Cargo.toml; --verbose
-must_not: @src/main.rs; #L5; AskUserQuestion
-holdout: yes
-note: codex is not Claude Code: bare refs; a flag next to an existing one is a small addition
---- refs
-src/main.rs:5-40
-Cargo.toml
---- request
-add a --verbose flag next to --quiet
-
-# #587, written before its prompt change: config asks its kind first, a message
-# asks for the fact its reader needs, a test gets the mutation step, and a
-# change with no test stays lean.
 === nightly-job-yaml
 kind: format
 window: bash · bash · /home/u/projects/reports
@@ -1264,136 +1032,6 @@ write tests for the parse_price helper I added
 
 # #587 holdouts, written after the final prompt commit (d598bd2), on requests
 # the prompt does not name.
-=== h-flight-delayed
-kind: message
-window: bash · bash · /home/u
-expect: ask
-ask_any: time; when; land|lands|landing; arrive|arrives|arrival; how long; how late; hour|hours
-holdout: yes
-note: the reader needs the new arrival time, which only the owner has
---- request
-text my mom that my flight is delayed
-
-=== h-bucket-expiry
-kind: format
-window: bash · bash · /home/u/projects/infra
-out: format
-expect: ask
-ask_any: terraform; aws; s3; gcs; google cloud; azure; cloudformation; pulumi; provider; cloud; format; platform
-holdout: yes
-note: a bucket rule is a Terraform resource, an S3 lifecycle JSON or a GCS one, each a different file: the kind comes first
---- request
-config for a bucket named logs-archive that deletes objects after 30 days
-
-=== h-go-header-test
-kind: bug
-window: bash · bash · /home/u/projects/proxy
-expect: write
-out_is: prompt
-must: TestParseHeader; on purpose|deliberately|mutate|mutation test|mutation tests|mutation testing|mutation check|mutant|mutants|. break the code|. then break the code|temporarily break the code|. then flip|temporarily flip|flip one|try flipping|. flip|introduce a small bug|then introduce a bug|temporarily introduce a bug|. introduce a bug|. then invert|temporarily invert|invert one|try inverting|. invert|. revert the fix|. then revert the fix|temporarily revert the fix; undo|undoing|revert|reverting|restore|put back|put it back
-holdout: yes
-note: a failing test to fix gets the break-it step after it passes; #599: the break words name the act, as in last-commit-test; #684, from a review's sentence set, not from replies: `. invert`, `. flip` and `. introduce a bug` take a step that opens a sentence (the text's start opens one); `then flip` and `then invert` must open one, since mid-sentence they also pass a fix step ("then invert the check so the test passes"); `break the code` and `mutation` need the act (`. break the code`, `mutation test`), since bare they pass "don't break the code elsewhere" and "any mutation of shared state"; `. revert the fix` takes "revert the fix, confirm the test fails, reapply it"; #757, two known limits of a sentence start: the full stop of an abbreviation opens one, so "i.e. flip the condition that is backwards" and "e.g. invert the check" pass as a break step; only a full stop or the text's start opens one, so a break step after a colon, a bullet, a newline, a semicolon, an open paren or a quote fails; #752, a known limit: a fix step that opens a sentence ("Invert the sign check so the test passes") also passes as a break step
---- screen
-$ go test -run TestParseHeader ./header
-    header_test.go:41: got "x-id", want "X-Id"
-FAIL
-FAIL	example.com/proxy/header	0.004s
---- request
-fix the failing test
-
-# #589 review holdout, written after the final prompt commit (49d7a24): a change
-# notice whose next fact is not a date, time or place.
-=== h-support-number
-kind: message
-window: bash · bash · /home/u
-expect: ask
-ask_any: number; phone
-holdout: yes
-note: customers need the new number to call, which only the owner has
---- request
-email our customers that the support phone number changed
-
-# #590 holdouts, written after the final prompt commit, on requests the prompt
-# does not name: bare refs in a shell pane stay bare, and a small edit stays small.
-=== h-refs-bare-vat
-kind: bug
-window: dev · bash · /home/u/shop
-expect: write
-out_is: prompt
-must: src/billing/tax.py:12-40; 121
-must_not: @src/billing/tax.py; #L12; Assumed:
-holdout: yes
-note: the request settles actual versus expected; the ref is bare in a bash pane
---- refs
-src/billing/tax.py:12-40
---- request
-an order of 100 shows 142 with vat but it should be 121, vat is added twice in here. fix it
-
-=== h-refs-bare-docs
-kind: feature
-window: work · zsh · /home/u/tool
-out: prompt
-expect: write
-must: docs/setup.md; scripts/install.sh:5-9
-must_not: @docs/setup.md; @scripts/install.sh; #L5
-holdout: yes
-note: a whole file and a range, both bare in a zsh pane
---- refs
-docs/setup.md
-scripts/install.sh:5-9
---- request
-update the install section of the doc so it matches what the script does
-
-=== h-refs-bare-port
-kind: ops
-window: srv · fish · /home/u/svc
-out: prompt
-expect: write
-must: config/app.yaml:3; 8081
-must_not: @config/app.yaml; #L3; baseline; subagent|subagents; AskUserQuestion
-holdout: yes
-note: a one-line change with a bare ref: no baseline, subagent or interview
---- refs
-config/app.yaml:3
---- request
-change the port here to 8081
-
-# #590 review holdouts, written after 00fe620, the final prompt commit: a
-# mention in an exploring claude write stays as given, and a bare rename of a
-# constant stays small.
-=== h-refs-explore-mention
-kind: bug
-window: claude · claude · /home/u/invoicer
-explore: invoicer
-expect: write
-out_is: prompt
-must: @invoicer/money.py#L9-11; 11.90
-must_not: (lines 9-11); lines 9-11; Assumed:
-holdout: yes
-note: an explored claude ref is copied as its mention, never as a line count
---- refs
-invoicer/money.py:9-11
---- request
-add_vat(10, 19) gives 11.9 but should print 11.90. fix it
-
-=== h-refs-bare-const
-kind: refactor
-window: dev · bash · /home/u/web
-out: prompt
-expect: write
-must: src/config.ts:8; MAX_RETRIES
-must_not: @src/config.ts; #L8; subagent|subagents; AskUserQuestion
-holdout: yes
-note: a rename of one constant with a bare ref: the ref stays bare, with no @ or #L; a baseline run is allowed, as the owner passed one on rename-fn
---- refs
-src/config.ts:8
---- request
-rename RETRIES to MAX_RETRIES here and wherever it is used
-
-# #701: data derived from project files, added before the prompt change they
-# measure. The reply should have Claude Code reuse the parser or generator the
-# project already has, and check the result against its source; the last case
-# is the control, with nothing on screen that shows a parser to reuse.
 === derived-cards-parser
 kind: feature
 window: claude · claude · /home/u/projects/tool
@@ -1446,45 +1084,6 @@ write a script that converts data.csv to json
 
 # Bugs with the failure on screen: reproduce first, check again after the fix.
 
-=== ho-pytest-keyerror
-kind: bug
-window: claude · claude · /home/u/projects/storefront
-expect: write
-must: test_refund|tests/test_orders.py; reproduce|reproduces|reproducing|confirm the bug|run it first|first run|first to see|first to confirm|to see the failure|to see the panic|see it fail|before fixing|before you fix; again|after the fix|rerun|re-run
-must_not: AskUserQuestion; requirements list|list of requirements
-holdout: yes
-note: the failing test, its file and the error are on screen, so the agent can run it; a careful brief runs that test first to see the KeyError, fixes it, then runs the test (and the suite) again; nothing is left for the owner; mutation test: fail|failing|failure|crash|panic named the symptom, not a repro step, so a brief that never reran the bug passed; the repro term now takes only a repro step; tightened for mutation survivor, #701; #702 review label fix: must_not "requirements" became "requirements list|list of requirements", which requirements.txt does not hit; the repro term takes "reproduce it before changing" for "before changing"; #702 review F3: "reproduce it before changing" dropped, since "reproduce" already matches it
---- screen
-$ pytest tests/test_orders.py -q
-..F.
-FAILED tests/test_orders.py::test_refund - KeyError: 'currency'
-  orders/refunds.py:41: in build_refund
-      amount = Money(order.total, payload["currency"])
-1 failed, 3 passed in 0.42s
---- request
-fix this
-
-=== ho-go-importer-panic
-kind: bug
-window: bash · bash · /home/u/projects/ledger
-expect: write
-must: parse.go|cmd/importer|sample.csv; reproduce|reproduces|reproducing|confirm the bug|run it first|first run|first to see|first to confirm|to see the failure|to see the panic|see it fail|before fixing|before you fix; again|after the fix|rerun|re-run
-must_not: AskUserQuestion; requirements list|list of requirements
-holdout: yes
-note: the command, the input file and the panic site are all on screen; the brief should rerun that exact command to see the panic, fix the bounds check, then run it again on the same file (plus go test); the owner has nothing to add; mutation test: fail|failing|failure|crash|panic named the symptom, not a repro step, so a brief that never reran the bug passed; the repro term now takes only a repro step; tightened for mutation survivor, #701; #702 review label fix: must_not "requirements" became "requirements list|list of requirements", which requirements.txt does not hit; the repro term takes "reproduce it before changing" for "before changing"; #702 review F3: "reproduce it before changing" dropped, since "reproduce" already matches it
---- screen
-$ go run ./cmd/importer data/sample.csv
-panic: runtime error: index out of range [3] with length 3
-
-goroutine 1 [running]:
-github.com/u/ledger/internal/csv.parseRow(...)
-        /home/u/projects/ledger/internal/csv/parse.go:57
-exit status 2
---- request
-it crashes on this file, fix it
-
-# Big features whose requirements only the owner can settle.
-
 === ho-multi-currency
 kind: feature
 window: claude · claude · /home/u/projects/shop
@@ -1535,44 +1134,6 @@ add an offline mode to the mobile app
 
 # Small additions next to an existing feature: no interview.
 
-=== ho-quiet-flag
-kind: feature
-window: claude · claude · /home/u/projects/dbtool
-expect: write
-must: --quiet|quiet; export
-must_not: AskUserQuestion; requirements list|list of requirements
-holdout: yes
-note: one flag beside an existing one in the same command; what quiet means (suppress the progress output that --verbose adds to) is clear from the code; a brief that checks the command works, adds the flag and tests both is enough, an interview would be overkill; #702 review label fix: must_not "requirements" became "requirements list|list of requirements", which requirements.txt does not hit
---- screen
-$ dbtool export --help
-Usage: dbtool export [OPTIONS] TABLE
-
-Options:
-  --format [json|csv]  Output format
-  --verbose            Print progress for each batch
-  --help               Show this message and exit.
---- request
-add a --quiet flag to the export command that hides the progress output
-
-=== ho-serializer-field
-kind: feature
-window: claude · claude · /home/u/projects/crm
-expect: write
-must: last_login|last_login_at; serializer|serializers|UserSerializer
-must_not: AskUserQuestion; requirements list|list of requirements
-holdout: yes
-note: the model already has the field and the serializer lists the others; adding one read-only field and a test is a small edit with nothing to settle; #702 review label fix: must_not "requirements" became "requirements list|list of requirements", which requirements.txt does not hit
---- screen
-● accounts/serializers.py:
-  class UserSerializer(serializers.ModelSerializer):
-      class Meta:
-          model = User
-          fields = ["id", "email", "full_name", "date_joined"]
---- request
-also return last_login in the user API response, the model already has it
-
-# The owner names a limit with an allowed alternative.
-
 === ho-staging-not-prod
 kind: ops
 window: bash · bash · /home/u/projects/payments-infra
@@ -1609,104 +1170,6 @@ logins fail when people type their email with capitals. don't rename or change t
 
 # Report only.
 
-=== ho-backup-slow-why
-kind: investigate
-window: claude · claude · /home/u/projects/ops-scripts
-expect: write
-must: backup|backups; do not change|don't change|not change|report only|investigate only|no changes|do not modify|don't modify|not modify|without changing|read-only|read only
-holdout: yes
-note: the owner wants a cause, not a fix, and says so; the brief must keep the agent from editing the job or its cron while it looks at the logs and the script
---- screen
-$ grep duration /var/log/backup/nightly.log | tail -3
-2026-11-06 nightly backup duration=00:41:12
-2026-11-07 nightly backup duration=02:58:40
-2026-11-08 nightly backup duration=03:04:05
---- request
-why did the nightly backup jump from 40 minutes to 3 hours? just tell me why, don't change anything
-
-# Subagents: several independent parts fit them, one small edit does not.
-
-=== ho-lambdas-runtime-audit
-kind: investigate
-window: claude · claude · /home/u/projects/serverless
-expect: write
-must: subagent|subagents; nodejs16|nodejs16.x|runtime; v2|aws-sdk
-holdout: yes
-note: five separate functions, each its own package, checked for the same two things; one subagent per function keeps the work parallel and the contexts small; the owner wants a report, nothing to ask
---- screen
-$ ls functions
-image-resize  invoice-mailer  order-webhook  report-export  user-cleanup
---- request
-check each of these lambdas for the nodejs16.x runtime and aws-sdk v2 imports, and list what each one needs to move to node 20 and sdk v3
-
-=== ho-timeout-one-edit
-kind: plan
-window: claude · claude · /home/u/projects/fetcher
-expect: write
-must: 60; timeout
-must_not: subagent|subagents
-holdout: yes
-note: worded as a plan, but it is one constant and its docstring in one file; delegating would cost more than the edit
---- request
-plan: raise DEFAULT_TIMEOUT in fetcher/config.py from 30 to 60 seconds and update its docstring to match
-
-# Style or naming is the only open point: pick a default.
-
-=== ho-cents-helper-name
-kind: feature
-window: claude · claude · /home/u/projects/billing-web
-expect: write
-must: money.ts; cents
-must_not: AskUserQuestion
-holdout: yes
-note: the behaviour is fully given (integer cents in, "$1,234.56" out); only the name is open and the owner hands it over; the brief should tell the agent to follow the file's existing naming, not ask
---- screen
-● src/utils/money.ts exports parseAmount and roundToCents.
---- request
-add a helper to src/utils/money.ts that turns integer cents into a string like $1,234.56. name it whatever fits the file
-
-# Data derivation where the project already has the generator.
-
-=== ho-currency-json-generator
-kind: feature
-window: claude · claude · /home/u/projects/geo-data
-expect: write
-out_is: prompt
-must: gen_countries.py|gen_countries; compare|diff|match|matches|same as
-must_not: AskUserQuestion
-holdout: yes
-note: the screen shows the repo already turns an ISO csv into JSON with scripts/gen_countries.py, and the request gives the output shape; the brief should reuse or extend that script rather than hand-write the data, then check the result matches the shape of countries.json; nothing is left to ask; widened for #701, the second sanctioned held-out edit (owner OK): equals|against added to the compare term; #702 M3: the term added after seeing replies is reverted (owner ruling)
---- screen
-$ ls scripts data out
-scripts:
-gen_countries.py
-data:
-iso3166.csv  iso4217.csv
-out:
-countries.json
-$ head -3 out/countries.json
-{
-  "DE": {"name": "Germany", "numeric": "276"},
-  "FR": {"name": "France", "numeric": "250"},
---- request
-make out/currencies.json from data/iso4217.csv, same layout as countries.json: code -> {name, minor_units}
-
-# Config for a named format with every field given.
-
-=== ho-editorconfig-given
-kind: format
-window: bash · bash · /home/u/projects/site
-out: format
-expect: write
-out_is: format
-must: indent_size; utf-8; lf
-holdout: yes
-note: the format and every value are given; a file with nothing to guess is written
---- request
-.editorconfig for all files: spaces, indent size 2, lf line endings, utf-8, final newline, trim trailing whitespace
-
-# #701 change 7, written before the prompt change: work that repeats until a
-# check passes gets a stop condition; a one-shot fix gets none.
 === iterate-until-green
 kind: bug
 window: claude · claude · /home/u/projects/api
@@ -1815,33 +1278,6 @@ recent commits:
 --- request
 check that migration 0042 runs cleanly, but don't touch the live db, restore last night's dump into a local container and run it there
 
-=== ho2-tests-only
-kind: bug
-window: bash · bash · /home/u/work/webshop
-out: prompt
-out_is: prompt
-expect: write
-must: src; wait|waits|retry|retries
-holdout: yes
-note: the limit (no edits under src/) and the allowed change (waits or retries in the spec) are both given; no question
---- screen
-$ npx playwright test checkout
-  1) checkout.spec.ts:31 › pays with a saved card
-     Error: locator('#pay-button') not found
-     Retry #1 ... failed
-  1 failed, 12 passed
---- repo
-branch: fix/flaky-checkout...origin/main
-root: /home/u/work/webshop
-status:
-  M tests/checkout.spec.ts
-recent commits:
-  4ab7c16 tests: pay with saved card
---- request
-the checkout test is flaky. don't edit anything under src/, only the tests; adding waits or retries in checkout.spec.ts is fine
-
-# #702 review D1b, written before the prompt change: fixing a failing test
-# keeps the break-it step.
 === failing-test-keeps-break-it
 kind: bug
 window: claude · claude · /home/u/projects/api
@@ -1859,73 +1295,3 @@ this test fails, fix it
 
 # Third blind set (#702, purpose question): written without seeing the prompt.
 
-=== ho3-tool-lending-parts
-kind: feature
-window: claude · claude · /home/u/projects/toolshed
-expect: ask
-ask_any: purpose; goal; so that; who uses; who is it for; who it serves; what is it for; what is this for; what problem; @purpose
-holdout: yes
-note: names four parts (catalogue, checkout, waitlist, steward screen) and says nothing of what the lending is for or who borrows; a question about purpose is the one that changes the work most; ask_any holds purpose words only, so a question about the stack or the database does not pass; #702 H3: @purpose added as a uniform rule from this note, owner-approved
---- repo
-branch: main...origin/main
-root: /home/u/projects/toolshed
-status:
-recent commits:
-  c41f0aa members: profile page
-  7be2d19 flask: app factory
-  1a90e3c db: members table
-diff --stat:
---- request
-add tool lending: a catalogue page, a checkout and return form, a waitlist for tools that are out, and a steward screen
-
-=== ho3-practice-rooms-stated
-kind: feature
-window: claude · claude · /home/u/projects/musicdept
-expect: write
-holdout: yes
-must: teachers; grid
-must_not: what is this for|what is it for|who will use|who uses it|who is this for|what is the goal|what is the purpose|what's the purpose
-note: same size of feature as the lending case, but the request says it is for the school's music teachers to book practice rooms and that students never book, so no purpose question; the reply must carry the two things the owner stated
---- repo
-branch: main...origin/main
-root: /home/u/projects/musicdept
-status:
-recent commits:
-  8d2e6b1 staff: login
-  f03a7c9 rooms: seed the six practice rooms
-diff --stat:
---- request
-add practice-room booking so our music teachers can reserve a room for a lesson: a weekly grid of the six rooms, a booking form, a check that refuses a double booking, and a cancel link. Students never book, only teachers do.
-
-=== ho3-trail-markers-go-ahead
-kind: feature
-window: claude · claude · /home/u/projects/trailkeeper
-expect: write
-holdout: yes
-must: rangers; repair
-must_not: what is it for|what is this for|who will use|who uses it|who is it for|what is the goal|what is the purpose|what's the purpose
-note: second turn through the rig's conversation section: the panel already asked what the trail-marker map is for and the owner answered, so "go ahead" gets a prompt that uses the answer and no second purpose question; the first request is on the screen so the reply knows the parts
---- screen
-> add a trail marker map: a map view of the markers, a detail panel for one marker, a repair log form, and a filter by trail
---- conversation
-assistant: What is the trail marker map for? Options: Hikers planning routes | Rangers logging repairs
-user: Rangers logging repairs, so crews know which markers are broken before they set out
---- request
-go ahead
-
-=== ho3-rsync-site-to-web2
-kind: ops
-window: bash · bash · /home/u/site
-expect: either
-out_is: command
-ask_any: delete; trailing slash; dry run; dry-run; exclude
-must: rsync; web2
-holdout: yes
-note: the source, the host and the target folder are all in the request, so the reply writes the rsync command (a question about --delete or a dry run is also fine); no purpose question applies to a file sync
---- screen
-$ ls
-build  node_modules  package.json  src
-$ ls build
-index.html  app.js  style.css  img
---- request
-copy the contents of ./build to deploy@web2.example.net:/var/www/site/ and remove files there that are no longer in build
