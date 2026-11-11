@@ -6119,10 +6119,28 @@ esac
                 c.env(format!("XDG_{k}_HOME"), p(v));
             }
             c.env("PANEL_EVAL_RIG_ARGS", args).env("COCKPIT_CLAUDE", claude);
+            for (k, _) in cockpit_tui::panel::request::CALL_ENV {
+                c.env_remove(k);
+            }
             let o = c.output().unwrap();
             let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
             let rows = std::fs::read_to_string(d.0.join("rows.jsonl")).unwrap_or_default();
             (o.status.code(), text(&o.stdout), text(&o.stderr), rows)
+        }
+
+        /// #853: a rig call starts with the panel's three variables, set by
+        /// the panel's own Request code, though the rig's env has none of them.
+        #[test]
+        fn a_rig_call_starts_with_telemetry_updates_and_error_reports_off() {
+            let one = "=== env-q\nkind: bug\nwindow: bash · bash · /home/u\n\
+                expect: write\nmust: ok\n--- request\nfix this\n";
+            let dump = "#!/bin/sh\n[ \"$1\" = --version ] && { echo 9.9.9; exit 0; }\n\
+                cat >/dev/null\nenv | grep '^DISABLE_' | sort\n";
+            let (code, out, err, rows) = rig_run_with("quiet-call-env", one, dump, &[]);
+            assert_eq!(code, Some(0), "{out}{err}");
+            let row: Value = serde_json::from_str(rows.lines().next().unwrap_or("null")).unwrap();
+            let want = "DISABLE_AUTOUPDATER=1\nDISABLE_ERROR_REPORTING=1\nDISABLE_TELEMETRY=1";
+            assert_eq!(row["reply"].as_str().map(str::trim), Some(want), "{rows}");
         }
 
         /// Not a test of its own: the child [`rig_run`] starts.
