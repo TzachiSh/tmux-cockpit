@@ -4059,11 +4059,12 @@ mod tests {
     fn each_owner_label_carries_its_cases_input() {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("evals/panel");
         let read = |f: &str| std::fs::read_to_string(root.join(f)).unwrap();
-        let mut cases = parse_cases(&read("cases.txt")).unwrap();
+        let (c, b) = (root.join("cases.txt"), root.join("holdout-blind.txt"));
+        let mut cases = load(&c, Some(&b)).unwrap().cases;
         cases.extend(parse_cases(&read("explore.txt")).unwrap());
         let labels = judge::read_labels("owner-labels", &read("owner-labels.jsonl")).unwrap();
         let unmatched = labels.iter().filter(|l| !cases.iter().any(|c| c.id == l.case)).count();
-        assert_eq!(unmatched, 0, "every label's case is in cases.txt or explore.txt");
+        assert_eq!(unmatched, 0, "every label's case is in a cases file or explore.txt");
         assert_eq!(label_drift(&cases, &labels), vec![]);
     }
 
@@ -4908,9 +4909,11 @@ mod tests {
         assert!(tail.is_empty(), "a request ends in a # line: {tail:?}");
     }
 
+    /// A shipped case by id, from cases.txt or the held-out file.
     fn shipped(id: &str) -> Case {
-        let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("evals/panel/cases.txt");
-        let cases = parse_cases(&std::fs::read_to_string(p).unwrap()).unwrap();
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("evals/panel");
+        let (c, b) = (root.join("cases.txt"), root.join("holdout-blind.txt"));
+        let cases = load(&c, Some(&b)).unwrap().cases;
         cases.into_iter().find(|c| c.id == id).unwrap_or_else(|| panic!("no case {id}"))
     }
 
