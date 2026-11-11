@@ -19559,8 +19559,9 @@ ir_run() {                    # <TMPDIR for the nested run> <label for the rows>
         return
     fi
     is "$l: the held run's server listens on the socket it named" "1" "$irl"
-    # [spaced]: the pin is the space in the socket path. A TMPDIR longer than 26 bytes makes
-    # the nested socket too long, and the block falls back to the runtime dir, which has no
+    # [spaced]: the pin is the space in the socket path. A TMPDIR longer than about 26 bytes
+    # on Linux with a 7-digit pid (the fallback starts later with a 5-digit pid) makes the
+    # nested socket too long, and the block falls back to the runtime dir, which has no
     # space: the run still passes, but tests no quoting. Say so (#827).
     if [ "${3:-}" = spaced ]; then
         case $irs in
