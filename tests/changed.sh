@@ -7,8 +7,8 @@
 # is grepped for the scripts it runs, and top-level helpers are resolved first
 # (a block that calls st() depends on whatever st()'s body names -- 9 of the 115
 # blocks reach agent-state only that way), and so are the helpers a helper calls, to
-# any depth (#838). Measured: deriving needs a marker on
-# 5 blocks; mapping by block title would need one on 59.
+# any depth (#838). Measured: deriving needs a marker on 5 blocks; mapping by block
+# title would need one on 59.
 #
 # Prints "ALL" when it cannot be sure. Every unknown path takes that branch.
 #
@@ -58,15 +58,16 @@ FNR == NR {                                       # pass 1: the top-level helper
 # Between the passes: a helper inherits the files of every helper it calls, and theirs,
 # to a fixed point (#838). av_bindrow names no script, but calls av_once, which runs
 # agent-poll. Only a word in command position is a call -- after a newline, ; & | ( ` {
-# or a keyword -- so the `local st` in av_gone does not make it a caller of st().
+# and any then, do, else, if, while, until or ! -- so the `local st` in av_gone does not
+# make it a caller of st().
 FNR == 1 && !closed {
     closed = 1
-    lead = "([\n;&|(`{]|[ \t](then|do|else|if|while|until|!))[ \t]*"
+    lead = "[\n;&|(`{][ \t]*((then|do|else|if|while|until)[ \t]+|![ \t]*)*"
     for (g in FN) {
         s = B[g]
-        while (match(s, lead "[A-Za-z_][A-Za-z_0-9]*([ \t\n;)|&]|$)")) {
+        while (match(s, lead "[A-Za-z_][A-Za-z_0-9]*([ \t\n;)|&`<>]|$)")) {
             w = substr(s, RSTART, RLENGTH); s = substr(s, RSTART + RLENGTH - 1)
-            sub(/[ \t\n;)|&]$/, "", w); sub(/^.*[^A-Za-z_0-9]/, "", w)
+            sub(/[ \t\n;)|&`<>]$/, "", w); sub(/^.*[^A-Za-z_0-9]/, "", w)
             if ((w in FN) && w != g) CALL[g, w] = 1
         }
         m = split(H[g], P, " "); for (i = 1; i <= m; i++) if (P[i] != "") HAS[g, P[i]] = 1
