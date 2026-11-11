@@ -130,7 +130,8 @@ in_client() {
   [ -n "$n" ] && [ "$n" -gt 0 ] 2>/dev/null
 }
 
-num() { [[ ${1:-} =~ ^[0-9]+$ ]]; }
+# [0123456789], not [0-9]: in a UTF-8 locale [0-9] also matches ² and ١ (#842)
+num() { [[ ${1:-} =~ ^[0123456789]+$ ]]; }
 
 # Not has-session -t "=NAME": tmux reads "=$5x" as a session id and finds nothing.
 sid_of() {  # sid_of NAME -- that session's id, empty when there is none

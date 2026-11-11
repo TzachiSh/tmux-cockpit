@@ -2645,6 +2645,22 @@ is "Write(missing) is dropped" ""                     "$(op 'Write(docs/nope.md)
 # A wrapper is unwrapped, not stripped: file(12,3) is a LOCATION, and reading
 # it as a wrapper would look up "12,3" as a filename and lose the line number.
 is "file(12,3) is not a wrapper" "$OP/tm:12:3"        "$(op 'tm(12,3): error TS1005')"
+# In a UTF-8 locale [0-9] also matches ² and ١, so Write(1²,3) read as tsc's file(12,3) and its
+# inside was never tried. Write(12,3) stays a location there too (#842).
+if OPLOC=$(utf8_loc); then
+    : > "$OP/12,3"
+    oploc() { env LOCPATH="$OPLOC" LC_ALL=en_US.UTF-8 \
+        "$DIR/scripts/tmux-open-path" --dry-run "$OP" "$1"; }
+    for opd in ² ١; do
+        : > "$OP/1$opd,3"
+        is "in en_US.UTF-8 Write(1$opd,3) is a wrapper: the file inside is found" "$OP/1$opd,3::" \
+           "$(oploc "Write(1$opd,3)")"
+    done
+    is "in en_US.UTF-8 Write(12,3) is still a location, not a wrapper" "" "$(oploc 'Write(12,3)')"
+else
+    bad "a UTF-8 locale whose regex [0-9] matches ² and ١ loads (localedef en_US.UTF-8)" \
+        "loaded" "none"
+fi
 # Wrapped and bracketed at once -- the inner token gets the same strip.
 is "nested (Write(path))"    "$OP/README.md::"        "$(op '(Write(README.md))')"
 rm -rf "$OP"
@@ -5530,6 +5546,16 @@ tfrun() { : > "$TF/log"; env -u TMUX_PANE TF_LOG="$TF/log" PATH="$TF:$PATH" "$@"
 tfrun env -u TMUX "$DIR/scripts/tm" '$5x'
 is "tm \$5x attaches the existing session by id, creating nothing" "attach-session -d -t \$7|0" \
    "$(grep '^attach' "$TF/log")|$(grep -c '^new-session' "$TF/log")"
+# tm's num counts ASCII digits: in a UTF-8 locale [0-9] also matches ² and ١ (#842).
+if TMLOC=$(utf8_loc); then
+    is "in en_US.UTF-8 tm's num: 12 is a number, 1² and 1١ are not" "0 1 1" \
+       "$(env LOCPATH="$TMLOC" LC_ALL=en_US.UTF-8 bash -c 'eval "$(sed -n "/^num() {/p" "$1")"
+            r=; for a in 12 1² 1١; do num "$a"; r+="$? "; done; printf %s "${r% }"' \
+            _ "$DIR/scripts/tm")"
+else
+    bad "a UTF-8 locale whose regex [0-9] matches ² and ١ loads (localedef en_US.UTF-8)" \
+        "loaded" "none"
+fi
 tfrun env -u TMUX "$DIR/scripts/tm" -k '$5x'
 is "and tm -k \$5x kills it by id" "kill-session -t \$7" "$(grep '^kill' "$TF/log")"
 # From the popup, the switch names the client that pressed prefix+s: a phone
@@ -6516,6 +6542,26 @@ is "and the first backup is untouched" "garbage before any header" \
     "$(head -1 "$rsbak1" 2>/dev/null)"
 printf '## src.go:x (+)\nbad line number\n' > "$RSF.bad2"; parse_store "$RSF.bad2" 2>/dev/null
 is "a header with a non-numeric line is corruption" "0" "$STORE_N"
+# In a UTF-8 locale bash's regex [0-9] also matches ² and ١. A line or an end in either is
+# corruption there too, and an ASCII range still parses (#842).
+rs_loc() {                    # <LOCPATH dir> <header>: STORE_N after parsing it in en_US.UTF-8
+    printf '%s\nbody\n' "$2" > "$RSF.loc"
+    env LOCPATH="$1" LC_ALL=en_US.UTF-8 bash -c '. "$1"; declare -A STORE
+        parse_store "$2" 2>/dev/null; printf %s "$STORE_N"' _ "$RS_LIB" "$RSF.loc"
+}
+if RSLC=$(utf8_loc); then
+    for rsd in ² ١; do
+        for rsh in "src.go:$rsd" "src.go:3-$rsd"; do
+            is "in en_US.UTF-8 a header $rsh (+) is corruption" "0" \
+               "$(rs_loc "$RSLC" "## $rsh (+)")"
+        done
+    done
+    is "in en_US.UTF-8 an ASCII header src.go:3-4 (+) still parses" "1" \
+       "$(rs_loc "$RSLC" '## src.go:3-4 (+)')"
+else
+    bad "a UTF-8 locale whose regex [0-9] matches ² and ١ loads (localedef en_US.UTF-8)" \
+        "loaded" "none"
+fi
 parse_store "$RSD/does-not-exist"; is "a missing store is a blank state" "0" "$STORE_N"
 # A record in the shape the loop writes (header, quote, body) parses.
 RSATT="$RSD/att"; printf '## src.go:3 (+)\n> x := 1\nfrom attach\n\n' > "$RSATT"
@@ -6525,7 +6571,7 @@ is "a store record in the loop's shape parses" "src.go/3/+/x := 1/from attach" \
 # The boundary: nothing but comments may say tmux or git in the pure module.
 is "the library touches neither tmux nor git" "0" \
     "$(sed '/^[[:space:]]*#/d' "$RS_LIB" | grep -cE 'tmux|git')"
-unset -f store_set store_dump; unset STORE STORE_N STORE_BAK
+unset -f store_set store_dump rs_loc; unset STORE STORE_N STORE_BAK
 
 echo "== tmux-review --compose: header + blocks verbatim, ?? passes through untouched =="
 RV3STORE=$(mktemp)
@@ -17157,8 +17203,10 @@ STUB
 chmod +x "$OKT/tmux"; ln -s "$(command -v bash)" "$OKT/bash"
 for t in mktemp rm cat; do ln -s "$(command -v $t)" "$OKT/$t"; done   # the stderr capture
 okrun() {                     # okrun <key> [bin] -- the log after a pick answering <key>
+    # OKLC: a LOCPATH dir to run in its en_US.UTF-8 (#842)
     : > "$OKL"
-    env -i PATH="$OKT" HOME="$OKT" TMUX_LOG="$OKL" CLICK_DIR="$OKT/w" CLICK_LINE="a.txt b.txt" \
+    env -i ${OKLC:+"LOCPATH=$OKLC"} ${OKLC:+LC_ALL=en_US.UTF-8} \
+        PATH="$OKT" HOME="$OKT" TMUX_LOG="$OKL" CLICK_DIR="$OKT/w" CLICK_LINE="a.txt b.txt" \
         OPEN_EDITOR=ed PICK_KEY="$1" PICK_RC="${PICK_RC:-0}" COCKPIT_TUI_BIN="${2:-$OPTUI}" \
         bash "$DIR/scripts/tmux-open-path" ${OKARG---pick} %1 </dev/null >/dev/null 2>"$OKT/err"
     echo "rc=$?"; cat "$OKL"
@@ -17172,6 +17220,21 @@ for k in 2 99 -1 abc '0;x' ''; do
                 "a 'not a candidate' message" "$(okrun "$k")" ;;
     esac
 done
+# In a UTF-8 locale [0-9] also matches ² and ١: such a key passed the check and reached
+# [ -lt ], which printed bash's "integer expected" under the message. The check refuses it
+# now, and stderr stays empty (#842). Key 1 still opens there.
+if OKLOC=$(utf8_loc); then
+    for k in ² ١; do
+        is "in en_US.UTF-8 key [$k] is refused before [ -lt ] reads it: no bash error" \
+           "rc=1|MSG cockpit: the picker named something that is not a candidate|" \
+           "$(OKLC=$OKLOC okrun "$k" | paste -sd'|')|$(cat "$OKT/err")"
+    done
+    is "in en_US.UTF-8 key 1 still opens the second candidate" "rc=0|NEWWIN ed  $OKT/w/b.txt|" \
+       "$(OKLC=$OKLOC okrun 1 | paste -sd'|')|$(cat "$OKT/err")"
+else
+    bad "a UTF-8 locale whose regex [0-9] matches ² and ١ loads (localedef en_US.UTF-8)" \
+        "loaded" "none"
+fi
 case "$(okrun 0 "$OKT/no-such-tui")" in
     *NEWWIN*) bad "no cockpit-tui: nothing opens" "no new window" "opened" ;;
     *"cockpit-tui is missing"*) ok "no cockpit-tui: the message names it, nothing opens" ;;
@@ -18055,6 +18118,20 @@ FBV='edit 7\n' fb on "view $FBD/sub/n.txt\n" 0 "VISUAL=$FB/bin/ed-visual"
 fbwait "$FB/ed.log"
 is "touch: an editor with no +N known gets the file only" "$FB/bin/ed-visual [$FBD/sub/n.txt]" \
     "$(cat "$FB/ed.log")"
+# In a UTF-8 locale the viewer's `edit ²` passes the [0-9] check that reads it. term_edit counts
+# ASCII digits, so nvim gets the file and no +² (#842).
+if FBLOC=$(utf8_loc); then
+    for fbd in ² ١; do
+        FBV="edit $fbd\n" fb on "view $FBD/sub/n.txt\n" 0 "VISUAL=$FB/bin/nvim" \
+            LOCPATH="$FBLOC" LC_ALL=en_US.UTF-8
+        fbwait "$FB/ed.log"
+        is "touch, en_US.UTF-8: the viewer's edit $fbd opens nvim on the file with no +$fbd" \
+           "$FB/bin/nvim [$FBD/sub/n.txt]" "$(cat "$FB/ed.log")"
+    done
+else
+    bad "a UTF-8 locale whose regex [0-9] matches ² and ١ loads (localedef en_US.UTF-8)" \
+        "loaded" "none"
+fi
 FBV='edit 7\n' fb off "view $FBD/sub/n.txt\n" 0
 fbwait "$FB/code.log"
 case "$(cat "$FB/code.log")" in

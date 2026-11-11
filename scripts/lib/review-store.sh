@@ -32,8 +32,9 @@ _parse_store() {
                             *-*) STORE[$i.line]=${loc%%-*}; STORE[$i.end]=${loc#*-} ;;
                             *)   STORE[$i.line]=$loc ;;
                         esac
-                        [[ ${STORE[$i.line]:-} =~ ^[0-9]+$ ]] || bad=1
-                        [[ ${STORE[$i.end]-0} =~ ^[0-9]+$ ]] || bad=1 ;;
+                        # ASCII digits: in a UTF-8 locale [0-9] also matches ² and ١ (#842)
+                        [[ ${STORE[$i.line]:-} =~ ^[0123456789]+$ ]] || bad=1
+                        [[ ${STORE[$i.end]-0} =~ ^[0123456789]+$ ]] || bad=1 ;;
                     *) bad=1 ;;
                 esac ;;
             '> '*)

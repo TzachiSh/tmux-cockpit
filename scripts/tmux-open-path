@@ -195,7 +195,8 @@ touch_client() {
 # A terminal editor in a window of its own, in the file's folder; never VS Code.
 term_edit() {
     local file=$1 ln=${2:-} editor fd bin wn at=
-    [[ $ln =~ ^[0-9]+$ ]] || ln=
+    # [0123456789], not [0-9]: in a UTF-8 locale [0-9] also matches ² and ١ (#842)
+    [[ $ln =~ ^[0123456789]+$ ]] || ln=
     editor=$(tmux show-options -gqv @cockpit_editor)
     [ -n "$editor" ] || editor=${VISUAL:-${EDITOR:-}}
     if [ -z "$editor" ]; then
@@ -439,7 +440,8 @@ for raw in $line; do
     # clears BASH_REMATCH before the second expands, and set -u dies.
     if [[ $tok =~ ^[A-Za-z_][A-Za-z0-9_-]*\((.+)\)$ ]]; then
         inner=${BASH_REMATCH[1]}
-        if ! [[ $inner =~ ^[0-9]+,[0-9]+$ ]]; then
+        # [0123456789], not [0-9]: in a UTF-8 locale [0-9] also matches ² and ١ (#842)
+        if ! [[ $inner =~ ^[0123456789]+,[0123456789]+$ ]]; then
             strip_ends "$inner"
             [ -n "$TOK" ] && try_token "$TOK" && continue
         fi
@@ -505,7 +507,8 @@ case "$rc" in
           read -rsn1 -p '[any key]'; exit 1 ;;
 esac
 # The picker is untrusted text until proven an index into FILES.
-[[ $key =~ ^[0-9]+$ ]] && [ "$key" -lt "${#FILES[@]}" ] \
+# [0123456789], not [0-9]: in a UTF-8 locale [0-9] also matches ² and ١ (#842)
+[[ $key =~ ^[0123456789]+$ ]] && [ "$key" -lt "${#FILES[@]}" ] \
     || { note "cockpit: the picker named something that is not a candidate"; exit 1; }
 if [ "$rc" -eq 10 ]; then
     # alt-c: the path, absolute, to the client's clipboard and the paste buffer.
