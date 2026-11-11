@@ -8910,6 +8910,66 @@ is "every fixture block is counted exactly once (faithfulness: extracted == grep
 is "the injected bad is the one failure, the rest still pass" \
     "3 passed, 1 failed, 0 skipped" "$SUMMARY"
 
+echo "== tests/par.sh: each shard says when it starts and ends, so a stalled one is named (#805) =="
+# The shard logs are buffered and printed when every shard is done, so a cancelled run's log
+# named nothing (#805). Each shard now writes a start line with its blocks' titles and an end
+# line with its status to par.sh's stderr as it happens. A sandbox as above; its runs carry
+# their own TMPDIR, which every process they start inherits: the leftover count reads it.
+PSROOT=$(mktmpd); mkdir -p "$PSROOT/tests" "$PSROOT/t"
+cp "$DIR/tests/par.sh" "$PSROOT/tests/par.sh"
+awk '/^echo "== /{exit} {print}' "$DIR/tests/run.sh" > "$PSROOT/tests/run.sh"
+Q='"'
+{
+    printf 'echo %s== ps1: solo ==%s\n' "$Q" "$Q"
+    printf 'is "ps1" 1 1\n\n'
+    printf '# group: h\n'
+    printf 'echo %s== ps2a: grouped ==%s\n' "$Q" "$Q"
+    printf 'is "ps2a" 1 1\n\n'
+    printf '# group: h\n'
+    printf 'echo %s== ps2b: grouped, with a title long enough to be cut at its width: %s ==%s\n' \
+        "$Q" "$(printf 'x%.0s' $(seq 1 120))" "$Q"
+    printf 'is "ps2b" 1 1\n\n'
+} >> "$PSROOT/tests/run.sh"
+cp "$PSROOT/tests/run.sh" "$PSROOT/tests/run.green"
+{
+    printf 'echo %s== ps3: never ends ==%s\n' "$Q" "$Q"
+    printf 'sleep 287\n'
+} >> "$PSROOT/tests/run.sh"
+ps_left() {                   # the processes still carrying the sandbox's TMPDIR
+    local p n=0
+    for p in /proc/[0-9]*; do
+        tr '\0' '\n' 2>/dev/null < "$p/environ" | grep -qxF "TMPDIR=$PSROOT/t" && n=$((n + 1))
+    done
+    printf '%s' "$n"
+}
+# The run with a shard that never ends, ended from outside at 15 s.
+( cd "$PSROOT" && env -u PAR_BLOCKS TMPDIR="$PSROOT/t" J=3 \
+    timeout 15 tests/par.sh ) </dev/null >/dev/null 2>"$PSROOT/hung.err"
+is "a shard still running when the run is ended has a start line" "1" \
+   "$(grep -c '^par\.sh: shard [0-9]* start: ps3: never ends$' "$PSROOT/hung.err")"
+is "and no end line" "0" "$(grep -c '^par\.sh: shard 0004 end' "$PSROOT/hung.err")"
+is "a shard that finished has both, with its status" "1 1" \
+   "$(grep -c '^par\.sh: shard 0001 start: ps1: solo$' "$PSROOT/hung.err") $(
+      grep -c '^par\.sh: shard 0001 end rc=0$' "$PSROOT/hung.err")"
+is "nothing the ended run started is left" "0" "$(ps_left)"
+# A green run: the counts are what they were, and no new line reads as a row.
+cp "$PSROOT/tests/run.green" "$PSROOT/tests/run.sh"
+( cd "$PSROOT" && env -u PAR_BLOCKS TMPDIR="$PSROOT/t" J=3 tests/par.sh ) \
+    </dev/null >"$PSROOT/green.out" 2>"$PSROOT/green.err"
+is "a green run counts its rows as before" "3 passed, 0 failed, 0 skipped" \
+   "$(grep -oE '[0-9]+ passed, [0-9]+ failed, [0-9]+ skipped' "$PSROOT/green.out")"
+is "every shard has one start and one end line: 2 shards, 4 lines" "2 2" \
+   "$(grep -c '^par\.sh: shard [0-9]* start: ' "$PSROOT/green.err") $(
+      grep -c '^par\.sh: shard [0-9]* end rc=[0-9]*$' "$PSROOT/green.err")"
+is "a grouped shard names its blocks, its title cut at 100 bytes" \
+   "par.sh: shard 0002 start: ps2a: grouped | ps2b: grouped, with a title long enough to b$(
+   )e cut at its width: $(printf 'x%.0s' $(seq 1 20))..." \
+   "$(grep '^par\.sh: shard 0002 start' "$PSROOT/green.err")"
+is "no new line reads as a row or a count" "0" \
+   "$(grep -cE '^  (PASS|FAIL|SKIP)|passed,|failed,' "$PSROOT/green.err")"
+is "nor is left behind" "0" "$(ps_left)"
+unset -f ps_left; unset PSROOT Q
+
 echo "== tests/green.sh: the stamp hits on unchanged content, misses on one changed byte, and tool versions are in the key =="
 GROOT=$(mktmpd)
 mkdir -p "$GROOT/scripts/lib" "$GROOT/tests" "$GROOT/examples"
