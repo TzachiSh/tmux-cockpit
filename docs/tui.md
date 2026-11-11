@@ -2952,8 +2952,9 @@ you, `✕` error, `●` running, `✓` done, `○` idle, blank for no agent), th
 agent and window counts (`1 agent  2 wins` at 47 columns of list or more, `1a 2w`
 down to 32, none below), `◉` when another client is attached, and the time since
 the session was last used, in `data::fmt_dur`'s format (`45s`, `1m05s`, `4m12s`,
-`1h03m`). A pane is an agent when its command is in `@cockpit_agents_glob`, the test
-`agent-state` uses, so a stale `@panestate` on a shell is not believed.
+`1h03m`). A pane is an agent when its command's basename is in `@cockpit_agents_glob`
+(`./claude` is `claude`, #840), the test `agent-state` uses, so a stale `@panestate` on a
+shell is not believed.
 
 **Order.** Waiting first, then failed, then the most recently used; the session
 `--current` names goes last and is marked `(here)`. The order is read once and
