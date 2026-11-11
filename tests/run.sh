@@ -19364,6 +19364,7 @@ is "a dir a test made unreadable is named, and nothing of the run is left outsid
 chmod -R u+rwx "$CRL" 2>/dev/null; rm -rf "$CRL"
 
 
+# tests: scripts/agent-poll
 echo "== agent-poll: the bind rule's claude check ignores case, as the agents glob does (#756) =="
 # #508 made every @cockpit_agents_glob site match in any case, so a CLAUDE pane is an agent.
 # The bind rule's own "the pane runs claude" check must agree, or such a pane never binds.
@@ -19386,7 +19387,8 @@ av_setup
 if need_tmux "agent-poll bind version"; then :; else
 av_srv bindver
 av_tm set -g @cockpit_agents_glob '|claude|codex|'
-av_bindrow "a pane whose command is a version title (2.1.318) binds its job" 2.1.318 "aa|alpha|running"
+av_bindrow "a pane whose command is a version title (2.1.318) binds its job" 2.1.318 \
+    "aa|alpha|running"
 av_bindrow "...and with underscores (2_1_318)" 2_1_318 "aa|alpha|running"
 av_bindrow "digits with one dot (3.11) are no version title: no bind" 3.11 "||"
 av_bindrow "...nor a version with a letter in it (2.1.3a)" 2.1.3a "||"
