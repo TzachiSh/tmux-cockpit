@@ -136,6 +136,14 @@ fn out_type(s: &str) -> Option<OutType> {
     })
 }
 
+/// The keys a case's header lines may give, and the only ones [`parse_some`] reads.
+// Wrapped by hand to stay under 100 columns, as refs.rs does.
+#[rustfmt::skip]
+const KEYS: [&str; 11] = [
+    "kind", "window", "out", "out_is", "expect", "ask_any",
+    "must", "must_not", "holdout", "explore", "note",
+];
+
 fn list(v: &str) -> Vec<String> {
     v.split(';').map(str::trim).filter(|s| !s.is_empty()).map(String::from).collect()
 }
@@ -248,6 +256,9 @@ fn parse_some(text: &str, quiet: bool) -> Result<Vec<Case>, String> {
                 return Err(broke(at, &format!("{} given twice", k.trim())));
             }
             seen.push(k.trim().into());
+            if !KEYS.contains(&k.trim()) {
+                return Err(say(at, "unknown key", format!("unknown key {}", k.trim())));
+            }
             match k.trim() {
                 "kind" => c.kind = v.into(),
                 "window" => {
@@ -291,8 +302,8 @@ fn parse_some(text: &str, quiet: bool) -> Result<Vec<Case>, String> {
                     }
                     c.explore = Some(v.into())
                 }
-                "note" => {}
-                k => return Err(say(at, "unknown key", format!("unknown key {k}"))),
+                // `note`, for people only
+                _ => {}
             }
         }
         c.expect = expect.ok_or_else(|| broke(0, "no expect"))?;
