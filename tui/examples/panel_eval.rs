@@ -88,6 +88,8 @@ impl Expect {
 #[derive(Clone, Debug, PartialEq)]
 struct Case {
     id: String,
+    /// Its `=== id` line in the file it was read from.
+    line: usize,
     kind: String,
     name: String,
     cmd: String,
@@ -200,6 +202,7 @@ fn parse_some(text: &str, quiet: bool) -> Result<Vec<Case>, String> {
         let (head, bodies) = rest.split_once("\n--- ").unwrap_or((&rest, ""));
         let mut c = Case {
             id: id.clone(),
+            line: line0,
             kind: String::new(),
             name: String::new(),
             cmd: String::new(),
@@ -376,7 +379,8 @@ struct Loaded {
 
 /// Reads the cases file, then the held-out file when there is one (#783). That
 /// file may hold no case, each of its cases says `holdout: yes`, and none has
-/// an id the cases file has. An error starts with the file it is in.
+/// an id the cases file has. No held-out id from either file sits inside
+/// another id. An error starts with the file it is in.
 fn load(cases: &Path, blind: Option<&Path>) -> Result<Loaded, String> {
     let read = |p: &Path| std::fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display()));
     let mut all = parse_cases(&read(cases)?).map_err(|e| format!("{}: {e}", cases.display()))?;
@@ -392,6 +396,16 @@ fn load(cases: &Path, blind: Option<&Path>) -> Result<Loaded, String> {
         }
         from.push((b.to_path_buf(), held.len()));
         all.extend(held);
+    }
+    // `--only` matches by substring, so a held-out id inside another id picks
+    // two cases and `--show-holdout` can never show it (#804): a held-out case
+    // from either file, against every id loaded
+    for (i, c) in all.iter().enumerate().filter(|(_, c)| c.holdout) {
+        if all.iter().any(|o| o.id != c.id && o.id.contains(c.id.as_str())) {
+            let file = &from[usize::from(i >= from[0].1)].0;
+            let rule = "a held-out id is inside another id: --only cannot pick it alone";
+            return Err(format!("{}: line {}: {rule}", file.display(), c.line));
+        }
     }
     Ok(Loaded { cases: all, from })
 }
@@ -4293,6 +4307,73 @@ mod tests {
         assert!(e.contains("case b1: ") && e.contains(&other), "{e}");
     }
 
+    /// #804: the error for a held-out id inside another id, at its `===` line.
+    fn nested(line: usize) -> String {
+        format!("line {line}: a held-out id is inside another id: --only cannot pick it alone")
+    }
+
+    /// #804: a held-out id inside another held-out id is refused at the inner
+    /// case's `===` line, in either order, and the error names no id.
+    #[test]
+    fn a_held_out_id_inside_another_held_out_id_is_refused_unshown() {
+        let rows = [("inner first", ["hb-1", "hb-10"], 2), ("inner last", ["hb-10", "hb-1"], 13)];
+        for (i, (row, [x, y], line)) in rows.into_iter().enumerate() {
+            let blind = format!("# readers\n{}{}", held(x), held(y));
+            let (_d, c, b) = two_files(&format!("nest-{i}"), ONE, &blind);
+            let e = load(&c, Some(&b)).err().unwrap_or_else(|| panic!("{row}: loaded"));
+            assert_eq!(e, format!("{}: {}", b.display(), nested(line)), "{row}");
+        }
+    }
+
+    /// #804: a held-out id inside a cases.txt id is refused the same way.
+    #[test]
+    fn a_held_out_id_inside_a_tune_id_is_refused_unshown() {
+        let tune = ONE.replace("=== crash", "=== xhb-1-tune");
+        let (_d, c, b) = two_files("nest-tune", &tune, &format!("# readers\n{}", held("hb-1")));
+        let e = load(&c, Some(&b)).err().expect("a held-out id inside a tune id loaded");
+        assert_eq!(e, format!("{}: {}", b.display(), nested(2)));
+    }
+
+    /// #804: a held-out case in cases.txt is checked too, inside a tune id or
+    /// a held-out one, with or without the held-out file; the error names
+    /// cases.txt and the case's line.
+    #[test]
+    fn a_held_out_id_in_the_cases_file_inside_another_id_is_refused_unshown() {
+        let tune = ONE.replace("=== crash", "=== xhb-1-tune");
+        let in_tune = format!("{tune}{}", held("hb-1"));
+        let in_held = format!("# c\n{}{}", held("hb-1"), held("hb-10"));
+        let rows = [
+            ("inside a tune id", &in_tune, true, 12),
+            ("inside a held-out id", &in_held, true, 2),
+            ("no held-out file", &in_tune, false, 12),
+        ];
+        for (i, (row, cases, blind, line)) in rows.into_iter().enumerate() {
+            let (_d, c, b) = two_files(&format!("nest-cases-{i}"), cases, "");
+            let e = load(&c, blind.then_some(b.as_path())).err();
+            let e = e.unwrap_or_else(|| panic!("{row}: loaded"));
+            assert_eq!(e, format!("{}: {}", c.display(), nested(line)), "{row}");
+        }
+    }
+
+    /// #804: ids that do not sit inside one another load, a tune id inside a
+    /// held-out id included: `--only` on the held-out id still picks one. A
+    /// tune id inside a tune id loads too: the check reads held-out ids only.
+    #[test]
+    fn held_out_ids_that_do_not_nest_load() {
+        let tune = |id: &str| ONE.replace("=== crash", &format!("=== {id}"));
+        let rows = [
+            ("apart", ONE.to_string(), 1),
+            ("tune inside", tune("hb"), 1),
+            ("tune inside tune", tune("two") + &tune("two-x"), 2),
+        ];
+        for (i, (row, cases, n)) in rows.into_iter().enumerate() {
+            let blind = held("hb-01") + &held("hb-02");
+            let (_d, c, b) = two_files(&format!("apart-{i}"), &cases, &blind);
+            let got = load(&c, Some(&b)).unwrap_or_else(|e| panic!("{row}: {e}"));
+            assert_eq!(got.from, [(c, n), (b, 2)], "{row}");
+        }
+    }
+
     /// #783: a held-out file with no case, a header or nothing at all, loads.
     #[test]
     fn a_held_out_file_with_no_case_loads() {
@@ -5400,12 +5481,14 @@ esac
             }
         }
 
-        /// [`QUIET`] and two more held-out cases, `hb-1` and `hb-10`, one id
-        /// inside the other.
+        /// [`QUIET`] and two more cases, `hb-1` and `hb-10`, one id inside the
+        /// other. They are tune cases: a held-out id inside another does not
+        /// load (#804).
         fn with_hb() -> String {
             let at = QUIET.find("=== held-q\n").unwrap();
             let held = &QUIET[at..QUIET.find("=== held-ask").unwrap()];
-            let hb = |id: &str| held.replace("=== held-q\n", &format!("=== {id}\n"));
+            let tune = held.replace("holdout: yes\n", "");
+            let hb = |id: &str| tune.replace("=== held-q\n", &format!("=== {id}\n"));
             format!("{QUIET}{}{}", hb("hb-1"), hb("hb-10"))
         }
 
