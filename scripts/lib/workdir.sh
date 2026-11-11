@@ -10,6 +10,8 @@
 . "${BASH_SOURCE[0]%/*}/pane.sh" || return 1
 # shellcheck source=tui.sh
 . "${BASH_SOURCE[0]%/*}/tui.sh" || return 1
+# shellcheck source=cmdname.sh
+. "${BASH_SOURCE[0]%/*}/cmdname.sh" || return 1
 
 # workdir takes about 12 ms; the bound is a hang guard. timeout is GNU coreutils;
 # a box without it calls unbounded, as agent-state does.
@@ -50,13 +52,15 @@ unset _wd
 # The board's live test (tui/src/data.rs list_fleet, agentish): the glob, a
 # version-shaped name (a live Claude renames itself to one like 2.1.246), or a
 # @panestate the hooks set. The board's walk of the process tree is left out: it
-# forks ps.
+# forks ps. The path and dash cleanup is lib/cmdname.sh's (#799). The version
+# test stays this regex: in a UTF-8 locale its [0-9] can match more than
+# version_cmd's glob does, and a refactor changes no answer.
 workdir_agent() {             # <glob 1|0> <@panestate> <pane_current_command>
-    local b=${3##*/} s
+    local s
     if [ "$1" = 1 ] || [ -n "$2" ]; then return 0; fi
-    b=${b#"${b%%[!-]*}"}
-    [[ $b =~ ^[0-9][0-9._]*$ ]] || return 1
-    s=${b//[0-9]/}
+    cmd_base "$3"
+    [[ $CMD_BASE =~ ^[0-9][0-9._]*$ ]] || return 1
+    s=${CMD_BASE//[0-9]/}
     [ "${#s}" -ge 2 ]
 }
 
