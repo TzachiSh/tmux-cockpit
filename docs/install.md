@@ -120,4 +120,7 @@ The hooks and the state each one writes: [states-and-hooks.md](states-and-hooks.
   `revdiff`. Other versions may use a different package path; see revdiff's
   README.
 - Claude Code (or any agent that can run a command on lifecycle events).
+- GNU `timeout` bounds the hook's payload reads, the agent-view poller's `claude agents`
+  and the board's `workdir` call. On macOS, `brew install coreutils` bounds them (as
+  `gtimeout`); stock macOS without coreutils runs them unbounded.
 - A Nerd Font is *not* required. The markers are plain Unicode geometry.
