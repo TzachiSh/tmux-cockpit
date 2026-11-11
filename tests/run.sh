@@ -17676,6 +17676,7 @@ mvrun() {                     # mvrun <click line> <args...> -- the log after on
             POPUP_RC="${POPUP_RC:-}" NO_CLIENT="${NO_CLIENT:-}" NEWWIN_RC="${NEWWIN_RC:-}" \
         VIEW_ONCE="${VIEW_ONCE:-}" VIEW_ENV="${VIEW_ENV:-}" ${FUNCNEST:+FUNCNEST="$FUNCNEST"} \
         bash "${MV_SCRIPT:-$DIR/scripts/tmux-open-path}" "${@:2}" </dev/null >/dev/null 2>"$MV/err"
+    printf '%s' "$?" > "$MV/rc"   # for a row that must tell "opens nothing" from a crash (#842)
     cat "$MVL"
 }
 is "a lone .md opens a popup the pane's size over it, which re-enters with --view" \
@@ -17766,8 +17767,9 @@ if MVLOC=$(utf8_loc); then
     for mvd in ² ١; do
         for mvt in 1 0; do
             is "touch=$mvt, en_US.UTF-8: the viewer's edit $mvd opens nothing" \
-               "VIEW [view] [--] [$MV/w/a.md]" \
-               "$(MVLC=$MVLOC VIEW_OUT="edit $mvd" TOUCH=$mvt mvrun 'x' --view %1 "$MV/w/a.md" '')"
+               "VIEW [view] [--] [$MV/w/a.md]|rc=0|err=" \
+               "$(MVLC=$MVLOC VIEW_OUT="edit $mvd" TOUCH=$mvt mvrun 'x' --view %1 \
+                  "$MV/w/a.md" '')|rc=$(cat "$MV/rc")|err=$(cat "$MV/err")"
         done
     done
     # term_edit's own check: no caller hands it a line that is not ASCII now, so it runs
@@ -17831,8 +17833,9 @@ if MVLOC=$(utf8_loc); then
     for mvd in ² ١; do
         for o in "ask $mvd 3" "ask 1 1$mvd"; do
             is "en_US.UTF-8: the viewer's [$o] is not an ask: no panel" \
-               "VIEW [view] [--] [$MV/w/a.md]" \
-               "$(MVLC=$MVLOC askrun "$o" --view %1 "$MV/w/a.md" '')"
+               "VIEW [view] [--] [$MV/w/a.md]|rc=0|err=" \
+               "$(MVLC=$MVLOC askrun "$o" --view %1 "$MV/w/a.md" '')|rc=$(cat "$MV/rc")|err=$(
+                  cat "$MV/err")"
         done
     done
 else
