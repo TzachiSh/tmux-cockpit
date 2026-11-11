@@ -291,30 +291,32 @@ the tune set), goes as a plain text call, with no repo access and no
 unless it routes like the others.
 
 Held-out cases live in `tui/evals/panel/holdout-blind.txt`, not in the cases
-file every tuning session reads. Its readers are the owner,
-the orchestrator, the re-verify and blindness reviewers, and the lane that
-commits cases to it; a tuning session must not open it, and its header says so.
-The held-out cases written before #783 moved there from the cases file in
-#834, each block byte for byte, so the cases file holds tune cases only. The
-rig still reads a `holdout: yes` case in the cases file, as it does with
-`--cases FILE`, under the rules below. The rig loads the file beside
-the cases file: each of its cases must say `holdout: yes`, an id the cases file
-also has is an error, it may hold no case, and a missing file is an error, so a
-lost file cannot quietly drop the held-out cases from a run or from the overlap
-check. A held-out id from either file that sits inside another id, as `hb-1`
-does in `hb-10` (#804), or equals any case's kind, its own included (#826), is
-an error naming the case's file and `===` line only, with or without the
-held-out file: `--only` matches by part of an id or by a whole kind, so
-`--show-holdout` could never pick that case alone. A run reports its
-cases with the other held-out cases, apart from the tune cases, and
-`--check` prints each file it read with its case count. `--cases FILE` reads
-only that file. A parse error in the held-out file names the file, the case id,
-the line number and the rule it broke, never the line's text, so held-out text
-stays out of test, build and CI logs. A case starts at a line that is exactly
-`=== ` and an id of lowercase letters, digits and `-`, trailing spaces allowed
-(#825). In the held-out file any other `=== ` line is an error naming the line
-only. In the cases file a `=== ` line whose rest is not such an id opens a case
-too when the next line that is neither blank nor a `#` comment has a header key
+file every tuning session reads. Its readers are the owner, the orchestrator,
+the re-verify and blindness reviewers, and the lane that commits cases to it; a
+tuning session must not open it, and its header says so. The held-out cases
+written before #783 moved there from the cases file in #834, each block byte
+for byte, so the cases file holds tune cases only. The cases file,
+`explore.txt` and any `--cases` file but the held-out file refuse a case whose
+`holdout:` is anything but `no`, with an error naming the file and the case's
+line only (#861), so a held-out case cannot drift back. `--cases` on the
+held-out file reads it as a loud file, every case allowed. The rig loads the
+file beside the cases file: each of its cases must say `holdout: yes`, an id
+the cases file also has is an error, it may hold no case, and a missing file is
+an error, so a lost file cannot quietly drop the held-out cases from a run or
+from the overlap check. A held-out id from either file that sits inside another
+id, as `hb-1` does in `hb-10` (#804), or equals any case's kind, its own
+included (#826), is an error naming the case's file and `===` line only, with
+or without the held-out file: `--only` matches by part of an id or by a whole
+kind, so `--show-holdout` could never pick that case alone. A run reports its
+cases with the other held-out cases, apart from the tune cases, and `--check`
+prints each file it read with its case count. `--cases FILE` reads only that
+file. A parse error in the held-out file names the file, the case id, the line
+number and the rule it broke, never the line's text, so held-out text stays out
+of test, build and CI logs. A case starts at a line that is exactly `=== ` and
+an id of lowercase letters, digits and `-`, trailing spaces allowed (#825). In
+the held-out file any other `=== ` line is an error naming the line only. In
+the cases file a `=== ` line whose rest is not such an id opens a case too when
+the next line that is neither blank nor a `#` comment has a header key
 (`kind:`, `expect:` and the rest), so a case line with a mistyped id never
 joins the case above; otherwise it is body text, as Go's `=== RUN` or a pytest
 banner followed by test output is. The residual limit: an inner line "=== x"
