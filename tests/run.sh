@@ -19505,6 +19505,35 @@ IRS="$(mktmpd)/my  tmp %x"; mkdir -p "$IRS"
 ir_run "$IRS" "a TMPDIR with two spaces and a %"
 fi
 
+
+echo "== cmdname.sh: cmd_base cuts a path and leading dashes for both callers (#757) =="
+# Function level, not pane level: tmux's #{pane_current_command} goes through its own
+# parse_window_name (format.c), which already drops a path and leading dashes, so no pane
+# hands these names to agent-poll or workdir.sh. The cuts are defensive and twin
+# tui/src/data.rs cmd_base, which its unit tests pin; these rows pin the shell copy.
+# A subshell keeps CMD_BASE and the sourced functions out of the suite.
+cn_run() {                    # cn_run <fn> <names...>: one word per name, 1|0 or CMD_BASE
+    (
+        . "$DIR/scripts/lib/cmdname.sh" || exit 1
+        eval "$(sed -n '/^claude_cmd() {/,/^}/p' "$DIR/scripts/agent-poll")"
+        f=$1; shift; out=
+        for n in "$@"; do
+            if [ "$f" = cmd_base ]; then cmd_base "$n"; out+=" $CMD_BASE"
+            elif "$f" "$n"; then out+=" 1"; else out+=" 0"; fi
+        done
+        printf '%s' "${out# }"
+    )
+}
+is "agent-poll's claude_cmd is there to read" "claude_cmd is a function" \
+   "$(eval "$(sed -n '/^claude_cmd() {/,/^}/p' "$DIR/scripts/agent-poll")"
+      [ "$(type -t claude_cmd)" = function ] && echo "claude_cmd is a function")"
+is "cmd_base: /x/2.1.318, -claude and --2.1.318 lose the path and the dashes" \
+   "2.1.318 claude 2.1.318" "$(cn_run cmd_base /x/2.1.318 -claude --2.1.318)"
+is "version_cmd reads the cut name: /x/2.1.318 and --2.1.318 are version titles, -claude not" \
+   "1 0 1" "$(cn_run version_cmd /x/2.1.318 -claude --2.1.318)"
+is "agent-poll's claude_cmd reads the cut name: all three are claude's" \
+   "1 1 1" "$(cn_run claude_cmd /x/2.1.318 -claude --2.1.318)"
+
 flop_left
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1
