@@ -412,9 +412,9 @@ fn is_name(id: &str) -> bool {
 
 /// Whether line `i` of `lines` opens a case (#825): it is `=== ` and a name,
 /// or `=== ` and anything with the next line that is neither blank nor a `#`
-/// comment a header line with a key of [`KEYS`]. So a mistyped case line
-/// never joins the case above, and Go's `=== RUN` or a pytest banner,
-/// followed by test output, stays body text.
+/// comment a header line with a key of [`KEYS`]. So a case line with a
+/// mistyped id never joins the case above, and Go's `=== RUN` or a pytest
+/// banner, followed by test output, stays body text.
 fn opens_case(lines: &[&str], i: usize) -> bool {
     let l = lines[i];
     if case_line(l).is_some() {
@@ -4481,6 +4481,7 @@ mod tests {
             ("tune, then held", format!("{ONE}{}", typo("=== HB-03")), 12),
             ("held first", format!("{}{ONE}", typo("=== hb_03")), 1),
             ("held, then tune", format!("{}{}", held("b1"), tune("=== HB-03")), 12),
+            ("blank and # lines", format!("{ONE}{}", typo("=== HB-03\n\n# made-up\n")), 12),
         ];
         let rule = "an id is lowercase letters, digits and -";
         for (i, (row, cases, line)) in rows.into_iter().enumerate() {
