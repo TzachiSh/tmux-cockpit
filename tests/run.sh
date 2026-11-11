@@ -467,7 +467,9 @@ echo "== fresh_server: a new-session refused by the killed server is retried, th
 # A call with no -L or -S is logged and dropped: it would reach the default
 # server, which may be the user's.
 if need_tmux "fresh_server"; then :; else
-FS="cockpit-fresh-$$"; SOCKS="$SOCKS $FS"; FSD=$(mktmpd)
+FS="cockpit-fresh-$$"; SOCKS="$SOCKS $FS"
+# A $ in the fake's dir: the fake must keep it literal, or it counts nothing (#856).
+FSD="$(mktmpd)/f\$y"; mkdir -p "$FSD"
 printf '#!/bin/sh\ncase " $* " in *" -L "*|*" -S "*) ;; *) sock=none ;; esac
 case " $* " in
 *" kill-server "*) echo k >> "%s/kills"; [ -z "$sock" ] || exit 0 ;;
