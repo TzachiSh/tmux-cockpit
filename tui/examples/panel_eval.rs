@@ -5085,14 +5085,14 @@ mod tests {
         let two_held = held_kind("made-up-k", "ops") + &held_kind("made-up-2", "made-up-k");
         let in_cases = format!("{ONE}{}", held_kind("bug", "ops"));
         let rows = [
-            ("a tune kind", ONE.to_string(), held_kind("bug", "ops"), 1),
-            ("a held-out kind", ONE.to_string(), two_held, 1),
-            ("its own kind", ONE.to_string(), held_kind("ops", "ops"), 1),
+            ("a tune kind", ONE.to_string(), held_kind("bug", "ops")),
+            ("a held-out kind", ONE.to_string(), two_held),
+            ("its own kind", ONE.to_string(), held_kind("ops", "ops")),
         ];
-        for (i, (row, cases, blind, line)) in rows.into_iter().enumerate() {
+        for (i, (row, cases, blind)) in rows.into_iter().enumerate() {
             let (_d, c, b) = two_files(&format!("kind-{i}"), &cases, &blind);
             let e = load(&c, Some(&b)).err().unwrap_or_else(|| panic!("{row}: loaded"));
-            assert_eq!(e, format!("{}: {}", b.display(), a_kind(line)), "{row}");
+            assert_eq!(e, format!("{}: {}", b.display(), a_kind(1)), "{row}");
         }
         // #861: cases.txt refuses a held-out case first; `--cases` on the
         // held-out file reads it as a loud file, the check included
@@ -6239,6 +6239,7 @@ esac
         assert_eq!(field(&out, "pairs").as_deref(), Some("1"));
     }
 
+    /// #783: the overlap check judges the held-out file's cases, and no tune case.
     #[test]
     fn overlap_judges_only_held_out_cases() {
         let d = overlap_dir("ov-held");
@@ -6729,22 +6730,40 @@ esac
             (o.status.code(), text(&o.stdout), text(&o.stderr), rows)
         }
 
+        /// The row of a rig run's one call, the rig's env with none of the
+        /// panel's three variables and CLAUDE_CONFIG_DIR bytes that are not
+        /// UTF-8. The call's reply is its DISABLE_ variables, sorted.
+        fn bytes_dir_row() -> &'static Value {
+            static ROW: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
+            ROW.get_or_init(|| {
+                use std::os::unix::ffi::OsStrExt;
+                let one = "=== env-q\nkind: bug\nwindow: bash · bash · /home/u\n\
+                    expect: write\nmust: ok\n--- request\nfix this\n";
+                let dump = "#!/bin/sh\n[ \"$1\" = --version ] && { echo 9.9.9; exit 0; }\n\
+                    cat >/dev/null\nenv | grep '^DISABLE_' | sort\n";
+                let env = [("CLAUDE_CONFIG_DIR", OsStr::from_bytes(b"\xff/c"))];
+                let (code, out, err, rows) = rig_run_env("quiet-call-env", one, dump, &[], &env);
+                assert_eq!(code, Some(0), "{out}{err}");
+                serde_json::from_str(rows.lines().next().unwrap_or("null")).unwrap()
+            })
+        }
+
         /// #853: a rig call starts with the panel's three variables, set by
         /// the panel's own Request code, though the rig's env has none of them.
         #[test]
         fn a_rig_call_starts_with_telemetry_updates_and_error_reports_off() {
-            let one = "=== env-q\nkind: bug\nwindow: bash · bash · /home/u\n\
-                expect: write\nmust: ok\n--- request\nfix this\n";
-            let dump = "#!/bin/sh\n[ \"$1\" = --version ] && { echo 9.9.9; exit 0; }\n\
-                cat >/dev/null\nenv | grep '^DISABLE_' | sort\n";
-            // #875: and one of the first four names, not UTF-8, is recorded with its bytes
-            let env = [("CLAUDE_CONFIG_DIR", std::os::unix::ffi::OsStrExt::from_bytes(b"\xff/c"))];
-            let (code, out, err, rows) = rig_run_env("quiet-call-env", one, dump, &[], &env);
-            assert_eq!(code, Some(0), "{out}{err}");
-            let row: Value = serde_json::from_str(rows.lines().next().unwrap_or("null")).unwrap();
+            let row = bytes_dir_row();
             let want = "DISABLE_AUTOUPDATER=1\nDISABLE_ERROR_REPORTING=1\nDISABLE_TELEMETRY=1";
-            assert_eq!(row["reply"].as_str().map(str::trim), Some(want), "{rows}");
-            assert_eq!(row["env"]["vars"]["CLAUDE_CONFIG_DIR"], json!({ "bytes": "ff2f63" }), "{rows}");
+            assert_eq!(row["reply"].as_str().map(str::trim), Some(want), "{row}");
+        }
+
+        /// #875: one of the first four names, its value not UTF-8, is in the
+        /// row with its bytes, in the same run.
+        #[test]
+        fn a_rig_run_records_a_config_dir_that_is_not_utf8_with_its_bytes() {
+            let row = bytes_dir_row();
+            let dir = &row["env"]["vars"]["CLAUDE_CONFIG_DIR"];
+            assert_eq!(*dir, json!({ "bytes": "ff2f63" }), "{row}");
         }
 
         /// #871: a variable of the rig's own env that is not UTF-8 reaches the
