@@ -645,3 +645,64 @@ $ ls build
 index.html  app.js  style.css  img
 --- request
 copy the contents of ./build to deploy@web2.example.net:/var/www/site/ and remove files there that are no longer in build
+
+=== hb-01
+kind: feature
+window: zsh · zsh · ~/code/pantry-notes
+expect: ask
+ask_any: @purpose; who uses; who will use
+holdout: yes
+note: Three parts are listed (collections, a share link, an import from a text file) but nothing says what the app is for or who uses it. A solo cook organising recipes, a family sharing meal plans and a public recipe site need different collection models, link permissions and import formats, so the readings lead to different work. Only the owner knows the purpose. Label rule: intent and scope, which no file in the repo can answer.
+--- screen
+$ ls
+README.md  app  db  package.json  test
+$ git status -s
+$
+--- request
+add recipe collections so you can group recipes, a share link for a collection, and import recipes from a text file. do all three
+
+=== hb-02
+kind: feature
+window: claude · node · ~/code/podcast-app
+out: auto
+expect: write
+out_is: prompt
+must: wifi|wi-fi; resume|resumes|resumed|resuming|resumable|resumption; flight|flights; delete|deletes|deleted|deleting|deletion|auto-delete|auto-deletes|auto-deleted|auto-deleting|remove|removes|removed|removing|removal
+must_not: what is this for; what's this for; what is the purpose; what are you trying to; why do you need
+holdout: yes
+note: The purpose is already settled by the earlier answer (listening offline on flights), and the three parts are concrete and independent. Under the label rule there is no intent, scope or outside fact left that only the owner knows, and how to build each part is a fact the agent can find in the repo. Asking the purpose again would only repeat a settled question, so the right move is a prompt that states the offline-flight purpose as the user's own.
+--- conversation
+assistant: What is the download work for? Is it about saving mobile data, or something else? Options: saving mobile data | listening with no connection | faster playback start
+user: no it's for listening with no connection, mostly on flights. I download a few episodes the night before and need them to be there and play with airplane mode on
+--- request
+ok so add episode downloads: 1) a download button on each episode row that adds it to a queue, with pause and resume that survives the app being killed halfway, 2) a setting to only download on wifi, default on, 3) auto delete an episode 24h after I finish it so the phone doesn't fill up. also show a little downloaded badge on the row
+
+=== hb-03
+kind: feature
+window: billsplit · claude · ~/code/billsplit
+expect: write
+out_is: prompt
+must: argue|arguing|argument|arguments|dispute|disputes|disagree|disagreement|disagreements|fight|fights|fighting; percent|percentage|percentages|%; rent day|rent; csv; settle-up|settle up|settlement
+must_not: what is this for?; what is it for?; who is this for?; who is it for?; what is the goal?; what's the goal?; who will use it?; who will use this?
+holdout: yes
+note: The request states the purpose (the three of them keep arguing over who owes what on rent day, and this is meant to end that) and lists three parts (uneven percentage shares per bill, a month-end settle-up that nets who pays whom, and a CSV of the result). The intent and audience are given, so nothing is left that only the owner knows. How to fit it into the existing code is a fact the agent finds by reading the repo. Under the label rule this is write, and the prompt should carry the purpose through.
+--- request
+billsplit needs three changes. 1) each bill can have its own split in percentages per person instead of always equal, e.g. I take 40% of the internet bill because my room has the office. 2) a month-end settle-up screen that nets everything out so it shows the fewest payments, like "Dana pays Sam 85", not every bill one by one. 3) a CSV download of that settle-up. the point is the three of us keep arguing over who owes what every rent day, I want one page everyone agrees on and nobody has to redo the math by hand
+
+=== hb-04
+kind: feature
+window: cardbox · zsh · ~/code/cardbox
+expect: ask
+ask_any: @purpose; who uses; who will use; who studies
+holdout: yes
+note: Deck import, a review scheduler and a stats page are listed, but nothing says who studies with it (a class, a language learner, an exam crammer), and that changes the import format, the scheduling and the stats, so a reply would guess the intent.
+--- screen
+$ git status -s
+ M app/models/card.py
+$ ls
+app  tests  pyproject.toml  manage.py
+$ grep -n 'django\|celery' pyproject.toml
+  "django>=5.0",
+  "djangorestframework>=3.15",
+--- request
+add flashcard decks to cardbox. import a deck from a csv, a review scheduler that picks which cards come up next based on how I answered, and a stats page with a daily streak and accuracy per deck
