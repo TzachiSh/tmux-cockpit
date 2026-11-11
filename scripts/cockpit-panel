@@ -33,7 +33,8 @@ case "${1:-}" in
 esac
 # --ask (#365): the first run opens on the question; the binary checks the lines again
 if [ "${3:-}" = --ask ]; then
-    n='^[1-9][0-9]{0,8}$'
+    # digits spelled out: in a UTF-8 locale [1-9] and [0-9] also match ² and ١ (#842)
+    n='^[123456789][0123456789]{0,8}$'
     if [ "$#" -ne 6 ] || [ -z "$4" ] || ! [[ $5 =~ $n && $6 =~ $n ]] || [ "$5" -gt "$6" ]; then
         printf 'usage: cockpit-panel -p <pane> --ask <file> <a> <b>\n' >&2; exit 2
     fi

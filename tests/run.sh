@@ -2645,6 +2645,38 @@ is "Write(missing) is dropped" ""                     "$(op 'Write(docs/nope.md)
 # A wrapper is unwrapped, not stripped: file(12,3) is a LOCATION, and reading
 # it as a wrapper would look up "12,3" as a filename and lose the line number.
 is "file(12,3) is not a wrapper" "$OP/tm:12:3"        "$(op 'tm(12,3): error TS1005')"
+# In a UTF-8 locale [0-9] also matches ² and ١, so Write(1²,3) read as tsc's file(12,3) and its
+# inside was never tried. Write(12,3) stays a location there too (#842).
+if OPLOC=$(utf8_loc); then
+    : > "$OP/12,3"
+    oploc() { env LOCPATH="$OPLOC" LC_ALL=en_US.UTF-8 \
+        "$DIR/scripts/tmux-open-path" --dry-run "$OP" "$1"; }
+    for opd in ² ١; do
+        : > "$OP/1$opd,3"
+        is "in en_US.UTF-8 Write(1$opd,3) is a wrapper: the file inside is found" "$OP/1$opd,3::" \
+           "$(oploc "Write(1$opd,3)")"
+    done
+    is "in en_US.UTF-8 Write(12,3) is still a location, not a wrapper" "" "$(oploc 'Write(12,3)')"
+    # The location parsers read ASCII digits too. "and bin/tm" proves the run reached its end.
+    for opd in ² ١; do
+        # strip_ends: (1²,3) is no location, so its ")" is stripped like any other
+        : > "$OP/bin/tm(1$opd,3"
+        is "in en_US.UTF-8 bin/tm(1$opd,3) loses its ')': no tsc location" "$OP/bin/tm(1$opd,3::" \
+           "$(oploc "bin/tm(1$opd,3)")"
+        is "in en_US.UTF-8 tm(1$opd,4) is no tsc file(12,3)" "$OP/bin/tm::" \
+           "$(oploc "tm(1$opd,4) and bin/tm")"
+        is "in en_US.UTF-8 README.md:1$opd:3 is no file:line:col" "$OP/bin/tm::" \
+           "$(oploc "README.md:1$opd:3 and bin/tm")"
+        is "in en_US.UTF-8 README.md:1$opd is no file:line" "$OP/bin/tm::" \
+           "$(oploc "README.md:1$opd and bin/tm")"
+    done
+    is "in en_US.UTF-8 the ASCII shapes read as before" \
+       "$OP/bin/tm:12:3"$'\n'"$OP/src/foo-bar.ts:31:5"$'\n'"$OP/README.md:7:" \
+       "$(oploc 'bin/tm(12,3): src/foo-bar.ts:31:5 README.md:7')"
+else
+    bad "a UTF-8 locale whose regex [0-9] matches ² and ١ loads (localedef en_US.UTF-8)" \
+        "loaded" "none"
+fi
 # Wrapped and bracketed at once -- the inner token gets the same strip.
 is "nested (Write(path))"    "$OP/README.md::"        "$(op '(Write(README.md))')"
 rm -rf "$OP"
@@ -5530,6 +5562,16 @@ tfrun() { : > "$TF/log"; env -u TMUX_PANE TF_LOG="$TF/log" PATH="$TF:$PATH" "$@"
 tfrun env -u TMUX "$DIR/scripts/tm" '$5x'
 is "tm \$5x attaches the existing session by id, creating nothing" "attach-session -d -t \$7|0" \
    "$(grep '^attach' "$TF/log")|$(grep -c '^new-session' "$TF/log")"
+# tm's num counts ASCII digits: in a UTF-8 locale [0-9] also matches ² and ١ (#842).
+if TMLOC=$(utf8_loc); then
+    is "in en_US.UTF-8 tm's num: 12 is a number, 1² and 1١ are not" "0 1 1" \
+       "$(env LOCPATH="$TMLOC" LC_ALL=en_US.UTF-8 bash -c 'eval "$(sed -n "/^num() {/p" "$1")"
+            r=; for a in 12 1² 1١; do num "$a"; r+="$? "; done; printf %s "${r% }"' \
+            _ "$DIR/scripts/tm")"
+else
+    bad "a UTF-8 locale whose regex [0-9] matches ² and ١ loads (localedef en_US.UTF-8)" \
+        "loaded" "none"
+fi
 tfrun env -u TMUX "$DIR/scripts/tm" -k '$5x'
 is "and tm -k \$5x kills it by id" "kill-session -t \$7" "$(grep '^kill' "$TF/log")"
 # From the popup, the switch names the client that pressed prefix+s: a phone
@@ -6516,6 +6558,26 @@ is "and the first backup is untouched" "garbage before any header" \
     "$(head -1 "$rsbak1" 2>/dev/null)"
 printf '## src.go:x (+)\nbad line number\n' > "$RSF.bad2"; parse_store "$RSF.bad2" 2>/dev/null
 is "a header with a non-numeric line is corruption" "0" "$STORE_N"
+# In a UTF-8 locale bash's regex [0-9] also matches ² and ١. A line or an end in either is
+# corruption there too, and an ASCII range still parses (#842).
+rs_loc() {                    # <LOCPATH dir> <header>: STORE_N after parsing it in en_US.UTF-8
+    printf '%s\nbody\n' "$2" > "$RSF.loc"
+    env LOCPATH="$1" LC_ALL=en_US.UTF-8 bash -c '. "$1"; declare -A STORE
+        parse_store "$2" 2>/dev/null; printf %s "$STORE_N"' _ "$RS_LIB" "$RSF.loc"
+}
+if RSLC=$(utf8_loc); then
+    for rsd in ² ١; do
+        for rsh in "src.go:$rsd" "src.go:3-$rsd"; do
+            is "in en_US.UTF-8 a header $rsh (+) is corruption" "0" \
+               "$(rs_loc "$RSLC" "## $rsh (+)")"
+        done
+    done
+    is "in en_US.UTF-8 an ASCII header src.go:3-4 (+) still parses" "1" \
+       "$(rs_loc "$RSLC" '## src.go:3-4 (+)')"
+else
+    bad "a UTF-8 locale whose regex [0-9] matches ² and ١ loads (localedef en_US.UTF-8)" \
+        "loaded" "none"
+fi
 parse_store "$RSD/does-not-exist"; is "a missing store is a blank state" "0" "$STORE_N"
 # A record in the shape the loop writes (header, quote, body) parses.
 RSATT="$RSD/att"; printf '## src.go:3 (+)\n> x := 1\nfrom attach\n\n' > "$RSATT"
@@ -6525,7 +6587,7 @@ is "a store record in the loop's shape parses" "src.go/3/+/x := 1/from attach" \
 # The boundary: nothing but comments may say tmux or git in the pure module.
 is "the library touches neither tmux nor git" "0" \
     "$(sed '/^[[:space:]]*#/d' "$RS_LIB" | grep -cE 'tmux|git')"
-unset -f store_set store_dump; unset STORE STORE_N STORE_BAK
+unset -f store_set store_dump rs_loc; unset STORE STORE_N STORE_BAK
 
 echo "== tmux-review --compose: header + blocks verbatim, ?? passes through untouched =="
 RV3STORE=$(mktemp)
@@ -11063,6 +11125,18 @@ for pa in "--ask /r/x.rs 7 3" "--ask /r/x.rs 0 1" "--ask /r/x.rs 01 2" "--ask /r
     is "cockpit-panel -p %5 $pa is refused before the binary runs" "rc=2" "$(pask $pa)"
 done
 is "--ask with an empty file is refused" "rc=2" "$(pask --ask '' 3 7)"
+# In a UTF-8 locale [1-9] and [0-9] also match ² and ١: a line ² passed the usage check and
+# reached [ -gt ], which failed, so the run went on to the binary (#842).
+if PALOC=$(utf8_loc); then
+    for pa in "--ask /r/x.rs ² 3" "--ask /r/x.rs 1 1²" "--ask /r/x.rs ١ 3" "--ask /r/x.rs 1 1١"; do
+        # shellcheck disable=SC2086
+        is "en_US.UTF-8: cockpit-panel -p %5 $pa is refused before the binary runs" "rc=2" \
+           "$( { export LOCPATH=$PALOC LC_ALL=en_US.UTF-8; pask $pa; } 2>/dev/null)"
+    done
+else
+    bad "a UTF-8 locale whose regex [0-9] matches ² and ١ loads (localedef en_US.UTF-8)" \
+        "loaded" "none"
+fi
 # a panel hidden on the pane stays hidden: the ask opens on its question, not on it.
 # `display` answers $PND/now, so 4242 is the server's pid that keys the hidden file.
 mkdir -p "$PND/xdg/tmux-cockpit/panel"; printf 'H\n' > "$PND/xdg/tmux-cockpit/panel/4242-5.state"
@@ -17157,8 +17231,10 @@ STUB
 chmod +x "$OKT/tmux"; ln -s "$(command -v bash)" "$OKT/bash"
 for t in mktemp rm cat; do ln -s "$(command -v $t)" "$OKT/$t"; done   # the stderr capture
 okrun() {                     # okrun <key> [bin] -- the log after a pick answering <key>
+    # OKLC: a LOCPATH dir to run in its en_US.UTF-8 (#842)
     : > "$OKL"
-    env -i PATH="$OKT" HOME="$OKT" TMUX_LOG="$OKL" CLICK_DIR="$OKT/w" CLICK_LINE="a.txt b.txt" \
+    env -i ${OKLC:+"LOCPATH=$OKLC"} ${OKLC:+LC_ALL=en_US.UTF-8} \
+        PATH="$OKT" HOME="$OKT" TMUX_LOG="$OKL" CLICK_DIR="$OKT/w" CLICK_LINE="a.txt b.txt" \
         OPEN_EDITOR=ed PICK_KEY="$1" PICK_RC="${PICK_RC:-0}" COCKPIT_TUI_BIN="${2:-$OPTUI}" \
         bash "$DIR/scripts/tmux-open-path" ${OKARG---pick} %1 </dev/null >/dev/null 2>"$OKT/err"
     echo "rc=$?"; cat "$OKL"
@@ -17172,6 +17248,21 @@ for k in 2 99 -1 abc '0;x' ''; do
                 "a 'not a candidate' message" "$(okrun "$k")" ;;
     esac
 done
+# In a UTF-8 locale [0-9] also matches ² and ١: such a key passed the check and reached
+# [ -lt ], which printed bash's "integer expected" under the message. The check refuses it
+# now, and stderr stays empty (#842). Key 1 still opens there.
+if OKLOC=$(utf8_loc); then
+    for k in ² ١; do
+        is "in en_US.UTF-8 key [$k] is refused before [ -lt ] reads it: no bash error" \
+           "rc=1|MSG cockpit: the picker named something that is not a candidate|" \
+           "$(OKLC=$OKLOC okrun "$k" | paste -sd'|')|$(cat "$OKT/err")"
+    done
+    is "in en_US.UTF-8 key 1 still opens the second candidate" "rc=0|NEWWIN ed  $OKT/w/b.txt|" \
+       "$(OKLC=$OKLOC okrun 1 | paste -sd'|')|$(cat "$OKT/err")"
+else
+    bad "a UTF-8 locale whose regex [0-9] matches ² and ١ loads (localedef en_US.UTF-8)" \
+        "loaded" "none"
+fi
 case "$(okrun 0 "$OKT/no-such-tui")" in
     *NEWWIN*) bad "no cockpit-tui: nothing opens" "no new window" "opened" ;;
     *"cockpit-tui is missing"*) ok "no cockpit-tui: the message names it, nothing opens" ;;
@@ -17574,8 +17665,10 @@ STUB
 chmod +x "$MV/bin/tmux" "$MV/bin/cockpit-tui"; ln -s "$(command -v bash)" "$MV/bin/bash"
 for t in mktemp rm cat; do ln -s "$(command -v $t)" "$MV/bin/$t"; done   # the stderr capture
 mvrun() {                     # mvrun <click line> <args...> -- the log after one run
+    # MVLC: a LOCPATH dir to run in its en_US.UTF-8 (#842)
     : > "$MVL"; rm -f "$MVL".once*
-    env -i PATH="$MV/bin" HOME="$MV" TMUX_LOG="$MVL" CLICK_DIR="$MV/w" CLICK_LINE="$1" \
+    env -i ${MVLC:+"LOCPATH=$MVLC"} ${MVLC:+LC_ALL=en_US.UTF-8} \
+        PATH="$MV/bin" HOME="$MV" TMUX_LOG="$MVL" CLICK_DIR="$MV/w" CLICK_LINE="$1" \
         OPEN_EDITOR="${MV_ED:-ed}" TOUCH="${TOUCH:-}" \
         COCKPIT_TUI_BIN="${MV_BIN:-$MV/bin/cockpit-tui}" MD_VIEW="${MD_VIEW:-}" \
             VIEW_OUT="${VIEW_OUT-}" \
@@ -17583,6 +17676,7 @@ mvrun() {                     # mvrun <click line> <args...> -- the log after on
             POPUP_RC="${POPUP_RC:-}" NO_CLIENT="${NO_CLIENT:-}" NEWWIN_RC="${NEWWIN_RC:-}" \
         VIEW_ONCE="${VIEW_ONCE:-}" VIEW_ENV="${VIEW_ENV:-}" ${FUNCNEST:+FUNCNEST="$FUNCNEST"} \
         bash "${MV_SCRIPT:-$DIR/scripts/tmux-open-path}" "${@:2}" </dev/null >/dev/null 2>"$MV/err"
+    printf '%s' "$?" > "$MV/rc"   # for a row that must tell "opens nothing" from a crash (#842)
     cat "$MVL"
 }
 is "a lone .md opens a popup the pane's size over it, which re-enters with --view" \
@@ -17667,6 +17761,33 @@ is "a window tmux refuses to open is a note, from the editor path" \
 is "and from the touch client's terminal editor" \
    "VIEW [view] [--] [$MV/w/a.md]"$'\n'"NEWWIN ed $MV/w/a.md"$'\n'"MSG cockpit: tmux could not open a window for a.md" \
    "$(NEWWIN_RC=1 VIEW_OUT='edit 5' TOUCH=1 mvrun 'x' --view %1 "$MV/w/a.md" '')"
+# In a UTF-8 locale [0-9] also matches ² and ١. The viewer's `edit ²` is no edit: nothing
+# opens, on a touch client or not (#842). The edit 5 rows above are the ASCII answers.
+if MVLOC=$(utf8_loc); then
+    for mvd in ² ١; do
+        for mvt in 1 0; do
+            is "touch=$mvt, en_US.UTF-8: the viewer's edit $mvd opens nothing" \
+               "VIEW [view] [--] [$MV/w/a.md]|rc=0|err=" \
+               "$(MVLC=$MVLOC VIEW_OUT="edit $mvd" TOUCH=$mvt mvrun 'x' --view %1 \
+                  "$MV/w/a.md" '')|rc=$(cat "$MV/rc")|err=$(cat "$MV/err")"
+        done
+    done
+    # term_edit's own check: no caller hands it a line that is not ASCII now, so it runs
+    # alone here, with a stub tmux that prints the window's command.
+    ter() { env LOCPATH="$MVLOC" LC_ALL=en_US.UTF-8 bash -c '
+            eval "$(sed -n "/^term_edit() {/,/^}/p" "$1")"
+            tmux() { case $1 in show-options) echo nvim ;; new-window) printf %s "${!#}" ;; esac; }
+            plain_name() { printf %s "$1"; }; fesc() { printf %s "$1"; }; shq() { printf %s "$1"; }
+            win=@0; term_edit /w/n.txt "$2"' _ "$DIR/scripts/tmux-open-path" "$1"; }
+    for mvd in ² ١; do
+        is "en_US.UTF-8: term_edit at line 1$mvd gives nvim the file and no +1$mvd" \
+           "nvim /w/n.txt" "$(ter "1$mvd")"
+    done
+    is "en_US.UTF-8: term_edit at line 7 gives nvim +7" "nvim +7 /w/n.txt" "$(ter 7)"
+else
+    bad "a UTF-8 locale whose regex [0-9] matches ² and ١ loads (localedef en_US.UTF-8)" \
+        "loaded" "none"
+fi
 # #365: the viewer's `ask <a> <b>` opens cockpit-panel --ask, called by its path
 # beside the script, then the viewer again at line a. A copy of the script with
 # a cockpit-panel stub beside it, so the real panel never runs.
@@ -17706,6 +17827,21 @@ for o in 'ask 7 3' 'ask 0 1' 'ask 01 2' 'ask 1' 'ask 1 2 3' 'ask a b' 'ask 12345
         *) ok "the viewer's [$o] is not an ask: no panel" ;;
     esac
 done
+# In a UTF-8 locale [1-9] and [0-9] also match ² and ١: `ask ² 3` reached [ -gt ], which
+# failed, so the panel opened on line ² (#842). The ask 3 7 row above is the ASCII answer.
+if MVLOC=$(utf8_loc); then
+    for mvd in ² ١; do
+        for o in "ask $mvd 3" "ask 1 1$mvd"; do
+            is "en_US.UTF-8: the viewer's [$o] is not an ask: no panel" \
+               "VIEW [view] [--] [$MV/w/a.md]|rc=0|err=" \
+               "$(MVLC=$MVLOC askrun "$o" --view %1 "$MV/w/a.md" '')|rc=$(cat "$MV/rc")|err=$(
+                  cat "$MV/err")"
+        done
+    done
+else
+    bad "a UTF-8 locale whose regex [0-9] matches ² and ١ loads (localedef en_US.UTF-8)" \
+        "loaded" "none"
+fi
 
 echo "== cockpit-panel (#582): the basket clear keeps a ref added just before it =="
 # A private server and a shim tmux in PATH that forwards every call to it. Just

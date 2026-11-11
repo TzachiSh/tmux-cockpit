@@ -146,7 +146,8 @@ md_view() {
         return 0
     fi
     # the viewer's ? (#365): the panel opens in this popup, then the viewer again
-    local n='([1-9][0-9]{0,8})'
+    # digits spelled out: in a UTF-8 locale [1-9] and [0-9] also match ² and ١ (#842)
+    local n='([123456789][0123456789]{0,8})'
     # the basket's pane (#365 child 5): this script's own, and only as `%N`
     local bp=''
     [[ $pane =~ ^%[0-9]+$ ]] && bp=$pane
@@ -176,7 +177,8 @@ md_view() {
         [ -f "$file" ] || return 0
     done
     # nothing printed is a plain close (q, esc): the browser takes that as back
-    [[ $out =~ ^edit\ ([0-9]+)$ ]] || { [ -n "$out" ] || VIEW_CLOSED=1; return 0; }
+    # [0123456789], not [0-9]: in a UTF-8 locale [0-9] also matches ² and ١ (#842)
+    [[ $out =~ ^edit\ ([0123456789]+)$ ]] || { [ -n "$out" ] || VIEW_CLOSED=1; return 0; }
     # a touch client has no use for VS Code: a terminal editor, at the line
     if touch_client; then term_edit "$file" "${BASH_REMATCH[1]}"; return 0; fi
     MD_EDIT=1 open_one "$file" "${BASH_REMATCH[1]}" ""
@@ -195,7 +197,8 @@ touch_client() {
 # A terminal editor in a window of its own, in the file's folder; never VS Code.
 term_edit() {
     local file=$1 ln=${2:-} editor fd bin wn at=
-    [[ $ln =~ ^[0-9]+$ ]] || ln=
+    # [0123456789], not [0-9]: in a UTF-8 locale [0-9] also matches ² and ١ (#842)
+    [[ $ln =~ ^[0123456789]+$ ]] || ln=
     editor=$(tmux show-options -gqv @cockpit_editor)
     [ -n "$editor" ] || editor=${VISUAL:-${EDITOR:-}}
     if [ -z "$editor" ]; then
@@ -391,7 +394,8 @@ strip_ends() {
     done
     while [ -n "$TOK" ]; do
         # Keep the ")" of tsc/MSVC's "file(12,3)".
-        [[ $TOK =~ \([0-9]+,[0-9]+\)$ ]] && break
+        # ASCII digits only, here and in try_token: [0-9] also matches ² and ١ (#842)
+        [[ $TOK =~ \([0123456789]+,[0123456789]+\)$ ]] && break
         # And of "Write(src/a.ts)": it marks the wrapper the loop unwraps.
         [[ $TOK =~ ^[A-Za-z_][A-Za-z0-9_-]*\(.+\)$ ]] && break
         case "$TOK" in
@@ -404,15 +408,16 @@ strip_ends() {
 # One token, in the shapes tools print paths in. 0 when it recorded something.
 try_token() {
     local tok=$1
+    # Line and column are ASCII digits: in a UTF-8 locale [0-9] also matches ² and ١ (#842).
     # file(12,3) — the shape tsc and MSVC print.
-    if [[ $tok =~ ^(.+)\(([0-9]+),([0-9]+)\)$ ]]; then
+    if [[ $tok =~ ^(.+)\(([0123456789]+),([0123456789]+)\)$ ]]; then
         consider "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}" && return 0
     fi
     # file:12:3 and file:12 — grep, eslint, stack traces, every compiler.
-    if [[ $tok =~ ^(.+):([0-9]+):([0-9]+)$ ]]; then
+    if [[ $tok =~ ^(.+):([0123456789]+):([0123456789]+)$ ]]; then
         consider "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}" && return 0
     fi
-    if [[ $tok =~ ^(.+):([0-9]+)$ ]]; then
+    if [[ $tok =~ ^(.+):([0123456789]+)$ ]]; then
         consider "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "" && return 0
     fi
     consider "$tok" "" "" && return 0
@@ -439,7 +444,8 @@ for raw in $line; do
     # clears BASH_REMATCH before the second expands, and set -u dies.
     if [[ $tok =~ ^[A-Za-z_][A-Za-z0-9_-]*\((.+)\)$ ]]; then
         inner=${BASH_REMATCH[1]}
-        if ! [[ $inner =~ ^[0-9]+,[0-9]+$ ]]; then
+        # [0123456789], not [0-9]: in a UTF-8 locale [0-9] also matches ² and ١ (#842)
+        if ! [[ $inner =~ ^[0123456789]+,[0123456789]+$ ]]; then
             strip_ends "$inner"
             [ -n "$TOK" ] && try_token "$TOK" && continue
         fi
@@ -505,7 +511,8 @@ case "$rc" in
           read -rsn1 -p '[any key]'; exit 1 ;;
 esac
 # The picker is untrusted text until proven an index into FILES.
-[[ $key =~ ^[0-9]+$ ]] && [ "$key" -lt "${#FILES[@]}" ] \
+# [0123456789], not [0-9]: in a UTF-8 locale [0-9] also matches ² and ١ (#842)
+[[ $key =~ ^[0123456789]+$ ]] && [ "$key" -lt "${#FILES[@]}" ] \
     || { note "cockpit: the picker named something that is not a candidate"; exit 1; }
 if [ "$rc" -eq 10 ]; then
     # alt-c: the path, absolute, to the client's clipboard and the paste buffer.
