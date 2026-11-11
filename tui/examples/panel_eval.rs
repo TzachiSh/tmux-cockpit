@@ -4712,21 +4712,21 @@ mod tests {
         // here the next case's `===` line is a parse error, which comes first
         let by_body = tune("=== b1").replace("boom\n", "boom\nholdout: yes\n");
         let rows = [
-            ("tune, then held", format!("{ONE}{}", typo("=== MADE-UP")), 12, id_rule),
-            ("held first", format!("{}{ONE}", typo("=== made_up")), 1, id_rule),
-            ("held, then tune", format!("{}{}", held("b1"), tune("=== MADE-UP")), 12, net),
-            ("body-held, then tune", format!("{by_body}{}", tune("=== MADE-UP")), 12, net),
-            ("blank and # lines", format!("{ONE}{}", typo("=== MADE-UP\n\n# c\n")), 12, id_rule),
+            ("tune, then held", format!("{ONE}{}", typo("=== MADE-UP-3")), 12, id_rule),
+            ("held first", format!("{}{ONE}", typo("=== made_up_3")), 1, id_rule),
+            ("held, then tune", format!("{}{}", held("b1"), tune("=== MADE-UP-3")), 12, net),
+            ("body-held, then tune", format!("{by_body}{}", tune("=== MADE-UP-3")), 12, net),
+            ("blank and # lines", format!("{ONE}{}", typo("=== MADE-UP-3\n\n# c\n")), 12, id_rule),
         ];
         for (i, (row, cases, line, rule)) in rows.into_iter().enumerate() {
             let (_d, c, b) = two_files(&format!("typo-{i}"), &cases, "");
             let e = load(&c, Some(&b)).err().unwrap_or_else(|| panic!("{row}: loaded"));
             assert_eq!(e, format!("{}: line {line}: {rule}", c.display()), "{row}");
         }
-        let (_d, c, b) = two_files("typo-tune", &format!("{ONE}{}", tune("=== made_up")), "");
+        let (_d, c, b) = two_files("typo-tune", &format!("{ONE}{}", tune("=== made_up_3")), "");
         let got = load(&c, Some(&b)).unwrap_or_else(|e| panic!("tune, then tune: {e}"));
         let ids: Vec<&str> = got.cases.iter().map(|c| c.id.as_str()).collect();
-        assert_eq!(ids, ["crash", "made_up"]);
+        assert_eq!(ids, ["crash", "made_up_3"]);
     }
 
     /// #825 review: a held-out case whose case line lacks its space opens no
@@ -4754,7 +4754,7 @@ mod tests {
     /// Held out by its header, the same case gets the id rule's message.
     #[test]
     fn a_case_held_out_by_a_body_line_names_why_its_id_is_refused() {
-        let typo = ONE.replace("=== crash", "=== MADE-UP");
+        let typo = ONE.replace("=== crash", "=== MADE-UP-3");
         let by_body = "a body line holds this case out, and its === line is not a case line";
         let by_head = "an id is lowercase letters, digits and -";
         let rows = [
@@ -6758,7 +6758,7 @@ esac
         }
 
         /// #875: one of the first four names, its value not UTF-8, is in the
-        /// row with its bytes, in the same run.
+        /// row with its bytes, in the run `bytes_dir_row` makes.
         #[test]
         fn a_rig_run_records_a_config_dir_that_is_not_utf8_with_its_bytes() {
             let row = bytes_dir_row();
