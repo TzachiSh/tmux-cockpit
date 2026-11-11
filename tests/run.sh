@@ -85,45 +85,50 @@ chmod +x "$SHIM/tmux"
 # TMUX_BIN is the real one, for a stub that counts its calls.
 TMUX_BIN=$TMUX_REAL
 flop_write() {                # <dir> <real tmux> -> <dir>/tmux, the guard in front of that tmux
-    cat > "$1/tmux" <<FLOPEOF
-#!/bin/sh
+    # Quoted: a $ or a ` in TMPDIR must not expand again when the guard runs (#849). The
+    # dirs go in as single-quoted words, each ' written as '\''. Underscored names: sh keeps an
+    # inherited variable exported, so a plain F or R would reach tmux in place of the caller's.
+    local q="'\\''"
+    { printf "#!/bin/sh\n_FD='%s' _FR='%s' _FU='%s'\n" "${1//\'/$q}" "${2//\'/$q}" "$(id -u)"
+    cat <<'FLOPEOF'
 n=L.default v= p=
 for a do
-    case \$p in
-    -L) n=L.\$a; p=; continue ;;
-    -S) n=S.\$a; p=; continue ;;
+    case $p in
+    -L) n=L.$a; p=; continue ;;
+    -S) n=S.$a; p=; continue ;;
     -c|-f|-T) p=; continue ;;
     esac
-    case \$a in
-    -c|-f|-L|-S|-T) p=\$a ;;
-    -L?*) n=L.\${a#-L} ;;
-    -S?*) n=S.\${a#-S} ;;
+    case $a in
+    -c|-f|-L|-S|-T) p=$a ;;
+    -L?*) n=L.${a#-L} ;;
+    -S?*) n=S.${a#-S} ;;
     -*) ;;
-    *) v=\$a; break ;;
+    *) v=$a; break ;;
     esac
 done
-case \$v in kill-server|new-session) ;; *) exec "$2" "\$@" ;; esac
+case $v in kill-server|new-session) ;; *) exec "$_FR" "$@" ;; esac
 # The key is the socket's path, the one tmux uses, so -L x and -S <dir>/x meet.
-case \$n in
-L.*) n=\${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/\${n#L.} ;;
-*) n=\${n#S.} ;;
+case $n in
+L.*) n=${TMUX_TMPDIR:-/tmp}/tmux-$_FU/${n#L.} ;;
+*) n=${n#S.} ;;
 esac
-n=\$(printf '%s' "\$n" | sed 's/_/__/g; s|/|_.|g')
-case \$v in
-kill-server) : > "$1/k.\$n" ;;
+n=$(printf '%s' "$n" | sed 's/_/__/g; s|/|_.|g')
+case $v in
+kill-server) : > "$_FD/k.$n" ;;
 new-session)
-    if [ -e "$1/k.\$n" ]; then
-        rm -f "$1/k.\$n"; [ -e "$1/r.\$n" ] || printf '%s.' "\$*" > "$1/r.\$n"
+    if [ -e "$_FD/k.$n" ]; then
+        rm -f "$_FD/k.$n"; [ -e "$_FD/r.$n" ] || printf '%s.' "$*" > "$_FD/r.$n"
         echo "server exited unexpectedly (refused by tests/run.sh, #573)" >&2; exit 1
     fi
-    if [ -e "$1/r.\$n" ]; then
-        "$2" "\$@"; rc=\$?
-        [ \$rc -ne 0 ] || [ "\$(cat "$1/r.\$n")" != "\$*." ] || rm -f "$1/r.\$n"
-        exit \$rc
+    if [ -e "$_FD/r.$n" ]; then
+        "$_FR" "$@"; rc=$?
+        [ $rc -ne 0 ] || [ "$(cat "$_FD/r.$n")" != "$*." ] || rm -f "$_FD/r.$n"
+        exit $rc
     fi ;;
 esac
-exec "$2" "\$@"
+exec "$_FR" "$@"
 FLOPEOF
+    } > "$1/tmux"
     chmod +x "$1/tmux"
 }
 FLOP="$STATE/flop"; mkdir -p "$FLOP"
@@ -467,15 +472,23 @@ echo "== fresh_server: a new-session refused by the killed server is retried, th
 # A call with no -L or -S is logged and dropped: it would reach the default
 # server, which may be the user's.
 if need_tmux "fresh_server"; then :; else
-FS="cockpit-fresh-$$"; SOCKS="$SOCKS $FS"; FSD=$(mktmpd)
-printf '#!/bin/sh\ncase " $* " in *" -L "*|*" -S "*) ;; *) sock=none ;; esac
+FS="cockpit-fresh-$$"; SOCKS="$SOCKS $FS"
+# A $ and a ' in the fake's dir: the fake must keep both literal, or it counts nothing (#856).
+FSD="$(mktmpd)/f\$y'q"; mkdir -p "$FSD"
+fsq="'\\''"
+{ printf "#!/bin/sh\nD='%s' R='%s'\n" "${FSD//\'/$fsq}" "${TMUX_BIN//\'/$fsq}"
+cat <<'FSEOF'
+case " $* " in *" -L "*|*" -S "*) ;; *) sock=none ;; esac
 case " $* " in
-*" kill-server "*) echo k >> "%s/kills"; [ -z "$sock" ] || exit 0 ;;
-*" new-session "*) echo n >> "%s/tries"; [ -z "$sock" ] || exit 1
-    [ "$(wc -l < "%s/tries")" -gt "$FS_FAILS" ] || {
-    echo "server exited unexpectedly ($(wc -l < "%s/tries"))" >&2; exit 1; } ;;
-esac\nexec "%s" "$@"\n' "$FSD" "$FSD" "$FSD" "$FSD" "$TMUX_BIN" > "$FSD/tmux"
-chmod +x "$FSD/tmux"
+*" kill-server "*) echo k >> "$D/kills"; [ -z "$sock" ] || exit 0 ;;
+*" new-session "*) echo n >> "$D/tries"; [ -z "$sock" ] || exit 1
+    [ "$(wc -l < "$D/tries")" -gt "$FS_FAILS" ] || {
+    echo "server exited unexpectedly ($(wc -l < "$D/tries"))" >&2; exit 1; } ;;
+esac
+exec "$R" "$@"
+FSEOF
+} > "$FSD/tmux"
+chmod +x "$FSD/tmux"; unset fsq
 # fs_run <fails> <polls> <fresh_server args...> -> "rc tries kills bads|bad's got"
 fs_run() {
     local fails=$1 polls=$2; shift 2
@@ -19759,6 +19772,45 @@ ir_run() {                    # <TMPDIR for the nested run> <label for the rows>
 ir_run "$(mktmpd)" "a plain TMPDIR"
 IRS="$(mktmpd)/my  tmp %x"; mkdir -p "$IRS"
 ir_run "$IRS" "a TMPDIR with two spaces and a %" spaced
+fi
+
+echo "== a TMPDIR holding a \$, a \` and a ' leaves no suite server behind (#849) =="
+# The prelude's kill/new guard (flop_write) put the dirs it was given inside double quotes of
+# the script it wrote, so a $ in TMPDIR expanded again each time the guard ran: its marker
+# path named a dir that does not exist. dash exits when the redirect of the special builtin
+# `:` fails, before the guard's exec, so the cleanup's kill-server never reached the suite's
+# server, and the cleanup then removed its socket file. Here one block runs on its own under
+# such a TMPDIR, with a TMUX_TMPDIR of its own, and that socket dir is read after the run: no
+# listener in /proc/net/unix, which keeps a bound path after the file is gone, and no socket.
+# The ` and ' are there too: a guard that escaped only $ passed with a $ alone. The nested run
+# reads the live tests/run.sh, not a par.sh snapshot, and inherits this suite's PATH shim, so
+# its server's cmdline carries two -L names; tmux takes the last, its own.
+if need_tmux "a \$ in TMPDIR"; then :
+elif [ ! -r /proc/net/unix ]; then skip_ "a \$ in TMPDIR (no /proc/net/unix)"
+else
+DS=$(mktmpd); DST="$DS/d\$x\`y'z"; DSS="$DS/s"; mkdir -p "$DST" "$DSS"
+# The nested socket is $DSS/tmux-<uid>/cockpit-suite-<pid>: past 107 bytes the server cannot
+# bind, which is the long-TMPDIR class, not this one.
+if [ $((${#DSS} + ${#UID} + 28)) -gt 107 ]; then
+    skip_ "a \$ in TMPDIR (TMPDIR too long for the nested socket path)"
+else
+( cd "$DIR" && TMPDIR="$DST" TMUX_TMPDIR="$DSS" exec tests/only.sh '^cmdname.sh: cmd_base cuts' ) \
+    </dev/null >"$DS/log" 2>&1
+dsr=$?; [ "$dsr" = 0 ] || dsr="$dsr: $(tail -3 "$DS/log" | tr '\n' ' ')"
+is "the nested run of one block under a TMPDIR holding \$, \` and ' passes" "0" "$dsr"
+is "after it no server listens in its socket dir" "0" "$(grep -cF " $DSS/" /proc/net/unix)"
+is "and no socket file is left there" "" "$(find "$DSS" -type s 2>/dev/null)"
+# A server the run left: only a tmux server, started as a suite's, whose TMUX_TMPDIR is ours.
+for p in /proc/[0-9]*; do
+    c=""; read -r c 2>/dev/null < "$p/comm"
+    [ "$c" = "tmux: server" ] || continue
+    a=$(tr '\0' ' ' 2>/dev/null < "$p/cmdline")
+    case $a in *" -L cockpit-suite-"*) ;; *) continue ;; esac
+    tr '\0' '\n' 2>/dev/null < "$p/environ" | grep -qxF "TMUX_TMPDIR=$DSS" \
+        && kill -TERM "${p#/proc/}"
+done
+fi
+unset DS DST DSS dsr p c a
 fi
 
 

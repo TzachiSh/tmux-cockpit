@@ -28,7 +28,8 @@
 //! flag's pre-flight.
 //!
 //! The cases are evals/panel/cases.txt and, beside it, the held-out file
-//! evals/panel/holdout-blind.txt (#783), which tuning sessions do not open:
+//! evals/panel/holdout-blind.txt (#783), where every held-out case lives since
+//! #834, and which tuning sessions do not open:
 //! every case in it says `holdout: yes`, none shares an id with cases.txt, and
 //! it may hold none. `--check` prints each file with its count; `--cases FILE`
 //! reads only FILE.
@@ -219,7 +220,16 @@ fn parse_some(text: &str, quiet: bool) -> Result<Vec<Case>, String> {
         // a mistyped case line opens a case when a key follows: in a quiet
         // case its "id" may be case text, so one that is not a name goes unshown
         if quiet && !is_name(&id) {
-            return Err(format!("line {line0}: an id is lowercase letters, digits and -"));
+            // quiet only through a body line or the held-out case above, the
+            // parser reads it as tune, so the held-out id rule is not why (#835)
+            let rule = if net {
+                "the case above is held out, and this === line is not a case line"
+            } else if held && !held_head(head) {
+                "a body line holds this case out, and its === line is not a case line"
+            } else {
+                "an id is lowercase letters, digits and -"
+            };
+            return Err(format!("line {line0}: {rule}"));
         }
         let err = |m: &str| if net { m.to_string() } else { format!("case {id}: {m}") };
         // `loud` holds the file's text; a quiet error says only where and why
@@ -463,7 +473,9 @@ fn load(cases: &Path, blind: Option<&Path>) -> Result<Loaded, String> {
         let at = |e: String| format!("{}: {e}", b.display());
         let held = parse_some(&read(b)?, true).map_err(at)?;
         if let Some(c) = held.iter().find(|c| !c.holdout) {
-            return Err(at(format!("case {}: every case in this file needs holdout: yes", c.id)));
+            // its line only: a case quoted in a held-out request opens one, and
+            // its id is held text (#834)
+            return Err(at(format!("line {}: every case in this file needs holdout: yes", c.line)));
         }
         if let Some(c) = held.iter().find(|c| all.iter().any(|a| a.id == c.id)) {
             return Err(at(format!("case {}: already in {}", c.id, cases.display())));
@@ -4059,11 +4071,12 @@ mod tests {
     fn each_owner_label_carries_its_cases_input() {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("evals/panel");
         let read = |f: &str| std::fs::read_to_string(root.join(f)).unwrap();
-        let mut cases = parse_cases(&read("cases.txt")).unwrap();
+        let (c, b) = (root.join("cases.txt"), root.join("holdout-blind.txt"));
+        let mut cases = load(&c, Some(&b)).unwrap().cases;
         cases.extend(parse_cases(&read("explore.txt")).unwrap());
         let labels = judge::read_labels("owner-labels", &read("owner-labels.jsonl")).unwrap();
         let unmatched = labels.iter().filter(|l| !cases.iter().any(|c| c.id == l.case)).count();
-        assert_eq!(unmatched, 0, "every label's case is in cases.txt or explore.txt");
+        assert_eq!(unmatched, 0, "every label's case is in a cases file or explore.txt");
         assert_eq!(label_drift(&cases, &labels), vec![]);
     }
 
@@ -4363,11 +4376,24 @@ mod tests {
         for (row, blind) in rows {
             let (_d, c, b) = two_files(&format!("nokey-{}", row.replace(' ', "-")), ONE, &blind);
             let e = load(&c, Some(&b)).err().unwrap_or_else(|| panic!("{row}: loaded"));
-            assert!(
-                e.contains("holdout-blind.txt: case b1: ") && e.contains("holdout: yes"),
-                "{row}: {e}"
-            );
+            let want = "line 1: every case in this file needs holdout: yes";
+            assert_eq!(e, format!("{}: {want}", b.display()), "{row}");
         }
+    }
+
+    /// #834: a whole case quoted inside a held-out request opens a case of
+    /// held text with no `holdout` key: it is refused at its `===` line, and
+    /// the error names neither its id nor its lines.
+    #[test]
+    fn a_case_quoted_in_a_held_out_request_is_refused_unshown() {
+        let quoted = "=== made-up-inner\nkind: bug\nwindow: bash · bash · /home/u\nexpect: write\n\
+                      --- request\nMADE-UP quoted request\n";
+        let inner = held("b1").replace("fix this\n", &format!("fix this\n{quoted}"));
+        let blind = format!("# readers\n{inner}");
+        let (_d, c, b) = two_files("quoted", ONE, &blind);
+        let e = load(&c, Some(&b)).err().expect("a quoted case loaded");
+        let want = "line 13: every case in this file needs holdout: yes";
+        assert_eq!(e, format!("{}: {want}", b.display()));
     }
 
     /// Each row: a parse error in the second of two made-up held-out cases, as
@@ -4477,14 +4503,16 @@ mod tests {
     fn a_mistyped_case_line_before_a_key_opens_a_case() {
         let tune = |id: &str| ONE.replace("# a comment\n", "").replace("=== crash", id);
         let typo = |id: &str| held("b1").replace("=== b1", id);
+        let id_rule = "an id is lowercase letters, digits and -";
+        // #835: a tune case quiet only through the held-out case above has no id rule
+        let net = "the case above is held out, and this === line is not a case line";
         let rows = [
-            ("tune, then held", format!("{ONE}{}", typo("=== HB-03")), 12),
-            ("held first", format!("{}{ONE}", typo("=== hb_03")), 1),
-            ("held, then tune", format!("{}{}", held("b1"), tune("=== HB-03")), 12),
-            ("blank and # lines", format!("{ONE}{}", typo("=== HB-03\n\n# made-up\n")), 12),
+            ("tune, then held", format!("{ONE}{}", typo("=== HB-03")), 12, id_rule),
+            ("held first", format!("{}{ONE}", typo("=== hb_03")), 1, id_rule),
+            ("held, then tune", format!("{}{}", held("b1"), tune("=== HB-03")), 12, net),
+            ("blank and # lines", format!("{ONE}{}", typo("=== HB-03\n\n# c\n")), 12, id_rule),
         ];
-        let rule = "an id is lowercase letters, digits and -";
-        for (i, (row, cases, line)) in rows.into_iter().enumerate() {
+        for (i, (row, cases, line, rule)) in rows.into_iter().enumerate() {
             let (_d, c, b) = two_files(&format!("typo-{i}"), &cases, "");
             let e = load(&c, Some(&b)).err().unwrap_or_else(|| panic!("{row}: loaded"));
             assert_eq!(e, format!("{}: line {line}: {rule}", c.display()), "{row}");
@@ -4511,6 +4539,26 @@ mod tests {
             let (_d, c, b) = two_files(&format!("joined-{section}"), &cases, "");
             let e = load(&c, Some(&b)).err().unwrap_or_else(|| panic!("{section}: loaded"));
             assert_eq!(e, format!("{}: case crash: line 12: {rule}", c.display()), "{section}");
+        }
+    }
+
+    /// #835: a case with an id that is not a name, quiet only because a body
+    /// line says `holdout: yes`, is refused at its `===` line with a message
+    /// that does not cite the held-out id rule: the parser reads it as tune.
+    /// Held out by its header, the same case gets the id rule's message.
+    #[test]
+    fn a_case_held_out_by_a_body_line_names_why_its_id_is_refused() {
+        let typo = ONE.replace("=== crash", "=== HB-03");
+        let by_body = "a body line holds this case out, and its === line is not a case line";
+        let by_head = "an id is lowercase letters, digits and -";
+        let rows = [
+            ("body", typo.replace("boom\n", "boom\nholdout: yes\n"), by_body),
+            ("header", typo.replace("expect: write\n", "expect: write\nholdout: yes\n"), by_head),
+        ];
+        for (row, cases, rule) in rows {
+            let (_d, c, b) = two_files(&format!("body-id-{row}"), &cases, "");
+            let e = load(&c, Some(&b)).err().unwrap_or_else(|| panic!("{row}: loaded"));
+            assert_eq!(e, format!("{}: line 2: {rule}", c.display()), "{row}");
         }
     }
 
@@ -4908,9 +4956,11 @@ mod tests {
         assert!(tail.is_empty(), "a request ends in a # line: {tail:?}");
     }
 
+    /// A shipped case by id, from cases.txt or the held-out file.
     fn shipped(id: &str) -> Case {
-        let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("evals/panel/cases.txt");
-        let cases = parse_cases(&std::fs::read_to_string(p).unwrap()).unwrap();
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("evals/panel");
+        let (c, b) = (root.join("cases.txt"), root.join("holdout-blind.txt"));
+        let cases = load(&c, Some(&b)).unwrap().cases;
         cases.into_iter().find(|c| c.id == id).unwrap_or_else(|| panic!("no case {id}"))
     }
 
