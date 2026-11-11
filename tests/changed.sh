@@ -6,7 +6,8 @@
 # Which blocks exercise which script is DERIVED, not declared: each block's body
 # is grepped for the scripts it runs, and top-level helpers are resolved first
 # (a block that calls st() depends on whatever st()'s body names -- 9 of the 115
-# blocks reach agent-state only that way). Measured: deriving needs a marker on
+# blocks reach agent-state only that way), and so are the helpers a helper calls, to
+# any depth (#838). Measured: deriving needs a marker on
 # 5 blocks; mapping by block title would need one on 59.
 #
 # Prints "ALL" when it cannot be sure. Every unknown path takes that branch.
@@ -49,9 +50,42 @@ FNR == NR {                                       # pass 1: the top-level helper
     if (infn) {
         o = $0; c = $0; d += gsub(/\{/, "", o) - gsub(/\}/, "", c)
         delete h; note(h, $0); for (k in h) H[fn] = H[fn] " " k
+        FN[fn] = 1; B[fn] = B[fn] "\n" $0
         if (d <= 0) infn = 0
     }
     next
+}
+# Between the passes: a helper inherits the files of every helper it calls, and theirs,
+# to a fixed point (#838). av_bindrow names no script, but calls av_once, which runs
+# agent-poll. Only a word in command position is a call -- after a newline, ; & | ( ` {
+# or a keyword -- so the `local st` in av_gone does not make it a caller of st().
+FNR == 1 && !closed {
+    closed = 1
+    lead = "([\n;&|(`{]|[ \t](then|do|else|if|while|until|!))[ \t]*"
+    for (g in FN) {
+        s = B[g]
+        while (match(s, lead "[A-Za-z_][A-Za-z_0-9]*([ \t\n;)|&]|$)")) {
+            w = substr(s, RSTART, RLENGTH); s = substr(s, RSTART + RLENGTH - 1)
+            sub(/[ \t\n;)|&]$/, "", w); sub(/^.*[^A-Za-z_0-9]/, "", w)
+            if ((w in FN) && w != g) CALL[g, w] = 1
+        }
+        m = split(H[g], P, " "); for (i = 1; i <= m; i++) if (P[i] != "") HAS[g, P[i]] = 1
+    }
+    # One level per pass, merged after it: an array grown while a for-in walks it is
+    # walked in an order awk leaves undefined.
+    do {
+        grew = 0; delete ADD
+        for (gc in CALL) {
+            split(gc, GC, SUBSEP)
+            for (hf in HAS) {
+                split(hf, HF, SUBSEP)
+                if (HF[1] == GC[2] && !((GC[1], HF[2]) in HAS)) ADD[GC[1], HF[2]] = 1
+            }
+        }
+        for (a in ADD) { HAS[a] = 1; grew = 1 }
+    } while (grew)
+    for (g in FN) H[g] = ""
+    for (hf in HAS) { split(hf, HF, SUBSEP); H[HF[1]] = H[HF[1]] " " HF[2] }
 }
 
 # A marker credits the block it is WRITTEN FOR, and all five in run.sh sit on
