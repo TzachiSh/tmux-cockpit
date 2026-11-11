@@ -6732,11 +6732,14 @@ esac
                 expect: write\nmust: ok\n--- request\nfix this\n";
             let dump = "#!/bin/sh\n[ \"$1\" = --version ] && { echo 9.9.9; exit 0; }\n\
                 cat >/dev/null\nenv | grep '^DISABLE_' | sort\n";
-            let (code, out, err, rows) = rig_run_with("quiet-call-env", one, dump, &[]);
+            // #875: and one of the first four names, not UTF-8, is recorded with its bytes
+            let env = [("CLAUDE_CONFIG_DIR", std::os::unix::ffi::OsStrExt::from_bytes(b"\xff/c"))];
+            let (code, out, err, rows) = rig_run_env("quiet-call-env", one, dump, &[], &env);
             assert_eq!(code, Some(0), "{out}{err}");
             let row: Value = serde_json::from_str(rows.lines().next().unwrap_or("null")).unwrap();
             let want = "DISABLE_AUTOUPDATER=1\nDISABLE_ERROR_REPORTING=1\nDISABLE_TELEMETRY=1";
             assert_eq!(row["reply"].as_str().map(str::trim), Some(want), "{rows}");
+            assert_eq!(row["env"]["vars"]["CLAUDE_CONFIG_DIR"], json!({ "bytes": "ff2f63" }), "{rows}");
         }
 
         /// #871: a variable of the rig's own env that is not UTF-8 reaches the
@@ -6758,36 +6761,49 @@ esac
             assert_eq!(row["env"]["vars"].get("CLAUDE_CONFIG_DIR"), Some(&Value::Null), "{rows}");
         }
 
-        /// #875: the rig's own lookup at both ends for values that are text.
-        /// An empty call variable, a text one and a long one of the first four
-        /// names, with capitals and a space at each end, reach the call, and
-        /// the row records each as the call got it, an unset call name too.
-        #[test]
-        fn a_rig_run_records_an_empty_and_a_text_variable_as_the_call_got_them() {
+        /// A rig run with DISABLE_TELEMETRY empty, DISABLE_AUTOUPDATER `auto`,
+        /// DISABLE_ERROR_REPORTING unset and CLAUDE_CONFIG_DIR `dir`: the row
+        /// of its one call, whose reply is the four as the call got them.
+        fn text_env_row(name: &str, auto: &str, dir: &str) -> Value {
             let one = "=== env-e\nkind: bug\nwindow: bash · bash · /home/u\n\
                 expect: write\nmust: ok\n--- request\nfix this\n";
             let dump = "#!/bin/sh\n[ \"$1\" = --version ] && { echo 9.9.9; exit 0; }\ncat >/dev/null\n\
                 echo \"${DISABLE_TELEMETRY-unset},${DISABLE_AUTOUPDATER-unset},${DISABLE_ERROR_REPORTING-unset},\
                 ${CLAUDE_CONFIG_DIR-unset}.\"\n";
-            let long = format!(" {} ", "/Made-Up/".repeat(40));
-            let set = [
-                ("DISABLE_TELEMETRY", ""),
-                ("DISABLE_AUTOUPDATER", "0"),
-                ("CLAUDE_CONFIG_DIR", long.as_str()),
-            ];
+            let set = [("DISABLE_TELEMETRY", ""), ("DISABLE_AUTOUPDATER", auto), ("CLAUDE_CONFIG_DIR", dir)];
             let env = set.map(|(k, v)| (k, OsStr::new(v)));
-            let (code, out, err, rows) = rig_run_env("quiet-env-text", one, dump, &[], &env);
+            let (code, out, err, rows) = rig_run_env(name, one, dump, &[], &env);
             assert_eq!(code, Some(0), "{out}{err}");
-            let row: Value = serde_json::from_str(rows.lines().next().unwrap_or("null")).unwrap();
-            assert_eq!(
-                row["reply"].as_str().map(str::trim),
-                Some(format!(",0,1,{long}.").as_str()),
-                "{rows}"
-            );
+            serde_json::from_str(rows.lines().next().unwrap_or("null")).unwrap()
+        }
+
+        /// #875: the rig's own lookup at both ends for values that are text.
+        /// An empty call variable, a long text one and a long one of the first
+        /// four names, with capitals and a space at each end, reach the call,
+        /// and the row records each as the call got it, an unset call name too.
+        #[test]
+        fn a_rig_run_records_an_empty_and_a_text_variable_as_the_call_got_them() {
+            let long = format!(" {} ", "/Made-Up/".repeat(40));
+            let row = text_env_row("quiet-env-text", &long, &long);
+            assert_eq!(row["reply"].as_str().map(str::trim), Some(format!(",{long},1,{long}.").as_str()));
+            let names = [
+                "DISABLE_TELEMETRY",
+                "DISABLE_AUTOUPDATER",
+                "DISABLE_ERROR_REPORTING",
+                "CLAUDE_CONFIG_DIR",
+            ];
+            let got = names.map(|k| row["env"]["vars"][k].clone());
             // a name the rig lacks is recorded as the 1 the call got
-            assert_eq!(row["env"]["vars"]["DISABLE_ERROR_REPORTING"], "1", "{rows}");
-            let got = set.map(|(k, _)| row["env"]["vars"][k].clone());
-            assert_eq!(got, set.map(|(_, v)| json!(v)), "{rows}");
+            assert_eq!(got, ["", long.as_str(), "1", long.as_str()].map(Value::from), "{row}");
+        }
+
+        /// #875: an empty value of one of the first four names is recorded as
+        /// empty too, through the rig's own lookup.
+        #[test]
+        fn a_rig_run_records_an_empty_config_dir_as_empty() {
+            let row = text_env_row("quiet-env-empty-dir", "0", "");
+            assert_eq!(row["reply"].as_str().map(str::trim), Some(",0,1,."), "{row}");
+            assert_eq!(row["env"]["vars"]["CLAUDE_CONFIG_DIR"], "", "{row}");
         }
 
         /// Not a test of its own: the child [`rig_run`] starts.
