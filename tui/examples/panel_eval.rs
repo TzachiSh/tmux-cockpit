@@ -2956,6 +2956,7 @@ mod tests {
     fn words_match_whole_and_any_of() {
         assert!(!has("Before editing, write an explanation", "plan"));
         assert!(has("Make a plan first.", "plan"));
+        assert!(has("Make a PLAN first.", "Plan"));
         assert!(!has("the answer is 360", "36"));
         assert!(has("it is 36.", "36"));
         assert!(!has("a different file", "diff"));
@@ -2963,6 +2964,25 @@ mod tests {
         assert!(has("cite sources", "source|sources"));
         assert!(has("add --json to show", "--json"));
         assert!(has("run /code-review now", "/code-review"));
+    }
+
+    /// #868: a `must` group reads no negation. A reply that names the term
+    /// only to forbid it passes the group, and a reply without the term
+    /// fails it. Case, term and replies are made up.
+    #[test]
+    fn a_must_group_passes_on_a_term_the_reply_only_forbids() {
+        let mut c = parse_cases(ONE).unwrap().remove(0);
+        c.must = vec!["zorbflux".into()];
+        let rows = [
+            ("not before the term", "<prompt>Do not zorbflux the widget.</prompt>", true),
+            ("never before the term", "<prompt>Tidy it, and never zorbflux.</prompt>", true),
+            ("no such term", "<prompt>Tidy the widget.</prompt>", false),
+        ];
+        for (row, reply, pass) in rows {
+            let g = grade(&c, reply);
+            let missing = if pass { vec![] } else { c.must.clone() };
+            assert_eq!((g.missing, g.pass), (missing, pass), "{row}");
+        }
     }
 
     #[test]
