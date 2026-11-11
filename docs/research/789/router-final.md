@@ -1,6 +1,6 @@
 # Router tuning and the final prompt
 
-Run on 2026-11-10 and 2026-11-11, after README decision 2 (prototype the router), which the owner answered A. After the like-for-like replay the owner chose, in a separate question recorded on #789 (comment 6770734166), to keep tuning the router on Sonnet for accuracy only (that question's option B, not the README's decision 2 option B). The owner then chose v2 as the final prompt on 2026-11-11. Nothing here changes the shipped prompt or any code. The router is research only and is not wired into the product. The raw rows stay under `~/.cache/probe789e-*`, and the held-out rows were read only through counting scripts.
+Run on 2026-11-10 and 2026-11-11, after README decision 2 (prototype the router), which the owner answered A. After the Haiku start-up probe the owner chose, in a separate question recorded on #789 (comment 6770734166), to keep tuning the router on Sonnet for accuracy only (that question's option B, not the README's decision 2 option B). The owner then chose v2 as the final prompt on 2026-11-11. Nothing here changes the shipped prompt or any code. The router is research only and is not wired into the product. The raw rows stay under `~/.cache/probe789e-*`, and the held-out rows were read only through counting scripts.
 
 ## The prompts
 
@@ -17,7 +17,7 @@ Run on 2026-11-10 and 2026-11-11, after README decision 2 (prototype the router)
 - **Cases:** the 80 tune cases (24 ask, 48 write, 8 either), 3 runs each, `--no-explore`, model sonnet, hermetic. A case counts as right only when all 3 runs match its label. The either cases are counted apart.
 - **Split:** the first alternating split put sibling cases of one family on both halves, so it was retired before any tuning. The family split links cases that share one or more rare phrases (in at most 3 of the 80 cases) or a case-id stem. It gave 59 families, develop 40 and confirm 40 with ask 12, write 24 and either 4 on each side, and 0 rare shared phrases across the halves. `develop.txt` sha256 `7e399264…`, `confirm.txt` sha256 `fa827f3d…`. The first rule failed two checks and the orchestrator amended it, which `RULE.txt` records.
 - **Writer lane:** a separate lane wrote v2, v3 and v4a, and saw only the develop cases, the misses and the sourced criteria. The confirm half was run blind, as counts only, at most twice (v2 and v3). After the owner asked for a last round, the two straggler cases were opened to the writer and the confirm half stopped being blind for v4a and v4b.
-- **Held-out set:** the 41 older held-out cases (6 ask, 30 write, 5 either). They are checked in at `tui/evals/panel/cases.txt` with `holdout: yes`, so "unseen" means no writer lane received any of their text. A check of every held-out body line of 30 or more characters found none in any writer artifact, in the pass files or in this record. The only hits are 5 lines of an old writer copy that also occur verbatim in tune cases. Run as counts only through the closed-set `label` field that PR #829 added. The label is "ask", "write" or "other", never reply text.
+- **Held-out set:** the 41 older held-out cases (6 ask, 30 write, 5 either). They are checked in at `tui/evals/panel/cases.txt` with `holdout: yes`, so "unseen" means no writer lane received any of their text. A check of every held-out body line of 30 or more characters found none in the writer artifacts, the prompt files, the pass folders or this record. The only hits are 5 lines in the old develop-half copies (the old writer copy and pass 1), which also occur verbatim in tune cases. The pass B rows and the blind run files were not scanned for body text. Run as counts only through the closed-set `label` field that PR #829 added. The label is "ask", "write" or "other", never reply text.
 
 ## Results
 
@@ -62,13 +62,13 @@ The owner chose v2 on 2026-11-11. Reasons: it is the simplest prompt that carrie
 | Confirm runs (v2, v3) | $0.2472, $0.2348 |
 | Pass A (v4a and v4b on develop and confirm) | $0.9997 |
 | Pass B (v1, v2, v3, v4a on the held-out set) | $1.1223 |
-| Total tuning | $3.4380 of the $4 tuning cap the orchestrator set for this round inside the owner's $80 eval budget. The total excludes the earlier $0.6312 and $1.2141 replays. Costs are the `cost.tsv` figures, so pass A reads $0.9997 where its rows sum to $0.9995 and pass B reads $1.1223 where its rows sum to $1.1224 |
+| Total tuning | $3.4380 of the $4 tuning cap the orchestrator set for this round inside the owner's $80 eval budget. The total excludes the earlier $0.6312 and $1.2141 replays. Pass A is the row sum ($0.9997, and its `cost.tsv` files sum to $0.9995). Pass B is the `cost.tsv` sum ($1.1223, and its rows sum to $1.1224) |
 
 ## Limits
 
 - The confirm half is spent. The held-out set was used for this round. Any further edit would have only the four new blind cases, which is too few to conclude.
 - v2 still misses two develop cases, `ci-workflow-spec` and `review-my-changes`.
-- The router adds a call in front of the writer: for v2, a median latency of 2.2 s (p90 2.7 s) and a median cost of $0.0015 per call (mean $0.0021, first cold call about $0.003 to $0.005), over 363 calls through `claude -p` in the panel's own CLI path. Start-up dominates the latency. No end-to-end cost or latency was measured. A routed request pays the router call and then the writer call.
+- The router adds a call in front of the writer: for v2, a median latency of 2.2 s (p90 2.7 s) and a median cost of $0.0015 per call (mean $0.0021, first cold call about $0.003, p90 $0.0035), over 363 calls through `claude -p` in the panel's own CLI path. Start-up dominates the latency. No end-to-end cost or latency was measured. A routed request pays the router call and then the writer call.
 - Master's single prompt scored 214 of 216 calls on the same 80 tune cases, but it was tuned on them. Neither side has been compared on unseen cases other than the four blind cases still to be committed.
 
 ## Not tested
