@@ -4514,6 +4514,21 @@ mod tests {
         }
     }
 
+    /// #825 review: held-ness is read from every line of a case, bodies
+    /// included, so a `holdout: yes` line in a tune case's screen makes its
+    /// errors quiet too. It can only hide text; the case still parses as tune.
+    #[test]
+    fn a_holdout_line_in_a_body_makes_the_case_quiet() {
+        let tune = ONE.replace("boom\n", "boom\nholdout: yes\n");
+        let bad = tune.replace("kind: bug\n", "kind: bug\nMADE-UP stray line\n");
+        let (_d, c, b) = two_files("body-held", &bad, "");
+        let e = load(&c, Some(&b)).err().expect("a bad line loaded");
+        assert_eq!(e, format!("{}: case crash: line 4: not key: value", c.display()));
+        let (_d, c, b) = two_files("body-held-ok", &tune, "");
+        let got = load(&c, Some(&b)).unwrap_or_else(|e| panic!("{e}"));
+        assert!(!got.cases[0].holdout && got.cases[0].screen.ends_with("holdout: yes"));
+    }
+
     /// #825 review: every key of KEYS has its own arm in parse_some, so a
     /// key added to the list alone panics here rather than being ignored.
     #[test]
