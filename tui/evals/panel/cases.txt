@@ -12,7 +12,7 @@
 #   ask_any: for ask or either, the question or one option names one of these (; separated, any case)
 #   must:    for write or either, the reply carries every one of these
 #   must_not: the reply, a question included, carries none of these
-#   holdout: yes for a held-out case (default no); those live in holdout-blind.txt (#834)
+#   holdout: yes for a case written after the prompt it runs on; default no; holdout-blind.txt only
 # Words match whole and in any case ("plan" is not in "explanation"); "a|b" is
 # any of them. A must_not skips a match negated in its clause within six words
 # before it (not, never, don't, no, without, rather than, instead of); a clause

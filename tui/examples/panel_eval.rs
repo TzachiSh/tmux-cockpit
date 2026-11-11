@@ -461,13 +461,23 @@ struct Loaded {
     from: Vec<(PathBuf, usize)>,
 }
 
-/// Reads the cases file, then the held-out file when there is one (#783). That
-/// file may hold no case, each of its cases says `holdout: yes`, and none has
-/// an id the cases file has. No held-out id from either file sits inside
-/// another id or equals a kind. An error starts with the file it is in.
+/// Reads the cases file, then the held-out file when there is one (#783). The
+/// cases file holds no held-out case, unless `--cases` names the held-out file
+/// itself (#861). The held-out file beside it may hold no case, each of its
+/// cases says `holdout: yes`, and none has an id the cases file has. No
+/// held-out id sits inside another id or equals a kind. An error starts with
+/// the file it is in.
 fn load(cases: &Path, blind: Option<&Path>) -> Result<Loaded, String> {
     let read = |p: &Path| std::fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display()));
     let mut all = parse_cases(&read(cases)?).map_err(|e| format!("{}: {e}", cases.display()))?;
+    // every held-out case lives in the held-out file (#834): a loud file
+    // refuses one, by its line only, unless it is that file named by --cases.
+    // The error says which file that is: the one refusing has any name (#861)
+    let blind_named = cases.file_name() == Path::new(BLIND).file_name();
+    if let Some(c) = all.iter().find(|c| c.holdout).filter(|_| !blind_named) {
+        let rule = "a held-out case belongs in holdout-blind.txt";
+        return Err(format!("{}: line {}: {rule}", cases.display(), c.line));
+    }
     let mut from = vec![(cases.to_path_buf(), all.len())];
     if let Some(b) = blind {
         let at = |e: String| format!("{}: {e}", b.display());
@@ -486,7 +496,8 @@ fn load(cases: &Path, blind: Option<&Path>) -> Result<Loaded, String> {
     // `--only` matches by substring or by whole kind, so a held-out id inside
     // another id (#804) or equal to any case's kind, its own included (#826),
     // picks more than one case and `--show-holdout` can never show it: a
-    // held-out case from either file, against every case loaded
+    // held-out case, from the held-out file beside the cases file or named by
+    // `--cases` (#861), against every case loaded
     for (i, c) in all.iter().enumerate().filter(|(_, c)| c.holdout) {
         let file = &from[usize::from(i >= from[0].1)].0;
         let at = format!("{}: line {}", file.display(), c.line);
@@ -4472,7 +4483,7 @@ mod tests {
         text.replace("fix this\n", &format!("fix this\n{lines}"))
     }
 
-    /// #825: in cases.txt a `=== ` line whose rest is not a name opens no
+    /// #825: in a loud file a `=== ` line whose rest is not a name opens no
     /// case: it stays in the request, held out or tune, and the count holds.
     /// A pytest banner in either shape stays too.
     #[test]
@@ -4486,8 +4497,11 @@ mod tests {
             let tune = held("b1").replace("holdout: yes\n", "");
             for (mark, case) in [("held", held("b1")), ("tune", tune)] {
                 let cases = format!("{ONE}{}", in_request(&case, line));
-                let (_d, c, b) = two_files(&format!("eq-req-{i}-{mark}"), &cases, "");
-                let got = load(&c, Some(&b)).unwrap_or_else(|e| panic!("{line:?} {mark}: {e}"));
+                // #861: a held-out case loads from a loud read only as `--cases`
+                // on the held-out file
+                let (_d, c, b) = two_files(&format!("eq-req-{i}-{mark}"), &cases, &cases);
+                let file = if mark == "held" { &b } else { &c };
+                let got = load(file, None).unwrap_or_else(|e| panic!("{line:?} {mark}: {e}"));
                 assert_eq!(got.from[0].1, 2, "{line:?} {mark}");
                 let want = format!("fix this\n{}", line.trim_end());
                 assert_eq!(got.cases[1].request, want, "{mark}");
@@ -4793,7 +4807,8 @@ mod tests {
     /// #783: an id in both files is an error naming the id and the other file.
     #[test]
     fn an_id_in_both_files_fails() {
-        let (_d, c, b) = two_files("clash", &format!("{ONE}{}", held("b1")), &held("b1"));
+        let tune = held("b1").replace("holdout: yes\n", "");
+        let (_d, c, b) = two_files("clash", &format!("{ONE}{tune}"), &held("b1"));
         let e = load(&c, Some(&b)).err().expect("an id in both files loaded");
         let other = format!("already in {}", c.display());
         assert!(e.contains("case b1: ") && e.contains(&other), "{e}");
@@ -4826,25 +4841,26 @@ mod tests {
         assert_eq!(e, format!("{}: {}", b.display(), nested(2)));
     }
 
-    /// #804: a held-out case in cases.txt is checked too, inside a tune id or
-    /// a held-out one, with or without the held-out file; the error names
-    /// cases.txt and the case's line.
+    /// #804: a held-out case in cases.txt, its id inside a tune id or a
+    /// held-out one, meets the guard before the nested check (#861). `--cases`
+    /// on the held-out file runs that check, and the error names that file and
+    /// the case's line.
     #[test]
     fn a_held_out_id_in_the_cases_file_inside_another_id_is_refused_unshown() {
         let tune = ONE.replace("=== crash", "=== xhb-1-tune");
         let in_tune = format!("{tune}{}", held("hb-1"));
         let in_held = format!("# c\n{}{}", held("hb-1"), held("hb-10"));
-        let rows = [
-            ("inside a tune id", &in_tune, true, 12),
-            ("inside a held-out id", &in_held, true, 2),
-            ("no held-out file", &in_tune, false, 12),
-        ];
-        for (i, (row, cases, blind, line)) in rows.into_iter().enumerate() {
+        // #861: cases.txt refuses a held-out case first, by its line
+        let rows = [("inside a tune id", &in_tune, 12), ("inside a held-out id", &in_held, 2)];
+        for (i, (row, cases, line)) in rows.into_iter().enumerate() {
             let (_d, c, b) = two_files(&format!("nest-cases-{i}"), cases, "");
-            let e = load(&c, blind.then_some(b.as_path())).err();
-            let e = e.unwrap_or_else(|| panic!("{row}: loaded"));
-            assert_eq!(e, format!("{}: {}", c.display(), nested(line)), "{row}");
+            let e = load(&c, Some(&b)).err().unwrap_or_else(|| panic!("{row}: loaded"));
+            assert_eq!(e, format!("{}: line {line}: {GUARD}", c.display()), "{row}");
         }
+        // `--cases` on the held-out file reads it as a loud file, the check included
+        let (_d, _, b) = two_files("nest-cases-named", ONE, &in_tune);
+        let e = load(&b, None).err().expect("--cases on the held-out file loaded");
+        assert_eq!(e, format!("{}: {}", b.display(), nested(12)));
     }
 
     /// #804: ids that do not sit inside one another load, a tune id inside a
@@ -4877,8 +4893,9 @@ mod tests {
     }
 
     /// #826: a held-out id equal to a kind is refused at its `===` line, the
-    /// kind a tune case's, a held-out case's or its own; in either file, and
-    /// with no held-out file. The error names no id or kind.
+    /// kind a tune case's, a held-out case's or its own. In cases.txt the guard
+    /// refuses the case first (#861); `--cases` on the held-out file, with no
+    /// file beside it, runs the check. The error names no id or kind.
     #[test]
     fn a_held_out_id_equal_to_a_kind_is_refused_unshown() {
         let two_held = held_kind("hb-k", "ops") + &held_kind("hb-2", "hb-k");
@@ -4887,8 +4904,6 @@ mod tests {
             ("a tune kind", ONE.to_string(), held_kind("bug", "ops"), Some(true), 1),
             ("a held-out kind", ONE.to_string(), two_held, Some(true), 1),
             ("its own kind", ONE.to_string(), held_kind("ops", "ops"), Some(true), 1),
-            ("in cases.txt", in_cases.clone(), String::new(), Some(false), 12),
-            ("no held-out file", in_cases, String::new(), None, 12),
         ];
         for (i, (row, cases, blind, in_blind, line)) in rows.into_iter().enumerate() {
             let (_d, c, b) = two_files(&format!("kind-{i}"), &cases, &blind);
@@ -4897,6 +4912,13 @@ mod tests {
             let file = if in_blind == Some(true) { &b } else { &c };
             assert_eq!(e, format!("{}: {}", file.display(), a_kind(line)), "{row}");
         }
+        // #861: cases.txt refuses a held-out case first; `--cases` on the
+        // held-out file reads it as a loud file, the check included
+        let (_d, c, b) = two_files("kind-cases", &in_cases, &in_cases);
+        let e = load(&c, Some(&b)).err().expect("a held-out case in cases.txt loaded");
+        assert_eq!(e, format!("{}: line 12: {GUARD}", c.display()));
+        let e = load(&b, None).err().expect("--cases on the held-out file loaded");
+        assert_eq!(e, format!("{}: {}", b.display(), a_kind(12)));
     }
 
     /// #826: a tune id equal to a kind loads, and so do ids and kinds apart.
@@ -4909,6 +4931,75 @@ mod tests {
             let (_d, c, b) = two_files(&format!("kind-apart-{i}"), &cases, &blind);
             let got = load(&c, Some(&b)).unwrap_or_else(|e| panic!("{row}: {e}"));
             assert_eq!(got.from, [(c, n), (b, 1)], "{row}");
+        }
+    }
+
+    /// #861: the error for a held-out case in a loud file. It names the file
+    /// the case belongs in, since the loud file may be of any name.
+    const GUARD: &str = "a held-out case belongs in holdout-blind.txt";
+
+    /// #861: ONE, then a made-up case whose `holdout:` line says `v`.
+    fn marked(v: &str) -> String {
+        format!("{ONE}{}", held("hb-1").replace("holdout: yes", &format!("holdout: {v}")))
+    }
+
+    /// #861: a loud file refuses a `holdout: yes` case whatever its name:
+    /// cases.txt, explore.txt, a `--cases` file whose name only ends as the
+    /// held-out file's does. With or without the held-out file beside it, the
+    /// error names the file and the case's `===` line only.
+    #[test]
+    fn a_loud_file_refuses_a_held_out_case() {
+        let (d, _, b) = two_files("loud-held-yes", "", "");
+        for name in ["cases.txt", "explore.txt", "x-holdout-blind.txt"] {
+            let p = d.0.join(name);
+            std::fs::write(&p, marked("yes")).unwrap();
+            for blind in [None, Some(b.as_path())] {
+                let e = load(&p, blind).err().unwrap_or_else(|| panic!("{name}: loaded"));
+                assert_eq!(e, format!("{}: line 12: {GUARD}", p.display()), "{name}");
+            }
+        }
+    }
+
+    /// #861: the held-out file's whole name is what `--cases` may read a
+    /// held-out case from: in one dir the same text loads under that name and
+    /// is refused under a name that only starts as it does.
+    #[test]
+    fn only_the_held_out_files_whole_name_loads_a_held_out_case() {
+        let (d, _, b) = two_files("loud-held-name", "", &marked("yes"));
+        let got = load(&b, None).unwrap_or_else(|e| panic!("the held-out file: {e}"));
+        assert_eq!((got.from[0].1, got.cases[1].holdout), (2, true));
+        let near = d.0.join("holdout-blind.txt.bak");
+        std::fs::write(&near, marked("yes")).unwrap();
+        let e = load(&near, None).err().expect("holdout-blind.txt.bak loaded");
+        assert_eq!(e, format!("{}: line 12: {GUARD}", near.display()));
+    }
+
+    /// #861: a `holdout:` value that is neither `yes` nor `no` is refused too,
+    /// while parsing: quietly, by the line it is on.
+    #[test]
+    fn a_loud_file_refuses_a_holdout_value_that_is_not_yes_or_no() {
+        let (_d, c, b) = two_files("loud-held-maybe", &marked("maybe"), "");
+        for blind in [None, Some(b.as_path())] {
+            let e = load(&c, blind).err().expect("holdout: maybe loaded");
+            assert_eq!(e, format!("{}: case hb-1: line 16: holdout is yes or no", c.display()));
+        }
+    }
+
+    /// #861: `holdout: no` loads from a loud file, as a tune case.
+    #[test]
+    fn a_loud_file_loads_a_case_marked_holdout_no() {
+        let (_d, c, b) = two_files("loud-held-no", &marked("no"), "");
+        let got = load(&c, Some(&b)).unwrap_or_else(|e| panic!("holdout: no: {e}"));
+        assert_eq!((got.from[0].1, got.cases[1].holdout), (2, false));
+    }
+
+    /// #861: the shipped loud files load with no held-out case in them.
+    #[test]
+    fn the_shipped_loud_files_hold_no_held_out_case() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("evals/panel");
+        for f in ["cases.txt", "explore.txt"] {
+            let l = load(&root.join(f), None).unwrap_or_else(|e| panic!("{f}: {e}"));
+            assert!(l.cases.iter().all(|c| !c.holdout), "{f}");
         }
     }
 
@@ -5569,7 +5660,10 @@ esac
     fn overlap_dir(name: &str) -> judge::Scratch {
         use std::os::unix::fs::PermissionsExt;
         let d = scratch(name);
-        std::fs::write(d.0.join("cases.txt"), OVERLAP_CASES).unwrap();
+        // #861: the held-out case in the held-out file, the tune one in cases.txt
+        let (held, tuned) = OVERLAP_CASES.split_at(OVERLAP_CASES.find("=== tuned-b").unwrap());
+        std::fs::write(d.0.join("cases.txt"), tuned).unwrap();
+        std::fs::write(d.0.join("holdout-blind.txt"), held).unwrap();
         std::fs::write(d.0.join("from.txt"), "an old line\n").unwrap();
         std::fs::write(d.0.join("claude"), OVERLAP_STUB).unwrap();
         let exe = std::fs::Permissions::from_mode(0o755);
@@ -5704,17 +5798,16 @@ esac
     fn overlap_with_lines_but_no_held_out_case_exits_2() {
         let d = overlap_dir("ov-nocase");
         std::fs::write(d.0.join("cases.txt"), OVERLAP_CASES.replace("holdout: yes\n", "")).unwrap();
+        std::fs::remove_file(d.0.join("holdout-blind.txt")).unwrap();
         let (code, _, err) = overlap_run(&d.0, "a plain line\n");
         assert_eq!((code, calls(&d.0)), (Some(2), 0), "{err}");
     }
 
     /// #783: the overlap check judges the held-out file's cases too.
+    /// [`overlap_dir`] writes the one held-out case there (#861).
     #[test]
     fn overlap_judges_the_held_out_files_cases() {
         let d = overlap_dir("ov-blind");
-        let (held, tuned) = OVERLAP_CASES.split_at(OVERLAP_CASES.find("=== tuned-b").unwrap());
-        std::fs::write(d.0.join("cases.txt"), tuned).unwrap();
-        std::fs::write(d.0.join("holdout-blind.txt"), held).unwrap();
         let (code, out, err) = overlap_run(&d.0, "a plain line\n");
         assert_eq!((code, calls(&d.0)), (Some(0), 1), "{out}{err}");
     }
@@ -6122,10 +6215,12 @@ esac
         /// [`rig_run_on`] with `script` as the stand-in claude.
         fn rig_run_with(name: &str, cases: &str, script: &str, extra: &[&str]) -> Ran {
             let d = scratch(name);
-            std::fs::write(d.0.join("cases.txt"), cases).unwrap();
+            // tune and held-out cases in one --cases file: only the held-out
+            // file may hold both (#861)
+            std::fs::write(d.0.join("holdout-blind.txt"), cases).unwrap();
             let claude = fake(&d.0, script);
             let p = |f: &str| d.0.join(f).display().to_string();
-            let (cases, rows, ledger) = (p("cases.txt"), p("rows.jsonl"), p("cost.tsv"));
+            let (cases, rows, ledger) = (p("holdout-blind.txt"), p("rows.jsonl"), p("cost.tsv"));
             let base = ["--cases", &cases, "--no-hermetic", "--runs", "1", "--jobs", "1"];
             let out = ["--out", &rows, "--ledger", &ledger];
             let args = [&base[..], &out, extra].concat().join("\n");
