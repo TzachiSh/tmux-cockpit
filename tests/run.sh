@@ -7522,11 +7522,11 @@ printf '%s\n' '#!/usr/bin/env bash' \
     "exec $(lfq "$(command -v git)") \"\${a[@]}\"" > "$LF/keep/git"
 chmod +x "$LF/keep/git"
 git -C "$LF/c" config remote.origin.url "$(file_url "$LF/src")"
-# With every guard stripped the remote fires, so the guard rows after test something. The row
-# proves the shim strips; that git.sh loads is the guard rows' to show, as each fails without it.
+# With every guard stripped the remote fires, so the guard rows after test something. The diff
+# runs only when git is git.sh's function, so the row also fails when git.sh did not load (#827).
 ( export LF_KEEP=none PATH="$LF/keep:$LF/hb:$PATH"; . "$DIR/scripts/lib/git.sh"
-  git -C "$LF/c" diff --numstat HEAD ) >/dev/null 2>&1
-is "keep/git with no guard kept strips every guard: the remote fires" "up" \
+  [ "$(type -t git)" = function ] && git -C "$LF/c" diff --numstat HEAD ) >/dev/null 2>&1
+is "keep/git with no guard kept strips every guard: the remote fires through git.sh" "up" \
    "$(head -1 "$LFM" 2>/dev/null)"
 rm -f "$LFM"
 for lfk in lazy proto nofetch; do
