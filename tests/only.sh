@@ -4,8 +4,8 @@
 # the prelude (helpers, counters, the state dir), every top-level function
 # defined anywhere in run.sh, the matching blocks, and the summary tail.
 # Blocks that read variables another block set (AP/NP from the deliver
-# block, RVS from the loop block) need that block matched too -- widen the
-# pattern.  A "\(" in PATTERN is a literal paren.  No match: status 2; invalid ERE: status 4.
+# block) need that block matched too -- widen the pattern.
+# A "\(" in PATTERN is a literal paren.  No match: status 2; invalid ERE: status 4.
 # ONLY_RUN=FILE reads blocks from FILE instead of tests/run.sh (the tests).
 # Usage: tests/only.sh 'tmux-review --attach|--deliver'
 set -u

@@ -185,13 +185,16 @@ export COCKPIT_NO_AUTOSTART=1
 # Scratch servers are registered here so an interrupted run does not leave them
 # behind. Each block still kills its own; this is the backstop.
 SOCKS=""
+# Socket paths of servers a block made under its own TMUX_TMPDIR, one per line: SOCKS splits
+# on spaces, and a TMPDIR may hold one (#818).
+SOCKP=""
 # kill-server does NOT unlink the socket file -- tmux never removes one, by any
 # exit path (measured: kill-server, last kill-session and a natural exit all
 # leave it). A suite that mints 17 unique -L names per run therefore left 17
 # dead socket inodes in the tmux socket dir every time; ~850 had piled up.
 SOCKDIR="${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)"
-# A SOCKS entry is a -L name under SOCKDIR, or the full path of a socket a block made under
-# its own TMUX_TMPDIR (#814): killed by that socket, never by pid.
+# A -L name under SOCKDIR (SOCKS), or the full path of a socket a block made under its own
+# TMUX_TMPDIR (SOCKP, #814): killed by that socket, never by pid.
 kill_sock() {                 # <-L name | /socket/path>
     case $1 in
         /*) "$TMUX_REAL" -S "$1" kill-server >/dev/null 2>&1; [ ! -S "$1" ] || rm -f "$1" ;;
@@ -199,7 +202,11 @@ kill_sock() {                 # <-L name | /socket/path>
     esac
 }
 kill_socks() {
+    local s
     for s in $SOCKS; do kill_sock "$s"; done
+    while IFS= read -r s; do [ -z "$s" ] || kill_sock "$s"; done <<EOF_SOCKP
+$SOCKP
+EOF_SOCKP
 }
 
 # Several checks need a live tmux server to set per-pane options against. Skip
@@ -232,6 +239,11 @@ fi
 # the moment it returns, so the first version of this registered nothing at all.
 TMPS=$(mktemp)
 mktmpd() { local d; d=$(mktemp -d) || return 1; printf '%s\n' "$d" >> "$TMPS"; printf '%s' "$d"; }
+# A file:// URL for a fixture dir under TMPDIR: curl rejects a raw space, and reads %xx as an
+# escape, so % is encoded first, then the space (#818). Only those two: mktemp's own names
+# hold neither, and the other characters curl rejects (# ? [ ] { }, a tab, a newline) can
+# reach a path only from the caller's TMPDIR prefix, which is not supported.
+file_url() { local p=${1//%/%25}; printf 'file://%s' "${p// /%20}"; }
 mktmpf() { local f; f=$(mktemp)    || return 1; printf '%s\n' "$f" >> "$TMPS"; printf '%s' "$f"; }
 # Polled, not slept for. A fixed sleep guesses how long a keystroke takes to
 # land; these wait for the thing the next assertion reads and give up after
@@ -3770,7 +3782,7 @@ printf '# mine\nrun-shell %s/cockpit.tmux\n' "$DIR" > "$BH/.tmux.conf"
 bs() {                        # bs <args...> -- bootstrap.sh on the faked box
     env -u TMUX -u TMUX_PANE HOME="$BH" XDG_BIN_HOME="${BSBIN:-$BB}" \
         XDG_CONFIG_HOME="$BH/.config" TMUX_TMPDIR="$BS/tmuxtmp" \
-        COCKPIT_GITHUB="file://$REL" PATH="$BPATH" "$DIR/bootstrap.sh" "$@" </dev/null 2>&1
+        COCKPIT_GITHUB="$(file_url "$REL")" PATH="$BPATH" "$DIR/bootstrap.sh" "$@" </dev/null 2>&1
 }
 # One tarball per published asset name, so the block never repeats the uname
 # mapping the script under test owns. The binaries are shell scripts: the only
@@ -8957,7 +8969,7 @@ TF=$(mktmpd); mkdir -p "$TF/plugin/scripts/lib" "$TF/build" "$TF/curlshim" "$TF/
 cp "$DIR/scripts/tui-fetch" "$TF/plugin/scripts/"
 cp "$DIR/scripts/lib/vnum.sh" "$DIR/scripts/lib/tui.sh" "$DIR/scripts/lib/cargo-build.sh" \
     "$TF/plugin/scripts/lib/"
-TFB="$TF/plugin/bin/cockpit-tui"; TFR="file://$TF/rel"; TFGONE="file://$TF/no-such-host"
+TFB="$TF/plugin/bin/cockpit-tui"; TFR=$(file_url "$TF/rel"); TFGONE=$(file_url "$TF/no-such-host")
 # Counting curl, not timing it: "a 404 is retried" is a fork count, never a clock.
 printf '#!/bin/sh\necho x >> "%s"\nexec %s "$@"\n' "$TF/curlcount" "$(command -v curl)" \
     > "$TF/curlshim/curl"
@@ -9469,7 +9481,7 @@ td_fetch() {                  # <exe> <its JSON spelling> [env...]: tui-fetch's 
     local e=$1 j=$2; shift 2; td_stale; rm -f "$TD/p/bin/cockpit-tui"
     PATH="$TD/shim:$PATH" TD_DIR="$TD/out" TD_EXE="$e" TD_EXE_JSON="$j" \
         env -u CARGO_TARGET_DIR -u COCKPIT_TUI_OFFLINE -u COCKPIT_TUI_BIN \
-        COCKPIT_TUI_RELEASES="file://$TD/no-such-host" "$@" \
+        COCKPIT_TUI_RELEASES="$(file_url "$TD/no-such-host")" "$@" \
         "$TD/p/scripts/tui-fetch" --required --version cockpit-tui-v9.9.9 > "$TD/fetch.out" 2>&1
     printf '%s %s' "$?" "$("$TD/p/bin/cockpit-tui" --version 2>/dev/null)"
 }
@@ -15084,20 +15096,20 @@ if [ "$RVTN" -gt "$RVMAX" ]; then
     rvsk="socket path $RVTN bytes, over $RVMAX, and no short XDG_RUNTIME_DIR (#766)"
     skip_ "the revdiff on the server's PATH: $rvsk"
 else
-RVS="env -u TMUX TMUX_TMPDIR=$RVTT $TMUX_REAL -L $SUITE_SOCK -f /dev/null"
-# Under its own TMUX_TMPDIR, so the cleanup finds it only by its path (#814). SOCKS is split
-# on spaces: a path with one is not registered, so no piece of it reaches the cleanup's rm.
-RVSP="$RVTT/tmux-$(id -u)/$SUITE_SOCK"
-case $RVSP in *[[:space:]]*) ;; *) SOCKS="$SOCKS $RVSP" ;; esac
-$RVS new-session -d 'sleep 300' >/dev/null 2>&1
-$RVS set-environment -g PATH "$RV/old:/usr/bin:/bin" >/dev/null 2>&1
+# A function, not a string: a path with a space in TMUX_TMPDIR stays one argument (#818).
+rvs() { env -u TMUX TMUX_TMPDIR="$RVTT" "$TMUX_REAL" -L "$SUITE_SOCK" -f /dev/null "$@"; }
+# Under its own TMUX_TMPDIR, so the cleanup finds it only by its path (#814), kept whole in
+# SOCKP even with a space in it (#818).
+RVSP="$RVTT/tmux-$(id -u)/$SUITE_SOCK"; SOCKP="$SOCKP$RVSP"$'\n'
+rvs new-session -d 'sleep 300' >/dev/null 2>&1
+rvs set-environment -g PATH "$RV/old:/usr/bin:/bin" >/dev/null 2>&1
 # A seam for the interrupt block (#814), set only by it: the run stops here with this server
 # up, and names the socket the server bound (resolved, as /proc/net/unix lists it).
 if [ -n "${COCKPIT_TEST_RV_HOLD:-}" ]; then
-    $RVS display-message -p '#{socket_path}' > "$COCKPIT_TEST_RV_HOLD" 2>/dev/null; sleep 60
+    rvs display-message -p '#{socket_path}' > "$COCKPIT_TEST_RV_HOLD" 2>/dev/null; sleep 60
 fi
 is "the revdiff on the server's PATH is the one graded" "warn" "$(rvrow "$(rvdc "$RV/new")")"
-$RVS kill-server >/dev/null 2>&1
+rvs kill-server >/dev/null 2>&1
 fi
 out=$(rvdc "$RV/old")
 is "revdiff below the tested version is a warn row" "warn" "$(rvrow "$out")"
@@ -15129,7 +15141,7 @@ rvrel() {                     # rvrel [flip]
 rvbs() {                      # rvbs <extra PATH dir> <args...> -- bootstrap.sh on the fake box
     local p=$1; shift
     env -u TMUX -u TMUX_PANE HOME="$RVH" XDG_BIN_HOME="$RVB" XDG_CONFIG_HOME="$RVH/.config" \
-        TMUX_TMPDIR="$RV/tmuxtmp" COCKPIT_GITHUB="file://$RVREL" \
+        TMUX_TMPDIR="$RV/tmuxtmp" COCKPIT_GITHUB="$(file_url "$RVREL")" \
         PATH="$p:$SHIM:/usr/bin:/bin" "$DIR/bootstrap.sh" "$@" </dev/null 2>&1
 }
 rvrel
@@ -19444,6 +19456,12 @@ KSD=$(mktmpd); echo keep > "$KSD/my"
 kill_sock "$KSD/my"
 is "kill_sock on a path that is not a socket leaves that file alone" "keep" "$(cat "$KSD/my")"
 
+echo "== file_url encodes a fixture path for curl, % first (#818) =="
+# The order is the row: encoding the space first turns its %20 into %2520.
+is "file_url: a space and a %, % encoded first" "file:///a%20b/c%25d%20e%2520f" \
+   "$(file_url "/a b/c%d e%20f")"
+is "file_url: a plain path is unchanged" "file:///a/b" "$(file_url /a/b)"
+
 echo "== an interrupted run leaves no revdiff doctor server behind (#814) =="
 # That block's server runs under its own TMUX_TMPDIR. A run ended mid-block left it up for
 # its 300 s, since the cleanup only walked SOCKDIR. Here the block is run on its own, held
@@ -19455,26 +19473,31 @@ elif ! command -v jq >/dev/null 2>&1; then skip_ "revdiff interrupt (no jq)"
 elif [ ! -r /proc/net/unix ] || ! command -v setsid >/dev/null 2>&1; then
     skip_ "revdiff interrupt (no /proc/net/unix or setsid)"
 else
-IR=$(mktmpd)
-# The caller's runtime dir, as the suite itself had it: the block's short-socket fallback.
-( cd "$DIR" && TMPDIR="$IR" XDG_RUNTIME_DIR="$SUITE_XRD" COCKPIT_TEST_RV_HOLD="$IR/held" \
-    exec setsid tests/only.sh '^revdiff: the doctor grades it' ) </dev/null >"$IR/log" 2>&1 &
-irp=$!
-# Held, or the run is over (it never reached the hold): whichever comes first.
-POLLS=600 until_out '?*' sh -c "[ -s '$IR/held' ] && echo held || kill -0 $irp || echo gone"
-irs=$(cat "$IR/held" 2>/dev/null)
-irl=0; [ -z "$irs" ] || irl=$(grep -cF " $irs" /proc/net/unix)
-if [ -z "$irs" ]; then
-    wait "$irp" 2>/dev/null
-    # skip_ prints a colour code between SKIP and the reason.
-    if grep -q "SKIP.* the revdiff on the server's PATH" "$IR/log"; then
-        skip_ "revdiff interrupt (the block skipped its server row, so it never held)"
-    else
-        bad "the revdiff block, run on its own, held with its server up" "held" \
-            "$(tail -3 "$IR/log" | tr '\n' ' ')"
+# The nested run's TMPDIR, plain and with two spaces and a % (#818): the block's server
+# command and the cleanup's socket list must keep such a path whole.
+ir_run() {                    # <TMPDIR for the nested run> <label for the rows>
+    local d=$1 l=$2 irp irs irl irc
+    # The caller's runtime dir, as the suite itself had it: the block's short-socket fallback.
+    ( cd "$DIR" && TMPDIR="$d" XDG_RUNTIME_DIR="$SUITE_XRD" COCKPIT_TEST_RV_HOLD="$d/held" \
+        exec setsid tests/only.sh '^revdiff: the doctor grades it' ) </dev/null >"$d/log" 2>&1 &
+    irp=$!
+    # Held, or the run is over (it never reached the hold): whichever comes first.
+    POLLS=600 until_out '?*' \
+        sh -c "[ -s '$d/held' ] && echo held || kill -0 $irp || echo gone"
+    irs=$(cat "$d/held" 2>/dev/null)
+    irl=0; [ -z "$irs" ] || irl=$(grep -cF " $irs" /proc/net/unix)
+    if [ -z "$irs" ]; then
+        wait "$irp" 2>/dev/null
+        # skip_ prints a colour code between SKIP and the reason.
+        if grep -q "SKIP.* the revdiff on the server's PATH" "$d/log"; then
+            skip_ "revdiff interrupt, $l (its server row skipped: it never held)"
+        else
+            bad "$l: the revdiff block, run on its own, held with its server up" "held" \
+                "$(tail -3 "$d/log" | tr '\n' ' ')"
+        fi
+        return
     fi
-else
-    is "the held run's server listens on the socket it named" "1" "$irl"
+    is "$l: the held run's server listens on the socket it named" "1" "$irl"
     # Only the group this block started, only while it is held, and only when its leader is
     # still that run.
     irc=""; read -r irc 2>/dev/null < "/proc/$irp/comm"
@@ -19483,9 +19506,12 @@ else
     # only.sh ends at once; the script it runs ends after its EXIT trap's cleanup: wait for
     # that, by the listener count, not a clock.
     until_out 0 grep -cF " $irs" /proc/net/unix
-    is "after TERM no server listens on the revdiff block's socket" "0" \
+    is "$l: after TERM no server listens on the revdiff block's socket" "0" \
        "$(grep -cF " $irs" /proc/net/unix)"
-fi
+}
+ir_run "$(mktmpd)" "a plain TMPDIR"
+IRS="$(mktmpd)/my  tmp %x"; mkdir -p "$IRS"
+ir_run "$IRS" "a TMPDIR with two spaces and a %"
 fi
 
 flop_left
