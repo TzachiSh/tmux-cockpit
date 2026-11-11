@@ -257,9 +257,11 @@ utf8_loc() {
 # hold neither, and the other characters curl rejects (# ? [ ] { }, a tab, a newline) can
 # reach a path only from the caller's TMPDIR prefix, which is not supported.
 file_url() { local p=${1//%/%25}; printf 'file://%s' "${p// /%20}"; }
-# Its callers' release dirs have a space in their own name ("r el"), so a call site reverted
-# to a raw file:// fails at any TMPDIR, not only a spaced one (#827). The no-such-host URLs
-# are meant to fail, and a raw one fails too: no row can tell them apart.
+# The bootstrap (#228), tui-fetch and revdiff release dirs have a space in their own name
+# ("r el"), so a call site there reverted to a raw file:// fails at any TMPDIR. The #217
+# block's clones fail raw only under a TMPDIR holding a %XX escape, which git decodes, and its
+# loop's file:// remote is unpinned. The no-such-host URLs are meant to fail, and a raw one
+# fails too: no row can tell them apart (#827).
 mktmpf() { local f; f=$(mktemp)    || return 1; printf '%s\n' "$f" >> "$TMPS"; printf '%s' "$f"; }
 # Polled, not slept for. A fixed sleep guesses how long a keystroke takes to
 # land; these wait for the thing the next assertion reads and give up after
@@ -7400,12 +7402,16 @@ echo "== a partial clone's lazy fetch cannot run the repo's planted remote confi
 # old/git shim drops GIT_NO_LAZY_FETCH as git < 2.44 does, leaving only the protocol pin.
 LF=$(mktmpd); LFM="$LF/marker"; mkdir "$LF/old" "$LF/hb"
 # The paths go into the generated scripts single-quoted: a space in TMPDIR split the marker's
-# path, and the script appended to a file outside the suite's scratch (#820).
-printf "#!/bin/sh\necho up >> '%s'\nexit 1\n" "$LFM" > "$LF/up"; chmod +x "$LF/up"
+# path, and the script appended to a file outside the suite's scratch (#820). lfq escapes a '
+# inside them as '\'', as scripts/lib/hook.sh's shq does, so a ' in TMPDIR holds too (#827).
+lfq() { printf "'%s'" "${1//\'/\'\\\'\'}"; }
+printf '#!/bin/sh\necho up >> %s\nexit 1\n' "$(lfq "$LFM")" > "$LF/up"; chmod +x "$LF/up"
 ln -s "$LF/up" "$LF/hb/git-remote-foo"
 printf '#!/bin/sh\nunset GIT_NO_LAZY_FETCH\nexec '"'%s'"' "$@"\n' "$(command -v git)" \
     > "$LF/old/git"
 chmod +x "$LF/old/git"
+# git percent-decodes a file:// URL, so the clones take theirs from file_url: a raw one
+# fails under a TMPDIR holding %20, and the chain sets no plant (#827).
 ( export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
   git init -q -b main "$LF/src" && cd "$LF/src" && git config uploadpack.allowFilter true \
   && printf 'a\n' > f.txt && git add -A && git commit -qm 1 \
@@ -7415,7 +7421,8 @@ chmod +x "$LF/old/git"
   && git switch -q main && printf 'b\n' >> f.txt && git commit -qam 2 \
   && git clone -q --filter=blob:none "$(file_url "$LF/src")" "$LF/c2" \
   && cd "$LF/c" && git fetch -q && git reset -q --soft origin/main \
-  && git config remote.origin.uploadpack "'$LF/up'" && git config core.sshCommand "'$LF/up'" \
+  && git config remote.origin.uploadpack "$(lfq "$LF/up")" \
+  && git config core.sshCommand "$(lfq "$LF/up")" \
   && git config protocol.file.allow always && git config protocol.ssh.allow always \
   && git config protocol.ext.allow always && git config protocol.foo.allow always ) >/dev/null 2>&1
 lf_paths() {
@@ -7427,8 +7434,8 @@ lf_paths() {
 }
 # foo:: is a remote helper on PATH (hb/), which no protocol.<p>.allow pin can name. git runs
 # uploadpack and sshCommand through a shell, so those hold the path quoted, and ext:: splits
-# its command at spaces, "% " being a space and "%%" a % (#820). git percent-decodes a
-# file:// URL, so a % in TMPDIR goes through file_url, %25 (#827).
+# its command at spaces, "% " being a space and "%%" a % (#820). The file:// remote is
+# unpinned: up fires whatever path git reads from it (#827).
 lfx=${LF//%/%%}; lfx=${lfx// /% }
 for lfu in "$(file_url "$LF/src")" ssh://h/r "ext::$lfx/up" foo::x; do
     git -C "$LF/c" config remote.origin.url "$lfu"
