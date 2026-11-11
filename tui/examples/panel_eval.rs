@@ -6715,6 +6715,8 @@ esac
             for (k, _) in cockpit_tui::panel::request::CALL_ENV {
                 c.env_remove(k);
             }
+            // unset unless `env` sets it, whatever the developer's own shell has
+            c.env_remove("CLAUDE_CONFIG_DIR");
             c.envs(env.iter().copied());
             let o = c.output().unwrap();
             let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
@@ -6746,33 +6748,44 @@ esac
                 expect: write\nmust: ok\n--- request\nfix this\n";
             let dump = "#!/bin/sh\n[ \"$1\" = --version ] && { echo 9.9.9; exit 0; }\n\
                 cat >/dev/null\nprintf %s \"$DISABLE_TELEMETRY\" | od -An -tx1 | tr -d ' \\n'\n";
-            let env = [("DISABLE_TELEMETRY", OsStr::from_bytes(b"o\xff"))];
+            let env = [("DISABLE_TELEMETRY", OsStr::from_bytes(b"\xffo"))];
             let (code, out, err, rows) = rig_run_env("quiet-env-bytes", one, dump, &[], &env);
             assert_eq!(code, Some(0), "{out}{err}");
             let row: Value = serde_json::from_str(rows.lines().next().unwrap_or("null")).unwrap();
-            assert_eq!(row["reply"].as_str().map(str::trim), Some("6fff"), "{rows}");
-            assert_eq!(row["env"]["vars"]["DISABLE_TELEMETRY"], json!({ "bytes": "6fff" }), "{rows}");
+            assert_eq!(row["reply"].as_str().map(str::trim), Some("ff6f"), "{rows}");
+            assert_eq!(row["env"]["vars"]["DISABLE_TELEMETRY"], json!({ "bytes": "ff6f" }), "{rows}");
+            // one of the first four names the rig lacks is in the row as null (#875)
+            assert_eq!(row["env"]["vars"].get("CLAUDE_CONFIG_DIR"), Some(&Value::Null), "{rows}");
         }
 
         /// #875: the rig's own lookup at both ends for values that are text.
-        /// An empty call variable, a text one and one of the first four names
-        /// reach the call, and the row records each as the call got it.
+        /// An empty call variable, a text one and a long one of the first four
+        /// names, with capitals and a space at each end, reach the call, and
+        /// the row records each as the call got it, an unset call name too.
         #[test]
         fn a_rig_run_records_an_empty_and_a_text_variable_as_the_call_got_them() {
             let one = "=== env-e\nkind: bug\nwindow: bash · bash · /home/u\n\
                 expect: write\nmust: ok\n--- request\nfix this\n";
             let dump = "#!/bin/sh\n[ \"$1\" = --version ] && { echo 9.9.9; exit 0; }\ncat >/dev/null\n\
-                echo \"${DISABLE_TELEMETRY-unset},${DISABLE_AUTOUPDATER-unset},${CLAUDE_CONFIG_DIR-unset}.\"\n";
+                echo \"${DISABLE_TELEMETRY-unset},${DISABLE_AUTOUPDATER-unset},${DISABLE_ERROR_REPORTING-unset},\
+                ${CLAUDE_CONFIG_DIR-unset}.\"\n";
+            let long = format!(" {} ", "/Made-Up/".repeat(40));
             let set = [
                 ("DISABLE_TELEMETRY", ""),
                 ("DISABLE_AUTOUPDATER", "0"),
-                ("CLAUDE_CONFIG_DIR", "/c d"),
+                ("CLAUDE_CONFIG_DIR", long.as_str()),
             ];
             let env = set.map(|(k, v)| (k, OsStr::new(v)));
             let (code, out, err, rows) = rig_run_env("quiet-env-text", one, dump, &[], &env);
             assert_eq!(code, Some(0), "{out}{err}");
             let row: Value = serde_json::from_str(rows.lines().next().unwrap_or("null")).unwrap();
-            assert_eq!(row["reply"].as_str().map(str::trim), Some(",0,/c d."), "{rows}");
+            assert_eq!(
+                row["reply"].as_str().map(str::trim),
+                Some(format!(",0,1,{long}.").as_str()),
+                "{rows}"
+            );
+            // a name the rig lacks is recorded as the 1 the call got
+            assert_eq!(row["env"]["vars"]["DISABLE_ERROR_REPORTING"], "1", "{rows}");
             let got = set.map(|(k, _)| row["env"]["vars"][k].clone());
             assert_eq!(got, set.map(|(_, v)| json!(v)), "{rows}");
         }
