@@ -4268,14 +4268,19 @@ mod tests {
     }
 
     /// #853: the fingerprint names the panel call's three variables as the calls
-    /// get them: the rig's own value when it has one, else the panel's.
+    /// get them: the rig's own value when it has one, else the panel's. A
+    /// value set to nothing is one the rig has (#859): the calls get it empty.
     #[test]
     fn the_fingerprint_names_the_call_env_as_the_calls_get_it() {
-        let var = |k: &str| (k == "DISABLE_TELEMETRY").then(|| "0".to_string());
+        let var = |k: &str| match k {
+            "DISABLE_TELEMETRY" => Some("0".to_string()),
+            "DISABLE_AUTOUPDATER" => Some(String::new()),
+            _ => None,
+        };
         let f = fingerprint("v", true, None, Path::new("/c"), Effort::Medium, var);
         let names = ["DISABLE_TELEMETRY", "DISABLE_AUTOUPDATER", "DISABLE_ERROR_REPORTING"];
         let got = names.map(|k| f.json()["vars"][k].clone());
-        assert_eq!(got, ["0", "1", "1"].map(serde_json::Value::from));
+        assert_eq!(got, ["0", "", "1"].map(serde_json::Value::from));
     }
 
     /// The effort the calls get, from COCKPIT_PANEL_EFFORT, is in the fingerprint.
