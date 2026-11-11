@@ -4669,7 +4669,18 @@ fi
 echo "== a reload that turns a cockpit key off or moves it gives the old key back (#290) =="
 # Every key, not only the menu's and the panel's. "Stock" is what a -f /dev/null
 # server of the same tmux binds there, note included; nothing when it binds nothing.
-if need_tmux "key give-back"; then :; else
+# Its sockets sit in one dir under /tmp, not TMPDIR: a path past 107 bytes cannot be bound,
+# and a long TMPDIR passed it (#858). $GBT holds gb_stock's socket dirs and is the "/tmp
+# unwritable" row's TMPDIR: socket-bearing dirs only, a few bytes each, as the suite's
+# SOCKDIR is. It is in TMPS, so an interrupted run removes it too, and removed at the end of
+# this block; its name carries the run's tag, so a check tells this run's from another's.
+# Production's give_back tries /tmp first for the same reason.
+GBTAG=${COCKPIT_TEST_GBTAG:-$$}
+if need_tmux "key give-back"; then :
+elif ! GBT=$(mktemp -d "/tmp/cockpit-gbt-$GBTAG.XXXXXX" 2>/dev/null); then
+    skip_ "key give-back (no writable /tmp for its stock sockets)"
+else
+printf '%s\n' "$GBT" >> "$TMPS"
 GB="cockpit-gb-$$"; SOCKS="$SOCKS $GB"
 GBD=$(mktmpd)
 "$TMUX_REAL" -L "$GB" -f /dev/null new-session -d -s t -c "$GBD" >/dev/null 2>&1
@@ -4691,7 +4702,7 @@ gb_on() {                     # <tmux argv...> <key>  the binding, then its note
 }
 gb_live()  { gb_on "$TMUX_REAL" -L "$GB" "$1"; }
 gb_stock() {
-    local d; d=$(mktemp -d "$GBD/stock.XXXXXX") || return
+    local d; d=$(mktemp -d "$GBT/s.XXXXXX") || return
     gb_on "$TMUX_REAL" -S "$d/s" -f /dev/null "$1"; rm -rf "$d"
 }
 gb_state() { [ "$(gb_live "$1")" = "$(gb_stock "$1")" ] && echo stock || echo cockpit; }
@@ -4794,13 +4805,13 @@ loaded_on "$GB" "and the next load gives w back" &&
        "$(gb_live w | grep -o 'choose-tree -Zw')|$(gb_left)"
 gb_set board unset; gb_load
 # /tmp read-only and TMPDIR writable (Termux): the read falls back to TMPDIR.
-mkdir -p "$GBD/ro" "$GBD/tt"
+mkdir -p "$GBD/ro"
 # The shim refuses the /tmp template only: the suite's own TMPDIR is under /tmp too.
 { printf '#!/bin/sh\nfor a; do case "$a" in /tmp/cockpit-gb.*) exit 1 ;; esac; done\n'
   printf 'exec "%s" "$@"\n' "$(command -v mktemp)"; } > "$GBD/ro/mktemp"
 chmod +x "$GBD/ro/mktemp"
 gb_set board off
-reload_on "$GB" "PATH='$GBD/ro':\"\$PATH\" TMPDIR='$GBD/tt' '$DIR/cockpit.tmux'"
+reload_on "$GB" "PATH='$GBD/ro':\"\$PATH\" TMPDIR='$GBT' '$DIR/cockpit.tmux'"
 loaded_on "$GB" "with /tmp unwritable the stock read uses TMPDIR: w back, nothing pending" &&
     is "with /tmp unwritable the stock read uses TMPDIR: w back, nothing pending" \
        "choose-tree -Zw|" \
@@ -4821,7 +4832,43 @@ is "sessions and jump trading keys keep both bound" "tmux-jump:--popup" \
 unset -f gb_load gb_set gb_on gb_live gb_stock gb_state
 "$TMUX_REAL" -L "$GBO" kill-server >/dev/null 2>&1
 "$TMUX_REAL" -L "$GB" kill-server >/dev/null 2>&1
-rm -rf "$GBD"
+rm -rf "$GBD" "$GBT"
+is "the block leaves no cockpit-gbt dir of its own in /tmp (#858)" "" \
+   "$(ls -d /tmp/cockpit-gbt-"$GBTAG".* 2>/dev/null)"
+fi
+unset GBTAG GBT
+
+echo "== the key give-back block passes under a long TMPDIR and leaves nothing in /tmp (#858) =="
+# A socket path past 107 bytes cannot be bound. The #290 block built two under TMPDIR:
+# gb_stock's stock socket (TMPDIR + 30 bytes) and the "/tmp unwritable" row's fallback
+# (TMPDIR + 38), so a TMPDIR of 70 bytes failed one row and one of 78 failed 13. Here that
+# block runs on its own under a 70- and a 90-byte TMPDIR, tagged so its /tmp dirs are told
+# from another run's, and must pass and leave none of them behind. The nested run reads the
+# live tests/run.sh, not a par.sh snapshot.
+if need_tmux "key give-back under a long TMPDIR"; then :; else
+gbl_run() {                   # <TMPDIR length in bytes>
+    local base d tag rc nb
+    base=$(mktmpd); d="$base/$(printf 'x%.0s' $(seq 1 $(($1 - ${#base} - 1))))"
+    if [ "${#d}" -ne "$1" ]; then
+        skip_ "key give-back under a $1-byte TMPDIR (the suite's own TMPDIR is too long)"
+        return
+    fi
+    mkdir -p "$d"; tag="l$$-$1"
+    ( cd "$DIR" && TMPDIR="$d" COCKPIT_TEST_GBTAG="$tag" \
+        exec tests/only.sh '^a reload that turns a cockpit key off or moves it' ) \
+        </dev/null >"$base/log" 2>&1
+    # Exit 0 is not enough: a block that skips exits 0 having tested nothing. Its FAIL and
+    # SKIP lines and its count line are the evidence, shown here as the log goes at cleanup.
+    rc=$?; nb=$(grep -aE '^  .{0,12}(FAIL|SKIP)' "$base/log" | sed 's/\x1b\[[0-9;]*m//g')
+    [ "$rc" = 0 ] && [ -z "$nb" ] || rc="$rc: $(printf '%s\n' "$nb" \
+        "$(grep -a 'passed,' "$base/log" | tail -1)" | tr -s '\n' ' ')"
+    is "under a $1-byte TMPDIR the key give-back block passes, none skipped (#858)" "0" "$rc"
+    is "and leaves no cockpit-gbt dir of its own in /tmp" "" \
+       "$(ls -d /tmp/cockpit-gbt-"$tag".* 2>/dev/null)"
+}
+gbl_run 70
+gbl_run 90
+unset -f gbl_run
 fi
 
 echo "== upgrading from a load before the key notes still gives the old keys back (#290) =="
