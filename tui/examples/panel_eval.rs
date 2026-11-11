@@ -1031,6 +1031,8 @@ struct Ended<'a> {
     read: Option<Vec<String>>,
     /// What an exploring call read and searched ([`panel_reads`]).
     calls: Option<Vec<String>>,
+    /// Whether the run has `--router-prompt`: its rows carry a `label` (#789).
+    router: bool,
 }
 
 /// The one place that decides what a run shows of a case (#792). A tune case
@@ -1045,7 +1047,7 @@ fn show_case<T>(held: bool, full: impl FnOnce() -> T, blind: impl FnOnce() -> T)
 /// The `--out` fields a held-out case's row keeps (#792): none holds its
 /// phrases. Every other field, one added later included, is null on that row:
 /// the reply holds a passing case's must phrases, and the reads its searches.
-const HELD_FIELDS: [&str; 25] = [
+const HELD_FIELDS: [&str; 26] = [
     "id",
     "expect",
     "run",
@@ -1071,6 +1073,9 @@ const HELD_FIELDS: [&str; 25] = [
     "judge_model",
     "judge_cost_usd",
     "rubric",
+    // #789: a router reply's label is one of three fixed words, ask, write or
+    // other ([`router_label`]), never the reply's text, so it holds no phrase
+    "label",
 ];
 
 /// Why a `--show-holdout` run refuses to start, and the fix.
@@ -1112,7 +1117,26 @@ fn blind_row(mut row: serde_json::Value) -> serde_json::Value {
             *v = serde_json::Value::Null;
         }
     }
+    // `label` is held for router_label's three words only: any other value
+    // a later writer puts there may be case text
+    if let Some(l) = m.get_mut("label")
+        && !matches!(l.as_str(), Some("ask" | "write" | "other"))
+    {
+        *l = serde_json::Value::Null;
+    }
     row
+}
+
+/// A `--router-prompt` reply's label (#789): `ask` or `write` when the reply,
+/// trimmed and lowercased with one trailing `.` allowed, is that word, else
+/// `other`. The set is closed: a held-out row keeps the label, never the reply.
+fn router_label(reply: &str) -> &'static str {
+    let word = reply.trim().to_lowercase();
+    match word.strip_suffix('.').unwrap_or(&word) {
+        "ask" => "ask",
+        "write" => "write",
+        _ => "other",
+    }
 }
 
 /// Whether an `--out` row is a held-out case's; a row that does not say is.
@@ -1212,7 +1236,7 @@ impl Ended<'_> {
 
     fn full_row(&self, env: serde_json::Value) -> serde_json::Value {
         let (c, g, u) = (self.case, self.grade.as_ref(), &self.usage);
-        serde_json::json!({
+        let mut row = serde_json::json!({
             "id": c.id, "kind": c.kind, "expect": c.expect.as_str(), "run": self.run, "model": self.model,
             "system": format!("{:016x}", self.system), "prompt": self.prompt,
             "ms": self.ms as u64, "error": self.err,
@@ -1225,7 +1249,12 @@ impl Ended<'_> {
             "in_tokens": u.in_tokens, "out_tokens": u.out_tokens,
             "refused": g.map(|g| g.refused), "holdout": c.holdout, "reply": self.reply,
             "explore": self.explore, "files_read": self.read, "reads": self.calls, "env": env,
-        })
+        });
+        // a failed call has no reply to label
+        if self.router {
+            row["label"] = self.err.as_ref().map_or(router_label(self.reply), |_| "other").into();
+        }
+        row
     }
 }
 
@@ -1440,6 +1469,7 @@ fn run(o: &Opts, me: std::io::Result<PathBuf>) {
                 explore: j.explore,
                 read,
                 calls,
+                router: o.router.is_some(),
             };
             println!("{}", end.printed(o.show_holdout));
             if log.is_some() || o.judge {
@@ -5452,6 +5482,7 @@ esac
                 explore: false,
                 read: None,
                 calls: None,
+                router: false,
             }
         }
 
@@ -5966,6 +5997,180 @@ esac
             }
             assert!(!e.contains("write.jsonl"), "{e}");
             assert_eq!(mixed_error(&[(&w, &rows(&plain)), (&m, &rows(&routed))]), None);
+        }
+
+        // --- #789: a held-out router row keeps a closed-set label ---
+
+        /// Made-up cases: a tune case and two held-out ones, each request with a
+        /// `wk-` phrase no id, kind or rig line holds.
+        const ROUTED: &str = "=== rt-tune\nkind: bug\nwindow: bash · bash · /home/u\n\
+            expect: write\nmust: al-beacon\n--- request\nwk-tune fix this\n\
+            === rt-ask\nkind: co-kd\nwindow: bash · bash · /home/u\n\
+            expect: ask\nholdout: yes\nask_any: sf-gate\n--- request\nwk-ask route this\n\
+            === rt-write\nkind: co-kd\nwindow: bash · bash · /home/u\n\
+            expect: write\nholdout: yes\nmust: qz-lamp\n--- request\nwk-write route that\n";
+
+        /// A stand-in claude that replies with the request it was sent.
+        const ECHO_ALL: &str = "#!/bin/sh\n[ \"$1\" = --version ] && { echo 9.9.9; exit 0; }\n\
+            cat\n";
+
+        /// [`ROUTED`] run on `script` with `--router-prompt` when `router`.
+        fn routed_run(name: &str, script: &str, router: bool) -> Ran {
+            let d = scratch(&format!("{name}-rp"));
+            let file = d.0.join("router.txt");
+            std::fs::write(&file, ROUTER).unwrap();
+            let file = file.display().to_string();
+            let flags = if router { vec!["--router-prompt", file.as_str()] } else { vec![] };
+            rig_run_with(name, ROUTED, script, &flags)
+        }
+
+        /// The `label` of `id`'s row in `rows`, `None` when the row has no such key.
+        fn label_of(rows: &str, id: &str) -> Option<Value> {
+            let rows = rows.lines().map(|l| serde_json::from_str::<Value>(l).unwrap());
+            let row = rows.into_iter().find(|r| r["id"] == json!(id)).unwrap();
+            row.as_object().unwrap().get("label").cloned()
+        }
+
+        #[test]
+        fn a_held_out_router_row_echoing_its_request_is_labelled_other_and_shows_no_text() {
+            let (code, out, err, rows) = routed_run("label-echo", ECHO_ALL, true);
+            assert_eq!(code, Some(0), "{out}{err}");
+            for id in ["rt-ask", "rt-write"] {
+                assert_eq!(label_of(&rows, id), Some(json!("other")), "{id}: {rows}");
+            }
+            let held = rows.lines().filter(|l| !l.contains("rt-tune")).collect::<String>();
+            let shown = format!("{out}\n{err}\n{held}");
+            assert!(!shown.contains("wk-ask") && !shown.contains("wk-write"), "{shown}");
+        }
+
+        /// A stand-in claude replying ` Ask.` to rt-ask and `WRITE` to the rest.
+        const WORDS: &str = "#!/bin/sh\n[ \"$1\" = --version ] && { echo 9.9.9; exit 0; }\n\
+            case \"$(cat)\" in *wk-ask*) printf ' Ask.\\n' ;; *) printf 'WRITE\\n' ;; esac\n";
+
+        /// Each held-out case's console line in `out`, mark and id, then all
+        /// after the latency.
+        fn held_lines(out: &str) -> Vec<String> {
+            let ids = ["rt-ask", "rt-write"];
+            let held = |l: &&str| ids.contains(&l.split_whitespace().nth(1).unwrap_or(""));
+            let cut = |l: &str| {
+                let (head, tail) = l.split_once(" ms  ")?;
+                Some(format!("{} | {tail}", head.split(" want ").next()?))
+            };
+            out.lines().filter(held).filter_map(cut).collect()
+        }
+
+        #[test]
+        fn a_router_run_prints_a_held_out_line_as_a_run_without_it() {
+            let (_, on, _, _) = routed_run("label-line-on", WORDS, true);
+            let (_, off, _, _) = routed_run("label-line-off", WORDS, false);
+            let lines = held_lines(&on);
+            assert_eq!(lines.len(), 2, "{on}");
+            assert_eq!(lines, held_lines(&off), "{on}\n{off}");
+        }
+
+        #[test]
+        fn a_held_out_router_row_keeps_an_ask_or_write_reply_as_its_label() {
+            let (code, out, err, rows) = routed_run("label-word", WORDS, true);
+            assert_eq!(code, Some(0), "{out}{err}");
+            let want = [("rt-ask", "ask"), ("rt-write", "write"), ("rt-tune", "write")];
+            for (id, label) in want {
+                assert_eq!(label_of(&rows, id), Some(json!(label)), "{id}: {rows}");
+            }
+        }
+
+        #[test]
+        fn without_router_prompt_no_row_has_a_label_key() {
+            let (code, out, err, rows) = routed_run("label-off", ECHO_ALL, false);
+            assert_eq!(code, Some(0), "{out}{err}");
+            for id in ["rt-tune", "rt-ask", "rt-write"] {
+                assert_eq!(label_of(&rows, id), None, "{id}: {rows}");
+            }
+        }
+
+        /// The `--out` row #801 wrote for [`QUIET`]'s held-q answered [`LEAKY`].
+        const HELD_ROW: &str = concat!(
+            r#"{"id":"held-q","kind":null,"expect":"write","run":0,"model":"sonnet","#,
+            r#""system":"0000000000000001","prompt":"p","ms":7,"error":null,"asked":false,"#,
+            r#""pass":false,"question":null,"missing":null,"forbidden":null,"wrong_type":null,"#,
+            r#""cost_usd":null,"in_tokens":null,"out_tokens":null,"refused":false,"#,
+            r#""holdout":true,"reply":null,"explore":false,"files_read":null,"reads":null,"#,
+            r#""env":{},"missing_n":1,"forbidden_n":1}"#,
+        );
+
+        /// The `--out` row #801 wrote for [`QUIET`]'s tune-q answered [`LEAKY`].
+        const TUNE_ROW: &str = concat!(
+            r#"{"id":"tune-q","kind":"bug","expect":"write","run":0,"model":"sonnet","#,
+            r#""system":"0000000000000001","prompt":"p","ms":7,"error":null,"asked":false,"#,
+            r#""pass":false,"question":"","missing":["ga-relay"],"forbidden":["ze-trap"],"#,
+            r#""wrong_type":null,"cost_usd":null,"in_tokens":null,"out_tokens":null,"#,
+            r#""refused":false,"holdout":false,"reply":"<prompt>Use ze-trap, vi-nail,"#,
+            r#" al-beacon and qz-lamp.</prompt>","explore":false,"files_read":null,"#,
+            r#""reads":null,"env":{}}"#,
+        );
+
+        /// Without `--router-prompt`, a held-out and a tune row are byte for
+        /// byte the rows #801 wrote.
+        #[test]
+        fn without_router_prompt_rows_are_byte_for_byte_as_before() {
+            let cases = parse_cases(QUIET).unwrap();
+            let row = |id| row_of(&ended(&cases, id, LEAKY)).to_string();
+            assert_eq!(row("held-q"), HELD_ROW);
+            assert_eq!(row("tune-q"), TUNE_ROW);
+        }
+
+        #[test]
+        fn router_label_is_ask_write_or_other() {
+            let rows = [
+                ("bare ask", "ask", "ask"),
+                ("padded, cased, one dot", " Write.\n", "write"),
+                ("upper case", "ASK", "ask"),
+                ("two dots", "ask..", "other"),
+                ("two words", "ask it", "other"),
+                ("a sentence", "I would write", "other"),
+                ("other punctuation", "write!", "other"),
+                ("empty", "", "other"),
+                ("blank", " \n", "other"),
+            ];
+            for (name, reply, want) in rows {
+                assert_eq!(router_label(reply), want, "{name}");
+            }
+        }
+
+        #[test]
+        fn a_held_out_router_row_keeps_its_label_and_nulls_its_reply() {
+            let cases = parse_cases(QUIET).unwrap();
+            let mut e = ended(&cases, "held-q", "write");
+            e.router = true;
+            let row = row_of(&e);
+            assert_eq!((&row["label"], &row["reply"]), (&json!("write"), &Value::Null));
+        }
+
+        #[test]
+        fn a_failed_router_call_is_labelled_other() {
+            let cases = parse_cases(QUIET).unwrap();
+            for id in ["tune-q", "held-q"] {
+                let mut e = failed(&cases, id, "ask");
+                e.router = true;
+                assert_eq!(row_of(&e)["label"], json!("other"), "{id}");
+            }
+        }
+
+        /// `blind_row` passes a `label` only as one of the three words: any
+        /// other value, case text included, is null on a held-out row.
+        #[test]
+        fn blind_row_keeps_a_label_only_from_the_closed_set() {
+            let rows = [
+                ("case text", json!("wk-secret"), Value::Null),
+                ("a word's case", json!("Ask"), Value::Null),
+                ("a number", json!(1), Value::Null),
+                ("ask", json!("ask"), json!("ask")),
+                ("write", json!("write"), json!("write")),
+                ("other", json!("other"), json!("other")),
+            ];
+            for (name, label, want) in rows {
+                let row = blind_row(json!({"id": "x", "holdout": true, "label": label}));
+                assert_eq!(row["label"], want, "{name}");
+            }
         }
 
         #[test]
