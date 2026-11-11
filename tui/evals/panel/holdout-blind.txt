@@ -667,7 +667,7 @@ window: claude · node · ~/code/podcast-app
 out: auto
 expect: write
 out_is: prompt
-must: wifi|wi-fi; resume|resumes|resuming|resumable; flight|flights; delete|deletes|deleted|auto-delete|auto-deletes|remove|removes|removed
+must: wifi|wi-fi; resume|resumes|resumed|resuming|resumable|resumption; flight|flights; delete|deletes|deleted|deleting|deletion|auto-delete|auto-deletes|auto-deleted|auto-deleting|remove|removes|removed|removing|removal
 must_not: what is this for; what's this for; what is the purpose; what are you trying to; why do you need
 holdout: yes
 note: The purpose is already settled by the earlier answer (listening offline on flights), and the three parts are concrete and independent. Under the label rule there is no intent, scope or outside fact left that only the owner knows, and how to build each part is a fact the agent can find in the repo. Asking the purpose again would only repeat a settled question, so the right move is a prompt that states the offline-flight purpose as the user's own.
