@@ -19961,19 +19961,41 @@ is "bound uses timeout where it exists, as the four callers did before" "timeout
 is "bound_start: a later process's start time differs from this shell's, and survives exec" \
    "differs same" \
    "$( . "$DIR/scripts/lib/bound.sh"
-       sh -c 'sleep 1; exec sleep 3' & q=$!; a=$(bound_start "$q")
+       sh -c 'until [ -e "$1/go" ]; do sleep 0.05; done; exec sleep 30' _ "$BW" & bw_q=$!
+       a=$(bound_start "$bw_q")
        [ -n "$a" ] && [ "$a" != "$(bound_start $$)" ] && printf differs
-       sleep 2; [ "$(bound_start "$q")" = "$a" ] && printf ' same'
-       kill "$q" 2>/dev/null; wait "$q" 2>/dev/null )"
+       : > "$BW/go"; until_out sleep cat "/proc/$bw_q/comm"
+       [ "$(bound_start "$bw_q")" = "$a" ] && printf ' same'
+       kill "$bw_q" 2>/dev/null; wait "$bw_q" 2>/dev/null )"
 is "a hung command is ended at its 2 s bound with TERM: 143" "143 in" "$(bw 2 3 bound 2 sleep 30)"
 is "a wrapper that execs into another program is ended all the same" "143 in" \
    "$(bw 2 3 bound 2 sh -c 'exec sleep 30')"
-# Timed from outside the $( ): a child left running holds it open after bound returns. The
-# leaves go first, so the wrapper may end on its own once its child is gone: no status here.
+# Timed from outside the $( ): a child left running holds it open after bound returns.
 bw_t=$SECONDS
 bw_r=$(BW_TAG=fork$$ bw 2 3 bound 2 sh -c 'sh -c "sleep 30" & wait'); bw_t=$((SECONDS - bw_t))
 is "a wrapper that forks is ended with what it started, so the caller's \$( ) ends at the bound" \
-   "in|in|" "${bw_r#* }|$([ "$bw_t" -le 3 ] && echo in || echo "$bw_t s")|$(bw_left fork$$)"
+   "143 in|in|" "$bw_r|$([ "$bw_t" -le 3 ] && echo in || echo "$bw_t s")|$(bw_left fork$$)"
+# The tree is frozen before any of it ends: no parent runs on between its child's end and
+# its own, to start its next command or to finish as if nothing had happened.
+is "a wrapper does not run on once its command is ended: 143 and no output" "143|" \
+   "$( . "$DIR/scripts/lib/bound.sh"; BOUND_TO=""
+       o=$(bound 2 sh -c 'sleep 8; echo late'); printf '%s|%s' "$?" "$o")"
+# The order itself, from a kill that logs its signal (a function in the test shell): every
+# process is stopped, top first, before any is ended, then all are continued.
+is "the tree is stopped top down before any of it is ended: STOP, then TERM, then CONT" \
+   "STOP top|STOP TERM CONT" \
+   "$( . "$DIR/scripts/lib/bound.sh"; BOUND_TO=""
+       kill() { printf '%s %s\n' "${1#-}" "${2-}" >> "$BW/kills"; command kill "$@"; }
+       rm -f "$BW/kills"
+       bound 1 sh -c 'echo $$ > "$1/top"; sh -c "sleep 30" & wait' _ "$BW" >/dev/null 2>&1
+       read -r k1 p1 < "$BW/kills"
+       [ "$p1" = "$(cat "$BW/top")" ] && p1=top
+       ks=$(cut -d' ' -f1 "$BW/kills" | uniq | tr '\n' ' ')
+       printf '%s %s|%s' "$k1" "$p1" "${ks% }")"
+bw_t=$SECONDS
+bw_r=$(BW_TAG=two$$ bw 1 2 bound 1 sh -c 'sleep 6; sleep 6; echo late'); bw_t=$((SECONDS - bw_t))
+is "nor starts its next one: the caller's \$( ) ends at the bound, nothing left" "143 in|in|" \
+   "$bw_r|$([ "$bw_t" -le 2 ] && echo in || echo "$bw_t s")|$(bw_left two$$)"
 # Below the verified child, a process is signalled only while its parent is still the one it
 # was listed under. bound_ppid overridden to name another parent for the sleep, as for a pid
 # the kernel reparented or reused: the wrapper is ended, the sleep runs on.
@@ -19991,6 +20013,30 @@ bw_r=$(bw_left other$$)
 is "a process whose parent is no longer the verified child is not signalled" "143|1" \
    "$bw_t|$(set -- $bw_r; printf '%s' $#)"
 # It is the sleep, still ours by its tag: ended here, by name.
+for bw_p in $bw_r; do
+    bw_c=""; read -r bw_c 2>/dev/null < "/proc/$bw_p/comm"
+    [ "$bw_c" != sleep ] || kill "$bw_p" 2>/dev/null
+done
+# The same, when the parent changes between the check before its SIGSTOP and the one after,
+# as for a pid the kernel handed on in between: it is let go, running, not left stopped.
+bw_t=$( BW_TAG=late$$; export BW_TAG
+        . "$DIR/scripts/lib/bound.sh"; BOUND_TO=""
+        eval "bw_real_$(declare -f bound_ppid)"
+        bound_ppid() {
+            case "$(tr '\0' ' ' 2>/dev/null < "/proc/$1/cmdline")" in
+                "sleep 34 ") if [ -e "$BW/seen" ]; then printf 1
+                             else : > "$BW/seen"; bw_real_bound_ppid "$1"; fi ;;
+                *) bw_real_bound_ppid "$1" ;;
+            esac
+        }
+        bound 2 sh -c 'sleep 34 & wait' >/dev/null 2>&1
+        printf '%s' "$?" )
+bw_r=$(bw_left late$$); bw_s=""
+for bw_p in $bw_r; do
+    read -r bw_s 2>/dev/null < "/proc/$bw_p/stat"; bw_s=${bw_s##*) }; bw_s=${bw_s%% *}
+done
+is "a process whose parent changed after its SIGSTOP is let go: running, not stopped" "143|1|S" \
+   "$bw_t|$(set -- $bw_r; printf '%s' $#)|$bw_s"
 for bw_p in $bw_r; do
     bw_c=""; read -r bw_c 2>/dev/null < "/proc/$bw_p/comm"
     [ "$bw_c" != sleep ] || kill "$bw_p" 2>/dev/null
@@ -20034,7 +20080,7 @@ is "nor one whose start time cannot be read at the deadline: no kill is claimed"
    "0 in ran" "$(bw_re - '')"
 is "nor one whose start time could not be read from the fork on" \
    "0 in ran" "$(bw_re '' '')"
-unset -f bw bw_left bw_re; unset BW bw_t bw_r bw_p bw_c
+unset -f bw bw_left bw_re; unset BW bw_t bw_r bw_p bw_c bw_s
 
 echo "== cmdname.sh: cmd_base cuts a path and leading dashes for the agent tests (#757) =="
 # The functions themselves, beside the pane rows in the agent-poll bind blocks and the #470

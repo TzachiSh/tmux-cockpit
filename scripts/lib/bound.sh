@@ -43,30 +43,44 @@ bound_ppid() {                # <pid> -> its parent's pid, or nothing
     fi
 }
 
-# TERM to <pid> and the processes below it, only while <pid> is still the process started at
+# TERM to <pid> and every process below it, only while <pid> is still the process started at
 # <start time>: a gone or reused pid, or one whose start time cannot be read, is signalled
-# nothing, and nor is anything below it. The tree comes from one `ps -A -o pid= -o ppid=`
-# (POSIX, so on macOS too). It is signalled leaves first, each only while its parent is
-# still the one it was listed under, read again just before its own signal: a process the
-# kernel reparented or a pid it reused is no longer below ours. A forking wrapper's child
-# would otherwise hold the caller's $( ) open after the wrapper ends. <pid> itself comes
-# last, its start time read again.
+# nothing, and nor is anything below it. The tree is frozen first, top down: SIGSTOP the
+# verified top, then each child of a stopped process, read from a fresh
+# `ps -A -o pid= -o ppid=` (POSIX, so on macOS too). A stopped process can start no other,
+# and none of them can run on between its child's end and its own (a wrapper would start
+# its next command, or exit 0). Each child is stopped only while its parent is still the
+# stopped one, read again just before (bound_ppid), and kept only if that still holds after:
+# else it is let go (SIGCONT), a pid the kernel handed to someone else. Then all of them get
+# TERM, then CONT, so each acts on it. A forking wrapper's child would otherwise hold the
+# caller's $( ) open after the wrapper ends.
 bound_kill() {                # <pid> <start time>
     [ -n "$2" ] && [ "$(bound_start "$1")" = "$2" ] || return 0
-    local tab todo=$1 c pid ppid listed="" e rev=""
-    tab=$(ps -A -o pid= -o ppid= 2>/dev/null)
+    kill -STOP "$1" 2>/dev/null || return 0
+    local held=$1 todo=$1 c pid ppid
     while [ -n "$todo" ]; do
-        c=${todo%% *}; todo=${todo#"$c"}
+        c=${todo%% *}; todo=${todo#"$c"}; todo=${todo# }
         while read -r pid ppid; do
-            [ "$ppid" = "$c" ] && listed="$listed $pid:$c" && todo="$todo $pid"
-        done <<< "$tab"
-        todo=${todo# }
+            [ "$ppid" = "$c" ] && [ "$(bound_ppid "$pid")" = "$c" ] || continue
+            kill -STOP "$pid" 2>/dev/null || continue
+            if [ "$(bound_ppid "$pid")" = "$c" ]; then
+                held="$held $pid"; todo="$todo $pid"
+            else
+                kill -CONT "$pid" 2>/dev/null
+            fi
+        done <<EOF_BOUND
+$(ps -A -o pid= -o ppid= 2>/dev/null)
+EOF_BOUND
     done
-    for e in $listed; do rev="$e $rev"; done
-    for e in $rev; do
-        [ "$(bound_ppid "${e%%:*}")" = "${e#*:}" ] && kill -TERM "${e%%:*}" 2>/dev/null
-    done
-    [ "$(bound_start "$1")" = "$2" ] && kill -TERM "$1" 2>/dev/null
+    # shellcheck disable=SC2086  # a list of pids
+    kill -TERM $held 2>/dev/null
+    # shellcheck disable=SC2086
+    kill -CONT $held 2>/dev/null
+}
+
+# The timer: a sleep with no children, so no tree, the same start-time check.
+bound_end() {                 # <pid> <start time>
+    [ -n "$2" ] && [ "$(bound_start "$1")" = "$2" ] && kill -TERM "$1" 2>/dev/null
 }
 
 bound() {                     # <secs> <cmd> [args...] -> cmd's status (143 when ended)
@@ -86,7 +100,7 @@ bound() {                     # <secs> <cmd> [args...] -> cmd's status (143 when
                   wait "$s" && bound_kill "$p" "$tp")
         read -r s ts <&9
         wait "$p"; rc=$?
-        bound_kill "$s" "$ts"
+        bound_end "$s" "$ts"
         read -r _ <&9                      # EOF: the timer has finished
         exit "$rc"
     )
