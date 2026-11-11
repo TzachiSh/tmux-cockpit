@@ -14,8 +14,7 @@ Labels: develop is in-sample. Confirm is in-sample for the writer and partly in-
 
 Sources: https://code.claude.com/docs/en/env-vars and https://code.claude.com/docs/en/data-usage.
 
-- Models haiku-5-5, sonnet-5-5, opus-5-5, fable-5-2. Haiku is $0.10 / $0.50 per MTok, Sonnet $2 / $10. All take five effort levels. Thinking cannot be turned off. There is no temperature or top_p flag.
-- `--json-schema` exists. `--bare` needs an API key (this box is a subscription login).
+- From the research lane's own sources, not from the two pages above (unconfirmed there): models haiku-5-5, sonnet-5-5, opus-5-5, fable-5-2. Haiku is $0.10 / $0.50 per MTok, Sonnet $2 / $10. All take five effort levels. Thinking cannot be turned off. There is no temperature or top_p flag. `--bare` needs an API key (this box is a subscription login). `--json-schema` exists.
 - `DISABLE_TELEMETRY`: opts out of telemetry, "Also disables feature-flag fetching".
 - `DISABLE_AUTOUPDATER`: disables automatic background updates. `DISABLE_UPDATES` blocks all updates. A separate update-check variable is not documented.
 - `DISABLE_ERROR_REPORTING`: opts out of error reporting (stack traces sent to a third-party tracker, on for Pro, Max and Ultra sign-ins connecting directly).
@@ -24,11 +23,11 @@ Sources: https://code.claude.com/docs/en/env-vars and https://code.claude.com/do
 
 ## Stage 1 and 1b: start-up latency of a trivial call
 
-120 trivial calls per variant (answer "ok" every time). Stage 1b shuffled the order (seed 789).
+Stage 1 ran 220 trivial calls in all. Stage 1b ran 20 calls per variant, 6 variants, 120 calls, in a shuffled order (seed 789). Every reply was "ok". The figures below are stage 1b's, recomputed from its rows.
 
-- Start-up falls from about 1.05 s to about 0.3 s with `DISABLE_TELEMETRY=1` or the umbrella variable. Wall p50 falls from about 2.35 to 2.49 s down to about 1.54 to 1.57 s. Baseline spread 138 ms.
-- Feature flags alone give 39% of the gap. Telemetry (97%) and the umbrella (99%) both include feature-flag fetching.
-- Every variant adds about 41 cache-write tokens per call.
+- Wall p50: both baselines 2492 and 2354 ms (spread 138 ms). `DISABLE_TELEMETRY=1` 1566 ms, the umbrella variable 1556 ms, all flags at once 1536 ms, feature flags alone 2049 ms.
+- So telemetry and the umbrella take about 0.86 s off a trivial call, and feature-flag fetching alone takes about 0.37 s. Stage 1's start-up split (about 1.05 s down to about 0.3 s) is the runner's report and was not recomputed here.
+- Every variant adds about 41 cache-write tokens per call (565 against 604 to 609).
 - Cost: $0.4441 and $0.2900.
 
 ## Router: effort (R1 develop and confirm, R2 held-out)
@@ -59,7 +58,7 @@ Verdicts:
 
 ## Router: model, schema, telemetry (R3)
 
-- haiku at medium: develop 29/36 (94/108), 5 always-right drops. Confirm 25/36 (82/108), 9 drops. Held-out 35/36 (106/108), 0 drops (30 of 36 are write cases, which hides the ask misses). Its misses are mostly new cases, not medium's hard ones (shared misses 2 of 7, 2 of 11, 1 of 1). About 1/17 of the cost. Quality fails. Not usable at this prompt.
+- haiku at medium: develop 29/36 (94/108), 5 always-right drops. Confirm 25/36 (82/108), 9 drops. Held-out 35/36 (106/108), 0 drops (30 of 36 are write cases, which hides the ask misses). Its misses are mostly new cases, not medium's hard ones (shared misses 2 of 7, 2 of 11, 1 of 1). About 1/14 to 1/15 of the cost per call as measured. Quality fails. Not usable at this prompt.
 - `--json-schema` (label enum): one probe call, $0.007626. The label came back both in `structured_output` and in `result`. The call took two turns (`num_turns` 2), 1778 cache-write tokens against about 1130, 51 output tokens against 3, so roughly four times the cost per call and no latency win possible. One-word replies had 0 parse failures in 1,812 router calls. The arm was not run. Parse rule written for it: `structured_output.label` if a string, else `result` parsed as JSON with a string `label`, else the usual no-answer failure.
 - `DISABLE_TELEMETRY=1` at medium: quality unchanged on develop 34/36, confirm 34/36, held-out 35/36, no always-right drop, labels differing from the baseline majority 3/120, 0/120 and 1/123. p50 1705, 1505, 1252 ms against baselines 2432, 2337, 2082, so -727, -832 and -830 ms.
 - Umbrella `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` (develop and confirm only, as ruled): 34/36 (103/108) and 34/36 (102/108), no always-right drop, 1/120 and 0/120 labels differing. p50 1204 and 1202 ms, so -1228 and -1135 ms, eight and two times the spreads. $/call equal to medium. Adopt-candidate for the router by the rule. Latency caveat: R3 ran later than the baselines, so time of day is not controlled. Stage 1b's shuffled start-up result points the same way.
@@ -86,14 +85,14 @@ Noise reading, separately: on three runs medium-a and medium-b differ on 0 cases
 
 ## Ledger
 
-Follow-up $9.0364 of the $10 cap: stage 1 $0.4441, stage 1b $0.2900, R1 $1.7276, R2 $0.8818, R3 $1.2155, writer warm-ups $0.0455, writer held-out arms $3.3791, writer second run $1.0528. The parts add up to $9.0364. Whole eval about $65.48 of $80: $53.01 to probe789d, $3.4378 router tuning, $9.0364 follow-up. The $53.01 is carried from the runner's session record.
+Follow-up $9.0364 of the $10 cap: stage 1 $0.4441, stage 1b $0.2900, R1 $1.7276, R2 $0.8818, R3 $1.2155, writer warm-ups $0.0455, writer held-out arms $3.3791, writer second run $1.0528. The parts add up to $9.0364. Whole eval about $65.48 of $80: $53.01 to probe789d, $3.4378 router tuning (the passes sum to $3.4378, and the earlier record rounds it to $3.4380), $9.0364 follow-up. The $53.01 is carried from the runner's session record.
 
 ## What it means
 
 - Effort: no effort level changes the router or the writer beyond noise, and high is worse. Keep medium.
 - Model: Haiku is not usable for the router at v2.
 - Structured output: not worth it. The call takes two turns.
-- Telemetry and the other nonessential calls: the umbrella variable cuts start-up by about 0.75 s per call, keeps answers unchanged on 240 router calls, and costs +41 tokens per call. Writer quality is "not distinguishable from noise". Setting it on the panel's own `claude -p` calls is a product change for the owner, because it turns off telemetry for those child calls.
+- Telemetry and the other nonessential calls: the umbrella variable cuts wall time by about 0.75 s (writer, not confirmed on a loaded box) to 1.2 s (router) per call, changed 1 of 120 develop labels and 0 of 120 confirm labels against the baseline majority on the router (no held-out run backs the umbrella router), and costs +41 tokens per call. Writer quality is "not distinguishable from noise, not demonstrated equal". Setting it on the panel's own `claude -p` calls is a product change for the owner, because it turns off telemetry for those child calls.
 
 ## Where the evidence lives
 
