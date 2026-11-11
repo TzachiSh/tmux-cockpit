@@ -314,12 +314,15 @@ refused, and the fix is to reword the line. A tune case with a ref to lines of
 a file named `holdout`, as `holdout:3`, is refused too, and the fix is to
 rename the file or put it in a folder, since `dir/holdout:3` loads. A parse
 error anywhere in the file comes before the refusal. `--cases` on the held-out
-file reads it as a loud file, every case allowed. The rig loads the file beside
+file reads it as a loud file, every case allowed. The held-out file is known by
+the name it is opened by (#873): a file opened under the name
+`holdout-blind.txt` is exempt from the refusal whatever it is on disk, and a
+link of another name to the held-out file is not. The rig loads the file beside
 the cases file: each of its cases must say `holdout: yes`, an id the cases file
 also has is an error, it may hold no case, and a missing file is an error, so a
 lost file cannot quietly drop the held-out cases from a run or from the overlap
-check. A held-out id that sits inside another id, as `hb-1` does in
-`hb-10` (#804), or equals any case's kind, its own included (#826), is
+check. A held-out id that sits inside another id, as `made-up-1` does in
+`made-up-10` (#804), or equals any case's kind, its own included (#826), is
 an error naming the held-out file and the case's `===` line only, whether that
 file is read beside the cases file or alone by `--cases` (in the cases file the
 refusal above comes first): `--only` matches by part of an id or by a whole
@@ -582,11 +585,12 @@ opt-in and never part of the default run. The changed lines are the ones
 (`HEAD` by default), or with `--from OLD --to NEW` the lines of `NEW` that `OLD`
 lacks, which covers the override file; `--base` beside `--from` is refused. Each
 changed line goes to the judge with each `holdout: yes` case's request, from
-`tui/evals/panel/holdout-blind.txt` and from any in the cases file (`--only`
-narrows the cases), and the judge answers yes when the line paraphrases the
-request's specific scenario and no when it only shares its topic. The judge
-sees the request only: a line that mirrors a held-out case's screen, repo, refs
-or earlier rounds (an error line, a path) is not judged. A flagged pair prints
+`tui/evals/panel/holdout-blind.txt` (`--only` narrows the cases). The cases
+file gives none, since a loud file refuses a held-out case (#861). The judge
+answers yes when the line paraphrases the request's specific scenario and no
+when it only shares its topic. The judge sees the request only: a line that
+mirrors a held-out case's screen, repo, refs or earlier rounds (an error line,
+a path) is not judged. A flagged pair prints
 `FLAG<TAB>case id<TAB>line`; the case's text is never printed or logged, so
 whoever edits the prompt stays blind. Then an `overlap` record gives `flagged`,
 `pairs`, `lines`, `cases`, `cached`, `failed`, `usd`, `model` and `question`
