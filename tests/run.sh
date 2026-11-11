@@ -11125,6 +11125,18 @@ for pa in "--ask /r/x.rs 7 3" "--ask /r/x.rs 0 1" "--ask /r/x.rs 01 2" "--ask /r
     is "cockpit-panel -p %5 $pa is refused before the binary runs" "rc=2" "$(pask $pa)"
 done
 is "--ask with an empty file is refused" "rc=2" "$(pask --ask '' 3 7)"
+# In a UTF-8 locale [1-9] and [0-9] also match ² and ١: a line ² passed the usage check and
+# reached [ -gt ], which failed, so the run went on to the binary (#842).
+if PALOC=$(utf8_loc); then
+    for pa in "--ask /r/x.rs ² 3" "--ask /r/x.rs 1 1²" "--ask /r/x.rs ١ 3" "--ask /r/x.rs 1 1١"; do
+        # shellcheck disable=SC2086
+        is "en_US.UTF-8: cockpit-panel -p %5 $pa is refused before the binary runs" "rc=2" \
+           "$( { export LOCPATH=$PALOC LC_ALL=en_US.UTF-8; pask $pa; } 2>/dev/null)"
+    done
+else
+    bad "a UTF-8 locale whose regex [0-9] matches ² and ١ loads (localedef en_US.UTF-8)" \
+        "loaded" "none"
+fi
 # a panel hidden on the pane stays hidden: the ask opens on its question, not on it.
 # `display` answers $PND/now, so 4242 is the server's pid that keys the hidden file.
 mkdir -p "$PND/xdg/tmux-cockpit/panel"; printf 'H\n' > "$PND/xdg/tmux-cockpit/panel/4242-5.state"
