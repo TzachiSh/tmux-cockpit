@@ -19761,6 +19761,33 @@ IRS="$(mktmpd)/my  tmp %x"; mkdir -p "$IRS"
 ir_run "$IRS" "a TMPDIR with two spaces and a %" spaced
 fi
 
+echo "== a TMPDIR holding a \$ leaves no suite server behind (#849) =="
+# The prelude's kill/new guard (flop_write) put the dirs it was given inside double quotes of
+# the script it wrote, so a $ in TMPDIR expanded again each time the guard ran: its marker
+# path named a dir that does not exist. dash exits when the redirect of the special builtin
+# `:` fails, before the guard's exec, so the cleanup's kill-server never reached the suite's
+# server, and the cleanup then removed its socket file. Here one block runs on its own under
+# such a TMPDIR, with a TMUX_TMPDIR of its own, and that socket dir is read after the run: no
+# listener in /proc/net/unix, which keeps a bound path after the file is gone, and no socket.
+if need_tmux "a \$ in TMPDIR"; then :
+elif [ ! -r /proc/net/unix ]; then skip_ "a \$ in TMPDIR (no /proc/net/unix)"
+else
+DS=$(mktmpd); DST="$DS/d\$x"; DSS="$DS/s"; mkdir -p "$DST" "$DSS"
+( cd "$DIR" && TMPDIR="$DST" TMUX_TMPDIR="$DSS" exec tests/only.sh '^cmdname.sh: cmd_base cuts' ) \
+    </dev/null >"$DS/log" 2>&1
+is "the nested run of one block under a TMPDIR holding a \$ passes" "0" "$?"
+is "after it no server listens in its socket dir" "0" "$(grep -cF " $DSS/" /proc/net/unix)"
+is "and no socket file is left there" "" "$(find "$DSS" -type s 2>/dev/null)"
+# A server the run left: only a tmux server, started as a suite's, whose TMUX_TMPDIR is ours.
+for p in /proc/[0-9]*; do
+    c=""; read -r c 2>/dev/null < "$p/comm"
+    [ "$c" = "tmux: server" ] || continue
+    case "$(tr '\0' ' ' < "$p/cmdline" 2>/dev/null)" in *" -L cockpit-suite-"*) ;; *) continue ;; esac
+    tr '\0' '\n' < "$p/environ" 2>/dev/null | grep -qxF "TMUX_TMPDIR=$DSS" && kill -TERM "${p#/proc/}"
+done
+unset DS DST DSS p c
+fi
+
 
 echo "== cmdname.sh: cmd_base cuts a path and leading dashes for the agent tests (#757) =="
 # The functions themselves, beside the pane rows in the agent-poll bind blocks and the #470
