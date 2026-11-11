@@ -468,8 +468,8 @@ echo "== fresh_server: a new-session refused by the killed server is retried, th
 # server, which may be the user's.
 if need_tmux "fresh_server"; then :; else
 FS="cockpit-fresh-$$"; SOCKS="$SOCKS $FS"
-# A $ in the fake's dir: the fake must keep it literal, or it counts nothing (#856).
-FSD="$(mktmpd)/f\$y"; mkdir -p "$FSD"
+# A $ and a ' in the fake's dir: the fake must keep both literal, or it counts nothing (#856).
+FSD="$(mktmpd)/f\$y'q"; mkdir -p "$FSD"
 fsq="'\\''"
 { printf "#!/bin/sh\nD='%s' R='%s'\n" "${FSD//\'/$fsq}" "${TMUX_BIN//\'/$fsq}"
 cat <<'FSEOF'
