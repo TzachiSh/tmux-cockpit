@@ -4250,11 +4250,12 @@ mod tests {
     /// child execs, and an exec of the script meanwhile fails with ETXTBSY.
     /// So the script gets a first line that exits 0 on [`PROBE`] before any
     /// line of its own runs, and is started with it until that start is free.
+    /// On any other start that line leaves `$?` at 0, as no line would (#888).
     fn stand_in(path: &Path, script: &str) -> String {
         let Some(body) = script.strip_prefix("#!/bin/sh\n") else {
             panic!("stand-in {}: script does not open with a #!/bin/sh line", path.display())
         };
-        write_exe(path, &format!("#!/bin/sh\n[ \"$1\" = {PROBE} ] && exit 0\n{body}"));
+        write_exe(path, &format!("#!/bin/sh\n[ \"$1\" != {PROBE} ] || exit 0\n{body}"));
         start_until_free(path, STARTS, |_| std::thread::yield_now());
         path.display().to_string()
     }
@@ -4277,6 +4278,20 @@ mod tests {
         let run = |arg: &str| std::process::Command::new(&f).arg(arg).status().unwrap().code();
         assert_eq!((run("--version"), run(PROBE)), (Some(0), Some(0)));
         assert_eq!(std::fs::read_to_string(&log).unwrap(), "call\n");
+    }
+
+    /// #888: on a real start the probe line leaves `$?` at 0, so a script with
+    /// no command of its own, or one that opens with a bare `exit`, exits 0
+    /// as the same text does without the line.
+    #[test]
+    fn a_stand_ins_probe_line_leaves_a_real_start_at_exit_0() {
+        let dir = scratch("probe-status");
+        let rows = [("only the shebang", "#!/bin/sh\n"), ("a bare exit", "#!/bin/sh\nexit\n")];
+        for (i, (row, script)) in rows.into_iter().enumerate() {
+            let f = stand_in(&dir.0.join(format!("fake-{i}")), script);
+            let code = std::process::Command::new(f).status().unwrap().code();
+            assert_eq!(code, Some(0), "{row}");
+        }
     }
 
     /// #877: a script is refused unless the probe line can go under `#!/bin/sh`.
