@@ -24,6 +24,23 @@ impl Server {
         let d = self.dir.display().to_string();
         self.tmux(&["new-window", "-d", "-P", "-F", "#{pane_id}", "-c", &d, &cmd])
     }
+
+    /// A pane running sleep as `argv0`, once tmux shows that name: a relative path
+    /// (#840) cannot be a copied file's name, as tmux cuts only an absolute one.
+    fn pane_as(&self, argv0: &str) -> String {
+        let d = self.dir.display().to_string();
+        let cmd = format!("exec -a {argv0} sleep 300");
+        let p = self.tmux(&["new-window", "-d", "-P", "-F", "#{pane_id}", "-c", &d, &cmd]);
+        let shown = || self.tmux(&["display-message", "-p", "-t", &p, "#{pane_current_command}"]);
+        // a poll: the shell execs sleep a moment after new-window returns
+        for _ in 0..500 {
+            if shown() == argv0 {
+                return p;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("{p} never showed {argv0}: {}", shown());
+    }
 }
 
 impl Drop for Server {
@@ -65,6 +82,8 @@ fn claude_and_its_version_title_read_at_mentions_and_nothing_else_does() {
     let rows = [
         ("claude", s.pane("claude"), true),
         ("its version title", s.pane("2.1.318"), true),
+        // #840: tmux keeps a relative path, and no glob site calls ./claude an agent
+        ("./claude", s.pane_as("./claude"), false),
         ("codex", s.pane("codex"), false),
         ("a shell", s.pane("zsh"), false),
         ("a stale @panestate on a shell", stale, false),
