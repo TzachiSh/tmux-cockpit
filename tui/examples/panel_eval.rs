@@ -207,7 +207,9 @@ fn parse_some(text: &str, quiet: bool) -> Result<Vec<Case>, String> {
         let (head, bodies) = rest.split_once("\n--- ").unwrap_or((&rest, ""));
         // a held-out case in a loud file is quiet too (#797), though its
         // `holdout:` line may come after the bad one
-        let held = held_head(head);
+        // any line of the case, not its header only: a held-out case whose
+        // case line lacks its space joins the case above as body text (#825)
+        let held = held_head(&rest);
         // a name-shaped `=== ` line in a held-out case's request in a loud
         // file opens a case of held text with no `holdout` key (#825): its
         // errors name neither its id nor its lines
@@ -385,9 +387,11 @@ fn parse_some(text: &str, quiet: bool) -> Result<Vec<Case>, String> {
     Ok(cases)
 }
 
-/// Whether a case's key lines, `head`, hold a `holdout` key whose value is not
-/// `no` (#797). A value that is neither yes nor no counts as held: it is an
-/// error anyway, and a quoted line from a case meant to be held out leaks.
+/// Whether a case's lines hold a `holdout` key line whose value is not `no`
+/// (#797). A value that is neither yes nor no counts as held: it is an error
+/// anyway, and a quoted line from a case meant to be held out leaks. Its
+/// callers pass the whole case, bodies included (#825): a held-out case can
+/// join the case above as body text.
 fn held_head(head: &str) -> bool {
     let mut keys = head.lines().filter_map(|l| l.trim().split_once(':'));
     keys.any(|(k, v)| k.trim() == "holdout" && v.trim() != "no")
@@ -4488,6 +4492,25 @@ mod tests {
         let got = load(&c, Some(&b)).unwrap_or_else(|e| panic!("tune, then tune: {e}"));
         let ids: Vec<&str> = got.cases.iter().map(|c| c.id.as_str()).collect();
         assert_eq!(ids, ["crash", "hb_03"]);
+    }
+
+    /// #825 review: a held-out case whose case line lacks its space opens no
+    /// case and joins the case above. When that case ends in a refs or a
+    /// conversation section, its error names the line and the rule only:
+    /// the case is quiet when any line of it is a `holdout` key.
+    #[test]
+    fn a_held_out_case_joined_to_the_case_above_errs_unshown() {
+        let rows = [
+            ("refs", "refs are path, path:a or path:a-b lines"),
+            ("conversation", "conversation is user: and assistant: lines"),
+        ];
+        let joined = held("hb-03").replace("=== hb-03", "===hb-03");
+        for (section, rule) in rows {
+            let cases = format!("{ONE}--- {section}\n{joined}");
+            let (_d, c, b) = two_files(&format!("joined-{section}"), &cases, "");
+            let e = load(&c, Some(&b)).err().unwrap_or_else(|| panic!("{section}: loaded"));
+            assert_eq!(e, format!("{}: case crash: line 12: {rule}", c.display()), "{section}");
+        }
     }
 
     /// #825 ruling, the documented limit: a body line `=== x` directly
