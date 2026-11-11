@@ -596,7 +596,7 @@ pub(crate) fn cmd_base(comm: &str) -> String {
 /// Claude Code's version-shaped process title (`2.1.318`, `2_1_318`): a leading
 /// digit, then only digits, dots and underscores, two or more of them dots or
 /// underscores. The one copy of the rule in Rust: basket's claude_cmd calls it
-/// (#776). scripts/agent-poll's version_cmd is its shell twin.
+/// (#776). scripts/lib/cmdname.sh's version_cmd is its shell twin.
 pub(crate) fn version_shaped(s: &str) -> bool {
     let seps = s.chars().filter(|c| *c == '.' || *c == '_').count();
     seps >= 2 && s.starts_with(|c: char| c.is_ascii_digit()) && s.chars().all(|c| c.is_ascii_digit() || c == '.' || c == '_')
