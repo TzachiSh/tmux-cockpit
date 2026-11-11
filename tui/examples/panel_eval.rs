@@ -1793,7 +1793,8 @@ struct Fingerprint {
     setting_sources: Option<String>,
     /// The panel's `--effort`, from COCKPIT_PANEL_EFFORT (#623).
     effort: &'static str,
-    /// HOME, XDG_CONFIG_HOME, XDG_CACHE_HOME and CLAUDE_CONFIG_DIR, `None` unset.
+    /// HOME, XDG_CONFIG_HOME, XDG_CACHE_HOME and CLAUDE_CONFIG_DIR, `None` unset,
+    /// then the panel call's own variables as the calls get them (#853).
     vars: Vec<(&'static str, Option<String>)>,
 }
 
@@ -1816,6 +1817,10 @@ fn fingerprint(
         Some(r) => format!("{}/<case>-<run>", r.display()),
         None => dir.display().to_string(),
     };
+    // a value the rig has reaches the calls as it is; Request sets the rest
+    let call_env = cockpit_tui::panel::request::CALL_ENV
+        .iter()
+        .map(|(k, v)| (*k, var(k).or_else(|| Some(v.to_string()))));
     Fingerprint {
         claude: claude.into(),
         cwd,
@@ -1826,7 +1831,7 @@ fn fingerprint(
             panel_sources.cloned()
         },
         effort: effort.as_str(),
-        vars: ENV_VARS.iter().map(|k| (*k, var(k))).collect(),
+        vars: ENV_VARS.iter().map(|k| (*k, var(k))).chain(call_env).collect(),
     }
 }
 
@@ -4262,6 +4267,17 @@ mod tests {
         assert_eq!(plain.setting_sources.as_deref(), Some(""));
     }
 
+    /// #853: the fingerprint names the panel call's three variables as the calls
+    /// get them: the rig's own value when it has one, else the panel's.
+    #[test]
+    fn the_fingerprint_names_the_call_env_as_the_calls_get_it() {
+        let var = |k: &str| (k == "DISABLE_TELEMETRY").then(|| "0".to_string());
+        let f = fingerprint("v", true, None, Path::new("/c"), Effort::Medium, var);
+        let names = ["DISABLE_TELEMETRY", "DISABLE_AUTOUPDATER", "DISABLE_ERROR_REPORTING"];
+        let got = names.map(|k| f.json()["vars"][k].clone());
+        assert_eq!(got, ["0", "1", "1"].map(serde_json::Value::from));
+    }
+
     /// The effort the calls get, from COCKPIT_PANEL_EFFORT, is in the fingerprint.
     #[test]
     fn the_fingerprint_names_the_effort() {
@@ -6214,10 +6230,28 @@ esac
                 c.env(format!("XDG_{k}_HOME"), p(v));
             }
             c.env("PANEL_EVAL_RIG_ARGS", args).env("COCKPIT_CLAUDE", claude);
+            for (k, _) in cockpit_tui::panel::request::CALL_ENV {
+                c.env_remove(k);
+            }
             let o = c.output().unwrap();
             let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
             let rows = std::fs::read_to_string(d.0.join("rows.jsonl")).unwrap_or_default();
             (o.status.code(), text(&o.stdout), text(&o.stderr), rows)
+        }
+
+        /// #853: a rig call starts with the panel's three variables, set by
+        /// the panel's own Request code, though the rig's env has none of them.
+        #[test]
+        fn a_rig_call_starts_with_telemetry_updates_and_error_reports_off() {
+            let one = "=== env-q\nkind: bug\nwindow: bash · bash · /home/u\n\
+                expect: write\nmust: ok\n--- request\nfix this\n";
+            let dump = "#!/bin/sh\n[ \"$1\" = --version ] && { echo 9.9.9; exit 0; }\n\
+                cat >/dev/null\nenv | grep '^DISABLE_' | sort\n";
+            let (code, out, err, rows) = rig_run_with("quiet-call-env", one, dump, &[]);
+            assert_eq!(code, Some(0), "{out}{err}");
+            let row: Value = serde_json::from_str(rows.lines().next().unwrap_or("null")).unwrap();
+            let want = "DISABLE_AUTOUPDATER=1\nDISABLE_ERROR_REPORTING=1\nDISABLE_TELEMETRY=1";
+            assert_eq!(row["reply"].as_str().map(str::trim), Some(want), "{rows}");
         }
 
         /// Not a test of its own: the child [`rig_run`] starts.
