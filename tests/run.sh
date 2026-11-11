@@ -19558,10 +19558,10 @@ ir_run "$IRS" "a TMPDIR with two spaces and a %"
 fi
 
 
-echo "== cmdname.sh: cmd_base cuts a path and leading dashes for its three callers (#757) =="
+echo "== cmdname.sh: cmd_base cuts a path and leading dashes for the agent tests (#757) =="
 # The functions themselves, beside the pane rows in the agent-poll bind blocks and the #470
 # workdir block. tmux's parse_window_name (format.c) drops leading dashes, then cuts a path
-# only when the name starts with /, so ./claude and /x/--2.1.318 (shown as --2.1.318) reach
+# only when the name starts with /, so ./2.1.318 and /x/--2.1.318 (shown as --2.1.318) reach
 # these cuts from a pane. The Rust twin is pinned through claude_cmd in
 # tui/tests/basket_claude_cmd.rs. A subshell keeps CMD_BASE and the functions out of the suite.
 cn_run() {                    # cn_run <fn> <names...>: one word per name, 1|0 or CMD_BASE
