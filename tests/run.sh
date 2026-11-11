@@ -9038,6 +9038,20 @@ is "a cycle ends: a.sh and b.sh, naming each other, each pick both blocks (#748)
 # d.sh, and a d.sh edit runs c.sh's block. Too many blocks, never too few.
 is "known limit: a d.sh edit picks the block of c.sh, which sources subd.sh (#748)" \
     "$(printf 'scripts/lib/d.sh\t4')" "$(sed -n 3p <<< "$CHG_CYE")"
+# A helper that reaches a script only through other helpers, on a scratch tree: block 2
+# calls hc_a, which calls hc_b, hc_c, then hc_d, whose body runs scripts/tool. A block
+# inherits the scripts of every helper its helpers call, to a fixed point (#838). Block 3
+# calls hv, whose body holds a variable named hc_d, not a call: only a word in command
+# position is a call, so block 3 picks nothing for scripts/tool.
+CHG_HC=$(mktmpd); mkdir -p "$CHG_HC/tests" "$CHG_HC/scripts"
+cp "$DIR/tests/changed.sh" "$CHG_HC/tests/"
+printf '%s\n' 'hc_d() { "$DIR/scripts/tool"; }' 'hc_c() { hc_d; }' 'hc_b() { x=1; hc_c "$@"; }' \
+    'hc_a() {' '    hc_b' '}' 'hv() { local hc_d; hc_d=1; }' 'echo "== syntax =="' \
+    'echo "== chain =="' 'hc_a' 'echo "== var =="' 'hv' > "$CHG_HC/tests/run.sh"
+echo ': a tool' > "$CHG_HC/scripts/tool"
+is "a block reaching scripts/tool through four helpers is picked for it, not hv's (#838)" \
+    "$(printf 'scripts/tool\t2')" \
+    "$(timeout 20 bash "$CHG_HC/tests/changed.sh" --each scripts/tool)"
 CHG_STAMP=$(bash "$DIR/tests/green.sh" files)
 is "the green stamp hashes every file a block reads" "" "$(cut -f2 <<< "$CHG_READS" | sort -u |
     awk 'NR == FNR { s[$0] = 1; next } !($0 in s) { printf " %s", $0 }' \
