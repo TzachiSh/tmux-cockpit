@@ -7575,6 +7575,15 @@ is "a pane running as ./2.1.318 is an agent, so it is asked" "1 $WD/other" \
    "$(wd_ct ok "$(wd_pane ./2.1.318)")"
 is "...and one running as /x/--2.1.318, which tmux shows as --2.1.318" "1 $WD/other" \
    "$(wd_ct ok "$(wd_pane /x/--2.1.318 --2.1.318)")"
+# In a UTF-8 locale such as en_US, workdir_agent's old regex [0-9] matched ²; version_cmd
+# counts ASCII digits only, as agentish does (#830). tmux trims a trailing ², hence 1.².1.
+if WDLOC=$(utf8_loc); then
+    WDU=$(wd_pane 1.².1)
+    is "in en_US.UTF-8 a pane running as 1.².1 is no agent, so it is not asked" "0 $WD/launch" \
+       "$( { export LOCPATH=$WDLOC LC_ALL=en_US.UTF-8; wd_ct ok "$WDU"; } 2>/dev/null)"
+else
+    bad "a UTF-8 locale whose regex [0-9] matches ² loads (localedef en_US.UTF-8)" "loaded" "none"
+fi
 WDST=$(wd_pane snooze)
 "$TMUX_REAL" -L "$WDS" set -p -t "$WDST" @panestate running >/dev/null 2>&1
 is "a pane carrying @panestate is an agent whatever it runs, so it is asked" "1 $WD/other" \
@@ -19583,6 +19592,16 @@ is "agent-poll's claude_cmd reads the cut name: all three are claude's" \
    "1 1 1" "$(cn_run claude_cmd /x/2.1.318 -claude --2.1.318)"
 is "workdir.sh's workdir_agent reads the cut name: the two version titles are agents" \
    "1 0 1" "$(cn_run workdir_agent /x/2.1.318 -claude --2.1.318)"
+# A glob range [0-9] matches ² in en_US.UTF-8 when globasciiranges is off, as in bash before 5;
+# version_cmd spells its digits out, so it counts ASCII digits whatever the bash (#830).
+if CNLOC=$(utf8_loc); then
+    is "with globasciiranges off in en_US.UTF-8, version_cmd: 1.².1 is no version title" "no" \
+       "$(env LOCPATH="$CNLOC" LC_ALL=en_US.UTF-8 bash -c 'shopt -u globasciiranges; . "$1"
+            if version_cmd 1.².1; then echo yes; else echo no; fi' _ \
+            "$DIR/scripts/lib/cmdname.sh" 2>/dev/null)"
+else
+    bad "a UTF-8 locale whose regex [0-9] matches ² loads (localedef en_US.UTF-8)" "loaded" "none"
+fi
 
 flop_left
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
