@@ -273,7 +273,8 @@ both sides over the cases both graded in full, and each side's own (unpaired)
 the cases file; held-out cases live in `tui/evals/panel/holdout-blind.txt`
 and are written after the prompt they run on, so a gain there is not
 overfitting. A `must` pass is a keyword screen (#868): each `;` separated group
-passes when the reply contains one of its `|` terms, and the match reads no
+passes when the reply contains one of its `|` terms as a whole word, in any
+letter case, and the match reads no
 negation and no context, so a reply that names a term without doing that part
 still passes the group. Whether the reply does the part is what the judge pass
 is for (`--judge`, below): it grades the reply against its rubric and is not

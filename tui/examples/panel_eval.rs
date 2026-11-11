@@ -478,7 +478,8 @@ fn load(cases: &Path, blind: Option<&Path>) -> Result<Loaded, String> {
     let read = |p: &Path| std::fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display()));
     let mut all = parse_cases(&read(cases)?).map_err(|e| format!("{}: {e}", cases.display()))?;
     // every held-out case lives in the held-out file (#834): a loud file
-    // refuses one, by its line only, unless it is that file named by --cases.
+    // refuses one, by its line only. `--cases` on the held-out file reads it
+    // as it reads a loud file, but without the refusal.
     // The error says which file that is: the one refusing has any name (#861).
     // Held out as the parser's scan reads it, by any line of the case: a body
     // line sets no `holdout` key, so the case would load as a tune case while
@@ -2956,6 +2957,7 @@ mod tests {
     fn words_match_whole_and_any_of() {
         assert!(!has("Before editing, write an explanation", "plan"));
         assert!(has("Make a plan first.", "plan"));
+        assert!(has("Make a PLAN first.", "Plan"));
         assert!(!has("the answer is 360", "36"));
         assert!(has("it is 36.", "36"));
         assert!(!has("a different file", "diff"));
@@ -2963,6 +2965,25 @@ mod tests {
         assert!(has("cite sources", "source|sources"));
         assert!(has("add --json to show", "--json"));
         assert!(has("run /code-review now", "/code-review"));
+    }
+
+    /// #868: a `must` group reads no negation. A reply that names the term
+    /// only to forbid it passes the group, and a reply without the term
+    /// fails it. Case, term and replies are made up.
+    #[test]
+    fn a_must_group_passes_on_a_term_the_reply_only_forbids() {
+        let mut c = parse_cases(ONE).unwrap().remove(0);
+        c.must = vec!["zorbflux".into()];
+        let rows = [
+            ("not before the term", "<prompt>Do not zorbflux the widget.</prompt>", true),
+            ("never before the term", "<prompt>Tidy it, and never zorbflux.</prompt>", true),
+            ("no such term", "<prompt>Tidy the widget.</prompt>", false),
+        ];
+        for (row, reply, pass) in rows {
+            let g = grade(&c, reply);
+            let missing = if pass { vec![] } else { c.must.clone() };
+            assert_eq!((g.missing, g.pass), (missing, pass), "{row}");
+        }
     }
 
     #[test]
@@ -4250,11 +4271,16 @@ mod tests {
     /// child execs, and an exec of the script meanwhile fails with ETXTBSY.
     /// So the script gets a first line that exits 0 on [`PROBE`] before any
     /// line of its own runs, and is started with it until that start is free.
+    /// On any other start that line leaves `$?` at 0, as no line would (#888).
+    /// It is an `if` and not a `[ ... ] || exit 0`: a test that fails or
+    /// cannot be read then goes on to the script, where its tests see it,
+    /// and never ends a real start at exit 0 with no line of the script run.
     fn stand_in(path: &Path, script: &str) -> String {
         let Some(body) = script.strip_prefix("#!/bin/sh\n") else {
             panic!("stand-in {}: script does not open with a #!/bin/sh line", path.display())
         };
-        write_exe(path, &format!("#!/bin/sh\n[ \"$1\" = {PROBE} ] && exit 0\n{body}"));
+        let probe = format!("if [ \"$1\" = {PROBE} ]; then exit 0; fi");
+        write_exe(path, &format!("#!/bin/sh\n{probe}\n{body}"));
         start_until_free(path, STARTS, |_| std::thread::yield_now());
         path.display().to_string()
     }
@@ -4279,6 +4305,37 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&log).unwrap(), "call\n");
     }
 
+    /// #888: on a real start the probe line leaves `$?` at 0, so a script with
+    /// no command of its own, or one that opens with a bare `exit`, exits 0
+    /// as the same text does without the line.
+    #[test]
+    fn a_stand_ins_probe_line_leaves_a_real_start_at_exit_0() {
+        let dir = scratch("probe-status");
+        let code = |(i, script): (usize, &str)| {
+            let f = stand_in(&dir.0.join(format!("fake-{i}")), script);
+            std::process::Command::new(f).status().unwrap().code()
+        };
+        let scripts = ["#!/bin/sh\n", "#!/bin/sh\nexit\n"];
+        let codes: Vec<_> = scripts.into_iter().enumerate().map(code).collect();
+        assert_eq!(codes, [Some(0), Some(0)], "only the shebang, then a bare exit");
+    }
+
+    /// #888: a real start reaches the script's own lines with `$?` at 0 and
+    /// its arguments whole: with none, with one a stand-in for claude gets,
+    /// and with two that an unquoted `$1` in the probe line reads as a true
+    /// test, ending the start before the script.
+    #[test]
+    fn a_stand_ins_real_start_runs_its_script_whatever_the_first_argument() {
+        let dir = scratch("probe-args");
+        let f = stand_in(&dir.0.join("fake-claude"), "#!/bin/sh\necho \"$?:$#:$1\"\nexit 7\n");
+        for args in [vec![], vec!["-p"], vec!["x -o y"], vec!["! x"]] {
+            let out = std::process::Command::new(&f).args(&args).output().unwrap();
+            let got = (out.status.code(), String::from_utf8(out.stdout).unwrap());
+            let said = format!("0:{}:{}\n", args.len(), args.first().unwrap_or(&""));
+            assert_eq!(got, (Some(7), said), "{args:?}");
+        }
+    }
+
     /// #877: a script is refused unless the probe line can go under `#!/bin/sh`.
     #[test]
     fn a_stand_in_script_without_the_sh_line_is_refused() {
@@ -4296,6 +4353,16 @@ mod tests {
     /// fail with ETXTBSY, and the script is started again until it is closed.
     /// A fork on another test's thread can copy the handle and hold it for
     /// some starts more, so the count has a floor and no ceiling.
+    ///
+    /// Kernel dependency (#888): this test and the cap test below need the
+    /// kernel to refuse the start of a file open for writing. Linux dropped
+    /// that refusal in 6.11 (2a010c412853, "fs: don't block i_writecount
+    /// during exec") and put it back with the revert 3b832035387f, which is
+    /// in 6.13 and in the stable releases 6.12.2 and 6.11.11. On 6.11 to
+    /// 6.11.10, 6.12 and 6.12.1 no start is busy, so both tests go red while
+    /// [`stand_in`] is still right. Neither skips there: 6.11 is past its
+    /// end of life, 6.12.2 replaced 6.12 and 6.12.1, and a skip is a way to
+    /// pass without a busy start.
     #[test]
     fn a_busy_stand_in_is_started_again_until_its_writer_lets_go() {
         let dir = scratch("probe-held");
@@ -4306,12 +4373,14 @@ mod tests {
             let mut writer = Some(std::fs::OpenOptions::new().append(true).open(&f).unwrap());
             let let_go = |n| writer = writer.take().filter(|_| n < held);
             let busy = start_until_free(&f, STARTS, let_go);
-            assert!(busy >= held, "{busy} busy starts, the writer held on for {held}");
+            let hint = "does this kernel refuse to start a file open for writing? (#888)";
+            assert!(busy >= held, "{busy} busy starts, the writer held on for {held}: {hint}");
         }
     }
 
     /// #877: a script still busy at the cap fails its test, naming the
     /// script, the count and the error. It never hands the script back.
+    /// It needs a kernel that refuses the start, as the test above says.
     #[test]
     fn a_stand_in_still_busy_at_the_cap_panics_naming_it() {
         let dir = scratch("probe-cap");
@@ -4372,31 +4441,39 @@ mod tests {
         }
     }
 
+    /// Forks a child and reaps it, again and again until `stop` is set: what
+    /// each forking thread of the #877 race test runs. Returns how many
+    /// children it started.
+    fn fork_until(stop: &std::sync::atomic::AtomicBool) -> usize {
+        let mut forks = 0;
+        while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+            forks += usize::from(std::process::Command::new("true").status().is_ok());
+        }
+        forks
+    }
+
     /// #877, the race itself: threads fork in a loop, as the rig's tests do
     /// to each other, while this one writes a stand-in and starts it at once.
     /// Written with a plain `fs::write`, some of these starts fail with
-    /// "Text file busy (os error 26)".
+    /// "Text file busy (os error 26)". Each thread must have forked, or the
+    /// starts raced nothing (#888).
     #[test]
     fn a_stand_in_starts_at_once_while_other_threads_fork() {
-        use std::sync::atomic::{AtomicBool, Ordering};
         let dir = scratch("probe-race");
-        let stop = AtomicBool::new(false);
-        let failed: Vec<String> = std::thread::scope(|s| {
-            let _stop = StopForks(&stop);
-            for _ in 0..FORKERS {
-                s.spawn(|| {
-                    while !stop.load(Ordering::Relaxed) {
-                        let _ = std::process::Command::new("true").status();
-                    }
-                });
-            }
-            let start = |i| {
-                let f = stand_in(&dir.0.join(format!("fake-{i}")), "#!/bin/sh\n");
-                std::process::Command::new(f).status().err().map(|e| format!("start {i}: {e}"))
-            };
-            (0..RACE_STARTS).filter_map(start).collect()
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        let start = |i| {
+            let f = stand_in(&dir.0.join(format!("fake-{i}")), "#!/bin/sh\n");
+            std::process::Command::new(f).status().err().map(|e| format!("start {i}: {e}"))
+        };
+        let (failed, forks): (Vec<String>, Vec<usize>) = std::thread::scope(|s| {
+            let stopper = StopForks(&stop);
+            let forkers: Vec<_> = (0..FORKERS).map(|_| s.spawn(|| fork_until(&stop))).collect();
+            let failed = (0..RACE_STARTS).filter_map(start).collect();
+            drop(stopper);
+            (failed, forkers.into_iter().map(|f| f.join().unwrap()).collect())
         });
         assert_eq!(failed, [] as [String; 0]);
+        assert!(forks.iter().all(|n| *n > 0), "a thread forked nothing: {forks:?}");
     }
 
     /// The threads forking against the #877 race test's writer.
@@ -4865,8 +4942,9 @@ mod tests {
             let tune = held("b1").replace("holdout: yes\n", "");
             for (mark, case) in [("held", held("b1")), ("tune", tune)] {
                 let cases = format!("{ONE}{}", in_request(&case, line));
-                // #861: a held-out case loads from a loud read only as `--cases`
-                // on the held-out file
+                // #861: with no cases file beside it, a held-out case loads only
+                // from the held-out file, which `--cases` reads as it reads a
+                // loud file, but without the refusal
                 let (_d, c, b) = two_files(&format!("eq-req-{i}-{mark}"), &cases, &cases);
                 let file = if mark == "held" { &b } else { &c };
                 let got = load(file, None).unwrap_or_else(|e| panic!("{line:?} {mark}: {e}"));
@@ -5238,7 +5316,8 @@ mod tests {
             let e = load(&c, Some(&b)).err().unwrap_or_else(|| panic!("{row}: loaded"));
             assert_eq!(e, format!("{}: line {line}: {GUARD}", c.display()), "{row}");
         }
-        // `--cases` on the held-out file reads it as a loud file, the check included
+        // `--cases` on the held-out file reads it as it reads a loud file, but
+        // without the refusal: the check runs there too
         let (_d, _, b) = two_files("nest-cases-named", ONE, &in_tune);
         let e = load(&b, None).err().expect("--cases on the held-out file loaded");
         assert_eq!(e, format!("{}: {}", b.display(), nested(12)));
@@ -5292,7 +5371,8 @@ mod tests {
             assert_eq!(e, format!("{}: {}", b.display(), a_kind(1)), "{row}");
         }
         // #861: cases.txt refuses a held-out case first; `--cases` on the
-        // held-out file reads it as a loud file, the check included
+        // held-out file reads it as it reads a loud file, but without the
+        // refusal: the check runs there too
         let (_d, c, b) = two_files("kind-cases", &in_cases, &in_cases);
         let e = load(&c, Some(&b)).err().expect("a held-out case in cases.txt loaded");
         assert_eq!(e, format!("{}: line 12: {GUARD}", c.display()));
@@ -5523,10 +5603,11 @@ mod tests {
         }
     }
 
-    /// #872: the held-out file loads such a case as before. Named by `--cases`
-    /// it is a loud file, every case allowed: the case loads as the tune case
-    /// its keys say. Beside the cases file, a `holdout: yes` case with the
-    /// same body line loads as held out.
+    /// #872: the held-out file loads such a case as before. `--cases` on it
+    /// reads it as it reads a loud file, but without the refusal, so every
+    /// case is allowed: the case loads as the tune case its keys say. Beside
+    /// the cases file, a `holdout: yes` case with the same body line loads as
+    /// held out.
     #[test]
     fn the_held_out_file_loads_a_case_a_body_line_holds_out() {
         let text = format!("{ONE}{}", in_body("screen", "holdout: yes"));
