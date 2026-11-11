@@ -579,16 +579,18 @@ fn lineage(pid: &str, procs_t: &mut Option<Procs>) -> Vec<(String, String)> {
         .collect()
 }
 
-/// A live Claude renames itself to its version, so `2.1.246` and `2_1_246` are
-/// agent names too.
+/// A command in the agents glob, or a version title: a live Claude renames itself
+/// to its version, so `2.1.246` and `2_1_246` are agent names too.
 pub(crate) fn agentish(comm: &str) -> bool {
     AGENT_GLOB.with(|g| agentish_in(g, comm))
 }
 
 /// [`agentish`] against a glob passed in, not the tmux one: the pure half a test pins.
+/// The glob reads the name raw, as every shell site's `#{m/i:*|cmd|*,glob}` does
+/// (#840): tmux keeps a relative path in `pane_current_command`, so `./claude` is no
+/// agent there or here. Only the version test reads [`cmd_base`]'s last path part.
 fn agentish_in(glob: &str, comm: &str) -> bool {
-    let b = cmd_base(comm);
-    glob_has(glob, &b) || version_shaped(&b)
+    glob_has(glob, comm) || version_shaped(&cmd_base(comm))
 }
 
 /// A command name as the agent tests read it: the last path part, without its
@@ -1514,6 +1516,33 @@ mod tests {
         // every row that differs, so one red run names them all
         let wrong: Vec<_> = rows.iter().filter(|(g, c, w)| glob_has(g, c) != *w).collect();
         assert!(wrong.is_empty(), "differs from tmux: {wrong:?}");
+    }
+
+    /// #840: the glob reads the name as tmux shows it, as every shell site's m/i does. tmux
+    /// cuts a path only off a name starting with `/`, so `./claude` is no agent; only the
+    /// version test reads the last path part.
+    #[test]
+    fn agentish_tests_the_glob_on_the_raw_name() {
+        let rows = [
+            ("./claude", false),
+            ("x/claude", false),
+            ("../bin/claude", false),
+            ("-claude", false), // tmux drops the dashes before any site reads it
+            ("claude", true),
+            ("Claude", true),
+            ("CLAUDE", true),
+            ("./2.1.318", true), // the version test still cuts the path
+            ("x/2_1_318", true),
+            ("", false),
+        ];
+        let wrong: Vec<_> = rows.iter().filter(|(c, w)| agentish_in("|claude|codex|", c) != *w).collect();
+        assert!(wrong.is_empty(), "differs from the shell sites: {wrong:?}");
+    }
+
+    /// With no glob (the plugin not loaded) only a version title is an agent's name.
+    #[test]
+    fn agentish_with_no_glob_takes_only_a_version_title() {
+        assert_eq!((agentish_in("", "claude"), agentish_in("", "./2.1.318")), (false, true));
     }
 
     /// Kills the child on drop, so a failed assert cannot leave it running.

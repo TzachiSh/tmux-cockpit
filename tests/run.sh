@@ -19332,6 +19332,167 @@ is "sessions: a claude under the entry CLAUDE waits, so its session is first" "s
 "$TMUX_REAL" -L "$SVS" kill-server >/dev/null 2>&1
 fi
 
+echo "== a relative agent name (./claude) is no agent, on the board as at each glob site (#840) =="
+# tmux cuts a path off pane_current_command only when the name starts with /, so a process
+# titled ./claude shows as ./claude. Each shell site tests that raw name in a tmux format,
+# #{m/i:*|./claude|*,|claude|codex|}: no agent. The board reads the same field and must agree.
+# Each row is "<board> <site>" for one pane; claude is the control both call an agent. The
+# board's verdict is read first: a @panestate a site needs makes any pane the board's.
+if need_tmux "relative agent names"; then :; else
+RN="cockpit-rn840-$$"; SOCKS="$SOCKS $RN"; RND=$(mktmpd)
+rn() { "$TMUX_REAL" -L "$RN" "$@"; }
+rn -f /dev/null new-session -d -s t -x 100 -y 30 -c "$RND" 'exec sleep 300' >/dev/null 2>&1
+rn set -g @cockpit_agents_glob '|claude|codex|' >/dev/null 2>&1
+RNH=$(rn display -p -t t: '#{pane_id}')
+sock_path "$RN" RNSP
+rn_pane() {                   # rn_pane <argv0> <shown> -> a new window's pane, sleep as <argv0>
+    local p
+    p=$(rn new-window -d -P -F '#{pane_id}' -t t: -c "$RND" "exec -a $1 sleep 300")
+    until_out "$2" rn display -p -t "$p" '#{pane_current_command}'
+    printf '%s' "$p"
+}
+RNR=$(rn_pane ./claude ./claude); RNX=$(rn_pane x/claude x/claude)
+RNU=$(rn_pane ../bin/claude ../bin/claude); RNM=$(rn_pane -claude claude)
+RNC=$(rn_pane claude claude)
+rn_word() { if [ "$1" = 1 ]; then printf agent; else printf none; fi; }
+# The board: cockpit-tui workdir exits 1 for a pane that is no agent (#470).
+rn_board() {                  # rn_board <pane> [socket path] -> agent | none
+    local rc=0
+    TMUX="${2:-$RNSP},0,0" "$COCKPIT_TUI_BIN" workdir "$1" </dev/null >/dev/null 2>&1 || rc=$?
+    rn_word "$([ "$rc" = 0 ] && echo 1)"
+}
+is "the board: ./claude, x/claude, ../bin/claude none; -claude (tmux drops -), claude agents" \
+    "none none none agent agent" \
+    "$(for p in "$RNR" "$RNX" "$RNU" "$RNM" "$RNC"; do rn_board "$p"; printf ' '; done |
+        sed 's/ $//')"
+RNBR=$(rn_board "$RNR"); RNBC=$(rn_board "$RNC")
+rn_pair() {                   # rn_pair <site> <verdict fn>: ./claude none, claude agent, both sides
+    is "$1 and the board: ./claude is no agent" "none none" "$RNBR $("$2" "$RNR")"
+    is "$1 and the board: claude is an agent" "agent agent" "$RNBC $("$2" "$RNC")"
+}
+
+# statusbar.conf:73, @cockpit_is_agent. cockpit.tmux keeps the glob set and sources it.
+rn run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+rn_bar() { rn_word "$(rn display -p -t "$1" '#{E:@cockpit_is_agent}')"; }
+rn_pair "statusbar.conf's @cockpit_is_agent" rn_bar
+
+# workdir.sh:47, WORKDIR_FMT, the agent test of goto and prefix r, read by its own row parser.
+rn_wd() {
+    rn_word "$(TMUX="$RNSP,0,0" bash -c '. "$1/scripts/lib/workdir.sh" || exit 2
+        workdir_row "$(tmux display-message -p -t "$2" "$WORKDIR_FMT")"
+        printf %s "$WD_AGENT"' _ "$DIR" "$1")"
+}
+rn_pair "workdir.sh's WORKDIR_FMT" rn_wd
+
+# tmux-jump:28. Only the pane under test waits; prefix u from the shell lands on it or not.
+rn_jump() {
+    rn set -p -t "$1" @panestate needs-input
+    rn select-window -t "$RNH"
+    TMUX="$RNSP,0,0" "$DIR/scripts/tmux-jump" "$RNH" </dev/null >/dev/null 2>&1
+    rn_word "$([ "$(rn display -p -t t: '#{pane_id}')" = "$1" ] && echo 1)"
+    rn set -pu -t "$1" @panestate
+}
+rn_pair "tmux-jump" rn_jump
+
+# agent-state:49. Only the pane under test waits: the fleet count of waiting agents is 1 or 0.
+rn_state() {
+    TMUX="$RNSP,0,0" "$DIR/scripts/agent-state" needs-input "$1" </dev/null >/dev/null 2>&1
+    rn_word "$(rn show -gqv @cockpit_fleet_nb)"
+    rn set -pu -t "$1" @panestate
+}
+rn_pair "agent-state's fleet count" rn_state
+
+# cockpit.tmux's prefix t popup, a glob site the issue did not list: its list-panes command as
+# the binding holds it. Only the pane under test waits: its line shows the state, or -.
+RNT_CMD=$(rn list-keys -T cockpit t | sed -n 's/.* "\(tmux list-panes .*\)"$/\1/p')
+rn_t() {
+    local w; w=$(rn display -p -t "$1" '#{session_name}:#{window_index}')
+    rn set -p -t "$1" @panestate needs-input
+    rn_word "$(TMUX="$RNSP,0,0" sh -c "$RNT_CMD" </dev/null 2>/dev/null |
+        awk -v w="$w" '$1 == w { print ($2 == "needs-input") }')"
+    rn set -pu -t "$1" @panestate
+}
+rn_pair "prefix t" rn_t
+
+# review-deliver.sh:78, --deliver's guard: past it the review is spooled or pasted (sent).
+printf '## a.go:1 (+)\nfix this\n\n' > "$RND/store"
+rn_deliver() {
+    cp "$RND/store" "$RND/store.$1"
+    TMUX="$RNSP,0,0" "$DIR/scripts/tmux-review" --deliver "$1" "$RND/store.$1" \
+        </dev/null >/dev/null 2>&1
+    rn_word "$({ [ -n "$(rn show -pqv -t "$1" @cockpit_review_spool)" ] ||
+        [ "$(rn show -pqv -t "$1" @cockpit_review)" = sent ]; } && echo 1)"
+    rn set -pu -t "$1" @cockpit_review; rn set -pu -t "$1" @cockpit_review_spool
+}
+rn_pair "--deliver's guard" rn_deliver
+
+# review-deliver.sh:171, the paste gate. deliver() never reaches it for a pane its guard
+# refused, so the gate as shipped, read out of the file, runs on the pane itself.
+RNGATE=$(sed -n 's/^ *"\(#{&&:#{m\/i:.*}\)" \\$/\1/p' "$DIR/scripts/lib/review-deliver.sh")
+rn_gate() { rn_word "$(rn display -p -t "$1" "$RNGATE")"; }
+rn_pair "--deliver's paste gate" rn_gate
+
+# cockpit-board:177, resume's "already running" test. The pane under test holds the session
+# the board asks to resume in a pane whose dir is gone: a live agent stops it first, else the
+# missing dir does. A stub binary writes the action, as in the #301 block.
+SID=0b5e7c1a-3f2d-4e8b-9a6c-1d2e3f4a5b6c
+mkdir "$RND/gone"
+RNT=$(rn new-window -d -P -F '#{pane_id}' -t t: -c "$RND/gone" 'exec sleep 300')
+until_out "$RND/gone*" rn display -p -t "$RNT" '#{pane_current_path}'
+rmdir "$RND/gone"
+rn set -p -t "$RNT" @cockpit_session "$SID"; rn set -p -t "$RNT" @panestate needs-input
+cat > "$RND/bin" <<RNBIN
+#!/bin/sh
+[ "\${5:-}" = "" ] || cat "\$5" >> "\$RNRES/note"
+[ ! -e "\$RNRES/once" ] || exit 0
+: > "\$RNRES/once"
+printf '%s\n' "$SID" > "\$COCKPIT_ACTION.expect"
+printf 'resume %s\n' "$RNT" > "\$COCKPIT_ACTION"
+RNBIN
+cat > "$RND/run" <<'RNRUN'
+#!/bin/sh
+# run <result dir> <bin> <cockpit-board> <pane>
+RNRES=$1 COCKPIT_TUI_BIN=$2 XDG_STATE_HOME=$1/state COCKPIT_LOG=$1/tui.log "$3" -p "$4"
+echo x > "$1/done"
+RNRUN
+chmod +x "$RND/bin" "$RND/run"
+rn_resume() {
+    local r; r=$(mktmpd)
+    rn set -p -t "$1" @cockpit_session "$SID"
+    rn new-window -d -t t: -c "$r" "$RND/run" "$r" "$RND/bin" "$DIR/scripts/cockpit-board" "$RNH"
+    until_file "$r/done" 'x'
+    rn set -pu -t "$1" @cockpit_session
+    case $(cat "$r/note" 2>/dev/null) in
+        *"already running in $1") printf agent ;;
+        *"has no directory to start in") printf none ;;
+        *) printf '?%s' "$(cat "$r/note" 2>/dev/null)" ;;
+    esac
+}
+rn_pair "cockpit-board's resume" rn_resume
+rn kill-server >/dev/null 2>&1
+
+# agent-poll:93, the bind rule's agent flag, on the agent-view rig: a pane titled alpha, its
+# board verdict, then one poll with bind.json. Bound to the job is agent, unbound none.
+av_setup
+av_srv rel840
+av_tm set -g @cockpit_agents_glob '|claude|codex|'
+sock_path "$AV" RNAV
+rn_bind() {                   # rn_bind <argv0> -> "<board> <poll>" for one pane
+    local p b
+    p=$(av_np alpha "$1")
+    until_out "$1" av_tm display -p -t "$p" '#{pane_current_command}'
+    b=$(rn_board "$p" "$RNAV")
+    av_once bind.json >/dev/null
+    printf '%s %s' "$b" "$(rn_word "$([ "$(avo @cockpit_job "$p")" = aa ] && echo 1)")"
+    av_tm kill-pane -t "$p"
+}
+is "agent-poll's bind rule and the board: ./claude is no agent" "none none" "$(rn_bind ./claude)"
+is "agent-poll's bind rule and the board: claude is an agent" "agent agent" "$(rn_bind claude)"
+av_tm kill-server >/dev/null 2>&1
+unset -f rn rn_pane rn_word rn_board rn_pair rn_bar rn_wd rn_jump rn_state rn_t rn_deliver \
+    rn_gate rn_resume rn_bind
+fi
+
 echo "== jq filters parse on jq 1.7.x: no postfix after a term's ? (#481) =="
 # jq 1.7.x rejects any postfix written straight after the ? of a call, $var or
 # parenthesised term (f(x)?.c, f(x)?["c"], f(x)?[0], $x?.b); 1.8 accepts them. The
