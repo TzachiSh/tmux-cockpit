@@ -7471,10 +7471,11 @@ printf '{"type":"user","cwd":"%s","message":{"content":"hi"}}\n' "$WD/repo" \
     >/dev/null 2>&1
 "$TMUX_REAL" -L "$WDS" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
 WDSH=$("$TMUX_REAL" -L "$WDS" list-panes -a -F '#{pane_id}' | head -1)
-wd_pane() {                   # wd_pane <argv0> -> a new pane in the launch dir running sleep
+wd_pane() {                   # wd_pane <argv0> [shown] -> a new pane in the launch dir, sleeping
     local p; p=$("$TMUX_REAL" -L "$WDS" new-window -P -F '#{pane_id}' -d -t t: -c "$WD/launch" \
         "exec -a $1 sleep 300")
-    until_out "$1" "$TMUX_REAL" -L "$WDS" display-message -p -t "$p" '#{pane_current_command}'
+    # [shown]: the name tmux shows, when it differs from argv0 (/x/--2.1.318 shows as --2.1.318)
+    until_out "${2:-$1}" "$TMUX_REAL" -L "$WDS" display-message -p -t "$p" '#{pane_current_command}'
     printf '%s' "$p"
 }
 WDP=$(wd_pane claude)        # an agent with a session: its transcript names the repo
@@ -7557,6 +7558,12 @@ done
 WDV1=$(wd_pane 2.1)
 is "a pane running as 2.1 is not version-shaped, so it is not asked" "0 $WD/launch" \
    "$(wd_ct ok "$WDV1")"
+# tmux drops leading dashes, then cuts a path only when the name starts with /, so a relative
+# path and /x/--name reach workdir_agent with them: cmd_base's cuts are what count it (#757).
+is "a pane running as ./2.1.318 is an agent, so it is asked" "1 $WD/other" \
+   "$(wd_ct ok "$(wd_pane ./2.1.318)")"
+is "...and one running as /x/--2.1.318, which tmux shows as --2.1.318" "1 $WD/other" \
+   "$(wd_ct ok "$(wd_pane /x/--2.1.318 --2.1.318)")"
 WDST=$(wd_pane snooze)
 "$TMUX_REAL" -L "$WDS" set -p -t "$WDST" @panestate running >/dev/null 2>&1
 is "a pane carrying @panestate is an agent whatever it runs, so it is asked" "1 $WD/other" \
@@ -19392,6 +19399,11 @@ av_bindrow "a pane whose command is a version title (2.1.318) binds its job" 2.1
 av_bindrow "...and with underscores (2_1_318)" 2_1_318 "aa|alpha|running"
 av_bindrow "digits with one dot (3.11) are no version title: no bind" 3.11 "||"
 av_bindrow "...nor a version with a letter in it (2.1.3a)" 2.1.3a "||"
+# tmux keeps a relative path (it cuts only a name that starts with /) and shows /x/--2.1.318
+# as --2.1.318 (dashes first): version_cmd and claude_cmd read them through cmd_base (#757).
+av_bindrow "a pane running ./2.1.318 binds its job: the path is cut" ./2.1.318 "aa|alpha|running"
+av_bindrow "a pane running /x/--2.1.318 binds its job: the dashes are cut" /x/--2.1.318 \
+    "aa|alpha|running"
 # The glob (|claude|codex|) never names a version title, so the poller dropped such a pane's
 # marks as "not an agent any more" and then bound it unmarked (review-770). It is an agent,
 # as on the board: a foreground mark newer than the job's start keeps the pane unbound.
@@ -19504,6 +19516,42 @@ ir_run "$(mktmpd)" "a plain TMPDIR"
 IRS="$(mktmpd)/my  tmp %x"; mkdir -p "$IRS"
 ir_run "$IRS" "a TMPDIR with two spaces and a %"
 fi
+
+
+echo "== cmdname.sh: cmd_base cuts a path and leading dashes for its three callers (#757) =="
+# The functions themselves, beside the pane rows in the agent-poll bind blocks and the #470
+# workdir block. tmux's parse_window_name (format.c) drops leading dashes, then cuts a path
+# only when the name starts with /, so ./claude and /x/--2.1.318 (shown as --2.1.318) reach
+# these cuts from a pane. The Rust twin is pinned through claude_cmd in
+# tui/tests/basket_claude_cmd.rs. A subshell keeps CMD_BASE and the functions out of the suite.
+cn_run() {                    # cn_run <fn> <names...>: one word per name, 1|0 or CMD_BASE
+    (
+        . "$DIR/scripts/lib/cmdname.sh" || exit 1
+        eval "$(sed -n '/^claude_cmd() {/,/^}/p' "$DIR/scripts/agent-poll")"
+        eval "$(sed -n '/^workdir_agent() {/,/^}/p' "$DIR/scripts/lib/workdir.sh")"
+        f=$1; shift; out=
+        for n in "$@"; do
+            if [ "$f" = cmd_base ]; then cmd_base "$n"; out+=" $CMD_BASE"
+            elif [ "$f" = workdir_agent ]; then
+                if workdir_agent 0 "" "$n"; then out+=" 1"; else out+=" 0"; fi
+            elif "$f" "$n"; then out+=" 1"; else out+=" 0"; fi
+        done
+        printf '%s' "${out# }"
+    )
+}
+is "agent-poll's claude_cmd and workdir.sh's workdir_agent are there to read" "2 functions" \
+   "$(eval "$(sed -n '/^claude_cmd() {/,/^}/p' "$DIR/scripts/agent-poll")"
+      eval "$(sed -n '/^workdir_agent() {/,/^}/p' "$DIR/scripts/lib/workdir.sh")"
+      n=0; for f in claude_cmd workdir_agent; do [ "$(type -t $f)" = function ] && n=$((n+1)); done
+      echo "$n functions")"
+is "cmd_base: /x/2.1.318, -claude and --2.1.318 lose the path and the dashes" \
+   "2.1.318 claude 2.1.318" "$(cn_run cmd_base /x/2.1.318 -claude --2.1.318)"
+is "version_cmd reads the cut name: /x/2.1.318 and --2.1.318 are version titles, -claude not" \
+   "1 0 1" "$(cn_run version_cmd /x/2.1.318 -claude --2.1.318)"
+is "agent-poll's claude_cmd reads the cut name: all three are claude's" \
+   "1 1 1" "$(cn_run claude_cmd /x/2.1.318 -claude --2.1.318)"
+is "workdir.sh's workdir_agent reads the cut name: the two version titles are agents" \
+   "1 0 1" "$(cn_run workdir_agent /x/2.1.318 -claude --2.1.318)"
 
 flop_left
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
