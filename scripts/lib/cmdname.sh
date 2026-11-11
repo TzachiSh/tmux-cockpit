@@ -4,8 +4,9 @@
 
 # A command name as the agent tests read it: the last path part, without its
 # leading dashes. Sets CMD_BASE, so a loop over panes forks nothing. The shell
-# twin of cmd_base in tui/src/data.rs (#799); case is left to each caller's
-# pattern, as the patterns below only hold digits or spell out both cases.
+# twin of cmd_base in tui/src/data.rs (#799). Case is left to each caller's
+# pattern: version_cmd's holds no letter, and agent-poll's claude_cmd spells out
+# both cases.
 cmd_base() {
     CMD_BASE=${1##*/}
     CMD_BASE=${CMD_BASE#"${CMD_BASE%%[!-]*}"}

@@ -52,10 +52,16 @@ unset _wd
 # The board's live test (tui/src/data.rs list_fleet, agentish): the glob, a
 # version-shaped name (a live Claude renames itself to one like 2.1.246), or a
 # @panestate the hooks set. The board's walk of the process tree is left out: it
-# forks ps. The version test is lib/cmdname.sh's, as agent-poll's (#799).
+# forks ps. The path and dash cleanup is lib/cmdname.sh's (#799). The version
+# test stays this regex: in a UTF-8 locale its [0-9] can match more than
+# version_cmd's glob does, and a refactor changes no answer.
 workdir_agent() {             # <glob 1|0> <@panestate> <pane_current_command>
+    local s
     if [ "$1" = 1 ] || [ -n "$2" ]; then return 0; fi
-    version_cmd "$3"
+    cmd_base "$3"
+    [[ $CMD_BASE =~ ^[0-9][0-9._]*$ ]] || return 1
+    s=${CMD_BASE//[0-9]/}
+    [ "${#s}" -ge 2 ]
 }
 
 # Whether the binary's answer can differ from the rule without it: only for an
