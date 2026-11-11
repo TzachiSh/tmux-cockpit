@@ -470,14 +470,20 @@ if need_tmux "fresh_server"; then :; else
 FS="cockpit-fresh-$$"; SOCKS="$SOCKS $FS"
 # A $ in the fake's dir: the fake must keep it literal, or it counts nothing (#856).
 FSD="$(mktmpd)/f\$y"; mkdir -p "$FSD"
-printf '#!/bin/sh\ncase " $* " in *" -L "*|*" -S "*) ;; *) sock=none ;; esac
+fsq="'\\''"
+{ printf "#!/bin/sh\nD='%s' R='%s'\n" "${FSD//\'/$fsq}" "${TMUX_BIN//\'/$fsq}"
+cat <<'FSEOF'
+case " $* " in *" -L "*|*" -S "*) ;; *) sock=none ;; esac
 case " $* " in
-*" kill-server "*) echo k >> "%s/kills"; [ -z "$sock" ] || exit 0 ;;
-*" new-session "*) echo n >> "%s/tries"; [ -z "$sock" ] || exit 1
-    [ "$(wc -l < "%s/tries")" -gt "$FS_FAILS" ] || {
-    echo "server exited unexpectedly ($(wc -l < "%s/tries"))" >&2; exit 1; } ;;
-esac\nexec "%s" "$@"\n' "$FSD" "$FSD" "$FSD" "$FSD" "$TMUX_BIN" > "$FSD/tmux"
-chmod +x "$FSD/tmux"
+*" kill-server "*) echo k >> "$D/kills"; [ -z "$sock" ] || exit 0 ;;
+*" new-session "*) echo n >> "$D/tries"; [ -z "$sock" ] || exit 1
+    [ "$(wc -l < "$D/tries")" -gt "$FS_FAILS" ] || {
+    echo "server exited unexpectedly ($(wc -l < "$D/tries"))" >&2; exit 1; } ;;
+esac
+exec "$R" "$@"
+FSEOF
+} > "$FSD/tmux"
+chmod +x "$FSD/tmux"; unset fsq
 # fs_run <fails> <polls> <fresh_server args...> -> "rc tries kills bads|bad's got"
 fs_run() {
     local fails=$1 polls=$2; shift 2
