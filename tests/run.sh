@@ -19975,7 +19975,11 @@ for nt_d in "${nt_path[@]}"; do
     [ -d "$nt_d" ] && find "$nt_d" -maxdepth 1 \( -type f -o -type l \) \
         ! -name timeout ! -name gtimeout -print0
 done | xargs -0 ln -s -t "$NT/bin" 2>/dev/null
-ln -s "$(command -v timeout)" "$NT/bin/gtimeout"
+# gtimeout: the real timeout under that name, by its own path (a multicall timeout will not
+# run as gtimeout), logging what it was handed and how it ended, so a row sees it ran.
+printf '#!/bin/sh\n%s "$@"; rc=$?\necho "$rc $*" >> %s\nexit $rc\n' \
+    "$(command -v timeout)" "$NT/g.log" > "$NT/bin/gtimeout"
+chmod +x "$NT/bin/gtimeout"
 printf '#!/bin/sh\nexec sleep 20\n' > "$NT/fake/claude"; cp "$NT/fake/claude" "$NT/fake/tui"
 chmod +x "$NT/fake/claude" "$NT/fake/tui"
 NTS="cockpit-nt-$$"; SOCKS="$SOCKS $NTS"
@@ -20021,6 +20025,13 @@ for nt_f in stop subs workdir poll; do
     is "$nt_n, with timeout" "0" "$(cat "$NT/$nt_f.rc")"
     is "$nt_n, with only gtimeout" "0" "$(cat "$NT/g$nt_f.rc")"
 done
+# Every site fails open, so a 0 alone would pass a gtimeout that ran nothing: each must
+# have run its own command under gtimeout, ended at its bound (124).
+is "gtimeout ran each site's command and ended it at its bound: 124 four times" \
+   "124 10 head -n 1|124 2 head -n 1|124 3 $NT/fake/tui workdir %0|$(
+   )124 5 claude agents --json --all" \
+   "$(for nt_c in '10 head -n 1' '2 head -n 1' "3 $NT/fake/tui workdir %0" \
+          '5 claude agents --json --all'; do grep -xF "124 $nt_c" "$NT/g.log"; done | paste -sd'|')"
 # The writers: only ours, by name.
 for nt_p in $nt_w; do
     nt_c=""; read -r nt_c 2>/dev/null < "/proc/$nt_p/comm"
