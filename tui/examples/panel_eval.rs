@@ -4712,21 +4712,21 @@ mod tests {
         // here the next case's `===` line is a parse error, which comes first
         let by_body = tune("=== b1").replace("boom\n", "boom\nholdout: yes\n");
         let rows = [
-            ("tune, then held", format!("{ONE}{}", typo("=== HB-03")), 12, id_rule),
-            ("held first", format!("{}{ONE}", typo("=== hb_03")), 1, id_rule),
-            ("held, then tune", format!("{}{}", held("b1"), tune("=== HB-03")), 12, net),
-            ("body-held, then tune", format!("{by_body}{}", tune("=== HB-03")), 12, net),
-            ("blank and # lines", format!("{ONE}{}", typo("=== HB-03\n\n# c\n")), 12, id_rule),
+            ("tune, then held", format!("{ONE}{}", typo("=== MADE-UP")), 12, id_rule),
+            ("held first", format!("{}{ONE}", typo("=== made_up")), 1, id_rule),
+            ("held, then tune", format!("{}{}", held("b1"), tune("=== MADE-UP")), 12, net),
+            ("body-held, then tune", format!("{by_body}{}", tune("=== MADE-UP")), 12, net),
+            ("blank and # lines", format!("{ONE}{}", typo("=== MADE-UP\n\n# c\n")), 12, id_rule),
         ];
         for (i, (row, cases, line, rule)) in rows.into_iter().enumerate() {
             let (_d, c, b) = two_files(&format!("typo-{i}"), &cases, "");
             let e = load(&c, Some(&b)).err().unwrap_or_else(|| panic!("{row}: loaded"));
             assert_eq!(e, format!("{}: line {line}: {rule}", c.display()), "{row}");
         }
-        let (_d, c, b) = two_files("typo-tune", &format!("{ONE}{}", tune("=== hb_03")), "");
+        let (_d, c, b) = two_files("typo-tune", &format!("{ONE}{}", tune("=== made_up")), "");
         let got = load(&c, Some(&b)).unwrap_or_else(|e| panic!("tune, then tune: {e}"));
         let ids: Vec<&str> = got.cases.iter().map(|c| c.id.as_str()).collect();
-        assert_eq!(ids, ["crash", "hb_03"]);
+        assert_eq!(ids, ["crash", "made_up"]);
     }
 
     /// #825 review: a held-out case whose case line lacks its space opens no
@@ -4739,7 +4739,7 @@ mod tests {
             ("refs", "refs are path, path:a or path:a-b lines"),
             ("conversation", "conversation is user: and assistant: lines"),
         ];
-        let joined = held("hb-03").replace("=== hb-03", "===hb-03");
+        let joined = held("made-up-3").replace("=== made-up-3", "===made-up-3");
         for (section, rule) in rows {
             let cases = format!("{ONE}--- {section}\n{joined}");
             let (_d, c, b) = two_files(&format!("joined-{section}"), &cases, "");
@@ -4754,7 +4754,7 @@ mod tests {
     /// Held out by its header, the same case gets the id rule's message.
     #[test]
     fn a_case_held_out_by_a_body_line_names_why_its_id_is_refused() {
-        let typo = ONE.replace("=== crash", "=== HB-03");
+        let typo = ONE.replace("=== crash", "=== MADE-UP");
         let by_body = "a body line holds this case out, and its === line is not a case line";
         let by_head = "an id is lowercase letters, digits and -";
         let rows = [
@@ -5003,7 +5003,10 @@ mod tests {
     /// case's `===` line, in either order, and the error names no id.
     #[test]
     fn a_held_out_id_inside_another_held_out_id_is_refused_unshown() {
-        let rows = [("inner first", ["hb-1", "hb-10"], 2), ("inner last", ["hb-10", "hb-1"], 13)];
+        let rows = [
+            ("inner first", ["made-up-1", "made-up-10"], 2),
+            ("inner last", ["made-up-10", "made-up-1"], 13),
+        ];
         for (i, (row, [x, y], line)) in rows.into_iter().enumerate() {
             let blind = format!("# readers\n{}{}", held(x), held(y));
             let (_d, c, b) = two_files(&format!("nest-{i}"), ONE, &blind);
@@ -5015,8 +5018,9 @@ mod tests {
     /// #804: a held-out id inside a cases.txt id is refused the same way.
     #[test]
     fn a_held_out_id_inside_a_tune_id_is_refused_unshown() {
-        let tune = ONE.replace("=== crash", "=== xhb-1-tune");
-        let (_d, c, b) = two_files("nest-tune", &tune, &format!("# readers\n{}", held("hb-1")));
+        let tune = ONE.replace("=== crash", "=== xmade-up-1-tune");
+        let blind = format!("# readers\n{}", held("made-up-1"));
+        let (_d, c, b) = two_files("nest-tune", &tune, &blind);
         let e = load(&c, Some(&b)).err().expect("a held-out id inside a tune id loaded");
         assert_eq!(e, format!("{}: {}", b.display(), nested(2)));
     }
@@ -5027,9 +5031,9 @@ mod tests {
     /// the case's line.
     #[test]
     fn a_held_out_id_in_the_cases_file_inside_another_id_is_refused_unshown() {
-        let tune = ONE.replace("=== crash", "=== xhb-1-tune");
-        let in_tune = format!("{tune}{}", held("hb-1"));
-        let in_held = format!("# c\n{}{}", held("hb-1"), held("hb-10"));
+        let tune = ONE.replace("=== crash", "=== xmade-up-1-tune");
+        let in_tune = format!("{tune}{}", held("made-up-1"));
+        let in_held = format!("# c\n{}{}", held("made-up-1"), held("made-up-10"));
         // #861: cases.txt refuses a held-out case first, by its line
         let rows = [("inside a tune id", &in_tune, 12), ("inside a held-out id", &in_held, 2)];
         for (i, (row, cases, line)) in rows.into_iter().enumerate() {
@@ -5051,11 +5055,11 @@ mod tests {
         let tune = |id: &str| ONE.replace("=== crash", &format!("=== {id}"));
         let rows = [
             ("apart", ONE.to_string(), 1),
-            ("tune inside", tune("hb"), 1),
+            ("tune inside", tune("made-up"), 1),
             ("tune inside tune", tune("two") + &tune("two-x"), 2),
         ];
         for (i, (row, cases, n)) in rows.into_iter().enumerate() {
-            let blind = held("hb-01") + &held("hb-02");
+            let blind = held("made-up-01") + &held("made-up-02");
             let (_d, c, b) = two_files(&format!("apart-{i}"), &cases, &blind);
             let got = load(&c, Some(&b)).unwrap_or_else(|e| panic!("{row}: {e}"));
             assert_eq!(got.from, [(c, n), (b, 2)], "{row}");
@@ -5078,7 +5082,7 @@ mod tests {
     /// file beside it, runs the check. The error names no id or kind.
     #[test]
     fn a_held_out_id_equal_to_a_kind_is_refused_unshown() {
-        let two_held = held_kind("hb-k", "ops") + &held_kind("hb-2", "hb-k");
+        let two_held = held_kind("made-up-k", "ops") + &held_kind("made-up-2", "made-up-k");
         let in_cases = format!("{ONE}{}", held_kind("bug", "ops"));
         let rows = [
             ("a tune kind", ONE.to_string(), held_kind("bug", "ops"), 1),
@@ -5105,7 +5109,7 @@ mod tests {
         let tune = |id: &str| ONE.replace("=== crash", &format!("=== {id}"));
         let rows = [("apart", ONE.to_string(), 1), ("a tune id is a kind", tune("bug") + ONE, 2)];
         for (i, (row, cases, n)) in rows.into_iter().enumerate() {
-            let blind = held_kind("hb-01", "ops");
+            let blind = held_kind("made-up-01", "ops");
             let (_d, c, b) = two_files(&format!("kind-apart-{i}"), &cases, &blind);
             let got = load(&c, Some(&b)).unwrap_or_else(|e| panic!("{row}: {e}"));
             assert_eq!(got.from, [(c, n), (b, 1)], "{row}");
@@ -5118,7 +5122,7 @@ mod tests {
 
     /// #861: ONE, then a made-up case whose `holdout:` line says `v`.
     fn marked(v: &str) -> String {
-        format!("{ONE}{}", held("hb-1").replace("holdout: yes", &format!("holdout: {v}")))
+        format!("{ONE}{}", held("made-up-1").replace("holdout: yes", &format!("holdout: {v}")))
     }
 
     /// #861: a loud file refuses a `holdout: yes` case whatever its name:
@@ -5160,7 +5164,8 @@ mod tests {
         let (_d, c, b) = two_files("loud-held-maybe", &marked("maybe"), "");
         for blind in [None, Some(b.as_path())] {
             let e = load(&c, blind).err().expect("holdout: maybe loaded");
-            assert_eq!(e, format!("{}: case hb-1: line 16: holdout is yes or no", c.display()));
+            let rule = "case made-up-1: line 16: holdout is yes or no";
+            assert_eq!(e, format!("{}: {rule}", c.display()));
         }
     }
 
@@ -6592,15 +6597,15 @@ esac
             }
         }
 
-        /// [`QUIET`] and two more cases, `hb-1` and `hb-10`, one id inside the
+        /// [`QUIET`] and two more cases, `made-up-1` and `made-up-10`, one id inside the
         /// other. They are tune cases: a held-out id inside another does not
         /// load (#804).
-        fn with_hb() -> String {
+        fn with_nested() -> String {
             let at = QUIET.find("=== held-q\n").unwrap();
             let held = &QUIET[at..QUIET.find("=== held-ask").unwrap()];
             let tune = held.replace("holdout: yes\n", "");
-            let hb = |id: &str| tune.replace("=== held-q\n", &format!("=== {id}\n"));
-            format!("{QUIET}{}{}", hb("hb-1"), hb("hb-10"))
+            let case = |id: &str| tune.replace("=== held-q\n", &format!("=== {id}\n"));
+            format!("{QUIET}{}{}", case("made-up-1"), case("made-up-10"))
         }
 
         #[test]
@@ -6608,18 +6613,18 @@ esac
             let rows = [
                 ("many ids", "-", 5),
                 ("a kind", "co-kd", 4),
-                ("in another", "hb-1", 2),
+                ("in another", "made-up-1", 2),
                 ("a part", "ld-as", 1),
             ];
             for (name, only, n) in rows {
                 let flags = ["--show-holdout", "--runs", "1", "--only", only];
-                let (code, out, err, _) = rig_run_on("quiet-one", &with_hb(), &flags);
+                let (code, out, err, _) = rig_run_on("quiet-one", &with_nested(), &flags);
                 assert_eq!(code, Some(2), "{name}: {out}{err}");
                 let silent = [" cases (", "held out", "warning"].iter().all(|w| !out.contains(w));
                 assert!(silent, "{name}: {out}");
                 let want = format!("{SHOW_ONE}; {n} matched");
                 assert!(err.contains(&want), "{name}: {err}");
-                assert!(!err.contains("hb-") && leaked(&err).is_empty(), "{name}: {err}");
+                assert!(!err.contains("made-up-") && leaked(&err).is_empty(), "{name}: {err}");
             }
         }
 
