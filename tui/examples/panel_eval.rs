@@ -108,6 +108,10 @@ struct Case {
     must_not: Vec<String>,
     /// Written after the prompt it is run on, so it shows overfitting.
     holdout: bool,
+    /// Whether any line of the case holds it out, a body's included
+    /// ([`held_head`]): true whenever `holdout` is, and for a case whose
+    /// screen, repo or request has such a line while its keys have none (#872).
+    held: bool,
     screen: String,
     /// The `<repo>` block the panel would send; "" for a window outside a repo.
     repo: String,
@@ -253,6 +257,7 @@ fn parse_some(text: &str, quiet: bool) -> Result<Vec<Case>, String> {
             must: vec![],
             must_not: vec![],
             holdout: false,
+            held,
             screen: String::new(),
             repo: String::new(),
             request: String::new(),
@@ -401,7 +406,8 @@ fn parse_some(text: &str, quiet: bool) -> Result<Vec<Case>, String> {
 /// (#797). A value that is neither yes nor no counts as held: it is an error
 /// anyway, and a quoted line from a case meant to be held out leaks. Its
 /// callers pass the whole case, bodies included (#825): a held-out case can
-/// join the case above as body text.
+/// join the case above as body text. [`load`] refuses in a loud file the case
+/// this holds out (#872), so the scan and that guard read one rule.
 fn held_head(head: &str) -> bool {
     let mut keys = head.lines().filter_map(|l| l.trim().split_once(':'));
     keys.any(|(k, v)| k.trim() == "holdout" && v.trim() != "no")
@@ -462,8 +468,9 @@ struct Loaded {
 }
 
 /// Reads the cases file, then the held-out file when there is one (#783). The
-/// cases file holds no held-out case, unless `--cases` names the held-out file
-/// itself (#861). The held-out file beside it may hold no case, each of its
+/// cases file holds no held-out case, held out by its `holdout` key or by any
+/// other line of it (#872), unless `--cases` names the held-out file itself
+/// (#861). The held-out file beside it may hold no case, each of its
 /// cases says `holdout: yes`, and none has an id the cases file has. No
 /// held-out id sits inside another id or equals a kind. An error starts with
 /// the file it is in.
@@ -472,9 +479,12 @@ fn load(cases: &Path, blind: Option<&Path>) -> Result<Loaded, String> {
     let mut all = parse_cases(&read(cases)?).map_err(|e| format!("{}: {e}", cases.display()))?;
     // every held-out case lives in the held-out file (#834): a loud file
     // refuses one, by its line only, unless it is that file named by --cases.
-    // The error says which file that is: the one refusing has any name (#861)
+    // The error says which file that is: the one refusing has any name (#861).
+    // Held out as the parser's scan reads it, by any line of the case: a body
+    // line sets no `holdout` key, so the case would load as a tune case while
+    // the rig keeps its text quiet as held (#872)
     let blind_named = cases.file_name() == Path::new(BLIND).file_name();
-    if let Some(c) = all.iter().find(|c| c.holdout).filter(|_| !blind_named) {
+    if let Some(c) = all.iter().find(|c| c.held).filter(|_| !blind_named) {
         let rule = "a held-out case belongs in holdout-blind.txt";
         return Err(format!("{}: line {}: {rule}", cases.display(), c.line));
     }
@@ -4399,6 +4409,8 @@ mod tests {
         let rows = [
             ("no key", held("b1").replace("holdout: yes\n", "")),
             ("no", held("b1").replace(": yes", ": no")),
+            // #872: a body line is not the key, here as in a loud file
+            ("a body line only", held("b1").replace("holdout: yes\n", "").replace("boom\n", BODY)),
         ];
         for (row, blind) in rows {
             let (_d, c, b) = two_files(&format!("nokey-{}", row.replace(' ', "-")), ONE, &blind);
@@ -4595,6 +4607,8 @@ mod tests {
     /// #825 review: held-ness is read from every line of a case, bodies
     /// included, so a `holdout: yes` line in a tune case's screen makes its
     /// errors quiet too. It can only hide text; the case still parses as tune.
+    /// With no bad line, cases.txt refuses it and the held-out file named by
+    /// `--cases` loads it, its `holdout` key unset (#872).
     #[test]
     fn a_holdout_line_in_a_body_makes_the_case_quiet() {
         let tune = ONE.replace("boom\n", "boom\nholdout: yes\n");
@@ -4602,8 +4616,10 @@ mod tests {
         let (_d, c, b) = two_files("body-held", &bad, "");
         let e = load(&c, Some(&b)).err().expect("a bad line loaded");
         assert_eq!(e, format!("{}: case crash: line 4: not key: value", c.display()));
-        let (_d, c, b) = two_files("body-held-ok", &tune, "");
-        let got = load(&c, Some(&b)).unwrap_or_else(|e| panic!("{e}"));
+        let (_d, c, b) = two_files("body-held-ok", &tune, &tune);
+        let e = load(&c, None).err().expect("a case a body line holds out loaded");
+        assert_eq!(e, format!("{}: line 2: {GUARD}", c.display()));
+        let got = load(&b, None).unwrap_or_else(|e| panic!("{e}"));
         assert!(!got.cases[0].holdout && got.cases[0].screen.ends_with("holdout: yes"));
     }
 
@@ -4993,7 +5009,171 @@ mod tests {
         assert_eq!((got.from[0].1, got.cases[1].holdout), (2, false));
     }
 
-    /// #861: the shipped loud files load with no held-out case in them.
+    /// #872: `boom`, the last line of ONE's screen, then a body line that
+    /// holds the case out.
+    const BODY: &str = "boom\nholdout: yes\n";
+
+    /// #872: a made-up tune case, id `made-up-b`, with `line` as a line of its
+    /// screen, its repo or its request. No header line of it says `holdout`.
+    fn in_body(section: &str, line: &str) -> String {
+        let c = ONE.replace("# a comment\n", "").replace("=== crash", "=== made-up-b");
+        match section {
+            "screen" => c.replace("boom\n", &format!("boom\n{line}\n")),
+            "repo" => c.replace("--- request\n", &format!("--- repo\n{line}\n--- request\n")),
+            "request" => c.replace("fix this\n", &format!("fix this\n{line}\n")),
+            s => panic!("no section {s}"),
+        }
+    }
+
+    /// #872: a loud file refuses a tune case that a body line holds out. A
+    /// `holdout: yes` line of its screen, its repo or its request sets no
+    /// `holdout` key, and the rig still reads the case as held (#825). With or
+    /// without the held-out file beside it, the error is the guard's, at the
+    /// case's `===` line: no id, no text, and not the body line's number.
+    #[test]
+    fn a_loud_file_refuses_a_case_a_body_line_holds_out() {
+        for section in ["screen", "repo", "request"] {
+            let text = format!("{ONE}{}", in_body(section, "holdout: yes"));
+            let (_d, c, b) = two_files(&format!("body-guard-{section}"), &text, "");
+            for blind in [None, Some(b.as_path())] {
+                let e = load(&c, blind).err().unwrap_or_else(|| panic!("{section}: loaded"));
+                assert_eq!(e, format!("{}: line 12: {GUARD}", c.display()), "{section}");
+            }
+        }
+    }
+
+    /// #872: `holdout: no` among a case's keys does not excuse a body line.
+    /// A shipped tune case says `holdout: no`, so this is the shape one of
+    /// them would have.
+    #[test]
+    fn a_holdout_no_key_does_not_excuse_a_body_line() {
+        let no_key = "expect: write\nholdout: no";
+        let keyed = in_body("request", "holdout: yes").replace("expect: write", no_key);
+        let (_d, c, b) = two_files("body-guard-no-key", &format!("{ONE}{keyed}"), "");
+        let e = load(&c, Some(&b)).err().expect("holdout: no with a body line loaded");
+        assert_eq!(e, format!("{}: line 12: {GUARD}", c.display()));
+    }
+
+    /// #872: the loud file's name changes nothing, as for a `holdout: yes` key
+    /// (#861): cases.txt, explore.txt, a `--cases` file of another name, and
+    /// names that only end or only start as the held-out file's does.
+    #[test]
+    fn a_loud_file_of_any_name_refuses_a_case_a_body_line_holds_out() {
+        let (d, _, _) = two_files("body-guard-names", "", "");
+        let text = format!("{ONE}{}", in_body("screen", "holdout: yes"));
+        let near = ["x-holdout-blind.txt", "holdout-blind.txt.bak"];
+        for name in ["cases.txt", "explore.txt", "made-up.txt"].into_iter().chain(near) {
+            let p = d.0.join(name);
+            std::fs::write(&p, &text).unwrap();
+            let e = load(&p, None).err().unwrap_or_else(|| panic!("{name}: loaded"));
+            assert_eq!(e, format!("{}: line 12: {GUARD}", p.display()), "{name}");
+        }
+    }
+
+    /// #872: the held-out file loads such a case as before. Named by `--cases`
+    /// it is a loud file, every case allowed: the case loads as the tune case
+    /// its keys say. Beside the cases file, a `holdout: yes` case with the
+    /// same body line loads as held out.
+    #[test]
+    fn the_held_out_file_loads_a_case_a_body_line_holds_out() {
+        let text = format!("{ONE}{}", in_body("screen", "holdout: yes"));
+        let (_d, c, b) = two_files("body-guard-blind", ONE, &text);
+        let got = load(&b, None).unwrap_or_else(|e| panic!("--cases: {e}"));
+        assert_eq!((got.from[0].1, got.cases[1].holdout), (2, false));
+        assert!(got.cases[1].screen.ends_with("holdout: yes"));
+        std::fs::write(&b, held("made-up-b").replace("boom\n", BODY)).unwrap();
+        let got = load(&c, Some(&b)).unwrap_or_else(|e| panic!("beside cases.txt: {e}"));
+        assert_eq!((got.from[1].1, got.cases[1].holdout), (1, true));
+    }
+
+    /// #872: the guard reads every case of the file, and names the first one
+    /// held out, by a body line or by its key, whichever comes first.
+    #[test]
+    fn the_guard_finds_a_body_held_case_wherever_it_sits() {
+        let by_body = in_body("screen", "holdout: yes");
+        let tune = ONE.replace("# a comment\n", "").replace("=== crash", "=== made-up-c");
+        let rows = [
+            ("first", format!("{by_body}{tune}"), 1),
+            ("in the middle", format!("{ONE}{by_body}{tune}"), 12),
+            ("last", format!("{ONE}{tune}{by_body}"), 22),
+            ("before a held-out key", format!("{ONE}{by_body}{}", held("made-up-c")), 12),
+            ("after a held-out key", format!("{ONE}{}{by_body}", held("made-up-c")), 12),
+        ];
+        for (i, (row, text, line)) in rows.into_iter().enumerate() {
+            let (_d, c, _) = two_files(&format!("body-guard-at-{i}"), &text, "");
+            let e = load(&c, None).err().unwrap_or_else(|| panic!("{row}: loaded"));
+            assert_eq!(e, format!("{}: line {line}: {GUARD}", c.display()), "{row}");
+        }
+    }
+
+    /// #872: each row is a screen line, and whether it holds its case out.
+    /// The rule is the scan's (#797): the line, trimmed, is `holdout`, a
+    /// colon and anything but `no`, with spaces allowed around the colon.
+    fn body_rows() -> [(&'static str, &'static str, bool); 19] {
+        [
+            ("yes", "holdout: yes", true),
+            ("indented", "    holdout: yes", true),
+            ("after a tab", "\tholdout: yes", true),
+            ("no space after the colon", "holdout:yes", true),
+            ("a space before the colon", "holdout : yes", true),
+            ("no value", "holdout:", true),
+            ("a value of spaces", "holdout:   ", true),
+            ("another value", "holdout: MADE-UP", true),
+            ("no in capitals", "holdout: NO", true),
+            ("no and more", "holdout: no, MADE-UP", true),
+            ("a second colon", "holdout: no: MADE-UP", true),
+            ("no", "holdout: no", false),
+            ("no, indented, spaces after", "  holdout: no  ", false),
+            ("a capital in the key", "Holdout: yes", false),
+            ("a list item", "- holdout: yes", false),
+            ("a # line", "# holdout: yes", false),
+            ("a quoted key", "\"holdout\": \"yes\"", false),
+            ("a word before the key", "MADE-UP holdout: yes", false),
+            ("no colon", "holdout yes", false),
+        ]
+    }
+
+    /// #872: the guard holds a case out by the lines the scan does, so the two
+    /// cannot disagree: a case the rig keeps quiet is one a loud file refuses.
+    #[test]
+    fn the_guard_reads_a_body_line_as_the_scan_does() {
+        for (i, (row, line, refused)) in body_rows().into_iter().enumerate() {
+            assert_eq!(held_head(line), refused, "{row}: the scan");
+            let text = format!("{ONE}{}", in_body("screen", line));
+            let (_d, c, _) = two_files(&format!("body-rule-{i}"), &text, "");
+            let got = load(&c, None).map(|l| l.cases.len());
+            let want = format!("{}: line 12: {GUARD}", c.display());
+            assert_eq!(got, if refused { Err(want) } else { Ok(2) }, "{row}");
+        }
+    }
+
+    /// #872: a held-out case whose case line lacks its space joins the tune
+    /// case above as request text (#825). The guard refuses that case, at its
+    /// own `===` line, so the joined lines never load as a tune request.
+    #[test]
+    fn a_held_out_case_joined_to_a_tune_case_is_refused() {
+        let joined = "===made-up-b\nexpect: write\nholdout: yes\nMADE-UP request line\n";
+        let (_d, c, b) = two_files("body-guard-joined", &format!("{ONE}{joined}"), "");
+        let e = load(&c, Some(&b)).err().expect("a joined held-out case loaded");
+        assert_eq!(e, format!("{}: line 2: {GUARD}", c.display()));
+    }
+
+    /// #872: a `holdout:` line the guard does not read still loads: a comment
+    /// before the first case, a comment among a case's keys, `holdout: no` as a
+    /// key and `holdout: no` in a body, all in one file.
+    #[test]
+    fn a_loud_file_loads_the_holdout_lines_that_hold_nothing_out() {
+        let keyed = held("made-up-c").replace("holdout: yes", "# holdout: yes\nholdout: no");
+        let no = in_body("repo", "holdout: no");
+        let text = format!("#   holdout: yes or no\n{ONE}{no}{keyed}");
+        let (_d, c, b) = two_files("body-guard-loads", &text, "");
+        let got = load(&c, Some(&b)).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(got.from[0].1, 3);
+        assert!(got.cases.iter().all(|c| !c.holdout));
+    }
+
+    /// #861: the shipped loud files load with no held-out case in them, and
+    /// so with no case a body line holds out (#872): the load would refuse it.
     #[test]
     fn the_shipped_loud_files_hold_no_held_out_case() {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("evals/panel");

@@ -299,8 +299,19 @@ for byte, so the cases file holds tune cases only. The cases file,
 `explore.txt` and any `--cases` file but the held-out file refuse a case whose
 `holdout:` is anything but `no`, with an error naming the file, the case's
 line and `holdout-blind.txt` as where it belongs, no id and no text (#861), so
-a held-out case cannot drift back. `--cases` on the
-held-out file reads it as a loud file, every case allowed. The rig loads the
+a held-out case cannot drift back. The refusal reads every line of the case,
+its screen, repo and request included, and not its keys alone (#872). A line
+holds its case out when, with the spaces around it dropped, it is `holdout`, a
+colon and anything but `no`, with spaces allowed on either side of the colon.
+So an indented `holdout: yes`, `holdout:yes`, `holdout:` with no value and
+`holdout: NO` are refused, at the case's `===` line and not at the body line.
+`holdout: no`, `Holdout: yes`, `- holdout: yes` and `# holdout: yes` load. The
+quiet errors below go by the same rule, so a case the rig keeps quiet as held
+is a case a loud file refuses. A tune case whose screen shows a config file
+with such a line is refused too. That false positive is accepted (#872), and
+the fix is to reword the line. A parse error anywhere in the file comes before
+the refusal. `--cases` on the held-out file reads it as a loud file, every case
+allowed. The rig loads the
 file beside the cases file: each of its cases must say `holdout: yes`, an id
 the cases file also has is an error, it may hold no case, and a missing file is
 an error, so a lost file cannot quietly drop the held-out cases from a run or
