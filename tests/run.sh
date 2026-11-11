@@ -85,45 +85,49 @@ chmod +x "$SHIM/tmux"
 # TMUX_BIN is the real one, for a stub that counts its calls.
 TMUX_BIN=$TMUX_REAL
 flop_write() {                # <dir> <real tmux> -> <dir>/tmux, the guard in front of that tmux
-    cat > "$1/tmux" <<FLOPEOF
-#!/bin/sh
+    # Quoted: a $ or a ` in TMPDIR must not expand again when the guard runs (#849). The
+    # dirs go in as single-quoted words, each ' written as '\''.
+    local q="'\\''"
+    { printf "#!/bin/sh\nF='%s' R='%s' U='%s'\n" "${1//\'/$q}" "${2//\'/$q}" "$(id -u)"
+    cat <<'FLOPEOF'
 n=L.default v= p=
 for a do
-    case \$p in
-    -L) n=L.\$a; p=; continue ;;
-    -S) n=S.\$a; p=; continue ;;
+    case $p in
+    -L) n=L.$a; p=; continue ;;
+    -S) n=S.$a; p=; continue ;;
     -c|-f|-T) p=; continue ;;
     esac
-    case \$a in
-    -c|-f|-L|-S|-T) p=\$a ;;
-    -L?*) n=L.\${a#-L} ;;
-    -S?*) n=S.\${a#-S} ;;
+    case $a in
+    -c|-f|-L|-S|-T) p=$a ;;
+    -L?*) n=L.${a#-L} ;;
+    -S?*) n=S.${a#-S} ;;
     -*) ;;
-    *) v=\$a; break ;;
+    *) v=$a; break ;;
     esac
 done
-case \$v in kill-server|new-session) ;; *) exec "$2" "\$@" ;; esac
+case $v in kill-server|new-session) ;; *) exec "$R" "$@" ;; esac
 # The key is the socket's path, the one tmux uses, so -L x and -S <dir>/x meet.
-case \$n in
-L.*) n=\${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/\${n#L.} ;;
-*) n=\${n#S.} ;;
+case $n in
+L.*) n=${TMUX_TMPDIR:-/tmp}/tmux-$U/${n#L.} ;;
+*) n=${n#S.} ;;
 esac
-n=\$(printf '%s' "\$n" | sed 's/_/__/g; s|/|_.|g')
-case \$v in
-kill-server) : > "$1/k.\$n" ;;
+n=$(printf '%s' "$n" | sed 's/_/__/g; s|/|_.|g')
+case $v in
+kill-server) : > "$F/k.$n" ;;
 new-session)
-    if [ -e "$1/k.\$n" ]; then
-        rm -f "$1/k.\$n"; [ -e "$1/r.\$n" ] || printf '%s.' "\$*" > "$1/r.\$n"
+    if [ -e "$F/k.$n" ]; then
+        rm -f "$F/k.$n"; [ -e "$F/r.$n" ] || printf '%s.' "$*" > "$F/r.$n"
         echo "server exited unexpectedly (refused by tests/run.sh, #573)" >&2; exit 1
     fi
-    if [ -e "$1/r.\$n" ]; then
-        "$2" "\$@"; rc=\$?
-        [ \$rc -ne 0 ] || [ "\$(cat "$1/r.\$n")" != "\$*." ] || rm -f "$1/r.\$n"
-        exit \$rc
+    if [ -e "$F/r.$n" ]; then
+        "$R" "$@"; rc=$?
+        [ $rc -ne 0 ] || [ "$(cat "$F/r.$n")" != "$*." ] || rm -f "$F/r.$n"
+        exit $rc
     fi ;;
 esac
-exec "$2" "\$@"
+exec "$R" "$@"
 FLOPEOF
+    } > "$1/tmux"
     chmod +x "$1/tmux"
 }
 FLOP="$STATE/flop"; mkdir -p "$FLOP"
