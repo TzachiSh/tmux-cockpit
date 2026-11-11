@@ -14333,7 +14333,8 @@ done
 # live copy there, so the resume runs; ١ is a second digit of the class (#757).
 if RSLOC=$(utf8_loc); then
     for rsu in 1.².1 1.١.1; do
-        RL=$("$TMUX_REAL" -L "$RS" new-window -d -P -F '#{pane_id}' -t t: "exec -a $rsu sleep 3600")
+        RL=$("$TMUX_REAL" -L "$RS" new-window -d -P -F '#{pane_id}' -t t: \
+            "exec -a $rsu sleep 3600")
         "$TMUX_REAL" -L "$RS" set -p -t "$RL" @panestate running
         "$TMUX_REAL" -L "$RS" set -p -t "$RL" @cockpit_session "$SID"
         R=$(rs_agent "$SID")
@@ -19626,12 +19627,12 @@ is "workdir.sh's workdir_agent reads the cut name: the two version titles are ag
 # "the glob range does not widen" and fails, never passing against a version_cmd it can't test
 # (#757).
 if CNLOC=$(utf8_loc); then
-    for cnu in 1.².1 1.١.1; do
-        is "with globasciiranges off in en_US.UTF-8, version_cmd: $cnu is no version title" "no" \
-           "$(env LOCPATH="$CNLOC" LC_ALL=en_US.UTF-8 bash -c 'shopt -u globasciiranges
-                case ${2:2:1} in [0-9]) ;; *) echo "the glob range does not widen"; exit ;; esac
-                . "$1"; if version_cmd "$2"; then echo yes; else echo no; fi' _ \
-                "$DIR/scripts/lib/cmdname.sh" "$cnu" 2>/dev/null)"
+    for cnd in ² ١; do
+        is "with globasciiranges off in en_US.UTF-8, version_cmd: 1.$cnd.1 is no version title" \
+           "no" "$(env LOCPATH="$CNLOC" LC_ALL=en_US.UTF-8 bash -c 'shopt -u globasciiranges
+                case $2 in [0-9]) ;; *) echo "the glob range does not widen"; exit ;; esac
+                . "$1"; if version_cmd "1.$2.1"; then echo yes; else echo no; fi' _ \
+                "$DIR/scripts/lib/cmdname.sh" "$cnd" 2>/dev/null)"
     done
 else
     bad "a UTF-8 locale whose regex [0-9] matches ² and ١ loads (localedef en_US.UTF-8)" \

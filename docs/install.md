@@ -108,7 +108,7 @@ The hooks and the state each one writes: [states-and-hooks.md](states-and-hooks.
   cargo. `make check` builds it, so the suite needs cargo.
 - The shell suite builds an `en_US.UTF-8` locale with **`localedef`**, which needs the
   locale sources (on Debian and Ubuntu, the `locales` package). Without them its
-  three UTF-8 digit rows fail rather than run in the C locale.
+  three UTF-8 digit blocks each fail one row rather than run in the C locale.
 - No fzf: every picker is `cockpit-tui`. `jq` is needed by `install.sh --hooks` and
   the review gate.
 - **revdiff** for the `prefix + r` review; tested with v1.13.0. Without it
