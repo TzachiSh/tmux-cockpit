@@ -63,6 +63,26 @@ if [ -n "${PAR_BLOCKS:-}" ] && [ "${PAR_BLOCKS}" != ALL ]; then
     ' "$WORK/groups.tsv" > "$WORK/groups.sel" && mv "$WORK/groups.sel" "$WORK/groups.tsv"
 fi
 
+# Each shard's titles, for its start line (#805): its blocks' titles joined by " | ", cut
+# at 100 bytes (never inside a UTF-8 character) with "..." after, control bytes dropped.
+# Titles only: no path or variable a log should not carry. Written once here, read once
+# per shard, never per row.
+mkdir -p "$WORK/title"
+LC_ALL=C awk -F'\t' -v dir="$WORK/title" '
+    NR == FNR { if (/^echo "== /) { n++; t = $0; sub(/^echo "== /, "", t); sub(/ =="$/, "", t)
+                                    gsub(/[\001-\037\177]/, "", t); title[n] = t }
+                next }
+    # The test before the assignment: mawk makes s[$1] exist as it reads the left side.
+    { if ($1 in s) s[$1] = s[$1] " | " title[$2]; else s[$1] = title[$2] }
+    END { for (id in s) { t = s[id]
+                          if (length(t) > 100) {
+                              c = substr(t, 101, 1); t = substr(t, 1, 100)
+                              # a cut inside a UTF-8 character drops that character
+                              if (c ~ /[\200-\277]/) sub(/[\300-\377][\200-\277]*$/, "", t)
+                              t = t "..." }
+                          print t > (dir "/" id); close(dir "/" id) } }
+' "$WORK/run.snap" "$WORK/groups.tsv"
+
 while IFS=$'\t' read -r id n g; do
     printf '%s\n' "$n" >> "$WORK/list/$id"
     [ "$g" = serial ] && serial_ids=" $id${serial_ids:-}"
@@ -124,7 +144,13 @@ run_shards() {                       # <parallelism> <shard file>...
     printf '%s\n' "$@" | xargs -P "$p" -I{} sh -c '
         id=${1##*.}
         PAR_COUNT="'"$WORK"'/out/$id.n" export PAR_COUNT
-        bash "$1" > "'"$WORK"'/out/$id.log" 2>&1 || : > "'"$WORK"'/out/$id.fail"
+        # Live, to par.sh'"'"'s stderr, one short line each (#805): a run cancelled mid-way
+        # shows a start with no end for the shard that held it up.
+        t=""; read -r t 2>/dev/null < "'"$WORK"'/title/$id"
+        printf "par.sh: shard %s start: %s\n" "$id" "$t" >&2
+        bash "$1" > "'"$WORK"'/out/$id.log" 2>&1; rc=$?
+        [ "$rc" -eq 0 ] || : > "'"$WORK"'/out/$id.fail"
+        printf "par.sh: shard %s end rc=%s\n" "$id" "$rc" >&2
     ' _ {}
 }
 
