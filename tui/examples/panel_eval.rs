@@ -166,22 +166,22 @@ fn parse_some(text: &str, quiet: bool) -> Result<Vec<Case>, String> {
     if let Some(i) = bad.filter(|_| quiet) {
         return Err(format!("line {}: {rule}", i + 1));
     }
+    // each line that opens a case: its byte offset in `text` and its line
+    let mut opens = vec![];
+    let mut at = 0;
+    for (i, l) in text.split_inclusive('\n').enumerate() {
+        if l.starts_with("=== ") {
+            opens.push((at, i + 1));
+        }
+        at += l.len();
+    }
+    preamble(&text[..opens.first().map_or(text.len(), |o| o.0)], quiet)?;
     let mut cases = Vec::new();
-    let mut next = 1;
-    for (n, block) in text.split("\n=== ").enumerate() {
-        // the block's first line in the file
-        let line0 = next;
-        next += block.matches('\n').count() + 1;
-        let block = if n == 0 {
-            match block.strip_prefix("=== ") {
-                Some(b) => b,
-                None => {
-                    preamble(block, quiet)?;
-                    continue;
-                }
-            }
-        } else {
-            block
+    for (k, &(from, line0)) in opens.iter().enumerate() {
+        // up to the next case's line, the newline before it left out
+        let block = match opens.get(k + 1) {
+            Some(&(to, _)) => &text[from + 4..to - 1],
+            None => &text[from + 4..],
         };
         let (id, rest) = block.split_once('\n').unwrap_or((block, ""));
         let id = id.trim().to_string();
