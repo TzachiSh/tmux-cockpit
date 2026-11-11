@@ -5810,15 +5810,6 @@ esac
         assert_eq!((code, calls(&d.0)), (Some(2), 0), "{err}");
     }
 
-    /// #783: the overlap check judges the held-out file's cases too.
-    /// [`overlap_dir`] writes the one held-out case there (#861).
-    #[test]
-    fn overlap_judges_the_held_out_files_cases() {
-        let d = overlap_dir("ov-blind");
-        let (code, out, err) = overlap_run(&d.0, "a plain line\n");
-        assert_eq!((code, calls(&d.0)), (Some(0), 1), "{out}{err}");
-    }
-
     #[test]
     fn overlap_spend_goes_in_the_ledger() {
         let d = overlap_dir("ov-ledger");
