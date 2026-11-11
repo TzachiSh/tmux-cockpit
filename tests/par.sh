@@ -64,8 +64,9 @@ if [ -n "${PAR_BLOCKS:-}" ] && [ "${PAR_BLOCKS}" != ALL ]; then
 fi
 
 # Each shard's titles, for its start line (#805): its blocks' titles joined by " | ", cut
-# at 100 bytes (never inside a UTF-8 character) with "..." after, control bytes dropped. Titles only: no path or variable a
-# log should not carry. Written once here, read once per shard, never per row.
+# at 100 bytes (never inside a UTF-8 character) with "..." after, control bytes dropped.
+# Titles only: no path or variable a log should not carry. Written once here, read once
+# per shard, never per row.
 mkdir -p "$WORK/title"
 LC_ALL=C awk -F'\t' -v dir="$WORK/title" '
     NR == FNR { if (/^echo "== /) { n++; t = $0; sub(/^echo "== /, "", t); sub(/ =="$/, "", t)
@@ -145,7 +146,7 @@ run_shards() {                       # <parallelism> <shard file>...
         PAR_COUNT="'"$WORK"'/out/$id.n" export PAR_COUNT
         # Live, to par.sh'"'"'s stderr, one short line each (#805): a run cancelled mid-way
         # shows a start with no end for the shard that held it up.
-        t=""; read -r t < "'"$WORK"'/title/$id"
+        t=""; read -r t 2>/dev/null < "'"$WORK"'/title/$id"
         printf "par.sh: shard %s start: %s\n" "$id" "$t" >&2
         bash "$1" > "'"$WORK"'/out/$id.log" 2>&1; rc=$?
         [ "$rc" -eq 0 ] || : > "'"$WORK"'/out/$id.fail"

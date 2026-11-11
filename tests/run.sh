@@ -8929,11 +8929,17 @@ Q='"'
     printf 'echo %s== ps2b: grouped, with a title long enough to be cut at its width: %s ==%s\n' \
         "$Q" "$(printf 'x%.0s' $(seq 1 120))" "$Q"
     printf 'is "ps2b" 1 1\n\n'
+    # A cut that falls inside a UTF-8 character: 98 bytes, then a 3-byte one across byte 100.
+    printf 'echo %s== ps4: %s\342\226\262\342\226\262 ==%s\n' "$Q" \
+        "$(printf 'y%.0s' $(seq 1 93))" "$Q"
+    printf 'is "ps4" 1 1\n\n'
+    printf 'echo %s== ps5: tab\there ==%s\n' "$Q" "$Q"
+    printf 'is "ps5" 1 1\n\n'
 } >> "$PSROOT/tests/run.sh"
 cp "$PSROOT/tests/run.sh" "$PSROOT/tests/run.green"
 {
     printf 'echo %s== ps3: never ends ==%s\n' "$Q" "$Q"
-    printf 'sleep 287\n'
+    printf ': > "$TMPDIR/ps3.in"; sleep 287\n'
 } >> "$PSROOT/tests/run.sh"
 ps_left() {                   # the processes still carrying the sandbox's TMPDIR
     local p n=0
@@ -8942,12 +8948,20 @@ ps_left() {                   # the processes still carrying the sandbox's TMPDI
     done
     printf '%s' "$n"
 }
-# The run with a shard that never ends, ended from outside at 15 s.
-( cd "$PSROOT" && env -u PAR_BLOCKS TMPDIR="$PSROOT/t" J=3 \
-    timeout 15 tests/par.sh ) </dev/null >/dev/null 2>"$PSROOT/hung.err"
+# The run with a shard that never ends: once that shard is inside its block (past the
+# prelude, whose EXIT trap cleans up) and a finished shard's end line is out, it is ended
+# from outside through timeout (whose 60 s is only a backstop), which hands the TERM to the
+# whole run's process group.
+( cd "$PSROOT" && exec env -u PAR_BLOCKS TMPDIR="$PSROOT/t" J=3 \
+    timeout 60 tests/par.sh ) </dev/null >/dev/null 2>"$PSROOT/hung.err" & ps_to=$!
+until_out '?*' ls "$PSROOT/t/ps3.in"
+until_file "$PSROOT/hung.err" '*shard 0001 end rc=0*'
+ps_c=""; read -r ps_c 2>/dev/null < "/proc/$ps_to/comm"
+[ "$ps_c" != timeout ] || kill -TERM "$ps_to" 2>/dev/null
+wait "$ps_to" 2>/dev/null
 is "a shard still running when the run is ended has a start line" "1" \
-   "$(grep -c '^par\.sh: shard [0-9]* start: ps3: never ends$' "$PSROOT/hung.err")"
-is "and no end line" "0" "$(grep -c '^par\.sh: shard 0004 end' "$PSROOT/hung.err")"
+   "$(grep -c '^par\.sh: shard 0006 start: ps3: never ends$' "$PSROOT/hung.err")"
+is "and no end line" "0" "$(grep -c '^par\.sh: shard 0006 end' "$PSROOT/hung.err")"
 is "a shard that finished has both, with its status" "1 1" \
    "$(grep -c '^par\.sh: shard 0001 start: ps1: solo$' "$PSROOT/hung.err") $(
       grep -c '^par\.sh: shard 0001 end rc=0$' "$PSROOT/hung.err")"
@@ -8956,19 +8970,27 @@ is "nothing the ended run started is left" "0" "$(ps_left)"
 cp "$PSROOT/tests/run.green" "$PSROOT/tests/run.sh"
 ( cd "$PSROOT" && env -u PAR_BLOCKS TMPDIR="$PSROOT/t" J=3 tests/par.sh ) \
     </dev/null >"$PSROOT/green.out" 2>"$PSROOT/green.err"
-is "a green run counts its rows as before" "3 passed, 0 failed, 0 skipped" \
+is "a green run counts its rows as before" "5 passed, 0 failed, 0 skipped" \
    "$(grep -oE '[0-9]+ passed, [0-9]+ failed, [0-9]+ skipped' "$PSROOT/green.out")"
-is "every shard has one start and one end line: 2 shards, 4 lines" "2 2" \
+is "every shard has one start and one end line: 4 shards, 8 lines" "4 4" \
    "$(grep -c '^par\.sh: shard [0-9]* start: ' "$PSROOT/green.err") $(
       grep -c '^par\.sh: shard [0-9]* end rc=[0-9]*$' "$PSROOT/green.err")"
 is "a grouped shard names its blocks, its title cut at 100 bytes" \
    "par.sh: shard 0002 start: ps2a: grouped | ps2b: grouped, with a title long enough to b$(
    )e cut at its width: $(printf 'x%.0s' $(seq 1 20))..." \
    "$(grep '^par\.sh: shard 0002 start' "$PSROOT/green.err")"
-is "no new line reads as a row or a count" "0" \
-   "$(grep -cE '^  (PASS|FAIL|SKIP)|passed,|failed,' "$PSROOT/green.err")"
+is "a cut inside a UTF-8 character drops the whole character" \
+   "par.sh: shard 0004 start: ps4: $(printf 'y%.0s' $(seq 1 93))..." \
+   "$(grep '^par\.sh: shard 0004 start' "$PSROOT/green.err")"
+is "a control byte in a title is dropped" "par.sh: shard 0005 start: ps5: tabhere" \
+   "$(grep '^par\.sh: shard 0005 start' "$PSROOT/green.err")"
+# A row is two spaces, a colour, PASS, FAIL or SKIP: the pattern finds the run's own rows.
+ps_row="^  ($ESC\[[0-9;]*m)?(PASS|FAIL|SKIP)|passed,|failed,"
+is "the row pattern finds the green run's rows and its count" "6" \
+   "$(grep -cE "$ps_row" "$PSROOT/green.out")"
+is "no new line reads as a row or a count" "0" "$(grep -cE "$ps_row" "$PSROOT/green.err")"
 is "nor is left behind" "0" "$(ps_left)"
-unset -f ps_left; unset PSROOT Q
+unset -f ps_left; unset PSROOT Q ps_to ps_c ps_row
 
 echo "== tests/green.sh: the stamp hits on unchanged content, misses on one changed byte, and tool versions are in the key =="
 GROOT=$(mktmpd)
