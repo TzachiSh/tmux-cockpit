@@ -15,12 +15,14 @@ cmd_base() {
 # Is this pane command the native install's version-shaped title (2.1.318)? After
 # cmd_base: a leading digit, then only digits, dots and underscores, two or more
 # of them dots or underscores. The shell twin of version_shaped in
-# tui/src/data.rs (#761).
+# tui/src/data.rs (#761). The digits are spelled out: a range [0-9] matches ² in a
+# UTF-8 locale such as en_US when globasciiranges is off (bash before 5), and
+# version_shaped counts ASCII digits only (#830).
 version_cmd() {
     cmd_base "$1"
     case $CMD_BASE in
-        *[!0-9._]*) return 1 ;;
-        [0-9]*[._]*[._]*) return 0 ;;
+        *[!0123456789._]*) return 1 ;;
+        [0123456789]*[._]*[._]*) return 0 ;;
     esac
     return 1
 }

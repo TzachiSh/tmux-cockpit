@@ -239,6 +239,17 @@ fi
 # the moment it returns, so the first version of this registered nothing at all.
 TMPS=$(mktemp)
 mktmpd() { local d; d=$(mktemp -d) || return 1; printf '%s\n' "$d" >> "$TMPS"; printf '%s' "$d"; }
+# A glibc UTF-8 locale in which bash's regex [0-9] matches ²: en_US.UTF-8, built once under
+# $STATE with localedef (C.UTF-8, on every image, does not widen it). Prints the LOCPATH dir.
+# 1 when none loads or it does not widen: the caller fails its row, never runs it in C (#830).
+utf8_loc() {
+    local d="$STATE/utf8loc"
+    if [ ! -d "$d/en_US.UTF-8" ]; then
+        mkdir -p "$d" && localedef -i en_US -f UTF-8 "$d/en_US.UTF-8" >/dev/null 2>&1
+    fi
+    LOCPATH=$d LC_ALL=en_US.UTF-8 bash -c '[[ ² =~ ^[0-9]$ ]]' 2>/dev/null || return 1
+    printf '%s' "$d"
+}
 # A file:// URL for a fixture dir under TMPDIR: curl rejects a raw space, and reads %xx as an
 # escape, so % is encoded first, then the space (#818). Only those two: mktemp's own names
 # hold neither, and the other characters curl rejects (# ? [ ] { }, a tab, a newline) can
@@ -7564,6 +7575,15 @@ is "a pane running as ./2.1.318 is an agent, so it is asked" "1 $WD/other" \
    "$(wd_ct ok "$(wd_pane ./2.1.318)")"
 is "...and one running as /x/--2.1.318, which tmux shows as --2.1.318" "1 $WD/other" \
    "$(wd_ct ok "$(wd_pane /x/--2.1.318 --2.1.318)")"
+# In a UTF-8 locale such as en_US, workdir_agent's old regex [0-9] matched ²; version_cmd
+# counts ASCII digits only, as agentish does (#830). tmux trims a trailing ², hence 1.².1.
+if WDLOC=$(utf8_loc); then
+    WDU=$(wd_pane 1.².1)
+    is "in en_US.UTF-8 a pane running as 1.².1 is no agent, so it is not asked" "0 $WD/launch" \
+       "$( { export LOCPATH=$WDLOC LC_ALL=en_US.UTF-8; wd_ct ok "$WDU"; } 2>/dev/null)"
+else
+    bad "a UTF-8 locale whose regex [0-9] matches ² loads (localedef en_US.UTF-8)" "loaded" "none"
+fi
 WDST=$(wd_pane snooze)
 "$TMUX_REAL" -L "$WDS" set -p -t "$WDST" @panestate running >/dev/null 2>&1
 is "a pane carrying @panestate is an agent whatever it runs, so it is asked" "1 $WD/other" \
@@ -14209,8 +14229,9 @@ rs_panes() { "$TMUX_REAL" -L "$RS" display -p -t "$1" '#{window_panes}'; }
 rs_run() {                    # <action-line> <expect>: one trip; the note it left
     rm -f "$RSD/once" "$RSD/done" "$RSD/ran"; : > "$RSD/bargv"
     printf '%s\n' "$1" > "$RSD/line"; printf '%s\n' "$2" > "$RSD/expect"
+    # RS_ENV: NAME=value words for the board's environment, a locale for one (#830)
     "$TMUX_REAL" -L "$RS" new-window -d -t t: \
-        "env PATH=\"$RSD/stub:\$PATH\" COCKPIT_TUI_BIN=$RSD/bin XDG_STATE_HOME=$RSD/state COCKPIT_LOG=$RSD/tui.log $DIR/scripts/cockpit-board -p $RSHOME; echo x > $RSD/done"
+        "env ${RS_ENV:-} PATH=\"$RSD/stub:\$PATH\" COCKPIT_TUI_BIN=$RSD/bin XDG_STATE_HOME=$RSD/state COCKPIT_LOG=$RSD/tui.log $DIR/scripts/cockpit-board -p $RSHOME; echo x > $RSD/done"
     until_file "$RSD/done" 'x'
     sed -n '3,$p' "$RSD/bargv"
 }
@@ -14275,7 +14296,10 @@ case "$(rs_run "resume %99999" "$SID")" in
 # agent (by @cockpit_agents_glob, or a claude renamed to its version) holding
 # the id. The ended panes above held it too and never blocked a resume.
 "$TMUX_REAL" -L "$RS" set -g @cockpit_agents_glob '|claude|'
-for argv0 in claude 2.1.246; do
+# The version test is lib/cmdname.sh's version_cmd, as the board's agentish reads it (#830): no
+# digit is needed between separators, and a relative path and leading dashes are cut. tmux
+# shows /x/-2.1.318 as -2.1.318 (it drops dashes first, then a path only after a leading /).
+for argv0 in claude 2.1.246 2..1 2.1.318. 2_1_318_ ./2.1.318 /x/-2.1.318; do
     RL=$("$TMUX_REAL" -L "$RS" new-window -d -P -F '#{pane_id}' -t t: "exec -a $argv0 sleep 3600")
     "$TMUX_REAL" -L "$RS" set -p -t "$RL" @panestate running
     "$TMUX_REAL" -L "$RS" set -p -t "$RL" @cockpit_session "$SID"
@@ -14289,6 +14313,22 @@ for argv0 in claude 2.1.246; do
     is "and nothing ran for it" "1 " "$(rs_panes "$R") $(cat "$RSD/ran" 2>/dev/null)"
     "$TMUX_REAL" -L "$RS" kill-pane -t "$RL"
 done
+# In a UTF-8 locale such as en_US, bash's regex [0-9] also matches ²; agentish counts ASCII
+# digits only, and so does version_cmd (#830). A 1.².1 pane (tmux trims a trailing ²) is no
+# live copy there, so the resume runs.
+if RSLOC=$(utf8_loc); then
+    RL=$("$TMUX_REAL" -L "$RS" new-window -d -P -F '#{pane_id}' -t t: "exec -a 1.².1 sleep 3600")
+    "$TMUX_REAL" -L "$RS" set -p -t "$RL" @panestate running
+    "$TMUX_REAL" -L "$RS" set -p -t "$RL" @cockpit_session "$SID"
+    R=$(rs_agent "$SID")
+    RS_ENV="LOCPATH=$RSLOC LC_ALL=en_US.UTF-8" rs_run "resume $R" "$SID" >/dev/null
+    until_file "$RSD/ran" '?*'
+    is "in en_US.UTF-8 a session in a 1.².1 pane is no live copy: the resume runs" \
+        "[$RSD/work][--resume][$SID]" "$(cat "$RSD/ran" 2>/dev/null)"
+    "$TMUX_REAL" -L "$RS" kill-pane -t "$RL"
+else
+    bad "a UTF-8 locale whose regex [0-9] matches ² loads (localedef en_US.UTF-8)" "loaded" "none"
+fi
 # the target itself running an agent again (a stale board's row) is refused too
 R=$("$TMUX_REAL" -L "$RS" new-window -d -P -F '#{pane_id}' -c "$RSD/work" -t t: \
     'exec -a claude sleep 3600')
@@ -19518,10 +19558,10 @@ ir_run "$IRS" "a TMPDIR with two spaces and a %"
 fi
 
 
-echo "== cmdname.sh: cmd_base cuts a path and leading dashes for its three callers (#757) =="
+echo "== cmdname.sh: cmd_base cuts a path and leading dashes for the agent tests (#757) =="
 # The functions themselves, beside the pane rows in the agent-poll bind blocks and the #470
 # workdir block. tmux's parse_window_name (format.c) drops leading dashes, then cuts a path
-# only when the name starts with /, so ./claude and /x/--2.1.318 (shown as --2.1.318) reach
+# only when the name starts with /, so ./2.1.318 and /x/--2.1.318 (shown as --2.1.318) reach
 # these cuts from a pane. The Rust twin is pinned through claude_cmd in
 # tui/tests/basket_claude_cmd.rs. A subshell keeps CMD_BASE and the functions out of the suite.
 cn_run() {                    # cn_run <fn> <names...>: one word per name, 1|0 or CMD_BASE
@@ -19552,6 +19592,16 @@ is "agent-poll's claude_cmd reads the cut name: all three are claude's" \
    "1 1 1" "$(cn_run claude_cmd /x/2.1.318 -claude --2.1.318)"
 is "workdir.sh's workdir_agent reads the cut name: the two version titles are agents" \
    "1 0 1" "$(cn_run workdir_agent /x/2.1.318 -claude --2.1.318)"
+# A glob range [0-9] matches ² in en_US.UTF-8 when globasciiranges is off, as in bash before 5;
+# version_cmd spells its digits out, so it counts ASCII digits whatever the bash (#830).
+if CNLOC=$(utf8_loc); then
+    is "with globasciiranges off in en_US.UTF-8, version_cmd: 1.².1 is no version title" "no" \
+       "$(env LOCPATH="$CNLOC" LC_ALL=en_US.UTF-8 bash -c 'shopt -u globasciiranges; . "$1"
+            if version_cmd 1.².1; then echo yes; else echo no; fi' _ \
+            "$DIR/scripts/lib/cmdname.sh" 2>/dev/null)"
+else
+    bad "a UTF-8 locale whose regex [0-9] matches ² loads (localedef en_US.UTF-8)" "loaded" "none"
+fi
 
 flop_left
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
