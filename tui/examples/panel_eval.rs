@@ -4321,6 +4321,8 @@ mod tests {
         let plain = fingerprint("v", false, None, Path::new("/c"), Effort::Medium, var);
         assert_eq!((plain.hermetic, plain.cwd.as_str()), (false, "/c"));
         assert_eq!(f.json()["vars"]["XDG_CONFIG_HOME"], serde_json::Value::Null);
+        // an unset name is in the row as null, not left out of it (#875)
+        assert!(f.json()["vars"].as_object().unwrap().contains_key("XDG_CONFIG_HOME"));
     }
 
     /// #623: the panel's own call loads no setting source, so a plain run does not either.
@@ -4362,6 +4364,8 @@ mod tests {
             assert_ne!(got, recorded(k, None), "{k}: as unset");
             assert_eq!(got, serde_json::json!({ "bytes": "ff" }), "{k}");
         }
+        // two hex digits for a byte under 16 too, in the value's own order (#875)
+        assert_eq!(recorded("HOME", Some(b"\xff\x01")), serde_json::json!({ "bytes": "ff01" }));
     }
 
     /// #871: nor is it the empty value, which stays the string it was (#859).
@@ -4377,11 +4381,12 @@ mod tests {
     /// #871: two values that are not UTF-8 are recorded apart, byte by byte.
     #[test]
     fn two_values_that_are_not_utf8_are_recorded_apart() {
-        let pairs: [(&str, &[u8], &[u8]); 4] = [
+        let pairs: [(&str, &[u8], &[u8]); 5] = [
             ("another byte", b"\xff", b"\xfe"),
             ("its text part", b"a\xff", b"b\xff"),
             ("one more byte", b"\xff", b"\xff\xff"),
             ("where a byte ends", b"\xff\x01\x23", b"\xff\x12\x03"),
+            ("their order", b"\xff\xfe", b"\xfe\xff"),
         ];
         for (row, a, b) in pairs {
             assert_ne!(recorded("HOME", Some(a)), recorded("HOME", Some(b)), "{row}");
@@ -4400,6 +4405,16 @@ mod tests {
         }
     }
 
+    /// A text value is recorded whole (#875): the spaces at its ends, its
+    /// capitals, and every character of a long one.
+    #[test]
+    fn a_text_value_is_recorded_byte_for_byte() {
+        let long = "/Made-Up/".repeat(40);
+        for text in [" A ", "\tb\n", long.as_str()] {
+            assert_eq!(recorded("HOME", Some(text.as_bytes())), text, "{text:?}");
+        }
+    }
+
     /// The summary's environment line for a fingerprint whose one variable is `v`.
     fn env_line(v: Option<Var>) -> String {
         let mut f = fingerprint("v", true, None, Path::new("/c"), Effort::Medium, |_: &str| None::<String>);
@@ -4414,13 +4429,20 @@ mod tests {
         assert_ne!(bytes(b"\xff"), env_line(None), "as unset");
         assert_ne!(bytes(b"\xff"), env_line(Some("".into())), "as empty");
         assert_ne!(bytes(b"\xff"), bytes(b"\xfe"), "as another byte");
+        // its words, and the whole value two hex digits a byte (#875)
+        let line = bytes(b"\xff\x01");
+        assert!(line.ends_with("; HOME=(not UTF-8, bytes ff01)"), "{line}");
     }
 
-    /// The line still names a text value as it is and an unset one in words.
+    /// The line still names a text value as it is, an empty one as nothing
+    /// and an unset one in words, so the last two read apart (#875).
     #[test]
     fn the_environment_line_names_a_text_value_as_it_is_and_an_unset_one() {
-        let text = env_line(Some("/home/u v".into()));
-        assert!(text.ends_with("; HOME=/home/u v"), "{text}");
+        let long = "/Made-Up/".repeat(40);
+        for text in [" /Home/u v ", "", long.as_str()] {
+            let line = env_line(Some(text.into()));
+            assert!(line.ends_with(&format!("; HOME={text}")), "{line:?}");
+        }
         let unset = env_line(None);
         assert!(unset.ends_with("; HOME=(unset)"), "{unset}");
     }
@@ -6730,6 +6752,29 @@ esac
             let row: Value = serde_json::from_str(rows.lines().next().unwrap_or("null")).unwrap();
             assert_eq!(row["reply"].as_str().map(str::trim), Some("6fff"), "{rows}");
             assert_eq!(row["env"]["vars"]["DISABLE_TELEMETRY"], json!({ "bytes": "6fff" }), "{rows}");
+        }
+
+        /// #875: the rig's own lookup at both ends for values that are text.
+        /// An empty call variable, a text one and one of the first four names
+        /// reach the call, and the row records each as the call got it.
+        #[test]
+        fn a_rig_run_records_an_empty_and_a_text_variable_as_the_call_got_them() {
+            let one = "=== env-e\nkind: bug\nwindow: bash · bash · /home/u\n\
+                expect: write\nmust: ok\n--- request\nfix this\n";
+            let dump = "#!/bin/sh\n[ \"$1\" = --version ] && { echo 9.9.9; exit 0; }\ncat >/dev/null\n\
+                echo \"${DISABLE_TELEMETRY-unset},${DISABLE_AUTOUPDATER-unset},${CLAUDE_CONFIG_DIR-unset}.\"\n";
+            let set = [
+                ("DISABLE_TELEMETRY", ""),
+                ("DISABLE_AUTOUPDATER", "0"),
+                ("CLAUDE_CONFIG_DIR", "/c d"),
+            ];
+            let env = set.map(|(k, v)| (k, OsStr::new(v)));
+            let (code, out, err, rows) = rig_run_env("quiet-env-text", one, dump, &[], &env);
+            assert_eq!(code, Some(0), "{out}{err}");
+            let row: Value = serde_json::from_str(rows.lines().next().unwrap_or("null")).unwrap();
+            assert_eq!(row["reply"].as_str().map(str::trim), Some(",0,/c d."), "{rows}");
+            let got = set.map(|(k, _)| row["env"]["vars"][k].clone());
+            assert_eq!(got, set.map(|(_, v)| json!(v)), "{rows}");
         }
 
         /// Not a test of its own: the child [`rig_run`] starts.

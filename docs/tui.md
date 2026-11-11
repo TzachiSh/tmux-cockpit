@@ -435,7 +435,8 @@ variables (#853) as the calls get them, the rig's own value or else `1`. Each
 `--out` row carries the same as `env`. There `env.vars.<NAME>` is a string for
 a text value, `null` for one of the first four left unset, and for a value
 that is not UTF-8 the object `{"bytes":"<hex>"}`, its bytes two hex digits each
-(#871): the call gets such a value too. `--compare`
+(#871): the call gets such a value too, and the `environment` line prints it
+as `(not UTF-8, bytes <hex>)`. `--compare`
 prints each side's `env` and warns when they differ, as a run from before #598
 has none. The fingerprint records what the calls got, so rows from before #853
 warn as different environments in `--compare`.
