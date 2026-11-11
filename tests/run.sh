@@ -19947,44 +19947,72 @@ bw() {                        # <lo> <hi> <cmd...>: "<status> in" when the time 
       if [ "$t" -ge "$lo" ] && [ "$t" -le "$hi" ]; then printf '%s in' "$rc"
       else printf '%s after %s s' "$rc" "$t"; fi )
 }
+bw_left() {                   # <tag>: the processes whose environment carries BW_TAG=<tag>
+    local p n=""
+    for p in /proc/[0-9]*; do
+        tr '\0' '\n' 2>/dev/null < "$p/environ" | grep -qxF "BW_TAG=$1" && n="$n ${p#/proc/}"
+    done
+    printf '%s' "$n"
+}
 is "bound uses timeout where it exists, as the four callers did before" "timeout" \
    "$( . "$DIR/scripts/lib/bound.sh"; printf '%s' "$BOUND_TO")"
+# The reader itself: a process started later has another start time, and its own survives
+# an exec.
+is "bound_start: a later process's start time differs from this shell's, and survives exec" \
+   "differs same" \
+   "$( . "$DIR/scripts/lib/bound.sh"
+       sh -c 'sleep 1; exec sleep 3' & q=$!; a=$(bound_start "$q")
+       [ -n "$a" ] && [ "$a" != "$(bound_start $$)" ] && printf differs
+       sleep 2; [ "$(bound_start "$q")" = "$a" ] && printf ' same'
+       kill "$q" 2>/dev/null; wait "$q" 2>/dev/null )"
 is "a hung command is ended at its 2 s bound with TERM: 143" "143 in" "$(bw 2 3 bound 2 sleep 30)"
 is "a wrapper that execs into another program is ended all the same" "143 in" \
    "$(bw 2 3 bound 2 sh -c 'exec sleep 30')"
-is "a command that ends first returns its own status at once" "3 in" \
-   "$(bw 0 1 bound 17 sh -c 'exit 3')"
-bw_left=""
-for bw_p in /proc/[0-9]*; do
-    case "$(tr '\0' ' ' 2>/dev/null < "$bw_p/cmdline")" in
-        "sleep 17 "*) bw_left="$bw_left ${bw_p#/proc/}" ;;
-    esac
-done
-is "and leaves no timer behind: no sleep 17 runs" "" "$bw_left"
+# Timed from outside the $( ): a child left running holds it open after bound returns.
+bw_t=$SECONDS
+bw_r=$(BW_TAG=fork$$ bw 2 3 bound 2 sh -c 'sleep 30 & wait'); bw_t=$((SECONDS - bw_t))
+is "a wrapper that forks is ended with its child, so the caller's \$( ) ends at the bound" \
+   "143 in|in|" "$bw_r|$([ "$bw_t" -le 3 ] && echo in || echo "$bw_t s")|$(bw_left fork$$)"
+is "a command that ends first returns its own status at once, and leaves no timer behind" \
+   "3 in|" "$(BW_TAG=fast$$ bw 0 1 bound 17 sh -c 'exit 3')|$(bw_left fast$$)"
+# The caller's own shape: inside $( ) in a script fed by a pipe.
 is "stdin reaches the command" "hello" \
-   "$(echo hello | ( . "$DIR/scripts/lib/bound.sh"; BOUND_TO=""; bound 2 head -n 1 ))"
+   "$(echo hello | BOUND_DIR="$DIR" bash -c '. "$BOUND_DIR/scripts/lib/bound.sh"; BOUND_TO=""
+       x=$(bound 2 head -n 1); printf %s "$x"')"
+# macOS: ps pads lstart, and read trims what the timer hands back. A ps that pads, on the
+# ps path: the timer must still be ended when the command ends first.
+mkdir -p "$BW/ps"
+printf '#!/bin/sh\nkill -0 "$4" 2>/dev/null && printf "  Wed Nov 11 17:00:00 2026   \\n"\n' \
+    > "$BW/ps/ps"
+chmod +x "$BW/ps/ps"
+is "on the ps path, padded, a command that ends first returns at once" "3 in" \
+   "$(PATH="$BW/ps:$PATH" bw 0 1 \
+      eval 'bound_start() { bound_ps_start "$1"; }; bound 5 sh -c "exit 3"')"
 # A reused pid: at the deadline bound_start reads another start time, as for a process the
 # kernel gave that pid after ours ended. The stand-in (still our child) must survive it.
-bw_re() {                     # <what bound_start reads once $BW/flip exists>
+bw_re() {                     # <read before the flip> <read after it>, "-" for the real one
     rm -f "$BW/flip" "$BW/ran"
     ( . "$DIR/scripts/lib/bound.sh"; BOUND_TO=""
       eval "bw_real_$(declare -f bound_start)"
-      bw_alt=$1
+      bw_pre=$1 bw_post=$2
       bound_start() {
-          if [ -e "$BW/flip" ]; then printf '%s' "$bw_alt"; else bw_real_bound_start "$1"; fi
+          local v=$bw_pre; [ -e "$BW/flip" ] && v=$bw_post
+          if [ "$v" = - ]; then bw_real_bound_start "$1"; else printf '%s' "$v"; fi
       }
       s=$SECONDS
-      # The flip comes 1 s in, after bound has read the real start time at the fork.
+      # The flip comes 1 s in, after bound has read the start time at the fork.
       bound 2 sh -c 'sleep 1; : > "$1/flip"; sleep 2; : > "$1/ran"' _ "$BW"
       rc=$?; t=$((SECONDS - s))
       [ "$t" -ge 3 ] && [ "$t" -le 4 ] && t=in
       printf '%s %s %s' "$rc" "$t" "$([ -e "$BW/ran" ] && echo ran)" )
 }
 is "a pid whose start time differs at the deadline is not signalled: the stand-in runs on" \
-   "0 in ran" "$(bw_re 'another start time')"
-is "nor one whose start time cannot be read: no kill is claimed, the command's own status" \
-   "0 in ran" "$(bw_re '')"
-unset -f bw bw_re; unset BW bw_left bw_p
+   "0 in ran" "$(bw_re - 'another start time')"
+is "nor one whose start time cannot be read at the deadline: no kill is claimed" \
+   "0 in ran" "$(bw_re - '')"
+is "nor one whose start time could not be read from the fork on" \
+   "0 in ran" "$(bw_re '' '')"
+unset -f bw bw_left bw_re; unset BW bw_t bw_r
 
 echo "== cmdname.sh: cmd_base cuts a path and leading dashes for the agent tests (#757) =="
 # The functions themselves, beside the pane rows in the agent-poll bind blocks and the #470
