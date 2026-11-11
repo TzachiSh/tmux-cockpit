@@ -1468,7 +1468,7 @@ fn run(o: &Opts, me: std::io::Result<PathBuf>) {
         None => Staged(None),
     };
     let env = fingerprint(&version, hermetic, cwds.0.as_deref(), &call.dir, call.effort, |k| {
-        std::env::var(k).ok()
+        std::env::var_os(k)
     });
     let mut hashes: Vec<u64> = vec![];
     let mut todo: Vec<(usize, usize)> = (0..o.runs).flat_map(|r| (0..cases.len()).map(move |c| (c, r))).collect();
@@ -1805,21 +1805,68 @@ struct Fingerprint {
     effort: &'static str,
     /// HOME, XDG_CONFIG_HOME, XDG_CACHE_HOME and CLAUDE_CONFIG_DIR, `None` unset,
     /// then the panel call's own variables as the calls get them (#853).
-    vars: Vec<(&'static str, Option<String>)>,
+    vars: Vec<(&'static str, Option<Var>)>,
+}
+
+/// A variable's value as the calls get it (#871). One that is not UTF-8 is
+/// still set, and the spawn passes it on, so the record keeps its bytes.
+#[derive(Debug, PartialEq)]
+enum Var {
+    Text(String),
+    Bytes(Vec<u8>),
+}
+
+impl From<OsString> for Var {
+    fn from(v: OsString) -> Var {
+        v.into_string()
+            .map_or_else(|v| Var::Bytes(v.as_encoded_bytes().to_vec()), Var::Text)
+    }
+}
+
+impl From<&str> for Var {
+    fn from(v: &str) -> Var {
+        Var::Text(v.into())
+    }
+}
+
+impl Var {
+    /// The bytes in hex, two digits each, so no two values share a spelling.
+    fn hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    /// Text is a string as before; bytes are an object, which no text equals.
+    fn json(&self) -> serde_json::Value {
+        match self {
+            Var::Text(s) => serde_json::json!(s),
+            Var::Bytes(b) => serde_json::json!({ "bytes": Var::hex(b) }),
+        }
+    }
+}
+
+impl std::fmt::Display for Var {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Var::Text(s) => f.write_str(s),
+            Var::Bytes(b) => write!(f, "(not UTF-8, bytes {})", Var::hex(b)),
+        }
+    }
 }
 
 const ENV_VARS: [&str; 4] = ["HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "CLAUDE_CONFIG_DIR"];
 
 /// `hermetic` is what the calls get (see [`hand_off`]); `root` where they run.
-/// A plain call loads what the panel's own argv names (#623).
-fn fingerprint(
+/// A plain call loads what the panel's own argv names (#623). `var` reads a
+/// variable as the spawn does, set whatever its bytes (#871).
+fn fingerprint<V: Into<OsString>>(
     claude: &str,
     hermetic: bool,
     root: Option<&Path>,
     dir: &Path,
     effort: Effort,
-    var: impl Fn(&str) -> Option<String>,
+    var: impl Fn(&str) -> Option<V>,
 ) -> Fingerprint {
+    let var = |k: &str| var(k).map(|v| Var::from(v.into()));
     let panel = Profile::TEXT.argv(effort);
     let at = panel.iter().position(|a| a == HERMETIC_FLAGS[0]);
     let panel_sources = at.and_then(|i| panel.get(i + 1));
@@ -1830,7 +1877,7 @@ fn fingerprint(
     // a value the rig has reaches the calls as it is; Request sets the rest
     let call_env = cockpit_tui::panel::request::CALL_ENV
         .iter()
-        .map(|(k, v)| (*k, var(k).or_else(|| Some(v.to_string()))));
+        .map(|(k, v)| (*k, var(k).or_else(|| Some(Var::from(*v)))));
     Fingerprint {
         claude: claude.into(),
         cwd,
@@ -1847,8 +1894,11 @@ fn fingerprint(
 
 impl Fingerprint {
     fn json(&self) -> serde_json::Value {
-        let vars: serde_json::Map<String, serde_json::Value> =
-            self.vars.iter().map(|(k, v)| (k.to_string(), serde_json::json!(v))).collect();
+        let vars: serde_json::Map<String, serde_json::Value> = self
+            .vars
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.as_ref().map(Var::json).into()))
+            .collect();
         serde_json::json!({
             "claude": self.claude, "cwd": self.cwd, "hermetic": self.hermetic,
             "setting_sources": self.setting_sources, "effort": self.effort, "vars": vars,
@@ -1865,7 +1915,10 @@ impl std::fmt::Display for Fingerprint {
         };
         write!(f, "claude {}; {memory}; effort {}; cwd {}", self.claude, self.effort, self.cwd)?;
         for (k, v) in &self.vars {
-            write!(f, "; {k}={}", v.as_deref().unwrap_or("(unset)"))?;
+            match v {
+                Some(v) => write!(f, "; {k}={v}")?,
+                None => write!(f, "; {k}=(unset)")?,
+            }
         }
         Ok(())
     }
@@ -4268,12 +4321,14 @@ mod tests {
         let plain = fingerprint("v", false, None, Path::new("/c"), Effort::Medium, var);
         assert_eq!((plain.hermetic, plain.cwd.as_str()), (false, "/c"));
         assert_eq!(f.json()["vars"]["XDG_CONFIG_HOME"], serde_json::Value::Null);
+        // an unset name is in the row as null, not left out of it (#875)
+        assert!(f.json()["vars"].as_object().unwrap().contains_key("XDG_CONFIG_HOME"));
     }
 
     /// #623: the panel's own call loads no setting source, so a plain run does not either.
     #[test]
     fn a_plain_run_loads_the_setting_sources_the_panel_does() {
-        let plain = fingerprint("v", false, None, Path::new("/c"), Effort::Medium, |_: &str| None);
+        let plain = fingerprint("v", false, None, Path::new("/c"), Effort::Medium, |_: &str| None::<String>);
         assert_eq!(plain.setting_sources.as_deref(), Some(""));
     }
 
@@ -4293,10 +4348,109 @@ mod tests {
         assert_eq!(got, ["0", "", "1"].map(serde_json::Value::from));
     }
 
+    /// The fingerprint's record of `k` when the rig's env holds it as `bytes`.
+    fn recorded(k: &str, bytes: Option<&[u8]>) -> serde_json::Value {
+        use std::os::unix::ffi::OsStringExt;
+        let var = |n: &str| bytes.filter(|_| n == k).map(|b| OsString::from_vec(b.to_vec()));
+        fingerprint("v", true, None, Path::new("/c"), Effort::Medium, var).json()["vars"][k].clone()
+    }
+
+    /// #871: the spawn passes on a value that is not UTF-8, so the fingerprint
+    /// records it as set: not as the unset variable's `null`, nor the panel's `1`.
+    #[test]
+    fn a_value_that_is_not_utf8_is_recorded_as_set_with_its_bytes() {
+        for k in ["HOME", "DISABLE_TELEMETRY"] {
+            let got = recorded(k, Some(b"\xff"));
+            assert_ne!(got, recorded(k, None), "{k}: as unset");
+            assert_eq!(got, serde_json::json!({ "bytes": "ff" }), "{k}");
+        }
+        // two hex digits for a byte under 16 too, in the value's own order (#875)
+        assert_eq!(recorded("HOME", Some(b"\xff\x01")), serde_json::json!({ "bytes": "ff01" }));
+    }
+
+    /// #871: nor is it the empty value, which stays the string it was (#859).
+    #[test]
+    fn a_value_that_is_not_utf8_is_not_recorded_as_the_empty_one() {
+        for k in ["HOME", "DISABLE_TELEMETRY"] {
+            let empty = recorded(k, Some(b""));
+            assert_eq!(empty, "", "{k}");
+            assert_ne!(recorded(k, Some(b"\xff")), empty, "{k}");
+        }
+    }
+
+    /// #871: two values that are not UTF-8 are recorded apart, byte by byte.
+    #[test]
+    fn two_values_that_are_not_utf8_are_recorded_apart() {
+        let pairs: [(&str, &[u8], &[u8]); 5] = [
+            ("another byte", b"\xff", b"\xfe"),
+            ("its text part", b"a\xff", b"b\xff"),
+            ("one more byte", b"\xff", b"\xff\xff"),
+            ("where a byte ends", b"\xff\x01\x23", b"\xff\x12\x03"),
+            ("their order", b"\xff\xfe", b"\xfe\xff"),
+        ];
+        for (row, a, b) in pairs {
+            assert_ne!(recorded("HOME", Some(a)), recorded("HOME", Some(b)), "{row}");
+        }
+    }
+
+    /// #871: no text is recorded as bytes are: not the lossy reading, with
+    /// U+FFFD for the bad byte, nor text spelling the hex or the summary's words.
+    #[test]
+    fn a_value_that_is_not_utf8_is_recorded_apart_from_every_text() {
+        let got = recorded("HOME", Some(b"\xff"));
+        let line = Var::Bytes(vec![0xff]).to_string();
+        for text in ["\u{fffd}", "ff", r#"{"bytes":"ff"}"#, line.as_str()] {
+            assert_ne!(got, recorded("HOME", Some(text.as_bytes())), "{text}");
+            assert_eq!(recorded("HOME", Some(text.as_bytes())), text);
+        }
+    }
+
+    /// A text value is recorded whole (#875): the spaces at its ends, its
+    /// capitals, and every character of a long one.
+    #[test]
+    fn a_text_value_is_recorded_byte_for_byte() {
+        let long = "/Made-Up/".repeat(40);
+        for text in [" A ", "\tb\n", long.as_str()] {
+            assert_eq!(recorded("HOME", Some(text.as_bytes())), text, "{text:?}");
+        }
+    }
+
+    /// The summary's environment line for a fingerprint whose one variable is `v`.
+    fn env_line(v: Option<Var>) -> String {
+        let mut f = fingerprint("v", true, None, Path::new("/c"), Effort::Medium, |_: &str| None::<String>);
+        f.vars = vec![("HOME", v)];
+        f.to_string()
+    }
+
+    /// #871: the summary's environment line tells the three apart as the rows do.
+    #[test]
+    fn the_environment_line_tells_not_utf8_from_unset_and_from_empty() {
+        let bytes = |b: &[u8]| env_line(Some(Var::Bytes(b.to_vec())));
+        assert_ne!(bytes(b"\xff"), env_line(None), "as unset");
+        assert_ne!(bytes(b"\xff"), env_line(Some("".into())), "as empty");
+        assert_ne!(bytes(b"\xff"), bytes(b"\xfe"), "as another byte");
+        // its words, and the whole value two hex digits a byte (#875)
+        let line = bytes(b"\xff\x01");
+        assert!(line.ends_with("; HOME=(not UTF-8, bytes ff01)"), "{line}");
+    }
+
+    /// The line still names a text value as it is, an empty one as nothing
+    /// and an unset one in words, so the last two read apart (#875).
+    #[test]
+    fn the_environment_line_names_a_text_value_as_it_is_and_an_unset_one() {
+        let long = "/Made-Up/".repeat(40);
+        for text in [" /Home/u v ", "", long.as_str()] {
+            let line = env_line(Some(text.into()));
+            assert!(line.ends_with(&format!("; HOME={text}")), "{line:?}");
+        }
+        let unset = env_line(None);
+        assert!(unset.ends_with("; HOME=(unset)"), "{unset}");
+    }
+
     /// The effort the calls get, from COCKPIT_PANEL_EFFORT, is in the fingerprint.
     #[test]
     fn the_fingerprint_names_the_effort() {
-        let f = fingerprint("v", true, None, Path::new("/c"), Effort::XHigh, |_: &str| None);
+        let f = fingerprint("v", true, None, Path::new("/c"), Effort::XHigh, |_: &str| None::<String>);
         assert_eq!(f.json()["effort"], "xhigh");
     }
 
@@ -6537,6 +6691,11 @@ esac
 
         /// [`rig_run_on`] with `script` as the stand-in claude.
         fn rig_run_with(name: &str, cases: &str, script: &str, extra: &[&str]) -> Ran {
+            rig_run_env(name, cases, script, extra, &[])
+        }
+
+        /// [`rig_run_with`] with `env` added to the child's own environment.
+        fn rig_run_env(name: &str, cases: &str, script: &str, extra: &[&str], env: &[(&str, &OsStr)]) -> Ran {
             let d = scratch(name);
             // tune and held-out cases in one --cases file: only the held-out
             // file may hold both (#861)
@@ -6556,6 +6715,9 @@ esac
             for (k, _) in cockpit_tui::panel::request::CALL_ENV {
                 c.env_remove(k);
             }
+            // unset unless `env` sets it, whatever the developer's own shell has
+            c.env_remove("CLAUDE_CONFIG_DIR");
+            c.envs(env.iter().copied());
             let o = c.output().unwrap();
             let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
             let rows = std::fs::read_to_string(d.0.join("rows.jsonl")).unwrap_or_default();
@@ -6570,11 +6732,78 @@ esac
                 expect: write\nmust: ok\n--- request\nfix this\n";
             let dump = "#!/bin/sh\n[ \"$1\" = --version ] && { echo 9.9.9; exit 0; }\n\
                 cat >/dev/null\nenv | grep '^DISABLE_' | sort\n";
-            let (code, out, err, rows) = rig_run_with("quiet-call-env", one, dump, &[]);
+            // #875: and one of the first four names, not UTF-8, is recorded with its bytes
+            let env = [("CLAUDE_CONFIG_DIR", std::os::unix::ffi::OsStrExt::from_bytes(b"\xff/c"))];
+            let (code, out, err, rows) = rig_run_env("quiet-call-env", one, dump, &[], &env);
             assert_eq!(code, Some(0), "{out}{err}");
             let row: Value = serde_json::from_str(rows.lines().next().unwrap_or("null")).unwrap();
             let want = "DISABLE_AUTOUPDATER=1\nDISABLE_ERROR_REPORTING=1\nDISABLE_TELEMETRY=1";
             assert_eq!(row["reply"].as_str().map(str::trim), Some(want), "{rows}");
+            assert_eq!(row["env"]["vars"]["CLAUDE_CONFIG_DIR"], json!({ "bytes": "ff2f63" }), "{rows}");
+        }
+
+        /// #871: a variable of the rig's own env that is not UTF-8 reaches the
+        /// call, and the row's fingerprint records the bytes the call got.
+        #[test]
+        fn a_rig_run_records_a_call_variable_that_is_not_utf8_as_the_call_got_it() {
+            use std::os::unix::ffi::OsStrExt;
+            let one = "=== env-b\nkind: bug\nwindow: bash · bash · /home/u\n\
+                expect: write\nmust: ok\n--- request\nfix this\n";
+            let dump = "#!/bin/sh\n[ \"$1\" = --version ] && { echo 9.9.9; exit 0; }\n\
+                cat >/dev/null\nprintf %s \"$DISABLE_TELEMETRY\" | od -An -tx1 | tr -d ' \\n'\n";
+            let env = [("DISABLE_TELEMETRY", OsStr::from_bytes(b"\xffo"))];
+            let (code, out, err, rows) = rig_run_env("quiet-env-bytes", one, dump, &[], &env);
+            assert_eq!(code, Some(0), "{out}{err}");
+            let row: Value = serde_json::from_str(rows.lines().next().unwrap_or("null")).unwrap();
+            assert_eq!(row["reply"].as_str().map(str::trim), Some("ff6f"), "{rows}");
+            assert_eq!(row["env"]["vars"]["DISABLE_TELEMETRY"], json!({ "bytes": "ff6f" }), "{rows}");
+            // one of the first four names the rig lacks is in the row as null (#875)
+            assert_eq!(row["env"]["vars"].get("CLAUDE_CONFIG_DIR"), Some(&Value::Null), "{rows}");
+        }
+
+        /// A rig run with DISABLE_TELEMETRY empty, DISABLE_AUTOUPDATER `auto`,
+        /// DISABLE_ERROR_REPORTING unset and CLAUDE_CONFIG_DIR `dir`: the row
+        /// of its one call, whose reply is the four as the call got them.
+        fn text_env_row(name: &str, auto: &str, dir: &str) -> Value {
+            let one = "=== env-e\nkind: bug\nwindow: bash · bash · /home/u\n\
+                expect: write\nmust: ok\n--- request\nfix this\n";
+            let dump = "#!/bin/sh\n[ \"$1\" = --version ] && { echo 9.9.9; exit 0; }\ncat >/dev/null\n\
+                echo \"${DISABLE_TELEMETRY-unset},${DISABLE_AUTOUPDATER-unset},${DISABLE_ERROR_REPORTING-unset},\
+                ${CLAUDE_CONFIG_DIR-unset}.\"\n";
+            let set = [("DISABLE_TELEMETRY", ""), ("DISABLE_AUTOUPDATER", auto), ("CLAUDE_CONFIG_DIR", dir)];
+            let env = set.map(|(k, v)| (k, OsStr::new(v)));
+            let (code, out, err, rows) = rig_run_env(name, one, dump, &[], &env);
+            assert_eq!(code, Some(0), "{out}{err}");
+            serde_json::from_str(rows.lines().next().unwrap_or("null")).unwrap()
+        }
+
+        /// #875: the rig's own lookup at both ends for values that are text.
+        /// An empty call variable, a long text one and a long one of the first
+        /// four names, with capitals and a space at each end, reach the call,
+        /// and the row records each as the call got it, an unset call name too.
+        #[test]
+        fn a_rig_run_records_an_empty_and_a_text_variable_as_the_call_got_them() {
+            let long = format!(" {} ", "/Made-Up/".repeat(40));
+            let row = text_env_row("quiet-env-text", &long, &long);
+            assert_eq!(row["reply"].as_str().map(str::trim), Some(format!(",{long},1,{long}.").as_str()));
+            let names = [
+                "DISABLE_TELEMETRY",
+                "DISABLE_AUTOUPDATER",
+                "DISABLE_ERROR_REPORTING",
+                "CLAUDE_CONFIG_DIR",
+            ];
+            let got = names.map(|k| row["env"]["vars"][k].clone());
+            // a name the rig lacks is recorded as the 1 the call got
+            assert_eq!(got, ["", long.as_str(), "1", long.as_str()].map(Value::from), "{row}");
+        }
+
+        /// #875: an empty value of one of the first four names is recorded as
+        /// empty too, through the rig's own lookup.
+        #[test]
+        fn a_rig_run_records_an_empty_config_dir_as_empty() {
+            let row = text_env_row("quiet-env-empty-dir", "0", "");
+            assert_eq!(row["reply"].as_str().map(str::trim), Some(",0,1,."), "{row}");
+            assert_eq!(row["env"]["vars"]["CLAUDE_CONFIG_DIR"], "", "{row}");
         }
 
         /// Not a test of its own: the child [`rig_run`] starts.
