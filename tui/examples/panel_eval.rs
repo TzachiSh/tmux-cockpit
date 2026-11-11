@@ -4442,33 +4442,38 @@ mod tests {
     }
 
     /// Forks a child and reaps it, again and again until `stop` is set: what
-    /// each forking thread of the #877 race test runs.
-    fn fork_until(stop: &std::sync::atomic::AtomicBool) {
+    /// each forking thread of the #877 race test runs. Returns how many
+    /// children it started.
+    fn fork_until(stop: &std::sync::atomic::AtomicBool) -> usize {
+        let mut forks = 0;
         while !stop.load(std::sync::atomic::Ordering::Relaxed) {
-            let _ = std::process::Command::new("true").status();
+            forks += usize::from(std::process::Command::new("true").status().is_ok());
         }
+        forks
     }
 
     /// #877, the race itself: threads fork in a loop, as the rig's tests do
     /// to each other, while this one writes a stand-in and starts it at once.
     /// Written with a plain `fs::write`, some of these starts fail with
-    /// "Text file busy (os error 26)".
+    /// "Text file busy (os error 26)". Each thread must have forked, or the
+    /// starts raced nothing (#888).
     #[test]
     fn a_stand_in_starts_at_once_while_other_threads_fork() {
         let dir = scratch("probe-race");
         let stop = std::sync::atomic::AtomicBool::new(false);
-        let failed: Vec<String> = std::thread::scope(|s| {
-            let _stop = StopForks(&stop);
-            for _ in 0..FORKERS {
-                s.spawn(|| fork_until(&stop));
-            }
-            let start = |i| {
-                let f = stand_in(&dir.0.join(format!("fake-{i}")), "#!/bin/sh\n");
-                std::process::Command::new(f).status().err().map(|e| format!("start {i}: {e}"))
-            };
-            (0..RACE_STARTS).filter_map(start).collect()
+        let start = |i| {
+            let f = stand_in(&dir.0.join(format!("fake-{i}")), "#!/bin/sh\n");
+            std::process::Command::new(f).status().err().map(|e| format!("start {i}: {e}"))
+        };
+        let (failed, forks): (Vec<String>, Vec<usize>) = std::thread::scope(|s| {
+            let stopper = StopForks(&stop);
+            let forkers: Vec<_> = (0..FORKERS).map(|_| s.spawn(|| fork_until(&stop))).collect();
+            let failed = (0..RACE_STARTS).filter_map(start).collect();
+            drop(stopper);
+            (failed, forkers.into_iter().map(|f| f.join().unwrap()).collect())
         });
         assert_eq!(failed, [] as [String; 0]);
+        assert!(forks.iter().all(|n| *n > 0), "a thread forked nothing: {forks:?}");
     }
 
     /// The threads forking against the #877 race test's writer.
