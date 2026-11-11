@@ -7409,11 +7409,11 @@ chmod +x "$LF/old/git"
 ( export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
   git init -q -b main "$LF/src" && cd "$LF/src" && git config uploadpack.allowFilter true \
   && printf 'a\n' > f.txt && git add -A && git commit -qm 1 \
-  && git clone -q --filter=blob:none "file://$LF/src" "$LF/c" \
+  && git clone -q --filter=blob:none "$(file_url "$LF/src")" "$LF/c" \
   && git switch -qc side && printf 'g\n' > g.txt && git add g.txt && git commit -qm g \
   && git switch -qc side2 main && printf 'h\n' > h.txt && git add h.txt && git commit -qm h \
   && git switch -q main && printf 'b\n' >> f.txt && git commit -qam 2 \
-  && git clone -q --filter=blob:none "file://$LF/src" "$LF/c2" \
+  && git clone -q --filter=blob:none "$(file_url "$LF/src")" "$LF/c2" \
   && cd "$LF/c" && git fetch -q && git reset -q --soft origin/main \
   && git config remote.origin.uploadpack "'$LF/up'" && git config core.sshCommand "'$LF/up'" \
   && git config protocol.file.allow always && git config protocol.ssh.allow always \
@@ -7427,9 +7427,10 @@ lf_paths() {
 }
 # foo:: is a remote helper on PATH (hb/), which no protocol.<p>.allow pin can name. git runs
 # uploadpack and sshCommand through a shell, so those hold the path quoted, and ext:: splits
-# its command at spaces, "% " being a space and "%%" a % (#820).
+# its command at spaces, "% " being a space and "%%" a % (#820). git percent-decodes a
+# file:// URL, so a % in TMPDIR goes through file_url, %25 (#827).
 lfx=${LF//%/%%}; lfx=${lfx// /% }
-for lfu in "file://$LF/src" ssh://h/r "ext::$lfx/up" foo::x; do
+for lfu in "$(file_url "$LF/src")" ssh://h/r "ext::$lfx/up" foo::x; do
     git -C "$LF/c" config remote.origin.url "$lfu"
     PATH="$LF/hb:$PATH" git -C "$LF/c" diff --numstat HEAD >/dev/null 2>&1
     is "the planted remote fires under plain git (${lfu%%:*})" "up" "$(head -1 "$LFM" 2>/dev/null)"
