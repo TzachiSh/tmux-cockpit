@@ -214,7 +214,7 @@ pub fn main(args: &[String]) -> i32 {
 /// title (`2.1.318`), as data's agentish reads them; the one agent that inlines
 /// `@path#La-b`.
 pub fn claude_cmd(comm: &str) -> bool {
-    let b = comm.rsplit('/').next().unwrap_or(comm).trim_start_matches('-').to_ascii_lowercase();
+    let b = crate::data::cmd_base(comm);
     b == "claude" || crate::data::version_shaped(&b)
 }
 

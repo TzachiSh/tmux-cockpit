@@ -582,8 +582,15 @@ fn lineage(pid: &str, procs_t: &mut Option<Procs>) -> Vec<(String, String)> {
 /// A live Claude renames itself to its version, so `2.1.246` and `2_1_246` are
 /// agent names too.
 pub(crate) fn agentish(comm: &str) -> bool {
-    let b = comm.rsplit('/').next().unwrap_or(comm).trim_start_matches('-').to_ascii_lowercase();
+    let b = cmd_base(comm);
     is_agent_cmd(&b) || version_shaped(&b)
+}
+
+/// A command name as the agent tests read it: the last path part, without its
+/// leading dashes, in lowercase. The one copy in
+/// Rust: agentish and basket's claude_cmd call it (#799).
+pub(crate) fn cmd_base(comm: &str) -> String {
+    comm.rsplit('/').next().unwrap_or(comm).trim_start_matches('-').to_ascii_lowercase()
 }
 
 /// Claude Code's version-shaped process title (`2.1.318`, `2_1_318`): a leading
