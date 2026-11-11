@@ -4536,10 +4536,13 @@ mod tests {
         let id_rule = "an id is lowercase letters, digits and -";
         // #835: a tune case quiet only through the held-out case above has no id rule
         let net = "the case above is held out, and this === line is not a case line";
+        // #859: held out by a line of its screen only, so its `holdout` key is unset
+        let by_body = tune("=== b1").replace("boom\n", "boom\nholdout: yes\n");
         let rows = [
             ("tune, then held", format!("{ONE}{}", typo("=== HB-03")), 12, id_rule),
             ("held first", format!("{}{ONE}", typo("=== hb_03")), 1, id_rule),
             ("held, then tune", format!("{}{}", held("b1"), tune("=== HB-03")), 12, net),
+            ("body-held, then tune", format!("{by_body}{}", tune("=== HB-03")), 12, net),
             ("blank and # lines", format!("{ONE}{}", typo("=== HB-03\n\n# c\n")), 12, id_rule),
         ];
         for (i, (row, cases, line, rule)) in rows.into_iter().enumerate() {
