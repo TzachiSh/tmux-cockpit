@@ -490,6 +490,18 @@ fn lexical(p: &Path) -> PathBuf {
     out
 }
 
+/// What every panel call starts with when the panel's own environment lacks the
+/// name (#853): telemetry (and with it feature-flag fetching), the background
+/// auto-updater and error reporting off. A name already there, empty included,
+/// is the user's and reaches the call as it is: claude reads an empty
+/// `DISABLE_TELEMETRY` as unset. `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`
+/// covers all three and more; to switch, make it this list's one pair.
+pub const CALL_ENV: &[(&str, &str)] = &[
+    ("DISABLE_TELEMETRY", "1"),
+    ("DISABLE_AUTOUPDATER", "1"),
+    ("DISABLE_ERROR_REPORTING", "1"),
+];
+
 fn start(call: &Call, p: &Profile, system: &str, model: &str) -> Result<std::process::Child, String> {
     for d in &p.read_dirs {
         read_dir_ok(d)?;
@@ -517,6 +529,9 @@ fn start(call: &Call, p: &Profile, system: &str, model: &str) -> Result<std::pro
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .process_group(0);
+    for (k, v) in CALL_ENV.iter().filter(|(k, _)| std::env::var_os(k).is_none()) {
+        c.env(k, v);
+    }
     // A panel killed past Drop (abort, a torn-down popup) must not leave claude
     // running. The signal follows the spawning thread, so spawn from the main one.
     #[cfg(target_os = "linux")]

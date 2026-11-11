@@ -37,6 +37,8 @@ done
 . "$DIR/scripts/lib/tui.sh" || exit 1
 # shellcheck source=lib/fmt.sh
 . "$DIR/scripts/lib/fmt.sh" || exit 1
+# shellcheck source=lib/cmdname.sh
+. "$DIR/scripts/lib/cmdname.sh" || exit 1
 BIN=$COCKPIT_TUI_BIN
 # In a popup a bare display-message picks the most recently active client.
 say=(display-message); is_pane "$PANE" && say+=(-t "$PANE")
@@ -164,7 +166,8 @@ while :; do
             have=${info%%"$sep"*} dir=${info#*"$sep"}
             # A second copy of a live session: any pane, this one included, holds
             # the id and runs an agent (its command in
-            # @cockpit_agents_glob, or a claude renamed to its version). Checked
+            # @cockpit_agents_glob, or a claude renamed to its version, read by
+            # lib/cmdname.sh's version_cmd as the board's agentish reads it, #830). Checked
             # here, at the key, so a stale board cannot skip it. The command only,
             # not the process tree the board reads. It goes last: free-form.
             # Not @panestate: SessionStart and idle run `agent-state off`, so a
@@ -174,7 +177,7 @@ while :; do
             fmt+="$sep#{?#{m/i:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},1,0}$sep#{pane_current_command}"
             [ -z "$want" ] || while IFS="$sep" read -r p s g cmd; do
                 [ "$s" = "$want" ] || continue
-                if [ "$g" = 1 ] || [[ $cmd =~ ^[0-9]+([._][0-9]+){2,}$ ]]; then live=$p; break; fi
+                if [ "$g" = 1 ] || version_cmd "$cmd"; then live=$p; break; fi
             done < <(tmux list-panes -a -F "$fmt" 2>/dev/null)
             if [ -z "$have" ]; then
                 printf '✕ cockpit: %s is gone, nothing resumed\n' "$target" > "$note"

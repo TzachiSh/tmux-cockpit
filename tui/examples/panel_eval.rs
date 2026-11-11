@@ -220,7 +220,16 @@ fn parse_some(text: &str, quiet: bool) -> Result<Vec<Case>, String> {
         // a mistyped case line opens a case when a key follows: in a quiet
         // case its "id" may be case text, so one that is not a name goes unshown
         if quiet && !is_name(&id) {
-            return Err(format!("line {line0}: an id is lowercase letters, digits and -"));
+            // quiet only through a body line or the held-out case above, the
+            // parser reads it as tune, so the held-out id rule is not why (#835)
+            let rule = if net {
+                "the case above is held out, and this === line is not a case line"
+            } else if held && !held_head(head) {
+                "a body line holds this case out, and its === line is not a case line"
+            } else {
+                "an id is lowercase letters, digits and -"
+            };
+            return Err(format!("line {line0}: {rule}"));
         }
         let err = |m: &str| if net { m.to_string() } else { format!("case {id}: {m}") };
         // `loud` holds the file's text; a quiet error says only where and why
@@ -4494,14 +4503,16 @@ mod tests {
     fn a_mistyped_case_line_before_a_key_opens_a_case() {
         let tune = |id: &str| ONE.replace("# a comment\n", "").replace("=== crash", id);
         let typo = |id: &str| held("b1").replace("=== b1", id);
+        let id_rule = "an id is lowercase letters, digits and -";
+        // #835: a tune case quiet only through the held-out case above has no id rule
+        let net = "the case above is held out, and this === line is not a case line";
         let rows = [
-            ("tune, then held", format!("{ONE}{}", typo("=== HB-03")), 12),
-            ("held first", format!("{}{ONE}", typo("=== hb_03")), 1),
-            ("held, then tune", format!("{}{}", held("b1"), tune("=== HB-03")), 12),
-            ("blank and # lines", format!("{ONE}{}", typo("=== HB-03\n\n# made-up\n")), 12),
+            ("tune, then held", format!("{ONE}{}", typo("=== HB-03")), 12, id_rule),
+            ("held first", format!("{}{ONE}", typo("=== hb_03")), 1, id_rule),
+            ("held, then tune", format!("{}{}", held("b1"), tune("=== HB-03")), 12, net),
+            ("blank and # lines", format!("{ONE}{}", typo("=== HB-03\n\n# c\n")), 12, id_rule),
         ];
-        let rule = "an id is lowercase letters, digits and -";
-        for (i, (row, cases, line)) in rows.into_iter().enumerate() {
+        for (i, (row, cases, line, rule)) in rows.into_iter().enumerate() {
             let (_d, c, b) = two_files(&format!("typo-{i}"), &cases, "");
             let e = load(&c, Some(&b)).err().unwrap_or_else(|| panic!("{row}: loaded"));
             assert_eq!(e, format!("{}: line {line}: {rule}", c.display()), "{row}");
@@ -4528,6 +4539,26 @@ mod tests {
             let (_d, c, b) = two_files(&format!("joined-{section}"), &cases, "");
             let e = load(&c, Some(&b)).err().unwrap_or_else(|| panic!("{section}: loaded"));
             assert_eq!(e, format!("{}: case crash: line 12: {rule}", c.display()), "{section}");
+        }
+    }
+
+    /// #835: a case with an id that is not a name, quiet only because a body
+    /// line says `holdout: yes`, is refused at its `===` line with a message
+    /// that does not cite the held-out id rule: the parser reads it as tune.
+    /// Held out by its header, the same case gets the id rule's message.
+    #[test]
+    fn a_case_held_out_by_a_body_line_names_why_its_id_is_refused() {
+        let typo = ONE.replace("=== crash", "=== HB-03");
+        let by_body = "a body line holds this case out, and its === line is not a case line";
+        let by_head = "an id is lowercase letters, digits and -";
+        let rows = [
+            ("body", typo.replace("boom\n", "boom\nholdout: yes\n"), by_body),
+            ("header", typo.replace("expect: write\n", "expect: write\nholdout: yes\n"), by_head),
+        ];
+        for (row, cases, rule) in rows {
+            let (_d, c, b) = two_files(&format!("body-id-{row}"), &cases, "");
+            let e = load(&c, Some(&b)).err().unwrap_or_else(|| panic!("{row}: loaded"));
+            assert_eq!(e, format!("{}: line 2: {rule}", c.display()), "{row}");
         }
     }
 

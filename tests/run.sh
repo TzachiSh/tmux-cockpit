@@ -85,45 +85,50 @@ chmod +x "$SHIM/tmux"
 # TMUX_BIN is the real one, for a stub that counts its calls.
 TMUX_BIN=$TMUX_REAL
 flop_write() {                # <dir> <real tmux> -> <dir>/tmux, the guard in front of that tmux
-    cat > "$1/tmux" <<FLOPEOF
-#!/bin/sh
+    # Quoted: a $ or a ` in TMPDIR must not expand again when the guard runs (#849). The
+    # dirs go in as single-quoted words, each ' written as '\''. Underscored names: sh keeps an
+    # inherited variable exported, so a plain F or R would reach tmux in place of the caller's.
+    local q="'\\''"
+    { printf "#!/bin/sh\n_FD='%s' _FR='%s' _FU='%s'\n" "${1//\'/$q}" "${2//\'/$q}" "$(id -u)"
+    cat <<'FLOPEOF'
 n=L.default v= p=
 for a do
-    case \$p in
-    -L) n=L.\$a; p=; continue ;;
-    -S) n=S.\$a; p=; continue ;;
+    case $p in
+    -L) n=L.$a; p=; continue ;;
+    -S) n=S.$a; p=; continue ;;
     -c|-f|-T) p=; continue ;;
     esac
-    case \$a in
-    -c|-f|-L|-S|-T) p=\$a ;;
-    -L?*) n=L.\${a#-L} ;;
-    -S?*) n=S.\${a#-S} ;;
+    case $a in
+    -c|-f|-L|-S|-T) p=$a ;;
+    -L?*) n=L.${a#-L} ;;
+    -S?*) n=S.${a#-S} ;;
     -*) ;;
-    *) v=\$a; break ;;
+    *) v=$a; break ;;
     esac
 done
-case \$v in kill-server|new-session) ;; *) exec "$2" "\$@" ;; esac
+case $v in kill-server|new-session) ;; *) exec "$_FR" "$@" ;; esac
 # The key is the socket's path, the one tmux uses, so -L x and -S <dir>/x meet.
-case \$n in
-L.*) n=\${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/\${n#L.} ;;
-*) n=\${n#S.} ;;
+case $n in
+L.*) n=${TMUX_TMPDIR:-/tmp}/tmux-$_FU/${n#L.} ;;
+*) n=${n#S.} ;;
 esac
-n=\$(printf '%s' "\$n" | sed 's/_/__/g; s|/|_.|g')
-case \$v in
-kill-server) : > "$1/k.\$n" ;;
+n=$(printf '%s' "$n" | sed 's/_/__/g; s|/|_.|g')
+case $v in
+kill-server) : > "$_FD/k.$n" ;;
 new-session)
-    if [ -e "$1/k.\$n" ]; then
-        rm -f "$1/k.\$n"; [ -e "$1/r.\$n" ] || printf '%s.' "\$*" > "$1/r.\$n"
+    if [ -e "$_FD/k.$n" ]; then
+        rm -f "$_FD/k.$n"; [ -e "$_FD/r.$n" ] || printf '%s.' "$*" > "$_FD/r.$n"
         echo "server exited unexpectedly (refused by tests/run.sh, #573)" >&2; exit 1
     fi
-    if [ -e "$1/r.\$n" ]; then
-        "$2" "\$@"; rc=\$?
-        [ \$rc -ne 0 ] || [ "\$(cat "$1/r.\$n")" != "\$*." ] || rm -f "$1/r.\$n"
-        exit \$rc
+    if [ -e "$_FD/r.$n" ]; then
+        "$_FR" "$@"; rc=$?
+        [ $rc -ne 0 ] || [ "$(cat "$_FD/r.$n")" != "$*." ] || rm -f "$_FD/r.$n"
+        exit $rc
     fi ;;
 esac
-exec "$2" "\$@"
+exec "$_FR" "$@"
 FLOPEOF
+    } > "$1/tmux"
     chmod +x "$1/tmux"
 }
 FLOP="$STATE/flop"; mkdir -p "$FLOP"
@@ -239,11 +244,29 @@ fi
 # the moment it returns, so the first version of this registered nothing at all.
 TMPS=$(mktemp)
 mktmpd() { local d; d=$(mktemp -d) || return 1; printf '%s\n' "$d" >> "$TMPS"; printf '%s' "$d"; }
+# A glibc UTF-8 locale in which bash's regex [0-9] matches ² and ١: en_US.UTF-8, built once
+# under $STATE with localedef (C.UTF-8, on every image, does not widen it). Prints the LOCPATH
+# dir. 1 when none loads or it does not widen: the caller fails its row, never runs it in C
+# (#830). docs/install.md names what it needs: localedef and the en_US source (#757).
+utf8_loc() {
+    local d="$STATE/utf8loc"
+    if [ ! -d "$d/en_US.UTF-8" ]; then
+        mkdir -p "$d" && localedef -i en_US -f UTF-8 "$d/en_US.UTF-8" >/dev/null 2>&1
+    fi
+    LOCPATH=$d LC_ALL=en_US.UTF-8 bash -c '[[ ² =~ ^[0-9]$ && ١ =~ ^[0-9]$ ]]' 2>/dev/null ||
+        return 1
+    printf '%s' "$d"
+}
 # A file:// URL for a fixture dir under TMPDIR: curl rejects a raw space, and reads %xx as an
 # escape, so % is encoded first, then the space (#818). Only those two: mktemp's own names
 # hold neither, and the other characters curl rejects (# ? [ ] { }, a tab, a newline) can
 # reach a path only from the caller's TMPDIR prefix, which is not supported.
 file_url() { local p=${1//%/%25}; printf 'file://%s' "${p// /%20}"; }
+# The bootstrap (#228), tui-fetch and revdiff release dirs have a space in their own name
+# ("r el"), so a call site there reverted to a raw file:// fails at any TMPDIR. The #217
+# block's clones fail raw only under a TMPDIR holding a %XX escape, which git decodes, and its
+# loop's file:// remote is unpinned. The no-such-host URLs are meant to fail, and a raw one
+# fails too: no row can tell them apart (#827).
 mktmpf() { local f; f=$(mktemp)    || return 1; printf '%s\n' "$f" >> "$TMPS"; printf '%s' "$f"; }
 # Polled, not slept for. A fixed sleep guesses how long a keystroke takes to
 # land; these wait for the thing the next assertion reads and give up after
@@ -449,15 +472,23 @@ echo "== fresh_server: a new-session refused by the killed server is retried, th
 # A call with no -L or -S is logged and dropped: it would reach the default
 # server, which may be the user's.
 if need_tmux "fresh_server"; then :; else
-FS="cockpit-fresh-$$"; SOCKS="$SOCKS $FS"; FSD=$(mktmpd)
-printf '#!/bin/sh\ncase " $* " in *" -L "*|*" -S "*) ;; *) sock=none ;; esac
+FS="cockpit-fresh-$$"; SOCKS="$SOCKS $FS"
+# A $ and a ' in the fake's dir: the fake must keep both literal, or it counts nothing (#856).
+FSD="$(mktmpd)/f\$y'q"; mkdir -p "$FSD"
+fsq="'\\''"
+{ printf "#!/bin/sh\nD='%s' R='%s'\n" "${FSD//\'/$fsq}" "${TMUX_BIN//\'/$fsq}"
+cat <<'FSEOF'
+case " $* " in *" -L "*|*" -S "*) ;; *) sock=none ;; esac
 case " $* " in
-*" kill-server "*) echo k >> "%s/kills"; [ -z "$sock" ] || exit 0 ;;
-*" new-session "*) echo n >> "%s/tries"; [ -z "$sock" ] || exit 1
-    [ "$(wc -l < "%s/tries")" -gt "$FS_FAILS" ] || {
-    echo "server exited unexpectedly ($(wc -l < "%s/tries"))" >&2; exit 1; } ;;
-esac\nexec "%s" "$@"\n' "$FSD" "$FSD" "$FSD" "$FSD" "$TMUX_BIN" > "$FSD/tmux"
-chmod +x "$FSD/tmux"
+*" kill-server "*) echo k >> "$D/kills"; [ -z "$sock" ] || exit 0 ;;
+*" new-session "*) echo n >> "$D/tries"; [ -z "$sock" ] || exit 1
+    [ "$(wc -l < "$D/tries")" -gt "$FS_FAILS" ] || {
+    echo "server exited unexpectedly ($(wc -l < "$D/tries"))" >&2; exit 1; } ;;
+esac
+exec "$R" "$@"
+FSEOF
+} > "$FSD/tmux"
+chmod +x "$FSD/tmux"; unset fsq
 # fs_run <fails> <polls> <fresh_server args...> -> "rc tries kills bads|bad's got"
 fs_run() {
     local fails=$1 polls=$2; shift 2
@@ -2627,6 +2658,38 @@ is "Write(missing) is dropped" ""                     "$(op 'Write(docs/nope.md)
 # A wrapper is unwrapped, not stripped: file(12,3) is a LOCATION, and reading
 # it as a wrapper would look up "12,3" as a filename and lose the line number.
 is "file(12,3) is not a wrapper" "$OP/tm:12:3"        "$(op 'tm(12,3): error TS1005')"
+# In a UTF-8 locale [0-9] also matches ² and ١, so Write(1²,3) read as tsc's file(12,3) and its
+# inside was never tried. Write(12,3) stays a location there too (#842).
+if OPLOC=$(utf8_loc); then
+    : > "$OP/12,3"
+    oploc() { env LOCPATH="$OPLOC" LC_ALL=en_US.UTF-8 \
+        "$DIR/scripts/tmux-open-path" --dry-run "$OP" "$1"; }
+    for opd in ² ١; do
+        : > "$OP/1$opd,3"
+        is "in en_US.UTF-8 Write(1$opd,3) is a wrapper: the file inside is found" "$OP/1$opd,3::" \
+           "$(oploc "Write(1$opd,3)")"
+    done
+    is "in en_US.UTF-8 Write(12,3) is still a location, not a wrapper" "" "$(oploc 'Write(12,3)')"
+    # The location parsers read ASCII digits too. "and bin/tm" proves the run reached its end.
+    for opd in ² ١; do
+        # strip_ends: (1²,3) is no location, so its ")" is stripped like any other
+        : > "$OP/bin/tm(1$opd,3"
+        is "in en_US.UTF-8 bin/tm(1$opd,3) loses its ')': no tsc location" "$OP/bin/tm(1$opd,3::" \
+           "$(oploc "bin/tm(1$opd,3)")"
+        is "in en_US.UTF-8 tm(1$opd,4) is no tsc file(12,3)" "$OP/bin/tm::" \
+           "$(oploc "tm(1$opd,4) and bin/tm")"
+        is "in en_US.UTF-8 README.md:1$opd:3 is no file:line:col" "$OP/bin/tm::" \
+           "$(oploc "README.md:1$opd:3 and bin/tm")"
+        is "in en_US.UTF-8 README.md:1$opd is no file:line" "$OP/bin/tm::" \
+           "$(oploc "README.md:1$opd and bin/tm")"
+    done
+    is "in en_US.UTF-8 the ASCII shapes read as before" \
+       "$OP/bin/tm:12:3"$'\n'"$OP/src/foo-bar.ts:31:5"$'\n'"$OP/README.md:7:" \
+       "$(oploc 'bin/tm(12,3): src/foo-bar.ts:31:5 README.md:7')"
+else
+    bad "a UTF-8 locale whose regex [0-9] matches ² and ١ loads (localedef en_US.UTF-8)" \
+        "loaded" "none"
+fi
 # Wrapped and bracketed at once -- the inner token gets the same strip.
 is "nested (Write(path))"    "$OP/README.md::"        "$(op '(Write(README.md))')"
 rm -rf "$OP"
@@ -3767,7 +3830,7 @@ echo "== bootstrap.sh: no bat and no --full (#228); the first backup kept =="
 if ! command -v curl >/dev/null 2>&1; then skip_ "bootstrap.sh (no curl)"
 elif ! command -v sha256sum >/dev/null 2>&1; then skip_ "bootstrap.sh (no sha256sum)"; else
 BS=$(mktmpd)
-BH="$BS/home"; BB="$BS/bin"; BB2="$BS/bin2"; BSH="$BS/shim"; REL="$BS/rel"; BSBIN=""
+BH="$BS/home"; BB="$BS/bin"; BB2="$BS/bin2"; BSH="$BS/shim"; REL="$BS/r el"; BSBIN=""
 mkdir -p "$BH/.tmux/plugins" "$BB" "$BB2" "$BSH" "$BS/tmuxtmp"
 # Every plugin already cloned, every package already present, no ~/.claude and
 # no claude on PATH: the packages, plugins and hooks steps all do nothing, so
@@ -3842,6 +3905,9 @@ BPATH=$bspath
 # and the pristine backup taken the first time must survive it.
 printf '# mine\n' > "$BH/.tmux.conf"; rm -f "$BH/.tmux.conf.bak"
 bs >/dev/null 2>&1
+# Every run fetches revdiff from the release fixture: a URL curl refuses fetches nothing (#827).
+is "the run fetched the fixture's revdiff into XDG_BIN_HOME" "version: 1.13.0" \
+   "$("$BB/revdiff" --version 2>/dev/null)"
 is "the first append backs the config up" "# mine" "$(cat "$BH/.tmux.conf.bak" 2>/dev/null)"
 grep -v cockpit "$BH/.tmux.conf" > "$BH/c2" && mv "$BH/c2" "$BH/.tmux.conf"
 printf '# edited since\n' >> "$BH/.tmux.conf"
@@ -5509,6 +5575,16 @@ tfrun() { : > "$TF/log"; env -u TMUX_PANE TF_LOG="$TF/log" PATH="$TF:$PATH" "$@"
 tfrun env -u TMUX "$DIR/scripts/tm" '$5x'
 is "tm \$5x attaches the existing session by id, creating nothing" "attach-session -d -t \$7|0" \
    "$(grep '^attach' "$TF/log")|$(grep -c '^new-session' "$TF/log")"
+# tm's num counts ASCII digits: in a UTF-8 locale [0-9] also matches ² and ١ (#842).
+if TMLOC=$(utf8_loc); then
+    is "in en_US.UTF-8 tm's num: 12 is a number, 1² and 1١ are not" "0 1 1" \
+       "$(env LOCPATH="$TMLOC" LC_ALL=en_US.UTF-8 bash -c 'eval "$(sed -n "/^num() {/p" "$1")"
+            r=; for a in 12 1² 1١; do num "$a"; r+="$? "; done; printf %s "${r% }"' \
+            _ "$DIR/scripts/tm")"
+else
+    bad "a UTF-8 locale whose regex [0-9] matches ² and ١ loads (localedef en_US.UTF-8)" \
+        "loaded" "none"
+fi
 tfrun env -u TMUX "$DIR/scripts/tm" -k '$5x'
 is "and tm -k \$5x kills it by id" "kill-session -t \$7" "$(grep '^kill' "$TF/log")"
 # From the popup, the switch names the client that pressed prefix+s: a phone
@@ -6495,6 +6571,26 @@ is "and the first backup is untouched" "garbage before any header" \
     "$(head -1 "$rsbak1" 2>/dev/null)"
 printf '## src.go:x (+)\nbad line number\n' > "$RSF.bad2"; parse_store "$RSF.bad2" 2>/dev/null
 is "a header with a non-numeric line is corruption" "0" "$STORE_N"
+# In a UTF-8 locale bash's regex [0-9] also matches ² and ١. A line or an end in either is
+# corruption there too, and an ASCII range still parses (#842).
+rs_loc() {                    # <LOCPATH dir> <header>: STORE_N after parsing it in en_US.UTF-8
+    printf '%s\nbody\n' "$2" > "$RSF.loc"
+    env LOCPATH="$1" LC_ALL=en_US.UTF-8 bash -c '. "$1"; declare -A STORE
+        parse_store "$2" 2>/dev/null; printf %s "$STORE_N"' _ "$RS_LIB" "$RSF.loc"
+}
+if RSLC=$(utf8_loc); then
+    for rsd in ² ١; do
+        for rsh in "src.go:$rsd" "src.go:3-$rsd"; do
+            is "in en_US.UTF-8 a header $rsh (+) is corruption" "0" \
+               "$(rs_loc "$RSLC" "## $rsh (+)")"
+        done
+    done
+    is "in en_US.UTF-8 an ASCII header src.go:3-4 (+) still parses" "1" \
+       "$(rs_loc "$RSLC" '## src.go:3-4 (+)')"
+else
+    bad "a UTF-8 locale whose regex [0-9] matches ² and ١ loads (localedef en_US.UTF-8)" \
+        "loaded" "none"
+fi
 parse_store "$RSD/does-not-exist"; is "a missing store is a blank state" "0" "$STORE_N"
 # A record in the shape the loop writes (header, quote, body) parses.
 RSATT="$RSD/att"; printf '## src.go:3 (+)\n> x := 1\nfrom attach\n\n' > "$RSATT"
@@ -6504,7 +6600,7 @@ is "a store record in the loop's shape parses" "src.go/3/+/x := 1/from attach" \
 # The boundary: nothing but comments may say tmux or git in the pure module.
 is "the library touches neither tmux nor git" "0" \
     "$(sed '/^[[:space:]]*#/d' "$RS_LIB" | grep -cE 'tmux|git')"
-unset -f store_set store_dump; unset STORE STORE_N STORE_BAK
+unset -f store_set store_dump rs_loc; unset STORE STORE_N STORE_BAK
 
 echo "== tmux-review --compose: header + blocks verbatim, ?? passes through untouched =="
 RV3STORE=$(mktemp)
@@ -7381,22 +7477,27 @@ echo "== a partial clone's lazy fetch cannot run the repo's planted remote confi
 # old/git shim drops GIT_NO_LAZY_FETCH as git < 2.44 does, leaving only the protocol pin.
 LF=$(mktmpd); LFM="$LF/marker"; mkdir "$LF/old" "$LF/hb"
 # The paths go into the generated scripts single-quoted: a space in TMPDIR split the marker's
-# path, and the script appended to a file outside the suite's scratch (#820).
-printf "#!/bin/sh\necho up >> '%s'\nexit 1\n" "$LFM" > "$LF/up"; chmod +x "$LF/up"
+# path, and the script appended to a file outside the suite's scratch (#820). lfq escapes a '
+# inside them as '\'', as scripts/lib/hook.sh's shq does, so a ' in TMPDIR holds too (#827).
+lfq() { printf "'%s'" "${1//\'/\'\\\'\'}"; }
+printf '#!/bin/sh\necho up >> %s\nexit 1\n' "$(lfq "$LFM")" > "$LF/up"; chmod +x "$LF/up"
 ln -s "$LF/up" "$LF/hb/git-remote-foo"
 printf '#!/bin/sh\nunset GIT_NO_LAZY_FETCH\nexec '"'%s'"' "$@"\n' "$(command -v git)" \
     > "$LF/old/git"
 chmod +x "$LF/old/git"
+# git percent-decodes a file:// URL, so the clones take theirs from file_url: a raw one
+# fails under a TMPDIR holding %20, and the chain sets no plant (#827).
 ( export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
   git init -q -b main "$LF/src" && cd "$LF/src" && git config uploadpack.allowFilter true \
   && printf 'a\n' > f.txt && git add -A && git commit -qm 1 \
-  && git clone -q --filter=blob:none "file://$LF/src" "$LF/c" \
+  && git clone -q --filter=blob:none "$(file_url "$LF/src")" "$LF/c" \
   && git switch -qc side && printf 'g\n' > g.txt && git add g.txt && git commit -qm g \
   && git switch -qc side2 main && printf 'h\n' > h.txt && git add h.txt && git commit -qm h \
   && git switch -q main && printf 'b\n' >> f.txt && git commit -qam 2 \
-  && git clone -q --filter=blob:none "file://$LF/src" "$LF/c2" \
+  && git clone -q --filter=blob:none "$(file_url "$LF/src")" "$LF/c2" \
   && cd "$LF/c" && git fetch -q && git reset -q --soft origin/main \
-  && git config remote.origin.uploadpack "'$LF/up'" && git config core.sshCommand "'$LF/up'" \
+  && git config remote.origin.uploadpack "$(lfq "$LF/up")" \
+  && git config core.sshCommand "$(lfq "$LF/up")" \
   && git config protocol.file.allow always && git config protocol.ssh.allow always \
   && git config protocol.ext.allow always && git config protocol.foo.allow always ) >/dev/null 2>&1
 lf_paths() {
@@ -7408,9 +7509,10 @@ lf_paths() {
 }
 # foo:: is a remote helper on PATH (hb/), which no protocol.<p>.allow pin can name. git runs
 # uploadpack and sshCommand through a shell, so those hold the path quoted, and ext:: splits
-# its command at spaces, "% " being a space and "%%" a % (#820).
+# its command at spaces, "% " being a space and "%%" a % (#820). The file:// remote is
+# unpinned: up fires whatever path git reads from it (#827).
 lfx=${LF//%/%%}; lfx=${lfx// /% }
-for lfu in "file://$LF/src" ssh://h/r "ext::$lfx/up" foo::x; do
+for lfu in "$(file_url "$LF/src")" ssh://h/r "ext::$lfx/up" foo::x; do
     git -C "$LF/c" config remote.origin.url "$lfu"
     PATH="$LF/hb:$PATH" git -C "$LF/c" diff --numstat HEAD >/dev/null 2>&1
     is "the planted remote fires under plain git (${lfu%%:*})" "up" "$(head -1 "$LFM" 2>/dev/null)"
@@ -7418,6 +7520,37 @@ for lfu in "file://$LF/src" ssh://h/r "ext::$lfx/up" foo::x; do
     PATH="$LF/hb:$PATH" lf_paths " (${lfu%%:*})"
     PATH="$LF/old:$LF/hb:$PATH" lf_paths " (${lfu%%:*}, git < 2.44)"
 done
+# git.sh stacks three fetch guards on one call (GIT_NO_LAZY_FETCH=1, GIT_ALLOW_PROTOCOL='' and
+# the protocol.*.allow=never flags), and any one stops the fetch, so the rows above stay green
+# with one dropped. keep/git strips all but $LF_KEEP before the real git: each guard alone must
+# stop it, so dropping that guard from git.sh fires the remote (#827).
+mkdir "$LF/keep"
+printf '%s\n' '#!/usr/bin/env bash' \
+    'a=(); while [ $# -gt 0 ]; do' \
+    '    if [ "$1" = -c ] && [[ ${2-} == protocol.*allow=never ]]; then' \
+    '        [ "$LF_KEEP" = nofetch ] && a+=("$1" "$2"); shift 2; continue' \
+    '    fi; a+=("$1"); shift; done' \
+    '[ "$LF_KEEP" = lazy ] || unset GIT_NO_LAZY_FETCH' \
+    '[ "$LF_KEEP" = proto ] || unset GIT_ALLOW_PROTOCOL' \
+    "exec $(lfq "$(command -v git)") \"\${a[@]}\"" > "$LF/keep/git"
+chmod +x "$LF/keep/git"
+git -C "$LF/c" config remote.origin.url "$(file_url "$LF/src")"
+# With every guard stripped the remote fires, so the guard rows after test something. The diff
+# runs only when git is git.sh's function, so the row also fails when git.sh did not load (#827).
+( export LF_KEEP=none PATH="$LF/keep:$LF/hb:$PATH"; . "$DIR/scripts/lib/git.sh"
+  [ "$(type -t git)" = function ] && git -C "$LF/c" diff --numstat HEAD ) >/dev/null 2>&1
+is "keep/git with no guard kept strips every guard: the remote fires through git.sh" "up" \
+   "$(head -1 "$LFM" 2>/dev/null)"
+rm -f "$LFM"
+for lfk in lazy proto nofetch; do
+    LF_KEEP=$lfk PATH="$LF/keep:$LF/hb:$PATH" lf_paths " (file, only the $lfk guard)"
+done
+# The "git < 2.44" rows mean something only if old/git runs git and drops GIT_NO_LAZY_FETCH:
+# with that set and no other guard, the remote fires through old/git alone (#827).
+GIT_NO_LAZY_FETCH=1 PATH="$LF/old:$LF/hb:$PATH" git -C "$LF/c" diff --numstat HEAD >/dev/null 2>&1
+is "old/git drops GIT_NO_LAZY_FETCH and runs git: the remote fires through it" "up" \
+   "$(head -1 "$LFM" 2>/dev/null)"
+rm -f "$LFM"
 # A user's own switch or worktree add still fetches what it checks out; a diff does not.
 is "a diff through git.sh's git still cannot fetch a clean clone's blob" "" \
    "$( . "$DIR/scripts/lib/git.sh"; git -C "$LF/c2" diff --numstat main origin/side 2>/dev/null)"
@@ -7427,7 +7560,7 @@ is "while switch --track through it fetches the branch's blob" "g" \
 ( . "$DIR/scripts/lib/git.sh"
 git -C "$LF/c2" worktree add -q --detach "$LF/wt" origin/side2 ) >/dev/null 2>&1
 is "and so does worktree add" "h" "$(cat "$LF/wt/h.txt" 2>/dev/null)"
-rm -rf "$LF"; unset lfu lfx; unset -f lf_paths
+rm -rf "$LF"; unset LF LFM lfu lfx lfk; unset -f lf_paths lfq
 
 echo "== tmux-review: a pane id that is not %<digits> never reaches tmux =="
 # The glob %[0-9]* let "%1;display-message PWNED" through, and deliver() splices
@@ -7471,10 +7604,11 @@ printf '{"type":"user","cwd":"%s","message":{"content":"hi"}}\n' "$WD/repo" \
     >/dev/null 2>&1
 "$TMUX_REAL" -L "$WDS" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
 WDSH=$("$TMUX_REAL" -L "$WDS" list-panes -a -F '#{pane_id}' | head -1)
-wd_pane() {                   # wd_pane <argv0> -> a new pane in the launch dir running sleep
+wd_pane() {                   # wd_pane <argv0> [shown] -> a new pane in the launch dir, sleeping
     local p; p=$("$TMUX_REAL" -L "$WDS" new-window -P -F '#{pane_id}' -d -t t: -c "$WD/launch" \
         "exec -a $1 sleep 300")
-    until_out "$1" "$TMUX_REAL" -L "$WDS" display-message -p -t "$p" '#{pane_current_command}'
+    # [shown]: the name tmux shows, when it differs from argv0 (/x/--2.1.318 shows as --2.1.318)
+    until_out "${2:-$1}" "$TMUX_REAL" -L "$WDS" display-message -p -t "$p" '#{pane_current_command}'
     printf '%s' "$p"
 }
 WDP=$(wd_pane claude)        # an agent with a session: its transcript names the repo
@@ -7557,6 +7691,26 @@ done
 WDV1=$(wd_pane 2.1)
 is "a pane running as 2.1 is not version-shaped, so it is not asked" "0 $WD/launch" \
    "$(wd_ct ok "$WDV1")"
+# tmux drops leading dashes, then cuts a path only when the name starts with /, so a relative
+# path and /x/--name reach workdir_agent with them: cmd_base's cuts are what count it (#757).
+is "a pane running as ./2.1.318 is an agent, so it is asked" "1 $WD/other" \
+   "$(wd_ct ok "$(wd_pane ./2.1.318)")"
+is "...and one running as /x/--2.1.318, which tmux shows as --2.1.318" "1 $WD/other" \
+   "$(wd_ct ok "$(wd_pane /x/--2.1.318 --2.1.318)")"
+# In a UTF-8 locale such as en_US, workdir_agent's old regex [0-9] matched ²; version_cmd
+# counts ASCII digits only, as agentish does (#830). tmux trims a trailing ², hence 1.².1;
+# ١ (Arabic-Indic one) is a second digit of the class (#757).
+if WDLOC=$(utf8_loc); then
+    for wdu in 1.².1 1.١.1; do
+        WDU=$(wd_pane "$wdu")
+        is "in en_US.UTF-8 a pane running as $wdu is no agent, so it is not asked" \
+           "0 $WD/launch" \
+           "$( { export LOCPATH=$WDLOC LC_ALL=en_US.UTF-8; wd_ct ok "$WDU"; } 2>/dev/null)"
+    done
+else
+    bad "a UTF-8 locale whose regex [0-9] matches ² and ١ loads (localedef en_US.UTF-8)" \
+        "loaded" "none"
+fi
 WDST=$(wd_pane snooze)
 "$TMUX_REAL" -L "$WDS" set -p -t "$WDST" @panestate running >/dev/null 2>&1
 is "a pane carrying @panestate is an agent whatever it runs, so it is asked" "1 $WD/other" \
@@ -8975,7 +9129,7 @@ TF=$(mktmpd); mkdir -p "$TF/plugin/scripts/lib" "$TF/build" "$TF/curlshim" "$TF/
 cp "$DIR/scripts/tui-fetch" "$TF/plugin/scripts/"
 cp "$DIR/scripts/lib/vnum.sh" "$DIR/scripts/lib/tui.sh" "$DIR/scripts/lib/cargo-build.sh" \
     "$TF/plugin/scripts/lib/"
-TFB="$TF/plugin/bin/cockpit-tui"; TFR=$(file_url "$TF/rel"); TFGONE=$(file_url "$TF/no-such-host")
+TFB="$TF/plugin/bin/cockpit-tui"; TFR=$(file_url "$TF/r el"); TFGONE=$(file_url "$TF/no-such-host")
 # Counting curl, not timing it: "a 404 is retried" is a fork count, never a clock.
 printf '#!/bin/sh\necho x >> "%s"\nexec %s "$@"\n' "$TF/curlcount" "$(command -v curl)" \
     > "$TF/curlshim/curl"
@@ -8986,7 +9140,7 @@ chmod +x "$TF/curlshim/curl" "$TF/shim/rustc" "$TF/shim/cargo"
 # Every target name gets the same bytes, so the block runs on whatever box the
 # suite is on without re-deriving the uname mapping the script under test owns.
 tf_release() {                # <tag> <version-it-reports> [flip|flat|broken|noasset]
-    local d="$TF/rel/$1" t
+    local d="$TF/r el/$1" t
     mkdir -p "$d"; rm -rf "$TF/build"; mkdir -p "$TF/build"
     if [ "${3:-}" = noasset ]; then
         # A manifest that lists only somebody else's platform: settled, not transient.
@@ -9037,7 +9191,7 @@ is "and the installed binary is the one the tag named" "cockpit-tui 0.1.0" "$(tf
 # Deleting the release proves the second run never went looking for it: the
 # probe is the binary in bin/, not a name on PATH -- fzf's installer
 # re-downloaded everything when a distro copy shadowed its own.
-rm -rf "$TF/rel/cockpit-tui-v0.1.0"
+rm -rf "$TF/r el/cockpit-tui-v0.1.0"
 tfout=$(tf "$TFR" --version cockpit-tui-v0.1.0); tfrc=$?
 case "$tfout" in
     *"already current"*) ok "a second run with a current binary says already current" ;;
@@ -9302,7 +9456,7 @@ while [ $# -gt 0 ]; do
         *)  tag=$1; shift ;;
     esac
 done
-exec cp "$TF/rel/$tag/$pat" "$out"
+exec cp "$TF/r el/$tag/$pat" "$out"
 GHSHIM
 cat > "$TF/ghbad/gh" <<'GHBAD'
 #!/bin/sh
@@ -9318,7 +9472,7 @@ TF="$(cd "$(dirname "$0")/.." && pwd)"
 echo x >> "$TF/curlcount"
 out=
 while [ $# -gt 1 ]; do [ "$1" = -o ] && out=$2; shift; done
-exec cp "$TF/rel/${1##*releases/download/}" "$out"
+exec cp "$TF/r el/${1##*releases/download/}" "$out"
 CURLFAKE
 chmod +x "$TF/ghshim/gh" "$TF/ghbad/gh" "$TF/curlfake/curl"
 
@@ -10985,6 +11139,18 @@ for pa in "--ask /r/x.rs 7 3" "--ask /r/x.rs 0 1" "--ask /r/x.rs 01 2" "--ask /r
     is "cockpit-panel -p %5 $pa is refused before the binary runs" "rc=2" "$(pask $pa)"
 done
 is "--ask with an empty file is refused" "rc=2" "$(pask --ask '' 3 7)"
+# In a UTF-8 locale [1-9] and [0-9] also match ² and ١: a line ² passed the usage check and
+# reached [ -gt ], which failed, so the run went on to the binary (#842).
+if PALOC=$(utf8_loc); then
+    for pa in "--ask /r/x.rs ² 3" "--ask /r/x.rs 1 1²" "--ask /r/x.rs ١ 3" "--ask /r/x.rs 1 1١"; do
+        # shellcheck disable=SC2086
+        is "en_US.UTF-8: cockpit-panel -p %5 $pa is refused before the binary runs" "rc=2" \
+           "$( { export LOCPATH=$PALOC LC_ALL=en_US.UTF-8; pask $pa; } 2>/dev/null)"
+    done
+else
+    bad "a UTF-8 locale whose regex [0-9] matches ² and ١ loads (localedef en_US.UTF-8)" \
+        "loaded" "none"
+fi
 # a panel hidden on the pane stays hidden: the ask opens on its question, not on it.
 # `display` answers $PND/now, so 4242 is the server's pid that keys the hidden file.
 mkdir -p "$PND/xdg/tmux-cockpit/panel"; printf 'H\n' > "$PND/xdg/tmux-cockpit/panel/4242-5.state"
@@ -14202,8 +14368,11 @@ rs_panes() { "$TMUX_REAL" -L "$RS" display -p -t "$1" '#{window_panes}'; }
 rs_run() {                    # <action-line> <expect>: one trip; the note it left
     rm -f "$RSD/once" "$RSD/done" "$RSD/ran"; : > "$RSD/bargv"
     printf '%s\n' "$1" > "$RSD/line"; printf '%s\n' "$2" > "$RSD/expect"
-    "$TMUX_REAL" -L "$RS" new-window -d -t t: \
-        "env PATH=\"$RSD/stub:\$PATH\" COCKPIT_TUI_BIN=$RSD/bin XDG_STATE_HOME=$RSD/state COCKPIT_LOG=$RSD/tui.log $DIR/scripts/cockpit-board -p $RSHOME; echo x > $RSD/done"
+    # RS_ENV: NAME=value words for the board's environment, a locale for one (#830)
+    local cmd="env ${RS_ENV:-} PATH=\"$RSD/stub:\$PATH\" COCKPIT_TUI_BIN=$RSD/bin"
+    cmd+=" XDG_STATE_HOME=$RSD/state COCKPIT_LOG=$RSD/tui.log"
+    cmd+=" $DIR/scripts/cockpit-board -p $RSHOME; echo x > $RSD/done"
+    "$TMUX_REAL" -L "$RS" new-window -d -t t: "$cmd"
     until_file "$RSD/done" 'x'
     sed -n '3,$p' "$RSD/bargv"
 }
@@ -14268,7 +14437,10 @@ case "$(rs_run "resume %99999" "$SID")" in
 # agent (by @cockpit_agents_glob, or a claude renamed to its version) holding
 # the id. The ended panes above held it too and never blocked a resume.
 "$TMUX_REAL" -L "$RS" set -g @cockpit_agents_glob '|claude|'
-for argv0 in claude 2.1.246; do
+# The version test is lib/cmdname.sh's version_cmd, as the board's agentish reads it (#830): no
+# digit is needed between separators, and a relative path and leading dashes are cut. tmux
+# shows /x/-2.1.318 as -2.1.318 (it drops dashes first, then a path only after a leading /).
+for argv0 in claude 2.1.246 2..1 2.1.318. 2_1_318_ ./2.1.318 /x/-2.1.318; do
     RL=$("$TMUX_REAL" -L "$RS" new-window -d -P -F '#{pane_id}' -t t: "exec -a $argv0 sleep 3600")
     "$TMUX_REAL" -L "$RS" set -p -t "$RL" @panestate running
     "$TMUX_REAL" -L "$RS" set -p -t "$RL" @cockpit_session "$SID"
@@ -14282,6 +14454,26 @@ for argv0 in claude 2.1.246; do
     is "and nothing ran for it" "1 " "$(rs_panes "$R") $(cat "$RSD/ran" 2>/dev/null)"
     "$TMUX_REAL" -L "$RS" kill-pane -t "$RL"
 done
+# In a UTF-8 locale such as en_US, bash's regex [0-9] also matches ²; agentish counts ASCII
+# digits only, and so does version_cmd (#830). A 1.².1 pane (tmux trims a trailing ²) is no
+# live copy there, so the resume runs; ١ is a second digit of the class (#757).
+if RSLOC=$(utf8_loc); then
+    for rsu in 1.².1 1.١.1; do
+        RL=$("$TMUX_REAL" -L "$RS" new-window -d -P -F '#{pane_id}' -t t: \
+            "exec -a $rsu sleep 3600")
+        "$TMUX_REAL" -L "$RS" set -p -t "$RL" @panestate running
+        "$TMUX_REAL" -L "$RS" set -p -t "$RL" @cockpit_session "$SID"
+        R=$(rs_agent "$SID")
+        RS_ENV="LOCPATH=$RSLOC LC_ALL=en_US.UTF-8" rs_run "resume $R" "$SID" >/dev/null
+        until_file "$RSD/ran" '?*'
+        is "in en_US.UTF-8 a session in a $rsu pane is no live copy: the resume runs" \
+            "[$RSD/work][--resume][$SID]" "$(cat "$RSD/ran" 2>/dev/null)"
+        "$TMUX_REAL" -L "$RS" kill-pane -t "$RL"
+    done
+else
+    bad "a UTF-8 locale whose regex [0-9] matches ² and ١ loads (localedef en_US.UTF-8)" \
+        "loaded" "none"
+fi
 # the target itself running an agent again (a stale board's row) is refused too
 R=$("$TMUX_REAL" -L "$RS" new-window -d -P -F '#{pane_id}' -c "$RSD/work" -t t: \
     'exec -a claude sleep 3600')
@@ -15050,7 +15242,7 @@ if ! command -v curl >/dev/null 2>&1; then skip_ "revdiff install (no curl)"
 elif ! command -v sha256sum >/dev/null 2>&1; then skip_ "revdiff install (no sha256sum)"
 elif ! command -v jq >/dev/null 2>&1; then skip_ "revdiff install (no jq)"; else
 RV=$(mktmpd)
-RVH="$RV/home"; RVB="$RV/bin"; RVREL="$RV/rel"
+RVH="$RV/home"; RVB="$RV/bin"; RVREL="$RV/r el"
 RVD="$RVREL/umputun/revdiff/releases/download/v1.13.0"
 mkdir -p "$RVH/.tmux/plugins" "$RVB" "$RV/new" "$RV/old" "$RV/unk" "$RV/none" "$RV/tmuxtmp" \
     "$RVD" "$RV/pack"
@@ -17053,8 +17245,10 @@ STUB
 chmod +x "$OKT/tmux"; ln -s "$(command -v bash)" "$OKT/bash"
 for t in mktemp rm cat; do ln -s "$(command -v $t)" "$OKT/$t"; done   # the stderr capture
 okrun() {                     # okrun <key> [bin] -- the log after a pick answering <key>
+    # OKLC: a LOCPATH dir to run in its en_US.UTF-8 (#842)
     : > "$OKL"
-    env -i PATH="$OKT" HOME="$OKT" TMUX_LOG="$OKL" CLICK_DIR="$OKT/w" CLICK_LINE="a.txt b.txt" \
+    env -i ${OKLC:+"LOCPATH=$OKLC"} ${OKLC:+LC_ALL=en_US.UTF-8} \
+        PATH="$OKT" HOME="$OKT" TMUX_LOG="$OKL" CLICK_DIR="$OKT/w" CLICK_LINE="a.txt b.txt" \
         OPEN_EDITOR=ed PICK_KEY="$1" PICK_RC="${PICK_RC:-0}" COCKPIT_TUI_BIN="${2:-$OPTUI}" \
         bash "$DIR/scripts/tmux-open-path" ${OKARG---pick} %1 </dev/null >/dev/null 2>"$OKT/err"
     echo "rc=$?"; cat "$OKL"
@@ -17068,6 +17262,21 @@ for k in 2 99 -1 abc '0;x' ''; do
                 "a 'not a candidate' message" "$(okrun "$k")" ;;
     esac
 done
+# In a UTF-8 locale [0-9] also matches ² and ١: such a key passed the check and reached
+# [ -lt ], which printed bash's "integer expected" under the message. The check refuses it
+# now, and stderr stays empty (#842). Key 1 still opens there.
+if OKLOC=$(utf8_loc); then
+    for k in ² ١; do
+        is "in en_US.UTF-8 key [$k] is refused before [ -lt ] reads it: no bash error" \
+           "rc=1|MSG cockpit: the picker named something that is not a candidate|" \
+           "$(OKLC=$OKLOC okrun "$k" | paste -sd'|')|$(cat "$OKT/err")"
+    done
+    is "in en_US.UTF-8 key 1 still opens the second candidate" "rc=0|NEWWIN ed  $OKT/w/b.txt|" \
+       "$(OKLC=$OKLOC okrun 1 | paste -sd'|')|$(cat "$OKT/err")"
+else
+    bad "a UTF-8 locale whose regex [0-9] matches ² and ١ loads (localedef en_US.UTF-8)" \
+        "loaded" "none"
+fi
 case "$(okrun 0 "$OKT/no-such-tui")" in
     *NEWWIN*) bad "no cockpit-tui: nothing opens" "no new window" "opened" ;;
     *"cockpit-tui is missing"*) ok "no cockpit-tui: the message names it, nothing opens" ;;
@@ -17470,8 +17679,10 @@ STUB
 chmod +x "$MV/bin/tmux" "$MV/bin/cockpit-tui"; ln -s "$(command -v bash)" "$MV/bin/bash"
 for t in mktemp rm cat; do ln -s "$(command -v $t)" "$MV/bin/$t"; done   # the stderr capture
 mvrun() {                     # mvrun <click line> <args...> -- the log after one run
+    # MVLC: a LOCPATH dir to run in its en_US.UTF-8 (#842)
     : > "$MVL"; rm -f "$MVL".once*
-    env -i PATH="$MV/bin" HOME="$MV" TMUX_LOG="$MVL" CLICK_DIR="$MV/w" CLICK_LINE="$1" \
+    env -i ${MVLC:+"LOCPATH=$MVLC"} ${MVLC:+LC_ALL=en_US.UTF-8} \
+        PATH="$MV/bin" HOME="$MV" TMUX_LOG="$MVL" CLICK_DIR="$MV/w" CLICK_LINE="$1" \
         OPEN_EDITOR="${MV_ED:-ed}" TOUCH="${TOUCH:-}" \
         COCKPIT_TUI_BIN="${MV_BIN:-$MV/bin/cockpit-tui}" MD_VIEW="${MD_VIEW:-}" \
             VIEW_OUT="${VIEW_OUT-}" \
@@ -17479,6 +17690,7 @@ mvrun() {                     # mvrun <click line> <args...> -- the log after on
             POPUP_RC="${POPUP_RC:-}" NO_CLIENT="${NO_CLIENT:-}" NEWWIN_RC="${NEWWIN_RC:-}" \
         VIEW_ONCE="${VIEW_ONCE:-}" VIEW_ENV="${VIEW_ENV:-}" ${FUNCNEST:+FUNCNEST="$FUNCNEST"} \
         bash "${MV_SCRIPT:-$DIR/scripts/tmux-open-path}" "${@:2}" </dev/null >/dev/null 2>"$MV/err"
+    printf '%s' "$?" > "$MV/rc"   # for a row that must tell "opens nothing" from a crash (#842)
     cat "$MVL"
 }
 is "a lone .md opens a popup the pane's size over it, which re-enters with --view" \
@@ -17563,6 +17775,33 @@ is "a window tmux refuses to open is a note, from the editor path" \
 is "and from the touch client's terminal editor" \
    "VIEW [view] [--] [$MV/w/a.md]"$'\n'"NEWWIN ed $MV/w/a.md"$'\n'"MSG cockpit: tmux could not open a window for a.md" \
    "$(NEWWIN_RC=1 VIEW_OUT='edit 5' TOUCH=1 mvrun 'x' --view %1 "$MV/w/a.md" '')"
+# In a UTF-8 locale [0-9] also matches ² and ١. The viewer's `edit ²` is no edit: nothing
+# opens, on a touch client or not (#842). The edit 5 rows above are the ASCII answers.
+if MVLOC=$(utf8_loc); then
+    for mvd in ² ١; do
+        for mvt in 1 0; do
+            is "touch=$mvt, en_US.UTF-8: the viewer's edit $mvd opens nothing" \
+               "VIEW [view] [--] [$MV/w/a.md]|rc=0|err=" \
+               "$(MVLC=$MVLOC VIEW_OUT="edit $mvd" TOUCH=$mvt mvrun 'x' --view %1 \
+                  "$MV/w/a.md" '')|rc=$(cat "$MV/rc")|err=$(cat "$MV/err")"
+        done
+    done
+    # term_edit's own check: no caller hands it a line that is not ASCII now, so it runs
+    # alone here, with a stub tmux that prints the window's command.
+    ter() { env LOCPATH="$MVLOC" LC_ALL=en_US.UTF-8 bash -c '
+            eval "$(sed -n "/^term_edit() {/,/^}/p" "$1")"
+            tmux() { case $1 in show-options) echo nvim ;; new-window) printf %s "${!#}" ;; esac; }
+            plain_name() { printf %s "$1"; }; fesc() { printf %s "$1"; }; shq() { printf %s "$1"; }
+            win=@0; term_edit /w/n.txt "$2"' _ "$DIR/scripts/tmux-open-path" "$1"; }
+    for mvd in ² ١; do
+        is "en_US.UTF-8: term_edit at line 1$mvd gives nvim the file and no +1$mvd" \
+           "nvim /w/n.txt" "$(ter "1$mvd")"
+    done
+    is "en_US.UTF-8: term_edit at line 7 gives nvim +7" "nvim +7 /w/n.txt" "$(ter 7)"
+else
+    bad "a UTF-8 locale whose regex [0-9] matches ² and ١ loads (localedef en_US.UTF-8)" \
+        "loaded" "none"
+fi
 # #365: the viewer's `ask <a> <b>` opens cockpit-panel --ask, called by its path
 # beside the script, then the viewer again at line a. A copy of the script with
 # a cockpit-panel stub beside it, so the real panel never runs.
@@ -17602,6 +17841,21 @@ for o in 'ask 7 3' 'ask 0 1' 'ask 01 2' 'ask 1' 'ask 1 2 3' 'ask a b' 'ask 12345
         *) ok "the viewer's [$o] is not an ask: no panel" ;;
     esac
 done
+# In a UTF-8 locale [1-9] and [0-9] also match ² and ١: `ask ² 3` reached [ -gt ], which
+# failed, so the panel opened on line ² (#842). The ask 3 7 row above is the ASCII answer.
+if MVLOC=$(utf8_loc); then
+    for mvd in ² ١; do
+        for o in "ask $mvd 3" "ask 1 1$mvd"; do
+            is "en_US.UTF-8: the viewer's [$o] is not an ask: no panel" \
+               "VIEW [view] [--] [$MV/w/a.md]|rc=0|err=" \
+               "$(MVLC=$MVLOC askrun "$o" --view %1 "$MV/w/a.md" '')|rc=$(cat "$MV/rc")|err=$(
+                  cat "$MV/err")"
+        done
+    done
+else
+    bad "a UTF-8 locale whose regex [0-9] matches ² and ١ loads (localedef en_US.UTF-8)" \
+        "loaded" "none"
+fi
 
 echo "== cockpit-panel (#582): the basket clear keeps a ref added just before it =="
 # A private server and a shim tmux in PATH that forwards every call to it. Just
@@ -19392,6 +19646,11 @@ av_bindrow "a pane whose command is a version title (2.1.318) binds its job" 2.1
 av_bindrow "...and with underscores (2_1_318)" 2_1_318 "aa|alpha|running"
 av_bindrow "digits with one dot (3.11) are no version title: no bind" 3.11 "||"
 av_bindrow "...nor a version with a letter in it (2.1.3a)" 2.1.3a "||"
+# tmux keeps a relative path (it cuts only a name that starts with /) and shows /x/--2.1.318
+# as --2.1.318 (dashes first): version_cmd and claude_cmd read them through cmd_base (#757).
+av_bindrow "a pane running ./2.1.318 binds its job: the path is cut" ./2.1.318 "aa|alpha|running"
+av_bindrow "a pane running /x/--2.1.318 binds its job: the dashes are cut" /x/--2.1.318 \
+    "aa|alpha|running"
 # The glob (|claude|codex|) never names a version title, so the poller dropped such a pane's
 # marks as "not an agent any more" and then bound it unmarked (review-770). It is an agent,
 # as on the board: a foreground mark newer than the job's start keeps the pane unbound.
@@ -19466,7 +19725,7 @@ elif [ ! -r /proc/net/unix ] || ! command -v setsid >/dev/null 2>&1; then
 else
 # The nested run's TMPDIR, plain and with two spaces and a % (#818): the block's server
 # command and the cleanup's socket list must keep such a path whole.
-ir_run() {                    # <TMPDIR for the nested run> <label for the rows>
+ir_run() {                    # <TMPDIR for the nested run> <label for the rows> [spaced]
     local d=$1 l=$2 irp irs irl irc
     # The caller's runtime dir, as the suite itself had it: the block's short-socket fallback.
     ( cd "$DIR" && TMPDIR="$d" XDG_RUNTIME_DIR="$SUITE_XRD" COCKPIT_TEST_RV_HOLD="$d/held" \
@@ -19489,6 +19748,16 @@ ir_run() {                    # <TMPDIR for the nested run> <label for the rows>
         return
     fi
     is "$l: the held run's server listens on the socket it named" "1" "$irl"
+    # [spaced]: the pin is the space in the socket path. A TMPDIR longer than about 26 bytes
+    # on Linux with a 7-digit pid (the fallback starts later with a 5-digit pid) makes the
+    # nested socket too long, and the block falls back to the runtime dir, which has no
+    # space: the run still passes, but tests no quoting. Say so (#827).
+    if [ "${3:-}" = spaced ]; then
+        case $irs in
+            *" "*) ok "$l: the held socket path keeps the TMPDIR's spaces" ;;
+            *) skip_ "$l: the socket fell back to the runtime dir, so no space is tested" ;;
+        esac
+    fi
     # Only the group this block started, only while it is held, and only when its leader is
     # still that run.
     irc=""; read -r irc 2>/dev/null < "/proc/$irp/comm"
@@ -19502,7 +19771,99 @@ ir_run() {                    # <TMPDIR for the nested run> <label for the rows>
 }
 ir_run "$(mktmpd)" "a plain TMPDIR"
 IRS="$(mktmpd)/my  tmp %x"; mkdir -p "$IRS"
-ir_run "$IRS" "a TMPDIR with two spaces and a %"
+ir_run "$IRS" "a TMPDIR with two spaces and a %" spaced
+fi
+
+echo "== a TMPDIR holding a \$, a \` and a ' leaves no suite server behind (#849) =="
+# The prelude's kill/new guard (flop_write) put the dirs it was given inside double quotes of
+# the script it wrote, so a $ in TMPDIR expanded again each time the guard ran: its marker
+# path named a dir that does not exist. dash exits when the redirect of the special builtin
+# `:` fails, before the guard's exec, so the cleanup's kill-server never reached the suite's
+# server, and the cleanup then removed its socket file. Here one block runs on its own under
+# such a TMPDIR, with a TMUX_TMPDIR of its own, and that socket dir is read after the run: no
+# listener in /proc/net/unix, which keeps a bound path after the file is gone, and no socket.
+# The ` and ' are there too: a guard that escaped only $ passed with a $ alone. The nested run
+# reads the live tests/run.sh, not a par.sh snapshot, and inherits this suite's PATH shim, so
+# its server's cmdline carries two -L names; tmux takes the last, its own.
+if need_tmux "a \$ in TMPDIR"; then :
+elif [ ! -r /proc/net/unix ]; then skip_ "a \$ in TMPDIR (no /proc/net/unix)"
+else
+DS=$(mktmpd); DST="$DS/d\$x\`y'z"; DSS="$DS/s"; mkdir -p "$DST" "$DSS"
+# The nested socket is $DSS/tmux-<uid>/cockpit-suite-<pid>: past 107 bytes the server cannot
+# bind, which is the long-TMPDIR class, not this one.
+if [ $((${#DSS} + ${#UID} + 28)) -gt 107 ]; then
+    skip_ "a \$ in TMPDIR (TMPDIR too long for the nested socket path)"
+else
+( cd "$DIR" && TMPDIR="$DST" TMUX_TMPDIR="$DSS" exec tests/only.sh '^cmdname.sh: cmd_base cuts' ) \
+    </dev/null >"$DS/log" 2>&1
+dsr=$?; [ "$dsr" = 0 ] || dsr="$dsr: $(tail -3 "$DS/log" | tr '\n' ' ')"
+is "the nested run of one block under a TMPDIR holding \$, \` and ' passes" "0" "$dsr"
+is "after it no server listens in its socket dir" "0" "$(grep -cF " $DSS/" /proc/net/unix)"
+is "and no socket file is left there" "" "$(find "$DSS" -type s 2>/dev/null)"
+# A server the run left: only a tmux server, started as a suite's, whose TMUX_TMPDIR is ours.
+for p in /proc/[0-9]*; do
+    c=""; read -r c 2>/dev/null < "$p/comm"
+    [ "$c" = "tmux: server" ] || continue
+    a=$(tr '\0' ' ' 2>/dev/null < "$p/cmdline")
+    case $a in *" -L cockpit-suite-"*) ;; *) continue ;; esac
+    tr '\0' '\n' 2>/dev/null < "$p/environ" | grep -qxF "TMUX_TMPDIR=$DSS" \
+        && kill -TERM "${p#/proc/}"
+done
+fi
+unset DS DST DSS dsr p c a
+fi
+
+
+echo "== cmdname.sh: cmd_base cuts a path and leading dashes for the agent tests (#757) =="
+# The functions themselves, beside the pane rows in the agent-poll bind blocks and the #470
+# workdir block. tmux's parse_window_name (format.c) drops leading dashes, then cuts a path
+# only when the name starts with /, so ./2.1.318 and /x/--2.1.318 (shown as --2.1.318) reach
+# these cuts from a pane. The Rust twin is pinned through claude_cmd in
+# tui/tests/basket_claude_cmd.rs. A subshell keeps CMD_BASE and the functions out of the suite.
+cn_run() {                    # cn_run <fn> <names...>: one word per name, 1|0 or CMD_BASE
+    (
+        . "$DIR/scripts/lib/cmdname.sh" || exit 1
+        eval "$(sed -n '/^claude_cmd() {/,/^}/p' "$DIR/scripts/agent-poll")"
+        eval "$(sed -n '/^workdir_agent() {/,/^}/p' "$DIR/scripts/lib/workdir.sh")"
+        f=$1; shift; out=
+        for n in "$@"; do
+            if [ "$f" = cmd_base ]; then cmd_base "$n"; out+=" $CMD_BASE"
+            elif [ "$f" = workdir_agent ]; then
+                if workdir_agent 0 "" "$n"; then out+=" 1"; else out+=" 0"; fi
+            elif "$f" "$n"; then out+=" 1"; else out+=" 0"; fi
+        done
+        printf '%s' "${out# }"
+    )
+}
+is "agent-poll's claude_cmd and workdir.sh's workdir_agent are there to read" "2 functions" \
+   "$(eval "$(sed -n '/^claude_cmd() {/,/^}/p' "$DIR/scripts/agent-poll")"
+      eval "$(sed -n '/^workdir_agent() {/,/^}/p' "$DIR/scripts/lib/workdir.sh")"
+      n=0; for f in claude_cmd workdir_agent; do [ "$(type -t $f)" = function ] && n=$((n+1)); done
+      echo "$n functions")"
+is "cmd_base: /x/2.1.318, -claude and --2.1.318 lose the path and the dashes" \
+   "2.1.318 claude 2.1.318" "$(cn_run cmd_base /x/2.1.318 -claude --2.1.318)"
+is "version_cmd reads the cut name: /x/2.1.318 and --2.1.318 are version titles, -claude not" \
+   "1 0 1" "$(cn_run version_cmd /x/2.1.318 -claude --2.1.318)"
+is "agent-poll's claude_cmd reads the cut name: all three are claude's" \
+   "1 1 1" "$(cn_run claude_cmd /x/2.1.318 -claude --2.1.318)"
+is "workdir.sh's workdir_agent reads the cut name: the two version titles are agents" \
+   "1 0 1" "$(cn_run workdir_agent /x/2.1.318 -claude --2.1.318)"
+# A glob range [0-9] matches ² in en_US.UTF-8 when globasciiranges is off, as in bash before 5;
+# version_cmd spells its digits out, so it counts ASCII digits whatever the bash (#830). utf8_loc
+# proves the regex range widens; the row first proves the glob range does too, or it answers
+# "the glob range does not widen" and fails, never passing against a version_cmd it can't test
+# (#757).
+if CNLOC=$(utf8_loc); then
+    for cnd in ² ١; do
+        is "with globasciiranges off in en_US.UTF-8, version_cmd: 1.$cnd.1 is no version title" \
+           "no" "$(env LOCPATH="$CNLOC" LC_ALL=en_US.UTF-8 bash -c 'shopt -u globasciiranges
+                case $2 in [0-9]) ;; *) echo "the glob range does not widen"; exit ;; esac
+                . "$1"; if version_cmd "1.$2.1"; then echo yes; else echo no; fi' _ \
+                "$DIR/scripts/lib/cmdname.sh" "$cnd" 2>/dev/null)"
+    done
+else
+    bad "a UTF-8 locale whose regex [0-9] matches ² and ١ loads (localedef en_US.UTF-8)" \
+        "loaded" "none"
 fi
 
 flop_left

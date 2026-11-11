@@ -324,15 +324,19 @@ error in a case of the cases file quotes the line, unless the case says
 error gives the line and the rule only, as the held-out file does, even when
 the bad line comes before its `holdout:` line (#797). A case is held out for
 this when any of its lines is a `holdout:` key, so one that joined the case
-above still makes it quiet. A case right after a held-out one that has no
+above still makes it quiet. When only a body line holds a case out, the parser
+still reads it as tune, so an id that is not a name is refused with "a body
+line holds this case out, and its === line is not a case line", not the
+held-out id rule (#835). A case right after a held-out one that has no
 `holdout:` key is quiet the same way and gives its errors without its id: a
 name-shaped `=== ` line in a held-out request opens such a case, and its id and
-lines are held text. In both files a line before the first case is a comment or
-blank. In the held-out file a line that starts with `=` is also a case's `===
-id` line, so a case whose `===` line is mistyped is an error and is never
-dropped unseen or merged into the case before it. In the cases file such a line
-is body text, as a pytest banner on a screen is, and a lost tune case shows in
-the counts.
+lines are held text. Its id that is not a name is refused with "the case above
+is held out, and this === line is not a case line" (#835). In both files a line
+before the first case is a comment or blank. In the held-out file a line that
+starts with `=` is also a case's `=== id` line, so a case whose `===` line is
+mistyped is an error and is never dropped unseen or merged into the case before
+it. In the cases file such a line is body text, as a pytest banner on a screen
+is, and a lost tune case shows in the counts.
 
 A run prints none of a held-out case's text, whichever file it came from, pass
 or fail (#792). A passing reply holds every must phrase, and an on-target
@@ -586,6 +590,18 @@ distinct prompt is written once to
 0600 in a 0700 directory. `tmux-cockpit/panel` is also the call's working
 directory. Nothing prunes it; a new file appears only when a prompt's text
 changes.
+
+**The panel call's environment** (#853). Each `claude -p` call the panel
+starts gets three variables. In the words of
+https://code.claude.com/docs/en/env-vars, `DISABLE_TELEMETRY=1` opts out of
+telemetry and "also disables feature-flag fetching", `DISABLE_AUTOUPDATER=1`
+disables "automatic background updates", and `DISABLE_ERROR_REPORTING=1` opts
+out of "error reporting". Nothing else the panel starts gets them. A variable
+already in the panel's environment reaches the call unchanged, even an empty
+one: claude reads an empty value as unset, which is how a user turns telemetry
+or error reporting back on. `panel_eval`'s panel calls run through the same
+code and inherit the three. Its judge, purpose and overlap calls start claude
+themselves and do not get them.
 
 ## The screens
 
