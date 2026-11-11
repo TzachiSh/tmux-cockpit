@@ -4915,27 +4915,59 @@ mod tests {
     /// #861: the error for a held-out case in a loud file.
     const GUARD: &str = "a held-out case belongs in the held-out file";
 
-    /// #861: a loud file (cases.txt, explore.txt, any `--cases` file but the
-    /// held-out file) refuses a case with `holdout:` of any value but `no`,
-    /// naming the file and the case's `===` line only; `holdout: no` loads.
+    /// #861: ONE, then a made-up case whose `holdout:` line says `v`.
+    fn marked(v: &str) -> String {
+        format!("{ONE}{}", held("hb-1").replace("holdout: yes", &format!("holdout: {v}")))
+    }
+
+    /// #861: a loud file refuses a `holdout: yes` case whatever its name:
+    /// cases.txt, explore.txt, a `--cases` file whose name only ends as the
+    /// held-out file's does. With or without the held-out file beside it, the
+    /// error names the file and the case's `===` line only.
     #[test]
     fn a_loud_file_refuses_a_held_out_case() {
-        let mark = |v: &str| held("hb-1").replace("holdout: yes", &format!("holdout: {v}"));
-        let guard = format!("line 12: {GUARD}");
-        let maybe = "case hb-1: line 16: holdout is yes or no";
-        let rows = [("yes", guard.as_str()), ("maybe", maybe)];
-        for (v, want) in rows {
-            for blind in [true, false] {
-                let cases = format!("{ONE}{}", mark(v));
-                let (_d, c, b) = two_files(&format!("loud-held-{v}-{blind}"), &cases, "");
-                let e = load(&c, blind.then_some(b.as_path()))
-                    .err()
-                    .unwrap_or_else(|| panic!("{v}: loaded"));
-                assert_eq!(e, format!("{}: {want}", c.display()), "{v} {blind}");
+        let (d, _, b) = two_files("loud-held-yes", "", "");
+        for name in ["cases.txt", "explore.txt", "x-holdout-blind.txt"] {
+            let p = d.0.join(name);
+            std::fs::write(&p, marked("yes")).unwrap();
+            for blind in [None, Some(b.as_path())] {
+                let e = load(&p, blind).err().unwrap_or_else(|| panic!("{name}: loaded"));
+                assert_eq!(e, format!("{}: line 12: {GUARD}", p.display()), "{name}");
             }
         }
-        let (_d, c, b) = two_files("loud-held-no", &format!("{ONE}{}", mark("no")), "");
-        assert_eq!(load(&c, Some(&b)).unwrap_or_else(|e| panic!("no: {e}")).from[0].1, 2);
+    }
+
+    /// #861: the held-out file's whole name is what `--cases` may read a
+    /// held-out case from: in one dir the same text loads under that name and
+    /// is refused under a name that only starts as it does.
+    #[test]
+    fn only_the_held_out_files_whole_name_loads_a_held_out_case() {
+        let (d, _, b) = two_files("loud-held-name", "", &marked("yes"));
+        let got = load(&b, None).unwrap_or_else(|e| panic!("the held-out file: {e}"));
+        assert_eq!((got.from[0].1, got.cases[1].holdout), (2, true));
+        let near = d.0.join("holdout-blind.txt.bak");
+        std::fs::write(&near, marked("yes")).unwrap();
+        let e = load(&near, None).err().expect("holdout-blind.txt.bak loaded");
+        assert_eq!(e, format!("{}: line 12: {GUARD}", near.display()));
+    }
+
+    /// #861: a `holdout:` value that is neither `yes` nor `no` is refused too,
+    /// while parsing: quietly, by the line it is on.
+    #[test]
+    fn a_loud_file_refuses_a_holdout_value_that_is_not_yes_or_no() {
+        let (_d, c, b) = two_files("loud-held-maybe", &marked("maybe"), "");
+        for blind in [None, Some(b.as_path())] {
+            let e = load(&c, blind).err().expect("holdout: maybe loaded");
+            assert_eq!(e, format!("{}: case hb-1: line 16: holdout is yes or no", c.display()));
+        }
+    }
+
+    /// #861: `holdout: no` loads from a loud file, as a tune case.
+    #[test]
+    fn a_loud_file_loads_a_case_marked_holdout_no() {
+        let (_d, c, b) = two_files("loud-held-no", &marked("no"), "");
+        let got = load(&c, Some(&b)).unwrap_or_else(|e| panic!("holdout: no: {e}"));
+        assert_eq!((got.from[0].1, got.cases[1].holdout), (2, false));
     }
 
     /// #861: the shipped loud files load with no held-out case in them.
