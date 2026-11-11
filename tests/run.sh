@@ -12384,6 +12384,16 @@ av_np() {                     # av_np <title> [command]: a pane; its id
     av_tm select-pane -t "$p" -T "$1"
     printf '%s' "$p"
 }
+# One bind row of the #756, #761 and #774 blocks: a pane titled alpha running <command>, one
+# poll with bind.json, then its job|name|state against <want> (#791).
+av_bindrow() {                # av_bindrow <label> <command> <want>
+    local p
+    p=$(av_np alpha "$2")
+    av_once bind.json >/dev/null
+    is "$1" "$3" "$(printf '%s|%s|%s' "$(avo @cockpit_job "$p")" \
+        "$(avo @cockpit_job_name "$p")" "$(avo @panestate "$p")")"
+    av_tm kill-pane -t "$p"
+}
 avj() {                       # avj <pane>: "<job>|<job name>|<state>|<ask>"
     printf '%s|%s|%s|%s' "$(avo @cockpit_job "$1")" "$(avo @cockpit_job_name "$1")" \
         "$(avo @panestate "$1")" "$(avo @panestate_msg "$1")"
@@ -19361,19 +19371,10 @@ av_setup
 if need_tmux "agent-poll bind case"; then :; else
 av_srv bindcase
 av_tm set -g @cockpit_agents_glob '|claude|codex|'
-bc_case() {                   # bc_case <label> <command> <want>: a pane titled alpha, one poll
-    local p
-    p=$(av_tm new-window -d -c "$AVWD" -P -F '#{pane_id}' "exec -a $2 sleep 300")
-    av_tm select-pane -t "$p" -T alpha
-    av_once bind.json >/dev/null
-    is "$1" "$3" "$(printf '%s|%s|%s' "$(avo @cockpit_job "$p")" \
-        "$(avo @cockpit_job_name "$p")" "$(avo @panestate "$p")")"
-    av_tm kill-pane -t "$p"
-}
-bc_case "a pane running CLAUDE binds its job" CLAUDE "aa|alpha|running"
-bc_case "...and one running Claude" Claude "aa|alpha|running"
-bc_case "a longer name is still not claude: claudex does not bind" claudex "||"
-bc_case "...nor xclaude" xclaude "||"
+av_bindrow "a pane running CLAUDE binds its job" CLAUDE "aa|alpha|running"
+av_bindrow "...and one running Claude" Claude "aa|alpha|running"
+av_bindrow "a longer name is still not claude: claudex does not bind" claudex "||"
+av_bindrow "...nor xclaude" xclaude "||"
 av_tm kill-server >/dev/null 2>&1
 fi
 
@@ -19385,19 +19386,10 @@ av_setup
 if need_tmux "agent-poll bind version"; then :; else
 av_srv bindver
 av_tm set -g @cockpit_agents_glob '|claude|codex|'
-bv_case() {                   # bv_case <label> <command> <want>: a pane titled alpha, one poll
-    local p
-    p=$(av_tm new-window -d -c "$AVWD" -P -F '#{pane_id}' "exec -a $2 sleep 300")
-    av_tm select-pane -t "$p" -T alpha
-    av_once bind.json >/dev/null
-    is "$1" "$3" "$(printf '%s|%s|%s' "$(avo @cockpit_job "$p")" \
-        "$(avo @cockpit_job_name "$p")" "$(avo @panestate "$p")")"
-    av_tm kill-pane -t "$p"
-}
-bv_case "a pane whose command is a version title (2.1.318) binds its job" 2.1.318 "aa|alpha|running"
-bv_case "...and with underscores (2_1_318)" 2_1_318 "aa|alpha|running"
-bv_case "digits with one dot (3.11) are no version title: no bind" 3.11 "||"
-bv_case "...nor a version with a letter in it (2.1.3a)" 2.1.3a "||"
+av_bindrow "a pane whose command is a version title (2.1.318) binds its job" 2.1.318 "aa|alpha|running"
+av_bindrow "...and with underscores (2_1_318)" 2_1_318 "aa|alpha|running"
+av_bindrow "digits with one dot (3.11) are no version title: no bind" 3.11 "||"
+av_bindrow "...nor a version with a letter in it (2.1.3a)" 2.1.3a "||"
 # The glob (|claude|codex|) never names a version title, so the poller dropped such a pane's
 # marks as "not an agent any more" and then bound it unmarked (review-770). It is an agent,
 # as on the board: a foreground mark newer than the job's start keeps the pane unbound.
@@ -19422,18 +19414,9 @@ av_setup
 if need_tmux "agent-poll bind glob"; then :; else
 av_srv bindglob
 av_tm set -g @cockpit_agents_glob '|codex|'
-bg_case() {                   # bg_case <label> <command> <want>: a pane titled alpha, one poll
-    local p
-    p=$(av_tm new-window -d -c "$AVWD" -P -F '#{pane_id}' "exec -a $2 sleep 300")
-    av_tm select-pane -t "$p" -T alpha
-    av_once bind.json >/dev/null
-    is "$1" "$3" "$(printf '%s|%s|%s' "$(avo @cockpit_job "$p")" \
-        "$(avo @cockpit_job_name "$p")" "$(avo @panestate "$p")")"
-    av_tm kill-pane -t "$p"
-}
-bg_case "glob |codex|: a claude pane does not bind" claude "||"
-bg_case "...nor a CLAUDE pane" CLAUDE "||"
-bg_case "...but a version title binds whatever the glob says" 2.1.318 "aa|alpha|running"
+av_bindrow "glob |codex|: a claude pane does not bind" claude "||"
+av_bindrow "...nor a CLAUDE pane" CLAUDE "||"
+av_bindrow "...but a version title binds whatever the glob says" 2.1.318 "aa|alpha|running"
 # A claude pane bound while the glob named claude, after the user drops claude from it: it
 # is no agent now, so the bind ends whole (review-787). Job, name, job state and state clear.
 av_tm set -g @cockpit_agents_glob '|claude|codex|'
