@@ -392,7 +392,7 @@ struct Loaded {
 /// Reads the cases file, then the held-out file when there is one (#783). That
 /// file may hold no case, each of its cases says `holdout: yes`, and none has
 /// an id the cases file has. No held-out id from either file sits inside
-/// another id. An error starts with the file it is in.
+/// another id or equals a kind. An error starts with the file it is in.
 fn load(cases: &Path, blind: Option<&Path>) -> Result<Loaded, String> {
     let read = |p: &Path| std::fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display()));
     let mut all = parse_cases(&read(cases)?).map_err(|e| format!("{}: {e}", cases.display()))?;
@@ -409,14 +409,19 @@ fn load(cases: &Path, blind: Option<&Path>) -> Result<Loaded, String> {
         from.push((b.to_path_buf(), held.len()));
         all.extend(held);
     }
-    // `--only` matches by substring, so a held-out id inside another id picks
-    // two cases and `--show-holdout` can never show it (#804): a held-out case
-    // from either file, against every id loaded
+    // `--only` matches by substring or by whole kind, so a held-out id inside
+    // another id (#804) or equal to any case's kind, its own included (#826),
+    // picks more than one case and `--show-holdout` can never show it: a
+    // held-out case from either file, against every case loaded
     for (i, c) in all.iter().enumerate().filter(|(_, c)| c.holdout) {
+        let file = &from[usize::from(i >= from[0].1)].0;
+        let at = format!("{}: line {}", file.display(), c.line);
+        let alone = |why: &str| format!("{at}: a held-out id {why}: --only cannot pick it alone");
         if all.iter().any(|o| o.id != c.id && o.id.contains(c.id.as_str())) {
-            let file = &from[usize::from(i >= from[0].1)].0;
-            let rule = "a held-out id is inside another id: --only cannot pick it alone";
-            return Err(format!("{}: line {}: {rule}", file.display(), c.line));
+            return Err(alone("is inside another id"));
+        }
+        if all.iter().any(|o| o.kind == c.id) {
+            return Err(alone("is a case's kind"));
         }
     }
     Ok(Loaded { cases: all, from })
@@ -4536,6 +4541,52 @@ mod tests {
             let (_d, c, b) = two_files(&format!("apart-{i}"), &cases, &blind);
             let got = load(&c, Some(&b)).unwrap_or_else(|e| panic!("{row}: {e}"));
             assert_eq!(got.from, [(c, n), (b, 2)], "{row}");
+        }
+    }
+
+    /// #826: the error for a held-out id equal to a kind, at its `===` line.
+    fn a_kind(line: usize) -> String {
+        format!("line {line}: a held-out id is a case's kind: --only cannot pick it alone")
+    }
+
+    /// #826: a made-up held-out case `id` of kind `kind`.
+    fn held_kind(id: &str, kind: &str) -> String {
+        held(id).replace("kind: bug", &format!("kind: {kind}"))
+    }
+
+    /// #826: a held-out id equal to a kind is refused at its `===` line, the
+    /// kind a tune case's, a held-out case's or its own; in either file, and
+    /// with no held-out file. The error names no id or kind.
+    #[test]
+    fn a_held_out_id_equal_to_a_kind_is_refused_unshown() {
+        let two_held = held_kind("hb-k", "ops") + &held_kind("hb-2", "hb-k");
+        let in_cases = format!("{ONE}{}", held_kind("bug", "ops"));
+        let rows = [
+            ("a tune kind", ONE.to_string(), held_kind("bug", "ops"), Some(true), 1),
+            ("a held-out kind", ONE.to_string(), two_held, Some(true), 1),
+            ("its own kind", ONE.to_string(), held_kind("ops", "ops"), Some(true), 1),
+            ("in cases.txt", in_cases.clone(), String::new(), Some(false), 12),
+            ("no held-out file", in_cases, String::new(), None, 12),
+        ];
+        for (i, (row, cases, blind, in_blind, line)) in rows.into_iter().enumerate() {
+            let (_d, c, b) = two_files(&format!("kind-{i}"), &cases, &blind);
+            let e = load(&c, in_blind.map(|_| b.as_path())).err();
+            let e = e.unwrap_or_else(|| panic!("{row}: loaded"));
+            let file = if in_blind == Some(true) { &b } else { &c };
+            assert_eq!(e, format!("{}: {}", file.display(), a_kind(line)), "{row}");
+        }
+    }
+
+    /// #826: a tune id equal to a kind loads, and so do ids and kinds apart.
+    #[test]
+    fn ids_equal_to_no_held_out_kind_load() {
+        let tune = |id: &str| ONE.replace("=== crash", &format!("=== {id}"));
+        let rows = [("apart", ONE.to_string(), 1), ("a tune id is a kind", tune("bug") + ONE, 2)];
+        for (i, (row, cases, n)) in rows.into_iter().enumerate() {
+            let blind = held_kind("hb-01", "ops");
+            let (_d, c, b) = two_files(&format!("kind-apart-{i}"), &cases, &blind);
+            let got = load(&c, Some(&b)).unwrap_or_else(|e| panic!("{row}: {e}"));
+            assert_eq!(got.from, [(c, n), (b, 1)], "{row}");
         }
     }
 
