@@ -478,7 +478,8 @@ fn load(cases: &Path, blind: Option<&Path>) -> Result<Loaded, String> {
     let read = |p: &Path| std::fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display()));
     let mut all = parse_cases(&read(cases)?).map_err(|e| format!("{}: {e}", cases.display()))?;
     // every held-out case lives in the held-out file (#834): a loud file
-    // refuses one, by its line only, unless it is that file named by --cases.
+    // refuses one, by its line only. `--cases` on the held-out file reads it
+    // as it reads a loud file, but without the refusal.
     // The error says which file that is: the one refusing has any name (#861).
     // Held out as the parser's scan reads it, by any line of the case: a body
     // line sets no `holdout` key, so the case would load as a tune case while
@@ -4331,6 +4332,16 @@ mod tests {
     /// fail with ETXTBSY, and the script is started again until it is closed.
     /// A fork on another test's thread can copy the handle and hold it for
     /// some starts more, so the count has a floor and no ceiling.
+    ///
+    /// Kernel dependency (#888): this test and the cap test below need the
+    /// kernel to refuse the start of a file open for writing. Linux dropped
+    /// that refusal in 6.11 (2a010c412853, "fs: don't block i_writecount
+    /// during exec") and put it back with the revert 3b832035387f, which is
+    /// in 6.13 and in the stable releases 6.12.2 and 6.11.11. On 6.11 to
+    /// 6.11.10, 6.12 and 6.12.1 no start is busy, so both tests go red while
+    /// [`stand_in`] is still right. Neither skips there: those releases are
+    /// past their end of life, and a skip is a way to pass without a busy
+    /// start.
     #[test]
     fn a_busy_stand_in_is_started_again_until_its_writer_lets_go() {
         let dir = scratch("probe-held");
@@ -4347,6 +4358,7 @@ mod tests {
 
     /// #877: a script still busy at the cap fails its test, naming the
     /// script, the count and the error. It never hands the script back.
+    /// It needs a kernel that refuses the start, as the test above says.
     #[test]
     fn a_stand_in_still_busy_at_the_cap_panics_naming_it() {
         let dir = scratch("probe-cap");
@@ -5276,7 +5288,8 @@ mod tests {
             let e = load(&c, Some(&b)).err().unwrap_or_else(|| panic!("{row}: loaded"));
             assert_eq!(e, format!("{}: line {line}: {GUARD}", c.display()), "{row}");
         }
-        // `--cases` on the held-out file reads it as a loud file, the check included
+        // `--cases` on the held-out file reads it as it reads a loud file, but
+        // without the refusal: the check runs there too
         let (_d, _, b) = two_files("nest-cases-named", ONE, &in_tune);
         let e = load(&b, None).err().expect("--cases on the held-out file loaded");
         assert_eq!(e, format!("{}: {}", b.display(), nested(12)));
@@ -5330,7 +5343,8 @@ mod tests {
             assert_eq!(e, format!("{}: {}", b.display(), a_kind(1)), "{row}");
         }
         // #861: cases.txt refuses a held-out case first; `--cases` on the
-        // held-out file reads it as a loud file, the check included
+        // held-out file reads it as it reads a loud file, but without the
+        // refusal: the check runs there too
         let (_d, c, b) = two_files("kind-cases", &in_cases, &in_cases);
         let e = load(&c, Some(&b)).err().expect("a held-out case in cases.txt loaded");
         assert_eq!(e, format!("{}: line 12: {GUARD}", c.display()));
@@ -5561,10 +5575,11 @@ mod tests {
         }
     }
 
-    /// #872: the held-out file loads such a case as before. Named by `--cases`
-    /// it is a loud file, every case allowed: the case loads as the tune case
-    /// its keys say. Beside the cases file, a `holdout: yes` case with the
-    /// same body line loads as held out.
+    /// #872: the held-out file loads such a case as before. `--cases` on it
+    /// reads it as it reads a loud file, but without the refusal, so every
+    /// case is allowed: the case loads as the tune case its keys say. Beside
+    /// the cases file, a `holdout: yes` case with the same body line loads as
+    /// held out.
     #[test]
     fn the_held_out_file_loads_a_case_a_body_line_holds_out() {
         let text = format!("{ONE}{}", in_body("screen", "holdout: yes"));
