@@ -19518,7 +19518,7 @@ elif [ ! -r /proc/net/unix ] || ! command -v setsid >/dev/null 2>&1; then
 else
 # The nested run's TMPDIR, plain and with two spaces and a % (#818): the block's server
 # command and the cleanup's socket list must keep such a path whole.
-ir_run() {                    # <TMPDIR for the nested run> <label for the rows>
+ir_run() {                    # <TMPDIR for the nested run> <label for the rows> [spaced]
     local d=$1 l=$2 irp irs irl irc
     # The caller's runtime dir, as the suite itself had it: the block's short-socket fallback.
     ( cd "$DIR" && TMPDIR="$d" XDG_RUNTIME_DIR="$SUITE_XRD" COCKPIT_TEST_RV_HOLD="$d/held" \
@@ -19541,6 +19541,15 @@ ir_run() {                    # <TMPDIR for the nested run> <label for the rows>
         return
     fi
     is "$l: the held run's server listens on the socket it named" "1" "$irl"
+    # [spaced]: the pin is the space in the socket path. A TMPDIR longer than 26 bytes makes
+    # the nested socket too long, and the block falls back to the runtime dir, which has no
+    # space: the run still passes, but tests no quoting. Say so (#827).
+    if [ "${3:-}" = spaced ]; then
+        case $irs in
+            *" "*) ok "$l: the held socket path keeps the TMPDIR's spaces" ;;
+            *) skip_ "$l: the socket fell back to the runtime dir, so no space is tested" ;;
+        esac
+    fi
     # Only the group this block started, only while it is held, and only when its leader is
     # still that run.
     irc=""; read -r irc 2>/dev/null < "/proc/$irp/comm"
@@ -19554,7 +19563,7 @@ ir_run() {                    # <TMPDIR for the nested run> <label for the rows>
 }
 ir_run "$(mktmpd)" "a plain TMPDIR"
 IRS="$(mktmpd)/my  tmp %x"; mkdir -p "$IRS"
-ir_run "$IRS" "a TMPDIR with two spaces and a %"
+ir_run "$IRS" "a TMPDIR with two spaces and a %" spaced
 fi
 
 
