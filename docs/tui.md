@@ -321,16 +321,18 @@ error gives the line and the rule only, as the held-out file does, even when
 the bad line comes before its `holdout:` line (#797). A case is held out for
 this when any of its lines is a `holdout:` key, so one that joined the case
 above still makes it quiet. When only a body line holds a case out, the parser
-still reads it as tune, so an id that is not a name is refused with a message
-of its own, not the held-out id rule (#835). A case right after a held-out one
-that has no `holdout:` key is quiet the same way and gives its errors without
-its id: a name-shaped `=== ` line in a held-out request opens such a case, and
-its id and lines are held text. In both files a line before the first case is a
-comment or blank. In the held-out file a line that starts with `=` is also a
-case's `=== id` line, so a case whose `===` line is mistyped is an error and is
-never dropped unseen or merged into the case before it. In the cases file such
-a line is body text, as a pytest banner on a screen is, and a lost tune case
-shows in the counts.
+still reads it as tune, so an id that is not a name is refused with "a body
+line holds this case out, and its === line is not a case line", not the
+held-out id rule (#835). A case right after a held-out one that has no
+`holdout:` key is quiet the same way and gives its errors without its id: a
+name-shaped `=== ` line in a held-out request opens such a case, and its id and
+lines are held text. Its id that is not a name is refused with "the case above
+is held out, and this === line is not a case line" (#835). In both files a line
+before the first case is a comment or blank. In the held-out file a line that
+starts with `=` is also a case's `=== id` line, so a case whose `===` line is
+mistyped is an error and is never dropped unseen or merged into the case before
+it. In the cases file such a line is body text, as a pytest banner on a screen
+is, and a lost tune case shows in the counts.
 
 A run prints none of a held-out case's text, whichever file it came from, pass
 or fail (#792). A passing reply holds every must phrase, and an on-target

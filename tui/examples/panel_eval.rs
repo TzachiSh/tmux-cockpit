@@ -219,9 +219,11 @@ fn parse_some(text: &str, quiet: bool) -> Result<Vec<Case>, String> {
         // a mistyped case line opens a case when a key follows: in a quiet
         // case its "id" may be case text, so one that is not a name goes unshown
         if quiet && !is_name(&id) {
-            // quiet only through a body line, the parser reads it as tune, so
-            // the held-out id rule is not why (#835)
-            let rule = if held && !held_head(head) {
+            // quiet only through a body line or the held-out case above, the
+            // parser reads it as tune, so the held-out id rule is not why (#835)
+            let rule = if net {
+                "the case above is held out, and this === line is not a case line"
+            } else if held && !held_head(head) {
                 "a body line holds this case out, and its === line is not a case line"
             } else {
                 "an id is lowercase letters, digits and -"
@@ -4484,14 +4486,16 @@ mod tests {
     fn a_mistyped_case_line_before_a_key_opens_a_case() {
         let tune = |id: &str| ONE.replace("# a comment\n", "").replace("=== crash", id);
         let typo = |id: &str| held("b1").replace("=== b1", id);
+        let id_rule = "an id is lowercase letters, digits and -";
+        // #835: a tune case quiet only through the held-out case above has no id rule
+        let net = "the case above is held out, and this === line is not a case line";
         let rows = [
-            ("tune, then held", format!("{ONE}{}", typo("=== HB-03")), 12),
-            ("held first", format!("{}{ONE}", typo("=== hb_03")), 1),
-            ("held, then tune", format!("{}{}", held("b1"), tune("=== HB-03")), 12),
-            ("blank and # lines", format!("{ONE}{}", typo("=== HB-03\n\n# made-up\n")), 12),
+            ("tune, then held", format!("{ONE}{}", typo("=== HB-03")), 12, id_rule),
+            ("held first", format!("{}{ONE}", typo("=== hb_03")), 1, id_rule),
+            ("held, then tune", format!("{}{}", held("b1"), tune("=== HB-03")), 12, net),
+            ("blank and # lines", format!("{ONE}{}", typo("=== HB-03\n\n# c\n")), 12, id_rule),
         ];
-        let rule = "an id is lowercase letters, digits and -";
-        for (i, (row, cases, line)) in rows.into_iter().enumerate() {
+        for (i, (row, cases, line, rule)) in rows.into_iter().enumerate() {
             let (_d, c, b) = two_files(&format!("typo-{i}"), &cases, "");
             let e = load(&c, Some(&b)).err().unwrap_or_else(|| panic!("{row}: loaded"));
             assert_eq!(e, format!("{}: line {line}: {rule}", c.display()), "{row}");
