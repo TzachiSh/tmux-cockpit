@@ -333,8 +333,7 @@ request it was sent. Its `--out` row keeps `missing_n`, `forbidden_n` and
 `--compare` reads `files_read_n` where `files_read` is null. Under
 `--router-prompt` every row has `label`, the reply as `ask`, `write` or `other`
 (#789): a held-out row keeps it, since three fixed words hold no case text.
-With `--judge`
-its line is `judge ok|FAIL <id>` with no critique, or the line
+With `--judge` its line is `judge ok|FAIL <id>` with no critique, or the line
 `judge ERR <id>  held out: call failed`. A tune case prints and writes all of
 it, as before. `--compare`, `--overlap` and the summary print ids, `want` and
 counts only. When a held-out case's refs fail to stage, the error line before
