@@ -20019,6 +20019,7 @@ is "the panes show ./claude, ./codex, claude (an absolute path), claude (on PATH
    "./claude ./codex claude claude " "$(gs_each '#{pane_current_command}')"
 # agent-poll: its own PANE_FMT's glob field, and the bind rule (glob and claude_cmd).
 gs_poll() {                   # <pane> -> "<glob field> <bind|no-bind>"
+    # shellcheck disable=SC2034  # SLOT is read by the PANE_FMT the eval sets
     ( SLOT=@x; eval "$(sed -n '/^T=\$/p;/^PANE_FMT=/p' "$DIR/scripts/agent-poll")"
       . "$DIR/scripts/lib/cmdname.sh"
       eval "$(sed -n '/^claude_cmd() {/,/^}/p' "$DIR/scripts/agent-poll")"
@@ -20052,15 +20053,19 @@ gs_clauses() {                # <file> -> each agent-glob clause's value on the 
     while IFS= read -r c; do gs_each "#{?$c,1,0}"; done < <(grep -oE "$GS_RE" "$DIR/$1")
 }
 for gs_f in scripts/agent-state scripts/cockpit-board scripts/lib/review-deliver.sh \
-            scripts/tmux-jump cockpit.tmux examples/full.tmux.conf; do
+            scripts/tmux-jump cockpit.tmux examples/full.tmux.conf tui/src/data/sessions.rs; do
     gs_n=$(grep -oF '#{@cockpit_agents_glob}' "$DIR/$gs_f" | wc -l)
     is "$gs_f: every agent-glob clause ($gs_n) says agent on all four" \
-       "$(for gs_i in $(seq 1 "$gs_n"); do printf '1 1 1 1 '; done)" "$(gs_clauses "$gs_f")"
+       "$(for _ in $(seq 1 "$gs_n"); do printf '1 1 1 1 '; done)" "$(gs_clauses "$gs_f")"
 done
 # No site reads the raw name: a site added with it fails here.
+# The whole repo but tests and docs (a site in a Rust string is one too: the sessions
+# picker's format), build output and git's own files left out.
 is "no shipped file tests the agent glob on the raw #{pane_current_command}" "" \
-   "$(grep -rlF '#{m/i:*|#{pane_current_command}|*,#{@cockpit_agents_glob}}' \
-        "$DIR/cockpit.tmux" "$DIR/scripts" "$DIR/examples" | sed "s|^$DIR/||")"
+   "$(find "$DIR" \( -name .git -o -name target -o -path "$DIR/tests" -o -path "$DIR/docs" \
+        -o -path "$DIR/bin" \) -prune -o -type f -print0 |
+      xargs -0 grep -lF '#{m/i:*|#{pane_current_command}|*,#{@cockpit_agents_glob}}' 2>/dev/null |
+      sed "s|^$DIR/||")"
 # The board and the shell agree: cockpit-tui workdir answers 0 for an agent, 1 for none.
 gs_agree() {                  # <pane> -> agree | board=<rc> shell=<is_agent>
     local rc=0 a
@@ -20072,8 +20077,12 @@ gs_agree() {                  # <pane> -> agree | board=<rc> shell=<is_agent>
 is "the board and the shell say the same of ./claude ./codex <abs> <plain>" \
    "agree agree agree agree" \
    "$(gs_agree "$GS_RC") $(gs_agree "$GS_RX") $(gs_agree "$GS_AB") $(gs_agree "$GS_PL")"
+# And of a pane that is no agent: both say no, not both yes.
+GS_NO=$(gs display -p -t t:0 '#{pane_id}')
+is "and of a pane that is no agent (a sleep): board 1, shell 0" "agree|0" \
+   "$(gs_agree "$GS_NO")|$(gs display -p -t "$GS_NO" '#{E:@cockpit_is_agent}')"
 # A glob token holding a slash no longer matches (#840's one narrowing): the test sees the
-# basename, so |x/claude| meets claude, not x/claude. Stated in docs/tui.md.
+# basename, so |x/claude| meets claude, not x/claude. Stated in docs/configuration.md.
 gs set -g @cockpit_agents_glob '|x/claude|' >/dev/null 2>&1
 is "a glob token with a slash: typed x/claude is no longer matched by |x/claude|" "0" \
    "$(gs display -p -t "$GS_SL" '#{E:@cockpit_is_agent}')"
@@ -20085,13 +20094,13 @@ gs_empty() {
     local f c
     for f in scripts/agent-poll scripts/lib/workdir.sh scripts/lib/statusbar.conf \
              scripts/agent-state scripts/cockpit-board scripts/lib/review-deliver.sh \
-             scripts/tmux-jump cockpit.tmux examples/full.tmux.conf; do
+             scripts/tmux-jump cockpit.tmux examples/full.tmux.conf tui/src/data/sessions.rs; do
         while IFS= read -r c; do
             gs display -p -t "$GS_RC" "#{?${c//pane_current_command/@gs_empty},1,0}"
         done < <(grep -oE "$GS_RE" "$DIR/$f")
     done | sort | uniq -c | awk '{printf "%s:%s ", $2, $1}'
 }
-is "an empty name is no agent at any site: every clause, 11 of them, says 0" "0:11 " "$(gs_empty)"
+is "an empty name is no agent at any site: every clause, 12 of them, says 0" "0:12 " "$(gs_empty)"
 gs kill-server >/dev/null 2>&1
 # goto: tmux-branch's jump to a worktree takes its agent pane over a shell in it. A server of
 # its own, so no other agent pane is in the repo: the origin, a shell in the repo, ./claude.
@@ -20118,7 +20127,8 @@ is "goto to the repo selects the ./claude pane, not the shell beside it" "agent"
        *) echo other ;; esac)"
 gg kill-server >/dev/null 2>&1
 unset -f gs gg gs_typed gs_each gs_poll gs_wd gs_clauses gs_agree gs_empty
-unset GS GSD GSK GS_RE GS_SH GS_P GG GGK GG_O GG_S GG_A GS_RC GS_RX GS_AB GS_PL GS_SL gs_f gs_n gs_i
+unset GS GSD GSK GS_RE GS_SH GS_P GG GGK GG_O GG_S GG_A GS_RC GS_RX GS_AB GS_PL GS_SL GS_NO
+unset gs_f gs_n
 fi
 
 echo "== cmdname.sh: cmd_base cuts a path and leading dashes for the agent tests (#757) =="
