@@ -23,7 +23,7 @@
 # the patterns documented at asks_purpose in tui/examples/panel_eval.rs. It
 # reads only the question's text, not its options (#702).
 # A key or a section given twice is an error. A screen cannot hold a line that
-# starts with "--- " or "=== ": those start a section or a case.
+# starts with "--- " (a section) or is "=== " and an id of a-z, 0-9 and - (a case).
 #   note:    why the label is what it is
 # then "--- screen" (optional), "--- repo" (optional), "--- conversation" (optional),
 # "--- refs" (optional) and "--- request".

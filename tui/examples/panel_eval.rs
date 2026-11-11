@@ -155,28 +155,37 @@ fn parse_cases(text: &str) -> Result<Vec<Case>, String> {
 /// line's text: a held-out case's text stays out of test and build logs. A
 /// case whose keys mark it held out is quiet in any file (#797). A
 /// rule of the whole case names the case's `===` line. Case ids stay in: a
-/// quiet file's ids must be names (lowercase letters, digits and `-`), so a
-/// body line that opens with `=== ` cannot pass case text off as one.
+/// case starts only at a line that is `=== ` and a name (lowercase letters,
+/// digits and `-`, #825), so a body line such as `=== RUN` cannot pass case
+/// text off as one.
 fn parse_some(text: &str, quiet: bool) -> Result<Vec<Case>, String> {
     // a mistyped `=== id` line would join the case before it as text (#783):
     // in the held-out file only, where a lost case changes no count anyone reads;
     // elsewhere a pytest banner is a real screen line
-    let rule = "a line that starts with = is a case's === line";
-    let bad = text.lines().position(|l| l.starts_with('=') && !l.starts_with("=== "));
+    // and a `=== ` line that is not a case's (#825) would be body text: in the
+    // held-out file both are errors that name the line only
+    let bad = text.lines().position(|l| l.starts_with('=') && case_line(l).is_none());
     if let Some(i) = bad.filter(|_| quiet) {
+        let rule = if text.lines().nth(i).is_some_and(|l| l.starts_with("=== ")) {
+            "an id is lowercase letters, digits and -"
+        } else {
+            "a line that starts with = is a case's === line"
+        };
         return Err(format!("line {}: {rule}", i + 1));
     }
     // each line that opens a case: its byte offset in `text` and its line
     let mut opens = vec![];
     let mut at = 0;
     for (i, l) in text.split_inclusive('\n').enumerate() {
-        if l.starts_with("=== ") {
+        if case_line(l).is_some() {
             opens.push((at, i + 1));
         }
         at += l.len();
     }
     preamble(&text[..opens.first().map_or(text.len(), |o| o.0)], quiet)?;
     let mut cases = Vec::new();
+    // the case before was held out: see `net` below
+    let mut after_held = false;
     for (k, &(from, line0)) in opens.iter().enumerate() {
         // up to the next case's line, the newline before it left out
         let block = match opens.get(k + 1) {
@@ -189,14 +198,14 @@ fn parse_some(text: &str, quiet: bool) -> Result<Vec<Case>, String> {
         let (head, bodies) = rest.split_once("\n--- ").unwrap_or((&rest, ""));
         // a held-out case in a loud file is quiet too (#797), though its
         // `holdout:` line may come after the bad one
-        let quiet = quiet || held_head(head);
-        // a body line opening with `=== ` reads as a case: in a quiet case its
-        // "id" may be case text, so one that is not a name goes unshown
-        let name = |c: char| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-';
-        if quiet && (id.is_empty() || !id.chars().all(name)) {
-            return Err(format!("line {line0}: an id is lowercase letters, digits and -"));
-        }
-        let err = |m: &str| format!("case {id}: {m}");
+        let held = held_head(head);
+        // a name-shaped `=== ` line in a held-out case's request in a loud
+        // file opens a case of held text with no `holdout` key (#825): its
+        // errors name neither its id nor its lines
+        let net = !quiet && after_held && !held;
+        after_held = held;
+        let quiet = quiet || held || net;
+        let err = |m: &str| if net { m.to_string() } else { format!("case {id}: {m}") };
         // `loud` holds the file's text; a quiet error says only where and why
         let say = |at: usize, rule: &str, loud: String| {
             let short = format!("line {}: {rule}", line0 + at);
@@ -365,6 +374,14 @@ fn parse_some(text: &str, quiet: bool) -> Result<Vec<Case>, String> {
 fn held_head(head: &str) -> bool {
     let mut keys = head.lines().filter_map(|l| l.trim().split_once(':'));
     keys.any(|(k, v)| k.trim() == "holdout" && v.trim() != "no")
+}
+
+/// The id a line opens a case with (#825): the line is exactly `=== ` and a
+/// name, lowercase letters, digits and `-`, with trailing spaces allowed.
+fn case_line(l: &str) -> Option<&str> {
+    let id = l.strip_prefix("=== ")?.trim_end();
+    let name = |c: char| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-';
+    (!id.is_empty() && id.chars().all(name)).then_some(id)
 }
 
 /// The lines before a file's first case are comments or blank (#783): a case
@@ -4363,20 +4380,67 @@ mod tests {
         }
     }
 
-    /// #797: a held-out case's id in cases.txt must be a name, as in the
-    /// held-out file, so an error cannot show case text as its id. A tune
-    /// case's id in cases.txt may be any text.
+    /// #825: `text` with `lines` added to its last case's request.
+    fn in_request(text: &str, lines: &str) -> String {
+        text.replace("fix this\n", &format!("fix this\n{lines}"))
+    }
+
+    /// #825: in cases.txt a `=== ` line whose rest is not a name opens no
+    /// case: it stays in the request, held out or tune, and the count holds.
+    /// A pytest banner in either shape stays too.
     #[test]
-    fn a_held_out_id_in_the_cases_file_that_is_not_a_name_is_refused_unshown() {
-        let odd = held("b1").replace("=== b1", "=== MADE-UP secret id");
-        let (_d, c, b) = two_files("quiet-id", &odd, "");
-        let e = load(&c, Some(&b)).err().expect("a held-out id that is not a name loaded");
-        let rule = "line 1: an id is lowercase letters, digits and -";
-        assert_eq!(e, format!("{}: {rule}", c.display()));
-        let tune = odd.replace("holdout: yes\n", "");
-        let (_d, c, b) = two_files("loud-id", &tune, "");
-        let got = load(&c, Some(&b)).unwrap_or_else(|e| panic!("tune: {e}"));
-        assert_eq!(got.cases[0].id, "MADE-UP secret id");
+    fn a_case_line_that_is_not_a_name_is_request_text_in_the_cases_file() {
+        let rows = [
+            "=== RUN   MADE-UP\n",
+            "===== test session starts =====\n",
+            "=== test session starts ===\n",
+        ];
+        for (i, line) in rows.into_iter().enumerate() {
+            let tune = held("b1").replace("holdout: yes\n", "");
+            for (mark, case) in [("held", held("b1")), ("tune", tune)] {
+                let cases = format!("{ONE}{}", in_request(&case, line));
+                let (_d, c, b) = two_files(&format!("eq-req-{i}-{mark}"), &cases, "");
+                let got = load(&c, Some(&b)).unwrap_or_else(|e| panic!("{line:?} {mark}: {e}"));
+                assert_eq!(got.from[0].1, 2, "{line:?} {mark}");
+                let want = format!("fix this\n{}", line.trim_end());
+                assert_eq!(got.cases[1].request, want, "{mark}");
+            }
+        }
+    }
+
+    /// #825: in the held-out file the same line is an error naming the line only.
+    #[test]
+    fn a_case_line_that_is_not_a_name_is_an_error_in_the_held_out_file() {
+        let blind = in_request(&held("b1"), "=== RUN   MADE-UP\nx\n");
+        let (_d, c, b) = two_files("eq-held", ONE, &blind);
+        let e = load(&c, Some(&b)).err().expect("a non-name === line loaded");
+        let rule = "line 12: an id is lowercase letters, digits and -";
+        assert_eq!(e, format!("{}: {rule}", b.display()));
+    }
+
+    /// #825: a name-shaped `=== ` line in a held-out case's request in
+    /// cases.txt still opens a case, but that case's error, though it has no
+    /// `holdout` key, names neither its id nor its lines: they are held text.
+    #[test]
+    fn a_case_after_a_held_out_case_errs_unshown() {
+        let inner = "=== made-up-name\nMADE-UP secret line\n";
+        let cases = format!("{ONE}{}", in_request(&held("b1"), inner));
+        let (_d, c, b) = two_files("eq-net", &cases, "");
+        let e = load(&c, Some(&b)).err().expect("a held-out request's fragment loaded");
+        assert_eq!(e, format!("{}: line 24: not key: value", c.display()));
+    }
+
+    /// #825: the same line in a tune case's request gives the error it gave
+    /// before, the id and the line quoted.
+    #[test]
+    fn a_case_after_a_tune_case_errs_as_before() {
+        let tune = held("b1").replace("holdout: yes\n", "");
+        let inner = "=== made-up-name\nMADE-UP secret line\n";
+        let cases = format!("{ONE}{}", in_request(&tune, inner));
+        let (_d, c, b) = two_files("eq-net-tune", &cases, "");
+        let e = load(&c, Some(&b)).err().expect("a tune request's fragment loaded");
+        let want = "case made-up-name: not key: value: MADE-UP secret line";
+        assert_eq!(e, format!("{}: {want}", c.display()));
     }
 
     /// #797: a case's quietness is known before its keys are read, so a bad
