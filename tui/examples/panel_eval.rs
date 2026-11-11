@@ -4272,11 +4272,15 @@ mod tests {
     /// So the script gets a first line that exits 0 on [`PROBE`] before any
     /// line of its own runs, and is started with it until that start is free.
     /// On any other start that line leaves `$?` at 0, as no line would (#888).
+    /// It is an `if` and not a `[ ... ] || exit 0`: a test that fails or
+    /// cannot be read then goes on to the script, where its tests see it,
+    /// and never ends a real start at exit 0 with no line of the script run.
     fn stand_in(path: &Path, script: &str) -> String {
         let Some(body) = script.strip_prefix("#!/bin/sh\n") else {
             panic!("stand-in {}: script does not open with a #!/bin/sh line", path.display())
         };
-        write_exe(path, &format!("#!/bin/sh\n[ \"$1\" != {PROBE} ] || exit 0\n{body}"));
+        let probe = format!("if [ \"$1\" = {PROBE} ]; then exit 0; fi");
+        write_exe(path, &format!("#!/bin/sh\n{probe}\n{body}"));
         start_until_free(path, STARTS, |_| std::thread::yield_now());
         path.display().to_string()
     }
@@ -4314,6 +4318,22 @@ mod tests {
         let scripts = ["#!/bin/sh\n", "#!/bin/sh\nexit\n"];
         let codes: Vec<_> = scripts.into_iter().enumerate().map(code).collect();
         assert_eq!(codes, [Some(0), Some(0)], "only the shebang, then a bare exit");
+    }
+
+    /// #888: a real start reaches the script's own lines with `$?` at 0 and
+    /// its arguments whole: with none, with one a stand-in for claude gets,
+    /// and with two that an unquoted `$1` in the probe line reads as a true
+    /// test, ending the start before the script.
+    #[test]
+    fn a_stand_ins_real_start_runs_its_script_whatever_the_first_argument() {
+        let dir = scratch("probe-args");
+        let f = stand_in(&dir.0.join("fake-claude"), "#!/bin/sh\necho \"$?:$#:$1\"\nexit 7\n");
+        for args in [vec![], vec!["-p"], vec!["x -o y"], vec!["! x"]] {
+            let out = std::process::Command::new(&f).args(&args).output().unwrap();
+            let got = (out.status.code(), String::from_utf8(out.stdout).unwrap());
+            let said = format!("0:{}:{}\n", args.len(), args.first().unwrap_or(&""));
+            assert_eq!(got, (Some(7), said), "{args:?}");
+        }
     }
 
     /// #877: a script is refused unless the probe line can go under `#!/bin/sh`.
