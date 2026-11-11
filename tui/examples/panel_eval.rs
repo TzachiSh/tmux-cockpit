@@ -463,7 +463,9 @@ fn load(cases: &Path, blind: Option<&Path>) -> Result<Loaded, String> {
         let at = |e: String| format!("{}: {e}", b.display());
         let held = parse_some(&read(b)?, true).map_err(at)?;
         if let Some(c) = held.iter().find(|c| !c.holdout) {
-            return Err(at(format!("case {}: every case in this file needs holdout: yes", c.id)));
+            // its line only: a case quoted in a held-out request opens one, and
+            // its id is held text (#834)
+            return Err(at(format!("line {}: every case in this file needs holdout: yes", c.line)));
         }
         if let Some(c) = held.iter().find(|c| all.iter().any(|a| a.id == c.id)) {
             return Err(at(format!("case {}: already in {}", c.id, cases.display())));
@@ -4364,11 +4366,24 @@ mod tests {
         for (row, blind) in rows {
             let (_d, c, b) = two_files(&format!("nokey-{}", row.replace(' ', "-")), ONE, &blind);
             let e = load(&c, Some(&b)).err().unwrap_or_else(|| panic!("{row}: loaded"));
-            assert!(
-                e.contains("holdout-blind.txt: case b1: ") && e.contains("holdout: yes"),
-                "{row}: {e}"
-            );
+            let want = "line 1: every case in this file needs holdout: yes";
+            assert_eq!(e, format!("{}: {want}", b.display()), "{row}");
         }
+    }
+
+    /// #834: a whole case quoted inside a held-out request opens a case of
+    /// held text with no `holdout` key: it is refused at its `===` line, and
+    /// the error names neither its id nor its lines.
+    #[test]
+    fn a_case_quoted_in_a_held_out_request_is_refused_unshown() {
+        let quoted = "=== made-up-inner\nkind: bug\nwindow: bash · bash · /home/u\nexpect: write\n\
+                      --- request\nMADE-UP quoted request\n";
+        let inner = held("b1").replace("fix this\n", &format!("fix this\n{quoted}"));
+        let blind = format!("# readers\n{inner}");
+        let (_d, c, b) = two_files("quoted", ONE, &blind);
+        let e = load(&c, Some(&b)).err().expect("a quoted case loaded");
+        let want = "line 13: every case in this file needs holdout: yes";
+        assert_eq!(e, format!("{}: {want}", b.display()));
     }
 
     /// Each row: a parse error in the second of two made-up held-out cases, as
