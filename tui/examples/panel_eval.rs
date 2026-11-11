@@ -461,10 +461,12 @@ struct Loaded {
     from: Vec<(PathBuf, usize)>,
 }
 
-/// Reads the cases file, then the held-out file when there is one (#783). That
-/// file may hold no case, each of its cases says `holdout: yes`, and none has
-/// an id the cases file has. No held-out id from either file sits inside
-/// another id or equals a kind. An error starts with the file it is in.
+/// Reads the cases file, then the held-out file when there is one (#783). The
+/// cases file holds no held-out case, unless `--cases` names the held-out file
+/// itself (#861). The held-out file beside it may hold no case, each of its
+/// cases says `holdout: yes`, and none has an id the cases file has. No
+/// held-out id sits inside another id or equals a kind. An error starts with
+/// the file it is in.
 fn load(cases: &Path, blind: Option<&Path>) -> Result<Loaded, String> {
     let read = |p: &Path| std::fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display()));
     let mut all = parse_cases(&read(cases)?).map_err(|e| format!("{}: {e}", cases.display()))?;
@@ -494,7 +496,8 @@ fn load(cases: &Path, blind: Option<&Path>) -> Result<Loaded, String> {
     // `--only` matches by substring or by whole kind, so a held-out id inside
     // another id (#804) or equal to any case's kind, its own included (#826),
     // picks more than one case and `--show-holdout` can never show it: a
-    // held-out case from either file, against every case loaded
+    // held-out case, from the held-out file beside the cases file or named by
+    // `--cases` (#861), against every case loaded
     for (i, c) in all.iter().enumerate().filter(|(_, c)| c.holdout) {
         let file = &from[usize::from(i >= from[0].1)].0;
         let at = format!("{}: line {}", file.display(), c.line);
@@ -4822,9 +4825,10 @@ mod tests {
         assert_eq!(e, format!("{}: {}", b.display(), nested(2)));
     }
 
-    /// #804: a held-out case in cases.txt is checked too, inside a tune id or
-    /// a held-out one, with or without the held-out file; the error names
-    /// cases.txt and the case's line.
+    /// #804: a held-out case in cases.txt, its id inside a tune id or a
+    /// held-out one, meets the guard before the nested check (#861). `--cases`
+    /// on the held-out file runs that check, and the error names that file and
+    /// the case's line.
     #[test]
     fn a_held_out_id_in_the_cases_file_inside_another_id_is_refused_unshown() {
         let tune = ONE.replace("=== crash", "=== xhb-1-tune");
@@ -4873,8 +4877,9 @@ mod tests {
     }
 
     /// #826: a held-out id equal to a kind is refused at its `===` line, the
-    /// kind a tune case's, a held-out case's or its own; in either file, and
-    /// with no held-out file. The error names no id or kind.
+    /// kind a tune case's, a held-out case's or its own. In cases.txt the guard
+    /// refuses the case first (#861); `--cases` on the held-out file, with no
+    /// file beside it, runs the check. The error names no id or kind.
     #[test]
     fn a_held_out_id_equal_to_a_kind_is_refused_unshown() {
         let two_held = held_kind("hb-k", "ops") + &held_kind("hb-2", "hb-k");
@@ -5783,12 +5788,10 @@ esac
     }
 
     /// #783: the overlap check judges the held-out file's cases too.
+    /// [`overlap_dir`] writes the one held-out case there (#861).
     #[test]
     fn overlap_judges_the_held_out_files_cases() {
         let d = overlap_dir("ov-blind");
-        let (held, tuned) = OVERLAP_CASES.split_at(OVERLAP_CASES.find("=== tuned-b").unwrap());
-        std::fs::write(d.0.join("cases.txt"), tuned).unwrap();
-        std::fs::write(d.0.join("holdout-blind.txt"), held).unwrap();
         let (code, out, err) = overlap_run(&d.0, "a plain line\n");
         assert_eq!((code, calls(&d.0)), (Some(0), 1), "{out}{err}");
     }

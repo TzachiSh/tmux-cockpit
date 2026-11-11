@@ -304,10 +304,11 @@ held-out file reads it as a loud file, every case allowed. The rig loads the
 file beside the cases file: each of its cases must say `holdout: yes`, an id
 the cases file also has is an error, it may hold no case, and a missing file is
 an error, so a lost file cannot quietly drop the held-out cases from a run or
-from the overlap check. A held-out id from either file that sits inside another
-id, as `hb-1` does in `hb-10` (#804), or equals any case's kind, its own
-included (#826), is an error naming the case's file and `===` line only, with
-or without the held-out file: `--only` matches by part of an id or by a whole
+from the overlap check. A held-out id that sits inside another id, as `hb-1`
+does in `hb-10` (#804), or equals any case's kind, its own included (#826), is
+an error naming the held-out file and the case's `===` line only, whether that
+file is read beside the cases file or alone by `--cases` (in the cases file the
+refusal above comes first): `--only` matches by part of an id or by a whole
 kind, so `--show-holdout` could never pick that case alone. A run reports its
 cases with the other held-out cases, apart from the tune cases, and `--check`
 prints each file it read with its case count. `--cases FILE` reads only that
