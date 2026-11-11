@@ -13,11 +13,12 @@
 #   must:    for write or either, the reply carries every one of these
 #   must_not: the reply, a question included, carries none of these
 #   holdout: yes for a case written after the prompt it runs on; default no; holdout-blind.txt only
-# A loud file, this one included, refuses a case that has a line "holdout:" with
-# any value but no, in its keys or in any body (#872, #873). Two false positives
-# are accepted: a screen that shows that key, and a refs line pointing at lines
-# of a file named holdout ("dir/holdout:3", a path with a folder, loads). The
-# full rule is in docs/tui.md.
+# Every cases file but holdout-blind.txt, this one included, refuses a case that
+# has a line "holdout:" with any value but no, an empty one included, in its
+# keys or in any body (#872, #873). Two false positives are accepted: a screen
+# that shows that key, and a refs line pointing at lines of a file named holdout
+# ("dir/holdout:3", a path with a folder, loads). The full rule is in
+# docs/tui.md.
 # Words match whole and in any case ("plan" is not in "explanation"); "a|b" is
 # any of them. A must_not skips a match negated in its clause within six words
 # before it (not, never, don't, no, without, rather than, instead of); a clause
