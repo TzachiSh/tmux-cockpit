@@ -272,7 +272,12 @@ both sides over the cases both graded in full, and each side's own (unpaired)
 `must`, `must_not`, `out_is` and `holdout` keys, is described at the top of
 the cases file; held-out cases live in `tui/evals/panel/holdout-blind.txt`
 and are written after the prompt they run on, so a gain there is not
-overfitting. `--model`, `--runs`, `--jobs`, `--only <id or
+overfitting. A `must` pass is a keyword screen (#868): each `;` separated group
+passes when the reply contains one of its `|` terms, and the match reads no
+negation and no context, so a reply that names a term without doing that part
+still passes the group. Whether the reply does the part is what the judge pass
+is for (`--judge`, below): it grades the reply against its rubric and is not
+given the terms. `--model`, `--runs`, `--jobs`, `--only <id or
 kind>`, `--out <file.jsonl>`, `--no-hermetic` and `--show-holdout` are the knobs.
 `--router-prompt <file>` sends the file's text as every call's system prompt in
 place of the write prompt (#789); the file is read once at start-up, and a
@@ -296,9 +301,10 @@ the re-verify and blindness reviewers, and the lane that commits cases to it; a
 tuning session must not open it, and its header says so. The held-out cases
 written before #783 moved there from the cases file in #834, each block byte
 for byte, so the cases file holds tune cases only. The cases file,
-`explore.txt` and any `--cases` file but the held-out file refuse a case whose
-`holdout:` is anything but `no`, with an error naming the file, the case's
-line and `holdout-blind.txt` as where it belongs, no id and no text (#861), so
+`explore.txt` and any `--cases` file but the held-out file are the loud files.
+A loud file refuses a case whose `holdout:` is anything but `no`, with an
+error naming the file, the case's line and `holdout-blind.txt` as where it
+belongs, no id and no text (#861), so
 a held-out case cannot drift back. The refusal reads every line of the case,
 its screen, repo, request and refs included, and not its keys alone (#872). A
 line holds its case out when, with the spaces around it dropped, it is
@@ -314,8 +320,9 @@ refused, and the fix is to reword the line. A tune case with a ref to lines of
 a file named `holdout`, as `holdout:3`, is refused too, and the fix is to
 rename the file or put it in a folder, since `dir/holdout:3` loads. A parse
 error anywhere in the file comes before the refusal. `--cases` on the held-out
-file reads it as a loud file, every case allowed. The held-out file is known by
-the name it is opened by (#873): a file opened under the name
+file reads it as it reads a loud file, but without the refusal, so every case
+is allowed. The held-out file is known by the name it is opened by (#873): a
+file opened under the name
 `holdout-blind.txt` is exempt from the refusal whatever it is on disk, and a
 link of another name to the held-out file is not. The rig loads the file beside
 the cases file: each of its cases must say `holdout: yes`, an id the cases file
