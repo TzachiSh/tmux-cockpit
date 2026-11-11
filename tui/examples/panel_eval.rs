@@ -469,10 +469,11 @@ fn load(cases: &Path, blind: Option<&Path>) -> Result<Loaded, String> {
     let read = |p: &Path| std::fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display()));
     let mut all = parse_cases(&read(cases)?).map_err(|e| format!("{}: {e}", cases.display()))?;
     // every held-out case lives in the held-out file (#834): a loud file
-    // refuses one, by its line only, unless it is that file named by --cases
+    // refuses one, by its line only, unless it is that file named by --cases.
+    // The error says which file that is: the one refusing has any name (#861)
     let blind_named = cases.file_name() == Path::new(BLIND).file_name();
     if let Some(c) = all.iter().find(|c| c.holdout).filter(|_| !blind_named) {
-        let rule = "a held-out case belongs in the held-out file";
+        let rule = "a held-out case belongs in holdout-blind.txt";
         return Err(format!("{}: line {}: {rule}", cases.display(), c.line));
     }
     let mut from = vec![(cases.to_path_buf(), all.len())];
@@ -4912,8 +4913,9 @@ mod tests {
         }
     }
 
-    /// #861: the error for a held-out case in a loud file.
-    const GUARD: &str = "a held-out case belongs in the held-out file";
+    /// #861: the error for a held-out case in a loud file. It names the file
+    /// the case belongs in, since the loud file may be of any name.
+    const GUARD: &str = "a held-out case belongs in holdout-blind.txt";
 
     /// #861: ONE, then a made-up case whose `holdout:` line says `v`.
     fn marked(v: &str) -> String {

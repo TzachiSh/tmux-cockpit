@@ -297,8 +297,9 @@ tuning session must not open it, and its header says so. The held-out cases
 written before #783 moved there from the cases file in #834, each block byte
 for byte, so the cases file holds tune cases only. The cases file,
 `explore.txt` and any `--cases` file but the held-out file refuse a case whose
-`holdout:` is anything but `no`, with an error naming the file and the case's
-line only (#861), so a held-out case cannot drift back. `--cases` on the
+`holdout:` is anything but `no`, with an error naming the file, the case's
+line and `holdout-blind.txt` as where it belongs, no id and no text (#861), so
+a held-out case cannot drift back. `--cases` on the
 held-out file reads it as a loud file, every case allowed. The rig loads the
 file beside the cases file: each of its cases must say `holdout: yes`, an id
 the cases file also has is an error, it may hold no case, and a missing file is
