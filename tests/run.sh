@@ -19968,11 +19968,33 @@ is "bound_start: a later process's start time differs from this shell's, and sur
 is "a hung command is ended at its 2 s bound with TERM: 143" "143 in" "$(bw 2 3 bound 2 sleep 30)"
 is "a wrapper that execs into another program is ended all the same" "143 in" \
    "$(bw 2 3 bound 2 sh -c 'exec sleep 30')"
-# Timed from outside the $( ): a child left running holds it open after bound returns.
+# Timed from outside the $( ): a child left running holds it open after bound returns. The
+# leaves go first, so the wrapper may end on its own once its child is gone: no status here.
 bw_t=$SECONDS
-bw_r=$(BW_TAG=fork$$ bw 2 3 bound 2 sh -c 'sleep 30 & wait'); bw_t=$((SECONDS - bw_t))
-is "a wrapper that forks is ended with its child, so the caller's \$( ) ends at the bound" \
-   "143 in|in|" "$bw_r|$([ "$bw_t" -le 3 ] && echo in || echo "$bw_t s")|$(bw_left fork$$)"
+bw_r=$(BW_TAG=fork$$ bw 2 3 bound 2 sh -c 'sh -c "sleep 30" & wait'); bw_t=$((SECONDS - bw_t))
+is "a wrapper that forks is ended with what it started, so the caller's \$( ) ends at the bound" \
+   "in|in|" "${bw_r#* }|$([ "$bw_t" -le 3 ] && echo in || echo "$bw_t s")|$(bw_left fork$$)"
+# Below the verified child, a process is signalled only while its parent is still the one it
+# was listed under. bound_ppid overridden to name another parent for the sleep, as for a pid
+# the kernel reparented or reused: the wrapper is ended, the sleep runs on.
+bw_t=$( BW_TAG=other$$; export BW_TAG
+        . "$DIR/scripts/lib/bound.sh"; BOUND_TO=""
+        eval "bw_real_$(declare -f bound_ppid)"
+        bound_ppid() {
+            case "$(tr '\0' ' ' 2>/dev/null < "/proc/$1/cmdline")" in
+                "sleep 33 ") printf 1 ;; *) bw_real_bound_ppid "$1" ;;
+            esac
+        }
+        bound 2 sh -c 'sleep 33 & wait' >/dev/null 2>&1
+        printf '%s' "$?" )
+bw_r=$(bw_left other$$)
+is "a process whose parent is no longer the verified child is not signalled" "143|1" \
+   "$bw_t|$(set -- $bw_r; printf '%s' $#)"
+# It is the sleep, still ours by its tag: ended here, by name.
+for bw_p in $bw_r; do
+    bw_c=""; read -r bw_c 2>/dev/null < "/proc/$bw_p/comm"
+    [ "$bw_c" != sleep ] || kill "$bw_p" 2>/dev/null
+done
 is "a command that ends first returns its own status at once, and leaves no timer behind" \
    "3 in|" "$(BW_TAG=fast$$ bw 0 1 bound 17 sh -c 'exit 3')|$(bw_left fast$$)"
 # The caller's own shape: inside $( ) in a script fed by a pipe.
@@ -20012,7 +20034,7 @@ is "nor one whose start time cannot be read at the deadline: no kill is claimed"
    "0 in ran" "$(bw_re - '')"
 is "nor one whose start time could not be read from the fork on" \
    "0 in ran" "$(bw_re '' '')"
-unset -f bw bw_left bw_re; unset BW bw_t bw_r
+unset -f bw bw_left bw_re; unset BW bw_t bw_r bw_p bw_c
 
 echo "== cmdname.sh: cmd_base cuts a path and leading dashes for the agent tests (#757) =="
 # The functions themselves, beside the pane rows in the agent-poll bind blocks and the #470

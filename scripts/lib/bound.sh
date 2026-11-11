@@ -30,20 +30,43 @@ bound_ps_start() {            # <pid> -> ps's lstart, trimmed
     s=${s#"${s%%[![:space:]]*}"}; printf '%s' "${s%"${s##*[![:space:]]}"}"
 }
 
-# TERM to <pid>, and to the processes it started, only while <pid> is still the process
-# started at <start time>: a gone or reused pid, or one whose start time cannot be read, is
-# signalled nothing. Its children are read from the live parent link (pgrep -P) before it
-# goes: a forking wrapper's child would hold the caller's $( ) open after it.
+# Its parent now: /proc/<pid>/stat field 4, after the last ")"; macOS `ps -o ppid=`.
+bound_ppid() {                # <pid> -> its parent's pid, or nothing
+    local s bound_fields
+    if [ -r "/proc/$1/stat" ]; then
+        read -r s 2>/dev/null < "/proc/$1/stat" || return 0
+        read -r -a bound_fields <<< "${s##*) }"
+        printf '%s' "${bound_fields[1]-}"
+    elif [ ! -d /proc/self ]; then
+        s=$(ps -o ppid= -p "$1" 2>/dev/null) || return 0
+        printf '%s' "${s//[[:space:]]/}"
+    fi
+}
+
+# TERM to <pid> and the processes below it, only while <pid> is still the process started at
+# <start time>: a gone or reused pid, or one whose start time cannot be read, is signalled
+# nothing, and nor is anything below it. The tree comes from one `ps -A -o pid= -o ppid=`
+# (POSIX, so on macOS too). It is signalled leaves first, each only while its parent is
+# still the one it was listed under, read again just before its own signal: a process the
+# kernel reparented or a pid it reused is no longer below ours. A forking wrapper's child
+# would otherwise hold the caller's $( ) open after the wrapper ends. <pid> itself comes
+# last, its start time read again.
 bound_kill() {                # <pid> <start time>
     [ -n "$2" ] && [ "$(bound_start "$1")" = "$2" ] || return 0
-    local todo=$1 kids="" c k
+    local tab todo=$1 c pid ppid listed="" e rev=""
+    tab=$(ps -A -o pid= -o ppid= 2>/dev/null)
     while [ -n "$todo" ]; do
         c=${todo%% *}; todo=${todo#"$c"}
-        for k in $(pgrep -P "$c" 2>/dev/null); do kids="$kids $k"; todo="$todo $k"; done
+        while read -r pid ppid; do
+            [ "$ppid" = "$c" ] && listed="$listed $pid:$c" && todo="$todo $pid"
+        done <<< "$tab"
         todo=${todo# }
     done
-    # shellcheck disable=SC2086  # a list of pids
-    kill -TERM "$1" $kids 2>/dev/null
+    for e in $listed; do rev="$e $rev"; done
+    for e in $rev; do
+        [ "$(bound_ppid "${e%%:*}")" = "${e#*:}" ] && kill -TERM "${e%%:*}" 2>/dev/null
+    done
+    [ "$(bound_start "$1")" = "$2" ] && kill -TERM "$1" 2>/dev/null
 }
 
 bound() {                     # <secs> <cmd> [args...] -> cmd's status (143 when ended)
