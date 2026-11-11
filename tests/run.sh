@@ -257,6 +257,9 @@ utf8_loc() {
 # hold neither, and the other characters curl rejects (# ? [ ] { }, a tab, a newline) can
 # reach a path only from the caller's TMPDIR prefix, which is not supported.
 file_url() { local p=${1//%/%25}; printf 'file://%s' "${p// /%20}"; }
+# Its callers' release dirs have a space in their own name ("r el"), so a call site reverted
+# to a raw file:// fails at any TMPDIR, not only a spaced one (#827). The no-such-host URLs
+# are meant to fail, and a raw one fails too: no row can tell them apart.
 mktmpf() { local f; f=$(mktemp)    || return 1; printf '%s\n' "$f" >> "$TMPS"; printf '%s' "$f"; }
 # Polled, not slept for. A fixed sleep guesses how long a keystroke takes to
 # land; these wait for the thing the next assertion reads and give up after
@@ -3780,7 +3783,7 @@ echo "== bootstrap.sh: no bat and no --full (#228); the first backup kept =="
 if ! command -v curl >/dev/null 2>&1; then skip_ "bootstrap.sh (no curl)"
 elif ! command -v sha256sum >/dev/null 2>&1; then skip_ "bootstrap.sh (no sha256sum)"; else
 BS=$(mktmpd)
-BH="$BS/home"; BB="$BS/bin"; BB2="$BS/bin2"; BSH="$BS/shim"; REL="$BS/rel"; BSBIN=""
+BH="$BS/home"; BB="$BS/bin"; BB2="$BS/bin2"; BSH="$BS/shim"; REL="$BS/r el"; BSBIN=""
 mkdir -p "$BH/.tmux/plugins" "$BB" "$BB2" "$BSH" "$BS/tmuxtmp"
 # Every plugin already cloned, every package already present, no ~/.claude and
 # no claude on PATH: the packages, plugins and hooks steps all do nothing, so
@@ -3855,6 +3858,9 @@ BPATH=$bspath
 # and the pristine backup taken the first time must survive it.
 printf '# mine\n' > "$BH/.tmux.conf"; rm -f "$BH/.tmux.conf.bak"
 bs >/dev/null 2>&1
+# Every run fetches revdiff from the release fixture: a URL curl refuses fetches nothing (#827).
+is "the run fetched the fixture's revdiff into XDG_BIN_HOME" "version: 1.13.0" \
+   "$("$BB/revdiff" --version 2>/dev/null)"
 is "the first append backs the config up" "# mine" "$(cat "$BH/.tmux.conf.bak" 2>/dev/null)"
 grep -v cockpit "$BH/.tmux.conf" > "$BH/c2" && mv "$BH/c2" "$BH/.tmux.conf"
 printf '# edited since\n' >> "$BH/.tmux.conf"
@@ -9009,7 +9015,7 @@ TF=$(mktmpd); mkdir -p "$TF/plugin/scripts/lib" "$TF/build" "$TF/curlshim" "$TF/
 cp "$DIR/scripts/tui-fetch" "$TF/plugin/scripts/"
 cp "$DIR/scripts/lib/vnum.sh" "$DIR/scripts/lib/tui.sh" "$DIR/scripts/lib/cargo-build.sh" \
     "$TF/plugin/scripts/lib/"
-TFB="$TF/plugin/bin/cockpit-tui"; TFR=$(file_url "$TF/rel"); TFGONE=$(file_url "$TF/no-such-host")
+TFB="$TF/plugin/bin/cockpit-tui"; TFR=$(file_url "$TF/r el"); TFGONE=$(file_url "$TF/no-such-host")
 # Counting curl, not timing it: "a 404 is retried" is a fork count, never a clock.
 printf '#!/bin/sh\necho x >> "%s"\nexec %s "$@"\n' "$TF/curlcount" "$(command -v curl)" \
     > "$TF/curlshim/curl"
@@ -9020,7 +9026,7 @@ chmod +x "$TF/curlshim/curl" "$TF/shim/rustc" "$TF/shim/cargo"
 # Every target name gets the same bytes, so the block runs on whatever box the
 # suite is on without re-deriving the uname mapping the script under test owns.
 tf_release() {                # <tag> <version-it-reports> [flip|flat|broken|noasset]
-    local d="$TF/rel/$1" t
+    local d="$TF/r el/$1" t
     mkdir -p "$d"; rm -rf "$TF/build"; mkdir -p "$TF/build"
     if [ "${3:-}" = noasset ]; then
         # A manifest that lists only somebody else's platform: settled, not transient.
@@ -9071,7 +9077,7 @@ is "and the installed binary is the one the tag named" "cockpit-tui 0.1.0" "$(tf
 # Deleting the release proves the second run never went looking for it: the
 # probe is the binary in bin/, not a name on PATH -- fzf's installer
 # re-downloaded everything when a distro copy shadowed its own.
-rm -rf "$TF/rel/cockpit-tui-v0.1.0"
+rm -rf "$TF/r el/cockpit-tui-v0.1.0"
 tfout=$(tf "$TFR" --version cockpit-tui-v0.1.0); tfrc=$?
 case "$tfout" in
     *"already current"*) ok "a second run with a current binary says already current" ;;
@@ -9336,7 +9342,7 @@ while [ $# -gt 0 ]; do
         *)  tag=$1; shift ;;
     esac
 done
-exec cp "$TF/rel/$tag/$pat" "$out"
+exec cp "$TF/r el/$tag/$pat" "$out"
 GHSHIM
 cat > "$TF/ghbad/gh" <<'GHBAD'
 #!/bin/sh
@@ -9352,7 +9358,7 @@ TF="$(cd "$(dirname "$0")/.." && pwd)"
 echo x >> "$TF/curlcount"
 out=
 while [ $# -gt 1 ]; do [ "$1" = -o ] && out=$2; shift; done
-exec cp "$TF/rel/${1##*releases/download/}" "$out"
+exec cp "$TF/r el/${1##*releases/download/}" "$out"
 CURLFAKE
 chmod +x "$TF/ghshim/gh" "$TF/ghbad/gh" "$TF/curlfake/curl"
 
@@ -14327,7 +14333,8 @@ done
 # live copy there, so the resume runs; ١ is a second digit of the class (#757).
 if RSLOC=$(utf8_loc); then
     for rsu in 1.².1 1.١.1; do
-        RL=$("$TMUX_REAL" -L "$RS" new-window -d -P -F '#{pane_id}' -t t: "exec -a $rsu sleep 3600")
+        RL=$("$TMUX_REAL" -L "$RS" new-window -d -P -F '#{pane_id}' -t t: \
+            "exec -a $rsu sleep 3600")
         "$TMUX_REAL" -L "$RS" set -p -t "$RL" @panestate running
         "$TMUX_REAL" -L "$RS" set -p -t "$RL" @cockpit_session "$SID"
         R=$(rs_agent "$SID")
@@ -15109,7 +15116,7 @@ if ! command -v curl >/dev/null 2>&1; then skip_ "revdiff install (no curl)"
 elif ! command -v sha256sum >/dev/null 2>&1; then skip_ "revdiff install (no sha256sum)"
 elif ! command -v jq >/dev/null 2>&1; then skip_ "revdiff install (no jq)"; else
 RV=$(mktmpd)
-RVH="$RV/home"; RVB="$RV/bin"; RVREL="$RV/rel"
+RVH="$RV/home"; RVB="$RV/bin"; RVREL="$RV/r el"
 RVD="$RVREL/umputun/revdiff/releases/download/v1.13.0"
 mkdir -p "$RVH/.tmux/plugins" "$RVB" "$RV/new" "$RV/old" "$RV/unk" "$RV/none" "$RV/tmuxtmp" \
     "$RVD" "$RV/pack"
@@ -19553,8 +19560,9 @@ ir_run() {                    # <TMPDIR for the nested run> <label for the rows>
         return
     fi
     is "$l: the held run's server listens on the socket it named" "1" "$irl"
-    # [spaced]: the pin is the space in the socket path. A TMPDIR longer than 26 bytes makes
-    # the nested socket too long, and the block falls back to the runtime dir, which has no
+    # [spaced]: the pin is the space in the socket path. A TMPDIR longer than about 26 bytes
+    # on Linux with a 7-digit pid (the fallback starts later with a 5-digit pid) makes the
+    # nested socket too long, and the block falls back to the runtime dir, which has no
     # space: the run still passes, but tests no quoting. Say so (#827).
     if [ "${3:-}" = spaced ]; then
         case $irs in
@@ -19619,12 +19627,12 @@ is "workdir.sh's workdir_agent reads the cut name: the two version titles are ag
 # "the glob range does not widen" and fails, never passing against a version_cmd it can't test
 # (#757).
 if CNLOC=$(utf8_loc); then
-    for cnu in 1.².1 1.١.1; do
-        is "with globasciiranges off in en_US.UTF-8, version_cmd: $cnu is no version title" "no" \
-           "$(env LOCPATH="$CNLOC" LC_ALL=en_US.UTF-8 bash -c 'shopt -u globasciiranges
-                case ${2:2:1} in [0-9]) ;; *) echo "the glob range does not widen"; exit ;; esac
-                . "$1"; if version_cmd "$2"; then echo yes; else echo no; fi' _ \
-                "$DIR/scripts/lib/cmdname.sh" "$cnu" 2>/dev/null)"
+    for cnd in ² ١; do
+        is "with globasciiranges off in en_US.UTF-8, version_cmd: 1.$cnd.1 is no version title" \
+           "no" "$(env LOCPATH="$CNLOC" LC_ALL=en_US.UTF-8 bash -c 'shopt -u globasciiranges
+                case $2 in [0-9]) ;; *) echo "the glob range does not widen"; exit ;; esac
+                . "$1"; if version_cmd "1.$2.1"; then echo yes; else echo no; fi' _ \
+                "$DIR/scripts/lib/cmdname.sh" "$cnd" 2>/dev/null)"
     done
 else
     bad "a UTF-8 locale whose regex [0-9] matches ² and ١ loads (localedef en_US.UTF-8)" \
