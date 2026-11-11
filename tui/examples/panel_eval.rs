@@ -3950,7 +3950,6 @@ mod tests {
     /// weighs those reads. The real judge's grading is the calibration's job.
     #[test]
     fn a_stand_in_judge_fails_a_pr_named_in_neither_the_screen_nor_the_reads() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = scratch("judge-reads");
         let root = &dir.0;
         let fake = root.join("fake-claude");
@@ -3961,8 +3960,7 @@ mod tests {
             case \"$r\" in *Read*) ;; *) exit 5;; esac\n\
             case \"$r\" in *'#871'*) echo 'CRITIQUE: read it'; echo 'VERDICT: PASS';;\n\
             *) echo 'CRITIQUE: #871 invented'; echo 'VERDICT: FAIL';; esac\n";
-        std::fs::write(&fake, script).unwrap();
-        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        stand_in(&fake, script);
         let c = &parse_cases(ONE).unwrap()[0];
         let reply = "<question>Which PR?</question>\n<option>#871</option>\n<option>#872</option>";
         let i = judge_input(c, reply, panel_reads(Some(EXPLORED), true));
@@ -4006,7 +4004,6 @@ mod tests {
     /// picked in it and fails one for the other.
     #[test]
     fn a_stand_in_judge_reads_the_users_earlier_answer() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = scratch("judge-rounds");
         let root = &dir.0;
         let fake = root.join("fake-claude");
@@ -4016,8 +4013,7 @@ mod tests {
             [ -n \"$a\" ] || exit 4\n\
             case \"$p\" in *\"<reply>\"*\"$a\"*) echo 'CRITIQUE: uses the answer'; echo 'VERDICT: PASS';;\n\
             *) echo 'CRITIQUE: ignores the answer'; echo 'VERDICT: FAIL';; esac\n";
-        std::fs::write(&fake, script).unwrap();
-        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        stand_in(&fake, script);
         let c = &parse_cases(ANSWERED).unwrap()[0];
         let inputs = ["<prompt>cache the billing API</prompt>", "<prompt>cache the gateway</prompt>"].map(|r| judge_input(c, r, None));
         let got = judge::judge_all(&fake.display().to_string(), "haiku", &inputs, 1, root);
@@ -4163,15 +4159,13 @@ mod tests {
     /// system prompt file and the case on stdin, and reads its verdict back.
     #[test]
     fn judge_all_reads_back_a_stand_in_verdict() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = scratch("judge-trip");
         let root = &dir.0;
         let fake = root.join("fake-claude");
         let script = "#!/bin/sh\nwhile [ \"$1\" != --system-prompt-file ]; do shift; done\n\
             grep -q 'exactly 2 options' \"$2\" || exit 3\n\
             grep -q 'deploy it' && echo 'CRITIQUE: saw it' && echo 'VERDICT: FAIL'\n";
-        std::fs::write(&fake, script).unwrap();
-        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        stand_in(&fake, script);
         let i = judge::Input {
             request: "deploy it".into(),
             reply: "r".into(),
@@ -4206,6 +4200,211 @@ mod tests {
         assert!(!dir.exists(), "{} left behind", dir.display());
     }
 
+    /// The argument a stand-in script is started with to prove it starts. No
+    /// caller of a stand-in passes it.
+    const PROBE: &str = "--stand-in-probe";
+
+    /// How many busy starts [`stand_in`] sits through. A start forks a process
+    /// and waits for it to reach its exec, so it cannot end before the kernel
+    /// has scheduled a process made after the one holding the script open:
+    /// the count waits on the scheduler and cannot be spun through. On a
+    /// loaded box the most one stand-in needed was 15, and 32 with no yield
+    /// between starts (#877).
+    const STARTS: usize = 2000;
+
+    /// Writes `script` to `path` as an executable.
+    fn write_exe(path: &Path, script: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::write(path, script).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    /// Starts `script` with [`PROBE`] until a start gets past ETXTBSY, at most
+    /// `cap` times, calling `busy` with the count after each busy start.
+    /// Returns the number of busy starts. Panics on any other start error, on
+    /// a probe that does not exit 0, and on a script still busy at `cap`.
+    fn start_until_free(script: &Path, cap: usize, mut busy: impl FnMut(usize)) -> usize {
+        use std::process::{Command, Stdio};
+        let name = script.display();
+        let mut last = None;
+        for n in 0..cap {
+            let mut c = Command::new(script);
+            c.arg(PROBE).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+            match c.status() {
+                Ok(s) if s.success() => return n,
+                Ok(s) => panic!("stand-in {name}: its probe start ended with {s}, not exit 0"),
+                Err(e) if e.raw_os_error() == Some(libc::ETXTBSY) => {
+                    last = Some(e);
+                    busy(n + 1);
+                }
+                Err(e) => panic!("stand-in {name}: its probe start failed: {e}"),
+            }
+        }
+        let last = last.map_or("no start made".to_string(), |e| e.to_string());
+        panic!("stand-in {name}: ETXTBSY on each of {cap} starts, the cap; the last said: {last}")
+    }
+
+    /// Writes the stand-in `script` at `path` and returns the path once the
+    /// script starts (#877). A fork on another test's thread copies the
+    /// handle this write has open into its child, which holds it until that
+    /// child execs, and an exec of the script meanwhile fails with ETXTBSY.
+    /// So the script gets a first line that exits 0 on [`PROBE`] before any
+    /// line of its own runs, and is started with it until that start is free.
+    fn stand_in(path: &Path, script: &str) -> String {
+        let Some(body) = script.strip_prefix("#!/bin/sh\n") else {
+            panic!("stand-in {}: script does not open with a #!/bin/sh line", path.display())
+        };
+        write_exe(path, &format!("#!/bin/sh\n[ \"$1\" = {PROBE} ] && exit 0\n{body}"));
+        start_until_free(path, STARTS, |_| std::thread::yield_now());
+        path.display().to_string()
+    }
+
+    /// What `f` panics with.
+    fn panic_of<T>(f: impl FnOnce() -> T) -> String {
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+        *r.err().expect("it panics").downcast::<String>().unwrap()
+    }
+
+    /// #877: the probe start leaves no trace a test could count. The script's
+    /// own first line would log a call.
+    #[test]
+    fn a_stand_ins_probe_start_runs_none_of_its_script() {
+        let dir = scratch("probe-quiet");
+        let log = dir.0.join("calls.log");
+        let script = format!("#!/bin/sh\necho call >> '{}'\n", log.display());
+        let f = stand_in(&dir.0.join("fake-claude"), &script);
+        assert!(!log.exists(), "the probe start ran the script");
+        let run = |arg: &str| std::process::Command::new(&f).arg(arg).status().unwrap().code();
+        assert_eq!((run("--version"), run(PROBE)), (Some(0), Some(0)));
+        assert_eq!(std::fs::read_to_string(&log).unwrap(), "call\n");
+    }
+
+    /// #877: a script is refused unless the probe line can go under `#!/bin/sh`.
+    #[test]
+    fn a_stand_in_script_without_the_sh_line_is_refused() {
+        let dir = scratch("probe-shebang");
+        for script in ["", "echo hi\n", "#!/bin/sh", "#!/bin/bash\necho hi\n"] {
+            let f = dir.0.join("fake-claude");
+            let said = panic_of(|| stand_in(&f, script));
+            let want = "script does not open with a #!/bin/sh line";
+            assert_eq!(said, format!("stand-in {}: {want}", f.display()), "{script:?}");
+            assert!(!f.exists(), "{script:?} was written");
+        }
+    }
+
+    /// #877, the mechanism alone: a handle open for writing makes the start
+    /// fail with ETXTBSY, and the script is started again until it is closed.
+    /// A fork on another test's thread can copy the handle and hold it for
+    /// some starts more, so the count has a floor and no ceiling.
+    #[test]
+    fn a_busy_stand_in_is_started_again_until_its_writer_lets_go() {
+        let dir = scratch("probe-held");
+        let f = PathBuf::from(stand_in(&dir.0.join("fake-claude"), "#!/bin/sh\n"));
+        let free = start_until_free(&f, 1, |n| panic!("busy start {n} with no writer"));
+        assert_eq!(free, 0, "one start is enough for a script nobody has open");
+        for held in [1, 3] {
+            let mut writer = Some(std::fs::OpenOptions::new().append(true).open(&f).unwrap());
+            let let_go = |n| writer = writer.take().filter(|_| n < held);
+            let busy = start_until_free(&f, STARTS, let_go);
+            assert!(busy >= held, "{busy} busy starts, the writer held on for {held}");
+        }
+    }
+
+    /// #877: a script still busy at the cap fails its test, naming the
+    /// script, the count and the error. It never hands the script back.
+    #[test]
+    fn a_stand_in_still_busy_at_the_cap_panics_naming_it() {
+        let dir = scratch("probe-cap");
+        let f = PathBuf::from(stand_in(&dir.0.join("fake-claude"), "#!/bin/sh\n"));
+        let _writer = std::fs::OpenOptions::new().append(true).open(&f).unwrap();
+        for cap in [1, 4] {
+            let mut busy = vec![];
+            let said = panic_of(|| start_until_free(&f, cap, |n| busy.push(n)));
+            let want = format!("ETXTBSY on each of {cap} starts, the cap; the last said: ");
+            assert!(said.starts_with(&format!("stand-in {}: {want}", f.display())), "{said}");
+            assert!(said.ends_with("(os error 26)"), "{said}");
+            assert_eq!(busy, (1..=cap).collect::<Vec<_>>(), "{said}");
+        }
+        let said = panic_of(|| start_until_free(&f, 0, |_| ()));
+        assert!(said.ends_with("0 starts, the cap; the last said: no start made"), "{said}");
+    }
+
+    /// #877: only ETXTBSY is waited out. A start that fails any other way
+    /// fails the test at once with that error, after no second start.
+    #[test]
+    fn a_stand_in_that_cannot_start_is_not_started_again() {
+        let dir = scratch("probe-other");
+        let (missing, plain) = (dir.0.join("missing"), dir.0.join("no-exec-bit"));
+        std::fs::write(&plain, "#!/bin/sh\n").unwrap();
+        for (f, errno) in [(&missing, libc::ENOENT), (&plain, libc::EACCES)] {
+            let mut busy = 0;
+            let said = panic_of(|| start_until_free(f, 9, |_| busy += 1));
+            let want = std::io::Error::from_raw_os_error(errno);
+            let head = format!("stand-in {}: its probe start failed", f.display());
+            assert_eq!((said, busy), (format!("{head}: {want}"), 0));
+        }
+    }
+
+    /// #877: a script that starts and exits non-zero on the probe is not
+    /// called busy. Its test fails with the exit status, after one start.
+    #[test]
+    fn a_stand_in_whose_probe_exits_non_zero_is_not_called_busy() {
+        let dir = scratch("probe-exit");
+        let f = dir.0.join("fake-claude");
+        for (last, status) in [("exit 7", "exit status: 7"), ("false", "exit status: 1")] {
+            let script = &format!("#!/bin/sh\n{last}\n");
+            write_exe(&f, script);
+            let mut starts = 0;
+            // the write above can itself be held by a fork: count the starts that ran
+            let said = panic_of(|| start_until_free(&f, STARTS, |_| starts += 1));
+            let want = format!("its probe start ended with {status}, not exit 0");
+            assert_eq!(said, format!("stand-in {}: {want}", f.display()), "after {starts} busy");
+        }
+    }
+
+    /// Stops the forking threads of the #877 race test when it drops, a
+    /// panic on the writing thread included.
+    struct StopForks<'a>(&'a std::sync::atomic::AtomicBool);
+
+    impl Drop for StopForks<'_> {
+        fn drop(&mut self) {
+            self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    /// #877, the race itself: threads fork in a loop, as the rig's tests do
+    /// to each other, while this one writes a stand-in and starts it at once.
+    /// Written with a plain `fs::write`, some of these starts fail with
+    /// "Text file busy (os error 26)".
+    #[test]
+    fn a_stand_in_starts_at_once_while_other_threads_fork() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let dir = scratch("probe-race");
+        let stop = AtomicBool::new(false);
+        let failed: Vec<String> = std::thread::scope(|s| {
+            let _stop = StopForks(&stop);
+            for _ in 0..FORKERS {
+                s.spawn(|| {
+                    while !stop.load(Ordering::Relaxed) {
+                        let _ = std::process::Command::new("true").status();
+                    }
+                });
+            }
+            let start = |i| {
+                let f = stand_in(&dir.0.join(format!("fake-{i}")), "#!/bin/sh\n");
+                std::process::Command::new(f).status().err().map(|e| format!("start {i}: {e}"))
+            };
+            (0..RACE_STARTS).filter_map(start).collect()
+        });
+        assert_eq!(failed, [] as [String; 0]);
+    }
+
+    /// The threads forking against the #877 race test's writer.
+    const FORKERS: usize = 4;
+
+    /// The stand-ins the #877 race test writes and starts.
+    const RACE_STARTS: usize = 300;
+
     fn base_call(dir: &Path) -> Call {
         let timeout = Duration::from_secs(30);
         Call {
@@ -4236,12 +4435,10 @@ mod tests {
     /// claude in that call's folder (a stand-in claude that prints its cwd).
     #[test]
     fn the_panels_request_runs_claude_in_the_hermetic_folder() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = scratch("cwd-trip");
         let root = &dir.0;
         let fake = root.join("fake-claude");
-        std::fs::write(&fake, "#!/bin/sh\ncat >/dev/null\npwd -P\n").unwrap();
-        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        stand_in(&fake, "#!/bin/sh\ncat >/dev/null\npwd -P\n");
         let base = Call {
             claude: fake.display().to_string(),
             ..base_call(root)
@@ -6149,16 +6346,13 @@ esac
     /// A scratch dir with the cases, the old prompt and the stand-in claude,
     /// removed when it drops, a failed assert included.
     fn overlap_dir(name: &str) -> judge::Scratch {
-        use std::os::unix::fs::PermissionsExt;
         let d = scratch(name);
         // #861: the held-out case in the held-out file, the tune one in cases.txt
         let (held, tuned) = OVERLAP_CASES.split_at(OVERLAP_CASES.find("=== tuned-b").unwrap());
         std::fs::write(d.0.join("cases.txt"), tuned).unwrap();
         std::fs::write(d.0.join("holdout-blind.txt"), held).unwrap();
         std::fs::write(d.0.join("from.txt"), "an old line\n").unwrap();
-        std::fs::write(d.0.join("claude"), OVERLAP_STUB).unwrap();
-        let exe = std::fs::Permissions::from_mode(0o755);
-        std::fs::set_permissions(d.0.join("claude"), exe).unwrap();
+        stand_in(&d.0.join("claude"), OVERLAP_STUB);
         d
     }
 
@@ -6379,11 +6573,7 @@ esac
 
         /// A stand-in claude at `dir`/fake-claude running `script`.
         fn fake(dir: &Path, script: &str) -> String {
-            use std::os::unix::fs::PermissionsExt;
-            let f = dir.join("fake-claude");
-            std::fs::write(&f, script).unwrap();
-            std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
-            f.display().to_string()
+            stand_in(&dir.join("fake-claude"), script)
         }
 
         /// A judge verdict whose critique quotes the held-out case's phrases.
