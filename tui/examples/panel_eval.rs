@@ -5249,7 +5249,7 @@ mod tests {
     /// #872: each row is a screen line, and whether it holds its case out.
     /// The rule is the scan's (#797): the line, trimmed, is `holdout`, a
     /// colon and anything but `no`, with spaces allowed around the colon.
-    fn body_rows() -> [(&'static str, &'static str, bool); 30] {
+    fn body_rows() -> [(&'static str, &'static str, bool); 31] {
         [
             ("yes", "holdout: yes", true),
             ("indented", "    holdout: yes", true),
@@ -5271,6 +5271,7 @@ mod tests {
             ("no", "holdout: no", false),
             ("no, indented, spaces after", "  holdout: no  ", false),
             ("no, a tab after", "holdout: no\t", false),
+            ("no, a tab after the colon", "holdout:\tno", false),
             ("no, a carriage return after", "holdout: no\r", false),
             ("no, a no-break space after", "holdout: no\u{a0}", false),
             ("a longer key", "holdout-blind: yes", false),
