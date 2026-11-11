@@ -8,8 +8,8 @@
 #
 # The format is cases.txt's, described at the top of that file. Every case here
 # says holdout: yes, and no id here may also be in cases.txt: either is an
-# error. The file may hold no case. A run reports these cases with the
-# held-out cases in cases.txt. --cases FILE reads only FILE.
+# error. The file may hold no case. The held-out cases live in this file
+# (#834). --cases FILE reads only FILE.
 
 === h-search-wrong
 kind: bug
