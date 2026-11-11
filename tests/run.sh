@@ -7400,8 +7400,10 @@ echo "== a partial clone's lazy fetch cannot run the repo's planted remote confi
 # old/git shim drops GIT_NO_LAZY_FETCH as git < 2.44 does, leaving only the protocol pin.
 LF=$(mktmpd); LFM="$LF/marker"; mkdir "$LF/old" "$LF/hb"
 # The paths go into the generated scripts single-quoted: a space in TMPDIR split the marker's
-# path, and the script appended to a file outside the suite's scratch (#820).
-printf "#!/bin/sh\necho up >> '%s'\nexit 1\n" "$LFM" > "$LF/up"; chmod +x "$LF/up"
+# path, and the script appended to a file outside the suite's scratch (#820). lfq escapes a '
+# inside them as '\'', as scripts/lib/hook.sh's shq does, so a ' in TMPDIR holds too (#827).
+lfq() { printf "'%s'" "${1//\'/\'\\\'\'}"; }
+printf '#!/bin/sh\necho up >> %s\nexit 1\n' "$(lfq "$LFM")" > "$LF/up"; chmod +x "$LF/up"
 ln -s "$LF/up" "$LF/hb/git-remote-foo"
 printf '#!/bin/sh\nunset GIT_NO_LAZY_FETCH\nexec '"'%s'"' "$@"\n' "$(command -v git)" \
     > "$LF/old/git"
@@ -7415,7 +7417,8 @@ chmod +x "$LF/old/git"
   && git switch -q main && printf 'b\n' >> f.txt && git commit -qam 2 \
   && git clone -q --filter=blob:none "$(file_url "$LF/src")" "$LF/c2" \
   && cd "$LF/c" && git fetch -q && git reset -q --soft origin/main \
-  && git config remote.origin.uploadpack "'$LF/up'" && git config core.sshCommand "'$LF/up'" \
+  && git config remote.origin.uploadpack "$(lfq "$LF/up")" \
+  && git config core.sshCommand "$(lfq "$LF/up")" \
   && git config protocol.file.allow always && git config protocol.ssh.allow always \
   && git config protocol.ext.allow always && git config protocol.foo.allow always ) >/dev/null 2>&1
 lf_paths() {
