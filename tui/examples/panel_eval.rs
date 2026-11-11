@@ -4360,9 +4360,9 @@ mod tests {
     /// during exec") and put it back with the revert 3b832035387f, which is
     /// in 6.13 and in the stable releases 6.12.2 and 6.11.11. On 6.11 to
     /// 6.11.10, 6.12 and 6.12.1 no start is busy, so both tests go red while
-    /// [`stand_in`] is still right. Neither skips there: those releases are
-    /// past their end of life, and a skip is a way to pass without a busy
-    /// start.
+    /// [`stand_in`] is still right. Neither skips there: 6.11 is past its
+    /// end of life, 6.12.2 replaced 6.12 and 6.12.1, and a skip is a way to
+    /// pass without a busy start.
     #[test]
     fn a_busy_stand_in_is_started_again_until_its_writer_lets_go() {
         let dir = scratch("probe-held");
@@ -4373,7 +4373,8 @@ mod tests {
             let mut writer = Some(std::fs::OpenOptions::new().append(true).open(&f).unwrap());
             let let_go = |n| writer = writer.take().filter(|_| n < held);
             let busy = start_until_free(&f, STARTS, let_go);
-            assert!(busy >= held, "{busy} busy starts, the writer held on for {held}");
+            let hint = "does this kernel refuse to start a file open for writing? (#888)";
+            assert!(busy >= held, "{busy} busy starts, the writer held on for {held}: {hint}");
         }
     }
 
@@ -4936,8 +4937,9 @@ mod tests {
             let tune = held("b1").replace("holdout: yes\n", "");
             for (mark, case) in [("held", held("b1")), ("tune", tune)] {
                 let cases = format!("{ONE}{}", in_request(&case, line));
-                // #861: a held-out case loads from a loud read only as `--cases`
-                // on the held-out file
+                // #861: with no cases file beside it, a held-out case loads only
+                // from the held-out file, which `--cases` reads as it reads a
+                // loud file, but without the refusal
                 let (_d, c, b) = two_files(&format!("eq-req-{i}-{mark}"), &cases, &cases);
                 let file = if mark == "held" { &b } else { &c };
                 let got = load(file, None).unwrap_or_else(|e| panic!("{line:?} {mark}: {e}"));
