@@ -19960,6 +19960,76 @@ unset DS DST DSS dsr p c a
 fi
 
 
+echo "== the four bounded reads end by their bounds with timeout, or with only gtimeout (#746) =="
+# agent-state's Stop payload (10 s), subslog's payload (2 s), workdir_ask (3 s) and agent-poll's
+# claude agents (5 s) were bounded only where GNU timeout exists. Homebrew's coreutils on macOS
+# installs it as gtimeout, which they now use too. Two PATHs: the suite's own, and one with
+# every command but timeout, and gtimeout (the real timeout under that name). The two stdin
+# reads get a writer that sends neither a newline nor EOF, the two commands a fake that never
+# answers. The eight run at once, each capped from outside: rc 124 is a read with no bound.
+# With neither, as on stock macOS, the reads stay unbounded: docs/install.md says so.
+if need_tmux "bounds with no timeout on PATH"; then :; else
+NT=$(mktmpd); mkdir -p "$NT/bin" "$NT/fake"
+IFS=: read -ra nt_path <<< "$PATH"
+for nt_d in "${nt_path[@]}"; do
+    [ -d "$nt_d" ] && find "$nt_d" -maxdepth 1 \( -type f -o -type l \) \
+        ! -name timeout ! -name gtimeout -print0
+done | xargs -0 ln -s -t "$NT/bin" 2>/dev/null
+ln -s "$(command -v timeout)" "$NT/bin/gtimeout"
+printf '#!/bin/sh\nexec sleep 20\n' > "$NT/fake/claude"; cp "$NT/fake/claude" "$NT/fake/tui"
+chmod +x "$NT/fake/claude" "$NT/fake/tui"
+NTS="cockpit-nt-$$"; SOCKS="$SOCKS $NTS"
+"$TMUX_REAL" -L "$NTS" -f /dev/null new-session -d -s t -c "$NT" 'exec -a claude sleep 300' \
+    >/dev/null 2>&1
+NTP=$("$TMUX_REAL" -L "$NTS" display -p -t t '#{pane_id}')
+NTK=$("$TMUX_REAL" -L "$NTS" display -p '#{socket_path}')
+"$TMUX_REAL" -L "$NTS" set -g @cockpit_agents_glob '|claude|' \; \
+    set -p -t "$NTP" @cockpit_agentview 1 >/dev/null 2>&1
+nt_w="" nt_r=""
+for nt_f in stop subs gstop gsubs; do
+    mkfifo "$NT/$nt_f"; (printf '{"x":1'; exec sleep 20) > "$NT/$nt_f" & nt_w="$nt_w $!"
+done
+nt_run() {                    # <name> <cap> <cmd...>: its exit status in $NT/<name>.rc
+    local n=$1 c=$2; shift 2
+    ( timeout "$c" "$@" >/dev/null 2>&1; echo $? > "$NT/$n.rc" ) & nt_r="$nt_r $!"
+}
+nt_run stop 16 env -u CLAUDE_CONFIG_DIR PATH="$PATH" TMUX="$NTK,0,0" TMUX_PANE="$NTP" \
+    bash -c 'exec "$1/scripts/agent-state" done < "$2"' _ "$DIR" "$NT/stop"
+nt_run subs 8 env PATH="$PATH" \
+    bash -c '. "$1/scripts/lib/subslog.sh"; subs_payload < "$2"' _ "$DIR" "$NT/subs"
+nt_run workdir 8 env PATH="$PATH" COCKPIT_TUI_BIN="$NT/fake/tui" \
+    bash -c '. "$1/scripts/lib/workdir.sh"; workdir_ask %0' _ "$DIR"
+nt_run poll 11 env -u CLAUDE_CONFIG_DIR PATH="$NT/fake:$PATH" TMUX="$NTK,0,0" \
+    "$DIR/scripts/agent-poll" --once
+nt_run gstop 16 env -u CLAUDE_CONFIG_DIR PATH="$NT/bin" TMUX="$NTK,0,0" TMUX_PANE="$NTP" \
+    bash -c 'exec "$1/scripts/agent-state" done < "$2"' _ "$DIR" "$NT/gstop"
+nt_run gsubs 8 env PATH="$NT/bin" \
+    bash -c '. "$1/scripts/lib/subslog.sh"; subs_payload < "$2"' _ "$DIR" "$NT/gsubs"
+nt_run gworkdir 8 env PATH="$NT/bin" COCKPIT_TUI_BIN="$NT/fake/tui" \
+    bash -c '. "$1/scripts/lib/workdir.sh"; workdir_ask %0' _ "$DIR"
+nt_run gpoll 11 env -u CLAUDE_CONFIG_DIR PATH="$NT/fake:$NT/bin" TMUX="$NTK,0,0" \
+    "$DIR/scripts/agent-poll" --once
+# shellcheck disable=SC2086  # a list of pids
+wait $nt_r
+is "a PATH with gtimeout and no timeout (the g rows below test nothing otherwise)" "gtimeout" \
+   "$(PATH="$NT/bin" command -v timeout gtimeout | sed 's|.*/||')"
+for nt_f in stop subs workdir poll; do
+    nt_n=$(case $nt_f in stop) echo "agent-state's Stop read ends by its 10 s bound" ;;
+        subs) echo "subslog's payload read ends by its 2 s bound" ;;
+        workdir) echo "workdir_ask ends by its 3 s bound" ;;
+        poll) echo "agent-poll's claude agents read ends by its 5 s bound" ;; esac)
+    is "$nt_n, with timeout" "0" "$(cat "$NT/$nt_f.rc")"
+    is "$nt_n, with only gtimeout" "0" "$(cat "$NT/g$nt_f.rc")"
+done
+# The writers: only ours, by name.
+for nt_p in $nt_w; do
+    nt_c=""; read -r nt_c 2>/dev/null < "/proc/$nt_p/comm"
+    [ "$nt_c" != sleep ] || kill "$nt_p" 2>/dev/null
+done
+"$TMUX_REAL" -L "$NTS" kill-server >/dev/null 2>&1
+unset -f nt_run; unset NT NTS NTP NTK nt_w nt_r nt_f nt_d nt_p nt_c nt_path nt_n
+fi
+
 echo "== cmdname.sh: cmd_base cuts a path and leading dashes for the agent tests (#757) =="
 # The functions themselves, beside the pane rows in the agent-poll bind blocks and the #470
 # workdir block. tmux's parse_window_name (format.c) drops leading dashes, then cuts a path
