@@ -7445,6 +7445,36 @@ for lfu in "$(file_url "$LF/src")" ssh://h/r "ext::$lfx/up" foo::x; do
     PATH="$LF/hb:$PATH" lf_paths " (${lfu%%:*})"
     PATH="$LF/old:$LF/hb:$PATH" lf_paths " (${lfu%%:*}, git < 2.44)"
 done
+# git.sh stacks three fetch guards on one call (GIT_NO_LAZY_FETCH=1, GIT_ALLOW_PROTOCOL='' and
+# the protocol.*.allow=never flags), and any one stops the fetch, so the rows above stay green
+# with one dropped. keep/git strips all but $LF_KEEP before the real git: each guard alone must
+# stop it, so dropping that guard from git.sh fires the remote (#827).
+mkdir "$LF/keep"
+printf '%s\n' '#!/usr/bin/env bash' \
+    'a=(); while [ $# -gt 0 ]; do' \
+    '    if [ "$1" = -c ] && [[ ${2-} == protocol.*allow=never ]]; then' \
+    '        [ "$LF_KEEP" = nofetch ] && a+=("$1" "$2"); shift 2; continue' \
+    '    fi; a+=("$1"); shift; done' \
+    '[ "$LF_KEEP" = lazy ] || unset GIT_NO_LAZY_FETCH' \
+    '[ "$LF_KEEP" = proto ] || unset GIT_ALLOW_PROTOCOL' \
+    "exec $(lfq "$(command -v git)") \"\${a[@]}\"" > "$LF/keep/git"
+chmod +x "$LF/keep/git"
+git -C "$LF/c" config remote.origin.url "$(file_url "$LF/src")"
+# With every guard stripped the remote fires through git.sh, so the rows after test something.
+( export LF_KEEP=none PATH="$LF/keep:$LF/hb:$PATH"; . "$DIR/scripts/lib/git.sh"
+  git -C "$LF/c" diff --numstat HEAD ) >/dev/null 2>&1
+is "keep/git with no guard kept: the remote fires through git.sh" "up" \
+   "$(head -1 "$LFM" 2>/dev/null)"
+rm -f "$LFM"
+for lfk in lazy proto nofetch; do
+    LF_KEEP=$lfk PATH="$LF/keep:$LF/hb:$PATH" lf_paths " (file, only the $lfk guard)"
+done
+# The "git < 2.44" rows mean something only if old/git runs git and drops GIT_NO_LAZY_FETCH:
+# with that set and no other guard, the remote fires through old/git alone (#827).
+GIT_NO_LAZY_FETCH=1 PATH="$LF/old:$LF/hb:$PATH" git -C "$LF/c" diff --numstat HEAD >/dev/null 2>&1
+is "old/git drops GIT_NO_LAZY_FETCH and runs git: the remote fires through it" "up" \
+   "$(head -1 "$LFM" 2>/dev/null)"
+rm -f "$LFM"
 # A user's own switch or worktree add still fetches what it checks out; a diff does not.
 is "a diff through git.sh's git still cannot fetch a clean clone's blob" "" \
    "$( . "$DIR/scripts/lib/git.sh"; git -C "$LF/c2" diff --numstat main origin/side 2>/dev/null)"
@@ -7454,7 +7484,7 @@ is "while switch --track through it fetches the branch's blob" "g" \
 ( . "$DIR/scripts/lib/git.sh"
 git -C "$LF/c2" worktree add -q --detach "$LF/wt" origin/side2 ) >/dev/null 2>&1
 is "and so does worktree add" "h" "$(cat "$LF/wt/h.txt" 2>/dev/null)"
-rm -rf "$LF"; unset lfu lfx; unset -f lf_paths
+rm -rf "$LF"; unset lfu lfx lfk; unset -f lf_paths lfq
 
 echo "== tmux-review: a pane id that is not %<digits> never reaches tmux =="
 # The glob %[0-9]* let "%1;display-message PWNED" through, and deliver() splices
