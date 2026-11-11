@@ -1782,7 +1782,8 @@ struct Fingerprint {
     setting_sources: Option<String>,
     /// The panel's `--effort`, from COCKPIT_PANEL_EFFORT (#623).
     effort: &'static str,
-    /// HOME, XDG_CONFIG_HOME, XDG_CACHE_HOME and CLAUDE_CONFIG_DIR, `None` unset.
+    /// HOME, XDG_CONFIG_HOME, XDG_CACHE_HOME and CLAUDE_CONFIG_DIR, `None` unset,
+    /// then the panel call's own variables as the calls get them (#853).
     vars: Vec<(&'static str, Option<String>)>,
 }
 
@@ -1805,6 +1806,10 @@ fn fingerprint(
         Some(r) => format!("{}/<case>-<run>", r.display()),
         None => dir.display().to_string(),
     };
+    // a value the rig has reaches the calls as it is; Request sets the rest
+    let call_env = cockpit_tui::panel::request::CALL_ENV
+        .iter()
+        .map(|(k, v)| (*k, var(k).or_else(|| Some(v.to_string()))));
     Fingerprint {
         claude: claude.into(),
         cwd,
@@ -1815,7 +1820,7 @@ fn fingerprint(
             panel_sources.cloned()
         },
         effort: effort.as_str(),
-        vars: ENV_VARS.iter().map(|k| (*k, var(k))).collect(),
+        vars: ENV_VARS.iter().map(|k| (*k, var(k))).chain(call_env).collect(),
     }
 }
 
@@ -4249,6 +4254,17 @@ mod tests {
     fn a_plain_run_loads_the_setting_sources_the_panel_does() {
         let plain = fingerprint("v", false, None, Path::new("/c"), Effort::Medium, |_: &str| None);
         assert_eq!(plain.setting_sources.as_deref(), Some(""));
+    }
+
+    /// #853: the fingerprint names the panel call's three variables as the calls
+    /// get them: the rig's own value when it has one, else the panel's.
+    #[test]
+    fn the_fingerprint_names_the_call_env_as_the_calls_get_it() {
+        let var = |k: &str| (k == "DISABLE_TELEMETRY").then(|| "0".to_string());
+        let f = fingerprint("v", true, None, Path::new("/c"), Effort::Medium, var);
+        let names = ["DISABLE_TELEMETRY", "DISABLE_AUTOUPDATER", "DISABLE_ERROR_REPORTING"];
+        let got = names.map(|k| f.json()["vars"][k].clone());
+        assert_eq!(got, ["0", "1", "1"].map(serde_json::Value::from));
     }
 
     /// The effort the calls get, from COCKPIT_PANEL_EFFORT, is in the fingerprint.

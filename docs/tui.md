@@ -412,8 +412,9 @@ either, so the folder is the one difference left. `--no-hermetic` runs the call
 as the panel does. The effort is the panel's: set `COCKPIT_PANEL_EFFORT` to
 measure another. The summary's `environment` line names the claude version, the
 cwd, whether user settings loaded, the effort, and `HOME`, `XDG_CONFIG_HOME`,
-`XDG_CACHE_HOME` and `CLAUDE_CONFIG_DIR`; each `--out` row carries the same as
-`env`. `--compare`
+`XDG_CACHE_HOME` and `CLAUDE_CONFIG_DIR`. It then names the panel call's three
+variables (#853) as the calls get them, the rig's own value or else `1`. Each
+`--out` row carries the same as `env`. `--compare`
 prints each side's `env` and warns when they differ, as a run from before #598
 has none.
 
