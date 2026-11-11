@@ -90,7 +90,7 @@ poll_err() {                  # <reason> | "" ; one tmux call per change
 # (a leading empty field would vanish). The title is last: tmux escapes a tab in it.
 T=$'\t'
 PANE_FMT=".#{pane_id}$T.#{pane_current_command}$T.#{allow-set-title}"
-PANE_FMT="$PANE_FMT$T.#{?#{m/i:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},1,0}"
+PANE_FMT="$PANE_FMT$T.#{?#{m/i:*|#{b:pane_current_command}|*,#{@cockpit_agents_glob}},1,0}"
 PANE_FMT="$PANE_FMT$T.#{@cockpit_agentview}$T.#{@cockpit_fg}"
 PANE_FMT="$PANE_FMT$T.#{@cockpit_job}$T.#{@cockpit_job_name}$T.#{@cockpit_job_state}"
 PANE_FMT="$PANE_FMT$T.#{@panestate}$T.#{$SLOT}$T.#{@cockpit_cfg}$T.#{pane_title}"

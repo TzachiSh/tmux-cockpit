@@ -75,7 +75,7 @@ deliver() {
 
     local is_agent
     is_agent=$(tmux display-message -p -t "$pane" \
-        '#{?#{m/i:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},1,0}' \
+        '#{?#{m/i:*|#{b:pane_current_command}|*,#{@cockpit_agents_glob}},1,0}' \
         2>/dev/null)
     [ "$is_agent" = 1 ] || {
         tmux display-message \
@@ -168,7 +168,7 @@ deliver() {
     local notice_paste="cockpit: review pasted into $where · ↵ sends it$jump"
     local notice_queue="cockpit: review queued for $where · it lands when the agent stops"
     tmux if-shell -F -t "$pane" \
-        "#{&&:#{m/i:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},#{&&:#{!=:#{@panestate},running},#{!=:#{@panestate},needs-input}}}" \
+        "#{&&:#{m/i:*|#{b:pane_current_command}|*,#{@cockpit_agents_glob}},#{&&:#{!=:#{@panestate},running},#{!=:#{@panestate},needs-input}}}" \
         "set-option -pu -t $pane @cockpit_review_spool ; set-option -p -t $pane @cockpit_review sent ; paste-buffer -p -r -d -b $bufname -t $pane ; display-message -d 0 '$notice_paste'" \
         "delete-buffer -b $bufname ; display-message -d 0 '$notice_queue'"
 

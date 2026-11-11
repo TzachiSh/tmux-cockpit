@@ -46,7 +46,7 @@ else
 fi
 # Window, session and fleet summaries are precomputed here so status redraws walk no
 # panes (tmux#2774/#3352). They refresh only on a transition in that window or session.
-agent='#{m/i:*|#{pane_current_command}|*,#{@cockpit_agents_glob}}'
+agent='#{m/i:*|#{b:pane_current_command}|*,#{@cockpit_agents_glob}}'
 
 # Worst state in the window: needs-input > error > running > done > idle ("A" = agent with no state).
 fmt_state="#{?#{m:*needs-input*,#{P:#{?$agent,#{@panestate},} }},needs-input,#{?#{m:*error*,#{P:#{?$agent,#{@panestate},} }},error,#{?#{m:*running*,#{P:#{?$agent,#{@panestate},} }},running,#{?#{m:*done*,#{P:#{?$agent,#{@panestate},} }},done,#{?#{m:*A*,#{P:#{?$agent,A,}}},idle,}}}}}"
