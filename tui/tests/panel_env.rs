@@ -186,9 +186,13 @@ fn the_shipped_prompts_render_without_a_placeholder_left() {
     );
 }
 
+/// HOME is the test's own: the examples carry `{{home}}`, so a home folder whose
+/// name holds a tag would answer the searches below (#910). Each prompt is first
+/// checked to hold that HOME, so the text searched is the one rendered from it.
 #[test]
 fn the_shipped_write_prompt_never_asks_for_a_file_edit() {
-    let _e = Env::new("no-edit", &[("XDG_CONFIG_HOME", Some("$D/cfg".into()))]);
+    let vars = [("XDG_CONFIG_HOME", Some("$D/cfg".into())), ("HOME", Some("/home/u".into()))];
+    let _e = Env::new("no-edit", &vars);
     for out in [OutType::Auto, OutType::Command, OutType::Format, OutType::Hint] {
         for window in ["claude", "shell", "ssh", "other"] {
             let w = prompts::write(&Ctx {
@@ -196,10 +200,10 @@ fn the_shipped_write_prompt_never_asks_for_a_file_edit() {
                 window,
                 ..Ctx::default()
             });
-            assert!(
-                !w.contains("<edit") && !w.contains("<need_file") && !w.contains("<file"),
-                "{out:?} {window}"
-            );
+            assert!(w.contains("@/home/u/bin/net-proxy"), "{out:?} {window}: not this HOME's");
+            for tag in ["<edit", "<need_file", "<file"] {
+                assert!(!w.contains(tag), "{out:?} {window}: {tag}");
+            }
         }
     }
 }
@@ -242,6 +246,15 @@ fn termux_is_named_by_either_variable() {
     assert!(!platform.contains("Termux"), "{platform}");
 }
 
+/// The whole note for an override at `p` that exists and cannot be read. `p` is
+/// there in full, so the file's name is compared at its place in the path and a
+/// temp folder of that name cannot stand in for it (#910). The error is the one
+/// the test's own read of `p` gives, whichever way the file was made unreadable.
+fn unread(p: &Path) -> String {
+    let e = std::fs::read_to_string(p).expect_err("the test can read the override");
+    format!("cannot read {}: {e}; using the shipped prompt", p.display())
+}
+
 #[test]
 fn a_broken_prompt_file_falls_back_and_says_why() {
     let e = Env::new("broken", &[("XDG_CONFIG_HOME", Some("$D/cfg".into()))]);
@@ -253,7 +266,7 @@ fn a_broken_prompt_file_falls_back_and_says_why() {
         fix.starts_with("You correct a draft"),
         "invalid UTF-8 keeps the shipped text: {fix}"
     );
-    assert!(note.as_deref().is_some_and(|n| n.contains("fix.txt")), "{note:?}");
+    assert_eq!(note, Some(unread(&d.join("fix.txt"))));
 
     let p = d.join("explain.txt");
     std::fs::write(&p, "Mine").unwrap();
@@ -265,7 +278,7 @@ fn a_broken_prompt_file_falls_back_and_says_why() {
     }
     let (explain, note) = prompts::explain_noted();
     assert!(explain.starts_with("You help a user understand"), "{explain}");
-    assert!(note.as_deref().is_some_and(|n| n.contains("explain.txt")), "{note:?}");
+    assert_eq!(note, Some(unread(&p)));
     assert_eq!(prompts::write_noted(&Ctx::default()).1, None, "an absent override is no note");
 }
 
@@ -419,7 +432,8 @@ fn an_override_that_cannot_be_read_is_a_warn_note_on_the_busy_view() {
     use cockpit_tui::panel::capture::Capture;
     let e = Env::new("noted", &[("XDG_CONFIG_HOME", Some("$D/cfg".into()))]);
     // a directory where the file should be: it exists, and reading it fails
-    std::fs::create_dir_all(e.dir.join("cfg/tmux-cockpit/prompts/explain.txt")).unwrap();
+    let p = e.dir.join("cfg/tmux-cockpit/prompts/explain.txt");
+    std::fs::create_dir_all(&p).unwrap();
     let call = Call {
         claude: e.exec("claude", "cat >/dev/null; exec sleep 1000"),
         timeout: Duration::from_secs(77),
@@ -432,7 +446,7 @@ fn an_override_that_cannot_be_read_is_a_warn_note_on_the_busy_view() {
     a.launch(&call);
     let n = a.note.clone().expect("a note");
     assert_eq!(n.level, Level::Warn);
-    assert!(n.text.contains("explain.txt") && n.text.contains("shipped prompt"), "{}", n.text);
+    assert_eq!(n.text, unread(&p));
     assert_eq!(a.timeout, Duration::from_secs(77), "the limit comes from the call");
     a.stop();
 }
