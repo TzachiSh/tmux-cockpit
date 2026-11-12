@@ -151,7 +151,8 @@ fn rig_path_makes_the_bin_writes_the_stub_and_puts_the_bin_first() {
     let got = rig_path(&bin);
     let old = std::env::var("PATH").unwrap();
     assert_eq!(got, format!("{}:{old}", bin.display()));
-    assert_eq!(std::fs::read_to_string(bin.join("claude")).unwrap(), "#!/bin/sh\nexit 127\n");
+    let body = "#!/bin/sh\necho x >> \"$0.started\"\nexit 127\n";
+    assert_eq!(std::fs::read_to_string(bin.join("claude")).unwrap(), body);
     assert_eq!(std::fs::metadata(bin.join("claude")).unwrap().permissions().mode() & 0o777, 0o755);
     assert_eq!(rigs_claude(&OsString::from(&got), &s.join("rig")), Ok(bin.join("claude")));
 }
@@ -167,6 +168,19 @@ fn the_stub_prints_nothing_and_exits_127() {
         .output()
         .unwrap();
     assert_eq!((out.status.code(), out.stdout.len(), out.stderr.len()), (Some(127), 0, 0));
+}
+
+#[test]
+fn the_stub_counts_each_start_in_a_file_beside_itself() {
+    let s = scratch("count");
+    let bin = s.join("bin");
+    rig_path(&bin);
+    assert!(!bin.join("claude.started").exists(), "counted before any start");
+    for _ in 0..2 {
+        // by its full path, as above
+        std::process::Command::new(bin.join("claude")).status().unwrap();
+    }
+    assert_eq!(std::fs::read_to_string(bin.join("claude.started")).unwrap(), "x\nx\n");
 }
 
 #[test]

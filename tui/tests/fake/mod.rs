@@ -170,8 +170,10 @@ pub fn passes_in_a_child(test: &str) {
 /// that as no answer, so a lookup goes as it does where claude is not
 /// installed, the state CI runs in. It must never print: a JSON array on its
 /// stdout would be an answer, and the rig's panes would take sessions from it.
+/// Each start appends one line to `claude.started` beside it, so a rig that
+/// looks up can hold that its own `claude` was the one started.
 #[allow(dead_code)]
-const NO_CLAUDE: &str = "#!/bin/sh\nexit 127\n";
+const NO_CLAUDE: &str = "#!/bin/sh\necho x >> \"$0.started\"\nexit 127\n";
 
 /// What a spawn searches when PATH is not set at all: glibc's `_CS_PATH`, as
 /// `getconf PATH` prints it.
