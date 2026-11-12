@@ -1422,12 +1422,18 @@ not wired into Explain yet.
   space between.
 - **Status.** With no status on any step there is no status column and no
   current step. Otherwise the current step is the first one not done: `▶` in
-  the ladder's first column, `◀ here` after its line in the list.
-- **Notes.** A note starting `NEED FROM YOU` goes in the box closing the
-  drawing; any other note shows under the step before it, after a `↳`.
+  the ladder's first column, `◀ here` at the end of its line in the list, or
+  on the line below when it does not fit there.
+- **Notes.** A note whose first words are `NEED FROM YOU` goes in the box
+  closing the drawing (`NEED FROM YOUR` is an ordinary note). Any other note
+  shows after a `↳`: under the step before it, or under the header when it
+  comes before the first step. A long note wraps onto more rows.
 - **Width.** No line is wider than the width, measured with `unicode-width` by
-  grapheme cluster; control characters show as U+FFFD. Nothing panics.
-- **Goldens:** `flow-base-{40,60,100}` and `flow-status-{40,60,100}`.
+  grapheme cluster. Text goes through `action::sanitize` first, so bidi
+  controls, U+2028/U+2029 and control characters never reach a line; a tab is
+  a space. Nothing panics, even on a `Flow` built by hand.
+- **Goldens:** `flow-base-{40,60,100}`, `flow-status-{40,60,100}` and
+  `flow-wide-{60,100}`.
 
 ### The panel on a small screen
 
