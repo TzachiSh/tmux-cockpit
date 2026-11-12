@@ -230,3 +230,19 @@ fn empty_input_is_not_drawn_and_width_0_draws_nothing_visible() {
     assert!(flow::render("", 40)[0].starts_with("(not drawn: "));
     assert!(flow::render(STATUS, 0).iter().all(String::is_empty));
 }
+
+#[test]
+fn bidi_controls_and_line_separators_never_reach_a_line() {
+    for (row, label) in [
+        ("U+202E", "abc\u{202E}fed"),
+        ("U+2028", "one\u{2028}two"),
+        ("U+2029", "one\u{2029}two"),
+    ] {
+        let src = format!("sequenceDiagram\nA->>B: {label}\n");
+        for w in [40, 60] {
+            let out = flow::render(&src, w);
+            let bad = |c: char| matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{2028}' | '\u{2029}');
+            assert!(out.iter().all(|l| !l.chars().any(bad)), "{row} w={w}: {out:?}");
+        }
+    }
+}

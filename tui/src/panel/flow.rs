@@ -113,10 +113,12 @@ impl Flow {
     }
 }
 
-/// Tabs become spaces and other control characters U+FFFD, so a width counts
-/// what the terminal shows and no escape reaches it.
+/// Untrusted text made safe to draw: [`action::sanitize`](super::action::sanitize)
+/// drops bidi controls, U+2028/U+2029 and every control but tab and newline;
+/// then a tab is a space and a newline U+FFFD, so a width counts what shows.
 fn clean(s: &str) -> String {
-    s.chars()
+    super::action::sanitize(s)
+        .chars()
         .map(|c| match c {
             '\t' => ' ',
             c if c.is_control() => '\u{FFFD}',
