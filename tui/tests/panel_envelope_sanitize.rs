@@ -221,16 +221,17 @@ fn a_key_glued_to_a_word_by_a_direction_control_is_hidden_in_an_asks_code() {
 
 /// Made-up keys split after the matcher's minimum run: the raw pass hides the
 /// head, the cleaning glues `[hidden]` to the tail, and the tail has no prefix.
-const LATE: [(&str, &str); 2] = [
+const LATE: [(&str, &str); 3] = [
     ("sk-ant-MADEUPMADEUP\u{202E}FAKEFAKE00", "sk-ant-"),
     ("ghp_MADEUPMADEUPMADEUPMADE\u{2066}FAKEFAKE00", "ghp_"),
+    ("sk-ant-MADEUPMADEUP\u{202E}FAKE\u{2066}FAKE00", "two controls"),
 ];
 
 #[test]
 fn a_key_split_after_its_minimum_run_is_hidden_whole_in_every_redacted_section() {
     let mut sent = vec![];
     for (value, row) in LATE {
-        let leaked = redacted_sections(value).into_iter().filter(|(_, env)| env.contains("FAKEFAKE00"));
+        let leaked = redacted_sections(value).into_iter().filter(|(_, env)| env.contains("FAKE"));
         sent.extend(leaked.map(|(section, _)| format!("{row} {section}")));
     }
     assert_eq!(sent, Vec::<String>::new());
@@ -240,14 +241,33 @@ fn a_key_split_after_its_minimum_run_is_hidden_whole_in_every_redacted_section()
     }
 }
 
-/// The marker takes only the key characters glued to it: a word after a blank
-/// stays, in the second pass too.
+/// A marker takes a key's tail only where the cleaning dropped something right
+/// after it: text after a hidden value stays, glued to it or not.
 #[test]
 fn text_after_a_hidden_value_stays() {
-    for s in ["password=MADEUPVALUE next word", "password=MADEUPVALUE next\u{202E} word"] {
-        let env = build(&write("x"), &screen(s), &[], 3);
-        assert_eq!(body(&env, "<screen", "</screen>"), "password=[hidden] next word", "{s:?}");
-    }
+    let rows = [
+        ("password=MADEUPVALUE next word", "password=[hidden] next word"),
+        ("password=MADEUPVALUE next\u{202E} word", "password=[hidden] next word"),
+        ("AKIAMADEUPFAKE123456-prod", "[hidden]-prod"),
+        ("ghp_MADEUPFAKEFAKEFAKEFAKE00-prod", "[hidden]-prod"),
+        ("ghp_MADEUPFAKEFAKEFAKEFAKE00_prod", "[hidden]_prod"),
+        ("[hidden]word stays", "[hidden]word stays"),
+        ("see [hidden]-flag", "see [hidden]-flag"),
+        ("[hidden]_name", "[hidden]_name"),
+    ];
+    let lost: Vec<_> = rows
+        .iter()
+        .map(|(s, want)| (*s, body(&build(&write("x"), &screen(s), &[], 3), "<screen", "</screen>"), *want))
+        .filter(|(_, got, want)| got != want)
+        .collect();
+    assert_eq!(lost, vec![]);
+}
+
+/// The same in an Ask's code, restored from a state file.
+#[test]
+fn text_after_a_hidden_value_stays_in_an_asks_code() {
+    let env = build(&ask_with("1 id = AKIAMADEUPFAKE123456-prod"), &Capture::default(), &[], 3);
+    assert_eq!(body(&env, "<code", "</code>"), "1 id = [hidden]-prod");
 }
 
 /// One key is one hidden, whichever pass caught it: the second pass matching

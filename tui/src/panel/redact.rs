@@ -26,27 +26,35 @@ pub fn redact(text: &str) -> (String, usize) {
 /// A direction control inside a key cuts it into runs too short to match, and
 /// only the cleaned text joins them; one between a word and a key is the
 /// boundary the matchers need, and only the raw text has it. A key split after
-/// its first run already matched has its head hidden by the first pass; the
-/// cleaning joins the marker to the tail, which [`absorb`] then hides. A key
+/// its first run already matched has its head hidden by the first pass, and
+/// [`absorb`] hides the tail the cleaning would join to the marker. A key
 /// both glued and split by such controls is missed by both passes. The count is
 /// the first pass's and the markers the second adds, so a key the first hid,
 /// matched again as `token=[hidden]`, is not counted twice.
 pub fn redact_clean(text: &str) -> (String, usize) {
     let (raw, n) = redact(text);
-    let (clean, _) = redact(&absorb(&super::action::sanitize(&raw)));
+    let (clean, _) = redact(&super::action::sanitize(&absorb(&raw)));
     let added = added(&raw, &clean);
     (clean, n + added)
 }
 
-/// Each [`HIDDEN`] marker with the key characters joined to it dropped: after
-/// the cleaning they are the tail of the key it hid. A blank or other character
-/// ends them, so the text after a hidden value stays.
+/// The raw text with the tail of each split key dropped: after a [`HIDDEN`]
+/// marker, characters the cleaning drops and the key characters behind them,
+/// as often as they alternate. Text right after a marker, with nothing the
+/// cleaning drops between, stays: it was there before the key was hidden.
 fn absorb(s: &str) -> String {
+    let dropped = |c: char| super::action::sanitize(c.encode_utf8(&mut [0; 4])).is_empty();
     let (mut out, mut rest) = (String::with_capacity(s.len()), s);
     while let Some(k) = rest.find(HIDDEN) {
-        let end = k + HIDDEN.len();
-        out.push_str(&rest[..end]);
-        rest = &rest[end + run(rest, end, tok)..];
+        out.push_str(&rest[..k + HIDDEN.len()]);
+        rest = &rest[k + HIDDEN.len()..];
+        loop {
+            let gone: usize = rest.chars().take_while(|&c| dropped(c)).map(char::len_utf8).sum();
+            if gone == 0 {
+                break;
+            }
+            rest = &rest[gone + run(rest, gone, tok)..];
+        }
     }
     out + rest
 }

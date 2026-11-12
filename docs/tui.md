@@ -1187,10 +1187,11 @@ is.
   (`redact::redact_clean`): a direction control inside a key cuts it into runs
   too short to match, and one between a word and a key is the boundary the
   match needs. A key cut after its first run already matched is hidden whole
-  too: the marker the first pass left takes the key characters the cleaning
-  joins to it. A key that direction controls both join to the word before it
-  and split inside is missed. A file name with a control or bidi character is
-  refused.
+  too: where the cleaning drops characters right after the marker the first
+  pass left, the key characters behind them go too. Text right after a
+  marker, with nothing dropped between, stays. A key that direction controls
+  both join to the word before it and split inside is missed. A file name with
+  a control or bidi character is refused.
 - **The call.** `request::Profile::read_only(repo, research = true)`: Read,
   Grep, Glob, WebSearch, WebFetch and skills, with no hooks and the secret
   paths denied, and no read outside the repo (see the rule on actions above).
