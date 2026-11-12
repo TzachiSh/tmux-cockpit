@@ -2124,13 +2124,21 @@ is "and flags the pane pending" "pending" \
 RGMK=$(mktmpd)
 printf '#!/bin/sh\ncase "$1" in -d) exit 1 ;; esac\nexec %q "$@"\n' "$(command -v mktemp)" \
     > "$RGMK/mktemp"; chmod +x "$RGMK/mktemp"
+rgd="PATH=$(printf '%q' "$RGMK"):\$PATH XDG_STATE_HOME=$(printf '%q' "$RGSTATE")"
 is "--delta, when the diff cannot be read, says so (exit 2)" "D=2" \
-    "$("$TMUX_REAL" -L "$RG" run-shell "PATH=$(printf '%q' "$RGMK"):\$PATH XDG_STATE_HOME=$(printf '%q' "$RGSTATE") '$DIR/scripts/tmux-review' --delta $RGAP; echo D=\$?" \
-    2>/dev/null | tail -1)"
+    "$("$TMUX_REAL" -L "$RG" run-shell \
+        "$rgd '$DIR/scripts/tmux-review' --delta $RGAP; echo D=\$?" 2>/dev/null | tail -1)"
 RG_PRE="PATH=$(printf '%q' "$RGMK"):\$PATH " rg_run "$RGPAY"
 is "and the Stop hook leaves the pending mark as it is" "pending|GRC=0" \
     "$("$TMUX_REAL" -L "$RG" show-option -pqv -t "$RGAP" @cockpit_review)|$(rg_rc)"
-unset RGMK
+# And from no mark: a refusal sets none (it would flag a tree no one could read).
+"$TMUX_REAL" -L "$RG" set-option -pu -t "$RGAP" @cockpit_review
+RG_PRE="PATH=$(printf '%q' "$RGMK"):\$PATH " rg_run "$RGPAY"
+is "and from no mark, the Stop hook sets none" "|GRC=0" \
+    "$("$TMUX_REAL" -L "$RG" show-option -pqv -t "$RGAP" @cockpit_review)|$(rg_rc)"
+# The rows after this one read a pending mark: the readable diff puts it back.
+rg_run "$RGPAY"
+unset RGMK rgd
 case "$("$TMUX_REAL" -L "$RG" show-option -gqv @cockpit_fleet)" in
     *'◆1'*) ok "the fleet string says ◆1" ;;
     *) bad "the fleet string says ◆1" "◆1" \
@@ -17446,14 +17454,18 @@ UD="cockpit-ud-$$"; SOCKS="$SOCKS $UD"; UDD=$(mktmpd); mkdir -p "$UDD/bin" "$UDD
   git init -q -b main "$UDD/r" && cd "$UDD/r" && printf 'a\n' > f && git add f \
   && git commit -q -m one && git switch -q -c feat && printf 'b\n' >> f \
   && git commit -q -am two && printf 'c\n' >> f ) >/dev/null 2>&1
-printf '#!/bin/sh\ncase "$1" in -d) n=$(cat %q 2>/dev/null || echo 0); n=$((n+1)); echo "$n" > %q\n''    [ "$n" -lt "$(cat %q)" ] || exit 1 ;; esac\nexec %q "$@"\n' \
-    "$UDD/n" "$UDD/n" "$UDD/from" "$(command -v mktemp)" > "$UDD/bin/mktemp"
+udf='#!/bin/sh\ncase "$1" in -d) n=$(cat %q 2>/dev/null || echo 0); n=$((n+1))\n'
+udf+='    echo "$n" > %q; [ "$n" -lt "$(cat %q)" ] || exit 1 ;; esac\nexec %q "$@"\n'
+# shellcheck disable=SC2059  # the format is built above, from literals only
+printf "$udf" "$UDD/n" "$UDD/n" "$UDD/from" "$(command -v mktemp)" > "$UDD/bin/mktemp"
 printf '#!/bin/sh\nexit 0\n' > "$UDD/bin/revdiff"
 cat > "$UDD/bin/tmux" <<SHIMEOF
 #!/bin/sh
 case "\$1" in
     display-popup) for a; do :; done; sh -c "\$a" >/dev/null 2>&1; exit 0 ;;
-    display-message) for a; do :; done; case "\$a" in *session_attached*) echo 1; exit 0 ;; esac; printf '%s\\n' "\$a" >> $(printf %q "$UDD/msgs") ;;
+    display-message) for a; do :; done
+        case "\$a" in *session_attached*) echo 1; exit 0 ;; esac
+        printf '%s\\n' "\$a" >> $(printf %q "$UDD/msgs") ;;
 esac
 exec $(printf %q "$TMUX_REAL") -L $(printf %q "$UD") "\$@"
 SHIMEOF
@@ -17466,8 +17478,8 @@ ud() {                        # <fail -d from this call> <stdin> -> the loop's s
 # The popup: the first tree_diff fails. It says so and keeps the pinned comments.
 printf '## f:1\n> a\nkeep this\n' > "$UDD/store"
 ud 1 ""; udrc=$?
-is "the review popup says the diff could not be read, status 1" \
-   "cockpit: could not read the diff in $UDD/r|1" "$(head -1 "$UDD/msgs")|$udrc"
+is "the review popup says the diff could not be read, status 124 (no review opened)" \
+   "cockpit: could not read the diff in $UDD/r|124" "$(head -1 "$UDD/msgs")|$udrc"
 is "and the pinned comments stay" "keep this" "$(grep -x 'keep this' "$UDD/store" 2>/dev/null)"
 # The b key: the first tree_diff reads the change, the one after b cannot. A fresh store, or
 # the loop first asks whether to unpin the comment kept above, and that read takes the b.
@@ -17478,8 +17490,29 @@ case "$(cat "$UDD/msgs")" in
     *) bad "b on a base whose diff cannot be read says so" "could not read the diff against ..." \
            "$(tr '\n' '|' < "$UDD/msgs")" ;;
 esac
+# --request, the agent's way in: the popup's loop cannot read the diff, and the agent is told
+# so on stderr with status 1, not 0, which the skill reads as a review that pinned nothing.
+"$TMUX_REAL" -L "$UD" -f /dev/null new-session -d -s t -c "$UDD/r" 'exec sleep 300' \
+    >/dev/null 2>&1
+UDP=$("$TMUX_REAL" -L "$UD" display -p -t t '#{pane_id}')
+rm -f "$UDD/n" "$UDD/store"; echo 1 > "$UDD/from"
+udo=$(env -u TMUX PATH="$UDD/bin:$PATH" XDG_STATE_HOME="$UDD/st" \
+    "$DIR/scripts/tmux-review" --request "$UDP" 2>&1 >/dev/null </dev/null); udrc=$?
+is "--request, when the diff cannot be read, fails and says why" \
+   "1|tmux-review: no review opened|could not read the diff in $UDD/r" \
+   "$udrc|$(printf '%s' "$udo" | head -2 | paste -sd'|')"
+# A git diff that fails (a blob it cannot read) is a failure too, not empty output and 0. A
+# repo of its own: one commit, f edited, and HEAD's blob of f unreadable.
+( git init -q -b main "$UDD/r2" && cd "$UDD/r2" && printf 'a\n' > f && git add f \
+  && git -c user.name=t -c user.email=t@e commit -q -m one && printf 'b\n' >> f ) >/dev/null 2>&1
+udb=$(git -C "$UDD/r2" rev-parse HEAD:f 2>/dev/null)
+chmod 000 "$UDD/r2/.git/objects/${udb:0:2}/${udb:2}" 2>/dev/null
+is "tree_diff on a blob it cannot read fails (1), with no output" "rc=1|" \
+   "$(bash -c '. "$1/git.sh"; . "$1/review-diff.sh"; o=$(tree_diff "$2" --numstat)
+        echo "rc=$?|$o"' _ "$DIR/scripts/lib" "$UDD/r2" 2>/dev/null)"
+chmod 644 "$UDD/r2/.git/objects/${udb:0:2}/${udb:2}" 2>/dev/null
 "$TMUX_REAL" -L "$UD" kill-server >/dev/null 2>&1
-unset -f ud; unset UD UDD udrc
+unset -f ud; unset UD UDD UDP udrc udo udb udf
 fi
 
 echo "== tests/only.sh: a pattern with \\( and ^ selects the block, no match is an error (#241) =="
