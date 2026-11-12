@@ -279,3 +279,19 @@ fn the_list_aligns_who_to_whom_whatever_the_label_widths() {
         assert!(cols.windows(2).all(|p| p[0] == p[1]), "{row}: {out:?}");
     }
 }
+
+#[test]
+fn a_hand_built_step_naming_a_missing_actor_draws_without_a_panic() {
+    let mut f = parsed("sequenceDiagram\nA->>B: x\n");
+    f.steps[0].to = 7;
+    f.steps[0].from = usize::MAX;
+    let no_actors = flow::Flow {
+        steps: f.steps.clone(),
+        ..Default::default()
+    };
+    for (row, f) in [("past the end", &f), ("no actors at all", &no_actors)] {
+        for w in [0, 40, 60, 100] {
+            assert!(flow::draw(f, w).iter().all(|l| l.width() <= w), "{row} w={w}");
+        }
+    }
+}

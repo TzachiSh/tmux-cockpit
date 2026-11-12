@@ -403,7 +403,8 @@ fn ladder(f: &Flow, w: usize) -> Vec<String> {
     let gutter = if f.has_status() { 3 } else { 1 };
     let right = if f.steps.iter().any(|s| s.time.is_some()) { 6 } else { 0 };
     let slot = (w.saturating_sub(gutter + right) / f.actors.len().max(1)).max(2);
-    let x = |i: usize| gutter + slot * i + slot / 2;
+    // A step built by hand may name an actor past the end: it draws at the last.
+    let x = |i: usize| gutter + slot * i.min(f.actors.len().saturating_sub(1)) + slot / 2;
     let lifelines = || {
         let mut r = Row::new(w);
         for i in 0..f.actors.len() {
@@ -468,7 +469,8 @@ fn list(f: &Flow, w: usize) -> Vec<String> {
     let status = f.has_status();
     let digits = if f.autonumber { f.steps.len().to_string().len().max(2) } else { 0 };
     let longest = f.steps.iter().map(|s| s.label.width()).max().unwrap_or(0);
-    let who = |s: &Step| format!("{}→{}", f.actors[s.from].name, f.actors[s.to].name);
+    let name = |i: usize| f.actors.get(i).map_or("?", |a| a.name.as_str());
+    let who = |s: &Step| format!("{}→{}", name(s.from), name(s.to));
     let who_w = f.steps.iter().map(|s| who(s).width()).max().unwrap_or(0);
     let time_w = f.steps.iter().filter_map(|s| s.time.as_deref()).map(str::width).max().unwrap_or(0);
     let lead_w = usize::from(status) * 2 + if f.autonumber { digits + 1 } else { 0 };
