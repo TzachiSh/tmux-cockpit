@@ -55,8 +55,14 @@ fn the_hook_options_reach_the_pane_through_the_format() {
         s.tmux(&["set-option", "-p", "-t", &p, k, v]);
     }
     // The pane has no session, so `list_panes` looks one up: `claude agents --json`,
-    // found by PATH. The rig's own answers it; `tmux` still comes from the rest (#972).
-    let path = fake::rig_path(&dir.join("bin"));
+    // found by PATH. The rig's own answers it and counts its starts, as silent as the
+    // one `rig_path` writes, which keeps a `claude` the rig wrote first. `tmux` still
+    // comes from the rest of PATH (#972).
+    let bin = dir.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let counting = format!("#!/bin/sh\necho 1 >> '{d}/starts'\nexit 127\n");
+    fake::write_exec(&bin.join("claude"), &counting);
+    let path = fake::rig_path(&bin);
     // SAFETY: this test binary holds exactly one test, so nothing runs beside it.
     unsafe {
         std::env::set_var("PATH", path);
@@ -67,6 +73,8 @@ fn the_hook_options_reach_the_pane_through_the_format() {
     }
     fake::assert_claude_is_the_rigs(&dir);
     let ps = list_panes().unwrap();
+    let starts = std::fs::read_to_string(dir.join("starts")).unwrap_or_default();
+    assert_eq!(starts.lines().count(), 1, "the lookup did not start the rig's claude once");
     let got: Vec<(u32, Vec<String>)> = ps
         .iter()
         .map(|p| (p.subs_n, p.subs.iter().map(|s| s.desc.clone()).collect()))
