@@ -20254,7 +20254,8 @@ NTK=$("$TMUX_REAL" -L "$NTS" display -p '#{socket_path}')
 "$TMUX_REAL" -L "$NTS" set -g @cockpit_agents_glob '|claude|' \; \
     set -p -t "$NTP" @cockpit_agentview 1 >/dev/null 2>&1
 nt_w="" nt_r=""
-for nt_f in stop subs gstop gsubs; do
+# never: a fifo no site opens, as a site that fails before reading its stdin leaves (#930).
+for nt_f in stop subs gstop gsubs never; do
     mkfifo "$NT/$nt_f"; (printf '{"x":1'; exec sleep 20) > "$NT/$nt_f" & nt_w="$nt_w $!"
 done
 nt_run() {                    # <name> <cap> <cmd...>: its exit status in $NT/<name>.rc
@@ -20301,6 +20302,14 @@ for nt_p in $nt_w; do
     nt_c=""; read -r nt_c 2>/dev/null < "/proc/$nt_p/comm"
     [ "$nt_c" != sleep ] || kill "$nt_p" 2>/dev/null
 done
+# A writer whose fifo no site opened is still blocked in open(), on this shell's stdout: the
+# cleanup must end it too, or a site that fails holds the run open (#930).
+# shellcheck disable=SC2086  # a list of pids
+until_out '' sh -c 'for p; do kill -0 "$p" 2>/dev/null && echo "$p"; done' _ $nt_w
+is "no fifo writer outlives the block, the one no site opened included" "" \
+   "$(for nt_p in $nt_w; do kill -0 "$nt_p" 2>/dev/null && echo "$nt_p"; done)"
+# Whatever the cleanup did: let a writer still blocked in open() through, so it ends.
+for nt_f in stop subs gstop gsubs never; do : 2>/dev/null <> "$NT/$nt_f"; done
 "$TMUX_REAL" -L "$NTS" kill-server >/dev/null 2>&1
 unset -f nt_run; unset NT NTS NTP NTK nt_w nt_r nt_f nt_d nt_p nt_c nt_path nt_n
 fi
