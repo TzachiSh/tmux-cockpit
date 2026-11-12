@@ -1,6 +1,6 @@
 //! The panel's hide and resume (#278): ^Z keeps the whole state in a version 2
 //! state file, and `--resume <file> --last hidden` brings it back as it was.
-#[allow(dead_code)] // for its Scratch guard only, not write_exec
+#[allow(dead_code)] // for its Scratch guard and fixed environment, not write_exec
 mod fake;
 
 use cockpit_tui::panel::action::{HIDE_AGE, HIDE_MAX, read_hidden, read_state, write_hidden};
@@ -18,7 +18,10 @@ use std::path::PathBuf;
 
 const NOW: u64 = 1_800_000_000;
 
+/// Every `App` here is built under the binary's one environment (#957): the
+/// developer's HOME, prompt overrides and COCKPIT_PANEL_MODEL answer no test.
 fn app(cmd: &str) -> App {
+    fake::fixed_env();
     let cap = Capture {
         name: "work".into(),
         cmd: cmd.into(),
@@ -27,6 +30,22 @@ fn app(cmd: &str) -> App {
         ..Default::default()
     };
     App::new("%3", cap)
+}
+
+/// Once an `App` is built, the binary runs under the fixed environment (#957).
+/// It builds one itself, so it holds when run first or alone.
+#[test]
+fn an_app_is_built_under_the_fixed_environment() {
+    let _ = app("bash");
+    fake::assert_fixed_env();
+}
+
+/// The test above in a process started with all three variables set. On a box
+/// that sets none of them, CI included, a COCKPIT_PANEL_MODEL left in place
+/// would pass that test: here it does not (#957).
+#[test]
+fn the_fixed_environment_replaces_values_already_set() {
+    fake::fixed_env_in_a_child("an_app_is_built_under_the_fixed_environment");
 }
 
 fn key(a: &mut App, code: KeyCode) {

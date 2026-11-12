@@ -4,6 +4,9 @@
 //! outside the folder it may read marked as not read. The basket rides along
 //! with a written result that names every ref, for cockpit-panel to clear once
 //! the paste lands. No tmux: the basket is set on the App as main would read it.
+#[allow(dead_code)] // for its fixed environment only, not write_exec
+mod fake;
+
 use cockpit_tui::panel::action::sanitize;
 use cockpit_tui::panel::app::{App, View};
 use cockpit_tui::panel::capture::Capture;
@@ -22,8 +25,12 @@ impl Drop for Dir {
 }
 
 /// A temp dir holding `repo/a.rs`, `repo/b.md` and `other/c.rs`, canonical;
-/// `repo/.git` marks the project an ask needs.
+/// `repo/.git` marks the project an ask needs. Every test here that reaches
+/// the product builds one first, so this is where the binary takes its one
+/// environment (#957): the developer's HOME, prompt overrides and
+/// COCKPIT_PANEL_MODEL answer no test.
 fn tree(tag: &str) -> Dir {
+    fake::fixed_env();
     let d = std::env::temp_dir().join(format!("cockpit-write-refs-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(d.join("repo/.git")).unwrap();
@@ -32,6 +39,22 @@ fn tree(tag: &str) -> Dir {
         std::fs::write(d.join(f), "x\ny\nz\n").unwrap();
     }
     Dir(d.canonicalize().unwrap())
+}
+
+/// Once a tree is made, the binary runs under the fixed environment (#957).
+/// It makes one itself, so it holds when run first or alone.
+#[test]
+fn a_tree_is_made_under_the_fixed_environment() {
+    let _ = tree("fixedenv");
+    fake::assert_fixed_env();
+}
+
+/// The test above in a process started with all three variables set. On a box
+/// that sets none of them, CI included, a COCKPIT_PANEL_MODEL left in place
+/// would pass that test: here it does not (#957).
+#[test]
+fn the_fixed_environment_replaces_values_already_set() {
+    fake::fixed_env_in_a_child("a_tree_is_made_under_the_fixed_environment");
 }
 
 fn r(d: &Dir, f: &str, lines: Option<(u32, u32)>) -> Ref {
