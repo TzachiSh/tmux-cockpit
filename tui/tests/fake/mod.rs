@@ -8,8 +8,9 @@
 //! child's fd still writes to it. So the bytes go to a side file, a `cp` child
 //! writes the file that runs, and this process never opens that file for writing.
 //!
-//! Also the shared [`Scratch`] guard (#544), and the one environment a test
-//! binary can take for itself ([`fixed_env`], #957).
+//! Also the shared [`Scratch`] guard (#544), the one environment a test
+//! binary can take for itself ([`fixed_env`], #957), and the `claude` a rig
+//! answers a lookup with ([`rig_path`], #972).
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Once;
@@ -162,4 +163,72 @@ pub fn passes_in_a_child(test: &str) {
     let (said, passed) = (String::from_utf8_lossy(&out.stdout), format!("test {test} ... ok"));
     let ran = said.lines().any(|l| l == passed);
     assert!(out.status.success() && ran, "{}", told(test, &out));
+}
+
+/// The `claude` a rig holds unless it wrote its own: no output and exit 127,
+/// the status a shell gives for a command that is not there. The product reads
+/// that as no answer, so a lookup goes as it does where claude is not
+/// installed, the state CI runs in. It must never print: a JSON array on its
+/// stdout would be an answer, and the rig's panes would take sessions from it.
+#[allow(dead_code)]
+const NO_CLAUDE: &str = "#!/bin/sh\nexit 127\n";
+
+/// The PATH for a rig whose folder of fakes is `bin`: `bin`, then the PATH of
+/// this moment. `bin` is made if it is not there and gets a `claude`
+/// ([`NO_CLAUDE`]) unless the rig put one there already. The product looks
+/// agents up by starting `claude agents --json`, found by PATH, so a rig that
+/// reaches a lookup with no `claude` of its own starts the developer's (#972).
+/// This sets nothing: the caller sets PATH where it sets the rest of its
+/// environment, under its own lock, and then calls [`assert_claude_is_the_rigs`].
+#[allow(dead_code)]
+pub fn rig_path(bin: &Path) -> String {
+    assert!(bin.is_absolute(), "bin must be absolute: {}", bin.display());
+    // a `:` would split it into two entries of the PATH it opens
+    let Some(first) = bin.to_str().filter(|b| !b.contains(':')) else {
+        panic!("bin must hold no ':' and be UTF-8: {}", bin.display());
+    };
+    std::fs::create_dir_all(bin).unwrap();
+    if !bin.join("claude").exists() {
+        write_exec(&bin.join("claude"), NO_CLAUDE);
+    }
+    match std::env::var("PATH") {
+        Ok(old) if !old.is_empty() => format!("{first}:{old}"),
+        // no trailing `:` then: an empty entry is the cwd
+        Ok(_) | Err(std::env::VarError::NotPresent) => first.to_string(),
+        Err(e) => panic!("PATH: {e}"),
+    }
+}
+
+/// Whether a spawn could start `p`: a file with an exec bit.
+#[allow(dead_code)]
+fn runs(p: &Path) -> bool {
+    std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+}
+
+/// The first `claude` a spawn would find on `path`, the value of a PATH: `Ok`
+/// with it when it lies under `dir`, else `Err` with it, or with `None` when
+/// no entry holds one. It walks as execvp does: an empty entry is the cwd, and
+/// a `claude` that is no file or has no exec bit is passed over. It reads and
+/// never runs what it finds, so checking a rig that forgot [`rig_path`] starts
+/// nothing.
+#[allow(dead_code)]
+pub fn rigs_claude(path: &std::ffi::OsStr, dir: &Path) -> Result<PathBuf, Option<PathBuf>> {
+    assert!(dir.is_absolute(), "dir must be absolute: {}", dir.display());
+    let cwd = |e: PathBuf| if e.as_os_str().is_empty() { PathBuf::from(".") } else { e };
+    match std::env::split_paths(path).map(|e| cwd(e).join("claude")).find(|p| runs(p)) {
+        Some(found) if found.starts_with(dir) => Ok(found),
+        other => Err(other),
+    }
+}
+
+/// For a rig, once its environment is set: the `claude` a lookup would start
+/// now is one under `dir`, the rig's own folder. It fails where no `claude` is
+/// on PATH at all too, so it holds on a box without one as on a developer's.
+#[allow(dead_code)]
+pub fn assert_claude_is_the_rigs(dir: &Path) {
+    let path = std::env::var_os("PATH").expect("PATH is not set");
+    if let Err(found) = rigs_claude(&path, dir) {
+        let dir = dir.display();
+        panic!("the first claude on PATH is {found:?}, not one under {dir} (#972)");
+    }
 }
