@@ -15,7 +15,6 @@ use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
-use std::sync::Once;
 use std::time::Duration;
 
 fn golden(name: &str, got: &str) {
@@ -62,34 +61,11 @@ fn goldens(name: &str, app: &App, tick: u64) {
     golden(&format!("panel-{name}-120"), &frame(app, 120, 24, tick));
 }
 
-/// HOME and XDG_CONFIG_HOME for every test here. Nothing is ever made at it:
-/// sysfs takes no entry from a user, and a box without /sys has no such folder.
-const NO_HOME: &str = "/sys/absent-948";
-
-/// One environment for the whole test binary, set before the first `App` is
-/// built and never restored. A prompt override under the developer's own config
-/// folder and their HOME changed what a write sends (#948), and an exported
-/// COCKPIT_PANEL_MODEL changed the model and the frames that name it (#953).
-/// A test that reaches the product without [`app`] calls this itself first.
-fn fixed_env() {
-    static SET: Once = Once::new();
-    SET.call_once(|| {
-        // SAFETY: std's getenv and setenv share one lock, and a spawn holds it
-        // while the child takes the environment. Every read a test thread
-        // makes here is a Rust read; the readers that are not Rust are child
-        // processes, which get their copy at the spawn. A C function called
-        // in this process that reads the environment (a local time call, a
-        // getenv in a linked library) would break this: none is called today.
-        unsafe {
-            std::env::set_var("HOME", NO_HOME);
-            std::env::set_var("XDG_CONFIG_HOME", NO_HOME);
-            std::env::remove_var("COCKPIT_PANEL_MODEL");
-        }
-    });
-}
-
+/// Every `App` here is built under the binary's one environment (#948, #953),
+/// which [`fake::fixed_env`] sets. A test that reaches the product without this
+/// calls that itself first.
 fn app(name: &str, cmd: &str, screen: &str) -> App {
-    fixed_env();
+    fake::fixed_env();
     let cap = Capture {
         name: name.into(),
         cmd: cmd.into(),
@@ -100,20 +76,12 @@ fn app(name: &str, cmd: &str, screen: &str) -> App {
     App::new("%3", cap)
 }
 
-/// What [`an_app_is_built_under_the_fixed_environment`] writes to stderr once
-/// its three checks held, for the test that runs it in a process of its own.
-const ENV_CHECKED: &str = "the-fixed-environment-held";
-
 /// Once an `App` is built, the binary runs under the fixed environment (#948,
 /// #953). It builds one itself, so it holds when run first or alone.
 #[test]
 fn an_app_is_built_under_the_fixed_environment() {
     let _ = app("w", "zsh", "$ ");
-    let now = |k: &str| std::env::var(k).ok();
-    assert_eq!(now("HOME").as_deref(), Some(NO_HOME));
-    assert_eq!(now("XDG_CONFIG_HOME").as_deref(), Some(NO_HOME));
-    assert_eq!(now("COCKPIT_PANEL_MODEL"), None);
-    eprintln!("{ENV_CHECKED}");
+    fake::assert_fixed_env();
 }
 
 /// The test above in a process started with all three variables set. On a box
@@ -121,15 +89,7 @@ fn an_app_is_built_under_the_fixed_environment() {
 /// would pass that test: here it does not (#953).
 #[test]
 fn the_fixed_environment_replaces_values_already_set() {
-    let set = [("HOME", "/sys/other-948"), ("XDG_CONFIG_HOME", "/sys/other-948")];
-    let out = std::process::Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", "an_app_is_built_under_the_fixed_environment", "--nocapture"])
-        .envs(set)
-        .env("COCKPIT_PANEL_MODEL", "opus")
-        .output()
-        .unwrap();
-    let said = String::from_utf8_lossy(&out.stderr);
-    assert!(out.status.success() && said.lines().any(|l| l == ENV_CHECKED), "{said}");
+    fake::fixed_env_in_a_child("an_app_is_built_under_the_fixed_environment");
 }
 
 fn key(a: &mut App, code: KeyCode) {
