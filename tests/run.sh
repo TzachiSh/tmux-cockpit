@@ -1306,9 +1306,12 @@ if command -v timeout >/dev/null 2>&1; then
     is "a writer that pauses 3 s mid-payload still holds" running "$(bgo @panestate)"
     # A writer that never finishes, 8 KB every 0.2 s and no newline, is still cut at 10 s and
     # the Stop is done. Polled for 15 s.
+    # The fifo stays open on fd 3 for the whole loop, so a line written while the feeder is
+    # blocked in a write waits there instead of being dropped (#805). A failed write ends it:
+    # with SIGPIPE ignored, as on GitHub's runners, a reader that is gone is only an error.
     bgfeed() {                # <fifo>: 8 KB every 0.2 s, no newline, until a line on <fifo>
         printf '{"last_assistant_message":"'
-        while ! read -r -t 0.2 _ <> "$1"; do printf '%08192d' 0; done
+        { while ! read -r -t 0.2 -u 3 _; do printf '%08192d' 0 || break; done; } 3<> "$1"
     }
     bgst running "$BGU"
     { bgfeed "$BGF" 2>/dev/null \
