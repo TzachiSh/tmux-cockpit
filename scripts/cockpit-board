@@ -192,8 +192,11 @@ while :; do
             else
                 # -c expands formats, so the directory goes through fesc; the
                 # command does not, and $want is hex and dashes, quoted anyway.
+                # exec: tmux runs the string as `<default-shell> -c`, and a shell
+                # that forks its last command (dash) would stay the pane's process,
+                # so the pane would read sh, no agent to the check above (#895).
                 new=$(tmux split-window -P -F '#{pane_id}' -t "$target" -c "$(fesc "$dir")" \
-                    "claude --resume $(sq "$want")" 2>/dev/null)
+                    "exec claude --resume $(sq "$want")" 2>/dev/null)
                 if is_pane "$new"; then
                     log "resumed session $want in $new beside $target"
                     tmux switch-client ${CLIENT:+-c "$CLIENT"} -t "$new" 2>/dev/null || true

@@ -24,6 +24,17 @@ impl Server {
         let d = self.dir.display().to_string();
         self.tmux(&["new-window", "-d", "-P", "-F", "#{pane_id}", "-c", &d, &cmd])
     }
+
+    /// A pane as the board's resume key starts claude under a dash default shell
+    /// (#895): `dash -c <string>`, the string with or without `exec`. bash, this
+    /// server's shell, execs dash; dash forks the last command unless told to exec.
+    fn resumed(&self, dash: &str, exec: bool) -> String {
+        let bin = self.dir.join("claude");
+        let pre = if exec { "exec " } else { "" };
+        let cmd = format!("{dash} -c \"{pre}{} -c 'sleep 300; :'\"", bin.display());
+        let d = self.dir.display().to_string();
+        self.tmux(&["new-window", "-d", "-P", "-F", "#{pane_id}", "-c", &d, &cmd])
+    }
 }
 
 impl Drop for Server {
@@ -82,6 +93,24 @@ fn claude_and_its_version_title_read_at_mentions_and_nothing_else_does() {
     ];
     for (row, pane, want) in rows {
         assert_eq!(basket::is_claude(&pane), want, "{row} ({pane})");
+    }
+    // The resume key's string under dash (#895): with exec the pane is claude, as the
+    // key's live-copy check reads it; without, it is the shell, and no claude to either.
+    if dash {
+        let cases = [("with exec", true, "claude", true), ("without exec", false, "dash", false)];
+        for (row, exec, settled, want) in cases {
+            let pane = s.resumed("/usr/bin/dash", exec);
+            let cmd = || s.tmux(&["display-message", "-p", "-t", &pane, "#{pane_current_command}"]);
+            // bash, then dash, then claude exec'd or forked: wait for the pane to settle
+            for _ in 0..50 {
+                if cmd() == settled {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            assert_eq!(cmd(), settled, "a resume string {row}, under dash: the pane's command");
+            assert_eq!(basket::is_claude(&pane), want, "a resume string {row}, under dash ({pane})");
+        }
     }
     assert!(!basket::is_claude("%99999"), "a pane that is not there");
 }
