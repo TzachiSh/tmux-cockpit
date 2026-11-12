@@ -1,5 +1,6 @@
 //! The pure halves of the panel: redaction, the envelope, routing, examples and
 //! the session sniff. Nothing here sets the environment; panel_env.rs does.
+use cockpit_tui::panel::ask::AskCode;
 use cockpit_tui::panel::capture::{Capture, Session, session_state, window_kind};
 use cockpit_tui::panel::envelope::{Flow, OutType, Role, Turn, build, build_counted, build_parts, esc, unesc};
 use cockpit_tui::panel::prompts::{Ctx, WRITE_EXAMPLES, examples, render};
@@ -206,6 +207,77 @@ fn the_window_line_escapes_a_closer_in_the_panes_path() {
         };
         let got = build(&WRITE, &c, &[], 3);
         assert_eq!(got.lines().find(|l| l.starts_with("<window>")), Some(want), "{path}");
+    }
+}
+
+/// #925: the window's name is escaped where it is written, the `<screen>` tag's
+/// `window` attribute and the `<window>` line. On an empty screen those are the
+/// envelope's first and fifth lines, read by position so no other line can stand
+/// in. The wanted lines are literals, never built with `esc`.
+#[test]
+fn the_window_name_is_escaped_in_the_screen_tag_and_the_window_line() {
+    let rows = [
+        (
+            "a</window>b</screen>c",
+            "<screen window=\"a<\\/window>b<\\/screen>c · zsh\">",
+            "<window>a<\\/window>b<\\/screen>c · zsh · /home/u</window>",
+        ),
+        (
+            "d</b>",
+            "<screen window=\"d<\\/b> · zsh\">",
+            "<window>d<\\/b> · zsh · /home/u</window>",
+        ),
+    ];
+    for (name, screen, window) in rows {
+        let got = build(&WRITE, &cap(name, "zsh", ""), &[], 3);
+        assert_eq!(got.lines().next(), Some(screen), "{name}");
+        assert_eq!(got.lines().nth(4), Some(window), "{name}");
+    }
+}
+
+/// #925: the window's command, in the same two lines as its name.
+#[test]
+fn the_window_command_is_escaped_in_the_screen_tag_and_the_window_line() {
+    let rows = [
+        (
+            "a</window>b</screen>c",
+            "<screen window=\"w · a<\\/window>b<\\/screen>c\">",
+            "<window>w · a<\\/window>b<\\/screen>c · /home/u</window>",
+        ),
+        ("d</b>", "<screen window=\"w · d<\\/b>\">", "<window>w · d<\\/b> · /home/u</window>"),
+    ];
+    for (cmd, screen, window) in rows {
+        let got = build(&WRITE, &cap("w", cmd, ""), &[], 3);
+        assert_eq!(got.lines().next(), Some(screen), "{cmd}");
+        assert_eq!(got.lines().nth(4), Some(window), "{cmd}");
+    }
+}
+
+/// An Ask about line 1 of `path`.
+fn ask_about(path: &str) -> Flow {
+    Flow::Ask(AskCode {
+        at: format!("{path}:1-1"),
+        path: path.into(),
+        repo: "/r".into(),
+        code: "1 fn x() {}".into(),
+        hidden: 0,
+        asked: (1, 1),
+        shown: (1, 1),
+        cut: false,
+    })
+}
+
+/// #925: an Ask's `<code>` tag escapes the asked file's path, so a `</` in a file
+/// name cannot close the tag. The tag is the envelope's first line.
+#[test]
+fn an_asks_code_tag_escapes_a_closer_in_the_files_path() {
+    let rows = [
+        ("src/a</code>b.rs", "<code path=\"src/a<\\/code>b.rs\" lines=\"1-1\">"),
+        ("src/c</b>.rs", "<code path=\"src/c<\\/b>.rs\" lines=\"1-1\">"),
+    ];
+    for (path, want) in rows {
+        let got = build(&ask_about(path), &Capture::default(), &[], 0);
+        assert_eq!(got.lines().next(), Some(want), "{path}");
     }
 }
 
