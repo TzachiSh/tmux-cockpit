@@ -270,21 +270,30 @@ tree_diff() {
         done < <(big_list "$dir" "$base")
         [ "${#ex[@]}" -gt 0 ] && ex=(-- "${ex[@]}") ;;
     esac
+    # git diff exits 0 with or without changes: any other status is a diff that failed (a
+    # blob it cannot read), which must not read as a clean tree (#944).
+    local drc=0
     if [ -n "$br" ]; then
         # core.quotePath=false, as tui/src/data/gitsafe.rs's diff: literal non-ASCII
         # paths. The nonascii and untracked rows in tests/run.sh pin it.
         GIT_INDEX_FILE=$idx git -C "$dir" --no-optional-locks -c core.quotePath=false \
-            diff --no-color --no-ext-diff --ignore-submodules=dirty "$base" "$@" "${ex[@]+"${ex[@]}"}" 2>/dev/null
+            diff --no-color --no-ext-diff --ignore-submodules=dirty "$base" "$@" \
+            "${ex[@]+"${ex[@]}"}" 2>/dev/null || drc=$?
     else
         local out
-        out=$(GIT_INDEX_FILE=$idx git -C "$dir" --no-optional-locks -c core.quotePath=false diff --no-color --no-ext-diff --ignore-submodules=dirty "$@" "${ex[@]+"${ex[@]}"}" 2>/dev/null)
-        [ -n "$out" ] || out=$(GIT_INDEX_FILE=$idx git -C "$dir" --no-optional-locks -c core.quotePath=false diff --no-color --no-ext-diff --ignore-submodules=dirty --cached "$@" "${ex[@]+"${ex[@]}"}" 2>/dev/null)
+        local -a dg=(git -C "$dir" --no-optional-locks -c core.quotePath=false
+            diff --no-color --no-ext-diff --ignore-submodules=dirty)
+        out=$(GIT_INDEX_FILE=$idx "${dg[@]}" "$@" "${ex[@]+"${ex[@]}"}" 2>/dev/null) || drc=$?
+        [ -n "$out" ] || [ "$drc" -ne 0 ] \
+            || out=$(GIT_INDEX_FILE=$idx "${dg[@]}" --cached "$@" "${ex[@]+"${ex[@]}"}" \
+                2>/dev/null) || drc=$?
         printf '%s\n' "$out"
     fi
     # The binary-file numstat row git would have printed: without it a tree whose
     # only change is a big file reads clean to --delta.
     [ "${#bigp[@]}" -eq 0 ] || case " $* " in *' --numstat '*) printf -- '-\t-\t%s\n' "${bigp[@]}" ;; esac
     scratch_done
+    [ "$drc" -eq 0 ]
 }
 
 # tree_diff's and approve's way out, on every path: the temp dir gone, the

@@ -132,11 +132,14 @@ review_loop() {
     set_base_line
 
     # Status, not output: a tree_diff that fails prints nothing too, and is no clean tree
-    # (#944). Its store stays: the pinned comments are not the failure's to drop.
+    # (#944). Its store stays: the pinned comments are not the failure's to drop. 124 with
+    # the reason in revdiff.err is the loop's "no review opened", which --request reports
+    # as a failure: the agent must not read it as a review that pinned nothing.
     local tdo
     if ! tdo=$(tree_diff "$dir" --numstat); then
         tmux display-message "$(fesc "cockpit: could not read the diff in $dir")" 2>/dev/null
-        exit 1
+        printf 'could not read the diff in %s\n' "$dir" > "${store%/*}/revdiff.err"
+        exit 124
     fi
     if [ -z "$tdo" ]; then
         tmux display-message "$(fesc "cockpit: no uncommitted changes in $dir")" 2>/dev/null
@@ -148,7 +151,7 @@ review_loop() {
             "cockpit: resumed $(grep -c '^## ' -- "$store") pinned comment(s)" 2>/dev/null
     fi
 
-    local rc n key choice to errf="${store%/*}/revdiff.err"
+    local rc n key choice to msg errf="${store%/*}/revdiff.err"
     local -a args rdx
     while :; do
         # Big files stay out of revdiff's git: revdiff_files in review-diff.sh.
@@ -229,7 +232,8 @@ review_loop() {
                    COCKPIT_REVIEW_BASE=$nxt; export COCKPIT_REVIEW_BASE
                    set_base_line
                    if ! tdo=$(tree_diff "$dir" --numstat); then
-                       tmux display-message "$(fesc "cockpit: could not read the diff against $label")" 2>/dev/null
+                       msg="cockpit: could not read the diff against $label"
+                       tmux display-message "$(fesc "$msg")" 2>/dev/null
                    elif [ -z "$tdo" ]; then
                        tmux display-message "$(fesc "cockpit: nothing to review against $label")" 2>/dev/null
                    fi
