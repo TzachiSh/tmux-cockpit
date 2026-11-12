@@ -62,7 +62,9 @@ file and the answer to a private temp file for the paste.
   the answer ends with that message, ready to insert or send.
 - Claude may ask up to 3 multiple-choice questions first (6 for Explain):
   `1`-`4` picks, `o` types your own answer, `g` tells it to guess. A write
-  asks rather than guesses what only you know, with 2 options a question. A
+  asks rather than guesses what only you know, with 2 options a question, and
+  may ask up to 3 independent questions at once: you answer them one by one
+  (`question 1 of 2`), and they go back together. A
   write that still asks with no questions left is told once to write it
   anyway, leaving that point to Claude Code's options or a placeholder; the
   error shows only if it asks again.
