@@ -4,7 +4,7 @@
 //! newline, tab and right-to-left letters stay. Every value here is made up.
 use cockpit_tui::panel::ask::{self, AskCode};
 use cockpit_tui::panel::capture::Capture;
-use cockpit_tui::panel::envelope::{Flow, OutType, Role, Turn, build};
+use cockpit_tui::panel::envelope::{Flow, OutType, Role, Turn, build, build_parts};
 use std::path::PathBuf;
 
 /// A capture with `screen` and `repo`, and the window's name, command and path.
@@ -170,20 +170,81 @@ fn an_asks_code_read_from_a_file_drops_a_direction_control() {
     assert_eq!(a.code, "1 let a = 1;");
 }
 
-// ------------------------------------- sanitize before redact (a split secret)
+// ------------------------- redact, clean, redact again (split and glued keys)
 
 /// A made-up key with a direction control inside: redact alone stops at it and
 /// sees a run too short to be a key, so the halves would go out joined.
 const SPLIT: &str = "sk-ant-MADEUP\u{202E}FAKEFAKE00";
 
+/// Made-up keys behind a word and a direction control: the control is the word
+/// boundary each matcher needs, so cleaning alone would glue the key to the word.
+const GLUED: [(&str, &str); 3] = [
+    ("x\u{202E}sk-ant-MADEUPFAKEFAKE00", "MADEUPFAKEFAKE00"),
+    ("a\u{2066}password=MADEUPVALUE", "MADEUPVALUE"),
+    (
+        "x\u{200F}ghp_MADEUPFAKEFAKEFAKEFAKEFAKEFAKE0000",
+        "MADEUPFAKEFAKEFAKEFAKEFAKEFAKE0000",
+    ),
+];
+
+/// The envelope of `value` in each redacted section, named.
+fn redacted_sections(value: &str) -> [(&'static str, String); 4] {
+    [
+        ("screen", build(&write("x"), &screen(value), &[], 3)),
+        ("repo", build(&write("x"), &cap("w", "b", "/p", "", value), &[], 3)),
+        ("turn", build(&Flow::Explain, &screen(""), &turn(value), 3)),
+        (
+            "state-file ask code",
+            build(&ask_with(&format!("1 {value}")), &Capture::default(), &[], 3),
+        ),
+    ]
+}
+
+#[test]
+fn a_key_glued_to_a_word_by_a_direction_control_is_hidden_in_every_redacted_section() {
+    for (value, tail) in GLUED {
+        for (section, env) in redacted_sections(value) {
+            assert!(env.contains("[hidden]"), "{section}: {env}");
+            assert!(!env.contains(tail), "{section}: {env}");
+        }
+    }
+}
+
+#[test]
+fn a_key_glued_to_a_word_by_a_direction_control_is_hidden_in_an_asks_code() {
+    let (_r, f) = Repo::new("glued", "let k = x\u{202E}sk-ant-MADEUPFAKEFAKE00;\n");
+    let a = ask::load_in(&f, 1, 1, None).unwrap();
+    assert_eq!((a.code.as_str(), a.hidden), ("1 let k = x[hidden];", 1));
+}
+
+/// One key is one hidden, whichever pass caught it: the second pass matching
+/// `password=[hidden]` again is no new key.
+#[test]
+fn a_key_counts_once_whichever_pass_hides_it() {
+    for value in ["password=MADEUPVALUE", SPLIT, GLUED[0].0] {
+        assert_eq!(build_parts(&write("x"), &screen(value), &[], 3).screen_hidden, 1, "{value:?}");
+    }
+}
+
+/// A state file's code that `ask::load` already redacted keeps its count: the
+/// envelope's own pass adds only what it newly hides.
+#[test]
+fn a_restored_asks_code_counts_only_what_the_envelope_newly_hides() {
+    let rows = [
+        ("already hidden", "1 token=[hidden]", 1),
+        ("a split key", "1 sk-ant-MADEUP\u{202E}FAKEFAKE00", 1),
+    ];
+    for (row, code, want) in rows {
+        let Flow::Ask(mut a) = ask_with(code) else { unreachable!() };
+        a.hidden = usize::from(row == "already hidden");
+        let e = build_parts(&Flow::Ask(a), &Capture::default(), &[], 3);
+        assert_eq!(e.repo_hidden, want, "{row}");
+    }
+}
+
 #[test]
 fn a_secret_split_by_a_direction_control_is_hidden_in_every_redacted_section() {
-    let rows = [
-        ("screen", build(&write("x"), &screen(SPLIT), &[], 3)),
-        ("repo", build(&write("x"), &cap("w", "b", "/p", "", SPLIT), &[], 3)),
-        ("turn", build(&Flow::Explain, &screen(""), &turn(SPLIT), 3)),
-    ];
-    for (section, env) in rows {
+    for (section, env) in redacted_sections(SPLIT) {
         assert!(env.contains("[hidden]"), "{section}: {env}");
         assert!(!env.contains("FAKEFAKE00"), "{section}: {env}");
     }

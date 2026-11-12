@@ -2,7 +2,7 @@
 use super::action::sanitize;
 use super::ask::AskCode;
 use super::capture::{Capture, session_state};
-use super::redact::redact;
+use super::redact::{added, redact_clean};
 use super::request::read_denied;
 use crate::refs::Ref;
 use std::path::Path;
@@ -259,11 +259,12 @@ fn refs_part(refs: &[RefItem]) -> String {
 /// [`build_parts`], and for a Write with the basket's refs (#365 child 5) a
 /// `<refs>` block before the request. No other flow carries it.
 ///
-/// Every section of outside text is cleaned as a send is ([`sanitize`], #936),
-/// then redacted where it is, then escaped. Cleaning goes first so a direction
-/// control inside a secret cannot cut it into halves too short to match.
+/// Every section of outside text is cleaned as a send is ([`sanitize`], #936)
+/// and escaped last. A redacted section is redacted both before and after the
+/// cleaning ([`redact_clean`]): a direction control can split a key or be the
+/// boundary before one.
 pub fn build_refs(flow: &Flow, cap: &Capture, turns: &[Turn], questions_left: usize, refs: &[RefItem]) -> Envelope {
-    let (screen, screen_hidden) = redact(&sanitize(&cap.screen));
+    let (screen, screen_hidden) = redact_clean(&cap.screen);
     let (mut repo_hidden, mut turns_hidden) = (0, 0);
     let screen = esc(&screen);
     let (name, cmd) = (esc(&sanitize(&cap.name)), esc(&sanitize(&cap.cmd)));
@@ -278,7 +279,7 @@ pub fn build_refs(flow: &Flow, cap: &Capture, turns: &[Turn], questions_left: us
             let repo = cap.repo.get();
             if !repo.is_empty() {
                 // Commit messages and paths carry secrets as a screen does.
-                let (repo, n) = redact(&sanitize(repo));
+                let (repo, n) = redact_clean(repo);
                 repo_hidden = n;
                 parts.push(format!("<repo>\n{}\n</repo>", esc(&repo)));
             }
@@ -296,13 +297,14 @@ pub fn build_refs(flow: &Flow, cap: &Capture, turns: &[Turn], questions_left: us
         }
         // the code, never the screen: the question is about the file (#365)
         Flow::Ask(a) => {
-            // ask::load redacted each line before it cut any
-            repo_hidden = a.hidden;
+            // ask::load cleaned and redacted each line before it cut any; a
+            // state file's code is done here too, counting only what is new
+            let (code, _) = redact_clean(&a.code);
+            repo_hidden = a.hidden + added(&a.code, &code);
             let lines = format!("{}-{}", a.asked.0, a.asked.1);
             // ask::load refused a name with a control character; a `"` would end the attribute
             let path = a.path.replace('"', "&quot;");
-            // ask::load cleaned it already; a state file's code is cleaned here
-            let code = esc(&sanitize(&a.code));
+            let code = esc(&code);
             let path = esc(&path);
             parts.push(format!("<code path=\"{path}\" lines=\"{lines}\">\n{code}\n</code>"));
             let (s0, s1) = a.shown;
@@ -331,7 +333,7 @@ pub fn build_refs(flow: &Flow, cap: &Capture, turns: &[Turn], questions_left: us
             .iter()
             .map(|t| {
                 let role = if t.role == Role::User { "user" } else { "assistant" };
-                let (text, n) = redact(&sanitize(&t.text));
+                let (text, n) = redact_clean(&t.text);
                 turns_hidden += n;
                 format!("<turn role=\"{role}\">{}</turn>", esc(&text))
             })

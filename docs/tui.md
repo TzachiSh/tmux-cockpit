@@ -1181,11 +1181,13 @@ is.
   and an end past the file's last line is held to it. At most 400 lines and
   32 KB go inline, each behind its number; the call is told what was left out
   or cut short, and reads the rest with its own Read. Each line is cleaned
-  (`action::sanitize`, #936) and then redacted as the screen is, before it is
+  (`action::sanitize`, #936) and redacted as the screen is, before it is
   numbered or cut (a key's PEM body line by line), and the screen itself is
-  never sent. Cleaning goes first, so a direction control inside a key cannot
-  cut it into halves too short to match. A file name with a control or bidi
-  character is refused.
+  never sent. Redaction runs on the line before and after the cleaning
+  (`redact::redact_clean`): a direction control inside a key cuts it into runs
+  too short to match, and one between a word and a key is the boundary the
+  match needs. A key both glued and split that way is missed. A file name with
+  a control or bidi character is refused.
 - **The call.** `request::Profile::read_only(repo, research = true)`: Read,
   Grep, Glob, WebSearch, WebFetch and skills, with no hooks and the secret
   paths denied, and no read outside the repo (see the rule on actions above).

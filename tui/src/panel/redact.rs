@@ -21,6 +21,26 @@ pub fn redact(text: &str) -> (String, usize) {
     (s, n)
 }
 
+/// [`redact`] for text from outside the code (#936): the raw text, then the text
+/// cleaned (`action::sanitize`), then that again. Neither pass alone is enough.
+/// A direction control inside a key cuts it into runs too short to match, and
+/// only the cleaned text joins them; one between a word and a key is the
+/// boundary the matchers need, and only the raw text has it. A key both glued
+/// and split by such controls is missed by both passes. The count is the first
+/// pass's and the markers the second adds, so a key the first hid, matched
+/// again as `token=[hidden]`, is not counted twice.
+pub fn redact_clean(text: &str) -> (String, usize) {
+    let (raw, n) = redact(text);
+    let (clean, _) = redact(&super::action::sanitize(&raw));
+    let added = added(&raw, &clean);
+    (clean, n + added)
+}
+
+/// The [`HIDDEN`] markers `after` has over `before`.
+pub fn added(before: &str, after: &str) -> usize {
+    after.matches(HIDDEN).count().saturating_sub(before.matches(HIDDEN).count())
+}
+
 fn pass(s: &str, n: &mut usize, m: Matcher) -> String {
     let mut out = String::with_capacity(s.len());
     let mut i = 0;
