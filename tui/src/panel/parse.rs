@@ -10,6 +10,16 @@ pub struct Opt {
     pub recommended: bool,
 }
 
+/// One question of a batch, with the options that follow it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Query {
+    pub text: String,
+    pub options: Vec<Opt>,
+}
+
+/// The most questions a write's reply asks at once; past it the rest go.
+pub const MAX_BATCH: usize = 3;
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Step {
     pub note: String,
@@ -24,6 +34,8 @@ pub enum Reply {
         text: String,
         options: Vec<Opt>,
     },
+    /// A write's 2 to [`MAX_BATCH`] independent questions, in the reply's order.
+    Batch(Vec<Query>),
     Prompt(String),
     Text(String),
     Format {
@@ -184,6 +196,33 @@ fn question_at(o: &str) -> Option<(usize, Reply)> {
     Some((t.start, q))
 }
 
+/// The closed `<question>`s that start before `end`, by where their tag starts,
+/// up to the first one never closed.
+fn question_starts(o: &str, end: usize) -> Vec<usize> {
+    let mut starts = vec![];
+    let mut at = 0;
+    while let Some(t) = find_open(o, at, "question", "", false, false).filter(|t| t.start < end) {
+        let Some((_, next)) = body(o, &t, "question", false) else { break };
+        starts.push(t.start);
+        at = next;
+    }
+    starts
+}
+
+/// Several questions: each takes the options up to the next one, the first
+/// also any before it, as a lone question does.
+fn batch(o: &str, starts: &[usize]) -> Reply {
+    let mut qs = vec![];
+    for (i, &s) in starts.iter().enumerate().take(MAX_BATCH) {
+        let seg = &o[if i == 0 { 0 } else { s }..starts.get(i + 1).copied().unwrap_or(o.len())];
+        let Some(Reply::Question { text, options }) = question(seg) else {
+            continue;
+        };
+        qs.push(Query { text, options });
+    }
+    Reply::Batch(qs)
+}
+
 fn question(o: &str) -> Option<Reply> {
     question_at(o).map(|(_, q)| q)
 }
@@ -296,6 +335,10 @@ fn write_reply(o: &str, raw: &str, want: OutType) -> Reply {
     ];
     let first = found.into_iter().flatten().min_by_key(|(t, _)| t.start);
     // A question counts only once closed, and only when no other tag comes first.
+    let starts = question_starts(o, first.as_ref().map_or(o.len(), |(t, _)| t.start));
+    if starts.len() > 1 {
+        return batch(o, &starts);
+    }
     let (t, kind) = match (first, question_at(o)) {
         (Some((t, _)), Some((at, q))) if at < t.start => return q,
         (None, Some((_, q))) => return q,

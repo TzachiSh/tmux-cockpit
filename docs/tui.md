@@ -1311,8 +1311,9 @@ folder, then writing`, and tablet mode has an `[ explore ]` button.
   by now comes back with explore off, and the note says so.
 - **The caps are per call.** USD 0.15 and 90 s, `app::EXPLORE_BUDGET_USD` and
   `EXPLORE_TIMEOUT`, each call. One write can make up to five exploring calls
-  on its own: the first, one per answered question (three at most), and the
-  retry when it still asks with none left. Each `r` and each `a` correction is
+  on its own: the first, one per round of answered questions (three at most,
+  fewer when a reply asks several at once), and the retry when it still asks
+  with none left. Each `r` and each `a` correction is
   one more. The budget covers the write prompt's cache and three to five
   reads on sonnet. Reading past that is the agent's job, so the call ends instead
   of keeping the user on Busy. The budget is also the turn limit: `--max-turns`
@@ -1350,6 +1351,50 @@ folder, then writing`, and tablet mode has an `[ explore ]` button.
     that text context only, and nothing runs unasked: an insert is a paste, and
     a send needs a confirm. But a command or steps result can be sent by the
     user, so an injection can reach a command the user runs.
+
+### Batched questions
+
+A write may ask up to 3 questions in one reply, when they are independent: no
+answer to one could change whether or how another is asked (`prompts/write.txt`).
+The reply repeats the one-question block for each, `<question>` and its two
+`<option>` lines, most important first. Explain and Fix still ask one at a time,
+and `parse::fix` and `parse::explain` read only the first question, as before.
+
+- **Parsing.** `parse::write` reads two or more closed `<question>`s that come
+  before any result tag as `Reply::Batch`, each with the options up to the next
+  question; one question stays `Reply::Question`, parsed exactly as before. A
+  reply with more than `parse::MAX_BATCH` (3) keeps the first 3: the prompt
+  orders them most important first, so the first are the ones worth asking.
+- **The screen.** A batch shows `question k of N` above the question, and
+  `R of at most 3 questions asked` below it. Each question takes the same keys
+  as a lone one: a digit or Enter picks, `o` types your own answer. An answer
+  before the last shows the next question at once, with no call. After the
+  last, every answer goes back in one call, as turns in order: question 1,
+  answer 1, question 2, answer 2.
+- **The budget.** A batch takes one question each from `<questions_left>`
+  when it arrives: two questions leave 1 of 3. A batch larger than the
+  questions left keeps its first ones, so `rounds` never passes `max`; with
+  none left a batch is its first question, and the write is told once to
+  write it, as a lone question is.
+- **Back and esc.** `⌫` and `←` go back one question: within a batch to the
+  one before, its answer dropped; from the first question of a later round to
+  the last question of the batch before it. `esc` leaves the whole flow, as on
+  any question: the batch's answers go with the run, and the draft is kept.
+- **Best guess.** `g` answers the question on screen and every one after it in
+  the batch with the best-guess line, in the one call. A cancelled call comes
+  back on the question `g` was pressed on, with the questions after it still to
+  answer and the rounds given back.
+- **Hide.** `^Z` keeps the batch: each shown question's place in it, and the
+  questions still to come (`ahead`). A state file from before batches has no
+  place for a question and no `ahead`, and reads as one question a round.
+- **The rubric and the rig.** Rule 5 of `evals/panel/judge-rubric.txt` passes
+  up to 3 questions with 2 options each, and fails a batch with a question
+  whose answer could change another, or a padding question. The owner's labels
+  are all single-question replies; batch replies have none yet. `panel_eval`
+  scores a batch as asked; an `ask_any` term may be in any of its questions,
+  and the row's `question` numbers them (`1. Q1? [a | b] 2. Q2? [c | d]`). A
+  single question's row is as before.
+- **Goldens:** `panel-question-batch-{40,80}`, the second question of two.
 
 ### The panel on a small screen
 
@@ -1546,7 +1591,8 @@ Backspace.
   Explain's questions, Answer, Error) with its selection and scroll, the draft
   and its cursor, the output type, the model, the explore toggle (dropped,
   with a note, if the pane is no longer local), and the run: the flow, the
-  turns, the question rounds and their stack, the options, Explain's log, the
+  turns, the question rounds and their stack, a batch's questions still to
+  come, the options, Explain's log, the
   prompt for the agent, the model the call went to and why. A Confirm is kept
   as the view it was opened from, so a resumed panel never opens on a yes. An
   armed Answer comes back unarmed. The `?` overlay is not kept.

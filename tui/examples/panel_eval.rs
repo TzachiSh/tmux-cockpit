@@ -741,6 +741,11 @@ fn shown(raw: &str, out: OutType) -> Option<String> {
             let o: Vec<String> = options.into_iter().map(|o| o.label).collect();
             format!("{text}\n{}", o.join("\n"))
         }
+        Reply::Batch(qs) => qs
+            .into_iter()
+            .map(|q| shown_question(&q.text, &q.options))
+            .collect::<Vec<_>>()
+            .join("\n"),
         Reply::Prompt(t) | Reply::Text(t) | Reply::Hint(t) | Reply::Untagged(t) => t,
         Reply::Format { body, .. } => body,
         Reply::Steps { steps, .. } => steps
@@ -753,10 +758,26 @@ fn shown(raw: &str, out: OutType) -> Option<String> {
     })
 }
 
+/// A question as [`shown`] has it: the text, then each option on a line.
+fn shown_question(text: &str, options: &[parse::Opt]) -> String {
+    let o: Vec<&str> = options.iter().map(|o| o.label.as_str()).collect();
+    format!("{text}\n{}", o.join("\n"))
+}
+
+/// A question as a row records it: `text [a | b]`, or the text alone.
+fn row_question(text: &str, options: &[parse::Opt]) -> String {
+    let opts: Vec<&str> = options.iter().map(|o| o.label.as_str()).collect();
+    if opts.is_empty() {
+        text.to_string()
+    } else {
+        format!("{text} [{}]", opts.join(" | "))
+    }
+}
+
 /// The output type a reply is, for `out_is`; `None` for a question.
 fn reply_type(r: &Reply) -> Option<&'static str> {
     Some(match r {
-        Reply::Question { .. } => return None,
+        Reply::Question { .. } | Reply::Batch(_) => return None,
         Reply::Prompt(_) => "prompt",
         Reply::Text(_) => "text",
         Reply::Format { .. } => "format",
@@ -805,15 +826,24 @@ fn grade(c: &Case, raw: &str) -> Grade {
         g.refused = true;
         return g;
     };
-    if let Reply::Question { text, options } = &reply {
+    // a batch is asked as a whole: an ask_any term may be in any one of its questions
+    let asked: Vec<String> = match &reply {
+        Reply::Question { text, options } => vec![row_question(text, options)],
+        Reply::Batch(qs) => qs.iter().map(|q| row_question(&q.text, &q.options)).collect(),
+        _ => vec![],
+    };
+    if !asked.is_empty() {
         g.asked = true;
-        let opts: Vec<&str> = options.iter().map(|o| o.label.as_str()).collect();
-        g.question = if opts.is_empty() {
-            text.clone()
-        } else {
-            format!("{text} [{}]", opts.join(" | "))
+        g.question = match &asked[..] {
+            [one] => one.clone(),
+            many => many
+                .iter()
+                .enumerate()
+                .map(|(i, q)| format!("{}. {q}", i + 1))
+                .collect::<Vec<_>>()
+                .join(" "),
         };
-        g.on_target = c.ask_any.is_empty() || c.ask_any.iter().any(|w| ask_term(&g.question, w));
+        g.on_target = c.ask_any.is_empty() || c.ask_any.iter().any(|w| asked.iter().any(|q| ask_term(q, w)));
     }
     if !g.asked {
         g.missing = c.must.iter().filter(|m| !has(&text, m)).cloned().collect();
@@ -2781,6 +2811,32 @@ mod tests {
         assert!(g.pass && g.on_target, "{g:?}");
         c.ask_any = vec!["which file".into()];
         assert!(!grade(&c, q).pass);
+    }
+
+    #[test]
+    fn grades_a_batch_as_asked_when_any_question_names_an_ask_any_term() {
+        let c = parse_cases(&ONE.replace("expect: write\nmust: net-proxy; line 88", "expect: ask\nask_any: zq-port")).unwrap();
+        let ask = |a: &str, b: &str| format!("<question>{a}</question><option>x</option><option>y</option><question>{b}</question>");
+        let g = grade(&c[0], &ask("Which host?", "Which zq-port?"));
+        assert!(g.asked && g.on_target && g.pass, "{g:?}");
+        assert_eq!(g.question, "1. Which host? [x | y] 2. Which zq-port?");
+        assert!(!grade(&c[0], &ask("Which host?", "Which user?")).on_target);
+    }
+
+    #[test]
+    fn a_purpose_question_second_in_a_batch_is_on_target() {
+        let c = parse_cases(&ONE.replace("expect: write\nmust: net-proxy; line 88", "expect: ask\nask_any: @purpose")).unwrap();
+        let reply = "<question>Which host?</question><option>lab</option><option>prod</option>\
+                     <question>What is it mainly for?</question><option>x</option><option>y</option>";
+        let g = grade(&c[0], reply);
+        assert!(g.asked && g.on_target, "{g:?}");
+    }
+
+    #[test]
+    fn a_must_not_in_a_batch_s_later_question_is_found() {
+        let c = parse_cases(&ONE.replace("must: net-proxy; line 88", "must: net-proxy\nmust_not: zq-wipe")).unwrap();
+        let g = grade(&c[0], "<question>Which host?</question><question>Run zq-wipe first?</question>");
+        assert_eq!(g.forbidden, ["zq-wipe"], "{g:?}");
     }
 
     #[test]
@@ -7099,6 +7155,46 @@ esac
             let row = text_env_row("quiet-env-empty-dir", "0", "");
             assert_eq!(row["reply"].as_str().map(str::trim), Some(",0,1,."), "{row}");
             assert_eq!(row["env"]["vars"]["CLAUDE_CONFIG_DIR"], "", "{row}");
+        }
+
+        // ---------------------------------------------------------------- batch questions
+
+        /// The row of a rig run whose one ask case gets `reply` from a stand-in
+        /// claude, without the fields a run (`ms`, `env`) or a prompt edit
+        /// (`system`, `prompt`) changes.
+        fn asked_row(name: &str, reply: &str) -> Value {
+            let one = "=== bq-ask\nkind: bug\nwindow: bash · bash · /home/u\n\
+                expect: ask\nask_any: zq-port\n--- request\ndeploy it\n";
+            let script =
+                format!("#!/bin/sh\n[ \"$1\" = --version ] && {{ echo 9.9.9; exit 0; }}\ncat >/dev/null\nprintf '%s\\n' '{reply}'\n");
+            let (code, out, err, rows) = rig_run_with(name, one, &script, &[]);
+            assert_eq!(code, Some(0), "{out}{err}");
+            let mut row: Value = serde_json::from_str(rows.lines().next().unwrap_or("null")).unwrap();
+            for k in ["ms", "system", "prompt", "env"] {
+                row.as_object_mut().unwrap().remove(k);
+            }
+            row
+        }
+
+        #[test]
+        fn a_rig_run_scores_a_two_question_batch_as_asked_on_its_second_question() {
+            let reply = "<question>Which host?</question><option>lab</option><option>prod</option>\
+                <question>Which zq-port?</question><option>80</option><option>443</option>";
+            let row = asked_row("bq-batch", reply);
+            assert_eq!((&row["asked"], &row["pass"]), (&json!(true), &json!(true)), "{row}");
+            let want = "1. Which host? [lab | prod] 2. Which zq-port? [80 | 443]";
+            assert_eq!(row["question"], want, "{row}");
+        }
+
+        /// The row master wrote for this reply, but for the fields [`asked_row`] drops.
+        #[test]
+        fn a_rig_run_row_of_one_question_is_as_before_batches() {
+            let row = asked_row(
+                "bq-single",
+                "<question>Which zq-port?</question><option>80</option><option>443</option>",
+            );
+            let want = r#"{"id":"bq-ask","kind":"bug","expect":"ask","run":0,"model":"sonnet","reads":null,"files_read":null,"error":null,"asked":true,"pass":true,"question":"Which zq-port? [80 | 443]","missing":[],"forbidden":[],"wrong_type":null,"cost_usd":null,"in_tokens":null,"out_tokens":null,"refused":false,"holdout":false,"reply":"<question>Which zq-port?</question><option>80</option><option>443</option>\n","explore":false}"#;
+            assert_eq!(row, serde_json::from_str::<Value>(want).unwrap());
         }
 
         /// Not a test of its own: the child [`rig_run`] starts.

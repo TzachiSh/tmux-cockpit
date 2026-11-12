@@ -1,9 +1,9 @@
 //! The action, text, cmd and state files the panel hands its wrapper, and the
 //! `--resume` state read back: the Steps after an action (version 1), and a
 //! hidden panel (version 2, #278).
-use super::app::{Action, App, InputKind, MAX_DRAFT, MODELS, OUT_CYCLE, Resume, Run, View, assumed};
+use super::app::{Action, App, InputKind, MAX_DRAFT, MODELS, OUT_CYCLE, Resume, Run, Shown, View, assumed};
 use super::envelope::{Flow, OutType, Role, Turn};
-use super::parse::{Opt, Step};
+use super::parse::{Opt, Query, Step};
 use serde_json::{Map, Value, json};
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
@@ -361,7 +361,12 @@ fn run_out(r: &Run) -> Value {
         // an ask's code and ref ride in `draft`, one JSON string (#365)
         Flow::Ask(a) => ("ask", Some(ask_out(a)), None),
     };
-    let qstack: Vec<Value> = r.qstack.iter().map(|(q, o, t)| json!([q, opts_out(o), turns_out(t)])).collect();
+    let qstack: Vec<Value> = r
+        .qstack
+        .iter()
+        .map(|s| json!([s.text, opts_out(&s.options), turns_out(&s.turns), s.at]))
+        .collect();
+    let ahead: Vec<Value> = r.ahead.iter().map(|q| json!([q.text, opts_out(&q.options)])).collect();
     let log: Vec<Value> = r.log.iter().map(|(you, t)| json!([you, t])).collect();
     json!({
         "flow": flow,
@@ -371,6 +376,7 @@ fn run_out(r: &Run) -> Value {
         "rounds": r.rounds,
         "max": r.max,
         "qstack": qstack,
+        "ahead": ahead,
         "question": r.question,
         "options": opts_out(&r.options),
         "log": log,
@@ -426,6 +432,13 @@ impl Obj {
     }
     fn list(&mut self, k: &str) -> Result<Vec<Value>, String> {
         list(self.take(k)?).map_err(|e| format!("{k}: {e}"))
+    }
+    /// A list a file from before it was added does not have: absent is empty.
+    fn opt_list(&mut self, k: &str) -> Result<Vec<Value>, String> {
+        match self.0.remove(k) {
+            None => Ok(vec![]),
+            Some(v) => list(v).map_err(|e| format!("{k}: {e}")),
+        }
     }
     fn done(self) -> Result<(), String> {
         match self.0.keys().next() {
@@ -583,10 +596,29 @@ fn run_in(v: Value) -> Result<Run, String> {
     };
     let turns = turns_in(o.take("turns")?)?;
     let (rounds, max) = (o.num("rounds")?, o.num("max")?);
-    let mut qstack = vec![];
+    let mut qstack: Vec<Shown> = vec![];
     for q in o.list("qstack")? {
-        let [q, opts, ts] = tuple(q)?;
-        qstack.push((text(q)?, opts_in(opts)?, turns_in(ts)?));
+        // a file from before batches has no index: each question was its own round
+        let mut q = list(q)?;
+        let at = if q.len() == 4 { num(q.pop().unwrap_or_default())? } else { 0 };
+        let [q, opts, ts] = tuple(Value::Array(q))?;
+        // a batch's later question follows the one before it
+        if at > 0 && qstack.last().is_none_or(|s| s.at + 1 != at) {
+            return Err("a question out of its batch".into());
+        }
+        let (text, options, turns) = (text(q)?, opts_in(opts)?, turns_in(ts)?);
+        qstack.push(Shown { text, options, turns, at });
+    }
+    let mut ahead = vec![];
+    for q in o.opt_list("ahead")? {
+        let [q, opts] = tuple(q)?;
+        ahead.push(Query {
+            text: text(q)?,
+            options: opts_in(opts)?,
+        });
+    }
+    if !ahead.is_empty() && qstack.is_empty() {
+        return Err("questions to come with none on screen".into());
     }
     let question = o.text("question")?;
     let options = opts_in(o.take("options")?)?;
@@ -601,6 +633,7 @@ fn run_in(v: Value) -> Result<Run, String> {
         rounds,
         max,
         qstack,
+        ahead,
         question,
         options,
         log,

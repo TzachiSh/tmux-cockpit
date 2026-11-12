@@ -1,6 +1,6 @@
 //! Reply parsing: one literal reply per behaviour, pure functions only.
 use cockpit_tui::panel::envelope::OutType;
-use cockpit_tui::panel::parse::{Opt, Parsed, Reply, Step, cut_off, explain, files_read, fix, tool_calls, write};
+use cockpit_tui::panel::parse::{Opt, Parsed, Query, Reply, Step, cut_off, explain, files_read, fix, tool_calls, write};
 
 fn opt(label: &str, recommended: bool) -> Opt {
     Opt {
@@ -422,4 +422,80 @@ fn tool_calls_of_a_call_that_ran_none_is_empty_and_of_other_output_none() {
 fn tool_calls_keep_a_call_with_no_string_argument_by_its_name() {
     let out = format!("[{}]", call("a", "Glob", r#"{"pattern":7}"#));
     assert_eq!(tool_calls(&out), Some(vec!["Glob".to_string()]));
+}
+
+// ---------------------------------------------------------------- batch questions
+
+fn query(text: &str, options: Vec<Opt>) -> Query {
+    Query {
+        text: text.into(),
+        options,
+    }
+}
+
+fn asked(n: usize) -> String {
+    format!("<question>Q{n}?</question>\n<option recommended=\"true\">a{n}</option>\n<option>b{n}</option>\n")
+}
+
+#[test]
+fn a_two_question_batch_gives_each_question_its_own_options() {
+    let want = Reply::Batch(vec![
+        query("Q1?", vec![opt("a1", true), opt("b1", false)]),
+        query("Q2?", vec![opt("a2", true), opt("b2", false)]),
+    ]);
+    assert_eq!(reply(&format!("{}{}", asked(1), asked(2))), want);
+}
+
+#[test]
+fn a_three_question_batch_keeps_its_order() {
+    let got = reply(&(1..=3).map(asked).collect::<String>());
+    let Reply::Batch(qs) = got else { panic!("{got:?}") };
+    let texts: Vec<&str> = qs.iter().map(|q| q.text.as_str()).collect();
+    assert_eq!(texts, ["Q1?", "Q2?", "Q3?"]);
+    assert_eq!(qs[2].options, vec![opt("a3", true), opt("b3", false)]);
+}
+
+#[test]
+fn a_four_question_reply_keeps_the_first_three() {
+    let got = reply(&(1..=4).map(asked).collect::<String>());
+    let Reply::Batch(qs) = got else { panic!("{got:?}") };
+    let texts: Vec<&str> = qs.iter().map(|q| q.text.as_str()).collect();
+    assert_eq!(texts, ["Q1?", "Q2?", "Q3?"], "the prompt orders them most important first");
+}
+
+#[test]
+fn a_batch_question_with_no_options_takes_none_of_the_next_ones() {
+    let out = format!("<question>Which host?</question>\n{}", asked(2));
+    let want = Reply::Batch(vec![
+        query("Which host?", vec![]),
+        query("Q2?", vec![opt("a2", true), opt("b2", false)]),
+    ]);
+    assert_eq!(reply(&out), want);
+}
+
+#[test]
+fn one_question_still_parses_as_a_single_question() {
+    let want = Reply::Question {
+        text: "Q1?".into(),
+        options: vec![opt("a1", true), opt("b1", false)],
+    };
+    assert_eq!(reply(&asked(1)), want);
+}
+
+#[test]
+fn a_question_after_a_result_tag_is_not_part_of_the_batch() {
+    let out = format!("{}<prompt>Fix it.</prompt>\n{}", asked(1), asked(2));
+    assert!(
+        matches!(reply(&out), Reply::Question { text, .. } if text == "Q1?"),
+        "{:?}",
+        reply(&out)
+    );
+}
+
+#[test]
+fn fix_and_explain_never_read_a_batch() {
+    let out = format!("{}{}", asked(1), asked(2));
+    for (flow, got) in [("fix", fix(&out)), ("explain", explain(&out))] {
+        assert!(matches!(&got, Reply::Question { text, .. } if text == "Q1?"), "{flow}: {got:?}");
+    }
 }
