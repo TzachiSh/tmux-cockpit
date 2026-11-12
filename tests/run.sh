@@ -262,6 +262,10 @@ utf8_loc() {
 # hold neither, and the other characters curl rejects (# ? [ ] { }, a tab, a newline) can
 # reach a path only from the caller's TMPDIR prefix, which is not supported.
 file_url() { local p=${1//%/%25}; printf 'file://%s' "${p// /%20}"; }
+# A path for a script the suite writes, single-quoted with a ' inside as '\'', as
+# scripts/lib/hook.sh's shq does: a TMPDIR holding a space split it, and a stub wrote beside
+# the run's scratch (#929).
+tq() { printf "'%s'" "${1//\'/\'\\\'\'}"; }
 # The bootstrap (#228), tui-fetch and revdiff release dirs have a space in their own name
 # ("r el"), so a call site there reverted to a raw file:// fails at any TMPDIR. The #217
 # block's clones fail raw only under a TMPDIR holding a %XX escape, which git decodes, and its
@@ -1520,7 +1524,7 @@ is "the fleet counter still counts" '#[fg=themered bold]▲1#[default] ' \
 # them. Not -b: the hook's shell finishes before the hook's client returns.
 RTSETS="$RTS/sets"; : > "$RTSETS"
 "$TMUX_REAL" -L "$RT" set-hook -g after-set-option \
-    "run-shell 'echo \"#{hook_arguments}\" >> $RTSETS'" >/dev/null 2>&1
+    "run-shell 'echo \"#{hook_arguments}\" >> $(printf %q "$RTSETS")'" >/dev/null 2>&1
 # An unchanged state still costs exactly one round-trip and writes nothing.
 rtsame=$(rtcall needs-input)
 is "an unchanged state costs one call and no writes" "1 0" \
@@ -2528,7 +2532,7 @@ is "a repo pane gets its branch" "feat/x" "$(wsb "$WSR")"
 is "a pane outside a repo gets none" "" "$(wsb "$WSP")"
 WSLOG="$WSD/sets"; : > "$WSLOG"
 "$TMUX_REAL" -L "$WS" set-hook -g after-set-option \
-    "run-shell 'echo \"#{hook_arguments}\" >> $WSLOG'" >/dev/null 2>&1
+    "run-shell 'echo \"#{hook_arguments}\" >> $(printf %q "$WSLOG")'" >/dev/null 2>&1
 wset "$WSR"; wset "$WSP"
 is "an unchanged branch writes nothing" "0" "$(wc -l < "$WSLOG" | tr -d ' ')"
 printf 'ref: refs/heads/main\n' > "$WSD/repo/.git/HEAD"
@@ -6409,7 +6413,7 @@ CXTMUX2="$SOCKDIR/$CX2,0,0"
 CXS=$(mktmpd)
 CXLOG="$CXS/setlog"; : > "$CXLOG"; CXCALLS="$CXS/calls"; : > "$CXCALLS"
 "$TMUX_REAL" -L "$CX2" set-hook -g after-set-option \
-    "run-shell 'echo \"#{hook_arguments}\" >> $CXLOG'" >/dev/null 2>&1
+    "run-shell 'echo \"#{hook_arguments}\" >> $(printf %q "$CXLOG")'" >/dev/null 2>&1
 cat > "$CXS/tmux" <<SHIMEOF
 #!/bin/sh
 printf '%s\n' "\$*" >> "$CXCALLS"
@@ -7556,12 +7560,12 @@ GH=$(mktmpd); GHM="$GH/marker"
 # core.fsmonitor, textconv and the diff commands its caller's stdin, and a bare
 # cat there blocked forever whenever that was an open terminal or socket.
 for h in fsmon textconv dcmd extdiff clean proc gpg pager; do
-    printf '#!/bin/sh\necho %s >> %s\ncat </dev/null\n' "$h" "$GHM" > "$GH/$h"; chmod +x "$GH/$h"
+    printf '#!/bin/sh\necho %s >> %s\ncat </dev/null\n' "$h" "$(tq "$GHM")" > "$GH/$h"; chmod +x "$GH/$h"
 done
 ( cd "$GH" && mkdir r && cd r && git init -q -b main . \
   && printf 'a\n' > f.txt && printf '* diff=evil filter=evil\n' > .gitattributes \
   && git add -A && git -c user.name=t -c user.email=t@t commit -qm i && printf 'b\n' >> f.txt \
-  && mkdir -p hk && printf '#!/bin/sh\necho hook >> %s\n' "$GHM" > hk/post-checkout &&
+  && mkdir -p hk && printf '#!/bin/sh\necho hook >> %s\n' "$(tq "$GHM")" > hk/post-checkout &&
       chmod +x hk/post-checkout \
   && git config core.fsmonitor "$GH/fsmon" && git config diff.evil.textconv "$GH/textconv" \
   && git config diff.evil.command "$GH/dcmd" && git config diff.external "$GH/extdiff" \
@@ -7920,7 +7924,7 @@ for td_a in "" nope . .. .:empty link sib:badls; do
                    chmod +x "$TDE/bin/ls" ;;
         *) td_w=${td_a%:empty} ;;
     esac
-    printf '#!/bin/sh\necho %s\n' "$td_w" > "$TDE/bin/mktemp"; chmod +x "$TDE/bin/mktemp"
+    printf '#!/bin/sh\necho %q\n' "$td_w" > "$TDE/bin/mktemp"; chmod +x "$TDE/bin/mktemp"
     td_o=$(cd "$TDE/cwd" && PATH="$TDE/bin:$PATH" bash -c \
         '. "$1/git.sh"; . "$1/review-diff.sh"; tree_diff "$2" --numstat' _ "$DIR/scripts/lib" \
         "$TDE/repo" 2>/dev/null; echo "rc=$?")
@@ -8884,7 +8888,7 @@ esac
 RB3O="cockpit-rb3o-$$"; SOCKS="$SOCKS $RB3O"
 mkdir -p "$RB3D/p/scripts"; cp "$DIR/cockpit.tmux" "$RB3D/p/"
 cp -r "$DIR"/scripts/. "$RB3D/p/scripts/"
-printf '#!/bin/sh\nprintf %%s "$*" > %s/args; sleep 30\n' "$RB3D" > "$RB3D/p/scripts/cockpit-board"
+printf '#!/bin/sh\nprintf %%s "$*" > %s; sleep 30\n' "$(tq "$RB3D/args")" > "$RB3D/p/scripts/cockpit-board"
 chmod +x "$RB3D/p/scripts/cockpit-board"
 "$TMUX_REAL" -L "$RB3" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
 "$TMUX_REAL" -L "$RB3" run-shell "$RB3D/p/cockpit.tmux" >/dev/null 2>&1
@@ -9803,7 +9807,7 @@ echo "== the suite never reaches the network: install.sh fetches nothing under C
 NW=$(mktmpd); mkdir -p "$NW/p" "$NW/stub" "$NW/home" "$NW/bin"
 cp "$DIR/install.sh" "$NW/p/"; cp -r "$DIR/scripts" "$NW/p/"
 for t in gh curl cargo; do
-    printf '#!/bin/sh\necho "%s $*" >> %s/calls\nexit 1\n' "$t" "$NW" > "$NW/stub/$t"
+    printf '#!/bin/sh\necho "%s $*" >> %s\nexit 1\n' "$t" "$(tq "$NW/calls")" > "$NW/stub/$t"
     chmod +x "$NW/stub/$t"
 done
 # -u COCKPIT_TUI_BIN: the copy's own empty bin/, not the suite's current binary.
@@ -10078,7 +10082,7 @@ cp "$DIR/cockpit.tmux" "$BD/p/"
 cp -r "$DIR"/scripts/. "$BD/p/scripts/"
 # Nothing in a test may reach the network: the copy's tui-fetch only counts its
 # own runs, which is also how "once, in the background" is pinned.
-printf '#!/bin/sh\necho ran >> %s/fetched\n' "$BD" > "$BD/p/scripts/tui-fetch"
+printf '#!/bin/sh\necho ran >> %s\n' "$(tq "$BD/fetched")" > "$BD/p/scripts/tui-fetch"
 chmod +x "$BD/p/scripts/tui-fetch"
 
 # cockpit.tmux runs under run-shell, which inherits the SERVER's environment, so
@@ -10088,7 +10092,7 @@ chmod +x "$BD/p/scripts/tui-fetch"
 # forward would land on the user's own server.
 bshim() {                     # <dir> <socket> <version-to-report|"">
     mkdir -p "$1"
-    { printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> %s/argv\n' "$BD"
+    { printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> %s\n' "$(tq "$BD/argv")"
       [ -z "$3" ] || printf '[ "$1" = -V ] && { echo "tmux %s"; exit 0; }\n' "$3"
       printf 'exec %s -L %s "$@"\n' "$TMUX_REAL" "$2"
     } > "$1/tmux"
@@ -10302,12 +10306,12 @@ exit 0
 BDREC
 chmod +x "$BD/rec/tmux"
 for s in tmux-jump tmux-review cockpit-panel; do
-    printf '#!/bin/sh\nprintf "%s %%s\\n" "$*" >> %s/wargv\n' "$s" "$BD" > "$BD/p/scripts/$s"
+    printf '#!/bin/sh\nprintf "%s %%s\\n" "$*" >> %s\n' "$s" "$(tq "$BD/wargv")" > "$BD/p/scripts/$s"
     chmod +x "$BD/p/scripts/$s"
 done
 # The panel from the board writes its last line where the loop asks.
-printf '#!/bin/sh\nprintf "cockpit-panel %%s\\n" "$*" >> %s/wargv\n[ -z "$COCKPIT_PANEL_NOTE" ] || cat %s/pnote > "$COCKPIT_PANEL_NOTE"\n' \
-    "$BD" "$BD" > "$BD/p/scripts/cockpit-panel"
+printf '#!/bin/sh\nprintf "cockpit-panel %%s\\n" "$*" >> %s\n''[ -z "$COCKPIT_PANEL_NOTE" ] || cat %s > "$COCKPIT_PANEL_NOTE"\n' \
+    "$(tq "$BD/wargv")" "$(tq "$BD/pnote")" > "$BD/p/scripts/cockpit-panel"
 printf 'cockpit: sent to %%1\n' > "$BD/pnote"
 # The line travels in a file rather than inside the fake binary's source: the
 # cases below are shell syntax, and re-quoting them into a script is the test
@@ -10394,7 +10398,7 @@ is "@cockpit_board_return off: panel too" "cockpit-panel -p %1;" "$(wact 'panel 
 is "and the board ran once again" "board;" "$(bruns)"
 rm -f "$BD/ret"
 # A board that fails ends the loop rather than spinning on it.
-printf '#!/bin/sh\nprintf x >> %s/bfail\nexit 3\n' "$BD" > "$BD/p/bin/cockpit-tui"
+printf '#!/bin/sh\nprintf x >> %s\nexit 3\n' "$(tq "$BD/bfail")" > "$BD/p/bin/cockpit-tui"
 : > "$BD/wargv"; rm -f "$BD/bfail"
 PATH="$BD/rec:$PATH" COCKPIT_LOG="$BD/tui.log" COCKPIT_TUI_BIN="$BD/p/bin/cockpit-tui" \
     "$BD/p/scripts/cockpit-board" -p %3 </dev/null >/dev/null 2>&1
@@ -10454,7 +10458,7 @@ is "a missing binary says so once, on the pane the key was pressed in, and exits
 # block above).
 BI=$(mktmpd); BIDIR="$BI/x'\$(touch $BI/OWNED)'y"
 mkdir -p "$BIDIR"; cp -r "$BD/p/." "$BIDIR/"
-printf '#!/bin/sh\nprintf "%%s\\n" "$*" > %s/args\n' "$BI" > "$BIDIR/scripts/cockpit-board"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" > %s\n' "$(tq "$BI/args")" > "$BIDIR/scripts/cockpit-board"
 chmod +x "$BIDIR/scripts/cockpit-board"
 BW_IN="cockpit-bwi-$$"; BW_OUT="cockpit-bwo-$$"; SOCKS="$SOCKS $BW_IN $BW_OUT"
 "$TMUX_REAL" -L "$BW_IN" -f /dev/null new-session -d -s s -x 100 -y 30 \
@@ -10488,7 +10492,7 @@ if need_tmux "the board's return trip"; then :; else
 RB="cockpit-rbz-$$"; SOCKS="$SOCKS $RB"; RBD=$(mktmpd)
 mkdir -p "$RBD/p" "$RBD/state"
 cp -r "$DIR"/scripts "$RBD/p/"
-printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> %s/rv\n' "$RBD" > "$RBD/p/scripts/tmux-review"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> %s\n' "$(tq "$RBD/rv")" > "$RBD/p/scripts/tmux-review"
 chmod +x "$RBD/p/scripts/tmux-review"
 "$TMUX_REAL" -L "$RB" -f /dev/null new-session -d -s t -x 120 -y 40 \
     'exec sleep 3600' >/dev/null 2>&1
@@ -10905,7 +10909,7 @@ echo "== cockpit-tui board: an idle board on a busy agent captures once a tick (
 # counts capture-pane calls over 5 s of an idle board: about one a second.
 if need_tmux "the right pane's capture rate"; then :; else
 PR="cockpit-pr-$$"; SOCKS="$SOCKS $PR"; PRD=$(mktmpd)
-printf '#!/bin/sh\nprintf "%%s\\n" "$1" >> %s/calls\nexec %s "$@"\n' "$PRD" \
+printf '#!/bin/sh\nprintf "%%s\\n" "$1" >> %s\nexec %s "$@"\n' "$(tq "$PRD/calls")" \
     "$TMUX_REAL" > "$PRD/tmux"
 chmod +x "$PRD/tmux"
 "$TMUX_REAL" -L "$PR" -f /dev/null new-session -d -s t -x 120 -y 30 -c "$PRD" \
@@ -10943,8 +10947,8 @@ echo "== cockpit-tui board: a held j recaptures, and fetches only on the tick (#
 # let happen.
 if need_tmux "a held j on the board"; then :; else
 PJ="cockpit-pj-$$"; SOCKS="$SOCKS $PJ"; PJD=$(mktmpd)
-printf '#!/bin/sh\nprintf "%%s\\n" "$1" >> %s/calls\nexec %s "$@"\n' \
-    "$PJD" "$TMUX_REAL" > "$PJD/tmux"
+printf '#!/bin/sh\nprintf "%%s\\n" "$1" >> %s\nexec %s "$@"\n' \
+    "$(tq "$PJD/calls")" "$TMUX_REAL" > "$PJD/tmux"
 chmod +x "$PJD/tmux"
 "$TMUX_REAL" -L "$PJ" -f /dev/null new-session -d -s t -x 120 -y 30 -c "$PJD" \
     'exec sleep 3600' >/dev/null 2>&1
@@ -11005,8 +11009,8 @@ echo "== cockpit-tui board: the tiles capture in one tmux call, fetch or capture
 # a capture after a list-panes is a fetch's, any other a capture-only job's.
 if need_tmux "the tiles' batched capture"; then :; else
 PB6="cockpit-pt-$$"; SOCKS="$SOCKS $PB6"; BTD=$(mktmpd)
-printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> %s/calls\nexec %s "$@"\n' \
-    "$BTD" "$TMUX_REAL" > "$BTD/tmux"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> %s\nexec %s "$@"\n' \
+    "$(tq "$BTD/calls")" "$TMUX_REAL" > "$BTD/tmux"
 chmod +x "$BTD/tmux"
 "$TMUX_REAL" -L "$PB6" -f /dev/null new-session -d -s t -x 120 -y 40 -c "$BTD" \
     'exec sleep 3600' >/dev/null 2>&1
@@ -12767,7 +12771,8 @@ case "$AVMSG" in
 esac
 # Compare-then-set: an unchanged state writes nothing, since every set redraws.
 AVSETS="$AVREC/sets"; : > "$AVSETS"
-av_tm set-hook -g after-set-option "run-shell 'echo \"#{hook_arguments}\" >> $AVSETS'"
+av_tm set-hook -g after-set-option \
+    "run-shell 'echo \"#{hook_arguments}\" >> $(printf %q "$AVSETS")'"
 av_once blocked.json >/dev/null; av_once blocked.json >/dev/null
 : > "$AVSETS"; av_once blocked.json >/dev/null
 is "a poll that changes nothing writes nothing" "0" "$(wc -l < "$AVSETS" | tr -d ' ')"
@@ -12876,7 +12881,8 @@ is "a marked pane whose title names two jobs keeps the worst of all" \
    "||needs-input|fix the parser needs you" "$(avj "$AVMD")"
 # Compare-then-set: a second poll of the same bind writes nothing (every set redraws).
 AVSETS="$AVREC/bsets"; : > "$AVSETS"
-av_tm set-hook -g after-set-option "run-shell 'echo \"#{hook_arguments}\" >> $AVSETS'"
+av_tm set-hook -g after-set-option \
+    "run-shell 'echo \"#{hook_arguments}\" >> $(printf %q "$AVSETS")'"
 av_bind; : > "$AVSETS"; av_bind
 is "a poll that changes nothing writes nothing, bound panes included" "0" \
    "$(wc -l < "$AVSETS" | tr -d ' ')"
@@ -13330,7 +13336,7 @@ av_tm set -g @cockpit_agents_glob '|claude|codex|'
 AVWK="$AVREC/woke"; : > "$AVWK"
 AVWP=$(av_np "alpha")
 AVWF="'#{@cockpit_job}' '#{@cockpit_job_name}'"   # the pane's job and name, at the wake
-av_tm set -g @cockpit_board_wake "run-shell -t $AVWP \"printf '%s|%s\\\\n' $AVWF >> $AVWK\" ; "
+av_tm set -g @cockpit_board_wake "run-shell -t $AVWP \"printf '%s|%s\\\\n' $AVWF >> $(tq "$AVWK")\" ; "
 av_once bind.json >/dev/null
 is "a new bind's wake already sees its job and name" "aa|alpha" "$(sed -n 1p "$AVWK")"
 av_tm select-pane -t "$AVWP" -T "fix the parser"
@@ -13576,7 +13582,7 @@ is "git.sh blanks the same drivers as git-flags --filters" \
    "$(gs_argv status | grep -x -B1 'filter\..*' | grep -v '^--$' | paste -d' ' - - | LC_ALL=C sort)"
 # The worktree hook needs no binary: a cockpit-tui on PATH and at COCKPIT_TUI_BIN
 # that only leaves a mark, and git.sh still hands git every flag.
-printf '#!/bin/sh\necho ran >> %s/tuiran\n' "$GD" > "$GD/bin/cockpit-tui"
+printf '#!/bin/sh\necho ran >> %s\n' "$(tq "$GD/tuiran")" > "$GD/bin/cockpit-tui"
 chmod +x "$GD/bin/cockpit-tui"
 is "git.sh never runs cockpit-tui, and still hands git every flag" "$("$DSB" git-flags)" \
    "$(COCKPIT_TUI_BIN="$GD/bin/cockpit-tui" gs_argv status | sed '/^-c$/{N;/\nfilter\./d}' |
@@ -14394,8 +14400,8 @@ if need_tmux "the board's kill verb"; then :; else
 KV="cockpit-kv-$$"; SOCKS="$SOCKS $KV"; KD=$(mktmpd)
 mkdir -p "$KD/p" "$KD/state"
 cp -r "$DIR"/scripts "$KD/p/"
-printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> %s/rv\n[ ! -e %s/rvout ] || cat %s/rvout\nexit "$(cat %s/rvrc 2>/dev/null || echo 0)"\n' \
-    "$KD" "$KD" "$KD" "$KD" > "$KD/p/scripts/tmux-review"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> %s\n[ ! -e %s ] || cat %s\n''exit "$(cat %s 2>/dev/null || echo 0)"\n' \
+    "$(tq "$KD/rv")" "$(tq "$KD/rvout")" "$(tq "$KD/rvout")" "$(tq "$KD/rvrc")" > "$KD/p/scripts/tmux-review"
 chmod +x "$KD/p/scripts/tmux-review"
 # The binary acts once, then exits with no action (the ordinary q). It writes
 # $COCKPIT_ACTION.expect before the line, as the board does, when asked to.
@@ -14468,8 +14474,8 @@ C=$(kv_win claude); CW=$(kv_id "$C")
 C2=$("$TMUX_REAL" -L "$KV" split-window -d -P -F '#{pane_id}' -t "$C" 'exec sleep 3600')
 D=$(kv_win claude)
 mkdir -p "$KD/shim"
-printf '#!/bin/sh\nif [ "$1" = if-shell ] && [ -e %s/race ]; then rm -f %s/race; %s join-pane -d -s %s -t %s; fi\nexec %s "$@"\n' \
-    "$KD" "$KD" "$TMUX_REAL" "$C" "$D" "$TMUX_REAL" > "$KD/shim/tmux"
+printf '#!/bin/sh\nif [ "$1" = if-shell ] && [ -e %s ]; then rm -f %s; %s join-pane -d -s %s -t %s; fi\n''exec %s "$@"\n' \
+    "$(tq "$KD/race")" "$(tq "$KD/race")" "$TMUX_REAL" "$C" "$D" "$TMUX_REAL" > "$KD/shim/tmux"
 chmod +x "$KD/shim/tmux"; : > "$KD/race"; KV_SHIM=$KD/shim
 kv_run "kill $C" "$C $CW" >/dev/null
 KV_SHIM=
@@ -14592,7 +14598,7 @@ echo "== cockpit-board: resume %N runs claude --resume <id> in a new pane at the
 if need_tmux "the board's resume verb"; then :; else
 RS="cockpit-rs-$$"; SOCKS="$SOCKS $RS"; RSD=$(mktmpd)
 mkdir -p "$RSD/stub" "$RSD/state" "$RSD/work" "$RSD/wt" "$RSD/d#(touch \$RSPWN)"
-printf '#!/bin/sh\nprintf "[%%s]" "$PWD" "$@" > %s/ran\nexec sleep 3600\n' "$RSD" \
+printf '#!/bin/sh\nprintf "[%%s]" "$PWD" "$@" > %s\nexec sleep 3600\n' "$(tq "$RSD/ran")" \
     > "$RSD/stub/claude"
 chmod +x "$RSD/stub/claude"
 cat > "$RSD/bin" <<RSBIN
@@ -14910,7 +14916,7 @@ echo "== cockpit-board: @cockpit_glyphs reaches the binary as COCKPIT_GLYPHS (#2
 # binary records what it got and exits with no action.
 if need_tmux "the board's glyphs"; then :; else
 GL="cockpit-gl-$$"; SOCKS="$SOCKS $GL"; GD=$(mktmpd)
-printf '#!/bin/sh\nprintf "[%%s]" "${COCKPIT_GLYPHS:-}" > %s/g\n' "$GD" > "$GD/bin"
+printf '#!/bin/sh\nprintf "[%%s]" "${COCKPIT_GLYPHS:-}" > %s\n' "$(tq "$GD/g")" > "$GD/bin"
 chmod +x "$GD/bin"
 "$TMUX_REAL" -L "$GL" -f /dev/null new-session -d -s t -x 100 -y 30 \
     'exec sleep 3600' >/dev/null 2>&1
@@ -14938,8 +14944,8 @@ echo "== cockpit-panel: @cockpit_glyphs reaches the binary as COCKPIT_GLYPHS (#2
 # (#272); the stub records both, so neither can fall out of the merged line.
 if need_tmux "the panel's glyphs"; then :; else
 GP="cockpit-gp-$$"; SOCKS="$SOCKS $GP"; GPD=$(mktmpd)
-printf '#!/bin/sh\nprintf "[%%s] D=[%%s]" "${COCKPIT_GLYPHS:-}" "${COCKPIT_PANEL_DROPPED:-}" > %s/g\n' \
-    "$GPD" > "$GPD/bin"; chmod +x "$GPD/bin"
+printf '#!/bin/sh\nprintf "[%%s] D=[%%s]" "${COCKPIT_GLYPHS:-}" "${COCKPIT_PANEL_DROPPED:-}" > %s\n' \
+    "$(tq "$GPD/g")" > "$GPD/bin"; chmod +x "$GPD/bin"
 "$TMUX_REAL" -L "$GP" -f /dev/null new-session -d -s t -x 100 -y 30 \
     'exec sleep 3600' >/dev/null 2>&1
 GPP=$("$TMUX_REAL" -L "$GP" list-panes -t t -F '#{pane_id}')
@@ -14969,7 +14975,7 @@ echo "== cockpit-panel: @cockpit_panel_effort reaches the binary as COCKPIT_PANE
 # only the CLI's words, so the wrapper passes the value as it is, as one word.
 if need_tmux "the panel's effort"; then :; else
 GE="cockpit-ge-$$"; SOCKS="$SOCKS $GE"; GED=$(mktmpd)
-printf '#!/bin/sh\nprintf "[%%s]" "${COCKPIT_PANEL_EFFORT-unset}" > %s/e\n' "$GED" > "$GED/bin"
+printf '#!/bin/sh\nprintf "[%%s]" "${COCKPIT_PANEL_EFFORT-unset}" > %s\n' "$(tq "$GED/e")" > "$GED/bin"
 chmod +x "$GED/bin"
 "$TMUX_REAL" -L "$GE" -f /dev/null new-session -d -s t -x 100 -y 30 -c "$GED" 'exec sleep 3600' \
     >/dev/null 2>&1
@@ -17338,7 +17344,7 @@ is "a killed pane's subagents leave the sum at the sweep" "▲1 " "$(sbf)"
 # Compare-then-set: every set redraws. A server hook sees the writes inside the one call.
 sbst done "$(sbstop "$SBT,$SBT")"; SBSETS=$(mktmpf)
 "$TMUX_REAL" -L "$SB" set-hook -g after-set-option \
-    "run-shell 'echo \"#{hook_arguments}\" >> $SBSETS'"
+    "run-shell 'echo \"#{hook_arguments}\" >> $(printf %q "$SBSETS")'"
 sbst done "$(sbstop "$SBT,$SBT")"
 is "an unchanged count is not set again" "0" "$(grep -c '@cockpit_subs' "$SBSETS")"
 sbst done "$(sbstop "$SBT,$SBT,$SBT")"
@@ -17540,8 +17546,8 @@ OLD=$(mktmpd); OLLOG="$OLD/log"; OLED="$OLD/ed"; : > "$OLLOG"
 mkdir -p "$OLD/w/sub"; : > "$OLD/w/one.txt"; : > "$OLD/w/two.txt"; : > "$OLD/w/three.txt"
 # The editor runs in a new window after the script has exited (#610). The shim
 # waits while $OLD/hold is there, so every row meets that order, the late one.
-printf '#!/bin/sh\nwhile [ -e %s/hold ]; do sleep 0.05; done\necho "OPEN $*" >> %s\n' \
-    "$OLD" "$OLLOG" > "$OLED"; chmod +x "$OLED"
+printf '#!/bin/sh\nwhile [ -e %s ]; do sleep 0.05; done\necho "OPEN $*" >> %s\n' \
+    "$(tq "$OLD/hold")" "$(tq "$OLLOG")" > "$OLED"; chmod +x "$OLED"
 "$TMUX_REAL" -L "$OL" -f /dev/null new-session -d -s t -x 100 -y 28 -c "$OLD/w" >/dev/null 2>&1
 "$TMUX_REAL" -L "$OL" set -g @cockpit_editor "$OLED" >/dev/null 2>&1
 OLP=$("$TMUX_REAL" -L "$OL" list-panes -t t -F '#{pane_id}' | head -1)
@@ -18313,7 +18319,7 @@ echo "== tmux-open-path (#283): the viewer in a real popup, e to the editor, a h
 if need_tmux "markdown viewer popup"; then :; else
 MDI="cockpit-mdi-$$"; MDO="cockpit-mdo-$$"; SOCKS="$SOCKS $MDI $MDO"   # not the move menu's mvo
 MVD=$(mktmpd); mkdir -p "$MVD/w"; MVE="$MVD/ed.log"; : > "$MVE"
-printf '#!/bin/sh\necho "OPEN $*" >> %s\n' "$MVE" > "$MVD/ed"; chmod +x "$MVD/ed"
+printf '#!/bin/sh\necho "OPEN $*" >> %s\n' "$(tq "$MVE")" > "$MVD/ed"; chmod +x "$MVD/ed"
 MVN='r#(tmux${IFS}set${IFS}-g${IFS}@pwned${IFS}yes).md'   # no spaces: the line splits on them
 { printf '# Heading\n\n'; for i in $(seq 0 40); do printf 'p%s\n\n' "$i"; done; } > "$MVD/w/$MVN"
 "$TMUX_REAL" -L "$MDI" -f /dev/null new-session -d -s t -x 100 -y 30 -c "$MVD/w" \
