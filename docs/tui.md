@@ -57,12 +57,13 @@ naming nothing, on the `rust-version` toolchain through rustup (CI's, so the
 lints match); `make tui-test TUI_TOOLCHAIN=` skips that.
 `make tui-test-clean` runs it in a private TMPDIR and TMUX_TMPDIR and fails,
 naming them, on any file, dir or socket a test left there (#400).
-The tests need a `TMPDIR` whose path holds no space, quote or glob character
-(#911). They point `COCKPIT_TMUX` at a stub under it, and that value is split
-on whitespace. They build their projects under it, and the panel refuses a
-read dir whose path holds a glob character. Some stubs write the path into a
-shell script unquoted. Under a `TMPDIR` with a space or a glob character many
-unrelated tests fail, and under one with a quote a few do.
+The tests need a `TMPDIR` whose path holds no space, quote, glob character
+(`*`, `?`, `[`, `]`, `{`, `}` or a backslash) or other character a shell reads
+specially, such as `(` (#911). Many point `COCKPIT_TMUX` at a stub under it,
+and that value is split on whitespace. They build their projects under it, and
+the panel refuses a read dir whose path holds a glob character. Some stubs
+write the path into a shell script unquoted. Under a `TMPDIR` with a space, a
+quote or a glob character many unrelated tests fail.
 
 The binary lives in the plugin's own `bin/` and is gitignored. `install.sh`
 runs `scripts/tui-fetch --required` and exits 1 when no working binary is
