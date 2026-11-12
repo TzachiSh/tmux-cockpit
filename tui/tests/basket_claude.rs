@@ -42,7 +42,12 @@ fn claude_and_its_version_title_read_at_mentions_and_nothing_else_does() {
     let dir = std::env::temp_dir().join(&sock);
     std::fs::create_dir_all(&dir).unwrap();
     let mut new = Command::new("tmux");
-    new.args(["-L", &sock, "-f", "/dev/null", "new-session", "-d", "-c"])
+    // bash, whatever $SHELL is (#882): tmux runs a pane's command in the default
+    // shell, and only bash execs it; under dash the pane stays `sh`, never `claude`.
+    // Set in the command that starts the server, so the first pane has it too.
+    new.args(["-L", &sock, "-f", "/dev/null"])
+        .args(["set-option", "-g", "default-shell", "/bin/bash", ";"])
+        .args(["new-session", "-d", "-c"])
         .arg(&dir)
         .arg("sleep 300");
     let ok = new.status().is_ok_and(|s| s.success());
