@@ -1404,13 +1404,14 @@ not wired into Explain yet.
 - **What it reads.** `participant` and `actor`, with `as` for a display name,
   and participants named only in a step. The arrows `->>`, `-->>`, `->` and
   `-->`; the dashed ones draw `┄`. `autonumber`. `Note left of`, `right of` or
-  `over`. A `%% status: <s> [HH:MM]` line after a step, `<s>` one of `✓ ● ○ ✗ !`
-  or `done running pending failed needs`; a `%%` at the end of a step line is
-  part of its label, as in Mermaid. Other `%%` lines are comments.
+  `over`. A `%% status: <s> [HH:MM]` line after a step, the key in any case,
+  `<s>` one of `✓ ● ○ ✗ !` or `done running pending failed needs`, the time
+  from 00:00 to 23:59; a `%%` at the end of a step line is part of its label,
+  as in Mermaid. Other `%%` lines are comments.
 - **Blocks.** `loop`, `alt`, `opt`, `else` and `end` are dropped and their steps
   kept in order. An `end` or `else` outside a block, or a block never closed,
   is an error.
-- **Anything else** (`par`, `activate`, `-x`, a bad status word) is an `Err`
+- **Anything else** (`par`, `activate`, `-x`, a bad status word or time) is an `Err`
   naming the line. `flow::render` then shows `flow::not_drawn`: `(not drawn:
   <why>)`, then the raw lines, each cut to the width.
 - **Ladder or list.** The ladder at 60 columns or more with at most 4 actors,

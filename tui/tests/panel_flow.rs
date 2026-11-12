@@ -324,3 +324,26 @@ fn a_long_note_wraps_onto_more_rows_and_keeps_every_word() {
         assert_eq!(words.join(" "), LONG_NOTE, "w={w}: {out:?}");
     }
 }
+
+#[test]
+fn the_status_key_is_read_in_any_case() {
+    for (row, line) in [("Status", "%% Status: done"), ("STATUS", "%% STATUS: ✓ 09:02")] {
+        let f = parsed(&format!("sequenceDiagram\nA->>B: x\n{line}\n"));
+        assert_eq!(f.steps[0].status, Some(Status::Done), "{row}");
+    }
+    assert!(flow::parse("sequenceDiagram\nA->>B: x\n%% Status: maybe\n").is_err());
+}
+
+#[test]
+fn a_time_past_23_59_is_not_drawn() {
+    for (row, time, ok) in [
+        ("23:59", "23:59", true),
+        ("00:00", "00:00", true),
+        ("hour 24", "24:00", false),
+        ("minute 60", "12:60", false),
+        ("99:99", "99:99", false),
+    ] {
+        let got = flow::parse(&format!("sequenceDiagram\nA->>B: x\n%% status: ✓ {time}\n"));
+        assert_eq!(got.is_ok(), ok, "{row}: {got:?}");
+    }
+}

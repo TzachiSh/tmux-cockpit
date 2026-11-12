@@ -131,9 +131,13 @@ fn is_id(s: &str) -> bool {
     !s.is_empty() && s.chars().all(|c| c.is_alphanumeric() || c == '_')
 }
 
+/// `HH:MM` on a 24-hour clock, 00:00 to 23:59.
 fn is_time(s: &str) -> bool {
-    let b = s.as_bytes();
-    b.len() == 5 && b[2] == b':' && [0, 1, 3, 4].iter().all(|&i| b[i].is_ascii_digit())
+    let num = |d: &str| d.len() == 2 && d.bytes().all(|b| b.is_ascii_digit());
+    match s.split_once(':') {
+        Some((h, m)) if num(h) && num(m) => h < "24" && m < "60",
+        _ => false,
+    }
 }
 
 /// `status: <word> [HH:MM]`, the text after `%%`.
@@ -157,7 +161,10 @@ const ARROWS: [(&str, bool); 4] = [("-->>", true), ("->>", false), ("-->", true)
 /// One line, trimmed and not empty, into `f`. `depth` counts open blocks.
 fn line(f: &mut Flow, l: &str, depth: &mut usize) -> Result<(), String> {
     if let Some(comment) = l.strip_prefix("%%") {
-        if let Some(rest) = comment.trim_start().strip_prefix("status:") {
+        let comment = comment.trim_start();
+        // The key in any case: "%% Status: done" is a status, never a comment.
+        let key = comment.get(..7).filter(|k| k.eq_ignore_ascii_case("status:"));
+        if let Some(rest) = key.map(|k| &comment[k.len()..]) {
             let (status, time) = status_line(rest)?;
             let step = f.steps.last_mut().ok_or("a status before any step")?;
             step.status = Some(status);
