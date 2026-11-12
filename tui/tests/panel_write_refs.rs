@@ -4,9 +4,10 @@
 //! outside the folder it may read marked as not read. The basket rides along
 //! with a written result that names every ref, for cockpit-panel to clear once
 //! the paste lands. No tmux: the basket is set on the App as main would read it.
+use cockpit_tui::panel::action::sanitize;
 use cockpit_tui::panel::app::{App, View};
 use cockpit_tui::panel::capture::Capture;
-use cockpit_tui::panel::envelope::{Flow, OutType, RefItem, build, build_refs, ref_items};
+use cockpit_tui::panel::envelope::{Flow, OutType, RefItem, build, build_refs, esc, ref_items};
 use cockpit_tui::panel::request::Fail;
 use cockpit_tui::refs::Ref;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -305,18 +306,52 @@ fn prompt(a: &App) -> String {
     a.request_parts().expect("a write is pending").1
 }
 
+/// The prompt before its `<window>` line, and from its request on, as every
+/// write in this file sends them.
+const BEFORE: &str = "<screen window=\"claude · claude\">\n$ \n</screen>\n\n";
+const AFTER: &str = "fix it</request>\n\n<questions_left>3</questions_left>";
+
+/// What the prompt holds between its `<window>` line and its request: the
+/// `<refs>` block and the blank line after it, or nothing when none was sent.
+/// The window line states the repo's path, which sits under the temp dir and
+/// can hold any word a test looks for, so a test compares this part whole
+/// (#910). The parts cut off are compared whole here, the window line with
+/// the path as the envelope escapes it, so a block or a note written anywhere
+/// else in the prompt fails too. `esc` leaves no `</` in a path, so the first
+/// `</window>` is the line's own; the last `<request>` is the request's, the
+/// draft holding none.
+fn refs_sent(a: &App) -> String {
+    let p = prompt(a);
+    let cut = |what: &str| panic!("no {what}: {p}");
+    let (before, rest) = p.split_once("<window>").unwrap_or_else(|| cut("window line"));
+    let (window, rest) = rest.split_once("</window>\n\n").unwrap_or_else(|| cut("window end"));
+    let (refs, after) = rest.rsplit_once("<request>").unwrap_or_else(|| cut("request"));
+    let shown = format!("claude · claude · {}", esc(&a.cap.path));
+    assert_eq!((before, window, after), (BEFORE, shown.as_str(), AFTER), "{p}");
+    refs.to_string()
+}
+
+/// A ref outside the pane's folder as the block writes it: the absolute path,
+/// cleaned and escaped as `refs_part` does, so a `</` in the temp dir's path
+/// goes out as `<\/`.
+fn abs(d: &Dir, f: &str, lines: &str) -> String {
+    esc(&sanitize(&format!("{}:{lines}", d.0.join(f).display())))
+}
+
+/// The two refs `compose` puts in the basket, as a pane that is not claude gets them.
+const INSIDE: &str = "<ref form=\"bare\">a.rs:1-2</ref>\n\
+                      <ref form=\"bare\" note=\"whole file\">b.md</ref>";
+
 #[test]
 fn ctrl_s_with_a_basket_sends_the_refs() {
     let d = tree("ctrls");
     let mut a = compose(&d, true);
     ctrl(&mut a, 's');
-    let p = prompt(&a);
-    assert!(
-        p.contains("<refs>\n<ref form=\"mention\">@a.rs#L1-2</ref>\n<ref form=\"mention\" note=\"whole file\">@b.md</ref>\n</refs>"),
-        "{p}"
-    );
+    let refs = "<refs>\n<ref form=\"mention\">@a.rs#L1-2</ref>\n\
+                <ref form=\"mention\" note=\"whole file\">@b.md</ref>\n</refs>";
+    assert_eq!(refs_sent(&a), format!("{refs}\n\n"));
     a.basket.clear();
-    assert!(!prompt(&a).contains("<refs>"), "an empty basket sends no block");
+    assert_eq!(refs_sent(&a), "", "an empty basket sends no block");
 }
 
 /// #590: a write with a bare ref carries the example that keeps one bare and
@@ -346,12 +381,11 @@ fn an_exploring_write_marks_a_ref_outside_its_folder() {
     ctrl(&mut a, 'r');
     assert!(a.explore, "{:?}", a.note);
     ctrl(&mut a, 's');
-    let p = prompt(&a);
     let out = format!(
-        "<ref form=\"bare\" note=\"outside the repo, not read\">{}:2-3</ref>",
-        d.0.join("other/c.rs").display()
+        "<ref form=\"bare\" note=\"outside the repo, not read\">{}</ref>",
+        abs(&d, "other/c.rs", "2-3")
     );
-    assert!(p.contains(&out) && p.contains("<ref form=\"bare\">a.rs:1-2</ref>"), "{p}");
+    assert_eq!(refs_sent(&a), format!("<refs>\n{INSIDE}\n{out}\n</refs>\n\n"));
 }
 
 #[test]
@@ -360,7 +394,9 @@ fn a_write_without_explore_marks_nothing_outside() {
     let mut a = compose(&d, false);
     a.basket.push(r(&d, "other/c.rs", Some((2, 3))));
     ctrl(&mut a, 's');
-    assert!(!prompt(&a).contains("outside"), "{}", prompt(&a));
+    // the third ref goes out with no note, compared whole: its path can hold `outside`
+    let out = format!("<ref form=\"bare\">{}</ref>", abs(&d, "other/c.rs", "2-3"));
+    assert_eq!(refs_sent(&a), format!("<refs>\n{INSIDE}\n{out}\n</refs>\n\n"));
 }
 
 const NAMED: &str = "<prompt>Fix it in @a.rs#L1-2, as @b.md says.</prompt>";
