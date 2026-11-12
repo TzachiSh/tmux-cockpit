@@ -27,7 +27,7 @@ jobs:
   lint:
     runs-on: ubuntu-24.04 # pin: bump on purpose, ubuntu-latest moved to 26 (#401)
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # Pinned: apt's 0.9.0 has no --extended-analysis, and without it the
       # lint of tests/run.sh needs 15+ GB and the runner is shut down.
       - name: Install shellcheck

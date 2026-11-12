@@ -40,7 +40,7 @@ jobs:
     steps:
       # Full history: the #290 key-notes block upgrades from older commits and
       # skips (8 checks) on a depth-1 clone.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       - uses: ./.github/actions/tmux
