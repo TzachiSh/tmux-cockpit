@@ -62,9 +62,11 @@ impl Rig {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("claude");
-        let body = script.replace("$D", &dir.display().to_string());
+        // `$D` is the fake's own folder, read from `$0` and never written into
+        // the script, and every use is quoted: a space in the path once sent
+        // a redirect to a file beside TMPDIR (#911).
         let _g = FORK.lock().unwrap_or_else(|e| e.into_inner());
-        fake::write_exec(&p, &format!("#!/bin/sh\n{body}\n"));
+        fake::write_exec(&p, &format!("#!/bin/sh\nD=${{0%/*}}\n{script}\n"));
         Rig { dir }
     }
 
@@ -108,7 +110,7 @@ fn answer(req: &mut Request) -> Result<String, Fail> {
 fn the_argv_stdin_and_cwd_follow_the_contract() {
     let rig = Rig::new(
         "argv",
-        "printf '%s\\n' \"$@\" > $D/argv\ncat > $D/stdin\npwd > $D/cwd\necho 'the reply'",
+        "printf '%s\\n' \"$@\" > \"$D/argv\"\ncat > \"$D/stdin\"\npwd > \"$D/cwd\"\necho 'the reply'",
     );
     let mut req = spawn(&rig.call(30), "SYS", "hello </x>\n", "sonnet");
     assert_eq!(answer(&mut req), Ok("the reply\n".into()));
@@ -142,7 +144,7 @@ fn the_argv_stdin_and_cwd_follow_the_contract() {
 
 #[test]
 fn the_default_model_sends_no_model_flag() {
-    let rig = Rig::new("default", "printf '%s\\n' \"$@\" > $D/argv\necho ok");
+    let rig = Rig::new("default", "printf '%s\\n' \"$@\" > \"$D/argv\"\necho ok");
     let mut req = spawn(&rig.call(30), "S", "p", "default");
     assert_eq!(answer(&mut req), Ok("ok\n".into()));
     assert_eq!(rig.read("argv").lines().take(2).collect::<Vec<_>>(), ["-p", "--system-prompt-file"]);
@@ -191,12 +193,40 @@ fn a_missing_binary_fails_through_poll() {
     }
 }
 
+/// Where a redirect to an unquoted `dir` lands: the path cut at its first space.
+fn cut_at_space(dir: &Path) -> PathBuf {
+    PathBuf::from(dir.display().to_string().split(' ').next().unwrap())
+}
+
+/// A file's size and write time, `None` when it is absent: a write shows as a change.
+fn stamp(p: &Path) -> Option<(u64, std::time::SystemTime)> {
+    let m = std::fs::metadata(p).ok()?;
+    Some((m.len(), m.modified().ok()?))
+}
+
+/// Fails when `stray` changed since `before`, so a file some other run left
+/// there is not this fake's. One the fake made inside the temp dir is removed
+/// first, so a red run does not turn the next one red; one outside is left.
+fn assert_no_stray(stray: &Path, before: Option<(u64, std::time::SystemTime)>) {
+    let after = stamp(stray);
+    if before.is_none() && stray.starts_with(std::env::temp_dir()) {
+        let _ = std::fs::remove_file(stray);
+    }
+    assert_eq!(after, before, "the fake wrote {} beside its folder", stray.display());
+}
+
+/// The rig's folder holds a space, so the fake's write is also the #911 row:
+/// it lands inside the folder and makes no file beside it.
 #[test]
 fn the_timeout_kills_the_whole_process_group() {
-    let rig = Rig::new("timeout", "sleep 1000 &\necho $! > $D/kid\nexec sleep 1000");
+    let rig = Rig::new("time out", "sleep 1000 &\necho $! > \"$D/kid\"\nexec sleep 1000");
+    let stray = cut_at_space(&rig.dir);
+    let before = stamp(&stray);
     let mut req = spawn(&rig.call(1), "S", "p", "haiku");
     let pid = req.pid().unwrap();
-    assert!(until(|| rig.pid_file("kid").is_some()), "the fake never started");
+    let started = until(|| rig.pid_file("kid").is_some() || stamp(&stray) != before);
+    assert_no_stray(&stray, before);
+    assert!(started, "the fake never started");
     let kid = rig.pid_file("kid").unwrap();
     assert_eq!(answer(&mut req), Err(Fail::Timeout));
     assert_eq!(Fail::Timeout.to_string(), "took too long");
@@ -206,7 +236,7 @@ fn the_timeout_kills_the_whole_process_group() {
 
 #[test]
 fn cancel_kills_and_reaps_and_silences_poll() {
-    let rig = Rig::new("cancel", "echo $$ > $D/pid\nexec sleep 1000");
+    let rig = Rig::new("cancel", "echo $$ > \"$D/pid\"\nexec sleep 1000");
     let mut req = spawn(&rig.call(120), "S", "p", "haiku");
     assert!(until(|| rig.pid_file("pid").is_some()), "the fake never started");
     let pid = req.pid().unwrap();
@@ -218,7 +248,7 @@ fn cancel_kills_and_reaps_and_silences_poll() {
 
 #[test]
 fn dropping_a_request_kills_its_claude() {
-    let rig = Rig::new("drop", "echo $$ > $D/pid\nexec sleep 1000");
+    let rig = Rig::new("drop", "echo $$ > \"$D/pid\"\nexec sleep 1000");
     let req = spawn(&rig.call(120), "S", "p", "haiku");
     assert!(until(|| rig.pid_file("pid").is_some()), "the fake never started");
     let pid = req.pid().unwrap();
@@ -288,7 +318,7 @@ Read(//**/.env),Read(//**/.env.*)";
 /// The ask's cap in these tests: long enough never to fire.
 const CAP: Duration = Duration::from_secs(300);
 
-const ECHO_ARGV: &str = "printf '%s\\n' \"$@\" > $D/argv\npwd > $D/cwd\necho ok";
+const ECHO_ARGV: &str = "printf '%s\\n' \"$@\" > \"$D/argv\"\npwd > \"$D/cwd\"\necho ok";
 
 /// The argv after `-p` and the system prompt file, one per line.
 fn argv_after_prompt(rig: &Rig) -> Vec<String> {
@@ -427,7 +457,7 @@ fn every_read_only_profile_denies_the_writers() {
 /// A profile's own timeout wins over the call's: an ask may run longer than a write.
 #[test]
 fn a_profile_timeout_overrides_the_calls() {
-    let rig = Rig::new("ptimeout", "echo $$ > $D/pid\nexec sleep 30");
+    let rig = Rig::new("ptimeout", "echo $$ > \"$D/pid\"\nexec sleep 30");
     let p = Profile {
         timeout: Some(Duration::from_millis(300)),
         ..Profile::TEXT
