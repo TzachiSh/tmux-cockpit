@@ -7844,20 +7844,25 @@ export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER
   git init -q -b main .; printf 'a\n' > f; git add -A; git commit -q -m init
   printf 'b\n' >> f ) >/dev/null 2>&1
 printf 'keep\n' > "$TDS/victim"
-cat > "$TDS/bin/mktemp" <<STUB
-#!/bin/sh
-d=$TDS/race; mkdir -m 700 "\$d"; ln -s "$TDS/victim" "\$d/index"; ln -s "$TDS/victim" "\$d/staged"
-case "\$1" in -d) echo "\$d" ;; *) ln -s "$TDS/victim" "\$d.f"; echo "\$d.f" ;; esac
-STUB
-chmod +x "$TDS/bin/mktemp"
+# mktemp hands back a fresh, empty dir, as tree_diff checks it is (#943); the agent's symlinks
+# land after that check, from an ls shim, the check's own ls: the race won after creation,
+# which set -C has to stop. The paths go in %q-quoted, for a TMPDIR holding a space.
+printf '#!/bin/sh\nd=%q\nmkdir -m 700 "$d"\ncase "$1" in -d) echo "$d" ;; *) ln -s %q "$d.f"; echo "$d.f" ;; esac\n' \
+    "$TDS/race" "$TDS/victim" > "$TDS/bin/mktemp"
+printf '#!/bin/sh\n%q "$@"; rc=$?\nif [ -d %q ] && [ ! -e %q ]; then\n    ln -s %q %q && ln -s %q %q && : > %q\nfi\nexit $rc\n' \
+    "$(command -v ls)" "$TDS/race" "$TDS/planted" "$TDS/victim" "$TDS/race/index" \
+    "$TDS/victim" "$TDS/race/staged" "$TDS/planted" > "$TDS/bin/ls"
+chmod +x "$TDS/bin/mktemp" "$TDS/bin/ls"
 tds_diff() { bash -c '. "$1/git.sh"; . "$1/review-diff.sh"; tree_diff "$2" --numstat' _ \
         "$DIR/scripts/lib" "$TDS/repo"
 }
 PATH="$TDS/bin:$PATH" tds_diff >/dev/null 2>&1
 is "symlinks raced in at the index copy's and the file list's names: the victim is untouched" \
     "keep" "$(cat "$TDS/victim")"
+is "and the symlinks were in place before tree_diff wrote" "planted" \
+    "$([ -e "$TDS/planted" ] && echo planted || echo "not planted")"
 # The git shim reads the mode of the dir the index copy sits in, at the add.
-rm -f "$TDS/bin/mktemp"
+rm -f "$TDS/bin/mktemp" "$TDS/bin/ls"
 cat > "$TDS/bin/git" <<STUB
 #!/usr/bin/env bash
 case " \$* " in *" add "*) ls -ld "\$(dirname "\$GIT_INDEX_FILE")" | cut -c1-10 > "$TDS/mode" ;; esac
@@ -7868,6 +7873,32 @@ PATH="$TDS/bin:$PATH" TMPDIR="$TDS/tmp" tds_diff >/dev/null 2>&1
 is "the index copy sits in a dir only the user can open" "drwx------" \
     "$(cat "$TDS/mode" 2>/dev/null)"
 rm -rf "$TDS"; unset -f tds_diff
+
+echo "== tree_diff arms rm -rf only on a fresh dir of its own, never the caller's cwd (#943) =="
+# A mktemp that answers nothing (exit 0) made tree_diff's scratch dir $PWD/, and its trap
+# removed the caller's cwd. Each answer from a cwd of its own, under scratch, with a canary in
+# it and one beside it: both stay, and tree_diff fails closed, status 1, no output. ".:empty"
+# answers . from an empty cwd, which only the cwd test refuses (the empty test passes it).
+for td_a in "" nope . .. .:empty; do
+    TDE=$(mktmpd); mkdir -p "$TDE/cwd" "$TDE/bin" "$TDE/repo"
+    [ "$td_a" = .:empty ] || echo keep > "$TDE/cwd/canary"; echo keep > "$TDE/canary"
+    ( cd "$TDE/repo" || exit
+      git init -q -b main . && printf 'a\n' > f && git add f \
+      && git -c user.name=t -c user.email=t@e commit -q -m i && printf 'b\n' >> f ) >/dev/null 2>&1
+    printf '#!/bin/sh\necho %s\n' "${td_a%:empty}" > "$TDE/bin/mktemp"; chmod +x "$TDE/bin/mktemp"
+    td_o=$(cd "$TDE/cwd" && PATH="$TDE/bin:$PATH" bash -c \
+        '. "$1/git.sh"; . "$1/review-diff.sh"; tree_diff "$2" --numstat' _ "$DIR/scripts/lib" \
+        "$TDE/repo" 2>/dev/null; echo "rc=$?")
+    is "a mktemp answering [$td_a]: both canaries stay, and tree_diff fails closed" \
+       "kept kept|rc=1" \
+       "$([ -e "$TDE/cwd/canary" ] || [ "$td_a" = .:empty ] && echo kept || echo gone) $(
+           [ -e "$TDE/canary" ] && echo kept || echo gone)|$(
+           printf '%s' "$td_o" | tr '\n' ' ' | sed 's/ $//')"
+    [ "$td_a" != .:empty ] || is "and the empty cwd is still empty and still there" "empty" \
+       "$([ -d "$TDE/cwd" ] && [ -z "$(ls -A "$TDE/cwd")" ] && echo empty || echo changed)"
+    rm -rf "$TDE"
+done
+unset TDE td_a td_o
 
 # group: deliver
 echo "== tmux-review --deliver: guards refuse before anything is pasted =="
