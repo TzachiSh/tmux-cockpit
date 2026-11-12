@@ -260,17 +260,22 @@ impl Drop for Dir {
 }
 
 /// Pinned: an Ask's Busy line is #965's to fix, and this change leaves it as
-/// it was: the screen counted as Home counts it, the rest as conversation.
+/// it was: the screen counted as Home counts it, the rest (here a key in the
+/// code) as conversation, never as a repo block the Ask did not send.
 #[test]
 fn an_asks_busy_line_is_left_as_it_was() {
     let d = Dir(std::env::temp_dir().join(format!("cockpit-panel-counts-{}", std::process::id())));
     std::fs::create_dir_all(d.0.join(".git")).unwrap();
     let f = d.0.join("x.rs");
-    std::fs::write(&f, "a\nb\nc\n").unwrap();
+    std::fs::write(&f, "a\nb sk-abcdefghijklmnopqrst3\nc\n").unwrap();
     let mut a = app(cap(PLAIN, "w", "/h"));
     a.ask_open(ask::load(&f, 1, 2).unwrap());
     key(&mut a, KeyCode::Char('y'));
     key(&mut a, KeyCode::Enter);
     assert_eq!(a.view, View::Busy);
-    assert!(frame(&a).contains("sent: screen 2 lines, 1 hidden · ask about"), "{}", frame(&a));
+    let f = frame(&a);
+    assert!(
+        f.contains("sent: screen 2 lines, 1 hidden, 1 more in the conversation · ask about"),
+        "{f}"
+    );
 }
