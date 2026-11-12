@@ -70,13 +70,16 @@ const NO_HOME: &str = "/sys/absent-948";
 /// built and never restored. A prompt override under the developer's own config
 /// folder and their HOME changed what a write sends (#948), and an exported
 /// COCKPIT_PANEL_MODEL changed the model and the frames that name it (#953).
+/// A test that reaches the product without [`app`] calls this itself first.
 fn fixed_env() {
     static SET: Once = Once::new();
     SET.call_once(|| {
         // SAFETY: std's getenv and setenv share one lock, and a spawn holds it
         // while the child takes the environment. Every read a test thread
         // makes here is a Rust read; the readers that are not Rust are child
-        // processes, which get their copy at the spawn.
+        // processes, which get their copy at the spawn. A C function called
+        // in this process that reads the environment (a local time call, a
+        // getenv in a linked library) would break this: none is called today.
         unsafe {
             std::env::set_var("HOME", NO_HOME);
             std::env::set_var("XDG_CONFIG_HOME", NO_HOME);
@@ -95,6 +98,38 @@ fn app(name: &str, cmd: &str, screen: &str) -> App {
         ..Default::default()
     };
     App::new("%3", cap)
+}
+
+/// What [`an_app_is_built_under_the_fixed_environment`] writes to stderr once
+/// its three checks held, for the test that runs it in a process of its own.
+const ENV_CHECKED: &str = "the-fixed-environment-held";
+
+/// Once an `App` is built, the binary runs under the fixed environment (#948,
+/// #953). It builds one itself, so it holds when run first or alone.
+#[test]
+fn an_app_is_built_under_the_fixed_environment() {
+    let _ = app("w", "zsh", "$ ");
+    let now = |k: &str| std::env::var(k).ok();
+    assert_eq!(now("HOME").as_deref(), Some(NO_HOME));
+    assert_eq!(now("XDG_CONFIG_HOME").as_deref(), Some(NO_HOME));
+    assert_eq!(now("COCKPIT_PANEL_MODEL"), None);
+    eprintln!("{ENV_CHECKED}");
+}
+
+/// The test above in a process started with all three variables set. On a box
+/// that sets none of them, CI included, a COCKPIT_PANEL_MODEL left in place
+/// would pass that test: here it does not (#953).
+#[test]
+fn the_fixed_environment_replaces_values_already_set() {
+    let set = [("HOME", "/sys/other-948"), ("XDG_CONFIG_HOME", "/sys/other-948")];
+    let out = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "an_app_is_built_under_the_fixed_environment", "--nocapture"])
+        .envs(set)
+        .env("COCKPIT_PANEL_MODEL", "opus")
+        .output()
+        .unwrap();
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success() && said.lines().any(|l| l == ENV_CHECKED), "{said}");
 }
 
 fn key(a: &mut App, code: KeyCode) {
