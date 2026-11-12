@@ -404,7 +404,8 @@ fn write_sends_the_draft_the_type_and_the_question_budget() {
     ch(&mut a, '1');
     writing_from_compose(&mut a, "biggest files");
     let (system, prompt, model) = a.request_parts().unwrap();
-    assert!(system.contains("<examples>"));
+    // HOME sits inside an example's line, so a path can hold the tag but never be the line (#910)
+    assert!(system.lines().any(|l| l == "<examples>"), "no line is the tag");
     assert!(
         prompt.contains("<request>biggest files</request>") && prompt.contains("<output_type>command</output_type>"),
         "{prompt}"
