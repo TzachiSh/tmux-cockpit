@@ -540,3 +540,19 @@ pub fn render(src: &str, w: usize) -> Vec<String> {
         Err(why) => not_drawn(src, &why, w),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::Row;
+
+    /// No layout writes over a wide cell today; this pins the rule for the next one.
+    #[test]
+    fn writing_over_either_half_of_a_wide_cell_blanks_the_other() {
+        for (row, col, want) in [("over the left half", 2, "  │ x"), ("over the right half", 3, "   │x")] {
+            let mut r = Row::new(5);
+            r.text(2, "名x");
+            r.put(col, "│");
+            assert_eq!(r.done(), want.trim_end(), "{row}");
+        }
+    }
+}
