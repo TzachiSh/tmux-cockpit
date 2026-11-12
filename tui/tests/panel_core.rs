@@ -294,6 +294,143 @@ fn an_asks_code_tag_escapes_a_closer_in_the_files_path() {
     }
 }
 
+const FIX: Flow = Flow::Fix { draft: String::new() };
+
+/// #932: the first line starting with `start` in the envelope `flow` builds on `c`.
+fn line_of(flow: &Flow, c: &Capture, start: &str) -> Option<String> {
+    let got = build(flow, c, &[], 3);
+    got.lines().find(|l| l.starts_with(start)).map(str::to_string)
+}
+
+/// #932: a Fix hides a secret on the screen. The made-up line is one `redact`'s
+/// key and value matcher takes, and each wanted line below is a literal.
+#[test]
+fn a_fix_hides_a_secret_on_the_screen() {
+    let got = line_of(&FIX, &cap("w", "zsh", "export TOKEN=abcd1234"), "export ");
+    assert_eq!(got.as_deref(), Some("export TOKEN=[hidden]"));
+}
+
+/// #932: an Explain hides a secret on the screen.
+#[test]
+fn an_explain_hides_a_secret_on_the_screen() {
+    let got = line_of(&Flow::Explain, &cap("w", "zsh", "export TOKEN=abcd1234"), "export ");
+    assert_eq!(got.as_deref(), Some("export TOKEN=[hidden]"));
+}
+
+/// #932: a Fix escapes a closer on the screen, the tag's own and any other.
+#[test]
+fn a_fix_escapes_a_closer_on_the_screen() {
+    let rows = [("$ echo </screen>", "$ echo <\\/screen>"), ("$ echo </b>", "$ echo <\\/b>")];
+    for (screen, want) in rows {
+        let got = line_of(&FIX, &cap("w", "zsh", screen), "$ echo ");
+        assert_eq!(got.as_deref(), Some(want), "{screen}");
+    }
+}
+
+/// #932: an Explain escapes a closer on the screen.
+#[test]
+fn an_explain_escapes_a_closer_on_the_screen() {
+    let rows = [("$ echo </screen>", "$ echo <\\/screen>"), ("$ echo </b>", "$ echo <\\/b>")];
+    for (screen, want) in rows {
+        let got = line_of(&Flow::Explain, &cap("w", "zsh", screen), "$ echo ");
+        assert_eq!(got.as_deref(), Some(want), "{screen}");
+    }
+}
+
+/// #932: a Fix's `<screen>` tag escapes a closer in the window's name.
+#[test]
+fn a_fixs_screen_tag_escapes_a_closer_in_the_window_name() {
+    let rows = [
+        ("a</window>b</screen>c", "<screen window=\"a<\\/window>b<\\/screen>c · zsh\">"),
+        ("d</b>", "<screen window=\"d<\\/b> · zsh\">"),
+    ];
+    for (name, want) in rows {
+        let got = line_of(&FIX, &cap(name, "zsh", ""), "<screen ");
+        assert_eq!(got.as_deref(), Some(want), "{name}");
+    }
+}
+
+/// #932: a Fix's `<screen>` tag escapes a closer in the window's command.
+#[test]
+fn a_fixs_screen_tag_escapes_a_closer_in_the_window_command() {
+    let rows = [
+        ("a</window>b</screen>c", "<screen window=\"w · a<\\/window>b<\\/screen>c\">"),
+        ("d</b>", "<screen window=\"w · d<\\/b>\">"),
+    ];
+    for (cmd, want) in rows {
+        let got = line_of(&FIX, &cap("w", cmd, ""), "<screen ");
+        assert_eq!(got.as_deref(), Some(want), "{cmd}");
+    }
+}
+
+/// #932: an Explain's `<screen>` tag escapes a closer in the window's name.
+#[test]
+fn an_explains_screen_tag_escapes_a_closer_in_the_window_name() {
+    let rows = [
+        ("a</window>b</screen>c", "<screen window=\"a<\\/window>b<\\/screen>c · zsh\">"),
+        ("d</b>", "<screen window=\"d<\\/b> · zsh\">"),
+    ];
+    for (name, want) in rows {
+        let got = line_of(&Flow::Explain, &cap(name, "zsh", ""), "<screen ");
+        assert_eq!(got.as_deref(), Some(want), "{name}");
+    }
+}
+
+/// #932: an Explain's `<screen>` tag escapes a closer in the window's command.
+#[test]
+fn an_explains_screen_tag_escapes_a_closer_in_the_window_command() {
+    let rows = [
+        ("a</window>b</screen>c", "<screen window=\"w · a<\\/window>b<\\/screen>c\">"),
+        ("d</b>", "<screen window=\"w · d<\\/b>\">"),
+    ];
+    for (cmd, want) in rows {
+        let got = line_of(&Flow::Explain, &cap("w", cmd, ""), "<screen ");
+        assert_eq!(got.as_deref(), Some(want), "{cmd}");
+    }
+}
+
+/// #932: a `"` in the window's name cannot end a Write's `window` attribute.
+#[test]
+fn a_quote_in_the_window_name_cannot_end_a_writes_attribute() {
+    let got = line_of(&WRITE, &cap("my \"w\"", "zsh", ""), "<screen ");
+    assert_eq!(got.as_deref(), Some("<screen window=\"my &quot;w&quot; · zsh\">"));
+}
+
+/// #932: a `"` in the window's command cannot end a Write's `window` attribute.
+#[test]
+fn a_quote_in_the_window_command_cannot_end_a_writes_attribute() {
+    let got = line_of(&WRITE, &cap("w", "my \"c\"", ""), "<screen ");
+    assert_eq!(got.as_deref(), Some("<screen window=\"w · my &quot;c&quot;\">"));
+}
+
+/// #932: a `"` in the window's command cannot end a Fix's `window` attribute.
+#[test]
+fn a_quote_in_the_window_command_cannot_end_a_fixs_attribute() {
+    let got = line_of(&FIX, &cap("w", "my \"c\"", ""), "<screen ");
+    assert_eq!(got.as_deref(), Some("<screen window=\"w · my &quot;c&quot;\">"));
+}
+
+/// #932: a `"` in the window's name cannot end an Explain's `window` attribute.
+#[test]
+fn a_quote_in_the_window_name_cannot_end_an_explains_attribute() {
+    let got = line_of(&Flow::Explain, &cap("my \"w\"", "zsh", ""), "<screen ");
+    assert_eq!(got.as_deref(), Some("<screen window=\"my &quot;w&quot; · zsh\">"));
+}
+
+/// #932: a `"` in the window's command cannot end an Explain's `window` attribute.
+#[test]
+fn a_quote_in_the_window_command_cannot_end_an_explains_attribute() {
+    let got = line_of(&Flow::Explain, &cap("w", "my \"c\"", ""), "<screen ");
+    assert_eq!(got.as_deref(), Some("<screen window=\"w · my &quot;c&quot;\">"));
+}
+
+/// #932: a `"` in the asked file's path cannot end an Ask's `path` attribute.
+#[test]
+fn a_quote_in_the_files_path_cannot_end_an_asks_attribute() {
+    let got = line_of(&ask_about("src/a\"b.rs"), &Capture::default(), "<code ");
+    assert_eq!(got.as_deref(), Some("<code path=\"src/a&quot;b.rs\" lines=\"1-1\">"));
+}
+
 #[test]
 fn an_empty_repo_block_sends_no_tag() {
     assert!(!build(&WRITE, &with_repo(""), &[], 3).contains("<repo"));
