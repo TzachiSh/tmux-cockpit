@@ -306,16 +306,28 @@ fn prompt(a: &App) -> String {
     a.request_parts().expect("a write is pending").1
 }
 
+/// The prompt before its `<window>` line, and from its request on, as every
+/// write in this file sends them.
+const BEFORE: &str = "<screen window=\"claude · claude\">\n$ \n</screen>\n\n";
+const AFTER: &str = "fix it</request>\n\n<questions_left>3</questions_left>";
+
 /// What the prompt holds between its `<window>` line and its request: the
 /// `<refs>` block and the blank line after it, or nothing when none was sent.
 /// The window line states the repo's path, which sits under the temp dir and
 /// can hold any word a test looks for, so a test compares this part whole
-/// (#910). `esc` leaves no `</` in a path, so the first `</window>` is the
-/// line's own; the last `<request>` is the request's, the draft holding none.
+/// (#910). The parts cut off are compared whole here, the window line with
+/// the path as the envelope escapes it, so a block or a note written anywhere
+/// else in the prompt fails too. `esc` leaves no `</` in a path, so the first
+/// `</window>` is the line's own; the last `<request>` is the request's, the
+/// draft holding none.
 fn refs_sent(a: &App) -> String {
     let p = prompt(a);
-    let (_, rest) = p.split_once("</window>\n\n").unwrap_or_else(|| panic!("no window line: {p}"));
-    let (refs, _) = rest.rsplit_once("<request>").unwrap_or_else(|| panic!("no request: {p}"));
+    let cut = |what: &str| panic!("no {what}: {p}");
+    let (before, rest) = p.split_once("<window>").unwrap_or_else(|| cut("window line"));
+    let (window, rest) = rest.split_once("</window>\n\n").unwrap_or_else(|| cut("window line end"));
+    let (refs, after) = rest.rsplit_once("<request>").unwrap_or_else(|| cut("request"));
+    let shown = format!("claude · claude · {}", esc(&a.cap.path));
+    assert_eq!((before, window, after), (BEFORE, shown.as_str(), AFTER), "{p}");
     refs.to_string()
 }
 
