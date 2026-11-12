@@ -14514,8 +14514,10 @@ rs_panes() { "$TMUX_REAL" -L "$RS" display -p -t "$1" '#{window_panes}'; }
 rs_run() {                    # <action-line> <expect>: one trip; the note it left
     rm -f "$RSD/once" "$RSD/done" "$RSD/ran"; : > "$RSD/bargv"
     printf '%s\n' "$1" > "$RSD/line"; printf '%s\n' "$2" > "$RSD/expect"
-    # RS_ENV: NAME=value words for the board's environment, a locale for one (#830)
-    local cmd="env ${RS_ENV:-} PATH=\"$RSD/stub:\$PATH\" COCKPIT_TUI_BIN=$RSD/bin"
+    # RS_ENV: NAME=value words for the board's environment, a locale for one (#830);
+    # RS_STUB and RS_PATH: another stub dir and the PATH after it (#895)
+    local cmd="env ${RS_ENV:-} PATH=\"${RS_STUB:-$RSD/stub}:${RS_PATH:-\$PATH}\""
+    cmd+=" COCKPIT_TUI_BIN=$RSD/bin"
     cmd+=" XDG_STATE_HOME=$RSD/state COCKPIT_LOG=$RSD/tui.log"
     cmd+=" $DIR/scripts/cockpit-board -p $RSHOME; echo x > $RSD/done"
     "$TMUX_REAL" -L "$RS" new-window -d -t t: "$cmd"
@@ -14655,6 +14657,52 @@ is "an ended pane holding the id does not block the resume" "[$RSD/work][--resum
     "$(cat "$RSD/ran" 2>/dev/null)"
 is "no format job ran in the whole block" "absent" \
     "$([ -e "$RSD/pwned" ] && echo present || echo absent)"
+# A default shell that forks the last command of a -c string (#895): dash, /bin/sh on Debian
+# and Ubuntu. tmux runs the resume string as `<default-shell> -c <string>`, so without exec
+# dash stays the pane's process and the pane reads sh. Then neither the live-copy check
+# above nor basket::is_claude calls it claude, and a second `o` starts a second copy. Last in
+# the block, as the server keeps dash from here on. The stub keeps the name claude: a bash
+# copy run as claude, idle. On a PATH with no real claude anywhere, checked first.
+RSDASH=/bin/sh                # as the issue saw it: /bin/sh where it is dash, else dash itself
+[ "$(readlink -f /bin/sh)" = "$(readlink -f "$(command -v dash 2>/dev/null)")" ] \
+    || RSDASH=$(command -v dash 2>/dev/null)
+if [ -z "$RSDASH" ]; then skip_ "the resume under a forking default shell: no dash"; else
+mkdir -p "$RSD/stub2"; cp "$(command -v bash)" "$RSD/stub2/idle"
+printf '#!/bin/bash\nprintf "[%%s]" "$PWD" "$@" > %q\nexec -a claude %q -c %q\n' \
+    "$RSD/ran" "$RSD/stub2/idle" 'sleep 3600; :' > "$RSD/stub2/claude"
+chmod +x "$RSD/stub2/claude"
+rs_nc=$(IFS=:; for d in $PATH; do [ -e "$d/claude" ] || printf '%s:' "$d"; done)
+rs_nc="$RSD/stub2:${rs_nc%:}"
+is "under dash, claude resolves to the stub before anything runs it" "$RSD/stub2/claude" \
+   "$(env PATH="$rs_nc" "$RSDASH" -c 'command -v claude')"
+if [ "$(env PATH="$rs_nc" "$RSDASH" -c 'command -v claude')" = "$RSD/stub2/claude" ]; then
+"$TMUX_REAL" -L "$RS" set-environment -g PATH "$rs_nc"
+"$TMUX_REAL" -L "$RS" set -g default-shell "$RSDASH"
+R=$(rs_agent "$SID")
+RS_STUB="$RSD/stub2" RS_PATH="$rs_nc" rs_run "resume $R" "$SID" >/dev/null
+until_file "$RSD/ran" '?*'
+is "under dash the resume runs claude --resume <id>" "[$RSD/work][--resume][$SID]" \
+    "$(cat "$RSD/ran" 2>/dev/null)"
+RN=$("$TMUX_REAL" -L "$RS" list-panes -t "$R" -F '#{pane_id}' | grep -vx -- "$R")
+until_out claude "$TMUX_REAL" -L "$RS" display -p -t "$RN" '#{pane_current_command}'
+is "and the resumed pane reads claude, not the shell" "claude" \
+    "$("$TMUX_REAL" -L "$RS" display -p -t "$RN" '#{pane_current_command}')"
+is "so the agent glob calls it an agent" "1" "$("$TMUX_REAL" -L "$RS" display -p -t "$RN" \
+    '#{?#{m/i:*|#{b:pane_current_command}|*,#{@cockpit_agents_glob}},1,0}')"
+# its SessionStart hook names the session on its pane, as a real claude's does
+"$TMUX_REAL" -L "$RS" set -p -t "$RN" @cockpit_session "$SID"
+R2=$(rs_agent "$SID")
+case "$(RS_STUB="$RSD/stub2" RS_PATH="$rs_nc" rs_run "resume $R2" "$SID")" in
+    "✕ cockpit: ${SID:0:8} is already running in $RN") ok \
+            "and a second o on the same id is refused: the live-copy check sees it" ;;
+    *) bad "and a second o on the same id is refused: the live-copy check sees it" \
+            "✕ cockpit: ${SID:0:8} is already running in $RN" "$(cat "$RSD/bargv")" ;;
+    esac
+is "and nothing ran for it" "1 " "$(rs_panes "$R2") $(cat "$RSD/ran" 2>/dev/null)"
+fi
+unset rs_nc R2 RN
+fi
+unset RSDASH
 "$TMUX_REAL" -L "$RS" kill-server >/dev/null 2>&1
 fi
 
