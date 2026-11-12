@@ -20237,9 +20237,12 @@ for nt_d in "${nt_path[@]}"; do
         ! -name timeout ! -name gtimeout -print0
 done | xargs -0 ln -s -t "$NT/bin" 2>/dev/null
 # gtimeout: the real timeout under that name, by its own path (a multicall timeout will not
-# run as gtimeout), logging what it was handed and how it ended, so a row sees it ran.
+# run as gtimeout), logging what it was handed and how it ended, so a row sees it ran. Both
+# paths single-quoted, a ' in them as '\'': a space in TMPDIR split the log's (#893).
+ntq() { printf "'%s'" "${1//\'/\'\\\'\'}"; }
 printf '#!/bin/sh\n%s "$@"; rc=$?\necho "$rc $*" >> %s\nexit $rc\n' \
-    "$(command -v timeout)" "$NT/g.log" > "$NT/bin/gtimeout"
+    "$(ntq "$(command -v timeout)")" "$(ntq "$NT/g.log")" > "$NT/bin/gtimeout"
+unset -f ntq
 chmod +x "$NT/bin/gtimeout"
 printf '#!/bin/sh\nexec sleep 20\n' > "$NT/fake/claude"; cp "$NT/fake/claude" "$NT/fake/tui"
 chmod +x "$NT/fake/claude" "$NT/fake/tui"
@@ -20300,6 +20303,26 @@ for nt_p in $nt_w; do
 done
 "$TMUX_REAL" -L "$NTS" kill-server >/dev/null 2>&1
 unset -f nt_run; unset NT NTS NTP NTK nt_w nt_r nt_f nt_d nt_p nt_c nt_path nt_n
+fi
+
+echo "== the #746 block holds under a TMPDIR with two spaces (#893) =="
+# Its gtimeout shim wrote the timeout and log paths into its script unquoted, so a space in
+# TMPDIR split the log path: the log row went red, and the shim appended to a file named by
+# the path's first word, beside the run's scratch. The block run on its own, nested; a block
+# of its own, as a nested run of the same block would run this row again.
+if need_tmux "the #746 block under a spaced TMPDIR"; then :
+elif ! command -v timeout >/dev/null 2>&1; then skip_ "the #746 block under a spaced TMPDIR (no timeout)"
+else
+SPB=$(mktmpd); SPT="$SPB/my  tmp"; mkdir -p "$SPT"
+( cd "$DIR" && TMPDIR="$SPT" exec timeout 120 tests/only.sh '^the four bounded reads end' ) \
+    </dev/null > "$SPB/log" 2>&1
+sp_n=$(sed 's/\x1b\[[0-9;]*m//g' "$SPB/log" | grep -E '[0-9]+ passed, [0-9]+ failed' | tail -1)
+is "the #746 block, under a TMPDIR with two spaces, passes whole" "ok" \
+   "$(case $sp_n in "" | *" 0 passed"*) echo "none: $(tail -2 "$SPB/log" | tr '\n' ' ')" ;;
+        *" 0 failed"*) echo ok ;; *) echo "$sp_n" ;; esac)"
+is "and writes nothing beside that TMPDIR" "absent" \
+   "$([ -e "$SPB/my" ] && echo present || echo absent)"
+rm -rf "$SPB"; unset SPB SPT sp_n
 fi
 
 echo "== cmdname.sh: cmd_base cuts a path and leading dashes for the agent tests (#757) =="
