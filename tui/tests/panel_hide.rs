@@ -464,3 +464,20 @@ fn an_explore_that_is_not_true_or_false_is_refused() {
     let bad = good.replace("\"explore\":true", "\"explore\":\"yes\"");
     assert!(refused("explore-type", &bad).contains("explore"), "{bad}");
 }
+
+// ---------------------------------------------------------------- batch questions
+
+#[test]
+fn a_batch_comes_back_on_its_question_with_the_rest_still_to_ask() {
+    let q = |n: usize| format!("<question>Q{n}?</question><option>a{n}</option><option>b{n}</option>");
+    let mut a = replied("do it", &format!("{}{}{}", q(1), q(2), q(3)));
+    key(&mut a, KeyCode::Char('1'));
+    let mut b = round(&mut a, "batch");
+    let r = b.run.as_ref().unwrap();
+    assert_eq!((r.question.as_str(), r.place(), r.rounds), ("Q2?", (2, 3), 3));
+    key(&mut b, KeyCode::Char('1'));
+    assert_eq!(b.run.as_ref().unwrap().place(), (3, 3), "the third question was kept");
+    key(&mut b, KeyCode::Backspace);
+    key(&mut b, KeyCode::Backspace);
+    assert_eq!(b.run.as_ref().unwrap().question, "Q1?", "and so was the first");
+}

@@ -3759,3 +3759,18 @@ fn golden_input_correct() {
     typ(&mut a, "two files");
     goldens("input-correct", &a, 0);
 }
+
+// ---------------------------------------------------------------- batch questions
+
+/// The second of a batch of two: which of the two it is, and the budget both took.
+#[test]
+fn golden_question_batch() {
+    let mut a = app("work", "bash", "$ ls");
+    writing(&mut a, "deploy it");
+    a.reply(Ok("<question>Which host?</question>\n<option recommended=\"true\">lab</option>\n\
+                <option>prod</option>\n<question>Which port?</question>\n<option>80</option>\n<option>443</option>"
+        .into()));
+    ch(&mut a, '1');
+    golden("panel-question-batch-80", &frame(&a, 80, 20, 0));
+    golden("panel-question-batch-40", &frame(&a, 40, 12, 0));
+}
