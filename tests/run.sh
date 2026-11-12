@@ -2095,7 +2095,7 @@ rg_wait() {
 rg_run() {
     local n0; n0=$(rg_n)
     "$TMUX_REAL" -L "$RG" send-keys -t "$RGCTL" \
-        "TMUX_PANE=$RGAP XDG_STATE_HOME=$(printf '%q' "$RGSTATE") '$DIR/scripts/review-gate' < $(printf '%q' "$1") > $(printf '%q' "$RGSTATE/out") 2> $(printf '%q' "$RGSTATE/err"); echo GRC=\$?" Enter
+        "${RG_PRE:-}TMUX_PANE=$RGAP XDG_STATE_HOME=$(printf '%q' "$RGSTATE") '$DIR/scripts/review-gate' < $(printf '%q' "$1") > $(printf '%q' "$RGSTATE/out") 2> $(printf '%q' "$RGSTATE/err"); echo GRC=\$?" Enter
     rg_wait "$n0"
 }
 rg_rc() { "$TMUX_REAL" -L "$RG" capture-pane -p -J -S - -t "$RGCTL" | grep -o 'GRC=[0-9]*' | tail -1
@@ -2118,6 +2118,19 @@ printf 'a\nb\n' > "$RGDIR/f"
 rg_run "$RGPAY"; is "a finished, unreviewed diff exits 0" "GRC=0" "$(rg_rc)"
 is "and flags the pane pending" "pending" \
     "$("$TMUX_REAL" -L "$RG" show-option -pqv -t "$RGAP" @cockpit_review)"
+# A diff that cannot be read (#944): mktemp -d fails, so tree_diff returns 1 and prints
+# nothing. --delta says it cannot tell (2), and the Stop hook leaves the mark as it is: a
+# refusal is neither a change to review nor a clean tree.
+RGMK=$(mktmpd)
+printf '#!/bin/sh\ncase "$1" in -d) exit 1 ;; esac\nexec %q "$@"\n' "$(command -v mktemp)" \
+    > "$RGMK/mktemp"; chmod +x "$RGMK/mktemp"
+is "--delta, when the diff cannot be read, says so (exit 2)" "D=2" \
+    "$("$TMUX_REAL" -L "$RG" run-shell "PATH=$(printf '%q' "$RGMK"):\$PATH XDG_STATE_HOME=$(printf '%q' "$RGSTATE") '$DIR/scripts/tmux-review' --delta $RGAP; echo D=\$?" \
+    2>/dev/null | tail -1)"
+RG_PRE="PATH=$(printf '%q' "$RGMK"):\$PATH " rg_run "$RGPAY"
+is "and the Stop hook leaves the pending mark as it is" "pending|GRC=0" \
+    "$("$TMUX_REAL" -L "$RG" show-option -pqv -t "$RGAP" @cockpit_review)|$(rg_rc)"
+unset RGMK
 case "$("$TMUX_REAL" -L "$RG" show-option -gqv @cockpit_fleet)" in
     *'◆1'*) ok "the fleet string says ◆1" ;;
     *) bad "the fleet string says ◆1" "◆1" \
@@ -17421,6 +17434,53 @@ is "--loop on a clean repo: still 'no uncommitted changes', status 0" \
     "cockpit: no uncommitted changes in $GD/ok|0" "$(head -1 "$GD/msgs")|$rfrc"
 fi
 rm -rf "${GD:-/nonexistent-gd}"
+
+echo "== a diff that cannot be read is said, not shown as a clean tree (#944) =="
+# tree_diff returns 1 and prints nothing when it cannot make its scratch dir (#943 refuses
+# one it did not make), and its readers took that for no changes. A mktemp that fails -d
+# from its Nth call on, counted, plays it; every other mktemp is the real one. tmux goes
+# through a shim onto a private socket, as in the #330 block: never the user's server.
+if need_tmux "an unreadable diff in tmux-review"; then :; else
+UD="cockpit-ud-$$"; SOCKS="$SOCKS $UD"; UDD=$(mktmpd); mkdir -p "$UDD/bin" "$UDD/st"
+( export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main "$UDD/r" && cd "$UDD/r" && printf 'a\n' > f && git add f \
+  && git commit -q -m one && git switch -q -c feat && printf 'b\n' >> f \
+  && git commit -q -am two && printf 'c\n' >> f ) >/dev/null 2>&1
+printf '#!/bin/sh\ncase "$1" in -d) n=$(cat %q 2>/dev/null || echo 0); n=$((n+1)); echo "$n" > %q\n''    [ "$n" -lt "$(cat %q)" ] || exit 1 ;; esac\nexec %q "$@"\n' \
+    "$UDD/n" "$UDD/n" "$UDD/from" "$(command -v mktemp)" > "$UDD/bin/mktemp"
+printf '#!/bin/sh\nexit 0\n' > "$UDD/bin/revdiff"
+cat > "$UDD/bin/tmux" <<SHIMEOF
+#!/bin/sh
+case "\$1" in
+    display-popup) for a; do :; done; sh -c "\$a" >/dev/null 2>&1; exit 0 ;;
+    display-message) for a; do :; done; case "\$a" in *session_attached*) echo 1; exit 0 ;; esac; printf '%s\\n' "\$a" >> $(printf %q "$UDD/msgs") ;;
+esac
+exec $(printf %q "$TMUX_REAL") -L $(printf %q "$UD") "\$@"
+SHIMEOF
+chmod +x "$UDD/bin/mktemp" "$UDD/bin/revdiff" "$UDD/bin/tmux"
+ud() {                        # <fail -d from this call> <stdin> -> the loop's status
+    rm -f "$UDD/n"; echo "$1" > "$UDD/from"; : > "$UDD/msgs"
+    printf '%s' "$2" | env -u TMUX PATH="$UDD/bin:$PATH" XDG_STATE_HOME="$UDD/st" \
+        "$DIR/scripts/tmux-review" --loop "$UDD/r" "$UDD/store" >/dev/null 2>&1
+}
+# The popup: the first tree_diff fails. It says so and keeps the pinned comments.
+printf '## f:1\n> a\nkeep this\n' > "$UDD/store"
+ud 1 ""; udrc=$?
+is "the review popup says the diff could not be read, status 1" \
+   "cockpit: could not read the diff in $UDD/r|1" "$(head -1 "$UDD/msgs")|$udrc"
+is "and the pinned comments stay" "keep this" "$(grep -x 'keep this' "$UDD/store" 2>/dev/null)"
+# The b key: the first tree_diff reads the change, the one after b cannot. A fresh store, or
+# the loop first asks whether to unpin the comment kept above, and that read takes the b.
+rm -f "$UDD/store"
+ud 2 b
+case "$(cat "$UDD/msgs")" in
+    *"could not read the diff against "*) ok "b on a base whose diff cannot be read says so" ;;
+    *) bad "b on a base whose diff cannot be read says so" "could not read the diff against ..." \
+           "$(tr '\n' '|' < "$UDD/msgs")" ;;
+esac
+"$TMUX_REAL" -L "$UD" kill-server >/dev/null 2>&1
+unset -f ud; unset UD UDD udrc
+fi
 
 echo "== tests/only.sh: a pattern with \\( and ^ selects the block, no match is an error (#241) =="
 OD=$(mktemp -d)
