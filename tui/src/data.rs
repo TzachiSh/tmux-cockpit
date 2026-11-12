@@ -1530,6 +1530,10 @@ mod tests {
         }
     }
 
+    /// How often `lineage_on_the_real_proc_matches_ps` looks for the child.
+    #[cfg(target_os = "linux")]
+    const LINEAGE_POLLS: usize = 300;
+
     /// A child named past 15 chars: the walk and `ps` agree on pids and on the
     /// truncated name.
     #[cfg(target_os = "linux")]
@@ -1540,17 +1544,29 @@ mod tests {
         let py = Command::new("sh").args(["-c", "command -v python3"]).output().unwrap().stdout;
         let long = dir.join("claude-with-a-very-long-name");
         std::os::unix::fs::symlink(String::from_utf8(py).unwrap().trim(), &long).unwrap();
-        let cmd = format!("{} -c 'import time; time.sleep(30)' & wait", long.display());
-        let sh = Reap(Command::new("sh").arg("-c").arg(cmd).spawn().unwrap());
+        // The path is the shell's `$0`, quoted, never part of the script: a
+        // space in TMPDIR once split it, and the shell exited at once (#911).
+        let cmd = "\"$0\" -c 'import time; time.sleep(30)' & wait";
+        let sh = Reap(Command::new("sh").arg("-c").arg(cmd).arg(&long).spawn().unwrap());
         let pid = sh.0.id().to_string();
+        // Polled to a count, 3 s of pauses at most: a child that never shows
+        // fails the test, where an unbounded loop hung it (#911).
         let mut t = procs();
-        while tree(&pid, &t).len() < 2 {
+        for _ in 0..LINEAGE_POLLS {
+            if tree(&pid, &t).len() >= 2 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
             t = procs();
         }
-        let want: Vec<_> = tree(&pid, &t).into_iter().map(|p| (p.clone(), t.comm[&p].clone())).collect();
-        assert_eq!(lineage(&pid, &mut None), want);
-        assert_eq!(want[1].1.len(), 15);
+        let seen = tree(&pid, &t);
+        let want: Vec<_> = seen.iter().map(|p| (p.clone(), t.comm[p].clone())).collect();
+        let got = lineage(&pid, &mut None);
+        // read first, removed before any assert: a red run leaves no directory
         let _ = std::fs::remove_dir_all(&dir);
+        assert!(seen.len() >= 2, "sh {pid} showed no child in {LINEAGE_POLLS} polls: {seen:?}");
+        assert_eq!(got, want);
+        assert_eq!(want[1].1.len(), 15);
     }
 
     #[test]
