@@ -13,10 +13,8 @@
 # shellcheck source=cmdname.sh
 . "${BASH_SOURCE[0]%/*}/cmdname.sh" || return 1
 
-# workdir takes about 12 ms; the bound is a hang guard. timeout is GNU coreutils;
-# a box without it calls unbounded, as agent-state does.
-WORKDIR_TO=()
-command -v timeout >/dev/null 2>&1 && WORKDIR_TO=(timeout 3)
+# shellcheck source=bound.sh
+. "${BASH_SOURCE[0]%/*}/bound.sh" || return 1
 
 # Only an absolute path naming a directory counts: a relative one is read
 # against the caller's cwd, and a walk up from it never ends (#474).
@@ -35,7 +33,9 @@ workdir_pick() {              # <answer> <@cockpit_dir> <pane_current_path>
 workdir_ask() {               # <pane> -> its dir
     local out
     [ -x "$COCKPIT_TUI_BIN" ] || return 0
-    out=$(${WORKDIR_TO[@]+"${WORKDIR_TO[@]}"} "$COCKPIT_TUI_BIN" workdir "$1" \
+    # workdir takes about 12 ms; the bound is a hang guard: timeout, else gtimeout; unbounded
+    # with neither (#746).
+    out=$(bound 3 "$COCKPIT_TUI_BIN" workdir "$1" \
         </dev/null 2>/dev/null) || return 0
     printf '%s' "$out"
 }
