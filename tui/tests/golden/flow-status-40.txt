@@ -1,0 +1,9 @@
+✓  1 brief    owner→agent     09:02
+✓  2 PR open  agent→reviewer  09:20
+✓  3 NIT x2   reviewer→agent  09:41
+●  4 suite    agent→CI        09:44
+     ◀ here
+!  5 merge?   CI→owner
+┌ NEED FROM YOU ───────────────────────┐
+│ approve merge after CI green         │
+└──────────────────────────────────────┘

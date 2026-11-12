@@ -1,0 +1,14 @@
+sequenceDiagram
+  participant A as agent
+  participant C as CI
+  loop until green
+    A->>C: push
+    alt red
+      C-->>A: failure log
+    else green
+      C-->>A: pass
+    end
+  end
+  opt flaky
+    A->>A: rerun
+  end

@@ -1,0 +1,11 @@
+sequenceDiagram
+  participant O as owner
+  participant A as agent
+  O->>A: brief
+  %% status: ✓ 10:01
+  Note right of A: reads the issue first
+  A-->>O: plan
+  %% status: ✓
+  A->>A: build
+  %% status: running 10:15
+  Note over O,A: NEED FROM YOU: pick a name

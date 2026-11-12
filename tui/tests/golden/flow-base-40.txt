@@ -1,0 +1,8 @@
+ 1 brief    owner→agent
+ 2 PR open  agent→reviewer
+ 3 NIT x2   reviewer→agent
+ 4 suite    agent→CI
+ 5 merge?   CI→owner
+┌ NEED FROM YOU ───────────────────────┐
+│ approve merge after CI green         │
+└──────────────────────────────────────┘

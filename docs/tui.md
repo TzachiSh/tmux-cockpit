@@ -1396,6 +1396,45 @@ and `parse::fix` and `parse::explain` read only the first question, as before.
   single question's row is as before.
 - **Goldens:** `panel-question-batch-{40,80}`, the second question of two.
 
+### The flow renderer (#935)
+
+`panel::flow` draws a Mermaid `sequenceDiagram` as text that fits a width. It is
+not wired into Explain yet.
+
+- **What it reads.** `participant` and `actor`, with `as` for a display name,
+  and participants named only in a step. The arrows `->>`, `-->>`, `->` and
+  `-->`; the dashed ones draw `┄`. `autonumber`. `Note left of`, `right of` or
+  `over`. A `%% status: <s> [HH:MM]` line after a step, the key in any case,
+  `<s>` one of `✓ ● ○ ✗ !` or `done running pending failed needs`, the time
+  from 00:00 to 23:59; a `%%` at the end of a step line is part of its label,
+  as in Mermaid. Other `%%` lines are comments.
+- **Blocks.** `loop`, `alt`, `opt`, `else` and `end` are dropped and their steps
+  kept in order. An `end` or `else` outside a block, or a block never closed,
+  is an error.
+- **Anything else** (`par`, `activate`, `-x`, a bad status word or time) is an `Err`
+  naming the line. `flow::render` then shows `flow::not_drawn`: `(not drawn:
+  <why>)`, then the raw lines, each cut to the width.
+- **Ladder or list.** The ladder at 60 columns or more with at most 4 actors,
+  the numbered list otherwise. The ladder takes two rows a step, the label
+  above its arrow. The list gives every label one column, so who to whom lines
+  up, when that column holds the longest label or 6 columns of it, whichever
+  is less; otherwise each line is the label, who to whom and the time with one
+  space between.
+- **Status.** With no status on any step there is no status column and no
+  current step. Otherwise the current step is the first one not done: `▶` in
+  the ladder's first column, `◀ here` at the end of its line in the list, or
+  on the line below when it does not fit there.
+- **Notes.** A note whose first words are `NEED FROM YOU` goes in the box
+  closing the drawing (`NEED FROM YOUR` is an ordinary note). Any other note
+  shows after a `↳`: under the step before it, or under the header when it
+  comes before the first step. A long note wraps onto more rows.
+- **Width.** No line is wider than the width, measured with `unicode-width` by
+  grapheme cluster. Text goes through `action::sanitize` first, so bidi
+  controls, U+2028/U+2029 and control characters never reach a line; a tab is
+  a space. Nothing panics, even on a `Flow` built by hand.
+- **Goldens:** `flow-base-{40,60,100}`, `flow-status-{40,60,100}` and
+  `flow-wide-{60,100}`.
+
 ### The panel on a small screen
 
 The panel is built down to 28x7, the floor measured over every view: under 28
