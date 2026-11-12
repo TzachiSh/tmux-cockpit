@@ -671,6 +671,10 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
         }
         View::Question { sel, scroll } => {
             let Some(r) = run else { return b };
+            let (k, n) = r.place();
+            if n > 1 {
+                b.lines.extend(many(&format!("question {k} of {n}"), w, "", meta));
+            }
             // in the body, not the head: a long question must not push the options off
             b.lines.extend(many(&r.question, w, "", bold));
             b.lines.push(plain(""));
@@ -686,8 +690,11 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
                 b.lines.extend(many("no options: o types your answer", w, "", meta));
             }
             b.lines.push(plain(""));
-            b.lines
-                .extend(many(&format!("question {} of at most {}", r.rounds, r.max), w, "", meta));
+            let left = match n {
+                1 => format!("question {} of at most {}", r.rounds, r.max),
+                _ => format!("{} of at most {} questions asked", r.rounds, r.max),
+            };
+            b.lines.extend(many(&left, w, "", meta));
             if let Some(s) = scroll {
                 (b.scroll, b.sel) = (*s, None);
             }

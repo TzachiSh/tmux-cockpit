@@ -3,7 +3,7 @@
 use super::action::{Hidden, hide_body, sanitize, state_body};
 use super::capture::{Capture, REPO_BUDGET, SSH_LIKE, Session, is_local, session_state, toplevel, window_kind};
 use super::envelope::{Flow, OutType, RefItem, Role, Turn, build_refs, ref_items};
-use super::parse::{self, Opt, Reply, Step};
+use super::parse::{self, Opt, Query, Reply, Step};
 use super::prompts::{self, Ctx};
 use super::redact::redact;
 use super::request::{Call, Fail, Profile, Request, read_dir_ok};
@@ -196,13 +196,27 @@ struct Carried {
     from: Option<usize>,
 }
 
+/// A question as it was shown: the turns up to and with it, and its index in
+/// the batch its reply asked.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Shown {
+    pub text: String,
+    pub options: Vec<Opt>,
+    pub turns: Vec<Turn>,
+    pub at: usize,
+}
+
 /// One request's conversation: the question rounds and, for Explain, the log.
 pub struct Run {
     pub flow: Flow,
     pub turns: Vec<Turn>,
+    /// Questions asked: a batch counts each of its questions when it comes.
     pub rounds: usize,
     pub max: usize,
-    pub qstack: Vec<(String, Vec<Opt>, Vec<Turn>)>,
+    /// Every question shown, one entry each, so back goes one question at a time.
+    pub qstack: Vec<Shown>,
+    /// The questions of the batch on screen still to come, in order.
+    pub ahead: Vec<Query>,
     pub question: String,
     pub options: Vec<Opt>,
     /// Explain's transcript: `(true, text)` is the user, `false` Claude.
@@ -215,6 +229,14 @@ pub struct Run {
     pub pending_turn: bool,
     /// The rounds before a best guess or a correction, so a cancelled one can be undone.
     pub guessed_from: Option<usize>,
+}
+
+impl Run {
+    /// The question on screen as `(k, n)`: the k-th of the n its reply asked.
+    pub fn place(&self) -> (usize, usize) {
+        let k = self.qstack.last().map_or(0, |s| s.at) + 1;
+        (k, k + self.ahead.len())
+    }
 }
 
 pub struct App {
@@ -1081,6 +1103,7 @@ impl App {
             rounds: 0,
             max,
             qstack: vec![],
+            ahead: vec![],
             question: String::new(),
             options: vec![],
             log,
@@ -1277,6 +1300,10 @@ impl App {
             && std::mem::take(&mut r.pending_turn)
         {
             r.turns.pop();
+            // a guess on a batch carried the turns of its later questions too
+            if let (Some(View::Question { .. }), Some(s)) = (&self.busy_back, r.qstack.last()) {
+                r.turns.truncate(s.turns.len());
+            }
             if r.log.last().is_some_and(|(you, _)| *you) {
                 r.log.pop();
             }
@@ -1336,8 +1363,24 @@ impl App {
         if let Some(t) = cut {
             self.say(Level::Warn, format!("the reply looks cut off (no </{t}>): check it, or r retries"));
         }
+        // with no questions left a batch is its first question, the one that matters most
+        let reply = match reply {
+            Reply::Batch(qs) if rounds >= max => match qs.into_iter().next() {
+                Some(Query { text, options }) => Reply::Question { text, options },
+                None => Reply::Untagged(out.trim().into()),
+            },
+            r => r,
+        };
+        // a guess answered the batch's later questions: once a reply other than a
+        // question lands, none are left to ask, and a hide must not keep them
+        if !matches!(reply, Reply::Question { .. } | Reply::Batch(_) | Reply::Unsupported(_))
+            && let Some(r) = self.run.as_mut()
+        {
+            r.ahead.clear();
+        }
         match reply {
-            Reply::Question { text, options } if rounds < max => self.ask(text, options),
+            Reply::Question { text, options } if rounds < max => self.ask(vec![Query { text, options }]),
+            Reply::Batch(qs) => self.ask(qs),
             Reply::Question { text, .. } if explain => self.answer(out.trim().into(), format!("(Claude still asks: {text})"), None),
             // a question is not text to paste: no Result, so no insert or send
             Reply::Question { text, .. } => self.write_now(text, carried),
@@ -1444,26 +1487,54 @@ impl App {
         };
     }
 
-    fn ask(&mut self, text: String, options: Vec<Opt>) {
+    /// A reply's questions, never more than the questions left: past those, its
+    /// first, which the prompt orders most important first. Each counts as asked.
+    fn ask(&mut self, mut qs: Vec<Query>) {
         let Some(r) = self.run.as_mut() else { return };
-        r.rounds += 1;
-        let listed: Vec<&str> = options.iter().map(|o| o.label.as_str()).collect();
-        let turn = if listed.is_empty() {
-            text.clone()
-        } else {
-            format!("{text} Options: {}", listed.join(" | "))
-        };
+        qs.truncate(r.max.saturating_sub(r.rounds).max(1));
+        r.rounds += qs.len();
+        let first = qs.remove(0);
+        r.ahead = qs;
+        self.show(first, 0);
+    }
+
+    /// Puts `q` on screen as question `at` of its batch, with its turn.
+    fn show(&mut self, q: Query, at: usize) {
+        let Some(r) = self.run.as_mut() else { return };
         r.turns.push(Turn {
             role: Role::Assistant,
-            text: turn,
+            text: asked(&q),
         });
-        r.qstack.push((text.clone(), options.clone(), r.turns.clone()));
+        let Query { text, options } = q;
+        r.qstack.push(Shown {
+            text: text.clone(),
+            options: options.clone(),
+            turns: r.turns.clone(),
+            at,
+        });
         r.question = text;
         r.options = options;
         self.view = View::Question { sel: 0, scroll: None };
     }
 
+    /// An answer: the batch's next question, or after its last, every answer in one call.
     fn pick(&mut self, answer: String) {
+        let Some(r) = self.run.as_mut() else { return };
+        if r.ahead.is_empty() {
+            return self.send(answer);
+        }
+        if r.flow.is_qa() {
+            r.log.push((true, answer.clone()));
+        }
+        r.turns.push(Turn {
+            role: Role::User,
+            text: answer,
+        });
+        let (at, next) = (r.place().0, r.ahead.remove(0));
+        self.show(next, at);
+    }
+
+    fn send(&mut self, answer: String) {
         let Some(r) = self.run.as_mut() else { return };
         if r.flow.is_qa() {
             r.log.push((true, answer.clone()));
@@ -1493,6 +1564,7 @@ impl App {
             "answer" => {
                 if let Some(r) = self.run.as_mut() {
                     r.qstack.clear();
+                    r.ahead.clear();
                 }
                 self.view = View::Answer {
                     scroll: usize::MAX,
@@ -1552,8 +1624,19 @@ impl App {
                 if let Some(r) = self.run.as_mut() {
                     r.guessed_from = Some(r.rounds);
                     r.rounds = r.max;
+                    // the batch's later questions get the guess too, in this one call
+                    for q in &r.ahead {
+                        r.turns.push(Turn {
+                            role: Role::User,
+                            text: BEST_GUESS.into(),
+                        });
+                        r.turns.push(Turn {
+                            role: Role::Assistant,
+                            text: asked(q),
+                        });
+                    }
                 }
-                self.pick(BEST_GUESS.into());
+                self.send(BEST_GUESS.into());
             }
             KeyCode::Backspace | KeyCode::Left => self.back(),
             KeyCode::Esc => self.leave(),
@@ -1567,16 +1650,27 @@ impl App {
         }
     }
 
-    /// The previous round with its answers, or out of the flow.
+    /// The previous question, its answer dropped, or out of the flow. Within a
+    /// batch the one left is asked again after it; past the batch's first, the
+    /// batch goes and the round before it is back on its last question.
     fn back(&mut self) {
         let Some(r) = self.run.as_mut() else { return self.leave() };
-        r.qstack.pop();
+        match r.qstack.pop() {
+            Some(s) if s.at > 0 => r.ahead.insert(
+                0,
+                Query {
+                    text: s.text,
+                    options: s.options,
+                },
+            ),
+            _ => r.ahead.clear(),
+        }
         match r.qstack.last().cloned() {
-            Some((q, opts, turns)) => {
-                r.question = q;
-                r.options = opts;
-                r.turns = turns;
-                r.rounds = r.qstack.len();
+            Some(s) => {
+                r.question = s.text;
+                r.options = s.options;
+                r.turns = s.turns;
+                r.rounds = r.qstack.len() + r.ahead.len();
                 self.view = View::Question { sel: 0, scroll: None };
             }
             None => self.leave(),
@@ -1613,6 +1707,7 @@ impl App {
                                 r.turns.push(Turn { role: Role::User, text: t });
                                 r.rounds = 0;
                                 r.qstack.clear();
+                                r.ahead.clear();
                                 r.pending_turn = true;
                             }
                             self.busy(back);
@@ -1979,6 +2074,16 @@ fn put(text: &mut String, cur: &mut usize, s: &str) -> usize {
 fn pasted(s: &str, multi: bool) -> String {
     let t = sanitize(&s.replace("\r\n", "\n").replace('\r', "\n"));
     if multi { t } else { t.split('\n').collect::<Vec<_>>().join(" ") }
+}
+
+/// A question as its assistant turn: the text, then the options it gave.
+fn asked(q: &Query) -> String {
+    let listed: Vec<&str> = q.options.iter().map(|o| o.label.as_str()).collect();
+    if listed.is_empty() {
+        q.text.clone()
+    } else {
+        format!("{} Options: {}", q.text, listed.join(" | "))
+    }
 }
 
 pub fn bracketed_ok(cmd: &str) -> bool {
