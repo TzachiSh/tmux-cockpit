@@ -20302,6 +20302,26 @@ done
 unset -f nt_run; unset NT NTS NTP NTK nt_w nt_r nt_f nt_d nt_p nt_c nt_path nt_n
 fi
 
+echo "== the #746 block holds under a TMPDIR with two spaces (#893) =="
+# Its gtimeout shim wrote the timeout and log paths into its script unquoted, so a space in
+# TMPDIR split the log path: the log row went red, and the shim appended to a file named by
+# the path's first word, beside the run's scratch. The block run on its own, nested; a block
+# of its own, as a nested run of the same block would run this row again.
+if need_tmux "the #746 block under a spaced TMPDIR"; then :
+elif ! command -v timeout >/dev/null 2>&1; then skip_ "the #746 block under a spaced TMPDIR (no timeout)"
+else
+SPB=$(mktmpd); SPT="$SPB/my  tmp"; mkdir -p "$SPT"
+( cd "$DIR" && TMPDIR="$SPT" exec timeout 120 tests/only.sh '^the four bounded reads end' ) \
+    </dev/null > "$SPB/log" 2>&1
+sp_n=$(sed 's/\x1b\[[0-9;]*m//g' "$SPB/log" | grep -E '[0-9]+ passed, [0-9]+ failed' | tail -1)
+is "the #746 block, under a TMPDIR with two spaces, passes whole" "ok" \
+   "$(case $sp_n in "" | *" 0 passed"*) echo "none: $(tail -2 "$SPB/log" | tr '\n' ' ')" ;;
+        *" 0 failed"*) echo ok ;; *) echo "$sp_n" ;; esac)"
+is "and writes nothing beside that TMPDIR" "absent" \
+   "$([ -e "$SPB/my" ] && echo present || echo absent)"
+rm -rf "$SPB"; unset SPB SPT sp_n
+fi
+
 echo "== cmdname.sh: cmd_base cuts a path and leading dashes for the agent tests (#757) =="
 # The functions themselves, beside the pane rows in the agent-poll bind blocks and the #470
 # workdir block. tmux's parse_window_name (format.c) drops leading dashes, then cuts a path
