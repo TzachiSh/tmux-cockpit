@@ -1396,6 +1396,35 @@ and `parse::fix` and `parse::explain` read only the first question, as before.
   single question's row is as before.
 - **Goldens:** `panel-question-batch-{40,80}`, the second question of two.
 
+### The flow renderer (#935)
+
+`panel::flow` draws a Mermaid `sequenceDiagram` as text that fits a width. It is
+not wired into Explain yet.
+
+- **What it reads.** `participant` and `actor`, with `as` for a display name,
+  and participants named only in a step. The arrows `->>`, `-->>`, `->` and
+  `-->`; the dashed ones draw `┄`. `autonumber`. `Note left of`, `right of` or
+  `over`. A `%% status: <s> [HH:MM]` line after a step, `<s>` one of `✓ ● ○ ✗ !`
+  or `done running pending failed needs`; a `%%` at the end of a step line is
+  part of its label, as in Mermaid. Other `%%` lines are comments.
+- **Blocks.** `loop`, `alt`, `opt`, `else` and `end` are dropped and their steps
+  kept in order. An `end` or `else` outside a block, or a block never closed,
+  is an error.
+- **Anything else** (`par`, `activate`, `-x`, a bad status word) is an `Err`
+  naming the line. `flow::render` then shows `flow::not_drawn`: `(not drawn:
+  <why>)`, then the raw lines, each cut to the width.
+- **Ladder or list.** The ladder at 60 columns or more with at most 4 actors,
+  the numbered list otherwise. The ladder takes two rows a step, the label
+  above its arrow.
+- **Status.** With no status on any step there is no status column and no
+  current step. Otherwise the current step is the first one not done: `▶` in
+  the ladder's first column, `◀ here` after its line in the list.
+- **Notes.** A note starting `NEED FROM YOU` goes in the box closing the
+  drawing; any other note shows under the step before it, after a `↳`.
+- **Width.** No line is wider than the width, measured with `unicode-width` by
+  grapheme cluster; control characters show as U+FFFD. Nothing panics.
+- **Goldens:** `flow-base-{40,60,100}` and `flow-status-{40,60,100}`.
+
 ### The panel on a small screen
 
 The panel is built down to 28x7, the floor measured over every view: under 28
