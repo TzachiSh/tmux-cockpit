@@ -246,3 +246,10 @@ fn bidi_controls_and_line_separators_never_reach_a_line() {
         }
     }
 }
+
+#[test]
+fn need_from_you_is_a_whole_prefix_not_the_start_of_a_longer_word() {
+    let f = parsed("sequenceDiagram\nA->>B: x\nNote over A: NEED FROM YOUR call is wanted\nNote over A: NEED FROM YOU pick one\n");
+    assert_eq!(f.steps[0].notes, vec!["NEED FROM YOUR call is wanted".to_string()]);
+    assert_eq!(f.need, vec!["pick one".to_string()]);
+}

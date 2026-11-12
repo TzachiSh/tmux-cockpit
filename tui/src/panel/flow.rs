@@ -200,7 +200,11 @@ fn note(f: &mut Flow, rest: &str) -> Result<(), String> {
         f.actor(id);
     }
     let text = clean(text.trim());
-    if let Some(need) = text.strip_prefix("NEED FROM YOU") {
+    // The prefix ends the word: "NEED FROM YOUR call" is an ordinary note.
+    let need = text
+        .strip_prefix("NEED FROM YOU")
+        .filter(|r| r.is_empty() || r.starts_with(':') || r.starts_with(char::is_whitespace));
+    if let Some(need) = need {
         f.need.push(need.trim_start_matches(':').trim().to_string());
     } else if let Some(step) = f.steps.last_mut() {
         step.notes.push(text);
