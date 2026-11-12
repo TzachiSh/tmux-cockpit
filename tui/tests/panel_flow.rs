@@ -295,3 +295,32 @@ fn a_hand_built_step_naming_a_missing_actor_draws_without_a_panic() {
         }
     }
 }
+
+const LONG_NOTE: &str = "the suite runs twice because the first run on this box was flaky and the second decides";
+
+fn lead_and_long_note() -> String {
+    format!("sequenceDiagram\nNote over A: starts after lunch\nA->>B: x\nNote over A: {LONG_NOTE}\n")
+}
+
+#[test]
+fn a_note_before_the_first_step_shows_under_the_header() {
+    let f = parsed(&lead_and_long_note());
+    assert_eq!(f.lead, vec!["starts after lunch".to_string()]);
+    assert!(flow::render(&lead_and_long_note(), 60)[1].contains("↳ starts after lunch"));
+    assert!(flow::render(&lead_and_long_note(), 40)[0].contains("↳ starts after lunch"));
+}
+
+#[test]
+fn a_long_note_wraps_onto_more_rows_and_keeps_every_word() {
+    for w in [40, 60] {
+        let out = flow::render(&lead_and_long_note(), w);
+        let rows: Vec<&String> = out.iter().filter(|l| l.contains('↳')).skip(1).collect();
+        assert!(rows.len() >= 2, "w={w}: {out:?}");
+        let words: Vec<&str> = rows
+            .iter()
+            .flat_map(|l| l.split_whitespace())
+            .filter(|t| LONG_NOTE.contains(*t))
+            .collect();
+        assert_eq!(words.join(" "), LONG_NOTE, "w={w}: {out:?}");
+    }
+}
