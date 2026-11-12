@@ -15,6 +15,7 @@ use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
+use std::sync::Once;
 use std::time::Duration;
 
 fn golden(name: &str, got: &str) {
@@ -61,7 +62,31 @@ fn goldens(name: &str, app: &App, tick: u64) {
     golden(&format!("panel-{name}-120"), &frame(app, 120, 24, tick));
 }
 
+/// HOME and XDG_CONFIG_HOME for every test here. Nothing is ever made at it:
+/// sysfs takes no entry from a user, and a box without /sys has no such folder.
+const NO_HOME: &str = "/sys/absent-948";
+
+/// One environment for the whole test binary, set before the first `App` is
+/// built and never restored. A prompt override under the developer's own config
+/// folder and their HOME changed what a write sends (#948), and an exported
+/// COCKPIT_PANEL_MODEL changed the model and the frames that name it (#953).
+fn fixed_env() {
+    static SET: Once = Once::new();
+    SET.call_once(|| {
+        // SAFETY: std's getenv and setenv share one lock, and a spawn holds it
+        // while the child takes the environment. Every read a test thread
+        // makes here is a Rust read; the readers that are not Rust are child
+        // processes, which get their copy at the spawn.
+        unsafe {
+            std::env::set_var("HOME", NO_HOME);
+            std::env::set_var("XDG_CONFIG_HOME", NO_HOME);
+            std::env::remove_var("COCKPIT_PANEL_MODEL");
+        }
+    });
+}
+
 fn app(name: &str, cmd: &str, screen: &str) -> App {
+    fixed_env();
     let cap = Capture {
         name: name.into(),
         cmd: cmd.into(),
