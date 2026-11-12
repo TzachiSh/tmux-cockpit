@@ -182,13 +182,16 @@ subs_count() {
     # 2 s deadline then cut the array off a long final message. The payload is compact JSON,
     # one line: claude writes it with a newline and closes stdin (2.1.317), so head returns.
     # Bounded all the same (#320): a writer that sends neither must not hold the Stop. A
-    # timeout fails open to done. timeout is GNU coreutils; a box without it reads unbounded.
+    # timeout fails open to done.
     # 10 s, not 2 (#743): a 1 MB payload through a 64 KiB pipe on a loaded box, or a writer
     # that pauses, can take past 2 s and showed done with subagents in flight. A bound on
     # progress instead cost a temp file and three more processes on every Stop, and failed a
     # single long pause that this one reads. The cost: a writer that never ends holds 10 s.
-    local to=""; command -v timeout >/dev/null 2>&1 && to="timeout 10"
-    payload=$($to head -n 1 2>/dev/null) || return 0
+    # bound: timeout, else gtimeout; unbounded with neither (#746).
+    local d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")
+    # shellcheck source=lib/bound.sh
+    . "${d%/*}/lib/bound.sh" 2>/dev/null || return 0
+    payload=$(bound 10 head -n 1 2>/dev/null) || return 0
     # Regexes, linear in the payload: a `${payload#*key}` cut rescans it once per byte, and
     # the final message, any size, comes before the key. After `[`, whole strings or single
     # bytes other than `]`, so the match ends with the array (its entries are flat objects,
