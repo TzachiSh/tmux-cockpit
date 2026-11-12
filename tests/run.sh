@@ -20298,39 +20298,46 @@ is "gtimeout ran each site's command and ended it at its bound: 124 four times" 
    "$(for nt_c in '10 head -n 1' '2 head -n 1' "3 $NT/fake/tui workdir %0" \
           '5 claude agents --json --all'; do grep -xF "124 $nt_c" "$NT/g.log"; done | paste -sd'|')"
 # The writers. One whose fifo no site opened is still blocked in open(), named bash, on this
-# shell's stdout (#930), so not by name: each that is still this shell's own child, its ppid
-# read back, is ended and reaped. /proc first; ps only where there is no /proc at all (macOS),
-# as AGENTS.md has it. A parent it cannot read back signals nothing.
+# shell's stdout (#930), so not by name: each that is still this shell's own child, its parent
+# read back, is ended. /proc first, the ppid after the last ")" as a comm may hold spaces; ps
+# only where there is no /proc at all (macOS), as AGENTS.md has it. A parent it cannot read
+# back signals nothing.
 nt_ppid() {                   # <pid> -> its parent's pid, or nothing
     local s=""
-    if [ -r "/proc/$1/stat" ]; then read -r _ _ _ s _ 2>/dev/null < "/proc/$1/stat"
+    if [ -r "/proc/$1/stat" ]; then
+        read -r s 2>/dev/null < "/proc/$1/stat"; s=${s##*) }; s=${s#* }; s=${s%% *}
     elif [ ! -d /proc/self ]; then s=$(ps -o ppid= -p "$1" 2>/dev/null); s=${s//[[:space:]]/}
     fi
     printf '%s' "$s"
 }
-nt_reap() {                   # <pid>...: end and reap those that are this shell's children
+nt_reap() {                   # <pid>...: end those that are this shell's children; no wait
     local p
     for p; do [ "$(nt_ppid "$p")" != "$BASHPID" ] || kill "$p" 2>/dev/null; done
-    wait "$@" 2>/dev/null
 }
 # shellcheck disable=SC2086  # a list of pids
 nt_reap $nt_w
-# A writer whose fifo no site opened is still blocked in open(), on this shell's stdout: the
-# cleanup must end it too, or a site that fails holds the run open (#930).
+# Polled, never waited on: a writer the reap missed reds the row instead of holding the run.
 # shellcheck disable=SC2086  # a list of pids
 until_out '' sh -c 'for p; do kill -0 "$p" 2>/dev/null && echo "$p"; done' _ $nt_w
 is "no fifo writer outlives the block, the one no site opened included" "" \
    "$(for nt_p in $nt_w; do kill -0 "$nt_p" 2>/dev/null && echo "$nt_p"; done)"
-# Whatever the cleanup did: let a writer still blocked in open() through, so it ends.
+# Whatever the reap did: let a writer still blocked in open() through, so it ends; then reap.
 for nt_f in stop subs gstop gsubs never; do : 2>/dev/null <> "$NT/$nt_f"; done
+# shellcheck disable=SC2086  # a list of pids
+wait $nt_w 2>/dev/null
 # A pid in the list that is not this shell's child, as a recycled one would be, is left alone:
-# a sleep orphaned by its subshell, which then ends by itself, signalled by no one.
-( sleep 5 & echo "$!" > "$NT/foreign" ); nt_p=$(cat "$NT/foreign")
-nt_reap "$nt_p"
-is "a listed pid whose parent is not this shell is not signalled" "alive" \
-   "$(kill -0 "$nt_p" 2>/dev/null && echo alive || echo gone)"
+# a sleep whose parent is a subshell, which records how it ended (143 if it was signalled).
+( sleep 2 & echo "$!" > "$NT/foreign"; wait "$!"; echo "$?" > "$NT/foreign.rc" ) \
+    >/dev/null 2>&1 &
+nt_s=$!
+until_file "$NT/foreign" '?*'
+nt_reap "$(cat "$NT/foreign")"
+wait "$nt_s"
+is "a listed pid whose parent is not this shell is not signalled" "0" \
+   "$(cat "$NT/foreign.rc" 2>/dev/null)"
 "$TMUX_REAL" -L "$NTS" kill-server >/dev/null 2>&1
-unset -f nt_run nt_ppid nt_reap; unset NT NTS NTP NTK nt_w nt_r nt_f nt_d nt_p nt_c nt_path nt_n
+unset -f nt_run nt_ppid nt_reap
+unset NT NTS NTP NTK nt_w nt_r nt_f nt_d nt_p nt_c nt_path nt_n nt_s
 fi
 
 echo "== the #746 block holds under a TMPDIR with two spaces (#893) =="
