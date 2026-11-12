@@ -481,3 +481,54 @@ fn a_batch_comes_back_on_its_question_with_the_rest_still_to_ask() {
     key(&mut b, KeyCode::Backspace);
     assert_eq!(b.run.as_ref().unwrap().question, "Q1?", "and so was the first");
 }
+
+/// A hide body's JSON line, changed by `f`, as a whole body again.
+fn rewritten(body: &str, f: impl FnOnce(&mut serde_json::Value)) -> String {
+    let (head, j) = body.trim_end().split_once('\n').unwrap();
+    let mut v: serde_json::Value = serde_json::from_str(j).unwrap();
+    f(&mut v);
+    format!("{head}\n{v}\n")
+}
+
+/// Two one-question rounds, the second on screen, hidden by ^Z.
+fn two_rounds_hidden() -> String {
+    let mut a = replied("do it", "<question>Q1?</question><option>a1</option><option>b1</option>");
+    key(&mut a, KeyCode::Char('1'));
+    a.reply(Ok("<question>Q2?</question><option>a2</option><option>b2</option>".into()));
+    ctrl(&mut a, 'z');
+    cockpit_tui::panel::action::hide_body(&a, NOW).unwrap()
+}
+
+#[test]
+fn a_hide_file_from_before_batches_resumes_and_goes_back() {
+    // as master wrote it: three-element qstack entries, no `ahead`
+    let old = rewritten(&two_rounds_hidden(), |v| {
+        for e in v["run"]["qstack"].as_array_mut().unwrap() {
+            e.as_array_mut().unwrap().truncate(3);
+        }
+        v["run"].as_object_mut().unwrap().remove("ahead");
+    });
+    let d = dir("pre-batch");
+    let p = d.join("s");
+    std::fs::write(&p, &old).unwrap();
+    let mut b = app("bash");
+    b.unhide(read_hidden(&p, "%3", NOW).expect("a file from before batches reads"));
+    let r = b.run.as_ref().unwrap();
+    assert_eq!((r.question.as_str(), r.place(), r.rounds), ("Q2?", (1, 1), 2));
+    key(&mut b, KeyCode::Backspace);
+    let r = b.run.as_ref().unwrap();
+    assert_eq!((r.question.as_str(), r.place(), r.rounds), ("Q1?", (1, 1), 1));
+}
+
+#[test]
+fn a_batch_state_out_of_place_is_refused() {
+    let q = |n: usize| format!("<question>Q{n}?</question><option>a{n}</option><option>b{n}</option>");
+    let mut a = replied("do it", &format!("{}{}{}", q(1), q(2), q(3)));
+    key(&mut a, KeyCode::Char('1'));
+    ctrl(&mut a, 'z');
+    let good = cockpit_tui::panel::action::hide_body(&a, NOW).unwrap();
+    let first_at_1 = rewritten(&good, |v| v["run"]["qstack"][0][3] = 1.into());
+    assert!(refused("batch-at", &first_at_1).contains("a question out of its batch"));
+    let none_shown = rewritten(&good, |v| v["run"]["qstack"] = serde_json::json!([]));
+    assert!(refused("batch-ahead", &none_shown).contains("questions to come with none on screen"));
+}

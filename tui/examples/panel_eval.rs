@@ -2824,6 +2824,15 @@ mod tests {
     }
 
     #[test]
+    fn a_purpose_question_second_in_a_batch_is_on_target() {
+        let c = parse_cases(&ONE.replace("expect: write\nmust: net-proxy; line 88", "expect: ask\nask_any: @purpose")).unwrap();
+        let reply = "<question>Which host?</question><option>lab</option><option>prod</option>\
+                     <question>What is it mainly for?</question><option>x</option><option>y</option>";
+        let g = grade(&c[0], reply);
+        assert!(g.asked && g.on_target, "{g:?}");
+    }
+
+    #[test]
     fn a_must_not_in_a_batch_s_later_question_is_found() {
         let c = parse_cases(&ONE.replace("must: net-proxy; line 88", "must: net-proxy\nmust_not: zq-wipe")).unwrap();
         let g = grade(&c[0], "<question>Which host?</question><question>Run zq-wipe first?</question>");
