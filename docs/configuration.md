@@ -58,6 +58,10 @@ below 160 columns, and full width in touch mode.
 An entry in `@cockpit_agents` matches the pane's command in any case: `Cursor` marks a
 `cursor` pane as an agent, and `claude` marks a `CLAUDE` one.
 
+The name compared is the last part of the command's path, as tmux's `#{b:}` gives it:
+`./claude`, `bin/claude` and `/opt/x/claude` are all `claude`, as on the board (#840).
+So an entry that holds a `/`, such as `x/claude`, never matches.
+
 Entries are command names, not patterns. When `@cockpit_agents_glob` is unset, an
 entry with any character other than letters, digits, `_` and `-` (a `*`, `[0-9]` or
 `.`) makes the plugin show a message and use the default list instead of yours. In

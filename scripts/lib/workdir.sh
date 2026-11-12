@@ -44,7 +44,7 @@ workdir_ask() {               # <pane> -> its dir
 # and the command name. Then the pane's @cockpit_dir and cwd. m/i, as at every
 # agent-glob site and on the board: names match in any case, Claude is claude (#508).
 _wd=$'\037'
-WORKDIR_FMT="#{pane_id}$_wd#{?#{m/i:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},1,0}"
+WORKDIR_FMT="#{pane_id}$_wd#{?#{m/i:*|#{b:pane_current_command}|*,#{@cockpit_agents_glob}},1,0}"
 WORKDIR_FMT+="$_wd#{@panestate}$_wd#{pane_current_command}"
 WORKDIR_FMT+="$_wd#{@cockpit_dir}$_wd#{pane_current_path}"
 unset _wd

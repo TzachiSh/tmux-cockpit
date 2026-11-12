@@ -174,7 +174,7 @@ while :; do
             # live claude (the one `o` just opened, too) often has none.
             live=
             fmt="#{pane_id}$sep#{@cockpit_session}"
-            fmt+="$sep#{?#{m/i:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},1,0}$sep#{pane_current_command}"
+            fmt+="$sep#{?#{m/i:*|#{b:pane_current_command}|*,#{@cockpit_agents_glob}},1,0}$sep#{pane_current_command}"
             [ -z "$want" ] || while IFS="$sep" read -r p s g cmd; do
                 [ "$s" = "$want" ] || continue
                 if [ "$g" = 1 ] || version_cmd "$cmd"; then live=$p; break; fi

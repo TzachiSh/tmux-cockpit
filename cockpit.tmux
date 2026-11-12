@@ -264,7 +264,7 @@ tmux bind-key -T cockpit o run-shell -b "$(fesc "$Q_OPEN") --folder #{pane_id}"
 # display-popup expands no format in its command, so list-panes gets the #{...}.
 # The columns are tmux's own padding (p16), so a title with spaces stays whole.
 tmux bind-key -T cockpit t display-popup -E -w 78% -h 40% -T ' agents ' \
-    "tmux list-panes -a -F '#{p16:#{session_name}:#{window_index}} #{p12:#{?#{m/i:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},#{@panestate},-}} #{pane_title}'; read -r _"
+    "tmux list-panes -a -F '#{p16:#{session_name}:#{window_index}} #{p12:#{?#{m/i:*|#{b:pane_current_command}|*,#{@cockpit_agents_glob}},#{@panestate},-}} #{pane_title}'; read -r _"
 # tmux keeps its drag flag when a popup eats the release and turns the next press
 # into MouseDragEnd1<where>, losing a tab click (#21). Stock leaves this unbound.
 tmux bind-key -n MouseDragEnd1Status switch-client -t =

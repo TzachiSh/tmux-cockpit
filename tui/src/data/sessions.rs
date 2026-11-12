@@ -7,11 +7,12 @@ const US: char = '\u{1f}';
 
 /// One pane per line. The name fields come last and are split with a limit, so
 /// a separator inside a name cannot shift the fields before it. An agent is a
-/// pane whose command is in `@cockpit_agents_glob`, the test agent-state uses:
+/// pane whose command's basename is in `@cockpit_agents_glob`, the test agent-state
+/// uses (#840: `./claude` is `claude`):
 /// a stale `@panestate` on a shell is not believed. `@panestate_since` (#225) is
 /// the epoch second a pane entered needs-input, written by agent-state alone.
 fn format() -> String {
-    let agent = "#{?#{m/i:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},1,0}";
+    let agent = "#{?#{m/i:*|#{b:pane_current_command}|*,#{@cockpit_agents_glob}},1,0}";
     let msg = "#{?#{@panestate_msg},#{s/\n/ /:#{s/\t/ /:#{s/\u{1f}/ /:#{@panestate_msg}}}},}";
     [
         "#{session_id}",

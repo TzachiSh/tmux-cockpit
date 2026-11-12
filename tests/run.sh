@@ -19960,6 +19960,178 @@ unset DS DST DSS dsr p c a
 fi
 
 
+echo "== a relative or path-shaped agent command is an agent at every glob site (#840) =="
+# Typed at a prompt as ./claude, a binary is ./claude in #{pane_current_command}. The board's
+# agentish already reads such a pane as an agent through its process tree; every shell glob
+# site tested the raw name and said no. They test its basename, #{b:pane_current_command}
+# (tmux 3.8 and master: format.c's FORMAT_BASENAME). A real binary (a copy of bash, which
+# does not care what it is called) is typed at a bash prompt in a git repo: ./claude and
+# ./codex, then an absolute path and a plain name on PATH, which every site already took.
+# Each site's own code is read on each pane.
+if need_tmux "#840 glob sites"; then :; else
+GS="cockpit-gs840-$$"; SOCKS="$SOCKS $GS"; GSD=$(mktmpd)
+mkdir -p "$GSD/r/x" "$GSD/bin" "$GSD/o"
+( cd "$GSD/r" && git init -q && echo x > f && git add f &&
+    git -c user.name=t -c user.email=t@e commit -qm one ) >/dev/null 2>&1
+for gs_f in r/claude r/codex r/x/claude bin/claude; do cp "$(command -v bash)" "$GSD/$gs_f"; done
+gs() { "$TMUX_REAL" -L "$GS" "$@"; }
+gs -f /dev/null new-session -d -s t -x 120 -y 30 -c "$GSD/o" 'exec sleep 600' >/dev/null 2>&1
+gs set -g @cockpit_agents_glob '|claude|codex|' >/dev/null 2>&1
+# The prompt's PATH is set in its own command: new-window -e does not reach it, and the
+# user's PATH may hold a real claude, which a typed `claude` would start.
+GS_SH="env PATH='${GSD//\'/\'\\\'\'}/bin:/usr/bin:/bin' bash --norc --noprofile"
+# Before a name is typed, the pane's own shell says what it resolves to (command -v runs
+# nothing): it must be the fixture's own copy, else the row fails and nothing more is typed,
+# so a real agent on some PATH is never started.
+gs_typed() {                  # <server fn> <typed> <shown>: a repo window running it in GS_P
+    local p r; GS_P=""
+    p=$("$1" new-window -d -P -F '#{pane_id}' -t t: -c "$GSD/r" "$GS_SH")
+    until_out bash "$1" display -p -t "$p" '#{pane_current_command}'
+    rm -f "$GSD/cv"
+    "$1" send-keys -t "$p" \
+        "{ command -v $(printf %q "$2"); echo .; } > $(printf %q "$GSD/cv")" Enter
+    until_file "$GSD/cv" '*.'
+    r=$(head -1 "$GSD/cv"); case $r in /*) ;; ?*) r="$GSD/r/${r#./}" ;; esac
+    case $r in
+        "$GSD"/*) ;;
+        *) bad "$2 resolves to the fixture's copy before it is typed" "$GSD/..." "${r:-nothing}"
+           return ;;
+    esac
+    "$1" send-keys -t "$p" "$(printf %q "$2") --norc --noprofile -c 'read x'" Enter
+    until_out "$3" "$1" display -p -t "$p" '#{pane_current_command}'
+    GS_P=$p
+}
+gs_typed gs ./claude ./claude; GS_RC=$GS_P
+gs_typed gs ./codex ./codex; GS_RX=$GS_P
+gs_typed gs "$GSD/r/claude" claude; GS_AB=$GS_P
+gs_typed gs claude claude; GS_PL=$GS_P
+gs_typed gs x/claude x/claude; GS_SL=$GS_P
+sock_path "$GS" GSK
+# The pattern lives outside the functions: tests/par.sh ends a function where its braces balance.
+GS_RE='#[{]m/i:[*][|]#[{](b:)?pane_current_command[}][|][*],#[{]@cockpit_agents_glob[}][}]'
+gs_each() {                   # <format> -> its value on ./claude ./codex <abs> <plain>
+    local p
+    for p in "$GS_RC" "$GS_RX" "$GS_AB" "$GS_PL"; do
+        printf '%s ' "$(gs display -p -t "$p" "$1")"
+    done
+}
+is "the panes show ./claude, ./codex, claude (an absolute path), claude (on PATH)" \
+   "./claude ./codex claude claude " "$(gs_each '#{pane_current_command}')"
+# agent-poll: its own PANE_FMT's glob field, and the bind rule (glob and claude_cmd).
+gs_poll() {                   # <pane> -> "<glob field> <bind|no-bind>"
+    # shellcheck disable=SC2034  # SLOT is read by the PANE_FMT the eval sets
+    ( SLOT=@x; eval "$(sed -n '/^T=\$/p;/^PANE_FMT=/p' "$DIR/scripts/agent-poll")"
+      . "$DIR/scripts/lib/cmdname.sh"
+      eval "$(sed -n '/^claude_cmd() {/,/^}/p' "$DIR/scripts/agent-poll")"
+      IFS=$'\t' read -r _ cmd _ glob _ <<< "$(gs display -p -t "$1" "$PANE_FMT")"
+      cmd=${cmd#.}; glob=${glob#.}
+      [ "$glob" = 1 ] || ! version_cmd "$cmd" || glob=1
+      if [ "$glob" = 1 ] && claude_cmd "$cmd"; then b=bind; else b=no-bind; fi
+      printf '%s %s' "$glob" "$b" )
+}
+is "agent-poll: ./claude is an agent and binds" "1 bind" "$(gs_poll "$GS_RC")"
+is "agent-poll: ./codex is an agent (codex does not bind: not claude)" "1 no-bind" \
+   "$(gs_poll "$GS_RX")"
+is "agent-poll: and an absolute path and a plain name still are, and bind" "1 bind|1 bind" \
+   "$(gs_poll "$GS_AB")|$(gs_poll "$GS_PL")"
+# workdir.sh: WD_AGENT from its own WORKDIR_FMT and workdir_row.
+gs_wd() {                     # <pane> -> WD_AGENT
+    TMUX="$GSK,0,0" bash -c '. "$1/scripts/lib/workdir.sh" || exit 2
+        workdir_row "$(tmux display-message -p -t "$2" "$WORKDIR_FMT")"; printf %s "$WD_AGENT"' \
+        _ "$DIR" "$1"
+}
+is "workdir.sh: WD_AGENT on ./claude ./codex <abs> <plain>" "1 1 1 1" \
+   "$(gs_wd "$GS_RC") $(gs_wd "$GS_RX") $(gs_wd "$GS_AB") $(gs_wd "$GS_PL")"
+# statusbar.conf: the line that sets @cockpit_is_agent, sourced as shipped.
+grep '^set -g @cockpit_is_agent ' "$DIR/scripts/lib/statusbar.conf" > "$GSD/isagent.conf"
+gs source-file "$GSD/isagent.conf" >/dev/null 2>&1
+is "statusbar.conf: @cockpit_is_agent on ./claude ./codex <abs> <plain>" "1 1 1 1 " \
+   "$(gs_each '#{E:@cockpit_is_agent}')"
+# The sites that hold the glob in a format of their own: each clause in the file, on the panes.
+gs_clauses() {                # <file> -> each agent-glob clause's value on the four panes
+    local c
+    while IFS= read -r c; do gs_each "#{?$c,1,0}"; done < <(grep -oE "$GS_RE" "$DIR/$1")
+}
+for gs_f in scripts/agent-state scripts/cockpit-board scripts/lib/review-deliver.sh \
+            scripts/tmux-jump cockpit.tmux examples/full.tmux.conf tui/src/data/sessions.rs; do
+    gs_n=$(grep -oF '#{@cockpit_agents_glob}' "$DIR/$gs_f" | wc -l)
+    is "$gs_f: every agent-glob clause ($gs_n) says agent on all four" \
+       "$(for _ in $(seq 1 "$gs_n"); do printf '1 1 1 1 '; done)" "$(gs_clauses "$gs_f")"
+done
+# No site reads the raw name: a site added with it fails here.
+# The whole repo but tests and docs (a site in a Rust string is one too: the sessions
+# picker's format), build output and git's own files left out. Pruned by name, not by full
+# path: tests/changed.sh reads a repo path here as this block reading every file under it.
+is "no shipped file tests the agent glob on the raw #{pane_current_command}" "" \
+   "$(find "$DIR" \( -name .git -o -name target -o -name tests -o -name docs -o -name bin \) \
+        -prune -o -type f -print0 |
+      xargs -0 grep -lF '#{m/i:*|#{pane_current_command}|*,#{@cockpit_agents_glob}}' 2>/dev/null |
+      sed "s|^$DIR/||")"
+# The board and the shell agree: cockpit-tui workdir answers 0 for an agent, 1 for none.
+gs_agree() {                  # <pane> -> agree | board=<rc> shell=<is_agent>
+    local rc=0 a
+    TMUX="$GSK,0,0" "$COCKPIT_TUI_BIN" workdir "$1" </dev/null >/dev/null 2>&1 || rc=$?
+    a=$(gs display -p -t "$1" '#{E:@cockpit_is_agent}')
+    if { [ "$rc" = 0 ] && [ "$a" = 1 ]; } || { [ "$rc" = 1 ] && [ "$a" = 0 ]; }; then
+        printf agree; else printf 'board=%s shell=%s' "$rc" "$a"; fi
+}
+is "the board and the shell say the same of ./claude ./codex <abs> <plain>" \
+   "agree agree agree agree" \
+   "$(gs_agree "$GS_RC") $(gs_agree "$GS_RX") $(gs_agree "$GS_AB") $(gs_agree "$GS_PL")"
+# And of a pane that is no agent: both say no, not both yes.
+GS_NO=$(gs display -p -t t:0 '#{pane_id}')
+is "and of a pane that is no agent (a sleep): board 1, shell 0" "agree|0" \
+   "$(gs_agree "$GS_NO")|$(gs display -p -t "$GS_NO" '#{E:@cockpit_is_agent}')"
+# A glob token holding a slash no longer matches (#840's one narrowing): the test sees the
+# basename, so |x/claude| meets claude, not x/claude. Stated in docs/configuration.md.
+gs set -g @cockpit_agents_glob '|x/claude|' >/dev/null 2>&1
+is "a glob token with a slash: typed x/claude is no longer matched by |x/claude|" "0" \
+   "$(gs display -p -t "$GS_SL" '#{E:@cockpit_is_agent}')"
+gs set -g @cockpit_agents_glob '|claude|codex|' >/dev/null 2>&1
+# An empty name (no real pane has one: tmux falls back to the process name) is no agent:
+# each site's clause, its name read from an empty option, on a pane.
+gs set -p -t "$GS_RC" @gs_empty '' >/dev/null 2>&1
+gs_empty() {
+    local f c
+    for f in scripts/agent-poll scripts/lib/workdir.sh scripts/lib/statusbar.conf \
+             scripts/agent-state scripts/cockpit-board scripts/lib/review-deliver.sh \
+             scripts/tmux-jump cockpit.tmux examples/full.tmux.conf tui/src/data/sessions.rs; do
+        while IFS= read -r c; do
+            gs display -p -t "$GS_RC" "#{?${c//pane_current_command/@gs_empty},1,0}"
+        done < <(grep -oE "$GS_RE" "$DIR/$f")
+    done | sort | uniq -c | awk '{printf "%s:%s ", $2, $1}'
+}
+is "an empty name is no agent at any site: every clause, 12 of them, says 0" "0:12 " "$(gs_empty)"
+gs kill-server >/dev/null 2>&1
+# goto: tmux-branch's jump to a worktree takes its agent pane over a shell in it. A server of
+# its own, so no other agent pane is in the repo: the origin, a shell in the repo, ./claude.
+GG="cockpit-gg840-$$"; SOCKS="$SOCKS $GG"
+gg() { "$TMUX_REAL" -L "$GG" "$@"; }
+gg -f /dev/null new-session -d -s t -x 120 -y 30 -c "$GSD/o" 'exec sleep 600' >/dev/null 2>&1
+gg set -g @cockpit_agents_glob '|claude|codex|' >/dev/null 2>&1
+GG_O=$(gg display -p -t t: '#{pane_id}')
+GG_S=$(gg new-window -d -P -F '#{pane_id}' -t t: -c "$GSD/r" 'exec sleep 600')
+gs_typed gg ./claude ./claude; GG_A=$GS_P
+sock_path "$GG" GGK
+cat > "$GSD/ct" <<GSCT
+#!/bin/sh
+case \$1 in
+    branch) [ -e "$GSD/ran" ] && exit 1; : > "$GSD/ran"; echo "goto $GSD/r"; exit 0 ;;
+esac
+exec "$COCKPIT_TUI_BIN" "\$@"
+GSCT
+chmod +x "$GSD/ct"
+TMUX="$GGK,0,0" COCKPIT_TUI_BIN="$GSD/ct" timeout 30 "$DIR/scripts/tmux-branch" -p "$GG_O" \
+    "$GSD/r" </dev/null >/dev/null 2>&1
+is "goto to the repo selects the ./claude pane, not the shell beside it" "agent" \
+   "$(case "$(gg display -p -t t: '#{pane_id}')" in "$GG_A") echo agent ;; "$GG_S") echo shell ;;
+       *) echo other ;; esac)"
+gg kill-server >/dev/null 2>&1
+unset -f gs gg gs_typed gs_each gs_poll gs_wd gs_clauses gs_agree gs_empty
+unset GS GSD GSK GS_RE GS_SH GS_P GG GGK GG_O GG_S GG_A GS_RC GS_RX GS_AB GS_PL GS_SL GS_NO
+unset gs_f gs_n
+fi
+
 echo "== the four bounded reads end by their bounds with timeout, or with only gtimeout (#746) =="
 # agent-state's Stop payload (10 s), subslog's payload (2 s), workdir_ask (3 s) and agent-poll's
 # claude agents (5 s) were bounded only where GNU timeout exists. Homebrew's coreutils on macOS
