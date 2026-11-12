@@ -20297,11 +20297,15 @@ is "gtimeout ran each site's command and ended it at its bound: 124 four times" 
    )124 5 claude agents --json --all" \
    "$(for nt_c in '10 head -n 1' '2 head -n 1' "3 $NT/fake/tui workdir %0" \
           '5 claude agents --json --all'; do grep -xF "124 $nt_c" "$NT/g.log"; done | paste -sd'|')"
-# The writers: only ours, by name.
+# The writers. One whose fifo no site opened is still blocked in open(), named bash, on this
+# shell's stdout (#930), so not by name: each that is still this shell's own child (its ppid,
+# read back), whatever it is named, is ended and reaped.
 for nt_p in $nt_w; do
-    nt_c=""; read -r nt_c 2>/dev/null < "/proc/$nt_p/comm"
-    [ "$nt_c" != sleep ] || kill "$nt_p" 2>/dev/null
+    nt_c=""; read -r _ _ _ nt_c _ 2>/dev/null < "/proc/$nt_p/stat"
+    [ "$nt_c" != "$BASHPID" ] || kill "$nt_p" 2>/dev/null
 done
+# shellcheck disable=SC2086  # a list of pids
+wait $nt_w 2>/dev/null
 # A writer whose fifo no site opened is still blocked in open(), on this shell's stdout: the
 # cleanup must end it too, or a site that fails holds the run open (#930).
 # shellcheck disable=SC2086  # a list of pids
