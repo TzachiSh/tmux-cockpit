@@ -3618,6 +3618,22 @@ mkdir -p "$DH/locked"; echo "gitdir: x" > "$DH/locked/.git"; chmod 000 "$DH/lock
 is "an unreadable .git file is quiet, not a bash error" "" \
    "$("$DIR/scripts/tmux-where" branch 1 "$DH/locked" claude 2>&1 >/dev/null)"
 chmod 600 "$DH/locked/.git"
+# A path with no slash (#488): ${d%/*} leaves it as it is, so the walk up never ended. Each
+# call under timeout, from a dir with no repo, so a walk that spins fails its row (124).
+if command -v timeout >/dev/null 2>&1; then
+    DHN=$(mktmpd)
+    is "a relative path with no repo above it ends, its label empty" "x:0: .:0: ..:0: x/y:0:" \
+       "$(cd "$DHN" && for p in x . .. x/y; do
+            o=$(timeout 5 "$DIR/scripts/tmux-where" branch 1 "$p" claude 2>/dev/null); rc=$?
+            printf '%s:%s:%s ' "$p" "$rc" "$(printf '%s' "$o" | plain)"; done | sed 's/ $//')"
+    is "and . at a repo's root reads what its absolute path reads" \
+       "$("$DIR/scripts/tmux-where" branch 1 "$DH" claude 2>/dev/null | plain)" \
+       "$(cd "$DH" && timeout 5 "$DIR/scripts/tmux-where" branch 1 . claude 2>/dev/null | plain)"
+    rm -rf "$DHN"; unset DHN
+else
+    skip_ "a relative path with no repo above it ends, its label empty (no timeout)"
+    skip_ "and . at a repo's root reads what its absolute path reads (no timeout)"
+fi
 rm -rf "$DH"
 echo "== install.sh only ever touches its own links =="
 IB=$(mktmpd); IL="$IB/link"; ln -s "$DIR" "$IL"; IBIN="$IB/bin"; mkdir -p "$IBIN"
