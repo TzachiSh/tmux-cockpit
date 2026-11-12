@@ -1,0 +1,17 @@
+sequenceDiagram
+  autonumber
+  participant O as owner
+  participant A as agent
+  participant R as reviewer
+  participant C as CI
+  O->>A: brief
+  %% status: ✓ 09:02
+  A->>R: PR open
+  %% status: ✓ 09:20
+  R-->>A: NIT x2
+  %% status: done 09:41
+  A->>C: suite
+  %% status: ● 09:44
+  C-->>O: merge?
+  %% status: needs
+  Note over O,C: NEED FROM YOU: approve merge after CI green
