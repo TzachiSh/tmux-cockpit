@@ -207,6 +207,27 @@ fn busy_counts_match_the_envelopes_split_per_flow() {
     }
 }
 
+/// A key the user typed into an explain's question is the conversation's.
+#[test]
+fn busy_counts_a_key_in_the_question_under_the_conversation() {
+    let mut a = app(cap(PLAIN, "w", "/h"));
+    tile(&mut a, Tile::Explain);
+    key(&mut a, KeyCode::Char('5'));
+    for c in "why sk-abcdefghijklmnopqrst2".chars() {
+        key(&mut a, KeyCode::Char(c));
+    }
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(a.view, View::Busy);
+    assert_eq!(
+        a.sent_hidden(),
+        SentHidden {
+            screen: 1,
+            repo: 0,
+            talk: 1
+        }
+    );
+}
+
 /// Pinned: a plain key on the screen, in the name and in the path count as
 /// #963 left them.
 #[test]
