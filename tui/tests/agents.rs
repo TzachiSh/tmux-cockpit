@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
 static ENV: Mutex<()> = Mutex::new(());
+type Lock = MutexGuard<'static, ()>;
 
 /// field 22 of a stat line is `start`
 fn stat(start: &str) -> String {
@@ -21,7 +22,32 @@ fn stat(start: &str) -> String {
 struct Rig {
     dir: PathBuf,
     old: Vec<(&'static str, Option<String>)>,
-    _lock: MutexGuard<'static, ()>,
+    _lock: Option<Lock>,
+}
+
+/// Each variable back to the value it had, or unset again. The caller holds `ENV`.
+fn put_back(old: &[(&'static str, Option<String>)]) {
+    for (k, v) in old {
+        // SAFETY: the ENV mutex is held, as it was when these were set.
+        unsafe {
+            match v {
+                Some(v) => std::env::set_var(k, v),
+                None => std::env::remove_var(k),
+            }
+        }
+    }
+}
+
+/// Polls until no lookup thread is left. False once `bound` has passed with one still running.
+fn lookups_end_within(bound: std::time::Duration) -> bool {
+    let end = std::time::Instant::now() + bound;
+    while lookups() > 0 {
+        if std::time::Instant::now() >= end {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    true
 }
 
 impl Rig {
@@ -34,6 +60,11 @@ impl Rig {
     /// `board` false is a one-shot caller (`--json`, `--rows`): it waits for the lookup.
     fn with(tag: &str, claude_body: &str, board: bool) -> Rig {
         let lock = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        Rig::build(tag, claude_body, board, Some(lock))
+    }
+
+    /// `lock` is `ENV`, held from here to the drop. None when the caller holds it.
+    fn build(tag: &str, claude_body: &str, board: bool, lock: Option<Lock>) -> Rig {
         let dir = std::env::temp_dir().join(format!("cockpit-agents-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("bin")).unwrap();
@@ -129,15 +160,7 @@ fn stub_of(pid: i32, dir: &std::path::Path) -> bool {
 
 impl Drop for Rig {
     fn drop(&mut self) {
-        for (k, v) in &self.old {
-            // SAFETY: as above.
-            unsafe {
-                match v {
-                    Some(v) => std::env::set_var(k, v),
-                    None => std::env::remove_var(k),
-                }
-            }
-        }
+        put_back(&self.old);
         // a red run must not leave a stub looping on a file that never comes
         let _ = std::fs::write(self.dir.join("go"), "");
         // AGENTS.md: never signal a pid nobody verified. The stub may be long gone and
@@ -151,10 +174,7 @@ impl Drop for Rig {
         }
         // A board's lookup writes its cache after this rig is gone, and the write makes
         // the dir again (#608): wait for it first. No panic in a drop: the dir goes anyway.
-        let end = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        while lookups() > 0 && std::time::Instant::now() < end {
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
+        let _ = lookups_end_within(std::time::Duration::from_secs(10));
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
