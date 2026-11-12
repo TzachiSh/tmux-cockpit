@@ -189,6 +189,8 @@ fn a_selection_past_the_first_screen_is_drawn_on_the_first_frame() {
     let at = rows.iter().position(|r| r.trim_end() == "▎ f60.txt");
     let last = rows.iter().rposition(|r| listed(r));
     assert!(at.is_some() && at == last, "f60 at {at:?}, last row {last:?}: {rows:#?}");
+    // Row 1 is the header and row 2 the first list row: what `listed` says of each (#910).
+    assert!(!listed(&rows[1]) && listed(&rows[2]), "{rows:#?}");
     assert!(!rows.iter().any(|r| shows(r, "f10.txt")), "scrolled: {rows:#?}");
 }
 
