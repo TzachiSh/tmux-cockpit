@@ -518,14 +518,20 @@ fn a_single_cut_line_is_tagged() {
     );
 }
 
-/// The ^Z state holds the redacted lines, never the secret.
+/// The ^Z state holds the redacted lines, never the secret. It also names the
+/// repo, whose path sits under the temp dir and can hold any word, so the path
+/// is swapped for a fixed word and all the rest is searched (#910). The swap is
+/// checked too: the word sits in the `repo` field, before the code line as
+/// redaction leaves it.
 #[test]
 fn a_hidden_ask_keeps_no_secret() {
-    let (_d, f) = repo("hidesecret", "let token=abcdef123456;\n");
+    let (d, f) = repo("hidesecret", "let token=abcdef123456;\n");
     let mut a = App::new("%3", Capture::default());
     a.ask_open(ask::load(&f, 1, 1).unwrap());
     let body = cockpit_tui::panel::action::hide_body(&a, 0).unwrap();
-    assert!(!body.contains("abcdef123456"), "{body}");
+    let kept = body.replace(d.0.to_str().unwrap(), "REPO");
+    let code = r#"\"repo\":\"REPO\",\"code\":\"1 let token=[hidden]\","#;
+    assert_eq!((kept.contains("abcdef123456"), kept.contains(code)), (false, true), "{kept}");
 }
 
 /// #465 confines the ask's reads to its repo: the prompt says so, and never
