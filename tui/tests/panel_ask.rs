@@ -455,7 +455,9 @@ fn a_repo_the_read_check_refuses_cannot_be_asked_about() {
     let d = Dir::new("globrepo");
     let f = d.file("a*/x.rs", &lines(3));
     let why = ask::load(&f, 1, 1).unwrap_err();
-    assert!(why.contains("glob"), "{why}");
+    // the refusal quotes the folder first, and its path holds `glob` (#910)
+    let shown = format!("{:?} ", f.parent().unwrap().display().to_string());
+    assert_eq!(why.strip_prefix(shown.as_str()), Some("holds a glob character; refused"), "{why}");
 }
 
 /// A name with a control or bidi character would go out cleaned, naming no file.
