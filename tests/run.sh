@@ -20237,9 +20237,12 @@ for nt_d in "${nt_path[@]}"; do
         ! -name timeout ! -name gtimeout -print0
 done | xargs -0 ln -s -t "$NT/bin" 2>/dev/null
 # gtimeout: the real timeout under that name, by its own path (a multicall timeout will not
-# run as gtimeout), logging what it was handed and how it ended, so a row sees it ran.
+# run as gtimeout), logging what it was handed and how it ended, so a row sees it ran. Both
+# paths single-quoted, a ' in them as '\'': a space in TMPDIR split the log's (#893).
+ntq() { printf "'%s'" "${1//\'/\'\\\'\'}"; }
 printf '#!/bin/sh\n%s "$@"; rc=$?\necho "$rc $*" >> %s\nexit $rc\n' \
-    "$(command -v timeout)" "$NT/g.log" > "$NT/bin/gtimeout"
+    "$(ntq "$(command -v timeout)")" "$(ntq "$NT/g.log")" > "$NT/bin/gtimeout"
+unset -f ntq
 chmod +x "$NT/bin/gtimeout"
 printf '#!/bin/sh\nexec sleep 20\n' > "$NT/fake/claude"; cp "$NT/fake/claude" "$NT/fake/tui"
 chmod +x "$NT/fake/claude" "$NT/fake/tui"
