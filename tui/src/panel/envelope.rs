@@ -258,11 +258,15 @@ fn refs_part(refs: &[RefItem]) -> String {
 
 /// [`build_parts`], and for a Write with the basket's refs (#365 child 5) a
 /// `<refs>` block before the request. No other flow carries it.
+///
+/// Every section of outside text is cleaned as a send is ([`sanitize`], #936),
+/// then redacted where it is, then escaped. Cleaning goes first so a direction
+/// control inside a secret cannot cut it into halves too short to match.
 pub fn build_refs(flow: &Flow, cap: &Capture, turns: &[Turn], questions_left: usize, refs: &[RefItem]) -> Envelope {
-    let (screen, screen_hidden) = redact(&cap.screen);
+    let (screen, screen_hidden) = redact(&sanitize(&cap.screen));
     let (mut repo_hidden, mut turns_hidden) = (0, 0);
     let screen = esc(&screen);
-    let (name, cmd) = (esc(&cap.name), esc(&cap.cmd));
+    let (name, cmd) = (esc(&sanitize(&cap.name)), esc(&sanitize(&cap.cmd)));
     // A `"` in a window name would end the attribute early.
     let window = format!("{name} · {cmd}").replace('"', "&quot;");
     let mut parts = Vec::new();
@@ -270,25 +274,25 @@ pub fn build_refs(flow: &Flow, cap: &Capture, turns: &[Turn], questions_left: us
         Flow::Write { draft, out } => {
             let shown = if screen.is_empty() { "(empty)" } else { &screen };
             parts.push(format!("<screen window=\"{window}\">\n{shown}\n</screen>"));
-            parts.push(format!("<window>{name} · {cmd} · {}</window>", esc(&cap.path)));
+            parts.push(format!("<window>{name} · {cmd} · {}</window>", esc(&sanitize(&cap.path))));
             let repo = cap.repo.get();
             if !repo.is_empty() {
                 // Commit messages and paths carry secrets as a screen does.
-                let (repo, n) = redact(repo);
+                let (repo, n) = redact(&sanitize(repo));
                 repo_hidden = n;
                 parts.push(format!("<repo>\n{}\n</repo>", esc(&repo)));
             }
             if !refs.is_empty() {
                 parts.push(refs_part(refs));
             }
-            parts.push(format!("<request>{}</request>", esc(draft)));
+            parts.push(format!("<request>{}</request>", esc(&sanitize(draft))));
             if *out != OutType::Auto {
                 parts.push(format!("<output_type>{}</output_type>", out.as_str()));
             }
         }
         Flow::Fix { draft } => {
             parts.push(format!("<screen window=\"{window}\">\n{screen}\n</screen>"));
-            parts.push(format!("<text>{}</text>", esc(draft)));
+            parts.push(format!("<text>{}</text>", esc(&sanitize(draft))));
         }
         // the code, never the screen: the question is about the file (#365)
         Flow::Ask(a) => {
@@ -297,7 +301,8 @@ pub fn build_refs(flow: &Flow, cap: &Capture, turns: &[Turn], questions_left: us
             let lines = format!("{}-{}", a.asked.0, a.asked.1);
             // ask::load refused a name with a control character; a `"` would end the attribute
             let path = a.path.replace('"', "&quot;");
-            let code = esc(&a.code);
+            // ask::load cleaned it already; a state file's code is cleaned here
+            let code = esc(&sanitize(&a.code));
             let path = esc(&path);
             parts.push(format!("<code path=\"{path}\" lines=\"{lines}\">\n{code}\n</code>"));
             let (s0, s1) = a.shown;
@@ -326,7 +331,7 @@ pub fn build_refs(flow: &Flow, cap: &Capture, turns: &[Turn], questions_left: us
             .iter()
             .map(|t| {
                 let role = if t.role == Role::User { "user" } else { "assistant" };
-                let (text, n) = redact(&t.text);
+                let (text, n) = redact(&sanitize(&t.text));
                 turns_hidden += n;
                 format!("<turn role=\"{role}\">{}</turn>", esc(&text))
             })

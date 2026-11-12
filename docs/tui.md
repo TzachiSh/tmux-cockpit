@@ -1180,9 +1180,11 @@ is.
   them: a file the viewer refuses (binary, over 1 MB, not UTF-8) is an error,
   and an end past the file's last line is held to it. At most 400 lines and
   32 KB go inline, each behind its number; the call is told what was left out
-  or cut short, and reads the rest with its own Read. Each line is redacted as
-  the screen is before it is numbered or cut (a key's PEM body line by line),
-  and the screen itself is never sent. A file name with a control or bidi
+  or cut short, and reads the rest with its own Read. Each line is cleaned
+  (`action::sanitize`, #936) and then redacted as the screen is, before it is
+  numbered or cut (a key's PEM body line by line), and the screen itself is
+  never sent. Cleaning goes first, so a direction control inside a key cannot
+  cut it into halves too short to match. A file name with a control or bidi
   character is refused.
 - **The call.** `request::Profile::read_only(repo, research = true)`: Read,
   Grep, Glob, WebSearch, WebFetch and skills, with no hooks and the secret

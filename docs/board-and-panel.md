@@ -96,9 +96,17 @@ file and the answer to a private temp file for the paste.
 - Under 28x7 (28x12 in tablet mode) the panel asks for a larger window. `esc` and `q` still act as on
   the screen underneath and `^C` quits; other keys are dropped.
 
-Secrets on the screen are blanked before anything is sent. `prefix + f`
-opens it on the pane you are in, and `f` on a board tile opens it on that
-tile's pane. The key replaces stock `find-window`:
+Secrets on the screen are blanked before anything is sent. Everything the
+panel sends from outside itself (the screen, the window's name, command and
+path, the git state, your draft, the earlier turns and the code of a question)
+first loses its control characters, the invisible direction controls (U+061C,
+U+200E, U+200F, U+202A to U+202E, U+2066 to U+2069) and the line and paragraph
+separators U+2028 and U+2029 (#936). They reorder or break what Claude reads
+and nothing shows them. Newlines and tabs stay, a Windows line end becomes a
+newline, and right-to-left letters such as Hebrew or Arabic stay.
+
+`prefix + f` opens the panel on the pane you are in, and `f` on a board tile
+opens it on that tile's pane. The key replaces stock `find-window`:
 
 ```sh
 set -g @cockpit_panel_key f    # the default; off restores stock find-window

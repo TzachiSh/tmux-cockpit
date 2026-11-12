@@ -69,9 +69,10 @@ pub fn load(file: &Path, a: u32, b: u32) -> Result<AskCode, String> {
     load_in(file, a, b, home().as_deref())
 }
 
-/// [`load`], with `home` as the home folder. Each line is redacted before it is
-/// numbered or cut, so a key at the cap is hidden whole and the ^Z state holds
-/// no secret; a key's PEM body is hidden line by line, from the file's start.
+/// [`load`], with `home` as the home folder. Each line is cleaned as a send is
+/// (`action::sanitize`), then redacted, before it is numbered or cut, so a key
+/// at the cap is hidden whole and the ^Z state holds no secret; a key's PEM
+/// body is hidden line by line, from the file's start.
 pub fn load_in(file: &Path, a: u32, b: u32, home: Option<&Path>) -> Result<AskCode, String> {
     let r = Ref::new(file, Some((a, b)), None).map_err(|e| e.to_string())?;
     // the path goes out as the model's to Read: a cleaned one would name no file
@@ -100,6 +101,9 @@ pub fn load_in(file: &Path, a: u32, b: u32, home: Option<&Path>) -> Result<AskCo
     let (mut cut, mut pem) = (false, false);
     for (i, l) in all[..b as usize].iter().enumerate() {
         let num = i as u32 + 1;
+        // cleaned before the PEM check and redact (#936): a direction control
+        // inside a key would cut it into halves too short to match
+        let l = &super::action::sanitize(l);
         let open = pem || pem_edge(l, "BEGIN");
         pem = open && !pem_edge(l, "END");
         if num < a {
