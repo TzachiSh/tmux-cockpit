@@ -46,7 +46,9 @@ fn claude_and_its_version_title_read_at_mentions_and_nothing_else_does() {
     // shell. dash forks the command and stays the pane's process, so the pane is
     // never `claude`; bash execs it.
     // Set in the command that starts the server, so the first pane has it too.
-    // SHELL: dash if there, so CI, whose SHELL is bash, exercises the line below (#896).
+    // SHELL: dash if there, else /bin/sh, so CI, whose SHELL is bash, exercises the
+    // default-shell line (#896). Where /bin/sh execs the command (a host with no
+    // /usr/bin/dash, such as macOS), the test passes and proves nothing about that line.
     let dash = std::path::Path::new("/usr/bin/dash").exists();
     new.env("SHELL", if dash { "/usr/bin/dash" } else { "/bin/sh" })
         .args(["-L", &sock, "-f", "/dev/null"])

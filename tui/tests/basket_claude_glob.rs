@@ -43,9 +43,12 @@ fn a_claude_the_agent_list_leaves_out_is_no_claude() {
     std::fs::create_dir_all(&dir).unwrap();
     let mut new = Command::new("tmux");
     // bash, whatever $SHELL is (#882): tmux runs a pane's command in the default
-    // shell. dash forks the command and stays the pane's process, so the `claude`
-    // row passes for the wrong reason; bash execs it. Set as the server starts.
-    // SHELL: dash if there, so CI, whose SHELL is bash, exercises the line below (#896).
+    // shell. Under dash, which forks the command and stays the pane's process, the
+    // `claude` row would pass for the wrong reason. bash execs it.
+    // Set as the server starts.
+    // SHELL: dash if there, else /bin/sh, so CI, whose SHELL is bash, exercises the
+    // default-shell line (#896). Where /bin/sh execs the command (a host with no
+    // /usr/bin/dash, such as macOS), the test passes and proves nothing about that line.
     let dash = std::path::Path::new("/usr/bin/dash").exists();
     new.env("SHELL", if dash { "/usr/bin/dash" } else { "/bin/sh" })
         .args(["-L", &sock, "-f", "/dev/null"])
