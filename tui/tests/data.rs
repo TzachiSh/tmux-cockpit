@@ -80,6 +80,7 @@ impl Rig {
             ("HOME", d),
             ("COCKPIT_READONLY", "1".into()),
         ]);
+        fake::assert_claude_is_the_rigs(&dir);
         Rig {
             dir,
             _env: env,

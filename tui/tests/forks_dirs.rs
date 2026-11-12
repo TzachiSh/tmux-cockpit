@@ -34,15 +34,17 @@ fn one_fetch_is_one_tmux_call_and_cockpit_dir_comes_off_it() {
     // records the tree each probe ran in: `git -C <dir> ...`
     write_exec(&dir.join("bin/git"), &format!("#!/bin/sh\necho \"$2\" >> {d}/git\nexit 1\n"));
     write_exec(&dir.join("bin/ps"), "#!/bin/sh\n");
+    let path = fake::rig_path(&dir.join("bin"));
     // SAFETY: this test binary holds exactly one test, so nothing runs beside it.
     unsafe {
-        std::env::set_var("PATH", format!("{d}/bin:{}", std::env::var("PATH").unwrap_or_default()));
+        std::env::set_var("PATH", path);
         std::env::set_var("COCKPIT_TMUX", format!("{d}/bin/tmux"));
         std::env::set_var("HOME", &d);
         std::env::set_var("COCKPIT_READONLY", "1");
         // #505: no proc under it, so the walk asks the fake ps, not the live pid of the same number
         std::env::set_var("COCKPIT_PROC_DIR", format!("{d}/proc"));
     }
+    fake::assert_claude_is_the_rigs(&dir);
 
     assert_eq!(list_panes().unwrap().len(), 3);
     assert_eq!(list_panes().unwrap().len(), 3);
