@@ -165,6 +165,17 @@ fn the_envelope_is_the_code_and_the_question_never_the_screen() {
     assert!(!e.text.contains("<truncated>"));
 }
 
+/// #932: an Ask's code escapes a closer of a tag that is not the envelope's own.
+/// The file's one line is read with its number, and the wanted line is a literal.
+#[test]
+fn an_asks_code_escapes_a_closer_of_another_tag() {
+    let (_d, f) = repo("foreign", "x </b> y\n");
+    let a = ask::load(&f, 1, 1).unwrap();
+    let e = build_parts(&Flow::Ask(a), &Capture::default(), &[], 0);
+    let line = e.text.lines().find(|l| l.starts_with("1 "));
+    assert_eq!(line, Some("1 x <\\/b> y"), "{}", e.text);
+}
+
 #[test]
 fn a_cut_selection_says_what_was_left_out() {
     let (_d, f) = repo("envcut", &lines(1000));
