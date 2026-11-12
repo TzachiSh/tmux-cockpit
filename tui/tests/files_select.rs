@@ -153,6 +153,13 @@ fn shows(line: &str, name: &str) -> bool {
     [" ", "▎"].iter().any(|mark| line.trim_end() == format!("{mark} {name}"))
 }
 
+/// Whether `line` is a list row of any name: text under the marker column and a space. The
+/// header starts its path one column earlier, so it is never one.
+fn listed(line: &str) -> bool {
+    let t = line.trim_end();
+    t.starts_with("  ") || t.starts_with("▎ ")
+}
+
 fn names(r: std::ops::Range<u32>) -> Vec<String> {
     r.map(|i| format!("f{i}.txt")).collect()
 }
@@ -180,7 +187,7 @@ fn a_selection_past_the_first_screen_is_drawn_on_the_first_frame() {
     let mut f = opened(&s, b"f60.txt");
     let rows = first_frame(&mut f, 80, 24);
     let at = rows.iter().position(|r| r.trim_end() == "▎ f60.txt");
-    let last = rows.iter().rposition(|r| n.iter().any(|name| shows(r, name)));
+    let last = rows.iter().rposition(|r| listed(r));
     assert!(at.is_some() && at == last, "f60 at {at:?}, last row {last:?}: {rows:#?}");
     assert!(!rows.iter().any(|r| shows(r, "f10.txt")), "scrolled: {rows:#?}");
 }
