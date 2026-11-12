@@ -131,7 +131,14 @@ review_loop() {
     }
     set_base_line
 
-    if [ -z "$(tree_diff "$dir" --numstat)" ]; then
+    # Status, not output: a tree_diff that fails prints nothing too, and is no clean tree
+    # (#944). Its store stays: the pinned comments are not the failure's to drop.
+    local tdo
+    if ! tdo=$(tree_diff "$dir" --numstat); then
+        tmux display-message "$(fesc "cockpit: could not read the diff in $dir")" 2>/dev/null
+        exit 1
+    fi
+    if [ -z "$tdo" ]; then
         tmux display-message "$(fesc "cockpit: no uncommitted changes in $dir")" 2>/dev/null
         drop_store "$store"
         exit 0
@@ -221,8 +228,11 @@ review_loop() {
                    printf '%s\n' "$nxt" > "$store.base"
                    COCKPIT_REVIEW_BASE=$nxt; export COCKPIT_REVIEW_BASE
                    set_base_line
-                   [ -n "$(tree_diff "$dir" --numstat)" ] || \
+                   if ! tdo=$(tree_diff "$dir" --numstat); then
+                       tmux display-message "$(fesc "cockpit: could not read the diff against $label")" 2>/dev/null
+                   elif [ -z "$tdo" ]; then
                        tmux display-message "$(fesc "cockpit: nothing to review against $label")" 2>/dev/null
+                   fi
                    break ;;
                 x) [ "$n" -gt 0 ] || continue
                    printf ' discard %d comment(s)? y/N ' "$n"

@@ -395,7 +395,9 @@ next_base() {                 # <dir> <current-mode>
 }
 
 # Exit 0 when PANE's tree differs from its review base -- the Stop hook's
-# question. Reads the mode the pane's own review chose with b, if any.
+# question -- 1 when it does not, and 2 when that cannot be told: a tree_diff that fails
+# prints nothing too, and is no clean tree (#944). Reads the mode the pane's own review
+# chose with b, if any.
 delta_mode() {                # <pane>
     local pane=$1 dir root sess mode
     dir=$(pane_workdir "$pane")
@@ -405,7 +407,9 @@ delta_mode() {                # <pane>
     sess=$(session_dir "$pane" "$root")
     mode=$(cat -- "$sess/comments.md.base" 2>/dev/null)
     export COCKPIT_REVIEW_BASE=${mode:-auto}
-    [ -n "$(tree_diff "$root" --numstat)" ]
+    local out
+    out=$(tree_diff "$root" --numstat) || return 2
+    [ -n "$out" ]
 }
 
 # --- approve -------------------------------------------------------------------
