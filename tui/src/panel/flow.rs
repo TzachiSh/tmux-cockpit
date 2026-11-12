@@ -470,6 +470,12 @@ fn list(f: &Flow, w: usize) -> Vec<String> {
     let longest = f.steps.iter().map(|s| s.label.width()).max().unwrap_or(0);
     let who = |s: &Step| format!("{}→{}", f.actors[s.from].name, f.actors[s.to].name);
     let who_w = f.steps.iter().map(|s| who(s).width()).max().unwrap_or(0);
+    let time_w = f.steps.iter().filter_map(|s| s.time.as_deref()).map(str::width).max().unwrap_or(0);
+    let lead_w = usize::from(status) * 2 + if f.autonumber { digits + 1 } else { 0 };
+    // One label column for every line: aligned when it holds the longest label
+    // or 6 columns of it, whichever is less; compact otherwise.
+    let room = w.saturating_sub(lead_w + 2 + who_w + 2 + time_w).min(longest);
+    let aligned = room >= longest.min(6);
     let mut out = vec![];
     for (i, s) in f.steps.iter().enumerate() {
         let mut lead = String::new();
@@ -483,8 +489,7 @@ fn list(f: &Flow, w: usize) -> Vec<String> {
         let who = who(s);
         let time = s.time.as_deref().unwrap_or("");
         let tail = format!("  {who}{}  {time}", " ".repeat(who_w - who.width()));
-        let room = w.saturating_sub(lead.width() + tail.width()).min(longest);
-        let line = if room >= 6 {
+        let line = if aligned {
             let label = fit(&s.label, room);
             format!("{lead}{label}{}{tail}", " ".repeat(room - label.width()))
         } else {

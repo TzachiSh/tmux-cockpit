@@ -262,3 +262,20 @@ fn goldens_wide_graphemes_at_60_and_100() {
         golden(&format!("flow-wide-{w}"), &drawn(WIDE, w));
     }
 }
+
+#[test]
+fn the_list_aligns_who_to_whom_whatever_the_label_widths() {
+    // Where "→" sits on each line: one column for every step, short or long labels.
+    for (row, labels) in [
+        ("all short", ["go", "run", "ok"]),
+        ("short and long", ["go", "run the suite", "ok"]),
+    ] {
+        let src = format!(
+            "sequenceDiagram\nO->>A: {}\nA->>O: {}\nO->>A: {}\n",
+            labels[0], labels[1], labels[2]
+        );
+        let out = flow::render(&src, 40);
+        let cols: Vec<usize> = out.iter().map(|l| l.split('→').next().unwrap().width()).collect();
+        assert!(cols.windows(2).all(|p| p[0] == p[1]), "{row}: {out:?}");
+    }
+}
