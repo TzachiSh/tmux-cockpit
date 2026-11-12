@@ -146,6 +146,20 @@ fn rows_of(t: &Terminal<TestBackend>, w: u16, h: u16) -> Vec<String> {
     (0..h).map(|y| (0..w).map(|x| b[(x, y)].symbol()).collect()).collect()
 }
 
+/// Whether `line` is the list row of `name`, selected or not: the marker column, a space, the
+/// name, then padding. The whole line must match: the header above the list shows the temp
+/// path, which can hold any name (#908).
+fn shows(line: &str, name: &str) -> bool {
+    [" ", "▎"].iter().any(|mark| line.trim_end() == format!("{mark} {name}"))
+}
+
+/// Whether `line` is a list row of any name: text under the marker column and a space. The
+/// header starts its path one column earlier, so it is never one.
+fn listed(line: &str) -> bool {
+    let t = line.trim_end();
+    t.starts_with("  ") || t.starts_with("▎ ")
+}
+
 fn names(r: std::ops::Range<u32>) -> Vec<String> {
     r.map(|i| format!("f{i}.txt")).collect()
 }
@@ -158,8 +172,9 @@ fn a_selection_on_the_first_screen_keeps_the_rows_above_it() {
     let s = Scratch::new(&n.iter().map(String::as_str).collect::<Vec<_>>());
     let mut f = opened(&s, b"f12.txt");
     let rows = first_frame(&mut f, 80, 24);
-    assert!(rows.iter().any(|r| r.contains("f10.txt")), "{rows:#?}");
-    assert!(rows.iter().any(|r| r.contains("f12.txt")), "{rows:#?}");
+    for name in ["f10.txt", "f12.txt"] {
+        assert!(rows.iter().any(|r| shows(r, name)), "no list row shows {name:?}: {rows:#?}");
+    }
     assert_eq!(enter(&mut f), view(&s.0.join("f12.txt")));
 }
 
@@ -171,10 +186,10 @@ fn a_selection_past_the_first_screen_is_drawn_on_the_first_frame() {
     let s = Scratch::new(&n.iter().map(String::as_str).collect::<Vec<_>>());
     let mut f = opened(&s, b"f60.txt");
     let rows = first_frame(&mut f, 80, 24);
-    let at = rows.iter().position(|r| r.contains("▎ f60.txt"));
-    let last = rows.iter().rposition(|r| r.contains(".txt"));
+    let at = rows.iter().position(|r| r.trim_end() == "▎ f60.txt");
+    let last = rows.iter().rposition(|r| listed(r));
     assert!(at.is_some() && at == last, "f60 at {at:?}, last row {last:?}: {rows:#?}");
-    assert!(!rows.iter().any(|r| r.contains("f10.txt")), "scrolled: {rows:#?}");
+    assert!(!rows.iter().any(|r| shows(r, "f10.txt")), "scrolled: {rows:#?}");
 }
 
 /// A key leaves the screen laid out for its frame (#601): the header first,
@@ -188,5 +203,5 @@ fn a_key_leaves_the_selection_on_the_screen_it_drew() {
     let mut t = Terminal::new(TestBackend::new(80, 24)).unwrap();
     t.draw(|fr| files::draw(fr, fr.area(), &f, &Theme::fixed())).unwrap();
     let rows = rows_of(&t, 80, 24);
-    assert!(rows.iter().any(|r| r.contains("▎ f61.txt")), "{rows:#?}");
+    assert!(rows.iter().any(|r| r.trim_end() == "▎ f61.txt"), "{rows:#?}");
 }
