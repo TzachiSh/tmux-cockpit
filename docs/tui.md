@@ -1692,9 +1692,10 @@ it, created new with `O_NOFOLLOW`, mode 0600) with a 1 MiB cap, and is as
 strict: one body line, the pane must be the one opened on, at most 24 h old
 and not more than a minute in the future, every key present and none unknown,
 every cursor on a character boundary of its text, the model and the type
-known, steps 1 to 64 with the selection among them, and a Question or Answer
-only with the run it is drawn from. Any failure opens a fresh panel with the
-reason in a warn note.
+known, steps 1 to 64 with the selection among them, a Question or Answer
+only with the run it is drawn from, and an Ask's file path with no control or
+bidi character, as `ask::load_in` requires (#936). Any failure opens a fresh
+panel with the reason in a warn note.
 
 ### Contract changes for tablet mode (for #61)
 

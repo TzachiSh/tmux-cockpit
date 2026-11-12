@@ -2,6 +2,8 @@
 //! code goes through `action::sanitize`, as a ref already did. A direction
 //! control (U+202E, U+2066, ...) or a line or paragraph separator is dropped;
 //! newline, tab and right-to-left letters stay. Every value here is made up.
+use cockpit_tui::panel::action;
+use cockpit_tui::panel::app::App;
 use cockpit_tui::panel::ask::{self, AskCode};
 use cockpit_tui::panel::capture::Capture;
 use cockpit_tui::panel::envelope::{Flow, OutType, Role, Turn, build, build_parts};
@@ -310,4 +312,31 @@ fn right_to_left_letters_stay_in_every_section() {
 fn a_screen_of_only_direction_controls_reads_as_empty() {
     let env = build(&write("x"), &screen("\u{202E}\u{2066}\u{2028}"), &[], 3);
     assert_eq!(body(&env, "<screen", "</screen>"), "(empty)");
+}
+
+// ------------------------------------------- a restored Ask's path (review of #954)
+
+/// A hidden panel's state file, written then read back for `%3`: why it was
+/// refused, or `None` when it was not.
+fn refused(dir: &std::path::Path, body: &str) -> Option<String> {
+    let p = dir.join("state");
+    let _ = std::fs::remove_file(&p);
+    std::fs::write(&p, body).unwrap();
+    action::read_hidden(&p, "%3", 0).err()
+}
+
+/// `ask::load_in` refuses such a name, so only a forged or corrupt state file
+/// holds one: the restored Ask is refused whole, never sent.
+#[test]
+fn a_restored_ask_with_a_direction_control_in_its_path_is_refused() {
+    let (r, f) = Repo::new("statepath", "let a = 1;\n");
+    let mut a = App::new("%3", Capture::default());
+    a.ask_open(ask::load(&f, 1, 1).unwrap());
+    let good = action::hide_body(&a, 0).unwrap();
+    let path = r#"\"path\":\"src/x.rs\""#;
+    assert_eq!(good.matches(path).count(), 1, "{good}");
+    let forged = good.replace(path, "\\\"path\\\":\\\"src/\u{202E}x.rs\\\"");
+    assert_eq!(refused(&r.0, &good), None, "the state as written comes back");
+    let why = refused(&r.0, &forged).unwrap_or_else(|| "accepted".into());
+    assert!(why.contains("the ask's path"), "{why}");
 }
