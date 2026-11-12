@@ -5,7 +5,7 @@ use super::capture::{Capture, REPO_BUDGET, SSH_LIKE, Session, is_local, session_
 use super::envelope::{Flow, OutType, RefItem, Role, Turn, build_refs, ref_items};
 use super::parse::{self, Opt, Query, Reply, Step};
 use super::prompts::{self, Ctx};
-use super::redact::redact;
+use super::redact::{redact, redact_clean};
 use super::request::{Call, Fail, Profile, Request, read_dir_ok};
 use super::route::{Route, route};
 use super::view::{TABLET_MIN_H, TABLET_MIN_W};
@@ -262,7 +262,8 @@ pub struct App {
     pub pending: bool,
     pub req: Option<Request>,
     pub started: Option<Instant>,
-    /// Secrets the last call's envelope hid (screen and turns), and the screen's alone.
+    /// Secrets the last call's envelope hid (screen and turns), and the screen's
+    /// alone, its window's name included.
     pub hidden: usize,
     pub screen_hidden: usize,
     /// The call's limit, from [`Call`] at launch; zero until a call goes out.
@@ -328,7 +329,8 @@ pub struct App {
 
 impl App {
     pub fn new(pane: &str, cap: Capture) -> App {
-        let screen_hidden = redact(&cap.screen).1;
+        // the window's name labels every screen sent, and the envelope counts it there (#937)
+        let screen_hidden = redact(&cap.screen).1 + redact_clean(&cap.name).1;
         let local = is_local(&cap.cmd);
         App {
             pane: pane.into(),
