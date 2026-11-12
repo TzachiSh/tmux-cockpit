@@ -31,17 +31,6 @@ struct Rig {
 /// this is a thread that hangs, on a box however loaded (#969).
 const DROP_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
 
-/// What the stubs and `write_exec` call by name. Linked into the rig's bin, so the
-/// rig's PATH is that one folder and none of the developer's (#969).
-const TOOLS: [&str; 4] = ["cat", "cp", "sleep", "touch"];
-
-/// The first file named `tool` on `path`, else under the two system folders.
-fn tool(tool: &str, path: &str) -> PathBuf {
-    let dirs = path.split(':').filter(|d| !d.is_empty()).chain(["/usr/bin", "/bin"]);
-    let found = dirs.map(|d| Path::new(d).join(tool)).find(|p| p.is_file());
-    found.unwrap_or_else(|| panic!("no {tool} on PATH {path:?}"))
-}
-
 /// Each variable back to the value it had, or unset again. The caller holds `ENV`.
 fn put_back(old: &[(&'static str, Option<String>)]) {
     for (k, v) in old {
@@ -95,10 +84,10 @@ impl Rig {
         write_exec(&dir.join("bin/ps"), "#!/bin/sh\nexit 1\n");
         write_exec(&dir.join("bin/git"), "#!/bin/sh\nexit 1\n");
         // `exec $HOME/bin/sleep`: argv[0] keeps the rig's dir, so Drop can still verify the stub
-        let path = std::env::var("PATH").unwrap_or_default();
-        for t in TOOLS {
-            std::os::unix::fs::symlink(tool(t, &path), dir.join("bin").join(t)).unwrap();
-        }
+        let real = ["/usr/bin/sleep", "/bin/sleep"]
+            .into_iter()
+            .find(|p| std::path::Path::new(p).exists());
+        std::os::unix::fs::symlink(real.unwrap_or("/bin/sleep"), dir.join("bin/sleep")).unwrap();
         write_exec(&dir.join("bin/claude"), &format!("#!/bin/sh\necho 1 >> {d}/forks\n{claude_body}\n"));
         let root = dir.join("proc");
         std::fs::create_dir_all(root.join("self/task")).unwrap();
@@ -107,8 +96,9 @@ impl Rig {
         std::fs::write(root.join("100/comm"), "claude\n").unwrap();
         std::fs::write(root.join("100/stat"), stat("5")).unwrap();
         set_background(board);
+        let path = std::env::var("PATH").unwrap_or_default();
         let vars = [
-            ("PATH", format!("{d}/bin")),
+            ("PATH", format!("{d}/bin:{path}")),
             ("COCKPIT_TMUX", format!("{d}/bin/tmux")),
             ("COCKPIT_PROC_DIR", format!("{d}/proc")),
             ("HOME", d),
@@ -189,15 +179,16 @@ fn stub_of(pid: i32, dir: &std::path::Path) -> bool {
 fn give_up(dir: &Path, bound: std::time::Duration) -> ! {
     use std::io::Write;
     let me = std::thread::current();
+    let (test, n) = (me.name().unwrap_or("the test that ran last"), lookups());
+    let how = if std::thread::panicking() { ", while it was panicking" } else { "" };
     let msg = format!(
-        "\nthe agents rig {} gave up: {} lookup thread(s) still running {bound:?} after its \
-         drop began (test thread {:?}{}).\nPATH and HOME stay the rig's: put back, they would \
-         let that lookup start the real `claude` (#969). Aborting this test binary. The rig's \
-         dir is left behind.\n",
+        "\nThe agents test rig stopped this test binary. This is the rig's guard for issue \
+         #969, not a product crash.\n{n} lookup thread(s) were still running {bound:?} after \
+         the rig of {test} began its drop{how}. Putting PATH and HOME back would let that \
+         lookup start the real `claude`, so they stay the rig's and the run aborts here.\n\
+         What to do: rerun {test} alone, with `cargo test --test agents -- --exact {test}`.\n\
+         The rig's folder was left behind: {}\n",
         dir.display(),
-        lookups(),
-        me.name().unwrap_or("?"),
-        if std::thread::panicking() { ", panicking" } else { "" },
     );
     let _ = std::io::stderr().write_all(msg.as_bytes());
     std::process::abort();
@@ -393,8 +384,8 @@ fn a_drop_whose_lookup_never_ends_aborts_with_the_variables_kept() {
     use std::os::unix::process::ExitStatusExt;
     assert_eq!(out.status.signal(), Some(libc::SIGABRT), "{:?}", out.status);
     let err = String::from_utf8_lossy(&out.stderr);
-    let said = format!("{} gave up: 1 lookup thread(s) still running 200ms", rig.display());
-    assert!(err.contains(&said), "{err}");
+    let said = ["not a product crash", "rerun hung_lookup_child alone", &rig.display().to_string()];
+    assert!(said.iter().all(|s| err.contains(s)), "{err}");
     assert_eq!(seen, (true, true, false), "(rig dir left, dev dir left, no outside claude)");
 }
 
