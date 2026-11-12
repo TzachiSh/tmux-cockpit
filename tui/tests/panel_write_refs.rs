@@ -324,7 +324,7 @@ fn refs_sent(a: &App) -> String {
     let p = prompt(a);
     let cut = |what: &str| panic!("no {what}: {p}");
     let (before, rest) = p.split_once("<window>").unwrap_or_else(|| cut("window line"));
-    let (window, rest) = rest.split_once("</window>\n\n").unwrap_or_else(|| cut("window line end"));
+    let (window, rest) = rest.split_once("</window>\n\n").unwrap_or_else(|| cut("window end"));
     let (refs, after) = rest.rsplit_once("<request>").unwrap_or_else(|| cut("request"));
     let shown = format!("claude · claude · {}", esc(&a.cap.path));
     assert_eq!((before, window, after), (BEFORE, shown.as_str(), AFTER), "{p}");
