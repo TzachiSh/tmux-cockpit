@@ -87,7 +87,10 @@ flag_pane() {
     review=${cur%%"$sep"*};  cur=${cur#*"$sep"}
     title_cur=${cur%%"$sep"*}; sid_cur=${cur#*"$sep"}
 
-    if "$here/tmux-review" --delta "$pane" >/dev/null 2>&1; then want=pending; else want=""; fi
+    # 2: the diff could not be read (#944). Then the mark stays as it is: a refusal is
+    # neither a change to review nor a clean tree.
+    "$here/tmux-review" --delta "$pane" >/dev/null 2>&1
+    case $? in 0) want=pending ;; 2) want=$review ;; *) want="" ;; esac
     if [ "$review" != "$want" ]; then
         if [ -n "$want" ]; then tmux set-option -p -t "$pane" @cockpit_review pending 2>/dev/null
         else                    tmux set-option -pu -t "$pane" @cockpit_review 2>/dev/null; fi

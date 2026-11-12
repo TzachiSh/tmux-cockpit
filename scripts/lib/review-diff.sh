@@ -270,21 +270,30 @@ tree_diff() {
         done < <(big_list "$dir" "$base")
         [ "${#ex[@]}" -gt 0 ] && ex=(-- "${ex[@]}") ;;
     esac
+    # git diff exits 0 with or without changes: any other status is a diff that failed (a
+    # blob it cannot read), which must not read as a clean tree (#944).
+    local drc=0
     if [ -n "$br" ]; then
         # core.quotePath=false, as tui/src/data/gitsafe.rs's diff: literal non-ASCII
         # paths. The nonascii and untracked rows in tests/run.sh pin it.
         GIT_INDEX_FILE=$idx git -C "$dir" --no-optional-locks -c core.quotePath=false \
-            diff --no-color --no-ext-diff --ignore-submodules=dirty "$base" "$@" "${ex[@]+"${ex[@]}"}" 2>/dev/null
+            diff --no-color --no-ext-diff --ignore-submodules=dirty "$base" "$@" \
+            "${ex[@]+"${ex[@]}"}" 2>/dev/null || drc=$?
     else
         local out
-        out=$(GIT_INDEX_FILE=$idx git -C "$dir" --no-optional-locks -c core.quotePath=false diff --no-color --no-ext-diff --ignore-submodules=dirty "$@" "${ex[@]+"${ex[@]}"}" 2>/dev/null)
-        [ -n "$out" ] || out=$(GIT_INDEX_FILE=$idx git -C "$dir" --no-optional-locks -c core.quotePath=false diff --no-color --no-ext-diff --ignore-submodules=dirty --cached "$@" "${ex[@]+"${ex[@]}"}" 2>/dev/null)
+        local -a dg=(git -C "$dir" --no-optional-locks -c core.quotePath=false
+            diff --no-color --no-ext-diff --ignore-submodules=dirty)
+        out=$(GIT_INDEX_FILE=$idx "${dg[@]}" "$@" "${ex[@]+"${ex[@]}"}" 2>/dev/null) || drc=$?
+        [ -n "$out" ] || [ "$drc" -ne 0 ] \
+            || out=$(GIT_INDEX_FILE=$idx "${dg[@]}" --cached "$@" "${ex[@]+"${ex[@]}"}" \
+                2>/dev/null) || drc=$?
         printf '%s\n' "$out"
     fi
     # The binary-file numstat row git would have printed: without it a tree whose
     # only change is a big file reads clean to --delta.
     [ "${#bigp[@]}" -eq 0 ] || case " $* " in *' --numstat '*) printf -- '-\t-\t%s\n' "${bigp[@]}" ;; esac
     scratch_done
+    [ "$drc" -eq 0 ]
 }
 
 # tree_diff's and approve's way out, on every path: the temp dir gone, the
@@ -395,7 +404,9 @@ next_base() {                 # <dir> <current-mode>
 }
 
 # Exit 0 when PANE's tree differs from its review base -- the Stop hook's
-# question. Reads the mode the pane's own review chose with b, if any.
+# question -- 1 when it does not, and 2 when that cannot be told: a tree_diff that fails
+# prints nothing too, and is no clean tree (#944). Reads the mode the pane's own review
+# chose with b, if any.
 delta_mode() {                # <pane>
     local pane=$1 dir root sess mode
     dir=$(pane_workdir "$pane")
@@ -405,7 +416,9 @@ delta_mode() {                # <pane>
     sess=$(session_dir "$pane" "$root")
     mode=$(cat -- "$sess/comments.md.base" 2>/dev/null)
     export COCKPIT_REVIEW_BASE=${mode:-auto}
-    [ -n "$(tree_diff "$root" --numstat)" ]
+    local out
+    out=$(tree_diff "$root" --numstat) || return 2
+    [ -n "$out" ]
 }
 
 # --- approve -------------------------------------------------------------------
