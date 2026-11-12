@@ -1,6 +1,7 @@
 //! FIELDS against a real tmux server on a private socket (#313): the options the hooks write
 //! come back as `Pane.subs_n` and `Pane.subs`. `subs_fields.rs` pins the parser on canned
 //! rows; this pins the format string. Its own binary: `list_panes` reads the env.
+mod fake;
 use cockpit_tui::data::list_panes;
 use std::path::PathBuf;
 use std::process::Command;
@@ -53,13 +54,18 @@ fn the_hook_options_reach_the_pane_through_the_format() {
     for (k, v) in [("@panestate", "running"), ("@cockpit_subs", "3"), ("@cockpit_transcript", &t)] {
         s.tmux(&["set-option", "-p", "-t", &p, k, v]);
     }
+    // The pane has no session, so `list_panes` looks one up: `claude agents --json`,
+    // found by PATH. The rig's own answers it; `tmux` still comes from the rest (#972).
+    let path = fake::rig_path(&dir.join("bin"));
     // SAFETY: this test binary holds exactly one test, so nothing runs beside it.
     unsafe {
+        std::env::set_var("PATH", path);
         std::env::set_var("COCKPIT_TMUX", format!("tmux -L {}", s.sock));
         std::env::set_var("HOME", &d);
         std::env::remove_var("CLAUDE_CONFIG_DIR");
         std::env::set_var("COCKPIT_READONLY", "1");
     }
+    fake::assert_claude_is_the_rigs(&dir);
     let ps = list_panes().unwrap();
     let got: Vec<(u32, Vec<String>)> = ps
         .iter()
