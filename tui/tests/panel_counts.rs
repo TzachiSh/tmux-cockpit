@@ -3,9 +3,10 @@
 //! split by a direction control as a screen secret, never one "more in the
 //! conversation". Busy takes its split from the envelope it sent. Every value
 //! here is made up.
-use cockpit_tui::panel::app::{App, Tile, View};
+use cockpit_tui::panel::app::{App, SentHidden, Tile, View};
 use cockpit_tui::panel::ask;
 use cockpit_tui::panel::capture::Capture;
+use cockpit_tui::panel::envelope::{Flow, OutType, build_parts};
 use cockpit_tui::panel::view::render;
 use cockpit_tui::theme::Theme;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -90,6 +91,17 @@ fn start(a: &mut App, row: &str) {
 
 const FLOWS: [(&str, &str); 3] = [("write", "write (auto)"), ("fix", "fix spelling"), ("explain", "explain")];
 
+fn flow(row: &str) -> Flow {
+    match row {
+        "write" => Flow::Write {
+            draft: "x".into(),
+            out: OutType::Auto,
+        },
+        "fix" => Flow::Fix { draft: "x".into() },
+        _ => Flow::Explain,
+    }
+}
+
 // --------------------------------------------------------------------- Home
 
 #[test]
@@ -132,6 +144,34 @@ fn busy_shows_a_split_key_on_the_screen_under_the_screen() {
     }
 }
 
+#[test]
+fn busy_counts_a_split_key_on_the_screen_under_the_screen() {
+    let want = SentHidden {
+        screen: 1,
+        repo: 0,
+        talk: 0,
+    };
+    for (row, _) in FLOWS {
+        let mut a = app(cap(SPLIT, "w", "/h"));
+        start(&mut a, row);
+        assert_eq!(a.sent_hidden(), want, "{row}");
+    }
+}
+
+#[test]
+fn busy_counts_a_glued_key_on_the_screen_under_the_screen() {
+    let want = SentHidden {
+        screen: 1,
+        repo: 0,
+        talk: 0,
+    };
+    for (row, _) in FLOWS {
+        let mut a = app(cap(GLUED, "w", "/h"));
+        start(&mut a, row);
+        assert_eq!(a.sent_hidden(), want, "{row}");
+    }
+}
+
 /// The repo block is redacted with the same call: a split key there is the
 /// block's, not the conversation's.
 #[test]
@@ -142,6 +182,49 @@ fn busy_shows_a_split_key_in_the_repo_block_under_the_repo_block() {
     start(&mut a, "write");
     let f = frame(&a);
     assert!(f.contains("sent: screen 1 lines, 0 hidden, 1 in the repo block · write"), "{f}");
+}
+
+/// Every source at once: the screen's plain, split and glued keys, a split
+/// key in the name, a key in the path (a write's alone) and one in the repo
+/// block (a write's alone). Each flow's count is the envelope's own split.
+#[test]
+fn busy_counts_match_the_envelopes_split_per_flow() {
+    let screen = format!("{PLAIN}\n{SPLIT}\n{GLUED}");
+    let mut c = cap(&screen, "w-sk-ant-MADEUP\u{202E}FAKEFAKE00", "/u/ghp_MADEUPFAKEFAKEFAKEFAKE00");
+    c.repo = "log:\n  abc1234 sk-ant-MADEUP\u{202E}FAKEFAKE00".into();
+    for (row, want) in [("write", (5, 1)), ("fix", (4, 0)), ("explain", (4, 0))] {
+        let mut a = app(c.clone());
+        start(&mut a, row);
+        let r = a.run.as_ref().unwrap();
+        let e = build_parts(&flow(row), &c, &r.turns, 0);
+        let got = a.sent_hidden();
+        assert_eq!((got.screen, got.repo), want, "{row}");
+        assert_eq!(
+            (got.screen, got.repo, got.talk),
+            (e.screen_hidden, e.repo_hidden, e.turns_hidden),
+            "{row}"
+        );
+    }
+}
+
+/// Pinned: a plain key on the screen, in the name and in the path count as
+/// #963 left them.
+#[test]
+fn busy_counts_an_ordinary_screen_name_and_path_as_before() {
+    let c = cap(PLAIN, "deploy-sk-ant-MADEUPFAKEFAKE00", "/u/ghp_MADEUPFAKEFAKEFAKEFAKE00");
+    for (row, want) in [("write", 3), ("fix", 2), ("explain", 2)] {
+        let mut a = app(c.clone());
+        start(&mut a, row);
+        assert_eq!(
+            a.sent_hidden(),
+            SentHidden {
+                screen: want,
+                repo: 0,
+                talk: 0
+            },
+            "{row}"
+        );
+    }
 }
 
 // ---------------------------------------------------------------- an Ask

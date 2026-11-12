@@ -2,10 +2,9 @@
 //! terminal here, so every transition is a unit test away.
 use super::action::{Hidden, hide_body, sanitize, state_body};
 use super::capture::{Capture, REPO_BUDGET, SSH_LIKE, Session, is_local, session_state, toplevel, window_kind};
-use super::envelope::{Flow, OutType, RefItem, Role, Turn, build_refs, ref_items};
+use super::envelope::{Envelope, Flow, OutType, RefItem, Role, Turn, build_refs, redact_screen, ref_items};
 use super::parse::{self, Opt, Query, Reply, Step};
 use super::prompts::{self, Ctx};
-use super::redact::{redact, redact_clean};
 use super::request::{Call, Fail, Profile, Request, read_dir_ok};
 use super::route::{Route, route};
 use super::view::{TABLET_MIN_H, TABLET_MIN_W};
@@ -263,9 +262,11 @@ pub struct App {
     pub req: Option<Request>,
     pub started: Option<Instant>,
     /// Secrets the last call's envelope hid (screen and turns), and the screen's
-    /// alone, its window's name included.
+    /// alone, its window's name included, counted by the envelope's own call.
     pub hidden: usize,
     pub screen_hidden: usize,
+    /// The last call's envelope's count, split by where each secret was (#964).
+    sent: SentHidden,
     /// The call's limit, from [`Call`] at launch; zero until a call goes out.
     pub timeout: Duration,
     pub busy_back: Option<View>,
@@ -327,10 +328,19 @@ pub struct App {
     guard: u64,
 }
 
+/// The secrets a call's envelope hid, by where they were: the screen with its
+/// window, the repo block (a write's alone), and the conversation.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SentHidden {
+    pub screen: usize,
+    pub repo: usize,
+    pub talk: usize,
+}
+
 impl App {
     pub fn new(pane: &str, cap: Capture) -> App {
-        // the window's name labels every screen sent, and the envelope counts it there (#937)
-        let screen_hidden = redact(&cap.screen).1 + redact_clean(&cap.name).1;
+        // the envelope's own call (#964); the window's name labels every screen sent (#937)
+        let screen_hidden = redact_screen(&cap).2;
         let local = is_local(&cap.cmd);
         App {
             pane: pane.into(),
@@ -350,6 +360,7 @@ impl App {
             started: None,
             hidden: 0,
             screen_hidden,
+            sent: SentHidden::default(),
             timeout: Duration::ZERO,
             busy_back: None,
             note: None,
@@ -1123,14 +1134,33 @@ impl App {
         self.view = View::Busy;
         self.pending = true;
         self.note = None;
-        self.hidden = self.run.as_ref().map_or(0, |r| self.envelope(r).1);
+        let e = self.run.as_ref().map(|r| self.envelope(r));
+        self.hidden = e.as_ref().map_or(0, Envelope::hidden);
+        self.sent = e.map_or_else(SentHidden::default, |e| SentHidden {
+            screen: e.screen_hidden,
+            repo: e.repo_hidden,
+            talk: e.turns_hidden,
+        });
     }
 
-    fn envelope(&self, r: &Run) -> (String, usize) {
+    /// What Busy says the call hid, split as the envelope counted it (#964): a
+    /// key split by a direction control is the screen's or the repo block's,
+    /// never the conversation's. An Ask sends no screen; its line keeps the
+    /// count it had, the screen as Home counts it and the rest as talk (#965).
+    pub fn sent_hidden(&self) -> SentHidden {
+        match self.run.as_ref().map(|r| &r.flow) {
+            Some(Flow::Ask(_)) => SentHidden {
+                screen: self.screen_hidden,
+                repo: 0,
+                talk: self.hidden.saturating_sub(self.screen_hidden),
+            },
+            _ => self.sent,
+        }
+    }
+
+    fn envelope(&self, r: &Run) -> Envelope {
         let refs = self.write_refs(&r.flow);
-        let e = build_refs(&r.flow, &self.cap, &r.turns, r.max.saturating_sub(r.rounds), &refs);
-        let n = e.hidden();
-        (e.text, n)
+        build_refs(&r.flow, &self.cap, &r.turns, r.max.saturating_sub(r.rounds), &refs)
     }
 
     /// The basket's refs as a Write names them (#365 child 5): as the pane's
@@ -1208,7 +1238,7 @@ impl App {
             Flow::Explain => noted(prompts::explain_noted()),
             Flow::Ask(_) => noted(prompts::ask_code_noted()),
         };
-        Some(((system, self.envelope(r).0, r.model.clone()), note, hash))
+        Some(((system, self.envelope(r).text, r.model.clone()), note, hash))
     }
 
     /// Forks the pending call, if there is one.
