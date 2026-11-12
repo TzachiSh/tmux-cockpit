@@ -253,3 +253,12 @@ fn need_from_you_is_a_whole_prefix_not_the_start_of_a_longer_word() {
     assert_eq!(f.steps[0].notes, vec!["NEED FROM YOUR call is wanted".to_string()]);
     assert_eq!(f.need, vec!["pick one".to_string()]);
 }
+
+#[test]
+fn goldens_wide_graphemes_at_60_and_100() {
+    // CJK names and labels, an emoji ZWJ sequence, a flag: each lifeline must
+    // keep its column on every row, which the final cut to the width can hide.
+    for w in [60, 100] {
+        golden(&format!("flow-wide-{w}"), &drawn(WIDE, w));
+    }
+}
