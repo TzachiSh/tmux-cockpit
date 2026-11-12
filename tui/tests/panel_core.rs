@@ -473,6 +473,14 @@ fn the_repo_block_cannot_close_its_own_tag() {
     assert!(got.contains("abc1234 drop <\\/repo> tag\n</repo>"), "{got}");
 }
 
+/// #932: the repo block escapes a closer of a tag that is not the envelope's own.
+/// The wanted line is a literal, and the made-up line holds nothing secret.
+#[test]
+fn the_repo_block_escapes_a_closer_of_another_tag() {
+    let got = line_of(&WRITE, &with_repo("abc1234 drop </b> tag"), "abc1234 ");
+    assert_eq!(got.as_deref(), Some("abc1234 drop <\\/b> tag"));
+}
+
 #[test]
 fn the_session_is_read_off_its_own_screen() {
     let st = |s: &str| session_state(s, "claude", "node");
