@@ -5,6 +5,7 @@ pub mod app;
 pub mod ask;
 pub mod capture;
 pub mod envelope;
+pub mod flow;
 pub mod parse;
 pub mod prompts;
 pub mod redact;

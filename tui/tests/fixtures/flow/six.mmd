@@ -1,0 +1,16 @@
+sequenceDiagram
+  autonumber
+  participant O as owner
+  participant L as lead
+  participant A as agent
+  participant R as reviewer
+  participant C as CI
+  participant G as GitHub
+  O->>L: brief
+  L->>A: task
+  A->>G: push
+  G->>C: suite
+  C-->>R: green
+  R-->>L: VERDICT
+  L-->>O: merge?
+  Note over O,G: NEED FROM YOU: approve merge
