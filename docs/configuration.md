@@ -71,3 +71,9 @@ some installs of Claude Code show, as an agent on their own, among them the boar
 (and its resume key), the info screen, the panel, the background-job poller and the
 work dir. Others, such as the status bar, jump, review delivery and the sessions
 screen, follow only the names.
+
+A process name that holds glob characters (`*`, `?`, `[...]`) is a pattern to the
+shell places and plain text to the board's own list, so such names are unsupported.
+A process titled `*` or `c*` counts as an agent at every shell place, among them the
+status bar, jump, review delivery, the background-job poller, the work dir and the
+board's resume key, but not in the board's own list (#880).

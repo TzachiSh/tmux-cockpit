@@ -759,9 +759,12 @@ fn is_agent_cmd(cmd: &str) -> bool {
     AGENT_GLOB.with(|g| glob_has(g, cmd))
 }
 
-/// Whether `cmd` is an entry of `glob`, a `|a|b|` list, in any case (#508). The test
-/// tmux's `#{m/i:*|cmd|*,glob}` makes: `|cmd|` inside the glob, both sides folded, so
-/// an entry `Cursor` is the command `cursor` and a glob with no closing bar has no entry.
+/// Whether `cmd` is an entry of `glob`, a `|a|b|` list, in any case (#508). For a `cmd`
+/// with no glob characters this is the test tmux's `#{m/i:*|cmd|*,glob}` makes: `|cmd|`
+/// inside the glob, both sides folded, so an entry `Cursor` is the command `cursor` and
+/// a glob with no closing bar has no entry. tmux's m/i reads a `*`, `?` or `[` in `cmd`
+/// as a pattern, so a process titled `*` matches there. The board matches `cmd`
+/// literally by design (#880).
 fn glob_has(glob: &str, cmd: &str) -> bool {
     !cmd.is_empty() && glob.to_lowercase().contains(&format!("|{}|", cmd.to_lowercase()))
 }
