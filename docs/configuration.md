@@ -74,5 +74,6 @@ screen, follow only the names.
 
 A process name that holds glob characters (`*`, `?`, `[...]`) is a pattern to the
 shell places and plain text to the board, so such names are unsupported. A process
-titled `*` or `c*` counts as an agent in the status bar and jump but not on the
-board (#880).
+titled `*` or `c*` counts as an agent at every shell place, among them the status
+bar, jump, review delivery, the background-job poller, the work dir and the board's
+resume key, but not in the board's own list (#880).
