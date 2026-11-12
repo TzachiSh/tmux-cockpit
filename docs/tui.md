@@ -57,6 +57,12 @@ naming nothing, on the `rust-version` toolchain through rustup (CI's, so the
 lints match); `make tui-test TUI_TOOLCHAIN=` skips that.
 `make tui-test-clean` runs it in a private TMPDIR and TMUX_TMPDIR and fails,
 naming them, on any file, dir or socket a test left there (#400).
+The tests need a `TMPDIR` whose path holds no space, quote or glob character
+(#911). They point `COCKPIT_TMUX` at a stub under it, and that value is split
+on whitespace. They build their projects under it, and the panel refuses a
+read dir whose path holds a glob character. Some stubs write the path into a
+shell script unquoted. Under a `TMPDIR` with a space or a glob character many
+unrelated tests fail, and under one with a quote a few do.
 
 The binary lives in the plugin's own `bin/` and is gitignored. `install.sh`
 runs `scripts/tui-fetch --required` and exits 1 when no working binary is
@@ -1293,8 +1299,9 @@ folder, then writing`, and tablet mode has an `[ explore ]` button.
   may be a shell on another machine: its command is not in `LOCAL_CMDS` and not
   an agent name (`capture::is_local`, #433's rule). It is also refused when tmux
   gives no folder, and for a folder `request::read_dir_ok` refuses, run on
-  that repo root, with its words: `/`, the home folder or one above it, or a name that is empty, not
-  UTF-8, or holds a control, bidi or glob character. A shell in `~`, or in a
+  that repo root, with its words: `/`, the home folder or one above it, or a
+  path that is empty, not UTF-8, or holds a control, bidi or glob character
+  anywhere in it, a parent folder's name included. A shell in `~`, or in a
   folder of a home that is itself a repo, cannot explore: `cd` into a project
   of its own first. The rule reads the command captured when the panel opened:
   `profile_for` checks it again at each call, so a toggle restored from a hidden
@@ -2327,8 +2334,11 @@ tell the two quiet answers apart: `[]` with exit 0 is "no agents", exit 1 is
   so a user's `defaultMode` cannot approve the rest. No Read, Grep or Glob allow
   rule is passed (a bare Grep or Glob one approved outside reads). One check,
   `request::read_dir_ok`, refuses a read dir that is `/`, home or above it, or
-  whose name is empty, not UTF-8, or holds a control, bidi or glob character;
-  a caller runs it to refuse up front. The secret denies stay as a second wall.
+  whose path is empty, not UTF-8, or holds a control, bidi or glob character.
+  It reads the whole path as one string, so a parent folder's name counts as
+  the folder's own does (#911), and the glob characters are `*`, `?`, `[`,
+  `]`, `{`, `}` and a backslash. A caller runs it to refuse up front. The
+  secret denies stay as a second wall.
   Every panel call loads no setting source (`--setting-sources ""`, #623), so a
   user's or a repo's `settings.json` adds no allow rule, `additionalDirectories`
   entry, hook or `env`; only managed settings, which sit above every source,
