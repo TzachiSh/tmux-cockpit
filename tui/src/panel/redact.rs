@@ -25,15 +25,30 @@ pub fn redact(text: &str) -> (String, usize) {
 /// cleaned (`action::sanitize`), then that again. Neither pass alone is enough.
 /// A direction control inside a key cuts it into runs too short to match, and
 /// only the cleaned text joins them; one between a word and a key is the
-/// boundary the matchers need, and only the raw text has it. A key both glued
-/// and split by such controls is missed by both passes. The count is the first
-/// pass's and the markers the second adds, so a key the first hid, matched
-/// again as `token=[hidden]`, is not counted twice.
+/// boundary the matchers need, and only the raw text has it. A key split after
+/// its first run already matched has its head hidden by the first pass; the
+/// cleaning joins the marker to the tail, which [`absorb`] then hides. A key
+/// both glued and split by such controls is missed by both passes. The count is
+/// the first pass's and the markers the second adds, so a key the first hid,
+/// matched again as `token=[hidden]`, is not counted twice.
 pub fn redact_clean(text: &str) -> (String, usize) {
     let (raw, n) = redact(text);
-    let (clean, _) = redact(&super::action::sanitize(&raw));
+    let (clean, _) = redact(&absorb(&super::action::sanitize(&raw)));
     let added = added(&raw, &clean);
     (clean, n + added)
+}
+
+/// Each [`HIDDEN`] marker with the key characters joined to it dropped: after
+/// the cleaning they are the tail of the key it hid. A blank or other character
+/// ends them, so the text after a hidden value stays.
+fn absorb(s: &str) -> String {
+    let (mut out, mut rest) = (String::with_capacity(s.len()), s);
+    while let Some(k) = rest.find(HIDDEN) {
+        let end = k + HIDDEN.len();
+        out.push_str(&rest[..end]);
+        rest = &rest[end + run(rest, end, tok)..];
+    }
+    out + rest
 }
 
 /// The [`HIDDEN`] markers `after` has over `before`.

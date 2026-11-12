@@ -219,11 +219,42 @@ fn a_key_glued_to_a_word_by_a_direction_control_is_hidden_in_an_asks_code() {
     assert_eq!((a.code.as_str(), a.hidden), ("1 let k = x[hidden];", 1));
 }
 
+/// Made-up keys split after the matcher's minimum run: the raw pass hides the
+/// head, the cleaning glues `[hidden]` to the tail, and the tail has no prefix.
+const LATE: [(&str, &str); 2] = [
+    ("sk-ant-MADEUPMADEUP\u{202E}FAKEFAKE00", "sk-ant-"),
+    ("ghp_MADEUPMADEUPMADEUPMADE\u{2066}FAKEFAKE00", "ghp_"),
+];
+
+#[test]
+fn a_key_split_after_its_minimum_run_is_hidden_whole_in_every_redacted_section() {
+    let mut sent = vec![];
+    for (value, row) in LATE {
+        let leaked = redacted_sections(value).into_iter().filter(|(_, env)| env.contains("FAKEFAKE00"));
+        sent.extend(leaked.map(|(section, _)| format!("{row} {section}")));
+    }
+    assert_eq!(sent, Vec::<String>::new());
+    for (value, row) in LATE {
+        let env = build(&write("x"), &screen(value), &[], 3);
+        assert_eq!(body(&env, "<screen", "</screen>"), "[hidden]", "{row}");
+    }
+}
+
+/// The marker takes only the key characters glued to it: a word after a blank
+/// stays, in the second pass too.
+#[test]
+fn text_after_a_hidden_value_stays() {
+    for s in ["password=MADEUPVALUE next word", "password=MADEUPVALUE next\u{202E} word"] {
+        let env = build(&write("x"), &screen(s), &[], 3);
+        assert_eq!(body(&env, "<screen", "</screen>"), "password=[hidden] next word", "{s:?}");
+    }
+}
+
 /// One key is one hidden, whichever pass caught it: the second pass matching
 /// `password=[hidden]` again is no new key.
 #[test]
 fn a_key_counts_once_whichever_pass_hides_it() {
-    for value in ["password=MADEUPVALUE", SPLIT, GLUED[0].0] {
+    for value in ["password=MADEUPVALUE", SPLIT, GLUED[0].0, LATE[0].0] {
         assert_eq!(build_parts(&write("x"), &screen(value), &[], 3).screen_hidden, 1, "{value:?}");
     }
 }

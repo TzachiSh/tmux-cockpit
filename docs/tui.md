@@ -1186,8 +1186,11 @@ is.
   never sent. Redaction runs on the line before and after the cleaning
   (`redact::redact_clean`): a direction control inside a key cuts it into runs
   too short to match, and one between a word and a key is the boundary the
-  match needs. A key both glued and split that way is missed. A file name with
-  a control or bidi character is refused.
+  match needs. A key cut after its first run already matched is hidden whole
+  too: the marker the first pass left takes the key characters the cleaning
+  joins to it. A key that direction controls both join to the word before it
+  and split inside is missed. A file name with a control or bidi character is
+  refused.
 - **The call.** `request::Profile::read_only(repo, research = true)`: Read,
   Grep, Glob, WebSearch, WebFetch and skills, with no hooks and the secret
   paths denied, and no read outside the repo (see the rule on actions above).

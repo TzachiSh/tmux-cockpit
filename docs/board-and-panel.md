@@ -104,8 +104,10 @@ U+200E, U+200F, U+202A to U+202E, U+2066 to U+2069) and the line and paragraph
 separators U+2028 and U+2029 (#936). They reorder or break what Claude reads
 and nothing shows them. Newlines and tabs stay, a Windows line end becomes a
 newline, and right-to-left letters such as Hebrew or Arabic stay. Secrets are
-looked for both before and after this cleaning: a key split by a direction
-control is still hidden, and so is one that a control sets right after a word.
+looked for both before and after this cleaning, so a key with a direction
+control inside it is hidden whole, and so is a key that a direction control
+joins to the word before it. A key that direction controls both join to the
+word before it and split inside is missed.
 
 `prefix + f` opens the panel on the pane you are in, and `f` on a board tile
 opens it on that tile's pane. The key replaces stock `find-window`:
