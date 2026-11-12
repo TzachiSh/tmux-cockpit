@@ -218,3 +218,12 @@ fn a_batch_with_no_questions_left_is_told_once_to_write() {
         a.view
     );
 }
+
+#[test]
+fn a_result_after_a_guess_leaves_no_batch_questions_queued() {
+    let mut a = replied(&batch(&[1, 2, 3]));
+    ch(&mut a, 'g');
+    a.reply(Ok("<prompt>Do it.</prompt>".into()));
+    assert!(matches!(a.view, View::Result { .. }), "{:?}", a.view);
+    assert_eq!(a.run.as_ref().unwrap().ahead, vec![], "the guess answered them");
+}

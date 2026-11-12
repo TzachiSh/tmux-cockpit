@@ -1371,6 +1371,13 @@ impl App {
             },
             r => r,
         };
+        // a guess answered the batch's later questions: once a reply other than a
+        // question lands, none are left to ask, and a hide must not keep them
+        if !matches!(reply, Reply::Question { .. } | Reply::Batch(_) | Reply::Unsupported(_))
+            && let Some(r) = self.run.as_mut()
+        {
+            r.ahead.clear();
+        }
         match reply {
             Reply::Question { text, options } if rounds < max => self.ask(vec![Query { text, options }]),
             Reply::Batch(qs) => self.ask(qs),
