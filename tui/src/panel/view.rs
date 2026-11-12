@@ -643,7 +643,10 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
             // Only a write sends the block, and by Busy its envelope has already joined it.
             let writing = app.run.as_ref().is_some_and(|r| matches!(r.flow, Flow::Write { .. }));
             let repo = if writing { super::redact::redact(app.cap.repo.get()).1 } else { 0 };
-            let talk = match app.hidden.saturating_sub(app.screen_hidden + repo) {
+            // a write's <window> line sends the path too, counted with the screen (#937)
+            let path = if writing { super::redact::redact_clean(&app.cap.path).1 } else { 0 };
+            let screen = app.screen_hidden + path;
+            let talk = match app.hidden.saturating_sub(screen + repo) {
                 0 => String::new(),
                 n => format!(", {n} more in the conversation"),
             };
@@ -651,11 +654,8 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
                 0 => talk,
                 n => format!("{talk}, {n} in the repo block"),
             };
-            let sent = format!(
-                "sent: screen {} lines, {} hidden{talk} {d} {flow}",
-                app.screen_lines(),
-                app.screen_hidden
-            );
+            let lines = app.screen_lines();
+            let sent = format!("sent: screen {lines} lines, {screen} hidden{talk} {d} {flow}");
             b.lines.extend(many(&sent, w, "", meta));
             b.lines.extend(many(&format!("model {model}: {why}"), w, "", meta));
             if !app.timeout.is_zero() {
