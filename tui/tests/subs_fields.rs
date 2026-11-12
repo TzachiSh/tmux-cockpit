@@ -70,10 +70,10 @@ fn field_14_is_the_count_and_the_subagents_dir_follows_the_transcript_then_the_s
     );
     write_exec(&dir.join("bin/git"), "#!/bin/sh\nexit 1\n");
     write_exec(&dir.join("bin/ps"), "#!/bin/sh\n");
+    let path = fake::rig_path(&dir.join("bin"));
     // SAFETY: this test binary holds exactly one test, so nothing runs beside it.
     unsafe {
-        let path = std::env::var("PATH").unwrap_or_default();
-        std::env::set_var("PATH", format!("{d}/bin:{path}"));
+        std::env::set_var("PATH", path);
         std::env::set_var("COCKPIT_TMUX", format!("{d}/bin/tmux"));
         std::env::set_var("HOME", &d);
         std::env::remove_var("CLAUDE_CONFIG_DIR");
@@ -81,6 +81,7 @@ fn field_14_is_the_count_and_the_subagents_dir_follows_the_transcript_then_the_s
         // #505: no proc under it, so the walk asks the fake ps, not the live pid of the same number
         std::env::set_var("COCKPIT_PROC_DIR", format!("{d}/proc"));
     }
+    fake::assert_claude_is_the_rigs(&dir);
 
     let mut ps = list_panes().unwrap();
     ps.sort_by(|a, b| a.id.cmp(&b.id));

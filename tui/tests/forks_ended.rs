@@ -35,15 +35,17 @@ fn two_ticks_on_an_ended_row_fork_ps_once() {
     );
     write_exec(&dir.join("bin/ps"), &format!("#!/bin/sh\necho 1 >> {d}/ps.n\necho '100 1 sleep'\n"));
     write_exec(&dir.join("bin/git"), "#!/bin/sh\nexit 1\n");
+    let path = fake::rig_path(&dir.join("bin"));
     // SAFETY: this test binary holds exactly one test, so nothing runs beside it.
     unsafe {
-        std::env::set_var("PATH", format!("{d}/bin:{}", std::env::var("PATH").unwrap_or_default()));
+        std::env::set_var("PATH", path);
         std::env::set_var("COCKPIT_TMUX", format!("{d}/bin/tmux"));
         std::env::set_var("HOME", &d);
         std::env::set_var("COCKPIT_READONLY", "1");
         // #505: no proc under it, so the walk asks the fake ps, not the live pid of the same number
         std::env::set_var("COCKPIT_PROC_DIR", format!("{d}/proc"));
     }
+    fake::assert_claude_is_the_rigs(&dir);
 
     assert!(list_panes().unwrap()[0].ended, "the first tick reads it ended");
     assert!(list_panes().unwrap()[0].ended, "and the second, off the cache");

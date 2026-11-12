@@ -170,11 +170,19 @@ pub fn passes_in_a_child(test: &str) {
 /// that as no answer, so a lookup goes as it does where claude is not
 /// installed, the state CI runs in. It must never print: a JSON array on its
 /// stdout would be an answer, and the rig's panes would take sessions from it.
+/// Each start appends one line to `claude.started` beside it, so a rig that
+/// looks up can hold that its own `claude` was the one started.
 #[allow(dead_code)]
-const NO_CLAUDE: &str = "#!/bin/sh\nexit 127\n";
+const NO_CLAUDE: &str = "#!/bin/sh\necho x >> \"$0.started\"\nexit 127\n";
+
+/// What a spawn searches when PATH is not set at all: glibc's `_CS_PATH`, as
+/// `getconf PATH` prints it.
+#[allow(dead_code)]
+const DEFAULT_PATH: &str = "/bin:/usr/bin";
 
 /// The PATH for a rig whose folder of fakes is `bin`: `bin`, then the PATH of
-/// this moment. `bin` is made if it is not there and gets a `claude`
+/// this moment, or [`DEFAULT_PATH`] where none is set, so the rig still finds
+/// what a spawn found before it. `bin` is made if it is not there and gets a `claude`
 /// ([`NO_CLAUDE`]) unless the rig put one there already. The product looks
 /// agents up by starting `claude agents --json`, found by PATH, so a rig that
 /// reaches a lookup with no `claude` of its own starts the developer's (#972).
@@ -193,30 +201,46 @@ pub fn rig_path(bin: &Path) -> String {
     }
     match std::env::var("PATH") {
         Ok(old) if !old.is_empty() => format!("{first}:{old}"),
-        // no trailing `:` then: an empty entry is the cwd
-        Ok(_) | Err(std::env::VarError::NotPresent) => first.to_string(),
+        // an empty PATH names the cwd alone, and so would a trailing `:`
+        Ok(_) => first.to_string(),
+        Err(std::env::VarError::NotPresent) => format!("{first}:{DEFAULT_PATH}"),
         Err(e) => panic!("PATH: {e}"),
     }
 }
 
-/// Whether a spawn could start `p`: a file with an exec bit.
+/// Whether a spawn by this user could start `p`: a file the kernel lets it
+/// execute, which a mode without the owner's bit or a noexec mount does not.
 #[allow(dead_code)]
 fn runs(p: &Path) -> bool {
-    std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+    use std::os::unix::ffi::OsStrExt;
+    let Ok(c) = std::ffi::CString::new(p.as_os_str().as_bytes()) else {
+        return false;
+    };
+    // SAFETY: `c` is a NUL-terminated path, and access only reads it.
+    p.is_file() && unsafe { libc::access(c.as_ptr(), libc::X_OK) } == 0
 }
 
 /// The first `claude` a spawn would find on `path`, the value of a PATH: `Ok`
 /// with it when it lies under `dir`, else `Err` with it, or with `None` when
-/// no entry holds one. It walks as execvp does: an empty entry is the cwd, and
-/// a `claude` that is no file or has no exec bit is passed over. It reads and
-/// never runs what it finds, so checking a rig that forgot [`rig_path`] starts
-/// nothing.
+/// no entry holds one. It reads and never runs what it finds, so checking a
+/// rig that forgot [`rig_path`] starts nothing.
+///
+/// The walk follows a spawn's for a rig this module builds, and no further
+/// (#975). An empty entry is the cwd. A `claude` that is no file, or that this
+/// user may not execute (its mode, a noexec mount), is passed over. The one
+/// found is the rig's by where its name leads, not by its spelling: a link in
+/// the rig's bin to a `claude` outside and an entry `<rig>/../out` are not the
+/// rig's. One case is left out: a `claude` whose interpreter is missing. A
+/// spawn passes over it and starts the next one, and this walk stops at it and
+/// says `Ok`. [`write_exec`] with a `#!/bin/sh` body does not make one.
 #[allow(dead_code)]
 pub fn rigs_claude(path: &std::ffi::OsStr, dir: &Path) -> Result<PathBuf, Option<PathBuf>> {
     assert!(dir.is_absolute(), "dir must be absolute: {}", dir.display());
     let cwd = |e: PathBuf| if e.as_os_str().is_empty() { PathBuf::from(".") } else { e };
+    let real = |p: &Path| p.canonicalize().ok();
+    let inside = |p: &Path| real(p).zip(real(dir)).is_some_and(|(p, d)| p.starts_with(d));
     match std::env::split_paths(path).map(|e| cwd(e).join("claude")).find(|p| runs(p)) {
-        Some(found) if found.starts_with(dir) => Ok(found),
+        Some(found) if inside(&found) => Ok(found),
         other => Err(other),
     }
 }
