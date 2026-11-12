@@ -116,7 +116,12 @@ pinned the prompt names `l` for leave. Leaving keeps the comments on disk:
 `cockpit: resumed N pinned comment(s)`. A review opened on a tree that does not
 differ from its base never starts revdiff: it ends with
 `cockpit: no uncommitted changes in <dir>`, and drops any comments pinned for
-that tree.
+that tree. A diff that cannot be read at all (no private temp dir, or a blob git
+cannot read) is not a clean tree: the review ends with
+`cockpit: could not read the diff in <dir>`, keeps the pinned comments, and an
+agent's `tmux-review --request` gets `no review opened` and that reason, status
+1. The Stop hook's ◆ then stays as it was: such a diff neither sets nor clears
+it (#944).
 
 **Big files are counted, not hashed.** To tell whether a file changed at all
 git hashes the whole of it, about 100 ms at 32 MB and 26 s at 1 GB. So when the

@@ -350,6 +350,10 @@ fn ask_in(s: &str) -> Result<super::ask::AskCode, String> {
         shown: pair(o.take("shown")?)?,
     };
     o.done()?;
+    // ask::load_in refuses such a name, so only a forged state file holds one (#936)
+    if crate::pick::clean(&a.path) != a.path {
+        return Err("a control or bidi character in the ask's path".into());
+    }
     Ok(a)
 }
 
