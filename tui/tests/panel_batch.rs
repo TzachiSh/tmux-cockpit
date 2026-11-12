@@ -227,3 +227,30 @@ fn a_result_after_a_guess_leaves_no_batch_questions_queued() {
     assert!(matches!(a.view, View::Result { .. }), "{:?}", a.view);
     assert_eq!(a.run.as_ref().unwrap().ahead, vec![], "the guess answered them");
 }
+
+/// The question on screen, its place and the rounds asked.
+fn state(a: &App) -> (String, (usize, usize), usize) {
+    let r = a.run.as_ref().unwrap();
+    (r.question.clone(), r.place(), r.rounds)
+}
+
+#[test]
+fn an_edit_reply_after_a_guess_keeps_the_batch_for_esc() {
+    let mut a = replied(&batch(&[1, 2, 3]));
+    ch(&mut a, 'g');
+    a.reply(Ok("<edit path=\"p\">x</edit>".into()));
+    assert!(matches!(a.view, View::Error { .. }), "{:?}", a.view);
+    key(&mut a, KeyCode::Esc);
+    assert_eq!(state(&a), ("Q1?".into(), (1, 3), 3));
+}
+
+#[test]
+fn a_question_after_a_guess_keeps_the_batch_when_its_retry_is_cancelled() {
+    let mut a = replied(&batch(&[1, 2, 3]));
+    ch(&mut a, 'g');
+    a.reply(Ok(q(4)));
+    assert_eq!(a.view, View::Busy, "told once to write now");
+    key(&mut a, KeyCode::Esc);
+    assert_eq!(state(&a), ("Q1?".into(), (1, 3), 3));
+    assert_eq!(tail(&a, 1), [turn(Role::Assistant, "Q1? Options: a1 | b1")]);
+}
