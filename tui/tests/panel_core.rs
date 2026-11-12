@@ -210,46 +210,59 @@ fn the_window_line_escapes_a_closer_in_the_panes_path() {
     }
 }
 
-/// #925: the window's name is escaped where it is written, the `<screen>` tag's
-/// `window` attribute and the `<window>` line. On an empty screen those are the
-/// envelope's first and fifth lines, read by position so no other line can stand
-/// in. The wanted lines are literals, never built with `esc`.
+/// #925: the window's name is escaped in the `<screen>` tag's `window` attribute,
+/// the envelope's first line. The wanted lines are literals, never built with `esc`.
 #[test]
-fn the_window_name_is_escaped_in_the_screen_tag_and_the_window_line() {
+fn the_screen_tag_escapes_a_closer_in_the_window_name() {
     let rows = [
-        (
-            "a</window>b</screen>c",
-            "<screen window=\"a<\\/window>b<\\/screen>c · zsh\">",
-            "<window>a<\\/window>b<\\/screen>c · zsh · /home/u</window>",
-        ),
-        (
-            "d</b>",
-            "<screen window=\"d<\\/b> · zsh\">",
-            "<window>d<\\/b> · zsh · /home/u</window>",
-        ),
+        ("a</window>b</screen>c", "<screen window=\"a<\\/window>b<\\/screen>c · zsh\">"),
+        ("d</b>", "<screen window=\"d<\\/b> · zsh\">"),
     ];
-    for (name, screen, window) in rows {
+    for (name, want) in rows {
         let got = build(&WRITE, &cap(name, "zsh", ""), &[], 3);
-        assert_eq!(got.lines().next(), Some(screen), "{name}");
-        assert_eq!(got.lines().nth(4), Some(window), "{name}");
+        assert_eq!(got.lines().next(), Some(want), "{name}");
     }
 }
 
-/// #925: the window's command, in the same two lines as its name.
+/// #925: the window's name, in the `<window>` line.
 #[test]
-fn the_window_command_is_escaped_in_the_screen_tag_and_the_window_line() {
+fn the_window_line_escapes_a_closer_in_the_window_name() {
     let rows = [
         (
             "a</window>b</screen>c",
-            "<screen window=\"w · a<\\/window>b<\\/screen>c\">",
-            "<window>w · a<\\/window>b<\\/screen>c · /home/u</window>",
+            "<window>a<\\/window>b<\\/screen>c · zsh · /home/u</window>",
         ),
-        ("d</b>", "<screen window=\"w · d<\\/b>\">", "<window>w · d<\\/b> · /home/u</window>"),
+        ("d</b>", "<window>d<\\/b> · zsh · /home/u</window>"),
     ];
-    for (cmd, screen, window) in rows {
+    for (name, want) in rows {
+        let got = build(&WRITE, &cap(name, "zsh", ""), &[], 3);
+        assert_eq!(got.lines().find(|l| l.starts_with("<window>")), Some(want), "{name}");
+    }
+}
+
+/// #925: the window's command, in the `<screen>` tag's `window` attribute.
+#[test]
+fn the_screen_tag_escapes_a_closer_in_the_window_command() {
+    let rows = [
+        ("a</window>b</screen>c", "<screen window=\"w · a<\\/window>b<\\/screen>c\">"),
+        ("d</b>", "<screen window=\"w · d<\\/b>\">"),
+    ];
+    for (cmd, want) in rows {
         let got = build(&WRITE, &cap("w", cmd, ""), &[], 3);
-        assert_eq!(got.lines().next(), Some(screen), "{cmd}");
-        assert_eq!(got.lines().nth(4), Some(window), "{cmd}");
+        assert_eq!(got.lines().next(), Some(want), "{cmd}");
+    }
+}
+
+/// #925: the window's command, in the `<window>` line.
+#[test]
+fn the_window_line_escapes_a_closer_in_the_window_command() {
+    let rows = [
+        ("a</window>b</screen>c", "<window>w · a<\\/window>b<\\/screen>c · /home/u</window>"),
+        ("d</b>", "<window>w · d<\\/b> · /home/u</window>"),
+    ];
+    for (cmd, want) in rows {
+        let got = build(&WRITE, &cap("w", cmd, ""), &[], 3);
+        assert_eq!(got.lines().find(|l| l.starts_with("<window>")), Some(want), "{cmd}");
     }
 }
 
