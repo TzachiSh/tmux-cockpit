@@ -284,6 +284,16 @@ fn a_ref_cannot_close_the_tag_or_carry_a_bidi_control() {
     assert_eq!(got.matches("</refs>").count(), 1, "{got}");
 }
 
+/// #932: a ref escapes a closer of a tag that is not the envelope's own. The
+/// wanted line is a literal, and nothing else in the name needs a guard.
+#[test]
+fn a_ref_escapes_a_closer_of_another_tag() {
+    let items = [item("@a</b>.rs", false, false)];
+    let got = build_refs(&write(), &cap(Path::new("/r")), &[], 3, &items).text;
+    let line = got.lines().find(|l| l.starts_with("<ref "));
+    assert_eq!(line, Some("<ref form=\"mention\">@a<\\/b>.rs</ref>"), "{got}");
+}
+
 // ------------------------------------------------------------- the App side
 
 /// A Compose on `repo` with a.rs:1-2 and b.md in the basket, the draft typed.
