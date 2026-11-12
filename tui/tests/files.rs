@@ -195,18 +195,16 @@ fn ignored_rows_are_drawn_dim_and_the_others_are_not() {
     let mut t = Terminal::new(TestBackend::new(60, 16)).unwrap();
     t.draw(|fr| files::draw(fr, fr.area(), &f, &th)).unwrap();
     let buf = t.backend().buffer();
-    let fg = |name: &str| {
-        let y = (0..16)
-            .find(|&y| (0..60).map(|x| buf[(x, y)].symbol()).collect::<String>().contains(name))
-            .unwrap();
-        let x = (0..60)
-            .find(|&x| buf[(x, y)].symbol() == &name[..1] && buf[(x + 1, y)].symbol() == &name[1..2])
-            .unwrap();
-        buf[(x, y)].fg
+    // A list row is its marker column, a space, then its text from column 2. The whole
+    // text must match: the header above shows the temp path, which can hold any name (#567).
+    let fg = |row: &str| {
+        let text = |y: u16| (2..60).map(|x| buf[(x, y)].symbol()).collect::<String>();
+        let y = (0..16).find(|&y| text(y).trim_end() == row);
+        buf[(2, y.unwrap_or_else(|| panic!("no list row is drawn as {row:?}")))].fg
     };
-    assert_eq!(fg("target"), th.faint);
+    assert_eq!(fg("target/"), th.faint);
     assert_ne!(fg("main.rs"), th.faint);
-    assert_ne!(fg("src"), th.faint);
+    assert_ne!(fg("src/"), th.faint);
 }
 
 #[test]
