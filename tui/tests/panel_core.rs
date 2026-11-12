@@ -1,11 +1,15 @@
 //! The pure halves of the panel: redaction, the envelope, routing, examples and
-//! the session sniff. Nothing here sets the environment; panel_env.rs does.
+//! the session sniff. No test here sets a variable of its own; panel_env.rs
+//! does. The binary takes one fixed environment instead (#957).
+#[allow(dead_code)] // for its fixed environment only, not write_exec
+mod fake;
+
 use cockpit_tui::panel::ask::AskCode;
 use cockpit_tui::panel::capture::{Capture, Session, session_state, window_kind};
 use cockpit_tui::panel::envelope::{Flow, OutType, Role, Turn, build, build_counted, build_parts, esc, unesc};
 use cockpit_tui::panel::prompts::{Ctx, WRITE_EXAMPLES, examples, render};
 use cockpit_tui::panel::redact::redact;
-use cockpit_tui::panel::route::{Route, model_argv, route};
+use cockpit_tui::panel::route::{Route, model_argv};
 
 fn hid(s: &str) -> String {
     redact(s).0
@@ -498,6 +502,29 @@ fn the_session_is_read_off_its_own_screen() {
     assert_eq!(window_kind("x", "vim"), "other");
 }
 
+/// The product's `route`, under the binary's one environment (#957): an
+/// exported COCKPIT_PANEL_MODEL beats every choice a test here compares.
+fn route(flow: &Flow, choice: &str) -> Route {
+    fake::fixed_env();
+    cockpit_tui::panel::route::route(flow, choice)
+}
+
+/// Once a route is asked for, the binary runs under the fixed environment (#957).
+/// It asks for one itself, so it holds when run first or alone.
+#[test]
+fn a_route_is_read_under_the_fixed_environment() {
+    let _ = route(&Flow::Explain, "auto");
+    fake::assert_fixed_env();
+}
+
+/// The test above in a process started with all three variables set. On a box
+/// that sets none of them, CI included, a COCKPIT_PANEL_MODEL left in place
+/// would pass that test: here it does not (#957).
+#[test]
+fn the_fixed_environment_replaces_values_already_set() {
+    fake::fixed_env_in_a_child("a_route_is_read_under_the_fixed_environment");
+}
+
 fn r(model: &str, why: &str, suggest: Option<(&str, &str)>) -> Route {
     Route {
         model: model.into(),
@@ -683,8 +710,11 @@ fn a_bare_ref_picks_the_bare_ref_example_first() {
     assert!(hint.contains(&"bare-ref") && hint.contains(&"math"), "{hint:?}");
 }
 
+/// The fixed environment first (#957): this reads HOME and so does `render`,
+/// and another test's first `route` between the two reads would change it.
 #[test]
 fn render_fills_known_names_twice_and_leaves_the_rest() {
+    fake::fixed_env();
     let home = std::env::var("HOME").unwrap_or_default();
     let got = render("at {{home}} {{x}} {{ examples }} {{examples}}", Some("E {{home}}"));
     assert_eq!(got, format!("at {home} {{{{x}}}} {{{{ examples }}}} E {home}"));

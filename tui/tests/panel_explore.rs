@@ -12,7 +12,10 @@ use fake::Scratch;
 use std::path::Path;
 use std::time::Duration;
 
+/// Every `App` here is built under the binary's one environment (#957): the
+/// developer's HOME, prompt overrides and COCKPIT_PANEL_MODEL answer no test.
 fn app(cmd: &str, path: &str) -> App {
+    fake::fixed_env();
     let cap = Capture {
         name: "work".into(),
         cmd: cmd.into(),
@@ -60,9 +63,28 @@ fn fake_at(path: &Path, body: &str) {
 }
 
 /// A fresh temp dir in the shared guard: a failed assert leaves nothing behind.
+/// The fixed environment first (#957): a test that runs git in its scratch
+/// before it builds an `App` starts that git under it too.
 fn scratch(tag: &str) -> Scratch {
+    fake::fixed_env();
     let name = format!("cockpit-panel-explore-{tag}-{}", std::process::id());
     Scratch::fresh(std::env::temp_dir().join(name))
+}
+
+/// Once an `App` is built, the binary runs under the fixed environment (#957).
+/// It builds one itself, so it holds when run first or alone.
+#[test]
+fn an_app_is_built_under_the_fixed_environment() {
+    let _ = app("bash", "/home/u/proj");
+    fake::assert_fixed_env();
+}
+
+/// The test above in a process started with all three variables set. On a box
+/// that sets none of them, CI included, a COCKPIT_PANEL_MODEL left in place
+/// would pass that test: here it does not (#957).
+#[test]
+fn the_fixed_environment_replaces_values_already_set() {
+    fake::fixed_env_in_a_child("an_app_is_built_under_the_fixed_environment");
 }
 
 #[test]
@@ -366,8 +388,11 @@ fn the_root_folder_is_refused_with_request_rs_words() {
     assert_eq!(text, format!("explore refused: {why}"));
 }
 
+/// The fixed environment first (#957): this reads HOME before it builds an
+/// `App`, and the check must read the same one.
 #[test]
 fn home_and_the_folders_above_it_are_refused() {
+    fake::fixed_env();
     let home = std::env::var("HOME").expect("HOME");
     let above = Path::new(&home).parent().expect("home has a parent").display().to_string();
     for dir in [home.as_str(), above.as_str()] {

@@ -7050,6 +7050,8 @@ esac
             }
             // unset unless `env` sets it, whatever the developer's own shell has
             c.env_remove("CLAUDE_CONFIG_DIR");
+            // the route's own model in every row, whatever their shell exports (#957)
+            c.env_remove("COCKPIT_PANEL_MODEL");
             c.envs(env.iter().copied());
             let o = c.output().unwrap();
             let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
@@ -7195,6 +7197,25 @@ esac
             );
             let want = r#"{"id":"bq-ask","kind":"bug","expect":"ask","run":0,"model":"sonnet","reads":null,"files_read":null,"error":null,"asked":true,"pass":true,"question":"Which zq-port? [80 | 443]","missing":[],"forbidden":[],"wrong_type":null,"cost_usd":null,"in_tokens":null,"out_tokens":null,"refused":false,"holdout":false,"reply":"<question>Which zq-port?</question><option>80</option><option>443</option>\n","explore":false}"#;
             assert_eq!(row, serde_json::from_str::<Value>(want).unwrap());
+        }
+
+        /// [`a_rig_run_row_of_one_question_is_as_before_batches`] in a process
+        /// started with COCKPIT_PANEL_MODEL set: the rig's child is started
+        /// without it, so the row names the route's model (#957). On a box that
+        /// does not export the variable, CI included, that test passes with the
+        /// removal gone. The exit status alone would pass a name that matches
+        /// no test, so the line the harness prints for a pass is asked for too.
+        #[test]
+        fn a_rig_child_is_started_without_the_shells_model() {
+            let test = "tests::quiet::a_rig_run_row_of_one_question_is_as_before_batches";
+            let o = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", test])
+                .env("COCKPIT_PANEL_MODEL", "opus")
+                .output()
+                .unwrap();
+            let out = String::from_utf8_lossy(&o.stdout);
+            let passed = format!("test {test} ... ok");
+            assert!(o.status.success() && out.lines().any(|l| l == passed), "{out}");
         }
 
         /// Not a test of its own: the child [`rig_run`] starts.

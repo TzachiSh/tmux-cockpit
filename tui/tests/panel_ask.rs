@@ -10,7 +10,11 @@ use std::path::{Path, PathBuf};
 struct Dir(PathBuf);
 
 impl Dir {
+    /// Every test here that reaches the product builds one first, so this is
+    /// where the binary takes its one environment (#957): the developer's HOME,
+    /// prompt overrides and COCKPIT_PANEL_MODEL answer no test.
     fn new(tag: &str) -> Dir {
+        fake::fixed_env();
         let d = std::env::temp_dir().join(format!("cockpit-panel-ask-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
@@ -62,11 +66,14 @@ fn one_line_reads_as_path_colon_line() {
 }
 
 /// No `.git` above it: the file's own folder is the repo the call may read.
+/// Home is the folder the scratch sits in, so the walk up ends there and a
+/// `.git` further up, at the developer's home or above the temp dir, answers
+/// nothing (#957).
 #[test]
 fn outside_a_repo_the_folder_is_the_repo() {
     let d = Dir::new("norepo");
     let f = d.file("x.rs", &lines(4));
-    let a = ask::load(&f, 1, 2).unwrap();
+    let a = ask::load_in(&f, 1, 2, d.0.parent()).unwrap();
     assert_eq!((a.repo.clone(), a.at.as_str()), (d.0.clone(), "x.rs:1-2"));
 }
 
@@ -213,6 +220,22 @@ fn opened(tag: &str) -> (Dir, App) {
     let mut a = App::new("%3", Capture::default());
     a.ask_open(ask::load(&f, 3, 5).unwrap());
     (d, a)
+}
+
+/// Once an ask is opened, the binary runs under the fixed environment (#957).
+/// It opens one itself, so it holds when run first or alone.
+#[test]
+fn an_ask_is_opened_under_the_fixed_environment() {
+    let _ = opened("fixedenv");
+    fake::assert_fixed_env();
+}
+
+/// The test above in a process started with all three variables set. On a box
+/// that sets none of them, CI included, a COCKPIT_PANEL_MODEL left in place
+/// would pass that test: here it does not (#957).
+#[test]
+fn the_fixed_environment_replaces_values_already_set() {
+    fake::fixed_env_in_a_child("an_ask_is_opened_under_the_fixed_environment");
 }
 
 /// `--ask` opens on the question's box, with nothing sent yet.
@@ -460,12 +483,13 @@ fn a_repo_under_home_is_its_work_tree() {
 }
 
 /// The read dir passes request::read_dir_ok before the box opens: a folder with
-/// a glob character is refused in its words.
+/// a glob character is refused in its words. Home is the folder the scratch
+/// sits in, so no `.git` further up becomes the repo in its place (#957).
 #[test]
 fn a_repo_the_read_check_refuses_cannot_be_asked_about() {
     let d = Dir::new("globrepo");
     let f = d.file("a*/x.rs", &lines(3));
-    let why = ask::load(&f, 1, 1).unwrap_err();
+    let why = ask::load_in(&f, 1, 1, d.0.parent()).unwrap_err();
     // the refusal quotes the folder first, and its path holds `glob` (#910)
     let shown = format!("{:?} ", f.parent().unwrap().display().to_string());
     assert_eq!(why.strip_prefix(shown.as_str()), Some("holds a glob character; refused"), "{why}");
