@@ -159,6 +159,7 @@ impl Rig {
             // SAFETY: the ENV mutex is held for the whole lifetime of this rig.
             unsafe { std::env::set_var(k, v) };
         }
+        fake::assert_claude_is_the_rigs(&dir);
         Rig { dir, old, _lock: lock }
     }
 
