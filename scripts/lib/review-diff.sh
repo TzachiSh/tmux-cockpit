@@ -302,7 +302,18 @@ scratch_done() { rm -rf -- "$tmp"; trap - EXIT HUP INT TERM; }
 scratch_index() {             # <dir> <gitdir>
     local dir=$1 gd=$2
     tmp=$(mktemp -d) || return 1
-    case $tmp in /*) ;; *) tmp=$PWD/$tmp ;; esac   # git reads GIT_INDEX_FILE from -C's dir
+    case $tmp in /*) ;; ?*) tmp=$PWD/$tmp ;; esac   # git reads GIT_INDEX_FILE from -C's dir
+    # rm -rf is armed only on an empty dir of the user's own (#943): an empty answer once
+    # became $PWD/, and its trap removed the caller's cwd. So: no symlink, the user's, empty
+    # as mktemp -d makes it, and neither / nor the cwd. Each test fails closed: an ls that
+    # cannot run or read the dir is a refusal, not an empty listing. No trap is set unless all
+    # hold.
+    local real ents
+    real=$(cd -- "$tmp" 2>/dev/null && pwd -P) || real=""
+    if [ -z "$real" ] || [ "$real" = / ] || [ "$real" = "$(pwd -P)" ] || [ -L "$tmp" ] \
+        || [ ! -O "$tmp" ] || ! ents=$(ls -A -- "$tmp" 2>/dev/null) || [ -n "$ents" ]; then
+        tmp=""; return 1
+    fi
     trap 'rm -rf -- "$tmp"' EXIT; trap 'trap "" HUP INT TERM; exit 143' HUP INT TERM
     idx=$tmp/index
     { (set -C; cat -- "$gd/index" > "$idx") && touch -r "$gd/index" -- "$idx"; } 2>/dev/null \

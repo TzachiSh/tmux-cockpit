@@ -7844,20 +7844,29 @@ export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER
   git init -q -b main .; printf 'a\n' > f; git add -A; git commit -q -m init
   printf 'b\n' >> f ) >/dev/null 2>&1
 printf 'keep\n' > "$TDS/victim"
-cat > "$TDS/bin/mktemp" <<STUB
-#!/bin/sh
-d=$TDS/race; mkdir -m 700 "\$d"; ln -s "$TDS/victim" "\$d/index"; ln -s "$TDS/victim" "\$d/staged"
-case "\$1" in -d) echo "\$d" ;; *) ln -s "$TDS/victim" "\$d.f"; echo "\$d.f" ;; esac
-STUB
-chmod +x "$TDS/bin/mktemp"
+# mktemp hands back a fresh, empty dir, as tree_diff checks it is (#943); the agent's symlinks
+# land after that check, from an ls shim, the check's own ls: the race won after creation,
+# which set -C has to stop. The paths go in %q-quoted, for a TMPDIR holding a space.
+td_f='#!/bin/sh\nd=%q\nmkdir -m 700 "$d"\n'
+td_f+='case "$1" in -d) echo "$d" ;; *) ln -s %q "$d.f"; echo "$d.f" ;; esac\n'
+# shellcheck disable=SC2059  # the format is built above, from literals only
+printf "$td_f" "$TDS/race" "$TDS/victim" > "$TDS/bin/mktemp"
+td_f='#!/bin/sh\n%q "$@"; rc=$?\nif [ -d %q ] && [ ! -e %q ]; then\n'
+td_f+='    ln -s %q %q && ln -s %q %q && : > %q\nfi\nexit $rc\n'
+# shellcheck disable=SC2059  # the format is built above, from literals only
+printf "$td_f" "$(command -v ls)" "$TDS/race" "$TDS/planted" "$TDS/victim" "$TDS/race/index" \
+    "$TDS/victim" "$TDS/race/staged" "$TDS/planted" > "$TDS/bin/ls"
+chmod +x "$TDS/bin/mktemp" "$TDS/bin/ls"
 tds_diff() { bash -c '. "$1/git.sh"; . "$1/review-diff.sh"; tree_diff "$2" --numstat' _ \
         "$DIR/scripts/lib" "$TDS/repo"
 }
 PATH="$TDS/bin:$PATH" tds_diff >/dev/null 2>&1
 is "symlinks raced in at the index copy's and the file list's names: the victim is untouched" \
     "keep" "$(cat "$TDS/victim")"
+is "and the symlinks were in place before tree_diff wrote" "planted" \
+    "$([ -e "$TDS/planted" ] && echo planted || echo "not planted")"
 # The git shim reads the mode of the dir the index copy sits in, at the add.
-rm -f "$TDS/bin/mktemp"
+rm -f "$TDS/bin/mktemp" "$TDS/bin/ls"
 cat > "$TDS/bin/git" <<STUB
 #!/usr/bin/env bash
 case " \$* " in *" add "*) ls -ld "\$(dirname "\$GIT_INDEX_FILE")" | cut -c1-10 > "$TDS/mode" ;; esac
@@ -7867,7 +7876,44 @@ chmod +x "$TDS/bin/git"
 PATH="$TDS/bin:$PATH" TMPDIR="$TDS/tmp" tds_diff >/dev/null 2>&1
 is "the index copy sits in a dir only the user can open" "drwx------" \
     "$(cat "$TDS/mode" 2>/dev/null)"
-rm -rf "$TDS"; unset -f tds_diff
+rm -rf "$TDS"; unset -f tds_diff; unset td_f
+
+echo "== tree_diff arms rm -rf only on an empty dir of the user's own, never the cwd (#943) =="
+# A mktemp that answers nothing (exit 0) made tree_diff's scratch dir $PWD/, and its trap
+# removed the caller's cwd. Each answer from a cwd of its own, under scratch, with a canary in
+# it and one beside it: both stay, and tree_diff fails closed, status 1, no output.
+#   .:empty    . from an empty cwd, which only the cwd test refuses
+#   link       a symlink to an empty dir, which only the symlink test refuses
+#   sib:badls  a sibling dir with a canary, and an ls that fails: the emptiness test must
+#              fail closed, not read a failed ls as an empty dir
+for td_a in "" nope . .. .:empty link sib:badls; do
+    TDE=$(mktmpd); mkdir -p "$TDE/cwd" "$TDE/bin" "$TDE/repo" "$TDE/e" "$TDE/sib"
+    [ "$td_a" = .:empty ] || echo keep > "$TDE/cwd/canary"
+    echo keep > "$TDE/canary"; echo keep > "$TDE/sib/canary"; ln -s "$TDE/e" "$TDE/l"
+    ( cd "$TDE/repo" || exit
+      git init -q -b main . && printf 'a\n' > f && git add f \
+      && git -c user.name=t -c user.email=t@e commit -q -m i && printf 'b\n' >> f ) >/dev/null 2>&1
+    case $td_a in
+        link) td_w=$TDE/l ;;
+        sib:badls) td_w=$TDE/sib; printf '#!/bin/sh\nexit 2\n' > "$TDE/bin/ls"
+                   chmod +x "$TDE/bin/ls" ;;
+        *) td_w=${td_a%:empty} ;;
+    esac
+    printf '#!/bin/sh\necho %s\n' "$td_w" > "$TDE/bin/mktemp"; chmod +x "$TDE/bin/mktemp"
+    td_o=$(cd "$TDE/cwd" && PATH="$TDE/bin:$PATH" bash -c \
+        '. "$1/git.sh"; . "$1/review-diff.sh"; tree_diff "$2" --numstat' _ "$DIR/scripts/lib" \
+        "$TDE/repo" 2>/dev/null; echo "rc=$?")
+    td_k() { [ -e "$1" ] && echo kept || echo gone; }
+    is "a mktemp answering [$td_a]: every canary stays, and tree_diff fails closed" \
+       "kept kept kept kept|rc=1" \
+       "$( [ "$td_a" = .:empty ] && echo kept || td_k "$TDE/cwd/canary") $(td_k "$TDE/canary") $(
+           td_k "$TDE/sib/canary") $(td_k "$TDE/e")|$(printf '%s' "$td_o" | tr '\n' ' ' \
+           | sed 's/ $//')"
+    [ "$td_a" != .:empty ] || is "and the empty cwd is still empty and still there" "empty" \
+       "$([ -d "$TDE/cwd" ] && [ -z "$(ls -A "$TDE/cwd")" ] && echo empty || echo changed)"
+    rm -rf "$TDE"
+done
+unset -f td_k; unset TDE td_a td_o td_w
 
 # group: deliver
 echo "== tmux-review --deliver: guards refuse before anything is pasted =="
