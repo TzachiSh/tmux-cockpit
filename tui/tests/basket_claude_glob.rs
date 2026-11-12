@@ -42,7 +42,12 @@ fn a_claude_the_agent_list_leaves_out_is_no_claude() {
     let dir = std::env::temp_dir().join(&sock);
     std::fs::create_dir_all(&dir).unwrap();
     let mut new = Command::new("tmux");
-    new.args(["-L", &sock, "-f", "/dev/null", "new-session", "-d", "-c"])
+    // bash, whatever $SHELL is (#882): tmux runs a pane's command in the default
+    // shell, and only bash execs it; under dash the pane stays `sh`, and the
+    // `claude` row passes for the wrong reason. Set as the server starts.
+    new.args(["-L", &sock, "-f", "/dev/null"])
+        .args(["set-option", "-g", "default-shell", "/bin/bash", ";"])
+        .args(["new-session", "-d", "-c"])
         .arg(&dir)
         .arg("sleep 300");
     let ok = new.status().is_ok_and(|s| s.success());
