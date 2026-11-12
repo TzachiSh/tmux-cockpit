@@ -64,7 +64,8 @@ fn fake_at(path: &Path, body: &str) {
 
 /// A fresh temp dir in the shared guard: a failed assert leaves nothing behind.
 /// The fixed environment first (#957): a test that runs git in its scratch
-/// before it builds an `App` starts that git under it too.
+/// before it builds an `App` starts that git under it too. No test fails when
+/// this call is dropped: what shows it is a log of the reads its children make.
 fn scratch(tag: &str) -> Scratch {
     fake::fixed_env();
     let name = format!("cockpit-panel-explore-{tag}-{}", std::process::id());
@@ -389,7 +390,7 @@ fn the_root_folder_is_refused_with_request_rs_words() {
 }
 
 /// The fixed environment first (#957): this reads HOME before it builds an
-/// `App`, and the check must read the same one.
+/// `App`, and the check must read the same one. The test after it pins that.
 #[test]
 fn home_and_the_folders_above_it_are_refused() {
     fake::fixed_env();
@@ -402,6 +403,14 @@ fn home_and_the_folders_above_it_are_refused() {
         assert!(!a.explore, "{dir}");
         assert_eq!(a.profile_for(&write_flow()), Profile::TEXT, "{dir}");
     }
+}
+
+/// The test above, alone, in a process started under another HOME. Without its
+/// first line it reads that HOME, the `App` it builds then sets the fixed one,
+/// and the check refuses neither folder (#957).
+#[test]
+fn the_home_test_reads_the_fixed_home_when_run_alone_under_another() {
+    fake::passes_in_a_child("home_and_the_folders_above_it_are_refused");
 }
 
 #[test]

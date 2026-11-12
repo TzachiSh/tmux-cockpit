@@ -114,20 +114,52 @@ pub fn assert_fixed_env() {
     eprintln!("{ENV_CHECKED}");
 }
 
+/// `test` of this binary, alone, in a process started with all three variables
+/// set to other values, with `more` as further arguments of the harness.
+#[allow(dead_code)]
+fn rerun(test: &str, more: &[&str]) -> std::process::Output {
+    let set = [("HOME", "/sys/other-948"), ("XDG_CONFIG_HOME", "/sys/other-948")];
+    std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", test])
+        .args(more)
+        .envs(set)
+        .env("COCKPIT_PANEL_MODEL", "opus")
+        .output()
+        .unwrap()
+}
+
+/// What a failed rerun says: the test asked for, how the child ended and all
+/// it wrote, so a child that ran no test is told apart from one that failed.
+#[allow(dead_code)]
+fn told(test: &str, out: &std::process::Output) -> String {
+    let (o, e) = (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    format!("{test} in a child: {}\nstdout:\n{o}\nstderr:\n{e}", out.status)
+}
+
 /// `test`, this binary's test that ends in [`assert_fixed_env`], in a process
 /// started with all three variables set. On a box that sets none of them, CI
 /// included, a COCKPIT_PANEL_MODEL left in place would pass that test: here it
 /// does not (#953). The exit status alone would pass a name that matches no
-/// test, so the marker line is asked for too.
+/// test, so the marker line is asked for too. A test must not pass its own
+/// name: its child would start a child of its own, without end.
 #[allow(dead_code)]
 pub fn fixed_env_in_a_child(test: &str) {
-    let set = [("HOME", "/sys/other-948"), ("XDG_CONFIG_HOME", "/sys/other-948")];
-    let out = std::process::Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", test, "--nocapture"])
-        .envs(set)
-        .env("COCKPIT_PANEL_MODEL", "opus")
-        .output()
-        .unwrap();
+    let out = rerun(test, &["--nocapture"]);
     let said = String::from_utf8_lossy(&out.stderr);
-    assert!(out.status.success() && said.lines().any(|l| l == ENV_CHECKED), "{said}");
+    let held = said.lines().any(|l| l == ENV_CHECKED);
+    assert!(out.status.success() && held, "{}", told(test, &out));
+}
+
+/// `test`, a test of this binary that reads one of the three itself and so
+/// calls [`fixed_env`] before that read, in a process started with all three
+/// set to other values. Run alone there, it compares what it read with what
+/// the product reads after the helper's call, and the two differ once its own
+/// call is gone. It writes no marker, so the line the harness prints for its
+/// pass is asked for beside the exit status. Not its own name, as above.
+#[allow(dead_code)]
+pub fn passes_in_a_child(test: &str) {
+    let out = rerun(test, &[]);
+    let (said, passed) = (String::from_utf8_lossy(&out.stdout), format!("test {test} ... ok"));
+    let ran = said.lines().any(|l| l == passed);
+    assert!(out.status.success() && ran, "{}", told(test, &out));
 }

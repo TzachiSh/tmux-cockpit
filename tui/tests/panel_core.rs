@@ -712,6 +712,8 @@ fn a_bare_ref_picks_the_bare_ref_example_first() {
 
 /// The fixed environment first (#957): this reads HOME and so does `render`,
 /// and another test's first `route` between the two reads would change it.
+/// No test fails when this call is dropped: alone, both reads agree without
+/// it. What shows it is a log of the reads this test makes.
 #[test]
 fn render_fills_known_names_twice_and_leaves_the_rest() {
     fake::fixed_env();
