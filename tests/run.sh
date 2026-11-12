@@ -20060,10 +20060,11 @@ for gs_f in scripts/agent-state scripts/cockpit-board scripts/lib/review-deliver
 done
 # No site reads the raw name: a site added with it fails here.
 # The whole repo but tests and docs (a site in a Rust string is one too: the sessions
-# picker's format), build output and git's own files left out.
+# picker's format), build output and git's own files left out. Pruned by name, not by full
+# path: tests/changed.sh reads a repo path here as this block reading every file under it.
 is "no shipped file tests the agent glob on the raw #{pane_current_command}" "" \
-   "$(find "$DIR" \( -name .git -o -name target -o -path "$DIR/tests" -o -path "$DIR/docs" \
-        -o -path "$DIR/bin" \) -prune -o -type f -print0 |
+   "$(find "$DIR" \( -name .git -o -name target -o -name tests -o -name docs -o -name bin \) \
+        -prune -o -type f -print0 |
       xargs -0 grep -lF '#{m/i:*|#{pane_current_command}|*,#{@cockpit_agents_glob}}' 2>/dev/null |
       sed "s|^$DIR/||")"
 # The board and the shell agree: cockpit-tui workdir answers 0 for an agent, 1 for none.
