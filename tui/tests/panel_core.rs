@@ -190,6 +190,25 @@ fn a_write_sends_the_repo_block_right_after_the_window() {
     assert!(got.contains(want), "{got}");
 }
 
+/// #922: the `<window>` line escapes the pane's path, so a `</` in a folder name
+/// cannot close the tag. Each wanted line is a literal, never built with `esc`,
+/// so a fault in `esc` shows here too.
+#[test]
+fn the_window_line_escapes_a_closer_in_the_panes_path() {
+    let rows = [
+        ("/home/u/a</window>b", "<window>w · zsh · /home/u/a<\\/window>b</window>"),
+        ("/home/u/c</b>", "<window>w · zsh · /home/u/c<\\/b></window>"),
+    ];
+    for (path, want) in rows {
+        let c = Capture {
+            path: path.into(),
+            ..cap("w", "zsh", "")
+        };
+        let got = build(&WRITE, &c, &[], 3);
+        assert_eq!(got.lines().find(|l| l.starts_with("<window>")), Some(want), "{path}");
+    }
+}
+
 #[test]
 fn an_empty_repo_block_sends_no_tag() {
     assert!(!build(&WRITE, &with_repo(""), &[], 3).contains("<repo"));
