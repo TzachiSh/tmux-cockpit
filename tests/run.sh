@@ -1306,19 +1306,44 @@ if command -v timeout >/dev/null 2>&1; then
     is "a writer that pauses 3 s mid-payload still holds" running "$(bgo @panestate)"
     # A writer that never finishes, 8 KB every 0.2 s and no newline, is still cut at 10 s and
     # the Stop is done. Polled for 15 s.
+    # The fifo stays open on fd 3 for the whole loop, so a line written while the feeder is
+    # blocked in a write waits there instead of being dropped (#805). A failed write ends it:
+    # with SIGPIPE ignored, as on GitHub's runners, a reader that is gone is only an error.
+    bgfeed() {                # <fifo>: 8 KB every 0.2 s, no newline, until a line on <fifo>
+        printf '{"last_assistant_message":"'
+        { while ! read -r -t 0.2 -u 3 _; do printf '%08192d' 0 || break; done; } 3<> "$1"
+    }
     bgst running "$BGU"
-    { { printf '{"last_assistant_message":"'
-        while ! read -r -t 0.2 _ <> "$BGF"; do printf '%08192d' 0; done; } 2>/dev/null \
+    { bgfeed "$BGF" 2>/dev/null \
         | TMUX="$SOCKDIR/$BG,0,0" "$DIR/scripts/agent-state" done "$BGP" >/dev/null 2>&1; } &
     bghold=$!
     POLLS=150 until_out done bgo @panestate
     is "a writer that never finishes is done within its bound" done "$(bgo @panestate)"
     printf 'x\n' 1<> "$BGF"; wait "$bghold"
+    # The feeder itself ends (#805). GitHub's runners ignore SIGPIPE, so a write to a reader
+    # that is gone fails instead of killing it; and a line sent while the feeder is blocked
+    # on a full pipe must not be lost. Each in its own bash under timeout, so a feeder that
+    # never ends fails its row instead of holding the suite.
+    BGFF="$(mktmpd)/feed"; mkfifo "$BGFF"
+    bgfd=$(declare -f bgfeed)
+    timeout 10 bash -c "$bgfd"'
+        trap "" PIPE; bgfeed "$1" 2>/dev/null | true' _ "$BGFF" >/dev/null 2>&1
+    is "the feeder ends when its reader is gone, with SIGPIPE ignored" 0 "$?"
+    # The reader takes nothing for 4 s, so the pipe fills (64 KiB, about 1.6 s) and the
+    # feeder blocks in a write; the line goes in at 3 s, then the reader drains for good.
+    timeout 15 bash -c "$bgfd"'
+        trap "" PIPE
+        { bgfeed "$1" 2>/dev/null | { sleep 4; cat > /dev/null; }; } & h=$!
+        sleep 3; printf "x\n" 1<> "$1"; wait "$h"' _ "$BGFF" >/dev/null 2>&1
+    is "a line sent while the feeder is blocked on a full pipe still ends it" 0 "$?"
+    unset -f bgfeed; unset BGFF bgfd
 else
     skip_ "a Stop with no newline and stdin held open returns within its bound (no timeout)"
     skip_ "a timed-out read that got part of the payload is done (no timeout)"
     skip_ "a writer that pauses 3 s mid-payload still holds (no timeout)"
     skip_ "a writer that never finishes is done within its bound (no timeout)"
+    skip_ "the feeder ends when its reader is gone, with SIGPIPE ignored (no timeout)"
+    skip_ "a line sent while the feeder is blocked on a full pipe still ends it (no timeout)"
 fi
 
 # Sticky states stay sticky: a subagent's PermissionRequest lands on the main pane.
