@@ -233,13 +233,20 @@ fn is_key(key: &str) -> bool {
 }
 
 /// The last-seen record for `key` under `store`; `None` for a missing,
-/// unreadable or malformed file. Reads at most 200 bytes.
+/// unreadable or malformed file, and for anything there that is no file: a
+/// FIFO, a device, a folder. Reads at most 200 bytes and never waits: a FIFO
+/// opened without O_NONBLOCK waits for a writer (#1003).
 pub fn read_seen(store: &Path, key: &str) -> Option<Seen> {
     if !is_key(key) {
         return None;
     }
+    let mut opts = OpenOptions::new();
+    let f = opts.read(true).custom_flags(libc::O_NONBLOCK).open(store.join(key)).ok()?;
+    if !f.metadata().ok()?.is_file() {
+        return None;
+    }
     let mut b = Vec::new();
-    std::fs::File::open(store.join(key)).ok()?.take(200).read_to_end(&mut b).ok()?;
+    f.take(200).read_to_end(&mut b).ok()?;
     let s = std::str::from_utf8(&b).ok()?.strip_suffix('\n')?;
     let (head, at) = s.split_once(' ')?;
     let at = at.bytes().all(|c| c.is_ascii_digit()).then(|| at.parse().ok()).flatten()?;

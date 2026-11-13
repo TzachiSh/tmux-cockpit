@@ -826,3 +826,38 @@ fn the_panels_gh_is_the_name_gh_found_by_path_within_its_budgets() {
     let want = (OsString::from("gh"), None, GIT_BUDGET, seen_dir());
     assert_eq!((c.gh.program, c.gh.path, c.git_budget, c.store), want);
 }
+
+// ---- review fixes: a FIFO at the last-seen path never blocks ----
+
+/// [`read_seen`] on a thread, given 10 s. A deadlock guard, not a measure: past
+/// it, a writer is opened to free the reader and the row fails.
+fn read_unblocked(store: &Path, key: &str) -> Option<cockpit_tui::panel::changes::Seen> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let (s, k) = (store.to_path_buf(), key.to_string());
+    let t = std::thread::spawn(move || tx.send(read_seen(&s, &k)).unwrap());
+    let got = rx.recv_timeout(Duration::from_secs(10));
+    if got.is_err() {
+        use std::os::unix::fs::OpenOptionsExt;
+        let w = std::fs::OpenOptions::new()
+            .write(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(store.join(key));
+        drop(w);
+        t.join().unwrap();
+        panic!("read_seen blocked on {key}");
+    }
+    got.unwrap()
+}
+
+#[test]
+fn a_fifo_or_a_device_at_the_last_seen_path_is_nothing_seen() {
+    let r = Rig::new("fifo");
+    let key = "0123456789abcdef";
+    std::fs::create_dir_all(r.store()).unwrap();
+    let at = r.store().join(key);
+    assert!(Command::new("mkfifo").arg(&at).status().unwrap().success());
+    assert_eq!(read_unblocked(&r.store(), key), None, "a FIFO");
+    std::fs::remove_file(&at).unwrap();
+    std::os::unix::fs::symlink("/dev/zero", &at).unwrap();
+    assert_eq!(read_unblocked(&r.store(), key), None, "a device");
+}
