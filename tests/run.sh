@@ -162,12 +162,13 @@ flop_left() {                 # [dir] -> a bad row for each r.* whose call was n
 }
 # A TMPDIR holding a space: an unquoted path in a script the suite writes splits at it, and the
 # write lands on the part before the space, beside the run's scratch (#929). BESIDE is that
-# name when it is not there at the start; the tail fails the run if it is there at the end.
+# name, and the tail fails the run if it is newer than a stamp made here: a name an earlier
+# run left is still caught when this run writes to it again (#991).
 BESIDE=
-case ${TMPDIR:-} in *' '*) [ -e "${TMPDIR%% *}" ] || BESIDE=${TMPDIR%% *} ;; esac
+case ${TMPDIR:-} in *' '*) BESIDE=${TMPDIR%% *}; : > "$STATE/beside.stamp" ;; esac
 beside_left() {
-    [ -z "$BESIDE" ] || [ ! -e "$BESIDE" ] ||
-        bad "nothing the suite wrote landed beside its TMPDIR (#929)" "no $BESIDE" \
+    [ -z "$BESIDE" ] || [ -d "$BESIDE" ] || [ ! "$BESIDE" -nt "$STATE/beside.stamp" ] ||
+        bad "nothing the suite wrote landed beside its TMPDIR (#929)" "$BESIDE untouched" \
             "$(ls -ld "$BESIDE" 2>&1)"
 }
 # The suite itself runs inside the user's tmux, so its own $TMUX would send
@@ -9874,16 +9875,21 @@ echo "== a stub the suite writes lands nothing beside a TMPDIR that holds a spac
 # stubs whose log path is written into them: unquoted, that path splits at the space, the log
 # goes to "my" beside the TMPDIR and the control row finds no call. CI's own TMPDIR holds no
 # space, so this is the run that sees it there.
-SPD=$(mktmpd); mkdir -p "$SPD/my  tmp" "$SPD/s"
-spo=$(cd "$DIR" && env -u TMUX TMPDIR="$SPD/my  tmp" TMUX_TMPDIR="$SPD/s" \
-    tests/only.sh '^the suite never reaches the network' 2>&1 </dev/null); sprc=$?
-is "the network block passes there and only the TMPDIR is beside it" \
-   "0|  4 passed, 0 failed, 0 skipped|my  tmp,s," \
-   "$sprc|$(printf '%s\n' "$spo" | tail -1)|$(ls -A "$SPD" | tr '\n' ,)"
-for sps in "$SPD"/s/tmux-*/*; do
-    [ -S "$sps" ] && "$TMUX_REAL" -S "$sps" kill-server >/dev/null 2>&1
+NBS=$(mktmpd); mkdir -p "$NBS/my  tmp" "$NBS/s"
+# The nested socket is $NBS/s/tmux-<uid>/cockpit-suite-<pid>: past 107 bytes no server binds.
+if [ $((${#NBS} + ${#UID} + 30)) -gt 107 ]; then
+    skip_ "a stub beside a spaced TMPDIR (TMPDIR too long for the nested socket path)"
+else
+nbo=$(cd "$DIR" && env -u TMUX TMPDIR="$NBS/my  tmp" TMUX_TMPDIR="$NBS/s" \
+    tests/only.sh '^the suite never reaches the network' 2>&1 </dev/null); nbrc=$?
+is "the network block's run there exits 0 with no row failed" "0 0" \
+   "$nbrc $(printf '%s\n' "$nbo" | grep -c 'FAIL')"
+is "and only the TMPDIR is beside it" "my  tmp,s," "$(ls -A "$NBS" | tr '\n' ,)"
+for nbs in "$NBS"/s/tmux-*/*; do
+    [ -S "$nbs" ] && "$TMUX_REAL" -S "$nbs" kill-server >/dev/null 2>&1
 done
-unset SPD spo sprc sps
+fi
+unset NBS nbo nbrc nbs
 
 # tests: scripts/tui-fetch
 echo "== cockpit-tui builds install the executable cargo built, not a guessed path (#591) =="
@@ -13392,7 +13398,10 @@ av_tm set -g @cockpit_agents_glob '|claude|codex|'
 AVWK="$AVREC/woke"; : > "$AVWK"
 AVWP=$(av_np "alpha")
 AVWF="'#{@cockpit_job}' '#{@cockpit_job_name}'"   # the pane's job and name, at the wake
-av_tm set -g @cockpit_board_wake "run-shell -t $AVWP \"printf '%s|%s\\\\n' $AVWF >> $(tq "$AVWK")\" ; "
+# The log's path comes from the server environment, escaped so the shell expands it, not tmux.
+av_tm set-environment -g CKWK "$AVWK"
+av_tm set -g @cockpit_board_wake \
+    "run-shell -t $AVWP \"printf '%s|%s\\\\n' $AVWF >> \\\"\\\$CKWK\\\"\" ; "
 av_once bind.json >/dev/null
 is "a new bind's wake already sees its job and name" "aa|alpha" "$(sed -n 1p "$AVWK")"
 av_tm select-pane -t "$AVWP" -T "fix the parser"
@@ -13825,6 +13834,7 @@ for at in "index staged" pathspec gitlinks; do
     cat > "$GD/bin/mktemp" <<STUB
 #!/bin/sh
 d=$(tq "$GD/race"); rm -rf "\$d" "\$d.f"; mkdir -m 700 "\$d"
+echo "\$d" >> $(tq "$GD/race.log")
 for n in $at; do ln -s "$GD/victim" "\$d/\$n"; done
 case "\$1" in -d) echo "\$d" ;; *) ln -s "$GD/victim" "\$d.f"; echo "\$d.f" ;; esac
 STUB
@@ -13832,7 +13842,9 @@ STUB
     PATH="$GD/bin:$PATH" ap_run "$GD/r" >/dev/null
     is "a symlink raced in at $at: the victim keeps its 5 bytes" "5" "$(wc -c < "$GD/victim")"
 done
-rm -rf "$GD/bin/mktemp" "$GD/race" "$GD/race.f"; ap_unref "$GD/r"
+is "the shim handed back its raced dir each time, and no other" "$GD/race" \
+   "$(sort -u "$GD/race.log" 2>/dev/null)"
+rm -rf "$GD/bin/mktemp" "$GD/race" "$GD/race.f" "$GD/race.log"; ap_unref "$GD/r"
 ds_redirty 204001010000
 is "approve exits 0 and runs no gitlink's clean filter" "0|" \
    "$(TMPDIR="$GD/tmp" ap_run "$GD/r")|$(ls "$GD" | grep '^PWNED')"
