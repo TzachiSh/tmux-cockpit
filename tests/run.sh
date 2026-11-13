@@ -61,20 +61,20 @@ ncols() {                     # <string> -> the columns it draws in
 TMUX_REAL=$(command -v tmux) || TMUX_REAL=tmux
 SUITE_SOCK="cockpit-suite-$$"
 SHIM=$(mktemp -d)
-# What the prelude itself makes: the suite's own server, its socket, $STATE and $SHIM. cleanup
-# ends them at the end; a prelude FATAL comes before `trap cleanup EXIT` is set, while
-# cleanup's other halves (kill_socks, $TMPS) do not exist yet, so it ends them through the same
-# function (#984). The socket path is SOCKDIR's, spelled out: SOCKDIR is set later.
+# What the prelude itself makes: the suite's own server, its socket, $STATE and $SHIM. The
+# socket path is SOCKDIR's, spelled out: SOCKDIR is set later.
 suite_clean() {
     "$TMUX_REAL" -L "$SUITE_SOCK" kill-server >/dev/null 2>&1
     rm -f "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/$SUITE_SOCK"
     rm -rf -- "$STATE" "$SHIM"
 }
-fatal() {                     # <message>
-    printf '  \033[31mFATAL\033[0m %s\n' "$1" >&2
-    suite_clean
-    exit 1
-}
+# Armed here, before the server starts, and replaced by `trap cleanup EXIT` once cleanup's
+# other halves (kill_socks, $TMPS) exist. The server leaves this process group, so a TERM or
+# a HUP that ends the run in between never reaches it, and bash runs the EXIT trap on both:
+# without this a run ended there left the server and its pane behind for an hour (#900). A
+# prelude FATAL leaves through the same trap (#984).
+trap suite_clean EXIT
+fatal() { printf '  \033[31mFATAL\033[0m %s\n' "$1" >&2; exit 1; }
 # Deferring when $TMUX is set is load-bearing: tmux exports it to everything it
 # runs, so cockpit.tmux launched by a run-shell inside one of the per-block
 # servers must talk to THAT server, not this one.
@@ -17567,16 +17567,73 @@ sed '/^PANE=\$(tmux list-panes -a/a PANE=""' "$DIR/tests/run.sh" > "$FD/srv.sh"
 is "both FATAL mutants differ from the script" "1 1" \
    "$(cmp -s "$FD/stub.sh" "$DIR/tests/run.sh"; echo $?) $(cmp -s "$FD/srv.sh" "$DIR/tests/run.sh"; echo $?)"
 for fx in stub srv; do
+    # The nested socket is $FD/s/tmux-<uid>/cockpit-suite-<pid>: past 107 bytes no server binds,
+    # and the srv row would pass with none to clean up.
+    if [ "$fx" = srv ] && [ $((${#FD} + ${#UID} + 30)) -gt 107 ]; then
+        skip_ "a prelude FATAL (srv) (TMPDIR too long for the nested socket path)"; continue
+    fi
     fo=$(cd "$DIR" && env -u TMUX ONLY_RUN="$FD/$fx.sh" TMPDIR="$FD/t" TMUX_TMPDIR="$FD/s" \
         tests/only.sh '^syntax' 2>&1 </dev/null); forc=$?
-    is "a prelude FATAL ($fx) exits 1 and leaves no dir, server or socket behind" "1|FATAL||" \
+    is "a prelude FATAL ($fx) exits 1 and leaves no dir, socket or listening server behind" \
+       "1|FATAL|||0" \
        "$forc|$(printf '%s' "$fo" | grep -o FATAL | head -1)|$(ls -A "$FD/t")|$(
-        ls -A "$FD"/s/tmux-* 2>/dev/null)"
+        ls -A "$FD"/s/tmux-* 2>/dev/null)|$(grep -cF " $FD/s/" /proc/net/unix 2>/dev/null)"
     # Whatever a red run left: ended by its own socket, then removed.
     for fs in "$FD"/s/tmux-*/*; do [ -S "$fs" ] && "$TMUX_REAL" -S "$fs" kill-server >/dev/null 2>&1; done
     rm -rf "${FD:?}/t/"* "${FD:?}/s/"*
 done
 unset FD fo forc fx fs
+
+echo "== run.sh: a run ended by a signal in its prelude leaves no server, socket or temp dir (#900) =="
+# The suite's server leaves the run's process group, so a signal that ends the run never
+# reaches it: only the run's own EXIT trap can end it. That trap used to be set long after the
+# server started, and a par.sh shard ended in between left the server and its pane behind for
+# an hour (#900). Two copies of the prelude here, each holding still at one place until a
+# signal ends it: win, right after the server starts; ctl, after `trap cleanup EXIT`. The hold
+# is a read on a fifo the script holds open, so no child of it is left to count.
+SG=$(mktmpd); mkdir -p "$SG/tests"
+awk '/^echo "== /{exit} {print}' "$DIR/tests/run.sh" > "$SG/tests/pre.sh"
+sg_hold='mkfifo "$TMPDIR/pf"; exec 9<>"$TMPDIR/pf"; : > "$TMPDIR/started"; read -r -t 20 -u 9 _'
+sed "/^    'exec -a claude sleep 3600' >\\/dev\\/null 2>&1\$/a $sg_hold" "$SG/tests/pre.sh" \
+    > "$SG/tests/win.sh"
+sed "/^trap cleanup EXIT\$/a $sg_hold" "$SG/tests/pre.sh" > "$SG/tests/ctl.sh"
+is "each copy holds at one place" "1 1" \
+   "$(grep -c 'exec 9<>' "$SG/tests/win.sh") $(grep -c 'exec 9<>' "$SG/tests/ctl.sh")"
+sg_left() {                   # the processes carrying the copy's TMPDIR: "0", or count and names
+    local p n=0 o=""
+    for p in /proc/[0-9]*; do
+        tr '\0' '\n' 2>/dev/null < "$p/environ" | grep -qxF "TMPDIR=$SG/t" || continue
+        n=$((n + 1)); o="$o [$(tr '\0' ' ' 2>/dev/null < "$p/cmdline")]"
+    done
+    printf '%s%s' "$n" "$o"
+}
+sg_run() {                    # <signal> <copy> -> status|carriers|left in TMPDIR|listeners
+    local c="" rc s
+    rm -rf "${SG:?}/t" "${SG:?}/s"; mkdir -p "$SG/t" "$SG/s"
+    ( cd "$SG" && exec env -u TMUX TMPDIR="$SG/t" TMUX_TMPDIR="$SG/s" bash "tests/$2.sh" ) \
+        </dev/null >/dev/null 2>&1 & sg_p=$!
+    until_out '?*' ls "$SG/t/started" >/dev/null
+    read -r c 2>/dev/null < "/proc/$sg_p/comm"
+    [ "$c" != bash ] || kill -"$1" "$sg_p" 2>/dev/null
+    wait "$sg_p" 2>/dev/null; rc=$?
+    printf '%s|%s|%s|%s' "$rc" "$(sg_left)" "$(ls -A "$SG/t" | tr '\n' ,)" \
+        "$(grep -cF " $SG/s/" /proc/net/unix)"
+    # Whatever a red run left: ended by its own socket, never by a pid.
+    for s in "$SG"/s/tmux-*/*; do
+        [ -S "$s" ] && "$TMUX_REAL" -S "$s" kill-server >/dev/null 2>&1
+    done
+}
+# The nested socket is $SG/s/tmux-<uid>/cockpit-suite-<pid>: past 107 bytes no server binds.
+if [ ! -r /proc/net/unix ]; then skip_ "a signal in the prelude (no /proc/net/unix)"
+elif [ $((${#SG} + ${#UID} + 30)) -gt 107 ]; then
+    skip_ "a signal in the prelude (TMPDIR too long for the nested socket path)"
+else
+    is "a TERM right after the server starts leaves no process, dir or socket" \
+       "143|0|pf,started,|0" "$(sg_run TERM win)"
+    is "a HUP there leaves none either" "129|0|pf,started,|0" "$(sg_run HUP win)"
+    is "a TERM after the trap is set leaves none" "143|0|pf,started,|0" "$(sg_run TERM ctl)"
+fi
+unset -f sg_left sg_run; unset SG sg_hold sg_p
 
 echo "== tests/only.sh: a pattern with \\( and ^ selects the block, no match is an error (#241) =="
 OD=$(mktemp -d)
