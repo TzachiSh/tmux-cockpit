@@ -418,3 +418,46 @@ fn busy_counts_an_asks_code_by_the_lines_shown() {
     let want: Vec<_> = rows.iter().map(|(row, .., w)| (*row, format!("sent: {w}"))).collect();
     assert_eq!(got, want);
 }
+
+// ------------------------------------------------- a secret-shaped folder (#966)
+
+/// Compose, ^R, a draft, ^S: a write that asked to explore.
+fn explore_write(a: &mut App) {
+    tile(a, Tile::Compose);
+    ctrl(a, 'r');
+    key(a, KeyCode::Char('x'));
+    ctrl(a, 's');
+    assert_eq!(a.view, View::Busy);
+}
+
+/// ^R is refused for a folder whose name holds a made-up key, so the write that
+/// follows is the plain one, and its Busy line says so: no "explore first". The
+/// path's key is the screen's, as the `<window>` line hides it (#937).
+#[test]
+fn busy_line_of_a_write_on_a_secret_folder_names_the_plain_write() {
+    let rows = [
+        ("plain", "/u/deploy-sk-ant-MADEUPFAKEFAKE00"),
+        ("glued", "/u/w\u{2066}sk-ant-MADEUPFAKEFAKE00"),
+        ("split", "/u/sk-ant-MADEUP\u{202E}FAKEFAKE00"),
+    ];
+    let sent = |path| {
+        let mut a = app(cap("$ ls", "w", path));
+        explore_write(&mut a);
+        (sent_line(&frame(&a)), a.sent_hidden(), a.explore)
+    };
+    let got: Vec<_> = rows.iter().map(|(row, path)| (*row, sent(*path))).collect();
+    let line = "sent: screen 1 lines, 1 hidden · write (auto)";
+    let plain = |r| (r, (line.to_string(), split(1, 0, 0), false));
+    let want: Vec<_> = rows.iter().map(|(r, _)| plain(*r)).collect();
+    assert_eq!(got, want);
+}
+
+/// Pinned: an ordinary folder still explores, and its line says so.
+#[test]
+fn busy_line_of_an_exploring_write_on_an_ordinary_folder_is_as_before() {
+    let mut a = app(cap("$ ls", "w", "/u/proj"));
+    explore_write(&mut a);
+    assert!(a.explore);
+    let want = "sent: screen 1 lines, 0 hidden · write (auto), explore first";
+    assert_eq!(sent_line(&frame(&a)), want);
+}
