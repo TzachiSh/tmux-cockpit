@@ -6487,7 +6487,7 @@ rvpsplant=$( (
   git init -q -b main r && cd r && printf '1\n' > core && git add -A && git commit -q -m first
   git -c protocol.file.allow=always submodule add -q "$RVPS/in" sub && git commit -q -m sub
   printf '1\n2\n' > core; dd if=/dev/null of=Core bs=1048576 seek=33
-  git config -f .git/modules/sub/config filter.mark.clean "touch $RVPS/PWNED; cat"
+  git config -f .git/modules/sub/config filter.mark.clean "touch $(tq "$RVPS/PWNED"); cat"
   printf '* filter=mark\n' > .git/modules/sub/info/attributes
   touch -t 203001010000 sub/f.txt; git status --porcelain >/dev/null
   ls "$RVPS" | grep -c '^PWNED$'
@@ -6984,7 +6984,7 @@ is "a gitlink's planted clean filter fires under plain git status" "1" "$( (
   git init -q -b main r && cd r && printf '1\n' > a && git add -A && git commit -q -m first
   git -c protocol.file.allow=always submodule add -q "$RBFG/in" sub && git commit -q -m sub
   printf 'gl\n' > big.log; truncate -s 33M big.log
-  git config -f .git/modules/sub/config filter.mark.clean "touch $RBFG/PWNED; cat"
+  git config -f .git/modules/sub/config filter.mark.clean "touch $(tq "$RBFG/PWNED"); cat"
   printf '* filter=mark\n' > .git/modules/sub/info/attributes
   touch -t 203001010000 sub/f.txt; git status --porcelain >/dev/null
   ls "$RBFG" | grep -c '^PWNED$'; rm -f "$RBFG/PWNED"; touch -t 203101010000 sub/f.txt
@@ -13599,7 +13599,7 @@ unset -f gs_argv
 GD=$(mktmpd)
 ( git init -q "$GD/r" && cd "$GD/r" && printf 'hi\n' > x &&
     printf 'x filter=a=b\n' > .gitattributes \
-  && git config 'filter.a=b.clean' "touch $GD/PWNED" ) >/dev/null 2>&1
+  && git config 'filter.a=b.clean' "touch $(tq "$GD/PWNED")" ) >/dev/null 2>&1
 git -C "$GD/r" -c 'filter.a=b.clean=' add x >/dev/null 2>&1
 is "a=b's plant fires under git -c filter.a=b.clean=" "yes" "$([ -e "$GD/PWNED" ] && echo yes)"
 git -C "$GD/r" read-tree --empty; rm -f "$GD/PWNED"
@@ -13632,8 +13632,8 @@ ds_subs() {                   # <dir>: $1/r, a.txt changed, n.txt new, submodule
       printf 'y\n' > bump/g.txt && git -C bump add g.txt && git -C bump commit -q -m bump &&
           printf 'b\n' > a.txt
       printf 'n\n' > n.txt
-      git config -f .git/modules/sub/config filter.mark.clean "touch $1/PWNED.sub; cat"
-      git config -f "$e/.git/config" filter.mark.clean "touch $1/PWNED.emb; cat"
+      git config -f .git/modules/sub/config filter.mark.clean "touch $(tq "$1/PWNED").sub; cat"
+      git config -f "$e/.git/config" filter.mark.clean "touch $(tq "$1/PWNED").emb; cat"
       printf '* filter=mark\n' | tee .git/modules/sub/info/attributes > "$e/.git/info/attributes"
       touch -t 203001010000 sub/f.txt "$e/e.txt"; git status --porcelain >/dev/null
       ls "$1" | grep -c '^PWNED\.'; rm -f "$1"/PWNED.*; touch -t 203101010000 sub/f.txt "$e/e.txt"
@@ -13700,7 +13700,7 @@ is "unborn HEAD, a staged embedded repo: its plant fires under plain git status"
          cd "$GD" && git init -q -b main r && cd r && git init -q -b main e &&
              printf 'e\n' > e/e.txt
          git -C e add -A && git -C e commit -q -m e && git add e
-         git config -f e/.git/config filter.mark.clean "touch $GD/PWNED; cat"
+         git config -f e/.git/config filter.mark.clean "touch $(tq "$GD/PWNED"); cat"
          printf '* filter=mark\n' > e/.git/info/attributes
          touch -t 203001010000 e/e.txt; git status --porcelain >/dev/null
          ls "$GD" | grep -c '^PWNED$'; rm -f "$GD/PWNED"; \
@@ -17403,7 +17403,7 @@ if need_tmux "git.sh refusal in tmux-review"; then :; else
 RF="cockpit-rf-$$"; SOCKS="$SOCKS $RF"; GD=$(mktmpd); RFS=$(mktmpd)
 ( git init -q "$GD/r" && cd "$GD/r" && printf 'hi\n' > x &&
     printf 'x filter=a=b\n' > .gitattributes \
-  && git config 'filter.a=b.clean' "touch $GD/PWNED" ) >/dev/null 2>&1
+  && git config 'filter.a=b.clean' "touch $(tq "$GD/PWNED")" ) >/dev/null 2>&1
 ( git init -q -b main "$GD/ok" && cd "$GD/ok" && printf 'a\n' > y && git add y \
   && git -c user.name=t -c user.email=t@t commit -qm i && printf 'a\nb\n' > y ) >/dev/null 2>&1
 "$TMUX_REAL" -L "$RF" -f /dev/null new-session -d -s t -x 100 -y 30 -c "$GD/r" \
@@ -17765,7 +17765,7 @@ if need_tmux "git.sh refusal in tmux-branch"; then :; else
 BQ="cockpit-bq2-$$"; SOCKS="$SOCKS $BQ"; GD=$(mktmpd)
 ( git init -q "$GD/r" && cd "$GD/r" && printf 'hi\n' > x &&
     printf 'x filter=a=b\n' > .gitattributes \
-  && git config 'filter.a=b.clean' "touch $GD/PWNED" ) >/dev/null 2>&1
+  && git config 'filter.a=b.clean' "touch $(tq "$GD/PWNED")" ) >/dev/null 2>&1
 ( git init -q -b main "$GD/ok" && cd "$GD/ok" && printf 'a\n' > y && git add y \
   && git -c user.name=t -c user.email=t@t commit -qm i && git branch other &&
       git worktree add -q "$GD/ok-wt" other ) >/dev/null 2>&1
