@@ -9072,8 +9072,15 @@ echo "== tests/par.sh: each shard says when it starts and ends, so a stalled one
 # their own TMPDIR, which every process they start inherits: the leftover count reads it.
 PSROOT=$(mktmpd); mkdir -p "$PSROOT/tests" "$PSROOT/t"
 cp "$DIR/tests/par.sh" "$PSROOT/tests/par.sh"
-awk '/^echo "== /{exit} {print}' "$DIR/tests/run.sh" > "$PSROOT/tests/run.sh"
+# The sandbox's prelude is this script's, with one line more: the shard that runs ps5 takes a
+# second at the top of its cleanup. A run ended while a shard is there (or while its server is
+# still starting) leaves that shard's server, since no trap covers either moment (#900, #1006):
+# the ended run below must wait for every other shard, and this makes a missing wait leave 2.
 Q='"'
+awk -v h="    ! grep -q '^echo ${Q}== ps5: ' ${Q}\$0${Q} || sleep 1" \
+    '/^echo "== /{exit} {print} /^cleanup\(\) \{$/{print h}' "$DIR/tests/run.sh" \
+    > "$PSROOT/tests/run.sh"
+is "the sandbox's cleanup holds for ps5" "1" "$(grep -c "ps5: ' .* || sleep 1" "$PSROOT/tests/run.sh")"
 {
     printf 'echo %s== ps1: solo ==%s\n' "$Q" "$Q"
     printf 'is "ps1" 1 1\n\n'
@@ -9109,8 +9116,8 @@ ps_left() {                   # the processes still carrying the sandbox's TMPDI
 # raced them (#900). So: polled until none is left, bounded by POLLS. A leftover past that is
 # a real one, and the row names each: pid, name, command line.
 ps_settle() {                 # -> 0, or "<count>:" and each leftover
-    local i n p
-    for i in $(seq 1 "$POLLS"); do n=$(ps_left); [ "$n" = 0 ] && break; sleep 0.1; done
+    local n p end=$((SECONDS + POLLS / 10))     # by the clock: one pass over /proc is slow
+    while n=$(ps_left); [ "$n" != 0 ] && [ "$SECONDS" -lt "$end" ]; do sleep 0.1; done
     printf '%s' "$n"
     [ "$n" = 0 ] && return 0
     printf ':'
@@ -9121,13 +9128,18 @@ ps_settle() {                 # -> 0, or "<count>:" and each leftover
     done
 }
 # The run with a shard that never ends: once that shard is inside its block (past the
-# prelude, whose EXIT trap cleans up) and a finished shard's end line is out, it is ended
+# prelude, whose EXIT trap cleans up) and every other shard's end line is out, it is ended
 # from outside through timeout (whose 60 s is only a backstop), which hands the TERM to the
-# whole run's process group.
+# whole run's process group. Every other shard, not one: a shard still in its prelude or its
+# cleanup when the TERM lands can leave its server, and the two leftover rows then read 2
+# (#900: 12 of 650 such runs with one end line awaited, 0 of 650 with all four). Each wait is
+# bounded; past the bound the rows go on and ps_settle names what is left.
 ( cd "$PSROOT" && exec env -u PAR_BLOCKS TMPDIR="$PSROOT/t" J=3 \
     timeout 60 tests/par.sh ) </dev/null >/dev/null 2>"$PSROOT/hung.err" & ps_to=$!
 until_out '?*' ls "$PSROOT/t/ps3.in"
-until_file "$PSROOT/hung.err" '*shard 0001 end rc=0*'
+for ps_s in 0001 0002 0004 0005; do
+    until_file "$PSROOT/hung.err" "*shard $ps_s end rc=0*"
+done
 ps_c=""; read -r ps_c 2>/dev/null < "/proc/$ps_to/comm"
 [ "$ps_c" != timeout ] || kill -TERM "$ps_to" 2>/dev/null
 wait "$ps_to" 2>/dev/null
@@ -9162,7 +9174,7 @@ is "the row pattern finds the green run's rows and its count" "6" \
    "$(grep -cE "$ps_row" "$PSROOT/green.out")"
 is "no new line reads as a row or a count" "0" "$(grep -cE "$ps_row" "$PSROOT/green.err")"
 is "nor is left behind" "0" "$(ps_settle)"
-unset -f ps_left ps_settle; unset PSROOT Q ps_to ps_c ps_row
+unset -f ps_left ps_settle; unset PSROOT Q ps_to ps_c ps_row ps_s
 
 echo "== tests/par.sh: a checkout under a path with a space runs every shard and nothing else (#1007) =="
 # par.sh joined its shard paths into one string and split it again, so a path holding a space
@@ -17665,9 +17677,12 @@ for fx in stub srv; do
     is "a prelude FATAL ($fx) exits 1 and leaves no dir, socket or listening server behind" \
        "1|FATAL|||0" \
        "$forc|$(printf '%s' "$fo" | grep -o FATAL | head -1)|$(ls -A "$FD/t")|$(
-        ls -A "$FD"/s/tmux-* 2>/dev/null)|$(grep -cF " $FD/s/" /proc/net/unix 2>/dev/null)"
+        ls -A "$FD"/s/tmux-* 2>/dev/null)|$(
+        if [ -r /proc/net/unix ]; then grep -cF " $FD/s/" /proc/net/unix; else echo 0; fi)"
     # Whatever a red run left: ended by its own socket, then removed.
-    for fs in "$FD"/s/tmux-*/*; do [ -S "$fs" ] && "$TMUX_REAL" -S "$fs" kill-server >/dev/null 2>&1; done
+    for fs in "$FD"/s/tmux-*/*; do
+        [ -S "$fs" ] && "$TMUX_REAL" -S "$fs" kill-server >/dev/null 2>&1
+    done
     rm -rf "${FD:?}/t/"* "${FD:?}/s/"*
 done
 unset FD fo forc fx fs
@@ -17688,18 +17703,28 @@ sed "/^trap cleanup EXIT\$/a $sg_hold" "$SG/tests/pre.sh" > "$SG/tests/ctl.sh"
 is "each copy holds at one place" "1 1" \
    "$(grep -c 'exec 9<>' "$SG/tests/win.sh") $(grep -c 'exec 9<>' "$SG/tests/ctl.sh")"
 sg_left() {                   # the processes carrying the copy's TMPDIR: "0", or count and names
-    local p n=0 o=""
-    for p in /proc/[0-9]*; do
-        tr '\0' '\n' 2>/dev/null < "$p/environ" | grep -qxF "TMPDIR=$SG/t" || continue
-        n=$((n + 1)); o="$o [$(tr '\0' ' ' 2>/dev/null < "$p/cmdline")]"
+    local p n o end=$((SECONDS + 3))            # read again for 3 s: one on its way out is none
+    while :; do
+        n=0 o=""
+        for p in /proc/[0-9]*; do
+            tr '\0' '\n' 2>/dev/null < "$p/environ" | grep -qxF "TMPDIR=$SG/t" || continue
+            n=$((n + 1)); o="$o [$(tr '\0' ' ' 2>/dev/null < "$p/cmdline")]"
+        done
+        [ "$n" != 0 ] && [ "$SECONDS" -lt "$end" ] || break
+        sleep 0.1
     done
     printf '%s%s' "$n" "$o"
 }
+# A background child starts with INT ignored, and a suite under nohup starts with HUP ignored
+# (#524); bash cannot trap a signal it started with ignored. env hands the default back where
+# it can, and where it cannot the row for that signal is skipped with the reason.
+sg_dfl() { env --default-signal="$1" true 2>/dev/null; }
 sg_run() {                    # <signal> <copy> -> status|carriers|left in TMPDIR|listeners
     local c="" rc s
     rm -rf "${SG:?}/t" "${SG:?}/s"; mkdir -p "$SG/t" "$SG/s"
-    ( cd "$SG" && exec env -u TMUX TMPDIR="$SG/t" TMUX_TMPDIR="$SG/s" bash "tests/$2.sh" ) \
-        </dev/null >/dev/null 2>&1 & sg_p=$!
+    local d=(); ! sg_dfl "$1" || d=(--default-signal="$1")
+    ( cd "$SG" && exec env "${d[@]}" -u TMUX TMPDIR="$SG/t" TMUX_TMPDIR="$SG/s" \
+        bash "tests/$2.sh" ) </dev/null >/dev/null 2>&1 & sg_p=$!
     until_out '?*' ls "$SG/t/started" >/dev/null
     read -r c 2>/dev/null < "/proc/$sg_p/comm"
     [ "$c" != bash ] || kill -"$1" "$sg_p" 2>/dev/null
@@ -17718,10 +17743,16 @@ elif [ $((${#SG} + ${#UID} + 30)) -gt 107 ]; then
 else
     is "a TERM right after the server starts leaves no process, dir or socket" \
        "143|0|pf,started,|0" "$(sg_run TERM win)"
-    is "a HUP there leaves none either" "129|0|pf,started,|0" "$(sg_run HUP win)"
+    if ! sg_dfl HUP && [ -n "$(trap -p HUP)" ]; then
+        skip_ "a HUP in the prelude (SIGHUP is ignored and env cannot reset it)"
+    else is "a HUP there leaves none either" "129|0|pf,started,|0" "$(sg_run HUP win)"
+    fi
+    if ! sg_dfl INT; then skip_ "an INT in the prelude (env cannot reset an ignored SIGINT)"
+    else is "nor does an INT" "130|0|pf,started,|0" "$(sg_run INT win)"
+    fi
     is "a TERM after the trap is set leaves none" "143|0|pf,started,|0" "$(sg_run TERM ctl)"
 fi
-unset -f sg_left sg_run; unset SG sg_hold sg_p
+unset -f sg_left sg_run sg_dfl; unset SG sg_hold sg_p
 
 echo "== tests/only.sh: a pattern with \\( and ^ selects the block, no match is an error (#241) =="
 OD=$(mktemp -d)
