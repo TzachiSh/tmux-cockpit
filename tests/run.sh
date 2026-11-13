@@ -163,13 +163,18 @@ flop_left() {                 # [dir] -> a bad row for each r.* whose call was n
 # A TMPDIR holding a space: an unquoted path in a script the suite writes splits at it, and the
 # write lands on the part before the space, beside the run's scratch (#929). BESIDE is that
 # name, and the tail fails the run if it is newer than a stamp made here: a name an earlier
-# run left is still caught when this run writes to it again (#991).
+# run left is still caught when this run writes to it again (#991). A directory that was there
+# at the start is left out: anything may change it (a TMPDIR under "/home/a b" names /home/a).
+# One the run made is not.
 BESIDE=
-case ${TMPDIR:-} in *' '*) BESIDE=${TMPDIR%% *}; : > "$STATE/beside.stamp" ;; esac
+case ${TMPDIR:-} in
+    *' '*) [ -d "${TMPDIR%% *}" ] || BESIDE=${TMPDIR%% *}
+           : > "$STATE/beside.stamp" ;;
+esac
 beside_left() {
-    [ -z "$BESIDE" ] || [ -d "$BESIDE" ] || [ ! "$BESIDE" -nt "$STATE/beside.stamp" ] ||
-        bad "nothing the suite wrote landed beside its TMPDIR (#929)" "$BESIDE untouched" \
-            "$(ls -ld "$BESIDE" 2>&1)"
+    [ -n "$BESIDE" ] && [ "$BESIDE" -nt "$STATE/beside.stamp" ] || return 0
+    bad "nothing the suite wrote landed beside its TMPDIR (#929)" "$BESIDE untouched" \
+        "$(ls -ld "$BESIDE" 2>&1)"
 }
 # The suite itself runs inside the user's tmux, so its own $TMUX would send
 # every bare call straight back to the live server. Drop it.
