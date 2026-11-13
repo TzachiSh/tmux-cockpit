@@ -440,8 +440,20 @@ fn kill_group(reaped: &Mutex<bool>, pid: u32) {
     drop(g);
 }
 
+/// The folder's name as redacted, when [`super::redact::redact_clean`], the call
+/// the envelope makes, would hide any of it; `None` when it would hide nothing
+/// (#966). A name that is not UTF-8 is read lossily, so its key is found too.
+pub fn secret_dir(dir: &Path) -> Option<String> {
+    let (shown, hidden) = super::redact::redact_clean(&dir.to_string_lossy());
+    (hidden > 0).then_some(shown)
+}
+
 /// The whole check on a read dir, the one [`Request::spawn_with`] runs: a caller
 /// may run it first to refuse up front. The error is a line for the user.
+///
+/// A folder [`secret_dir`] names is refused first, by its redacted name: the
+/// system prompt and `--add-dir` carry a read dir whole, and a redacted one would
+/// name no folder (#966). So no other refusal shows such a name in full.
 ///
 /// A name goes into the system prompt, so a control or bidi character is refused,
 /// never cleaned, as the call would read some other folder; so is an empty name
@@ -449,6 +461,12 @@ fn kill_group(reaped: &Mutex<bool>, pid: u32) {
 /// home, a link to one included. A glob character is refused though no rule holds
 /// the path today, in case one does again.
 pub fn read_dir_ok(dir: &Path) -> Result<(), String> {
+    if let Some(shown) = secret_dir(dir) {
+        return Err(format!(
+            "{shown:?} holds what looks like a secret, and the call would send its name; \
+             rename the folder to read it"
+        ));
+    }
     let shown = format!("{:?}", dir.display().to_string());
     let Some(s) = dir.to_str() else {
         return Err(format!("{shown} is not UTF-8; refused"));
