@@ -391,13 +391,45 @@ fn a_binary_killed_by_a_signal_is_reported_by_that_signal() {
     }
 }
 
-/// The runner dies by ABRT with no core file of its own beside the binary's.
-/// It starts here with the core limit as high as this user may set it and in
-/// the rig's folder, where a core would land. Where that limit is 0 no
-/// process leaves a core, and this holds whatever the runner does.
+/// Why a box cannot hold the second half of the row below, or None: `pattern`
+/// is its `core_pattern`, `hard` this user's hard core limit. Where the pattern
+/// pipes cores to a program the kernel ignores a core limit (core(5)), so the
+/// runner is dumped whatever it sets. Where the hard limit is 0 nothing is
+/// dumped whatever it sets.
+fn no_core_half_skipped(pattern: &str, hard: libc::rlim_t) -> Option<String> {
+    if pattern.starts_with('|') {
+        Some(format!(
+            "core_pattern pipes cores to a program, which ignores a core limit: {}",
+            pattern.trim()
+        ))
+    } else {
+        (hard == 0).then(|| "this user's hard core limit is 0".to_string())
+    }
+}
+
 #[test]
-fn the_runner_that_dies_by_the_binarys_signal_leaves_no_core() {
-    use std::os::unix::process::CommandExt;
+fn the_no_core_half_is_skipped_under_a_piped_pattern_or_a_hard_limit_of_0() {
+    let apport = "|/usr/share/apport/apport -p%p -s%s -c%c -d%d -P%P -u%u -g%g -- %E\n";
+    let piped = no_core_half_skipped(apport, libc::RLIM_INFINITY).expect("a piped pattern");
+    assert!(piped.contains("pipes cores") && piped.ends_with("-- %E"), "{piped}");
+    assert_eq!(
+        no_core_half_skipped("core\n", 0).as_deref(),
+        Some("this user's hard core limit is 0")
+    );
+    for (pattern, hard) in [("core\n", 1), ("/var/crash/core.%p\n", libc::RLIM_INFINITY), ("", 4096)] {
+        assert_eq!(no_core_half_skipped(pattern, hard), None, "{pattern:?} {hard}");
+    }
+}
+
+/// The runner dies by the binary's ABRT, everywhere. Its core limit is 0 by
+/// then, so that where a core is a file its own does not land on the
+/// binary's: it starts here with the limit as high as this user may set it,
+/// in the rig's folder, and must leave no core. That half is skipped where
+/// [`no_core_half_skipped`] says why, with a line on the real stderr, past the
+/// harness's capture, so a run's log shows that it was.
+#[test]
+fn the_runner_that_dies_by_the_binarys_signal_leaves_no_core_file() {
+    use std::{io::Write, os::unix::process::CommandExt};
     let r = Rig::new("core");
     let mut c = r.command();
     c.current_dir(&*r.0).arg(r.binary(TEST, DIES)).arg("ABRT");
@@ -411,8 +443,23 @@ fn the_runner_that_dies_by_the_binarys_signal_leaves_no_core() {
             Ok(())
         })
     };
-    assert_eq!(r.ran(&mut c).signal, Some((libc::SIGABRT, false)));
+    let (signal, core) = r.ran(&mut c).signal.expect("the runner did not die by a signal");
+    assert_eq!(signal, libc::SIGABRT);
+    let pattern = std::fs::read_to_string("/proc/sys/kernel/core_pattern").unwrap_or_default();
+    // SAFETY: getrlimit writes one rlimit into the struct it is handed.
+    let hard = unsafe {
+        let mut l = std::mem::zeroed::<libc::rlimit>();
+        libc::getrlimit(libc::RLIMIT_CORE, &mut l);
+        l.rlim_max
+    };
+    match no_core_half_skipped(&pattern, hard) {
+        Some(why) => drop(writeln!(std::io::stderr(), "{CORE_ROW}: SKIPPED the no-core half: {why}")),
+        None => assert!(!core, "the runner left a core of its own"),
+    }
 }
+
+/// The row above, as its skipped half names it in a run's log.
+const CORE_ROW: &str = "claude_guard the_runner_that_dies_by_the_binarys_signal_leaves_no_core_file";
 
 /// A binary may choose an exit status above 128. One that names a signal which
 /// stops or is ignored is passed on as the status it is: sending STOP would

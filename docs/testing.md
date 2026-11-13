@@ -65,6 +65,12 @@ because the runner then dies by the same signal. A binary that exits by its own
 choice with 128 plus the number of such a signal, 134 for one, is reported the
 same way. A shell cannot tell the two apart.
 
+That has one cost. On a box that pipes core dumps to a program (apport,
+systemd-coredump), a test binary that aborts leaves a second report there, of
+the runner's shell: the kernel ignores a core limit under a pipe (core(5)).
+Where a core is a file the runner sets its limit to 0 and leaves none, so the
+binary's own core is not written over.
+
 Doctests are guarded from cargo 1.89. The 1.88 toolchain `make tui-test` uses
 does not hand a doctest to a runner, and the crate has no doctest today.
 

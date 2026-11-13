@@ -69,10 +69,13 @@ trap - EXIT HUP INT TERM
 
 # cargo names the signal a test binary died by. The shell hands that death on
 # as 128 + the signal, which cargo would print as a plain exit status, so this
-# script dies by the same signal, without a second core file. An exit status
-# above 128 that the binary chose itself reads the same here and is passed on
-# as a signal too. Only a signal that ends a process is sent: STOP would leave
-# this script, and cargo behind it, waiting for good.
+# script dies by the same signal. Its core limit goes to 0 first: where a core
+# is a file, this script's would land on the binary's. Where cores are piped to
+# a program the kernel ignores the limit (core(5)), and the program gets a
+# second report, of this shell. An exit status above 128 that the binary chose
+# itself reads the same here and is passed on as a signal too. Only a signal
+# that ends a process is sent: STOP would leave this script, and cargo behind
+# it, waiting for good.
 sig=$got
 [ "$rc" -le 128 ] || sig=$(kill -l "$rc" 2>/dev/null) || sig=$got
 case $sig in
