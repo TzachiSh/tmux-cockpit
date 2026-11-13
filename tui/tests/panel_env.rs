@@ -899,3 +899,25 @@ fn the_panels_own_environment_stays_without_the_three() {
     let (_, own) = call_env("quiet-own", &[]);
     assert_eq!(own, [None, None, None], "the panel's own env after a call, {QUIET:?}");
 }
+
+// --- #970: an ask's walk up for a `.git` stops at the user's HOME ---
+
+/// `ask::load` hands `load_in` the HOME of this moment, so a `.git` above HOME
+/// (here one planted in the dir HOME sits in) is no project, and a file in a
+/// plain folder under HOME has that folder as its repo. The planted `.git` sits
+/// between HOME and every real folder above, so the developer's checkout or a
+/// `.git` above the temp dir changes nothing. Paths are canonical, and HOME's
+/// value goes through `load`'s own canonicalizing, so a linked temp dir holds.
+/// A walk past HOME finds the planted `.git`, and the read check then refuses
+/// that folder for holding HOME; a home set too low has no project at all.
+#[test]
+fn an_asks_walk_up_stops_at_home() {
+    let e = Env::new("askhome", &[("HOME", Some("$D/home".into()))]);
+    let d = e.dir.canonicalize().unwrap();
+    std::fs::create_dir_all(d.join(".git")).unwrap();
+    std::fs::create_dir_all(d.join("home/notes")).unwrap();
+    let f = d.join("home/notes/x.md");
+    std::fs::write(&f, "a\nb\n").unwrap();
+    let got = cockpit_tui::panel::ask::load(&f, 1, 2).map(|a| a.repo);
+    assert_eq!(got, Ok(d.join("home/notes")), "a plain folder under HOME, a .git above it");
+}
