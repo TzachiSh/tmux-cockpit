@@ -89,7 +89,9 @@ The guard is absent from a run started outside the checkout with
 `--manifest-path`, from a test binary started by hand or under a debugger
 (`tui/tests/claude-guard/runner <binary>` starts one behind it), from a test
 that builds its `PATH` from nothing, and on a target the config names no
-runner for, where one test fails and says which lines to add.
+runner for. There one test of `tui/tests/claude_guard.rs` fails and says which
+lines to add, in a run that includes that binary. A filtered run there, such as
+`cargo test --test agents`, has no guard and says nothing.
 `docs/testing.md` has the targets, the switch that lifts the guard, what a
 cargo runner of your own does to it, and what the script changes for
 `cargo run`.

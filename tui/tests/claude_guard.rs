@@ -742,15 +742,40 @@ fn why_no_guard(found: &str, target: Option<&str>, config: Option<&str>) -> Stri
     }
 }
 
-/// The target this binary was built for: the folder above `<profile>/deps`
-/// where cargo was given `--target`, and else the host that `rustc -vV` names.
-/// None where neither can be read.
-fn built_for() -> Option<String> {
-    let exe = std::env::current_exe().ok()?;
+/// Where cargo built the binary at `exe`, `<above>/<profile>/deps/<binary>`:
+/// the target folder, and the triple when cargo was given `--target`. Read by
+/// `.rustc_info.json`, the file cargo keeps its rustc's details in. cargo 1.88
+/// and 1.92 write it into the target folder in all four layouts measured (a
+/// plain build and a `--target` one, each into a folder cargo made and into one
+/// made before) and never into the triple's folder: in `<above>` it is a plain
+/// build, in the folder above that a `--target` one (#997). `CACHEDIR.TAG` was
+/// read before and cannot tell the four apart. The file is cargo's own and no
+/// documented contract. None where neither folder holds it: a binary started
+/// by hand, `CARGO_CACHE_RUSTC_INFO=0`, or a cargo that no longer writes it.
+/// Then [`built_for`] asks rustc, and [`plain_target`] has none, so the rows
+/// that need it print their SKIPPED line. It only chooses words and skips: no
+/// row that fails without the guard reads it.
+fn built_into(exe: &Path) -> Option<(PathBuf, Option<String>)> {
     let above = exe.parent()?.parent()?.parent()?;
-    if !above.join("CACHEDIR.TAG").is_file() {
-        return Some(above.file_name()?.to_string_lossy().into_owned());
+    let made = |d: &Path| d.join(".rustc_info.json").is_file();
+    if made(above) {
+        return Some((above.to_path_buf(), None));
     }
+    let root = above.parent().filter(|r| made(r))?;
+    Some((root.to_path_buf(), Some(above.file_name()?.to_string_lossy().into_owned())))
+}
+
+/// The target the binary at `exe` was built for: the triple of a `--target`
+/// build, and else the one `host` names. None where neither can be read.
+fn built_for(exe: &Path, host: impl FnOnce() -> Option<String>) -> Option<String> {
+    match built_into(exe) {
+        Some((_, Some(triple))) => Some(triple),
+        _ => host(),
+    }
+}
+
+/// The host `rustc -vV` names.
+fn rustc_host() -> Option<String> {
     let out = Command::new("rustc").arg("-vV").stdin(Stdio::null()).output().ok()?;
     let said = String::from_utf8_lossy(&out.stdout);
     said.lines().find_map(|l| l.strip_prefix("host: ")).map(str::to_string)
@@ -768,7 +793,8 @@ fn this_run_is_behind_the_guard_where_one_was_asked_for() {
     let held = behind_the_guard(switch.as_deref(), dir.as_deref().map(Path::new), &var("PATH").unwrap_or_default());
     if let Err(found) = held {
         let config = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../.cargo/config.toml"));
-        panic!("{}", why_no_guard(&found, built_for().as_deref(), config.ok().as_deref()));
+        let target = std::env::current_exe().ok().and_then(|exe| built_for(&exe, rustc_host));
+        panic!("{}", why_no_guard(&found, target.as_deref(), config.ok().as_deref()));
     }
 }
 
@@ -852,15 +878,59 @@ fn switch_child() {
     }
 }
 
-/// The target folder a plain `cargo test` built this binary into, which a
-/// second cargo started here finds built: `<target>/debug/deps/<binary>`,
-/// under the folder cargo marks as its own. None for a binary started by hand
-/// or built another way (`--release`, `--target`), where that cargo would
-/// build the crate again.
-fn plain_target() -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    let debug = exe.parent().filter(|d| d.ends_with("debug/deps"))?.parent()?;
-    debug.parent().filter(|t| t.join("CACHEDIR.TAG").is_file()).map(Path::to_path_buf)
+/// The target folder a plain `cargo test` built the binary at `exe` into,
+/// which a second cargo started here finds built: `<target>/debug/deps/<binary>`,
+/// by [`built_into`]. None for a binary started by hand or built another way
+/// (`--release`, `--target`), where that cargo would build the crate again.
+fn plain_target(exe: &Path) -> Option<PathBuf> {
+    exe.parent().filter(|d| d.ends_with("debug/deps"))?;
+    match built_into(exe)? {
+        (target, None) => Some(target),
+        (_, Some(_)) => None,
+    }
+}
+
+/// The triple of a `--target` build in [`LAYOUTS`], its folder's tag and its binary.
+const RV: &str = "riscv64gc-unknown-linux-gnu";
+const RV_TAG: &str = "riscv64gc-unknown-linux-gnu/CACHEDIR.TAG";
+const RV_EXE: &str = "riscv64gc-unknown-linux-gnu/debug/deps/c";
+const TAG: &str = "CACHEDIR.TAG";
+const INFO: &str = ".rustc_info.json";
+
+/// A target folder as cargo 1.88 and 1.92 left it (#997): (row, the files in it,
+/// the binary below it, [`built_for`] with `host` as the host, [`plain_target`]).
+type Layout = (
+    &'static str,
+    &'static [&'static str],
+    &'static str,
+    &'static str,
+    Option<&'static str>,
+);
+
+/// `CACHEDIR.TAG` is in the folder cargo made and in a `--target` build's
+/// triple folder, and in neither when the folder was made before cargo ran.
+const LAYOUTS: [Layout; 7] = [
+    ("plain, a folder cargo made", &[TAG, INFO], "debug/deps/c", "host", Some("")),
+    ("plain, a folder made before", &[INFO], "debug/deps/c", "host", Some("")),
+    ("--target, a folder cargo made", &[TAG, INFO, RV_TAG], RV_EXE, RV, None),
+    ("--target, a folder made before", &[INFO, RV_TAG], RV_EXE, RV, None),
+    ("plain --release", &[TAG, INFO], "release/deps/c", "host", None),
+    ("no .rustc_info.json, plain", &[TAG], "debug/deps/c", "host", None),
+    ("no .rustc_info.json, --target", &[TAG, RV_TAG], RV_EXE, "host", None),
+];
+
+#[test]
+fn the_target_and_the_plain_target_folder_are_read_from_where_cargo_left_rustc_info() {
+    for (row, files, exe, target, plain) in LAYOUTS {
+        let r = Rig::new("layout");
+        let root = r.0.join("t");
+        for file in files.iter().chain([&exe]) {
+            r.binary(&format!("t/{file}"), "");
+        }
+        let exe = root.join(exe);
+        let got = (built_for(&exe, || Some("host".into())), plain_target(&exe));
+        assert_eq!(got, (Some(target.to_string()), plain.map(|p| root.join(p))), "{row}");
+    }
 }
 
 /// The repo's `.cargo/config.toml` sets the switch to 1 for whatever cargo
@@ -873,6 +943,21 @@ fn a_cargo_started_in_the_checkout_sets_the_switch_to_1() {
     a_second_cargo_runs_switch_child("a_cargo_started_in_the_checkout_sets_the_switch_to_1", &[]);
 }
 
+/// A developer's own runner under a `cfg(..)` key, as one of their configs may
+/// hold. `cfg(all())` holds on every target, macOS too, and no repo has a use
+/// for a key that names no target. `false` fails any binary it is handed.
+const OTHER_CFG_RUNNER: &str = "target.'cfg(all())'.runner='false'";
+
+/// The repo's runner is under exact target names (#973). Under a `cfg(..)` key
+/// of its own, any other matching cfg runner key a developer holds made cargo
+/// refuse every build in the checkout, exit 101, "several matching instances".
+/// Under the exact name cargo drops the developer's, and the tests run guarded.
+#[test]
+fn a_cargo_given_another_matching_cfg_runner_key_still_runs_the_tests() {
+    let row = "a_cargo_given_another_matching_cfg_runner_key_still_runs_the_tests";
+    a_second_cargo_runs_switch_child(row, &["--config", OTHER_CFG_RUNNER]);
+}
+
 /// A cargo of `row`'s own, started in the checkout with `config` added to its
 /// arguments, runs this binary's `switch_child`, which must pass with the
 /// switch at 1. It finds the crate built in the target folder this binary came
@@ -880,7 +965,8 @@ fn a_cargo_started_in_the_checkout_sets_the_switch_to_1() {
 /// binary or it was not built the plain way.
 fn a_second_cargo_runs_switch_child(row: &str, config: &[&str]) {
     use std::io::Write;
-    let (Some(cargo), Some(target)) = (std::env::var_os("CARGO"), plain_target()) else {
+    let target = std::env::current_exe().ok().and_then(|exe| plain_target(&exe));
+    let (Some(cargo), Some(target)) = (std::env::var_os("CARGO"), target) else {
         let why = "no cargo started this binary, or it was not built by a plain cargo test";
         return drop(writeln!(std::io::stderr(), "claude_guard {row}: SKIPPED: {why}"));
     };
