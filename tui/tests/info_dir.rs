@@ -69,21 +69,24 @@ fn rig(t: &Tmp, cwd: &str, opt: &str, said: &str) -> Vec<(&'static str, String)>
     fake::write_exec(&d.join("tmux"), &sh);
     vec![
         ("COCKPIT_TMUX", d.join("tmux").display().to_string()),
+        // `set` never puts PATH back, so each rig adds an entry that outlives its folder
+        ("PATH", fake::rig_path(&d.join("bin"))),
         ("CLAUDE_CONFIG_DIR", home.join(".claude").display().to_string()),
         ("HOME", home.display().to_string()),
         ("COCKPIT_READONLY", "1".into()),
     ]
 }
 
-fn set(env: &[(&'static str, String)]) {
+fn set(t: &Tmp, env: &[(&'static str, String)]) {
     for (k, v) in env {
         // SAFETY: every test in this binary holds ENV while it touches the environment.
         unsafe { std::env::set_var(k, v) };
     }
+    fake::assert_claude_is_the_rigs(&t.0);
 }
 
 fn facts(t: &Tmp, cwd: &str, opt: &str, said: &str) -> Facts {
-    set(&rig(t, cwd, opt, said));
+    set(t, &rig(t, cwd, opt, said));
     gather("%1").unwrap()
 }
 
@@ -132,7 +135,7 @@ fn info_json_dir_is_the_boards_work_dir() {
         let env = rig(&t, &cwd, o, s);
         let (code, stdout) = info_json(&env, "%1");
         let v: serde_json::Value = serde_json::from_slice(&stdout).unwrap_or_default();
-        set(&env);
+        set(&t, &env);
         let board = list_panes().unwrap().into_iter().find(|p| p.id == "%1").unwrap().dir;
         assert_eq!(
             (code, v["dir"].as_str(), board.as_str()),
@@ -158,7 +161,7 @@ fn gather_reads_the_bound_job_cleaned() {
     let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
     let t = Tmp::new("job");
     let cwd = t.sub("cwd");
-    set(&rig(&t, &cwd, "", ""));
+    set(&t, &rig(&t, &cwd, "", ""));
     let plain = std::fs::read_to_string(t.0.join("display")).unwrap();
     std::fs::write(t.0.join("display"), format!("{plain}\u{1f}bg_7\u{1f}swe\u{202e}ep\u{7}")).unwrap();
     assert_eq!(gather("%1").unwrap().job, Some(("sweep".to_string(), "bg_7".to_string())));
