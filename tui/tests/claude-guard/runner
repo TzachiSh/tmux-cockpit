@@ -1,0 +1,115 @@
+#!/bin/sh
+# cargo's runner for this repo (.cargo/config.toml, #973). cargo starts every
+# binary of `cargo test`, `cargo run` and `cargo bench` as
+#   tui/tests/claude-guard/runner <binary> [args...]
+# A test binary runs with the refusing `claude` beside this file first on its
+# PATH, and fails, named, when it started that claude. The product sends a
+# failed claude's stderr away and reads the failure as no answer, so the
+# refusal alone would pass: each start leaves a line in a file this script
+# owns, read once the binary has ended. Anything else is exec'd with its
+# arguments, its PATH and its pid as cargo gave them. One thing a shell cannot
+# hand on: dash drops an environment variable whose name is no shell name.
+# COCKPIT_TEST_CLAUDE_GUARD=0 lifts the guard by hand (docs/testing.md).
+me=claude-guard
+[ "$#" -gt 0 ] || { echo "$me: usage: runner <binary> [args...]" >&2; exit 2; }
+[ "${COCKPIT_TEST_CLAUDE_GUARD-}" != 0 ] || exec "$@"
+
+# What `cargo test` runs, by the folder the binary is in and its name: one in
+# deps/, which `cargo bench` runs too; an example built as a test,
+# examples/<name>-<16 hex>, where `cargo run --example` runs examples/<name>;
+# and a doctest, which cargo 1.92 hands to a runner and 1.88 does not. cargo
+# gives the whole path. A path given by hand from a folder of its own,
+# ./<name>, is read from that folder.
+h='[0-9a-f]'
+h=$h$h$h$h
+h=$h$h$h$h
+dir=${1%/*}
+case $1 in
+    /*) ;;
+    */*) dir=$(cd "$dir" 2>/dev/null && pwd) || dir= ;;
+    *) dir= ;;
+esac
+case ${dir##*/}/${1##*/} in
+    deps/* | examples/*-$h | rustdoctest*/rust_out) ;;
+    *) exec "$@" ;;
+esac
+# `cargo bench` adds --bench, and the harness then runs no test unless --test
+# is there too.
+bench=
+tests=
+for a in "$@"; do
+    case $a in
+        --bench) bench=1 ;;
+        --test) tests=1 ;;
+    esac
+done
+[ -z "$bench" ] || [ -n "$tests" ] || exec "$@"
+
+# One folder per binary run, so two cargo runs at once share nothing. No
+# folder, no run: the binary is never started without the guard.
+d=$(mktemp -d "${TMPDIR:-/tmp}/cockpit-claude-guard.XXXXXX") || {
+    echo "$me: error: no folder for the guard, the binary was not started binary=$1" >&2
+    exit 1
+}
+# Until the binary starts, any exit removes the folder.
+trap 'rm -rf "$d"' EXIT
+# A signal sent to this script waits for the binary: the log is still read and
+# the folder removed, and the script then dies by that signal itself.
+got=
+trap 'got=HUP' HUP
+trap 'got=INT' INT
+trap 'got=QUIT' QUIT
+trap 'got=TERM' TERM
+case $d in /*) ;; *) d=$PWD/$d ;; esac
+case $d in
+    *:*)
+        echo "$me: error: a ':' in TMPDIR would split PATH, the binary was not started dir=$d" >&2
+        exit 1
+        ;;
+esac
+cp "${0%/*}/claude" "$d/claude" && : > "$d/reached" || {
+    echo "$me: error: cannot set the guard up, the binary was not started dir=$d" >&2
+    exit 1
+}
+
+# From here the folder is removed by the line after the binary and by nothing
+# else. A signal this script does not trap ends it at once, and its binary may
+# run on. bash runs an EXIT trap on such a death and dash does not, so with the
+# trap left in place the folder went under bash, and a later start found the
+# next claude on PATH. Killed, this script leaves its folder, and the stub in it
+# keeps refusing (#973).
+trap - EXIT
+PATH=$d:${PATH-/bin:/usr/bin} COCKPIT_TEST_CLAUDE_GUARD_DIR=$d "$@"
+rc=$?
+
+if [ ! -f "$d/reached" ]; then
+    echo "$me: error: the guard's folder was removed under the binary binary=$1 dir=$d" >&2
+    [ "$rc" -ne 0 ] || rc=1
+elif [ -s "$d/reached" ]; then
+    echo "$me: error: a test started claude, not its rig's own stub (docs/tui.md) binary=$1" >&2
+    cat "$d/reached" >&2
+    [ "$rc" -ne 0 ] || rc=1
+fi
+rm -rf "$d"
+trap - HUP INT QUIT TERM
+
+# cargo names the signal a test binary died by. The shell hands that death on
+# as 128 + the signal, which cargo would print as a plain exit status, so this
+# script dies by the same signal. Its core limit goes to 0 first: where a core
+# is a file, this script's would land on the binary's. Where cores are piped to
+# a program the kernel ignores the limit (core(5)), and the program gets a
+# second report, of this shell. An exit status above 128 that the binary chose
+# itself reads the same here and is sent on as a signal too. A signal that
+# stops is never sent: this script, and cargo behind it, would wait for good.
+# One that ends nothing falls through to the plain status, and so does QUIT
+# where sh is bash, which ignores it in every shell.
+sig=$got
+[ "$rc" -le 128 ] || sig=$(kill -l "$rc" 2>/dev/null) || sig=$got
+case $sig in
+    '' | STOP | TSTP | TTIN | TTOU) ;;
+    *)
+        ulimit -c 0 2>/dev/null
+        kill -s "$sig" "$$" 2>/dev/null
+        ;;
+esac
+exit "$rc"
