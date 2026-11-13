@@ -61,6 +61,14 @@ ncols() {                     # <string> -> the columns it draws in
 TMUX_REAL=$(command -v tmux) || TMUX_REAL=tmux
 SUITE_SOCK="cockpit-suite-$$"
 SHIM=$(mktemp -d)
+# A prelude FATAL comes before `trap cleanup EXIT` is set, so it ends what the run made so far
+# itself: the suite's own server, if it got that far, and $STATE and $SHIM (#984).
+fatal() {                     # <message>
+    printf '  \033[31mFATAL\033[0m %s\n' "$1" >&2
+    "$TMUX_REAL" -L "$SUITE_SOCK" kill-server >/dev/null 2>&1
+    rm -rf -- "$STATE" "$SHIM"
+    exit 1
+}
 # Deferring when $TMUX is set is load-bearing: tmux exports it to everything it
 # runs, so cockpit.tmux launched by a run-shell inside one of the per-block
 # servers must talk to THAT server, not this one.
@@ -175,8 +183,9 @@ exit 0
 CODEEOF
 chmod +x "$SHIM/code"
 # The suite's own claude, before the developer's (#982). cockpit-tui starts `claude agents
-# --json` by PATH, as it should for a user, and under the suite that reached the real one
-# about 29 times a run. This one prints nothing, exits 127 and logs each start beside itself.
+# --json` by PATH, as it should for a user, and under the suite that reached the
+# developer's real one (#982 has the count). This one prints nothing, exits 127 and logs each
+# start beside itself.
 # A folder of its own, not $SHIM: the #895 rows strip every folder that holds a claude and
 # must keep the tmux shim. A block that puts its own stub first still wins.
 SUITE_CLAUDE="$STATE/claude-stub"; mkdir -p "$SUITE_CLAUDE"
@@ -184,11 +193,8 @@ printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "${0%%/*}/starts"\nexit 127\n' > "$SU
 chmod +x "$SUITE_CLAUDE/claude"
 PATH="$SHIM:$SUITE_CLAUDE:$(path_without_mnt "$PATH")"; export PATH
 # An edit of the line above must not quietly hand the developer's claude back.
-if [ "$(command -v claude)" != "$SUITE_CLAUDE/claude" ]; then
-    printf '  \033[31mFATAL\033[0m claude is not the suite'\''s stub: %s\n' \
-        "$(command -v claude || echo none)" >&2
-    exit 1
-fi
+[ "$(command -v claude)" = "$SUITE_CLAUDE/claude" ] \
+    || fatal "claude is not the suite's stub: $(command -v claude || echo none)"
 
 "$TMUX_REAL" -L "$SUITE_SOCK" -f /dev/null new-session -d -s suite \
     'exec -a claude sleep 3600' >/dev/null 2>&1
@@ -245,10 +251,7 @@ st()    { "$DIR/scripts/agent-state" "$@"; }
 # a running agent whose own hooks fire concurrently and race the assertions --
 # that made the suite intermittently red for reasons unrelated to the code.
 PANE=$(tmux list-panes -a -F '#{pane_id}' 2>/dev/null | head -1)
-if [ -z "$PANE" ]; then
-    printf '  \033[31mFATAL\033[0m private tmux server did not start\n' >&2
-    exit 1
-fi
+[ -n "$PANE" ] || fatal "private tmux server did not start"
 # Every mktemp in the suite goes through these, so an interrupted run cleans up
 # after itself. The per-block `rm -rf` calls stay -- they keep the footprint
 # small DURING the run; this is the backstop for the blocks still in flight.
