@@ -262,3 +262,23 @@ pub fn assert_claude_is_the_rigs(dir: &Path) {
         panic!("the first claude on PATH is {found:?}, not one under {dir} (#972)");
     }
 }
+
+// ---- gh, the what-changed collector's second command found by PATH (#1000) ----
+
+/// [`rigs_claude`]'s walk for `gh`. A `gh` reached outside a rig runs as the
+/// developer's GitHub login, so no rig may leave one ahead of its own.
+#[allow(dead_code)]
+pub fn rigs_gh(path: &std::ffi::OsStr, dir: &Path) -> Result<PathBuf, Option<PathBuf>> {
+    rigs_first("gh", path, dir)
+}
+
+/// For a rig that hands a spawn the PATH value `path`: the `gh` that spawn
+/// would find is one under `dir`, the rig's own folder. It fails where no `gh`
+/// is on that PATH at all, too.
+#[allow(dead_code)]
+pub fn assert_gh_is_the_rigs(path: &std::ffi::OsStr, dir: &Path) {
+    if let Err(found) = rigs_gh(path, dir) {
+        let dir = dir.display();
+        panic!("the first gh on PATH is {found:?}, not one under {dir} (#1000)");
+    }
+}

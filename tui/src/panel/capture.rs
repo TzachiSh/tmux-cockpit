@@ -226,10 +226,11 @@ impl Drop for Git {
     }
 }
 
-/// How a call ended.
+/// How a call ended; a failed one with its exit code, `None` when it never
+/// started or a signal ended it.
 pub(crate) enum Ran {
     Ok(String),
-    Failed,
+    Failed(Option<i32>),
     TimedOut,
 }
 
@@ -246,14 +247,14 @@ impl Ran {
 /// nothing.
 pub(crate) fn wait(g: Option<Git>, end: Instant) -> Ran {
     let Some(mut g) = g else {
-        return Ran::Failed;
+        return Ran::Failed(None);
     };
     let out = g.out.recv_timeout(end.saturating_duration_since(Instant::now())).ok();
     // stdout closed is not exited: wait out what is left of the budget
     while let Some(b) = &out {
         match g.child.try_wait() {
             Ok(Some(st)) if st.success() => return Ran::Ok(String::from_utf8_lossy(b).into()),
-            Ok(Some(_)) => return Ran::Failed,
+            Ok(Some(st)) => return Ran::Failed(st.code()),
             Ok(None) if Instant::now() < end => std::thread::sleep(Duration::from_millis(1)),
             _ => break,
         }
@@ -347,7 +348,7 @@ fn repo_work(dir: &str, screen: &str, end: Instant, send: &dyn Fn(String)) {
     // `git config` exits 1 when nothing matches, so only a timeout fails here.
     let cfg = match finish(spawn_git(dir, &[], &FILTER_CONFIG), end, "config") {
         Ran::Ok(s) => s,
-        Ran::Failed => String::new(),
+        Ran::Failed(_) => String::new(),
         Ran::TimedOut => return,
     };
     let Some(mut filters) = filter_flags(&cfg) else {
@@ -389,7 +390,7 @@ fn repo_work(dir: &str, screen: &str, end: Instant, send: &dyn Fn(String)) {
             }
         }
         Ran::TimedOut => b.push_str(&format!("branch: unknown\nroot: {}\nstatus: timed out\n", top.trim())),
-        Ran::Failed => return,
+        Ran::Failed(_) => return,
     }
     if let Some(log) = log {
         section(&mut b, "recent commits:", &log.lines().collect::<Vec<_>>(), 5);
