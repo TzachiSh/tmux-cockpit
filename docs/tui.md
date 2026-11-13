@@ -1454,16 +1454,20 @@ It is not wired into Explain yet: nothing in the panel calls it.
 - **Last seen.** Per repo, the HEAD sha and a time in seconds, one line
   `<sha> <secs>` in `$XDG_CACHE_HOME/tmux-cockpit/panel/seen/<key>`
   (`~/.cache/...` when XDG_CACHE_HOME is unset or relative). The file is mode
-  600 and the folder mode 700. `<key>` is 16 hex digits, FNV-1a 64 of the repo's
-  canonical top-level path, so the file name and its body hold no path, no
-  subject and no title. A missing, unreadable or malformed file is "nothing
-  seen", and the list starts from the newest commits. Only `mark_seen` writes
-  the file; collecting never writes anything.
+  600. `mark_seen` makes the folder mode 700, or sets 700 on one it finds.
+  `<key>` is 16 hex digits, FNV-1a 64 of the repo's canonical top-level path,
+  so the file name and its body hold no path, no subject and no title. A
+  missing, unreadable or malformed file is "nothing seen", and so is anything
+  there that is not a file (a FIFO, a device, a folder); it is opened without
+  waiting, so a FIFO never blocks. The list then starts from the newest
+  commits. Only `mark_seen` writes the file; collecting never writes anything.
 - **Commits.** `git log <last-seen>..HEAD` under gitsafe's flags, the same
   bounded spawn as the write call's repo block, within 1 s for all git calls.
-  Each item cites the commit's first 12 hex digits. A last-seen sha that is no
-  longer behind HEAD, after a force-push or a reset or because it is not in the
-  repo, gives one item instead: `history rewritten since <time>`.
+  Each item cites the commit's first 12 hex digits. A last-seen sha that is not
+  behind HEAD but that a ref still holds (another branch after a checkout, or
+  HEAD moved back) lists the commits on HEAD that are not behind it. One that
+  no ref holds, after a force-push, a reset or a deleted branch, or that is not
+  in the repo, gives one item instead: `history rewritten since <time>`.
 - **GitHub.** With `origin` on github.com: `gh pr list` and `gh issue list`,
   searched for `updated:>=<last seen>`, and `gh run list` for the branch's
   latest run, each with `-R github.com/<owner>/<repo>` and started from `/`, so
@@ -1481,7 +1485,8 @@ It is not wired into Explain yet: nothing in the panel calls it.
 - **Failing quietly.** No GitHub remote, no `gh` on PATH, gh not logged in
   (its exit 4), a timeout (the whole process group killed), gh printing
   nothing, and gh printing something that is not a JSON array each leave the
-  GitHub items out and add one note saying why. Nothing is printed and nothing
+  GitHub items out and add one note saying why. A detached HEAD has no branch
+  for the CI call, which is skipped with its own note. Nothing is printed and nothing
   panics. `collect` blocks for at most the two budgets, so the wiring calls it
   off the drawing thread.
 
