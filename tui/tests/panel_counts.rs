@@ -286,13 +286,18 @@ const CODE_SPLIT: &str = "b sk-ant-MADEUP\u{202E}FAKEFAKE00";
 /// An Ask about lines 1-2 of a file whose second line is `line`, its question
 /// `q` sent from a pane showing `c`. The guard keeps the file until the test ends.
 fn ask(c: Capture, tag: &str, line: &str, q: &str) -> (fake::Scratch, App) {
+    ask_lines(c, tag, &format!("a\n{line}\nc\n"), (1, 2), q)
+}
+
+/// An Ask about lines `from`-`to` of a file holding `body`, as [`ask`].
+fn ask_lines(c: Capture, tag: &str, body: &str, (from, to): (u32, u32), q: &str) -> (fake::Scratch, App) {
     let name = format!("cockpit-panel-counts-{tag}-{}", std::process::id());
     let d = fake::Scratch::fresh(std::env::temp_dir().join(name));
     std::fs::create_dir_all(d.join(".git")).unwrap();
     let f = d.join("x.rs");
-    std::fs::write(&f, format!("a\n{line}\nc\n")).unwrap();
+    std::fs::write(&f, body).unwrap();
     let mut a = app(c);
-    a.ask_open(ask::load(&f, 1, 2).unwrap());
+    a.ask_open(ask::load(&f, from, to).unwrap());
     q.chars().for_each(|ch| key(&mut a, KeyCode::Char(ch)));
     key(&mut a, KeyCode::Enter);
     assert_eq!(a.view, View::Busy);
@@ -386,4 +391,30 @@ fn busy_counts_a_key_in_an_asks_question_under_the_conversation() {
 fn busy_line_of_an_ask_from_an_empty_capture() {
     let (_d, a) = ask(Capture::default(), "empty", "b", "y");
     assert_eq!(sent_line(&frame(&a)), "sent: code 2 lines, 0 hidden · ask about x.rs:1-2");
+}
+
+/// The line counts the code inlined, not the lines asked: the caps cut an Ask
+/// past [`ask::MAX_LINES`], and a line over [`ask::MAX_BYTES`] after the first.
+#[test]
+fn busy_counts_an_asks_code_by_the_lines_shown() {
+    let many: String = (1..=450).map(|i| format!("l{i}\n")).collect();
+    let long = format!("a\n{}\nc\n", "x".repeat(ask::MAX_BYTES + 1));
+    let rows = [
+        (
+            "past the line cap",
+            many.as_str(),
+            (1, 450),
+            "code 400 lines, 0 hidden · ask about x.rs:1-450",
+        ),
+        (
+            "a line past the byte cap",
+            long.as_str(),
+            (1, 3),
+            "code 1 lines, 0 hidden · ask about x.rs:1-3",
+        ),
+    ];
+    let line = |body, range| sent_line(&frame(&ask_lines(cap("$ ls", "w", "/h"), "shown", body, range, "y").1));
+    let got: Vec<_> = rows.iter().map(|(row, body, range, _)| (*row, line(*body, *range))).collect();
+    let want: Vec<_> = rows.iter().map(|(row, .., w)| (*row, format!("sent: {w}"))).collect();
+    assert_eq!(got, want);
 }
