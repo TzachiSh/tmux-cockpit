@@ -13884,7 +13884,7 @@ TMUX_PANE=%99 "$TMUX_REAL" -L "$TPI" -f /dev/null new-session -d -s one \
     "TERM=xterm-256color exec $TMUX_REAL -L $TPI attach -t one" >/dev/null 2>&1
 until_out '?*' "$TMUX_REAL" -L "$TPI" list-clients -F '#{client_name}'
 tpc=$("$TMUX_REAL" -L "$TPI" list-clients -F '#{client_name}' 2>/dev/null)
-"$TMUX_REAL" -L "$TPI" display-popup -c "$tpc" -E "$DIR/scripts/tm two; touch $TPD/done" \
+"$TMUX_REAL" -L "$TPI" display-popup -c "$tpc" -E "$DIR/scripts/tm two; touch $(tq "$TPD/done")" \
     >/dev/null 2>&1 &
 until_out 1 sh -c "[ -e '$TPD/done' ] && echo 1"
 if [ -e "$TPD/done" ]; then ok "tm returned, so the popup closed"
