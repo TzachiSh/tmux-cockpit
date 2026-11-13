@@ -113,12 +113,15 @@ impl Rig {
                 std::env::set_var(k, v);
             }
         }
-        Rig {
+        let rig = Rig {
             dir,
             old,
             wait: DROP_WAIT,
             _lock: lock,
-        }
+        };
+        // once the rig exists, so that a failure here drops it and the variables go back (#972)
+        fake::assert_claude_is_the_rigs(&rig.dir);
+        rig
     }
 
     /// A board's rig inside `_dev`, which holds `ENV`: its drop puts back what `_dev` set.
