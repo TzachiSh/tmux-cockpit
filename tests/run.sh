@@ -174,7 +174,21 @@ printf '%s\\n' "\$@" >> "$STATE/code.argv"
 exit 0
 CODEEOF
 chmod +x "$SHIM/code"
-PATH="$SHIM:$(path_without_mnt "$PATH")"; export PATH
+# The suite's own claude, before the developer's (#982). cockpit-tui starts `claude agents
+# --json` by PATH, as it should for a user, and under the suite that reached the real one
+# about 29 times a run. This one prints nothing, exits 127 and logs each start beside itself.
+# A folder of its own, not $SHIM: the #895 rows strip every folder that holds a claude and
+# must keep the tmux shim. A block that puts its own stub first still wins.
+SUITE_CLAUDE="$STATE/claude-stub"; mkdir -p "$SUITE_CLAUDE"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "${0%%/*}/starts"\nexit 127\n' > "$SUITE_CLAUDE/claude"
+chmod +x "$SUITE_CLAUDE/claude"
+PATH="$SHIM:$SUITE_CLAUDE:$(path_without_mnt "$PATH")"; export PATH
+# An edit of the line above must not quietly hand the developer's claude back.
+if [ "$(command -v claude)" != "$SUITE_CLAUDE/claude" ]; then
+    printf '  \033[31mFATAL\033[0m claude is not the suite'\''s stub: %s\n' \
+        "$(command -v claude || echo none)" >&2
+    exit 1
+fi
 
 "$TMUX_REAL" -L "$SUITE_SOCK" -f /dev/null new-session -d -s suite \
     'exec -a claude sleep 3600' >/dev/null 2>&1
