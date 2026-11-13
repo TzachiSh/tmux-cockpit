@@ -235,11 +235,17 @@ fn runs(p: &Path) -> bool {
 /// says `Ok`. [`write_exec`] with a `#!/bin/sh` body does not make one.
 #[allow(dead_code)]
 pub fn rigs_claude(path: &std::ffi::OsStr, dir: &Path) -> Result<PathBuf, Option<PathBuf>> {
+    rigs_first("claude", path, dir)
+}
+
+/// [`rigs_claude`]'s walk for the command `name`.
+#[allow(dead_code)]
+fn rigs_first(name: &str, path: &std::ffi::OsStr, dir: &Path) -> Result<PathBuf, Option<PathBuf>> {
     assert!(dir.is_absolute(), "dir must be absolute: {}", dir.display());
     let cwd = |e: PathBuf| if e.as_os_str().is_empty() { PathBuf::from(".") } else { e };
     let real = |p: &Path| p.canonicalize().ok();
     let inside = |p: &Path| real(p).zip(real(dir)).is_some_and(|(p, d)| p.starts_with(d));
-    match std::env::split_paths(path).map(|e| cwd(e).join("claude")).find(|p| runs(p)) {
+    match std::env::split_paths(path).map(|e| cwd(e).join(name)).find(|p| runs(p)) {
         Some(found) if inside(&found) => Ok(found),
         other => Err(other),
     }
@@ -254,5 +260,25 @@ pub fn assert_claude_is_the_rigs(dir: &Path) {
     if let Err(found) = rigs_claude(&path, dir) {
         let dir = dir.display();
         panic!("the first claude on PATH is {found:?}, not one under {dir} (#972)");
+    }
+}
+
+// ---- gh, the what-changed collector's second command found by PATH (#1000) ----
+
+/// [`rigs_claude`]'s walk for `gh`. A `gh` reached outside a rig runs as the
+/// developer's GitHub login, so no rig may leave one ahead of its own.
+#[allow(dead_code)]
+pub fn rigs_gh(path: &std::ffi::OsStr, dir: &Path) -> Result<PathBuf, Option<PathBuf>> {
+    rigs_first("gh", path, dir)
+}
+
+/// For a rig that hands a spawn the PATH value `path`: the `gh` that spawn
+/// would find is one under `dir`, the rig's own folder. It fails where no `gh`
+/// is on that PATH at all, too.
+#[allow(dead_code)]
+pub fn assert_gh_is_the_rigs(path: &std::ffi::OsStr, dir: &Path) {
+    if let Err(found) = rigs_gh(path, dir) {
+        let dir = dir.display();
+        panic!("the first gh on PATH is {found:?}, not one under {dir} (#1000)");
     }
 }

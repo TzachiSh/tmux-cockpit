@@ -4,6 +4,7 @@ pub mod action;
 pub mod app;
 pub mod ask;
 pub mod capture;
+pub mod changes;
 pub mod envelope;
 pub mod flow;
 pub mod parse;
