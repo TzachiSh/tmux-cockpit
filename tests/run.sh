@@ -9176,6 +9176,45 @@ is "no new line reads as a row or a count" "0" "$(grep -cE "$ps_row" "$PSROOT/gr
 is "nor is left behind" "0" "$(ps_settle)"
 unset -f ps_left ps_settle; unset PSROOT Q ps_to ps_c ps_row ps_s
 
+echo "== tests/par.sh: a checkout under a path with a space runs every shard and nothing else (#1007) =="
+# par.sh joined its shard paths into one string and split it again, so a path holding a space
+# came apart: no shard ran, and bash was handed the path's first word as a script. A sandbox
+# as above, in a folder named "v1.2 proj", with a script beside it at that first word, "v1.2",
+# which says so if anything runs it. The dot is on purpose: a worker takes its shard id from
+# the text after the last dot, and with no dot in the first word that id holds a slash, the
+# log's redirect fails and bash is never reached, so the stray file would not be run and the
+# second row could not fail.
+PW=$(mktmpd); Q='"'
+pw_run() {                    # <checkout folder> <TMPDIR folder> -> status|summary|starts ends
+    local d="$PW/$1" t="$PW/$2" rc
+    mkdir -p "$d/tests" "$t"
+    cp "$DIR/tests/par.sh" "$d/tests/par.sh"
+    awk '/^echo "== /{exit} {print}' "$DIR/tests/run.sh" > "$d/tests/run.sh"
+    {
+        printf 'echo %s== pw1: one ==%s\nis "pw1" 1 1\n\n' "$Q" "$Q"
+        printf 'echo %s== pw2: two ==%s\nis "pw2" 1 1\n\n' "$Q" "$Q"
+    } >> "$d/tests/run.sh"
+    ( cd "$d" && env -u PAR_BLOCKS TMPDIR="$t" J=2 tests/par.sh ) \
+        </dev/null >"$PW/out" 2>"$PW/err"; rc=$?
+    printf '%s|%s|%s %s' "$rc" \
+        "$(grep -oE '[0-9]+ passed, [0-9]+ failed, [0-9]+ skipped' "$PW/out")" \
+        "$(grep -c '^par\.sh: shard [0-9]* start: ' "$PW/err")" \
+        "$(grep -c '^par\.sh: shard [0-9]* end rc=0$' "$PW/err")"
+}
+printf '#!/bin/sh\necho ran >> "$0.ran"\n' > "$PW/v1.2"; chmod +x "$PW/v1.2"
+is "under a path with a space both shards run and count" \
+   "0|2 passed, 0 failed, 0 skipped|2 2" "$(pw_run 'v1.2 proj' t)"
+is "and the file named like the path's first word is never run" "" \
+   "$(cat "$PW/v1.2.ran" 2>/dev/null)"
+is "nor is a shard file left in the checkout" "" "$(ls -A "$PW/v1.2 proj/tests" | grep '^\.par')"
+# The other two faults, in a run of their own: a quote stops the old xargs before any path is
+# split, so in the sandbox above the rows could not tell them apart. A ' in the checkout's
+# path is what a newline list through xargs -I{} choked on; a " and a $ in TMPDIR are what
+# broke, or expanded, when the work dir was pasted into the worker's script.
+is "under a path with a ' and a TMPDIR with a \" and a \$ both shards run and count" \
+   "0|2 passed, 0 failed, 0 skipped|2 2" "$(pw_run "pr'oj" 't"$HOME')"
+unset -f pw_run; unset PW Q
+
 echo "== tests/green.sh: the stamp hits on unchanged content, misses on one changed byte, and tool versions are in the key =="
 GROOT=$(mktmpd)
 mkdir -p "$GROOT/scripts/lib" "$GROOT/tests" "$GROOT/examples"
