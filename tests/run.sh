@@ -17098,7 +17098,7 @@ fe_ran() { [ -e "$FED/pwned" ] && echo ran || echo none; }
 # kills a #() job when the client that expanded it goes, so this run-shell
 # holds its client until the job has landed (or 5 s pass).
 "$TMUX_REAL" -L "$FE" \
-    run-shell "true '#(touch \$FEMK)'; i=0; while [ ! -e '$FED/pwned' ] && [ \$i -lt 50 ]; do sleep 0.1; i=\$((i+1)); done" >/dev/null 2>&1
+    run-shell "true '#(touch \"\$FEMK\")'; i=0; while [ ! -e '$FED/pwned' ] && [ \$i -lt 50 ]; do sleep 0.1; i=\$((i+1)); done" >/dev/null 2>&1
 until_out ran fe_ran; is "control: an unescaped #() in run-shell runs" "ran" "$(fe_ran)"
 rm -f "$FED/pwned"
 
