@@ -646,12 +646,67 @@ fn end_stand_in(up: &Path, exe: &Path) {
     let Some(pid) = pid else { return };
     let args = match std::fs::read(format!("/proc/{pid}/cmdline")) {
         Ok(a) => String::from_utf8_lossy(&a).replace('\0', " "),
+        Err(_) if Path::new("/proc/self").is_dir() => String::new(),
         Err(_) => command_output("ps", &["-o", "args=", "-p", &pid.to_string()]),
     };
     if args.contains(&*exe.to_string_lossy()) {
         // SAFETY: a pid whose command line names this row's own stand-in.
         unsafe { libc::kill(pid, libc::SIGKILL) };
     }
+}
+
+/// A stand-in that says it runs, then waits for a line on the fifo beside
+/// itself and ends well.
+const BLOCKS: &str = "#!/bin/sh\n: > \"$0.ran\"\nread -r _ < \"$0.go\"\n";
+
+/// The file `ext` a stand-in at `exe` keeps beside itself.
+fn sibling(exe: &Path, ext: &str) -> PathBuf {
+    PathBuf::from(format!("{}.{ext}", exe.display()))
+}
+
+/// The stand-ins a row started, each ended by [`end_stand_in`] when this is
+/// dropped, on every path of the row, a panic's too.
+struct Started(Vec<PathBuf>);
+
+impl Drop for Started {
+    fn drop(&mut self) {
+        self.0.iter().for_each(|exe| end_stand_in(&sibling(exe, "up"), exe));
+    }
+}
+
+/// The stand-in `name` below the rig, [`BLOCKS`] on a fifo of its own, its pid
+/// written beside it as soon as it is started. Returns once its script runs:
+/// the command line of a process that has just been started may still be empty
+/// for a moment after its exec (#997).
+fn blocked(r: &Rig, name: &str, started: &mut Started) -> (PathBuf, std::process::Child) {
+    let exe = r.binary(name, BLOCKS);
+    let fifo = std::ffi::CString::new(sibling(&exe, "go").to_str().unwrap()).unwrap();
+    // SAFETY: `fifo` is a NUL-terminated path under the rig's folder.
+    assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+    let child = Command::new(&exe).stdin(Stdio::null()).spawn().unwrap();
+    started.0.push(exe.clone());
+    std::fs::write(sibling(&exe, "up"), child.id().to_string()).unwrap();
+    appears(&sibling(&exe, "ran"));
+    (exe, child)
+}
+
+/// [`end_stand_in`] signals the pid in `up` only where its command line names
+/// the stand-in it is handed: a pid another process now holds is spared, as
+/// AGENTS.md's "Never signal a pid the hook has not verified" asks (#997).
+#[test]
+fn a_pid_whose_command_line_names_another_binary_is_not_signalled() {
+    let r = Rig::new("pid");
+    let mut started = Started(vec![]);
+    let (spared, a) = blocked(&r, "spared", &mut started);
+    let (killed, b) = blocked(&r, "killed", &mut started);
+    end_stand_in(&sibling(&spared, "up"), &killed);
+    end_stand_in(&sibling(&killed, "up"), &killed);
+    let released = release(&sibling(&spared, "go"));
+    if released.is_err() {
+        end_stand_in(&sibling(&spared, "up"), &spared);
+    }
+    let (a, b) = (ended(a, "the spared stand-in").status, ended(b, "the killed stand-in").status);
+    assert_eq!((released, a.code(), b.signal()), (Ok(()), Some(0), Some(libc::SIGKILL)));
 }
 
 /// What `program` wrote to stdout, empty where it could not be run.
@@ -1006,13 +1061,16 @@ fn a_cargo_started_in_the_checkout_sets_the_switch_to_1() {
 }
 
 /// A developer's own runner under a `cfg(..)` key, as one of their configs may
-/// hold. `cfg(all())` holds on every target, macOS too, and no repo has a use
-/// for a key that names no target. The runner must run the binary it is
-/// handed, as `env` does: on a target with no key of the repo's this key is
-/// the one that applies, and a runner that failed the binary would turn this
-/// row red there too, with no words of its own, and keep it red with the
-/// switch at 0 that the guard's row offers (#973).
-const OTHER_CFG_RUNNER: &str = "target.'cfg(all())'.runner='env'";
+/// hold. `cfg(not(any()))` holds on every target, macOS too, and is a spelling
+/// no config holds. cargo merges two tables of one name and this one wins, so
+/// a repo key under this exact spelling is the one this row cannot see. Under
+/// any other cfg key, `cfg(all())` and `cfg(unix)` among them, the two clash and
+/// the row is red (#997). The runner must run the binary it is handed, as `env`
+/// does: on a target with no key of the repo's this key is the one that
+/// applies, and a runner that failed the binary would turn this row red there
+/// too, with no words of its own, and keep it red with the switch at 0 that the
+/// guard's row offers (#973).
+const OTHER_CFG_RUNNER: &str = "target.'cfg(not(any()))'.runner='env'";
 
 /// The repo's runner is under exact target names (#973). Under a `cfg(..)` key
 /// of its own, any other matching cfg runner key a developer holds made cargo
