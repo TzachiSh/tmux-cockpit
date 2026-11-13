@@ -144,7 +144,17 @@ flop_left() {                 # [dir] -> a bad row for each r.* whose call was n
             "a retry with the same argv" "${a%.}, refused and never retried"
     done
     # the run's own tail (no dir): refusals a subshell made, whose count was lost (#195)
-    [ $# -gt 0 ] || sock_left
+    [ $# -gt 0 ] || { sock_left; beside_left; }
+}
+# A TMPDIR holding a space: an unquoted path in a script the suite writes splits at it, and the
+# write lands on the part before the space, beside the run's scratch (#929). BESIDE is that
+# name when it is not there at the start; the tail fails the run if it is there at the end.
+BESIDE=
+case ${TMPDIR:-} in *' '*) [ -e "${TMPDIR%% *}" ] || BESIDE=${TMPDIR%% *} ;; esac
+beside_left() {
+    [ -z "$BESIDE" ] || [ ! -e "$BESIDE" ] ||
+        bad "nothing the suite wrote landed beside its TMPDIR (#929)" "no $BESIDE" \
+            "$(ls -ld "$BESIDE" 2>&1)"
 }
 # The suite itself runs inside the user's tmux, so its own $TMUX would send
 # every bare call straight back to the live server. Drop it.
@@ -1537,8 +1547,9 @@ is "the fleet counter still counts" '#[fg=themered bold]▲1#[default] ' \
 # The writes happen inside one tmux command now, so a server hook is what sees
 # them. Not -b: the hook's shell finishes before the hook's client returns.
 RTSETS="$RTS/sets"; : > "$RTSETS"
+"$TMUX_REAL" -L "$RT" set-environment -g CKLOG "$RTSETS" >/dev/null 2>&1
 "$TMUX_REAL" -L "$RT" set-hook -g after-set-option \
-    "run-shell 'echo \"#{hook_arguments}\" >> $(printf %q "$RTSETS")'" >/dev/null 2>&1
+    "run-shell 'echo \"#{hook_arguments}\" >> \"\$CKLOG\"'" >/dev/null 2>&1
 # An unchanged state still costs exactly one round-trip and writes nothing.
 rtsame=$(rtcall needs-input)
 is "an unchanged state costs one call and no writes" "1 0" \
@@ -2545,8 +2556,9 @@ wset "$WSR"; wset "$WSP"
 is "a repo pane gets its branch" "feat/x" "$(wsb "$WSR")"
 is "a pane outside a repo gets none" "" "$(wsb "$WSP")"
 WSLOG="$WSD/sets"; : > "$WSLOG"
+"$TMUX_REAL" -L "$WS" set-environment -g CKLOG "$WSLOG" >/dev/null 2>&1
 "$TMUX_REAL" -L "$WS" set-hook -g after-set-option \
-    "run-shell 'echo \"#{hook_arguments}\" >> $(printf %q "$WSLOG")'" >/dev/null 2>&1
+    "run-shell 'echo \"#{hook_arguments}\" >> \"\$CKLOG\"'" >/dev/null 2>&1
 wset "$WSR"; wset "$WSP"
 is "an unchanged branch writes nothing" "0" "$(wc -l < "$WSLOG" | tr -d ' ')"
 printf 'ref: refs/heads/main\n' > "$WSD/repo/.git/HEAD"
@@ -6430,8 +6442,9 @@ CXP2=$("$TMUX_REAL" -L "$CX2" list-panes -t t -F '#{pane_id}')
 CXTMUX2="$SOCKDIR/$CX2,0,0"
 CXS=$(mktmpd)
 CXLOG="$CXS/setlog"; : > "$CXLOG"; CXCALLS="$CXS/calls"; : > "$CXCALLS"
+"$TMUX_REAL" -L "$CX2" set-environment -g CKLOG "$CXLOG" >/dev/null 2>&1
 "$TMUX_REAL" -L "$CX2" set-hook -g after-set-option \
-    "run-shell 'echo \"#{hook_arguments}\" >> $(printf %q "$CXLOG")'" >/dev/null 2>&1
+    "run-shell 'echo \"#{hook_arguments}\" >> \"\$CKLOG\"'" >/dev/null 2>&1
 cat > "$CXS/tmux" <<SHIMEOF
 #!/bin/sh
 printf '%s\n' "\$*" >> "$CXCALLS"
@@ -7608,10 +7621,9 @@ echo "== a partial clone's lazy fetch cannot run the repo's planted remote confi
 # old/git shim drops GIT_NO_LAZY_FETCH as git < 2.44 does, leaving only the protocol pin.
 LF=$(mktmpd); LFM="$LF/marker"; mkdir "$LF/old" "$LF/hb"
 # The paths go into the generated scripts single-quoted: a space in TMPDIR split the marker's
-# path, and the script appended to a file outside the suite's scratch (#820). lfq escapes a '
+# path, and the script appended to a file outside the suite's scratch (#820). tq escapes a '
 # inside them as '\'', as scripts/lib/hook.sh's shq does, so a ' in TMPDIR holds too (#827).
-lfq() { printf "'%s'" "${1//\'/\'\\\'\'}"; }
-printf '#!/bin/sh\necho up >> %s\nexit 1\n' "$(lfq "$LFM")" > "$LF/up"; chmod +x "$LF/up"
+printf '#!/bin/sh\necho up >> %s\nexit 1\n' "$(tq "$LFM")" > "$LF/up"; chmod +x "$LF/up"
 ln -s "$LF/up" "$LF/hb/git-remote-foo"
 printf '#!/bin/sh\nunset GIT_NO_LAZY_FETCH\nexec '"'%s'"' "$@"\n' "$(command -v git)" \
     > "$LF/old/git"
@@ -7627,8 +7639,8 @@ chmod +x "$LF/old/git"
   && git switch -q main && printf 'b\n' >> f.txt && git commit -qam 2 \
   && git clone -q --filter=blob:none "$(file_url "$LF/src")" "$LF/c2" \
   && cd "$LF/c" && git fetch -q && git reset -q --soft origin/main \
-  && git config remote.origin.uploadpack "$(lfq "$LF/up")" \
-  && git config core.sshCommand "$(lfq "$LF/up")" \
+  && git config remote.origin.uploadpack "$(tq "$LF/up")" \
+  && git config core.sshCommand "$(tq "$LF/up")" \
   && git config protocol.file.allow always && git config protocol.ssh.allow always \
   && git config protocol.ext.allow always && git config protocol.foo.allow always ) >/dev/null 2>&1
 lf_paths() {
@@ -7663,7 +7675,7 @@ printf '%s\n' '#!/usr/bin/env bash' \
     '    fi; a+=("$1"); shift; done' \
     '[ "$LF_KEEP" = lazy ] || unset GIT_NO_LAZY_FETCH' \
     '[ "$LF_KEEP" = proto ] || unset GIT_ALLOW_PROTOCOL' \
-    "exec $(lfq "$(command -v git)") \"\${a[@]}\"" > "$LF/keep/git"
+    "exec $(tq "$(command -v git)") \"\${a[@]}\"" > "$LF/keep/git"
 chmod +x "$LF/keep/git"
 git -C "$LF/c" config remote.origin.url "$(file_url "$LF/src")"
 # With every guard stripped the remote fires, so the guard rows after test something. The diff
@@ -7691,7 +7703,7 @@ is "while switch --track through it fetches the branch's blob" "g" \
 ( . "$DIR/scripts/lib/git.sh"
 git -C "$LF/c2" worktree add -q --detach "$LF/wt" origin/side2 ) >/dev/null 2>&1
 is "and so does worktree add" "h" "$(cat "$LF/wt/h.txt" 2>/dev/null)"
-rm -rf "$LF"; unset LF LFM lfu lfx lfk; unset -f lf_paths lfq
+rm -rf "$LF"; unset LF LFM lfu lfx lfk; unset -f lf_paths
 
 echo "== tmux-review: a pane id that is not %<digits> never reaches tmux =="
 # The glob %[0-9]* let "%1;display-message PWNED" through, and deliver() splices
@@ -7942,7 +7954,7 @@ for td_a in "" nope . .. .:empty link sib:badls; do
                    chmod +x "$TDE/bin/ls" ;;
         *) td_w=${td_a%:empty} ;;
     esac
-    printf '#!/bin/sh\necho %q\n' "$td_w" > "$TDE/bin/mktemp"; chmod +x "$TDE/bin/mktemp"
+    printf '#!/bin/sh\necho %s\n' "$(tq "$td_w")" > "$TDE/bin/mktemp"; chmod +x "$TDE/bin/mktemp"
     td_o=$(cd "$TDE/cwd" && PATH="$TDE/bin:$PATH" bash -c \
         '. "$1/git.sh"; . "$1/review-diff.sh"; tree_diff "$2" --numstat' _ "$DIR/scripts/lib" \
         "$TDE/repo" 2>/dev/null; echo "rc=$?")
@@ -9850,6 +9862,22 @@ esac
 unset -f nw
 rm -rf "$NW"
 
+echo "== a stub the suite writes lands nothing beside a TMPDIR that holds a space (#929) =="
+# The block above again, through only.sh, under a TMPDIR named "my  tmp". Its recorders are
+# stubs whose log path is written into them: unquoted, that path splits at the space, the log
+# goes to "my" beside the TMPDIR and the control row finds no call. CI's own TMPDIR holds no
+# space, so this is the run that sees it there.
+SPD=$(mktmpd); mkdir -p "$SPD/my  tmp" "$SPD/s"
+spo=$(cd "$DIR" && env -u TMUX TMPDIR="$SPD/my  tmp" TMUX_TMPDIR="$SPD/s" \
+    tests/only.sh '^the suite never reaches the network' 2>&1 </dev/null); sprc=$?
+is "the network block passes there and only the TMPDIR is beside it" \
+   "0|  4 passed, 0 failed, 0 skipped|my  tmp,s," \
+   "$sprc|$(printf '%s\n' "$spo" | tail -1)|$(ls -A "$SPD" | tr '\n' ,)"
+for sps in "$SPD"/s/tmux-*/*; do
+    [ -S "$sps" ] && "$TMUX_REAL" -S "$sps" kill-server >/dev/null 2>&1
+done
+unset SPD spo sprc sps
+
 # tests: scripts/tui-fetch
 echo "== cockpit-tui builds install the executable cargo built, not a guessed path (#591) =="
 # CARGO_TARGET_DIR or a config's build.target-dir moves the build out of
@@ -10328,8 +10356,9 @@ for s in tmux-jump tmux-review cockpit-panel; do
     chmod +x "$BD/p/scripts/$s"
 done
 # The panel from the board writes its last line where the loop asks.
-printf '#!/bin/sh\nprintf "cockpit-panel %%s\\n" "$*" >> %s\n''[ -z "$COCKPIT_PANEL_NOTE" ] || cat %s > "$COCKPIT_PANEL_NOTE"\n' \
-    "$(tq "$BD/wargv")" "$(tq "$BD/pnote")" > "$BD/p/scripts/cockpit-panel"
+{ printf '#!/bin/sh\nprintf "cockpit-panel %%s\\n" "$*" >> %s\n' "$(tq "$BD/wargv")"
+  printf '[ -z "$COCKPIT_PANEL_NOTE" ] || cat %s > "$COCKPIT_PANEL_NOTE"\n' "$(tq "$BD/pnote")"
+} > "$BD/p/scripts/cockpit-panel"
 printf 'cockpit: sent to %%1\n' > "$BD/pnote"
 # The line travels in a file rather than inside the fake binary's source: the
 # cases below are shell syntax, and re-quoting them into a script is the test
@@ -12789,8 +12818,9 @@ case "$AVMSG" in
 esac
 # Compare-then-set: an unchanged state writes nothing, since every set redraws.
 AVSETS="$AVREC/sets"; : > "$AVSETS"
+av_tm set-environment -g CKLOG "$AVSETS" >/dev/null 2>&1
 av_tm set-hook -g after-set-option \
-    "run-shell 'echo \"#{hook_arguments}\" >> $(printf %q "$AVSETS")'"
+    "run-shell 'echo \"#{hook_arguments}\" >> \"\$CKLOG\"'"
 av_once blocked.json >/dev/null; av_once blocked.json >/dev/null
 : > "$AVSETS"; av_once blocked.json >/dev/null
 is "a poll that changes nothing writes nothing" "0" "$(wc -l < "$AVSETS" | tr -d ' ')"
@@ -12899,8 +12929,9 @@ is "a marked pane whose title names two jobs keeps the worst of all" \
    "||needs-input|fix the parser needs you" "$(avj "$AVMD")"
 # Compare-then-set: a second poll of the same bind writes nothing (every set redraws).
 AVSETS="$AVREC/bsets"; : > "$AVSETS"
+av_tm set-environment -g CKLOG "$AVSETS" >/dev/null 2>&1
 av_tm set-hook -g after-set-option \
-    "run-shell 'echo \"#{hook_arguments}\" >> $(printf %q "$AVSETS")'"
+    "run-shell 'echo \"#{hook_arguments}\" >> \"\$CKLOG\"'"
 av_bind; : > "$AVSETS"; av_bind
 is "a poll that changes nothing writes nothing, bound panes included" "0" \
    "$(wc -l < "$AVSETS" | tr -d ' ')"
@@ -13786,7 +13817,7 @@ for at in "index staged" pathspec gitlinks; do
     printf 'keep\n' > "$GD/victim"
     cat > "$GD/bin/mktemp" <<STUB
 #!/bin/sh
-d=$GD/race; rm -rf "\$d" "\$d.f"; mkdir -m 700 "\$d"
+d=$(tq "$GD/race"); rm -rf "\$d" "\$d.f"; mkdir -m 700 "\$d"
 for n in $at; do ln -s "$GD/victim" "\$d/\$n"; done
 case "\$1" in -d) echo "\$d" ;; *) ln -s "$GD/victim" "\$d.f"; echo "\$d.f" ;; esac
 STUB
@@ -14418,8 +14449,10 @@ if need_tmux "the board's kill verb"; then :; else
 KV="cockpit-kv-$$"; SOCKS="$SOCKS $KV"; KD=$(mktmpd)
 mkdir -p "$KD/p" "$KD/state"
 cp -r "$DIR"/scripts "$KD/p/"
-printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> %s\n[ ! -e %s ] || cat %s\n''exit "$(cat %s 2>/dev/null || echo 0)"\n' \
-    "$(tq "$KD/rv")" "$(tq "$KD/rvout")" "$(tq "$KD/rvout")" "$(tq "$KD/rvrc")" > "$KD/p/scripts/tmux-review"
+{ printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> %s\n' "$(tq "$KD/rv")"
+  printf '[ ! -e %s ] || cat %s\n' "$(tq "$KD/rvout")" "$(tq "$KD/rvout")"
+  printf 'exit "$(cat %s 2>/dev/null || echo 0)"\n' "$(tq "$KD/rvrc")"
+} > "$KD/p/scripts/tmux-review"
 chmod +x "$KD/p/scripts/tmux-review"
 # The binary acts once, then exits with no action (the ordinary q). It writes
 # $COCKPIT_ACTION.expect before the line, as the board does, when asked to.
@@ -14492,8 +14525,10 @@ C=$(kv_win claude); CW=$(kv_id "$C")
 C2=$("$TMUX_REAL" -L "$KV" split-window -d -P -F '#{pane_id}' -t "$C" 'exec sleep 3600')
 D=$(kv_win claude)
 mkdir -p "$KD/shim"
-printf '#!/bin/sh\nif [ "$1" = if-shell ] && [ -e %s ]; then rm -f %s; %s join-pane -d -s %s -t %s; fi\n''exec %s "$@"\n' \
-    "$(tq "$KD/race")" "$(tq "$KD/race")" "$TMUX_REAL" "$C" "$D" "$TMUX_REAL" > "$KD/shim/tmux"
+{ printf '#!/bin/sh\nif [ "$1" = if-shell ] && [ -e %s ]; then rm -f %s\n' \
+      "$(tq "$KD/race")" "$(tq "$KD/race")"
+  printf '    %s join-pane -d -s %s -t %s\nfi\nexec %s "$@"\n' "$TMUX_REAL" "$C" "$D" "$TMUX_REAL"
+} > "$KD/shim/tmux"
 chmod +x "$KD/shim/tmux"; : > "$KD/race"; KV_SHIM=$KD/shim
 kv_run "kill $C" "$C $CW" >/dev/null
 KV_SHIM=
@@ -17361,8 +17396,9 @@ TMUX="$SOCKDIR/$SB,0,0" "$DIR/scripts/agent-state" sweep >/dev/null 2>&1
 is "a killed pane's subagents leave the sum at the sweep" "▲1 " "$(sbf)"
 # Compare-then-set: every set redraws. A server hook sees the writes inside the one call.
 sbst done "$(sbstop "$SBT,$SBT")"; SBSETS=$(mktmpf)
+"$TMUX_REAL" -L "$SB" set-environment -g CKLOG "$SBSETS" >/dev/null 2>&1
 "$TMUX_REAL" -L "$SB" set-hook -g after-set-option \
-    "run-shell 'echo \"#{hook_arguments}\" >> $(printf %q "$SBSETS")'"
+    "run-shell 'echo \"#{hook_arguments}\" >> \"\$CKLOG\"'"
 sbst done "$(sbstop "$SBT,$SBT")"
 is "an unchanged count is not set again" "0" "$(grep -c '@cockpit_subs' "$SBSETS")"
 sbst done "$(sbstop "$SBT,$SBT,$SBT")"
@@ -20402,10 +20438,8 @@ done | xargs -0 ln -s -t "$NT/bin" 2>/dev/null
 # gtimeout: the real timeout under that name, by its own path (a multicall timeout will not
 # run as gtimeout), logging what it was handed and how it ended, so a row sees it ran. Both
 # paths single-quoted, a ' in them as '\'': a space in TMPDIR split the log's (#893).
-ntq() { printf "'%s'" "${1//\'/\'\\\'\'}"; }
 printf '#!/bin/sh\n%s "$@"; rc=$?\necho "$rc $*" >> %s\nexit $rc\n' \
-    "$(ntq "$(command -v timeout)")" "$(ntq "$NT/g.log")" > "$NT/bin/gtimeout"
-unset -f ntq
+    "$(tq "$(command -v timeout)")" "$(tq "$NT/g.log")" > "$NT/bin/gtimeout"
 chmod +x "$NT/bin/gtimeout"
 printf '#!/bin/sh\nexec sleep 20\n' > "$NT/fake/claude"; cp "$NT/fake/claude" "$NT/fake/tui"
 chmod +x "$NT/fake/claude" "$NT/fake/tui"
