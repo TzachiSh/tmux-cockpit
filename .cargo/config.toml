@@ -3,12 +3,34 @@
 [env]
 COCKPIT_TEST_TMUX_GUARD = "1"
 # The runner below guards unless this is 0, and a row of tui/tests/claude_guard.rs
-# fails where this is set and the guard is not on PATH: another runner took its place.
+# fails where this is set and the guard is not on PATH: another runner took its
+# place, or the target has no key below.
 COCKPIT_TEST_CLAUDE_GUARD = "1"
 
 # Every binary cargo runs from here or below goes through this script. It puts a
 # refusing `claude` first on a test binary's PATH and fails the binary that
 # started it. `cargo run` and `cargo run --example` it starts with no guard, by
 # an exec in place (#973, docs/testing.md).
-[target.'cfg(unix)']
+#
+# One key for each target the tests are run on, by its exact name. A key that
+# takes many targets, `cfg(unix)`, met any `cfg(..)` runner key of a developer's
+# own, and cargo then refused every build in the checkout. A target with no key
+# here runs unguarded, and a row of tui/tests/claude_guard.rs fails there and
+# prints the two lines to add.
+[target.x86_64-unknown-linux-gnu]
+runner = "tui/tests/claude-guard/runner"
+
+[target.aarch64-unknown-linux-gnu]
+runner = "tui/tests/claude-guard/runner"
+
+[target.x86_64-unknown-linux-musl]
+runner = "tui/tests/claude-guard/runner"
+
+[target.aarch64-unknown-linux-musl]
+runner = "tui/tests/claude-guard/runner"
+
+[target.x86_64-apple-darwin]
+runner = "tui/tests/claude-guard/runner"
+
+[target.aarch64-apple-darwin]
 runner = "tui/tests/claude-guard/runner"

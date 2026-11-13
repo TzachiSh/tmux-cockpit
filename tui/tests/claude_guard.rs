@@ -631,25 +631,104 @@ fn behind_the_guard(switch: Option<&str>, dir: Option<&Path>, path: &OsStr) -> R
     if matches!(first, Some(Ok(_))) {
         return Ok(());
     }
-    Err(format!(
-        "COCKPIT_TEST_CLAUDE_GUARD is set and the guard's claude is not first on PATH ({first:?}, folder \
-         {dir:?}): another cargo runner took the place of the repo's (.cargo/config.toml, #973). End \
-         yours with `exec {RUNNER} \"$@\"`, or set COCKPIT_TEST_CLAUDE_GUARD=0, which runs the tests \
-         with no guard, so that one of them may start your own claude (docs/testing.md)."
-    ))
+    Err(format!("the guard's claude is not first on PATH ({first:?}, folder {dir:?})"))
+}
+
+/// The line that names the runner under each target's key in the repo's cargo config.
+const RUNNER_LINE: &str = "runner = \"tui/tests/claude-guard/runner\"";
+
+/// What the row below says once it has failed: `found` is what
+/// [`behind_the_guard`] found. Choosing the words is a diagnosis and no rule.
+/// Where `target`, the one these tests were built for, has no key of its own in
+/// `config`, the repo's cargo config, no runner ran, and the words are the two
+/// lines to add. Where it has one, or either of the two could not be read,
+/// another runner took the repo's place.
+fn why_no_guard(found: &str, target: Option<&str>, config: Option<&str>) -> String {
+    let lift = "or set COCKPIT_TEST_CLAUDE_GUARD=0, which runs the tests with no guard, so that one of them may \
+                start your own claude (docs/testing.md)";
+    let keyed = |t: &str, c: &str| c.lines().any(|l| l.trim() == format!("[target.{t}]"));
+    match target.zip(config).filter(|(t, c)| !keyed(t, c)) {
+        Some((t, _)) => format!(
+            "COCKPIT_TEST_CLAUDE_GUARD is set and {found}: the target these tests were built for, {t}, has no \
+             runner in the repo's .cargo/config.toml, so no test binary is guarded here (#973). Add \
+             there\n[target.{t}]\n{RUNNER_LINE}\n{lift}."
+        ),
+        None => format!(
+            "COCKPIT_TEST_CLAUDE_GUARD is set and {found}: another cargo runner took the place of the repo's \
+             (.cargo/config.toml, #973). End yours with `exec {RUNNER} \"$@\"`, {lift}."
+        ),
+    }
+}
+
+/// The target this binary was built for: the folder above `<profile>/deps`
+/// where cargo was given `--target`, and else the host that `rustc -vV` names.
+/// None where neither can be read.
+fn built_for() -> Option<String> {
+    let exe = std::env::current_exe().ok()?;
+    let above = exe.parent()?.parent()?.parent()?;
+    if !above.join("CACHEDIR.TAG").is_file() {
+        return Some(above.file_name()?.to_string_lossy().into_owned());
+    }
+    let out = Command::new("rustc").arg("-vV").stdin(Stdio::null()).output().ok()?;
+    let said = String::from_utf8_lossy(&out.stdout);
+    said.lines().find_map(|l| l.strip_prefix("host: ")).map(str::to_string)
 }
 
 /// This binary's own run. The repo's config sets the switch for every cargo
-/// started inside the checkout, and `make tui-test` sets it too, so a runner
-/// of the developer's own that replaced the repo's fails here, by name.
+/// started inside the checkout, and `make tui-test` sets it too, so a run with
+/// no guard fails here: under a runner of the developer's own that replaced
+/// the repo's, and on a target the repo's config has no key for.
 #[test]
 fn this_run_is_behind_the_guard_where_one_was_asked_for() {
     let var = |k: &str| std::env::var_os(k);
     let (switch, dir) = (var("COCKPIT_TEST_CLAUDE_GUARD"), var("COCKPIT_TEST_CLAUDE_GUARD_DIR"));
     let switch = switch.as_deref().map(|s| s.to_string_lossy());
     let held = behind_the_guard(switch.as_deref(), dir.as_deref().map(Path::new), &var("PATH").unwrap_or_default());
-    if let Err(why) = held {
-        panic!("{why}");
+    if let Err(found) = held {
+        let config = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../.cargo/config.toml"));
+        panic!("{}", why_no_guard(&found, built_for().as_deref(), config.ok().as_deref()));
+    }
+}
+
+/// A cargo config with a key for one target, as the repo's has six.
+const KEYED: &str = "[env]\nA = \"1\"\n\n[target.x86_64-unknown-linux-gnu]\nrunner = \"r\"\n";
+
+#[test]
+fn a_target_with_no_key_in_the_config_is_told_the_two_lines_to_add() {
+    let host = "x86_64-unknown-linux-gnu";
+    let (commented, longer) = (KEYED.replace("[target.", "# [target."), KEYED.replace("-gnu]", "-gnux32]"));
+    let none = [
+        ("riscv64gc-unknown-linux-gnu", KEYED),
+        (host, commented.as_str()),
+        (host, longer.as_str()),
+    ];
+    for (target, config) in none {
+        let why = why_no_guard("found", Some(target), Some(config));
+        let lines = format!("\n[target.{target}]\n{RUNNER_LINE}\n");
+        assert!(
+            why.contains(&lines) && why.contains("COCKPIT_TEST_CLAUDE_GUARD=0"),
+            "{target}: {why}"
+        );
+        assert!(!why.contains("another cargo runner"), "{target}: {why}");
+    }
+}
+
+/// The general words: for a target that has its key, and wherever the target
+/// or the config could not be read.
+#[test]
+fn a_target_with_a_key_or_one_that_cannot_be_read_is_told_another_runner_took_the_repos_place() {
+    let host = "x86_64-unknown-linux-gnu";
+    for (row, target, config) in [
+        ("keyed", Some(host), Some(KEYED)),
+        ("no rustc", None, Some(KEYED)),
+        ("no config", Some(host), None),
+    ] {
+        let why = why_no_guard("found", target, config);
+        assert!(why.contains("another cargo runner") && why.contains(RUNNER), "{row}: {why}");
+        assert!(
+            why.contains("COCKPIT_TEST_CLAUDE_GUARD=0") && !why.contains("[target."),
+            "{row}: {why}"
+        );
     }
 }
 
@@ -665,8 +744,8 @@ fn a_run_the_guard_was_asked_for_holds_only_with_the_guards_claude_first() {
         ("another claude first", Some(guard.as_path()), &second),
         ("no folder", None, &first),
     ] {
-        let why = behind_the_guard(Some("1"), dir, path).expect_err(row);
-        assert!(why.contains("COCKPIT_TEST_CLAUDE_GUARD=0") && why.contains(RUNNER), "{row}: {why}");
+        let found = behind_the_guard(Some("1"), dir, path).expect_err(row);
+        assert!(found.contains("is not first on PATH"), "{row}: {found}");
     }
 }
 

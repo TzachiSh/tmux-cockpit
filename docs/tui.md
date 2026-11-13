@@ -87,10 +87,12 @@ checked the same way. The fix belongs in the rig: `fake::rig_path` and
 with no guard, as cargo alone would but for one thing a shell cannot hand on.
 The guard is absent from a run started outside the checkout with
 `--manifest-path`, from a test binary started by hand or under a debugger
-(`tui/tests/claude-guard/runner <binary>` starts one behind it), and from a
-test that builds its `PATH` from nothing. `docs/testing.md` has the switch
-that lifts it, what a cargo runner of your own does to it, and what the script
-changes for `cargo run`.
+(`tui/tests/claude-guard/runner <binary>` starts one behind it), from a test
+that builds its `PATH` from nothing, and on a target the config names no
+runner for, where one test fails and says which lines to add.
+`docs/testing.md` has the targets, the switch that lifts the guard, what a
+cargo runner of your own does to it, and what the script changes for
+`cargo run`.
 
 The binary lives in the plugin's own `bin/` and is gitignored. `install.sh`
 runs `scripts/tui-fetch --required` and exits 1 when no working binary is

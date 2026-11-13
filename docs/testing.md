@@ -43,27 +43,31 @@ would, and a test with no stub of its own may start your real `claude`.
 `make tui-test` sets the variable to 1 itself and CI runs that target, so an
 exported 0 never lifts the gate.
 
-cargo takes one runner, and the guard is the repo's. A runner of your own meets
-it in one of three ways:
+cargo takes one runner, and the guard is the repo's. The config names it under
+six targets by their exact names: `x86_64-unknown-linux-gnu`,
+`aarch64-unknown-linux-gnu`, `x86_64-unknown-linux-musl`,
+`aarch64-unknown-linux-musl`, `x86_64-apple-darwin` and `aarch64-apple-darwin`.
+On any other target no runner applies and the tests run with no guard. The row
+`this_run_is_behind_the_guard_where_one_was_asked_for` in
+`tui/tests/claude_guard.rs` fails there, and its message names the target and
+the two lines to add to the config.
 
-- Set by `CARGO_TARGET_<TRIPLE>_RUNNER`, by a `[target.<triple>]` key, by
-  `--config`, or in a `.cargo/config.toml` below the repo's, yours replaces the
-  repo's and cargo says nothing. The row
-  `this_run_is_behind_the_guard_where_one_was_asked_for` in
-  `tui/tests/claude_guard.rs` then fails and says so, in a run that includes
-  that binary. `cargo test --test agents` alone runs no such row and says
-  nothing. To keep both, end your runner with
+A runner of your own meets the repo's in one of two ways:
+
+- Inside this checkout cargo drops yours without a word, and the guard runs,
+  when yours is set in any of these: a `[target.'cfg(..)']` key in your own
+  cargo config, a `[target.<triple>]` key in your own cargo config,
+  `--config "target.'cfg(..)'.runner=..."` on the command line, or a
+  `[target.'cfg(..)']` key in a `.cargo/config.toml` below the repo's. Every
+  cargo command still works.
+- Yours replaces the repo's, and cargo says nothing, when it is set by
+  `CARGO_TARGET_<TRIPLE>_RUNNER`, by `--config target.<triple>.runner=...`, or
+  by a `[target.<triple>]` key in a `.cargo/config.toml` below the repo's. The
+  row named above then fails and says so, in a run that includes that binary.
+  `cargo test --test agents` alone runs no such row and says nothing. To keep
+  both, end your runner with
   `exec <checkout>/tui/tests/claude-guard/runner "$@"`. To run without the
   guard, set the switch to 0.
-- Set under the repo's own key, `[target.'cfg(unix)']`, in your
-  `~/.cargo/config.toml`, yours is dropped by cargo inside this checkout
-  without a word, and the guard runs. Use one of the forms above.
-- Set under another `cfg(...)` key that also matches, cargo refuses to build
-  or run anything in the checkout: `cargo build`, `check`, `test`, `run`,
-  `clippy` and `doc` all end with ``several matching instances of
-  `target.'cfg(..)'.runner` in configurations``, exit 101. So do `make tui-bin`
-  and an install from source started there. Move your runner to one of the
-  forms above.
 
 cargo still names the signal a test binary died by (`signal: 6, SIGABRT`),
 because the runner then dies by the same signal. That holds for every signal
