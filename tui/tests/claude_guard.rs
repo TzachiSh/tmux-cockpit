@@ -867,21 +867,27 @@ fn plain_target() -> Option<PathBuf> {
 /// starts inside the checkout. That is what lets the row above fail under a
 /// runner that replaced the repo's, so it is asked of cargo itself: this
 /// binary's `switch_child`, started by a cargo of this row's own with the
-/// variable taken out of its environment. Skipped, with a line on the real
-/// stderr, where no cargo started this binary or it was not built the plain way.
+/// variable taken out of its environment.
 #[test]
 fn a_cargo_started_in_the_checkout_sets_the_switch_to_1() {
+    a_second_cargo_runs_switch_child("a_cargo_started_in_the_checkout_sets_the_switch_to_1", &[]);
+}
+
+/// A cargo of `row`'s own, started in the checkout with `config` added to its
+/// arguments, runs this binary's `switch_child`, which must pass with the
+/// switch at 1. It finds the crate built in the target folder this binary came
+/// from. Skipped, with a line on the real stderr, where no cargo started this
+/// binary or it was not built the plain way.
+fn a_second_cargo_runs_switch_child(row: &str, config: &[&str]) {
     use std::io::Write;
     let (Some(cargo), Some(target)) = (std::env::var_os("CARGO"), plain_target()) else {
         let why = "no cargo started this binary, or it was not built by a plain cargo test";
-        return drop(writeln!(
-            std::io::stderr(),
-            "claude_guard a_cargo_started_in_the_checkout_sets_the_switch_to_1: SKIPPED: {why}"
-        ));
+        return drop(writeln!(std::io::stderr(), "claude_guard {row}: SKIPPED: {why}"));
     };
     let mut c = Command::new(cargo);
     c.args(["test", "--locked", "--test", "claude_guard", "--target-dir"]).arg(target);
-    c.args(["--", "--exact", "switch_child", "--nocapture"])
+    c.args(config)
+        .args(["--", "--exact", "switch_child", "--nocapture"])
         .current_dir(env!("CARGO_MANIFEST_DIR"));
     c.env_remove("COCKPIT_TEST_CLAUDE_GUARD").env("CLAUDE_GUARD_SWITCH_CHILD", "1");
     let child = c
