@@ -565,9 +565,9 @@ fn an_exit_status_that_names_no_deadly_signal_is_passed_on_as_it_is() {
     }
 }
 
-/// A stand-in that says it runs, in a file beside itself, then waits for a
+/// A stand-in that writes its pid to a file beside itself, then waits for a
 /// line on the fifo beside itself, starts `claude` and ends well.
-const WAITS: &str = "#!/bin/sh\necho x > \"$0.up\"\nread -r _ < \"$0.go\"\nclaude late 2>/dev/null\nexit 0\n";
+const WAITS: &str = "#!/bin/sh\necho $$ > \"$0.up\"\nread -r _ < \"$0.go\"\nclaude late 2>/dev/null\nexit 0\n";
 
 /// `signal` sent to the runner alone while its binary runs: how the runner
 /// ended, whether the start the binary made afterwards was reported, and what
@@ -584,7 +584,11 @@ fn sent_to_the_runner(signal: i32) -> (Option<i32>, bool, usize) {
     appears(&up);
     // SAFETY: the pid of this row's own child, held and not yet waited for.
     assert_eq!(unsafe { libc::kill(child.id() as libc::pid_t, signal) }, 0);
-    release(Path::new(&go));
+    if let Err(e) = release(Path::new(&go)) {
+        end_stand_in(&up, &exe);
+        drop(ended(child, "the runner"));
+        panic!("{e}");
+    }
     let o = ended(child, "the runner");
     let said = String::from_utf8_lossy(&o.stderr).contains("argv=claude [late]");
     (o.status.signal(), said, std::fs::read_dir(r.0.join("tmp")).unwrap().count())
@@ -613,16 +617,71 @@ fn a_quit_to_the_runner_still_reads_the_log_and_removes_the_folder() {
 
 /// [`WAITS`], and a file beside itself once it has ended: nobody waits for a
 /// binary whose runner was killed.
-const OUTLIVES: &str = "#!/bin/sh\necho x > \"$0.up\"\nread -r _ < \"$0.go\"\nclaude late 2>/dev/null\necho x > \"$0.done\"\n";
+const OUTLIVES: &str = "#!/bin/sh\necho $$ > \"$0.up\"\nread -r _ < \"$0.go\"\nclaude late 2>/dev/null\necho x > \"$0.done\"\n";
 
 /// One line into `fifo` for the binary that waits on it. The fifo is opened
-/// without waiting, and a row fails where no binary has it open: a write to a
-/// fifo nobody reads would hold the row for good.
-fn release(fifo: &Path) {
+/// without waiting, since a write to a fifo nobody reads would hold the row for
+/// good. A binary writes that it runs before it opens the fifo, so the open is
+/// tried again while it finds no reader (ENXIO), polled for 20 s as
+/// [`appears`] is, and then fails (#997).
+fn release(fifo: &Path) -> Result<(), String> {
     use std::{io::Write, os::unix::fs::OpenOptionsExt};
-    let open = std::fs::OpenOptions::new().write(true).custom_flags(libc::O_NONBLOCK).open(fifo);
-    let mut f = open.unwrap_or_else(|e| panic!("no binary waits on {}: {e}", fifo.display()));
-    f.write_all(b"go\n").unwrap();
+    for tries in 0.. {
+        let open = std::fs::OpenOptions::new().write(true).custom_flags(libc::O_NONBLOCK).open(fifo);
+        match open {
+            Ok(mut f) => return f.write_all(b"go\n").map_err(|e| format!("{}: {e}", fifo.display())),
+            Err(e) if e.raw_os_error() == Some(libc::ENXIO) && tries < 2000 => {}
+            Err(e) => return Err(format!("no binary waits on {}: {e}", fifo.display())),
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    unreachable!()
+}
+
+/// Ends the stand-in at `exe` once its row has failed, so a red run leaves no
+/// binary blocked on its fifo. Its pid is the one it wrote to `up`, signalled
+/// only where that process's command line still names `exe`.
+fn end_stand_in(up: &Path, exe: &Path) {
+    let pid = std::fs::read_to_string(up).ok().and_then(|s| s.trim().parse::<libc::pid_t>().ok());
+    let Some(pid) = pid else { return };
+    let args = match std::fs::read(format!("/proc/{pid}/cmdline")) {
+        Ok(a) => String::from_utf8_lossy(&a).replace('\0', " "),
+        Err(_) => command_output("ps", &["-o", "args=", "-p", &pid.to_string()]),
+    };
+    if args.contains(&*exe.to_string_lossy()) {
+        // SAFETY: a pid whose command line names this row's own stand-in.
+        unsafe { libc::kill(pid, libc::SIGKILL) };
+    }
+}
+
+/// What `program` wrote to stdout, empty where it could not be run.
+fn command_output(program: &str, args: &[&str]) -> String {
+    let out = Command::new(program).args(args).stdin(Stdio::null()).output();
+    out.map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default()
+}
+
+/// [`WAITS`] with a count between its pid file and its fifo, as a loaded box
+/// puts time there.
+const LATE: &str = "#!/bin/sh\necho $$ > \"$0.up\"\ni=0\nwhile [ $i -lt 100000 ]; do i=$((i + 1)); done\n\
+                    read -r l < \"$0.go\"\necho \"$l\"\n";
+
+/// A binary that says it runs and opens its fifo only later still gets its line.
+#[test]
+fn a_binary_that_opens_its_fifo_late_is_still_released() {
+    let r = Rig::new("late");
+    let exe = r.binary(TEST, LATE);
+    let (up, go) = (r.0.join(format!("{TEST}.up")), r.0.join(format!("{TEST}.go")));
+    let fifo = std::ffi::CString::new(go.to_str().unwrap()).unwrap();
+    // SAFETY: `fifo` is a NUL-terminated path under the rig's folder.
+    assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+    let child = Command::new(&exe).stdin(Stdio::null()).stdout(Stdio::piped()).spawn().unwrap();
+    appears(&up);
+    let released = release(&go);
+    if released.is_err() {
+        end_stand_in(&up, &exe);
+    }
+    let out = ended(child, "the late binary");
+    assert_eq!((released, String::from_utf8_lossy(&out.stdout).as_ref()), (Ok(()), "go\n"));
 }
 
 /// Polled, never slept for: gives up after 20 s.
@@ -672,7 +731,10 @@ fn killed_under(shell: &str, at: [&str; 2], flags: &[&str]) -> Option<(usize, us
     assert_eq!(unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGUSR1) }, 0);
     assert_eq!(ended(child, "the killed runner").status.signal(), Some(libc::SIGUSR1), "{shell}");
     let folders: Vec<PathBuf> = std::fs::read_dir(r.0.join("tmp")).unwrap().map(|e| e.unwrap().path()).collect();
-    release(&beside("go"));
+    if let Err(e) = release(&beside("go")) {
+        end_stand_in(&beside("up"), &exe);
+        panic!("{e}");
+    }
     appears(&beside("done"));
     let log = folders
         .first()
@@ -945,8 +1007,12 @@ fn a_cargo_started_in_the_checkout_sets_the_switch_to_1() {
 
 /// A developer's own runner under a `cfg(..)` key, as one of their configs may
 /// hold. `cfg(all())` holds on every target, macOS too, and no repo has a use
-/// for a key that names no target. `false` fails any binary it is handed.
-const OTHER_CFG_RUNNER: &str = "target.'cfg(all())'.runner='false'";
+/// for a key that names no target. The runner must run the binary it is
+/// handed, as `env` does: on a target with no key of the repo's this key is
+/// the one that applies, and a runner that failed the binary would turn this
+/// row red there too, with no words of its own, and keep it red with the
+/// switch at 0 that the guard's row offers (#973).
+const OTHER_CFG_RUNNER: &str = "target.'cfg(all())'.runner='env'";
 
 /// The repo's runner is under exact target names (#973). Under a `cfg(..)` key
 /// of its own, any other matching cfg runner key a developer holds made cargo
@@ -982,7 +1048,10 @@ fn a_second_cargo_runs_switch_child(row: &str, config: &[&str]) {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    let out = ended(child, "the second cargo");
+    let out = ended(
+        child,
+        "the second cargo (a build lock another cargo in the checkout holds, or a rebuild)",
+    );
     let said = String::from_utf8_lossy(&out.stderr);
     let switch: Vec<&str> = said.lines().filter_map(|l| l.strip_prefix(SWITCH_IS)).collect();
     assert_eq!(
