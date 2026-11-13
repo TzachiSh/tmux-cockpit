@@ -173,24 +173,37 @@ for f in "$SH".*; do
 done
 # Arrays, one whole path each: joined into a string and split again, a path holding a space
 # came apart, no shard ran, and bash was handed the path's first word to run (#1007).
-[ ${#serial[@]} -eq 0 ] || run_shards 1 "${serial[@]}"
-[ ${#rest[@]} -eq 0 ] || run_shards "$J" "${rest[@]}"
+# xargs's own failure (it could not start a worker, or could not read its list) is kept: a
+# worker's script always ends 0, so anything else here is xargs, and the run was not whole.
+xrc=0
+[ ${#serial[@]} -eq 0 ] || run_shards 1 "${serial[@]}" || xrc=$?
+[ ${#rest[@]} -eq 0 ] || run_shards "$J" "${rest[@]}" || xrc=$?
 
-pass=0; fail=0; skip=0; red=0
+# Every shard planned must report its count. One that never started has no log, no count and
+# no fail mark, so the total simply left it out: a run in which no worker started printed
+# "0 passed, 0 failed" and ended 0, a gate that could not fail (#1013).
+pass=0; fail=0; skip=0; red=0; planned=0; reported=0
 for f in "$SH".*; do
-    id=${f##*.}
-    cat "$WORK/out/$id.log"
+    [ -e "$f" ] || continue
+    id=${f##*.}; planned=$((planned + 1))
+    [ ! -e "$WORK/out/$id.log" ] || cat "$WORK/out/$id.log"
     if [ -s "$WORK/out/$id.n" ]; then
         IFS=, read -r p q s < "$WORK/out/$id.n"
-        pass=$((pass + p)); fail=$((fail + q)); skip=$((skip + s))
+        pass=$((pass + p)); fail=$((fail + q)); skip=$((skip + s)); reported=$((reported + 1))
+        [ -e "$WORK/out/$id.fail" ] && red=1
+        continue
     fi
     # A shard can die before it counts -- set -u on a variable a block in
     # another shard sets. That is a grouping bug, so say so, do not just
     # report a total that quietly does not add up.
-    [ -e "$WORK/out/$id.fail" ] || continue
     red=1
-    [ -s "$WORK/out/$id.n" ] || echo "par.sh: shard $id died without reporting" >&2
+    if [ -e "$WORK/out/$id.log" ]; then echo "par.sh: shard $id died without reporting" >&2
+    else echo "par.sh: shard $id never started" >&2
+    fi
 done
+[ "$xrc" -eq 0 ] || { red=1; echo "par.sh: xargs ended $xrc: the workers did not all start" >&2; }
+[ "$reported" -eq "$planned" ] && [ "$planned" -gt 0 ] || {
+    red=1; echo "par.sh: $reported of $planned shards reported a count" >&2; }
 printf '  %d passed, %d failed, %d skipped  (J=%s, %s shards)\n' \
     "$pass" "$fail" "$skip" "$J" "$(find "$DIR/tests" -maxdepth 1 -name ".par.$$.*" | wc -l)"
 [ "$red" -eq 0 ] || exit 1

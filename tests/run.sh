@@ -9215,6 +9215,41 @@ is "under a path with a ' and a TMPDIR with a \" and a \$ both shards run and co
    "0|2 passed, 0 failed, 0 skipped|2 2" "$(pw_run "pr'oj" 't"$HOME')"
 unset -f pw_run; unset PW Q
 
+echo "== tests/par.sh: a run whose workers did not all start fails and says so (#1013) =="
+# A shard that never started left no log, no count and no fail mark, and the total left it out:
+# with no worker started par.sh printed "0 passed, 0 failed" and ended 0. A sandbox as above,
+# with an xargs of its own first on PATH: none (the real one), dead (ends 1 and starts
+# nothing), first (hands on only the first shard).
+PX=$(mktmpd); Q='"'; mkdir -p "$PX/c/tests" "$PX/t" "$PX/dead" "$PX/first"
+cp "$DIR/tests/par.sh" "$PX/c/tests/par.sh"
+awk '/^echo "== /{exit} {print}' "$DIR/tests/run.sh" > "$PX/c/tests/run.sh"
+{
+    printf 'echo %s== px1: one ==%s\nis "px1" 1 1\n\n' "$Q" "$Q"
+    printf 'echo %s== px2: two ==%s\nis "px2" 1 1\n\n' "$Q" "$Q"
+} >> "$PX/c/tests/run.sh"
+printf '#!/bin/sh\ncat >/dev/null\nexit 1\n' > "$PX/dead/xargs"
+printf '#!/bin/sh\ntr "\\0" "\\n" | head -n 1 | tr "\\n" "\\0" | exec %s "$@"\n' \
+    "$(tq "$(command -v xargs)")" > "$PX/first/xargs"
+chmod +x "$PX/dead/xargs" "$PX/first/xargs"
+px_run() {                    # <none|dead|first> -> status|summary|what par.sh said of its shards
+    local rc
+    ( cd "$PX/c" && PATH="$PX/$1:$PATH" exec env -u PAR_BLOCKS TMPDIR="$PX/t" J=2 tests/par.sh ) \
+        </dev/null >"$PX/out" 2>"$PX/err"; rc=$?
+    printf '%s|%s|%s' "$rc" \
+        "$(grep -oE '[0-9]+ passed, [0-9]+ failed, [0-9]+ skipped' "$PX/out")" \
+        "$(grep -E '^par\.sh: (shard [0-9]+ never started|[0-9]+ of [0-9]+ shards|xargs ended)' \
+            "$PX/err" | sed 's/: the workers.*//' | tr '\n' ';')"
+}
+is "with its own xargs both shards report and the run ends 0" \
+   "0|2 passed, 0 failed, 0 skipped|" "$(px_run none)"
+is "an xargs that starts no worker fails the run, and each shard is named" \
+   "1|0 passed, 0 failed, 0 skipped|par.sh: shard 0001 never started;par.sh: shard 0002 never started;par.sh: xargs ended 1;par.sh: 0 of 2 shards reported a count;" \
+   "$(px_run dead)"
+is "one shard that never started fails the run, the other still counts" \
+   "1|1 passed, 0 failed, 0 skipped|par.sh: shard 0002 never started;par.sh: 1 of 2 shards reported a count;" \
+   "$(px_run first)"
+unset -f px_run; unset PX Q
+
 echo "== tests/green.sh: the stamp hits on unchanged content, misses on one changed byte, and tool versions are in the key =="
 GROOT=$(mktmpd)
 mkdir -p "$GROOT/scripts/lib" "$GROOT/tests" "$GROOT/examples"
