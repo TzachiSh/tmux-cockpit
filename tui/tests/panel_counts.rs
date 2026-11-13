@@ -250,25 +250,214 @@ fn busy_counts_an_ordinary_screen_name_and_path_as_before() {
     }
 }
 
+/// Busy's "sent:" line, out of its frame's box.
+fn sent_line(f: &str) -> String {
+    let row = f.lines().find(|l| l.contains("sent: ")).unwrap_or("");
+    row.trim_matches(|c: char| c == '"' || c == '│' || c == ' ').to_string()
+}
+
+/// Pinned byte for byte as master printed them before #965: the flows that
+/// send a screen keep their line.
+#[test]
+fn busy_lines_of_the_flows_that_send_a_screen_are_as_before() {
+    let mut c = cap(
+        &format!("{PLAIN}\n{SPLIT}"),
+        "deploy-sk-ant-MADEUPFAKEFAKE00",
+        "/u/ghp_MADEUPFAKEFAKEFAKEFAKE00",
+    );
+    c.repo = "log:\n  abc1234 sk-ant-MADEUP\u{202E}FAKEFAKE00".into();
+    let rows = [
+        ("write", "sent: screen 4 lines, 4 hidden, 1 in the repo block · write (auto)"),
+        ("fix", "sent: screen 4 lines, 3 hidden · fix spelling"),
+        ("explain", "sent: screen 4 lines, 3 hidden · explain"),
+    ];
+    for (row, want) in rows {
+        let mut a = app(c.clone());
+        start(&mut a, row);
+        assert_eq!(sent_line(&frame(&a)), want, "{row}");
+    }
+}
+
 // ---------------------------------------------------------------- an Ask
 
-/// Pinned: an Ask's Busy line is #965's to fix, and this change leaves it as
-/// it was: the screen counted as Home counts it, the rest (here a key in the
-/// code) as conversation, never as a repo block the Ask did not send.
-#[test]
-fn an_asks_busy_line_is_left_as_it_was() {
-    let d = fake::Scratch::fresh(std::env::temp_dir().join(format!("cockpit-panel-counts-{}", std::process::id())));
+/// A made-up key cut in two by U+202E, as a line of an Ask's code.
+const CODE_SPLIT: &str = "b sk-ant-MADEUP\u{202E}FAKEFAKE00";
+
+/// An Ask about lines 1-2 of a file whose second line is `line`, its question
+/// `q` sent from a pane showing `c`. The guard keeps the file until the test ends.
+fn ask(c: Capture, tag: &str, line: &str, q: &str) -> (fake::Scratch, App) {
+    ask_lines(c, tag, &format!("a\n{line}\nc\n"), (1, 2), q)
+}
+
+/// An Ask about lines `from`-`to` of a file holding `body`, as [`ask`].
+fn ask_lines(c: Capture, tag: &str, body: &str, (from, to): (u32, u32), q: &str) -> (fake::Scratch, App) {
+    let name = format!("cockpit-panel-counts-{tag}-{}", std::process::id());
+    let d = fake::Scratch::fresh(std::env::temp_dir().join(name));
     std::fs::create_dir_all(d.join(".git")).unwrap();
     let f = d.join("x.rs");
-    std::fs::write(&f, "a\nb sk-abcdefghijklmnopqrst3\nc\n").unwrap();
-    let mut a = app(cap(PLAIN, "w", "/h"));
-    a.ask_open(ask::load(&f, 1, 2).unwrap());
-    key(&mut a, KeyCode::Char('y'));
+    std::fs::write(&f, body).unwrap();
+    let mut a = app(c);
+    a.ask_open(ask::load(&f, from, to).unwrap());
+    q.chars().for_each(|ch| key(&mut a, KeyCode::Char(ch)));
     key(&mut a, KeyCode::Enter);
     assert_eq!(a.view, View::Busy);
-    let f = frame(&a);
-    assert!(
-        f.contains("sent: screen 2 lines, 1 hidden, 1 more in the conversation · ask about"),
-        "{f}"
-    );
+    (d, a)
+}
+
+fn split(screen: usize, repo: usize, talk: usize) -> SentHidden {
+    SentHidden { screen, repo, talk }
+}
+
+/// The envelope an Ask sends holds no screen and no window: a key in either is
+/// none of its secrets (#965), whether plain, split, or in the window's name.
+#[test]
+fn an_asks_envelope_counts_no_secret_of_the_screen_or_window() {
+    let rows = [
+        ("plain screen", cap(PLAIN, "w", "/h")),
+        ("split screen", cap(SPLIT, "w", "/h")),
+        ("name", cap("$ ls", "deploy-sk-ant-MADEUPFAKEFAKE00", "/h")),
+        ("path", cap("$ ls", "w", "/u/ghp_MADEUPFAKEFAKEFAKEFAKE00")),
+    ];
+    for (row, c) in rows {
+        let (_d, a) = ask(c.clone(), "env", "b", "y");
+        let e = build_parts(&a.run.as_ref().unwrap().flow, &c, &[], 0);
+        assert_eq!(e.screen_hidden, 0, "{row}");
+    }
+}
+
+/// An Ask's code is counted as its own, once, a split key as well as a plain one.
+#[test]
+fn an_asks_envelope_counts_its_codes_keys_as_the_codes() {
+    for (row, line) in [("plain", "b sk-abcdefghijklmnopqrst3"), ("split", CODE_SPLIT)] {
+        let (_d, a) = ask(cap("$ ls", "w", "/h"), "code", line, "y");
+        let e = build_parts(&a.run.as_ref().unwrap().flow, &a.cap, &[], 0);
+        assert_eq!((e.screen_hidden, e.repo_hidden, e.turns_hidden), (0, 1, 0), "{row}");
+    }
+}
+
+/// Busy reads an Ask's split from the envelope it sent, as for every flow.
+#[test]
+fn busy_counts_an_ask_as_its_envelope_split_it() {
+    let c = cap(&format!("{PLAIN}\n{SPLIT}"), "deploy-sk-ant-MADEUPFAKEFAKE00", "/h");
+    let (_d, a) = ask(c.clone(), "match", CODE_SPLIT, "why sk-abcdefghijklmnopqrst2");
+    let r = a.run.as_ref().unwrap();
+    let e = build_parts(&r.flow, &c, &r.turns, 0);
+    assert_eq!(a.sent_hidden(), split(e.screen_hidden, e.repo_hidden, e.turns_hidden));
+    assert_eq!(a.sent_hidden(), split(0, 1, 1));
+}
+
+/// The code's key is named as the code's, never as "more in the conversation",
+/// and the line names no screen.
+#[test]
+fn busy_names_an_asks_code_and_no_screen() {
+    let (_d, a) = ask(cap(PLAIN, "w", "/h"), "line", "b sk-abcdefghijklmnopqrst3", "y");
+    assert_eq!(sent_line(&frame(&a)), "sent: code 2 lines, 1 hidden · ask about x.rs:1-2");
+}
+
+/// A key split by U+202E on the screen changes nothing in an Ask's line.
+#[test]
+fn busy_line_of_an_ask_ignores_a_split_key_on_the_screen() {
+    let (_d, a) = ask(cap(SPLIT, "w", "/h"), "scrsplit", "b", "y");
+    assert_eq!(sent_line(&frame(&a)), "sent: code 2 lines, 0 hidden · ask about x.rs:1-2");
+    assert_eq!(a.sent_hidden(), split(0, 0, 0));
+}
+
+/// A key in the window's name changes nothing in an Ask's line.
+#[test]
+fn busy_line_of_an_ask_ignores_a_key_in_the_window_name() {
+    let (_d, a) = ask(cap("$ ls", "deploy-sk-ant-MADEUPFAKEFAKE00", "/h"), "name", "b", "y");
+    assert_eq!(sent_line(&frame(&a)), "sent: code 2 lines, 0 hidden · ask about x.rs:1-2");
+    assert_eq!(a.sent_hidden(), split(0, 0, 0));
+}
+
+/// A key split by U+202E in the Ask's code is the code's.
+#[test]
+fn busy_counts_a_split_key_in_an_asks_code_as_the_codes() {
+    let (_d, a) = ask(cap("$ ls", "w", "/h"), "codesplit", CODE_SPLIT, "y");
+    assert_eq!(sent_line(&frame(&a)), "sent: code 2 lines, 1 hidden · ask about x.rs:1-2");
+    assert_eq!(a.sent_hidden(), split(0, 1, 0));
+}
+
+/// Pinned: a key in the Ask's question is the conversation's, as before.
+#[test]
+fn busy_counts_a_key_in_an_asks_question_under_the_conversation() {
+    let (_d, a) = ask(cap("$ ls", "w", "/h"), "talk", "b", "why sk-abcdefghijklmnopqrst2");
+    let want = "sent: code 2 lines, 0 hidden, 1 more in the conversation · ask about x.rs:1-2";
+    assert_eq!(sent_line(&frame(&a)), want);
+}
+
+/// An Ask from a pane with nothing captured says the same.
+#[test]
+fn busy_line_of_an_ask_from_an_empty_capture() {
+    let (_d, a) = ask(Capture::default(), "empty", "b", "y");
+    assert_eq!(sent_line(&frame(&a)), "sent: code 2 lines, 0 hidden · ask about x.rs:1-2");
+}
+
+/// The line counts the code inlined, not the lines asked: the caps cut an Ask
+/// past [`ask::MAX_LINES`], and a line over [`ask::MAX_BYTES`] after the first.
+#[test]
+fn busy_counts_an_asks_code_by_the_lines_shown() {
+    let many: String = (1..=450).map(|i| format!("l{i}\n")).collect();
+    let long = format!("a\n{}\nc\n", "x".repeat(ask::MAX_BYTES + 1));
+    let rows = [
+        (
+            "past the line cap",
+            many.as_str(),
+            (1, 450),
+            "code 400 lines, 0 hidden · ask about x.rs:1-450",
+        ),
+        (
+            "a line past the byte cap",
+            long.as_str(),
+            (1, 3),
+            "code 1 lines, 0 hidden · ask about x.rs:1-3",
+        ),
+    ];
+    let line = |body, range| sent_line(&frame(&ask_lines(cap("$ ls", "w", "/h"), "shown", body, range, "y").1));
+    let got: Vec<_> = rows.iter().map(|(row, body, range, _)| (*row, line(*body, *range))).collect();
+    let want: Vec<_> = rows.iter().map(|(row, .., w)| (*row, format!("sent: {w}"))).collect();
+    assert_eq!(got, want);
+}
+
+// ------------------------------------------------- a secret-shaped folder (#966)
+
+/// Compose, ^R, a draft, ^S: a write that asked to explore.
+fn explore_write(a: &mut App) {
+    tile(a, Tile::Compose);
+    ctrl(a, 'r');
+    key(a, KeyCode::Char('x'));
+    ctrl(a, 's');
+    assert_eq!(a.view, View::Busy);
+}
+
+/// ^R is refused for a folder whose name holds a made-up key, so the write that
+/// follows is the plain one, and its Busy line says so: no "explore first". The
+/// path's key is the screen's, as the `<window>` line hides it (#937).
+#[test]
+fn busy_line_of_a_write_on_a_secret_folder_names_the_plain_write() {
+    let rows = [
+        ("plain", "/u/deploy-sk-ant-MADEUPFAKEFAKE00"),
+        ("glued", "/u/w\u{2066}sk-ant-MADEUPFAKEFAKE00"),
+        ("split", "/u/sk-ant-MADEUP\u{202E}FAKEFAKE00"),
+    ];
+    let sent = |path| {
+        let mut a = app(cap("$ ls", "w", path));
+        explore_write(&mut a);
+        (sent_line(&frame(&a)), a.sent_hidden(), a.explore)
+    };
+    let got: Vec<_> = rows.iter().map(|(row, path)| (*row, sent(*path))).collect();
+    let line = "sent: screen 1 lines, 1 hidden · write (auto)";
+    let plain = |r| (r, (line.to_string(), split(1, 0, 0), false));
+    let want: Vec<_> = rows.iter().map(|(r, _)| plain(*r)).collect();
+    assert_eq!(got, want);
+}
+
+/// Pinned: an ordinary folder still explores, and its line says so.
+#[test]
+fn busy_line_of_an_exploring_write_on_an_ordinary_folder_is_as_before() {
+    let mut a = app(cap("$ ls", "w", "/u/proj"));
+    explore_write(&mut a);
+    assert!(a.explore);
+    let want = "sent: screen 1 lines, 0 hidden · write (auto), explore first";
+    assert_eq!(sent_line(&frame(&a)), want);
 }
