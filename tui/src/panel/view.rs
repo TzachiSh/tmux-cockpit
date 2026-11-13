@@ -640,8 +640,13 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
             ));
             b.lines.push(plain(""));
             // split as the envelope counted it (#964): a write's path is the screen's (#937),
-            // and only a write sends the repo block
+            // and only a write sends the repo block. An Ask sends its code, never the
+            // screen (#965): the envelope counts the code's keys where a write's block goes.
             let SentHidden { screen, repo, talk } = app.sent_hidden();
+            let (part, lines, hidden, repo) = match run.map(|r| &r.flow) {
+                Some(Flow::Ask(a)) => ("code", a.shown.1.saturating_sub(a.shown.0) as usize + 1, repo, 0),
+                _ => ("screen", app.screen_lines(), screen, repo),
+            };
             let talk = match talk {
                 0 => String::new(),
                 n => format!(", {n} more in the conversation"),
@@ -650,8 +655,7 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
                 0 => talk,
                 n => format!("{talk}, {n} in the repo block"),
             };
-            let lines = app.screen_lines();
-            let sent = format!("sent: screen {lines} lines, {screen} hidden{talk} {d} {flow}");
+            let sent = format!("sent: {part} {lines} lines, {hidden} hidden{talk} {d} {flow}");
             b.lines.extend(many(&sent, w, "", meta));
             b.lines.extend(many(&format!("model {model}: {why}"), w, "", meta));
             if !app.timeout.is_zero() {

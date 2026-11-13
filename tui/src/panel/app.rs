@@ -329,7 +329,8 @@ pub struct App {
 }
 
 /// The secrets a call's envelope hid, by where they were: the screen with its
-/// window, the repo block (a write's alone), and the conversation.
+/// window, the repo block a write sends or the code an Ask sends, and the
+/// conversation.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SentHidden {
     pub screen: usize,
@@ -1145,17 +1146,9 @@ impl App {
 
     /// What Busy says the call hid, split as the envelope counted it (#964): a
     /// key split by a direction control is the screen's or the repo block's,
-    /// never the conversation's. An Ask sends no screen; its line keeps the
-    /// count it had, the screen as Home counts it and the rest as talk (#965).
+    /// never the conversation's. An Ask's is its envelope's too (#965).
     pub fn sent_hidden(&self) -> SentHidden {
-        match self.run.as_ref().map(|r| &r.flow) {
-            Some(Flow::Ask(_)) => SentHidden {
-                screen: self.screen_hidden,
-                repo: 0,
-                talk: self.hidden.saturating_sub(self.screen_hidden),
-            },
-            _ => self.sent,
-        }
+        self.sent
     }
 
     fn envelope(&self, r: &Run) -> Envelope {
