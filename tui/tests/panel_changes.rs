@@ -759,3 +759,43 @@ fn no_failure_prints_a_line() {
     assert!(out.status.success(), "{said}");
     assert_eq!(said.lines().collect::<Vec<_>>(), ["the-failures-were-quiet"]);
 }
+
+// ---- review fixes: a branch switch is no rewrite ----
+
+#[test]
+fn a_last_seen_sha_on_another_branch_is_no_rewrite_after_a_checkout() {
+    let r = Rig::new("switch");
+    let d = r.repo("r", false);
+    git(&d, &["checkout", "-q", "-b", "feat"]);
+    r.seen(&d, &commit(&d, "on feat"), T0);
+    git(&d, &["checkout", "-q", "main"]);
+    let main = commit(&d, "on main");
+    let got = collect(&mut r.collector(), &d);
+    let want = [(Kind::Commit, short(&main), "on main".to_string())];
+    assert_eq!(of(&got, &[Kind::Rewritten, Kind::Commit]), want);
+}
+
+#[test]
+fn a_last_seen_tip_after_checking_out_its_parent_is_no_rewrite() {
+    let r = Rig::new("parent");
+    let d = r.repo("r", false);
+    r.seen(&d, &commit(&d, "two"), T0);
+    git(&d, &["checkout", "-q", "--detach", "HEAD~1"]);
+    let got = collect(&mut r.collector(), &d);
+    assert_eq!((got.items, got.notes), (vec![], vec![Note::NoGithubRemote]));
+}
+
+#[test]
+fn a_last_seen_sha_dropped_with_its_branch_is_still_a_rewrite() {
+    let r = Rig::new("dropped");
+    let d = r.repo("r", false);
+    git(&d, &["checkout", "-q", "-b", "feat"]);
+    let gone = commit(&d, "on feat");
+    r.seen(&d, &gone, T0);
+    git(&d, &["checkout", "-q", "main"]);
+    git(&d, &["branch", "-q", "-D", "feat"]);
+    commit(&d, "on main");
+    let got = collect(&mut r.collector(), &d);
+    let want = [(Kind::Rewritten, short(&gone), utc_text(T0))];
+    assert_eq!(of(&got, &[Kind::Rewritten, Kind::Commit]), want);
+}

@@ -462,28 +462,35 @@ impl Collector {
     }
 }
 
-/// The commits since the last-seen sha, or one [`Kind::Rewritten`] item when
-/// that sha is no longer behind HEAD.
+/// The commits since the last-seen sha: those on HEAD and not behind that sha.
+/// One [`Kind::Rewritten`] item instead when no ref holds that sha any more.
+/// A sha another branch still holds is no rewrite, only a checkout (#1003).
 fn commits(c: &mut Changes, top: &str, end: Instant) {
     let head = c.head.clone().unwrap_or_default();
     let range = match &c.seen {
         Some(s) if s.head == head => return,
         Some(s) => {
             let args = ["merge-base", "--is-ancestor", &s.head, &head];
-            let anc = capture::spawn_git(top, &[], &args);
-            match capture::wait(anc, end) {
-                Ran::Ok(_) => format!("{}..{head}", s.head),
+            let behind = match capture::wait(capture::spawn_git(top, &[], &args), end) {
                 Ran::TimedOut => return c.notes.push(Note::GitTimedOut),
-                Ran::Failed(_) => {
-                    let text = format!("history rewritten since {}", utc(s.at));
-                    let cite = s.head[..12].to_string();
-                    return c.push(Item {
-                        kind: Kind::Rewritten,
-                        cite,
-                        text,
-                    });
+                ran => matches!(ran, Ran::Ok(_)),
+            };
+            if !behind {
+                let one = ["--count=1", "--format=%(objectname)"];
+                let args = [&["for-each-ref"][..], &one, &["--contains", &s.head]].concat();
+                match capture::wait(capture::spawn_git(top, &[], &args), end) {
+                    Ran::Ok(refs) if !refs.trim().is_empty() => {}
+                    Ran::TimedOut => return c.notes.push(Note::GitTimedOut),
+                    // none holds it, or git does not know the sha
+                    _ => {
+                        let text = format!("history rewritten since {}", utc(s.at));
+                        let cite = s.head[..12].to_string();
+                        let kind = Kind::Rewritten;
+                        return c.push(Item { kind, cite, text });
+                    }
                 }
             }
+            format!("{}..{head}", s.head)
         }
         None => head,
     };
