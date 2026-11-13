@@ -4,7 +4,7 @@
 //! would call GitHub as the developer.
 mod fake;
 use cockpit_tui::panel::changes::{CAP, Changes, Collector, Gh, Item, Kind, More, Note};
-use cockpit_tui::panel::changes::{REFRESH_SECS, SEARCHES_PER_MINUTE};
+use cockpit_tui::panel::changes::{GH_BUDGET, GIT_BUDGET, REFRESH_SECS, SEARCHES_PER_MINUTE};
 use cockpit_tui::panel::changes::{github_repo, mark_seen, read_seen, repo_key, seen_dir, utc};
 use fake::{Scratch, assert_gh_is_the_rigs, rig_path, rigs_gh, write_exec};
 use std::ffi::OsString;
@@ -812,4 +812,17 @@ fn a_key_across_the_200_char_cut_comes_out_hidden() {
     r.answer("pr", &format!(r#"[{{"number":2,"title":"{title}"}}]"#));
     let got = collect(&mut r.collector(), &d);
     assert_eq!(github(&got)[0].2, format!("{lead} [hidden] tail"));
+}
+
+// ---- review fixes: the panel's own gh ----
+
+/// Spawns nothing: it reads the fields the panel would start gh with.
+#[test]
+fn the_panels_gh_is_the_name_gh_found_by_path_within_its_budgets() {
+    assert_eq!((GH_BUDGET, GIT_BUDGET), (Duration::from_secs(5), Duration::from_secs(1)));
+    let gh = Gh::from_env();
+    assert_eq!((gh.program, gh.path, gh.budget), (OsString::from("gh"), None, GH_BUDGET));
+    let c = Collector::from_env();
+    let want = (OsString::from("gh"), None, GIT_BUDGET, seen_dir());
+    assert_eq!((c.gh.program, c.gh.path, c.git_budget, c.store), want);
 }
