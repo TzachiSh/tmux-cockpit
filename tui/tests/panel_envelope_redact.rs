@@ -4,6 +4,8 @@
 //! (`#{pane_current_command}`), so it is cleaned and never redacted. A ref and
 //! an Ask's path are files the user chose, and stay as written. Every value
 //! here is made up.
+mod fake;
+
 use cockpit_tui::panel::app::{App, Tile, View};
 use cockpit_tui::panel::ask::AskCode;
 use cockpit_tui::panel::capture::Capture;
@@ -13,7 +15,6 @@ use cockpit_tui::theme::Theme;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
-use std::sync::Once;
 
 /// A made-up key glued to a word by a `-`, as `rename-window` could set it.
 const NAME: &str = "deploy-sk-ant-MADEUPFAKEFAKE00";
@@ -213,23 +214,26 @@ fn a_ref_is_not_redacted() {
 
 // --------------------------------------------------- what the panel shows
 
-/// HOME and XDG_CONFIG_HOME at a folder that is never made, before the first
-/// `App`: a prompt override under the developer's config changes a write.
-fn fixed_env() {
-    static SET: Once = Once::new();
-    SET.call_once(|| {
-        // SAFETY: set once, before any thread here reads the environment.
-        unsafe {
-            std::env::set_var("HOME", "/sys/absent-937");
-            std::env::set_var("XDG_CONFIG_HOME", "/sys/absent-937");
-            std::env::remove_var("COCKPIT_PANEL_MODEL");
-        }
-    });
+/// Every `App` here is built under the binary's one environment (#948, #953),
+/// which [`fake::fixed_env`] sets: a prompt override under the developer's
+/// config changes a write.
+fn app(name: &str, path: &str) -> App {
+    fake::fixed_env();
+    App::new("%3", cap(name, "zsh", path))
 }
 
-fn app(name: &str, path: &str) -> App {
-    fixed_env();
-    App::new("%3", cap(name, "zsh", path))
+/// Once an `App` is built, the binary runs under the fixed environment. It
+/// builds one itself, so it holds when run first or alone.
+#[test]
+fn an_app_is_built_under_the_fixed_environment() {
+    let _ = app("w", "/home/u");
+    fake::assert_fixed_env();
+}
+
+/// The test above in a process started with all three variables set.
+#[test]
+fn the_fixed_environment_replaces_values_already_set() {
+    fake::fixed_env_in_a_child("an_app_is_built_under_the_fixed_environment");
 }
 
 fn frame(a: &App) -> String {
