@@ -9164,6 +9164,35 @@ is "no new line reads as a row or a count" "0" "$(grep -cE "$ps_row" "$PSROOT/gr
 is "nor is left behind" "0" "$(ps_settle)"
 unset -f ps_left ps_settle; unset PSROOT Q ps_to ps_c ps_row
 
+echo "== tests/par.sh: a checkout under a path with a space runs every shard and nothing else (#1007) =="
+# par.sh joined its shard paths into one string and split it again, so a path holding a space
+# came apart: no shard ran, and bash was handed the path's first word as a script. A sandbox
+# as above, in a folder named "v1.2 proj", with a script beside it at that first word, "v1.2",
+# which says so if anything runs it. The dot is on purpose: a worker takes its shard id from
+# the text after the last dot, and with no dot in the first word that id holds a slash, the
+# log's redirect fails and bash is never reached, so the stray file would not be run and the
+# second row could not fail.
+PW=$(mktmpd); mkdir -p "$PW/v1.2 proj/tests" "$PW/t"
+cp "$DIR/tests/par.sh" "$PW/v1.2 proj/tests/par.sh"
+awk '/^echo "== /{exit} {print}' "$DIR/tests/run.sh" > "$PW/v1.2 proj/tests/run.sh"
+Q='"'
+{
+    printf 'echo %s== pw1: one ==%s\nis "pw1" 1 1\n\n' "$Q" "$Q"
+    printf 'echo %s== pw2: two ==%s\nis "pw2" 1 1\n\n' "$Q" "$Q"
+} >> "$PW/v1.2 proj/tests/run.sh"
+printf '#!/bin/sh\necho ran >> "$0.ran"\n' > "$PW/v1.2"; chmod +x "$PW/v1.2"
+( cd "$PW/v1.2 proj" && env -u PAR_BLOCKS TMPDIR="$PW/t" J=2 tests/par.sh ) \
+    </dev/null >"$PW/out" 2>"$PW/err"; pw_rc=$?
+is "under a path with a space both shards run and count" \
+   "0|2 passed, 0 failed, 0 skipped|2 2" \
+   "$pw_rc|$(grep -oE '[0-9]+ passed, [0-9]+ failed, [0-9]+ skipped' "$PW/out")|$(
+      grep -c '^par\.sh: shard [0-9]* start: ' "$PW/err") $(
+      grep -c '^par\.sh: shard [0-9]* end rc=0$' "$PW/err")"
+is "and the file named like the path's first word is never run" "" \
+   "$(cat "$PW/v1.2.ran" 2>/dev/null)"
+is "nor is a shard file left in the checkout" "" "$(ls -A "$PW/v1.2 proj/tests" | grep '^\.par')"
+unset PW Q pw_rc
+
 echo "== tests/green.sh: the stamp hits on unchanged content, misses on one changed byte, and tool versions are in the key =="
 GROOT=$(mktmpd)
 mkdir -p "$GROOT/scripts/lib" "$GROOT/tests" "$GROOT/examples"

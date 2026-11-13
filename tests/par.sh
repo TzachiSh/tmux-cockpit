@@ -139,19 +139,24 @@ for f in "$WORK"/list/*; do
 done
 [ -z "${bad_shards:-}" ] || { echo "par.sh: ungrouped shards:${bad_shards}" >&2; exit 2; }
 
+# A shard's path starts with the checkout's own, and $WORK with TMPDIR: either may hold a
+# space, a quote or a $. So the paths go to xargs NUL-separated, one whole path per worker
+# (a newline list through -I{} split at quotes and backslashes), and $WORK reaches the worker
+# through the environment, never pasted into its script (#1007).
 run_shards() {                       # <parallelism> <shard file>...
     local p=$1; shift
-    printf '%s\n' "$@" | xargs -P "$p" -I{} sh -c '
+    [ $# -gt 0 ] || return 0
+    printf '%s\0' "$@" | PAR_WORK="$WORK" xargs -0 -P "$p" -n 1 sh -c '
         id=${1##*.}
-        PAR_COUNT="'"$WORK"'/out/$id.n" export PAR_COUNT
-        # Live, to par.sh'"'"'s stderr, one short line each (#805): a run cancelled mid-way
+        PAR_COUNT="$PAR_WORK/out/$id.n" export PAR_COUNT
+        # Live, to the stderr of par.sh, one short line each (#805): a run cancelled mid-way
         # shows a start with no end for the shard that held it up.
-        t=""; read -r t 2>/dev/null < "'"$WORK"'/title/$id"
+        t=""; read -r t 2>/dev/null < "$PAR_WORK/title/$id"
         printf "par.sh: shard %s start: %s\n" "$id" "$t" >&2
-        bash "$1" > "'"$WORK"'/out/$id.log" 2>&1; rc=$?
-        [ "$rc" -eq 0 ] || : > "'"$WORK"'/out/$id.fail"
+        bash "$1" > "$PAR_WORK/out/$id.log" 2>&1; rc=$?
+        [ "$rc" -eq 0 ] || : > "$PAR_WORK/out/$id.fail"
         printf "par.sh: shard %s end rc=%s\n" "$id" "$rc" >&2
-    ' _ {}
+    ' _
 }
 
 # `# group: serial` blocks run against a clock or a large fixture, so they
@@ -159,17 +164,17 @@ run_shards() {                       # <parallelism> <shard file>...
 # were: green at J=4, red at J=8 and J=12. They run first, alone, while nothing
 # competes; the other blocks then take the machine. No block carries the mark
 # today; the shard stays for the next one that needs it.
-serial=""; rest=""
+serial=(); rest=()
 for f in "$SH".*; do
     case " $(printf '%s' "${serial_ids:-}" | tr ' ' '\n' | sort -u | tr '\n' ' ') " in
-        *" ${f##*.} "*) serial="$serial $f" ;;
-        *)              rest="$rest $f" ;;
+        *" ${f##*.} "*) serial+=("$f") ;;
+        *)              rest+=("$f") ;;
     esac
 done
-# shellcheck disable=SC2086  # deliberate word splitting: a list of shard paths
-[ -z "$serial" ] || run_shards 1 $serial
-# shellcheck disable=SC2086
-run_shards "$J" $rest
+# Arrays, one whole path each: joined into a string and split again, a path holding a space
+# came apart, no shard ran, and bash was handed the path's first word to run (#1007).
+[ ${#serial[@]} -eq 0 ] || run_shards 1 "${serial[@]}"
+[ ${#rest[@]} -eq 0 ] || run_shards "$J" "${rest[@]}"
 
 pass=0; fail=0; skip=0; red=0
 for f in "$SH".*; do
