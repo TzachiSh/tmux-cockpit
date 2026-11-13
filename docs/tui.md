@@ -2436,8 +2436,8 @@ tell the two quiet answers apart: `[]` with exit 0 is "no agents", exit 1 is
   `redact::redact_clean`, the envelope's own call, would hide any of (#966).
   The system prompt and `--add-dir` carry the path whole, and a redacted one
   names no folder, so such a folder is never read, and the refusal shows it
-  redacted. It reads the whole path as one string, so a parent folder's name counts as
-  the folder's own does (#911), and the glob characters are `*`, `?`, `[`,
+  redacted. It reads the whole path as one string, so a parent folder's name
+  counts as the folder's own does (#911), and the glob characters are `*`, `?`, `[`,
   `]`, `{`, `}` and a backslash. A caller runs it to refuse up front. The
   secret denies stay as a second wall.
   Every panel call loads no setting source (`--setting-sources ""`, #623), so a
