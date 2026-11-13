@@ -405,6 +405,72 @@ fn a_gh_outside_the_rig_and_ahead_of_it_is_named() {
     assert_eq!(rigs_gh(&r.path, &r.s.join("rig")), Ok(r.bin.join("gh")));
 }
 
+/// #977's walk shapes, for gh: an entry that climbs out of the rig, a link in
+/// the rig to a gh outside, and a gh file this user may not execute.
+#[test]
+fn the_gh_walk_judges_a_climb_out_a_link_and_a_dead_file_as_a_spawn_would() {
+    let r = Rig::new("walkrows");
+    let (rig, out) = (r.s.join("rig"), r.s.join("out"));
+    std::fs::create_dir_all(&out).unwrap();
+    write_exec(&out.join("gh"), "#!/bin/sh\nexit 1\n");
+    let (link, dead) = (rig.join("link"), rig.join("dead"));
+    std::fs::create_dir_all(&link).unwrap();
+    std::os::unix::fs::symlink(out.join("gh"), link.join("gh")).unwrap();
+    std::fs::create_dir_all(&dead).unwrap();
+    write_exec(&dead.join("gh"), "#!/bin/sh\nexit 1\n");
+    std::fs::set_permissions(dead.join("gh"), std::fs::Permissions::from_mode(0o644)).unwrap();
+    let rows = [
+        ("climb out", vec![rig.join("../out")], Err(Some(rig.join("../out/gh")))),
+        ("link out", vec![link.clone()], Err(Some(link.join("gh")))),
+        ("not executable", vec![dead, r.bin.clone()], Ok(r.bin.join("gh"))),
+    ];
+    for (name, dirs, want) in rows {
+        assert_eq!(rigs_gh(&std::env::join_paths(dirs).unwrap(), &rig), want, "row {name}");
+    }
+}
+
+/// The child half of the row below: its cwd holds a `gh`, its PATH value
+/// opens with an empty entry.
+#[test]
+fn gh_empty_entry_child() {
+    let Some(rig) = std::env::var_os("CHANGES_GH_EMPTY_ENTRY") else {
+        return;
+    };
+    let rig = PathBuf::from(rig);
+    let mut p = OsString::from(":");
+    p.push(rig.join("bin"));
+    assert_eq!(rigs_gh(&p, &rig), Err(Some(PathBuf::from("./gh"))));
+    eprintln!("the-empty-entry-was-the-cwd");
+}
+
+#[test]
+fn an_empty_path_entry_is_the_cwd_for_gh_too() {
+    let r = Rig::new("emptyentry");
+    let cwd = r.s.join("cwd");
+    std::fs::create_dir_all(&cwd).unwrap();
+    write_exec(&cwd.join("gh"), "#!/bin/sh\nexit 1\n");
+    let out = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "gh_empty_entry_child", "--nocapture"])
+        .env("CHANGES_GH_EMPTY_ENTRY", r.s.join("rig"))
+        .current_dir(cwd)
+        .output()
+        .unwrap();
+    let said = String::from_utf8_lossy(&out.stderr);
+    let ran = said.lines().any(|l| l == "the-empty-entry-was-the-cwd");
+    assert!(out.status.success() && ran, "{said}");
+}
+
+#[test]
+#[should_panic(expected = "the first gh on PATH is Some(")]
+fn assert_gh_is_the_rigs_names_a_gh_ahead_of_the_rigs() {
+    let r = Rig::new("assertgh");
+    let out = r.s.join("out");
+    std::fs::create_dir_all(&out).unwrap();
+    write_exec(&out.join("gh"), "#!/bin/sh\nexit 1\n");
+    let ahead = std::env::join_paths([&out, &r.bin]).unwrap();
+    assert_gh_is_the_rigs(&ahead, &r.s.join("rig"));
+}
+
 #[test]
 fn the_spawn_finds_the_rigs_gh_first_on_the_path_it_sees() {
     let r = Rig::new("path");
