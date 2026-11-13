@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "msg_id": "m-0001",
+  "from": "agentA",
+  "to": "agentB",
+  "subject": "msg.agentA.agentB",
+  "timestamp": "2026-11-14T09:33:00Z",
+  "correlation_id": "m-0001",
+  "payload": {
+    "intent_id": "int-0001",
+    "body_ref": "messages/m-0001.md"
+  }
+}

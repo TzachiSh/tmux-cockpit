@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:tmux-cockpit:contracts:agent-message",
+  "title": "agent-message",
+  "description": "One message between agents. The payload holds ids and *_ref pointers only; the words live in a private file a *_ref names.",
+  "type": "object",
+  "properties": {
+    "schema_version": { "const": 1 },
+    "msg_id": { "$ref": "#/$defs/id" },
+    "from": { "$ref": "#/$defs/id" },
+    "to": { "$ref": "#/$defs/id" },
+    "subject": {
+      "description": "msg. then 1 to 15 dotted tokens, NATS-safe: no *, no >, no empty token.",
+      "type": "string",
+      "maxLength": 255,
+      "pattern": "^msg(\\.[A-Za-z0-9_-]{1,64}){1,15}(?!\\n)$"
+    },
+    "timestamp": { "$ref": "#/$defs/utc" },
+    "correlation_id": { "$ref": "#/$defs/id" },
+    "payload": {
+      "description": "Keys ending in _id hold an id, keys ending in _ref a ref. Any other key is refused, so no field can carry free text.",
+      "type": "object",
+      "maxProperties": 16,
+      "patternProperties": {
+        "^[a-z][a-z0-9_]{0,59}_id(?!\\n)$": { "$ref": "#/$defs/id" },
+        "^[a-z][a-z0-9_]{0,59}_ref(?!\\n)$": { "$ref": "#/$defs/ref" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "required": ["schema_version", "msg_id", "from", "to", "subject", "timestamp", "correlation_id", "payload"],
+  "additionalProperties": false,
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,64}(?!\\n)$" },
+    "ref": {
+      "description": "A file under the private refs folder: 1 to 4 parts joined by /, each part dot-separated tokens, ending in .md, .json or .txt. No .., no leading /, no space.",
+      "type": "string",
+      "maxLength": 200,
+      "pattern": "^([A-Za-z0-9_-]+(\\.[A-Za-z0-9_-]+)*/){0,3}[A-Za-z0-9_-]+(\\.[A-Za-z0-9_-]+)*\\.(md|json|txt)(?!\\n)$"
+    },
+    "utc": {
+      "description": "ISO-8601 in UTC, Z only, optional fraction.",
+      "type": "string",
+      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.[0-9]{1,9})?Z(?!\\n)$"
+    }
+  }
+}

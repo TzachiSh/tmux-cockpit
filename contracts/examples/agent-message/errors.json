@@ -1,0 +1,26 @@
+{
+  "invalid-free-text-payload.json": {
+    "keyword": "additionalProperties",
+    "at": "$.payload"
+  },
+  "invalid-text-in-ref.json": {
+    "keyword": "pattern",
+    "at": "$.payload.body_ref"
+  },
+  "invalid-text-in-id.json": {
+    "keyword": "pattern",
+    "at": "$.payload.intent_id"
+  },
+  "invalid-subject-wildcard.json": {
+    "keyword": "pattern",
+    "at": "$.subject"
+  },
+  "invalid-local-time.json": {
+    "keyword": "pattern",
+    "at": "$.timestamp"
+  },
+  "invalid-no-version.json": {
+    "keyword": "required",
+    "at": "$"
+  }
+}

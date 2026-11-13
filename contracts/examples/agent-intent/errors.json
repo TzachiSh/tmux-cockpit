@@ -1,0 +1,26 @@
+{
+  "invalid-raw-summary.json": {
+    "keyword": "pattern",
+    "at": "$.summary_ref"
+  },
+  "invalid-dotdot-ref.json": {
+    "keyword": "pattern",
+    "at": "$.summary_ref"
+  },
+  "invalid-absolute-ref.json": {
+    "keyword": "pattern",
+    "at": "$.summary_ref"
+  },
+  "invalid-kind.json": {
+    "keyword": "enum",
+    "at": "$.kind"
+  },
+  "invalid-no-version.json": {
+    "keyword": "required",
+    "at": "$"
+  },
+  "invalid-local-time.json": {
+    "keyword": "pattern",
+    "at": "$.expires_at"
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "invalid-owner-word.json": {
+    "keyword": "enum",
+    "at": "$.state"
+  },
+  "invalid-title.json": {
+    "keyword": "additionalProperties",
+    "at": "$"
+  },
+  "invalid-no-version.json": {
+    "keyword": "required",
+    "at": "$"
+  },
+  "invalid-version-2.json": {
+    "keyword": "const",
+    "at": "$.schema_version"
+  },
+  "invalid-local-time.json": {
+    "keyword": "pattern",
+    "at": "$.updated_at"
+  }
+}
