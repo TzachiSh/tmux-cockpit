@@ -261,9 +261,11 @@ pub struct App {
     pub pending: bool,
     pub req: Option<Request>,
     pub started: Option<Instant>,
-    /// Secrets the last call's envelope hid (screen and turns), and the screen's
-    /// alone, its window's name included, counted by the envelope's own call.
+    /// Secrets the last call's envelope hid, in all: Busy shows its split
+    /// ([`App::sent_hidden`]), and only tests read this total now.
     pub hidden: usize,
+    /// The screen's secrets, its window's name included, counted by the
+    /// envelope's own call: Home's count.
     pub screen_hidden: usize,
     /// The last call's envelope's count, split by where each secret was (#964).
     sent: SentHidden,
