@@ -83,12 +83,14 @@ cargo then says how to rerun that binary: `cargo test --test <name>`, from
 `tui/`. Add `-- --exact <test>` to find the test, since a filtered run is
 checked the same way. The fix belongs in the rig: `fake::rig_path` and
 `fake::assert_claude_is_the_rigs` (#972). `cargo run` and
-`cargo run --example panel_eval` go through the same script and are started
-untouched. The guard is absent from a run started outside the checkout with
+`cargo run --example panel_eval` go through the same script, which starts them
+with no guard, as cargo alone would but for one thing a shell cannot hand on.
+The guard is absent from a run started outside the checkout with
 `--manifest-path`, from a test binary started by hand or under a debugger
 (`tui/tests/claude-guard/runner <binary>` starts one behind it), and from a
 test that builds its `PATH` from nothing. `docs/testing.md` has the switch
-that lifts it and what a cargo runner of your own does to it.
+that lifts it, what a cargo runner of your own does to it, and what the script
+changes for `cargo run`.
 
 The binary lives in the plugin's own `bin/` and is gitignored. `install.sh`
 runs `scripts/tui-fetch --required` and exits 1 when no working binary is

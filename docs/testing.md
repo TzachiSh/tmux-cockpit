@@ -50,20 +50,27 @@ it in one of three ways:
   `--config`, or in a `.cargo/config.toml` below the repo's, yours replaces the
   repo's and cargo says nothing. The row
   `this_run_is_behind_the_guard_where_one_was_asked_for` in
-  `tui/tests/claude_guard.rs` then fails and says so. To keep both, end your
-  runner with `exec <checkout>/tui/tests/claude-guard/runner "$@"`. To run
-  without the guard, set the switch to 0.
+  `tui/tests/claude_guard.rs` then fails and says so, in a run that includes
+  that binary. `cargo test --test agents` alone runs no such row and says
+  nothing. To keep both, end your runner with
+  `exec <checkout>/tui/tests/claude-guard/runner "$@"`. To run without the
+  guard, set the switch to 0.
 - Set under the repo's own key, `[target.'cfg(unix)']`, in your
   `~/.cargo/config.toml`, yours is dropped by cargo inside this checkout
   without a word, and the guard runs. Use one of the forms above.
-- Set under another `cfg(...)` key that also matches, cargo refuses every
-  `cargo test` and `cargo run` in the checkout: ``several matching instances of
-  `target.'cfg(..)'.runner` in configurations``.
+- Set under another `cfg(...)` key that also matches, cargo refuses to build
+  or run anything in the checkout: `cargo build`, `check`, `test`, `run`,
+  `clippy` and `doc` all end with ``several matching instances of
+  `target.'cfg(..)'.runner` in configurations``, exit 101. So do `make tui-bin`
+  and an install from source started there. Move your runner to one of the
+  forms above.
 
 cargo still names the signal a test binary died by (`signal: 6, SIGABRT`),
-because the runner then dies by the same signal. A binary that exits by its own
-choice with 128 plus the number of such a signal, 134 for one, is reported the
-same way. A shell cannot tell the two apart.
+because the runner then dies by the same signal. That holds for every signal
+that ends a process, with one exception: where `/bin/sh` is bash, a death by
+QUIT is reported as exit status 131, since bash ignores QUIT. A binary that
+exits by its own choice with 128 plus the number of such a signal, 134 for
+one, is reported as that signal. A shell cannot tell the two apart.
 
 That has one cost. On a box that pipes core dumps to a program (apport,
 systemd-coredump), a test binary that aborts leaves a second report there, of
@@ -71,8 +78,25 @@ the runner's shell: the kernel ignores a core limit under a pipe (core(5)).
 Where a core is a file the runner sets its limit to 0 and leaves none, so the
 binary's own core is not written over.
 
-Doctests are guarded from cargo 1.89. The 1.88 toolchain `make tui-test` uses
-does not hand a doctest to a runner, and the crate has no doctest today.
+Everything cargo starts in the checkout goes through that script, `cargo run`
+and `cargo run --example` too. They get no guard and keep their arguments,
+their `PATH` and their pid. The rest of the environment is the shell's to
+hand on. Where `/bin/sh` is dash, a variable whose name is no shell name, one
+with a dot or a dash in it, does not reach the binary: dash drops it, and bash
+does not. Either shell sets `PWD` when it is missing or stale, and bash also
+sets `SHLVL` and drops `_` and a stale `OLDPWD`.
+
+`cargo bench` gets no guard either. Its binaries are the test binaries, run
+with `--bench`, and the harness runs no test then. With `--bench` and `--test`
+together it does, and the guard is on.
+
+A signal sent to the runner alone (HUP, INT, QUIT, TERM) waits for the test
+binary. Another one ends the runner at once and leaves its folder,
+`cockpit-claude-guard.<6>`, in `TMPDIR`.
+
+Doctests are guarded under cargo 1.92 and not under 1.88, the two measured:
+1.88, the toolchain `make tui-test` uses, does not hand a doctest to a runner.
+The crate has no doctest today.
 
 ## CI
 

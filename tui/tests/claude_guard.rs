@@ -66,6 +66,24 @@ fn field<'a>(rec: &'a str, key: &str, end: Option<&str>) -> &'a str {
     end.and_then(|e| rest.find(e)).map_or(rest, |to| &rest[..to])
 }
 
+/// What `child` wrote and how it ended, polled for and never waited on for
+/// good: one still running after 30 s is killed and the row fails. A runner
+/// that sent itself a signal that stops would hold its row, and cargo, for good.
+fn ended(mut child: std::process::Child, what: &str) -> std::process::Output {
+    for tries in 0.. {
+        if child.try_wait().unwrap().is_some() {
+            break;
+        }
+        if tries == 6000 {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("{what} had not ended after 30 s and was killed");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    child.wait_with_output().unwrap()
+}
+
 struct Rig(Scratch);
 
 impl Rig {
@@ -98,7 +116,12 @@ impl Rig {
     }
 
     fn command(&self) -> Command {
-        let mut c = Command::new(RUNNER);
+        self.command_of(Path::new(RUNNER))
+    }
+
+    /// The rig's environment for `program`, the runner or a copy of it.
+    fn command_of(&self, program: &Path) -> Command {
+        let mut c = Command::new(program);
         c.env_clear().env("PATH", self.path()).env("TMPDIR", self.0.join("tmp"));
         c.env("RUNNER", RUNNER).stdin(Stdio::null());
         c
@@ -112,7 +135,7 @@ impl Rig {
     fn ran(&self, c: &mut Command) -> Ran {
         let child = c.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
         let pid = child.id();
-        let o = child.wait_with_output().unwrap();
+        let o = ended(child, "the runner");
         let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
         let left = std::fs::read_dir(self.0.join("tmp")).map_or(vec![], |d| {
             d.map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect()
@@ -149,26 +172,40 @@ fn a_test_binary_finds_the_guards_claude_first_and_its_old_path_after() {
 }
 
 /// What cargo starts through the runner, and whether it is a test binary:
-/// (row, the path below the target folder, an argument, guarded).
-const RULE: [(&str, &str, &str, bool); 11] = [
-    ("cargo test", TEST, "--quiet", true),
-    ("cargo test --release", "release/deps/t-0123456789abcdef", "--quiet", true),
-    ("an example built as a test", "debug/examples/ev-0123456789abcdef", "--quiet", true),
-    ("cargo test --doc, cargo 1.89 on", "rustdoctestAb12Cd/rust_out", "", true),
-    ("cargo run", "debug/cockpit-tui", "--quiet", false),
-    ("cargo run, target below a deps/", "deps/target/debug/cockpit-tui", "", false),
-    ("cargo run, a binary named deps", "debug/deps", "--quiet", false),
-    ("cargo run --example", "debug/examples/panel_eval", "--quiet", false),
-    ("an example with a dash in its name", "debug/examples/panel-eval", "", false),
-    ("an example ending in 15 hex", "debug/examples/e-0123456789abcde", "", false),
-    ("cargo bench", "release/deps/t-0123456789abcdef", "--bench", false),
+/// (row, the path below the target folder, the arguments, guarded).
+const RULE: [(&str, &str, &[&str], bool); 15] = [
+    ("cargo test", TEST, &["--quiet"], true),
+    ("cargo test --release", "release/deps/t-0123456789abcdef", &["--quiet"], true),
+    ("an example built as a test", "debug/examples/ev-0123456789abcdef", &[], true),
+    ("cargo test --doc, cargo 1.92", "rustdoctestAb12Cd/rust_out", &[], true),
+    ("cargo test -- --bench --test", TEST, &["--bench", "--test"], true),
+    ("cargo test -- --test --bench", TEST, &["--test", "--bench"], true),
+    ("cargo run", "debug/cockpit-tui", &["--quiet"], false),
+    ("cargo run, target below a deps/", "deps/target/debug/cockpit-tui", &[], false),
+    ("cargo run, a binary named deps", "debug/deps", &["--quiet"], false),
+    ("cargo run --example", "debug/examples/panel_eval", &["--quiet"], false),
+    ("an example with a dash in its name", "debug/examples/panel-eval", &[], false),
+    ("an example ending in 15 hex", "debug/examples/e-0123456789abcde", &[], false),
+    (
+        "an example ending in 16, one no hex",
+        "debug/examples/e-0123456789abcdeg",
+        &[],
+        false,
+    ),
+    ("cargo bench", "release/deps/t-0123456789abcdef", &["--bench"], false),
+    (
+        "cargo bench -- name",
+        "release/deps/t-0123456789abcdef",
+        &["name", "--bench"],
+        false,
+    ),
 ];
 
 #[test]
 fn only_what_cargo_test_runs_gets_the_guard() {
-    for (row, rel, arg, guarded) in RULE {
+    for (row, rel, args, guarded) in RULE {
         let r = Rig::new("rule");
-        let ran = r.run(&r.binary(rel, SAYS), &[arg]);
+        let ran = r.run(&r.binary(rel, SAYS), args);
         assert_eq!(ran.code, Some(0), "{row}: {}", ran.err);
         if guarded {
             guard_dir(&r, &ran);
@@ -178,6 +215,25 @@ fn only_what_cargo_test_runs_gets_the_guard() {
         let got = (ran.said("claude"), ran.said("path"), ran.said("dir"), ran.said("pid"));
         // the same pid: exec'd in place, as cargo would have started it itself
         assert_eq!(got, (own.as_str(), r.path().as_str(), "", ran.pid.to_string().as_str()), "{row}");
+    }
+}
+
+/// cargo gives the whole path. By hand from the binary's own folder the path
+/// is `./<name>`, and the rule reads it from that folder.
+#[test]
+fn a_path_given_by_hand_is_read_from_the_folder_it_is_given_in() {
+    let r = Rig::new("byhand");
+    r.binary(TEST, SAYS);
+    let name = "t-0123456789abcdef";
+    for (cwd, given) in [
+        ("debug/deps", format!("./{name}")),
+        ("debug", format!("deps/{name}")),
+        ("debug/deps", format!("../deps/{name}")),
+    ] {
+        let mut c = r.command();
+        let ran = r.ran(c.current_dir(r.0.join(cwd)).arg(&given));
+        assert_eq!(ran.code, Some(0), "{given}: {}", ran.err);
+        guard_dir(&r, &ran);
     }
 }
 
@@ -270,6 +326,30 @@ fn without_a_temp_folder_the_binary_is_not_started() {
     assert_eq!(ran.code, Some(1));
     assert_eq!(field(ran.records()[0], "binary", None), exe.to_string_lossy());
     assert!(!r.0.join(format!("{TEST}.ran")).exists(), "started without the guard");
+}
+
+/// The runner copies the stub from beside itself. A runner with no stub there
+/// cannot guard, and does not start the binary.
+#[test]
+fn without_the_stub_beside_the_runner_the_binary_is_not_started() {
+    let r = Rig::new("nostub");
+    let lone = r.binary("lone/runner", &std::fs::read_to_string(RUNNER).unwrap());
+    let mut c = r.command_of(&lone);
+    let ran = r.ran(c.arg(r.binary(TEST, MARKS)));
+    assert_eq!((ran.code, ran.records().len(), ran.left.len()), (Some(1), 1, 0), "{}", ran.err);
+    assert!(!r.0.join(format!("{TEST}.ran")).exists(), "started without the guard");
+}
+
+/// PATH takes the guard's folder by its whole path, so a test that changes
+/// its folder still finds the guard where TMPDIR was given as a relative one.
+#[test]
+fn a_relative_temp_folder_is_made_whole_before_it_goes_on_path() {
+    let r = Rig::new("relative");
+    let exe = r.binary(TEST, "#!/bin/sh\ncd / && claude from-the-root 2>/dev/null\nexit 0\n");
+    let mut c = r.command();
+    let ran = r.ran(c.current_dir(&*r.0).env("TMPDIR", "tmp").arg(&exe));
+    assert_eq!((ran.code, r.own_starts(), ran.left.len()), (Some(1), 0, 0), "{}", ran.err);
+    assert_eq!(field(ran.records()[1], "argv", None), "claude [from-the-root]");
 }
 
 #[test]
@@ -379,6 +459,7 @@ fn a_binary_killed_by_a_signal_is_reported_by_that_signal() {
         ("SEGV", libc::SIGSEGV),
         ("KILL", libc::SIGKILL),
         ("TERM", libc::SIGTERM),
+        ("USR1", libc::SIGUSR1),
     ] {
         let ran = r.run(&exe, &[name]);
         assert_eq!(
@@ -416,7 +497,13 @@ fn the_no_core_half_is_skipped_under_a_piped_pattern_or_a_hard_limit_of_0() {
         no_core_half_skipped("core\n", 0).as_deref(),
         Some("this user's hard core limit is 0")
     );
-    for (pattern, hard) in [("core\n", 1), ("/var/crash/core.%p\n", libc::RLIM_INFINITY), ("", 4096)] {
+    let files = [
+        ("core\n", 1),
+        ("/var/crash/core.%p\n", libc::RLIM_INFINITY),
+        ("", 4096),
+        ("core|%p\n", 1),
+    ];
+    for (pattern, hard) in files {
         assert_eq!(no_core_half_skipped(pattern, hard), None, "{pattern:?} {hard}");
     }
 }
@@ -461,21 +548,18 @@ fn the_runner_that_dies_by_the_binarys_signal_leaves_no_core_file() {
 /// The row above, as its skipped half names it in a run's log.
 const CORE_ROW: &str = "claude_guard the_runner_that_dies_by_the_binarys_signal_leaves_no_core_file";
 
-/// A binary may choose an exit status above 128. One that names a signal which
-/// stops or is ignored is passed on as the status it is: sending STOP would
-/// leave the runner, and cargo behind it, waiting for good.
+/// A binary may choose an exit status above 128, and the runner cannot tell it
+/// from a death by that signal. The four signals that stop are never sent on:
+/// the runner, and cargo behind it, would wait for good. One that ends
+/// nothing by default (CHLD, CONT, URG, WINCH) is sent and ends nothing. A
+/// status no signal has is left alone. All come out as the status they are.
 #[test]
 fn an_exit_status_that_names_no_deadly_signal_is_passed_on_as_it_is() {
     let r = Rig::new("status");
     let exe = r.binary(TEST, "#!/bin/sh\nexit \"$1\"\n");
-    for code in [
-        128 + libc::SIGSTOP,
-        128 + libc::SIGTSTP,
-        128 + libc::SIGCHLD,
-        128 + libc::SIGCONT,
-        200,
-        255,
-    ] {
+    let stops = [libc::SIGSTOP, libc::SIGTSTP, libc::SIGTTIN, libc::SIGTTOU];
+    let ends_nothing = [libc::SIGCHLD, libc::SIGCONT, libc::SIGURG, libc::SIGWINCH];
+    for code in stops.into_iter().chain(ends_nothing).map(|n| 128 + n).chain([200, 255]) {
         let ran = r.run(&exe, &[&code.to_string()]);
         assert_eq!((ran.code, ran.signal), (Some(code), None), "{}", ran.err);
     }
@@ -485,19 +569,16 @@ fn an_exit_status_that_names_no_deadly_signal_is_passed_on_as_it_is() {
 /// line on the fifo beside itself, starts `claude` and ends well.
 const WAITS: &str = "#!/bin/sh\necho x > \"$0.up\"\nread -r _ < \"$0.go\"\nclaude late 2>/dev/null\nexit 0\n";
 
-/// TERM sent to the runner alone, the binary still running: the binary runs
-/// on, its start is still reported, the folder goes, and the runner then dies
-/// by TERM.
-#[test]
-fn a_signal_to_the_runner_waits_for_the_binary_and_its_log() {
-    let r = Rig::new("term");
+/// `signal` sent to the runner alone while its binary runs: how the runner
+/// ended, whether the start the binary made afterwards was reported, and what
+/// was left in the temp folder.
+fn sent_to_the_runner(signal: i32) -> (Option<i32>, bool, usize) {
+    let r = Rig::new(&format!("sent{signal}"));
     let exe = r.binary(TEST, WAITS);
-    let (up, go) = (
-        r.0.join(format!("{TEST}.up")),
-        std::ffi::CString::new(format!("{}.go", exe.display())).unwrap(),
-    );
-    // SAFETY: `go` is a NUL-terminated path under the rig's folder.
-    assert_eq!(unsafe { libc::mkfifo(go.as_ptr(), 0o600) }, 0);
+    let (up, go) = (r.0.join(format!("{TEST}.up")), format!("{}.go", exe.display()));
+    let fifo = std::ffi::CString::new(go.as_str()).unwrap();
+    // SAFETY: `fifo` is a NUL-terminated path under the rig's folder.
+    assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
     let mut c = r.command();
     let child = c.arg(&exe).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().unwrap();
     // polled, never slept for: gives up after 20 s
@@ -509,16 +590,32 @@ fn a_signal_to_the_runner_waits_for_the_binary_and_its_log() {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     // SAFETY: the pid of this row's own child, held and not yet waited for.
-    assert_eq!(unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) }, 0);
-    std::fs::write(go.to_str().unwrap(), "go\n").unwrap();
-    let o = child.wait_with_output().unwrap();
-    let said = String::from_utf8_lossy(&o.stderr);
-    assert_eq!(
-        (o.status.signal(), said.contains("argv=claude [late]")),
-        (Some(libc::SIGTERM), true),
-        "{said}"
-    );
-    assert_eq!(std::fs::read_dir(r.0.join("tmp")).unwrap().count(), 0);
+    assert_eq!(unsafe { libc::kill(child.id() as libc::pid_t, signal) }, 0);
+    std::fs::write(&go, "go\n").unwrap();
+    let o = ended(child, "the runner");
+    let said = String::from_utf8_lossy(&o.stderr).contains("argv=claude [late]");
+    (o.status.signal(), said, std::fs::read_dir(r.0.join("tmp")).unwrap().count())
+}
+
+/// A signal sent to the runner alone, the binary still running: the binary
+/// runs on, its start is still reported, the folder goes, and the runner then
+/// dies by that signal. TERM and HUP come from outside, INT from the keyboard,
+/// where the binary gets it too.
+#[test]
+fn a_signal_to_the_runner_waits_for_the_binary_and_its_log() {
+    for signal in [libc::SIGTERM, libc::SIGHUP, libc::SIGINT] {
+        assert_eq!(sent_to_the_runner(signal), (Some(signal), true, 0), "signal {signal}");
+    }
+}
+
+/// QUIT is the keyboard's other one, ctrl and backslash. The start is still reported and
+/// the folder goes. How the runner then ends is its shell's own: dash dies by
+/// QUIT, and bash, where it is sh, ignores QUIT in every shell and ends with
+/// the binary's status.
+#[test]
+fn a_quit_to_the_runner_still_reads_the_log_and_removes_the_folder() {
+    let (_, reported, left) = sent_to_the_runner(libc::SIGQUIT);
+    assert_eq!((reported, left), (true, 0));
 }
 
 /// What the row below holds of a run: `switch` is COCKPIT_TEST_CLAUDE_GUARD,
@@ -580,6 +677,115 @@ fn a_run_with_the_switch_unset_or_at_0_holds_whatever_is_on_path() {
     for switch in [None, Some("0")] {
         assert_eq!(behind_the_guard(switch, None, &path), Ok(()), "{switch:?}");
     }
+}
+
+/// What the child half below writes, with the switch as it found it.
+const SWITCH_IS: &str = "the-switch-is=";
+
+/// The child half of the row below: says what the switch is in a run cargo
+/// started. Nothing unless that row asked.
+#[test]
+fn switch_child() {
+    if std::env::var_os("CLAUDE_GUARD_SWITCH_CHILD").is_some() {
+        eprintln!("{SWITCH_IS}{:?}", std::env::var("COCKPIT_TEST_CLAUDE_GUARD").ok());
+    }
+}
+
+/// The target folder a plain `cargo test` built this binary into, which a
+/// second cargo started here finds built: `<target>/debug/deps/<binary>`,
+/// under the folder cargo marks as its own. None for a binary started by hand
+/// or built another way (`--release`, `--target`), where that cargo would
+/// build the crate again.
+fn plain_target() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let debug = exe.parent().filter(|d| d.ends_with("debug/deps"))?.parent()?;
+    debug.parent().filter(|t| t.join("CACHEDIR.TAG").is_file()).map(Path::to_path_buf)
+}
+
+/// The repo's `.cargo/config.toml` sets the switch to 1 for whatever cargo
+/// starts inside the checkout. That is what lets the row above fail under a
+/// runner that replaced the repo's, so it is asked of cargo itself: this
+/// binary's `switch_child`, started by a cargo of this row's own with the
+/// variable taken out of its environment. Skipped, with a line on the real
+/// stderr, where no cargo started this binary or it was not built the plain way.
+#[test]
+fn a_cargo_started_in_the_checkout_sets_the_switch_to_1() {
+    use std::io::Write;
+    let (Some(cargo), Some(target)) = (std::env::var_os("CARGO"), plain_target()) else {
+        let why = "no cargo started this binary, or it was not built by a plain cargo test";
+        return drop(writeln!(
+            std::io::stderr(),
+            "claude_guard a_cargo_started_in_the_checkout_sets_the_switch_to_1: SKIPPED: {why}"
+        ));
+    };
+    let mut c = Command::new(cargo);
+    c.args(["test", "--locked", "--test", "claude_guard", "--target-dir"]).arg(target);
+    c.args(["--", "--exact", "switch_child", "--nocapture"])
+        .current_dir(env!("CARGO_MANIFEST_DIR"));
+    c.env_remove("COCKPIT_TEST_CLAUDE_GUARD").env("CLAUDE_GUARD_SWITCH_CHILD", "1");
+    let child = c
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let out = ended(child, "the second cargo");
+    let said = String::from_utf8_lossy(&out.stderr);
+    let switch: Vec<&str> = said.lines().filter_map(|l| l.strip_prefix(SWITCH_IS)).collect();
+    assert_eq!(
+        (out.status.code(), switch.as_slice()),
+        (Some(0), ["Some(\"1\")"].as_slice()),
+        "{said}"
+    );
+}
+
+/// `make tui-test` is the gate, and its recipe sets the switch to 1 on the
+/// cargo that runs the tests, whatever the caller exported. The recipe runs
+/// here with a `cargo` of the rig's first on PATH, which notes its first
+/// argument and the switch it was started with. Skipped, with a line on the
+/// real stderr, on a box with no `make`.
+#[test]
+fn make_tui_test_starts_cargo_test_with_the_switch_at_1_over_an_exported_0() {
+    use std::io::Write;
+    let r = Rig::new("make");
+    let cargo = r.binary(
+        "own/cargo",
+        "#!/bin/sh\necho \"$1 ${COCKPIT_TEST_CLAUDE_GUARD-unset}\" >> \"$0.calls\"\n",
+    );
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let mut c = Command::new("make");
+    c.env_clear().env("PATH", r.path()).env("COCKPIT_TEST_CLAUDE_GUARD", "0");
+    c.args(["-s", "-C"]).arg(repo).arg("tui-test").stdin(Stdio::null());
+    let child = match c.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn() {
+        Ok(child) => child,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let row = "make_tui_test_starts_cargo_test_with_the_switch_at_1_over_an_exported_0";
+            return drop(writeln!(std::io::stderr(), "claude_guard {row}: SKIPPED: no make on {}", r.path()));
+        }
+        Err(e) => panic!("make: {e}"),
+    };
+    let out = ended(child, "make");
+    let calls = std::fs::read_to_string(cargo.with_extension("calls")).unwrap_or_default();
+    assert_eq!(
+        calls.lines().next(),
+        Some("test 1"),
+        "{calls}{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// The product writes its prompt to `claude`'s stdin and holds the pipe open.
+/// The stub reads none of it: here the pipe is never written or closed, and
+/// the stub ends all the same.
+#[test]
+fn the_stub_ends_with_its_stdin_still_open() {
+    let r = Rig::new("stdin");
+    fake::write_exec(&r.0.join("claude"), &std::fs::read_to_string(STUB).unwrap());
+    let mut c = Command::new(r.0.join("claude"));
+    let mut child = c.stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+    let held = child.stdin.take();
+    assert_eq!(ended(child, "the stub").status.code(), Some(126));
+    drop(held);
 }
 
 /// The guard's `claude` as the runner places it: a copy in `dir`, with the

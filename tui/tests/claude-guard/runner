@@ -6,27 +6,44 @@
 # PATH, and fails, named, when it started that claude. The product sends a
 # failed claude's stderr away and reads the failure as no answer, so the
 # refusal alone would pass: each start leaves a line in a file this script
-# owns, read once the binary has ended. Anything else is exec'd untouched.
+# owns, read once the binary has ended. Anything else is exec'd with its
+# arguments, its PATH and its pid as cargo gave them. One thing a shell cannot
+# hand on: dash drops an environment variable whose name is no shell name.
 # COCKPIT_TEST_CLAUDE_GUARD=0 lifts the guard by hand (docs/testing.md).
 me=claude-guard
 [ "$#" -gt 0 ] || { echo "$me: usage: runner <binary> [args...]" >&2; exit 2; }
 [ "${COCKPIT_TEST_CLAUDE_GUARD-}" != 0 ] || exec "$@"
 
 # What `cargo test` runs, by the folder the binary is in and its name: one in
-# deps/, which `cargo bench` runs too, with --bench; an example built as a
-# test, examples/<name>-<16 hex>, where `cargo run --example` runs
-# examples/<name>; and from cargo 1.89 a doctest.
+# deps/, which `cargo bench` runs too; an example built as a test,
+# examples/<name>-<16 hex>, where `cargo run --example` runs examples/<name>;
+# and a doctest, which cargo 1.92 hands to a runner and 1.88 does not. cargo
+# gives the whole path. A path given by hand from a folder of its own,
+# ./<name>, is read from that folder.
 h='[0-9a-f]'
 h=$h$h$h$h
 h=$h$h$h$h
 dir=${1%/*}
+case $1 in
+    /*) ;;
+    */*) dir=$(cd "$dir" 2>/dev/null && pwd) || dir= ;;
+    *) dir= ;;
+esac
 case ${dir##*/}/${1##*/} in
     deps/* | examples/*-$h | rustdoctest*/rust_out) ;;
     *) exec "$@" ;;
 esac
+# `cargo bench` adds --bench, and the harness then runs no test unless --test
+# is there too.
+bench=
+tests=
 for a in "$@"; do
-    [ "$a" != --bench ] || exec "$@"
+    case $a in
+        --bench) bench=1 ;;
+        --test) tests=1 ;;
+    esac
 done
+[ -z "$bench" ] || [ -n "$tests" ] || exec "$@"
 
 # One folder per binary run, so two cargo runs at once share nothing. No
 # folder, no run: the binary is never started without the guard.
@@ -40,6 +57,7 @@ trap 'rm -rf "$d"' EXIT
 got=
 trap 'got=HUP' HUP
 trap 'got=INT' INT
+trap 'got=QUIT' QUIT
 trap 'got=TERM' TERM
 case $d in /*) ;; *) d=$PWD/$d ;; esac
 case $d in
@@ -65,7 +83,7 @@ elif [ -s "$d/reached" ]; then
     [ "$rc" -ne 0 ] || rc=1
 fi
 rm -rf "$d"
-trap - EXIT HUP INT TERM
+trap - EXIT HUP INT QUIT TERM
 
 # cargo names the signal a test binary died by. The shell hands that death on
 # as 128 + the signal, which cargo would print as a plain exit status, so this
@@ -73,16 +91,17 @@ trap - EXIT HUP INT TERM
 # is a file, this script's would land on the binary's. Where cores are piped to
 # a program the kernel ignores the limit (core(5)), and the program gets a
 # second report, of this shell. An exit status above 128 that the binary chose
-# itself reads the same here and is passed on as a signal too. Only a signal
-# that ends a process is sent: STOP would leave this script, and cargo behind
-# it, waiting for good.
+# itself reads the same here and is sent on as a signal too. A signal that
+# stops is never sent: this script, and cargo behind it, would wait for good.
+# One that ends nothing falls through to the plain status, and so does QUIT
+# where sh is bash, which ignores it in every shell.
 sig=$got
 [ "$rc" -le 128 ] || sig=$(kill -l "$rc" 2>/dev/null) || sig=$got
 case $sig in
-    HUP | INT | QUIT | ILL | TRAP | ABRT | BUS | FPE | KILL | USR1 | SEGV | USR2 | PIPE | ALRM | \
-        TERM | XCPU | XFSZ | SYS)
+    '' | STOP | TSTP | TTIN | TTOU) ;;
+    *)
         ulimit -c 0 2>/dev/null
-        kill -s "$sig" "$$"
+        kill -s "$sig" "$$" 2>/dev/null
         ;;
 esac
 exit "$rc"
