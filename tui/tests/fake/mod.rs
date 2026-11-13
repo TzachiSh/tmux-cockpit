@@ -235,11 +235,17 @@ fn runs(p: &Path) -> bool {
 /// says `Ok`. [`write_exec`] with a `#!/bin/sh` body does not make one.
 #[allow(dead_code)]
 pub fn rigs_claude(path: &std::ffi::OsStr, dir: &Path) -> Result<PathBuf, Option<PathBuf>> {
+    rigs_first("claude", path, dir)
+}
+
+/// [`rigs_claude`]'s walk for the command `name`.
+#[allow(dead_code)]
+fn rigs_first(name: &str, path: &std::ffi::OsStr, dir: &Path) -> Result<PathBuf, Option<PathBuf>> {
     assert!(dir.is_absolute(), "dir must be absolute: {}", dir.display());
     let cwd = |e: PathBuf| if e.as_os_str().is_empty() { PathBuf::from(".") } else { e };
     let real = |p: &Path| p.canonicalize().ok();
     let inside = |p: &Path| real(p).zip(real(dir)).is_some_and(|(p, d)| p.starts_with(d));
-    match std::env::split_paths(path).map(|e| cwd(e).join("claude")).find(|p| runs(p)) {
+    match std::env::split_paths(path).map(|e| cwd(e).join(name)).find(|p| runs(p)) {
         Some(found) if inside(&found) => Ok(found),
         other => Err(other),
     }

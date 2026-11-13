@@ -152,7 +152,8 @@ impl std::fmt::Debug for Repo {
     }
 }
 
-struct Git {
+/// A child started by [`bounded`], and its stdout once that closes.
+pub(crate) struct Git {
     child: Child,
     out: Receiver<Vec<u8>>,
 }
@@ -162,9 +163,9 @@ struct Git {
 const PLAIN: [&str; 6] = ["-c", "color.ui=false", "-c", "color.status=false", "-c", "color.diff=false"];
 
 /// gitsafe's flags, no lock taken under the user's own git, no prompt, no
-/// transport; its own process group so a timeout kills what it forked. The
-/// repo is the one `dir` is in, whatever [`REDIRECT`] the panel inherited.
-fn spawn_git(dir: &str, extra: &[String], args: &[&str]) -> Option<Git> {
+/// transport; started by [`bounded`]. The repo is the one `dir` is in,
+/// whatever [`REDIRECT`] the panel inherited.
+pub(crate) fn spawn_git(dir: &str, extra: &[String], args: &[&str]) -> Option<Git> {
     let mut c = Command::new("git");
     for v in REDIRECT {
         c.env_remove(v);
@@ -175,14 +176,17 @@ fn spawn_git(dir: &str, extra: &[String], args: &[&str]) -> Option<Git> {
         .args(PLAIN)
         .args(extra)
         .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_OPTIONAL_LOCKS", "0")
         .env("GIT_NO_LAZY_FETCH", "1")
-        .env("GIT_ALLOW_PROTOCOL", "")
-        .process_group(0);
+        .env("GIT_ALLOW_PROTOCOL", "");
+    bounded(c).ok()
+}
+
+/// `c` started with no stdin and no stderr, in its own process group so a
+/// timeout kills what it forked, its stdout read on a thread of its own.
+pub(crate) fn bounded(mut c: Command) -> std::io::Result<Git> {
+    c.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).process_group(0);
     // The panel quitting mid-block takes its git calls with it.
     #[cfg(target_os = "linux")]
     {
@@ -199,15 +203,15 @@ fn spawn_git(dir: &str, extra: &[String], args: &[&str]) -> Option<Git> {
             });
         }
     }
-    let mut child = c.spawn().ok()?;
-    let mut stdout = child.stdout.take()?;
+    let mut child = c.spawn()?;
+    let mut stdout = child.stdout.take().ok_or_else(|| std::io::Error::other("no stdout pipe"))?;
     let (tx, out) = channel();
     std::thread::spawn(move || {
         let mut b = Vec::new();
         let _ = stdout.read_to_end(&mut b);
         let _ = tx.send(b);
     });
-    Some(Git { child, out })
+    Ok(Git { child, out })
 }
 
 /// A call dropped unfinished, on an early return say, is killed with its group.
@@ -222,15 +226,15 @@ impl Drop for Git {
     }
 }
 
-/// How a git call ended.
-enum Ran {
+/// How a call ended.
+pub(crate) enum Ran {
     Ok(String),
     Failed,
     TimedOut,
 }
 
 impl Ran {
-    fn ok(self) -> Option<String> {
+    pub(crate) fn ok(self) -> Option<String> {
         match self {
             Ran::Ok(s) => Some(s),
             _ => None,
@@ -238,9 +242,9 @@ impl Ran {
     }
 }
 
-/// Its stdout if it exited 0 by `end`; killed with its group otherwise. A
-/// timeout is logged with `part`, the panel's stderr being tui.log.
-fn finish(g: Option<Git>, end: Instant, part: &str) -> Ran {
+/// Its stdout if it exited 0 by `end`; killed with its group otherwise. Prints
+/// nothing.
+pub(crate) fn wait(g: Option<Git>, end: Instant) -> Ran {
     let Some(mut g) = g else {
         return Ran::Failed;
     };
@@ -255,8 +259,16 @@ fn finish(g: Option<Git>, end: Instant, part: &str) -> Ran {
         }
     }
     drop(g); // the kill
-    eprintln!("cockpit-tui: repo block: git {part} timed out, left out");
     Ran::TimedOut
+}
+
+/// [`wait`], and a timeout logged with `part`, the panel's stderr being tui.log.
+fn finish(g: Option<Git>, end: Instant, part: &str) -> Ran {
+    let ran = wait(g, end);
+    if matches!(ran, Ran::TimedOut) {
+        eprintln!("cockpit-tui: repo block: git {part} timed out, left out");
+    }
+    ran
 }
 
 /// The work tree of the repo `dir` is in, under [`spawn_git`]'s flags, or `None`
