@@ -340,7 +340,7 @@ pub struct SentHidden {
 impl App {
     pub fn new(pane: &str, cap: Capture) -> App {
         // the envelope's own call (#964); the window's name labels every screen sent (#937)
-        let screen_hidden = redact_screen(&cap).2;
+        let (_screen, _name, screen_hidden) = redact_screen(&cap);
         let local = is_local(&cap.cmd);
         App {
             pane: pane.into(),
