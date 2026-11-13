@@ -872,3 +872,15 @@ fn a_detached_head_skips_ci_with_one_note() {
     let got = collect(&mut r.collector(), &d);
     assert_eq!((got.notes, r.starts()), (vec![Note::NoBranch], 2));
 }
+
+// ---- review fixes: the store is mode 700, made or found ----
+
+#[test]
+fn mark_seen_tightens_an_existing_store_to_700() {
+    let r = Rig::new("tighten");
+    std::fs::create_dir_all(r.store()).unwrap();
+    std::fs::set_permissions(r.store(), std::fs::Permissions::from_mode(0o755)).unwrap();
+    mark_seen(&r.store(), "0123456789abcdef", &"ab".repeat(20), T0).unwrap();
+    let mode = std::fs::metadata(r.store()).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o700);
+}

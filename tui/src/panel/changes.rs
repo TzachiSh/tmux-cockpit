@@ -21,7 +21,7 @@ use std::collections::{HashMap, VecDeque};
 use std::ffi::OsString;
 use std::fs::{DirBuilder, OpenOptions};
 use std::io::{Read, Write};
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -267,6 +267,8 @@ pub fn mark_seen(store: &Path, key: &str, head: &str, at: u64) -> std::io::Resul
         return Err(bad("head must be a full lowercase sha"));
     }
     DirBuilder::new().recursive(true).mode(0o700).create(store)?;
+    // the mode above holds only for a folder made here; one found is tightened
+    std::fs::set_permissions(store, std::fs::Permissions::from_mode(0o700))?;
     // Threads of one process share the pid, so the counter keeps their temp names apart.
     static SEQ: AtomicU64 = AtomicU64::new(0);
     let seq = SEQ.fetch_add(1, Ordering::Relaxed);
