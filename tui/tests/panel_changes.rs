@@ -799,3 +799,17 @@ fn a_last_seen_sha_dropped_with_its_branch_is_still_a_rewrite() {
     let want = [(Kind::Rewritten, short(&gone), utc_text(T0))];
     assert_eq!(of(&got, &[Kind::Rewritten, Kind::Commit]), want);
 }
+
+// ---- review fixes: the cut comes after redaction ----
+
+/// A made-up key from char 180 to 208, across the 200-char cut.
+#[test]
+fn a_key_across_the_200_char_cut_comes_out_hidden() {
+    let r = Rig::new("straddle");
+    let d = r.repo("r", true);
+    let lead = "a".repeat(179);
+    let title = format!("{lead} ghp_MADEUPFAKEFAKEFAKEFAKE00 tail");
+    r.answer("pr", &format!(r#"[{{"number":2,"title":"{title}"}}]"#));
+    let got = collect(&mut r.collector(), &d);
+    assert_eq!(github(&got)[0].2, format!("{lead} [hidden] tail"));
+}
