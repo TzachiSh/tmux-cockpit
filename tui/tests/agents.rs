@@ -184,15 +184,22 @@ fn give_up(dir: &Path, bound: std::time::Duration) -> ! {
     let me = std::thread::current();
     let (test, n) = (me.name().unwrap_or("the test that ran last"), lookups());
     let how = if std::thread::panicking() { ", while it was panicking" } else { "" };
+    // read at the last moment, so the text shows what a late lookup would have found
+    let path = std::env::var("PATH").unwrap_or_default();
+    let home = std::env::var("HOME").unwrap_or_default();
+    let first = path.split(':').next().unwrap_or_default();
     let msg = format!(
         "\nThe agents test rig stopped this test binary. This is the rig's guard for issue \
          #969, not a product crash.\n{n} lookup thread(s) were still running {bound:?} after \
          the rig of {test} began its drop{how}. Putting PATH and HOME back would let that \
          lookup start the real `claude`, so they stay the rig's and the run aborts here.\n\
          What to do: rerun {test} alone, with `cargo test --test agents -- --exact {test}`.\n\
-         The rig's folder was left behind: {}\n",
+         The rig's folder was left behind: {}\n\
+         At the abort PATH began with {first} and HOME was {home}\n",
         dir.display(),
     );
+    // nothing may follow this message but the abort: a put-back after it would hand a
+    // lookup still running the developer's `claude`, unseen by the message's last line (#969)
     let _ = std::io::stderr().write_all(msg.as_bytes());
     std::process::abort();
 }
@@ -332,24 +339,9 @@ fn nor_does_one_pending_at_a_drop_during_a_panic() {
     assert_eq!(inside, 2, "both asks reached the rig's stub");
 }
 
-/// Runs in the child half below, at its abort and on the thread that aborts: says what
-/// PATH and HOME are then, so a put-back anywhere ahead of the abort shows on stderr.
-/// `abort()` raises the signal on its own thread, between two statements of `give_up`,
-/// so this interrupts no call and holds no lock when it allocates and reads the
-/// environment. The process still dies of SIGABRT once it returns.
-extern "C" fn at_the_abort(_: libc::c_int) {
-    use std::io::Write;
-    let path = std::env::var("PATH").unwrap_or_default();
-    let first = path.split(':').next().unwrap_or_default();
-    let home = std::env::var("HOME").unwrap_or_default();
-    let line = format!("At the abort PATH began with {first} and HOME was {home}\n");
-    let _ = std::io::stderr().write_all(line.as_bytes());
-}
-
 /// The child half of the give-up test: a lookup thread that never ends, and a rig
 /// whose drop waits 200 ms for it. Should the rig's HOME ever be put back under that
-/// thread, it asks again, and the `claude` outside the rig logs it. The abort ends the
-/// process ahead of that ask, so the handler above is what the parent reads.
+/// thread, it asks again, and the `claude` outside the rig logs it.
 #[test]
 fn hung_lookup_child() {
     if std::env::var_os("HUNG_LOOKUP_CHILD").is_none() {
@@ -370,8 +362,6 @@ fn hung_lookup_child() {
     }
     // SAFETY: setrlimit reads one struct. No core file for an abort that is meant.
     unsafe { libc::setrlimit(libc::RLIMIT_CORE, &libc::rlimit { rlim_cur: 0, rlim_max: 0 }) };
-    // SAFETY: signal takes a number and a function that lives as long as the process.
-    unsafe { libc::signal(libc::SIGABRT, at_the_abort as *const () as libc::sighandler_t) };
     let dev = Dev::new("hung");
     std::fs::write(dev.dir.join("made"), "").unwrap();
     let mut r = Rig::inside(&dev, "hung", ONE);
