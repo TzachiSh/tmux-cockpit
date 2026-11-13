@@ -2017,6 +2017,26 @@ panel with the reason in a warn note.
   `view-find-80`, `view-note-60`, `view-help-60`, `view-empty-60` and
   `view-floor`. No other golden moved.
 
+### Contract changes for the store (for #61)
+
+- #1020: a new module, `store`, and `pub mod store;` in `lib.rs`. Nothing
+  calls it and no schema is read at run time: it lays the interface for a
+  later storage change (contracts/README.md), and the backend is not chosen.
+- `Store` has three methods: `get(&Key) -> Option<(Value, Revision)>`,
+  `put_if_revision(&Key, &Value, Option<Revision>) -> Result<Revision,
+  PutError>`, where `None` creates only, and `watch(&Key) -> Watch`. Values are
+  `serde_json::Value`, already a dependency: the schemas describe JSON, so no
+  caller parses bytes, and a NATS backend serialises at its edge.
+  `PutError` is `Conflict { current }`, `Busy` (the lock wait ran out),
+  `TooLarge` or `Io`.
+- `LocalStore` keeps one file per key under `$XDG_STATE_HOME/tmux-cockpit/store`
+  (folder 0700): `cockpit-store 1`, `rev <n>`, the value as one line of JSON.
+  A put takes `<key>~lock` with `LOCK_NB` retries for up to a second, checks
+  the revision, writes `<key>~tmp` (`O_EXCL`, `O_NOFOLLOW`, 0600), fsyncs it
+  and renames it over the key. A read takes a regular file of at most 64 KiB,
+  opened `O_NOFOLLOW | O_NONBLOCK`. Anything else reads as no value.
+- No new dependency, no `Cargo.toml` change.
+
 ### The triage overlay
 
 Phase 2, not shipped. It answers a blocked agent in place rather than attaching
@@ -2516,6 +2536,7 @@ workspace, no crate split.
 | `sessions` | the `cockpit-tui sessions` view (#245) on `pick`'s screen; `data::sessions` the one `list-panes -a` read, the order and the freeze |
 | `panel` | the type-panel port: capture, redaction, prompt envelope, the `claude -p` request, reply parsing; `panel::action` the action, text, cmd and state files |
 | `highlight` | the code lexer (#282) and `split`, the one fence rule the panel's view and its reply parsing share (#283) |
+| `store` | the `Store` trait (`get`, `put_if_revision`, `watch`), `Key`, `Revision` and `LocalStore`, one 0600 file per key under XDG state (#1020); unwired, nothing calls it |
 
 Every mutating action stays a shell script: the binary prints
 `<verb> <pane-id>` and a wrapper runs it.
