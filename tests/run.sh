@@ -9276,6 +9276,59 @@ else skip_ "par.sh under a full stderr (no /dev/full)"
 fi
 unset -f px_run px_mk; unset PX Q px_x
 
+echo "== tests/par.sh: a plan it could not make, or a shard gone before it ran, fails the run (#1017) =="
+# Two more ways par.sh ran less than it should and ended 0. An awk that failed wrote no plan,
+# and no plan read as "nothing selected". And the plan was a listing of the folder taken after
+# the shards were written, so a shard file gone by then was not a shard. A sandbox as above,
+# with an awk or a bash of its own first on PATH: awk0 fails every time; awk1 fails only where
+# the shards are written; bash1 removes shard 0001's file after its syntax check; bashA
+# removes every shard's. Each bash hands everything else to the real one, and removes only a
+# file named .par.*.
+PY=$(mktmpd); Q='"'; mkdir -p "$PY/c/tests" "$PY/t" "$PY/awk0" "$PY/awk1" "$PY/bash1" "$PY/bashA"
+cp "$DIR/tests/par.sh" "$PY/c/tests/par.sh"
+awk '/^echo "== /{exit} {print}' "$DIR/tests/run.sh" > "$PY/c/tests/run.sh"
+{
+    printf 'echo %s== py1: one ==%s\nis "py1" 1 1\n\n' "$Q" "$Q"
+    printf 'echo %s== py2: two ==%s\nis "py2" 1 1\n\n' "$Q" "$Q"
+} >> "$PY/c/tests/run.sh"
+py_awk=$(tq "$(command -v awk)"); py_bash=$(tq "$(command -v bash)")
+printf '#!/bin/sh\nexit 1\n' > "$PY/awk0/awk"
+printf '#!/bin/sh\ncase "$*" in *seen_block*) exit 1 ;; esac\nexec %s "$@"\n' "$py_awk" \
+    > "$PY/awk1/awk"
+for py_w in 1 A; do
+    case $py_w in 1) py_m='.par.*.0001' ;; *) py_m='.par.*' ;; esac
+    {
+        printf '#!/bin/sh\n[ "$1" = -n ] || exec %s "$@"\n%s "$@"; rc=$?\n' "$py_bash" "$py_bash"
+        printf 'case ${2##*/} in %s) rm -f -- "$2" ;; esac\nexit $rc\n' "$py_m"
+    } > "$PY/bash$py_w/bash"
+done
+chmod +x "$PY/awk0/awk" "$PY/awk1/awk" "$PY/bash1/bash" "$PY/bashA/bash"
+py_run() {                    # <none|awk0|awk1|bash1|bashA> [PAR_BLOCKS] -> status|stdout's last line|par.sh's lines
+    local rc
+    ( cd "$PY/c" && PATH="$PY/$1:$PATH" exec env -u PAR_BLOCKS ${2:+PAR_BLOCKS="$2"} \
+        TMPDIR="$PY/t" J=2 tests/par.sh ) </dev/null >"$PY/out" 2>"$PY/err"; rc=$?
+    printf '%s|%s|%s' "$rc" "$(tail -n 1 "$PY/out" | tr -s ' ' | sed 's/^ //')" \
+        "$(grep -E '^par\.sh: (awk failed|no block|shard [0-9]+ (left|died)|[0-9]+ of [0-9]+ shards)' \
+            "$PY/err" | sed 's/^par\.sh: //' | tr '\n' ';')"
+}
+is "with its own tools both shards run and the run ends 0" \
+   "0|2 passed, 0 failed, 0 skipped (J=2, 2 shards)|" "$(py_run none)"
+is "a PAR_BLOCKS that names no block is still nothing selected, and ends 0" \
+   "0|nothing selected|" "$(py_run none 99999)"
+is "an awk that fails makes no plan: the run ends 2 and says awk failed" \
+   "2||awk failed grouping the blocks (status 1): no run;" "$(py_run awk0)"
+is "an awk that fails while the shards are written ends the run the same way" \
+   "2||awk failed writing shard 0001 (status 1): no run;" "$(py_run awk1)"
+is "a shard file gone before it ran is still a shard: the run fails and names it" \
+   "1|1 passed, 0 failed, 0 skipped (J=2, 2 shards)|shard 0001 died without reporting;1 of 2 shards reported a count;" \
+   "$(py_run bash1)"
+is "with every shard file gone the run fails and says none reported" \
+   "1|0 passed, 0 failed, 0 skipped (J=2, 2 shards)|shard 0001 died without reporting;shard 0002 died without reporting;0 of 2 shards reported a count;" \
+   "$(py_run bashA)"
+is "and none of those runs left a shard file in the checkout" "" \
+   "$(ls -A "$PY/c/tests" | grep '^\.par')"
+unset -f py_run; unset PY Q py_awk py_bash py_w py_m
+
 echo "== tests/green.sh: the stamp hits on unchanged content, misses on one changed byte, and tool versions are in the key =="
 GROOT=$(mktmpd)
 mkdir -p "$GROOT/scripts/lib" "$GROOT/tests" "$GROOT/examples"
