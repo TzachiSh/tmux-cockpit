@@ -156,6 +156,7 @@ run_shards() {                       # <parallelism> <shard file>...
         bash "$1" > "$PAR_WORK/out/$id.log" 2>&1; rc=$?
         [ "$rc" -eq 0 ] || : > "$PAR_WORK/out/$id.fail"
         printf "par.sh: shard %s end rc=%s\n" "$id" "$rc" >&2
+        exit 0      # never the last printf: a closed stderr must not read as a failed worker
     ' _
 }
 
@@ -164,8 +165,12 @@ run_shards() {                       # <parallelism> <shard file>...
 # were: green at J=4, red at J=8 and J=12. They run first, alone, while nothing
 # competes; the other blocks then take the machine. No block carries the mark
 # today; the shard stays for the next one that needs it.
+# The plan: the shard files as made, listed once, here. The summary walks this list and not
+# the folder, so a shard file that is gone by then (a block that removed it, a sweep from
+# outside) is still a shard that must report (#1013).
+plan=("$SH".*); [ -e "${plan[0]}" ] || plan=()
 serial=(); rest=()
-for f in "$SH".*; do
+for f in ${plan[@]+"${plan[@]}"}; do
     case " $(printf '%s' "${serial_ids:-}" | tr ' ' '\n' | sort -u | tr '\n' ' ') " in
         *" ${f##*.} "*) serial+=("$f") ;;
         *)              rest+=("$f") ;;
@@ -173,8 +178,9 @@ for f in "$SH".*; do
 done
 # Arrays, one whole path each: joined into a string and split again, a path holding a space
 # came apart, no shard ran, and bash was handed the path's first word to run (#1007).
-# xargs's own failure (it could not start a worker, or could not read its list) is kept: a
-# worker's script always ends 0, so anything else here is xargs, and the run was not whole.
+# The status of xargs is kept: a worker's script always ends 0, so anything else is xargs
+# itself (it could not start a worker, could not read its list, or a worker was killed), and
+# the run was not whole.
 xrc=0
 [ ${#serial[@]} -eq 0 ] || run_shards 1 "${serial[@]}" || xrc=$?
 [ ${#rest[@]} -eq 0 ] || run_shards "$J" "${rest[@]}" || xrc=$?
@@ -182,10 +188,9 @@ xrc=0
 # Every shard planned must report its count. One that never started has no log, no count and
 # no fail mark, so the total simply left it out: a run in which no worker started printed
 # "0 passed, 0 failed" and ended 0, a gate that could not fail (#1013).
-pass=0; fail=0; skip=0; red=0; planned=0; reported=0
-for f in "$SH".*; do
-    [ -e "$f" ] || continue
-    id=${f##*.}; planned=$((planned + 1))
+pass=0; fail=0; skip=0; red=0; planned=${#plan[@]}; reported=0
+for f in ${plan[@]+"${plan[@]}"}; do
+    id=${f##*.}
     [ ! -e "$WORK/out/$id.log" ] || cat "$WORK/out/$id.log"
     if [ -s "$WORK/out/$id.n" ]; then
         IFS=, read -r p q s < "$WORK/out/$id.n"
@@ -198,12 +203,12 @@ for f in "$SH".*; do
     # report a total that quietly does not add up.
     red=1
     if [ -e "$WORK/out/$id.log" ]; then echo "par.sh: shard $id died without reporting" >&2
-    else echo "par.sh: shard $id never started" >&2
+    else echo "par.sh: shard $id left no log" >&2
     fi
 done
-[ "$xrc" -eq 0 ] || { red=1; echo "par.sh: xargs ended $xrc: the workers did not all start" >&2; }
+[ "$xrc" -eq 0 ] || { red=1; echo "par.sh: xargs ended $xrc: the run was not whole" >&2; }
 [ "$reported" -eq "$planned" ] && [ "$planned" -gt 0 ] || {
     red=1; echo "par.sh: $reported of $planned shards reported a count" >&2; }
 printf '  %d passed, %d failed, %d skipped  (J=%s, %s shards)\n' \
-    "$pass" "$fail" "$skip" "$J" "$(find "$DIR/tests" -maxdepth 1 -name ".par.$$.*" | wc -l)"
+    "$pass" "$fail" "$skip" "$J" "$planned"
 [ "$red" -eq 0 ] || exit 1
