@@ -9215,6 +9215,67 @@ is "under a path with a ' and a TMPDIR with a \" and a \$ both shards run and co
    "0|2 passed, 0 failed, 0 skipped|2 2" "$(pw_run "pr'oj" 't"$HOME')"
 unset -f pw_run; unset PW Q
 
+echo "== tests/par.sh: a run whose shards did not all report fails and says so (#1013) =="
+# A shard that never started left no log, no count and no fail mark, and the total left it out:
+# with no worker started par.sh printed "0 passed, 0 failed" and ended 0. Sandboxes as above.
+# Three checkouts: c, two good blocks; d, one whose shard sends its count nowhere; e, one
+# whose shard removes its own file and then fails a row. And an xargs of its own first on
+# PATH: none (the real one), dead (ends 1 and starts nothing), first (hands on only the first
+# shard), late (runs every worker, then ends 123).
+PX=$(mktmpd); Q='"'; mkdir -p "$PX/t" "$PX/dead" "$PX/first" "$PX/late"
+px_mk() {                     # <checkout> <block 1's body> <block 2's body>
+    mkdir -p "$PX/$1/tests"
+    cp "$DIR/tests/par.sh" "$PX/$1/tests/par.sh"
+    awk '/^echo "== /{exit} {print}' "$DIR/tests/run.sh" > "$PX/$1/tests/run.sh"
+    {
+        printf 'echo %s== px1: one ==%s\n%s\n\n' "$Q" "$Q" "$2"
+        printf 'echo %s== px2: two ==%s\n%s\n\n' "$Q" "$Q" "$3"
+    } >> "$PX/$1/tests/run.sh"
+}
+px_mk c 'is "px1" 1 1' 'is "px2" 1 1'
+px_mk d 'is "px1" 1 1' 'PAR_COUNT=/dev/null; is "px2" 1 1'
+px_mk e 'rm -f "$0"; is "px1" 1 2' 'is "px2" 1 1'
+px_x=$(tq "$(command -v xargs)")
+printf '#!/bin/sh\ncat >/dev/null\nexit 1\n' > "$PX/dead/xargs"
+printf '#!/bin/sh\ntr "\\0" "\\n" | head -n 1 | tr "\\n" "\\0" | exec %s "$@"\n' "$px_x" \
+    > "$PX/first/xargs"
+printf '#!/bin/sh\n%s "$@"\nexit 123\n' "$px_x" > "$PX/late/xargs"
+chmod +x "$PX/dead/xargs" "$PX/first/xargs" "$PX/late/xargs"
+px_run() {                    # <none|dead|first|late> [checkout] -> status|summary|what par.sh said
+    local rc
+    ( cd "$PX/${2:-c}" && PATH="$PX/$1:$PATH" exec env -u PAR_BLOCKS TMPDIR="$PX/t" J=2 \
+        tests/par.sh ) </dev/null >"$PX/out" 2>"$PX/err"; rc=$?
+    printf '%s|%s|%s' "$rc" \
+        "$(grep -oE '[0-9]+ passed, [0-9]+ failed, [0-9]+ skipped +\(J=2, [0-9]+ shards\)' \
+            "$PX/out" | tr -s ' ')" \
+        "$(grep -E '^par\.sh: (shard [0-9]+ (left|died)|[0-9]+ of [0-9]+ shards|xargs ended)' \
+            "$PX/err" | sed 's/^par\.sh: //; s/: the run was not whole//' | tr '\n' ';')"
+}
+is "with its own xargs both shards report and the run ends 0" \
+   "0|2 passed, 0 failed, 0 skipped (J=2, 2 shards)|" "$(px_run none)"
+is "an xargs that starts no worker fails the run, and each shard is named" \
+   "1|0 passed, 0 failed, 0 skipped (J=2, 2 shards)|shard 0001 left no log;shard 0002 left no log;xargs ended 1;0 of 2 shards reported a count;" \
+   "$(px_run dead)"
+is "one shard that never ran fails the run, the other still counts" \
+   "1|1 passed, 0 failed, 0 skipped (J=2, 2 shards)|shard 0002 left no log;1 of 2 shards reported a count;" \
+   "$(px_run first)"
+is "an xargs that ends badly after every worker ran fails the run by itself" \
+   "1|2 passed, 0 failed, 0 skipped (J=2, 2 shards)|xargs ended 123;" "$(px_run late)"
+is "a shard that ran and sent no count fails the run" \
+   "1|1 passed, 0 failed, 0 skipped (J=2, 2 shards)|shard 0002 died without reporting;1 of 2 shards reported a count;" \
+   "$(px_run none d)"
+is "a shard whose file is gone by the end still counts, and its failed row fails the run" \
+   "1|1 passed, 1 failed, 0 skipped (J=2, 2 shards)|" "$(px_run none e)"
+# A worker's last command was a printf to stderr, and its status was the worker's: a stderr
+# that takes no write made xargs end 123 on a run with nothing wrong.
+if [ -c /dev/full ]; then
+    is "a stderr that takes no write does not fail a good run" "0" \
+       "$(cd "$PX/c" && env -u PAR_BLOCKS TMPDIR="$PX/t" J=2 tests/par.sh </dev/null \
+            >/dev/null 2>/dev/full; echo $?)"
+else skip_ "par.sh under a full stderr (no /dev/full)"
+fi
+unset -f px_run px_mk; unset PX Q px_x
+
 echo "== tests/green.sh: the stamp hits on unchanged content, misses on one changed byte, and tool versions are in the key =="
 GROOT=$(mktmpd)
 mkdir -p "$GROOT/scripts/lib" "$GROOT/tests" "$GROOT/examples"
