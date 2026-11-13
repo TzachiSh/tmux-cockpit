@@ -3,6 +3,8 @@
 //! split by a direction control as a screen secret, never one "more in the
 //! conversation". Busy takes its split from the envelope it sent. Every value
 //! here is made up.
+mod fake;
+
 use cockpit_tui::panel::app::{App, SentHidden, Tile, View};
 use cockpit_tui::panel::ask;
 use cockpit_tui::panel::capture::Capture;
@@ -12,8 +14,6 @@ use cockpit_tui::theme::Theme;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
-use std::path::PathBuf;
-use std::sync::Once;
 
 /// A made-up key cut in two by U+202E: too short to match on either side.
 const SPLIT: &str = "$ ls\nsk-ant-MADEUP\u{202E}FAKEFAKE00";
@@ -21,20 +21,6 @@ const SPLIT: &str = "$ ls\nsk-ant-MADEUP\u{202E}FAKEFAKE00";
 const GLUED: &str = "$ ls\nw\u{2066}sk-ant-MADEUPFAKEFAKE00";
 /// A made-up key with nothing around it, as the panel always counted it.
 const PLAIN: &str = "$ ls\nsk-abcdefghijklmnopqrst1";
-
-/// HOME and XDG_CONFIG_HOME at a folder that is never made, before the first
-/// `App`: a prompt override under the developer's config changes a write.
-fn fixed_env() {
-    static SET: Once = Once::new();
-    SET.call_once(|| {
-        // SAFETY: set once, before any thread here reads the environment.
-        unsafe {
-            std::env::set_var("HOME", "/sys/absent-964");
-            std::env::set_var("XDG_CONFIG_HOME", "/sys/absent-964");
-            std::env::remove_var("COCKPIT_PANEL_MODEL");
-        }
-    });
-}
 
 fn cap(screen: &str, name: &str, path: &str) -> Capture {
     Capture {
@@ -46,9 +32,25 @@ fn cap(screen: &str, name: &str, path: &str) -> Capture {
     }
 }
 
+/// Every `App` here is built under the binary's one environment (#948, #953),
+/// which [`fake::fixed_env`] sets.
 fn app(c: Capture) -> App {
-    fixed_env();
+    fake::fixed_env();
     App::new("%3", c)
+}
+
+/// Once an `App` is built, the binary runs under the fixed environment. It
+/// builds one itself, so it holds when run first or alone.
+#[test]
+fn an_app_is_built_under_the_fixed_environment() {
+    let _ = app(cap("$ ", "w", "/h"));
+    fake::assert_fixed_env();
+}
+
+/// The test above in a process started with all three variables set.
+#[test]
+fn the_fixed_environment_replaces_values_already_set() {
+    fake::fixed_env_in_a_child("an_app_is_built_under_the_fixed_environment");
 }
 
 fn frame(a: &App) -> String {
@@ -250,23 +252,14 @@ fn busy_counts_an_ordinary_screen_name_and_path_as_before() {
 
 // ---------------------------------------------------------------- an Ask
 
-/// A scratch dir under the temp dir, removed on drop.
-struct Dir(PathBuf);
-
-impl Drop for Dir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
 /// Pinned: an Ask's Busy line is #965's to fix, and this change leaves it as
 /// it was: the screen counted as Home counts it, the rest (here a key in the
 /// code) as conversation, never as a repo block the Ask did not send.
 #[test]
 fn an_asks_busy_line_is_left_as_it_was() {
-    let d = Dir(std::env::temp_dir().join(format!("cockpit-panel-counts-{}", std::process::id())));
-    std::fs::create_dir_all(d.0.join(".git")).unwrap();
-    let f = d.0.join("x.rs");
+    let d = fake::Scratch::fresh(std::env::temp_dir().join(format!("cockpit-panel-counts-{}", std::process::id())));
+    std::fs::create_dir_all(d.join(".git")).unwrap();
+    let f = d.join("x.rs");
     std::fs::write(&f, "a\nb sk-abcdefghijklmnopqrst3\nc\n").unwrap();
     let mut a = app(cap(PLAIN, "w", "/h"));
     a.ask_open(ask::load(&f, 1, 2).unwrap());
