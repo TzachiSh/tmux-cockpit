@@ -30,6 +30,44 @@ much as the code. No block carries the mark today. A `cpu_under` budget needs
 no mark: each is 3x its site's CPU measured under twelve spinners, so it is
 sized for contention already.
 
+### The tui tests' claude guard
+
+`cargo test` in `tui/` starts every test binary behind a guard against your own
+`claude` (#973). `docs/tui.md`, under Install, says what the guard is and what a
+failure prints. This section has its switch and its limits.
+
+The repo's `.cargo/config.toml` sets `COCKPIT_TEST_CLAUDE_GUARD=1` for every
+cargo started inside the checkout. `COCKPIT_TEST_CLAUDE_GUARD=0 cargo test`
+lifts the guard by hand. The runner then starts each test binary as cargo alone
+would, and a test with no stub of its own may start your real `claude`.
+`make tui-test` sets the variable to 1 itself and CI runs that target, so an
+exported 0 never lifts the gate.
+
+cargo takes one runner, and the guard is the repo's. A runner of your own meets
+it in one of three ways:
+
+- Set by `CARGO_TARGET_<TRIPLE>_RUNNER`, by a `[target.<triple>]` key, by
+  `--config`, or in a `.cargo/config.toml` below the repo's, yours replaces the
+  repo's and cargo says nothing. The row
+  `this_run_is_behind_the_guard_where_one_was_asked_for` in
+  `tui/tests/claude_guard.rs` then fails and says so. To keep both, end your
+  runner with `exec <checkout>/tui/tests/claude-guard/runner "$@"`. To run
+  without the guard, set the switch to 0.
+- Set under the repo's own key, `[target.'cfg(unix)']`, in your
+  `~/.cargo/config.toml`, yours is dropped by cargo inside this checkout
+  without a word, and the guard runs. Use one of the forms above.
+- Set under another `cfg(...)` key that also matches, cargo refuses every
+  `cargo test` and `cargo run` in the checkout: ``several matching instances of
+  `target.'cfg(..)'.runner` in configurations``.
+
+cargo still names the signal a test binary died by (`signal: 6, SIGABRT`),
+because the runner then dies by the same signal. A binary that exits by its own
+choice with 128 plus the number of such a signal, 134 for one, is reported the
+same way. A shell cannot tell the two apart.
+
+Doctests are guarded from cargo 1.89. The 1.88 toolchain `make tui-test` uses
+does not hand a doctest to a runner, and the crate has no doctest today.
+
 ## CI
 
 Two workflows run the tests on every pull request and on master and `scratch/**`

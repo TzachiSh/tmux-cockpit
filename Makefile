@@ -22,7 +22,7 @@ SHELL := /bin/bash
 
 # Every executable shell file, whatever its extension. Listed once so a new
 # script cannot be added to the repo and quietly skipped by the linter.
-SOURCES := cockpit.tmux install.sh bootstrap.sh tests/run.sh tests/only.sh tests/par.sh tests/green.sh tests/changed.sh tests/clean-run.sh tests/fixtures/review/mkfix.sh $(filter-out scripts/lib,$(wildcard scripts/*)) $(wildcard scripts/lib/*)
+SOURCES := cockpit.tmux install.sh bootstrap.sh tests/run.sh tests/only.sh tests/par.sh tests/green.sh tests/changed.sh tests/clean-run.sh tests/fixtures/review/mkfix.sh tui/tests/claude-guard/runner tui/tests/claude-guard/claude $(filter-out scripts/lib,$(wildcard scripts/*)) $(wildcard scripts/lib/*)
 
 .PHONY: all check test test-par check-par gate test-changed lint fmt tui tui-bin tui-test tui-test-clean install uninstall bootstrap help
 
@@ -76,8 +76,10 @@ tui: tui-bin
 TUI_TOOLCHAIN ?= $(if $(shell command -v rustup 2>/dev/null),$(shell sed -n 's/^rust-version *= *"\(.*\)".*/\1/p' tui/Cargo.toml))
 TUI_ENV = $(if $(TUI_TOOLCHAIN),RUSTUP_TOOLCHAIN=$(TUI_TOOLCHAIN))
 
+# COCKPIT_TEST_CLAUDE_GUARD=1: an exported 0 lifts the guard against a real
+# claude for a cargo test by hand, never for this gate (#973).
 tui-test:
-	@$(TUI_ENV) cargo test --locked --manifest-path tui/Cargo.toml
+	@$(TUI_ENV) COCKPIT_TEST_CLAUDE_GUARD=1 cargo test --locked --manifest-path tui/Cargo.toml
 	@$(TUI_ENV) cargo clippy --locked --manifest-path tui/Cargo.toml --all-targets -- -D warnings
 	@$(TUI_ENV) cargo fmt --manifest-path tui/Cargo.toml --check
 	@# Any rustdoc warning fails the target: a doc link to a name that does not

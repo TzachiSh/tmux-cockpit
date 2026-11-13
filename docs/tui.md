@@ -65,6 +65,31 @@ the panel refuses a read dir whose path holds a glob character. Some stubs
 write the path into a shell script unquoted. Under a `TMPDIR` with a space, a
 quote or a glob character many unrelated tests fail.
 
+Every test binary runs behind a guard against the developer's own `claude`
+(#973). The repo's `.cargo/config.toml` gives cargo a runner,
+`tui/tests/claude-guard/runner`, so a `cargo test` started anywhere inside the
+checkout, `make tui-test` included, starts each test binary through that script
+with a `claude` that refuses first on its `PATH`. A rig's own stub still comes
+before it. The refusal exits 126, the product reads that as no answer and the
+test may pass all the same, so the runner fails the binary once it has ended,
+with one line that names it and one line for each start:
+
+```
+claude-guard: error: a test started claude, not its rig's own stub (docs/tui.md) binary=<the test binary>
+claude-guard: error: refused to start claude for a test ppid=<pid> cwd=<dir> argv=claude [agents] [--json]
+```
+
+cargo then says how to rerun that binary: `cargo test --test <name>`, from
+`tui/`. Add `-- --exact <test>` to find the test, since a filtered run is
+checked the same way. The fix belongs in the rig: `fake::rig_path` and
+`fake::assert_claude_is_the_rigs` (#972). `cargo run` and
+`cargo run --example panel_eval` go through the same script and are started
+untouched. The guard is absent from a run started outside the checkout with
+`--manifest-path`, from a test binary started by hand or under a debugger
+(`tui/tests/claude-guard/runner <binary>` starts one behind it), and from a
+test that builds its `PATH` from nothing. `docs/testing.md` has the switch
+that lifts it and what a cargo runner of your own does to it.
+
 The binary lives in the plugin's own `bin/` and is gitignored. `install.sh`
 runs `scripts/tui-fetch --required` and exits 1 when no working binary is
 left; `install.sh --check` fails when it is missing or older than `TUI_MIN`

@@ -1,12 +1,10 @@
 //! The `claude` a rig answers a lookup with (#972): the rows of the helpers in
-//! `fake`, and a scan of this folder for a rig that reaches a lookup without
-//! the check. Nothing here sets a variable: every PATH is a value handed to
-//! the helper, or the environment of a child.
+//! `fake`. Nothing here sets a variable: every PATH is a value handed to the
+//! helper, or the environment of a child.
 //!
-//! The scan is a rule over text, and only as good as [`ENTRIES`]. A product
-//! entry added later, and a test that runs the built binary, get past it. The
-//! net without a list is a `claude` that refuses, put first on PATH by the run
-//! itself (#973).
+//! Whether a rig reaches a lookup without that `claude` is not read off its
+//! source. The run puts a `claude` that refuses first on every test binary's
+//! PATH and fails the binary that started it (#973, `claude_guard.rs`).
 mod fake;
 use fake::{Scratch, rig_path, rigs_claude};
 use std::ffi::OsString;
@@ -231,109 +229,4 @@ fn an_unset_path_keeps_the_default_search_after_the_bin() {
         out.status.success() && said.lines().any(|l| l == "the-default-search-was-kept"),
         "{said}"
     );
-}
-
-/// The product's entries that can start `claude`, each with a text the file
-/// must also hold for the word to count: in `data`, the read of all panes and
-/// the read of one (the lookup in agents.rs), the read behind the info popup,
-/// and the transcript module's lookup of a pane's file (its `timeout 2
-/// claude`). Each is written in two halves, so that this file names none.
-const ENTRIES: [(&str, &str); 4] = [
-    (concat!("list_", "panes"), ""),
-    (concat!("one_", "pane"), ""),
-    (concat!("gat", "her"), ""),
-    ("file", concat!("data::trans", "cript")),
-];
-
-/// What a file that names an entry must call.
-const CHECK: &str = concat!("assert_claude_is_", "the_rigs(");
-
-/// Whether `text` holds `word` as a whole identifier.
-fn names(text: &str, word: &str) -> bool {
-    let part = |c: char| c.is_alphanumeric() || c == '_';
-    text.match_indices(word).any(|(i, _)| {
-        let before = text[..i].chars().next_back();
-        let after = text[i + word.len()..].chars().next();
-        !before.is_some_and(part) && !after.is_some_and(part)
-    })
-}
-
-/// The entries `text`, the source of a test file, names without the check.
-fn unchecked(text: &str) -> Vec<&'static str> {
-    let named = |(word, with): &&(&str, &str)| names(text, word) && text.contains(with);
-    let found = ENTRIES.iter().filter(named).map(|(word, _)| *word);
-    if text.contains(CHECK) { vec![] } else { found.collect() }
-}
-
-/// Every `.rs` under `dir`, as `(path below the tests folder, source)`.
-fn sources(dir: &Path, below: &str, out: &mut Vec<(String, String)>) {
-    for e in std::fs::read_dir(dir).unwrap().map(|e| e.unwrap()) {
-        let name = format!("{below}{}", e.file_name().to_string_lossy());
-        if e.path().is_dir() {
-            sources(&e.path(), &format!("{name}/"), out);
-        } else if name.ends_with(".rs") {
-            out.push((name, std::fs::read_to_string(e.path()).unwrap()));
-        }
-    }
-}
-
-fn tree() -> Vec<(String, String)> {
-    let mut all = vec![];
-    sources(&Path::new(env!("CARGO_MANIFEST_DIR")).join("tests"), "", &mut all);
-    all.sort();
-    all
-}
-
-#[test]
-fn every_test_file_that_names_a_lookup_entry_calls_the_check() {
-    let bad: Vec<(String, Vec<&str>)> = tree()
-        .into_iter()
-        .map(|(file, text)| (unchecked(&text), file))
-        .filter(|(left, _)| !left.is_empty())
-        .map(|(left, file)| (file, left))
-        .collect();
-    assert_eq!(bad, [], "these name an entry that can start claude and never call the check");
-}
-
-/// The scan reads the files it is for: without its check, the rig that started
-/// the developer's `claude` on every run is the one it reports.
-#[test]
-fn the_scan_reports_subs_tmux_once_its_check_is_gone() {
-    let all = tree();
-    let subs = all.iter().find(|(f, _)| f == "subs_tmux.rs");
-    let (_, text) = subs.expect("subs_tmux.rs is in the tree");
-    assert_eq!(unchecked(text), Vec::<&str>::new());
-    assert_eq!(unchecked(&text.replace(CHECK, "(")), [ENTRIES[0].0]);
-}
-
-#[test]
-fn an_entry_inside_a_longer_name_is_not_named() {
-    let (list, one) = (ENTRIES[0].0, ENTRIES[1].0);
-    assert_eq!(
-        unchecked(&format!("fn a_g{one}_gives_way() {{}} fn {list}_of() {{}}")),
-        Vec::<&str>::new()
-    );
-    assert_eq!(unchecked(&format!("let p = data::{one}(id);")), [one]);
-}
-
-#[test]
-fn the_transcript_entry_counts_only_beside_its_module() {
-    let (word, module) = ENTRIES[3];
-    assert_eq!(unchecked(&format!("let f = {word}(\"%1\", \"\");")), Vec::<&str>::new());
-    let import = format!("use cockpit_tui::{module}::{{{word}, tail}};");
-    assert_eq!(unchecked(&import), [word]);
-}
-
-#[test]
-fn a_file_that_calls_the_check_is_let_through() {
-    let text = format!("use cockpit_tui::data::{};\nfake::{CHECK}&dir);", ENTRIES[0].0);
-    assert_eq!(unchecked(&text), Vec::<&str>::new());
-}
-
-/// A file is reported for every entry it names, in the order of [`ENTRIES`].
-#[test]
-fn a_file_that_names_two_entries_is_reported_for_both() {
-    let (list, gat) = (ENTRIES[0].0, ENTRIES[2].0);
-    let both = format!("use cockpit_tui::data::{list};\nuse cockpit_tui::data::info::{gat};");
-    assert_eq!(unchecked(&both), [list, gat]);
 }

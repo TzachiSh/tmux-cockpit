@@ -2,3 +2,12 @@
 # tmux only on a private server or a stub, never the user's (AGENTS.md).
 [env]
 COCKPIT_TEST_TMUX_GUARD = "1"
+# The runner below guards unless this is 0, and a row of tui/tests/claude_guard.rs
+# fails where this is set and the guard is not on PATH: another runner took its place.
+COCKPIT_TEST_CLAUDE_GUARD = "1"
+
+# Every binary cargo runs from here or below goes through this script. It puts a
+# refusing `claude` first on a test binary's PATH and fails the binary that
+# started it; `cargo run` and `cargo run --example` it execs untouched (#973).
+[target.'cfg(unix)']
+runner = "tui/tests/claude-guard/runner"
