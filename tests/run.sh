@@ -225,10 +225,12 @@ PATH="$SHIM:$SUITE_CLAUDE:$(path_without_mnt "$PATH")"; export PATH
 # KILL or a signal while the server was still starting, left server and pane behind for the
 # rest of that hour (#1006). argv0 stays claude: pane_current_command must read as an agent.
 # tail --pid is GNU's and uutils's; the probe runs the very form the pane will, and where it
-# is refused the pane is a sleep with no end in reach, which answers #981 and not #1006.
+# is refused the pane is a four-hour sleep. The longest run measured took about 90 minutes,
+# so four hours outlasts a run (#981) and a server left behind still ends by itself; on such
+# a platform it can stay for those four hours, which is #1022.
 if ( exec -a claude tail --pid="$$" -n 0 /dev/null ) >/dev/null 2>&1; then
     SUITE_PANE="exec -a claude tail --pid=$$ -f /dev/null"
-else SUITE_PANE='exec -a claude sleep 2147483647'
+else SUITE_PANE='exec -a claude sleep 14400'
 fi
 "$TMUX_REAL" -L "$SUITE_SOCK" -f /dev/null new-session -d -s suite "$SUITE_PANE" >/dev/null 2>&1
 # No agent-view poller on the suite's server: a relayed agent_needs_input would start one, and
@@ -17937,13 +17939,13 @@ sg_pane() {                   # [a folder to put first on PATH] -> the pane's ar
 }
 if [ ! -r "/proc/$$/cmdline" ]; then skip_ "the suite pane's command line (no /proc)"
 elif [ "${SUITE_PANE#*--pid=}" = "$SUITE_PANE" ]; then
-    is "this tail has no --pid, so the pane is the sleep with no end in reach" \
-       "claude 2147483647 " "$(sg_pane)"
+    is "this tail has no --pid, so the pane is the four-hour sleep" \
+       "claude 14400 " "$(sg_pane)"
 else
     is "the pane watches the pid of the very script that started it" \
        "claude --pid=PID -f /dev/null " "$(sg_pane)"
-    is "where tail refuses --pid the pane is the sleep with no end in reach" \
-       "claude 2147483647 " "$(sg_pane "$SG/notail")"
+    is "where tail refuses --pid the pane is the four-hour sleep" \
+       "claude 14400 " "$(sg_pane "$SG/notail")"
     is "and this run's own pane watches this run" "claude --pid=$$ -f /dev/null " \
        "$(tr '\0' ' ' < "/proc/$(tmux display-message -p -t "$PANE" '#{pane_pid}')/cmdline")"
 fi
