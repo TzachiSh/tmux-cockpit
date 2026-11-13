@@ -1445,6 +1445,46 @@ not wired into Explain yet.
 - **Goldens:** `flow-base-{40,60,100}`, `flow-status-{40,60,100}` and
   `flow-wide-{60,100}`.
 
+### What changed since you last looked (#1000)
+
+`panel::changes` builds the list of what changed in a repo since the user last
+looked, in plain code, so the model that explains it cannot make an item up.
+It is not wired into Explain yet: nothing in the panel calls it.
+
+- **Last seen.** Per repo, the HEAD sha and a time in seconds, one line
+  `<sha> <secs>` in `$XDG_CACHE_HOME/tmux-cockpit/panel/seen/<key>`
+  (`~/.cache/...` when XDG_CACHE_HOME is unset or relative). The file is mode
+  600 and the folder mode 700. `<key>` is 16 hex digits, FNV-1a 64 of the repo's
+  canonical top-level path, so the file name and its body hold no path, no
+  subject and no title. A missing, unreadable or malformed file is "nothing
+  seen", and the list starts from the newest commits. Only `mark_seen` writes
+  the file; collecting never writes anything.
+- **Commits.** `git log <last-seen>..HEAD` under gitsafe's flags, the same
+  bounded spawn as the write call's repo block, within 1 s for all git calls.
+  Each item cites the commit's first 12 hex digits. A last-seen sha that is no
+  longer behind HEAD, after a force-push or a reset or because it is not in the
+  repo, gives one item instead: `history rewritten since <time>`.
+- **GitHub.** With `origin` on github.com: `gh pr list` and `gh issue list`,
+  searched for `updated:>=<last seen>`, and `gh run list` for the branch's
+  latest run, each with `-R github.com/<owner>/<repo>` and started from `/`, so
+  gh never runs git in the repo. The three start at once and share 5 s. A repo
+  is refreshed at most once every 60 s, the answer kept in between, and all
+  repos together search at most 30 times a minute. Both limits are held by the
+  `Collector` the panel keeps, so they last as long as the panel process.
+- **Citations.** An item without its citation (a 12-digit sha, `#N` or a run
+  id) is dropped, never shown.
+- **Caps.** At most 20 items a kind (`changes::CAP`, which the owner may
+  change), newest first, then `and K more`. gh is asked for 100 at most, so 100
+  back reads `and K or more`.
+- **Outside text.** Commit subjects, PR and issue titles and workflow names go
+  through `redact::redact_clean`, then become one line, cut at 200 characters.
+- **Failing quietly.** No GitHub remote, no `gh` on PATH, gh not logged in
+  (its exit 4), a timeout (the whole process group killed), gh printing
+  nothing, and gh printing something that is not a JSON array each leave the
+  GitHub items out and add one note saying why. Nothing is printed and nothing
+  panics. `collect` blocks for at most the two budgets, so the wiring calls it
+  off the drawing thread.
+
 ### The panel on a small screen
 
 The panel is built down to 28x7, the floor measured over every view: under 28
