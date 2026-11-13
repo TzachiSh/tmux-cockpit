@@ -51,6 +51,7 @@ d=$(mktemp -d "${TMPDIR:-/tmp}/cockpit-claude-guard.XXXXXX") || {
     echo "$me: error: no folder for the guard, the binary was not started binary=$1" >&2
     exit 1
 }
+# Until the binary starts, any exit removes the folder.
 trap 'rm -rf "$d"' EXIT
 # A signal sent to this script waits for the binary: the log is still read and
 # the folder removed, and the script then dies by that signal itself.
@@ -71,6 +72,13 @@ cp "${0%/*}/claude" "$d/claude" && : > "$d/reached" || {
     exit 1
 }
 
+# From here the folder is removed by the line after the binary and by nothing
+# else. A signal this script does not trap ends it at once, and its binary may
+# run on. bash runs an EXIT trap on such a death and dash does not, so with the
+# trap left in place the folder went under bash, and a later start found the
+# next claude on PATH. Killed, this script leaves its folder, and the stub in it
+# keeps refusing (#973).
+trap - EXIT
 PATH=$d:${PATH-/bin:/usr/bin} COCKPIT_TEST_CLAUDE_GUARD_DIR=$d "$@"
 rc=$?
 
@@ -83,7 +91,7 @@ elif [ -s "$d/reached" ]; then
     [ "$rc" -ne 0 ] || rc=1
 fi
 rm -rf "$d"
-trap - EXIT HUP INT QUIT TERM
+trap - HUP INT QUIT TERM
 
 # cargo names the signal a test binary died by. The shell hands that death on
 # as 128 + the signal, which cargo would print as a plain exit status, so this

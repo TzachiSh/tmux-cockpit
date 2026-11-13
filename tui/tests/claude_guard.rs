@@ -581,17 +581,10 @@ fn sent_to_the_runner(signal: i32) -> (Option<i32>, bool, usize) {
     assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
     let mut c = r.command();
     let child = c.arg(&exe).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().unwrap();
-    // polled, never slept for: gives up after 20 s
-    for tries in 0.. {
-        if up.exists() {
-            break;
-        }
-        assert!(tries < 2000, "the binary never started");
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
+    appears(&up);
     // SAFETY: the pid of this row's own child, held and not yet waited for.
     assert_eq!(unsafe { libc::kill(child.id() as libc::pid_t, signal) }, 0);
-    std::fs::write(&go, "go\n").unwrap();
+    release(Path::new(&go));
     let o = ended(child, "the runner");
     let said = String::from_utf8_lossy(&o.stderr).contains("argv=claude [late]");
     (o.status.signal(), said, std::fs::read_dir(r.0.join("tmp")).unwrap().count())
@@ -616,6 +609,95 @@ fn a_signal_to_the_runner_waits_for_the_binary_and_its_log() {
 fn a_quit_to_the_runner_still_reads_the_log_and_removes_the_folder() {
     let (_, reported, left) = sent_to_the_runner(libc::SIGQUIT);
     assert_eq!((reported, left), (true, 0));
+}
+
+/// [`WAITS`], and a file beside itself once it has ended: nobody waits for a
+/// binary whose runner was killed.
+const OUTLIVES: &str = "#!/bin/sh\necho x > \"$0.up\"\nread -r _ < \"$0.go\"\nclaude late 2>/dev/null\necho x > \"$0.done\"\n";
+
+/// One line into `fifo` for the binary that waits on it. The fifo is opened
+/// without waiting, and a row fails where no binary has it open: a write to a
+/// fifo nobody reads would hold the row for good.
+fn release(fifo: &Path) {
+    use std::{io::Write, os::unix::fs::OpenOptionsExt};
+    let open = std::fs::OpenOptions::new().write(true).custom_flags(libc::O_NONBLOCK).open(fifo);
+    let mut f = open.unwrap_or_else(|e| panic!("no binary waits on {}: {e}", fifo.display()));
+    f.write_all(b"go\n").unwrap();
+}
+
+/// Polled, never slept for: gives up after 20 s.
+fn appears(file: &Path) {
+    for tries in 0.. {
+        if file.exists() {
+            return;
+        }
+        assert!(tries < 2000, "{} never appeared", file.display());
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+/// The runner run by `shell` and killed by USR1, a signal it does not trap,
+/// while its binary still waits. The binary then starts `claude`. Returns the
+/// folders in the temp folder once the runner was gone, how often the rig's
+/// own `claude`, the next on PATH, was started, and the log the guard's folder
+/// holds at the end. None where `shell` is at none of `at`, with a line on the
+/// real stderr that says which shell.
+fn killed_under(shell: &str, at: [&str; 2], flags: &[&str]) -> Option<(usize, usize, String)> {
+    use std::io::Write;
+    let Some(sh) = at.into_iter().find(|p| Path::new(p).is_file()) else {
+        let row = "a_runner_killed_by_a_signal_it_does_not_trap_leaves_the_stub_refusing";
+        drop(writeln!(
+            std::io::stderr(),
+            "claude_guard {row}: SKIPPED under {shell}: no {shell} at {at:?}"
+        ));
+        return None;
+    };
+    let r = Rig::new(&format!("killed-{shell}"));
+    let exe = r.binary(TEST, OUTLIVES);
+    let beside = |ext: &str| PathBuf::from(format!("{}.{ext}", exe.display()));
+    let fifo = std::ffi::CString::new(beside("go").to_str().unwrap()).unwrap();
+    // SAFETY: `fifo` is a NUL-terminated path under the rig's folder.
+    assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+    let mut c = r.command_of(Path::new(sh));
+    let child = c
+        .args(flags)
+        .arg(RUNNER)
+        .arg(&exe)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    appears(&beside("up"));
+    // SAFETY: the pid of this row's own child, held and not yet waited for.
+    assert_eq!(unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGUSR1) }, 0);
+    assert_eq!(ended(child, "the killed runner").status.signal(), Some(libc::SIGUSR1), "{shell}");
+    let folders: Vec<PathBuf> = std::fs::read_dir(r.0.join("tmp")).unwrap().map(|e| e.unwrap().path()).collect();
+    release(&beside("go"));
+    appears(&beside("done"));
+    let log = folders
+        .first()
+        .map(|f| std::fs::read_to_string(f.join("reached")).unwrap_or_default());
+    Some((folders.len(), r.own_starts(), log.unwrap_or_default()))
+}
+
+/// A runner killed by a signal it does not trap leaves its folder, so the stub
+/// keeps refusing for the binary that outlives it. bash runs an EXIT trap on
+/// such a death and dash does not: with the trap left in place through the
+/// binary, under bash the folder went and the start reached the next `claude`.
+/// Each shell runs the runner here itself, whichever of the two `/bin/sh` is.
+#[test]
+fn a_runner_killed_by_a_signal_it_does_not_trap_leaves_the_stub_refusing() {
+    let shells = [
+        ("dash", ["/bin/dash", "/usr/bin/dash"], &[][..]),
+        ("bash", ["/bin/bash", "/usr/bin/bash"], &["--posix"][..]),
+    ];
+    for (shell, at, flags) in shells {
+        let Some((folders, own, log)) = killed_under(shell, at, flags) else {
+            continue;
+        };
+        assert_eq!((folders, own), (1, 0), "{shell}: the folder is gone or the next claude was started");
+        assert!(log.contains("argv=claude [late]"), "{shell}: the stub logged no refusal: {log:?}");
+    }
 }
 
 /// What the row below holds of a run: `switch` is COCKPIT_TEST_CLAUDE_GUARD,

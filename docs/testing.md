@@ -50,9 +50,13 @@ six targets by their exact names: `x86_64-unknown-linux-gnu`,
 On any other target no runner applies and the tests run with no guard. The row
 `this_run_is_behind_the_guard_where_one_was_asked_for` in
 `tui/tests/claude_guard.rs` fails there, and its message names the target and
-the two lines to add to the config.
+the two lines to add to the config. Only a run that includes that binary is
+loud: a filtered run on such a target, `cargo test --test agents`, has no guard
+and says nothing.
 
-A runner of your own meets the repo's in one of two ways:
+A runner of your own meets the repo's in one of two ways. The rule behind
+both is cargo's: a key that names the target wins over every `cfg(..)` key,
+from whatever file.
 
 - Inside this checkout cargo drops yours without a word, and the guard runs,
   when yours is set in any of these: a `[target.'cfg(..)']` key in your own
@@ -95,8 +99,11 @@ with `--bench`, and the harness runs no test then. With `--bench` and `--test`
 together it does, and the guard is on.
 
 A signal sent to the runner alone (HUP, INT, QUIT, TERM) waits for the test
-binary. Another one ends the runner at once and leaves its folder,
-`cockpit-claude-guard.<6>`, in `TMPDIR`.
+binary. Any other one, KILL among them, ends the runner at once, and the binary
+runs on with nobody left to read the log. The guard's folder,
+`cockpit-claude-guard.<6>`, then stays in `TMPDIR`, under dash and under bash
+alike: a later start is still refused, and not reported. That folder is the
+cost. Nothing sweeps it, and `make tui-test-clean` names it.
 
 Doctests are guarded under cargo 1.92 and not under 1.88, the two measured:
 1.88, the toolchain `make tui-test` uses, does not hand a doctest to a runner.
