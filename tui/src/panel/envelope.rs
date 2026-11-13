@@ -2,7 +2,7 @@
 use super::action::sanitize;
 use super::ask::AskCode;
 use super::capture::{Capture, session_state};
-use super::redact::redact;
+use super::redact::{added, redact_clean};
 use super::request::read_denied;
 use crate::refs::Ref;
 use std::path::Path;
@@ -158,7 +158,8 @@ pub fn build(flow: &Flow, cap: &Capture, turns: &[Turn], questions_left: usize) 
     build_counted(flow, cap, turns, questions_left).0
 }
 
-/// [`build`], and how many secrets the screen, the repo block and the turns had hidden.
+/// [`build`], and how many secrets the screen and its window, the repo block
+/// and the turns had hidden.
 pub fn build_counted(flow: &Flow, cap: &Capture, turns: &[Turn], questions_left: usize) -> (String, usize) {
     let e = build_parts(flow, cap, turns, questions_left);
     let n = e.hidden();
@@ -258,11 +259,25 @@ fn refs_part(refs: &[RefItem]) -> String {
 
 /// [`build_parts`], and for a Write with the basket's refs (#365 child 5) a
 /// `<refs>` block before the request. No other flow carries it.
+///
+/// Every section of outside text is cleaned as a send is ([`sanitize`], #936)
+/// and escaped last. A redacted section is redacted both before and after the
+/// cleaning ([`redact_clean`]): a direction control can split a key or be the
+/// boundary before one.
+///
+/// Redacted: the screen, the window's name and the pane's path (#937), the
+/// repo block, an Ask's code and the turns. The window's command is a
+/// program's name (`#{pane_current_command}`, never the start command), so it
+/// is only cleaned. A ref and an Ask's path are files the user chose, and are
+/// only cleaned too. The name and the path count in `screen_hidden`: they
+/// label the screen. The name counts once though a write writes it twice.
 pub fn build_refs(flow: &Flow, cap: &Capture, turns: &[Turn], questions_left: usize, refs: &[RefItem]) -> Envelope {
-    let (screen, screen_hidden) = redact(&cap.screen);
+    let (screen, mut screen_hidden) = redact_clean(&cap.screen);
     let (mut repo_hidden, mut turns_hidden) = (0, 0);
     let screen = esc(&screen);
-    let (name, cmd) = (esc(&cap.name), esc(&cap.cmd));
+    let (name, name_hidden) = redact_clean(&cap.name);
+    screen_hidden += name_hidden;
+    let (name, cmd) = (esc(&name), esc(&sanitize(&cap.cmd)));
     // A `"` in a window name would end the attribute early.
     let window = format!("{name} · {cmd}").replace('"', "&quot;");
     let mut parts = Vec::new();
@@ -270,34 +285,40 @@ pub fn build_refs(flow: &Flow, cap: &Capture, turns: &[Turn], questions_left: us
         Flow::Write { draft, out } => {
             let shown = if screen.is_empty() { "(empty)" } else { &screen };
             parts.push(format!("<screen window=\"{window}\">\n{shown}\n</screen>"));
-            parts.push(format!("<window>{name} · {cmd} · {}</window>", esc(&cap.path)));
+            let (path, path_hidden) = redact_clean(&cap.path);
+            screen_hidden += path_hidden;
+            parts.push(format!("<window>{name} · {cmd} · {}</window>", esc(&path)));
             let repo = cap.repo.get();
             if !repo.is_empty() {
-                // Commit messages and paths carry secrets as a screen does.
-                let (repo, n) = redact(repo);
+                // Its commit messages and file names carry secrets as a screen
+                // does. The window's name and path are redacted above; a ref
+                // and an Ask's path are not (the list before this function).
+                let (repo, n) = redact_clean(repo);
                 repo_hidden = n;
                 parts.push(format!("<repo>\n{}\n</repo>", esc(&repo)));
             }
             if !refs.is_empty() {
                 parts.push(refs_part(refs));
             }
-            parts.push(format!("<request>{}</request>", esc(draft)));
+            parts.push(format!("<request>{}</request>", esc(&sanitize(draft))));
             if *out != OutType::Auto {
                 parts.push(format!("<output_type>{}</output_type>", out.as_str()));
             }
         }
         Flow::Fix { draft } => {
             parts.push(format!("<screen window=\"{window}\">\n{screen}\n</screen>"));
-            parts.push(format!("<text>{}</text>", esc(draft)));
+            parts.push(format!("<text>{}</text>", esc(&sanitize(draft))));
         }
         // the code, never the screen: the question is about the file (#365)
         Flow::Ask(a) => {
-            // ask::load redacted each line before it cut any
-            repo_hidden = a.hidden;
+            // ask::load cleaned and redacted each line before it cut any; a
+            // state file's code is done here too, counting only what is new
+            let (code, _) = redact_clean(&a.code);
+            repo_hidden = a.hidden + added(&a.code, &code);
             let lines = format!("{}-{}", a.asked.0, a.asked.1);
             // ask::load refused a name with a control character; a `"` would end the attribute
             let path = a.path.replace('"', "&quot;");
-            let code = esc(&a.code);
+            let code = esc(&code);
             let path = esc(&path);
             parts.push(format!("<code path=\"{path}\" lines=\"{lines}\">\n{code}\n</code>"));
             let (s0, s1) = a.shown;
@@ -326,7 +347,7 @@ pub fn build_refs(flow: &Flow, cap: &Capture, turns: &[Turn], questions_left: us
             .iter()
             .map(|t| {
                 let role = if t.role == Role::User { "user" } else { "assistant" };
-                let (text, n) = redact(&t.text);
+                let (text, n) = redact_clean(&t.text);
                 turns_hidden += n;
                 format!("<turn role=\"{role}\">{}</turn>", esc(&text))
             })

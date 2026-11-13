@@ -69,7 +69,8 @@ pub fn load(file: &Path, a: u32, b: u32) -> Result<AskCode, String> {
     load_in(file, a, b, home().as_deref())
 }
 
-/// [`load`], with `home` as the home folder. Each line is redacted before it is
+/// [`load`], with `home` as the home folder. Each line is cleaned as a send is
+/// and redacted before and after (`redact::redact_clean`), before it is
 /// numbered or cut, so a key at the cap is hidden whole and the ^Z state holds
 /// no secret; a key's PEM body is hidden line by line, from the file's start.
 pub fn load_in(file: &Path, a: u32, b: u32, home: Option<&Path>) -> Result<AskCode, String> {
@@ -100,15 +101,17 @@ pub fn load_in(file: &Path, a: u32, b: u32, home: Option<&Path>) -> Result<AskCo
     let (mut cut, mut pem) = (false, false);
     for (i, l) in all[..b as usize].iter().enumerate() {
         let num = i as u32 + 1;
-        let open = pem || pem_edge(l, "BEGIN");
-        pem = open && !pem_edge(l, "END");
+        // the PEM check on the cleaned line, redact on both (#936)
+        let clean = super::action::sanitize(l);
+        let open = pem || pem_edge(&clean, "BEGIN");
+        pem = open && !pem_edge(&clean, "END");
         if num < a {
             continue;
         }
         let (l, n) = if open {
             (super::redact::HIDDEN.to_string(), 1)
         } else {
-            super::redact::redact(l)
+            super::redact::redact_clean(l)
         };
         let row = format!("{num:>w$} {l}");
         let sep = usize::from(!code.is_empty());

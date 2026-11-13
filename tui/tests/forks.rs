@@ -34,6 +34,7 @@ fn two_ticks_inside_the_ttl_fork_claude_once() {
         // #505: no proc under it, so the walk asks the fake ps, not the live pid of the same number
         std::env::set_var("COCKPIT_PROC_DIR", format!("{d}/proc"));
     }
+    fake::assert_claude_is_the_rigs(&dir);
 
     list_panes().unwrap();
     // the lookup runs on a thread of its own (#492): wait for its answer file

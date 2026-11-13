@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
 static ENV: Mutex<()> = Mutex::new(());
+type Lock = MutexGuard<'static, ()>;
 
 /// field 22 of a stat line is `start`
 fn stat(start: &str) -> String {
@@ -21,7 +22,38 @@ fn stat(start: &str) -> String {
 struct Rig {
     dir: PathBuf,
     old: Vec<(&'static str, Option<String>)>,
-    _lock: MutexGuard<'static, ()>,
+    /// how long the drop waits for the lookups to end before it gives up
+    wait: std::time::Duration,
+    _lock: Option<Lock>,
+}
+
+/// A lookup ends within the product's own 2.5 s deadline, so one still running after
+/// this is a thread that hangs, on a box however loaded (#969).
+const DROP_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Each variable back to the value it had, or unset again. The caller holds `ENV`.
+fn put_back(old: &[(&'static str, Option<String>)]) {
+    for (k, v) in old {
+        // SAFETY: the ENV mutex is held, as it was when these were set.
+        unsafe {
+            match v {
+                Some(v) => std::env::set_var(k, v),
+                None => std::env::remove_var(k),
+            }
+        }
+    }
+}
+
+/// Polls until no lookup thread is left. False once `bound` has passed with one still running.
+fn lookups_end_within(bound: std::time::Duration) -> bool {
+    let end = std::time::Instant::now() + bound;
+    while lookups() > 0 {
+        if std::time::Instant::now() >= end {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    true
 }
 
 impl Rig {
@@ -34,6 +66,11 @@ impl Rig {
     /// `board` false is a one-shot caller (`--json`, `--rows`): it waits for the lookup.
     fn with(tag: &str, claude_body: &str, board: bool) -> Rig {
         let lock = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        Rig::build(tag, claude_body, board, Some(lock))
+    }
+
+    /// `lock` is `ENV`, held from here to the drop. None when the caller holds it.
+    fn build(tag: &str, claude_body: &str, board: bool, lock: Option<Lock>) -> Rig {
         let dir = std::env::temp_dir().join(format!("cockpit-agents-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("bin")).unwrap();
@@ -76,7 +113,17 @@ impl Rig {
                 std::env::set_var(k, v);
             }
         }
-        Rig { dir, old, _lock: lock }
+        Rig {
+            dir,
+            old,
+            wait: DROP_WAIT,
+            _lock: lock,
+        }
+    }
+
+    /// A board's rig inside `_dev`, which holds `ENV`: its drop puts back what `_dev` set.
+    fn inside(_dev: &Dev, tag: &str, claude_body: &str) -> Rig {
+        Rig::build(tag, claude_body, true, None)
     }
 
     fn proc_dir(&self, pid: &str, comm: &str, kids: &str) {
@@ -127,17 +174,28 @@ fn stub_of(pid: i32, dir: &std::path::Path) -> bool {
     dir.len() > 1 && cmd.windows(dir.len()).any(|w| w == dir.as_slice())
 }
 
+/// The drop gave up: says so on the real stderr, past the harness's capture, and ends
+/// the run there. The variables stay the rig's and `dir` is left (#969).
+fn give_up(dir: &Path, bound: std::time::Duration) -> ! {
+    use std::io::Write;
+    let me = std::thread::current();
+    let (test, n) = (me.name().unwrap_or("the test that ran last"), lookups());
+    let how = if std::thread::panicking() { ", while it was panicking" } else { "" };
+    let msg = format!(
+        "\nThe agents test rig stopped this test binary. This is the rig's guard for issue \
+         #969, not a product crash.\n{n} lookup thread(s) were still running {bound:?} after \
+         the rig of {test} began its drop{how}. Putting PATH and HOME back would let that \
+         lookup start the real `claude`, so they stay the rig's and the run aborts here.\n\
+         What to do: rerun {test} alone, with `cargo test --test agents -- --exact {test}`.\n\
+         The rig's folder was left behind: {}\n",
+        dir.display(),
+    );
+    let _ = std::io::stderr().write_all(msg.as_bytes());
+    std::process::abort();
+}
+
 impl Drop for Rig {
     fn drop(&mut self) {
-        for (k, v) in &self.old {
-            // SAFETY: as above.
-            unsafe {
-                match v {
-                    Some(v) => std::env::set_var(k, v),
-                    None => std::env::remove_var(k),
-                }
-            }
-        }
         // a red run must not leave a stub looping on a file that never comes
         let _ = std::fs::write(self.dir.join("go"), "");
         // AGENTS.md: never signal a pid nobody verified. The stub may be long gone and
@@ -149,14 +207,186 @@ impl Drop for Rig {
             // SAFETY: a plain signal to a pid whose cmdline names this rig's own dir.
             unsafe { libc::kill(p, libc::SIGKILL) };
         }
-        // A board's lookup writes its cache after this rig is gone, and the write makes
-        // the dir again (#608): wait for it first. No panic in a drop: the dir goes anyway.
-        let end = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        while lookups() > 0 && std::time::Instant::now() < end {
-            std::thread::sleep(std::time::Duration::from_millis(5));
+        // A lookup thread forks `claude` on its own schedule, by the PATH of that moment.
+        // Put back first, the PATH would hand one that has not forked yet the developer's
+        // own `claude`, under the run's HOME (#969). So the variables stay the rig's until
+        // no lookup is left, and for good if one never ends. The wait also covers the
+        // cache write, which would make the dir again after it is removed (#608).
+        if !lookups_end_within(self.wait) {
+            give_up(&self.dir, self.wait);
         }
+        put_back(&self.old);
         let _ = std::fs::remove_dir_all(&self.dir);
     }
+}
+
+/// A developer's side of the environment, made up: a HOME of its own and a PATH whose
+/// first `claude` logs each start to `outside`. A rig built inside it inherits both,
+/// and its drop puts them back as it would a developer's own (#969).
+struct Dev {
+    dir: PathBuf,
+    old: Vec<(&'static str, Option<String>)>,
+    _lock: Lock,
+}
+
+impl Dev {
+    fn new(tag: &str) -> Dev {
+        let lock = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let name = format!("cockpit-agents-{tag}-dev-{}", std::process::id());
+        let dir = std::env::temp_dir().join(name);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("bin")).unwrap();
+        let d = dir.display().to_string();
+        write_exec(
+            &dir.join("bin/claude"),
+            &format!("#!/bin/sh\necho \"HOME=$HOME\" >> {d}/outside\nexit 1\n"),
+        );
+        let path = std::env::var("PATH").unwrap_or_default();
+        let vars = [("PATH", format!("{d}/bin:{path}")), ("HOME", d)];
+        let mut old: Vec<_> = vars.iter().map(|(k, _)| (*k, std::env::var(k).ok())).collect();
+        old.push(("XDG_CACHE_HOME", std::env::var("XDG_CACHE_HOME").ok()));
+        // SAFETY: the ENV mutex is held until Drop restores these.
+        unsafe {
+            std::env::remove_var("XDG_CACHE_HOME");
+            for (k, v) in &vars {
+                std::env::set_var(k, v);
+            }
+        }
+        Dev { dir, old, _lock: lock }
+    }
+
+    /// One line per start of the `claude` outside the rig.
+    fn outside(&self) -> String {
+        std::fs::read_to_string(self.dir.join("outside")).unwrap_or_default()
+    }
+}
+
+impl Drop for Dev {
+    fn drop(&mut self) {
+        put_back(&self.old);
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// The dir of the rig whose lookup thread [`ask_again_at_the_drop`] is to hold.
+static HELD: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+/// On the lookup thread at its end, still counted: waits for the rig's drop to begin
+/// (it writes `go`), then asks once more on this thread, as a one-shot caller does.
+/// The product has no stage ahead of its fork, so this second ask stands in for a
+/// lookup thread that has not forked yet when its rig drops (#969).
+fn ask_again_at_the_drop(at: Stage, _pid: u32) {
+    if at != Stage::Reaping {
+        return;
+    }
+    // taken, so the ask below, which ends in this stage too, passes through
+    let Some(dir) = HELD.lock().unwrap_or_else(|e| e.into_inner()).take() else {
+        return;
+    };
+    std::fs::write(dir.join("held"), "").unwrap();
+    let end = std::time::Instant::now() + GONE_BY;
+    while !dir.join("go").exists() && std::time::Instant::now() < end {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    set_background(false);
+    resolve(&[("100".into(), "claude".into())]);
+}
+
+/// A rig dropped while its lookup thread still has an ask to make, by returning or
+/// by a panic: how many asks reached the rig's `claude`, and the log of the one outside.
+fn asks_of_a_lookup_held_past_the_drop(tag: &str, panics: bool) -> (usize, String) {
+    let dev = Dev::new(tag);
+    let inside = dev.dir.join("inside");
+    let body = format!("echo 1 >> {}\n{ONE}", inside.display());
+    let rig = std::panic::AssertUnwindSafe(|| {
+        let r = Rig::inside(&dev, tag, &body);
+        *HELD.lock().unwrap_or_else(|e| e.into_inner()) = Some(r.dir.clone());
+        set_stage_hook(Some(ask_again_at_the_drop));
+        r.sess();
+        wait_file(&r.dir.join("held"));
+        assert!(!panics, "a failed assert between the fetch and its wait");
+    });
+    assert_eq!(std::panic::catch_unwind(rig).is_err(), panics);
+    assert!(lookups_end_within(GONE_BY), "the lookup never finished");
+    set_stage_hook(None);
+    let inside = std::fs::read_to_string(inside).map_or(0, |s| s.lines().count());
+    (inside, dev.outside())
+}
+
+/// #969: a lookup that has not forked when its rig drops still finds the rig's stub.
+#[test]
+fn a_lookup_pending_at_the_drop_starts_no_claude_outside_the_rig() {
+    let (inside, outside) = asks_of_a_lookup_held_past_the_drop("late", false);
+    assert_eq!(outside, "", "a `claude` outside the rig was started");
+    assert_eq!(inside, 2, "both asks reached the rig's stub");
+}
+
+/// A second case: the drop runs in a panic's unwind, as after any failed assert.
+#[test]
+fn nor_does_one_pending_at_a_drop_during_a_panic() {
+    let (inside, outside) = asks_of_a_lookup_held_past_the_drop("latepanic", true);
+    assert_eq!(outside, "", "a `claude` outside the rig was started");
+    assert_eq!(inside, 2, "both asks reached the rig's stub");
+}
+
+/// The child half of the give-up test: a lookup thread that never ends, and a rig
+/// whose drop waits 200 ms for it. Should the rig's HOME ever be put back under that
+/// thread, it asks again, and the `claude` outside the rig logs it.
+#[test]
+fn hung_lookup_child() {
+    if std::env::var_os("HUNG_LOOKUP_CHILD").is_none() {
+        return;
+    }
+    fn hang(at: Stage, _pid: u32) {
+        if at == Stage::Reaping {
+            let home = std::env::var("HOME").unwrap();
+            std::fs::write(Path::new(&home).join("held"), "").unwrap();
+            loop {
+                if std::env::var("HOME").unwrap() != home {
+                    set_background(false);
+                    resolve(&[("100".into(), "claude".into())]);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        }
+    }
+    // SAFETY: setrlimit reads one struct. No core file for an abort that is meant.
+    unsafe { libc::setrlimit(libc::RLIMIT_CORE, &libc::rlimit { rlim_cur: 0, rlim_max: 0 }) };
+    let dev = Dev::new("hung");
+    std::fs::write(dev.dir.join("made"), "").unwrap();
+    let mut r = Rig::inside(&dev, "hung", ONE);
+    r.wait = std::time::Duration::from_millis(200);
+    set_stage_hook(Some(hang));
+    r.sess();
+    wait_file(&r.dir.join("held"));
+    drop(r);
+    std::process::exit(3);
+}
+
+/// #969: a drop whose lookup never ends does not put PATH and HOME back. It says
+/// why and aborts, and leaves its dirs, the made-up developer's `claude` unstarted.
+#[test]
+fn a_drop_whose_lookup_never_ends_aborts_with_the_variables_kept() {
+    let _r = Rig::new("giveup", ONE);
+    let me = std::env::current_exe().unwrap();
+    let mut child = std::process::Command::new(me);
+    child
+        .args(["--exact", "hung_lookup_child", "--test-threads=1"])
+        .env("HUNG_LOOKUP_CHILD", "1");
+    let child = child.stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped());
+    let child = child.spawn().unwrap();
+    let pid = child.id();
+    let out = child.wait_with_output().unwrap();
+    let left = |tag: &str| std::env::temp_dir().join(format!("cockpit-agents-{tag}-{pid}"));
+    let (rig, dev) = (left("hung"), left("hung-dev"));
+    let seen = (rig.join("go").exists(), dev.join("made").exists(), dev.join("outside").exists());
+    let _ = (std::fs::remove_dir_all(&rig), std::fs::remove_dir_all(&dev));
+    use std::os::unix::process::ExitStatusExt;
+    assert_eq!(out.status.signal(), Some(libc::SIGABRT), "{:?}", out.status);
+    let err = String::from_utf8_lossy(&out.stderr);
+    let said = ["not a product crash", "rerun hung_lookup_child alone", &rig.display().to_string()];
+    assert!(said.iter().all(|s| err.contains(s)), "{err}");
+    assert_eq!(seen, (true, true, false), "(rig dir left, dev dir left, no outside claude)");
 }
 
 const ONE: &str = r#"printf '[{"pid":100,"sessionId":"s-100","cwd":"/launch","kind":"interactive"}]'"#;
@@ -507,6 +737,15 @@ fn seeded_at(r: &Rig, age: u64, session: &str) {
     ));
 }
 
+/// Polls until `p` is there, failing once [`GONE_BY`] has passed.
+fn wait_file(p: &Path) {
+    let end = std::time::Instant::now() + GONE_BY;
+    while !p.exists() {
+        assert!(std::time::Instant::now() < end, "{} never appeared", p.display());
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
 fn wait_forks(r: &Rig, n: usize) {
     for _ in 0..2000 {
         if r.forks() >= n {
@@ -689,6 +928,9 @@ fn a_fifo_a_symlink_or_a_huge_file_at_the_path_is_not_read() {
     assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
     assert_eq!(read_file(&cache, &root, now()), None, "fifo");
     assert_eq!(r.sess(), "", "the fetch over a fifo");
+    // the lookup that fetch started renames its answer over the fifo: wait for it, as a
+    // read of the path would hang on a fifo still there (#969)
+    assert!(lookups_end_within(GONE_BY), "the lookup never finished");
 }
 
 /// By pid, not by name: a real `claude` beside the lookup child in the board's

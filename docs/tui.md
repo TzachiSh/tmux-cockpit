@@ -1180,10 +1180,18 @@ is.
   them: a file the viewer refuses (binary, over 1 MB, not UTF-8) is an error,
   and an end past the file's last line is held to it. At most 400 lines and
   32 KB go inline, each behind its number; the call is told what was left out
-  or cut short, and reads the rest with its own Read. Each line is redacted as
-  the screen is before it is numbered or cut (a key's PEM body line by line),
-  and the screen itself is never sent. A file name with a control or bidi
-  character is refused.
+  or cut short, and reads the rest with its own Read. Each line is cleaned
+  (`action::sanitize`, #936) and redacted as the screen is, before it is
+  numbered or cut (a key's PEM body line by line), and the screen itself is
+  never sent. Redaction runs on the line before and after the cleaning
+  (`redact::redact_clean`): a direction control inside a key cuts it into runs
+  too short to match, and one between a word and a key is the boundary the
+  match needs. A key cut after its first run already matched is hidden whole
+  too: where the cleaning drops characters right after the marker the first
+  pass left, the key characters behind them go too. Text right after a
+  marker, with nothing dropped between, stays. A key that direction controls
+  both join to the word before it and split inside is missed. A file name with
+  a control or bidi character is refused.
 - **The call.** `request::Profile::read_only(repo, research = true)`: Read,
   Grep, Glob, WebSearch, WebFetch and skills, with no hooks and the secret
   paths denied, and no read outside the repo (see the rule on actions above).
@@ -1688,9 +1696,10 @@ it, created new with `O_NOFOLLOW`, mode 0600) with a 1 MiB cap, and is as
 strict: one body line, the pane must be the one opened on, at most 24 h old
 and not more than a minute in the future, every key present and none unknown,
 every cursor on a character boundary of its text, the model and the type
-known, steps 1 to 64 with the selection among them, and a Question or Answer
-only with the run it is drawn from. Any failure opens a fresh panel with the
-reason in a warn note.
+known, steps 1 to 64 with the selection among them, a Question or Answer
+only with the run it is drawn from, and an Ask's file path with no control or
+bidi character, as `ask::load_in` requires (#936). Any failure opens a fresh
+panel with the reason in a warn note.
 
 ### Contract changes for tablet mode (for #61)
 
