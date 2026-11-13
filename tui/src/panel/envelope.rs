@@ -257,6 +257,15 @@ fn refs_part(refs: &[RefItem]) -> String {
     format!("<refs>\n{}\n</refs>", lines.join("\n"))
 }
 
+/// The screen and the window's name as every `<screen>` sends them, redacted,
+/// and how many secrets the two hid. The panel's Home line counts with this
+/// call too (#964), so it cannot count the screen another way than it is sent.
+pub fn redact_screen(cap: &Capture) -> (String, String, usize) {
+    let (screen, n) = redact_clean(&cap.screen);
+    let (name, m) = redact_clean(&cap.name);
+    (screen, name, n + m)
+}
+
 /// [`build_parts`], and for a Write with the basket's refs (#365 child 5) a
 /// `<refs>` block before the request. No other flow carries it.
 ///
@@ -272,11 +281,9 @@ fn refs_part(refs: &[RefItem]) -> String {
 /// only cleaned too. The name and the path count in `screen_hidden`: they
 /// label the screen. The name counts once though a write writes it twice.
 pub fn build_refs(flow: &Flow, cap: &Capture, turns: &[Turn], questions_left: usize, refs: &[RefItem]) -> Envelope {
-    let (screen, mut screen_hidden) = redact_clean(&cap.screen);
+    let (screen, name, mut screen_hidden) = redact_screen(cap);
     let (mut repo_hidden, mut turns_hidden) = (0, 0);
     let screen = esc(&screen);
-    let (name, name_hidden) = redact_clean(&cap.name);
-    screen_hidden += name_hidden;
     let (name, cmd) = (esc(&name), esc(&sanitize(&cap.cmd)));
     // A `"` in a window name would end the attribute early.
     let window = format!("{name} · {cmd}").replace('"', "&quot;");
