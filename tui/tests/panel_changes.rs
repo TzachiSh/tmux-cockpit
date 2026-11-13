@@ -861,3 +861,14 @@ fn a_fifo_or_a_device_at_the_last_seen_path_is_nothing_seen() {
     std::os::unix::fs::symlink("/dev/zero", &at).unwrap();
     assert_eq!(read_unblocked(&r.store(), key), None, "a device");
 }
+
+// ---- review fixes: a detached HEAD says why CI is missing ----
+
+#[test]
+fn a_detached_head_skips_ci_with_one_note() {
+    let r = Rig::new("detached");
+    let d = r.repo("r", true);
+    git(&d, &["checkout", "-q", "--detach"]);
+    let got = collect(&mut r.collector(), &d);
+    assert_eq!((got.notes, r.starts()), (vec![Note::NoBranch], 2));
+}

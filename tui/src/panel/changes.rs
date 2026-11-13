@@ -89,6 +89,8 @@ pub enum Note {
     /// Not JSON, or JSON of the wrong shape.
     GhUnreadable,
     GhFailed,
+    /// A detached HEAD: no branch to ask CI about.
+    NoBranch,
     /// This repo was refreshed under [`REFRESH_SECS`] ago with another last-seen time.
     Floor {
         again_in: u64,
@@ -112,6 +114,7 @@ impl std::fmt::Display for Note {
             Note::GhSilent => gh(f, "gh printed nothing"),
             Note::GhUnreadable => gh(f, "gh printed something unreadable"),
             Note::GhFailed => gh(f, "gh failed"),
+            Note::NoBranch => f.write_str("GitHub: HEAD is detached, CI left out"),
             Note::Floor { again_in } => {
                 write!(f, "GitHub: checked under {REFRESH_SECS} s ago, again in {again_in} s")
             }
@@ -560,6 +563,10 @@ fn refresh(gh: &Gh, f: &mut Fetched, repo: &str, branch: Option<&str>, since: Op
     };
     let (prs, issues) = (read(prs), read(issues));
     let run = run.and_then(&mut read);
+    if branch.is_none() {
+        // in the run's place, so a failed list call still comes first
+        notes.push(Note::NoBranch);
+    }
     let mut c = Changes::default();
     numbered(&mut c, Kind::Pr, prs);
     numbered(&mut c, Kind::Issue, issues);
