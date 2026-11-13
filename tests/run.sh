@@ -61,12 +61,18 @@ ncols() {                     # <string> -> the columns it draws in
 TMUX_REAL=$(command -v tmux) || TMUX_REAL=tmux
 SUITE_SOCK="cockpit-suite-$$"
 SHIM=$(mktemp -d)
-# A prelude FATAL comes before `trap cleanup EXIT` is set, so it ends what the run made so far
-# itself: the suite's own server, if it got that far, and $STATE and $SHIM (#984).
+# What the prelude itself makes: the suite's own server, its socket, $STATE and $SHIM. cleanup
+# ends them at the end; a prelude FATAL comes before `trap cleanup EXIT` is set, while
+# cleanup's other halves (kill_socks, $TMPS) do not exist yet, so it ends them through the same
+# function (#984). The socket path is SOCKDIR's, spelled out: SOCKDIR is set later.
+suite_clean() {
+    "$TMUX_REAL" -L "$SUITE_SOCK" kill-server >/dev/null 2>&1
+    rm -f "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/$SUITE_SOCK"
+    rm -rf -- "$STATE" "$SHIM"
+}
 fatal() {                     # <message>
     printf '  \033[31mFATAL\033[0m %s\n' "$1" >&2
-    "$TMUX_REAL" -L "$SUITE_SOCK" kill-server >/dev/null 2>&1
-    rm -rf -- "$STATE" "$SHIM"
+    suite_clean
     exit 1
 }
 # Deferring when $TMUX is set is load-bearing: tmux exports it to everything it
@@ -463,9 +469,7 @@ tdiff() {                     # <dir> [git diff args...]
 }
 cleanup() {
     kill_socks
-    "$TMUX_REAL" -L "$SUITE_SOCK" kill-server >/dev/null 2>&1
-    rm -f "$SOCKDIR/$SUITE_SOCK"
-    rm -rf "$STATE" "$SHIM"
+    suite_clean
     while read -r t; do
         [ -n "$t" ] || continue
         chmod -R u+w "$t" 2>/dev/null      # the read-only-dir test leaves one at 555
@@ -17531,6 +17535,27 @@ chmod 644 "$UDD/r2/.git/objects/${udb:0:2}/${udb:2}" 2>/dev/null
 "$TMUX_REAL" -L "$UD" kill-server >/dev/null 2>&1
 unset -f ud; unset UD UDD UDP udrc udo udb udf
 fi
+
+echo "== run.sh: a prelude FATAL leaves no temp dir, server or socket behind (#984) =="
+# Each FATAL tripped on purpose in a copy of this script, run through only.sh with a TMPDIR
+# and a TMUX_TMPDIR of its own: whatever it leaves there is a leak. stub: the suite's claude
+# is taken off PATH; srv: the server's pane check reads nothing.
+FD=$(mktmpd); mkdir -p "$FD/t" "$FD/s"
+sed 's|^PATH="\$SHIM:\$SUITE_CLAUDE:|PATH="$SHIM:|' "$DIR/tests/run.sh" > "$FD/stub.sh"
+sed '/^PANE=\$(tmux list-panes -a/a PANE=""' "$DIR/tests/run.sh" > "$FD/srv.sh"
+is "both FATAL mutants differ from the script" "1 1" \
+   "$(cmp -s "$FD/stub.sh" "$DIR/tests/run.sh"; echo $?) $(cmp -s "$FD/srv.sh" "$DIR/tests/run.sh"; echo $?)"
+for fx in stub srv; do
+    fo=$(cd "$DIR" && env -u TMUX ONLY_RUN="$FD/$fx.sh" TMPDIR="$FD/t" TMUX_TMPDIR="$FD/s" \
+        tests/only.sh '^syntax' 2>&1 </dev/null); forc=$?
+    is "a prelude FATAL ($fx) exits 1 and leaves no dir, server or socket behind" "1|FATAL||" \
+       "$forc|$(printf '%s' "$fo" | grep -o FATAL | head -1)|$(ls -A "$FD/t")|$(
+        ls -A "$FD"/s/tmux-* 2>/dev/null)"
+    # Whatever a red run left: ended by its own socket, then removed.
+    for fs in "$FD"/s/tmux-*/*; do [ -S "$fs" ] && "$TMUX_REAL" -S "$fs" kill-server >/dev/null 2>&1; done
+    rm -rf "${FD:?}/t/"* "${FD:?}/s/"*
+done
+unset FD fo forc fx fs
 
 echo "== tests/only.sh: a pattern with \\( and ^ selects the block, no match is an error (#241) =="
 OD=$(mktemp -d)
