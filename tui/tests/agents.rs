@@ -704,12 +704,10 @@ fn own_pane_stays_no_agent(tag: &str, grandchild: bool, by_ps: bool) {
     let root = r.dir.join("proc");
     r.proc_dir("200", "bash", "");
     r.sess();
-    let pid = loop {
-        if let Ok(p) = std::fs::read_to_string(r.dir.join("stubpid")) {
-            break p.trim().to_string();
-        }
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    };
+    // `spawn` returns only after the exec, so the stub writes stubpid while the board
+    // may not hold its pid yet, and a walk then meets a child it does not know. And
+    // an empty read, between the stub's truncate and its write, checks nothing (#976).
+    let pid = wait_in_flight().to_string();
     // the stub is the board's child, and it is named claude
     std::fs::write(root.join("200/task/200/children"), &pid).unwrap();
     // the real `claude` forks helpers; one named claude, under the child, counts as the child
@@ -781,16 +779,19 @@ fn wait_forks(r: &Rig, n: usize) {
 /// count of polls, which a busy scheduler stretches past any window (#564).
 const GONE_BY: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// In a child test process: waits until the stub runs and the board holds its
-/// pid. The stub writes its pid before the board has stored it, and a hangup in
+/// Waits until the stub runs and the board holds its pid, and returns that pid.
+/// The stub writes its pid before the board has stored it, and a hangup in
 /// that gap finds no child to kill: the old tests raced it under load (#564).
-fn wait_in_flight() {
+/// An empty or missing stubpid never counts, even while the board holds none (#976).
+fn wait_in_flight() -> u32 {
     let stub = Path::new(&std::env::var("HOME").unwrap()).join("stubpid");
     let end = std::time::Instant::now() + GONE_BY;
     loop {
         let pid = std::fs::read_to_string(&stub).unwrap_or_default().trim().parse::<u32>().ok();
-        if pid.is_some() && pid == lookup_pid() {
-            return;
+        if let Some(p) = pid
+            && pid == lookup_pid()
+        {
+            return p;
         }
         assert!(std::time::Instant::now() < end, "the lookup never started: {pid:?}");
         std::thread::sleep(std::time::Duration::from_millis(5));
