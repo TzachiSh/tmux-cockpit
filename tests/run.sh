@@ -19665,11 +19665,22 @@ printf '%s\n' "$SID" > "\$COCKPIT_ACTION.expect"
 printf 'resume %s\n' "$ACS" > "\$COCKPIT_ACTION"
 ACBIN
 chmod +x "$ACD/bin"
-ac new-window -d -t t: -c "$ACD" "env COCKPIT_TUI_BIN=$ACD/bin XDG_STATE_HOME=$ACD/state \
-COCKPIT_LOG=$ACD/tui.log $DIR/scripts/cockpit-board -p $ACH; echo x > $ACD/done"
+# A claude of the row's own, first on the window's PATH (#978): were the refusal to fail,
+# cockpit-board's resume would run `claude --resume`, and it must reach this, which logs its
+# argv, never one a developer's PATH holds.
+mkdir -p "$ACD/stub"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "${0%%/*}/ran"\nexit 0\n' > "$ACD/stub/claude"
+chmod +x "$ACD/stub/claude"
+# The window says which claude it would run, so a row sees the stub is the one reached.
+ac new-window -d -t t: -c "$ACD" "PATH=\"$ACD/stub:\$PATH\"; export PATH; \
+command -v claude > $ACD/which; env COCKPIT_TUI_BIN=$ACD/bin \
+XDG_STATE_HOME=$ACD/state COCKPIT_LOG=$ACD/tui.log $DIR/scripts/cockpit-board -p $ACH; \
+echo x > $ACD/done"
 until_file "$ACD/done" 'x'
 is "resume: a session live in OPENCODE is not opened twice" \
     "✕ cockpit: ${SID:0:8} is already running in $ACO" "$(cat "$ACD/note" 2>/dev/null)"
+is "the window's claude is the row's own" "$ACD/stub/claude" "$(cat "$ACD/which" 2>/dev/null)"
+is "and no claude was started for it" "" "$(cat "$ACD/stub/ran" 2>/dev/null)"
 ac kill-server >/dev/null 2>&1
 unset -f ac ac_pane ac_each ac_wd ac_jump ac_deliver
 
