@@ -54,7 +54,8 @@ file and the answer to a private temp file for the paste.
   typed. `⇥` picks the output type and `^N` the model. `^R` turns on
   explore first: the write may read a few files in the pane's repo, so
   the prompt names real files and functions (local windows only, never ssh,
-  `/` or your home folder; up to USD 0.15 and 90 s per call). The box has a
+  `/`, your home folder or a folder whose path looks like it holds a secret;
+  up to USD 0.15 and 90 s per call). The box has a
   cursor: `←` `→`, `^←` `^→` by word, `Home` `End` (`^A` `^E`) and `Del`;
   `⌫`, `^W` and `^U` delete before it.
 - **Explain**: what the pane is doing, what should happen next, or your
@@ -98,7 +99,12 @@ file and the answer to a private temp file for the paste.
 
 Secrets on the screen, in the window's name and in the pane's folder are
 blanked before anything is sent (#937). The window's command is a program's
-name and is not, nor is the path of a file you added or asked about.
+name and is not, nor is the path of a file you added or asked about. A
+folder the panel would let Claude read, an exploring write's repo or a
+question's, cannot be sent blanked, as Claude needs its real path: when its
+path holds what looks like a secret, `^R` and the question are refused with a
+note naming it blanked, and a write reads the screen alone (#966). Rename the
+folder to read it.
 Everything the panel sends from outside itself (the screen, the window's
 name, command and path, the git state, your draft, the earlier turns and the
 code of a question) first loses its control characters, the invisible

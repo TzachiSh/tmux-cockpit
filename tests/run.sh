@@ -3952,7 +3952,11 @@ mkrel
 # bat went with tmux-open-path's previews (#228), and --full with it: that tier
 # fetched nothing else. A bootstrap run names no bat anywhere.
 bsout=$(bs --dry-run); bsrc=$?
-is "a run names no bat" "0" "$(printf '%s\n' "$bsout" | grep -ci 'bat\b')"
+# The step's own words, never a path (#987): the old bat step named the tool as a word of its
+# own (its package line, "fzf … and bat …", "brew install fzf bat"). A word holding a / is a
+# path, and a temp folder can end in bat or be named bat, so those are not counted.
+is "a run names no bat" "0" "$(printf '%s\n' "$bsout" | tr -s ' \t' '\n' | grep -v / |
+    grep -ciE '^[[:punct:]]*(bat|batcat)[[:punct:]]*$')"
 is "and names no latest-tools step" "0" "$(printf '%s\n' "$bsout" | grep -c 'latest tools')"
 is "and the run exits 0" "0" "$bsrc"
 bsout=$(bs --full --dry-run); bsrc=$?

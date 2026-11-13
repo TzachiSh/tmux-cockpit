@@ -257,6 +257,15 @@ fn refs_part(refs: &[RefItem]) -> String {
     format!("<refs>\n{}\n</refs>", lines.join("\n"))
 }
 
+/// The screen and the window's name as every `<screen>` sends them, redacted,
+/// and how many secrets the two hid. The panel's Home line counts with this
+/// call too (#964), so it cannot count the screen another way than it is sent.
+pub fn redact_screen(cap: &Capture) -> (String, String, usize) {
+    let (screen, n) = redact_clean(&cap.screen);
+    let (name, m) = redact_clean(&cap.name);
+    (screen, name, n + m)
+}
+
 /// [`build_parts`], and for a Write with the basket's refs (#365 child 5) a
 /// `<refs>` block before the request. No other flow carries it.
 ///
@@ -270,13 +279,13 @@ fn refs_part(refs: &[RefItem]) -> String {
 /// program's name (`#{pane_current_command}`, never the start command), so it
 /// is only cleaned. A ref and an Ask's path are files the user chose, and are
 /// only cleaned too. The name and the path count in `screen_hidden`: they
-/// label the screen. The name counts once though a write writes it twice.
+/// label the screen. The name counts once though a write writes it twice. Only
+/// a flow that sends the screen counts it: an Ask sends neither it nor the
+/// window (#965), and counts its code in `repo_hidden`.
 pub fn build_refs(flow: &Flow, cap: &Capture, turns: &[Turn], questions_left: usize, refs: &[RefItem]) -> Envelope {
-    let (screen, mut screen_hidden) = redact_clean(&cap.screen);
-    let (mut repo_hidden, mut turns_hidden) = (0, 0);
+    let (screen, name, on_screen) = redact_screen(cap);
+    let (mut screen_hidden, mut repo_hidden, mut turns_hidden) = (0, 0, 0);
     let screen = esc(&screen);
-    let (name, name_hidden) = redact_clean(&cap.name);
-    screen_hidden += name_hidden;
     let (name, cmd) = (esc(&name), esc(&sanitize(&cap.cmd)));
     // A `"` in a window name would end the attribute early.
     let window = format!("{name} · {cmd}").replace('"', "&quot;");
@@ -286,7 +295,7 @@ pub fn build_refs(flow: &Flow, cap: &Capture, turns: &[Turn], questions_left: us
             let shown = if screen.is_empty() { "(empty)" } else { &screen };
             parts.push(format!("<screen window=\"{window}\">\n{shown}\n</screen>"));
             let (path, path_hidden) = redact_clean(&cap.path);
-            screen_hidden += path_hidden;
+            screen_hidden = on_screen + path_hidden;
             parts.push(format!("<window>{name} · {cmd} · {}</window>", esc(&path)));
             let repo = cap.repo.get();
             if !repo.is_empty() {
@@ -306,6 +315,7 @@ pub fn build_refs(flow: &Flow, cap: &Capture, turns: &[Turn], questions_left: us
             }
         }
         Flow::Fix { draft } => {
+            screen_hidden = on_screen;
             parts.push(format!("<screen window=\"{window}\">\n{screen}\n</screen>"));
             parts.push(format!("<text>{}</text>", esc(&sanitize(draft))));
         }
@@ -332,6 +342,7 @@ pub fn build_refs(flow: &Flow, cap: &Capture, turns: &[Turn], questions_left: us
             }
         }
         Flow::Explain => {
+            screen_hidden = on_screen;
             parts.push(format!("<screen window=\"{window}\">\n{screen}\n</screen>"));
             if let Some(st) = session_state(&cap.screen, &cap.name, &cap.cmd) {
                 parts.push(format!(

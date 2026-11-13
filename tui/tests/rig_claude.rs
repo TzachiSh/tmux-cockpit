@@ -248,10 +248,6 @@ const ENTRIES: [(&str, &str); 4] = [
 /// What a file that names an entry must call.
 const CHECK: &str = concat!("assert_claude_is_", "the_rigs(");
 
-/// `(file, entry)` pairs the scan lets through for now. agents.rs writes its
-/// own `claude` and is held by #974: its check follows that.
-const WAITING: [(&str, &str); 1] = [("agents.rs", ENTRIES[0].0)];
-
 /// Whether `text` holds `word` as a whole identifier.
 fn names(text: &str, word: &str) -> bool {
     let part = |c: char| c.is_alphanumeric() || c == '_';
@@ -262,11 +258,10 @@ fn names(text: &str, word: &str) -> bool {
     })
 }
 
-/// The entries `text`, the source of `file`, names without the check.
-fn unchecked(file: &str, text: &str) -> Vec<&'static str> {
+/// The entries `text`, the source of a test file, names without the check.
+fn unchecked(text: &str) -> Vec<&'static str> {
     let named = |(word, with): &&(&str, &str)| names(text, word) && text.contains(with);
     let found = ENTRIES.iter().filter(named).map(|(word, _)| *word);
-    let found = found.filter(|e| !WAITING.contains(&(file, e)));
     if text.contains(CHECK) { vec![] } else { found.collect() }
 }
 
@@ -293,7 +288,7 @@ fn tree() -> Vec<(String, String)> {
 fn every_test_file_that_names_a_lookup_entry_calls_the_check() {
     let bad: Vec<(String, Vec<&str>)> = tree()
         .into_iter()
-        .map(|(file, text)| (unchecked(&file, &text), file))
+        .map(|(file, text)| (unchecked(&text), file))
         .filter(|(left, _)| !left.is_empty())
         .map(|(left, file)| (file, left))
         .collect();
@@ -306,41 +301,39 @@ fn every_test_file_that_names_a_lookup_entry_calls_the_check() {
 fn the_scan_reports_subs_tmux_once_its_check_is_gone() {
     let all = tree();
     let subs = all.iter().find(|(f, _)| f == "subs_tmux.rs");
-    let (file, text) = subs.expect("subs_tmux.rs is in the tree");
-    assert_eq!(unchecked(file, text), Vec::<&str>::new());
-    assert_eq!(unchecked(file, &text.replace(CHECK, "(")), [ENTRIES[0].0]);
+    let (_, text) = subs.expect("subs_tmux.rs is in the tree");
+    assert_eq!(unchecked(text), Vec::<&str>::new());
+    assert_eq!(unchecked(&text.replace(CHECK, "(")), [ENTRIES[0].0]);
 }
 
 #[test]
 fn an_entry_inside_a_longer_name_is_not_named() {
     let (list, one) = (ENTRIES[0].0, ENTRIES[1].0);
     assert_eq!(
-        unchecked("x.rs", &format!("fn a_g{one}_gives_way() {{}} fn {list}_of() {{}}")),
+        unchecked(&format!("fn a_g{one}_gives_way() {{}} fn {list}_of() {{}}")),
         Vec::<&str>::new()
     );
-    assert_eq!(unchecked("x.rs", &format!("let p = data::{one}(id);")), [one]);
+    assert_eq!(unchecked(&format!("let p = data::{one}(id);")), [one]);
 }
 
 #[test]
 fn the_transcript_entry_counts_only_beside_its_module() {
     let (word, module) = ENTRIES[3];
-    assert_eq!(unchecked("x.rs", &format!("let f = {word}(\"%1\", \"\");")), Vec::<&str>::new());
+    assert_eq!(unchecked(&format!("let f = {word}(\"%1\", \"\");")), Vec::<&str>::new());
     let import = format!("use cockpit_tui::{module}::{{{word}, tail}};");
-    assert_eq!(unchecked("x.rs", &import), [word]);
+    assert_eq!(unchecked(&import), [word]);
 }
 
 #[test]
 fn a_file_that_calls_the_check_is_let_through() {
     let text = format!("use cockpit_tui::data::{};\nfake::{CHECK}&dir);", ENTRIES[0].0);
-    assert_eq!(unchecked("x.rs", &text), Vec::<&str>::new());
+    assert_eq!(unchecked(&text), Vec::<&str>::new());
 }
 
-/// The exemption is the pair, not the file: agents.rs naming a second entry is
-/// reported for that one, and another file naming the exempt entry is reported.
+/// A file is reported for every entry it names, in the order of [`ENTRIES`].
 #[test]
-fn a_waiting_file_is_let_through_for_its_own_entry_only() {
+fn a_file_that_names_two_entries_is_reported_for_both() {
     let (list, gat) = (ENTRIES[0].0, ENTRIES[2].0);
     let both = format!("use cockpit_tui::data::{list};\nuse cockpit_tui::data::info::{gat};");
-    assert_eq!(unchecked("agents.rs", &both), [gat]);
-    assert_eq!(unchecked("other.rs", &both), [list, gat]);
+    assert_eq!(unchecked(&both), [list, gat]);
 }

@@ -1,6 +1,6 @@
 //! The panel's screens and its event loop. Every body is wrapped by hand: a
 //! ratatui `Wrap` panics on double-width graphemes (#2679).
-use super::app::{App, DRAFT_COUNT, InputKind, Level, MAX_DRAFT, MODELS, QUICK, Tap, View, assumed, boundary, needs_y};
+use super::app::{App, DRAFT_COUNT, InputKind, Level, MAX_DRAFT, MODELS, QUICK, SentHidden, Tap, View, assumed, boundary, needs_y};
 use super::envelope::Flow;
 use super::request::Call;
 use crate::highlight::{self, Role};
@@ -639,23 +639,28 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
                 Style::new().fg(th.running),
             ));
             b.lines.push(plain(""));
-            // the envelope's count also covers the repo block and the turns: they are not screen.
-            // Only a write sends the block, and by Busy its envelope has already joined it.
-            let writing = app.run.as_ref().is_some_and(|r| matches!(r.flow, Flow::Write { .. }));
-            let repo = if writing { super::redact::redact(app.cap.repo.get()).1 } else { 0 };
-            // a write's <window> line sends the path too, counted with the screen (#937)
-            let path = if writing { super::redact::redact_clean(&app.cap.path).1 } else { 0 };
-            let screen = app.screen_hidden + path;
-            let talk = match app.hidden.saturating_sub(screen + repo) {
+            // split as the envelope counted it (#964): a write's path is the screen's (#937),
+            // and only a write sends the repo block. An Ask sends its code, never the
+            // screen (#965): the envelope counts the code's keys where a write's block goes.
+            let SentHidden { screen, repo, talk } = app.sent_hidden();
+            let talk = match talk {
                 0 => String::new(),
                 n => format!(", {n} more in the conversation"),
             };
-            let talk = match repo {
-                0 => talk,
-                n => format!("{talk}, {n} in the repo block"),
+            let sent = match run.map(|r| &r.flow) {
+                Some(Flow::Ask(a)) => {
+                    let shown = a.shown.1.saturating_sub(a.shown.0) as usize + 1;
+                    format!("code {shown} lines, {repo} hidden{talk}")
+                }
+                _ => {
+                    let block = match repo {
+                        0 => String::new(),
+                        n => format!(", {n} in the repo block"),
+                    };
+                    format!("screen {} lines, {screen} hidden{talk}{block}", app.screen_lines())
+                }
             };
-            let lines = app.screen_lines();
-            let sent = format!("sent: screen {lines} lines, {screen} hidden{talk} {d} {flow}");
+            let sent = format!("sent: {sent} {d} {flow}");
             b.lines.extend(many(&sent, w, "", meta));
             b.lines.extend(many(&format!("model {model}: {why}"), w, "", meta));
             if !app.timeout.is_zero() {

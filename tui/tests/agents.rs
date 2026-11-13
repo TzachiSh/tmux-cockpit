@@ -113,12 +113,15 @@ impl Rig {
                 std::env::set_var(k, v);
             }
         }
-        Rig {
+        let rig = Rig {
             dir,
             old,
             wait: DROP_WAIT,
             _lock: lock,
-        }
+        };
+        // once the rig exists, so that a failure here drops it and the variables go back (#972)
+        fake::assert_claude_is_the_rigs(&rig.dir);
+        rig
     }
 
     /// A board's rig inside `_dev`, which holds `ENV`: its drop puts back what `_dev` set.
@@ -181,15 +184,22 @@ fn give_up(dir: &Path, bound: std::time::Duration) -> ! {
     let me = std::thread::current();
     let (test, n) = (me.name().unwrap_or("the test that ran last"), lookups());
     let how = if std::thread::panicking() { ", while it was panicking" } else { "" };
+    // read at the last moment, so the text shows what a late lookup would have found
+    let path = std::env::var("PATH").unwrap_or_default();
+    let home = std::env::var("HOME").unwrap_or_default();
+    let first = path.split(':').next().unwrap_or_default();
     let msg = format!(
         "\nThe agents test rig stopped this test binary. This is the rig's guard for issue \
          #969, not a product crash.\n{n} lookup thread(s) were still running {bound:?} after \
          the rig of {test} began its drop{how}. Putting PATH and HOME back would let that \
          lookup start the real `claude`, so they stay the rig's and the run aborts here.\n\
          What to do: rerun {test} alone, with `cargo test --test agents -- --exact {test}`.\n\
-         The rig's folder was left behind: {}\n",
+         The rig's folder was left behind: {}\n\
+         At the abort PATH began with {first} and HOME was {home}\n",
         dir.display(),
     );
+    // nothing may follow this message but the abort: a put-back after it would hand a
+    // lookup still running the developer's `claude`, unseen by the message's last line (#969)
     let _ = std::io::stderr().write_all(msg.as_bytes());
     std::process::abort();
 }
@@ -363,13 +373,9 @@ fn hung_lookup_child() {
     std::process::exit(3);
 }
 
-/// #969: a drop whose lookup never ends does not put PATH and HOME back. It says
-/// why and aborts, and leaves its dirs, the made-up developer's `claude` unstarted.
-#[test]
-fn a_drop_whose_lookup_never_ends_aborts_with_the_variables_kept() {
-    let _r = Rig::new("giveup", ONE);
-    let me = std::env::current_exe().unwrap();
-    let mut child = std::process::Command::new(me);
+/// Runs the child half: its exit, its stderr, and the rig's and the dev's dirs it names.
+fn hung_lookup_run() -> (std::process::ExitStatus, String, PathBuf, PathBuf) {
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap());
     child
         .args(["--exact", "hung_lookup_child", "--test-threads=1"])
         .env("HUNG_LOOKUP_CHILD", "1");
@@ -378,13 +384,28 @@ fn a_drop_whose_lookup_never_ends_aborts_with_the_variables_kept() {
     let pid = child.id();
     let out = child.wait_with_output().unwrap();
     let left = |tag: &str| std::env::temp_dir().join(format!("cockpit-agents-{tag}-{pid}"));
-    let (rig, dev) = (left("hung"), left("hung-dev"));
+    (
+        out.status,
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+        left("hung"),
+        left("hung-dev"),
+    )
+}
+
+/// #969: a drop whose lookup never ends does not put PATH and HOME back. It says
+/// why and aborts, and leaves its dirs, the made-up developer's `claude` unstarted.
+#[test]
+fn a_drop_whose_lookup_never_ends_aborts_with_the_variables_kept() {
+    let _r = Rig::new("giveup", ONE);
+    let (status, err, rig, dev) = hung_lookup_run();
     let seen = (rig.join("go").exists(), dev.join("made").exists(), dev.join("outside").exists());
     let _ = (std::fs::remove_dir_all(&rig), std::fs::remove_dir_all(&dev));
     use std::os::unix::process::ExitStatusExt;
-    assert_eq!(out.status.signal(), Some(libc::SIGABRT), "{:?}", out.status);
-    let err = String::from_utf8_lossy(&out.stderr);
-    let said = ["not a product crash", "rerun hung_lookup_child alone", &rig.display().to_string()];
+    assert_eq!(status.signal(), Some(libc::SIGABRT), "{status:?}");
+    let r = rig.display();
+    let left = format!("The rig's folder was left behind: {r}\n");
+    let kept = format!("At the abort PATH began with {r}/bin and HOME was {r}\n");
+    let said = ["not a product crash", "rerun hung_lookup_child alone", &left, &kept];
     assert!(said.iter().all(|s| err.contains(s)), "{err}");
     assert_eq!(seen, (true, true, false), "(rig dir left, dev dir left, no outside claude)");
 }
@@ -929,7 +950,9 @@ fn a_fifo_a_symlink_or_a_huge_file_at_the_path_is_not_read() {
     assert_eq!(read_file(&cache, &root, now()), None, "fifo");
     assert_eq!(r.sess(), "", "the fetch over a fifo");
     // the lookup that fetch started renames its answer over the fifo: wait for it, as a
-    // read of the path would hang on a fifo still there (#969)
+    // read of the path would hang on a fifo still there (#969). Nothing in the tree
+    // pins this wait: the drop's order alone closes the window. It stays as a second
+    // barrier, by ruling on #969.
     assert!(lookups_end_within(GONE_BY), "the lookup never finished");
 }
 
