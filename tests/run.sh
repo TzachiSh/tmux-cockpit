@@ -9061,7 +9061,9 @@ Q='"'
 cp "$PSROOT/tests/run.sh" "$PSROOT/tests/run.green"
 {
     printf 'echo %s== ps3: never ends ==%s\n' "$Q" "$Q"
-    printf ': > "$TMPDIR/ps3.in"; sleep 287\n'
+    # Its TERM takes a second to end it, as a shard mid-cleanup does: the leftover count below
+    # must wait for that, and a count read at once sees it (#900).
+    printf ': > "$TMPDIR/ps3.in"; trap %ssleep 1; exit 0%s TERM; sleep 287 & wait $!\n' "$Q" "$Q"
 } >> "$PSROOT/tests/run.sh"
 ps_left() {                   # the processes still carrying the sandbox's TMPDIR
     local p n=0
@@ -9069,6 +9071,21 @@ ps_left() {                   # the processes still carrying the sandbox's TMPDI
         tr '\0' '\n' 2>/dev/null < "$p/environ" | grep -qxF "TMPDIR=$PSROOT/t" && n=$((n + 1))
     done
     printf '%s' "$n"
+}
+# The run's processes take their TERM, then exit: a count read once, right after the wait,
+# raced them (#900). So: polled until none is left, bounded by POLLS. A leftover past that is
+# a real one, and the row names each: pid, name, command line.
+ps_settle() {                 # -> 0, or "<count>:" and each leftover
+    local i n p
+    for i in $(seq 1 "$POLLS"); do n=$(ps_left); [ "$n" = 0 ] && break; sleep 0.1; done
+    printf '%s' "$n"
+    [ "$n" = 0 ] && return 0
+    printf ':'
+    for p in /proc/[0-9]*; do
+        tr '\0' '\n' 2>/dev/null < "$p/environ" | grep -qxF "TMPDIR=$PSROOT/t" || continue
+        printf ' [%s %s %s]' "${p#/proc/}" "$(cat "$p/comm" 2>/dev/null)" \
+            "$(tr '\0' ' ' 2>/dev/null < "$p/cmdline")"
+    done
 }
 # The run with a shard that never ends: once that shard is inside its block (past the
 # prelude, whose EXIT trap cleans up) and a finished shard's end line is out, it is ended
@@ -9087,7 +9104,7 @@ is "and no end line" "0" "$(grep -c '^par\.sh: shard 0006 end' "$PSROOT/hung.err
 is "a shard that finished has both, with its status" "1 1" \
    "$(grep -c '^par\.sh: shard 0001 start: ps1: solo$' "$PSROOT/hung.err") $(
       grep -c '^par\.sh: shard 0001 end rc=0$' "$PSROOT/hung.err")"
-is "nothing the ended run started is left" "0" "$(ps_left)"
+is "nothing the ended run started is left" "0" "$(ps_settle)"
 # A green run: the counts are what they were, and no new line reads as a row.
 cp "$PSROOT/tests/run.green" "$PSROOT/tests/run.sh"
 ( cd "$PSROOT" && env -u PAR_BLOCKS TMPDIR="$PSROOT/t" J=3 tests/par.sh ) \
@@ -9111,8 +9128,8 @@ ps_row="^  ($ESC\[[0-9;]*m)?(PASS|FAIL|SKIP)|passed,|failed,"
 is "the row pattern finds the green run's rows and its count" "6" \
    "$(grep -cE "$ps_row" "$PSROOT/green.out")"
 is "no new line reads as a row or a count" "0" "$(grep -cE "$ps_row" "$PSROOT/green.err")"
-is "nor is left behind" "0" "$(ps_left)"
-unset -f ps_left; unset PSROOT Q ps_to ps_c ps_row
+is "nor is left behind" "0" "$(ps_settle)"
+unset -f ps_left ps_settle; unset PSROOT Q ps_to ps_c ps_row
 
 echo "== tests/green.sh: the stamp hits on unchanged content, misses on one changed byte, and tool versions are in the key =="
 GROOT=$(mktmpd)
