@@ -87,7 +87,9 @@ LC_ALL=C awk -F'\t' -v dir="$WORK/title" '
                               if (c ~ /[\200-\277]/) sub(/[\300-\377][\200-\277]*$/, "", t)
                               t = t "..." }
                           print t > (dir "/" id); close(dir "/" id) } }
-' "$WORK/run.snap" "$WORK/groups.tsv" || awk_died "writing the shard titles" $?
+' "$WORK/run.snap" "$WORK/groups.tsv" ||
+    echo "par.sh: awk failed writing the shard titles (status $?): start lines carry no title" >&2
+# Not fatal, unlike the others: a title is what a start line says, never what a shard runs.
 
 while IFS=$'\t' read -r id n g; do
     printf '%s\n' "$n" >> "$WORK/list/$id"
@@ -133,12 +135,19 @@ for f in "$WORK"/list/*; do
         /^flop_left$/ { next }             # the tail below calls it once
         /^printf .  %d passed/ { next }
         /^\[ "\$fail" -eq 0 \]/ { next }
-        /^echo "== / { n++; keep = (index(want, "," n ",") > 0) }
+        /^echo "== / { n++; keep = (index(want, "," n ",") > 0); kept += keep }
         keep { print }
-        END { print "flop_left"
+        END { if (!kept) exit 3            # a shard with no block in it: its list was not read
+              print "flop_left"
               print "printf %d,%d,%d\\\\n \"$pass\" \"$fail\" \"$skipped\" > \"$PAR_COUNT\""
               print "[ \"$fail\" -eq 0 ] || exit 1" }
-    ' "$WORK/run.snap" > "$SH.$id" || awk_died "writing shard $id" $?
+    ' "$WORK/run.snap" > "$SH.$id" || {
+        rc=$?
+        # 3 is the awk's own: the shard's list of blocks came through empty (a failed tr), and
+        # a shard of prelude alone would run, count 0,0,0 and pass (#1017).
+        [ "$rc" -ne 3 ] || { echo "par.sh: shard $id would hold no block: no run" >&2; exit 2; }
+        awk_died "writing shard $id" "$rc"
+    }
     plan+=("$SH.$id")
     # A block whose `if`/`fi` straddles the next block's title does not stand
     # alone; name every one of them, not just the first, so one `# group:`
