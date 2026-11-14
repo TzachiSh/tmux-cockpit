@@ -11761,6 +11761,10 @@ if need_tmux "cockpit-panel end to end"; then :; else
 # command string are odd whatever TMPDIR is: bare, sh split them (#990, C2c).
 PN="cockpit-pn-$$"; SOCKS="$SOCKS $PN"; PND="$(mktmpd)/p n"
 mkdir -p "$PND/bin" "$PND/cache" "$PND/cfg"
+# Without the blank the rows below would pass with a path pasted bare (#1069): it is the
+# blank in this name that makes them red then, whatever TMPDIR is (#1076).
+is "the block's own folder has a blank in its name" "blank" \
+   "$(case "${PND##*/}" in *' '*) echo blank ;; *) echo "none in ${PND##*/}" ;; esac)"
 # With $PND/hang present the fake records its pid and parent, then never answers.
 cat > "$PND/bin/claude" <<PNFAKE
 #!/bin/sh
@@ -12225,8 +12229,10 @@ touch "$PND/state"; rm -f "$PND/bargv"
 is "a state file beside the action reruns the binary on it, after the paste" \
    "load-buffer -b B -;hi;paste-buffer -p -d -b B -t %5;display-message -t %5 cockpit: inserted 2 chars into %5;load-buffer -b B -;hi;paste-buffer -p -d -b B -t %5;display-message -t %5 cockpit: inserted 2 chars into %5;" \
    "$(pact 'paste %5' hi)"
+# The path is cut out of each run's line before the lines are joined: cut after, the greedy
+# pattern would take every run between the first --resume and the last /resume (#1076).
 is "and tells it the paste went in" "panel %5;panel %5 --resume */resume --last ok;" \
-   "$(tr '\n' ';' < "$PND/bargv" | sed 's| --resume .*/resume| --resume */resume|')"
+   "$(sed 's| --resume .*/resume| --resume */resume|' "$PND/bargv" | tr '\n' ';')"
 rm -f "$PND/bargv"; pact 'send %5' hi '' claude zsh >/dev/null
 is "or why nothing was sent" \
     "panel %5 --resume */resume --last failed:the pane now runs zsh, not claude" \
@@ -12253,6 +12259,10 @@ if need_tmux "cockpit-panel hide and resume"; then :; else
 # As the insert block's: a blank in the folder's own name (#990, C2c).
 PH="cockpit-ph-$$"; SOCKS="$SOCKS $PH"; PHD="$(mktmpd)/p h"
 mkdir -p "$PHD/bin" "$PHD/state"
+# Without the blank the rows below would pass with a path pasted bare (#1069): it is the
+# blank in this name that makes them red then, whatever TMPDIR is (#1076).
+is "the block's own folder has a blank in its name" "blank" \
+   "$(case "${PHD##*/}" in *' '*) echo blank ;; *) echo "none in ${PHD##*/}" ;; esac)"
 # Never asked: nothing in this block sends a request.
 printf '#!/bin/sh\ncat >/dev/null\necho "<text>NEVER CALLED</text>"\n' > "$PHD/bin/claude"
 chmod +x "$PHD/bin/claude"
@@ -12495,6 +12505,10 @@ echo "== cockpit-panel: a tap in the popup acts once, and x copies by OSC 52 =="
 if need_tmux "taps in the popup"; then :; else
 TI="cockpit-tapi2-$$"; TO="cockpit-tapo2-$$"; SOCKS="$SOCKS $TI $TO"; TPD="$(mktmpd)/t p"
 mkdir -p "$TPD/bin"
+# Without the blank the rows below would pass with a path pasted bare (#1069): it is the
+# blank in this name that makes them red then, whatever TMPDIR is (#1076).
+is "the block's own folder has a blank in its name" "blank" \
+   "$(case "${TPD##*/}" in *' '*) echo blank ;; *) echo "none in ${TPD##*/}" ;; esac)"
 printf '#!/bin/sh\ncat >/dev/null\nprintf "<text>copied by tap</text>"\n' > "$TPD/bin/claude"
 chmod +x "$TPD/bin/claude"
 "$TMUX_REAL" -L "$TI" -f /dev/null new-session -d -s t -x 100 -y 30 'exec cat' >/dev/null 2>&1
