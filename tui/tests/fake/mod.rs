@@ -335,8 +335,10 @@ pub fn settle(sock: &str, pane: &str, name: &str) {
     for _ in 0..500 {
         last = names(&pid);
         let (comm, argv0) = &last;
+        // /proc's comm is cut to 15 bytes; argv[0] and `ps` keep the whole name
+        let comm_ok = comm == name || (argv0.is_some() && comm == name.get(..15).unwrap_or(name));
         // two checks: comm, then the argv[0] tmux reads, which the kernel sets after it
-        if comm == name && argv0.as_deref().is_none_or(|a| a == name) {
+        if comm_ok && argv0.as_deref().is_none_or(|a| a == name) {
             return;
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
