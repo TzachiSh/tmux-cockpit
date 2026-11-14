@@ -119,14 +119,52 @@ impl Rig {
         self.command_of(Path::new(RUNNER))
     }
 
-    /// The rig's environment for `program`, the runner or a copy of it.
+    /// The rig's environment for `program`, the runner or a copy of it, with
+    /// the signals of [`SENT`] at their default.
     fn command_of(&self, program: &Path) -> Command {
+        use std::os::unix::process::CommandExt;
         let mut c = Command::new(program);
         c.env_clear().env("PATH", self.path()).env("TMPDIR", self.0.join("tmp"));
         c.env("RUNNER", RUNNER).stdin(Stdio::null());
+        // SAFETY: at_default makes only async-signal-safe calls and allocates nothing.
+        unsafe { c.pre_exec(at_default) };
         c
     }
+}
 
+/// The signals the rows send to the runner or have a stand-in send itself.
+/// A process starts with its parent's ignored signals and signal mask, and a
+/// shell cannot trap a signal ignored when it started: a suite started with
+/// `&` from a script ignores INT, one under nohup HUP, and bash keeps a mask
+/// that dash clears. KILL can be neither ignored nor blocked.
+const SENT: [libc::c_int; 7] = [
+    libc::SIGHUP,
+    libc::SIGINT,
+    libc::SIGQUIT,
+    libc::SIGTERM,
+    libc::SIGUSR1,
+    libc::SIGABRT,
+    libc::SIGSEGV,
+];
+
+/// Run between fork and exec: each signal of [`SENT`] at its default action
+/// and unblocked, so a row measures the runner and not how the suite was
+/// started (#1044).
+fn at_default() -> std::io::Result<()> {
+    // SAFETY: signal, sigemptyset, sigaddset and sigprocmask are async-signal-safe.
+    unsafe {
+        let mut set: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut set);
+        for s in SENT {
+            libc::signal(s, libc::SIG_DFL);
+            libc::sigaddset(&mut set, s);
+        }
+        libc::sigprocmask(libc::SIG_UNBLOCK, &set, std::ptr::null_mut());
+    }
+    Ok(())
+}
+
+impl Rig {
     fn run(&self, exe: &Path, args: &[&str]) -> Ran {
         let mut c = self.command();
         self.ran(c.arg(exe).args(args))
