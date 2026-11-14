@@ -32,13 +32,16 @@ sized for contention already.
 
 ### A TMPDIR with a blank
 
-Under a `TMPDIR` whose path holds a space or a tab, `tests/run.sh` keeps one
-small file outside it: its wrapper around tmux, in a folder it makes in the
-caller's runtime dir, `$XDG_RUNTIME_DIR/cnb.<6>`, mode 700 (#992). Pane commands
-in the suite paste that wrapper's path unquoted, so it must hold no blank. The
-run removes the folder when it ends, also on a FATAL and on HUP, INT or TERM. A
-run ended by KILL leaves it, with `flop/tmux` inside. Nothing sweeps it, and it
-is safe to remove once no suite is running.
+Under a `TMPDIR` whose path holds a space or a tab, a run of `tests/run.sh`
+(`tests/only.sh` and each `tests/par.sh` shard too) keeps its wrapper around
+tmux outside it, in a folder it makes in the caller's runtime dir,
+`$XDG_RUNTIME_DIR/cnb.<6>`, mode 700 (#992). Pane commands in the suite paste
+that wrapper's path unquoted, so it must hold no blank. The wrapper's small
+marker files sit beside it, `flop/k.*` and `flop/r.*`, and a run started inside
+the run makes its own `cnb.<6>` in there. The run removes the folder when it
+ends, also on a FATAL and on HUP, INT or TERM. A run ended by KILL leaves it,
+with `flop/tmux` inside. Nothing sweeps it, and it is safe to remove once no
+run is going.
 
 With no runtime dir to use, such a run ends at its start and says what it needs:
 set `XDG_RUNTIME_DIR` to a folder that exists, can be written to and has no
