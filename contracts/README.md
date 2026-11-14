@@ -24,13 +24,16 @@ Nothing reads these schemas at run time. The Rust side is `tui/src/store.rs`, a
 - **Privacy:** shared status holds only ids, states and timestamps. No titles,
   no subjects, no paths and no prompt content. Words an agent wants to share go
   in a private file, and the record carries a `*_ref` to it.
-- **Refs** (`summary_ref`, any `*_ref`) are paths relative to one fixed private
-  folder, `$XDG_STATE_HOME/tmux-cockpit/refs/` (0700). One to four parts joined
-  by `/`, each part dot-separated `[A-Za-z0-9_-]` tokens, ending in `.md`,
-  `.json` or `.txt`. That rules out `..`, a leading `/`, spaces and
-  punctuation, so a sentence does not fit. A one-word secret still would: the
-  schema checks shape, not meaning. The reader of a ref still refuses a symlink
-  that leads out of the folder.
+- **Ids are opaque:** every id field (`agent_id`, `intent_id`, `from_agent`,
+  `msg_id`, `from`, `to`, `correlation_id`, any payload `*_id`) is 16 to 64
+  lowercase hex, and so is each `agent-message.subject` token after `msg.`.
+  No word, title or snake_case sentence fits one. Pane ids (`%N`), the
+  github-budget key (16 hex or `global`) and timestamps keep their own shapes.
+- **Refs are opaque too** (`summary_ref`, any `*_ref`): a file name of 16 to 64
+  lowercase hex, then `.md`, `.json` or `.txt`, directly in one fixed private
+  folder, `$XDG_STATE_HOME/tmux-cockpit/refs/` (0700). No folder part, no `..`,
+  no `/` and no word fits. The reader of a ref still refuses a symlink that
+  leads out of the folder.
 - **`agent-message.payload`** allows a key only when it ends in `_id` (its value
   must be an id) or in `_ref` (its value must be a ref). Every other key is
   refused (`additionalProperties: false` beside the two `patternProperties`),

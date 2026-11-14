@@ -7,9 +7,21 @@
     "keyword": "pattern",
     "at": "$.payload.body_ref"
   },
+  "invalid-word-ref.json": {
+    "keyword": "pattern",
+    "at": "$.payload.prompt_ref"
+  },
   "invalid-text-in-id.json": {
     "keyword": "pattern",
     "at": "$.payload.intent_id"
+  },
+  "invalid-title-id.json": {
+    "keyword": "pattern",
+    "at": "$.to"
+  },
+  "invalid-subject-word.json": {
+    "keyword": "pattern",
+    "at": "$.subject"
   },
   "invalid-subject-wildcard.json": {
     "keyword": "pattern",

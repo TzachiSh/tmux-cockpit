@@ -10,10 +10,10 @@
     "from": { "$ref": "#/$defs/id" },
     "to": { "$ref": "#/$defs/id" },
     "subject": {
-      "description": "msg. then 1 to 15 dotted tokens, NATS-safe: no *, no >, no empty token.",
+      "description": "msg. then 1 to 15 dotted ids: NATS-safe, and no word fits.",
       "type": "string",
       "maxLength": 255,
-      "pattern": "^msg(\\.[A-Za-z0-9_-]{1,64}){1,15}(?!\\n)$"
+      "pattern": "^msg(\\.[0-9a-f]{16,64}){1,15}(?!\\n)$"
     },
     "timestamp": { "$ref": "#/$defs/utc" },
     "correlation_id": { "$ref": "#/$defs/id" },
@@ -40,12 +40,11 @@
   ],
   "additionalProperties": false,
   "$defs": {
-    "id": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,64}(?!\\n)$" },
+    "id": { "type": "string", "pattern": "^[0-9a-f]{16,64}(?!\\n)$" },
     "ref": {
-      "description": "A file under the private refs folder: 1 to 4 parts joined by /, each part dot-separated tokens, ending in .md, .json or .txt. No .., no leading /, no space.",
+      "description": "An opaque file name in the private refs folder: 16 to 64 lowercase hex, then .md, .json or .txt.",
       "type": "string",
-      "maxLength": 200,
-      "pattern": "^([A-Za-z0-9_-]+(\\.[A-Za-z0-9_-]+)*/){0,3}[A-Za-z0-9_-]+(\\.[A-Za-z0-9_-]+)*\\.(md|json|txt)(?!\\n)$"
+      "pattern": "^[0-9a-f]{16,64}\\.(md|json|txt)(?!\\n)$"
     },
     "utc": {
       "description": "ISO-8601 in UTC, Z only, optional fraction.",

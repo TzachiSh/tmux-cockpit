@@ -7,6 +7,10 @@
     "keyword": "additionalProperties",
     "at": "$"
   },
+  "invalid-title-id.json": {
+    "keyword": "pattern",
+    "at": "$.agent_id"
+  },
   "invalid-no-version.json": {
     "keyword": "required",
     "at": "$"

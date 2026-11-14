@@ -19,7 +19,7 @@
   "required": ["schema_version", "agent_id", "pane_id", "state", "updated_at", "revision"],
   "additionalProperties": false,
   "$defs": {
-    "id": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,64}(?!\\n)$" },
+    "id": { "type": "string", "pattern": "^[0-9a-f]{16,64}(?!\\n)$" },
     "utc": {
       "description": "ISO-8601 in UTC, Z only, optional fraction.",
       "type": "string",

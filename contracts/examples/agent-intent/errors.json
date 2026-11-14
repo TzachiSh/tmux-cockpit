@@ -3,6 +3,14 @@
     "keyword": "pattern",
     "at": "$.summary_ref"
   },
+  "invalid-word-ref.json": {
+    "keyword": "pattern",
+    "at": "$.summary_ref"
+  },
+  "invalid-folder-ref.json": {
+    "keyword": "pattern",
+    "at": "$.summary_ref"
+  },
   "invalid-dotdot-ref.json": {
     "keyword": "pattern",
     "at": "$.summary_ref"
@@ -10,6 +18,10 @@
   "invalid-absolute-ref.json": {
     "keyword": "pattern",
     "at": "$.summary_ref"
+  },
+  "invalid-title-id.json": {
+    "keyword": "pattern",
+    "at": "$.intent_id"
   },
   "invalid-kind.json": {
     "keyword": "enum",
