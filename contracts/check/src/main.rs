@@ -598,6 +598,12 @@ mod tests {
             ),
             ("multi-line flag", r"(?m)^a$", true),
             ("posix class, then a bar", r"^[[:alpha:]|]$", true),
+            ("a group cut at its $", r"^([0-9a-f]{16}|global)", true),
+            ("hex cut at its $", r"^[0-9a-f]{16}", true),
+            ("unbalanced group", r"^(a$", true),
+            ("unclosed class", r"^[a$", true),
+            ("lookbehind", r"^(?<=a)b$", true),
+            ("backreference", r"^(a)\1$", true),
             ("alternation in a group", r"^(a|b)$", false),
             ("upper case alternation in a group", r"^(A|B)$", false),
             ("non-capturing group", r"^(?:a|b)$", false),
@@ -617,6 +623,133 @@ mod tests {
     }
 
     #[test]
+    fn the_readme_reading_of_groups_repetitions_flags_and_the_empty_pattern() {
+        let rows = [
+            ("empty pattern", "", true),
+            ("only the empty string", "^$", false),
+            ("capturing group around it all", "(^a$)", true),
+            ("non-capturing group around it all", "(?:^a$)", false),
+            ("repetition inside", "^a*$", false),
+            ("repeated $ that may match nothing", "^a$*", true),
+            ("flags first", "(?i)^a$", false),
+            ("x-mode spaces", "^(?x) a $", false),
+            ("two anchored branches", "^a$|^b$", true),
+        ];
+        for (row, pattern, refused) in rows {
+            assert_eq!(anchor_problem(pattern).is_some(), refused, "row {row}");
+        }
+    }
+
+    #[test]
+    fn a_pattern_the_engine_cannot_read_is_named_not_passed() {
+        let bad = house_rules(&json!({"pattern": "^(a$"}));
+        let want = r#"pattern "^(a$" is not a pattern the engine reads"#;
+        assert!(bad.iter().any(|b| b == want), "{bad:?}");
+    }
+
+    const PROBE_KEY: &str = "3f2a9c0d1e4b5a67\nfix login for acme";
+
+    #[test]
+    fn every_refused_key_pattern_lets_the_probe_key_through() {
+        let refused = [
+            "^([0-9a-f]{16}|global)",
+            "^[0-9a-f]{16}",
+            "^[0-9a-f]{16}|global$",
+            "^[0-9a-f[]{16}|global$",
+            "^(?x)[0-9a-f]{16}#(\n|global$",
+        ];
+        for p in refused {
+            assert_eq!(unanchored(&json!({"pattern": p})), [p], "{p:?}");
+            let v = compile(&json!({"type": "string", "pattern": p})).unwrap();
+            assert!(v.is_valid(&json!(PROBE_KEY)), "{p:?} refused the probe key");
+        }
+    }
+
+    #[test]
+    fn the_real_github_budget_refuses_the_probe_key() {
+        let root = root_from(args(&[])).unwrap();
+        let v = compile(&load(&root.join("github-budget.schema.json")).unwrap()).unwrap();
+        let mut doc = load(&root.join("examples/github-budget/valid-repo.json")).unwrap();
+        assert!(v.is_valid(&doc));
+        doc["key"] = json!(PROBE_KEY);
+        assert!(!v.is_valid(&doc));
+    }
+
+    /// The versions of `name` a Cargo.lock lists, one per `[[package]]` entry.
+    fn locked_versions(lock: &str, name: &str) -> Vec<String> {
+        let head = format!("name = \"{name}\"");
+        let lines: Vec<&str> = lock.lines().collect();
+        lines
+            .windows(2)
+            .filter(|pair| pair[0] == head)
+            .filter_map(|pair| pair[1].strip_prefix("version = \"")?.strip_suffix('"'))
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// What differs between Cargo.toml's `name = "=x.y.z"` and the lock: empty when the lock
+    /// holds that one version, so this check parses with the code the validator runs (#1057).
+    fn parser_drift(manifest: &str, lock: &str, name: &str) -> Vec<String> {
+        let prefix = format!("{name} = \"=");
+        let pin = manifest
+            .lines()
+            .find_map(|l| l.strip_prefix(&prefix)?.strip_suffix('"'));
+        let locked = locked_versions(lock, name);
+        let mut bad = vec![];
+        if locked.len() != 1 {
+            bad.push(format!("{name}: the lock holds {locked:?}"));
+        }
+        if pin.is_none() || locked.first().map(String::as_str) != pin {
+            bad.push(format!("{name}: pinned {pin:?}, locked {locked:?}"));
+        }
+        bad
+    }
+
+    #[test]
+    fn the_check_parses_patterns_with_the_validators_own_versions() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let manifest = std::fs::read_to_string(dir.join("Cargo.toml")).unwrap();
+        let lock = std::fs::read_to_string(dir.join("Cargo.lock")).unwrap();
+        for name in ["jsonschema-regex", "regex-syntax"] {
+            assert_eq!(parser_drift(&manifest, &lock, name), Vec::<String>::new());
+        }
+    }
+
+    #[test]
+    fn parser_drift_names_a_second_version_or_a_loose_pin() {
+        let lock1 = "[[package]]\nname = \"rs\"\nversion = \"1.0.1\"\n";
+        let lock2 = format!("{lock1}\n[[package]]\nname = \"rs\"\nversion = \"1.0.2\"\n");
+        let rows = [
+            (
+                "pinned and locked alike",
+                "rs = \"=1.0.1\"",
+                lock1.to_string(),
+                true,
+            ),
+            ("a second version locked", "rs = \"=1.0.1\"", lock2, false),
+            (
+                "pinned to another version",
+                "rs = \"=1.0.0\"",
+                lock1.to_string(),
+                false,
+            ),
+            (
+                "a caret, not a pin",
+                "rs = \"1.0.1\"",
+                lock1.to_string(),
+                false,
+            ),
+        ];
+        for (row, manifest, lock, clean) in rows {
+            assert_eq!(
+                parser_drift(manifest, &lock, "rs").is_empty(),
+                clean,
+                "row {row}"
+            );
+        }
+    }
+
+    #[test]
     fn the_broken_fixture_gives_exactly_its_surprises() {
         let want = [
             "examples/orphan: no orphan.schema.json",
@@ -625,6 +758,7 @@ mod tests {
             "alpha/errors.json: names invalid-gone.json, which is no invalid-* file here",
             "beta.schema.json: additionalProperties is not false",
             "beta: no valid-* example",
+            r#"delta.schema.json: pattern "^(?<=a)b$" is not a pattern the engine reads"#,
             r#"gamma.schema.json: pattern "^[0-9a-f]{16}" does not start with ^ and end with $"#,
             "gamma.schema.json: pattern \"^repo|global$\" has a | outside every group, \
              so ^ and $ each anchor one side only",

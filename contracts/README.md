@@ -47,14 +47,28 @@ Nothing reads these schemas at run time. The Rust side is `tui/src/store.rs`, a
   checks it itself.
 - **Patterns** start with `^` and end with `$`, and are checked by Rust's
   `regex` engine. Its `$` is the end of the string, so `^%[0-9]{1,10}$` refuses
-  `"%12\n"`. An alternation goes inside a group, as in `^(a|b)$`: `^a|b$` means
-  `(^a)|(b$)`, each side anchored at one end only. The check reads every
-  `pattern` and `patternProperties` key in a schema, `$defs` included, as the
-  validator does (jsonschema-regex's translation, then regex-syntax's parse),
-  and fails one that does not parse as `^`, a body, then `$`. A `[` inside a
-  class is a literal there, and `(?m)` or an `(?x)` comment counts as written.
-  It also fails a pattern with lookaround or a backreference. Python's `$` also matches before a final
-  newline: a Python validator would accept `"%12\n"`.
+  `"%12\n"`. Python's `$` also matches before a final newline: a Python
+  validator would accept `"%12\n"`. An alternation goes inside a group, as in
+  `^(a|b)$`: `^a|b$` means `(^a)|(b$)`, each side anchored at one end only.
+
+  The check reads every `pattern` and `patternProperties` key in a schema,
+  `$defs` included, as the validator does: jsonschema-regex translates it, then
+  regex-syntax parses the result. The parse, after regex-syntax's own
+  simplification, must be a sequence whose first item is `^` (start of text)
+  and whose last is `$` (end of text):
+  - A group is one item in between. `^(a|b)$` passes. A capturing group around
+    the whole pattern, `(^a$)`, fails. A non-capturing one, `(?:^a$)`, leaves
+    no item of its own and passes. Two anchored branches, `^a$|^b$`, fail:
+    their shared `^` is factored out, and the last item is the alternation.
+  - A repetition is one item: `^a*$` passes. `^a$*` fails, since `$*` may
+    match nothing.
+  - Flags add no item: `(?i)^a$` passes. `(?m)` makes `^` and `$` line anchors,
+    which fail. `(?x)` drops spaces and `#` comments before the reading, so a
+    `(` in a comment opens nothing.
+  - A `[` inside a class is a literal, as jsonschema-regex escapes it.
+  - The empty pattern fails. `^$` passes and matches only the empty string.
+  - A pattern the translation or the parse refuses fails by name, as does one
+    with lookaround or a backreference.
 - **Unknown, malformed or wrong-version** payloads mean "no value, start fresh",
   as today's state files do (`data/agents.rs`, `board.rs`, `panel/action.rs`).
   No reader repairs, upgrades or fails on one. Starting fresh never reuses a
