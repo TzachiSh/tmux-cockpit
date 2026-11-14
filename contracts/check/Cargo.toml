@@ -1,0 +1,17 @@
+[package]
+name = "contracts-check"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.88"
+publish = false
+
+# Its own workspace, so cargo never joins this crate to a parent manifest (#1052).
+[workspace]
+
+[dependencies]
+# Pinned exactly, a release past its first two weeks when picked. Default features
+# off: no HTTP or file resolving, no TLS, no C, and no idn formats (no schema uses one).
+jsonschema = { version = "=0.60.2", default-features = false }
+# serde_json keeps the last of two equal keys; serde's Visitor is how the check refuses them.
+serde = { version = "1", default-features = false }
+serde_json = "1.0.151"
