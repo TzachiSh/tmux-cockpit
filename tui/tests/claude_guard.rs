@@ -896,12 +896,18 @@ fn killed_under(shell: &str, at: [&str; 2], flags: &[&str]) -> Option<(usize, us
         return None;
     };
     let r = Rig::new(&format!("killed-{shell}"));
+    Some(killed_in(&r, sh, flags, shell))
+}
+
+/// [`killed_under`]'s run in the rig `r`, the runner started by the shell at
+/// `sh` with `flags`, `shell` naming it in a failed assert.
+fn killed_in(r: &Rig, sh: &str, flags: &[&str], shell: &str) -> (usize, usize, String) {
     let exe = r.binary(TEST, OUTLIVES);
     let beside = |ext: &str| PathBuf::from(format!("{}.{ext}", exe.display()));
     let fifo = std::ffi::CString::new(beside("go").to_str().unwrap()).unwrap();
     // SAFETY: `fifo` is a NUL-terminated path under the rig's folder.
     assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
-    // declared after `r`, so dropped before the rig's folder goes
+    // made after the rig, so dropped before the rig's folder goes
     let mut go = Unreleased(Some(beside("go")));
     let mut c = r.command_of(Path::new(sh));
     let child = c
@@ -925,7 +931,7 @@ fn killed_under(shell: &str, at: [&str; 2], flags: &[&str]) -> Option<(usize, us
     let log = folders
         .first()
         .map(|f| std::fs::read_to_string(f.join("reached")).unwrap_or_default());
-    Some((folders.len(), r.own_starts(), log.unwrap_or_default()))
+    (folders.len(), r.own_starts(), log.unwrap_or_default())
 }
 
 /// A runner killed by a signal it does not trap leaves its folder, so the stub
