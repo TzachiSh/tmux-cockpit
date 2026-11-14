@@ -1704,7 +1704,8 @@ bw_list() { "$TMUX_REAL" -L "$BW" show-option -gqv @cockpit_board_wake; }
 bw_open() {                   # <n>  -> BWW, BWPID: board <n> in its own window, its channel listed
     local i
     BWW=$("$TMUX_REAL" -L "$BW" new-window -d -P -F '#{pane_id}' -t t: \
-        "exec env XDG_STATE_HOME=$(tq "$BWD/$1") COCKPIT_LOG=$(tq "$BWD/tui$1.log") $(tq "$COCKPIT_TUI_BIN") board")
+        "exec env XDG_STATE_HOME=$(tq "$BWD/$1") COCKPIT_LOG=$(tq "$BWD/tui$1.log") \
+$(tq "$COCKPIT_TUI_BIN") board")
     BWPID=$("$TMUX_REAL" -L "$BW" display -p -t "$BWW" '#{pane_pid}')
     for i in $(seq 1 "$POLLS"); do
         case "$(bw_list)" in *"cockpit-board-$BWPID ; "*) return 0 ;; esac
@@ -10916,7 +10917,8 @@ for p in "${RBP[@]}"; do
 done
 # Tiles sort by state, then pane id: all running, so tile 2 is the second pane.
 RBX=${RBP[1]}
-RBENV="env COCKPIT_TUI_BIN=$(tq "$COCKPIT_TUI_BIN") XDG_STATE_HOME=$(tq "$RBD/state") COCKPIT_LOG=$(tq "$RBD/tui.log")"
+RBENV="env COCKPIT_TUI_BIN=$(tq "$COCKPIT_TUI_BIN") XDG_STATE_HOME=$(tq "$RBD/state") \
+COCKPIT_LOG=$(tq "$RBD/tui.log")"
 rb_open() {                   # -> RBW, the wrapper's pane, with tiles drawn
     RBW=$("$TMUX_REAL" -L "$RB" new-window -d -P -F '#{pane_id}' -t t: \
         "$RBENV $(tq "$RBD/p/scripts/cockpit-board") -p ${RBP[0]}")
@@ -11049,7 +11051,8 @@ for p in "${KBP[@]}"; do
 done
 kb_open() {                   # <pane> <action-dir> -> KBW, a board on that pane
     KBW=$("$TMUX_REAL" -L "$KB" new-window -d -P -F '#{pane_id}' -t t: \
-        "env COCKPIT_READONLY=1 XDG_STATE_HOME=$(tq "$KBD/state") COCKPIT_ACTION=$(tq "$2/act") $(tq "$COCKPIT_TUI_BIN") board --select $1")
+        "env COCKPIT_READONLY=1 XDG_STATE_HOME=$(tq "$KBD/state") COCKPIT_ACTION=$(tq "$2/act") \
+$(tq "$COCKPIT_TUI_BIN") board --select $1")
     until_cap "$KB" "$KBW" '*board · 2 agents*'
 }
 kb_cap() { "$TMUX_REAL" -L "$KB" capture-pane -p -J -t "$KBW" 2>/dev/null; }
@@ -11134,7 +11137,8 @@ for s in alpha beta; do
 done
 bf_open() {                   # -> BFW, a board in its own window, its list drawn
     BFW=$("$TMUX_REAL" -L "$BF" new-window -d -P -F '#{pane_id}' -t alpha: \
-        "env XDG_STATE_HOME=$(tq "$BFD") COCKPIT_LOG=$(tq "$BFD/tui.log") $(tq "$COCKPIT_TUI_BIN") board")
+        "env XDG_STATE_HOME=$(tq "$BFD") COCKPIT_LOG=$(tq "$BFD/tui.log") \
+$(tq "$COCKPIT_TUI_BIN") board")
     until_cap "$BF" "$BFW" '*2 sessions*'
 }
 bf_quit() {                   # q, then wait for the window to go
@@ -11187,7 +11191,8 @@ for s in alpha beta; do
 done
 bn_open() {                   # -> BNW, a board in its own window, its list drawn
     BNW=$("$TMUX_REAL" -L "$BN" new-window -d -P -F '#{pane_id}' -t alpha: \
-        "env XDG_STATE_HOME=$(tq "$BND") COCKPIT_LOG=$(tq "$BND/tui.log") $(tq "$COCKPIT_TUI_BIN") board")
+        "env XDG_STATE_HOME=$(tq "$BND") COCKPIT_LOG=$(tq "$BND/tui.log") \
+$(tq "$COCKPIT_TUI_BIN") board")
     until_cap "$BN" "$BNW" '*2 sessions*'
 }
 bn_cap() { "$TMUX_REAL" -L "$BN" capture-pane -p -t "$BNW"; }
@@ -11253,7 +11258,8 @@ for p in "${PVP[@]}"; do
     "$TMUX_REAL" -L "$PV" set -p -t "$p" @panestate running >/dev/null 2>&1
 done
 PVW=$("$TMUX_REAL" -L "$PV" new-window -d -P -F '#{pane_id}' -t t: -c "$PVD" \
-    "env XDG_STATE_HOME=$(tq "$PVD") COCKPIT_LOG=$(tq "$PVD/tui.log") $(tq "$COCKPIT_TUI_BIN") board")
+    "env XDG_STATE_HOME=$(tq "$PVD") COCKPIT_LOG=$(tq "$PVD/tui.log") \
+$(tq "$COCKPIT_TUI_BIN") board")
 pv_cap() { "$TMUX_REAL" -L "$PV" capture-pane -p -t "$PVW"; }
 # the list's first agent is alpha's: the same state, the lower pane id
 if until_cap "$PV" "$PVW" '*live · *screen-of-alpha*'; then
@@ -11302,7 +11308,8 @@ for cmd in "printf '\\033[2J\\033[H'" 'echo other'; do
     "$TMUX_REAL" -L "$PB" set -p -t "$pbp" @panestate running >/dev/null 2>&1
 done
 PBW=$("$TMUX_REAL" -L "$PB" new-window -d -P -F '#{pane_id}' -t t: -c "$PBD" \
-    "env XDG_STATE_HOME=$(tq "$PBD") COCKPIT_LOG=$(tq "$PBD/tui.log") $(tq "$COCKPIT_TUI_BIN") board")
+    "env XDG_STATE_HOME=$(tq "$PBD") COCKPIT_LOG=$(tq "$PBD/tui.log") \
+$(tq "$COCKPIT_TUI_BIN") board")
 if until_cap "$PB" "$PBW" '*live · blank*'; then
     ok "a blank first capture shows, not reading the screen"
 else
@@ -11331,7 +11338,8 @@ prp=$("$TMUX_REAL" -L "$PR" new-window -d -P -F '#{pane_id}' -t t: -c "$PRD" \
     "exec -a claude sh -c 'while :; do date +%s%N; sleep 0.05; done'")
 "$TMUX_REAL" -L "$PR" set -p -t "$prp" @panestate running >/dev/null 2>&1
 PRW=$("$TMUX_REAL" -L "$PR" new-window -d -P -F '#{pane_id}' -t t: -c "$PRD" \
-    "env COCKPIT_TMUX=$(tq "$PRT/tmux") XDG_STATE_HOME=$(tq "$PRD") COCKPIT_LOG=$(tq "$PRD/tui.log") $(tq "$COCKPIT_TUI_BIN") board")
+    "env COCKPIT_TMUX=$(tq "$PRT/tmux") XDG_STATE_HOME=$(tq "$PRD") \
+COCKPIT_LOG=$(tq "$PRD/tui.log") $(tq "$COCKPIT_TUI_BIN") board")
 if until_cap "$PR" "$PRW" '*live · *line*'; then
     : > "$PRD/calls"
     sleep 5   # a rate: the count over a fixed window is the measurement
@@ -14862,7 +14870,9 @@ kv_run() {
     [ $# -lt 2 ] || printf '%s\n' "$2" > "$KD/expect"
     [ "${KV_LINK:-}" != 1 ] || : > "$KD/link"
     "$TMUX_REAL" -L "$KV" new-window -d -t t: \
-        "${KV_SHIM:+export PATH=\"$KV_SHIM:\$PATH\"; }env COCKPIT_TUI_BIN=$(tq "$KD/bin") XDG_STATE_HOME=$(tq "$KD/state") COCKPIT_LOG=$(tq "$KD/tui.log") $(tq "$KD/p/scripts/cockpit-board") -p $KVHOME; echo x > $(tq "$KD/done")"
+        "${KV_SHIM:+export PATH=\"$KV_SHIM:\$PATH\"; }env COCKPIT_TUI_BIN=$(tq "$KD/bin") \
+XDG_STATE_HOME=$(tq "$KD/state") COCKPIT_LOG=$(tq "$KD/tui.log") \
+$(tq "$KD/p/scripts/cockpit-board") -p $KVHOME; echo x > $(tq "$KD/done")"
     until_file "$KD/done" 'x'
     # the second run's argv is `board --select %N --note <file>` and then the note
     sed -n '3,$p' "$KD/bargv"
@@ -14954,7 +14964,9 @@ rm -f "$KD/once" "$KD/twice" "$KD/done" "$KD/link" "$KD/rv"; : > "$KD/bargv"
 printf 'kill %s\n' "$V" > "$KD/line"; printf '%s %s\n' "$V2" "$V2W" > "$KD/expect"
 printf 'kill %s\n' "$V2" > "$KD/line2"
 "$TMUX_REAL" -L "$KV" new-window -d -t t: \
-    "env COCKPIT_TUI_BIN=$(tq "$KD/bin") XDG_STATE_HOME=$(tq "$KD/state") COCKPIT_LOG=$(tq "$KD/tui.log") $(tq "$KD/p/scripts/cockpit-board") -p $KVHOME 2>$(tq "$KD/err"); echo x > $(tq "$KD/done")"
+    "env COCKPIT_TUI_BIN=$(tq "$KD/bin") XDG_STATE_HOME=$(tq "$KD/state") \
+COCKPIT_LOG=$(tq "$KD/tui.log") $(tq "$KD/p/scripts/cockpit-board") -p $KVHOME \
+2>$(tq "$KD/err"); echo x > $(tq "$KD/done")"
 until_file "$KD/done" 'x'
 case "$(tail -n 1 "$KD/bargv")" in
     '✕ cockpit: not killed: the board named no window'*) \
@@ -15283,7 +15295,8 @@ until_out sleep "$TMUX_REAL" -L "$EB" display -p -t "$EBT" '#{pane_current_comma
         "$("$TMUX_REAL" -L "$EB" display -p -t "$EBT" '#{pane_current_command}')"
 eb_open() {                   # <pane> <action-dir> -> EBW, a board on that pane
     EBW=$("$TMUX_REAL" -L "$EB" new-window -d -P -F '#{pane_id}' -t t: \
-        "env COCKPIT_READONLY=1 XDG_STATE_HOME=$(tq "$EBD/state") COCKPIT_ACTION=$(tq "$2/act") $(tq "$COCKPIT_TUI_BIN") board --select $1")
+        "env COCKPIT_READONLY=1 XDG_STATE_HOME=$(tq "$EBD/state") COCKPIT_ACTION=$(tq "$2/act") \
+$(tq "$COCKPIT_TUI_BIN") board --select $1")
     until_cap "$EB" "$EBW" '*board · 4 agents*'
 }
 eb_cap() { "$TMUX_REAL" -L "$EB" capture-pane -p -J -t "$EBW" 2>/dev/null; }
@@ -15351,7 +15364,8 @@ GLP=$("$TMUX_REAL" -L "$GL" list-panes -t t -F '#{pane_id}')
 gl_run() {
     rm -f "$GD/g"
     "$TMUX_REAL" -L "$GL" new-window -d -t t: \
-        "env -u COCKPIT_GLYPHS COCKPIT_TUI_BIN=$(tq "$GD/bin") XDG_STATE_HOME=$(tq "$GD") COCKPIT_LOG=$(tq "$GD/tui.log") $(tq "$DIR/scripts/cockpit-board") -p $GLP"
+        "env -u COCKPIT_GLYPHS COCKPIT_TUI_BIN=$(tq "$GD/bin") XDG_STATE_HOME=$(tq "$GD") \
+COCKPIT_LOG=$(tq "$GD/tui.log") $(tq "$DIR/scripts/cockpit-board") -p $GLP"
     until_file "$GD/g" '\[*\]'
     cat "$GD/g" 2>/dev/null
 }
@@ -15381,7 +15395,8 @@ gp_run() {
     rm -f "$GPD/g"; mkdir -p "$GPD/tmux-cockpit/panel"
     : > "$GPD/tmux-cockpit/panel/$GPS-9999.state"     # a hide left by a pane that is gone
     "$TMUX_REAL" -L "$GP" new-window -d -t t: \
-        "env -u COCKPIT_GLYPHS COCKPIT_TUI_BIN=$(tq "$GPD/bin") XDG_STATE_HOME=$(tq "$GPD") COCKPIT_LOG=$(tq "$GPD/tui.log") $(tq "$DIR/scripts/cockpit-panel") -p $GPP"
+        "env -u COCKPIT_GLYPHS COCKPIT_TUI_BIN=$(tq "$GPD/bin") XDG_STATE_HOME=$(tq "$GPD") \
+COCKPIT_LOG=$(tq "$GPD/tui.log") $(tq "$DIR/scripts/cockpit-panel") -p $GPP"
     until_file "$GPD/g" '\[*\]'
     cat "$GPD/g" 2>/dev/null
 }
@@ -20289,7 +20304,8 @@ chmod +x "$ACD/stub/claude"
 # The window says which claude it would run, so a row sees the stub is the one reached.
 ac new-window -d -t t: -c "$ACD" "PATH=\"$ACD/stub:\$PATH\"; export PATH; \
 command -v claude > $(tq "$ACD/which"); env COCKPIT_TUI_BIN=$(tq "$ACD/bin") \
-XDG_STATE_HOME=$(tq "$ACD/state") COCKPIT_LOG=$(tq "$ACD/tui.log") $(tq "$DIR/scripts/cockpit-board") -p $ACH; \
+XDG_STATE_HOME=$(tq "$ACD/state") COCKPIT_LOG=$(tq "$ACD/tui.log") \
+$(tq "$DIR/scripts/cockpit-board") -p $ACH; \
 echo x > $(tq "$ACD/done")"
 until_file "$ACD/done" 'x'
 is "resume: a session live in OPENCODE is not opened twice" \
