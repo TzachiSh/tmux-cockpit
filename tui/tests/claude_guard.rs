@@ -695,10 +695,12 @@ fn a_runner_started_with_a_signal_ignored_still_reads_the_log_and_ends_as_its_bi
 }
 
 /// The child half of the row below: writes far more than a pipe holds, then
-/// fails. Run only where that row sets COCKPIT_LOUD_CHILD.
+/// fails. Run only where COCKPIT_LOUD_CHILD names a file that row made for this
+/// run, so the variable exported in a developer's shell changes nothing (#1061).
 #[test]
 fn loud_child() {
-    if std::env::var_os("COCKPIT_LOUD_CHILD").is_none() {
+    let made = std::env::var_os("COCKPIT_LOUD_CHILD").filter(|p| Path::new(p).is_file());
+    if made.is_none() {
         return;
     }
     eprint!("{}", "x".repeat(300_000));
@@ -709,10 +711,22 @@ fn loud_child() {
 /// holds is quoted when it ends, not waited out to the bound without a word.
 #[test]
 fn a_loud_red_row_handed_down_is_quoted() {
-    let loud = [("COCKPIT_LOUD_CHILD", "1")];
+    let r = Rig::new("loud");
+    let made = r.0.join("loud");
+    std::fs::write(&made, "").unwrap();
+    let loud = [("COCKPIT_LOUD_CHILD", made.to_str().unwrap())];
     let err = fake::handed(&["loud_child"], &[], &loud, Duration::from_secs(30)).unwrap_err();
     let said = err.contains("the loud child's own words");
     assert!(said, "{}", &err[..err.len().min(2000)]);
+}
+
+/// #1061: COCKPIT_LOUD_CHILD exported in a developer's shell, a value no row
+/// made, leaves `loud_child` green.
+#[test]
+fn an_exported_loud_child_variable_changes_nothing() {
+    let exported = [("COCKPIT_LOUD_CHILD", "1")];
+    let ran = fake::handed(&["loud_child"], &[], &exported, Duration::from_secs(30));
+    assert!(ran.is_ok(), "{}", ran.unwrap_err());
 }
 
 /// QUIT is the keyboard's other one, ctrl and backslash. The start is still reported and
