@@ -63,10 +63,11 @@ SUITE_SOCK="cockpit-suite-$$"
 SHIM=$(mktemp -d)
 # What the prelude itself makes: the suite's own server, its socket, $STATE and $SHIM. The
 # socket path is SOCKDIR's, spelled out: SOCKDIR is set later.
+SUITE_NB=                     # a folder outside TMPDIR for the tmux wrapper, when one is made
 suite_clean() {
     "$TMUX_REAL" -L "$SUITE_SOCK" kill-server >/dev/null 2>&1
     rm -f "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/$SUITE_SOCK"
-    rm -rf -- "$STATE" "$SHIM"
+    rm -rf -- "$STATE" "$SHIM" ${SUITE_NB:+"$SUITE_NB"}
 }
 # Armed here, before the server starts, and replaced by `trap cleanup EXIT` once cleanup's
 # other halves (kill_socks, $TMPS) exist. The server leaves this process group, so a TERM or
@@ -145,7 +146,25 @@ FLOPEOF
     } > "$1/tmux"
     chmod +x "$1/tmux"
 }
-FLOP="$STATE/flop"; mkdir -p "$FLOP"
+# "$TMUX_REAL" is this wrapper's path from here on, and some forty pane commands paste it in
+# unquoted ("exec $TMUX_REAL -L $X attach"). Under a TMPDIR holding a blank the path split
+# there, the client ended 127 and its server with it (#992). So the wrapper's folder holds no
+# blank: $STATE where that has none, else a folder made in the caller's runtime dir, as #766
+# does for a socket. A prelude run inside a run (a block's sandbox) inherits the outer run's
+# folder and makes its own in there, so the outer run's cleanup takes it even when the inner
+# one was ended by a KILL. With no such place the run ends here and says so.
+FLOP="$STATE/flop"
+case $FLOP in
+*[[:space:]]*)
+    for flop_d in "${COCKPIT_SUITE_NB:-}" "$SUITE_XRD"; do
+        case $flop_d in ''|*[[:space:]]*) continue ;; esac
+        [ -d "$flop_d" ] && [ -w "$flop_d" ] && SUITE_NB=$(mktemp -d "$flop_d/cnb.XXXXXX") && break
+    done
+    [ -n "$SUITE_NB" ] || fatal "TMPDIR holds a blank, and the tmux wrapper needs a folder $(
+        )without one: set XDG_RUNTIME_DIR to such a folder (#992)"
+    export COCKPIT_SUITE_NB="$SUITE_NB"; FLOP="$SUITE_NB/flop"; unset flop_d ;;
+esac
+mkdir -p "$FLOP"
 if [ -x "$TMUX_BIN" ]; then flop_write "$FLOP" "$TMUX_BIN"; TMUX_REAL="$FLOP/tmux"; fi
 flop_left() {                 # [dir] -> a bad row for each r.* whose call was never retried, and
                               # with no dir each socket refusal a subshell made (#195)
