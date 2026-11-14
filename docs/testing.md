@@ -126,10 +126,13 @@ is the cost. Nothing sweeps it, and `make tui-test-clean` names it.
 A shell cannot trap a signal that was ignored when it started. A suite started
 with `&` from a script ignores INT and QUIT, one under nohup ignores HUP, and
 the runner then ignores that signal as its binary does: the log is still read,
-the folder removed, and the runner ends with the binary's status. The rows of
-`claude_guard.rs` start the runner with every signal they send at its default
-and unblocked, so they hold however the suite was started. One row starts its
-own binary again with INT and HUP ignored, and fails without that reset (#1044).
+the folder removed, and the runner ends with the binary's status, and one row
+of `claude_guard.rs` starts the runner that way to hold it. The other rows
+start the runner with every signal they send at its default and unblocked, so
+they hold however the suite was started. So do the rows of `agents.rs` and
+`push.rs` that signal a process they started (#1061). Each of the three files
+has a row that starts its own binary again with those signals ignored and
+blocked, and fails without that reset (#1044, #1061).
 
 Doctests are guarded under cargo 1.92 and not under 1.88, the two measured:
 1.88, the toolchain `make tui-test` uses, does not hand a doctest to a runner.
