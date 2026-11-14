@@ -10618,7 +10618,8 @@ for cw in state config bin cache data; do cw_ls "$cw" > "$CW/$cw.before"; done
 cwo=$(cd "$DIR" && env -u TMUX TMUX_TMPDIR="$CW/s" \
     XDG_STATE_HOME="$CW/c/state" XDG_CONFIG_HOME="$CW/c/config" XDG_BIN_HOME="$CW/c/bin" \
     XDG_CACHE_HOME="$CW/c/cache" XDG_DATA_HOME="$CW/c/data" COCKPIT_LOG="$CW/c/log" \
-    VISUAL="$CW/c/visual" EDITOR="$CW/c/editor" COCKPIT_READONLY=1 COCKPIT_PANEL_NOTE=canary \
+    VISUAL="$CW/c/visual" EDITOR="$CW/c/editor" COCKPIT_READONLY=1 \
+    COCKPIT_PANEL_NOTE="$CW/c/note" \
     COCKPIT_REVIEW_BASE=canary COCKPIT_PROC_DIR="$CW/c/proc" COCKPIT_POLL_KEY=canary \
     REVDIFF_CONFIG="$CW/c/revdiff" REVDIFF_EXCLUDE=canary CLAUDE_CODE_SESSION_KIND=canary \
     tests/only.sh "^the suite sees none of its caller|^install\.sh --check: one row|$(:
@@ -10641,7 +10642,12 @@ for cw in VISUAL:visual EDITOR:editor; do
     is "${cw%:*}: the suite did not see it, and the caller's editor was not run" "1 not run" \
        "$(cw_unseen "${cw%:*}") $([ -e "$CW/c/${cw#*:}.ran" ] && echo ran || echo 'not run')"
 done
-for cw in COCKPIT_READONLY COCKPIT_PANEL_NOTE COCKPIT_REVIEW_BASE COCKPIT_PROC_DIR \
+# The one switch that names a file to write: a path in this block's folder, so a run that
+# does see it writes there and not into the checkout the nested run starts in.
+is "COCKPIT_PANEL_NOTE: the suite did not see it, and the caller's file was not written" \
+   "1 not written" \
+   "$(cw_unseen COCKPIT_PANEL_NOTE) $([ -e "$CW/c/note" ] && echo written || echo 'not written')"
+for cw in COCKPIT_READONLY COCKPIT_REVIEW_BASE COCKPIT_PROC_DIR \
         COCKPIT_POLL_KEY REVDIFF_CONFIG REVDIFF_EXCLUDE CLAUDE_CODE_SESSION_KIND; do
     is "$cw: the suite did not see it" "1" "$(cw_unseen "$cw")"
 done
