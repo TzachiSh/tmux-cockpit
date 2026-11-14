@@ -660,7 +660,8 @@ fn the_signal_row_holds_in_a_binary_handed_an_ignored_int_and_hup() {
     };
     let out = ended(c.spawn().unwrap(), "this binary, started again");
     let said = String::from_utf8_lossy(&out.stdout);
-    assert_eq!((out.status.code(), said.contains(" 1 passed; 0 failed")), (Some(0), true), "{said}");
+    let one_passed = said.contains(" 1 passed; 0 failed");
+    assert_eq!((out.status.code(), one_passed), (Some(0), true), "{said}");
 }
 
 /// QUIT is the keyboard's other one, ctrl and backslash. The start is still reported and
