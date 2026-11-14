@@ -38,9 +38,9 @@ tmux outside it, in a folder it makes in the caller's runtime dir,
 `$XDG_RUNTIME_DIR/cnb.<6>`, mode 700 (#992). Pane commands in the suite paste
 that wrapper's path unquoted, so it must hold no blank. The wrapper's small
 marker files sit beside it, `flop/k.*` and `flop/r.*`, and a run started inside
-the run makes its own `cnb.<6>` in there. While one of three board blocks runs
-it also holds a stub tmux, `ct.<6>/tmux`. The run removes the folder when it
-ends, also on a FATAL and on HUP, INT or TERM. A run ended by KILL leaves it,
+the run makes its own `cnb.<6>` in there. Three board blocks each add a stub
+tmux, `ct.<6>/tmux`, which stays until the run ends. The run removes the folder
+when it ends, also on a FATAL and on HUP, INT or TERM. A run ended by KILL leaves it,
 with `flop/tmux` inside. Nothing sweeps it, and it is safe to remove once no
 run is going.
 

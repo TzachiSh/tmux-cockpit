@@ -36,6 +36,16 @@ either line: `sh` has no home directory to put in place of `~`. Give the full
 path there, in single quotes inside double ones so that a space in it holds:
 `run-shell "'/full/path/to/tmux-cockpit/cockpit.tmux'"`.
 
+`bootstrap.sh` appends a line of that last shape to an existing config, with
+the plugin folder's own path in it, escaped so that tmux and `sh` both read it
+as one word whatever the path holds. Before #1046 it appended the path with no
+quotes. That older line still loads the plugin from a folder whose path is
+plain, and `bootstrap.sh` leaves it alone. From a folder whose path holds a
+space, a quote, a `$` or another character `sh` reads, it loads nothing. There
+`bootstrap.sh` names the line's number and prints the line to put in its place,
+and `install.sh --check` gives the same as a warning on its config row. Neither
+edits your config.
+
 `install.sh` only ever creates symlinks, skips a name already taken by a real
 file or by another tool's link, reports anything it could not create, and
 `--uninstall` removes only links that point back into the plugin (and reports

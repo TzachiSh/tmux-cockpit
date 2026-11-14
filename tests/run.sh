@@ -4079,6 +4079,191 @@ is "and the XDG file is left alone" "# xdg" "$(cat "$BH/.config/tmux/tmux.conf")
 rm -rf "$BS"
 fi
 
+echo "== bootstrap.sh and install.sh give a line that loads the plugin from any folder (#1046) =="
+# bootstrap.sh appended `run-shell <folder>/cockpit.tmux` and install.sh printed it. tmux hands
+# that to sh bare: a blank in the folder's path split it and nothing loaded, and a $( ) in it
+# was run. Both now build the line with cockpit_conf_line (scripts/lib/confline.sh). Here a
+# copy of the plugin sits under each folder shape, bootstrap.sh runs from the copy on a faked
+# box (as the #228 block's), and a private server sources the config it wrote. Each copy's
+# cockpit.tmux also sets @cl_from to its own number, so a row can tell whose plugin loaded.
+if ! command -v curl >/dev/null 2>&1; then skip_ "the #1046 rows (no curl)"
+elif ! command -v sha256sum >/dev/null 2>&1; then skip_ "the #1046 rows (no sha256sum)"
+elif need_tmux "the line bootstrap.sh appends"; then :; else
+CL=$(mktmpd); CLREL="$CL/rel"; mkdir -p "$CL/p" "$CL/wd" "$CL/shim" "$CL/tmuxtmp" "$CL/pack"
+printf '#!/bin/sh\ntouch %s\nexit 99\n' "$(tq "$CL/SUDO_RAN")" > "$CL/shim/sudo"
+chmod +x "$CL/shim/sudo"
+cl_d="$CLREL/umputun/revdiff/releases/download/v1.13.0"; mkdir -p "$cl_d"
+printf '#!/bin/sh\necho "version: 1.13.0"\n' > "$CL/pack/revdiff"; chmod +x "$CL/pack/revdiff"
+for cl_a in linux_amd64 linux_arm64 darwin_amd64 darwin_arm64; do
+    ( cd "$CL/pack" && tar -czf "$cl_d/revdiff_1.13.0_$cl_a.tar.gz" revdiff )
+done
+( cd "$cl_d" && sha256sum revdiff_1.13.0_*.tar.gz > revdiff_1.13.0_checksums.txt )
+for cl_n in 1 2 3 4 5 6 7 8 9 10 11 12; do SOCKS="$SOCKS cockpit-cl-$$-$cl_n"; done
+cl_box() {                    # <n> <folder name> -- a copy of the plugin and a home for it
+    local p="$CL/p/$2" h="$CL/h$1" d
+    mkdir -p "$p" "$h/bin" "$h/.tmux/plugins"
+    for d in tpm tmux-sensible tmux-yank tmux-resurrect tmux-continuum tmux; do
+        mkdir -p "$h/.tmux/plugins/$d/.git"
+    done
+    cp "$DIR/bootstrap.sh" "$DIR/install.sh" "$DIR/cockpit.tmux" "$p/"
+    for d in scripts examples bin; do ln -s "$DIR/$d" "$p/$d"; done
+    printf '\ntmux set-option -g @cl_from %s\n' "$1" >> "$p/cockpit.tmux"
+    printf '# mine\n' > "$h/.tmux.conf"
+}
+cl_env() {                    # <n> <command...> -- on the faked box, home h<n>
+    local h="$CL/h$1"; shift
+    env -u TMUX -u TMUX_PANE HOME="$h" XDG_BIN_HOME="$h/bin" XDG_CONFIG_HOME="$h/.config" \
+        TMUX_TMPDIR="$CL/tmuxtmp" COCKPIT_GITHUB="$(file_url "$CLREL")" \
+        PATH="$CL/shim:$SHIM:/usr/bin:/bin" "$@" </dev/null 2>&1
+}
+cl_load() {                   # <n> [socket n] -> <@cl_from>|<prefix w bindings>, h<n> sourced
+    local h="$CL/h$1" s="cockpit-cl-$$-${2:-$1}"
+    ( cd "$CL/wd" && HOME="$h" exec "$TMUX_REAL" -L "$s" -f /dev/null new-session -d -s t \
+        -c "$CL/wd" 'exec sleep 300' ) >/dev/null 2>&1
+    ( cd "$CL/wd" && exec "$TMUX_REAL" -L "$s" source-file "$h/.tmux.conf" ) >/dev/null 2>&1
+    until_out '?*' "$TMUX_REAL" -L "$s" show-option -gqv @cl_from >/dev/null
+    printf '%s|%s' "$("$TMUX_REAL" -L "$s" show-option -gqv @cl_from 2>/dev/null)" \
+        "$("$TMUX_REAL" -L "$s" list-keys -T prefix w 2>/dev/null | grep -c cockpit_board)"
+    "$TMUX_REAL" -L "$s" kill-server >/dev/null 2>&1
+}
+cl_n=0
+# The $( ) holds no blank: tmux splits a bare line at one before sh sees it, and then sh
+# stops at the half it got. Whole, sh runs it, in the cwd of the client that sourced the config.
+for cl_f in 'plain' 'two  blanks' "a'quote" 'd$(id>pwned)x' 'd$HOME#{pane_id}' \
+        'C#Sharp#[x##y' 'q"t;s\b`id>pwned`x'; do
+    cl_n=$((cl_n + 1)); cl_box "$cl_n" "$cl_f"
+    ( cd "$CL/wd" && cl_env "$cl_n" "$CL/p/$cl_f/bootstrap.sh" --yes ) > "$CL/out$cl_n"
+    is "a folder named [$cl_f]: bootstrap.sh appends one line" "1" \
+       "$(grep -c 'cockpit\.tmux' "$CL/h$cl_n/.tmux.conf")"
+    is "and a server that sources the config loads that folder's plugin" "$cl_n|1" \
+       "$(cl_load "$cl_n")"
+    cp "$CL/h$cl_n/.tmux.conf" "$CL/conf$cl_n"
+    ( cd "$CL/wd" && cl_env "$cl_n" "$CL/p/$cl_f/bootstrap.sh" --yes ) > "$CL/again$cl_n"
+    is "and a second run appends nothing" "same" \
+       "$(cmp -s "$CL/h$cl_n/.tmux.conf" "$CL/conf$cl_n" && echo same || echo changed)"
+    is "and that run prints no notice: the line it finds is quoted" "0" \
+       "$(grep -c 'has no quotes around the path' "$CL/again$cl_n")"
+done
+# And by a shell: each config is run as a script, as a line pasted at a prompt would be.
+# sh finds no run-shell, and must not run a backtick or a $( ) on the way to saying so.
+for cl_f in "$CL"/conf[0-9]; do ( cd "$CL/wd" && sh "$cl_f" ) >/dev/null 2>&1; done
+is "nothing in a folder's name was run, by bootstrap.sh, by the server or by a shell" "" \
+   "$(find "$CL" -name pwned | tr '\n' ' ')"
+is "and no run reached for sudo" "absent" "$([ -e "$CL/SUDO_RAN" ] && echo present || echo absent)"
+
+# Which folders a bare line carries, as measured on tmux 3.6 and 3.8: a # in front of a [
+# arrives whole, a ## run included, and so does one in front of a plain letter. tmux replaces
+# #S and the other one-letter names, a #, and a #{ }, and makes one # of a ##.
+is "cockpit_bare_carries: which # shapes a bare line carries" \
+   "a#[b:yes a##[b:yes a#xb:yes a#:yes C#Sharp:no a#,b:no a##b:no a#{b:no a#Wb:no a b:no " \
+   "$(. "$DIR/scripts/lib/confline.sh"
+      for cl_f in 'a#[b' 'a##[b' 'a#xb' 'a#' 'C#Sharp' 'a#,b' 'a##b' 'a#{b' 'a#Wb' 'a b'; do
+          cockpit_bare_carries "/p/$cl_f" && printf '%s:yes ' "$cl_f" || printf '%s:no ' "$cl_f"
+      done)"
+
+# Which line of a config is the old one: run or run-shell, a tab or a blank after it, an
+# optional -b, the path written out or with ~ for HOME, also a HOME with a / at its end.
+is "cockpit_conf_bare_line: the spellings of the old line, by line number" "3 1 3 none" \
+   "$(. "$DIR/scripts/lib/confline.sh"; HOME="$CL/h1"
+      printf '# a\n\n  run -b ~/pl ug/cockpit.tmux\n' > "$CL/sp1"
+      printf 'run-shell\t%s/pl ug/cockpit.tmux  \n' "$HOME" > "$CL/sp2"
+      printf 'run-shell "%s/pl ug/cockpit.tmux"\n' "$HOME" > "$CL/sp3"
+      printf '%s ' "$(cockpit_conf_bare_line "$CL/sp1" "$HOME/pl ug")" \
+          "$(cockpit_conf_bare_line "$CL/sp2" "$HOME/pl ug")"
+      HOME="$HOME/"; printf '%s ' "$(cockpit_conf_bare_line "$CL/sp1" "$CL/h1/pl ug")"
+      cockpit_conf_bare_line "$CL/sp3" "$CL/h1/pl ug" || printf none)"
+
+# A config that already holds the older line. bootstrap.sh never rewrites a config, so it
+# says what it found: only when the line is the bare one and the folder's path holds a
+# character such a line does not carry. Box 2 is the folder with blanks, box 1 the plain one.
+cl_p2="$CL/p/two  blanks"
+printf '# mine\n\nrun-shell %s/cockpit.tmux\n' "$cl_p2" > "$CL/h2/.tmux.conf"
+cp "$CL/h2/.tmux.conf" "$CL/conf2"
+cl_out=$( cd "$CL/wd" && cl_env 2 "$cl_p2/bootstrap.sh" --yes )
+cl_line=$(. "$DIR/scripts/lib/confline.sh" && cockpit_conf_line "$cl_p2")
+case "$cl_out" in
+    *"NOTE   line 3 of that file has no quotes around the path"*"Replace line 3 with:"*"
+           $cl_line
+"*) ok "an old bare line and a folder with blanks: the notice names line 3 and gives the line" ;;
+    *) bad "an old bare line and a folder with blanks: the notice names line 3 and gives the line" \
+           "NOTE … line 3 … $cl_line" "$cl_out" ;;
+esac
+is "and the config is left as it was" "same" \
+   "$(cmp -s "$CL/h2/.tmux.conf" "$CL/conf2" && echo same || echo changed)"
+cl_said() {                   # <label> <literal text> <output that must hold it>
+    case "$3" in
+        *"$2"*) ok "$1" ;;
+        *) bad "$1" "$2" "$3" ;;
+    esac
+}
+cl_said "and install.sh --check warns on its config row, with the same line" \
+    "[ warn ] config         $CL/h2/.tmux.conf line 3 unquoted, loads nothing from this $(:
+        )folder; replace line 3 with $cl_line
+" "$(cl_env 2 "$cl_p2/install.sh" --check)
+"
+# The four places install.sh prints the line, each from the folder with blanks, on a home
+# of its own. The line is read whole, to its line end: a bare path is a red row.
+mkdir -p "$CL/h8/bin"
+cl_said "install.sh, no tmux config: the note gives the line" \
+    "No tmux config found. Create $CL/h8/.tmux.conf with:
+  $cl_line
+" "$(cl_env 8 "$cl_p2/install.sh")
+"
+cl_said "install.sh --check, no tmux config: the fix column gives the line" \
+    "no tmux config           run bootstrap.sh, or add $cl_line
+" "$(cl_env 8 "$cl_p2/install.sh" --check)
+"
+printf '# mine\n' > "$CL/h8/.tmux.conf"
+cl_out=$(cl_env 8 "$cl_p2/install.sh")
+cl_said "install.sh, a config that does not load the plugin: the note gives the line" \
+    "Add this to $CL/h8/.tmux.conf, AFTER every option using an #{agent_*} token:
+  $cl_line
+" "$cl_out
+"
+cl_said "install.sh --check on that config: the fix column gives the line" \
+    "$CL/h8/.tmux.conf run bootstrap.sh, or add $cl_line
+" "$(cl_env 8 "$cl_p2/install.sh" --check)
+"
+cl_said "install.sh with HOME unset: the note gives the line" \
+    "HOME is not set; add this to your tmux config by hand:
+  $cl_line
+" "$(env -u TMUX -u TMUX_PANE -u HOME -u XDG_CONFIG_HOME XDG_BIN_HOME="$CL/h8/bin" \
+        PATH="$CL/shim:$SHIM:/usr/bin:/bin" "$cl_p2/install.sh" </dev/null 2>&1)
+"
+# What the note printed, put where it says: the line under "Add this to", into that config.
+printf '%s\n' "$cl_out" | awk 'f { sub(/^  /, ""); print; exit } /^Add this to /{ f = 1 }' \
+    >> "$CL/h8/.tmux.conf"
+is "the line install.sh's note printed, added to that config, loads the folder's plugin" "2|1" \
+   "$(cl_load 8)"
+unset -f cl_said
+is "the line the notice gives loads the plugin once it replaces line 3" "2|1" \
+   "$(printf '# mine\n\n%s\n' "$cl_line" > "$CL/h2/.tmux.conf"; cl_load 2 11)"
+# A folder with a control character in its name: no line is shown, a terminal would act on it.
+cl_box 9 "e"$'\033'"[31msc"
+printf 'run-shell %s/cockpit.tmux\n' "$CL/p/e"$'\033'"[31msc" > "$CL/h9/.tmux.conf"
+cl_out=$( cd "$CL/wd" && cl_env 9 "$CL/p/e"$'\033'"[31msc/bootstrap.sh" --yes )
+is "an old bare line and a folder with an ESC in its name: the notice shows no line" "1|0" \
+   "$(printf '%s\n' "$cl_out" | grep -c 'holds a control character, so no line is shown')|$(
+      printf '%s\n' "$cl_out" | grep -c 'Replace line')"
+# The plain folder: a bare line works there, so nothing new is said. The run's output is
+# the same, byte for byte, whether the config holds the old line or the new one.
+# Under a TMPDIR whose own path a bare line does not carry, "plain" is not plain.
+if ! ( . "$DIR/scripts/lib/confline.sh" && cockpit_bare_carries "$CL" ); then
+    skip_ "an old bare line and a plain folder: same output (TMPDIR's path is not plain)"
+    skip_ "and install.sh --check passes its config row (TMPDIR's path is not plain)"
+else
+printf '# mine\nrun-shell %s/cockpit.tmux\n' "$CL/p/plain" > "$CL/h1/.tmux.conf"
+( cd "$CL/wd" && cl_env 1 "$CL/p/plain/bootstrap.sh" --yes ) > "$CL/bare1"
+is "an old bare line and a plain folder: the run says what a run with the new line says" "same" \
+   "$(cmp -s "$CL/bare1" "$CL/again1" && echo same || echo differs)"
+is "and install.sh --check passes its config row" "1" \
+   "$(cl_env 1 "$CL/p/plain/install.sh" --check |
+      grep -cF "[  ok  ] config         $CL/h1/.tmux.conf loads cockpit")"
+fi
+unset -f cl_box cl_env cl_load
+unset CL CLREL cl_d cl_a cl_n cl_f cl_p2 cl_out cl_line
+fi
+
 echo "== HOME unset must not kill the path picker =="
 # set -u plus a bare $HOME: a "~/..." token on a clicked line aborted the script
 # outright wherever HOME is missing -- a stripped run-shell, a systemd tmux.
@@ -18215,18 +18400,23 @@ is "the README, both examples, both docs pages and cockpit.tmux each give the in
 # of prose. Each `run … cockpit.tmux` is cut out of its line and must be one of the three
 # forms the docs give: the line above, the one for a plugin folder with a space, and the one
 # with a full path, for a server started with no HOME.
-# Not read yet: bootstrap.sh, which appends a line to a user's config, and install.sh,
-# which prints one. Both still give the bare shape (#1046), so this row's green is about
-# the pages, the examples and the comment only.
-is "and no page, example or comment loads cockpit.tmux in another form: file:line of each" "" \
+# A line ending in \ is joined to the next first. `ru`, `run-sh` and the other short spellings
+# tmux takes count, and so does an if-shell that holds the line. The skills' pages are read
+# too. awk's own exit is part of the answer: a page that is gone, or an awk that did not
+# run, is a red row and not an empty list (#1046).
+# bootstrap.sh and install.sh hold no line to read: both build theirs with cockpit_conf_line,
+# and the #1046 block, further up, runs what they give.
+is "and no page, example or comment loads cockpit.tmux in another form: file:line of each" "rc=0" \
    "$(cd "$DIR" && A="$IL" B="run-shell '\"\$HOME/my plugins/tmux-cockpit/cockpit.tmux\"'" \
         C="run-shell \"'/full/path/to/tmux-cockpit/cockpit.tmux'\"" \
-      awk '{ s = $0
-             while (match(s, /run(-shell)?[ \t][^`]*cockpit\.tmux['"'"'"]*/)) {
+      awk '{ if (held != "") { s = held $0 } else { s = $0; at = FNR }
+             if (s ~ /\\$/) { held = substr(s, 1, length(s) - 1); next }
+             held = ""
+             while (match(s, /(ru(n(-[a-z]*)?)?|if(-s[a-z]*)?)[ \t][^`]*cockpit\.tmux['"'"'"]*/)) {
                  m = substr(s, RSTART, RLENGTH); s = substr(s, RSTART + RLENGTH)
                  if (m != ENVIRON["A"] && m != ENVIRON["B"] && m != ENVIRON["C"]) {
-                     printf "%s:%d ", FILENAME, FNR; break } } }' \
-          ./*.md docs/*.md docs/*/*.md examples/* cockpit.tmux 2>/dev/null)"
+                     printf "%s:%d ", FILENAME, at; break } } }' \
+          ./*.md docs/*.md docs/*/*.md skills/*/*.md examples/* cockpit.tmux; echo "rc=$?")"
 if need_tmux "the install line under a HOME with a blank"; then :; else
 ILD=$(mktmpd); mkdir -p "$ILD/wd"
 # A server each, by number: the rows call this in a subshell, so the names are registered
