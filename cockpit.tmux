@@ -155,6 +155,11 @@ give_back() {                 # <key> -> 1 when tmux's own binding could not be 
 # command, and only until a load has noted every key (@cockpit_notes): after
 # that a note-less key is the user's, whatever it runs.
 notes=$(tmux show-option -gqv @cockpit_notes)
+# The pre-notes panel key ran "$(sq <panel>) -p ...", and #{key_command} prints that
+# argument in a "...", with \ " $ escaped: the raw $DIR missed a ' or a " in it (#1086).
+legacy_panel=$(sq "$DIR/scripts/cockpit-panel")
+legacy_panel=${legacy_panel//\\/\\\\}; legacy_panel=${legacy_panel//\"/\\\"}
+legacy_panel=${legacy_panel//\$/\\\$}
 owned() {                     # <name> <key>
     local nc
     nc=$(tmux list-keys -T prefix -F "#{key_note}"$'\037'"#{key_command}" "$2" 2>/dev/null)
@@ -162,7 +167,7 @@ owned() {                     # <name> <key>
         "cockpit: $1") return 0 ;;
         "") [ -z "$notes" ] || return 1
             case "$1:${nc#*$'\037'}" in
-                menu:*'display-menu -T "#[align=centre]'*|panel:*"$DIR/scripts/cockpit-panel"*)
+                menu:*'display-menu -T "#[align=centre]'*|panel:*"$legacy_panel"*)
                     tmux display-message "$(fesc \
                         "tmux-cockpit: $2 was the $1 key before the key notes; giving it back")"
                     return 0 ;;
