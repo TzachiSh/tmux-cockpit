@@ -28,7 +28,7 @@
   "$defs": {
     "id": { "type": "string", "pattern": "^[0-9a-f]{16,64}(?!\\n)$" },
     "ref": {
-      "description": "An opaque file name in the private refs folder: 16 to 64 lowercase hex, then .md, .json or .txt.",
+      "description": "An opaque file name in the private refs folder: 16 to 64 lowercase hex, then .md, .json or .txt. No word fits as written; an encoded one does.",
       "type": "string",
       "pattern": "^[0-9a-f]{16,64}\\.(md|json|txt)(?!\\n)$"
     },

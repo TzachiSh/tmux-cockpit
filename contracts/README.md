@@ -27,13 +27,15 @@ Nothing reads these schemas at run time. The Rust side is `tui/src/store.rs`, a
 - **Ids are opaque:** every id field (`agent_id`, `intent_id`, `from_agent`,
   `msg_id`, `from`, `to`, `correlation_id`, any payload `*_id`) is 16 to 64
   lowercase hex, and so is each `agent-message.subject` token after `msg.`.
-  No word, title or snake_case sentence fits one. Pane ids (`%N`), the
-  github-budget key (16 hex or `global`) and timestamps keep their own shapes.
+  No word or title fits one as written. A hex-encoded one still fits, and only
+  the writer keeps it out. Pane ids (`%N`), the github-budget key (16 hex or
+  `global`) and timestamps keep their own shapes.
 - **Refs are opaque too** (`summary_ref`, any `*_ref`): a file name of 16 to 64
   lowercase hex, then `.md`, `.json` or `.txt`, directly in one fixed private
-  folder, `$XDG_STATE_HOME/tmux-cockpit/refs/` (0700). No folder part, no `..`,
-  no `/` and no word fits. The reader of a ref still refuses a symlink that
-  leads out of the folder.
+  folder, `$XDG_STATE_HOME/tmux-cockpit/refs/` (0700). No folder part, no `..`
+  and no `/` fits, and no word or title as written; a hex-encoded one still
+  fits, and only the writer keeps it out. The reader of a ref still refuses a
+  symlink that leads out of the folder.
 - **`agent-message.payload`** allows a key only when it ends in `_id` (its value
   must be an id) or in `_ref` (its value must be a ref). Every other key is
   refused (`additionalProperties: false` beside the two `patternProperties`),

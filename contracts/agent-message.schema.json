@@ -10,7 +10,7 @@
     "from": { "$ref": "#/$defs/id" },
     "to": { "$ref": "#/$defs/id" },
     "subject": {
-      "description": "msg. then 1 to 15 dotted ids: NATS-safe, and no word fits.",
+      "description": "msg. then 1 to 15 dotted ids: NATS-safe, and no word fits as written.",
       "type": "string",
       "maxLength": 255,
       "pattern": "^msg(\\.[0-9a-f]{16,64}){1,15}(?!\\n)$"
@@ -42,7 +42,7 @@
   "$defs": {
     "id": { "type": "string", "pattern": "^[0-9a-f]{16,64}(?!\\n)$" },
     "ref": {
-      "description": "An opaque file name in the private refs folder: 16 to 64 lowercase hex, then .md, .json or .txt.",
+      "description": "An opaque file name in the private refs folder: 16 to 64 lowercase hex, then .md, .json or .txt. No word fits as written; an encoded one does.",
       "type": "string",
       "pattern": "^[0-9a-f]{16,64}\\.(md|json|txt)(?!\\n)$"
     },
