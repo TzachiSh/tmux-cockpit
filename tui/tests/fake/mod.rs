@@ -688,7 +688,7 @@ fn rig_process(p: u32, pid: u32) -> bool {
         let sock = String::from_utf8_lossy(v).split(',').next().unwrap_or_default().to_string();
         rigs(sock.rsplit('/').next().unwrap_or_default())
     });
-    let ours = own.is_some_and(|o| vars.iter().any(|v| *v == o.as_slice()));
+    let ours = own.is_some_and(|o| vars.contains(&o.as_slice()));
     (server || pane) && ours
 }
 
