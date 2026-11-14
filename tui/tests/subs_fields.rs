@@ -29,6 +29,9 @@ impl Drop for Gone {
 
 #[test]
 fn field_14_is_the_count_and_the_subagents_dir_follows_the_transcript_then_the_session() {
+    // first, before the rig's folder: the runner unset the caller's
+    // agents cache and state folder, which a lookup uses (#1066)
+    fake::checked_state();
     let dir = std::env::temp_dir().join(format!("cockpit-tui-subs-fields-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let _gone = Gone(dir.clone());
@@ -71,7 +74,8 @@ fn field_14_is_the_count_and_the_subagents_dir_follows_the_transcript_then_the_s
     write_exec(&dir.join("bin/git"), "#!/bin/sh\nexit 1\n");
     write_exec(&dir.join("bin/ps"), "#!/bin/sh\n");
     let path = fake::rig_path(&dir.join("bin"));
-    // SAFETY: this test binary holds exactly one test, so nothing runs beside it.
+    // SAFETY: the one test of this binary that writes the env. The other reads it only
+    // in its spawn, which std orders with these writes (fake::run_by_hand).
     unsafe {
         std::env::set_var("PATH", path);
         std::env::set_var("COCKPIT_TMUX", format!("{d}/bin/tmux"));
@@ -96,4 +100,30 @@ fn field_14_is_the_count_and_the_subagents_dir_follows_the_transcript_then_the_s
         ("%5".to_string(), 0, v(&[])),
     ];
     assert_eq!(got, want);
+}
+
+/// #1066: started by hand with a caller's XDG_CACHE_HOME kept, this binary's rig
+/// refuses before a lookup can read or write the agents cache there.
+#[test]
+fn a_kept_agents_cache_is_refused() {
+    let kept = [("XDG_CACHE_HOME", "/canary-1066/cache")];
+    let (code, said) = fake::run_by_hand(
+        "field_14_is_the_count_and_the_subagents_dir_follows_the_transcript_then_the_session",
+        &kept,
+    );
+    let refused = said.contains("the caller's state refused (#1066): XDG_CACHE_HOME set. ");
+    assert_eq!((code, refused), (Some(101), true), "{said}");
+}
+
+/// #1066: started by hand with a caller's XDG_STATE_HOME kept, this binary's rig
+/// refuses before it can read the hooks' subagent log there.
+#[test]
+fn a_kept_state_folder_is_refused() {
+    let kept = [("XDG_STATE_HOME", "/canary-1066/state")];
+    let (code, said) = fake::run_by_hand(
+        "field_14_is_the_count_and_the_subagents_dir_follows_the_transcript_then_the_session",
+        &kept,
+    );
+    let refused = said.contains("the caller's state refused (#1066): XDG_STATE_HOME set. ");
+    assert_eq!((code, refused), (Some(101), true), "{said}");
 }

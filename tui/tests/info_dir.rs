@@ -78,6 +78,8 @@ fn rig(t: &Tmp, cwd: &str, opt: &str, said: &str) -> Vec<(&'static str, String)>
 }
 
 fn set(t: &Tmp, env: &[(&'static str, String)]) {
+    // the runner unset the caller's cache and state, which a lookup uses (#1066)
+    fake::checked_state();
     for (k, v) in env {
         // SAFETY: every test in this binary holds ENV while it touches the environment.
         unsafe { std::env::set_var(k, v) };
@@ -170,4 +172,24 @@ fn gather_reads_the_bound_job_cleaned() {
     // a name with no id is no bind (agent-poll sets both at once): never `(@cockpit_job )`
     std::fs::write(t.0.join("display"), format!("{plain}\u{1f}\u{1f}lone")).unwrap();
     assert_eq!(gather("%1").unwrap().job, None);
+}
+
+/// #1066: started by hand with a caller's XDG_CACHE_HOME kept, this binary's rig
+/// refuses before a lookup can read or write the agents cache there.
+#[test]
+fn a_kept_agents_cache_is_refused() {
+    let kept = [("XDG_CACHE_HOME", "/canary-1066/cache")];
+    let (code, said) = fake::run_by_hand("the_work_dir_follows_the_board_order_and_root_follows_it", &kept);
+    let refused = said.contains("the caller's state refused (#1066): XDG_CACHE_HOME set. ");
+    assert_eq!((code, refused), (Some(101), true), "{said}");
+}
+
+/// #1066: started by hand with a caller's XDG_STATE_HOME kept, this binary's rig
+/// refuses before it can read the review folder there.
+#[test]
+fn a_kept_state_folder_is_refused() {
+    let kept = [("XDG_STATE_HOME", "/canary-1066/state")];
+    let (code, said) = fake::run_by_hand("the_work_dir_follows_the_board_order_and_root_follows_it", &kept);
+    let refused = said.contains("the caller's state refused (#1066): XDG_STATE_HOME set. ");
+    assert_eq!((code, refused), (Some(101), true), "{said}");
 }

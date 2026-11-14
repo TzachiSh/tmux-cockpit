@@ -28,6 +28,9 @@ impl Drop for Server {
 
 #[test]
 fn the_hook_options_reach_the_pane_through_the_format() {
+    // first, before the rig's folder: the runner unset the caller's
+    // log, agents cache and state folder, which a lookup uses (#1066)
+    fake::checked_state();
     if Command::new("tmux").arg("-V").output().is_err() {
         eprintln!("no tmux on PATH -- skipping");
         return;
@@ -60,8 +63,6 @@ fn the_hook_options_reach_the_pane_through_the_format() {
     // found by PATH. The rig's own answers it, the one `rig_path` writes, which counts
     // its starts beside itself. `tmux` still comes from the rest of PATH (#972).
     let path = fake::rig_path(&dir.join("bin"));
-    // the runner unset the caller's log, which a lookup writes to (#1066)
-    fake::checked_state();
     // SAFETY: the one test of this binary that writes the env. The other reads it only
     // in its spawn, which std orders with these writes (fake::run_by_hand).
     unsafe {
@@ -86,10 +87,28 @@ fn the_hook_options_reach_the_pane_through_the_format() {
 /// refuses before a lookup can write a line there. The runner unsets it.
 #[test]
 fn a_kept_cockpit_log_is_refused() {
-    let (code, said) = fake::run_by_hand(
-        "the_hook_options_reach_the_pane_through_the_format",
-        &[("COCKPIT_LOG", "/canary-1066/log")],
-    );
+    let kept = [("COCKPIT_LOG", "/canary-1066/log")];
+    let (code, said) = fake::run_by_hand("the_hook_options_reach_the_pane_through_the_format", &kept);
     let refused = said.contains("the caller's state refused (#1066): COCKPIT_LOG set. ");
+    assert_eq!((code, refused), (Some(101), true), "{said}");
+}
+
+/// #1066: started by hand with a caller's XDG_CACHE_HOME kept, this binary's rig
+/// refuses before a lookup can read or write the agents cache there.
+#[test]
+fn a_kept_agents_cache_is_refused() {
+    let kept = [("XDG_CACHE_HOME", "/canary-1066/cache")];
+    let (code, said) = fake::run_by_hand("the_hook_options_reach_the_pane_through_the_format", &kept);
+    let refused = said.contains("the caller's state refused (#1066): XDG_CACHE_HOME set. ");
+    assert_eq!((code, refused), (Some(101), true), "{said}");
+}
+
+/// #1066: started by hand with a caller's XDG_STATE_HOME kept, this binary's rig
+/// refuses before it can read the hooks' subagent log there.
+#[test]
+fn a_kept_state_folder_is_refused() {
+    let kept = [("XDG_STATE_HOME", "/canary-1066/state")];
+    let (code, said) = fake::run_by_hand("the_hook_options_reach_the_pane_through_the_format", &kept);
+    let refused = said.contains("the caller's state refused (#1066): XDG_STATE_HOME set. ");
     assert_eq!((code, refused), (Some(101), true), "{said}");
 }

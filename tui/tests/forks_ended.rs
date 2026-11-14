@@ -8,6 +8,9 @@ use fake::write_exec;
 
 #[test]
 fn two_ticks_on_an_ended_row_fork_ps_once() {
+    // first, before the rig's folder: the runner unset the caller's
+    // log, agents cache and state folder, which a lookup uses (#1066)
+    fake::checked_state();
     let dir = std::env::temp_dir().join(format!("cockpit-tui-forks-ended-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("bin")).unwrap();
@@ -36,8 +39,6 @@ fn two_ticks_on_an_ended_row_fork_ps_once() {
     write_exec(&dir.join("bin/ps"), &format!("#!/bin/sh\necho 1 >> {d}/ps.n\necho '100 1 sleep'\n"));
     write_exec(&dir.join("bin/git"), "#!/bin/sh\nexit 1\n");
     let path = fake::rig_path(&dir.join("bin"));
-    // the runner unset the caller's log, which a lookup writes to (#1066)
-    fake::checked_state();
     // SAFETY: the one test of this binary that writes the env. The other reads it only
     // in its spawn, which std orders with these writes (fake::run_by_hand).
     unsafe {
@@ -62,7 +63,18 @@ fn two_ticks_on_an_ended_row_fork_ps_once() {
 /// refuses before a lookup can write a line there. The runner unsets it.
 #[test]
 fn a_kept_cockpit_log_is_refused() {
-    let (code, said) = fake::run_by_hand("two_ticks_on_an_ended_row_fork_ps_once", &[("COCKPIT_LOG", "/canary-1066/log")]);
+    let kept = [("COCKPIT_LOG", "/canary-1066/log")];
+    let (code, said) = fake::run_by_hand("two_ticks_on_an_ended_row_fork_ps_once", &kept);
     let refused = said.contains("the caller's state refused (#1066): COCKPIT_LOG set. ");
+    assert_eq!((code, refused), (Some(101), true), "{said}");
+}
+
+/// #1066: started by hand with a caller's XDG_CACHE_HOME kept, this binary's rig
+/// refuses before a lookup can read or write the agents cache there.
+#[test]
+fn a_kept_agents_cache_is_refused() {
+    let kept = [("XDG_CACHE_HOME", "/canary-1066/cache")];
+    let (code, said) = fake::run_by_hand("two_ticks_on_an_ended_row_fork_ps_once", &kept);
+    let refused = said.contains("the caller's state refused (#1066): XDG_CACHE_HOME set. ");
     assert_eq!((code, refused), (Some(101), true), "{said}");
 }

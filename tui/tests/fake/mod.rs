@@ -280,7 +280,7 @@ fn refusal(what: &str, why: &[String]) -> String {
     format!(
         "{what} refused (#1066): {}. cargo test clears these through tests/claude-guard/runner, \
          and clears nothing with COCKPIT_TEST_CLAUDE_GUARD=0. By hand: env -u TMUX -u TMUX_PANE \
-         -u TMUX_COCKPIT_DIR -u COCKPIT_LOG TMUX_TMPDIR=\"$(mktemp -d)\" {}",
+         -u TMUX_COCKPIT_DIR -u COCKPIT_LOG -u XDG_CACHE_HOME -u XDG_STATE_HOME TMUX_TMPDIR=\"$(mktemp -d)\" {}",
         why.join(", "),
         exe.display()
     )
@@ -310,12 +310,16 @@ pub fn tmux_refusal() -> Option<String> {
     if why.is_empty() { None } else { Some(refusal("tmux", &why)) }
 }
 
-/// For a rig that sets HOME and reaches the product's log: red with
-/// [`refusal`]'s line where COCKPIT_LOG is still set, as the runner unsets it
-/// (#1066). A caller's log took the rig's lines (data.rs:58).
+/// For a rig that sets HOME and reaches the product's log, agents cache or state:
+/// red with [`refusal`]'s line where COCKPIT_LOG, XDG_CACHE_HOME or XDG_STATE_HOME
+/// is still set, as the runner unsets all three (#1066). A caller's log took the
+/// rig's lines (data.rs:58), a caller's cache folder held the agents cache
+/// (data/agents.rs:162), and a caller's state folder the hooks' subagent log
+/// (data/subagents.rs:525) and the review folder (data/info.rs:108), each in
+/// place of the one under the rig's HOME.
 #[allow(dead_code)]
 pub fn checked_state() {
-    let why = still_set(&["COCKPIT_LOG"]);
+    let why = still_set(&["COCKPIT_LOG", "XDG_CACHE_HOME", "XDG_STATE_HOME"]);
     if !why.is_empty() {
         panic!("{}", refusal("the caller's state", &why));
     }
@@ -508,6 +512,116 @@ pub fn tests_beside_a_server(skip: &str) {
     let got = s.commands() - before;
     assert!(out.status.success(), "{}", told(&format!("all but {skip}"), &out));
     assert_eq!(got, 0, "the tests sent the caller's server {got} commands");
+}
+
+/// Set in the child of a row that starts this whole binary again, so that rows
+/// of that kind return at once there rather than start children of their own.
+#[allow(dead_code)]
+const WHOLE_CHILD: &str = "COCKPIT_TEST_WHOLE_CHILD";
+
+/// Whether this binary runs as the child of [`tests_leave_alone`]: a row of
+/// that kind then has nothing to do.
+#[allow(dead_code)]
+pub fn in_a_whole_child() -> bool {
+    std::env::var_os(WHOLE_CHILD).is_some()
+}
+
+/// The files the product's reading names under each of these variables, made
+/// in a canary so that a read of one is an open the watch sees: a lookup of a
+/// path that is not there makes no event. data/agents.rs:162 and
+/// panel/prompts.rs:30.
+#[allow(dead_code)]
+fn canary_files(var: &str) -> &'static [&'static str] {
+    match var {
+        "XDG_CACHE_HOME" => &["tmux-cockpit/agents.json"],
+        "XDG_CONFIG_HOME" => &[
+            "tmux-cockpit/prompts/ask-code.txt",
+            "tmux-cockpit/prompts/explain.txt",
+            "tmux-cockpit/prompts/fix.txt",
+            "tmux-cockpit/prompts/write.txt",
+            "tmux-cockpit/prompts/write.examples.txt",
+            "tmux-cockpit/prompts/write.explore.txt",
+        ],
+        _ => &[],
+    }
+}
+
+/// This binary's tests, started again with each of `vars` set to a canary of
+/// this call's own: COCKPIT_LOG a file, any other a folder holding the files
+/// [`canary_files`] names. An inotify watch on every canary folder sees each
+/// open, write, create, rename and delete under them while the child runs. Red
+/// where a test fails there. Returns what the child touched, as `<var>: <path>`:
+/// nothing, where no test reads or writes the caller's copy (#1066). In that
+/// child it returns nothing at once, so the row that calls it starts no other.
+/// Linux only.
+#[cfg(target_os = "linux")]
+#[allow(dead_code)]
+pub fn tests_leave_alone(vars: &[&str]) -> Vec<String> {
+    if in_a_whole_child() {
+        return vec![];
+    }
+    // one folder per call: two such rows of one binary run at once
+    static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let at = std::env::temp_dir().join(format!("ccan-{}-{n}", std::process::id()));
+    let at = Scratch::fresh(at);
+    let mut c = Command::new(std::env::current_exe().unwrap());
+    c.env(WHOLE_CHILD, "1");
+    let mut folders = vec![];
+    for v in vars {
+        let dir = at.join(v);
+        std::fs::create_dir(&dir).unwrap();
+        for f in canary_files(v) {
+            std::fs::create_dir_all(dir.join(f).parent().unwrap()).unwrap();
+            std::fs::write(dir.join(f), "canary #1066 {{\n").unwrap();
+        }
+        c.env(v, if *v == "COCKPIT_LOG" { dir.join("log") } else { dir.clone() });
+        let walk = |d: &Path| std::fs::read_dir(d).unwrap().flatten().map(|e| e.path());
+        let mut todo = vec![dir.clone()];
+        while let Some(d) = todo.pop() {
+            todo.extend(walk(&d).filter(|p| p.is_dir()));
+            folders.push((v.to_string(), d));
+        }
+    }
+    // SAFETY: inotify_init1 takes flags only.
+    let fd = unsafe { libc::inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC) };
+    assert!(fd >= 0, "inotify_init1: {}", std::io::Error::last_os_error());
+    let mask = libc::IN_OPEN | libc::IN_MODIFY | libc::IN_CREATE | libc::IN_MOVED_TO | libc::IN_DELETE;
+    let mut watched = std::collections::HashMap::new();
+    for (v, d) in &folders {
+        let path = std::ffi::CString::new(d.to_str().unwrap()).unwrap();
+        // SAFETY: `fd` is this call's inotify, `path` a NUL-terminated folder name.
+        let wd = unsafe { libc::inotify_add_watch(fd, path.as_ptr(), mask) };
+        assert!(wd >= 0, "inotify_add_watch {}: {}", d.display(), std::io::Error::last_os_error());
+        watched.insert(wd, (v.clone(), d.clone()));
+    }
+    let out = c.stdin(std::process::Stdio::null()).output().unwrap();
+    assert!(out.status.success(), "{}", told("the whole binary beside canaries", &out));
+    let mut touched = vec![];
+    let mut buf = [0u8; 65536];
+    loop {
+        // SAFETY: `buf` is ours and its length is passed.
+        let n = unsafe { libc::read(fd, buf.as_mut_ptr().cast(), buf.len()) };
+        if n <= 0 {
+            break;
+        }
+        let mut i = 0;
+        while i < n as usize {
+            // SAFETY: the kernel writes whole inotify_event records into `buf`.
+            let e = unsafe { std::ptr::read_unaligned(buf[i..].as_ptr().cast::<libc::inotify_event>()) };
+            let name = &buf[i + 16..i + 16 + e.len as usize];
+            let name = String::from_utf8_lossy(name).trim_end_matches('\0').to_string();
+            if let Some((v, d)) = watched.get(&e.wd) {
+                touched.push(format!("{v}: {}", d.join(name).strip_prefix(&at.0).unwrap().display()));
+            }
+            i += 16 + e.len as usize;
+        }
+    }
+    // SAFETY: closes this call's own fd.
+    unsafe { libc::close(fd) };
+    touched.sort();
+    touched.dedup();
+    touched
 }
 
 // --- pane start-up waits for the basket_claude tests (#1056) ---

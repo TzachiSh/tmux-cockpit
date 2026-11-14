@@ -89,6 +89,8 @@ impl Rig {
             .envs(self.env.iter().map(|(k, v)| (*k, v.as_str())))
             // the caller's log is not the rig's: a lookup writes a line to it (#1066)
             .env_remove("COCKPIT_LOG")
+            // HOME is the rig's, and so must be the agents cache under it (data/agents.rs:162)
+            .env_remove("XDG_CACHE_HOME")
             .output()
             .unwrap();
         (o.status.code(), String::from_utf8_lossy(&o.stdout).into_owned())
@@ -220,4 +222,12 @@ fn a_kept_cockpit_log_gets_no_line() {
     let left = std::fs::read_to_string(&log).unwrap();
     std::fs::remove_file(&log).unwrap();
     assert_eq!((ran.0, left.as_str()), (Some(0), "marker\n"), "{}", ran.1);
+}
+
+/// #1066: this binary's tests, started again by hand with a canary XDG_CACHE_HOME holding
+/// an agents cache, as a caller who exports one starts them: no test opens or writes it.
+#[test]
+#[cfg(target_os = "linux")]
+fn the_tests_leave_the_callers_cache_alone() {
+    assert_eq!(fake::tests_leave_alone(&["XDG_CACHE_HOME"]), Vec::<String>::new());
 }

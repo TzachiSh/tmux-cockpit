@@ -49,7 +49,7 @@ pub struct Rig {
 
 impl Rig {
     fn new(tag: &str) -> Rig {
-        // the runner unset the caller's log, which a lookup writes to (#1066)
+        // the runner unset the caller's log, cache and state, which a lookup uses (#1066)
         fake::checked_state();
         let lock = ENV.lock().unwrap_or_else(|e| e.into_inner());
         let dir = std::env::temp_dir().join(format!("cockpit-tui-{tag}-{}", std::process::id()));
@@ -1871,7 +1871,18 @@ fn an_unborn_repo_counts_its_staged_lines_beside_an_untracked_file() {
 /// refuses before a lookup can write a line there. The runner unsets it.
 #[test]
 fn a_kept_cockpit_log_is_refused() {
-    let (code, said) = fake::run_by_hand("the_window_id_is_the_thirteenth_field", &[("COCKPIT_LOG", "/canary-1066/log")]);
+    let kept = [("COCKPIT_LOG", "/canary-1066/log")];
+    let (code, said) = fake::run_by_hand("the_window_id_is_the_thirteenth_field", &kept);
     let refused = said.contains("the caller's state refused (#1066): COCKPIT_LOG set. ");
+    assert_eq!((code, refused), (Some(101), true), "{said}");
+}
+
+/// #1066: started by hand with a caller's XDG_CACHE_HOME kept, this binary's rig
+/// refuses before a lookup can read or write the agents cache there.
+#[test]
+fn a_kept_agents_cache_is_refused() {
+    let kept = [("XDG_CACHE_HOME", "/canary-1066/cache")];
+    let (code, said) = fake::run_by_hand("the_window_id_is_the_thirteenth_field", &kept);
+    let refused = said.contains("the caller's state refused (#1066): XDG_CACHE_HOME set. ");
     assert_eq!((code, refused), (Some(101), true), "{said}");
 }

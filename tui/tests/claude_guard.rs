@@ -1498,7 +1498,7 @@ fn a_run_that_kept_the_callers_session_is_refused() {
         let said = format!(
             "tmux refused (#1066): {why}. cargo test clears these through tests/claude-guard/runner, \
              and clears nothing with COCKPIT_TEST_CLAUDE_GUARD=0. By hand: env -u TMUX -u TMUX_PANE \
-             -u TMUX_COCKPIT_DIR -u COCKPIT_LOG TMUX_TMPDIR=\"$(mktemp -d)\" {}",
+             -u TMUX_COCKPIT_DIR -u COCKPIT_LOG -u XDG_CACHE_HOME -u XDG_STATE_HOME TMUX_TMPDIR=\"$(mktemp -d)\" {}",
             exe.display()
         );
         let err = String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr);
@@ -1522,7 +1522,7 @@ fn with_the_claude_guard_lifted_a_kept_session_is_refused() {
     let said = format!(
         "tmux refused (#1066): TMUX set. cargo test clears these through tests/claude-guard/runner, \
          and clears nothing with COCKPIT_TEST_CLAUDE_GUARD=0. By hand: env -u TMUX -u TMUX_PANE \
-         -u TMUX_COCKPIT_DIR -u COCKPIT_LOG TMUX_TMPDIR=\"$(mktemp -d)\" {}",
+         -u TMUX_COCKPIT_DIR -u COCKPIT_LOG -u XDG_CACHE_HOME -u XDG_STATE_HOME TMUX_TMPDIR=\"$(mktemp -d)\" {}",
         exe.display()
     );
     let err = String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr);
@@ -1559,4 +1559,28 @@ fn the_binary_gets_no_callers_log() {
     c.env("COCKPIT_LOG", r.0.join("callers.log"));
     let ran = r.ran(c.arg(r.binary(TEST, "#!/bin/sh\necho \"log=${COCKPIT_LOG-unset}\"\n")));
     assert_eq!((ran.code, ran.said("log")), (Some(0), "unset"), "{}", ran.err);
+}
+
+/// #1066: a test binary under the runner gets no XDG_CACHE_HOME, though the
+/// caller exports one: rigs that set HOME then read and wrote the caller's agents
+/// cache. Unset, the cache resolves under whatever HOME the test has.
+#[test]
+fn the_binary_gets_no_callers_cache_folder() {
+    let r = Rig::new("cache");
+    let mut c = r.command();
+    c.env("XDG_CACHE_HOME", r.0.join("callers-cache"));
+    let ran = r.ran(c.arg(r.binary(TEST, "#!/bin/sh\necho \"cache=${XDG_CACHE_HOME-unset}\"\n")));
+    assert_eq!((ran.code, ran.said("cache")), (Some(0), "unset"), "{}", ran.err);
+}
+
+/// #1066: a test binary under the runner gets no XDG_STATE_HOME, though the
+/// caller exports one: rigs that set HOME read the hooks' subagent log and the
+/// review folder from the caller's state folder.
+#[test]
+fn the_binary_gets_no_callers_state_folder() {
+    let r = Rig::new("state");
+    let mut c = r.command();
+    c.env("XDG_STATE_HOME", r.0.join("callers-state"));
+    let ran = r.ran(c.arg(r.binary(TEST, "#!/bin/sh\necho \"state=${XDG_STATE_HOME-unset}\"\n")));
+    assert_eq!((ran.code, ran.said("state")), (Some(0), "unset"), "{}", ran.err);
 }
