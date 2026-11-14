@@ -4425,7 +4425,7 @@ elif ! ( . "$DIR/scripts/lib/vnum.sh"
 else
 OH=$(mktmpd); mkdir -p "$OH/p" "$OH/wd" "$OH/old"
 oh_st="cockpit-oh-$$-st"; SOCKS="$SOCKS $oh_st"
-for oh_n in 1 2 3 4 5 6 7 8 9 10 11; do
+for oh_n in 1 2 3 4 5 6 7 8 9 10 11 12; do
     SOCKS="$SOCKS cockpit-oh-$$-$oh_n cockpit-ohc-$$-$oh_n"
 done
 # A cockpit-tui older than the plugin's floor, for the hint's second arm.
@@ -4463,7 +4463,7 @@ oh_stock=$("$TMUX_REAL" -L "$oh_st" list-keys -T prefix -F '#{key_command}' f 2>
 # The panel key as cockpit.tmux bound it before the notes: from argv, no note.
 oh_src='"$(tmux display-message -p -t "\$${TMUX##*,}" "#{pane_id}")"'
 oh_n=0
-for oh_f in plain "a'q" 'a"q'; do
+for oh_f in plain "a'q" 'a"q' 'a$HOMEq'; do
     oh_n=$((oh_n + 1)); oh_s="cockpit-oh-$$-$oh_n"; oh_box "$oh_n" "$oh_f"
     oh_server "$oh_s" "$COCKPIT_TUI_BIN"; oh_p=$(cd -P "$OH/p/$oh_f" && pwd)
     "$TMUX_REAL" -L "$oh_s" bind-key f display-popup -E -e COCKPIT_PANEL_MODE=auto -w 94% \
