@@ -112,11 +112,10 @@ case ${TMUX_TMPDIR:-} in
    export TMUX_TMPDIR ;;
 esac
 if [ -z "${TMUX_TMPDIR:-}" ] || [ ! -d "$TMUX_TMPDIR" ]; then
-    for suite_tt_n in 1 2 3; do
+    for _ in 1 2 3; do
         SUITE_TT=$(mktemp -u /tmp/cs.XXXXXX) && mkdir -m 700 "$SUITE_TT" 2>/dev/null && break
         SUITE_TT=
     done
-    unset suite_tt_n
     [ -n "$SUITE_TT" ] || fatal "no socket folder: could not make /tmp/cs.XXXXXX, three tries"
     export TMUX_TMPDIR="$SUITE_TT"
 fi
