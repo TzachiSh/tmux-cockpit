@@ -250,9 +250,10 @@ const HANDED_FOR: std::time::Duration = std::time::Duration::from_secs(300);
 /// down. Each row that signals a child holds there only by its own
 /// [`at_default`] (#1061). The run must name every row passed, since a renamed
 /// row runs none. A row must not pass its own name: its child would start a
-/// child of its own, without end.
+/// child of its own, without end. Returns the child's pid, for a row that looks for
+/// what the child left.
 #[allow(dead_code)]
-pub fn rows_pass_handed(rows: &[&str], signals: &'static [libc::c_int]) {
+pub fn rows_pass_handed(rows: &[&str], signals: &'static [libc::c_int]) -> u32 {
     use std::os::unix::process::CommandExt;
     use std::process::Stdio;
     let mut c = Command::new(std::env::current_exe().unwrap());
@@ -276,6 +277,7 @@ pub fn rows_pass_handed(rows: &[&str], signals: &'static [libc::c_int]) {
     };
     // SAFETY: `hand_down` makes only async-signal-safe calls and allocates nothing.
     let mut child = unsafe { c.pre_exec(hand_down) }.spawn().unwrap();
+    let pid = child.id();
     let step = std::time::Duration::from_millis(20);
     for tries in 0.. {
         if child.try_wait().unwrap().is_some() {
@@ -292,6 +294,7 @@ pub fn rows_pass_handed(rows: &[&str], signals: &'static [libc::c_int]) {
     let said = String::from_utf8_lossy(&out.stdout);
     let all = said.contains(&format!(" {} passed; 0 failed", rows.len()));
     assert!(out.status.success() && all, "{}", told(&rows.join(" "), &out));
+    pid
 }
 
 /// Whether a spawn by this user could start `p`: a file the kernel lets it
