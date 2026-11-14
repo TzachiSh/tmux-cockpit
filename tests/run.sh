@@ -4097,7 +4097,7 @@ for cl_a in linux_amd64 linux_arm64 darwin_amd64 darwin_arm64; do
     ( cd "$CL/pack" && tar -czf "$cl_d/revdiff_1.13.0_$cl_a.tar.gz" revdiff )
 done
 ( cd "$cl_d" && sha256sum revdiff_1.13.0_*.tar.gz > revdiff_1.13.0_checksums.txt )
-for cl_n in 1 2 3 4 5 6; do SOCKS="$SOCKS cockpit-cl-$$-$cl_n"; done
+for cl_n in 1 2 3 4 5 6 7; do SOCKS="$SOCKS cockpit-cl-$$-$cl_n"; done
 cl_box() {                    # <n> <folder name> -- a copy of the plugin and a home for it
     local p="$CL/p/$2" h="$CL/h$1" d
     mkdir -p "$p" "$h/bin" "$h/.tmux/plugins"
@@ -4128,7 +4128,8 @@ cl_load() {                   # <n> [socket n] -> <@cl_from>|<prefix w bindings>
 cl_n=0
 # The $( ) holds no blank: tmux splits a bare line at one before sh sees it, and then sh
 # stops at the half it got. Whole, sh runs it, in the cwd of the client that sourced the config.
-for cl_f in 'plain' 'two  blanks' "a'quote" 'd$(id>pwned)x' 'd$HOME#{pane_id}'; do
+for cl_f in 'plain' 'two  blanks' "a'quote" 'd$(id>pwned)x' 'd$HOME#{pane_id}' \
+        'C#Sharp#[x##y'; do
     cl_n=$((cl_n + 1)); cl_box "$cl_n" "$cl_f"
     ( cd "$CL/wd" && cl_env "$cl_n" "$CL/p/$cl_f/bootstrap.sh" --yes ) > "$CL/out$cl_n"
     is "a folder named [$cl_f]: bootstrap.sh appends one line" "1" \
@@ -4145,6 +4146,16 @@ done
 is "nothing in a folder's name was run, by bootstrap.sh or by the server" "" \
    "$(find "$CL" -name pwned | tr '\n' ' ')"
 is "and no run reached for sudo" "absent" "$([ -e "$CL/SUDO_RAN" ] && echo present || echo absent)"
+
+# Which folders a bare line carries, as measured on tmux 3.6 and 3.8: a # in front of a [
+# arrives whole, a ## run included, and so does one in front of a plain letter. tmux replaces
+# #S and the other one-letter names, a #, and a #{ }, and makes one # of a ##.
+is "cockpit_bare_carries: which # shapes a bare line carries" \
+   "a#[b:yes a##[b:yes a#xb:yes a#:yes C#Sharp:no a#,b:no a##b:no a#{b:no a#Wb:no a b:no " \
+   "$(. "$DIR/scripts/lib/confline.sh"
+      for cl_f in 'a#[b' 'a##[b' 'a#xb' 'a#' 'C#Sharp' 'a#,b' 'a##b' 'a#{b' 'a#Wb' 'a b'; do
+          cockpit_bare_carries "/p/$cl_f" && printf '%s:yes ' "$cl_f" || printf '%s:no ' "$cl_f"
+      done)"
 
 # A config that already holds the older line. bootstrap.sh never rewrites a config, so it
 # says what it found: only when the line is the bare one and the folder's path holds a
@@ -4167,7 +4178,7 @@ is "and install.sh --check warns on its config row, with the same line" "1" \
    "$(cl_env 2 "$cl_p2/install.sh" --check |
       grep -cF "[ warn ] config         $CL/h2/.tmux.conf line 3")"
 is "the line the notice gives loads the plugin once it replaces line 3" "2|1" \
-   "$(printf '# mine\n\n%s\n' "$cl_line" > "$CL/h2/.tmux.conf"; cl_load 2 6)"
+   "$(printf '# mine\n\n%s\n' "$cl_line" > "$CL/h2/.tmux.conf"; cl_load 2 7)"
 # The plain folder: a bare line works there, so nothing new is said. The run's output is
 # the same, byte for byte, whether the config holds the old line or the new one.
 printf '# mine\nrun-shell %s/cockpit.tmux\n' "$CL/p/plain" > "$CL/h1/.tmux.conf"

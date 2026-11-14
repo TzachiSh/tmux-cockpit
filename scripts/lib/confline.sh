@@ -4,24 +4,35 @@
 #
 # tmux hands a run-shell argument to sh, so the path must reach sh as one quoted word:
 # bare, sh splits it at a blank and runs a $( ) in it (#1043, #1046). The word then sits in
-# a tmux double-quoted string, where \ " and $ are escaped, and # is doubled because
-# run-shell expands tmux formats in its argument.
+# a tmux double-quoted string, where \ " and $ are escaped. run-shell expands tmux formats
+# in its argument, and doubling a # does not hide it there: tmux copies a ## in front of a [
+# through as it is. So each # leaves sh's quotes as \#, which puts a ' after every # for
+# tmux, and #' is no format.
 cockpit_conf_line() {         # <plugin folder> -> run-shell "'<folder>/cockpit.tmux'"
     local p="$1/cockpit.tmux" q="'\\''"
     p="'${p//\'/$q}'"
-    p=${p//\\/\\\\}; p=${p//\"/\\\"}; p=${p//\$/\\\$}; p=${p//#/##}
+    p=${p//\\/\\\\}; p=${p//\"/\\\"}; p=${p//\$/\\\$}; p=${p//#/\'\\\\#\'}
     printf 'run-shell "%s"' "$p"
 }
 
 # Does a bare line, run-shell <folder>/cockpit.tmux, load the plugin from this folder?
-# Measured on tmux 3.6 and 3.8, one character at a time (#1046): sh splits or reads these,
-# and run-shell expands a #{ }. Every other printing character arrives whole.
+# Measured on tmux 3.6 and 3.8, one character at a time (#1046): sh splits or reads the
+# characters in bad, and run-shell expands tmux formats. A run of # in front of a [ arrives
+# as it is. Any other ## becomes one #, and a # in front of { , or one of tmux's one-letter
+# names (#S, #W…) is replaced. A # before anything else, and every other printing
+# character, arrive whole.
 cockpit_bare_carries() {      # <path> -> 0 when a bare line carries it
-    local bad=$' \t\n"$&\'()*;<>?\\`|}'
-    case "$1" in
-        *["$bad"]*|*'#{'*|*[[:cntrl:]]*) return 1 ;;
-    esac
-    return 0
+    local bad=$' \t\n"$&\'()*;<>?\\`|}' r=$1 h
+    case "$r" in *["$bad"]*|*[[:cntrl:]]*) return 1 ;; esac
+    while :; do
+        case "$r" in *'#'*) ;; *) return 0 ;; esac
+        r=${r#*'#'}; h=${r%%[!#]*}; r=${r#"$h"}       # h: the rest of this run of #
+        case "$r" in
+            '['*) ;;
+            [{,DFHIPSTWh]*) return 1 ;;
+            *) [ -z "$h" ] || return 1 ;;
+        esac
+    done
 }
 
 # The number of the first line in a config that loads this folder's plugin bare:
