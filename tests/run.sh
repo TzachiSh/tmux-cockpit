@@ -15686,10 +15686,11 @@ sv_pane() {
     # retries the new-session that can reach it (#547, #573).
     "$TMUX_REAL" -L "$SVO" kill-server >/dev/null 2>&1
     { printf '#!/bin/sh\n'; printf '%q ' "$@"
-        printf '2> "%s/err"\necho $? > "%s/rc"\nexec sleep 30\n' "$d" "$d"; } > "$d/run"
+        printf '2> %s\necho $? > %s\nexec sleep 30\n' "$(tq "$d/err")" "$(tq "$d/rc")"
+    } > "$d/run"
     chmod +x "$d/run"; : > "$d/err"; rm -f "$d/rc"
     fresh_server -L "$SVO" -f /dev/null -- -d -s t -x "${SVCOLS:-100}" -y "${SVROWS:-24}" \
-        "TERM=xterm-256color $d/run"
+        "TERM=xterm-256color $(tq "$d/run")"
 }
 # sv_ui <dir> [tui args...] -- cockpit-tui sessions, the action files under <dir>/act
 sv_ui() {
@@ -15746,6 +15747,15 @@ TMUX_REAL="$SVD/flop-tmux" sv_pane "$SVD" sh -c 'echo pane-up; exec sleep 30'
 sv_cap '*pane-up*' && ok "a new-session refused by a dying server is retried until the pane runs" \
     || bad "a new-session refused by a dying server is retried until the pane runs" "pane-up" \
         "$("$TMUX_REAL" -L "$SVO" capture-pane -p -t t 2>&1 | head -3)"
+# sv_pane pasted its folder bare into the pane command, and in double quotes into the
+# script the pane runs. Under a TMPDIR with a blank sh split the first, so no pane of
+# these blocks ran (#990); a " or a $ in the path broke the second. Here the folder
+# itself holds all three, so the row is red without tq whatever TMPDIR is.
+SVQ="$SVD/s p\"q\$x"; mkdir -p "$SVQ"
+sv_pane "$SVQ" sh -c 'echo oops >&2; exit 7'
+until_out '7' cat "$SVQ/rc"
+is "sv_pane from a folder with a blank, a \" and a \$ in its path: rc and stderr land beside it" \
+   "7|oops" "$(cat "$SVQ/rc" 2>/dev/null)|$(cat "$SVQ/err" 2>/dev/null)"
 sv_ui "$SVD" --current "$SVA"
 sv_cap '*beta*gamma*alpha*(here)*' &&
     ok "the rows are drawn: waiting first, your own session last and marked" \
