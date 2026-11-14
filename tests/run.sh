@@ -18170,13 +18170,13 @@ fi
 rm -rf -- "$nb_rt" "$nb_rt2"
 unset -f nb_run nb_no; unset NB nb_rt nb_rt2 nb_ss
 
-# tests: README.md examples/tmux.conf examples/full.tmux.conf docs/install.md docs/status-bar.md
+# tests: README.md examples/tmux.conf examples/full.tmux.conf docs/install.md docs/status-bar.md cockpit.tmux
 echo "== the install line loads the plugin whatever the path to HOME holds (#1043) =="
 # The line was `run-shell ~/.tmux/plugins/tmux-cockpit/cockpit.tmux`. tmux expanded the ~ and
 # handed the path to sh bare: with a space in HOME's path sh split it, nothing loaded and
 # tmux said nothing, and with a $( ) in it sh ran what was inside. In single quotes tmux
-# hands the ~ on as it is and sh expands it, unsplit and unread. Five places give the line,
-# and here each must read the same; then both example configs are sourced on a server whose
+# hands the ~ on as it is and sh expands it, unsplit and unread. Six places give the line,
+# cockpit.tmux's own first comment among them, and here each must read the same; then both example configs are sourced on a server whose
 # HOME holds a blank, and one whose HOME holds a command to run.
 IL="run-shell '~/.tmux/plugins/tmux-cockpit/cockpit.tmux'"
 il_n=""
@@ -18184,8 +18184,10 @@ for il_f in README.md examples/tmux.conf examples/full.tmux.conf docs/install.md
     il_n="$il_n$(grep -cxF -- "$IL" "$DIR/$il_f")$(
         grep -c '^run-shell ~/' "$DIR/$il_f") "
 done
-is "the README, both examples and both docs pages give the one line, and none the bare one" \
-   "10 10 10 10 10 " "$il_n"
+il_n="$il_n$(grep -cxF -- "# tmux-cockpit. Load with:  $IL" "$DIR/cockpit.tmux")$(
+    grep -c 'run-shell ~/' "$DIR/cockpit.tmux")"
+is "the README, both examples, both docs pages and cockpit.tmux give the one line, none the bare" \
+   "10 10 10 10 10 10" "$il_n"
 if need_tmux "the install line under a HOME with a blank"; then :; else
 ILD=$(mktmpd); mkdir -p "$ILD/wd"
 # A server each, by number: the rows call this in a subshell, so the names are registered
