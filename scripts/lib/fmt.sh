@@ -26,7 +26,7 @@ gesc() {
   local s=$1 out='' c
   while [ -n "$s" ]; do
     c=${s:0:1}; s=${s:1}
-    case $c in '\' | '*' | '?' | '[') out+='\' ;; esac
+    case $c in \\ | \* | \? | \[) out+=\\ ;; esac
     out+=$c
   done
   printf '%s' "$out"
