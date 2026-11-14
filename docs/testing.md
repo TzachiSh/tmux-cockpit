@@ -44,6 +44,25 @@ when it ends, also on a FATAL and on HUP, INT or TERM. A run ended by KILL leave
 with `flop/tmux` inside. Nothing sweeps it, and it is safe to remove once no
 run is going.
 
+### The suite's tmux sockets
+
+Every tmux server the suite starts is on a socket of its own name, under
+`TMUX_TMPDIR`. With no `TMUX_TMPDIR`, or one naming a folder that is not there,
+tmux would put those sockets in `/tmp/tmux-<uid>`, beside your own server's. So
+a run of `tests/run.sh` (`tests/only.sh` and each `tests/par.sh` shard too)
+then makes a folder of its own, `/tmp/cs.<6>`, mode 700, and exports it as
+`TMUX_TMPDIR` before its first tmux call (#1098). It is in `/tmp` and short
+because a socket's path can hold 107 bytes. It holds sockets only. A run inside
+the run finds it set and uses it.
+
+A `TMUX_TMPDIR` you set yourself, naming a folder that exists, is kept as it is.
+
+The run removes its folder with `rmdir` when it ends, also on a FATAL and on
+HUP, INT or TERM. If a block left a socket in it, the folder stays and the run
+names what is in it on stderr: `tests/run.sh: left in its socket folder …`. A
+run ended by KILL leaves it too. Nothing sweeps `/tmp/cs.*`. One is safe to
+remove once no server answers on a socket inside it.
+
 With no runtime dir to use, such a run ends at its start and says what it needs:
 set `XDG_RUNTIME_DIR` to a folder that exists, can be written to and has no
 blank in its path.
