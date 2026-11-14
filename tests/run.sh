@@ -3796,7 +3796,11 @@ if ! command -v jq >/dev/null 2>&1; then skip_ "install.sh --check (no jq)"; els
 DC=$(mktmpd)
 DH="$DC/home"; DBIN="$DC/bin"; DSH="$DC/shim"; DNO="$DC/notmux"
 mkdir -p "$DH/.claude" "$DBIN" "$DSH" "$DNO" "$DC/tmuxtmp"
-printf '# mine\nrun-shell %s/cockpit.tmux\n' "$DIR" > "$DH/.tmux.conf"
+# The config holds the line install.sh itself gives for this checkout. A bare
+# run-shell $DIR/cockpit.tmux made the box "wired" only where $DIR is a path such a line
+# carries: from a checkout with a blank in its path the doctor warns, rightly (#1064).
+dcline() { ( . "$DIR/scripts/lib/confline.sh" && cockpit_conf_line "$1" ); }
+printf '# mine\n%s\n' "$(dcline "$DIR")" > "$DH/.tmux.conf"
 dshim() { printf '#!/bin/sh\necho "%s"\n' "$2" > "$3/$1"; chmod +x "$3/$1"; }
 dshim revdiff "version: 1.13.0" "$DSH"
 # The no-tmux PATH carries only what install.sh itself needs, so "no tmux on
@@ -3889,6 +3893,16 @@ done
 mkdir -p "$DH/.config/tmux"; printf 'set -g @unrelated 1\n' > "$DH/.config/tmux/tmux.conf"
 dcout=$(dc "$DCP")
 is "an XDG config beside a wired ~/.tmux.conf is still ok" "1" "$(dcrow "$dcout" "ok config")"
+# The same from a plugin folder whose own path holds a blank, which no CI checkout has:
+# install.sh is copied there, the config is written as the block writes its own, and the
+# config row must be ok. With a bare line in dcline it is a warn row (#1064).
+DCO="$DC/od d"; mkdir -p "$DCO" "$DC/home2"
+cp "$DIR/install.sh" "$DCO/"; for u in scripts bin; do ln -s "$DIR/$u" "$DCO/$u"; done
+printf '# mine\n%s\n' "$(dcline "$DCO")" > "$DC/home2/.tmux.conf"
+is "a plugin folder with a blank in its path, wired as this block wires: an ok config row" "1" \
+   "$(env -u TMUX -u TMUX_PANE HOME="$DC/home2" XDG_BIN_HOME="$DBIN" \
+        XDG_CONFIG_HOME="$DC/home2/.config" TMUX_TMPDIR="$DC/tmuxtmp" PATH="$DCP" \
+        "$DCO/install.sh" --check 2>&1 | dcrows | grep -c -x 'ok config')"
 rm -rf "$DH/.config"
 
 # A config predating the precompute derives the dot and the banner at redraw time.
