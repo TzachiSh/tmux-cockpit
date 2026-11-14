@@ -150,9 +150,11 @@ FLOPEOF
 # unquoted ("exec $TMUX_REAL -L $X attach"). Under a TMPDIR holding a blank the path split
 # there, the client ended 127 and its server with it (#992). So the wrapper's folder holds no
 # blank: $STATE where that has none, else a folder made in the caller's runtime dir, as #766
-# does for a socket. A prelude run inside a run (a block's sandbox) inherits the outer run's
-# folder and makes its own in there, so the outer run's cleanup takes it even when the inner
-# one was ended by a KILL. With no such place the run ends here and says so.
+# does for a socket. Every run exports the blank-free folder it settled on, its own $STATE
+# when that has none: a prelude run inside a run (a block's sandbox) makes its folder in
+# there first, so it needs no runtime dir of its own, and the outer run's cleanup takes it
+# even when the inner one was ended by a KILL. With no such place the run ends here and
+# says so.
 FLOP="$STATE/flop"
 case $FLOP in
 *[[:space:]]*)
@@ -161,9 +163,11 @@ case $FLOP in
         [ -d "$flop_d" ] && [ -w "$flop_d" ] && SUITE_NB=$(mktemp -d "$flop_d/cnb.XXXXXX") && break
     done
     [ -n "$SUITE_NB" ] || fatal "TMPDIR holds a blank, and the tmux wrapper needs a folder $(
-        )without one: set XDG_RUNTIME_DIR to such a folder (#992)"
-    export COCKPIT_SUITE_NB="$SUITE_NB"; FLOP="$SUITE_NB/flop"; unset flop_d ;;
+        )without one: set XDG_RUNTIME_DIR to a folder that exists, can be written to $(
+        )and has no blank in its path (#992)"
+    FLOP="$SUITE_NB/flop"; unset flop_d ;;
 esac
+export COCKPIT_SUITE_NB="${SUITE_NB:-$STATE}"
 mkdir -p "$FLOP"
 if [ -x "$TMUX_BIN" ]; then flop_write "$FLOP" "$TMUX_BIN"; TMUX_REAL="$FLOP/tmux"; fi
 flop_left() {                 # [dir] -> a bad row for each r.* whose call was never retried, and
@@ -18035,53 +18039,70 @@ unset -f sg_left sg_run sg_dfl sg_pane; unset SG sg_hold sg_p sg_gone sg_haspid
 echo "== run.sh: under a TMPDIR with a blank the tmux wrapper sits where no blank is (#992) =="
 # "$TMUX_REAL" is the #573 wrapper's path, pasted unquoted into some forty pane commands. It
 # sat under $STATE, so a blank in TMPDIR split it and every outer client ended 127. A copy
-# of the prelude here that writes its TMUX_REAL down and ends, run under a TMPDIR folder
-# named "a b": with a runtime dir, with none, with one that holds a blank itself, and with
-# the folder an outer run hands down. The runtime dir is the block's own, in the outer run's
-# blank-free folder where there is one.
-NB=$(mktmpd); mkdir -p "$NB/tests" "$NB/a b" "$NB/plain" "$NB/r t"
+# of the prelude here that ends after writing down its TMUX_REAL, its server's socket and
+# the folder a child of it is handed, run under a TMPDIR folder named "a b": with a runtime
+# dir, with none, with one that holds a blank itself, and with the folder an outer run hands
+# down. The runtime dirs are the block's own, in the outer run's blank-free folder.
+NB=$(mktmpd); mkdir -p "$NB/tests" "$NB/a b" "$NB/a"$'\t'"b" "$NB/plain" "$NB/r t" "$NB/s"
 {
     awk '/^echo "== /{exit} {print}' "$DIR/tests/run.sh"
-    printf '%s\n' 'printf "%s\n" "$TMUX_REAL" > "$TMPDIR/real"'
+    printf '%s\n' 'printf "%s\n" "$TMUX_REAL" > "$TMPDIR/real"' \
+        '"$TMUX_REAL" -L "$SUITE_SOCK" display-message -p "#{socket_path}" > "$TMPDIR/sock"' \
+        'sh -c '\''printf "%s\n" "${COCKPIT_SUITE_NB:-}"'\'' > "$TMPDIR/handed"'
 } > "$NB/tests/pre.sh"
-nb_rt=$(mktemp -d "${COCKPIT_SUITE_NB:-$NB}/rt.XXXXXX")
-nb_run() {                    # <TMPDIR folder> [VAR=value...] -> status|where the wrapper was
-    local rc w
-    rm -f "$NB/$1/real"
+nb_rt=$(mktemp -d "$COCKPIT_SUITE_NB/rt.XXXXXX")
+nb_rt2=$(mktemp -d "$COCKPIT_SUITE_NB/rt.XXXXXX")
+nb_ss=$(cd "$NB/s" && pwd -P)
+# <TMPDIR folder> [VAR=value...] -> status|where the wrapper was|where the server's socket
+# was|what a child was handed: "own" is the folder that holds this run's wrapper
+nb_run() {
+    local rc w k h t="$NB/$1"
+    rm -f "$t/real" "$t/sock" "$t/handed"
     ( cd "$NB" && exec env -u TMUX -u COCKPIT_SUITE_NB -u XDG_RUNTIME_DIR "${@:2}" \
-        TMPDIR="$NB/$1" TMUX_TMPDIR="$NB/s" bash tests/pre.sh ) </dev/null >/dev/null 2>"$NB/err"
+        TMPDIR="$t" TMUX_TMPDIR="$NB/s" bash tests/pre.sh ) </dev/null >/dev/null 2>"$NB/err"
     rc=$?
-    w=$(cat "$NB/$1/real" 2>/dev/null); rm -f "$NB/$1/real"
+    w=$(cat "$t/real" 2>/dev/null); k=$(cat "$t/sock" 2>/dev/null); h=$(cat "$t/handed" 2>/dev/null)
+    rm -f "$t/real" "$t/sock" "$t/handed"
+    [ -z "$w" ] || [ "$h" != "${w%/flop/tmux}" ] || h=own
     case $w in
     "$nb_rt"/cnb.??????/flop/tmux) w=RT/flop/tmux ;;
-    "$NB/$1"/tmp.*/flop/tmux) w=STATE/flop/tmux ;;
+    "$nb_rt2"/cnb.??????/flop/tmux) w=RT2/flop/tmux ;;
+    "$t"/tmp.*/flop/tmux) w=STATE/flop/tmux ;;
     esac
-    printf '%s|%s' "$rc" "$w"
+    case $k in "$nb_ss"/tmux-*/cockpit-suite-*) k=S ;; esac
+    printf '%s|%s|%s|%s' "$rc" "$w" "$k" "$h"
 }
+nb_no() { grep -c 'set XDG_RUNTIME_DIR to a folder that exists' "$NB/err"; }
 # The nested socket is $NB/s/tmux-<uid>/cockpit-suite-<pid>: past 107 bytes no server binds.
 if [ $((${#NB} + ${#UID} + 30)) -gt 107 ]; then
     skip_ "the tmux wrapper under a TMPDIR with a blank (the socket path would pass 107 bytes)"
 else
+    # S: the inner server's socket is in the block's own folder, never the default one. own:
+    # the run hands its children the folder its wrapper is in.
     is "with a blank in TMPDIR the wrapper is in a folder made in the runtime dir" \
-       "0|RT/flop/tmux" "$(nb_run 'a b' XDG_RUNTIME_DIR="$nb_rt")"
+       "0|RT/flop/tmux|S|own" "$(nb_run 'a b' XDG_RUNTIME_DIR="$nb_rt")"
     is "and the run took that folder away again, and left nothing in its TMPDIR" "|" \
        "$(ls -A "$nb_rt")|$(ls -A "$NB/a b")"
-    is "the folder an outer run hands down is used the same way" \
-       "0|RT/flop/tmux|" "$(nb_run 'a b' COCKPIT_SUITE_NB="$nb_rt")|$(ls -A "$nb_rt")"
+    is "a tab in TMPDIR is a blank too" \
+       "0|RT/flop/tmux|S|own|" "$(nb_run "a"$'\t'"b" XDG_RUNTIME_DIR="$nb_rt")|$(ls -A "$nb_rt")"
+    is "the folder an outer run hands down comes before the runtime dir" \
+       "0|RT/flop/tmux|S|own||" \
+       "$(nb_run 'a b' COCKPIT_SUITE_NB="$nb_rt" XDG_RUNTIME_DIR="$nb_rt2")|$(
+          ls -A "$nb_rt")|$(ls -A "$nb_rt2")"
     is "with no runtime dir the run ends, says what it needs and leaves nothing" \
-       "1||1|" "$(nb_run 'a b')|$(grep -c 'needs a folder without one' "$NB/err")|$(
-          ls -A "$NB/a b")"
+       "1||||1|" "$(nb_run 'a b')|$(nb_no)|$(ls -A "$NB/a b")"
     is "a runtime dir that holds a blank itself is no such folder" \
-       "1||1|" "$(nb_run 'a b' XDG_RUNTIME_DIR="$NB/r t")|$(
-          grep -c 'needs a folder without one' "$NB/err")|$(ls -A "$NB/r t")"
+       "1||||1|" "$(nb_run 'a b' XDG_RUNTIME_DIR="$NB/r t")|$(nb_no)|$(ls -A "$NB/r t")"
     case $NB in
     *[[:space:]]*) skip_ "the wrapper under a TMPDIR with no blank (this run's own holds one)" ;;
-    *) is "without a blank the wrapper stays in the run's own state folder" \
-          "0|STATE/flop/tmux|" "$(nb_run plain XDG_RUNTIME_DIR="$nb_rt")|$(ls -A "$nb_rt")" ;;
+    *) is "without a blank the wrapper stays in the run's own state folder, handed on too" \
+          "0|STATE/flop/tmux|S|own|" "$(nb_run plain XDG_RUNTIME_DIR="$nb_rt")|$(ls -A "$nb_rt")" ;;
     esac
+    is "no inner run left a socket file in the block's folder" "" \
+       "$(cd "$NB/s" && ls -A tmux-*/ 2>/dev/null | tr '\n' ' ')"
 fi
-rm -rf -- "$nb_rt"
-unset -f nb_run; unset NB nb_rt
+rm -rf -- "$nb_rt" "$nb_rt2"
+unset -f nb_run nb_no; unset NB nb_rt nb_rt2 nb_ss
 
 echo "== tests/only.sh: a pattern with \\( and ^ selects the block, no match is an error (#241) =="
 OD=$(mktemp -d)
