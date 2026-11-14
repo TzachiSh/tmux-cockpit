@@ -164,7 +164,10 @@ it goes by `rmdir`, only if empty. A socket left in it is a server the binary
 did not end: the runner names the folder and fails the binary with status 1,
 or with the binary's own status where that failed, after any report of the
 claude guard. A server still running keeps its socket there, and the runner
-ends no process. Killed by a signal it does not trap, the runner leaves this
+ends no process. Every rig starts its server with TERM and HUP at their default
+and unblocked, since kill-server is a TERM the server sends itself and a HUP to
+each pane: a suite started with them blocked left servers and panes running
+(#1061). Killed by a signal it does not trap, the runner leaves this
 folder, empty, beside the guard's: the same cost, and `make tui-test-clean`
 names it. A socket path fails past 107 bytes (103 on macOS), and the folder's
 name takes 20 of them: under a `TMUX_TMPDIR` of 48 bytes or more a rig's server
