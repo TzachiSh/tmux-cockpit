@@ -49,6 +49,8 @@ pub struct Rig {
 
 impl Rig {
     fn new(tag: &str) -> Rig {
+        // the runner unset the caller's log, which a lookup writes to (#1066)
+        fake::checked_state();
         let lock = ENV.lock().unwrap_or_else(|e| e.into_inner());
         let dir = std::env::temp_dir().join(format!("cockpit-tui-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -1863,4 +1865,13 @@ fn an_unborn_repo_counts_its_staged_lines_beside_an_untracked_file() {
     r.git(&["add", "s"]);
     r.write("u", "z\n");
     assert_eq!(diffstat(&[&r.path()]), ("2\t0\t1\t+2 -0  ?1 new\n".into(), 0));
+}
+
+/// #1066: started by hand with a caller's COCKPIT_LOG kept, this binary's rig
+/// refuses before a lookup can write a line there. The runner unsets it.
+#[test]
+fn a_kept_cockpit_log_is_refused() {
+    let (code, said) = fake::run_by_hand("the_window_id_is_the_thirteenth_field", &[("COCKPIT_LOG", "/canary-1066/log")]);
+    let refused = said.contains("the caller's state refused (#1066): COCKPIT_LOG set. ");
+    assert_eq!((code, refused), (Some(101), true), "{said}");
 }

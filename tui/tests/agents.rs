@@ -63,6 +63,8 @@ impl Rig {
     /// One agent pane, pid 100, no @cockpit_session, in a fake proc root at start `5`.
     /// `claude` runs `claude_body` and logs one line per call to `forks`.
     fn new(tag: &str, claude_body: &str) -> Rig {
+        // the runner unset the caller's log, which a lookup writes to (#1066)
+        fake::checked_state();
         Rig::with(tag, claude_body, true)
     }
 
@@ -288,6 +290,8 @@ struct Dev {
 
 impl Dev {
     fn new(tag: &str) -> Dev {
+        // the runner unset the caller's log, which a lookup writes to (#1066)
+        fake::checked_state();
         let lock = ENV.lock().unwrap_or_else(|e| e.into_inner());
         let name = format!("cockpit-agents-{tag}-dev-{}", std::process::id());
         let dir = std::env::temp_dir().join(name);
@@ -1480,4 +1484,13 @@ fn a_signalled_board_kills_a_lookup_in_flight() {
     assert_eq!(st.code(), Some(0), "the handler's _exit(0), not the child's own exit");
     let pid = std::fs::read_to_string(r.dir.join("stubpid")).unwrap();
     wait_gone(pid.trim());
+}
+
+/// #1066: started by hand with a caller's COCKPIT_LOG kept, this binary's rig
+/// refuses before a lookup can write a line there. The runner unsets it.
+#[test]
+fn a_kept_cockpit_log_is_refused() {
+    let (code, said) = fake::run_by_hand("a_failed_call_does_not_move_at", &[("COCKPIT_LOG", "/canary-1066/log")]);
+    let refused = said.contains("the caller's state refused (#1066): COCKPIT_LOG set. ");
+    assert_eq!((code, refused), (Some(101), true), "{said}");
 }

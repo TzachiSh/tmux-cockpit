@@ -1498,7 +1498,7 @@ fn a_run_that_kept_the_callers_session_is_refused() {
         let said = format!(
             "tmux refused (#1066): {why}. cargo test clears these through tests/claude-guard/runner, \
              and clears nothing with COCKPIT_TEST_CLAUDE_GUARD=0. By hand: env -u TMUX -u TMUX_PANE \
-             -u TMUX_COCKPIT_DIR TMUX_TMPDIR=\"$(mktemp -d)\" {}",
+             -u TMUX_COCKPIT_DIR -u COCKPIT_LOG TMUX_TMPDIR=\"$(mktemp -d)\" {}",
             exe.display()
         );
         let err = String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr);
@@ -1522,7 +1522,7 @@ fn with_the_claude_guard_lifted_a_kept_session_is_refused() {
     let said = format!(
         "tmux refused (#1066): TMUX set. cargo test clears these through tests/claude-guard/runner, \
          and clears nothing with COCKPIT_TEST_CLAUDE_GUARD=0. By hand: env -u TMUX -u TMUX_PANE \
-         -u TMUX_COCKPIT_DIR TMUX_TMPDIR=\"$(mktemp -d)\" {}",
+         -u TMUX_COCKPIT_DIR -u COCKPIT_LOG TMUX_TMPDIR=\"$(mktemp -d)\" {}",
         exe.display()
     );
     let err = String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr);
@@ -1548,4 +1548,15 @@ fn a_server_start_that_fails_names_its_cause() {
     // tmux's own words follow, whatever they are: here that it found no server to run it on
     let want = format!("the server on {sock} did not start: exit status: 1: ");
     assert!(said.starts_with(&want) && said.len() > want.len() + 1, "{said}");
+}
+
+/// #1066: a test binary under the runner gets no COCKPIT_LOG, though the
+/// caller exports one: a rig's lookups wrote their lines to it.
+#[test]
+fn the_binary_gets_no_callers_log() {
+    let r = Rig::new("log");
+    let mut c = r.command();
+    c.env("COCKPIT_LOG", r.0.join("callers.log"));
+    let ran = r.ran(c.arg(r.binary(TEST, "#!/bin/sh\necho \"log=${COCKPIT_LOG-unset}\"\n")));
+    assert_eq!((ran.code, ran.said("log")), (Some(0), "unset"), "{}", ran.err);
 }

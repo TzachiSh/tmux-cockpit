@@ -87,6 +87,8 @@ impl Rig {
         let o = Command::new(env!("CARGO_BIN_EXE_cockpit-tui"))
             .args(args)
             .envs(self.env.iter().map(|(k, v)| (*k, v.as_str())))
+            // the caller's log is not the rig's: a lookup writes a line to it (#1066)
+            .env_remove("COCKPIT_LOG")
             .output()
             .unwrap();
         (o.status.code(), String::from_utf8_lossy(&o.stdout).into_owned())
@@ -205,4 +207,17 @@ fn workdir_exits_1_for_a_dir_that_is_not_on_disk() {
     std::fs::write(r.t.0.join("rows"), rows).unwrap();
     assert_eq!(r.run(&["workdir", "%1"]), (Some(1), String::new()), "a removed dir");
     assert_eq!(r.run(&["workdir", "%2"]), (Some(1), String::new()), "a non-UTF-8 dir");
+}
+
+/// #1066: started by hand with a caller's COCKPIT_LOG kept, this binary's
+/// runs of the built binary write no line there: each run's child gets none.
+#[test]
+fn a_kept_cockpit_log_gets_no_line() {
+    let log = std::env::temp_dir().join(format!("cockpit-kept-log-{}", std::process::id()));
+    std::fs::write(&log, "marker\n").unwrap();
+    let canary = log.display().to_string();
+    let ran = fake::run_by_hand("workdir_is_the_boards_dir_for_every_kind_of_pane", &[("COCKPIT_LOG", &canary)]);
+    let left = std::fs::read_to_string(&log).unwrap();
+    std::fs::remove_file(&log).unwrap();
+    assert_eq!((ran.0, left.as_str()), (Some(0), "marker\n"), "{}", ran.1);
 }

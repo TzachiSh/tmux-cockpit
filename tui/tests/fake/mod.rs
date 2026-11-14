@@ -280,7 +280,7 @@ fn refusal(what: &str, why: &[String]) -> String {
     format!(
         "{what} refused (#1066): {}. cargo test clears these through tests/claude-guard/runner, \
          and clears nothing with COCKPIT_TEST_CLAUDE_GUARD=0. By hand: env -u TMUX -u TMUX_PANE \
-         -u TMUX_COCKPIT_DIR TMUX_TMPDIR=\"$(mktemp -d)\" {}",
+         -u TMUX_COCKPIT_DIR -u COCKPIT_LOG TMUX_TMPDIR=\"$(mktemp -d)\" {}",
         why.join(", "),
         exe.display()
     )
@@ -308,6 +308,17 @@ pub fn tmux_refusal() -> Option<String> {
         Some(_) => {}
     }
     if why.is_empty() { None } else { Some(refusal("tmux", &why)) }
+}
+
+/// For a rig that sets HOME and reaches the product's log: red with
+/// [`refusal`]'s line where COCKPIT_LOG is still set, as the runner unsets it
+/// (#1066). A caller's log took the rig's lines (data.rs:58).
+#[allow(dead_code)]
+pub fn checked_state() {
+    let why = still_set(&["COCKPIT_LOG"]);
+    if !why.is_empty() {
+        panic!("{}", refusal("the caller's state", &why));
+    }
 }
 
 /// `test` of this binary, alone, in a child started by hand with `set` in its

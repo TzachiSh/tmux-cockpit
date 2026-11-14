@@ -60,7 +60,10 @@ fn the_hook_options_reach_the_pane_through_the_format() {
     // found by PATH. The rig's own answers it, the one `rig_path` writes, which counts
     // its starts beside itself. `tmux` still comes from the rest of PATH (#972).
     let path = fake::rig_path(&dir.join("bin"));
-    // SAFETY: this test binary holds exactly one test, so nothing runs beside it.
+    // the runner unset the caller's log, which a lookup writes to (#1066)
+    fake::checked_state();
+    // SAFETY: the one test of this binary that writes the env. The other reads it only
+    // in its spawn, which std orders with these writes (fake::run_by_hand).
     unsafe {
         std::env::set_var("PATH", path);
         std::env::set_var("COCKPIT_TMUX", format!("tmux -L {}", s.sock));
@@ -77,4 +80,16 @@ fn the_hook_options_reach_the_pane_through_the_format() {
         .map(|p| (p.subs_n, p.subs.iter().map(|s| s.desc.clone()).collect()))
         .collect();
     assert_eq!(got, [(3, vec!["live".to_string()])]);
+}
+
+/// #1066: started by hand with a caller's COCKPIT_LOG kept, this binary's rig
+/// refuses before a lookup can write a line there. The runner unsets it.
+#[test]
+fn a_kept_cockpit_log_is_refused() {
+    let (code, said) = fake::run_by_hand(
+        "the_hook_options_reach_the_pane_through_the_format",
+        &[("COCKPIT_LOG", "/canary-1066/log")],
+    );
+    let refused = said.contains("the caller's state refused (#1066): COCKPIT_LOG set. ");
+    assert_eq!((code, refused), (Some(101), true), "{said}");
 }

@@ -72,8 +72,9 @@ cp "${0%/*}/claude" "$d/claude" && : > "$d/reached" || {
     exit 1
 }
 
-# None of the caller's tmux session either (#1066): from inside one, a test's
-# plain tmux reached its server, and its rigs' sockets went beside that server.
+# None of the caller's tmux session either, nor its tui log (#1066): from inside
+# tmux a test's plain tmux reached its server, its rigs' sockets went beside that
+# server, and rigs wrote lines to the caller's COCKPIT_LOG.
 # The binary gets a socket folder of its own, made before it starts, since tmux
 # puts a socket in /tmp when TMUX_TMPDIR names no folder. It sits where the
 # caller's tmux would put its own folder, a short path: a socket's path fails
@@ -83,7 +84,7 @@ t=$(mktemp -d "${TMUX_TMPDIR:-/tmp}/cockpit-tmux.XXXXXX") || {
     exit 1
 }
 case $t in /*) ;; *) t=$PWD/$t ;; esac
-unset TMUX TMUX_PANE TMUX_COCKPIT_DIR
+unset TMUX TMUX_PANE TMUX_COCKPIT_DIR COCKPIT_LOG
 TMUX_TMPDIR=$t
 export TMUX_TMPDIR
 

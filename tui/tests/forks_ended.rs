@@ -36,7 +36,10 @@ fn two_ticks_on_an_ended_row_fork_ps_once() {
     write_exec(&dir.join("bin/ps"), &format!("#!/bin/sh\necho 1 >> {d}/ps.n\necho '100 1 sleep'\n"));
     write_exec(&dir.join("bin/git"), "#!/bin/sh\nexit 1\n");
     let path = fake::rig_path(&dir.join("bin"));
-    // SAFETY: this test binary holds exactly one test, so nothing runs beside it.
+    // the runner unset the caller's log, which a lookup writes to (#1066)
+    fake::checked_state();
+    // SAFETY: the one test of this binary that writes the env. The other reads it only
+    // in its spawn, which std orders with these writes (fake::run_by_hand).
     unsafe {
         std::env::set_var("PATH", path);
         std::env::set_var("COCKPIT_TMUX", format!("{d}/bin/tmux"));
@@ -53,4 +56,13 @@ fn two_ticks_on_an_ended_row_fork_ps_once() {
     let forks = std::fs::read_to_string(dir.join("ps.n")).map(|s| s.lines().count()).unwrap_or(0);
     assert_eq!(forks, 1, "an ended row forked ps on every tick");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// #1066: started by hand with a caller's COCKPIT_LOG kept, this binary's rig
+/// refuses before a lookup can write a line there. The runner unsets it.
+#[test]
+fn a_kept_cockpit_log_is_refused() {
+    let (code, said) = fake::run_by_hand("two_ticks_on_an_ended_row_fork_ps_once", &[("COCKPIT_LOG", "/canary-1066/log")]);
+    let refused = said.contains("the caller's state refused (#1066): COCKPIT_LOG set. ");
+    assert_eq!((code, refused), (Some(101), true), "{said}");
 }
