@@ -42,15 +42,15 @@ fn the_hook_options_reach_the_pane_through_the_format() {
     std::fs::write(&t, "").unwrap();
     let sock = format!("cockpit-subs-{pid}");
     let d = dir.display().to_string();
-    let mut server = fake::Server::new(&sock);
-    server.start(|c| {
-        c.args(["new-session", "-d", "-s", "t", "-c", &d, "exec sleep 60"]);
-    });
-    let s = Server {
+    // built first, so a start that panics still removes the folder
+    let mut s = Server {
+        _server: fake::Server::new(&sock),
         sock,
         dir: dir.clone(),
-        _server: server,
     };
+    s._server.start(|c| {
+        c.args(["new-session", "-d", "-s", "t", "-c", &d, "exec sleep 60"]);
+    });
     let p = s.tmux(&["display-message", "-p", "-t", "t", "#{pane_id}"]);
     let t = t.display().to_string();
     for (k, v) in [("@panestate", "running"), ("@cockpit_subs", "3"), ("@cockpit_transcript", &t)] {

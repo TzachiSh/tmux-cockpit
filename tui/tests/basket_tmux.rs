@@ -19,15 +19,16 @@ impl Server {
         let dir = std::env::temp_dir().join(&sock);
         std::fs::create_dir_all(&dir).ok()?;
         let dir = dir.canonicalize().ok()?;
-        let mut server = fake::Server::new(&sock);
-        let ok = server.start(|c| {
-            c.args(["new-session", "-d", "-c"]).arg(&dir).arg("sleep 300");
-        });
-        ok.then_some(Server {
+        // built first, so a start that fails or panics still removes the folder
+        let mut s = Server {
+            _server: fake::Server::new(&sock),
             sock,
             dir,
-            _server: server,
-        })
+        };
+        let ok = s._server.start(|c| {
+            c.args(["new-session", "-d", "-c"]).arg(&s.dir).arg("sleep 300");
+        });
+        ok.then_some(s)
     }
 
     fn tmux(&self, args: &[&str]) -> String {

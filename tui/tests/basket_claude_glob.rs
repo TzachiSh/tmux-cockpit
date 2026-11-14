@@ -40,7 +40,12 @@ fn a_claude_the_agent_list_leaves_out_is_no_claude() {
     let sock = format!("cockpit-claude-glob-{}", std::process::id());
     let dir = std::env::temp_dir().join(&sock);
     std::fs::create_dir_all(&dir).unwrap();
-    let mut server = fake::Server::new(&sock);
+    // built first, so a start that fails or panics still removes the folder
+    let mut s = Server {
+        _server: fake::Server::new(&sock),
+        sock,
+        dir,
+    };
     // bash, whatever $SHELL is (#882): tmux runs a pane's command in the default
     // shell. Under dash, which forks the command and stays the pane's process, the
     // `claude` row would pass for the wrong reason. bash execs it.
@@ -49,22 +54,17 @@ fn a_claude_the_agent_list_leaves_out_is_no_claude() {
     // default-shell line (#896). Where /bin/sh execs the command (a host with no
     // /usr/bin/dash, such as macOS), the test passes and proves nothing about that line.
     let dash = std::path::Path::new("/usr/bin/dash").exists();
-    let ok = server.start(|c| {
+    let ok = s._server.start(|c| {
         c.env("SHELL", if dash { "/usr/bin/dash" } else { "/bin/sh" })
             .args(["set-option", "-g", "default-shell", "/bin/bash", ";"])
             .args(["new-session", "-d", "-c"])
-            .arg(&dir)
+            .arg(&s.dir)
             .arg("sleep 300");
     });
     if !ok {
         eprintln!("SKIP: no tmux");
         return;
     }
-    let s = Server {
-        sock,
-        dir,
-        _server: server,
-    };
     s.tmux(&["set-option", "-g", "@cockpit_agents_glob", "|codex|"]);
     // SAFETY: the only test in this binary; nothing else reads the env meanwhile.
     unsafe { std::env::set_var("COCKPIT_TMUX", format!("tmux -L {}", s.sock)) };

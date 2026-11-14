@@ -13,7 +13,7 @@
 //! answers a lookup with ([`rig_path`], #972), the rigs' private tmux servers
 //! ([`Server`], #1066), and the waits for a pane's start-up ([`held_pane`],
 //! [`named_pane`] and [`settle`], #1056).
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Once;
@@ -262,8 +262,68 @@ pub fn assert_claude_is_the_rigs(dir: &Path) {
 
 // --- the rigs' private tmux servers (#1066) ---
 
+/// The variables of a caller's tmux session: the server and pane a plain
+/// `tmux` reaches, and the live plugin's folder.
+#[allow(dead_code)]
+const SESSION: [&str; 3] = ["TMUX", "TMUX_PANE", "TMUX_COCKPIT_DIR"];
+
+/// The one line a check refuses with: what is wrong, and how to run this binary
+/// by hand. cargo's runner clears these for a test binary (#1066), and clears
+/// nothing with COCKPIT_TEST_CLAUDE_GUARD=0, so from inside a tmux session a
+/// run with the claude guard lifted meets this too.
+#[allow(dead_code)]
+fn refusal(what: &str, why: &[String]) -> String {
+    let exe = std::env::current_exe().unwrap();
+    format!(
+        "{what} refused (#1066): {}. cargo test clears these through tests/claude-guard/runner, \
+         and clears nothing with COCKPIT_TEST_CLAUDE_GUARD=0. By hand: env -u TMUX -u TMUX_PANE \
+         -u TMUX_COCKPIT_DIR TMUX_TMPDIR=\"$(mktemp -d)\" {}",
+        why.join(", "),
+        exe.display()
+    )
+}
+
+/// The variables of `vars` that are set, as one reason, or none.
+#[allow(dead_code)]
+fn still_set(vars: &[&str]) -> Vec<String> {
+    let set: Vec<&str> = vars.iter().copied().filter(|v| std::env::var_os(v).is_some()).collect();
+    if set.is_empty() {
+        vec![]
+    } else {
+        vec![format!("{} set", set.join(", "))]
+    }
+}
+
+/// The line [`checked_tmux`] refuses with, or `None` where this binary may run
+/// tmux: none of [`SESSION`] set, and TMUX_TMPDIR an existing folder.
+#[allow(dead_code)]
+pub fn tmux_refusal() -> Option<String> {
+    let mut why = still_set(&SESSION);
+    match std::env::var_os("TMUX_TMPDIR").map(PathBuf::from) {
+        None => why.push("TMUX_TMPDIR not set".into()),
+        Some(f) if !f.is_dir() => why.push(format!("TMUX_TMPDIR {} no folder", f.display())),
+        Some(_) => {}
+    }
+    if why.is_empty() { None } else { Some(refusal("tmux", &why)) }
+}
+
+/// This binary's socket folder, TMUX_TMPDIR, which the runner made for it with
+/// TMUX, TMUX_PANE and TMUX_COCKPIT_DIR cleared (#1066). Red with
+/// [`tmux_refusal`]'s line before any tmux runs where that does not hold: from
+/// inside a tmux session a plain `tmux` reached the caller's server and a rig's
+/// socket went beside it, and tmux 3.8 puts a socket in /tmp when TMUX_TMPDIR
+/// names no folder.
+#[allow(dead_code)]
+pub fn checked_tmux() -> PathBuf {
+    if let Some(why) = tmux_refusal() {
+        panic!("{why}");
+    }
+    PathBuf::from(std::env::var_os("TMUX_TMPDIR").unwrap())
+}
+
 /// A rig's private tmux server on the socket `sock`, named by `-L`, never the
-/// user's (AGENTS.md). Every rig starts its server through [`Server::start`].
+/// user's (AGENTS.md), in the folder [`checked_tmux`] holds. Every rig starts
+/// its server through [`Server::start`].
 /// Dropped, it kills the server and removes its socket file, which kill-server
 /// leaves behind by any exit path (tests/run.sh, the note above kill_socks).
 #[allow(dead_code)]
@@ -285,15 +345,18 @@ impl Server {
 
     /// Starts the server: `tmux -L <sock> -f /dev/null`, then what `with` adds,
     /// the command that makes its first session. Whether that ran and exited 0.
+    /// A start that ran and failed is red with its status and stderr, so a rig
+    /// names why (#1084). `false` where tmux is not there to run.
     pub fn start(&mut self, with: impl FnOnce(&mut Command)) -> bool {
+        checked_tmux();
         let mut c = Command::new("tmux");
         c.args(["-L", &self.sock, "-f", "/dev/null"]);
         with(&mut c);
-        let ok = c.output().is_ok_and(|o| o.status.success());
-        if ok {
-            self.path = tmux_on(&self.sock, &["display-message", "-p", "#{socket_path}"]);
-        }
-        ok
+        let Ok(o) = c.output() else { return false };
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert!(o.status.success(), "the server on {} did not start: {}: {err}", self.sock, o.status);
+        self.path = tmux_on(&self.sock, &["display-message", "-p", "#{socket_path}"]);
+        true
     }
 }
 
@@ -306,11 +369,96 @@ impl Drop for Server {
     }
 }
 
+/// A stand-in for the caller's own tmux server (#1066): a `-S` server in a
+/// folder of its own, `<at>/s/tmux-<uid>/default`, so that a plain `tmux` finds it
+/// both ways it finds the caller's, by TMUX ([`StandIn::tmux`]) and as the
+/// default socket of TMUX_TMPDIR `<at>/s`. It holds a hostile agent list, one
+/// that names ssh and the shells, and a hostile theme, and logs every command a
+/// client sends it (`-vv`, in `at`). Never the live server: its socket is a path
+/// under `at`, started with none of the caller's session. Killed when dropped.
+#[allow(dead_code)]
+pub struct StandIn {
+    at: PathBuf,
+    sock: PathBuf,
+    /// TMUX, as tmux sets it in a pane of this server
+    pub tmux: String,
+    pub pane: String,
+}
+
+#[allow(dead_code)]
+impl StandIn {
+    /// `None` where tmux is not there to run.
+    pub fn start(at: &Path) -> Option<StandIn> {
+        // SAFETY: getuid has no preconditions.
+        let uid = unsafe { libc::getuid() };
+        let folder = at.join("s").join(format!("tmux-{uid}"));
+        std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&folder).unwrap();
+        let mut s = StandIn {
+            at: at.to_path_buf(),
+            sock: folder.join("default"),
+            tmux: String::new(),
+            pane: String::new(),
+        };
+        let hostile = "|bash|sh|dash|zsh|fish|ssh|mosh|vim|nvim|less|man|claude|codex|";
+        let mut c = s.command();
+        c.args(["-vv", "-f", "/dev/null", "new-session", "-d", "-c"])
+            .arg(at)
+            .arg("sleep 300");
+        c.args([";", "set-option", "-s", "theme", "light"]);
+        c.args([";", "set-option", "-g", "@cockpit_agents_glob", hostile]);
+        for role in ["@thm_fg", "@thm_dim", "@thm_error", "@thm_sel"] {
+            c.args([";", "set-option", "-g", role, "#ff00ff"]);
+        }
+        let o = c.output().ok()?;
+        assert!(
+            o.status.success(),
+            "the stand-in did not start: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+        let ask = |what: &str| {
+            let o = s.command().args(["display-message", "-p", what]).output().unwrap();
+            String::from_utf8_lossy(&o.stdout).trim().to_string()
+        };
+        let (pid, pane) = (ask("#{pid}"), ask("#{pane_id}"));
+        s.tmux = format!("{},{pid},0", s.sock.display());
+        s.pane = pane;
+        Some(s)
+    }
+
+    /// The folder to hand on as TMUX_TMPDIR, where its socket is the default.
+    pub fn folder(&self) -> PathBuf {
+        self.at.join("s")
+    }
+
+    fn command(&self) -> Command {
+        let mut c = Command::new("tmux");
+        c.arg("-S").arg(&self.sock).current_dir(&self.at);
+        c.env_remove("TMUX").env_remove("TMUX_PANE").env_remove("TMUX_COCKPIT_DIR");
+        c
+    }
+
+    /// The commands its clients have sent it so far, read from its `-vv` log.
+    pub fn commands(&self) -> usize {
+        let logs = std::fs::read_dir(&self.at).unwrap().flatten().map(|e| e.path());
+        let name = |p: &PathBuf| p.file_name().unwrap().to_string_lossy().starts_with("tmux-server-");
+        let text = logs.filter(name).map(|p| std::fs::read_to_string(p).unwrap_or_default());
+        let line = |l: &str| l.contains(" message: client-") && l.contains(" command: ");
+        text.map(|t| t.lines().filter(|l| line(l)).count()).sum()
+    }
+}
+
+impl Drop for StandIn {
+    fn drop(&mut self) {
+        let _ = self.command().arg("kill-server").output();
+    }
+}
+
 // --- pane start-up waits for the basket_claude tests (#1056) ---
 
 /// One tmux command on the private server `sock`, its output trimmed.
 #[allow(dead_code)]
 fn tmux_on(sock: &str, args: &[&str]) -> String {
+    checked_tmux();
     let out = std::process::Command::new("tmux").args(["-L", sock]).args(args).output().unwrap();
     String::from_utf8_lossy(&out.stdout).trim_end().to_string()
 }

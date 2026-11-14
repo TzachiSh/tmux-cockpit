@@ -72,6 +72,21 @@ cp "${0%/*}/claude" "$d/claude" && : > "$d/reached" || {
     exit 1
 }
 
+# None of the caller's tmux session either (#1066): from inside one, a test's
+# plain tmux reached its server, and its rigs' sockets went beside that server.
+# The binary gets a socket folder of its own, made before it starts, since tmux
+# puts a socket in /tmp when TMUX_TMPDIR names no folder. It sits where the
+# caller's tmux would put its own folder, a short path: a socket's path fails
+# past 107 bytes, 103 on macOS, whose TMPDIR alone runs near 50.
+t=$(mktemp -d "${TMUX_TMPDIR:-/tmp}/cockpit-tmux.XXXXXX") || {
+    echo "$me: error: no tmux folder, the binary was not started binary=$1" >&2
+    exit 1
+}
+case $t in /*) ;; *) t=$PWD/$t ;; esac
+unset TMUX TMUX_PANE TMUX_COCKPIT_DIR
+TMUX_TMPDIR=$t
+export TMUX_TMPDIR
+
 # From here the folder is removed by the line after the binary and by nothing
 # else. A signal this script does not trap ends it at once, and its binary may
 # run on. bash runs an EXIT trap on such a death and dash does not, so with the
@@ -90,6 +105,13 @@ elif [ -s "$d/reached" ]; then
     cat "$d/reached" >&2
     [ "$rc" -ne 0 ] || rc=1
 fi
+# Only if empty: a socket left there is a server the binary did not end, and it
+# stays for a look, as `make tui-test-clean` would name it.
+rmdir "$t"/tmux-* 2>/dev/null
+rmdir "$t" 2>/dev/null || {
+    echo "$me: error: the binary left a tmux socket binary=$1 dir=$t" >&2
+    [ "$rc" -ne 0 ] || rc=1
+}
 rm -rf "$d"
 trap - HUP INT QUIT TERM
 

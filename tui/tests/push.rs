@@ -176,18 +176,18 @@ fn rig_env(tag: &str, env: EnvLock) -> Option<Rig> {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     // The server first: Push::start() lists its channel the moment it runs.
-    let mut server = fake::Server::new(&sock);
-    server.start(|c| {
-        c.args(["new-session", "-d", "-c"]).arg(&dir).args(["-s", "t", "sleep 300"]);
-        c.env_remove("TMUX").env_remove("TMUX_PANE");
-    });
-    Some(Rig {
+    // built first, so a start that panics still removes the folder
+    let mut rig = Rig {
         kids: Vec::new(),
+        _server: fake::Server::new(&sock),
         sock,
         dir,
-        _server: server,
         _env: env,
-    })
+    };
+    rig._server.start(|c| {
+        c.args(["new-session", "-d", "-c"]).arg(&rig.dir).args(["-s", "t", "sleep 300"]);
+    });
+    Some(rig)
 }
 
 fn woke(log: &PathBuf, n: usize) -> bool {

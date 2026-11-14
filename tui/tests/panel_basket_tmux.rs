@@ -40,18 +40,18 @@ fn d_and_shift_d_write_the_basket_before_the_list_shows_it() {
     let dir = std::env::temp_dir().join(&sock);
     std::fs::create_dir_all(&dir).unwrap();
     let dir = dir.canonicalize().unwrap();
-    let mut server = fake::Server::new(&sock);
-    if !server.start(|c| {
-        c.args(["new-session", "-d", "-c"]).arg(&dir).arg("sleep 300");
+    // built first, so a start that fails or panics still removes the folder
+    let mut s = Server {
+        _server: fake::Server::new(&sock),
+        sock,
+        dir,
+    };
+    if !s._server.start(|c| {
+        c.args(["new-session", "-d", "-c"]).arg(&s.dir).arg("sleep 300");
     }) {
         eprintln!("SKIP: no tmux");
         return;
     }
-    let s = Server {
-        sock,
-        dir,
-        _server: server,
-    };
     // SAFETY: the only test in this binary; nothing else reads the env meanwhile.
     unsafe { std::env::set_var("COCKPIT_TMUX", format!("tmux -L {}", s.sock)) };
     let pane = s.tmux(&["display-message", "-p", "#{pane_id}"]);

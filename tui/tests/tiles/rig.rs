@@ -67,17 +67,16 @@ pub fn rig(tag: &str) -> Option<Rig> {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let d = dir.display().to_string();
-    let mut server = crate::fake::Server::new(&sock);
-    server.start(|c| {
-        c.args(["new-session", "-d", "-c", &d, "-x", "80", "-y", "20", "sleep 300"])
-            .env_remove("TMUX");
-    });
+    // built first, so a start that panics still removes the folder
     let mut r = Rig {
+        _server: crate::fake::Server::new(&sock),
         sock,
         dir,
         ids: vec![],
-        _server: server,
     };
+    r._server.start(|c| {
+        c.args(["new-session", "-d", "-c", &d, "-x", "80", "-y", "20", "sleep 300"]);
+    });
     for s in SCREENS {
         let cmd = format!("{s}; exec sleep 300");
         let id = r.tmux(&["new-window", "-d", "-P", "-F", "#{pane_id}", "-c", &d, &cmd]);
