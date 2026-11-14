@@ -17,7 +17,8 @@ use fake::Scratch;
 use std::ffi::OsStr;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Command, ExitStatus, Stdio};
+use std::time::Duration;
 
 const RUNNER: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/claude-guard/runner");
 const STUB: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/claude-guard/claude");
@@ -66,29 +67,55 @@ fn field<'a>(rec: &'a str, key: &str, end: Option<&str>) -> &'a str {
     end.and_then(|e| rest.find(e)).map_or(rest, |to| &rest[..to])
 }
 
+/// How long [`ended`] polls a child before it kills it.
+const ENDED_FOR: Duration = Duration::from_secs(30);
+
+/// How long [`appears`] polls for a file.
+const APPEARS_FOR: Duration = Duration::from_secs(20);
+
+/// How long [`release`] polls for a reader of a fifo.
+const RELEASE_FOR: Duration = Duration::from_secs(20);
+
+/// The signals [`a_signal_to_the_runner_waits_for_the_binary_and_its_log`] sends.
+const TO_THE_RUNNER: [libc::c_int; 3] = [libc::SIGTERM, libc::SIGHUP, libc::SIGINT];
+
+// The row that starts this binary again waits for it through
+// fake::rows_pass_handed, whose bound must outlast the row it runs: at or under
+// it, it killed that binary before it could kill its runner, and left the runner
+// and its folder (#1061). That row's longest run: for each signal a wait for the
+// binary to start, one for its fifo, and one for the runner to end, the last
+// also on the path where the release failed.
+const _: () = {
+    let one_signal = APPEARS_FOR.as_secs() + RELEASE_FOR.as_secs() + ENDED_FOR.as_secs();
+    let signal_row = TO_THE_RUNNER.len() as u64 * one_signal;
+    assert!(
+        fake::HANDED_FOR.as_secs() > signal_row,
+        "fake::HANDED_FOR must outlast the signal row's own waits"
+    );
+};
+
 /// What `child` wrote and how it ended, polled for and never waited on for
-/// good: one still running after 30 s is killed and the row fails. A runner
-/// that sent itself a signal that stops would hold its row, and cargo, for good.
+/// good: one still running after [`ENDED_FOR`] is killed and the row fails. A
+/// runner that sent itself a signal that stops would hold its row, and cargo,
+/// for good.
 fn ended(mut child: std::process::Child, what: &str) -> std::process::Output {
     for tries in 0.. {
         if child.try_wait().unwrap().is_some() {
             break;
         }
-        if tries == 6000 {
+        if tries == ENDED_FOR.as_millis() / 5 {
             child.kill().unwrap();
             child.wait().unwrap();
-            panic!("{what} had not ended after 30 s and was killed");
+            panic!("{what} had not ended after {} s and was killed", ENDED_FOR.as_secs());
         }
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
     child.wait_with_output().unwrap()
 }
 
-/// The signals the rows send to the runner or have a stand-in send itself.
-/// A process starts with its parent's ignored signals and signal mask, and a
-/// shell cannot trap a signal ignored when it started: a suite started with
-/// `&` from a script ignores INT and QUIT, one under nohup HUP, and bash
-/// keeps a mask that dash clears. KILL can be neither ignored nor blocked.
+/// The signals the rows send to the runner or have a stand-in send itself, each
+/// at its default and unblocked wherever a runner starts ([`fake::at_default`],
+/// #1044). KILL can be neither ignored nor blocked.
 const SENT: [libc::c_int; 7] = [
     libc::SIGHUP,
     libc::SIGINT,
@@ -98,23 +125,6 @@ const SENT: [libc::c_int; 7] = [
     libc::SIGABRT,
     libc::SIGSEGV,
 ];
-
-/// Run between fork and exec: each signal of [`SENT`] at its default action
-/// and unblocked, so a row measures the runner and not how the suite was
-/// started (#1044).
-fn at_default() -> std::io::Result<()> {
-    // SAFETY: signal, sigemptyset, sigaddset and sigprocmask are async-signal-safe.
-    unsafe {
-        let mut set: libc::sigset_t = std::mem::zeroed();
-        libc::sigemptyset(&mut set);
-        for s in SENT {
-            libc::signal(s, libc::SIG_DFL);
-            libc::sigaddset(&mut set, s);
-        }
-        libc::sigprocmask(libc::SIG_UNBLOCK, &set, std::ptr::null_mut());
-    }
-    Ok(())
-}
 
 struct Rig(Scratch);
 
@@ -154,12 +164,10 @@ impl Rig {
     /// The rig's environment for `program`, the runner or a copy of it, with
     /// the signals of [`SENT`] at their default.
     fn command_of(&self, program: &Path) -> Command {
-        use std::os::unix::process::CommandExt;
         let mut c = Command::new(program);
         c.env_clear().env("PATH", self.path()).env("TMPDIR", self.0.join("tmp"));
         c.env("RUNNER", RUNNER).stdin(Stdio::null());
-        // SAFETY: at_default makes only async-signal-safe calls and allocates nothing.
-        unsafe { c.pre_exec(at_default) };
+        fake::at_default(&mut c, &SENT);
         c
     }
 
@@ -602,21 +610,32 @@ fn an_exit_status_that_names_no_deadly_signal_is_passed_on_as_it_is() {
 }
 
 /// A stand-in that writes its pid to a file beside itself, then waits for a
-/// line on the fifo beside itself, starts `claude` and ends well.
-const WAITS: &str = "#!/bin/sh\necho $$ > \"$0.up\"\nread -r _ < \"$0.go\"\nclaude late 2>/dev/null\nexit 0\n";
+/// line on the fifo beside itself, starts `claude` and exits with its first
+/// argument, 0 without one.
+const WAITS: &str = "#!/bin/sh\necho $$ > \"$0.up\"\nread -r _ < \"$0.go\"\n\
+                     claude late 2>/dev/null\nexit \"${1:-0}\"\n";
 
 /// `signal` sent to the runner alone while its binary runs: how the runner
 /// ended, whether the start the binary made afterwards was reported, and what
 /// was left in the temp folder.
 fn sent_to_the_runner(signal: i32) -> (Option<i32>, bool, usize) {
     let r = Rig::new(&format!("sent{signal}"));
+    let (status, said, left) = signalled(&r, &mut r.command(), signal, &[]);
+    (status.signal(), said, left)
+}
+
+/// `c`, a runner of the rig `r`, started on a [`WAITS`] stand-in handed `args`
+/// and sent `signal` alone while the stand-in waits: how it ended, whether the
+/// start the stand-in made afterwards was reported, and what was left in the
+/// temp folder.
+fn signalled(r: &Rig, c: &mut Command, signal: i32, args: &[&str]) -> (ExitStatus, bool, usize) {
     let exe = r.binary(TEST, WAITS);
     let (up, go) = (r.0.join(format!("{TEST}.up")), format!("{}.go", exe.display()));
     let fifo = std::ffi::CString::new(go.as_str()).unwrap();
     // SAFETY: `fifo` is a NUL-terminated path under the rig's folder.
     assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
-    let mut c = r.command();
-    let child = c.arg(&exe).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().unwrap();
+    c.arg(&exe).args(args).stdout(Stdio::null()).stderr(Stdio::piped());
+    let child = c.spawn().unwrap();
     appears(&up);
     // SAFETY: the pid of this row's own child, held and not yet waited for.
     assert_eq!(unsafe { libc::kill(child.id() as libc::pid_t, signal) }, 0);
@@ -627,7 +646,7 @@ fn sent_to_the_runner(signal: i32) -> (Option<i32>, bool, usize) {
     }
     let o = ended(child, "the runner");
     let said = String::from_utf8_lossy(&o.stderr).contains("argv=claude [late]");
-    (o.status.signal(), said, std::fs::read_dir(r.0.join("tmp")).unwrap().count())
+    (o.status, said, std::fs::read_dir(r.0.join("tmp")).unwrap().count())
 }
 
 /// A signal sent to the runner alone, the binary still running: the binary
@@ -636,32 +655,43 @@ fn sent_to_the_runner(signal: i32) -> (Option<i32>, bool, usize) {
 /// where the binary gets it too.
 #[test]
 fn a_signal_to_the_runner_waits_for_the_binary_and_its_log() {
-    for signal in [libc::SIGTERM, libc::SIGHUP, libc::SIGINT] {
+    for signal in TO_THE_RUNNER {
         assert_eq!(sent_to_the_runner(signal), (Some(signal), true, 0), "signal {signal}");
     }
 }
 
-/// The row above, in this binary started again with INT and HUP ignored, as
-/// `&` from a script and nohup hand them down. The rig's reset is what holds
-/// it (#1044). The inner run must name one passed row: a renamed row runs none.
+/// The row above, in this binary started again with INT and HUP ignored and
+/// blocked, as `&` from a script and nohup hand them down ignored. The rig's
+/// reset is what holds it (#1044). The wait for that binary outlasts the
+/// row's own waits, so a red run there ends what it started first (#1061).
 #[test]
-fn the_signal_row_holds_in_a_binary_handed_an_ignored_int_and_hup() {
+fn the_signal_row_holds_in_a_binary_handed_an_ignored_and_blocked_int_and_hup() {
+    let row = "a_signal_to_the_runner_waits_for_the_binary_and_its_log";
+    fake::rows_pass_handed(&[row], &[libc::SIGINT, libc::SIGHUP]);
+}
+
+/// The runner started with INT or HUP ignored, as `&` from a script and nohup
+/// start it. A shell cannot trap a signal ignored when it started, so that
+/// signal ends nothing: the log is still read, the folder removed, the start
+/// refused and reported, and the runner ends with its binary's status, 7 here
+/// (docs/testing.md). This one start undoes the rig's reset on purpose (#1061).
+#[test]
+fn a_runner_started_with_a_signal_ignored_still_reads_the_log_and_ends_as_its_binary() {
     use std::os::unix::process::CommandExt;
-    let mut c = Command::new(std::env::current_exe().unwrap());
-    c.args(["--exact", "a_signal_to_the_runner_waits_for_the_binary_and_its_log"]);
-    c.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
-    // SAFETY: signal is async-signal-safe and allocates nothing.
-    unsafe {
-        c.pre_exec(|| {
-            libc::signal(libc::SIGINT, libc::SIG_IGN);
-            libc::signal(libc::SIGHUP, libc::SIG_IGN);
+    for signal in [libc::SIGINT, libc::SIGHUP] {
+        let r = Rig::new(&format!("ignored{signal}"));
+        let mut c = r.command();
+        let ignore = move || {
+            // SAFETY: signal is async-signal-safe and allocates nothing.
+            unsafe { libc::signal(signal, libc::SIG_IGN) };
             Ok(())
-        })
-    };
-    let out = ended(c.spawn().unwrap(), "this binary, started again");
-    let said = String::from_utf8_lossy(&out.stdout);
-    let one_passed = said.contains(" 1 passed; 0 failed");
-    assert_eq!((out.status.code(), one_passed), (Some(0), true), "{said}");
+        };
+        // SAFETY: as above. Added after the rig's reset, so it runs after it.
+        unsafe { c.pre_exec(ignore) };
+        let (status, said, left) = signalled(&r, &mut c, signal, &["7"]);
+        let got = (status.code(), said, left, r.own_starts());
+        assert_eq!(got, (Some(7), true, 0, 0), "signal {signal}");
+    }
 }
 
 /// QUIT is the keyboard's other one, ctrl and backslash. The start is still reported and
@@ -681,15 +711,16 @@ const OUTLIVES: &str = "#!/bin/sh\necho $$ > \"$0.up\"\nread -r _ < \"$0.go\"\nc
 /// One line into `fifo` for the binary that waits on it. The fifo is opened
 /// without waiting, since a write to a fifo nobody reads would hold the row for
 /// good. A binary writes that it runs before it opens the fifo, so the open is
-/// tried again while it finds no reader (ENXIO), polled for 20 s as
-/// [`appears`] is, and then fails (#997).
+/// tried again while it finds no reader (ENXIO), polled for [`RELEASE_FOR`],
+/// and then fails (#997).
 fn release(fifo: &Path) -> Result<(), String> {
     use std::{io::Write, os::unix::fs::OpenOptionsExt};
+    let polls = RELEASE_FOR.as_millis() / 10;
     for tries in 0.. {
         let open = std::fs::OpenOptions::new().write(true).custom_flags(libc::O_NONBLOCK).open(fifo);
         match open {
             Ok(mut f) => return f.write_all(b"go\n").map_err(|e| format!("{}: {e}", fifo.display())),
-            Err(e) if e.raw_os_error() == Some(libc::ENXIO) && tries < 2000 => {}
+            Err(e) if e.raw_os_error() == Some(libc::ENXIO) && tries < polls => {}
             Err(e) => return Err(format!("no binary waits on {}: {e}", fifo.display())),
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
@@ -768,6 +799,45 @@ fn a_pid_whose_command_line_names_another_binary_is_not_signalled() {
     assert_eq!((released, a.code(), b.signal()), (Ok(()), Some(0), Some(libc::SIGKILL)));
 }
 
+/// The fifo of a stand-in that waits on it, given its line when this is dropped
+/// unless [`Unreleased::release`] gave it first. A row that fails before its
+/// release, a panic's unwind, so ends its stand-in as a green row does, by the
+/// line it waits for, and signals no pid (#1061).
+struct Unreleased(Option<PathBuf>);
+
+impl Unreleased {
+    fn release(&mut self) -> Result<(), String> {
+        release(&self.0.take().expect("released once"))
+    }
+}
+
+impl Drop for Unreleased {
+    fn drop(&mut self) {
+        if let Some(fifo) = self.0.take() {
+            drop(release(&fifo));
+        }
+    }
+}
+
+/// #1061: a stand-in left waiting by a row that failed before its release is
+/// given its line by the unwind, and ends: a red run leaves no stand-in.
+#[test]
+fn a_stand_in_left_waiting_by_a_failed_row_is_released_by_the_unwind() {
+    let r = Rig::new("unwound");
+    let exe = r.binary("unwound", BLOCKS);
+    let fifo = std::ffi::CString::new(sibling(&exe, "go").to_str().unwrap()).unwrap();
+    // SAFETY: `fifo` is a NUL-terminated path under the rig's folder.
+    assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+    let child = Command::new(&exe).stdin(Stdio::null()).spawn().unwrap();
+    appears(&sibling(&exe, "ran"));
+    let red = std::panic::catch_unwind(|| {
+        let _go = Unreleased(Some(sibling(&exe, "go")));
+        panic!("a failed assert before the release");
+    });
+    assert!(red.is_err(), "the forced panic did not fire");
+    assert_eq!(ended(child, "the stand-in left waiting").status.code(), Some(0));
+}
+
 /// What `program` wrote to stdout, empty where it could not be run.
 fn command_output(program: &str, args: &[&str]) -> String {
     let out = Command::new(program).args(args).stdin(Stdio::null()).output();
@@ -798,13 +868,13 @@ fn a_binary_that_opens_its_fifo_late_is_still_released() {
     assert_eq!((released, String::from_utf8_lossy(&out.stdout).as_ref()), (Ok(()), "go\n"));
 }
 
-/// Polled, never slept for: gives up after 20 s.
+/// Polled, never slept for: gives up after [`APPEARS_FOR`].
 fn appears(file: &Path) {
     for tries in 0.. {
         if file.exists() {
             return;
         }
-        assert!(tries < 2000, "{} never appeared", file.display());
+        assert!(tries < APPEARS_FOR.as_millis() / 10, "{} never appeared", file.display());
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
 }
@@ -831,6 +901,8 @@ fn killed_under(shell: &str, at: [&str; 2], flags: &[&str]) -> Option<(usize, us
     let fifo = std::ffi::CString::new(beside("go").to_str().unwrap()).unwrap();
     // SAFETY: `fifo` is a NUL-terminated path under the rig's folder.
     assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+    // declared after `r`, so dropped before the rig's folder goes
+    let mut go = Unreleased(Some(beside("go")));
     let mut c = r.command_of(Path::new(sh));
     let child = c
         .args(flags)
@@ -845,7 +917,7 @@ fn killed_under(shell: &str, at: [&str; 2], flags: &[&str]) -> Option<(usize, us
     assert_eq!(unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGUSR1) }, 0);
     assert_eq!(ended(child, "the killed runner").status.signal(), Some(libc::SIGUSR1), "{shell}");
     let folders: Vec<PathBuf> = std::fs::read_dir(r.0.join("tmp")).unwrap().map(|e| e.unwrap().path()).collect();
-    if let Err(e) = release(&beside("go")) {
+    if let Err(e) = go.release() {
         end_stand_in(&beside("up"), &exe);
         panic!("{e}");
     }

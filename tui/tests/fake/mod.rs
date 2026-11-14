@@ -13,6 +13,7 @@
 //! answers a lookup with ([`rig_path`], #972).
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::Once;
 
 fn beside(path: &Path, ext: &str) -> PathBuf {
@@ -206,6 +207,97 @@ pub fn rig_path(bin: &Path) -> String {
         Err(std::env::VarError::NotPresent) => format!("{first}:{DEFAULT_PATH}"),
         Err(e) => panic!("PATH: {e}"),
     }
+}
+
+/// `c` with each of `signals` at its default action and unblocked in its child,
+/// set between the fork and the exec. A process starts with its parent's
+/// ignored signals and signal mask: a suite started with `&` from a script
+/// ignores INT and QUIT, one under nohup HUP, and bash keeps a mask that dash
+/// clears. A shell cannot trap a signal ignored when it started, and a handler
+/// never runs for a blocked one. A row that signals a child, or has one signal
+/// itself, measures that child and not how the suite was started (#1044, #1061).
+/// KILL and STOP can be neither ignored nor blocked.
+#[allow(dead_code)]
+pub fn at_default(c: &mut Command, signals: &'static [libc::c_int]) {
+    use std::os::unix::process::CommandExt;
+    let reset = move || {
+        // SAFETY: signal, sigemptyset, sigaddset and sigprocmask are
+        // async-signal-safe, and nothing here allocates.
+        unsafe {
+            let mut set: libc::sigset_t = std::mem::zeroed();
+            libc::sigemptyset(&mut set);
+            for &s in signals {
+                libc::signal(s, libc::SIG_DFL);
+                libc::sigaddset(&mut set, s);
+            }
+            libc::sigprocmask(libc::SIG_UNBLOCK, &set, std::ptr::null_mut());
+        }
+        Ok(())
+    };
+    // SAFETY: `reset` makes only async-signal-safe calls and allocates nothing.
+    unsafe { c.pre_exec(reset) };
+}
+
+/// How long [`rows_pass_handed`] gives its child: past the rows' own bounds, so
+/// theirs fire first and a row still ends what it started. The longest is
+/// claude_guard.rs's signal row, whose waits are checked against this when
+/// that file builds. A bound at or under a row's own killed that child
+/// before it could kill its runner, and left the runner running (#1061). A
+/// child alive after this is killed, so a hung harness cannot hold the suite for
+/// good.
+#[allow(dead_code)]
+pub const HANDED_FOR: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// `rows` of this binary, matched exactly, in this binary started again with
+/// each of `signals` ignored and blocked: the worst state a suite can hand
+/// down. Each row that signals a child holds there only by its own
+/// [`at_default`] (#1061). The run must name every row passed, since a renamed
+/// row runs none. A row must not pass its own name: its child would start a
+/// child of its own, without end. Returns the child's pid, for a row that looks for
+/// what the child left.
+#[allow(dead_code)]
+pub fn rows_pass_handed(rows: &[&str], signals: &'static [libc::c_int]) -> u32 {
+    use std::os::unix::process::CommandExt;
+    use std::process::Stdio;
+    let mut c = Command::new(std::env::current_exe().unwrap());
+    c.arg("--exact")
+        .args(rows)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let hand_down = move || {
+        // SAFETY: as in `at_default`, the calls here are async-signal-safe.
+        unsafe {
+            let mut set: libc::sigset_t = std::mem::zeroed();
+            libc::sigemptyset(&mut set);
+            for &s in signals {
+                libc::signal(s, libc::SIG_IGN);
+                libc::sigaddset(&mut set, s);
+            }
+            libc::sigprocmask(libc::SIG_BLOCK, &set, std::ptr::null_mut());
+        }
+        Ok(())
+    };
+    // SAFETY: `hand_down` makes only async-signal-safe calls and allocates nothing.
+    let mut child = unsafe { c.pre_exec(hand_down) }.spawn().unwrap();
+    let pid = child.id();
+    let step = std::time::Duration::from_millis(20);
+    for tries in 0.. {
+        if child.try_wait().unwrap().is_some() {
+            break;
+        }
+        if tries == HANDED_FOR.as_millis() / step.as_millis() {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("{rows:?} in a child had not ended after {HANDED_FOR:?} and was killed");
+        }
+        std::thread::sleep(step);
+    }
+    let out = child.wait_with_output().unwrap();
+    let said = String::from_utf8_lossy(&out.stdout);
+    let all = said.contains(&format!(" {} passed; 0 failed", rows.len()));
+    assert!(out.status.success() && all, "{}", told(&rows.join(" "), &out));
+    pid
 }
 
 /// Whether a spawn by this user could start `p`: a file the kernel lets it

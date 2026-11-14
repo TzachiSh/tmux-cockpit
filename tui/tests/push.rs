@@ -123,9 +123,11 @@ impl Rig {
     /// A `push_hold` child listing itself on this server; its index and log.
     fn hold(&mut self) -> (usize, PathBuf) {
         let log = self.dir.join(format!("tui{}.log", self.kids.len()));
+        let mut c = Command::new(example("push_hold"));
+        // a row's SIGTERM reaches the board's handler however the suite was started (#1061)
+        fake::at_default(&mut c, &[libc::SIGTERM]);
         self.kids.push(
-            Command::new(example("push_hold"))
-                .env("COCKPIT_TMUX", format!("tmux -L {}", self.sock))
+            c.env("COCKPIT_TMUX", format!("tmux -L {}", self.sock))
                 .env("COCKPIT_LOG", &log)
                 .env_remove("COCKPIT_READONLY")
                 .env_remove("TMUX")
@@ -180,8 +182,13 @@ fn rig_env(tag: &str, env: EnvLock) -> Option<Rig> {
     let dir = std::env::temp_dir().join(&sock);
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    // The server first: Push::start() lists its channel the moment it runs.
-    let _ = Command::new("tmux")
+    // The server first: Push::start() lists its channel the moment it runs. Its
+    // kill-server is a TERM it sends itself, then a HUP to each pane, which starts
+    // with the server's mask. So the server starts with both at their default and
+    // unblocked: a suite started with them blocked left it and its pane running (#1061).
+    let mut server = Command::new("tmux");
+    fake::at_default(&mut server, &[libc::SIGTERM, libc::SIGHUP]);
+    let _ = server
         .args(["-L", &sock, "-f", "/dev/null", "new-session", "-d", "-c"])
         .arg(&dir)
         .args(["-s", "t", "sleep 300"])
@@ -393,7 +400,10 @@ fn a_cockpit_tui_survives_sigusr1() {
         &stub,
         &format!("#!/bin/sh\n: > {d}/ready\nwhile [ ! -e {d}/go ]; do sleep 0.05; done\nexit 1\n"),
     );
-    let mut child = Command::new(env!("CARGO_BIN_EXE_cockpit-tui"))
+    let mut c = Command::new(env!("CARGO_BIN_EXE_cockpit-tui"));
+    // USR1 at its default, so that only the board's own ignore keeps it alive (#1061)
+    fake::at_default(&mut c, &[libc::SIGUSR1]);
+    let mut child = c
         .args(["info", "--text", "%1"])
         .env("COCKPIT_TMUX", &stub)
         .env_remove("TMUX")
@@ -410,4 +420,34 @@ fn a_cockpit_tui_survives_sigusr1() {
     let _ = std::fs::remove_dir_all(&dir);
     assert!(ready, "info never reached its tmux read");
     assert_eq!(st.signal(), None, "SIGUSR1 killed a cockpit-tui: {st:?}");
+}
+
+/// The processes left of the `push` rig of the test binary `pid`, read from /proc: its
+/// server, by the socket its command line names, and its pane, by the folder it runs
+/// in. Linux only, as are the rows that count them.
+fn left_by(pid: u32) -> usize {
+    let sock = format!("-L\0cockpit-tui-push-{pid}\0");
+    let dir = format!("/cockpit-tui-push-{pid}");
+    let left = |e: &std::fs::DirEntry| {
+        let line = std::fs::read(e.path().join("cmdline")).unwrap_or_default();
+        let cwd = std::fs::read_link(e.path().join("cwd")).unwrap_or_default();
+        let cwd = cwd.to_string_lossy();
+        let in_dir = cwd.ends_with(&dir) || cwd.ends_with(&format!("{dir} (deleted)"));
+        String::from_utf8_lossy(&line).contains(&sock) || in_dir
+    };
+    std::fs::read_dir("/proc").map_or(0, |d| d.flatten().filter(left).count())
+}
+
+/// #1061: the two rows that signal a board, in this binary started again with TERM, HUP
+/// and USR1 ignored and blocked. Each holds there by its own reset, and the rig's server,
+/// told to go by a TERM it sends itself, is gone afterwards with its pane.
+#[test]
+#[cfg(target_os = "linux")]
+fn the_signalling_rows_hold_in_a_binary_handed_an_ignored_and_blocked_term_hup_and_usr1() {
+    let rows = [
+        "a_wake_reaches_the_loop_and_sigterm_takes_the_waiter_along",
+        "a_cockpit_tui_survives_sigusr1",
+    ];
+    let pid = fake::rows_pass_handed(&rows, &[libc::SIGTERM, libc::SIGHUP, libc::SIGUSR1]);
+    assert!(until(|| left_by(pid) == 0), "the child's rig left its server or its pane");
 }
