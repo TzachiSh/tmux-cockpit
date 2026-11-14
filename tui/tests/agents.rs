@@ -541,15 +541,40 @@ fn so_does_one_started_with_sigabrt_blocked() {
     gave_up("blocked");
 }
 
+/// `script` under [`SH`] as the give-up starts it, with a core limit of 0, soft and
+/// hard, as the child half sets its own: a death that is meant leaves no core (#988).
+fn shell(script: &str) -> std::process::Command {
+    use std::os::unix::process::CommandExt;
+    let mut sh = std::process::Command::new(SH);
+    sh.arg0("sh").args(["-c", script]);
+    let no_core = || {
+        // SAFETY: setrlimit reads one struct.
+        unsafe { libc::setrlimit(libc::RLIMIT_CORE, &libc::rlimit { rlim_cur: 0, rlim_max: 0 }) };
+        Ok(())
+    };
+    // SAFETY: setrlimit is async-signal-safe and allocates nothing.
+    unsafe { sh.pre_exec(no_core) };
+    sh
+}
+
+/// #988: the shells these rows start die by SIGABRT with both core limits at 0, so a
+/// developer's own limit leaves no core file of theirs in `tui/`.
+#[test]
+fn the_rows_shells_die_with_no_core_limit() {
+    use std::os::unix::process::ExitStatusExt;
+    let out = shell(&format!("ulimit -c; ulimit -Hc; {SAY}")).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "0\n0\n", "soft, then hard");
+    assert_eq!(out.status.signal(), Some(libc::SIGABRT), "{:?}", out.status);
+}
+
 /// #988: with nobody left to read stderr the shell still dies by SIGABRT, as abort()
 /// does, though the exec has set SIGPIPE back to its default.
 #[test]
 fn the_shell_dies_by_sigabrt_on_a_stderr_nobody_reads() {
-    use std::os::unix::process::{CommandExt, ExitStatusExt};
+    use std::os::unix::process::ExitStatusExt;
     let (read, write) = std::io::pipe().unwrap();
     drop(read);
-    let mut sh = std::process::Command::new(SH);
-    let status = sh.arg0("sh").args(["-c", SAY]).stderr(write).status().unwrap();
+    let status = shell(SAY).stderr(write).status().unwrap();
     assert_eq!(status.signal(), Some(libc::SIGABRT), "{status:?}");
 }
 
@@ -570,11 +595,11 @@ const ODD: [(&str, Option<&str>); 9] = [
 /// read as a format, as this binary's own read would, and dies by SIGABRT.
 #[test]
 fn the_shell_prints_odd_values_whole() {
-    use std::os::unix::process::{CommandExt, ExitStatusExt};
+    use std::os::unix::process::ExitStatusExt;
     for (row, v) in ODD {
         let path = format!("{}:/second", v.unwrap_or("/first"));
-        let mut sh = std::process::Command::new(SH);
-        sh.arg0("sh").args(["-c", SAY]).env_clear().env("PATH", &path);
+        let mut sh = shell(SAY);
+        sh.env_clear().env("PATH", &path);
         if let Some(v) = v {
             sh.env("HOME", v);
         }
