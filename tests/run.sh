@@ -4200,7 +4200,7 @@ cp "$CL/h2/.tmux.conf" "$CL/conf2"
 cl_out=$( cd "$CL/wd" && cl_env 2 "$cl_p2/bootstrap.sh" --yes )
 cl_line=$(. "$DIR/scripts/lib/confline.sh" && cockpit_conf_line "$cl_p2")
 case "$cl_out" in
-    *"NOTE   line 3 of that file has no quotes around the path"*"the plugin may not load."*$(:
+    *"NOTE   line 3 of that file has no quotes around the path"*"the plugin might not load."*$(:
       )"Replace line 3 with:"*"
            $cl_line
 "*) ok "an old bare line and a folder with blanks: the notice names line 3 and gives the line" ;;
@@ -4216,7 +4216,7 @@ cl_said() {                   # <label> <literal text> <output that must hold it
     esac
 }
 cl_said "and install.sh --check warns on its config row, with the same line" \
-    "[ warn ] config         $CL/h2/.tmux.conf line 3 unquoted, may not load from this $(:
+    "[ warn ] config         $CL/h2/.tmux.conf line 3 unquoted, might not load from this $(:
         )folder; replace line 3 with $cl_line
 " "$(cl_env 2 "$cl_p2/install.sh" --check)
 "
@@ -4271,7 +4271,7 @@ cl_said() {                   # <label> <literal text> <output that must hold it
     esac
 }
 cl_said "and install.sh --check on that box names the control character and gives no line" \
-    "unquoted, may not load from this folder; the folder path holds a control character: $(:
+    "unquoted, might not load from this folder; the folder path holds a control character: $(:
     )move the folder
 " "$(cl_env 9 "$CL/p/e"$'\033'"[31msc/install.sh" --check)
 "

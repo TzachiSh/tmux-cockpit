@@ -19,7 +19,7 @@ cockpit_conf_line() {         # <plugin folder> -> run-shell "'<folder>/cockpit.
 }
 
 # Does a bare line, run-shell <folder>/cockpit.tmux, load the plugin from this folder?
-# A yes is sure. A no means "may not": a * or a ? with no other folder to match, an ESC
+# A yes is sure. A no means "might not": a * or a ? with no other folder to match, an ESC
 # and a few more do load, and the callers word what they print that way (#1060).
 # Measured on tmux 3.6 and 3.8, one character at a time (#1046): sh splits or reads the
 # characters in bad, and run-shell expands tmux formats. A run of # in front of a [ arrives
