@@ -3,7 +3,7 @@
 mod fake;
 
 use cockpit_tui::data::agents::{Background, Entry, Stage, flush, lookup_pid, lookups};
-use cockpit_tui::data::agents::{read_file, resolve};
+use cockpit_tui::data::agents::{is_lookup_child, read_file, resolve};
 use cockpit_tui::data::agents::{set_background, set_stage_hook};
 use cockpit_tui::data::list_panes;
 use fake::write_exec;
@@ -207,6 +207,9 @@ fn give_up(dir: &Path, bound: std::time::Duration) -> ! {
 
 impl Drop for Rig {
     fn drop(&mut self) {
+        // a hook set under this rig ends with it, on a panic too: left set, it would
+        // run in every later test's lookups (#1024)
+        set_stage_hook(None);
         // a red run must not leave a stub looping on a file that never comes
         let _ = std::fs::write(self.dir.join("go"), "");
         // AGENTS.md: never signal a pid nobody verified. The stub may be long gone and
@@ -338,6 +341,25 @@ fn nor_does_one_pending_at_a_drop_during_a_panic() {
     let (inside, outside) = asks_of_a_lookup_held_past_the_drop("latepanic", true);
     assert_eq!(outside, "", "a `claude` outside the rig was started");
     assert_eq!(inside, 2, "both asks reached the rig's stub");
+}
+
+/// #1024: a rig dropped in a panic's unwind leaves no stage hook set for the next rig.
+#[test]
+fn a_rig_dropped_in_a_panic_leaves_no_stage_hook_set() {
+    static CALLS: AtomicUsize = AtomicUsize::new(0);
+    fn count(_at: Stage, _pid: u32) {
+        CALLS.fetch_add(1, Ordering::SeqCst);
+    }
+    // the dev holds ENV across both rigs, so no other test clears the hook in between
+    let dev = Dev::new("hookleft");
+    let red = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _r = Rig::inside(&dev, "hookleft", ONE);
+        set_stage_hook(Some(count));
+        panic!("a red between the set and the test's own clear");
+    }));
+    assert!(red.is_err(), "the forced panic did not fire");
+    Rig::inside(&dev, "hookleft2", ONE).sess();
+    assert_eq!(CALLS.load(Ordering::SeqCst), 0, "the hook ran in a later rig's lookup");
 }
 
 /// The child half of the give-up test: a lookup thread that never ends, and a rig
@@ -787,6 +809,8 @@ fn own_pane_stays_no_agent(tag: &str, grandchild: bool, by_ps: bool, hold: Hold)
     let ids: Vec<_> = list_panes().unwrap().into_iter().map(|p| p.id).collect();
     set_stage_hook(None);
     assert_eq!(ids, ["%1"], "the board's own pane showed as an agent");
+    // an empty stubpid read names no child, and the walk then checks nothing (#1024)
+    assert!(is_lookup_child(&pid), "the walk met no lookup child: {pid:?}");
     std::fs::write(r.dir.join("go"), "").unwrap();
     r.wait_cache();
 }
