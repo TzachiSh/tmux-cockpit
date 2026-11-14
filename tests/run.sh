@@ -21068,7 +21068,7 @@ echo "== tests/tui-refusers.sh: with no user namespace it starts no test binary 
 TRF=$(mktmpd)
 mkdir "$TRF/fail" "$TRF/none"
 printf '#!/bin/sh\nexit 1\n' > "$TRF/fail/unshare"
-printf '#!/bin/sh\necho "$*" >> "%s/calls"\n' "$TRF" > "$TRF/fail/cargo"
+printf '#!/bin/sh\necho "$*" >> "$0.calls"\n' > "$TRF/fail/cargo"
 cp "$TRF/fail/cargo" "$TRF/none/cargo"
 cp "$TRF/fail/cargo" "$TRF/bin"
 chmod +x "$TRF/fail/unshare" "$TRF/fail/cargo" "$TRF/none/cargo" "$TRF/bin"
@@ -21076,15 +21076,18 @@ echo "$TRF/bin" > "$TRF/list"
 trf() {   # <PATH> <args...>: what the script printed, its status, and the calls recorded
     local p=$1 o r; shift
     o=$(PATH=$p "$DIR/tests/tui-refusers.sh" "$@" 2>&1); r=$?
-    printf '%s rc=%s calls=%s' "$o" "$r" "$(cat "$TRF/calls" 2>/dev/null | wc -l)"
+    printf '%s rc=%s calls=%s' "$o" "$r" "$(cat "$TRF"/*/*.calls "$TRF"/*.calls 2>/dev/null | wc -l)"
 }
 TRS="tui-refusers.sh: no user and mount namespace here (unshare -rm), so no test binary was started"
 is "an unshare that fails: one line, exit 1, nothing built or started" \
    "$TRS rc=1 calls=0" "$(trf "$TRF/fail:/usr/bin:/bin")"
 is "no unshare on PATH: the same" "$TRS rc=1 calls=0" "$(trf "$TRF/none")"
+TRI="tui-refusers.sh: --inside not in a namespace of its own, so no test binary was started"
 is "its inner half started outside a namespace starts no binary" \
-   "tui-refusers.sh: --inside outside a user namespace, so no test binary was started rc=1 calls=0" \
-   "$(trf "$TRF/fail:/usr/bin:/bin" --inside "$TRF/list")"
+   "$TRI rc=1 calls=0" "$(trf "$TRF/fail:/usr/bin:/bin" --inside "$TRF/list")"
+is "...nor handed the namespaces it runs in, as a call inside a container's would be" \
+   "$TRI rc=1 calls=0" "$(trf "$TRF/fail:/usr/bin:/bin" --inside "$TRF/list" \
+       "$(readlink /proc/self/ns/user)/$(readlink /proc/self/ns/mnt)")"
 rm -rf "$TRF"
 
 

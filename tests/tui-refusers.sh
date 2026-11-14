@@ -24,17 +24,21 @@ if [ "${1-}" != --inside ]; then
     list=$(mktemp) || exit 1
     (cd "$here/../tui" && cargo test --locked --no-run --message-format=json 2>/dev/null) |
         grep '"profile":{[^}]*"test":true' | sed -n 's/.*"executable":"\([^"]*\)".*/\1/p' | sort -u >"$list"
-    unshare -rm "$here/tui-refusers.sh" --inside "$list"
+    ns=$(readlink /proc/self/ns/user)/$(readlink /proc/self/ns/mnt)
+    unshare -rm "$here/tui-refusers.sh" --inside "$list" "$ns"
     rc=$?
     rm -f "$list"
     exit "$rc"
 fi
 
-# --inside is for the line above alone. Outside a user namespace the uid map
-# is the whole range, and no binary may start there.
-read -r _ _ range </proc/self/uid_map || exit 1
-if [ "$range" = 4294967295 ]; then
-    echo "tui-refusers.sh: --inside outside a user namespace, so no test binary was started" >&2
+# --inside is for the line above alone, which hands it the user and mount
+# namespaces it ran in. Called any other way, from a shell or from inside a
+# container's own namespace (#1089), it has no others to show, and no binary
+# may start there.
+ns=$(readlink /proc/self/ns/user)/$(readlink /proc/self/ns/mnt)
+case $ns in /* | */) ns=${3-} ;; esac
+if [ -z "${3-}" ] || [ "$ns" = "$3" ]; then
+    echo "tui-refusers.sh: --inside not in a namespace of its own, so no test binary was started" >&2
     exit 1
 fi
 # the list sits in TMPDIR, which may be /tmp: opened before the tmpfs hides it
