@@ -43,6 +43,10 @@ cp "$DIR/tests/run.sh" "$WORK/run.snap" || exit 1
 # Groups.  A block is its own group unless the line above its `echo "== "` is
 # `# group: NAME`; blocks sharing a NAME run in one shard, in source order,
 # because they read variables the first of them set.
+# An awk that fails here writes nothing, and nothing read as "nothing to do": with a broken
+# awk par.sh said "nothing selected" and ended 0 (#1017). Each awk below is asked how it
+# ended, and a plan with no block in it is an error unless PAR_BLOCKS chose none.
+awk_died() { echo "par.sh: awk failed $1 (status $2): no run" >&2; exit 2; }
 awk '
     /^# group: / { g = $3; next }
     /^echo "== / { n++
@@ -50,7 +54,8 @@ awk '
                    if (!(g in first)) first[g] = n
                    printf "%04d\t%d\t%s\n", first[g], n, g
                    g = "" }
-' "$WORK/run.snap" > "$WORK/groups.tsv"
+' "$WORK/run.snap" > "$WORK/groups.tsv" || awk_died "grouping the blocks" $?
+[ -s "$WORK/groups.tsv" ] || { echo "par.sh: no block found in tests/run.sh: no run" >&2; exit 2; }
 
 # PAR_BLOCKS restricts the run to a comma-separated set of ordinals (see
 # tests/changed.sh). Whole GROUPS survive the filter: selecting block 96 without
@@ -60,7 +65,8 @@ if [ -n "${PAR_BLOCKS:-}" ] && [ "${PAR_BLOCKS}" != ALL ]; then
     awk -F'\t' -v want=",${PAR_BLOCKS}," '
         { if (index(want, "," $2 ",")) keep[$1] = 1; row[NR] = $0 }
         END { for (i = 1; i <= NR; i++) { split(row[i], c, "\t"); if (c[1] in keep) print row[i] } }
-    ' "$WORK/groups.tsv" > "$WORK/groups.sel" && mv "$WORK/groups.sel" "$WORK/groups.tsv"
+    ' "$WORK/groups.tsv" > "$WORK/groups.sel" || awk_died "selecting PAR_BLOCKS" $?
+    mv "$WORK/groups.sel" "$WORK/groups.tsv"
 fi
 
 # Each shard's titles, for its start line (#805): its blocks' titles joined by " | ", cut
@@ -68,7 +74,10 @@ fi
 # Titles only: no path or variable a log should not carry. Written once here, read once
 # per shard, never per row.
 mkdir -p "$WORK/title"
-LC_ALL=C awk -F'\t' -v dir="$WORK/title" '
+# The folder goes through the environment: awk -v unescapes backslashes, so a TMPDIR holding
+# one sent every title to another name and the start lines came out empty (#1015).
+PAR_TITLES="$WORK/title" LC_ALL=C awk -F'\t' '
+    BEGIN { dir = ENVIRON["PAR_TITLES"] }
     NR == FNR { if (/^echo "== /) { n++; t = $0; sub(/^echo "== /, "", t); sub(/ =="$/, "", t)
                                     gsub(/[\001-\037\177]/, "", t); title[n] = t }
                 next }
@@ -81,7 +90,9 @@ LC_ALL=C awk -F'\t' -v dir="$WORK/title" '
                               if (c ~ /[\200-\277]/) sub(/[\300-\377][\200-\277]*$/, "", t)
                               t = t "..." }
                           print t > (dir "/" id); close(dir "/" id) } }
-' "$WORK/run.snap" "$WORK/groups.tsv"
+' "$WORK/run.snap" "$WORK/groups.tsv" ||
+    echo "par.sh: awk failed writing the shard titles (status $?): start lines carry no title" >&2
+# Not fatal, unlike the others: a title is what a start line says, never what a shard runs.
 
 while IFS=$'\t' read -r id n g; do
     printf '%s\n' "$n" >> "$WORK/list/$id"
@@ -108,6 +119,10 @@ if [ -n "$EACH" ]; then
     exit 0
 fi
 
+# The plan is the list of shard files as each is written, kept here. Never a listing of the
+# folder afterwards: a shard file gone by then would not be a shard, its blocks would not run,
+# and the run would end 0 (#1013, #1017).
+plan=()
 for f in "$WORK"/list/*; do
     id=${f##*/}
     awk -v want=",$(tr '\n' ',' < "$f")" '
@@ -123,12 +138,20 @@ for f in "$WORK"/list/*; do
         /^flop_left$/ { next }             # the tail below calls it once
         /^printf .  %d passed/ { next }
         /^\[ "\$fail" -eq 0 \]/ { next }
-        /^echo "== / { n++; keep = (index(want, "," n ",") > 0) }
+        /^echo "== / { n++; keep = (index(want, "," n ",") > 0); kept += keep }
         keep { print }
-        END { print "flop_left"
+        END { if (!kept) exit 3            # a shard with no block in it: its list was not read
+              print "flop_left"
               print "printf %d,%d,%d\\\\n \"$pass\" \"$fail\" \"$skipped\" > \"$PAR_COUNT\""
               print "[ \"$fail\" -eq 0 ] || exit 1" }
-    ' "$WORK/run.snap" > "$SH.$id"
+    ' "$WORK/run.snap" > "$SH.$id" || {
+        rc=$?
+        # 3 is the awk's own: the shard's list of blocks came through empty (a failed tr), and
+        # a shard of prelude alone would run, count 0,0,0 and pass (#1017).
+        [ "$rc" -ne 3 ] || { echo "par.sh: shard $id would hold no block: no run" >&2; exit 2; }
+        awk_died "writing shard $id" "$rc"
+    }
+    plan+=("$SH.$id")
     # A block whose `if`/`fi` straddles the next block's title does not stand
     # alone; name every one of them, not just the first, so one `# group:`
     # pass fixes them all. Not `bash -n | sed`: a pipeline reports sed's
@@ -165,12 +188,8 @@ run_shards() {                       # <parallelism> <shard file>...
 # were: green at J=4, red at J=8 and J=12. They run first, alone, while nothing
 # competes; the other blocks then take the machine. No block carries the mark
 # today; the shard stays for the next one that needs it.
-# The plan: the shard files as made, listed once, here. The summary walks this list and not
-# the folder, so a shard file that is gone by then (a block that removed it, a sweep from
-# outside) is still a shard that must report (#1013).
-plan=("$SH".*); [ -e "${plan[0]}" ] || plan=()
 serial=(); rest=()
-for f in ${plan[@]+"${plan[@]}"}; do
+for f in "${plan[@]}"; do
     case " $(printf '%s' "${serial_ids:-}" | tr ' ' '\n' | sort -u | tr '\n' ' ') " in
         *" ${f##*.} "*) serial+=("$f") ;;
         *)              rest+=("$f") ;;
@@ -189,7 +208,7 @@ xrc=0
 # no fail mark, so the total simply left it out: a run in which no worker started printed
 # "0 passed, 0 failed" and ended 0, a gate that could not fail (#1013).
 pass=0; fail=0; skip=0; red=0; planned=${#plan[@]}; reported=0
-for f in ${plan[@]+"${plan[@]}"}; do
+for f in "${plan[@]}"; do
     id=${f##*.}
     [ ! -e "$WORK/out/$id.log" ] || cat "$WORK/out/$id.log"
     if [ -s "$WORK/out/$id.n" ]; then
@@ -207,7 +226,7 @@ for f in ${plan[@]+"${plan[@]}"}; do
     fi
 done
 [ "$xrc" -eq 0 ] || { red=1; echo "par.sh: xargs ended $xrc: the run was not whole" >&2; }
-[ "$reported" -eq "$planned" ] && [ "$planned" -gt 0 ] || {
+[ "$reported" -eq "$planned" ] || {
     red=1; echo "par.sh: $reported of $planned shards reported a count" >&2; }
 printf '  %d passed, %d failed, %d skipped  (J=%s, %s shards)\n' \
     "$pass" "$fail" "$skip" "$J" "$planned"

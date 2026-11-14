@@ -63,10 +63,11 @@ SUITE_SOCK="cockpit-suite-$$"
 SHIM=$(mktemp -d)
 # What the prelude itself makes: the suite's own server, its socket, $STATE and $SHIM. The
 # socket path is SOCKDIR's, spelled out: SOCKDIR is set later.
+SUITE_NB=                     # a folder outside TMPDIR for the tmux wrapper, when one is made
 suite_clean() {
     "$TMUX_REAL" -L "$SUITE_SOCK" kill-server >/dev/null 2>&1
     rm -f "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/$SUITE_SOCK"
-    rm -rf -- "$STATE" "$SHIM"
+    rm -rf -- "$STATE" "$SHIM" ${SUITE_NB:+"$SUITE_NB"}
 }
 # Armed here, before the server starts, and replaced by `trap cleanup EXIT` once cleanup's
 # other halves (kill_socks, $TMPS) exist. The server leaves this process group, so a TERM or
@@ -145,7 +146,29 @@ FLOPEOF
     } > "$1/tmux"
     chmod +x "$1/tmux"
 }
-FLOP="$STATE/flop"; mkdir -p "$FLOP"
+# "$TMUX_REAL" is this wrapper's path from here on, and some forty pane commands paste it in
+# unquoted ("exec $TMUX_REAL -L $X attach"). Under a TMPDIR holding a blank the path split
+# there, the client ended 127 and its server with it (#992). So the wrapper's folder holds no
+# blank: $STATE where that has none, else a folder made in the caller's runtime dir, as #766
+# does for a socket. Every run exports the blank-free folder it settled on, its own $STATE
+# when that has none: a prelude run inside a run (a block's sandbox) makes its folder in
+# there first, so it needs no runtime dir of its own, and the outer run's cleanup takes it
+# even when the inner one was ended by a KILL. With no such place the run ends here and
+# says so.
+FLOP="$STATE/flop"
+case $FLOP in
+*[[:space:]]*)
+    for flop_d in "${COCKPIT_SUITE_NB:-}" "$SUITE_XRD"; do
+        case $flop_d in ''|*[[:space:]]*) continue ;; esac
+        [ -d "$flop_d" ] && [ -w "$flop_d" ] && SUITE_NB=$(mktemp -d "$flop_d/cnb.XXXXXX") && break
+    done
+    [ -n "$SUITE_NB" ] || fatal "TMPDIR holds a blank, and the tmux wrapper needs a folder $(
+        )without one: set XDG_RUNTIME_DIR to a folder that exists, can be written to $(
+        )and has no blank in its path (#992)"
+    FLOP="$SUITE_NB/flop"; unset flop_d ;;
+esac
+export COCKPIT_SUITE_NB="${SUITE_NB:-$STATE}"
+mkdir -p "$FLOP"
 if [ -x "$TMUX_BIN" ]; then flop_write "$FLOP" "$TMUX_BIN"; TMUX_REAL="$FLOP/tmux"; fi
 flop_left() {                 # [dir] -> a bad row for each r.* whose call was never retried, and
                               # with no dir each socket refusal a subshell made (#195)
@@ -218,8 +241,29 @@ PATH="$SHIM:$SUITE_CLAUDE:$(path_without_mnt "$PATH")"; export PATH
 [ "$(command -v claude)" = "$SUITE_CLAUDE/claude" ] \
     || fatal "claude is not the suite's stub: $(command -v claude || echo none)"
 
-"$TMUX_REAL" -L "$SUITE_SOCK" -f /dev/null new-session -d -s suite \
-    'exec -a claude sleep 3600' >/dev/null 2>&1
+# The suite's pane lives exactly as long as this run: it watches this script's own pid ($$:
+# the script `make test` runs, the one only.sh builds, or one par.sh shard, each with a server
+# of its own) and ends within about a second of it. It used to be `sleep 3600`. A run longer
+# than an hour then lost its server (#981), and a run ended where no cleanup could reach, a
+# KILL or a signal while the server was still starting, left server and pane behind for the
+# rest of that hour (#1006). argv0 stays claude: pane_current_command must read as an agent.
+# tail --pid is GNU's and uutils's; the probe asks whether this tail accepts --pid under the
+# pane's argv0, and where it is refused the pane is a four-hour sleep. The longest run
+# measured took about 90 minutes, so four hours outlasts a run (#981) and a server left behind
+# still ends by itself; on such a platform it can stay for those four hours, which is #1022.
+# What the tail follows is an empty file in a folder of its own. uutils's tail follows by
+# inotify. On /dev/null the watch sits on the node itself, so the pane woke on every open of
+# /dev/null by any process on the box: 2% to 8% of a core for each pane beside the suite's
+# own blocks (#1029). On a regular file the watch sits on the folder that holds it, so
+# nothing else may be written into that folder. The path reaches the pane's shell in the
+# server's environment, never in the command string: a TMPDIR may hold a space.
+SUITE_IDLE="$STATE/pane/idle"; mkdir -p "$STATE/pane"; : > "$SUITE_IDLE"
+if ( exec -a claude tail --pid="$$" -n 0 /dev/null ) >/dev/null 2>&1; then
+    SUITE_PANE="exec -a claude tail --pid=$$ -f \"\$SUITE_IDLE\""
+else SUITE_PANE='exec -a claude sleep 14400'
+fi
+SUITE_IDLE="$SUITE_IDLE" "$TMUX_REAL" -L "$SUITE_SOCK" -f /dev/null new-session -d -s suite \
+    "$SUITE_PANE" >/dev/null 2>&1
 # No agent-view poller on the suite's server: a relayed agent_needs_input would start one, and
 # it runs the real `claude agents` (#174). The agent-view blocks use servers of their own.
 "$TMUX_REAL" -L "$SUITE_SOCK" set -g @cockpit_bg_poll off >/dev/null 2>&1
@@ -9072,15 +9116,47 @@ echo "== tests/par.sh: each shard says when it starts and ends, so a stalled one
 # their own TMPDIR, which every process they start inherits: the leftover count reads it.
 PSROOT=$(mktmpd); mkdir -p "$PSROOT/tests" "$PSROOT/t"
 cp "$DIR/tests/par.sh" "$PSROOT/tests/par.sh"
-# The sandbox's prelude is this script's, with one line more: the shard that runs ps5 takes a
-# second at the top of its cleanup. A run ended while a shard is there (or while its server is
-# still starting) leaves that shard's server, since no trap covers either moment (#900, #1006):
-# the ended run below must wait for every other shard, and this makes a missing wait leave 2.
+# The sandbox's servers get a socket folder of their own, so what a run leaves is found and
+# ended there, by folder: no /proc is needed, a dead socket file is seen as well as a live
+# server, and the default folder takes nothing from this block (#1032). A socket path past
+# 107 bytes binds nowhere: under so long a TMPDIR the sandbox keeps the default folder, the
+# rows that read the folder are skipped, and what a red row left is found through /proc.
+PSS="$PSROOT/s"; ps_env=(TMPDIR="$PSROOT/t" TMUX_TMPDIR="$PSS")
+if [ $((${#PSS} + ${#UID} + 30)) -gt 107 ]; then PSS=""; ps_env=(TMPDIR="$PSROOT/t")
+else mkdir -p "$PSS"
+fi
+# The sandbox's prelude is this script's, with four changes.
+# One line more in cleanup: the shard that runs ps5 takes a second at its top. A run ended
+# while a shard is there (or while its server is still starting) leaves that shard's server,
+# since no trap covers either moment (#900, #1006): the ended run below must wait for every
+# other shard, and this makes a missing wait leave 2.
+# Its pane watches this run's pid, not its own shard's. With its own, a server left behind
+# ends by itself inside a second, and the waits, the hold, the count and the cleanup below
+# could not turn a row red on any box whose tail takes --pid (#1032). With this run's, such
+# a server stays for the rows to count, and still ends with this run when the run is ended
+# from outside in the middle of the block, where no cleanup of this block's can reach: the
+# sandbox is a process group of its own, and this run's cleanup removes the socket folder
+# (#1035). Where tail has no --pid the pane is the prelude's fallback sleep, cut to five
+# minutes for the same reason: a sandbox run takes seconds.
+# And each server writes down where its socket is.
 Q='"'
-awk -v h="    ! grep -q '^echo ${Q}== ps5: ' ${Q}\$0${Q} || sleep 1" \
-    '/^echo "== /{exit} {print} /^cleanup\(\) \{$/{print h}' "$DIR/tests/run.sh" \
-    > "$PSROOT/tests/run.sh"
-is "the sandbox's cleanup holds for ps5" "1" "$(grep -c "ps5: ' .* || sleep 1" "$PSROOT/tests/run.sh")"
+ps_rec="${Q}\$TMUX_REAL${Q} -L ${Q}\$SUITE_SOCK${Q} display-message -p '#{socket_path}'"
+awk -v h="    ! grep -q '^echo ${Q}== ps5: ' ${Q}\$0${Q} || sleep 1" -v pid="$$" \
+    -v rec="$ps_rec >> ${Q}\$TMPDIR/socks${Q}" '
+    /^echo "== /{exit}
+    /^    SUITE_PANE="exec -a claude tail --pid=\$\$ -f / { sub(/--pid=\$\$/, "--pid=" pid) }
+    /^else SUITE_PANE=.exec -a claude sleep 14400.$/ { sub(/14400/, "300") }
+    {print}
+    /^cleanup\(\) \{$/{print h}
+    /^"\$TMUX_REAL" -L "\$SUITE_SOCK" set -g @cockpit_bg_poll off >\/dev\/null 2>&1$/{print rec}
+' "$DIR/tests/run.sh" > "$PSROOT/tests/run.sh"
+is "the sandbox's cleanup holds for ps5" "1" \
+   "$(grep -c "ps5: ' .* || sleep 1" "$PSROOT/tests/run.sh")"
+is "the sandbox's pane watches this run's pid, and its fallback sleep is five minutes" "1 1" \
+   "$(grep -c "^    SUITE_PANE=${Q}exec -a claude tail --pid=$$ -f " "$PSROOT/tests/run.sh") $(
+      grep -c "^else SUITE_PANE='exec -a claude sleep 300'\$" "$PSROOT/tests/run.sh")"
+is "and its servers say where their socket is" "1" \
+   "$(grep -c "socket_path}' >> " "$PSROOT/tests/run.sh")"
 {
     printf 'echo %s== ps1: solo ==%s\n' "$Q" "$Q"
     printf 'is "ps1" 1 1\n\n'
@@ -9105,12 +9181,20 @@ cp "$PSROOT/tests/run.sh" "$PSROOT/tests/run.green"
     # must wait for that, and a count read at once sees it (#900).
     printf ': > "$TMPDIR/ps3.in"; trap %ssleep 1; exit 0%s TERM; sleep 287 & wait $!\n' "$Q" "$Q"
 } >> "$PSROOT/tests/run.sh"
-ps_left() {                   # the processes still carrying the sandbox's TMPDIR
-    local p n=0
+ps_live() {                   # the sandbox's sockets a server still answers on, one a line
+    local f
+    [ -n "$PSS" ] || return 0
+    for f in "$PSS"/tmux-*/*; do
+        [ -S "$f" ] && "$TMUX_REAL" -S "$f" list-sessions >/dev/null 2>&1 && printf '%s\n' "$f"
+    done
+}
+ps_left() {                   # the processes still carrying the sandbox's TMPDIR; where
+    local p n=0               # /proc shows none, the servers still answering in its folder
     for p in /proc/[0-9]*; do
         tr '\0' '\n' 2>/dev/null < "$p/environ" | grep -qxF "TMPDIR=$PSROOT/t" && n=$((n + 1))
     done
-    printf '%s' "$n"
+    [ "$n" != 0 ] || n=$(ps_live | wc -l)
+    printf '%s' "$((n))"
 }
 # The run's processes take their TERM, then exit: a count read once, right after the wait,
 # raced them (#900). So: polled until none is left, bounded by POLLS. A leftover past that is
@@ -9126,6 +9210,36 @@ ps_settle() {                 # -> 0, or "<count>:" and each leftover
         printf ' [%s %s %s]' "${p#/proc/}" "$(cat "$p/comm" 2>/dev/null)" \
             "$(tr '\0' ' ' 2>/dev/null < "$p/cmdline")"
     done
+    printf ' sockets answering: %s' "$(ps_live | wc -l)"
+}
+# What a run left in the sandbox's socket folder, live or dead: the rows want none, and then
+# each is ended by its own socket, never by a pid, and its file removed (#1012, #1032). On
+# the fallback pane a server left behind would otherwise stay for that pane's four hours.
+ps_socks() {
+    [ -z "$PSS" ] || ( cd "$PSS" 2>/dev/null && ls -A tmux-*/ 2>/dev/null | tr '\n' ' ' )
+}
+ps_end() {
+    local f p c a n d
+    if [ -n "$PSS" ]; then
+        for f in "$PSS"/tmux-*/*; do
+            [ -S "$f" ] || continue
+            "$TMUX_REAL" -S "$f" kill-server >/dev/null 2>&1
+            rm -f -- "$f"
+        done
+        return 0
+    fi
+    # No folder of its own (the long TMPDIR above): the servers carrying the sandbox's TMPDIR,
+    # each by the last -L of its argv when that is a suite's name (#1012).
+    for p in /proc/[0-9]*; do
+        tr '\0' '\n' 2>/dev/null < "$p/environ" | grep -qxF "TMPDIR=$PSROOT/t" || continue
+        c=""; read -r c 2>/dev/null < "$p/comm"; [ "$c" = "tmux: server" ] || continue
+        a=$(tr '\0' ' ' 2>/dev/null < "$p/cmdline")
+        n=$(printf '%s\n' "$a" | grep -oE -- '-L [^ ]+ ' | tail -n 1)
+        n=${n#-L }; n=${n% }; [[ $n =~ ^cockpit-suite-[0-9]+$ ]] || continue
+        d=$(tr '\0' '\n' 2>/dev/null < "$p/environ" | sed -n 's/^TMUX_TMPDIR=//p')
+        "$TMUX_REAL" -S "${d:-/tmp}/tmux-$(id -u)/$n" kill-server >/dev/null 2>&1
+        rm -f -- "${d:-/tmp}/tmux-$(id -u)/$n"
+    done
 }
 # The run with a shard that never ends: once that shard is inside its block (past the
 # prelude, whose EXIT trap cleans up) and every other shard's end line is out, it is ended
@@ -9134,12 +9248,16 @@ ps_settle() {                 # -> 0, or "<count>:" and each leftover
 # cleanup when the TERM lands can leave its server, and the two leftover rows then read 2
 # (#900: 12 of 650 such runs with one end line awaited, 0 of 650 with all four). Each wait is
 # bounded; past the bound the rows go on and ps_settle names what is left.
-( cd "$PSROOT" && exec env -u PAR_BLOCKS TMPDIR="$PSROOT/t" J=3 \
+( cd "$PSROOT" && exec env -u PAR_BLOCKS "${ps_env[@]}" J=3 \
     timeout 60 tests/par.sh ) </dev/null >/dev/null 2>"$PSROOT/hung.err" & ps_to=$!
 until_out '?*' ls "$PSROOT/t/ps3.in"
 for ps_s in 0001 0002 0004 0005; do
     until_file "$PSROOT/hung.err" "*shard $ps_s end rc=0*"
 done
+# How many of the four end lines were in when the TERM went: a red leftover row says it, so
+# a log tells a wait that ran out (fewer than 4) from a server left with all four in (#1012).
+ps_in=$(grep -cE '^par\.sh: shard 000[1245] end rc=0$' "$PSROOT/hung.err")
+is "every other shard's end line was in when the TERM went" "4" "$ps_in"
 ps_c=""; read -r ps_c 2>/dev/null < "/proc/$ps_to/comm"
 [ "$ps_c" != timeout ] || kill -TERM "$ps_to" 2>/dev/null
 wait "$ps_to" 2>/dev/null
@@ -9149,10 +9267,15 @@ is "and no end line" "0" "$(grep -c '^par\.sh: shard 0006 end' "$PSROOT/hung.err
 is "a shard that finished has both, with its status" "1 1" \
    "$(grep -c '^par\.sh: shard 0001 start: ps1: solo$' "$PSROOT/hung.err") $(
       grep -c '^par\.sh: shard 0001 end rc=0$' "$PSROOT/hung.err")"
-is "nothing the ended run started is left" "0" "$(ps_settle)"
+ps_got=$(ps_settle); [ "$ps_got" = 0 ] || ps_got="$ps_got; end lines in at the TERM: $ps_in of 4"
+is "nothing the ended run started is left" "0" "$ps_got"
+if [ -z "$PSS" ]; then skip_ "the ended run's socket folder (the socket path would pass 107 bytes)"
+else is "and no socket of it, live or dead, is in the sandbox's folder" "" "$(ps_socks)"
+fi
+ps_end
 # A green run: the counts are what they were, and no new line reads as a row.
 cp "$PSROOT/tests/run.green" "$PSROOT/tests/run.sh"
-( cd "$PSROOT" && env -u PAR_BLOCKS TMPDIR="$PSROOT/t" J=3 tests/par.sh ) \
+( cd "$PSROOT" && env -u PAR_BLOCKS "${ps_env[@]}" J=3 tests/par.sh ) \
     </dev/null >"$PSROOT/green.out" 2>"$PSROOT/green.err"
 is "a green run counts its rows as before" "5 passed, 0 failed, 0 skipped" \
    "$(grep -oE '[0-9]+ passed, [0-9]+ failed, [0-9]+ skipped' "$PSROOT/green.out")"
@@ -9173,8 +9296,20 @@ ps_row="^  ($ESC\[[0-9;]*m)?(PASS|FAIL|SKIP)|passed,|failed,"
 is "the row pattern finds the green run's rows and its count" "6" \
    "$(grep -cE "$ps_row" "$PSROOT/green.out")"
 is "no new line reads as a row or a count" "0" "$(grep -cE "$ps_row" "$PSROOT/green.err")"
-is "nor is left behind" "0" "$(ps_settle)"
-unset -f ps_left ps_settle; unset PSROOT Q ps_to ps_c ps_row ps_s
+ps_got=$(ps_settle)
+is "nor is left behind" "0" "$ps_got"
+if [ -z "$PSS" ]; then skip_ "the green run's socket folder (the socket path would pass 107 bytes)"
+else
+    is "nor a socket, live or dead" "" "$(ps_socks)"
+    # 5 shards in the ended run and 4 in the green one, a server each. tmux resolves the
+    # folder before it binds, so the lines are held against the resolved name.
+    is "every server of both runs had its socket in the sandbox's folder: 9, none elsewhere" \
+       "9 " "$(wc -l < "$PSROOT/t/socks" | tr -d ' ') $(
+          grep -vF "$(cd "$PSS" && pwd -P)/" "$PSROOT/t/socks" | tr '\n' ' ')"
+fi
+ps_end
+unset -f ps_live ps_left ps_settle ps_socks ps_end
+unset PSROOT PSS ps_env ps_rec Q ps_to ps_c ps_row ps_s ps_in ps_got
 
 echo "== tests/par.sh: a checkout under a path with a space runs every shard and nothing else (#1007) =="
 # par.sh joined its shard paths into one string and split it again, so a path holding a space
@@ -9213,6 +9348,13 @@ is "nor is a shard file left in the checkout" "" "$(ls -A "$PW/v1.2 proj/tests" 
 # broke, or expanded, when the work dir was pasted into the worker's script.
 is "under a path with a ' and a TMPDIR with a \" and a \$ both shards run and count" \
    "0|2 passed, 0 failed, 0 skipped|2 2" "$(pw_run "pr'oj" 't"$HOME')"
+# A backslash in TMPDIR: par.sh handed its titles folder to awk with -v, which unescapes, so
+# "a\tb" became a tab, every title went to another name and each start line came out empty
+# (#1015). Shards ran and counted all the same, so the counts above could not see it.
+is "under a TMPDIR with a backslash each start line still carries its title" \
+   "0|2 passed, 0 failed, 0 skipped|2 2|pw1: one,pw2: two," \
+   "$(pw_run proj 'a\tb')|$(sed -n 's/^par\.sh: shard [0-9]* start: //p' "$PW/err" | sort |
+        tr '\n' ,)"
 unset -f pw_run; unset PW Q
 
 echo "== tests/par.sh: a run whose shards did not all report fails and says so (#1013) =="
@@ -9275,6 +9417,79 @@ if [ -c /dev/full ]; then
 else skip_ "par.sh under a full stderr (no /dev/full)"
 fi
 unset -f px_run px_mk; unset PX Q px_x
+
+echo "== tests/par.sh: a plan it could not make, or a shard gone before it ran, fails the run (#1017) =="
+# Two more ways par.sh ran less than it should and ended 0. An awk that failed wrote no plan,
+# and no plan read as "nothing selected". And the plan was a listing of the folder taken after
+# the shards were written, so a shard file gone by then was not a shard. A sandbox as above,
+# with a tool of its own first on PATH. awk0 fails every time; awkG writes no groups and ends
+# 0; awkS fails only where PAR_BLOCKS is applied; awkT only where the titles are written; awk1
+# only where the shards are written. trN fails where a shard's list of blocks is joined. bash1
+# removes shard 0001's file after its syntax check; bashA removes every shard's. Each stub
+# hands everything else to the real tool, and a bash removes only a file named .par.*.
+PY=$(mktmpd); Q='"'
+mkdir -p "$PY/c/tests" "$PY/t" "$PY/awk0" "$PY/awk1" "$PY/awkG" "$PY/awkS" "$PY/awkT" \
+    "$PY/trN" "$PY/bash1" "$PY/bashA"
+cp "$DIR/tests/par.sh" "$PY/c/tests/par.sh"
+awk '/^echo "== /{exit} {print}' "$DIR/tests/run.sh" > "$PY/c/tests/run.sh"
+{
+    printf 'echo %s== py1: one ==%s\nis "py1" 1 1\n\n' "$Q" "$Q"
+    printf 'echo %s== py2: two ==%s\nis "py2" 1 1\n\n' "$Q" "$Q"
+} >> "$PY/c/tests/run.sh"
+py_awk=$(tq "$(command -v awk)"); py_bash=$(tq "$(command -v bash)")
+printf '#!/bin/sh\nexit 1\n' > "$PY/awk0/awk"
+py_stub() {                   # <dir> <a pattern of the call's arguments> <status>
+    printf '#!/bin/sh\ncase "$*" in %s) exit %s ;; esac\nexec %s "$@"\n' "$2" "$3" "$py_awk" \
+        > "$PY/$1/awk"; chmod +x "$PY/$1/awk"
+}
+py_stub awk1 '*seen_block*' 1
+py_stub awkG "*'# group: '*" 0
+py_stub awkS "*'keep[\$1]'*" 1
+py_stub awkT "*'title[n]'*" 1
+printf '#!/bin/sh\n[ "$1,$2" != "\\n,," ] || exit 1\nexec %s "$@"\n' "$(tq "$(command -v tr)")" \
+    > "$PY/trN/tr"; chmod +x "$PY/trN/tr"
+for py_w in 1 A; do
+    case $py_w in 1) py_m='.par.*.0001' ;; *) py_m='.par.*' ;; esac
+    {
+        printf '#!/bin/sh\n[ "$1" = -n ] || exec %s "$@"\n%s "$@"; rc=$?\n' "$py_bash" "$py_bash"
+        printf 'case ${2##*/} in %s) rm -f -- "$2" ;; esac\nexit $rc\n' "$py_m"
+    } > "$PY/bash$py_w/bash"
+done
+chmod +x "$PY/awk0/awk" "$PY/awk1/awk" "$PY/bash1/bash" "$PY/bashA/bash"
+py_run() {                    # <none|awk0|awk1|bash1|bashA> [PAR_BLOCKS] -> status|stdout's last line|par.sh's lines
+    local rc
+    ( cd "$PY/c" && PATH="$PY/$1:$PATH" exec env -u PAR_BLOCKS ${2:+PAR_BLOCKS="$2"} \
+        TMPDIR="$PY/t" J=2 tests/par.sh ) </dev/null >"$PY/out" 2>"$PY/err"; rc=$?
+    printf '%s|%s|%s' "$rc" "$(tail -n 1 "$PY/out" | tr -s ' ' | sed 's/^ //')" \
+        "$(grep -E '^par\.sh: (awk failed|no block|shard [0-9]+ (left|died|would)|[0-9]+ of [0-9]+ shards)' \
+            "$PY/err" | sed 's/^par\.sh: //' | tr '\n' ';')"
+}
+is "with its own tools both shards run and the run ends 0" \
+   "0|2 passed, 0 failed, 0 skipped (J=2, 2 shards)|" "$(py_run none)"
+is "a PAR_BLOCKS that names no block is still nothing selected, and ends 0" \
+   "0|nothing selected|" "$(py_run none 99999)"
+is "an awk that fails makes no plan: the run ends 2 and says awk failed" \
+   "2||awk failed grouping the blocks (status 1): no run;" "$(py_run awk0)"
+is "an awk that fails while the shards are written ends the run the same way" \
+   "2||awk failed writing shard 0001 (status 1): no run;" "$(py_run awk1)"
+is "so does one that fails where PAR_BLOCKS is applied: no run of everything, or of nothing" \
+   "2||awk failed selecting PAR_BLOCKS (status 1): no run;" "$(py_run awkS 1)"
+is "an awk that ends 0 with no block grouped is no plan either" \
+   "2||no block found in tests/run.sh: no run;" "$(py_run awkG)"
+is "a shard whose list of blocks came through empty is not run as a shard of nothing" \
+   "2||shard 0001 would hold no block: no run;" "$(py_run trN)"
+is "an awk that fails on the titles costs the titles, not the run" \
+   "0|2 passed, 0 failed, 0 skipped (J=2, 2 shards)|awk failed writing the shard titles (status 1): start lines carry no title;" \
+   "$(py_run awkT)"
+is "a shard file gone before it ran is still a shard: the run fails and names it" \
+   "1|1 passed, 0 failed, 0 skipped (J=2, 2 shards)|shard 0001 died without reporting;1 of 2 shards reported a count;" \
+   "$(py_run bash1)"
+is "with every shard file gone the run fails and says none reported" \
+   "1|0 passed, 0 failed, 0 skipped (J=2, 2 shards)|shard 0001 died without reporting;shard 0002 died without reporting;0 of 2 shards reported a count;" \
+   "$(py_run bashA)"
+is "and none of those runs left a shard file in the checkout" "" \
+   "$(ls -A "$PY/c/tests" | grep '^\.par')"
+unset -f py_run py_stub; unset PY Q py_awk py_bash py_w py_m
 
 echo "== tests/green.sh: the stamp hits on unchanged content, misses on one changed byte, and tool versions are in the key =="
 GROOT=$(mktmpd)
@@ -17768,13 +17983,14 @@ echo "== run.sh: a run ended by a signal in its prelude leaves no server, socket
 SG=$(mktmpd); mkdir -p "$SG/tests"
 awk '/^echo "== /{exit} {print}' "$DIR/tests/run.sh" > "$SG/tests/pre.sh"
 sg_hold='mkfifo "$TMPDIR/pf"; exec 9<>"$TMPDIR/pf"; : > "$TMPDIR/started"; read -r -t 20 -u 9 _'
-sed "/^    'exec -a claude sleep 3600' >\\/dev\\/null 2>&1\$/a $sg_hold" "$SG/tests/pre.sh" \
-    > "$SG/tests/win.sh"
+sed "/^    \"\\\$SUITE_PANE\" >\\/dev\\/null 2>&1\$/a $sg_hold" \
+    "$SG/tests/pre.sh" > "$SG/tests/win.sh"
 sed "/^trap cleanup EXIT\$/a $sg_hold" "$SG/tests/pre.sh" > "$SG/tests/ctl.sh"
 is "each copy holds at one place" "1 1" \
    "$(grep -c 'exec 9<>' "$SG/tests/win.sh") $(grep -c 'exec 9<>' "$SG/tests/ctl.sh")"
 sg_left() {                   # the processes carrying the copy's TMPDIR: "0", or count and names
-    local p n o end=$((SECONDS + 3))            # read again for 3 s: one on its way out is none
+    local p n o end=$((SECONDS + 10))    # read again, up to 10 s: one on its way
+    # out is none, and a pane that watches its run's pid takes about a second to see it gone
     while :; do
         n=0 o=""
         for p in /proc/[0-9]*; do
@@ -17807,6 +18023,18 @@ sg_run() {                    # <signal> <copy> -> status|carriers|left in TMPDI
         [ -S "$s" ] && "$TMUX_REAL" -S "$s" kill-server >/dev/null 2>&1
     done
 }
+# Whether this box's tail takes --pid, asked here and not read from the prelude's own answer:
+# a prelude that fell back to the sleep on a box whose tail has --pid must turn rows red, not
+# skip them (#1023). The run is a tail -f on a pid already gone, which ends by itself.
+( : ) & sg_gone=$!; wait "$sg_gone" 2>/dev/null
+timeout 10 tail --pid="$sg_gone" -f /dev/null >/dev/null 2>&1
+case $? in
+    0) sg_haspid=1 ;;
+    124) sg_haspid=late       # no answer is not "no --pid": said here, and the rows that
+                              # need the answer are skipped, not read as the fallback
+         bad "the block's own tail run answered inside 10 s" "0 or a refusal" "timed out" ;;
+    *) sg_haspid=0 ;;
+esac
 # The nested socket is $SG/s/tmux-<uid>/cockpit-suite-<pid>: past 107 bytes no server binds.
 if [ ! -r /proc/net/unix ]; then skip_ "a signal in the prelude (no /proc/net/unix)"
 elif [ $((${#SG} + ${#UID} + 30)) -gt 107 ]; then
@@ -17822,8 +18050,125 @@ else
     else is "nor does an INT" "130|0|pf,started,|0" "$(sg_run INT win)"
     fi
     is "a TERM after the trap is set leaves none" "143|0|pf,started,|0" "$(sg_run TERM ctl)"
+    # A KILL reaches no trap, so nothing is cleaned: the temp dirs stay, and so would the
+    # server. What ends it is its own pane, which watches the run's pid (#981, #1006). Read
+    # here: the status, the processes left and the listeners; the wait is sg_left's, bounded.
+    if [ "$sg_haspid" = 0 ]; then
+        skip_ "a KILL in the prelude (this tail has no --pid: the pane is a sleep)"
+    elif [ "$sg_haspid" = late ]; then
+        skip_ "a KILL in the prelude (the block's own tail run timed out)"
+    else
+        is "a KILL there leaves no process: the pane ended with its run" "137|0|0" \
+           "$(sg_run KILL win | cut -d'|' -f1,2,4)"
+    fi
 fi
-unset -f sg_left sg_run sg_dfl; unset SG sg_hold sg_p
+# The pane's own command line, from a copy of the prelude that writes it down and ends: with
+# the tail on PATH, and with one that refuses --pid, as BSD's and macOS's do.
+{
+    cat "$SG/tests/pre.sh"
+    printf '%s\n' 'echo "$$" > "$TMPDIR/pid"' \
+        'tr "\0" " " < "/proc/$(tmux display-message -p -t "$PANE" "#{pane_pid}")/cmdline" > "$TMPDIR/argv"'
+} > "$SG/tests/pan.sh"
+mkdir -p "$SG/notail"
+printf '#!/bin/sh\ncase " $* " in *" --pid="*) exit 1 ;; esac\nexec %s "$@"\n' \
+    "$(tq "$(command -v tail)")" > "$SG/notail/tail"; chmod +x "$SG/notail/tail"
+sg_pane() {                   # [a folder to put first on PATH] -> the pane's argv, its pid as
+    local a                   # PID and the copy's state folder as STATE
+    rm -rf "${SG:?}/t" "${SG:?}/s"; mkdir -p "$SG/t" "$SG/s"
+    ( cd "$SG" && PATH="${1:+$1:}$PATH" exec env -u TMUX TMPDIR="$SG/t" TMUX_TMPDIR="$SG/s" \
+        bash tests/pan.sh ) </dev/null >/dev/null 2>&1
+    a=$(sed "s/--pid=$(cat "$SG/t/pid" 2>/dev/null) /--pid=PID /" "$SG/t/argv" 2>/dev/null; echo .)
+    a=${a%.}; printf '%s' "${a/"$SG/t/"tmp.*"/pane/idle"/STATE/pane/idle}"
+}
+if [ ! -r "/proc/$$/cmdline" ]; then skip_ "the suite pane's command line (no /proc)"
+elif [ "$sg_haspid" = late ]; then
+    skip_ "the suite pane's command line (the block's own tail run timed out)"
+elif [ "$sg_haspid" = 0 ]; then
+    is "this tail has no --pid, so the pane is the four-hour sleep" \
+       "claude 14400 " "$(sg_pane)"
+else
+    is "the pane watches the pid of the very script that started it" \
+       "claude --pid=PID -f STATE/pane/idle " "$(sg_pane)"
+    is "where tail refuses --pid the pane is the four-hour sleep" \
+       "claude 14400 " "$(sg_pane "$SG/notail")"
+    is "and this run's own pane watches this run" "claude --pid=$$ -f $STATE/pane/idle " \
+       "$(tr '\0' ' ' < "/proc/$(tmux display-message -p -t "$PANE" '#{pane_pid}')/cmdline")"
+    # At a TMPDIR with no space the pane's argv reads the same with the path pasted in.
+    is "the path is not in the pane's command string" \
+       'exec -a claude tail --pid=PID -f "$SUITE_IDLE"' "${SUITE_PANE/--pid=$$ /--pid=PID }"
+    # uutils's tail wakes on a write to anything beside the file it follows (#1029).
+    is "the file it follows is alone in its folder, and empty" "idle 0" \
+       "$(ls -A "$STATE/pane" | tr '\n' ' ')$(wc -c < "$STATE/pane/idle")"
+fi
+unset -f sg_left sg_run sg_dfl sg_pane; unset SG sg_hold sg_p sg_gone sg_haspid
+
+echo "== run.sh: under a TMPDIR with a blank the tmux wrapper sits where no blank is (#992) =="
+# "$TMUX_REAL" is the #573 wrapper's path, pasted unquoted into some forty pane commands. It
+# sat under $STATE, so a blank in TMPDIR split it and every outer client ended 127. A copy
+# of the prelude here that ends after writing down its TMUX_REAL, its server's socket and
+# the folder a child of it is handed, run under a TMPDIR folder named "a b": with a runtime
+# dir, with none, with one that holds a blank itself, and with the folder an outer run hands
+# down. The runtime dirs are the block's own, in the outer run's blank-free folder.
+NB=$(mktmpd); mkdir -p "$NB/tests" "$NB/a b" "$NB/a"$'\t'"b" "$NB/plain" "$NB/r t" "$NB/s"
+{
+    awk '/^echo "== /{exit} {print}' "$DIR/tests/run.sh"
+    printf '%s\n' 'printf "%s\n" "$TMUX_REAL" > "$TMPDIR/real"' \
+        '"$TMUX_REAL" -L "$SUITE_SOCK" display-message -p "#{socket_path}" > "$TMPDIR/sock"' \
+        'sh -c '\''printf "%s\n" "${COCKPIT_SUITE_NB:-}"'\'' > "$TMPDIR/handed"'
+} > "$NB/tests/pre.sh"
+nb_rt=$(mktemp -d "$COCKPIT_SUITE_NB/rt.XXXXXX")
+nb_rt2=$(mktemp -d "$COCKPIT_SUITE_NB/rt.XXXXXX")
+nb_ss=$(cd "$NB/s" && pwd -P)
+# <TMPDIR folder> [VAR=value...] -> status|where the wrapper was|where the server's socket
+# was|what a child was handed: "own" is the folder that holds this run's wrapper
+nb_run() {
+    local rc w k h t="$NB/$1"
+    rm -f "$t/real" "$t/sock" "$t/handed"
+    ( cd "$NB" && exec env -u TMUX -u COCKPIT_SUITE_NB -u XDG_RUNTIME_DIR "${@:2}" \
+        TMPDIR="$t" TMUX_TMPDIR="$NB/s" bash tests/pre.sh ) </dev/null >/dev/null 2>"$NB/err"
+    rc=$?
+    w=$(cat "$t/real" 2>/dev/null); k=$(cat "$t/sock" 2>/dev/null); h=$(cat "$t/handed" 2>/dev/null)
+    rm -f "$t/real" "$t/sock" "$t/handed"
+    [ -z "$w" ] || [ "$h" != "${w%/flop/tmux}" ] || h=own
+    case $w in
+    "$nb_rt"/cnb.??????/flop/tmux) w=RT/flop/tmux ;;
+    "$nb_rt2"/cnb.??????/flop/tmux) w=RT2/flop/tmux ;;
+    "$t"/tmp.*/flop/tmux) w=STATE/flop/tmux ;;
+    esac
+    case $k in "$nb_ss"/tmux-*/cockpit-suite-*) k=S ;; esac
+    printf '%s|%s|%s|%s' "$rc" "$w" "$k" "$h"
+}
+nb_no() { grep -c 'set XDG_RUNTIME_DIR to a folder that exists' "$NB/err"; }
+# The nested socket is $NB/s/tmux-<uid>/cockpit-suite-<pid>: past 107 bytes no server binds.
+if [ $((${#NB} + ${#UID} + 30)) -gt 107 ]; then
+    skip_ "the tmux wrapper under a TMPDIR with a blank (the socket path would pass 107 bytes)"
+else
+    # S: the inner server's socket is in the block's own folder, never the default one. own:
+    # the run hands its children the folder its wrapper is in.
+    is "with a blank in TMPDIR the wrapper is in a folder made in the runtime dir" \
+       "0|RT/flop/tmux|S|own" "$(nb_run 'a b' XDG_RUNTIME_DIR="$nb_rt")"
+    is "and the run took that folder away again, and left nothing in its TMPDIR" "|" \
+       "$(ls -A "$nb_rt")|$(ls -A "$NB/a b")"
+    is "a tab in TMPDIR is a blank too" \
+       "0|RT/flop/tmux|S|own|" "$(nb_run "a"$'\t'"b" XDG_RUNTIME_DIR="$nb_rt")|$(ls -A "$nb_rt")"
+    is "the folder an outer run hands down comes before the runtime dir" \
+       "0|RT/flop/tmux|S|own||" \
+       "$(nb_run 'a b' COCKPIT_SUITE_NB="$nb_rt" XDG_RUNTIME_DIR="$nb_rt2")|$(
+          ls -A "$nb_rt")|$(ls -A "$nb_rt2")"
+    is "with no runtime dir the run ends, says what it needs and leaves nothing" \
+       "1||||1|" "$(nb_run 'a b')|$(nb_no)|$(ls -A "$NB/a b")"
+    is "a runtime dir that holds a blank itself is no such folder" \
+       "1||||1|" "$(nb_run 'a b' XDG_RUNTIME_DIR="$NB/r t")|$(nb_no)|$(ls -A "$NB/r t")"
+    case $NB in
+    *[[:space:]]*) skip_ "the wrapper under a TMPDIR with no blank (this run's own holds one)" ;;
+    *) is "without a blank the wrapper stays in the run's own state folder, handed on too" \
+          "0|STATE/flop/tmux|S|own|" "$(nb_run plain XDG_RUNTIME_DIR="$nb_rt")|$(ls -A "$nb_rt")" ;;
+    esac
+    is "no inner run left a socket file in the block's folder" "" \
+       "$(cd "$NB/s" && ls -A tmux-*/ 2>/dev/null | tr '\n' ' ')"
+fi
+rm -rf -- "$nb_rt" "$nb_rt2"
+unset -f nb_run nb_no; unset NB nb_rt nb_rt2 nb_ss
 
 echo "== tests/only.sh: a pattern with \\( and ^ selects the block, no match is an error (#241) =="
 OD=$(mktemp -d)
@@ -19944,7 +20289,16 @@ until_file "$ACD/done" 'x'
 is "resume: a session live in OPENCODE is not opened twice" \
     "✕ cockpit: ${SID:0:8} is already running in $ACO" "$(cat "$ACD/note" 2>/dev/null)"
 is "the window's claude is the row's own" "$ACD/stub/claude" "$(cat "$ACD/which" 2>/dev/null)"
-is "and no claude was started for it" "" "$(cat "$ACD/stub/ran" 2>/dev/null)"
+# The stub writes its line a moment before or after `done` appears, and a read right at `done`
+# can come first (#1001). A claude started for the resume runs in a pane, by a split or in a
+# window of its own, and that pane closes after the stub's write. So: wait until the server
+# holds its five panes again, an x for each, and no more. The row reads that count too: a
+# wait that ran out means something is still running, and must not pass. The five are
+# written out, not read from the format beforehand: a format that printed nothing would
+# then agree with itself (#1030).
+until_out xxxxx ac display -p '#{S:#{W:#{P:x}}}'
+is "and no claude was started for it" "xxxxx|" \
+    "$(ac display -p '#{S:#{W:#{P:x}}}')|$(cat "$ACD/stub/ran" 2>/dev/null)"
 ac kill-server >/dev/null 2>&1
 unset -f ac ac_pane ac_each ac_wd ac_jump ac_deliver
 
