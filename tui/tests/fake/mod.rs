@@ -13,6 +13,7 @@
 //! answers a lookup with ([`rig_path`], #972).
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::Once;
 
 fn beside(path: &Path, ext: &str) -> PathBuf {
@@ -206,6 +207,35 @@ pub fn rig_path(bin: &Path) -> String {
         Err(std::env::VarError::NotPresent) => format!("{first}:{DEFAULT_PATH}"),
         Err(e) => panic!("PATH: {e}"),
     }
+}
+
+/// `c` with each of `signals` at its default action and unblocked in its child,
+/// set between the fork and the exec. A process starts with its parent's
+/// ignored signals and signal mask: a suite started with `&` from a script
+/// ignores INT and QUIT, one under nohup HUP, and bash keeps a mask that dash
+/// clears. A shell cannot trap a signal ignored when it started, and a handler
+/// never runs for a blocked one. A row that signals a child, or has one signal
+/// itself, measures that child and not how the suite was started (#1044, #1061).
+/// KILL and STOP can be neither ignored nor blocked.
+#[allow(dead_code)]
+pub fn at_default(c: &mut Command, signals: &'static [libc::c_int]) {
+    use std::os::unix::process::CommandExt;
+    let reset = move || {
+        // SAFETY: signal, sigemptyset, sigaddset and sigprocmask are
+        // async-signal-safe, and nothing here allocates.
+        unsafe {
+            let mut set: libc::sigset_t = std::mem::zeroed();
+            libc::sigemptyset(&mut set);
+            for &s in signals {
+                libc::signal(s, libc::SIG_DFL);
+                libc::sigaddset(&mut set, s);
+            }
+            libc::sigprocmask(libc::SIG_UNBLOCK, &set, std::ptr::null_mut());
+        }
+        Ok(())
+    };
+    // SAFETY: `reset` makes only async-signal-safe calls and allocates nothing.
+    unsafe { c.pre_exec(reset) };
 }
 
 /// Whether a spawn by this user could start `p`: a file the kernel lets it
