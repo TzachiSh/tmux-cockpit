@@ -70,9 +70,11 @@ owner's earlier list maps onto them:
 
 ## The Store and NATS KV
 
-Keys are dotted tokens: each token non-empty `[A-Za-z0-9_-]`, at most 200 bytes
+Keys are dotted tokens: each token non-empty `[a-z0-9_-]`, at most 200 bytes
 in all, with no `*`, `>`, `/`, or empty token. Such a key is a valid NATS
-subject and KV key, and a valid file name. Values are the JSON these schemas
+subject and KV key, and a valid file name. Lower case only: macOS's default
+file system folds case, so `agent.A` and `agent.a` would be two NATS keys but
+one `LocalStore` file, and the two backends would disagree. Values are the JSON these schemas
 describe. Revisions are plain integers that callers compare only for equality:
 `LocalStore` counts up per key and skips a revision a killed writer took,
 while NATS uses the stream's sequence, which skips more.

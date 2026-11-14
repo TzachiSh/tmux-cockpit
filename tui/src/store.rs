@@ -19,8 +19,9 @@ pub const KEY_MAX: usize = 200;
 pub const FILE_MAX: u64 = 64 * 1024;
 const HEAD: &str = "cockpit-store 1";
 
-/// Dotted tokens, each non-empty `[A-Za-z0-9_-]`: a NATS subject with no
-/// wildcard, and a file name with no `/` and no leading dot.
+/// Dotted tokens, each non-empty `[a-z0-9_-]`: a NATS subject with no
+/// wildcard, and a file name with no `/` and no leading dot. Lower case only:
+/// macOS folds case, so `agent.A` and `agent.a` would share one file there.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Key(String);
 
@@ -42,12 +43,16 @@ impl std::error::Error for KeyError {}
 impl Key {
     pub fn new(key: &str) -> Result<Key, KeyError> {
         let bad = |why| Err(KeyError { key: key.to_string(), why });
-        let token = |t: &str| !t.is_empty() && t.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-');
+        let token = |t: &str| {
+            !t.is_empty()
+                && t.bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-')
+        };
         if key.len() > KEY_MAX {
             return bad("longer than 200 bytes");
         }
         if !key.split('.').all(token) {
-            return bad("not dotted tokens of [A-Za-z0-9_-]");
+            return bad("not dotted tokens of [a-z0-9_-]");
         }
         Ok(Key(key.to_string()))
     }

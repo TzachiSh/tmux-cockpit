@@ -406,9 +406,17 @@ fn watch_sends_the_keys_under_its_prefix_then_a_later_change() {
 }
 
 #[test]
+fn an_upper_case_key_is_refused() {
+    assert!(Key::new("agent.a").is_ok());
+    for k in ["agent.A", "A", "msg.agentA.agentB"] {
+        assert_eq!(Key::new(k).map_err(|e| e.key), Err(k.to_string()), "row {k:?}");
+    }
+}
+
+#[test]
 fn a_key_is_dotted_tokens_and_nothing_else() {
     let (long, longer) = ("a".repeat(200), "a".repeat(201));
-    let ok = ["a", "agent.a-1_B", "msg.agentA.agentB", "-x", &long];
+    let ok = ["a", "agent.a-1_b", "msg.7f3a9c0d1e4b5a67.a1b2c3d4e5f60718", "-x", &long];
     let bad = [
         "", ".", "..", "a..b", ".a", "a.", "*", "a.*", ">", "a.>", "a/b", "/a", "../a", "a b", "a~lock", "é", "a\n", &longer,
     ];
