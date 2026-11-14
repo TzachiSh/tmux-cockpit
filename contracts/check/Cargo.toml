@@ -13,5 +13,6 @@ publish = false
 # off: no HTTP or file resolving, no TLS, no C, and no idn formats (no schema uses one).
 jsonschema = { version = "=0.60.2", default-features = false }
 # serde_json keeps the last of two equal keys; serde's Visitor is how the check refuses them.
-serde = { version = "1", default-features = false }
+# Plain "1": jsonschema and serde_json turn on serde's std and derive anyway.
+serde = "1"
 serde_json = "1.0.151"
