@@ -342,7 +342,8 @@ fi
 tv=$(tui_check)
 case $? in
     # fesc: display-message reads its text as a format, so a # in $DIR was eaten (#1087).
-    1) tmux display-message "$(fesc "tmux-cockpit: cockpit-tui is missing; run $DIR/install.sh")" ;;
+    1) tmux display-message "$(fesc \
+        "tmux-cockpit: cockpit-tui is missing; run $DIR/install.sh")" ;;
     2) tmux display-message "$(fesc \
         "tmux-cockpit: cockpit-tui $tv is older than $TUI_MIN; run $DIR/install.sh")" ;;
 esac
