@@ -60,7 +60,12 @@ jobs:
       # A private, short tmux socket dir (#803). With none, SOCKDIR is /tmp/tmux-<uid>, the
       # same path a test could hardcode, so such a test stayed green here (#784). Short for
       # the 108-byte socket path limit (#766).
+      # Not on ubuntu-26.04: that leg starts the suite as a plain `make test` does, with no
+      # TMUX_TMPDIR, so the folder the suite then makes for itself, /tmp/cs.<6>, and its row
+      # for a socket left in it are run here too (#1098). The step after the suite, on every
+      # leg, is then the check that nothing of the suite's reached /tmp/tmux-<uid>.
       - name: Private TMUX_TMPDIR
+        if: matrix.os != 'ubuntu-26.04'
         run: |
           d="$RUNNER_TEMP/tx"; mkdir -p "$d"
           echo "TMUX_TMPDIR=$d" >> "$GITHUB_ENV"

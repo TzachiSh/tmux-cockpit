@@ -58,10 +58,18 @@ the run finds it set and uses it.
 A `TMUX_TMPDIR` you set yourself, naming a folder that exists, is kept as it is.
 
 The run removes its folder with `rmdir` when it ends, also on a FATAL and on
-HUP, INT or TERM. If a block left a socket in it, the folder stays and the run
+HUP, INT or TERM. A socket in it that is neither the suite's own server's nor
+a name a block put in `SOCKS` fails the run, with the row "every socket in the
+suite's own folder is one cleanup knows". The folder then stays, and the run
 names what is in it on stderr: `tests/run.sh: left in its socket folder …`. A
 run ended by KILL leaves it too. Nothing sweeps `/tmp/cs.*`. One is safe to
 remove once no server answers on a socket inside it.
+
+That row holds only where the suite made the folder. In a folder you named,
+other runs' sockets may sit beside this run's, so nothing is asked of it. On
+CI one leg, `shell-suite (ubuntu-26.04)`, starts the suite with no
+`TMUX_TMPDIR` and so runs the suite's own folder and the row. The other legs
+set a private folder themselves and do not.
 
 With no runtime dir to use, such a run ends at its start and says what it needs:
 set `XDG_RUNTIME_DIR` to a folder that exists, can be written to and has no
