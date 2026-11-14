@@ -4,13 +4,22 @@
 #
 # Builds the test binaries, the artifacts cargo built with the test profile,
 # then starts each one directly, as cargo does where no runner applies, with
-# no TMUX_TMPDIR and none of a tmux session's variables. They run in a user and mount namespace of their own with a tmpfs
-# over /tmp, so no socket and no read reaches your tmux server. Prints each
-# binary that refuses with "TMUX_TMPDIR not set", then the counts.
+# no TMUX_TMPDIR and none of a tmux session's variables. They run in a user and
+# mount namespace of their own with a tmpfs over /tmp, so no socket and no read
+# reaches your tmux server. Prints each binary that refuses with
+# "TMUX_TMPDIR not set", then the counts.
 #
-# Linux only: it needs `unshare -rm`. Usage: tests/tui-refusers.sh
+# Linux only: it needs `unshare -rm`. Where that fails (no unshare, or no user
+# namespaces: macOS, a locked-down container) it says so in one line and exits
+# 1 before it builds or starts anything. It never runs a binary outside the
+# namespace, since there a plain tmux would reach /tmp/tmux-<uid>.
+# Usage: tests/tui-refusers.sh
 set -u
 if [ "${1-}" != --inside ]; then
+    if ! unshare -rm true 2>/dev/null; then
+        echo "tui-refusers.sh: no user and mount namespace here (unshare -rm), so no test binary was started" >&2
+        exit 1
+    fi
     here=$(cd "$(dirname "$0")" && pwd) || exit 1
     list=$(mktemp) || exit 1
     (cd "$here/../tui" && cargo test --locked --no-run --message-format=json 2>/dev/null) |
@@ -21,6 +30,13 @@ if [ "${1-}" != --inside ]; then
     exit "$rc"
 fi
 
+# --inside is for the line above alone. Outside a user namespace the uid map
+# is the whole range, and no binary may start there.
+read -r _ _ range </proc/self/uid_map || exit 1
+if [ "$range" = 4294967295 ]; then
+    echo "tui-refusers.sh: --inside outside a user namespace, so no test binary was started" >&2
+    exit 1
+fi
 # the list sits in TMPDIR, which may be /tmp: opened before the tmpfs hides it
 exec 3<"$2"
 mount -t tmpfs none /tmp || exit 1

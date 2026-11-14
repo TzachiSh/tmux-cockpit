@@ -57,7 +57,8 @@ folder of its own and clears your session's variables. With
 started directly, the binaries that run tmux refuse until `TMUX_TMPDIR` names a
 folder, since a rig's socket would otherwise land beside your own tmux server's.
 That was 26 of the 106 when #1066 merged. `tests/tui-refusers.sh` counts them
-again, on Linux, without reaching your tmux server.
+again, on Linux, without reaching your tmux server: it runs them in a user and
+mount namespace, and where it gets none it says so and starts no binary.
 In `tui/` the refusal's own command runs them:
 `d=$(mktemp -d) && env -u TMUX -u TMUX_PANE -u TMUX_COCKPIT_DIR -u COCKPIT_LOG -u XDG_CACHE_HOME -u XDG_STATE_HOME TMUX_TMPDIR="$d" cargo test`.
 
