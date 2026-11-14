@@ -25,3 +25,5 @@ pub mod branch;
 pub mod sessions;
 // file browser (#363)
 pub mod files;
+// the storage contract, unwired (#1020)
+pub mod store;

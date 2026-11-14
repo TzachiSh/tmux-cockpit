@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "agent_id": "fix_login_bug_for_acme_customer",
+  "pane_id": "%3",
+  "state": "needs-input",
+  "updated_at": "2026-11-14T09:31:05Z",
+  "revision": 12
+}

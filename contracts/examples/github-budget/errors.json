@@ -1,0 +1,34 @@
+{
+  "invalid-path.json": {
+    "keyword": "additionalProperties",
+    "at": "$"
+  },
+  "invalid-title.json": {
+    "keyword": "additionalProperties",
+    "at": "$"
+  },
+  "invalid-subject.json": {
+    "keyword": "additionalProperties",
+    "at": "$"
+  },
+  "invalid-no-version.json": {
+    "keyword": "required",
+    "at": "$"
+  },
+  "invalid-local-time.json": {
+    "keyword": "pattern",
+    "at": "$.checked_at"
+  },
+  "invalid-scope-key.json": {
+    "keyword": "const",
+    "at": "$.key"
+  },
+  "invalid-estimate-over-30.json": {
+    "keyword": "maximum",
+    "at": "$.remaining_estimate"
+  },
+  "invalid-trailing-newline.json": {
+    "keyword": "pattern",
+    "at": "$.owner_pane"
+  }
+}

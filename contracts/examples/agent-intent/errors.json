@@ -1,0 +1,46 @@
+{
+  "invalid-absolute-ref.json": {
+    "keyword": "pattern",
+    "at": "$.summary_ref"
+  },
+  "invalid-dotdot-ref.json": {
+    "keyword": "pattern",
+    "at": "$.summary_ref"
+  },
+  "invalid-folder-ref.json": {
+    "keyword": "pattern",
+    "at": "$.summary_ref"
+  },
+  "invalid-id-trailing-newline.json": {
+    "keyword": "pattern",
+    "at": "$.intent_id"
+  },
+  "invalid-kind.json": {
+    "keyword": "enum",
+    "at": "$.kind"
+  },
+  "invalid-local-time.json": {
+    "keyword": "pattern",
+    "at": "$.expires_at"
+  },
+  "invalid-no-version.json": {
+    "keyword": "required",
+    "at": "$"
+  },
+  "invalid-raw-summary.json": {
+    "keyword": "pattern",
+    "at": "$.summary_ref"
+  },
+  "invalid-ref-trailing-newline.json": {
+    "keyword": "pattern",
+    "at": "$.summary_ref"
+  },
+  "invalid-title-id.json": {
+    "keyword": "pattern",
+    "at": "$.intent_id"
+  },
+  "invalid-word-ref.json": {
+    "keyword": "pattern",
+    "at": "$.summary_ref"
+  }
+}

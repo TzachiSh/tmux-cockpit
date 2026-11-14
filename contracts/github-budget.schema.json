@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:tmux-cockpit:contracts:github-budget",
+  "title": "github-budget",
+  "description": "How much of GitHub's search limit one scope has left, as the panel last saw it. Ids, numbers and timestamps only: no path, no title, no subject.",
+  "type": "object",
+  "properties": {
+    "schema_version": { "const": 1 },
+    "scope": { "enum": ["repo", "global"] },
+    "key": {
+      "description": "repo: the repo key, FNV-1a 64 of the canonical top-level path as 16 lowercase hex. global: the word global.",
+      "type": "string",
+      "pattern": "^([0-9a-f]{16}|global)(?!\\n)$"
+    },
+    "checked_at": { "$ref": "#/$defs/utc" },
+    "ttl_seconds": { "type": "integer", "minimum": 0 },
+    "remaining_estimate": {
+      "description": "The panel's local estimate of searches left, out of 30 a minute.",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 30
+    },
+    "revision": {
+      "description": "The store revision the writer read before this write; 0 for a create.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "owner_pane": { "type": "string", "pattern": "^%[0-9]{1,10}(?!\\n)$" }
+  },
+  "required": [
+    "schema_version",
+    "scope",
+    "key",
+    "checked_at",
+    "ttl_seconds",
+    "revision",
+    "owner_pane"
+  ],
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": { "properties": { "scope": { "const": "global" } } },
+      "then": { "properties": { "key": { "const": "global" } } },
+      "else": { "properties": { "key": { "pattern": "^[0-9a-f]{16}(?!\\n)$" } } }
+    }
+  ],
+  "$defs": {
+    "utc": {
+      "description": "ISO-8601 in UTC, Z only, optional fraction.",
+      "type": "string",
+      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.[0-9]{1,9})?Z(?!\\n)$"
+    }
+  }
+}

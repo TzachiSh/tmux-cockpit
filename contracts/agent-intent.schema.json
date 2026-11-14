@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:tmux-cockpit:contracts:agent-intent",
+  "title": "agent-intent",
+  "description": "An agent's open decision, approval or claim. The words live in a private file that summary_ref points to, never in this record.",
+  "type": "object",
+  "properties": {
+    "schema_version": { "const": 1 },
+    "intent_id": { "$ref": "#/$defs/id" },
+    "from_agent": { "$ref": "#/$defs/id" },
+    "kind": { "enum": ["decision", "approval", "claim"] },
+    "status": { "enum": ["open", "approved", "rejected", "expired"] },
+    "created_at": { "$ref": "#/$defs/utc" },
+    "expires_at": { "$ref": "#/$defs/utc" },
+    "summary_ref": { "$ref": "#/$defs/ref" }
+  },
+  "required": [
+    "schema_version",
+    "intent_id",
+    "from_agent",
+    "kind",
+    "status",
+    "created_at",
+    "expires_at",
+    "summary_ref"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[0-9a-f]{16,64}(?!\\n)$" },
+    "ref": {
+      "description": "An opaque file name in the private refs folder: 16 to 64 lowercase hex, then .md, .json or .txt. No word fits as written; an encoded one does.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{16,64}\\.(md|json|txt)(?!\\n)$"
+    },
+    "utc": {
+      "description": "ISO-8601 in UTC, Z only, optional fraction.",
+      "type": "string",
+      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.[0-9]{1,9})?Z(?!\\n)$"
+    }
+  }
+}
