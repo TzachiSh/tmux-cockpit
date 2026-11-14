@@ -18,6 +18,21 @@ STATE=$(mktemp -d)
 # socket a long TMPDIR would push past 107 bytes (#766).
 SUITE_XRD=${XDG_RUNTIME_DIR:-}
 export XDG_RUNTIME_DIR="$STATE"
+# A socket folder of the suite's own when its caller hands it none (#1098). With no
+# TMUX_TMPDIR, or one naming a folder that is not there, tmux puts every socket in
+# /tmp/tmux-<uid>, beside the user's own server. CI and the lanes set a private folder; a
+# plain `make test` had none. The folder is in /tmp and short, for the 107 bytes a socket
+# path can hold (#803). It holds sockets only, and suite_clean takes it away with rmdir, so
+# what a block left in it is named and stays. A caller's own folder is kept as it is.
+# Exported before the first tmux call: a run inside this run finds it set and keeps it.
+SUITE_TT=
+if [ -z "${TMUX_TMPDIR:-}" ] || [ ! -d "$TMUX_TMPDIR" ]; then
+    SUITE_TT=$(mktemp -d /tmp/cs.XXXXXX) || {
+        echo "tests/run.sh: no socket folder: mktemp -d /tmp/cs.XXXXXX failed" >&2
+        rm -rf -- "$STATE"; exit 1
+    }
+    export TMUX_TMPDIR="$SUITE_TT"
+fi
 mkdir -p "$STATE/agent-state"
 
 # Private HOME: the example configs load ~/.tmux/plugins/* by path.
@@ -68,6 +83,15 @@ suite_clean() {
     "$TMUX_REAL" -L "$SUITE_SOCK" kill-server >/dev/null 2>&1
     rm -f "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/$SUITE_SOCK"
     rm -rf -- "$STATE" "$SHIM" ${SUITE_NB:+"$SUITE_NB"}
+    [ -z "$SUITE_TT" ] || suite_tt_end
+}
+# The suite's own socket folder, at the end: rmdir and never rm -r, since a socket still in
+# it may be a server's that is still up. What is left is named, and the folder stays.
+suite_tt_end() {
+    rmdir "$SUITE_TT/tmux-$(id -u)" 2>/dev/null
+    rmdir "$SUITE_TT" 2>/dev/null || [ ! -e "$SUITE_TT" ] ||
+        echo "tests/run.sh: left in its socket folder $SUITE_TT: $(
+            cd "$SUITE_TT" && find . -mindepth 1 | sort | tr '\n' ' ')" >&2
 }
 # Armed here, before the server starts, and replaced by `trap cleanup EXIT` once cleanup's
 # other halves (kill_socks, $TMPS) exist. The server leaves this process group, so a TERM or
@@ -10623,6 +10647,71 @@ for cds in "$CDN"/s/tmux-*/*; do
 done
 fi
 unset CDN cdo cdrc cds
+
+echo "== the suite's own server is on a socket under TMUX_TMPDIR, in a folder that exists (#1098) =="
+# With no TMUX_TMPDIR, or one naming a folder that is not there, tmux falls back to
+# /tmp/tmux-<uid>, where the user's own server has its socket. The prelude makes a folder
+# then. Paths are compared resolved: tmux reports the socket's real path.
+if need_tmux "the suite's socket folder"; then :; else
+st_u=$(id -u)
+st_p=$("$TMUX_REAL" -L "$SUITE_SOCK" display-message -p '#{socket_path}' 2>/dev/null)
+st_d=$(cd "${st_p%/*}" 2>/dev/null && pwd -P)
+is "the suite's server answers on a socket in TMUX_TMPDIR's folder, which is there" \
+   "in $(cd "${TMUX_TMPDIR:-/nowhere}/tmux-$st_u" 2>/dev/null && pwd -P)" "in $st_d"
+# SUITE_TT is the folder the prelude made, empty when the caller's own was kept.
+is "that folder is the suite's own when its caller gave none: /tmp/cs.*, mode 700, not tmux's" \
+   "ok" "$(if [ -z "$SUITE_TT" ]; then echo ok; else
+       case $SUITE_TT in /tmp/cs.??????) ;; *) printf 'named %s ' "$SUITE_TT" ;; esac
+       case $(ls -ld "$SUITE_TT") in drwx------*) ;; *) printf 'not 700 ' ;; esac
+       [ "$st_d" != "$(cd "/tmp/tmux-$st_u" 2>/dev/null && pwd -P)" ] || printf 'the default '
+       [ "$TMUX_TMPDIR" = "$SUITE_TT" ] || printf 'not exported '
+       echo ok; fi)"
+# For the block below, which runs this one nested and then looks for the folder.
+[ -z "${COCKPIT_ST_OUT:-}" ] || printf '%s\n' "${SUITE_TT:-kept $TMUX_TMPDIR}" > "$COCKPIT_ST_OUT"
+fi
+unset st_u st_p st_d
+
+echo "== a run with no TMUX_TMPDIR puts no socket in /tmp/tmux-<uid> and removes its folder (#1098) =="
+# The block above through only.sh, started as a plain `make test` starts the suite: with no
+# TMUX_TMPDIR, then with one naming a folder that is not there, then with a caller's own.
+# CI and the lanes set a private folder, so this is the run that meets the other starts.
+# /tmp/tmux-<uid> is only listed, before and after; nothing is put there.
+SF=$(mktmpd); mkdir -p "$SF/own"
+sf_ls() { ls -A "/tmp/tmux-$(id -u)" 2>/dev/null | grep '^cockpit-' | sort; }
+sf_run() {                    # <env words...> -> the nested run's verdict and what it left
+    local o rc f
+    rm -f "$SF/out"; sf_ls > "$SF/before"
+    o=$(cd "$DIR" && env -u TMUX "$@" COCKPIT_ST_OUT="$SF/out" \
+        tests/only.sh "^the suite's own server is on a socket under TMUX_TMPDIR" 2>&1 </dev/null)
+    rc=$?
+    f=$(cat "$SF/out" 2>/dev/null)
+    printf '%s %s %s|' "$rc" "$(printf '%s\n' "$o" | grep -c 'PASS')" \
+        "$(printf '%s\n' "$o" | grep -c 'FAIL')"
+    case $f in
+        /tmp/cs.??????) [ -e "$f" ] && printf 'made, still there|' || printf 'made, gone|' ;;
+        *) printf '%s|' "${f:-no folder reported}" ;;
+    esac
+    sf_ls | comm -13 "$SF/before" - | tr '\n' ' '
+}
+if need_tmux "a run with no TMUX_TMPDIR"; then :
+# The nested socket is $SF/own/tmux-<uid>/cockpit-suite-<pid>: past 107 bytes no server binds.
+elif [ $((${#SF} + ${#UID} + 32)) -gt 107 ]; then
+    skip_ "a run with no TMUX_TMPDIR (TMPDIR too long for the nested socket path)"
+else
+is "no TMUX_TMPDIR: both rows pass, the folder it made is gone, /tmp/tmux-<uid> gained none" \
+   "0 2 0|made, gone|" "$(sf_run -u TMUX_TMPDIR)"
+is "a TMUX_TMPDIR naming a missing folder: the same, and that folder is not made" \
+   "0 2 0|made, gone| missing" \
+   "$(sf_run TMUX_TMPDIR="$SF/none") $([ -e "$SF/none" ] && echo made || echo missing)"
+is "a caller's own TMUX_TMPDIR is kept, and its server's folder is in it" \
+   "0 2 0|kept $SF/own| in it" \
+   "$(sf_run TMUX_TMPDIR="$SF/own") $([ -d "$SF/own/tmux-$(id -u)" ] && echo 'in it' || echo 'not')"
+for sf_s in "$SF"/own/tmux-*/*; do
+    [ -S "$sf_s" ] && "$TMUX_REAL" -S "$sf_s" kill-server >/dev/null 2>&1
+done
+fi
+unset -f sf_ls sf_run
+unset SF sf_s
 
 # tests: scripts/tui-fetch
 echo "== cockpit-tui builds install the executable cargo built, not a guessed path (#591) =="
