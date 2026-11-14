@@ -132,7 +132,11 @@ start the runner with every signal they send at its default and unblocked, so
 they hold however the suite was started. So do the rows of `agents.rs` and
 `push.rs` that signal a process they started (#1061). Each of the three files
 has a row that starts its own binary again with those signals ignored and
-blocked, and fails without that reset (#1044, #1061).
+blocked, and fails without that reset (#1044, #1061). Those rows, and a test
+binary started directly, are what hold the blocked cases: through
+`make tui-test` a blocked signal never reaches a test binary, since GNU make
+starts its children with an empty mask and dash clears one, and an ignored
+USR1 never does either, since make and cargo catch USR1.
 
 Doctests are guarded under cargo 1.92 and not under 1.88, the two measured:
 1.88, the toolchain `make tui-test` uses, does not hand a doctest to a runner.
