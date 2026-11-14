@@ -476,6 +476,21 @@ fn the_signalling_rows_hold_in_a_binary_handed_an_ignored_and_blocked_term_hup_a
     assert!(until(|| left_by(pid) == 0), "the child's rig left its server or its pane");
 }
 
+/// A child this process forked, killed and reaped when this is dropped, on every path
+/// of its row, a panic's too. It holds the pid `fork` returned and nothing else, and
+/// that pid stays the child's until this reaps it (#1061).
+struct Forked(libc::pid_t);
+
+impl Drop for Forked {
+    fn drop(&mut self) {
+        // SAFETY: the pid of this row's own child, not yet reaped.
+        unsafe {
+            libc::kill(self.0, libc::SIGKILL);
+            libc::waitpid(self.0, std::ptr::null_mut(), 0);
+        }
+    }
+}
+
 /// #1061: a mask blocked for a moment reads clear once it is lifted. A child of
 /// this process blocks every signal, as a board inside its own spawn shows, and
 /// lifts them when the row writes `go`, which it does after the first read. A
@@ -515,6 +530,7 @@ fn a_mask_blocked_for_a_moment_reads_clear_once_it_is_lifted() {
         }
     }
     assert!(pid > 0, "fork failed");
+    let _child = Forked(pid);
     let started = until(|| dir.join("ready").exists());
     let mut reads = vec![];
     let clear = usr1_unblocked(pid as u32, |bit| {
@@ -523,10 +539,5 @@ fn a_mask_blocked_for_a_moment_reads_clear_once_it_is_lifted() {
         }
         reads.push(bit);
     });
-    // SAFETY: this row's own child, not yet reaped, so its pid is still its own.
-    unsafe {
-        libc::kill(pid, libc::SIGKILL);
-        libc::waitpid(pid, std::ptr::null_mut(), 0);
-    }
     assert_eq!((started, reads.first(), clear), (true, Some(&Some(1)), true), "{reads:?}");
 }
