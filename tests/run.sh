@@ -4333,13 +4333,19 @@ elif ! ( . "$DIR/scripts/lib/vnum.sh"
     skip_ "the plugin path shapes (tmux below 3.8: cockpit.tmux binds nothing there)"
 else
 PS=$(mktmpd); mkdir -p "$PS/p" "$PS/wd"
-for ps_n in 1 2 3 4 5 6; do SOCKS="$SOCKS cockpit-ps-$$-$ps_n cockpit-pso-$$-$ps_n"; done
+for ps_n in 1 2 3 4 5 6 7 8 9; do SOCKS="$SOCKS cockpit-ps-$$-$ps_n cockpit-pso-$$-$ps_n"; done
+# Siblings the unescaped glob of a*b, a?c and a[d] would match: their statusbar.conf
+# sets a decoy option, so loading one reds the option row.
+for ps_f in aXb aYc ad; do
+    mkdir -p "$PS/p/$ps_f/scripts/lib"
+    echo "set -g @cockpit_decoy $ps_f" > "$PS/p/$ps_f/scripts/lib/statusbar.conf"
+done
 ps_opts() {                   # <socket> <folder> -> name=value per @cockpit option, folder as P
-    local n v q=${2//\'/\'\\\'\'}
+    local n v q=${2//\'/\'\\\'\'}   # the folder as sq() writes it
     "$TMUX_REAL" -L "$1" show-options -g 2>/dev/null | while read -r n _; do
         case $n in @cockpit_sweep_seq) continue ;; @cockpit*) ;; *) continue ;; esac
         v=$("$TMUX_REAL" -L "$1" show-options -gv "$n" 2>/dev/null)
-        v=${v//"$q"/P}; v=${v//"$2"/P}
+        v=${v//"$q"/P}            # only that form: a value that lost sq() stays unequal
         printf '%s=%s\n' "$n" "$v"
     done
 }
@@ -4353,7 +4359,7 @@ ps_rename() {                 # <outer socket> <menu key> <prompt> <name>
     "$TMUX_REAL" -L "$1" send-keys -t o Enter
 }
 ps_n=0
-for ps_f in plain 'a b' "a'q" 'a"q' 'a$HOMEq' 'a\x'; do
+for ps_f in plain 'a b' "a'q" 'a"q' 'a$HOMEq' 'a\x' 'a*b' 'a?c' 'a[d]'; do
     ps_n=$((ps_n + 1)); ps_s="cockpit-ps-$$-$ps_n"; ps_o="cockpit-pso-$$-$ps_n"
     ps_p="$PS/p/$ps_f"; mkdir -p "$ps_p"
     cp "$DIR/bootstrap.sh" "$DIR/install.sh" "$DIR/cockpit.tmux" "$ps_p/"
