@@ -4694,6 +4694,7 @@ dm_note() {                   # <n> <case> <want>: name the window w<n>, deliver
     got=$("$TMUX_REAL" -L "cockpit-dmo-$$-6" capture-pane -p -t o | tail -1)
     is "the notice names the bound jump key: $2" "$want" "${got%"${got##*[! ]}"}"
 }
+dm_note 0 "nothing set: the shipped default u, never the pre-#43 J" " · prefix u jumps"
 "$TMUX_REAL" -L "$dm_s" set -t t @cockpit_jump_key x \; set -t B @cockpit_jump_key y
 dm_note 1 "session values x and y, bound u" " · prefix u jumps"
 "$TMUX_REAL" -L "$dm_s" set -t t -u @cockpit_jump_key \; set -t B -u @cockpit_jump_key \; \
@@ -4707,6 +4708,44 @@ dm_note 4 "a jump bound with no note, as before the key notes: no clause" ""
 ( cd "$DM/wd" && exec "$TMUX_REAL" -L "$dm_s" run-shell "$(tq "$DIR/cockpit.tmux")" \
     ) >/dev/null 2>&1
 dm_note 5 "off, after a reload: no clause" ""
+"$TMUX_REAL" -L "$dm_s" set -g @cockpit_jump_key x
+( cd "$DM/wd" && exec "$TMUX_REAL" -L "$dm_s" run-shell "$(tq "$DIR/cockpit.tmux")" \
+    ) >/dev/null 2>&1
+dm_note 6 "x set globally before a load: the key the user configured" " · prefix x jumps"
+# The binding is the truth, the option a record of it: a key moved by hand, two keys that
+# both carry the note, and keys whose names need care, as tmux names them for the user.
+dm_jn=$(. "$DIR/scripts/lib/fmt.sh" && cockpit_key_note jump)
+"$TMUX_REAL" -L "$dm_s" unbind-key -T prefix x \; \
+    bind-key -T prefix -N "$dm_jn" k run-shell true >/dev/null 2>&1
+dm_note 7 "the binding moved by hand to k, the option still x" " · prefix k jumps"
+"$TMUX_REAL" -L "$dm_s" bind-key -T prefix -N "$dm_jn" x run-shell true >/dev/null 2>&1
+dm_note 8 "k and x both carry the note, the load recorded x: x, once" " · prefix x jumps"
+"$TMUX_REAL" -L "$dm_s" unbind-key -T prefix x \; unbind-key -T prefix k >/dev/null 2>&1
+dm_n=8
+for dm_f in Space C-x M-x "'" '#'; do
+    dm_n=$((dm_n + 1))
+    "$TMUX_REAL" -L "$dm_s" bind-key -T prefix -N "$dm_jn" "$dm_f" run-shell true >/dev/null 2>&1
+    dm_note "$dm_n" "the jump bound on [$dm_f]" " · prefix $dm_f jumps"
+    "$TMUX_REAL" -L "$dm_s" unbind-key -T prefix "$dm_f" >/dev/null 2>&1
+done
+"$TMUX_REAL" -L "$dm_s" set -g @cockpit_jump_key x
+( cd "$DM/wd" && exec "$TMUX_REAL" -L "$dm_s" run-shell "$(tq "$DIR/cockpit.tmux")" \
+    ) >/dev/null 2>&1
+# The 72 columns an 80-column client draws, for a realistic place: session work, window 2,
+# named api. Read whole on a client wider than the notice, so a cut cannot pass.
+"$TMUX_REAL" -L "$dm_s" rename-session -t t work \; move-window -s work:0 -t work:2 \; \
+    rename-window -t work:2 api >/dev/null 2>&1
+printf '## src.go:20 (+)\n> foo\nDM fix\n\n' > "$DM/jstore-fit"
+dm_tmux 6 "$DIR/scripts/tmux-review" --deliver "$dm_p" "$DM/jstore-fit"
+dm_f="cockpit: review pasted into work:2 api · ↵ sends it · prefix x jumps"
+dm_line 6 "$dm_f" >/dev/null
+dm_d=$("$TMUX_REAL" -L "cockpit-dmo-$$-6" capture-pane -p -t o | tail -1)
+dm_k=$("$TMUX_REAL" -L "$dm_s" list-clients -F '#{client_width}' | head -1)
+is "the notice for work:2 api is drawn whole on a $dm_k-column client" "$dm_f" \
+   "${dm_d%"${dm_d##*[! ]}"}"
+is "and it fits the 72 columns an 80-column client shows" "yes" \
+   "$( [ "$(ncols "$dm_f")" -le 72 ] && [ "$dm_k" -gt 72 ] && echo yes \
+        || echo "no: $(ncols "$dm_f") columns on a $dm_k-column client" )"
 dm_down 6
 # The scan: each display-message call in cockpit.tmux or scripts/ that shows a variable or
 # a $( ) goes through dmsg. A \-continued line is joined first, then split at every
@@ -4795,7 +4834,7 @@ is "and names nothing in dmsg, a -p read, a fixed text or an exception in its ow
    "$(for dm_f in ok-version:cockpit.tmux ok-dmsg:scripts/lib/fmt.sh ok-other:scripts/x; do
           (cd "$DM/pl/${dm_f%%:*}" && dm_scan "${dm_f#*:}"); done)"
 unset -f dm_up dm_drawn dm_line dm_down dm_tmux dm_scan dm_note dm_plant
-unset DM dm_n dm_f dm_p dm_d dm_k dm_names dm_files dm_s
+unset DM dm_n dm_f dm_p dm_d dm_k dm_names dm_files dm_s dm_jn
 fi
 
 echo "== HOME unset must not kill the path picker =="
@@ -13793,47 +13832,6 @@ rr_repo() {                   # -> $RRDIR, a repo whose one changed file has a l
           > scripts/lib/very_long_module_name_here.sh
     ) >/dev/null 2>&1
 }
-
-echo "== #105: the delivery notice names the configured jump key and fits 72 columns =="
-if need_tmux "#105 jump key notice"; then :; else
-RRJ="cockpit-rrj-$$"; SOCKS="$SOCKS $RRJ"
-"$TMUX_REAL" -L "$RRJ" -f /dev/null new-session -d -s t 'sleep 600' >/dev/null 2>&1
-# Rendered by tmux itself, not read: a format that looks right in a grep can
-# still expand to the wrong text -- which is exactly defect 1.
-RRJFMT=$(sed -n "s/^ *local jump='\(.*\)'\$/\1/p" "$DIR/scripts/lib/review-deliver.sh" | head -1)
-RRJMSG=$(sed -n 's/^ *local notice_paste="\(.*\)"$/\1/p' "$DIR/scripts/lib/review-deliver.sh" |
-    head -1)
-if [ -z "$RRJFMT" ] || [ -z "$RRJMSG" ]; then
-    bad "the notice builds its jump clause from a format" \
-        "local jump=... and local notice_paste=..." \
-        "jump:[$RRJFMT] notice:[$RRJMSG]"
-else
-    rr_notice() {             # rr_notice <key-or-unset> -> the notice as a client sees it
-        if [ "$1" = unset ]; then "$TMUX_REAL" -L "$RRJ" set -gu @cockpit_jump_key >/dev/null 2>&1
-        else "$TMUX_REAL" -L "$RRJ" set -g @cockpit_jump_key "$1" >/dev/null 2>&1; fi
-        local m=${RRJMSG//\$jump/$RRJFMT}
-        "$TMUX_REAL" -L "$RRJ" display-message -p "${m//\$where/work:2 api}"
-    }
-    case "$(rr_notice x)" in
-        *"prefix x"*) ok "with @cockpit_jump_key x the notice says prefix x" ;;
-        *) bad "with @cockpit_jump_key x the notice says prefix x" "prefix x" "$(rr_notice x)" ;;
-    esac
-    case "$(rr_notice off)" in
-        *prefix*) bad "with the key off the clause drops out rather than naming an unbound key" \
-                      "no prefix clause" "$(rr_notice off)" ;;
-        *) ok "with the key off the clause drops out rather than naming an unbound key" ;;
-    esac
-    case "$(rr_notice unset)" in
-        *"prefix u"*) ok "unset, it names the shipped default u, never the pre-#43 J" ;;
-        *) bad "unset, it names the shipped default u, never the pre-#43 J" "prefix u" \
-                "$(rr_notice unset)" ;;
-    esac
-    is "and the whole notice fits the 72 columns an 80-column client shows" "yes" \
-       "$( [ "$(ncols "$(rr_notice unset)")" -le 72 ] && echo yes \
-            || echo "no: $(ncols "$(rr_notice unset)") columns" )"
-fi
-"$TMUX_REAL" -L "$RRJ" kill-server >/dev/null 2>&1
-fi
 
 echo "== #105: one message prefix, and the popup refusals speak through tmux =="
 # On this theme a display-message is welded into status-right with no
