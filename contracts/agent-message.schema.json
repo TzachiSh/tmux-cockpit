@@ -28,7 +28,16 @@
       "additionalProperties": false
     }
   },
-  "required": ["schema_version", "msg_id", "from", "to", "subject", "timestamp", "correlation_id", "payload"],
+  "required": [
+    "schema_version",
+    "msg_id",
+    "from",
+    "to",
+    "subject",
+    "timestamp",
+    "correlation_id",
+    "payload"
+  ],
   "additionalProperties": false,
   "$defs": {
     "id": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,64}(?!\\n)$" },

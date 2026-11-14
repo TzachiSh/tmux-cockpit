@@ -27,7 +27,15 @@
     },
     "owner_pane": { "type": "string", "pattern": "^%[0-9]{1,10}(?!\\n)$" }
   },
-  "required": ["schema_version", "scope", "key", "checked_at", "ttl_seconds", "revision", "owner_pane"],
+  "required": [
+    "schema_version",
+    "scope",
+    "key",
+    "checked_at",
+    "ttl_seconds",
+    "revision",
+    "owner_pane"
+  ],
   "additionalProperties": false,
   "allOf": [
     {

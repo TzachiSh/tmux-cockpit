@@ -14,7 +14,16 @@
     "expires_at": { "$ref": "#/$defs/utc" },
     "summary_ref": { "$ref": "#/$defs/ref" }
   },
-  "required": ["schema_version", "intent_id", "from_agent", "kind", "status", "created_at", "expires_at", "summary_ref"],
+  "required": [
+    "schema_version",
+    "intent_id",
+    "from_agent",
+    "kind",
+    "status",
+    "created_at",
+    "expires_at",
+    "summary_ref"
+  ],
   "additionalProperties": false,
   "$defs": {
     "id": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,64}(?!\\n)$" },
