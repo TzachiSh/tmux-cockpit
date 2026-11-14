@@ -4537,14 +4537,16 @@ DM=$(mktmpd); mkdir -p "$DM/wd" "$DM/m"
 for dm_n in 1 2 3 4; do SOCKS="$SOCKS cockpit-dm-$$-$dm_n cockpit-dmo-$$-$dm_n"; done
 dm_names=('a##x' 'a#[fg=red]b' 'a#Sb' 'a#(touch pwned)b')
 dm_up() {                     # <n> [new-session command] -> a server, a client on it
-    local s="cockpit-dm-$$-$1" o="cockpit-dmo-$$-$1"
+    # Wide enough by construction: a message wider than the client is cut. The longest
+    # text here is a sentence and a name past the scratch folder's own path.
+    local s="cockpit-dm-$$-$1" o="cockpit-dmo-$$-$1" w=$(( ${#DM} + 150 ))
     ( cd "$DM/wd" && exec env -u TMUX_COCKPIT_DIR -u TMUX -u TMUX_PANE "$TMUX_REAL" -L "$s" \
-        -f /dev/null new-session -d -s t -x 250 -y 10 -c "$DM/wd" "${2:-exec sleep 300}" \
+        -f /dev/null new-session -d -s t -x "$w" -y 10 -c "$DM/wd" "${2:-exec sleep 300}" \
         ) >/dev/null 2>&1
     "$TMUX_REAL" -L "$s" set -g display-time 0 \; set -g status-left '' \; \
         set -g status-right '' >/dev/null 2>&1
     ( cd "$DM/wd" && exec env -u TMUX_COCKPIT_DIR -u TMUX -u TMUX_PANE "$TMUX_REAL" -L "$o" \
-        -f /dev/null new-session -d -s o -x 250 -y 12 -c "$DM/wd" \
+        -f /dev/null new-session -d -s o -x "$w" -y 12 -c "$DM/wd" \
         "TERM=xterm-256color exec $(tq "$TMUX_REAL") -L $s attach -t t" ) >/dev/null 2>&1
     until_cap "$o" o '*[!\ ]*'
     until_out '?*' "$TMUX_REAL" -L "$s" list-clients -F '#{client_name}'
