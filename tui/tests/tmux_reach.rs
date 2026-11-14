@@ -210,10 +210,14 @@ fn a_process_with_another_tmux_tmpdir_is_never_taken_for_a_rigs() {
         c.arg("30").env("TMUX", &tmux).env("TMUX_TMPDIR", tmpdir).spawn().unwrap()
     };
     let (mut ours, mut decoy) = (start(&own), start(Path::new("/elsewhere-1066")));
-    // the spawns have exec'd sleep once each reads as sleep in /proc
+    // the spawns have exec'd sleep once each reads as sleep in /proc: polled, 20 s at most
     let comm = |p: u32| std::fs::read_to_string(format!("/proc/{p}/comm")).unwrap_or_default();
-    while comm(ours.id()).trim() != "sleep" || comm(decoy.id()).trim() != "sleep" {
-        std::thread::yield_now();
+    for tries in 0.. {
+        if comm(ours.id()).trim() == "sleep" && comm(decoy.id()).trim() == "sleep" {
+            break;
+        }
+        assert!(tries < 4000, "the two sleeps were not sleep after {tries} tries");
+        std::thread::sleep(std::time::Duration::from_millis(5));
     }
     let left = fake::servers_left(child);
     for c in [&mut ours, &mut decoy] {
