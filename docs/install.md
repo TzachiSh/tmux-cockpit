@@ -10,19 +10,31 @@ git clone <this repo> ~/.tmux/plugins/tmux-cockpit
 Add to `~/.tmux.conf` (see `examples/tmux.conf` for the full block):
 
 ```tmux
-run-shell ~/.tmux/plugins/tmux-cockpit/cockpit.tmux
+run-shell '~/.tmux/plugins/tmux-cockpit/cockpit.tmux'
 ```
 
 That one line draws the status bar and borders and binds the keys — there is
 nothing else to add for them. It must come **after** the cockpit options you
 set, and before tpm.
 
-If the path contains a space, quote it for the shell *inside* the tmux string —
-tmux hands the line to `sh`, which would otherwise split it and fail with 127:
+Keep the single quotes. tmux hands what is between them to `sh` as it is, and
+`sh` turns `~` into your home directory without splitting it, so the line also
+loads when the path to your home holds a space. Without the quotes tmux expands
+`~` itself and `sh` splits the result at the space: nothing loads. tmux says
+nothing when it starts, and `'<path>' returned 127` when you reload the config.
+
+If the plugin sits somewhere else and that path holds a space, put the path in
+double quotes inside the single ones, with `$HOME` in place of `~` (`sh` leaves
+a `~` inside quotes alone):
 
 ```tmux
-run-shell "'~/my plugins/tmux-cockpit/cockpit.tmux'"
+run-shell '"$HOME/my plugins/tmux-cockpit/cockpit.tmux"'
 ```
+
+A tmux server started with `HOME` unset or empty does not load the plugin with
+either line: `sh` has no home directory to put in place of `~`. Give the full
+path there, in single quotes inside double ones so that a space in it holds:
+`run-shell "'/full/path/to/tmux-cockpit/cockpit.tmux'"`.
 
 `install.sh` only ever creates symlinks, skips a name already taken by a real
 file or by another tool's link, reports anything it could not create, and
