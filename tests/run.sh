@@ -18,21 +18,7 @@ STATE=$(mktemp -d)
 # socket a long TMPDIR would push past 107 bytes (#766).
 SUITE_XRD=${XDG_RUNTIME_DIR:-}
 export XDG_RUNTIME_DIR="$STATE"
-# A socket folder of the suite's own when its caller hands it none (#1098). With no
-# TMUX_TMPDIR, or one naming a folder that is not there, tmux puts every socket in
-# /tmp/tmux-<uid>, beside the user's own server. CI and the lanes set a private folder; a
-# plain `make test` had none. The folder is in /tmp and short, for the 107 bytes a socket
-# path can hold (#803). It holds sockets only, and suite_clean takes it away with rmdir, so
-# what a block left in it is named and stays. A caller's own folder is kept as it is.
-# Exported before the first tmux call: a run inside this run finds it set and keeps it.
-SUITE_TT=
-if [ -z "${TMUX_TMPDIR:-}" ] || [ ! -d "$TMUX_TMPDIR" ]; then
-    SUITE_TT=$(mktemp -d /tmp/cs.XXXXXX) || {
-        echo "tests/run.sh: no socket folder: mktemp -d /tmp/cs.XXXXXX failed" >&2
-        rm -rf -- "$STATE"; exit 1
-    }
-    export TMUX_TMPDIR="$SUITE_TT"
-fi
+SUITE_TT=                     # the socket folder the prelude makes below, when it makes one
 mkdir -p "$STATE/agent-state"
 
 # Private HOME: the example configs load ~/.tmux/plugins/* by path.
@@ -100,6 +86,19 @@ suite_tt_end() {
 # prelude FATAL leaves through the same trap (#984).
 trap suite_clean EXIT
 fatal() { printf '  \033[31mFATAL\033[0m %s\n' "$1" >&2; exit 1; }
+# A socket folder of the suite's own when its caller hands it none (#1098). With no
+# TMUX_TMPDIR, or one naming a folder that is not there, tmux puts every socket in
+# /tmp/tmux-<uid>, beside the user's own server. CI and the lanes set a private folder; a
+# plain `make test` had none. The folder is in /tmp and short, for the 107 bytes a socket
+# path can hold (#803). It holds sockets only, and suite_clean takes it away with rmdir, so
+# what a block left in it is named and stays. A caller's own folder is kept as it is.
+# Made here, with the trap above already armed, so no way out of the prelude leaves it, and
+# exported before the first tmux call: a run inside this run finds it set and keeps it.
+if [ -z "${TMUX_TMPDIR:-}" ] || [ ! -d "$TMUX_TMPDIR" ]; then
+    SUITE_TT=$(mktemp -d /tmp/cs.XXXXXX) || { SUITE_TT=; fatal "no socket folder: $(
+        )mktemp -d /tmp/cs.XXXXXX failed"; }
+    export TMUX_TMPDIR="$SUITE_TT"
+fi
 # Deferring when $TMUX is set is load-bearing: tmux exports it to everything it
 # runs, so cockpit.tmux launched by a run-shell inside one of the per-block
 # servers must talk to THAT server, not this one.
