@@ -2,6 +2,7 @@
 //! pane (#519's is_agent) whose command is `claude` or its version title. On a
 //! private `-L` server, never the user's; one test, as it sets COCKPIT_TMUX.
 use cockpit_tui::basket;
+use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
 
 struct Server {
@@ -35,6 +36,66 @@ impl Server {
         let d = self.dir.display().to_string();
         self.tmux(&["new-window", "-d", "-P", "-F", "#{pane_id}", "-c", &d, &cmd])
     }
+
+    /// As [`Server::pane`], but the pane's process holds 0.3 s before it execs
+    /// `name` (#1056): the start-up window held open, so a read that does not
+    /// wait for [`Server::settle`] finds the `held` script, not `name`.
+    fn held(&self, name: &str) -> String {
+        let bin = self.dir.join(name);
+        // a copy a pane already runs cannot be written over (ETXTBSY)
+        if !bin.exists() {
+            std::fs::copy("/bin/bash", &bin).unwrap();
+        }
+        let hold = self.dir.join("held");
+        std::fs::write(&hold, "#!/bin/sh\nsleep 0.3\nexec \"$@\"\n").unwrap();
+        std::fs::set_permissions(&hold, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let cmd = format!("{} {} -c 'sleep 300; :'", hold.display(), bin.display());
+        let d = self.dir.display().to_string();
+        self.tmux(&["new-window", "-d", "-P", "-F", "#{pane_id}", "-c", &d, &cmd])
+    }
+
+    /// Waits until the pane's own process has exec'd `name` (#1056). Not by
+    /// pane_current_command: while a pane starts, tmux 3.8 reads it as the pane's
+    /// argv, then `tmux`, then the shell, then the name, so its first read can
+    /// already be `name`. The pane's pid keeps through each exec, and its comm
+    /// only moves forward. Red, naming the comm read last, when it never gets there.
+    /// The kernel sets comm before the new argv, and an exec's empty cmdline sends
+    /// tmux back to the pane's start argv, so the argv tmux reads must agree too.
+    fn settle(&self, pane: &str, name: &str) {
+        let pid = self.tmux(&["display-message", "-p", "-t", pane, "#{pane_pid}"]);
+        let mut last = String::new();
+        for _ in 0..500 {
+            last = comm(&pid);
+            if last == name {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("pane {pane} never ran {name}: its process {pid} read {last:?} last");
+    }
+}
+
+/// A process's name: /proc's comm, with the argv[0] tmux reads (/proc's cmdline)
+/// added when the two differ; else `ps` where there is no /proc (macOS prints a path).
+fn comm(pid: &str) -> String {
+    if std::path::Path::new("/proc/self").is_dir() {
+        let comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).unwrap_or_default();
+        let argv = std::fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
+        let argv0 = argv.split(|b| *b == 0).next().unwrap_or_default();
+        let argv0 = String::from_utf8_lossy(argv0).to_string();
+        let base = argv0.rsplit('/').next().unwrap_or_default();
+        let comm = comm.trim_end();
+        return if base == comm {
+            comm.to_string()
+        } else {
+            format!("{comm} (argv[0] {argv0:?})")
+        };
+    }
+    let out = Command::new("ps").args(["-o", "comm=", "-p", pid]).output();
+    let c = out
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+    c.rsplit('/').next().unwrap_or_default().to_string()
 }
 
 impl Drop for Server {
@@ -85,13 +146,20 @@ fn claude_and_its_version_title_read_at_mentions_and_nothing_else_does() {
     // @panestate outlives the claude that set it: on a shell it is no claude
     s.tmux(&["set-option", "-p", "-t", &stale, "@panestate", "working"]);
     let rows = [
-        ("claude", s.pane("claude"), true),
-        ("its version title", s.pane("2.1.318"), true),
-        ("codex", s.pane("codex"), false),
-        ("a shell", s.pane("zsh"), false),
-        ("a stale @panestate on a shell", stale, false),
+        ("claude", s.pane("claude"), "claude", true),
+        ("its version title", s.pane("2.1.318"), "2.1.318", true),
+        (
+            "its version title, its start held before the exec",
+            s.held("2.1.318"),
+            "2.1.318",
+            true,
+        ),
+        ("codex", s.pane("codex"), "codex", false),
+        ("a shell", s.pane("zsh"), "zsh", false),
+        ("a stale @panestate on a shell", stale, "fish", false),
     ];
-    for (row, pane, want) in rows {
+    for (row, pane, name, want) in rows {
+        s.settle(&pane, name);
         assert_eq!(basket::is_claude(&pane), want, "{row} ({pane})");
     }
     // The resume key's string under dash (#895): with exec the pane is claude, as the
@@ -100,15 +168,10 @@ fn claude_and_its_version_title_read_at_mentions_and_nothing_else_does() {
         let cases = [("with exec", true, "claude", true), ("without exec", false, "dash", false)];
         for (row, exec, settled, want) in cases {
             let pane = s.resumed("/usr/bin/dash", exec);
-            let cmd = || s.tmux(&["display-message", "-p", "-t", &pane, "#{pane_current_command}"]);
-            // bash, then dash, then claude exec'd or forked: wait for the pane to settle
-            for _ in 0..50 {
-                if cmd() == settled {
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(100));
-            }
-            assert_eq!(cmd(), settled, "a resume string {row}, under dash: the pane's command");
+            // bash, then dash, then claude exec'd or forked: wait for the pane's process
+            s.settle(&pane, settled);
+            let cmd = s.tmux(&["display-message", "-p", "-t", &pane, "#{pane_current_command}"]);
+            assert_eq!(cmd, settled, "a resume string {row}, under dash: the pane's command");
             assert_eq!(basket::is_claude(&pane), want, "a resume string {row}, under dash ({pane})");
         }
     }
