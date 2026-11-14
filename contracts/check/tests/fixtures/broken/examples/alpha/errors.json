@@ -1,0 +1,14 @@
+{
+  "invalid-gone.json": {
+    "keyword": "enum",
+    "at": "$.state"
+  },
+  "invalid-state.json": {
+    "keyword": "enum",
+    "at": "$.state"
+  },
+  "invalid-two.json": {
+    "keyword": "pattern",
+    "at": "$.pane_id"
+  }
+}

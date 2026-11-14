@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:tmux-cockpit:contracts:beta",
+  "description": "Breaks one house rule: no additionalProperties false. Has no valid example.",
+  "type": "object",
+  "properties": {
+    "schema_version": { "const": 1 }
+  },
+  "required": ["schema_version"]
+}

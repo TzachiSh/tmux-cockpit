@@ -386,6 +386,92 @@ mod tests {
         }
     }
 
+    /// Rows: name, file, refusals as (keyword, at), whether errors.json has an entry, passes.
+    type VerdictRow<'a> = (&'a str, &'a str, &'a [(&'a str, &'a str)], bool, bool);
+
+    #[test]
+    fn verdict_passes_an_invalid_example_only_on_its_one_named_refusal() {
+        let want = json!({"keyword": "enum", "at": "$.state"});
+        let (named, other) = (("enum", "$.state"), ("pattern", "$.pane_id"));
+        let rows: [VerdictRow; 8] = [
+            ("valid, none", "valid-a.json", &[], false, true),
+            ("valid, one", "valid-a.json", &[named], false, false),
+            (
+                "invalid, no entry",
+                "invalid-a.json",
+                &[named],
+                false,
+                false,
+            ),
+            ("invalid, none", "invalid-a.json", &[], true, false),
+            (
+                "invalid, the named one",
+                "invalid-a.json",
+                &[named],
+                true,
+                true,
+            ),
+            (
+                "invalid, named and another",
+                "invalid-a.json",
+                &[named, other],
+                true,
+                false,
+            ),
+            (
+                "invalid, wrong keyword",
+                "invalid-a.json",
+                &[("const", "$.state")],
+                true,
+                false,
+            ),
+            (
+                "invalid, wrong place",
+                "invalid-a.json",
+                &[("enum", "$")],
+                true,
+                false,
+            ),
+        ];
+        for (row, file, refusals, entry, passes) in rows {
+            let refusals: Vec<Refusal> = refusals
+                .iter()
+                .map(|(k, a)| Refusal {
+                    keyword: k.to_string(),
+                    at: a.to_string(),
+                    message: String::new(),
+                })
+                .collect();
+            let got = verdict(file, &refusals, entry.then_some(&want));
+            assert_eq!(got.is_ok(), passes, "row {row}");
+        }
+    }
+
+    fn fixture(name: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures")
+            .join(name)
+    }
+
+    #[test]
+    fn the_broken_fixture_gives_exactly_its_surprises() {
+        let want = [
+            "examples/orphan: no orphan.schema.json",
+            "alpha/invalid-two.json: refused for [('pattern', '$.pane_id'), ('enum', '$.state')], \
+             errors.json wants pattern at $.pane_id",
+            "alpha/errors.json: names invalid-gone.json, which is no invalid-* file here",
+            "beta.schema.json: additionalProperties is not false",
+            "beta: no valid-* example",
+        ];
+        assert_eq!(check(&fixture("broken")), want);
+    }
+
+    #[test]
+    fn the_contracts_folder_has_no_surprise() {
+        let root = root_from(args(&[])).unwrap();
+        assert_eq!(check(&root), Vec::<String>::new());
+    }
+
     #[test]
     fn json_path_unescapes_a_pointer_segment() {
         let doc = json!({"a/b": {"c~d": {"": 1}}});
