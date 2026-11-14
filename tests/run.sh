@@ -4126,7 +4126,9 @@ cl_load() {                   # <n> [socket n] -> <@cl_from>|<prefix w bindings>
     "$TMUX_REAL" -L "$s" kill-server >/dev/null 2>&1
 }
 cl_n=0
-for cl_f in 'plain' 'two  blanks' "a'quote" 'd$(touch pwned)x' 'd$HOME#{pane_id}'; do
+# The $( ) holds no blank: tmux splits a bare line at one before sh sees it, and then sh
+# stops at the half it got. Whole, sh runs it, in the cwd of the client that sourced the config.
+for cl_f in 'plain' 'two  blanks' "a'quote" 'd$(id>pwned)x' 'd$HOME#{pane_id}'; do
     cl_n=$((cl_n + 1)); cl_box "$cl_n" "$cl_f"
     ( cd "$CL/wd" && cl_env "$cl_n" "$CL/p/$cl_f/bootstrap.sh" --yes ) > "$CL/out$cl_n"
     is "a folder named [$cl_f]: bootstrap.sh appends one line" "1" \
