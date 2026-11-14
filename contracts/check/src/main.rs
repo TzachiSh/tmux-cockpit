@@ -634,6 +634,11 @@ mod tests {
             ("flags first", "(?i)^a$", false),
             ("x-mode spaces", "^(?x) a $", false),
             ("two anchored branches", "^a$|^b$", true),
+            ("repetition of the whole", "(^a$)+", true),
+            ("non-capturing repetition of the whole", "(?:^a$)+", true),
+            ("flags after $", "^a$(?i)", false),
+            ("flag group around the whole", "(?i:^a$)", false),
+            ("multi-line flag", "(?m)^a$", true),
         ];
         for (row, pattern, refused) in rows {
             assert_eq!(anchor_problem(pattern).is_some(), refused, "row {row}");

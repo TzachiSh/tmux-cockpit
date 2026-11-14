@@ -45,30 +45,36 @@ Nothing reads these schemas at run time. The Rust side is `tui/src/store.rs`, a
   `format` an annotation, and the check does not turn format checking on. A
   reader that needs order (an intent's `expires_at` after its `created_at`)
   checks it itself.
-- **Patterns** start with `^` and end with `$`, and are checked by Rust's
-  `regex` engine. Its `$` is the end of the string, so `^%[0-9]{1,10}$` refuses
-  `"%12\n"`. Python's `$` also matches before a final newline: a Python
-  validator would accept `"%12\n"`. An alternation goes inside a group, as in
-  `^(a|b)$`: `^a|b$` means `(^a)|(b$)`, each side anchored at one end only.
+- **Patterns** start with `^` and end with `$`, the start and the end of the
+  whole string. Rust's `regex` engine checks them, so `^%[0-9]{1,10}$` refuses
+  `"%12\n"`. Until #1052 every pattern ended in `(?!\n)$` instead, because
+  Python's `$` also matches before a final newline. An alternation goes inside
+  a group, as in `^(a|b)$`: `^a|b$` means `(^a)|(b$)`.
 
   The check reads every `pattern` and `patternProperties` key in a schema,
   `$defs` included, as the validator does: jsonschema-regex translates it, then
-  regex-syntax parses the result. The parse, after regex-syntax's own
-  simplification, must be a sequence whose first item is `^` (start of text)
-  and whose last is `$` (end of text):
-  - A group is one item in between. `^(a|b)$` passes. A capturing group around
-    the whole pattern, `(^a$)`, fails. A non-capturing one, `(?:^a$)`, leaves
-    no item of its own and passes. Two anchored branches, `^a$|^b$`, fail:
-    their shared `^` is factored out, and the last item is the alternation.
-  - A repetition is one item: `^a*$` passes. `^a$*` fails, since `$*` may
-    match nothing.
-  - Flags add no item: `(?i)^a$` passes. `(?m)` makes `^` and `$` line anchors,
-    which fail. `(?x)` drops spaces and `#` comments before the reading, so a
-    `(` in a comment opens nothing.
+  regex-syntax parses the result. The top node of that parse, after
+  regex-syntax's own simplification, must be a concatenation whose first item
+  is `Look::Start` and whose last is `Look::End`, the `^` and `$` read without
+  `(?m)`:
+  - A group is one item in between, so `^(a|b)$` passes. A capturing group
+    around the whole pattern, `(^a$)`, fails, since the group is the top node.
+    A non-capturing group leaves no node, so `(?:^a$)` passes. `^a$|^b$`
+    fails: the shared `^` is factored out, and the last item is the
+    alternation.
+  - A repetition is one item: `^a*$` passes, and `^a$*` fails, since `$*` may
+    match nothing. A repetition of the whole pattern, `(^a$)+` or
+    `(?:^a$)+`, fails, since the repetition is the top node.
+  - Flags add no item: `(?i)^a$`, `^a$(?i)` and `(?i:^a$)` pass. `(?m)^a$`
+    fails, since its anchors are `Look::StartLF` and `Look::EndLF`, which also
+    match at a newline. `(?x)` drops spaces and `#` comments before the
+    reading, so a `(` in a comment opens nothing.
   - A `[` inside a class is a literal, as jsonschema-regex escapes it.
-  - The empty pattern fails. `^$` passes and matches only the empty string.
-  - A pattern the translation or the parse refuses fails by name, as does one
-    with lookaround or a backreference.
+  - The empty pattern fails, since its top node is empty. `^$` passes and
+    matches only the empty string.
+  - A pattern the translation or the parse refuses fails, and the surprise
+    names the schema file and the pattern. So does one with lookaround or a
+    backreference.
 - **Unknown, malformed or wrong-version** payloads mean "no value, start fresh",
   as today's state files do (`data/agents.rs`, `board.rs`, `panel/action.rs`).
   No reader repairs, upgrades or fails on one. Starting fresh never reuses a
