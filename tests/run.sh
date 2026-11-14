@@ -6673,7 +6673,8 @@ rqe_cmd() {                   # [VAR=value] -> the --loop root the popup was giv
       PATH="$RQESHIM:$PATH" XDG_STATE_HOME=$RQES "$DIR/scripts/tmux-review" --request "$RQEP" \
           >/dev/null 2>&1 )
     # The root is %q-quoted in the popup's command: a blank in it is "\ ", not the root's end.
-    sed -n 's/.* --loop \(\(\\.\|[^ \\]\)*\) .*/\1/p' "$RQES/cmd" 2>/dev/null
+    # A root that %q writes as $'...' (a control character in it) with a blank is still cut.
+    sed -nE 's/.* --loop ((\\.|[^ \\])*) .*/\1/p' "$RQES/cmd" 2>/dev/null
 }
 rqewant=$(printf '%q' "$(git -C "$RQED/pane" rev-parse --show-toplevel)")
 is "the popup reviews the pane repo's root, nothing inherited" "$rqewant" "$(rqe_cmd)"
