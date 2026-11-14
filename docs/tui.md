@@ -51,6 +51,14 @@ That needs **Rust >= 1.88** (ratatui 0.30's floor; Debian 13 ships 1.85 and
 Ubuntu 24.04 ships 1.75). On an older toolchain the fetch path refuses by name
 rather than dumping a compiler error, and keeps any binary you already have.
 
+A debug build, and anything cargo starts in the checkout (`cargo run` too, since
+`.cargo/config.toml` sets `COCKPIT_TEST_TMUX_GUARD`), refuses the tmux reads and
+writes that would reach your own server, and the board says so once in its
+footer. It is the tests' guard: a test started by hand then reads and writes
+none of your session (#1089). To run a debug board against your own session, run
+`COCKPIT_TEST_TMUX_GUARD=0 cargo run -- board` in `tui/` from a pane inside it;
+`make tui` builds the release binary, which has no guard.
+
 `make check` builds the binary first; the suite needs cargo. `make tui-test`
 runs cargo's tests, clippy, fmt and a rustdoc pass that fails on a doc link
 naming nothing, on the `rust-version` toolchain through rustup (CI's, so the
@@ -260,7 +268,7 @@ Read-only, and owned by bash: `@cockpit_session`, `@cockpit_dir`, `@panestate`,
 |----------|------|
 | `COCKPIT_ACTION` | file the one action line is written to. Unset sends it to stdout |
 | `COCKPIT_TMUX` | overrides the tmux argv. The value is split on whitespace, so `tmux -L sock` works, but a tmux path holding a space can't be named here: reach it through a wrapper script or a symlink. Unset follows `$TMUX` to whatever socket the pane is on |
-| `COCKPIT_TEST_TMUX_GUARD` | the test guard on tmux, on in any debug build and wherever this is set to anything but `0` (`.cargo/config.toml` sets it for whatever cargo starts, `cargo run` included). The basket then runs tmux only on a `-L`/`-S` server or a stub. Every other tmux call through `data::tmux` (the agent list, the theme, the pane reads, `tmux_set`) runs a plain `tmux` only with `TMUX` unset and `TMUX_TMPDIR` an existing folder, as cargo's runner starts a test binary, and reads anything else as tmux giving no value (#1089): a test binary started by hand reads nothing of the caller's server, in whatever test. `COCKPIT_TEST_TMUX_GUARD=0 cargo run` lifts it from inside tmux. A release build run outside cargo, as the plugin runs it, has it off |
+| `COCKPIT_TEST_TMUX_GUARD` | the test guard on tmux, on in any debug build and wherever this is set to anything but `0` (`.cargo/config.toml` sets it for whatever cargo starts, `cargo run` included). The basket then runs tmux only on a `-L`/`-S` server or a stub. Every other tmux call through `data::tmux` (the agent list, the theme, the pane reads, `tmux_set`) runs a plain `tmux` only with `TMUX` unset and `TMUX_TMPDIR` an existing folder, as cargo's runner starts a test binary, and reads anything else as tmux giving no value (#1089): a test binary started by hand reads nothing of the caller's server, in whatever test. `COCKPIT_TEST_TMUX_GUARD=0 cargo run` lifts it from inside tmux. The board's footer says so once per run, until a key. A release build run outside cargo, as the plugin runs it, has it off |
 | `COCKPIT_LOG` | append target. The binding sets it to `${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/tui.log` |
 | `COCKPIT_PROC_DIR` | the proc root the pane-tree walk reads (default `/proc`); a test seam. A root without `self/task` or without `children` files sends the lookup to `ps` |
 | `COCKPIT_READONLY` | any non-empty value: never write to a tmux server, the pid included. The panel wrapper then pastes and sends nothing and logs what it would have done |

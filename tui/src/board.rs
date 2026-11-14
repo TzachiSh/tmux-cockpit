@@ -4202,6 +4202,15 @@ pub fn run(o: &Opts) -> Option<Exit> {
             note = None;
             dirty = true;
         }
+        // a debug build or a cargo run reads none of the caller's tmux: said once, until a key
+        if let Some(t) = crate::data::guard_note() {
+            note = Some(Note {
+                text: t.to_string(),
+                at: Instant::now(),
+                ttl: None,
+            });
+            dirty = true;
+        }
         match snap_rx.try_recv() {
             Ok(s) => {
                 let t0 = Instant::now();

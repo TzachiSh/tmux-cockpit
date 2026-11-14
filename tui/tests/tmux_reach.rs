@@ -232,11 +232,10 @@ fn a_process_with_another_tmux_tmpdir_is_never_taken_for_a_rigs() {
 /// that row then makes the product's read once and ends.
 const PRODUCT_READ: &str = "COCKPIT_TEST_PRODUCT_READ";
 
-/// How many calls the product's agent list read (`data::tmux`) made, in a child of this row
+/// How many calls the product's agent list read (`data::tmux`) made, in a child of row `me`
 /// started by hand with the guard on, no TMUX, TMUX_TMPDIR or COCKPIT_TMUX, then `set`, and
 /// two stubs first on PATH that record each call and open no socket: `tmux`, and `stub`.
-fn product_reads(s: &Path, set: &[(&str, &str)]) -> usize {
-    let me = "the_product_refuses_a_plain_tmux_bound_for_the_callers_server";
+fn product_reads(s: &Path, me: &str, set: &[(&str, &str)]) -> usize {
     let path = format!("{}:{}", s.display(), std::env::var("PATH").unwrap_or_default());
     let mut c = std::process::Command::new(std::env::current_exe().unwrap());
     for v in ["TMUX", "TMUX_TMPDIR", "COCKPIT_TMUX"] {
@@ -285,6 +284,32 @@ fn the_product_refuses_a_plain_tmux_bound_for_the_callers_server() {
         ("a stub by another name, no TMUX_TMPDIR", &[("COCKPIT_TMUX", "stub")], 1),
         ("the guard lifted, no TMUX_TMPDIR", &[("COCKPIT_TEST_TMUX_GUARD", "0")], 1),
     ];
-    let got: Vec<_> = cases.iter().map(|(n, set, _)| (*n, product_reads(&s.0, set))).collect();
+    let me = "the_product_refuses_a_plain_tmux_bound_for_the_callers_server";
+    let got: Vec<_> = cases.iter().map(|(n, set, _)| (*n, product_reads(&s.0, me, set))).collect();
     assert_eq!(got, cases.map(|(n, _, want)| (n, want)));
+}
+
+/// Set in the child of [`the_board_is_told_once_that_a_read_was_refused`] to what it
+/// wants: `refused` or `ran`.
+const PRODUCT_NOTE: &str = "COCKPIT_TEST_PRODUCT_NOTE";
+
+/// #1089: once `data::tmux` refused a read, the board's note names the guard and the way
+/// out, once per run; where nothing was refused there is no note.
+#[test]
+fn the_board_is_told_once_that_a_read_was_refused() {
+    if let Some(want) = std::env::var_os(PRODUCT_NOTE) {
+        let read = || cockpit_tui::data::tmux(&["show-option", "-gqv", "@cockpit_agents_glob"]);
+        let _ = (read(), read());
+        let said = [cockpit_tui::data::guard_note(), cockpit_tui::data::guard_note()];
+        let text = "COCKPIT_TEST_TMUX_GUARD: no private tmux in COCKPIT_TMUX (-L or -S); \
+                    reads refused. Set it to 0 to lift";
+        assert_eq!(said, if want == "refused" { [Some(text), None] } else { [None, None] });
+        return;
+    }
+    let s = fake::Scratch::fresh(std::env::temp_dir().join(format!("cockpit-note-{}", std::process::id())));
+    fake::write_exec(&s.0.join("tmux"), "#!/bin/sh\necho \"$*\" >> \"$0.calls\"\nexit 1\n");
+    let me = "the_board_is_told_once_that_a_read_was_refused";
+    let dir = s.0.display().to_string();
+    assert_eq!(product_reads(&s.0, me, &[(PRODUCT_NOTE, "refused")]), 0);
+    assert_eq!(product_reads(&s.0, me, &[(PRODUCT_NOTE, "ran"), ("TMUX_TMPDIR", &dir)]), 2);
 }

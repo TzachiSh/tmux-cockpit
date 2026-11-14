@@ -33,9 +33,23 @@ fn split_tmux_argv(value: Option<&str>) -> Vec<String> {
 pub fn tmux(args: &[&str]) -> Option<String> {
     let argv = tmux_argv();
     if reaches_callers_tmux(&argv) {
+        REFUSED.store(true, std::sync::atomic::Ordering::Relaxed);
         return None;
     }
     tmux_on(&argv, args)
+}
+
+/// Whether `data::tmux` refused a call, and whether [`guard_note`] has said so.
+static REFUSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static TOLD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The line the board shows once a read was refused (#1089), once per run: it reads
+/// like the basket's refusal and names the way out. `None` before a refusal and after
+/// the first time.
+pub fn guard_note() -> Option<&'static str> {
+    use std::sync::atomic::Ordering::Relaxed;
+    let first = REFUSED.load(Relaxed) && !TOLD.swap(true, Relaxed);
+    first.then_some("COCKPIT_TEST_TMUX_GUARD: no private tmux in COCKPIT_TMUX (-L or -S); reads refused. Set it to 0 to lift")
 }
 
 /// Under the basket's test guard (`basket::guarded`, off in a release build run
