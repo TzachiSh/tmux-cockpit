@@ -9,6 +9,7 @@ use cockpit_tui::data::list_panes;
 use fake::write_exec;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
 static ENV: Mutex<()> = Mutex::new(());
@@ -689,27 +690,80 @@ fn a_key_that_is_not_digits_is_dropped() {
     assert!(s.by_pid.is_empty() && s.none.is_empty());
 }
 
+/// What the lookup thread holds back, between `spawn`'s return and the store (#976).
+#[derive(Clone, Copy, PartialEq)]
+enum Hold {
+    Nothing,
+    /// the store, until the test has read the stub's pid twice
+    Store,
+    /// the stub's pid, until the test has read stubpid empty, and then as `Store`
+    EmptyFile,
+}
+
+/// Polls of [`wait_in_flight`] that read a pid, and that read stubpid empty (#976).
+static PID_READS: AtomicUsize = AtomicUsize::new(0);
+static EMPTY_READS: AtomicUsize = AtomicUsize::new(0);
+
+/// On the lookup thread: polls until `done`, or the test's `go` on a red run, for a
+/// bounded count of polls.
+fn hold_until(done: impl Fn() -> bool) {
+    let go = Path::new(&std::env::var("HOME").unwrap()).join("go");
+    for _ in 0..1000 {
+        if done() || go.exists() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+/// Holds the store until the test has read the stub's pid twice while the board held
+/// none. A helper that walks on its first read of a pid walks inside the hold.
+fn hold_the_store(at: Stage, _pid: u32) {
+    if at == Stage::Spawned {
+        let from = PID_READS.load(Ordering::SeqCst);
+        hold_until(|| PID_READS.load(Ordering::SeqCst) >= from + 2);
+    }
+}
+
+/// Holds the stub's pid back until the test has read stubpid empty, then holds the
+/// store as [`hold_the_store`]. A helper that takes an empty read walks inside the hold.
+fn hold_an_empty_stubpid(at: Stage, pid: u32) {
+    if at == Stage::Spawned {
+        let from = EMPTY_READS.load(Ordering::SeqCst);
+        hold_until(|| EMPTY_READS.load(Ordering::SeqCst) > from);
+        let home = PathBuf::from(std::env::var("HOME").unwrap());
+        std::fs::write(home.join("released"), "").unwrap();
+        hold_the_store(at, pid);
+    }
+}
+
 /// The lookup is a child of the board, and the board sits in a pane: a walk of
 /// that pane's tree meets a `claude` and the pane, which runs no agent, turns
 /// into a row until the call ends.
-fn own_pane_stays_no_agent(tag: &str, grandchild: bool, by_ps: bool) {
-    let r = Rig::new(
-        tag,
-        &format!("echo $$ > $HOME/stubpid\nwhile [ ! -f $HOME/go ]; do sleep 0.02; done\n{ONE}"),
-    );
+fn own_pane_stays_no_agent(tag: &str, grandchild: bool, by_ps: bool, hold: Hold) {
+    const GO: &str = "while [ ! -f $HOME/go ]; do sleep 0.02; done\n";
+    let wait = if hold == Hold::EmptyFile {
+        ": > $HOME/stubpid\nwhile [ ! -f $HOME/released ]; do sleep 0.02; done\n"
+    } else {
+        ""
+    };
+    let r = Rig::new(tag, &format!("{wait}echo $$ > $HOME/stubpid\n{GO}{ONE}"));
     let row = ["%2", "w:1", "board", "bash", "-", "-", "-", "-", "/w", "200", "-", "-", "@2"].join("\u{1f}");
     let mut rows = std::fs::read_to_string(r.dir.join("rows")).unwrap();
     rows.push_str(&(row + "\n"));
     std::fs::write(r.dir.join("rows"), rows).unwrap();
     let root = r.dir.join("proc");
     r.proc_dir("200", "bash", "");
+    match hold {
+        Hold::Nothing => {}
+        Hold::Store => set_stage_hook(Some(hold_the_store)),
+        Hold::EmptyFile => set_stage_hook(Some(hold_an_empty_stubpid)),
+    }
     r.sess();
-    let pid = loop {
-        if let Ok(p) = std::fs::read_to_string(r.dir.join("stubpid")) {
-            break p.trim().to_string();
-        }
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    };
+    // `spawn` returns only after the exec, so the stub writes stubpid while the board
+    // may not hold its pid yet, and a walk then meets a child it does not know. And
+    // an empty read, between the stub's truncate and its write, checks nothing (#976).
+    let pid = wait_in_flight().to_string();
     // the stub is the board's child, and it is named claude
     std::fs::write(root.join("200/task/200/children"), &pid).unwrap();
     // the real `claude` forks helpers; one named claude, under the child, counts as the child
@@ -731,6 +785,7 @@ fn own_pane_stays_no_agent(tag: &str, grandchild: bool, by_ps: bool) {
         write_exec(&r.dir.join("bin/ps"), &format!("#!/bin/sh\ncat {}/ps\n", r.dir.display()));
     }
     let ids: Vec<_> = list_panes().unwrap().into_iter().map(|p| p.id).collect();
+    set_stage_hook(None);
     assert_eq!(ids, ["%1"], "the board's own pane showed as an agent");
     std::fs::write(r.dir.join("go"), "").unwrap();
     r.wait_cache();
@@ -738,17 +793,31 @@ fn own_pane_stays_no_agent(tag: &str, grandchild: bool, by_ps: bool) {
 
 #[test]
 fn the_lookup_child_does_not_make_the_boards_own_pane_an_agent() {
-    own_pane_stays_no_agent("selfrow", false, false);
+    own_pane_stays_no_agent("selfrow", false, false, Hold::Nothing);
 }
 
 #[test]
 fn nor_does_a_claude_under_the_lookup_child() {
-    own_pane_stays_no_agent("selfrow2", true, false);
+    own_pane_stays_no_agent("selfrow2", true, false, Hold::Nothing);
 }
 
 #[test]
 fn the_ps_walk_skips_the_lookup_child_too() {
-    own_pane_stays_no_agent("selfrow3", true, true);
+    own_pane_stays_no_agent("selfrow3", true, true, Hold::Nothing);
+}
+
+/// #976: the board stores its child only once `spawn` has returned. Held there, a
+/// walk on the stub's pid alone meets a child the board does not know yet.
+#[test]
+fn the_own_pane_check_waits_for_the_board_to_hold_the_stub() {
+    own_pane_stays_no_agent("selfrow4", false, false, Hold::Store);
+}
+
+/// #976: the stub's `echo` truncates stubpid before it writes. Held empty there, a
+/// helper that takes the empty read walks a tree that is not the stub's.
+#[test]
+fn the_own_pane_check_takes_no_pid_from_an_empty_stubpid() {
+    own_pane_stays_no_agent("selfrow5", false, false, Hold::EmptyFile);
 }
 
 fn seeded_at(r: &Rig, age: u64, session: &str) {
@@ -781,18 +850,31 @@ fn wait_forks(r: &Rig, n: usize) {
 /// count of polls, which a busy scheduler stretches past any window (#564).
 const GONE_BY: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// In a child test process: waits until the stub runs and the board holds its
-/// pid. The stub writes its pid before the board has stored it, and a hangup in
+/// Waits until the stub runs and the board holds its pid, and returns that pid.
+/// The stub writes its pid before the board has stored it, and a hangup in
 /// that gap finds no child to kill: the old tests raced it under load (#564).
-fn wait_in_flight() {
+/// An empty or missing stubpid never counts, even while the board holds none (#976).
+fn wait_in_flight() -> u32 {
     let stub = Path::new(&std::env::var("HOME").unwrap()).join("stubpid");
     let end = std::time::Instant::now() + GONE_BY;
     loop {
-        let pid = std::fs::read_to_string(&stub).unwrap_or_default().trim().parse::<u32>().ok();
-        if pid.is_some() && pid == lookup_pid() {
-            return;
+        let raw = std::fs::read_to_string(&stub).ok();
+        let pid = raw.as_deref().and_then(|s| s.trim().parse::<u32>().ok());
+        if pid.is_some() {
+            PID_READS.fetch_add(1, Ordering::SeqCst);
+        } else if raw.as_deref() == Some("") {
+            EMPTY_READS.fetch_add(1, Ordering::SeqCst);
         }
-        assert!(std::time::Instant::now() < end, "the lookup never started: {pid:?}");
+        if let Some(p) = pid
+            && pid == lookup_pid()
+        {
+            return p;
+        }
+        let board = lookup_pid();
+        assert!(
+            std::time::Instant::now() < end,
+            "the lookup never started: stubpid {pid:?}, board {board:?}"
+        );
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
 }
@@ -969,14 +1051,8 @@ fn a_real_claude_beside_the_lookup_child_keeps_the_pane_an_agent() {
     std::fs::write(r.dir.join("rows"), rows).unwrap();
     r.proc_dir("200", "bash", "");
     r.sess();
-    let pid = loop {
-        if let Ok(p) = std::fs::read_to_string(r.dir.join("stubpid"))
-            && !p.is_empty()
-        {
-            break p.trim().to_string();
-        }
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    };
+    // as in the own-pane check: walk only once the board holds the stub (#976)
+    let pid = wait_in_flight().to_string();
     std::fs::write(r.dir.join("proc/200/task/200/children"), format!("{pid} 777")).unwrap();
     r.proc_dir(&pid, "claude", "");
     r.proc_dir("777", "claude", "");
