@@ -20092,7 +20092,6 @@ mkdir -p "$ACD/stub"
 printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "${0%%/*}/ran"\nexit 0\n' > "$ACD/stub/claude"
 chmod +x "$ACD/stub/claude"
 # The window says which claude it would run, so a row sees the stub is the one reached.
-ac_n=$(ac display -p '#{S:#{W:#{P:x}}}')      # the server's panes before the board's window
 ac new-window -d -t t: -c "$ACD" "PATH=\"$ACD/stub:\$PATH\"; export PATH; \
 command -v claude > $(tq "$ACD/which"); env COCKPIT_TUI_BIN=$ACD/bin \
 XDG_STATE_HOME=$ACD/state COCKPIT_LOG=$ACD/tui.log $DIR/scripts/cockpit-board -p $ACH; \
@@ -20104,13 +20103,15 @@ is "the window's claude is the row's own" "$ACD/stub/claude" "$(cat "$ACD/which"
 # The stub writes its line a moment before or after `done` appears, and a read right at `done`
 # can come first (#1001). A claude started for the resume runs in a pane, by a split or in a
 # window of its own, and that pane closes after the stub's write. So: wait until the server
-# holds the panes it held before the board's window, and no more. The row reads that count
-# too: a wait that ran out means something is still running, and must not pass (#1030).
-until_out "$ac_n" ac display -p '#{S:#{W:#{P:x}}}'
-is "and no claude was started for it" "$ac_n|" \
+# holds its five panes again, an x for each, and no more. The row reads that count too: a
+# wait that ran out means something is still running, and must not pass. The five are
+# written out, not read from the format beforehand: a format that printed nothing would
+# then agree with itself (#1030).
+until_out xxxxx ac display -p '#{S:#{W:#{P:x}}}'
+is "and no claude was started for it" "xxxxx|" \
     "$(ac display -p '#{S:#{W:#{P:x}}}')|$(cat "$ACD/stub/ran" 2>/dev/null)"
 ac kill-server >/dev/null 2>&1
-unset -f ac ac_pane ac_each ac_wd ac_jump ac_deliver; unset ac_n
+unset -f ac ac_pane ac_each ac_wd ac_jump ac_deliver
 
 # The sessions screen: gamma's claude, waiting, is an agent under the entry CLAUDE, so gamma
 # sorts first, the row Enter switches to. Counted as no agent, beta comes first.
