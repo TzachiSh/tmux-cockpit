@@ -76,15 +76,14 @@ cp "${0%/*}/claude" "$d/claude" && : > "$d/reached" || {
 # (#1066): from inside tmux a test's plain tmux reached its server, its rigs'
 # sockets went beside that server, and rigs used the caller's COCKPIT_LOG,
 # XDG_CACHE_HOME and XDG_STATE_HOME where they meant the files under their HOME.
-# The binary gets a socket folder of its own, made before it starts, since tmux
-# puts a socket in /tmp when TMUX_TMPDIR names no folder. It sits where the
-# caller's tmux would put its own folder, a short path: a socket's path fails
-# past 107 bytes, 103 on macOS, whose TMPDIR alone runs near 50.
-t=$(mktemp -d "${TMUX_TMPDIR:-/tmp}/cockpit-tmux.XXXXXX") || {
-    echo "$me: error: no tmux folder, the binary was not started binary=$1" >&2
+# The binary gets a socket folder of its own, mode 700, made before it starts,
+# since tmux puts a socket in /tmp when TMUX_TMPDIR names no folder. It is in
+# /tmp, never in a caller's TMUX_TMPDIR or TMPDIR: a socket's path fails past
+# 107 bytes, 103 on macOS, and those run long. It holds sockets and nothing else.
+t=$(mktemp -d /tmp/ct.XXXXXX) || {
+    echo "$me: error: no tmux folder in /tmp, the binary was not started binary=$1" >&2
     exit 1
 }
-case $t in /*) ;; *) t=$PWD/$t ;; esac
 unset TMUX TMUX_PANE TMUX_COCKPIT_DIR COCKPIT_LOG XDG_CACHE_HOME XDG_STATE_HOME
 TMUX_TMPDIR=$t
 export TMUX_TMPDIR
@@ -107,8 +106,9 @@ elif [ -s "$d/reached" ]; then
     cat "$d/reached" >&2
     [ "$rc" -ne 0 ] || rc=1
 fi
-# Only if empty: a socket left there is a server the binary did not end, and it
-# stays for a look, as `make tui-test-clean` would name it.
+# Only if empty: a socket left there is a server the binary did not end. It is
+# named here, and it and its folder stay for a look. This line runs on every way
+# out but a signal this script does not trap: one it traps waits for the binary.
 rmdir "$t"/tmux-* 2>/dev/null
 rmdir "$t" 2>/dev/null || {
     echo "$me: error: the binary left a tmux socket binary=$1 dir=$t" >&2

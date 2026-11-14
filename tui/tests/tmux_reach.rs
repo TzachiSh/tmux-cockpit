@@ -4,6 +4,8 @@
 //! `fake::checked_tmux` refuses a binary started without them. A binary that
 //! runs tmux and never reaches that check would run unrefused by hand from
 //! inside a tmux session.
+mod fake;
+
 use std::path::{Path, PathBuf};
 
 /// The text of every Rust string literal in `src`, `\n` read as a new line.
@@ -152,4 +154,35 @@ fn the_scan_names_each_way_a_test_runs_tmux_and_no_other() {
         let got = literals(src).into_iter().any(|(at, t)| runs_tmux(src, at, &t));
         assert_eq!(got, want, "{row}: {src}");
     }
+}
+
+/// #1066: the folder the runner makes for this binary in /tmp holds tmux's own
+/// `tmux-<uid>` folder and the sockets in it, and nothing else, read while a rig
+/// server runs there.
+#[test]
+fn the_tmux_folder_holds_sockets_and_nothing_else() {
+    use std::os::unix::fs::FileTypeExt;
+    let dir = fake::checked_tmux();
+    let mut s = fake::Server::new(&format!("cr-{}", std::process::id()));
+    let cwd = std::env::temp_dir();
+    if !s.start(|c| {
+        c.args(["new-session", "-d", "-c"]).arg(&cwd).arg("sleep 30");
+    }) {
+        eprintln!("SKIP: no tmux on PATH");
+        return;
+    }
+    let mut odd = vec![];
+    for top in std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap()) {
+        let name = top.file_name().to_string_lossy().into_owned();
+        if !(name.starts_with("tmux-") && top.file_type().unwrap().is_dir()) {
+            odd.push(name);
+            continue;
+        }
+        for e in std::fs::read_dir(top.path()).unwrap().map(|e| e.unwrap()) {
+            if !e.file_type().unwrap().is_socket() {
+                odd.push(format!("{name}/{}", e.file_name().to_string_lossy()));
+            }
+        }
+    }
+    assert_eq!(odd, Vec::<String>::new(), "in {}", dir.display());
 }

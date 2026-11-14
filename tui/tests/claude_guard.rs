@@ -166,8 +166,6 @@ impl Rig {
     fn command_of(&self, program: &Path) -> Command {
         let mut c = Command::new(program);
         c.env_clear().env("PATH", self.path()).env("TMPDIR", self.0.join("tmp"));
-        // where the runner makes the binary's tmux folder (#1066), as it does the guard's
-        c.env("TMUX_TMPDIR", self.0.join("tmp"));
         c.env("RUNNER", RUNNER).stdin(Stdio::null());
         fake::at_default(&mut c, &SENT);
         c
@@ -614,7 +612,7 @@ fn an_exit_status_that_names_no_deadly_signal_is_passed_on_as_it_is() {
 /// A stand-in that writes its pid to a file beside itself, then waits for a
 /// line on the fifo beside itself, starts `claude` and exits with its first
 /// argument, 0 without one.
-const WAITS: &str = "#!/bin/sh\necho $$ > \"$0.up\"\nread -r _ < \"$0.go\"\n\
+const WAITS: &str = "#!/bin/sh\necho \"$TMUX_TMPDIR\" > \"$0.ct\"\necho $$ > \"$0.up\"\nread -r _ < \"$0.go\"\n\
                      claude late 2>/dev/null\nexit \"${1:-0}\"\n";
 
 /// `signal` sent to the runner alone while its binary runs: how the runner
@@ -743,7 +741,8 @@ fn a_quit_to_the_runner_still_reads_the_log_and_removes_the_folder() {
 
 /// [`WAITS`], and a file beside itself once it has ended: nobody waits for a
 /// binary whose runner was killed.
-const OUTLIVES: &str = "#!/bin/sh\necho $$ > \"$0.up\"\nread -r _ < \"$0.go\"\nclaude late 2>/dev/null\necho x > \"$0.done\"\n";
+const OUTLIVES: &str = "#!/bin/sh\necho \"$TMUX_TMPDIR\" > \"$0.ct\"\necho $$ > \"$0.up\"\nread -r _ < \"$0.go\"\n\
+                        claude late 2>/dev/null\necho x > \"$0.done\"\n";
 
 /// One line into `fifo` for the binary that waits on it. The fifo is opened
 /// without waiting, since a write to a fifo nobody reads would hold the row for
@@ -959,15 +958,16 @@ fn killed_in(r: &Rig, sh: &str, flags: &[&str], shell: &str) -> (usize, usize, S
     // SAFETY: the pid of this row's own child, held and not yet waited for.
     assert_eq!(unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGUSR1) }, 0);
     assert_eq!(ended(child, "the killed runner").status.signal(), Some(libc::SIGUSR1), "{shell}");
-    // the guard's folders; the tmux folder the runner made (#1066) stays beside it
-    let guard = |p: &PathBuf| p.file_name().unwrap().to_string_lossy().starts_with("cockpit-claude-guard.");
-    let all = std::fs::read_dir(r.0.join("tmp")).unwrap().map(|e| e.unwrap().path());
-    let folders: Vec<PathBuf> = all.filter(guard).collect();
+    let folders: Vec<PathBuf> = std::fs::read_dir(r.0.join("tmp")).unwrap().map(|e| e.unwrap().path()).collect();
     if let Err(e) = go.release() {
         end_stand_in(&beside("up"), &exe);
         panic!("{e}");
     }
     appears(&beside("done"));
+    // The runner's tmux folder in /tmp stays too, empty: the same cost (#1066).
+    // This row is its maker, so it removes it.
+    let ct = PathBuf::from(std::fs::read_to_string(beside("ct")).unwrap().trim_end());
+    assert_eq!(std::fs::remove_dir(&ct).map_err(|e| e.kind()), Ok(()), "{shell}: {ct:?}");
     let log = folders
         .first()
         .map(|f| std::fs::read_to_string(f.join("reached")).unwrap_or_default());
@@ -1418,7 +1418,8 @@ fn the_stub_writes_no_log_where_the_runner_made_none() {
 /// A stand-in that says what of tmux it runs with, one `key=value` a line.
 const TMUX_SAYS: &str = "#!/bin/sh\necho \"tmux=${TMUX-unset}\"\necho \"pane=${TMUX_PANE-unset}\"\n\
                          echo \"plugin=${TMUX_COCKPIT_DIR-unset}\"\necho \"tmpdir=${TMUX_TMPDIR-unset}\"\n\
-                         [ -d \"${TMUX_TMPDIR-}\" ] && echo isdir=yes || echo isdir=no\n";
+                         [ -d \"${TMUX_TMPDIR-}\" ] && echo isdir=yes || echo isdir=no\n\
+                         echo \"mode=$(ls -ld \"${TMUX_TMPDIR-}\" 2>/dev/null | cut -c1-10)\"\n";
 
 /// A folder of this row's own on a short path, for a row that starts a tmux
 /// server: a socket's path fails past 107 bytes, and a rig's folder takes about
@@ -1449,10 +1450,11 @@ fn the_binary_gets_none_of_the_callers_tmux_session() {
     assert_eq!((ran.code, ran.left.len()), (Some(0), 0));
 }
 
-/// #1066: a test binary under the runner gets a TMUX_TMPDIR of its own, a folder
-/// made in the caller's TMUX_TMPDIR that is there when it starts and gone after,
-/// a new one for each run. tmux puts a socket in /tmp when the folder
-/// TMUX_TMPDIR names is not there.
+/// #1066: a test binary under the runner gets a TMUX_TMPDIR of its own,
+/// `/tmp/ct.XXXXXX`, mode 700, there when it starts and gone after, a new one for
+/// each run. Never tmux's own `/tmp/tmux-<uid>` nor in it, and never the caller's
+/// TMUX_TMPDIR, which is replaced and gets nothing written to it. tmux puts a
+/// socket in /tmp when the folder TMUX_TMPDIR names is not there.
 #[test]
 fn the_binary_gets_a_tmux_folder_of_its_own_there_before_it_and_gone_after() {
     let r = Rig::new("tmpdir");
@@ -1463,8 +1465,10 @@ fn the_binary_gets_a_tmux_folder_of_its_own_there_before_it_and_gone_after() {
     let (a, b) = (run(), run());
     let folder = |ran: &Ran| PathBuf::from(ran.said("tmpdir"));
     let (fa, fb) = (folder(&a), folder(&b));
-    assert_eq!(fa.parent(), Some(canary.as_path()), "{fa:?}");
-    assert!(fa.file_name().unwrap().to_string_lossy().starts_with("cockpit-tmux."), "{fa:?}");
+    assert_eq!(fa.parent(), Some(Path::new("/tmp")), "{fa:?}");
+    let name = fa.file_name().unwrap().to_string_lossy().into_owned();
+    assert!(name.starts_with("ct.") && name.len() == 9, "{fa:?}");
+    assert_eq!((a.said("mode"), b.said("mode")), ("drwx------", "drwx------"));
     assert_ne!(fa, fb, "two runs shared a folder");
     assert_eq!((a.said("isdir"), b.said("isdir")), ("yes", "yes"));
     let names = std::fs::read_dir(&canary).unwrap().count();
@@ -1531,6 +1535,9 @@ fn a_socket_the_binary_leaves_is_said_and_its_folder_kept() {
         );
         assert_eq!(got, (Some(code), guard + 1, first, Some(&left.as_str())), "{row}: {}", ran.err);
         assert!(folder.join("tmux-0/left").exists(), "{row}: the folder went");
+        // this row made what is in it: the folder the runner named, under /tmp
+        assert!(folder.starts_with("/tmp") && folder.file_name().unwrap().to_string_lossy().starts_with("ct."));
+        std::fs::remove_dir_all(&folder).unwrap();
     }
 }
 
@@ -1544,12 +1551,10 @@ fn a_server_the_binary_left_running_is_said_and_left_alone() {
         return;
     };
     let r = Rig::new("ls");
-    let callers = short("l");
     let body = "#!/bin/sh\ntmux -L c$$ -f /dev/null new-session -d -c \"$TMPDIR\" 'sleep 60' || exit 3\n\
                 echo \"sock=$(tmux -L c$$ display-message -p '#{socket_path}')\"\n";
     let mut c = r.command();
-    c.env("PATH", format!("{}:{}", r.path(), tmux.display()))
-        .env("TMUX_TMPDIR", &callers.0);
+    c.env("PATH", format!("{}:{}", r.path(), tmux.display()));
     let ran = r.ran(c.arg(r.binary(TEST, body)));
     let sock = PathBuf::from(ran.said("sock"));
     let folder = sock.parent().unwrap().parent().unwrap().to_path_buf();
@@ -1560,9 +1565,12 @@ fn a_server_the_binary_left_running_is_said_and_left_alone() {
         r.0.join(TEST).display(),
         folder.display()
     );
+    // the server this row's binary started is gone; its socket file and folders go too
+    let tidy = std::fs::remove_file(&sock).and_then(|()| std::fs::remove_dir(sock.parent().unwrap()));
+    let tidy = tidy.and_then(|()| std::fs::remove_dir(&folder));
     assert_eq!(
-        (ran.code, ran.records(), alive),
-        (Some(1), vec![left.as_str()], true),
+        (ran.code, ran.records(), alive, tidy.is_ok()),
+        (Some(1), vec![left.as_str()], true, true),
         "{}",
         ran.err
     );
@@ -1721,4 +1729,47 @@ fn the_binary_gets_no_callers_state_folder() {
     c.env("XDG_STATE_HOME", r.0.join("callers-state"));
     let ran = r.ran(c.arg(r.binary(TEST, "#!/bin/sh\necho \"state=${XDG_STATE_HOME-unset}\"\n")));
     assert_eq!((ran.code, ran.said("state")), (Some(0), "unset"), "{}", ran.err);
+}
+
+/// #1066: a HUP, INT or TERM sent to the runner alone still removes the binary's
+/// tmux folder: the runner waits for the binary and goes on to its rmdir.
+#[test]
+fn a_signal_to_the_runner_still_removes_the_tmux_folder() {
+    for signal in TO_THE_RUNNER {
+        let r = Rig::new(&format!("ctsig{signal}"));
+        let (status, _, _) = signalled(&r, &mut r.command(), signal, &[]);
+        let ct = std::fs::read_to_string(r.0.join(format!("{TEST}.ct"))).unwrap();
+        let ct = PathBuf::from(ct.trim_end());
+        assert_eq!((status.signal(), ct.exists()), (Some(signal), false), "signal {signal}: {ct:?}");
+    }
+}
+
+/// #1066: where /tmp takes no folder, the runner starts no binary: one line that
+/// says so, and status 1, never a fallback to another folder. /tmp is made
+/// read-only for one child in a user and mount namespace of its own; where this
+/// box allows none, the row says SKIP on the real stderr.
+#[test]
+fn without_a_tmux_folder_in_tmp_the_binary_is_not_started() {
+    use std::io::Write;
+    let r = Rig::new("rotmp");
+    let exe = r.binary(TEST, "#!/bin/sh\n: > \"$0.ran\"\n");
+    let mut c = r.command_of(Path::new("/usr/bin/unshare"));
+    c.args(["-Urm", "sh", "-c", "mount -t tmpfs -o ro tmpfs /tmp || exit 99; exec \"$@\"", "sh"]);
+    let ran = r.ran(c.arg(RUNNER).arg(&exe));
+    if ran.code == Some(99) || !Path::new("/usr/bin/unshare").exists() || ran.err.contains("unshare:") {
+        let row = "without_a_tmux_folder_in_tmp_the_binary_is_not_started";
+        drop(writeln!(
+            std::io::stderr(),
+            "claude_guard {row}: SKIPPED: no user and mount namespace here"
+        ));
+        return;
+    }
+    let said = format!("no tmux folder in /tmp, the binary was not started binary={}", exe.display());
+    let ran_at_all = r.0.join(format!("{TEST}.ran")).exists();
+    assert_eq!(
+        (ran.code, ran.records(), ran_at_all),
+        (Some(1), vec![said.as_str()], false),
+        "{}",
+        ran.err
+    );
 }
