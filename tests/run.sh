@@ -205,7 +205,7 @@ flop_left() {                 # [dir] -> a bad row for each r.* whose call was n
             "a retry with the same argv" "${a%.}, refused and never retried"
     done
     # the run's own tail (no dir): refusals a subshell made, whose count was lost (#195)
-    [ $# -gt 0 ] || { sock_left; beside_left; }
+    [ $# -gt 0 ] || { sock_left; beside_left; tt_left; }
 }
 # A TMPDIR holding a space: an unquoted path in a script the suite writes splits at it, and the
 # write lands on the part before the space, beside the run's scratch (#929). BESIDE is that
@@ -218,6 +218,22 @@ case ${TMPDIR:-} in
     *' '*) [ -d "${TMPDIR%% *}" ] || BESIDE=${TMPDIR%% *}
            : > "$STATE/beside.stamp" ;;
 esac
+# A socket in the suite's own folder that cleanup does not know (#1098): not the suite's
+# server's, and not a name a block put in SOCKS. cleanup kills by those names and removes
+# their files, so a file of another name is a server nobody ends, or one a block killed and
+# left: either way the folder cannot be removed. Looked for only where the suite made the
+# folder. In a caller's own, other runs' sockets may sit beside this run's.
+tt_left() {
+    [ -n "$SUITE_TT" ] || return 0
+    local f n
+    for f in "$SUITE_TT/tmux-$(id -u)"/*; do
+        [ -e "$f" ] || [ -L "$f" ] || continue
+        n=${f##*/}
+        case " $SUITE_SOCK $SOCKS " in *" $n "*) continue ;; esac
+        bad "every socket in the suite's own folder is one cleanup knows (#1098)" \
+            "the suite's and the names in SOCKS" "$n"
+    done
+}
 beside_left() {
     [ -n "$BESIDE" ] && [ "$BESIDE" -nt "$STATE/beside.stamp" ] || return 0
     bad "nothing the suite wrote landed beside its TMPDIR (#929)" "$BESIDE untouched" \
@@ -10648,7 +10664,7 @@ done
 fi
 unset CDN cdo cdrc cds
 
-echo "== the suite's own server is on a socket under TMUX_TMPDIR, in a folder that exists (#1098) =="
+echo "== the suite's own server is on a socket under TMUX_TMPDIR, a folder that exists (#1098) =="
 # With no TMUX_TMPDIR, or one naming a folder that is not there, tmux falls back to
 # /tmp/tmux-<uid>, where the user's own server has its socket. The prelude makes a folder
 # then. Paths are compared resolved: tmux reports the socket's real path.
@@ -10671,7 +10687,7 @@ is "that folder is the suite's own when its caller gave none: /tmp/cs.*, mode 70
 fi
 unset st_u st_p st_d
 
-echo "== a run with no TMUX_TMPDIR puts no socket in /tmp/tmux-<uid> and removes its folder (#1098) =="
+echo "== a run with no TMUX_TMPDIR puts no socket in /tmp/tmux-<uid>; its folder goes (#1098) =="
 # The block above through only.sh, started as a plain `make test` starts the suite: with no
 # TMUX_TMPDIR, then with one naming a folder that is not there, then with a caller's own.
 # CI and the lanes set a private folder, so this is the run that meets the other starts.
@@ -10709,9 +10725,41 @@ is "a caller's own TMUX_TMPDIR is kept, and its server's folder is in it" \
 for sf_s in "$SF"/own/tmux-*/*; do
     [ -S "$sf_s" ] && "$TMUX_REAL" -S "$sf_s" kill-server >/dev/null 2>&1
 done
+# The tail's row, tt_left: this prelude with one block that starts a server on a name it
+# puts in no list. The run must fail on that name and leave its folder, since a server is
+# still on a socket in it; the folder goes once the server is ended by that socket.
+# The block's title line is printed, not written here: only.sh and par.sh cut this file at
+# every line that starts one.
+{ sed '/^echo "== /,$d' "$DIR/tests/run.sh"
+  printf 'echo "%s leak %s"\n' == ==
+  cat <<'SFEOF'
+"$TMUX_REAL" -L "cockpit-stleak-$$" -f /dev/null new-session -d -s l -c "$STATE" \
+    'exec sleep 300' </dev/null >/dev/null 2>&1
+printf '%s\n' "$SUITE_TT" > "$COCKPIT_ST_OUT"
+SFEOF
+} > "$SF/leak.sh"
+sf_o=$(cd "$DIR" && env -u TMUX -u TMUX_TMPDIR ONLY_RUN="$SF/leak.sh" \
+    COCKPIT_ST_OUT="$SF/out" tests/only.sh '^leak' 2>&1 </dev/null); sf_rc=$?
+sf_f=$(cat "$SF/out" 2>/dev/null)
+case $sf_f in
+/tmp/cs.??????)
+    is "a socket no cleanup knows: a failed row naming it, the run says where, the folder stays" \
+       "1 1 1 there" \
+       "$sf_rc $(printf '%s\n' "$sf_o" | grep -c "every socket in the suite's own folder") $(
+          printf '%s\n' "$sf_o" | grep -c "left in its socket folder $sf_f: .*cockpit-stleak-"
+          ) $([ -d "$sf_f" ] && echo there || echo gone)"
+    for sf_s in "$sf_f"/tmux-*/cockpit-stleak-*; do
+        [ -S "$sf_s" ] || continue
+        "$TMUX_REAL" -S "$sf_s" kill-server >/dev/null 2>&1; rm -f "$sf_s"
+    done
+    rmdir "$sf_f/tmux-$(id -u)" "$sf_f" 2>/dev/null
+    is "and with that server ended by its socket, the folder is removed" "gone" \
+       "$([ -e "$sf_f" ] && echo "still there: $(ls -A "$sf_f"/* 2>&1)" || echo gone)" ;;
+*) bad "the leak run reports the folder it made" "/tmp/cs.<6>" "${sf_f:-nothing}: $sf_o" ;;
+esac
 fi
 unset -f sf_ls sf_run
-unset SF sf_s
+unset SF sf_s sf_o sf_rc sf_f
 
 # tests: scripts/tui-fetch
 echo "== cockpit-tui builds install the executable cargo built, not a guessed path (#591) =="
