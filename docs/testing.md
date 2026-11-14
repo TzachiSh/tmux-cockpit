@@ -48,6 +48,17 @@ With no runtime dir to use, such a run ends at its start and says what it needs:
 set `XDG_RUNTIME_DIR` to a folder that exists, can be written to and has no
 blank in its path.
 
+### Running the tui tests
+
+Run them with `make tui-test` from the checkout: on the six targets
+`.cargo/config.toml` names, cargo's runner gives each test binary a tmux socket
+folder of its own and clears your session's variables. With
+`COCKPIT_TEST_CLAUDE_GUARD=0`, on another target (#1090), or with a test binary
+started directly, 26 of the 106 binaries refuse until `TMUX_TMPDIR` names a
+folder, since a rig's socket would otherwise land beside your own tmux server's.
+In `tui/` the refusal's own command runs them:
+`d=$(mktemp -d) && env -u TMUX -u TMUX_PANE -u TMUX_COCKPIT_DIR -u COCKPIT_LOG -u XDG_CACHE_HOME -u XDG_STATE_HOME TMUX_TMPDIR="$d" cargo test`.
+
 ### The tui tests' claude guard
 
 `cargo test` in `tui/` starts every test binary behind a guard against your own
@@ -190,11 +201,14 @@ the cache and state folders resolve under whatever `HOME` the test has: for a
 test that sets no `HOME`, under yours, as on a box that never exported them. No test
 writes these variables itself. The helpers only check: `fake::checked_tmux`
 before any tmux a helper runs, and `fake::checked_state` in each rig that sets
-`HOME`. Started without the runner from a shell that still carries them, a test
-binary is refused in one line that names what is set and gives the command to
-run it with. That command makes a folder with `mktemp -d` for `TMUX_TMPDIR` and
-leaves it behind when the run ends. That happens with `COCKPIT_TEST_CLAUDE_GUARD=0` too, which execs
-the binary as it is and clears nothing, and on a target with no runner key.
+`HOME`. Started without the runner from a shell that still carries them, or
+with no `TMUX_TMPDIR`, a test binary is refused in three lines: what is set or
+unset and what that would do, `make tui-test` and a bare `cargo test` that
+clear it, and the command for that binary alone. The cargo command and the
+binary's each make a folder with `mktemp -d` for `TMUX_TMPDIR` and leave it
+behind when the run ends. That
+happens with `COCKPIT_TEST_CLAUDE_GUARD=0` too, which execs the binary as it is
+and clears nothing, and on a target with no runner key (#1090).
 One write from a test thread stays: `panel_batch.rs` takes `fake::fixed_env`
 for `XDG_CONFIG_HOME`, as #948's binaries do.
 

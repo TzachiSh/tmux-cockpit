@@ -409,17 +409,26 @@ pub fn assert_claude_is_the_rigs(dir: &Path) {
 #[allow(dead_code)]
 const SESSION: [&str; 3] = ["TMUX", "TMUX_PANE", "TMUX_COCKPIT_DIR"];
 
-/// The one line a check refuses with: what is wrong, and how to run this binary
-/// by hand. cargo's runner clears these for a test binary (#1066), and clears
-/// nothing with COCKPIT_TEST_CLAUDE_GUARD=0, so from inside a tmux session a
-/// run with the claude guard lifted meets this too.
+/// What a refusal hands the reader to paste: a folder for TMUX_TMPDIR and what
+/// the runner clears, ahead of the command.
 #[allow(dead_code)]
-fn refusal(what: &str, why: &[String]) -> String {
+const CLEARED: &str = "d=$(mktemp -d) && env -u TMUX -u TMUX_PANE -u TMUX_COCKPIT_DIR -u COCKPIT_LOG \
+                       -u XDG_CACHE_HOME -u XDG_STATE_HOME TMUX_TMPDIR=\"$d\"";
+
+/// The message a check refuses with, three lines: what is set or unset and what
+/// that would do, the gate and a bare cargo run that clear it, and this binary
+/// alone. cargo's runner clears these for a test binary on the six targets
+/// .cargo/config.toml names (#1066), and clears nothing with
+/// COCKPIT_TEST_CLAUDE_GUARD=0 or on another target (#1090), so a run there
+/// meets this from any shell: TMUX_TMPDIR is unset in one outside tmux too.
+#[allow(dead_code)]
+fn refusal(what: &str, why: &[String], risk: &str) -> String {
     let exe = std::env::current_exe().unwrap();
     format!(
-        "{what} refused (#1066): {}. cargo test clears these through tests/claude-guard/runner, \
-         and clears nothing with COCKPIT_TEST_CLAUDE_GUARD=0. By hand: env -u TMUX -u TMUX_PANE \
-         -u TMUX_COCKPIT_DIR -u COCKPIT_LOG -u XDG_CACHE_HOME -u XDG_STATE_HOME TMUX_TMPDIR=\"$(mktemp -d)\" {}",
+        "{what} refused (#1066): {}. {risk}\n\
+         Run make tui-test from the checkout: it clears these on the six targets \
+         .cargo/config.toml names (another: #1090). Or, in tui/: {CLEARED} cargo test\n\
+         This binary alone: {CLEARED} {}",
         why.join(", "),
         exe.display()
     )
@@ -441,12 +450,20 @@ fn still_set(vars: &[&str]) -> Vec<String> {
 #[allow(dead_code)]
 pub fn tmux_refusal() -> Option<String> {
     let mut why = still_set(&SESSION);
-    match std::env::var_os("TMUX_TMPDIR").map(PathBuf::from) {
-        None => why.push("TMUX_TMPDIR not set".into()),
-        Some(f) if !f.is_dir() => why.push(format!("TMUX_TMPDIR {} no folder", f.display())),
-        Some(_) => {}
+    let mut risk = vec![];
+    if !why.is_empty() {
+        risk.push("A plain tmux in a test would reach your own tmux server.");
     }
-    if why.is_empty() { None } else { Some(refusal("tmux", &why)) }
+    let folder = match std::env::var_os("TMUX_TMPDIR").map(PathBuf::from) {
+        None => Some("TMUX_TMPDIR not set".to_string()),
+        Some(f) if !f.is_dir() => Some(format!("TMUX_TMPDIR {} no folder", f.display())),
+        Some(_) => None,
+    };
+    if let Some(f) = folder {
+        why.push(f);
+        risk.push("A rig's tmux socket would land beside your own tmux server's.");
+    }
+    (!why.is_empty()).then(|| refusal("tmux", &why, &risk.join(" ")))
 }
 
 /// For a rig that sets HOME and reaches the product's log, agents cache or state:
@@ -460,7 +477,8 @@ pub fn tmux_refusal() -> Option<String> {
 pub fn checked_state() {
     let why = still_set(&["COCKPIT_LOG", "XDG_CACHE_HOME", "XDG_STATE_HOME"]);
     if !why.is_empty() {
-        panic!("{}", refusal("the caller's state", &why));
+        let risk = "A rig would write your own log, agents cache or state, not the ones under its HOME.";
+        panic!("{}", refusal("the caller's state", &why, risk));
     }
 }
 

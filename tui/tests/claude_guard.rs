@@ -1626,33 +1626,53 @@ fn the_helpers_check_holds_under_the_runner() {
     fake::checked_tmux();
 }
 
+/// The helpers' tmux refusal for `why` and `risk`, word for word as a reader
+/// sees it (#1066): its three lines, the two commands copy-ready.
+fn tmux_refused(why: &str, risk: &str, exe: &Path) -> String {
+    let cleared = "d=$(mktemp -d) && env -u TMUX -u TMUX_PANE -u TMUX_COCKPIT_DIR -u COCKPIT_LOG \
+                   -u XDG_CACHE_HOME -u XDG_STATE_HOME TMUX_TMPDIR=\"$d\"";
+    format!(
+        "tmux refused (#1066): {why}. {risk}\n\
+         Run make tui-test from the checkout: it clears these on the six targets \
+         .cargo/config.toml names (another: #1090). Or, in tui/: {cleared} cargo test\n\
+         This binary alone: {cleared} {}",
+        exe.display()
+    )
+}
+
 /// #1066: a test binary started with no runner between it and a caller's tmux
 /// session, as by hand from a shell inside tmux, is refused by the helpers'
-/// check before any tmux runs, in one line that names what is set and the one
-/// command to run it by hand. Rows: (row, variables set, variables removed, the
+/// check before any tmux runs, in a message that names what is set, what it
+/// would do, and the commands to run it with. Rows: (row, variables set, variables removed, the
 /// reason the line gives).
 #[test]
 fn a_run_that_kept_the_callers_session_is_refused() {
     let gone = std::env::temp_dir().join("no-such-folder-1066");
     let g = gone.display().to_string();
-    type Row<'a> = (&'a str, &'a [(&'a str, &'a str)], &'a [&'a str], String);
+    type Row<'a> = (&'a str, &'a [(&'a str, &'a str)], &'a [&'a str], String, &'a str);
+    let (server, socket) = (
+        "A plain tmux in a test would reach your own tmux server.",
+        "A rig's tmux socket would land beside your own tmux server's.",
+    );
     let rows: [Row; 3] = [
         (
             "the session kept",
             &[("TMUX", "/canary,1,0"), ("TMUX_PANE", "%1"), ("TMUX_COCKPIT_DIR", "/canary")],
             &[],
             "TMUX, TMUX_PANE, TMUX_COCKPIT_DIR set".into(),
+            server,
         ),
         (
             "a folder that is not there",
             &[("TMUX_TMPDIR", &g)],
             &[],
             format!("TMUX_TMPDIR {g} no folder"),
+            socket,
         ),
-        ("no folder at all", &[], &["TMUX_TMPDIR"], "TMUX_TMPDIR not set".into()),
+        ("no folder at all", &[], &["TMUX_TMPDIR"], "TMUX_TMPDIR not set".into(), socket),
     ];
     let exe = std::env::current_exe().unwrap();
-    for (row, set, unset, why) in rows {
+    for (row, set, unset, why, risk) in rows {
         let mut c = Command::new(&exe);
         c.args(["--exact", "the_helpers_check_holds_under_the_runner"])
             .envs(set.iter().copied());
@@ -1660,15 +1680,26 @@ fn a_run_that_kept_the_callers_session_is_refused() {
             c.env_remove(v);
         }
         let out = c.stdin(Stdio::null()).output().unwrap();
-        let said = format!(
-            "tmux refused (#1066): {why}. cargo test clears these through tests/claude-guard/runner, \
-             and clears nothing with COCKPIT_TEST_CLAUDE_GUARD=0. By hand: env -u TMUX -u TMUX_PANE \
-             -u TMUX_COCKPIT_DIR -u COCKPIT_LOG -u XDG_CACHE_HOME -u XDG_STATE_HOME TMUX_TMPDIR=\"$(mktemp -d)\" {}",
-            exe.display()
-        );
+        let said = tmux_refused(&why, risk, &exe);
         let err = String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr);
         assert_eq!((out.status.code(), err.contains(&said)), (Some(101), true), "{row}: {err}");
     }
+}
+
+/// #1066: the refusal's command for this binary alone runs it, pasted as it
+/// reads into sh from a shell that kept its session: the check it refused passes.
+#[test]
+fn the_refusals_command_for_the_binary_runs_it() {
+    let test = "the_helpers_check_holds_under_the_runner";
+    let (code, said) = fake::run_by_hand(test, &[("TMUX", "/canary,1,0")]);
+    let line = said.lines().find_map(|l| l.strip_prefix("This binary alone: "));
+    let line = line.unwrap_or_else(|| panic!("no command in {said}"));
+    let tmp = Scratch::fresh(std::env::temp_dir().join(format!("cockpit-pasted-{}", std::process::id())));
+    let mut c = Command::new("/bin/sh");
+    c.arg("-c").arg(format!("{line} --exact {test}")).env("TMUX", "/canary,1,0");
+    let out = c.env("TMPDIR", &tmp.0).stdin(Stdio::null()).output().unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!((code, out.status.code()), (Some(101), Some(0)), "{line}: {err}");
 }
 
 /// #1066: with the claude guard lifted the runner execs the binary as it was
@@ -1684,12 +1715,7 @@ fn with_the_claude_guard_lifted_a_kept_session_is_refused() {
         .env("TMUX", "/canary,1,0")
         .env_remove("TMUX_PANE");
     let out = c.env_remove("TMUX_COCKPIT_DIR").stdin(Stdio::null()).output().unwrap();
-    let said = format!(
-        "tmux refused (#1066): TMUX set. cargo test clears these through tests/claude-guard/runner, \
-         and clears nothing with COCKPIT_TEST_CLAUDE_GUARD=0. By hand: env -u TMUX -u TMUX_PANE \
-         -u TMUX_COCKPIT_DIR -u COCKPIT_LOG -u XDG_CACHE_HOME -u XDG_STATE_HOME TMUX_TMPDIR=\"$(mktemp -d)\" {}",
-        exe.display()
-    );
+    let said = tmux_refused("TMUX set", "A plain tmux in a test would reach your own tmux server.", &exe);
     let err = String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr);
     assert_eq!((out.status.code(), err.contains(&said)), (Some(101), true), "{err}");
 }
