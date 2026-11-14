@@ -631,7 +631,7 @@ fn an_answer_notes_the_files_read_from_the_repo() {
 }
 
 /// #1066: this binary reads tmux through the product's plain `tmux`
-/// (`data.rs:755`). Under the runner that finds no server; started by
+/// (`AGENT_GLOB` in `data.rs`). Under the runner that finds no server; started by
 /// hand from inside a tmux session it would read the caller's, so it is refused.
 #[test]
 fn the_binary_runs_with_no_tmux_session_of_the_callers() {

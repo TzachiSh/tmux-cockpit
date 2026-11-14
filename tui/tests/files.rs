@@ -691,7 +691,7 @@ fn usage_names_the_files_screen() {
 }
 
 /// #1066: this binary reads tmux through the product's plain `tmux`
-/// (`data.rs:755`, `theme.rs:84`). Under the runner that finds no server; started by
+/// (`AGENT_GLOB` in `data.rs`, `Theme::load`). Under the runner that finds no server; started by
 /// hand from inside a tmux session it would read the caller's, so it is refused.
 #[test]
 fn the_binary_runs_with_no_tmux_session_of_the_callers() {
