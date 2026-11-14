@@ -18173,21 +18173,30 @@ unset -f nb_run nb_no; unset NB nb_rt nb_rt2 nb_ss
 # tests: README.md examples/tmux.conf examples/full.tmux.conf docs/install.md docs/status-bar.md cockpit.tmux
 echo "== the install line loads the plugin whatever the path to HOME holds (#1043) =="
 # The line was `run-shell ~/.tmux/plugins/tmux-cockpit/cockpit.tmux`. tmux expanded the ~ and
-# handed the path to sh bare: with a space in HOME's path sh split it, nothing loaded and
-# tmux said nothing, and with a $( ) in it sh ran what was inside. In single quotes tmux
-# hands the ~ on as it is and sh expands it, unsplit and unread. Six places give the line,
-# cockpit.tmux's own first comment among them, and here each must read the same; then both example configs are sourced on a server whose
-# HOME holds a blank, and one whose HOME holds a command to run.
+# handed the path to sh bare: with a space in HOME's path sh split it and nothing loaded
+# (tmux says so only on a reload, "returned 127"), and with a $( ) in it sh ran what was
+# inside. In single quotes tmux hands the ~ on as it is and sh expands it, unsplit and
+# unread. Six places give the line, cockpit.tmux's own first comment among them. Each must
+# hold it, and no page, example or comment may load cockpit.tmux in any other form but the
+# two the docs give. Then both example configs are sourced on a server whose HOME holds a
+# blank, and one whose HOME holds a command to run.
 IL="run-shell '~/.tmux/plugins/tmux-cockpit/cockpit.tmux'"
 il_n=""
-for il_f in README.md examples/tmux.conf examples/full.tmux.conf docs/install.md docs/status-bar.md; do
-    il_n="$il_n$(grep -cxF -- "$IL" "$DIR/$il_f")$(
-        grep -c '^run-shell ~/' "$DIR/$il_f") "
+for il_f in README.md examples/tmux.conf examples/full.tmux.conf docs/install.md \
+        docs/status-bar.md; do
+    grep -qxF -- "$IL" "$DIR/$il_f" || il_n="$il_n$il_f "
 done
-il_n="$il_n$(grep -cxF -- "# tmux-cockpit. Load with:  $IL" "$DIR/cockpit.tmux")$(
-    grep -c 'run-shell ~/' "$DIR/cockpit.tmux")"
-is "the README, both examples, both docs pages and cockpit.tmux give the one line, none the bare" \
-   "10 10 10 10 10 10" "$il_n"
+grep -qxF -- "# tmux-cockpit. Load with:  $IL" "$DIR/cockpit.tmux" || il_n="${il_n}cockpit.tmux "
+is "the README, both examples, both docs pages and cockpit.tmux each give the install line" \
+   "" "$il_n"
+# Any spelling: `run` for `run-shell`, an indent, double quotes, another page. The two forms
+# the docs give are the line above and the one for a plugin folder with a space.
+is "and nothing there loads cockpit.tmux in another form: file:line of each that does" "" \
+   "$(cd "$DIR" && grep -nE 'run(-shell)?[[:space:]]+[^[:space:]]*cockpit\.tmux' \
+        ./*.md docs/*.md examples/* cockpit.tmux 2>/dev/null |
+      grep -vF -e "'~/.tmux/plugins/tmux-cockpit/cockpit.tmux'" \
+               -e "'\"\$HOME/my plugins/tmux-cockpit/cockpit.tmux\"'" |
+      cut -d: -f1,2 | tr '\n' ' ')"
 if need_tmux "the install line under a HOME with a blank"; then :; else
 ILD=$(mktmpd); mkdir -p "$ILD/wd"
 # A server each, by number: the rows call this in a subshell, so the names are registered

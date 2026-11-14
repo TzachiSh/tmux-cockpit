@@ -20,8 +20,8 @@ set, and before tpm.
 Keep the single quotes. tmux hands what is between them to `sh` as it is, and
 `sh` turns `~` into your home directory without splitting it, so the line also
 loads when the path to your home holds a space. Without the quotes tmux expands
-`~` itself and `sh` splits the result at the space: nothing loads, and tmux
-says nothing.
+`~` itself and `sh` splits the result at the space: nothing loads. tmux says
+nothing when it starts, and `'<path>' returned 127` when you reload the config.
 
 If the plugin sits somewhere else and that path holds a space, put the path in
 double quotes inside the single ones, with `$HOME` in place of `~` (`sh` leaves
