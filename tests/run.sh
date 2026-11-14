@@ -8979,7 +8979,7 @@ cp -r "$DIR"/scripts/. "$RB3D/p/scripts/"
 printf '#!/bin/sh\nprintf %%s "$*" > %s; sleep 30\n' "$(tq "$RB3D/args")" > "$RB3D/p/scripts/cockpit-board"
 chmod +x "$RB3D/p/scripts/cockpit-board"
 "$TMUX_REAL" -L "$RB3" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
-"$TMUX_REAL" -L "$RB3" run-shell "$RB3D/p/cockpit.tmux" >/dev/null 2>&1
+"$TMUX_REAL" -L "$RB3" run-shell "$(tq "$RB3D/p/cockpit.tmux")" >/dev/null 2>&1
 RB3S=$("$TMUX_REAL" -L "$RB3" list-panes -t t:0 -F '#{pane_id}')
 "$TMUX_REAL" -L "$RB3O" -f /dev/null new-session -d -s o -x 100 -y 30 \
     "TERM=xterm-256color exec $TMUX_REAL -L $RB3 attach -t t" >/dev/null 2>&1
@@ -10524,7 +10524,7 @@ B="cockpit-bwz-$$"; SOCKS="$SOCKS $B"; bshim "$BD/s1" "$B" ""
 # -u: the server's environment is what cockpit.tmux reads, and this copy has no binary.
 env -u COCKPIT_TUI_BIN PATH="$BD/s1:$PATH" "$TMUX_REAL" -L "$B" -f /dev/null new-session -d -s t \
     'exec -a claude sleep 300' >/dev/null 2>&1
-"$TMUX_REAL" -L "$B" run-shell "$BD/p/cockpit.tmux" >/dev/null 2>&1; bloaded "$B"
+"$TMUX_REAL" -L "$B" run-shell "$(tq "$BD/p/cockpit.tmux")" >/dev/null 2>&1; bloaded "$B"
 bw=$(bkey "$B" w)
 # This copy has no binary on purpose: a broken install still binds the key,
 # and the wrapper says so at press time.
@@ -10596,7 +10596,7 @@ bver() {                      # <version> -> the load's cockpit-tui message, if 
     printf '#!/bin/sh\necho "cockpit-tui %s"\n' "$1" > "$BD/vtui"; chmod +x "$BD/vtui"
     COCKPIT_TUI_BIN="$BD/vtui" PATH="$BD/s7:$PATH" "$TMUX_REAL" -L "$b" -f /dev/null new-session \
         -d -s t 'sleep 300' >/dev/null 2>&1
-    "$TMUX_REAL" -L "$b" run-shell "$BD/p/cockpit.tmux" >/dev/null 2>&1; bloaded "$b"
+    "$TMUX_REAL" -L "$b" run-shell "$(tq "$BD/p/cockpit.tmux")" >/dev/null 2>&1; bloaded "$b"
     grep 'display-message tmux-cockpit: cockpit-tui' "$BD/argv" 2>/dev/null
     "$TMUX_REAL" -L "$b" kill-server >/dev/null 2>&1
 }
@@ -10618,7 +10618,7 @@ B2="cockpit-bw2-$$"; SOCKS="$SOCKS $B2"; bshim "$BD/s2" "$B2" ""
 PATH="$BD/s2:$PATH" "$TMUX_REAL" -L "$B2" -f /dev/null new-session -d -s t \
     'exec -a claude sleep 300' >/dev/null 2>&1
 "$TMUX_REAL" -L "$B2" set -g @cockpit_board_key off >/dev/null 2>&1
-"$TMUX_REAL" -L "$B2" run-shell "$BD/p/cockpit.tmux" >/dev/null 2>&1; bloaded "$B2"
+"$TMUX_REAL" -L "$B2" run-shell "$(tq "$BD/p/cockpit.tmux")" >/dev/null 2>&1; bloaded "$B2"
 loaded_on "$B2" "@cockpit_board_key off leaves w to stock tmux" &&
     case "$(bkey "$B2" w)" in
         *cockpit-board*) bad "@cockpit_board_key off leaves w to stock tmux" \
@@ -10638,7 +10638,7 @@ PATH="$BD/s3:$PATH" "$TMUX_REAL" -L "$B3" -f /dev/null new-session -d -s t \
     'exec -a claude sleep 300' >/dev/null 2>&1
 "$TMUX_REAL" -L "$B3" set -g @cockpit_popup_height 44% >/dev/null 2>&1
 "$TMUX_REAL" -L "$B3" set -g @cockpit_tui_fetch on >/dev/null 2>&1
-"$TMUX_REAL" -L "$B3" run-shell "$BD/p/cockpit.tmux" >/dev/null 2>&1; bloaded "$B3"
+"$TMUX_REAL" -L "$B3" run-shell "$(tq "$BD/p/cockpit.tmux")" >/dev/null 2>&1; bloaded "$B3"
 case "$(bkey "$B3" w)" in *'"44%"'*) ok "a set @cockpit_popup_height reaches the board too" ;;
     *) bad "a set @cockpit_popup_height reaches the board too" "-h 44%" "$(bkey "$B3" w)" ;;
 esac
@@ -10658,7 +10658,7 @@ B6="cockpit-bw6-$$"; SOCKS="$SOCKS $B6"; bshim "$BD/s6" "$B6" ""
 PATH="$BD/s6:$PATH" "$TMUX_REAL" -L "$B6" -f /dev/null new-session -d -s t \
     'exec -a claude sleep 300' >/dev/null 2>&1
 "$TMUX_REAL" -L "$B6" set -g @cockpit_board_window on >/dev/null 2>&1
-"$TMUX_REAL" -L "$B6" run-shell "$BD/p/cockpit.tmux" >/dev/null 2>&1; bloaded "$B6"
+"$TMUX_REAL" -L "$B6" run-shell "$(tq "$BD/p/cockpit.tmux")" >/dev/null 2>&1; bloaded "$B6"
 case "$(bkey "$B6" w)" in
     *new-window*cockpit-board*) ok "@cockpit_board_window on parks the board in a window" ;;
     *) bad "@cockpit_board_window on parks the board in a window" \
@@ -10675,7 +10675,7 @@ esac
 B4="cockpit-bw4-$$"; SOCKS="$SOCKS $B4"; bshim "$BD/s4" "$B4" 3.7; rm -f "$BD/argv"
 PATH="$BD/s4:$PATH" "$TMUX_REAL" -L "$B4" -f /dev/null new-session -d -s t \
     'exec -a claude sleep 300' >/dev/null 2>&1
-"$TMUX_REAL" -L "$B4" run-shell "$BD/p/cockpit.tmux" >/dev/null 2>&1
+"$TMUX_REAL" -L "$B4" run-shell "$(tq "$BD/p/cockpit.tmux")" >/dev/null 2>&1
 is "tmux 3.7 binds nothing" "" "$(grep -c 'bind-key' "$BD/argv" 2>/dev/null | grep -v '^0$')"
 case "$(cat "$BD/argv" 2>/dev/null)" in *'tmux-cockpit needs tmux 3.8 or newer (found 3.7)'*)
         ok "and says which tmux it needs" ;;
@@ -10686,7 +10686,7 @@ esac
 # is older than 3.7 (#545). The same server, a new answer to -V each load.
 for r in next-3.7:refuses v3.7:refuses next-3.8:loads next-3.9:loads master:loads 3.8:loads; do
     tv=${r%:*}; bshim "$BD/s4" "$B4" "$tv"; rm -f "$BD/argv"
-    "$TMUX_REAL" -L "$B4" run-shell "$BD/p/cockpit.tmux" >/dev/null 2>&1
+    "$TMUX_REAL" -L "$B4" run-shell "$(tq "$BD/p/cockpit.tmux")" >/dev/null 2>&1
     nm=$(grep -c 'needs tmux 3.8 or newer' "$BD/argv" 2>/dev/null)
     nb=$(grep -c bind-key "$BD/argv" 2>/dev/null)
     case "${nm:-0} ${nb:-0}" in
