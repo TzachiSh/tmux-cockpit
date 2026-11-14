@@ -257,6 +257,9 @@ fn product_reads(s: &Path, set: &[(&str, &str)]) -> usize {
     calls
 }
 
+/// A case of the row below: its name, what its child has set, and the calls it wants.
+type Case<'a> = (&'a str, &'a [(&'a str, &'a str)], usize);
+
 /// #1089: under test the product's own tmux call refuses a plain `tmux` that would reach the
 /// caller's server, by TMUX or as the default socket in /tmp, and reads it as no value. It
 /// still runs the runner's case, a `-L` server, a stub, and any tmux with the guard lifted.
@@ -273,7 +276,7 @@ fn the_product_refuses_a_plain_tmux_bound_for_the_callers_server() {
         fake::write_exec(&s.0.join(name), "#!/bin/sh\necho \"$*\" >> \"$0.calls\"\nexit 1\n");
     }
     let (dir, none) = (s.0.display().to_string(), s.0.join("none").display().to_string());
-    let cases: [(&str, &[(&str, &str)], usize); 7] = [
+    let cases: [Case; 7] = [
         ("the runner's: TMUX unset, a TMUX_TMPDIR folder", &[("TMUX_TMPDIR", &dir)], 1),
         ("no TMUX_TMPDIR", &[], 0),
         ("a TMUX_TMPDIR that is no folder", &[("TMUX_TMPDIR", &none)], 0),
