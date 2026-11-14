@@ -44,6 +44,21 @@ when it ends, also on a FATAL and on HUP, INT or TERM. A run ended by KILL leave
 with `flop/tmux` inside. Nothing sweeps it, and it is safe to remove once no
 run is going.
 
+The suite drops what its caller's environment could hand to a script under test:
+`XDG_STATE_HOME`, `XDG_CONFIG_HOME`, `XDG_BIN_HOME`, `XDG_CACHE_HOME`,
+`XDG_DATA_HOME`, `COCKPIT_LOG`, `VISUAL`, `EDITOR`, and the switches
+`COCKPIT_READONLY`, `COCKPIT_PANEL_NOTE`, `COCKPIT_REVIEW_BASE`,
+`COCKPIT_PROC_DIR`, `COCKPIT_POLL_KEY`, `REVDIFF_CONFIG`, `REVDIFF_EXCLUDE` and
+`CLAUDE_CODE_SESSION_KIND` (#1078). A block that needs one sets it itself.
+Before that fix a run from a shell that exported them wrote there. If you ran
+the suite that way, you may find three symlinks in your `XDG_BIN_HOME`, `tm`,
+`tmux-branch` and `tmux-open-path`, pointing into the checkout you tested (your
+own install's links point into your plugin folder and are not these), a file
+under `$XDG_CACHE_HOME/tmux-cockpit/panel/prompts/`, and lines from test boards
+in the file `COCKPIT_LOG` names. All three are safe to remove. A run without
+those variables exported left nothing: everything went under the suite's own
+`HOME`, which it deletes.
+
 With no runtime dir to use, such a run ends at its start and says what it needs:
 set `XDG_RUNTIME_DIR` to a folder that exists, can be written to and has no
 blank in its path.
