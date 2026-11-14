@@ -18,10 +18,9 @@ Nothing reads these schemas at run time. The Rust side is `tui/src/store.rs`, a
 ## Rules
 
 - **`schema_version`** is required in every payload and is an integer `const`
-  in its schema. A breaking change (a field removed, renamed, narrowed or made
-  required) bumps it. A new optional field does not: `additionalProperties` is
-  `false`, so an old reader refuses it, and that is a breaking change too.
-  Bump.
+  in its schema. Any change to the fields bumps it: one removed, renamed,
+  narrowed or made required, and a new optional one too, since
+  `additionalProperties` is `false` and an old reader refuses it.
 - **Privacy:** shared status holds only ids, states and timestamps. No titles,
   no subjects, no paths and no prompt content. Words an agent wants to share go
   in a private file, and the record carries a `*_ref` to it.
