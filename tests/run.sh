@@ -4642,9 +4642,10 @@ dm_down 4
 is "and no message ran a #( from a name or a value" "" \
    "$(find "$DM" \( -name pwned -o -name pmode \) | tr '\n' ' ')"
 
-# The scan: a display-message in cockpit.tmux or scripts/ that shows a variable or a $( )
-# goes through dmsg. A \-continued line is joined first; a -p read is not a message.
-# Allowed, each by a fixed piece of its line:
+# The scan: each display-message call in cockpit.tmux or scripts/ that shows a variable or
+# a $( ) goes through dmsg. A \-continued line is joined first, then split at every
+# display-message, so each call is judged on its own text: a -p before its first quote is
+# a read, not a message. Allowed, each only when that call starts with its fixed text:
 #   cockpit.tmux, the version check: it runs on a tmux below the floor, where -l (3.4)
 #     may not exist, and shows only that tmux's own -V output.
 #   fmt.sh, dmsg itself.
@@ -4657,25 +4658,59 @@ dm_scan() {                   # <file...> -> file:line of each display-message n
         /\\$/ { buf = buf substr($0, 1, length($0) - 1) " "; next }
         { l = buf $0; buf = "" }
         l ~ /^[ \t]*#/ || l !~ /display-message/ { next }
-        l ~ /display-message[^|;]*[ \t]-p([ \t]|$)/ { next }
-        index(l, "needs tmux 3.8 or newer (found $tmux_version)") { next }
-        index(l, "tmux display-message \"${@:1:$#-1}\" -l") { next }
-        index(l, "display-message -d 0 '\''$notice_") { next }
-        { t = l; sub(/^.*display-message/, "", t) }
-        # \173 is an open brace, written so: only.sh and par.sh hoist this function by
-        # counting its braces, and the count must close with it.
-        t ~ /(^|[^\\])\$[A-Za-z_\173(@*0-9#!?]/ { print FILENAME ":" start }
+        {
+            n = split(l, seg, /display-message/)
+            for (i = 2; i <= n; i++) {
+                c = seg[i]
+                if (c ~ /^[^"'\''$]*[ \t]-p([ \t]|$)/) continue
+                if (index(c, " \"tmux-cockpit needs tmux 3.8 or newer (found $tmux_version)") == 1)
+                    continue
+                if (index(c, " \"${@:1:$#-1}\" -l ") == 1) continue
+                if (index(c, " -d 0 '\''$notice_") == 1) continue
+                # \173 is an open brace, written so: only.sh and par.sh hoist this function
+                # by counting its braces, and the count must close with it (#1103).
+                if (c ~ /(^|[^\\])\$[A-Za-z_\173(@*0-9#!?]/) { print FILENAME ":" start; break }
+            }
+        }
     ' "$@"
 }
 mapfile -t dm_files < <(cd "$DIR" && find scripts -type f | sort)
 is "every display-message of a variable in cockpit.tmux and scripts/ goes through dmsg" "" \
    "$(cd "$DIR" && dm_scan cockpit.tmux "${dm_files[@]}" | tr '\n' ' ')"
-printf 'x() {\n    tmux display-message "mode [$m]"\n    tmux display-message \\\n' \
-    > "$DM/plant"
-printf '        "$(fesc "$y")"\n    dmsg "$z"\n    tmux display-message -p "$w"\n}\n' \
-    >> "$DM/plant"
-is "and the scan names a raw one and a fesc'd one, not dmsg or a -p read" \
-   "$DM/plant:2 $DM/plant:3 " "$(dm_scan "$DM/plant" | tr '\n' ' ')"
+# Planted, one case a file, each named by the file it is in.
+mkdir -p "$DM/plant"
+cat > "$DM/plant/raw" <<'EOF'
+    tmux display-message "mode [$m]"
+EOF
+cat > "$DM/plant/fesc" <<'EOF'
+    tmux display-message \
+        "$(fesc "$y")"
+EOF
+cat > "$DM/plant/read-then-raw" <<'EOF'
+    p=$(tmux display-message -p '#{pane_id}'); tmux display-message "$p" 2>/dev/null
+EOF
+cat > "$DM/plant/raw-then-constant" <<'EOF'
+    tmux display-message "$client" \; display-message "done" 2>/dev/null
+EOF
+cat > "$DM/plant/notice-then-raw" <<'EOF'
+    "delete-buffer -b $b ; display-message -d 0 '$notice_queue' ; display-message '$b'"
+EOF
+cat > "$DM/plant/version-then-raw" <<'EOF'
+    tmux display-message "tmux-cockpit needs tmux 3.8 or newer (found $tmux_version)"; \
+    tmux display-message "$DIR"
+EOF
+cat > "$DM/plant/allowed" <<'EOF'
+    dmsg "$z"
+    tmux display-message -p "$w"
+    tmux display-message -d 0 "fixed text"
+    "delete-buffer -b $b ; display-message -d 0 '$notice_queue'"
+    tmux display-message "tmux-cockpit needs tmux 3.8 or newer (found $tmux_version); x"
+EOF
+for dm_f in raw fesc read-then-raw raw-then-constant notice-then-raw version-then-raw; do
+    is "the scan names a planted [$dm_f]" "$DM/plant/$dm_f:1" "$(dm_scan "$DM/plant/$dm_f")"
+done
+is "and names nothing in dmsg, a -p read, a fixed text or the two exempt calls alone" "" \
+   "$(dm_scan "$DM/plant/allowed")"
 unset -f dm_up dm_drawn dm_down dm_tmux dm_scan
 unset DM dm_n dm_f dm_p dm_d dm_k dm_names dm_files
 fi
