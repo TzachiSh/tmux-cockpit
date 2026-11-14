@@ -124,8 +124,8 @@ under bash alike: a later start is still refused, and not reported. That folder
 is the cost. Nothing sweeps it, and `make tui-test-clean` names it.
 
 A shell cannot trap a signal that was ignored when it started. A suite started
-with `&` from a script ignores INT, one under nohup ignores HUP, and the runner
-then ignores that signal as its binary does: the log is still read, the folder
+with `&` from a script ignores INT and QUIT, one under nohup ignores HUP, and
+the runner then ignores that signal as its binary does: the log is still read, the folder
 removed, and the runner ends with the binary's status. The rows of
 `claude_guard.rs` start the runner with every signal they send at its default
 and unblocked, so they hold however the suite was started (#1044).

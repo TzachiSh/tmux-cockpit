@@ -87,8 +87,8 @@ fn ended(mut child: std::process::Child, what: &str) -> std::process::Output {
 /// The signals the rows send to the runner or have a stand-in send itself.
 /// A process starts with its parent's ignored signals and signal mask, and a
 /// shell cannot trap a signal ignored when it started: a suite started with
-/// `&` from a script ignores INT, one under nohup HUP, and bash keeps a mask
-/// that dash clears. KILL can be neither ignored nor blocked.
+/// `&` from a script ignores INT and QUIT, one under nohup HUP, and bash
+/// keeps a mask that dash clears. KILL can be neither ignored nor blocked.
 const SENT: [libc::c_int; 7] = [
     libc::SIGHUP,
     libc::SIGINT,
