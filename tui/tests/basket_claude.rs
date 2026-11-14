@@ -77,7 +77,8 @@ fn claude_and_its_version_title_read_at_mentions_and_nothing_else_does() {
         return;
     }
     s.tmux(&["set-option", "-g", "@cockpit_agents_glob", "|claude|codex|aider|gemini|"]);
-    // SAFETY: the only test in this binary; nothing else reads the env meanwhile.
+    // SAFETY: the one test of this binary that writes the env; the others read it only
+    // in their spawns, which std orders with this write (fake::rows_pass_handed).
     unsafe { std::env::set_var("COCKPIT_TMUX", format!("tmux -L {}", s.sock)) };
     let stale = s.pane("fish");
     // @panestate outlives the claude that set it: on a shell it is no claude
@@ -121,4 +122,15 @@ fn claude_and_its_version_title_read_at_mentions_and_nothing_else_does() {
         }
     }
     assert!(!basket::is_claude("%99999"), "a pane that is not there");
+}
+
+/// #1061, #1066: this binary's rig row, started again with TERM and HUP ignored and blocked, as a
+/// suite under nohup or with them blocked hands them down: the rig's server, told to
+/// go by a TERM it sends itself, is gone afterwards with its panes.
+#[test]
+#[cfg(target_os = "linux")]
+fn the_rig_rows_leave_no_server_handed_a_blocked_term_and_hup() {
+    let rows = ["claude_and_its_version_title_read_at_mentions_and_nothing_else_does"];
+    let pid = fake::rows_pass_handed(&rows, &[libc::SIGTERM, libc::SIGHUP]);
+    fake::assert_no_server_left(pid);
 }

@@ -52,7 +52,8 @@ fn d_and_shift_d_write_the_basket_before_the_list_shows_it() {
         eprintln!("SKIP: no tmux");
         return;
     }
-    // SAFETY: the only test in this binary; nothing else reads the env meanwhile.
+    // SAFETY: the one test of this binary that writes the env; the others read it only
+    // in their spawns, which std orders with this write (fake::rows_pass_handed).
     unsafe { std::env::set_var("COCKPIT_TMUX", format!("tmux -L {}", s.sock)) };
     let pane = s.tmux(&["display-message", "-p", "#{pane_id}"]);
     let refs: Vec<Ref> = ["a.rs", "b.rs", "c.rs"]
@@ -80,4 +81,15 @@ fn d_and_shift_d_write_the_basket_before_the_list_shows_it() {
     key(&mut a, KeyCode::Char('D'), KeyModifiers::SHIFT);
     assert!(basket::read(&pane).unwrap().is_empty() && a.basket.is_empty(), "D empties it");
     assert_eq!(s.tmux(&["show-options", "-pqv", "-t", &pane, basket::OPTION]), "", "unset");
+}
+
+/// #1061, #1066: this binary's rig row, started again with TERM and HUP ignored and blocked, as a
+/// suite under nohup or with them blocked hands them down: the rig's server, told to
+/// go by a TERM it sends itself, is gone afterwards with its panes.
+#[test]
+#[cfg(target_os = "linux")]
+fn the_rig_rows_leave_no_server_handed_a_blocked_term_and_hup() {
+    let rows = ["d_and_shift_d_write_the_basket_before_the_list_shows_it"];
+    let pid = fake::rows_pass_handed(&rows, &[libc::SIGTERM, libc::SIGHUP]);
+    fake::assert_no_server_left(pid);
 }

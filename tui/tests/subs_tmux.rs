@@ -63,8 +63,8 @@ fn the_hook_options_reach_the_pane_through_the_format() {
     // found by PATH. The rig's own answers it, the one `rig_path` writes, which counts
     // its starts beside itself. `tmux` still comes from the rest of PATH (#972).
     let path = fake::rig_path(&dir.join("bin"));
-    // SAFETY: the one test of this binary that writes the env. The other reads it only
-    // in its spawn, which std orders with these writes (fake::run_by_hand).
+    // SAFETY: the one test of this binary that writes the env. The others read it only
+    // in their spawns, which std orders with these writes (fake::run_by_hand).
     unsafe {
         std::env::set_var("PATH", path);
         std::env::set_var("COCKPIT_TMUX", format!("tmux -L {}", s.sock));
@@ -111,4 +111,15 @@ fn a_kept_state_folder_is_refused() {
     let (code, said) = fake::run_by_hand("the_hook_options_reach_the_pane_through_the_format", &kept);
     let refused = said.contains("the caller's state refused (#1066): XDG_STATE_HOME set. ");
     assert_eq!((code, refused), (Some(101), true), "{said}");
+}
+
+/// #1061, #1066: this binary's rig row, started again with TERM and HUP ignored and blocked, as a
+/// suite under nohup or with them blocked hands them down: the rig's server, told to
+/// go by a TERM it sends itself, is gone afterwards with its panes.
+#[test]
+#[cfg(target_os = "linux")]
+fn the_rig_rows_leave_no_server_handed_a_blocked_term_and_hup() {
+    let rows = ["the_hook_options_reach_the_pane_through_the_format"];
+    let pid = fake::rows_pass_handed(&rows, &[libc::SIGTERM, libc::SIGHUP]);
+    fake::assert_no_server_left(pid);
 }

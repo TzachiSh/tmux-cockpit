@@ -522,6 +522,10 @@ impl Server {
         checked_tmux();
         let mut c = Command::new("tmux");
         c.args(["-L", &self.sock, "-f", "/dev/null"]);
+        // kill-server is a TERM the server sends itself, then a HUP to each pane,
+        // which starts with the server's mask: both at their default and unblocked,
+        // so a suite started with them blocked leaves no server or pane (#1061, #1066)
+        at_default(&mut c, &[libc::SIGTERM, libc::SIGHUP]);
         with(&mut c);
         let Ok(o) = c.output() else { return false };
         let err = String::from_utf8_lossy(&o.stderr);
@@ -622,6 +626,51 @@ impl Drop for StandIn {
     fn drop(&mut self) {
         let _ = self.command().arg("kill-server").output();
     }
+}
+
+/// The processes left of the rig servers of this binary started again as `pid`
+/// ([`rows_pass_handed`]), read from /proc: a server by the `-L` name its command
+/// line gives, which ends in `-<pid>` for every rig, and a pane by the TMUX it
+/// starts with, which names that socket. Linux only, as are the rows that ask.
+#[allow(dead_code)]
+pub fn servers_left(pid: u32) -> Vec<u32> {
+    let name = format!("-{pid}\0");
+    let pane = format!("-{pid},");
+    let ours = |p: &Path| {
+        let line = std::fs::read(p.join("cmdline")).unwrap_or_default();
+        let env = std::fs::read(p.join("environ")).unwrap_or_default();
+        let server = line.starts_with(b"tmux") && String::from_utf8_lossy(&line).contains(&name);
+        let pane = env
+            .split(|b| *b == 0)
+            .any(|v| v.starts_with(b"TMUX=") && String::from_utf8_lossy(v).contains(&pane));
+        server || pane
+    };
+    let Ok(d) = std::fs::read_dir("/proc") else { return vec![] };
+    let pids = d.flatten().filter_map(|e| e.file_name().to_str()?.parse::<u32>().ok());
+    pids.filter(|p| ours(&Path::new("/proc").join(p.to_string()))).collect()
+}
+
+/// For a row that started this binary again as `pid`: no server and no pane of
+/// its rigs is left. Polled for 10 s, since kill-server ends a server and its
+/// panes after the command returns. A red run ends what it found with KILL,
+/// each pid read again just before, so it names them and leaves none.
+#[allow(dead_code)]
+pub fn assert_no_server_left(pid: u32) {
+    let step = std::time::Duration::from_millis(20);
+    for _ in 0..500 {
+        if servers_left(pid).is_empty() {
+            return;
+        }
+        std::thread::sleep(step);
+    }
+    let left = servers_left(pid);
+    for p in &left {
+        if servers_left(pid).contains(p) {
+            // SAFETY: kill only signals; `p` was read again as this run's just above.
+            unsafe { libc::kill(*p as libc::pid_t, libc::SIGKILL) };
+        }
+    }
+    panic!("the child {pid} left its rigs' servers or panes, now killed: {left:?}");
 }
 
 /// cargo's runner for this repo, which a row starts itself to show what it hands

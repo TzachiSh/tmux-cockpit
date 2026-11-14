@@ -178,9 +178,7 @@ fn rig_env(tag: &str, env: EnvLock) -> Option<Rig> {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     // The server first: Push::start() lists its channel the moment it runs. Its
-    // kill-server is a TERM it sends itself, then a HUP to each pane, which starts
-    // with the server's mask. So the server starts with both at their default and
-    // unblocked: a suite started with them blocked left it and its pane running (#1061).
+    // start resets TERM and HUP, as every rig's does (fake::Server::start, #1061).
     // Built first, so a start that panics still removes the folder.
     let mut rig = Rig {
         kids: Vec::new(),
@@ -190,7 +188,6 @@ fn rig_env(tag: &str, env: EnvLock) -> Option<Rig> {
         _env: env,
     };
     rig._server.start(|c| {
-        fake::at_default(c, &[libc::SIGTERM, libc::SIGHUP]);
         c.args(["new-session", "-d", "-c"]).arg(&rig.dir).args(["-s", "t", "sleep 300"]);
     });
     Some(rig)

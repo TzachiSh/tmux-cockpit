@@ -66,7 +66,8 @@ fn a_claude_the_agent_list_leaves_out_is_no_claude() {
         return;
     }
     s.tmux(&["set-option", "-g", "@cockpit_agents_glob", "|codex|"]);
-    // SAFETY: the one test of this binary that reads the env; the other reads none of it.
+    // SAFETY: the one test of this binary that writes the env; the others read it only
+    // in their spawns, which std orders with this write (fake::rows_pass_handed).
     unsafe { std::env::set_var("COCKPIT_TMUX", format!("tmux -L {}", s.sock)) };
     // Each pane starts in its own row's turn, so a held row's hold is not spent
     // waiting on the rows before it, whatever their order (#1056).
@@ -109,4 +110,15 @@ fn a_comm_that_cannot_be_written_is_a_skip_naming_the_cause() {
         let said = format!("SKIP: {at} cannot be written (");
         assert_eq!(skip.as_ref().map(|s| s.starts_with(&said)), skips.then_some(true), "{row}");
     }
+}
+
+/// #1061, #1066: this binary's rig row, started again with TERM and HUP ignored and blocked, as a
+/// suite under nohup or with them blocked hands them down: the rig's server, told to
+/// go by a TERM it sends itself, is gone afterwards with its panes.
+#[test]
+#[cfg(target_os = "linux")]
+fn the_rig_rows_leave_no_server_handed_a_blocked_term_and_hup() {
+    let rows = ["a_claude_the_agent_list_leaves_out_is_no_claude"];
+    let pid = fake::rows_pass_handed(&rows, &[libc::SIGTERM, libc::SIGHUP]);
+    fake::assert_no_server_left(pid);
 }

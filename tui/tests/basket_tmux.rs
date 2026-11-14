@@ -49,7 +49,8 @@ fn the_basket_round_trips_through_a_pane_option() {
         eprintln!("SKIP: no tmux");
         return;
     };
-    // SAFETY: the only test in this binary; nothing else reads the env meanwhile.
+    // SAFETY: the one test of this binary that writes the env; the others read it only
+    // in their spawns, which std orders with this write (fake::rows_pass_handed).
     unsafe { std::env::set_var("COCKPIT_TMUX", format!("tmux -L {}", s.sock)) };
     let pane = s.tmux(&["display-message", "-p", "#{pane_id}"]);
     let f = s.dir.join("a.rs");
@@ -117,4 +118,15 @@ fn the_basket_round_trips_through_a_pane_option() {
         "",
         "unset when empty"
     );
+}
+
+/// #1061, #1066: this binary's rig row, started again with TERM and HUP ignored and blocked, as a
+/// suite under nohup or with them blocked hands them down: the rig's server, told to
+/// go by a TERM it sends itself, is gone afterwards with its panes.
+#[test]
+#[cfg(target_os = "linux")]
+fn the_rig_rows_leave_no_server_handed_a_blocked_term_and_hup() {
+    let rows = ["the_basket_round_trips_through_a_pane_option"];
+    let pid = fake::rows_pass_handed(&rows, &[libc::SIGTERM, libc::SIGHUP]);
+    fake::assert_no_server_left(pid);
 }
