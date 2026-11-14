@@ -117,6 +117,8 @@ Set the option before the plugin's `run-shell` line. `off` disables the key
 A reload (`prefix R`) that turns a key off or moves it gives the old key back
 to what tmux binds there with no config; a key you bound yourself since stays
 yours. Each cockpit key carries a `cockpit: <name>` note in `prefix ?`.
+The keys are global and read when the plugin loads: set them with `set -g`, and
+reload after a change; a session's own value is not read.
 
 ```sh
 set -g @cockpit_menu_key      a    # n if you never use next-window

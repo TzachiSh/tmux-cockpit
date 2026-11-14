@@ -7,7 +7,7 @@
 | tap the branch on the border | the branch popup, `cockpit-tui branch` |
 | `prefix + b` | the same popup, without the mouse |
 | `prefix + a` | the menu: every cockpit and window action, one letter each, no Shift; `≡` on the border opens it too — `@cockpit_menu_key` rebinds, `off` disables |
-| `prefix + u` | jump to the pane that needs you (again: next one) — `@cockpit_jump_key` rebinds, `off` disables |
+| `prefix + u` | jump to the pane that needs you (again: next one) — `@cockpit_jump_key` rebinds, `off` disables; like every key option it is global (`set -g`) and read at load, so a change needs a reload |
 | `prefix + s` | the sessions screen (`cockpit-tui sessions`, what `tm` shows), replacing stock `choose-tree` — `@cockpit_sessions_key` rebinds, `off` keeps stock |
 | `prefix + r` | the board, the same one `prefix + w` opens; `r` on a row reviews that agent's uncommitted diff (replaces stock `refresh-client`) — `@cockpit_review_key` rebinds, `off` restores stock; `@cockpit_review_window on` opens a window instead of the popup |
 | `prefix + i` | one screen for the pane you are on: cwd, the git root the review diffs, state, review mark, review base, session id and review dir; it replaces stock window info, `@cockpit_info_key` rebinds, `off` restores stock; the board's `i` draws the same screen |
