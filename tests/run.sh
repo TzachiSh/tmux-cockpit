@@ -4554,7 +4554,7 @@ elif ! ( . "$DIR/scripts/lib/vnum.sh"
     skip_ "messages show names as written (tmux below 3.8: the plugin refuses it)"
 else
 DM=$(mktmpd); mkdir -p "$DM/wd" "$DM/m"
-for dm_n in 1 2 3 4; do SOCKS="$SOCKS cockpit-dm-$$-$dm_n cockpit-dmo-$$-$dm_n"; done
+for dm_n in 1 2 3 4 5; do SOCKS="$SOCKS cockpit-dm-$$-$dm_n cockpit-dmo-$$-$dm_n"; done
 dm_names=('a##x' 'a#[fg=red]b' 'a#Sb' 'a#(touch pwned)b')
 dm_up() {                     # <n> [new-session command] -> a server, a client on it
     # Wide enough by construction: a message wider than the client is cut. The longest
@@ -4575,6 +4575,16 @@ dm_drawn() {                  # <n> <text> -> 1 once the client's status line dr
     local o="cockpit-dmo-$$-$1" i
     for ((i = 1; i <= POLLS; i++)); do
         "$TMUX_REAL" -L "$o" capture-pane -p -t o | grep -qF -- "$2" && { echo 1; return; }
+        sleep 0.1
+    done
+    echo 0
+}
+dm_line() {                   # <n> <text> -> 1 once the client's last line is <text>
+    local o="cockpit-dmo-$$-$1" i l
+    for ((i = 1; i <= POLLS; i++)); do
+        l=$("$TMUX_REAL" -L "$o" capture-pane -p -t o | tail -1)
+        l=${l%"${l##*[! ]}"}
+        [ "$l" = "$2" ] && { echo 1; return; }
         sleep 0.1
     done
     echo 0
@@ -4647,6 +4657,19 @@ until_out yes sh -c "[ -e $(tq "$DM/m/control") ] && echo yes"
 dm_down 4
 is "and no message ran a #( from a name or a value, where a raw one did" "$DM/m/control " \
    "$(find "$DM" \( -name pwned -o -name pmode -o -name control \) | tr '\n' ' ')"
+# 5. dmsg itself: a text that starts with - would read as a flag, and tmux showed nothing.
+# It gets a -- before it, and only it: the command any other text makes is unchanged.
+is "dmsg puts -- before a text that starts with -, and only there" \
+   "[display-message][-l][--][-x foo]|[display-message][-l][ -x]|[display-message][-l][x]|" \
+   "$(. "$DIR/scripts/lib/fmt.sh"
+      tmux() { printf '[%s]' "$@"; }
+      for dm_f in '-x foo' ' -x' 'x'; do dmsg "$dm_f"; printf '|'; done)"
+dm_up 5
+for dm_f in '-x foo' '--' '-' '-l' '-#[fg=red]' ' -x foo'; do
+    dm_tmux 5 bash -c '. "$1/scripts/lib/fmt.sh" && dmsg "$2"' _ "$DIR" "$dm_f"
+    is "dmsg draws [$dm_f] whole, as the client's whole status line" "1" "$(dm_line 5 "$dm_f")"
+done
+dm_down 5
 
 # The scan: each display-message call in cockpit.tmux or scripts/ that shows a variable or
 # a $( ) goes through dmsg. A \-continued line is joined first, then split at every
@@ -4671,7 +4694,7 @@ dm_scan() {                   # <file...> -> file:line of each display-message n
                 if (c ~ /^[^"'\''$]*[ \t]-p([ \t]|$)/) continue
                 if (index(c, " \"tmux-cockpit needs tmux 3.8 or newer (found $tmux_version)") == 1)
                     continue
-                if (index(c, " \"${@:1:$#-1}\" -l ") == 1) continue
+                if (index(c, " \"$@\" \"${t//#/##}\"") == 1) continue
                 if (index(c, " -d 0 '\''$notice_") == 1) continue
                 # \173 is an open brace, written so: only.sh and par.sh hoist this function
                 # by counting its braces, and the count must close with it (#1103).
@@ -4717,7 +4740,7 @@ for dm_f in raw fesc read-then-raw raw-then-constant notice-then-raw version-the
 done
 is "and names nothing in dmsg, a -p read, a fixed text or the two exempt calls alone" "" \
    "$(dm_scan "$DM/plant/allowed")"
-unset -f dm_up dm_drawn dm_down dm_tmux dm_scan
+unset -f dm_up dm_drawn dm_line dm_down dm_tmux dm_scan
 unset DM dm_n dm_f dm_p dm_d dm_k dm_names dm_files
 fi
 

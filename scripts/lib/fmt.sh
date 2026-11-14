@@ -36,11 +36,15 @@ gesc() {
 # an error line goes through here (#1096). tmux expands a message as a format, which runs a
 # #( ), and then draws it, reading ## as # and #[ as a style, so fesc alone still lost a ##
 # and a #[...]. -l (tmux 3.4) skips the expansion; every # doubled comes through the draw
-# as one. The display-message flags (-c, -t, -d) go first, the text last.
+# as one. The display-message flags (-c, -t, -d) go first, the text last. A text that
+# starts with - gets a -- before it, or tmux reads it as a flag and shows nothing; any
+# other text gets none, so the command stays as it was.
 dmsg() {                      # [display-message flags...] <text>
   [ $# -ge 1 ] || { echo 'dmsg: no text to show' >&2; return 2; }
   local t=${!#}
-  tmux display-message "${@:1:$#-1}" -l "${t//#/##}"
+  set -- "${@:1:$#-1}" -l
+  case $t in -*) set -- "$@" -- ;; esac
+  tmux display-message "$@" "${t//#/##}"
 }
 
 # A file name as a title: no control character and no bidi mark, which would
