@@ -77,12 +77,12 @@ fn told(out: &Output) -> String {
     format!("child: {}\nstdout:\n{o}\nstderr:\n{e}", out.status)
 }
 
-/// umask 000, and the kernel's SIGXFSZ kill on a write past 4 KiB: a writer
-/// stopped dead between its temp file's write and the rename.
-fn die_past_4k() {
+/// umask 000, and the kernel's SIGXFSZ kill on a write past `bytes`: a writer
+/// stopped dead part-way through a write.
+fn die_past(bytes: libc::rlim_t) {
     let lim = libc::rlimit {
-        rlim_cur: 4096,
-        rlim_max: 4096,
+        rlim_cur: bytes,
+        rlim_max: bytes,
     };
     // SAFETY: plain syscalls; this child runs one test on one thread.
     unsafe {
@@ -133,14 +133,19 @@ fn child_job() {
     let (s, k) = (LocalStore::new(root).unwrap(), key("agent.a"));
     match verb {
         "umask0-create" => {
-            // SAFETY: as in die_past_4k.
+            // SAFETY: as in die_past.
             unsafe { libc::umask(0) };
             std::fs::write(Path::new(root).with_file_name("umask-probe"), "").unwrap();
             s.put_if_revision(&k, &json!({"n": 1}), None).unwrap();
         }
         "killed-mid-write" => {
-            die_past_4k();
+            die_past(4096);
             let r = s.put_if_revision(&k, &json!({"big": "x".repeat(16 * 1024)}), Some(Revision(1)));
+            panic!("lived past the file size limit: {r:?}");
+        }
+        "killed-mid-lock" => {
+            die_past(1);
+            let r = s.put_if_revision(&k, &json!("lost"), Some(Revision(1)));
             panic!("lived past the file size limit: {r:?}");
         }
         "forking-puts" => forking_puts(&s, &k),
@@ -270,6 +275,17 @@ fn a_writer_killed_before_its_rename_leaves_the_old_value() {
     // 3, not 2: the killed writer had recorded 2 in the lock before its rename.
     assert_eq!(s.put_if_revision(&k, &json!({"new": 1}), Some(Revision(1))).unwrap(), Revision(3));
     assert_eq!(s.get(&k), Some((json!({"new": 1}), Revision(3))));
+}
+
+#[test]
+fn a_writer_killed_mid_lock_record_leaves_a_number_a_re_create_goes_past() {
+    let d = scratch("killlock");
+    let (s, k) = (local(&d), key("agent.a"));
+    s.put_if_revision(&k, &json!("first"), None).unwrap();
+    let out = child("killed-mid-lock", s.root()).output().unwrap();
+    assert_eq!(out.status.signal(), Some(libc::SIGXFSZ), "{}", told(&out));
+    std::fs::write(s.path(&k), "garbage\n").unwrap();
+    assert_eq!(s.put_if_revision(&k, &json!("second"), None).unwrap(), Revision(3));
 }
 
 #[test]

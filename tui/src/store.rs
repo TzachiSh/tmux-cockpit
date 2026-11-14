@@ -300,10 +300,13 @@ fn last_written(lock: &File) -> u64 {
     digits.parse().unwrap_or(0)
 }
 
+/// Digits first, then the cut: revisions never get shorter, so a kill between
+/// or during the two leaves a whole number in the lock, never an empty one.
 fn record_written(lock: &File, rev: Revision) -> io::Result<()> {
     use std::os::unix::fs::FileExt;
-    lock.set_len(0)?;
-    lock.write_all_at(format!("{}\n", rev.0).as_bytes(), 0)?;
+    let line = format!("{}\n", rev.0);
+    lock.write_all_at(line.as_bytes(), 0)?;
+    lock.set_len(line.len() as u64)?;
     lock.sync_data()
 }
 
