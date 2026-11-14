@@ -18213,30 +18213,40 @@ esac
 # review-revdiff: the no-diff message names the repo dir (a worktree is named
 # after its branch). A stub revdiff: the message comes before it would run.
 FEBIN=$(mktmpd); printf '#!/bin/sh\nexit 0\n' > "$FEBIN/revdiff"; chmod +x "$FEBIN/revdiff"
-FER="$FED/x#(touch \$FEMK)"; mkdir -p "$FER"
+FER="$FED/x##y#[z#(touch \$FEMK)"; mkdir -p "$FER"
 ( cd "$FER" && git init -q -b main . &&
     git -c user.name=t -c user.email=t@e commit -q --allow-empty -m init ) >/dev/null 2>&1
 mkdir -p "$FED/rs"
 TMUX=$FETMUX PATH="$FEBIN:$PATH" "$DIR/scripts/tmux-review" --loop "$FER" "$FED/rs/comments.md" \
     </dev/null >/dev/null 2>&1
 fe_want="cockpit: no uncommitted changes in $FER"
-until_out "*no uncommitted changes in $FED/x*" fe_msgs
-case "$(fe_msgs)" in
+# This row pins what is seen: the client's drawn status line, not the message log, which
+# since #1096 holds each # doubled as dmsg sent it. display-time 0 keeps it drawn, and
+# stays on for the rest of this block. A message wider than the client is cut, so the
+# client grows to the scratch folder's length plus room for both rows' texts past it.
+"$TMUX_REAL" -L "$FE" set -g display-time 0 >/dev/null 2>&1
+fe_w=$(( ${#FED} + 120 ))
+"$TMUX_REAL" -L "$FEO" resize-window -t o -x "$fe_w" >/dev/null 2>&1
+until_out "$fe_w" "$TMUX_REAL" -L "$FE" list-clients -F '#{client_width}'
+fe_seen() { "$TMUX_REAL" -L "$FEO" capture-pane -p -t o 2>/dev/null; }
+until_cap "$FEO" o "*$fe_want*"
+case "$(fe_seen)" in
     *"$fe_want"*) ok "review-revdiff's no-diff message shows the dir literally" ;;
     *) bad "review-revdiff's no-diff message shows the dir literally" "$fe_want" \
-            "$(fe_msgs | tail -1)" ;;
+            "$(fe_seen | grep -F 'cockpit:' | tail -1)" ;;
 esac
 
 # review-fleet: the session dir in "could not create" (XDG_STATE_HOME is a file).
-FES="$FED/st#(touch \$FEMK)"; : > "$FES"
+FES="$FED/st##y#[z#(touch \$FEMK)"; : > "$FES"
 TMUX=$FETMUX XDG_STATE_HOME=$FES REVIEW_PANE_ID=$FEP "$DIR/scripts/tmux-review" \
     </dev/null >/dev/null 2>&1
-until_out "*could not create $FED/st*" fe_msgs
-case "$(fe_msgs)" in
+# This row pins what is seen, as the one above: it waits for its own message drawn.
+until_cap "$FEO" o "*cockpit: could not create $FES/*"
+case "$(fe_seen)" in
     *"cockpit: could not create $FES/"*) \
             ok "review-fleet's could-not-create message shows the path literally" ;;
     *) bad "review-fleet's could-not-create message shows the path literally" \
-            "cockpit: could not create $FES/..." "$(fe_msgs | tail -1)" ;;
+            "cockpit: could not create $FES/..." "$(fe_seen | grep -F 'cockpit:' | tail -1)" ;;
 esac
 
 # Nothing above ran the payload. The run-shell is the one tmux would run, and
