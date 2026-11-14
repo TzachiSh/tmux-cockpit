@@ -110,9 +110,13 @@ elif [ -s "$d/reached" ]; then
     cat "$d/reached" >&2
     [ "$rc" -ne 0 ] || rc=1
 fi
-# Only if empty: a socket left there is a server the binary did not end. It is
-# named here, and it and its folder stay for a look. This line runs on every way
-# out but a signal this script does not trap: one it traps waits for the binary.
+# Only if empty: a socket file left there is one no rig removed, from a binary
+# that died before its rigs were dropped or a server started past fake::Server.
+# It is named here, and it and its folder stay for a look. A rig's server that
+# outlived its kill-server has lost its socket file to the rig, and this line
+# cannot see it: rows that ask /proc do (fake::assert_no_server_left). This line
+# runs on every way out but a signal this script does not trap: one it traps
+# waits for the binary.
 rmdir "$t"/tmux-* 2>/dev/null
 rmdir "$t" 2>/dev/null || {
     echo "$me: error: the binary left a tmux socket binary=$1 dir=$t" >&2

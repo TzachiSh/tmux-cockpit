@@ -179,13 +179,17 @@ nobody can guess, before the binary starts: tmux puts its socket in `/tmp` when
 `TMUX_TMPDIR` names a folder that is not there. It is in `/tmp` and nowhere
 else, since a socket's path fails past 107 bytes (103 on macOS) and a TMPDIR
 runs long. It holds tmux's own `tmux-<uid>` folder and sockets, nothing else.
-Where `/tmp` takes no folder the binary is not started, with one line. After
+Where `/tmp` takes no folder the binary is not started, and two lines say
+so: mktemp's own, then the runner's. After
 the binary it goes by `rmdir`, only if empty, also after a HUP, INT, QUIT or
-TERM to the runner, which waits for the binary first. A socket left in it is a
-server the binary did not end: the runner names the folder and fails the
-binary with status 1, or with the binary's own status where that failed, after
-any report of the claude guard. A server still running keeps its socket there,
-and the runner ends no process. Killed by a signal it does not trap, KILL among
+TERM to the runner, which waits for the binary first. A socket file left in
+it is one no rig removed, from a binary that died before its rigs were dropped
+or a server started past `fake::Server`: the runner names the folder and fails
+the binary with status 1, or with the binary's own status where that failed,
+after any report of the claude guard. A rig removes its server's socket file
+when it is dropped, even where kill-server failed, so a server that outlives its
+rig leaves no socket here for the runner to see. The rows that ask `/proc`
+catch it (`fake::assert_no_server_left`), and the runner ends no process. Killed by a signal it does not trap, KILL among
 them, the runner leaves its `/tmp/ct.<6>` folder behind, empty. Under a plain
 `cargo test` nothing names it. That folder is the cost. Nothing sweeps it, and
 it is safe to remove once no test is running. `make tui-test-clean` hands the
