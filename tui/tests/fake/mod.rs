@@ -240,13 +240,13 @@ pub fn at_default(c: &mut Command, signals: &'static [libc::c_int]) {
 
 /// How long [`rows_pass_handed`] gives its child: past the rows' own bounds, so
 /// theirs fire first and a row still ends what it started. The longest is
-/// claude_guard.rs's signal row, three signals of at most 20 s for the binary
-/// to start, 20 s for its fifo and 30 s for the runner to end, 210 s. A bound
-/// at or under a row's own killed that child before it could kill its runner,
-/// and left the runner running (#1061). A child alive after this is killed, so
-/// a hung harness cannot hold the suite for good.
+/// claude_guard.rs's signal row, whose waits are checked against this when
+/// that file builds. A bound at or under a row's own killed that child
+/// before it could kill its runner, and left the runner running (#1061). A
+/// child alive after this is killed, so a hung harness cannot hold the suite for
+/// good.
 #[allow(dead_code)]
-const HANDED_FOR: std::time::Duration = std::time::Duration::from_secs(300);
+pub const HANDED_FOR: std::time::Duration = std::time::Duration::from_secs(300);
 
 /// `rows` of this binary, matched exactly, in this binary started again with
 /// each of `signals` ignored and blocked: the worst state a suite can hand

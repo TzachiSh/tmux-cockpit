@@ -18,6 +18,7 @@ use std::ffi::OsStr;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
+use std::time::Duration;
 
 const RUNNER: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/claude-guard/runner");
 const STUB: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/claude-guard/claude");
@@ -66,18 +67,46 @@ fn field<'a>(rec: &'a str, key: &str, end: Option<&str>) -> &'a str {
     end.and_then(|e| rest.find(e)).map_or(rest, |to| &rest[..to])
 }
 
+/// How long [`ended`] polls a child before it kills it.
+const ENDED_FOR: Duration = Duration::from_secs(30);
+
+/// How long [`appears`] polls for a file.
+const APPEARS_FOR: Duration = Duration::from_secs(20);
+
+/// How long [`release`] polls for a reader of a fifo.
+const RELEASE_FOR: Duration = Duration::from_secs(20);
+
+/// The signals [`a_signal_to_the_runner_waits_for_the_binary_and_its_log`] sends.
+const TO_THE_RUNNER: [libc::c_int; 3] = [libc::SIGTERM, libc::SIGHUP, libc::SIGINT];
+
+// The row that starts this binary again waits for it through
+// fake::rows_pass_handed, whose bound must outlast the row it runs: at or under
+// it, it killed that binary before it could kill its runner, and left the runner
+// and its folder (#1061). That row's longest run: for each signal a wait for the
+// binary to start, one for its fifo, and one for the runner to end, the last
+// also on the path where the release failed.
+const _: () = {
+    let one_signal = APPEARS_FOR.as_secs() + RELEASE_FOR.as_secs() + ENDED_FOR.as_secs();
+    let signal_row = TO_THE_RUNNER.len() as u64 * one_signal;
+    assert!(
+        fake::HANDED_FOR.as_secs() > signal_row,
+        "fake::HANDED_FOR must outlast the signal row's own waits"
+    );
+};
+
 /// What `child` wrote and how it ended, polled for and never waited on for
-/// good: one still running after 30 s is killed and the row fails. A runner
-/// that sent itself a signal that stops would hold its row, and cargo, for good.
+/// good: one still running after [`ENDED_FOR`] is killed and the row fails. A
+/// runner that sent itself a signal that stops would hold its row, and cargo,
+/// for good.
 fn ended(mut child: std::process::Child, what: &str) -> std::process::Output {
     for tries in 0.. {
         if child.try_wait().unwrap().is_some() {
             break;
         }
-        if tries == 6000 {
+        if tries == ENDED_FOR.as_millis() / 5 {
             child.kill().unwrap();
             child.wait().unwrap();
-            panic!("{what} had not ended after 30 s and was killed");
+            panic!("{what} had not ended after {} s and was killed", ENDED_FOR.as_secs());
         }
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
@@ -626,7 +655,7 @@ fn signalled(r: &Rig, c: &mut Command, signal: i32, args: &[&str]) -> (ExitStatu
 /// where the binary gets it too.
 #[test]
 fn a_signal_to_the_runner_waits_for_the_binary_and_its_log() {
-    for signal in [libc::SIGTERM, libc::SIGHUP, libc::SIGINT] {
+    for signal in TO_THE_RUNNER {
         assert_eq!(sent_to_the_runner(signal), (Some(signal), true, 0), "signal {signal}");
     }
 }
@@ -682,15 +711,16 @@ const OUTLIVES: &str = "#!/bin/sh\necho $$ > \"$0.up\"\nread -r _ < \"$0.go\"\nc
 /// One line into `fifo` for the binary that waits on it. The fifo is opened
 /// without waiting, since a write to a fifo nobody reads would hold the row for
 /// good. A binary writes that it runs before it opens the fifo, so the open is
-/// tried again while it finds no reader (ENXIO), polled for 20 s as
-/// [`appears`] is, and then fails (#997).
+/// tried again while it finds no reader (ENXIO), polled for [`RELEASE_FOR`],
+/// and then fails (#997).
 fn release(fifo: &Path) -> Result<(), String> {
     use std::{io::Write, os::unix::fs::OpenOptionsExt};
+    let polls = RELEASE_FOR.as_millis() / 10;
     for tries in 0.. {
         let open = std::fs::OpenOptions::new().write(true).custom_flags(libc::O_NONBLOCK).open(fifo);
         match open {
             Ok(mut f) => return f.write_all(b"go\n").map_err(|e| format!("{}: {e}", fifo.display())),
-            Err(e) if e.raw_os_error() == Some(libc::ENXIO) && tries < 2000 => {}
+            Err(e) if e.raw_os_error() == Some(libc::ENXIO) && tries < polls => {}
             Err(e) => return Err(format!("no binary waits on {}: {e}", fifo.display())),
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
@@ -838,13 +868,13 @@ fn a_binary_that_opens_its_fifo_late_is_still_released() {
     assert_eq!((released, String::from_utf8_lossy(&out.stdout).as_ref()), (Ok(()), "go\n"));
 }
 
-/// Polled, never slept for: gives up after 20 s.
+/// Polled, never slept for: gives up after [`APPEARS_FOR`].
 fn appears(file: &Path) {
     for tries in 0.. {
         if file.exists() {
             return;
         }
-        assert!(tries < 2000, "{} never appeared", file.display());
+        assert!(tries < APPEARS_FOR.as_millis() / 10, "{} never appeared", file.display());
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
 }
