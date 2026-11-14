@@ -147,11 +147,14 @@ deliver() {
     # argument (stripped), and # is a format (doubled by fesc; on 3.7c
     # w##{@secret} rendered the option's value). The read itself is safe: a
     # #{window_name} value is not re-expanded, only this second interpolation.
+    # Not dmsg (#1096): the notice must stay a format, since $jump below is read
+    # where and when it is shown, on the reader's session. So every # is doubled
+    # before fesc, and the draw, which reads ## as # and #[ as a style, gives it back.
     local where
     where=$(tmux display-message -p -t "$pane" \
         '#{session_name}:#{window_index} #{window_name}' 2>/dev/null)
     where=${where//\'/}
-    where=$(fesc "$where")
+    where=$(fesc "${where//#/##}")
     [ -n "$where" ] || where="the agent pane"   # display-message failed; still read as a sentence
 
     # Armed first, disarmed by the idle arm: never armed on a pane that took the
