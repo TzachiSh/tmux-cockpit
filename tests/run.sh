@@ -225,14 +225,22 @@ PATH="$SHIM:$SUITE_CLAUDE:$(path_without_mnt "$PATH")"; export PATH
 # KILL or a signal while the server was still starting, left server and pane behind for the
 # rest of that hour (#1006). argv0 stays claude: pane_current_command must read as an agent.
 # tail --pid is GNU's and uutils's; the probe asks whether this tail accepts --pid under the
-# pane's argv0, and where it is refused the pane is a four-hour sleep. The longest run measured took about 90 minutes,
-# so four hours outlasts a run (#981) and a server left behind still ends by itself; on such
-# a platform it can stay for those four hours, which is #1022.
+# pane's argv0, and where it is refused the pane is a four-hour sleep. The longest run
+# measured took about 90 minutes, so four hours outlasts a run (#981) and a server left behind
+# still ends by itself; on such a platform it can stay for those four hours, which is #1022.
+# What the tail follows is an empty file in a folder of its own. uutils's tail follows by
+# inotify. On /dev/null the watch sits on the node itself, so the pane woke on every open of
+# /dev/null by any process on the box: 2% to 8% of a core for each pane beside the suite's
+# own blocks (#1029). On a regular file the watch sits on the folder that holds it, so
+# nothing else may be written into that folder. The path reaches the pane's shell in the
+# server's environment, never in the command string: a TMPDIR may hold a space.
+SUITE_IDLE="$STATE/pane/idle"; mkdir -p "$STATE/pane"; : > "$SUITE_IDLE"
 if ( exec -a claude tail --pid="$$" -n 0 /dev/null ) >/dev/null 2>&1; then
-    SUITE_PANE="exec -a claude tail --pid=$$ -f /dev/null"
+    SUITE_PANE="exec -a claude tail --pid=$$ -f \"\$SUITE_IDLE\""
 else SUITE_PANE='exec -a claude sleep 14400'
 fi
-"$TMUX_REAL" -L "$SUITE_SOCK" -f /dev/null new-session -d -s suite "$SUITE_PANE" >/dev/null 2>&1
+SUITE_IDLE="$SUITE_IDLE" "$TMUX_REAL" -L "$SUITE_SOCK" -f /dev/null new-session -d -s suite \
+    "$SUITE_PANE" >/dev/null 2>&1
 # No agent-view poller on the suite's server: a relayed agent_needs_input would start one, and
 # it runs the real `claude agents` (#174). The agent-view blocks use servers of their own.
 "$TMUX_REAL" -L "$SUITE_SOCK" set -g @cockpit_bg_poll off >/dev/null 2>&1
@@ -9140,6 +9148,24 @@ ps_settle() {                 # -> 0, or "<count>:" and each leftover
             "$(tr '\0' ' ' 2>/dev/null < "$p/cmdline")"
     done
 }
+# A red leftover row leaves a server and its pane; where tail has no --pid they would stay for
+# the pane's four hours (#1012). Each is ended here by its own socket, the last -L of its
+# argv when that is a suite's name, never by a pid, and the socket file a killed server
+# leaves is removed. It reads /proc/<pid>/environ, as ps_settle does: on a box without it
+# both see nothing, so the box this reaches is a Linux one whose tail has no --pid.
+ps_end() {
+    local p c a n d
+    for p in /proc/[0-9]*; do
+        tr '\0' '\n' 2>/dev/null < "$p/environ" | grep -qxF "TMPDIR=$PSROOT/t" || continue
+        c=""; read -r c 2>/dev/null < "$p/comm"; [ "$c" = "tmux: server" ] || continue
+        a=$(tr '\0' ' ' 2>/dev/null < "$p/cmdline")
+        n=$(printf '%s\n' "$a" | grep -oE -- '-L [^ ]+ ' | tail -n 1)
+        n=${n#-L }; n=${n% }; [[ $n =~ ^cockpit-suite-[0-9]+$ ]] || continue
+        d=$(tr '\0' '\n' 2>/dev/null < "$p/environ" | sed -n 's/^TMUX_TMPDIR=//p')
+        "$TMUX_REAL" -S "${d:-/tmp}/tmux-$(id -u)/$n" kill-server >/dev/null 2>&1
+        rm -f -- "${d:-/tmp}/tmux-$(id -u)/$n"
+    done
+}
 # The run with a shard that never ends: once that shard is inside its block (past the
 # prelude, whose EXIT trap cleans up) and every other shard's end line is out, it is ended
 # from outside through timeout (whose 60 s is only a backstop), which hands the TERM to the
@@ -9153,6 +9179,9 @@ until_out '?*' ls "$PSROOT/t/ps3.in"
 for ps_s in 0001 0002 0004 0005; do
     until_file "$PSROOT/hung.err" "*shard $ps_s end rc=0*"
 done
+# How many of the four end lines were in when the TERM went: a red leftover row says it, so
+# a log tells a wait that ran out (fewer than 4) from a server left with all four in (#1012).
+ps_in=$(grep -cE '^par\.sh: shard 000[1245] end rc=0$' "$PSROOT/hung.err")
 ps_c=""; read -r ps_c 2>/dev/null < "/proc/$ps_to/comm"
 [ "$ps_c" != timeout ] || kill -TERM "$ps_to" 2>/dev/null
 wait "$ps_to" 2>/dev/null
@@ -9162,7 +9191,9 @@ is "and no end line" "0" "$(grep -c '^par\.sh: shard 0006 end' "$PSROOT/hung.err
 is "a shard that finished has both, with its status" "1 1" \
    "$(grep -c '^par\.sh: shard 0001 start: ps1: solo$' "$PSROOT/hung.err") $(
       grep -c '^par\.sh: shard 0001 end rc=0$' "$PSROOT/hung.err")"
-is "nothing the ended run started is left" "0" "$(ps_settle)"
+ps_got=$(ps_settle); [ "$ps_got" = 0 ] || ps_got="$ps_got; end lines in at the TERM: $ps_in of 4"
+is "nothing the ended run started is left" "0" "$ps_got"
+[ "$ps_got" = 0 ] || ps_end
 # A green run: the counts are what they were, and no new line reads as a row.
 cp "$PSROOT/tests/run.green" "$PSROOT/tests/run.sh"
 ( cd "$PSROOT" && env -u PAR_BLOCKS TMPDIR="$PSROOT/t" J=3 tests/par.sh ) \
@@ -9186,8 +9217,10 @@ ps_row="^  ($ESC\[[0-9;]*m)?(PASS|FAIL|SKIP)|passed,|failed,"
 is "the row pattern finds the green run's rows and its count" "6" \
    "$(grep -cE "$ps_row" "$PSROOT/green.out")"
 is "no new line reads as a row or a count" "0" "$(grep -cE "$ps_row" "$PSROOT/green.err")"
-is "nor is left behind" "0" "$(ps_settle)"
-unset -f ps_left ps_settle; unset PSROOT Q ps_to ps_c ps_row ps_s
+ps_got=$(ps_settle)
+is "nor is left behind" "0" "$ps_got"
+[ "$ps_got" = 0 ] || ps_end
+unset -f ps_left ps_settle ps_end; unset PSROOT Q ps_to ps_c ps_row ps_s ps_in ps_got
 
 echo "== tests/par.sh: a checkout under a path with a space runs every shard and nothing else (#1007) =="
 # par.sh joined its shard paths into one string and split it again, so a path holding a space
@@ -17861,7 +17894,7 @@ echo "== run.sh: a run ended by a signal in its prelude leaves no server, socket
 SG=$(mktmpd); mkdir -p "$SG/tests"
 awk '/^echo "== /{exit} {print}' "$DIR/tests/run.sh" > "$SG/tests/pre.sh"
 sg_hold='mkfifo "$TMPDIR/pf"; exec 9<>"$TMPDIR/pf"; : > "$TMPDIR/started"; read -r -t 20 -u 9 _'
-sed "/^\"\\\$TMUX_REAL\" -L \"\\\$SUITE_SOCK\" -f \\/dev\\/null new-session -d -s suite /a $sg_hold" \
+sed "/^    \"\\\$SUITE_PANE\" >\\/dev\\/null 2>&1\$/a $sg_hold" \
     "$SG/tests/pre.sh" > "$SG/tests/win.sh"
 sed "/^trap cleanup EXIT\$/a $sg_hold" "$SG/tests/pre.sh" > "$SG/tests/ctl.sh"
 is "each copy holds at one place" "1 1" \
@@ -17903,11 +17936,16 @@ sg_run() {                    # <signal> <copy> -> status|carriers|left in TMPDI
 }
 # Whether this box's tail takes --pid, asked here and not read from the prelude's own answer:
 # a prelude that fell back to the sleep on a box whose tail has --pid must turn rows red, not
-# skip them (#1023). The run is the pane's -f form on a pid already gone, which ends by itself.
+# skip them (#1023). The run is a tail -f on a pid already gone, which ends by itself.
 ( : ) & sg_gone=$!; wait "$sg_gone" 2>/dev/null
-if timeout 10 tail --pid="$sg_gone" -f /dev/null >/dev/null 2>&1; then sg_haspid=1
-else sg_haspid=0
-fi
+timeout 10 tail --pid="$sg_gone" -f /dev/null >/dev/null 2>&1
+case $? in
+    0) sg_haspid=1 ;;
+    124) sg_haspid=late       # no answer is not "no --pid": said here, and the rows that
+                              # need the answer are skipped, not read as the fallback
+         bad "the block's own tail run answered inside 10 s" "0 or a refusal" "timed out" ;;
+    *) sg_haspid=0 ;;
+esac
 # The nested socket is $SG/s/tmux-<uid>/cockpit-suite-<pid>: past 107 bytes no server binds.
 if [ ! -r /proc/net/unix ]; then skip_ "a signal in the prelude (no /proc/net/unix)"
 elif [ $((${#SG} + ${#UID} + 30)) -gt 107 ]; then
@@ -17928,6 +17966,8 @@ else
     # here: the status, the processes left and the listeners; the wait is sg_left's, bounded.
     if [ "$sg_haspid" = 0 ]; then
         skip_ "a KILL in the prelude (this tail has no --pid: the pane is a sleep)"
+    elif [ "$sg_haspid" = late ]; then
+        skip_ "a KILL in the prelude (the block's own tail run timed out)"
     else
         is "a KILL there leaves no process: the pane ended with its run" "137|0|0" \
            "$(sg_run KILL win | cut -d'|' -f1,2,4)"
@@ -17943,23 +17983,33 @@ fi
 mkdir -p "$SG/notail"
 printf '#!/bin/sh\ncase " $* " in *" --pid="*) exit 1 ;; esac\nexec %s "$@"\n' \
     "$(tq "$(command -v tail)")" > "$SG/notail/tail"; chmod +x "$SG/notail/tail"
-sg_pane() {                   # [a folder to put first on PATH] -> the pane's argv, its pid as PID
+sg_pane() {                   # [a folder to put first on PATH] -> the pane's argv, its pid as
+    local a                   # PID and the copy's state folder as STATE
     rm -rf "${SG:?}/t" "${SG:?}/s"; mkdir -p "$SG/t" "$SG/s"
     ( cd "$SG" && PATH="${1:+$1:}$PATH" exec env -u TMUX TMPDIR="$SG/t" TMUX_TMPDIR="$SG/s" \
         bash tests/pan.sh ) </dev/null >/dev/null 2>&1
-    sed "s/--pid=$(cat "$SG/t/pid" 2>/dev/null) /--pid=PID /" "$SG/t/argv" 2>/dev/null
+    a=$(sed "s/--pid=$(cat "$SG/t/pid" 2>/dev/null) /--pid=PID /" "$SG/t/argv" 2>/dev/null; echo .)
+    a=${a%.}; printf '%s' "${a/"$SG/t/"tmp.*"/pane/idle"/STATE/pane/idle}"
 }
 if [ ! -r "/proc/$$/cmdline" ]; then skip_ "the suite pane's command line (no /proc)"
+elif [ "$sg_haspid" = late ]; then
+    skip_ "the suite pane's command line (the block's own tail run timed out)"
 elif [ "$sg_haspid" = 0 ]; then
     is "this tail has no --pid, so the pane is the four-hour sleep" \
        "claude 14400 " "$(sg_pane)"
 else
     is "the pane watches the pid of the very script that started it" \
-       "claude --pid=PID -f /dev/null " "$(sg_pane)"
+       "claude --pid=PID -f STATE/pane/idle " "$(sg_pane)"
     is "where tail refuses --pid the pane is the four-hour sleep" \
        "claude 14400 " "$(sg_pane "$SG/notail")"
-    is "and this run's own pane watches this run" "claude --pid=$$ -f /dev/null " \
+    is "and this run's own pane watches this run" "claude --pid=$$ -f $STATE/pane/idle " \
        "$(tr '\0' ' ' < "/proc/$(tmux display-message -p -t "$PANE" '#{pane_pid}')/cmdline")"
+    # At a TMPDIR with no space the pane's argv reads the same with the path pasted in.
+    is "the path is not in the pane's command string" \
+       'exec -a claude tail --pid=PID -f "$SUITE_IDLE"' "${SUITE_PANE/--pid=$$ /--pid=PID }"
+    # uutils's tail wakes on a write to anything beside the file it follows (#1029).
+    is "the file it follows is alone in its folder, and empty" "idle 0" \
+       "$(ls -A "$STATE/pane" | tr '\n' ' ')$(wc -c < "$STATE/pane/idle")"
 fi
 unset -f sg_left sg_run sg_dfl sg_pane; unset SG sg_hold sg_p sg_gone sg_haspid
 
@@ -20082,7 +20132,16 @@ until_file "$ACD/done" 'x'
 is "resume: a session live in OPENCODE is not opened twice" \
     "✕ cockpit: ${SID:0:8} is already running in $ACO" "$(cat "$ACD/note" 2>/dev/null)"
 is "the window's claude is the row's own" "$ACD/stub/claude" "$(cat "$ACD/which" 2>/dev/null)"
-is "and no claude was started for it" "" "$(cat "$ACD/stub/ran" 2>/dev/null)"
+# The stub writes its line a moment before or after `done` appears, and a read right at `done`
+# can come first (#1001). A claude started for the resume runs in a pane, by a split or in a
+# window of its own, and that pane closes after the stub's write. So: wait until the server
+# holds its five panes again, an x for each, and no more. The row reads that count too: a
+# wait that ran out means something is still running, and must not pass. The five are
+# written out, not read from the format beforehand: a format that printed nothing would
+# then agree with itself (#1030).
+until_out xxxxx ac display -p '#{S:#{W:#{P:x}}}'
+is "and no claude was started for it" "xxxxx|" \
+    "$(ac display -p '#{S:#{W:#{P:x}}}')|$(cat "$ACD/stub/ran" 2>/dev/null)"
 ac kill-server >/dev/null 2>&1
 unset -f ac ac_pane ac_each ac_wd ac_jump ac_deliver
 
