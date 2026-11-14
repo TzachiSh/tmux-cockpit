@@ -621,7 +621,22 @@ const WAITS: &str = "#!/bin/sh\necho \"$TMUX_TMPDIR\" > \"$0.ct\"\necho $$ > \"$
 fn sent_to_the_runner(signal: i32) -> (Option<i32>, bool, usize) {
     let r = Rig::new(&format!("sent{signal}"));
     let (status, said, left) = signalled(&r, &mut r.command(), signal, &[]);
+    let _ = ct_kept(&r);
     (status.signal(), said, left)
+}
+
+/// Whether the tmux folder the runner made for a [`WAITS`] stand-in of `r` was
+/// still there after the run (#1066); a folder still there is removed, empty or
+/// not, as this run made it, so a red run leaves nothing in /tmp.
+fn ct_kept(r: &Rig) -> bool {
+    let ct = std::fs::read_to_string(r.0.join(format!("{TEST}.ct"))).unwrap_or_default();
+    let ct = PathBuf::from(ct.trim_end());
+    let ours = ct.starts_with("/tmp") && ct.file_name().is_some_and(|n| n.to_string_lossy().starts_with("ct."));
+    let kept = ours && ct.exists();
+    if kept {
+        drop(std::fs::remove_dir_all(&ct));
+    }
+    kept
 }
 
 /// `c`, a runner of the rig `r`, started on a [`WAITS`] stand-in handed `args`
@@ -1533,11 +1548,15 @@ fn a_socket_the_binary_leaves_is_said_and_its_folder_kept() {
             records.first().copied().filter(|_| guard > 0),
             records.last(),
         );
+        let kept = folder.join("tmux-0/left").exists();
+        // this row made what is in it, the folder the runner named under /tmp: it goes
+        // before the asserts, so a red run leaves nothing there either
+        let ours = folder.starts_with("/tmp") && folder.file_name().unwrap().to_string_lossy().starts_with("ct.");
+        if ours {
+            drop(std::fs::remove_dir_all(&folder));
+        }
         assert_eq!(got, (Some(code), guard + 1, first, Some(&left.as_str())), "{row}: {}", ran.err);
-        assert!(folder.join("tmux-0/left").exists(), "{row}: the folder went");
-        // this row made what is in it: the folder the runner named, under /tmp
-        assert!(folder.starts_with("/tmp") && folder.file_name().unwrap().to_string_lossy().starts_with("ct."));
-        std::fs::remove_dir_all(&folder).unwrap();
+        assert!(kept && ours, "{row}: the folder went, or is not under /tmp: {folder:?}");
     }
 }
 
@@ -1738,9 +1757,7 @@ fn a_signal_to_the_runner_still_removes_the_tmux_folder() {
     for signal in TO_THE_RUNNER {
         let r = Rig::new(&format!("ctsig{signal}"));
         let (status, _, _) = signalled(&r, &mut r.command(), signal, &[]);
-        let ct = std::fs::read_to_string(r.0.join(format!("{TEST}.ct"))).unwrap();
-        let ct = PathBuf::from(ct.trim_end());
-        assert_eq!((status.signal(), ct.exists()), (Some(signal), false), "signal {signal}: {ct:?}");
+        assert_eq!((status.signal(), ct_kept(&r)), (Some(signal), false), "signal {signal}");
     }
 }
 
