@@ -142,41 +142,49 @@ deliver() {
     # it survives only if tmux ran neither (the pane vanished), checked below.
 
     # Where it landed, read now against the target: the notice carries no -t, so
-    # a #{window_name} left in it would name the reader's window. The name is
-    # user data crossing two parsers: single quotes would close the if-shell
-    # argument (stripped), and # is a format (doubled by fesc; on 3.7c
-    # w##{@secret} rendered the option's value). The read itself is safe: a
-    # #{window_name} value is not re-expanded, only this second interpolation.
-    # Not dmsg (#1096): the notice must stay a format, since $jump below is read
-    # where and when it is shown, on the reader's session. So every # is doubled
-    # before fesc, and the draw, which reads ## as # and #[ as a style, gives it back.
+    # a #{window_name} left in it would name the reader's window. The read is safe: a
+    # #{window_name} value is not re-expanded. The notice goes through dmsg, so the name
+    # is shown as written, quotes and # included (#1096).
     local where
     where=$(tmux display-message -p -t "$pane" \
         '#{session_name}:#{window_index} #{window_name}' 2>/dev/null)
-    where=${where//\'/}
-    where=$(fesc "${where//#/##}")
     [ -n "$where" ] || where="the agent pane"   # display-message failed; still read as a sentence
 
     # Armed first, disarmed by the idle arm: never armed on a pane that took the
     # paste, never missing on one that did not.
     tmux set-option -p -t "$pane" @cockpit_review_spool "$spool" 2>/dev/null
 
-    # The jump key is read, never spelled (#105); `off` drops the clause. Both
-    # notices fit the 72 columns an 80-column client draws.
-    local jump='#{?#{==:#{@cockpit_jump_key},off},, · prefix #{?#{@cockpit_jump_key},#{@cockpit_jump_key},u} jumps}'
+    # The jump key is read, never spelled (#105): the prefix key bound with the note
+    # "cockpit: jump", the binding itself. @cockpit_jump_key is read at load, globally,
+    # so a session's value or a change without a reload named a key that was not the
+    # jump, and could be stock kill-pane (#1102). No such binding (off, or a load from
+    # before the key notes) drops the clause. Both notices fit the 72 columns an
+    # 80-column client draws.
+    local jk jump=''
+    jk=$(tmux list-keys -T prefix -F '#{key_note}'$'\t''#{key_string}' 2>/dev/null |
+        awk -F'\t' '$1 == "cockpit: jump" { print $2; exit }')
+    [ -z "$jk" ] || jump=" · prefix $jk jumps"
     local notice_paste="cockpit: review pasted into $where · ↵ sends it$jump"
     local notice_queue="cockpit: review queued for $where · it lands when the agent stops"
+    local paste_arm="set-option -pu -t $pane @cockpit_review_spool"
+    paste_arm="$paste_arm ; set-option -p -t $pane @cockpit_review sent"
+    paste_arm="$paste_arm ; paste-buffer -p -r -d -b $bufname -t $pane"
     tmux if-shell -F -t "$pane" \
         "#{&&:#{m/i:*|#{b:pane_current_command}|*,#{@cockpit_agents_glob}},#{&&:#{!=:#{@panestate},running},#{!=:#{@panestate},needs-input}}}" \
-        "set-option -pu -t $pane @cockpit_review_spool ; set-option -p -t $pane @cockpit_review sent ; paste-buffer -p -r -d -b $bufname -t $pane ; display-message -d 0 '$notice_paste'" \
-        "delete-buffer -b $bufname ; display-message -d 0 '$notice_queue'"
+        "$paste_arm" "delete-buffer -b $bufname"
 
     # An empty option means the paste happened: nobody will read the spool.
-    [ -n "$(tmux show-option -pqv -t "$pane" @cockpit_review_spool 2>/dev/null)" ] || rm -f -- "$spool"
+    local spooled
+    spooled=$(tmux show-option -pqv -t "$pane" @cockpit_review_spool 2>/dev/null)
+    [ -n "$spooled" ] || rm -f -- "$spool"
 
     if tmux list-buffers -F '#{buffer_name}' 2>/dev/null | grep -qxF "$bufname"; then
         tmux delete-buffer -b "$bufname" 2>/dev/null
         return 1
     fi
+    # Which arm ran, told by the spool option the paste arm unset (#1102: the notice is no
+    # longer a format inside the arms, so it is shown here).
+    if [ -n "$spooled" ]; then dmsg -d 0 "$notice_queue" 2>/dev/null
+    else dmsg -d 0 "$notice_paste" 2>/dev/null; fi
     return 0
 }
