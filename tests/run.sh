@@ -11757,7 +11757,9 @@ echo "== cockpit-panel: insert pastes without Enter, send adds it, and the text 
 # The panel is the one wrapper that writes into a pane, so it is driven for real:
 # a fake claude, a target running cat, the panel in a second window, send-keys.
 if need_tmux "cockpit-panel end to end"; then :; else
-PN="cockpit-pn-$$"; SOCKS="$SOCKS $PN"; PND=$(mktmpd)
+# The folder's own name holds a blank, so that the paths this block pastes into a pane's
+# command string are odd whatever TMPDIR is: bare, sh split them (#990, C2c).
+PN="cockpit-pn-$$"; SOCKS="$SOCKS $PN"; PND="$(mktmpd)/p n"
 mkdir -p "$PND/bin" "$PND/cache" "$PND/cfg"
 # With $PND/hang present the fake records its pid and parent, then never answers.
 cat > "$PND/bin/claude" <<PNFAKE
@@ -11769,7 +11771,9 @@ PNFAKE
 chmod +x "$PND/bin/claude"
 "$TMUX_REAL" -L "$PN" -f /dev/null new-session -d -s t -x 120 -y 40 'exec sleep 300' >/dev/null 2>&1
 # The fake is found on PATH, as the real one would be; COCKPIT_CLAUDE would beat it.
-PNENV="env -u COCKPIT_CLAUDE 'PATH=$PND/bin:$SHIM:/usr/bin:/bin' XDG_CACHE_HOME=$PND/cache XDG_CONFIG_HOME=$PND/cfg COCKPIT_LOG=$PND/tui.log"
+PNENV="env -u COCKPIT_CLAUDE $(tq "PATH=$PND/bin:$SHIM:/usr/bin:/bin")"
+PNENV="$PNENV XDG_CACHE_HOME=$(tq "$PND/cache") XDG_CONFIG_HOME=$(tq "$PND/cfg")"
+PNENV="$PNENV COCKPIT_LOG=$(tq "$PND/tui.log")"
 pn_gone() {                   # <pane>  the wrapper has exited and its window with it
     local i
     for i in $(seq 1 "$POLLS"); do
@@ -11781,7 +11785,7 @@ pn_gone() {                   # <pane>  the wrapper has exited and its window wi
 pn_go() {                     # <target-cmd> <draft>  -> PNA target, PNB panel, at the result view
     PNA=$("$TMUX_REAL" -L "$PN" new-window -d -P -F '#{pane_id}' -t t: "$1")
     PNB=$("$TMUX_REAL" -L "$PN" new-window -d -P -F '#{pane_id}' -t t: \
-        "$PNENV $DIR/scripts/cockpit-panel -p $PNA")
+        "$PNENV $(tq "$DIR/scripts/cockpit-panel") -p $PNA")
     until_cap "$PN" "$PNB" '*will send*' || return 1
     "$TMUX_REAL" -L "$PN" send-keys -t "$PNB" 1
     "$TMUX_REAL" -L "$PN" send-keys -t "$PNB" -l "$2"
@@ -11848,7 +11852,7 @@ pn_hang() {                   # <signal>  -> the claude pid, or empty; kills the
     rm -f "$PND/cpid" "$PND/ppid"; touch "$PND/hang"
     PNA=$("$TMUX_REAL" -L "$PN" new-window -d -P -F '#{pane_id}' -t t: 'exec cat')
     PNB=$("$TMUX_REAL" -L "$PN" new-window -d -P -F '#{pane_id}' -t t: \
-        "$PNENV $DIR/scripts/cockpit-panel -p $PNA")
+        "$PNENV $(tq "$DIR/scripts/cockpit-panel") -p $PNA")
     until_cap "$PN" "$PNB" '*will send*' || return 1
     "$TMUX_REAL" -L "$PN" send-keys -t "$PNB" 1
     "$TMUX_REAL" -L "$PN" send-keys -t "$PNB" -l 'hang'
@@ -12070,11 +12074,15 @@ exit 0
 PNSTUB
 chmod +x "$PND/rec/tmux" "$PND/p/bin/cockpit-tui"
 # <action-line> <text> [notext] -> every tmux argv the wrapper produced
+# The wrapper makes its resume file under TMPDIR. Here that is the block's folder, whose
+# name holds a blank, so the rows that cut the file's path out of the binary's argv meet
+# a path with a blank in every run (#990, C2c).
 pact() {
     : > "$PND/pargv"; printf '%s\n' "$1" > "$PND/line"; printf '%s' "$2" > "$PND/text"
     [ "${3:-}" = notext ] && rm -f "$PND/text"
     printf '%s\n' "${4:-zsh}" > "$PND/cmd"; printf '%s\n' "${5:-zsh}" > "$PND/now"
-    PATH="$PND/rec:$PATH" COCKPIT_LOG="$PND/tui.log" COCKPIT_TUI_BIN="$PND/p/bin/cockpit-tui" \
+    TMPDIR="$PND" PATH="$PND/rec:$PATH" COCKPIT_LOG="$PND/tui.log" \
+        COCKPIT_TUI_BIN="$PND/p/bin/cockpit-tui" \
         "$PND/p/scripts/cockpit-panel" -p %5 </dev/null >/dev/null 2>&1
     tr '\n' ';' < "$PND/pargv" | sed "s/cockpit-panel-[0-9]*/B/g"
 }
@@ -12084,7 +12092,8 @@ pact() {
 pask() {
     : > "$PND/bargv"; printf 'paste %%5\n' > "$PND/line"; printf 'hi' > "$PND/text"
     printf 'zsh\n' > "$PND/cmd"; printf 'zsh\n' > "$PND/now"
-    PATH="$PND/rec:$PATH" COCKPIT_LOG="$PND/tui.log" COCKPIT_TUI_BIN="$PND/p/bin/cockpit-tui" \
+    TMPDIR="$PND" PATH="$PND/rec:$PATH" COCKPIT_LOG="$PND/tui.log" \
+        COCKPIT_TUI_BIN="$PND/p/bin/cockpit-tui" \
         "$PND/p/scripts/cockpit-panel" -p %5 "$@" </dev/null >/dev/null 2>&1
     echo "rc=$?"; cat "$PND/bargv"
 }
@@ -12092,8 +12101,8 @@ is "--ask reaches the binary on the first run" "rc=0"$'\n'"panel %5 --ask /r/x.r
     "$(pask --ask /r/x.rs 3 7)"
 touch "$PND/state"
 is "and a run after an action resumes without it" \
-    "rc=0"$'\n'"panel %5 --ask /r/x.rs 3 7"$'\n'"panel %5 --resume ${PND}/RESUME --last ok" \
-   "$(pask --ask /r/x.rs 3 7 | sed "s#--resume [^ ]*/resume#--resume ${PND}/RESUME#")"
+    "rc=0"$'\n'"panel %5 --ask /r/x.rs 3 7"$'\n'"panel %5 --resume */resume --last ok" \
+   "$(pask --ask /r/x.rs 3 7 | sed 's| --resume .*/resume| --resume */resume|')"
 rm -f "$PND/state"
 for pa in "--ask /r/x.rs 7 3" "--ask /r/x.rs 0 1" "--ask /r/x.rs 01 2" "--ask /r/x.rs 3" \
     "--ask /r/x.rs 3 7 8" "--ask  3 7" "--x /r 1 2"; do
@@ -12217,15 +12226,15 @@ is "a state file beside the action reruns the binary on it, after the paste" \
    "load-buffer -b B -;hi;paste-buffer -p -d -b B -t %5;display-message -t %5 cockpit: inserted 2 chars into %5;load-buffer -b B -;hi;paste-buffer -p -d -b B -t %5;display-message -t %5 cockpit: inserted 2 chars into %5;" \
    "$(pact 'paste %5' hi)"
 is "and tells it the paste went in" "panel %5;panel %5 --resume */resume --last ok;" \
-   "$(tr '\n' ';' < "$PND/bargv" | sed 's| --resume [^ ]*/resume| --resume */resume|')"
+   "$(tr '\n' ';' < "$PND/bargv" | sed 's| --resume .*/resume| --resume */resume|')"
 rm -f "$PND/bargv"; pact 'send %5' hi '' claude zsh >/dev/null
 is "or why nothing was sent" \
     "panel %5 --resume */resume --last failed:the pane now runs zsh, not claude" \
-   "$(sed -n 2p "$PND/bargv" | sed 's| --resume [^ ]*/resume| --resume */resume|')"
+   "$(sed -n 2p "$PND/bargv" | sed 's| --resume .*/resume| --resume */resume|')"
 rm -f "$PND/bargv"; COCKPIT_READONLY=1 pact 'send %5' hi >/dev/null
 is "COCKPIT_READONLY reruns it too, saying nothing was sent" \
     "panel %5 --resume */resume --last failed:COCKPIT_READONLY is set; nothing sent" \
-   "$(sed -n 2p "$PND/bargv" | sed 's| --resume [^ ]*/resume| --resume */resume|')"
+   "$(sed -n 2p "$PND/bargv" | sed 's| --resume .*/resume| --resume */resume|')"
 rm -f "$PND/state"
 touch "$PND/crash"; : > "$PND/tui.log"
 is "a panel that exits non-zero is reported on the pane" \
@@ -12241,16 +12250,19 @@ echo "== cockpit-panel: ^Z hides the panel and the next run on the pane brings i
 # The wrapper in a window stands in for the popup prefix f opens: the window
 # closing is the popup closing, and a second run on the same pane is prefix f again.
 if need_tmux "cockpit-panel hide and resume"; then :; else
-PH="cockpit-ph-$$"; SOCKS="$SOCKS $PH"; PHD=$(mktmpd)
+# As the insert block's: a blank in the folder's own name (#990, C2c).
+PH="cockpit-ph-$$"; SOCKS="$SOCKS $PH"; PHD="$(mktmpd)/p h"
 mkdir -p "$PHD/bin" "$PHD/state"
 # Never asked: nothing in this block sends a request.
 printf '#!/bin/sh\ncat >/dev/null\necho "<text>NEVER CALLED</text>"\n' > "$PHD/bin/claude"
 chmod +x "$PHD/bin/claude"
 "$TMUX_REAL" -L "$PH" -f /dev/null new-session -d -s t -x 120 -y 40 'exec sleep 300' >/dev/null 2>&1
-PHENV="env -u COCKPIT_CLAUDE 'PATH=$PHD/bin:$SHIM:/usr/bin:/bin' XDG_STATE_HOME=$PHD/state XDG_CACHE_HOME=$PHD XDG_CONFIG_HOME=$PHD COCKPIT_LOG=$PHD/tui.log"
+PHENV="env -u COCKPIT_CLAUDE $(tq "PATH=$PHD/bin:$SHIM:/usr/bin:/bin")"
+PHENV="$PHENV XDG_STATE_HOME=$(tq "$PHD/state") XDG_CACHE_HOME=$(tq "$PHD")"
+PHENV="$PHENV XDG_CONFIG_HOME=$(tq "$PHD") COCKPIT_LOG=$(tq "$PHD/tui.log")"
 ph_open() {                   # <target>  -> PHB, the panel's pane, once it has drawn
     PHB=$("$TMUX_REAL" -L "$PH" new-window -d -P -F '#{pane_id}' -t t: \
-        "$PHENV $DIR/scripts/cockpit-panel -p $1")
+        "$PHENV $(tq "$DIR/scripts/cockpit-panel") -p $1")
     until_cap "$PH" "$PHB" '*panel*'
 }
 ph_gone() {                   # <pane>
@@ -12481,7 +12493,7 @@ echo "== cockpit-panel: a tap in the popup acts once, and x copies by OSC 52 =="
 # an SGR click written there is what a touch screen sends. Coordinates are read
 # off the outer capture, 1-based as the wire wants them.
 if need_tmux "taps in the popup"; then :; else
-TI="cockpit-tapi2-$$"; TO="cockpit-tapo2-$$"; SOCKS="$SOCKS $TI $TO"; TPD=$(mktmpd)
+TI="cockpit-tapi2-$$"; TO="cockpit-tapo2-$$"; SOCKS="$SOCKS $TI $TO"; TPD="$(mktmpd)/t p"
 mkdir -p "$TPD/bin"
 printf '#!/bin/sh\ncat >/dev/null\nprintf "<text>copied by tap</text>"\n' > "$TPD/bin/claude"
 chmod +x "$TPD/bin/claude"
@@ -12495,7 +12507,8 @@ tpa=$("$TMUX_REAL" -L "$TI" list-panes -F '#{pane_id}' | head -1)
 until_cap "$TO" o '*[!\ ]*' >/dev/null
 tpc=$("$TMUX_REAL" -L "$TI" list-clients -F '#{client_name}' | head -1)
 "$TMUX_REAL" -L "$TI" display-popup -c "$tpc" -w 80 -h 24 -e COCKPIT_PANEL_MODE=tablet -E \
-    "env 'PATH=$TPD/bin:$SHIM:/usr/bin:/bin' COCKPIT_LOG=$TPD/tui.log $DIR/scripts/cockpit-panel -p $tpa" \
+    "env $(tq "PATH=$TPD/bin:$SHIM:/usr/bin:/bin") COCKPIT_LOG=$(tq "$TPD/tui.log") $(:
+        )$(tq "$DIR/scripts/cockpit-panel") -p $tpa" \
         >/dev/null 2>&1 &
 # <label> <M|m> [button]  presses (M) or releases (m) on the label's first cell
 tp_at() {
