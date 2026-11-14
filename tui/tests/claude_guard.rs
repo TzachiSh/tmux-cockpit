@@ -694,6 +694,27 @@ fn a_runner_started_with_a_signal_ignored_still_reads_the_log_and_ends_as_its_bi
     }
 }
 
+/// The child half of the row below: writes far more than a pipe holds, then
+/// fails. Run only where that row sets COCKPIT_LOUD_CHILD.
+#[test]
+fn loud_child() {
+    if std::env::var_os("COCKPIT_LOUD_CHILD").is_none() {
+        return;
+    }
+    eprint!("{}", "x".repeat(300_000));
+    panic!("the loud child's own words");
+}
+
+/// #1061: a red row in a binary started again that writes more than a pipe
+/// holds is quoted when it ends, not waited out to the bound without a word.
+#[test]
+fn a_loud_red_row_handed_down_is_quoted() {
+    let loud = [("COCKPIT_LOUD_CHILD", "1")];
+    let err = fake::handed(&["loud_child"], &[], &loud, Duration::from_secs(30)).unwrap_err();
+    let said = err.contains("the loud child's own words");
+    assert!(said, "{}", &err[..err.len().min(2000)]);
+}
+
 /// QUIT is the keyboard's other one, ctrl and backslash. The start is still reported and
 /// the folder goes. How the runner then ends is its shell's own: dash dies by
 /// QUIT, and bash, where it is sh, ignores QUIT in every shell and ends with
