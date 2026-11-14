@@ -613,7 +613,7 @@ const ODD: [(&str, Option<&str>); 9] = [
 fn the_shell_prints_odd_values_whole() {
     use std::os::unix::process::ExitStatusExt;
     for (row, v) in ODD {
-        let path = format!("{}:/second", v.unwrap_or("/first"));
+        let path = format!("{}:/second:/third", v.unwrap_or("/first"));
         let mut sh = shell(SAY);
         sh.env_clear().env("PATH", &path);
         if let Some(v) = v {
