@@ -178,30 +178,54 @@ fn stub_of(pid: i32, dir: &std::path::Path) -> bool {
     dir.len() > 1 && cmd.windows(dir.len()).any(|w| w == dir.as_slice())
 }
 
+/// The shell the give-up becomes, by full path so that no PATH is searched for it (#988).
+const SH: &str = "/bin/sh";
+
+/// The give-up's last line, printed by [`SH`] from the environment the exec handed it,
+/// then SIGABRT under the same pid. `command` passes over a function of that name
+/// imported from the environment, which bash does even as `sh`. `${HOME-}` holds under
+/// an exported `SHELLOPTS=nounset`. `exit 134` only if the kill did not end it (#988).
+const SAY: &str = concat!(
+    r#"command printf 'At the abort PATH began with %s and HOME was %s\n' "#,
+    r#""${PATH%%:*}" "${HOME-}" >&2; command kill -s ABRT "$$"; exit 134"#,
+);
+
+/// The give-up's last line as this binary writes it when there is no shell to exec.
+fn last_line(path: &str, home: &str) -> String {
+    let first = path.split(':').next().unwrap_or_default();
+    format!("At the abort PATH began with {first} and HOME was {home}\n")
+}
+
 /// The drop gave up: says so on the real stderr, past the harness's capture, and ends
 /// the run there. The variables stay the rig's and `dir` is left (#969).
 fn give_up(dir: &Path, bound: std::time::Duration) -> ! {
     use std::io::Write;
+    use std::os::unix::process::CommandExt;
     let me = std::thread::current();
     let (test, n) = (me.name().unwrap_or("the test that ran last"), lookups());
     let how = if std::thread::panicking() { ", while it was panicking" } else { "" };
-    // read at the last moment, so the text shows what a late lookup would have found
-    let path = std::env::var("PATH").unwrap_or_default();
-    let home = std::env::var("HOME").unwrap_or_default();
-    let first = path.split(':').next().unwrap_or_default();
     let msg = format!(
         "\nThe agents test rig stopped this test binary. This is the rig's guard for issue \
          #969, not a product crash.\n{n} lookup thread(s) were still running {bound:?} after \
          the rig of {test} began its drop{how}. Putting PATH and HOME back would let that \
          lookup start the real `claude`, so they stay the rig's and the run aborts here.\n\
          What to do: rerun {test} alone, with `cargo test --test agents -- --exact {test}`.\n\
-         The rig's folder was left behind: {}\n\
-         At the abort PATH began with {first} and HOME was {home}\n",
+         The rig's folder was left behind: {}\n",
         dir.display(),
     );
-    // nothing may follow this message but the abort: a put-back after it would hand a
-    // lookup still running the developer's `claude`, unseen by the message's last line (#969)
     let _ = std::io::stderr().write_all(msg.as_bytes());
+    // The last line is printed by the shell this process becomes. No line of this binary
+    // runs after the exec, so the line shows PATH and HOME as a late lookup would have
+    // found them, whatever was written above it (#988). An exec keeps an ignored signal:
+    // SIGABRT goes back to its default so that the shell's kill ends the process.
+    // SAFETY: sets the default action, no handler.
+    unsafe { libc::signal(libc::SIGABRT, libc::SIG_DFL) };
+    let _ = std::process::Command::new(SH).arg0("sh").args(["-c", SAY]).exec();
+    // No shell: the line from this binary's own read, which a put-back between this read
+    // and the abort would get past, as one anywhere after the read did before #988.
+    let path = std::env::var("PATH").unwrap_or_default();
+    let home = std::env::var("HOME").unwrap_or_default();
+    let _ = std::io::stderr().write_all(last_line(&path, &home).as_bytes());
     std::process::abort();
 }
 
