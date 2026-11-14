@@ -4325,6 +4325,94 @@ unset -f cl_box cl_env cl_load
 unset CL CLREL cl_d cl_a cl_n cl_f cl_p2 cl_out cl_line
 fi
 
+echo "== the plugin loads whole and the menu renames, from a folder of any name (#1050, #1071) =="
+# source-file reads its path as a glob pattern: under a folder named a\x it looked for ax,
+# and statusbar.conf with its @cockpit options never loaded (#1050). The menu's Rename rows
+# put the path in a tmux "..." string, whose parser ate a ', a ", a $ or a \ in it, and the
+# rename ran nothing (#1071). A copy of the plugin sits under each folder shape, as the
+# #1046 block's, loaded by the line cockpit_conf_line gives, and keys go to it through a
+# real attached client.
+if need_tmux "the plugin path shapes"; then :
+elif ! ( . "$DIR/scripts/lib/vnum.sh"
+         v=$("$TMUX_REAL" -V); vnum_ge "${v#tmux }" 3.8 ); then
+    skip_ "the plugin path shapes (tmux below 3.8: cockpit.tmux binds nothing there)"
+else
+PS=$(mktmpd); mkdir -p "$PS/p" "$PS/wd"
+for ps_n in 1 2 3 4 5 6 7 8 9; do SOCKS="$SOCKS cockpit-ps-$$-$ps_n cockpit-pso-$$-$ps_n"; done
+# Siblings the unescaped glob of a*b, a?c and a[d] would match: their statusbar.conf
+# sets a decoy option, so loading one reds the option row.
+for ps_f in aXb aYc ad; do
+    mkdir -p "$PS/p/$ps_f/scripts/lib"
+    echo "set -g @cockpit_decoy $ps_f" > "$PS/p/$ps_f/scripts/lib/statusbar.conf"
+done
+ps_opts() {                   # <socket> <folder> -> name=value per @cockpit option, folder as P
+    local n v q=${2//\'/\'\\\'\'}   # the folder as sq() writes it
+    "$TMUX_REAL" -L "$1" show-options -g 2>/dev/null | while read -r n _; do
+        case $n in @cockpit_sweep_seq) continue ;; @cockpit*) ;; *) continue ;; esac
+        v=$("$TMUX_REAL" -L "$1" show-options -gv "$n" 2>/dev/null)
+        v=${v//"$q"/P}            # only that form: a value that lost sq() stays unequal
+        printf '%s=%s\n' "$n" "$v"
+    done
+}
+ps_rename() {                 # <outer socket> <menu key> <prompt> <name>
+    "$TMUX_REAL" -L "$1" send-keys -t o C-b a
+    until_cap "$1" o '*Rename session*'
+    "$TMUX_REAL" -L "$1" send-keys -t o "$2"
+    until_cap "$1" o "*($3)*"
+    "$TMUX_REAL" -L "$1" send-keys -t o C-u
+    "$TMUX_REAL" -L "$1" send-keys -t o -l -- "$4"
+    "$TMUX_REAL" -L "$1" send-keys -t o Enter
+}
+ps_n=0
+for ps_f in plain 'a b' "a'q" 'a"q' 'a$HOMEq' 'a\x' 'a*b' 'a?c' 'a[d]'; do
+    ps_n=$((ps_n + 1)); ps_s="cockpit-ps-$$-$ps_n"; ps_o="cockpit-pso-$$-$ps_n"
+    ps_p="$PS/p/$ps_f"; mkdir -p "$ps_p"
+    cp "$DIR/bootstrap.sh" "$DIR/install.sh" "$DIR/cockpit.tmux" "$ps_p/"
+    for ps_d in scripts examples bin; do ln -s "$DIR/$ps_d" "$ps_p/$ps_d"; done
+    { echo 'set -g @cockpit_bg_poll off'
+      ( . "$DIR/scripts/lib/confline.sh"; cockpit_conf_line "$ps_p" ); echo; } > "$PS/conf$ps_n"
+    ( cd "$PS/wd" && exec env -u TMUX_COCKPIT_DIR -u TMUX -u TMUX_PANE "$TMUX_REAL" \
+        -L "$ps_s" -f /dev/null new-session -d -s t -x 120 -y 30 -c "$PS/wd" 'exec sleep 300'
+    ) >/dev/null 2>&1
+    "$TMUX_REAL" -L "$ps_s" source-file "$PS/conf$ps_n" >/dev/null 2>&1
+    until_out '*@cockpit_click_line*' "$TMUX_REAL" -L "$ps_s" list-keys -T root C-MouseDown3Pane
+    # The load's own sweep runs in the background; this one ends before the options are read.
+    "$TMUX_REAL" -L "$ps_s" run-shell "$(tq "$ps_p/scripts/agent-state") sweep" >/dev/null 2>&1
+    ps_opts "$ps_s" "$ps_p" > "$PS/opts$ps_n"
+    if [ "$ps_n" = 1 ]; then
+        is "the plain folder's load sets statusbar.conf's options" "1" \
+           "$(grep -c '^@cockpit_corner_fmt=' "$PS/opts1")"
+    else
+        is "a folder named [$ps_f]: every @cockpit option and its value are the plain one's" \
+           "" "$(diff "$PS/opts1" "$PS/opts$ps_n" | head -5)"
+    fi
+    ( cd "$PS/wd" && exec env -u TMUX_COCKPIT_DIR -u TMUX -u TMUX_PANE "$TMUX_REAL" \
+        -L "$ps_o" -f /dev/null new-session -d -s o -x 120 -y 32 -c "$PS/wd" \
+        "TERM=xterm-256color exec $(tq "$TMUX_REAL") -L $ps_s attach -t t" ) >/dev/null 2>&1
+    until_cap "$ps_o" o '*[!\ ]*'
+    until_out '?*' "$TMUX_REAL" -L "$ps_s" list-clients -F '#{client_name}'
+    ps_sid=$("$TMUX_REAL" -L "$ps_s" display-message -p -t t: '#{session_id}')
+    ps_rename "$ps_o" , rename-window "w$ps_n"
+    until_out "w$ps_n" "$TMUX_REAL" -L "$ps_s" display-message -p -t "$ps_sid:" '#{window_name}'
+    ps_rename "$ps_o" '$' rename-session "s$ps_n"
+    until_out "s$ps_n" "$TMUX_REAL" -L "$ps_s" display-message -p -t "$ps_sid:" '#{session_name}'
+    is "a folder named [$ps_f]: the menu's Rename window and Rename session rows rename" \
+       "w$ps_n|s$ps_n" "$("$TMUX_REAL" -L "$ps_s" display-message -p -t "$ps_sid:" \
+           '#{window_name}|#{session_name}')"
+    "$TMUX_REAL" -L "$ps_o" kill-server >/dev/null 2>&1
+    "$TMUX_REAL" -L "$ps_s" kill-server >/dev/null 2>&1
+done
+# gesc, the escape for source-file's glob: each of \ * ? [ behind a \, nothing else.
+is "gesc puts a \\ before each of \\ * ? [ and leaves the rest" \
+   "|/p/plain|/p/a\\\\x|/p/a\\*b|/p/a\\?c|/p/a\\[d]|/p/a'\$\"#{x}" \
+   "$(. "$DIR/scripts/lib/fmt.sh"
+      for ps_f in '' /p/plain '/p/a\x' '/p/a*b' '/p/a?c' '/p/a[d]' "/p/a'\$\"#{x}"; do
+          printf '%s|' "$(gesc "$ps_f")"
+      done | sed 's/|$//')"
+unset -f ps_opts ps_rename
+unset PS ps_n ps_s ps_o ps_f ps_p ps_d ps_sid
+fi
+
 echo "== HOME unset must not kill the path picker =="
 # set -u plus a bare $HOME: a "~/..." token on a clicked line aborted the script
 # outright wherever HOME is missing -- a stripped run-shell, a systemd tmux.
