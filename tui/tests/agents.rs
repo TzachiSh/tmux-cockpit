@@ -25,6 +25,8 @@ struct Rig {
     old: Vec<(&'static str, Option<String>)>,
     /// how long the drop waits for the lookups to end before it gives up
     wait: std::time::Duration,
+    /// the shell the give-up execs: [`SH`], or a missing file for a box without one
+    sh: PathBuf,
     _lock: Option<Lock>,
 }
 
@@ -118,6 +120,7 @@ impl Rig {
             dir,
             old,
             wait: DROP_WAIT,
+            sh: PathBuf::from(SH),
             _lock: lock,
         };
         // once the rig exists, so that a failure here drops it and the variables go back (#972)
@@ -178,30 +181,70 @@ fn stub_of(pid: i32, dir: &std::path::Path) -> bool {
     dir.len() > 1 && cmd.windows(dir.len()).any(|w| w == dir.as_slice())
 }
 
+/// The shell the give-up becomes, by full path so that no PATH is searched for it (#988).
+const SH: &str = "/bin/sh";
+
+/// The give-up's last line, printed by [`SH`] from the environment the exec handed it,
+/// then SIGABRT under the same pid. The exec sets SIGPIPE back to its default, so the
+/// trap keeps a closed stderr from ending it by SIGPIPE first. `command` passes over a
+/// function of that name imported from the environment, which bash does even as `sh`.
+/// `${HOME-}` holds under an exported `SHELLOPTS=nounset`. `exit 134` only if the kill
+/// did not end it (#988).
+const SAY: &str = concat!(
+    r#"trap '' PIPE; command printf 'At the abort PATH began with %s and HOME was %s\n' "#,
+    r#""${PATH%%:*}" "${HOME-}" >&2; command kill -s ABRT "$$"; exit 134"#,
+);
+
+/// The give-up's last line as this binary writes it when there is no shell to exec.
+fn last_line(path: &str, home: &str) -> String {
+    let first = path.split(':').next().unwrap_or_default();
+    format!("At the abort PATH began with {first} and HOME was {home}\n")
+}
+
+/// The fallback's line ahead of the last: which path wrote it, and why (#988).
+fn exec_failed(sh: &Path, e: &std::io::Error) -> String {
+    format!("No shell from {}: {e}. The line below is this binary's own read.\n", sh.display())
+}
+
 /// The drop gave up: says so on the real stderr, past the harness's capture, and ends
 /// the run there. The variables stay the rig's and `dir` is left (#969).
-fn give_up(dir: &Path, bound: std::time::Duration) -> ! {
+fn give_up(dir: &Path, bound: std::time::Duration, sh: &Path) -> ! {
     use std::io::Write;
+    use std::os::unix::process::CommandExt;
     let me = std::thread::current();
     let (test, n) = (me.name().unwrap_or("the test that ran last"), lookups());
     let how = if std::thread::panicking() { ", while it was panicking" } else { "" };
-    // read at the last moment, so the text shows what a late lookup would have found
-    let path = std::env::var("PATH").unwrap_or_default();
-    let home = std::env::var("HOME").unwrap_or_default();
-    let first = path.split(':').next().unwrap_or_default();
     let msg = format!(
         "\nThe agents test rig stopped this test binary. This is the rig's guard for issue \
          #969, not a product crash.\n{n} lookup thread(s) were still running {bound:?} after \
          the rig of {test} began its drop{how}. Putting PATH and HOME back would let that \
          lookup start the real `claude`, so they stay the rig's and the run aborts here.\n\
          What to do: rerun {test} alone, with `cargo test --test agents -- --exact {test}`.\n\
-         The rig's folder was left behind: {}\n\
-         At the abort PATH began with {first} and HOME was {home}\n",
+         The rig's folder was left behind: {}\n",
         dir.display(),
     );
-    // nothing may follow this message but the abort: a put-back after it would hand a
-    // lookup still running the developer's `claude`, unseen by the message's last line (#969)
     let _ = std::io::stderr().write_all(msg.as_bytes());
+    // The last line is printed by the shell this process becomes. No line of this binary
+    // runs after the exec, so the line shows PATH and HOME as a late lookup would have
+    // found them, whatever was written above it (#988). An exec keeps an ignored action
+    // and the signal mask, which abort() would undo for itself: undone here, so that the
+    // shell's kill ends the process.
+    // SAFETY: sets the default action and unblocks SIGABRT on this thread, no handler.
+    unsafe {
+        libc::signal(libc::SIGABRT, libc::SIG_DFL);
+        let mut abrt: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut abrt);
+        libc::sigaddset(&mut abrt, libc::SIGABRT);
+        libc::pthread_sigmask(libc::SIG_UNBLOCK, &abrt, std::ptr::null_mut());
+    }
+    let failed = std::process::Command::new(sh).arg0("sh").args(["-c", SAY]).exec();
+    // No shell: the line from this binary's own read, which a put-back between this read
+    // and the abort would get past, as one anywhere after the read did before #988. The
+    // line ahead of it says so, for the reader of a give-up (#988).
+    let path = std::env::var("PATH").unwrap_or_default();
+    let home = std::env::var("HOME").unwrap_or_default();
+    let read = last_line(&path, &home);
+    let _ = std::io::stderr().write_all((exec_failed(sh, &failed) + &read).as_bytes());
     std::process::abort();
 }
 
@@ -227,7 +270,7 @@ impl Drop for Rig {
         // no lookup is left, and for good if one never ends. The wait also covers the
         // cache write, which would make the dir again after it is removed (#608).
         if !lookups_end_within(self.wait) {
-            give_up(&self.dir, self.wait);
+            give_up(&self.dir, self.wait, &self.sh);
         }
         put_back(&self.old);
         let _ = std::fs::remove_dir_all(&self.dir);
@@ -364,12 +407,17 @@ fn a_rig_dropped_in_a_panic_leaves_no_stage_hook_set() {
 
 /// The child half of the give-up test: a lookup thread that never ends, and a rig
 /// whose drop waits 200 ms for it. Should the rig's HOME ever be put back under that
-/// thread, it asks again, and the `claude` outside the rig logs it.
+/// thread, it asks again, and the `claude` outside the rig logs it. `HUNG_LOOKUP_CHILD`
+/// says how the rig goes: `panic` drops it in a panic's unwind, `nosh` gives it a
+/// shell path that does not exist, and `return`, `ignored` and `blocked` drop it
+/// plainly. Any other value fails the child, so a misspelt mode cannot pass (#988).
 #[test]
 fn hung_lookup_child() {
-    if std::env::var_os("HUNG_LOOKUP_CHILD").is_none() {
+    let Ok(how) = std::env::var("HUNG_LOOKUP_CHILD") else {
         return;
-    }
+    };
+    let modes = ["return", "panic", "nosh", "ignored", "blocked"];
+    assert!(modes.contains(&how.as_str()), "no child mode {how:?}");
     fn hang(at: Stage, _pid: u32) {
         if at == Stage::Reaping {
             let home = std::env::var("HOME").unwrap();
@@ -389,19 +437,44 @@ fn hung_lookup_child() {
     std::fs::write(dev.dir.join("made"), "").unwrap();
     let mut r = Rig::inside(&dev, "hung", ONE);
     r.wait = std::time::Duration::from_millis(200);
+    if how == "nosh" {
+        r.sh = r.dir.join("no-such-sh");
+    }
     set_stage_hook(Some(hang));
     r.sess();
     wait_file(&r.dir.join("held"));
+    assert!(how != "panic", "a failed assert while the lookup hangs");
     drop(r);
     std::process::exit(3);
 }
 
-/// Runs the child half: its exit, its stderr, and the rig's and the dev's dirs it names.
-fn hung_lookup_run() -> (std::process::ExitStatus, String, PathBuf, PathBuf) {
+/// Runs the child half `how`: its exit, its stderr, and the rig's and the dev's dirs it
+/// names. `ignored` starts it with SIGABRT ignored and `blocked` with SIGABRT blocked,
+/// as a parent may hand either down (#988).
+fn hung_lookup_run(how: &str) -> (std::process::ExitStatus, String, PathBuf, PathBuf) {
+    use std::os::unix::process::CommandExt;
     let mut child = std::process::Command::new(std::env::current_exe().unwrap());
     child
         .args(["--exact", "hung_lookup_child", "--test-threads=1"])
-        .env("HUNG_LOOKUP_CHILD", "1");
+        .env("HUNG_LOOKUP_CHILD", how);
+    let (ignore, block) = (how == "ignored", how == "blocked");
+    let hand_down = move || {
+        // SAFETY: sets an action or the mask, no handler.
+        unsafe {
+            let mut abrt: libc::sigset_t = std::mem::zeroed();
+            libc::sigemptyset(&mut abrt);
+            libc::sigaddset(&mut abrt, libc::SIGABRT);
+            if ignore {
+                libc::signal(libc::SIGABRT, libc::SIG_IGN);
+            }
+            if block {
+                libc::sigprocmask(libc::SIG_BLOCK, &abrt, std::ptr::null_mut());
+            }
+        }
+        Ok(())
+    };
+    // SAFETY: the calls above are async-signal-safe, made between fork and exec.
+    unsafe { child.pre_exec(hand_down) };
     let child = child.stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped());
     let child = child.spawn().unwrap();
     let pid = child.id();
@@ -415,12 +488,12 @@ fn hung_lookup_run() -> (std::process::ExitStatus, String, PathBuf, PathBuf) {
     )
 }
 
-/// #969: a drop whose lookup never ends does not put PATH and HOME back. It says
-/// why and aborts, and leaves its dirs, the made-up developer's `claude` unstarted.
-#[test]
-fn a_drop_whose_lookup_never_ends_aborts_with_the_variables_kept() {
+/// Runs the child half `how` and asserts the give-up of #969: SIGABRT, the message with
+/// the rig's own PATH and HOME on its last line, the dirs left, no `claude` outside the
+/// rig started. Returns the child's stderr and the rig's dir.
+fn gave_up(how: &str) -> (String, PathBuf) {
     let _r = Rig::new("giveup", ONE);
-    let (status, err, rig, dev) = hung_lookup_run();
+    let (status, err, rig, dev) = hung_lookup_run(how);
     let seen = (rig.join("go").exists(), dev.join("made").exists(), dev.join("outside").exists());
     let _ = (std::fs::remove_dir_all(&rig), std::fs::remove_dir_all(&dev));
     use std::os::unix::process::ExitStatusExt;
@@ -431,6 +504,134 @@ fn a_drop_whose_lookup_never_ends_aborts_with_the_variables_kept() {
     let said = ["not a product crash", "rerun hung_lookup_child alone", &left, &kept];
     assert!(said.iter().all(|s| err.contains(s)), "{err}");
     assert_eq!(seen, (true, true, false), "(rig dir left, dev dir left, no outside claude)");
+    (err, rig)
+}
+
+/// #969: a drop whose lookup never ends does not put PATH and HOME back. It says
+/// why and aborts, and leaves its dirs, the made-up developer's `claude` unstarted.
+#[test]
+fn a_drop_whose_lookup_never_ends_aborts_with_the_variables_kept() {
+    gave_up("return");
+}
+
+/// #988: the same when the rig drops in a panic's unwind, as after a failed assert.
+#[test]
+fn so_does_one_dropped_in_a_panics_unwind() {
+    let (err, _) = gave_up("panic");
+    assert!(err.contains("began its drop, while it was panicking."), "{err}");
+}
+
+/// #988: with no shell at the path, the binary reads PATH and HOME itself and aborts,
+/// and the line ahead of the last says that the shell could not be started, and why.
+#[test]
+fn so_does_one_with_no_shell_to_exec() {
+    let (err, rig) = gave_up("nosh");
+    let r = rig.display();
+    // spelt out, not built by `exec_failed`, so that the row pins the words: ENOENT
+    // as std words an OS error, with the text glibc, musl and macOS give it (#988)
+    let why = format!(
+        "No shell from {r}/no-such-sh: No such file or directory (os error 2). \
+         The line below is this binary's own read.\n"
+    );
+    let kept = format!("At the abort PATH began with {r}/bin and HOME was {r}\n");
+    assert!(err.contains(&(why + &kept)), "{err}");
+}
+
+/// #988: an ignored SIGABRT, which an exec hands down, does not keep the shell alive.
+#[test]
+fn so_does_one_started_with_sigabrt_ignored() {
+    gave_up("ignored");
+}
+
+/// #988: nor does a blocked one, which an exec hands down too.
+#[test]
+fn so_does_one_started_with_sigabrt_blocked() {
+    gave_up("blocked");
+}
+
+/// `script` under [`SH`] as the give-up starts it, with a core limit of 0, soft and
+/// hard, as the child half sets its own: a death that is meant leaves no core (#988).
+fn shell(script: &str) -> std::process::Command {
+    use std::os::unix::process::CommandExt;
+    let mut sh = std::process::Command::new(SH);
+    sh.arg0("sh").args(["-c", script]);
+    let no_core = || {
+        // SAFETY: setrlimit reads one struct.
+        unsafe { libc::setrlimit(libc::RLIMIT_CORE, &libc::rlimit { rlim_cur: 0, rlim_max: 0 }) };
+        Ok(())
+    };
+    // SAFETY: setrlimit is async-signal-safe and allocates nothing.
+    unsafe { sh.pre_exec(no_core) };
+    sh
+}
+
+/// #988: the shells these rows start die by SIGABRT with both core limits at 0, so a
+/// developer's own limit leaves no core file of theirs in `tui/`.
+#[test]
+fn the_rows_shells_die_with_no_core_limit() {
+    use std::os::unix::process::ExitStatusExt;
+    let out = shell(&format!("ulimit -c; ulimit -Hc; {SAY}")).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "0\n0\n", "soft, then hard");
+    assert_eq!(out.status.signal(), Some(libc::SIGABRT), "{:?}", out.status);
+}
+
+/// #988: a shell whose kill does not end it, here with SIGABRT ignored, exits 134 and
+/// never 0, which cargo would read as a pass.
+#[test]
+fn a_shell_that_outlives_its_kill_exits_134() {
+    use std::os::unix::process::CommandExt;
+    let mut sh = shell(SAY);
+    let ignore = || {
+        // SAFETY: sets an action, no handler.
+        unsafe { libc::signal(libc::SIGABRT, libc::SIG_IGN) };
+        Ok(())
+    };
+    // SAFETY: signal() is async-signal-safe, made between fork and exec.
+    let out = unsafe { sh.pre_exec(ignore) }.output().unwrap();
+    assert_eq!(out.status.code(), Some(134), "{:?}", out.status);
+}
+
+/// #988: with nobody left to read stderr the shell still dies by SIGABRT, as abort()
+/// does, though the exec has set SIGPIPE back to its default.
+#[test]
+fn the_shell_dies_by_sigabrt_on_a_stderr_nobody_reads() {
+    use std::os::unix::process::ExitStatusExt;
+    let (read, write) = std::io::pipe().unwrap();
+    drop(read);
+    let status = shell(SAY).stderr(write).status().unwrap();
+    assert_eq!(status.signal(), Some(libc::SIGABRT), "{status:?}");
+}
+
+/// Rows of a PATH's first entry and a HOME, each by name. `None` leaves HOME unset.
+const ODD: [(&str, Option<&str>); 9] = [
+    ("quotes", Some("q'x\"y")),
+    ("blank", Some("a b")),
+    ("percent", Some("%s%d%%")),
+    ("backslash", Some("a\\nb\\")),
+    ("newline", Some("a\nb")),
+    ("expansion", Some("$(id)`id`*")),
+    ("dash", Some("-n")),
+    ("empty", Some("")),
+    ("unset", None),
+];
+
+/// #988: the shell prints PATH's first entry and HOME whole, neither expanded nor
+/// read as a format, as this binary's own read would, and dies by SIGABRT.
+#[test]
+fn the_shell_prints_odd_values_whole() {
+    use std::os::unix::process::ExitStatusExt;
+    for (row, v) in ODD {
+        let path = format!("{}:/second:/third", v.unwrap_or("/first"));
+        let mut sh = shell(SAY);
+        sh.env_clear().env("PATH", &path);
+        if let Some(v) = v {
+            sh.env("HOME", v);
+        }
+        let out = sh.output().unwrap();
+        let want = last_line(&path, v.unwrap_or_default());
+        assert_eq!(String::from_utf8_lossy(&out.stderr), want, "row {row}");
+        assert_eq!(out.status.signal(), Some(libc::SIGABRT), "row {row}");
+    }
 }
 
 const ONE: &str = r#"printf '[{"pid":100,"sessionId":"s-100","cwd":"/launch","kind":"interactive"}]'"#;
