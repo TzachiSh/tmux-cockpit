@@ -338,14 +338,15 @@ $(sq "$(fesc "$Q_BOARD") -p '#{pane_id}' -c '#{client_name}'")"
     fi
 fi
 
+# A message naming $DIR, shown as written (#1087). display-message expands its text as a
+# format (fesc's part), then draws it reading ## as # and #[ as a style: every # doubled
+# first comes through the draw as one.
+say_lit() { local t=$1; tmux display-message "$(fesc "${t//#/##}")"; }
 # Required (#199). Offline: one --version, never a fetch, on every load.
 tv=$(tui_check)
 case $? in
-    # fesc: display-message reads its text as a format, so a # in $DIR was eaten (#1087).
-    1) tmux display-message "$(fesc \
-        "tmux-cockpit: cockpit-tui is missing; run $DIR/install.sh")" ;;
-    2) tmux display-message "$(fesc \
-        "tmux-cockpit: cockpit-tui $tv is older than $TUI_MIN; run $DIR/install.sh")" ;;
+    1) say_lit "tmux-cockpit: cockpit-tui is missing; run $DIR/install.sh" ;;
+    2) say_lit "tmux-cockpit: cockpit-tui $tv is older than $TUI_MIN; run $DIR/install.sh" ;;
 esac
 
 # Opt-in: this runs on every config reload, which must not wait on curl.

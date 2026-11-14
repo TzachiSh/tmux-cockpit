@@ -4425,7 +4425,7 @@ elif ! ( . "$DIR/scripts/lib/vnum.sh"
 else
 OH=$(mktmpd); mkdir -p "$OH/p" "$OH/wd" "$OH/old"
 oh_st="cockpit-oh-$$-st"; SOCKS="$SOCKS $oh_st"
-for oh_n in 1 2 3 4 5 6 7 8 9 10 11 12; do
+for oh_n in 1 2 3 4 5 6 7 8 9 10 11 12 13 14; do
     SOCKS="$SOCKS cockpit-oh-$$-$oh_n cockpit-ohc-$$-$oh_n"
 done
 # A cockpit-tui older than the plugin's floor, for the hint's second arm.
@@ -4447,7 +4447,7 @@ oh_server() {                 # <socket> <cockpit-tui path> -- a server with no 
 }
 oh_attach() {                 # <socket> <client's socket>: a real client on <socket>
     ( cd "$OH/wd" && exec env -u TMUX_COCKPIT_DIR -u TMUX -u TMUX_PANE "$TMUX_REAL" -L "$2" \
-        -f /dev/null new-session -d -s o -x 120 -y 32 -c "$OH/wd" \
+        -f /dev/null new-session -d -s o -x 300 -y 32 -c "$OH/wd" \
         "TERM=xterm-256color exec $(tq "$TMUX_REAL") -L $1 attach -t t" ) >/dev/null 2>&1
     until_cap "$2" o '*[!\ ]*'
     until_out '?*' "$TMUX_REAL" -L "$1" list-clients -F '#{client_name}'
@@ -4476,7 +4476,9 @@ for oh_f in plain "a'q" 'a"q' 'a$HOMEq'; do
 done
 # The hints, missing and older, from folders holding # shapes. A message reaches the log
 # only when a client is attached to be shown it; ' command: ' lines hold the text as typed.
-for oh_f in 'a#Sb' 'a#{pane_id}b' 'a#[fg=red]b' 'a#(touch pwned)b'; do
+# The log keeps the text as sent, unexpanded, each # doubled for the draw; the status line
+# draws one # of each ##, and it stays drawn (display-time 0) until it is captured.
+for oh_f in 'a#Sb' 'a#{pane_id}b' 'a#[fg=red]b' 'a##x' 'a#(touch pwned)b'; do
     for oh_arm in missing older; do
         oh_n=$((oh_n + 1)); oh_s="cockpit-oh-$$-$oh_n"; oh_box "$oh_n" "$oh_f"
         oh_p=$(cd -P "$OH/p/$oh_f" && pwd)
@@ -4487,19 +4489,23 @@ for oh_f in 'a#Sb' 'a#{pane_id}b' 'a#[fg=red]b' 'a#(touch pwned)b'; do
             oh_server "$oh_s" "$OH/old/cockpit-tui"
             oh_want="tmux-cockpit: cockpit-tui 0.0.1 is older than $oh_min; run $oh_p/install.sh"
         fi
+        "$TMUX_REAL" -L "$oh_s" set -g display-time 0
         oh_attach "$oh_s" "cockpit-ohc-$$-$oh_n"; oh_load "$oh_s" "$oh_n"
         until_out '*install.sh*' sh -c "$(tq "$TMUX_REAL") -L $oh_s show-messages |
             grep -v ' command: '"
-        is "a folder named [$oh_f], cockpit-tui $oh_arm: the hint names install.sh whole" \
+        is "a folder named [$oh_f], cockpit-tui $oh_arm: the hint is logged unexpanded" \
            "1" "$("$TMUX_REAL" -L "$oh_s" show-messages 2>/dev/null | grep -v ' command: ' |
-                  grep -cF -- " $oh_want")"
-        "$TMUX_REAL" -L "cockpit-ohc-$$-$oh_n" kill-server >/dev/null 2>&1
+                  grep -cF -- " ${oh_want//#/##}")"
+        oh_c="cockpit-ohc-$$-$oh_n"; until_cap "$oh_c" o '*install.sh*'
+        is "a folder named [$oh_f], cockpit-tui $oh_arm: the status line draws it whole" "1" \
+           "$("$TMUX_REAL" -L "$oh_c" capture-pane -p -t o | grep -cF -- "$oh_want")"
+        "$TMUX_REAL" -L "$oh_c" kill-server >/dev/null 2>&1
         "$TMUX_REAL" -L "$oh_s" kill-server >/dev/null 2>&1
     done
 done
 is "and no hint ran a #( ) from the folder's name" "" "$(find "$OH" -name pwned)"
 unset -f oh_box oh_server oh_attach oh_load
-unset OH oh_st oh_n oh_s oh_f oh_p oh_arm oh_want oh_min oh_stock oh_src
+unset OH oh_st oh_n oh_s oh_c oh_f oh_p oh_arm oh_want oh_min oh_stock oh_src
 fi
 
 echo "== HOME unset must not kill the path picker =="
