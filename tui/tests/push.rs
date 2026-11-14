@@ -502,8 +502,10 @@ fn a_mask_blocked_for_a_moment_reads_clear_once_it_is_lifted() {
     let dir = fake::Scratch::fresh(std::env::temp_dir().join(name));
     let path = |name: &str| std::ffi::CString::new(dir.join(name).to_str().unwrap()).unwrap();
     let (ready, go) = (path("ready"), path("go"));
-    // SAFETY: the child makes only async-signal-safe calls on what was made before
-    // the fork, allocates nothing, and ends by _exit within 60 s if nobody kills it.
+    // SAFETY: the child calls only sigfillset, sigprocmask, open, close, access, poll
+    // and _exit, each on the async-signal-safe list of `man 7 signal-safety`, on what
+    // was made before the fork. It allocates nothing, and ends by _exit within 60 s if
+    // nobody kills it.
     let pid = unsafe { libc::fork() };
     if pid == 0 {
         // SAFETY: as above, in the child alone.
@@ -512,19 +514,16 @@ fn a_mask_blocked_for_a_moment_reads_clear_once_it_is_lifted() {
             libc::sigfillset(&mut all);
             libc::sigprocmask(libc::SIG_BLOCK, &all, std::ptr::null_mut());
             libc::close(libc::open(ready.as_ptr(), libc::O_CREAT | libc::O_WRONLY, 0o600));
-            let nap = libc::timespec {
-                tv_sec: 0,
-                tv_nsec: 5_000_000,
-            };
+            // poll on no descriptors waits its 5 ms and returns
             for _ in 0..6000 {
                 if libc::access(go.as_ptr(), libc::F_OK) == 0 {
                     break;
                 }
-                libc::nanosleep(&nap, std::ptr::null_mut());
+                libc::poll(std::ptr::null_mut(), 0, 5);
             }
             libc::sigprocmask(libc::SIG_UNBLOCK, &all, std::ptr::null_mut());
             for _ in 0..6000 {
-                libc::nanosleep(&nap, std::ptr::null_mut());
+                libc::poll(std::ptr::null_mut(), 0, 5);
             }
             libc::_exit(0);
         }
