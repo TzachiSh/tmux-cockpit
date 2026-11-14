@@ -99,27 +99,76 @@ fn json_path(doc: &Value, pointer: &str) -> String {
 }
 
 /// The README's rules a schema states about itself; empty when it keeps them all.
-fn house_rules(schema: &Value) -> Vec<&'static str> {
-    let mut bad = vec![];
+fn house_rules(schema: &Value) -> Vec<String> {
+    let mut bad: Vec<String> = vec![];
     if schema.get("$schema").and_then(Value::as_str) != Some(DRAFT) {
-        bad.push("$schema is not draft 2020-12");
+        bad.push("$schema is not draft 2020-12".into());
     }
     let id = schema.get("$id").and_then(Value::as_str).unwrap_or("");
     if !id.starts_with("urn:tmux-cockpit:contracts:") {
-        bad.push("$id is not urn:tmux-cockpit:contracts:<name>");
+        bad.push("$id is not urn:tmux-cockpit:contracts:<name>".into());
     }
     let version = schema.pointer("/properties/schema_version/const");
     if !version.is_some_and(|c| c.is_i64() || c.is_u64()) {
-        bad.push("schema_version is not an integer const");
+        bad.push("schema_version is not an integer const".into());
     }
     let required = schema.get("required").and_then(Value::as_array);
     if !required.is_some_and(|r| r.iter().any(|k| k == "schema_version")) {
-        bad.push("schema_version is not required");
+        bad.push("schema_version is not required".into());
     }
     if schema.get("additionalProperties") != Some(&Value::Bool(false)) {
-        bad.push("additionalProperties is not false");
+        bad.push("additionalProperties is not false".into());
+    }
+    for p in unanchored(schema) {
+        bad.push(format!(
+            "pattern {p:?} does not start with ^ and end with $"
+        ));
     }
     bad
+}
+
+/// Every `pattern` and `patternProperties` key in a schema that does not start with `^` and
+/// end with an unescaped `$` (#1052). `const`, `enum`, `examples` and `default` hold data.
+fn unanchored(schema: &Value) -> Vec<String> {
+    let mut out = vec![];
+    walk_schema(schema, &mut out);
+    out
+}
+
+fn anchored(pattern: &str) -> bool {
+    let Some(body) = pattern.strip_suffix('$') else {
+        return false;
+    };
+    let escapes = body.chars().rev().take_while(|c| *c == '\\').count();
+    pattern.starts_with('^') && escapes % 2 == 0
+}
+
+fn walk_schema(schema: &Value, out: &mut Vec<String>) {
+    let Value::Object(map) = schema else {
+        return walk_any(schema, out);
+    };
+    for (key, value) in map {
+        match (key.as_str(), value) {
+            ("pattern", Value::String(p)) if !anchored(p) => out.push(p.clone()),
+            ("const" | "enum" | "examples" | "default", _) => {}
+            ("properties" | "$defs" | "definitions" | "dependentSchemas", Value::Object(m)) => {
+                m.values().for_each(|v| walk_schema(v, out));
+            }
+            ("patternProperties", Value::Object(m)) => {
+                out.extend(m.keys().filter(|k| !anchored(k)).cloned());
+                m.values().for_each(|v| walk_schema(v, out));
+            }
+            _ => walk_any(value, out),
+        }
+    }
+}
+
+fn walk_any(value: &Value, out: &mut Vec<String>) {
+    match value {
+        Value::Object(_) => walk_schema(value, out),
+        Value::Array(items) => items.iter().for_each(|v| walk_any(v, out)),
+        _ => {}
+    }
 }
 
 /// The contracts folder: the one argument, else the folder holding this crate.
@@ -447,6 +496,52 @@ mod tests {
         }
     }
 
+    #[test]
+    fn every_pattern_starts_with_a_caret_and_ends_with_a_dollar() {
+        let rows = [
+            ("anchored", json!({"pattern": "^a$"}), vec![]),
+            ("no dollar", json!({"pattern": "^a"}), vec!["^a"]),
+            ("no caret", json!({"pattern": "a$"}), vec!["a$"]),
+            ("escaped dollar", json!({"pattern": r"^a\$"}), vec![r"^a\$"]),
+            ("escaped backslash", json!({"pattern": r"^a\\$"}), vec![]),
+            (
+                "in $defs",
+                json!({"$defs": {"k": {"pattern": "^a"}}}),
+                vec!["^a"],
+            ),
+            (
+                "in an else",
+                json!({"allOf": [{"else": {"pattern": "^b"}}]}),
+                vec!["^b"],
+            ),
+            (
+                "a patternProperties key",
+                json!({"patternProperties": {"^c": {}}}),
+                vec!["^c"],
+            ),
+            (
+                "a property named pattern",
+                json!({"properties": {"pattern": {"pattern": "^d"}}}),
+                vec!["^d"],
+            ),
+            (
+                "a property named const",
+                json!({"properties": {"const": {"pattern": "^e"}}}),
+                vec!["^e"],
+            ),
+        ];
+        for (row, schema, want) in rows {
+            assert_eq!(unanchored(&schema), want, "row {row}");
+        }
+    }
+
+    #[test]
+    fn a_pattern_key_inside_const_data_is_no_pattern() {
+        let schema =
+            json!({"const": {"pattern": "x"}, "enum": [{"pattern": "y"}], "pattern": "^z"});
+        assert_eq!(unanchored(&schema), ["^z"]);
+    }
+
     fn fixture(name: &str) -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures")
@@ -462,6 +557,7 @@ mod tests {
             "alpha/errors.json: names invalid-gone.json, which is no invalid-* file here",
             "beta.schema.json: additionalProperties is not false",
             "beta: no valid-* example",
+            r#"gamma.schema.json: pattern "^[0-9a-f]{16}" does not start with ^ and end with $"#,
         ];
         assert_eq!(check(&fixture("broken")), want);
     }

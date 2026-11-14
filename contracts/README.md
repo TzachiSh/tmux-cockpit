@@ -45,9 +45,11 @@ Nothing reads these schemas at run time. The Rust side is `tui/src/store.rs`, a
   `format` an annotation, and the check does not turn format checking on. A
   reader that needs order (an intent's `expires_at` after its `created_at`)
   checks it itself.
-- **Patterns** are checked by Rust's `regex` engine. Its `$` is the end of the
-  string, so `^%[0-9]{1,10}$` refuses `"%12\n"`, and a pattern with lookaround
-  or a backreference fails the check. Python's `$` also matches before a final
+- **Patterns** start with `^` and end with `$`, and are checked by Rust's
+  `regex` engine. Its `$` is the end of the string, so `^%[0-9]{1,10}$` refuses
+  `"%12\n"`. The check fails a `pattern` or `patternProperties` key anywhere in
+  a schema, `$defs` included, that lacks either anchor, and a pattern with
+  lookaround or a backreference. Python's `$` also matches before a final
   newline: a Python validator would accept `"%12\n"`.
 - **Unknown, malformed or wrong-version** payloads mean "no value, start fresh",
   as today's state files do (`data/agents.rs`, `board.rs`, `panel/action.rs`).
