@@ -99,8 +99,10 @@ fatal() { printf '  \033[31mFATAL\033[0m %s\n' "$1" >&2; exit 1; }
 # what a block left in it is named and stays. A caller's own folder is kept as it is.
 # Made here, with the trap above already armed, and by name first: mktemp only picks the
 # name, and mkdir makes the folder once the shell holds that name, so a run ended at any
-# point either has no folder yet or has one the trap removes. Exported before the first
-# tmux call: a run inside this run finds it set and keeps it.
+# point either has no folder yet or has one the trap removes. A plain mkdir, never -p: /tmp
+# is anyone's to write in, and a name that is already there is someone else's, not a folder
+# for the suite to take over. Three names are tried, then the run ends. Exported before
+# the first tmux call: a run inside this run finds it set and keeps it.
 # A relative one that names a folder is the caller's as well, and is kept, but as that
 # folder's full path: tmux reads the variable in every call, and a call made after a cd
 # would look for it from there, find nothing and fall back to /tmp.
@@ -110,8 +112,12 @@ case ${TMUX_TMPDIR:-} in
    export TMUX_TMPDIR ;;
 esac
 if [ -z "${TMUX_TMPDIR:-}" ] || [ ! -d "$TMUX_TMPDIR" ]; then
-    SUITE_TT=$(mktemp -u /tmp/cs.XXXXXX) && mkdir -m 700 "$SUITE_TT" || {
-        SUITE_TT=; fatal "no socket folder: could not make /tmp/cs.XXXXXX"; }
+    for suite_tt_n in 1 2 3; do
+        SUITE_TT=$(mktemp -u /tmp/cs.XXXXXX) && mkdir -m 700 "$SUITE_TT" 2>/dev/null && break
+        SUITE_TT=
+    done
+    unset suite_tt_n
+    [ -n "$SUITE_TT" ] || fatal "no socket folder: could not make /tmp/cs.XXXXXX, three tries"
     export TMUX_TMPDIR="$SUITE_TT"
 fi
 # Deferring when $TMUX is set is load-bearing: tmux exports it to everything it
@@ -10938,11 +10944,11 @@ sf_u=$(id -u)
 sf_one="^the suite's own server is on a socket under TMUX_TMPDIR"
 sf_run() {                    # <pattern> <ONLY_RUN file or ''> <env words...>
     # -> exit, PASS and FAIL rows | the folder the run reported | its names in /tmp/tmux-<uid>
-    local pat=$1 run=$2 e=() o rc f="" p=""
+    local pat=$1 run=$2 sf_e=() o rc f="" p=""
     shift 2
-    [ -z "$run" ] || e=(ONLY_RUN="$run")
+    [ -z "$run" ] || sf_e=(ONLY_RUN="$run")
     rm -f "$SF/out"
-    o=$(cd "$DIR" && env -u TMUX "$@" ${e[@]+"${e[@]}"} COCKPIT_ST_OUT="$SF/out" \
+    o=$(cd "$DIR" && env -u TMUX "$@" ${sf_e[@]+"${sf_e[@]}"} COCKPIT_ST_OUT="$SF/out" \
         tests/only.sh "$pat" 2>&1 </dev/null)
     rc=$?
     printf '%s\n' "$o" > "$SF/log"
@@ -11034,6 +11040,20 @@ is "a run ended inside the folder's mktemp leaves no folder under the name it wa
    "$(sf_f=$(cat "$SF/mk.name" 2>/dev/null)
       case $sf_f in /tmp/cs.??????) printf 'a name, ' ;; *) printf 'no name [%s], ' "$sf_f" ;; esac
       [ -n "$sf_f" ] && [ -e "$sf_f" ] && echo "left: $sf_o" || echo 'nothing there')"
+# A mktemp that gives, for the folder's template, a name that is already there: someone
+# else's folder in a place anyone can write to. The suite must not take it over. It tries
+# three names, then ends, and the folder is as it was.
+mkdir -p "$SF/taken" "$SF/bin3"; : > "$SF/taken/theirs"
+printf '#!/bin/sh\ncase "$*" in *cs.XXXXXX*) echo x >> %s; printf "%%s\\n" %s; exit 0 ;; esac\n' \
+    "$(tq "$SF/mk.tries")" "$(tq "$SF/taken")" > "$SF/bin3/mktemp"
+printf 'exec %s "$@"\n' "$(tq "$(command -v mktemp)")" >> "$SF/bin3/mktemp"
+chmod +x "$SF/bin3/mktemp"
+is "a name that is already there is not taken over: three tries, exit 1, the folder as it was" \
+   "1 0 0|no folder reported|no pid reported 1 3 theirs" \
+   "$(sf_run '^fixture' "$SF/plain.sh" -u TMUX_TMPDIR PATH="$SF/bin3:$PATH") $(
+      grep -c 'FATAL.* no socket folder: could not make /tmp/cs.XXXXXX, three' "$SF/log") $(
+      cat "$SF/mk.tries" 2>/dev/null | wc -l | tr -d ' ') $(ls -A "$SF/taken" | tr '\n' ' ' |
+          sed 's/ $//')"
 # A mktemp that fails for the folder's template and passes every other call on, and a tmux
 # that notes each call: a run with no folder must make none, its cleanup's included, since
 # with no TMUX_TMPDIR a call goes to /tmp/tmux-<uid>.
@@ -11045,7 +11065,7 @@ chmod +x "$SF/bin/mktemp" "$SF/bin/tmux"
 is "the folder's mktemp failing: the run ends 1 before any block, says why, calls no tmux" \
    "1 0 0|no folder reported|no pid reported 1 0" \
    "$(sf_run '^fixture' "$SF/plain.sh" -u TMUX_TMPDIR PATH="$SF/bin:$PATH") $(
-      grep -c 'FATAL.* no socket folder: could not make /tmp/cs.XXXXXX' "$SF/log") $(
+      grep -c 'FATAL.* no socket folder: could not make /tmp/cs.XXXXXX, three' "$SF/log") $(
       cat "$SF/tmux.calls" 2>/dev/null | wc -l | tr -d ' ')"
 # The tail's rows, tt_left: a server on a name the block puts in no list, one on a name it
 # does put in SOCKS, and a folder that is no socket. The run must fail on the first and the
