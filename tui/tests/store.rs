@@ -42,6 +42,24 @@ fn bounded<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Option<
     rx.recv_timeout(CAP).ok()
 }
 
+/// `path`'s flock, made here so the row does not lean on the put making it. Polled
+/// up to CAP: a child another row forks keeps a dropped lock's fd until it execs.
+fn hold(path: &Path) -> std::fs::File {
+    let f = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)
+        .unwrap();
+    let t0 = std::time::Instant::now();
+    // SAFETY: flock on an fd this function owns.
+    while unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        assert!(t0.elapsed() < CAP, "no flock on {} within {CAP:?}", path.display());
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    f
+}
+
 fn mode(p: &Path) -> u32 {
     std::fs::symlink_metadata(p).unwrap().mode() & 0o777
 }
@@ -295,20 +313,13 @@ fn a_held_lock_makes_put_busy_not_blocked() {
     let d = scratch("lock");
     let (s, k) = (local(&d).with_lock_wait(Duration::from_millis(50)), key("agent.a"));
     s.put_if_revision(&k, &json!(1), None).unwrap();
-    // Made here, not left to the put: the row is about the wait, not who made the file.
-    let held = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(s.lock_path(&k))
-        .unwrap();
-    // SAFETY: flock on an fd this test owns.
-    assert_eq!(unsafe { libc::flock(held.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) }, 0);
+    let held = hold(&s.lock_path(&k));
     let (s2, k2) = (s.clone(), k.clone());
     let got = bounded(move || s2.put_if_revision(&k2, &json!(2), Some(Revision(1))));
     assert!(matches!(got, Some(Err(PutError::Busy))), "{got:?}");
     drop(held);
-    assert_eq!(s.put_if_revision(&k, &json!(2), Some(Revision(1))).unwrap(), Revision(2));
+    let after = s.with_lock_wait(CAP).put_if_revision(&k, &json!(2), Some(Revision(1)));
+    assert_eq!(after.unwrap(), Revision(2));
 }
 
 #[test]
