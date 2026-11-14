@@ -10611,13 +10611,23 @@ fi
 unset NBS nbo nbrc nbs
 
 echo "== the suite sees none of its caller's folders, log, editors or switches (#1078) =="
-for cv in XDG_STATE_HOME XDG_CONFIG_HOME XDG_BIN_HOME XDG_CACHE_HOME XDG_DATA_HOME COCKPIT_LOG \
-        VISUAL EDITOR COCKPIT_READONLY COCKPIT_PANEL_NOTE COCKPIT_REVIEW_BASE COCKPIT_PROC_DIR \
-        COCKPIT_POLL_KEY REVDIFF_CONFIG REVDIFF_EXCLUDE CLAUDE_CODE_SESSION_KIND \
-        COCKPIT_TMUX COCKPIT_CLAUDE COCKPIT_ACTION; do
+cvs="XDG_STATE_HOME XDG_CONFIG_HOME XDG_BIN_HOME XDG_CACHE_HOME XDG_DATA_HOME COCKPIT_LOG"
+cvs="$cvs VISUAL EDITOR COCKPIT_READONLY COCKPIT_PANEL_NOTE COCKPIT_REVIEW_BASE"
+cvs="$cvs COCKPIT_PROC_DIR COCKPIT_POLL_KEY REVDIFF_CONFIG REVDIFF_EXCLUDE"
+cvs="$cvs CLAUDE_CODE_SESSION_KIND COCKPIT_TMUX COCKPIT_CLAUDE COCKPIT_ACTION"
+for cv in $cvs; do
     is "$cv is not in the suite's environment" "unset" "${!cv-unset}"
 done
-unset cv
+# Unset before the suite's own server starts: a server keeps the environment it was started
+# with and hands it to every run-shell and pane, whatever the suite's shell drops later. The
+# server is asked whether it is there first: no server holds no variable either.
+if need_tmux "the suite's server's environment"; then :; else
+is "the suite's own server is up, and holds none of them in its environment" "up " \
+   "$(tmux has-session -t suite 2>/dev/null && printf 'up ' || printf 'down '
+      tmux show-environment -g 2>/dev/null | sed 's/^-//; s/=.*//' |
+          grep -xE "$(printf '%s' "$cvs" | tr ' ' '|')" | tr '\n' ' ')"
+fi
+unset cv cvs
 
 echo "== nothing of the caller's is written or run, canaries in its environment (#1078) =="
 # The block above and the blocks that wrote into a caller's folders, through only.sh, with
@@ -10649,7 +10659,7 @@ for cw in state config bin cache data; do cw_ls "$cw" > "$CW/$cw.before"; done
 cwo=$(cd "$DIR" && env -u TMUX TMUX_TMPDIR="$CW/s" \
     XDG_STATE_HOME="$CW/c/state" XDG_CONFIG_HOME="$CW/c/config" XDG_BIN_HOME="$CW/c/bin" \
     XDG_CACHE_HOME="$CW/c/cache" XDG_DATA_HOME="$CW/c/data" COCKPIT_LOG="$CW/c/log" \
-    VISUAL="$CW/c/visual" EDITOR="$CW/c/editor" COCKPIT_READONLY=1 \
+    VISUAL="$(tq "$CW/c/visual")" EDITOR="$(tq "$CW/c/editor")" COCKPIT_READONLY=1 \
     COCKPIT_PANEL_NOTE="$CW/c/note" \
     COCKPIT_REVIEW_BASE=canary COCKPIT_PROC_DIR="$CW/c/proc" COCKPIT_POLL_KEY=canary \
     REVDIFF_CONFIG="$CW/c/revdiff" REVDIFF_EXCLUDE=canary CLAUDE_CODE_SESSION_KIND=canary \
@@ -10660,6 +10670,8 @@ cwo=$(cd "$DIR" && env -u TMUX TMUX_TMPDIR="$CW/s" \
         )^cockpit-board: x asks first" 2>&1 </dev/null); cwrc=$?
 is "the blocks that wrote there, run under the canaries: exit 0, no row failed" "0 0" \
    "$cwrc $(printf '%s\n' "$cwo" | grep -c 'FAIL')"
+# A block renamed out of the pattern would drop from the run with every row still green.
+is "and all eight blocks of the pattern ran" "8" "$(printf '%s\n' "$cwo" | grep -c '^== ')"
 cw_unseen() {                 # <variable> -> 1 when the nested run's own row for it passed
     printf '%s\n' "$cwo" | grep -c "PASS[^ ]* $1 is not in the suite's environment"
 }
