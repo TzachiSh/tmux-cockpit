@@ -782,6 +782,45 @@ fn a_pid_whose_command_line_names_another_binary_is_not_signalled() {
     assert_eq!((released, a.code(), b.signal()), (Ok(()), Some(0), Some(libc::SIGKILL)));
 }
 
+/// The fifo of a stand-in that waits on it, given its line when this is dropped
+/// unless [`Unreleased::release`] gave it first. A row that fails before its
+/// release, a panic's unwind, so ends its stand-in as a green row does, by the
+/// line it waits for, and signals no pid (#1061).
+struct Unreleased(Option<PathBuf>);
+
+impl Unreleased {
+    fn release(&mut self) -> Result<(), String> {
+        release(&self.0.take().expect("released once"))
+    }
+}
+
+impl Drop for Unreleased {
+    fn drop(&mut self) {
+        if let Some(fifo) = self.0.take() {
+            drop(release(&fifo));
+        }
+    }
+}
+
+/// #1061: a stand-in left waiting by a row that failed before its release is
+/// given its line by the unwind, and ends: a red run leaves no stand-in.
+#[test]
+fn a_stand_in_left_waiting_by_a_failed_row_is_released_by_the_unwind() {
+    let r = Rig::new("unwound");
+    let exe = r.binary("unwound", BLOCKS);
+    let fifo = std::ffi::CString::new(sibling(&exe, "go").to_str().unwrap()).unwrap();
+    // SAFETY: `fifo` is a NUL-terminated path under the rig's folder.
+    assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+    let child = Command::new(&exe).stdin(Stdio::null()).spawn().unwrap();
+    appears(&sibling(&exe, "ran"));
+    let red = std::panic::catch_unwind(|| {
+        let _go = Unreleased(Some(sibling(&exe, "go")));
+        panic!("a failed assert before the release");
+    });
+    assert!(red.is_err(), "the forced panic did not fire");
+    assert_eq!(ended(child, "the stand-in left waiting").status.code(), Some(0));
+}
+
 /// What `program` wrote to stdout, empty where it could not be run.
 fn command_output(program: &str, args: &[&str]) -> String {
     let out = Command::new(program).args(args).stdin(Stdio::null()).output();
@@ -845,6 +884,8 @@ fn killed_under(shell: &str, at: [&str; 2], flags: &[&str]) -> Option<(usize, us
     let fifo = std::ffi::CString::new(beside("go").to_str().unwrap()).unwrap();
     // SAFETY: `fifo` is a NUL-terminated path under the rig's folder.
     assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+    // declared after `r`, so dropped before the rig's folder goes
+    let mut go = Unreleased(Some(beside("go")));
     let mut c = r.command_of(Path::new(sh));
     let child = c
         .args(flags)
@@ -859,7 +900,7 @@ fn killed_under(shell: &str, at: [&str; 2], flags: &[&str]) -> Option<(usize, us
     assert_eq!(unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGUSR1) }, 0);
     assert_eq!(ended(child, "the killed runner").status.signal(), Some(libc::SIGUSR1), "{shell}");
     let folders: Vec<PathBuf> = std::fs::read_dir(r.0.join("tmp")).unwrap().map(|e| e.unwrap().path()).collect();
-    if let Err(e) = release(&beside("go")) {
+    if let Err(e) = go.release() {
         end_stand_in(&beside("up"), &exe);
         panic!("{e}");
     }
