@@ -4426,6 +4426,101 @@ unset -f ps_opts ps_rename
 unset PS ps_n ps_s ps_o ps_f ps_p ps_d ps_sid
 fi
 
+echo "== a reload knows the pre-notes panel key, and the install hint shows a # (#1086, #1087) =="
+# owned() matched the raw folder against #{key_command}, which prints the pre-notes panel
+# key's argument sq()-quoted in a "..." with \ " $ escaped: a ' or a " in the folder hid
+# the key, and a reload took it for the user's (#1086). The cockpit-tui hints gave
+# display-message the raw folder, which reads a # as a format and runs a #( ) (#1087).
+if need_tmux "the legacy panel key and the install hint"; then :
+elif ! ( . "$DIR/scripts/lib/vnum.sh"
+         v=$("$TMUX_REAL" -V); vnum_ge "${v#tmux }" 3.8 ); then
+    skip_ "the legacy panel key and the install hint (tmux below 3.8: nothing binds there)"
+else
+OH=$(mktmpd); mkdir -p "$OH/p" "$OH/wd" "$OH/old"
+oh_st="cockpit-oh-$$-st"; SOCKS="$SOCKS $oh_st"
+for oh_n in 1 2 3 4 5 6 7 8 9 10 11 12 13 14; do
+    SOCKS="$SOCKS cockpit-oh-$$-$oh_n cockpit-ohc-$$-$oh_n"
+done
+# A cockpit-tui older than the plugin's floor, for the hint's second arm.
+printf '#!/bin/sh\necho "cockpit-tui 0.0.1"\n' > "$OH/old/cockpit-tui"
+chmod +x "$OH/old/cockpit-tui"
+oh_min=$(. "$DIR/scripts/lib/tui.sh" && printf '%s' "$TUI_MIN")
+oh_box() {                    # <n> <folder name> -> a copy of the plugin, its conf line
+    local p="$OH/p/$2" d
+    [ -e "$p/cockpit.tmux" ] || {
+        mkdir -p "$p"; cp "$DIR/cockpit.tmux" "$p/"
+        for d in scripts examples bin; do ln -s "$DIR/$d" "$p/$d"; done
+    }
+    ( . "$DIR/scripts/lib/confline.sh"; cockpit_conf_line "$p" ) > "$OH/conf$1"
+}
+oh_server() {                 # <socket> <cockpit-tui path> -- a server with no client
+    ( cd "$OH/wd" && exec env -u TMUX_COCKPIT_DIR -u TMUX -u TMUX_PANE COCKPIT_TUI_BIN="$2" \
+        "$TMUX_REAL" -L "$1" -f /dev/null new-session -d -s t -x 120 -y 30 -c "$OH/wd" \
+        'exec sleep 300' ) >/dev/null 2>&1
+}
+oh_attach() {                 # <socket> <client's socket>: a real client on <socket>
+    ( cd "$OH/wd" && exec env -u TMUX_COCKPIT_DIR -u TMUX -u TMUX_PANE "$TMUX_REAL" -L "$2" \
+        -f /dev/null new-session -d -s o -x 300 -y 32 -c "$OH/wd" \
+        "TERM=xterm-256color exec $(tq "$TMUX_REAL") -L $1 attach -t t" ) >/dev/null 2>&1
+    until_cap "$2" o '*[!\ ]*'
+    until_out '?*' "$TMUX_REAL" -L "$1" list-clients -F '#{client_name}'
+}
+oh_load() {                   # <socket> <n>
+    # From wd: a #( ) the load let run would run there, in this client's cwd.
+    ( cd "$OH/wd" && exec "$TMUX_REAL" -L "$1" source-file "$OH/conf$2" ) >/dev/null 2>&1
+    until_out '*@cockpit_click_line*' "$TMUX_REAL" -L "$1" list-keys -T root C-MouseDown3Pane
+}
+oh_server "$oh_st" "$COCKPIT_TUI_BIN"
+oh_stock=$("$TMUX_REAL" -L "$oh_st" list-keys -T prefix -F '#{key_command}' f 2>/dev/null)
+"$TMUX_REAL" -L "$oh_st" kill-server >/dev/null 2>&1
+# The panel key as cockpit.tmux bound it before the notes: from argv, no note.
+oh_src='"$(tmux display-message -p -t "\$${TMUX##*,}" "#{pane_id}")"'
+oh_n=0
+for oh_f in plain "a'q" 'a"q' 'a$HOMEq'; do
+    oh_n=$((oh_n + 1)); oh_s="cockpit-oh-$$-$oh_n"; oh_box "$oh_n" "$oh_f"
+    oh_server "$oh_s" "$COCKPIT_TUI_BIN"; oh_p=$(cd -P "$OH/p/$oh_f" && pwd)
+    "$TMUX_REAL" -L "$oh_s" bind-key f display-popup -E -e COCKPIT_PANEL_MODE=auto -w 94% \
+        -h 90% -T ' panel · #{pane_id} ' "$(tq "$oh_p/scripts/cockpit-panel") -p $oh_src"
+    "$TMUX_REAL" -L "$oh_s" set -g @cockpit_panel_bound f \; set -g @cockpit_panel_key g
+    oh_load "$oh_s" "$oh_n"
+    is "a folder named [$oh_f]: a reload gives the pre-notes panel key f back to tmux" \
+       "$oh_stock" "$("$TMUX_REAL" -L "$oh_s" list-keys -T prefix -F '#{key_command}' f)"
+    "$TMUX_REAL" -L "$oh_s" kill-server >/dev/null 2>&1
+done
+# The hints, missing and older, from folders holding # shapes. A message reaches the log
+# only when a client is attached to be shown it; ' command: ' lines hold the text as typed.
+# The log keeps the text as sent, unexpanded, each # doubled for the draw; the status line
+# draws one # of each ##, and it stays drawn (display-time 0) until it is captured.
+for oh_f in 'a#Sb' 'a#{pane_id}b' 'a#[fg=red]b' 'a##x' 'a#(touch pwned)b'; do
+    for oh_arm in missing older; do
+        oh_n=$((oh_n + 1)); oh_s="cockpit-oh-$$-$oh_n"; oh_box "$oh_n" "$oh_f"
+        oh_p=$(cd -P "$OH/p/$oh_f" && pwd)
+        if [ "$oh_arm" = missing ]; then
+            oh_server "$oh_s" "$OH/none/cockpit-tui"
+            oh_want="tmux-cockpit: cockpit-tui is missing; run $oh_p/install.sh"
+        else
+            oh_server "$oh_s" "$OH/old/cockpit-tui"
+            oh_want="tmux-cockpit: cockpit-tui 0.0.1 is older than $oh_min; run $oh_p/install.sh"
+        fi
+        "$TMUX_REAL" -L "$oh_s" set -g display-time 0
+        oh_attach "$oh_s" "cockpit-ohc-$$-$oh_n"; oh_load "$oh_s" "$oh_n"
+        until_out '*install.sh*' sh -c "$(tq "$TMUX_REAL") -L $oh_s show-messages |
+            grep -v ' command: '"
+        is "a folder named [$oh_f], cockpit-tui $oh_arm: the hint is logged unexpanded" \
+           "1" "$("$TMUX_REAL" -L "$oh_s" show-messages 2>/dev/null | grep -v ' command: ' |
+                  grep -cF -- " ${oh_want//#/##}")"
+        oh_c="cockpit-ohc-$$-$oh_n"; until_cap "$oh_c" o '*install.sh*'
+        is "a folder named [$oh_f], cockpit-tui $oh_arm: the status line draws it whole" "1" \
+           "$("$TMUX_REAL" -L "$oh_c" capture-pane -p -t o | grep -cF -- "$oh_want")"
+        "$TMUX_REAL" -L "$oh_c" kill-server >/dev/null 2>&1
+        "$TMUX_REAL" -L "$oh_s" kill-server >/dev/null 2>&1
+    done
+done
+is "and no hint ran a #( ) from the folder's name" "" "$(find "$OH" -name pwned)"
+unset -f oh_box oh_server oh_attach oh_load
+unset OH oh_st oh_n oh_s oh_c oh_f oh_p oh_arm oh_want oh_min oh_stock oh_src
+fi
+
 echo "== HOME unset must not kill the path picker =="
 # set -u plus a bare $HOME: a "~/..." token on a clicked line aborted the script
 # outright wherever HOME is missing -- a stripped run-shell, a systemd tmux.

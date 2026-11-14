@@ -155,6 +155,11 @@ give_back() {                 # <key> -> 1 when tmux's own binding could not be 
 # command, and only until a load has noted every key (@cockpit_notes): after
 # that a note-less key is the user's, whatever it runs.
 notes=$(tmux show-option -gqv @cockpit_notes)
+# The pre-notes panel key ran "$(sq <panel>) -p ...", and #{key_command} prints that
+# argument in a "...", with \ " $ escaped: the raw $DIR missed a ' or a " in it (#1086).
+legacy_panel=$(sq "$DIR/scripts/cockpit-panel")
+legacy_panel=${legacy_panel//\\/\\\\}; legacy_panel=${legacy_panel//\"/\\\"}
+legacy_panel=${legacy_panel//\$/\\\$}
 owned() {                     # <name> <key>
     local nc
     nc=$(tmux list-keys -T prefix -F "#{key_note}"$'\037'"#{key_command}" "$2" 2>/dev/null)
@@ -162,7 +167,7 @@ owned() {                     # <name> <key>
         "cockpit: $1") return 0 ;;
         "") [ -z "$notes" ] || return 1
             case "$1:${nc#*$'\037'}" in
-                menu:*'display-menu -T "#[align=centre]'*|panel:*"$DIR/scripts/cockpit-panel"*)
+                menu:*'display-menu -T "#[align=centre]'*|panel:*"$legacy_panel"*)
                     tmux display-message "$(fesc \
                         "tmux-cockpit: $2 was the $1 key before the key notes; giving it back")"
                     return 0 ;;
@@ -333,11 +338,15 @@ $(sq "$(fesc "$Q_BOARD") -p '#{pane_id}' -c '#{client_name}'")"
     fi
 fi
 
+# A message naming $DIR, shown as written (#1087). display-message expands its text as a
+# format (fesc's part), then draws it reading ## as # and #[ as a style: every # doubled
+# first comes through the draw as one.
+say_lit() { local t=$1; tmux display-message "$(fesc "${t//#/##}")"; }
 # Required (#199). Offline: one --version, never a fetch, on every load.
 tv=$(tui_check)
 case $? in
-    1) tmux display-message "tmux-cockpit: cockpit-tui is missing; run $DIR/install.sh" ;;
-    2) tmux display-message "tmux-cockpit: cockpit-tui $tv is older than $TUI_MIN; run $DIR/install.sh" ;;
+    1) say_lit "tmux-cockpit: cockpit-tui is missing; run $DIR/install.sh" ;;
+    2) say_lit "tmux-cockpit: cockpit-tui $tv is older than $TUI_MIN; run $DIR/install.sh" ;;
 esac
 
 # Opt-in: this runs on every config reload, which must not wait on curl.
