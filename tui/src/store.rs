@@ -69,7 +69,7 @@ impl std::fmt::Display for Key {
 }
 
 /// Compared for equality only: a NATS revision is the stream's sequence and
-/// skips, while [`LocalStore`] counts 1, 2, 3 per key.
+/// skips; [`LocalStore`] counts up per key and never hands one out twice.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Revision(pub u64);
 
@@ -163,7 +163,8 @@ pub fn root_from(state_home: Option<&str>, home: Option<&str>) -> Option<PathBuf
 }
 
 /// One file per key under a 0700 folder: a version line, `rev <n>`, the value
-/// as one line of JSON. Beside it `<key>~lock` and, mid-write, `<key>~tmp`.
+/// as one line of JSON. Beside it `<key>~lock`, which holds the last revision
+/// written, and, mid-write, `<key>~tmp`.
 #[derive(Clone, Debug)]
 pub struct LocalStore {
     root: PathBuf,
@@ -276,6 +277,27 @@ impl LocalStore {
     }
 }
 
+/// The last revision a put wrote for the key, kept in its lock file; 0 when
+/// the lock holds none it can read.
+fn last_written(lock: &File) -> u64 {
+    use std::os::unix::fs::FileExt;
+    let mut buf = [0u8; 21];
+    let n = lock.read_at(&mut buf, 0).unwrap_or(0);
+    let text = std::str::from_utf8(&buf[..n]).unwrap_or("");
+    let digits = text.strip_suffix('\n').unwrap_or("");
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return 0;
+    }
+    digits.parse().unwrap_or(0)
+}
+
+fn record_written(lock: &File, rev: Revision) -> io::Result<()> {
+    use std::os::unix::fs::FileExt;
+    lock.set_len(0)?;
+    lock.write_all_at(format!("{}\n", rev.0).as_bytes(), 0)?;
+    lock.sync_data()
+}
+
 /// The stored form: strict, so anything else reads as no value.
 fn parse(body: &str) -> Option<(Value, Revision)> {
     let mut lines = body.strip_suffix('\n')?.split('\n');
@@ -344,19 +366,21 @@ impl Store for LocalStore {
 
     fn put_if_revision(&self, key: &Key, value: &Value, expected: Option<Revision>) -> Result<Revision, PutError> {
         DirBuilder::new().recursive(true).mode(0o700).create(&self.root)?;
-        let _lock = self.lock(key)?;
+        let lock = self.lock(key)?;
         let current = read_entry(&self.path(key)).map(|(_, r)| r);
         if current != expected {
             return Err(PutError::Conflict { current });
         }
-        let next = match current {
-            None => Revision(1),
-            Some(r) => Revision(r.0.checked_add(1).ok_or_else(|| io::Error::other("revision at u64::MAX"))?),
-        };
+        // Past the last revision written too: a value that reads as none must not
+        // hand its revision to a new one, or a writer holding the old one wins.
+        let base = current.map_or(0, |r| r.0).max(last_written(&lock));
+        let next = Revision(base.checked_add(1).ok_or_else(|| io::Error::other("revision at u64::MAX"))?);
         let text = render(value, next);
         if text.len() as u64 > FILE_MAX {
             return Err(PutError::TooLarge);
         }
+        // Before the rename, so the lock never holds less than the file.
+        record_written(&lock, next)?;
         self.replace(key, &text)?;
         Ok(next)
     }

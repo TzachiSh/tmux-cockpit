@@ -233,8 +233,9 @@ fn a_writer_killed_before_its_rename_leaves_the_old_value() {
     assert_eq!(out.status.signal(), Some(libc::SIGXFSZ), "{}", told(&out));
     assert_eq!(s.get(&k), Some((json!({"old": true}), Revision(1))));
     assert_eq!(std::fs::metadata(s.temp_path(&k)).unwrap().len(), 4096, "the kill landed mid-write");
-    assert_eq!(s.put_if_revision(&k, &json!({"new": 1}), Some(Revision(1))).unwrap(), Revision(2));
-    assert_eq!(s.get(&k), Some((json!({"new": 1}), Revision(2))));
+    // 3, not 2: the killed writer had recorded 2 in the lock before its rename.
+    assert_eq!(s.put_if_revision(&k, &json!({"new": 1}), Some(Revision(1))).unwrap(), Revision(3));
+    assert_eq!(s.get(&k), Some((json!({"new": 1}), Revision(3))));
 }
 
 #[test]
@@ -288,7 +289,7 @@ fn a_malformed_or_empty_file_reads_as_none() {
 }
 
 #[test]
-fn an_unreadable_file_reads_as_none_and_a_create_starts_fresh() {
+fn an_unreadable_file_reads_as_none_and_a_create_continues_its_revisions() {
     // SAFETY: a plain syscall.
     if unsafe { libc::geteuid() } == 0 {
         return; // root reads a mode 000 file
@@ -298,8 +299,28 @@ fn an_unreadable_file_reads_as_none_and_a_create_starts_fresh() {
     s.put_if_revision(&k, &json!(1), None).unwrap();
     std::fs::set_permissions(s.path(&k), std::fs::Permissions::from_mode(0o000)).unwrap();
     assert_eq!(s.get(&k), None);
-    assert_eq!(s.put_if_revision(&k, &json!(2), None).unwrap(), Revision(1));
-    assert_eq!(s.get(&k), Some((json!(2), Revision(1))));
+    assert_eq!(s.put_if_revision(&k, &json!(2), None).unwrap(), Revision(2));
+    assert_eq!(s.get(&k), Some((json!(2), Revision(2))));
+}
+
+#[test]
+fn a_writer_holding_the_revision_before_a_malformed_file_loses() {
+    let d = scratch("recreate");
+    let (s, k) = (local(&d), key("agent.a"));
+    s.put_if_revision(&k, &json!("first"), None).unwrap();
+    std::fs::write(s.path(&k), "garbage\n").unwrap();
+    assert_eq!(s.put_if_revision(&k, &json!("second"), None).unwrap(), Revision(2));
+    let stale = s.put_if_revision(&k, &json!("stale"), Some(Revision(1)));
+    assert!(
+        matches!(
+            stale,
+            Err(PutError::Conflict {
+                current: Some(Revision(2))
+            })
+        ),
+        "{stale:?}"
+    );
+    assert_eq!(s.get(&k), Some((json!("second"), Revision(2))));
 }
 
 #[test]

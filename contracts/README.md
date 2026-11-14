@@ -44,7 +44,9 @@ Nothing reads these schemas at run time. The Rust side is `tui/src/store.rs`, a
   `"%12\n"`.
 - **Unknown, malformed or wrong-version** payloads mean "no value, start fresh",
   as today's state files do (`data/agents.rs`, `board.rs`, `panel/action.rs`).
-  No reader repairs, upgrades or fails on one.
+  No reader repairs, upgrades or fails on one. Starting fresh never reuses a
+  revision: `LocalStore` keeps the last one it wrote for a key in `<key>~lock`
+  and goes on past it, as NATS never reuses one either.
 - **File modes:** a schema cannot say 0600. The writer creates the file 0600
   and its folder 0700; `LocalStore` does both.
 - **`revision`** inside a payload is the store revision the writer read before
@@ -69,8 +71,8 @@ Keys are dotted tokens: each token non-empty `[A-Za-z0-9_-]`, at most 200 bytes
 in all, with no `*`, `>`, `/`, or empty token. Such a key is a valid NATS
 subject and KV key, and a valid file name. Values are the JSON these schemas
 describe. Revisions are plain integers that callers compare only for equality:
-`LocalStore` counts 1, 2, 3 per key, while NATS uses the stream's sequence,
-which skips.
+`LocalStore` counts up per key and skips a revision a killed writer took,
+while NATS uses the stream's sequence, which skips more.
 
 | `Store` | NATS KV |
 |---------|---------|
