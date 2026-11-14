@@ -107,11 +107,6 @@ case ${TMUX_TMPDIR:-} in
 *) TMUX_TMPDIR=$(cd "$TMUX_TMPDIR" 2>/dev/null && pwd -P) || TMUX_TMPDIR=
    export TMUX_TMPDIR ;;
 esac
-if [ -z "${TMUX_TMPDIR:-}" ] || [ ! -d "$TMUX_TMPDIR" ]; then
-    SUITE_TT=$(mktemp -d /tmp/cs.XXXXXX) || { SUITE_TT=; fatal "no socket folder: $(
-        )mktemp -d /tmp/cs.XXXXXX failed"; }
-    export TMUX_TMPDIR="$SUITE_TT"
-fi
 # Deferring when $TMUX is set is load-bearing: tmux exports it to everything it
 # runs, so cockpit.tmux launched by a run-shell inside one of the per-block
 # servers must talk to THAT server, not this one.
