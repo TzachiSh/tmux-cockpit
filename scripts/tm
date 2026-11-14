@@ -256,7 +256,7 @@ ceiling() {  # ceiling VAR OPTION WHOLE -- OPTION as N% of WHOLE or N cells
 # popup closes and takes its stderr with it.
 refuse() {
   printf '✕ %s\n' "$*" >&2
-  [ -z "${TM_POPUP:-}" ] || tmux display-message ${TM_CLIENT:+-c "$TM_CLIENT"} "$(fesc "cockpit: ✕ $*")" 2>/dev/null
+  [ -z "${TM_POPUP:-}" ] || dmsg ${TM_CLIENT:+-c "$TM_CLIENT"} "cockpit: ✕ $*" 2>/dev/null
   return 1
 }
 

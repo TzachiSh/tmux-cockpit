@@ -69,18 +69,16 @@ deliver() {
     # tmux prefix-matches -t against session names: a non-%N id could resolve
     # onto someone else's pane.
     is_pane "$pane" || {
-        tmux display-message \
-            "$(fesc "cockpit: not a pane id, refusing to deliver$(keep_hint '' "$store")")" \
-            2>/dev/null; return 1; }
+        dmsg "cockpit: not a pane id, refusing to deliver$(keep_hint '' "$store")" 2>/dev/null
+        return 1; }
 
     local is_agent
     is_agent=$(tmux display-message -p -t "$pane" \
         '#{?#{m/i:*|#{b:pane_current_command}|*,#{@cockpit_agents_glob}},1,0}' \
         2>/dev/null)
     [ "$is_agent" = 1 ] || {
-        tmux display-message \
-            "$(fesc "cockpit: $pane is not an agent pane, refusing to deliver$(keep_hint "$pane" "$store")")" \
-            2>/dev/null
+        dmsg "cockpit: $pane is not an agent pane, refusing to deliver$(
+            keep_hint "$pane" "$store")" 2>/dev/null
         return 1
     }
 
@@ -97,9 +95,8 @@ deliver() {
     # below is paste-only (the harness files hook output past 10,000 chars).
     local spool="$store.deliver"
     if ! (umask 077; [ ! -L "$spool" ] && printf '%s' "$payload" > "$spool"); then
-        tmux display-message \
-            "$(fesc "cockpit: could not write the review spool, refusing to deliver$(keep_hint "$pane" "$store")")" \
-            2>/dev/null
+        dmsg "cockpit: could not write the review spool, refusing to deliver$(
+            keep_hint "$pane" "$store")" 2>/dev/null
         return 1
     fi
 
@@ -113,9 +110,8 @@ deliver() {
         local runtime file
         runtime=${XDG_RUNTIME_DIR:-/tmp}
         file=$(umask 077 && mktemp "$runtime/tmux-cockpit-review-${pane#%}-XXXXXX") || {
-            tmux display-message \
-                "$(fesc "cockpit: could not create the review file, refusing to deliver$(keep_hint "$pane" "$store")")" \
-                2>/dev/null
+            dmsg "cockpit: could not create the review file, refusing to deliver$(
+                keep_hint "$pane" "$store")" 2>/dev/null
             return 1
         }
         printf '%s' "$payload" > "$file"

@@ -55,7 +55,7 @@ PICK=0 DRY=0 FOLDER=0 BROWSE=0 VIEW=0
 [ "${1:-}" = --dry-run ] && { DRY=1;  shift; }
 
 # display-message expands formats: a clicked name like x#(cmd).txt must show, not run (#289)
-note() { [ "$DRY" -eq 1 ] || tmux display-message "$(fesc "$*")"; }
+note() { [ "$DRY" -eq 1 ] || dmsg "$*"; }
 
 # --- open ---------------------------------------------------------------------
 # tmux runs these command strings through sh: every path in one is %q-quoted,
