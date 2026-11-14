@@ -41,12 +41,16 @@ Nothing reads these schemas at run time. The Rust side is `tui/src/store.rs`, a
   (`additionalProperties: false`). A key name cannot carry words either. A new
   key is a schema change, so it bumps `schema_version` by the rule above.
 - **Timestamps** are ISO-8601 in UTC with a `Z`, an optional fraction, checked
-  by `pattern`. `format: date-time` would not be checked: the distro's
-  jsonschema lacks `rfc3339_validator`. A reader that needs order (an intent's
-  `expires_at` after its `created_at`) checks it itself.
-- **Patterns end in `(?!\n)$`**, not `$`. Python's `$` also matches before a
-  final newline and ECMA-262's does not. The lookahead makes both refuse
-  `"%12\n"`.
+  by `pattern`. `format: date-time` would not be checked: draft 2020-12 makes
+  `format` an annotation, and the check does not turn format checking on. A
+  reader that needs order (an intent's `expires_at` after its `created_at`)
+  checks it itself.
+- **Patterns** start with `^` and end with `$`, and are checked by Rust's
+  `regex` engine. Its `$` is the end of the string, so `^%[0-9]{1,10}$` refuses
+  `"%12\n"`. The check fails a `pattern` or `patternProperties` key anywhere in
+  a schema, `$defs` included, that lacks either anchor, and a pattern with
+  lookaround or a backreference. Python's `$` also matches before a final
+  newline: a Python validator would accept `"%12\n"`.
 - **Unknown, malformed or wrong-version** payloads mean "no value, start fresh",
   as today's state files do (`data/agents.rs`, `board.rs`, `panel/action.rs`).
   No reader repairs, upgrades or fails on one. Starting fresh never reuses a
@@ -101,15 +105,19 @@ update per existing key, is taken before `watch` returns.
 ## Checking the schemas
 
 ```sh
-python3 -I tests/contracts.py
+cargo run --locked --manifest-path contracts/check/Cargo.toml
 ```
 
-It checks each schema against draft 2020-12 and the rules above that a schema
-states about itself. Every `examples/<name>/valid-*.json` must pass, and every
-`invalid-*.json` must fail with exactly the one error its folder's
+`contracts/check` is a crate of its own, with its own `Cargo.lock`, apart from
+`tui/`. It reads `contracts/` by default, or the folder given as its one
+argument. It checks each schema against draft 2020-12 and the rules above that
+a schema states about itself. Every `examples/<name>/valid-*.json` must pass,
+and every `invalid-*.json` must fail with exactly the one error its folder's
 `errors.json` names (a keyword and a JSON path), so an example cannot fail for
-a reason other than the one in its name. It exits 1 on any surprise, including
-a folder with no valid or no invalid example.
+a reason other than the one in its name. A duplicate key or a NaN makes a file
+unreadable. It exits 1 on any surprise, including a folder with no valid or no
+invalid example, and 2 when it cannot start: a bad argument or a folder it
+cannot read. `cargo test` with the same manifest runs its own tests.
 
 Nothing runs it automatically (#1021). Whoever changes a file under
 `contracts/` runs it and quotes the output in the PR. The reviewer reruns it.

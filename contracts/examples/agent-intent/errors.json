@@ -39,6 +39,10 @@
     "keyword": "pattern",
     "at": "$.intent_id"
   },
+  "invalid-utc-trailing-newline.json": {
+    "keyword": "pattern",
+    "at": "$.expires_at"
+  },
   "invalid-word-ref.json": {
     "keyword": "pattern",
     "at": "$.summary_ref"

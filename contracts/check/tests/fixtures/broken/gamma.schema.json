@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:tmux-cockpit:contracts:gamma",
+  "description": "Breaks one house rule: a pattern in $defs with no closing $.",
+  "type": "object",
+  "properties": {
+    "schema_version": { "const": 1 },
+    "key": { "$ref": "#/$defs/key" }
+  },
+  "required": ["schema_version", "key"],
+  "additionalProperties": false,
+  "$defs": {
+    "key": { "type": "string", "pattern": "^[0-9a-f]{16}" }
+  }
+}

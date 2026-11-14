@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:tmux-cockpit:contracts:alpha",
+  "description": "Keeps every house rule; its examples break the example rules.",
+  "type": "object",
+  "properties": {
+    "schema_version": { "const": 1 },
+    "pane_id": { "type": "string", "pattern": "^%[0-9]{1,10}$" },
+    "state": { "enum": ["running", "idle"] }
+  },
+  "required": ["schema_version", "pane_id", "state"],
+  "additionalProperties": false
+}
