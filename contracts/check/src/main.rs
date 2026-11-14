@@ -120,15 +120,21 @@ fn house_rules(schema: &Value) -> Vec<String> {
         bad.push("additionalProperties is not false".into());
     }
     for p in unanchored(schema) {
-        bad.push(format!(
-            "pattern {p:?} does not start with ^ and end with $"
-        ));
+        let ends = p.starts_with('^') && p.ends_with('$');
+        bad.push(if ends && bar_at_top(&p) {
+            format!(
+                "pattern {p:?} has a | outside every group, so ^ and $ each anchor one side only"
+            )
+        } else {
+            format!("pattern {p:?} does not start with ^ and end with $")
+        });
     }
     bad
 }
 
 /// Every `pattern` and `patternProperties` key in a schema that does not start with `^` and
-/// end with an unescaped `$` (#1052). `const`, `enum`, `examples` and `default` hold data.
+/// end with an unescaped `$` (#1052), or has a top-level `|` (#1057). `const`, `enum`,
+/// `examples` and `default` hold data.
 fn unanchored(schema: &Value) -> Vec<String> {
     let mut out = vec![];
     walk_schema(schema, &mut out);
@@ -140,7 +146,56 @@ fn anchored(pattern: &str) -> bool {
         return false;
     };
     let escapes = body.chars().rev().take_while(|c| *c == '\\').count();
-    pattern.starts_with('^') && escapes % 2 == 0
+    pattern.starts_with('^') && escapes % 2 == 0 && !bar_at_top(pattern)
+}
+
+/// Whether a `|` sits outside every group and class: `^a|b$` is `(^a)|(b$)`, each side
+/// anchored at one end only (#1057). `(?:` opens a group like `(`.
+fn bar_at_top(pattern: &str) -> bool {
+    let mut chars = pattern.chars();
+    let mut depth = 0usize;
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => {
+                chars.next();
+            }
+            '[' => skip_class(&mut chars),
+            '(' => depth += 1,
+            ')' => depth = depth.saturating_sub(1),
+            '|' if depth == 0 => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Consumes a class whose `[` was just read, through its closing `]`. A `]` first, or first
+/// after `^`, is a literal, and a `[` inside opens a nested class, as Rust's regex reads them.
+fn skip_class(chars: &mut std::str::Chars) {
+    let mut depth = 1usize;
+    let mut first = true;
+    while let Some(c) = chars.next() {
+        match c {
+            '^' if first => continue,
+            ']' if first => {}
+            '\\' => {
+                chars.next();
+            }
+            '[' => {
+                depth += 1;
+                first = true;
+                continue;
+            }
+            ']' => {
+                depth -= 1;
+                if depth == 0 {
+                    return;
+                }
+            }
+            _ => {}
+        }
+        first = false;
+    }
 }
 
 fn walk_schema(schema: &Value, out: &mut Vec<String>) {
@@ -510,6 +565,11 @@ mod tests {
                 vec!["^a"],
             ),
             (
+                "a definition named const",
+                json!({"$defs": {"const": {"pattern": "^a"}}}),
+                vec!["^a"],
+            ),
+            (
                 "in an else",
                 json!({"allOf": [{"else": {"pattern": "^b"}}]}),
                 vec!["^b"],
@@ -549,6 +609,26 @@ mod tests {
     }
 
     #[test]
+    fn a_bar_outside_every_group_and_class_is_refused() {
+        let rows = [
+            ("top-level alternation", r"^a|b$", true),
+            ("after a group closes", r"^(a)|b$", true),
+            ("alternation in a group", r"^(a|b)$", false),
+            ("non-capturing group", r"^(?:a|b)$", false),
+            ("bar in a class", r"^[|]$", false),
+            ("bar after a leading ] in a class", r"^[]|]$", false),
+            ("bar after a leading ^] in a class", r"^[^]|]$", false),
+            ("bar after a nested class", r"^[a[b]|]$", false),
+            ("escaped bar", r"^\|$", false),
+            ("escaped bracket, then a bar", r"^\[|a$", true),
+        ];
+        for (row, pattern, refused) in rows {
+            let want: Vec<&str> = if refused { vec![pattern] } else { vec![] };
+            assert_eq!(unanchored(&json!({"pattern": pattern})), want, "row {row}");
+        }
+    }
+
+    #[test]
     fn the_broken_fixture_gives_exactly_its_surprises() {
         let want = [
             "examples/orphan: no orphan.schema.json",
@@ -558,6 +638,8 @@ mod tests {
             "beta.schema.json: additionalProperties is not false",
             "beta: no valid-* example",
             r#"gamma.schema.json: pattern "^[0-9a-f]{16}" does not start with ^ and end with $"#,
+            "gamma.schema.json: pattern \"^repo|global$\" has a | outside every group, \
+             so ^ and $ each anchor one side only",
         ];
         assert_eq!(check(&fixture("broken")), want);
     }
