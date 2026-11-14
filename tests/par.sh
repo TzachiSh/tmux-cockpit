@@ -74,7 +74,10 @@ fi
 # Titles only: no path or variable a log should not carry. Written once here, read once
 # per shard, never per row.
 mkdir -p "$WORK/title"
-LC_ALL=C awk -F'\t' -v dir="$WORK/title" '
+# The folder goes through the environment: awk -v unescapes backslashes, so a TMPDIR holding
+# one sent every title to another name and the start lines came out empty (#1015).
+PAR_TITLES="$WORK/title" LC_ALL=C awk -F'\t' '
+    BEGIN { dir = ENVIRON["PAR_TITLES"] }
     NR == FNR { if (/^echo "== /) { n++; t = $0; sub(/^echo "== /, "", t); sub(/ =="$/, "", t)
                                     gsub(/[\001-\037\177]/, "", t); title[n] = t }
                 next }
