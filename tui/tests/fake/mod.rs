@@ -430,8 +430,15 @@ fn refusal(what: &str, why: &[String], risk: &str) -> String {
          .cargo/config.toml names (another: #1090). Or, in tui/: {CLEARED} cargo test\n\
          This binary alone: {CLEARED} {}",
         why.join(", "),
-        exe.display()
+        sh_quoted(&exe.to_string_lossy())
     )
+}
+
+/// `s` as one word for sh, in single quotes, each `'` in it closed, escaped and
+/// reopened: a checkout's path may hold a space (#997) or a quote.
+#[allow(dead_code)]
+fn sh_quoted(s: &str) -> String {
+    format!("'{}'", s.replace('\'', r"'\''"))
 }
 
 /// The variables of `vars` that are set, as one reason, or none.

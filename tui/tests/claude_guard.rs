@@ -1627,7 +1627,8 @@ fn the_helpers_check_holds_under_the_runner() {
 }
 
 /// The helpers' tmux refusal for `why` and `risk`, word for word as a reader
-/// sees it (#1066): its three lines, the two commands copy-ready.
+/// sees it (#1066): its three lines, the two commands copy-ready, the binary's
+/// path in single quotes. Its path here holds no quote.
 fn tmux_refused(why: &str, risk: &str, exe: &Path) -> String {
     let cleared = "d=$(mktemp -d) && env -u TMUX -u TMUX_PANE -u TMUX_COCKPIT_DIR -u COCKPIT_LOG \
                    -u XDG_CACHE_HOME -u XDG_STATE_HOME TMUX_TMPDIR=\"$d\"";
@@ -1635,7 +1636,7 @@ fn tmux_refused(why: &str, risk: &str, exe: &Path) -> String {
         "tmux refused (#1066): {why}. {risk}\n\
          Run make tui-test from the checkout: it clears these on the six targets \
          .cargo/config.toml names (another: #1090). Or, in tui/: {cleared} cargo test\n\
-         This binary alone: {cleared} {}",
+         This binary alone: {cleared} '{}'",
         exe.display()
     )
 }
@@ -1688,18 +1689,42 @@ fn a_run_that_kept_the_callers_session_is_refused() {
 
 /// #1066: the refusal's command for this binary alone runs it, pasted as it
 /// reads into sh from a shell that kept its session: the check it refused passes.
+/// Cases: this binary where cargo built it, and a copy of it in a folder whose name
+/// holds a space, then a single quote, as a checkout's path may (#997).
 #[test]
 fn the_refusals_command_for_the_binary_runs_it() {
     let test = "the_helpers_check_holds_under_the_runner";
-    let (code, said) = fake::run_by_hand(test, &[("TMUX", "/canary,1,0")]);
-    let line = said.lines().find_map(|l| l.strip_prefix("This binary alone: "));
-    let line = line.unwrap_or_else(|| panic!("no command in {said}"));
     let tmp = Scratch::fresh(std::env::temp_dir().join(format!("cockpit-pasted-{}", std::process::id())));
-    let mut c = Command::new("/bin/sh");
-    c.arg("-c").arg(format!("{line} --exact {test}")).env("TMUX", "/canary,1,0");
-    let out = c.env("TMPDIR", &tmp.0).stdin(Stdio::null()).output().unwrap();
-    let err = String::from_utf8_lossy(&out.stderr);
-    assert_eq!((code, out.status.code()), (Some(101), Some(0)), "{line}: {err}");
+    for folder in ["", "sp ace", "it's"] {
+        let exe = pasted_copy(&tmp, folder);
+        let mut c = Command::new(&exe);
+        c.args(["--exact", test]).env("TMUX", "/canary,1,0").stdin(Stdio::null());
+        let out = c.output().unwrap();
+        let said = String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr);
+        let line = said.lines().find_map(|l| l.strip_prefix("This binary alone: "));
+        let line = line.unwrap_or_else(|| panic!("{folder:?}: no command in {said}"));
+        let mut c = Command::new("/bin/sh");
+        c.arg("-c").arg(format!("{line} --exact {test}")).env("TMUX", "/canary,1,0");
+        let pasted = c.env("TMPDIR", &tmp.0).stdin(Stdio::null()).output().unwrap();
+        let err = String::from_utf8_lossy(&pasted.stderr);
+        assert_eq!((out.status.code(), pasted.status.code()), (Some(101), Some(0)), "{folder:?}: {line}: {err}");
+    }
+}
+
+/// This test binary for [`the_refusals_command_for_the_binary_runs_it`]: itself for
+/// `""`, else a copy in `<tmp>/<folder>/`, hard-linked where the filesystem allows,
+/// so the copy's own path is the one its refusal prints.
+fn pasted_copy(tmp: &Scratch, folder: &str) -> PathBuf {
+    let me = std::env::current_exe().unwrap();
+    if folder.is_empty() {
+        return me;
+    }
+    let exe = tmp.join(folder).join(me.file_name().unwrap());
+    std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
+    if std::fs::hard_link(&me, &exe).is_err() {
+        std::fs::copy(&me, &exe).unwrap();
+    }
+    exe
 }
 
 /// #1066: with the claude guard lifted the runner execs the binary as it was
