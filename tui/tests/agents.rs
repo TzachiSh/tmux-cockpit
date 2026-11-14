@@ -409,12 +409,15 @@ fn a_rig_dropped_in_a_panic_leaves_no_stage_hook_set() {
 /// whose drop waits 200 ms for it. Should the rig's HOME ever be put back under that
 /// thread, it asks again, and the `claude` outside the rig logs it. `HUNG_LOOKUP_CHILD`
 /// says how the rig goes: `panic` drops it in a panic's unwind, `nosh` gives it a
-/// shell path that does not exist, and anything else drops it plainly (#988).
+/// shell path that does not exist, and `return`, `ignored` and `blocked` drop it
+/// plainly. Any other value fails the child, so a misspelt mode cannot pass (#988).
 #[test]
 fn hung_lookup_child() {
     let Ok(how) = std::env::var("HUNG_LOOKUP_CHILD") else {
         return;
     };
+    let modes = ["return", "panic", "nosh", "ignored", "blocked"];
+    assert!(modes.contains(&how.as_str()), "no child mode {how:?}");
     fn hang(at: Stage, _pid: u32) {
         if at == Stage::Reaping {
             let home = std::env::var("HOME").unwrap();
