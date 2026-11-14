@@ -3,7 +3,7 @@
 mod fake;
 
 use cockpit_tui::data::agents::{Background, Entry, Stage, flush, lookup_pid, lookups};
-use cockpit_tui::data::agents::{read_file, resolve};
+use cockpit_tui::data::agents::{is_lookup_child, read_file, resolve};
 use cockpit_tui::data::agents::{set_background, set_stage_hook};
 use cockpit_tui::data::list_panes;
 use fake::write_exec;
@@ -207,6 +207,9 @@ fn give_up(dir: &Path, bound: std::time::Duration) -> ! {
 
 impl Drop for Rig {
     fn drop(&mut self) {
+        // a hook set under this rig ends with it, on a panic too: left set, it would
+        // run in every later test's lookups (#1024)
+        set_stage_hook(None);
         // a red run must not leave a stub looping on a file that never comes
         let _ = std::fs::write(self.dir.join("go"), "");
         // AGENTS.md: never signal a pid nobody verified. The stub may be long gone and
@@ -786,6 +789,8 @@ fn own_pane_stays_no_agent(tag: &str, grandchild: bool, by_ps: bool, hold: Hold)
     }
     let ids: Vec<_> = list_panes().unwrap().into_iter().map(|p| p.id).collect();
     set_stage_hook(None);
+    // an empty stubpid read names no child, and the walk then checks nothing (#1024)
+    assert!(is_lookup_child(&pid), "the walk met no lookup child: {pid:?}");
     assert_eq!(ids, ["%1"], "the board's own pane showed as an agent");
     std::fs::write(r.dir.join("go"), "").unwrap();
     r.wait_cache();
