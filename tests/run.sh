@@ -4554,7 +4554,7 @@ elif ! ( . "$DIR/scripts/lib/vnum.sh"
     skip_ "messages show names as written (tmux below 3.8: the plugin refuses it)"
 else
 DM=$(mktmpd); mkdir -p "$DM/wd" "$DM/m"
-for dm_n in 1 2 3 4 5; do SOCKS="$SOCKS cockpit-dm-$$-$dm_n cockpit-dmo-$$-$dm_n"; done
+for dm_n in 1 2 3 4 5 6; do SOCKS="$SOCKS cockpit-dm-$$-$dm_n cockpit-dmo-$$-$dm_n"; done
 dm_names=('a##x' 'a#[fg=red]b' 'a#Sb' 'a#(touch pwned)b')
 dm_up() {                     # <n> [new-session command] -> a server, a client on it
     # Wide enough by construction: a message wider than the client is cut. The longest
@@ -4621,9 +4621,9 @@ for dm_f in "${dm_names[@]}"; do
        "$(dm_drawn 2 "cockpit: board needs cockpit-tui: run $dm_d/install.sh")"
 done
 dm_down 2
-# 3. The delivery notice, the one message that stays a format (its jump clause): the agent
-# window named with each shape, stored literally: rename-window expands its argument, so
-# it gets the name fesc'd, which keeps a #[ as it is and doubles every other #.
+# 3. The delivery notice: the agent window named with each shape, stored literally:
+# rename-window expands its argument, so it gets the name fesc'd, which keeps a #[ as it
+# is and doubles every other #.
 dm_up 3 'exec -a claude bash'
 "$TMUX_REAL" -L "cockpit-dm-$$-3" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
 dm_p=$("$TMUX_REAL" -L "cockpit-dm-$$-3" display-message -p -t t: '#{pane_id}')
@@ -4671,15 +4671,51 @@ for dm_f in '-x foo' '--' '-' '-l' '-#[fg=red]' ' -x foo'; do
 done
 dm_down 5
 
+# 6. The notice's jump clause names the key bound as "cockpit: jump" (#1102). The option
+# is read at load, globally: a session's value, or a change with no reload, named a key
+# that was not the jump (x is stock kill-pane). The agent's session is t; the client
+# reads in session B, as a user elsewhere does.
+dm_up 6 'exec -a claude bash'
+dm_s="cockpit-dm-$$-6"
+"$TMUX_REAL" -L "$dm_s" set -g mouse on >/dev/null 2>&1
+( cd "$DM/wd" && exec "$TMUX_REAL" -L "$dm_s" run-shell "$(tq "$DIR/cockpit.tmux")" \
+    ) >/dev/null 2>&1
+until_out '*@cockpit_click_line*' "$TMUX_REAL" -L "$dm_s" list-keys -T root C-MouseDown3Pane
+"$TMUX_REAL" -L "$dm_s" new-session -d -s B -c "$DM/wd" 'exec sleep 300' \; \
+    switch-client -c "$("$TMUX_REAL" -L "$dm_s" list-clients -F '#{client_name}')" -t B \
+    >/dev/null 2>&1
+dm_p=$("$TMUX_REAL" -L "$dm_s" display-message -p -t t: '#{pane_id}')
+dm_note() {                   # <n> <case> <want>: name the window w<n>, deliver, read the line
+    "$TMUX_REAL" -L "$dm_s" rename-window -t t:0 -- "w$1" >/dev/null 2>&1
+    printf '## src.go:%s (+)\n> foo\nDM fix\n\n' "$1" > "$DM/jstore$1"
+    dm_tmux 6 "$DIR/scripts/tmux-review" --deliver "$dm_p" "$DM/jstore$1"
+    local want="cockpit: review pasted into t:0 w$1 · ↵ sends it$3" got
+    dm_line 6 "$want" >/dev/null
+    got=$("$TMUX_REAL" -L "cockpit-dmo-$$-6" capture-pane -p -t o | tail -1)
+    is "the notice names the bound jump key: $2" "$want" "${got%"${got##*[! ]}"}"
+}
+"$TMUX_REAL" -L "$dm_s" set -t t @cockpit_jump_key x \; set -t B @cockpit_jump_key y
+dm_note 1 "session values x and y, bound u" " · prefix u jumps"
+"$TMUX_REAL" -L "$dm_s" set -t t -u @cockpit_jump_key \; set -t B -u @cockpit_jump_key \; \
+    set -g @cockpit_jump_key j
+dm_note 2 "the global changed to j with no reload, bound u" " · prefix u jumps"
+"$TMUX_REAL" -L "$dm_s" set -gu @cockpit_jump_key \; set -gu @cockpit_jump_bound
+dm_note 3 "@cockpit_jump_bound never set, as an older load leaves it" " · prefix u jumps"
+"$TMUX_REAL" -L "$dm_s" bind-key -T prefix u run-shell true
+dm_note 4 "a jump bound with no note, as before the key notes: no clause" ""
+"$TMUX_REAL" -L "$dm_s" set -g @cockpit_jump_key off
+( cd "$DM/wd" && exec "$TMUX_REAL" -L "$dm_s" run-shell "$(tq "$DIR/cockpit.tmux")" \
+    ) >/dev/null 2>&1
+dm_note 5 "off, after a reload: no clause" ""
+dm_down 6
 # The scan: each display-message call in cockpit.tmux or scripts/ that shows a variable or
 # a $( ) goes through dmsg. A \-continued line is joined first, then split at every
 # display-message, so each call is judged on its own text: a -p before its first quote is
-# a read, not a message. Allowed, each only when that call starts with its fixed text:
+# a read, not a message. Allowed, each only in its own file and only when that call
+# starts with its fixed text (#1108):
 #   cockpit.tmux, the version check: it runs on a tmux below the floor, where -l (3.4)
 #     may not exist, and shows only that tmux's own -V output.
-#   fmt.sh, dmsg itself.
-#   review-deliver.sh, the delivery notice: it stays a format for its jump clause, read on
-#     the reader's session when shown; its window name is doubled and fesc'd (row 3).
+#   scripts/lib/fmt.sh, dmsg itself.
 dm_scan() {                   # <file...> -> file:line of each display-message not via dmsg
     awk '
         FNR == 1 { buf = "" }
@@ -4692,10 +4728,11 @@ dm_scan() {                   # <file...> -> file:line of each display-message n
             for (i = 2; i <= n; i++) {
                 c = seg[i]
                 if (c ~ /^[^"'\''$]*[ \t]-p([ \t]|$)/) continue
-                if (index(c, " \"tmux-cockpit needs tmux 3.8 or newer (found $tmux_version)") == 1)
+                if (FILENAME == "cockpit.tmux" &&
+                    index(c, " \"tmux-cockpit needs tmux 3.8 or newer (found $tmux_version)") == 1)
                     continue
-                if (index(c, " \"$@\" \"${t//#/##}\"") == 1) continue
-                if (index(c, " -d 0 '\''$notice_") == 1) continue
+                if (FILENAME == "scripts/lib/fmt.sh" && index(c, " \"$@\" \"${t//#/##}\"") == 1)
+                    continue
                 # \173 is an open brace, written so: only.sh and par.sh hoist this function
                 # by counting its braces, and the count must close with it (#1103).
                 if (c ~ /(^|[^\\])\$[A-Za-z_\173(@*0-9#!?]/) { print FILENAME ":" start; break }
@@ -4706,42 +4743,59 @@ dm_scan() {                   # <file...> -> file:line of each display-message n
 mapfile -t dm_files < <(cd "$DIR" && find scripts -type f | sort)
 is "every display-message of a variable in cockpit.tmux and scripts/ goes through dmsg" "" \
    "$(cd "$DIR" && dm_scan cockpit.tmux "${dm_files[@]}" | tr '\n' ' ')"
-# Planted, one case a file, each named by the file it is in.
-mkdir -p "$DM/plant"
-cat > "$DM/plant/raw" <<'EOF'
+# Planted, one case a folder, each file at the path it would have in the plugin, since an
+# exception holds only in its own file. The scan runs from the case's folder.
+dm_plant() {                  # <case> <path> < text
+    mkdir -p "$DM/pl/$1/$(dirname "$2")"; cat > "$DM/pl/$1/$2"
+}
+dm_plant raw scripts/x <<'EOF'
     tmux display-message "mode [$m]"
 EOF
-cat > "$DM/plant/fesc" <<'EOF'
+dm_plant fesc scripts/x <<'EOF'
     tmux display-message \
         "$(fesc "$y")"
 EOF
-cat > "$DM/plant/read-then-raw" <<'EOF'
+dm_plant read-then-raw scripts/x <<'EOF'
     p=$(tmux display-message -p '#{pane_id}'); tmux display-message "$p" 2>/dev/null
 EOF
-cat > "$DM/plant/raw-then-constant" <<'EOF'
+dm_plant raw-then-constant scripts/x <<'EOF'
     tmux display-message "$client" \; display-message "done" 2>/dev/null
 EOF
-cat > "$DM/plant/notice-then-raw" <<'EOF'
-    "delete-buffer -b $b ; display-message -d 0 '$notice_queue' ; display-message '$b'"
+dm_plant notice scripts/lib/review-deliver.sh <<'EOF'
+    "delete-buffer -b $b ; display-message -d 0 '$notice_queue'"
 EOF
-cat > "$DM/plant/version-then-raw" <<'EOF'
+dm_plant version-then-raw cockpit.tmux <<'EOF'
     tmux display-message "tmux-cockpit needs tmux 3.8 or newer (found $tmux_version)"; \
     tmux display-message "$DIR"
 EOF
-cat > "$DM/plant/allowed" <<'EOF'
+dm_plant version-elsewhere scripts/x <<'EOF'
+    tmux display-message "tmux-cockpit needs tmux 3.8 or newer (found $tmux_version)"
+EOF
+dm_plant dmsg-call-elsewhere scripts/tmux-jump <<'EOF'
+  tmux display-message "$@" "${t//#/##}"
+EOF
+for dm_f in raw:scripts/x fesc:scripts/x read-then-raw:scripts/x raw-then-constant:scripts/x \
+        notice:scripts/lib/review-deliver.sh version-then-raw:cockpit.tmux \
+        version-elsewhere:scripts/x dmsg-call-elsewhere:scripts/tmux-jump; do
+    is "the scan names a planted [${dm_f%%:*}]" "${dm_f#*:}:1" \
+       "$(cd "$DM/pl/${dm_f%%:*}" && dm_scan "${dm_f#*:}")"
+done
+dm_plant ok-version cockpit.tmux <<'EOF'
+    tmux display-message "tmux-cockpit needs tmux 3.8 or newer (found $tmux_version); x"
+EOF
+dm_plant ok-dmsg scripts/lib/fmt.sh <<'EOF'
+  tmux display-message "$@" "${t//#/##}"
+EOF
+dm_plant ok-other scripts/x <<'EOF'
     dmsg "$z"
     tmux display-message -p "$w"
     tmux display-message -d 0 "fixed text"
-    "delete-buffer -b $b ; display-message -d 0 '$notice_queue'"
-    tmux display-message "tmux-cockpit needs tmux 3.8 or newer (found $tmux_version); x"
 EOF
-for dm_f in raw fesc read-then-raw raw-then-constant notice-then-raw version-then-raw; do
-    is "the scan names a planted [$dm_f]" "$DM/plant/$dm_f:1" "$(dm_scan "$DM/plant/$dm_f")"
-done
-is "and names nothing in dmsg, a -p read, a fixed text or the two exempt calls alone" "" \
-   "$(dm_scan "$DM/plant/allowed")"
-unset -f dm_up dm_drawn dm_line dm_down dm_tmux dm_scan
-unset DM dm_n dm_f dm_p dm_d dm_k dm_names dm_files
+is "and names nothing in dmsg, a -p read, a fixed text or an exception in its own file" "" \
+   "$(for dm_f in ok-version:cockpit.tmux ok-dmsg:scripts/lib/fmt.sh ok-other:scripts/x; do
+          (cd "$DM/pl/${dm_f%%:*}" && dm_scan "${dm_f#*:}"); done)"
+unset -f dm_up dm_drawn dm_line dm_down dm_tmux dm_scan dm_note dm_plant
+unset DM dm_n dm_f dm_p dm_d dm_k dm_names dm_files dm_s
 fi
 
 echo "== HOME unset must not kill the path picker =="
