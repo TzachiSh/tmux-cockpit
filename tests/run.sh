@@ -9226,6 +9226,13 @@ is "nor is a shard file left in the checkout" "" "$(ls -A "$PW/v1.2 proj/tests" 
 # broke, or expanded, when the work dir was pasted into the worker's script.
 is "under a path with a ' and a TMPDIR with a \" and a \$ both shards run and count" \
    "0|2 passed, 0 failed, 0 skipped|2 2" "$(pw_run "pr'oj" 't"$HOME')"
+# A backslash in TMPDIR: par.sh handed its titles folder to awk with -v, which unescapes, so
+# "a\tb" became a tab, every title went to another name and each start line came out empty
+# (#1015). Shards ran and counted all the same, so the counts above could not see it.
+is "under a TMPDIR with a backslash each start line still carries its title" \
+   "0|2 passed, 0 failed, 0 skipped|2 2|pw1: one,pw2: two," \
+   "$(pw_run proj 'a\tb')|$(sed -n 's/^par\.sh: shard [0-9]* start: //p' "$PW/err" | sort |
+        tr '\n' ,)"
 unset -f pw_run; unset PW Q
 
 echo "== tests/par.sh: a run whose shards did not all report fails and says so (#1013) =="
