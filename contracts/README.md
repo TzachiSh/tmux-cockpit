@@ -51,7 +51,13 @@ Nothing reads these schemas at run time. The Rust side is `tui/src/store.rs`, a
   Python's `$` also matches before a final newline. An alternation goes inside
   a group, as in `^(a|b)$`: `^a|b$` means `(^a)|(b$)`.
 
-  The check reads every `pattern` and `patternProperties` key in a schema,
+  The text itself starts with `^` and ends with `$`, so flags go after the `^`:
+  `^(?i)a$` passes, while `(?i)^a$`, `^a$(?i)`, `(?i:^a$)` and `(?:^a$)` fail.
+  The parse below reads `\A` and `\z` as anchors too, but ECMA-262 reads them
+  as letters, so `\A[0-9a-f]{16}\z` fails: another validator would see it
+  unanchored. An escaped `\$` at the end is a literal and fails the parse.
+
+  The check also reads every `pattern` and `patternProperties` key in a schema,
   `$defs` included, as the validator does: jsonschema-regex translates it, then
   regex-syntax parses the result. The top node of that parse, after
   regex-syntax's own simplification, must be a concatenation whose first item
@@ -59,16 +65,15 @@ Nothing reads these schemas at run time. The Rust side is `tui/src/store.rs`, a
   `(?m)`:
   - A group is one item in between, so `^(a|b)$` passes. A capturing group
     around the whole pattern, `(^a$)`, fails, since the group is the top node.
-    A non-capturing group leaves no node, so `(?:^a$)` passes. `^a$|^b$`
-    fails: the shared `^` is factored out, and the last item is the
+    `^a$|^b$` fails: the shared `^` is factored out, and the last item is the
     alternation.
   - A repetition is one item: `^a*$` passes, and `^a$*` fails, since `$*` may
     match nothing. A repetition of the whole pattern, `(^a$)+` or
     `(?:^a$)+`, fails, since the repetition is the top node.
-  - Flags add no item: `(?i)^a$`, `^a$(?i)` and `(?i:^a$)` pass. `(?m)^a$`
-    fails, since its anchors are `Look::StartLF` and `Look::EndLF`, which also
-    match at a newline. `(?x)` drops spaces and `#` comments before the
-    reading, so a `(` in a comment opens nothing.
+  - Flags add no item: `^(?i)a$` passes. `^(?m)a$` fails, since its anchors
+    are `Look::StartLF` and `Look::EndLF`, which also match at a newline.
+    `(?x)` drops spaces and `#` comments before the reading, so a `(` in a
+    comment opens nothing.
   - A `[` inside a class is a literal, as jsonschema-regex escapes it.
   - The empty pattern fails, since its top node is empty. `^$` passes and
     matches only the empty string.

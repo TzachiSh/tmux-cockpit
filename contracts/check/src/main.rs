@@ -139,6 +139,9 @@ fn unanchored(schema: &Value) -> Vec<String> {
 /// translated by jsonschema-regex's `to_rust_regex`, as jsonschema 0.60.2 does before it builds
 /// the regex, then parsed by regex-syntax. The parse must be `^`, something, `$`.
 fn anchor_problem(pattern: &str) -> Option<&'static str> {
+    if !written_anchored(pattern) {
+        return Some("does not start with ^ and end with $");
+    }
     let parsed = jsonschema_regex::to_rust_regex(pattern)
         .ok()
         .and_then(|rust| regex_syntax::Parser::new().parse(&rust).ok());
@@ -156,6 +159,13 @@ fn anchor_problem(pattern: &str) -> Option<&'static str> {
         }
         _ => Some("does not start with ^ and end with $"),
     }
+}
+
+/// Whether the text itself starts with `^` and ends with `$`. The parse reads `\A` and `\z`
+/// as anchors too, but ECMA-262 reads them as letters, so other validators would see such a
+/// pattern unanchored (#1057). An escaped final `\$` passes here and fails the parse.
+fn written_anchored(pattern: &str) -> bool {
+    pattern.starts_with('^') && pattern.ends_with('$')
 }
 
 /// Whether `node` is the look `want`: `Look::Start` is `^`, `Look::End` is `$`, without (?m).
@@ -598,6 +608,10 @@ mod tests {
             ),
             ("multi-line flag", r"(?m)^a$", true),
             ("posix class, then a bar", r"^[[:alpha:]|]$", true),
+            ("\\A and \\z", r"\A[0-9a-f]{16}\z", true),
+            ("^ and \\z", r"^[0-9a-f]{16}\z", true),
+            ("\\A and $", r"\A[0-9a-f]{16}$", true),
+            ("escaped $ at the end", r"^[0-9a-f]{16}\$", true),
             ("a group cut at its $", r"^([0-9a-f]{16}|global)", true),
             ("hex cut at its $", r"^[0-9a-f]{16}", true),
             ("unbalanced group", r"^(a$", true),
@@ -628,17 +642,19 @@ mod tests {
             ("empty pattern", "", true),
             ("only the empty string", "^$", false),
             ("capturing group around it all", "(^a$)", true),
-            ("non-capturing group around it all", "(?:^a$)", false),
+            ("non-capturing group around it all", "(?:^a$)", true),
             ("repetition inside", "^a*$", false),
             ("repeated $ that may match nothing", "^a$*", true),
-            ("flags first", "(?i)^a$", false),
+            ("flags first", "(?i)^a$", true),
+            ("flags after the ^", "^(?i)a$", false),
             ("x-mode spaces", "^(?x) a $", false),
             ("two anchored branches", "^a$|^b$", true),
             ("repetition of the whole", "(^a$)+", true),
             ("non-capturing repetition of the whole", "(?:^a$)+", true),
-            ("flags after $", "^a$(?i)", false),
-            ("flag group around the whole", "(?i:^a$)", false),
+            ("flags after $", "^a$(?i)", true),
+            ("flag group around the whole", "(?i:^a$)", true),
             ("multi-line flag", "(?m)^a$", true),
+            ("multi-line flag after the ^", "^(?m)a$", true),
         ];
         for (row, pattern, refused) in rows {
             assert_eq!(anchor_problem(pattern).is_some(), refused, "row {row}");
