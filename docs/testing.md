@@ -30,6 +30,20 @@ much as the code. No block carries the mark today. A `cpu_under` budget needs
 no mark: each is 3x its site's CPU measured under twelve spinners, so it is
 sized for contention already.
 
+### A TMPDIR with a blank
+
+Under a `TMPDIR` whose path holds a space or a tab, `tests/run.sh` keeps one
+small file outside it: its wrapper around tmux, in a folder it makes in the
+caller's runtime dir, `$XDG_RUNTIME_DIR/cnb.<6>`, mode 700 (#992). Pane commands
+in the suite paste that wrapper's path unquoted, so it must hold no blank. The
+run removes the folder when it ends, also on a FATAL and on HUP, INT or TERM. A
+run ended by KILL leaves it, with `flop/tmux` inside. Nothing sweeps it, and it
+is safe to remove once no suite is running.
+
+With no runtime dir to use, such a run ends at its start and says what it needs:
+set `XDG_RUNTIME_DIR` to a folder that exists, can be written to and has no
+blank in its path.
+
 ### The tui tests' claude guard
 
 `cargo test` in `tui/` starts every test binary behind a guard against your own
