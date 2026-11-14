@@ -156,22 +156,28 @@ read the hooks' subagent log and review folder under an exported
 `XDG_STATE_HOME`.
 
 The same runner now unsets `TMUX`, `TMUX_PANE`, `TMUX_COCKPIT_DIR`,
-`COCKPIT_LOG`, `XDG_CACHE_HOME` and `XDG_STATE_HOME` for each test binary and sets `TMUX_TMPDIR`
-to a folder of its own, `cockpit-tmux.<6>`, made in your `TMUX_TMPDIR` (or
-`/tmp`) before the binary starts. It is made first because tmux puts its socket
-in `/tmp` when `TMUX_TMPDIR` names a folder that is not there. After the binary
-it goes by `rmdir`, only if empty. A socket left in it is a server the binary
-did not end: the runner names the folder and fails the binary with status 1,
-or with the binary's own status where that failed, after any report of the
-claude guard. A server still running keeps its socket there, and the runner
-ends no process. Every rig starts its server with TERM and HUP at their default
-and unblocked, since kill-server is a TERM the server sends itself and a HUP to
-each pane: a suite started with them blocked left servers and panes running
-(#1061). Killed by a signal it does not trap, the runner leaves this
-folder, empty, beside the guard's: the same cost, and `make tui-test-clean`
-names it. A socket path fails past 107 bytes (103 on macOS), and the folder's
-name takes 20 of them: under a `TMUX_TMPDIR` of 48 bytes or more a rig's server
-fails to start, and says so.
+`COCKPIT_LOG`, `XDG_CACHE_HOME` and `XDG_STATE_HOME` for each test binary, and
+sets `TMUX_TMPDIR` to a folder of its own whatever yours says, which it never
+uses or writes to. Every rig starts its server with TERM and HUP at their
+default and unblocked, since kill-server is a TERM the server sends itself and a
+HUP to each pane: a suite started with them blocked left servers and panes
+running (#1061).
+
+That folder is `/tmp/ct.<6>`, made by `mktemp -d`, so mode 700 and a name
+nobody can guess, before the binary starts: tmux puts its socket in `/tmp` when
+`TMUX_TMPDIR` names a folder that is not there. It is in `/tmp` and nowhere
+else, since a socket's path fails past 107 bytes (103 on macOS) and a TMPDIR
+runs long. It holds tmux's own `tmux-<uid>` folder and sockets, nothing else.
+Where `/tmp` takes no folder the binary is not started, with one line. After
+the binary it goes by `rmdir`, only if empty, also after a HUP, INT, QUIT or
+TERM to the runner, which waits for the binary first. A socket left in it is a
+server the binary did not end: the runner names the folder and fails the
+binary with status 1, or with the binary's own status where that failed, after
+any report of the claude guard. A server still running keeps its socket there,
+and the runner ends no process. Killed by a signal it does not trap, KILL among
+them, the runner leaves its `/tmp/ct.<6>` folder behind, empty, and nothing
+names it. That folder is the cost. Nothing sweeps it, and it is safe to remove
+once no test is running.
 
 So every test binary runs as on CI. A plain `tmux` in it finds no server, and
 the cache and state folders resolve under whatever `HOME` the test has: for a
@@ -180,7 +186,8 @@ writes these variables itself. The helpers only check: `fake::checked_tmux`
 before any tmux a helper runs, and `fake::checked_state` in each rig that sets
 `HOME`. Started without the runner from a shell that still carries them, a test
 binary is refused in one line that names what is set and gives the command to
-run it with. That happens with `COCKPIT_TEST_CLAUDE_GUARD=0` too, which execs
+run it with. That command makes a folder with `mktemp -d` for `TMUX_TMPDIR` and
+leaves it behind when the run ends. That happens with `COCKPIT_TEST_CLAUDE_GUARD=0` too, which execs
 the binary as it is and clears nothing, and on a target with no runner key.
 One write from a test thread stays: `panel_batch.rs` takes `fake::fixed_env`
 for `XDG_CONFIG_HOME`, as #948's binaries do.
