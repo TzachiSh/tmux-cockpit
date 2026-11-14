@@ -4638,9 +4638,15 @@ dm_up 4
     ) >/dev/null 2>&1
 is "an odd @cockpit_panel_mode is drawn as written" "1" \
    "$(dm_drawn 4 "@cockpit_panel_mode is [x#(touch $DM/m/pmode)y##z#[fg=red]w]; use auto")"
+# A positive control, last on this server: a raw message whose #( must run. Every job a
+# message above could have started was queued before it, so its marker showing up means
+# any of theirs would have too. run-shell reads ## as # before the job's tmux sees it.
+"$TMUX_REAL" -L "cockpit-dm-$$-4" run-shell \
+    "tmux display-message 'x##(touch $DM/m/control)y'" >/dev/null 2>&1
+until_out yes sh -c "[ -e $(tq "$DM/m/control") ] && echo yes"
 dm_down 4
-is "and no message ran a #( from a name or a value" "" \
-   "$(find "$DM" \( -name pwned -o -name pmode \) | tr '\n' ' ')"
+is "and no message ran a #( from a name or a value, where a raw one did" "$DM/m/control " \
+   "$(find "$DM" \( -name pwned -o -name pmode -o -name control \) | tr '\n' ' ')"
 
 # The scan: each display-message call in cockpit.tmux or scripts/ that shows a variable or
 # a $( ) goes through dmsg. A \-continued line is joined first, then split at every
