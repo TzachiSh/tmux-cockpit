@@ -205,8 +205,10 @@ to the file it names.
 
 So every test binary runs as on CI. A plain `tmux` in it finds no server, and
 the cache and state folders resolve under whatever `HOME` the test has: for a
-test that sets no `HOME`, under yours, as on a box that never exported them. No test
-writes these variables itself. The helpers only check: `fake::checked_tmux`
+test that sets no `HOME`, under yours, as on a box that never exported them. One binary
+writes two of them in its own process: panel_env's fake-tmux rows set `TMUX_TMPDIR`
+and unset `TMUX` while they hold its `ENV` lock, and every panel_env row that
+reads the environment takes that lock too (#1089). The helpers only check: `fake::checked_tmux`
 before any tmux a helper runs, and `fake::checked_state` in each rig that sets
 `HOME`. The product's own tmux call refuses too (#1089): under the test guard
 (`COCKPIT_TEST_TMUX_GUARD`, docs/tui.md) `data::tmux` runs a plain `tmux` only
