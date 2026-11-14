@@ -382,6 +382,8 @@ fn refused(dir: &std::path::Path, body: &str) -> Option<String> {
 /// holds one: the restored Ask is refused whole, never sent.
 #[test]
 fn a_restored_ask_with_a_direction_control_in_its_path_is_refused() {
+    // its hide reads the agent list through a plain tmux (#1089)
+    fake::checked_tmux();
     let (r, f) = Repo::new("statepath", "let a = 1;\n");
     let mut a = App::new("%3", Capture::default());
     a.ask_open(ask::load(&f, 1, 1).unwrap());
@@ -400,4 +402,12 @@ fn a_restored_ask_with_a_direction_control_in_its_path_is_refused() {
 #[test]
 fn the_binary_runs_with_no_tmux_session_of_the_callers() {
     fake::checked_tmux();
+}
+
+/// #1089: started with no TMUX_TMPDIR, no test of this binary reaches the product's
+/// plain `tmux` before it is refused: a stub first on PATH gets no call.
+#[test]
+fn no_test_reaches_tmux_before_its_check() {
+    let calls = fake::unchecked_tmux_calls("no_test_reaches_tmux_before_its_check");
+    assert_eq!(calls, Vec::<String>::new());
 }

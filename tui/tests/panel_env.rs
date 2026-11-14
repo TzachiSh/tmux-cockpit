@@ -428,6 +428,8 @@ fn a_dead_pane_captures_nothing() {
 
 #[test]
 fn an_override_that_cannot_be_read_is_a_warn_note_on_the_busy_view() {
+    // its launch reads the agent list through a plain tmux (#1089)
+    fake::checked_tmux();
     use cockpit_tui::panel::app::{App, Level, View};
     use cockpit_tui::panel::capture::Capture;
     let e = Env::new("noted", &[("XDG_CONFIG_HOME", Some("$D/cfg".into()))]);
@@ -929,4 +931,12 @@ fn an_asks_walk_up_stops_at_home() {
 #[test]
 fn the_binary_runs_with_no_tmux_session_of_the_callers() {
     fake::checked_tmux();
+}
+
+/// #1089: started with no TMUX_TMPDIR, no test of this binary reaches the product's
+/// plain `tmux` before it is refused: a stub first on PATH gets no call.
+#[test]
+fn no_test_reaches_tmux_before_its_check() {
+    let calls = fake::unchecked_tmux_calls("no_test_reaches_tmux_before_its_check");
+    assert_eq!(calls, Vec::<String>::new());
 }

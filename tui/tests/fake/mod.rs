@@ -503,6 +503,26 @@ pub fn run_by_hand(test: &str, set: &[(&str, &str)]) -> (Option<i32>, String) {
     (out.status.code(), said)
 }
 
+/// What a plain `tmux` got from this binary's tests, every test but `skip`, started by
+/// hand with no TMUX_TMPDIR, as on a target with no runner key (#1090) or with the
+/// claude guard at 0: one argv per call, from a stub `tmux` first on PATH that exits 1
+/// and opens no socket. A test that reaches the product's plain tmux before any check
+/// shows here. Started that way for real, its tmux would reach the default socket in
+/// /tmp/tmux-<uid>, beside the caller's server (#1066).
+#[allow(dead_code)]
+pub fn unchecked_tmux_calls(skip: &str) -> Vec<String> {
+    let s = Scratch::fresh(std::env::temp_dir().join(format!("cockpit-unchecked-{}", std::process::id())));
+    write_exec(&s.join("tmux"), "#!/bin/sh\necho \"$*\" >> \"$0.calls\"\nexit 1\n");
+    let path = format!("{}:{}", s.display(), std::env::var("PATH").unwrap_or_default());
+    let mut c = Command::new(std::env::current_exe().unwrap());
+    c.args(["--skip", skip]).env_remove("TMUX_TMPDIR").env("PATH", path);
+    let out = c.stdin(std::process::Stdio::null()).output().unwrap();
+    let said = String::from_utf8_lossy(&out.stdout);
+    assert!(said.contains("test result:"), "the child ran no tests: {said}");
+    let calls = std::fs::read_to_string(s.join("tmux.calls")).unwrap_or_default();
+    calls.lines().map(String::from).collect()
+}
+
 /// This binary's socket folder, TMUX_TMPDIR, which the runner made for it with
 /// TMUX, TMUX_PANE and TMUX_COCKPIT_DIR cleared (#1066). Red with
 /// [`tmux_refusal`]'s line before any tmux runs where that does not hold: from

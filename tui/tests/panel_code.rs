@@ -75,6 +75,8 @@ fn fg(b: &Buffer, needle: &str) -> Color {
 }
 
 fn app(name: &str, cmd: &str, screen: &str) -> App {
+    // a test that goes on to a result reads the agent list through a plain tmux (#1089)
+    fake::checked_tmux();
     let cap = Capture {
         name: name.into(),
         cmd: cmd.into(),
@@ -268,4 +270,12 @@ fn a_tab_indented_heredoc_end_closes_in_the_panel() {
 #[test]
 fn the_binary_runs_with_no_tmux_session_of_the_callers() {
     fake::checked_tmux();
+}
+
+/// #1089: started with no TMUX_TMPDIR, no test of this binary reaches the product's
+/// plain `tmux` before it is refused: a stub first on PATH gets no call.
+#[test]
+fn no_test_reaches_tmux_before_its_check() {
+    let calls = fake::unchecked_tmux_calls("no_test_reaches_tmux_before_its_check");
+    assert_eq!(calls, Vec::<String>::new());
 }
