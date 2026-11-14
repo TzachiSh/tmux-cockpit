@@ -4521,6 +4521,142 @@ unset -f oh_box oh_server oh_attach oh_load
 unset OH oh_st oh_n oh_s oh_c oh_f oh_p oh_arm oh_want oh_min oh_stock oh_src
 fi
 
+echo "== a message shows a name as written, and runs nothing in it (#1096) =="
+# tmux expands a display-message as a format, which runs a #( ), then draws it, reading ##
+# as # and #[ as a style: fesc got a name through the first step only, and an unescaped
+# message ran a #( (cockpit.tmux's @cockpit_panel_mode line). dmsg (fmt.sh) shows it as
+# written. Each kind of site is read where the user reads it, the drawn status line of a
+# client attached through an outer server, with names holding ##, #[...], #S and a #( whose
+# marker must not appear. A scan then holds every display-message of a variable to dmsg.
+if need_tmux "messages show names as written"; then :
+elif ! ( . "$DIR/scripts/lib/vnum.sh"
+         v=$("$TMUX_REAL" -V); vnum_ge "${v#tmux }" 3.8 ); then
+    skip_ "messages show names as written (tmux below 3.8: the plugin refuses it)"
+else
+DM=$(mktmpd); mkdir -p "$DM/wd" "$DM/m"
+for dm_n in 1 2 3 4; do SOCKS="$SOCKS cockpit-dm-$$-$dm_n cockpit-dmo-$$-$dm_n"; done
+dm_names=('a##x' 'a#[fg=red]b' 'a#Sb' 'a#(touch pwned)b')
+dm_up() {                     # <n> [new-session command] -> a server, a client on it
+    local s="cockpit-dm-$$-$1" o="cockpit-dmo-$$-$1"
+    ( cd "$DM/wd" && exec env -u TMUX_COCKPIT_DIR -u TMUX -u TMUX_PANE "$TMUX_REAL" -L "$s" \
+        -f /dev/null new-session -d -s t -x 250 -y 10 -c "$DM/wd" "${2:-exec sleep 300}" \
+        ) >/dev/null 2>&1
+    "$TMUX_REAL" -L "$s" set -g display-time 0 \; set -g status-left '' \; \
+        set -g status-right '' >/dev/null 2>&1
+    ( cd "$DM/wd" && exec env -u TMUX_COCKPIT_DIR -u TMUX -u TMUX_PANE "$TMUX_REAL" -L "$o" \
+        -f /dev/null new-session -d -s o -x 250 -y 12 -c "$DM/wd" \
+        "TERM=xterm-256color exec $(tq "$TMUX_REAL") -L $s attach -t t" ) >/dev/null 2>&1
+    until_cap "$o" o '*[!\ ]*'
+    until_out '?*' "$TMUX_REAL" -L "$s" list-clients -F '#{client_name}'
+}
+dm_drawn() {                  # <n> <text> -> 1 once the client's status line draws <text>
+    local o="cockpit-dmo-$$-$1" i
+    for ((i = 1; i <= POLLS; i++)); do
+        "$TMUX_REAL" -L "$o" capture-pane -p -t o | grep -qF -- "$2" && { echo 1; return; }
+        sleep 0.1
+    done
+    echo 0
+}
+dm_down() {
+    "$TMUX_REAL" -L "cockpit-dmo-$$-$1" kill-server >/dev/null 2>&1
+    "$TMUX_REAL" -L "cockpit-dm-$$-$1" kill-server >/dev/null 2>&1
+}
+# Every call runs from $DM/wd: a #( a message let run would run in that client's cwd.
+dm_tmux() {                   # <n> <command...> with TMUX on server <n>, from wd
+    local n=$1; shift
+    ( cd "$DM/wd" && TMUX="$SOCKDIR/cockpit-dm-$$-$n,0,0" exec "$@" ) >/dev/null 2>&1
+}
+
+# 1. dmsg called with the text alone: tmux-rename's refusal, a staged name, no such window.
+dm_up 1
+for dm_f in "${dm_names[@]}"; do
+    "$TMUX_REAL" -L "cockpit-dm-$$-1" set -g @cockpit_rename_to "$dm_f" >/dev/null 2>&1
+    dm_tmux 1 "$DIR/scripts/tmux-rename" window @999
+    is "tmux-rename's refusal draws the name [$dm_f] as written" "1" \
+       "$(dm_drawn 1 "cockpit: could not rename window @999 to $dm_f")"
+done
+dm_down 1
+# 2. dmsg with -t: cockpit-board's "needs cockpit-tui", from a plugin copy in a folder
+# holding the name, cockpit-tui pointed at nothing.
+dm_up 2
+dm_p=$("$TMUX_REAL" -L "cockpit-dm-$$-2" display-message -p -t t: '#{pane_id}')
+for dm_f in "${dm_names[@]}"; do
+    mkdir -p "$DM/c/$dm_f"; cp -R "$DIR/scripts" "$DM/c/$dm_f/"
+    dm_d=$(cd -P "$DM/c/$dm_f" && pwd)
+    # Not env VAR=...: a folder holding a = would read as one more assignment.
+    COCKPIT_TUI_BIN="$DM/none/cockpit-tui" dm_tmux 2 "$dm_d/scripts/cockpit-board" -p "$dm_p"
+    is "cockpit-board's message draws the folder [$dm_f] as written" "1" \
+       "$(dm_drawn 2 "cockpit: board needs cockpit-tui: run $dm_d/install.sh")"
+done
+dm_down 2
+# 3. The delivery notice, the one message that stays a format (its jump clause): the agent
+# window named with each shape, stored literally: rename-window expands its argument, so
+# it gets the name fesc'd, which keeps a #[ as it is and doubles every other #.
+dm_up 3 'exec -a claude bash'
+"$TMUX_REAL" -L "cockpit-dm-$$-3" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
+dm_p=$("$TMUX_REAL" -L "cockpit-dm-$$-3" display-message -p -t t: '#{pane_id}')
+dm_k=0
+for dm_f in "${dm_names[@]}"; do
+    dm_k=$((dm_k + 1))
+    "$TMUX_REAL" -L "cockpit-dm-$$-3" rename-window -t t:0 -- \
+        "$(. "$DIR/scripts/lib/fmt.sh" && fesc "$dm_f")" >/dev/null 2>&1
+    is "the agent window is named [$dm_f]" "$dm_f" \
+       "$("$TMUX_REAL" -L "cockpit-dm-$$-3" display-message -p -t t:0 '#{window_name}')"
+    printf '## src.go:%s (+)\n> foo\nDM fix\n\n' "$dm_k" > "$DM/store$dm_k"
+    dm_tmux 3 "$DIR/scripts/tmux-review" --deliver "$dm_p" "$DM/store$dm_k"
+    is "the delivery notice draws the window [$dm_f] as written" "1" \
+       "$(dm_drawn 3 "cockpit: review pasted into t:0 $dm_f ")"
+done
+dm_down 3
+# 4. cockpit.tmux:302 (#1096): an @cockpit_panel_mode value went in raw, and its #( ran.
+dm_up 4
+"$TMUX_REAL" -L "cockpit-dm-$$-4" set -g mouse on \; \
+    set -g @cockpit_panel_mode "x#(touch $DM/m/pmode)y##z#[fg=red]w" >/dev/null 2>&1
+( cd "$DM/wd" && exec "$TMUX_REAL" -L "cockpit-dm-$$-4" run-shell "$(tq "$DIR/cockpit.tmux")" \
+    ) >/dev/null 2>&1
+is "an odd @cockpit_panel_mode is drawn as written" "1" \
+   "$(dm_drawn 4 "@cockpit_panel_mode is [x#(touch $DM/m/pmode)y##z#[fg=red]w]; use auto")"
+dm_down 4
+is "and no message ran a #( from a name or a value" "" \
+   "$(find "$DM" \( -name pwned -o -name pmode \) | tr '\n' ' ')"
+
+# The scan: a display-message in cockpit.tmux or scripts/ that shows a variable or a $( )
+# goes through dmsg. A \-continued line is joined first; a -p read is not a message.
+# Allowed, each by a fixed piece of its line:
+#   cockpit.tmux, the version check: it runs on a tmux below the floor, where -l (3.4)
+#     may not exist, and shows only that tmux's own -V output.
+#   fmt.sh, dmsg itself.
+#   review-deliver.sh, the delivery notice: it stays a format for its jump clause, read on
+#     the reader's session when shown; its window name is doubled and fesc'd (row 3).
+dm_scan() {                   # <file...> -> file:line of each display-message not via dmsg
+    awk '
+        FNR == 1 { buf = "" }
+        { if (buf == "") start = FNR }
+        /\\$/ { buf = buf substr($0, 1, length($0) - 1) " "; next }
+        { l = buf $0; buf = "" }
+        l ~ /^[ \t]*#/ || l !~ /display-message/ { next }
+        l ~ /display-message[^|;]*[ \t]-p([ \t]|$)/ { next }
+        index(l, "needs tmux 3.8 or newer (found $tmux_version)") { next }
+        index(l, "tmux display-message \"${@:1:$#-1}\" -l") { next }
+        index(l, "display-message -d 0 '\''$notice_") { next }
+        { t = l; sub(/^.*display-message/, "", t) }
+        # \173 is an open brace, written so: only.sh and par.sh hoist this function by
+        # counting its braces, and the count must close with it.
+        t ~ /(^|[^\\])\$[A-Za-z_\173(@*0-9#!?]/ { print FILENAME ":" start }
+    ' "$@"
+}
+is "every display-message of a variable in cockpit.tmux and scripts/ goes through dmsg" "" \
+   "$(cd "$DIR" && dm_scan cockpit.tmux $(find scripts -type f | sort) | tr '\n' ' ')"
+printf 'x() {\n    tmux display-message "mode [$m]"\n    tmux display-message \\\n' \
+    > "$DM/plant"
+printf '        "$(fesc "$y")"\n    dmsg "$z"\n    tmux display-message -p "$w"\n}\n' \
+    >> "$DM/plant"
+is "and the scan names a raw one and a fesc'd one, not dmsg or a -p read" \
+   "$DM/plant:2 $DM/plant:3 " "$(dm_scan "$DM/plant" | tr '\n' ' ')"
+unset -f dm_up dm_drawn dm_down dm_tmux dm_scan
+unset DM dm_n dm_f dm_p dm_d dm_k dm_names
+fi
+
 echo "== HOME unset must not kill the path picker =="
 # set -u plus a bare $HOME: a "~/..." token on a clicked line aborted the script
 # outright wherever HOME is missing -- a stripped run-shell, a systemd tmux.
