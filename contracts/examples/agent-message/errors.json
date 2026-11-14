@@ -3,29 +3,9 @@
     "keyword": "additionalProperties",
     "at": "$.payload"
   },
-  "invalid-text-in-ref.json": {
+  "invalid-id-trailing-newline.json": {
     "keyword": "pattern",
-    "at": "$.payload.body_ref"
-  },
-  "invalid-word-ref.json": {
-    "keyword": "pattern",
-    "at": "$.payload.prompt_ref"
-  },
-  "invalid-text-in-id.json": {
-    "keyword": "pattern",
-    "at": "$.payload.intent_id"
-  },
-  "invalid-title-id.json": {
-    "keyword": "pattern",
-    "at": "$.to"
-  },
-  "invalid-subject-word.json": {
-    "keyword": "pattern",
-    "at": "$.subject"
-  },
-  "invalid-subject-wildcard.json": {
-    "keyword": "pattern",
-    "at": "$.subject"
+    "at": "$.msg_id"
   },
   "invalid-local-time.json": {
     "keyword": "pattern",
@@ -34,5 +14,37 @@
   "invalid-no-version.json": {
     "keyword": "required",
     "at": "$"
+  },
+  "invalid-ref-trailing-newline.json": {
+    "keyword": "pattern",
+    "at": "$.payload.body_ref"
+  },
+  "invalid-subject-trailing-newline.json": {
+    "keyword": "pattern",
+    "at": "$.subject"
+  },
+  "invalid-subject-wildcard.json": {
+    "keyword": "pattern",
+    "at": "$.subject"
+  },
+  "invalid-subject-word.json": {
+    "keyword": "pattern",
+    "at": "$.subject"
+  },
+  "invalid-text-in-id.json": {
+    "keyword": "pattern",
+    "at": "$.payload.intent_id"
+  },
+  "invalid-text-in-ref.json": {
+    "keyword": "pattern",
+    "at": "$.payload.body_ref"
+  },
+  "invalid-title-id.json": {
+    "keyword": "pattern",
+    "at": "$.to"
+  },
+  "invalid-word-ref.json": {
+    "keyword": "pattern",
+    "at": "$.payload.prompt_ref"
   }
 }
