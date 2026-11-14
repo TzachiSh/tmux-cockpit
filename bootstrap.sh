@@ -170,11 +170,11 @@ done
 
 if [ -n "$wired" ]; then
     note "have   $wired already loads cockpit.tmux"
-    # An older line has no quote around the path, and from this folder it may not load
+    # An older line has no quote around the path, and from this folder it might not load
     # (#1046). Said, never rewritten: the config is the user's.
     if ! cockpit_bare_carries "$DIR" && n=$(cockpit_conf_bare_line "$wired" "$DIR"); then
         note "NOTE   line $n of that file has no quotes around the path, and this folder's"
-        note "       path holds a character such a line may not carry: the plugin may not load."
+        note "       path holds a character such a line might not carry: the plugin might not load."
         case "$DIR" in
             *[[:cntrl:]]*)
                 note "       The path holds a control character, so no line is shown here."
