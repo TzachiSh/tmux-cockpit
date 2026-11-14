@@ -18170,6 +18170,49 @@ fi
 rm -rf -- "$nb_rt" "$nb_rt2"
 unset -f nb_run nb_no; unset NB nb_rt nb_rt2 nb_ss
 
+# tests: README.md examples/tmux.conf examples/full.tmux.conf docs/install.md docs/status-bar.md
+echo "== the install line loads the plugin whatever the path to HOME holds (#1043) =="
+# The line was `run-shell ~/.tmux/plugins/tmux-cockpit/cockpit.tmux`. tmux expanded the ~ and
+# handed the path to sh bare: with a space in HOME's path sh split it, nothing loaded and
+# tmux said nothing, and with a $( ) in it sh ran what was inside. In single quotes tmux
+# hands the ~ on as it is and sh expands it, unsplit and unread. Five places give the line,
+# and here each must read the same; then both example configs are sourced on a server whose
+# HOME holds a blank, and one whose HOME holds a command to run.
+IL="run-shell '~/.tmux/plugins/tmux-cockpit/cockpit.tmux'"
+il_n=""
+for il_f in README.md examples/tmux.conf examples/full.tmux.conf docs/install.md docs/status-bar.md; do
+    il_n="$il_n$(grep -cxF -- "$IL" "$DIR/$il_f")$(
+        grep -c '^run-shell ~/' "$DIR/$il_f") "
+done
+is "the README, both examples and both docs pages give the one line, and none the bare one" \
+   "10 10 10 10 10 " "$il_n"
+if need_tmux "the install line under a HOME with a blank"; then :; else
+ILD=$(mktmpd); mkdir -p "$ILD/wd"
+# A server each, by number: the rows call this in a subshell, so the names are registered
+# here, and a second server on one socket would meet the #573 guard.
+SOCKS="$SOCKS cockpit-il-$$-1 cockpit-il-$$-2 cockpit-il-$$-3"
+il_load() {                   # <n> <HOME's folder name> <example config> -> binding|agents set
+    local h="$ILD/$2" s="cockpit-il-$$-$1" a
+    mkdir -p "$h/.tmux/plugins"; [ -e "$h/.tmux/plugins/tmux-cockpit" ] ||
+        ln -s "$DIR" "$h/.tmux/plugins/tmux-cockpit"
+    ( cd "$ILD/wd" && HOME="$h" exec "$TMUX_REAL" -L "$s" -f /dev/null new-session -d -s t \
+        -c "$ILD/wd" 'exec sleep 300' ) >/dev/null 2>&1
+    "$TMUX_REAL" -L "$s" source-file "$DIR/examples/$3" >/dev/null 2>&1
+    until_out '?*' "$TMUX_REAL" -L "$s" show-option -gqv @cockpit_agents >/dev/null
+    a=$("$TMUX_REAL" -L "$s" show-option -gqv @cockpit_agents 2>/dev/null)
+    printf '%s|%s' "$("$TMUX_REAL" -L "$s" list-keys -T prefix w 2>/dev/null |
+        grep -c cockpit_board)" "${a:+set}"
+    "$TMUX_REAL" -L "$s" kill-server >/dev/null 2>&1
+}
+is "examples/tmux.conf loads under a HOME with a blank in its path" "1|set" \
+   "$(il_load 1 'h ome' tmux.conf)"
+is "and examples/full.tmux.conf does" "1|set" "$(il_load 2 'h ome' full.tmux.conf)"
+is "under a HOME whose path holds a \$( ) it loads, and nothing in the path is run" "1|set|" \
+   "$(il_load 3 'h$(touch pwned)x' tmux.conf)|$(find "$ILD" -name pwned | tr '\n' ' ')"
+unset -f il_load; unset ILD
+fi
+unset IL il_n il_f
+
 echo "== tests/only.sh: a pattern with \\( and ^ selects the block, no match is an error (#241) =="
 OD=$(mktemp -d)
 # printf: only.sh would split a heredoc at its echo "== " lines
