@@ -368,7 +368,20 @@ fn a_revision_at_u64_max_is_an_error_not_a_panic() {
     std::fs::write(s.path(&k), format!("cockpit-store 1\nrev {}\n{{}}\n", u64::MAX)).unwrap();
     assert_eq!(s.get(&k), Some((json!({}), Revision(u64::MAX))));
     let got = s.put_if_revision(&k, &json!(1), Some(Revision(u64::MAX)));
-    assert!(matches!(got, Err(PutError::Io(_))), "{got:?}");
+    assert!(matches!(&got, Err(PutError::Io { path, .. }) if *path == s.path(&k)), "{got:?}");
+}
+
+#[test]
+fn an_io_error_names_the_path_it_failed_on() {
+    let d = scratch("iopath");
+    let (s, k) = (local(&d), key("agent.a"));
+    s.put_if_revision(&key("seed"), &json!(0), None).unwrap();
+    std::fs::create_dir(s.lock_path(&k)).unwrap();
+    let got = s.put_if_revision(&k, &json!(1), None);
+    assert!(
+        matches!(&got, Err(PutError::Io { path, .. }) if *path == s.lock_path(&k)),
+        "{got:?}"
+    );
 }
 
 #[test]

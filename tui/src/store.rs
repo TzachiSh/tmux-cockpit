@@ -76,14 +76,13 @@ pub struct Revision(pub u64);
 #[derive(Debug)]
 pub enum PutError {
     /// The key's revision is not the one expected; `None` when it has no value.
-    Conflict {
-        current: Option<Revision>,
-    },
+    Conflict { current: Option<Revision> },
     /// Another writer held the key past the wait; try again.
     Busy,
     /// The value would not read back: its file passes [`FILE_MAX`].
     TooLarge,
-    Io(io::Error),
+    /// `path` is the file or folder the call failed on.
+    Io { path: PathBuf, error: io::Error },
 }
 
 impl std::fmt::Display for PutError {
@@ -93,16 +92,18 @@ impl std::fmt::Display for PutError {
             PutError::Conflict { current: None } => write!(f, "conflict: the key has no value"),
             PutError::Busy => write!(f, "busy: another writer holds the key"),
             PutError::TooLarge => write!(f, "too large: the value's file passes {FILE_MAX} bytes"),
-            PutError::Io(e) => write!(f, "{e}"),
+            PutError::Io { path, error } => write!(f, "{}: {error}", path.display()),
         }
     }
 }
 
 impl std::error::Error for PutError {}
 
-impl From<io::Error> for PutError {
-    fn from(e: io::Error) -> Self {
-        PutError::Io(e)
+/// An io error as a [`PutError`] that names `path`.
+fn at(path: &Path) -> impl FnOnce(io::Error) -> PutError + '_ {
+    move |error| PutError::Io {
+        path: path.to_path_buf(),
+        error,
     }
 }
 
@@ -222,7 +223,8 @@ impl LocalStore {
 
     /// The key's lock, taken with LOCK_NB and retried until the wait runs out:
     /// a writer that hangs holding it must not hang every other one.
-    fn lock(&self, key: &Key) -> Result<File, PutError> {
+    fn lock(&self, key: &Key) -> Result<(File, PathBuf), PutError> {
+        let path = self.lock_path(key);
         let f = OpenOptions::new()
             .read(true)
             .write(true)
@@ -230,19 +232,20 @@ impl LocalStore {
             .truncate(false)
             .mode(0o600)
             .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-            .open(self.lock_path(key))?;
-        if !f.metadata()?.is_file() {
-            return Err(io::Error::other("the lock is not a regular file").into());
+            .open(&path)
+            .map_err(at(&path))?;
+        if !f.metadata().map_err(at(&path))?.is_file() {
+            return Err(at(&path)(io::Error::other("the lock is not a regular file")));
         }
         let end = Instant::now() + self.lock_wait;
         loop {
             // SAFETY: flock on an fd this function owns.
             if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
-                return Ok(f);
+                return Ok((f, path));
             }
             let e = io::Error::last_os_error();
             if e.raw_os_error() != Some(libc::EWOULDBLOCK) && e.kind() != io::ErrorKind::Interrupted {
-                return Err(e.into());
+                return Err(at(&path)(e));
             }
             if Instant::now() >= end {
                 return Err(PutError::Busy);
@@ -254,10 +257,10 @@ impl LocalStore {
     /// Under the key's lock only, so `~tmp` has one writer: a killed writer's
     /// leftover is removed first. 0600 is passed to the create, which a umask
     /// can only narrow; fsync, then a rename the old file is replaced by whole.
-    fn replace(&self, key: &Key, text: &str) -> io::Result<()> {
-        let tmp = self.temp_path(key);
+    fn replace(&self, key: &Key, text: &str) -> Result<(), PutError> {
+        let (tmp, path) = (self.temp_path(key), self.path(key));
         match std::fs::remove_file(&tmp) {
-            Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
+            Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(at(&tmp)(e)),
             _ => {}
         }
         let written = OpenOptions::new()
@@ -267,13 +270,14 @@ impl LocalStore {
             .custom_flags(libc::O_NOFOLLOW)
             .open(&tmp)
             .and_then(|mut f| f.write_all(text.as_bytes()).and_then(|_| f.sync_all()))
-            .and_then(|_| std::fs::rename(&tmp, self.path(key)));
+            .map_err(at(&tmp))
+            .and_then(|_| std::fs::rename(&tmp, &path).map_err(at(&path)));
         if written.is_err() {
             let _ = std::fs::remove_file(&tmp);
         }
         written?;
         // The rename reaches the disk with the folder's own fsync.
-        File::open(&self.root).and_then(|d| d.sync_all())
+        File::open(&self.root).and_then(|d| d.sync_all()).map_err(at(&self.root))
     }
 }
 
@@ -365,8 +369,12 @@ impl Store for LocalStore {
     }
 
     fn put_if_revision(&self, key: &Key, value: &Value, expected: Option<Revision>) -> Result<Revision, PutError> {
-        DirBuilder::new().recursive(true).mode(0o700).create(&self.root)?;
-        let lock = self.lock(key)?;
+        DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&self.root)
+            .map_err(at(&self.root))?;
+        let (lock, lock_path) = self.lock(key)?;
         let current = read_entry(&self.path(key)).map(|(_, r)| r);
         if current != expected {
             return Err(PutError::Conflict { current });
@@ -374,13 +382,14 @@ impl Store for LocalStore {
         // Past the last revision written too: a value that reads as none must not
         // hand its revision to a new one, or a writer holding the old one wins.
         let base = current.map_or(0, |r| r.0).max(last_written(&lock));
-        let next = Revision(base.checked_add(1).ok_or_else(|| io::Error::other("revision at u64::MAX"))?);
+        let next = base.checked_add(1).map(Revision);
+        let next = next.ok_or_else(|| at(&self.path(key))(io::Error::other("revision at u64::MAX")))?;
         let text = render(value, next);
         if text.len() as u64 > FILE_MAX {
             return Err(PutError::TooLarge);
         }
         // Before the rename, so the lock never holds less than the file.
-        record_written(&lock, next)?;
+        record_written(&lock, next).map_err(at(&lock_path))?;
         self.replace(key, &text)?;
         Ok(next)
     }

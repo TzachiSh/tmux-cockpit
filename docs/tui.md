@@ -2028,14 +2028,15 @@ panel with the reason in a warn note.
   `serde_json::Value`, already a dependency: the schemas describe JSON, so no
   caller parses bytes, and a NATS backend serialises at its edge.
   `PutError` is `Conflict { current }`, `Busy` (the lock wait ran out),
-  `TooLarge` or `Io`.
+  `TooLarge` or `Io { path, error }`, which names the file it failed on.
 - `LocalStore` keeps one file per key under `$XDG_STATE_HOME/tmux-cockpit/store`
   (folder 0700): `cockpit-store 1`, `rev <n>`, the value as one line of JSON.
   A put takes `<key>~lock` with `LOCK_NB` retries for up to a second, checks
   the revision, records the new one in the lock (so a key that reads as no
   value never gets an old revision back), writes `<key>~tmp` (`O_EXCL`,
-  `O_NOFOLLOW`, 0600), fsyncs it and renames it over the key. A read takes a regular file of at most 64 KiB,
-  opened `O_NOFOLLOW | O_NONBLOCK`. Anything else reads as no value.
+  `O_NOFOLLOW`, 0600), fsyncs it and renames it over the key. A read takes a
+  regular file of at most 64 KiB, opened `O_NOFOLLOW | O_NONBLOCK`. Anything
+  else reads as no value.
 - No new dependency, no `Cargo.toml` change.
 
 ### The triage overlay
