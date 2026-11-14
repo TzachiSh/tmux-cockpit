@@ -475,3 +475,58 @@ fn the_signalling_rows_hold_in_a_binary_handed_an_ignored_and_blocked_term_hup_a
     let pid = fake::rows_pass_handed(&rows, &[libc::SIGTERM, libc::SIGHUP, libc::SIGUSR1]);
     assert!(until(|| left_by(pid) == 0), "the child's rig left its server or its pane");
 }
+
+/// #1061: a mask blocked for a moment reads clear once it is lifted. A child of
+/// this process blocks every signal, as a board inside its own spawn shows, and
+/// lifts them when the row writes `go`, which it does after the first read. A
+/// single read sees the mask blocked and fails here every time.
+#[test]
+#[cfg(target_os = "linux")]
+fn a_mask_blocked_for_a_moment_reads_clear_once_it_is_lifted() {
+    let name = format!("cockpit-tui-mask-{}", std::process::id());
+    let dir = fake::Scratch::fresh(std::env::temp_dir().join(name));
+    let path = |name: &str| std::ffi::CString::new(dir.join(name).to_str().unwrap()).unwrap();
+    let (ready, go) = (path("ready"), path("go"));
+    // SAFETY: the child makes only async-signal-safe calls on what was made before
+    // the fork, allocates nothing, and ends by _exit within 60 s if nobody kills it.
+    let pid = unsafe { libc::fork() };
+    if pid == 0 {
+        // SAFETY: as above, in the child alone.
+        unsafe {
+            let mut all: libc::sigset_t = std::mem::zeroed();
+            libc::sigfillset(&mut all);
+            libc::sigprocmask(libc::SIG_BLOCK, &all, std::ptr::null_mut());
+            libc::close(libc::open(ready.as_ptr(), libc::O_CREAT | libc::O_WRONLY, 0o600));
+            let nap = libc::timespec {
+                tv_sec: 0,
+                tv_nsec: 5_000_000,
+            };
+            for _ in 0..6000 {
+                if libc::access(go.as_ptr(), libc::F_OK) == 0 {
+                    break;
+                }
+                libc::nanosleep(&nap, std::ptr::null_mut());
+            }
+            libc::sigprocmask(libc::SIG_UNBLOCK, &all, std::ptr::null_mut());
+            for _ in 0..6000 {
+                libc::nanosleep(&nap, std::ptr::null_mut());
+            }
+            libc::_exit(0);
+        }
+    }
+    assert!(pid > 0, "fork failed");
+    let started = until(|| dir.join("ready").exists());
+    let mut reads = vec![];
+    let clear = usr1_unblocked(pid as u32, |bit| {
+        if reads.is_empty() {
+            std::fs::write(dir.join("go"), "").unwrap();
+        }
+        reads.push(bit);
+    });
+    // SAFETY: this row's own child, not yet reaped, so its pid is still its own.
+    unsafe {
+        libc::kill(pid, libc::SIGKILL);
+        libc::waitpid(pid, std::ptr::null_mut(), 0);
+    }
+    assert_eq!((started, reads.first(), clear), (true, Some(&Some(1)), true), "{reads:?}");
+}
