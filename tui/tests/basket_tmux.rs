@@ -130,3 +130,17 @@ fn the_rig_rows_leave_no_server_handed_a_blocked_term_and_hup() {
     let pid = fake::rows_pass_handed(&rows, &[libc::SIGTERM, libc::SIGHUP]);
     fake::assert_no_server_left(pid);
 }
+
+/// #1066: started by hand from a caller's session, `TMUX` kept, the rig's server start
+/// refuses before tmux runs: status 101, the refusal, and nothing in the socket folder the
+/// row hands it, where a server would have put its `tmux-<uid>` folder and socket.
+#[test]
+fn a_rig_started_by_hand_from_a_session_is_refused_before_its_server() {
+    let folder = std::env::temp_dir().join(format!("cockpit-basket-kept-{}", std::process::id()));
+    let folder = fake::Scratch::fresh(folder);
+    let kept = [("TMUX", "/canary-1066/server,1,0"), ("TMUX_TMPDIR", folder.to_str().unwrap())];
+    let (code, said) = fake::run_by_hand("the_basket_round_trips_through_a_pane_option", &kept);
+    let left: Vec<_> = std::fs::read_dir(&folder.0).unwrap().map(|e| e.unwrap().file_name()).collect();
+    let refused = said.contains("tmux refused (#1066): TMUX set. ");
+    assert_eq!((code, refused, left.len()), (Some(101), true, 0), "{left:?} {said}");
+}

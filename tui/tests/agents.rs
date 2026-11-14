@@ -63,8 +63,6 @@ impl Rig {
     /// One agent pane, pid 100, no @cockpit_session, in a fake proc root at start `5`.
     /// `claude` runs `claude_body` and logs one line per call to `forks`.
     fn new(tag: &str, claude_body: &str) -> Rig {
-        // the runner unset the caller's log, cache and state, which a lookup uses (#1066)
-        fake::checked_state();
         Rig::with(tag, claude_body, true)
     }
 
@@ -76,6 +74,9 @@ impl Rig {
 
     /// `lock` is `ENV`, held from here to the drop. None when the caller holds it.
     fn build(tag: &str, claude_body: &str, board: bool, lock: Option<Lock>) -> Rig {
+        // every rig comes through here, `new`, `with` and `inside` alike: the runner unset
+        // the caller's log, cache and state, which a lookup uses (#1066)
+        fake::checked_state();
         let dir = std::env::temp_dir().join(format!("cockpit-agents-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("bin")).unwrap();
@@ -290,8 +291,6 @@ struct Dev {
 
 impl Dev {
     fn new(tag: &str) -> Dev {
-        // the runner unset the caller's log, cache and state, which a lookup uses (#1066)
-        fake::checked_state();
         let lock = ENV.lock().unwrap_or_else(|e| e.into_inner());
         let name = format!("cockpit-agents-{tag}-dev-{}", std::process::id());
         let dir = std::env::temp_dir().join(name);
@@ -1501,6 +1500,21 @@ fn a_kept_cockpit_log_is_refused() {
     let (code, said) = fake::run_by_hand("a_failed_call_does_not_move_at", &kept);
     let refused = said.contains("the caller's state refused (#1066): COCKPIT_LOG set. ");
     assert_eq!((code, refused), (Some(101), true), "{said}");
+}
+
+/// #1066: a rig built by `Rig::with`, which skipped the check `Rig::new` made, now meets
+/// it too: started by hand with a caller's COCKPIT_LOG kept, the one-shot row is refused
+/// and the caller's log keeps its one line.
+#[test]
+fn a_one_shot_rig_with_a_kept_log_is_refused_and_writes_nothing() {
+    let log = std::env::temp_dir().join(format!("cockpit-agents-keptlog-{}", std::process::id()));
+    std::fs::write(&log, "marker\n").unwrap();
+    let kept = [("COCKPIT_LOG", log.to_str().unwrap())];
+    let (code, said) = fake::run_by_hand("a_one_shot_read_waits_for_the_lookup", &kept);
+    let left = std::fs::read_to_string(&log).unwrap();
+    std::fs::remove_file(&log).unwrap();
+    let refused = said.contains("the caller's state refused (#1066): COCKPIT_LOG set. ");
+    assert_eq!((code, refused, left.as_str()), (Some(101), true, "marker\n"), "{said}");
 }
 
 /// #1061: the three rows that signal a process they started, in this binary started

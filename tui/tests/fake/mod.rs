@@ -502,6 +502,9 @@ pub struct Server {
     pub sock: String,
     /// the socket file, asked of the server once it runs; empty before
     path: String,
+    /// whether a start was run: with none there is nothing to kill, and a kill-server
+    /// would make tmux's own folder in the socket folder for nothing
+    started: bool,
 }
 
 #[allow(dead_code)]
@@ -511,6 +514,7 @@ impl Server {
         Server {
             sock: sock.to_string(),
             path: String::new(),
+            started: false,
         }
     }
 
@@ -527,6 +531,7 @@ impl Server {
         // so a suite started with them blocked leaves no server or pane (#1061, #1066)
         at_default(&mut c, &[libc::SIGTERM, libc::SIGHUP]);
         with(&mut c);
+        self.started = true;
         let Ok(o) = c.output() else { return false };
         let err = String::from_utf8_lossy(&o.stderr);
         assert!(o.status.success(), "the server on {} did not start: {}: {err}", self.sock, o.status);
@@ -537,6 +542,9 @@ impl Server {
 
 impl Drop for Server {
     fn drop(&mut self) {
+        if !self.started {
+            return;
+        }
         let _ = Command::new("tmux").args(["-L", &self.sock, "kill-server"]).output();
         if self.path.ends_with(&self.sock) {
             let _ = std::fs::remove_file(&self.path);
@@ -823,7 +831,6 @@ pub fn tests_leave_alone(vars: &[&str]) -> Vec<String> {
 /// One tmux command on the private server `sock`, its output trimmed.
 #[allow(dead_code)]
 fn tmux_on(sock: &str, args: &[&str]) -> String {
-    checked_tmux();
     let out = std::process::Command::new("tmux").args(["-L", sock]).args(args).output().unwrap();
     String::from_utf8_lossy(&out.stdout).trim_end().to_string()
 }
