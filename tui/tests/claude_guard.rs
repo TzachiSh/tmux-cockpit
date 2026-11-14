@@ -934,6 +934,31 @@ fn killed_in(r: &Rig, sh: &str, flags: &[&str], shell: &str) -> (usize, usize, S
     (folders.len(), r.own_starts(), log.unwrap_or_default())
 }
 
+/// #1061: the USR1 row's own run, failed before its release, leaves no stand-in.
+/// The shell here starts the stand-in itself and ends with 3 on USR1, so the
+/// row's assert on the signal fails while the stand-in still waits. A guard made
+/// too late to cover that assert leaves it waiting: `done` then never appears,
+/// and this row's own guard gives the stand-in its line as it unwinds.
+#[test]
+fn a_usr1_row_that_fails_before_its_release_leaves_no_stand_in() {
+    let r = Rig::new("wired");
+    let ends_3 = ["-c", "trap 'exit 3' USR1; \"$2\" & wait", "sh"];
+    let run = std::panic::AssertUnwindSafe(|| killed_in(&r, "/bin/sh", &ends_3, "sh"));
+    assert!(std::panic::catch_unwind(run).is_err(), "the row did not fail");
+    let exe = r.0.join(TEST);
+    let done = sibling(&exe, "done");
+    let ended = (0..APPEARS_FOR.as_millis() / 10).any(|_| {
+        std::thread::sleep(Duration::from_millis(10));
+        done.exists()
+    });
+    if !ended {
+        // let the stand-in go and end before the rig's folder goes, then fail
+        let released = Unreleased(Some(sibling(&exe, "go"))).release();
+        appears(&done);
+        panic!("the stand-in was left waiting on its fifo, released now: {released:?}");
+    }
+}
+
 /// A runner killed by a signal it does not trap leaves its folder, so the stub
 /// keeps refusing for the binary that outlives it. bash runs an EXIT trap on
 /// such a death and dash does not: with the trap left in place through the
