@@ -295,14 +295,10 @@ fn render(value: &Value, rev: Revision) -> String {
     format!("{HEAD}\nrev {}\n{value}\n", rev.0)
 }
 
-/// A small regular file only, checked before the open (a FIFO would block it,
-/// a symlink would lead out) and again on the open file, since either can be
-/// swapped in between.
+/// A small regular file only. O_NOFOLLOW refuses a symlink and O_NONBLOCK
+/// opens a FIFO without waiting for a writer; the open file is then checked.
 fn read_entry(path: &Path) -> Option<(Value, Revision)> {
     let small = |m: std::fs::Metadata| m.is_file() && m.len() <= FILE_MAX;
-    if !std::fs::symlink_metadata(path).is_ok_and(small) {
-        return None;
-    }
     let f = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
