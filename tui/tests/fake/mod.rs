@@ -9,8 +9,10 @@
 //! writes the file that runs, and this process never opens that file for writing.
 //!
 //! Also the shared [`Scratch`] guard (#544), the one environment a test
-//! binary can take for itself ([`fixed_env`], #957), and the `claude` a rig
-//! answers a lookup with ([`rig_path`], #972).
+//! binary can take for itself ([`fixed_env`], #957), the `claude` a rig
+//! answers a lookup with ([`rig_path`], #972), the rigs' private tmux servers
+//! ([`Server`], #1066), and the waits for a pane's start-up ([`held_pane`],
+//! [`named_pane`] and [`settle`], #1056).
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -325,8 +327,7 @@ pub fn held_pane(sock: &str, dir: &Path, name: &str) -> String {
         std::fs::copy("/bin/bash", &bin).unwrap();
     }
     let hold = dir.join("held");
-    std::fs::write(&hold, "#!/bin/sh\nsleep 0.3\nexec \"$@\"\n").unwrap();
-    std::fs::set_permissions(&hold, std::fs::Permissions::from_mode(0o755)).unwrap();
+    write_exec(&hold, "#!/bin/sh\nsleep 0.3\nexec \"$@\"\n");
     let cmd = format!("{} {} -c 'sleep 300; :'", hold.display(), bin.display());
     let d = dir.display().to_string();
     tmux_on(sock, &["new-window", "-d", "-P", "-F", "#{pane_id}", "-c", &d, &cmd])
@@ -360,8 +361,7 @@ pub fn named_pane(sock: &str, dir: &Path, name: &str) -> String {
         "printf %s \"${1##*/}\" > /proc/$$/comm || exit 3\n",
         "sleep 0.3\nexec \"$@\"\n"
     );
-    std::fs::write(&named, body).unwrap();
-    std::fs::set_permissions(&named, std::fs::Permissions::from_mode(0o755)).unwrap();
+    write_exec(&named, body);
     let cmd = format!("{} {} -c 'sleep 300; :'", named.display(), bin.display());
     let d = dir.display().to_string();
     tmux_on(sock, &["new-window", "-d", "-P", "-F", "#{pane_id}", "-c", &d, &cmd])
@@ -374,7 +374,8 @@ pub fn named_pane(sock: &str, dir: &Path, name: &str) -> String {
 /// Two checks: its comm, which only moves forward, and the argv[0] tmux reads,
 /// as the kernel sets comm before the new argv and an exec's empty cmdline sends
 /// tmux back to the pane's start argv. Red, naming both reads last, when it
-/// never gets there.
+/// never gets there. On Linux no row pins the comm check, as argv[0] reads the
+/// name only after comm does. Without /proc it is the whole check.
 #[allow(dead_code)]
 pub fn settle(sock: &str, pane: &str, name: &str) {
     let pid = tmux_on(sock, &["display-message", "-p", "-t", pane, "#{pane_pid}"]);
