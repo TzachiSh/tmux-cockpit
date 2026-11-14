@@ -57,14 +57,16 @@ fn word(b: &[u8], i: usize) -> bool {
 
 /// Whether a literal at `at` in `src`, with text `t`, names a real tmux to run:
 /// `tmux` alone as a program (not a path part given to `join`), an argv that
-/// starts with it (a COCKPIT_TMUX value), or a shell line that runs it.
+/// starts with it (a COCKPIT_TMUX value), or a line of a script that runs it,
+/// `tmux` and a word after an optional `exec`.
 fn runs_tmux(src: &str, at: usize, t: &str) -> bool {
     let before = src[..at - 1].trim_end();
     let program = t == "tmux" && !before.ends_with("join(");
     let line = |l: &str| {
         let l = l.trim_start();
-        l.strip_prefix("tmux ")
-            .is_some_and(|rest| rest.starts_with('-') || l.contains("\"$@\""))
+        let l = l.strip_prefix("exec ").unwrap_or(l).trim_start();
+        let arg = |c: char| c.is_ascii_lowercase() || c == '-' || c == '"';
+        l.strip_prefix("tmux ").is_some_and(|rest| rest.starts_with(arg))
     };
     let shell = t.contains('\n') && t.lines().flat_map(|l| l.split([';', '|', '&'])).any(line);
     program || t.starts_with("tmux -") || shell
@@ -106,9 +108,11 @@ const ALLOWED: [(&str, &str); 1] = [(
 /// string literal that [`runs_tmux`] and none of its files names a [`CHECKS`]
 /// entry. What it cannot see: a binary that reaches tmux only through the
 /// product, as the panel binaries and `files` do through `data::tmux` and
-/// `Theme::load` (each has a row of its own that runs the check); a tmux name
-/// built at run time; a script read from a file; and a check named in a file
-/// but never reached.
+/// `Theme::load` (each has a row of its own that runs the check); tmux by a
+/// path, as `Command::new("/usr/bin/tmux")`; a one-line shell string, as
+/// `["-c", "tmux ls"]`; a tmux name built at run time or by a helper from
+/// parts; a script read from a file; and a check named in a file but never
+/// reached.
 #[test]
 fn every_binary_that_runs_tmux_reaches_the_check() {
     let tests = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
@@ -136,14 +140,18 @@ fn every_binary_that_runs_tmux_reaches_the_check() {
 }
 
 /// The scan above, on sources with a known answer, so a reader that sees
-/// nothing cannot pass it.
+/// nothing cannot pass it. The shapes it reads, not every way to run tmux:
+/// [`every_binary_that_runs_tmux_reaches_the_check`] lists what it misses.
 #[test]
-fn the_scan_names_each_way_a_test_runs_tmux_and_no_other() {
+fn the_scan_finds_the_shapes_it_reads_and_no_lookalike() {
     let rows = [
         ("a program", r#"Command::new("tmux").arg("-V")"#, true),
         ("an argv value", r#"format!("tmux -L {}", s)"#, true),
         ("a script line", r##""#!/bin/sh\ntmux -L x \"$@\"\n""##, true),
         ("after a ;", r##""#!/bin/sh\nset -e; tmux -S y ls\n""##, true),
+        ("a command word", r##""#!/bin/sh\ntmux ls\n""##, true),
+        ("after exec", r##""#!/bin/sh\nexec tmux new-session -d\n""##, true),
+        ("a quoted command", r##""#!/bin/sh\nexec tmux \"$@\"\n""##, true),
         ("a path part", r#"dir.join("tmux")"#, false),
         ("a stub's path", r#"format!("{d}/bin/tmux")"#, false),
         ("words in a message", r#"assert!(x, "tmux is not answering")"#, false),
