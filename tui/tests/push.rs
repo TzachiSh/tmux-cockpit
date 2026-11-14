@@ -413,6 +413,14 @@ fn a_cockpit_tui_survives_sigusr1() {
         .spawn()
         .unwrap();
     let ready = until(|| dir.join("ready").exists());
+    // A blocked USR1 is never delivered, and the row then passes whatever the board
+    // does (#1061). The board ignores USR1 itself, so SigIgn tells nothing; its mask
+    // is the one it was started with. Read where /proc is, checked only there.
+    let status = std::fs::read_to_string(format!("/proc/{}/status", child.id()));
+    let mask = status.ok().and_then(|s| {
+        let m = s.lines().find_map(|l| l.strip_prefix("SigBlk:"))?;
+        u64::from_str_radix(m.trim(), 16).ok()
+    });
     // our own unreaped child: the pid cannot have been recycled
     unsafe { libc::kill(child.id() as i32, libc::SIGUSR1) };
     std::fs::write(dir.join("go"), "").unwrap();
@@ -420,6 +428,10 @@ fn a_cockpit_tui_survives_sigusr1() {
     let _ = std::fs::remove_dir_all(&dir);
     assert!(ready, "info never reached its tmux read");
     assert_eq!(st.signal(), None, "SIGUSR1 killed a cockpit-tui: {st:?}");
+    if std::path::Path::new("/proc/self").is_dir() {
+        let blocked = mask.map(|m| (m >> (libc::SIGUSR1 - 1)) & 1);
+        assert_eq!(blocked, Some(0), "USR1 was blocked in the board, which then never gets it");
+    }
 }
 
 /// The processes left of the `push` rig of the test binary `pid`, read from /proc: its
