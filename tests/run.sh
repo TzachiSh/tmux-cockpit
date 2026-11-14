@@ -3801,6 +3801,11 @@ mkdir -p "$DH/.claude" "$DBIN" "$DSH" "$DNO" "$DC/tmuxtmp"
 # carries: from a checkout with a blank in its path the doctor warns, rightly (#1064).
 dcline() { ( . "$DIR/scripts/lib/confline.sh" && cockpit_conf_line "$1" ); }
 printf '# mine\n%s\n' "$(dcline "$DIR")" > "$DH/.tmux.conf"
+# This checkout's path is one a bare line carries wherever CI runs, so no row below
+# would notice the config going back to the bare line. This one reads the config itself.
+is "the block's own config holds no unquoted line for this checkout" "none" \
+   "$(. "$DIR/scripts/lib/confline.sh"
+      cockpit_conf_bare_line "$DH/.tmux.conf" "$DIR" || echo none)"
 dshim() { printf '#!/bin/sh\necho "%s"\n' "$2" > "$3/$1"; chmod +x "$3/$1"; }
 dshim revdiff "version: 1.13.0" "$DSH"
 # The no-tmux PATH carries only what install.sh itself needs, so "no tmux on
