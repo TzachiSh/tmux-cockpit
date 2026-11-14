@@ -4667,8 +4667,9 @@ dm_scan() {                   # <file...> -> file:line of each display-message n
         t ~ /(^|[^\\])\$[A-Za-z_\173(@*0-9#!?]/ { print FILENAME ":" start }
     ' "$@"
 }
+mapfile -t dm_files < <(cd "$DIR" && find scripts -type f | sort)
 is "every display-message of a variable in cockpit.tmux and scripts/ goes through dmsg" "" \
-   "$(cd "$DIR" && dm_scan cockpit.tmux $(find scripts -type f | sort) | tr '\n' ' ')"
+   "$(cd "$DIR" && dm_scan cockpit.tmux "${dm_files[@]}" | tr '\n' ' ')"
 printf 'x() {\n    tmux display-message "mode [$m]"\n    tmux display-message \\\n' \
     > "$DM/plant"
 printf '        "$(fesc "$y")"\n    dmsg "$z"\n    tmux display-message -p "$w"\n}\n' \
@@ -4676,7 +4677,7 @@ printf '        "$(fesc "$y")"\n    dmsg "$z"\n    tmux display-message -p "$w"\
 is "and the scan names a raw one and a fesc'd one, not dmsg or a -p read" \
    "$DM/plant:2 $DM/plant:3 " "$(dm_scan "$DM/plant" | tr '\n' ' ')"
 unset -f dm_up dm_drawn dm_down dm_tmux dm_scan
-unset DM dm_n dm_f dm_p dm_d dm_k dm_names
+unset DM dm_n dm_f dm_p dm_d dm_k dm_names dm_files
 fi
 
 echo "== HOME unset must not kill the path picker =="
