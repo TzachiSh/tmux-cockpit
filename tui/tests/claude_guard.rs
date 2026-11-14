@@ -1707,7 +1707,8 @@ fn the_refusals_command_for_the_binary_runs_it() {
         c.arg("-c").arg(format!("{line} --exact {test}")).env("TMUX", "/canary,1,0");
         let pasted = c.env("TMPDIR", &tmp.0).stdin(Stdio::null()).output().unwrap();
         let err = String::from_utf8_lossy(&pasted.stderr);
-        assert_eq!((out.status.code(), pasted.status.code()), (Some(101), Some(0)), "{folder:?}: {line}: {err}");
+        let got = (out.status.code(), pasted.status.code());
+        assert_eq!(got, (Some(101), Some(0)), "{folder:?}: {line}: {err}");
     }
 }
 
