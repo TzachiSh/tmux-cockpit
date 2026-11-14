@@ -4097,7 +4097,7 @@ for cl_a in linux_amd64 linux_arm64 darwin_amd64 darwin_arm64; do
     ( cd "$CL/pack" && tar -czf "$cl_d/revdiff_1.13.0_$cl_a.tar.gz" revdiff )
 done
 ( cd "$cl_d" && sha256sum revdiff_1.13.0_*.tar.gz > revdiff_1.13.0_checksums.txt )
-for cl_n in 1 2 3 4 5 6 7; do SOCKS="$SOCKS cockpit-cl-$$-$cl_n"; done
+for cl_n in 1 2 3 4 5 6 7 8; do SOCKS="$SOCKS cockpit-cl-$$-$cl_n"; done
 cl_box() {                    # <n> <folder name> -- a copy of the plugin and a home for it
     local p="$CL/p/$2" h="$CL/h$1" d
     mkdir -p "$p" "$h/bin" "$h/.tmux/plugins"
@@ -4174,9 +4174,52 @@ case "$cl_out" in
 esac
 is "and the config is left as it was" "same" \
    "$(cmp -s "$CL/h2/.tmux.conf" "$CL/conf2" && echo same || echo changed)"
-is "and install.sh --check warns on its config row, with the same line" "1" \
-   "$(cl_env 2 "$cl_p2/install.sh" --check |
-      grep -cF "[ warn ] config         $CL/h2/.tmux.conf line 3")"
+cl_said() {                   # <label> <literal text> <output that must hold it>
+    case "$3" in
+        *"$2"*) ok "$1" ;;
+        *) bad "$1" "$2" "$3" ;;
+    esac
+}
+cl_said "and install.sh --check warns on its config row, with the same line" \
+    "[ warn ] config         $CL/h2/.tmux.conf line 3 unquoted, loads nothing from this $(:
+        )folder; replace line 3 with $cl_line
+" "$(cl_env 2 "$cl_p2/install.sh" --check)
+"
+# The four places install.sh prints the line, each from the folder with blanks, on a home
+# of its own. The line is read whole, to its line end: a bare path is a red row.
+mkdir -p "$CL/h8/bin"
+cl_said "install.sh, no tmux config: the note gives the line" \
+    "No tmux config found. Create $CL/h8/.tmux.conf with:
+  $cl_line
+" "$(cl_env 8 "$cl_p2/install.sh")
+"
+cl_said "install.sh --check, no tmux config: the fix column gives the line" \
+    "no tmux config           run bootstrap.sh, or add $cl_line
+" "$(cl_env 8 "$cl_p2/install.sh" --check)
+"
+printf '# mine\n' > "$CL/h8/.tmux.conf"
+cl_out=$(cl_env 8 "$cl_p2/install.sh")
+cl_said "install.sh, a config that does not load the plugin: the note gives the line" \
+    "Add this to $CL/h8/.tmux.conf, AFTER every option using an #{agent_*} token:
+  $cl_line
+" "$cl_out
+"
+cl_said "install.sh --check on that config: the fix column gives the line" \
+    "$CL/h8/.tmux.conf run bootstrap.sh, or add $cl_line
+" "$(cl_env 8 "$cl_p2/install.sh" --check)
+"
+cl_said "install.sh with HOME unset: the note gives the line" \
+    "HOME is not set; add this to your tmux config by hand:
+  $cl_line
+" "$(env -u TMUX -u TMUX_PANE -u HOME -u XDG_CONFIG_HOME XDG_BIN_HOME="$CL/h8/bin" \
+        PATH="$CL/shim:$SHIM:/usr/bin:/bin" "$cl_p2/install.sh" </dev/null 2>&1)
+"
+# What the note printed, put where it says: the line under "Add this to", into that config.
+printf '%s\n' "$cl_out" | awk 'f { sub(/^  /, ""); print; exit } /^Add this to /{ f = 1 }' \
+    >> "$CL/h8/.tmux.conf"
+is "the line install.sh's note printed, added to that config, loads the folder's plugin" "2|1" \
+   "$(cl_load 8)"
+unset -f cl_said
 is "the line the notice gives loads the plugin once it replaces line 3" "2|1" \
    "$(printf '# mine\n\n%s\n' "$cl_line" > "$CL/h2/.tmux.conf"; cl_load 2 7)"
 # The plain folder: a bare line works there, so nothing new is said. The run's output is

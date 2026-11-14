@@ -28,8 +28,8 @@ cockpit_bare_carries() {      # <path> -> 0 when a bare line carries it
         case "$r" in *'#'*) ;; *) return 0 ;; esac
         r=${r#*'#'}; h=${r%%[!#]*}; r=${r#"$h"}       # h: the rest of this run of #
         case "$r" in
-            '['*) ;;
-            [{,DFHIPSTWh]*) return 1 ;;
+            \[*) ;;
+            [\{,DFHIPSTWh]*) return 1 ;;
             *) [ -z "$h" ] || return 1 ;;
         esac
     done
