@@ -54,8 +54,10 @@ Run them with `make tui-test` from the checkout: on the six targets
 `.cargo/config.toml` names, cargo's runner gives each test binary a tmux socket
 folder of its own and clears your session's variables. With
 `COCKPIT_TEST_CLAUDE_GUARD=0`, on another target (#1090), or with a test binary
-started directly, 26 of the 106 binaries refuse until `TMUX_TMPDIR` names a
+started directly, the binaries that run tmux refuse until `TMUX_TMPDIR` names a
 folder, since a rig's socket would otherwise land beside your own tmux server's.
+That was 26 of the 106 when #1066 merged. `tests/tui-refusers.sh` counts them
+again, on Linux, without reaching your tmux server.
 In `tui/` the refusal's own command runs them:
 `d=$(mktemp -d) && env -u TMUX -u TMUX_PANE -u TMUX_COCKPIT_DIR -u COCKPIT_LOG -u XDG_CACHE_HOME -u XDG_STATE_HOME TMUX_TMPDIR="$d" cargo test`.
 
