@@ -157,51 +157,64 @@ fn shown(v: Option<&Value>) -> String {
     }
 }
 
-/// None when the example behaves, else what went wrong.
+/// One error a validator gave an example: its keyword, its path as `$.a[0]`, its message.
+struct Refusal {
+    keyword: String,
+    at: String,
+    message: String,
+}
+
+/// Loads one example and runs its schema over it; see `verdict` for what passes.
 fn check_example(
     validator: &jsonschema::Validator,
     path: &Path,
     want: Option<&Value>,
-) -> Option<String> {
-    let doc = match load(path) {
-        Ok(doc) => doc,
-        Err(e) => return Some(format!("unreadable: {e}")),
-    };
-    let errors: Vec<_> = validator.iter_errors(&doc).collect();
-    let got: Vec<(&str, String)> = errors
-        .iter()
-        .map(|e| {
-            (
-                e.kind().keyword(),
-                json_path(&doc, e.instance_path().as_str()),
-            )
+) -> Result<(), String> {
+    let doc = load(path).map_err(|e| format!("unreadable: {e}"))?;
+    let refusals: Vec<Refusal> = validator
+        .iter_errors(&doc)
+        .map(|e| Refusal {
+            keyword: e.kind().keyword().to_owned(),
+            at: json_path(&doc, e.instance_path().as_str()),
+            message: first_line(&e.to_string()).to_owned(),
         })
         .collect();
-    if file_name(path).starts_with("valid-") {
-        let (first, (keyword, at)) = errors.first().zip(got.first())?;
-        return Some(format!(
-            "refused: {keyword} at {at}: {}",
-            first_line(&first.to_string())
-        ));
+    verdict(&file_name(path), &refusals, want)
+}
+
+/// A valid-* example passes with no refusal. An invalid-* one passes with exactly one,
+/// the keyword and path its errors.json entry `want` names, so it fails for its stated reason.
+fn verdict(file: &str, refusals: &[Refusal], want: Option<&Value>) -> Result<(), String> {
+    if file.starts_with("valid-") {
+        return match refusals.first() {
+            None => Ok(()),
+            Some(r) => Err(format!("refused: {} at {}: {}", r.keyword, r.at, r.message)),
+        };
     }
     let Some(want) = want else {
-        return Some("no errors.json entry".into());
+        return Err("no errors.json entry".into());
     };
-    if got.is_empty() {
-        return Some("accepted".into());
-    }
     let (keyword, at) = (want.get("keyword"), want.get("at"));
-    let single = got.len() == 1 && Some(got[0].0) == keyword.and_then(Value::as_str);
-    if single && Some(got[0].1.as_str()) == at.and_then(Value::as_str) {
-        return None;
+    let named = |r: &Refusal| {
+        Some(r.keyword.as_str()) == keyword.and_then(Value::as_str)
+            && Some(r.at.as_str()) == at.and_then(Value::as_str)
+    };
+    match refusals {
+        [] => Err("accepted".into()),
+        [only] if named(only) => Ok(()),
+        _ => {
+            let listed: Vec<String> = refusals
+                .iter()
+                .map(|r| format!("('{}', '{}')", r.keyword, r.at))
+                .collect();
+            Err(format!(
+                "refused for [{}], errors.json wants {} at {}",
+                listed.join(", "),
+                shown(keyword),
+                shown(at)
+            ))
+        }
     }
-    let listed: Vec<String> = got.iter().map(|(k, a)| format!("('{k}', '{a}')")).collect();
-    Some(format!(
-        "refused for [{}], errors.json wants {} at {}",
-        listed.join(", "),
-        shown(keyword),
-        shown(at)
-    ))
 }
 
 fn file_name(path: &Path) -> String {
@@ -252,12 +265,11 @@ fn check_dir(
             surprises.push(format!("{name}/{file}: not valid-* or invalid-*"));
             continue;
         }
-        let wrong = check_example(validator, path, why.get(&file));
-        match &wrong {
-            None => println!("ok   {name}/{file}"),
-            Some(w) => {
-                println!("FAIL {name}/{file}: {w}");
-                surprises.push(format!("{name}/{file}: {w}"));
+        match check_example(validator, path, why.get(&file)) {
+            Ok(()) => println!("ok   {name}/{file}"),
+            Err(wrong) => {
+                println!("FAIL {name}/{file}: {wrong}");
+                surprises.push(format!("{name}/{file}: {wrong}"));
             }
         }
         if file.starts_with("invalid-") {
