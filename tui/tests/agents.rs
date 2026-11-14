@@ -526,10 +526,15 @@ fn so_does_one_dropped_in_a_panics_unwind() {
 #[test]
 fn so_does_one_with_no_shell_to_exec() {
     let (err, rig) = gave_up("nosh");
-    let enoent = std::io::Error::from_raw_os_error(libc::ENOENT);
     let r = rig.display();
+    // spelt out, not built by `exec_failed`, so that the row pins the words: ENOENT
+    // as std words an OS error, with the text glibc, musl and macOS give it (#988)
+    let why = format!(
+        "No shell from {r}/no-such-sh: No such file or directory (os error 2). \
+         The line below is this binary's own read.\n"
+    );
     let kept = format!("At the abort PATH began with {r}/bin and HOME was {r}\n");
-    assert!(err.contains(&(exec_failed(&rig.join("no-such-sh"), &enoent) + &kept)), "{err}");
+    assert!(err.contains(&(why + &kept)), "{err}");
 }
 
 /// #988: an ignored SIGABRT, which an exec hands down, does not keep the shell alive.
