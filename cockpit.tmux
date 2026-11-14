@@ -63,7 +63,7 @@ tmux set-option -gq @cockpit_home_re "$(printf '%s' "$home" | sed 's/[][\\.*^$+?
 # The script's path, shell-quoted, for the formats and hooks to expand: a format's
 # value reaches sh as it is, where a tmux "..." string would eat sq()'s backslashes.
 tmux set-option -g @cockpit_where_cmd "$(sq "$DIR/scripts/tmux-where")"
-tmux source-file "$DIR/scripts/lib/statusbar.conf"
+tmux source-file "$(gesc "$DIR/scripts/lib/statusbar.conf")"
 # NO_COLOR: every slot is the terminal's default colour (the slots are the bar's).
 if [ -n "${NO_COLOR:-}" ] && [ "$(tmux show-option -gqv @cockpit_statusbar)" != off ]; then
     set --
