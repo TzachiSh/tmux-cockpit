@@ -1,6 +1,7 @@
 //! Checks contracts/ (#1020, #1052). Run by hand, from anywhere:
 //! `cargo run --locked --manifest-path contracts/check/Cargo.toml [-- <contracts dir>]`.
 
+use regex_syntax::hir::{Hir, HirKind, Look};
 use serde::de::{self, Deserialize, Deserializer, MapAccess, SeqAccess, Visitor};
 use serde_json::{Map, Value};
 use std::collections::BTreeSet;
@@ -120,82 +121,46 @@ fn house_rules(schema: &Value) -> Vec<String> {
         bad.push("additionalProperties is not false".into());
     }
     for p in unanchored(schema) {
-        let ends = p.starts_with('^') && p.ends_with('$');
-        bad.push(if ends && bar_at_top(&p) {
-            format!(
-                "pattern {p:?} has a | outside every group, so ^ and $ each anchor one side only"
-            )
-        } else {
-            format!("pattern {p:?} does not start with ^ and end with $")
-        });
+        let why = anchor_problem(&p).unwrap_or("is not anchored");
+        bad.push(format!("pattern {p:?} {why}"));
     }
     bad
 }
 
-/// Every `pattern` and `patternProperties` key in a schema that does not start with `^` and
-/// end with an unescaped `$` (#1052), or has a top-level `|` (#1057). `const`, `enum`,
-/// `examples` and `default` hold data.
+/// Every `pattern` and `patternProperties` key in a schema that `anchor_problem` refuses.
+/// `const`, `enum`, `examples` and `default` hold data.
 fn unanchored(schema: &Value) -> Vec<String> {
     let mut out = vec![];
     walk_schema(schema, &mut out);
     out
 }
 
-fn anchored(pattern: &str) -> bool {
-    let Some(body) = pattern.strip_suffix('$') else {
-        return false;
+/// Why a pattern does not match only whole strings, as the validator reads it (#1057): it is
+/// translated by jsonschema-regex's `to_rust_regex`, as jsonschema 0.60.2 does before it builds
+/// the regex, then parsed by regex-syntax. The parse must be `^`, something, `$`.
+fn anchor_problem(pattern: &str) -> Option<&'static str> {
+    let parsed = jsonschema_regex::to_rust_regex(pattern)
+        .ok()
+        .and_then(|rust| regex_syntax::Parser::new().parse(&rust).ok());
+    let Some(hir) = parsed else {
+        return Some("is not a pattern the engine reads");
     };
-    let escapes = body.chars().rev().take_while(|c| *c == '\\').count();
-    pattern.starts_with('^') && escapes % 2 == 0 && !bar_at_top(pattern)
+    match hir.kind() {
+        HirKind::Alternation(_) => {
+            Some("has a | outside every group, so ^ and $ each anchor one side only")
+        }
+        HirKind::Concat(parts)
+            if is_look(parts.first(), Look::Start) && is_look(parts.last(), Look::End) =>
+        {
+            None
+        }
+        _ => Some("does not start with ^ and end with $"),
+    }
 }
 
-/// Whether a `|` sits outside every group and class: `^a|b$` is `(^a)|(b$)`, each side
-/// anchored at one end only (#1057). `(?:` opens a group like `(`.
-fn bar_at_top(pattern: &str) -> bool {
-    let mut chars = pattern.chars();
-    let mut depth = 0usize;
-    while let Some(c) = chars.next() {
-        match c {
-            '\\' => {
-                chars.next();
-            }
-            '[' => skip_class(&mut chars),
-            '(' => depth += 1,
-            ')' => depth = depth.saturating_sub(1),
-            '|' if depth == 0 => return true,
-            _ => {}
-        }
-    }
-    false
-}
-
-/// Consumes a class whose `[` was just read, through its closing `]`. A `]` first, or first
-/// after `^`, is a literal, and a `[` inside opens a nested class, as Rust's regex reads them.
-fn skip_class(chars: &mut std::str::Chars) {
-    let mut depth = 1usize;
-    let mut first = true;
-    while let Some(c) = chars.next() {
-        match c {
-            '^' if first => continue,
-            ']' if first => {}
-            '\\' => {
-                chars.next();
-            }
-            '[' => {
-                depth += 1;
-                first = true;
-                continue;
-            }
-            ']' => {
-                depth -= 1;
-                if depth == 0 {
-                    return;
-                }
-            }
-            _ => {}
-        }
-        first = false;
-    }
+/// Whether `node` is the look `want`: `Look::Start` is `^`, `Look::End` is `$`, without (?m).
+fn is_look(node: Option<&Hir>, want: Look) -> bool {
+    matches!(node.map(Hir::kind), Some(HirKind::Look(look)) if *look == want)
 }
 
 fn walk_schema(schema: &Value, out: &mut Vec<String>) {
@@ -204,13 +169,13 @@ fn walk_schema(schema: &Value, out: &mut Vec<String>) {
     };
     for (key, value) in map {
         match (key.as_str(), value) {
-            ("pattern", Value::String(p)) if !anchored(p) => out.push(p.clone()),
+            ("pattern", Value::String(p)) if anchor_problem(p).is_some() => out.push(p.clone()),
             ("const" | "enum" | "examples" | "default", _) => {}
             ("properties" | "$defs" | "definitions" | "dependentSchemas", Value::Object(m)) => {
                 m.values().for_each(|v| walk_schema(v, out));
             }
             ("patternProperties", Value::Object(m)) => {
-                out.extend(m.keys().filter(|k| !anchored(k)).cloned());
+                out.extend(m.keys().filter(|k| anchor_problem(k).is_some()).cloned());
                 m.values().for_each(|v| walk_schema(v, out));
             }
             _ => walk_any(value, out),
@@ -609,18 +574,41 @@ mod tests {
     }
 
     #[test]
-    fn a_bar_outside_every_group_and_class_is_refused() {
+    fn a_pattern_is_refused_unless_the_engine_parses_it_as_caret_body_dollar() {
         let rows = [
             ("top-level alternation", r"^a|b$", true),
             ("after a group closes", r"^(a)|b$", true),
+            ("escaped bracket, then a bar", r"^\[|a$", true),
+            ("escaped backslash, then a bar", r"^\\|a$", true),
+            (
+                "[ inside a class is a literal",
+                r"^[0-9a-f[]{16}|global$",
+                true,
+            ),
+            ("[ inside a class, then a bar", r"^[a[b]|]$", true),
+            (
+                "x-mode comment hides a (",
+                "^(?x)[0-9a-f]{16}#(\n|global$",
+                true,
+            ),
+            (
+                "x-mode comment, hex either side",
+                "^(?x)[0-9a-f]{16}#(\n|[0-9a-f]{16}$",
+                true,
+            ),
+            ("multi-line flag", r"(?m)^a$", true),
+            ("posix class, then a bar", r"^[[:alpha:]|]$", true),
             ("alternation in a group", r"^(a|b)$", false),
+            ("upper case alternation in a group", r"^(A|B)$", false),
             ("non-capturing group", r"^(?:a|b)$", false),
+            ("named group", r"^(?<k>a|b)$", false),
+            ("flag group, then a group", r"^(?i)(a|b)$", false),
+            ("empty branch in a group", r"^(|x)$", false),
             ("bar in a class", r"^[|]$", false),
+            ("escaped ] in a class", r"^[\]|]$", false),
             ("bar after a leading ] in a class", r"^[]|]$", false),
             ("bar after a leading ^] in a class", r"^[^]|]$", false),
-            ("bar after a nested class", r"^[a[b]|]$", false),
             ("escaped bar", r"^\|$", false),
-            ("escaped bracket, then a bar", r"^\[|a$", true),
         ];
         for (row, pattern, refused) in rows {
             let want: Vec<&str> = if refused { vec![pattern] } else { vec![] };

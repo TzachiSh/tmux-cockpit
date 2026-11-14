@@ -48,10 +48,12 @@ Nothing reads these schemas at run time. The Rust side is `tui/src/store.rs`, a
 - **Patterns** start with `^` and end with `$`, and are checked by Rust's
   `regex` engine. Its `$` is the end of the string, so `^%[0-9]{1,10}$` refuses
   `"%12\n"`. An alternation goes inside a group, as in `^(a|b)$`: `^a|b$` means
-  `(^a)|(b$)`, each side anchored at one end only. The check fails a `pattern`
-  or `patternProperties` key anywhere in a schema, `$defs` included, that lacks
-  either anchor or has a `|` outside every group and class, and a pattern with
-  lookaround or a backreference. Python's `$` also matches before a final
+  `(^a)|(b$)`, each side anchored at one end only. The check reads every
+  `pattern` and `patternProperties` key in a schema, `$defs` included, as the
+  validator does (jsonschema-regex's translation, then regex-syntax's parse),
+  and fails one that does not parse as `^`, a body, then `$`. A `[` inside a
+  class is a literal there, and `(?m)` or an `(?x)` comment counts as written.
+  It also fails a pattern with lookaround or a backreference. Python's `$` also matches before a final
   newline: a Python validator would accept `"%12\n"`.
 - **Unknown, malformed or wrong-version** payloads mean "no value, start fresh",
   as today's state files do (`data/agents.rs`, `board.rs`, `panel/action.rs`).
