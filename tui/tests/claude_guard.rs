@@ -1941,13 +1941,13 @@ fn clean_run_names_its_own_tmux_folders_left_and_no_other() {
 /// #1066: where /tmp takes no folder the runner starts no binary and falls back to no
 /// other folder, held where no namespace is allowed, as on CI: a `mktemp` first on the
 /// runner's own PATH (the rig's, `<stub>:<own>:/bin:/usr/bin`) fails for a `/tmp/ct.*`
-/// template and runs `/usr/bin/mktemp` for any other, the guard's folder among them.
+/// template and runs the next `mktemp` on PATH for any other, the guard's folder among them.
 #[test]
 fn a_tmux_folder_that_cannot_be_made_starts_no_binary() {
     let r = Rig::new("nomktemp");
     let stub = r.0.join("stub");
     let body = "#!/bin/sh\nfor a; do case $a in /tmp/ct.*) echo \"mktemp: refused $a\" >&2; exit 1 ;; esac; done\n\
-                exec /usr/bin/mktemp \"$@\"\n";
+                PATH=${PATH#*:} exec mktemp \"$@\"\n";
     std::fs::create_dir_all(&stub).unwrap();
     fake::write_exec(&stub.join("mktemp"), body);
     let exe = r.binary(TEST, "#!/bin/sh\n: > \"$0.ran\"\n");
