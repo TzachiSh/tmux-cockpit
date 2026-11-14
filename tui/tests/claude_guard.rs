@@ -589,12 +589,20 @@ const WAITS: &str = "#!/bin/sh\necho $$ > \"$0.up\"\nread -r _ < \"$0.go\"\nclau
 /// was left in the temp folder.
 fn sent_to_the_runner(signal: i32) -> (Option<i32>, bool, usize) {
     let r = Rig::new(&format!("sent{signal}"));
+    let (status, said, left) = signalled(&r, &mut r.command(), signal);
+    (status.signal(), said, left)
+}
+
+/// `c`, a runner of the rig `r`, started on a [`WAITS`] stand-in and sent
+/// `signal` alone while the stand-in waits: how it ended, whether the start
+/// the stand-in made afterwards was reported, and what was left in the temp
+/// folder.
+fn signalled(r: &Rig, c: &mut Command, signal: i32) -> (std::process::ExitStatus, bool, usize) {
     let exe = r.binary(TEST, WAITS);
     let (up, go) = (r.0.join(format!("{TEST}.up")), format!("{}.go", exe.display()));
     let fifo = std::ffi::CString::new(go.as_str()).unwrap();
     // SAFETY: `fifo` is a NUL-terminated path under the rig's folder.
     assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
-    let mut c = r.command();
     let child = c.arg(&exe).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().unwrap();
     appears(&up);
     // SAFETY: the pid of this row's own child, held and not yet waited for.
@@ -606,7 +614,7 @@ fn sent_to_the_runner(signal: i32) -> (Option<i32>, bool, usize) {
     }
     let o = ended(child, "the runner");
     let said = String::from_utf8_lossy(&o.stderr).contains("argv=claude [late]");
-    (o.status.signal(), said, std::fs::read_dir(r.0.join("tmp")).unwrap().count())
+    (o.status, said, std::fs::read_dir(r.0.join("tmp")).unwrap().count())
 }
 
 /// A signal sent to the runner alone, the binary still running: the binary
