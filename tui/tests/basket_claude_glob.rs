@@ -72,17 +72,22 @@ fn a_claude_the_agent_list_leaves_out_is_no_claude() {
     s.tmux(&["set-option", "-g", "@cockpit_agents_glob", "|codex|"]);
     // SAFETY: the only test in this binary; nothing else reads the env meanwhile.
     unsafe { std::env::set_var("COCKPIT_TMUX", format!("tmux -L {}", s.sock)) };
-    let rows = [
-        ("claude, not in the agent list", s.pane("claude"), "claude", false),
-        ("the version title, agent-shaped all the same", s.pane("2.1.318"), "2.1.318", true),
+    // Each pane starts in its own row's turn, so a held row's hold is not spent
+    // waiting on the rows before it, whatever their order (#1056).
+    type Start<'a> = &'a dyn Fn() -> String;
+    let held = || fake::held_pane(&s.sock, &s.dir, "2.1.318");
+    let rows: [(&str, Start, &str, bool); 3] = [
+        ("claude, not in the agent list", &|| s.pane("claude"), "claude", false),
         (
-            "the version title, its start held before the exec",
-            fake::held_pane(&s.sock, &s.dir, "2.1.318"),
+            "the version title, agent-shaped all the same",
+            &|| s.pane("2.1.318"),
             "2.1.318",
             true,
         ),
+        ("the version title, its start held before the exec", &held, "2.1.318", true),
     ];
-    for (row, pane, name, want) in rows {
+    for (row, start, name, want) in rows {
+        let pane = start();
         fake::settle(&s.sock, &pane, name);
         assert_eq!(basket::is_claude(&pane), want, "{row} ({pane})");
     }

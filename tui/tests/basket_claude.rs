@@ -86,20 +86,20 @@ fn claude_and_its_version_title_read_at_mentions_and_nothing_else_does() {
     let stale = s.pane("fish");
     // @panestate outlives the claude that set it: on a shell it is no claude
     s.tmux(&["set-option", "-p", "-t", &stale, "@panestate", "working"]);
-    let rows = [
-        ("claude", s.pane("claude"), "claude", true),
-        ("its version title", s.pane("2.1.318"), "2.1.318", true),
-        (
-            "its version title, its start held before the exec",
-            fake::held_pane(&s.sock, &s.dir, "2.1.318"),
-            "2.1.318",
-            true,
-        ),
-        ("codex", s.pane("codex"), "codex", false),
-        ("a shell", s.pane("zsh"), "zsh", false),
-        ("a stale @panestate on a shell", stale, "fish", false),
+    // Each pane starts in its own row's turn, so a held row's hold is not spent
+    // waiting on the rows before it, whatever their order (#1056).
+    type Start<'a> = &'a dyn Fn() -> String;
+    let held = || fake::held_pane(&s.sock, &s.dir, "2.1.318");
+    let rows: [(&str, Start, &str, bool); 6] = [
+        ("claude", &|| s.pane("claude"), "claude", true),
+        ("its version title", &|| s.pane("2.1.318"), "2.1.318", true),
+        ("its version title, its start held before the exec", &held, "2.1.318", true),
+        ("codex", &|| s.pane("codex"), "codex", false),
+        ("a shell", &|| s.pane("zsh"), "zsh", false),
+        ("a stale @panestate on a shell", &|| stale.clone(), "fish", false),
     ];
-    for (row, pane, name, want) in rows {
+    for (row, start, name, want) in rows {
+        let pane = start();
         fake::settle(&s.sock, &pane, name);
         assert_eq!(basket::is_claude(&pane), want, "{row} ({pane})");
     }
