@@ -138,9 +138,12 @@ fn root_from(mut args: impl Iterator<Item = OsString>) -> Result<PathBuf, String
     Ok(PathBuf::from(arg))
 }
 
+/// The regex engine, not the default fancy-regex: no lookaround or backreference, and `$`
+/// is the end of input, so a pattern needs no `(?!\n)` (#1052).
 fn compile(schema: &Value) -> Result<jsonschema::Validator, String> {
     jsonschema::options()
         .with_draft(jsonschema::Draft::Draft202012)
+        .with_pattern_options(jsonschema::PatternOptions::regex())
         .build(schema)
         .map_err(|e| e.to_string())
 }
@@ -438,6 +441,26 @@ mod tests {
     #[test]
     fn a_schema_that_is_no_object_breaks_every_rule() {
         assert_eq!(house_rules(&json!(true)).len(), 5);
+    }
+
+    #[test]
+    fn lookaround_or_a_backreference_fails_to_compile() {
+        let rows = [
+            ("lookahead", r"^a(?!\n)$"),
+            ("lookbehind", "(?<=a)b"),
+            ("backref", r"^(a)\1$"),
+        ];
+        for (row, pattern) in rows {
+            let schema = json!({"type": "string", "pattern": pattern});
+            assert!(compile(&schema).is_err(), "row {row}");
+        }
+    }
+
+    #[test]
+    fn a_dollar_pattern_refuses_a_trailing_newline() {
+        let v = compile(&json!({"type": "string", "pattern": "^%[0-9]{1,10}$"})).unwrap();
+        assert!(v.is_valid(&json!("%12")));
+        assert!(!v.is_valid(&json!("%12\n")));
     }
 
     fn args(list: &[&str]) -> impl Iterator<Item = OsString> {

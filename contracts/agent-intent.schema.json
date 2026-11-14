@@ -26,16 +26,16 @@
   ],
   "additionalProperties": false,
   "$defs": {
-    "id": { "type": "string", "pattern": "^[0-9a-f]{16,64}(?!\\n)$" },
+    "id": { "type": "string", "pattern": "^[0-9a-f]{16,64}$" },
     "ref": {
       "description": "An opaque file name in the private refs folder: 16 to 64 lowercase hex, then .md, .json or .txt. No word fits as written; an encoded one does.",
       "type": "string",
-      "pattern": "^[0-9a-f]{16,64}\\.(md|json|txt)(?!\\n)$"
+      "pattern": "^[0-9a-f]{16,64}\\.(md|json|txt)$"
     },
     "utc": {
       "description": "ISO-8601 in UTC, Z only, optional fraction.",
       "type": "string",
-      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.[0-9]{1,9})?Z(?!\\n)$"
+      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.[0-9]{1,9})?Z$"
     }
   }
 }

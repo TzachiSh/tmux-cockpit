@@ -44,9 +44,10 @@ Nothing reads these schemas at run time. The Rust side is `tui/src/store.rs`, a
   by `pattern`. `format: date-time` would not be checked: the distro's
   jsonschema lacks `rfc3339_validator`. A reader that needs order (an intent's
   `expires_at` after its `created_at`) checks it itself.
-- **Patterns end in `(?!\n)$`**, not `$`. Python's `$` also matches before a
-  final newline and ECMA-262's does not. The lookahead makes both refuse
-  `"%12\n"`.
+- **Patterns** are checked by Rust's `regex` engine. Its `$` is the end of the
+  string, so `^%[0-9]{1,10}$` refuses `"%12\n"`, and a pattern with lookaround
+  or a backreference fails the check. Python's `$` also matches before a final
+  newline: a Python validator would accept `"%12\n"`.
 - **Unknown, malformed or wrong-version** payloads mean "no value, start fresh",
   as today's state files do (`data/agents.rs`, `board.rs`, `panel/action.rs`).
   No reader repairs, upgrades or fails on one. Starting fresh never reuses a
