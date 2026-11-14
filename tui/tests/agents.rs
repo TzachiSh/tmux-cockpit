@@ -671,8 +671,11 @@ fn the_rig_never_kills_a_pid_that_is_not_its_stub() {
         let r = Rig::new("reused", ONE);
         // After Rig::new, which can wait on the ENV lock behind other rigs: a sleep started
         // before it could end on its own and be blamed on the drop. An absolute path, since
-        // a bare `sleep` is the rig's bin/sleep, whose cmdline names the rig's dir.
-        let other = std::process::Command::new("/bin/sleep").arg("30").spawn().unwrap();
+        // a bare `sleep` is the rig's bin/sleep, whose cmdline names the rig's dir. TERM at
+        // its default and unblocked, whatever the suite was started with (#1061).
+        let mut sleep = std::process::Command::new("/bin/sleep");
+        fake::at_default(sleep.arg("30"), &[libc::SIGTERM]);
+        let other = sleep.spawn().unwrap();
         std::fs::write(r.dir.join("stubpid"), other.id().to_string()).unwrap();
         other
     };
@@ -1386,8 +1389,10 @@ fn spawned_hup_child() {
 #[test]
 fn a_hang_up_before_the_child_is_stored_still_takes_it() {
     let r = Rig::new("spawned", "exec $HOME/bin/sleep 60");
-    let me = std::env::current_exe().unwrap();
-    let st = std::process::Command::new(me)
+    let mut c = std::process::Command::new(std::env::current_exe().unwrap());
+    // the board's handler runs for a HUP the suite handed down blocked only once unblocked
+    fake::at_default(&mut c, &[libc::SIGHUP]);
+    let st = c
         .args(["--exact", "spawned_hup_child", "--test-threads=1"])
         .env("SPAWNED_HUP_CHILD", "1")
         .stdout(std::process::Stdio::null())
@@ -1470,8 +1475,10 @@ fn a_failed_lookup_spawn_leaves_no_count() {
 #[test]
 fn a_signalled_board_kills_a_lookup_in_flight() {
     let r = Rig::new("sighup", "echo $$ > $HOME/stubpid\nexec $HOME/bin/sleep 60");
-    let me = std::env::current_exe().unwrap();
-    let st = std::process::Command::new(me)
+    let mut c = std::process::Command::new(std::env::current_exe().unwrap());
+    // as in the row above: HUP unblocked, whatever the suite was started with (#1061)
+    fake::at_default(&mut c, &[libc::SIGHUP]);
+    let st = c
         .args(["--exact", "hup_child", "--test-threads=1"])
         .env("HUP_CHILD", "1")
         .stdout(std::process::Stdio::null())
@@ -1480,4 +1487,17 @@ fn a_signalled_board_kills_a_lookup_in_flight() {
     assert_eq!(st.code(), Some(0), "the handler's _exit(0), not the child's own exit");
     let pid = std::fs::read_to_string(r.dir.join("stubpid")).unwrap();
     wait_gone(pid.trim());
+}
+
+/// #1061: the three rows that signal a process they started, in this binary started
+/// again with TERM and HUP ignored and blocked. Each holds there by its own reset: the
+/// stand-in's TERM, and the HUP of the board child that raises it.
+#[test]
+fn the_signalling_rows_hold_in_a_binary_handed_an_ignored_and_blocked_term_and_hup() {
+    let rows = [
+        "the_rig_never_kills_a_pid_that_is_not_its_stub",
+        "a_hang_up_before_the_child_is_stored_still_takes_it",
+        "a_signalled_board_kills_a_lookup_in_flight",
+    ];
+    fake::rows_pass_handed(&rows, &[libc::SIGTERM, libc::SIGHUP]);
 }
