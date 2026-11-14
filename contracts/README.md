@@ -102,15 +102,19 @@ update per existing key, is taken before `watch` returns.
 ## Checking the schemas
 
 ```sh
-python3 -I tests/contracts.py
+cargo run --locked --manifest-path contracts/check/Cargo.toml
 ```
 
-It checks each schema against draft 2020-12 and the rules above that a schema
-states about itself. Every `examples/<name>/valid-*.json` must pass, and every
-`invalid-*.json` must fail with exactly the one error its folder's
+`contracts/check` is a crate of its own, with its own `Cargo.lock`, apart from
+`tui/`. It reads `contracts/` by default, or the folder given as its one
+argument. It checks each schema against draft 2020-12 and the rules above that
+a schema states about itself. Every `examples/<name>/valid-*.json` must pass,
+and every `invalid-*.json` must fail with exactly the one error its folder's
 `errors.json` names (a keyword and a JSON path), so an example cannot fail for
-a reason other than the one in its name. It exits 1 on any surprise, including
-a folder with no valid or no invalid example.
+a reason other than the one in its name. A duplicate key or a NaN makes a file
+unreadable. It exits 1 on any surprise, including a folder with no valid or no
+invalid example, and 2 when it cannot start: a bad argument or a folder it
+cannot read. `cargo test` with the same manifest runs its own tests.
 
 Nothing runs it automatically (#1021). Whoever changes a file under
 `contracts/` runs it and quotes the output in the PR. The reviewer reruns it.
