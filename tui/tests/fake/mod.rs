@@ -256,3 +256,113 @@ pub fn assert_claude_is_the_rigs(dir: &Path) {
         panic!("the first claude on PATH is {found:?}, not one under {dir} (#972)");
     }
 }
+
+// --- pane start-up waits for the basket_claude tests (#1056) ---
+
+/// One tmux command on the private server `sock`, its output trimmed.
+#[allow(dead_code)]
+fn tmux_on(sock: &str, args: &[&str]) -> String {
+    let out = std::process::Command::new("tmux").args(["-L", sock]).args(args).output().unwrap();
+    String::from_utf8_lossy(&out.stdout).trim_end().to_string()
+}
+
+/// As a basket_claude test's `Server::pane`, a new window on the private server
+/// `sock` running a copy of bash named `name` in `dir`, but the pane's process
+/// holds 0.3 s before it execs `name` (#1056): the start-up window held open, so
+/// a read that does not wait for [`settle`] finds the `held` script, not `name`.
+#[allow(dead_code)]
+pub fn held_pane(sock: &str, dir: &Path, name: &str) -> String {
+    let bin = dir.join(name);
+    // a copy a pane already runs cannot be written over (ETXTBSY)
+    if !bin.exists() {
+        std::fs::copy("/bin/bash", &bin).unwrap();
+    }
+    let hold = dir.join("held");
+    std::fs::write(&hold, "#!/bin/sh\nsleep 0.3\nexec \"$@\"\n").unwrap();
+    std::fs::set_permissions(&hold, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let cmd = format!("{} {} -c 'sleep 300; :'", hold.display(), bin.display());
+    let d = dir.display().to_string();
+    tmux_on(sock, &["new-window", "-d", "-P", "-F", "#{pane_id}", "-c", &d, &cmd])
+}
+
+/// As [`held_pane`], but the start script first writes `name` into its own
+/// comm, so for its 0.3 s comm reads `name` while argv[0] is still the script's
+/// shell: the gap inside an exec, where the kernel sets comm before the argv
+/// tmux reads (#1056). Red at once where /proc's comm cannot be written, as the
+/// row would then hold no such gap and pass for nothing. Where there is no /proc
+/// it says SKIP and starts a [`held_pane`], since `ps` gives no argv[0] to check.
+#[allow(dead_code)]
+pub fn named_pane(sock: &str, dir: &Path, name: &str) -> String {
+    if !Path::new("/proc/self").is_dir() {
+        eprintln!("SKIP: no /proc, so no comm to set ahead of argv[0]; a held row instead");
+        return held_pane(sock, dir, name);
+    }
+    // the kernel's rule for the script's own write, tried on this thread's name
+    let me = std::fs::read_to_string("/proc/thread-self/comm").unwrap_or_default();
+    if let Err(e) = std::fs::write("/proc/thread-self/comm", me.trim_end()) {
+        panic!("/proc/thread-self/comm cannot be written ({e}): no comm-ahead row here");
+    }
+    let bin = dir.join(name);
+    // a copy a pane already runs cannot be written over (ETXTBSY)
+    if !bin.exists() {
+        std::fs::copy("/bin/bash", &bin).unwrap();
+    }
+    let named = dir.join("named");
+    let body = concat!(
+        "#!/bin/sh\n",
+        "printf %s \"${1##*/}\" > /proc/$$/comm || exit 3\n",
+        "sleep 0.3\nexec \"$@\"\n"
+    );
+    std::fs::write(&named, body).unwrap();
+    std::fs::set_permissions(&named, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let cmd = format!("{} {} -c 'sleep 300; :'", named.display(), bin.display());
+    let d = dir.display().to_string();
+    tmux_on(sock, &["new-window", "-d", "-P", "-F", "#{pane_id}", "-c", &d, &cmd])
+}
+
+/// Waits until the pane's own process, on the private server `sock`, has exec'd
+/// `name` (#1056). Not by pane_current_command: while a pane starts, tmux 3.8
+/// reads it as the pane's argv, then `tmux`, then the shell, then the name, so
+/// its first read can already be `name`. The pane's pid keeps through each exec.
+/// Two checks: its comm, which only moves forward, and the argv[0] tmux reads,
+/// as the kernel sets comm before the new argv and an exec's empty cmdline sends
+/// tmux back to the pane's start argv. Red, naming both reads last, when it
+/// never gets there.
+#[allow(dead_code)]
+pub fn settle(sock: &str, pane: &str, name: &str) {
+    let pid = tmux_on(sock, &["display-message", "-p", "-t", pane, "#{pane_pid}"]);
+    let mut last = (String::new(), None);
+    for _ in 0..500 {
+        last = names(&pid);
+        let (comm, argv0) = &last;
+        // /proc's comm is cut to 15 bytes; argv[0] and `ps` keep the whole name
+        let comm_ok = comm == name || (argv0.is_some() && comm == name.get(..15).unwrap_or(name));
+        // two checks: comm, then the argv[0] tmux reads, which the kernel sets after it
+        if comm_ok && argv0.as_deref().is_none_or(|a| a == name) {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let (comm, argv0) = last;
+    let last = format!("comm {comm:?}, argv[0] {argv0:?}");
+    panic!("pane {pane} never ran {name}: its process {pid} read {last} last");
+}
+
+/// What [`settle`] reads of a process: its comm, and the last path part of the
+/// argv[0] in the cmdline tmux names a pane by. Where there is no /proc, `ps`
+/// gives one name (macOS prints a path), so there is no argv[0] to check: `None`.
+#[allow(dead_code)]
+fn names(pid: &str) -> (String, Option<String>) {
+    if Path::new("/proc/self").is_dir() {
+        let comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).unwrap_or_default();
+        let argv = std::fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
+        let argv0 = String::from_utf8_lossy(argv.split(|b| *b == 0).next().unwrap_or_default());
+        let base = argv0.rsplit('/').next().unwrap_or_default().to_string();
+        return (comm.trim_end().to_string(), Some(base));
+    }
+    let out = std::process::Command::new("ps").args(["-o", "comm=", "-p", pid]).output();
+    let c = out
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+    (c.rsplit('/').next().unwrap_or_default().to_string(), None)
+}

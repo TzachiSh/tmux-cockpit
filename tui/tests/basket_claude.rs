@@ -1,6 +1,8 @@
 //! Which pane reads Claude Code's `@path#La-b` (#365 child 5, D4): an agent's
 //! pane (#519's is_agent) whose command is `claude` or its version title. On a
 //! private `-L` server, never the user's; one test, as it sets COCKPIT_TMUX.
+mod fake;
+
 use cockpit_tui::basket;
 use std::process::Command;
 
@@ -84,14 +86,29 @@ fn claude_and_its_version_title_read_at_mentions_and_nothing_else_does() {
     let stale = s.pane("fish");
     // @panestate outlives the claude that set it: on a shell it is no claude
     s.tmux(&["set-option", "-p", "-t", &stale, "@panestate", "working"]);
-    let rows = [
-        ("claude", s.pane("claude"), true),
-        ("its version title", s.pane("2.1.318"), true),
-        ("codex", s.pane("codex"), false),
-        ("a shell", s.pane("zsh"), false),
-        ("a stale @panestate on a shell", stale, false),
+    // Each pane starts in its own row's turn, so a held row's hold is not spent
+    // waiting on the rows before it, whatever their order (#1056).
+    type Start<'a> = &'a dyn Fn() -> String;
+    let held = || fake::held_pane(&s.sock, &s.dir, "2.1.318");
+    let named = || fake::named_pane(&s.sock, &s.dir, "2.1.318");
+    let rows: [(&str, Start, &str, bool); 8] = [
+        ("claude", &|| s.pane("claude"), "claude", true),
+        ("its version title", &|| s.pane("2.1.318"), "2.1.318", true),
+        ("its version title, its start held before the exec", &held, "2.1.318", true),
+        ("its version title, comm ahead of its argv", &named, "2.1.318", true),
+        ("codex", &|| s.pane("codex"), "codex", false),
+        ("a shell", &|| s.pane("zsh"), "zsh", false),
+        (
+            "a name past comm's 15 bytes",
+            &|| s.pane("claude-code-nightly"),
+            "claude-code-nightly",
+            false,
+        ),
+        ("a stale @panestate on a shell", &|| stale.clone(), "fish", false),
     ];
-    for (row, pane, want) in rows {
+    for (row, start, name, want) in rows {
+        let pane = start();
+        fake::settle(&s.sock, &pane, name);
         assert_eq!(basket::is_claude(&pane), want, "{row} ({pane})");
     }
     // The resume key's string under dash (#895): with exec the pane is claude, as the
@@ -100,15 +117,10 @@ fn claude_and_its_version_title_read_at_mentions_and_nothing_else_does() {
         let cases = [("with exec", true, "claude", true), ("without exec", false, "dash", false)];
         for (row, exec, settled, want) in cases {
             let pane = s.resumed("/usr/bin/dash", exec);
-            let cmd = || s.tmux(&["display-message", "-p", "-t", &pane, "#{pane_current_command}"]);
-            // bash, then dash, then claude exec'd or forked: wait for the pane to settle
-            for _ in 0..50 {
-                if cmd() == settled {
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(100));
-            }
-            assert_eq!(cmd(), settled, "a resume string {row}, under dash: the pane's command");
+            // bash, then dash, then claude exec'd or forked: wait for the pane's process
+            fake::settle(&s.sock, &pane, settled);
+            let cmd = s.tmux(&["display-message", "-p", "-t", &pane, "#{pane_current_command}"]);
+            assert_eq!(cmd, settled, "a resume string {row}, under dash: the pane's command");
             assert_eq!(basket::is_claude(&pane), want, "a resume string {row}, under dash ({pane})");
         }
     }
