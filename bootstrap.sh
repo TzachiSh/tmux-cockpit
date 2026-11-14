@@ -54,6 +54,8 @@ sha_c() { if have sha256sum; then sha256sum -c -; else shasum -a 256 -c -; fi; }
 
 # shellcheck source=scripts/lib/vnum.sh
 . "$DIR/scripts/lib/vnum.sh" || exit 1
+# shellcheck source=scripts/lib/confline.sh
+. "$DIR/scripts/lib/confline.sh" || exit 1
 ver_ge() {  # ver_ge <have> <maj> <min>
     local v=${1#tmux }; v=${v#v}                      # v1.13.0-abc1234-date: x.y.z leads
     vnum_ge "$v" "$2.$3"                              # next-3.9 is 3.9; no number: modern
@@ -168,6 +170,19 @@ done
 
 if [ -n "$wired" ]; then
     note "have   $wired already loads cockpit.tmux"
+    # An older line has no quote around the path, and from this folder it loads nothing
+    # (#1046). Said, never rewritten: the config is the user's.
+    if ! cockpit_bare_carries "$DIR" && n=$(cockpit_conf_bare_line "$wired" "$DIR"); then
+        note "NOTE   line $n of that file has no quotes around the path, and this folder's"
+        note "       path holds a character such a line does not carry: tmux loads nothing."
+        case "$DIR" in
+            *[[:cntrl:]]*)
+                note "       The path holds a control character, so no line is shown here."
+                note "       Move the plugin folder, or see docs/install.md." ;;
+            *)  note "       Replace line $n with:"
+                note "         $(cockpit_conf_line "$DIR")" ;;
+        esac
+    fi
     skipped+=("config: already wired")
 elif [ ! -e "$CONF" ]; then
     if ask "no tmux config; install the full example to $CONF?" y; then
@@ -190,7 +205,7 @@ else
                 bak_ok=0
             fi
             if [ "$bak_ok" -eq 1 ] &&
-               printf '\n# tmux-cockpit\nrun-shell %s/cockpit.tmux\n' "$DIR" >> "$CONF"; then
+               printf '\n# tmux-cockpit\n%s\n' "$(cockpit_conf_line "$DIR")" >> "$CONF"; then
                 did+=("append run-shell to $CONF$bak_note")
                 printf '  ok:    appended to %s%s\n' "$CONF" "$bak_note"
                 note "the full example config is at $DIR/examples/full.tmux.conf"

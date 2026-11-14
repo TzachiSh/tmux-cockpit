@@ -44,6 +44,8 @@ esac; done
 # ---------------------------------------------------------------- doctor ----
 # shellcheck source=scripts/lib/vnum.sh
 . "$DIR/scripts/lib/vnum.sh" || exit 1
+# shellcheck source=scripts/lib/confline.sh
+. "$DIR/scripts/lib/confline.sh" || exit 1
 # shellcheck source=scripts/lib/tui.sh
 . "$DIR/scripts/lib/tui.sh" || exit 1
 
@@ -147,8 +149,16 @@ if [ "$check" -eq 1 ]; then
         done < "$c"
         [ "$wired" -eq 1 ] && break
     done
-    wire_fix="run bootstrap.sh, or add run-shell $DIR/cockpit.tmux"
-    if [ "$wired" -eq 1 ]; then row ok config "$conf loads cockpit"
+    wire_fix="run bootstrap.sh, or add $(cockpit_conf_line "$DIR")"
+    # A line with no quote around the path loads nothing from a folder it cannot carry (#1046).
+    if [ "$wired" -eq 1 ] && ! cockpit_bare_carries "$DIR" &&
+       n=$(cockpit_conf_bare_line "$conf" "$DIR"); then
+        case "$DIR" in
+            *[[:cntrl:]]*) wire_fix='the folder path holds a control character: move the folder' ;;
+            *) wire_fix="replace line $n with $(cockpit_conf_line "$DIR")" ;;
+        esac
+        row warn config "$conf line $n" "unquoted, loads nothing from this folder; $wire_fix"
+    elif [ "$wired" -eq 1 ]; then row ok config "$conf loads cockpit"
     elif [ -n "$conf" ];    then row fail config "$conf" "$wire_fix"
     else row fail config 'no tmux config' "$wire_fix"
     fi
@@ -502,7 +512,8 @@ esac
 
 # HOME may be unset here, since only XDG_BIN_HOME was needed above.
 if [ -z "${HOME:-}" ]; then
-    printf '\nHOME is not set; add this to your tmux config by hand:\n  run-shell %s/cockpit.tmux\n' "$DIR" >&2
+    printf '\nHOME is not set; add this to your tmux config by hand:\n  %s\n' \
+        "$(cockpit_conf_line "$DIR")" >&2
 else
     # tmux loads both, so the run-shell line in either wires it, as --check reads it.
     conf=""; wired=0
@@ -512,11 +523,11 @@ else
         grep -q 'cockpit\.tmux' "$c" && { wired=1; break; }
     done
     if [ -z "$conf" ]; then
-        printf '\nNo tmux config found. Create %s with:\n  run-shell %s/cockpit.tmux\n' \
-               "$HOME/.tmux.conf" "$DIR" >&2
+        printf '\nNo tmux config found. Create %s with:\n  %s\n' \
+               "$HOME/.tmux.conf" "$(cockpit_conf_line "$DIR")" >&2
     elif [ "$wired" -eq 0 ]; then
-        printf '\nAdd this to %s, AFTER every option using an #{agent_*} token:\n  run-shell %s/cockpit.tmux\n' \
-               "$conf" "$DIR" >&2
+        printf '\nAdd this to %s, AFTER every option using an #{agent_*} token:\n  %s\n' \
+               "$conf" "$(cockpit_conf_line "$DIR")" >&2
     fi
 fi
 
