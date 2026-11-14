@@ -4272,7 +4272,9 @@ is "the line for a folder with a newline and a blank in its name is one line, an
 # Without scripts/lib/confline.sh both scripts stop where they source it, before a step.
 mkdir -p "$CL/p/nolib/scripts/lib" "$CL/h12/bin"
 cp "$DIR/bootstrap.sh" "$DIR/install.sh" "$CL/p/nolib/"
-ln -s "$DIR/scripts/lib/vnum.sh" "$CL/p/nolib/scripts/lib/vnum.sh"
+for cl_f in "$DIR"/scripts/lib/*; do      # every other lib is there: only this one stops it
+    [ "${cl_f##*/}" = confline.sh ] || ln -s "$cl_f" "$CL/p/nolib/scripts/lib/${cl_f##*/}"
+done
 cl_out=$( cd "$CL/wd" && cl_env 12 "$CL/p/nolib/bootstrap.sh" --yes ); cl_n=$?
 is "bootstrap.sh without confline.sh: exit 1, and no step was started" "1|0" \
    "$cl_n|$(printf '%s\n' "$cl_out" | grep -c '^== ')"
