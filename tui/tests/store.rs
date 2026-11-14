@@ -255,7 +255,12 @@ fn a_malformed_or_empty_file_reads_as_none() {
     let d = scratch("malformed");
     let s = local(&d);
     s.put_if_revision(&key("seed"), &json!(0), None).unwrap();
-    let big = format!("cockpit-store 1\nrev 1\n\"{}\"\n", "x".repeat(FILE_MAX as usize));
+    // A whole record of exactly FILE_MAX bytes, then one more: a read that cut at
+    // FILE_MAX would take the record and miss the size check.
+    let head = "cockpit-store 1\nrev 1\n\"";
+    let mut big = format!("{head}{}\"\n", "x".repeat(FILE_MAX as usize - head.len() - 2));
+    assert_eq!(big.len() as u64, FILE_MAX);
+    big.push('x');
     let deep = format!("cockpit-store 1\nrev 1\n{}{}\n", "[".repeat(200), "]".repeat(200));
     let rows: [(&str, &[u8]); 13] = [
         ("empty", b""),
@@ -274,10 +279,12 @@ fn a_malformed_or_empty_file_reads_as_none() {
     ];
     for (name, body) in rows {
         std::fs::write(s.path(&key(name)), body).unwrap();
-        assert_eq!(s.get(&key(name)), None, "row {name}");
+        assert_eq!(s.get(&key(name)).map(|(_, r)| r), None, "row {name}");
     }
     std::fs::write(s.path(&key("control")), b"cockpit-store 1\nrev 7\n{\"a\":1}\n").unwrap();
     assert_eq!(s.get(&key("control")), Some((json!({"a": 1}), Revision(7))), "row control");
+    std::fs::write(s.path(&key("at-max")), &big[..FILE_MAX as usize]).unwrap();
+    assert_eq!(s.get(&key("at-max")).map(|(_, r)| r), Some(Revision(1)), "row at-max");
 }
 
 #[test]
