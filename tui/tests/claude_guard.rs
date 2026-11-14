@@ -84,6 +84,38 @@ fn ended(mut child: std::process::Child, what: &str) -> std::process::Output {
     child.wait_with_output().unwrap()
 }
 
+/// The signals the rows send to the runner or have a stand-in send itself.
+/// A process starts with its parent's ignored signals and signal mask, and a
+/// shell cannot trap a signal ignored when it started: a suite started with
+/// `&` from a script ignores INT and QUIT, one under nohup HUP, and bash
+/// keeps a mask that dash clears. KILL can be neither ignored nor blocked.
+const SENT: [libc::c_int; 7] = [
+    libc::SIGHUP,
+    libc::SIGINT,
+    libc::SIGQUIT,
+    libc::SIGTERM,
+    libc::SIGUSR1,
+    libc::SIGABRT,
+    libc::SIGSEGV,
+];
+
+/// Run between fork and exec: each signal of [`SENT`] at its default action
+/// and unblocked, so a row measures the runner and not how the suite was
+/// started (#1044).
+fn at_default() -> std::io::Result<()> {
+    // SAFETY: signal, sigemptyset, sigaddset and sigprocmask are async-signal-safe.
+    unsafe {
+        let mut set: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut set);
+        for s in SENT {
+            libc::signal(s, libc::SIG_DFL);
+            libc::sigaddset(&mut set, s);
+        }
+        libc::sigprocmask(libc::SIG_UNBLOCK, &set, std::ptr::null_mut());
+    }
+    Ok(())
+}
+
 struct Rig(Scratch);
 
 impl Rig {
@@ -119,11 +151,15 @@ impl Rig {
         self.command_of(Path::new(RUNNER))
     }
 
-    /// The rig's environment for `program`, the runner or a copy of it.
+    /// The rig's environment for `program`, the runner or a copy of it, with
+    /// the signals of [`SENT`] at their default.
     fn command_of(&self, program: &Path) -> Command {
+        use std::os::unix::process::CommandExt;
         let mut c = Command::new(program);
         c.env_clear().env("PATH", self.path()).env("TMPDIR", self.0.join("tmp"));
         c.env("RUNNER", RUNNER).stdin(Stdio::null());
+        // SAFETY: at_default makes only async-signal-safe calls and allocates nothing.
+        unsafe { c.pre_exec(at_default) };
         c
     }
 
@@ -603,6 +639,29 @@ fn a_signal_to_the_runner_waits_for_the_binary_and_its_log() {
     for signal in [libc::SIGTERM, libc::SIGHUP, libc::SIGINT] {
         assert_eq!(sent_to_the_runner(signal), (Some(signal), true, 0), "signal {signal}");
     }
+}
+
+/// The row above, in this binary started again with INT and HUP ignored, as
+/// `&` from a script and nohup hand them down. The rig's reset is what holds
+/// it (#1044). The inner run must name one passed row: a renamed row runs none.
+#[test]
+fn the_signal_row_holds_in_a_binary_handed_an_ignored_int_and_hup() {
+    use std::os::unix::process::CommandExt;
+    let mut c = Command::new(std::env::current_exe().unwrap());
+    c.args(["--exact", "a_signal_to_the_runner_waits_for_the_binary_and_its_log"]);
+    c.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    // SAFETY: signal is async-signal-safe and allocates nothing.
+    unsafe {
+        c.pre_exec(|| {
+            libc::signal(libc::SIGINT, libc::SIG_IGN);
+            libc::signal(libc::SIGHUP, libc::SIG_IGN);
+            Ok(())
+        })
+    };
+    let out = ended(c.spawn().unwrap(), "this binary, started again");
+    let said = String::from_utf8_lossy(&out.stdout);
+    let one_passed = said.contains(" 1 passed; 0 failed");
+    assert_eq!((out.status.code(), one_passed), (Some(0), true), "{said}");
 }
 
 /// QUIT is the keyboard's other one, ctrl and backslash. The start is still reported and
