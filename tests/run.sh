@@ -226,6 +226,11 @@ unset REVDIFF_CONFIG REVDIFF_EXCLUDE CLAUDE_CODE_SESSION_KIND
 # commands, set-option among them, to whatever the caller's names: "tmux -L work" is a
 # documented use. Unset, the board runs the tmux on PATH, which is the suite's shim.
 unset COCKPIT_TMUX
+# The claude the panel runs, past PATH: the suite's stub is first on PATH (#982), and a
+# caller's COCKPIT_CLAUDE would be run in its place, with a real model call if it is the
+# real one. And the file a board writes its action to, which a board reads as "I was
+# started by a wrapper": with a caller's, a row that starts a bare board reads otherwise.
+unset COCKPIT_CLAUDE COCKPIT_ACTION
 # The suite never runs the real VS Code (#350). Under WSL the Windows PATH brings
 # its code(1) in, and with the private HOME it installs a fresh ~/.vscode-server
 # (639 MB) and can open the owner's editor. So: no /mnt/<drive> entry on PATH, and
@@ -10609,7 +10614,7 @@ echo "== the suite sees none of its caller's folders, log, editors or switches (
 for cv in XDG_STATE_HOME XDG_CONFIG_HOME XDG_BIN_HOME XDG_CACHE_HOME XDG_DATA_HOME COCKPIT_LOG \
         VISUAL EDITOR COCKPIT_READONLY COCKPIT_PANEL_NOTE COCKPIT_REVIEW_BASE COCKPIT_PROC_DIR \
         COCKPIT_POLL_KEY REVDIFF_CONFIG REVDIFF_EXCLUDE CLAUDE_CODE_SESSION_KIND \
-        COCKPIT_TMUX; do
+        COCKPIT_TMUX COCKPIT_CLAUDE COCKPIT_ACTION; do
     is "$cv is not in the suite's environment" "unset" "${!cv-unset}"
 done
 unset cv
@@ -10617,8 +10622,8 @@ unset cv
 echo "== nothing of the caller's is written or run, canaries in its environment (#1078) =="
 # The block above and the blocks that wrote into a caller's folders, through only.sh, with
 # every one of those variables set as a caller might have it: a canary folder each for the
-# five XDG ones, a canary log, stub editors and a stub tmux that only leave a mark, a value
-# in each switch.
+# five XDG ones, a canary log, stub editors, a stub tmux and a stub claude that only leave
+# a mark, a value in each switch.
 # CI's environment has none of them, so this is the run that meets them there. One row per
 # variable, so a red one names it.
 CW=$(mktmpd); mkdir -p "$CW/s" "$CW/c"
@@ -10629,8 +10634,12 @@ for cw in visual editor; do
     chmod +x "$CW/c/$cw"
 done
 # The caller's COCKPIT_TMUX: it reaches no server, and exits 1 as a tmux with none does.
-printf '#!/bin/sh\necho ran >> %s\nexit 1\n' "$(tq "$CW/c/tmux.ran")" > "$CW/c/tmux"
-chmod +x "$CW/c/tmux"
+# Their COCKPIT_CLAUDE: a stub by its full path, which calls no model.
+for cw in tmux claude; do
+    printf '#!/bin/sh\necho ran >> %s\nexit 1\n' "$(tq "$CW/c/$cw.ran")" > "$CW/c/$cw"
+    chmod +x "$CW/c/$cw"
+done
+: > "$CW/c/act"
 cw_ls() { ( cd "$CW/c/$1" && find . | sort | tr '\n' ' '; cat seed ); }
 # The nested socket is $CW/s/tmux-<uid>/cockpit-suite-<pid>: past 107 bytes no server binds.
 if [ $((${#CW} + ${#UID} + 30)) -gt 107 ]; then
@@ -10644,7 +10653,7 @@ cwo=$(cd "$DIR" && env -u TMUX TMUX_TMPDIR="$CW/s" \
     COCKPIT_PANEL_NOTE="$CW/c/note" \
     COCKPIT_REVIEW_BASE=canary COCKPIT_PROC_DIR="$CW/c/proc" COCKPIT_POLL_KEY=canary \
     REVDIFF_CONFIG="$CW/c/revdiff" REVDIFF_EXCLUDE=canary CLAUDE_CODE_SESSION_KIND=canary \
-    COCKPIT_TMUX="$CW/c/tmux" \
+    COCKPIT_TMUX="$CW/c/tmux" COCKPIT_CLAUDE="$CW/c/claude" COCKPIT_ACTION="$CW/c/act" \
     tests/only.sh "^the suite sees none of its caller|^install\.sh --check: one row|$(:
         )^install\.sh --hooks merges additively|^cockpit-panel: a tap in the popup|$(:
         )^tmux-open-path --folder|^tm: the kill picker|^cockpit-tui: --json names every|$(:
@@ -10674,6 +10683,10 @@ is "COCKPIT_PANEL_NOTE: the suite did not see it, and the caller's file was not 
 # it would run no stub; the first half of the row is what holds there.
 is "COCKPIT_TMUX: the suite did not see it, and the caller's tmux was not run" "1 not run" \
    "$(cw_unseen COCKPIT_TMUX) $([ -e "$CW/c/tmux.ran" ] && echo ran || echo 'not run')"
+is "COCKPIT_CLAUDE: the suite did not see it, and the caller's claude was not run" "1 not run" \
+   "$(cw_unseen COCKPIT_CLAUDE) $([ -e "$CW/c/claude.ran" ] && echo ran || echo 'not run')"
+is "COCKPIT_ACTION: the suite did not see it, and the caller's file is empty" "1 0" \
+   "$(cw_unseen COCKPIT_ACTION) $(wc -c < "$CW/c/act" | tr -d ' ')"
 for cw in COCKPIT_READONLY COCKPIT_REVIEW_BASE COCKPIT_PROC_DIR \
         COCKPIT_POLL_KEY REVDIFF_CONFIG REVDIFF_EXCLUDE CLAUDE_CODE_SESSION_KIND; do
     is "$cw: the suite did not see it" "1" "$(cw_unseen "$cw")"

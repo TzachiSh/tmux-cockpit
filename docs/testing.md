@@ -49,8 +49,8 @@ The suite drops what its caller's environment could hand to a script under test:
 `XDG_DATA_HOME`, `COCKPIT_LOG`, `VISUAL`, `EDITOR`, and the switches
 `COCKPIT_READONLY`, `COCKPIT_PANEL_NOTE`, `COCKPIT_REVIEW_BASE`,
 `COCKPIT_PROC_DIR`, `COCKPIT_POLL_KEY`, `REVDIFF_CONFIG`, `REVDIFF_EXCLUDE`,
-`CLAUDE_CODE_SESSION_KIND` and `COCKPIT_TMUX` (#1078). A block that needs one
-sets it itself.
+`CLAUDE_CODE_SESSION_KIND`, `COCKPIT_TMUX`, `COCKPIT_CLAUDE` and
+`COCKPIT_ACTION` (#1078). A block that needs one sets it itself.
 Before that fix a run from a shell that exported them wrote there. If you ran
 the suite that way, you may find three symlinks in your `XDG_BIN_HOME`, `tm`,
 `tmux-branch` and `tmux-open-path`, pointing into the checkout you tested (your
@@ -61,7 +61,9 @@ in the file `COCKPIT_LOG` names. All three are safe to remove. With
 server that value names: they listed its panes and added `wait-for` entries to
 its global `@cockpit_board_wake` option. A board takes its own entry out when it
 exits; one that was killed leaves an entry that signals a channel nobody waits
-on. A run without
+on. With `COCKPIT_CLAUDE` exported, one panel block ran the program it names as
+`claude -p`, with the test pane's text: a model call, if it was the real one. A
+run without
 those variables exported left nothing: everything went under the suite's own
 `HOME`, which it deletes.
 
