@@ -18197,7 +18197,9 @@ il_load() {                   # <n> <HOME's folder name> <example config> -> bin
         ln -s "$DIR" "$h/.tmux/plugins/tmux-cockpit"
     ( cd "$ILD/wd" && HOME="$h" exec "$TMUX_REAL" -L "$s" -f /dev/null new-session -d -s t \
         -c "$ILD/wd" 'exec sleep 300' ) >/dev/null 2>&1
-    "$TMUX_REAL" -L "$s" source-file "$DIR/examples/$3" >/dev/null 2>&1
+    # From the block's own folder: what a bare line runs out of the path, it runs in the
+    # cwd of the client that sourced the config, and the last row looks for it here.
+    ( cd "$ILD/wd" && exec "$TMUX_REAL" -L "$s" source-file "$DIR/examples/$3" ) >/dev/null 2>&1
     until_out '?*' "$TMUX_REAL" -L "$s" show-option -gqv @cockpit_agents >/dev/null
     a=$("$TMUX_REAL" -L "$s" show-option -gqv @cockpit_agents 2>/dev/null)
     printf '%s|%s' "$("$TMUX_REAL" -L "$s" list-keys -T prefix w 2>/dev/null |
