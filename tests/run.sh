@@ -9116,15 +9116,47 @@ echo "== tests/par.sh: each shard says when it starts and ends, so a stalled one
 # their own TMPDIR, which every process they start inherits: the leftover count reads it.
 PSROOT=$(mktmpd); mkdir -p "$PSROOT/tests" "$PSROOT/t"
 cp "$DIR/tests/par.sh" "$PSROOT/tests/par.sh"
-# The sandbox's prelude is this script's, with one line more: the shard that runs ps5 takes a
-# second at the top of its cleanup. A run ended while a shard is there (or while its server is
-# still starting) leaves that shard's server, since no trap covers either moment (#900, #1006):
-# the ended run below must wait for every other shard, and this makes a missing wait leave 2.
+# The sandbox's servers get a socket folder of their own, so what a run leaves is found and
+# ended there, by folder: no /proc is needed, a dead socket file is seen as well as a live
+# server, and the default folder takes nothing from this block (#1032). A socket path past
+# 107 bytes binds nowhere: under so long a TMPDIR the sandbox keeps the default folder, the
+# rows that read the folder are skipped, and what a red row left is found through /proc.
+PSS="$PSROOT/s"; ps_env=(TMPDIR="$PSROOT/t" TMUX_TMPDIR="$PSS")
+if [ $((${#PSS} + ${#UID} + 30)) -gt 107 ]; then PSS=""; ps_env=(TMPDIR="$PSROOT/t")
+else mkdir -p "$PSS"
+fi
+# The sandbox's prelude is this script's, with four changes.
+# One line more in cleanup: the shard that runs ps5 takes a second at its top. A run ended
+# while a shard is there (or while its server is still starting) leaves that shard's server,
+# since no trap covers either moment (#900, #1006): the ended run below must wait for every
+# other shard, and this makes a missing wait leave 2.
+# Its pane watches this run's pid, not its own shard's. With its own, a server left behind
+# ends by itself inside a second, and the waits, the hold, the count and the cleanup below
+# could not turn a row red on any box whose tail takes --pid (#1032). With this run's, such
+# a server stays for the rows to count, and still ends with this run when the run is ended
+# from outside in the middle of the block, where no cleanup of this block's can reach: the
+# sandbox is a process group of its own, and this run's cleanup removes the socket folder
+# (#1035). Where tail has no --pid the pane is the prelude's fallback sleep, cut to five
+# minutes for the same reason: a sandbox run takes seconds.
+# And each server writes down where its socket is.
 Q='"'
-awk -v h="    ! grep -q '^echo ${Q}== ps5: ' ${Q}\$0${Q} || sleep 1" \
-    '/^echo "== /{exit} {print} /^cleanup\(\) \{$/{print h}' "$DIR/tests/run.sh" \
-    > "$PSROOT/tests/run.sh"
-is "the sandbox's cleanup holds for ps5" "1" "$(grep -c "ps5: ' .* || sleep 1" "$PSROOT/tests/run.sh")"
+ps_rec="${Q}\$TMUX_REAL${Q} -L ${Q}\$SUITE_SOCK${Q} display-message -p '#{socket_path}'"
+awk -v h="    ! grep -q '^echo ${Q}== ps5: ' ${Q}\$0${Q} || sleep 1" -v pid="$$" \
+    -v rec="$ps_rec >> ${Q}\$TMPDIR/socks${Q}" '
+    /^echo "== /{exit}
+    /^    SUITE_PANE="exec -a claude tail --pid=\$\$ -f / { sub(/--pid=\$\$/, "--pid=" pid) }
+    /^else SUITE_PANE=.exec -a claude sleep 14400.$/ { sub(/14400/, "300") }
+    {print}
+    /^cleanup\(\) \{$/{print h}
+    /^"\$TMUX_REAL" -L "\$SUITE_SOCK" set -g @cockpit_bg_poll off >\/dev\/null 2>&1$/{print rec}
+' "$DIR/tests/run.sh" > "$PSROOT/tests/run.sh"
+is "the sandbox's cleanup holds for ps5" "1" \
+   "$(grep -c "ps5: ' .* || sleep 1" "$PSROOT/tests/run.sh")"
+is "the sandbox's pane watches this run's pid, and its fallback sleep is five minutes" "1 1" \
+   "$(grep -c "^    SUITE_PANE=${Q}exec -a claude tail --pid=$$ -f " "$PSROOT/tests/run.sh") $(
+      grep -c "^else SUITE_PANE='exec -a claude sleep 300'\$" "$PSROOT/tests/run.sh")"
+is "and its servers say where their socket is" "1" \
+   "$(grep -c "socket_path}' >> " "$PSROOT/tests/run.sh")"
 {
     printf 'echo %s== ps1: solo ==%s\n' "$Q" "$Q"
     printf 'is "ps1" 1 1\n\n'
@@ -9149,12 +9181,20 @@ cp "$PSROOT/tests/run.sh" "$PSROOT/tests/run.green"
     # must wait for that, and a count read at once sees it (#900).
     printf ': > "$TMPDIR/ps3.in"; trap %ssleep 1; exit 0%s TERM; sleep 287 & wait $!\n' "$Q" "$Q"
 } >> "$PSROOT/tests/run.sh"
-ps_left() {                   # the processes still carrying the sandbox's TMPDIR
-    local p n=0
+ps_live() {                   # the sandbox's sockets a server still answers on, one a line
+    local f
+    [ -n "$PSS" ] || return 0
+    for f in "$PSS"/tmux-*/*; do
+        [ -S "$f" ] && "$TMUX_REAL" -S "$f" list-sessions >/dev/null 2>&1 && printf '%s\n' "$f"
+    done
+}
+ps_left() {                   # the processes still carrying the sandbox's TMPDIR; where
+    local p n=0               # /proc shows none, the servers still answering in its folder
     for p in /proc/[0-9]*; do
         tr '\0' '\n' 2>/dev/null < "$p/environ" | grep -qxF "TMPDIR=$PSROOT/t" && n=$((n + 1))
     done
-    printf '%s' "$n"
+    [ "$n" != 0 ] || n=$(ps_live | wc -l)
+    printf '%s' "$((n))"
 }
 # The run's processes take their TERM, then exit: a count read once, right after the wait,
 # raced them (#900). So: polled until none is left, bounded by POLLS. A leftover past that is
@@ -9170,14 +9210,26 @@ ps_settle() {                 # -> 0, or "<count>:" and each leftover
         printf ' [%s %s %s]' "${p#/proc/}" "$(cat "$p/comm" 2>/dev/null)" \
             "$(tr '\0' ' ' 2>/dev/null < "$p/cmdline")"
     done
+    printf ' sockets answering: %s' "$(ps_live | wc -l)"
 }
-# A red leftover row leaves a server and its pane; where tail has no --pid they would stay for
-# the pane's four hours (#1012). Each is ended here by its own socket, the last -L of its
-# argv when that is a suite's name, never by a pid, and the socket file a killed server
-# leaves is removed. It reads /proc/<pid>/environ, as ps_settle does: on a box without it
-# both see nothing, so the box this reaches is a Linux one whose tail has no --pid.
+# What a run left in the sandbox's socket folder, live or dead: the rows want none, and then
+# each is ended by its own socket, never by a pid, and its file removed (#1012, #1032). On
+# the fallback pane a server left behind would otherwise stay for that pane's four hours.
+ps_socks() {
+    [ -z "$PSS" ] || ( cd "$PSS" 2>/dev/null && ls -A tmux-*/ 2>/dev/null | tr '\n' ' ' )
+}
 ps_end() {
-    local p c a n d
+    local f p c a n d
+    if [ -n "$PSS" ]; then
+        for f in "$PSS"/tmux-*/*; do
+            [ -S "$f" ] || continue
+            "$TMUX_REAL" -S "$f" kill-server >/dev/null 2>&1
+            rm -f -- "$f"
+        done
+        return 0
+    fi
+    # No folder of its own (the long TMPDIR above): the servers carrying the sandbox's TMPDIR,
+    # each by the last -L of its argv when that is a suite's name (#1012).
     for p in /proc/[0-9]*; do
         tr '\0' '\n' 2>/dev/null < "$p/environ" | grep -qxF "TMPDIR=$PSROOT/t" || continue
         c=""; read -r c 2>/dev/null < "$p/comm"; [ "$c" = "tmux: server" ] || continue
@@ -9196,7 +9248,7 @@ ps_end() {
 # cleanup when the TERM lands can leave its server, and the two leftover rows then read 2
 # (#900: 12 of 650 such runs with one end line awaited, 0 of 650 with all four). Each wait is
 # bounded; past the bound the rows go on and ps_settle names what is left.
-( cd "$PSROOT" && exec env -u PAR_BLOCKS TMPDIR="$PSROOT/t" J=3 \
+( cd "$PSROOT" && exec env -u PAR_BLOCKS "${ps_env[@]}" J=3 \
     timeout 60 tests/par.sh ) </dev/null >/dev/null 2>"$PSROOT/hung.err" & ps_to=$!
 until_out '?*' ls "$PSROOT/t/ps3.in"
 for ps_s in 0001 0002 0004 0005; do
@@ -9205,6 +9257,7 @@ done
 # How many of the four end lines were in when the TERM went: a red leftover row says it, so
 # a log tells a wait that ran out (fewer than 4) from a server left with all four in (#1012).
 ps_in=$(grep -cE '^par\.sh: shard 000[1245] end rc=0$' "$PSROOT/hung.err")
+is "every other shard's end line was in when the TERM went" "4" "$ps_in"
 ps_c=""; read -r ps_c 2>/dev/null < "/proc/$ps_to/comm"
 [ "$ps_c" != timeout ] || kill -TERM "$ps_to" 2>/dev/null
 wait "$ps_to" 2>/dev/null
@@ -9216,10 +9269,13 @@ is "a shard that finished has both, with its status" "1 1" \
       grep -c '^par\.sh: shard 0001 end rc=0$' "$PSROOT/hung.err")"
 ps_got=$(ps_settle); [ "$ps_got" = 0 ] || ps_got="$ps_got; end lines in at the TERM: $ps_in of 4"
 is "nothing the ended run started is left" "0" "$ps_got"
-[ "$ps_got" = 0 ] || ps_end
+if [ -z "$PSS" ]; then skip_ "the ended run's socket folder (the socket path would pass 107 bytes)"
+else is "and no socket of it, live or dead, is in the sandbox's folder" "" "$(ps_socks)"
+fi
+ps_end
 # A green run: the counts are what they were, and no new line reads as a row.
 cp "$PSROOT/tests/run.green" "$PSROOT/tests/run.sh"
-( cd "$PSROOT" && env -u PAR_BLOCKS TMPDIR="$PSROOT/t" J=3 tests/par.sh ) \
+( cd "$PSROOT" && env -u PAR_BLOCKS "${ps_env[@]}" J=3 tests/par.sh ) \
     </dev/null >"$PSROOT/green.out" 2>"$PSROOT/green.err"
 is "a green run counts its rows as before" "5 passed, 0 failed, 0 skipped" \
    "$(grep -oE '[0-9]+ passed, [0-9]+ failed, [0-9]+ skipped' "$PSROOT/green.out")"
@@ -9242,8 +9298,18 @@ is "the row pattern finds the green run's rows and its count" "6" \
 is "no new line reads as a row or a count" "0" "$(grep -cE "$ps_row" "$PSROOT/green.err")"
 ps_got=$(ps_settle)
 is "nor is left behind" "0" "$ps_got"
-[ "$ps_got" = 0 ] || ps_end
-unset -f ps_left ps_settle ps_end; unset PSROOT Q ps_to ps_c ps_row ps_s ps_in ps_got
+if [ -z "$PSS" ]; then skip_ "the green run's socket folder (the socket path would pass 107 bytes)"
+else
+    is "nor a socket, live or dead" "" "$(ps_socks)"
+    # 5 shards in the ended run and 4 in the green one, a server each. tmux resolves the
+    # folder before it binds, so the lines are held against the resolved name.
+    is "every server of both runs had its socket in the sandbox's folder: 9, none elsewhere" \
+       "9 " "$(wc -l < "$PSROOT/t/socks" | tr -d ' ') $(
+          grep -vF "$(cd "$PSS" && pwd -P)/" "$PSROOT/t/socks" | tr '\n' ' ')"
+fi
+ps_end
+unset -f ps_live ps_left ps_settle ps_socks ps_end
+unset PSROOT PSS ps_env ps_rec Q ps_to ps_c ps_row ps_s ps_in ps_got
 
 echo "== tests/par.sh: a checkout under a path with a space runs every shard and nothing else (#1007) =="
 # par.sh joined its shard paths into one string and split it again, so a path holding a space
