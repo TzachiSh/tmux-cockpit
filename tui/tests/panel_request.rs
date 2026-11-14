@@ -865,7 +865,7 @@ fn read_dir_ok_refuses_a_link_to_home() {
     let link = rig.dir.join("h");
     std::os::unix::fs::symlink(std::env::var_os("HOME").expect("HOME"), &link).unwrap();
     let why = read_dir_ok(&link).expect_err("a link to home");
-    assert_eq!(said(&why, &link), Some("is your home folder or holds it; refused"));
+    assert_eq!(said(&why, &link), Some("is your home folder or holds it; refused"), "{why}");
 }
 
 /// A project folder passes: under home, under the temp dir, an odd but plain name.
