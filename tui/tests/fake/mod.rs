@@ -287,46 +287,45 @@ pub fn held_pane(sock: &str, dir: &Path, name: &str) -> String {
 
 /// Waits until the pane's own process, on the private server `sock`, has exec'd
 /// `name` (#1056). Not by pane_current_command: while a pane starts, tmux 3.8
-/// reads it as the pane's
-/// argv, then `tmux`, then the shell, then the name, so its first read can
-/// already be `name`. The pane's pid keeps through each exec, and its comm
-/// only moves forward. Red, naming the comm read last, when it never gets there.
-/// The kernel sets comm before the new argv, and an exec's empty cmdline sends
-/// tmux back to the pane's start argv, so the argv tmux reads must agree too.
+/// reads it as the pane's argv, then `tmux`, then the shell, then the name, so
+/// its first read can already be `name`. The pane's pid keeps through each exec.
+/// Two checks: its comm, which only moves forward, and the argv[0] tmux reads,
+/// as the kernel sets comm before the new argv and an exec's empty cmdline sends
+/// tmux back to the pane's start argv. Red, naming both reads last, when it
+/// never gets there.
 #[allow(dead_code)]
 pub fn settle(sock: &str, pane: &str, name: &str) {
     let pid = tmux_on(sock, &["display-message", "-p", "-t", pane, "#{pane_pid}"]);
-    let mut last = String::new();
+    let mut last = (String::new(), None);
     for _ in 0..500 {
-        last = comm(&pid);
-        if last == name {
+        last = names(&pid);
+        let (comm, argv0) = &last;
+        // two checks: comm, then the argv[0] tmux reads, which the kernel sets after it
+        if comm == name && argv0.as_deref().is_none_or(|a| a == name) {
             return;
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    panic!("pane {pane} never ran {name}: its process {pid} read {last:?} last");
+    let (comm, argv0) = last;
+    let last = format!("comm {comm:?}, argv[0] {argv0:?}");
+    panic!("pane {pane} never ran {name}: its process {pid} read {last} last");
 }
 
-/// A process's name: /proc's comm, with the argv[0] tmux reads (/proc's cmdline)
-/// added when the two differ; else `ps` where there is no /proc (macOS prints a path).
+/// What [`settle`] reads of a process: its comm, and the last path part of the
+/// argv[0] in the cmdline tmux names a pane by. Where there is no /proc, `ps`
+/// gives one name (macOS prints a path), so there is no argv[0] to check: `None`.
 #[allow(dead_code)]
-fn comm(pid: &str) -> String {
-    if std::path::Path::new("/proc/self").is_dir() {
+fn names(pid: &str) -> (String, Option<String>) {
+    if Path::new("/proc/self").is_dir() {
         let comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).unwrap_or_default();
         let argv = std::fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
-        let argv0 = argv.split(|b| *b == 0).next().unwrap_or_default();
-        let argv0 = String::from_utf8_lossy(argv0).to_string();
-        let base = argv0.rsplit('/').next().unwrap_or_default();
-        let comm = comm.trim_end();
-        return if base == comm {
-            comm.to_string()
-        } else {
-            format!("{comm} (argv[0] {argv0:?})")
-        };
+        let argv0 = String::from_utf8_lossy(argv.split(|b| *b == 0).next().unwrap_or_default());
+        let base = argv0.rsplit('/').next().unwrap_or_default().to_string();
+        return (comm.trim_end().to_string(), Some(base));
     }
     let out = std::process::Command::new("ps").args(["-o", "comm=", "-p", pid]).output();
     let c = out
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .unwrap_or_default();
-    c.rsplit('/').next().unwrap_or_default().to_string()
+    (c.rsplit('/').next().unwrap_or_default().to_string(), None)
 }
