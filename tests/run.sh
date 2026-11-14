@@ -2895,6 +2895,12 @@ tmfline=$(grep '^attach-session' "$TMF_LOG" 2>/dev/null | head -1)
 is "tm attaches with -d so the newest client takes the session" \
     "attach-session -d -t \$4" "$tmfline"
 rm -rf "$TMF"
+# A socket of a given name left in a folder: the file is looked at, and no tmux call is
+# made. The last row asks this of /tmp/tmux-<uid>, which may hold the user's own server,
+# and a tmux call there is one a guard on PATH refuses, which read as "none" (#1092).
+tc_left() { [ -S "$1/$2" ] && echo left || echo none; }   # <folder> <socket name>
+is "tc_left sees the block's own socket while its server is up, and none of another name" \
+   "left none" "$(tc_left "$SOCKDIR" "$TC") $(tc_left "$SOCKDIR" "$TC-none")"
 "$TMUX_REAL" -L "$TCO" kill-server >/dev/null 2>&1
 "$TMUX_REAL" -L "$TC" kill-server >/dev/null 2>&1
 # tm found the server through a hardcoded /tmp path: under TMUX_TMPDIR it started a second
@@ -2902,7 +2908,7 @@ rm -rf "$TMF"
 # either path once the block is done.
 tc_up() { "$TMUX_REAL" -S "$1" has-session 2>/dev/null && echo up || echo none; }
 is "no server is left on the block's socket, in SOCKDIR or in /tmp" "none none" \
-   "$(tc_up "$SOCKDIR/$TC") $(tc_up "/tmp/tmux-$(id -u)/$TC")"
+   "$(tc_up "$SOCKDIR/$TC") $(tc_left "/tmp/tmux-$(id -u)" "$TC")"
 fi
 
 echo "== tmux-branch: local and remote branches =="
