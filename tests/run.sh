@@ -211,6 +211,17 @@ unset VSCODE_IPC_HOOK_CLI
 # server a block starts would inherit it, and a script run there before the block loads its
 # own copy would be the live one's (#1073).
 unset TMUX_COCKPIT_DIR
+# What else a caller's environment can hand to a script under test (#1078). The scripts read
+# each folder as ${XDG_…:-$HOME/…}, so unset they stay under HOME, the suite's own or the
+# one a block sets for its box. Left set, install.sh linked tm into the caller's
+# XDG_BIN_HOME, the panel wrote its prompts under their XDG_CACHE_HOME, a dozen blocks
+# wrote to their COCKPIT_LOG and tmux-open-path ran their VISUAL. A block that wants one
+# sets it itself.
+unset XDG_STATE_HOME XDG_CONFIG_HOME XDG_BIN_HOME XDG_CACHE_HOME XDG_DATA_HOME
+unset COCKPIT_LOG VISUAL EDITOR
+# Switches: each changes what a script does, and so a row's verdict.
+unset COCKPIT_READONLY COCKPIT_PANEL_NOTE COCKPIT_REVIEW_BASE COCKPIT_PROC_DIR COCKPIT_POLL_KEY
+unset REVDIFF_CONFIG REVDIFF_EXCLUDE CLAUDE_CODE_SESSION_KIND
 # The suite never runs the real VS Code (#350). Under WSL the Windows PATH brings
 # its code(1) in, and with the private HOME it installs a fresh ~/.vscode-server
 # (639 MB) and can open the owner's editor. So: no /mnt/<drive> entry on PATH, and
@@ -10488,6 +10499,70 @@ for nbs in "$NBS"/s/tmux-*/*; do
 done
 fi
 unset NBS nbo nbrc nbs
+
+echo "== the suite sees none of its caller's folders, log, editors or switches (#1078) =="
+for cv in XDG_STATE_HOME XDG_CONFIG_HOME XDG_BIN_HOME XDG_CACHE_HOME XDG_DATA_HOME COCKPIT_LOG \
+        VISUAL EDITOR COCKPIT_READONLY COCKPIT_PANEL_NOTE COCKPIT_REVIEW_BASE COCKPIT_PROC_DIR \
+        COCKPIT_POLL_KEY REVDIFF_CONFIG REVDIFF_EXCLUDE CLAUDE_CODE_SESSION_KIND; do
+    is "$cv is not in the suite's environment" "unset" "${!cv-unset}"
+done
+unset cv
+
+echo "== nothing of the caller's is written or run, canaries in its environment (#1078) =="
+# The block above and the blocks that wrote into a caller's folders, through only.sh, with
+# every one of those variables set as a caller might have it: a canary folder each for the
+# five XDG ones, a canary log, stub editors that only leave a mark, a value in each switch.
+# CI's environment has none of them, so this is the run that meets them there. One row per
+# variable, so a red one names it.
+CW=$(mktmpd); mkdir -p "$CW/s" "$CW/c"
+for cw in state config bin cache data; do mkdir -p "$CW/c/$cw"; echo seed > "$CW/c/$cw/seed"; done
+: > "$CW/c/log"
+for cw in visual editor; do
+    printf '#!/bin/sh\necho ran >> %s\nexit 0\n' "$(tq "$CW/c/$cw.ran")" > "$CW/c/$cw"
+    chmod +x "$CW/c/$cw"
+done
+cw_ls() { ( cd "$CW/c/$1" && find . | sort | tr '\n' ' '; cat seed ); }
+# The nested socket is $CW/s/tmux-<uid>/cockpit-suite-<pid>: past 107 bytes no server binds.
+if [ $((${#CW} + ${#UID} + 30)) -gt 107 ]; then
+    skip_ "canaries in the caller's environment (TMPDIR too long for the nested socket path)"
+else
+for cw in state config bin cache data; do cw_ls "$cw" > "$CW/$cw.before"; done
+cwo=$(cd "$DIR" && env -u TMUX TMUX_TMPDIR="$CW/s" \
+    XDG_STATE_HOME="$CW/c/state" XDG_CONFIG_HOME="$CW/c/config" XDG_BIN_HOME="$CW/c/bin" \
+    XDG_CACHE_HOME="$CW/c/cache" XDG_DATA_HOME="$CW/c/data" COCKPIT_LOG="$CW/c/log" \
+    VISUAL="$CW/c/visual" EDITOR="$CW/c/editor" COCKPIT_READONLY=1 COCKPIT_PANEL_NOTE=canary \
+    COCKPIT_REVIEW_BASE=canary COCKPIT_PROC_DIR="$CW/c/proc" COCKPIT_POLL_KEY=canary \
+    REVDIFF_CONFIG="$CW/c/revdiff" REVDIFF_EXCLUDE=canary CLAUDE_CODE_SESSION_KIND=canary \
+    tests/only.sh "^the suite sees none of its caller|^install\.sh --check: one row|$(:
+        )^install\.sh --hooks merges additively|^cockpit-panel: a tap in the popup|$(:
+        )^tmux-open-path --folder|^tm: the kill picker|^cockpit-tui: --json names every|$(:
+        )^cockpit-board: x asks first" 2>&1 </dev/null); cwrc=$?
+is "the blocks that wrote there, run under the canaries: exit 0, no row failed" "0 0" \
+   "$cwrc $(printf '%s\n' "$cwo" | grep -c 'FAIL')"
+cw_unseen() {                 # <variable> -> 1 when the nested run's own row for it passed
+    printf '%s\n' "$cwo" | grep -c "PASS[^ ]* $1 is not in the suite's environment"
+}
+for cw in STATE:state CONFIG:config BIN:bin CACHE:cache DATA:data; do
+    is "XDG_${cw%:*}_HOME: the suite did not see it, and its folder is as it was" "1 same" \
+       "$(cw_unseen "XDG_${cw%:*}_HOME") $(cw_ls "${cw#*:}" | cmp -s - "$CW/${cw#*:}.before" &&
+           echo same || echo "changed: $(cw_ls "${cw#*:}")")"
+done
+is "COCKPIT_LOG: the suite did not see it, and the caller's log is empty" "1 0" \
+   "$(cw_unseen COCKPIT_LOG) $(wc -c < "$CW/c/log" | tr -d ' ')"
+for cw in VISUAL:visual EDITOR:editor; do
+    is "${cw%:*}: the suite did not see it, and the caller's editor was not run" "1 not run" \
+       "$(cw_unseen "${cw%:*}") $([ -e "$CW/c/${cw#*:}.ran" ] && echo ran || echo 'not run')"
+done
+for cw in COCKPIT_READONLY COCKPIT_PANEL_NOTE COCKPIT_REVIEW_BASE COCKPIT_PROC_DIR \
+        COCKPIT_POLL_KEY REVDIFF_CONFIG REVDIFF_EXCLUDE CLAUDE_CODE_SESSION_KIND; do
+    is "$cw: the suite did not see it" "1" "$(cw_unseen "$cw")"
+done
+for cw in "$CW"/s/tmux-*/*; do
+    [ -S "$cw" ] && "$TMUX_REAL" -S "$cw" kill-server >/dev/null 2>&1
+done
+fi
+unset -f cw_ls cw_unseen
+unset CW cw cwo cwrc
 
 echo "== a server the suite starts holds no TMUX_COCKPIT_DIR (#1073) =="
 if need_tmux "a server's environment"; then :; else
