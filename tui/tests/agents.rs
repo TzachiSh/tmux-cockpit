@@ -567,6 +567,22 @@ fn the_rows_shells_die_with_no_core_limit() {
     assert_eq!(out.status.signal(), Some(libc::SIGABRT), "{:?}", out.status);
 }
 
+/// #988: a shell whose kill does not end it, here with SIGABRT ignored, exits 134 and
+/// never 0, which cargo would read as a pass.
+#[test]
+fn a_shell_that_outlives_its_kill_exits_134() {
+    use std::os::unix::process::CommandExt;
+    let mut sh = shell(SAY);
+    let ignore = || {
+        // SAFETY: sets an action, no handler.
+        unsafe { libc::signal(libc::SIGABRT, libc::SIG_IGN) };
+        Ok(())
+    };
+    // SAFETY: signal() is async-signal-safe, made between fork and exec.
+    let out = unsafe { sh.pre_exec(ignore) }.output().unwrap();
+    assert_eq!(out.status.code(), Some(134), "{:?}", out.status);
+}
+
 /// #988: with nobody left to read stderr the shell still dies by SIGABRT, as abort()
 /// does, though the exec has set SIGPIPE back to its default.
 #[test]
