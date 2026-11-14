@@ -9140,6 +9140,24 @@ ps_settle() {                 # -> 0, or "<count>:" and each leftover
             "$(tr '\0' ' ' 2>/dev/null < "$p/cmdline")"
     done
 }
+# A red leftover row leaves a server and its pane; where tail has no --pid they would stay for
+# the pane's four hours (#1012). Each is ended here by its own socket, the last -L of its
+# argv when that is a suite's name, never by a pid, and the socket file a killed server
+# leaves is removed. It reads /proc/<pid>/environ, as ps_settle does: on a box without it
+# both see nothing, so the box this reaches is a Linux one whose tail has no --pid.
+ps_end() {
+    local p c a n d
+    for p in /proc/[0-9]*; do
+        tr '\0' '\n' 2>/dev/null < "$p/environ" | grep -qxF "TMPDIR=$PSROOT/t" || continue
+        c=""; read -r c 2>/dev/null < "$p/comm"; [ "$c" = "tmux: server" ] || continue
+        a=$(tr '\0' ' ' 2>/dev/null < "$p/cmdline")
+        n=$(printf '%s\n' "$a" | grep -oE -- '-L [^ ]+ ' | tail -n 1)
+        n=${n#-L }; n=${n% }; [[ $n =~ ^cockpit-suite-[0-9]+$ ]] || continue
+        d=$(tr '\0' '\n' 2>/dev/null < "$p/environ" | sed -n 's/^TMUX_TMPDIR=//p')
+        "$TMUX_REAL" -S "${d:-/tmp}/tmux-$(id -u)/$n" kill-server >/dev/null 2>&1
+        rm -f -- "${d:-/tmp}/tmux-$(id -u)/$n"
+    done
+}
 # The run with a shard that never ends: once that shard is inside its block (past the
 # prelude, whose EXIT trap cleans up) and every other shard's end line is out, it is ended
 # from outside through timeout (whose 60 s is only a backstop), which hands the TERM to the
@@ -9153,6 +9171,9 @@ until_out '?*' ls "$PSROOT/t/ps3.in"
 for ps_s in 0001 0002 0004 0005; do
     until_file "$PSROOT/hung.err" "*shard $ps_s end rc=0*"
 done
+# How many of the four end lines were in when the TERM went: a red leftover row says it, so
+# a log tells a wait that ran out (fewer than 4) from a server left with all four in (#1012).
+ps_in=$(grep -cE '^par\.sh: shard 000[1245] end rc=0$' "$PSROOT/hung.err")
 ps_c=""; read -r ps_c 2>/dev/null < "/proc/$ps_to/comm"
 [ "$ps_c" != timeout ] || kill -TERM "$ps_to" 2>/dev/null
 wait "$ps_to" 2>/dev/null
@@ -9162,7 +9183,9 @@ is "and no end line" "0" "$(grep -c '^par\.sh: shard 0006 end' "$PSROOT/hung.err
 is "a shard that finished has both, with its status" "1 1" \
    "$(grep -c '^par\.sh: shard 0001 start: ps1: solo$' "$PSROOT/hung.err") $(
       grep -c '^par\.sh: shard 0001 end rc=0$' "$PSROOT/hung.err")"
-is "nothing the ended run started is left" "0" "$(ps_settle)"
+ps_got=$(ps_settle); [ "$ps_got" = 0 ] || ps_got="$ps_got; end lines in at the TERM: $ps_in of 4"
+is "nothing the ended run started is left" "0" "$ps_got"
+[ "$ps_got" = 0 ] || ps_end
 # A green run: the counts are what they were, and no new line reads as a row.
 cp "$PSROOT/tests/run.green" "$PSROOT/tests/run.sh"
 ( cd "$PSROOT" && env -u PAR_BLOCKS TMPDIR="$PSROOT/t" J=3 tests/par.sh ) \
@@ -9186,8 +9209,10 @@ ps_row="^  ($ESC\[[0-9;]*m)?(PASS|FAIL|SKIP)|passed,|failed,"
 is "the row pattern finds the green run's rows and its count" "6" \
    "$(grep -cE "$ps_row" "$PSROOT/green.out")"
 is "no new line reads as a row or a count" "0" "$(grep -cE "$ps_row" "$PSROOT/green.err")"
-is "nor is left behind" "0" "$(ps_settle)"
-unset -f ps_left ps_settle; unset PSROOT Q ps_to ps_c ps_row ps_s
+ps_got=$(ps_settle)
+is "nor is left behind" "0" "$ps_got"
+[ "$ps_got" = 0 ] || ps_end
+unset -f ps_left ps_settle ps_end; unset PSROOT Q ps_to ps_c ps_row ps_s ps_in ps_got
 
 echo "== tests/par.sh: a checkout under a path with a space runs every shard and nothing else (#1007) =="
 # par.sh joined its shard paths into one string and split it again, so a path holding a space
@@ -20075,7 +20100,16 @@ until_file "$ACD/done" 'x'
 is "resume: a session live in OPENCODE is not opened twice" \
     "✕ cockpit: ${SID:0:8} is already running in $ACO" "$(cat "$ACD/note" 2>/dev/null)"
 is "the window's claude is the row's own" "$ACD/stub/claude" "$(cat "$ACD/which" 2>/dev/null)"
-is "and no claude was started for it" "" "$(cat "$ACD/stub/ran" 2>/dev/null)"
+# The stub writes its line a moment before or after `done` appears, and a read right at `done`
+# can come first (#1001). A claude started for the resume runs in a pane, by a split or in a
+# window of its own, and that pane closes after the stub's write. So: wait until the server
+# holds its five panes again, an x for each, and no more. The row reads that count too: a
+# wait that ran out means something is still running, and must not pass. The five are
+# written out, not read from the format beforehand: a format that printed nothing would
+# then agree with itself (#1030).
+until_out xxxxx ac display -p '#{S:#{W:#{P:x}}}'
+is "and no claude was started for it" "xxxxx|" \
+    "$(ac display -p '#{S:#{W:#{P:x}}}')|$(cat "$ACD/stub/ran" 2>/dev/null)"
 ac kill-server >/dev/null 2>&1
 unset -f ac ac_pane ac_each ac_wd ac_jump ac_deliver
 
