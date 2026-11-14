@@ -28,8 +28,6 @@ fn ctrl(a: &mut App, c: char) {
 
 /// An ask about src/x.rs:3-5, asked "why a fn?", answered with `reply`.
 fn answered(tag: &str, reply: &str) -> (Dir, App) {
-    // the answer reads the agent list through a plain tmux (#1089)
-    fake::checked_tmux();
     let d = std::env::temp_dir().join(format!("cockpit-panel-prefill-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(d.join(".git")).unwrap();
@@ -121,7 +119,6 @@ fn a_write_from_that_compose_ends_the_thread() {
 /// Flow A only: an Explain's answer has no file and lines to send.
 #[test]
 fn c_on_an_explain_answer_does_nothing() {
-    fake::checked_tmux();
     let mut a = App::new("%3", Capture::default());
     a.view = View::ExplainAsk { sel: 0 };
     key(&mut a, KeyCode::Enter);
@@ -256,10 +253,10 @@ fn the_binary_runs_with_no_tmux_session_of_the_callers() {
     fake::checked_tmux();
 }
 
-/// #1089: started with no TMUX_TMPDIR, no test of this binary reaches the product's
-/// plain `tmux` before it is refused: a stub first on PATH gets no call.
+/// #1089: started with no TMUX_TMPDIR, no test of this binary reaches a plain `tmux`:
+/// the product's own call refuses it, and a stub first on PATH gets no call.
 #[test]
-fn no_test_reaches_tmux_before_its_check() {
-    let calls = fake::unchecked_tmux_calls("no_test_reaches_tmux_before_its_check");
+fn started_bare_no_test_reaches_a_plain_tmux() {
+    let calls = fake::unchecked_tmux_calls("started_bare_no_test_reaches_a_plain_tmux");
     assert_eq!(calls, Vec::<String>::new());
 }

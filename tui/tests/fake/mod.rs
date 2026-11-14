@@ -506,9 +506,9 @@ pub fn run_by_hand(test: &str, set: &[(&str, &str)]) -> (Option<i32>, String) {
 /// What a plain `tmux` got from this binary's tests, every test but `skip`, started by
 /// hand with no TMUX_TMPDIR, as on a target with no runner key (#1090) or with the
 /// claude guard at 0: one argv per call, from a stub `tmux` first on PATH that exits 1
-/// and opens no socket. A test that reaches the product's plain tmux before any check
-/// shows here. Started that way for real, its tmux would reach the default socket in
-/// /tmp/tmux-<uid>, beside the caller's server (#1066).
+/// and opens no socket. A plain tmux that gets past the product's own refusal
+/// (`data::tmux`, #1089) shows here. Started that way for real, it would reach the
+/// default socket in /tmp/tmux-<uid>, beside the caller's server (#1066).
 #[allow(dead_code)]
 pub fn unchecked_tmux_calls(skip: &str) -> Vec<String> {
     let s = Scratch::fresh(std::env::temp_dir().join(format!("cockpit-unchecked-{}", std::process::id())));
@@ -528,7 +528,8 @@ pub fn unchecked_tmux_calls(skip: &str) -> Vec<String> {
 /// [`tmux_refusal`]'s line before any tmux runs where that does not hold: from
 /// inside a tmux session a plain `tmux` reached the caller's server and a rig's
 /// socket went beside it, and tmux 3.8 puts a socket in /tmp when TMUX_TMPDIR
-/// names no folder.
+/// names no folder. In a binary whose rows set these variables, call it under that
+/// binary's lock: outside it, a sibling's value passes the check (#1089).
 #[allow(dead_code)]
 pub fn checked_tmux() -> PathBuf {
     if let Some(why) = tmux_refusal() {
