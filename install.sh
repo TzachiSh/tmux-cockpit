@@ -150,14 +150,14 @@ if [ "$check" -eq 1 ]; then
         [ "$wired" -eq 1 ] && break
     done
     wire_fix="run bootstrap.sh, or add $(cockpit_conf_line "$DIR")"
-    # A line with no quote around the path loads nothing from a folder it cannot carry (#1046).
+    # A line with no quote around the path may not load from this folder (#1046, #1060).
     if [ "$wired" -eq 1 ] && ! cockpit_bare_carries "$DIR" &&
        n=$(cockpit_conf_bare_line "$conf" "$DIR"); then
         case "$DIR" in
             *[[:cntrl:]]*) wire_fix='the folder path holds a control character: move the folder' ;;
             *) wire_fix="replace line $n with $(cockpit_conf_line "$DIR")" ;;
         esac
-        row warn config "$conf line $n" "unquoted, loads nothing from this folder; $wire_fix"
+        row warn config "$conf line $n" "unquoted, may not load from this folder; $wire_fix"
     elif [ "$wired" -eq 1 ]; then row ok config "$conf loads cockpit"
     elif [ -n "$conf" ];    then row fail config "$conf" "$wire_fix"
     else row fail config 'no tmux config' "$wire_fix"

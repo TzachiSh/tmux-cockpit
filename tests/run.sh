@@ -4151,13 +4151,17 @@ is "nothing in a folder's name was run, by bootstrap.sh, by the server or by a s
    "$(find "$CL" -name pwned | tr '\n' ' ')"
 is "and no run reached for sudo" "absent" "$([ -e "$CL/SUDO_RAN" ] && echo present || echo absent)"
 
+# The first name is plain: the two plain-folder rows at the block's end skip by asking
+# this function, so a character wrongly added to its list must be red here (#1060).
 # Which folders a bare line carries, as measured on tmux 3.6 and 3.8: a # in front of a [
 # arrives whole, a ## run included, and so does one in front of a plain letter. tmux replaces
 # #S and the other one-letter names, a #, and a #{ }, and makes one # of a ##.
 is "cockpit_bare_carries: which # shapes a bare line carries" \
-   "a#[b:yes a##[b:yes a#xb:yes a#:yes C#Sharp:no a#,b:no a##b:no a#{b:no a#Wb:no a b:no " \
+   "plug-in_1.2:yes a#[b:yes a##[b:yes a#xb:yes a#:yes C#Sharp:no a#,b:no a##b:no a#{b:no $(:
+   )a#Wb:no a b:no " \
    "$(. "$DIR/scripts/lib/confline.sh"
-      for cl_f in 'a#[b' 'a##[b' 'a#xb' 'a#' 'C#Sharp' 'a#,b' 'a##b' 'a#{b' 'a#Wb' 'a b'; do
+      for cl_f in 'plug-in_1.2' 'a#[b' 'a##[b' 'a#xb' 'a#' 'C#Sharp' 'a#,b' 'a##b' 'a#{b' \
+              'a#Wb' 'a b'; do
           cockpit_bare_carries "/p/$cl_f" && printf '%s:yes ' "$cl_f" || printf '%s:no ' "$cl_f"
       done)"
 
@@ -4182,7 +4186,8 @@ cp "$CL/h2/.tmux.conf" "$CL/conf2"
 cl_out=$( cd "$CL/wd" && cl_env 2 "$cl_p2/bootstrap.sh" --yes )
 cl_line=$(. "$DIR/scripts/lib/confline.sh" && cockpit_conf_line "$cl_p2")
 case "$cl_out" in
-    *"NOTE   line 3 of that file has no quotes around the path"*"Replace line 3 with:"*"
+    *"NOTE   line 3 of that file has no quotes around the path"*"the plugin may not load."*$(:
+      )"Replace line 3 with:"*"
            $cl_line
 "*) ok "an old bare line and a folder with blanks: the notice names line 3 and gives the line" ;;
     *) bad "an old bare line and a folder with blanks: the notice names line 3 and gives the line" \
@@ -4197,7 +4202,7 @@ cl_said() {                   # <label> <literal text> <output that must hold it
     esac
 }
 cl_said "and install.sh --check warns on its config row, with the same line" \
-    "[ warn ] config         $CL/h2/.tmux.conf line 3 unquoted, loads nothing from this $(:
+    "[ warn ] config         $CL/h2/.tmux.conf line 3 unquoted, may not load from this $(:
         )folder; replace line 3 with $cl_line
 " "$(cl_env 2 "$cl_p2/install.sh" --check)
 "
@@ -4245,6 +4250,38 @@ cl_out=$( cd "$CL/wd" && cl_env 9 "$CL/p/e"$'\033'"[31msc/bootstrap.sh" --yes )
 is "an old bare line and a folder with an ESC in its name: the notice shows no line" "1|0" \
    "$(printf '%s\n' "$cl_out" | grep -c 'holds a control character, so no line is shown')|$(
       printf '%s\n' "$cl_out" | grep -c 'Replace line')"
+cl_said() {                   # <label> <literal text> <output that must hold it>
+    case "$3" in
+        *"$2"*) ok "$1" ;;
+        *) bad "$1" "$2" "$3" ;;
+    esac
+}
+cl_said "and install.sh --check on that box names the control character and gives no line" \
+    "unquoted, may not load from this folder; the folder path holds a control character: $(:
+    )move the folder
+" "$(cl_env 9 "$CL/p/e"$'\033'"[31msc/install.sh" --check)
+"
+unset -f cl_said
+# A newline in the folder's name goes into the line as \n. A stub stands for the plugin:
+# bootstrap.sh is not run from here, the row is about the line alone.
+mkdir -p "$CL/h10" "$CL/p/n"$'\n'" l"
+printf '#!/bin/sh\ntmux set-option -g @cl_from 10\n' > "$CL/p/n"$'\n'" l/cockpit.tmux"
+chmod +x "$CL/p/n"$'\n'" l/cockpit.tmux"
+( . "$DIR/scripts/lib/confline.sh" && cockpit_conf_line "$CL/p/n"$'\n'" l" ) > "$CL/h10/.tmux.conf"
+is "the line for a folder with a newline and a blank in its name is one line, and loads it" \
+   "1|10|0" "$(grep -c '' "$CL/h10/.tmux.conf")|$(cl_load 10)"
+# Without scripts/lib/confline.sh both scripts stop where they source it, before a step.
+mkdir -p "$CL/p/nolib/scripts/lib" "$CL/h12/bin"
+cp "$DIR/bootstrap.sh" "$DIR/install.sh" "$CL/p/nolib/"
+for cl_f in "$DIR"/scripts/lib/*; do      # every other lib is there: only this one stops it
+    [ "${cl_f##*/}" = confline.sh ] || ln -s "$cl_f" "$CL/p/nolib/scripts/lib/${cl_f##*/}"
+done
+cl_out=$( cd "$CL/wd" && cl_env 12 "$CL/p/nolib/bootstrap.sh" --yes ); cl_n=$?
+is "bootstrap.sh without confline.sh: exit 1, and no step was started" "1|0" \
+   "$cl_n|$(printf '%s\n' "$cl_out" | grep -c '^== ')"
+cl_out=$( cl_env 12 "$CL/p/nolib/install.sh" --check ); cl_n=$?
+is "install.sh --check without it: exit 1, and no row was printed" "1|0" \
+   "$cl_n|$(printf '%s\n' "$cl_out" | grep -c '^\[')"
 # The plain folder: a bare line works there, so nothing new is said. The run's output is
 # the same, byte for byte, whether the config holds the old line or the new one.
 # Under a TMPDIR whose own path a bare line does not carry, "plain" is not plain.
