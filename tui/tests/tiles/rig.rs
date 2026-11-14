@@ -9,7 +9,7 @@ pub struct Rig {
     pub sock: String,
     pub dir: PathBuf,
     pub ids: Vec<String>,
-    /// killed with its socket after the folder goes
+    /// killed with its socket before the folder goes
     _server: crate::fake::Server,
 }
 
@@ -94,6 +94,7 @@ pub fn rig(tag: &str) -> Option<Rig> {
 
 impl Drop for Rig {
     fn drop(&mut self) {
+        self._server.stop();
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }

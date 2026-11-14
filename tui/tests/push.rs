@@ -93,7 +93,7 @@ struct Rig {
     kids: Vec<Child>,
     sock: String,
     dir: PathBuf,
-    /// killed with its socket after the kids and the folder go
+    /// killed with its socket after the kids, before the folder goes
     _server: fake::Server,
     // last, so it is released after Drop has taken the rest down
     _env: EnvLock,
@@ -159,6 +159,7 @@ impl Drop for Rig {
             let _ = k.kill();
             let _ = k.wait();
         }
+        self._server.stop();
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }

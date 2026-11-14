@@ -13,7 +13,7 @@ use std::process::Command;
 struct Server {
     sock: String,
     dir: std::path::PathBuf,
-    /// killed with its socket after the folder goes
+    /// killed with its socket before the folder goes
     _server: fake::Server,
 }
 
@@ -26,6 +26,7 @@ impl Server {
 
 impl Drop for Server {
     fn drop(&mut self) {
+        self._server.stop();
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }

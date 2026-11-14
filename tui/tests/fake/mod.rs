@@ -540,15 +540,24 @@ impl Server {
     }
 }
 
-impl Drop for Server {
-    fn drop(&mut self) {
-        if !self.started {
+impl Server {
+    /// Kills the server and removes its socket file, once. A rig calls it before it
+    /// removes the folder its panes run in, so the server ends, and kill-server's HUP
+    /// reaches each pane, while that folder is still there (#1066).
+    pub fn stop(&mut self) {
+        if !std::mem::take(&mut self.started) {
             return;
         }
         let _ = Command::new("tmux").args(["-L", &self.sock, "kill-server"]).output();
         if self.path.ends_with(&self.sock) {
             let _ = std::fs::remove_file(&self.path);
         }
+    }
+}
+
+impl Drop for Server {
+    fn drop(&mut self) {
+        self.stop();
     }
 }
 
