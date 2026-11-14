@@ -41,9 +41,10 @@ Nothing reads these schemas at run time. The Rust side is `tui/src/store.rs`, a
   (`additionalProperties: false`). A key name cannot carry words either. A new
   key is a schema change, so it bumps `schema_version` by the rule above.
 - **Timestamps** are ISO-8601 in UTC with a `Z`, an optional fraction, checked
-  by `pattern`. `format: date-time` would not be checked: the distro's
-  jsonschema lacks `rfc3339_validator`. A reader that needs order (an intent's
-  `expires_at` after its `created_at`) checks it itself.
+  by `pattern`. `format: date-time` would not be checked: draft 2020-12 makes
+  `format` an annotation, and the check does not turn format checking on. A
+  reader that needs order (an intent's `expires_at` after its `created_at`)
+  checks it itself.
 - **Patterns** are checked by Rust's `regex` engine. Its `$` is the end of the
   string, so `^%[0-9]{1,10}$` refuses `"%12\n"`, and a pattern with lookaround
   or a backreference fails the check. Python's `$` also matches before a final
