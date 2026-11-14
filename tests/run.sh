@@ -18189,13 +18189,18 @@ done
 grep -qxF -- "# tmux-cockpit. Load with:  $IL" "$DIR/cockpit.tmux" || il_n="${il_n}cockpit.tmux "
 is "the README, both examples, both docs pages and cockpit.tmux each give the install line" \
    "" "$il_n"
-# Any spelling: `run` for `run-shell`, an indent, double quotes, another page. The two forms
-# the docs give are the line above and the one for a plugin folder with a space.
-is "and nothing there loads cockpit.tmux in another form: file:line of each that does" "" \
+# Any spelling: `run` for `run-shell`, an indent, double quotes, another page. The three
+# forms the docs give are the line above, the one for a plugin folder with a space, and
+# the one with a full path, for a server started with no HOME.
+# Not read yet: bootstrap.sh, which appends a line to a user's config, and install.sh,
+# which prints one. Both still give the bare shape (#1046), so this row's green is about
+# the pages, the examples and the comment only.
+is "and no page, example or comment loads cockpit.tmux in another form: file:line of each" "" \
    "$(cd "$DIR" && grep -nE 'run(-shell)?[[:space:]]+[^[:space:]]*cockpit\.tmux' \
         ./*.md docs/*.md examples/* cockpit.tmux 2>/dev/null |
       grep -vF -e "'~/.tmux/plugins/tmux-cockpit/cockpit.tmux'" \
-               -e "'\"\$HOME/my plugins/tmux-cockpit/cockpit.tmux\"'" |
+               -e "'\"\$HOME/my plugins/tmux-cockpit/cockpit.tmux\"'" \
+               -e "'/full/path/to/tmux-cockpit/cockpit.tmux'" |
       cut -d: -f1,2 | tr '\n' ' ')"
 if need_tmux "the install line under a HOME with a blank"; then :; else
 ILD=$(mktmpd); mkdir -p "$ILD/wd"
