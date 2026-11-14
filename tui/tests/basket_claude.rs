@@ -90,10 +90,12 @@ fn claude_and_its_version_title_read_at_mentions_and_nothing_else_does() {
     // waiting on the rows before it, whatever their order (#1056).
     type Start<'a> = &'a dyn Fn() -> String;
     let held = || fake::held_pane(&s.sock, &s.dir, "2.1.318");
-    let rows: [(&str, Start, &str, bool); 6] = [
+    let named = || fake::named_pane(&s.sock, &s.dir, "2.1.318");
+    let rows: [(&str, Start, &str, bool); 7] = [
         ("claude", &|| s.pane("claude"), "claude", true),
         ("its version title", &|| s.pane("2.1.318"), "2.1.318", true),
         ("its version title, its start held before the exec", &held, "2.1.318", true),
+        ("its version title, comm ahead of its argv", &named, "2.1.318", true),
         ("codex", &|| s.pane("codex"), "codex", false),
         ("a shell", &|| s.pane("zsh"), "zsh", false),
         ("a stale @panestate on a shell", &|| stale.clone(), "fish", false),

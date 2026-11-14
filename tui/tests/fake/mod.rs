@@ -285,6 +285,41 @@ pub fn held_pane(sock: &str, dir: &Path, name: &str) -> String {
     tmux_on(sock, &["new-window", "-d", "-P", "-F", "#{pane_id}", "-c", &d, &cmd])
 }
 
+/// As [`held_pane`], but the start script first writes `name` into its own
+/// comm, so for its 0.3 s comm reads `name` while argv[0] is still the script's
+/// shell: the gap inside an exec, where the kernel sets comm before the argv
+/// tmux reads (#1056). Red at once where /proc's comm cannot be written, as the
+/// row would then hold no such gap and pass for nothing. Where there is no /proc
+/// it says SKIP and starts a [`held_pane`], since `ps` gives no argv[0] to check.
+#[allow(dead_code)]
+pub fn named_pane(sock: &str, dir: &Path, name: &str) -> String {
+    if !Path::new("/proc/self").is_dir() {
+        eprintln!("SKIP: no /proc, so no comm to set ahead of argv[0]; a held row instead");
+        return held_pane(sock, dir, name);
+    }
+    // the kernel's rule for the script's own write, tried on this thread's name
+    let me = std::fs::read_to_string("/proc/thread-self/comm").unwrap_or_default();
+    if let Err(e) = std::fs::write("/proc/thread-self/comm", me.trim_end()) {
+        panic!("/proc/thread-self/comm cannot be written ({e}): no comm-ahead row here");
+    }
+    let bin = dir.join(name);
+    // a copy a pane already runs cannot be written over (ETXTBSY)
+    if !bin.exists() {
+        std::fs::copy("/bin/bash", &bin).unwrap();
+    }
+    let named = dir.join("named");
+    let body = concat!(
+        "#!/bin/sh\n",
+        "printf %s \"${1##*/}\" > /proc/$$/comm || exit 3\n",
+        "sleep 0.3\nexec \"$@\"\n"
+    );
+    std::fs::write(&named, body).unwrap();
+    std::fs::set_permissions(&named, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let cmd = format!("{} {} -c 'sleep 300; :'", named.display(), bin.display());
+    let d = dir.display().to_string();
+    tmux_on(sock, &["new-window", "-d", "-P", "-F", "#{pane_id}", "-c", &d, &cmd])
+}
+
 /// Waits until the pane's own process, on the private server `sock`, has exec'd
 /// `name` (#1056). Not by pane_current_command: while a pane starts, tmux 3.8
 /// reads it as the pane's argv, then `tmux`, then the shell, then the name, so

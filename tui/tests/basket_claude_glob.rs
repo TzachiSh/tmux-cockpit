@@ -76,7 +76,8 @@ fn a_claude_the_agent_list_leaves_out_is_no_claude() {
     // waiting on the rows before it, whatever their order (#1056).
     type Start<'a> = &'a dyn Fn() -> String;
     let held = || fake::held_pane(&s.sock, &s.dir, "2.1.318");
-    let rows: [(&str, Start, &str, bool); 3] = [
+    let named = || fake::named_pane(&s.sock, &s.dir, "2.1.318");
+    let rows: [(&str, Start, &str, bool); 4] = [
         ("claude, not in the agent list", &|| s.pane("claude"), "claude", false),
         (
             "the version title, agent-shaped all the same",
@@ -85,6 +86,7 @@ fn a_claude_the_agent_list_leaves_out_is_no_claude() {
             true,
         ),
         ("the version title, its start held before the exec", &held, "2.1.318", true),
+        ("the version title, comm ahead of its argv", &named, "2.1.318", true),
     ];
     for (row, start, name, want) in rows {
         let pane = start();
