@@ -28,9 +28,29 @@ fn split_tmux_argv(value: Option<&str>) -> Vec<String> {
 }
 
 /// `None` on a spawn failure or non-zero exit: "no tmux" is not "no agents".
-/// A blank COCKPIT_TMUX names no program, so it is a spawn failure too.
+/// A blank COCKPIT_TMUX names no program, so it is a spawn failure too, and
+/// so is a call `reaches_callers_tmux` refuses.
 pub fn tmux(args: &[&str]) -> Option<String> {
-    tmux_on(&tmux_argv(), args)
+    let argv = tmux_argv();
+    if reaches_callers_tmux(&argv) {
+        return None;
+    }
+    tmux_on(&argv, args)
+}
+
+/// Under the basket's test guard (`basket::guarded`, off in a release build run
+/// outside cargo): whether `argv` is a plain `tmux`, no `-L` or `-S`, that would
+/// reach the caller's own server, by TMUX or as the default socket, which tmux
+/// 3.8 puts in /tmp when TMUX_TMPDIR names no folder. cargo's runner hands a
+/// test binary TMUX unset and a TMUX_TMPDIR folder of its own (#1066); a binary
+/// started without it is refused here, whichever test reads and in whatever
+/// order, where a check in each test missed one (#1089).
+fn reaches_callers_tmux(argv: &[String]) -> bool {
+    use std::path::Path;
+    let plain = argv.first().is_some_and(|p| Path::new(p).file_name().is_some_and(|n| n == "tmux"));
+    let socket = argv.iter().any(|a| a == "-L" || a == "-S");
+    let folder = std::env::var_os("TMUX_TMPDIR").is_some_and(|d| Path::new(&d).is_dir());
+    crate::basket::guarded() && plain && !socket && (std::env::var_os("TMUX").is_some() || !folder)
 }
 
 /// `tmux` on a given argv: the program is `c[0]`, so an empty argv spawns nothing.

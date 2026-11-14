@@ -208,7 +208,11 @@ the cache and state folders resolve under whatever `HOME` the test has: for a
 test that sets no `HOME`, under yours, as on a box that never exported them. No test
 writes these variables itself. The helpers only check: `fake::checked_tmux`
 before any tmux a helper runs, and `fake::checked_state` in each rig that sets
-`HOME`. Started without the runner from a shell that still carries them, or
+`HOME`. The product's own tmux call refuses too (#1089): under the test guard
+(`COCKPIT_TEST_TMUX_GUARD`, docs/tui.md) `data::tmux` runs a plain `tmux` only
+with `TMUX` unset and `TMUX_TMPDIR` an existing folder, and reads anything else
+as no answer, so no test reads your server's agent list or theme, whether or not
+it reached a check first. Started without the runner from a shell that still carries them, or
 with no `TMUX_TMPDIR`, a test binary is refused in three lines: what is set or
 unset and what that would do, `make tui-test` and a bare `cargo test` that
 clear it, and the command for that binary alone. The cargo command and the

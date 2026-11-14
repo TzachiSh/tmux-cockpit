@@ -108,8 +108,9 @@ const ALLOWED: [(&str, &str); 1] = [(
 /// string literal that [`runs_tmux`] and none of its files names a [`CHECKS`]
 /// entry. What it cannot see: a binary that reaches tmux only through the
 /// product, as the panel binaries and `files` do through `data::tmux` and
-/// `Theme::load` (each has a row of its own that runs the check); tmux by a
-/// path, as `Command::new("/usr/bin/tmux")`; a one-line shell string, as
+/// `Theme::load` (`data::tmux` itself refuses a plain tmux that would reach the
+/// caller's server, [`the_product_refuses_a_plain_tmux_bound_for_the_callers_server`]);
+/// tmux by a path, as `Command::new("/usr/bin/tmux")`; a one-line shell string, as
 /// `["-c", "tmux ls"]`; a tmux name built at run time or by a helper from
 /// parts; a script read from a file; and a check named in a file but never
 /// reached.
@@ -225,4 +226,62 @@ fn a_process_with_another_tmux_tmpdir_is_never_taken_for_a_rigs() {
         c.wait().unwrap();
     }
     assert_eq!((left.contains(&ours.id()), left.contains(&decoy.id())), (true, false), "{left:?}");
+}
+
+/// Set in the child of [`the_product_refuses_a_plain_tmux_bound_for_the_callers_server`]:
+/// that row then makes the product's read once and ends.
+const PRODUCT_READ: &str = "COCKPIT_TEST_PRODUCT_READ";
+
+/// How many calls the product's agent list read (`data::tmux`) made, in a child of this row
+/// started by hand with the guard on, no TMUX, TMUX_TMPDIR or COCKPIT_TMUX, then `set`, and
+/// two stubs first on PATH that record each call and open no socket: `tmux`, and `stub`.
+fn product_reads(s: &Path, set: &[(&str, &str)]) -> usize {
+    let me = "the_product_refuses_a_plain_tmux_bound_for_the_callers_server";
+    let path = format!("{}:{}", s.display(), std::env::var("PATH").unwrap_or_default());
+    let mut c = std::process::Command::new(std::env::current_exe().unwrap());
+    for v in ["TMUX", "TMUX_TMPDIR", "COCKPIT_TMUX"] {
+        c.env_remove(v);
+    }
+    c.args(["--exact", me])
+        .envs([("PATH", path.as_str()), ("COCKPIT_TEST_TMUX_GUARD", "1")]);
+    c.env(PRODUCT_READ, "1")
+        .envs(set.iter().copied())
+        .stdin(std::process::Stdio::null());
+    let out = c.output().unwrap();
+    assert!(String::from_utf8_lossy(&out.stdout).contains("1 passed"), "{out:?}");
+    let mut calls = 0;
+    for f in ["tmux.calls", "stub.calls"] {
+        calls += std::fs::read_to_string(s.join(f)).unwrap_or_default().lines().count();
+        let _ = std::fs::remove_file(s.join(f));
+    }
+    calls
+}
+
+/// #1089: under test the product's own tmux call refuses a plain `tmux` that would reach the
+/// caller's server, by TMUX or as the default socket in /tmp, and reads it as no value. It
+/// still runs the runner's case, a `-L` server, a stub, and any tmux with the guard lifted.
+#[test]
+fn the_product_refuses_a_plain_tmux_bound_for_the_callers_server() {
+    if std::env::var_os(PRODUCT_READ).is_some() {
+        let glob = cockpit_tui::data::tmux(&["show-option", "-gqv", "@cockpit_agents_glob"]);
+        assert_eq!(glob, None);
+        return;
+    }
+    let tag = format!("cockpit-product-read-{}", std::process::id());
+    let s = fake::Scratch::fresh(std::env::temp_dir().join(tag));
+    for name in ["tmux", "stub"] {
+        fake::write_exec(&s.0.join(name), "#!/bin/sh\necho \"$*\" >> \"$0.calls\"\nexit 1\n");
+    }
+    let (dir, none) = (s.0.display().to_string(), s.0.join("none").display().to_string());
+    let cases: [(&str, &[(&str, &str)], usize); 7] = [
+        ("the runner's: TMUX unset, a TMUX_TMPDIR folder", &[("TMUX_TMPDIR", &dir)], 1),
+        ("no TMUX_TMPDIR", &[], 0),
+        ("a TMUX_TMPDIR that is no folder", &[("TMUX_TMPDIR", &none)], 0),
+        ("TMUX set", &[("TMUX_TMPDIR", &dir), ("TMUX", "/elsewhere/default,1,0")], 0),
+        ("a -L server, no TMUX_TMPDIR", &[("COCKPIT_TMUX", "tmux -L cockpit-read")], 1),
+        ("a stub by another name, no TMUX_TMPDIR", &[("COCKPIT_TMUX", "stub")], 1),
+        ("the guard lifted, no TMUX_TMPDIR", &[("COCKPIT_TEST_TMUX_GUARD", "0")], 1),
+    ];
+    let got: Vec<_> = cases.iter().map(|(n, set, _)| (*n, product_reads(&s.0, set))).collect();
+    assert_eq!(got, cases.map(|(n, _, want)| (n, want)));
 }
