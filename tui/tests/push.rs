@@ -436,22 +436,6 @@ fn usr1_unblocked(pid: u32, mut after_read: impl FnMut(Option<u64>)) -> bool {
     })
 }
 
-/// The processes left of the `push` rig of the test binary `pid`, read from /proc: its
-/// server, by the socket its command line names, and its pane, by the folder it runs
-/// in. Linux only, as are the rows that count them.
-fn left_by(pid: u32) -> usize {
-    let sock = format!("-L\0cockpit-tui-push-{pid}\0");
-    let dir = format!("/cockpit-tui-push-{pid}");
-    let left = |e: &std::fs::DirEntry| {
-        let line = std::fs::read(e.path().join("cmdline")).unwrap_or_default();
-        let cwd = std::fs::read_link(e.path().join("cwd")).unwrap_or_default();
-        let cwd = cwd.to_string_lossy();
-        let in_dir = cwd.ends_with(&dir) || cwd.ends_with(&format!("{dir} (deleted)"));
-        String::from_utf8_lossy(&line).contains(&sock) || in_dir
-    };
-    std::fs::read_dir("/proc").map_or(0, |d| d.flatten().filter(left).count())
-}
-
 /// #1061: the two rows that signal a board, in this binary started again with TERM, HUP
 /// and USR1 ignored and blocked. Each holds there by its own reset, and the rig's server,
 /// told to go by a TERM it sends itself, is gone afterwards with its pane.
@@ -463,7 +447,9 @@ fn the_signalling_rows_hold_in_a_binary_handed_an_ignored_and_blocked_term_hup_a
         "a_cockpit_tui_survives_sigusr1",
     ];
     let pid = fake::rows_pass_handed(&rows, &[libc::SIGTERM, libc::SIGHUP, libc::SIGUSR1]);
-    assert!(until(|| left_by(pid) == 0), "the child's rig left its server or its pane");
+    // as every rig's row does: a red run ends what the child left, each pid read again
+    // as the child's just before the kill (fake::assert_no_server_left, #1066)
+    fake::assert_no_server_left(pid);
 }
 
 /// A child this process forked, killed and reaped when this is dropped, on every path

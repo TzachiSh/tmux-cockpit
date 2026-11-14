@@ -629,20 +629,24 @@ impl Drop for StandIn {
 }
 
 /// The processes left of the rig servers of this binary started again as `pid`
-/// ([`rows_pass_handed`]), read from /proc: a server by the `-L` name its command
-/// line gives, which ends in `-<pid>` for every rig, and a pane by the TMUX it
-/// starts with, which names that socket. Linux only, as are the rows that ask.
+/// ([`rows_pass_handed`]), read from /proc. A rig's socket is named
+/// `cockpit-<what>-<pid>`, the pid of the binary that started it, here that
+/// child of this row's own. A server is a `tmux` whose `-L` names such a socket,
+/// and a pane a process whose TMUX, which tmux sets for each pane, names one.
+/// Linux only, as are the rows that ask.
 #[allow(dead_code)]
 pub fn servers_left(pid: u32) -> Vec<u32> {
-    let name = format!("-{pid}\0");
-    let pane = format!("-{pid},");
+    let rigs = |sock: &str| sock.starts_with("cockpit-") && sock.ends_with(&format!("-{pid}"));
     let ours = |p: &Path| {
         let line = std::fs::read(p.join("cmdline")).unwrap_or_default();
+        let args: Vec<String> = line.split(|b| *b == 0).map(|a| String::from_utf8_lossy(a).into_owned()).collect();
+        let server =
+            args.first().is_some_and(|a| a.rsplit('/').next() == Some("tmux")) && args.windows(2).any(|w| w[0] == "-L" && rigs(&w[1]));
         let env = std::fs::read(p.join("environ")).unwrap_or_default();
-        let server = line.starts_with(b"tmux") && String::from_utf8_lossy(&line).contains(&name);
-        let pane = env
-            .split(|b| *b == 0)
-            .any(|v| v.starts_with(b"TMUX=") && String::from_utf8_lossy(v).contains(&pane));
+        let pane = env.split(|b| *b == 0).filter_map(|v| v.strip_prefix(b"TMUX=")).any(|v| {
+            let sock = String::from_utf8_lossy(v).split(',').next().unwrap_or_default().to_string();
+            rigs(sock.rsplit('/').next().unwrap_or_default())
+        });
         server || pane
     };
     let Ok(d) = std::fs::read_dir("/proc") else { return vec![] };
@@ -652,8 +656,10 @@ pub fn servers_left(pid: u32) -> Vec<u32> {
 
 /// For a row that started this binary again as `pid`: no server and no pane of
 /// its rigs is left. Polled for 10 s, since kill-server ends a server and its
-/// panes after the command returns. A red run ends what it found with KILL,
-/// each pid read again just before, so it names them and leaves none.
+/// panes after the command returns. A red run ends what it found with KILL: each
+/// pid is matched again by [`servers_left`] just before its own kill, its command
+/// line or its TMUX naming a rig socket of `pid`, this row's own child, so it
+/// names them and leaves none, and signals no process it did not just verify.
 #[allow(dead_code)]
 pub fn assert_no_server_left(pid: u32) {
     let step = std::time::Duration::from_millis(20);
