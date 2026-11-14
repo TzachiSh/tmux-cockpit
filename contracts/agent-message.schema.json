@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:tmux-cockpit:contracts:agent-message",
   "title": "agent-message",
-  "description": "One message between agents. The payload holds ids and *_ref pointers only; the words live in a private file a *_ref names.",
+  "description": "One message between agents. The payload holds an intent_id and a body_ref only; the words live in the private file body_ref names.",
   "type": "object",
   "properties": {
     "schema_version": { "const": 1 },
@@ -18,12 +18,11 @@
     "timestamp": { "$ref": "#/$defs/utc" },
     "correlation_id": { "$ref": "#/$defs/id" },
     "payload": {
-      "description": "Keys ending in _id hold an id, keys ending in _ref a ref. Any other key is refused, so no field can carry free text.",
+      "description": "A closed list of keys: a new one is a schema change and a schema_version bump.",
       "type": "object",
-      "maxProperties": 16,
-      "patternProperties": {
-        "^[a-z][a-z0-9_]{0,59}_id(?!\\n)$": { "$ref": "#/$defs/id" },
-        "^[a-z][a-z0-9_]{0,59}_ref(?!\\n)$": { "$ref": "#/$defs/ref" }
+      "properties": {
+        "intent_id": { "$ref": "#/$defs/id" },
+        "body_ref": { "$ref": "#/$defs/ref" }
       },
       "additionalProperties": false
     }

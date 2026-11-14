@@ -23,23 +23,23 @@ Nothing reads these schemas at run time. The Rust side is `tui/src/store.rs`, a
   `additionalProperties` is `false` and an old reader refuses it.
 - **Privacy:** shared status holds only ids, states and timestamps. No titles,
   no subjects, no paths and no prompt content. Words an agent wants to share go
-  in a private file, and the record carries a `*_ref` to it.
+  in a private file, and the record carries a ref to it.
 - **Ids are opaque:** every id field (`agent_id`, `intent_id`, `from_agent`,
-  `msg_id`, `from`, `to`, `correlation_id`, any payload `*_id`) is 16 to 64
-  lowercase hex, and so is each `agent-message.subject` token after `msg.`.
-  No word or title fits one as written. A hex-encoded one still fits, and only
-  the writer keeps it out. Pane ids (`%N`), the github-budget key (16 hex or
-  `global`) and timestamps keep their own shapes.
-- **Refs are opaque too** (`summary_ref`, any `*_ref`): a file name of 16 to 64
-  lowercase hex, then `.md`, `.json` or `.txt`, directly in one fixed private
-  folder, `$XDG_STATE_HOME/tmux-cockpit/refs/` (0700). No folder part, no `..`
-  and no `/` fits, and no word or title as written; a hex-encoded one still
-  fits, and only the writer keeps it out. The reader of a ref still refuses a
-  symlink that leads out of the folder.
-- **`agent-message.payload`** allows a key only when it ends in `_id` (its value
-  must be an id) or in `_ref` (its value must be a ref). Every other key is
-  refused (`additionalProperties: false` beside the two `patternProperties`),
-  so no field of the payload can hold free text.
+  `msg_id`, `from`, `to`, `correlation_id`, the payload's `intent_id`) is 16
+  to 64 lowercase hex, and so is each `agent-message.subject` token after
+  `msg.`. No word or title fits one as written. A hex-encoded one still fits,
+  and only the writer keeps it out. Pane ids (`%N`), the github-budget key (16
+  hex or `global`) and timestamps keep their own shapes.
+- **Refs are opaque too** (`summary_ref`, the payload's `body_ref`): a file
+  name of 16 to 64 lowercase hex, then `.md`, `.json` or `.txt`, directly in
+  one fixed private folder, `$XDG_STATE_HOME/tmux-cockpit/refs/` (0700). No
+  folder part, no `..` and no `/` fits, and no word or title as written; a
+  hex-encoded one still fits, and only the writer keeps it out. The reader of
+  a ref still refuses a symlink that leads out of the folder.
+- **`agent-message.payload`** is a closed list: `intent_id` (an id) and
+  `body_ref` (a ref), both optional, and every other key is refused
+  (`additionalProperties: false`). A key name cannot carry words either. A new
+  key is a schema change, so it bumps `schema_version` by the rule above.
 - **Timestamps** are ISO-8601 in UTC with a `Z`, an optional fraction, checked
   by `pattern`. `format: date-time` would not be checked: the distro's
   jsonschema lacks `rfc3339_validator`. A reader that needs order (an intent's
