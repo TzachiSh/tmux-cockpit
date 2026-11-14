@@ -41,7 +41,7 @@ the plugin folder's own path in it, escaped so that tmux and `sh` both read it
 as one word whatever the path holds. Before #1046 it appended the path with no
 quotes. That older line still loads the plugin from a folder whose path is
 plain, and `bootstrap.sh` leaves it alone. From a folder whose path holds a
-space, a quote, a `$` or another character `sh` reads, it loads nothing. There
+space, a quote, a `$` or another character `sh` reads, it may not load. There
 `bootstrap.sh` names the line's number and prints the line to put in its place,
 and `install.sh --check` gives the same as a warning on its config row. Neither
 edits your config.
