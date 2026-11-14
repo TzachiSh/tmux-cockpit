@@ -66,8 +66,13 @@ SHIM=$(mktemp -d)
 # socket path is SOCKDIR's, spelled out: SOCKDIR is set later.
 SUITE_NB=                     # a folder outside TMPDIR for the tmux wrapper, when one is made
 suite_clean() {
-    "$TMUX_REAL" -L "$SUITE_SOCK" kill-server >/dev/null 2>&1
-    rm -f "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/$SUITE_SOCK"
+    # With no socket folder there is no server of the suite's: the one run that has none is
+    # the one whose folder could not be made, and a tmux call from it would go to tmux's
+    # default folder, /tmp/tmux-<uid> (#1098).
+    if [ -n "${TMUX_TMPDIR:-}" ] && [ -d "$TMUX_TMPDIR" ]; then
+        "$TMUX_REAL" -L "$SUITE_SOCK" kill-server >/dev/null 2>&1
+        rm -f "$TMUX_TMPDIR/tmux-$(id -u)/$SUITE_SOCK"
+    fi
     rm -rf -- "$STATE" "$SHIM" ${SUITE_NB:+"$SUITE_NB"}
     [ -z "$SUITE_TT" ] || suite_tt_end
 }
@@ -94,6 +99,14 @@ fatal() { printf '  \033[31mFATAL\033[0m %s\n' "$1" >&2; exit 1; }
 # what a block left in it is named and stays. A caller's own folder is kept as it is.
 # Made here, with the trap above already armed, so no way out of the prelude leaves it, and
 # exported before the first tmux call: a run inside this run finds it set and keeps it.
+# A relative one that names a folder is the caller's as well, and is kept, but as that
+# folder's full path: tmux reads the variable in every call, and a call made after a cd
+# would look for it from there, find nothing and fall back to /tmp.
+case ${TMUX_TMPDIR:-} in
+''|/*) ;;
+*) TMUX_TMPDIR=$(cd "$TMUX_TMPDIR" 2>/dev/null && pwd -P) || TMUX_TMPDIR=
+   export TMUX_TMPDIR ;;
+esac
 if [ -z "${TMUX_TMPDIR:-}" ] || [ ! -d "$TMUX_TMPDIR" ]; then
     SUITE_TT=$(mktemp -d /tmp/cs.XXXXXX) || { SUITE_TT=; fatal "no socket folder: $(
         )mktemp -d /tmp/cs.XXXXXX failed"; }
@@ -231,6 +244,13 @@ tt_left() {
         case " $SUITE_SOCK $SOCKS " in *" $n "*) continue ;; esac
         bad "every socket in the suite's own folder is one cleanup knows (#1098)" \
             "the suite's and the names in SOCKS" "$n"
+    done
+    # Anything beside tmux's own folder keeps the suite's from being removed, too.
+    for f in "$SUITE_TT"/* "$SUITE_TT"/.[!.]*; do
+        [ -e "$f" ] || [ -L "$f" ] || continue
+        [ "${f##*/}" != "tmux-$(id -u)" ] || continue
+        bad "the suite's own socket folder holds tmux's folder and nothing else (#1098)" \
+            "tmux-$(id -u) alone" "${f##*/}"
     done
 }
 beside_left() {
@@ -2963,8 +2983,9 @@ is "tc_left sees the block's own socket while its server is up, none of another 
    "$(tc_left "$SOCKDIR" "$TC") $(tc_left "$SOCKDIR" "$TC-none") $(tc_left "$TCD" "$TC")"
 "$TMUX_REAL" -L "$TCO" kill-server >/dev/null 2>&1
 "$TMUX_REAL" -L "$TC" kill-server >/dev/null 2>&1
-# kill-server leaves the socket's file behind. Started with no TMUX_TMPDIR, SOCKDIR is
-# /tmp/tmux-<uid> itself, and the last row would read the block's own file as a leak.
+# kill-server leaves the socket's file behind. Where SOCKDIR is /tmp/tmux-<uid> itself (a
+# caller who names /tmp as TMUX_TMPDIR; a run with none makes its own folder since #1098),
+# the last row would read the block's own file as a leak.
 rm -f "$SOCKDIR/$TC"
 is "the block's own socket file is gone once its server is killed" "none" \
    "$(tc_left "$SOCKDIR" "$TC")"
@@ -10896,84 +10917,154 @@ is "that folder is the suite's own when its caller gave none: /tmp/cs.*, mode 70
        [ "$st_d" != "$(cd "/tmp/tmux-$st_u" 2>/dev/null && pwd -P)" ] || printf 'the default '
        [ "$TMUX_TMPDIR" = "$SUITE_TT" ] || printf 'not exported '
        echo ok; fi)"
-# For the block below, which runs this one nested and then looks for the folder.
-[ -z "${COCKPIT_ST_OUT:-}" ] || printf '%s\n' "${SUITE_TT:-kept $TMUX_TMPDIR}" > "$COCKPIT_ST_OUT"
+# tmux reads TMUX_TMPDIR in every call: a relative one would be looked for from here (#1098).
+is "a tmux call made from another folder reaches that same socket" "$st_p" \
+   "$(cd "$STATE" && "$TMUX_REAL" -L "$SUITE_SOCK" display-message -p '#{socket_path}' 2>&1)"
+# For the block below, which runs this one nested: the folder, and this run's pid.
+[ -z "${COCKPIT_ST_OUT:-}" ] ||
+    printf '%s\n%s\n' "${SUITE_TT:-kept $TMUX_TMPDIR}" "$$" > "$COCKPIT_ST_OUT"
 fi
 unset st_u st_p st_d
 
 echo "== a run with no TMUX_TMPDIR puts no socket in /tmp/tmux-<uid>; its folder goes (#1098) =="
 # The block above through only.sh, started as a plain `make test` starts the suite: with no
-# TMUX_TMPDIR, then with one naming a folder that is not there, then with a caller's own.
-# CI and the lanes set a private folder, so this is the run that meets the other starts.
-# /tmp/tmux-<uid> is only listed, before and after; nothing is put there.
-SF=$(mktmpd); mkdir -p "$SF/own"
-sf_ls() { ls -A "/tmp/tmux-$(id -u)" 2>/dev/null | grep '^cockpit-' | sort; }
-sf_run() {                    # <env words...> -> the nested run's verdict and what it left
-    local o rc f
-    rm -f "$SF/out"; sf_ls > "$SF/before"
-    o=$(cd "$DIR" && env -u TMUX "$@" COCKPIT_ST_OUT="$SF/out" \
-        tests/only.sh "^the suite's own server is on a socket under TMUX_TMPDIR" 2>&1 </dev/null)
+# TMUX_TMPDIR, with one naming a folder that is not there, with a caller's own, and with a
+# relative one. CI's bare leg aside, a run has a private folder, so this is the run that
+# meets the other starts. /tmp/tmux-<uid> is only listed; nothing is put there.
+SF=$(mktmpd); mkdir -p "$SF/own" "$SF/rel" "$SF/bin"
+sf_u=$(id -u)
+sf_one="^the suite's own server is on a socket under TMUX_TMPDIR"
+sf_run() {                    # <pattern> <ONLY_RUN file or ''> <env words...>
+    # -> exit, PASS and FAIL rows | the folder the run reported | its names in /tmp/tmux-<uid>
+    local pat=$1 run=$2 e=() o rc f="" p=""
+    shift 2
+    [ -z "$run" ] || e=(ONLY_RUN="$run")
+    rm -f "$SF/out"
+    o=$(cd "$DIR" && env -u TMUX "$@" ${e[@]+"${e[@]}"} COCKPIT_ST_OUT="$SF/out" \
+        tests/only.sh "$pat" 2>&1 </dev/null)
     rc=$?
-    f=$(cat "$SF/out" 2>/dev/null)
-    printf '%s %s %s|' "$rc" "$(printf '%s\n' "$o" | grep -c 'PASS')" \
-        "$(printf '%s\n' "$o" | grep -c 'FAIL')"
+    printf '%s\n' "$o" > "$SF/log"
+    { IFS= read -r f; IFS= read -r p; } < "$SF/out" 2>/dev/null
+    printf '%s %s %s|' "$rc" "$(grep -c 'PASS' "$SF/log")" "$(grep -c 'FAIL' "$SF/log")"
     case $f in
-        /tmp/cs.??????) [ -e "$f" ] && printf 'made, still there|' || printf 'made, gone|' ;;
+        /tmp/cs.[A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9])
+            [ -e "$f" ] && printf 'made, still there|' || printf 'made, gone|' ;;
         *) printf '%s|' "${f:-no folder reported}" ;;
     esac
-    sf_ls | comm -13 "$SF/before" - | tr '\n' ' '
+    # That run's own names, by its pid: another run's sockets there are not this row's.
+    case $p in
+        ''|*[!0-9]*) printf 'no pid reported' ;;
+        *) ls -A "/tmp/tmux-$sf_u" 2>/dev/null | grep -- "-$p\$" | tr '\n' ' ' ;;
+    esac
+}
+sf_made() {                   # the folder the last sf_run reported, when it is one mktemp made
+    local f=""
+    IFS= read -r f < "$SF/out" 2>/dev/null
+    case $f in
+        /tmp/cs.[A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9])
+            printf '%s' "$f" ;;
+    esac
 }
 if need_tmux "a run with no TMUX_TMPDIR"; then :
 # The nested socket is $SF/own/tmux-<uid>/cockpit-suite-<pid>: past 107 bytes no server binds.
 elif [ $((${#SF} + ${#UID} + 32)) -gt 107 ]; then
     skip_ "a run with no TMUX_TMPDIR (TMPDIR too long for the nested socket path)"
 else
-is "no TMUX_TMPDIR: both rows pass, the folder it made is gone, /tmp/tmux-<uid> gained none" \
-   "0 2 0|made, gone|" "$(sf_run -u TMUX_TMPDIR)"
+is "no TMUX_TMPDIR: the rows pass, the folder it made is gone, /tmp/tmux-<uid> has none of it" \
+   "0 3 0|made, gone|" "$(sf_run "$sf_one" '' -u TMUX_TMPDIR)"
 is "a TMUX_TMPDIR naming a missing folder: the same, and that folder is not made" \
-   "0 2 0|made, gone| missing" \
-   "$(sf_run TMUX_TMPDIR="$SF/none") $([ -e "$SF/none" ] && echo made || echo missing)"
+   "0 3 0|made, gone| missing" \
+   "$(sf_run "$sf_one" '' TMUX_TMPDIR="$SF/none") $(
+      [ -e "$SF/none" ] && echo made || echo missing)"
 is "a caller's own TMUX_TMPDIR is kept, and its server's folder is in it" \
-   "0 2 0|kept $SF/own| in it" \
-   "$(sf_run TMUX_TMPDIR="$SF/own") $([ -d "$SF/own/tmux-$(id -u)" ] && echo 'in it' || echo 'not')"
-for sf_s in "$SF"/own/tmux-*/*; do
+   "0 3 0|kept $SF/own| in it" \
+   "$(sf_run "$sf_one" '' TMUX_TMPDIR="$SF/own") $(
+      [ -d "$SF/own/tmux-$sf_u" ] && echo 'in it' || echo 'not')"
+# $SF/rel as a relative name from the checkout, where the nested run starts: up to / and
+# down again, so a run that mishandled it writes nothing into the checkout.
+sf_abs=$(cd "$SF/rel" && pwd -P)
+sf_rel="$(cd "$DIR" && pwd -P | sed 's|/[^/]*|../|g')${sf_abs#/}"
+is "a relative TMUX_TMPDIR is kept as that folder's full path, and its server is in it" \
+   "0 3 0|kept $sf_abs| in it" \
+   "$(sf_run "$sf_one" '' TMUX_TMPDIR="$sf_rel") $(
+      [ -d "$SF/rel/tmux-$sf_u" ] && echo 'in it' || echo 'not')"
+for sf_s in "$SF"/own/tmux-*/* "$SF"/rel/tmux-*/*; do
     [ -S "$sf_s" ] && "$TMUX_REAL" -S "$sf_s" kill-server >/dev/null 2>&1
 done
-# The tail's row, tt_left: this prelude with one block that starts a server on a name it
-# puts in no list. The run must fail on that name and leave its folder, since a server is
-# still on a socket in it; the folder goes once the server is ended by that socket.
-# The block's title line is printed, not written here: only.sh and par.sh cut this file at
-# every line that starts one.
-{ sed '/^echo "== /,$d' "$DIR/tests/run.sh"
-  printf 'echo "%s leak %s"\n' == ==
-  cat <<'SFEOF'
+# The rest run this prelude with one block of the row's own. A block's title line is
+# printed, not written here: only.sh and par.sh cut this file at every line that starts one.
+sf_fix() {                    # <file> <a line put after the folder's export, or ''> < the block
+    { SF_INJ=$2 awk '{ print }
+          ENVIRON["SF_INJ"] != "" && $0 == "    export TMUX_TMPDIR=\"$SUITE_TT\"" {
+              print ENVIRON["SF_INJ"] }' <(sed '/^echo "== /,$d' "$DIR/tests/run.sh")
+      printf 'echo "%s fixture %s"\n' == ==
+      cat
+    } > "$1"
+}
+sf_tell='printf "%s\n%s\n" "$SUITE_TT" "$$" > "$COCKPIT_ST_OUT"'
+# The ways out of the prelude once the folder is made: each must take the folder with it,
+# which holds only while the exit trap is armed before the folder is made.
+sf_fix "$SF/fatal.sh" "    $sf_tell; fatal 'stopped here by the #1098 block'" <<'SFEOF'
+:
+SFEOF
+is "a FATAL in the prelude after the folder is made: exit 1, and the folder is gone" \
+   "1 0 0|made, gone|" "$(sf_run '^fixture' "$SF/fatal.sh" -u TMUX_TMPDIR)"
+sf_fix "$SF/term.sh" "    $sf_tell; kill -TERM \$\$" <<'SFEOF'
+:
+SFEOF
+is "a TERM there: ended by it, and the folder is gone" \
+   "143 0 0|made, gone|" "$(sf_run '^fixture' "$SF/term.sh" -u TMUX_TMPDIR)"
+# A mktemp that fails for the folder's template and passes every other call on, and a tmux
+# that notes each call: a run with no folder must make none, its cleanup's included, since
+# with no TMUX_TMPDIR a call goes to /tmp/tmux-<uid>.
+printf '#!/bin/sh\ncase "$*" in *cs.XXXXXX*) exit 1 ;; esac\nexec %s "$@"\n' \
+    "$(tq "$(command -v mktemp)")" > "$SF/bin/mktemp"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> %s\nexec %s "$@"\n' \
+    "$(tq "$SF/tmux.calls")" "$(tq "$TMUX_REAL")" > "$SF/bin/tmux"
+chmod +x "$SF/bin/mktemp" "$SF/bin/tmux"
+sf_fix "$SF/plain.sh" '' <<'SFEOF'
+printf '%s\n%s\n' "${SUITE_TT:-none made}" "$$" > "$COCKPIT_ST_OUT"
+SFEOF
+is "the folder's mktemp failing: the run ends 1 before any block, says why, calls no tmux" \
+   "1 0 0|no folder reported|no pid reported 1 0" \
+   "$(sf_run '^fixture' "$SF/plain.sh" -u TMUX_TMPDIR PATH="$SF/bin:$PATH") $(
+      grep -c 'FATAL.* no socket folder: mktemp -d /tmp/cs.XXXXXX failed' "$SF/log") $(
+      cat "$SF/tmux.calls" 2>/dev/null | wc -l | tr -d ' ')"
+# The tail's rows, tt_left: a server on a name the block puts in no list, one on a name it
+# does put in SOCKS, and a folder that is no socket. The run must fail on the first and the
+# last, by name, and not on the second; its folder stays, since a server is still on a
+# socket in it, and goes once that server is ended by its socket.
+sf_fix "$SF/leak.sh" '' <<'SFEOF'
 "$TMUX_REAL" -L "cockpit-stleak-$$" -f /dev/null new-session -d -s l -c "$STATE" \
     'exec sleep 300' </dev/null >/dev/null 2>&1
-printf '%s\n' "$SUITE_TT" > "$COCKPIT_ST_OUT"
+SOCKS="$SOCKS cockpit-stknown-$$"
+"$TMUX_REAL" -L "cockpit-stknown-$$" -f /dev/null new-session -d -s k -c "$STATE" \
+    'exec sleep 300' </dev/null >/dev/null 2>&1
+mkdir "$TMUX_TMPDIR/stray"
+printf '%s\n%s\n' "$SUITE_TT" "$$" > "$COCKPIT_ST_OUT"
 SFEOF
-} > "$SF/leak.sh"
-sf_o=$(cd "$DIR" && env -u TMUX -u TMUX_TMPDIR ONLY_RUN="$SF/leak.sh" \
-    COCKPIT_ST_OUT="$SF/out" tests/only.sh '^leak' 2>&1 </dev/null); sf_rc=$?
-sf_f=$(cat "$SF/out" 2>/dev/null)
-case $sf_f in
-/tmp/cs.??????)
-    is "a socket no cleanup knows: a failed row naming it, the run says where, the folder stays" \
-       "1 1 1 there" \
-       "$sf_rc $(printf '%s\n' "$sf_o" | grep -c "every socket in the suite's own folder") $(
-          printf '%s\n' "$sf_o" | grep -c "left in its socket folder $sf_f: .*cockpit-stleak-"
-          ) $([ -d "$sf_f" ] && echo there || echo gone)"
+sf_o=$(sf_run '^fixture' "$SF/leak.sh" -u TMUX_TMPDIR)
+sf_f=$(sf_made)
+if [ -n "$sf_f" ]; then
+    is "a socket no cleanup knows and a stray folder: a failed row each, the folder stays" \
+       "1 0 2|made, still there| 1 1 0 1" \
+       "$sf_o $(grep -c "FAIL.* every socket in the suite's own folder" "$SF/log") $(
+          grep -c "FAIL.* the suite's own socket folder holds tmux's folder" "$SF/log") $(
+          grep -c 'got .*cockpit-stknown-' "$SF/log") $(
+          grep -c "left in its socket folder $sf_f: .*cockpit-stleak-" "$SF/log")"
     for sf_s in "$sf_f"/tmux-*/cockpit-stleak-*; do
         [ -S "$sf_s" ] || continue
         "$TMUX_REAL" -S "$sf_s" kill-server >/dev/null 2>&1; rm -f "$sf_s"
     done
-    rmdir "$sf_f/tmux-$(id -u)" "$sf_f" 2>/dev/null
-    is "and with that server ended by its socket, the folder is removed" "gone" \
-       "$([ -e "$sf_f" ] && echo "still there: $(ls -A "$sf_f"/* 2>&1)" || echo gone)" ;;
-*) bad "the leak run reports the folder it made" "/tmp/cs.<6>" "${sf_f:-nothing}: $sf_o" ;;
-esac
+    rmdir "$sf_f/stray" "$sf_f/tmux-$sf_u" "$sf_f" 2>/dev/null
+    is "and with that server ended by its socket and the stray folder gone, it is removed" \
+       "gone" "$([ -e "$sf_f" ] && echo "still there: $(ls -A "$sf_f"/* 2>&1)" || echo gone)"
+else
+    bad "the leak run reports the folder it made" "/tmp/cs.<6>" "$sf_o: $(tail -3 "$SF/log")"
 fi
-unset -f sf_ls sf_run
-unset SF sf_s sf_o sf_rc sf_f
+fi
+unset -f sf_run sf_made sf_fix
+unset SF sf_u sf_one sf_abs sf_rel sf_tell sf_s sf_o sf_f
 
 # tests: scripts/tui-fetch
 echo "== cockpit-tui builds install the executable cargo built, not a guessed path (#591) =="
@@ -21687,7 +21778,9 @@ ir_run() {                    # <TMPDIR for the nested run> <label for the rows>
     # And for the run itself to be over: that socket closes early in its cleanup, and its own
     # server and socket go last. They are in the socket folder this run shares with it, where
     # this run's tail looks for what was left (#1098): the group is empty once the trap is done.
-    until_out gone ir_gone "$irp"
+    until_out gone ir_gone "$irp" ||
+        bad "$l: the interrupted run was over inside the wait" "its process group empty" \
+            "still running"
     is "$l: after TERM no server listens on the revdiff block's socket" "0" \
        "$(grep -cF " $irs" /proc/net/unix)"
 }
