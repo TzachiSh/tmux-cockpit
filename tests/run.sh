@@ -6671,7 +6671,8 @@ rqe_cmd() {                   # [VAR=value] -> the --loop root the popup was giv
     ( [ $# -eq 0 ] || export "${1%%=*}=${1#*=}"
       PATH="$RQESHIM:$PATH" XDG_STATE_HOME=$RQES "$DIR/scripts/tmux-review" --request "$RQEP" \
           >/dev/null 2>&1 )
-    sed -n 's/.* --loop \([^ ]*\) .*/\1/p' "$RQES/cmd" 2>/dev/null
+    # The root is %q-quoted in the popup's command: a blank in it is "\ ", not the root's end.
+    sed -n 's/.* --loop \(\(\\.\|[^ \\]\)*\) .*/\1/p' "$RQES/cmd" 2>/dev/null
 }
 rqewant=$(printf '%q' "$(git -C "$RQED/pane" rev-parse --show-toplevel)")
 is "the popup reviews the pane repo's root, nothing inherited" "$rqewant" "$(rqe_cmd)"
@@ -11318,16 +11319,19 @@ echo "== cockpit-tui board: an idle board on a busy agent captures once a tick (
 # counts capture-pane calls over 5 s of an idle board: about one a second.
 if need_tmux "the right pane's capture rate"; then :; else
 PR="cockpit-pr-$$"; SOCKS="$SOCKS $PR"; PRD=$(mktmpd)
+# COCKPIT_TMUX is an argv the board splits at blanks, so no quoting carries a path with one:
+# the stub sits in the run's blank-free folder (#992), which the run removes.
+PRT=$(mktemp -d "$COCKPIT_SUITE_NB/ct.XXXXXX")
 printf '#!/bin/sh\nprintf "%%s\\n" "$1" >> %s\nexec %s "$@"\n' "$(tq "$PRD/calls")" \
-    "$TMUX_REAL" > "$PRD/tmux"
-chmod +x "$PRD/tmux"
+    "$TMUX_REAL" > "$PRT/tmux"
+chmod +x "$PRT/tmux"
 "$TMUX_REAL" -L "$PR" -f /dev/null new-session -d -s t -x 120 -y 30 -c "$PRD" \
     'exec sleep 3600' >/dev/null 2>&1
 prp=$("$TMUX_REAL" -L "$PR" new-window -d -P -F '#{pane_id}' -t t: -c "$PRD" \
     "exec -a claude sh -c 'while :; do date +%s%N; sleep 0.05; done'")
 "$TMUX_REAL" -L "$PR" set -p -t "$prp" @panestate running >/dev/null 2>&1
 PRW=$("$TMUX_REAL" -L "$PR" new-window -d -P -F '#{pane_id}' -t t: -c "$PRD" \
-    "env COCKPIT_TMUX=$(tq "$PRD/tmux") XDG_STATE_HOME=$(tq "$PRD") COCKPIT_LOG=$(tq "$PRD/tui.log") $(tq "$COCKPIT_TUI_BIN") board")
+    "env COCKPIT_TMUX=$(tq "$PRT/tmux") XDG_STATE_HOME=$(tq "$PRD") COCKPIT_LOG=$(tq "$PRD/tui.log") $(tq "$COCKPIT_TUI_BIN") board")
 if until_cap "$PR" "$PRW" '*live · *line*'; then
     : > "$PRD/calls"
     sleep 5   # a rate: the count over a fixed window is the measurement
@@ -11356,9 +11360,10 @@ echo "== cockpit-tui board: a held j recaptures, and fetches only on the tick (#
 # let happen.
 if need_tmux "a held j on the board"; then :; else
 PJ="cockpit-pj-$$"; SOCKS="$SOCKS $PJ"; PJD=$(mktmpd)
+PJT=$(mktemp -d "$COCKPIT_SUITE_NB/ct.XXXXXX")    # as above: no blank (#992)
 printf '#!/bin/sh\nprintf "%%s\\n" "$1" >> %s\nexec %s "$@"\n' \
-    "$(tq "$PJD/calls")" "$TMUX_REAL" > "$PJD/tmux"
-chmod +x "$PJD/tmux"
+    "$(tq "$PJD/calls")" "$TMUX_REAL" > "$PJT/tmux"
+chmod +x "$PJT/tmux"
 "$TMUX_REAL" -L "$PJ" -f /dev/null new-session -d -s t -x 120 -y 30 -c "$PJD" \
     'exec sleep 3600' >/dev/null 2>&1
 for s in alpha beta; do
@@ -11366,7 +11371,7 @@ for s in alpha beta; do
         "printf 'screen-of-$s\n'; exec -a claude sleep 3600")
     "$TMUX_REAL" -L "$PJ" set -p -t "$pjp" @panestate running >/dev/null 2>&1
 done
-PJENV="COCKPIT_TMUX=$(tq "$PJD/tmux") XDG_STATE_HOME=$(tq "$PJD") COCKPIT_LOG=$(tq "$PJD/tui.log")"
+PJENV="COCKPIT_TMUX=$(tq "$PJT/tmux") XDG_STATE_HOME=$(tq "$PJD") COCKPIT_LOG=$(tq "$PJD/tui.log")"
 PJW=$("$TMUX_REAL" -L "$PJ" new-window -d -P -F '#{pane_id}' -t t: -c "$PJD" \
     "env $PJENV $(tq "$COCKPIT_TUI_BIN") board")
 pj_n() { local n; n=$(grep -cx "$1" "$PJD/calls" 2>/dev/null); printf '%s' "${n:-0}"; }
@@ -11418,9 +11423,10 @@ echo "== cockpit-tui board: the tiles capture in one tmux call, fetch or capture
 # a capture after a list-panes is a fetch's, any other a capture-only job's.
 if need_tmux "the tiles' batched capture"; then :; else
 PB6="cockpit-pt-$$"; SOCKS="$SOCKS $PB6"; BTD=$(mktmpd)
+BTT=$(mktemp -d "$COCKPIT_SUITE_NB/ct.XXXXXX")    # as above: no blank (#992)
 printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> %s\nexec %s "$@"\n' \
-    "$(tq "$BTD/calls")" "$TMUX_REAL" > "$BTD/tmux"
-chmod +x "$BTD/tmux"
+    "$(tq "$BTD/calls")" "$TMUX_REAL" > "$BTT/tmux"
+chmod +x "$BTT/tmux"
 "$TMUX_REAL" -L "$PB6" -f /dev/null new-session -d -s t -x 120 -y 40 -c "$BTD" \
     'exec sleep 3600' >/dev/null 2>&1
 for s in alpha beta gamma; do
@@ -11428,7 +11434,7 @@ for s in alpha beta gamma; do
         "printf 'screen-of-$s\n'; exec -a claude sleep 3600")
     "$TMUX_REAL" -L "$PB6" set -p -t "$btp" @panestate running >/dev/null 2>&1
 done
-BTENV="COCKPIT_TMUX=$(tq "$BTD/tmux") XDG_STATE_HOME=$(tq "$BTD") COCKPIT_LOG=$(tq "$BTD/tui.log")"
+BTENV="COCKPIT_TMUX=$(tq "$BTT/tmux") XDG_STATE_HOME=$(tq "$BTD") COCKPIT_LOG=$(tq "$BTD/tui.log")"
 BTW=$("$TMUX_REAL" -L "$PB6" new-window -d -P -F '#{pane_id}' -t t: -c "$BTD" \
     "env $BTENV $(tq "$COCKPIT_TUI_BIN") board")
 bt_caps() {                   # each capturing call: fetch|look, then how many it captured
@@ -15147,7 +15153,7 @@ if RSLOC=$(utf8_loc); then
         "$TMUX_REAL" -L "$RS" set -p -t "$RL" @panestate running
         "$TMUX_REAL" -L "$RS" set -p -t "$RL" @cockpit_session "$SID"
         R=$(rs_agent "$SID")
-        RS_ENV="LOCPATH=$RSLOC LC_ALL=en_US.UTF-8" rs_run "resume $R" "$SID" >/dev/null
+        RS_ENV="LOCPATH=$(tq "$RSLOC") LC_ALL=en_US.UTF-8" rs_run "resume $R" "$SID" >/dev/null
         until_file "$RSD/ran" '?*'
         is "in en_US.UTF-8 a session in a $rsu pane is no live copy: the resume runs" \
             "[$RSD/work][--resume][$SID]" "$(cat "$RSD/ran" 2>/dev/null)"
@@ -15269,7 +15275,7 @@ EBX=$("$TMUX_REAL" -L "$EB" new-window -d -n nosid -c "$EBD" -P -F '#{pane_id}' 
 # in the pane's process tree under a foreground `sleep`. Live, so it keeps ▲.
 ln -s "$(command -v sleep)" "$EBD/claude"
 EBT=$("$TMUX_REAL" -L "$EB" new-window -d -n editing -c "$EBD" -P -F '#{pane_id}' -t t: \
-    "sh -c '$EBD/claude 3600 & exec sleep 3600'")
+    "sh -c $(tq "$(tq "$EBD/claude") 3600 & exec sleep 3600")")
 "$TMUX_REAL" -L "$EB" set -p -t "$EBT" @panestate needs-input
 "$TMUX_REAL" -L "$EB" set -p -t "$EBT" @panestate_msg 'Allow this edit?'
 until_out sleep "$TMUX_REAL" -L "$EB" display -p -t "$EBT" '#{pane_current_command}' \
