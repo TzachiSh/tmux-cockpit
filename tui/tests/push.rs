@@ -427,20 +427,20 @@ fn a_cockpit_tui_survives_sigusr1() {
     assert!(clear, "USR1 was blocked in the board, which then never gets it");
 }
 
-/// The USR1 bit of `pid`'s SigBlk, read from /proc: None where there is none.
-fn usr1_blocked(pid: u32) -> Option<u64> {
-    let s = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
-    let m = s.lines().find_map(|l| l.strip_prefix("SigBlk:"))?;
-    Some((u64::from_str_radix(m.trim(), 16).ok()? >> (libc::SIGUSR1 - 1)) & 1)
-}
-
-/// Whether `pid` shows USR1 unblocked within [`CAP`], `after_read` handed each read.
-/// Polled, never read once: a process inside a spawn of its own shows every signal
-/// blocked until the spawn returns, and a board in its tmux read may be there (#1061).
-/// A red with the mask still blocked costs the whole CAP, a green returns at once.
+/// Whether `pid` shows USR1 unblocked within [`CAP`], `after_read` handed each read
+/// of the USR1 bit of its SigBlk, None where /proc has none. Polled, never read once:
+/// a process inside a spawn of its own shows every signal blocked until the spawn
+/// returns, and a board in its tmux read may be there (#1061). The read lives here
+/// alone, so no row can read the mask once. A red with the mask still blocked costs
+/// the whole CAP, a green returns at once.
 fn usr1_unblocked(pid: u32, mut after_read: impl FnMut(Option<u64>)) -> bool {
+    let usr1_blocked = || {
+        let s = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+        let m = s.lines().find_map(|l| l.strip_prefix("SigBlk:"))?;
+        Some((u64::from_str_radix(m.trim(), 16).ok()? >> (libc::SIGUSR1 - 1)) & 1)
+    };
     until(|| {
-        let bit = usr1_blocked(pid);
+        let bit = usr1_blocked();
         after_read(bit);
         bit == Some(0)
     })
