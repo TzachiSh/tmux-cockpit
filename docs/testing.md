@@ -44,9 +44,68 @@ when it ends, also on a FATAL and on HUP, INT or TERM. A run ended by KILL leave
 with `flop/tmux` inside. Nothing sweeps it, and it is safe to remove once no
 run is going.
 
+The suite drops what its caller's environment could hand to a script under test:
+`XDG_STATE_HOME`, `XDG_CONFIG_HOME`, `XDG_BIN_HOME`, `XDG_CACHE_HOME`,
+`XDG_DATA_HOME`, `COCKPIT_LOG`, `VISUAL`, `EDITOR`, and the switches
+`COCKPIT_READONLY`, `COCKPIT_PANEL_NOTE`, `COCKPIT_REVIEW_BASE`,
+`COCKPIT_PROC_DIR`, `COCKPIT_POLL_KEY`, `REVDIFF_CONFIG`, `REVDIFF_EXCLUDE`,
+`CLAUDE_CODE_SESSION_KIND`, `COCKPIT_TMUX`, `COCKPIT_CLAUDE` and
+`COCKPIT_ACTION` (#1078). A block that needs one sets it itself. Other names
+the scripts and the board read are still left to the caller, none of which
+names a place to write: `NO_COLOR`, `COCKPIT_GLYPHS`, the `COCKPIT_PANEL_*`
+and `TM_*` switches and a dozen more, listed in #1100.
+Before that fix a run from a shell that exported them wrote there. If you ran
+the suite that way, you may find three symlinks in your `XDG_BIN_HOME`, `tm`,
+`tmux-branch` and `tmux-open-path`, pointing into the checkout you tested (your
+own install's links point into your plugin folder and are not these), a file
+under `$XDG_CACHE_HOME/tmux-cockpit/panel/prompts/`, and lines from test boards
+in the file `COCKPIT_LOG` names. The file and the lines are safe to remove. So
+are the links, unless the checkout you tested is your plugin folder: there they
+are your install's own links, with the same names and the same targets. With
+`COCKPIT_TMUX` exported, the suite's test boards sent their tmux commands to the
+server that value names: they listed its panes and added `wait-for` entries to
+its global `@cockpit_board_wake` option. A board takes its own entry out when it
+exits; one that was killed leaves an entry that signals a channel nobody waits
+on. With `COCKPIT_CLAUDE` exported, one panel block ran the program it names as
+`claude -p`, with the test pane's text: a model call, if it was the real one. A
+run without
+those variables exported left nothing: everything went under the suite's own
+`HOME`, which it deletes.
+
 With no runtime dir to use, such a run ends at its start and says what it needs:
 set `XDG_RUNTIME_DIR` to a folder that exists, can be written to and has no
 blank in its path.
+
+### The suite's tmux sockets
+
+Every tmux server the suite starts is on a socket of its own name, under
+`TMUX_TMPDIR`. With no `TMUX_TMPDIR`, or one naming a folder that is not there,
+tmux would put those sockets in `/tmp/tmux-<uid>`, beside your own server's. So
+a run of `tests/run.sh` (`tests/only.sh` and each `tests/par.sh` shard too)
+then makes a folder of its own, `/tmp/cs.<6>`, mode 700, and exports it as
+`TMUX_TMPDIR` before its first tmux call (#1098). It is in `/tmp` and short
+because a socket's path can hold 107 bytes. It holds sockets only. A run inside
+the run finds it set and uses it.
+
+A `TMUX_TMPDIR` you set yourself, naming a folder that exists, is kept. A
+relative one is kept as that folder's full path: tmux reads the variable in
+every call, and a call made after a `cd` would not find a relative one again.
+
+The run removes its folder with `rmdir` when it ends, also on a FATAL and on
+HUP, INT or TERM. A socket in it that is neither the suite's own server's nor
+a name a block put in `SOCKS` fails the run, with the row "every socket in the
+suite's own folder is one cleanup knows". So does anything in the folder beside
+tmux's own `tmux-<uid>`. The folder then stays, and the run
+names what is in it on stderr: `tests/run.sh: left in its socket folder …`. A
+run ended by KILL leaves it too. Nothing sweeps `/tmp/cs.*`. One is safe to
+remove once no server answers on a socket inside it.
+
+Those rows hold only where the suite made the folder. In a folder you named,
+other runs' sockets may sit beside this run's, so nothing is asked of it. On
+CI one leg, the one marked `bare` in `shell-suite.yml`'s matrix (the
+ubuntu-26.04 one today), starts the suite with no `TMUX_TMPDIR` and so runs
+the suite's own folder and the rows. The other legs
+set a private folder themselves and do not.
 
 ### Running the tui tests
 

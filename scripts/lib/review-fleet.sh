@@ -11,7 +11,7 @@ review_pane() {
     # umask in the subshell, so the parents and the store are born private.
     # [ ! -L ]: a store path is derivable, so a planted symlink is refused.
     (umask 077; mkdir -p -- "$sess" && [ ! -L "$store" ] && : >> "$store") || {
-        tmux display-message "$(fesc "cockpit: could not create $sess")" 2>/dev/null
+        dmsg "cockpit: could not create $sess" 2>/dev/null
         return 1
     }
     REVIEW_PANE_ID=$pane "$SELF" --loop "$dir" "$store"
@@ -106,7 +106,7 @@ main_entry() {
     fi
     dir=$(pane_workdir "$pane")
     if [ -z "$dir" ]; then
-        tmux display-message "$(fesc "cockpit: pane $pane is gone")" 2>/dev/null
+        dmsg "cockpit: pane $pane is gone" 2>/dev/null
         return 0
     fi
     review_pane "$pane" "$(git_root "$dir")"

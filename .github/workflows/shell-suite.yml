@@ -30,6 +30,13 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-24.04, ubuntu-26.04]
+        # One leg starts the suite bare, with no TMUX_TMPDIR, as a plain `make test` does
+        # (#1098). Named here and not by an image's name in a step's condition: if this os
+        # leaves the list above, the entry no longer merges into a leg and becomes a leg of
+        # its own, so the bare run cannot drop out of the workflow unseen.
+        include:
+          - os: ubuntu-26.04
+            bare: true
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     env:
@@ -60,15 +67,26 @@ jobs:
       # A private, short tmux socket dir (#803). With none, SOCKDIR is /tmp/tmux-<uid>, the
       # same path a test could hardcode, so such a test stayed green here (#784). Short for
       # the 108-byte socket path limit (#766).
+      # Not on the bare leg: there the suite makes its own folder, /tmp/cs.<6>, and its rows
+      # for what is left in it run too (#1098). The step after the suite, on every leg, is
+      # then the check that nothing of the suite's reached /tmp/tmux-<uid>.
       - name: Private TMUX_TMPDIR
+        if: ${{ !matrix.bare }}
         run: |
           d="$RUNNER_TEMP/tx"; mkdir -p "$d"
           echo "TMUX_TMPDIR=$d" >> "$GITHUB_ENV"
           printf 'TMUX_TMPDIR=%s (%d bytes)\n' "$d" "${#d}"
+      # The bare leg must be bare: a TMUX_TMPDIR set for it by anything would make it one
+      # more private leg, and the suite's own folder would run nowhere on CI.
+      - name: The bare leg has no TMUX_TMPDIR
+        if: ${{ matrix.bare }}
+        run: |
+          [ -z "${TMUX_TMPDIR:-}" ] || { echo "TMUX_TMPDIR is set on the bare leg: $TMUX_TMPDIR"; exit 1; }
+          echo "no TMUX_TMPDIR: the suite makes its own socket folder"
       - run: J=4 make test-par
       # Nothing of the suite's may be left in the default socket dir once it is done (#811).
-      # TMUX_TMPDIR is private above, so a test that hardcodes /tmp/tmux-<uid> leaks there,
-      # and no row would see it unless it looked.
+      # TMUX_TMPDIR is private above, or the suite's own folder on the bare leg, so a test
+      # that hardcodes /tmp/tmux-<uid> leaks there, and no row would see it unless it looked.
       - name: No suite socket left in /tmp/tmux-<uid>
         if: success() || failure()
         run: |

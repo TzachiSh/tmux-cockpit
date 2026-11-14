@@ -63,7 +63,7 @@ tmux set-option -gq @cockpit_home_re "$(printf '%s' "$home" | sed 's/[][\\.*^$+?
 # The script's path, shell-quoted, for the formats and hooks to expand: a format's
 # value reaches sh as it is, where a tmux "..." string would eat sq()'s backslashes.
 tmux set-option -g @cockpit_where_cmd "$(sq "$DIR/scripts/tmux-where")"
-tmux source-file "$DIR/scripts/lib/statusbar.conf"
+tmux source-file "$(gesc "$DIR/scripts/lib/statusbar.conf")"
 # NO_COLOR: every slot is the terminal's default colour (the slots are the bar's).
 if [ -n "${NO_COLOR:-}" ] && [ "$(tmux show-option -gqv @cockpit_statusbar)" != off ]; then
     set --
@@ -146,7 +146,7 @@ give_back() {                 # <key> -> 1 when tmux's own binding could not be 
         case "$err" in "unknown key: "*) tmux unbind-key -T prefix "$k"; return 0 ;; esac
     fi
     err="tmux-cockpit: could not read tmux's own binding for $k (${err:-no answer})"
-    tmux display-message "$(fesc "$err; left it bound, the next load tries again")"
+    dmsg "$err; left it bound, the next load tries again"
     return 1
 }
 # Still cockpit's <name> binding: its note, or, from a load before the notes, no
@@ -155,6 +155,11 @@ give_back() {                 # <key> -> 1 when tmux's own binding could not be 
 # command, and only until a load has noted every key (@cockpit_notes): after
 # that a note-less key is the user's, whatever it runs.
 notes=$(tmux show-option -gqv @cockpit_notes)
+# The pre-notes panel key ran "$(sq <panel>) -p ...", and #{key_command} prints that
+# argument in a "...", with \ " $ escaped: the raw $DIR missed a ' or a " in it (#1086).
+legacy_panel=$(sq "$DIR/scripts/cockpit-panel")
+legacy_panel=${legacy_panel//\\/\\\\}; legacy_panel=${legacy_panel//\"/\\\"}
+legacy_panel=${legacy_panel//\$/\\\$}
 owned() {                     # <name> <key>
     local nc
     nc=$(tmux list-keys -T prefix -F "#{key_note}"$'\037'"#{key_command}" "$2" 2>/dev/null)
@@ -162,9 +167,8 @@ owned() {                     # <name> <key>
         "cockpit: $1") return 0 ;;
         "") [ -z "$notes" ] || return 1
             case "$1:${nc#*$'\037'}" in
-                menu:*'display-menu -T "#[align=centre]'*|panel:*"$DIR/scripts/cockpit-panel"*)
-                    tmux display-message "$(fesc \
-                        "tmux-cockpit: $2 was the $1 key before the key notes; giving it back")"
+                menu:*'display-menu -T "#[align=centre]'*|panel:*"$legacy_panel"*)
+                    dmsg "tmux-cockpit: $2 was the $1 key before the key notes; giving it back"
                     return 0 ;;
             esac ;;
     esac
@@ -294,7 +298,9 @@ Q_PANEL=$(sq "$DIR/scripts/cockpit-panel")
 pmode=$(tmux show-option -gqv @cockpit_panel_mode)
 case "$pmode" in
     ''|auto|pc|tablet) ;;
-    *) tmux display-message "tmux-cockpit: @cockpit_panel_mode is [$pmode]; use auto, pc or tablet (auto for now)"; pmode=auto ;;
+    # dmsg: the value went in raw and a #( in it ran (#1096).
+    *) dmsg "tmux-cockpit: @cockpit_panel_mode is [$pmode]; use auto, pc or tablet (auto for now)"
+       pmode=auto ;;
 esac
 if [ -n "$pk" ]; then
     ckey panel "$pk" "${SRC_SET[@]}" display-popup -E -e "COCKPIT_PANEL_MODE=${pmode:-auto}" -w 94% -h 90% \
@@ -336,8 +342,8 @@ fi
 # Required (#199). Offline: one --version, never a fetch, on every load.
 tv=$(tui_check)
 case $? in
-    1) tmux display-message "tmux-cockpit: cockpit-tui is missing; run $DIR/install.sh" ;;
-    2) tmux display-message "tmux-cockpit: cockpit-tui $tv is older than $TUI_MIN; run $DIR/install.sh" ;;
+    1) dmsg "tmux-cockpit: cockpit-tui is missing; run $DIR/install.sh" ;;
+    2) dmsg "tmux-cockpit: cockpit-tui $tv is older than $TUI_MIN; run $DIR/install.sh" ;;
 esac
 
 # Opt-in: this runs on every config reload, which must not wait on curl.
@@ -431,9 +437,11 @@ row 'Move window to a session...' M "$mk"
 # The typed name is staged with %%% (quotes kept) and renamed by tmux-rename,
 # which escapes it: rename-window and rename-session expand formats, and a bare
 # %% let a " end the string (#289). The id is the one the menu was opened on
-# (expanded once here). The path is escaped twice: the menu expands the
-# item, then run-shell its command.
-Q_REN=$(fesc "$(fesc "$(sq "$DIR/scripts/tmux-rename")")")
+# (expanded once here). The path waits in an option, as @cockpit_where_cmd does:
+# the item is a tmux "..." string, whose parser ate a \, a $ or a quote in it
+# (#1071). ##{ is the menu's expansion, the second # run-shell's.
+tmux set-option -g @cockpit_rename_cmd "$(sq "$DIR/scripts/tmux-rename")"
+Q_REN='##{@cockpit_rename_cmd}'
 rows+=('Rename window' ',' "command-prompt -p '(rename-window)' -I '##W' \"set -g @cockpit_rename_to \\\"%%%\\\" ; run-shell \\\"$Q_REN window '#{window_id}'\\\"\"")
 rows+=('#{?#{e|>:#{window_panes},1},Kill pane…,Close window…}' x \
        "confirm-before -p '#{?#{e|>:#{window_panes},1},Kill pane ##P?,Close window ##I?} (y/n)' kill-pane")
