@@ -228,10 +228,11 @@ PATH="$SHIM:$SUITE_CLAUDE:$(path_without_mnt "$PATH")"; export PATH
 # pane's argv0, and where it is refused the pane is a four-hour sleep. The longest run
 # measured took about 90 minutes, so four hours outlasts a run (#981) and a server left behind
 # still ends by itself; on such a platform it can stay for those four hours, which is #1022.
-# What the tail follows is an empty file in a folder of its own. uutils's tail watches the
-# folder of the file it follows, so with /dev/null it woke on every write there by any
-# process on the box: 2% to 8% of a core for each pane beside the suite's own blocks (#1029).
-# Nothing else may be written into that folder. The path reaches the pane's shell in the
+# What the tail follows is an empty file in a folder of its own. uutils's tail follows by
+# inotify. On /dev/null the watch sits on the node itself, so the pane woke on every open of
+# /dev/null by any process on the box: 2% to 8% of a core for each pane beside the suite's
+# own blocks (#1029). On a regular file the watch sits on the folder that holds it, so
+# nothing else may be written into that folder. The path reaches the pane's shell in the
 # server's environment, never in the command string: a TMPDIR may hold a space.
 SUITE_IDLE="$STATE/pane/idle"; mkdir -p "$STATE/pane"; : > "$SUITE_IDLE"
 if ( exec -a claude tail --pid="$$" -n 0 /dev/null ) >/dev/null 2>&1; then
@@ -17903,12 +17904,13 @@ sg_run() {                    # <signal> <copy> -> status|carriers|left in TMPDI
 }
 # Whether this box's tail takes --pid, asked here and not read from the prelude's own answer:
 # a prelude that fell back to the sleep on a box whose tail has --pid must turn rows red, not
-# skip them (#1023). The run is the pane's -f form on a pid already gone, which ends by itself.
+# skip them (#1023). The run is a tail -f on a pid already gone, which ends by itself.
 ( : ) & sg_gone=$!; wait "$sg_gone" 2>/dev/null
 timeout 10 tail --pid="$sg_gone" -f /dev/null >/dev/null 2>&1
 case $? in
     0) sg_haspid=1 ;;
-    124) sg_haspid=0          # no answer is not "no --pid": said, not read as the fallback
+    124) sg_haspid=late       # no answer is not "no --pid": said here, and the rows that
+                              # need the answer are skipped, not read as the fallback
          bad "the block's own tail run answered inside 10 s" "0 or a refusal" "timed out" ;;
     *) sg_haspid=0 ;;
 esac
@@ -17932,6 +17934,8 @@ else
     # here: the status, the processes left and the listeners; the wait is sg_left's, bounded.
     if [ "$sg_haspid" = 0 ]; then
         skip_ "a KILL in the prelude (this tail has no --pid: the pane is a sleep)"
+    elif [ "$sg_haspid" = late ]; then
+        skip_ "a KILL in the prelude (the block's own tail run timed out)"
     else
         is "a KILL there leaves no process: the pane ended with its run" "137|0|0" \
            "$(sg_run KILL win | cut -d'|' -f1,2,4)"
@@ -17956,6 +17960,8 @@ sg_pane() {                   # [a folder to put first on PATH] -> the pane's ar
     a=${a%.}; printf '%s' "${a/"$SG/t/"tmp.*"/pane/idle"/STATE/pane/idle}"
 }
 if [ ! -r "/proc/$$/cmdline" ]; then skip_ "the suite pane's command line (no /proc)"
+elif [ "$sg_haspid" = late ]; then
+    skip_ "the suite pane's command line (the block's own tail run timed out)"
 elif [ "$sg_haspid" = 0 ]; then
     is "this tail has no --pid, so the pane is the four-hour sleep" \
        "claude 14400 " "$(sg_pane)"
@@ -17966,6 +17972,9 @@ else
        "claude 14400 " "$(sg_pane "$SG/notail")"
     is "and this run's own pane watches this run" "claude --pid=$$ -f $STATE/pane/idle " \
        "$(tr '\0' ' ' < "/proc/$(tmux display-message -p -t "$PANE" '#{pane_pid}')/cmdline")"
+    # At a TMPDIR with no space the pane's argv reads the same with the path pasted in.
+    is "the path is not in the pane's command string" \
+       'exec -a claude tail --pid=PID -f "$SUITE_IDLE"' "${SUITE_PANE/--pid=$$ /--pid=PID }"
     # uutils's tail wakes on a write to anything beside the file it follows (#1029).
     is "the file it follows is alone in its folder, and empty" "idle 0" \
        "$(ls -A "$STATE/pane" | tr '\n' ' ')$(wc -c < "$STATE/pane/idle")"
