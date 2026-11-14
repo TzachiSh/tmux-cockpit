@@ -17,7 +17,7 @@ use fake::Scratch;
 use std::ffi::OsStr;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Command, ExitStatus, Stdio};
 
 const RUNNER: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/claude-guard/runner");
 const STUB: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/claude-guard/claude");
@@ -581,29 +581,32 @@ fn an_exit_status_that_names_no_deadly_signal_is_passed_on_as_it_is() {
 }
 
 /// A stand-in that writes its pid to a file beside itself, then waits for a
-/// line on the fifo beside itself, starts `claude` and ends well.
-const WAITS: &str = "#!/bin/sh\necho $$ > \"$0.up\"\nread -r _ < \"$0.go\"\nclaude late 2>/dev/null\nexit 0\n";
+/// line on the fifo beside itself, starts `claude` and exits with its first
+/// argument, 0 without one.
+const WAITS: &str = "#!/bin/sh\necho $$ > \"$0.up\"\nread -r _ < \"$0.go\"\n\
+                     claude late 2>/dev/null\nexit \"${1:-0}\"\n";
 
 /// `signal` sent to the runner alone while its binary runs: how the runner
 /// ended, whether the start the binary made afterwards was reported, and what
 /// was left in the temp folder.
 fn sent_to_the_runner(signal: i32) -> (Option<i32>, bool, usize) {
     let r = Rig::new(&format!("sent{signal}"));
-    let (status, said, left) = signalled(&r, &mut r.command(), signal);
+    let (status, said, left) = signalled(&r, &mut r.command(), signal, &[]);
     (status.signal(), said, left)
 }
 
-/// `c`, a runner of the rig `r`, started on a [`WAITS`] stand-in and sent
-/// `signal` alone while the stand-in waits: how it ended, whether the start
-/// the stand-in made afterwards was reported, and what was left in the temp
-/// folder.
-fn signalled(r: &Rig, c: &mut Command, signal: i32) -> (std::process::ExitStatus, bool, usize) {
+/// `c`, a runner of the rig `r`, started on a [`WAITS`] stand-in handed `args`
+/// and sent `signal` alone while the stand-in waits: how it ended, whether the
+/// start the stand-in made afterwards was reported, and what was left in the
+/// temp folder.
+fn signalled(r: &Rig, c: &mut Command, signal: i32, args: &[&str]) -> (ExitStatus, bool, usize) {
     let exe = r.binary(TEST, WAITS);
     let (up, go) = (r.0.join(format!("{TEST}.up")), format!("{}.go", exe.display()));
     let fifo = std::ffi::CString::new(go.as_str()).unwrap();
     // SAFETY: `fifo` is a NUL-terminated path under the rig's folder.
     assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
-    let child = c.arg(&exe).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().unwrap();
+    c.arg(&exe).args(args).stdout(Stdio::null()).stderr(Stdio::piped());
+    let child = c.spawn().unwrap();
     appears(&up);
     // SAFETY: the pid of this row's own child, held and not yet waited for.
     assert_eq!(unsafe { libc::kill(child.id() as libc::pid_t, signal) }, 0);
@@ -649,6 +652,30 @@ fn the_signal_row_holds_in_a_binary_handed_an_ignored_int_and_hup() {
     let said = String::from_utf8_lossy(&out.stdout);
     let one_passed = said.contains(" 1 passed; 0 failed");
     assert_eq!((out.status.code(), one_passed), (Some(0), true), "{said}");
+}
+
+/// The runner started with INT or HUP ignored, as `&` from a script and nohup
+/// start it. A shell cannot trap a signal ignored when it started, so that
+/// signal ends nothing: the log is still read, the folder removed, the start
+/// refused and reported, and the runner ends with its binary's status, 7 here
+/// (docs/testing.md). This one start undoes the rig's reset on purpose (#1061).
+#[test]
+fn a_runner_started_with_a_signal_ignored_still_reads_the_log_and_ends_as_its_binary() {
+    use std::os::unix::process::CommandExt;
+    for signal in [libc::SIGINT, libc::SIGHUP] {
+        let r = Rig::new(&format!("ignored{signal}"));
+        let mut c = r.command();
+        let ignore = move || {
+            // SAFETY: signal is async-signal-safe and allocates nothing.
+            unsafe { libc::signal(signal, libc::SIG_IGN) };
+            Ok(())
+        };
+        // SAFETY: as above. Added after the rig's reset, so it runs after it.
+        unsafe { c.pre_exec(ignore) };
+        let (status, said, left) = signalled(&r, &mut c, signal, &["7"]);
+        let got = (status.code(), said, left, r.own_starts());
+        assert_eq!(got, (Some(7), true, 0, 0), "signal {signal}");
+    }
 }
 
 /// QUIT is the keyboard's other one, ctrl and backslash. The start is still reported and
