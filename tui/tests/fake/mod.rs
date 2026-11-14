@@ -636,38 +636,50 @@ impl Drop for StandIn {
     }
 }
 
-/// The processes left of the rig servers of this binary started again as `pid`
-/// ([`rows_pass_handed`]), read from /proc. A rig's socket is named
-/// `cockpit-<what>-<pid>`, the pid of the binary that started it, here that
-/// child of this row's own. A server is a `tmux` whose `-L` names such a socket,
-/// and a pane a process whose TMUX, which tmux sets for each pane, names one.
-/// Linux only, as are the rows that ask.
+/// Whether the process `p` is a server or a pane of a rig of this binary started again
+/// as `pid` ([`rows_pass_handed`]), read from /proc/<p> alone. A rig's socket is named
+/// `cockpit-<what>-<pid>`, the pid of the binary that started it, here that child of
+/// this row's own. A server is a `tmux` whose `-L` names such a socket, a pane a process
+/// whose TMUX, which tmux sets for each pane, names one. Both must also carry this
+/// binary's own TMUX_TMPDIR, which the child had from it and handed to every server
+/// and pane, so a server another run leaked under a reused pid is never taken.
+#[allow(dead_code)]
+fn rig_process(p: u32, pid: u32) -> bool {
+    let at = Path::new("/proc").join(p.to_string());
+    let rigs = |sock: &str| sock.starts_with("cockpit-") && sock.ends_with(&format!("-{pid}"));
+    let own = std::env::var_os("TMUX_TMPDIR").map(|d| {
+        let mut v = b"TMUX_TMPDIR=".to_vec();
+        v.extend_from_slice(std::os::unix::ffi::OsStrExt::as_bytes(d.as_os_str()));
+        v
+    });
+    let line = std::fs::read(at.join("cmdline")).unwrap_or_default();
+    let args: Vec<String> = line.split(|b| *b == 0).map(|a| String::from_utf8_lossy(a).into_owned()).collect();
+    let server = args.first().is_some_and(|a| a.rsplit('/').next() == Some("tmux")) && args.windows(2).any(|w| w[0] == "-L" && rigs(&w[1]));
+    let env = std::fs::read(at.join("environ")).unwrap_or_default();
+    let vars: Vec<&[u8]> = env.split(|b| *b == 0).collect();
+    let pane = vars.iter().filter_map(|v| v.strip_prefix(b"TMUX=")).any(|v| {
+        let sock = String::from_utf8_lossy(v).split(',').next().unwrap_or_default().to_string();
+        rigs(sock.rsplit('/').next().unwrap_or_default())
+    });
+    let ours = own.is_some_and(|o| vars.iter().any(|v| *v == o.as_slice()));
+    (server || pane) && ours
+}
+
+/// The processes [`rig_process`] takes for `pid`, read from /proc. Linux only, as are
+/// the rows that ask.
 #[allow(dead_code)]
 pub fn servers_left(pid: u32) -> Vec<u32> {
-    let rigs = |sock: &str| sock.starts_with("cockpit-") && sock.ends_with(&format!("-{pid}"));
-    let ours = |p: &Path| {
-        let line = std::fs::read(p.join("cmdline")).unwrap_or_default();
-        let args: Vec<String> = line.split(|b| *b == 0).map(|a| String::from_utf8_lossy(a).into_owned()).collect();
-        let server =
-            args.first().is_some_and(|a| a.rsplit('/').next() == Some("tmux")) && args.windows(2).any(|w| w[0] == "-L" && rigs(&w[1]));
-        let env = std::fs::read(p.join("environ")).unwrap_or_default();
-        let pane = env.split(|b| *b == 0).filter_map(|v| v.strip_prefix(b"TMUX=")).any(|v| {
-            let sock = String::from_utf8_lossy(v).split(',').next().unwrap_or_default().to_string();
-            rigs(sock.rsplit('/').next().unwrap_or_default())
-        });
-        server || pane
-    };
     let Ok(d) = std::fs::read_dir("/proc") else { return vec![] };
     let pids = d.flatten().filter_map(|e| e.file_name().to_str()?.parse::<u32>().ok());
-    pids.filter(|p| ours(&Path::new("/proc").join(p.to_string()))).collect()
+    pids.filter(|p| rig_process(*p, pid)).collect()
 }
 
 /// For a row that started this binary again as `pid`: no server and no pane of
 /// its rigs is left. Polled for 10 s, since kill-server ends a server and its
 /// panes after the command returns. A red run ends what it found with KILL: each
-/// pid is matched again by [`servers_left`] just before its own kill, its command
-/// line or its TMUX naming a rig socket of `pid`, this row's own child, so it
-/// names them and leaves none, and signals no process it did not just verify.
+/// pid is read again, /proc/<pid> alone, by [`rig_process`] just before its own
+/// kill, so it names them and leaves none, and signals no process it did not just
+/// verify.
 #[allow(dead_code)]
 pub fn assert_no_server_left(pid: u32) {
     let step = std::time::Duration::from_millis(20);
@@ -679,7 +691,7 @@ pub fn assert_no_server_left(pid: u32) {
     }
     let left = servers_left(pid);
     for p in &left {
-        if servers_left(pid).contains(p) {
+        if rig_process(*p, pid) {
             // SAFETY: kill only signals; `p` was read again as this run's just above.
             unsafe { libc::kill(*p as libc::pid_t, libc::SIGKILL) };
         }

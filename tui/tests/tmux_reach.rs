@@ -186,3 +186,31 @@ fn the_tmux_folder_holds_sockets_and_nothing_else() {
     }
     assert_eq!(odd, Vec::<String>::new(), "in {}", dir.display());
 }
+
+/// #1066: what a part 4 row may kill is a process whose TMUX names a rig socket of the
+/// child and which carries this binary's own TMUX_TMPDIR. Two `sleep`s of the row's own
+/// with the same socket name in TMUX: the one with another TMUX_TMPDIR, as a server
+/// another run leaked under a reused pid would have, is not taken.
+#[test]
+#[cfg(target_os = "linux")]
+fn a_process_with_another_tmux_tmpdir_is_never_taken_for_a_rigs() {
+    let own = fake::checked_tmux();
+    let child = 999_999_999u32;
+    let tmux = format!("{}/tmux-0/cockpit-decoy-{child},1,0", own.display());
+    let start = |tmpdir: &Path| {
+        let mut c = std::process::Command::new("/bin/sleep");
+        c.arg("30").env("TMUX", &tmux).env("TMUX_TMPDIR", tmpdir).spawn().unwrap()
+    };
+    let (mut ours, mut decoy) = (start(&own), start(Path::new("/elsewhere-1066")));
+    // the spawns have exec'd sleep once each reads as sleep in /proc
+    let comm = |p: u32| std::fs::read_to_string(format!("/proc/{p}/comm")).unwrap_or_default();
+    while comm(ours.id()).trim() != "sleep" || comm(decoy.id()).trim() != "sleep" {
+        std::thread::yield_now();
+    }
+    let left = fake::servers_left(child);
+    for c in [&mut ours, &mut decoy] {
+        c.kill().unwrap();
+        c.wait().unwrap();
+    }
+    assert_eq!((left.contains(&ours.id()), left.contains(&decoy.id())), (true, false), "{left:?}");
+}
