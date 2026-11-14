@@ -414,13 +414,9 @@ fn a_cockpit_tui_survives_sigusr1() {
         .unwrap();
     let ready = until(|| dir.join("ready").exists());
     // A blocked USR1 is never delivered, and the row then passes whatever the board
-    // does (#1061). The board ignores USR1 itself, so SigIgn tells nothing; its mask
-    // is the one it was started with. Read where /proc is, checked only there.
-    let status = std::fs::read_to_string(format!("/proc/{}/status", child.id()));
-    let mask = status.ok().and_then(|s| {
-        let m = s.lines().find_map(|l| l.strip_prefix("SigBlk:"))?;
-        u64::from_str_radix(m.trim(), 16).ok()
-    });
+    // does (#1061). The board ignores USR1 itself, so SigIgn tells nothing. Read where
+    // /proc is, checked only there.
+    let clear = !std::path::Path::new("/proc/self").is_dir() || usr1_unblocked(child.id(), |_| {});
     // our own unreaped child: the pid cannot have been recycled
     unsafe { libc::kill(child.id() as i32, libc::SIGUSR1) };
     std::fs::write(dir.join("go"), "").unwrap();
@@ -428,10 +424,26 @@ fn a_cockpit_tui_survives_sigusr1() {
     let _ = std::fs::remove_dir_all(&dir);
     assert!(ready, "info never reached its tmux read");
     assert_eq!(st.signal(), None, "SIGUSR1 killed a cockpit-tui: {st:?}");
-    if std::path::Path::new("/proc/self").is_dir() {
-        let blocked = mask.map(|m| (m >> (libc::SIGUSR1 - 1)) & 1);
-        assert_eq!(blocked, Some(0), "USR1 was blocked in the board, which then never gets it");
-    }
+    assert!(clear, "USR1 was blocked in the board, which then never gets it");
+}
+
+/// The USR1 bit of `pid`'s SigBlk, read from /proc: None where there is none.
+fn usr1_blocked(pid: u32) -> Option<u64> {
+    let s = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+    let m = s.lines().find_map(|l| l.strip_prefix("SigBlk:"))?;
+    Some((u64::from_str_radix(m.trim(), 16).ok()? >> (libc::SIGUSR1 - 1)) & 1)
+}
+
+/// Whether `pid` shows USR1 unblocked within [`CAP`], `after_read` handed each read.
+/// Polled, never read once: a process inside a spawn of its own shows every signal
+/// blocked until the spawn returns, and a board in its tmux read may be there (#1061).
+/// A red with the mask still blocked costs the whole CAP, a green returns at once.
+fn usr1_unblocked(pid: u32, mut after_read: impl FnMut(Option<u64>)) -> bool {
+    until(|| {
+        let bit = usr1_blocked(pid);
+        after_read(bit);
+        bit == Some(0)
+    })
 }
 
 /// The processes left of the `push` rig of the test binary `pid`, read from /proc: its
