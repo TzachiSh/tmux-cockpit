@@ -228,7 +228,7 @@ impl LocalStore {
 
     /// The key's lock, taken with LOCK_NB and retried until the wait runs out:
     /// a writer that hangs holding it must not hang every other one.
-    fn lock(&self, key: &Key) -> Result<(File, PathBuf), PutError> {
+    fn lock(&self, key: &Key) -> Result<(Held, PathBuf), PutError> {
         let path = self.lock_path(key);
         let f = OpenOptions::new()
             .read(true)
@@ -246,7 +246,7 @@ impl LocalStore {
         loop {
             // SAFETY: flock on an fd this function owns.
             if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
-                return Ok((f, path));
+                return Ok((Held(f), path));
             }
             let e = io::Error::last_os_error();
             if e.raw_os_error() != Some(libc::EWOULDBLOCK) && e.kind() != io::ErrorKind::Interrupted {
@@ -305,6 +305,17 @@ fn record_written(lock: &File, rev: Revision) -> io::Result<()> {
     lock.set_len(0)?;
     lock.write_all_at(format!("{}\n", rev.0).as_bytes(), 0)?;
     lock.sync_data()
+}
+
+/// A key's lock, held. Released by LOCK_UN before the close: a child forked from
+/// another thread keeps the fd until it execs, and the close alone would not (#1028).
+struct Held(File);
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        // SAFETY: flock on an fd this guard owns.
+        unsafe { libc::flock(self.0.as_raw_fd(), libc::LOCK_UN) };
+    }
 }
 
 /// The stored form: strict, so anything else reads as no value.
@@ -386,7 +397,7 @@ impl Store for LocalStore {
         }
         // Past the last revision written too: a value that reads as none must not
         // hand its revision to a new one, or a writer holding the old one wins.
-        let base = current.map_or(0, |r| r.0).max(last_written(&lock));
+        let base = current.map_or(0, |r| r.0).max(last_written(&lock.0));
         let next = base.checked_add(1).map(Revision);
         let next = next.ok_or_else(|| at(&self.path(key))(io::Error::other("revision at u64::MAX")))?;
         let text = render(value, next);
@@ -394,7 +405,7 @@ impl Store for LocalStore {
             return Err(PutError::TooLarge);
         }
         // Before the rename, so the lock never holds less than the file.
-        record_written(&lock, next).map_err(at(&lock_path))?;
+        record_written(&lock.0, next).map_err(at(&lock_path))?;
         self.replace(key, &text)?;
         Ok(next)
     }

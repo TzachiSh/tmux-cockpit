@@ -67,7 +67,7 @@ fn mode(p: &Path) -> u32 {
 /// This binary again, running only [`child_job`] with `job` on `root`.
 fn child(job: &str, root: &Path) -> Command {
     let mut c = Command::new(std::env::current_exe().unwrap());
-    c.args(["--exact", "child_job", "--test-threads=1", "--quiet"]);
+    c.args(["--exact", "child_job", "--test-threads=1", "--quiet", "--nocapture"]);
     c.env(CHILD, format!("{job} {}", root.display()));
     c
 }
@@ -92,6 +92,39 @@ fn die_past_4k() {
     }
 }
 
+/// 50 puts in a row while another thread forks children that wait 200 ms
+/// before their exec; exits 5 if any put found the key busy.
+fn forking_puts(s: &LocalStore, k: &Key) {
+    use std::os::unix::process::CommandExt;
+    let stop = Arc::new(AtomicBool::new(false));
+    let flag = stop.clone();
+    let forker = std::thread::spawn(move || {
+        while !flag.load(Ordering::Relaxed) {
+            let mut c = Command::new("true");
+            // SAFETY: the hook only sleeps, which is async-signal-safe.
+            unsafe {
+                c.pre_exec(|| {
+                    std::thread::sleep(Duration::from_millis(200));
+                    Ok(())
+                })
+            };
+            let _ = c.status();
+        }
+    });
+    let (s, mut rev, mut busy) = (s.clone().with_lock_wait(Duration::from_millis(20)), None, 0);
+    for i in 0..50 {
+        match s.put_if_revision(k, &json!(i), rev) {
+            Ok(r) => rev = Some(r),
+            Err(PutError::Busy) => busy += 1,
+            Err(e) => panic!("put {i}: {e}"),
+        }
+    }
+    stop.store(true, Ordering::Relaxed);
+    forker.join().unwrap();
+    eprintln!("busy {busy} of 50");
+    std::process::exit(if busy == 0 { 0 } else { 5 });
+}
+
 /// The other half of [`child`]; a plain run passes it doing nothing.
 #[test]
 fn child_job() {
@@ -110,6 +143,7 @@ fn child_job() {
             let r = s.put_if_revision(&k, &json!({"big": "x".repeat(16 * 1024)}), Some(Revision(1)));
             panic!("lived past the file size limit: {r:?}");
         }
+        "forking-puts" => forking_puts(&s, &k),
         "race" => {
             let r = s
                 .with_lock_wait(CAP)
@@ -334,6 +368,13 @@ fn a_symlink_or_fifo_at_the_key_is_refused_without_hanging() {
     assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
     let s2 = s.clone();
     assert_eq!(bounded(move || (s2.get(&key("link")), s2.get(&key("fifo")))), Some((None, None)));
+}
+
+#[test]
+fn a_put_lets_go_of_its_lock_while_a_forked_child_waits_to_exec() {
+    let d = scratch("forks");
+    let out = child("forking-puts", &d.join("store")).output().unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", told(&out));
 }
 
 #[test]
