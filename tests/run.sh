@@ -18178,7 +18178,7 @@ echo "== the install line loads the plugin whatever the path to HOME holds (#104
 # inside. In single quotes tmux hands the ~ on as it is and sh expands it, unsplit and
 # unread. Six places give the line, cockpit.tmux's own first comment among them. Each must
 # hold it, and no page, example or comment may load cockpit.tmux in any other form but the
-# two the docs give. Then both example configs are sourced on a server whose HOME holds a
+# three the docs give. Then both example configs are sourced on a server whose HOME holds a
 # blank, and one whose HOME holds a command to run.
 IL="run-shell '~/.tmux/plugins/tmux-cockpit/cockpit.tmux'"
 il_n=""
@@ -18189,19 +18189,22 @@ done
 grep -qxF -- "# tmux-cockpit. Load with:  $IL" "$DIR/cockpit.tmux" || il_n="${il_n}cockpit.tmux "
 is "the README, both examples, both docs pages and cockpit.tmux each give the install line" \
    "" "$il_n"
-# Any spelling: `run` for `run-shell`, an indent, double quotes, another page. The three
-# forms the docs give are the line above, the one for a plugin folder with a space, and
-# the one with a full path, for a server started with no HOME.
+# Any spelling: `run` for `run-shell`, a flag, an indent, other quotes, another page, a line
+# of prose. Each `run … cockpit.tmux` is cut out of its line and must be one of the three
+# forms the docs give: the line above, the one for a plugin folder with a space, and the one
+# with a full path, for a server started with no HOME.
 # Not read yet: bootstrap.sh, which appends a line to a user's config, and install.sh,
 # which prints one. Both still give the bare shape (#1046), so this row's green is about
 # the pages, the examples and the comment only.
 is "and no page, example or comment loads cockpit.tmux in another form: file:line of each" "" \
-   "$(cd "$DIR" && grep -nE 'run(-shell)?[[:space:]]+[^[:space:]]*cockpit\.tmux' \
-        ./*.md docs/*.md examples/* cockpit.tmux 2>/dev/null |
-      grep -vF -e "'~/.tmux/plugins/tmux-cockpit/cockpit.tmux'" \
-               -e "'\"\$HOME/my plugins/tmux-cockpit/cockpit.tmux\"'" \
-               -e "'/full/path/to/tmux-cockpit/cockpit.tmux'" |
-      cut -d: -f1,2 | tr '\n' ' ')"
+   "$(cd "$DIR" && A="$IL" B="run-shell '\"\$HOME/my plugins/tmux-cockpit/cockpit.tmux\"'" \
+        C="run-shell \"'/full/path/to/tmux-cockpit/cockpit.tmux'\"" \
+      awk '{ s = $0
+             while (match(s, /run(-shell)?[ \t][^`]*cockpit\.tmux['"'"'"]*/)) {
+                 m = substr(s, RSTART, RLENGTH); s = substr(s, RSTART + RLENGTH)
+                 if (m != ENVIRON["A"] && m != ENVIRON["B"] && m != ENVIRON["C"]) {
+                     printf "%s:%d ", FILENAME, FNR; break } } }' \
+          ./*.md docs/*.md docs/*/*.md examples/* cockpit.tmux 2>/dev/null)"
 if need_tmux "the install line under a HOME with a blank"; then :; else
 ILD=$(mktmpd); mkdir -p "$ILD/wd"
 # A server each, by number: the rows call this in a subshell, so the names are registered

@@ -33,7 +33,8 @@ run-shell '"$HOME/my plugins/tmux-cockpit/cockpit.tmux"'
 
 A tmux server started with `HOME` unset or empty does not load the plugin with
 either line: `sh` has no home directory to put in place of `~`. Give the full
-path there, `run-shell '/full/path/to/tmux-cockpit/cockpit.tmux'`.
+path there, in single quotes inside double ones so that a space in it holds:
+`run-shell "'/full/path/to/tmux-cockpit/cockpit.tmux'"`.
 
 `install.sh` only ever creates symlinks, skips a name already taken by a real
 file or by another tool's link, reports anything it could not create, and
