@@ -641,6 +641,28 @@ fn a_signal_to_the_runner_waits_for_the_binary_and_its_log() {
     }
 }
 
+/// The row above, in this binary started again with INT and HUP ignored, as
+/// `&` from a script and nohup hand them down. The rig's reset is what holds
+/// it (#1044). The inner run must name one passed row: a renamed row runs none.
+#[test]
+fn the_signal_row_holds_in_a_binary_handed_an_ignored_int_and_hup() {
+    use std::os::unix::process::CommandExt;
+    let mut c = Command::new(std::env::current_exe().unwrap());
+    c.args(["--exact", "a_signal_to_the_runner_waits_for_the_binary_and_its_log"]);
+    c.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    // SAFETY: signal is async-signal-safe and allocates nothing.
+    unsafe {
+        c.pre_exec(|| {
+            libc::signal(libc::SIGINT, libc::SIG_IGN);
+            libc::signal(libc::SIGHUP, libc::SIG_IGN);
+            Ok(())
+        })
+    };
+    let out = ended(c.spawn().unwrap(), "this binary, started again");
+    let said = String::from_utf8_lossy(&out.stdout);
+    assert_eq!((out.status.code(), said.contains(" 1 passed; 0 failed")), (Some(0), true), "{said}");
+}
+
 /// QUIT is the keyboard's other one, ctrl and backslash. The start is still reported and
 /// the folder goes. How the runner then ends is its shell's own: dash dies by
 /// QUIT, and bash, where it is sh, ignores QUIT in every shell and ends with
