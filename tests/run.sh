@@ -9142,15 +9142,17 @@ ps_settle() {                 # -> 0, or "<count>:" and each leftover
 }
 # A red leftover row leaves a server and its pane; where tail has no --pid they would stay for
 # the pane's four hours (#1012). Each is ended here by its own socket, the last -L of its
-# argv, never by a pid, and the socket file a killed server leaves is removed.
+# argv when that is a suite's name, never by a pid, and the socket file a killed server
+# leaves is removed. It reads /proc/<pid>/environ, as ps_settle does: on a box without it
+# both see nothing, so the box this reaches is a Linux one whose tail has no --pid.
 ps_end() {
     local p c a n d
     for p in /proc/[0-9]*; do
         tr '\0' '\n' 2>/dev/null < "$p/environ" | grep -qxF "TMPDIR=$PSROOT/t" || continue
         c=""; read -r c 2>/dev/null < "$p/comm"; [ "$c" = "tmux: server" ] || continue
         a=$(tr '\0' ' ' 2>/dev/null < "$p/cmdline")
-        n=$(printf '%s\n' "$a" | grep -oE -- '-L cockpit-suite-[0-9]+ ' | tail -n 1)
-        n=${n#-L }; n=${n% }; [ -n "$n" ] || continue
+        n=$(printf '%s\n' "$a" | grep -oE -- '-L [^ ]+ ' | tail -n 1)
+        n=${n#-L }; n=${n% }; [[ $n =~ ^cockpit-suite-[0-9]+$ ]] || continue
         d=$(tr '\0' '\n' 2>/dev/null < "$p/environ" | sed -n 's/^TMUX_TMPDIR=//p')
         "$TMUX_REAL" -S "${d:-/tmp}/tmux-$(id -u)/$n" kill-server >/dev/null 2>&1
         rm -f -- "${d:-/tmp}/tmux-$(id -u)/$n"
@@ -9183,7 +9185,7 @@ is "a shard that finished has both, with its status" "1 1" \
       grep -c '^par\.sh: shard 0001 end rc=0$' "$PSROOT/hung.err")"
 ps_got=$(ps_settle); [ "$ps_got" = 0 ] || ps_got="$ps_got; end lines in at the TERM: $ps_in of 4"
 is "nothing the ended run started is left" "0" "$ps_got"
-ps_end
+[ "$ps_got" = 0 ] || ps_end
 # A green run: the counts are what they were, and no new line reads as a row.
 cp "$PSROOT/tests/run.green" "$PSROOT/tests/run.sh"
 ( cd "$PSROOT" && env -u PAR_BLOCKS TMPDIR="$PSROOT/t" J=3 tests/par.sh ) \
@@ -9207,8 +9209,9 @@ ps_row="^  ($ESC\[[0-9;]*m)?(PASS|FAIL|SKIP)|passed,|failed,"
 is "the row pattern finds the green run's rows and its count" "6" \
    "$(grep -cE "$ps_row" "$PSROOT/green.out")"
 is "no new line reads as a row or a count" "0" "$(grep -cE "$ps_row" "$PSROOT/green.err")"
-is "nor is left behind" "0" "$(ps_settle)"
-ps_end
+ps_got=$(ps_settle)
+is "nor is left behind" "0" "$ps_got"
+[ "$ps_got" = 0 ] || ps_end
 unset -f ps_left ps_settle ps_end; unset PSROOT Q ps_to ps_c ps_row ps_s ps_in ps_got
 
 echo "== tests/par.sh: a checkout under a path with a space runs every shard and nothing else (#1007) =="
@@ -20089,6 +20092,7 @@ mkdir -p "$ACD/stub"
 printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "${0%%/*}/ran"\nexit 0\n' > "$ACD/stub/claude"
 chmod +x "$ACD/stub/claude"
 # The window says which claude it would run, so a row sees the stub is the one reached.
+ac_n=$(ac display -p '#{S:#{W:#{P:x}}}')      # the server's panes before the board's window
 ac new-window -d -t t: -c "$ACD" "PATH=\"$ACD/stub:\$PATH\"; export PATH; \
 command -v claude > $(tq "$ACD/which"); env COCKPIT_TUI_BIN=$ACD/bin \
 XDG_STATE_HOME=$ACD/state COCKPIT_LOG=$ACD/tui.log $DIR/scripts/cockpit-board -p $ACH; \
@@ -20098,12 +20102,15 @@ is "resume: a session live in OPENCODE is not opened twice" \
     "✕ cockpit: ${SID:0:8} is already running in $ACO" "$(cat "$ACD/note" 2>/dev/null)"
 is "the window's claude is the row's own" "$ACD/stub/claude" "$(cat "$ACD/which" 2>/dev/null)"
 # The stub writes its line a moment before or after `done` appears, and a read right at `done`
-# can come first (#1001). A resume would have split the window; one pane again means the
-# window's command and all it started are through.
-until_out 1 ac display -p -t "$ACS" '#{window_panes}'
-is "and no claude was started for it" "" "$(cat "$ACD/stub/ran" 2>/dev/null)"
+# can come first (#1001). A claude started for the resume runs in a pane, by a split or in a
+# window of its own, and that pane closes after the stub's write. So: wait until the server
+# holds the panes it held before the board's window, and no more. The row reads that count
+# too: a wait that ran out means something is still running, and must not pass (#1030).
+until_out "$ac_n" ac display -p '#{S:#{W:#{P:x}}}'
+is "and no claude was started for it" "$ac_n|" \
+    "$(ac display -p '#{S:#{W:#{P:x}}}')|$(cat "$ACD/stub/ran" 2>/dev/null)"
 ac kill-server >/dev/null 2>&1
-unset -f ac ac_pane ac_each ac_wd ac_jump ac_deliver
+unset -f ac ac_pane ac_each ac_wd ac_jump ac_deliver; unset ac_n
 
 # The sessions screen: gamma's claude, waiting, is an agent under the entry CLAUDE, so gamma
 # sorts first, the row Enter switches to. Counted as no agent, beta comes first.
