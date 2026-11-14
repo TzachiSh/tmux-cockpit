@@ -4186,7 +4186,8 @@ cp "$CL/h2/.tmux.conf" "$CL/conf2"
 cl_out=$( cd "$CL/wd" && cl_env 2 "$cl_p2/bootstrap.sh" --yes )
 cl_line=$(. "$DIR/scripts/lib/confline.sh" && cockpit_conf_line "$cl_p2")
 case "$cl_out" in
-    *"NOTE   line 3 of that file has no quotes around the path"*"Replace line 3 with:"*"
+    *"NOTE   line 3 of that file has no quotes around the path"*"the plugin may not load."*$(:
+      )"Replace line 3 with:"*"
            $cl_line
 "*) ok "an old bare line and a folder with blanks: the notice names line 3 and gives the line" ;;
     *) bad "an old bare line and a folder with blanks: the notice names line 3 and gives the line" \
