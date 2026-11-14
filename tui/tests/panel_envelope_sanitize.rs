@@ -2,6 +2,8 @@
 //! code goes through `action::sanitize`, as a ref already did. A direction
 //! control (U+202E, U+2066, ...) or a line or paragraph separator is dropped;
 //! newline, tab and right-to-left letters stay. Every value here is made up.
+mod fake;
+
 use cockpit_tui::panel::action;
 use cockpit_tui::panel::app::App;
 use cockpit_tui::panel::ask::{self, AskCode};
@@ -390,4 +392,12 @@ fn a_restored_ask_with_a_direction_control_in_its_path_is_refused() {
     assert_eq!(refused(&r.0, &good), None, "the state as written comes back");
     let why = refused(&r.0, &forged).unwrap_or_else(|| "accepted".into());
     assert!(why.contains("the ask's path"), "{why}");
+}
+
+/// #1066: this binary reads tmux through the product's plain `tmux`
+/// (`data.rs:755`). Under the runner that finds no server; started by
+/// hand from inside a tmux session it would read the caller's, so it is refused.
+#[test]
+fn the_binary_runs_with_no_tmux_session_of_the_callers() {
+    fake::checked_tmux();
 }

@@ -85,6 +85,9 @@ pub const NO_HOME: &str = "/sys/absent-948";
 /// module and takes no fixed environment leaves these unused, hence the allows.
 #[allow(dead_code)]
 pub fn fixed_env() {
+    // the product's plain tmux reads the caller's server where the runner did
+    // not clear its session: refused, in every test that comes through here (#1066)
+    checked_tmux();
     static SET: Once = Once::new();
     SET.call_once(|| {
         // SAFETY: holds for each test binary that calls this, one by one. std's
@@ -307,6 +310,20 @@ pub fn tmux_refusal() -> Option<String> {
     if why.is_empty() { None } else { Some(refusal("tmux", &why)) }
 }
 
+/// `test` of this binary, alone, in a child started by hand with `set` in its
+/// environment and no runner between it and this one: how it ended and all it
+/// wrote, for a row that holds a refusal word for word. Not the row's own name.
+#[allow(dead_code)]
+pub fn run_by_hand(test: &str, set: &[(&str, &str)]) -> (Option<i32>, String) {
+    let mut c = Command::new(std::env::current_exe().unwrap());
+    c.args(["--exact", test])
+        .envs(set.iter().copied())
+        .stdin(std::process::Stdio::null());
+    let out = c.output().unwrap();
+    let said = String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr);
+    (out.status.code(), said)
+}
+
 /// This binary's socket folder, TMUX_TMPDIR, which the runner made for it with
 /// TMUX, TMUX_PANE and TMUX_COCKPIT_DIR cleared (#1066). Red with
 /// [`tmux_refusal`]'s line before any tmux runs where that does not hold: from
@@ -451,6 +468,35 @@ impl Drop for StandIn {
     fn drop(&mut self) {
         let _ = self.command().arg("kill-server").output();
     }
+}
+
+/// cargo's runner for this repo, which a row starts itself to show what it hands
+/// a test binary (.cargo/config.toml, #973, #1066).
+#[allow(dead_code)]
+const RUNNER: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/claude-guard/runner");
+
+/// This binary's tests but `skip`, started again through the runner beside a
+/// [`StandIn`] for the caller's own tmux server, with TMUX, TMUX_PANE and
+/// TMUX_TMPDIR in the runner's environment naming it, as from a shell inside
+/// that session (#1066). Red where a test fails there, or where any test sent
+/// the stand-in a command. `skip` is the calling row's own name, so its child
+/// starts no child of its own.
+#[allow(dead_code)]
+pub fn tests_beside_a_server(skip: &str) {
+    let at = Scratch::fresh(std::env::temp_dir().join(format!("cstand-{}", std::process::id())));
+    let Some(s) = StandIn::start(&at.join("s")) else {
+        eprintln!("SKIP: no tmux on PATH");
+        return;
+    };
+    let mut c = Command::new(RUNNER);
+    c.arg(std::env::current_exe().unwrap()).args(["--skip", skip, "--exact"]);
+    c.env("TMUX", &s.tmux).env("TMUX_PANE", &s.pane).env("TMUX_TMPDIR", s.folder());
+    c.env("TMUX_COCKPIT_DIR", at.join("plugin"));
+    let before = s.commands();
+    let out = c.stdin(std::process::Stdio::null()).output().unwrap();
+    let got = s.commands() - before;
+    assert!(out.status.success(), "{}", told(&format!("all but {skip}"), &out));
+    assert_eq!(got, 0, "the tests sent the caller's server {got} commands");
 }
 
 // --- pane start-up waits for the basket_claude tests (#1056) ---
