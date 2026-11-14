@@ -63,7 +63,7 @@ tmux set-option -gq @cockpit_home_re "$(printf '%s' "$home" | sed 's/[][\\.*^$+?
 # The script's path, shell-quoted, for the formats and hooks to expand: a format's
 # value reaches sh as it is, where a tmux "..." string would eat sq()'s backslashes.
 tmux set-option -g @cockpit_where_cmd "$(sq "$DIR/scripts/tmux-where")"
-tmux source-file "$DIR/scripts/lib/statusbar.conf"
+tmux source-file "$(gesc "$DIR/scripts/lib/statusbar.conf")"
 # NO_COLOR: every slot is the terminal's default colour (the slots are the bar's).
 if [ -n "${NO_COLOR:-}" ] && [ "$(tmux show-option -gqv @cockpit_statusbar)" != off ]; then
     set --
@@ -431,9 +431,11 @@ row 'Move window to a session...' M "$mk"
 # The typed name is staged with %%% (quotes kept) and renamed by tmux-rename,
 # which escapes it: rename-window and rename-session expand formats, and a bare
 # %% let a " end the string (#289). The id is the one the menu was opened on
-# (expanded once here). The path is escaped twice: the menu expands the
-# item, then run-shell its command.
-Q_REN=$(fesc "$(fesc "$(sq "$DIR/scripts/tmux-rename")")")
+# (expanded once here). The path waits in an option, as @cockpit_where_cmd does:
+# the item is a tmux "..." string, whose parser ate a \, a $ or a quote in it
+# (#1071). ##{ is the menu's expansion, the second # run-shell's.
+tmux set-option -g @cockpit_rename_cmd "$(sq "$DIR/scripts/tmux-rename")"
+Q_REN='##{@cockpit_rename_cmd}'
 rows+=('Rename window' ',' "command-prompt -p '(rename-window)' -I '##W' \"set -g @cockpit_rename_to \\\"%%%\\\" ; run-shell \\\"$Q_REN window '#{window_id}'\\\"\"")
 rows+=('#{?#{e|>:#{window_panes},1},Kill pane…,Close window…}' x \
        "confirm-before -p '#{?#{e|>:#{window_panes},1},Kill pane ##P?,Close window ##I?} (y/n)' kill-pane")
