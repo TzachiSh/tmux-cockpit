@@ -2899,13 +2899,20 @@ rm -rf "$TMF"
 # made. The last row asks this of /tmp/tmux-<uid>, which may hold the user's own server,
 # and a tmux call there is one a guard on PATH refuses, which read as "none" (#1092).
 tc_left() { [ -S "$1/$2" ] && echo left || echo none; }   # <folder> <socket name>
-is "tc_left sees the block's own socket while its server is up, and none of another name" \
-   "left none" "$(tc_left "$SOCKDIR" "$TC") $(tc_left "$SOCKDIR" "$TC-none")"
+is "tc_left sees the block's own socket while its server is up, none of another name or folder" \
+   "left none none" \
+   "$(tc_left "$SOCKDIR" "$TC") $(tc_left "$SOCKDIR" "$TC-none") $(tc_left "$TCD" "$TC")"
 "$TMUX_REAL" -L "$TCO" kill-server >/dev/null 2>&1
 "$TMUX_REAL" -L "$TC" kill-server >/dev/null 2>&1
+# kill-server leaves the socket's file behind. Started with no TMUX_TMPDIR, SOCKDIR is
+# /tmp/tmux-<uid> itself, and the last row would read the block's own file as a leak.
+rm -f "$SOCKDIR/$TC"
+is "the block's own socket file is gone once its server is killed" "none" \
+   "$(tc_left "$SOCKDIR" "$TC")"
 # tm found the server through a hardcoded /tmp path: under TMUX_TMPDIR it started a second
 # server there, on the shared /tmp, that no cleanup killed (#784). Nothing may answer on
-# either path once the block is done.
+# either path once the block is done. The /tmp half asks whether a socket's file is there,
+# which is stricter than whether a server answers on it.
 tc_up() { "$TMUX_REAL" -S "$1" has-session 2>/dev/null && echo up || echo none; }
 is "no server is left on the block's socket, in SOCKDIR or in /tmp" "none none" \
    "$(tc_up "$SOCKDIR/$TC") $(tc_left "/tmp/tmux-$(id -u)" "$TC")"
@@ -12243,7 +12250,7 @@ is "and says this one is closed" "1" \
 rm -f "$PND/state"; rm -rf "$PND/xdg"
 : > "$PND/bargv"; pask >/dev/null
 is "a plain run is not told the slot is taken" "" "$(cat "$PND/taken")"
-unset -f pask pn_runs
+unset -f pask
 is "send %5 loads the text, pastes it bracketed, deletes the buffer, presses Enter, says so" \
    "load-buffer -b B -;hi;paste-buffer -p -d -b B -t %5;send-keys -t %5 Enter;display-message -t %5 cockpit: sent to %5;" \
    "$(pact 'send %5' hi)"
@@ -12333,6 +12340,7 @@ is "three runs read back as three, a wrong one in the middle still there" \
    "$(pn_runs "$PND/three")"
 is "and tells it the paste went in" "panel %5;panel %5 --resume */resume --last ok;" \
    "$(pn_runs "$PND/bargv")"
+unset -f pn_runs
 rm -f "$PND/bargv"; pact 'send %5' hi '' claude zsh >/dev/null
 is "or why nothing was sent" \
     "panel %5 --resume */resume --last failed:the pane now runs zsh, not claude" \
