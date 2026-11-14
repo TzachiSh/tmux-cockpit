@@ -1773,3 +1773,99 @@ fn without_a_tmux_folder_in_tmp_the_binary_is_not_started() {
         ran.err
     );
 }
+
+/// The list variable `make tui-test-clean` hands the runner (#1066).
+const CT_LIST: &str = "COCKPIT_TEST_CLEAN_RUN_CT_LIST";
+
+/// A stand-in that says its tmux folder and exits with its first argument.
+const SAYS_CT: &str = "#!/bin/sh\necho \"tmpdir=$TMUX_TMPDIR\"\nexit \"${1:-0}\"\n";
+
+/// #1066: under the clean-run list variable the runner adds exactly its binary's
+/// tmux folder to the list, one whole line; with the variable unset it writes
+/// no list at all.
+#[test]
+fn the_runner_lists_its_tmux_folder_only_where_asked() {
+    let r = Rig::new("ctlist");
+    let exe = r.binary(TEST, SAYS_CT);
+    let list = r.0.join("list");
+    let asked = r.ran(r.command().env(CT_LIST, &list).arg(&exe));
+    let lines = std::fs::read_to_string(&list).unwrap();
+    assert_eq!(lines, format!("{}\n", asked.said("tmpdir")), "{}", asked.err);
+    std::fs::remove_file(&list).unwrap();
+    let plain = r.ran(r.command().arg(&exe));
+    assert_eq!((plain.code, list.exists()), (Some(0), false), "{}", plain.err);
+}
+
+/// #1066: two runners started at once against one list each add their line
+/// whole: one write of one line each, never a read and a rewrite.
+#[test]
+fn two_runners_at_once_keep_both_lines_of_the_list() {
+    let r = Rig::new("ctlist2");
+    let exe = r.binary(TEST, SAYS_CT);
+    let list = r.0.join("list");
+    let start = || {
+        let mut c = r.command();
+        c.env(CT_LIST, &list).arg(&exe).stdout(Stdio::piped()).stderr(Stdio::piped());
+        c.spawn().unwrap()
+    };
+    let (a, b) = (start(), start());
+    let (oa, ob) = (ended(a, "the first runner"), ended(b, "the second runner"));
+    let said = |o: &std::process::Output| {
+        let out = String::from_utf8_lossy(&o.stdout).into_owned();
+        out.trim_start_matches("tmpdir=").trim_end().to_string()
+    };
+    let mut want = vec![said(&oa), said(&ob)];
+    want.sort();
+    let mut got: Vec<String> = std::fs::read_to_string(&list).unwrap().lines().map(String::from).collect();
+    got.sort();
+    assert_eq!(got, want);
+}
+
+/// #1066: a list that takes no line is bookkeeping lost, not a failure: one line
+/// on stderr, and the binary runs and keeps its own status.
+#[test]
+fn a_list_that_takes_no_line_stops_nothing() {
+    let r = Rig::new("ctlist3");
+    let exe = r.binary(TEST, "#!/bin/sh\n: > \"$0.ran\"\nexit 7\n");
+    let list = r.0.join("no-such-folder/list");
+    let ran = r.ran(r.command().env(CT_LIST, &list).arg(&exe));
+    let warned = format!(
+        "claude-guard: warning: the clean-run list takes no line, the binary runs on list={}",
+        list.display()
+    );
+    let ran_at_all = r.0.join(format!("{TEST}.ran")).exists();
+    assert_eq!(
+        (ran.code, ran.err.lines().any(|l| l == warned), ran_at_all),
+        (Some(7), true, true),
+        "{}",
+        ran.err
+    );
+}
+
+/// `tests/clean-run.sh`, which `make tui-test-clean` is.
+const CLEAN_RUN: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../tests/clean-run.sh");
+
+/// #1066: `make tui-test-clean` names a tmux folder of its own run that is still
+/// in /tmp after the run, by the list its runners add to, and fails; a /tmp/ct.*
+/// of another gate, which is not on its list, it never names. Here a stand-in
+/// command lists a folder it leaves, and the row makes the other gate's.
+#[test]
+fn clean_run_names_its_own_tmux_folders_left_and_no_other() {
+    let r = Rig::new("cleanrun");
+    let other = PathBuf::from(command_output("mktemp", &["-d", "/tmp/ct.XXXXXX"]).trim_end());
+    assert!(other.is_dir(), "{other:?}");
+    let leaves = "d=$(mktemp -d /tmp/ct.XXXXXX) && printf '%s\\n' \"$d\" >> \"$COCKPIT_TEST_CLEAN_RUN_CT_LIST\" && echo \"$d\"";
+    let run = |cmd: &str| {
+        let mut c = Command::new(CLEAN_RUN);
+        c.args(["sh", "-c", cmd]).env("TMPDIR", r.0.join("tmp")).stdin(Stdio::null());
+        c.output().unwrap()
+    };
+    let (left, clean) = (run(leaves), run("true"));
+    let mine = String::from_utf8_lossy(&left.stdout).trim_end().to_string();
+    let err = String::from_utf8_lossy(&left.stderr).into_owned();
+    let tidy = (std::fs::remove_dir(&mine), std::fs::remove_dir(&other));
+    let said = format!("clean-run: left behind: {mine}\n");
+    let got = (left.status.code(), err.as_str(), clean.status.code(), clean.stderr.is_empty());
+    assert_eq!(got, (Some(1), said.as_str(), Some(0), true));
+    assert!(!err.contains(other.to_str().unwrap()) && tidy.0.is_ok() && tidy.1.is_ok());
+}

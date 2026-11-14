@@ -84,6 +84,10 @@ t=$(mktemp -d /tmp/ct.XXXXXX) || {
     echo "$me: error: no tmux folder in /tmp, the binary was not started binary=$1" >&2
     exit 1
 }
+# make tui-test-clean's list of these folders, read after its run: bookkeeping
+# only, so a list that cannot be written fails nothing
+[ -z "${COCKPIT_TEST_CLEAN_RUN_CT_LIST-}" ] || printf '%s\n' "$t" 2>/dev/null >>"$COCKPIT_TEST_CLEAN_RUN_CT_LIST" ||
+    echo "$me: warning: the clean-run list takes no line, the binary runs on list=$COCKPIT_TEST_CLEAN_RUN_CT_LIST" >&2
 unset TMUX TMUX_PANE TMUX_COCKPIT_DIR COCKPIT_LOG XDG_CACHE_HOME XDG_STATE_HOME
 TMUX_TMPDIR=$t
 export TMUX_TMPDIR

@@ -175,9 +175,15 @@ server the binary did not end: the runner names the folder and fails the
 binary with status 1, or with the binary's own status where that failed, after
 any report of the claude guard. A server still running keeps its socket there,
 and the runner ends no process. Killed by a signal it does not trap, KILL among
-them, the runner leaves its `/tmp/ct.<6>` folder behind, empty, and nothing
-names it. That folder is the cost. Nothing sweeps it, and it is safe to remove
-once no test is running.
+them, the runner leaves its `/tmp/ct.<6>` folder behind, empty. Under a plain
+`cargo test` nothing names it. That folder is the cost. Nothing sweeps it, and
+it is safe to remove once no test is running. `make tui-test-clean` hands the
+runner a list in `COCKPIT_TEST_CLEAN_RUN_CT_LIST`, the gate's own bookkeeping,
+and each runner adds its folder's path to it in one write. After the run the
+gate names every listed folder still there and fails, and only those: another
+gate's folders are on another list. A list that takes no line costs a warning,
+never the binary. Exported by hand, the variable gets one path a binary added
+to the file it names.
 
 So every test binary runs as on CI. A plain `tmux` in it finds no server, and
 the cache and state folders resolve under whatever `HOME` the test has: for a
