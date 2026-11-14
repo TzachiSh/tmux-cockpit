@@ -11192,7 +11192,7 @@ loaded_on "$B" "the menu replays no r beside the board's w" &&
     esac
 is "and a plain load fetches nothing" "no" "$([ -e "$BD/fetched" ] && echo yes || echo no)"
 # Required since #199: the load says so, offline, and names the fix.
-case "$(grep 'display-message tmux-cockpit: cockpit-tui' "$BD/argv" 2>/dev/null)" in
+case "$(grep 'display-message -l tmux-cockpit: cockpit-tui' "$BD/argv" 2>/dev/null)" in
     *"cockpit-tui is missing; run "*/install.sh) \
             ok "a load with no binary says it is missing and names install.sh" ;;
     *) bad "a load with no binary says it is missing and names install.sh" \
@@ -11211,7 +11211,7 @@ bver() {                      # <version> -> the load's cockpit-tui message, if 
     COCKPIT_TUI_BIN="$BD/vtui" PATH="$BD/s7:$PATH" "$TMUX_REAL" -L "$b" -f /dev/null new-session \
         -d -s t 'sleep 300' >/dev/null 2>&1
     "$TMUX_REAL" -L "$b" run-shell "$(tq "$BD/p/cockpit.tmux")" >/dev/null 2>&1; bloaded "$b"
-    grep 'display-message tmux-cockpit: cockpit-tui' "$BD/argv" 2>/dev/null
+    grep 'display-message -l tmux-cockpit: cockpit-tui' "$BD/argv" 2>/dev/null
     "$TMUX_REAL" -L "$b" kill-server >/dev/null 2>&1
 }
 bmsg=$(bver 0.0.1)
@@ -11366,7 +11366,7 @@ is "jump %9 goes to that pane and runs nothing else" \
 is "review %1 runs tmux-review on it and nothing else" "tmux-review -p %1;" "$(wact 'review %1')"
 is "panel %1 runs cockpit-panel on it and nothing else" "cockpit-panel -p %1;" "$(wact 'panel %1')"
 case "$(wact 'fix %1')" in
-    'display-message -t %3 cockpit: the board sent "fix", which this plugin does not know; prefix U updates the plugin and cockpit-tui;') \
+    'display-message -t %3 -l cockpit: the board sent "fix", which this plugin does not know; prefix U updates the plugin and cockpit-tui;') \
             ok "fix %1, the retired verb, runs nothing and says prefix U updates the binary" ;;
     *) bad "fix %1, the retired verb, runs nothing and says prefix U updates the binary" \
             "one display-message" "$(wact 'fix %1')" ;;
@@ -11427,7 +11427,7 @@ printf '#!/bin/sh\nprintf x >> %s\nexit 3\n' "$(tq "$BD/bfail")" > "$BD/p/bin/co
 PATH="$BD/rec:$PATH" COCKPIT_LOG="$BD/tui.log" COCKPIT_TUI_BIN="$BD/p/bin/cockpit-tui" \
     "$BD/p/scripts/cockpit-board" -p %3 </dev/null >/dev/null 2>&1
 is "a board that exits non-zero runs once and says so" \
-    "x display-message -t %3 cockpit: the board exited 3 — see $BD/tui.log;" \
+    "x display-message -t %3 -l cockpit: the board exited 3 — see $BD/tui.log;" \
    "$(cat "$BD/bfail") $(tr '\n' ';' < "$BD/wargv")"
 
 # The binary is the one piece of this plugin that is not shell, so its one line
@@ -11439,7 +11439,7 @@ is "a verb written as a command substitution runs nothing"   "" "$(inject '$(tou
 is "a third field on the action line runs nothing"           "" "$(inject 'jump %9 extra')"
 is "a target that is not %<digits> runs nothing"             "" "$(inject 'jump %9x')"
 is "an upper-case verb runs nothing"                         "" "$(inject 'JUMP %9')"
-is "a verb from a newer binary runs nothing, and says so"    "display-message -t %3 cockpit: the board sent \"frobnicate\", which this plugin does not know; prefix U updates the plugin and cockpit-tui;" \
+is "a verb from a newer binary runs nothing, and says so"    "display-message -t %3 -l cockpit: the board sent \"frobnicate\", which this plugin does not know; prefix U updates the plugin and cockpit-tui;" \
     "$(inject 'frobnicate %9')"
 # The log is the assertion, not the argv: an ordinary q and a rejected line both
 # run nothing, and only the log tells a version skew from a normal close.
@@ -11462,17 +11462,17 @@ rm -f "$BD/p/bin/cockpit-tui"; : > "$BD/wargv"
 PATH="$BD/rec:$PATH" COCKPIT_LOG="$BD/tui.log" COCKPIT_TUI_BIN="$BD/p/bin/cockpit-tui" \
     "$BD/p/scripts/cockpit-board" -p 'not-a-pane' </dev/null >/dev/null 2>&1
 case "$(cat "$BD/wargv" 2>/dev/null)" in
-    'display-message cockpit: board needs'*) \
+    'display-message -l cockpit: board needs'*) \
             ok "a -p that is not a pane id drops the -t rather than passing it on" ;;
     *) bad "a -p that is not a pane id drops the -t rather than passing it on" \
-         "display-message cockpit: board needs ..." "$(cat "$BD/wargv" 2>/dev/null)" ;;
+         "display-message -l cockpit: board needs ..." "$(cat "$BD/wargv" 2>/dev/null)" ;;
 esac
 : > "$BD/wargv"
 PATH="$BD/rec:$PATH" COCKPIT_LOG="$BD/tui.log" COCKPIT_TUI_BIN="$BD/p/bin/cockpit-tui" \
     "$BD/p/scripts/cockpit-board" -p %3 </dev/null >/dev/null 2>&1
 brc=$?
 is "a missing binary says so once, on the pane the key was pressed in, and exits 0" \
-   "0 display-message -t %3 cockpit: board needs cockpit-tui: run $(cd -P "$BD/p" && pwd)/install.sh" \
+   "0 display-message -t %3 -l cockpit: board needs cockpit-tui: run $(cd -P "$BD/p" && pwd)/install.sh" \
    "$brc $(cat "$BD/wargv" 2>/dev/null)"
 
 # --- a plugin directory that is shell syntax -----------------------------------
@@ -12483,21 +12483,21 @@ rm -f "$PND/state"; rm -rf "$PND/xdg"
 is "a plain run is not told the slot is taken" "" "$(cat "$PND/taken")"
 unset -f pask
 is "send %5 loads the text, pastes it bracketed, deletes the buffer, presses Enter, says so" \
-   "load-buffer -b B -;hi;paste-buffer -p -d -b B -t %5;send-keys -t %5 Enter;display-message -t %5 cockpit: sent to %5;" \
+   "load-buffer -b B -;hi;paste-buffer -p -d -b B -t %5;send-keys -t %5 Enter;display-message -t %5 -l cockpit: sent to %5;" \
    "$(pact 'send %5' hi)"
 is "paste %5 is the same without Enter, and says how much went in" \
-   "load-buffer -b B -;hi;paste-buffer -p -d -b B -t %5;display-message -t %5 cockpit: inserted 2 chars into %5;" \
+   "load-buffer -b B -;hi;paste-buffer -p -d -b B -t %5;display-message -t %5 -l cockpit: inserted 2 chars into %5;" \
    "$(pact 'paste %5' hi)"
 : > "$PND/tui.log"; touch "$PND/fail-load-buffer"
 is "a failed load-buffer pastes nothing and says so" \
-   "load-buffer -b B -;display-message -t %5 cockpit: could not load the paste buffer; nothing sent to %5;" \
+   "load-buffer -b B -;display-message -t %5 -l cockpit: could not load the paste buffer; nothing sent to %5;" \
    "$(pact 'paste %5' hi)"
 rm -f "$PND/fail-load-buffer"
 is "and logs tmux's error" "1" \
     "$(grep -c 'load-buffer failed for %5: boom load-buffer' "$PND/tui.log")"
 : > "$PND/tui.log"; touch "$PND/fail-paste-buffer"
 is "a failed paste-buffer drops the buffer, sends no Enter and says so" \
-   "load-buffer -b B -;hi;paste-buffer -p -d -b B -t %5;delete-buffer -b B;display-message -t %5 cockpit: could not paste into %5; nothing sent;" \
+   "load-buffer -b B -;hi;paste-buffer -p -d -b B -t %5;delete-buffer -b B;display-message -t %5 -l cockpit: could not paste into %5; nothing sent;" \
    "$(pact 'send %5' hi)"
 rm -f "$PND/fail-paste-buffer"
 is "and logs tmux's error" "1" \
@@ -12533,7 +12533,7 @@ is "and the files live in a private directory" "700" \
     "$(pact 'paste %5' hi >/dev/null; cat "$PND/dmode")"
 is "a missing text file pastes nothing" "" "$(pact 'send %5' hi notext)"
 is "a pane that runs something else by now gets nothing, and is told why" \
-   "display-message -t %5 cockpit: the pane now runs zsh, not claude; nothing sent;" \
+   "display-message -t %5 -l cockpit: the pane now runs zsh, not claude; nothing sent;" \
        "$(pact 'send %5' hi '' claude zsh)"
 # From the board the refusal is its note, which must stay one line: the board
 # refuses a two-line note, and a pane's command can carry a newline.
@@ -12553,13 +12553,13 @@ is "COCKPIT_READONLY runs the panel and sends tmux nothing, not even a message" 
     "$(COCKPIT_READONLY=1 pact 'send %5' hi)"
 is "and logs what it would have done" "1" "$(grep -c 'readonly, not sent: send %5' "$PND/tui.log")"
 is "a text that starts with - is pasted as text, not read as a flag" \
-   "load-buffer -b B -;-n hi;paste-buffer -p -d -b B -t %5;display-message -t %5 cockpit: inserted 5 chars into %5;" \
+   "load-buffer -b B -;-n hi;paste-buffer -p -d -b B -t %5;display-message -t %5 -l cockpit: inserted 5 chars into %5;" \
    "$(pact 'paste %5' '-n hi')"
 rm -f "$PND/bargv"; pact 'paste %5' hi >/dev/null
 is "with no state file the binary runs once" "panel %5" "$(cat "$PND/bargv")"
 touch "$PND/state"; rm -f "$PND/bargv"
 is "a state file beside the action reruns the binary on it, after the paste" \
-   "load-buffer -b B -;hi;paste-buffer -p -d -b B -t %5;display-message -t %5 cockpit: inserted 2 chars into %5;load-buffer -b B -;hi;paste-buffer -p -d -b B -t %5;display-message -t %5 cockpit: inserted 2 chars into %5;" \
+   "load-buffer -b B -;hi;paste-buffer -p -d -b B -t %5;display-message -t %5 -l cockpit: inserted 2 chars into %5;load-buffer -b B -;hi;paste-buffer -p -d -b B -t %5;display-message -t %5 -l cockpit: inserted 2 chars into %5;" \
    "$(pact 'paste %5' hi)"
 # The path is cut out of each run's line before the lines are joined: cut after, the greedy
 # pattern would take every run between the first --resume and the last /resume (#1076).
@@ -12583,7 +12583,7 @@ is "COCKPIT_READONLY reruns it too, saying nothing was sent" \
 rm -f "$PND/state"
 touch "$PND/crash"; : > "$PND/tui.log"
 is "a panel that exits non-zero is reported on the pane" \
-    "display-message -t %5 cockpit: the panel exited 3 — see $PND/tui.log;" \
+    "display-message -t %5 -l cockpit: the panel exited 3 — see $PND/tui.log;" \
    "$(pact 'paste %5' hi)"
 is "and under COCKPIT_READONLY only logged" "" "$(COCKPIT_READONLY=1 pact 'paste %5' hi)"
 is "the log says what it would have said" "1" \
