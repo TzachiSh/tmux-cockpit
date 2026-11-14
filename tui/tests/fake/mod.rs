@@ -238,6 +238,62 @@ pub fn at_default(c: &mut Command, signals: &'static [libc::c_int]) {
     unsafe { c.pre_exec(reset) };
 }
 
+/// How long [`rows_pass_handed`] gives its child: past the rows' own bounds,
+/// 30 s and less for each row that uses it, so theirs fire first and a row
+/// still ends what it started. A child alive after it is killed, so that a
+/// hung harness cannot hold the suite for good.
+#[allow(dead_code)]
+const HANDED_FOR: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// `rows` of this binary, matched exactly, in this binary started again with
+/// each of `signals` ignored and blocked: the worst state a suite can hand
+/// down. Each row that signals a child holds there only by its own
+/// [`at_default`] (#1061). The run must name every row passed, since a renamed
+/// row runs none. A row must not pass its own name: its child would start a
+/// child of its own, without end.
+#[allow(dead_code)]
+pub fn rows_pass_handed(rows: &[&str], signals: &'static [libc::c_int]) {
+    use std::os::unix::process::CommandExt;
+    use std::process::Stdio;
+    let mut c = Command::new(std::env::current_exe().unwrap());
+    c.arg("--exact")
+        .args(rows)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let hand_down = move || {
+        // SAFETY: as in `at_default`, the calls here are async-signal-safe.
+        unsafe {
+            let mut set: libc::sigset_t = std::mem::zeroed();
+            libc::sigemptyset(&mut set);
+            for &s in signals {
+                libc::signal(s, libc::SIG_IGN);
+                libc::sigaddset(&mut set, s);
+            }
+            libc::sigprocmask(libc::SIG_BLOCK, &set, std::ptr::null_mut());
+        }
+        Ok(())
+    };
+    // SAFETY: `hand_down` makes only async-signal-safe calls and allocates nothing.
+    let mut child = unsafe { c.pre_exec(hand_down) }.spawn().unwrap();
+    let step = std::time::Duration::from_millis(20);
+    for tries in 0.. {
+        if child.try_wait().unwrap().is_some() {
+            break;
+        }
+        if tries == HANDED_FOR.as_millis() / step.as_millis() {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("{rows:?} in a child had not ended after {HANDED_FOR:?} and was killed");
+        }
+        std::thread::sleep(step);
+    }
+    let out = child.wait_with_output().unwrap();
+    let said = String::from_utf8_lossy(&out.stdout);
+    let all = said.contains(&format!(" {} passed; 0 failed", rows.len()));
+    assert!(out.status.success() && all, "{}", told(&rows.join(" "), &out));
+}
+
 /// Whether a spawn by this user could start `p`: a file the kernel lets it
 /// execute, which a mode without the owner's bit or a noexec mount does not.
 #[allow(dead_code)]
