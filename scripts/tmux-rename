@@ -27,4 +27,4 @@ esac
 
 [ -n "$name" ] || exit 0          # an empty prompt renames nothing
 tmux "rename-$kind" -t "$id" -- "$(fesc "$name")" 2>/dev/null ||
-    tmux display-message "$(fesc "cockpit: could not rename $kind $id to $name")" 2>/dev/null
+    dmsg "cockpit: could not rename $kind $id to $name" 2>/dev/null

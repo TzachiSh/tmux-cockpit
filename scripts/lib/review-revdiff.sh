@@ -69,7 +69,7 @@ ingest_revdiff() {            # <dir> <store> <revdiff-output> <base-rev>
         STORE[$i.frag]=$frag
     done
     [ ! -L "$store" ] || {
-        tmux display-message "cockpit: ${store##*/} is a symlink, refusing to write" 2>/dev/null
+        dmsg "cockpit: ${store##*/} is a symlink, refusing to write" 2>/dev/null
         return 1
     }
     format_store "$store"
@@ -109,7 +109,7 @@ review_loop() {
 
     # 125: refused, so --request can tell it from "reviewed, no comments" (0). A pinned batch stays.
     if git_refused "$dir"; then
-        tmux display-message "$(fesc "$GIT_REFUSAL")" 2>/dev/null
+        dmsg "$GIT_REFUSAL" 2>/dev/null
         printf '%s\n' "$GIT_REFUSAL" >&2
         [ -s "$store" ] || drop_store "$store"
         exit 125
@@ -137,18 +137,17 @@ review_loop() {
     # as a failure: the agent must not read it as a review that pinned nothing.
     local tdo
     if ! tdo=$(tree_diff "$dir" --numstat); then
-        tmux display-message "$(fesc "cockpit: could not read the diff in $dir")" 2>/dev/null
+        dmsg "cockpit: could not read the diff in $dir" 2>/dev/null
         printf 'could not read the diff in %s\n' "$dir" > "${store%/*}/revdiff.err"
         exit 124
     fi
     if [ -z "$tdo" ]; then
-        tmux display-message "$(fesc "cockpit: no uncommitted changes in $dir")" 2>/dev/null
+        dmsg "cockpit: no uncommitted changes in $dir" 2>/dev/null
         drop_store "$store"
         exit 0
     fi
     if [ -s "$store" ]; then
-        tmux display-message \
-            "cockpit: resumed $(grep -c '^## ' -- "$store") pinned comment(s)" 2>/dev/null
+        dmsg "cockpit: resumed $(grep -c '^## ' -- "$store") pinned comment(s)" 2>/dev/null
     fi
 
     local rc n key choice to msg errf="${store%/*}/revdiff.err"
@@ -164,12 +163,12 @@ review_loop() {
         case $? in
             1) why="untracked files hidden: a big file's name starts or ends with whitespace" ;;
             2) why="no review: a big tracked file's name starts or ends with whitespace"
-               tmux display-message "cockpit: $why" 2>/dev/null
+               dmsg "cockpit: $why" 2>/dev/null
                printf 'cockpit: %s\n' "$why" > "$errf"
                if [ -s "$store" ]; then drop_scratch "$store"; else drop_store "$store"; fi
                exit 124 ;;
         esac
-        [ -z "$why" ] || tmux display-message "cockpit: $why" 2>/dev/null
+        [ -z "$why" ] || dmsg "cockpit: $why" 2>/dev/null
         # The default view is the uncommitted one; any other base is a ref.
         args=(${rdx[@]+"${rdx[@]}"} --exit-code-on-annotations -o "$store.rdout"
               --history-dir "${store%/*}/history")
@@ -193,8 +192,7 @@ review_loop() {
                     [ "$choice" = y ] && rm -f -- "$store"
                 fi ;;
             *)  # Kept, for --request to print once the popup is gone.
-                tmux display-message \
-                    "$(fesc "cockpit: revdiff exited $rc: $(head -n 1 -- "$errf" 2>/dev/null)")" 2>/dev/null
+                dmsg "cockpit: revdiff exited $rc: $(head -n 1 -- "$errf" 2>/dev/null)" 2>/dev/null
                 printf 'revdiff exited %s\n' "$rc" >&2; cat -- "$errf" >&2 2>/dev/null
                 drop_scratch "$store"; exit 126 ;;
         esac
@@ -233,9 +231,9 @@ review_loop() {
                    set_base_line
                    if ! tdo=$(tree_diff "$dir" --numstat); then
                        msg="cockpit: could not read the diff against $label"
-                       tmux display-message "$(fesc "$msg")" 2>/dev/null
+                       dmsg "$msg" 2>/dev/null
                    elif [ -z "$tdo" ]; then
-                       tmux display-message "$(fesc "cockpit: nothing to review against $label")" 2>/dev/null
+                       dmsg "cockpit: nothing to review against $label" 2>/dev/null
                    fi
                    break ;;
                 x) [ "$n" -gt 0 ] || continue

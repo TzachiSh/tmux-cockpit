@@ -3,6 +3,11 @@
 #   tmux-jump [<pane> [<client>]]   the pane and the client the key was pressed in
 set -u
 
+d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")
+case $d in */*) d=${d%/*} ;; *) d=. ;; esac
+# shellcheck source=lib/fmt.sh
+. "$d/lib/fmt.sh" || exit 1   # dmsg (#1096)
+
 # The bind passes the pane: run-shell sets no $TMUX_PANE (#45). And the client: a
 # bare switch-client moves the most recently active one, which may be another (#296).
 cur="${1:-${TMUX_PANE:-}}"
@@ -33,7 +38,7 @@ blocked+=(${pending[@]+"${pending[@]}"})
 blocked+=(${review_pending[@]+"${review_pending[@]}"})
 
 if [ ${#blocked[@]} -eq 0 ]; then
-    tmux display-message ${client:+-c "$client"} "cockpit: no agent needs you" 2>/dev/null
+    dmsg ${client:+-c "$client"} "cockpit: no agent needs you" 2>/dev/null
     exit 0
 fi
 

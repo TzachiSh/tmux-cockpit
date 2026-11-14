@@ -146,7 +146,7 @@ give_back() {                 # <key> -> 1 when tmux's own binding could not be 
         case "$err" in "unknown key: "*) tmux unbind-key -T prefix "$k"; return 0 ;; esac
     fi
     err="tmux-cockpit: could not read tmux's own binding for $k (${err:-no answer})"
-    tmux display-message "$(fesc "$err; left it bound, the next load tries again")"
+    dmsg "$err; left it bound, the next load tries again"
     return 1
 }
 # Still cockpit's <name> binding: its note, or, from a load before the notes, no
@@ -168,8 +168,7 @@ owned() {                     # <name> <key>
         "") [ -z "$notes" ] || return 1
             case "$1:${nc#*$'\037'}" in
                 menu:*'display-menu -T "#[align=centre]'*|panel:*"$legacy_panel"*)
-                    tmux display-message "$(fesc \
-                        "tmux-cockpit: $2 was the $1 key before the key notes; giving it back")"
+                    dmsg "tmux-cockpit: $2 was the $1 key before the key notes; giving it back"
                     return 0 ;;
             esac ;;
     esac
@@ -299,7 +298,9 @@ Q_PANEL=$(sq "$DIR/scripts/cockpit-panel")
 pmode=$(tmux show-option -gqv @cockpit_panel_mode)
 case "$pmode" in
     ''|auto|pc|tablet) ;;
-    *) tmux display-message "tmux-cockpit: @cockpit_panel_mode is [$pmode]; use auto, pc or tablet (auto for now)"; pmode=auto ;;
+    # dmsg: the value went in raw and a #( in it ran (#1096).
+    *) dmsg "tmux-cockpit: @cockpit_panel_mode is [$pmode]; use auto, pc or tablet (auto for now)"
+       pmode=auto ;;
 esac
 if [ -n "$pk" ]; then
     ckey panel "$pk" "${SRC_SET[@]}" display-popup -E -e "COCKPIT_PANEL_MODE=${pmode:-auto}" -w 94% -h 90% \
@@ -338,15 +339,11 @@ $(sq "$(fesc "$Q_BOARD") -p '#{pane_id}' -c '#{client_name}'")"
     fi
 fi
 
-# A message naming $DIR, shown as written (#1087). display-message expands its text as a
-# format (fesc's part), then draws it reading ## as # and #[ as a style: every # doubled
-# first comes through the draw as one.
-say_lit() { local t=$1; tmux display-message "$(fesc "${t//#/##}")"; }
 # Required (#199). Offline: one --version, never a fetch, on every load.
 tv=$(tui_check)
 case $? in
-    1) say_lit "tmux-cockpit: cockpit-tui is missing; run $DIR/install.sh" ;;
-    2) say_lit "tmux-cockpit: cockpit-tui $tv is older than $TUI_MIN; run $DIR/install.sh" ;;
+    1) dmsg "tmux-cockpit: cockpit-tui is missing; run $DIR/install.sh" ;;
+    2) dmsg "tmux-cockpit: cockpit-tui $tv is older than $TUI_MIN; run $DIR/install.sh" ;;
 esac
 
 # Opt-in: this runs on every config reload, which must not wait on curl.

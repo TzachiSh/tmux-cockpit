@@ -32,6 +32,21 @@ gesc() {
   printf '%s' "$out"
 }
 
+# Shows <text> on the status line as written: every display-message of a name, a path or
+# an error line goes through here (#1096). tmux expands a message as a format, which runs a
+# #( ), and then draws it, reading ## as # and #[ as a style, so fesc alone still lost a ##
+# and a #[...]. -l (tmux 3.4) skips the expansion; every # doubled comes through the draw
+# as one. The display-message flags (-c, -t, -d) go first, the text last. A text that
+# starts with - gets a -- before it, or tmux reads it as a flag and shows nothing; any
+# other text gets none, so the command stays as it was.
+dmsg() {                      # [display-message flags...] <text>
+  [ $# -ge 1 ] || { echo 'dmsg: no text to show' >&2; return 2; }
+  local t=${!#}
+  set -- "${@:1:$#-1}" -l
+  case $t in -*) set -- "$@" -- ;; esac
+  tmux display-message "$@" "${t//#/##}"
+}
+
 # A file name as a title: no control character and no bidi mark, which would
 # reorder what the eye reads (U+061C, U+200E-F, U+202A-E, U+2066-9, as UTF-8). tmux
 # refuses a window name holding a control character (#366), and a popup border
