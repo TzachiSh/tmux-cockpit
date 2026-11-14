@@ -15,6 +15,10 @@
     "keyword": "enum",
     "at": "$.state"
   },
+  "invalid-pane-trailing-newline.json": {
+    "keyword": "pattern",
+    "at": "$.pane_id"
+  },
   "invalid-title-id.json": {
     "keyword": "pattern",
     "at": "$.agent_id"
@@ -22,6 +26,10 @@
   "invalid-title.json": {
     "keyword": "additionalProperties",
     "at": "$"
+  },
+  "invalid-utc-trailing-newline.json": {
+    "keyword": "pattern",
+    "at": "$.updated_at"
   },
   "invalid-version-2.json": {
     "keyword": "const",

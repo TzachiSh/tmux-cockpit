@@ -301,7 +301,7 @@ fn last_written(lock: &File) -> u64 {
 }
 
 /// Digits first, then the cut: revisions never get shorter, so a kill between
-/// or during the two leaves a whole number in the lock, never an empty one.
+/// the two leaves a whole number in the lock, never an empty one.
 fn record_written(lock: &File, rev: Revision) -> io::Result<()> {
     use std::os::unix::fs::FileExt;
     let line = format!("{}\n", rev.0);

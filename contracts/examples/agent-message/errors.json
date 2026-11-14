@@ -47,6 +47,10 @@
     "keyword": "pattern",
     "at": "$.to"
   },
+  "invalid-utc-trailing-newline.json": {
+    "keyword": "pattern",
+    "at": "$.timestamp"
+  },
   "invalid-word-ref.json": {
     "keyword": "pattern",
     "at": "$.payload.body_ref"
