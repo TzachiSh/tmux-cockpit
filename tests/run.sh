@@ -206,6 +206,11 @@ unset TMUX TMUX_PANE
 unset CLAUDE_CONFIG_DIR
 # The owner's live VS Code socket must not reach a block (#350).
 unset VSCODE_IPC_HOOK_CLI
+# A pane of a session that loaded the plugin has the live plugin's folder in this variable
+# (cockpit.tmux sets it in the server's environment), and the hooks fall back on it. Every
+# server a block starts would inherit it, and a script run there before the block loads its
+# own copy would be the live one's (#1073).
+unset TMUX_COCKPIT_DIR
 # The suite never runs the real VS Code (#350). Under WSL the Windows PATH brings
 # its code(1) in, and with the private HOME it installs a fresh ~/.vscode-server
 # (639 MB) and can open the owner's editor. So: no /mnt/<drive> entry on PATH, and
@@ -10483,6 +10488,40 @@ for nbs in "$NBS"/s/tmux-*/*; do
 done
 fi
 unset NBS nbo nbrc nbs
+
+echo "== a server the suite starts holds no TMUX_COCKPIT_DIR (#1073) =="
+if need_tmux "a server's environment"; then :; else
+CDS="cockpit-cd-$$"; SOCKS="$SOCKS $CDS"; CDD=$(mktmpd)
+"$TMUX_REAL" -L "$CDS" -f /dev/null new-session -d -s t -c "$CDD" 'exec sleep 300' \
+    >/dev/null 2>&1
+is "the suite's own environment holds no TMUX_COCKPIT_DIR" "unset" "${TMUX_COCKPIT_DIR-unset}"
+# The server is asked whether it is there first: no server has no variable either.
+is "a server it starts is up, with none in its global environment" "up 0" \
+   "$("$TMUX_REAL" -L "$CDS" has-session -t t 2>/dev/null && printf 'up ' || printf 'down '
+      "$TMUX_REAL" -L "$CDS" show-environment -g 2>/dev/null | grep -c '^TMUX_COCKPIT_DIR=')"
+"$TMUX_REAL" -L "$CDS" kill-server >/dev/null 2>&1
+fi
+unset CDS CDD
+
+echo "== the suite drops a TMUX_COCKPIT_DIR its caller hands it (#1073) =="
+# The block above again, through only.sh, with the variable set as a pane of the live
+# session has it. CI's environment has none, so this is the run that meets one there.
+# The value names a folder that is not there: nothing may be run from it.
+CDN=$(mktmpd); mkdir -p "$CDN/s"
+# The nested socket is $CDN/s/tmux-<uid>/cockpit-suite-<pid>: past 107 bytes no server binds.
+if [ $((${#CDN} + ${#UID} + 30)) -gt 107 ]; then
+    skip_ "a caller's TMUX_COCKPIT_DIR (TMPDIR too long for the nested socket path)"
+else
+cdo=$(cd "$DIR" && env -u TMUX TMUX_COCKPIT_DIR="$CDN/live-plugin" TMUX_TMPDIR="$CDN/s" \
+    tests/only.sh '^a server the suite starts holds no TMUX_COCKPIT_DIR' 2>&1 </dev/null)
+cdrc=$?
+is "the block's run under a caller's TMUX_COCKPIT_DIR: both rows pass, exit 0" "0 2 0" \
+   "$cdrc $(printf '%s\n' "$cdo" | grep -c 'PASS') $(printf '%s\n' "$cdo" | grep -c 'FAIL')"
+for cds in "$CDN"/s/tmux-*/*; do
+    [ -S "$cds" ] && "$TMUX_REAL" -S "$cds" kill-server >/dev/null 2>&1
+done
+fi
+unset CDN cdo cdrc cds
 
 # tests: scripts/tui-fetch
 echo "== cockpit-tui builds install the executable cargo built, not a guessed path (#591) =="
