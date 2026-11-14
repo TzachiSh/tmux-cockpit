@@ -758,6 +758,7 @@ mod tests {
             "alpha/errors.json: names invalid-gone.json, which is no invalid-* file here",
             "beta.schema.json: additionalProperties is not false",
             "beta: no valid-* example",
+            r#"delta.schema.json: pattern "^(a$" is not a pattern the engine reads"#,
             r#"delta.schema.json: pattern "^(?<=a)b$" is not a pattern the engine reads"#,
             r#"gamma.schema.json: pattern "^[0-9a-f]{16}" does not start with ^ and end with $"#,
             "gamma.schema.json: pattern \"^repo|global$\" has a | outside every group, \
