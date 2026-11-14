@@ -9,7 +9,8 @@ use std::process::Command;
 struct Server {
     sock: String,
     dir: std::path::PathBuf,
-    path: String,
+    /// killed with its socket after the folder goes
+    _server: fake::Server,
 }
 
 impl Server {
@@ -30,10 +31,6 @@ impl Server {
 
 impl Drop for Server {
     fn drop(&mut self) {
-        let _ = Command::new("tmux").args(["-L", &self.sock, "kill-server"]).status();
-        if self.path.ends_with(&self.sock) {
-            let _ = std::fs::remove_file(&self.path);
-        }
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
@@ -43,7 +40,7 @@ fn a_claude_the_agent_list_leaves_out_is_no_claude() {
     let sock = format!("cockpit-claude-glob-{}", std::process::id());
     let dir = std::env::temp_dir().join(&sock);
     std::fs::create_dir_all(&dir).unwrap();
-    let mut new = Command::new("tmux");
+    let mut server = fake::Server::new(&sock);
     // bash, whatever $SHELL is (#882): tmux runs a pane's command in the default
     // shell. Under dash, which forks the command and stays the pane's process, the
     // `claude` row would pass for the wrong reason. bash execs it.
@@ -52,23 +49,22 @@ fn a_claude_the_agent_list_leaves_out_is_no_claude() {
     // default-shell line (#896). Where /bin/sh execs the command (a host with no
     // /usr/bin/dash, such as macOS), the test passes and proves nothing about that line.
     let dash = std::path::Path::new("/usr/bin/dash").exists();
-    new.env("SHELL", if dash { "/usr/bin/dash" } else { "/bin/sh" })
-        .args(["-L", &sock, "-f", "/dev/null"])
-        .args(["set-option", "-g", "default-shell", "/bin/bash", ";"])
-        .args(["new-session", "-d", "-c"])
-        .arg(&dir)
-        .arg("sleep 300");
-    let ok = new.status().is_ok_and(|s| s.success());
+    let ok = server.start(|c| {
+        c.env("SHELL", if dash { "/usr/bin/dash" } else { "/bin/sh" })
+            .args(["set-option", "-g", "default-shell", "/bin/bash", ";"])
+            .args(["new-session", "-d", "-c"])
+            .arg(&dir)
+            .arg("sleep 300");
+    });
     if !ok {
         eprintln!("SKIP: no tmux");
         return;
     }
-    let mut s = Server {
+    let s = Server {
         sock,
         dir,
-        path: String::new(),
+        _server: server,
     };
-    s.path = s.tmux(&["display-message", "-p", "#{socket_path}"]);
     s.tmux(&["set-option", "-g", "@cockpit_agents_glob", "|codex|"]);
     // SAFETY: the only test in this binary; nothing else reads the env meanwhile.
     unsafe { std::env::set_var("COCKPIT_TMUX", format!("tmux -L {}", s.sock)) };

@@ -1,5 +1,7 @@
 //! The basket on a real tmux, a private `-L` server, never the user's. One
 //! test in this binary: it points `COCKPIT_TMUX` at that server for the process.
+mod fake;
+
 use cockpit_tui::basket;
 use cockpit_tui::refs::Ref;
 use std::process::Command;
@@ -7,8 +9,8 @@ use std::process::Command;
 struct Server {
     sock: String,
     dir: std::path::PathBuf,
-    /// the socket file, which kill-server leaves behind
-    path: String,
+    /// killed with its socket after the folder goes
+    _server: fake::Server,
 }
 
 impl Server {
@@ -17,20 +19,15 @@ impl Server {
         let dir = std::env::temp_dir().join(&sock);
         std::fs::create_dir_all(&dir).ok()?;
         let dir = dir.canonicalize().ok()?;
-        let ok = Command::new("tmux")
-            .args(["-L", &sock, "-f", "/dev/null", "new-session", "-d", "-c"])
-            .arg(&dir)
-            .arg("sleep 300")
-            .status()
-            .ok()?
-            .success();
-        let mut s = ok.then_some(Server {
+        let mut server = fake::Server::new(&sock);
+        let ok = server.start(|c| {
+            c.args(["new-session", "-d", "-c"]).arg(&dir).arg("sleep 300");
+        });
+        ok.then_some(Server {
             sock,
             dir,
-            path: String::new(),
-        })?;
-        s.path = s.tmux(&["display-message", "-p", "#{socket_path}"]);
-        Some(s)
+            _server: server,
+        })
     }
 
     fn tmux(&self, args: &[&str]) -> String {
@@ -41,10 +38,6 @@ impl Server {
 
 impl Drop for Server {
     fn drop(&mut self) {
-        let _ = Command::new("tmux").args(["-L", &self.sock, "kill-server"]).status();
-        if self.path.ends_with(&self.sock) {
-            let _ = std::fs::remove_file(&self.path);
-        }
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }

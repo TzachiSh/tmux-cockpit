@@ -1,6 +1,8 @@
 //! ^B's `d` and `D` on a real tmux (#365 child 5): each change is written to
 //! the pane's basket before the list shows it. A private `-L` server, never the
 //! user's; one test, as it sets COCKPIT_TMUX.
+mod fake;
+
 use cockpit_tui::basket;
 use cockpit_tui::panel::app::{App, View};
 use cockpit_tui::panel::capture::Capture;
@@ -11,7 +13,8 @@ use std::process::Command;
 struct Server {
     sock: String,
     dir: std::path::PathBuf,
-    path: String,
+    /// killed with its socket after the folder goes
+    _server: fake::Server,
 }
 
 impl Server {
@@ -23,10 +26,6 @@ impl Server {
 
 impl Drop for Server {
     fn drop(&mut self) {
-        let _ = Command::new("tmux").args(["-L", &self.sock, "kill-server"]).status();
-        if self.path.ends_with(&self.sock) {
-            let _ = std::fs::remove_file(&self.path);
-        }
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
@@ -41,20 +40,18 @@ fn d_and_shift_d_write_the_basket_before_the_list_shows_it() {
     let dir = std::env::temp_dir().join(&sock);
     std::fs::create_dir_all(&dir).unwrap();
     let dir = dir.canonicalize().unwrap();
-    let mut new = Command::new("tmux");
-    new.args(["-L", &sock, "-f", "/dev/null", "new-session", "-d", "-c"])
-        .arg(&dir)
-        .arg("sleep 300");
-    if !new.status().is_ok_and(|s| s.success()) {
+    let mut server = fake::Server::new(&sock);
+    if !server.start(|c| {
+        c.args(["new-session", "-d", "-c"]).arg(&dir).arg("sleep 300");
+    }) {
         eprintln!("SKIP: no tmux");
         return;
     }
-    let mut s = Server {
+    let s = Server {
         sock,
         dir,
-        path: String::new(),
+        _server: server,
     };
-    s.path = s.tmux(&["display-message", "-p", "#{socket_path}"]);
     // SAFETY: the only test in this binary; nothing else reads the env meanwhile.
     unsafe { std::env::set_var("COCKPIT_TMUX", format!("tmux -L {}", s.sock)) };
     let pane = s.tmux(&["display-message", "-p", "#{pane_id}"]);

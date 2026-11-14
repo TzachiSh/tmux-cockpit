@@ -93,6 +93,8 @@ struct Rig {
     kids: Vec<Child>,
     sock: String,
     dir: PathBuf,
+    /// killed with its socket after the kids and the folder go
+    _server: fake::Server,
     // last, so it is released after Drop has taken the rest down
     _env: EnvLock,
 }
@@ -155,13 +157,6 @@ impl Drop for Rig {
             let _ = k.kill();
             let _ = k.wait();
         }
-        self.tmux(&["kill-server"]);
-        // kill-server never unlinks the socket, by any exit path; the suite
-        // learned that after ~850 dead inodes piled up (tests/run.sh, the note above
-        // kill_socks).
-        let uid = unsafe { libc::getuid() };
-        let tmp = std::env::var("TMUX_TMPDIR").unwrap_or_else(|_| "/tmp".into());
-        let _ = std::fs::remove_file(PathBuf::from(tmp).join(format!("tmux-{uid}")).join(&self.sock));
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
@@ -181,17 +176,16 @@ fn rig_env(tag: &str, env: EnvLock) -> Option<Rig> {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     // The server first: Push::start() lists its channel the moment it runs.
-    let _ = Command::new("tmux")
-        .args(["-L", &sock, "-f", "/dev/null", "new-session", "-d", "-c"])
-        .arg(&dir)
-        .args(["-s", "t", "sleep 300"])
-        .env_remove("TMUX")
-        .env_remove("TMUX_PANE")
-        .output();
+    let mut server = fake::Server::new(&sock);
+    server.start(|c| {
+        c.args(["new-session", "-d", "-c"]).arg(&dir).args(["-s", "t", "sleep 300"]);
+        c.env_remove("TMUX").env_remove("TMUX_PANE");
+    });
     Some(Rig {
         kids: Vec::new(),
         sock,
         dir,
+        _server: server,
         _env: env,
     })
 }

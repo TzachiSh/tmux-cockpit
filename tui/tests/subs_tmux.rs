@@ -9,6 +9,8 @@ use std::process::Command;
 struct Server {
     sock: String,
     dir: PathBuf,
+    /// killed with its socket after the folder goes
+    _server: fake::Server,
 }
 
 impl Server {
@@ -20,11 +22,6 @@ impl Server {
 
 impl Drop for Server {
     fn drop(&mut self) {
-        self.tmux(&["kill-server"]);
-        let tmp = std::env::var("TMUX_TMPDIR").unwrap_or_else(|_| "/tmp".into());
-        // SAFETY: getuid has no preconditions.
-        let uid = unsafe { libc::getuid() };
-        let _ = std::fs::remove_file(PathBuf::from(tmp).join(format!("tmux-{uid}")).join(&self.sock));
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
@@ -43,12 +40,17 @@ fn the_hook_options_reach_the_pane_through_the_format() {
     std::fs::write(subs.join("agent-a.meta.json"), r#"{"agentType":"x","description":"live"}"#).unwrap();
     let t = dir.join(".claude/projects/-p/s1.jsonl");
     std::fs::write(&t, "").unwrap();
-    let s = Server {
-        sock: format!("cockpit-subs-{pid}"),
-        dir: dir.clone(),
-    };
+    let sock = format!("cockpit-subs-{pid}");
     let d = dir.display().to_string();
-    s.tmux(&["-f", "/dev/null", "new-session", "-d", "-s", "t", "-c", &d, "exec sleep 60"]);
+    let mut server = fake::Server::new(&sock);
+    server.start(|c| {
+        c.args(["new-session", "-d", "-s", "t", "-c", &d, "exec sleep 60"]);
+    });
+    let s = Server {
+        sock,
+        dir: dir.clone(),
+        _server: server,
+    };
     let p = s.tmux(&["display-message", "-p", "-t", "t", "#{pane_id}"]);
     let t = t.display().to_string();
     for (k, v) in [("@panestate", "running"), ("@cockpit_subs", "3"), ("@cockpit_transcript", &t)] {

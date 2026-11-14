@@ -13,6 +13,7 @@
 //! answers a lookup with ([`rig_path`], #972).
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::Once;
 
 fn beside(path: &Path, ext: &str) -> PathBuf {
@@ -254,6 +255,52 @@ pub fn assert_claude_is_the_rigs(dir: &Path) {
     if let Err(found) = rigs_claude(&path, dir) {
         let dir = dir.display();
         panic!("the first claude on PATH is {found:?}, not one under {dir} (#972)");
+    }
+}
+
+// --- the rigs' private tmux servers (#1066) ---
+
+/// A rig's private tmux server on the socket `sock`, named by `-L`, never the
+/// user's (AGENTS.md). Every rig starts its server through [`Server::start`].
+/// Dropped, it kills the server and removes its socket file, which kill-server
+/// leaves behind by any exit path (tests/run.sh, the note above kill_socks).
+#[allow(dead_code)]
+pub struct Server {
+    pub sock: String,
+    /// the socket file, asked of the server once it runs; empty before
+    path: String,
+}
+
+#[allow(dead_code)]
+impl Server {
+    /// The guard of `sock`, with no server yet.
+    pub fn new(sock: &str) -> Server {
+        Server {
+            sock: sock.to_string(),
+            path: String::new(),
+        }
+    }
+
+    /// Starts the server: `tmux -L <sock> -f /dev/null`, then what `with` adds,
+    /// the command that makes its first session. Whether that ran and exited 0.
+    pub fn start(&mut self, with: impl FnOnce(&mut Command)) -> bool {
+        let mut c = Command::new("tmux");
+        c.args(["-L", &self.sock, "-f", "/dev/null"]);
+        with(&mut c);
+        let ok = c.output().is_ok_and(|o| o.status.success());
+        if ok {
+            self.path = tmux_on(&self.sock, &["display-message", "-p", "#{socket_path}"]);
+        }
+        ok
+    }
+}
+
+impl Drop for Server {
+    fn drop(&mut self) {
+        let _ = Command::new("tmux").args(["-L", &self.sock, "kill-server"]).output();
+        if self.path.ends_with(&self.sock) {
+            let _ = std::fs::remove_file(&self.path);
+        }
     }
 }
 
