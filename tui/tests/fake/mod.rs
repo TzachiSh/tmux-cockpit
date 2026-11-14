@@ -484,19 +484,18 @@ pub fn held_pane(sock: &str, dir: &Path, name: &str) -> String {
 /// As [`held_pane`], but the start script first writes `name` into its own
 /// comm, so for its 0.3 s comm reads `name` while argv[0] is still the script's
 /// shell: the gap inside an exec, where the kernel sets comm before the argv
-/// tmux reads (#1056). Red at once where /proc's comm cannot be written, as the
-/// row would then hold no such gap and pass for nothing. Where there is no /proc
-/// it says SKIP and starts a [`held_pane`], since `ps` gives no argv[0] to check.
+/// tmux reads (#1056). Where a process cannot write its own comm, the row would
+/// hold no such gap: it says SKIP with the cause ([`comm_skip`]) and starts a
+/// [`held_pane`]. So it does where there is no /proc, as `ps` gives no argv[0].
 #[allow(dead_code)]
 pub fn named_pane(sock: &str, dir: &Path, name: &str) -> String {
     if !Path::new("/proc/self").is_dir() {
         eprintln!("SKIP: no /proc, so no comm to set ahead of argv[0]; a held row instead");
         return held_pane(sock, dir, name);
     }
-    // the kernel's rule for the script's own write, tried on this thread's name
-    let me = std::fs::read_to_string("/proc/thread-self/comm").unwrap_or_default();
-    if let Err(e) = std::fs::write("/proc/thread-self/comm", me.trim_end()) {
-        panic!("/proc/thread-self/comm cannot be written ({e}): no comm-ahead row here");
+    if let Some(skip) = comm_skip(Path::new("/proc/thread-self/comm")) {
+        eprintln!("{skip}");
+        return held_pane(sock, dir, name);
     }
     let bin = dir.join(name);
     // a copy a pane already runs cannot be written over (ETXTBSY)
@@ -506,7 +505,9 @@ pub fn named_pane(sock: &str, dir: &Path, name: &str) -> String {
     let named = dir.join("named");
     let body = concat!(
         "#!/bin/sh\n",
-        "printf %s \"${1##*/}\" > /proc/$$/comm || exit 3\n",
+        // a failed write is said on the pane's screen, which settle's red prints
+        "printf %s \"${1##*/}\" > /proc/$$/comm ||\n",
+        "    { echo \"$0: no comm write\"; exec sleep 300; }\n",
         "sleep 0.3\nexec \"$@\"\n"
     );
     write_exec(&named, body);
@@ -515,15 +516,28 @@ pub fn named_pane(sock: &str, dir: &Path, name: &str) -> String {
     tmux_on(sock, &["new-window", "-d", "-P", "-F", "#{pane_id}", "-c", &d, &cmd])
 }
 
+/// Where a process cannot write its own comm at `comm`, the SKIP line that says
+/// so with the error, else `None`. Tried on this thread's own name, under the
+/// kernel's rule the start script's write meets too. A box that mounts /proc
+/// read-only, or forbids the write by policy, holds no comm-ahead gap (#1068).
+#[allow(dead_code)]
+pub fn comm_skip(comm: &Path) -> Option<String> {
+    let me = std::fs::read_to_string(comm).unwrap_or_default();
+    let e = std::fs::write(comm, me.trim_end()).err()?;
+    let at = comm.display();
+    Some(format!("SKIP: {at} cannot be written ({e}): no comm-ahead row, a held one instead"))
+}
+
 /// Waits until the pane's own process, on the private server `sock`, has exec'd
 /// `name` (#1056). Not by pane_current_command: while a pane starts, tmux 3.8
 /// reads it as the pane's argv, then `tmux`, then the shell, then the name, so
 /// its first read can already be `name`. The pane's pid keeps through each exec.
 /// Two checks: its comm, which only moves forward, and the argv[0] tmux reads,
 /// as the kernel sets comm before the new argv and an exec's empty cmdline sends
-/// tmux back to the pane's start argv. Red, naming both reads last, when it
-/// never gets there. On Linux no row pins the comm check, as argv[0] reads the
-/// name only after comm does. Without /proc it is the whole check.
+/// tmux back to the pane's start argv. Red, naming both reads last and the
+/// pane's screen, when it never gets there. On Linux no row pins the comm check,
+/// as argv[0] reads the name only after comm does. Without /proc it is the whole
+/// check.
 #[allow(dead_code)]
 pub fn settle(sock: &str, pane: &str, name: &str) {
     let pid = tmux_on(sock, &["display-message", "-p", "-t", pane, "#{pane_pid}"]);
@@ -541,7 +555,8 @@ pub fn settle(sock: &str, pane: &str, name: &str) {
     }
     let (comm, argv0) = last;
     let last = format!("comm {comm:?}, argv[0] {argv0:?}");
-    panic!("pane {pane} never ran {name}: its process {pid} read {last} last");
+    let screen = tmux_on(sock, &["capture-pane", "-p", "-t", pane]);
+    panic!("pane {pane} never ran {name}: its process {pid} read {last} last; screen {screen:?}");
 }
 
 /// What [`settle`] reads of a process: its comm, and the last path part of the

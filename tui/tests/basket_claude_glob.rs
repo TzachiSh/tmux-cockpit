@@ -66,7 +66,7 @@ fn a_claude_the_agent_list_leaves_out_is_no_claude() {
         return;
     }
     s.tmux(&["set-option", "-g", "@cockpit_agents_glob", "|codex|"]);
-    // SAFETY: the only test in this binary; nothing else reads the env meanwhile.
+    // SAFETY: the one test of this binary that reads the env; the other reads none of it.
     unsafe { std::env::set_var("COCKPIT_TMUX", format!("tmux -L {}", s.sock)) };
     // Each pane starts in its own row's turn, so a held row's hold is not spent
     // waiting on the rows before it, whatever their order (#1056).
@@ -90,4 +90,23 @@ fn a_claude_the_agent_list_leaves_out_is_no_claude() {
         assert_eq!(basket::is_claude(&pane), want, "{row} ({pane})");
     }
     assert!(!basket::is_claude("%99999"), "a pane that is not there");
+}
+
+/// #1068's comm-ahead row on a box where a process cannot write its own comm: a SKIP
+/// that names the file and the error, and a held row instead, not a red. Paths that
+/// take no write stand in for a read-only /proc. Where the write goes through there is
+/// no SKIP, and the row runs as it is.
+#[test]
+fn a_comm_that_cannot_be_written_is_a_skip_naming_the_cause() {
+    let rows = [
+        ("no such file under /proc", "/proc/thread-self/absent-1066", true),
+        ("a file where a folder must be", "/proc/self/comm/absent-1066", true),
+        #[cfg(target_os = "linux")]
+        ("this thread's own comm", "/proc/thread-self/comm", false),
+    ];
+    for (row, at, skips) in rows {
+        let skip = fake::comm_skip(std::path::Path::new(at));
+        let said = format!("SKIP: {at} cannot be written (");
+        assert_eq!(skip.as_ref().map(|s| s.starts_with(&said)), skips.then_some(true), "{row}");
+    }
 }
