@@ -214,6 +214,145 @@ pub fn rig_path(bin: &Path) -> String {
     }
 }
 
+/// `c` with each of `signals` at its default action and unblocked in its child,
+/// set between the fork and the exec. A process starts with its parent's
+/// ignored signals and signal mask: a suite started with `&` from a script
+/// ignores INT and QUIT, one under nohup HUP, and bash keeps a mask that dash
+/// clears. A shell cannot trap a signal ignored when it started, and a handler
+/// never runs for a blocked one. A row that signals a child, or has one signal
+/// itself, measures that child and not how the suite was started (#1044, #1061).
+/// KILL and STOP can be neither ignored nor blocked.
+#[allow(dead_code)]
+pub fn at_default(c: &mut Command, signals: &'static [libc::c_int]) {
+    use std::os::unix::process::CommandExt;
+    let reset = move || {
+        // SAFETY: signal, sigemptyset, sigaddset and sigprocmask are
+        // async-signal-safe, and nothing here allocates.
+        unsafe {
+            let mut set: libc::sigset_t = std::mem::zeroed();
+            libc::sigemptyset(&mut set);
+            for &s in signals {
+                libc::signal(s, libc::SIG_DFL);
+                libc::sigaddset(&mut set, s);
+            }
+            libc::sigprocmask(libc::SIG_UNBLOCK, &set, std::ptr::null_mut());
+        }
+        Ok(())
+    };
+    // SAFETY: `reset` makes only async-signal-safe calls and allocates nothing.
+    unsafe { c.pre_exec(reset) };
+}
+
+/// How long [`rows_pass_handed`] gives its child: past the rows' own bounds, so
+/// theirs fire first and a row still ends what it started. The longest is
+/// claude_guard.rs's signal row, whose waits are checked against this when
+/// that file builds. A bound at or under a row's own killed that child
+/// before it could kill its runner, and left the runner running (#1061). A
+/// child alive after this is killed, so a hung harness cannot hold the suite for
+/// good.
+#[allow(dead_code)]
+pub const HANDED_FOR: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// `rows` of this binary, matched exactly, in this binary started again with
+/// each of `signals` ignored and blocked: the worst state a suite can hand
+/// down. Each row that signals a child holds there only by its own
+/// [`at_default`] (#1061). The run must name every row passed, since a renamed
+/// row runs none. A row must not pass its own name: its child would start a
+/// child of its own, without end. Returns the child's pid, for a row that looks
+/// for what the child left.
+#[allow(dead_code)]
+pub fn rows_pass_handed(rows: &[&str], signals: &'static [libc::c_int]) -> u32 {
+    handed(rows, signals, &[], HANDED_FOR).unwrap_or_else(|e| panic!("{e}"))
+}
+
+/// The bits of the `field` line, `SigIgn:` or `SigBlk:`, of `pid`'s
+/// /proc status: None where /proc has no such process.
+#[allow(dead_code)]
+fn status_bits(pid: u32, field: &str) -> Option<u64> {
+    let s = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+    let bits = s.lines().find_map(|l| l.strip_prefix(field))?;
+    u64::from_str_radix(bits.trim(), 16).ok()
+}
+
+/// [`rows_pass_handed`]'s run, with `env` set for the child and `bound` for its
+/// wait: the child's pid, or what went wrong with all the child wrote. Where
+/// /proc is, the child's own status must show each of `signals` ignored and
+/// blocked, read right after its exec, so a helper that hands nothing down
+/// fails. The child writes to files in a folder of its own and never to a pipe,
+/// which a red row writing more than a pipe holds would fill and then wait on
+/// for the whole bound (#1061).
+#[allow(dead_code)]
+pub fn handed(
+    rows: &[&str],
+    signals: &'static [libc::c_int],
+    // variables set for the child alone
+    env: &[(&str, &str)],
+    bound: std::time::Duration,
+) -> Result<u32, String> {
+    use std::os::unix::process::CommandExt;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static RUNS: AtomicUsize = AtomicUsize::new(0);
+    let run = RUNS.fetch_add(1, Ordering::SeqCst);
+    let me = std::process::id();
+    let dir = Scratch::fresh(std::env::temp_dir().join(format!("cockpit-handed-{me}-{run}")));
+    let (out, err) = (dir.join("out"), dir.join("err"));
+    let mut c = Command::new(std::env::current_exe().unwrap());
+    c.arg("--exact").args(rows).envs(env.iter().copied());
+    let file = |p: &Path| std::fs::File::create(p).unwrap();
+    c.stdin(std::process::Stdio::null()).stdout(file(&out)).stderr(file(&err));
+    let hand_down = move || {
+        // SAFETY: as in `at_default`, the calls here are async-signal-safe.
+        unsafe {
+            let mut set: libc::sigset_t = std::mem::zeroed();
+            libc::sigemptyset(&mut set);
+            for &s in signals {
+                libc::signal(s, libc::SIG_IGN);
+                libc::sigaddset(&mut set, s);
+            }
+            libc::sigprocmask(libc::SIG_BLOCK, &set, std::ptr::null_mut());
+        }
+        Ok(())
+    };
+    // SAFETY: `hand_down` makes only async-signal-safe calls and allocates nothing.
+    let mut child = unsafe { c.pre_exec(hand_down) }.spawn().unwrap();
+    let pid = child.id();
+    let what = rows.join(" ");
+    let said = |status: &str| {
+        let read = |p: &Path| std::fs::read(p).unwrap_or_default();
+        let read = |p: &Path| String::from_utf8_lossy(&read(p)).into_owned();
+        format!("{what} in a child: {status}\nstdout:\n{}\nstderr:\n{}", read(&out), read(&err))
+    };
+    let want = signals.iter().fold(0u64, |m, &s| m | 1 << (s - 1));
+    let got = (status_bits(pid, "SigIgn:"), status_bits(pid, "SigBlk:"));
+    let has = |bits: Option<u64>| bits.is_some_and(|b| b & want == want);
+    // a child handed less runs on to its end: killed now, it would leave what it began
+    let unhanded = Path::new("/proc/self").is_dir() && !(has(got.0) && has(got.1));
+    let why = || format!("the child was not handed {want:#x} ignored and blocked: {got:x?}");
+    let unhanded = unhanded.then(why);
+    let step = std::time::Duration::from_millis(20);
+    for tries in 0.. {
+        if let Some(status) = child.try_wait().unwrap() {
+            let passed = std::fs::read_to_string(&out).unwrap_or_default();
+            let all = passed.contains(&format!(" {} passed; 0 failed", rows.len()));
+            if let Some(why) = unhanded {
+                return Err(why);
+            }
+            return if status.success() && all {
+                Ok(pid)
+            } else {
+                Err(said(&status.to_string()))
+            };
+        }
+        if tries == bound.as_millis() / step.as_millis() {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            return Err(said(&format!("had not ended after {bound:?} and was killed")));
+        }
+        std::thread::sleep(step);
+    }
+    unreachable!()
+}
+
 /// Whether a spawn by this user could start `p`: a file the kernel lets it
 /// execute, which a mode without the owner's bit or a noexec mount does not.
 #[allow(dead_code)]
