@@ -295,7 +295,13 @@ fn a_held_lock_makes_put_busy_not_blocked() {
     let d = scratch("lock");
     let (s, k) = (local(&d).with_lock_wait(Duration::from_millis(50)), key("agent.a"));
     s.put_if_revision(&k, &json!(1), None).unwrap();
-    let held = std::fs::File::open(s.lock_path(&k)).unwrap();
+    // Made here, not left to the put: the row is about the wait, not who made the file.
+    let held = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(s.lock_path(&k))
+        .unwrap();
     // SAFETY: flock on an fd this test owns.
     assert_eq!(unsafe { libc::flock(held.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) }, 0);
     let (s2, k2) = (s.clone(), k.clone());
