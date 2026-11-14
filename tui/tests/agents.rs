@@ -185,11 +185,13 @@ fn stub_of(pid: i32, dir: &std::path::Path) -> bool {
 const SH: &str = "/bin/sh";
 
 /// The give-up's last line, printed by [`SH`] from the environment the exec handed it,
-/// then SIGABRT under the same pid. `command` passes over a function of that name
-/// imported from the environment, which bash does even as `sh`. `${HOME-}` holds under
-/// an exported `SHELLOPTS=nounset`. `exit 134` only if the kill did not end it (#988).
+/// then SIGABRT under the same pid. The exec sets SIGPIPE back to its default, so the
+/// trap keeps a closed stderr from ending it by SIGPIPE first. `command` passes over a
+/// function of that name imported from the environment, which bash does even as `sh`.
+/// `${HOME-}` holds under an exported `SHELLOPTS=nounset`. `exit 134` only if the kill
+/// did not end it (#988).
 const SAY: &str = concat!(
-    r#"command printf 'At the abort PATH began with %s and HOME was %s\n' "#,
+    r#"trap '' PIPE; command printf 'At the abort PATH began with %s and HOME was %s\n' "#,
     r#""${PATH%%:*}" "${HOME-}" >&2; command kill -s ABRT "$$"; exit 134"#,
 );
 
@@ -219,10 +221,17 @@ fn give_up(dir: &Path, bound: std::time::Duration, sh: &Path) -> ! {
     let _ = std::io::stderr().write_all(msg.as_bytes());
     // The last line is printed by the shell this process becomes. No line of this binary
     // runs after the exec, so the line shows PATH and HOME as a late lookup would have
-    // found them, whatever was written above it (#988). An exec keeps an ignored signal:
-    // SIGABRT goes back to its default so that the shell's kill ends the process.
-    // SAFETY: sets the default action, no handler.
-    unsafe { libc::signal(libc::SIGABRT, libc::SIG_DFL) };
+    // found them, whatever was written above it (#988). An exec keeps an ignored action
+    // and the signal mask, which abort() would undo for itself: undone here, so that the
+    // shell's kill ends the process.
+    // SAFETY: sets the default action and unblocks SIGABRT on this thread, no handler.
+    unsafe {
+        libc::signal(libc::SIGABRT, libc::SIG_DFL);
+        let mut abrt: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut abrt);
+        libc::sigaddset(&mut abrt, libc::SIGABRT);
+        libc::pthread_sigmask(libc::SIG_UNBLOCK, &abrt, std::ptr::null_mut());
+    }
     let _ = std::process::Command::new(sh).arg0("sh").args(["-c", SAY]).exec();
     // No shell: the line from this binary's own read, which a put-back between this read
     // and the abort would get past, as one anywhere after the read did before #988.
@@ -430,22 +439,32 @@ fn hung_lookup_child() {
 }
 
 /// Runs the child half `how`: its exit, its stderr, and the rig's and the dev's dirs it
-/// names. `ignored` starts it with SIGABRT ignored, as a parent may hand it down (#988).
+/// names. `ignored` starts it with SIGABRT ignored and `blocked` with SIGABRT blocked,
+/// as a parent may hand either down (#988).
 fn hung_lookup_run(how: &str) -> (std::process::ExitStatus, String, PathBuf, PathBuf) {
     use std::os::unix::process::CommandExt;
     let mut child = std::process::Command::new(std::env::current_exe().unwrap());
     child
         .args(["--exact", "hung_lookup_child", "--test-threads=1"])
         .env("HUNG_LOOKUP_CHILD", how);
-    if how == "ignored" {
-        let ignore = || {
-            // SAFETY: sets an action, no handler.
-            unsafe { libc::signal(libc::SIGABRT, libc::SIG_IGN) };
-            Ok(())
-        };
-        // SAFETY: signal() is async-signal-safe, the one call made between fork and exec.
-        unsafe { child.pre_exec(ignore) };
-    }
+    let (ignore, block) = (how == "ignored", how == "blocked");
+    let hand_down = move || {
+        // SAFETY: sets an action or the mask, no handler.
+        unsafe {
+            let mut abrt: libc::sigset_t = std::mem::zeroed();
+            libc::sigemptyset(&mut abrt);
+            libc::sigaddset(&mut abrt, libc::SIGABRT);
+            if ignore {
+                libc::signal(libc::SIGABRT, libc::SIG_IGN);
+            }
+            if block {
+                libc::sigprocmask(libc::SIG_BLOCK, &abrt, std::ptr::null_mut());
+            }
+        }
+        Ok(())
+    };
+    // SAFETY: the calls above are async-signal-safe, made between fork and exec.
+    unsafe { child.pre_exec(hand_down) };
     let child = child.stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped());
     let child = child.spawn().unwrap();
     let pid = child.id();
@@ -502,6 +521,24 @@ fn so_does_one_with_no_shell_to_exec() {
 #[test]
 fn so_does_one_started_with_sigabrt_ignored() {
     gave_up("ignored");
+}
+
+/// #988: nor does a blocked one, which an exec hands down too.
+#[test]
+fn so_does_one_started_with_sigabrt_blocked() {
+    gave_up("blocked");
+}
+
+/// #988: with nobody left to read stderr the shell still dies by SIGABRT, as abort()
+/// does, though the exec has set SIGPIPE back to its default.
+#[test]
+fn the_shell_dies_by_sigabrt_on_a_stderr_nobody_reads() {
+    use std::os::unix::process::{CommandExt, ExitStatusExt};
+    let (read, write) = std::io::pipe().unwrap();
+    drop(read);
+    let mut sh = std::process::Command::new(SH);
+    let status = sh.arg0("sh").args(["-c", SAY]).stderr(write).status().unwrap();
+    assert_eq!(status.signal(), Some(libc::SIGABRT), "{status:?}");
 }
 
 /// Rows of a PATH's first entry and a HOME, each by name. `None` leaves HOME unset.
