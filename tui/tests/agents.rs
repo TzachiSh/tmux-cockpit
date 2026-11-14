@@ -201,6 +201,11 @@ fn last_line(path: &str, home: &str) -> String {
     format!("At the abort PATH began with {first} and HOME was {home}\n")
 }
 
+/// The fallback's line ahead of the last: which path wrote it, and why (#988).
+fn exec_failed(sh: &Path, e: &std::io::Error) -> String {
+    format!("No shell from {}: {e}. The line below is this binary's own read.\n", sh.display())
+}
+
 /// The drop gave up: says so on the real stderr, past the harness's capture, and ends
 /// the run there. The variables stay the rig's and `dir` is left (#969).
 fn give_up(dir: &Path, bound: std::time::Duration, sh: &Path) -> ! {
@@ -232,12 +237,14 @@ fn give_up(dir: &Path, bound: std::time::Duration, sh: &Path) -> ! {
         libc::sigaddset(&mut abrt, libc::SIGABRT);
         libc::pthread_sigmask(libc::SIG_UNBLOCK, &abrt, std::ptr::null_mut());
     }
-    let _ = std::process::Command::new(sh).arg0("sh").args(["-c", SAY]).exec();
+    let failed = std::process::Command::new(sh).arg0("sh").args(["-c", SAY]).exec();
     // No shell: the line from this binary's own read, which a put-back between this read
-    // and the abort would get past, as one anywhere after the read did before #988.
+    // and the abort would get past, as one anywhere after the read did before #988. The
+    // line ahead of it says so, for the reader of a give-up (#988).
     let path = std::env::var("PATH").unwrap_or_default();
     let home = std::env::var("HOME").unwrap_or_default();
-    let _ = std::io::stderr().write_all(last_line(&path, &home).as_bytes());
+    let read = last_line(&path, &home);
+    let _ = std::io::stderr().write_all((exec_failed(sh, &failed) + &read).as_bytes());
     std::process::abort();
 }
 
@@ -480,8 +487,8 @@ fn hung_lookup_run(how: &str) -> (std::process::ExitStatus, String, PathBuf, Pat
 
 /// Runs the child half `how` and asserts the give-up of #969: SIGABRT, the message with
 /// the rig's own PATH and HOME on its last line, the dirs left, no `claude` outside the
-/// rig started. Returns the child's stderr.
-fn gave_up(how: &str) -> String {
+/// rig started. Returns the child's stderr and the rig's dir.
+fn gave_up(how: &str) -> (String, PathBuf) {
     let _r = Rig::new("giveup", ONE);
     let (status, err, rig, dev) = hung_lookup_run(how);
     let seen = (rig.join("go").exists(), dev.join("made").exists(), dev.join("outside").exists());
@@ -494,7 +501,7 @@ fn gave_up(how: &str) -> String {
     let said = ["not a product crash", "rerun hung_lookup_child alone", &left, &kept];
     assert!(said.iter().all(|s| err.contains(s)), "{err}");
     assert_eq!(seen, (true, true, false), "(rig dir left, dev dir left, no outside claude)");
-    err
+    (err, rig)
 }
 
 /// #969: a drop whose lookup never ends does not put PATH and HOME back. It says
@@ -507,14 +514,19 @@ fn a_drop_whose_lookup_never_ends_aborts_with_the_variables_kept() {
 /// #988: the same when the rig drops in a panic's unwind, as after a failed assert.
 #[test]
 fn so_does_one_dropped_in_a_panics_unwind() {
-    let err = gave_up("panic");
+    let (err, _) = gave_up("panic");
     assert!(err.contains("began its drop, while it was panicking."), "{err}");
 }
 
-/// #988: with no shell at the path, the binary reads PATH and HOME itself and aborts.
+/// #988: with no shell at the path, the binary reads PATH and HOME itself and aborts,
+/// and the line ahead of the last says that the shell could not be started, and why.
 #[test]
 fn so_does_one_with_no_shell_to_exec() {
-    gave_up("nosh");
+    let (err, rig) = gave_up("nosh");
+    let enoent = std::io::Error::from_raw_os_error(libc::ENOENT);
+    let r = rig.display();
+    let kept = format!("At the abort PATH began with {r}/bin and HOME was {r}\n");
+    assert!(err.contains(&(exec_failed(&rig.join("no-such-sh"), &enoent) + &kept)), "{err}");
 }
 
 /// #988: an ignored SIGABRT, which an exec hands down, does not keep the shell alive.
