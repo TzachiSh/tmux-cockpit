@@ -87,6 +87,8 @@ name = "contracts-check"
 version = "0.0.0"
 dependencies = [
  "jsonschema",
+ "jsonschema-regex",
+ "regex-syntax",
  "serde",
  "serde_json",
 ]

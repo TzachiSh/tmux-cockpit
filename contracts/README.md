@@ -45,12 +45,41 @@ Nothing reads these schemas at run time. The Rust side is `tui/src/store.rs`, a
   `format` an annotation, and the check does not turn format checking on. A
   reader that needs order (an intent's `expires_at` after its `created_at`)
   checks it itself.
-- **Patterns** start with `^` and end with `$`, and are checked by Rust's
-  `regex` engine. Its `$` is the end of the string, so `^%[0-9]{1,10}$` refuses
-  `"%12\n"`. The check fails a `pattern` or `patternProperties` key anywhere in
-  a schema, `$defs` included, that lacks either anchor, and a pattern with
-  lookaround or a backreference. Python's `$` also matches before a final
-  newline: a Python validator would accept `"%12\n"`.
+- **Patterns** start with `^` and end with `$`, the start and the end of the
+  whole string. Rust's `regex` engine checks them, so `^%[0-9]{1,10}$` refuses
+  `"%12\n"`. Until #1052 every pattern ended in `(?!\n)$` instead, because
+  Python's `$` also matches before a final newline. An alternation goes inside
+  a group, as in `^(a|b)$`: `^a|b$` means `(^a)|(b$)`.
+
+  The text itself starts with `^` and ends with `$`, so flags go after the `^`:
+  `^(?i)a$` passes, while `(?i)^a$`, `^a$(?i)`, `(?i:^a$)` and `(?:^a$)` fail.
+  The parse below reads `\A` and `\z` as anchors too, but ECMA-262 reads them
+  as letters, so `\A[0-9a-f]{16}\z` fails: another validator would see it
+  unanchored. An escaped `\$` at the end is a literal and fails the parse.
+
+  The check also reads every `pattern` and `patternProperties` key in a schema,
+  `$defs` included, as the validator does: jsonschema-regex translates it, then
+  regex-syntax parses the result. The top node of that parse, after
+  regex-syntax's own simplification, must be a concatenation whose first item
+  is `Look::Start` and whose last is `Look::End`, the `^` and `$` read without
+  `(?m)`:
+  - A group is one item in between, so `^(a|b)$` passes. A capturing group
+    around the whole pattern, `(^a$)`, fails, since the group is the top node.
+    `^a$|^b$` fails: the shared `^` is factored out, and the last item is the
+    alternation.
+  - A repetition is one item: `^a*$` passes, and `^a$*` fails, since `$*` may
+    match nothing. A repetition of the whole pattern, `(^a$)+` or
+    `(?:^a$)+`, fails, since the repetition is the top node.
+  - Flags add no item: `^(?i)a$` passes. `^(?m)a$` fails, since its anchors
+    are `Look::StartLF` and `Look::EndLF`, which also match at a newline.
+    `(?x)` drops spaces and `#` comments before the reading, so a `(` in a
+    comment opens nothing.
+  - A `[` inside a class is a literal, as jsonschema-regex escapes it.
+  - The empty pattern fails, since its top node is empty. `^$` passes and
+    matches only the empty string.
+  - A pattern the translation or the parse refuses fails, and the surprise
+    names the schema file and the pattern. So does one with lookaround or a
+    backreference.
 - **Unknown, malformed or wrong-version** payloads mean "no value, start fresh",
   as today's state files do (`data/agents.rs`, `board.rs`, `panel/action.rs`).
   No reader repairs, upgrades or fails on one. Starting fresh never reuses a

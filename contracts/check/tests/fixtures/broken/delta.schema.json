@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:tmux-cockpit:contracts:delta",
+  "description": "Breaks the anchor rule with two patterns the engine cannot read, in $defs entries nothing refers to, so building the validator never compiles them.",
+  "type": "object",
+  "properties": {
+    "schema_version": { "const": 1 }
+  },
+  "required": ["schema_version"],
+  "additionalProperties": false,
+  "$defs": {
+    "unbalanced": { "type": "string", "pattern": "^(a$" },
+    "unused": { "type": "string", "pattern": "^(?<=a)b$" }
+  }
+}

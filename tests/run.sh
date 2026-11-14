@@ -206,6 +206,11 @@ unset TMUX TMUX_PANE
 unset CLAUDE_CONFIG_DIR
 # The owner's live VS Code socket must not reach a block (#350).
 unset VSCODE_IPC_HOOK_CLI
+# A pane of a session that loaded the plugin has the live plugin's folder in this variable
+# (cockpit.tmux sets it in the server's environment), and the hooks fall back on it. Every
+# server a block starts would inherit it, and a script run there before the block loads its
+# own copy would be the live one's (#1073).
+unset TMUX_COCKPIT_DIR
 # The suite never runs the real VS Code (#350). Under WSL the Windows PATH brings
 # its code(1) in, and with the private HOME it installs a fresh ~/.vscode-server
 # (639 MB) and can open the owner's editor. So: no /mnt/<drive> entry on PATH, and
@@ -3796,7 +3801,16 @@ if ! command -v jq >/dev/null 2>&1; then skip_ "install.sh --check (no jq)"; els
 DC=$(mktmpd)
 DH="$DC/home"; DBIN="$DC/bin"; DSH="$DC/shim"; DNO="$DC/notmux"
 mkdir -p "$DH/.claude" "$DBIN" "$DSH" "$DNO" "$DC/tmuxtmp"
-printf '# mine\nrun-shell %s/cockpit.tmux\n' "$DIR" > "$DH/.tmux.conf"
+# The config holds the line install.sh itself gives for this checkout. A bare
+# run-shell $DIR/cockpit.tmux made the box "wired" only where $DIR is a path such a line
+# carries: from a checkout with a blank in its path the doctor warns, rightly (#1064).
+dcline() { ( . "$DIR/scripts/lib/confline.sh" && cockpit_conf_line "$1" ); }
+printf '# mine\n%s\n' "$(dcline "$DIR")" > "$DH/.tmux.conf"
+# This checkout's path is one a bare line carries wherever CI runs, so no row below
+# would notice the config going back to the bare line. This one reads the config itself.
+is "the block's own config holds no unquoted line for this checkout" "none" \
+   "$(. "$DIR/scripts/lib/confline.sh"
+      cockpit_conf_bare_line "$DH/.tmux.conf" "$DIR" || echo none)"
 dshim() { printf '#!/bin/sh\necho "%s"\n' "$2" > "$3/$1"; chmod +x "$3/$1"; }
 dshim revdiff "version: 1.13.0" "$DSH"
 # The no-tmux PATH carries only what install.sh itself needs, so "no tmux on
@@ -3889,6 +3903,16 @@ done
 mkdir -p "$DH/.config/tmux"; printf 'set -g @unrelated 1\n' > "$DH/.config/tmux/tmux.conf"
 dcout=$(dc "$DCP")
 is "an XDG config beside a wired ~/.tmux.conf is still ok" "1" "$(dcrow "$dcout" "ok config")"
+# The same from a plugin folder whose own path holds a blank, which no CI checkout has:
+# install.sh is copied there, the config is written as the block writes its own, and the
+# config row must be ok. With a bare line in dcline it is a warn row (#1064).
+DCO="$DC/od d"; mkdir -p "$DCO" "$DC/home2"
+cp "$DIR/install.sh" "$DCO/"; for u in scripts bin; do ln -s "$DIR/$u" "$DCO/$u"; done
+printf '# mine\n%s\n' "$(dcline "$DCO")" > "$DC/home2/.tmux.conf"
+is "a plugin folder with a blank in its path, wired as this block wires: an ok config row" "1" \
+   "$(env -u TMUX -u TMUX_PANE HOME="$DC/home2" XDG_BIN_HOME="$DBIN" \
+        XDG_CONFIG_HOME="$DC/home2/.config" TMUX_TMPDIR="$DC/tmuxtmp" PATH="$DCP" \
+        "$DCO/install.sh" --check 2>&1 | dcrows | grep -c -x 'ok config')"
 rm -rf "$DH/.config"
 
 # A config predating the precompute derives the dot and the banner at redraw time.
@@ -4186,7 +4210,7 @@ cp "$CL/h2/.tmux.conf" "$CL/conf2"
 cl_out=$( cd "$CL/wd" && cl_env 2 "$cl_p2/bootstrap.sh" --yes )
 cl_line=$(. "$DIR/scripts/lib/confline.sh" && cockpit_conf_line "$cl_p2")
 case "$cl_out" in
-    *"NOTE   line 3 of that file has no quotes around the path"*"the plugin may not load."*$(:
+    *"NOTE   line 3 of that file has no quotes around the path"*"the plugin might not load."*$(:
       )"Replace line 3 with:"*"
            $cl_line
 "*) ok "an old bare line and a folder with blanks: the notice names line 3 and gives the line" ;;
@@ -4202,7 +4226,7 @@ cl_said() {                   # <label> <literal text> <output that must hold it
     esac
 }
 cl_said "and install.sh --check warns on its config row, with the same line" \
-    "[ warn ] config         $CL/h2/.tmux.conf line 3 unquoted, may not load from this $(:
+    "[ warn ] config         $CL/h2/.tmux.conf line 3 unquoted, might not load from this $(:
         )folder; replace line 3 with $cl_line
 " "$(cl_env 2 "$cl_p2/install.sh" --check)
 "
@@ -4257,7 +4281,7 @@ cl_said() {                   # <label> <literal text> <output that must hold it
     esac
 }
 cl_said "and install.sh --check on that box names the control character and gives no line" \
-    "unquoted, may not load from this folder; the folder path holds a control character: $(:
+    "unquoted, might not load from this folder; the folder path holds a control character: $(:
     )move the folder
 " "$(cl_env 9 "$CL/p/e"$'\033'"[31msc/install.sh" --check)
 "
@@ -10465,6 +10489,40 @@ done
 fi
 unset NBS nbo nbrc nbs
 
+echo "== a server the suite starts holds no TMUX_COCKPIT_DIR (#1073) =="
+if need_tmux "a server's environment"; then :; else
+CDS="cockpit-cd-$$"; SOCKS="$SOCKS $CDS"; CDD=$(mktmpd)
+"$TMUX_REAL" -L "$CDS" -f /dev/null new-session -d -s t -c "$CDD" 'exec sleep 300' \
+    >/dev/null 2>&1
+is "the suite's own environment holds no TMUX_COCKPIT_DIR" "unset" "${TMUX_COCKPIT_DIR-unset}"
+# The server is asked whether it is there first: no server has no variable either.
+is "a server it starts is up, with none in its global environment" "up 0" \
+   "$("$TMUX_REAL" -L "$CDS" has-session -t t 2>/dev/null && printf 'up ' || printf 'down '
+      "$TMUX_REAL" -L "$CDS" show-environment -g 2>/dev/null | grep -c '^TMUX_COCKPIT_DIR=')"
+"$TMUX_REAL" -L "$CDS" kill-server >/dev/null 2>&1
+fi
+unset CDS CDD
+
+echo "== the suite drops a TMUX_COCKPIT_DIR its caller hands it (#1073) =="
+# The block above again, through only.sh, with the variable set as a pane of the live
+# session has it. CI's environment has none, so this is the run that meets one there.
+# The value names a folder that is not there: nothing may be run from it.
+CDN=$(mktmpd); mkdir -p "$CDN/s"
+# The nested socket is $CDN/s/tmux-<uid>/cockpit-suite-<pid>: past 107 bytes no server binds.
+if [ $((${#CDN} + ${#UID} + 30)) -gt 107 ]; then
+    skip_ "a caller's TMUX_COCKPIT_DIR (TMPDIR too long for the nested socket path)"
+else
+cdo=$(cd "$DIR" && env -u TMUX TMUX_COCKPIT_DIR="$CDN/live-plugin" TMUX_TMPDIR="$CDN/s" \
+    tests/only.sh '^a server the suite starts holds no TMUX_COCKPIT_DIR' 2>&1 </dev/null)
+cdrc=$?
+is "the block's run under a caller's TMUX_COCKPIT_DIR: both rows pass, exit 0" "0 2 0" \
+   "$cdrc $(printf '%s\n' "$cdo" | grep -c 'PASS') $(printf '%s\n' "$cdo" | grep -c 'FAIL')"
+for cds in "$CDN"/s/tmux-*/*; do
+    [ -S "$cds" ] && "$TMUX_REAL" -S "$cds" kill-server >/dev/null 2>&1
+done
+fi
+unset CDN cdo cdrc cds
+
 # tests: scripts/tui-fetch
 echo "== cockpit-tui builds install the executable cargo built, not a guessed path (#591) =="
 # CARGO_TARGET_DIR or a config's build.target-dir moves the build out of
@@ -11699,7 +11757,9 @@ echo "== cockpit-panel: insert pastes without Enter, send adds it, and the text 
 # The panel is the one wrapper that writes into a pane, so it is driven for real:
 # a fake claude, a target running cat, the panel in a second window, send-keys.
 if need_tmux "cockpit-panel end to end"; then :; else
-PN="cockpit-pn-$$"; SOCKS="$SOCKS $PN"; PND=$(mktmpd)
+# The folder's own name holds a blank, so that the paths this block pastes into a pane's
+# command string are odd whatever TMPDIR is: bare, sh split them (#990, C2c).
+PN="cockpit-pn-$$"; SOCKS="$SOCKS $PN"; PND="$(mktmpd)/p n"
 mkdir -p "$PND/bin" "$PND/cache" "$PND/cfg"
 # With $PND/hang present the fake records its pid and parent, then never answers.
 cat > "$PND/bin/claude" <<PNFAKE
@@ -11711,7 +11771,9 @@ PNFAKE
 chmod +x "$PND/bin/claude"
 "$TMUX_REAL" -L "$PN" -f /dev/null new-session -d -s t -x 120 -y 40 'exec sleep 300' >/dev/null 2>&1
 # The fake is found on PATH, as the real one would be; COCKPIT_CLAUDE would beat it.
-PNENV="env -u COCKPIT_CLAUDE 'PATH=$PND/bin:$SHIM:/usr/bin:/bin' XDG_CACHE_HOME=$PND/cache XDG_CONFIG_HOME=$PND/cfg COCKPIT_LOG=$PND/tui.log"
+PNENV="env -u COCKPIT_CLAUDE $(tq "PATH=$PND/bin:$SHIM:/usr/bin:/bin")"
+PNENV="$PNENV XDG_CACHE_HOME=$(tq "$PND/cache") XDG_CONFIG_HOME=$(tq "$PND/cfg")"
+PNENV="$PNENV COCKPIT_LOG=$(tq "$PND/tui.log")"
 pn_gone() {                   # <pane>  the wrapper has exited and its window with it
     local i
     for i in $(seq 1 "$POLLS"); do
@@ -11723,7 +11785,7 @@ pn_gone() {                   # <pane>  the wrapper has exited and its window wi
 pn_go() {                     # <target-cmd> <draft>  -> PNA target, PNB panel, at the result view
     PNA=$("$TMUX_REAL" -L "$PN" new-window -d -P -F '#{pane_id}' -t t: "$1")
     PNB=$("$TMUX_REAL" -L "$PN" new-window -d -P -F '#{pane_id}' -t t: \
-        "$PNENV $DIR/scripts/cockpit-panel -p $PNA")
+        "$PNENV $(tq "$DIR/scripts/cockpit-panel") -p $PNA")
     until_cap "$PN" "$PNB" '*will send*' || return 1
     "$TMUX_REAL" -L "$PN" send-keys -t "$PNB" 1
     "$TMUX_REAL" -L "$PN" send-keys -t "$PNB" -l "$2"
@@ -11790,7 +11852,7 @@ pn_hang() {                   # <signal>  -> the claude pid, or empty; kills the
     rm -f "$PND/cpid" "$PND/ppid"; touch "$PND/hang"
     PNA=$("$TMUX_REAL" -L "$PN" new-window -d -P -F '#{pane_id}' -t t: 'exec cat')
     PNB=$("$TMUX_REAL" -L "$PN" new-window -d -P -F '#{pane_id}' -t t: \
-        "$PNENV $DIR/scripts/cockpit-panel -p $PNA")
+        "$PNENV $(tq "$DIR/scripts/cockpit-panel") -p $PNA")
     until_cap "$PN" "$PNB" '*will send*' || return 1
     "$TMUX_REAL" -L "$PN" send-keys -t "$PNB" 1
     "$TMUX_REAL" -L "$PN" send-keys -t "$PNB" -l 'hang'
@@ -12012,11 +12074,15 @@ exit 0
 PNSTUB
 chmod +x "$PND/rec/tmux" "$PND/p/bin/cockpit-tui"
 # <action-line> <text> [notext] -> every tmux argv the wrapper produced
+# The wrapper makes its resume file under TMPDIR. Here that is the block's folder, whose
+# name holds a blank, so the rows that cut the file's path out of the binary's argv meet
+# a path with a blank in every run (#990, C2c).
 pact() {
     : > "$PND/pargv"; printf '%s\n' "$1" > "$PND/line"; printf '%s' "$2" > "$PND/text"
     [ "${3:-}" = notext ] && rm -f "$PND/text"
     printf '%s\n' "${4:-zsh}" > "$PND/cmd"; printf '%s\n' "${5:-zsh}" > "$PND/now"
-    PATH="$PND/rec:$PATH" COCKPIT_LOG="$PND/tui.log" COCKPIT_TUI_BIN="$PND/p/bin/cockpit-tui" \
+    TMPDIR="$PND" PATH="$PND/rec:$PATH" COCKPIT_LOG="$PND/tui.log" \
+        COCKPIT_TUI_BIN="$PND/p/bin/cockpit-tui" \
         "$PND/p/scripts/cockpit-panel" -p %5 </dev/null >/dev/null 2>&1
     tr '\n' ';' < "$PND/pargv" | sed "s/cockpit-panel-[0-9]*/B/g"
 }
@@ -12026,7 +12092,8 @@ pact() {
 pask() {
     : > "$PND/bargv"; printf 'paste %%5\n' > "$PND/line"; printf 'hi' > "$PND/text"
     printf 'zsh\n' > "$PND/cmd"; printf 'zsh\n' > "$PND/now"
-    PATH="$PND/rec:$PATH" COCKPIT_LOG="$PND/tui.log" COCKPIT_TUI_BIN="$PND/p/bin/cockpit-tui" \
+    TMPDIR="$PND" PATH="$PND/rec:$PATH" COCKPIT_LOG="$PND/tui.log" \
+        COCKPIT_TUI_BIN="$PND/p/bin/cockpit-tui" \
         "$PND/p/scripts/cockpit-panel" -p %5 "$@" </dev/null >/dev/null 2>&1
     echo "rc=$?"; cat "$PND/bargv"
 }
@@ -12034,8 +12101,8 @@ is "--ask reaches the binary on the first run" "rc=0"$'\n'"panel %5 --ask /r/x.r
     "$(pask --ask /r/x.rs 3 7)"
 touch "$PND/state"
 is "and a run after an action resumes without it" \
-    "rc=0"$'\n'"panel %5 --ask /r/x.rs 3 7"$'\n'"panel %5 --resume ${PND}/RESUME --last ok" \
-   "$(pask --ask /r/x.rs 3 7 | sed "s#--resume [^ ]*/resume#--resume ${PND}/RESUME#")"
+    "rc=0"$'\n'"panel %5 --ask /r/x.rs 3 7"$'\n'"panel %5 --resume */resume --last ok" \
+   "$(pask --ask /r/x.rs 3 7 | sed 's| --resume .*/resume| --resume */resume|')"
 rm -f "$PND/state"
 for pa in "--ask /r/x.rs 7 3" "--ask /r/x.rs 0 1" "--ask /r/x.rs 01 2" "--ask /r/x.rs 3" \
     "--ask /r/x.rs 3 7 8" "--ask  3 7" "--x /r 1 2"; do
@@ -12159,15 +12226,15 @@ is "a state file beside the action reruns the binary on it, after the paste" \
    "load-buffer -b B -;hi;paste-buffer -p -d -b B -t %5;display-message -t %5 cockpit: inserted 2 chars into %5;load-buffer -b B -;hi;paste-buffer -p -d -b B -t %5;display-message -t %5 cockpit: inserted 2 chars into %5;" \
    "$(pact 'paste %5' hi)"
 is "and tells it the paste went in" "panel %5;panel %5 --resume */resume --last ok;" \
-   "$(tr '\n' ';' < "$PND/bargv" | sed 's| --resume [^ ]*/resume| --resume */resume|')"
+   "$(tr '\n' ';' < "$PND/bargv" | sed 's| --resume .*/resume| --resume */resume|')"
 rm -f "$PND/bargv"; pact 'send %5' hi '' claude zsh >/dev/null
 is "or why nothing was sent" \
     "panel %5 --resume */resume --last failed:the pane now runs zsh, not claude" \
-   "$(sed -n 2p "$PND/bargv" | sed 's| --resume [^ ]*/resume| --resume */resume|')"
+   "$(sed -n 2p "$PND/bargv" | sed 's| --resume .*/resume| --resume */resume|')"
 rm -f "$PND/bargv"; COCKPIT_READONLY=1 pact 'send %5' hi >/dev/null
 is "COCKPIT_READONLY reruns it too, saying nothing was sent" \
     "panel %5 --resume */resume --last failed:COCKPIT_READONLY is set; nothing sent" \
-   "$(sed -n 2p "$PND/bargv" | sed 's| --resume [^ ]*/resume| --resume */resume|')"
+   "$(sed -n 2p "$PND/bargv" | sed 's| --resume .*/resume| --resume */resume|')"
 rm -f "$PND/state"
 touch "$PND/crash"; : > "$PND/tui.log"
 is "a panel that exits non-zero is reported on the pane" \
@@ -12183,16 +12250,19 @@ echo "== cockpit-panel: ^Z hides the panel and the next run on the pane brings i
 # The wrapper in a window stands in for the popup prefix f opens: the window
 # closing is the popup closing, and a second run on the same pane is prefix f again.
 if need_tmux "cockpit-panel hide and resume"; then :; else
-PH="cockpit-ph-$$"; SOCKS="$SOCKS $PH"; PHD=$(mktmpd)
+# As the insert block's: a blank in the folder's own name (#990, C2c).
+PH="cockpit-ph-$$"; SOCKS="$SOCKS $PH"; PHD="$(mktmpd)/p h"
 mkdir -p "$PHD/bin" "$PHD/state"
 # Never asked: nothing in this block sends a request.
 printf '#!/bin/sh\ncat >/dev/null\necho "<text>NEVER CALLED</text>"\n' > "$PHD/bin/claude"
 chmod +x "$PHD/bin/claude"
 "$TMUX_REAL" -L "$PH" -f /dev/null new-session -d -s t -x 120 -y 40 'exec sleep 300' >/dev/null 2>&1
-PHENV="env -u COCKPIT_CLAUDE 'PATH=$PHD/bin:$SHIM:/usr/bin:/bin' XDG_STATE_HOME=$PHD/state XDG_CACHE_HOME=$PHD XDG_CONFIG_HOME=$PHD COCKPIT_LOG=$PHD/tui.log"
+PHENV="env -u COCKPIT_CLAUDE $(tq "PATH=$PHD/bin:$SHIM:/usr/bin:/bin")"
+PHENV="$PHENV XDG_STATE_HOME=$(tq "$PHD/state") XDG_CACHE_HOME=$(tq "$PHD")"
+PHENV="$PHENV XDG_CONFIG_HOME=$(tq "$PHD") COCKPIT_LOG=$(tq "$PHD/tui.log")"
 ph_open() {                   # <target>  -> PHB, the panel's pane, once it has drawn
     PHB=$("$TMUX_REAL" -L "$PH" new-window -d -P -F '#{pane_id}' -t t: \
-        "$PHENV $DIR/scripts/cockpit-panel -p $1")
+        "$PHENV $(tq "$DIR/scripts/cockpit-panel") -p $1")
     until_cap "$PH" "$PHB" '*panel*'
 }
 ph_gone() {                   # <pane>
@@ -12423,7 +12493,7 @@ echo "== cockpit-panel: a tap in the popup acts once, and x copies by OSC 52 =="
 # an SGR click written there is what a touch screen sends. Coordinates are read
 # off the outer capture, 1-based as the wire wants them.
 if need_tmux "taps in the popup"; then :; else
-TI="cockpit-tapi2-$$"; TO="cockpit-tapo2-$$"; SOCKS="$SOCKS $TI $TO"; TPD=$(mktmpd)
+TI="cockpit-tapi2-$$"; TO="cockpit-tapo2-$$"; SOCKS="$SOCKS $TI $TO"; TPD="$(mktmpd)/t p"
 mkdir -p "$TPD/bin"
 printf '#!/bin/sh\ncat >/dev/null\nprintf "<text>copied by tap</text>"\n' > "$TPD/bin/claude"
 chmod +x "$TPD/bin/claude"
@@ -12437,7 +12507,8 @@ tpa=$("$TMUX_REAL" -L "$TI" list-panes -F '#{pane_id}' | head -1)
 until_cap "$TO" o '*[!\ ]*' >/dev/null
 tpc=$("$TMUX_REAL" -L "$TI" list-clients -F '#{client_name}' | head -1)
 "$TMUX_REAL" -L "$TI" display-popup -c "$tpc" -w 80 -h 24 -e COCKPIT_PANEL_MODE=tablet -E \
-    "env 'PATH=$TPD/bin:$SHIM:/usr/bin:/bin' COCKPIT_LOG=$TPD/tui.log $DIR/scripts/cockpit-panel -p $tpa" \
+    "env $(tq "PATH=$TPD/bin:$SHIM:/usr/bin:/bin") COCKPIT_LOG=$(tq "$TPD/tui.log") $(:
+        )$(tq "$DIR/scripts/cockpit-panel") -p $tpa" \
         >/dev/null 2>&1 &
 # <label> <M|m> [button]  presses (M) or releases (m) on the label's first cell
 tp_at() {
