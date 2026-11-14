@@ -21523,6 +21523,7 @@ elif [ ! -r /proc/net/unix ] || ! command -v setsid >/dev/null 2>&1; then
 else
 # The nested run's TMPDIR, plain and with two spaces and a % (#818): the block's server
 # command and the cleanup's socket list must keep such a path whole.
+ir_gone() { kill -0 -- "-$1" 2>/dev/null || echo gone; }   # <group>: gone when it is empty
 ir_run() {                    # <TMPDIR for the nested run> <label for the rows> [spaced]
     local d=$1 l=$2 irp irs irl irc
     # The caller's runtime dir, as the suite itself had it: the block's short-socket fallback.
@@ -21564,6 +21565,10 @@ ir_run() {                    # <TMPDIR for the nested run> <label for the rows>
     # only.sh ends at once; the script it runs ends after its EXIT trap's cleanup: wait for
     # that, by the listener count, not a clock.
     until_out 0 grep -cF " $irs" /proc/net/unix
+    # And for the run itself to be over: that socket closes early in its cleanup, and its own
+    # server and socket go last. They are in the socket folder this run shares with it, where
+    # this run's tail looks for what was left (#1098): the group is empty once the trap is done.
+    until_out gone ir_gone "$irp"
     is "$l: after TERM no server listens on the revdiff block's socket" "0" \
        "$(grep -cF " $irs" /proc/net/unix)"
 }
