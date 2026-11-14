@@ -12149,7 +12149,7 @@ is "and says this one is closed" "1" \
 rm -f "$PND/state"; rm -rf "$PND/xdg"
 : > "$PND/bargv"; pask >/dev/null
 is "a plain run is not told the slot is taken" "" "$(cat "$PND/taken")"
-unset -f pask
+unset -f pask pn_runs
 is "send %5 loads the text, pastes it bracketed, deletes the buffer, presses Enter, says so" \
    "load-buffer -b B -;hi;paste-buffer -p -d -b B -t %5;send-keys -t %5 Enter;display-message -t %5 cockpit: sent to %5;" \
    "$(pact 'send %5' hi)"
@@ -12231,8 +12231,14 @@ is "a state file beside the action reruns the binary on it, after the paste" \
    "$(pact 'paste %5' hi)"
 # The path is cut out of each run's line before the lines are joined: cut after, the greedy
 # pattern would take every run between the first --resume and the last /resume (#1076).
+pn_runs() { sed 's| --resume .*/resume| --resume */resume|' "$1" | tr '\n' ';'; }
+printf '%s\n' 'panel %5' 'panel %5 --resume /a b/resume --last WRONG' \
+    'panel %5 --resume /c/resume --last ok' > "$PND/three"
+is "three runs read back as three, a wrong one in the middle still there" \
+   "panel %5;panel %5 --resume */resume --last WRONG;panel %5 --resume */resume --last ok;" \
+   "$(pn_runs "$PND/three")"
 is "and tells it the paste went in" "panel %5;panel %5 --resume */resume --last ok;" \
-   "$(sed 's| --resume .*/resume| --resume */resume|' "$PND/bargv" | tr '\n' ';')"
+   "$(pn_runs "$PND/bargv")"
 rm -f "$PND/bargv"; pact 'send %5' hi '' claude zsh >/dev/null
 is "or why nothing was sent" \
     "panel %5 --resume */resume --last failed:the pane now runs zsh, not claude" \
