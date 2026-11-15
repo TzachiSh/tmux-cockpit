@@ -515,7 +515,12 @@ pub fn unchecked_tmux_calls(skip: &str) -> Vec<String> {
     write_exec(&s.join("tmux"), "#!/bin/sh\necho \"$*\" >> \"$0.calls\"\nexit 1\n");
     let path = format!("{}:{}", s.display(), std::env::var("PATH").unwrap_or_default());
     let mut c = Command::new(std::env::current_exe().unwrap());
-    c.args(["--skip", skip]).env_remove("TMUX_TMPDIR").env("PATH", path);
+    // as a bare start: cargo's COCKPIT_TEST_TMUX_GUARD=1 removed, so a debug build's own
+    // keying is what refuses (#1089)
+    c.args(["--skip", skip])
+        .env_remove("TMUX_TMPDIR")
+        .env_remove("COCKPIT_TEST_TMUX_GUARD");
+    c.env("PATH", path);
     let out = c.stdin(std::process::Stdio::null()).output().unwrap();
     let said = String::from_utf8_lossy(&out.stdout);
     assert!(said.contains("test result:"), "the child ran no tests: {said}");

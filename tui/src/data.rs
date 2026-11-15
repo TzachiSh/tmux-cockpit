@@ -29,27 +29,37 @@ fn split_tmux_argv(value: Option<&str>) -> Vec<String> {
 
 /// `None` on a spawn failure or non-zero exit: "no tmux" is not "no agents".
 /// A blank COCKPIT_TMUX names no program, so it is a spawn failure too, and
-/// so is a call `reaches_callers_tmux` refuses.
+/// so is a call `refuses` turns down.
 pub fn tmux(args: &[&str]) -> Option<String> {
     let argv = tmux_argv();
-    if reaches_callers_tmux(&argv) {
-        REFUSED.store(true, std::sync::atomic::Ordering::Relaxed);
+    if refuses(&argv) {
         return None;
     }
     tmux_on(&argv, args)
+}
+
+/// Whether a tmux on `argv` is refused here (`reaches_callers_tmux`), for every
+/// product path that runs tmux: this one, push's wait loop and the board's tile
+/// previews. The first refusal is recorded for [`guard_note`] and logged.
+pub(crate) fn refuses(argv: &[String]) -> bool {
+    let refused = reaches_callers_tmux(argv);
+    if refused && !REFUSED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        log("COCKPIT_TEST_TMUX_GUARD: tmux refused, a plain tmux with TMUX set or no TMUX_TMPDIR folder");
+    }
+    refused
 }
 
 /// Whether `data::tmux` refused a call, and whether [`guard_note`] has said so.
 static REFUSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static TOLD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// The line the board shows once a read was refused (#1089), once per run: it reads
-/// like the basket's refusal and names the way out. `None` before a refusal and after
-/// the first time.
+/// The line the board shows once a read was refused (#1089), once per run: the way
+/// out first, so a narrow pane still shows it, then the refusal in the basket's words.
+/// `None` before a refusal and after the first time.
 pub fn guard_note() -> Option<&'static str> {
     use std::sync::atomic::Ordering::Relaxed;
     let first = REFUSED.load(Relaxed) && !TOLD.swap(true, Relaxed);
-    first.then_some("COCKPIT_TEST_TMUX_GUARD: no private tmux in COCKPIT_TMUX (-L or -S); reads refused. Set it to 0 to lift")
+    first.then_some("COCKPIT_TEST_TMUX_GUARD=0 to lift: no private tmux in COCKPIT_TMUX (-L or -S); reads refused")
 }
 
 /// Under the basket's test guard (`basket::guarded`, off in a release build run

@@ -233,16 +233,16 @@ fn a_process_with_another_tmux_tmpdir_is_never_taken_for_a_rigs() {
 const PRODUCT_READ: &str = "COCKPIT_TEST_PRODUCT_READ";
 
 /// How many calls the product's agent list read (`data::tmux`) made, in a child of row `me`
-/// started by hand with the guard on, no TMUX, TMUX_TMPDIR or COCKPIT_TMUX, then `set`, and
+/// started by hand as a bare start is, no TMUX, TMUX_TMPDIR, COCKPIT_TMUX or
+/// COCKPIT_TEST_TMUX_GUARD (so a debug build's own keying is on), then `set`, and
 /// two stubs first on PATH that record each call and open no socket: `tmux`, and `stub`.
 fn product_reads(s: &Path, me: &str, set: &[(&str, &str)]) -> usize {
     let path = format!("{}:{}", s.display(), std::env::var("PATH").unwrap_or_default());
     let mut c = std::process::Command::new(std::env::current_exe().unwrap());
-    for v in ["TMUX", "TMUX_TMPDIR", "COCKPIT_TMUX"] {
+    for v in ["TMUX", "TMUX_TMPDIR", "COCKPIT_TMUX", "COCKPIT_TEST_TMUX_GUARD"] {
         c.env_remove(v);
     }
-    c.args(["--exact", me])
-        .envs([("PATH", path.as_str()), ("COCKPIT_TEST_TMUX_GUARD", "1")]);
+    c.args(["--exact", me]).env("PATH", path.as_str());
     c.env(PRODUCT_READ, "1")
         .envs(set.iter().copied())
         .stdin(std::process::Stdio::null());
@@ -275,12 +275,14 @@ fn the_product_refuses_a_plain_tmux_bound_for_the_callers_server() {
         fake::write_exec(&s.0.join(name), "#!/bin/sh\necho \"$*\" >> \"$0.calls\"\nexit 1\n");
     }
     let (dir, none) = (s.0.display().to_string(), s.0.join("none").display().to_string());
-    let cases: [Case; 7] = [
+    let cases: [Case; 9] = [
         ("the runner's: TMUX unset, a TMUX_TMPDIR folder", &[("TMUX_TMPDIR", &dir)], 1),
-        ("no TMUX_TMPDIR", &[], 0),
+        ("no TMUX_TMPDIR, a debug build with no variable", &[], 0),
+        ("no TMUX_TMPDIR, COCKPIT_TEST_TMUX_GUARD=1", &[("COCKPIT_TEST_TMUX_GUARD", "1")], 0),
         ("a TMUX_TMPDIR that is no folder", &[("TMUX_TMPDIR", &none)], 0),
         ("TMUX set", &[("TMUX_TMPDIR", &dir), ("TMUX", "/elsewhere/default,1,0")], 0),
         ("a -L server, no TMUX_TMPDIR", &[("COCKPIT_TMUX", "tmux -L cockpit-read")], 1),
+        ("a -S socket, no TMUX_TMPDIR", &[("COCKPIT_TMUX", "tmux -S /nowhere-1089/s")], 1),
         ("a stub by another name, no TMUX_TMPDIR", &[("COCKPIT_TMUX", "stub")], 1),
         ("the guard lifted, no TMUX_TMPDIR", &[("COCKPIT_TEST_TMUX_GUARD", "0")], 1),
     ];
@@ -300,9 +302,12 @@ fn the_board_is_told_once_that_a_read_was_refused() {
     if let Some(want) = std::env::var_os(PRODUCT_NOTE) {
         let read = || cockpit_tui::data::tmux(&["show-option", "-gqv", "@cockpit_agents_glob"]);
         let _ = (read(), read());
-        let said = [cockpit_tui::data::guard_note(), cockpit_tui::data::guard_note()];
-        let text = "COCKPIT_TEST_TMUX_GUARD: no private tmux in COCKPIT_TMUX (-L or -S); \
-                    reads refused. Set it to 0 to lift";
+        let mut note = None;
+        let shown = cockpit_tui::board::note_guard(&mut note, std::time::Instant::now());
+        let said = [note.as_ref().map(|n| n.text.as_str()), cockpit_tui::data::guard_note()];
+        assert_eq!((shown, note.as_ref().and_then(|n| n.ttl)), (want == "refused", None));
+        let text = "COCKPIT_TEST_TMUX_GUARD=0 to lift: no private tmux in COCKPIT_TMUX (-L or -S); \
+                    reads refused";
         assert_eq!(said, if want == "refused" { [Some(text), None] } else { [None, None] });
         return;
     }
@@ -312,4 +317,32 @@ fn the_board_is_told_once_that_a_read_was_refused() {
     let dir = s.0.display().to_string();
     assert_eq!(product_reads(&s.0, me, &[(PRODUCT_NOTE, "refused")]), 0);
     assert_eq!(product_reads(&s.0, me, &[(PRODUCT_NOTE, "ran"), ("TMUX_TMPDIR", &dir)]), 2);
+}
+
+/// Set in the child of [`push_and_the_tile_previews_send_the_callers_server_nothing`]: which
+/// product path it starts.
+const PRODUCT_PATH: &str = "COCKPIT_TEST_PRODUCT_PATH";
+
+/// #1089: push's wait loop and the board's tile previews run tmux on the argv themselves.
+/// Under the guard neither sends a caller's server anything: push registers no channel and
+/// starts no `wait-for`, and the previews read as failed captures. Started with `TMUX` set.
+#[test]
+fn push_and_the_tile_previews_send_the_callers_server_nothing() {
+    if let Some(path) = std::env::var_os(PRODUCT_PATH) {
+        if path == "push" {
+            drop(cockpit_tui::push::Push::start());
+        } else {
+            let _ = cockpit_tui::board::previews(&["tmux".to_string()], &[("%1".to_string(), 5)]);
+        }
+        return;
+    }
+    let s = fake::Scratch::fresh(std::env::temp_dir().join(format!("cockpit-paths-{}", std::process::id())));
+    fake::write_exec(&s.0.join("tmux"), "#!/bin/sh\necho \"$*\" >> \"$0.calls\"\nexit 1\n");
+    let me = "push_and_the_tile_previews_send_the_callers_server_nothing";
+    let tmux = ("TMUX", "/elsewhere/default,1,0");
+    let push = product_reads(&s.0, me, &[(PRODUCT_PATH, "push"), tmux]);
+    let previews = product_reads(&s.0, me, &[(PRODUCT_PATH, "previews"), tmux]);
+    let dir = s.0.display().to_string();
+    let ran = product_reads(&s.0, me, &[(PRODUCT_PATH, "previews"), ("TMUX_TMPDIR", &dir)]);
+    assert_eq!((push, previews, ran), (0, 0, 1));
 }

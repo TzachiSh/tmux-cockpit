@@ -3107,6 +3107,18 @@ impl Note {
     }
 }
 
+/// A debug build or a cargo run reads none of the caller's tmux (#1089): the first
+/// refusal puts its line on the footer until a key, once per run. Whether it did.
+pub fn note_guard(note: &mut Option<Note>, now: Instant) -> bool {
+    let Some(t) = crate::data::guard_note() else { return false };
+    *note = Some(Note {
+        text: t.to_string(),
+        at: now,
+        ttl: None,
+    });
+    true
+}
+
 /// A key pressed under a note: `(the note goes, the key still runs)`. A sticky
 /// note goes on any key, which also does its job, except `esc` (D20).
 pub fn note_key(n: &Note, code: KeyCode) -> (bool, bool) {
@@ -3715,6 +3727,9 @@ fn preview_on(argv: &[String], id: &str, n: usize) -> Option<String> {
 /// The result is not in `caps` order: zero-row panes come first, then the
 /// rest in `caps` order. The worker reads it into a map by pane id.
 pub fn previews(argv: &[String], caps: &[(String, usize)]) -> Vec<(String, Option<String>)> {
+    if crate::data::refuses(argv) {
+        return caps.iter().map(|(id, _)| (id.clone(), None)).collect();
+    }
     let (mut rest, none): (Vec<_>, Vec<_>) = caps.iter().cloned().partition(|c| c.1 > 0);
     let mut got: Vec<_> = none.into_iter().map(|(id, _)| (id, Some(String::new()))).collect();
     while !rest.is_empty() {
@@ -4202,15 +4217,7 @@ pub fn run(o: &Opts) -> Option<Exit> {
             note = None;
             dirty = true;
         }
-        // a debug build or a cargo run reads none of the caller's tmux: said once, until a key
-        if let Some(t) = crate::data::guard_note() {
-            note = Some(Note {
-                text: t.to_string(),
-                at: Instant::now(),
-                ttl: None,
-            });
-            dirty = true;
-        }
+        dirty |= note_guard(&mut note, Instant::now());
         match snap_rx.try_recv() {
             Ok(s) => {
                 let t0 = Instant::now();
