@@ -156,10 +156,23 @@ give_back() {                 # <key> -> 1 when tmux's own binding could not be 
 # that a note-less key is the user's, whatever it runs.
 notes=$(tmux show-option -gqv @cockpit_notes)
 # The pre-notes panel key ran "$(sq <panel>) -p ...", and #{key_command} prints that
-# argument in a "...", with \ " $ escaped: the raw $DIR missed a ' or a " in it (#1086).
-legacy_panel=$(sq "$DIR/scripts/cockpit-panel")
-legacy_panel=${legacy_panel//\\/\\\\}; legacy_panel=${legacy_panel//\"/\\\"}
-legacy_panel=${legacy_panel//\$/\\\$}
+# argument in a "...", escaped: \ " $ (#1086), a control byte as \t or \033, a byte
+# outside UTF-8 as \303 (#1097). So a notes-less load binds one key with that argument on
+# a scratch table named with its $$, reads how tmux prints it, and removes the table in
+# its own call, which runs even when the read fails: tmux stops a ; sequence at the
+# first failing command. A failed read leaves a raw \037, which tmux never prints raw:
+# the panel guess is off, never a match on everything.
+legacy_panel=$'\037'
+if [ -z "$notes" ]; then
+    lt="cockpit-legacy-$$"
+    lp=$(tmux bind-key -T "$lt" x display-popup "$(sq "$DIR/scripts/cockpit-panel") -p x" \; \
+        list-keys -T "$lt" -F '#{key_command}' x 2>/dev/null)
+    tmux unbind-key -a -T "$lt" 2>/dev/null
+    case "$lp" in 'display-popup "'*' -p x"')
+        lp=${lp#display-popup \"}; legacy_panel=${lp%' -p x"'} ;;
+    esac
+    unset lt lp
+fi
 owned() {                     # <name> <key>
     local nc
     nc=$(tmux list-keys -T prefix -F "#{key_note}"$'\037'"#{key_command}" "$2" 2>/dev/null)
