@@ -406,7 +406,8 @@ fn the_lock_scan_reads_past_names_spacing_and_the_writes_word() {
     let rw = "static GATE: std::sync::RwLock<()> = std::sync::RwLock::new(());";
     let set = "fn f() { unsafe { std::env::set_var(\"A\", \"1\") } }\n";
     let libc = |w: &str| format!("{mutex}\nfn f() {{ unsafe {{ libc::{w}(p) }}; }}\n");
-    let rows: [(&str, String, &[&str]); 13] = [
+    let interim = |w: &str| format!("{renamed}\nfn f() {{ unsafe {{ fake::{w}(\"A\") }} }}\n");
+    let rows: [(&str, String, &[&str]); 15] = [
         ("a renamed unit Mutex, a write", format!("{renamed}\n{set}"), &[renamed]),
         ("a renamed unit RwLock, a write", format!("{rw}\n{set}"), &[rw]),
         ("a renamed unit Mutex, no write", format!("{renamed}\n"), &[]),
@@ -444,6 +445,8 @@ fn the_lock_scan_reads_past_names_spacing_and_the_writes_word() {
         ("libc's putenv", libc("putenv"), &[mutex]),
         ("libc's unsetenv", libc("unsetenv"), &[mutex]),
         ("a word holding setenv", format!("{mutex}\nfn presetenv() {{}}\n"), &[]),
+        ("an interim write, #1132", interim("set_var_unlocked"), &[renamed]),
+        ("an interim remove, #1132", interim("remove_var_unlocked"), &[renamed]),
     ];
     for (row, src, want) in rows {
         assert_eq!(own_env_locks("x.rs", &src), want, "{row}: {src}");
