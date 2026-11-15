@@ -4715,11 +4715,14 @@ dm_up 4
     ) >/dev/null 2>&1
 is "an odd @cockpit_panel_mode is drawn as written" "1" \
    "$(dm_drawn 4 "@cockpit_panel_mode is [x#(touch $DM/m/pmode)y##z#[fg=red]w]; use auto")"
-# A positive control, last on this server: a raw message whose #( must run. Every job a
-# message above could have started was queued before it, so its marker showing up means
-# any of theirs would have too. run-shell reads ## as # before the job's tmux sees it.
+# A positive control, last on this server: a raw message whose #( must run. It shows that
+# #( runs here; it says nothing about the rows above (#1118). tmux kills a client's #(
+# jobs when that client exits, so the second run-shell keeps it until the marker exists
+# (#1113). run-shell reads ## as # before the job's tmux sees it.
 "$TMUX_REAL" -L "cockpit-dm-$$-4" run-shell \
-    "tmux display-message 'x##(touch $DM/m/control)y'" >/dev/null 2>&1
+    "tmux display-message 'x##(touch $DM/m/control)y' \; \
+        run-shell 'for i in \$(seq $POLLS); do [ -e $DM/m/control ] && break; sleep 0.1; done'" \
+    >/dev/null 2>&1
 until_out yes sh -c "[ -e $(tq "$DM/m/control") ] && echo yes"
 dm_down 4
 is "and no message ran a #( from a name or a value, where a raw one did" "$DM/m/control " \
