@@ -340,6 +340,8 @@ unset COCKPIT_PANEL_MODE COCKPIT_PANEL_DROPPED COCKPIT_PANEL_HIDE_TAKEN COCKPIT_
 unset COCKPIT_VIEW_BACK COCKPIT_BASKET_PANE COCKPIT_FILES_STATE COCKPIT_TEST_TMUX_GUARD
 unset COCKPIT_GITHUB COCKPIT_TUI_RELEASES COCKPIT_TUI_REPO TM_SID TM_CLIENT TM_PANE TM_POPUP
 unset TM_NEEDS MD_EDIT REVIEW_PANE_ID
+# The key cockpit-panel tells the binary (#1121): a caller's would name a key in the help.
+unset COCKPIT_PANEL_KEY
 # The board's Termux test (#1115): a TERMUX_VERSION, or a PREFIX in Termux's own tree, opens
 # the panel as a tablet's, and a panel row reads another screen.
 unset TERMUX_VERSION PREFIX
@@ -11645,6 +11647,7 @@ gv_names() {
           COCKPIT_VIEW_ASK COCKPIT_VIEW_BACK COCKPIT_BASKET_PANE COCKPIT_FILES_STATE
           COCKPIT_TEST_TMUX_GUARD COCKPIT_GITHUB COCKPIT_TUI_RELEASES COCKPIT_TUI_REPO
           TM_SID TM_CLIENT TM_PANE TM_POPUP TM_NEEDS MD_EDIT REVIEW_PANE_ID
+          COCKPIT_PANEL_KEY
           TERMUX_VERSION PREFIX"
 }
 gvs=$(gv_names | tr '\n' ' ')
@@ -13519,6 +13522,9 @@ cat > "$PND/rec/tmux" <<PNREC
 [ "\$*" = "show-option -gqv @cockpit_glyphs" ] && exit 0
 # nor the @cockpit_panel_effort read (#623)
 [ "\$*" = "show-option -gqv @cockpit_panel_effort" ] && exit 0
+# nor the panel key's two reads (#1121): its record, and the binding noted cockpit: panel
+[ "\$*" = "show-option -gqv @cockpit_panel_bound" ] && exit 0
+[ "\$*" = "list-keys -T prefix -F #{?#{==:#{key_note},cockpit: panel},#{key_string},}" ] && exit 0
 # capture-pane counts its calls; "still" mode answers the same screen each time.
 if [ "\$1" = capture-pane ]; then
     echo x >> "$PND/caps"
@@ -13852,6 +13858,55 @@ for ph_n in $'cockpit: panel\tTAB' $'cockpit: panel\037US' $'cockpit: panel\nx' 
         "cockpit: hidden · prefix g on $PHC brings it back" "$(ph_hidden)"
 done
 "$TMUX_REAL" -L "$PH" unbind-key c \; unbind-key g
+# #1121: the binary is told that key too, as COCKPIT_PANEL_KEY, for its ^Z help. None noted
+# passes none, and a value from the caller's environment does not reach it. A stub binary
+# records what it got.
+printf '#!/bin/sh\nprintf "[%%s]" "${COCKPIT_PANEL_KEY-unset}" > %s\n' "$(tq "$PHD/pkey")" \
+    > "$PHD/keytui"; chmod +x "$PHD/keytui"
+ph_pkey() {                   # [env words] -> [the COCKPIT_PANEL_KEY the binary got]
+    rm -f "$PHD/pkey"
+    "$TMUX_REAL" -L "$PH" new-window -d -t t: -c "$PHD" "$PHENV ${1:-} \
+COCKPIT_TUI_BIN=$(tq "$PHD/keytui") $(tq "$DIR/scripts/cockpit-panel") -p $PHC"
+    until_file "$PHD/pkey" '\[*\]'
+    cat "$PHD/pkey" 2>/dev/null
+}
+"$TMUX_REAL" -L "$PH" bind-key -N 'cockpit: panel' g display-message panel \; \
+    set-option -g @cockpit_panel_bound f
+is "the binary is told the noted key, not the record" "[g]" "$(ph_pkey)"
+"$TMUX_REAL" -L "$PH" unbind-key g \; bind-key -N 'cockpit: panel' '}' display-message panel
+is "a key named by a brace reaches the binary as written" "[}]" "$(ph_pkey)"
+"$TMUX_REAL" -L "$PH" unbind-key '}'
+is "no noted key: the binary is told none" "[unset]" "$(ph_pkey)"
+is "and a COCKPIT_PANEL_KEY from the caller does not reach it" "[unset]" \
+    "$(ph_pkey COCKPIT_PANEL_KEY=stale)"
+unset -f ph_pkey
+# #1121: the real binary reads COCKPIT_PANEL_KEY. A stub cannot show that read, only the
+# screen can: the ? list names the noted key, or says "the panel key" with none noted.
+ph_help() {                   # -> the ? list of a panel opened on $PHC, then closed
+    ph_open "$PHC"
+    "$TMUX_REAL" -L "$PH" send-keys -t "$PHB" '?'
+    until_cap "$PH" "$PHB" '*on this pane brings it back*'
+    ph_cap
+    "$TMUX_REAL" -L "$PH" send-keys -t "$PHB" q
+    until_cap "$PH" "$PHB" '*will send*'
+    "$TMUX_REAL" -L "$PH" send-keys -t "$PHB" q
+    ph_gone "$PHB"
+}
+"$TMUX_REAL" -L "$PH" bind-key -N 'cockpit: panel' g display-message panel
+phh=$(ph_help)
+case $phh in
+    *'hide; prefix g on this pane brings it back'*)
+        ok "the panel's ? list names the noted key" ;;
+    *) bad "the panel's ? list names the noted key" "prefix g on this pane" "$phh" ;;
+esac
+"$TMUX_REAL" -L "$PH" unbind-key g
+phh=$(ph_help)
+case $phh in
+    *'hide; the panel key on this pane brings it back'*)
+        ok "no noted key: the ? list says the panel key" ;;
+    *) bad "no noted key: the ? list says the panel key" "the panel key on this pane" "$phh" ;;
+esac
+unset -f ph_help; unset phh
 rm -f "$PHFC"
 unset -f ph_hidden
 unset -f ph_open ph_gone ph_cap

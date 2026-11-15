@@ -339,6 +339,7 @@ fn a_question_with_no_run_is_refused() {
 #[test]
 fn the_help_footer_and_buttons_name_the_hide_key() {
     let mut a = app("bash");
+    a.set_panel_key("f"); // what cockpit-panel passes for the stock binding (#1121)
     key(&mut a, KeyCode::Char('2'));
     let th = Theme::fixed();
     let keys = cockpit_tui::panel::view::keys(&a, &th.g);

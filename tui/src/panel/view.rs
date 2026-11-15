@@ -1179,8 +1179,11 @@ pub fn keys(app: &App, g: &Glyphs) -> Vec<(String, String)> {
     let mut all: Vec<_> = all.into_iter().filter(|(k, _)| !k.is_empty()).collect();
     let hide = if app.view == View::Busy {
         s("^Z", "hide, once the call is back")
+    } else if let Some(k) = app.panel_key() {
+        // the key cockpit-panel read from the binding (#1121), never a fixed f
+        s("^Z", &format!("hide; prefix {k} on this pane brings it back"))
     } else {
-        s("^Z", "hide; prefix f on this pane brings it back")
+        s("^Z", "hide; the panel key on this pane brings it back")
     };
     let at = all.iter().position(|(k, _)| k == "? F1" || k == "F1").unwrap_or(all.len());
     all.insert(at, hide);
@@ -1587,5 +1590,66 @@ mod tests {
         let next = &got[3];
         assert_eq!(next.to_string(), "'ab'");
         assert!(next.spans.iter().all(|s| s.style.fg == Some(th.done)), "{next:?}");
+    }
+
+    const GENERIC: &str = "hide; the panel key on this pane brings it back";
+
+    /// The help's ^Z words for a panel given `key` as cockpit-panel passes it (#1121).
+    fn hide_words(key: Option<&str>, busy: bool) -> String {
+        let mut a = App::new("%3", crate::panel::capture::Capture::default());
+        if let Some(k) = key {
+            a.set_panel_key(k);
+        }
+        if busy {
+            a.view = View::Busy;
+        }
+        let all = keys(&a, &Glyphs::unicode());
+        all.into_iter().find(|(k, _)| k == "^Z").map(|(_, v)| v).unwrap_or_default()
+    }
+
+    #[test]
+    fn the_hide_line_names_the_key_it_was_given() {
+        assert_eq!(hide_words(Some("g"), false), "hide; prefix g on this pane brings it back");
+    }
+
+    #[test]
+    fn no_key_draws_the_generic_words() {
+        assert_eq!(hide_words(None, false), GENERIC);
+    }
+
+    #[test]
+    fn a_key_with_a_control_byte_is_refused() {
+        for k in ["g\x1b[31m", "\x07", "g\n", "g\t", "g\u{7f}", "\u{9b}g"] {
+            assert_eq!(hide_words(Some(k), false), GENERIC, "{k:?}");
+        }
+    }
+
+    #[test]
+    fn an_over_long_key_is_refused() {
+        let k = "x".repeat(crate::panel::app::PANEL_KEY_MAX + 1);
+        assert_eq!(hide_words(Some(&k), false), GENERIC, "{k}");
+    }
+
+    /// Rows: names tmux 3.8's `key_string` printed for prefix bindings, and the
+    /// longest value the check keeps.
+    #[test]
+    fn tmux_key_names_are_drawn_as_given() {
+        let long = "x".repeat(crate::panel::app::PANEL_KEY_MAX);
+        for k in ["C-Space", "M-F12", "#", "}", "\\", "C-M-S-KPEnter", &long] {
+            let want = format!("hide; prefix {k} on this pane brings it back");
+            assert_eq!(hide_words(Some(k), false), want, "{k}");
+        }
+    }
+
+    #[test]
+    fn an_empty_spaced_or_non_ascii_key_is_refused() {
+        for k in ["", " ", "C- ", "é", "\u{202e}f"] {
+            assert_eq!(hide_words(Some(k), false), GENERIC, "{k:?}");
+        }
+    }
+
+    #[test]
+    fn a_busy_panel_keeps_its_own_hide_words() {
+        assert_eq!(hide_words(Some("g"), true), "hide, once the call is back");
     }
 }
