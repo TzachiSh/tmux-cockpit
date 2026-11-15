@@ -306,6 +306,7 @@ when it did not, and carried the facts a case requires, plus the latency. It
 calls `claude` once per case, so it is run by hand and never from `make test`;
 `--check` only validates the cases, and `cargo test` runs that check too. To
 compare a prompt edit, put it in the override file above and run again: the
+rig reads the overrides, and its unit tests under `cargo test` do not (#1088). The
 summary prints a hash of the system prompt it sent, and a pass count per case
 over the runs (3 by default: one run is not enough to judge a change). It also
 prints asking as FPR (asked on a write case) and FNR (no question on an ask
