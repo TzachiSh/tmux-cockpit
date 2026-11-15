@@ -1021,3 +1021,21 @@ fn names(pid: &str) -> (String, Option<String>) {
         .unwrap_or_default();
     (c.rsplit('/').next().unwrap_or_default().to_string(), None)
 }
+
+/// Until the thread `tid` of `t` sleeps or has ended: 4000 tries of 5 ms at most, a
+/// failsafe only, since a row's verdict is the thread's own end. A thread that waits
+/// for a lock sleeps there.
+#[cfg(target_os = "linux")]
+#[allow(dead_code)]
+pub fn asleep_or_done(t: &std::thread::JoinHandle<()>, tid: i32) {
+    let state = || std::fs::read_to_string(format!("/proc/self/task/{tid}/stat")).unwrap_or_default();
+    for tries in 0.. {
+        let s = state();
+        let asleep = s.rsplit_once(") ").is_some_and(|(_, r)| r.starts_with('S'));
+        if t.is_finished() || asleep {
+            return;
+        }
+        assert!(tries < 4000, "the thread neither slept nor ended after {tries} tries");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}

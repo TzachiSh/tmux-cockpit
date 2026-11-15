@@ -1904,25 +1904,9 @@ fn a_rig_checks_only_once_it_holds_the_lock() {
         tx.send(unsafe { libc::gettid() }).unwrap();
         drop(Rig::new("waits"));
     });
-    asleep_or_done(&t, rx.recv().unwrap());
+    fake::asleep_or_done(&t, rx.recv().unwrap());
     drop((env, held));
     // without the fix the payload is the refusal, naming COCKPIT_LOG
     let why = t.join().err().map(|e| e.downcast_ref::<String>().cloned().unwrap_or_default());
     assert_eq!(why, None, "the waiting rig panicked");
-}
-
-/// Until the thread `tid` of `t` sleeps or has ended: 4000 tries of 5 ms at most, a
-/// failsafe only, since the row's verdict is the thread's own end.
-#[cfg(target_os = "linux")]
-fn asleep_or_done(t: &std::thread::JoinHandle<()>, tid: i32) {
-    let state = || std::fs::read_to_string(format!("/proc/self/task/{tid}/stat")).unwrap_or_default();
-    for tries in 0.. {
-        let s = state();
-        let asleep = s.rsplit_once(") ").is_some_and(|(_, r)| r.starts_with('S'));
-        if t.is_finished() || asleep {
-            return;
-        }
-        assert!(tries < 4000, "the thread neither slept nor ended after {tries} tries");
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
 }
