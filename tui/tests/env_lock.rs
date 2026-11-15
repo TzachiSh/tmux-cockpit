@@ -206,7 +206,7 @@ fn builds_beside_env(s: &Path, name: &str, body: &str) -> (bool, String) {
 /// cannot pass for it. Built by rustc: the forged one is refused for its private field
 /// (E0451, `_guard`, the parts of the error a toolchain keeps), and the lawful one builds.
 #[test]
-fn the_token_has_no_constructor_outside_fake() {
+fn the_token_has_no_constructor_outside_test_env() {
     let s = scratch("cockpit-env-token");
     let taken = "pub fn take() -> env::EnvHeld { env::env_lock() }";
     let forged = "pub fn forge(g: std::sync::MutexGuard<'static, ()>) -> env::EnvHeld {\n\

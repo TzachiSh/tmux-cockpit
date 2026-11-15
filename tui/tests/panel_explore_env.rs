@@ -95,7 +95,8 @@ impl Drop for Restore<'_> {
 /// `vars` set while `f` runs, then put back, under the lock.
 fn with_env<T>(vars: &[(&str, &Path)], f: impl FnOnce() -> T) -> T {
     let held = fake::env_lock();
-    let _r = Restore(&held, vars.iter().map(|(k, _)| (k.to_string(), std::env::var_os(k))).collect());
+    let old = vars.iter().map(|(k, _)| (k.to_string(), std::env::var_os(k))).collect();
+    let _r = Restore(&held, old);
     // SAFETY: every test here takes the lock first, so no other thread reads the env meanwhile.
     unsafe { vars.iter().for_each(|(k, v)| fake::set_var(&held, k, v)) };
     f()

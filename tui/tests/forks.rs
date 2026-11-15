@@ -28,10 +28,11 @@ fn two_ticks_inside_the_ttl_fork_claude_once() {
     write_exec(&dir.join("bin/ps"), &format!("#!/bin/sh\ncat {d}/ps\n"));
     write_exec(&dir.join("bin/claude"), &format!("#!/bin/sh\necho 1 >> {d}/forks\nprintf '[]'\n"));
     write_exec(&dir.join("bin/git"), "#!/bin/sh\nexit 1\n");
+    let path = format!("{d}/bin:{}", std::env::var("PATH").unwrap_or_default());
     // SAFETY: the one test of this binary that writes the env. The other reads it only
     // in its spawn, which std orders with these writes (fake::run_by_hand).
     unsafe {
-        fake::set_var_unlocked("PATH", format!("{d}/bin:{}", std::env::var("PATH").unwrap_or_default()));
+        fake::set_var_unlocked("PATH", path);
         fake::set_var_unlocked("COCKPIT_TMUX", format!("{d}/bin/tmux"));
         fake::set_var_unlocked("HOME", &d);
         fake::set_var_unlocked("COCKPIT_READONLY", "1");
