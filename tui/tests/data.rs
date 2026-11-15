@@ -576,13 +576,15 @@ impl Repo {
         r
     }
 
+    /// git with TERM at its default and unblocked: the planted process filter is
+    /// ended by a TERM from git, and with TERM ignored its `cat` and this git wait
+    /// on each other for good (#1075). [`KEEPS_TERM`] set skips the reset.
     fn git(&self, args: &[&str]) -> std::process::Output {
-        std::process::Command::new("git")
-            .arg("-C")
-            .arg(&self.dir)
-            .args(args)
-            .output()
-            .unwrap()
+        let mut c = std::process::Command::new("git");
+        if std::env::var_os(KEEPS_TERM).is_none() {
+            fake::at_default(&mut c, &[libc::SIGTERM]);
+        }
+        c.arg("-C").arg(&self.dir).args(args).output().unwrap()
     }
 
     fn write(&self, name: &str, body: &str) {
@@ -680,6 +682,160 @@ fn planted_git_config_never_runs() {
     // f gains a line, g changes one, and the untracked .gitattributes is the one new
     // file, its lines no longer counted (#454)
     assert_eq!(pm, "+2 -1  ?1 new", "the hardened diff still measures the tree");
+}
+
+/// Set for one child alone by [`a_forced_hang_of_the_planted_filter_is_ended_once_it_forms`],
+/// so that its git keeps the ignored TERM it was handed and hangs. Only that row may
+/// set it: a reader must not copy it into a row that means to pass (#1075).
+const KEEPS_TERM: &str = "COCKPIT_TEST_GIT_KEEPS_TERM";
+
+/// How long a handed run of the planted row may take: it passes in under a second,
+/// so this bounds a hang and measures nothing (#1075).
+const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How long the forced row waits for its hang to form. The planted row reaches its
+/// first filtered git after a dozen plain ones, well under a second on an idle box, so
+/// 10 s holds at four times slower and more. Only a red waits it out (#1075).
+const FORM_BOUND: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Whether `f` holds within `bound`, polled.
+fn until(bound: std::time::Duration, mut f: impl FnMut() -> bool) -> bool {
+    let t0 = std::time::Instant::now();
+    while !f() {
+        if t0.elapsed() >= bound {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    true
+}
+
+/// Whether `pid` is a process of this user's, read from /proc.
+fn ours(pid: i32) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    // SAFETY: getuid cannot fail and touches no memory.
+    let me = unsafe { libc::getuid() };
+    std::fs::metadata(format!("/proc/{pid}")).is_ok_and(|m| m.uid() == me)
+}
+
+/// Whether `pid` is ours, its comm `git`, and an argument of its cmdline `dir` whole.
+fn a_git_in(pid: i32, dir: &str) -> bool {
+    let comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).unwrap_or_default();
+    let cmd = std::fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
+    let named = cmd.split(|&b| b == 0).any(|a| a == dir.as_bytes());
+    ours(pid) && comm.trim_end() == "git" && named
+}
+
+/// Pids with `pred`, read from /proc.
+fn pids_where(pred: impl Fn(i32) -> bool) -> Vec<i32> {
+    let all = std::fs::read_dir("/proc").into_iter().flatten().flatten();
+    let pids = all.filter_map(|e| e.file_name().to_str()?.parse::<i32>().ok());
+    pids.filter(|&p| pred(p)).collect()
+}
+
+/// Ends a handed child's hung git in `dir`, and with it the filter it waits on,
+/// which then sees its stdin close. Each pid is read again as that git right
+/// before the kill, and is left alone if the read fails or no longer matches.
+fn end_hung_gits(dir: &str) {
+    for pid in pids_where(|p| a_git_in(p, dir)) {
+        if a_git_in(pid, dir) {
+            // SAFETY: a pid read just now as our own git working in this row's folder.
+            unsafe { libc::kill(pid, libc::SIGKILL) };
+        }
+    }
+}
+
+/// How many processes of ours have a cwd under `dir`, once none is left or after a
+/// poll of [`HANG_BOUND`]. `dir` must have its links resolved, as the kernel gives a
+/// cwd. A zombie has no cwd and is not counted.
+fn left_under(dir: &Path) -> usize {
+    let under = |p: i32| ours(p) && std::fs::read_link(format!("/proc/{p}/cwd")).is_ok_and(|c| c.starts_with(dir));
+    until(HANG_BOUND, || pids_where(under).is_empty());
+    pids_where(under).len()
+}
+
+/// Whether the hang has formed in `dir`: a cat of ours working there with TERM
+/// ignored, and a git of ours naming `dir` waiting on its child (#1075). `dir` is
+/// resolved, so a cwd, which the kernel gives resolved, and git's cmdline, which
+/// holds the TMPDIR the row handed down, both carry this one form.
+fn hang_formed(dir: &str) -> bool {
+    let read = |p: i32, f: &str| std::fs::read_to_string(format!("/proc/{p}/{f}")).unwrap_or_default();
+    let term = 1u64 << (libc::SIGTERM - 1);
+    let ignores_term = |p: i32| {
+        let st = read(p, "status");
+        let bits = st.lines().find_map(|l| l.strip_prefix("SigIgn:"));
+        bits.and_then(|b| u64::from_str_radix(b.trim(), 16).ok())
+            .is_some_and(|b| b & term != 0)
+    };
+    let in_dir = |p: i32| std::fs::read_link(format!("/proc/{p}/cwd")).is_ok_and(|c| c == Path::new(dir));
+    let cat = |p: i32| ours(p) && read(p, "comm").trim_end() == "cat" && in_dir(p) && ignores_term(p);
+    let waiting = |p: i32| a_git_in(p, dir) && read(p, "wchan") == "do_wait";
+    !pids_where(cat).is_empty() && !pids_where(waiting).is_empty()
+}
+
+/// [`planted_git_config_never_runs`] in this binary handed an ignored and blocked
+/// TERM, with a TMPDIR of its own: the run, and how many of the processes it
+/// started are left once any hung git is ended.
+fn planted_row_handed() -> (Result<u32, String>, usize) {
+    let name = format!("cockpit-tui-handed-git-held-{}", std::process::id());
+    let tmp = fake::Scratch::fresh(std::env::temp_dir().join(name));
+    // resolved once and used for all: the child's TMPDIR, so git's cmdline, and each cwd
+    let canon = std::fs::canonicalize(&*tmp).unwrap();
+    let env = [("TMPDIR", canon.to_str().unwrap())];
+    let row = ["planted_git_config_never_runs"];
+    let run = fake::handed(&row, &[libc::SIGTERM], &env, HANG_BOUND);
+    for e in std::fs::read_dir(&canon).unwrap().flatten() {
+        if e.file_name().to_string_lossy().starts_with("cockpit-tui-git-plant-") {
+            end_hung_gits(e.path().to_str().unwrap());
+        }
+    }
+    (run, left_under(&canon))
+}
+
+/// #1075: the planted row passes in a binary started with TERM ignored and blocked,
+/// held there by its own git's reset, and leaves nothing behind.
+#[test]
+#[cfg(target_os = "linux")]
+fn planted_git_config_never_runs_in_a_binary_handed_an_ignored_term() {
+    let (run, left) = planted_row_handed();
+    assert_eq!((run.as_ref().err(), left), (None, 0), "{run:?}");
+}
+
+/// #1075: the hang the reset prevents, forced in a child of this binary started with
+/// TERM ignored and the reset skipped, forms; once it has, the child is killed, and the
+/// clean-up leaves none of its processes.
+#[test]
+#[cfg(target_os = "linux")]
+fn a_forced_hang_of_the_planted_filter_is_ended_once_it_forms() {
+    use std::os::unix::process::CommandExt;
+    let name = format!("cockpit-tui-handed-git-forced-{}", std::process::id());
+    let tmp = fake::Scratch::fresh(std::env::temp_dir().join(name));
+    // resolved once and used for all: the child's TMPDIR, so git's cmdline, and each cwd
+    let canon = std::fs::canonicalize(&*tmp).unwrap();
+    let mut c = std::process::Command::new(std::env::current_exe().unwrap());
+    c.args(["--exact", "planted_git_config_never_runs"])
+        .env("TMPDIR", &canon)
+        .env(KEEPS_TERM, "1");
+    c.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null());
+    let ignore = || {
+        // SAFETY: signal is async-signal-safe, and nothing here allocates.
+        unsafe { libc::signal(libc::SIGTERM, libc::SIG_IGN) };
+        Ok(())
+    };
+    // SAFETY: `ignore` makes one async-signal-safe call and allocates nothing.
+    let mut child = unsafe { c.pre_exec(ignore) }.stderr(std::process::Stdio::null()).spawn().unwrap();
+    let plant = format!("cockpit-tui-git-plant-{}", child.id());
+    let dir = canon.join(&plant);
+    let dir = dir.to_str().unwrap();
+    let formed = until(FORM_BOUND, || hang_formed(dir));
+    // our own unreaped child: the pid cannot have been recycled
+    child.kill().unwrap();
+    child.wait().unwrap();
+    end_hung_gits(dir);
+    let left = left_under(&canon);
+    let why = "git no longer hangs here: no git waited on a planted cat ignoring TERM";
+    assert!(formed, "{why} within {FORM_BOUND:?}");
+    assert_eq!(left, 0, "the clean-up left processes of the forced hang");
 }
 
 /// The board may start with a dotfiles setup's GIT_DIR, or one of its kin, in
