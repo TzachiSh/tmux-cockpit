@@ -4838,7 +4838,7 @@ dm_scan() {                   # <file...> -> file:line of each display-message n
                 # inside the same string is still named.
                 if (FILENAME == "cockpit.tmux" &&
                     c ~ /^ "tmux-cockpit needs tmux 3\.8 or newer / &&
-                    c ~ /^ "[^"]*\(found \$tmux_version\)[^"$`]*"/)
+                    c ~ /^ "[^"$`]*\(found \$tmux_version\)[^"$`]*"/)
                     continue
                 if (FILENAME == "scripts/lib/fmt.sh" && index(c, " \"$@\" \"${t//#/##}\"") == 1)
                     continue
@@ -4880,6 +4880,9 @@ EOF
 dm_plant version-then-var cockpit.tmux <<'EOF'
     tmux display-message "tmux-cockpit needs tmux 3.8 or newer (found $tmux_version) $DIR"
 EOF
+dm_plant var-before-found cockpit.tmux <<'EOF'
+    tmux display-message "tmux-cockpit needs tmux 3.8 or newer $DIR (found $tmux_version)"
+EOF
 dm_plant version-elsewhere scripts/x <<'EOF'
     tmux display-message "tmux-cockpit needs tmux 3.8 or newer (found $tmux_version)"
 EOF
@@ -4888,7 +4891,7 @@ dm_plant dmsg-call-elsewhere scripts/tmux-jump <<'EOF'
 EOF
 for dm_f in raw:scripts/x fesc:scripts/x read-then-raw:scripts/x raw-then-constant:scripts/x \
         notice:scripts/lib/review-deliver.sh version-then-raw:cockpit.tmux \
-        version-then-var:cockpit.tmux \
+        version-then-var:cockpit.tmux var-before-found:cockpit.tmux \
         version-elsewhere:scripts/x dmsg-call-elsewhere:scripts/tmux-jump; do
     is "the scan names a planted [${dm_f%%:*}]" "${dm_f#*:}:1" \
        "$(cd "$DM/pl/${dm_f%%:*}" && dm_scan "${dm_f#*:}")"
