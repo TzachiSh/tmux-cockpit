@@ -10109,8 +10109,13 @@ ps_settle() {                 # -> 0, or "<count>:" and each leftover
 ps_socks() {
     [ -z "$PSS" ] || ( cd "$PSS" 2>/dev/null && ls -A tmux-*/ 2>/dev/null | tr '\n' ' ' )
 }
+ps_ours() {                   # </proc/PID>: it carries the sandbox's TMPDIR and is a tmux server
+    local c=""
+    tr '\0' '\n' 2>/dev/null < "$1/environ" | grep -qxF "TMPDIR=$PSROOT/t" || return 1
+    read -r c 2>/dev/null < "$1/comm"; [ "$c" = "tmux: server" ]
+}
 ps_end() {
-    local f p c a n d
+    local f p a n d i
     if [ -n "$PSS" ]; then
         for f in "$PSS"/tmux-*/*; do
             [ -S "$f" ] || continue
@@ -10120,16 +10125,22 @@ ps_end() {
         return 0
     fi
     # No folder of its own (the long TMPDIR above): the servers carrying the sandbox's TMPDIR,
-    # each by the last -L of its argv when that is a suite's name (#1012).
+    # each when the last -L of its argv is a suite's name (#1012). Each is ended by its pid,
+    # which needs no socket path. The path used to be built, and for a server with no
+    # TMUX_TMPDIR it fell back to /tmp/tmux-<uid>, the user's own server's folder: a guard
+    # there refused the kill-server, and the rm then took the socket file of a server it left
+    # running (#1095). The pid is checked again right before the signal, since pids are
+    # reused (AGENTS.md). The socket file goes once its server is gone, and only where the
+    # server's TMUX_TMPDIR names its folder: no folder is guessed.
     for p in /proc/[0-9]*; do
-        tr '\0' '\n' 2>/dev/null < "$p/environ" | grep -qxF "TMPDIR=$PSROOT/t" || continue
-        c=""; read -r c 2>/dev/null < "$p/comm"; [ "$c" = "tmux: server" ] || continue
+        ps_ours "$p" || continue
         a=$(tr '\0' ' ' 2>/dev/null < "$p/cmdline")
         n=$(printf '%s\n' "$a" | grep -oE -- '-L [^ ]+ ' | tail -n 1)
         n=${n#-L }; n=${n% }; [[ $n =~ ^cockpit-suite-[0-9]+$ ]] || continue
         d=$(tr '\0' '\n' 2>/dev/null < "$p/environ" | sed -n 's/^TMUX_TMPDIR=//p')
-        "$TMUX_REAL" -S "${d:-/tmp}/tmux-$(id -u)/$n" kill-server >/dev/null 2>&1
-        rm -f -- "${d:-/tmp}/tmux-$(id -u)/$n"
+        ps_ours "$p" && kill "${p#/proc/}" 2>/dev/null || continue
+        for i in $(seq 1 "$POLLS"); do ps_ours "$p" || break; sleep 0.1; done
+        [ -z "$d" ] || ps_ours "$p" || rm -f -- "$d/tmux-$(id -u)/$n"
     done
 }
 # The run with a shard that never ends: once that shard is inside its block (past the
@@ -10199,8 +10210,69 @@ else
           grep -vF "$(cd "$PSS" && pwd -P)/" "$PSROOT/t/socks" | tr '\n' ' ')"
 fi
 ps_end
-unset -f ps_live ps_left ps_settle ps_socks ps_end
+# ps_end and ps_ours stay for the next block, which unsets them.
+unset -f ps_live ps_left ps_settle ps_socks
 unset PSROOT PSS ps_env ps_rec Q ps_to ps_c ps_row ps_s ps_in ps_got
+
+echo "== tests/par.sh: ps_end ends a server by its pid, guessing no socket folder (#1095) =="
+# ps_end's second arm, for a sandbox with no socket folder of its own, ended each server by a
+# socket path it built from the server's TMUX_TMPDIR, and with none there it built one in
+# /tmp/tmux-<uid>, the user's own server's folder. A guard tmux refuses that folder: the
+# kill-server was refused, the rm took the file, and the server stayed with no socket (#1095).
+# No run reaches that today, since the suite always exports a TMUX_TMPDIR (#1098), so the arm
+# is called here directly, on servers of this block's own: A with no TMUX_TMPDIR in its
+# environment and its socket at a -S path in this block's folder (the -L in its argv is only a
+# name there, since -S wins), B with one, and C under a name that is not a suite's. The tmux
+# ps_end is handed refuses and records every call, as a guard on the folder would, and its rm
+# records its path and removes only what is in this block's folder. A path ps_end builds in
+# /tmp/tmux-<uid> is so only ever a line in a log.
+pe_start() {                  # <socket> <-L name> <TMUX_TMPDIR, or "" for none> -> its pid
+    env -u TMUX_TMPDIR ${3:+TMUX_TMPDIR="$3"} SUITE_IDLE="$SUITE_IDLE" TMPDIR="$PE/t" \
+        "$TMUX_REAL" -L "$2" -S "$1" -f /dev/null new-session -d -c "$PE" "$SUITE_PANE" \
+        >/dev/null 2>&1
+    "$TMUX_REAL" -S "$1" display-message -p '#{pid}' 2>/dev/null
+}
+pe_state() {                  # <pid>... -> "up " or "gone " for each, by its name in /proc
+    local p c
+    for p do
+        c=""; read -r c 2>/dev/null < "/proc/$p/comm"
+        if [ "$c" = "tmux: server" ]; then printf 'up '; else printf 'gone '; fi
+    done
+}
+PE=$(mktmpd); pe_n="cockpit-suite-1095$$"; pe_b="$PE/b/tmux-$(id -u)/$pe_n"
+mkdir -p "$PE/t" "${pe_b%/*}"
+if [ ${#pe_b} -gt 107 ]; then
+    skip_ "ps_end by pid (a socket path in this block's folder would pass 107 bytes)"
+else
+    pa=$(pe_start "$PE/a" "$pe_n" "")
+    pb=$(pe_start "$pe_b" "$pe_n" "$PE/b")
+    pc=$(pe_start "$PE/c" "cockpit-other-1095$$" "$PE/b")
+    is "the block's three servers are up" "up up up " "$(pe_state "$pa" "$pb" "$pc")"
+    printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> %s\nexit 97\n' "$(tq "$PE/tmux.log")" \
+        > "$PE/tmux"
+    chmod +x "$PE/tmux"
+    (
+        PSROOT=$PE; PSS=""; TMUX_REAL="$PE/tmux"
+        rm() {
+            printf '%s\n' "${@: -1}" >> "$PE/rm.log"
+            case ${@: -1} in "$PE"/*) command rm "$@" ;; *) return 1 ;; esac
+        }
+        ps_end
+    )
+    is "both suite-named servers are ended, the one with no TMUX_TMPDIR too" "gone gone " \
+       "$(pe_state "$pa" "$pb")"
+    is "a server under another name is left running" "up " "$(pe_state "$pc")"
+    is "no path ps_end hands tmux or rm is outside this block's folder" "" \
+       "$(cat "$PE/tmux.log" "$PE/rm.log" 2>/dev/null | grep -vF -- "$PE/" | tr '\n' ' ')"
+    is "B's socket file goes; A's stays, since A names no folder" "gone there" \
+       "$([ -e "$pe_b" ] && echo there || echo gone) $([ -e "$PE/a" ] && echo there || echo gone)"
+    for pe_s in "$PE/a" "$pe_b" "$PE/c"; do
+        "$TMUX_REAL" -S "$pe_s" kill-server >/dev/null 2>&1
+    done
+fi
+rm -rf "$PE"
+unset -f pe_start pe_state ps_end ps_ours
+unset PE pe_n pe_b pa pb pc pe_s
 
 echo "== tests/par.sh: a checkout under a path with a space runs every shard and nothing else (#1007) =="
 # par.sh joined its shard paths into one string and split it again, so a path holding a space
