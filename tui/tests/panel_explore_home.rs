@@ -22,7 +22,7 @@ fn a_repo_at_home_is_refused_from_a_folder_inside_it() {
         .unwrap();
     assert!(ok.success());
     // SAFETY: this binary runs this one test, so no other thread reads HOME.
-    unsafe { fake::set_var_unlocked("HOME", &home) };
+    unsafe { fake::set_var(&fake::env_lock(), "HOME", &home) };
     let cap = Capture {
         name: "work".into(),
         cmd: "bash".into(),

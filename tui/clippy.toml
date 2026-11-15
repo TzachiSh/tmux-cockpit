@@ -1,6 +1,6 @@
 # The raw environment writers (#1132). tui/Cargo.toml forbids the lint, so a test writes
-# only through fake::set_var and fake::remove_var, which take the lock's token, or, until
-# step 2 of #1132, the interim writers. tests/tui-clippy-canary.sh calls each path in
+# only through fake::set_var and fake::remove_var, which take the lock's token.
+# tests/tui-clippy-canary.sh calls each path in
 # tui/examples/clippy_canary.rs and fails unless clippy refuses every call.
 
 [[disallowed-methods]]

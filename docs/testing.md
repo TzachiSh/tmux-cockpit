@@ -322,13 +322,11 @@ under the lock takes its token, `fake::checked_state_held` and
 `fake::checked_tmux_held`. The guard-less `fake::checked_state` and
 `fake::checked_tmux` take the lock for their read, and on a thread that already
 holds it they panic and name the `_held` form, where they would otherwise wait
-for themselves. `tmux_reach.rs` fails for a file under `tui/tests` that writes
-the environment and keeps a lock of its own: a `static` named `ENV` that is a
-`Mutex` or an `RwLock`, or a `Mutex<()>` or `RwLock<()>` of any name. It also
-fails for any `static ENV` in data, agents, panel_env or a file of `fake/`.
-push's `RwLock` is the one it lets through, by its declaration: its
-readers, the rigs, run in parallel, and its one writer sets no variable a check
-reads. The helpers only check: `fake::checked_tmux`
+for themselves. `fake::env_lock()` itself panics on a thread that already holds
+it, for the same reason. push keeps an `RwLock` of its own: its readers, the
+rigs, run in parallel, and its one writer takes `fake::env_lock()` after its rig
+is built, so the order is push's lock, then fake's, as in every rig's server
+start. The helpers only check: `fake::checked_tmux`
 before any tmux a helper runs, and `fake::checked_state`, or
 `fake::checked_state_held` where the rig holds the lock (data, agents and
 info_dir), in each rig that sets `HOME`. The product's own tmux calls refuse
@@ -371,7 +369,7 @@ any route: a `.clippy.toml` beside `clippy.toml`, a renamed table,
 `cargo clippy --all-features` run by hand builds the canaries and shows their
 errors. That is the canary doing its job.
 
-`tui/test-env` itself is the one reviewed root of trust. It is about 110 lines
+`tui/test-env` itself is the one reviewed root of trust. It is about 100 lines
 on std alone, every change to it shows in a diff, and nothing lints it: it sits
 outside the package so that its own writers can call the raw functions. The lint
 keeps every other file of the package from writing the environment except
@@ -380,16 +378,13 @@ takes no token, a function that wraps one of its writers, or a function that
 hands out an `EnvHeld` without the lock. Each of those passes every check, so
 any change to `tui/test-env` needs a load-bearing review. The rule for that
 review: a diff to `tui/test-env` adds no `pub` item that writes the environment
-or hands out an `EnvHeld`. Step 2 of #1132 removes the two interim writers,
-which leaves the two that take the token.
+or hands out an `EnvHeld`. Its two writers both take the token, so every write
+in the package takes the lock: a binary whose one test writes takes it for the
+writes alone, where it serves the type and closes no race (#1132).
 
-Until step 2 of #1132, the writes that took no lock before go through
-`set_var_unlocked` and `remove_var_unlocked`, which take no token.
-`tmux_reach.rs` holds:
-- each file's count of those two names under `tui/tests` and `tui/examples`,
-  which may only go down;
-- no `extern` block under `tui/tests` or `tui/examples`. A `setenv` declared
-  there would be a function no path in `clippy.toml` names.
+`tmux_reach.rs` holds the one rule the lint cannot name: no `extern` block under
+`tui/tests` or `tui/examples`. A `setenv` declared there would be a function no
+path in `clippy.toml` names.
 
 clippy 1.88 keeps a target's result when only `clippy.toml` changes, so touch
 a source file before you check an edit to it. The canary script touches its
