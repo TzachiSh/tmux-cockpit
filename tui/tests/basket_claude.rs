@@ -80,7 +80,7 @@ fn claude_and_its_version_title_read_at_mentions_and_nothing_else_does() {
     s.tmux(&["set-option", "-g", "@cockpit_agents_glob", "|claude|codex|aider|gemini|"]);
     // SAFETY: the one test of this binary that writes the env; the others read it only
     // in their spawns, which std orders with this write (fake::rows_pass_handed).
-    unsafe { fake::set_var_unlocked("COCKPIT_TMUX", format!("tmux -L {}", s.sock)) };
+    unsafe { fake::set_var(&fake::env_lock(), "COCKPIT_TMUX", format!("tmux -L {}", s.sock)) };
     let stale = s.pane("fish");
     // @panestate outlives the claude that set it: on a shell it is no claude
     s.tmux(&["set-option", "-p", "-t", &stale, "@panestate", "working"]);

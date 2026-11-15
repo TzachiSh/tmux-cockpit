@@ -762,34 +762,11 @@ fn interim_names() -> Vec<(String, usize)> {
 /// them. Counted as words, so a call through a renamed import counts only its `use`.
 #[test]
 fn the_unlocked_writes_only_get_fewer() {
-    let want: [(&str, usize); 22] = [
-        ("examples/panel_eval.rs", 4),
-        ("tests/basket_claude.rs", 1),
-        ("tests/basket_claude_glob.rs", 1),
-        ("tests/basket_stub.rs", 2),
-        ("tests/basket_tmux.rs", 3),
-        ("tests/branch_oldgit.rs", 1),
-        ("tests/ended_glob.rs", 5),
-        ("tests/fake/mod.rs", 2),
-        ("tests/files_global.rs", 2),
-        ("tests/forks.rs", 5),
-        ("tests/forks_dirs.rs", 5),
-        ("tests/forks_ended.rs", 5),
-        ("tests/info_ask.rs", 3),
-        ("tests/oldgit/mod.rs", 1),
-        ("tests/panel_basket_tmux.rs", 1),
-        ("tests/panel_explore_home.rs", 1),
-        ("tests/preview_shape.rs", 1),
-        ("tests/push.rs", 3),
-        ("tests/subs_fields.rs", 6),
-        ("tests/subs_tmux.rs", 5),
-        ("tests/tiles_batch_same.rs", 1),
-        ("tests/tiles_batch_stub.rs", 1),
-    ];
+    let want: [(&str, usize); 3] = [("examples/panel_eval.rs", 4), ("tests/fake/mod.rs", 2), ("tests/push.rs", 3)];
     let got = interim_names();
     let total: usize = got.iter().map(|(_, n)| n).sum();
     let got: Vec<(&str, usize)> = got.iter().map(|(f, n)| (f.as_str(), *n)).collect();
-    assert_eq!((total, got), (59, want.to_vec()), "lower the table in a step-2 PR, never raise it");
+    assert_eq!((total, got), (9, want.to_vec()), "lower the table in a step-2 PR, never raise it");
 }
 
 /// The word count above on sources with a known answer: a call counts, a longer

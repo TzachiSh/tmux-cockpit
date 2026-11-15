@@ -38,16 +38,18 @@ fn one_fetch_is_one_tmux_call_and_cockpit_dir_comes_off_it() {
     write_exec(&dir.join("bin/git"), &format!("#!/bin/sh\necho \"$2\" >> {d}/git\nexit 1\n"));
     write_exec(&dir.join("bin/ps"), "#!/bin/sh\n");
     let path = fake::rig_path(&dir.join("bin"));
+    let held = fake::env_lock();
     // SAFETY: the one test of this binary that writes the env. The other reads it only
     // in its spawn, which std orders with these writes (fake::run_by_hand).
     unsafe {
-        fake::set_var_unlocked("PATH", path);
-        fake::set_var_unlocked("COCKPIT_TMUX", format!("{d}/bin/tmux"));
-        fake::set_var_unlocked("HOME", &d);
-        fake::set_var_unlocked("COCKPIT_READONLY", "1");
+        fake::set_var(&held, "PATH", path);
+        fake::set_var(&held, "COCKPIT_TMUX", format!("{d}/bin/tmux"));
+        fake::set_var(&held, "HOME", &d);
+        fake::set_var(&held, "COCKPIT_READONLY", "1");
         // #505: no proc under it, so the walk asks the fake ps, not the live pid of the same number
-        fake::set_var_unlocked("COCKPIT_PROC_DIR", format!("{d}/proc"));
+        fake::set_var(&held, "COCKPIT_PROC_DIR", format!("{d}/proc"));
     }
+    drop(held);
     fake::assert_claude_is_the_rigs(&dir);
 
     assert_eq!(list_panes().unwrap().len(), 3);

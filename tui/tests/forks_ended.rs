@@ -39,16 +39,18 @@ fn two_ticks_on_an_ended_row_fork_ps_once() {
     write_exec(&dir.join("bin/ps"), &format!("#!/bin/sh\necho 1 >> {d}/ps.n\necho '100 1 sleep'\n"));
     write_exec(&dir.join("bin/git"), "#!/bin/sh\nexit 1\n");
     let path = fake::rig_path(&dir.join("bin"));
+    let held = fake::env_lock();
     // SAFETY: the one test of this binary that writes the env. The other reads it only
     // in its spawn, which std orders with these writes (fake::run_by_hand).
     unsafe {
-        fake::set_var_unlocked("PATH", path);
-        fake::set_var_unlocked("COCKPIT_TMUX", format!("{d}/bin/tmux"));
-        fake::set_var_unlocked("HOME", &d);
-        fake::set_var_unlocked("COCKPIT_READONLY", "1");
+        fake::set_var(&held, "PATH", path);
+        fake::set_var(&held, "COCKPIT_TMUX", format!("{d}/bin/tmux"));
+        fake::set_var(&held, "HOME", &d);
+        fake::set_var(&held, "COCKPIT_READONLY", "1");
         // #505: no proc under it, so the walk asks the fake ps, not the live pid of the same number
-        fake::set_var_unlocked("COCKPIT_PROC_DIR", format!("{d}/proc"));
+        fake::set_var(&held, "COCKPIT_PROC_DIR", format!("{d}/proc"));
     }
+    drop(held);
     fake::assert_claude_is_the_rigs(&dir);
 
     assert!(list_panes().unwrap()[0].ended, "the first tick reads it ended");

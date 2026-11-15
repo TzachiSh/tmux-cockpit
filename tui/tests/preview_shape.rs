@@ -11,7 +11,7 @@ use cockpit_tui::data::preview;
 fn preview_reads_what_it_read_before_the_split() {
     let (_dir, argv) = stub::stub("shape");
     // SAFETY: this test binary holds exactly one test, so nothing runs beside it.
-    unsafe { fake::set_var_unlocked("COCKPIT_TMUX", &argv[0]) };
+    unsafe { fake::set_var(&fake::env_lock(), "COCKPIT_TMUX", &argv[0]) };
     let got: Vec<_> = stub::screens().iter().map(|(id, _)| preview(id, 5)).collect();
     let want = [
         "\u{1b}[31mred\u{1b}[0m plain\nlink\n##",

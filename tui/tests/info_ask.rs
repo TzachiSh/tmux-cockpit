@@ -43,12 +43,14 @@ fn facts(tag: &str, state: &str, body: &str) -> (String, String) {
     fake::write_exec(&shim, &sh);
     // each call adds its bin to PATH and the entry stays, dead, once `d` is removed
     let path = fake::rig_path(&d.join("bin"));
+    let held = fake::env_lock();
     // SAFETY: the one test in this binary, so no thread reads the environment meanwhile.
     unsafe {
-        fake::set_var_unlocked("PATH", path);
-        fake::set_var_unlocked("COCKPIT_TMUX", &shim);
-        fake::set_var_unlocked("CLAUDE_CONFIG_DIR", &d);
+        fake::set_var(&held, "PATH", path);
+        fake::set_var(&held, "COCKPIT_TMUX", &shim);
+        fake::set_var(&held, "CLAUDE_CONFIG_DIR", &d);
     }
+    drop(held);
     fake::assert_claude_is_the_rigs(&d);
     let x = gather("%1").unwrap();
     let _ = std::fs::remove_dir_all(&d);
