@@ -733,7 +733,8 @@ fn push_and_the_tile_previews_send_the_callers_server_nothing() {
 fn words(code: &str, w: &str) -> usize {
     let id = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_');
     code.match_indices(w)
-        .filter(|(at, _)| !id(code[..*at].chars().last()) && !id(code[at + w.len()..].chars().next()))
+        .filter(|(at, _)| !id(code[..*at].chars().last()))
+        .filter(|(at, _)| !id(code[at + w.len()..].chars().next()))
         .count()
 }
 
