@@ -9,11 +9,8 @@ use cockpit_tui::data::list_panes;
 use fake::write_exec;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Mutex, MutexGuard};
-
-static ENV: Mutex<()> = Mutex::new(());
-type Lock = MutexGuard<'static, ()>;
 
 /// field 22 of a stat line is `start`
 fn stat(start: &str) -> String {
@@ -27,17 +24,17 @@ struct Rig {
     wait: std::time::Duration,
     /// the shell the give-up execs: [`SH`], or a missing file for a box without one
     sh: PathBuf,
-    _lock: Option<Lock>,
+    _lock: Option<fake::EnvHeld>,
 }
 
 /// A lookup ends within the product's own 2.5 s deadline, so one still running after
 /// this is a thread that hangs, on a box however loaded (#969).
 const DROP_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
 
-/// Each variable back to the value it had, or unset again. The caller holds `ENV`.
+/// Each variable back to the value it had, or unset again. The caller holds fake's lock.
 fn put_back(old: &[(&'static str, Option<String>)]) {
     for (k, v) in old {
-        // SAFETY: the ENV mutex is held, as it was when these were set.
+        // SAFETY: fake's environment lock is held, as it was when these were set.
         unsafe {
             match v {
                 Some(v) => std::env::set_var(k, v),
@@ -68,15 +65,19 @@ impl Rig {
 
     /// `board` false is a one-shot caller (`--json`, `--rows`): it waits for the lookup.
     fn with(tag: &str, claude_body: &str, board: bool) -> Rig {
-        let lock = ENV.lock().unwrap_or_else(|e| e.into_inner());
-        Rig::build(tag, claude_body, board, Some(lock))
+        let lock = fake::env_lock();
+        let mut rig = Rig::build(tag, claude_body, board, &lock);
+        rig._lock = Some(lock);
+        rig
     }
 
-    /// `lock` is `ENV`, held from here to the drop. None when the caller holds it.
-    fn build(tag: &str, claude_body: &str, board: bool, lock: Option<Lock>) -> Rig {
+    /// `held` is fake's environment lock, which the caller holds from here to the rig's
+    /// drop: [`Rig::with`] hands it to the rig, a [`Dev`] keeps it.
+    fn build(tag: &str, claude_body: &str, board: bool, held: &fake::EnvHeld) -> Rig {
         // every rig comes through here, `new`, `with` and `inside` alike: the runner unset
-        // the caller's log, cache and state, which a lookup uses (#1066)
-        fake::checked_state();
+        // the caller's log, cache and state, which a lookup uses (#1066), and a sibling
+        // writes XDG_CACHE_HOME under the lock this is checked under (#1110)
+        fake::checked_state_held(held);
         let dir = std::env::temp_dir().join(format!("cockpit-agents-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("bin")).unwrap();
@@ -112,7 +113,7 @@ impl Rig {
         ];
         let mut old: Vec<_> = vars.iter().map(|(k, _)| (*k, std::env::var(k).ok())).collect();
         old.push(("XDG_CACHE_HOME", std::env::var("XDG_CACHE_HOME").ok()));
-        // SAFETY: the ENV mutex is held until Drop restores these.
+        // SAFETY: fake's environment lock is held until Drop restores these.
         unsafe {
             std::env::remove_var("XDG_CACHE_HOME");
             for (k, v) in &vars {
@@ -124,16 +125,16 @@ impl Rig {
             old,
             wait: DROP_WAIT,
             sh: PathBuf::from(SH),
-            _lock: lock,
+            _lock: None,
         };
         // once the rig exists, so that a failure here drops it and the variables go back (#972)
         fake::assert_claude_is_the_rigs(&rig.dir);
         rig
     }
 
-    /// A board's rig inside `_dev`, which holds `ENV`: its drop puts back what `_dev` set.
-    fn inside(_dev: &Dev, tag: &str, claude_body: &str) -> Rig {
-        Rig::build(tag, claude_body, true, None)
+    /// A board's rig inside `dev`, which holds fake's lock: its drop puts back what `dev` set.
+    fn inside(dev: &Dev, tag: &str, claude_body: &str) -> Rig {
+        Rig::build(tag, claude_body, true, &dev.held)
     }
 
     fn proc_dir(&self, pid: &str, comm: &str, kids: &str) {
@@ -286,12 +287,12 @@ impl Drop for Rig {
 struct Dev {
     dir: PathBuf,
     old: Vec<(&'static str, Option<String>)>,
-    _lock: Lock,
+    held: fake::EnvHeld,
 }
 
 impl Dev {
     fn new(tag: &str) -> Dev {
-        let lock = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let held = fake::env_lock();
         let name = format!("cockpit-agents-{tag}-dev-{}", std::process::id());
         let dir = std::env::temp_dir().join(name);
         let _ = std::fs::remove_dir_all(&dir);
@@ -305,14 +306,14 @@ impl Dev {
         let vars = [("PATH", format!("{d}/bin:{path}")), ("HOME", d)];
         let mut old: Vec<_> = vars.iter().map(|(k, _)| (*k, std::env::var(k).ok())).collect();
         old.push(("XDG_CACHE_HOME", std::env::var("XDG_CACHE_HOME").ok()));
-        // SAFETY: the ENV mutex is held until Drop restores these.
+        // SAFETY: fake's environment lock is held until Drop restores these.
         unsafe {
             std::env::remove_var("XDG_CACHE_HOME");
             for (k, v) in &vars {
                 std::env::set_var(k, v);
             }
         }
-        Dev { dir, old, _lock: lock }
+        Dev { dir, old, held }
     }
 
     /// One line per start of the `claude` outside the rig.
@@ -396,7 +397,7 @@ fn a_rig_dropped_in_a_panic_leaves_no_stage_hook_set() {
     fn count(_at: Stage, _pid: u32) {
         CALLS.fetch_add(1, Ordering::SeqCst);
     }
-    // the dev holds ENV across both rigs, so no other test clears the hook in between
+    // the dev holds the lock across both rigs, so no other test clears the hook in between
     let dev = Dev::new("hookleft");
     let red = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let _r = Rig::inside(&dev, "hookleft", ONE);
@@ -672,7 +673,7 @@ fn now() -> u64 {
 fn the_rig_never_kills_a_pid_that_is_not_its_stub() {
     let mut other = {
         let r = Rig::new("reused", ONE);
-        // After Rig::new, which can wait on the ENV lock behind other rigs: a sleep started
+        // After Rig::new, which can wait on the lock behind other rigs: a sleep started
         // before it could end on its own and be blamed on the drop. An absolute path, since
         // a bare `sleep` is the rig's bin/sleep, whose cmdline names the rig's dir. TERM at
         // its default and unblocked, whatever the suite was started with (#1061).
