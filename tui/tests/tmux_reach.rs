@@ -1,0 +1,388 @@
+//! Which test binaries run a real tmux, and that each goes through the helpers'
+//! check first (#1066). cargo's runner clears the caller's TMUX, TMUX_PANE and
+//! TMUX_COCKPIT_DIR for a test binary and gives it a TMUX_TMPDIR of its own;
+//! `fake::checked_tmux` refuses a binary started without them. A binary that
+//! runs tmux and never reaches that check would run unrefused by hand from
+//! inside a tmux session.
+mod fake;
+
+use std::path::{Path, PathBuf};
+
+/// The text of every Rust string literal in `src`, `\n` read as a new line.
+/// Plain and raw literals; a char literal `'"'` is skipped.
+fn literals(src: &str) -> Vec<(usize, String)> {
+    let b = src.as_bytes();
+    let (mut out, mut i) = (vec![], 0);
+    while i < b.len() {
+        match b[i] {
+            b'/' if b.get(i + 1) == Some(&b'/') => {
+                i = src[i..].find('\n').map_or(b.len(), |n| i + n);
+            }
+            b'\'' if b.get(i + 2) == Some(&b'\'') || b.get(i + 1) == Some(&b'\\') => {
+                i = src[i + 1..].find('\'').map_or(b.len(), |n| i + n + 2);
+            }
+            b'r' if matches!(b.get(i + 1), Some(b'"' | b'#')) && !word(b, i) => {
+                let hashes = b[i + 1..].iter().take_while(|&&c| c == b'#').count();
+                let close = format!("\"{}", "#".repeat(hashes));
+                let start = i + 2 + hashes;
+                let end = src[start..].find(&close).map_or(b.len(), |n| start + n);
+                out.push((start, src[start..end].to_string()));
+                i = end + close.len();
+            }
+            b'"' => {
+                let (start, mut j, mut text) = (i + 1, i + 1, String::new());
+                while j < b.len() && b[j] != b'"' {
+                    if b[j] == b'\\' && j + 1 < b.len() {
+                        text.push(if b[j + 1] == b'n' { '\n' } else { b[j + 1] as char });
+                        j += 2;
+                    } else {
+                        let c = src[j..].chars().next().unwrap();
+                        text.push(c);
+                        j += c.len_utf8();
+                    }
+                }
+                out.push((start, text));
+                i = j + 1;
+            }
+            _ => i += 1,
+        }
+    }
+    out
+}
+
+/// Whether the byte before `i` continues a word, as in `br"` or `for"`.
+fn word(b: &[u8], i: usize) -> bool {
+    i > 0 && (b[i - 1].is_ascii_alphanumeric() || b[i - 1] == b'_')
+}
+
+/// Whether a literal at `at` in `src`, with text `t`, names a real tmux to run:
+/// `tmux` alone as a program (not a path part given to `join`), an argv that
+/// starts with it (a COCKPIT_TMUX value), or a line of a script that runs it,
+/// `tmux` and a word after an optional `exec`.
+fn runs_tmux(src: &str, at: usize, t: &str) -> bool {
+    let before = src[..at - 1].trim_end();
+    let program = t == "tmux" && !before.ends_with("join(");
+    let line = |l: &str| {
+        let l = l.trim_start();
+        let l = l.strip_prefix("exec ").unwrap_or(l).trim_start();
+        let arg = |c: char| c.is_ascii_lowercase() || c == '-' || c == '"';
+        l.strip_prefix("tmux ").is_some_and(|rest| rest.starts_with(arg))
+    };
+    let shell = t.contains('\n') && t.lines().flat_map(|l| l.split([';', '|', '&'])).any(line);
+    program || t.starts_with("tmux -") || shell
+}
+
+/// The files a test binary's root `root` is built from: itself, and each
+/// module it loads by `mod <name>;`, with or without `#[path = ...]`.
+fn crate_files(root: &Path) -> Vec<PathBuf> {
+    let dir = root.parent().unwrap();
+    let src = std::fs::read_to_string(root).unwrap();
+    let mut files = vec![root.to_path_buf()];
+    let mut path = None;
+    for l in src.lines().map(str::trim) {
+        if let Some(p) = l.strip_prefix("#[path = \"").and_then(|p| p.strip_suffix("\"]")) {
+            path = Some(dir.join(p));
+        } else if let Some(m) = l.strip_prefix("mod ").and_then(|m| m.strip_suffix(';')) {
+            files.push(path.take().unwrap_or_else(|| dir.join(m).join("mod.rs")));
+        }
+    }
+    files
+}
+
+/// `fake/mod.rs`, read apart: every tmux it runs goes through its own
+/// `checked_tmux` first, so its text would name each binary that loads it.
+const FAKE: &str = "fake/mod.rs";
+
+/// What a binary's files say when they reach the check: a call to it, or the
+/// rig server whose start makes it.
+const CHECKS: [&str; 2] = ["fake::checked_tmux(", "fake::Server::new("];
+
+/// Binaries the scan names that run no real tmux, each with why.
+const ALLOWED: [(&str, &str); 1] = [(
+    "transcript.rs",
+    "writes a stub named tmux and runs it by its path, through COCKPIT_TMUX",
+)];
+
+/// #1066: every test binary that runs a real tmux reaches the helpers' check.
+/// Read from `tui/tests`: a binary is named where one of its files holds a
+/// string literal that [`runs_tmux`] and none of its files names a [`CHECKS`]
+/// entry. What it cannot see: a binary that reaches tmux only through the
+/// product, as the panel binaries and `files` do through `data::tmux` and
+/// `Theme::load` (`data::tmux` itself refuses a plain tmux that would reach the
+/// caller's server, [`the_product_refuses_a_plain_tmux_bound_for_the_callers_server`]);
+/// tmux by a path, as `Command::new("/usr/bin/tmux")`; a one-line shell string, as
+/// `["-c", "tmux ls"]`; a tmux name built at run time or by a helper from
+/// parts; a script read from a file; and a check named in a file but never
+/// reached.
+#[test]
+fn every_binary_that_runs_tmux_reaches_the_check() {
+    let tests = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
+    let mut missing = vec![];
+    let mut roots: Vec<PathBuf> = std::fs::read_dir(&tests).unwrap().map(|e| e.unwrap().path()).collect();
+    roots.retain(|p| p.extension().is_some_and(|e| e == "rs"));
+    roots.sort();
+    for root in &roots {
+        let name = root.file_name().unwrap().to_string_lossy().into_owned();
+        let files = crate_files(root);
+        let text = |f: &PathBuf| std::fs::read_to_string(f).unwrap();
+        let checks = files.iter().any(|f| CHECKS.iter().any(|c| text(f).contains(c)));
+        let runs = files.iter().filter(|f| !f.ends_with(FAKE)).find_map(|f| {
+            let src = text(f);
+            let hit = literals(&src).into_iter().find(|(at, t)| runs_tmux(&src, *at, t))?;
+            let line = src[..hit.0].lines().count();
+            Some(format!("{}:{line}", f.strip_prefix(&tests).unwrap().display()))
+        });
+        let allowed = ALLOWED.iter().any(|(f, _)| *f == name);
+        if let (Some(at), false, false) = (runs, checks, allowed) {
+            missing.push(at);
+        }
+    }
+    assert_eq!(missing, Vec::<String>::new(), "run a real tmux and never reach fake::checked_tmux");
+}
+
+/// The scan above, on sources with a known answer, so a reader that sees
+/// nothing cannot pass it. The shapes it reads, not every way to run tmux:
+/// [`every_binary_that_runs_tmux_reaches_the_check`] lists what it misses.
+#[test]
+fn the_scan_finds_the_shapes_it_reads_and_no_lookalike() {
+    let rows = [
+        ("a program", r#"Command::new("tmux").arg("-V")"#, true),
+        ("an argv value", r#"format!("tmux -L {}", s)"#, true),
+        ("a script line", r##""#!/bin/sh\ntmux -L x \"$@\"\n""##, true),
+        ("after a ;", r##""#!/bin/sh\nset -e; tmux -S y ls\n""##, true),
+        ("a command word", r##""#!/bin/sh\ntmux ls\n""##, true),
+        ("after exec", r##""#!/bin/sh\nexec tmux new-session -d\n""##, true),
+        ("a quoted command", r##""#!/bin/sh\nexec tmux \"$@\"\n""##, true),
+        ("a path part", r#"dir.join("tmux")"#, false),
+        ("a stub's path", r#"format!("{d}/bin/tmux")"#, false),
+        ("words in a message", r#"assert!(x, "tmux is not answering")"#, false),
+        ("a plugin folder", r#"".cache/tmux-cockpit/agents.json""#, false),
+        ("a comment", "// Command::new(\"tmux\")\n", false),
+    ];
+    for (row, src, want) in rows {
+        let got = literals(src).into_iter().any(|(at, t)| runs_tmux(src, at, &t));
+        assert_eq!(got, want, "{row}: {src}");
+    }
+}
+
+/// #1066: the folder the runner makes for this binary in /tmp holds tmux's own
+/// `tmux-<uid>` folder and the sockets in it, and nothing else, read while a rig
+/// server runs there.
+#[test]
+fn the_tmux_folder_holds_sockets_and_nothing_else() {
+    use std::os::unix::fs::FileTypeExt;
+    let dir = fake::checked_tmux();
+    let mut s = fake::Server::new(&format!("cr-{}", std::process::id()));
+    let cwd = std::env::temp_dir();
+    if !s.start(|c| {
+        c.args(["new-session", "-d", "-c"]).arg(&cwd).arg("sleep 30");
+    }) {
+        eprintln!("SKIP: no tmux on PATH");
+        return;
+    }
+    let mut odd = vec![];
+    for top in std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap()) {
+        let name = top.file_name().to_string_lossy().into_owned();
+        if !(name.starts_with("tmux-") && top.file_type().unwrap().is_dir()) {
+            odd.push(name);
+            continue;
+        }
+        for e in std::fs::read_dir(top.path()).unwrap().map(|e| e.unwrap()) {
+            if !e.file_type().unwrap().is_socket() {
+                odd.push(format!("{name}/{}", e.file_name().to_string_lossy()));
+            }
+        }
+    }
+    assert_eq!(odd, Vec::<String>::new(), "in {}", dir.display());
+}
+
+/// #1066: what a part 4 row may kill is a process whose TMUX names a rig socket of the
+/// child and which carries this binary's own TMUX_TMPDIR. Two `sleep`s of the row's own
+/// with the same socket name in TMUX: the one with another TMUX_TMPDIR, as a server
+/// another run leaked under a reused pid would have, is not taken.
+#[test]
+#[cfg(target_os = "linux")]
+fn a_process_with_another_tmux_tmpdir_is_never_taken_for_a_rigs() {
+    let own = fake::checked_tmux();
+    let child = 999_999_999u32;
+    let tmux = format!("{}/tmux-0/cockpit-decoy-{child},1,0", own.display());
+    let start = |tmpdir: &Path| {
+        let mut c = std::process::Command::new("/bin/sleep");
+        c.arg("30").env("TMUX", &tmux).env("TMUX_TMPDIR", tmpdir).spawn().unwrap()
+    };
+    let (mut ours, mut decoy) = (start(&own), start(Path::new("/elsewhere-1066")));
+    // the spawns have exec'd sleep once each reads as sleep in /proc: polled, 20 s at most
+    let comm = |p: u32| std::fs::read_to_string(format!("/proc/{p}/comm")).unwrap_or_default();
+    for tries in 0.. {
+        if comm(ours.id()).trim() == "sleep" && comm(decoy.id()).trim() == "sleep" {
+            break;
+        }
+        assert!(tries < 4000, "the two sleeps were not sleep after {tries} tries");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let left = fake::servers_left(child);
+    for c in [&mut ours, &mut decoy] {
+        c.kill().unwrap();
+        c.wait().unwrap();
+    }
+    assert_eq!((left.contains(&ours.id()), left.contains(&decoy.id())), (true, false), "{left:?}");
+}
+
+/// Set in the child of [`the_product_refuses_a_plain_tmux_bound_for_the_callers_server`]:
+/// that row then makes the product's read once and ends.
+const PRODUCT_READ: &str = "COCKPIT_TEST_PRODUCT_READ";
+
+/// How many calls the product's agent list read (`data::tmux`) made, in a child of row `me`
+/// started by hand as a bare start is, no TMUX, TMUX_TMPDIR, COCKPIT_TMUX or
+/// COCKPIT_TEST_TMUX_GUARD (so a debug build's own keying is on), then `set`, and
+/// two stubs first on PATH that record each call and open no socket: `tmux`, and `stub`.
+fn product_reads(s: &Path, me: &str, set: &[(&str, &str)]) -> usize {
+    let path = format!("{}:{}", s.display(), std::env::var("PATH").unwrap_or_default());
+    let mut c = std::process::Command::new(std::env::current_exe().unwrap());
+    for v in ["TMUX", "TMUX_TMPDIR", "COCKPIT_TMUX", "COCKPIT_TEST_TMUX_GUARD"] {
+        c.env_remove(v);
+    }
+    c.args(["--exact", me]).env("PATH", path.as_str());
+    c.env(PRODUCT_READ, "1")
+        .envs(set.iter().copied())
+        .stdin(std::process::Stdio::null());
+    let out = c.output().unwrap();
+    assert!(String::from_utf8_lossy(&out.stdout).contains("1 passed"), "{out:?}");
+    let mut calls = 0;
+    for f in ["tmux.calls", "stub.calls"] {
+        calls += std::fs::read_to_string(s.join(f)).unwrap_or_default().lines().count();
+        let _ = std::fs::remove_file(s.join(f));
+    }
+    calls
+}
+
+/// A case of the row below: its name, what its child has set, and the calls it wants.
+type Case<'a> = (&'a str, &'a [(&'a str, &'a str)], usize);
+
+/// #1089: under test the product's own tmux call refuses a plain `tmux` that would reach the
+/// caller's server, by TMUX or as the default socket in /tmp, and reads it as no value. It
+/// still runs the runner's case, a `-L` server, a stub, and any tmux with the guard lifted.
+#[test]
+fn the_product_refuses_a_plain_tmux_bound_for_the_callers_server() {
+    if std::env::var_os(PRODUCT_READ).is_some() {
+        let glob = cockpit_tui::data::tmux(&["show-option", "-gqv", "@cockpit_agents_glob"]);
+        assert_eq!(glob, None);
+        return;
+    }
+    let tag = format!("cockpit-product-read-{}", std::process::id());
+    let s = fake::Scratch::fresh(std::env::temp_dir().join(tag));
+    for name in ["tmux", "stub"] {
+        fake::write_exec(&s.0.join(name), "#!/bin/sh\necho \"$*\" >> \"$0.calls\"\nexit 1\n");
+    }
+    let (dir, none) = (s.0.display().to_string(), s.0.join("none").display().to_string());
+    let cases: [Case; 9] = [
+        ("the runner's: TMUX unset, a TMUX_TMPDIR folder", &[("TMUX_TMPDIR", &dir)], 1),
+        ("no TMUX_TMPDIR, a debug build with no variable", &[], 0),
+        ("no TMUX_TMPDIR, COCKPIT_TEST_TMUX_GUARD=1", &[("COCKPIT_TEST_TMUX_GUARD", "1")], 0),
+        ("a TMUX_TMPDIR that is no folder", &[("TMUX_TMPDIR", &none)], 0),
+        ("TMUX set", &[("TMUX_TMPDIR", &dir), ("TMUX", "/elsewhere/default,1,0")], 0),
+        ("a -L server, no TMUX_TMPDIR", &[("COCKPIT_TMUX", "tmux -L cockpit-read")], 1),
+        ("a -S socket, no TMUX_TMPDIR", &[("COCKPIT_TMUX", "tmux -S /nowhere-1089/s")], 1),
+        ("a stub by another name, no TMUX_TMPDIR", &[("COCKPIT_TMUX", "stub")], 1),
+        ("the guard lifted, no TMUX_TMPDIR", &[("COCKPIT_TEST_TMUX_GUARD", "0")], 1),
+    ];
+    let me = "the_product_refuses_a_plain_tmux_bound_for_the_callers_server";
+    let got: Vec<_> = cases.iter().map(|(n, set, _)| (*n, product_reads(&s.0, me, set))).collect();
+    assert_eq!(got, cases.map(|(n, _, want)| (n, want)));
+}
+
+/// Set in the child of [`the_board_is_told_once_that_a_read_was_refused`] to what it
+/// wants: `refused` or `ran`.
+const PRODUCT_NOTE: &str = "COCKPIT_TEST_PRODUCT_NOTE";
+
+/// The footer row of the board, `w` columns wide, showing `note` over no agents, as a
+/// board whose reads were refused draws it (#1089).
+fn footer_at(note: &str, w: u16) -> String {
+    let th = cockpit_tui::theme::Theme::fixed();
+    let v = cockpit_tui::board::View {
+        panes: &[],
+        pvs: &[],
+        th: &th,
+        sel: 0,
+        top: 0,
+        active: "",
+        note: Some(note),
+        help: None,
+        stale: None,
+        lost: false,
+        never: false,
+        list: None,
+        confirm: None,
+    };
+    let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, 8)).unwrap();
+    t.draw(|f| cockpit_tui::board::render(f, f.area(), &v)).unwrap();
+    let b = t.backend().buffer();
+    (0..w).map(|x| b[(x, 7)].symbol()).collect()
+}
+
+/// #1089: once `data::tmux` refused a read, the board's note names the guard and the way
+/// out, once per run, and a 40-column footer still shows the way out; where nothing was
+/// refused there is no note.
+#[test]
+fn the_board_is_told_once_that_a_read_was_refused() {
+    if let Some(want) = std::env::var_os(PRODUCT_NOTE) {
+        let read = || cockpit_tui::data::tmux(&["show-option", "-gqv", "@cockpit_agents_glob"]);
+        let _ = (read(), read());
+        let mut note = None;
+        let shown = cockpit_tui::board::note_guard(&mut note, std::time::Instant::now());
+        let said = [note.as_ref().map(|n| n.text.as_str()), cockpit_tui::data::guard_note()];
+        assert_eq!((shown, note.as_ref().and_then(|n| n.ttl)), (want == "refused", None));
+        // a board in a 40-column pane, the narrowest it draws, still shows the way out
+        let foot = note.as_ref().map(|n| footer_at(&n.text, 40));
+        let out = "COCKPIT_TEST_TMUX_GUARD=0 to lift";
+        assert!(foot.as_ref().is_none_or(|f| f.contains(out)), "40 columns: {foot:?}");
+        let text = "COCKPIT_TEST_TMUX_GUARD=0 to lift: no private tmux in COCKPIT_TMUX (-L or -S); \
+                    reads refused";
+        assert_eq!(said, if want == "refused" { [Some(text), None] } else { [None, None] });
+        return;
+    }
+    let s = fake::Scratch::fresh(std::env::temp_dir().join(format!("cockpit-note-{}", std::process::id())));
+    fake::write_exec(&s.0.join("tmux"), "#!/bin/sh\necho \"$*\" >> \"$0.calls\"\nexit 1\n");
+    let me = "the_board_is_told_once_that_a_read_was_refused";
+    let dir = s.0.display().to_string();
+    assert_eq!(product_reads(&s.0, me, &[(PRODUCT_NOTE, "refused")]), 0);
+    assert_eq!(product_reads(&s.0, me, &[(PRODUCT_NOTE, "ran"), ("TMUX_TMPDIR", &dir)]), 2);
+}
+
+/// Set in the child of [`push_and_the_tile_previews_send_the_callers_server_nothing`]: which
+/// product path it starts.
+const PRODUCT_PATH: &str = "COCKPIT_TEST_PRODUCT_PATH";
+
+/// #1089: push's wait loop and the board's tile previews run tmux on the argv themselves.
+/// Under the guard neither sends a caller's server anything: push registers no channel and
+/// starts no `wait-for`, and the previews read as failed captures. Started with `TMUX` set.
+#[test]
+fn push_and_the_tile_previews_send_the_callers_server_nothing() {
+    if let Some(path) = std::env::var_os(PRODUCT_PATH) {
+        if path == "push" {
+            // its wait loop runs on a thread of its own: up to 400 tries of 5 ms for the
+            // stub, first on PATH, to record a call, so an ungated loop is seen
+            let _push = cockpit_tui::push::Push::start();
+            let path = std::env::var("PATH").unwrap_or_default();
+            let calls = Path::new(path.split(':').next().unwrap_or_default()).join("tmux.calls");
+            for _ in 0..400 {
+                if calls.exists() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        } else {
+            let _ = cockpit_tui::board::previews(&["tmux".to_string()], &[("%1".to_string(), 5)]);
+        }
+        return;
+    }
+    let s = fake::Scratch::fresh(std::env::temp_dir().join(format!("cockpit-paths-{}", std::process::id())));
+    fake::write_exec(&s.0.join("tmux"), "#!/bin/sh\necho \"$*\" >> \"$0.calls\"\nexit 1\n");
+    let me = "push_and_the_tile_previews_send_the_callers_server_nothing";
+    let tmux = ("TMUX", "/elsewhere/default,1,0");
+    let push = product_reads(&s.0, me, &[(PRODUCT_PATH, "push"), tmux]);
+    let previews = product_reads(&s.0, me, &[(PRODUCT_PATH, "previews"), tmux]);
+    let dir = s.0.display().to_string();
+    let ran = product_reads(&s.0, me, &[(PRODUCT_PATH, "previews"), ("TMUX_TMPDIR", &dir)]);
+    assert_eq!((push, previews, ran), (0, 0, 1));
+}

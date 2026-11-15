@@ -212,7 +212,8 @@ impl Push {
         }));
         // A blank COCKPIT_TMUX lists nothing, and argv[0] would be "wait-for".
         let argv = tmux_argv();
-        if readonly() || argv.is_empty() {
+        // under the test guard, a caller's server gets no channel and no wait-for (#1089)
+        if readonly() || argv.is_empty() || crate::data::refuses(&argv) {
             return Self;
         }
         let chan = channel(std::process::id());

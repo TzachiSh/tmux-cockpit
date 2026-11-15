@@ -1,11 +1,16 @@
 //! Write's batched questions: a reply that asks up to 3 independent questions
 //! at once, answered one by one and sent back in one round.
+mod fake;
+
 use cockpit_tui::panel::app::{App, InputKind, Tile, View};
 use cockpit_tui::panel::capture::Capture;
 use cockpit_tui::panel::envelope::{Role, Turn};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 fn app() -> App {
+    // the prompts the call is built from are the shipped ones, never a developer's
+    // override under XDG_CONFIG_HOME (panel/prompts.rs:30, #948, #1066)
+    fake::fixed_env();
     let cap = Capture {
         name: "w".into(),
         cmd: "zsh".into(),
@@ -253,4 +258,12 @@ fn a_question_after_a_guess_keeps_the_batch_when_its_retry_is_cancelled() {
     key(&mut a, KeyCode::Esc);
     assert_eq!(state(&a), ("Q1?".into(), (1, 3), 3));
     assert_eq!(tail(&a, 1), [turn(Role::Assistant, "Q1? Options: a1 | b1")]);
+}
+
+/// #1066: this binary's tests, started again by hand with a canary XDG_CONFIG_HOME holding
+/// a prompt override for each prompt, as a caller who exports one starts them: no test opens or writes it.
+#[test]
+#[cfg(target_os = "linux")]
+fn the_tests_leave_the_callers_config_alone() {
+    assert_eq!(fake::tests_leave_alone(&["XDG_CONFIG_HOME"]), Vec::<String>::new());
 }

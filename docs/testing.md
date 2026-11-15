@@ -107,6 +107,20 @@ ubuntu-26.04 one today), starts the suite with no `TMUX_TMPDIR` and so runs
 the suite's own folder and the rows. The other legs
 set a private folder themselves and do not.
 
+### Running the tui tests
+
+Run them with `make tui-test` from the checkout: on the six targets
+`.cargo/config.toml` names, cargo's runner gives each test binary a tmux socket
+folder of its own and clears your session's variables. With
+`COCKPIT_TEST_CLAUDE_GUARD=0`, on another target (#1090), or with a test binary
+started directly, the binaries that run tmux refuse until `TMUX_TMPDIR` names a
+folder, since a rig's socket would otherwise land beside your own tmux server's.
+That was 26 of the 106 when #1066 merged. `tests/tui-refusers.sh` counts them
+again, on Linux, without reaching your tmux server: it runs them in a user and
+mount namespace, and where it gets none it says so and starts no binary.
+In `tui/` the refusal's own command runs them:
+`d=$(mktemp -d) && env -u TMUX -u TMUX_PANE -u TMUX_COCKPIT_DIR -u COCKPIT_LOG -u XDG_CACHE_HOME -u XDG_STATE_HOME TMUX_TMPDIR="$d" cargo test`.
+
 ### The tui tests' claude guard
 
 `cargo test` in `tui/` starts every test binary behind a guard against your own
@@ -200,6 +214,76 @@ USR1 never does either, since make and cargo catch USR1.
 Doctests are guarded under cargo 1.92 and not under 1.88, the two measured:
 1.88, the toolchain `make tui-test` uses, does not hand a doctest to a runner.
 The crate has no doctest today.
+
+### Your tmux session, log and cache
+
+A `cargo test` started from a shell inside your tmux session used to hand that
+session to its tests (#1066). The rigs put their servers' sockets beside your
+server's, since `-L` picks a socket's name and not its folder, and handed your
+`TMUX`, `TMUX_PANE` and `TMUX_COCKPIT_DIR`, your live plugin's folder, to those
+servers and their panes. Ten binaries read your server's `@cockpit_agents_glob`
+and theme through a plain `tmux`, and with `TMUX` unset that read goes to the
+default socket, your server's too. Rigs that set `HOME` wrote to an exported
+`COCKPIT_LOG`, used the agents cache under an exported `XDG_CACHE_HOME`, and
+read the hooks' subagent log and review folder under an exported
+`XDG_STATE_HOME`.
+
+The same runner now unsets `TMUX`, `TMUX_PANE`, `TMUX_COCKPIT_DIR`,
+`COCKPIT_LOG`, `XDG_CACHE_HOME` and `XDG_STATE_HOME` for each test binary, and
+sets `TMUX_TMPDIR` to a folder of its own whatever yours says, which it never
+uses or writes to. Every rig starts its server with TERM and HUP at their
+default and unblocked, since kill-server is a TERM the server sends itself and a
+HUP to each pane: a suite started with them blocked left servers and panes
+running (#1061).
+
+That folder is `/tmp/ct.<6>`, made by `mktemp -d`, so mode 700 and a name
+nobody can guess, before the binary starts: tmux puts its socket in `/tmp` when
+`TMUX_TMPDIR` names a folder that is not there. It is in `/tmp` and nowhere
+else, since a socket's path fails past 107 bytes (103 on macOS) and a TMPDIR
+runs long. It holds tmux's own `tmux-<uid>` folder and sockets, nothing else.
+Where `/tmp` takes no folder the binary is not started, and two lines say
+so: mktemp's own, then the runner's. After
+the binary it goes by `rmdir`, only if empty, also after a HUP, INT, QUIT or
+TERM to the runner, which waits for the binary first. A socket file left in
+it is one no rig removed, from a binary that died before its rigs were dropped
+or a server started past `fake::Server`: the runner names the folder and fails
+the binary with status 1, or with the binary's own status where that failed,
+after any report of the claude guard. A rig removes its server's socket file
+when it is dropped, even where kill-server failed, so a server that outlives its
+rig leaves no socket here for the runner to see. The rows that ask `/proc`
+catch it (`fake::assert_no_server_left`), and the runner ends no process. Killed by a signal it does not trap, KILL among
+them, the runner leaves its `/tmp/ct.<6>` folder behind, empty. Under a plain
+`cargo test` nothing names it. That folder is the cost. Nothing sweeps it, and
+it is safe to remove once no test is running. `make tui-test-clean` hands the
+runner a list in `COCKPIT_TEST_CLEAN_RUN_CT_LIST`, the gate's own bookkeeping,
+and each runner adds its folder's path to it in one write. After the run the
+gate names every listed folder still there and fails, and only those: another
+gate's folders are on another list. A list that takes no line costs a warning,
+never the binary. Exported by hand, the variable gets one path a binary added
+to the file it names.
+
+So every test binary runs as on CI. A plain `tmux` in it finds no server, and
+the cache and state folders resolve under whatever `HOME` the test has: for a
+test that sets no `HOME`, under yours, as on a box that never exported them. Three binaries
+write some of them in their own process, each under its own `ENV` lock: panel_env
+(`TMUX`, `TMUX_PANE`, `TMUX_TMPDIR`, `XDG_CACHE_HOME`), agents (`XDG_CACHE_HOME`)
+and data (`COCKPIT_LOG`). Their checks read those under that lock (#1089). The helpers only check: `fake::checked_tmux`
+before any tmux a helper runs, and `fake::checked_state` in each rig that sets
+`HOME`. The product's own tmux calls refuse too (#1089): under the test guard
+(`COCKPIT_TEST_TMUX_GUARD`, docs/tui.md) `data::refuses` lets `data::tmux`,
+push's start and the board's tile previews run a plain `tmux` only with `TMUX`
+unset and `TMUX_TMPDIR` an existing folder, and each reads anything else
+as no answer, so no test reads your server's agent list or theme, whether or not
+it reached a check first. Started without the runner from a shell that still carries them, or
+with no `TMUX_TMPDIR`, a test binary is refused in three lines: what is set or
+unset and what that would do, `make tui-test` and a bare `cargo test` that
+clear it, and the command for that binary alone. The cargo command and the
+binary's each make a folder with `mktemp -d` for `TMUX_TMPDIR` and leave it
+behind when the run ends. That
+happens with `COCKPIT_TEST_CLAUDE_GUARD=0` too, which execs the binary as it is
+and clears nothing, and on a target with no runner key (#1090).
+One write from a test thread stays: `panel_batch.rs` takes `fake::fixed_env`
+for `XDG_CONFIG_HOME`, as #948's binaries do.
 
 ## CI
 

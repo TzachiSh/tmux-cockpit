@@ -108,6 +108,8 @@ impl Rig {
         let o = Command::new(env!("CARGO_BIN_EXE_cockpit-tui"))
             .args(args)
             .envs(self.env.iter().map(|(k, v)| (*k, v.as_str())))
+            // HOME is the rig's, and so must be the agents cache under it (data/agents.rs:162, #1066)
+            .env_remove("XDG_CACHE_HOME")
             .output()
             .unwrap();
         assert_eq!(o.status.code(), Some(0), "{args:?}: {}", String::from_utf8_lossy(&o.stderr));
@@ -158,4 +160,12 @@ fn the_board_workdir_and_info_find_the_same_transcript() {
         assert_eq!(r.three(id), (want.clone(), want.clone(), want.clone()), "{id}");
     }
     assert_eq!(std::fs::read_to_string(r.d.join("claude-calls")).unwrap_or_default(), "");
+}
+
+/// #1066: this binary's tests, started again by hand with a canary XDG_CACHE_HOME holding
+/// an agents cache, as a caller who exports one starts them: no test opens or writes it.
+#[test]
+#[cfg(target_os = "linux")]
+fn the_tests_leave_the_callers_cache_alone() {
+    assert_eq!(fake::tests_leave_alone(&["XDG_CACHE_HOME"]), Vec::<String>::new());
 }

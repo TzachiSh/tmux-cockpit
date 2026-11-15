@@ -72,6 +72,26 @@ cp "${0%/*}/claude" "$d/claude" && : > "$d/reached" || {
     exit 1
 }
 
+# None of the caller's tmux session either, nor its tui log or agents cache
+# (#1066): from inside tmux a test's plain tmux reached its server, its rigs'
+# sockets went beside that server, and rigs used the caller's COCKPIT_LOG,
+# XDG_CACHE_HOME and XDG_STATE_HOME where they meant the files under their HOME.
+# The binary gets a socket folder of its own, mode 700, made before it starts,
+# since tmux puts a socket in /tmp when TMUX_TMPDIR names no folder. It is in
+# /tmp, never in a caller's TMUX_TMPDIR or TMPDIR: a socket's path fails past
+# 107 bytes, 103 on macOS, and those run long. It holds sockets and nothing else.
+t=$(mktemp -d /tmp/ct.XXXXXX) || {
+    echo "$me: error: no tmux folder in /tmp, the binary was not started binary=$1" >&2
+    exit 1
+}
+# make tui-test-clean's list of these folders, read after its run: bookkeeping
+# only, so a list that cannot be written fails nothing
+[ -z "${COCKPIT_TEST_CLEAN_RUN_CT_LIST-}" ] || printf '%s\n' "$t" 2>/dev/null >>"$COCKPIT_TEST_CLEAN_RUN_CT_LIST" ||
+    echo "$me: warning: the clean-run list takes no line, the binary runs on list=$COCKPIT_TEST_CLEAN_RUN_CT_LIST" >&2
+unset TMUX TMUX_PANE TMUX_COCKPIT_DIR COCKPIT_LOG XDG_CACHE_HOME XDG_STATE_HOME
+TMUX_TMPDIR=$t
+export TMUX_TMPDIR
+
 # From here the folder is removed by the line after the binary and by nothing
 # else. A signal this script does not trap ends it at once, and its binary may
 # run on. bash runs an EXIT trap on such a death and dash does not, so with the
@@ -90,6 +110,18 @@ elif [ -s "$d/reached" ]; then
     cat "$d/reached" >&2
     [ "$rc" -ne 0 ] || rc=1
 fi
+# Only if empty: a socket file left there is one no rig removed, from a binary
+# that died before its rigs were dropped or a server started past fake::Server.
+# It is named here, and it and its folder stay for a look. A rig's server that
+# outlived its kill-server has lost its socket file to the rig, and this line
+# cannot see it: rows that ask /proc do (fake::assert_no_server_left). This line
+# runs on every way out but a signal this script does not trap: one it traps
+# waits for the binary.
+rmdir "$t"/tmux-* 2>/dev/null
+rmdir "$t" 2>/dev/null || {
+    echo "$me: error: the binary left a tmux socket binary=$1 dir=$t" >&2
+    [ "$rc" -ne 0 ] || rc=1
+}
 rm -rf "$d"
 trap - HUP INT QUIT TERM
 

@@ -93,6 +93,8 @@ struct Rig {
     kids: Vec<Child>,
     sock: String,
     dir: PathBuf,
+    /// killed with its socket after the kids, before the folder goes
+    _server: fake::Server,
     // last, so it is released after Drop has taken the rest down
     _env: EnvLock,
 }
@@ -157,13 +159,7 @@ impl Drop for Rig {
             let _ = k.kill();
             let _ = k.wait();
         }
-        self.tmux(&["kill-server"]);
-        // kill-server never unlinks the socket, by any exit path; the suite
-        // learned that after ~850 dead inodes piled up (tests/run.sh, the note above
-        // kill_socks).
-        let uid = unsafe { libc::getuid() };
-        let tmp = std::env::var("TMUX_TMPDIR").unwrap_or_else(|_| "/tmp".into());
-        let _ = std::fs::remove_file(PathBuf::from(tmp).join(format!("tmux-{uid}")).join(&self.sock));
+        self._server.stop();
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
@@ -183,24 +179,19 @@ fn rig_env(tag: &str, env: EnvLock) -> Option<Rig> {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     // The server first: Push::start() lists its channel the moment it runs. Its
-    // kill-server is a TERM it sends itself, then a HUP to each pane, which starts
-    // with the server's mask. So the server starts with both at their default and
-    // unblocked: a suite started with them blocked left it and its pane running (#1061).
-    let mut server = Command::new("tmux");
-    fake::at_default(&mut server, &[libc::SIGTERM, libc::SIGHUP]);
-    let _ = server
-        .args(["-L", &sock, "-f", "/dev/null", "new-session", "-d", "-c"])
-        .arg(&dir)
-        .args(["-s", "t", "sleep 300"])
-        .env_remove("TMUX")
-        .env_remove("TMUX_PANE")
-        .output();
-    Some(Rig {
+    // start resets TERM and HUP, as every rig's does (fake::Server::start, #1061).
+    // Built first, so a start that panics still removes the folder.
+    let mut rig = Rig {
         kids: Vec::new(),
+        _server: fake::Server::new(&sock),
         sock,
         dir,
         _env: env,
-    })
+    };
+    rig._server.start(|c| {
+        c.args(["new-session", "-d", "-c"]).arg(&rig.dir).args(["-s", "t", "sleep 300"]);
+    });
+    Some(rig)
 }
 
 fn woke(log: &PathBuf, n: usize) -> bool {
@@ -446,22 +437,6 @@ fn usr1_unblocked(pid: u32, mut after_read: impl FnMut(Option<u64>)) -> bool {
     })
 }
 
-/// The processes left of the `push` rig of the test binary `pid`, read from /proc: its
-/// server, by the socket its command line names, and its pane, by the folder it runs
-/// in. Linux only, as are the rows that count them.
-fn left_by(pid: u32) -> usize {
-    let sock = format!("-L\0cockpit-tui-push-{pid}\0");
-    let dir = format!("/cockpit-tui-push-{pid}");
-    let left = |e: &std::fs::DirEntry| {
-        let line = std::fs::read(e.path().join("cmdline")).unwrap_or_default();
-        let cwd = std::fs::read_link(e.path().join("cwd")).unwrap_or_default();
-        let cwd = cwd.to_string_lossy();
-        let in_dir = cwd.ends_with(&dir) || cwd.ends_with(&format!("{dir} (deleted)"));
-        String::from_utf8_lossy(&line).contains(&sock) || in_dir
-    };
-    std::fs::read_dir("/proc").map_or(0, |d| d.flatten().filter(left).count())
-}
-
 /// #1061: the two rows that signal a board, in this binary started again with TERM, HUP
 /// and USR1 ignored and blocked. Each holds there by its own reset, and the rig's server,
 /// told to go by a TERM it sends itself, is gone afterwards with its pane.
@@ -473,7 +448,9 @@ fn the_signalling_rows_hold_in_a_binary_handed_an_ignored_and_blocked_term_hup_a
         "a_cockpit_tui_survives_sigusr1",
     ];
     let pid = fake::rows_pass_handed(&rows, &[libc::SIGTERM, libc::SIGHUP, libc::SIGUSR1]);
-    assert!(until(|| left_by(pid) == 0), "the child's rig left its server or its pane");
+    // as every rig's row does: a red run ends what the child left, each pid read again
+    // as the child's just before the kill (fake::assert_no_server_left, #1066)
+    fake::assert_no_server_left(pid);
 }
 
 /// A child this process forked, killed and reaped when this is dropped, on every path

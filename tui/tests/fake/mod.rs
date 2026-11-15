@@ -9,9 +9,11 @@
 //! writes the file that runs, and this process never opens that file for writing.
 //!
 //! Also the shared [`Scratch`] guard (#544), the one environment a test
-//! binary can take for itself ([`fixed_env`], #957), and the `claude` a rig
-//! answers a lookup with ([`rig_path`], #972).
-use std::os::unix::fs::PermissionsExt;
+//! binary can take for itself ([`fixed_env`], #957), the `claude` a rig
+//! answers a lookup with ([`rig_path`], #972), the rigs' private tmux servers
+//! ([`Server`], #1066), and the waits for a pane's start-up ([`held_pane`],
+//! [`named_pane`] and [`settle`], #1056).
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Once;
@@ -83,6 +85,9 @@ pub const NO_HOME: &str = "/sys/absent-948";
 /// module and takes no fixed environment leaves these unused, hence the allows.
 #[allow(dead_code)]
 pub fn fixed_env() {
+    // the product's plain tmux reads the caller's server where the runner did
+    // not clear its session: refused, in every test that comes through here (#1066)
+    checked_tmux();
     static SET: Once = Once::new();
     SET.call_once(|| {
         // SAFETY: holds for each test binary that calls this, one by one. std's
@@ -397,6 +402,502 @@ pub fn assert_claude_is_the_rigs(dir: &Path) {
     }
 }
 
+// --- the rigs' private tmux servers (#1066) ---
+
+/// The variables of a caller's tmux session: the server and pane a plain
+/// `tmux` reaches, and the live plugin's folder.
+#[allow(dead_code)]
+const SESSION: [&str; 3] = ["TMUX", "TMUX_PANE", "TMUX_COCKPIT_DIR"];
+
+/// What a refusal hands the reader to paste: a folder for TMUX_TMPDIR and what
+/// the runner clears, ahead of the command.
+#[allow(dead_code)]
+const CLEARED: &str = "d=$(mktemp -d) && env -u TMUX -u TMUX_PANE -u TMUX_COCKPIT_DIR -u COCKPIT_LOG \
+                       -u XDG_CACHE_HOME -u XDG_STATE_HOME TMUX_TMPDIR=\"$d\"";
+
+/// The message a check refuses with, three lines: what is set or unset and what
+/// that would do, the gate and a bare cargo run that clear it, and this binary
+/// alone. cargo's runner clears these for a test binary on the six targets
+/// .cargo/config.toml names (#1066), and clears nothing with
+/// COCKPIT_TEST_CLAUDE_GUARD=0 or on another target (#1090), so a run there
+/// meets this from any shell: TMUX_TMPDIR is unset in one outside tmux too.
+#[allow(dead_code)]
+fn refusal(what: &str, why: &[String], risk: &str) -> String {
+    let exe = std::env::current_exe().unwrap();
+    format!(
+        "{what} refused (#1066): {}. {risk}\n\
+         Run make tui-test from the checkout: it clears these on the six targets \
+         .cargo/config.toml names (another: #1090). Or, in tui/: {CLEARED} cargo test\n\
+         This binary alone: {CLEARED} {}",
+        why.join(", "),
+        sh_quoted(&exe.to_string_lossy())
+    )
+}
+
+/// `s` as one word for sh, in single quotes, each `'` in it closed, escaped and
+/// reopened: a checkout's path may hold a space (#997) or a quote.
+#[allow(dead_code)]
+fn sh_quoted(s: &str) -> String {
+    format!("'{}'", s.replace('\'', r"'\''"))
+}
+
+/// The variables of `vars` that are set, as one reason, or none.
+#[allow(dead_code)]
+fn still_set(vars: &[&str]) -> Vec<String> {
+    let set: Vec<&str> = vars.iter().copied().filter(|v| std::env::var_os(v).is_some()).collect();
+    if set.is_empty() {
+        vec![]
+    } else {
+        vec![format!("{} set", set.join(", "))]
+    }
+}
+
+/// The line [`checked_tmux`] refuses with, or `None` where this binary may run
+/// tmux: none of [`SESSION`] set, and TMUX_TMPDIR an existing folder.
+#[allow(dead_code)]
+pub fn tmux_refusal() -> Option<String> {
+    let mut why = still_set(&SESSION);
+    let mut risk = vec![];
+    if !why.is_empty() {
+        risk.push("A plain tmux in a test would reach your own tmux server.");
+    }
+    let folder = match std::env::var_os("TMUX_TMPDIR").map(PathBuf::from) {
+        None => Some("TMUX_TMPDIR not set".to_string()),
+        Some(f) if !f.is_dir() => Some(format!("TMUX_TMPDIR {} no folder", f.display())),
+        Some(_) => None,
+    };
+    if let Some(f) = folder {
+        why.push(f);
+        risk.push("A rig's tmux socket would land beside your own tmux server's.");
+    }
+    (!why.is_empty()).then(|| refusal("tmux", &why, &risk.join(" ")))
+}
+
+/// For a rig that sets HOME and reaches the product's log, agents cache or state:
+/// red with [`refusal`]'s line where COCKPIT_LOG, XDG_CACHE_HOME or XDG_STATE_HOME
+/// is still set, as the runner unsets all three (#1066). A caller's log took the
+/// rig's lines (data.rs:58), a caller's cache folder held the agents cache
+/// (data/agents.rs:162), and a caller's state folder the hooks' subagent log
+/// (data/subagents.rs:525) and the review folder (data/info.rs:108), each in
+/// place of the one under the rig's HOME.
+#[allow(dead_code)]
+pub fn checked_state() {
+    let why = still_set(&["COCKPIT_LOG", "XDG_CACHE_HOME", "XDG_STATE_HOME"]);
+    if !why.is_empty() {
+        let risk = "A rig would write your own log, agents cache or state, not the ones under its HOME.";
+        panic!("{}", refusal("the caller's state", &why, risk));
+    }
+}
+
+/// `test` of this binary, alone, in a child started by hand with `set` in its
+/// environment and no runner between it and this one: how it ended and all it
+/// wrote, for a row that holds a refusal word for word. Not the row's own name.
+#[allow(dead_code)]
+pub fn run_by_hand(test: &str, set: &[(&str, &str)]) -> (Option<i32>, String) {
+    let mut c = Command::new(std::env::current_exe().unwrap());
+    c.args(["--exact", test])
+        .envs(set.iter().copied())
+        .stdin(std::process::Stdio::null());
+    let out = c.output().unwrap();
+    let said = String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr);
+    (out.status.code(), said)
+}
+
+/// What a plain `tmux` got from this binary's tests, every test but `skip`, started by
+/// hand with no TMUX_TMPDIR, as on a target with no runner key (#1090) or with the
+/// claude guard at 0: one argv per call, from a stub `tmux` first on PATH that exits 1
+/// and opens no socket. A plain tmux that gets past the product's own refusal
+/// (`data::tmux`, #1089) shows here. Started that way for real, it would reach the
+/// default socket in /tmp/tmux-<uid>, beside the caller's server (#1066).
+#[allow(dead_code)]
+pub fn unchecked_tmux_calls(skip: &str) -> Vec<String> {
+    let s = Scratch::fresh(std::env::temp_dir().join(format!("cockpit-unchecked-{}", std::process::id())));
+    write_exec(&s.join("tmux"), "#!/bin/sh\necho \"$*\" >> \"$0.calls\"\nexit 1\n");
+    let path = format!("{}:{}", s.display(), std::env::var("PATH").unwrap_or_default());
+    let mut c = Command::new(std::env::current_exe().unwrap());
+    // as a bare start: cargo's COCKPIT_TEST_TMUX_GUARD=1 removed, so a debug build's own
+    // keying is what refuses (#1089)
+    c.args(["--skip", skip])
+        .env_remove("TMUX_TMPDIR")
+        .env_remove("COCKPIT_TEST_TMUX_GUARD");
+    c.env("PATH", path);
+    let out = c.stdin(std::process::Stdio::null()).output().unwrap();
+    let said = String::from_utf8_lossy(&out.stdout);
+    assert!(said.contains("test result:"), "the child ran no tests: {said}");
+    let calls = std::fs::read_to_string(s.join("tmux.calls")).unwrap_or_default();
+    calls.lines().map(String::from).collect()
+}
+
+/// This binary's socket folder, TMUX_TMPDIR, which the runner made for it with
+/// TMUX, TMUX_PANE and TMUX_COCKPIT_DIR cleared (#1066). Red with
+/// [`tmux_refusal`]'s line before any tmux runs where that does not hold: from
+/// inside a tmux session a plain `tmux` reached the caller's server and a rig's
+/// socket went beside it, and tmux 3.8 puts a socket in /tmp when TMUX_TMPDIR
+/// names no folder. In a binary whose rows set these variables, call it under that
+/// binary's lock: outside it, a sibling's value passes the check (#1089).
+#[allow(dead_code)]
+pub fn checked_tmux() -> PathBuf {
+    if let Some(why) = tmux_refusal() {
+        panic!("{why}");
+    }
+    PathBuf::from(std::env::var_os("TMUX_TMPDIR").unwrap())
+}
+
+/// A rig's private tmux server on the socket `sock`, named by `-L`, never the
+/// user's (AGENTS.md), in the folder [`checked_tmux`] holds. Every rig starts
+/// its server through [`Server::start`].
+/// Dropped, it kills the server and removes its socket file, which kill-server
+/// leaves behind by any exit path (tests/run.sh, the note above kill_socks).
+#[allow(dead_code)]
+pub struct Server {
+    pub sock: String,
+    /// the socket file, asked of the server once it runs; empty before
+    path: String,
+    /// whether a start was run: with none there is nothing to kill, and a kill-server
+    /// would make tmux's own folder in the socket folder for nothing
+    started: bool,
+}
+
+#[allow(dead_code)]
+impl Server {
+    /// The guard of `sock`, with no server yet.
+    pub fn new(sock: &str) -> Server {
+        Server {
+            sock: sock.to_string(),
+            path: String::new(),
+            started: false,
+        }
+    }
+
+    /// Starts the server: `tmux -L <sock> -f /dev/null`, then what `with` adds,
+    /// the command that makes its first session. Whether that ran and exited 0.
+    /// A start that ran and failed is red with its status and stderr, so a rig
+    /// names why (#1084). `false` where tmux is not there to run.
+    pub fn start(&mut self, with: impl FnOnce(&mut Command)) -> bool {
+        checked_tmux();
+        let mut c = Command::new("tmux");
+        c.args(["-L", &self.sock, "-f", "/dev/null"]);
+        // kill-server is a TERM the server sends itself, then a HUP to each pane,
+        // which starts with the server's mask: both at their default and unblocked,
+        // so a suite started with them blocked leaves no server or pane (#1061, #1066)
+        at_default(&mut c, &[libc::SIGTERM, libc::SIGHUP]);
+        with(&mut c);
+        self.started = true;
+        let Ok(o) = c.output() else { return false };
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert!(o.status.success(), "the server on {} did not start: {}: {err}", self.sock, o.status);
+        self.path = tmux_on(&self.sock, &["display-message", "-p", "#{socket_path}"]);
+        true
+    }
+}
+
+impl Server {
+    /// Kills the server and removes its socket file, once. A rig calls it before it
+    /// removes the folder its panes run in, so the server ends, and kill-server's HUP
+    /// reaches each pane, while that folder is still there (#1066).
+    pub fn stop(&mut self) {
+        if !std::mem::take(&mut self.started) {
+            return;
+        }
+        let _ = Command::new("tmux").args(["-L", &self.sock, "kill-server"]).output();
+        if self.path.ends_with(&self.sock) {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
+impl Drop for Server {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+/// A stand-in for the caller's own tmux server (#1066): a `-S` server in a
+/// folder of its own, `<at>/s/tmux-<uid>/default`, so that a plain `tmux` finds it
+/// both ways it finds the caller's, by TMUX ([`StandIn::tmux`]) and as the
+/// default socket of TMUX_TMPDIR `<at>/s`. It holds a hostile agent list, one
+/// that names ssh and the shells, and a hostile theme, and logs every command a
+/// client sends it (`-vv`, in `at`). Never the live server: its socket is a path
+/// under `at`, started with none of the caller's session. Killed when dropped.
+#[allow(dead_code)]
+pub struct StandIn {
+    at: PathBuf,
+    sock: PathBuf,
+    /// TMUX, as tmux sets it in a pane of this server
+    pub tmux: String,
+    pub pane: String,
+}
+
+#[allow(dead_code)]
+impl StandIn {
+    /// `None` where tmux is not there to run.
+    pub fn start(at: &Path) -> Option<StandIn> {
+        // SAFETY: getuid has no preconditions.
+        let uid = unsafe { libc::getuid() };
+        let folder = at.join("s").join(format!("tmux-{uid}"));
+        std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&folder).unwrap();
+        let mut s = StandIn {
+            at: at.to_path_buf(),
+            sock: folder.join("default"),
+            tmux: String::new(),
+            pane: String::new(),
+        };
+        let hostile = "|bash|sh|dash|zsh|fish|ssh|mosh|vim|nvim|less|man|claude|codex|";
+        let mut c = s.command();
+        c.args(["-vv", "-f", "/dev/null", "new-session", "-d", "-c"])
+            .arg(at)
+            .arg("sleep 300");
+        c.args([";", "set-option", "-s", "theme", "light"]);
+        c.args([";", "set-option", "-g", "@cockpit_agents_glob", hostile]);
+        for role in ["@thm_fg", "@thm_dim", "@thm_error", "@thm_sel"] {
+            c.args([";", "set-option", "-g", role, "#ff00ff"]);
+        }
+        let o = c.output().ok()?;
+        assert!(
+            o.status.success(),
+            "the stand-in did not start: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+        let ask = |what: &str| {
+            let o = s.command().args(["display-message", "-p", what]).output().unwrap();
+            String::from_utf8_lossy(&o.stdout).trim().to_string()
+        };
+        let (pid, pane) = (ask("#{pid}"), ask("#{pane_id}"));
+        s.tmux = format!("{},{pid},0", s.sock.display());
+        s.pane = pane;
+        Some(s)
+    }
+
+    /// The folder to hand on as TMUX_TMPDIR, where its socket is the default.
+    pub fn folder(&self) -> PathBuf {
+        self.at.join("s")
+    }
+
+    fn command(&self) -> Command {
+        let mut c = Command::new("tmux");
+        c.arg("-S").arg(&self.sock).current_dir(&self.at);
+        c.env_remove("TMUX").env_remove("TMUX_PANE").env_remove("TMUX_COCKPIT_DIR");
+        c
+    }
+
+    /// The commands its clients have sent it so far, read from its `-vv` log.
+    pub fn commands(&self) -> usize {
+        let logs = std::fs::read_dir(&self.at).unwrap().flatten().map(|e| e.path());
+        let name = |p: &PathBuf| p.file_name().unwrap().to_string_lossy().starts_with("tmux-server-");
+        let text = logs.filter(name).map(|p| std::fs::read_to_string(p).unwrap_or_default());
+        let line = |l: &str| l.contains(" message: client-") && l.contains(" command: ");
+        text.map(|t| t.lines().filter(|l| line(l)).count()).sum()
+    }
+}
+
+impl Drop for StandIn {
+    fn drop(&mut self) {
+        let _ = self.command().arg("kill-server").output();
+    }
+}
+
+/// Whether the process `p` is a server or a pane of a rig of this binary started again
+/// as `pid` ([`rows_pass_handed`]), read from /proc/<p> alone. A rig's socket is named
+/// `cockpit-<what>-<pid>`, the pid of the binary that started it, here that child of
+/// this row's own. A server is a `tmux` whose `-L` names such a socket, a pane a process
+/// whose TMUX, which tmux sets for each pane, names one. Both must also carry this
+/// binary's own TMUX_TMPDIR, which the child had from it and handed to every server
+/// and pane, so a server another run leaked under a reused pid is never taken.
+#[allow(dead_code)]
+fn rig_process(p: u32, pid: u32) -> bool {
+    let at = Path::new("/proc").join(p.to_string());
+    let rigs = |sock: &str| sock.starts_with("cockpit-") && sock.ends_with(&format!("-{pid}"));
+    let own = std::env::var_os("TMUX_TMPDIR").map(|d| {
+        let mut v = b"TMUX_TMPDIR=".to_vec();
+        v.extend_from_slice(std::os::unix::ffi::OsStrExt::as_bytes(d.as_os_str()));
+        v
+    });
+    let line = std::fs::read(at.join("cmdline")).unwrap_or_default();
+    let args: Vec<String> = line.split(|b| *b == 0).map(|a| String::from_utf8_lossy(a).into_owned()).collect();
+    let server = args.first().is_some_and(|a| a.rsplit('/').next() == Some("tmux")) && args.windows(2).any(|w| w[0] == "-L" && rigs(&w[1]));
+    let env = std::fs::read(at.join("environ")).unwrap_or_default();
+    let vars: Vec<&[u8]> = env.split(|b| *b == 0).collect();
+    let pane = vars.iter().filter_map(|v| v.strip_prefix(b"TMUX=")).any(|v| {
+        let sock = String::from_utf8_lossy(v).split(',').next().unwrap_or_default().to_string();
+        rigs(sock.rsplit('/').next().unwrap_or_default())
+    });
+    let ours = own.is_some_and(|o| vars.contains(&o.as_slice()));
+    (server || pane) && ours
+}
+
+/// The processes [`rig_process`] takes for `pid`, read from /proc. Linux only, as are
+/// the rows that ask.
+#[allow(dead_code)]
+pub fn servers_left(pid: u32) -> Vec<u32> {
+    let Ok(d) = std::fs::read_dir("/proc") else { return vec![] };
+    let pids = d.flatten().filter_map(|e| e.file_name().to_str()?.parse::<u32>().ok());
+    pids.filter(|p| rig_process(*p, pid)).collect()
+}
+
+/// For a row that started this binary again as `pid`: no server and no pane of
+/// its rigs is left. Polled for 10 s, since kill-server ends a server and its
+/// panes after the command returns. A red run ends what it found with KILL: each
+/// pid is read again, /proc/<pid> alone, by [`rig_process`] just before its own
+/// kill, so it names them and leaves none, and signals no process it did not just
+/// verify.
+#[allow(dead_code)]
+pub fn assert_no_server_left(pid: u32) {
+    let step = std::time::Duration::from_millis(20);
+    for _ in 0..500 {
+        if servers_left(pid).is_empty() {
+            return;
+        }
+        std::thread::sleep(step);
+    }
+    let left = servers_left(pid);
+    for p in &left {
+        if rig_process(*p, pid) {
+            // SAFETY: kill only signals; `p` was read again as this run's just above.
+            unsafe { libc::kill(*p as libc::pid_t, libc::SIGKILL) };
+        }
+    }
+    panic!("the child {pid} left its rigs' servers or panes, now killed: {left:?}");
+}
+
+/// cargo's runner for this repo, which a row starts itself to show what it hands
+/// a test binary (.cargo/config.toml, #973, #1066).
+#[allow(dead_code)]
+const RUNNER: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/claude-guard/runner");
+
+/// This binary's tests but `skip`, started again through the runner beside a
+/// [`StandIn`] for the caller's own tmux server, with TMUX, TMUX_PANE and
+/// TMUX_TMPDIR in the runner's environment naming it, as from a shell inside
+/// that session (#1066). Red where a test fails there, or where any test sent
+/// the stand-in a command. `skip` is the calling row's own name, so its child
+/// starts no child of its own.
+#[allow(dead_code)]
+pub fn tests_beside_a_server(skip: &str) {
+    let at = Scratch::fresh(std::env::temp_dir().join(format!("cstand-{}", std::process::id())));
+    let Some(s) = StandIn::start(&at.join("s")) else {
+        eprintln!("SKIP: no tmux on PATH");
+        return;
+    };
+    let mut c = Command::new(RUNNER);
+    c.arg(std::env::current_exe().unwrap()).args(["--skip", skip, "--exact"]);
+    c.env("TMUX", &s.tmux).env("TMUX_PANE", &s.pane).env("TMUX_TMPDIR", s.folder());
+    c.env("TMUX_COCKPIT_DIR", at.join("plugin"));
+    let before = s.commands();
+    let out = c.stdin(std::process::Stdio::null()).output().unwrap();
+    let got = s.commands() - before;
+    assert!(out.status.success(), "{}", told(&format!("all but {skip}"), &out));
+    assert_eq!(got, 0, "the tests sent the caller's server {got} commands");
+}
+
+/// Set in the child of a row that starts this whole binary again, so that rows
+/// of that kind return at once there rather than start children of their own.
+#[allow(dead_code)]
+const WHOLE_CHILD: &str = "COCKPIT_TEST_WHOLE_CHILD";
+
+/// Whether this binary runs as the child of [`tests_leave_alone`]: a row of
+/// that kind then has nothing to do.
+#[allow(dead_code)]
+pub fn in_a_whole_child() -> bool {
+    std::env::var_os(WHOLE_CHILD).is_some()
+}
+
+/// The files the product's reading names under each of these variables, made
+/// in a canary so that a read of one is an open the watch sees: a lookup of a
+/// path that is not there makes no event. data/agents.rs:162 and
+/// panel/prompts.rs:30.
+#[allow(dead_code)]
+fn canary_files(var: &str) -> &'static [&'static str] {
+    match var {
+        "XDG_CACHE_HOME" => &["tmux-cockpit/agents.json"],
+        "XDG_CONFIG_HOME" => &[
+            "tmux-cockpit/prompts/ask-code.txt",
+            "tmux-cockpit/prompts/explain.txt",
+            "tmux-cockpit/prompts/fix.txt",
+            "tmux-cockpit/prompts/write.txt",
+            "tmux-cockpit/prompts/write.examples.txt",
+            "tmux-cockpit/prompts/write.explore.txt",
+        ],
+        _ => &[],
+    }
+}
+
+/// This binary's tests, started again with each of `vars` set to a canary of
+/// this call's own: COCKPIT_LOG a file, any other a folder holding the files
+/// [`canary_files`] names. An inotify watch on every canary folder sees each
+/// open, write, create, rename and delete under them while the child runs. Red
+/// where a test fails there. Returns what the child touched, as `<var>: <path>`:
+/// nothing, where no test reads or writes the caller's copy (#1066). In that
+/// child it returns nothing at once, so the row that calls it starts no other.
+/// Linux only.
+#[cfg(target_os = "linux")]
+#[allow(dead_code)]
+pub fn tests_leave_alone(vars: &[&str]) -> Vec<String> {
+    if in_a_whole_child() {
+        return vec![];
+    }
+    // one folder per call: two such rows of one binary run at once
+    static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let at = std::env::temp_dir().join(format!("ccan-{}-{n}", std::process::id()));
+    let at = Scratch::fresh(at);
+    let mut c = Command::new(std::env::current_exe().unwrap());
+    c.env(WHOLE_CHILD, "1");
+    let mut folders = vec![];
+    for v in vars {
+        let dir = at.join(v);
+        std::fs::create_dir(&dir).unwrap();
+        for f in canary_files(v) {
+            std::fs::create_dir_all(dir.join(f).parent().unwrap()).unwrap();
+            std::fs::write(dir.join(f), "canary #1066 {{\n").unwrap();
+        }
+        c.env(v, if *v == "COCKPIT_LOG" { dir.join("log") } else { dir.clone() });
+        let walk = |d: &Path| std::fs::read_dir(d).unwrap().flatten().map(|e| e.path());
+        let mut todo = vec![dir.clone()];
+        while let Some(d) = todo.pop() {
+            todo.extend(walk(&d).filter(|p| p.is_dir()));
+            folders.push((v.to_string(), d));
+        }
+    }
+    // SAFETY: inotify_init1 takes flags only.
+    let fd = unsafe { libc::inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC) };
+    assert!(fd >= 0, "inotify_init1: {}", std::io::Error::last_os_error());
+    let mask = libc::IN_OPEN | libc::IN_MODIFY | libc::IN_CREATE | libc::IN_MOVED_TO | libc::IN_DELETE;
+    let mut watched = std::collections::HashMap::new();
+    for (v, d) in &folders {
+        let path = std::ffi::CString::new(d.to_str().unwrap()).unwrap();
+        // SAFETY: `fd` is this call's inotify, `path` a NUL-terminated folder name.
+        let wd = unsafe { libc::inotify_add_watch(fd, path.as_ptr(), mask) };
+        assert!(wd >= 0, "inotify_add_watch {}: {}", d.display(), std::io::Error::last_os_error());
+        watched.insert(wd, (v.clone(), d.clone()));
+    }
+    let out = c.stdin(std::process::Stdio::null()).output().unwrap();
+    assert!(out.status.success(), "{}", told("the whole binary beside canaries", &out));
+    let mut touched = vec![];
+    let mut buf = [0u8; 65536];
+    loop {
+        // SAFETY: `buf` is ours and its length is passed.
+        let n = unsafe { libc::read(fd, buf.as_mut_ptr().cast(), buf.len()) };
+        if n <= 0 {
+            break;
+        }
+        let mut i = 0;
+        while i < n as usize {
+            // SAFETY: the kernel writes whole inotify_event records into `buf`.
+            let e = unsafe { std::ptr::read_unaligned(buf[i..].as_ptr().cast::<libc::inotify_event>()) };
+            let name = &buf[i + 16..i + 16 + e.len as usize];
+            let name = String::from_utf8_lossy(name).trim_end_matches('\0').to_string();
+            if let Some((v, d)) = watched.get(&e.wd) {
+                touched.push(format!("{v}: {}", d.join(name).strip_prefix(&at.0).unwrap().display()));
+            }
+            i += 16 + e.len as usize;
+        }
+    }
+    // SAFETY: closes this call's own fd.
+    unsafe { libc::close(fd) };
+    touched.sort();
+    touched.dedup();
+    touched
+}
+
 // --- pane start-up waits for the basket_claude tests (#1056) ---
 
 /// One tmux command on the private server `sock`, its output trimmed.
@@ -418,8 +919,7 @@ pub fn held_pane(sock: &str, dir: &Path, name: &str) -> String {
         std::fs::copy("/bin/bash", &bin).unwrap();
     }
     let hold = dir.join("held");
-    std::fs::write(&hold, "#!/bin/sh\nsleep 0.3\nexec \"$@\"\n").unwrap();
-    std::fs::set_permissions(&hold, std::fs::Permissions::from_mode(0o755)).unwrap();
+    write_exec(&hold, "#!/bin/sh\nsleep 0.3\nexec \"$@\"\n");
     let cmd = format!("{} {} -c 'sleep 300; :'", hold.display(), bin.display());
     let d = dir.display().to_string();
     tmux_on(sock, &["new-window", "-d", "-P", "-F", "#{pane_id}", "-c", &d, &cmd])
@@ -428,19 +928,18 @@ pub fn held_pane(sock: &str, dir: &Path, name: &str) -> String {
 /// As [`held_pane`], but the start script first writes `name` into its own
 /// comm, so for its 0.3 s comm reads `name` while argv[0] is still the script's
 /// shell: the gap inside an exec, where the kernel sets comm before the argv
-/// tmux reads (#1056). Red at once where /proc's comm cannot be written, as the
-/// row would then hold no such gap and pass for nothing. Where there is no /proc
-/// it says SKIP and starts a [`held_pane`], since `ps` gives no argv[0] to check.
+/// tmux reads (#1056). Where a process cannot write its own comm, the row would
+/// hold no such gap: it says SKIP with the cause ([`comm_skip`]) and starts a
+/// [`held_pane`]. So it does where there is no /proc, as `ps` gives no argv[0].
 #[allow(dead_code)]
 pub fn named_pane(sock: &str, dir: &Path, name: &str) -> String {
     if !Path::new("/proc/self").is_dir() {
         eprintln!("SKIP: no /proc, so no comm to set ahead of argv[0]; a held row instead");
         return held_pane(sock, dir, name);
     }
-    // the kernel's rule for the script's own write, tried on this thread's name
-    let me = std::fs::read_to_string("/proc/thread-self/comm").unwrap_or_default();
-    if let Err(e) = std::fs::write("/proc/thread-self/comm", me.trim_end()) {
-        panic!("/proc/thread-self/comm cannot be written ({e}): no comm-ahead row here");
+    if let Some(skip) = comm_skip(Path::new("/proc/thread-self/comm")) {
+        eprintln!("{skip}");
+        return held_pane(sock, dir, name);
     }
     let bin = dir.join(name);
     // a copy a pane already runs cannot be written over (ETXTBSY)
@@ -450,14 +949,27 @@ pub fn named_pane(sock: &str, dir: &Path, name: &str) -> String {
     let named = dir.join("named");
     let body = concat!(
         "#!/bin/sh\n",
-        "printf %s \"${1##*/}\" > /proc/$$/comm || exit 3\n",
+        // a failed write is said on the pane's screen, which settle's red prints
+        "printf %s \"${1##*/}\" > /proc/$$/comm ||\n",
+        "    { echo \"$0: no comm write\"; exec sleep 300; }\n",
         "sleep 0.3\nexec \"$@\"\n"
     );
-    std::fs::write(&named, body).unwrap();
-    std::fs::set_permissions(&named, std::fs::Permissions::from_mode(0o755)).unwrap();
+    write_exec(&named, body);
     let cmd = format!("{} {} -c 'sleep 300; :'", named.display(), bin.display());
     let d = dir.display().to_string();
     tmux_on(sock, &["new-window", "-d", "-P", "-F", "#{pane_id}", "-c", &d, &cmd])
+}
+
+/// Where a process cannot write its own comm at `comm`, the SKIP line that says
+/// so with the error, else `None`. Tried on this thread's own name, under the
+/// kernel's rule the start script's write meets too. A box that mounts /proc
+/// read-only, or forbids the write by policy, holds no comm-ahead gap (#1068).
+#[allow(dead_code)]
+pub fn comm_skip(comm: &Path) -> Option<String> {
+    let me = std::fs::read_to_string(comm).unwrap_or_default();
+    let e = std::fs::write(comm, me.trim_end()).err()?;
+    let at = comm.display();
+    Some(format!("SKIP: {at} cannot be written ({e}): no comm-ahead row, a held one instead"))
 }
 
 /// Waits until the pane's own process, on the private server `sock`, has exec'd
@@ -466,8 +978,10 @@ pub fn named_pane(sock: &str, dir: &Path, name: &str) -> String {
 /// its first read can already be `name`. The pane's pid keeps through each exec.
 /// Two checks: its comm, which only moves forward, and the argv[0] tmux reads,
 /// as the kernel sets comm before the new argv and an exec's empty cmdline sends
-/// tmux back to the pane's start argv. Red, naming both reads last, when it
-/// never gets there.
+/// tmux back to the pane's start argv. Red, naming both reads last and the
+/// pane's screen, when it never gets there. On Linux no row pins the comm check,
+/// as argv[0] reads the name only after comm does. Without /proc it is the whole
+/// check.
 #[allow(dead_code)]
 pub fn settle(sock: &str, pane: &str, name: &str) {
     let pid = tmux_on(sock, &["display-message", "-p", "-t", pane, "#{pane_pid}"]);
@@ -485,7 +999,8 @@ pub fn settle(sock: &str, pane: &str, name: &str) {
     }
     let (comm, argv0) = last;
     let last = format!("comm {comm:?}, argv[0] {argv0:?}");
-    panic!("pane {pane} never ran {name}: its process {pid} read {last} last");
+    let screen = tmux_on(sock, &["capture-pane", "-p", "-t", pane]);
+    panic!("pane {pane} never ran {name}: its process {pid} read {last} last; screen {screen:?}");
 }
 
 /// What [`settle`] reads of a process: its comm, and the last path part of the

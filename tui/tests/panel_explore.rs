@@ -764,3 +764,35 @@ fn a_separate_git_dir_explores_its_tree() {
     assert!(repo.join(".git").is_file());
     assert_eq!(root_of(&repo.join("src")), Some(canon(&repo)));
 }
+
+/// #1066: this binary reads tmux through the product's plain `tmux`
+/// (`AGENT_GLOB` in `data.rs`). Under the runner that finds no server; started by
+/// hand from inside a tmux session it would read the caller's, so it is refused.
+#[test]
+fn the_binary_runs_with_no_tmux_session_of_the_callers() {
+    fake::checked_tmux();
+}
+
+/// #1066: this binary's other tests, started again through the runner beside a
+/// stand-in for the caller's tmux server whose agent list names ssh. They pass
+/// as they do with no server, and send it nothing. Three of them read their
+/// verdicts from that list where it is reached: the two ssh rows here and
+/// panel_hide's.
+#[test]
+fn the_tests_send_the_callers_tmux_server_nothing() {
+    fake::tests_beside_a_server("the_tests_send_the_callers_tmux_server_nothing");
+}
+
+/// #1066: the check sits in fake::fixed_env, so a test of this binary that comes
+/// through it, started by hand with the caller's TMUX kept, is refused itself,
+/// not only the check row.
+#[test]
+fn a_test_through_fixed_env_refuses_a_kept_session() {
+    let kept = [("TMUX", "/canary-1066,1,0")];
+    let (code, said) = fake::run_by_hand("an_agent_window_may_explore", &kept);
+    assert_eq!(
+        (code, said.contains("tmux refused (#1066): TMUX set. ")),
+        (Some(101), true),
+        "{said}"
+    );
+}

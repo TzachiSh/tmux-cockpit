@@ -12467,6 +12467,48 @@ fi
 "$TMUX_REAL" -L "$PV" kill-server >/dev/null 2>&1
 fi
 
+echo "== cockpit-tui board: a guarded board says so and sends its server nothing (#1089) =="
+# Under the test guard (COCKPIT_TEST_TMUX_GUARD, which .cargo/config.toml sets for whatever
+# cargo starts) a plain tmux with TMUX set is refused, so a board in a pane reads nothing of
+# its server. Its loop then puts the way out on the footer, and the first refusal writes one
+# line to its log. A logging tmux sits first on the pane's PATH with COCKPIT_TMUX unset: it
+# sees no call from the guarded board, and does see the same board's with the guard lifted.
+if need_tmux "the guarded board's note"; then :; else
+TG="cockpit-tg-$$"; SOCKS="$SOCKS $TG"; TGD=$(mktmpd); mkdir -p "$TGD/bin"
+printf '#!/bin/sh\nprintf "%%s\\n" "$1" >> %s\nexec %s "$@"\n' "$(tq "$TGD/calls")" \
+    "$(tq "$TMUX_REAL")" > "$TGD/bin/tmux"
+chmod +x "$TGD/bin/tmux"
+"$TMUX_REAL" -L "$TG" -f /dev/null new-session -d -s t -x 100 -y 30 -c "$TGD" \
+    'exec sleep 3600' >/dev/null 2>&1
+tg_open() {                   # <switch> -> TGW, a board in its own window
+    TGW=$("$TMUX_REAL" -L "$TG" new-window -d -P -F '#{pane_id}' -t t: -c "$TGD" \
+        "env -u COCKPIT_TMUX PATH=$(tq "$TGD/bin:$PATH") COCKPIT_TEST_TMUX_GUARD=$1 \
+XDG_STATE_HOME=$(tq "$TGD") COCKPIT_LOG=$(tq "$TGD/tui.log") $(tq "$COCKPIT_TUI_BIN") board")
+}
+tg_cap() { "$TMUX_REAL" -L "$TG" capture-pane -p -t "$TGW"; }
+tg_calls() { cat "$TGD/calls" 2>/dev/null | wc -l | tr -d ' '; }
+tg_open 1
+if until_cap "$TG" "$TGW" '*COCKPIT_TEST_TMUX_GUARD=0 to lift*'; then
+    ok "a guarded board puts the way out on its footer"
+else bad "a guarded board puts the way out on its footer" "COCKPIT_TEST_TMUX_GUARD=0 to lift" \
+    "$(tg_cap)"
+fi
+"$TMUX_REAL" -L "$TG" send-keys -t "$TGW" q
+for i in $(seq 1 "$POLLS"); do   # the board gone, so its log is whole
+    "$TMUX_REAL" -L "$TG" list-panes -a -F '#{pane_id}' 2>/dev/null | grep -qx "$TGW" || break
+    sleep 0.1
+done
+is "its log holds one refusal line" 1 "$(grep -cF \
+    ' COCKPIT_TEST_TMUX_GUARD: tmux refused, a plain tmux with TMUX set or no TMUX_TMPDIR folder' \
+    "$TGD/tui.log" 2>/dev/null)"
+is "and the guarded board sent its server nothing" 0 "$(tg_calls)"
+tg_open 0
+for i in $(seq 1 "$POLLS"); do [ "$(tg_calls)" -gt 0 ] && break; sleep 0.1; done
+if [ "$(tg_calls)" -gt 0 ]; then ok "with the guard lifted the same wrapper sees its calls"
+else bad "with the guard lifted the same wrapper sees its calls" "a call" "$(tg_calls)"; fi
+"$TMUX_REAL" -L "$TG" kill-server >/dev/null 2>&1
+fi
+
 echo "== cockpit-tui board: a blank first capture replaces reading the screen (#284) =="
 # A pane no capture has reached and a blank capture both draw as empty, so the
 # redraw gate must carry whether the pick was read (read_gate). Its own fresh
@@ -21972,6 +22014,35 @@ is "a dir a test made unreadable is named, and nothing of the run is left outsid
    "$(TMPDIR=$CRL cr 'mkdir "$TMPDIR/locked" && touch "$TMPDIR/locked/f" &&
        chmod 000 "$TMPDIR/locked"') left=$(ls -A "$CRL" | wc -l)"
 chmod -R u+rwx "$CRL" 2>/dev/null; rm -rf "$CRL"
+
+echo "== tests/tui-refusers.sh: with no user namespace it starts no test binary (#1089) =="
+# Outside its namespace a test binary's plain tmux would reach /tmp/tmux-<uid>, so where
+# unshare fails or is missing the script says so and builds and starts nothing: a stub
+# cargo, which every binary would come from, and a stub binary each record a call.
+TRF=$(mktmpd)
+mkdir "$TRF/fail" "$TRF/none"
+printf '#!/bin/sh\nexit 1\n' > "$TRF/fail/unshare"
+printf '#!/bin/sh\necho "$*" >> "$0.calls"\n' > "$TRF/fail/cargo"
+cp "$TRF/fail/cargo" "$TRF/none/cargo"
+cp "$TRF/fail/cargo" "$TRF/bin"
+chmod +x "$TRF/fail/unshare" "$TRF/fail/cargo" "$TRF/none/cargo" "$TRF/bin"
+echo "$TRF/bin" > "$TRF/list"
+trf() {   # <PATH> <args...>: what the script printed, its status, and the calls recorded
+    local p=$1 o r; shift
+    o=$(PATH=$p "$DIR/tests/tui-refusers.sh" "$@" 2>&1); r=$?
+    printf '%s rc=%s calls=%s' "$o" "$r" "$(cat "$TRF"/*/*.calls "$TRF"/*.calls 2>/dev/null | wc -l)"
+}
+TRS="tui-refusers.sh: no user and mount namespace here (unshare -rm), so no test binary was started"
+is "an unshare that fails: one line, exit 1, nothing built or started" \
+   "$TRS rc=1 calls=0" "$(trf "$TRF/fail:/usr/bin:/bin")"
+is "no unshare on PATH: the same" "$TRS rc=1 calls=0" "$(trf "$TRF/none")"
+TRI="tui-refusers.sh: --inside not in a namespace of its own, so no test binary was started"
+is "its inner half started outside a namespace starts no binary" \
+   "$TRI rc=1 calls=0" "$(trf "$TRF/fail:/usr/bin:/bin" --inside "$TRF/list")"
+is "...nor handed the namespaces it runs in, as a call inside a container's would be" \
+   "$TRI rc=1 calls=0" "$(trf "$TRF/fail:/usr/bin:/bin" --inside "$TRF/list" \
+       "$(readlink /proc/self/ns/user)/$(readlink /proc/self/ns/mnt)")"
+rm -rf "$TRF"
 
 
 # tests: scripts/agent-poll

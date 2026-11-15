@@ -922,3 +922,23 @@ fn an_asks_walk_up_stops_at_home() {
     let got = cockpit_tui::panel::ask::load(&f, 1, 2).map(|a| a.repo);
     assert_eq!(got, Ok(d.join("home/notes")), "a plain folder under HOME, a .git in and above it");
 }
+
+/// #1066: this binary reads tmux through the product's plain `tmux`
+/// (`AGENT_GLOB` in `data.rs`). Under the runner that finds no server; started by
+/// hand from inside a tmux session it would read the caller's, so it is refused.
+#[test]
+fn the_binary_runs_with_no_tmux_session_of_the_callers() {
+    // ENV: sibling rows set TMUX_TMPDIR and unset TMUX for the whole process (#1089)
+    let _l = ENV.lock().unwrap_or_else(|e| e.into_inner());
+    fake::checked_tmux();
+}
+
+/// #1089: started with no TMUX_TMPDIR, no test of this binary reaches a plain `tmux`:
+/// the product's own call refuses it, and a stub first on PATH gets no call.
+#[test]
+fn started_bare_no_test_reaches_a_plain_tmux() {
+    // ENV: this reads PATH, which sibling rows set for the whole process
+    let _l = ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let calls = fake::unchecked_tmux_calls("started_bare_no_test_reaches_a_plain_tmux");
+    assert_eq!(calls, Vec::<String>::new());
+}
