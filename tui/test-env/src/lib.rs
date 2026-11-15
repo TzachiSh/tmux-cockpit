@@ -4,6 +4,8 @@
 //! names `std::env::set_var`, `std::env::remove_var` and libc's writers, and
 //! `tui/Cargo.toml` forbids the lint, so the tui package writes only through this crate.
 //! A crate of its own, outside the package, where that forbid does not reach; std alone.
+//! Its two writers are the only ones, and nothing lints this crate: a change here is
+//! reviewed as the one root of trust (docs/testing.md).
 
 use std::cell::Cell;
 use std::ffi::OsStr;
@@ -39,9 +41,10 @@ impl Drop for EnvHeld {
 /// and through it `fake::fixed_env` and `fake::Server::start`): that check waits for this
 /// lock and the join for the check, for ever. No test does. A wait for such a thread to
 /// sleep, as the rows that hold a sibling's write do, ends. `fake::fixed_env` and
-/// `fake::Server::start` check under this lock and let it go before the tmux or the write
-/// that follows, so a binary that writes TMUX or TMUX_TMPDIR in its own process must not
-/// call them: a sibling's value could reach that tmux. None does (panel_env, env_lock).
+/// `fake::Server::start` check under this lock and let it go before the tmux that follows
+/// (`fixed_env` takes it again for its own write), so a binary that writes TMUX or
+/// TMUX_TMPDIR in its own process must not call them: a sibling's value could reach that
+/// tmux. None does (panel_env, env_lock).
 /// On a thread that holds it already the take would wait for itself, so that call panics
 /// instead, naming what the holder does (#1132).
 pub fn env_lock() -> EnvHeld {
@@ -90,25 +93,5 @@ pub unsafe fn set_var<K: AsRef<OsStr>, V: AsRef<OsStr>>(_held: &EnvHeld, key: K,
 ///
 /// As for [`set_var`].
 pub unsafe fn remove_var<K: AsRef<OsStr>>(_held: &EnvHeld, key: K) {
-    unsafe { std::env::remove_var(key) }
-}
-
-/// `std::env::set_var` with no lock, for the writes that took none before #1132, renamed
-/// as they stood. Step 2 of #1132 moves each to [`set_var`] under [`env_lock`] and then
-/// removes this; a row of tmux_reach.rs counts its calls, and the count only goes down.
-///
-/// # Safety
-///
-/// As for `std::env::set_var`, and no lock keeps a sibling's read out.
-pub unsafe fn set_var_unlocked<K: AsRef<OsStr>, V: AsRef<OsStr>>(key: K, value: V) {
-    unsafe { std::env::set_var(key, value) }
-}
-
-/// `std::env::remove_var` with no lock: as [`set_var_unlocked`], removed by step 2 of #1132.
-///
-/// # Safety
-///
-/// As for [`set_var_unlocked`].
-pub unsafe fn remove_var_unlocked<K: AsRef<OsStr>>(key: K) {
     unsafe { std::env::remove_var(key) }
 }

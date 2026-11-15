@@ -20,8 +20,6 @@ use std::process::Command;
 use std::sync::Once;
 #[allow(unused_imports)]
 pub use test_env::{EnvHeld, env_lock, env_poisoned, remove_var, set_var};
-#[allow(unused_imports)]
-pub use test_env::{remove_var_unlocked, set_var_unlocked};
 
 /// The lock's token as a rig keeps it: its own, taken for the rig's life, or lent by a
 /// holder that outlives the rig, for one built inside another (#1132).
