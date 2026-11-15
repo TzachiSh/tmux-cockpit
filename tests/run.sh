@@ -23157,12 +23157,14 @@ NE=$(mktmpd)
     '^tests/green\.sh: the stamp hits|^cockpit-board: kill %N re-checks' \
     >"$NE/out" 2>"$NE/err" </dev/null)
 ne_rc=$?
-# A red nested run names its FAIL rows here: $NE/out goes with the run's temp folders.
-[ "$ne_rc" = 0 ] || ne_rc="$ne_rc: $(grep -A2 FAIL "$NE/out" | tr '\n' ' ')"
+# A red nested run names its FAIL rows here: $NE/out goes with the run's temp folders. The run
+# is not nest_run's, which merges stderr into the output; nest_fails reads its stdout alone.
+NEST_OUT=$(cat "$NE/out")
 # With the titles it printed: a block the pattern no longer matches would go unwatched.
 is "both blocks, the stamp and the kill block, ran through only.sh and passed" "0 2" \
-   "$ne_rc $(grep -c '^== ' "$NE/out")"
+   "$ne_rc$(nest_fails) $(grep -c '^== ' "$NE/out")"
 is "and print nothing on stderr" "" "$(cat "$NE/err")"
+unset NE ne_rc NEST_OUT
 
 flop_left
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
