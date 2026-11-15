@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Once;
 #[allow(unused_imports)]
-pub use test_env::{EnvHeld, env_lock, env_poisoned, remove_var, set_var};
+pub use test_env::{EnvHeld, env_lock, env_poisoned, remove_var, remove_var_unlocked, set_var, set_var_unlocked};
 
 /// The lock's token as a rig keeps it: its own, taken for the rig's life, or lent by a
 /// holder that outlives the rig, for one built inside another (#1132).
@@ -120,9 +120,9 @@ pub fn fixed_env() {
         // that reads the environment (a local time call, a getenv in a linked
         // library) would break this: no binary that calls this makes one today.
         unsafe {
-            std::env::set_var("HOME", NO_HOME);
-            std::env::set_var("XDG_CONFIG_HOME", NO_HOME);
-            std::env::remove_var("COCKPIT_PANEL_MODEL");
+            test_env::set_var_unlocked("HOME", NO_HOME);
+            test_env::set_var_unlocked("XDG_CONFIG_HOME", NO_HOME);
+            test_env::remove_var_unlocked("COCKPIT_PANEL_MODEL");
         }
     });
 }

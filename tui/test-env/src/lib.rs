@@ -85,3 +85,23 @@ pub unsafe fn set_var<K: AsRef<OsStr>, V: AsRef<OsStr>>(_held: &EnvHeld, key: K,
 pub unsafe fn remove_var<K: AsRef<OsStr>>(_held: &EnvHeld, key: K) {
     unsafe { std::env::remove_var(key) }
 }
+
+/// `std::env::set_var` with no lock, for the writes that took none before #1132, renamed
+/// as they stood. Step 2 of #1132 moves each to [`set_var`] under [`env_lock`] and then
+/// removes this; a row of tmux_reach.rs counts its calls, and the count only goes down.
+///
+/// # Safety
+///
+/// As for `std::env::set_var`, and no lock keeps a sibling's read out.
+pub unsafe fn set_var_unlocked<K: AsRef<OsStr>, V: AsRef<OsStr>>(key: K, value: V) {
+    unsafe { std::env::set_var(key, value) }
+}
+
+/// `std::env::remove_var` with no lock: as [`set_var_unlocked`], removed by step 2 of #1132.
+///
+/// # Safety
+///
+/// As for [`set_var_unlocked`].
+pub unsafe fn remove_var_unlocked<K: AsRef<OsStr>>(key: K) {
+    unsafe { std::env::remove_var(key) }
+}

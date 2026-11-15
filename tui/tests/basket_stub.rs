@@ -34,7 +34,7 @@ fn the_basket_never_reaches_a_tmux_it_was_not_given() {
     let n = || std::fs::read_to_string(&calls).map_or(0, |c| c.lines().count());
 
     // SAFETY: the only test in this binary; nothing else reads the env meanwhile.
-    unsafe { std::env::set_var("COCKPIT_TMUX", stub.display().to_string()) };
+    unsafe { fake::set_var_unlocked("COCKPIT_TMUX", stub.display().to_string()) };
     // a pane that is no `%N` id is refused before tmux runs at all
     for p in ["", "3", "%", "%3;x", "-t"] {
         let why = basket::add(p, r()).unwrap_err();
@@ -54,7 +54,7 @@ fn the_basket_never_reaches_a_tmux_it_was_not_given() {
     std::fs::create_dir_all(&bin).unwrap();
     fake::write_exec(&bin.join("tmux"), &body);
     let before = n();
-    unsafe { std::env::set_var("COCKPIT_TMUX", bin.join("tmux").display().to_string()) };
+    unsafe { fake::set_var_unlocked("COCKPIT_TMUX", bin.join("tmux").display().to_string()) };
     // on in a debug build whatever the cwd (review-510: cargo reads .cargo from the
     // cwd up, so a run from outside the repo had no guard); only an explicit 0 lifts it
     assert_ne!(std::env::var("COCKPIT_TEST_TMUX_GUARD").as_deref(), Ok("0"));

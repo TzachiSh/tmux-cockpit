@@ -253,8 +253,17 @@ fn by_name(name: &str) -> bool {
     ["data.rs", "agents.rs", "panel_env.rs"].contains(&name) || name.starts_with("fake/")
 }
 
-/// The words that mark a file as writing its own environment, std's and libc's.
-const WRITES: [&str; 5] = ["set_var", "remove_var", "setenv", "putenv", "unsetenv"];
+/// The words that mark a file as writing its own environment: std's and libc's, and the
+/// interim writers that take no lock until step 2 of #1132 removes them.
+const WRITES: [&str; 7] = [
+    "set_var",
+    "remove_var",
+    "set_var_unlocked",
+    "remove_var_unlocked",
+    "setenv",
+    "putenv",
+    "unsetenv",
+];
 
 /// Whether `w` stands in `code` as a whole word.
 fn has_word(code: &str, w: &str) -> bool {
