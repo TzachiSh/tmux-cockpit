@@ -372,10 +372,16 @@ any route: a `.clippy.toml` beside `clippy.toml`, a renamed table,
 errors. That is the canary doing its job.
 
 `tui/test-env` itself is the one reviewed root of trust. It is about 110 lines
-on std alone, and nothing lints it: it sits outside the package so that its own
-writers can call the raw functions. A writer added there that takes no token, or
-a function that hands out an `EnvHeld` without the lock, passes every check.
-Any change to `tui/test-env` therefore needs a load-bearing review.
+on std alone, every change to it shows in a diff, and nothing lints it: it sits
+outside the package so that its own writers can call the raw functions. The lint
+keeps every other file of the package from writing the environment except
+through the crate. Nothing keeps the crate itself from adding a writer that
+takes no token, a function that wraps one of its writers, or a function that
+hands out an `EnvHeld` without the lock. Each of those passes every check, so
+any change to `tui/test-env` needs a load-bearing review. The rule for that
+review: a diff to `tui/test-env` adds no `pub` item that writes the environment
+or hands out an `EnvHeld`. Step 2 of #1132 removes the two interim writers,
+which leaves the two that take the token.
 
 Until step 2 of #1132, the writes that took no lock before go through
 `set_var_unlocked` and `remove_var_unlocked`, which take no token.
