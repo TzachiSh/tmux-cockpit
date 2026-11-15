@@ -71,10 +71,13 @@ pub fn guard_note() -> Option<&'static str> {
 /// order, where a check in each test missed one (#1089).
 fn reaches_callers_tmux(argv: &[String]) -> bool {
     use std::path::Path;
+    if !crate::basket::guarded() {
+        return false;
+    }
     let plain = argv.first().is_some_and(|p| Path::new(p).file_name().is_some_and(|n| n == "tmux"));
     let socket = argv.iter().any(|a| a == "-L" || a == "-S");
     let folder = std::env::var_os("TMUX_TMPDIR").is_some_and(|d| Path::new(&d).is_dir());
-    crate::basket::guarded() && plain && !socket && (std::env::var_os("TMUX").is_some() || !folder)
+    plain && !socket && (std::env::var_os("TMUX").is_some() || !folder)
 }
 
 /// `tmux` on a given argv: the program is `c[0]`, so an empty argv spawns nothing.
