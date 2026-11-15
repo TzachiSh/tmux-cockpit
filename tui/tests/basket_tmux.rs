@@ -52,7 +52,7 @@ fn the_basket_round_trips_through_a_pane_option() {
     };
     // SAFETY: the one test of this binary that writes the env; the others read it only
     // in their spawns, which std orders with this write (fake::rows_pass_handed).
-    unsafe { std::env::set_var("COCKPIT_TMUX", format!("tmux -L {}", s.sock)) };
+    unsafe { fake::set_var_unlocked("COCKPIT_TMUX", format!("tmux -L {}", s.sock)) };
     let pane = s.tmux(&["display-message", "-p", "#{pane_id}"]);
     let f = s.dir.join("a.rs");
     std::fs::write(&f, "x\n").unwrap();
@@ -65,9 +65,9 @@ fn the_basket_round_trips_through_a_pane_option() {
     assert_eq!(basket::shown(Some(&pane), &one), "a.rs:1", "from the pane's folder");
 
     // the readonly guard: nothing is written, and the add says so
-    unsafe { std::env::set_var("COCKPIT_READONLY", "1") };
+    unsafe { fake::set_var_unlocked("COCKPIT_READONLY", "1") };
     let why = basket::write(&pane, &[]).unwrap_err();
-    unsafe { std::env::remove_var("COCKPIT_READONLY") };
+    unsafe { fake::remove_var_unlocked("COCKPIT_READONLY") };
     assert!(why.contains("COCKPIT_READONLY"), "{why}");
     assert_eq!(basket::read(&pane).unwrap().len(), 2, "unchanged under readonly");
 

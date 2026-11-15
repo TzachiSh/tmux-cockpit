@@ -69,7 +69,7 @@ fn a_claude_the_agent_list_leaves_out_is_no_claude() {
     s.tmux(&["set-option", "-g", "@cockpit_agents_glob", "|codex|"]);
     // SAFETY: the one test of this binary that writes the env; the others read it only
     // in their spawns, which std orders with this write (fake::rows_pass_handed).
-    unsafe { std::env::set_var("COCKPIT_TMUX", format!("tmux -L {}", s.sock)) };
+    unsafe { fake::set_var_unlocked("COCKPIT_TMUX", format!("tmux -L {}", s.sock)) };
     // Each pane starts in its own row's turn, so a held row's hold is not spent
     // waiting on the rows before it, whatever their order (#1056).
     type Start<'a> = &'a dyn Fn() -> String;

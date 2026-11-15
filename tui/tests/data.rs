@@ -9,27 +9,32 @@ use fake::write_exec;
 use std::fs::{FileTimes, OpenOptions};
 use std::path::{Path, PathBuf};
 
-struct Env(Vec<(&'static str, Option<String>)>);
+/// `vars` set under fake's lock, whose token this keeps, and put back when it drops.
+struct Env<'a> {
+    old: Vec<(&'static str, Option<String>)>,
+    held: fake::Held<'a>,
+}
 
-impl Env {
-    fn set(vars: &[(&'static str, String)]) -> Self {
+impl<'a> Env<'a> {
+    fn set(held: fake::Held<'a>, vars: &[(&'static str, String)]) -> Self {
         let old = vars.iter().map(|(k, _)| (*k, std::env::var(k).ok())).collect();
         for (k, v) in vars {
             // SAFETY: fake's environment lock is held for the whole lifetime of this guard.
-            unsafe { std::env::set_var(k, v) };
+            unsafe { fake::set_var(held.token(), k, v) };
         }
-        Env(old)
+        Env { old, held }
     }
 }
 
-impl Drop for Env {
+impl Drop for Env<'_> {
     fn drop(&mut self) {
-        for (k, v) in &self.0 {
+        let held = self.held.token();
+        for (k, v) in &self.old {
             // SAFETY: as above.
             unsafe {
                 match v {
-                    Some(v) => std::env::set_var(k, v),
-                    None => std::env::remove_var(k),
+                    Some(v) => fake::set_var(held, k, v),
+                    None => fake::remove_var(held, k),
                 }
             }
         }
@@ -40,8 +45,7 @@ impl Drop for Env {
 /// every rig holds fake's environment lock for its lifetime and puts the vars back.
 pub struct Rig {
     dir: PathBuf,
-    _env: Env,
-    _lock: fake::EnvHeld,
+    env: Env<'static>,
 }
 
 impl Rig {
@@ -72,20 +76,24 @@ impl Rig {
         write_exec(&dir.join("bin/git"), "#!/bin/sh\nexit 1\n");
         std::fs::write(dir.join("rows"), "").unwrap();
         std::fs::write(dir.join("ps"), "").unwrap();
-        let env = Env::set(&[
-            ("PATH", format!("{d}/bin:{}", std::env::var("PATH").unwrap_or_default())),
-            ("COCKPIT_TMUX", format!("{d}/bin/tmux")),
-            // no proc under it: the walk falls back to the fake `ps`, not the box's pids
-            ("COCKPIT_PROC_DIR", format!("{d}/proc")),
-            ("HOME", d),
-            ("COCKPIT_READONLY", "1".into()),
-        ]);
+        let env = Env::set(
+            fake::Held::Own(lock),
+            &[
+                ("PATH", format!("{d}/bin:{}", std::env::var("PATH").unwrap_or_default())),
+                ("COCKPIT_TMUX", format!("{d}/bin/tmux")),
+                // no proc under it: the walk falls back to the fake `ps`, not the box's pids
+                ("COCKPIT_PROC_DIR", format!("{d}/proc")),
+                ("HOME", d),
+                ("COCKPIT_READONLY", "1".into()),
+            ],
+        );
         fake::assert_claude_is_the_rigs(&dir);
-        Rig {
-            dir,
-            _env: env,
-            _lock: lock,
-        }
+        Rig { dir, env }
+    }
+
+    /// The token of fake's lock, which the rig holds for its life.
+    fn held(&self) -> &fake::EnvHeld {
+        self.env.held.token()
     }
 
     fn rows(&self, rows: &[String]) {
@@ -549,22 +557,18 @@ const BASH_ROW: &str = "{\"type\":\"assistant\",\"timestamp\":\"2026-08-27T00:00
 /// on PATH, and the box's own git config kept out.
 struct Repo {
     dir: PathBuf,
-    _env: Env,
-    _lock: fake::EnvHeld,
+    env: Env<'static>,
 }
 
 impl Repo {
     fn new(tag: &str) -> Repo {
         let lock = fake::env_lock();
-        let env = Env::set(&[("GIT_CONFIG_GLOBAL", "/dev/null".into()), ("GIT_CONFIG_NOSYSTEM", "1".into())]);
+        let vars = [("GIT_CONFIG_GLOBAL", "/dev/null".into()), ("GIT_CONFIG_NOSYSTEM", "1".into())];
+        let env = Env::set(fake::Held::Own(lock), &vars);
         let dir = std::env::temp_dir().join(format!("cockpit-tui-git-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let r = Repo {
-            dir,
-            _env: env,
-            _lock: lock,
-        };
+        let r = Repo { dir, env };
         r.git(&["init", "-q", "-b", "main", "."]);
         r.write("f", "a\n");
         r.git(&["add", "-A"]);
@@ -709,7 +713,7 @@ fn an_inherited_git_variable_never_moves_a_boards_row() {
     let moved: Vec<&str> = rows
         .into_iter()
         .filter(|(var, val)| {
-            let _e = Env::set(&[(var, val.clone())]); // `r` holds the lock
+            let _e = Env::set(fake::Held::Lent(r.env.held.token()), &[(var, val.clone())]);
             git_facts(&r.path()) != want
         })
         .map(|(var, _)| var)
@@ -946,7 +950,7 @@ fn the_window_id_is_the_thirteenth_field() {
 fn the_log_rotates_past_its_cap() {
     let r = Rig::new("logrot");
     let log = r.dir.join("tui.log");
-    let _env = Env::set(&[("COCKPIT_LOG", log.display().to_string())]);
+    let _env = Env::set(fake::Held::Lent(r.held()), &[("COCKPIT_LOG", log.display().to_string())]);
     let rot = r.dir.join("tui.log.1");
     std::fs::write(&rot, "older\n").unwrap();
     let full = "x".repeat(cockpit_tui::data::LOG_CAP as usize + 1);
@@ -1897,14 +1901,16 @@ fn a_kept_agents_cache_is_refused() {
 fn a_rig_checks_only_once_it_holds_the_lock() {
     let held = Rig::new("held");
     let log = held.dir.join("tui.log").display().to_string();
-    let env = Env::set(&[("COCKPIT_LOG", log)]);
+    let env = Env::set(fake::Held::Lent(held.held()), &[("COCKPIT_LOG", log)]);
     let (tx, rx) = std::sync::mpsc::channel();
     let t = std::thread::spawn(move || {
         tx.send(unsafe { libc::gettid() }).unwrap();
         drop(Rig::new("waits"));
     });
     fake::asleep_or_done(&t, rx.recv().unwrap());
-    drop((env, held));
+    // the variable goes back under the rig's lock, then the rig and the lock go
+    drop(env);
+    drop(held);
     // without the fix the payload is the refusal, naming COCKPIT_LOG
     let why = t.join().err().map(|e| e.downcast_ref::<String>().cloned().unwrap_or_default());
     assert_eq!(why, None, "the waiting rig panicked");

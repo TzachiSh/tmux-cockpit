@@ -1196,12 +1196,12 @@ fn no_color_puts_no_colour_byte_on_the_wire() {
     use cockpit_tui::backend::WideCellBackend;
     use ratatui::backend::Backend;
     let th = {
-        let _guard = fake::env_lock();
+        let held = fake::env_lock();
         // SAFETY: every test that touches the environment takes fake's lock first, and
         // Theme::load returns before any tmux call when NO_COLOR is set
-        unsafe { std::env::set_var("NO_COLOR", "1") };
+        unsafe { fake::set_var(&held, "NO_COLOR", "1") };
         let th = Theme::load();
-        unsafe { std::env::remove_var("NO_COLOR") };
+        unsafe { fake::remove_var(&held, "NO_COLOR") };
         th
     };
 

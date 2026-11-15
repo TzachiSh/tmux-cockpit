@@ -48,7 +48,7 @@ pub fn shim(root: &Path) {
     crate::fake::write_exec(&dir.join("git"), &script);
     let path = format!("{}:{}", dir.display(), std::env::var("PATH").unwrap());
     // SAFETY: the caller's file holds one test, so no other thread reads the environment.
-    unsafe { std::env::set_var("PATH", path) };
+    unsafe { test_env::set_var_unlocked("PATH", path) };
 }
 
 /// [`shim`], and `rev-parse --git-common-dir` answers as git 2.7 to 2.12 did: a

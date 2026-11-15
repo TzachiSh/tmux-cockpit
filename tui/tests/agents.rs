@@ -17,28 +17,28 @@ fn stat(start: &str) -> String {
     format!("100 (cl aude) S 1 100 100 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 {start} 0 0\n")
 }
 
-struct Rig {
+struct Rig<'a> {
     dir: PathBuf,
     old: Vec<(&'static str, Option<String>)>,
     /// how long the drop waits for the lookups to end before it gives up
     wait: std::time::Duration,
     /// the shell the give-up execs: [`SH`], or a missing file for a box without one
     sh: PathBuf,
-    _lock: Option<fake::EnvHeld>,
+    held: fake::Held<'a>,
 }
 
 /// A lookup ends within the product's own 2.5 s deadline, so one still running after
 /// this is a thread that hangs, on a box however loaded (#969).
 const DROP_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
 
-/// Each variable back to the value it had, or unset again. The caller holds fake's lock.
-fn put_back(old: &[(&'static str, Option<String>)]) {
+/// Each variable back to the value it had, or unset again, under fake's lock.
+fn put_back(held: &fake::EnvHeld, old: &[(&'static str, Option<String>)]) {
     for (k, v) in old {
         // SAFETY: fake's environment lock is held, as it was when these were set.
         unsafe {
             match v {
-                Some(v) => std::env::set_var(k, v),
-                None => std::env::remove_var(k),
+                Some(v) => fake::set_var(held, k, v),
+                None => fake::remove_var(held, k),
             }
         }
     }
@@ -56,28 +56,25 @@ fn lookups_end_within(bound: std::time::Duration) -> bool {
     true
 }
 
-impl Rig {
+impl Rig<'_> {
     /// One agent pane, pid 100, no @cockpit_session, in a fake proc root at start `5`.
     /// `claude` runs `claude_body` and logs one line per call to `forks`.
-    fn new(tag: &str, claude_body: &str) -> Rig {
+    fn new(tag: &str, claude_body: &str) -> Rig<'static> {
         Rig::with(tag, claude_body, true)
     }
 
     /// `board` false is a one-shot caller (`--json`, `--rows`): it waits for the lookup.
-    fn with(tag: &str, claude_body: &str, board: bool) -> Rig {
-        let lock = fake::env_lock();
-        let mut rig = Rig::build(tag, claude_body, board, &lock);
-        rig._lock = Some(lock);
-        rig
+    fn with(tag: &str, claude_body: &str, board: bool) -> Rig<'static> {
+        Rig::build(tag, claude_body, board, fake::Held::Own(fake::env_lock()))
     }
 
-    /// `held` is fake's environment lock, which the caller holds from here to the rig's
-    /// drop: [`Rig::with`] hands it to the rig, a [`Dev`] keeps it.
-    fn build(tag: &str, claude_body: &str, board: bool, held: &fake::EnvHeld) -> Rig {
+    /// `held` is fake's environment lock, held from here to the rig's drop: [`Rig::with`]
+    /// hands the rig its own, a [`Dev`] lends its.
+    fn build<'a>(tag: &str, claude_body: &str, board: bool, held: fake::Held<'a>) -> Rig<'a> {
         // every rig comes through here, `new`, `with` and `inside` alike: the runner unset
         // the caller's log, cache and state, which a lookup uses (#1066), and a sibling
         // writes XDG_CACHE_HOME under the lock this is checked under (#1110)
-        fake::checked_state_held(held);
+        fake::checked_state_held(held.token());
         let dir = std::env::temp_dir().join(format!("cockpit-agents-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("bin")).unwrap();
@@ -115,9 +112,9 @@ impl Rig {
         old.push(("XDG_CACHE_HOME", std::env::var("XDG_CACHE_HOME").ok()));
         // SAFETY: fake's environment lock is held until Drop restores these.
         unsafe {
-            std::env::remove_var("XDG_CACHE_HOME");
+            fake::remove_var(held.token(), "XDG_CACHE_HOME");
             for (k, v) in &vars {
-                std::env::set_var(k, v);
+                fake::set_var(held.token(), k, v);
             }
         }
         let rig = Rig {
@@ -125,7 +122,7 @@ impl Rig {
             old,
             wait: DROP_WAIT,
             sh: PathBuf::from(SH),
-            _lock: None,
+            held,
         };
         // once the rig exists, so that a failure here drops it and the variables go back (#972)
         fake::assert_claude_is_the_rigs(&rig.dir);
@@ -133,8 +130,8 @@ impl Rig {
     }
 
     /// A board's rig inside `dev`, which holds fake's lock: its drop puts back what `dev` set.
-    fn inside(dev: &Dev, tag: &str, claude_body: &str) -> Rig {
-        Rig::build(tag, claude_body, true, &dev.held)
+    fn inside<'a>(dev: &'a Dev, tag: &str, claude_body: &str) -> Rig<'a> {
+        Rig::build(tag, claude_body, true, fake::Held::Lent(&dev.held))
     }
 
     fn proc_dir(&self, pid: &str, comm: &str, kids: &str) {
@@ -252,7 +249,7 @@ fn give_up(dir: &Path, bound: std::time::Duration, sh: &Path) -> ! {
     std::process::abort();
 }
 
-impl Drop for Rig {
+impl Drop for Rig<'_> {
     fn drop(&mut self) {
         // a hook set under this rig ends with it, on a panic too: left set, it would
         // run in every later test's lookups (#1024)
@@ -276,7 +273,7 @@ impl Drop for Rig {
         if !lookups_end_within(self.wait) {
             give_up(&self.dir, self.wait, &self.sh);
         }
-        put_back(&self.old);
+        put_back(self.held.token(), &self.old);
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
@@ -308,9 +305,9 @@ impl Dev {
         old.push(("XDG_CACHE_HOME", std::env::var("XDG_CACHE_HOME").ok()));
         // SAFETY: fake's environment lock is held until Drop restores these.
         unsafe {
-            std::env::remove_var("XDG_CACHE_HOME");
+            fake::remove_var(&held, "XDG_CACHE_HOME");
             for (k, v) in &vars {
-                std::env::set_var(k, v);
+                fake::set_var(&held, k, v);
             }
         }
         Dev { dir, old, held }
@@ -324,7 +321,7 @@ impl Dev {
 
 impl Drop for Dev {
     fn drop(&mut self) {
-        put_back(&self.old);
+        put_back(&self.held, &self.old);
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }

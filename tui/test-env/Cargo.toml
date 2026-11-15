@@ -1,0 +1,15 @@
+# The one place a tui test may write its process environment (#1132): the lock, its token
+# and its writers. A crate of its own so that the tui package can forbid the raw writers
+# while this one place still calls them: under a forbid no `allow` inside the package can
+# let a write through. A dev-dependency by path, std alone, never in a release build. Not
+# a workspace member, so the tui package's clippy does not lint it.
+[package]
+name = "test-env"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.88"
+publish = false
+
+[lib]
+name = "test_env"
+path = "src/lib.rs"

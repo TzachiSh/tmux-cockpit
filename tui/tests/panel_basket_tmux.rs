@@ -55,7 +55,7 @@ fn d_and_shift_d_write_the_basket_before_the_list_shows_it() {
     }
     // SAFETY: the one test of this binary that writes the env; the others read it only
     // in their spawns, which std orders with this write (fake::rows_pass_handed).
-    unsafe { std::env::set_var("COCKPIT_TMUX", format!("tmux -L {}", s.sock)) };
+    unsafe { fake::set_var_unlocked("COCKPIT_TMUX", format!("tmux -L {}", s.sock)) };
     let pane = s.tmux(&["display-message", "-p", "#{pane_id}"]);
     let refs: Vec<Ref> = ["a.rs", "b.rs", "c.rs"]
         .iter()

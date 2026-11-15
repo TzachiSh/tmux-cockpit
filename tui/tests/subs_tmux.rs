@@ -67,11 +67,11 @@ fn the_hook_options_reach_the_pane_through_the_format() {
     // SAFETY: the one test of this binary that writes the env. The others read it only
     // in their spawns, which std orders with these writes (fake::run_by_hand).
     unsafe {
-        std::env::set_var("PATH", path);
-        std::env::set_var("COCKPIT_TMUX", format!("tmux -L {}", s.sock));
-        std::env::set_var("HOME", &d);
-        std::env::remove_var("CLAUDE_CONFIG_DIR");
-        std::env::set_var("COCKPIT_READONLY", "1");
+        fake::set_var_unlocked("PATH", path);
+        fake::set_var_unlocked("COCKPIT_TMUX", format!("tmux -L {}", s.sock));
+        fake::set_var_unlocked("HOME", &d);
+        fake::remove_var_unlocked("CLAUDE_CONFIG_DIR");
+        fake::set_var_unlocked("COCKPIT_READONLY", "1");
     }
     fake::assert_claude_is_the_rigs(&dir);
     let ps = list_panes().unwrap();

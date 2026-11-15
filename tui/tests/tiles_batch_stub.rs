@@ -12,7 +12,7 @@ use cockpit_tui::data::preview;
 fn the_batch_and_preview_read_the_same_tiles_off_the_same_captures() {
     let (dir, argv) = stub::stub("same");
     // SAFETY: this test binary holds exactly one test, so nothing runs beside it.
-    unsafe { std::env::set_var("COCKPIT_TMUX", &argv[0]) };
+    unsafe { fake::set_var_unlocked("COCKPIT_TMUX", &argv[0]) };
     let all: Vec<&str> = stub::screens().into_iter().map(|(id, _)| id).collect();
     // (name, the tiles, the stub's calls for the batch)
     let rows: [(&str, &[&str], usize); 3] = [
