@@ -11388,8 +11388,12 @@ is "sock_long with no folder: a red row of its own" "sock_long takes one folder 
 # A folder of 79 bytes less the uid's, so a suite's socket under it, with a 7-digit pid, is 107.
 nh_f="$NH/$(printf 'f%.0s' $(seq 1 $((79 - ${#UID} - ${#NH} - 1))))"
 if need_tmux "sock_long's limit"; then :
+elif [ "$(uname -s)" = Darwin ]; then
+    skip_ "sock_long's limit (macOS's socket path limit is 103; not measured, #1146)"
 elif [ "${#nh_f}" -ne $((79 - ${#UID})) ]; then skip_ "sock_long's limit (TMPDIR too long)"
 else
+# On the run's exit cleanup's list before it starts, for a block cut short (#1104).
+SOCKP="$SOCKP$nh_f/tmux-$UID/cockpit-suite-1234567"$'\n'
 nh_up() {                     # <folder> -> up when a server binds at its suite socket path
     local p="$1/tmux-$UID/cockpit-suite-1234567"
     mkdir -p "${p%/*}"
@@ -11403,26 +11407,45 @@ is "sock_long: at 107 bytes it says no and a server binds; at 108 it says yes an
 sock_sweep "$nh_f"
 unset -f nh_up
 fi
-# A server in a tmux-* folder, one in another folder beside it, and a file that is no socket.
+# In a tmux-* folder: a server, a dead socket, a file and a folder that are no socket. A server
+# in another folder beside it. The sweep runs with a tmux that notes each call it is handed.
 if need_tmux "sock_sweep"; then :; else
-nh_st() {                     # -> up or gone for each of the two servers
+nh_st() {                     # <socket>... -> up or gone for each
     local s
-    for s in "$NH/w/tmux-x/srv" "$NH/w/other/srv"; do
+    for s; do
         "$TMUX_REAL" -S "$s" has-session 2>/dev/null && printf 'up ' || printf 'gone '
     done
 }
-: > "$NH/w/tmux-x/plain"
-for nh_s in "$NH/w/tmux-x/srv" "$NH/w/other/srv"; do
+nh_calls() {                  # -> the noted calls, the block's folder cut, comma after each
+    local l
+    while IFS= read -r l; do printf '%s,' "${l//"$NH/w/"/}"; done 2>/dev/null < "$NH/calls"
+}
+nh_x="$NH/w/tmux-x"
+# On the run's exit cleanup's list before they start, for a block cut short (#1104).
+SOCKP="$SOCKP$nh_x/srv"$'\n'"$nh_x/dead"$'\n'"$NH/w/other/srv"$'\n'
+: > "$nh_x/plain"; mkdir -p "$nh_x/sub"
+for nh_s in "$nh_x/srv" "$nh_x/dead" "$NH/w/other/srv"; do
     "$TMUX_REAL" -S "$nh_s" -f /dev/null new-session -d -c "$NH" 'exec sleep 300' >/dev/null 2>&1
 done
-nh_b=$(nh_st); nh_o=$(sock_sweep "$NH/w" 2>&1)
-is "sock_sweep ends the server in a tmux-* folder, silently; the other server and a file stay" \
-   "up up > gone up |plain|" "$nh_b> $(nh_st)|$(ls "$NH/w/tmux-x" | grep -x plain)|$nh_o"
+# tmux leaves the socket file of a server that ends: nothing listens on dead after this.
+"$TMUX_REAL" -S "$nh_x/dead" kill-server >/dev/null 2>&1
+until_out 'gone ' nh_st "$nh_x/dead"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> %s\nexec %s "$@"\n' "$(tq "$NH/calls")" \
+    "$(tq "$TMUX_REAL")" > "$NH/rec"
+chmod +x "$NH/rec"
+nh_b=$(nh_st "$nh_x/srv" "$NH/w/other/srv")
+( TMUX_REAL="$NH/rec"; sock_sweep "$NH/w" ) > "$NH/sweep.out" 2>&1
+is "sock_sweep calls kill-server on the sockets of a tmux-* folder alone; that server ends" \
+   "up up > gone up |-S tmux-x/dead kill-server,-S tmux-x/srv kill-server,|plain sub" \
+   "$nh_b> $(nh_st "$nh_x/srv" "$NH/w/other/srv")|$(nh_calls)|$(
+      [ -f "$nh_x/plain" ] && printf plain; [ -d "$nh_x/sub" ] && printf ' sub')"
+is "and the sweep prints nothing, though the dead socket's kill-server says no server" "" \
+   "$(cat "$NH/sweep.out")"
 "$TMUX_REAL" -S "$NH/w/other/srv" kill-server >/dev/null 2>&1
-unset -f nh_st
+unset -f nh_st nh_calls
 fi
 unset -f nh_red
-unset NH nh_f nh_s nh_b nh_o NEST_RC NEST_OUT NEST_PASS NEST_FAIL
+unset NH nh_f nh_s nh_b nh_x NEST_RC NEST_OUT NEST_PASS NEST_FAIL
 
 echo "== a stub the suite writes lands nothing beside a TMPDIR that holds a space (#929) =="
 # The block above again, through only.sh, under a TMPDIR named "my  tmp". Its recorders are
