@@ -89,7 +89,19 @@ suite_tt_end() {
 # a HUP that ends the run in between never reaches it, and bash runs the EXIT trap on both:
 # without this a run ended there left the server and its pane behind for an hour (#900). A
 # prelude FATAL leaves through the same trap (#984).
-trap suite_clean EXIT
+# HUP, INT and TERM are trapped as well, by the run itself, for the whole run (#1107). With no
+# trap of its own on them, bash ends through its own handler, and that handler kills the shell
+# at once when a second such signal arrives while the first is still being handled: before
+# the EXIT trap starts or in the middle of it. One signal sent twice is common: `timeout` sends
+# its signal to the run and then to the run's process group, and a run that took the first
+# before the second arrived left its socket, its state and its shim behind. A signal the run
+# traps is only noted while the trap runs, and suite_sig ignores all three before it exits, so
+# a second one does nothing. A signal the run started with ignored (nohup) stays ignored.
+# The cost: bash runs a trap once the command in the foreground is done, so a signal sent to
+# the run's pid alone waits for that command. One sent to the group ends the command too.
+suite_sig() { trap '' HUP INT TERM; exit $((128 + $1)); }
+suite_sigs() { trap 'suite_sig 1' HUP; trap 'suite_sig 2' INT; trap 'suite_sig 15' TERM; }
+trap suite_clean EXIT; suite_sigs
 fatal() { printf '  \033[31mFATAL\033[0m %s\n' "$1" >&2; exit 1; }
 # A socket folder of the suite's own when its caller hands it none (#1098). With no
 # TMUX_TMPDIR, or one naming a folder that is not there, tmux puts every socket in
@@ -1941,8 +1953,7 @@ SGN=""; read -r SGN 2>/dev/null < "/proc/$SGP/comm"
 # that dies inside a stop must not leave it stopped: every client of it, the suite's own
 # cleanup too, would wait on it for good.
 case "$SGN" in
-    tmux*) trap 'kill -CONT "$SGP" 2>/dev/null; cleanup' EXIT; trap 'exit 130' INT
-           trap 'exit 143' TERM ;;
+    tmux*) trap 'kill -CONT "$SGP" 2>/dev/null; cleanup' EXIT ;;
     *) SGP="" ;;
 esac
 sg_hook() {
@@ -2015,7 +2026,7 @@ else
     bad "the stalled server is the private one" "tmux*" "$SGN"
 fi
 sgt kill-server
-trap cleanup EXIT; trap - INT TERM
+trap cleanup EXIT
 fi
 
 echo "== the gauge cells' focus hook and agent-context, stopped mid-format, stay exact (#713) =="
@@ -2049,8 +2060,7 @@ sct set -p -t "$SCC" @panestate_ctx 12; sct set -p -t "$SCX" @panestate_ctx 345
 sct set -gw @cockpit_ctx_on '#{?#{m:*q*,#{R:xxxxxxxxxx,2000}},,1}'
 SCP=$(sct display-message -p '#{pid}') SCN=""; read -r SCN 2>/dev/null < "/proc/$SCP/comm"
 case "$SCN" in
-    tmux*) trap 'kill -CONT "$SCP" 2>/dev/null; cleanup' EXIT; trap 'exit 130' INT
-           trap 'exit 143' TERM ;;
+    tmux*) trap 'kill -CONT "$SCP" 2>/dev/null; cleanup' EXIT ;;
     *) SCP="" ;;
 esac
 sc_ctx() {                    # <percent>: agent-context on C
@@ -2104,7 +2114,7 @@ else
     bad "the stalled server is the private one" "tmux*" "$SCN"
 fi
 sct kill-server
-trap cleanup EXIT; trap - INT TERM
+trap cleanup EXIT
 fi
 
 echo "== agent-state recount: ◆N counts panes with a pending review, off clears them =="
@@ -14203,8 +14213,9 @@ av_setup() {                  # the fixtures every agent-view block needs; each 
     # and bash cannot trap a signal it started with ignored: a poller's HUP trap never runs, and
     # its HUP rows fail with nothing wrong (#524). Those pollers start with the default back.
     AVDFL=(env); env --default-signal=HUP true 2>/dev/null && AVDFL=(env --default-signal=HUP)
-    # Where env cannot reset it, the HUP rows below go red: say why, once, above them.
-    [ "${AVDFL[*]}" = env ] && [ -n "$(trap -p HUP)" ] \
+    # Where env cannot reset it, the HUP rows below go red: say why, once, above them. The
+    # run traps HUP itself (#1107), so only the ignored form says it started ignored.
+    [ "${AVDFL[*]}" = env ] && [ "$(trap -p HUP)" = "trap -- '' SIGHUP" ] \
         && skip_ "the poller HUP rows: SIGHUP is ignored (nohup?) and env cannot reset it (#524)"
     AVF="$DIR/tests/fixtures/agent-view"
     AVBIN=$(mktmpd); ln -s "$AVF/claude" "$AVBIN/claude"
@@ -19250,7 +19261,8 @@ elif [ $((${#SG} + ${#UID} + 30)) -gt 107 ]; then
 else
     is "a TERM right after the server starts leaves no process, dir or socket" \
        "143|0|pf,started,|0" "$(sg_run TERM win)"
-    if ! sg_dfl HUP && [ -n "$(trap -p HUP)" ]; then
+    # The run traps HUP itself (#1107): only the ignored form says it started ignored.
+    if ! sg_dfl HUP && [ "$(trap -p HUP)" = "trap -- '' SIGHUP" ]; then
         skip_ "a HUP in the prelude (SIGHUP is ignored and env cannot reset it)"
     else is "a HUP there leaves none either" "129|0|pf,started,|0" "$(sg_run HUP win)"
     fi
@@ -19309,6 +19321,81 @@ else
        "$(ls -A "$STATE/pane" | tr '\n' ' ')$(wc -c < "$STATE/pane/idle")"
 fi
 unset -f sg_left sg_run sg_dfl sg_pane; unset SG sg_hold sg_p sg_gone sg_haspid
+
+echo "== run.sh: a second signal while the run's exit trap runs does not cut it short (#1107) =="
+# bash ends on a signal it has no trap for through its own handler, which runs the EXIT trap,
+# and a second such signal that lands while the first is handled kills the shell there and
+# then. `timeout` sends its signal to the run and then to the run's group: a run that took the
+# first before the second came left its socket, its state and its shim behind (#1107). Two
+# copies of the prelude here, each holding still twice: after its server starts (win) or after
+# `trap cleanup EXIT` (ctl), where the first signal is sent, and at the top of suite_clean,
+# where the second is. Both holds are reads on a fifo the script holds open, and the second
+# ends when the block writes a line to it. The window before the trap starts runs no line of
+# the script, so no hold pins it: a run that dies there is not caught here.
+S2=$(mktmpd); mkdir -p "$S2/tests"
+s2_hold='mkfifo "$TMPDIR/pf"; exec 9<>"$TMPDIR/pf"; : > "$TMPDIR/started"; read -r -t 20 -u 9 _'
+s2_in=': > "$TMPDIR/in"; read -r -t 20 -u 9 _'
+awk '/^echo "== /{exit} {print}' "$DIR/tests/run.sh" \
+    | sed "/^suite_clean() {\$/a $s2_in" > "$S2/tests/pre.sh"
+sed "/^    \"\\\$SUITE_PANE\" >\\/dev\\/null 2>&1\$/a $s2_hold" "$S2/tests/pre.sh" \
+    > "$S2/tests/win.sh"
+sed "/^trap cleanup EXIT\$/a $s2_hold" "$S2/tests/pre.sh" > "$S2/tests/ctl.sh"
+is "each copy holds at two places" "2 2" \
+   "$(grep -c 'read -r -t 20 -u 9 _' "$S2/tests/win.sh") $(
+      grep -c 'read -r -t 20 -u 9 _' "$S2/tests/ctl.sh")"
+s2_left() {                   # the processes carrying the copy's TMPDIR: "0", or count and names
+    local p n o end=$((SECONDS + 10))    # read again, up to 10 s: a dead run's pane takes
+    while :; do                          # about a second to see its run gone
+        n=0 o=""
+        for p in /proc/[0-9]*; do
+            tr '\0' '\n' 2>/dev/null < "$p/environ" | grep -qxF "TMPDIR=$S2/t" || continue
+            n=$((n + 1)); o="$o [$(tr '\0' ' ' 2>/dev/null < "$p/cmdline")]"
+        done
+        [ "$n" != 0 ] && [ "$SECONDS" -lt "$end" ] || break
+        sleep 0.1
+    done
+    printf '%s%s' "$n" "$o"
+}
+s2_dfl() { env --default-signal="$1" true 2>/dev/null; }
+s2_run() {                    # <copy> <first> <second> -> status|carriers|left|listeners|sockets
+    local c="" rc s d=()
+    rm -rf "${S2:?}/t" "${S2:?}/s"; mkdir -p "$S2/t" "$S2/s"
+    ! s2_dfl "$2" || d+=(--default-signal="$2")
+    ! s2_dfl "$3" || d+=(--default-signal="$3")
+    ( cd "$S2" && exec env "${d[@]}" -u TMUX TMPDIR="$S2/t" TMUX_TMPDIR="$S2/s" \
+        bash "tests/$1.sh" ) </dev/null >/dev/null 2>&1 & s2_p=$!
+    until_out '?*' ls "$S2/t/started" >/dev/null
+    read -r c 2>/dev/null < "/proc/$s2_p/comm"
+    if [ "$c" = bash ]; then
+        kill -"$2" "$s2_p" 2>/dev/null
+        until_out '?*' ls "$S2/t/in" >/dev/null
+        kill -"$3" "$s2_p" 2>/dev/null
+        printf '\n' 1<>"$S2/t/pf"       # ends the hold in suite_clean, if a run is left to read
+    fi
+    wait "$s2_p" 2>/dev/null; rc=$?
+    printf '%s|%s|%s|%s|%s' "$rc" "$(s2_left)" "$(ls -A "$S2/t" | tr '\n' ,)" \
+        "$(grep -cF " $S2/s/" /proc/net/unix)" "$(ls -A "$S2"/s/tmux-* 2>/dev/null | tr '\n' ,)"
+    # Whatever a red run left: ended by its own socket, never by a pid.
+    for s in "$S2"/s/tmux-*/*; do
+        [ -S "$s" ] && "$TMUX_REAL" -S "$s" kill-server >/dev/null 2>&1
+    done
+}
+if [ ! -r /proc/net/unix ]; then skip_ "a second signal in the exit trap (no /proc/net/unix)"
+elif [ $((${#S2} + ${#UID} + 30)) -gt 107 ]; then
+    skip_ "a second signal in the exit trap (TMPDIR too long for the nested socket path)"
+elif ! s2_dfl HUP && [ "$(trap -p HUP)" = "trap -- '' SIGHUP" ]; then
+    skip_ "a second signal in the exit trap (SIGHUP is ignored and env cannot reset it)"
+else
+    is "a HUP while the exit trap runs, after a HUP, leaves no process, dir or socket" \
+       "129|0|in,pf,started,|0|" "$(s2_run win HUP HUP)"
+    is "nor does a TERM after a TERM" "143|0|in,pf,started,|0|" "$(s2_run win TERM TERM)"
+    if ! s2_dfl INT; then skip_ "an INT then a TERM (env cannot reset an ignored SIGINT)"
+    else is "nor a TERM after an INT" "130|0|in,pf,started,|0|" "$(s2_run win INT TERM)"
+    fi
+    is "nor a HUP after a HUP once \`trap cleanup EXIT\` is set" "129|0|in,pf,started,|0|" \
+       "$(s2_run ctl HUP HUP)"
+fi
+unset -f s2_left s2_run s2_dfl; unset S2 s2_hold s2_in s2_p
 
 echo "== run.sh: under a TMPDIR with a blank the tmux wrapper sits where no blank is (#992) =="
 # "$TMUX_REAL" is the #573 wrapper's path, pasted unquoted into some forty pane commands. It
