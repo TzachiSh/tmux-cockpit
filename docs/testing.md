@@ -83,15 +83,16 @@ And it drops the other names the scripts and the board read, none of which
 names a place to write (#1100): `NO_COLOR`, `COCKPIT_GLYPHS`,
 `COCKPIT_PANEL_MODEL`, `COCKPIT_PANEL_EFFORT`, `COCKPIT_PANEL_TIMEOUT`,
 `COCKPIT_PANEL_MODE`, `COCKPIT_PANEL_DROPPED`, `COCKPIT_PANEL_HIDE_TAKEN`,
-`COCKPIT_PANEL_KEY`, `COCKPIT_VIEW_ASK`, `COCKPIT_VIEW_BACK`, `COCKPIT_BASKET_PANE`,
-`COCKPIT_FILES_STATE`, `COCKPIT_GITHUB`, `COCKPIT_TUI_RELEASES`,
-`COCKPIT_TUI_REPO`, `TM_SID`, `TM_CLIENT`, `TM_PANE`, `TM_POPUP`, `TM_NEEDS`,
-`MD_EDIT`, `REVIEW_PANE_ID`, and `COCKPIT_TEST_TMUX_GUARD`, the tui tests' own
-guard, which `.cargo/config.toml` sets for cargo and the suite clears for
-itself alone. With them go `TERMUX_VERSION` and `PREFIX` (#1115): the board
-reads either one, the second when it names Termux's own tree, as a sign that it
-runs under Termux, and then opens the panel as a tablet's. `COCKPIT_TUI_BIN` is
-still taken from the caller, on purpose.
+`COCKPIT_PANEL_KEY`, `COCKPIT_VIEW_ASK`, `COCKPIT_VIEW_BACK`,
+`COCKPIT_BASKET_PANE`, `COCKPIT_FILES_STATE`, `COCKPIT_GITHUB`,
+`COCKPIT_TUI_RELEASES`, `COCKPIT_TUI_REPO`, `TM_SID`, `TM_CLIENT`, `TM_PANE`,
+`TM_POPUP`, `TM_NEEDS`, `MD_EDIT`, `REVIEW_PANE_ID`, and
+`COCKPIT_TEST_TMUX_GUARD`, the tui tests' own guard, which `.cargo/config.toml`
+sets for cargo and the suite clears for itself alone. With them go
+`TERMUX_VERSION` and `PREFIX` (#1115): the board reads either one, the second
+when it names Termux's own tree, as a sign that it runs under Termux, and then
+opens the panel as a tablet's. `COCKPIT_TUI_BIN` is still taken from the
+caller, on purpose.
 
 Before #1080 a run from a shell that exported one of those nineteen used it. If
 you ran the suite that way, you may find three symlinks in your `XDG_BIN_HOME`,

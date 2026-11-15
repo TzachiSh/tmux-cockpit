@@ -219,6 +219,7 @@ while :; do
             # jump notice reads its key (#1109): the record alone named a key moved by hand,
             # stock find-window's f (#1112). Two noted: the recorded one (cockpit_noted_key,
             # #1124). No noted key, or list-keys failing, leaves the generic words.
+            # Read again, not $pkey: the key may be rebound while the panel is open.
             hk=$(cockpit_noted_key panel @cockpit_panel_bound)
             if [ -n "$hk" ]; then hk="prefix $hk"; else hk="the panel key"; fi
             msg="cockpit: hidden · $hk on $PANE brings it back"

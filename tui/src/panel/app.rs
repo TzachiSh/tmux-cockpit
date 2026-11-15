@@ -45,8 +45,8 @@ pub const RESUME_GUARD_MS: u64 = 800;
 pub const EXPLORE_BUDGET_USD: f64 = 0.15;
 pub const EXPLORE_TIMEOUT: Duration = Duration::from_secs(90);
 /// The longest panel key the ^Z help names (#1121). tmux 3.8's `key_string` for a
-/// keyboard key with all three modifiers tops out at 13 bytes (`C-M-S-KPEnter`); only
-/// mouse names run longer, and those get the generic words.
+/// keyboard key with all three modifiers tops out at 13 bytes (`C-M-S-KPEnter`). Mouse
+/// names past 16 bytes get the generic words; `DoubleClick1Pane`, 16, is drawn.
 pub const PANEL_KEY_MAX: usize = 16;
 
 /// The panel key as the ^Z help may draw it, or None: 1 to [`PANEL_KEY_MAX`] bytes of
