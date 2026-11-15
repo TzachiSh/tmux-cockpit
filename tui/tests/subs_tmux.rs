@@ -64,15 +64,17 @@ fn the_hook_options_reach_the_pane_through_the_format() {
     // found by PATH. The rig's own answers it, the one `rig_path` writes, which counts
     // its starts beside itself. `tmux` still comes from the rest of PATH (#972).
     let path = fake::rig_path(&dir.join("bin"));
+    let held = fake::env_lock();
     // SAFETY: the one test of this binary that writes the env. The others read it only
     // in their spawns, which std orders with these writes (fake::run_by_hand).
     unsafe {
-        fake::set_var_unlocked("PATH", path);
-        fake::set_var_unlocked("COCKPIT_TMUX", format!("tmux -L {}", s.sock));
-        fake::set_var_unlocked("HOME", &d);
-        fake::remove_var_unlocked("CLAUDE_CONFIG_DIR");
-        fake::set_var_unlocked("COCKPIT_READONLY", "1");
+        fake::set_var(&held, "PATH", path);
+        fake::set_var(&held, "COCKPIT_TMUX", format!("tmux -L {}", s.sock));
+        fake::set_var(&held, "HOME", &d);
+        fake::remove_var(&held, "CLAUDE_CONFIG_DIR");
+        fake::set_var(&held, "COCKPIT_READONLY", "1");
     }
+    drop(held);
     fake::assert_claude_is_the_rigs(&dir);
     let ps = list_panes().unwrap();
     let started = std::fs::read_to_string(dir.join("bin/claude.started")).unwrap_or_default();

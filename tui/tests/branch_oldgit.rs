@@ -47,7 +47,7 @@ fn without_z_the_plain_porcelain_names_the_worktree_and_skips_a_newline_path() {
     fake::write_exec(&shim.join("git"), &script);
     let path = format!("{}:{}", shim.display(), std::env::var("PATH").unwrap());
     // SAFETY: this file holds one test, so no other thread reads the environment.
-    unsafe { fake::set_var_unlocked("PATH", path) };
+    unsafe { fake::set_var(&fake::env_lock(), "PATH", path) };
     let bs = branches::list(repo.to_str().unwrap());
     let held = |n: &str| bs.iter().find(|b| b.name == n).unwrap().elsewhere.clone();
     let want = std::fs::canonicalize(root.join("w plain")).unwrap().to_str().unwrap().to_string();
