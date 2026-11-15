@@ -162,6 +162,7 @@ dependencies = [
  "pulldown-cmark",
  "ratatui",
  "serde_json",
+ "test-env",
  "unicode-segmentation",
  "unicode-width",
 ]
@@ -1503,6 +1504,10 @@ dependencies = [
  "wezterm-input-types",
  "winapi",
 ]
+
+[[package]]
+name = "test-env"
+version = "0.0.0"
 
 [[package]]
 name = "thiserror"

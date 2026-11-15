@@ -32,6 +32,10 @@ pulldown-cmark = { version = "=0.13.4", default-features = false }
 # default map is a BTreeMap, which would emit them alphabetically.
 serde_json = { version = "1.0.151", features = ["preserve_order"] }
 
+# The lock, its token and the only environment writers a test may call (#1132).
+[dev-dependencies]
+test-env = { path = "test-env" }
+
 [profile.release]
 lto = true
 strip = true

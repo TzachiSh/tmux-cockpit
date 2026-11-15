@@ -81,7 +81,8 @@ TUI_ENV = $(if $(TUI_TOOLCHAIN),RUSTUP_TOOLCHAIN=$(TUI_TOOLCHAIN))
 tui-test:
 	@$(TUI_ENV) COCKPIT_TEST_CLAUDE_GUARD=1 cargo test --locked --manifest-path tui/Cargo.toml
 	@$(TUI_ENV) cargo clippy --locked --manifest-path tui/Cargo.toml --all-targets -- -D warnings
-	@$(TUI_ENV) cargo fmt --manifest-path tui/Cargo.toml --check
+	@# --all: tui/test-env is a path dependency, and fmt skips one without it (#1132).
+	@$(TUI_ENV) cargo fmt --manifest-path tui/Cargo.toml --all --check
 	@# Any rustdoc warning fails the target: a doc link to a name that does not
 	@# resolve (#726), an unclosed HTML tag (#739).
 	@$(TUI_ENV) RUSTDOCFLAGS='-D warnings' cargo doc -q --locked \

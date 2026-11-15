@@ -14,14 +14,12 @@
 //! ([`Server`], #1066), the waits for a pane's start-up ([`held_pane`],
 //! [`named_pane`] and [`settle`], #1056), and the environment lock every check
 //! reads under ([`env_lock`], #1110).
-mod env;
-
-#[allow(unused_imports)]
-pub use env::{EnvHeld, env_lock, env_poisoned};
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Once;
+#[allow(unused_imports)]
+pub use test_env::{EnvHeld, env_lock, env_poisoned, remove_var, set_var};
 
 fn beside(path: &Path, ext: &str) -> PathBuf {
     let mut s = path.as_os_str().to_owned();
@@ -491,7 +489,7 @@ fn tmux_refusal() -> Option<String> {
 #[allow(dead_code)]
 pub fn checked_state() {
     let why = {
-        let _read = env::for_check("checked_state");
+        let _read = test_env::for_check("checked_state");
         state_refusal()
     };
     if let Some(why) = why {
@@ -566,7 +564,7 @@ pub fn unchecked_tmux_calls(skip: &str) -> Vec<String> {
 #[allow(dead_code)]
 pub fn checked_tmux() -> PathBuf {
     let read = {
-        let _read = env::for_check("checked_tmux");
+        let _read = test_env::for_check("checked_tmux");
         tmux_read()
     };
     read.unwrap_or_else(|why| panic!("{why}"))

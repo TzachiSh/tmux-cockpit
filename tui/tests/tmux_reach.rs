@@ -240,13 +240,10 @@ fn code_of(src: &str) -> String {
 }
 
 /// The locks named ENV a file may keep, each as its declaration in its file, never as the
-/// file: fake's own, the one every check reads under, and push's, an `RwLock` because its
-/// readers, its rigs, run in parallel and its one writer alone. That writer sets
-/// `COCKPIT_TMUX` and `COCKPIT_READONLY`, which no check reads.
-const KEPT: [(&str, &str); 2] = [
-    ("fake/env.rs", "static ENV: Mutex<()> = Mutex::new(());"),
-    ("push.rs", "static ENV: RwLock<()> = RwLock::new(());"),
-];
+/// file: push's, an `RwLock` because its readers, its rigs, run in parallel and its one
+/// writer alone. That writer sets `COCKPIT_TMUX` and `COCKPIT_READONLY`, which no check
+/// reads. The one every check reads under is the test-env crate's, outside `tests/` (#1132).
+const KEPT: [(&str, &str); 1] = [("push.rs", "static ENV: RwLock<()> = RwLock::new(());")];
 
 /// Whether any `static ENV` in the file `name` is a second lock, whatever its type and
 /// whether or not the file writes: in a binary that writes a variable a check reads in its
@@ -341,7 +338,7 @@ fn the_lock_scan_finds_the_shapes_it_reads_and_no_lookalike() {
     let local = "static ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());";
     let set = "fn f() { unsafe { std::env::set_var(\"A\", \"1\") } }\n";
     let unset = "fn f() { unsafe { std::env::remove_var(\"A\") } }\n";
-    let rows: [(&str, &str, String, &[&str]); 24] = [
+    let rows: [(&str, &str, String, &[&str]); 22] = [
         ("a Mutex, a set_var", "x.rs", format!("{mutex}\n{set}"), &[mutex]),
         ("a Mutex, a remove_var", "x.rs", format!("{mutex}\n{unset}"), &[mutex]),
         ("an RwLock, a set_var", "x.rs", format!("{rw}\n{set}"), &[rw]),
@@ -358,12 +355,11 @@ fn the_lock_scan_finds_the_shapes_it_reads_and_no_lookalike() {
         ("data's, no write", "data.rs", format!("{mutex}\n"), &[mutex]),
         ("agents', no write", "agents.rs", format!("{mutex}\n"), &[mutex]),
         ("panel_env's, no write", "panel_env.rs", format!("{mutex}\n"), &[mutex]),
-        ("fake's own", "fake/env.rs", format!("{mutex}\n{set}"), &[]),
         (
-            "fake's and a second",
+            "one in fake/env.rs, the crate's since #1132",
             "fake/env.rs",
-            format!("{mutex}\nfn t() {{ {local} }}\n"),
-            &[local],
+            format!("{mutex}\n{set}"),
+            &[mutex],
         ),
         ("one in fake/mod.rs, no write", "fake/mod.rs", format!("{mutex}\n"), &[mutex]),
         ("no write", "x.rs", format!("{mutex}\nfn f() {{ std::env::var(\"A\"); }}\n"), &[]),
@@ -377,9 +373,8 @@ fn the_lock_scan_finds_the_shapes_it_reads_and_no_lookalike() {
             &[],
         ),
         ("push's twice", "push.rs", format!("{rw}\nfn t() {{ {rw} }}\n{set}"), &[rw]),
-        ("fake's twice", "fake/env.rs", format!("{mutex}\nfn t() {{ {mutex} }}\n"), &[mutex]),
-        ("fake's twice at the top", "fake/env.rs", format!("{mutex}\n{mutex}\n"), &[mutex]),
-        ("fake's in a module", "fake/env.rs", format!("mod m {{ {mutex} }}\n"), &[mutex]),
+        ("push's twice at the top", "push.rs", format!("{rw}\n{rw}\n{set}"), &[rw]),
+        ("push's in a module", "push.rs", format!("mod m {{ {rw} }}\n{set}"), &[rw]),
         (
             "a lock in a raw string",
             "x.rs",
