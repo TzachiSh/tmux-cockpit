@@ -327,8 +327,10 @@ lock named `ENV` of its own and writes the environment, or a second one in
 `fake/`. push's `RwLock` is the one it lets through, by its declaration: its
 readers, the rigs, run in parallel, and its one writer sets no variable a check
 reads. The helpers only check: `fake::checked_tmux`
-before any tmux a helper runs, and `fake::checked_state` in each rig that sets
-`HOME`. The product's own tmux calls refuse too (#1089): under the test guard
+before any tmux a helper runs, and `fake::checked_state`, or
+`fake::checked_state_held` where the rig holds the lock (data, agents and
+info_dir), in each rig that sets `HOME`. The product's own tmux calls refuse
+too (#1089): under the test guard
 (`COCKPIT_TEST_TMUX_GUARD`, docs/tui.md) `data::refuses` lets `data::tmux`,
 push's start and the board's tile previews run a plain `tmux` only with `TMUX`
 unset and `TMUX_TMPDIR` an existing folder, and each reads anything else
