@@ -135,6 +135,20 @@ names what is in it on stderr: `tests/run.sh: left in its socket folder …`. A
 run ended by KILL leaves it too. Nothing sweeps `/tmp/cs.*`. One is safe to
 remove once no server answers on a socket inside it.
 
+Once the run's exit trap has started, it ignores HUP, INT and TERM, and so does
+every command it starts (#1107). No step of the cleanup has a time limit. A
+Ctrl-C then does nothing: with the suite's server stopped, so that the
+cleanup's `tmux kill-server` waited on it, an INT to the run's process group
+left the run running for over a minute. A HUP or TERM to the group, from a
+second terminal `kill -TERM -- -<pgid>`, ended that cleanup in about 2 s: the
+tmux client handles both itself, and the cleanup went on and removed
+everything. Anything else that hangs there, an `rm` or a `find`, needs
+`kill -9`, which ends the run where it is. It leaves the run's socket
+`cockpit-suite-<pid>` under `$TMUX_TMPDIR/tmux-<uid>`, its state and shim
+folders (`tmp.<10>` in `TMPDIR`) and, for a run started with no
+`TMUX_TMPDIR`, its `/tmp/cs.<6>` folder, to remove by hand. `kill -9 <pid>`
+alone also leaves the hung command running.
+
 Those rows hold only where the suite made the folder. In a folder you named,
 other runs' sockets may sit beside this run's, so nothing is asked of it. On
 CI one leg, the one marked `bare` in `shell-suite.yml`'s matrix (the
