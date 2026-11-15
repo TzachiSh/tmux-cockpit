@@ -4790,9 +4790,11 @@ for dm_f in "${dm_names[@]}"; do
        "$(dm_drawn 3 "cockpit: review pasted into t:0 $dm_f ")"
 done
 dm_down 3
-# 4. cockpit.tmux:302 (#1096): an @cockpit_panel_mode value went in raw, and its #( ran.
-# The drawn row below and the dmsg scan pin the fix: an expanded value changes the drawn
-# text, so a revert reds them every time. The pmode marker in the last row is a backstop
+# 4. cockpit.tmux's dmsg of "@cockpit_panel_mode is [$pmode]" (#1096): the value went in
+# raw, and its #( ran. Two rows pin the fix, and a revert reds both every time. The drawn
+# row below reds because an expanded value changes the drawn text. The dmsg scan reds
+# because it reads the source: it greps cockpit.tmux and scripts/ for a display-message
+# of a variable not made through dmsg. The pmode marker in the last row is a backstop
 # only: its job dies with cockpit.tmux's short-lived client, so a revert can leave none
 # (#1118).
 dm_up 4
