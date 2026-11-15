@@ -165,6 +165,163 @@ fn the_scan_finds_the_shapes_it_reads_and_no_lookalike() {
     }
 }
 
+// --- #1110: one environment lock in a binary, fake's ---
+
+/// `src` with its comments and the insides of its string and char literals blanked, so a
+/// scan of what the code declares and calls meets no word of a message or a row's table.
+fn code_of(src: &str) -> String {
+    let b = src.as_bytes();
+    let (mut out, mut i) = (String::new(), 0);
+    // how far past `from` `pat` first starts, plus `k`; past the end where it is not (cut below)
+    let at = |from: usize, pat: &str, k: usize| src[from..].find(pat).map_or(b.len(), |n| n + k);
+    while i < b.len() {
+        let char_lit = b.get(i + 2) == Some(&b'\'') || b.get(i + 1) == Some(&b'\\');
+        let raw = matches!(b.get(i + 1), Some(b'"' | b'#')) && !word(b, i);
+        let end = match b[i] {
+            b'/' if b.get(i + 1) == Some(&b'/') => i + at(i, "\n", 0),
+            b'/' if b.get(i + 1) == Some(&b'*') => i + at(i, "*/", 2),
+            b'\'' if char_lit => i + 1 + at(i + 1, "'", 1),
+            b'r' if raw => {
+                let hashes = b[i + 1..].iter().take_while(|&&c| c == b'#').count();
+                let close = format!("\"{}", "#".repeat(hashes));
+                i + 2 + hashes + at(i + 2 + hashes, &close, close.len())
+            }
+            b'"' => {
+                let mut j = i + 1;
+                while j < b.len() && b[j] != b'"' {
+                    j += if b[j] == b'\\' { 2 } else { 1 };
+                }
+                j + 1
+            }
+            _ => {
+                let c = src[i..].chars().next().unwrap();
+                out.push(c);
+                i += c.len_utf8();
+                continue;
+            }
+        };
+        out.push(' ');
+        i = end.min(b.len());
+    }
+    out
+}
+
+/// The one lock named ENV a file outside `fake` may keep: push's, an `RwLock` so that its
+/// rigs run side by side and its one writer alone. That writer sets `COCKPIT_TMUX` and
+/// `COCKPIT_READONLY`, which no check reads. Exempt as this declaration in this file, not
+/// as the file.
+const PUSH_LOCK: (&str, &str) = ("push.rs", "static ENV: RwLock<()> = RwLock::new(());");
+
+/// The binaries that write a variable a check reads in their own process: `COCKPIT_LOG`;
+/// `XDG_CACHE_HOME`; `TMUX`, `TMUX_PANE`, `TMUX_TMPDIR` and `XDG_CACHE_HOME`. Any `static
+/// ENV` there is one again, whatever its type.
+const WRITERS: [&str; 3] = ["data.rs", "agents.rs", "panel_env.rs"];
+
+/// Each `static ENV` of `src`, the file `name` under `tui/tests`, that is a lock of its
+/// own beside fake's (#1110): a `Mutex` or `RwLock` in a file that calls `set_var` or
+/// `remove_var`, but [`PUSH_LOCK`], and any in [`WRITERS`]. Its declaration, spaces
+/// made one, up to its `;`. None in `fake/`, which owns the lock.
+fn own_env_locks(name: &str, src: &str) -> Vec<String> {
+    if name.starts_with("fake/") {
+        return vec![];
+    }
+    let code = code_of(src);
+    let writes = code.contains("set_var(") || code.contains("remove_var(");
+    let mut found = vec![];
+    for (at, _) in code.match_indices("static ENV") {
+        if !code[at + "static ENV".len()..].trim_start().starts_with(':') {
+            continue;
+        }
+        let decl = code[at..].split(';').next().unwrap_or_default();
+        let decl = decl.split_whitespace().collect::<Vec<_>>().join(" ") + ";";
+        let lock = decl.contains("Mutex") || decl.contains("RwLock");
+        let exempt = (name, decl.as_str()) == PUSH_LOCK;
+        if WRITERS.contains(&name) || (lock && writes && !exempt) {
+            found.push(decl);
+        }
+    }
+    found
+}
+
+/// Every `.rs` file under `dir`, named by its path under `top`, `/` between the parts.
+fn rust_files(top: &Path, dir: &Path, out: &mut Vec<(String, PathBuf)>) {
+    for e in std::fs::read_dir(dir).unwrap().map(|e| e.unwrap().path()) {
+        if e.is_dir() {
+            rust_files(top, &e, out);
+        } else if e.extension().is_some_and(|x| x == "rs") {
+            let name = e.strip_prefix(top).unwrap().to_string_lossy().replace('\\', "/");
+            out.push((name, e));
+        }
+    }
+}
+
+/// #1110: no test binary keeps an environment lock of its own beside fake's, which every
+/// check reads under. A sibling's write under another lock would be read by a check as the
+/// caller's. What it cannot see: a writer that takes no lock at all, a lock by another
+/// name, and a write made through a helper of another file.
+#[test]
+fn no_binary_keeps_an_environment_lock_of_its_own() {
+    let tests = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
+    let mut files = vec![];
+    rust_files(&tests, &tests, &mut files);
+    assert!(files.iter().any(|(n, _)| n == "data.rs"), "the walk found no data.rs: {files:?}");
+    let mut found: Vec<(String, String)> = vec![];
+    for (name, f) in &files {
+        let src = std::fs::read_to_string(f).unwrap();
+        found.extend(own_env_locks(name, &src).into_iter().map(|d| (name.clone(), d)));
+    }
+    assert_eq!(found, Vec::<(String, String)>::new(), "a lock of its own: take fake::env_lock()");
+}
+
+/// The scan above, on sources with a known answer: what it flags and the lookalikes it
+/// passes, push's lock among them only where it is push's.
+#[test]
+fn the_lock_scan_finds_the_shapes_it_reads_and_no_lookalike() {
+    let mutex = "static ENV: Mutex<()> = Mutex::new(());";
+    let rw = "static ENV: RwLock<()> = RwLock::new(());";
+    let local = "static ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());";
+    let set = "fn f() { unsafe { std::env::set_var(\"A\", \"1\") } }\n";
+    let unset = "fn f() { unsafe { std::env::remove_var(\"A\") } }\n";
+    let rows: [(&str, &str, String, &[&str]); 18] = [
+        ("a Mutex, a set_var", "x.rs", format!("{mutex}\n{set}"), &[mutex]),
+        ("a Mutex, a remove_var", "x.rs", format!("{mutex}\n{unset}"), &[mutex]),
+        ("an RwLock, a set_var", "x.rs", format!("{rw}\n{set}"), &[rw]),
+        ("one inside a fn", "x.rs", format!("fn t() {{\n    {local}\n}}\n{set}"), &[local]),
+        ("a pub one", "x.rs", format!("pub {mutex}\n{set}"), &[mutex]),
+        ("push's", "push.rs", format!("{rw}\n{set}"), &[]),
+        (
+            "push's and a Mutex",
+            "push.rs",
+            format!("{rw}\nfn t() {{ {mutex} }}\n{set}"),
+            &[mutex],
+        ),
+        ("push's in another file", "theme.rs", format!("{rw}\n{set}"), &[rw]),
+        ("data's, no write", "data.rs", format!("{mutex}\n"), &[mutex]),
+        ("agents', no write", "agents.rs", format!("{mutex}\n"), &[mutex]),
+        ("panel_env's, no write", "panel_env.rs", format!("{mutex}\n"), &[mutex]),
+        ("fake's own", "fake/env.rs", format!("{mutex}\n{set}"), &[]),
+        ("no write", "x.rs", format!("{mutex}\nfn f() {{ std::env::var(\"A\"); }}\n"), &[]),
+        ("a write in a comment", "x.rs", format!("{mutex}\n// set_var(\"A\", \"1\")\n"), &[]),
+        ("a lock in a comment", "x.rs", format!("// {mutex}\n{set}"), &[]),
+        ("a lock in a string", "x.rs", format!("const S: &str = \"{mutex}\";\n{set}"), &[]),
+        (
+            "another lock's name",
+            "x.rs",
+            format!("{}\n{set}", mutex.replace("ENV", "ENVS")),
+            &[],
+        ),
+        (
+            "a lock in a raw string",
+            "x.rs",
+            format!("const S: &str = r#\"{mutex}\"#;\n{set}"),
+            &[],
+        ),
+    ];
+    for (row, name, src, want) in rows {
+        assert_eq!(own_env_locks(name, &src), want, "{row}: {src}");
+    }
+}
+
 /// #1066: the folder the runner makes for this binary in /tmp holds tmux's own
 /// `tmux-<uid>` folder and the sockets in it, and nothing else, read while a rig
 /// server runs there.
