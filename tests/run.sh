@@ -11311,6 +11311,12 @@ nest_run() {                  # <pattern> [env words...]
     NEST_PASS=$(printf '%s\n' "$NEST_OUT" | grep -c 'PASS')
     NEST_FAIL=$(printf '%s\n' "$NEST_OUT" | grep -c 'FAIL')
 }
+# For a row's got: a red nested run's own words, so the row names what failed in it.
+nest_fails() {                # -> ": <line>; <line>" of the last nest_run's FAIL and FATAL
+    local l                   # lines, colours cut; nothing when it printed none
+    l=$(printf '%s\n' "$NEST_OUT" | sed 's/\x1b\[[0-9;]*m//g; s/^ *//' | grep -E '^(FAIL|FATAL) ')
+    [ -z "$l" ] || printf ': %s' "${l//$'\n'/; }"
+}
 nh_red() {                    # <cmd...> -> the red rows it printed, by title, colours cut
     "$@" | sed 's/\x1b\[[0-9;]*m//g' | sed -n 's/^ *FAIL //p' | tr '\n' ' '
 }
@@ -11321,6 +11327,7 @@ NH=$(mktmpd); mkdir -p "$NH/s" "$NH/w/tmux-x" "$NH/w/other"
 { sed '/^echo "== /,$d' "$DIR/tests/run.sh"
   printf 'echo "%s nh green %s"\nis "nh one" a a\n' == ==
   printf 'echo "%s nh red %s"\nis "nh two" a a\nis "nh three" a b\n' == ==
+  printf 'echo "%s nh fatal %s"\nfatal "nh stops here"\n' == ==
 } > "$NH/fx.sh"
 if need_tmux "nest_run"; then :
 elif sock_long "$NH/s"; then skip_ "nest_run (TMPDIR too long for the nested socket path)"
@@ -11328,8 +11335,14 @@ else
 nest_run '^nh green' ONLY_RUN="$NH/fx.sh" TMUX_TMPDIR="$NH/s"
 is "nest_run of a green block: its exit, its PASS and its FAIL lines" "0 1 0" \
    "$NEST_RC $NEST_PASS $NEST_FAIL"
+is "nest_fails of that green run: nothing" "" "$(nest_fails)"
 nest_run '^nh red' ONLY_RUN="$NH/fx.sh" TMUX_TMPDIR="$NH/s"
 is "nest_run of a block with a red row: the same three" "1 1 1" "$NEST_RC $NEST_PASS $NEST_FAIL"
+is "nest_fails of that run: its red row's FAIL line, for an outer row's got" ": FAIL nh three" \
+   "$(nest_fails)"
+nest_run '^nh fatal' ONLY_RUN="$NH/fx.sh" TMUX_TMPDIR="$NH/s"
+is "nest_fails of a run that ends by fatal: its FATAL line" "1: FATAL nh stops here" \
+   "$NEST_RC$(nest_fails)"
 sock_sweep "$NH/s"
 fi
 is "nest_run with no pattern, or an empty one, runs nothing: a red row of its own, and 2" \
@@ -11387,7 +11400,8 @@ if sock_long "$NBS/s"; then
     skip_ "a stub beside a spaced TMPDIR (TMPDIR too long for the nested socket path)"
 else
 nest_run '^the suite never reaches the network' TMPDIR="$NBS/my  tmp" TMUX_TMPDIR="$NBS/s"
-is "the network block's run there exits 0 with no row failed" "0 0" "$NEST_RC $NEST_FAIL"
+is "the network block's run there exits 0 with no row failed" "0 0" \
+   "$NEST_RC $NEST_FAIL$(nest_fails)"
 is "and only the TMPDIR is beside it" "my  tmp,s," "$(ls -A "$NBS" | tr '\n' ,)"
 sock_sweep "$NBS/s"
 fi
@@ -11453,7 +11467,7 @@ nest_run "^the suite sees none of its caller|^install\.sh --check: one row|$(:
     REVDIFF_CONFIG="$CW/c/revdiff" REVDIFF_EXCLUDE=canary CLAUDE_CODE_SESSION_KIND=canary \
     COCKPIT_TMUX="$cw_ct/tmux" COCKPIT_CLAUDE="$CW/c/claude" COCKPIT_ACTION="$CW/c/act"
 is "the blocks that wrote there, run under the canaries: exit 0, no row failed" "0 0" \
-   "$NEST_RC $NEST_FAIL"
+   "$NEST_RC $NEST_FAIL$(nest_fails)"
 # A block renamed out of the pattern would drop from the run with every row still green.
 is "and all eight blocks of the pattern ran" "8" "$(printf '%s\n' "$NEST_OUT" | grep -c '^== ')"
 cw_unseen() {                 # <variable> -> 1 when the nested run's own row for it passed
@@ -11563,7 +11577,7 @@ nest_run "^the suite sees none of git's names|$(:
         )^tree_diff: staged, unstaged and untracked changes are one diff" \
     TMUX_TMPDIR="$GC/s" "${gc_e[@]}"
 is "the blocks that use git, run under the canaries: exit 0, no row failed" "0 0" \
-   "$NEST_RC $NEST_FAIL"
+   "$NEST_RC $NEST_FAIL$(nest_fails)"
 is "and all four blocks of the pattern ran" "4" "$(printf '%s\n' "$NEST_OUT" | grep -c '^== ')"
 is "nothing was made or changed where git's names pointed" "$gc_b" "$(gc_ls)"
 is "the caller's git editor and its template's hook were not run" "not run, not run" \
@@ -11607,7 +11621,7 @@ else
 nest_run '^a server the suite starts holds no TMUX_COCKPIT_DIR' \
     TMUX_COCKPIT_DIR="$CDN/live-plugin" TMUX_TMPDIR="$CDN/s"
 is "the block's run under a caller's TMUX_COCKPIT_DIR: both rows pass, exit 0" "0 2 0" \
-   "$NEST_RC $NEST_PASS $NEST_FAIL"
+   "$NEST_RC $NEST_PASS $NEST_FAIL$(nest_fails)"
 sock_sweep "$CDN/s"
 fi
 unset CDN NEST_RC NEST_OUT NEST_PASS NEST_FAIL
@@ -11660,7 +11674,8 @@ sf_run() {                    # <pattern> <ONLY_RUN file or ''> <env words...>
     printf '%s\n' "$NEST_OUT" > "$SF/log"
     # 2>/dev/null before the input redirect: after it, bash reports a missing file first.
     { IFS= read -r f; IFS= read -r p; } 2>/dev/null < "$SF/out"
-    printf '%s %s %s|' "$NEST_RC" "$NEST_PASS" "$NEST_FAIL"
+    # A run of the block above shows its FAIL lines; a fixture's are its row's to read.
+    printf '%s %s %s%s|' "$NEST_RC" "$NEST_PASS" "$NEST_FAIL" "$([ -n "$run" ] || nest_fails)"
     case $f in
         /tmp/cs.[A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9])
             [ -e "$f" ] && printf 'made, still there|' || printf 'made, gone|' ;;
