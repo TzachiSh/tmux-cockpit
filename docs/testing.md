@@ -59,6 +59,28 @@ The suite drops what its caller's environment could hand to a script under test
 `COCKPIT_ACTION`; and the programs `COCKPIT_TMUX` and `COCKPIT_CLAUDE`. A block
 that needs one sets it itself.
 
+It also drops every exported `GIT_` name (#1099), by prefix: `GIT_DIR`,
+`GIT_WORK_TREE`, `GIT_INDEX_FILE` and their kin point git at another
+repository, `GIT_CONFIG_GLOBAL`, `GIT_CONFIG_SYSTEM` and the numbered
+`GIT_CONFIG_KEY_<n>` hand it other settings, `GIT_TEMPLATE_DIR` other hooks,
+`GIT_TRACE` a file to append to, `GIT_EDITOR` a program to run. Before that,
+a run from a shell that exported `GIT_DIR`, as a git hook's shell does, made a
+repository in the folder it named, committed into it twice and failed 383
+rows. If you ran the suite that way, look there for a `cockpit-green` file,
+two commits titled `init` and worktree entries that are not yours. `BASH_ENV`
+and `ENV` go too: every bash the suite starts would source the file first.
+
+And it drops the other names the scripts and the board read, none of which
+names a place to write (#1100): `NO_COLOR`, `COCKPIT_GLYPHS`,
+`COCKPIT_PANEL_MODEL`, `COCKPIT_PANEL_EFFORT`, `COCKPIT_PANEL_TIMEOUT`,
+`COCKPIT_PANEL_MODE`, `COCKPIT_PANEL_DROPPED`, `COCKPIT_PANEL_HIDE_TAKEN`,
+`COCKPIT_VIEW_ASK`, `COCKPIT_VIEW_BACK`, `COCKPIT_BASKET_PANE`,
+`COCKPIT_FILES_STATE`, `COCKPIT_GITHUB`, `COCKPIT_TUI_RELEASES`,
+`COCKPIT_TUI_REPO`, `TM_SID`, `TM_CLIENT`, `TM_PANE`, `TM_POPUP`, `TM_NEEDS`,
+`MD_EDIT`, `REVIEW_PANE_ID`, and `COCKPIT_TEST_TMUX_GUARD`, the tui tests' own
+guard, which `.cargo/config.toml` sets for cargo and the suite clears for
+itself alone. `COCKPIT_TUI_BIN` is still taken from the caller, on purpose.
+
 Before #1080 a run from a shell that exported one of those nineteen used it. If
 you ran the suite that way, you may find three symlinks in your `XDG_BIN_HOME`,
 `tm`, `tmux-branch` and `tmux-open-path`, pointing into the checkout you

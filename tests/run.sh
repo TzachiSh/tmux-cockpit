@@ -297,6 +297,25 @@ unset COCKPIT_TMUX
 # real one. And the file a board writes its action to, which a board reads as "I was
 # started by a wrapper": with a caller's, a row that starts a bare board reads otherwise.
 unset COCKPIT_CLAUDE COCKPIT_ACTION
+# git's own names (#1099). GIT_DIR and its kin send every fixture's git to another
+# repository: with a caller's GIT_DIR the suite made a repository there, committed into it
+# and failed 383 rows. GIT_CONFIG_GLOBAL, GIT_CONFIG_SYSTEM and the GIT_CONFIG_KEY_<n>
+# family hand git a caller's settings, GIT_TEMPLATE_DIR its hooks for every git init,
+# GIT_TRACE a file to append to, GIT_EDITOR a program to run. So every exported GIT_ name
+# goes, by prefix: no list could spell the numbered ones. A block that needs one sets it
+# itself, as the fixtures do for the author's and the committer's name.
+for suite_v in $(compgen -e GIT_ 2>/dev/null); do unset "$suite_v"; done
+unset suite_v
+# The file every bash the suite starts would source before its first line, and sh's.
+unset BASH_ENV ENV
+# The other names the scripts and the board read (#1100). None names a place to write; each
+# changes what a script does, and so a row's verdict. COCKPIT_TEST_TMUX_GUARD is the tui
+# tests' own guard, set by .cargo/config.toml for cargo: dropped here for the suite alone.
+unset NO_COLOR COCKPIT_GLYPHS COCKPIT_PANEL_MODEL COCKPIT_PANEL_EFFORT COCKPIT_PANEL_TIMEOUT
+unset COCKPIT_PANEL_MODE COCKPIT_PANEL_DROPPED COCKPIT_PANEL_HIDE_TAKEN COCKPIT_VIEW_ASK
+unset COCKPIT_VIEW_BACK COCKPIT_BASKET_PANE COCKPIT_FILES_STATE COCKPIT_TEST_TMUX_GUARD
+unset COCKPIT_GITHUB COCKPIT_TUI_RELEASES COCKPIT_TUI_REPO TM_SID TM_CLIENT TM_PANE TM_POPUP
+unset TM_NEEDS MD_EDIT REVIEW_PANE_ID
 # The suite never runs the real VS Code (#350). Under WSL the Windows PATH brings
 # its code(1) in, and with the private HOME it installs a fresh ~/.vscode-server
 # (639 MB) and can open the owner's editor. So: no /mnt/<drive> entry on PATH, and
@@ -11076,6 +11095,89 @@ fi
 unset -f cw_ls cw_unseen
 rm -rf "$cw_ct"
 unset CW cw cwo cwrc cw_ct
+
+echo "== the suite sees none of git's names, no BASH_ENV, no other switch (#1099, #1100) =="
+gvs="GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY"
+gvs="$gvs GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CONFIG GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM"
+gvs="$gvs GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 GIT_CEILING_DIRECTORIES"
+gvs="$gvs GIT_TEMPLATE_DIR GIT_TRACE GIT_EDITOR BASH_ENV ENV"
+gvs="$gvs NO_COLOR COCKPIT_GLYPHS COCKPIT_PANEL_MODEL COCKPIT_PANEL_EFFORT"
+gvs="$gvs COCKPIT_PANEL_TIMEOUT COCKPIT_PANEL_MODE COCKPIT_PANEL_DROPPED"
+gvs="$gvs COCKPIT_PANEL_HIDE_TAKEN COCKPIT_VIEW_ASK COCKPIT_VIEW_BACK COCKPIT_BASKET_PANE"
+gvs="$gvs COCKPIT_FILES_STATE COCKPIT_TEST_TMUX_GUARD COCKPIT_GITHUB COCKPIT_TUI_RELEASES"
+gvs="$gvs COCKPIT_TUI_REPO TM_SID TM_CLIENT TM_PANE TM_POPUP TM_NEEDS MD_EDIT REVIEW_PANE_ID"
+for gv in $gvs; do
+    is "$gv is not in the suite's environment" "unset" "${!gv-unset}"
+done
+# By prefix, so a GIT_ name no list holds is caught too. The author's and the committer's
+# name and mail are the suite's own: an earlier block exports them for its fixtures.
+is "no other GIT_ name is exported" "" \
+   "$(compgen -e GIT_ | grep -vxE 'GIT_(AUTHOR|COMMITTER)_(NAME|EMAIL)' | tr '\n' ' ')"
+if need_tmux "the suite's server's environment"; then :; else
+is "the suite's own server is up, and holds none of them in its environment" "up " \
+   "$(tmux has-session -t suite 2>/dev/null && printf 'up ' || printf 'down '
+      tmux show-environment -g 2>/dev/null | sed 's/^-//; s/=.*//' |
+          grep -E "^GIT_|^($(printf '%s' "$gvs" | tr ' ' '|'))\$" |
+          grep -vxE 'GIT_(AUTHOR|COMMITTER)_(NAME|EMAIL)' | tr '\n' ' ')"
+fi
+unset gv
+
+echo "== git writes nothing where its caller's names point; no BASH_ENV is read (#1099) =="
+# The block above and three that make and commit into fixture repositories, through
+# only.sh, with every one of those names set as a caller might have it: folders and files of
+# a canary for git's, a stub editor, a BASH_ENV file that leaves a mark, a value in each
+# switch. CI's environment has none of them, so this is the run that meets them there.
+GC=$(mktmpd); mkdir -p "$GC/s" "$GC/c/dir" "$GC/c/wt" "$GC/c/common" "$GC/c/obj" "$GC/c/alt" \
+    "$GC/c/tpl/hooks"
+: > "$GC/c/cfg"; : > "$GC/c/gcfg"; : > "$GC/c/scfg"
+printf '#!/bin/sh\necho ran >> %s\nexit 0\n' "$(tq "$GC/ed.ran")" > "$GC/c/ed"
+printf '#!/bin/sh\necho ran >> %s\n' "$(tq "$GC/hook.ran")" > "$GC/c/tpl/hooks/post-commit"
+chmod +x "$GC/c/ed" "$GC/c/tpl/hooks/post-commit"
+# Sourced by every bash that starts with it set. The run's own first shells start before the
+# prelude can drop it, and are the caller's affair: they hold no COCKPIT_TUI_OFFLINE, which
+# the prelude exports, so the mark is left only by a bash the suite itself started.
+printf '[ -z "${COCKPIT_TUI_OFFLINE:-}" ] || echo ran >> %s\n' "$(tq "$GC/benv.ran")" \
+    > "$GC/c/benv"
+gc_ls() { ( cd "$GC/c" && find . | sort | tr '\n' ' ' ); }
+# The nested socket is $GC/s/tmux-<uid>/cockpit-suite-<pid>: past 107 bytes no server binds.
+if [ $((${#GC} + ${#UID} + 30)) -gt 107 ]; then
+    skip_ "canaries in git's names (TMPDIR too long for the nested socket path)"
+else
+gc_b=$(gc_ls)
+gc_e=(GIT_DIR="$GC/c/dir" GIT_WORK_TREE="$GC/c/wt" GIT_COMMON_DIR="$GC/c/common"
+    GIT_INDEX_FILE="$GC/c/index" GIT_OBJECT_DIRECTORY="$GC/c/obj"
+    GIT_ALTERNATE_OBJECT_DIRECTORIES="$GC/c/alt" GIT_CONFIG="$GC/c/cfg"
+    GIT_CONFIG_GLOBAL="$GC/c/gcfg" GIT_CONFIG_SYSTEM="$GC/c/scfg" GIT_CONFIG_COUNT=1
+    GIT_CONFIG_KEY_0=user.name GIT_CONFIG_VALUE_0=canary GIT_CEILING_DIRECTORIES=/
+    GIT_TEMPLATE_DIR="$GC/c/tpl" GIT_TRACE="$GC/c/trace" GIT_EDITOR="$GC/c/ed"
+    BASH_ENV="$GC/c/benv" ENV="$GC/c/benv")
+for gv in $gvs; do
+    case $gv in GIT_*|BASH_ENV|ENV) ;; *) gc_e+=("$gv=canary") ;; esac
+done
+gco=$(cd "$DIR" && env -u TMUX -u COCKPIT_TUI_OFFLINE TMUX_TMPDIR="$GC/s" "${gc_e[@]}" \
+    tests/only.sh "^the suite sees none of git's names|$(:
+        )^tmux-where: detached HEAD and odd repos|^tmux-branch: local and remote branches|$(:
+        )^tree_diff: staged, unstaged and untracked changes are one diff" 2>&1 </dev/null)
+gcrc=$?
+is "the blocks that use git, run under the canaries: exit 0, no row failed" "0 0" \
+   "$gcrc $(printf '%s\n' "$gco" | grep -c 'FAIL')"
+is "and all four blocks of the pattern ran" "4" "$(printf '%s\n' "$gco" | grep -c '^== ')"
+is "nothing was made or changed where git's names pointed" "$gc_b" "$(gc_ls)"
+is "the caller's git editor and its template's hook were not run" "not run, not run" \
+   "$([ -e "$GC/ed.ran" ] && printf 'ran, ' || printf 'not run, '
+      [ -e "$GC/hook.ran" ] && echo ran || echo 'not run')"
+is "no bash the suite started read the caller's BASH_ENV" "0" \
+   "$(cat "$GC/benv.ran" 2>/dev/null | wc -l | tr -d ' ')"
+gc_unseen() { printf '%s\n' "$gco" | grep -c "PASS[^ ]* $1 is not in the suite's environment"; }
+for gv in $gvs; do
+    is "$gv: the nested run did not see it" "1" "$(gc_unseen "$gv")"
+done
+for gv in "$GC"/s/tmux-*/*; do
+    [ -S "$gv" ] && "$TMUX_REAL" -S "$gv" kill-server >/dev/null 2>&1
+done
+fi
+unset -f gc_ls gc_unseen
+unset GC gc_b gc_e gco gcrc gv gvs
 
 echo "== a server the suite starts holds no TMUX_COCKPIT_DIR (#1073) =="
 if need_tmux "a server's environment"; then :; else
