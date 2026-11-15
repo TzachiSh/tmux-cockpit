@@ -83,6 +83,10 @@ fn panel(args: &[String]) {
     }
     // cockpit-panel says when an ask opens with a panel already hidden on the pane
     a.hide_taken = std::env::var_os("COCKPIT_PANEL_HIDE_TAKEN").is_some_and(|v| v == "1");
+    // the key cockpit-panel read from the binding noted `cockpit: panel` (#1121)
+    if let Ok(k) = std::env::var("COCKPIT_PANEL_KEY") {
+        a.set_panel_key(&k);
+    }
     // the pane's prompt basket (#365 child 5): a send from Compose carries its refs
     a.basket_raw = cockpit_tui::basket::read_text(pane).unwrap_or_default();
     a.basket = cockpit_tui::basket::from_body(&a.basket_raw);

@@ -1790,10 +1790,13 @@ fn an_overscrolled_help_moves_back_at_once() {
 
 #[test]
 fn golden_help() {
+    // the key cockpit-panel passes, set on the app: no environment write (#1121)
     let mut a = stepped();
+    a.set_panel_key("f");
     ch(&mut a, '?');
     goldens("help-steps", &a, 0);
     let mut a = app("work", "bash", "$ ");
+    a.set_panel_key("f");
     ch(&mut a, '1');
     key(&mut a, KeyCode::F(1));
     goldens("help-compose", &a, 0);

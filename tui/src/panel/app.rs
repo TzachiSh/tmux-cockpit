@@ -43,6 +43,18 @@ pub const RESUME_GUARD_MS: u64 = 800;
 /// An explore-first write's caps (#416): the prompt and a few reads on sonnet fit, and
 /// more reading than that is the agent's task, so the call ends rather than keeps the user.
 pub const EXPLORE_BUDGET_USD: f64 = 0.15;
+/// The longest panel key the ^Z help names (#1121). tmux 3.8's `key_string` for a
+/// keyboard key with all three modifiers tops out at 13 bytes (`C-M-S-KPEnter`); only
+/// mouse names run longer, and those get the generic words.
+pub const PANEL_KEY_MAX: usize = 16;
+
+/// The panel key as the ^Z help may draw it, or None: 1 to [`PANEL_KEY_MAX`] bytes of
+/// printable ASCII, no space. A UTF-8 key (`é`) is refused too: the rule needs no list
+/// of the marks that reorder text, and the generic words stay true.
+pub fn checked_panel_key(raw: &str) -> Option<String> {
+    let ok = (1..=PANEL_KEY_MAX).contains(&raw.len()) && raw.bytes().all(|b| b.is_ascii_graphic());
+    ok.then(|| raw.to_string())
+}
 pub const EXPLORE_TIMEOUT: Duration = Duration::from_secs(90);
 const ROUNDS_WRITE: usize = 3;
 const ROUNDS_EXPLAIN: usize = 6;
@@ -286,6 +298,9 @@ pub struct App {
     /// A panel is hidden on this pane already (an ask left it so): ^Z cannot hide
     /// this one too, as the pane keeps one.
     pub hide_taken: bool,
+    /// The prefix key bound with the note `cockpit: panel`, as cockpit-panel read it
+    /// (#1121), once checked: the ^Z help names it. None draws the generic words.
+    panel_key: Option<String>,
     /// The pane's prompt basket (#365 child 5), read at open: the refs a send
     /// from Compose carries, expanded after the draft.
     pub basket: Vec<crate::refs::Ref>,
@@ -372,6 +387,7 @@ impl App {
             resume: None,
             hide: false,
             hide_taken: false,
+            panel_key: None,
             basket: vec![],
             basket_raw: String::new(),
             claude: false,
@@ -722,6 +738,16 @@ impl App {
     }
 
     /// Out with no action, the call killed: a hangup, or a loop that broke.
+    /// The panel key the ^Z help names, through [`checked_panel_key`]: a value it
+    /// refuses leaves None, so nothing can set a key the help would draw unchecked.
+    pub fn set_panel_key(&mut self, raw: &str) {
+        self.panel_key = checked_panel_key(raw);
+    }
+
+    pub fn panel_key(&self) -> Option<&str> {
+        self.panel_key.as_deref()
+    }
+
     pub fn stop(&mut self) {
         self.action = None;
         self.resume = None;
@@ -729,7 +755,7 @@ impl App {
         self.exit();
     }
 
-    /// ^Z: out with no action and the state kept for the next `prefix f` on
+    /// ^Z: out with no action and the state kept for the next panel key on
     /// this pane. Never while a call is out: `claude -p` cannot outlive the
     /// process, and running it again on the way back would be a second paid call.
     fn hide_key(&mut self) {
