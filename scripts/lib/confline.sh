@@ -2,7 +2,7 @@
 # The line that loads the plugin from a tmux config, for a plugin folder at any path.
 # Written to bash 3.2's syntax, as bootstrap.sh is. Under bash 3.2.57 (#1060) this file,
 # bootstrap.sh and install.sh pass bash -n, and cockpit_conf_line and cockpit_bare_carries
-# print what bash 5.3 prints for 39 folder shapes, three of them holding a '. The two
+# print what bash 5.3 prints for 39 folder shapes, four of them holding a '. The two
 # scripts were parsed under 3.2 and never run under it, and macOS's own bash was not used.
 # Sourced by bootstrap.sh, which appends it to a config, and install.sh, which prints it.
 #
