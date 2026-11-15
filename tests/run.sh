@@ -4790,11 +4790,13 @@ for dm_f in "${dm_names[@]}"; do
        "$(dm_drawn 3 "cockpit: review pasted into t:0 $dm_f ")"
 done
 dm_down 3
-# 4. cockpit.tmux:302 (#1096): an @cockpit_panel_mode value went in raw, and its #( ran.
-# The drawn row below and the dmsg scan pin the fix: an expanded value changes the drawn
-# text, so a revert reds them every time. The pmode marker in the last row is a backstop
-# only: its job dies with cockpit.tmux's short-lived client, so a revert can leave none
-# (#1118).
+# 4. cockpit.tmux's dmsg of "@cockpit_panel_mode is [$pmode]" (#1096): the value went in
+# raw, and its #( ran. Two rows pin the fix, and a revert reds both every time. The drawn
+# row below reds because an expanded value changes the drawn text. The dmsg scan reds
+# because it reads the source: it scans cockpit.tmux and scripts/ for a display-message
+# call whose text holds a variable, a -p read, the version check and dmsg's own call
+# excepted. The pmode marker in the last row is a backstop only: its job dies with
+# cockpit.tmux's short-lived client, so a revert can leave none (#1118).
 dm_up 4
 "$TMUX_REAL" -L "cockpit-dm-$$-4" set -g mouse on \; \
     set -g @cockpit_panel_mode "x#(touch $DM/m/pmode)y##z#[fg=red]w" >/dev/null 2>&1
@@ -10557,6 +10559,8 @@ unset -f py_run py_stub; unset PY Q py_awk py_bash py_w py_m
 echo "== tests/green.sh: the stamp hits on unchanged content, misses on one changed byte, and tool versions are in the key =="
 GROOT=$(mktmpd)
 mkdir -p "$GROOT/scripts/lib" "$GROOT/tests" "$GROOT/examples"
+# green.sh's find walks these three, as a checkout has them: absent, it says so on stderr (#1116)
+mkdir -p "$GROOT/tests/fixtures" "$GROOT/tui" "$GROOT/skills"
 cp "$DIR/tests/green.sh" "$GROOT/tests/green.sh"
 for f in cockpit.tmux install.sh bootstrap.sh scripts/foo scripts/lib/bar tests/baz examples/qux; do
     printf 'a\n' > "$GROOT/$f"
@@ -16426,7 +16430,8 @@ kv_alive() { "$TMUX_REAL" -L "$KV" list-panes -a -F '#{pane_id}' 2>/dev/null | g
 }
 # <action-line> [expect]: one trip through the wrapper; the note it left
 kv_run() {
-    rm -f "$KD/once" "$KD/twice" "$KD/line2" "$KD/done" "$KD/link" "$KD/expect" "$KD/rv"
+    # Not rv: the request row empties it before its trip and reads it after (#1116).
+    rm -f "$KD/once" "$KD/twice" "$KD/line2" "$KD/done" "$KD/link" "$KD/expect"
     : > "$KD/bargv"; printf '%s\n' "$1" > "$KD/line"
     [ $# -lt 2 ] || printf '%s\n' "$2" > "$KD/expect"
     [ "${KV_LINK:-}" != 1 ] || : > "$KD/link"
@@ -23018,6 +23023,23 @@ else
     bad "a UTF-8 locale whose regex [0-9] matches ² and ١ loads (localedef en_US.UTF-8)" \
         "loaded" "none"
 fi
+
+echo "== the green.sh stamp block and the board's kill block print nothing on stderr (#1116) =="
+# Both printed a "No such file or directory" on every green run: green.sh's find walked
+# three folders the stamp's fixture tree lacked, and a cat read the rv file kv_run had
+# just removed. A real one in a red run's log was lost beside them. Through only.sh, as
+# the #1098 block runs a block, with stderr kept apart from the rows.
+NE=$(mktmpd)
+(cd "$DIR" && env -u TMUX tests/only.sh \
+    '^tests/green\.sh: the stamp hits|^cockpit-board: kill %N re-checks' \
+    >"$NE/out" 2>"$NE/err" </dev/null)
+ne_rc=$?
+# A red nested run names its FAIL rows here: $NE/out goes with the run's temp folders.
+[ "$ne_rc" = 0 ] || ne_rc="$ne_rc: $(grep -A2 FAIL "$NE/out" | tr '\n' ' ')"
+# With the titles it printed: a block the pattern no longer matches would go unwatched.
+is "both blocks, the stamp and the kill block, ran through only.sh and passed" "0 2" \
+   "$ne_rc $(grep -c '^== ' "$NE/out")"
+is "and print nothing on stderr" "" "$(cat "$NE/err")"
 
 flop_left
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
