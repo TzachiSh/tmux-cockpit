@@ -10,9 +10,11 @@ use std::process::{Command, Stdio};
 /// Set in a child of this binary to the case its row's child half runs.
 const CHILD: &str = "COCKPIT_TEST_ENV_LOCK_CHILD";
 
-/// A scratch folder named `tag` and this process, removed when dropped.
+/// A scratch folder named `tag` and this process under cargo's own scratch dir for this
+/// target, never the source tree or /tmp, removed when dropped.
 fn scratch(tag: &str) -> fake::Scratch {
-    fake::Scratch::fresh(std::env::temp_dir().join(format!("{tag}-{}", std::process::id())))
+    let top = Path::new(env!("CARGO_TARGET_TMPDIR"));
+    fake::Scratch::fresh(top.join(format!("{tag}-{}", std::process::id())))
 }
 
 /// The case this process was started for, where it is a child of a row here.
@@ -177,7 +179,9 @@ fn a_refusing_guard_less_check_leaves_the_lock_unpoisoned() {
 }
 
 /// Whether `body`, beside `fake/env.rs` loaded as `env`, builds as a library, and what
-/// rustc said: the rustc beside the cargo that built this binary, writing into `s`.
+/// rustc said. The rustc is the one beside the cargo that built this binary, so the same
+/// toolchain; it writes into `s` alone, its TMPDIR too. Where it cannot be started the
+/// row fails: there is no path that passes without it.
 fn builds_beside_env(s: &Path, name: &str, body: &str) -> (bool, String) {
     let env_rs = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fake/env.rs");
     let src = s.join(format!("{name}.rs"));
@@ -187,6 +191,7 @@ fn builds_beside_env(s: &Path, name: &str, body: &str) -> (bool, String) {
         .args(["--edition", "2024", "--crate-type", "lib", "--emit", "metadata", "--out-dir"])
         .arg(s)
         .arg(&src)
+        .env("TMPDIR", s)
         .output()
         .unwrap_or_else(|e| panic!("{}: {e}", rustc.display()));
     (out.status.success(), String::from_utf8_lossy(&out.stderr).into_owned())
@@ -194,7 +199,8 @@ fn builds_beside_env(s: &Path, name: &str, body: &str) -> (bool, String) {
 
 /// #1110: outside `fake`, the token a `_held` check takes comes from `env_lock` and from
 /// nothing else, so a guard of another lock cannot pass for it. Built by rustc: the
-/// forged one is refused for its private field, and the lawful one builds.
+/// forged one is refused for its private field (E0451, `_guard`, the parts of the error a
+/// toolchain keeps), and the lawful one builds.
 #[test]
 fn the_token_has_no_constructor_outside_fake() {
     let s = scratch("cockpit-env-token");
@@ -204,5 +210,6 @@ fn the_token_has_no_constructor_outside_fake() {
     let (ok, said) = builds_beside_env(&s, "taken", taken);
     assert!(ok, "the lawful token did not build: {said}");
     let (ok, said) = builds_beside_env(&s, "forged", forged);
-    assert_eq!((ok, said.contains("private")), (false, true), "{said}");
+    let refused = said.contains("error[E0451]") && said.contains("`_guard`");
+    assert_eq!((ok, refused), (false, true), "{said}");
 }
