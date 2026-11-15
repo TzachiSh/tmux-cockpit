@@ -746,16 +746,19 @@ fn end_hung_gits(dir: &str) {
 }
 
 /// How many processes of ours have a cwd under `dir`, once none is left or after a
-/// poll of [`HANG_BOUND`]. A zombie has no cwd and is not counted.
+/// poll of [`HANG_BOUND`]. `dir` must have its links resolved, as the kernel gives a
+/// cwd. A zombie has no cwd and is not counted.
 fn left_under(dir: &Path) -> usize {
     let under = |p: i32| ours(p) && std::fs::read_link(format!("/proc/{p}/cwd")).is_ok_and(|c| c.starts_with(dir));
     until(HANG_BOUND, || pids_where(under).is_empty());
     pids_where(under).len()
 }
 
-/// Whether the hang has formed in `dir`: a cat of ours working there with TERM
-/// ignored, and a git of ours naming `dir` waiting on its child (#1075).
-fn hang_formed(dir: &str) -> bool {
+/// Whether the hang has formed: a cat of ours working in `cwd` with TERM ignored,
+/// and a git of ours naming `dir` waiting on its child (#1075). `dir` is the folder as
+/// the row wrote it, which git's cmdline holds; `cwd` is the same folder resolved,
+/// as the kernel gives a cwd.
+fn hang_formed(dir: &str, cwd: &Path) -> bool {
     let read = |p: i32, f: &str| std::fs::read_to_string(format!("/proc/{p}/{f}")).unwrap_or_default();
     let term = 1u64 << (libc::SIGTERM - 1);
     let ignores_term = |p: i32| {
@@ -764,7 +767,7 @@ fn hang_formed(dir: &str) -> bool {
         bits.and_then(|b| u64::from_str_radix(b.trim(), 16).ok())
             .is_some_and(|b| b & term != 0)
     };
-    let in_dir = |p: i32| std::fs::read_link(format!("/proc/{p}/cwd")).is_ok_and(|c| c == Path::new(dir));
+    let in_dir = |p: i32| std::fs::read_link(format!("/proc/{p}/cwd")).is_ok_and(|c| c == cwd);
     let cat = |p: i32| ours(p) && read(p, "comm").trim_end() == "cat" && in_dir(p) && ignores_term(p);
     let waiting = |p: i32| a_git_in(p, dir) && read(p, "wchan") == "do_wait";
     !pids_where(cat).is_empty() && !pids_where(waiting).is_empty()
@@ -784,7 +787,7 @@ fn planted_row_handed() -> (Result<u32, String>, usize) {
             end_hung_gits(e.path().to_str().unwrap());
         }
     }
-    (run, left_under(&tmp))
+    (run, left_under(&std::fs::canonicalize(&*tmp).unwrap()))
 }
 
 /// #1075: the planted row passes in a binary started with TERM ignored and blocked,
@@ -817,14 +820,17 @@ fn a_forced_hang_of_the_planted_filter_is_ended_once_it_forms() {
     };
     // SAFETY: `ignore` makes one async-signal-safe call and allocates nothing.
     let mut child = unsafe { c.pre_exec(ignore) }.stderr(std::process::Stdio::null()).spawn().unwrap();
-    let dir = tmp.join(format!("cockpit-tui-git-plant-{}", child.id()));
+    let plant = format!("cockpit-tui-git-plant-{}", child.id());
+    // git's cmdline holds the path as written, a cwd the path with links resolved
+    let canon = std::fs::canonicalize(&*tmp).unwrap();
+    let dir = tmp.join(&plant);
     let dir = dir.to_str().unwrap();
-    let formed = until(FORM_BOUND, || hang_formed(dir));
+    let formed = until(FORM_BOUND, || hang_formed(dir, &canon.join(&plant)));
     // our own unreaped child: the pid cannot have been recycled
     child.kill().unwrap();
     child.wait().unwrap();
     end_hung_gits(dir);
-    let left = left_under(&tmp);
+    let left = left_under(&canon);
     let why = "git no longer hangs here: no git waited on a planted cat ignoring TERM";
     assert!(formed, "{why} within {FORM_BOUND:?}");
     assert_eq!(left, 0, "the clean-up left processes of the forced hang");
