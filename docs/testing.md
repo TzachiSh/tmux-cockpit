@@ -136,17 +136,18 @@ run ended by KILL leaves it too. Nothing sweeps `/tmp/cs.*`. One is safe to
 remove once no server answers on a socket inside it.
 
 Once the run's exit trap has started, it ignores HUP, INT and TERM, and so does
-every command it starts (#1107). So Ctrl-C does not stop a cleanup that hangs,
-and no step of the cleanup has a time limit: its `tmux kill-server` calls, `rm`,
-`rmdir`, `chmod` and `find`. From a second terminal, `kill -- -<pgid>` sends
-TERM to the run's process group. A tmux client stuck on a server that does not
-answer ends on it, and the cleanup goes on and removes everything. A command
-that does not handle TERM, a stuck `rm`, needs `kill -9 <pid>` or
-`kill -9 -- -<pgid>`, and that ends the run where it is. Left behind, for you to
-remove: the suite's socket `cockpit-suite-<pid>` under
-`$TMUX_TMPDIR/tmux-<uid>`, its two state folders (`STATE` and `SHIM`,
-`tmp.<10>` in `TMPDIR`), and with no `TMUX_TMPDIR` the `/tmp/cs.<6>` folder.
-`kill -9 <pid>` alone also leaves the stuck command running.
+every command it starts (#1107). No step of the cleanup has a time limit. A
+Ctrl-C then does nothing: with the suite's server stopped, so that the
+cleanup's `tmux kill-server` waited on it, an INT to the run's process group
+left the run running for over a minute. A HUP or TERM to the group, from a
+second terminal `kill -TERM -- -<pgid>`, ended that cleanup in about 2 s: the
+tmux client handles both itself, and the cleanup went on and removed
+everything. Anything else that hangs there, an `rm` or a `find`, needs
+`kill -9`, which ends the run where it is. It leaves the run's socket
+`cockpit-suite-<pid>` under `$TMUX_TMPDIR/tmux-<uid>`, its state and shim
+folders (`tmp.<10>` in `TMPDIR`) and, for a run started with no
+`TMUX_TMPDIR`, its `/tmp/cs.<6>` folder, to remove by hand. `kill -9 <pid>`
+alone also leaves the hung command running.
 
 Those rows hold only where the suite made the folder. In a folder you named,
 other runs' sockets may sit beside this run's, so nothing is asked of it. On
