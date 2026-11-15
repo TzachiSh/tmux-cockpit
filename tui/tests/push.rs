@@ -421,10 +421,35 @@ fn a_cockpit_tui_survives_sigusr1() {
 }
 
 /// The tmux stub of [`a_cockpit_tui_survives_sigusr1`] in `dir`: it writes `ready`,
-/// waits for `go`, and fails the board's read.
+/// waits for `go` while `dir` is there, and fails the board's read. A red row removes
+/// `dir` once its board is dead, maybe before the stub saw `go`, and a wait on `go`
+/// alone then loops for good (#1075).
 fn usr1_stub(dir: &std::path::Path) -> String {
-    let d = dir.display();
-    format!("#!/bin/sh\n: > {d}/ready\nwhile [ ! -e {d}/go ]; do sleep 0.05; done\nexit 1\n")
+    let d = dir.display().to_string().replace('\'', r"'\''");
+    let wait = r#"while [ -d "$d" ] && [ ! -e "$d/go" ]; do sleep 0.05; done"#;
+    format!("#!/bin/sh\nd='{d}'\n: > \"$d/ready\"\n{wait}\nexit 1\n")
+}
+
+/// #1075: the USR1 row's stub ends once its folder is removed, `go` never written.
+#[test]
+fn the_usr1_stub_ends_once_its_folder_is_gone() {
+    let dir = std::env::temp_dir().join(format!("cockpit-tui-usr1-stub-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    // beside the folder, so the removal leaves the script
+    let stub = dir.with_extension("sh");
+    fake::write_exec(&stub, &usr1_stub(&dir));
+    let mut child = Command::new(&stub).stdin(Stdio::null()).spawn().unwrap();
+    let ready = until(|| dir.join("ready").exists());
+    std::fs::remove_dir_all(&dir).unwrap();
+    let ended = until(|| child.try_wait().unwrap().is_some());
+    if !ended {
+        // our own unreaped child: the pid cannot have been recycled
+        child.kill().unwrap();
+        child.wait().unwrap();
+    }
+    let _ = std::fs::remove_file(&stub);
+    assert_eq!((ready, ended), (true, true), "the stub still waited with its folder gone");
 }
 
 /// Whether `pid` shows USR1 unblocked within [`CAP`], `after_read` handed each read
