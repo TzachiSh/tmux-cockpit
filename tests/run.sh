@@ -102,10 +102,12 @@ suite_tt_end() {
 # starts or in the middle of it. One signal sent twice is common: `timeout` sends its signal to
 # the run and then to the run's process group, and a run that took the first before the
 # second arrived left its socket, its state and its shim behind. A signal the run traps only
-# marks its trap to run. suite_sig ignores the three before it exits, and suite_clean, cleanup
-# and every other exit trap of the run's own shell ignore them first, so once the exit trap
-# has started any HUP, INT or TERM does nothing, whether the run was ended by a signal, by
-# `fatal` or by coming to its end. A signal the run started with ignored (nohup) stays ignored.
+# marks its trap to run. suite_sig ignores the three before it exits, for the step between its
+# `exit` and the exit trap's first line, where no line of the script runs and so no row of the
+# #1107 block can hold. suite_clean, cleanup and every other exit trap of the run's own shell
+# ignore them first as well, so once the exit trap has started any HUP, INT or TERM does
+# nothing, whether the run was ended by a signal, by `fatal` or by coming to its end. A signal
+# the run started with ignored (nohup) stays ignored.
 # The costs: bash runs a trap once the command in the foreground is done, so a signal sent to
 # the run's pid alone waits for that command (one sent to the group ends the command too). And
 # every command the cleanup starts inherits the ignored signals: a Ctrl-C during the cleanup
