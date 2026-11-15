@@ -269,9 +269,10 @@ write some of them in their own process, each under its own `ENV` lock: panel_en
 (`TMUX`, `TMUX_PANE`, `TMUX_TMPDIR`, `XDG_CACHE_HOME`), agents (`XDG_CACHE_HOME`)
 and data (`COCKPIT_LOG`). Their checks read those under that lock (#1089). The helpers only check: `fake::checked_tmux`
 before any tmux a helper runs, and `fake::checked_state` in each rig that sets
-`HOME`. The product's own tmux call refuses too (#1089): under the test guard
-(`COCKPIT_TEST_TMUX_GUARD`, docs/tui.md) `data::tmux` runs a plain `tmux` only
-with `TMUX` unset and `TMUX_TMPDIR` an existing folder, and reads anything else
+`HOME`. The product's own tmux calls refuse too (#1089): under the test guard
+(`COCKPIT_TEST_TMUX_GUARD`, docs/tui.md) `data::refuses` lets `data::tmux`,
+push's start and the board's tile previews run a plain `tmux` only with `TMUX`
+unset and `TMUX_TMPDIR` an existing folder, and each reads anything else
 as no answer, so no test reads your server's agent list or theme, whether or not
 it reached a check first. Started without the runner from a shell that still carries them, or
 with no `TMUX_TMPDIR`, a test binary is refused in three lines: what is set or

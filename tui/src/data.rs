@@ -49,7 +49,7 @@ pub(crate) fn refuses(argv: &[String]) -> bool {
     refused
 }
 
-/// Whether `data::tmux` refused a call, and whether [`guard_note`] has said so.
+/// Whether `refuses` turned a call down, and whether [`guard_note`] has said so.
 static REFUSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static TOLD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
