@@ -11282,26 +11282,116 @@ esac
 unset -f nw
 rm -rf "$NW"
 
+echo "== nested runs: a helper runs them, one guards the socket path, one sweeps (#1104) =="
+# For the blocks below that run others nested, each with a TMUX_TMPDIR of its own: whether a
+# suite's socket there can bind, the run itself, and the end of what servers it left (#1104).
+# Top-level, so only.sh and par.sh give them to every block; no block unsets them.
+sock_long() {                 # <TMUX_TMPDIR> -> true when a suite's socket under it,
+    # <it>/tmux-<uid>/cockpit-suite-<pid of up to 7 digits>, passes 107 bytes: none binds there
+    [ $# -eq 1 ] || { bad "sock_long takes one folder" "1" "$#"; return 0; }
+    [ $((${#1} + ${#UID} + 28)) -gt 107 ]
+}
+sock_sweep() {                # <TMUX_TMPDIR>... -> each server on a socket in its tmux-* folders
+    local d s                 # is ended by that socket, silently
+    for d; do
+        for s in "$d"/tmux-*/*; do
+            [ -S "$s" ] && "$TMUX_REAL" -S "$s" kill-server >/dev/null 2>&1
+        done
+    done
+}
+# tests/only.sh <pattern> from the checkout, with TMUX unset and the env words added (VAR=value
+# or -u VAR). Sets NEST_RC to its exit, NEST_OUT to its output, NEST_PASS and NEST_FAIL to the
+# number of its lines that say each.
+nest_run() {                  # <pattern> [env words...]
+    [ -n "${1:-}" ] || { bad "nest_run takes a pattern" "a pattern" "${1-none}"; return 2; }
+    local pat=$1
+    shift
+    NEST_OUT=$(cd "$DIR" && env -u TMUX "$@" tests/only.sh "$pat" 2>&1 </dev/null)
+    NEST_RC=$?
+    NEST_PASS=$(printf '%s\n' "$NEST_OUT" | grep -c 'PASS')
+    NEST_FAIL=$(printf '%s\n' "$NEST_OUT" | grep -c 'FAIL')
+}
+nh_red() {                    # <cmd...> -> the red rows it printed, by title, colours cut
+    "$@" | sed 's/\x1b\[[0-9;]*m//g' | sed -n 's/^ *FAIL //p' | tr '\n' ' '
+}
+# A file of blocks for nest_run, through ONLY_RUN: the prelude, then one green block and one
+# with a red row. Their titles are printed: only.sh and par.sh cut this file at a line that
+# starts one.
+NH=$(mktmpd); mkdir -p "$NH/s" "$NH/w/tmux-x" "$NH/w/other"
+{ sed '/^echo "== /,$d' "$DIR/tests/run.sh"
+  printf 'echo "%s nh green %s"\nis "nh one" a a\n' == ==
+  printf 'echo "%s nh red %s"\nis "nh two" a a\nis "nh three" a b\n' == ==
+} > "$NH/fx.sh"
+if need_tmux "nest_run"; then :
+elif sock_long "$NH/s"; then skip_ "nest_run (TMPDIR too long for the nested socket path)"
+else
+nest_run '^nh green' ONLY_RUN="$NH/fx.sh" TMUX_TMPDIR="$NH/s"
+is "nest_run of a green block: its exit, its PASS and its FAIL lines" "0 1 0" \
+   "$NEST_RC $NEST_PASS $NEST_FAIL"
+nest_run '^nh red' ONLY_RUN="$NH/fx.sh" TMUX_TMPDIR="$NH/s"
+is "nest_run of a block with a red row: the same three" "1 1 1" "$NEST_RC $NEST_PASS $NEST_FAIL"
+sock_sweep "$NH/s"
+fi
+is "nest_run with no pattern, or an empty one, runs nothing: a red row of its own, and 2" \
+   "nest_run takes a pattern nest_run takes a pattern |2" \
+   "$(nh_red nest_run; nh_red nest_run '')|$(nest_run '' >/dev/null; echo $?)"
+is "sock_long with no folder: a red row of its own" "sock_long takes one folder " \
+   "$(nh_red sock_long)"
+# The guard's number against the kernel's: a socket path of 107 bytes binds, of 108 does not.
+# A folder of 79 bytes less the uid's, so a suite's socket under it, with a 7-digit pid, is 107.
+nh_f="$NH/$(printf 'f%.0s' $(seq 1 $((79 - ${#UID} - ${#NH} - 1))))"
+if need_tmux "sock_long's limit"; then :
+elif [ "${#nh_f}" -ne $((79 - ${#UID})) ]; then skip_ "sock_long's limit (TMPDIR too long)"
+else
+nh_up() {                     # <folder> -> up when a server binds at its suite socket path
+    local p="$1/tmux-$UID/cockpit-suite-1234567"
+    mkdir -p "${p%/*}"
+    "$TMUX_REAL" -S "$p" -f /dev/null new-session -d -c "$NH" 'exec sleep 300' >/dev/null 2>&1
+    "$TMUX_REAL" -S "$p" has-session 2>/dev/null && echo up || echo none
+}
+is "sock_long: at 107 bytes it says no and a server binds; at 108 it says yes and none does" \
+   "fits up|long none" \
+   "$(sock_long "$nh_f" && echo long || echo fits) $(nh_up "$nh_f")|$(
+      sock_long "${nh_f}g" && echo long || echo fits) $(nh_up "${nh_f}g")"
+sock_sweep "$nh_f"
+unset -f nh_up
+fi
+# A server in a tmux-* folder, one in another folder beside it, and a file that is no socket.
+if need_tmux "sock_sweep"; then :; else
+nh_st() {                     # -> up or gone for each of the two servers
+    local s
+    for s in "$NH/w/tmux-x/srv" "$NH/w/other/srv"; do
+        "$TMUX_REAL" -S "$s" has-session 2>/dev/null && printf 'up ' || printf 'gone '
+    done
+}
+: > "$NH/w/tmux-x/plain"
+for nh_s in "$NH/w/tmux-x/srv" "$NH/w/other/srv"; do
+    "$TMUX_REAL" -S "$nh_s" -f /dev/null new-session -d -c "$NH" 'exec sleep 300' >/dev/null 2>&1
+done
+nh_b=$(nh_st); nh_o=$(sock_sweep "$NH/w" 2>&1)
+is "sock_sweep ends the server in a tmux-* folder, silently; the other server and a file stay" \
+   "up up > gone up |plain|" "$nh_b> $(nh_st)|$(ls "$NH/w/tmux-x" | grep -x plain)|$nh_o"
+"$TMUX_REAL" -S "$NH/w/other/srv" kill-server >/dev/null 2>&1
+unset -f nh_st
+fi
+unset -f nh_red
+unset NH nh_f nh_s nh_b nh_o NEST_RC NEST_OUT NEST_PASS NEST_FAIL
+
 echo "== a stub the suite writes lands nothing beside a TMPDIR that holds a space (#929) =="
 # The block above again, through only.sh, under a TMPDIR named "my  tmp". Its recorders are
 # stubs whose log path is written into them: unquoted, that path splits at the space, the log
 # goes to "my" beside the TMPDIR and the control row finds no call. CI's own TMPDIR holds no
 # space, so this is the run that sees it there.
 NBS=$(mktmpd); mkdir -p "$NBS/my  tmp" "$NBS/s"
-# The nested socket is $NBS/s/tmux-<uid>/cockpit-suite-<pid>: past 107 bytes no server binds.
-if [ $((${#NBS} + ${#UID} + 30)) -gt 107 ]; then
+if sock_long "$NBS/s"; then
     skip_ "a stub beside a spaced TMPDIR (TMPDIR too long for the nested socket path)"
 else
-nbo=$(cd "$DIR" && env -u TMUX TMPDIR="$NBS/my  tmp" TMUX_TMPDIR="$NBS/s" \
-    tests/only.sh '^the suite never reaches the network' 2>&1 </dev/null); nbrc=$?
-is "the network block's run there exits 0 with no row failed" "0 0" \
-   "$nbrc $(printf '%s\n' "$nbo" | grep -c 'FAIL')"
+nest_run '^the suite never reaches the network' TMPDIR="$NBS/my  tmp" TMUX_TMPDIR="$NBS/s"
+is "the network block's run there exits 0 with no row failed" "0 0" "$NEST_RC $NEST_FAIL"
 is "and only the TMPDIR is beside it" "my  tmp,s," "$(ls -A "$NBS" | tr '\n' ,)"
-for nbs in "$NBS"/s/tmux-*/*; do
-    [ -S "$nbs" ] && "$TMUX_REAL" -S "$nbs" kill-server >/dev/null 2>&1
-done
+sock_sweep "$NBS/s"
 fi
-unset NBS nbo nbrc nbs
+unset NBS NEST_RC NEST_OUT NEST_PASS NEST_FAIL
 
 echo "== the suite sees none of its caller's folders, log, editors or switches (#1078) =="
 cvs="XDG_STATE_HOME XDG_CONFIG_HOME XDG_BIN_HOME XDG_CACHE_HOME XDG_DATA_HOME COCKPIT_LOG"
@@ -11347,29 +11437,27 @@ for cw in "$cw_ct/tmux" "$CW/c/claude"; do
 done
 : > "$CW/c/act"
 cw_ls() { ( cd "$CW/c/$1" && find . | sort | tr '\n' ' '; cat seed ); }
-# The nested socket is $CW/s/tmux-<uid>/cockpit-suite-<pid>: past 107 bytes no server binds.
-if [ $((${#CW} + ${#UID} + 30)) -gt 107 ]; then
+if sock_long "$CW/s"; then
     skip_ "canaries in the caller's environment (TMPDIR too long for the nested socket path)"
 else
 for cw in state config bin cache data; do cw_ls "$cw" > "$CW/$cw.before"; done
-cwo=$(cd "$DIR" && env -u TMUX TMUX_TMPDIR="$CW/s" \
+nest_run "^the suite sees none of its caller|^install\.sh --check: one row|$(:
+        )^install\.sh --hooks merges additively|^cockpit-panel: a tap in the popup|$(:
+        )^tmux-open-path --folder|^tm: the kill picker|^cockpit-tui: --json names every|$(:
+        )^cockpit-board: x asks first" TMUX_TMPDIR="$CW/s" \
     XDG_STATE_HOME="$CW/c/state" XDG_CONFIG_HOME="$CW/c/config" XDG_BIN_HOME="$CW/c/bin" \
     XDG_CACHE_HOME="$CW/c/cache" XDG_DATA_HOME="$CW/c/data" COCKPIT_LOG="$CW/c/log" \
     VISUAL="$(tq "$CW/c/visual")" EDITOR="$(tq "$CW/c/editor")" COCKPIT_READONLY=1 \
     COCKPIT_PANEL_NOTE="$CW/c/note" \
     COCKPIT_REVIEW_BASE=canary COCKPIT_PROC_DIR="$CW/c/proc" COCKPIT_POLL_KEY=canary \
     REVDIFF_CONFIG="$CW/c/revdiff" REVDIFF_EXCLUDE=canary CLAUDE_CODE_SESSION_KIND=canary \
-    COCKPIT_TMUX="$cw_ct/tmux" COCKPIT_CLAUDE="$CW/c/claude" COCKPIT_ACTION="$CW/c/act" \
-    tests/only.sh "^the suite sees none of its caller|^install\.sh --check: one row|$(:
-        )^install\.sh --hooks merges additively|^cockpit-panel: a tap in the popup|$(:
-        )^tmux-open-path --folder|^tm: the kill picker|^cockpit-tui: --json names every|$(:
-        )^cockpit-board: x asks first" 2>&1 </dev/null); cwrc=$?
+    COCKPIT_TMUX="$cw_ct/tmux" COCKPIT_CLAUDE="$CW/c/claude" COCKPIT_ACTION="$CW/c/act"
 is "the blocks that wrote there, run under the canaries: exit 0, no row failed" "0 0" \
-   "$cwrc $(printf '%s\n' "$cwo" | grep -c 'FAIL')"
+   "$NEST_RC $NEST_FAIL"
 # A block renamed out of the pattern would drop from the run with every row still green.
-is "and all eight blocks of the pattern ran" "8" "$(printf '%s\n' "$cwo" | grep -c '^== ')"
+is "and all eight blocks of the pattern ran" "8" "$(printf '%s\n' "$NEST_OUT" | grep -c '^== ')"
 cw_unseen() {                 # <variable> -> 1 when the nested run's own row for it passed
-    printf '%s\n' "$cwo" | grep -c "PASS[^ ]* $1 is not in the suite's environment"
+    printf '%s\n' "$NEST_OUT" | grep -c "PASS[^ ]* $1 is not in the suite's environment"
 }
 for cw in STATE:state CONFIG:config BIN:bin CACHE:cache DATA:data; do
     is "XDG_${cw%:*}_HOME: the suite did not see it, and its folder is as it was" "1 same" \
@@ -11397,13 +11485,11 @@ for cw in COCKPIT_READONLY COCKPIT_REVIEW_BASE COCKPIT_PROC_DIR \
         COCKPIT_POLL_KEY REVDIFF_CONFIG REVDIFF_EXCLUDE CLAUDE_CODE_SESSION_KIND; do
     is "$cw: the suite did not see it" "1" "$(cw_unseen "$cw")"
 done
-for cw in "$CW"/s/tmux-*/*; do
-    [ -S "$cw" ] && "$TMUX_REAL" -S "$cw" kill-server >/dev/null 2>&1
-done
+sock_sweep "$CW/s"
 fi
 unset -f cw_ls cw_unseen
 rm -rf "$cw_ct"
-unset CW cw cwo cwrc cw_ct
+unset CW cw cw_ct NEST_RC NEST_OUT NEST_PASS NEST_FAIL
 
 echo "== the suite sees none of git's names, no BASH_ENV, no other switch (#1099, #1100) =="
 # The names, for this block and the next. A function, not a variable: only.sh and par.sh
@@ -11457,8 +11543,7 @@ chmod +x "$GC/c/ed" "$GC/c/tpl/hooks/post-commit"
 # again without it (#1115), so a mark means a git call from a shell that kept it.
 printf 'git() { echo ran >> %s; command git "$@"; }\n' "$(tq "$GC/benv.ran")" > "$GC/c/benv"
 gc_ls() { ( cd "$GC/c" && find . | sort | tr '\n' ' ' ); }
-# The nested socket is $GC/s/tmux-<uid>/cockpit-suite-<pid>: past 107 bytes no server binds.
-if [ $((${#GC} + ${#UID} + 30)) -gt 107 ]; then
+if sock_long "$GC/s"; then
     skip_ "canaries in git's names (TMPDIR too long for the nested socket path)"
 else
 gc_b=$(gc_ls)
@@ -11473,30 +11558,29 @@ gc_e=(GIT_DIR="$GC/c/dir" GIT_WORK_TREE="$GC/c/wt" GIT_COMMON_DIR="$GC/c/common"
 for gv in $gvs; do
     case $gv in GIT_*|BASH_ENV|ENV) ;; *) gc_e+=("$gv=canary") ;; esac
 done
-gco=$(cd "$DIR" && env -u TMUX TMUX_TMPDIR="$GC/s" "${gc_e[@]}" \
-    tests/only.sh "^the suite sees none of git's names|$(:
+nest_run "^the suite sees none of git's names|$(:
         )^tmux-where: detached HEAD and odd repos|^tmux-branch: local and remote branches|$(:
-        )^tree_diff: staged, unstaged and untracked changes are one diff" 2>&1 </dev/null)
-gcrc=$?
+        )^tree_diff: staged, unstaged and untracked changes are one diff" \
+    TMUX_TMPDIR="$GC/s" "${gc_e[@]}"
 is "the blocks that use git, run under the canaries: exit 0, no row failed" "0 0" \
-   "$gcrc $(printf '%s\n' "$gco" | grep -c 'FAIL')"
-is "and all four blocks of the pattern ran" "4" "$(printf '%s\n' "$gco" | grep -c '^== ')"
+   "$NEST_RC $NEST_FAIL"
+is "and all four blocks of the pattern ran" "4" "$(printf '%s\n' "$NEST_OUT" | grep -c '^== ')"
 is "nothing was made or changed where git's names pointed" "$gc_b" "$(gc_ls)"
 is "the caller's git editor and its template's hook were not run" "not run, not run" \
    "$([ -e "$GC/ed.ran" ] && printf 'ran, ' || printf 'not run, '
       [ -e "$GC/hook.ran" ] && echo ran || echo 'not run')"
 is "no git the suite ran went through the caller's BASH_ENV" "0" \
    "$(cat "$GC/benv.ran" 2>/dev/null | wc -l | tr -d ' ')"
-gc_unseen() { printf '%s\n' "$gco" | grep -c "PASS[^ ]* $1 is not in the suite's environment"; }
+gc_unseen() {
+    printf '%s\n' "$NEST_OUT" | grep -c "PASS[^ ]* $1 is not in the suite's environment"
+}
 for gv in $gvs; do
     is "$gv: the nested run did not see it" "1" "$(gc_unseen "$gv")"
 done
-for gv in "$GC"/s/tmux-*/*; do
-    [ -S "$gv" ] && "$TMUX_REAL" -S "$gv" kill-server >/dev/null 2>&1
-done
+sock_sweep "$GC/s"
 fi
 unset -f gc_ls gc_unseen gv_names
-unset GC gc_b gc_e gco gcrc gv gvs
+unset GC gc_b gc_e gv gvs NEST_RC NEST_OUT NEST_PASS NEST_FAIL
 
 echo "== a server the suite starts holds no TMUX_COCKPIT_DIR (#1073) =="
 if need_tmux "a server's environment"; then :; else
@@ -11517,20 +11601,16 @@ echo "== the suite drops a TMUX_COCKPIT_DIR its caller hands it (#1073) =="
 # session has it. CI's environment has none, so this is the run that meets one there.
 # The value names a folder that is not there: nothing may be run from it.
 CDN=$(mktmpd); mkdir -p "$CDN/s"
-# The nested socket is $CDN/s/tmux-<uid>/cockpit-suite-<pid>: past 107 bytes no server binds.
-if [ $((${#CDN} + ${#UID} + 30)) -gt 107 ]; then
+if sock_long "$CDN/s"; then
     skip_ "a caller's TMUX_COCKPIT_DIR (TMPDIR too long for the nested socket path)"
 else
-cdo=$(cd "$DIR" && env -u TMUX TMUX_COCKPIT_DIR="$CDN/live-plugin" TMUX_TMPDIR="$CDN/s" \
-    tests/only.sh '^a server the suite starts holds no TMUX_COCKPIT_DIR' 2>&1 </dev/null)
-cdrc=$?
+nest_run '^a server the suite starts holds no TMUX_COCKPIT_DIR' \
+    TMUX_COCKPIT_DIR="$CDN/live-plugin" TMUX_TMPDIR="$CDN/s"
 is "the block's run under a caller's TMUX_COCKPIT_DIR: both rows pass, exit 0" "0 2 0" \
-   "$cdrc $(printf '%s\n' "$cdo" | grep -c 'PASS') $(printf '%s\n' "$cdo" | grep -c 'FAIL')"
-for cds in "$CDN"/s/tmux-*/*; do
-    [ -S "$cds" ] && "$TMUX_REAL" -S "$cds" kill-server >/dev/null 2>&1
-done
+   "$NEST_RC $NEST_PASS $NEST_FAIL"
+sock_sweep "$CDN/s"
 fi
-unset CDN cdo cdrc cds
+unset CDN NEST_RC NEST_OUT NEST_PASS NEST_FAIL
 
 echo "== the suite's own server is on a socket under TMUX_TMPDIR, a folder that exists (#1098) =="
 # With no TMUX_TMPDIR, or one naming a folder that is not there, tmux falls back to
@@ -11572,17 +11652,15 @@ sf_u=$(id -u)
 sf_one="^the suite's own server is on a socket under TMUX_TMPDIR"
 sf_run() {                    # <pattern> <ONLY_RUN file or ''> <env words...>
     # -> exit, PASS and FAIL rows | the folder the run reported | its names in /tmp/tmux-<uid>
-    local pat=$1 run=$2 sf_e=() o rc f="" p=""
+    local pat=$1 run=$2 sf_e=() f="" p=""
     shift 2
     [ -z "$run" ] || sf_e=(ONLY_RUN="$run")
     rm -f "$SF/out"
-    o=$(cd "$DIR" && env -u TMUX "$@" ${sf_e[@]+"${sf_e[@]}"} COCKPIT_ST_OUT="$SF/out" \
-        tests/only.sh "$pat" 2>&1 </dev/null)
-    rc=$?
-    printf '%s\n' "$o" > "$SF/log"
+    nest_run "$pat" "$@" ${sf_e[@]+"${sf_e[@]}"} COCKPIT_ST_OUT="$SF/out"
+    printf '%s\n' "$NEST_OUT" > "$SF/log"
     # 2>/dev/null before the input redirect: after it, bash reports a missing file first.
     { IFS= read -r f; IFS= read -r p; } 2>/dev/null < "$SF/out"
-    printf '%s %s %s|' "$rc" "$(grep -c 'PASS' "$SF/log")" "$(grep -c 'FAIL' "$SF/log")"
+    printf '%s %s %s|' "$NEST_RC" "$NEST_PASS" "$NEST_FAIL"
     case $f in
         /tmp/cs.[A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9])
             [ -e "$f" ] && printf 'made, still there|' || printf 'made, gone|' ;;
@@ -11603,8 +11681,7 @@ sf_made() {                   # the folder the last sf_run reported, when it is 
     esac
 }
 if need_tmux "a run with no TMUX_TMPDIR"; then :
-# The nested socket is $SF/own/tmux-<uid>/cockpit-suite-<pid>: past 107 bytes no server binds.
-elif [ $((${#SF} + ${#UID} + 32)) -gt 107 ]; then
+elif sock_long "$SF/own"; then
     skip_ "a run with no TMUX_TMPDIR (TMPDIR too long for the nested socket path)"
 else
 is "no TMUX_TMPDIR: the rows pass, the folder it made is gone, /tmp/tmux-<uid> has none of it" \
@@ -11625,9 +11702,7 @@ is "a relative TMUX_TMPDIR is kept as that folder's full path, and its server is
    "0 3 0|kept $sf_abs| in it" \
    "$(sf_run "$sf_one" '' TMUX_TMPDIR="$sf_rel") $(
       [ -d "$SF/rel/tmux-$sf_u" ] && echo 'in it' || echo 'not')"
-for sf_s in "$SF"/own/tmux-*/* "$SF"/rel/tmux-*/*; do
-    [ -S "$sf_s" ] && "$TMUX_REAL" -S "$sf_s" kill-server >/dev/null 2>&1
-done
+sock_sweep "$SF/own" "$SF/rel"
 # The rest run this prelude with one block of the row's own. A block's title line is
 # printed, not written here: only.sh and par.sh cut this file at every line that starts one.
 sf_fix() {                    # <file> <a line put after the folder's export, or ''> < the block
@@ -19557,23 +19632,20 @@ is "both FATAL mutants differ from the script" "1 1" \
 for fx in stub srv; do
     # The nested socket is $FD/s/tmux-<uid>/cockpit-suite-<pid>: past 107 bytes no server binds,
     # and the srv row would pass with none to clean up.
-    if [ "$fx" = srv ] && [ $((${#FD} + ${#UID} + 30)) -gt 107 ]; then
+    if [ "$fx" = srv ] && sock_long "$FD/s"; then
         skip_ "a prelude FATAL (srv) (TMPDIR too long for the nested socket path)"; continue
     fi
-    fo=$(cd "$DIR" && env -u TMUX ONLY_RUN="$FD/$fx.sh" TMPDIR="$FD/t" TMUX_TMPDIR="$FD/s" \
-        tests/only.sh '^syntax' 2>&1 </dev/null); forc=$?
+    nest_run '^syntax' ONLY_RUN="$FD/$fx.sh" TMPDIR="$FD/t" TMUX_TMPDIR="$FD/s"
     is "a prelude FATAL ($fx) exits 1 and leaves no dir, socket or listening server behind" \
        "1|FATAL|||0" \
-       "$forc|$(printf '%s' "$fo" | grep -o FATAL | head -1)|$(ls -A "$FD/t")|$(
+       "$NEST_RC|$(printf '%s' "$NEST_OUT" | grep -o FATAL | head -1)|$(ls -A "$FD/t")|$(
         ls -A "$FD"/s/tmux-* 2>/dev/null)|$(
         if [ -r /proc/net/unix ]; then grep -cF " $FD/s/" /proc/net/unix; else echo 0; fi)"
     # Whatever a red run left: ended by its own socket, then removed.
-    for fs in "$FD"/s/tmux-*/*; do
-        [ -S "$fs" ] && "$TMUX_REAL" -S "$fs" kill-server >/dev/null 2>&1
-    done
+    sock_sweep "$FD/s"
     rm -rf "${FD:?}/t/"* "${FD:?}/s/"*
 done
-unset FD fo forc fx fs
+unset FD fx NEST_RC NEST_OUT NEST_PASS NEST_FAIL
 
 # For the #900 and #1107 blocks, which end prelude copies by signals; unset after #1107's.
 sig_left() {                  # <a copy's TMPDIR> -> the processes carrying it: "0", or count and
@@ -19611,7 +19683,7 @@ sed "/^trap cleanup EXIT\$/a $sg_hold" "$SG/tests/pre.sh" > "$SG/tests/ctl.sh"
 is "each copy holds at one place" "1 1" \
    "$(grep -c 'exec 9<>' "$SG/tests/win.sh") $(grep -c 'exec 9<>' "$SG/tests/ctl.sh")"
 sg_run() {                    # <signal> <copy> -> status|carriers|left in TMPDIR|listeners
-    local c="" rc s
+    local c="" rc
     rm -rf "${SG:?}/t" "${SG:?}/s"; mkdir -p "$SG/t" "$SG/s"
     local d=(); ! sig_dfl "$1" || d=(--default-signal="$1")
     ( cd "$SG" && exec env "${d[@]}" -u TMUX TMPDIR="$SG/t" TMUX_TMPDIR="$SG/s" \
@@ -19623,9 +19695,7 @@ sg_run() {                    # <signal> <copy> -> status|carriers|left in TMPDI
     printf '%s|%s|%s|%s' "$rc" "$(sig_left "$SG/t")" "$(ls -A "$SG/t" | tr '\n' ,)" \
         "$(grep -cF " $SG/s/" /proc/net/unix)"
     # Whatever a red run left: ended by its own socket, never by a pid.
-    for s in "$SG"/s/tmux-*/*; do
-        [ -S "$s" ] && "$TMUX_REAL" -S "$s" kill-server >/dev/null 2>&1
-    done
+    sock_sweep "$SG/s"
 }
 # Whether this box's tail takes --pid, asked here and not read from the prelude's own answer:
 # a prelude that fell back to the sleep on a box whose tail has --pid must turn rows red, not
@@ -19639,9 +19709,8 @@ case $? in
          bad "the block's own tail run answered inside 10 s" "0 or a refusal" "timed out" ;;
     *) sg_haspid=0 ;;
 esac
-# The nested socket is $SG/s/tmux-<uid>/cockpit-suite-<pid>: past 107 bytes no server binds.
 if [ ! -r /proc/net/unix ]; then skip_ "a signal in the prelude (no /proc/net/unix)"
-elif [ $((${#SG} + ${#UID} + 30)) -gt 107 ]; then
+elif sock_long "$SG/s"; then
     skip_ "a signal in the prelude (TMPDIR too long for the nested socket path)"
 else
     is "a TERM right after the server starts leaves no process, dir or socket" \
@@ -19737,7 +19806,7 @@ is "each copy holds where it should, and fat ends by fatal" "3 3 2 2 1" "$({
     for c in win ctl end fat; do grep -c 'read -r -t 20 -u 9 _' "$S2/tests/$c.sh"; done
     grep -c "^fatal 'the #1107" "$S2/tests/fat.sh"; } | tr '\n' ' ' | sed 's/ $//')"
 s2_run() {                    # <copy> <signal> [2nd] -> status|carriers|left|listeners|sockets
-    local c="" rc s g d=() k=$1   # the last signal goes to the group while the cleanup holds
+    local c="" rc g d=() k=$1     # the last signal goes to the group while the cleanup holds
     rm -rf "${S2:?}/t" "${S2:?}/s"; mkdir -p "$S2/t" "$S2/s"
     for g in HUP INT TERM; do ! sig_dfl "$g" || d+=(--default-signal="$g"); done
     ( cd "$S2" && exec env "${d[@]}" -u TMUX TMPDIR="$S2/t" TMUX_TMPDIR="$S2/s" \
@@ -19757,13 +19826,11 @@ s2_run() {                    # <copy> <signal> [2nd] -> status|carriers|left|li
     printf '%s|%s|%s|%s|%s' "$rc" "$(sig_left "$S2/t")" "$(ls -A "$S2/t" | tr '\n' ,)" \
         "$(grep -cF " $S2/s/" /proc/net/unix)" "$(ls -A "$S2"/s/tmux-* 2>/dev/null | tr '\n' ,)"
     # Whatever a red run left: ended by its own socket, never by a pid.
-    for s in "$S2"/s/tmux-*/*; do
-        [ -S "$s" ] && "$TMUX_REAL" -S "$s" kill-server >/dev/null 2>&1
-    done
+    sock_sweep "$S2/s"
 }
 if [ ! -r /proc/net/unix ]; then skip_ "a signal in the exit trap (no /proc/net/unix)"
 elif ! command -v setsid >/dev/null; then skip_ "a signal in the exit trap (no setsid)"
-elif [ $((${#S2} + ${#UID} + 30)) -gt 107 ]; then
+elif sock_long "$S2/s"; then
     skip_ "a signal in the exit trap (TMPDIR too long for the nested socket path)"
 elif ! sig_dfl HUP && [ "$(trap -p HUP)" = "trap -- '' SIGHUP" ]; then
     skip_ "a signal in the exit trap (SIGHUP is ignored and env cannot reset it)"
