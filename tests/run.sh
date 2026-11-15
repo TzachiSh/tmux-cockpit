@@ -13234,6 +13234,35 @@ fi
 is "and its file is removed" "" "$([ -e "$PHF" ] && echo there)"
 "$TMUX_REAL" -L "$PH" send-keys -t "$PHB" q
 ph_gone "$PHB"
+# #1112: the hidden message names the prefix key bound with the panel's note, read from
+# the binding as the jump notice reads its key (#1109), never @cockpit_panel_bound alone:
+# a key moved by hand leaves the record naming a key that is not the panel (stock f here).
+PHFC="$PHD/state/tmux-cockpit/panel/$("$TMUX_REAL" -L "$PH" display -p '#{pid}')-${PHC#%}.state"
+ph_hidden() {                 # -> the note the wrapper writes on ^Z, as the board reads it
+    rm -f "$PHD/note" "$PHFC"
+    PHB=$("$TMUX_REAL" -L "$PH" new-window -d -P -F '#{pane_id}' -t t: \
+        "$PHENV COCKPIT_PANEL_NOTE=$(tq "$PHD/note") $(tq "$DIR/scripts/cockpit-panel") -p $PHC")
+    until_cap "$PH" "$PHB" '*will send*'
+    "$TMUX_REAL" -L "$PH" send-keys -t "$PHB" C-z
+    ph_gone "$PHB"
+    cat "$PHD/note" 2>/dev/null
+}
+"$TMUX_REAL" -L "$PH" bind-key -N 'cockpit: panel' g display-message panel \; \
+    set-option -g @cockpit_panel_bound f
+is "a key moved by hand: the message names the noted key, not the record" \
+    "cockpit: hidden · prefix g on $PHC brings it back" "$(ph_hidden)"
+"$TMUX_REAL" -L "$PH" set-option -gu @cockpit_panel_bound
+is "no record: the noted key is named" \
+    "cockpit: hidden · prefix g on $PHC brings it back" "$(ph_hidden)"
+"$TMUX_REAL" -L "$PH" bind-key -N 'cockpit: panel' h display-message panel \; \
+    set-option -g @cockpit_panel_bound h
+is "two noted keys: the one the record names" \
+    "cockpit: hidden · prefix h on $PHC brings it back" "$(ph_hidden)"
+"$TMUX_REAL" -L "$PH" unbind-key g \; unbind-key h \; set-option -g @cockpit_panel_bound f
+is "no noted key: none is named, whatever the record says" \
+    "cockpit: hidden · the panel key on $PHC brings it back" "$(ph_hidden)"
+rm -f "$PHFC"
+unset -f ph_hidden
 unset -f ph_open ph_gone ph_cap
 "$TMUX_REAL" -L "$PH" kill-server >/dev/null 2>&1
 fi
