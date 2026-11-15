@@ -38,8 +38,9 @@ tmux outside it, in a folder it makes in the caller's runtime dir,
 `$XDG_RUNTIME_DIR/cnb.<6>`, mode 700 (#992). Pane commands in the suite paste
 that wrapper's path unquoted, so it must hold no blank. The wrapper's small
 marker files sit beside it, `flop/k.*` and `flop/r.*`, and a run started inside
-the run makes its own `cnb.<6>` in there. Three board blocks each add a stub
-tmux, `ct.<6>/tmux`, which stays until the run ends. The run removes the folder
+the run makes its own `cnb.<6>` in there. Four blocks each add a stub tmux,
+`ct.<6>/tmux`: three board blocks' stay until the run ends, and the #1078
+block's goes when that block ends. The run removes the folder
 when it ends, also on a FATAL and on HUP, INT or TERM. A run ended by KILL leaves it,
 with `flop/tmux` inside. Nothing sweeps it, and it is safe to remove once no
 run is going.
@@ -67,8 +68,16 @@ repository, `GIT_CONFIG_GLOBAL`, `GIT_CONFIG_SYSTEM` and the numbered
 a run from a shell that exported `GIT_DIR`, as a git hook's shell does, made a
 repository in the folder it named, committed into it twice and failed 383
 rows. If you ran the suite that way, look there for a `cockpit-green` file,
-two commits titled `init` and worktree entries that are not yours. `BASH_ENV`
-and `ENV` go too: every bash the suite starts would source the file first.
+two commits titled `init` and worktree entries that are not yours.
+
+`BASH_ENV` and `ENV` go too: every bash the suite starts would source
+`BASH_ENV` first, and an interactive sh `ENV`. The shell that runs the blocks
+is one of those bashes, so `tests/run.sh` starts itself again without the two
+names when either is set, before anything else (#1115). That covers `make
+test`, `tests/only.sh` and every `tests/par.sh` shard. What cannot be undone:
+each of those first shells, and `only.sh` and `par.sh` themselves, still source
+the file once before the run drops it, so a file that writes or starts
+something does that once per shell.
 
 And it drops the other names the scripts and the board read, none of which
 names a place to write (#1100): `NO_COLOR`, `COCKPIT_GLYPHS`,
@@ -79,7 +88,10 @@ names a place to write (#1100): `NO_COLOR`, `COCKPIT_GLYPHS`,
 `COCKPIT_TUI_REPO`, `TM_SID`, `TM_CLIENT`, `TM_PANE`, `TM_POPUP`, `TM_NEEDS`,
 `MD_EDIT`, `REVIEW_PANE_ID`, and `COCKPIT_TEST_TMUX_GUARD`, the tui tests' own
 guard, which `.cargo/config.toml` sets for cargo and the suite clears for
-itself alone. `COCKPIT_TUI_BIN` is still taken from the caller, on purpose.
+itself alone. With them go `TERMUX_VERSION` and `PREFIX` (#1115): the board
+reads either one, the second when it names Termux's own tree, as a sign that it
+runs under Termux, and then opens the panel as a tablet's. `COCKPIT_TUI_BIN` is
+still taken from the caller, on purpose.
 
 Before #1080 a run from a shell that exported one of those nineteen used it. If
 you ran the suite that way, you may find three symlinks in your `XDG_BIN_HOME`,

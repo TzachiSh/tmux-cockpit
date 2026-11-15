@@ -2,6 +2,11 @@
 # tmux-cockpit test rig.  Run:  tests/run.sh
 # Uses a throwaway state dir, so your live agent state is never touched.
 set -u
+# A caller's BASH_ENV is sourced by this very shell before its first line, and by every bash
+# it starts; ENV by an interactive sh, as a pane's shell can be. An unset would reach only
+# the children, so this file starts once more without them (#1099, #1115): make test,
+# only.sh and every par.sh shard all start here. "$BASH", the binary that was started.
+[ -z "${BASH_ENV+x}${ENV+x}" ] || exec env -u BASH_ENV -u ENV "$BASH" "$0" "$@"
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # Required (#199), and make test builds it first. Exported, so a copy of the
@@ -306,8 +311,6 @@ unset COCKPIT_CLAUDE COCKPIT_ACTION
 # itself, as the fixtures do for the author's and the committer's name.
 for suite_v in $(compgen -e GIT_ 2>/dev/null); do unset "$suite_v"; done
 unset suite_v
-# The file every bash the suite starts would source before its first line, and sh's.
-unset BASH_ENV ENV
 # The other names the scripts and the board read (#1100). None names a place to write; each
 # changes what a script does, and so a row's verdict. COCKPIT_TEST_TMUX_GUARD is the tui
 # tests' own guard, set by .cargo/config.toml for cargo: dropped here for the suite alone.
@@ -316,6 +319,9 @@ unset COCKPIT_PANEL_MODE COCKPIT_PANEL_DROPPED COCKPIT_PANEL_HIDE_TAKEN COCKPIT_
 unset COCKPIT_VIEW_BACK COCKPIT_BASKET_PANE COCKPIT_FILES_STATE COCKPIT_TEST_TMUX_GUARD
 unset COCKPIT_GITHUB COCKPIT_TUI_RELEASES COCKPIT_TUI_REPO TM_SID TM_CLIENT TM_PANE TM_POPUP
 unset TM_NEEDS MD_EDIT REVIEW_PANE_ID
+# The board's Termux test (#1115): a TERMUX_VERSION, or a PREFIX in Termux's own tree, opens
+# the panel as a tablet's, and a panel row reads another screen.
+unset TERMUX_VERSION PREFIX
 # The suite never runs the real VS Code (#350). Under WSL the Windows PATH brings
 # its code(1) in, and with the private HOME it installs a fresh ~/.vscode-server
 # (639 MB) and can open the owner's editor. So: no /mnt/<drive> entry on PATH, and
@@ -11220,22 +11226,25 @@ gv_names() {
           COCKPIT_PANEL_MODE COCKPIT_PANEL_DROPPED COCKPIT_PANEL_HIDE_TAKEN
           COCKPIT_VIEW_ASK COCKPIT_VIEW_BACK COCKPIT_BASKET_PANE COCKPIT_FILES_STATE
           COCKPIT_TEST_TMUX_GUARD COCKPIT_GITHUB COCKPIT_TUI_RELEASES COCKPIT_TUI_REPO
-          TM_SID TM_CLIENT TM_PANE TM_POPUP TM_NEEDS MD_EDIT REVIEW_PANE_ID"
+          TM_SID TM_CLIENT TM_PANE TM_POPUP TM_NEEDS MD_EDIT REVIEW_PANE_ID
+          TERMUX_VERSION PREFIX"
 }
 gvs=$(gv_names | tr '\n' ' ')
 for gv in $gvs; do
     is "$gv is not in the suite's environment" "unset" "${!gv-unset}"
 done
 # By prefix, so a GIT_ name no list holds is caught too. The author's and the committer's
-# name and mail are the suite's own: an earlier block exports them for its fixtures.
+# name and mail, with the values an earlier block exports for its fixtures, are the suite's
+# own; the same name with a caller's value is not (#1115).
 is "no other GIT_ name is exported" "" \
-   "$(compgen -e GIT_ | grep -vxE 'GIT_(AUTHOR|COMMITTER)_(NAME|EMAIL)' | tr '\n' ' ')"
+   "$(compgen -e GIT_ | while IFS= read -r gv; do printf '%s=%s\n' "$gv" "${!gv}"; done |
+      grep -vxE 'GIT_(AUTHOR|COMMITTER)_(NAME=t|EMAIL=t@e)' | tr '\n' ' ')"
+# The server starts in the prelude, before any block exports a name: none is its own.
 if need_tmux "the suite's server's environment"; then :; else
 is "the suite's own server is up, and holds none of them in its environment" "up " \
    "$(tmux has-session -t suite 2>/dev/null && printf 'up ' || printf 'down '
       tmux show-environment -g 2>/dev/null | sed 's/^-//; s/=.*//' |
-          grep -E "^GIT_|^($(printf '%s' "$gvs" | tr ' ' '|'))\$" |
-          grep -vxE 'GIT_(AUTHOR|COMMITTER)_(NAME|EMAIL)' | tr '\n' ' ')"
+          grep -E "^GIT_|^($(printf '%s' "$gvs" | tr ' ' '|'))\$" | tr '\n' ' ')"
 fi
 unset gv gvs
 
@@ -11251,11 +11260,10 @@ GC=$(mktmpd); mkdir -p "$GC/s" "$GC/c/dir" "$GC/c/wt" "$GC/c/common" "$GC/c/obj"
 printf '#!/bin/sh\necho ran >> %s\nexit 0\n' "$(tq "$GC/ed.ran")" > "$GC/c/ed"
 printf '#!/bin/sh\necho ran >> %s\n' "$(tq "$GC/hook.ran")" > "$GC/c/tpl/hooks/post-commit"
 chmod +x "$GC/c/ed" "$GC/c/tpl/hooks/post-commit"
-# Sourced by every bash that starts with it set. The run's own first shells start before the
-# prelude can drop it, and are the caller's affair: they hold no COCKPIT_TUI_OFFLINE, which
-# the prelude exports, so the mark is left only by a bash the suite itself started.
-printf '[ -z "${COCKPIT_TUI_OFFLINE:-}" ] || echo ran >> %s\n' "$(tq "$GC/benv.ran")" \
-    > "$GC/c/benv"
+# Sourced by every bash that starts with it set, the one that runs the blocks included: a
+# git of its own that leaves a mark. The first shell sources it once before run.sh starts
+# again without it (#1115), so a mark means a git call from a shell that kept it.
+printf 'git() { echo ran >> %s; command git "$@"; }\n' "$(tq "$GC/benv.ran")" > "$GC/c/benv"
 gc_ls() { ( cd "$GC/c" && find . | sort | tr '\n' ' ' ); }
 # The nested socket is $GC/s/tmux-<uid>/cockpit-suite-<pid>: past 107 bytes no server binds.
 if [ $((${#GC} + ${#UID} + 30)) -gt 107 ]; then
@@ -11265,14 +11273,15 @@ gc_b=$(gc_ls)
 gc_e=(GIT_DIR="$GC/c/dir" GIT_WORK_TREE="$GC/c/wt" GIT_COMMON_DIR="$GC/c/common"
     GIT_INDEX_FILE="$GC/c/index" GIT_OBJECT_DIRECTORY="$GC/c/obj"
     GIT_ALTERNATE_OBJECT_DIRECTORIES="$GC/c/alt" GIT_CONFIG="$GC/c/cfg"
-    GIT_CONFIG_GLOBAL="$GC/c/gcfg" GIT_CONFIG_SYSTEM="$GC/c/scfg" GIT_CONFIG_COUNT=1
+    GIT_CONFIG_GLOBAL="$GC/c/gcfg" GIT_CONFIG_SYSTEM="$GC/c/scfg" GIT_CONFIG_COUNT=2
     GIT_CONFIG_KEY_0=user.name GIT_CONFIG_VALUE_0=canary GIT_CEILING_DIRECTORIES=/
+    GIT_CONFIG_KEY_1=user.email GIT_CONFIG_VALUE_1=canary
     GIT_TEMPLATE_DIR="$GC/c/tpl" GIT_TRACE="$GC/c/trace" GIT_EDITOR="$GC/c/ed"
     BASH_ENV="$GC/c/benv" ENV="$GC/c/benv")
 for gv in $gvs; do
     case $gv in GIT_*|BASH_ENV|ENV) ;; *) gc_e+=("$gv=canary") ;; esac
 done
-gco=$(cd "$DIR" && env -u TMUX -u COCKPIT_TUI_OFFLINE TMUX_TMPDIR="$GC/s" "${gc_e[@]}" \
+gco=$(cd "$DIR" && env -u TMUX TMUX_TMPDIR="$GC/s" "${gc_e[@]}" \
     tests/only.sh "^the suite sees none of git's names|$(:
         )^tmux-where: detached HEAD and odd repos|^tmux-branch: local and remote branches|$(:
         )^tree_diff: staged, unstaged and untracked changes are one diff" 2>&1 </dev/null)
@@ -11284,7 +11293,7 @@ is "nothing was made or changed where git's names pointed" "$gc_b" "$(gc_ls)"
 is "the caller's git editor and its template's hook were not run" "not run, not run" \
    "$([ -e "$GC/ed.ran" ] && printf 'ran, ' || printf 'not run, '
       [ -e "$GC/hook.ran" ] && echo ran || echo 'not run')"
-is "no bash the suite started read the caller's BASH_ENV" "0" \
+is "no git the suite ran went through the caller's BASH_ENV" "0" \
    "$(cat "$GC/benv.ran" 2>/dev/null | wc -l | tr -d ' ')"
 gc_unseen() { printf '%s\n' "$gco" | grep -c "PASS[^ ]* $1 is not in the suite's environment"; }
 for gv in $gvs; do
