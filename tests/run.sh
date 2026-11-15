@@ -4790,11 +4790,13 @@ for dm_f in "${dm_names[@]}"; do
        "$(dm_drawn 3 "cockpit: review pasted into t:0 $dm_f ")"
 done
 dm_down 3
-# 4. cockpit.tmux:302 (#1096): an @cockpit_panel_mode value went in raw, and its #( ran.
-# The drawn row below and the dmsg scan pin the fix: an expanded value changes the drawn
-# text, so a revert reds them every time. The pmode marker in the last row is a backstop
-# only: its job dies with cockpit.tmux's short-lived client, so a revert can leave none
-# (#1118).
+# 4. cockpit.tmux's dmsg of "@cockpit_panel_mode is [$pmode]" (#1096): the value went in
+# raw, and its #( ran. Two rows pin the fix, and a revert reds both every time. The drawn
+# row below reds because an expanded value changes the drawn text. The dmsg scan reds
+# because it reads the source: it scans cockpit.tmux and scripts/ for a display-message
+# call whose text holds a variable, a -p read, the version check and dmsg's own call
+# excepted. The pmode marker in the last row is a backstop only: its job dies with
+# cockpit.tmux's short-lived client, so a revert can leave none (#1118).
 dm_up 4
 "$TMUX_REAL" -L "cockpit-dm-$$-4" set -g mouse on \; \
     set -g @cockpit_panel_mode "x#(touch $DM/m/pmode)y##z#[fg=red]w" >/dev/null 2>&1
@@ -4823,6 +4825,22 @@ is "dmsg puts -- before a text that starts with -, and only there" \
    "$(. "$DIR/scripts/lib/fmt.sh"
       tmux() { printf '[%s]' "$@"; }
       for dm_f in '-x foo' ' -x' 'x'; do dmsg "$dm_f"; printf '|'; done)"
+# cockpit_noted_key (#1124) puts the name into a tmux format, so it takes [a-z0-9-] only
+# and checks it before tmux is asked. Rows: <arguments>|<rc, what it says, each tmux call>.
+while IFS='|' read -r dm_f dm_w; do
+    is "cockpit_noted_key [$dm_f]: $dm_w" "$dm_w" \
+       "$(. "$DIR/scripts/lib/fmt.sh"
+          tmux() { printf 'asked;' >&3; }   # fd 3: the helper sends tmux's 2 away
+          # shellcheck disable=SC2086  # the row's words are the arguments
+          dm_f=$(cockpit_noted_key $dm_f 3>&1 2>&1); printf '%s %s' $? "$dm_f")"
+done <<'NKROWS'
+|2 cockpit_noted_key: bad name []
+a,b @cockpit_x_bound|2 cockpit_noted_key: bad name [a,b]
+a}b @cockpit_x_bound|2 cockpit_noted_key: bad name [a}b]
+jumpé @cockpit_x_bound|2 cockpit_noted_key: bad name [jumpé]
+jump|2 cockpit_noted_key: bad record option []
+fix-2 @cockpit_x_bound|0 asked;asked;
+NKROWS
 dm_up 5
 for dm_f in '-x foo' '--' '-' '-l' '-#[fg=red]' ' -x foo'; do
     dm_tmux 5 bash -c '. "$1/scripts/lib/fmt.sh" && dmsg "$2"' _ "$DIR" "$dm_f"
@@ -4890,6 +4908,16 @@ done
 "$TMUX_REAL" -L "$dm_s" set -g @cockpit_jump_key x
 ( cd "$DM/wd" && exec "$TMUX_REAL" -L "$dm_s" run-shell "$(tq "$DIR/cockpit.tmux")" \
     ) >/dev/null 2>&1
+# #1124: tmux prints a note's tab, \037 and newline raw. A user's note on c, listed before
+# x, holding the jump's note and one of them, was split into a key name (TAB) or an empty
+# key that matched the unset record, or read as the jump's note (its last line).
+for dm_f in "$dm_jn"$'\t'TAB "$dm_jn"$'\037'US "$dm_jn"$'\n'x $'X\n'"$dm_jn"; do
+    dm_n=$((dm_n + 1))
+    "$TMUX_REAL" -L "$dm_s" set -gu @cockpit_jump_bound \; \
+        bind-key -T prefix -N "$dm_f" c run-shell true >/dev/null 2>&1
+    dm_note "$dm_n" "c noted [$(printf %q "$dm_f")], no record: x" " · prefix x jumps"
+done
+"$TMUX_REAL" -L "$dm_s" unbind-key -T prefix c \; set -g @cockpit_jump_bound x >/dev/null 2>&1
 # The 72 columns an 80-column client draws, for a realistic place: session work, window 2,
 # named api. Read whole on a client wider than the notice, so a cut cannot pass.
 "$TMUX_REAL" -L "$dm_s" rename-session -t t work \; move-window -s work:0 -t work:2 \; \
@@ -10561,6 +10589,8 @@ unset -f py_run py_stub; unset PY Q py_awk py_bash py_w py_m
 echo "== tests/green.sh: the stamp hits on unchanged content, misses on one changed byte, and tool versions are in the key =="
 GROOT=$(mktmpd)
 mkdir -p "$GROOT/scripts/lib" "$GROOT/tests" "$GROOT/examples"
+# green.sh's find walks these three, as a checkout has them: absent, it says so on stderr (#1116)
+mkdir -p "$GROOT/tests/fixtures" "$GROOT/tui" "$GROOT/skills"
 cp "$DIR/tests/green.sh" "$GROOT/tests/green.sh"
 for f in cockpit.tmux install.sh bootstrap.sh scripts/foo scripts/lib/bar tests/baz examples/qux; do
     printf 'a\n' > "$GROOT/$f"
@@ -13719,6 +13749,17 @@ is "two noted keys: the one the record names" \
 "$TMUX_REAL" -L "$PH" unbind-key g \; unbind-key h \; set-option -g @cockpit_panel_bound f
 is "no noted key: none is named, whatever the record says" \
     "cockpit: hidden · the panel key on $PHC brings it back" "$(ph_hidden)"
+# #1124: a user's note on c, listed before g, holding the panel's note and a tab, a \037 or
+# a newline, all printed raw by tmux: never a key name, an empty key or the panel's note.
+"$TMUX_REAL" -L "$PH" bind-key -N 'cockpit: panel' g display-message panel \; \
+    set-option -gu @cockpit_panel_bound
+for ph_n in $'cockpit: panel\tTAB' $'cockpit: panel\037US' $'cockpit: panel\nx' \
+    $'X\ncockpit: panel'; do
+    "$TMUX_REAL" -L "$PH" bind-key -N "$ph_n" c display-message user
+    is "c noted [$(printf %q "$ph_n")], no record: the noted g" \
+        "cockpit: hidden · prefix g on $PHC brings it back" "$(ph_hidden)"
+done
+"$TMUX_REAL" -L "$PH" unbind-key c \; unbind-key g
 rm -f "$PHFC"
 unset -f ph_hidden
 unset -f ph_open ph_gone ph_cap
@@ -16520,7 +16561,8 @@ kv_alive() { "$TMUX_REAL" -L "$KV" list-panes -a -F '#{pane_id}' 2>/dev/null | g
 }
 # <action-line> [expect]: one trip through the wrapper; the note it left
 kv_run() {
-    rm -f "$KD/once" "$KD/twice" "$KD/line2" "$KD/done" "$KD/link" "$KD/expect" "$KD/rv"
+    # Not rv: the request row empties it before its trip and reads it after (#1116).
+    rm -f "$KD/once" "$KD/twice" "$KD/line2" "$KD/done" "$KD/link" "$KD/expect"
     : > "$KD/bargv"; printf '%s\n' "$1" > "$KD/line"
     [ $# -lt 2 ] || printf '%s\n' "$2" > "$KD/expect"
     [ "${KV_LINK:-}" != 1 ] || : > "$KD/link"
@@ -23104,6 +23146,23 @@ else
     bad "a UTF-8 locale whose regex [0-9] matches ² and ١ loads (localedef en_US.UTF-8)" \
         "loaded" "none"
 fi
+
+echo "== the green.sh stamp block and the board's kill block print nothing on stderr (#1116) =="
+# Both printed a "No such file or directory" on every green run: green.sh's find walked
+# three folders the stamp's fixture tree lacked, and a cat read the rv file kv_run had
+# just removed. A real one in a red run's log was lost beside them. Through only.sh, as
+# the #1098 block runs a block, with stderr kept apart from the rows.
+NE=$(mktmpd)
+(cd "$DIR" && env -u TMUX tests/only.sh \
+    '^tests/green\.sh: the stamp hits|^cockpit-board: kill %N re-checks' \
+    >"$NE/out" 2>"$NE/err" </dev/null)
+ne_rc=$?
+# A red nested run names its FAIL rows here: $NE/out goes with the run's temp folders.
+[ "$ne_rc" = 0 ] || ne_rc="$ne_rc: $(grep -A2 FAIL "$NE/out" | tr '\n' ' ')"
+# With the titles it printed: a block the pattern no longer matches would go unwatched.
+is "both blocks, the stamp and the kill block, ran through only.sh and passed" "0 2" \
+   "$ne_rc $(grep -c '^== ' "$NE/out")"
+is "and print nothing on stderr" "" "$(cat "$NE/err")"
 
 flop_left
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
