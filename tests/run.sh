@@ -13679,8 +13679,8 @@ printf '#!/bin/sh\nprintf "[%%s]" "${COCKPIT_PANEL_KEY-unset}" > %s\n' "$(tq "$P
     > "$PHD/keytui"; chmod +x "$PHD/keytui"
 ph_pkey() {                   # [env words] -> [the COCKPIT_PANEL_KEY the binary got]
     rm -f "$PHD/pkey"
-    "$TMUX_REAL" -L "$PH" new-window -d -t t: "$PHENV ${1:-} $(:
-        )COCKPIT_TUI_BIN=$(tq "$PHD/keytui") $(tq "$DIR/scripts/cockpit-panel") -p $PHC"
+    "$TMUX_REAL" -L "$PH" new-window -d -t t: -c "$PHD" "$PHENV ${1:-} \
+COCKPIT_TUI_BIN=$(tq "$PHD/keytui") $(tq "$DIR/scripts/cockpit-panel") -p $PHC"
     until_file "$PHD/pkey" '\[*\]'
     cat "$PHD/pkey" 2>/dev/null
 }
