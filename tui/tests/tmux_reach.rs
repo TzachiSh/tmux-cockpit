@@ -8,46 +8,100 @@ mod fake;
 
 use std::path::{Path, PathBuf};
 
-/// The text of every Rust string literal in `src`, `\n` read as a new line.
-/// Plain and raw literals; a char literal `'"'` is skipped.
+/// The text of every Rust string literal in `src`, `\n` read as a new line: plain, byte, C
+/// and raw ones, as [`lit_at`] reads them. Comments and char literals are skipped.
 fn literals(src: &str) -> Vec<(usize, String)> {
-    let b = src.as_bytes();
     let (mut out, mut i) = (vec![], 0);
-    while i < b.len() {
-        match b[i] {
-            b'/' if b.get(i + 1) == Some(&b'/') => {
-                i = src[i..].find('\n').map_or(b.len(), |n| i + n);
+    while i < src.len() {
+        match lit_at(src, i) {
+            Some((Lit::Str { raw }, start, end, next)) => {
+                let t = &src[start..end];
+                out.push((start, if raw { t.to_string() } else { unescape(t) }));
+                i = next;
             }
-            b'\'' if b.get(i + 2) == Some(&b'\'') || b.get(i + 1) == Some(&b'\\') => {
-                i = src[i + 1..].find('\'').map_or(b.len(), |n| i + n + 2);
-            }
-            b'r' if matches!(b.get(i + 1), Some(b'"' | b'#')) && !word(b, i) => {
-                let hashes = b[i + 1..].iter().take_while(|&&c| c == b'#').count();
-                let close = format!("\"{}", "#".repeat(hashes));
-                let start = i + 2 + hashes;
-                let end = src[start..].find(&close).map_or(b.len(), |n| start + n);
-                out.push((start, src[start..end].to_string()));
-                i = end + close.len();
-            }
-            b'"' => {
-                let (start, mut j, mut text) = (i + 1, i + 1, String::new());
-                while j < b.len() && b[j] != b'"' {
-                    if b[j] == b'\\' && j + 1 < b.len() {
-                        text.push(if b[j + 1] == b'n' { '\n' } else { b[j + 1] as char });
-                        j += 2;
-                    } else {
-                        let c = src[j..].chars().next().unwrap();
-                        text.push(c);
-                        j += c.len_utf8();
-                    }
-                }
-                out.push((start, text));
-                i = j + 1;
-            }
-            _ => i += 1,
+            Some((_, _, _, next)) => i = next,
+            None => i += src[i..].chars().next().map_or(1, char::len_utf8),
         }
     }
     out
+}
+
+/// A cooked literal's text with `\n` a new line and any other escape its next char.
+fn unescape(t: &str) -> String {
+    let (mut out, mut cs) = (String::new(), t.chars());
+    while let Some(c) = cs.next() {
+        match (c, c == '\\') {
+            (_, true) => out.extend(cs.next().map(|e| if e == 'n' { '\n' } else { e })),
+            (c, false) => out.push(c),
+        }
+    }
+    out
+}
+
+/// What a comment or literal at byte `i` of `src` is.
+enum Lit {
+    Comment,
+    Char,
+    Str { raw: bool },
+}
+
+/// The comment or literal that starts at byte `i` of `src`, read as rustc reads it (#1110),
+/// or `None` for code: its kind, where its text starts and ends, and where code resumes. A
+/// `//` comment runs to its line's end and a `/* */` one nests. A char or byte-char literal
+/// is one char or one escape between quotes, so a lifetime is not one. A raw string starts
+/// at an `r`, `br` or `cr` that continues no word, and its hashes must end at a quote, so
+/// `r#type` is an identifier. A plain, byte or C string ends at its first unescaped quote.
+fn lit_at(src: &str, i: usize) -> Option<(Lit, usize, usize, usize)> {
+    let b = src.as_bytes();
+    let at = |j: usize| b.get(j).copied();
+    match b[i] {
+        b'/' if at(i + 1) == Some(b'/') => {
+            let end = src[i..].find('\n').map_or(b.len(), |n| i + n);
+            Some((Lit::Comment, i, end, end))
+        }
+        b'/' if at(i + 1) == Some(b'*') => {
+            let (mut depth, mut j) = (0, i);
+            while j < b.len() {
+                let two = &b[j..b.len().min(j + 2)];
+                depth += (two == b"/*") as i32 - (two == b"*/") as i32;
+                j += if two == b"/*" || two == b"*/" { 2 } else { 1 };
+                if depth == 0 {
+                    break;
+                }
+            }
+            Some((Lit::Comment, i, j, j))
+        }
+        b'\'' => {
+            let c = src[i + 1..].chars().next()?;
+            let after = i + 1 + c.len_utf8();
+            let end = match c {
+                '\\' => after + 1 + src.get(after + 1..)?.find('\'')?,
+                _ if at(after) == Some(b'\'') => after,
+                _ => return None,
+            };
+            Some((Lit::Char, i + 1, end, end + 1))
+        }
+        b'r' | b'b' | b'c' if !word(b, i) => {
+            let r = if b[i] == b'r' { i } else { i + 1 };
+            let hashes = b.get(r + 1..)?.iter().take_while(|&&c| c == b'#').count();
+            if at(r) != Some(b'r') || at(r + 1 + hashes) != Some(b'"') {
+                return None;
+            }
+            let close = format!("\"{}", "#".repeat(hashes));
+            let start = r + 2 + hashes;
+            let end = src[start..].find(&close).map_or(b.len(), |n| start + n);
+            Some((Lit::Str { raw: true }, start, end, b.len().min(end + close.len())))
+        }
+        b'"' => {
+            let mut j = i + 1;
+            while j < b.len() && b[j] != b'"' {
+                j += if b[j] == b'\\' { 2 } else { 1 };
+            }
+            let end = j.min(b.len());
+            Some((Lit::Str { raw: false }, i + 1, end, b.len().min(end + 1)))
+        }
+        _ => None,
+    }
 }
 
 /// Whether the byte before `i` continues a word, as in `br"` or `for"`.
@@ -167,41 +221,20 @@ fn the_scan_finds_the_shapes_it_reads_and_no_lookalike() {
 
 // --- #1110: one environment lock in a binary, fake's ---
 
-/// `src` with its comments and the insides of its string and char literals blanked, so a
-/// scan of what the code declares and calls meets no word of a message or a row's table.
+/// `src` with its comments and the insides of its string and char literals blanked, as
+/// [`lit_at`] reads them, so a scan of what the code declares and calls meets no word of a
+/// message or a row's table.
 fn code_of(src: &str) -> String {
-    let b = src.as_bytes();
     let (mut out, mut i) = (String::new(), 0);
-    // how far past `from` `pat` first starts, plus `k`; past the end where it is not (cut below)
-    let at = |from: usize, pat: &str, k: usize| src[from..].find(pat).map_or(b.len(), |n| n + k);
-    while i < b.len() {
-        let char_lit = b.get(i + 2) == Some(&b'\'') || b.get(i + 1) == Some(&b'\\');
-        let raw = matches!(b.get(i + 1), Some(b'"' | b'#')) && !word(b, i);
-        let end = match b[i] {
-            b'/' if b.get(i + 1) == Some(&b'/') => i + at(i, "\n", 0),
-            b'/' if b.get(i + 1) == Some(&b'*') => i + at(i, "*/", 2),
-            b'\'' if char_lit => i + 1 + at(i + 1, "'", 1),
-            b'r' if raw => {
-                let hashes = b[i + 1..].iter().take_while(|&&c| c == b'#').count();
-                let close = format!("\"{}", "#".repeat(hashes));
-                i + 2 + hashes + at(i + 2 + hashes, &close, close.len())
-            }
-            b'"' => {
-                let mut j = i + 1;
-                while j < b.len() && b[j] != b'"' {
-                    j += if b[j] == b'\\' { 2 } else { 1 };
-                }
-                j + 1
-            }
-            _ => {
-                let c = src[i..].chars().next().unwrap();
-                out.push(c);
-                i += c.len_utf8();
-                continue;
-            }
-        };
-        out.push(' ');
-        i = end.min(b.len());
+    while i < src.len() {
+        if let Some((_, _, _, next)) = lit_at(src, i) {
+            out.push(' ');
+            i = next;
+        } else {
+            let c = src[i..].chars().next().unwrap();
+            out.push(c);
+            i += c.len_utf8();
+        }
     }
     out
 }
@@ -410,6 +443,58 @@ fn the_lock_scan_reads_past_names_spacing_and_the_writes_word() {
     ];
     for (row, src, want) in rows {
         assert_eq!(own_env_locks("x.rs", &src), want, "{row}: {src}");
+    }
+}
+
+/// The lock scan's lexer ([`lit_at`] through [`code_of`]) on sources with a known answer:
+/// each form of string, char and comment that can hold a quote or a `*/`, read as rustc
+/// reads it. A lock and a write after the form are still named; inside a comment, not.
+#[test]
+fn the_lock_scan_reads_literals_and_comments_as_rustc_does() {
+    let lock = "static ENV: Mutex<()> = Mutex::new(());";
+    let set = "fn f() { unsafe { std::env::set_var(\"A\", \"1\") } }";
+    let after: [(&str, &str); 13] = [
+        ("a raw byte string ending in a backslash", r#"const P: &[u8] = br"C:\";"#),
+        ("a raw string ending in a backslash", r#"const P: &str = r"C:\";"#),
+        ("a raw C string ending in a backslash", r#"const P: &CStr = cr"C:\";"#),
+        ("a raw string with hashes holding a quote", r##"const P: &str = r#"a "b" c"#;"##),
+        ("a raw byte string with hashes", r##"const P: &[u8] = br#"a"b"#;"##),
+        ("a byte string with an escaped quote", r#"const P: &[u8] = b"a\"b";"#),
+        ("a char holding a quote", r#"const C: char = '"';"#),
+        ("a byte char holding a quote", r#"const C: u8 = b'"';"#),
+        ("an escaped quote char", r#"const C: char = '\''; const D: &str = "x";"#),
+        ("an escaped quote, then a quote char", r#"const C: [char; 2] = ['\'','"'];"#),
+        ("a char past ASCII", r#"const C: char = 'é'; const D: &str = "x";"#),
+        ("a raw identifier", r#"fn f(r#type: u8) -> u8 { r#type }"#),
+        ("a nested block comment", "/* a /* b */ c */"),
+    ];
+    for (row, form) in after {
+        let src = format!("{form}\n{lock}\n{set}\n");
+        assert_eq!(own_env_locks("x.rs", &src), [lock], "{row}: {src}");
+    }
+    let src = format!("/* a /* b */ {lock} */\n{set}\n");
+    assert_eq!(own_env_locks("x.rs", &src), Vec::<String>::new(), "a lock inside a nested comment");
+}
+
+/// The tmux scan's lexer ([`lit_at`] through [`literals`]) on the same forms: the texts of the
+/// string literals, as rustc reads them, and nothing from a comment or a char.
+#[test]
+fn the_tmux_scan_reads_literals_and_comments_as_rustc_does() {
+    let texts = |src: &str| literals(src).into_iter().map(|(_, t)| t).collect::<Vec<_>>();
+    let rows: [(&str, &str, &[&str]); 6] = [
+        (
+            "a raw byte string ending in a backslash",
+            r#"br"C:\"; "tmux -V""#,
+            &["C:\\", "tmux -V"],
+        ),
+        ("a raw string with hashes", r##"r#"a "tmux" b"#"##, &["a \"tmux\" b"]),
+        ("a nested block comment", r#"/* "x" /* "y" */ "z" */ "w""#, &["w"]),
+        ("a char holding a quote", r#"'"' "v""#, &["v"]),
+        ("an escaped quote char", r#"'\'' "v""#, &["v"]),
+        ("a raw identifier", r#"r#type = "v""#, &["v"]),
+    ];
+    for (row, src, want) in rows {
+        assert_eq!(texts(src), want, "{row}: {src}");
     }
 }
 
