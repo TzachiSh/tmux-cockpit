@@ -29,7 +29,7 @@ fn beside_a_write(var: &str, check: fn()) -> Option<String> {
     let held = fake::env_lock();
     let old = std::env::var_os(var);
     // SAFETY: the lock is held, and every write of this binary takes it.
-    unsafe { std::env::set_var(var, "/sibling-1110") };
+    unsafe { fake::set_var(&held, var, "/sibling-1110") };
     let (tx, rx) = std::sync::mpsc::channel();
     let t = std::thread::spawn(move || {
         tx.send(unsafe { libc::gettid() }).unwrap();
@@ -39,8 +39,8 @@ fn beside_a_write(var: &str, check: fn()) -> Option<String> {
     // SAFETY: as above, still under the lock.
     unsafe {
         match old {
-            Some(v) => std::env::set_var(var, v),
-            None => std::env::remove_var(var),
+            Some(v) => fake::set_var(&held, var, v),
+            None => fake::remove_var(&held, var),
         }
     }
     drop(held);

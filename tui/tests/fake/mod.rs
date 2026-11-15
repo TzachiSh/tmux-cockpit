@@ -21,6 +21,25 @@ use std::sync::Once;
 #[allow(unused_imports)]
 pub use test_env::{EnvHeld, env_lock, env_poisoned, remove_var, set_var};
 
+/// The lock's token as a rig keeps it: its own, taken for the rig's life, or lent by a
+/// holder that outlives the rig, for one built inside another (#1132).
+#[allow(dead_code)]
+pub enum Held<'a> {
+    Own(EnvHeld),
+    Lent(&'a EnvHeld),
+}
+
+#[allow(dead_code)]
+impl Held<'_> {
+    /// The token, for [`set_var`] and [`remove_var`].
+    pub fn token(&self) -> &EnvHeld {
+        match self {
+            Held::Own(h) => h,
+            Held::Lent(h) => h,
+        }
+    }
+}
+
 fn beside(path: &Path, ext: &str) -> PathBuf {
     let mut s = path.as_os_str().to_owned();
     s.push(ext);
