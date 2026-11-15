@@ -42,7 +42,12 @@ impl Drop for EnvHeld {
 /// `fake::Server::start` check under this lock and let it go before the tmux or the write
 /// that follows, so a binary that writes TMUX or TMUX_TMPDIR in its own process must not
 /// call them: a sibling's value could reach that tmux. None does (panel_env, env_lock).
+/// On a thread that holds it already the take would wait for itself, so that call panics
+/// instead, naming what the holder does (#1132).
 pub fn env_lock() -> EnvHeld {
+    if HOLDS.get() {
+        panic!("fake::env_lock() on a thread that holds it: lend that token instead (#1132)");
+    }
     let guard = ENV.lock().unwrap_or_else(|e| e.into_inner());
     HOLDS.set(true);
     EnvHeld { _guard: guard }

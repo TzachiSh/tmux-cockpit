@@ -1,6 +1,6 @@
 //! The environment lock `fake` owns (#1110): a check reads under it whichever form is
 //! called, a guard-less check on the thread that holds it fails every run in place of a
-//! wait for itself, a panicked holder leaves the next check its own refusal, and the
+//! wait for itself, as a second take of the lock there does (#1132), a panicked holder leaves the next check its own refusal, and the
 //! token a `_held` check takes is made by `fake` alone.
 mod fake;
 
@@ -121,6 +121,22 @@ fn a_guard_less_check_under_the_lock_names_its_held_form() {
     let helper = said.contains("fake::Server::start, call that helper before you take the lock");
     let got = [named("state", "checked_state"), named("tmux", "checked_tmux"), (code, helper)];
     assert_eq!(got, [(Some(101), true); 3]);
+}
+
+/// #1132: a second take of the lock on the thread that holds it panics, naming what the
+/// holder does, where the take would wait for itself. Run in a child, so a hang is a kill.
+#[test]
+fn a_second_take_on_the_holding_thread_names_the_token_to_lend() {
+    if child_case().is_some() {
+        let _held = fake::env_lock();
+        drop(fake::env_lock());
+        return;
+    }
+    let s = scratch("cockpit-env-relock");
+    let me = "a_second_take_on_the_holding_thread_names_the_token_to_lend";
+    let (code, said) = bounded_child(&s, me, "again");
+    let want = "fake::env_lock() on a thread that holds it: lend that token instead";
+    assert_eq!((code, said.contains(want)), (Some(101), true), "{said}");
 }
 
 /// A row's child: a holder of the lock panics, then the check `case` names runs with its
