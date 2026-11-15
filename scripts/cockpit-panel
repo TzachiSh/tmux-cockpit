@@ -188,12 +188,17 @@ taken=''; [ "${#ask[@]}" -gt 0 ] && [ -n "$kept" ] && taken=1
 glyphs=$(tmux show-option -gqv @cockpit_glyphs 2>/dev/null)   # #293: the binary reads only the env
 # #623: as it is; the binary keeps only the CLI's effort words, medium for the rest
 effort=$(tmux show-option -gqv @cockpit_panel_effort 2>/dev/null)
+# #1121: the ^Z help names the key the hidden-panel message names, read the same way.
+# None noted passes none, and one from the caller's environment is dropped: the binary
+# then says "the panel key". The binary checks the value again before drawing it.
+pkey=$(cockpit_noted_key panel @cockpit_panel_bound)
 while :; do
     rm -f "$f" "$f.text" "$f.cmd" "$f.state" "$f.basket"
     # CLAUDECODE leaks in from the agent's environment and must not mark the call as its child.
-    env -u CLAUDECODE COCKPIT_ACTION="$f" COCKPIT_LOG="$LOG" COCKPIT_PANEL_DROPPED="${dropped# }" \
+    env -u CLAUDECODE -u COCKPIT_PANEL_KEY COCKPIT_ACTION="$f" COCKPIT_LOG="$LOG" \
+        COCKPIT_PANEL_DROPPED="${dropped# }" \
         ${glyphs:+"COCKPIT_GLYPHS=$glyphs"} ${effort:+"COCKPIT_PANEL_EFFORT=$effort"} \
-        ${taken:+COCKPIT_PANEL_HIDE_TAKEN=1} \
+        ${taken:+COCKPIT_PANEL_HIDE_TAKEN=1} ${pkey:+"COCKPIT_PANEL_KEY=$pkey"} \
         "$BIN" panel "$PANE" ${resume[@]+"${resume[@]}"} ${ask[@]+"${ask[@]}"} 2>>"$LOG" || {
         rc=$?
         tell "cockpit: the panel exited $rc — see $LOG"
@@ -214,6 +219,7 @@ while :; do
             # jump notice reads its key (#1109): the record alone named a key moved by hand,
             # stock find-window's f (#1112). Two noted: the recorded one (cockpit_noted_key,
             # #1124). No noted key, or list-keys failing, leaves the generic words.
+            # Read again, not $pkey: the key may be rebound while the panel is open.
             hk=$(cockpit_noted_key panel @cockpit_panel_bound)
             if [ -n "$hk" ]; then hk="prefix $hk"; else hk="the panel key"; fi
             msg="cockpit: hidden · $hk on $PANE brings it back"
