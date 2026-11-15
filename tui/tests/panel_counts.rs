@@ -461,3 +461,11 @@ fn busy_line_of_an_exploring_write_on_an_ordinary_folder_is_as_before() {
     let want = "sent: screen 1 lines, 0 hidden · write (auto), explore first";
     assert_eq!(sent_line(&frame(&a)), want);
 }
+
+/// #1066: this binary reads tmux through the product's plain `tmux`
+/// (`AGENT_GLOB` in `data.rs`). Under the runner that finds no server; started by
+/// hand from inside a tmux session it would read the caller's, so it is refused.
+#[test]
+fn the_binary_runs_with_no_tmux_session_of_the_callers() {
+    fake::checked_tmux();
+}

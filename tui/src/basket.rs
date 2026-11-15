@@ -85,7 +85,8 @@ fn check(pane: &str) -> Result<(), String> {
 /// from (cargo reads `.cargo/config.toml` from the cwd up: review-510), and
 /// wherever `COCKPIT_TEST_TMUX_GUARD` is set (the repo root's config sets it,
 /// for a release test run); `COCKPIT_TEST_TMUX_GUARD=0` lifts it by hand.
-fn guarded() -> bool {
+/// `data::tmux` refuses a plain tmux under the same switch (#1089).
+pub(crate) fn guarded() -> bool {
     match std::env::var("COCKPIT_TEST_TMUX_GUARD").as_deref() {
         Ok("0") => false,
         Ok(_) => true,

@@ -81,7 +81,8 @@ jobs:
       - name: The bare leg has no TMUX_TMPDIR
         if: ${{ matrix.bare }}
         run: |
-          [ -z "${TMUX_TMPDIR:-}" ] || { echo "TMUX_TMPDIR is set on the bare leg: $TMUX_TMPDIR"; exit 1; }
+          [ -z "${TMUX_TMPDIR:-}" ] || {
+            echo "TMUX_TMPDIR is set on the bare leg: $TMUX_TMPDIR"; exit 1; }
           echo "no TMUX_TMPDIR: the suite makes its own socket folder"
       - run: J=4 make test-par
       # Nothing of the suite's may be left in the default socket dir once it is done (#811).

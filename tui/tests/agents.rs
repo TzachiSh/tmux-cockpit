@@ -74,6 +74,9 @@ impl Rig {
 
     /// `lock` is `ENV`, held from here to the drop. None when the caller holds it.
     fn build(tag: &str, claude_body: &str, board: bool, lock: Option<Lock>) -> Rig {
+        // every rig comes through here, `new`, `with` and `inside` alike: the runner unset
+        // the caller's log, cache and state, which a lookup uses (#1066)
+        fake::checked_state();
         let dir = std::env::temp_dir().join(format!("cockpit-agents-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("bin")).unwrap();
@@ -1487,6 +1490,31 @@ fn a_signalled_board_kills_a_lookup_in_flight() {
     assert_eq!(st.code(), Some(0), "the handler's _exit(0), not the child's own exit");
     let pid = std::fs::read_to_string(r.dir.join("stubpid")).unwrap();
     wait_gone(pid.trim());
+}
+
+/// #1066: started by hand with a caller's COCKPIT_LOG kept, this binary's rig
+/// refuses before a lookup can write a line there. The runner unsets it.
+#[test]
+fn a_kept_cockpit_log_is_refused() {
+    let kept = [("COCKPIT_LOG", "/canary-1066/log")];
+    let (code, said) = fake::run_by_hand("a_failed_call_does_not_move_at", &kept);
+    let refused = said.contains("the caller's state refused (#1066): COCKPIT_LOG set. ");
+    assert_eq!((code, refused), (Some(101), true), "{said}");
+}
+
+/// #1066: a rig built by `Rig::with`, which skipped the check `Rig::new` made, now meets
+/// it too: started by hand with a caller's COCKPIT_LOG kept, the one-shot row is refused
+/// and the caller's log keeps its one line.
+#[test]
+fn a_one_shot_rig_with_a_kept_log_is_refused_and_writes_nothing() {
+    let log = std::env::temp_dir().join(format!("cockpit-agents-keptlog-{}", std::process::id()));
+    std::fs::write(&log, "marker\n").unwrap();
+    let kept = [("COCKPIT_LOG", log.to_str().unwrap())];
+    let (code, said) = fake::run_by_hand("a_one_shot_read_waits_for_the_lookup", &kept);
+    let left = std::fs::read_to_string(&log).unwrap();
+    std::fs::remove_file(&log).unwrap();
+    let refused = said.contains("the caller's state refused (#1066): COCKPIT_LOG set. ");
+    assert_eq!((code, refused, left.as_str()), (Some(101), true, "marker\n"), "{said}");
 }
 
 /// #1061: the three rows that signal a process they started, in this binary started

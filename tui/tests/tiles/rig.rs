@@ -9,6 +9,8 @@ pub struct Rig {
     pub sock: String,
     pub dir: PathBuf,
     pub ids: Vec<String>,
+    /// killed with its socket before the folder goes
+    _server: crate::fake::Server,
 }
 
 /// What each pane prints, then it sleeps. `END` marks a screen as drawn.
@@ -65,20 +67,16 @@ pub fn rig(tag: &str) -> Option<Rig> {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let d = dir.display().to_string();
-    let mut r = Rig { sock, dir, ids: vec![] };
-    r.tmux(&[
-        "-f",
-        "/dev/null",
-        "new-session",
-        "-d",
-        "-c",
-        &d,
-        "-x",
-        "80",
-        "-y",
-        "20",
-        "sleep 300",
-    ]);
+    // built first, so a start that panics still removes the folder
+    let mut r = Rig {
+        _server: crate::fake::Server::new(&sock),
+        sock,
+        dir,
+        ids: vec![],
+    };
+    r._server.start(|c| {
+        c.args(["new-session", "-d", "-c", &d, "-x", "80", "-y", "20", "sleep 300"]);
+    });
     for s in SCREENS {
         let cmd = format!("{s}; exec sleep 300");
         let id = r.tmux(&["new-window", "-d", "-P", "-F", "#{pane_id}", "-c", &d, &cmd]);
@@ -96,11 +94,7 @@ pub fn rig(tag: &str) -> Option<Rig> {
 
 impl Drop for Rig {
     fn drop(&mut self) {
-        self.tmux(&["kill-server"]);
-        let uid = unsafe { libc::getuid() };
-        let tmp = std::env::var("TMUX_TMPDIR").unwrap_or_else(|_| "/tmp".into());
-        let sock = PathBuf::from(tmp).join(format!("tmux-{uid}")).join(&self.sock);
-        let _ = std::fs::remove_file(sock);
+        self._server.stop();
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
