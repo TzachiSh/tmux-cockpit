@@ -23248,17 +23248,28 @@ else
         "loaded" "none"
 fi
 
-echo "== the green.sh stamp block, the board's kill block and the #1137 blocks print rows alone =="
+echo "== tests/run.sh reads no /proc environ with its 2>/dev/null after the input (#1137) =="
+# A redirect applies left to right: with 2>/dev/null after `< file`, a pid gone between the
+# /proc listing and the read has bash report the failed open on the suite's stderr. Built in
+# pieces, so this block's own lines hold no match.
+ev_pat='<[[:space:]]*"?[^[:space:]"]*'"environ"
+ev_pat+='"?[[:space:]]+2>/dev/null'
+is "no read of a /proc environ puts 2>/dev/null after the input redirect" "" \
+   "$(grep -nE "$ev_pat" "$DIR/tests/run.sh" | cut -d: -f1 | tr '\n' ' ')"
+unset ev_pat
+
+echo "== the green.sh stamp, the board's kill and seven #1137 blocks print rows alone =="
 # Both printed a "No such file or directory" on every green run: green.sh's find walked
 # three folders the stamp's fixture tree lacked, and a cat read the rv file kv_run had
 # just removed. A real one in a red run's log was lost beside them. Through only.sh, as
 # the #1098 block runs a block, with stderr kept apart from the rows.
 # #1137 adds the blocks below, each of which printed a stray line on a green run, on stderr
 # or among the rows on stdout. SIGPIPE ignored, as on GitHub's runners: there a writer whose
-# reader left reports it on stderr. An ignored signal stays ignored across the exec.
+# reader left reports it on stderr. An ignored signal stays ignored across the exec. The #310
+# block's `yes` line is fixed but not nested here: that block alone takes 40 s. The run-wide
+# check of #1153 pins it and replaces this nest.
 NE=$(mktmpd)
 NE_PAT='^tests/green\.sh: the stamp hits|^cockpit-board: kill %N re-checks'
-NE_PAT+='|^agent-state: a Stop with background subagents in flight is not done \(#310\)'
 NE_PAT+='|^cockpit-board: a state change wakes every running board through tmux wait-for'
 NE_PAT+='|^review-gate: hands a queued review over once'
 NE_PAT+="|^notify's deadline covers the whole read, not each line"
@@ -23273,7 +23284,7 @@ ne_rc=$?
 # is not nest_run's, which merges stderr into the output; nest_fails reads its stdout alone.
 NEST_OUT=$(cat "$NE/out")
 # With the titles it printed: a block the pattern no longer matches would go unwatched.
-is "the ten blocks, the stamp and the kill block first, ran through only.sh and passed" "0 10" \
+is "the nine blocks, the stamp and the kill block first, ran through only.sh and passed" "0 9" \
    "$ne_rc$(nest_fails) $(grep -c '^== ' "$NE/out")"
 is "and print nothing on stderr" "" "$(cat "$NE/err")"
 # On stdout a green run prints titles, PASS and SKIP rows and the totals line, nothing else.
