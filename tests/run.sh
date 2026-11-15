@@ -4602,7 +4602,7 @@ done
 # A control byte or a byte outside UTF-8 in the folder: #{key_command} prints it as \t, \n,
 # \r, \033, \177 or \303, which the \ " $ escapes alone missed (#1097).
 for oh_b in 09:tab 0a:newline 0d:CR 1b:ESC 7f:DEL c3:lone-0xc3; do
-    oh_s="cockpit-ohb-$$-${oh_b%%:*}"; SOCKS="$SOCKS $oh_s"; printf -v oh_f "a\\x${oh_b%%:*}q"
+    oh_s="cockpit-ohb-$$-${oh_b%%:*}"; SOCKS="$SOCKS $oh_s"; printf -v oh_f 'a%bq' "\\x${oh_b%%:*}"
     oh_box "b${oh_b%%:*}" "$oh_f"; oh_server "$oh_s" "$COCKPIT_TUI_BIN"
     oh_p=$(cd -P "$OH/p/$oh_f" && pwd)
     "$TMUX_REAL" -L "$oh_s" bind-key f display-popup -E -e COCKPIT_PANEL_MODE=auto -w 94% \
