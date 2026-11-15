@@ -47,6 +47,10 @@ dmsg() {                      # [display-message flags...] <text>
   tmux display-message "$@" "${t//#/##}"
 }
 
+# The note every cockpit key is bound with, "cockpit: <name>": cockpit.tmux writes it and
+# the review notice reads the jump key's back (#1102), so the text lives here once.
+cockpit_key_note() { printf 'cockpit: %s' "$1"; }    # <name>
+
 # A file name as a title: no control character and no bidi mark, which would
 # reorder what the eye reads (U+061C, U+200E-F, U+202A-E, U+2066-9, as UTF-8). tmux
 # refuses a window name holding a control character (#366), and a popup border
