@@ -1195,11 +1195,9 @@ fn sgr_params(bytes: &[u8]) -> Vec<u16> {
 fn no_color_puts_no_colour_byte_on_the_wire() {
     use cockpit_tui::backend::WideCellBackend;
     use ratatui::backend::Backend;
-    static ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     let th = {
-        let _guard = ENV.lock().unwrap_or_else(|e| e.into_inner());
-        // SAFETY: every test that touches the environment takes ENV first, and
+        let _guard = fake::env_lock();
+        // SAFETY: every test that touches the environment takes fake's lock first, and
         // Theme::load returns before any tmux call when NO_COLOR is set
         unsafe { std::env::set_var("NO_COLOR", "1") };
         let th = Theme::load();

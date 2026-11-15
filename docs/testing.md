@@ -314,11 +314,23 @@ to the file it names.
 So every test binary runs as on CI. A plain `tmux` in it finds no server, and
 the cache and state folders resolve under whatever `HOME` the test has: for a
 test that sets no `HOME`, under yours, as on a box that never exported them. Three binaries
-write some of them in their own process, each under its own `ENV` lock: panel_env
-(`TMUX`, `TMUX_PANE`, `TMUX_TMPDIR`, `XDG_CACHE_HOME`), agents (`XDG_CACHE_HOME`)
-and data (`COCKPIT_LOG`). Their checks read those under that lock (#1089). The helpers only check: `fake::checked_tmux`
-before any tmux a helper runs, and `fake::checked_state` in each rig that sets
-`HOME`. The product's own tmux calls refuse too (#1089): under the test guard
+write some of them in their own process: panel_env (`TMUX`, `TMUX_PANE`,
+`TMUX_TMPDIR`, `XDG_CACHE_HOME`), agents (`XDG_CACHE_HOME`) and data
+(`COCKPIT_LOG`). A test binary has one environment lock, `fake::env_lock()`
+(#1110), and every write and every check of these runs under it. A check made
+under the lock takes its token, `fake::checked_state_held` and
+`fake::checked_tmux_held`. The guard-less `fake::checked_state` and
+`fake::checked_tmux` take the lock for their read, and on a thread that already
+holds it they panic and name the `_held` form, where they would otherwise wait
+for themselves. `tmux_reach.rs` fails for a file under `tui/tests` that keeps a
+lock named `ENV` of its own and writes the environment, or a second one in
+`fake/`. push's `RwLock` is the one it lets through, by its declaration: its
+readers, the rigs, run in parallel, and its one writer sets no variable a check
+reads. The helpers only check: `fake::checked_tmux`
+before any tmux a helper runs, and `fake::checked_state`, or
+`fake::checked_state_held` where the rig holds the lock (data, agents and
+info_dir), in each rig that sets `HOME`. The product's own tmux calls refuse
+too (#1089): under the test guard
 (`COCKPIT_TEST_TMUX_GUARD`, docs/tui.md) `data::refuses` lets `data::tmux`,
 push's start and the board's tile previews run a plain `tmux` only with `TMUX`
 unset and `TMUX_TMPDIR` an existing folder, and each reads anything else

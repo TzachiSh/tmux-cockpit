@@ -5,19 +5,15 @@ mod fake;
 
 use cockpit_tui::data::tmux_set;
 use cockpit_tui::push::Push;
-use std::sync::Mutex;
-
-/// COCKPIT_* are process-global and cargo runs tests on threads, so every test
-/// that touches them serialises here and puts them back on the way out.
-static ENV: Mutex<()> = Mutex::new(());
-
+/// COCKPIT_* are process-global and cargo runs tests on threads, so every test that
+/// touches them serialises on fake's environment lock and puts them back on the way out.
 struct Env(Vec<(&'static str, Option<String>)>);
 
 impl Env {
     fn set(vars: &[(&'static str, &str)]) -> Self {
         let old = vars.iter().map(|(k, _)| (*k, std::env::var(k).ok())).collect();
         for (k, v) in vars {
-            // SAFETY: the ENV mutex is held for the whole lifetime of this guard.
+            // SAFETY: fake's environment lock is held for the whole lifetime of this guard.
             unsafe { std::env::set_var(k, v) };
         }
         Env(old)
@@ -72,7 +68,7 @@ fn a_scratch_dir_is_removed_on_a_pass_and_on_a_panic() {
 
 #[test]
 fn readonly_writes_nothing_not_even_the_wake_channel() {
-    let _lock = ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let _lock = fake::env_lock();
     let dir = scratch("ro");
     let (bin, log) = shim(&dir);
     let _env = Env::set(&[("COCKPIT_TMUX", &bin), ("COCKPIT_READONLY", "1")]);
@@ -87,7 +83,7 @@ fn readonly_writes_nothing_not_even_the_wake_channel() {
 /// above is not passing because the shim is broken.
 #[test]
 fn without_readonly_the_write_reaches_tmux() {
-    let _lock = ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let _lock = fake::env_lock();
     let dir = scratch("rw");
     let (bin, log) = shim(&dir);
     let _env = Env::set(&[("COCKPIT_TMUX", &bin), ("COCKPIT_READONLY", "")]);
