@@ -173,17 +173,24 @@ if [ -z "$notes" ]; then
     esac
     unset lt lp
 fi
+# tmux compares the note itself. It prints a note's tab, \037 and newline raw, so no
+# separator cuts a note from what follows it: a user's note that began with cockpit's
+# and a \037 was read as cockpit's, and the key given back (#1135). Only a key whose
+# note is empty has its command read, and only before the notes.
 owned() {                     # <name> <key>
-    local nc
-    nc=$(tmux list-keys -T prefix -F "#{key_note}"$'\037'"#{key_command}" "$2" 2>/dev/null)
-    case "${nc%%$'\037'*}" in
-        "$(cockpit_key_note "$1")") return 0 ;;
-        "") [ -z "$notes" ] || return 1
-            case "$1:${nc#*$'\037'}" in
-                menu:*'display-menu -T "#[align=centre]'*|panel:*"$legacy_panel"*)
-                    dmsg "tmux-cockpit: $2 was the $1 key before the key notes; giving it back"
-                    return 0 ;;
-            esac ;;
+    local m f
+    f="#{?#{==:#{key_note},$(cockpit_key_note "$1")},noted,"
+    m=$(tmux list-keys -T prefix -F "$f#{?#{==:#{key_note},},bare,}}" "$2" 2>/dev/null)
+    case $m in
+        noted) return 0 ;;
+        bare) [ -z "$notes" ] || return 1 ;;
+        *) return 1 ;;
+    esac
+    m=$(tmux list-keys -T prefix -F '#{key_command}' "$2" 2>/dev/null)
+    case "$1:$m" in
+        menu:*'display-menu -T "#[align=centre]'*|panel:*"$legacy_panel"*)
+            dmsg "tmux-cockpit: $2 was the $1 key before the key notes; giving it back"
+            return 0 ;;
     esac
     return 1
 }

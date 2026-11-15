@@ -4727,6 +4727,17 @@ is "and the load ends keeping the pre-notes key f: the guess is off" "1:1" \
    "$("$TMUX_REAL" -L "$oh_s" list-keys -T root C-MouseDown3Pane | grep -c cockpit_click_line
      ):$("$TMUX_REAL" -L "$oh_s" list-keys -T prefix f | grep -c cockpit-panel)"
 "$TMUX_REAL" -L "$oh_s" kill-server >/dev/null 2>&1
+# The guess is for a key with no note. A note that starts with \037 is a note, though cut
+# at its first \037 it read as empty, and the user's key went back to stock (#1135).
+oh_s="cockpit-ohb-$$-ln"; SOCKS="$SOCKS $oh_s"; oh_box bln plain
+oh_server "$oh_s" "$COCKPIT_TUI_BIN"; oh_p=$(cd -P "$OH/p/plain" && pwd)
+"$TMUX_REAL" -L "$oh_s" bind-key -N $'\037mine' f display-popup -E -e COCKPIT_PANEL_MODE=auto \
+    -w 94% -h 90% -T ' panel · #{pane_id} ' "$(tq "$oh_p/scripts/cockpit-panel") -p $oh_src"
+"$TMUX_REAL" -L "$oh_s" set -g @cockpit_panel_bound f \; set -g @cockpit_panel_key g
+oh_load "$oh_s" bln
+is "a key noted [\\037mine] on the pre-notes panel command stays the user's" "1" \
+   "$("$TMUX_REAL" -L "$oh_s" list-keys -T prefix f | grep -c cockpit-panel)"
+"$TMUX_REAL" -L "$oh_s" kill-server >/dev/null 2>&1
 unset oh_b
 # The hints, missing and older, from folders holding # shapes. A message reaches the log
 # only when a client is attached to be shown it; ' command: ' lines hold the text as typed.
@@ -5926,6 +5937,18 @@ loaded_on "$GB" "a user's key running cockpit's own scripts is never given back"
     is "a user's key running cockpit's own scripts is never given back" "1" \
        "$(gb_live w | grep -c 'scripts/tm --popup x')"
 gb_set board unset; gb_load
+# A note that only starts like cockpit's is the user's. tmux prints a note's tab, \037 and
+# newline raw, and a note cut at its first \037 read as cockpit's (#1135).
+for gb_n in 'cockpit: board\037US' 'cockpit: board\tx' 'cockpit: board\nx' \
+            'X\ncockpit: board'; do
+    printf -v gb_v '%b' "$gb_n"
+    "$TMUX_REAL" -L "$GB" bind-key -N "$gb_v" w display-message mine >/dev/null 2>&1
+    gb_set board off; gb_load
+    gbr="a user's w noted [$gb_n] is never given back"
+    loaded_on "$GB" "$gbr" && is "$gbr" "1" "$(gb_live w | grep -c 'display-message mine')"
+    gb_set board unset; gb_load
+done
+unset gb_n gb_v
 # The stock binding itself, not read back through the same probe the fix uses.
 gb_set board off; gb_load
 loaded_on "$GB" "board off gives w back as tmux's own choose-tree -Zw, with its note" &&
