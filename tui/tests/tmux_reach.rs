@@ -770,7 +770,7 @@ fn the_unlocked_writes_only_get_fewer() {
         ("tests/basket_tmux.rs", 3),
         ("tests/branch_oldgit.rs", 1),
         ("tests/ended_glob.rs", 5),
-        ("tests/fake/mod.rs", 5),
+        ("tests/fake/mod.rs", 2),
         ("tests/files_global.rs", 2),
         ("tests/forks.rs", 5),
         ("tests/forks_dirs.rs", 5),
@@ -789,7 +789,7 @@ fn the_unlocked_writes_only_get_fewer() {
     let got = interim_names();
     let total: usize = got.iter().map(|(_, n)| n).sum();
     let got: Vec<(&str, usize)> = got.iter().map(|(f, n)| (f.as_str(), *n)).collect();
-    assert_eq!((total, got), (62, want.to_vec()), "lower the table in a step-2 PR, never raise it");
+    assert_eq!((total, got), (59, want.to_vec()), "lower the table in a step-2 PR, never raise it");
 }
 
 /// The word count above on sources with a known answer: a call counts, a longer
