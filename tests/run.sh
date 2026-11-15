@@ -4599,6 +4599,44 @@ for oh_f in plain "a'q" 'a"q' 'a$HOMEq'; do
        "$oh_stock" "$("$TMUX_REAL" -L "$oh_s" list-keys -T prefix -F '#{key_command}' f)"
     "$TMUX_REAL" -L "$oh_s" kill-server >/dev/null 2>&1
 done
+# A control byte or a byte outside UTF-8 in the folder: #{key_command} prints it as \t, \n,
+# \r, \033, \177 or \303, which the \ " $ escapes alone missed (#1097).
+for oh_b in 09:tab 0a:newline 0d:CR 1b:ESC 7f:DEL c3:lone-0xc3; do
+    oh_s="cockpit-ohb-$$-${oh_b%%:*}"; SOCKS="$SOCKS $oh_s"; printf -v oh_f "a\\x${oh_b%%:*}q"
+    oh_box "b${oh_b%%:*}" "$oh_f"; oh_server "$oh_s" "$COCKPIT_TUI_BIN"
+    oh_p=$(cd -P "$OH/p/$oh_f" && pwd)
+    "$TMUX_REAL" -L "$oh_s" bind-key f display-popup -E -e COCKPIT_PANEL_MODE=auto -w 94% \
+        -h 90% -T ' panel · #{pane_id} ' "$(tq "$oh_p/scripts/cockpit-panel") -p $oh_src"
+    "$TMUX_REAL" -L "$oh_s" set -g @cockpit_panel_bound f \; set -g @cockpit_panel_key g
+    oh_load "$oh_s" "b${oh_b%%:*}"
+    is "a folder holding [${oh_b#*:}]: a reload gives the pre-notes panel key f back to tmux" \
+       "$oh_stock" "$("$TMUX_REAL" -L "$oh_s" list-keys -T prefix -F '#{key_command}' f)"
+    is "a folder holding [${oh_b#*:}]: the load leaves no key table of its own" "0" \
+       "$("$TMUX_REAL" -L "$oh_s" list-keys -F '#{key_table}' | grep -c '^cockpit-legacy')"
+    "$TMUX_REAL" -L "$oh_s" kill-server >/dev/null 2>&1
+done
+# The scratch read fails after its bind: tmux stops a ; sequence there, so the table must
+# go in a call of its own, and the guess is off, never a match on every command (#1097).
+mkdir -p "$OH/lkfail"
+printf '%s\n' '#!/usr/bin/env bash' 'case " $* " in *" list-keys -T cockpit-legacy-"*)' \
+    '    a=("$@"); for i in "${!a[@]}"; do [ "${a[i]}" = ";" ] && break; done' \
+    "    $(tq "$TMUX_REAL") \"\${a[@]:0:i}\"; echo 'list-keys: no answer' >&2; exit 1 ;;" \
+    esac "exec $(tq "$TMUX_REAL") \"\$@\"" > "$OH/lkfail/tmux"
+chmod +x "$OH/lkfail/tmux"
+oh_s="cockpit-ohb-$$-lk"; SOCKS="$SOCKS $oh_s"; oh_box blk lkfail
+oh_server "$oh_s" "$COCKPIT_TUI_BIN"; oh_p=$(cd -P "$OH/p/lkfail" && pwd)
+"$TMUX_REAL" -L "$oh_s" bind-key f display-popup -E -e COCKPIT_PANEL_MODE=auto -w 94% \
+    -h 90% -T ' panel · #{pane_id} ' "$(tq "$oh_p/scripts/cockpit-panel") -p $oh_src"
+"$TMUX_REAL" -L "$oh_s" set -g @cockpit_panel_bound f \; set -g @cockpit_panel_key g
+( cd "$OH/wd" && exec "$TMUX_REAL" -L "$oh_s" run-shell \
+    "PATH=$(tq "$OH/lkfail"):\"\$PATH\" $(tq "$oh_p/cockpit.tmux")" ) >/dev/null 2>&1
+is "a load whose scratch read fails leaves no key table of its own" "0" \
+   "$("$TMUX_REAL" -L "$oh_s" list-keys -F '#{key_table}' | grep -c '^cockpit-legacy')"
+is "and the load ends keeping the pre-notes key f: the guess is off" "1:1" \
+   "$("$TMUX_REAL" -L "$oh_s" list-keys -T root C-MouseDown3Pane | grep -c cockpit_click_line
+     ):$("$TMUX_REAL" -L "$oh_s" list-keys -T prefix f | grep -c cockpit-panel)"
+"$TMUX_REAL" -L "$oh_s" kill-server >/dev/null 2>&1
+unset oh_b
 # The hints, missing and older, from folders holding # shapes. A message reaches the log
 # only when a client is attached to be shown it; ' command: ' lines hold the text as typed.
 # The log keeps the text as sent, unexpanded, each # doubled for the draw; the status line
