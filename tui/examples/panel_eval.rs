@@ -1095,15 +1095,17 @@ fn hermetic_wanted(var: Option<OsString>) -> bool {
 /// # Safety
 /// No other thread may read or write the environment meanwhile.
 unsafe fn hand_off(real: &str, hermetic: bool) -> bool {
+    let held = test_env::env_lock();
     // SAFETY: the caller's
     unsafe {
-        test_env::set_var_unlocked(AS_CLAUDE, real);
+        test_env::set_var(&held, AS_CLAUDE, real);
         if hermetic {
-            test_env::set_var_unlocked(HERMETIC, "1");
+            test_env::set_var(&held, HERMETIC, "1");
         } else {
-            test_env::remove_var_unlocked(HERMETIC);
+            test_env::remove_var(&held, HERMETIC);
         }
     }
+    drop(held);
     hermetic_wanted(std::env::var_os(HERMETIC))
 }
 
@@ -2780,9 +2782,10 @@ mod tests {
     /// that reads a prompt in this process calls this first.
     fn pinned_config() {
         static SET: std::sync::Once = std::sync::Once::new();
+        let held = fake::env_lock();
         // SAFETY: std's getenv and setenv share one lock; every read here is a Rust read,
         // and a child takes its copy at the spawn, under that lock.
-        SET.call_once(|| unsafe { fake::set_var_unlocked("XDG_CONFIG_HOME", fake::NO_HOME) });
+        SET.call_once(|| unsafe { fake::set_var(&held, "XDG_CONFIG_HOME", fake::NO_HOME) });
     }
 
     const ONE: &str = "# a comment\n=== crash\nkind: bug\nwindow: bash · bash · /home/u\nexpect: write\n\

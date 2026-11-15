@@ -762,11 +762,11 @@ fn interim_names() -> Vec<(String, usize)> {
 /// them. Counted as words, so a call through a renamed import counts only its `use`.
 #[test]
 fn the_unlocked_writes_only_get_fewer() {
-    let want: [(&str, usize); 2] = [("examples/panel_eval.rs", 4), ("tests/fake/mod.rs", 2)];
+    let want: [(&str, usize); 1] = [("tests/fake/mod.rs", 2)];
     let got = interim_names();
     let total: usize = got.iter().map(|(_, n)| n).sum();
     let got: Vec<(&str, usize)> = got.iter().map(|(f, n)| (f.as_str(), *n)).collect();
-    assert_eq!((total, got), (6, want.to_vec()), "lower the table in a step-2 PR, never raise it");
+    assert_eq!((total, got), (2, want.to_vec()), "lower the table in a step-2 PR, never raise it");
 }
 
 /// The word count above on sources with a known answer: a call counts, a longer
