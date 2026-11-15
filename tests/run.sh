@@ -13811,6 +13811,33 @@ is "no noted key: the binary is told none" "[unset]" "$(ph_pkey)"
 is "and a COCKPIT_PANEL_KEY from the caller does not reach it" "[unset]" \
     "$(ph_pkey COCKPIT_PANEL_KEY=stale)"
 unset -f ph_pkey
+# #1121: the real binary reads COCKPIT_PANEL_KEY. A stub cannot show that read, only the
+# screen can: the ? list names the noted key, or says "the panel key" with none noted.
+ph_help() {                   # -> the ? list of a panel opened on $PHC, then closed
+    ph_open "$PHC"
+    "$TMUX_REAL" -L "$PH" send-keys -t "$PHB" '?'
+    until_cap "$PH" "$PHB" '*on this pane brings it back*'
+    ph_cap
+    "$TMUX_REAL" -L "$PH" send-keys -t "$PHB" q
+    until_cap "$PH" "$PHB" '*will send*'
+    "$TMUX_REAL" -L "$PH" send-keys -t "$PHB" q
+    ph_gone "$PHB"
+}
+"$TMUX_REAL" -L "$PH" bind-key -N 'cockpit: panel' g display-message panel
+phh=$(ph_help)
+case $phh in
+    *'hide; prefix g on this pane brings it back'*)
+        ok "the panel's ? list names the noted key" ;;
+    *) bad "the panel's ? list names the noted key" "prefix g on this pane" "$phh" ;;
+esac
+"$TMUX_REAL" -L "$PH" unbind-key g
+phh=$(ph_help)
+case $phh in
+    *'hide; the panel key on this pane brings it back'*)
+        ok "no noted key: the ? list says the panel key" ;;
+    *) bad "no noted key: the ? list says the panel key" "the panel key on this pane" "$phh" ;;
+esac
+unset -f ph_help; unset phh
 rm -f "$PHFC"
 unset -f ph_hidden
 unset -f ph_open ph_gone ph_cap
