@@ -492,6 +492,57 @@ fn the_signalling_rows_hold_in_a_binary_handed_an_ignored_and_blocked_term_hup_a
 /// that pid stays the child's until this reaps it (#1061).
 struct Forked(libc::pid_t);
 
+impl Forked {
+    /// None for a pid that is not positive: a kill of 0 signals this process's whole
+    /// group, and of -1 every process this user may signal (#1075).
+    fn new(pid: libc::pid_t) -> Option<Forked> {
+        // never `then_some(Forked(pid))`: it builds the Forked first, and dropping
+        // the one it refuses sends the very kill this check is here to stop
+        if pid > 0 { Some(Forked(pid)) } else { None }
+    }
+}
+
+/// #1075: a Forked is never built on a pid that is not positive.
+#[test]
+fn a_forked_refuses_a_pid_that_is_not_positive() {
+    let made = [0, -1, i32::MIN].map(|pid| {
+        let f = Forked::new(pid);
+        let made = f.is_some();
+        // never dropped, whatever `new` did: a Forked holding 0 would kill this
+        // runner's whole group, and one holding -1 every process of ours
+        std::mem::forget(f);
+        made
+    });
+    assert_eq!(made, [false; 3], "built on 0, -1, i32::MIN");
+}
+
+/// #1075: dropping a Forked kills its child and reaps it, so no wait finds it after.
+#[test]
+fn a_dropped_forked_has_killed_and_reaped_its_child() {
+    // SAFETY: the child calls only poll and _exit, both async-signal-safe, allocates
+    // nothing, and ends after 6000 polls of 5 ms if nobody kills it.
+    let pid = unsafe { libc::fork() };
+    if pid == 0 {
+        // SAFETY: as above, in the child alone.
+        unsafe {
+            for _ in 0..6000 {
+                libc::poll(std::ptr::null_mut(), 0, 5);
+            }
+            libc::_exit(0);
+        }
+    }
+    assert!(pid > 0, "fork failed");
+    drop(Forked::new(pid).unwrap());
+    // SAFETY: our own child's pid; WNOHANG never waits.
+    let got = unsafe { libc::waitpid(pid, std::ptr::null_mut(), libc::WNOHANG) };
+    let err = std::io::Error::last_os_error().raw_os_error();
+    if got == 0 {
+        // SAFETY: still our own child, alive and unreaped, so its pid is not recycled.
+        unsafe { (libc::kill(pid, libc::SIGKILL), libc::waitpid(pid, std::ptr::null_mut(), 0)) };
+    }
+    assert_eq!((got, err), (-1, Some(libc::ECHILD)), "the child was left unreaped");
+}
+
 impl Drop for Forked {
     fn drop(&mut self) {
         // SAFETY: the pid of this row's own child, not yet reaped.
@@ -514,9 +565,10 @@ fn a_mask_blocked_for_a_moment_reads_clear_once_it_is_lifted() {
     let path = |name: &str| std::ffi::CString::new(dir.join(name).to_str().unwrap()).unwrap();
     let (ready, go) = (path("ready"), path("go"));
     // SAFETY: the child calls only sigfillset, sigprocmask, open, close, access, poll
-    // and _exit, each on the async-signal-safe list of `man 7 signal-safety`, on what
-    // was made before the fork. It allocates nothing, and ends by _exit within 60 s if
-    // nobody kills it.
+    // and _exit, each on the async-signal-safe list of `man 7 signal-safety`, on the
+    // paths made before the fork and a signal set on its own stack. It allocates
+    // nothing, and if nobody kills it ends by _exit after two waits of 6000 polls of
+    // 5 ms each: 60 s of polls, more on a loaded box (#1075).
     let pid = unsafe { libc::fork() };
     if pid == 0 {
         // SAFETY: as above, in the child alone.
@@ -540,7 +592,7 @@ fn a_mask_blocked_for_a_moment_reads_clear_once_it_is_lifted() {
         }
     }
     assert!(pid > 0, "fork failed");
-    let _child = Forked(pid);
+    let _child = Forked::new(pid).unwrap();
     let started = until(|| dir.join("ready").exists());
     let mut reads = vec![];
     let clear = usr1_unblocked(pid as u32, |bit| {
