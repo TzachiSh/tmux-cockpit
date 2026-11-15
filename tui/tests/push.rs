@@ -392,11 +392,7 @@ fn a_cockpit_tui_survives_sigusr1() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let stub = dir.join("tmux");
-    let d = dir.display();
-    fake::write_exec(
-        &stub,
-        &format!("#!/bin/sh\n: > {d}/ready\nwhile [ ! -e {d}/go ]; do sleep 0.05; done\nexit 1\n"),
-    );
+    fake::write_exec(&stub, &usr1_stub(&dir));
     let mut c = Command::new(env!("CARGO_BIN_EXE_cockpit-tui"));
     // USR1 at its default, so that only the board's own ignore keeps it alive (#1061)
     fake::at_default(&mut c, &[libc::SIGUSR1]);
@@ -422,6 +418,13 @@ fn a_cockpit_tui_survives_sigusr1() {
     assert!(ready, "info never reached its tmux read");
     assert_eq!(st.signal(), None, "SIGUSR1 killed a cockpit-tui: {st:?}");
     assert!(clear, "USR1 was blocked in the board, which then never gets it");
+}
+
+/// The tmux stub of [`a_cockpit_tui_survives_sigusr1`] in `dir`: it writes `ready`,
+/// waits for `go`, and fails the board's read.
+fn usr1_stub(dir: &std::path::Path) -> String {
+    let d = dir.display();
+    format!("#!/bin/sh\n: > {d}/ready\nwhile [ ! -e {d}/go ]; do sleep 0.05; done\nexit 1\n")
 }
 
 /// Whether `pid` shows USR1 unblocked within [`CAP`], `after_read` handed each read
