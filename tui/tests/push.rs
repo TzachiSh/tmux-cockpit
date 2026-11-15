@@ -487,20 +487,35 @@ fn the_signalling_rows_hold_in_a_binary_handed_an_ignored_and_blocked_term_hup_a
     fake::assert_no_server_left(pid);
 }
 
-/// A child this process forked, killed and reaped when this is dropped, on every path
-/// of its row, a panic's too. It holds the pid `fork` returned and nothing else, and
-/// that pid stays the child's until this reaps it (#1061).
-struct Forked(libc::pid_t);
+/// [`Forked`] alone, so that its field is private and [`Forked::new`] the only way to build
+/// one: no code outside can write `Forked(0)` (#1075).
+mod forked {
+    /// A child this process forked, killed and reaped when this is dropped, on every path
+    /// of its row, a panic's too. It holds the pid `fork` returned and nothing else, and
+    /// that pid stays the child's until this reaps it (#1061).
+    pub struct Forked(libc::pid_t);
 
-impl Forked {
-    /// None for a pid that is not positive: a kill of 0 signals this process's whole
-    /// group, and of -1 every process this user may signal (#1075).
-    fn new(pid: libc::pid_t) -> Option<Forked> {
-        // never `then_some(Forked(pid))`: it builds the Forked first, and dropping
-        // the one it refuses sends the very kill this check is here to stop
-        if pid > 0 { Some(Forked(pid)) } else { None }
+    impl Forked {
+        /// None for a pid that is not positive: a kill of 0 signals this process's whole
+        /// group, and of -1 every process this user may signal (#1075).
+        pub fn new(pid: libc::pid_t) -> Option<Forked> {
+            // never `then_some(Forked(pid))`: it builds the Forked first, and dropping
+            // the one it refuses sends the very kill this check is here to stop
+            if pid > 0 { Some(Forked(pid)) } else { None }
+        }
+    }
+
+    impl Drop for Forked {
+        fn drop(&mut self) {
+            // SAFETY: the pid of this row's own child, not yet reaped.
+            unsafe {
+                libc::kill(self.0, libc::SIGKILL);
+                libc::waitpid(self.0, std::ptr::null_mut(), 0);
+            }
+        }
     }
 }
+use forked::Forked;
 
 /// #1075: a Forked is never built on a pid that is not positive.
 #[test]
@@ -541,16 +556,6 @@ fn a_dropped_forked_has_killed_and_reaped_its_child() {
         unsafe { (libc::kill(pid, libc::SIGKILL), libc::waitpid(pid, std::ptr::null_mut(), 0)) };
     }
     assert_eq!((got, err), (-1, Some(libc::ECHILD)), "the child was left unreaped");
-}
-
-impl Drop for Forked {
-    fn drop(&mut self) {
-        // SAFETY: the pid of this row's own child, not yet reaped.
-        unsafe {
-            libc::kill(self.0, libc::SIGKILL);
-            libc::waitpid(self.0, std::ptr::null_mut(), 0);
-        }
-    }
 }
 
 /// #1061: a mask blocked for a moment reads clear once it is lifted. A child of
