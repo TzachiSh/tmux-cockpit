@@ -96,13 +96,15 @@ fn bounded_child(s: &Path, test: &str, case: &str) -> (Option<i32>, String) {
 }
 
 /// #1110: a guard-less check called on the thread that holds the lock panics, naming the
-/// `_held` form, where the take would wait for itself. Run in a child, so a hang is a kill.
+/// `_held` form, where the take would wait for itself, and, reached through a helper, what
+/// the caller does instead. Run in a child, so a hang is a kill.
 #[test]
 fn a_guard_less_check_under_the_lock_names_its_held_form() {
     if let Some(case) = child_case() {
         let _held = fake::env_lock();
         match case.as_str() {
             "state" => fake::checked_state(),
+            "helper" => fake::fixed_env(),
             _ => drop(fake::checked_tmux()),
         }
         return;
@@ -115,8 +117,10 @@ fn a_guard_less_check_under_the_lock_names_its_held_form() {
         let want = format!("fake::{form}() {held} fake::{form}_held(&held)");
         (code, said.contains(&want))
     };
-    let got = [named("state", "checked_state"), named("tmux", "checked_tmux")];
-    assert_eq!(got, [(Some(101), true), (Some(101), true)]);
+    let (code, said) = bounded_child(&s, me, "helper");
+    let helper = said.contains("fake::Server::start, call that helper before you take the lock");
+    let got = [named("state", "checked_state"), named("tmux", "checked_tmux"), (code, helper)];
+    assert_eq!(got, [(Some(101), true); 3]);
 }
 
 /// A row's child: a holder of the lock panics, then the check `case` names runs with its

@@ -36,7 +36,10 @@ impl Drop for EnvHeld {
 /// of, a thread that calls a guard-less check (`fake::checked_state`, `fake::checked_tmux`,
 /// and through it `fake::fixed_env` and `fake::Server::start`): that check waits for this
 /// lock and the join for the check, for ever. No test does. A wait for such a thread to
-/// sleep, as the rows that hold a sibling's write do, ends.
+/// sleep, as the rows that hold a sibling's write do, ends. `fake::fixed_env` and
+/// `fake::Server::start` check under this lock and let it go before the tmux or the write
+/// that follows, so a binary that writes TMUX or TMUX_TMPDIR in its own process must not
+/// call them: a sibling's value could reach that tmux. None does (panel_env, env_lock).
 pub fn env_lock() -> EnvHeld {
     let guard = ENV.lock().unwrap_or_else(|e| e.into_inner());
     HOLDS.set(true);
@@ -51,11 +54,14 @@ pub fn env_poisoned() -> bool {
 
 /// The lock for the read of a guard-less check named `form`, recovered as in
 /// [`env_lock`]. On a thread that holds it already the take would wait for itself, so
-/// that call panics instead, naming the form that takes the holder's token.
+/// that call panics instead, naming the form that takes the holder's token, and, for a
+/// call that came through a helper, what the caller does instead.
 pub(super) fn for_check(form: &str) -> MutexGuard<'static, ()> {
     if HOLDS.get() {
         let held = "on a thread that holds fake::env_lock(): call";
-        panic!("fake::{form}() {held} fake::{form}_held(&held) (#1110)");
+        let helper = "or, called through fake::fixed_env or fake::Server::start, call that \
+                      helper before you take the lock";
+        panic!("fake::{form}() {held} fake::{form}_held(&held), {helper} (#1110)");
     }
     ENV.lock().unwrap_or_else(|e| e.into_inner())
 }
