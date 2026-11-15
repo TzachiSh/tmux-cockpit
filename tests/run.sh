@@ -4825,6 +4825,22 @@ is "dmsg puts -- before a text that starts with -, and only there" \
    "$(. "$DIR/scripts/lib/fmt.sh"
       tmux() { printf '[%s]' "$@"; }
       for dm_f in '-x foo' ' -x' 'x'; do dmsg "$dm_f"; printf '|'; done)"
+# cockpit_noted_key (#1124) puts the name into a tmux format, so it takes [a-z0-9-] only
+# and checks it before tmux is asked. Rows: <arguments>|<rc, what it says, each tmux call>.
+while IFS='|' read -r dm_f dm_w; do
+    is "cockpit_noted_key [$dm_f]: $dm_w" "$dm_w" \
+       "$(. "$DIR/scripts/lib/fmt.sh"
+          tmux() { printf 'asked;' >&3; }   # fd 3: the helper sends tmux's 2 away
+          # shellcheck disable=SC2086  # the row's words are the arguments
+          dm_f=$(cockpit_noted_key $dm_f 3>&1 2>&1); printf '%s %s' $? "$dm_f")"
+done <<'NKROWS'
+|2 cockpit_noted_key: bad name []
+a,b @cockpit_x_bound|2 cockpit_noted_key: bad name [a,b]
+a}b @cockpit_x_bound|2 cockpit_noted_key: bad name [a}b]
+jumpé @cockpit_x_bound|2 cockpit_noted_key: bad name [jumpé]
+jump|2 cockpit_noted_key: bad record option []
+fix-2 @cockpit_x_bound|0 asked;asked;
+NKROWS
 dm_up 5
 for dm_f in '-x foo' '--' '-' '-l' '-#[fg=red]' ' -x foo'; do
     dm_tmux 5 bash -c '. "$1/scripts/lib/fmt.sh" && dmsg "$2"' _ "$DIR" "$dm_f"
@@ -4892,6 +4908,16 @@ done
 "$TMUX_REAL" -L "$dm_s" set -g @cockpit_jump_key x
 ( cd "$DM/wd" && exec "$TMUX_REAL" -L "$dm_s" run-shell "$(tq "$DIR/cockpit.tmux")" \
     ) >/dev/null 2>&1
+# #1124: tmux prints a note's tab, \037 and newline raw. A user's note on c, listed before
+# x, holding the jump's note and one of them, was split into a key name (TAB) or an empty
+# key that matched the unset record, or read as the jump's note (its last line).
+for dm_f in "$dm_jn"$'\t'TAB "$dm_jn"$'\037'US "$dm_jn"$'\n'x $'X\n'"$dm_jn"; do
+    dm_n=$((dm_n + 1))
+    "$TMUX_REAL" -L "$dm_s" set -gu @cockpit_jump_bound \; \
+        bind-key -T prefix -N "$dm_f" c run-shell true >/dev/null 2>&1
+    dm_note "$dm_n" "c noted [$(printf %q "$dm_f")], no record: x" " · prefix x jumps"
+done
+"$TMUX_REAL" -L "$dm_s" unbind-key -T prefix c \; set -g @cockpit_jump_bound x >/dev/null 2>&1
 # The 72 columns an 80-column client draws, for a realistic place: session work, window 2,
 # named api. Read whole on a client wider than the notice, so a cut cannot pass.
 "$TMUX_REAL" -L "$dm_s" rename-session -t t work \; move-window -s work:0 -t work:2 \; \
@@ -13629,6 +13655,17 @@ is "two noted keys: the one the record names" \
 "$TMUX_REAL" -L "$PH" unbind-key g \; unbind-key h \; set-option -g @cockpit_panel_bound f
 is "no noted key: none is named, whatever the record says" \
     "cockpit: hidden · the panel key on $PHC brings it back" "$(ph_hidden)"
+# #1124: a user's note on c, listed before g, holding the panel's note and a tab, a \037 or
+# a newline, all printed raw by tmux: never a key name, an empty key or the panel's note.
+"$TMUX_REAL" -L "$PH" bind-key -N 'cockpit: panel' g display-message panel \; \
+    set-option -gu @cockpit_panel_bound
+for ph_n in $'cockpit: panel\tTAB' $'cockpit: panel\037US' $'cockpit: panel\nx' \
+    $'X\ncockpit: panel'; do
+    "$TMUX_REAL" -L "$PH" bind-key -N "$ph_n" c display-message user
+    is "c noted [$(printf %q "$ph_n")], no record: the noted g" \
+        "cockpit: hidden · prefix g on $PHC brings it back" "$(ph_hidden)"
+done
+"$TMUX_REAL" -L "$PH" unbind-key c \; unbind-key g
 rm -f "$PHFC"
 unset -f ph_hidden
 unset -f ph_open ph_gone ph_cap

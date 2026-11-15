@@ -212,15 +212,9 @@ while :; do
         if [ -n "$saved" ] && mkdir -p "$HDIR" 2>/dev/null && chmod 700 "$HDIR" 2>/dev/null && mv -f "$f.state" "$saved"; then
             # The key bound with the note "cockpit: panel", read from the binding as the
             # jump notice reads its key (#1109): the record alone named a key moved by hand,
-            # stock find-window's f (#1112). Two noted: the recorded one, else the first
-            # tmux lists. Split on \037 as cockpit.tmux's owned() does: a user's note can
-            # hold a tab. No noted key, or list-keys failing, leaves the generic words.
-            pb=$(tmux show-option -gqv @cockpit_panel_bound 2>/dev/null) hk=''
-            while IFS= read -r k; do
-                [ -n "$hk" ] || hk=$k
-                [ "$k" = "$pb" ] && { hk=$k; break; }
-            done < <(tmux list-keys -T prefix -F '#{key_note}'$'\037''#{key_string}' 2>/dev/null |
-                awk -F'\037' -v n="$(cockpit_key_note panel)" '$1 == n { print $2 }')
+            # stock find-window's f (#1112). Two noted: the recorded one (cockpit_noted_key,
+            # #1124). No noted key, or list-keys failing, leaves the generic words.
+            hk=$(cockpit_noted_key panel @cockpit_panel_bound)
             if [ -n "$hk" ]; then hk="prefix $hk"; else hk="the panel key"; fi
             msg="cockpit: hidden · $hk on $PANE brings it back"
             if [ -n "${COCKPIT_READONLY:-}" ] && [ -z "${COCKPIT_PANEL_NOTE:-}" ]; then

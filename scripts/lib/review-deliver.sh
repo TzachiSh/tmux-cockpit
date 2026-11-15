@@ -161,14 +161,9 @@ deliver() {
     # before the key notes) drops the clause. Both notices fit the 72 columns an
     # 80-column client draws.
     # Two bindings may carry the note (an old key left bound beside a new one): the one
-    # the last load recorded in @cockpit_jump_bound wins, else the first tmux lists.
-    local jb jk='' k jump=''
-    jb=$(tmux show-option -gqv @cockpit_jump_bound 2>/dev/null)
-    while IFS= read -r k; do
-        [ -n "$jk" ] || jk=$k
-        [ "$k" = "$jb" ] && { jk=$k; break; }
-    done < <(tmux list-keys -T prefix -F '#{key_note}'$'\t''#{key_string}' 2>/dev/null |
-        awk -F'\t' -v n="$(cockpit_key_note jump)" '$1 == n { print $2 }')
+    # the last load recorded in @cockpit_jump_bound wins (cockpit_noted_key, #1124).
+    local jk jump=''
+    jk=$(cockpit_noted_key jump @cockpit_jump_bound)
     [ -z "$jk" ] || jump=" · prefix $jk jumps"
     local notice_paste="cockpit: review pasted into $where · ↵ sends it$jump"
     local notice_queue="cockpit: review queued for $where · it lands when the agent stops"
