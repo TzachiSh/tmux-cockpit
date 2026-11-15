@@ -31,8 +31,8 @@ fn git_global_excludes_hide_and_alt_i_would_list_them() {
     std::fs::write(repo.join("keep.rs"), b"x").unwrap();
     // SAFETY: the only test in this binary, so nothing else reads the environment meanwhile.
     unsafe {
-        std::env::set_var("HOME", &home);
-        std::env::set_var("XDG_CONFIG_HOME", home.join("xdg"));
+        test_env::set_var_unlocked("HOME", &home);
+        test_env::set_var_unlocked("XDG_CONFIG_HOME", home.join("xdg"));
     }
     let plain = files::list_dir(&repo, false, false).unwrap();
     assert_eq!(plain.iter().map(|e| e.name.clone()).collect::<Vec<_>>(), [b"keep.rs".to_vec()]);

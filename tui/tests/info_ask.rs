@@ -45,9 +45,9 @@ fn facts(tag: &str, state: &str, body: &str) -> (String, String) {
     let path = fake::rig_path(&d.join("bin"));
     // SAFETY: the one test in this binary, so no thread reads the environment meanwhile.
     unsafe {
-        std::env::set_var("PATH", path);
-        std::env::set_var("COCKPIT_TMUX", &shim);
-        std::env::set_var("CLAUDE_CONFIG_DIR", &d);
+        fake::set_var_unlocked("PATH", path);
+        fake::set_var_unlocked("COCKPIT_TMUX", &shim);
+        fake::set_var_unlocked("CLAUDE_CONFIG_DIR", &d);
     }
     fake::assert_claude_is_the_rigs(&d);
     let x = gather("%1").unwrap();

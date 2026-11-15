@@ -79,7 +79,7 @@ fn set(g: &EnvHeld, t: &Tmp, env: &[(&'static str, String)]) {
     fake::checked_state_held(g);
     for (k, v) in env {
         // SAFETY: every test in this binary holds the lock while it touches the environment.
-        unsafe { std::env::set_var(k, v) };
+        unsafe { fake::set_var(g, k, v) };
     }
     fake::assert_claude_is_the_rigs(&t.0);
 }

@@ -74,18 +74,18 @@ fn a_panic_inside_with_env_still_restores_the_vars() {
     assert_eq!(std::env::var_os("GIT_WORK_TREE"), before);
 }
 
-/// The values a [`with_env`] replaced, put back on drop: a panic in its body
-/// unwinds through here too.
-struct Restore(Vec<(String, Option<OsString>)>);
+/// The values a [`with_env`] replaced, put back on drop under the lock whose token it
+/// borrows: a panic in its body unwinds through here too.
+struct Restore<'a>(&'a fake::EnvHeld, Vec<(String, Option<OsString>)>);
 
-impl Drop for Restore {
+impl Drop for Restore<'_> {
     fn drop(&mut self) {
-        for (k, v) in &self.0 {
+        for (k, v) in &self.1 {
             // SAFETY: dropped before the lock's token that every test here takes first.
             unsafe {
                 match v {
-                    Some(v) => std::env::set_var(k, v),
-                    None => std::env::remove_var(k),
+                    Some(v) => fake::set_var(self.0, k, v),
+                    None => fake::remove_var(self.0, k),
                 }
             }
         }
@@ -94,10 +94,11 @@ impl Drop for Restore {
 
 /// `vars` set while `f` runs, then put back, under the lock.
 fn with_env<T>(vars: &[(&str, &Path)], f: impl FnOnce() -> T) -> T {
-    let _g = fake::env_lock();
-    let _r = Restore(vars.iter().map(|(k, _)| (k.to_string(), std::env::var_os(k))).collect());
+    let held = fake::env_lock();
+    let old = vars.iter().map(|(k, _)| (k.to_string(), std::env::var_os(k))).collect();
+    let _r = Restore(&held, old);
     // SAFETY: every test here takes the lock first, so no other thread reads the env meanwhile.
-    unsafe { vars.iter().for_each(|(k, v)| std::env::set_var(k, v)) };
+    unsafe { vars.iter().for_each(|(k, v)| fake::set_var(&held, k, v)) };
     f()
 }
 

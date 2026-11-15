@@ -32,6 +32,17 @@ pulldown-cmark = { version = "=0.13.4", default-features = false }
 # default map is a BTreeMap, which would emit them alphabetically.
 serde_json = { version = "1.0.151", features = ["preserve_order"] }
 
+# The lock, its token and the only environment writers a test may call (#1132).
+[dev-dependencies]
+test-env = { path = "test-env" }
+
+# Every write of the process environment goes through test-env's writers (#1132):
+# tui/clippy.toml names the raw ones, and under forbid no `allow` can let one through.
+# tests/tui-clippy-canary.sh fails the gate unless clippy still refuses each of them and
+# still refuses an inner allow, which only this forbid does.
+[lints.clippy]
+disallowed_methods = "forbid"
+
 [profile.release]
 lto = true
 strip = true
@@ -52,3 +63,18 @@ inherits = "release"
 [[example]]
 name = "panel_eval"
 test = true
+
+# The canary of #1132: raw environment writes the gate's clippy must refuse. Built only
+# when named with this feature, by tests/tui-clippy-canary.sh: never by a plain build,
+# `cargo test`, `clippy --all-targets` or a release build, which use default features.
+# The second holds a write under an inner allow, which only a forbid refuses (E0453).
+[features]
+clippy-canary = []
+
+[[example]]
+name = "clippy_canary"
+required-features = ["clippy-canary"]
+
+[[example]]
+name = "clippy_canary_allow"
+required-features = ["clippy-canary"]

@@ -29,7 +29,7 @@ fn beside_a_write(var: &str, check: fn()) -> Option<String> {
     let held = fake::env_lock();
     let old = std::env::var_os(var);
     // SAFETY: the lock is held, and every write of this binary takes it.
-    unsafe { std::env::set_var(var, "/sibling-1110") };
+    unsafe { fake::set_var(&held, var, "/sibling-1110") };
     let (tx, rx) = std::sync::mpsc::channel();
     let t = std::thread::spawn(move || {
         tx.send(unsafe { libc::gettid() }).unwrap();
@@ -39,8 +39,8 @@ fn beside_a_write(var: &str, check: fn()) -> Option<String> {
     // SAFETY: as above, still under the lock.
     unsafe {
         match old {
-            Some(v) => std::env::set_var(var, v),
-            None => std::env::remove_var(var),
+            Some(v) => fake::set_var(&held, var, v),
+            None => fake::remove_var(&held, var),
         }
     }
     drop(held);
@@ -182,12 +182,12 @@ fn a_refusing_guard_less_check_leaves_the_lock_unpoisoned() {
     assert_eq!([passed("state", "COCKPIT_LOG"), passed("tmux", "TMUX")], [(Some(0), true); 2]);
 }
 
-/// Whether `body`, beside `fake/env.rs` loaded as `env`, builds as a library, and what
-/// rustc said. The rustc is the one beside the cargo that built this binary, so the same
-/// toolchain; it writes into `s` alone, its TMPDIR too. Where it cannot be started the
-/// row fails: there is no path that passes without it.
+/// Whether `body`, beside the test-env crate's source loaded as `env` (#1132), builds as a
+/// library, and what rustc said. The rustc is the one beside the cargo that built this
+/// binary, so the same toolchain; it writes into `s` alone, its TMPDIR too. Where it cannot
+/// be started the row fails: there is no path that passes without it.
 fn builds_beside_env(s: &Path, name: &str, body: &str) -> (bool, String) {
-    let env_rs = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fake/env.rs");
+    let env_rs = Path::new(env!("CARGO_MANIFEST_DIR")).join("test-env/src/lib.rs");
     let src = s.join(format!("{name}.rs"));
     std::fs::write(&src, format!("#[path = {env_rs:?}]\nmod env;\n{body}\n")).unwrap();
     let rustc = Path::new(env!("CARGO")).with_file_name("rustc");
@@ -201,12 +201,12 @@ fn builds_beside_env(s: &Path, name: &str, body: &str) -> (bool, String) {
     (out.status.success(), String::from_utf8_lossy(&out.stderr).into_owned())
 }
 
-/// #1110: outside `fake`, the token a `_held` check takes comes from `env_lock` and from
-/// nothing else, so a guard of another lock cannot pass for it. Built by rustc: the
-/// forged one is refused for its private field (E0451, `_guard`, the parts of the error a
-/// toolchain keeps), and the lawful one builds.
+/// #1110: outside the crate that `fake` re-exports (#1132), the token a `_held` check and a
+/// writer take comes from `env_lock` and from nothing else, so a guard of another lock
+/// cannot pass for it. Built by rustc: the forged one is refused for its private field
+/// (E0451, `_guard`, the parts of the error a toolchain keeps), and the lawful one builds.
 #[test]
-fn the_token_has_no_constructor_outside_fake() {
+fn the_token_has_no_constructor_outside_test_env() {
     let s = scratch("cockpit-env-token");
     let taken = "pub fn take() -> env::EnvHeld { env::env_lock() }";
     let forged = "pub fn forge(g: std::sync::MutexGuard<'static, ()>) -> env::EnvHeld {\n\
