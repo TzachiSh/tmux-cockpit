@@ -322,9 +322,11 @@ under the lock takes its token, `fake::checked_state_held` and
 `fake::checked_tmux_held`. The guard-less `fake::checked_state` and
 `fake::checked_tmux` take the lock for their read, and on a thread that already
 holds it they panic and name the `_held` form, where they would otherwise wait
-for themselves. `tmux_reach.rs` fails for a file under `tui/tests` that keeps a
-lock named `ENV` of its own and writes the environment, or a second one in
-`fake/`. push's `RwLock` is the one it lets through, by its declaration: its
+for themselves. `tmux_reach.rs` fails for a file under `tui/tests` that writes
+the environment and keeps a lock of its own: a `static` named `ENV` that is a
+`Mutex` or an `RwLock`, or a `Mutex<()>` or `RwLock<()>` of any name. It also
+fails for any `static ENV` in data, agents, panel_env or a file of `fake/`.
+push's `RwLock` is the one it lets through, by its declaration: its
 readers, the rigs, run in parallel, and its one writer sets no variable a check
 reads. The helpers only check: `fake::checked_tmux`
 before any tmux a helper runs, and `fake::checked_state`, or
@@ -345,6 +347,27 @@ happens with `COCKPIT_TEST_CLAUDE_GUARD=0` too, which execs the binary as it is
 and clears nothing, and on a target with no runner key (#1090).
 One write from a test thread stays: `panel_batch.rs` takes `fake::fixed_env`
 for `XDG_CONFIG_HOME`, as #948's binaries do.
+
+A test writes the environment only through the test-env crate
+(`tui/test-env`, #1132), which `fake` re-exports. The crate holds the lock and
+the writers that take its token, `fake::set_var(&held, ..)` and
+`fake::remove_var(&held, ..)`, and it sits outside the tui package.
+`tui/clippy.toml` names `std::env::set_var`, `std::env::remove_var`,
+`libc::setenv`, `libc::unsetenv` and `libc::putenv`, and `tui/Cargo.toml`
+forbids clippy's `disallowed_methods`. The gate's clippy therefore refuses a
+raw write anywhere in the package, whether through an alias or a function
+pointer, and no `allow` of the lint or of its groups can lift that.
+
+Until step 2 of #1132, the writes that took no lock before go through
+`set_var_unlocked` and `remove_var_unlocked`, which take no token.
+`tmux_reach.rs` holds:
+- each file's count of those two names, which may only go down;
+- the forbid line and the five paths;
+- no `extern` block under `tui/tests` or `tui/examples`. A `setenv` declared
+  there would be a function no path in `clippy.toml` names.
+
+clippy 1.88 keeps a target's result when only `clippy.toml` changes, so touch
+a source file before you check an edit to it.
 
 ## CI
 

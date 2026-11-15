@@ -723,3 +723,164 @@ fn push_and_the_tile_previews_send_the_callers_server_nothing() {
     let ran = product_reads(&s.0, me, &[(PRODUCT_PATH, "previews"), ("TMUX_TMPDIR", &dir)]);
     assert_eq!((push, previews, ran), (0, 0, 1));
 }
+
+// --- #1132: the environment written only through the lock's token ---
+
+/// How many times `w` stands in `code` as a whole word.
+fn words(code: &str, w: &str) -> usize {
+    let id = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_');
+    code.match_indices(w)
+        .filter(|(at, _)| !id(code[..*at].chars().last()) && !id(code[at + w.len()..].chars().next()))
+        .count()
+}
+
+/// The interim writers' names on the code of each `.rs` file under `tui/tests` and
+/// `tui/examples`, comments and literals blanked, for each file that names one: the file
+/// under `tui/`, and the count.
+fn interim_names() -> Vec<(String, usize)> {
+    let top = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = vec![];
+    for dir in ["tests", "examples"] {
+        rust_files(top, &top.join(dir), &mut files);
+    }
+    files.sort();
+    let named = files.into_iter().map(|(name, f)| {
+        let code = code_of(&std::fs::read_to_string(f).unwrap());
+        (name, words(&code, "set_var_unlocked") + words(&code, "remove_var_unlocked"))
+    });
+    named.filter(|(_, n)| *n > 0).collect()
+}
+
+/// #1132: the writes that take no lock, through `set_var_unlocked` and
+/// `remove_var_unlocked`, only ever get fewer. 62 names at #1132's step 1: 60 calls in 22
+/// files, and fake's re-export of the two names. A step-2 PR moves a binary's writes to
+/// `fake::set_var(&held, ..)` and lowers its row and the total here; nothing may raise
+/// them. Counted as words, so a call through a renamed import counts only its `use`.
+#[test]
+fn the_unlocked_writes_only_get_fewer() {
+    let want: [(&str, usize); 22] = [
+        ("examples/panel_eval.rs", 4),
+        ("tests/basket_claude.rs", 1),
+        ("tests/basket_claude_glob.rs", 1),
+        ("tests/basket_stub.rs", 2),
+        ("tests/basket_tmux.rs", 3),
+        ("tests/branch_oldgit.rs", 1),
+        ("tests/ended_glob.rs", 5),
+        ("tests/fake/mod.rs", 5),
+        ("tests/files_global.rs", 2),
+        ("tests/forks.rs", 5),
+        ("tests/forks_dirs.rs", 5),
+        ("tests/forks_ended.rs", 5),
+        ("tests/info_ask.rs", 3),
+        ("tests/oldgit/mod.rs", 1),
+        ("tests/panel_basket_tmux.rs", 1),
+        ("tests/panel_explore_home.rs", 1),
+        ("tests/preview_shape.rs", 1),
+        ("tests/push.rs", 3),
+        ("tests/subs_fields.rs", 6),
+        ("tests/subs_tmux.rs", 5),
+        ("tests/tiles_batch_same.rs", 1),
+        ("tests/tiles_batch_stub.rs", 1),
+    ];
+    let got = interim_names();
+    let total: usize = got.iter().map(|(_, n)| n).sum();
+    let got: Vec<(&str, usize)> = got.iter().map(|(f, n)| (f.as_str(), *n)).collect();
+    assert_eq!((total, got), (62, want.to_vec()), "lower the table in a step-2 PR, never raise it");
+}
+
+/// The word count above on sources with a known answer: a call counts, a longer
+/// identifier, a comment and a string do not.
+#[test]
+fn the_unlocked_count_reads_words_on_code() {
+    let rows: [(&str, &str, usize); 5] = [
+        ("a call", "unsafe { fake::set_var_unlocked(\"A\", \"1\") }", 1),
+        ("a longer name", "fn set_var_unlocked_too() {}", 0),
+        ("in a comment", "// fake::set_var_unlocked(\"A\", \"1\")", 0),
+        ("in a string", "const S: &str = \"set_var_unlocked\";", 0),
+        ("two calls", "set_var_unlocked(a, b); set_var_unlocked(c, d);", 2),
+    ];
+    for (row, src, want) in rows {
+        assert_eq!(words(&code_of(src), "set_var_unlocked"), want, "{row}");
+    }
+}
+
+/// The lint level `tui/Cargo.toml` sets for `disallowed_methods`, from its own line of the
+/// `[lints.clippy]` table, if the table holds one.
+fn lint_level(manifest: &str) -> Option<&str> {
+    let table = manifest.split("\n[").find_map(|t| t.strip_prefix("lints.clippy]\n"))?;
+    table.lines().find_map(|l| l.strip_prefix("disallowed_methods = "))
+}
+
+/// #1132: the raw writers stay forbidden. clippy refuses a raw write only while
+/// `tui/Cargo.toml` holds the lint at forbid and `tui/clippy.toml` names each writer, and
+/// it says nothing when either is weakened, so this row does.
+#[test]
+fn the_raw_writers_stay_forbidden() {
+    let top = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let manifest = std::fs::read_to_string(top.join("Cargo.toml")).unwrap();
+    assert_eq!(lint_level(&manifest), Some("\"forbid\""), "tui/Cargo.toml's [lints.clippy]");
+    let conf = std::fs::read_to_string(top.join("clippy.toml")).unwrap();
+    let named: Vec<&str> = conf
+        .lines()
+        .filter_map(|l| l.strip_prefix("path = \"")?.strip_suffix('"'))
+        .collect();
+    let want = [
+        "std::env::set_var",
+        "std::env::remove_var",
+        "libc::setenv",
+        "libc::unsetenv",
+        "libc::putenv",
+    ];
+    assert_eq!(named, want, "tui/clippy.toml's disallowed-methods");
+}
+
+/// How many `extern` blocks `code` declares, of any ABI: an `extern` word whose next
+/// token, past the ABI string that [`code_of`] blanks, is `{`.
+fn extern_blocks(code: &str) -> usize {
+    let id = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_');
+    code.match_indices("extern")
+        .filter(|(at, _)| !id(code[..*at].chars().last()))
+        .filter(|(at, _)| code[at + "extern".len()..].trim_start().starts_with('{'))
+        .count()
+}
+
+/// #1132: no file under `tui/tests` or `tui/examples` declares an `extern` block. A
+/// `setenv` declared in one is a function of its own that no `tui/clippy.toml` path
+/// names, so the lint would let a raw write through it.
+#[test]
+fn no_test_declares_an_extern_block() {
+    let top = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = vec![];
+    for dir in ["tests", "examples"] {
+        rust_files(top, &top.join(dir), &mut files);
+    }
+    assert!(
+        files.iter().any(|(n, _)| n == "tests/push.rs"),
+        "the walk found no push.rs: {files:?}"
+    );
+    let found: Vec<String> = files
+        .into_iter()
+        .filter(|(_, f)| extern_blocks(&code_of(&std::fs::read_to_string(f).unwrap())) > 0)
+        .map(|(n, _)| n)
+        .collect();
+    assert_eq!(found, Vec::<String>::new(), "an extern block: write through fake::set_var");
+}
+
+/// The block count above on sources with a known answer: a block of each ABI spelling
+/// counts; a function defined with an ABI, a crate, a comment and a string do not.
+#[test]
+fn the_extern_scan_reads_blocks_on_code() {
+    let rows: [(&str, &str, usize); 8] = [
+        ("C", "unsafe extern \"C\" { fn setenv(); }", 1),
+        ("no ABI", "extern { fn setenv(); }", 1),
+        ("system", "extern \"system\" {\n    fn putenv();\n}", 1),
+        ("a raw ABI", "unsafe extern r\"C\" { fn setenv(); }", 1),
+        ("a fn with an ABI", "extern \"C\" fn f() {}", 0),
+        ("a crate", "extern crate libc;", 0),
+        ("in a comment", "// extern \"C\" { fn setenv(); }", 0),
+        ("in a string", "const S: &str = \"extern {\";", 0),
+    ];
+    for (row, src, want) in rows {
+        assert_eq!(extern_blocks(&code_of(src)), want, "{row}");
+    }
+}

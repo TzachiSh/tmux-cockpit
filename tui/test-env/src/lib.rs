@@ -1,7 +1,9 @@
 //! The lock a tui test binary writes and reads its environment under (#1110), and the
 //! writers of that environment that take its token (#1132). `fake` re-exports all of it,
-//! so a test says `fake::env_lock()` and `fake::set_var(&held, ..)`. A crate of its own,
-//! outside the tui package, on std alone.
+//! so a test says `fake::env_lock()` and `fake::set_var(&held, ..)`. `tui/clippy.toml`
+//! names `std::env::set_var`, `std::env::remove_var` and libc's writers, and
+//! `tui/Cargo.toml` forbids the lint, so the tui package writes only through this crate.
+//! A crate of its own, outside the package, where that forbid does not reach; std alone.
 
 use std::cell::Cell;
 use std::ffi::OsStr;

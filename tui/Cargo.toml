@@ -36,6 +36,12 @@ serde_json = { version = "1.0.151", features = ["preserve_order"] }
 [dev-dependencies]
 test-env = { path = "test-env" }
 
+# Every write of the process environment goes through test-env's writers (#1132):
+# tui/clippy.toml names the raw ones, and under forbid no `allow` can let one through.
+# tests/tmux_reach.rs holds this line and those names.
+[lints.clippy]
+disallowed_methods = "forbid"
+
 [profile.release]
 lto = true
 strip = true

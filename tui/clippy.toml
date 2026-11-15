@@ -1,0 +1,23 @@
+# The raw environment writers (#1132). tui/Cargo.toml forbids the lint, so a test writes
+# only through fake::set_var and fake::remove_var, which take the lock's token, or, until
+# step 2 of #1132, the interim writers. tests/tmux_reach.rs holds these five paths.
+
+[[disallowed-methods]]
+path = "std::env::set_var"
+reason = "take fake::env_lock() and call fake::set_var(&held, ..) (#1132)"
+
+[[disallowed-methods]]
+path = "std::env::remove_var"
+reason = "take fake::env_lock() and call fake::remove_var(&held, ..) (#1132)"
+
+[[disallowed-methods]]
+path = "libc::setenv"
+reason = "take fake::env_lock() and call fake::set_var(&held, ..) (#1132)"
+
+[[disallowed-methods]]
+path = "libc::unsetenv"
+reason = "take fake::env_lock() and call fake::remove_var(&held, ..) (#1132)"
+
+[[disallowed-methods]]
+path = "libc::putenv"
+reason = "take fake::env_lock() and call fake::set_var(&held, ..) (#1132)"
