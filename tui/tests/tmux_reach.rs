@@ -330,7 +330,17 @@ const PRODUCT_PATH: &str = "COCKPIT_TEST_PRODUCT_PATH";
 fn push_and_the_tile_previews_send_the_callers_server_nothing() {
     if let Some(path) = std::env::var_os(PRODUCT_PATH) {
         if path == "push" {
-            drop(cockpit_tui::push::Push::start());
+            // its wait loop runs on a thread of its own: up to 400 tries of 5 ms for the
+            // stub, first on PATH, to record a call, so an ungated loop is seen
+            let _push = cockpit_tui::push::Push::start();
+            let path = std::env::var("PATH").unwrap_or_default();
+            let calls = Path::new(path.split(':').next().unwrap_or_default()).join("tmux.calls");
+            for _ in 0..400 {
+                if calls.exists() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
         } else {
             let _ = cockpit_tui::board::previews(&["tmux".to_string()], &[("%1".to_string(), 5)]);
         }
