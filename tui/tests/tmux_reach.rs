@@ -295,8 +295,34 @@ fn the_product_refuses_a_plain_tmux_bound_for_the_callers_server() {
 /// wants: `refused` or `ran`.
 const PRODUCT_NOTE: &str = "COCKPIT_TEST_PRODUCT_NOTE";
 
+/// The footer row of the board, `w` columns wide, showing `note` over no agents, as a
+/// board whose reads were refused draws it (#1089).
+fn footer_at(note: &str, w: u16) -> String {
+    let th = cockpit_tui::theme::Theme::fixed();
+    let v = cockpit_tui::board::View {
+        panes: &[],
+        pvs: &[],
+        th: &th,
+        sel: 0,
+        top: 0,
+        active: "",
+        note: Some(note),
+        help: None,
+        stale: None,
+        lost: false,
+        never: false,
+        list: None,
+        confirm: None,
+    };
+    let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, 8)).unwrap();
+    t.draw(|f| cockpit_tui::board::render(f, f.area(), &v)).unwrap();
+    let b = t.backend().buffer();
+    (0..w).map(|x| b[(x, 7)].symbol()).collect()
+}
+
 /// #1089: once `data::tmux` refused a read, the board's note names the guard and the way
-/// out, once per run; where nothing was refused there is no note.
+/// out, once per run, and a 40-column footer still shows the way out; where nothing was
+/// refused there is no note.
 #[test]
 fn the_board_is_told_once_that_a_read_was_refused() {
     if let Some(want) = std::env::var_os(PRODUCT_NOTE) {
@@ -306,6 +332,10 @@ fn the_board_is_told_once_that_a_read_was_refused() {
         let shown = cockpit_tui::board::note_guard(&mut note, std::time::Instant::now());
         let said = [note.as_ref().map(|n| n.text.as_str()), cockpit_tui::data::guard_note()];
         assert_eq!((shown, note.as_ref().and_then(|n| n.ttl)), (want == "refused", None));
+        // a board in a 40-column pane, the narrowest it draws, still shows the way out
+        let foot = note.as_ref().map(|n| footer_at(&n.text, 40));
+        let out = "COCKPIT_TEST_TMUX_GUARD=0 to lift";
+        assert!(foot.as_ref().is_none_or(|f| f.contains(out)), "40 columns: {foot:?}");
         let text = "COCKPIT_TEST_TMUX_GUARD=0 to lift: no private tmux in COCKPIT_TMUX (-L or -S); \
                     reads refused";
         assert_eq!(said, if want == "refused" { [Some(text), None] } else { [None, None] });
