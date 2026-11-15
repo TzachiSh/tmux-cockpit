@@ -2,6 +2,11 @@
 # tmux-cockpit test rig.  Run:  tests/run.sh
 # Uses a throwaway state dir, so your live agent state is never touched.
 set -u
+# A caller's BASH_ENV is sourced by this very shell before its first line, and by every bash
+# it starts; ENV by an interactive sh, as a pane's shell can be. An unset would reach only
+# the children, so this file starts once more without them (#1099, #1115): make test,
+# only.sh and every par.sh shard all start here. "$BASH", the binary that was started.
+[ -z "${BASH_ENV+x}${ENV+x}" ] || exec env -u BASH_ENV -u ENV "$BASH" "$0" "$@"
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # Required (#199), and make test builds it first. Exported, so a copy of the
@@ -297,6 +302,26 @@ unset COCKPIT_TMUX
 # real one. And the file a board writes its action to, which a board reads as "I was
 # started by a wrapper": with a caller's, a row that starts a bare board reads otherwise.
 unset COCKPIT_CLAUDE COCKPIT_ACTION
+# git's own names (#1099). GIT_DIR and its kin send every fixture's git to another
+# repository: with a caller's GIT_DIR the suite made a repository there, committed into it
+# and failed 383 rows. GIT_CONFIG_GLOBAL, GIT_CONFIG_SYSTEM and the GIT_CONFIG_KEY_<n>
+# family hand git a caller's settings, GIT_TEMPLATE_DIR its hooks for every git init,
+# GIT_TRACE a file to append to, GIT_EDITOR a program to run. So every exported GIT_ name
+# goes, by prefix: no list could spell the numbered ones. A block that needs one sets it
+# itself, as the fixtures do for the author's and the committer's name.
+for suite_v in $(compgen -e GIT_ 2>/dev/null); do unset "$suite_v"; done
+unset suite_v
+# The other names the scripts and the board read (#1100). None names a place to write; each
+# changes what a script does, and so a row's verdict. COCKPIT_TEST_TMUX_GUARD is the tui
+# tests' own guard, set by .cargo/config.toml for cargo: dropped here for the suite alone.
+unset NO_COLOR COCKPIT_GLYPHS COCKPIT_PANEL_MODEL COCKPIT_PANEL_EFFORT COCKPIT_PANEL_TIMEOUT
+unset COCKPIT_PANEL_MODE COCKPIT_PANEL_DROPPED COCKPIT_PANEL_HIDE_TAKEN COCKPIT_VIEW_ASK
+unset COCKPIT_VIEW_BACK COCKPIT_BASKET_PANE COCKPIT_FILES_STATE COCKPIT_TEST_TMUX_GUARD
+unset COCKPIT_GITHUB COCKPIT_TUI_RELEASES COCKPIT_TUI_REPO TM_SID TM_CLIENT TM_PANE TM_POPUP
+unset TM_NEEDS MD_EDIT REVIEW_PANE_ID
+# The board's Termux test (#1115): a TERMUX_VERSION, or a PREFIX in Termux's own tree, opens
+# the panel as a tablet's, and a panel row reads another screen.
+unset TERMUX_VERSION PREFIX
 # The suite never runs the real VS Code (#350). Under WSL the Windows PATH brings
 # its code(1) in, and with the private HOME it installs a fresh ~/.vscode-server
 # (639 MB) and can open the owner's editor. So: no /mnt/<drive> entry on PATH, and
@@ -9965,7 +9990,7 @@ cp "$DIR/tests/par.sh" "$PSROOT/tests/par.sh"
 # The sandbox's servers get a socket folder of their own, so what a run leaves is found and
 # ended there, by folder: no /proc is needed, a dead socket file is seen as well as a live
 # server, and the default folder takes nothing from this block (#1032). A socket path past
-# 107 bytes binds nowhere: under so long a TMPDIR the sandbox keeps the default folder, the
+# 107 bytes binds nowhere: under so long a TMPDIR the sandbox has no folder of its own, the
 # rows that read the folder are skipped, and what a red row left is found through /proc.
 PSS="$PSROOT/s"; ps_env=(TMPDIR="$PSROOT/t" TMUX_TMPDIR="$PSS")
 if [ $((${#PSS} + ${#UID} + 30)) -gt 107 ]; then PSS=""; ps_env=(TMPDIR="$PSROOT/t")
@@ -11119,11 +11144,14 @@ for cw in visual editor; do
     printf '#!/bin/sh\necho ran >> %s\nexit 0\n' "$(tq "$CW/c/$cw.ran")" > "$CW/c/$cw"
     chmod +x "$CW/c/$cw"
 done
-# The caller's COCKPIT_TMUX: it reaches no server, and exits 1 as a tmux with none does.
+# The caller's COCKPIT_TMUX: it reaches no server, and exits 1 as a tmux with none does. The
+# board splits the value on blanks, so the stub sits in the folder the suite keeps free of
+# blanks for stub tmuxes (#992), and the row holds under a TMPDIR with a blank too.
 # Their COCKPIT_CLAUDE: a stub by its full path, which calls no model.
-for cw in tmux claude; do
-    printf '#!/bin/sh\necho ran >> %s\nexit 1\n' "$(tq "$CW/c/$cw.ran")" > "$CW/c/$cw"
-    chmod +x "$CW/c/$cw"
+cw_ct=$(mktemp -d "$COCKPIT_SUITE_NB/ct.XXXXXX")
+for cw in "$cw_ct/tmux" "$CW/c/claude"; do
+    printf '#!/bin/sh\necho ran >> %s\nexit 1\n' "$(tq "$CW/c/${cw##*/}.ran")" > "$cw"
+    chmod +x "$cw"
 done
 : > "$CW/c/act"
 cw_ls() { ( cd "$CW/c/$1" && find . | sort | tr '\n' ' '; cat seed ); }
@@ -11139,7 +11167,7 @@ cwo=$(cd "$DIR" && env -u TMUX TMUX_TMPDIR="$CW/s" \
     COCKPIT_PANEL_NOTE="$CW/c/note" \
     COCKPIT_REVIEW_BASE=canary COCKPIT_PROC_DIR="$CW/c/proc" COCKPIT_POLL_KEY=canary \
     REVDIFF_CONFIG="$CW/c/revdiff" REVDIFF_EXCLUDE=canary CLAUDE_CODE_SESSION_KIND=canary \
-    COCKPIT_TMUX="$CW/c/tmux" COCKPIT_CLAUDE="$CW/c/claude" COCKPIT_ACTION="$CW/c/act" \
+    COCKPIT_TMUX="$cw_ct/tmux" COCKPIT_CLAUDE="$CW/c/claude" COCKPIT_ACTION="$CW/c/act" \
     tests/only.sh "^the suite sees none of its caller|^install\.sh --check: one row|$(:
         )^install\.sh --hooks merges additively|^cockpit-panel: a tap in the popup|$(:
         )^tmux-open-path --folder|^tm: the kill picker|^cockpit-tui: --json names every|$(:
@@ -11167,8 +11195,6 @@ done
 is "COCKPIT_PANEL_NOTE: the suite did not see it, and the caller's file was not written" \
    "1 not written" \
    "$(cw_unseen COCKPIT_PANEL_NOTE) $([ -e "$CW/c/note" ] && echo written || echo 'not written')"
-# The board splits the value on blanks, so under a TMPDIR with a blank a board that did see
-# it would run no stub; the first half of the row is what holds there.
 is "COCKPIT_TMUX: the suite did not see it, and the caller's tmux was not run" "1 not run" \
    "$(cw_unseen COCKPIT_TMUX) $([ -e "$CW/c/tmux.ran" ] && echo ran || echo 'not run')"
 is "COCKPIT_CLAUDE: the suite did not see it, and the caller's claude was not run" "1 not run" \
@@ -11184,7 +11210,101 @@ for cw in "$CW"/s/tmux-*/*; do
 done
 fi
 unset -f cw_ls cw_unseen
-unset CW cw cwo cwrc
+rm -rf "$cw_ct"
+unset CW cw cwo cwrc cw_ct
+
+echo "== the suite sees none of git's names, no BASH_ENV, no other switch (#1099, #1100) =="
+# The names, for this block and the next. A function, not a variable: only.sh and par.sh
+# give every block the file's top-level functions, and a block's variables to that block
+# alone, so the next block in a shard of its own would find the list unset.
+gv_names() {
+    echo "GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY
+          GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CONFIG GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM
+          GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 GIT_CEILING_DIRECTORIES
+          GIT_TEMPLATE_DIR GIT_TRACE GIT_EDITOR BASH_ENV ENV NO_COLOR COCKPIT_GLYPHS
+          COCKPIT_PANEL_MODEL COCKPIT_PANEL_EFFORT COCKPIT_PANEL_TIMEOUT
+          COCKPIT_PANEL_MODE COCKPIT_PANEL_DROPPED COCKPIT_PANEL_HIDE_TAKEN
+          COCKPIT_VIEW_ASK COCKPIT_VIEW_BACK COCKPIT_BASKET_PANE COCKPIT_FILES_STATE
+          COCKPIT_TEST_TMUX_GUARD COCKPIT_GITHUB COCKPIT_TUI_RELEASES COCKPIT_TUI_REPO
+          TM_SID TM_CLIENT TM_PANE TM_POPUP TM_NEEDS MD_EDIT REVIEW_PANE_ID
+          TERMUX_VERSION PREFIX"
+}
+gvs=$(gv_names | tr '\n' ' ')
+for gv in $gvs; do
+    is "$gv is not in the suite's environment" "unset" "${!gv-unset}"
+done
+# By prefix, so a GIT_ name no list holds is caught too. The author's and the committer's
+# name and mail, with the values an earlier block exports for its fixtures, are the suite's
+# own; the same name with a caller's value is not (#1115).
+is "no other GIT_ name is exported" "" \
+   "$(compgen -e GIT_ | while IFS= read -r gv; do printf '%s=%s\n' "$gv" "${!gv}"; done |
+      grep -vxE 'GIT_(AUTHOR|COMMITTER)_(NAME=t|EMAIL=t@e)' | tr '\n' ' ')"
+# The server starts in the prelude, before any block exports a name: none is its own.
+if need_tmux "the suite's server's environment"; then :; else
+is "the suite's own server is up, and holds none of them in its environment" "up " \
+   "$(tmux has-session -t suite 2>/dev/null && printf 'up ' || printf 'down '
+      tmux show-environment -g 2>/dev/null | sed 's/^-//; s/=.*//' |
+          grep -E "^GIT_|^($(printf '%s' "$gvs" | tr ' ' '|'))\$" | tr '\n' ' ')"
+fi
+unset gv gvs
+
+echo "== git writes nothing where its caller's names point; no BASH_ENV is read (#1099) =="
+# The block above and three that make and commit into fixture repositories, through
+# only.sh, with every one of those names set as a caller might have it: folders and files of
+# a canary for git's, a stub editor, a BASH_ENV file that leaves a mark, a value in each
+# switch. CI's environment has none of them, so this is the run that meets them there.
+gvs=$(gv_names | tr '\n' ' ')
+GC=$(mktmpd); mkdir -p "$GC/s" "$GC/c/dir" "$GC/c/wt" "$GC/c/common" "$GC/c/obj" "$GC/c/alt" \
+    "$GC/c/tpl/hooks"
+: > "$GC/c/cfg"; : > "$GC/c/gcfg"; : > "$GC/c/scfg"
+printf '#!/bin/sh\necho ran >> %s\nexit 0\n' "$(tq "$GC/ed.ran")" > "$GC/c/ed"
+printf '#!/bin/sh\necho ran >> %s\n' "$(tq "$GC/hook.ran")" > "$GC/c/tpl/hooks/post-commit"
+chmod +x "$GC/c/ed" "$GC/c/tpl/hooks/post-commit"
+# Sourced by every bash that starts with it set, the one that runs the blocks included: a
+# git of its own that leaves a mark. The first shell sources it once before run.sh starts
+# again without it (#1115), so a mark means a git call from a shell that kept it.
+printf 'git() { echo ran >> %s; command git "$@"; }\n' "$(tq "$GC/benv.ran")" > "$GC/c/benv"
+gc_ls() { ( cd "$GC/c" && find . | sort | tr '\n' ' ' ); }
+# The nested socket is $GC/s/tmux-<uid>/cockpit-suite-<pid>: past 107 bytes no server binds.
+if [ $((${#GC} + ${#UID} + 30)) -gt 107 ]; then
+    skip_ "canaries in git's names (TMPDIR too long for the nested socket path)"
+else
+gc_b=$(gc_ls)
+gc_e=(GIT_DIR="$GC/c/dir" GIT_WORK_TREE="$GC/c/wt" GIT_COMMON_DIR="$GC/c/common"
+    GIT_INDEX_FILE="$GC/c/index" GIT_OBJECT_DIRECTORY="$GC/c/obj"
+    GIT_ALTERNATE_OBJECT_DIRECTORIES="$GC/c/alt" GIT_CONFIG="$GC/c/cfg"
+    GIT_CONFIG_GLOBAL="$GC/c/gcfg" GIT_CONFIG_SYSTEM="$GC/c/scfg" GIT_CONFIG_COUNT=2
+    GIT_CONFIG_KEY_0=user.name GIT_CONFIG_VALUE_0=canary GIT_CEILING_DIRECTORIES=/
+    GIT_CONFIG_KEY_1=user.email GIT_CONFIG_VALUE_1=canary
+    GIT_TEMPLATE_DIR="$GC/c/tpl" GIT_TRACE="$GC/c/trace" GIT_EDITOR="$GC/c/ed"
+    BASH_ENV="$GC/c/benv" ENV="$GC/c/benv")
+for gv in $gvs; do
+    case $gv in GIT_*|BASH_ENV|ENV) ;; *) gc_e+=("$gv=canary") ;; esac
+done
+gco=$(cd "$DIR" && env -u TMUX TMUX_TMPDIR="$GC/s" "${gc_e[@]}" \
+    tests/only.sh "^the suite sees none of git's names|$(:
+        )^tmux-where: detached HEAD and odd repos|^tmux-branch: local and remote branches|$(:
+        )^tree_diff: staged, unstaged and untracked changes are one diff" 2>&1 </dev/null)
+gcrc=$?
+is "the blocks that use git, run under the canaries: exit 0, no row failed" "0 0" \
+   "$gcrc $(printf '%s\n' "$gco" | grep -c 'FAIL')"
+is "and all four blocks of the pattern ran" "4" "$(printf '%s\n' "$gco" | grep -c '^== ')"
+is "nothing was made or changed where git's names pointed" "$gc_b" "$(gc_ls)"
+is "the caller's git editor and its template's hook were not run" "not run, not run" \
+   "$([ -e "$GC/ed.ran" ] && printf 'ran, ' || printf 'not run, '
+      [ -e "$GC/hook.ran" ] && echo ran || echo 'not run')"
+is "no git the suite ran went through the caller's BASH_ENV" "0" \
+   "$(cat "$GC/benv.ran" 2>/dev/null | wc -l | tr -d ' ')"
+gc_unseen() { printf '%s\n' "$gco" | grep -c "PASS[^ ]* $1 is not in the suite's environment"; }
+for gv in $gvs; do
+    is "$gv: the nested run did not see it" "1" "$(gc_unseen "$gv")"
+done
+for gv in "$GC"/s/tmux-*/*; do
+    [ -S "$gv" ] && "$TMUX_REAL" -S "$gv" kill-server >/dev/null 2>&1
+done
+fi
+unset -f gc_ls gc_unseen gv_names
+unset GC gc_b gc_e gco gcrc gv gvs
 
 echo "== a server the suite starts holds no TMUX_COCKPIT_DIR (#1073) =="
 if need_tmux "a server's environment"; then :; else
@@ -11238,14 +11358,17 @@ is "that folder is the suite's own when its caller gave none: /tmp/cs.*, mode 70
        [ "$st_d" != "$(cd "/tmp/tmux-$st_u" 2>/dev/null && pwd -P)" ] || printf 'the default '
        [ "$TMUX_TMPDIR" = "$SUITE_TT" ] || printf 'not exported '
        echo ok; fi)"
-# tmux reads TMUX_TMPDIR in every call: a relative one would be looked for from here (#1098).
+# tmux reads TMUX_TMPDIR in every call: a relative one would be looked for from the folder
+# of the call (#1098). That folder is deeper than the checkout, so a relative name that
+# climbs from the checkout up to / stops short of / from here and names nothing.
+st_far="$STATE/$(pwd -P | sed 's|/[^/]*|d/|g')d"; mkdir -p "$st_far"
 is "a tmux call made from another folder reaches that same socket" "$st_p" \
-   "$(cd "$STATE" && "$TMUX_REAL" -L "$SUITE_SOCK" display-message -p '#{socket_path}' 2>&1)"
+   "$(cd "$st_far" && "$TMUX_REAL" -L "$SUITE_SOCK" display-message -p '#{socket_path}' 2>&1)"
 # For the block below, which runs this one nested: the folder, and this run's pid.
 [ -z "${COCKPIT_ST_OUT:-}" ] ||
     printf '%s\n%s\n' "${SUITE_TT:-kept $TMUX_TMPDIR}" "$$" > "$COCKPIT_ST_OUT"
 fi
-unset st_u st_p st_d
+unset st_u st_p st_d st_far
 
 echo "== a run with no TMUX_TMPDIR puts no socket in /tmp/tmux-<uid>; its folder goes (#1098) =="
 # The block above through only.sh, started as a plain `make test` starts the suite: with no
@@ -11265,7 +11388,8 @@ sf_run() {                    # <pattern> <ONLY_RUN file or ''> <env words...>
         tests/only.sh "$pat" 2>&1 </dev/null)
     rc=$?
     printf '%s\n' "$o" > "$SF/log"
-    { IFS= read -r f; IFS= read -r p; } < "$SF/out" 2>/dev/null
+    # 2>/dev/null before the input redirect: after it, bash reports a missing file first.
+    { IFS= read -r f; IFS= read -r p; } 2>/dev/null < "$SF/out"
     printf '%s %s %s|' "$rc" "$(grep -c 'PASS' "$SF/log")" "$(grep -c 'FAIL' "$SF/log")"
     case $f in
         /tmp/cs.[A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9])
@@ -11280,7 +11404,7 @@ sf_run() {                    # <pattern> <ONLY_RUN file or ''> <env words...>
 }
 sf_made() {                   # the folder the last sf_run reported, when it is one mktemp made
     local f=""
-    IFS= read -r f < "$SF/out" 2>/dev/null
+    IFS= read -r f 2>/dev/null < "$SF/out"
     case $f in
         /tmp/cs.[A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9])
             printf '%s' "$f" ;;
@@ -11353,6 +11477,12 @@ is "a run ended inside the folder's mktemp leaves no folder under the name it wa
    "$(sf_f=$(cat "$SF/mk.name" 2>/dev/null)
       case $sf_f in /tmp/cs.??????) printf 'a name, ' ;; *) printf 'no name [%s], ' "$sf_f" ;; esac
       [ -n "$sf_f" ] && [ -e "$sf_f" ] && echo "left: $sf_o" || echo 'nothing there')"
+# A red run of that row left the folder it found: taken away here, by the name it was given.
+sf_f=$(cat "$SF/mk.name" 2>/dev/null)
+case $sf_f in
+/tmp/cs.[A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9])
+    rmdir "$sf_f" 2>/dev/null ;;
+esac
 # A mktemp that gives, for the folder's template, a name that is already there: someone
 # else's folder in a place anyone can write to. The suite must not take it over. It tries
 # three names, then ends, and the folder is as it was.
