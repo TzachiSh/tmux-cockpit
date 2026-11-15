@@ -2104,12 +2104,15 @@ sc_ctx() {                    # <percent>: agent-context on C
 }
 sc_stall() {                  # <command...>: run it, with one stop at a random point of its CPU
     local x c0 c hp
-    x=$(( SCPER * (RANDOM % 100) / 100 )); read -r c0 _ < "/proc/$SCP/schedstat"
+    x=$(( SCPER * (RANDOM % 100) / 100 )); SC_X=$x SC_HIT=0   # SC_*: for a red row (#747)
+    read -r c0 _ < "/proc/$SCP/schedstat"
     "$@" & hp=$!
     while read -r c _ < "/proc/$SCP/schedstat"; [ $((c - c0)) -lt "$x" ] \
         && kill -0 "$hp" 2>/dev/null; do :; done
-    if kill -0 "$hp" 2>/dev/null; then kill -STOP "$SCP"; sleep 0.15; kill -CONT "$SCP"; fi
-    wait "$hp"
+    if kill -0 "$hp" 2>/dev/null; then
+        kill -STOP "$SCP"; sleep 0.15; kill -CONT "$SCP"; SC_HIT=1
+    fi
+    wait "$hp"; SC_RC=$?
 }
 sc_per() {                    # SCPER <- the server CPU of one call, from 8 of <command...>
     local c0 c i
@@ -2117,7 +2120,8 @@ sc_per() {                    # SCPER <- the server CPU of one call, from 8 of <
     for i in 1 2 3 4; do "$@" "$SCC" "$SCX" 7; "$@" "$SCX" "$SCC" 88; done
     read -r c _ < "/proc/$SCP/schedstat"; SCPER=$(( (c - c0) / 8 ))
 }
-sc_focus() { sct select-pane -t "$1"; }            # <to> <from> <pct>: the focus hook
+# <to> <from> <pct>: the focus hook. Its status reaches sc_stall's wait, its stderr one file.
+sc_focus() { "$TMUX_REAL" -L "$SC" select-pane -t "$1" 2> "$SCD/sel-err"; }
 sc_call() { sc_ctx "$3"; }                         # <to> <from> <pct>: agent-context
 SCF='#{@panestate_ctx}|#{@cockpit_ctx_all}|#{l:.}'
 sc_read() {                   # <pane>: its gauge and the cells, from a read that ends whole
@@ -2126,25 +2130,90 @@ sc_read() {                   # <pane>: its gauge and the cells, from a read tha
         && [ $((n += 1)) -lt 50 ]; do :; done
     printf '%s' "${g%|.}"
 }
+sc_ok() { [ "$1" = "$2" ] && echo right || echo "still wrong"; }    # <got> <want>
+sc_line() { tr '\n' ' ' 2>/dev/null < "$1" | sed 's/ $//'; }       # <file>: on one line
+# <pane> <want> <got> <before> <sel|ctx>: what a red call left (#747). A walk cut by tmux's time
+# limit stores the windows before the cut, a prefix sum of the wanted walk: "partial". The
+# value from before the call: "stale". Anything else: "other". The sums need the cells format
+# in the shape #{n:#{W:<one window>}}; in any other shape the value is "unclassified".
+sc_why() {
+    local c=${3#*|} f0 f p q act w1 walk i l s=0 d v=other
+    f0=$(sct show-options -gv @cockpit_fmt_cells); p=${f0#'#{n:#{W:'}; q=${p%'}}'}; f="#{n:$q}"
+    [ "$p" != "$f0" ] && [ "$q" != "$p" ] || v="unclassified (the cells format changed shape)"
+    read -r act w1 walk < <(sct display-message -p -t "$1" \
+        '#{pane_active} #{window_index} #{E:@cockpit_fmt_cells}')
+    if [ "$v" = other ]; then
+        d=$(( ${2#*|} - (0$(sct list-windows -t "$1" -F "+$f" | tr -d '\n')) ))
+        while read -r i l; do
+            [ "$c" = "$s" ] && v=partial
+            s=$(( s + l + (i == w1 ? d : 0) ))
+        done < <(sct list-windows -t "$1" -F "#{window_index} $f")
+        [ "$c" = "${4#*|}" ] && v=stale
+    fi
+    printf '%s: cells [%s], before the call [%s]; pane_active %s, the walk now [%s];' \
+        "$v" "$c" "${4#*|}" "$act" "$walk"
+    if [ "$5" = sel ]; then
+        printf ' select-pane exit %s, stderr [%s];' "$SC_RC" "$(sc_line "$SCD/sel-err")"
+    fi
+    printf ' stop sent %s, planned at %s of %s ns of server CPU for a call (schedstat)' \
+        "$SC_HIT" "$SC_X" "$SCPER"
+}
+# <pane> <got> <active pane>: put back what the wrong call left, after the writer step that
+# diagnosed it, so every later call measures what it would have measured without the step: the
+# diagnostics describe, they do not repair (#747). The active pane, the gauge, then the cells,
+# last: a select-pane fires the focus hook, which writes them.
+sc_back() {
+    sct select-pane -t "$3"
+    if [ -n "${2%%|*}" ]; then sct set -p -t "$1" @panestate_ctx "${2%%|*}"
+    else sct set -pu -t "$1" @panestate_ctx; fi
+    if [ -n "${2#*|}" ]; then sct set -t "$1" @cockpit_ctx_all "${2#*|}"
+    else sct set -u -t "$1" @cockpit_ctx_all; fi
+}
+SCA='#{P:#{?pane_active,#{pane_id},}}'                  # the window's active pane
+# agent-context exits 0 whatever its tmux call did, so only the uncut calls after a wrong one go
+# through the test's own tmux, which keeps their status and stderr (#747).
+sc_wrap() {                   # <percent>: agent-context on C, its tmux call's status kept
+    [ -x "$SCD/bin/tmux" ] || { mkdir -p "$SCD/bin"
+        printf '#!/bin/sh\n%s "$@" 2>> %s\nr=$?; echo "$r" >> %s; exit "$r"\n' \
+            "$(tq "$TMUX_REAL")" "$(tq "$SCD/ctx-err")" "$(tq "$SCD/ctx-rc")" > "$SCD/bin/tmux"
+        chmod +x "$SCD/bin/tmux"; }
+    PATH="$SCD/bin:$PATH" sc_ctx "$1"
+}
 if [ -n "$SCP" ]; then
-    sc_per sc_focus; scf=0 scf1=""
+    sc_per sc_focus; scf=0 scf1="" sch=0 scb=$(sc_read "$SCC")
     for i in $(seq 1 32); do
-        to=$SCC w=12; [ $((i % 2)) = 0 ] && to=$SCX w=345
-        sc_stall sc_focus "$to"
+        to=$SCC fr=$SCX w=12; [ $((i % 2)) = 0 ] && to=$SCX fr=$SCC w=345
+        sc_stall sc_focus "$to"; sch=$((sch + SC_HIT))
         g=$(sc_read "$to") w="$w|$((57 + 3 + ${#w}))"
-        [ "$g" = "$w" ] || { scf=$((scf + 1)); [ -n "$scf1" ] || scf1="change $i: [$g]"; }
+        if [ "$g" != "$w" ]; then
+            scf=$((scf + 1))
+            [ -n "$scf1" ] || { scf1="change $i: [$g]"; scd=$(sc_why "$to" "$w" "$g" "$scb" sel)
+                sca=$(sct display-message -p -t "$to" "$SCA")
+                sc_focus "$fr"; sc_focus "$to"; scr=$(sc_read "$to"); sc_back "$to" "$g" "$sca"
+                scd="$scd; after a change away and back: [$scr], $(sc_ok "$scr" "$w")"; }
+        fi
+        scb=$g
     done
     is "32 focus changes, each with the server stopped 150 ms mid-hook, leave the cells exact" \
-        "0" "$scf${scf1:+, first $scf1}"
-    sc_focus "$SCC"; sc_per sc_call; scf=0 scf1=""
+        "0" "$scf${scf1:+, first $scf1; $scd; stops sent while the client ran: $sch of 32}"
+    sc_focus "$SCC"; sc_per sc_call; scf=0 scf1="" sch=0 scb=$(sc_read "$SCC")
     for i in $(seq 1 32); do
         w=7; [ $((i % 2)) = 0 ] && w=88
-        sc_stall sc_ctx "$w"
-        g=$(sc_read "$SCC") w="$w|$((57 + 3 + ${#w}))"
-        [ "$g" = "$w" ] || { scf=$((scf + 1)); [ -n "$scf1" ] || scf1="call $i: [$g]"; }
+        sc_stall sc_ctx "$w"; sch=$((sch + SC_HIT))
+        g=$(sc_read "$SCC") wg=$w w="$w|$((57 + 3 + ${#w}))"
+        if [ "$g" != "$w" ]; then
+            scf=$((scf + 1))
+            [ -n "$scf1" ] || { scf1="call $i: [$g]"; scd=$(sc_why "$SCC" "$w" "$g" "$scb" ctx)
+                sca=$(sct display-message -p -t "$SCC" "$SCA")
+                sc_wrap 50; sc_wrap "$wg"; scr=$(sc_read "$SCC"); sc_back "$SCC" "$g" "$sca"
+                scd="$scd; after a call with 50, then $wg: [$scr], $(sc_ok "$scr" "$w")"
+                scd="$scd, their tmux exit [$(sc_line "$SCD/ctx-rc")]"
+                scd="$scd, stderr [$(sc_line "$SCD/ctx-err")]"; }
+        fi
+        scb=$g
     done
     is "and 32 agent-context calls stopped the same way leave C's gauge and the cells exact" \
-        "0" "$scf${scf1:+, first $scf1}"
+        "0" "$scf${scf1:+, first $scf1; $scd; stops sent while the client ran: $sch of 32}"
 else
     bad "the stalled server is the private one" "tmux*" "$SCN"
 fi
