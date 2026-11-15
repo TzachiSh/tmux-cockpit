@@ -4794,9 +4794,9 @@ dm_down 3
 # raw, and its #( ran. Two rows pin the fix, and a revert reds both every time. The drawn
 # row below reds because an expanded value changes the drawn text. The dmsg scan reds
 # because it reads the source: it scans cockpit.tmux and scripts/ for a display-message
-# call outside dmsg whose text holds a variable (the version check aside). The pmode
-# marker in the last row is a backstop only: its job dies with cockpit.tmux's short-lived
-# client, so a revert can leave none (#1118).
+# call whose text holds a variable, a -p read, the version check and dmsg's own call
+# excepted. The pmode marker in the last row is a backstop only: its job dies with
+# cockpit.tmux's short-lived client, so a revert can leave none (#1118).
 dm_up 4
 "$TMUX_REAL" -L "cockpit-dm-$$-4" set -g mouse on \; \
     set -g @cockpit_panel_mode "x#(touch $DM/m/pmode)y##z#[fg=red]w" >/dev/null 2>&1
