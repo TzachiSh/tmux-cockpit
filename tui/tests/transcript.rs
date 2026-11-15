@@ -121,7 +121,7 @@ fn every_failure_is_none() {
 struct Rig {
     dir: PathBuf,
     old: Vec<(&'static str, Option<String>)>,
-    _lock: fake::EnvHeld,
+    held: fake::EnvHeld,
 }
 
 impl Rig {
@@ -154,10 +154,10 @@ impl Rig {
         let old = vars.iter().map(|(k, _)| (*k, std::env::var(k).ok())).collect();
         for (k, v) in vars {
             // SAFETY: fake's environment lock is held for the whole lifetime of this rig.
-            unsafe { std::env::set_var(k, v) };
+            unsafe { fake::set_var(&lock, k, v) };
         }
         fake::assert_claude_is_the_rigs(&dir);
-        Rig { dir, old, _lock: lock }
+        Rig { dir, old, held: lock }
     }
 
     fn session(&self, proj: &str, sid: &str) -> PathBuf {
@@ -173,8 +173,8 @@ impl Drop for Rig {
             // SAFETY: as above.
             unsafe {
                 match v {
-                    Some(v) => std::env::set_var(k, v),
-                    None => std::env::remove_var(k),
+                    Some(v) => fake::set_var(&self.held, k, v),
+                    None => fake::remove_var(&self.held, k),
                 }
             }
         }
@@ -212,16 +212,16 @@ fn file_joins_claude_agents_on_the_pane_process_tree() {
 
 #[test]
 fn a_blank_cockpit_tmux_is_none_not_a_panic() {
-    let _lock = fake::env_lock();
+    let held = fake::env_lock();
     let old = std::env::var_os("COCKPIT_TMUX");
     for v in ["", " "] {
-        unsafe { std::env::set_var("COCKPIT_TMUX", v) };
+        unsafe { fake::set_var(&held, "COCKPIT_TMUX", v) };
         assert_eq!(file("%1", ""), None, "COCKPIT_TMUX={v:?}");
     }
     unsafe {
         match old {
-            Some(o) => std::env::set_var("COCKPIT_TMUX", o),
-            None => std::env::remove_var("COCKPIT_TMUX"),
+            Some(o) => fake::set_var(&held, "COCKPIT_TMUX", o),
+            None => fake::remove_var(&held, "COCKPIT_TMUX"),
         }
     }
 }

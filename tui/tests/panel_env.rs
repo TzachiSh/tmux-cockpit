@@ -23,7 +23,7 @@ const HUNG_BUDGET: Duration = Duration::from_secs(2);
 struct Env {
     old: Vec<(&'static str, Option<String>)>,
     dir: PathBuf,
-    _lock: fake::EnvHeld,
+    held: fake::EnvHeld,
 }
 
 impl Env {
@@ -40,12 +40,12 @@ impl Env {
             // SAFETY: the lock is held for the guard's lifetime and every test here takes it.
             unsafe {
                 match v {
-                    Some(v) => std::env::set_var(k, v.replace("$D", &dir.display().to_string())),
-                    None => std::env::remove_var(k),
+                    Some(v) => fake::set_var(&lock, k, v.replace("$D", &dir.display().to_string())),
+                    None => fake::remove_var(&lock, k),
                 }
             }
         }
-        Env { old, dir, _lock: lock }
+        Env { old, dir, held: lock }
     }
 
     fn exec(&self, name: &str, body: &str) -> String {
@@ -61,8 +61,8 @@ impl Drop for Env {
             // SAFETY: as above.
             unsafe {
                 match v {
-                    Some(v) => std::env::set_var(k, v),
-                    None => std::env::remove_var(k),
+                    Some(v) => fake::set_var(&self.held, k, v),
+                    None => fake::remove_var(&self.held, k),
                 }
             }
         }
@@ -605,7 +605,7 @@ fn an_inherited_git_variable_never_moves_the_repo_block() {
             let want = block(&pane);
             assert!(want.starts_with(&format!("branch: main\nroot: {pane}\n")), "{want}");
             // SAFETY: `e` holds the lock, and its drop puts every REDIRECT var back.
-            unsafe { std::env::set_var(var, val.replace("$D", &e.dir.display().to_string())) };
+            unsafe { fake::set_var(&e.held, var, val.replace("$D", &e.dir.display().to_string())) };
             block(&pane) != want
         })
         .map(|(var, _)| var)

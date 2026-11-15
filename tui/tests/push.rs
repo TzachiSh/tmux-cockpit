@@ -290,8 +290,8 @@ fn q_unlists_its_own_channel_and_only_its_own() {
     // SAFETY: the write lock keeps every other test of this binary from
     // spawning, so nothing reads the environment while it changes.
     unsafe {
-        std::env::set_var("COCKPIT_TMUX", format!("tmux -L {}", rig.sock));
-        std::env::remove_var("COCKPIT_READONLY");
+        fake::set_var_unlocked("COCKPIT_TMUX", format!("tmux -L {}", rig.sock));
+        fake::remove_var_unlocked("COCKPIT_READONLY");
     }
     let me = channel(std::process::id());
     let p = cockpit_tui::push::Push::start();
@@ -322,7 +322,7 @@ fn q_unlists_its_own_channel_and_only_its_own() {
     let _ = probe.kill();
     let _ = probe.wait();
     // SAFETY: as above, still under the write lock.
-    unsafe { std::env::remove_var("COCKPIT_TMUX") };
+    unsafe { fake::remove_var_unlocked("COCKPIT_TMUX") };
     assert!(entered, "the probe never ran, so the wait was not tested");
     assert!(!latched, "q left {me} latched on the server");
 }

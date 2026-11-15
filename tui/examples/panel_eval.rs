@@ -1097,11 +1097,11 @@ fn hermetic_wanted(var: Option<OsString>) -> bool {
 unsafe fn hand_off(real: &str, hermetic: bool) -> bool {
     // SAFETY: the caller's
     unsafe {
-        std::env::set_var(AS_CLAUDE, real);
+        test_env::set_var_unlocked(AS_CLAUDE, real);
         if hermetic {
-            std::env::set_var(HERMETIC, "1");
+            test_env::set_var_unlocked(HERMETIC, "1");
         } else {
-            std::env::remove_var(HERMETIC);
+            test_env::remove_var_unlocked(HERMETIC);
         }
     }
     hermetic_wanted(std::env::var_os(HERMETIC))
@@ -2782,7 +2782,7 @@ mod tests {
         static SET: std::sync::Once = std::sync::Once::new();
         // SAFETY: std's getenv and setenv share one lock; every read here is a Rust read,
         // and a child takes its copy at the spawn, under that lock.
-        SET.call_once(|| unsafe { std::env::set_var("XDG_CONFIG_HOME", fake::NO_HOME) });
+        SET.call_once(|| unsafe { fake::set_var_unlocked("XDG_CONFIG_HOME", fake::NO_HOME) });
     }
 
     const ONE: &str = "# a comment\n=== crash\nkind: bug\nwindow: bash · bash · /home/u\nexpect: write\n\
