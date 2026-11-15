@@ -4817,13 +4817,19 @@ dm_down 6
 # The scan: each display-message call in cockpit.tmux or scripts/ that shows a variable or
 # a $( ) goes through dmsg. A \-continued line is joined first, then split at every
 # display-message, so each call is judged on its own text: a -p before its first quote is
-# a read, not a message. Allowed, each only in its own file and only when that call
-# starts with its fixed text (#1108):
+# a read, not a message. Allowed, each only in its own file and only when the call's
+# text, from display-message to the end of the line, is its exact text (#1108), so any
+# byte added to it is named:
 #   cockpit.tmux, the version check: it runs on a tmux below the floor, where -l (3.4)
 #     may not exist, and shows only that tmux's own -V output.
 #   scripts/lib/fmt.sh, dmsg itself.
 dm_scan() {                   # <file...> -> file:line of each display-message not via dmsg
     awk '
+        BEGIN {
+            ver = " \"tmux-cockpit needs tmux 3.8 or newer (found $tmux_version);"
+            ver = ver " bootstrap.sh builds it\""
+            dm = " \"$@\" \"${t//#/##}\""
+        }
         FNR == 1 { buf = "" }
         { if (buf == "") start = FNR }
         /\\$/ { buf = buf substr($0, 1, length($0) - 1) " "; next }
@@ -4834,14 +4840,8 @@ dm_scan() {                   # <file...> -> file:line of each display-message n
             for (i = 2; i <= n; i++) {
                 c = seg[i]
                 if (c ~ /^[^"'\''$]*[ \t]-p([ \t]|$)/) continue
-                # The whole message, to its closing quote: a variable after the version
-                # inside the same string is still named.
-                if (FILENAME == "cockpit.tmux" &&
-                    c ~ /^ "tmux-cockpit needs tmux 3\.8 or newer / &&
-                    c ~ /^ "[^"$`]*\(found \$tmux_version\)[^"$`]*"/)
-                    continue
-                if (FILENAME == "scripts/lib/fmt.sh" && index(c, " \"$@\" \"${t//#/##}\"") == 1)
-                    continue
+                if (FILENAME == "cockpit.tmux" && c == ver) continue
+                if (FILENAME == "scripts/lib/fmt.sh" && c == dm) continue
                 # \173 is an open brace, written so: only.sh and par.sh hoist this function
                 # by counting its braces, and the count must close with it (#1103).
                 if (c ~ /(^|[^\\])\$[A-Za-z_\173(@*0-9#!?]/) { print FILENAME ":" start; break }
@@ -4873,32 +4873,36 @@ EOF
 dm_plant notice scripts/lib/review-deliver.sh <<'EOF'
     "delete-buffer -b $b ; display-message -d 0 '$notice_queue'"
 EOF
-dm_plant version-then-raw cockpit.tmux <<'EOF'
-    tmux display-message "tmux-cockpit needs tmux 3.8 or newer (found $tmux_version)"; \
-    tmux display-message "$DIR"
-EOF
-dm_plant version-then-var cockpit.tmux <<'EOF'
-    tmux display-message "tmux-cockpit needs tmux 3.8 or newer (found $tmux_version) $DIR"
-EOF
-dm_plant var-before-found cockpit.tmux <<'EOF'
-    tmux display-message "tmux-cockpit needs tmux 3.8 or newer $DIR (found $tmux_version)"
-EOF
-dm_plant version-elsewhere scripts/x <<'EOF'
-    tmux display-message "tmux-cockpit needs tmux 3.8 or newer (found $tmux_version)"
-EOF
+# The version check's message as cockpit.tmux has it. Each version plant is that call with
+# bytes added, so it differs from the exception by those bytes alone.
+dm_v='"tmux-cockpit needs tmux 3.8 or newer (found $tmux_version); bootstrap.sh builds it"'
+dm_vp() {                     # <case> <the call's text after display-message> [path]
+    printf '    tmux display-message %s\n' "$2" | dm_plant "$1" "${3:-cockpit.tmux}"
+}
+printf '    tmux display-message %s; \\\n    tmux display-message "$DIR"\n' "$dm_v" |
+    dm_plant version-then-raw cockpit.tmux
+dm_vp version-then-var "${dm_v%\"}"' $DIR"'
+dm_vp var-before-found "${dm_v/ (found/ \$DIR (found}"
+dm_vp version-elsewhere "$dm_v" scripts/x
+dm_vp escaped-quote "${dm_v%\"}"'\" $DIR \""'
+dm_vp version-joined "$dm_v"'$DIR'
+dm_vp second-argument "$dm_v"' "$DIR"'
 dm_plant dmsg-call-elsewhere scripts/tmux-jump <<'EOF'
   tmux display-message "$@" "${t//#/##}"
+EOF
+dm_plant dmsg-joined scripts/lib/fmt.sh <<'EOF'
+  tmux display-message "$@" "${t//#/##}"$x
 EOF
 for dm_f in raw:scripts/x fesc:scripts/x read-then-raw:scripts/x raw-then-constant:scripts/x \
         notice:scripts/lib/review-deliver.sh version-then-raw:cockpit.tmux \
         version-then-var:cockpit.tmux var-before-found:cockpit.tmux \
-        version-elsewhere:scripts/x dmsg-call-elsewhere:scripts/tmux-jump; do
+        version-elsewhere:scripts/x escaped-quote:cockpit.tmux version-joined:cockpit.tmux \
+        second-argument:cockpit.tmux dmsg-call-elsewhere:scripts/tmux-jump \
+        dmsg-joined:scripts/lib/fmt.sh; do
     is "the scan names a planted [${dm_f%%:*}]" "${dm_f#*:}:1" \
        "$(cd "$DM/pl/${dm_f%%:*}" && dm_scan "${dm_f#*:}")"
 done
-dm_plant ok-version cockpit.tmux <<'EOF'
-    tmux display-message "tmux-cockpit needs tmux 3.8 or newer (found $tmux_version); x"
-EOF
+dm_vp ok-version "$dm_v"
 dm_plant ok-dmsg scripts/lib/fmt.sh <<'EOF'
   tmux display-message "$@" "${t//#/##}"
 EOF
@@ -4910,8 +4914,8 @@ EOF
 is "and names nothing in dmsg, a -p read, a fixed text or an exception in its own file" "" \
    "$(for dm_f in ok-version:cockpit.tmux ok-dmsg:scripts/lib/fmt.sh ok-other:scripts/x; do
           (cd "$DM/pl/${dm_f%%:*}" && dm_scan "${dm_f#*:}"); done)"
-unset -f dm_up dm_drawn dm_line dm_down dm_tmux dm_scan dm_note dm_plant
-unset DM dm_n dm_f dm_p dm_d dm_k dm_names dm_files dm_s dm_jn
+unset -f dm_up dm_drawn dm_line dm_down dm_tmux dm_scan dm_note dm_plant dm_vp
+unset DM dm_n dm_f dm_p dm_d dm_k dm_names dm_files dm_s dm_jn dm_v
 fi
 
 echo "== HOME unset must not kill the path picker =="
