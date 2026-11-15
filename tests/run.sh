@@ -4791,6 +4791,10 @@ for dm_f in "${dm_names[@]}"; do
 done
 dm_down 3
 # 4. cockpit.tmux:302 (#1096): an @cockpit_panel_mode value went in raw, and its #( ran.
+# The drawn row below and the dmsg scan pin the fix: an expanded value changes the drawn
+# text, so a revert reds them every time. The pmode marker in the last row is a backstop
+# only: its job dies with cockpit.tmux's short-lived client, so a revert can leave none
+# (#1118).
 dm_up 4
 "$TMUX_REAL" -L "cockpit-dm-$$-4" set -g mouse on \; \
     set -g @cockpit_panel_mode "x#(touch $DM/m/pmode)y##z#[fg=red]w" >/dev/null 2>&1
@@ -4809,7 +4813,8 @@ is "an odd @cockpit_panel_mode is drawn as written" "1" \
     >/dev/null 2>&1
 until_out yes sh -c "[ -e $(tq "$DM/m/control") ] && echo yes"
 dm_down 4
-is "and no message ran a #( from a name or a value, where a raw one did" "$DM/m/control " \
+is "and no #( from a name or a value left a marker, where the control did (best effort, #1118)" \
+   "$DM/m/control " \
    "$(find "$DM" \( -name pwned -o -name pmode -o -name control \) | tr '\n' ' ')"
 # 5. dmsg itself: a text that starts with - would read as a flag, and tmux showed nothing.
 # It gets a -- before it, and only it: the command any other text makes is unchanged.
