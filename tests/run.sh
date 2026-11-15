@@ -10319,7 +10319,11 @@ ignore) trap '' TERM ;;
 slow) trap 'read -t 0.5 <> "$PE_FIFO"; exit 0' TERM ;;
 esac
 : > "$PE_FIFO.$3"
-while [ -d "/proc/$PE_RUN" ] && [ "$SECONDS" -lt 60 ]; do read -t 1 <> "$PE_FIFO"; done
+# A fifo gone with the block's folder, as a cut-short run's cleanup takes it, ends the stand-in:
+# the read would fail at once and the loop spin until the run's pid is gone (#1104).
+while [ -d "/proc/$PE_RUN" ] && [ "$SECONDS" -lt 60 ]; do
+    read -t 1 <> "$PE_FIFO" || [ -p "$PE_FIFO" ] || exit 0
+done
 EOF
     chmod +x "$PE/bin/tmux: server"
     pe_fake "${pe_n}1" ignore; pd=$!
