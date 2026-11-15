@@ -2134,25 +2134,42 @@ sc_ok() { [ "$1" = "$2" ] && echo right || echo "still wrong"; }    # <got> <wan
 sc_line() { tr '\n' ' ' 2>/dev/null < "$1" | sed 's/ $//'; }       # <file>: on one line
 # <pane> <want> <got> <before> <sel|ctx>: what a red call left (#747). A walk cut by tmux's time
 # limit stores the windows before the cut, a prefix sum of the wanted walk: "partial". The
-# value from before the call: "stale". Anything else: "other".
+# value from before the call: "stale". Anything else: "other". The sums need the cells format
+# in the shape #{n:#{W:<one window>}}; in any other shape the value is "unclassified".
 sc_why() {
-    local c=${3#*|} f act w1 walk i l s=0 d v=other
-    f=$(sct show-options -gv @cockpit_fmt_cells); f=${f#'#{n:#{W:'}; f="#{n:${f%'}}'}}"
+    local c=${3#*|} f0 f p q act w1 walk i l s=0 d v=other
+    f0=$(sct show-options -gv @cockpit_fmt_cells); p=${f0#'#{n:#{W:'}; q=${p%'}}'}; f="#{n:$q}"
+    [ "$p" != "$f0" ] && [ "$q" != "$p" ] || v="unclassified (the cells format changed shape)"
     read -r act w1 walk < <(sct display-message -p -t "$1" \
         '#{pane_active} #{window_index} #{E:@cockpit_fmt_cells}')
-    d=$(( ${2#*|} - (0$(sct list-windows -t "$1" -F "+$f" | tr -d '\n')) ))
-    while read -r i l; do
-        [ "$c" = "$s" ] && v=partial
-        s=$(( s + l + (i == w1 ? d : 0) ))
-    done < <(sct list-windows -t "$1" -F "#{window_index} $f")
-    [ "$c" = "${4#*|}" ] && v=stale
+    if [ "$v" = other ]; then
+        d=$(( ${2#*|} - (0$(sct list-windows -t "$1" -F "+$f" | tr -d '\n')) ))
+        while read -r i l; do
+            [ "$c" = "$s" ] && v=partial
+            s=$(( s + l + (i == w1 ? d : 0) ))
+        done < <(sct list-windows -t "$1" -F "#{window_index} $f")
+        [ "$c" = "${4#*|}" ] && v=stale
+    fi
     printf '%s: cells [%s], before the call [%s]; pane_active %s, the walk now [%s];' \
         "$v" "$c" "${4#*|}" "$act" "$walk"
     if [ "$5" = sel ]; then
         printf ' select-pane exit %s, stderr [%s];' "$SC_RC" "$(sc_line "$SCD/sel-err")"
     fi
-    printf ' stop sent %s at x %s of %s' "$SC_HIT" "$SC_X" "$SCPER"
+    printf ' stop sent %s, planned at %s of %s ns of server CPU for a call (schedstat)' \
+        "$SC_HIT" "$SC_X" "$SCPER"
 }
+# <pane> <got> <active pane>: put back what the wrong call left, after the writer step that
+# diagnosed it, so every later call measures what it would have measured without the step: the
+# diagnostics describe, they do not repair (#747). The active pane, the gauge, then the cells,
+# last: a select-pane fires the focus hook, which writes them.
+sc_back() {
+    sct select-pane -t "$3"
+    if [ -n "${2%%|*}" ]; then sct set -p -t "$1" @panestate_ctx "${2%%|*}"
+    else sct set -pu -t "$1" @panestate_ctx; fi
+    if [ -n "${2#*|}" ]; then sct set -t "$1" @cockpit_ctx_all "${2#*|}"
+    else sct set -u -t "$1" @cockpit_ctx_all; fi
+}
+SCA='#{P:#{?pane_active,#{pane_id},}}'                  # the window's active pane
 # agent-context exits 0 whatever its tmux call did, so only the uncut calls after a wrong one go
 # through the test's own tmux, which keeps their status and stderr (#747).
 sc_wrap() {                   # <percent>: agent-context on C, its tmux call's status kept
@@ -2171,8 +2188,9 @@ if [ -n "$SCP" ]; then
         if [ "$g" != "$w" ]; then
             scf=$((scf + 1))
             [ -n "$scf1" ] || { scf1="change $i: [$g]"; scd=$(sc_why "$to" "$w" "$g" "$scb" sel)
-                sc_focus "$fr"; sc_focus "$to"; g=$(sc_read "$to")
-                scd="$scd; after a change away and back: [$g], $(sc_ok "$g" "$w")"; }
+                sca=$(sct display-message -p -t "$to" "$SCA")
+                sc_focus "$fr"; sc_focus "$to"; scr=$(sc_read "$to"); sc_back "$to" "$g" "$sca"
+                scd="$scd; after a change away and back: [$scr], $(sc_ok "$scr" "$w")"; }
         fi
         scb=$g
     done
@@ -2186,8 +2204,9 @@ if [ -n "$SCP" ]; then
         if [ "$g" != "$w" ]; then
             scf=$((scf + 1))
             [ -n "$scf1" ] || { scf1="call $i: [$g]"; scd=$(sc_why "$SCC" "$w" "$g" "$scb" ctx)
-                sc_wrap 50; sc_wrap "$wg"; g=$(sc_read "$SCC")
-                scd="$scd; after a call with 50, then $wg: [$g], $(sc_ok "$g" "$w")"
+                sca=$(sct display-message -p -t "$SCC" "$SCA")
+                sc_wrap 50; sc_wrap "$wg"; scr=$(sc_read "$SCC"); sc_back "$SCC" "$g" "$sca"
+                scd="$scd; after a call with 50, then $wg: [$scr], $(sc_ok "$scr" "$w")"
                 scd="$scd, their tmux exit [$(sc_line "$SCD/ctx-rc")]"
                 scd="$scd, stderr [$(sc_line "$SCD/ctx-err")]"; }
         fi
