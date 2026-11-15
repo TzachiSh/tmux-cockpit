@@ -1692,7 +1692,10 @@ Backspace.
   `...; the pane now runs vim, not bash, so a paste is refused`.
 - **One state per pane.** `prefix f` on another pane opens a fresh panel and
   the hidden one stays. The wrapper says `cockpit: hidden · prefix f on %N
-  brings it back` (the bound key, from `@cockpit_panel_bound`); opened from
+  brings it back` (the prefix key bound with the note `cockpit: panel`, read from
+  the binding, as the review notice reads the jump key; `@cockpit_panel_bound`
+  only picks between two noted keys, and with none the message says `the panel
+  key`, #1112); opened from
   the board, that is the board's note and the board comes back, as after `esc`.
 - **Stale state is dropped, with a note.** A file older than 24 h
   (`action::HIDE_AGE`) is refused (`the hidden panel was dropped: it is older
