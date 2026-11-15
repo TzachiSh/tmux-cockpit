@@ -2098,9 +2098,17 @@ case "$SCN" in
     tmux*) trap 'trap "" HUP INT TERM; kill -CONT "$SCP" 2>/dev/null; cleanup' EXIT ;;
     *) SCP="" ;;
 esac
+# A red row says why (#747): the test's own copy of agent-context's tmux keeps that call's
+# status and stderr, and sc_focus keeps select-pane's. Read only when a call goes wrong.
+mkdir "$SCD/bin"
+printf '#!/bin/sh\n%s "$@" 2> %s\nr=$?; echo "$r" > %s; exit "$r"\n' "$(tq "$TMUX_REAL")" \
+    "$(tq "$SCD/ctx-err")" "$(tq "$SCD/ctx-rc")" > "$SCD/bin/tmux"
+chmod +x "$SCD/bin/tmux"
 sc_ctx() {                    # <percent>: agent-context on C
+    : > "$SCD/ctx-rc"
     printf '{"context_window":{"used_percentage":%s}}' "$1" \
-        | TMUX="$SOCKDIR/$SC,0,0" TMUX_PANE="$SCC" "$DIR/scripts/agent-context" >/dev/null 2>&1
+        | PATH="$SCD/bin:$PATH" TMUX="$SOCKDIR/$SC,0,0" TMUX_PANE="$SCC" \
+            "$DIR/scripts/agent-context" >/dev/null 2>&1
 }
 sc_stall() {                  # <command...>: run it, with one stop at a random point of its CPU
     local x c0 c hp
@@ -2108,7 +2116,10 @@ sc_stall() {                  # <command...>: run it, with one stop at a random 
     "$@" & hp=$!
     while read -r c _ < "/proc/$SCP/schedstat"; [ $((c - c0)) -lt "$x" ] \
         && kill -0 "$hp" 2>/dev/null; do :; done
-    if kill -0 "$hp" 2>/dev/null; then kill -STOP "$SCP"; sleep 0.15; kill -CONT "$SCP"; fi
+    SC_X=$x SC_HIT=0
+    if kill -0 "$hp" 2>/dev/null; then
+        SC_HIT=1; kill -STOP "$SCP"; sleep 0.15; kill -CONT "$SCP"
+    fi
     wait "$hp"
 }
 sc_per() {                    # SCPER <- the server CPU of one call, from 8 of <command...>
@@ -2117,7 +2128,9 @@ sc_per() {                    # SCPER <- the server CPU of one call, from 8 of <
     for i in 1 2 3 4; do "$@" "$SCC" "$SCX" 7; "$@" "$SCX" "$SCC" 88; done
     read -r c _ < "/proc/$SCP/schedstat"; SCPER=$(( (c - c0) / 8 ))
 }
-sc_focus() { sct select-pane -t "$1"; }            # <to> <from> <pct>: the focus hook
+sc_focus() {                  # <to> <from> <pct>: the focus hook
+    "$TMUX_REAL" -L "$SC" select-pane -t "$1" 2> "$SCD/sel-err"; echo "$?" > "$SCD/sel-rc"
+}
 sc_call() { sc_ctx "$3"; }                         # <to> <from> <pct>: agent-context
 SCF='#{@panestate_ctx}|#{@cockpit_ctx_all}|#{l:.}'
 sc_read() {                   # <pane>: its gauge and the cells, from a read that ends whole
@@ -2126,25 +2139,59 @@ sc_read() {                   # <pane>: its gauge and the cells, from a read tha
         && [ $((n += 1)) -lt 50 ]; do :; done
     printf '%s' "${g%|.}"
 }
+sc_ok() { [ "$1" = "$2" ] && echo right || echo "still wrong"; }    # <got> <want>
+# <pane> <want> <got> <before> <sel|ctx>: what a red call left (#747). A walk cut by tmux's time
+# limit stores the windows before the cut, a prefix sum of the wanted walk: "partial". The
+# value from before the call: "stale". Anything else: "other".
+sc_why() {
+    local c=${3#*|} f act w1 walk i l s=0 d v=other rc e
+    f=$(sct show-options -gv @cockpit_fmt_cells); f=${f#'#{n:#{W:'}; f="#{n:${f%'}}'}}"
+    read -r act w1 walk < <(sct display-message -p -t "$1" \
+        '#{pane_active} #{window_index} #{E:@cockpit_fmt_cells}')
+    d=$(( ${2#*|} - (0$(sct list-windows -t "$1" -F "+$f" | tr -d '\n')) ))
+    while read -r i l; do
+        [ "$c" = "$s" ] && v=partial
+        s=$(( s + l + (i == w1 ? d : 0) ))
+    done < <(sct list-windows -t "$1" -F "#{window_index} $f")
+    [ "$c" = "${4#*|}" ] && v=stale
+    rc=$(cat 2>/dev/null < "$SCD/$5-rc"); e=$(tr '\n' ' ' 2>/dev/null < "$SCD/$5-err")
+    printf '%s: cells [%s], before the call [%s]; pane_active %s, the walk now [%s];' \
+        "$v" "$c" "${4#*|}" "$act" "$walk"
+    printf ' %s exit %s, stderr [%s]; stop sent %s at x %s of %s' \
+        "$( [ "$5" = sel ] && echo select-pane || echo "agent-context's tmux")" \
+        "${rc:-none}" "$e" "$SC_HIT" "$SC_X" "$SCPER"
+}
 if [ -n "$SCP" ]; then
-    sc_per sc_focus; scf=0 scf1=""
+    sc_per sc_focus; scf=0 scf1="" sch=0 scb=$(sc_read "$SCC")
     for i in $(seq 1 32); do
-        to=$SCC w=12; [ $((i % 2)) = 0 ] && to=$SCX w=345
-        sc_stall sc_focus "$to"
+        to=$SCC fr=$SCX w=12; [ $((i % 2)) = 0 ] && to=$SCX fr=$SCC w=345
+        sc_stall sc_focus "$to"; sch=$((sch + SC_HIT))
         g=$(sc_read "$to") w="$w|$((57 + 3 + ${#w}))"
-        [ "$g" = "$w" ] || { scf=$((scf + 1)); [ -n "$scf1" ] || scf1="change $i: [$g]"; }
+        if [ "$g" != "$w" ]; then
+            scf=$((scf + 1))
+            [ -n "$scf1" ] || { scf1="change $i: [$g]"; scd=$(sc_why "$to" "$w" "$g" "$scb" sel)
+                sc_focus "$fr"; sc_focus "$to"; g=$(sc_read "$to")
+                scd="$scd; after a change away and back: [$g], $(sc_ok "$g" "$w")"; }
+        fi
+        scb=$g
     done
     is "32 focus changes, each with the server stopped 150 ms mid-hook, leave the cells exact" \
-        "0" "$scf${scf1:+, first $scf1}"
-    sc_focus "$SCC"; sc_per sc_call; scf=0 scf1=""
+        "0" "$scf${scf1:+, first $scf1; $scd; stops sent while the client ran: $sch of 32}"
+    sc_focus "$SCC"; sc_per sc_call; scf=0 scf1="" sch=0 scb=$(sc_read "$SCC")
     for i in $(seq 1 32); do
         w=7; [ $((i % 2)) = 0 ] && w=88
-        sc_stall sc_ctx "$w"
-        g=$(sc_read "$SCC") w="$w|$((57 + 3 + ${#w}))"
-        [ "$g" = "$w" ] || { scf=$((scf + 1)); [ -n "$scf1" ] || scf1="call $i: [$g]"; }
+        sc_stall sc_ctx "$w"; sch=$((sch + SC_HIT))
+        g=$(sc_read "$SCC") wg=$w w="$w|$((57 + 3 + ${#w}))"
+        if [ "$g" != "$w" ]; then
+            scf=$((scf + 1))
+            [ -n "$scf1" ] || { scf1="call $i: [$g]"; scd=$(sc_why "$SCC" "$w" "$g" "$scb" ctx)
+                sc_ctx 50; sc_ctx "$wg"; g=$(sc_read "$SCC")
+                scd="$scd; after a call with 50, then $wg: [$g], $(sc_ok "$g" "$w")"; }
+        fi
+        scb=$g
     done
     is "and 32 agent-context calls stopped the same way leave C's gauge and the cells exact" \
-        "0" "$scf${scf1:+, first $scf1}"
+        "0" "$scf${scf1:+, first $scf1; $scd; stops sent while the client ran: $sch of 32}"
 else
     bad "the stalled server is the private one" "tmux*" "$SCN"
 fi
