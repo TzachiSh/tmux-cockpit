@@ -12463,6 +12463,48 @@ fi
 "$TMUX_REAL" -L "$PV" kill-server >/dev/null 2>&1
 fi
 
+echo "== cockpit-tui board: a guarded board says so and sends its server nothing (#1089) =="
+# Under the test guard (COCKPIT_TEST_TMUX_GUARD, which .cargo/config.toml sets for whatever
+# cargo starts) a plain tmux with TMUX set is refused, so a board in a pane reads nothing of
+# its server. Its loop then puts the way out on the footer, and the first refusal writes one
+# line to its log. A logging tmux sits first on the pane's PATH with COCKPIT_TMUX unset: it
+# sees no call from the guarded board, and does see the same board's with the guard lifted.
+if need_tmux "the guarded board's note"; then :; else
+TG="cockpit-tg-$$"; SOCKS="$SOCKS $TG"; TGD=$(mktmpd); mkdir -p "$TGD/bin"
+printf '#!/bin/sh\nprintf "%%s\\n" "$1" >> %s\nexec %s "$@"\n' "$(tq "$TGD/calls")" \
+    "$(tq "$TMUX_REAL")" > "$TGD/bin/tmux"
+chmod +x "$TGD/bin/tmux"
+"$TMUX_REAL" -L "$TG" -f /dev/null new-session -d -s t -x 100 -y 30 -c "$TGD" \
+    'exec sleep 3600' >/dev/null 2>&1
+tg_open() {                   # <switch> -> TGW, a board in its own window
+    TGW=$("$TMUX_REAL" -L "$TG" new-window -d -P -F '#{pane_id}' -t t: -c "$TGD" \
+        "env -u COCKPIT_TMUX PATH=$(tq "$TGD/bin:$PATH") COCKPIT_TEST_TMUX_GUARD=$1 \
+XDG_STATE_HOME=$(tq "$TGD") COCKPIT_LOG=$(tq "$TGD/tui.log") $(tq "$COCKPIT_TUI_BIN") board")
+}
+tg_cap() { "$TMUX_REAL" -L "$TG" capture-pane -p -t "$TGW"; }
+tg_calls() { cat "$TGD/calls" 2>/dev/null | wc -l | tr -d ' '; }
+tg_open 1
+if until_cap "$TG" "$TGW" '*COCKPIT_TEST_TMUX_GUARD=0 to lift*'; then
+    ok "a guarded board puts the way out on its footer"
+else bad "a guarded board puts the way out on its footer" "COCKPIT_TEST_TMUX_GUARD=0 to lift" \
+    "$(tg_cap)"
+fi
+"$TMUX_REAL" -L "$TG" send-keys -t "$TGW" q
+for i in $(seq 1 "$POLLS"); do   # the board gone, so its log is whole
+    "$TMUX_REAL" -L "$TG" list-panes -a -F '#{pane_id}' 2>/dev/null | grep -qx "$TGW" || break
+    sleep 0.1
+done
+is "its log holds one refusal line" 1 "$(grep -cF \
+    ' COCKPIT_TEST_TMUX_GUARD: tmux refused, a plain tmux with TMUX set or no TMUX_TMPDIR folder' \
+    "$TGD/tui.log" 2>/dev/null)"
+is "and the guarded board sent its server nothing" 0 "$(tg_calls)"
+tg_open 0
+for i in $(seq 1 "$POLLS"); do [ "$(tg_calls)" -gt 0 ] && break; sleep 0.1; done
+if [ "$(tg_calls)" -gt 0 ]; then ok "with the guard lifted the same wrapper sees its calls"
+else bad "with the guard lifted the same wrapper sees its calls" "a call" "$(tg_calls)"; fi
+"$TMUX_REAL" -L "$TG" kill-server >/dev/null 2>&1
+fi
+
 echo "== cockpit-tui board: a blank first capture replaces reading the screen (#284) =="
 # A pane no capture has reached and a blank capture both draw as empty, so the
 # redraw gate must carry whether the pick was read (read_gate). Its own fresh
