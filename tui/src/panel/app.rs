@@ -43,6 +43,7 @@ pub const RESUME_GUARD_MS: u64 = 800;
 /// An explore-first write's caps (#416): the prompt and a few reads on sonnet fit, and
 /// more reading than that is the agent's task, so the call ends rather than keeps the user.
 pub const EXPLORE_BUDGET_USD: f64 = 0.15;
+pub const EXPLORE_TIMEOUT: Duration = Duration::from_secs(90);
 /// The longest panel key the ^Z help names (#1121). tmux 3.8's `key_string` for a
 /// keyboard key with all three modifiers tops out at 13 bytes (`C-M-S-KPEnter`); only
 /// mouse names run longer, and those get the generic words.
@@ -55,7 +56,6 @@ pub fn checked_panel_key(raw: &str) -> Option<String> {
     let ok = (1..=PANEL_KEY_MAX).contains(&raw.len()) && raw.bytes().all(|b| b.is_ascii_graphic());
     ok.then(|| raw.to_string())
 }
-pub const EXPLORE_TIMEOUT: Duration = Duration::from_secs(90);
 const ROUNDS_WRITE: usize = 3;
 const ROUNDS_EXPLAIN: usize = 6;
 const BEST_GUESS: &str = "(no preference - use your best guess and state the assumption)";
@@ -737,17 +737,18 @@ impl App {
         crate::chrome::scroll(code, scroll, self.bottom, self.room)
     }
 
-    /// Out with no action, the call killed: a hangup, or a loop that broke.
     /// The panel key the ^Z help names, through [`checked_panel_key`]: a value it
     /// refuses leaves None, so nothing can set a key the help would draw unchecked.
     pub fn set_panel_key(&mut self, raw: &str) {
         self.panel_key = checked_panel_key(raw);
     }
 
+    /// The checked panel key, or None when the help says "the panel key" (#1121).
     pub fn panel_key(&self) -> Option<&str> {
         self.panel_key.as_deref()
     }
 
+    /// Out with no action, the call killed: a hangup, or a loop that broke.
     pub fn stop(&mut self) {
         self.action = None;
         self.resume = None;
