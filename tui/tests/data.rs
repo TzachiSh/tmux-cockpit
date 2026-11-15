@@ -8,11 +8,6 @@ use cockpit_tui::data::{Pane, git_facts, list_panes, preview, screen, split_curs
 use fake::write_exec;
 use std::fs::{FileTimes, OpenOptions};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard};
-
-/// PATH, HOME and COCKPIT_* are process-global while cargo runs tests on
-/// threads, so every rig holds this for its lifetime and puts the vars back.
-static ENV: Mutex<()> = Mutex::new(());
 
 struct Env(Vec<(&'static str, Option<String>)>);
 
@@ -20,7 +15,7 @@ impl Env {
     fn set(vars: &[(&'static str, String)]) -> Self {
         let old = vars.iter().map(|(k, _)| (*k, std::env::var(k).ok())).collect();
         for (k, v) in vars {
-            // SAFETY: the ENV mutex is held for the whole lifetime of this guard.
+            // SAFETY: fake's environment lock is held for the whole lifetime of this guard.
             unsafe { std::env::set_var(k, v) };
         }
         Env(old)
@@ -41,18 +36,20 @@ impl Drop for Env {
     }
 }
 
+/// PATH, HOME and COCKPIT_* are process-global while cargo runs tests on threads, so
+/// every rig holds fake's environment lock for its lifetime and puts the vars back.
 pub struct Rig {
     dir: PathBuf,
     _env: Env,
-    _lock: MutexGuard<'static, ()>,
+    _lock: fake::EnvHeld,
 }
 
 impl Rig {
     fn new(tag: &str) -> Rig {
         // the runner unset the caller's log, cache and state, which a lookup uses (#1066);
-        // checked under ENV, as a sibling sets COCKPIT_LOG under it (#1089)
-        let lock = ENV.lock().unwrap_or_else(|e| e.into_inner());
-        fake::checked_state();
+        // checked under the lock, as a sibling sets COCKPIT_LOG under it (#1089, #1110)
+        let lock = fake::env_lock();
+        fake::checked_state_held(&lock);
         let dir = std::env::temp_dir().join(format!("cockpit-tui-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("bin")).unwrap();
@@ -548,17 +545,17 @@ fn an_open_question_further_back_than_64k_is_still_found() {
 const BASH_ROW: &str = "{\"type\":\"assistant\",\"timestamp\":\"2026-08-27T00:00:01.000Z\",\"message\":{\"stop_reason\":\"tool_use\",\
      \"content\":[{\"type\":\"tool_use\",\"id\":\"t1\",\"name\":\"Bash\",\"input\":{\"command\":\"echo one\"}}]}}\n";
 
-/// A real repo under $TMPDIR, with the ENV lock held so no Rig's git shim is
+/// A real repo under $TMPDIR, with fake's environment lock held so no Rig's git shim is
 /// on PATH, and the box's own git config kept out.
 struct Repo {
     dir: PathBuf,
     _env: Env,
-    _lock: MutexGuard<'static, ()>,
+    _lock: fake::EnvHeld,
 }
 
 impl Repo {
     fn new(tag: &str) -> Repo {
-        let lock = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let lock = fake::env_lock();
         let env = Env::set(&[("GIT_CONFIG_GLOBAL", "/dev/null".into()), ("GIT_CONFIG_NOSYSTEM", "1".into())]);
         let dir = std::env::temp_dir().join(format!("cockpit-tui-git-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -712,7 +709,7 @@ fn an_inherited_git_variable_never_moves_a_boards_row() {
     let moved: Vec<&str> = rows
         .into_iter()
         .filter(|(var, val)| {
-            let _e = Env::set(&[(var, val.clone())]); // `r` holds ENV
+            let _e = Env::set(&[(var, val.clone())]); // `r` holds the lock
             git_facts(&r.path()) != want
         })
         .map(|(var, _)| var)
@@ -1888,11 +1885,13 @@ fn a_kept_agents_cache_is_refused() {
     assert_eq!((code, refused), (Some(101), true), "{said}");
 }
 
-/// #1089: a rig takes ENV before its check, so a sibling's COCKPIT_LOG, set under ENV as
-/// `the_log_rotates_past_its_cap` sets it, is never read as the caller's. Nothing in the
-/// thread can sleep before `Rig::new`'s check: a send on an unbounded channel, then the
+/// #1089: a rig checks under fake's environment lock, so a sibling's COCKPIT_LOG, set under
+/// it as `the_log_rotates_past_its_cap` sets it, is never read as the caller's. Nothing in
+/// the thread can sleep before `Rig::new`'s check: a send on an unbounded channel, then the
 /// check's three `var_os` reads, whose env lock only a `set_var` holds, and every writer
-/// here holds ENV. So "asleep" is the wait at ENV, and with the check first it panics.
+/// here holds the lock. So "asleep" is the wait at the lock, and a check that read outside
+/// it would panic. Since #1110 none can: the `_held` check needs the lock's token, and the
+/// guard-less one takes the lock itself.
 #[test]
 #[cfg(target_os = "linux")]
 fn a_rig_checks_only_once_it_holds_the_lock() {
@@ -1904,25 +1903,9 @@ fn a_rig_checks_only_once_it_holds_the_lock() {
         tx.send(unsafe { libc::gettid() }).unwrap();
         drop(Rig::new("waits"));
     });
-    asleep_or_done(&t, rx.recv().unwrap());
+    fake::asleep_or_done(&t, rx.recv().unwrap());
     drop((env, held));
     // without the fix the payload is the refusal, naming COCKPIT_LOG
     let why = t.join().err().map(|e| e.downcast_ref::<String>().cloned().unwrap_or_default());
     assert_eq!(why, None, "the waiting rig panicked");
-}
-
-/// Until the thread `tid` of `t` sleeps or has ended: 4000 tries of 5 ms at most, a
-/// failsafe only, since the row's verdict is the thread's own end.
-#[cfg(target_os = "linux")]
-fn asleep_or_done(t: &std::thread::JoinHandle<()>, tid: i32) {
-    let state = || std::fs::read_to_string(format!("/proc/self/task/{tid}/stat")).unwrap_or_default();
-    for tries in 0.. {
-        let s = state();
-        let asleep = s.rsplit_once(") ").is_some_and(|(_, r)| r.starts_with('S'));
-        if t.is_finished() || asleep {
-            return;
-        }
-        assert!(tries < 4000, "the thread neither slept nor ended after {tries} tries");
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
 }

@@ -11,8 +11,13 @@
 //! Also the shared [`Scratch`] guard (#544), the one environment a test
 //! binary can take for itself ([`fixed_env`], #957), the `claude` a rig
 //! answers a lookup with ([`rig_path`], #972), the rigs' private tmux servers
-//! ([`Server`], #1066), and the waits for a pane's start-up ([`held_pane`],
-//! [`named_pane`] and [`settle`], #1056).
+//! ([`Server`], #1066), the waits for a pane's start-up ([`held_pane`],
+//! [`named_pane`] and [`settle`], #1056), and the environment lock every check
+//! reads under ([`env_lock`], #1110).
+mod env;
+
+#[allow(unused_imports)]
+pub use env::{EnvHeld, env_lock, env_poisoned};
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -453,9 +458,10 @@ fn still_set(vars: &[&str]) -> Vec<String> {
 }
 
 /// The line [`checked_tmux`] refuses with, or `None` where this binary may run
-/// tmux: none of [`SESSION`] set, and TMUX_TMPDIR an existing folder.
+/// tmux: none of [`SESSION`] set, and TMUX_TMPDIR an existing folder. Read under
+/// [`env_lock`]'s lock, by the checks alone.
 #[allow(dead_code)]
-pub fn tmux_refusal() -> Option<String> {
+fn tmux_refusal() -> Option<String> {
     let mut why = still_set(&SESSION);
     let mut risk = vec![];
     if !why.is_empty() {
@@ -479,14 +485,35 @@ pub fn tmux_refusal() -> Option<String> {
 /// rig's lines (data.rs:58), a caller's cache folder held the agents cache
 /// (data/agents.rs:162), and a caller's state folder the hooks' subagent log
 /// (data/subagents.rs:525) and the review folder (data/info.rs:108), each in
-/// place of the one under the rig's HOME.
+/// place of the one under the rig's HOME. Takes [`env_lock`]'s lock for the read
+/// and lets it go before it panics, so a sibling's write under that lock is never
+/// read as the caller's (#1110). Under that lock already, [`checked_state_held`].
 #[allow(dead_code)]
 pub fn checked_state() {
-    let why = still_set(&["COCKPIT_LOG", "XDG_CACHE_HOME", "XDG_STATE_HOME"]);
-    if !why.is_empty() {
-        let risk = "A rig would write your own log, agents cache or state, not the ones under its HOME.";
-        panic!("{}", refusal("the caller's state", &why, risk));
+    let why = {
+        let _read = env::for_check("checked_state");
+        state_refusal()
+    };
+    if let Some(why) = why {
+        panic!("{why}");
     }
+}
+
+/// [`checked_state`] for a caller that holds [`env_lock`]'s lock, as `held` proves.
+#[allow(dead_code)]
+pub fn checked_state_held(_held: &EnvHeld) {
+    if let Some(why) = state_refusal() {
+        panic!("{why}");
+    }
+}
+
+/// The line [`checked_state`] refuses with, or `None`. Read under [`env_lock`]'s lock.
+#[allow(dead_code)]
+fn state_refusal() -> Option<String> {
+    let why = still_set(&["COCKPIT_LOG", "XDG_CACHE_HOME", "XDG_STATE_HOME"]);
+    let risk = "A rig would write your own log, agents cache or state, \
+                not the ones under its HOME.";
+    (!why.is_empty()).then(|| refusal("the caller's state", &why, risk))
 }
 
 /// `test` of this binary, alone, in a child started by hand with `set` in its
@@ -533,14 +560,31 @@ pub fn unchecked_tmux_calls(skip: &str) -> Vec<String> {
 /// [`tmux_refusal`]'s line before any tmux runs where that does not hold: from
 /// inside a tmux session a plain `tmux` reached the caller's server and a rig's
 /// socket went beside it, and tmux 3.8 puts a socket in /tmp when TMUX_TMPDIR
-/// names no folder. In a binary whose rows set these variables, call it under that
-/// binary's lock: outside it, a sibling's value passes the check (#1089).
+/// names no folder. Read under [`env_lock`]'s lock, which it takes and lets go before
+/// it panics: outside it, a sibling's value written under it passed the check (#1089,
+/// #1110). Under that lock already, [`checked_tmux_held`].
 #[allow(dead_code)]
 pub fn checked_tmux() -> PathBuf {
-    if let Some(why) = tmux_refusal() {
-        panic!("{why}");
+    let read = {
+        let _read = env::for_check("checked_tmux");
+        tmux_read()
+    };
+    read.unwrap_or_else(|why| panic!("{why}"))
+}
+
+/// [`checked_tmux`] for a caller that holds [`env_lock`]'s lock, as `held` proves.
+#[allow(dead_code)]
+pub fn checked_tmux_held(_held: &EnvHeld) -> PathBuf {
+    tmux_read().unwrap_or_else(|why| panic!("{why}"))
+}
+
+/// TMUX_TMPDIR, or [`tmux_refusal`]'s line. Read under [`env_lock`]'s lock.
+#[allow(dead_code)]
+fn tmux_read() -> Result<PathBuf, String> {
+    match tmux_refusal() {
+        Some(why) => Err(why),
+        None => Ok(PathBuf::from(std::env::var_os("TMUX_TMPDIR").unwrap())),
     }
-    PathBuf::from(std::env::var_os("TMUX_TMPDIR").unwrap())
 }
 
 /// A rig's private tmux server on the socket `sock`, named by `-L`, never the
@@ -1020,4 +1064,22 @@ fn names(pid: &str) -> (String, Option<String>) {
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .unwrap_or_default();
     (c.rsplit('/').next().unwrap_or_default().to_string(), None)
+}
+
+/// Until the thread `tid` of `t` sleeps or has ended: 4000 tries of 5 ms at most, a
+/// failsafe only, since a row's verdict is the thread's own end. A thread that waits
+/// for a lock sleeps there.
+#[cfg(target_os = "linux")]
+#[allow(dead_code)]
+pub fn asleep_or_done(t: &std::thread::JoinHandle<()>, tid: i32) {
+    let state = || std::fs::read_to_string(format!("/proc/self/task/{tid}/stat")).unwrap_or_default();
+    for tries in 0.. {
+        let s = state();
+        let asleep = s.rsplit_once(") ").is_some_and(|(_, r)| r.starts_with('S'));
+        if t.is_finished() || asleep {
+            return;
+        }
+        assert!(tries < 4000, "the thread neither slept nor ended after {tries} tries");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
 }
