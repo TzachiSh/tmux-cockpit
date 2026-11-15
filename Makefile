@@ -22,9 +22,9 @@ SHELL := /bin/bash
 
 # Every executable shell file, whatever its extension. Listed once so a new
 # script cannot be added to the repo and quietly skipped by the linter.
-SOURCES := cockpit.tmux install.sh bootstrap.sh tests/run.sh tests/only.sh tests/par.sh tests/green.sh tests/changed.sh tests/clean-run.sh tests/tui-refusers.sh tests/fixtures/review/mkfix.sh tui/tests/claude-guard/runner tui/tests/claude-guard/claude $(filter-out scripts/lib,$(wildcard scripts/*)) $(wildcard scripts/lib/*)
+SOURCES := cockpit.tmux install.sh bootstrap.sh tests/run.sh tests/only.sh tests/par.sh tests/green.sh tests/changed.sh tests/clean-run.sh tests/tui-refusers.sh tests/tui-clippy-canary.sh tests/fixtures/review/mkfix.sh tui/tests/claude-guard/runner tui/tests/claude-guard/claude $(filter-out scripts/lib,$(wildcard scripts/*)) $(wildcard scripts/lib/*)
 
-.PHONY: all check test test-par check-par gate test-changed lint fmt tui tui-bin tui-test tui-test-clean install uninstall bootstrap help
+.PHONY: all check test test-par check-par gate test-changed lint fmt tui tui-bin tui-test tui-clippy-canary tui-test-clean install uninstall bootstrap help
 
 all: help
 
@@ -81,12 +81,17 @@ TUI_ENV = $(if $(TUI_TOOLCHAIN),RUSTUP_TOOLCHAIN=$(TUI_TOOLCHAIN))
 tui-test:
 	@$(TUI_ENV) COCKPIT_TEST_CLAUDE_GUARD=1 cargo test --locked --manifest-path tui/Cargo.toml
 	@$(TUI_ENV) cargo clippy --locked --manifest-path tui/Cargo.toml --all-targets -- -D warnings
+	@$(TUI_ENV) tests/tui-clippy-canary.sh
 	@# --all: tui/test-env is a path dependency, and fmt skips one without it (#1132).
 	@$(TUI_ENV) cargo fmt --manifest-path tui/Cargo.toml --all --check
 	@# Any rustdoc warning fails the target: a doc link to a name that does not
 	@# resolve (#726), an unclosed HTML tag (#739).
 	@$(TUI_ENV) RUSTDOCFLAGS='-D warnings' cargo doc -q --locked \
 		--manifest-path tui/Cargo.toml --no-deps --document-private-items
+
+# The lint behind #1132 still refuses a raw environment write: tests/tui-clippy-canary.sh.
+tui-clippy-canary:
+	@$(TUI_ENV) tests/tui-clippy-canary.sh
 
 # tui-test with TMPDIR and TMUX_TMPDIR on private empty dirs, failing on any
 # file, dir or socket a test left behind there (#400).
