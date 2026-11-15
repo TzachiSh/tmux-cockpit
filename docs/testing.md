@@ -309,8 +309,10 @@ under the lock takes its token, `fake::checked_state_held` and
 `fake::checked_tmux` take the lock for their read, and on a thread that already
 holds it they panic and name the `_held` form, where they would otherwise wait
 for themselves. `tmux_reach.rs` fails for a file under `tui/tests` that keeps a
-lock named `ENV` of its own and writes the environment. push's `RwLock` is the
-one it lets through: its one writer sets no variable a check reads. The helpers only check: `fake::checked_tmux`
+lock named `ENV` of its own and writes the environment, or a second one in
+`fake/`. push's `RwLock` is the one it lets through, by its declaration: its
+readers, the rigs, run in parallel, and its one writer sets no variable a check
+reads. The helpers only check: `fake::checked_tmux`
 before any tmux a helper runs, and `fake::checked_state` in each rig that sets
 `HOME`. The product's own tmux calls refuse too (#1089): under the test guard
 (`COCKPIT_TEST_TMUX_GUARD`, docs/tui.md) `data::refuses` lets `data::tmux`,

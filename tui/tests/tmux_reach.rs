@@ -206,25 +206,28 @@ fn code_of(src: &str) -> String {
     out
 }
 
-/// The one lock named ENV a file outside `fake` may keep: push's, an `RwLock` so that its
-/// rigs run side by side and its one writer alone. That writer sets `COCKPIT_TMUX` and
-/// `COCKPIT_READONLY`, which no check reads. Exempt as this declaration in this file, not
-/// as the file.
-const PUSH_LOCK: (&str, &str) = ("push.rs", "static ENV: RwLock<()> = RwLock::new(());");
+/// The locks named ENV a file may keep, each as its declaration in its file, never as the
+/// file: fake's own, the one every check reads under, and push's, an `RwLock` because its
+/// readers, its rigs, run in parallel and its one writer alone. That writer sets
+/// `COCKPIT_TMUX` and `COCKPIT_READONLY`, which no check reads.
+const KEPT: [(&str, &str); 2] = [
+    ("fake/env.rs", "static ENV: Mutex<()> = Mutex::new(());"),
+    ("push.rs", "static ENV: RwLock<()> = RwLock::new(());"),
+];
 
-/// The binaries that write a variable a check reads in their own process: `COCKPIT_LOG`;
-/// `XDG_CACHE_HOME`; `TMUX`, `TMUX_PANE`, `TMUX_TMPDIR` and `XDG_CACHE_HOME`. Any `static
-/// ENV` there is one again, whatever its type.
-const WRITERS: [&str; 3] = ["data.rs", "agents.rs", "panel_env.rs"];
+/// Whether any `static ENV` in the file `name` is a second lock, whatever its type and
+/// whether or not the file writes: in a binary that writes a variable a check reads in its
+/// own process (`COCKPIT_LOG`; `XDG_CACHE_HOME`; `TMUX`, `TMUX_PANE`, `TMUX_TMPDIR` and
+/// `XDG_CACHE_HOME`), and in any file of `fake`, which owns the one.
+fn by_name(name: &str) -> bool {
+    ["data.rs", "agents.rs", "panel_env.rs"].contains(&name) || name.starts_with("fake/")
+}
 
 /// Each `static ENV` of `src`, the file `name` under `tui/tests`, that is a lock of its
 /// own beside fake's (#1110): a `Mutex` or `RwLock` in a file that calls `set_var` or
-/// `remove_var`, but [`PUSH_LOCK`], and any in [`WRITERS`]. Its declaration, spaces
-/// made one, up to its `;`. None in `fake/`, which owns the lock.
+/// `remove_var`, and any where [`by_name`] holds, but the [`KEPT`] declarations. Its
+/// declaration, spaces made one, up to its `;`.
 fn own_env_locks(name: &str, src: &str) -> Vec<String> {
-    if name.starts_with("fake/") {
-        return vec![];
-    }
     let code = code_of(src);
     let writes = code.contains("set_var(") || code.contains("remove_var(");
     let mut found = vec![];
@@ -235,8 +238,8 @@ fn own_env_locks(name: &str, src: &str) -> Vec<String> {
         let decl = code[at..].split(';').next().unwrap_or_default();
         let decl = decl.split_whitespace().collect::<Vec<_>>().join(" ") + ";";
         let lock = decl.contains("Mutex") || decl.contains("RwLock");
-        let exempt = (name, decl.as_str()) == PUSH_LOCK;
-        if WRITERS.contains(&name) || (lock && writes && !exempt) {
+        let kept = KEPT.contains(&(name, decl.as_str()));
+        if !kept && (by_name(name) || (lock && writes)) {
             found.push(decl);
         }
     }
@@ -282,7 +285,7 @@ fn the_lock_scan_finds_the_shapes_it_reads_and_no_lookalike() {
     let local = "static ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());";
     let set = "fn f() { unsafe { std::env::set_var(\"A\", \"1\") } }\n";
     let unset = "fn f() { unsafe { std::env::remove_var(\"A\") } }\n";
-    let rows: [(&str, &str, String, &[&str]); 18] = [
+    let rows: [(&str, &str, String, &[&str]); 20] = [
         ("a Mutex, a set_var", "x.rs", format!("{mutex}\n{set}"), &[mutex]),
         ("a Mutex, a remove_var", "x.rs", format!("{mutex}\n{unset}"), &[mutex]),
         ("an RwLock, a set_var", "x.rs", format!("{rw}\n{set}"), &[rw]),
@@ -300,6 +303,13 @@ fn the_lock_scan_finds_the_shapes_it_reads_and_no_lookalike() {
         ("agents', no write", "agents.rs", format!("{mutex}\n"), &[mutex]),
         ("panel_env's, no write", "panel_env.rs", format!("{mutex}\n"), &[mutex]),
         ("fake's own", "fake/env.rs", format!("{mutex}\n{set}"), &[]),
+        (
+            "fake's and a second",
+            "fake/env.rs",
+            format!("{mutex}\nfn t() {{ {local} }}\n"),
+            &[local],
+        ),
+        ("one in fake/mod.rs, no write", "fake/mod.rs", format!("{mutex}\n"), &[mutex]),
         ("no write", "x.rs", format!("{mutex}\nfn f() {{ std::env::var(\"A\"); }}\n"), &[]),
         ("a write in a comment", "x.rs", format!("{mutex}\n// set_var(\"A\", \"1\")\n"), &[]),
         ("a lock in a comment", "x.rs", format!("// {mutex}\n{set}"), &[]),
