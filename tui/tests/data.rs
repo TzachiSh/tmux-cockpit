@@ -49,9 +49,10 @@ pub struct Rig {
 
 impl Rig {
     fn new(tag: &str) -> Rig {
-        // the runner unset the caller's log, cache and state, which a lookup uses (#1066)
-        fake::checked_state();
+        // the runner unset the caller's log, cache and state, which a lookup uses (#1066);
+        // checked under ENV, as a sibling sets COCKPIT_LOG under it (#1089)
         let lock = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        fake::checked_state();
         let dir = std::env::temp_dir().join(format!("cockpit-tui-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("bin")).unwrap();
@@ -1885,4 +1886,43 @@ fn a_kept_agents_cache_is_refused() {
     let (code, said) = fake::run_by_hand("the_window_id_is_the_thirteenth_field", &kept);
     let refused = said.contains("the caller's state refused (#1066): XDG_CACHE_HOME set. ");
     assert_eq!((code, refused), (Some(101), true), "{said}");
+}
+
+/// #1089: a rig takes ENV before its check, so a sibling's COCKPIT_LOG, set under ENV as
+/// `the_log_rotates_past_its_cap` sets it, is never read as the caller's. Nothing in the
+/// thread can sleep before `Rig::new`'s check: a send on an unbounded channel, then the
+/// check's three `var_os` reads, whose env lock only a `set_var` holds, and every writer
+/// here holds ENV. So "asleep" is the wait at ENV, and with the check first it panics.
+#[test]
+#[cfg(target_os = "linux")]
+fn a_rig_checks_only_once_it_holds_the_lock() {
+    let held = Rig::new("held");
+    let log = held.dir.join("tui.log").display().to_string();
+    let env = Env::set(&[("COCKPIT_LOG", log)]);
+    let (tx, rx) = std::sync::mpsc::channel();
+    let t = std::thread::spawn(move || {
+        tx.send(unsafe { libc::gettid() }).unwrap();
+        drop(Rig::new("waits"));
+    });
+    asleep_or_done(&t, rx.recv().unwrap());
+    drop((env, held));
+    // without the fix the payload is the refusal, naming COCKPIT_LOG
+    let why = t.join().err().map(|e| e.downcast_ref::<String>().cloned().unwrap_or_default());
+    assert_eq!(why, None, "the waiting rig panicked");
+}
+
+/// Until the thread `tid` of `t` sleeps or has ended: 4000 tries of 5 ms at most, a
+/// failsafe only, since the row's verdict is the thread's own end.
+#[cfg(target_os = "linux")]
+fn asleep_or_done(t: &std::thread::JoinHandle<()>, tid: i32) {
+    let state = || std::fs::read_to_string(format!("/proc/self/task/{tid}/stat")).unwrap_or_default();
+    for tries in 0.. {
+        let s = state();
+        let asleep = s.rsplit_once(") ").is_some_and(|(_, r)| r.starts_with('S'));
+        if t.is_finished() || asleep {
+            return;
+        }
+        assert!(tries < 4000, "the thread neither slept nor ended after {tries} tries");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
 }
