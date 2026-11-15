@@ -23033,7 +23033,10 @@ NE=$(mktmpd)
 (cd "$DIR" && env -u TMUX tests/only.sh \
     '^tests/green\.sh: the stamp hits|^cockpit-board: kill %N re-checks' \
     >"$NE/out" 2>"$NE/err" </dev/null)
-is "the stamp block and the kill block pass through only.sh" "0" "$?"
+ne_rc=$?
+# With the titles it printed: a block the pattern no longer matches would go unwatched.
+is "both blocks, the stamp and the kill block, ran through only.sh and passed" "0 2" \
+   "$ne_rc $(grep -c '^== ' "$NE/out")"
 is "and print nothing on stderr" "" "$(cat "$NE/err")"
 
 flop_left
