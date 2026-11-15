@@ -9854,7 +9854,7 @@ cp "$DIR/tests/par.sh" "$PSROOT/tests/par.sh"
 # The sandbox's servers get a socket folder of their own, so what a run leaves is found and
 # ended there, by folder: no /proc is needed, a dead socket file is seen as well as a live
 # server, and the default folder takes nothing from this block (#1032). A socket path past
-# 107 bytes binds nowhere: under so long a TMPDIR the sandbox keeps the default folder, the
+# 107 bytes binds nowhere: under so long a TMPDIR the sandbox has no folder of its own, the
 # rows that read the folder are skipped, and what a red row left is found through /proc.
 PSS="$PSROOT/s"; ps_env=(TMPDIR="$PSROOT/t" TMUX_TMPDIR="$PSS")
 if [ $((${#PSS} + ${#UID} + 30)) -gt 107 ]; then PSS=""; ps_env=(TMPDIR="$PSROOT/t")
@@ -11008,11 +11008,14 @@ for cw in visual editor; do
     printf '#!/bin/sh\necho ran >> %s\nexit 0\n' "$(tq "$CW/c/$cw.ran")" > "$CW/c/$cw"
     chmod +x "$CW/c/$cw"
 done
-# The caller's COCKPIT_TMUX: it reaches no server, and exits 1 as a tmux with none does.
+# The caller's COCKPIT_TMUX: it reaches no server, and exits 1 as a tmux with none does. The
+# board splits the value on blanks, so the stub sits in the folder the suite keeps free of
+# blanks for stub tmuxes (#992), and the row holds under a TMPDIR with a blank too.
 # Their COCKPIT_CLAUDE: a stub by its full path, which calls no model.
-for cw in tmux claude; do
-    printf '#!/bin/sh\necho ran >> %s\nexit 1\n' "$(tq "$CW/c/$cw.ran")" > "$CW/c/$cw"
-    chmod +x "$CW/c/$cw"
+cw_ct=$(mktemp -d "$COCKPIT_SUITE_NB/ct.XXXXXX")
+for cw in "$cw_ct/tmux" "$CW/c/claude"; do
+    printf '#!/bin/sh\necho ran >> %s\nexit 1\n' "$(tq "$CW/c/${cw##*/}.ran")" > "$cw"
+    chmod +x "$cw"
 done
 : > "$CW/c/act"
 cw_ls() { ( cd "$CW/c/$1" && find . | sort | tr '\n' ' '; cat seed ); }
@@ -11028,7 +11031,7 @@ cwo=$(cd "$DIR" && env -u TMUX TMUX_TMPDIR="$CW/s" \
     COCKPIT_PANEL_NOTE="$CW/c/note" \
     COCKPIT_REVIEW_BASE=canary COCKPIT_PROC_DIR="$CW/c/proc" COCKPIT_POLL_KEY=canary \
     REVDIFF_CONFIG="$CW/c/revdiff" REVDIFF_EXCLUDE=canary CLAUDE_CODE_SESSION_KIND=canary \
-    COCKPIT_TMUX="$CW/c/tmux" COCKPIT_CLAUDE="$CW/c/claude" COCKPIT_ACTION="$CW/c/act" \
+    COCKPIT_TMUX="$cw_ct/tmux" COCKPIT_CLAUDE="$CW/c/claude" COCKPIT_ACTION="$CW/c/act" \
     tests/only.sh "^the suite sees none of its caller|^install\.sh --check: one row|$(:
         )^install\.sh --hooks merges additively|^cockpit-panel: a tap in the popup|$(:
         )^tmux-open-path --folder|^tm: the kill picker|^cockpit-tui: --json names every|$(:
@@ -11056,8 +11059,6 @@ done
 is "COCKPIT_PANEL_NOTE: the suite did not see it, and the caller's file was not written" \
    "1 not written" \
    "$(cw_unseen COCKPIT_PANEL_NOTE) $([ -e "$CW/c/note" ] && echo written || echo 'not written')"
-# The board splits the value on blanks, so under a TMPDIR with a blank a board that did see
-# it would run no stub; the first half of the row is what holds there.
 is "COCKPIT_TMUX: the suite did not see it, and the caller's tmux was not run" "1 not run" \
    "$(cw_unseen COCKPIT_TMUX) $([ -e "$CW/c/tmux.ran" ] && echo ran || echo 'not run')"
 is "COCKPIT_CLAUDE: the suite did not see it, and the caller's claude was not run" "1 not run" \
@@ -11073,7 +11074,8 @@ for cw in "$CW"/s/tmux-*/*; do
 done
 fi
 unset -f cw_ls cw_unseen
-unset CW cw cwo cwrc
+rm -rf "$cw_ct"
+unset CW cw cwo cwrc cw_ct
 
 echo "== a server the suite starts holds no TMUX_COCKPIT_DIR (#1073) =="
 if need_tmux "a server's environment"; then :; else
@@ -11127,14 +11129,17 @@ is "that folder is the suite's own when its caller gave none: /tmp/cs.*, mode 70
        [ "$st_d" != "$(cd "/tmp/tmux-$st_u" 2>/dev/null && pwd -P)" ] || printf 'the default '
        [ "$TMUX_TMPDIR" = "$SUITE_TT" ] || printf 'not exported '
        echo ok; fi)"
-# tmux reads TMUX_TMPDIR in every call: a relative one would be looked for from here (#1098).
+# tmux reads TMUX_TMPDIR in every call: a relative one would be looked for from the folder
+# of the call (#1098). That folder is deeper than the checkout, so a relative name that
+# climbs from the checkout up to / stops short of / from here and names nothing.
+st_far="$STATE/$(pwd -P | sed 's|/[^/]*|d/|g')d"; mkdir -p "$st_far"
 is "a tmux call made from another folder reaches that same socket" "$st_p" \
-   "$(cd "$STATE" && "$TMUX_REAL" -L "$SUITE_SOCK" display-message -p '#{socket_path}' 2>&1)"
+   "$(cd "$st_far" && "$TMUX_REAL" -L "$SUITE_SOCK" display-message -p '#{socket_path}' 2>&1)"
 # For the block below, which runs this one nested: the folder, and this run's pid.
 [ -z "${COCKPIT_ST_OUT:-}" ] ||
     printf '%s\n%s\n' "${SUITE_TT:-kept $TMUX_TMPDIR}" "$$" > "$COCKPIT_ST_OUT"
 fi
-unset st_u st_p st_d
+unset st_u st_p st_d st_far
 
 echo "== a run with no TMUX_TMPDIR puts no socket in /tmp/tmux-<uid>; its folder goes (#1098) =="
 # The block above through only.sh, started as a plain `make test` starts the suite: with no
@@ -11154,7 +11159,8 @@ sf_run() {                    # <pattern> <ONLY_RUN file or ''> <env words...>
         tests/only.sh "$pat" 2>&1 </dev/null)
     rc=$?
     printf '%s\n' "$o" > "$SF/log"
-    { IFS= read -r f; IFS= read -r p; } < "$SF/out" 2>/dev/null
+    # 2>/dev/null before the input redirect: after it, bash reports a missing file first.
+    { IFS= read -r f; IFS= read -r p; } 2>/dev/null < "$SF/out"
     printf '%s %s %s|' "$rc" "$(grep -c 'PASS' "$SF/log")" "$(grep -c 'FAIL' "$SF/log")"
     case $f in
         /tmp/cs.[A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9])
@@ -11169,7 +11175,7 @@ sf_run() {                    # <pattern> <ONLY_RUN file or ''> <env words...>
 }
 sf_made() {                   # the folder the last sf_run reported, when it is one mktemp made
     local f=""
-    IFS= read -r f < "$SF/out" 2>/dev/null
+    IFS= read -r f 2>/dev/null < "$SF/out"
     case $f in
         /tmp/cs.[A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9])
             printf '%s' "$f" ;;
@@ -11242,6 +11248,12 @@ is "a run ended inside the folder's mktemp leaves no folder under the name it wa
    "$(sf_f=$(cat "$SF/mk.name" 2>/dev/null)
       case $sf_f in /tmp/cs.??????) printf 'a name, ' ;; *) printf 'no name [%s], ' "$sf_f" ;; esac
       [ -n "$sf_f" ] && [ -e "$sf_f" ] && echo "left: $sf_o" || echo 'nothing there')"
+# A red run of that row left the folder it found: taken away here, by the name it was given.
+sf_f=$(cat "$SF/mk.name" 2>/dev/null)
+case $sf_f in
+/tmp/cs.[A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9])
+    rmdir "$sf_f" 2>/dev/null ;;
+esac
 # A mktemp that gives, for the folder's template, a name that is already there: someone
 # else's folder in a place anyone can write to. The suite must not take it over. It tries
 # three names, then ends, and the folder is as it was.
