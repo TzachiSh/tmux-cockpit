@@ -51,6 +51,33 @@ dmsg() {                      # [display-message flags...] <text>
 # the review notice reads the jump key's back (#1102), so the text lives here once.
 cockpit_key_note() { printf 'cockpit: %s' "$1"; }    # <name>
 
+# The prefix key bound with that note, read from the binding: a record names a key moved by
+# hand (#1102, #1112). Two keys noted: the one the record option names, else the first tmux
+# lists. tmux compares the note itself, since it prints a note's tab, \037 and newline raw,
+# and no separator splits such a line safely (#1124). It prints no line for a key whose
+# format comes out empty, so no empty key can match an unset record: measured on tmux 3.8,
+# and relied on here. No noted key, or list-keys failing, prints nothing.
+cockpit_noted_key() {         # <name> <record option> -> the key
+  # The name goes into a tmux format: [a-z0-9-] only, spelled out, since in a UTF-8 locale
+  # a range can match more than ASCII (#842). Checked before tmux is asked anything.
+  case ${1-} in
+    ''|*[!abcdefghijklmnopqrstuvwxyz0123456789-]*)
+      echo "cockpit_noted_key: bad name [${1-}]" >&2; return 2 ;;
+  esac
+  case ${2-} in
+    @?*) ;;
+    *) echo "cockpit_noted_key: bad record option [${2-}]" >&2; return 2 ;;
+  esac
+  local r k first=''
+  r=$(tmux show-option -gqv "$2" 2>/dev/null)
+  while IFS= read -r k; do
+    [ "$k" = "$r" ] && { printf '%s' "$k"; return 0; }
+    [ -n "$first" ] || first=$k
+  done < <(tmux list-keys -T prefix \
+      -F "#{?#{==:#{key_note},$(cockpit_key_note "$1")},#{key_string},}" 2>/dev/null)
+  printf '%s' "$first"
+}
+
 # A file name as a title: no control character and no bidi mark, which would
 # reorder what the eye reads (U+061C, U+200E-F, U+202A-E, U+2066-9, as UTF-8). tmux
 # refuses a window name holding a control character (#366), and a popup border
