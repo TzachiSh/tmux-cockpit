@@ -11097,15 +11097,21 @@ rm -rf "$cw_ct"
 unset CW cw cwo cwrc cw_ct
 
 echo "== the suite sees none of git's names, no BASH_ENV, no other switch (#1099, #1100) =="
-gvs="GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY"
-gvs="$gvs GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CONFIG GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM"
-gvs="$gvs GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 GIT_CEILING_DIRECTORIES"
-gvs="$gvs GIT_TEMPLATE_DIR GIT_TRACE GIT_EDITOR BASH_ENV ENV"
-gvs="$gvs NO_COLOR COCKPIT_GLYPHS COCKPIT_PANEL_MODEL COCKPIT_PANEL_EFFORT"
-gvs="$gvs COCKPIT_PANEL_TIMEOUT COCKPIT_PANEL_MODE COCKPIT_PANEL_DROPPED"
-gvs="$gvs COCKPIT_PANEL_HIDE_TAKEN COCKPIT_VIEW_ASK COCKPIT_VIEW_BACK COCKPIT_BASKET_PANE"
-gvs="$gvs COCKPIT_FILES_STATE COCKPIT_TEST_TMUX_GUARD COCKPIT_GITHUB COCKPIT_TUI_RELEASES"
-gvs="$gvs COCKPIT_TUI_REPO TM_SID TM_CLIENT TM_PANE TM_POPUP TM_NEEDS MD_EDIT REVIEW_PANE_ID"
+# The names, for this block and the next. A function, not a variable: only.sh and par.sh
+# give every block the file's top-level functions, and a block's variables to that block
+# alone, so the next block in a shard of its own would find the list unset.
+gv_names() {
+    echo "GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY
+          GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CONFIG GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM
+          GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 GIT_CEILING_DIRECTORIES
+          GIT_TEMPLATE_DIR GIT_TRACE GIT_EDITOR BASH_ENV ENV NO_COLOR COCKPIT_GLYPHS
+          COCKPIT_PANEL_MODEL COCKPIT_PANEL_EFFORT COCKPIT_PANEL_TIMEOUT
+          COCKPIT_PANEL_MODE COCKPIT_PANEL_DROPPED COCKPIT_PANEL_HIDE_TAKEN
+          COCKPIT_VIEW_ASK COCKPIT_VIEW_BACK COCKPIT_BASKET_PANE COCKPIT_FILES_STATE
+          COCKPIT_TEST_TMUX_GUARD COCKPIT_GITHUB COCKPIT_TUI_RELEASES COCKPIT_TUI_REPO
+          TM_SID TM_CLIENT TM_PANE TM_POPUP TM_NEEDS MD_EDIT REVIEW_PANE_ID"
+}
+gvs=$(gv_names | tr '\n' ' ')
 for gv in $gvs; do
     is "$gv is not in the suite's environment" "unset" "${!gv-unset}"
 done
@@ -11120,13 +11126,14 @@ is "the suite's own server is up, and holds none of them in its environment" "up
           grep -E "^GIT_|^($(printf '%s' "$gvs" | tr ' ' '|'))\$" |
           grep -vxE 'GIT_(AUTHOR|COMMITTER)_(NAME|EMAIL)' | tr '\n' ' ')"
 fi
-unset gv
+unset gv gvs
 
 echo "== git writes nothing where its caller's names point; no BASH_ENV is read (#1099) =="
 # The block above and three that make and commit into fixture repositories, through
 # only.sh, with every one of those names set as a caller might have it: folders and files of
 # a canary for git's, a stub editor, a BASH_ENV file that leaves a mark, a value in each
 # switch. CI's environment has none of them, so this is the run that meets them there.
+gvs=$(gv_names | tr '\n' ' ')
 GC=$(mktmpd); mkdir -p "$GC/s" "$GC/c/dir" "$GC/c/wt" "$GC/c/common" "$GC/c/obj" "$GC/c/alt" \
     "$GC/c/tpl/hooks"
 : > "$GC/c/cfg"; : > "$GC/c/gcfg"; : > "$GC/c/scfg"
@@ -11176,7 +11183,7 @@ for gv in "$GC"/s/tmux-*/*; do
     [ -S "$gv" ] && "$TMUX_REAL" -S "$gv" kill-server >/dev/null 2>&1
 done
 fi
-unset -f gc_ls gc_unseen
+unset -f gc_ls gc_unseen gv_names
 unset GC gc_b gc_e gco gcrc gv gvs
 
 echo "== a server the suite starts holds no TMUX_COCKPIT_DIR (#1073) =="
