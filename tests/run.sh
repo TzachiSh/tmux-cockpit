@@ -4718,9 +4718,10 @@ is "an odd @cockpit_panel_mode is drawn as written" "1" \
 # A positive control, last on this server: a raw message whose #( must run. It shows that
 # #( runs here; it says nothing about the rows above (#1118). tmux kills a client's #(
 # jobs when that client exits, so the second run-shell keeps it until the marker exists
-# (#1113). run-shell reads ## as # before the job's tmux sees it.
+# (#1113). The job's sleep 1 is a floor on its life, not a wait for a result: a client that
+# leaves early always takes it down. run-shell reads ## as # before the job's tmux sees it.
 "$TMUX_REAL" -L "cockpit-dm-$$-4" run-shell \
-    "tmux display-message 'x##(touch $DM/m/control)y' \; \
+    "tmux display-message 'x##(sleep 1; touch $DM/m/control)y' \; \
         run-shell 'for i in \$(seq $POLLS); do [ -e $DM/m/control ] && break; sleep 0.1; done'" \
     >/dev/null 2>&1
 until_out yes sh -c "[ -e $(tq "$DM/m/control") ] && echo yes"
