@@ -164,7 +164,7 @@ owned() {                     # <name> <key>
     local nc
     nc=$(tmux list-keys -T prefix -F "#{key_note}"$'\037'"#{key_command}" "$2" 2>/dev/null)
     case "${nc%%$'\037'*}" in
-        "cockpit: $1") return 0 ;;
+        "$(cockpit_key_note "$1")") return 0 ;;
         "") [ -z "$notes" ] || return 1
             case "$1:${nc#*$'\037'}" in
                 menu:*'display-menu -T "#[align=centre]'*|panel:*"$legacy_panel"*)
@@ -185,7 +185,7 @@ key() {                       # <option> <default> -> the key, empty when off
 # @cockpit_<name>_bound, so the next load knows which keys were its own.
 ckey() {                      # <name> <key> <command...>
     local n=$1 k=$2; shift 2
-    tmux bind-key -N "cockpit: $n" "$k" "$@"
+    tmux bind-key -N "$(cockpit_key_note "$n")" "$k" "$@"
     tmux set-option -g "@cockpit_${n}_bound" "$k"
 }
 
