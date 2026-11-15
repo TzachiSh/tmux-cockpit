@@ -2098,29 +2098,21 @@ case "$SCN" in
     tmux*) trap 'trap "" HUP INT TERM; kill -CONT "$SCP" 2>/dev/null; cleanup' EXIT ;;
     *) SCP="" ;;
 esac
-# A red row says why (#747): the test's own copy of agent-context's tmux keeps that call's
-# status and stderr, and sc_focus keeps select-pane's. Read only when a call goes wrong.
-mkdir "$SCD/bin"
-printf '#!/bin/sh\n%s "$@" 2> %s\nr=$?; echo "$r" > %s; exit "$r"\n' "$(tq "$TMUX_REAL")" \
-    "$(tq "$SCD/ctx-err")" "$(tq "$SCD/ctx-rc")" > "$SCD/bin/tmux"
-chmod +x "$SCD/bin/tmux"
 sc_ctx() {                    # <percent>: agent-context on C
-    : > "$SCD/ctx-rc"
     printf '{"context_window":{"used_percentage":%s}}' "$1" \
-        | PATH="$SCD/bin:$PATH" TMUX="$SOCKDIR/$SC,0,0" TMUX_PANE="$SCC" \
-            "$DIR/scripts/agent-context" >/dev/null 2>&1
+        | TMUX="$SOCKDIR/$SC,0,0" TMUX_PANE="$SCC" "$DIR/scripts/agent-context" >/dev/null 2>&1
 }
 sc_stall() {                  # <command...>: run it, with one stop at a random point of its CPU
     local x c0 c hp
-    x=$(( SCPER * (RANDOM % 100) / 100 )); read -r c0 _ < "/proc/$SCP/schedstat"
+    x=$(( SCPER * (RANDOM % 100) / 100 )); SC_X=$x SC_HIT=0   # SC_*: for a red row (#747)
+    read -r c0 _ < "/proc/$SCP/schedstat"
     "$@" & hp=$!
     while read -r c _ < "/proc/$SCP/schedstat"; [ $((c - c0)) -lt "$x" ] \
         && kill -0 "$hp" 2>/dev/null; do :; done
-    SC_X=$x SC_HIT=0
     if kill -0 "$hp" 2>/dev/null; then
-        SC_HIT=1; kill -STOP "$SCP"; sleep 0.15; kill -CONT "$SCP"
+        kill -STOP "$SCP"; sleep 0.15; kill -CONT "$SCP"; SC_HIT=1
     fi
-    wait "$hp"
+    wait "$hp"; SC_RC=$?
 }
 sc_per() {                    # SCPER <- the server CPU of one call, from 8 of <command...>
     local c0 c i
@@ -2128,9 +2120,8 @@ sc_per() {                    # SCPER <- the server CPU of one call, from 8 of <
     for i in 1 2 3 4; do "$@" "$SCC" "$SCX" 7; "$@" "$SCX" "$SCC" 88; done
     read -r c _ < "/proc/$SCP/schedstat"; SCPER=$(( (c - c0) / 8 ))
 }
-sc_focus() {                  # <to> <from> <pct>: the focus hook
-    "$TMUX_REAL" -L "$SC" select-pane -t "$1" 2> "$SCD/sel-err"; echo "$?" > "$SCD/sel-rc"
-}
+# <to> <from> <pct>: the focus hook. Its status reaches sc_stall's wait, its stderr one file.
+sc_focus() { "$TMUX_REAL" -L "$SC" select-pane -t "$1" 2> "$SCD/sel-err"; }
 sc_call() { sc_ctx "$3"; }                         # <to> <from> <pct>: agent-context
 SCF='#{@panestate_ctx}|#{@cockpit_ctx_all}|#{l:.}'
 sc_read() {                   # <pane>: its gauge and the cells, from a read that ends whole
@@ -2140,11 +2131,12 @@ sc_read() {                   # <pane>: its gauge and the cells, from a read tha
     printf '%s' "${g%|.}"
 }
 sc_ok() { [ "$1" = "$2" ] && echo right || echo "still wrong"; }    # <got> <want>
+sc_line() { tr '\n' ' ' 2>/dev/null < "$1" | sed 's/ $//'; }       # <file>: on one line
 # <pane> <want> <got> <before> <sel|ctx>: what a red call left (#747). A walk cut by tmux's time
 # limit stores the windows before the cut, a prefix sum of the wanted walk: "partial". The
 # value from before the call: "stale". Anything else: "other".
 sc_why() {
-    local c=${3#*|} f act w1 walk i l s=0 d v=other rc e
+    local c=${3#*|} f act w1 walk i l s=0 d v=other
     f=$(sct show-options -gv @cockpit_fmt_cells); f=${f#'#{n:#{W:'}; f="#{n:${f%'}}'}}"
     read -r act w1 walk < <(sct display-message -p -t "$1" \
         '#{pane_active} #{window_index} #{E:@cockpit_fmt_cells}')
@@ -2154,12 +2146,21 @@ sc_why() {
         s=$(( s + l + (i == w1 ? d : 0) ))
     done < <(sct list-windows -t "$1" -F "#{window_index} $f")
     [ "$c" = "${4#*|}" ] && v=stale
-    rc=$(cat 2>/dev/null < "$SCD/$5-rc"); e=$(tr '\n' ' ' 2>/dev/null < "$SCD/$5-err")
     printf '%s: cells [%s], before the call [%s]; pane_active %s, the walk now [%s];' \
         "$v" "$c" "${4#*|}" "$act" "$walk"
-    printf ' %s exit %s, stderr [%s]; stop sent %s at x %s of %s' \
-        "$( [ "$5" = sel ] && echo select-pane || echo "agent-context's tmux")" \
-        "${rc:-none}" "$e" "$SC_HIT" "$SC_X" "$SCPER"
+    if [ "$5" = sel ]; then
+        printf ' select-pane exit %s, stderr [%s];' "$SC_RC" "$(sc_line "$SCD/sel-err")"
+    fi
+    printf ' stop sent %s at x %s of %s' "$SC_HIT" "$SC_X" "$SCPER"
+}
+# agent-context exits 0 whatever its tmux call did, so only the uncut calls after a wrong one go
+# through the test's own tmux, which keeps their status and stderr (#747).
+sc_wrap() {                   # <percent>: agent-context on C, its tmux call's status kept
+    [ -x "$SCD/bin/tmux" ] || { mkdir -p "$SCD/bin"
+        printf '#!/bin/sh\n%s "$@" 2>> %s\nr=$?; echo "$r" >> %s; exit "$r"\n' \
+            "$(tq "$TMUX_REAL")" "$(tq "$SCD/ctx-err")" "$(tq "$SCD/ctx-rc")" > "$SCD/bin/tmux"
+        chmod +x "$SCD/bin/tmux"; }
+    PATH="$SCD/bin:$PATH" sc_ctx "$1"
 }
 if [ -n "$SCP" ]; then
     sc_per sc_focus; scf=0 scf1="" sch=0 scb=$(sc_read "$SCC")
@@ -2185,8 +2186,10 @@ if [ -n "$SCP" ]; then
         if [ "$g" != "$w" ]; then
             scf=$((scf + 1))
             [ -n "$scf1" ] || { scf1="call $i: [$g]"; scd=$(sc_why "$SCC" "$w" "$g" "$scb" ctx)
-                sc_ctx 50; sc_ctx "$wg"; g=$(sc_read "$SCC")
-                scd="$scd; after a call with 50, then $wg: [$g], $(sc_ok "$g" "$w")"; }
+                sc_wrap 50; sc_wrap "$wg"; g=$(sc_read "$SCC")
+                scd="$scd; after a call with 50, then $wg: [$g], $(sc_ok "$g" "$w")"
+                scd="$scd, their tmux exit [$(sc_line "$SCD/ctx-rc")]"
+                scd="$scd, stderr [$(sc_line "$SCD/ctx-err")]"; }
         fi
         scb=$g
     done
