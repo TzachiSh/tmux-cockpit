@@ -20,8 +20,6 @@ use std::process::Command;
 use std::sync::Once;
 #[allow(unused_imports)]
 pub use test_env::{EnvHeld, env_lock, env_poisoned, remove_var, set_var};
-#[allow(unused_imports)]
-pub use test_env::{remove_var_unlocked, set_var_unlocked};
 
 /// The lock's token as a rig keeps it: its own, taken for the rig's life, or lent by a
 /// holder that outlives the rig, for one built inside another (#1132).
@@ -107,24 +105,30 @@ pub const NO_HOME: &str = "/sys/absent-948";
 /// of the three and put the old value back: a guard taken before the first
 /// call would put the developer's value back after it. A crate that loads this
 /// module and takes no fixed environment leaves these unused, hence the allows.
+/// Writes under [`env_lock`]'s lock, which it takes after its check, so a caller
+/// that holds the lock calls this before it takes it: the check's panic says so
+/// (#1132).
 #[allow(dead_code)]
 pub fn fixed_env() {
     // the product's plain tmux reads the caller's server where the runner did
     // not clear its session: refused, in every test that comes through here (#1066)
     checked_tmux();
+    // the lock outside the Once, so every caller takes the two in one order: a holder
+    // waiting in call_once for a caller that waits inside it for the lock is a hang
+    let held = env_lock();
     static SET: Once = Once::new();
     SET.call_once(|| {
-        // SAFETY: holds for each test binary that calls this, one by one. std's
-        // getenv and setenv share one lock, and a spawn holds it while the
-        // child takes the environment. Every read a test thread makes there is
-        // a Rust read; the readers that are not Rust are child processes, which
-        // get their copy at the spawn. A C function called in the test process
-        // that reads the environment (a local time call, a getenv in a linked
-        // library) would break this: no binary that calls this makes one today.
+        // SAFETY: under the lock, so no check reads meanwhile. std's getenv and
+        // setenv share one lock, and a spawn holds it while the child takes the
+        // environment. Every read a test thread makes there is a Rust read; the
+        // readers that are not Rust are child processes, which get their copy at
+        // the spawn. A C function called in the test process that reads the
+        // environment (a local time call, a getenv in a linked library) would
+        // break this: no binary that calls this makes one today.
         unsafe {
-            test_env::set_var_unlocked("HOME", NO_HOME);
-            test_env::set_var_unlocked("XDG_CONFIG_HOME", NO_HOME);
-            test_env::remove_var_unlocked("COCKPIT_PANEL_MODEL");
+            set_var(&held, "HOME", NO_HOME);
+            set_var(&held, "XDG_CONFIG_HOME", NO_HOME);
+            remove_var(&held, "COCKPIT_PANEL_MODEL");
         }
     });
 }

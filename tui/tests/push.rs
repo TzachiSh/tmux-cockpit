@@ -72,7 +72,9 @@ fn probe_in(chan: &str, probe: &mut Child) -> bool {
 
 /// The process environment: `q_unlists...` sets COCKPIT_TMUX in-process, and a
 /// set_var racing a spawn that reads environ is undefined. That test holds it
-/// for writing; every test that spawns holds it for reading.
+/// for writing; every test that spawns holds it for reading. Its writes take
+/// fake's lock too, after this one: the order is this lock, then fake's, as in
+/// every rig's `fake::Server::start`. No thread here takes them the other way (#1132).
 static ENV: RwLock<()> = RwLock::new(());
 
 enum EnvLock {
@@ -287,11 +289,15 @@ fn one_wake_reaches_two_boards() {
 fn q_unlists_its_own_channel_and_only_its_own() {
     let w = EnvLock::Write(ENV.write().unwrap_or_else(|e| e.into_inner()));
     let Some(rig) = rig_env("push3", w) else { return };
+    // fake's lock after the rig: its server start takes and lets go of fake's lock for
+    // its check, which panics on a thread that holds it. Declared after `rig`, so it is
+    // let go before the rig's Drop runs.
+    let held = fake::env_lock();
     // SAFETY: the write lock keeps every other test of this binary from
     // spawning, so nothing reads the environment while it changes.
     unsafe {
-        fake::set_var_unlocked("COCKPIT_TMUX", format!("tmux -L {}", rig.sock));
-        fake::remove_var_unlocked("COCKPIT_READONLY");
+        fake::set_var(&held, "COCKPIT_TMUX", format!("tmux -L {}", rig.sock));
+        fake::remove_var(&held, "COCKPIT_READONLY");
     }
     let me = channel(std::process::id());
     let p = cockpit_tui::push::Push::start();
@@ -322,7 +328,7 @@ fn q_unlists_its_own_channel_and_only_its_own() {
     let _ = probe.kill();
     let _ = probe.wait();
     // SAFETY: as above, still under the write lock.
-    unsafe { fake::remove_var_unlocked("COCKPIT_TMUX") };
+    unsafe { fake::remove_var(&held, "COCKPIT_TMUX") };
     assert!(entered, "the probe never ran, so the wait was not tested");
     assert!(!latched, "q left {me} latched on the server");
 }
