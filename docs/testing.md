@@ -353,21 +353,41 @@ A test writes the environment only through the test-env crate
 the writers that take its token, `fake::set_var(&held, ..)` and
 `fake::remove_var(&held, ..)`, and it sits outside the tui package.
 `tui/clippy.toml` names `std::env::set_var`, `std::env::remove_var`,
-`libc::setenv`, `libc::unsetenv` and `libc::putenv`, and `tui/Cargo.toml`
-forbids clippy's `disallowed_methods`. The gate's clippy therefore refuses a
-raw write anywhere in the package, whether through an alias or a function
-pointer, and no `allow` of the lint or of its groups can lift that.
+`libc::setenv`, `libc::unsetenv`, `libc::putenv` and `libc::clearenv`, and
+`tui/Cargo.toml` forbids clippy's `disallowed_methods`. The gate's clippy
+therefore refuses a raw write anywhere in the package, whether through an alias
+or a function pointer, and no `allow` of the lint or of its groups can lift
+that.
+
+`tests/tui-clippy-canary.sh` holds that rule, and `make tui-test` runs it after
+its clippy line, or `make tui-clippy-canary` alone. It runs clippy the way the
+gate does on two examples that only the `clippy-canary` feature builds.
+`clippy_canary.rs` calls each of the six paths. `clippy_canary_allow.rs` holds
+a write under an inner allow, which only a forbid refuses (E0453). The script
+fails unless clippy refuses every call and that allow, each with its own
+message on the canary's own line. So the gate goes red when the lint is off by
+any route: a `.clippy.toml` beside `clippy.toml`, a renamed table,
+`CLIPPY_CONF_DIR`, a level below forbid, or `--cap-lints` in rustflags.
+`cargo clippy --all-features` run by hand builds the canaries and shows their
+errors. That is the canary doing its job.
+
+`tui/test-env` itself is the one reviewed root of trust. It is about 110 lines
+on std alone, and nothing lints it: it sits outside the package so that its own
+writers can call the raw functions. A writer added there that takes no token, or
+a function that hands out an `EnvHeld` without the lock, passes every check.
+Any change to `tui/test-env` therefore needs a load-bearing review.
 
 Until step 2 of #1132, the writes that took no lock before go through
 `set_var_unlocked` and `remove_var_unlocked`, which take no token.
 `tmux_reach.rs` holds:
-- each file's count of those two names, which may only go down;
-- the forbid line and the five paths;
+- each file's count of those two names under `tui/tests` and `tui/examples`,
+  which may only go down;
 - no `extern` block under `tui/tests` or `tui/examples`. A `setenv` declared
   there would be a function no path in `clippy.toml` names.
 
 clippy 1.88 keeps a target's result when only `clippy.toml` changes, so touch
-a source file before you check an edit to it.
+a source file before you check an edit to it. The canary script touches its
+own examples for that reason.
 
 ## CI
 

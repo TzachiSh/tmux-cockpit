@@ -808,36 +808,6 @@ fn the_unlocked_count_reads_words_on_code() {
     }
 }
 
-/// The lint level `tui/Cargo.toml` sets for `disallowed_methods`, from its own line of the
-/// `[lints.clippy]` table, if the table holds one.
-fn lint_level(manifest: &str) -> Option<&str> {
-    let table = manifest.split("\n[").find_map(|t| t.strip_prefix("lints.clippy]\n"))?;
-    table.lines().find_map(|l| l.strip_prefix("disallowed_methods = "))
-}
-
-/// #1132: the raw writers stay forbidden. clippy refuses a raw write only while
-/// `tui/Cargo.toml` holds the lint at forbid and `tui/clippy.toml` names each writer, and
-/// it says nothing when either is weakened, so this row does.
-#[test]
-fn the_raw_writers_stay_forbidden() {
-    let top = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let manifest = std::fs::read_to_string(top.join("Cargo.toml")).unwrap();
-    assert_eq!(lint_level(&manifest), Some("\"forbid\""), "tui/Cargo.toml's [lints.clippy]");
-    let conf = std::fs::read_to_string(top.join("clippy.toml")).unwrap();
-    let named: Vec<&str> = conf
-        .lines()
-        .filter_map(|l| l.strip_prefix("path = \"")?.strip_suffix('"'))
-        .collect();
-    let want = [
-        "std::env::set_var",
-        "std::env::remove_var",
-        "libc::setenv",
-        "libc::unsetenv",
-        "libc::putenv",
-    ];
-    assert_eq!(named, want, "tui/clippy.toml's disallowed-methods");
-}
-
 /// How many `extern` blocks `code` declares, of any ABI: an `extern` word whose next
 /// token, past the ABI string that [`code_of`] blanks, is `{`.
 fn extern_blocks(code: &str) -> usize {
