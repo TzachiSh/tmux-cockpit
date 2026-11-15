@@ -1572,7 +1572,7 @@ fn a_server_the_binary_left_running_is_said_and_left_alone() {
     let r = Rig::new("ls");
     // where a broken runner gave no folder, the stand-in starts nothing: its server would
     // land in /tmp/tmux-<uid> (#1089)
-    let body = "#!/bin/sh\n[ -d \"${TMUX_TMPDIR-}\" ] || exit 4\n\
+    let body = "#!/bin/sh\n[ -d \"${TMUX_TMPDIR-}\" ] || { echo \"no TMUX_TMPDIR folder\" >&2; exit 4; }\n\
                 tmux -L c$$ -f /dev/null new-session -d -c \"$TMPDIR\" 'sleep 60' || exit 3\n\
                 echo \"sock=$(tmux -L c$$ display-message -p '#{socket_path}')\"\n";
     let mut c = r.command();
