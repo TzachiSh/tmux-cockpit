@@ -223,23 +223,46 @@ fn by_name(name: &str) -> bool {
     ["data.rs", "agents.rs", "panel_env.rs"].contains(&name) || name.starts_with("fake/")
 }
 
-/// Each `static ENV` of `src`, the file `name` under `tui/tests`, that is a lock of its
-/// own beside fake's (#1110): a `Mutex` or `RwLock` in a file that calls `set_var` or
-/// `remove_var`, and any where [`by_name`] holds, but the [`KEPT`] declarations. Its
-/// declaration, spaces made one, up to its `;`.
+/// The words that mark a file as writing its own environment, std's and libc's.
+const WRITES: [&str; 5] = ["set_var", "remove_var", "setenv", "putenv", "unsetenv"];
+
+/// Whether `w` stands in `code` as a whole word.
+fn has_word(code: &str, w: &str) -> bool {
+    let id = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_');
+    code.match_indices(w)
+        .any(|(at, _)| !id(code[..at].chars().last()) && !id(code[at + w.len()..].chars().next()))
+}
+
+/// Each `static` of `src`, the file `name` under `tui/tests`, that is a lock of its own
+/// beside fake's (#1110), read on its code with spaces made one: one named `ENV` (`mut` or
+/// not) that is a `Mutex` or `RwLock` in a file that writes ([`WRITES`]), or any `ENV`
+/// where [`by_name`] holds; and a `Mutex<()>` or `RwLock<()>` of any name in a file that
+/// writes. A [`KEPT`] declaration passes once, at the file's top level and the first
+/// time only. Its declaration, up to its `;`.
 fn own_env_locks(name: &str, src: &str) -> Vec<String> {
-    let code = code_of(src);
-    let writes = code.contains("set_var(") || code.contains("remove_var(");
-    let mut found = vec![];
-    for (at, _) in code.match_indices("static ENV") {
-        if !code[at + "static ENV".len()..].trim_start().starts_with(':') {
+    let code = code_of(src).split_whitespace().collect::<Vec<_>>().join(" ");
+    let writes = WRITES.iter().any(|w| has_word(&code, w));
+    let (mut found, mut kept_once) = (vec![], false);
+    for (at, _) in code.match_indices("static ") {
+        // a word of its own, not a lifetime's `'static`
+        if !matches!(code[..at].chars().last(), None | Some(' ' | '{' | '}' | ';')) {
             continue;
         }
-        let decl = code[at..].split(';').next().unwrap_or_default();
-        let decl = decl.split_whitespace().collect::<Vec<_>>().join(" ") + ";";
+        let rest = &code[at + "static ".len()..];
+        let rest = rest.strip_prefix("mut ").unwrap_or(rest);
+        let end = rest.find(|c: char| !(c.is_alphanumeric() || c == '_')).unwrap_or(rest.len());
+        let Some(ty) = rest[end..].trim_start().strip_prefix(':') else {
+            continue;
+        };
+        let decl = code[at..].split(';').next().unwrap_or_default().to_string() + ";";
+        let ty = ty.split('=').next().unwrap_or_default().trim();
+        let unit_lock = matches!(ty.rsplit("::").next(), Some("Mutex<()>" | "RwLock<()>"));
+        let env = &rest[..end] == "ENV";
         let lock = decl.contains("Mutex") || decl.contains("RwLock");
-        let kept = KEPT.contains(&(name, decl.as_str()));
-        if !kept && (by_name(name) || (lock && writes)) {
+        let top = code[..at].matches('{').count() == code[..at].matches('}').count();
+        if top && !kept_once && KEPT.contains(&(name, decl.as_str())) {
+            kept_once = true;
+        } else if (env && (by_name(name) || (lock && writes))) || (unit_lock && writes) {
             found.push(decl);
         }
     }
@@ -285,7 +308,7 @@ fn the_lock_scan_finds_the_shapes_it_reads_and_no_lookalike() {
     let local = "static ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());";
     let set = "fn f() { unsafe { std::env::set_var(\"A\", \"1\") } }\n";
     let unset = "fn f() { unsafe { std::env::remove_var(\"A\") } }\n";
-    let rows: [(&str, &str, String, &[&str]); 20] = [
+    let rows: [(&str, &str, String, &[&str]); 24] = [
         ("a Mutex, a set_var", "x.rs", format!("{mutex}\n{set}"), &[mutex]),
         ("a Mutex, a remove_var", "x.rs", format!("{mutex}\n{unset}"), &[mutex]),
         ("an RwLock, a set_var", "x.rs", format!("{rw}\n{set}"), &[rw]),
@@ -315,11 +338,15 @@ fn the_lock_scan_finds_the_shapes_it_reads_and_no_lookalike() {
         ("a lock in a comment", "x.rs", format!("// {mutex}\n{set}"), &[]),
         ("a lock in a string", "x.rs", format!("const S: &str = \"{mutex}\";\n{set}"), &[]),
         (
-            "another lock's name",
+            "another name, no unit lock",
             "x.rs",
-            format!("{}\n{set}", mutex.replace("ENV", "ENVS")),
+            format!("{}\n{set}", "static ENVS: Mutex<u8> = Mutex::new(0);"),
             &[],
         ),
+        ("push's twice", "push.rs", format!("{rw}\nfn t() {{ {rw} }}\n{set}"), &[rw]),
+        ("fake's twice", "fake/env.rs", format!("{mutex}\nfn t() {{ {mutex} }}\n"), &[mutex]),
+        ("fake's twice at the top", "fake/env.rs", format!("{mutex}\n{mutex}\n"), &[mutex]),
+        ("fake's in a module", "fake/env.rs", format!("mod m {{ {mutex} }}\n"), &[mutex]),
         (
             "a lock in a raw string",
             "x.rs",
@@ -329,6 +356,60 @@ fn the_lock_scan_finds_the_shapes_it_reads_and_no_lookalike() {
     ];
     for (row, name, src, want) in rows {
         assert_eq!(own_env_locks(name, &src), want, "{row}: {src}");
+    }
+}
+
+/// The scan above past a lock's name, its spacing and the word a write is made with: a unit
+/// lock by any name in a file that writes, `static mut`, a declaration spread over spaces
+/// and lines, and std's or libc's writes by whatever name they are called.
+#[test]
+fn the_lock_scan_reads_past_names_spacing_and_the_writes_word() {
+    let mutex = "static ENV: Mutex<()> = Mutex::new(());";
+    let renamed = "static LOCK: Mutex<()> = Mutex::new(());";
+    let rw = "static GATE: std::sync::RwLock<()> = std::sync::RwLock::new(());";
+    let set = "fn f() { unsafe { std::env::set_var(\"A\", \"1\") } }\n";
+    let libc = |w: &str| format!("{mutex}\nfn f() {{ unsafe {{ libc::{w}(p) }}; }}\n");
+    let rows: [(&str, String, &[&str]); 13] = [
+        ("a renamed unit Mutex, a write", format!("{renamed}\n{set}"), &[renamed]),
+        ("a renamed unit RwLock, a write", format!("{rw}\n{set}"), &[rw]),
+        ("a renamed unit Mutex, no write", format!("{renamed}\n"), &[]),
+        (
+            "a lock of another type",
+            format!("static HELD: Mutex<Option<u8>> = Mutex::new(None);\n{set}"),
+            &[],
+        ),
+        (
+            "static mut",
+            format!("static mut ENV: Mutex<()> = Mutex::new(());\n{set}"),
+            &["static mut ENV: Mutex<()> = Mutex::new(());"],
+        ),
+        (
+            "spaces and a line break",
+            format!("static  \n  ENV : Mutex<()> = Mutex::new(());\n{set}"),
+            &["static ENV : Mutex<()> = Mutex::new(());"],
+        ),
+        (
+            "a 'static lifetime",
+            format!("fn g(s: &'static str) -> &'static str {{ s }}\n{set}"),
+            &[],
+        ),
+        (
+            "set_var by another name",
+            format!("{mutex}\nuse std::env::set_var as sv;\n"),
+            &[mutex],
+        ),
+        (
+            "remove_var by another name",
+            format!("{mutex}\nuse std::env::remove_var as rv;\n"),
+            &[mutex],
+        ),
+        ("libc's setenv", libc("setenv"), &[mutex]),
+        ("libc's putenv", libc("putenv"), &[mutex]),
+        ("libc's unsetenv", libc("unsetenv"), &[mutex]),
+        ("a word holding setenv", format!("{mutex}\nfn presetenv() {{}}\n"), &[]),
+    ];
+    for (row, src, want) in rows {
+        assert_eq!(own_env_locks("x.rs", &src), want, "{row}: {src}");
     }
 }
 
