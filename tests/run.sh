@@ -3002,7 +3002,9 @@ fi
 echo "== tmux-open-path: which token on the line is a file =="
 # A scratch tree with the shapes real output prints. --dry-run resolves without
 # touching tmux and without opening anything.
-OP=$(mktmpd); mkdir -p "$OP/src" "$OP/bin"
+# The folder's own name holds two blanks (as #1069 did): a path of this block's that
+# reaches the clicked line bare is split whatever TMPDIR is, so a plain run pins it (#990).
+OP="$(mktmpd)/o  p"; mkdir -p "$OP/src" "$OP/bin"
 : > "$OP/src/foo-bar.ts"; : > "$OP/README.md"; : > "$OP/bin/tm"
 # A bare-word name at the top level: only such a token can even reach the
 # call-wrapper rule, so "tm(12,3)" is what proves tsc's shape is not one.
@@ -3020,7 +3022,12 @@ is "hyphen does not split it" "$OP/src/foo-bar.ts::"   "$(op 'src/foo-bar.ts')"
 is "tsc file(12,3)"          "$OP/bin/tm:12:3"        "$(op 'bin/tm(12,3): error TS1005')"
 # [:punct:] contains / and ~, so a leading-punctuation strip using it removed the
 # first character of every absolute and ~ path.
-is "absolute path survives"  "$OP/README.md:5:2"      "$(op "absolute $OP/README.md:5:2 ok")"
+# The script splits the clicked line on blanks (#1178), so this row's absolute path sits in
+# the folder the suite keeps free of blanks (#992), blank-free by design: under any TMPDIR
+# it is one token. $OP's blanks would make it three.
+OPA=$(mktemp -d "$COCKPIT_SUITE_NB/ct.XXXXXX"); : > "$OPA/README.md"
+is "absolute path survives"  "$OPA/README.md:5:2"     "$(op "absolute $OPA/README.md:5:2 ok")"
+rm -rf "$OPA"
 is "quoted path"             "$OP/README.md::"        "$(op '"README.md":')"
 is "bracketed path"          "$OP/bin/tm::"           "$(op '(bin/tm)')"
 is "git diff a/ prefix"      "$OP/README.md::"        "$(op '--- a/README.md')"
