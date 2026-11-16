@@ -20178,7 +20178,7 @@ nb_run() {
 }
 nb_no() { grep -c 'set XDG_RUNTIME_DIR to a folder that exists' "$NB/err"; }
 # The nested socket is $NB/s/tmux-<uid>/cockpit-suite-<pid>: past 107 bytes no server binds.
-if [ $((${#NB} + ${#UID} + 30)) -gt 107 ]; then
+if sock_long "$NB/s"; then
     skip_ "the tmux wrapper under a TMPDIR with a blank (the socket path would pass 107 bytes)"
 else
     # S: the inner server's socket is in the block's own folder, never the default one. own:
@@ -22971,7 +22971,7 @@ else
 DS=$(mktmpd); DST="$DS/d\$x\`y'z"; DSS="$DS/s"; mkdir -p "$DST" "$DSS"
 # The nested socket is $DSS/tmux-<uid>/cockpit-suite-<pid>: past 107 bytes the server cannot
 # bind, which is the long-TMPDIR class, not this one.
-if [ $((${#DSS} + ${#UID} + 28)) -gt 107 ]; then
+if sock_long "$DSS"; then
     skip_ "a \$ in TMPDIR (TMPDIR too long for the nested socket path)"
 else
 ( cd "$DIR" && TMPDIR="$DST" TMUX_TMPDIR="$DSS" exec tests/only.sh '^cmdname.sh: cmd_base cuts' ) \
