@@ -20899,7 +20899,9 @@ case "$1" in
           *pane_width*)        printf '90 30\n' ;;
           *)                   printf 'MSG %s\n' "${!#}" >> "$TMUX_LOG" ;;
       esac ;;
-  new-window) printf 'NEWWIN %s\n' "${!#}" >> "$TMUX_LOG"; exit "${NEWWIN_RC:-0}" ;;
+  # NEWWIN_SH: the window's command also runs, through that sh, as tmux runs it (#990)
+  new-window) printf 'NEWWIN %s\n' "${!#}" >> "$TMUX_LOG"
+      [ -z "${NEWWIN_SH:-}" ] || "$NEWWIN_SH" -c "${!#}"; exit "${NEWWIN_RC:-0}" ;;
   display-popup) shift; { printf 'POPUP'; printf ' [%s]' "$@"; echo; } >> "$TMUX_LOG"; exit "${POPUP_RC:-0}" ;;
   list-clients) [ -z "${NO_CLIENT:-}" ] && printf 'c\n' ;;
 esac
@@ -20935,6 +20937,7 @@ mvrun() {                     # mvrun <click line> <args...> -- the log after on
         VIEW_ERR="${VIEW_ERR:-}" VIEW_RC="${VIEW_RC:-}" PICK_KEY="${PICK_KEY:-0}" \
             POPUP_RC="${POPUP_RC:-}" NO_CLIENT="${NO_CLIENT:-}" NEWWIN_RC="${NEWWIN_RC:-}" \
         VIEW_ONCE="${VIEW_ONCE:-}" VIEW_ENV="${VIEW_ENV:-}" ${FUNCNEST:+FUNCNEST="$FUNCNEST"} \
+            NEWWIN_SH="${NEWWIN_SH:-}" \
         bash "${MV_SCRIPT:-$DIR/scripts/tmux-open-path}" "${@:2}" </dev/null >/dev/null 2>"$MV/err"
     printf '%s' "$?" > "$MV/rc"   # for a row that must tell "opens nothing" from a crash (#842)
     cat "$MVL"
@@ -21025,6 +21028,16 @@ is "a window tmux refuses to open is a note, from the editor path" \
 is "and from the touch client's terminal editor" \
    "VIEW [view] [--] [$MV/w/a.md]"$'\n'"NEWWIN ed $MVQA"$'\n'"MSG cockpit: tmux could not open a window for a.md" \
    "$(NEWWIN_RC=1 VIEW_OUT='edit 5' TOUCH=1 mvrun 'x' --view %1 "$MV/w/a.md" '')"
+# End to end (#990): the stub tmux runs the window's command through sh, and a stub editor
+# writes the argv it is handed, one argument per line, to $MV/argv. A want built by printf %q
+# only matches the script's quoting; this one reads what the editor got, so a quoting slip in
+# the script shows here under any TMPDIR. The name holds two blanks, a ', a ", a $ and a %.
+MVQ="q a  b'c\"d\$e%f.txt"; : > "$MV/w/$MVQ"
+printf '#!/bin/sh\nfor a in "$@"; do printf "%%s\\n" "$a"; done > %s\n' "$(tq "$MV/argv")" \
+    > "$MV/ed-argv"; chmod +x "$MV/ed-argv"; rm -f "$MV/argv"
+NEWWIN_SH=$(command -v sh) MV_ED=$(tq "$MV/ed-argv") mvrun x --view %1 "$MV/w/$MVQ" 7 >/dev/null
+is "end to end: the editor is handed +7 and the file's path whole" "+7"$'\n'"$MV/w/$MVQ" \
+   "$(cat "$MV/argv" 2>/dev/null)"
 # In a UTF-8 locale [0-9] also matches ² and ١. The viewer's `edit ²` is no edit: nothing
 # opens, on a touch client or not (#842). The edit 5 rows above are the ASCII answers.
 if MVLOC=$(utf8_loc); then
