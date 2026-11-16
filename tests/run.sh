@@ -20677,11 +20677,14 @@ echo "== tmux-open-path (#264): a path with #(...), #{...} and #S in it reaches 
 # PATH records what the script gave tmux (a #() job would run async, #255).
 if need_tmux "hostile path escape"; then :; else
 HX="cockpit-hx-$$"; SOCKS="$SOCKS $HX"
-# The folder's own name holds two blanks (as #1069 did), so a path of it pasted bare into
-# the editor setting is split in a plain run too (#990).
-HXD="$(mktmpd)/h  x"; HXB="$HXD/bin"; HXL="$HXD/argv.log"; HXA="$HXD/editor.log"
+# The folder's own name holds a blank, a ' and a ", so a path of it pasted bare into the
+# editor setting is split, and one typed in "..." or '...' into a shim or the pick line ends
+# its string, in a plain run too (#990, #1181). The pick's tui and the real tmux are reached
+# through this folder as well, so their quoting is pinned with the rest.
+HXD="$(mktmpd)/h '\" x"; HXB="$HXD/bin"; HXL="$HXD/argv.log"; HXA="$HXD/editor.log"
 mkdir -p "$HXB" "$HXD/w/d#S"
 optui_setup
+cp "$OPTUI" "$HXD/tui"; ln -s "$TMUX_REAL" "$HXD/real-tmux"
 HXED="$HXD/ed"
 # Each path in a generated script goes in through tq: in "..." a " or $ in TMPDIR would end
 # the string or expand (#990)
@@ -20689,7 +20692,7 @@ printf '#!/bin/sh\nfor a in "$@"; do printf "%%s\\n" "$a"; done >> %s\n' "$(tq "
 chmod +x "$HXED"
 HN='a#(touch${IFS}F)#{pid}#S.txt'; HW="$HXD/w/d#S"; : > "$HW/$HN"
 printf '#!/bin/sh\nfor a in "$@"; do printf "%%s\\n" "$a"; done >> %s\nexec %s "$@"\n' \
-    "$(tq "$HXL")" "$(tq "$TMUX_REAL")" > "$HXB/tmux"
+    "$(tq "$HXL")" "$(tq "$HXD/real-tmux")" > "$HXB/tmux"
 printf '#!/bin/sh\nexit 0\n' > "$HXB/code"; chmod +x "$HXB/tmux" "$HXB/code"
 "$TMUX_REAL" -L "$HX" -f /dev/null new-session -d -s t -x 100 -y 28 -c "$HXD/w" >/dev/null 2>&1
 "$TMUX_REAL" -L "$HX" set -g remain-on-exit on >/dev/null 2>&1   # the shim editor exits at once
@@ -20700,7 +20703,7 @@ until_out "*d#S" "$TMUX_REAL" -L "$HX" display-message -p -t "$HXP" '#{pane_curr
 hxgo() {                      # hxgo <n> -- run the pick re-entry; wait for it
     : > "$HXL"; : > "$HXA"
     "$TMUX_REAL" -L "$HX" send-keys \
-        -t "$HXP" "clear; PATH=$(tq "$HXB"):\$PATH COCKPIT_TUI_BIN=$(tq "$OPTUI") $(
+        -t "$HXP" "clear; PATH=$(tq "$HXB"):\$PATH COCKPIT_TUI_BIN=$(tq "$HXD/tui") $(
         )'$DIR/scripts/tmux-open-path' --pick '$HXP'; echo HXDONE$1=\$?" Enter
     until_cap "$HX" "$HXP" "*HXDONE$1=[0-9]*"
 }
