@@ -10828,6 +10828,17 @@ else
        "$(pq_run end f HUP)"
     is "nor a TERM" "2||" "$(pq_run end f TERM)"
 fi
+# The trap was armed below the mkdir of the work folder's list and out, so a mkdir that failed
+# ended the run with the folder left (#1175). A mkdir of the block's own first on PATH fails
+# that call alone and hands every other to the real one. Here, not in #1017's block: that
+# block's stubs and sandbox are unset with it, and this one is about par.sh's exit paths.
+mkdir -p "$PQ/mk"; cp "$DIR/tests/par.sh" "$PQ/c/tests/par.sh"
+printf '#!/bin/sh\ncase "$*" in *"/list "*"/out") exit 1 ;; esac\nexec %s "$@"\n' \
+    "$(tq "$(command -v mkdir)")" > "$PQ/mk/mkdir"; chmod +x "$PQ/mk/mkdir"
+rm -rf "${PQ:?}/t"; mkdir -p "$PQ/t"
+is "a run whose work folder's list and out cannot be made ends 1 and leaves no work folder" \
+   "1|" "$(cd "$PQ/c" && PATH="$PQ/mk:$PATH" env -u PAR_BLOCKS -u TMUX TMPDIR="$PQ/t" J=1 \
+            bash tests/par.sh </dev/null >/dev/null 2>&1; echo "$?|$(ls -A "$PQ/t" | tr '\n' ,)")"
 unset -f pq_mk pq_run; unset PQ Q pq_in pq_body pq_p pq_want
 
 echo "== tests/green.sh: the stamp hits on unchanged content, misses on one changed byte, and tool versions are in the key =="

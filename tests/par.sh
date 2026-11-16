@@ -36,7 +36,6 @@ case $WORK in /*) ;; *) WORK=$PWD/$WORK ;; esac
 # or scripts fails. tests/only.sh mktemps into tests/ for the same reason.
 # Flat, not a subdirectory: dirname/.. has to land on the repo root exactly.
 SH="$DIR/tests/.par.$$"
-mkdir -p "$WORK/list" "$WORK/out" || exit 1
 # HUP, INT and TERM are trapped by par.sh itself, and its exit trap ignores all three as its
 # first step, as tests/run.sh's do (#1107). With no trap of its own on them, bash ends through
 # its own handler, which runs the EXIT trap and kills the shell at once when a second such
@@ -52,6 +51,9 @@ par_clean() { trap '' HUP INT TERM; rm -rf -- "$WORK"; rm -f -- "$SH".*; }
 par_sig() { trap '' HUP INT TERM; exit $((128 + $1)); }
 trap par_clean EXIT
 trap 'par_sig 1' HUP; trap 'par_sig 2' INT; trap 'par_sig 15' TERM
+# Armed before any step after the mktemp that can end the run: with the trap below this mkdir,
+# a mkdir that failed ended the run and left the work folder behind (#1175).
+mkdir -p "$WORK/list" "$WORK/out" || exit 1
 
 # Snapshot first: a concurrent editor saving tests/run.sh mid-run would
 # otherwise hand half a file to a shard still being generated, which reads as
