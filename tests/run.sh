@@ -628,8 +628,13 @@ pane_runs() {                 # <-L socket> <pane> <comm> <argv...> -> 0, or a b
 # The Enter runs nothing at a prompt, and before readline it is an empty line; a shell held in
 # its rc file until a line is pending goes on with it. PATTERN is a case-pattern naming that
 # shell's own prompt, with no embedded quotes: '*[$#]*' also matches a pasted line's echo.
+# One prompt on screen is not enough: bash leaves readline when it reads the Enter, and a paste
+# made before the next prompt runs (#1196). So the wait ends when the line at the cursor is a
+# prompt AND the line above it is one too, the Enter's own. cursor_y and the screen come from
+# one tmux call per poll. A PROMPT_COMMAND that clears the screen or redraws in place defeats
+# it, and so does a call made while the line above the cursor is already a prompt.
 shell_prompt() {              # <-L socket> <pane> <pattern> -> 0, or a bad row and 1
-    local s=${1:-} p=${2:-} pat=${3:-}
+    local s=${1:-} p=${2:-} pat=${3:-} i y l=()
     need_sock "$s" shell_prompt || return 1
     if [ $# -ne 3 ] || [ -z "$p" ] || [ -z "$pat" ]; then
         sock_bad "shell_prompt takes a socket, a pane and a prompt pattern" \
@@ -637,9 +642,19 @@ shell_prompt() {              # <-L socket> <pane> <pattern> -> 0, or a bad row 
         return 1
     fi
     "$TMUX_REAL" -L "$s" send-keys -t "$p" Enter >/dev/null 2>&1
-    until_cap "$s" "$p" "$pat" && return 0
-    sock_bad "pane $p on $s never drew its prompt $pat (#1183)" "a prompt" \
-        "$("$TMUX_REAL" -L "$s" capture-pane -p -J -t "$p" 2>/dev/null | grep -v '^$' | tail -2)"
+    for ((i = 1; i <= POLLS; i++)); do
+        # l[0] is cursor_y, and screen line n is l[n+1].
+        mapfile -t l < <("$TMUX_REAL" -L "$s" display-message -p -t "$p" '#{cursor_y}' \; \
+            capture-pane -p -t "$p" 2>/dev/null)
+        y=${l[0]:-}
+        if [[ $y =~ ^[0-9]+$ ]] && [ "$y" -ge 1 ]; then
+            # shellcheck disable=SC2254  # $pat is meant as a glob, not a literal
+            case ${l[y+1]-} in $pat) case ${l[y]-} in $pat) return 0 ;; esac ;; esac
+        fi
+        [ "$i" -lt "$POLLS" ] && sleep 0.1
+    done
+    sock_bad "pane $p on $s never drew its prompt $pat twice at the cursor (#1183)" \
+        "two prompts" "cursor_y [$y], lines [${l[y]-}] [${l[y+1]-}]"
     return 1
 }
 # #195: an empty socket name never reaches tmux. `-L ''` itself errors, but TMUX=
@@ -23810,8 +23825,31 @@ is "once released, shell_prompt ends on its own prompt and not on another's" "0|
 is "shell_prompt with no pattern is a bad row and 1, before any tmux call" \
    "shell_prompt takes a socket, a pane and a prompt pattern|1" \
    "$( ( sock_bad() { printf '%s|' "$1"; }; shell_prompt "$SPS" "$SPP"; printf '%s' "$?" ) )"
+# A shell already at its prompt whose next prompt is held: PROMPT_COMMAND blocks on a fifo the
+# second time it runs, the gap after bash read the Enter and left readline (#1196).
+mkfifo "$SPD/g" "$SPD/u"
+{ printf 'sp_g=%s; sp_n=0\n' "$(tq "$SPD/g")"
+  printf '%s\n' "PS1='sp-ready\\$ '" \
+      'PROMPT_COMMAND='\''sp_n=$((sp_n+1)); [ "$sp_n" != 2 ] || read -r -t 20 _ <> "$sp_g"'\'
+} > "$SPD/rcg"
+SPG=$("$TMUX_REAL" -L "$SPS" new-window -d -P -F '#{pane_id}' -c "$SPD" \
+    "exec bash --rcfile $(tq "$SPD/rcg")" 2>/dev/null)
+until_cap "$SPS" "$SPG" '*sp-ready$*'
+is "on a shell at its prompt, shell_prompt does not end while the next prompt is held" 1 \
+   "$(sp_try 3 "$SPG" '*sp-ready$*')"
+printf 'x\n' 1<>"$SPD/g"
+is "and ends once that prompt is drawn" 0 "$(sp_try "$POLLS" "$SPG" '*sp-ready$*')"
+# A prompt at the cursor whose Enter is still unread: the rc prints one, unechoed, and holds.
+{ printf 'stty -echo; printf %s %s\n' "$(tq '\n%s')" "$(tq 'sp-ready$ ')"
+  printf 'read -r -t 20 _ <> %s; stty echo\n' "$(tq "$SPD/u")"
+} > "$SPD/rcu"
+SPU=$("$TMUX_REAL" -L "$SPS" new-window -d -P -F '#{pane_id}' -c "$SPD" \
+    "exec bash --rcfile $(tq "$SPD/rcu")" 2>/dev/null)
+until_cap "$SPS" "$SPU" '*sp-ready$*'
+is "shell_prompt does not end on one prompt at the cursor while its Enter is unread" 1 \
+   "$(sp_try 3 "$SPU" '*sp-ready$*')"
 "$TMUX_REAL" -L "$SPS" kill-server >/dev/null 2>&1
-unset -f sp_try; unset SPS SPD SPP
+unset -f sp_try; unset SPS SPD SPP SPG SPU
 fi
 
 flop_left
