@@ -22846,26 +22846,25 @@ else
 # The nested run's TMPDIR, plain and with two spaces and a % (#818): the block's server
 # command and the cleanup's socket list must keep such a path whole.
 ir_gone() { kill -0 -- "-$1" 2>/dev/null || echo gone; }   # <group>: gone when it is empty
-# shellcheck disable=SC2178,SC2128  # d is this function's string; d=() is two others' (#1137)
 ir_run() {                    # <TMPDIR for the nested run> <label for the rows> [spaced]
-    local d=$1 l=$2 irp irs irl irc
+    local irt=$1 l=$2 irp irs irl irc
     # The caller's runtime dir, as the suite itself had it: the block's short-socket fallback.
-    ( cd "$DIR" && TMPDIR="$d" XDG_RUNTIME_DIR="$SUITE_XRD" COCKPIT_TEST_RV_HOLD="$d/held" \
-        exec setsid tests/only.sh '^revdiff: the doctor grades it' ) </dev/null >"$d/log" 2>&1 &
+    ( cd "$DIR" && TMPDIR="$irt" XDG_RUNTIME_DIR="$SUITE_XRD" COCKPIT_TEST_RV_HOLD="$irt/held" \
+        exec setsid tests/only.sh '^revdiff: the doctor grades it' ) </dev/null >"$irt/log" 2>&1 &
     irp=$!
     # Held, or the run is over (it never reached the hold): whichever comes first.
     POLLS=600 until_out '?*' \
-        sh -c "[ -s '$d/held' ] && echo held || kill -0 $irp || echo gone"
-    irs=$(cat "$d/held" 2>/dev/null)
+        sh -c "[ -s '$irt/held' ] && echo held || kill -0 $irp || echo gone"
+    irs=$(cat "$irt/held" 2>/dev/null)
     irl=0; [ -z "$irs" ] || irl=$(grep -cF " $irs" /proc/net/unix)
     if [ -z "$irs" ]; then
         wait "$irp" 2>/dev/null
         # skip_ prints a colour code between SKIP and the reason.
-        if grep -q "SKIP.* the revdiff on the server's PATH" "$d/log"; then
+        if grep -q "SKIP.* the revdiff on the server's PATH" "$irt/log"; then
             skip_ "revdiff interrupt, $l (its server row skipped: it never held)"
         else
             bad "$l: the revdiff block, run on its own, held with its server up" "held" \
-                "$(tail -3 "$d/log" | tr '\n' ' ')"
+                "$(tail -3 "$irt/log" | tr '\n' ' ')"
         fi
         return
     fi
