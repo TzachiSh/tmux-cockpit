@@ -583,6 +583,8 @@ until_out() {                 # <pattern> <cmd...>
 # to 15 bytes, as the kernel cuts it) and its whole argv, which that -c shell does not share.
 # The last reads stay in PR_COMM and PR_ARGV for a row to check. Where there is no /proc it
 # waits on the field, as before; the #1079 block says so with its SKIP rows.
+# Pass a pane id from -P, not session:index: an index whose window has ended names another
+# window's pane, and the wait reads that pane's process. Anything else is refused.
 # In the prelude, so every block has it: bash defines a function where it reads it (#1145).
 pane_runs() {                 # <-L socket> <pane> <comm> <argv...> -> 0, or a bad row and 1
     local s=${1:-} p=${2:-} c=${3:-} pid i want n argv=()
@@ -591,6 +593,10 @@ pane_runs() {                 # <-L socket> <pane> <comm> <argv...> -> 0, or a b
     if [ $# -lt 4 ] || [ -z "$p" ] || [ -z "$c" ]; then
         sock_bad "pane_runs takes a socket, a pane, a comm and an argv" \
             "<socket> <pane> <comm> <argv...>" "$*"
+        return 1
+    fi
+    if ! [[ $p =~ ^%[0-9]+$ ]]; then
+        sock_bad "pane_runs takes a pane id from -P, not session:index" "%<digits>" "$p"
         return 1
     fi
     shift 3
@@ -1402,11 +1408,12 @@ echo "== stale state is disbelieved =="
 if need_tmux "stale state"; then :; else
 # Hooks cannot fire if an agent is killed or crashes, so @panestate can outlive
 # the agent. The formats only believe it while the pane is actually running one.
-w=$(tmux new-window -d -P -F '#{window_index}' -n cockpit-test 'bash' 2>/dev/null)
+read -r w wp <<<"$(tmux new-window -d -P -F '#{window_index} #{pane_id}' -n cockpit-test \
+    'bash' 2>/dev/null)"
 if [ -n "$w" ]; then
     # The border style below is judged off pane_current_command, so wait for
     # the shell to BE the pane's process rather than guess at the spawn (#1079).
-    pane_runs "$SUITE_SOCK" ":$w" bash bash
+    pane_runs "$SUITE_SOCK" "$wp" bash bash
     tp2=$(tmux list-panes -t ":$w" -F '#{pane_id}' 2>/dev/null | head -1)
     tmux set -p -t "$tp2" @panestate needs-input >/dev/null 2>&1
     is "option is still set"        "needs-input" "$(tmux show-option -pqv -t "$tp2" @panestate)"
@@ -1752,11 +1759,12 @@ fi
 # tests: cockpit.tmux
 echo "== spaced window names survive the formats =="
 if need_tmux "spaced window names"; then :; else
-sw=$(tmux new-window -d -P -F '#{window_index}' -n 'my project' 'sleep 30' 2>/dev/null)
+read -r sw swp <<<"$(tmux new-window -d -P -F '#{window_index} #{pane_id}' -n 'my project' \
+    'sleep 30' 2>/dev/null)"
 if [ -n "$sw" ]; then
     # automatic-rename fires on the pane's command, so waiting for that command
     # to be there is what gives it its chance to clobber the name (#1079).
-    pane_runs "$SUITE_SOCK" ":$sw" sleep sleep 30
+    pane_runs "$SUITE_SOCK" "$swp" sleep sleep 30
     # automatic-rename must not clobber an explicit name, and the format must
     # carry the space through -- the old shell version truncated at it.
     is "explicit name keeps its space" "my project" \
@@ -14860,7 +14868,7 @@ esac
 AGF=$("$TMUX_REAL" -L "$AGS" list-keys -T cockpit | awk '$4=="t"' |
     sed -n "s/.*list-panes -a -F '\([^']*\)'.*/\1/p")
 "$TMUX_REAL" -L "$AGS" new-window -d -t ag: 'exec -a claude sleep 300' >/dev/null 2>&1
-"$TMUX_REAL" -L "$AGS" new-window -d -t ag: 'sleep 300' >/dev/null 2>&1
+AGP=$("$TMUX_REAL" -L "$AGS" new-window -d -t ag: -P -F '#{pane_id}' 'sleep 300' 2>/dev/null)
 "$TMUX_REAL" -L "$AGS" select-pane -t ag:0 -T 'alpha  two  spaces' >/dev/null 2>&1
 "$TMUX_REAL" -L "$AGS" select-pane -t ag:1 -T bravo >/dev/null 2>&1
 "$TMUX_REAL" -L "$AGS" select-pane -t ag:2 -T plain >/dev/null 2>&1
@@ -14868,7 +14876,7 @@ AGF=$("$TMUX_REAL" -L "$AGS" list-keys -T cockpit | awk '$4=="t"' |
 "$TMUX_REAL" -L "$AGS" set-option -p -t ag:1 @panestate running >/dev/null 2>&1
 until_out '*claude*claude*' "$TMUX_REAL" -L "$AGS" list-panes -a \
     -F '#{pane_current_command}' >/dev/null
-pane_runs "$AGS" ag:2 sleep sleep 300  # its name reads sleep before sleep runs (#1079)
+pane_runs "$AGS" "$AGP" sleep sleep 300  # its name reads sleep before sleep runs (#1079)
 # The third pane is not an agent: its state column is the - sentinel, not a blank
 # that would slide the title one column left.
 is "two agent panes with their state, the plain pane with the sentinel, in fixed columns" \
@@ -23659,7 +23667,7 @@ echo "== pane_runs: a pane's start is waited for on its own process, not its nam
 # differs. Each held start reads the waited-for name first, as the old wait did, or its row
 # pins nothing.
 if need_tmux "pane_runs"; then :; elif [ ! -d /proc/self ]; then
-    for _ in 1 2 3 4 5 6 7 8; do
+    for _ in 1 2 3 4 5 6 7 8 9; do
         skip_ "pane_runs (no /proc: a pane start is waited for on #{pane_current_command}, #1079)"
     done
 else
@@ -23707,6 +23715,10 @@ is "pane_runs with no pane, comm or argv is a bad row and 1" \
 is "pane_runs on a pane that is gone is a bad row and 1" \
    "pane_runs: pane %99999 on $PZS has a pid (#1079)|1" \
    "$( ( sock_bad() { printf '%s|' "$1"; }; pane_runs "$PZS" %99999 sleep sleep 30
+         printf '%s' "$?" ) )"
+is "pane_runs on a session:index target is a bad row and 1, before any tmux call" \
+   "pane_runs takes a pane id from -P, not session:index|1" \
+   "$( ( sock_bad() { printf '%s|' "$1"; }; pane_runs "$PZS" t:0 sleep sleep 30
          printf '%s' "$?" ) )"
 "$TMUX_REAL" -L "$PZS" kill-server >/dev/null 2>&1
 unset -f pr_cmd pr_try; unset PZS PZD PZB PZP PZW PZWS
