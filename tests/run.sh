@@ -21087,6 +21087,24 @@ printf '#!/bin/sh\nfor a in "$@"; do printf "%%s\\n" "$a"; done > %s\n' "$(tq "$
 NEWWIN_SH=$(command -v sh) MV_ED=$(tq "$MV/ed-argv") mvrun x --view %1 "$MV/w/$MVQ" 7 >/dev/null
 is "end to end: the editor is handed +7 and the file's path whole" "+7"$'\n'"$MV/w/$MVQ" \
    "$(cat "$MV/argv" 2>/dev/null)"
+# #1177: a touch client's editor gets +N by its first word, read as sh reads it. An nvim stub
+# at a path holding the folder's blanks, spelled five ways; the viewer's e opens it at line 7
+mkdir -p "$MV/e"; cp "$MV/ed-argv" "$MV/e/nvim"
+for mvsp in single double backslash mixed args; do
+    case $mvsp in
+        single) mved=$(tq "$MV/e/nvim"); mvw= ;;
+        # inside "...", sh still reads \ " $ and ` : each is escaped first
+        double) mved="\"$(printf '%s' "$MV/e/nvim" | sed 's/[\\"$`]/\\&/g')\""; mvw= ;;
+        backslash) mved=$(printf '%s' "$MV/e/nvim" | sed 's/./\\&/g'); mvw= ;;   # each character
+        mixed) mved="$(tq "$MV/e")/nvim"; mvw= ;;
+        args) mved="$(tq "$MV/e/nvim") -u NONE"; mvw=$'-u\nNONE\n' ;;
+    esac
+    rm -f "$MV/argv"
+    NEWWIN_SH=$(command -v sh) TOUCH=1 VIEW_OUT='edit 7' MV_ED=$mved \
+        mvrun x --view %1 "$MV/w/a.md" '' >/dev/null
+    is "touch, an nvim path with blanks ($mvsp): the editor is handed +7 and the file" \
+       "$mvw+7"$'\n'"$MV/w/a.md" "$(cat "$MV/argv" 2>/dev/null)"
+done
 # In a UTF-8 locale [0-9] also matches ² and ١. The viewer's `edit ²` is no edit: nothing
 # opens, on a touch client or not (#842). The edit 5 rows above are the ASCII answers.
 if MVLOC=$(utf8_loc); then
@@ -21099,9 +21117,9 @@ if MVLOC=$(utf8_loc); then
         done
     done
     # term_edit's own check: no caller hands it a line that is not ASCII now, so it runs
-    # alone here, with a stub tmux that prints the window's command.
+    # alone here, with editor_bin (#1177) and a stub tmux that prints the window's command.
     ter() { env LOCPATH="$MVLOC" LC_ALL=en_US.UTF-8 bash -c '
-            eval "$(sed -n "/^term_edit() {/,/^}/p" "$1")"
+            eval "$(sed -n "/^editor_bin() {/,/^}/p; /^term_edit() {/,/^}/p" "$1")"
             tmux() { case $1 in show-options) echo nvim ;; new-window) printf %s "${!#}" ;; esac; }
             plain_name() { printf %s "$1"; }; fesc() { printf %s "$1"; }; shq() { printf %s "$1"; }
             win=@0; term_edit /w/n.txt "$2"' _ "$DIR/scripts/tmux-open-path" "$1"; }
@@ -21401,11 +21419,6 @@ if [ "\$k" = 2 ] && [ -e "$FB/answer.2" ]; then cat "$FB/answer.2"; else cat "$F
 exit \$(cat "$FB/rc")
 STUB
 chmod +x "$FB"/bin/*
-# The +N rows can't quote theirs: the script picks +N by the editor's first word, cut at a
-# blank and never unquoted (#1177). Their nvim sits in the folder the suite keeps free of
-# blanks (#992), unquoted and blank-free by design, so they hold under any TMPDIR. Copied
-# after the chmod above, so the copy is executable too.
-FBNV=$(mktemp -d "$COCKPIT_SUITE_NB/ct.XXXXXX"); cp "$FB/bin/nvim" "$FBNV/nvim"
 # from $FB: a #() that ran would drop its file in the server's cwd, never the checkout
 ( cd "$FB" &&
     PATH="$FB/bin:$PATH" "$TMUX_REAL" -L "$FBS" -f /dev/null new-session -d -s t -x 100 -y 30 \
@@ -21522,10 +21535,10 @@ for fbt in on off; do
 done
 # the viewer's e prints `edit N` (FBV): a touch client
 # gets a terminal editor at that line, a PC code
-FBV='edit 7\n' fb on "view $FBD/sub/n.txt\n" 0 "VISUAL=$FBNV/nvim"
+FBV='edit 7\n' fb on "view $FBD/sub/n.txt\n" 0 "VISUAL=$(tq "$FB/bin/nvim")"
 fbwait "$FB/ed.log"
 is "touch: the viewer's e opens a terminal editor at the line, not code" \
-    "$FBNV/nvim [+7] [$FBD/sub/n.txt]|0" \
+    "$FB/bin/nvim [+7] [$FBD/sub/n.txt]|0" \
    "$(cat "$FB/ed.log")|$(grep -c . "$FB/code.log")"
 FBV='edit 7\n' fb on "view $FBD/sub/n.txt\n" 0 "VISUAL=$FBEV"
 fbwait "$FB/ed.log"
@@ -21707,10 +21720,10 @@ is "touch, format-looking names: nothing ran" "" \
     "$(find "$FB" "$PWD" -maxdepth 3 -name PWN 2>/dev/null)"
 
 # an editor with arguments: the +N decision reads its first word only (#425)
-FBV='edit 7\n' fb on "view $FBD/sub/n.txt\n" 0 "VISUAL=$FBNV/nvim -u NONE"
+FBV='edit 7\n' fb on "view $FBD/sub/n.txt\n" 0 "VISUAL=$(tq "$FB/bin/nvim") -u NONE"
 fbwait "$FB/ed.log"
 is "touch: an editor with arguments keeps them and still gets +N" \
-   "$FBNV/nvim [-u] [NONE] [+7] [$FBD/sub/n.txt]" "$(cat "$FB/ed.log")"
+   "$FB/bin/nvim [-u] [NONE] [+7] [$FBD/sub/n.txt]" "$(cat "$FB/ed.log")"
 
 # a name tmux refuses as a window name still opens (#366): the name drops the control
 # characters and the bidi override, the editor gets the real path
@@ -21772,7 +21785,6 @@ env PATH="$FB/bin:$PATH" COCKPIT_TUI_BIN="$FB/bin/cockpit-tui" TMUX="$FBSOCK,0,0
     "$DIR/scripts/tmux-open-path" --browse "$FBP" </dev/null >"$FB/out" 2>&1
 is "a stale cockpit-tui is told apart" "1" "$(grep -c 'older than the plugin' "$FB/calls")"
 "$TMUX_REAL" -L "$FBS" kill-server >/dev/null 2>&1
-rm -rf "$FBNV"
 fi
 
 echo "== tmux-open-path --browse: the real cockpit-tui files, keys in, the exact path out (#372) =="
