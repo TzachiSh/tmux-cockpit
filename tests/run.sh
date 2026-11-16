@@ -37,7 +37,11 @@ ln -s "$DIR" "$HOME/.tmux/plugins/tmux-cockpit"
 pass=0; fail=0; skipped=0
 ok()   { pass=$((pass+1)); printf '  \033[32mPASS\033[0m %s\n' "$1"; }
 bad()  { fail=$((fail+1))
-    printf '  \033[31mFAIL\033[0m %s\n     want [%s]\n     got  [%s]\n' "$1" "$2" "$3"
+    # Each further line of a want or a got starts "     | ": par.sh then tells a red row's
+    # own lines from a line some command printed beside it (#1153).
+    local m=$'\n     | '
+    printf '  \033[31mFAIL\033[0m %s\n     want [%s]\n     got  [%s]\n' "$1" \
+        "${2//$'\n'/$m}" "${3//$'\n'/$m}"
 }
 is()   { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "$2" "$3"; fi; }
 
@@ -23313,40 +23317,76 @@ is "a poller gone before its comm or its environ is read: not counted, nothing o
    "0|" "$(polls_on x "/proc/$po_pid" "$PO/9" 2>"$PO/err")|$(cat "$PO/err")"
 unset PO po_pid
 
-echo "== the green.sh stamp, the board's kill and seven #1137 blocks print rows alone =="
-# Both printed a "No such file or directory" on every green run: green.sh's find walked
-# three folders the stamp's fixture tree lacked, and a cat read the rv file kv_run had
-# just removed. A real one in a red run's log was lost beside them. Through only.sh, as
-# the #1098 block runs a block, with stderr kept apart from the rows.
-# #1137 adds the blocks below, each of which printed a stray line on a green run, on stderr
-# or among the rows on stdout. SIGPIPE ignored, as on GitHub's runners: there a writer whose
-# reader left reports it on stderr. An ignored signal stays ignored across the exec. The #310
-# block's `yes` line is fixed but not nested here: that block alone takes 40 s. The run-wide
-# check of #1153 pins it and replaces this nest.
-NE=$(mktmpd)
-NE_PAT='^tests/green\.sh: the stamp hits|^cockpit-board: kill %N re-checks'
-NE_PAT+='|^cockpit-board: a state change wakes every running board through tmux wait-for'
-NE_PAT+='|^review-gate: hands a queued review over once'
-NE_PAT+="|^notify's deadline covers the whole read, not each line"
-NE_PAT+='|^install\.sh --hooks merges additively'
-NE_PAT+='|^tmux-open-path \(#283\): a lone markdown file opens in the viewer'
-NE_PAT+="|^agent-state session: the payload's session_id and transcript_path become"
-NE_PAT+="|^agent-poll: a refused config dir's pane is polled on the default dir"
-(cd "$DIR" && env -u TMUX bash -c 'trap "" PIPE; exec tests/only.sh "$1"' _ "$NE_PAT" \
-    >"$NE/out" 2>"$NE/err" </dev/null)
-ne_rc=$?
-# A red nested run names its FAIL rows here: $NE/out goes with the run's temp folders. The run
-# is not nest_run's, which merges stderr into the output; nest_fails reads its stdout alone.
-NEST_OUT=$(cat "$NE/out")
-# With the titles it printed: a block the pattern no longer matches would go unwatched.
-is "the nine blocks, the stamp and the kill block first, ran through only.sh and passed" "0 9" \
-   "$ne_rc$(nest_fails) $(grep -c '^== ' "$NE/out")"
-is "and print nothing on stderr" "" "$(cat "$NE/err")"
-# On stdout a green run prints titles, PASS and SKIP rows and the totals line, nothing else.
-is "and nothing on stdout but titles, rows and the totals (#1137)" "" \
-   "$(sed 's/\x1b\[[0-9;]*m//g' "$NE/out" \
-        | grep -vnE '^== .* ==$|^  (PASS|SKIP) |^  [0-9]+ passed, [0-9]+ failed, [0-9]+ skipped$')"
-unset NE NE_PAT ne_rc NEST_OUT
+echo "== tests/par.sh: a shard line that is not a title, a row or a FATAL fails the run (#1153) =="
+# par.sh reads every shard's log once the shards are done. A line that is not a block's title,
+# a row (a red row's want and got, each further line behind "     | ") or a FATAL is named on
+# its stderr, one record of tab-separated fields per line, and fails the run. A sandbox as
+# the par.sh blocks use, with one change: its prelude is run.sh's row printers alone. The
+# check reads lines, and a fixture block needs no server.
+is "bad starts each further line of a want or a got with '     | ' (#1153)" \
+   "  FAIL r|     want [w1|     | w2]|     got  [g1|     | |     | g3]" \
+   "$(bad r $'w1\nw2' $'g1\n\ng3' | sed 's/\x1b\[[0-9;]*m//g' | tr '\n' '|' | sed 's/|$//')"
+NEST_OUT=$(bad r1 a $'x\n  FAIL inner')
+is "nest_fails names a red row once, not a further line of its got that reads FAIL" \
+   ": FAIL r1" "$(nest_fails)"
+unset NEST_OUT
+PK=$(mktmpd); Q='"'; mkdir -p "$PK/t"
+# A checkout: par.sh, then ok, bad, is and skip_ as run.sh has them, then one solo block per
+# body read on stdin, the bodies split at "--" lines. Ranges, not brace counts: par.sh and
+# only.sh end a function where its braces balance.
+pk_mk() {                     # <checkout>
+    mkdir -p "$PK/$1/tests"
+    cp "$DIR/tests/par.sh" "$PK/$1/tests/par.sh"
+    { printf 'set -u\npass=0; fail=0; skipped=0\nflop_left() { :; }\n'
+      awk '/^ok\(\) /, /^is\(\) / { print } /^skip_\(\) / { print }' "$DIR/tests/run.sh"
+      awk -v q="$Q" 'NR == 1 || /^--$/ { n++; printf "\necho %s== pk%d ==%s\n", q, n, q }
+                     !/^--$/'
+    } > "$PK/$1/tests/run.sh"
+}
+pk_run() {                    # <checkout> [TMPDIR] -> par.sh's status; its streams in out, err
+    ( cd "$PK/$1" && exec env -u PAR_BLOCKS TMPDIR="${2:-$PK/t}" J=2 tests/par.sh ) \
+        </dev/null >"$PK/out" 2>"$PK/err"
+    echo "$?"
+}
+# One shard's records as line|block|text; a bash error's "<path>: line N: " is cut from the
+# text, so no row reads a path.
+pk_rec() {                    # <shard id>
+    awk -F'\t' -v s="shard=$1" '$1 == "par.sh: stray line" && $2 == s {
+        l = $3; b = $4; t = $5; sub(/^line=/, "", l); sub(/^block=/, "", b)
+        sub(/^text=/, "", t); sub(/^.*: line [0-9]+: /, "", t); printf "%s|%s|%s;", l, b, t }' \
+        "$PK/err"
+}
+pk_mk g <<'PKEOF'
+is "pk1 green" a a
+--
+skip_ "pk2 skipped"
+PKEOF
+is "a run whose shards print titles and rows alone ends 0 and names no line" "0|0" \
+   "$(pk_run g)|$(grep -c '^par\.sh: stray line' "$PK/err")"
+pk_mk c <<'PKEOF'
+is "pk1 green" a a
+--
+is "pk2 row" a a; echo "pk2 out"
+--
+echo "pk3 err" >&2; is "pk3 row" a a
+--
+bad "pk4 red" a $'g1\n== pk4 lookalike ==\n  PASS lookalike\nplain'
+--
+bad "pk5 red" a b | awk 'NR == 2 { print "pk5 inside" } 1'; fail=$((fail + 1))
+--
+echo "$pk_nope"
+PKEOF
+is "a line on a shard's stdout that is no row fails the run, named by shard, line, block" \
+   "1|3|pk2|pk2 out;" "$(pk_run c)|$(pk_rec 0002)"
+is "a line on a shard's stderr the same" "2|pk3|pk3 err;" "$(pk_rec 0003)"
+is "a red row whose got runs over lines is one red row: no line of it named" "1|" \
+   "$(grep -c 'FAIL.* pk4 red$' "$PK/out")|$(pk_rec 0004)"
+is "a line between a red row's FAIL and its want is named" "3|pk5|pk5 inside;" \
+   "$(pk_rec 0005)"
+is "a shard that died is named as died, and so is the line it died with" \
+   "1|2|pk6|pk_nope: unbound variable;" \
+   "$(grep -c '^par\.sh: shard 0006 died without reporting$' "$PK/err")|$(pk_rec 0006)"
+unset -f pk_mk pk_run pk_rec; unset PK Q
 
 flop_left
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
