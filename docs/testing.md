@@ -30,6 +30,36 @@ much as the code. No block carries the mark today. A `cpu_under` budget needs
 no mark: each is 3x its site's CPU measured under twelve spinners, so it is
 sized for contention already.
 
+### What a shard may print
+
+A block prints its `== title ==` and its rows, nothing else. `tests/par.sh`
+reads every shard's log once the shards are done, a dead shard's too. A line
+that is not a title, a `PASS`, `SKIP` or `FAIL` row, a red row's `want` and
+`got`, or a `FATAL` line fails the run (#1153). Such a line is a command's
+noise, or an error no row read, and in a red run's log it hides the real one.
+
+A `want` or a `got` can hold a newline. `bad` starts each further line of one
+with `     | `, so a red row stays readable and the check can tell its lines
+from a stray one. Each counts only in its place: a `want` right after a `FAIL`
+row, a `got` right after its `want`, a `     | ` line inside a `want` or a
+`got`. The same line anywhere else is named.
+
+Each stray line is one record on par.sh's stderr, its fields separated by
+tabs:
+
+```
+par.sh: stray line	shard=0002	line=3	block=<title>	text=<the line>
+```
+
+`line` counts from the top of that shard's log, `block` is the last title above
+the line, and `text` has its colours and control bytes dropped and is cut at
+200 bytes. A count line follows the records. A shard's stdout and stderr go to
+one log, so a record does not say which stream the line came from.
+
+Only `tests/par.sh` checks, and so `make test-par`, `make check-par`,
+`make gate`, `make test-changed` and CI.
+`tests/only.sh` and a plain `tests/run.sh` print as they run and check nothing.
+
 ### A TMPDIR with a blank
 
 Under a `TMPDIR` whose path holds a space or a tab, a run of `tests/run.sh`

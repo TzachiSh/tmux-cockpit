@@ -26,6 +26,10 @@ esac
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 J="${J:-$(nproc 2>/dev/null || echo 4)}"
 WORK=$(mktemp -d) || exit 1
+# Absolute: awk takes an operand shaped name=value as an assignment, not a file. Under a
+# relative TMPDIR such as "a=b c", "$WORK/run.snap" was one, the grouping awk read no block and
+# the run ended "no block found" (#1159). A path that starts with / is never one.
+case $WORK in /*) ;; *) WORK=$PWD/$WORK ;; esac
 # The shards themselves must sit directly under tests/, not in $WORK: the
 # prelude computes DIR from its own BASH_SOURCE, so a shard anywhere else
 # points $DIR at a temp dir and every assertion that reads the repo's config
@@ -176,6 +180,10 @@ run_shards() {                       # <parallelism> <shard file>...
         # shows a start with no end for the shard that held it up.
         t=""; read -r t 2>/dev/null < "$PAR_WORK/title/$id"
         printf "par.sh: shard %s start: %s\n" "$id" "$t" >&2
+        # SIGPIPE ignored, as on the GitHub runners: there a writer whose reader left says so
+        # on stderr, and a local run must show the same line (#1137, #1153). An ignored signal
+        # stays ignored in every process the shard starts.
+        trap "" PIPE
         bash "$1" > "$PAR_WORK/out/$id.log" 2>&1; rc=$?
         [ "$rc" -eq 0 ] || : > "$PAR_WORK/out/$id.fail"
         printf "par.sh: shard %s end rc=%s\n" "$id" "$rc" >&2
@@ -208,9 +216,10 @@ xrc=0
 # no fail mark, so the total simply left it out: a run in which no worker started printed
 # "0 passed, 0 failed" and ended 0, a gate that could not fail (#1013).
 pass=0; fail=0; skip=0; red=0; planned=${#plan[@]}; reported=0
+logs=()
 for f in "${plan[@]}"; do
     id=${f##*.}
-    [ ! -e "$WORK/out/$id.log" ] || cat "$WORK/out/$id.log"
+    [ ! -e "$WORK/out/$id.log" ] || { cat "$WORK/out/$id.log"; logs+=("$WORK/out/$id.log"); }
     if [ -s "$WORK/out/$id.n" ]; then
         IFS=, read -r p q s < "$WORK/out/$id.n"
         pass=$((pass + p)); fail=$((fail + q)); skip=$((skip + s)); reported=$((reported + 1))
@@ -225,6 +234,43 @@ for f in "${plan[@]}"; do
     else echo "par.sh: shard $id left no log" >&2
     fi
 done
+# A shard prints titles, rows (a red row's want and got with each further line behind
+# "     | ", as run.sh's bad writes them) and FATAL lines, nothing else. Any other line is a
+# command's noise or an error no row read: one record each on stderr, and the run fails
+# (#1153). Matched as the printers write them, colours included. Every log is read, a dead
+# shard's too, so what it printed as it died is named.
+# A want, a got and a "     | " line count only in a red row's place: st is 1 after a FAIL
+# row, 2 in its want, 3 in its got. A want comes only at 1, a got only at 2, a further line
+# only at 2 or 3; anywhere else each is named. A stray line leaves st as it was, so a line
+# another writer put between a red row's lines is named alone, not the row's own lines.
+if [ ${#logs[@]} -gt 0 ]; then
+    LC_ALL=C awk '
+        FNR == 1 { id = FILENAME; sub(/.*\//, "", id); sub(/\.log$/, "", id); blk = ""; st = 0 }
+        /^== .* ==$/ { blk = substr($0, 4, length($0) - 6); gsub(/[\001-\037\177]/, "", blk)
+                       st = 0; next }
+        /^  \033\[32mPASS\033\[0m / || /^  \033\[33mSKIP\033\[0m / { st = 0; next }
+        /^  \033\[31mFATAL\033\[0m / { st = 0; next }
+        /^  \033\[31mFAIL\033\[0m / { st = 1; next }
+        st == 1 && /^     want \[/ { st = 2; next }
+        st == 2 && /^     got  \[/ { st = 3; next }
+        st >= 2 && /^     \| / { next }
+        { t = $0; gsub(/\033\[[0-9;]*m/, "", t); gsub(/[\001-\037\177]/, "", t)
+          if (length(t) > 200) {
+              c = substr(t, 201, 1); t = substr(t, 1, 200)
+              # a cut inside a UTF-8 character drops that character
+              if (c ~ /[\200-\277]/) sub(/[\300-\377][\200-\277]*$/, "", t)
+              t = t "..." }
+          printf "par.sh: stray line\tshard=%s\tline=%d\tblock=%s\ttext=%s\n", id, FNR, blk, t
+          n++ }
+        END { if (n) printf "par.sh: %d stray lines: not a title, a row or a FATAL\n", n
+              exit (n > 0) }
+    ' "${logs[@]}" >&2
+    case $? in
+        0) ;;
+        1) red=1 ;;
+        *) red=1; echo "par.sh: awk failed reading the shard logs: no line was checked" >&2 ;;
+    esac
+fi
 [ "$xrc" -eq 0 ] || { red=1; echo "par.sh: xargs ended $xrc: the run was not whole" >&2; }
 [ "$reported" -eq "$planned" ] || {
     red=1; echo "par.sh: $reported of $planned shards reported a count" >&2; }
