@@ -23330,7 +23330,7 @@ NEST_OUT=$(bad r1 a $'x\n  FAIL inner')
 is "nest_fails names a red row once, not a further line of its got that reads FAIL" \
    ": FAIL r1" "$(nest_fails)"
 unset NEST_OUT
-PK=$(mktmpd); Q='"'; mkdir -p "$PK/t"
+PK=$(mktmpd); Q='"'; mkdir -p "$PK/t" "$PK/p/a=b c"
 # A checkout: par.sh, then ok, bad, is and skip_ as run.sh has them, then one solo block per
 # body read on stdin, the bodies split at "--" lines. Ranges, not brace counts: par.sh and
 # only.sh end a function where its braces balance.
@@ -23386,6 +23386,15 @@ is "a line between a red row's FAIL and its want is named" "3|pk5|pk5 inside;" \
 is "a shard that died is named as died, and so is the line it died with" \
    "1|2|pk6|pk_nope: unbound variable;" \
    "$(grep -c '^par\.sh: shard 0006 died without reporting$' "$PK/err")|$(pk_rec 0006)"
+# A relative TMPDIR holding = and a space. par.sh makes its work folder absolute, so no awk
+# operand it builds from that folder reads as a name=value assignment (#1159).
+pk_mk p <<'PKEOF'
+is "pk1 green" a a
+--
+is "pk2 row" a a; echo "pk2 out"
+PKEOF
+is "under a relative TMPDIR holding a=b and a space the shards run and the line is named" \
+   "1|3|pk2|pk2 out;" "$(pk_run p 'a=b c')|$(pk_rec 0002)"
 unset -f pk_mk pk_run pk_rec; unset PK Q
 
 flop_left

@@ -26,6 +26,10 @@ esac
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 J="${J:-$(nproc 2>/dev/null || echo 4)}"
 WORK=$(mktemp -d) || exit 1
+# Absolute: awk takes an operand shaped name=value as an assignment, not a file. Under a
+# relative TMPDIR such as "a=b c", "$WORK/run.snap" was one, the grouping awk read no block and
+# the run ended "no block found" (#1159). A path that starts with / is never one.
+case $WORK in /*) ;; *) WORK=$PWD/$WORK ;; esac
 # The shards themselves must sit directly under tests/, not in $WORK: the
 # prelude computes DIR from its own BASH_SOURCE, so a shard anywhere else
 # points $DIR at a temp dir and every assertion that reads the repo's config
