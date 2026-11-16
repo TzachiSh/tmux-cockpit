@@ -20571,11 +20571,13 @@ HXD="$(mktmpd)/h  x"; HXB="$HXD/bin"; HXL="$HXD/argv.log"; HXA="$HXD/editor.log"
 mkdir -p "$HXB" "$HXD/w/d#S"
 optui_setup
 HXED="$HXD/ed"
-printf '#!/bin/sh\nfor a in "$@"; do printf "%%s\\n" "$a"; done >> "%s"\n' "$HXA" > "$HXED"
+# Each path in a generated script goes in through tq: in "..." a " or $ in TMPDIR would end
+# the string or expand (#990)
+printf '#!/bin/sh\nfor a in "$@"; do printf "%%s\\n" "$a"; done >> %s\n' "$(tq "$HXA")" > "$HXED"
 chmod +x "$HXED"
 HN='a#(touch${IFS}F)#{pid}#S.txt'; HW="$HXD/w/d#S"; : > "$HW/$HN"
-printf '#!/bin/sh\nfor a in "$@"; do printf "%%s\\n" "$a"; done >> "%s"\nexec %s "$@"\n' "$HXL" \
-    "$TMUX_REAL" > "$HXB/tmux"
+printf '#!/bin/sh\nfor a in "$@"; do printf "%%s\\n" "$a"; done >> %s\nexec %s "$@"\n' \
+    "$(tq "$HXL")" "$(tq "$TMUX_REAL")" > "$HXB/tmux"
 printf '#!/bin/sh\nexit 0\n' > "$HXB/code"; chmod +x "$HXB/tmux" "$HXB/code"
 "$TMUX_REAL" -L "$HX" -f /dev/null new-session -d -s t -x 100 -y 28 -c "$HXD/w" >/dev/null 2>&1
 "$TMUX_REAL" -L "$HX" set -g remain-on-exit on >/dev/null 2>&1   # the shim editor exits at once
@@ -20586,7 +20588,8 @@ until_out "*d#S" "$TMUX_REAL" -L "$HX" display-message -p -t "$HXP" '#{pane_curr
 hxgo() {                      # hxgo <n> -- run the pick re-entry; wait for it
     : > "$HXL"; : > "$HXA"
     "$TMUX_REAL" -L "$HX" send-keys \
-        -t "$HXP" "clear; PATH='$HXB':\$PATH COCKPIT_TUI_BIN='$OPTUI' '$DIR/scripts/tmux-open-path' --pick '$HXP'; echo HXDONE$1=\$?" Enter
+        -t "$HXP" "clear; PATH=$(tq "$HXB"):\$PATH COCKPIT_TUI_BIN=$(tq "$OPTUI") $(
+        )'$DIR/scripts/tmux-open-path' --pick '$HXP'; echo HXDONE$1=\$?" Enter
     until_cap "$HX" "$HXP" "*HXDONE$1=[0-9]*"
 }
 # The script's own formats (#{window_id}) are legitimate, so only the lines that
