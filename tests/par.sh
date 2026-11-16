@@ -180,6 +180,10 @@ run_shards() {                       # <parallelism> <shard file>...
         # shows a start with no end for the shard that held it up.
         t=""; read -r t 2>/dev/null < "$PAR_WORK/title/$id"
         printf "par.sh: shard %s start: %s\n" "$id" "$t" >&2
+        # SIGPIPE ignored, as on the GitHub runners: there a writer whose reader left says so
+        # on stderr, and a local run must show the same line (#1137, #1153). An ignored signal
+        # stays ignored in every process the shard starts.
+        trap "" PIPE
         bash "$1" > "$PAR_WORK/out/$id.log" 2>&1; rc=$?
         [ "$rc" -eq 0 ] || : > "$PAR_WORK/out/$id.fail"
         printf "par.sh: shard %s end rc=%s\n" "$id" "$rc" >&2
