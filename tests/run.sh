@@ -458,6 +458,12 @@ sock_sweep() {                # <TMUX_TMPDIR>... -> each server on a socket in i
         done
     done
 }
+# For a block that ends a copy by signals. In the prelude, so the par.sh block above #900 has
+# it too: bash defines a function where it reads it (#1145).
+# A background child starts with INT ignored, and a suite under nohup starts with HUP ignored
+# (#524); bash cannot trap a signal it started with ignored. env hands the default back where
+# it can, and where it cannot the row for that signal is skipped with the reason.
+sig_dfl() { env --default-signal="$1" true 2>/dev/null; }
 
 # Several checks need a live tmux server to set per-pane options against. Skip
 # them cleanly rather than failing: a red suite should mean broken code, not
@@ -19930,6 +19936,7 @@ done
 unset FD fx NEST_RC NEST_OUT NEST_PASS NEST_FAIL
 
 # For the #900 and #1107 blocks, which end prelude copies by signals; unset after #1107's.
+# sig_dfl, its pair, is in the prelude.
 sig_left() {                  # <a copy's TMPDIR> -> the processes carrying it: "0", or count and
     local p n o end=$((SECONDS + 10))    # names. Read again, up to 10 s: one on its way
     # out is none, and a pane that watches its run's pid takes about a second to see it gone
@@ -19944,10 +19951,6 @@ sig_left() {                  # <a copy's TMPDIR> -> the processes carrying it: 
     done
     printf '%s%s' "$n" "$o"
 }
-# A background child starts with INT ignored, and a suite under nohup starts with HUP ignored
-# (#524); bash cannot trap a signal it started with ignored. env hands the default back where
-# it can, and where it cannot the row for that signal is skipped with the reason.
-sig_dfl() { env --default-signal="$1" true 2>/dev/null; }
 
 echo "== run.sh: a run ended by a signal in its prelude leaves no server, socket or temp dir (#900) =="
 # The suite's server leaves the run's process group, so a signal that ends the run never
@@ -20138,7 +20141,7 @@ else
        "0|0|in,pf,|0|" "$(s2_run end HUP)"
     is "nor a TERM" "0|0|in,pf,|0|" "$(s2_run end TERM)"
 fi
-unset -f s2_run sig_left sig_dfl; unset S2 s2_hold s2_in s2_pane s2_p s2_want
+unset -f s2_run sig_left; unset S2 s2_hold s2_in s2_pane s2_p s2_want
 
 echo "== run.sh: under a TMPDIR with a blank the tmux wrapper sits where no blank is (#992) =="
 # "$TMUX_REAL" is the #573 wrapper's path, pasted unquoted into some forty pane commands. It
