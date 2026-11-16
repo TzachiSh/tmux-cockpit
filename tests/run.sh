@@ -23663,53 +23663,53 @@ if need_tmux "pane_runs"; then :; elif [ ! -d /proc/self ]; then
         skip_ "pane_runs (no /proc: a pane start is waited for on #{pane_current_command}, #1079)"
     done
 else
-PRS="cockpit-pr1079-$$"; SOCKS="$SOCKS $PRS"; PRD=$(mktmpd); PRB=$(command -v bash)
-mkdir -p "$PRD/hold"; mkfifo "$PRD/f1" "$PRD/f2"
-"$TMUX_REAL" -L "$PRS" -f /dev/null new-session -d -s t -c "$PRD" 'exec sleep 300' \
+PZS="cockpit-pr1079-$$"; SOCKS="$SOCKS $PZS"; PZD=$(mktmpd); PZB=$(command -v bash)
+mkdir -p "$PZD/hold"; mkfifo "$PZD/f1" "$PZD/f2"
+"$TMUX_REAL" -L "$PZS" -f /dev/null new-session -d -s t -c "$PZD" 'exec sleep 300' \
     >/dev/null 2>&1
-"$TMUX_REAL" -L "$PRS" set -g default-shell "$PRB" >/dev/null 2>&1
-{ printf '#!%s\nset -m\n' "$PRB"
-  printf 'true | { exec 9<>%q; printf x > %q; read -r -t 20 -u 9 _; }\n' "$PRD/f1" "$PRD/in1"
+"$TMUX_REAL" -L "$PZS" set -g default-shell "$PZB" >/dev/null 2>&1
+{ printf '#!%s\nset -m\n' "$PZB"
+  printf 'true | { exec 9<>%q; printf x > %q; read -r -t 20 -u 9 _; }\n' "$PZD/f1" "$PZD/in1"
   printf 'exec -a sleep %q "$@"\n' "$(command -v sleep)"
-} > "$PRD/hold/sleep"
-chmod +x "$PRD/hold/sleep"
-pr_cmd() { "$TMUX_REAL" -L "$PRS" display-message -p -t "$1" '#{pane_current_command}'; }
+} > "$PZD/hold/sleep"
+chmod +x "$PZD/hold/sleep"
+pr_cmd() { "$TMUX_REAL" -L "$PZS" display-message -p -t "$1" '#{pane_current_command}'; }
 pr_try() {                    # <polls> <pane> <comm> <argv...> -> <status>|<comm>|<argv> read
-    ( sock_bad() { :; }; POLLS=$1 pane_runs "$PRS" "${@:2}"; printf '%s|%s|%s' "$?" \
+    ( sock_bad() { :; }; POLLS=$1 pane_runs "$PZS" "${@:2}"; printf '%s|%s|%s' "$?" \
         "$PR_COMM" "$PR_ARGV" )
 }
 # PATH on the tmux client, not new-window -e: tmux puts an unattached client's own PATH over
 # the pane's -e PATH (spawn.c), so an -e PATH never reaches the pane.
-PRP=$(PATH="$PRD/hold:$PATH" "$TMUX_REAL" -L "$PRS" new-window -d -P -F '#{pane_id}' \
-    -c "$PRD" 'sleep 30')
-until_file "$PRD/in1" x
-until_out sleep pr_cmd "$PRP"
+PZP=$(PATH="$PZD/hold:$PATH" "$TMUX_REAL" -L "$PZS" new-window -d -P -F '#{pane_id}' \
+    -c "$PZD" 'sleep 30')
+until_file "$PZD/in1" x
+until_out sleep pr_cmd "$PZP"
 is "a start held before it runs sleep reads sleep, its start's first word" sleep \
-   "$(pr_cmd "$PRP")"
+   "$(pr_cmd "$PZP")"
 is "pane_runs does not end on it: comm is sleep, the argv is the holder's" \
-   "1|sleep|[$PRB][$PRD/hold/sleep][30]" "$(pr_try 3 "$PRP" sleep sleep 30)"
-printf 'x\n' 1<>"$PRD/f1"
+   "1|sleep|[$PZB][$PZD/hold/sleep][30]" "$(pr_try 3 "$PZP" sleep sleep 30)"
+printf 'x\n' 1<>"$PZD/f1"
 is "and ends once the held start execs sleep" "0|sleep|[sleep][30]" \
-   "$(pr_try "$POLLS" "$PRP" sleep sleep 30)"
-PRWS="exec 9<>$(tq "$PRD/f2"); printf x > $(tq "$PRD/in2"); read -r -t 20 -u 9 _"
-PRWS+="; exec bash --norc --noprofile"
-PRW=$("$TMUX_REAL" -L "$PRS" new-window -d -P -F '#{pane_id}' -c "$PRD" "$PRWS")
-until_file "$PRD/in2" x
-is "a bash pane's -c shell, held, reads bash" bash "$(pr_cmd "$PRW")"
+   "$(pr_try "$POLLS" "$PZP" sleep sleep 30)"
+PZWS="exec 9<>$(tq "$PZD/f2"); printf x > $(tq "$PZD/in2"); read -r -t 20 -u 9 _"
+PZWS+="; exec bash --norc --noprofile"
+PZW=$("$TMUX_REAL" -L "$PZS" new-window -d -P -F '#{pane_id}' -c "$PZD" "$PZWS")
+until_file "$PZD/in2" x
+is "a bash pane's -c shell, held, reads bash" bash "$(pr_cmd "$PZW")"
 is "pane_runs does not end on the -c shell, whose comm and argv[0] are bash" \
-   "1|bash|[bash][-c][$PRWS]" "$(pr_try 3 "$PRW" bash bash --norc --noprofile)"
-printf 'x\n' 1<>"$PRD/f2"
+   "1|bash|[bash][-c][$PZWS]" "$(pr_try 3 "$PZW" bash bash --norc --noprofile)"
+printf 'x\n' 1<>"$PZD/f2"
 is "and ends on the bash it execs" "0|bash|[bash][--norc][--noprofile]" \
-   "$(pr_try "$POLLS" "$PRW" bash bash --norc --noprofile)"
+   "$(pr_try "$POLLS" "$PZW" bash bash --norc --noprofile)"
 is "pane_runs with no pane, comm or argv is a bad row and 1" \
    "pane_runs takes a socket, a pane, a comm and an argv|1" \
-   "$( ( sock_bad() { printf '%s|' "$1"; }; pane_runs "$PRS"; printf '%s' "$?" ) )"
+   "$( ( sock_bad() { printf '%s|' "$1"; }; pane_runs "$PZS"; printf '%s' "$?" ) )"
 is "pane_runs on a pane that is gone is a bad row and 1" \
-   "pane_runs: pane %99999 on $PRS has a pid (#1079)|1" \
-   "$( ( sock_bad() { printf '%s|' "$1"; }; pane_runs "$PRS" %99999 sleep sleep 30
+   "pane_runs: pane %99999 on $PZS has a pid (#1079)|1" \
+   "$( ( sock_bad() { printf '%s|' "$1"; }; pane_runs "$PZS" %99999 sleep sleep 30
          printf '%s' "$?" ) )"
-"$TMUX_REAL" -L "$PRS" kill-server >/dev/null 2>&1
-unset -f pr_cmd pr_try; unset PRS PRD PRB PRP PRW PRWS
+"$TMUX_REAL" -L "$PZS" kill-server >/dev/null 2>&1
+unset -f pr_cmd pr_try; unset PZS PZD PZB PZP PZW PZWS
 fi
 
 flop_left
