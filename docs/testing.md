@@ -198,6 +198,24 @@ ubuntu-26.04 one today), starts the suite with no `TMUX_TMPDIR` and so runs
 the suite's own folder and the rows. The other legs
 set a private folder themselves and do not.
 
+### Waiting for a pane's start
+
+A row that starts a pane and then needs its process waits with `pane_runs`
+(#1079), not on `#{pane_current_command}`. While tmux cannot read the pane's
+foreground process, it names the pane by the first word of its start command,
+so a pane started `sleep 30` reads `sleep` before sleep runs. A pane started
+`exec bash` reads `bash` already in the `<default-shell> -c` shell that starts
+it. `pane_runs <socket> <pane> <comm> <argv...>` reads `#{pane_pid}` and waits
+until that process's comm and whole argv are the ones given. On a start with no
+`exec`, such as `sleep 30`, it relies on the default shell exec'ing a lone `-c`
+command, so that the command becomes the pane's process; bash, dash and zsh do.
+
+A pane started by `new-window -e PATH=…` does not get that `PATH`: tmux puts the
+PATH of the client that ran `new-window` over it (tmux's `spawn.c`). A row that
+needs a pane to find its own `sleep` or `claude` first sets `PATH` on the tmux
+client command itself, `PATH="$dir:$PATH" "$TMUX_REAL" -L … new-window …`, or
+puts it in the start command.
+
 ### Running the tui tests
 
 Run them with `make tui-test` from the checkout: on the six targets
