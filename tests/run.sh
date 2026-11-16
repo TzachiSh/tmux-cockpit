@@ -442,6 +442,22 @@ kill_socks() {
 $SOCKP
 EOF_SOCKP
 }
+# For a block that runs a suite nested under a TMUX_TMPDIR of its own (#1104): whether a
+# suite's socket there can bind, and the end of what servers it left. In the prelude, so a
+# block above the #1104 block has them too: bash defines a function where it reads it (#1145).
+sock_long() {                 # <TMUX_TMPDIR> -> true when a suite's socket under it,
+    # <it>/tmux-<uid>/cockpit-suite-<pid of up to 7 digits>, passes 107 bytes: none binds there
+    [ $# -eq 1 ] || { bad "sock_long takes one folder" "1" "$#"; return 0; }
+    [ $((${#1} + ${#UID} + 28)) -gt 107 ]
+}
+sock_sweep() {                # <TMUX_TMPDIR>... -> each server on a socket in its tmux-* folders
+    local d s                 # is ended by that socket, silently
+    for d; do
+        for s in "$d"/tmux-*/*; do
+            [ -S "$s" ] && "$TMUX_REAL" -S "$s" kill-server >/dev/null 2>&1
+        done
+    done
+}
 
 # Several checks need a live tmux server to set per-pane options against. Skip
 # them cleanly rather than failing: a red suite should mean broken code, not
@@ -6099,8 +6115,14 @@ gbl_run() {                   # <TMPDIR length in bytes>
         skip_ "key give-back under a $1-byte TMPDIR (the suite's own TMPDIR is too long)"
         return
     fi
-    mkdir -p "$d"; tag="l$$-$1"
-    ( cd "$DIR" && TMPDIR="$d" COCKPIT_TEST_GBTAG="$tag" \
+    mkdir -p "$d" "$base/s"; tag="l$$-$1"
+    # Its servers in a socket folder of its own, swept below: in this run's folder, a nested
+    # run ended by KILL left servers this run's cleanup does not know (#1145).
+    if sock_long "$base/s"; then
+        skip_ "key give-back under a $1-byte TMPDIR (TMPDIR too long for the nested socket path)"
+        return
+    fi
+    ( cd "$DIR" && TMPDIR="$d" TMUX_TMPDIR="$base/s" COCKPIT_TEST_GBTAG="$tag" \
         exec tests/only.sh '^a reload that turns a cockpit key off or moves it' ) \
         </dev/null >"$base/log" 2>&1
     # Exit 0 is not enough: a block that skips exits 0 having tested nothing. Its FAIL and
@@ -6111,6 +6133,11 @@ gbl_run() {                   # <TMPDIR length in bytes>
     is "under a $1-byte TMPDIR the key give-back block passes, none skipped (#858)" "0" "$rc"
     is "and leaves no cockpit-gbt dir of its own in /tmp" "" \
        "$(ls -d /tmp/cockpit-gbt-"$tag".* 2>/dev/null)"
+    # tmux makes tmux-<uid> in TMUX_TMPDIR on its first call there; the nested run's server
+    # is its first.
+    is "and its servers' sockets were in a folder of its own" "own" \
+       "$([ -d "$base/s/tmux-$(id -u)" ] && echo own || echo none)"
+    sock_sweep "$base/s"
 }
 gbl_run 70
 gbl_run 90
@@ -11453,22 +11480,10 @@ unset -f nw
 rm -rf "$NW"
 
 echo "== nested runs: a helper runs them, one guards the socket path, one sweeps (#1104) =="
-# For the blocks below that run others nested, each with a TMUX_TMPDIR of its own: whether a
-# suite's socket there can bind, the run itself, and the end of what servers it left (#1104).
-# Top-level, so only.sh and par.sh give them to every block; no block unsets them.
-sock_long() {                 # <TMUX_TMPDIR> -> true when a suite's socket under it,
-    # <it>/tmux-<uid>/cockpit-suite-<pid of up to 7 digits>, passes 107 bytes: none binds there
-    [ $# -eq 1 ] || { bad "sock_long takes one folder" "1" "$#"; return 0; }
-    [ $((${#1} + ${#UID} + 28)) -gt 107 ]
-}
-sock_sweep() {                # <TMUX_TMPDIR>... -> each server on a socket in its tmux-* folders
-    local d s                 # is ended by that socket, silently
-    for d; do
-        for s in "$d"/tmux-*/*; do
-            [ -S "$s" ] && "$TMUX_REAL" -S "$s" kill-server >/dev/null 2>&1
-        done
-    done
-}
+# For the blocks below that run others nested, each with a TMUX_TMPDIR of its own: the run
+# itself (#1104). Its socket path guard and its sweep, sock_long and sock_sweep, are in the
+# prelude. Top-level, so only.sh and par.sh give these to every block below, as run.sh does: a
+# function is defined where it is read; no block unsets them.
 # tests/only.sh <pattern> from the checkout, with TMUX unset and the env words added (VAR=value
 # or -u VAR). Sets NEST_RC to its exit, NEST_OUT to its output, NEST_PASS and NEST_FAIL to the
 # number of its lines that say each.
@@ -20163,7 +20178,7 @@ nb_run() {
 }
 nb_no() { grep -c 'set XDG_RUNTIME_DIR to a folder that exists' "$NB/err"; }
 # The nested socket is $NB/s/tmux-<uid>/cockpit-suite-<pid>: past 107 bytes no server binds.
-if [ $((${#NB} + ${#UID} + 30)) -gt 107 ]; then
+if sock_long "$NB/s"; then
     skip_ "the tmux wrapper under a TMPDIR with a blank (the socket path would pass 107 bytes)"
 else
     # S: the inner server's socket is in the block's own folder, never the default one. own:
@@ -22956,7 +22971,7 @@ else
 DS=$(mktmpd); DST="$DS/d\$x\`y'z"; DSS="$DS/s"; mkdir -p "$DST" "$DSS"
 # The nested socket is $DSS/tmux-<uid>/cockpit-suite-<pid>: past 107 bytes the server cannot
 # bind, which is the long-TMPDIR class, not this one.
-if [ $((${#DSS} + ${#UID} + 28)) -gt 107 ]; then
+if sock_long "$DSS"; then
     skip_ "a \$ in TMPDIR (TMPDIR too long for the nested socket path)"
 else
 ( cd "$DIR" && TMPDIR="$DST" TMUX_TMPDIR="$DSS" exec tests/only.sh '^cmdname.sh: cmd_base cuts' ) \
@@ -23276,15 +23291,26 @@ echo "== the #746 block holds under a TMPDIR with two spaces (#893) =="
 if need_tmux "the #746 block under a spaced TMPDIR"; then :
 elif ! command -v timeout >/dev/null 2>&1; then skip_ "the #746 block under a spaced TMPDIR (no timeout)"
 else
-SPB=$(mktmpd); SPT="$SPB/my  tmp"; mkdir -p "$SPT"
-( cd "$DIR" && TMPDIR="$SPT" exec timeout 120 tests/only.sh '^the four bounded reads end' ) \
-    </dev/null > "$SPB/log" 2>&1
+SPB=$(mktmpd); SPT="$SPB/my  tmp"; mkdir -p "$SPT" "$SPB/s"
+# Its servers in a socket folder of its own, swept below: in this run's folder, a nested run
+# ended by KILL left servers this run's cleanup does not know (#1145).
+if sock_long "$SPB/s"; then
+    skip_ "the #746 block under a spaced TMPDIR (TMPDIR too long for the nested socket path)"
+else
+( cd "$DIR" && TMPDIR="$SPT" TMUX_TMPDIR="$SPB/s" \
+    exec timeout 120 tests/only.sh '^the four bounded reads end' ) </dev/null > "$SPB/log" 2>&1
 sp_n=$(sed 's/\x1b\[[0-9;]*m//g' "$SPB/log" | grep -E '[0-9]+ passed, [0-9]+ failed' | tail -1)
 is "the #746 block, under a TMPDIR with two spaces, passes whole" "ok" \
    "$(case $sp_n in "" | *" 0 passed"*) echo "none: $(tail -2 "$SPB/log" | tr '\n' ' ')" ;;
         *" 0 failed"*) echo ok ;; *) echo "$sp_n" ;; esac)"
 is "and writes nothing beside that TMPDIR" "absent" \
    "$([ -e "$SPB/my" ] && echo present || echo absent)"
+# tmux makes tmux-<uid> in TMUX_TMPDIR on its first call there; the nested run's server is
+# its first.
+is "and its servers' sockets were in a folder of its own" "own" \
+   "$([ -d "$SPB/s/tmux-$(id -u)" ] && echo own || echo none)"
+sock_sweep "$SPB/s"
+fi
 rm -rf "$SPB"; unset SPB SPT sp_n
 fi
 
