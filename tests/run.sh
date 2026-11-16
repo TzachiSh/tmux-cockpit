@@ -20452,7 +20452,10 @@ echo "== tmux-open-path (#264): the key from pick is checked, a missing binary i
 # The stub answers with PICK_KEY. Anything that is not an index into the list is
 # refused with a message and nothing opens.
 optui_setup
-OKT=$(mktmpd); OKL="$OKT/log"; : > "$OKL"; mkdir -p "$OKT/w"; : > "$OKT/w/a.txt"; : > "$OKT/w/b.txt"
+# The folder's own name holds two blanks (as #1069 did), so a want that carries one of its
+# paths raw where the script %q-quotes it is red in a plain run too (#990).
+OKT="$(mktmpd)/o  k"; mkdir -p "$OKT/w"; OKL="$OKT/log"; : > "$OKL"
+: > "$OKT/w/a.txt"; : > "$OKT/w/b.txt"
 cat > "$OKT/tmux" <<'STUB'
 #!/usr/bin/env bash
 case "$1" in
@@ -20485,7 +20488,9 @@ okrun() {                     # okrun <key> [bin] -- the log after a pick answer
         bash "$DIR/scripts/tmux-open-path" ${OKARG---pick} %1 </dev/null >/dev/null 2>"$OKT/err"
     echo "rc=$?"; cat "$OKL"
 }
-is "key 1 opens the second candidate" "rc=0"$'\n'"NEWWIN ed  $OKT/w/b.txt" "$(okrun 1)"
+# The window's command carries the file %q-quoted, as the script's shq writes it (#990)
+OKQB=$(printf %q "$OKT/w/b.txt")
+is "key 1 opens the second candidate" "rc=0"$'\n'"NEWWIN ed  $OKQB" "$(okrun 1)"
 for k in 2 99 -1 abc '0;x' ''; do
     case "$(okrun "$k")" in
         *NEWWIN*) bad "key [$k] is not a candidate: nothing opens" "no new window" "opened" ;;
@@ -20503,7 +20508,7 @@ if OKLOC=$(utf8_loc); then
            "rc=1|MSG cockpit: the picker named something that is not a candidate|" \
            "$(OKLC=$OKLOC okrun "$k" | paste -sd'|')|$(cat "$OKT/err")"
     done
-    is "in en_US.UTF-8 key 1 still opens the second candidate" "rc=0|NEWWIN ed  $OKT/w/b.txt|" \
+    is "in en_US.UTF-8 key 1 still opens the second candidate" "rc=0|NEWWIN ed  $OKQB|" \
        "$(OKLC=$OKLOC okrun 1 | paste -sd'|')|$(cat "$OKT/err")"
 else
     bad "a UTF-8 locale whose regex [0-9] matches ² and ١ loads (localedef en_US.UTF-8)" \
@@ -20864,7 +20869,9 @@ is "and no VS Code server was installed into the suite's HOME" "absent" \
 echo "== tmux-open-path (#283): a lone markdown file opens in the viewer, the rest as before =="
 # A tmux stub logs what the script asks of tmux, and a cockpit-tui stub answers
 # pick with PICK_KEY and view with VIEW_OUT, logging its own argv. No server.
-MV=$(mktmpd); MVL="$MV/log"; mkdir -p "$MV/bin" "$MV/w/d.md"
+# The folder's own name holds two blanks (as #1069 did), so a want that carries one of its
+# paths raw where the script %q-quotes it is red in a plain run too (#990).
+MV="$(mktmpd)/m  v"; MVL="$MV/log"; mkdir -p "$MV/bin" "$MV/w/d.md"
 MVB=$'b\xe2\x80\xaeq\x1b[2Jz.md'   # a bidi override and an escape in the name
 for f in a.md B.MD c.markdown e.mdown g.mkd n.md.txt t.txt 'h#(x)#{y}.md' "$MVB"; do : > "$MV/w/$f"
 done
@@ -20925,8 +20932,11 @@ mvrun() {                     # mvrun <click line> <args...> -- the log after on
     printf '%s' "$?" > "$MV/rc"   # for a row that must tell "opens nothing" from a crash (#842)
     cat "$MVL"
 }
+# A command the script builds carries the file %q-quoted, as its shq writes it; the
+# argv logged by the stubs carries it raw (#990)
+MVQA=$(printf %q "$MV/w/a.md")
 is "a lone .md opens a popup the pane's size over it, which re-enters with --view" \
-   "POPUP [-t] [%1] [-E] [-x] [P] [-y] [P] [-w] [90] [-h] [30] [-d] [$MV/w] [-T] [ a.md ] [$(printf %q "$DIR/scripts/tmux-open-path") --view %1 $MV/w/a.md '']" \
+   "POPUP [-t] [%1] [-E] [-x] [P] [-y] [P] [-w] [90] [-h] [30] [-d] [$MV/w] [-T] [ a.md ] [$(printf %q "$DIR/scripts/tmux-open-path") --view %1 $MVQA '']" \
    "$(mvrun 'see a.md' %1)"
 for f in B.MD c.markdown e.mdown g.mkd 'a.md:12'; do
     case "$(mvrun "$f" %1)" in
@@ -20935,15 +20945,16 @@ for f in B.MD c.markdown e.mdown g.mkd 'a.md:12'; do
     esac
 done
 case "$(mvrun 'a.md:12' %1)" in
-    *"--view %1 $MV/w/a.md 12]") ok "and a clicked :line goes with it" ;;
+    *"--view %1 $MVQA 12]") ok "and a clicked :line goes with it" ;;
     *) bad "and a clicked :line goes with it" "--view %1 .../a.md 12" "$(mvrun 'a.md:12' %1)" ;;
 esac
 for f in n.md.txt t.txt d.md; do
-    is "$f is not markdown: the editor, at once" "NEWWIN ed  $MV/w/$f" "$(mvrun "$f" %1)"
+    is "$f is not markdown: the editor, at once" "NEWWIN ed  $(printf %q "$MV/w/$f")" \
+       "$(mvrun "$f" %1)"
 done
-is "@cockpit_md_view off: a .md goes straight to the editor" "NEWWIN ed  $MV/w/a.md" \
+is "@cockpit_md_view off: a .md goes straight to the editor" "NEWWIN ed  $MVQA" \
     "$(MD_VIEW=off mvrun a.md %1)"
-is "no client on the pane's session: the editor, and no popup" "NEWWIN ed  $MV/w/a.md" \
+is "no client on the pane's session: the editor, and no popup" "NEWWIN ed  $MVQA" \
     "$(NO_CLIENT=1 mvrun a.md %1)"
 # tmux hands back the popup command's status: 129 is the client detaching
 # mid-view, 3 any exit 3. Neither is a refusal, so no editor opens behind them.
@@ -20956,7 +20967,7 @@ for rc in 129 3; do
                 "$(POPUP_RC=$rc mvrun a.md %1)" ;;
     esac
 done
-is "no cockpit-tui: a .md goes straight to the editor" "NEWWIN ed  $MV/w/a.md" \
+is "no cockpit-tui: a .md goes straight to the editor" "NEWWIN ed  $MVQA" \
     "$(MV_BIN="$MV/none" mvrun a.md %1)"
 is "the popup's title and directory spell each # as ##" "[-d] [$MV/w] [-T] [ h##(x)##{y}.md ]" \
    "$(mvrun 'h#(x)#{y}.md' %1 | grep -o '\[-d\] \[[^]]*\] \[-T\] \[[^]]*\]')"
@@ -20964,16 +20975,16 @@ is "the popup's title drops a bidi override and control characters" "[-T] [ bq[2
    "$(mvrun "$MVB" %1 | grep -o '\[-T\] \[[^]]*\]')"
 # --view is the popup's re-entry: the viewer runs in it, and e comes back here.
 is "--view runs the viewer at the line and opens the editor where e left it" \
-   "VIEW [view] [--line] [7] [--] [$MV/w/a.md]"$'\n'"NEWWIN ed +12 $MV/w/a.md" \
+   "VIEW [view] [--line] [7] [--] [$MV/w/a.md]"$'\n'"NEWWIN ed +12 $MVQA" \
    "$(VIEW_OUT='edit 12' mvrun '' --view %1 "$MV/w/a.md" 7)"
 # a touch client: the viewer's e opens a terminal editor, at +N for the editors that take it
 for e in vi vim nvim nano emacs micro; do
     is "--view on touch, e: $e gets +12" \
-        "VIEW [view] [--line] [7] [--] [$MV/w/a.md]"$'\n'"NEWWIN $e +12 $MV/w/a.md" \
+        "VIEW [view] [--line] [7] [--] [$MV/w/a.md]"$'\n'"NEWWIN $e +12 $MVQA" \
        "$(TOUCH=1 MV_ED=$e VIEW_OUT='edit 12' mvrun '' --view %1 "$MV/w/a.md" 7)"
 done
 is "--view on touch, e: an editor outside the list gets the file only" \
-   "VIEW [view] [--line] [7] [--] [$MV/w/a.md]"$'\n'"NEWWIN ed $MV/w/a.md" \
+   "VIEW [view] [--line] [7] [--] [$MV/w/a.md]"$'\n'"NEWWIN ed $MVQA" \
    "$(TOUCH=1 VIEW_OUT='edit 12' mvrun '' --view %1 "$MV/w/a.md" 7)"
 is "--view without a line passes none" "VIEW [view] [--] [$MV/w/a.md]" \
     "$(mvrun '' --view %1 "$MV/w/a.md" '')"
@@ -20984,28 +20995,28 @@ for o in 'edit 3; touch x' 'edit' 'edit x' 'open 3' 'edit 3 4'; do
     esac
 done
 case "$(VIEW_ERR='cockpit-tui: unknown screen view' mvrun '' --view %1 "$MV/w/a.md" '')" in
-    *"NEWWIN ed  $MV/w/a.md"*"older than the plugin"*|*"older than the plugin"*"NEWWIN ed  $MV/w/a.md"*)
+    *"NEWWIN ed  $MVQA"*"older than the plugin"*|*"older than the plugin"*"NEWWIN ed  $MVQA"*)
         ok "a cockpit-tui without view is called stale, and the editor opens" ;;
     *) bad "a cockpit-tui without view is called stale, and the editor opens" \
             "the stale note and the editor" \
          "$(VIEW_ERR='cockpit-tui: unknown screen view' mvrun '' --view %1 "$MV/w/a.md" '')" ;;
 esac
 case "$(VIEW_ERR=boom VIEW_RC=3 mvrun '' --view %1 "$MV/w/a.md" '')" in
-    *"viewer exited 3"*"NEWWIN ed  $MV/w/a.md"*|*"NEWWIN ed  $MV/w/a.md"*"viewer exited 3"*)
+    *"viewer exited 3"*"NEWWIN ed  $MVQA"*|*"NEWWIN ed  $MVQA"*"viewer exited 3"*)
         ok "a viewer that fails says so, and the editor opens" ;;
     *) bad "a viewer that fails says so, and the editor opens" "the note and the editor" \
          "$(VIEW_ERR=boom VIEW_RC=3 mvrun '' --view %1 "$MV/w/a.md" '')" ;;
 esac
 # From the picker's popup the viewer draws in place: tmux has one popup per client.
 is "a .md chosen in the picker opens the viewer in the picker's own popup" \
-   "VIEW [view] [--] [$MV/w/a.md]"$'\n'"NEWWIN ed +5 $MV/w/a.md" \
+   "VIEW [view] [--] [$MV/w/a.md]"$'\n'"NEWWIN ed +5 $MVQA" \
        "$(VIEW_OUT='edit 5' PICK_KEY=0 mvrun 'a.md t.txt' --pick %1)"
 # a refused new-window is said, not swallowed (#366): the editor row and the touch row
 is "a window tmux refuses to open is a note, from the editor path" \
-   "NEWWIN ed  $MV/w/t.txt"$'\n'"MSG cockpit: tmux could not open a window for t.txt" \
-       "$(NEWWIN_RC=1 mvrun 'x' --view %1 "$MV/w/t.txt" '')"
+   "NEWWIN ed  $(printf %q "$MV/w/t.txt")"$'\n'"MSG cockpit: tmux could not open a window for $(
+       )t.txt" "$(NEWWIN_RC=1 mvrun 'x' --view %1 "$MV/w/t.txt" '')"
 is "and from the touch client's terminal editor" \
-   "VIEW [view] [--] [$MV/w/a.md]"$'\n'"NEWWIN ed $MV/w/a.md"$'\n'"MSG cockpit: tmux could not open a window for a.md" \
+   "VIEW [view] [--] [$MV/w/a.md]"$'\n'"NEWWIN ed $MVQA"$'\n'"MSG cockpit: tmux could not open a window for a.md" \
    "$(NEWWIN_RC=1 VIEW_OUT='edit 5' TOUCH=1 mvrun 'x' --view %1 "$MV/w/a.md" '')"
 # In a UTF-8 locale [0-9] also matches ² and ١. The viewer's `edit ²` is no edit: nothing
 # opens, on a touch client or not (#842). The edit 5 rows above are the ASCII answers.
