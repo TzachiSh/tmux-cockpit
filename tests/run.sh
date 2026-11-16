@@ -20394,14 +20394,17 @@ echo "== tmux-open-path (#264): several candidates go through cockpit-tui pick =
 # key is pressed, and the editor shim's log is the only thing the asserts read.
 if need_tmux "open-at-line via pick"; then :; else
 OL="cockpit-ol-$$"; SOCKS="$SOCKS $OL"
-OLD=$(mktmpd); OLLOG="$OLD/log"; OLED="$OLD/ed"; : > "$OLLOG"
+# The folder's own name holds two blanks (as #1069 did), so a path of it pasted bare into
+# the editor setting is split in a plain run too (#990).
+OLD="$(mktmpd)/o  l"; mkdir -p "$OLD"; OLLOG="$OLD/log"; OLED="$OLD/ed"; : > "$OLLOG"
 mkdir -p "$OLD/w/sub"; : > "$OLD/w/one.txt"; : > "$OLD/w/two.txt"; : > "$OLD/w/three.txt"
 # The editor runs in a new window after the script has exited (#610). The shim
 # waits while $OLD/hold is there, so every row meets that order, the late one.
 printf '#!/bin/sh\nwhile [ -e %s ]; do sleep 0.05; done\necho "OPEN $*" >> %s\n' \
     "$(tq "$OLD/hold")" "$(tq "$OLLOG")" > "$OLED"; chmod +x "$OLED"
 "$TMUX_REAL" -L "$OL" -f /dev/null new-session -d -s t -x 100 -y 28 -c "$OLD/w" >/dev/null 2>&1
-"$TMUX_REAL" -L "$OL" set -g @cockpit_editor "$OLED" >/dev/null 2>&1
+# the option is a command, pasted unquoted into the window's: the path goes in quoted (#990)
+"$TMUX_REAL" -L "$OL" set -g @cockpit_editor "$(tq "$OLED")" >/dev/null 2>&1
 OLP=$("$TMUX_REAL" -L "$OL" list-panes -t t -F '#{pane_id}' | head -1)
 "$TMUX_REAL" -L "$OL" set-option -p -t "$OLP" @cockpit_click_line \
     "one.txt two.txt:7 sub/ three.txt" >/dev/null 2>&1
@@ -20562,7 +20565,9 @@ echo "== tmux-open-path (#264): a path with #(...), #{...} and #S in it reaches 
 # PATH records what the script gave tmux (a #() job would run async, #255).
 if need_tmux "hostile path escape"; then :; else
 HX="cockpit-hx-$$"; SOCKS="$SOCKS $HX"
-HXD=$(mktmpd); HXB="$HXD/bin"; HXL="$HXD/argv.log"; HXA="$HXD/editor.log"
+# The folder's own name holds two blanks (as #1069 did), so a path of it pasted bare into
+# the editor setting is split in a plain run too (#990).
+HXD="$(mktmpd)/h  x"; HXB="$HXD/bin"; HXL="$HXD/argv.log"; HXA="$HXD/editor.log"
 mkdir -p "$HXB" "$HXD/w/d#S"
 optui_setup
 HXED="$HXD/ed"
@@ -20587,10 +20592,12 @@ hxgo() {                      # hxgo <n> -- run the pick re-entry; wait for it
 # The script's own formats (#{window_id}) are legitimate, so only the lines that
 # carry the hostile name count; with every doubled ## taken out, any # left is
 # live: #(..) and #{..} but also the one-letter #S, which shq does not touch.
-# $1 drops the editor command's line, which must carry the real name.
-hxlive() { grep -F 'touch' "$HXL" | grep -v "^$HXED " | sed 's/##//g' | grep -c '#'; }
+# $1 drops the editor command's line, which must carry the real name. The option is a
+# command, pasted unquoted into the window's, so the path goes in quoted and the line is
+# found by that text, as a fixed string: a path read as a regex breaks on its own ' (#990).
+hxlive() { grep -F 'touch' "$HXL" | grep -vF -- "$(tq "$HXED") " | sed 's/##//g' | grep -c '#'; }
 hxseen() { grep -c -F 'touch' "$HXL"; }
-"$TMUX_REAL" -L "$HX" set -g @cockpit_editor "$HXED" >/dev/null 2>&1
+"$TMUX_REAL" -L "$HX" set -g @cockpit_editor "$(tq "$HXED")" >/dev/null 2>&1
 hxgo 1
 is "terminal editor: the name and directory arguments carry no live # format" "0" "$(hxlive)"
 is "and the hostile name did reach tmux (the check saw it)" "yes" \
@@ -21182,13 +21189,16 @@ echo "== tmux-open-path (#283): the viewer in a real popup, e to the editor, a h
 # client, keys go in through it, and an editor shim's log is what the asserts read.
 if need_tmux "markdown viewer popup"; then :; else
 MDI="cockpit-mdi-$$"; MDO="cockpit-mdo-$$"; SOCKS="$SOCKS $MDI $MDO"   # not the move menu's mvo
-MVD=$(mktmpd); mkdir -p "$MVD/w"; MVE="$MVD/ed.log"; : > "$MVE"
+# The folder's own name holds two blanks (as #1069 did), so a path of it pasted bare into
+# the editor setting is split in a plain run too (#990).
+MVD="$(mktmpd)/m  d"; mkdir -p "$MVD/w"; MVE="$MVD/ed.log"; : > "$MVE"
 printf '#!/bin/sh\necho "OPEN $*" >> %s\n' "$(tq "$MVE")" > "$MVD/ed"; chmod +x "$MVD/ed"
 MVN='r#(tmux${IFS}set${IFS}-g${IFS}@pwned${IFS}yes).md'   # no spaces: the line splits on them
 { printf '# Heading\n\n'; for i in $(seq 0 40); do printf 'p%s\n\n' "$i"; done; } > "$MVD/w/$MVN"
 "$TMUX_REAL" -L "$MDI" -f /dev/null new-session -d -s t -x 100 -y 30 -c "$MVD/w" \
     'exec sleep 300' >/dev/null 2>&1
-"$TMUX_REAL" -L "$MDI" set -g @cockpit_editor "$MVD/ed" >/dev/null 2>&1
+# the option is a command, pasted unquoted into the window's: the path goes in quoted (#990)
+"$TMUX_REAL" -L "$MDI" set -g @cockpit_editor "$(tq "$MVD/ed")" >/dev/null 2>&1
 "$TMUX_REAL" -L "$MDI" set -g remain-on-exit on >/dev/null 2>&1   # the shim editor exits at once
 MVP=$("$TMUX_REAL" -L "$MDI" list-panes -t t -F '#{pane_id}' | head -1)
 "$TMUX_REAL" -L "$MDI" set-option -p -t "$MVP" @cockpit_click_line "see $MVN" >/dev/null 2>&1
@@ -21250,7 +21260,9 @@ echo "== tmux-open-path --folder: the file browser, and what is done with the li
 # wrapper that logs every call before it runs, so "nothing was opened" is read
 # from the calls, never from a sleep.
 if need_tmux "folder browser"; then :; else
-FB=$(mktmpd); FBS="cockpit-fb-$$"; SOCKS="$SOCKS $FBS"
+# The folder's own name holds two blanks (as #1069 did), so a path of it pasted bare into
+# the editor setting is split in a plain run too (#990).
+FB="$(mktmpd)/f  b"; FBS="cockpit-fb-$$"; SOCKS="$SOCKS $FBS"
 FBD="$FB/proj"; mkdir -p "$FB/bin" "$FBD/sub"
 FBF="$FBD/a b's.txt"; : > "$FBF"; mkfifo "$FBD/fifo"; ln -s /dev/null "$FBD/devnull"
 : > "$FBD/sub/n.md"; : > "$FBD/sub/n.txt"
@@ -21272,6 +21284,9 @@ for e in ed-cockpit ed-visual ed-editor nvim; do
 mv -f "$FB/ed.log.\$\$" "$FB/ed.log"
 STUB
 done
+# An editor setting is a command that tmux-open-path pastes into new-window's sh command
+# unquoted, so a stub's path goes in single-quoted: a TMPDIR holding a blank splits it (#990)
+FBEC=$(tq "$FB/bin/ed-cockpit"); FBEV=$(tq "$FB/bin/ed-visual"); FBEE=$(tq "$FB/bin/ed-editor")
 cat > "$FB/bin/tmux" <<STUB
 #!/bin/sh
 printf '%s' "\$1" >> "$FB/calls"; for a in "\$@"; do printf ' [%s]' "\$a" >> "$FB/calls"; done; echo >> "$FB/calls"
@@ -21324,6 +21339,11 @@ if [ "\$k" = 2 ] && [ -e "$FB/answer.2" ]; then cat "$FB/answer.2"; else cat "$F
 exit \$(cat "$FB/rc")
 STUB
 chmod +x "$FB"/bin/*
+# The +N rows can't quote theirs: the script picks +N by the editor's first word, cut at a
+# blank and never unquoted (#1177). Their nvim sits in the folder the suite keeps free of
+# blanks (#992), unquoted and blank-free by design, so they hold under any TMPDIR. Copied
+# after the chmod above, so the copy is executable too.
+FBNV=$(mktemp -d "$COCKPIT_SUITE_NB/ct.XXXXXX"); cp "$FB/bin/nvim" "$FBNV/nvim"
 # from $FB: a #() that ran would drop its file in the server's cwd, never the checkout
 ( cd "$FB" &&
     PATH="$FB/bin:$PATH" "$TMUX_REAL" -L "$FBS" -f /dev/null new-session -d -s t -x 100 -y 30 \
@@ -21402,25 +21422,25 @@ case "$(cat "$FB/code.log")" in
 esac
 
 # a touch client: a terminal editor window instead, never VS Code
-fb on "open $FBF\n" 0 "VISUAL=$FB/bin/ed-visual" "EDITOR=$FB/bin/ed-editor"
+fb on "open $FBF\n" 0 "VISUAL=$FBEV" "EDITOR=$FBEE"
 fbwait "$FB/ed.log"
 is "touch: one window, no code" "1|0|2" "$(fbn new-window)|$(fbn run-shell)|$(fbwin)"
 is "touch: \$VISUAL opens the exact path" "$FB/bin/ed-visual [$FBF]" "$(cat "$FB/ed.log")"
 is "touch: code never ran" "" "$(cat "$FB/code.log")"
-fb on "open $FBF\n" 0 "EDITOR=$FB/bin/ed-editor"
+fb on "open $FBF\n" 0 "EDITOR=$FBEE"
 fbwait "$FB/ed.log"
 is "touch: \$EDITOR when there is no \$VISUAL" "$FB/bin/ed-editor [$FBF]" "$(cat "$FB/ed.log")"
 fb on "open $FBF\n" 0 "VISUAL=" "EDITOR="
 fbwait "$FB/ed.log"
 is "touch: nvim when nothing is set" "$FB/bin/nvim [$FBF]" "$(cat "$FB/ed.log")"
-"$TMUX_REAL" -L "$FBS" set -g @cockpit_editor "$FB/bin/ed-cockpit"
-fb on "open $FBF\n" 0 "VISUAL=$FB/bin/ed-visual"
+"$TMUX_REAL" -L "$FBS" set -g @cockpit_editor "$FBEC"
+fb on "open $FBF\n" 0 "VISUAL=$FBEV"
 fbwait "$FB/ed.log"
 is "touch: @cockpit_editor beats \$VISUAL" "$FB/bin/ed-cockpit [$FBF]" "$(cat "$FB/ed.log")"
 "$TMUX_REAL" -L "$FBS" set -gu @cockpit_editor
 # the editor window is named for the file and sits in its folder
 # (a .txt: a markdown file goes to the viewer instead, #283)
-fb on "open $FBD/sub/n.txt\n" 0 "VISUAL=$FB/bin/ed-visual"
+fb on "open $FBD/sub/n.txt\n" 0 "VISUAL=$FBEV"
 is "touch: the window is named for the file and starts in its folder" "n.txt $FBD/sub" \
    "$("$TMUX_REAL" -L "$FBS" list-windows -t t -F '#{window_name} #{pane_start_path}' |
        grep -Fx "n.txt $FBD/sub")"
@@ -21431,7 +21451,7 @@ is "touch: and that window's editor got the file" \
 # view: any regular file goes to the viewer, drawn in the browser's popup, touch or not (#406)
 for fbt in on off; do
     for fbv in n.md n.txt; do
-        fb "$fbt" "view $FBD/sub/$fbv\n" 0 "VISUAL=$FB/bin/ed-visual"
+        fb "$fbt" "view $FBD/sub/$fbv\n" 0 "VISUAL=$FBEV"
         is "$fbt: view $fbv opens the viewer on the exact path" "view -- $FBD/sub/$fbv" \
            "$(grep '^view' "$FB/tui.calls")"
         is "$fbt: and no editor, no code, no window opens for $fbv" "0|0" \
@@ -21440,12 +21460,12 @@ for fbt in on off; do
 done
 # the viewer's e prints `edit N` (FBV): a touch client
 # gets a terminal editor at that line, a PC code
-FBV='edit 7\n' fb on "view $FBD/sub/n.txt\n" 0 "VISUAL=$FB/bin/nvim"
+FBV='edit 7\n' fb on "view $FBD/sub/n.txt\n" 0 "VISUAL=$FBNV/nvim"
 fbwait "$FB/ed.log"
 is "touch: the viewer's e opens a terminal editor at the line, not code" \
-    "$FB/bin/nvim [+7] [$FBD/sub/n.txt]|0" \
+    "$FBNV/nvim [+7] [$FBD/sub/n.txt]|0" \
    "$(cat "$FB/ed.log")|$(grep -c . "$FB/code.log")"
-FBV='edit 7\n' fb on "view $FBD/sub/n.txt\n" 0 "VISUAL=$FB/bin/ed-visual"
+FBV='edit 7\n' fb on "view $FBD/sub/n.txt\n" 0 "VISUAL=$FBEV"
 fbwait "$FB/ed.log"
 is "touch: an editor with no +N known gets the file only" "$FB/bin/ed-visual [$FBD/sub/n.txt]" \
     "$(cat "$FB/ed.log")"
@@ -21473,7 +21493,7 @@ FBV='edit 7\n' fb off "view $FBD/sub/n.txt\n" 0
 fbwait "$FB/code.log"
 is "the viewer's e: the editor opens, the browser does not come back" "1|1" \
    "$(fbtn files)|$(grep -c 'n.txt:7' "$FB/code.log")"
-FBV='edit 7\n' fb on "view $FBD/sub/n.txt\n" 0 "VISUAL=$FB/bin/ed-visual"
+FBV='edit 7\n' fb on "view $FBD/sub/n.txt\n" 0 "VISUAL=$FBEV"
 fbwait "$FB/ed.log"
 is "touch, the viewer's e: the editor window opens, the browser does not come back" "1|1" \
    "$(fbtn files)|$(fbn new-window)"
@@ -21559,7 +21579,7 @@ is "the viewed file's folder gone: the browser comes back in the start folder" \
 is "and no error page: no exit line, no key waited for" "0" "$(grep -c 'files exited' "$FB/out")"
 # back from a view, alt-e's editor window still starts in the pane's folder:
 # the loop's folder is its own, never the script's
-"$TMUX_REAL" -L "$FBS" set -g @cockpit_editor "$FB/bin/ed-cockpit"
+"$TMUX_REAL" -L "$FBS" set -g @cockpit_editor "$FBEC"
 for w in $("$TMUX_REAL" -L "$FBS" list-windows -t t -F '#{window_index}' | sed 1d); do
     "$TMUX_REAL" -L "$FBS" kill-window -t "t:$w"; done
 FBR=2 FBA2="open $FBF\n" fb off "view $FBD/sub/n.txt\n" 0
@@ -21577,7 +21597,7 @@ FBASK="panel -p $FBP --ask $FBD/sub/n.txt 1 1|view --line 1 -- $FBD/sub/n.txt"
 is "ask, then q in the viewer it reopens: back to the browser, on the file" \
    "files $FBD|view -- $FBD/sub/n.txt|$FBASK|files $FBD/sub --select n.txt" "$(fbtui)"
 # open on a markdown file on a touch client is a terminal editor, never the viewer
-fb on "open $FBD/sub/n.md\n" 0 "VISUAL=$FB/bin/ed-visual"
+fb on "open $FBD/sub/n.md\n" 0 "VISUAL=$FBEV"
 fbwait "$FB/ed.log"
 is "touch: open on a markdown file goes to term_edit, not the viewer" \
     "$FB/bin/ed-visual [$FBD/sub/n.md]|files $FBD" \
@@ -21613,7 +21633,7 @@ rm -f "$FBC"
 
 # names that are tmux formats: -n and -c expand #(), so term_edit escapes both
 FBH="$FBD/#(touch\${IFS}PWN)dir"; mkdir -p "$FBH"; FBHF="$FBH/#(touch\${IFS}PWN).txt"; : > "$FBHF"
-fb on "open $FBHF\n" 0 "VISUAL=$FB/bin/ed-visual"
+fb on "open $FBHF\n" 0 "VISUAL=$FBEV"
 fbwait "$FB/ed.log"
 is "touch, format-looking names: the editor got the exact path" "$FB/bin/ed-visual [$FBHF]" \
     "$(cat "$FB/ed.log")"
@@ -21625,10 +21645,10 @@ is "touch, format-looking names: nothing ran" "" \
     "$(find "$FB" "$PWD" -maxdepth 3 -name PWN 2>/dev/null)"
 
 # an editor with arguments: the +N decision reads its first word only (#425)
-FBV='edit 7\n' fb on "view $FBD/sub/n.txt\n" 0 "VISUAL=$FB/bin/nvim -u NONE"
+FBV='edit 7\n' fb on "view $FBD/sub/n.txt\n" 0 "VISUAL=$FBNV/nvim -u NONE"
 fbwait "$FB/ed.log"
 is "touch: an editor with arguments keeps them and still gets +N" \
-   "$FB/bin/nvim [-u] [NONE] [+7] [$FBD/sub/n.txt]" "$(cat "$FB/ed.log")"
+   "$FBNV/nvim [-u] [NONE] [+7] [$FBD/sub/n.txt]" "$(cat "$FB/ed.log")"
 
 # a name tmux refuses as a window name still opens (#366): the name drops the control
 # characters and the bidi override, the editor gets the real path
@@ -21636,7 +21656,7 @@ FBC="$FBD/e"$'\e]2;OWNED\a'"x.txt"; : > "$FBC"
 FBB="$FBD/p"$'\xe2\x80\xae'"q.txt"; : > "$FBB"
 for row in "$FBC|e]2;OWNEDx.txt" "$FBB|pq.txt"; do
     for t in on off; do
-        "$TMUX_REAL" -L "$FBS" set -g @cockpit_editor "$FB/bin/ed-cockpit"
+        "$TMUX_REAL" -L "$FBS" set -g @cockpit_editor "$FBEC"
         for w in $("$TMUX_REAL" -L "$FBS" list-windows -t t -F '#{window_index}' | sed 1d); do
             "$TMUX_REAL" -L "$FBS" kill-window -t "t:$w"; done
         fb "$t" "open ${row%%|*}\n" 0
@@ -21677,7 +21697,7 @@ for row in "two lines|open $FBF\\nopen $FBF" "unknown verb|rm $FBF" "missing pat
            "view of a relative path|view proj/sub/n.md" "view, two lines|view $FBF\\nview $FBF" \
            "view, upper case|VIEW $FBF" "view, no path|view"; do
     for t in on off; do
-        fb "$t" "${row#*|}\n" 0 "VISUAL=$FB/bin/ed-visual"
+        fb "$t" "${row#*|}\n" 0 "VISUAL=$FBEV"
         is "refused (${row%%|*}, touch $t): no editor, no code, no copy" "0|0|0|1" \
            "$(fbn run-shell)|$(fbn new-window)|$(fbn load-buffer)|$(fbnotes)"
     done
@@ -21690,6 +21710,7 @@ env PATH="$FB/bin:$PATH" COCKPIT_TUI_BIN="$FB/bin/cockpit-tui" TMUX="$FBSOCK,0,0
     "$DIR/scripts/tmux-open-path" --browse "$FBP" </dev/null >"$FB/out" 2>&1
 is "a stale cockpit-tui is told apart" "1" "$(grep -c 'older than the plugin' "$FB/calls")"
 "$TMUX_REAL" -L "$FBS" kill-server >/dev/null 2>&1
+rm -rf "$FBNV"
 fi
 
 echo "== tmux-open-path --browse: the real cockpit-tui files, keys in, the exact path out (#372) =="
