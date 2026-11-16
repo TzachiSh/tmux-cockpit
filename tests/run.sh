@@ -23291,15 +23291,26 @@ echo "== the #746 block holds under a TMPDIR with two spaces (#893) =="
 if need_tmux "the #746 block under a spaced TMPDIR"; then :
 elif ! command -v timeout >/dev/null 2>&1; then skip_ "the #746 block under a spaced TMPDIR (no timeout)"
 else
-SPB=$(mktmpd); SPT="$SPB/my  tmp"; mkdir -p "$SPT"
-( cd "$DIR" && TMPDIR="$SPT" exec timeout 120 tests/only.sh '^the four bounded reads end' ) \
-    </dev/null > "$SPB/log" 2>&1
+SPB=$(mktmpd); SPT="$SPB/my  tmp"; mkdir -p "$SPT" "$SPB/s"
+# Its servers in a socket folder of its own, swept below: in this run's folder, a nested run
+# ended by KILL left servers this run's cleanup does not know (#1145).
+if sock_long "$SPB/s"; then
+    skip_ "the #746 block under a spaced TMPDIR (TMPDIR too long for the nested socket path)"
+else
+( cd "$DIR" && TMPDIR="$SPT" TMUX_TMPDIR="$SPB/s" \
+    exec timeout 120 tests/only.sh '^the four bounded reads end' ) </dev/null > "$SPB/log" 2>&1
 sp_n=$(sed 's/\x1b\[[0-9;]*m//g' "$SPB/log" | grep -E '[0-9]+ passed, [0-9]+ failed' | tail -1)
 is "the #746 block, under a TMPDIR with two spaces, passes whole" "ok" \
    "$(case $sp_n in "" | *" 0 passed"*) echo "none: $(tail -2 "$SPB/log" | tr '\n' ' ')" ;;
         *" 0 failed"*) echo ok ;; *) echo "$sp_n" ;; esac)"
 is "and writes nothing beside that TMPDIR" "absent" \
    "$([ -e "$SPB/my" ] && echo present || echo absent)"
+# tmux makes tmux-<uid> in TMUX_TMPDIR on its first call there; the nested run's server is
+# its first.
+is "and its servers' sockets were in a folder of its own" "own" \
+   "$([ -d "$SPB/s/tmux-$(id -u)" ] && echo own || echo none)"
+sock_sweep "$SPB/s"
+fi
 rm -rf "$SPB"; unset SPB SPT sp_n
 fi
 
