@@ -683,6 +683,18 @@ cleanup() {
 }
 trap cleanup EXIT
 sv()    { tmux show-option -pqv -t "$PANE" @panestate 2>/dev/null; }
+# How many of the given /proc/<pid> folders are agent-poll processes of the private server on
+# socket <name>. The folders are an argument, so a row can hand it one whose process is gone
+# (#1137): the walk then counts it out and prints nothing, whichever read the exit beat.
+polls_on() {                  # <socket name> <proc dir>... -> the count
+    local s=$1 p n=0
+    shift
+    for p in "$@"; do
+        [ "$(cat "$p/comm" 2>/dev/null)" = agent-poll ] || continue
+        tr '\0' '\n' 2>/dev/null < "$p/environ" | grep -q "^TMUX=$SOCKDIR/$s," && n=$((n + 1))
+    done
+    echo "$n"
+}
 
 echo "== syntax =="
 for f in "$DIR"/cockpit.tmux "$DIR"/install.sh "$DIR"/scripts/* "$DIR"/scripts/lib/*; do
@@ -1474,11 +1486,16 @@ if locale -a 2>/dev/null | grep -qix 'c\.utf-\?8'; then
     is "a subagent after a non-UTF-8 byte holds it under C.UTF-8" running "$(bgo @panestate)"
     # A 1 MB array with no subagent, then the same array ending in one, both under C.UTF-8.
     # yes never ends on its own: head closes the pipe at 1000 lines, and where SIGPIPE is
-    # ignored (GitHub's runners) yes says so on stderr (#1137).
-    BGARR=$(yes "{\"type\":\"shell\",\"command\":\"$(printf '%01000d' 0)\"}," 2>/dev/null \
-        | head -n 1000 | tr -d '\n')
+    # ignored (GitHub's runners) yes says so on stderr (#1137). Run so here, its stderr kept:
+    # without the 2>/dev/null the row below is red where yes is GNU coreutils, the
+    # ubuntu-24.04 and tmux-master legs as CI runs them.
+    BGYE=$(mktmpf)
+    BGARR=$( { trap '' PIPE
+               yes "{\"type\":\"shell\",\"command\":\"$(printf '%01000d' 0)\"}," 2>/dev/null \
+                   | head -n 1000 | tr -d '\n'; } 2>"$BGYE")
     is "the long array has 1000 shell entries" 1000 \
         "$(grep -o '"type":"shell"' <<< "$BGARR" | wc -l | tr -d ' ')"
+    is "and its yes, SIGPIPE ignored, leaves nothing on stderr (#1137)" "" "$(cat "$BGYE")"
     for bgw in done running; do
         bgx=${BGARR%,}; [ "$bgw" = running ] && bgx="$BGARR$BGT"
         bgst running "$BGU"; bgbig done "$(bgstop "$bgx")" LC_ALL=C.UTF-8
@@ -1487,6 +1504,7 @@ if locale -a 2>/dev/null | grep -qix 'c\.utf-\?8'; then
 else
     skip_ "a subagent after a non-UTF-8 byte holds it under C.UTF-8 (no C.UTF-8 locale)"
     skip_ "the long array has 1000 shell entries (no C.UTF-8 locale)"
+    skip_ "and its yes, SIGPIPE ignored, leaves nothing on stderr (no C.UTF-8 locale)"
     skip_ "a 1 MB array under C.UTF-8 ends done (no C.UTF-8 locale)"
     skip_ "a 1 MB array under C.UTF-8 ends running (no C.UTF-8 locale)"
 fi
@@ -5127,9 +5145,11 @@ echo "== notify's deadline covers the whole read, not each line =="
 # no reader, so the next printf dies of SIGPIPE, or fails where that signal is
 # ignored, and the drip stops short of 8 (#135).
 DL=$(mktmpf)
-# That failed printf is the row's mechanism: its stderr is the subshell's, so it goes (#1137).
-( for i in 1 2 3 4 5 6 7 8; do printf 'drip %s\n' "$i" || break; echo "$i" >> "$DL"; sleep 1
-done ) 2>/dev/null \
+# That failed printf is the row's mechanism: its own error goes, nothing else in the loop's
+# does (#1137).
+( for i in 1 2 3 4 5 6 7 8; do printf 'drip %s\n' "$i" 2>/dev/null || break
+    echo "$i" >> "$DL"; sleep 1
+done ) \
     | "$DIR/scripts/agent-state" notify %999999 >/dev/null 2>&1
 rc=${PIPESTATUS[1]}; n=$(wc -l < "$DL")
 if [ "$rc" = 0 ] && [ "$n" -lt 8 ]; then ok "a slow drip does not hold the hook open"
@@ -15308,14 +15328,7 @@ av_hook() {                   # av_hook <type>: a front end's relayed notificati
             "$DIR/scripts/agent-state" notify >/dev/null 2>&1
 }
 av_runs() { grep -c '^run-shell -b ' "$AVLOG"; }
-av_polls() {                  # live agent-poll processes on this server
-    local d n=0
-    for d in /proc/[0-9]*; do
-        [ "$(cat "$d/comm" 2>/dev/null)" = agent-poll ] || continue
-        tr '\0' '\n' 2>/dev/null < "$d/environ" | grep -q "^TMUX=$SOCKDIR/$AV," && n=$((n + 1))
-    done
-    echo "$n"
-}
+av_polls() { polls_on "$AV" /proc/[0-9]*; }   # live agent-poll processes on this server
 av_published() {              # the published pid is a live agent-poll
     local p; p=$(av_tm show-option -gqv @cockpit_poll_pid)
     [ -n "$p" ] && [ "$(cat "/proc/$p/comm" 2>/dev/null)" = agent-poll ]
@@ -22528,14 +22541,7 @@ is "...and a poller for it refuses the slot at its claim" "|config dirs share a 
    "$(pd_opt @cockpit_poll_pid_7)|$(pd_opt @cockpit_poll_err)"
 rm -f "$PD/cks/cksum"
 pd_tm kill-server
-pd_polls() {                  # live agent-poll processes on this block's server
-    local d n=0
-    for d in /proc/[0-9]*; do
-        [ "$(cat "$d/comm" 2>/dev/null)" = agent-poll ] || continue
-        tr '\0' '\n' 2>/dev/null < "$d/environ" | grep -q "^TMUX=$SOCKDIR/$PDS," && n=$((n + 1))
-    done
-    echo "$n"
-}
+pd_polls() { polls_on "$PDS" /proc/[0-9]*; }   # live agent-poll processes on this block's server
 av_wait '[ "$(pd_polls)" = 0 ]'
 is "the pollers leave with their server" "0" "$(pd_polls)"
 rm -rf "$PD"
@@ -22638,14 +22644,7 @@ rd_live() {                   # a live agent-poll holds the default dir's slot
     local p; p=$(rd_tm show-option -gqv @cockpit_poll_pid)
     [ -n "$p" ] && [ "$(cat "/proc/$p/comm" 2>/dev/null)" = agent-poll ]
 }
-rd_polls() {                  # live agent-poll processes on this block's server
-    local d n=0
-    for d in /proc/[0-9]*; do
-        [ "$(cat "$d/comm" 2>/dev/null)" = agent-poll ] || continue
-        tr '\0' '\n' 2>/dev/null < "$d/environ" | grep -q "^TMUX=$SOCKDIR/$RDS," && n=$((n + 1))
-    done
-    echo "$n"
-}
+rd_polls() { polls_on "$RDS" /proc/[0-9]*; }   # live agent-poll processes on this block's server
 for rdbad in "newline:"$'\n' "ESC:"$'\e'; do
     fresh_server -L "$RDS" -f /dev/null -- -d -s t -x 80 -y 24 -c "$RD" 'exec -a claude bash'
     rd_tm set -g @cockpit_agents_glob '|claude|' \; set -g @cockpit_bg_poll 1 \; \
@@ -22847,6 +22846,7 @@ else
 # The nested run's TMPDIR, plain and with two spaces and a % (#818): the block's server
 # command and the cleanup's socket list must keep such a path whole.
 ir_gone() { kill -0 -- "-$1" 2>/dev/null || echo gone; }   # <group>: gone when it is empty
+# shellcheck disable=SC2178,SC2128  # d is this function's string; d=() is two others' (#1137)
 ir_run() {                    # <TMPDIR for the nested run> <label for the rows> [spaced]
     local d=$1 l=$2 irp irs irl irc
     # The caller's runtime dir, as the suite itself had it: the block's short-socket fallback.
@@ -23303,15 +23303,16 @@ else
         "loaded" "none"
 fi
 
-echo "== tests/run.sh reads no /proc environ with its 2>/dev/null after the input (#1137) =="
+echo "== polls_on: a poller gone in mid-walk is not counted, and nothing reaches stderr (#1137) =="
 # A redirect applies left to right: with 2>/dev/null after `< file`, a pid gone between the
-# /proc listing and the read has bash report the failed open on the suite's stderr. Built in
-# pieces, so this block's own lines hold no match.
-ev_pat='<[[:space:]]*"?[^[:space:]"]*'"environ"
-ev_pat+='"?[[:space:]]+2>/dev/null'
-is "no read of a /proc environ puts 2>/dev/null after the input redirect" "" \
-   "$(grep -nE "$ev_pat" "$DIR/tests/run.sh" | cut -d: -f1 | tr '\n' ' ')"
-unset ev_pat
+# comm read and the environ read had bash report the failed open on the suite's stderr. Both
+# moments a poller can exit in: before its comm is read (a child already reaped, its /proc
+# folder gone) and after (a folder whose comm says agent-poll, with no environ left).
+PO=$(mktmpd); mkdir "$PO/9"; echo agent-poll > "$PO/9/comm"
+po_pid=$(sh -c 'echo "$$"')   # reaped once the substitution returns
+is "a poller gone before its comm or its environ is read: not counted, nothing on stderr" \
+   "0|" "$(polls_on x "/proc/$po_pid" "$PO/9" 2>"$PO/err")|$(cat "$PO/err")"
+unset PO po_pid
 
 echo "== the green.sh stamp, the board's kill and seven #1137 blocks print rows alone =="
 # Both printed a "No such file or directory" on every green run: green.sh's find walked
@@ -23345,7 +23346,7 @@ is "and print nothing on stderr" "" "$(cat "$NE/err")"
 # On stdout a green run prints titles, PASS and SKIP rows and the totals line, nothing else.
 is "and nothing on stdout but titles, rows and the totals (#1137)" "" \
    "$(sed 's/\x1b\[[0-9;]*m//g' "$NE/out" \
-        | grep -vE '^== .* ==$|^  (PASS|SKIP) |^  [0-9]+ passed, [0-9]+ failed, [0-9]+ skipped$')"
+        | grep -vnE '^== .* ==$|^  (PASS|SKIP) |^  [0-9]+ passed, [0-9]+ failed, [0-9]+ skipped$')"
 unset NE NE_PAT ne_rc NEST_OUT
 
 flop_left
