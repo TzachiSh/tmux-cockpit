@@ -194,6 +194,32 @@ touch_client() {
     case $t in ""|0) return 1 ;; esac
 }
 
+# The editor command's first word as sh reads it, its folder dropped (#1177): '...',
+# "..." (with \$ \` \" \\ inside) and a backslash are unquoted, leading blanks skipped,
+# and nothing expands or runs. Its limits: a first word that is wholly "$VAR" or $'...'
+# is read literally, and an `env` or VAR= prefix is the first word, so it gets no +N (#1188).
+editor_bin() {
+    local s=$1 w='' c q='' i=0
+    while [ "$i" -lt "${#s}" ]; do
+        c=${s:i:1}; i=$((i + 1))
+        if [ "$q" = "'" ]; then
+            if [ "$c" = "'" ]; then q=; else w+=$c; fi
+        elif [ "$q" = '"' ]; then
+            if [ "$c" = '"' ]; then q=
+            elif [ "$c" = \\ ] && [[ ${s:i:1} == [\$\`\"\\] ]]; then w+=${s:i:1}; i=$((i + 1))
+            else w+=$c; fi
+        else
+            case $c in
+                ' '|$'\t') [ -z "$w" ] || break ;;
+                \'|\") q=$c ;;
+                \\) w+=${s:i:1}; i=$((i + 1)) ;;
+                *) w+=$c ;;
+            esac
+        fi
+    done
+    printf %s "${w##*/}"
+}
+
 # A terminal editor in a window of its own, in the file's folder; never VS Code.
 term_edit() {
     local file=$1 ln=${2:-} editor fd bin wn at=
@@ -207,7 +233,7 @@ term_edit() {
     fi
     [ -n "$editor" ] || { note "cockpit: no terminal editor · set @cockpit_editor, \$VISUAL or \$EDITOR"; return 1; }
     # +N is the vi family's, nano's and emacs's way to a line; others get the file only
-    bin=${editor%% *}; bin=${bin##*/}
+    bin=$(editor_bin "$editor")
     case $bin in vi|vim|nvim|nano|emacs|micro) at=${ln:++$ln} ;; esac
     fd=${file%/*}; fd=${fd:-/}
     wn=$(plain_name "${file##*/}")

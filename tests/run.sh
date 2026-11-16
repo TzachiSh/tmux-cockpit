@@ -21087,6 +21087,22 @@ printf '#!/bin/sh\nfor a in "$@"; do printf "%%s\\n" "$a"; done > %s\n' "$(tq "$
 NEWWIN_SH=$(command -v sh) MV_ED=$(tq "$MV/ed-argv") mvrun x --view %1 "$MV/w/$MVQ" 7 >/dev/null
 is "end to end: the editor is handed +7 and the file's path whole" "+7"$'\n'"$MV/w/$MVQ" \
    "$(cat "$MV/argv" 2>/dev/null)"
+# #1177: a touch client's editor gets +N by its first word, read as sh reads it. An nvim stub
+# at a path holding the folder's blanks, spelled four ways; the viewer's e opens it at line 7
+mkdir -p "$MV/e"; cp "$MV/ed-argv" "$MV/e/nvim"
+for mvsp in single backslash mixed args; do
+    case $mvsp in
+        single) mved=$(tq "$MV/e/nvim"); mvw= ;;
+        backslash) mved=$(printf '%s' "$MV/e/nvim" | sed 's/./\\&/g'); mvw= ;;   # each character
+        mixed) mved="$(tq "$MV/e")/nvim"; mvw= ;;
+        args) mved="$(tq "$MV/e/nvim") -u NONE"; mvw=$'-u\nNONE\n' ;;
+    esac
+    rm -f "$MV/argv"
+    NEWWIN_SH=$(command -v sh) TOUCH=1 VIEW_OUT='edit 7' MV_ED=$mved \
+        mvrun x --view %1 "$MV/w/a.md" '' >/dev/null
+    is "touch, an nvim path with blanks ($mvsp): the editor is handed +7 and the file" \
+       "$mvw+7"$'\n'"$MV/w/a.md" "$(cat "$MV/argv" 2>/dev/null)"
+done
 # In a UTF-8 locale [0-9] also matches ² and ١. The viewer's `edit ²` is no edit: nothing
 # opens, on a touch client or not (#842). The edit 5 rows above are the ASCII answers.
 if MVLOC=$(utf8_loc); then
@@ -21099,9 +21115,9 @@ if MVLOC=$(utf8_loc); then
         done
     done
     # term_edit's own check: no caller hands it a line that is not ASCII now, so it runs
-    # alone here, with a stub tmux that prints the window's command.
+    # alone here, with editor_bin (#1177) and a stub tmux that prints the window's command.
     ter() { env LOCPATH="$MVLOC" LC_ALL=en_US.UTF-8 bash -c '
-            eval "$(sed -n "/^term_edit() {/,/^}/p" "$1")"
+            eval "$(sed -n "/^editor_bin() {/,/^}/p; /^term_edit() {/,/^}/p" "$1")"
             tmux() { case $1 in show-options) echo nvim ;; new-window) printf %s "${!#}" ;; esac; }
             plain_name() { printf %s "$1"; }; fesc() { printf %s "$1"; }; shq() { printf %s "$1"; }
             win=@0; term_edit /w/n.txt "$2"' _ "$DIR/scripts/tmux-open-path" "$1"; }
