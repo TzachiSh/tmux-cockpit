@@ -23256,6 +23256,14 @@ else
 # The nested run's TMPDIR, plain and with two spaces and a % (#818): the block's server
 # command and the cleanup's socket list must keep such a path whole.
 ir_gone() { kill -0 -- "-$1" 2>/dev/null || echo gone; }   # <group>: gone when it is empty
+ir_state() {                  # <pid> -> its state letter, read without reaping it, or nothing
+    local s=""                # the field after the LAST ')': the name before it may hold one
+    read -r s 2>/dev/null < "/proc/$1/stat"
+    s=${s##*') '}; printf '%s' "${s%% *}"
+}
+ir_over() {                   # <pid> -> "over" once it has exited: Z, or reaped and gone
+    local s; s=$(ir_state "$1"); [ -n "$s" ] && [ "$s" != Z ] || echo over
+}
 ir_run() {                    # <TMPDIR for the nested run> <label for the rows> [spaced]
     local irt=$1 l=$2 irp irs irl irc
     # The caller's runtime dir, as the suite itself had it: the block's short-socket fallback.
@@ -23293,10 +23301,20 @@ ir_run() {                    # <TMPDIR for the nested run> <label for the rows>
     # still that run.
     irc=""; read -r irc 2>/dev/null < "/proc/$irp/comm"
     case "$irc" in only.sh|bash) kill -TERM -- "-$irp" 2>/dev/null ;; esac
+    # only.sh traps TERM and runs its trap once the script it runs is done (#1171), so it exits
+    # only after that script's EXIT trap's cleanup. Its state is polled, not waited on: a bare
+    # wait has no bound. bash reaps its own child when it exits, keeping the status for `wait`,
+    # so the stat file is gone (a probe of `setsid sleep 0 &` read R, then no stat file, before
+    # its wait returned 0); a parent that is not bash leaves a zombie, Z. Either is over. Once
+    # reaped the pid can be reused: another process's state there gives a bounded red, never a
+    # signal. With neither inside the polls the row is red and nothing waits; a group still
+    # alive here is left running: nothing in this run or par.sh ends it (#814, #1171, #1201).
+    if ! until_out over ir_over "$irp"; then
+        bad "$l: the interrupted run's only.sh was over inside the wait" "Z or gone" \
+            "$(ir_state "$irp")"
+        return
+    fi
     wait "$irp" 2>/dev/null
-    # only.sh traps TERM and runs its trap once the script it runs is done (#1171), so this
-    # wait returns after that script's EXIT trap's cleanup; the listener count below is read
-    # once it is over.
     until_out 0 grep -cF " $irs" /proc/net/unix
     # And for the run itself to be over: that socket closes early in its cleanup, and its own
     # server and socket go last. They are in the socket folder this run shares with it, where
