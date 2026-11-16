@@ -574,6 +574,55 @@ until_out() {                 # <pattern> <cmd...>
     done
     return 1
 }
+# A pane's start, waited for on the pane's own process, never on #{pane_current_command}
+# (#1079). tmux names a pane from its foreground group's /proc cmdline. Where that read
+# fails or is empty, before the pane's process takes its tty and inside each exec, tmux
+# names it by the first word of the pane's start command: a pane started 'sleep 30' reads
+# sleep before sleep runs. And a pane started 'exec bash' reads bash already in the
+# `<default-shell> -c 'exec bash'` that starts it. So the wait reads #{pane_pid}'s comm (cut
+# to 15 bytes, as the kernel cuts it) and its whole argv, which that -c shell does not share.
+# The last reads stay in PR_COMM and PR_ARGV for a row to check. Where there is no /proc it
+# waits on the field, as before; the #1079 block says so with its SKIP rows.
+# Pass a pane id from -P, not session:index: an index whose window has ended names another
+# window's pane, and the wait reads that pane's process. Anything else is refused.
+# In the prelude, so every block has it: bash defines a function where it reads it (#1145).
+pane_runs() {                 # <-L socket> <pane> <comm> <argv...> -> 0, or a bad row and 1
+    local s=${1:-} p=${2:-} c=${3:-} pid i want n argv=()
+    PR_COMM='' PR_ARGV=''
+    need_sock "$s" pane_runs || return 1
+    if [ $# -lt 4 ] || [ -z "$p" ] || [ -z "$c" ]; then
+        sock_bad "pane_runs takes a socket, a pane, a comm and an argv" \
+            "<socket> <pane> <comm> <argv...>" "$*"
+        return 1
+    fi
+    if ! [[ $p =~ ^%[0-9]+$ ]]; then
+        sock_bad "pane_runs takes a pane id from -P, not session:index" "%<digits>" "$p"
+        return 1
+    fi
+    shift 3
+    if [ ! -d /proc/self ]; then
+        n=$1; case $n in /*) n=${n##*/} ;; esac
+        until_out "$n" "$TMUX_REAL" -L "$s" display-message -p -t "$p" '#{pane_current_command}'
+        return
+    fi
+    pid=$("$TMUX_REAL" -L "$s" display-message -p -t "$p" '#{pane_pid}' 2>/dev/null)
+    case $pid in ''|*[!0-9]*)
+        sock_bad "pane_runs: pane $p on $s has a pid (#1079)" "a pid" "${pid:-nothing}"
+        return 1 ;;
+    esac
+    printf -v want '[%s]' "$@"
+    for ((i = 1; i <= POLLS; i++)); do
+        PR_COMM='' argv=()
+        read -r PR_COMM 2>/dev/null < "/proc/$pid/comm"
+        mapfile -d '' -t argv 2>/dev/null < "/proc/$pid/cmdline"
+        printf -v PR_ARGV '[%s]' "${argv[@]}"
+        [ "$PR_COMM" = "${c:0:15}" ] && [ "$PR_ARGV" = "$want" ] && return 0
+        [ "$i" -lt "$POLLS" ] && sleep 0.1
+    done
+    sock_bad "pane $p never ran $want: its process $pid read comm [$PR_COMM], argv $PR_ARGV last" \
+        "comm [${c:0:15}], argv $want" "comm [$PR_COMM], argv $PR_ARGV"
+    return 1
+}
 # #195: an empty socket name never reaches tmux. `-L ''` itself errors, but TMUX=
 # takes the socket path before its first comma, and an empty path there, ",0,0" or
 # "", is the DEFAULT socket: the user's live server. A probe whose private server
@@ -1359,11 +1408,12 @@ echo "== stale state is disbelieved =="
 if need_tmux "stale state"; then :; else
 # Hooks cannot fire if an agent is killed or crashes, so @panestate can outlive
 # the agent. The formats only believe it while the pane is actually running one.
-w=$(tmux new-window -d -P -F '#{window_index}' -n cockpit-test 'bash' 2>/dev/null)
+read -r w wp <<<"$(tmux new-window -d -P -F '#{window_index} #{pane_id}' -n cockpit-test \
+    'bash' 2>/dev/null)"
 if [ -n "$w" ]; then
     # The border style below is judged off pane_current_command, so wait for
-    # the shell to BE the pane's command rather than guess at the spawn.
-    until_out bash tmux display-message -p -t ":$w" '#{pane_current_command}'
+    # the shell to BE the pane's process rather than guess at the spawn (#1079).
+    pane_runs "$SUITE_SOCK" "$wp" bash bash
     tp2=$(tmux list-panes -t ":$w" -F '#{pane_id}' 2>/dev/null | head -1)
     tmux set -p -t "$tp2" @panestate needs-input >/dev/null 2>&1
     is "option is still set"        "needs-input" "$(tmux show-option -pqv -t "$tp2" @panestate)"
@@ -1709,11 +1759,12 @@ fi
 # tests: cockpit.tmux
 echo "== spaced window names survive the formats =="
 if need_tmux "spaced window names"; then :; else
-sw=$(tmux new-window -d -P -F '#{window_index}' -n 'my project' 'sleep 30' 2>/dev/null)
+read -r sw swp <<<"$(tmux new-window -d -P -F '#{window_index} #{pane_id}' -n 'my project' \
+    'sleep 30' 2>/dev/null)"
 if [ -n "$sw" ]; then
     # automatic-rename fires on the pane's command, so waiting for that command
-    # to be there is what gives it its chance to clobber the name.
-    until_out sleep tmux display-message -p -t ":$sw" '#{pane_current_command}'
+    # to be there is what gives it its chance to clobber the name (#1079).
+    pane_runs "$SUITE_SOCK" "$swp" sleep sleep 30
     # automatic-rename must not clobber an explicit name, and the format must
     # carry the space through -- the old shell version truncated at it.
     is "explicit name keeps its space" "my project" \
@@ -8506,11 +8557,9 @@ RAAP=$("$TMUX_REAL" -L "$RA" list-panes -t t: -F '#{pane_id}')
 # new-window, not split-window: each control shell gets its own full-height
 # window; -p still targets RAAP explicitly, so which window the loop runs from
 # is moot.
-ra_shell() { local p i
+ra_shell() { local p       # waited for on its process: the name reads bash early (#1079)
     p=$("$TMUX_REAL" -L "$RA" new-window -d -t t: -P -F '#{pane_id}' 'exec bash')
-    for i in $(seq 1 40); do
-        [ "$("$TMUX_REAL" -L "$RA" display-message -p -t "$p" '#{pane_current_command}')" = bash ] \
-            && break; sleep 0.1; done; printf '%s' "$p"
+    pane_runs "$RA" "$p" bash bash; printf '%s' "$p"
 }
 RACTL=$(ra_shell)
 RASESS="$RASTATE/tmux-cockpit/review/${RAAP#%}-$(printf '%s' "$RADIR" | cksum | cut -d' ' -f1)"
@@ -9173,24 +9222,18 @@ RDS="cockpit-rd-$$"; SOCKS="$SOCKS $RDS"
 # to 13 lines (ai lens §7.F) -- AP's half needs to clear ~20 pasted lines
 # without scrolling, or bash's readline garbles the unexecuted multi-line
 # buffer redraw (reproduced: a 15-row pane truncates and interleaves lines).
-"$TMUX_REAL" -L "$RDS" -f /dev/null new-session -d -s t -x 100 -y 60 \
-    'exec -a claude bash' >/dev/null 2>&1
-"$TMUX_REAL" -L "$RDS" split-window -t t 'exec bash' >/dev/null 2>&1
-# The two panes below are picked BY pane_current_command, so that is the thing
-# to wait for: sorted, it is exactly one claude and one bash.
-rds_cmds() { "$TMUX_REAL" -L "$RDS" list-panes -t t: -F '#{pane_current_command}' | sort |
-        tr '\n' ' '
-}
-until_out 'bash claude ' rds_cmds
+AP=$("$TMUX_REAL" -L "$RDS" -f /dev/null new-session -d -s t -x 100 -y 60 \
+    -P -F '#{pane_id}' 'exec -a claude bash' 2>/dev/null)
+NP=$("$TMUX_REAL" -L "$RDS" split-window -t t -P -F '#{pane_id}' 'exec bash' 2>/dev/null)
+# Each pane by its id, and each waited for on its process: picked by pane_current_command, a
+# pane read its start's first word (bash) before it ran, then tmux before its exec (#1079).
+pane_runs "$RDS" "$AP" bash claude
+pane_runs "$RDS" "$NP" bash bash
 # The suite's private socket has no cockpit.tmux run-shell to default this --
 # set it exactly as cockpit.tmux itself would (cockpit.tmux:136).
 "$TMUX_REAL" -L "$RDS" set -g @cockpit_agents_glob \
     '|claude|codex|aider|cursor|opencode|gemini|crush|' >/dev/null 2>&1
 
-AP=$("$TMUX_REAL" -L "$RDS" list-panes -t t: -F '#{pane_id} #{pane_current_command}' \
-     | awk '$2 == "claude" { print $1 }')
-NP=$("$TMUX_REAL" -L "$RDS" list-panes -t t: -F '#{pane_id} #{pane_current_command}' \
-     | awk '$2 == "bash" { print $1 }')
 # Both shells' prompts, before anything is typed or pasted into them: see pane B below.
 until_cap "$RDS" "$AP" '*[$#]*'
 until_cap "$RDS" "$NP" '*[$#]*'
@@ -9364,7 +9407,7 @@ echo "== tmux-review --deliver: concurrent deliveries do not cross-wire panes ==
 AP2=$("$TMUX_REAL" -L "$RDS" split-window -t t -P -F '#{pane_id}' 'exec -a claude bash')
 NP2=$("$TMUX_REAL" -L "$RDS" split-window -t t -P -F '#{pane_id}' 'exec bash')
 until_out claude "$TMUX_REAL" -L "$RDS" display-message -p -t "$AP2" '#{pane_current_command}'
-until_out bash "$TMUX_REAL" -L "$RDS" display-message -p -t "$NP2" '#{pane_current_command}'
+pane_runs "$RDS" "$NP2" bash bash  # its name reads bash before bash runs (#1079)
 # pane_current_command reads claude the moment exec -a runs, before bash has read
 # its rc files. A paste that lands before readline is up is echoed by the tty,
 # unbracketed, and bash then runs its lines: pane B showed only the prompt and
@@ -9618,19 +9661,14 @@ echo "== tmux-review --deliver: the paste is gated atomically, so a pane that st
 # that outlived the agent and once against a live agent.
 if need_tmux "tmux-review --deliver atomic gate"; then :; else
 RG="cockpit-rgz-$$"; SOCKS="$SOCKS $RG"
-"$TMUX_REAL" -L "$RG" -f /dev/null new-session -d -s t -x 100 -y 30 \
-    'exec -a claude bash' >/dev/null 2>&1
-"$TMUX_REAL" -L "$RG" split-window -t t 'exec bash' >/dev/null 2>&1
-# The two panes below are picked BY pane_current_command, so that is the wait.
-rg_cmds() { "$TMUX_REAL" -L "$RG" list-panes -t t: -F '#{pane_current_command}' | sort | tr '\n' ' '
-}
-until_out 'bash claude ' rg_cmds
+APG=$("$TMUX_REAL" -L "$RG" -f /dev/null new-session -d -s t -x 100 -y 30 \
+    -P -F '#{pane_id}' 'exec -a claude bash' 2>/dev/null)
+NPG=$("$TMUX_REAL" -L "$RG" split-window -t t -P -F '#{pane_id}' 'exec bash' 2>/dev/null)
+# Each pane by its id, waited for on its process, as in the --deliver block above (#1079).
+pane_runs "$RG" "$APG" bash claude
+pane_runs "$RG" "$NPG" bash bash
 "$TMUX_REAL" -L "$RG" set -g @cockpit_agents_glob \
     '|claude|codex|aider|cursor|opencode|gemini|crush|' >/dev/null 2>&1
-APG=$("$TMUX_REAL" -L "$RG" list-panes -t t: -F '#{pane_id} #{pane_current_command}' \
-     | awk '$2 == "claude" { print $1 }')
-NPG=$("$TMUX_REAL" -L "$RG" list-panes -t t: -F '#{pane_id} #{pane_current_command}' \
-     | awk '$2 == "bash" { print $1 }')
 gcap() { "$TMUX_REAL" -L "$RG" capture-pane -p -J -t "$1"; }
 
 # The hazard the old code carried: once its stale check had passed, deliver()
@@ -12352,8 +12390,13 @@ is "and the tool text survives with the TAB as a space" "Bash: col1 col2" \
 # bash, not sleep: a multicall coreutils (uutils) refuses to run as "zzz".
 TJZ=$(mktmpd); ln -sf "$(command -v bash)" "$TJZ/zzz"
 "$TMUX_REAL" -L "$TJ" set -g @cockpit_agents_glob '|zzz|' >/dev/null 2>&1
-"$TMUX_REAL" -L "$TJ" new-window -d -t t: "exec $TJZ/zzz -c 'read -r _'" >/dev/null 2>&1
-"$TMUX_REAL" -L "$TJ" new-window -d -t t: 'exec sleep 3600'    >/dev/null 2>&1
+TJZP=$("$TMUX_REAL" -L "$TJ" new-window -d -t t: -P -F '#{pane_id}' \
+    "exec $TJZ/zzz -c 'read -r _'" 2>/dev/null)
+TJSP=$("$TMUX_REAL" -L "$TJ" new-window -d -t t: -P -F '#{pane_id}' 'exec sleep 3600' 2>/dev/null)
+# Both running before the board reads them: right after new-window a pane reads tmux, then
+# the -c shell (bash), and the board would leave zzz out (#1182).
+pane_runs "$TJ" "$TJZP" zzz "$TJZ/zzz" -c 'read -r _'
+pane_runs "$TJ" "$TJSP" sleep sleep 3600
 TJIDS=$(COCKPIT_TMUX="tmux -L $TJ" "$COCKPIT_TUI_BIN" --json |
     sed -n 's/^    "id": "\(%[0-9]*\)".*/\1/p')
 TJCMDS=$(for i in $TJIDS; do \
@@ -14825,14 +14868,15 @@ esac
 AGF=$("$TMUX_REAL" -L "$AGS" list-keys -T cockpit | awk '$4=="t"' |
     sed -n "s/.*list-panes -a -F '\([^']*\)'.*/\1/p")
 "$TMUX_REAL" -L "$AGS" new-window -d -t ag: 'exec -a claude sleep 300' >/dev/null 2>&1
-"$TMUX_REAL" -L "$AGS" new-window -d -t ag: 'sleep 300' >/dev/null 2>&1
+AGP=$("$TMUX_REAL" -L "$AGS" new-window -d -t ag: -P -F '#{pane_id}' 'sleep 300' 2>/dev/null)
 "$TMUX_REAL" -L "$AGS" select-pane -t ag:0 -T 'alpha  two  spaces' >/dev/null 2>&1
 "$TMUX_REAL" -L "$AGS" select-pane -t ag:1 -T bravo >/dev/null 2>&1
 "$TMUX_REAL" -L "$AGS" select-pane -t ag:2 -T plain >/dev/null 2>&1
 "$TMUX_REAL" -L "$AGS" set-option -p -t ag:0 @panestate needs-input >/dev/null 2>&1
 "$TMUX_REAL" -L "$AGS" set-option -p -t ag:1 @panestate running >/dev/null 2>&1
-until_out '*claude*claude*sleep*' "$TMUX_REAL" -L "$AGS" list-panes -a \
+until_out '*claude*claude*' "$TMUX_REAL" -L "$AGS" list-panes -a \
     -F '#{pane_current_command}' >/dev/null
+pane_runs "$AGS" "$AGP" sleep sleep 300  # its name reads sleep before sleep runs (#1079)
 # The third pane is not an agent: its state column is the - sentinel, not a blank
 # that would slide the title one column left.
 is "two agent panes with their state, the plain pane with the sentinel, in fixed columns" \
@@ -17253,7 +17297,9 @@ until_file "$RSD/ran" '?*'
 is "under dash the resume runs claude --resume <id>" "[$RSD/work][--resume][$SID]" \
     "$(cat "$RSD/ran" 2>/dev/null)"
 RN=$("$TMUX_REAL" -L "$RS" list-panes -t "$R" -F '#{pane_id}' | grep -vx -- "$R")
-until_out claude "$TMUX_REAL" -L "$RS" display -p -t "$RN" '#{pane_current_command}'
+# The stub's exec -a claude, on its process: the name reads claude, the first word of the
+# board's "exec claude --resume", inside that exec too (#1079).
+pane_runs "$RS" "$RN" idle claude -c 'sleep 3600; :'
 is "and the resumed pane reads claude, not the shell" "claude" \
     "$("$TMUX_REAL" -L "$RS" display -p -t "$RN" '#{pane_current_command}')"
 is "so the agent glob calls it an agent" "1" "$("$TMUX_REAL" -L "$RS" display -p -t "$RN" \
@@ -23162,9 +23208,11 @@ GS_SH="env PATH='${GSD//\'/\'\\\'\'}/bin:/usr/bin:/bin' bash --norc --noprofile"
 # nothing): it must be the fixture's own copy, else the row fails and nothing more is typed,
 # so a real agent on some PATH is never started.
 gs_typed() {                  # <server fn> <typed> <shown>: a repo window running it in GS_P
-    local p r; GS_P=""
+    local p r s=""; GS_P=""
+    case $1 in gs) s=$GS ;; gg) s=$GG ;; esac
     p=$("$1" new-window -d -P -F '#{pane_id}' -t t: -c "$GSD/r" "$GS_SH")
-    until_out bash "$1" display -p -t "$p" '#{pane_current_command}'
+    # the prompt's own bash: the -c shell that runs GS_SH reads bash before it (#1079)
+    pane_runs "$s" "$p" bash bash --norc --noprofile
     rm -f "$GSD/cv"
     "$1" send-keys -t "$p" \
         "{ command -v $(printf %q "$2"); echo .; } > $(printf %q "$GSD/cv")" Enter
@@ -23606,6 +23654,75 @@ PKEOF
 is "under a relative TMPDIR holding a=b and a space the shards run and the line is named" \
    "1|3|pk2|pk2 out;" "$(pk_run p 'a=b c')|$(pk_rec 0002)"
 unset -f pk_mk pk_run pk_rec; unset PK Q
+
+echo "== pane_runs: a pane's start is waited for on its own process, not its name (#1079) =="
+# While tmux's read of a pane's foreground group fails, it names the pane by the first word of
+# its start command; and a bash pane reads bash already in the `<default-shell> -c` shell that
+# starts it. A wait on #{pane_current_command} then ends before the process runs. Two starts
+# are held there, each on a fifo the block writes a line to. A 'sleep 30' whose PATH finds a
+# holder named sleep: the holder gives a pipeline the terminal (set -m) and the pipeline's
+# leader `true` exits, so tmux reads no cmdline and falls back to sleep. Its comm is sleep (the
+# script's name) and its argv[0] bash, so only the argv half holds pane_runs there. And a -c
+# shell that holds, then execs bash: comm and argv[0] are bash, and only the whole argv
+# differs. Each held start reads the waited-for name first, as the old wait did, or its row
+# pins nothing.
+if need_tmux "pane_runs"; then :; elif [ ! -d /proc/self ]; then
+    for _ in 1 2 3 4 5 6 7 8 9; do
+        skip_ "pane_runs (no /proc: a pane start is waited for on #{pane_current_command}, #1079)"
+    done
+else
+PZS="cockpit-pr1079-$$"; SOCKS="$SOCKS $PZS"; PZD=$(mktmpd); PZB=$(command -v bash)
+mkdir -p "$PZD/hold"; mkfifo "$PZD/f1" "$PZD/f2"
+"$TMUX_REAL" -L "$PZS" -f /dev/null new-session -d -s t -c "$PZD" 'exec sleep 300' \
+    >/dev/null 2>&1
+"$TMUX_REAL" -L "$PZS" set -g default-shell "$PZB" >/dev/null 2>&1
+{ printf '#!%s\nset -m\n' "$PZB"
+  printf 'true | { exec 9<>%q; printf x > %q; read -r -t 20 -u 9 _; }\n' "$PZD/f1" "$PZD/in1"
+  printf 'exec -a sleep %q "$@"\n' "$(command -v sleep)"
+} > "$PZD/hold/sleep"
+chmod +x "$PZD/hold/sleep"
+pr_cmd() { "$TMUX_REAL" -L "$PZS" display-message -p -t "$1" '#{pane_current_command}'; }
+pr_try() {                    # <polls> <pane> <comm> <argv...> -> <status>|<comm>|<argv> read
+    ( sock_bad() { :; }; POLLS=$1 pane_runs "$PZS" "${@:2}"; printf '%s|%s|%s' "$?" \
+        "$PR_COMM" "$PR_ARGV" )
+}
+# PATH on the tmux client, not new-window -e: tmux puts an unattached client's own PATH over
+# the pane's -e PATH (spawn.c), so an -e PATH never reaches the pane.
+PZP=$(PATH="$PZD/hold:$PATH" "$TMUX_REAL" -L "$PZS" new-window -d -P -F '#{pane_id}' \
+    -c "$PZD" 'sleep 30')
+until_file "$PZD/in1" x
+until_out sleep pr_cmd "$PZP"
+is "a start held before it runs sleep reads sleep, its start's first word" sleep \
+   "$(pr_cmd "$PZP")"
+is "pane_runs does not end on it: comm is sleep, the argv is the holder's" \
+   "1|sleep|[$PZB][$PZD/hold/sleep][30]" "$(pr_try 3 "$PZP" sleep sleep 30)"
+printf 'x\n' 1<>"$PZD/f1"
+is "and ends once the held start execs sleep" "0|sleep|[sleep][30]" \
+   "$(pr_try "$POLLS" "$PZP" sleep sleep 30)"
+PZWS="exec 9<>$(tq "$PZD/f2"); printf x > $(tq "$PZD/in2"); read -r -t 20 -u 9 _"
+PZWS+="; exec bash --norc --noprofile"
+PZW=$("$TMUX_REAL" -L "$PZS" new-window -d -P -F '#{pane_id}' -c "$PZD" "$PZWS")
+until_file "$PZD/in2" x
+is "a bash pane's -c shell, held, reads bash" bash "$(pr_cmd "$PZW")"
+is "pane_runs does not end on the -c shell, whose comm and argv[0] are bash" \
+   "1|bash|[bash][-c][$PZWS]" "$(pr_try 3 "$PZW" bash bash --norc --noprofile)"
+printf 'x\n' 1<>"$PZD/f2"
+is "and ends on the bash it execs" "0|bash|[bash][--norc][--noprofile]" \
+   "$(pr_try "$POLLS" "$PZW" bash bash --norc --noprofile)"
+is "pane_runs with no pane, comm or argv is a bad row and 1" \
+   "pane_runs takes a socket, a pane, a comm and an argv|1" \
+   "$( ( sock_bad() { printf '%s|' "$1"; }; pane_runs "$PZS"; printf '%s' "$?" ) )"
+is "pane_runs on a pane that is gone is a bad row and 1" \
+   "pane_runs: pane %99999 on $PZS has a pid (#1079)|1" \
+   "$( ( sock_bad() { printf '%s|' "$1"; }; pane_runs "$PZS" %99999 sleep sleep 30
+         printf '%s' "$?" ) )"
+is "pane_runs on a session:index target is a bad row and 1, before any tmux call" \
+   "pane_runs takes a pane id from -P, not session:index|1" \
+   "$( ( sock_bad() { printf '%s|' "$1"; }; pane_runs "$PZS" t:0 sleep sleep 30
+         printf '%s' "$?" ) )"
+"$TMUX_REAL" -L "$PZS" kill-server >/dev/null 2>&1
+unset -f pr_cmd pr_try; unset PZS PZD PZB PZP PZW PZWS
+fi
 
 flop_left
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
