@@ -125,9 +125,9 @@ fi
 # (no dir, no server, no answer) is not "binds nothing": the key stays as it is,
 # a message says why, and the 1 sends it to the next load's retry (#290).
 give_back() {                 # <key> -> 1 when tmux's own binding could not be read
-    local k=$1 d out="" err="" r note cmd
-    # tmux reads a lone ; argument as a command separator.
-    [ "$k" = ';' ] && k='\;'
+    local key=$1 k d out="" err="" r note cmd
+    # tmux reads an argument that ends in ; as a command separator: ;, M-; and C-; (#1151).
+    k=$(cockpit_key_arg "$key")
     # /tmp first for its short path; TMPDIR where /tmp is read-only (Termux).
     if ! d=$(mktemp -d /tmp/cockpit-gb.XXXXXX 2>/dev/null ||
              mktemp -d "${TMPDIR:-/tmp}/cockpit-gb.XXXXXX" 2>/dev/null); then
@@ -145,7 +145,7 @@ give_back() {                 # <key> -> 1 when tmux's own binding could not be 
         rm -rf -- "$d"
         case "$err" in "unknown key: "*) tmux unbind-key -T prefix "$k"; return 0 ;; esac
     fi
-    err="tmux-cockpit: could not read tmux's own binding for $k (${err:-no answer})"
+    err="tmux-cockpit: could not read tmux's own binding for $key (${err:-no answer})"
     dmsg "$err; left it bound, the next load tries again"
     return 1
 }
@@ -176,17 +176,20 @@ fi
 # tmux compares the note itself. It prints a note's tab, \037 and newline raw, so no
 # separator cuts a note from what follows it: a user's note that began with cockpit's
 # and a \037 was read as cockpit's, and the key given back (#1135). Only a key whose
-# note is empty has its command read, and only before the notes.
+# note is empty has its command read, and only before the notes. The key goes in escaped:
+# a bare ; ended list-keys, which then listed the whole table, and one key with no note
+# made the old cockpit key read as the user's, so it was never given back (#1151).
 owned() {                     # <name> <key>
-    local m f cmd
+    local m f cmd ka
+    ka=$(cockpit_key_arg "$2")
     f="#{?#{==:#{key_note},$(cockpit_key_note "$1")},noted,"
-    m=$(tmux list-keys -T prefix -F "$f#{?#{==:#{key_note},},bare,}}" "$2" 2>/dev/null)
+    m=$(tmux list-keys -T prefix -F "$f#{?#{==:#{key_note},},bare,}}" "$ka" 2>/dev/null)
     case $m in
         noted) return 0 ;;
         bare) [ -z "$notes" ] || return 1 ;;
         *) return 1 ;;
     esac
-    cmd=$(tmux list-keys -T prefix -F '#{key_command}' "$2" 2>/dev/null)
+    cmd=$(tmux list-keys -T prefix -F '#{key_command}' "$ka" 2>/dev/null)
     case "$1:$cmd" in
         menu:*'display-menu -T "#[align=centre]'*|panel:*"$legacy_panel"*)
             dmsg "tmux-cockpit: $2 was the $1 key before the key notes; giving it back"
@@ -259,7 +262,8 @@ for nk in $todo; do
     give_back "${nk#*:}" || left="$left $nk"
 done
 set +f
-if [ -n "$left" ]; then tmux set-option -g @cockpit_giveback "${left# }"
+# The list's last pair may end in ;, which tmux would cut off it (#1151).
+if [ -n "$left" ]; then tmux set-option -g @cockpit_giveback "$(cockpit_key_arg "${left# }")"
 else tmux set-option -gu @cockpit_giveback; fi
 
 Q_BRANCH=$(sq "$DIR/scripts/tmux-branch")

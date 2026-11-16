@@ -4999,6 +4999,61 @@ unset -f semi_load semi_get
 unset SEMI semi_s semi_n semi_a semi_k semi_w
 fi
 
+echo "== a cockpit key moved off ;, M-; or C-; is given back to tmux (#1151) =="
+# owned() passed the old key to list-keys bare: a lone ; ended the command, which then
+# listed the whole table, and any key with no note made the answer "not cockpit's", so the
+# old key kept its cockpit command after the move (#1151). M-; and C-; reached list-keys as
+# M- and C-. F9, bound with no note, pins that condition here, not cockpit's own b.
+if need_tmux "a cockpit key moved off ;"; then :
+else
+SOFF=$(mktmpd); soff_s="cockpit-soff-$$"; soff_st="cockpit-soffst-$$"
+SOCKS="$SOCKS $soff_s $soff_st"
+fresh_server -L "$soff_st" -f /dev/null -- -d -s t -c "$SOFF"
+soff_get() { "$TMUX_REAL" -L "$1" -f /dev/null list-keys -T prefix -F '#{key_command}' "$2" 2>&1; }
+soff_move() {                 # <name> <the key as argv spells it> [the second load's command]
+    fresh_server -L "$soff_s" -f /dev/null -- -d -s t -x 120 -y 30 -c "$SOFF" || return 1
+    "$TMUX_REAL" -L "$soff_s" -f /dev/null set -g @cockpit_bg_poll off >/dev/null 2>&1
+    "$TMUX_REAL" -L "$soff_s" -f /dev/null set -g "@cockpit_$1_key" "$2" >/dev/null 2>&1
+    reload_on "$soff_s" || return 1
+    "$TMUX_REAL" -L "$soff_s" -f /dev/null bind-key -T prefix F9 display-message x >/dev/null 2>&1
+    "$TMUX_REAL" -L "$soff_s" -f /dev/null set -g "@cockpit_$1_key" j >/dev/null 2>&1
+    reload_on "$soff_s" ${3:+"$3"}
+}
+# <name> <the key as argv spells it> <the key as tmux stores it>, on fd 3 as above.
+while read -r soff_n soff_a soff_k <&3; do
+    soff_move "$soff_n" "$soff_a" || continue
+    is "@cockpit_${soff_n}_key moved off [$soff_k] to j: [$soff_k] is tmux's own again" \
+       "$(soff_get "$soff_st" "$soff_a")" "$(soff_get "$soff_s" "$soff_a")"
+    is "@cockpit_${soff_n}_key moved off [$soff_k] to j: nothing waits in @cockpit_giveback" \
+       "" "$("$TMUX_REAL" -L "$soff_s" -f /dev/null show -gqv @cockpit_giveback)"
+done 3<<'SOFFROWS'
+jump \; ;
+jump M-\; M-;
+jump C-\; C-;
+reload \; ;
+SOFFROWS
+# A key whose stock binding could not be read waits in @cockpit_giveback for the next load.
+# The shim fails that read; the list's last pair ends in ;, which tmux cut off it (#1151).
+mkdir -p "$SOFF/gbfail"
+printf '%s\n' '#!/usr/bin/env bash' \
+    'case " $* " in *" start-server "*) echo "no answer" >&2; exit 1 ;; esac' \
+    "exec $(tq "$TMUX_REAL") \"\$@\"" > "$SOFF/gbfail/tmux"
+chmod +x "$SOFF/gbfail/tmux"
+if soff_move jump '\;' "PATH=$(tq "$SOFF/gbfail"):\"\$PATH\" $(tq "$DIR/cockpit.tmux")"; then
+    is "a ; whose stock binding could not be read waits whole in @cockpit_giveback" \
+       "jump:;" "$("$TMUX_REAL" -L "$soff_s" -f /dev/null show -gqv @cockpit_giveback)"
+    reload_on "$soff_s"
+    is "and the next load gives it back: ; is tmux's own again" \
+       "$(soff_get "$soff_st" '\;')" "$(soff_get "$soff_s" '\;')"
+    is "and nothing waits in @cockpit_giveback after it" "" \
+       "$("$TMUX_REAL" -L "$soff_s" -f /dev/null show -gqv @cockpit_giveback)"
+fi
+"$TMUX_REAL" -L "$soff_s" kill-server >/dev/null 2>&1
+"$TMUX_REAL" -L "$soff_st" kill-server >/dev/null 2>&1
+unset -f soff_get soff_move
+unset SOFF soff_s soff_st soff_n soff_a soff_k
+fi
+
 echo "== a message shows a name as written, and runs nothing in it (#1096) =="
 # tmux expands a display-message as a format, which runs a #( ), then draws it, reading ##
 # as # and #[ as a style: fesc got a name through the first step only, and an unescaped
