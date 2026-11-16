@@ -623,6 +623,40 @@ pane_runs() {                 # <-L socket> <pane> <comm> <argv...> -> 0, or a b
         "comm [${c:0:15}], argv $want" "comm [$PR_COMM], argv $PR_ARGV"
     return 1
 }
+# A shell's own prompt, waited for after an empty line (#1183). A paste into a bash whose
+# readline is not up yet is echoed by the tty unbracketed, and bash then runs its lines (#215).
+# The Enter runs nothing at a prompt, and before readline it is an empty line; a shell held in
+# its rc file until a line is pending goes on with it. PATTERN is a case-pattern naming that
+# shell's own prompt, with no embedded quotes: '*[$#]*' also matches a pasted line's echo.
+# One prompt on screen is not enough: bash leaves readline when it reads the Enter, and a paste
+# made before the next prompt runs (#1196). So the wait ends when the line at the cursor is a
+# prompt AND the line above it is one too, the Enter's own. cursor_y and the screen come from
+# one tmux call per poll. A PROMPT_COMMAND that clears the screen or redraws in place defeats
+# it, and so does a call made while the line above the cursor is already a prompt.
+shell_prompt() {              # <-L socket> <pane> <pattern> -> 0, or a bad row and 1
+    local s=${1:-} p=${2:-} pat=${3:-} i y l=()
+    need_sock "$s" shell_prompt || return 1
+    if [ $# -ne 3 ] || [ -z "$p" ] || [ -z "$pat" ]; then
+        sock_bad "shell_prompt takes a socket, a pane and a prompt pattern" \
+            "<socket> <pane> <pattern>" "$*"
+        return 1
+    fi
+    "$TMUX_REAL" -L "$s" send-keys -t "$p" Enter >/dev/null 2>&1
+    for ((i = 1; i <= POLLS; i++)); do
+        # l[0] is cursor_y, and screen line n is l[n+1].
+        mapfile -t l < <("$TMUX_REAL" -L "$s" display-message -p -t "$p" '#{cursor_y}' \; \
+            capture-pane -p -t "$p" 2>/dev/null)
+        y=${l[0]:-}
+        if [[ $y =~ ^[0-9]+$ ]] && [ "$y" -ge 1 ]; then
+            # shellcheck disable=SC2254  # $pat is meant as a glob, not a literal
+            case ${l[y+1]-} in $pat) case ${l[y]-} in $pat) return 0 ;; esac ;; esac
+        fi
+        [ "$i" -lt "$POLLS" ] && sleep 0.1
+    done
+    sock_bad "pane $p on $s never drew its prompt $pat twice at the cursor (#1183)" \
+        "two prompts" "cursor_y [$y], lines [${l[y]-}] [${l[y+1]-}]"
+    return 1
+}
 # #195: an empty socket name never reaches tmux. `-L ''` itself errors, but TMUX=
 # takes the socket path before its first comma, and an empty path there, ",0,0" or
 # "", is the DEFAULT socket: the user's live server. A probe whose private server
@@ -9661,14 +9695,33 @@ echo "== tmux-review --deliver: the paste is gated atomically, so a pane that st
 # that outlived the agent and once against a live agent.
 if need_tmux "tmux-review --deliver atomic gate"; then :; else
 RG="cockpit-rgz-$$"; SOCKS="$SOCKS $RG"
+# Both shells start on RGRC (#1183). It records each line bash runs as an unknown command in
+# RGD/ran, then holds before readline until a line is pending on the tty: `read -t 0` reads
+# nothing. A paste made before the prompt is therefore always made before readline, and runs.
+# The hold is bounded at 400 x 0.05 s, 20 s, and decides no row: running out records
+# "expired", which a row below reads as red. The last line draws a prompt no paste can echo.
+RGD=$(mktmpd); RGRC="$RGD/rc"; : > "$RGD/ran"
+{ printf 'RG_D=%s\n' "$(tq "$RGD")"
+  printf '%s\n' \
+    'command_not_found_handle() { printf "%s\n" "$1" >> "$RG_D/ran"; return 127; }' \
+    'rg_end() { printf "end\n" > "$RG_D/end$TMUX_PANE"; }' \
+    'i=0; until read -t 0 || [ "$i" -ge 400 ]; do sleep 0.05; i=$((i+1)); done' \
+    '[ "$i" -lt 400 ] || echo expired >> "$RG_D/ran"' \
+    "PS1='rg-ready\\$ '"
+} > "$RGRC"
 APG=$("$TMUX_REAL" -L "$RG" -f /dev/null new-session -d -s t -x 100 -y 30 \
-    -P -F '#{pane_id}' 'exec -a claude bash' 2>/dev/null)
-NPG=$("$TMUX_REAL" -L "$RG" split-window -t t -P -F '#{pane_id}' 'exec bash' 2>/dev/null)
+    -P -F '#{pane_id}' "exec -a claude bash --rcfile $(tq "$RGRC")" 2>/dev/null)
+NPG=$("$TMUX_REAL" -L "$RG" split-window -t t -P -F '#{pane_id}' \
+    "exec bash --rcfile $(tq "$RGRC")" 2>/dev/null)
 # Each pane by its id, waited for on its process, as in the --deliver block above (#1079).
-pane_runs "$RG" "$APG" bash claude
-pane_runs "$RG" "$NPG" bash bash
+pane_runs "$RG" "$APG" bash claude --rcfile "$RGRC"
+pane_runs "$RG" "$NPG" bash bash --rcfile "$RGRC"
 "$TMUX_REAL" -L "$RG" set -g @cockpit_agents_glob \
     '|claude|codex|aider|cursor|opencode|gemini|crush|' >/dev/null 2>&1
+# Each shell's own prompt before anything is pasted into it, as the --deliver block waits
+# (#215): a paste before readline is up is echoed unbracketed, and bash runs it (#1183).
+shell_prompt "$RG" "$APG" '*rg-ready$*'
+shell_prompt "$RG" "$NPG" '*rg-ready$*'
 gcap() { "$TMUX_REAL" -L "$RG" capture-pane -p -J -t "$1"; }
 
 # The hazard the old code carried: once its stale check had passed, deliver()
@@ -9834,7 +9887,20 @@ case "$(rc_from_buffer rg-newok)" in
          "1 (buffers [$rg_bufs] pane $APG saw [$rg_seen] now [$rg_cmd] screen [$rg_scr])" ;;
 esac
 
+# Every line pasted above stayed in readline: none ran (#1183). C-u drops what readline holds
+# and, unlike C-c, sends no signal that could kill the recording child before it writes. Keys
+# are read in order, so rg_end runs only after every line queued before it has run.
+for rg_p in "$APG" "$NPG"; do
+    "$TMUX_REAL" -L "$RG" send-keys -t "$rg_p" C-u rg_end Enter >/dev/null 2>&1
+    until_file "$RGD/end$rg_p" end
+done
+is "no line pasted into either pane ran as a command (#1183)" "" \
+   "$(grep -vx expired "$RGD/ran" | tr '\n' ' ')"
+is "and each shell's hold ended on input, not on its 20 s bound" 0 \
+   "$(grep -cx expired "$RGD/ran")"
+
 "$TMUX_REAL" -L "$RG" kill-server >/dev/null 2>&1
+unset rg_p RGD RGRC
 fi
 
 echo "== tmux-review: a delivered review's comment store does not outlive the popup that made it =="
@@ -23734,6 +23800,56 @@ is "pane_runs on a session:index target is a bad row and 1, before any tmux call
          printf '%s' "$?" ) )"
 "$TMUX_REAL" -L "$PZS" kill-server >/dev/null 2>&1
 unset -f pr_cmd pr_try; unset PZS PZD PZB PZP PZW PZWS
+fi
+
+echo "== shell_prompt: a shell is waited for on its own prompt, after an empty line (#1183) =="
+if need_tmux "shell_prompt"; then :; else
+SPS="cockpit-sp1183-$$"; SOCKS="$SOCKS $SPS"; SPD=$(mktmpd); mkfifo "$SPD/f"
+# The rc holds before readline on a fifo, deaf to the tty, then draws its own prompt.
+printf 'exec 9<>%s; printf x > %s; read -r -t 20 -u 9 _; exec 9<&-\n' \
+    "$(tq "$SPD/f")" "$(tq "$SPD/in")" > "$SPD/rc"
+printf '%s\n' "PS1='sp-ready\\$ '" >> "$SPD/rc"
+SPP=$("$TMUX_REAL" -L "$SPS" -f /dev/null new-session -d -s t -c "$SPD" -P -F '#{pane_id}' \
+    "exec bash --rcfile $(tq "$SPD/rc")" 2>/dev/null)
+until_file "$SPD/in" x
+sp_try() {                    # <polls> <pane> <pattern> -> the status shell_prompt returned
+    ( sock_bad() { :; }; POLLS=$1 shell_prompt "$SPS" "${@:2}"; printf '%s' "$?" )
+}
+is "a shell held in its rc file has drawn no prompt" held \
+   "$(case "$("$TMUX_REAL" -L "$SPS" capture-pane -p -J -t "$SPP")" in
+        *sp-ready*) echo drawn ;; *) echo held ;; esac)"
+is "shell_prompt does not end on it" 1 "$(sp_try 3 "$SPP" '*sp-ready$*')"
+printf 'x\n' 1<>"$SPD/f"
+is "once released, shell_prompt ends on its own prompt and not on another's" "0|1" \
+   "$(sp_try "$POLLS" "$SPP" '*sp-ready$*')|$(sp_try 3 "$SPP" '*rg-ready$*')"
+is "shell_prompt with no pattern is a bad row and 1, before any tmux call" \
+   "shell_prompt takes a socket, a pane and a prompt pattern|1" \
+   "$( ( sock_bad() { printf '%s|' "$1"; }; shell_prompt "$SPS" "$SPP"; printf '%s' "$?" ) )"
+# A shell already at its prompt whose next prompt is held: PROMPT_COMMAND blocks on a fifo the
+# second time it runs, the gap after bash read the Enter and left readline (#1196).
+mkfifo "$SPD/g" "$SPD/u"
+{ printf 'sp_g=%s; sp_n=0\n' "$(tq "$SPD/g")"
+  printf '%s\n' "PS1='sp-ready\\$ '" \
+      'PROMPT_COMMAND='\''sp_n=$((sp_n+1)); [ "$sp_n" != 2 ] || read -r -t 20 _ <> "$sp_g"'\'
+} > "$SPD/rcg"
+SPG=$("$TMUX_REAL" -L "$SPS" new-window -d -P -F '#{pane_id}' -c "$SPD" \
+    "exec bash --rcfile $(tq "$SPD/rcg")" 2>/dev/null)
+until_cap "$SPS" "$SPG" '*sp-ready$*'
+is "on a shell at its prompt, shell_prompt does not end while the next prompt is held" 1 \
+   "$(sp_try 3 "$SPG" '*sp-ready$*')"
+printf 'x\n' 1<>"$SPD/g"
+is "and ends once that prompt is drawn" 0 "$(sp_try "$POLLS" "$SPG" '*sp-ready$*')"
+# A prompt at the cursor whose Enter is still unread: the rc prints one, unechoed, and holds.
+{ printf 'stty -echo; printf %s %s\n' "$(tq '\n%s')" "$(tq 'sp-ready$ ')"
+  printf 'read -r -t 20 _ <> %s; stty echo\n' "$(tq "$SPD/u")"
+} > "$SPD/rcu"
+SPU=$("$TMUX_REAL" -L "$SPS" new-window -d -P -F '#{pane_id}' -c "$SPD" \
+    "exec bash --rcfile $(tq "$SPD/rcu")" 2>/dev/null)
+until_cap "$SPS" "$SPU" '*sp-ready$*'
+is "shell_prompt does not end on one prompt at the cursor while its Enter is unread" 1 \
+   "$(sp_try 3 "$SPU" '*sp-ready$*')"
+"$TMUX_REAL" -L "$SPS" kill-server >/dev/null 2>&1
+unset -f sp_try; unset SPS SPD SPP SPG SPU
 fi
 
 flop_left
