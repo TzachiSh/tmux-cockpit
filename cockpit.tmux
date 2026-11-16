@@ -178,7 +178,7 @@ fi
 # and a \037 was read as cockpit's, and the key given back (#1135). Only a key whose
 # note is empty has its command read, and only before the notes.
 owned() {                     # <name> <key>
-    local m f
+    local m f cmd
     f="#{?#{==:#{key_note},$(cockpit_key_note "$1")},noted,"
     m=$(tmux list-keys -T prefix -F "$f#{?#{==:#{key_note},},bare,}}" "$2" 2>/dev/null)
     case $m in
@@ -186,8 +186,8 @@ owned() {                     # <name> <key>
         bare) [ -z "$notes" ] || return 1 ;;
         *) return 1 ;;
     esac
-    m=$(tmux list-keys -T prefix -F '#{key_command}' "$2" 2>/dev/null)
-    case "$1:$m" in
+    cmd=$(tmux list-keys -T prefix -F '#{key_command}' "$2" 2>/dev/null)
+    case "$1:$cmd" in
         menu:*'display-menu -T "#[align=centre]'*|panel:*"$legacy_panel"*)
             dmsg "tmux-cockpit: $2 was the $1 key before the key notes; giving it back"
             return 0 ;;
