@@ -4923,6 +4923,82 @@ unset -f oh_box oh_server oh_attach oh_load
 unset OH oh_st oh_n oh_s oh_c oh_f oh_p oh_arm oh_want oh_min oh_stock oh_src
 fi
 
+echo "== a cockpit key on ;, M-; or C-; is bound, recorded, and keeps the menu (#1152) =="
+# tmux cuts a command-line argument that ends in ;: a lone ; ends the command, and M-; or C-;
+# loses its ; (#1152). A key on ; was never bound nor recorded, and a menu row replaying it
+# cut the menu's bind-key short, so prefix a went with it.
+# cockpit_key_arg: <key>|<its status and what it prints>.
+while IFS='|' read -r semi_k semi_w; do
+    is "cockpit_key_arg [$semi_k]: $semi_w" "$semi_w" \
+       "$(. "$DIR/scripts/lib/fmt.sh"; semi_o=$(cockpit_key_arg "$semi_k")
+          printf '%s [%s]' "$?" "$semi_o")"
+done <<'KAROWS'
+;|0 [\;]
+M-;|0 [M-\;]
+C-;|0 [C-\;]
+C-M-;|0 [C-M-\;]
+a|0 [a]
+|0 []
+\;|0 [\\;]
+KAROWS
+is "cockpit_key_arg twice, for a key inside a bound command: [;] prints [\\;]" '\\;' \
+   "$(. "$DIR/scripts/lib/fmt.sh"; cockpit_key_arg "$(cockpit_key_arg ';')")"
+is "cockpit_key_arg with no key, or two, says so and returns 2" \
+   "2 cockpit_key_arg: one key, got 0|2 cockpit_key_arg: one key, got 2" \
+   "$(. "$DIR/scripts/lib/fmt.sh"; semi_o=$(cockpit_key_arg 2>&1); printf '%s %s|' $? "$semi_o"
+      semi_o=$(cockpit_key_arg a b 2>&1); printf '%s %s' $? "$semi_o")"
+if need_tmux "a cockpit key on ;"; then :
+else
+SEMI=$(mktmpd); semi_s="cockpit-semi-$$"; SOCKS="$SOCKS $semi_s"
+semi_load() {                 # <name> <the key as argv spells it>: a fresh server, one load
+    fresh_server -L "$semi_s" -f /dev/null -- -d -s t -x 120 -y 30 -c "$SEMI" || return 1
+    "$TMUX_REAL" -L "$semi_s" set -g @cockpit_bg_poll off >/dev/null 2>&1
+    "$TMUX_REAL" -L "$semi_s" set -g "@cockpit_$1_key" "$2" >/dev/null 2>&1
+    reload_on "$semi_s"
+}
+semi_get() { "$TMUX_REAL" -L "$semi_s" -f /dev/null "$@" 2>&1; }
+# <name> <the key as argv spells it> <the key as tmux stores it>. On fd 3: no tmux call
+# below can read the rows.
+while read -r semi_n semi_a semi_k <&3; do
+    semi_load "$semi_n" "$semi_a" || continue
+    is "@cockpit_${semi_n}_key [$semi_k]: the key carries the note cockpit: $semi_n" \
+       "cockpit: $semi_n" "$(semi_get list-keys -T prefix -F '#{key_note}' "$semi_a")"
+    is "@cockpit_${semi_n}_key [$semi_k]: @cockpit_${semi_n}_bound records it" \
+       "$semi_k" "$(semi_get show -gqv "@cockpit_${semi_n}_bound")"
+    [ "$semi_n" = menu ] || is "@cockpit_${semi_n}_key [$semi_k]: prefix a is still the menu" \
+       "cockpit: menu" "$(semi_get list-keys -T prefix -F '#{key_note}' a)"
+    case "$semi_n $semi_k" in
+        'sessions ;')
+            # A bare send-keys -K resends the key that ran it (#1203): never pressed here.
+            is "@cockpit_sessions_key [;]: the border's corner replays ;, never a bare -K" \
+               'switch-client -T prefix \; send-keys -K \;' \
+               "$(semi_get list-keys -T root -F '#{key_command}' MouseUp1Control0)" ;;
+        'jump ;')
+            is "the review notice's jump key reads ; back from its binding (#1124)" ";" \
+               "$(. "$DIR/scripts/lib/fmt.sh"; tmux() { "$TMUX_REAL" -L "$semi_s" -f /dev/null "$@"; }
+                  cockpit_noted_key jump @cockpit_jump_bound)" ;;
+    esac
+done 3<<'SEMIROWS'
+jump \; ;
+sessions \; ;
+menu \; ;
+info \; ;
+panel \; ;
+board \; ;
+review \; ;
+reload \; ;
+move \; ;
+fullscreen \; ;
+jump M-\; M-;
+board M-\; M-;
+jump C-\; C-;
+board C-\; C-;
+SEMIROWS
+"$TMUX_REAL" -L "$semi_s" kill-server >/dev/null 2>&1
+unset -f semi_load semi_get
+unset SEMI semi_s semi_n semi_a semi_k semi_w
+fi
+
 echo "== a message shows a name as written, and runs nothing in it (#1096) =="
 # tmux expands a display-message as a format, which runs a #( ), then draws it, reading ##
 # as # and #[ as a style: fesc got a name through the first step only, and an unescaped

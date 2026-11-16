@@ -51,6 +51,14 @@ dmsg() {                      # [display-message flags...] <text>
 # the review notice reads the jump key's back (#1102), so the text lives here once.
 cockpit_key_note() { printf 'cockpit: %s' "$1"; }    # <name>
 
+# A key as one argument on a tmux command line. tmux cuts an argument that ends in ; there:
+# a lone ; ends the command, and M-; or C-; loses its ;. A \ before that ; keeps it (#1152).
+# One call per parse the argument passes through: a key inside a bound command takes two.
+cockpit_key_arg() {           # <key>
+  [ $# -eq 1 ] || { echo "cockpit_key_arg: one key, got $#" >&2; return 2; }
+  case $1 in *';') printf '%s\\;' "${1%;}" ;; *) printf '%s' "$1" ;; esac
+}
+
 # The prefix key bound with that note, read from the binding: a record names a key moved by
 # hand (#1102, #1112). Two keys noted: the one the record option names, else the first tmux
 # lists. tmux compares the note itself, since it prints a note's tab, \037 and newline raw,
