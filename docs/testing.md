@@ -180,6 +180,17 @@ folders (`tmp.<10>` in `TMPDIR`) and, for a run started with no
 `TMUX_TMPDIR`, its `/tmp/cs.<6>` folder, to remove by hand. `kill -9 <pid>`
 alone also leaves the hung command running.
 
+`tests/par.sh` does the same (#1127): it traps HUP, INT and TERM itself, and its
+exit trap ignores them first, so a second signal no longer leaves its work
+folder in `TMPDIR` or its `tests/.par.<pid>.*` shard files behind. The cost:
+bash runs a trap only once the command in the foreground is done, and par.sh's
+is the xargs that runs every shard. A signal sent to par.sh's pid alone, as
+`kill <pid>` or `timeout --foreground` sends it, now waits for that xargs to
+finish, every shard still queued included, and par.sh then exits 128 plus the
+signal's number with no totals. A signal sent to its process group, a Ctrl-C
+at the terminal or a plain `timeout`, reaches xargs and the shards too, and the
+run ends promptly.
+
 Those rows hold only where the suite made the folder. In a folder you named,
 other runs' sockets may sit beside this run's, so nothing is asked of it. On
 CI one leg, the one marked `bare` in `shell-suite.yml`'s matrix (the

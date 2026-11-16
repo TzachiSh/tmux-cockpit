@@ -458,6 +458,12 @@ sock_sweep() {                # <TMUX_TMPDIR>... -> each server on a socket in i
         done
     done
 }
+# For a block that ends a copy by signals. In the prelude, so the par.sh block above #900 has
+# it too: bash defines a function where it reads it (#1145).
+# A background child starts with INT ignored, and a suite under nohup starts with HUP ignored
+# (#524); bash cannot trap a signal it started with ignored. env hands the default back where
+# it can, and where it cannot the row for that signal is skipped with the reason.
+sig_dfl() { env --default-signal="$1" true 2>/dev/null; }
 
 # Several checks need a live tmux server to set per-pane options against. Skip
 # them cleanly rather than failing: a red suite should mean broken code, not
@@ -10749,6 +10755,92 @@ is "and none of those runs left a shard file in the checkout" "" \
    "$(ls -A "$PY/c/tests" | grep '^\.par')"
 unset -f py_run py_stub; unset PY Q py_awk py_bash py_w py_m
 
+echo "== tests/par.sh: once its exit trap starts, no HUP, INT or TERM cuts it short (#1127) =="
+# par.sh trapped none of the three. bash then ends through its own handler, which runs the EXIT
+# trap and kills the shell when a second such signal lands while the first is handled: a run
+# `timeout` ended, signalling it and then its group, left its work folder and its .par.* shard
+# files (#1127). So par.sh traps the three, and its exit trap ignores them first, as run.sh
+# does (#1107). Copies of par.sh in a sandbox as the #1153 block's: row printers and one block,
+# no server, so no socket folder comes into it. end holds in its exit trap, right before the
+# removal; win holds there and also before its shards run, where it writes its traps down. Each
+# hold is a read on a fifo the copy holds open, ended by a line the row writes. Checkout c's
+# block passes; f's fails par.sh's syntax check, so end there ends 2 by a check.
+PQ=$(mktmpd); Q='"'; mkdir -p "$PQ/s"
+pq_in='[ -p "$PQ_H/pf" ] || mkfifo "$PQ_H/pf"; exec 9<>"$PQ_H/pf"; : > "$PQ_H/in"; '
+pq_in="${pq_in}read -r -t 20 -u 9 _; "
+pq_body='mkfifo "$PQ_H/pf"; exec 9<>"$PQ_H/pf"; trap -p HUP INT TERM > "$PQ_H/traps"; '
+pq_body="${pq_body}: > \"\$PQ_H/started\"; read -r -t 20 -u 9 _"
+pq_mk() {                     # <checkout> <its one block's body>
+    mkdir -p "$PQ/$1/tests"
+    { printf 'set -u\npass=0; fail=0; skipped=0\nflop_left() { :; }\n'
+      awk '/^ok\(\) /, /^is\(\) / { print } /^skip_\(\) / { print }' "$DIR/tests/run.sh"
+      printf 'echo %s== pq1 ==%s\n%s\n' "$Q" "$Q" "$2"
+    } > "$PQ/$1/tests/run.sh"
+    sed "s#rm -rf -- \"\\\$WORK\"#$pq_in&#" "$DIR/tests/par.sh" > "$PQ/$1/tests/end.sh"
+    sed "/^xrc=0\$/i $pq_body" "$PQ/$1/tests/end.sh" > "$PQ/$1/tests/win.sh"
+}
+pq_mk c 'is "pq1" 1 1'
+pq_mk f 'if true; then'
+is "each copy holds where it should" "1 2 1" "$(for c in c/tests/end c/tests/win f/tests/end; do
+    grep -c 'read -r -t 20 -u 9 _' "$PQ/$c.sh"; done | tr '\n' ' ' | sed 's/ $//')"
+pq_run() {                    # <copy> <checkout> <signal> [2nd] -> status|left in TMPDIR|.par.*
+    local c="" g rc dfl=() k=$2 # the last signal goes to the group while the exit trap holds
+    rm -rf "${PQ:?}/t" "${PQ:?}/h"; rm -f "$PQ/traps" "$PQ/$k/tests/".par.*
+    mkdir -p "$PQ/t" "$PQ/h"
+    for g in HUP INT TERM; do ! sig_dfl "$g" || dfl+=(--default-signal="$g"); done
+    ( cd "$PQ/$2" && exec env "${dfl[@]}" -u TMUX -u PAR_BLOCKS TMPDIR="$PQ/t" \
+        TMUX_TMPDIR="$PQ/s" PQ_H="$PQ/h" J=1 setsid bash "tests/$1.sh" ) \
+        </dev/null >/dev/null 2>&1 & pq_p=$!
+    if [ $# -gt 3 ]; then until_out '?*' ls "$PQ/h/started" >/dev/null
+    else until_out '?*' ls "$PQ/h/in" >/dev/null
+    fi
+    read -r c 2>/dev/null < "/proc/$pq_p/comm"
+    if [ "$c" = bash ]; then
+        [ $# -lt 4 ] || { kill -"$3" "$pq_p" 2>/dev/null; shift; }
+        until_out '?*' ls "$PQ/h/in" >/dev/null
+        kill -"$3" -- "-$pq_p" 2>/dev/null
+        printf '\n' 1<>"$PQ/h/pf"       # ends the hold in the exit trap, if a run is left to read
+    fi
+    wait "$pq_p" 2>/dev/null; rc=$?
+    [ ! -e "$PQ/h/traps" ] || mv "$PQ/h/traps" "$PQ/traps"
+    printf '%s|%s|%s' "$rc" "$(ls -A "$PQ/t" | tr '\n' ,)" \
+        "$(ls -A "$PQ/$k/tests" | grep '^\.par' | tr '\n' ,)"
+}
+if ! command -v setsid >/dev/null; then skip_ "a signal in par.sh's exit trap (no setsid)"
+elif [ ! -r "/proc/$$/comm" ]; then skip_ "a signal in par.sh's exit trap (no /proc)"
+elif ! sig_dfl HUP && [ "$(trap -p HUP)" = "trap -- '' SIGHUP" ]; then
+    skip_ "a signal in par.sh's exit trap (SIGHUP is ignored and env cannot reset it)"
+else
+    is "a HUP, then a HUP to its group in its exit trap, leaves no work folder or shard file" \
+       "129||" "$(pq_run win c HUP HUP)"
+    is "nor does a TERM after a TERM" "143||" "$(pq_run win c TERM TERM)"
+    if ! sig_dfl INT; then skip_ "an INT, and par.sh's INT trap (env cannot reset SIGINT)"
+    else
+        is "nor a TERM after an INT" "130||" "$(pq_run win c INT TERM)"
+        pq_want="trap -- 'par_sig 1' SIGHUP trap -- 'par_sig 2' SIGINT"
+        is "par.sh's own traps take HUP, INT and TERM" "$pq_want trap -- 'par_sig 15' SIGTERM" \
+           "$(tr '\n' ' ' 2>/dev/null < "$PQ/traps" | sed 's/ $//')"
+    fi
+    is "a HUP to its group while the exit trap of a run that came to its end runs leaves nothing" \
+       "0||" "$(pq_run end c HUP)"
+    is "nor a TERM" "0||" "$(pq_run end c TERM)"
+    is "a HUP while the exit trap of a run a check ended runs leaves nothing" "2||" \
+       "$(pq_run end f HUP)"
+    is "nor a TERM" "2||" "$(pq_run end f TERM)"
+fi
+# The trap was armed below the mkdir of the work folder's list and out, so a mkdir that failed
+# ended the run with the folder left (#1175). A mkdir of the block's own first on PATH fails
+# that call alone and hands every other to the real one. Here, not in #1017's block: that
+# block's stubs and sandbox are unset with it, and this one is about par.sh's exit paths.
+mkdir -p "$PQ/mk"; cp "$DIR/tests/par.sh" "$PQ/c/tests/par.sh"
+printf '#!/bin/sh\ncase "$*" in *"/list "*"/out") exit 1 ;; esac\nexec %s "$@"\n' \
+    "$(tq "$(command -v mkdir)")" > "$PQ/mk/mkdir"; chmod +x "$PQ/mk/mkdir"
+rm -rf "${PQ:?}/t"; mkdir -p "$PQ/t"
+is "a run whose work folder's list and out cannot be made ends 1 and leaves no work folder" \
+   "1|" "$(cd "$PQ/c" && PATH="$PQ/mk:$PATH" env -u PAR_BLOCKS -u TMUX TMPDIR="$PQ/t" J=1 \
+            bash tests/par.sh </dev/null >/dev/null 2>&1; echo "$?|$(ls -A "$PQ/t" | tr '\n' ,)")"
+unset -f pq_mk pq_run; unset PQ Q pq_in pq_body pq_p pq_want
+
 echo "== tests/green.sh: the stamp hits on unchanged content, misses on one changed byte, and tool versions are in the key =="
 GROOT=$(mktmpd)
 mkdir -p "$GROOT/scripts/lib" "$GROOT/tests" "$GROOT/examples"
@@ -19930,6 +20022,7 @@ done
 unset FD fx NEST_RC NEST_OUT NEST_PASS NEST_FAIL
 
 # For the #900 and #1107 blocks, which end prelude copies by signals; unset after #1107's.
+# sig_dfl, its pair, is in the prelude.
 sig_left() {                  # <a copy's TMPDIR> -> the processes carrying it: "0", or count and
     local p n o end=$((SECONDS + 10))    # names. Read again, up to 10 s: one on its way
     # out is none, and a pane that watches its run's pid takes about a second to see it gone
@@ -19944,10 +20037,6 @@ sig_left() {                  # <a copy's TMPDIR> -> the processes carrying it: 
     done
     printf '%s%s' "$n" "$o"
 }
-# A background child starts with INT ignored, and a suite under nohup starts with HUP ignored
-# (#524); bash cannot trap a signal it started with ignored. env hands the default back where
-# it can, and where it cannot the row for that signal is skipped with the reason.
-sig_dfl() { env --default-signal="$1" true 2>/dev/null; }
 
 echo "== run.sh: a run ended by a signal in its prelude leaves no server, socket or temp dir (#900) =="
 # The suite's server leaves the run's process group, so a signal that ends the run never
@@ -20138,7 +20227,7 @@ else
        "0|0|in,pf,|0|" "$(s2_run end HUP)"
     is "nor a TERM" "0|0|in,pf,|0|" "$(s2_run end TERM)"
 fi
-unset -f s2_run sig_left sig_dfl; unset S2 s2_hold s2_in s2_pane s2_p s2_want
+unset -f s2_run sig_left; unset S2 s2_hold s2_in s2_pane s2_p s2_want
 
 echo "== run.sh: under a TMPDIR with a blank the tmux wrapper sits where no blank is (#992) =="
 # "$TMUX_REAL" is the #573 wrapper's path, pasted unquoted into some forty pane commands. It

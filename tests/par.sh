@@ -36,8 +36,24 @@ case $WORK in /*) ;; *) WORK=$PWD/$WORK ;; esac
 # or scripts fails. tests/only.sh mktemps into tests/ for the same reason.
 # Flat, not a subdirectory: dirname/.. has to land on the repo root exactly.
 SH="$DIR/tests/.par.$$"
+# HUP, INT and TERM are trapped by par.sh itself, and its exit trap ignores all three as its
+# first step, as tests/run.sh's do (#1107). With no trap of its own on them, bash ends through
+# its own handler, which runs the EXIT trap and kills the shell at once when a second such
+# signal arrives while the first is handled. `timeout` sends its signal to the run and then to
+# the run's process group, and a run that took the first before the second left its work
+# folder and its shard files behind (#1127). par_sig ignores the three before it exits, for
+# the step between its `exit` and the exit trap's first line, where no line runs.
+# The cost: bash runs a trap once the command in the foreground is done, and here that is the
+# xargs of every shard. A signal sent to par.sh's pid alone waits for every shard still to
+# run, then exits 128 + its number with no totals. One sent to the group, as a Ctrl-C or a
+# plain `timeout` sends it, ends xargs and its shards too, and the run at once.
+par_clean() { trap '' HUP INT TERM; rm -rf -- "$WORK"; rm -f -- "$SH".*; }
+par_sig() { trap '' HUP INT TERM; exit $((128 + $1)); }
+trap par_clean EXIT
+trap 'par_sig 1' HUP; trap 'par_sig 2' INT; trap 'par_sig 15' TERM
+# Armed before any step after the mktemp that can end the run: with the trap below this mkdir,
+# a mkdir that failed ended the run and left the work folder behind (#1175).
 mkdir -p "$WORK/list" "$WORK/out" || exit 1
-trap 'rm -rf -- "$WORK"; rm -f -- "$SH".*' EXIT
 
 # Snapshot first: a concurrent editor saving tests/run.sh mid-run would
 # otherwise hand half a file to a shard still being generated, which reads as
