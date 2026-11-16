@@ -20,7 +20,13 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUN="$DIR/tests/run.sh"
 cd "$DIR" || exit 1
 TBL=$(mktemp) || exit 1
-trap 'rm -f -- "$TBL"' EXIT
+# HUP, INT and TERM are trapped here, and the exit trap ignores all three first, as par.sh
+# does (#1127, #1171): with no trap of its own, a second such signal during the first's
+# handling kills bash before the table is removed.
+chg_clean() { trap '' HUP INT TERM; rm -f -- "$TBL"; }
+chg_sig() { trap '' HUP INT TERM; exit $((128 + $1)); }
+trap chg_clean EXIT
+trap 'chg_sig 1' HUP; trap 'chg_sig 2' INT; trap 'chg_sig 15' TERM
 
 SCRIPTS='agent-context agent-state cockpit-board cockpit-panel review-gate tm tmux-branch tmux-jump tmux-open-path tmux-review tmux-where tui-fetch worktree-create worktree-remove'
 

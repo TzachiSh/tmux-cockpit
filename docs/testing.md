@@ -191,6 +191,13 @@ signal's number with no totals. A signal sent to its process group, a Ctrl-C
 at the terminal or a plain `timeout`, reaches xargs and the shards too, and the
 run ends promptly.
 
+`tests/only.sh` and `tests/changed.sh` do the same (#1171), so a second signal
+no longer leaves only.sh's `tests/.only.*` file in the checkout or changed.sh's
+table in `TMPDIR`. The same cost applies to only.sh, whose foreground command is
+the run of the blocks it picked. A signal sent to its pid alone waits for that
+run to finish. A signal sent to its group ends that run too, and only.sh exits
+once the run's own cleanup is done.
+
 Those rows hold only where the suite made the folder. In a folder you named,
 other runs' sockets may sit beside this run's, so nothing is asked of it. On
 CI one leg, the one marked `bare` in `shell-suite.yml`'s matrix (the
