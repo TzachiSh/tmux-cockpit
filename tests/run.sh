@@ -10755,6 +10755,81 @@ is "and none of those runs left a shard file in the checkout" "" \
    "$(ls -A "$PY/c/tests" | grep '^\.par')"
 unset -f py_run py_stub; unset PY Q py_awk py_bash py_w py_m
 
+echo "== tests/par.sh: once its exit trap starts, no HUP, INT or TERM cuts it short (#1127) =="
+# par.sh trapped none of the three. bash then ends through its own handler, which runs the EXIT
+# trap and kills the shell when a second such signal lands while the first is handled: a run
+# `timeout` ended, signalling it and then its group, left its work folder and its .par.* shard
+# files (#1127). So par.sh traps the three, and its exit trap ignores them first, as run.sh
+# does (#1107). Copies of par.sh in a sandbox as the #1153 block's: row printers and one block,
+# no server, so no socket folder comes into it. end holds in its exit trap, right before the
+# removal; win holds there and also before its shards run, where it writes its traps down. Each
+# hold is a read on a fifo the copy holds open, ended by a line the row writes. Checkout c's
+# block passes; f's fails par.sh's syntax check, so end there ends 2 by a check.
+PQ=$(mktmpd); Q='"'; mkdir -p "$PQ/s"
+pq_in='[ -p "$PQ_H/pf" ] || mkfifo "$PQ_H/pf"; exec 9<>"$PQ_H/pf"; : > "$PQ_H/in"; '
+pq_in="${pq_in}read -r -t 20 -u 9 _; "
+pq_body='mkfifo "$PQ_H/pf"; exec 9<>"$PQ_H/pf"; trap -p HUP INT TERM > "$PQ_H/traps"; '
+pq_body="${pq_body}: > \"\$PQ_H/started\"; read -r -t 20 -u 9 _"
+pq_mk() {                     # <checkout> <its one block's body>
+    mkdir -p "$PQ/$1/tests"
+    { printf 'set -u\npass=0; fail=0; skipped=0\nflop_left() { :; }\n'
+      awk '/^ok\(\) /, /^is\(\) / { print } /^skip_\(\) / { print }' "$DIR/tests/run.sh"
+      printf 'echo %s== pq1 ==%s\n%s\n' "$Q" "$Q" "$2"
+    } > "$PQ/$1/tests/run.sh"
+    sed "s#rm -rf -- \"\\\$WORK\"#$pq_in&#" "$DIR/tests/par.sh" > "$PQ/$1/tests/end.sh"
+    sed "/^xrc=0\$/i $pq_body" "$PQ/$1/tests/end.sh" > "$PQ/$1/tests/win.sh"
+}
+pq_mk c 'is "pq1" 1 1'
+pq_mk f 'if true; then'
+is "each copy holds where it should" "1 2 1" "$(for c in c/tests/end c/tests/win f/tests/end; do
+    grep -c 'read -r -t 20 -u 9 _' "$PQ/$c.sh"; done | tr '\n' ' ' | sed 's/ $//')"
+pq_run() {                    # <copy> <checkout> <signal> [2nd] -> status|left in TMPDIR|.par.*
+    local c="" g rc dfl=() k=$2 # the last signal goes to the group while the exit trap holds
+    rm -rf "${PQ:?}/t" "${PQ:?}/h"; rm -f "$PQ/traps" "$PQ/$k/tests/".par.*
+    mkdir -p "$PQ/t" "$PQ/h"
+    for g in HUP INT TERM; do ! sig_dfl "$g" || dfl+=(--default-signal="$g"); done
+    ( cd "$PQ/$2" && exec env "${dfl[@]}" -u TMUX -u PAR_BLOCKS TMPDIR="$PQ/t" \
+        TMUX_TMPDIR="$PQ/s" PQ_H="$PQ/h" J=1 setsid bash "tests/$1.sh" ) \
+        </dev/null >/dev/null 2>&1 & pq_p=$!
+    if [ $# -gt 3 ]; then until_out '?*' ls "$PQ/h/started" >/dev/null
+    else until_out '?*' ls "$PQ/h/in" >/dev/null
+    fi
+    read -r c 2>/dev/null < "/proc/$pq_p/comm"
+    if [ "$c" = bash ]; then
+        [ $# -lt 4 ] || { kill -"$3" "$pq_p" 2>/dev/null; shift; }
+        until_out '?*' ls "$PQ/h/in" >/dev/null
+        kill -"$3" -- "-$pq_p" 2>/dev/null
+        printf '\n' 1<>"$PQ/h/pf"       # ends the hold in the exit trap, if a run is left to read
+    fi
+    wait "$pq_p" 2>/dev/null; rc=$?
+    [ ! -e "$PQ/h/traps" ] || mv "$PQ/h/traps" "$PQ/traps"
+    printf '%s|%s|%s' "$rc" "$(ls -A "$PQ/t" | tr '\n' ,)" \
+        "$(ls -A "$PQ/$k/tests" | grep '^\.par' | tr '\n' ,)"
+}
+if ! command -v setsid >/dev/null; then skip_ "a signal in par.sh's exit trap (no setsid)"
+elif [ ! -r "/proc/$$/comm" ]; then skip_ "a signal in par.sh's exit trap (no /proc)"
+elif ! sig_dfl HUP && [ "$(trap -p HUP)" = "trap -- '' SIGHUP" ]; then
+    skip_ "a signal in par.sh's exit trap (SIGHUP is ignored and env cannot reset it)"
+else
+    is "a HUP, then a HUP to its group in its exit trap, leaves no work folder or shard file" \
+       "129||" "$(pq_run win c HUP HUP)"
+    is "nor does a TERM after a TERM" "143||" "$(pq_run win c TERM TERM)"
+    if ! sig_dfl INT; then skip_ "an INT, and par.sh's INT trap (env cannot reset SIGINT)"
+    else
+        is "nor a TERM after an INT" "130||" "$(pq_run win c INT TERM)"
+        pq_want="trap -- 'par_sig 1' SIGHUP trap -- 'par_sig 2' SIGINT"
+        is "par.sh's own traps take HUP, INT and TERM" "$pq_want trap -- 'par_sig 15' SIGTERM" \
+           "$(tr '\n' ' ' 2>/dev/null < "$PQ/traps" | sed 's/ $//')"
+    fi
+    is "a HUP to its group while the exit trap of a run that came to its end runs leaves nothing" \
+       "0||" "$(pq_run end c HUP)"
+    is "nor a TERM" "0||" "$(pq_run end c TERM)"
+    is "a HUP while the exit trap of a run a check ended runs leaves nothing" "2||" \
+       "$(pq_run end f HUP)"
+    is "nor a TERM" "2||" "$(pq_run end f TERM)"
+fi
+unset -f pq_mk pq_run; unset PQ Q pq_in pq_body pq_p pq_want
+
 echo "== tests/green.sh: the stamp hits on unchanged content, misses on one changed byte, and tool versions are in the key =="
 GROOT=$(mktmpd)
 mkdir -p "$GROOT/scripts/lib" "$GROOT/tests" "$GROOT/examples"
