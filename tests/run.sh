@@ -623,6 +623,25 @@ pane_runs() {                 # <-L socket> <pane> <comm> <argv...> -> 0, or a b
         "comm [${c:0:15}], argv $want" "comm [$PR_COMM], argv $PR_ARGV"
     return 1
 }
+# A shell's own prompt, waited for after an empty line (#1183). A paste into a bash whose
+# readline is not up yet is echoed by the tty unbracketed, and bash then runs its lines (#215).
+# The Enter runs nothing at a prompt, and before readline it is an empty line; a shell held in
+# its rc file until a line is pending goes on with it. PATTERN is a case-pattern naming that
+# shell's own prompt, with no embedded quotes: '*[$#]*' also matches a pasted line's echo.
+shell_prompt() {              # <-L socket> <pane> <pattern> -> 0, or a bad row and 1
+    local s=${1:-} p=${2:-} pat=${3:-}
+    need_sock "$s" shell_prompt || return 1
+    if [ $# -ne 3 ] || [ -z "$p" ] || [ -z "$pat" ]; then
+        sock_bad "shell_prompt takes a socket, a pane and a prompt pattern" \
+            "<socket> <pane> <pattern>" "$*"
+        return 1
+    fi
+    "$TMUX_REAL" -L "$s" send-keys -t "$p" Enter >/dev/null 2>&1
+    until_cap "$s" "$p" "$pat" && return 0
+    sock_bad "pane $p on $s never drew its prompt $pat (#1183)" "a prompt" \
+        "$("$TMUX_REAL" -L "$s" capture-pane -p -J -t "$p" 2>/dev/null | grep -v '^$' | tail -2)"
+    return 1
+}
 # #195: an empty socket name never reaches tmux. `-L ''` itself errors, but TMUX=
 # takes the socket path before its first comma, and an empty path there, ",0,0" or
 # "", is the DEFAULT socket: the user's live server. A probe whose private server
@@ -23734,6 +23753,33 @@ is "pane_runs on a session:index target is a bad row and 1, before any tmux call
          printf '%s' "$?" ) )"
 "$TMUX_REAL" -L "$PZS" kill-server >/dev/null 2>&1
 unset -f pr_cmd pr_try; unset PZS PZD PZB PZP PZW PZWS
+fi
+
+echo "== shell_prompt: a shell is waited for on its own prompt, after an empty line (#1183) =="
+if need_tmux "shell_prompt"; then :; else
+SPS="cockpit-sp1183-$$"; SOCKS="$SOCKS $SPS"; SPD=$(mktmpd); mkfifo "$SPD/f"
+# The rc holds before readline on a fifo, deaf to the tty, then draws its own prompt.
+printf 'exec 9<>%s; printf x > %s; read -r -t 20 -u 9 _; exec 9<&-\n' \
+    "$(tq "$SPD/f")" "$(tq "$SPD/in")" > "$SPD/rc"
+printf '%s\n' "PS1='sp-ready\\$ '" >> "$SPD/rc"
+SPP=$("$TMUX_REAL" -L "$SPS" -f /dev/null new-session -d -s t -c "$SPD" -P -F '#{pane_id}' \
+    "exec bash --rcfile $(tq "$SPD/rc")" 2>/dev/null)
+until_file "$SPD/in" x
+sp_try() {                    # <polls> <pane> <pattern> -> the status shell_prompt returned
+    ( sock_bad() { :; }; POLLS=$1 shell_prompt "$SPS" "${@:2}"; printf '%s' "$?" )
+}
+is "a shell held in its rc file has drawn no prompt" held \
+   "$(case "$("$TMUX_REAL" -L "$SPS" capture-pane -p -J -t "$SPP")" in
+        *sp-ready*) echo drawn ;; *) echo held ;; esac)"
+is "shell_prompt does not end on it" 1 "$(sp_try 3 "$SPP" '*sp-ready$*')"
+printf 'x\n' 1<>"$SPD/f"
+is "once released, shell_prompt ends on its own prompt and not on another's" "0|1" \
+   "$(sp_try "$POLLS" "$SPP" '*sp-ready$*')|$(sp_try 3 "$SPP" '*rg-ready$*')"
+is "shell_prompt with no pattern is a bad row and 1, before any tmux call" \
+   "shell_prompt takes a socket, a pane and a prompt pattern|1" \
+   "$( ( sock_bad() { printf '%s|' "$1"; }; shell_prompt "$SPS" "$SPP"; printf '%s' "$?" ) )"
+"$TMUX_REAL" -L "$SPS" kill-server >/dev/null 2>&1
+unset -f sp_try; unset SPS SPD SPP
 fi
 
 flop_left
