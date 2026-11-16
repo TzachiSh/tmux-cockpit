@@ -239,14 +239,21 @@ done
 # command's noise or an error no row read: one record each on stderr, and the run fails
 # (#1153). Matched as the printers write them, colours included. Every log is read, a dead
 # shard's too, so what it printed as it died is named.
+# A want, a got and a "     | " line count only in a red row's place: st is 1 after a FAIL
+# row, 2 in its want, 3 in its got. A want comes only at 1, a got only at 2, a further line
+# only at 2 or 3; anywhere else each is named. A stray line leaves st as it was, so a line
+# another writer put between a red row's lines is named alone, not the row's own lines.
 if [ ${#logs[@]} -gt 0 ]; then
     LC_ALL=C awk '
-        FNR == 1 { id = FILENAME; sub(/.*\//, "", id); sub(/\.log$/, "", id); blk = "" }
+        FNR == 1 { id = FILENAME; sub(/.*\//, "", id); sub(/\.log$/, "", id); blk = ""; st = 0 }
         /^== .* ==$/ { blk = substr($0, 4, length($0) - 6); gsub(/[\001-\037\177]/, "", blk)
-                       next }
-        /^  \033\[32mPASS\033\[0m / || /^  \033\[33mSKIP\033\[0m / { next }
-        /^  \033\[31mFAIL\033\[0m / || /^  \033\[31mFATAL\033\[0m / { next }
-        /^     want \[/ || /^     got  \[/ || /^     \| / { next }
+                       st = 0; next }
+        /^  \033\[32mPASS\033\[0m / || /^  \033\[33mSKIP\033\[0m / { st = 0; next }
+        /^  \033\[31mFATAL\033\[0m / { st = 0; next }
+        /^  \033\[31mFAIL\033\[0m / { st = 1; next }
+        st == 1 && /^     want \[/ { st = 2; next }
+        st == 2 && /^     got  \[/ { st = 3; next }
+        st >= 2 && /^     \| / { next }
         { t = $0; gsub(/\033\[[0-9;]*m/, "", t); gsub(/[\001-\037\177]/, "", t)
           if (length(t) > 200) {
               c = substr(t, 201, 1); t = substr(t, 1, 200)

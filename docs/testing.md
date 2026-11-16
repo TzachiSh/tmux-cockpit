@@ -40,7 +40,9 @@ noise, or an error no row read, and in a red run's log it hides the real one.
 
 A `want` or a `got` can hold a newline. `bad` starts each further line of one
 with `     | `, so a red row stays readable and the check can tell its lines
-from a stray one.
+from a stray one. Each counts only in its place: a `want` right after a `FAIL`
+row, a `got` right after its `want`, a `     | ` line inside a `want` or a
+`got`. The same line anywhere else is named.
 
 Each stray line is one record on par.sh's stderr, its fields separated by
 tabs:
@@ -54,7 +56,8 @@ the line, and `text` has its colours and control bytes dropped and is cut at
 200 bytes. A count line follows the records. A shard's stdout and stderr go to
 one log, so a record does not say which stream the line came from.
 
-Only `tests/par.sh` checks, and so `make test-par`, `make gate` and CI.
+Only `tests/par.sh` checks, and so `make test-par`, `make check-par`,
+`make gate`, `make test-changed` and CI.
 `tests/only.sh` and a plain `tests/run.sh` print as they run and check nothing.
 
 ### A TMPDIR with a blank

@@ -23354,7 +23354,7 @@ pk_rec() {                    # <shard id>
     awk -F'\t' -v s="shard=$1" '$1 == "par.sh: stray line" && $2 == s {
         l = $3; b = $4; t = $5; sub(/^line=/, "", l); sub(/^block=/, "", b)
         sub(/^text=/, "", t); sub(/^.*: line [0-9]+: /, "", t); printf "%s|%s|%s;", l, b, t }' \
-        "$PK/err"
+        < "$PK/err"
 }
 pk_mk g <<'PKEOF'
 is "pk1 green" a a
@@ -23375,6 +23375,8 @@ bad "pk4 red" a $'g1\n== pk4 lookalike ==\n  PASS lookalike\nplain'
 bad "pk5 red" a b | awk 'NR == 2 { print "pk5 inside" } 1'; fail=$((fail + 1))
 --
 echo "$pk_nope"
+--
+is "pk7 row" a a; printf '     want [w]\n     got  [g]\n     | c\n'; bad "pk7 red" a $'g1\ng2'
 PKEOF
 is "a line on a shard's stdout that is no row fails the run, named by shard, line, block" \
    "1|3|pk2|pk2 out;" "$(pk_run c)|$(pk_rec 0002)"
@@ -23386,6 +23388,10 @@ is "a line between a red row's FAIL and its want is named" "3|pk5|pk5 inside;" \
 is "a shard that died is named as died, and so is the line it died with" \
    "1|2|pk6|pk_nope: unbound variable;" \
    "$(grep -c '^par\.sh: shard 0006 died without reporting$' "$PK/err")|$(pk_rec 0006)"
+# A want, a got and a further line count only in a red row's place: after a PASS row each is
+# named, and the real red row that follows them names nothing.
+is "a want, a got and a further line out of a red row's place are each named" \
+   "3|pk7|     want [w];4|pk7|     got  [g];5|pk7|     | c;" "$(pk_rec 0007)"
 # A relative TMPDIR holding = and a space. par.sh makes its work folder absolute, so no awk
 # operand it builds from that folder reads as a name=value assignment (#1159).
 pk_mk p <<'PKEOF'
