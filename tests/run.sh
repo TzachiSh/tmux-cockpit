@@ -442,6 +442,22 @@ kill_socks() {
 $SOCKP
 EOF_SOCKP
 }
+# For a block that runs a suite nested under a TMUX_TMPDIR of its own (#1104): whether a
+# suite's socket there can bind, and the end of what servers it left. In the prelude, so a
+# block above the #1104 block has them too: bash defines a function where it reads it (#1145).
+sock_long() {                 # <TMUX_TMPDIR> -> true when a suite's socket under it,
+    # <it>/tmux-<uid>/cockpit-suite-<pid of up to 7 digits>, passes 107 bytes: none binds there
+    [ $# -eq 1 ] || { bad "sock_long takes one folder" "1" "$#"; return 0; }
+    [ $((${#1} + ${#UID} + 28)) -gt 107 ]
+}
+sock_sweep() {                # <TMUX_TMPDIR>... -> each server on a socket in its tmux-* folders
+    local d s                 # is ended by that socket, silently
+    for d; do
+        for s in "$d"/tmux-*/*; do
+            [ -S "$s" ] && "$TMUX_REAL" -S "$s" kill-server >/dev/null 2>&1
+        done
+    done
+}
 
 # Several checks need a live tmux server to set per-pane options against. Skip
 # them cleanly rather than failing: a red suite should mean broken code, not
@@ -11453,22 +11469,10 @@ unset -f nw
 rm -rf "$NW"
 
 echo "== nested runs: a helper runs them, one guards the socket path, one sweeps (#1104) =="
-# For the blocks below that run others nested, each with a TMUX_TMPDIR of its own: whether a
-# suite's socket there can bind, the run itself, and the end of what servers it left (#1104).
-# Top-level, so only.sh and par.sh give them to every block; no block unsets them.
-sock_long() {                 # <TMUX_TMPDIR> -> true when a suite's socket under it,
-    # <it>/tmux-<uid>/cockpit-suite-<pid of up to 7 digits>, passes 107 bytes: none binds there
-    [ $# -eq 1 ] || { bad "sock_long takes one folder" "1" "$#"; return 0; }
-    [ $((${#1} + ${#UID} + 28)) -gt 107 ]
-}
-sock_sweep() {                # <TMUX_TMPDIR>... -> each server on a socket in its tmux-* folders
-    local d s                 # is ended by that socket, silently
-    for d; do
-        for s in "$d"/tmux-*/*; do
-            [ -S "$s" ] && "$TMUX_REAL" -S "$s" kill-server >/dev/null 2>&1
-        done
-    done
-}
+# For the blocks below that run others nested, each with a TMUX_TMPDIR of its own: the run
+# itself (#1104). Its socket path guard and its sweep, sock_long and sock_sweep, are in the
+# prelude. Top-level, so only.sh and par.sh give these to every block below, as run.sh does: a
+# function is defined where it is read; no block unsets them.
 # tests/only.sh <pattern> from the checkout, with TMUX unset and the env words added (VAR=value
 # or -u VAR). Sets NEST_RC to its exit, NEST_OUT to its output, NEST_PASS and NEST_FAIL to the
 # number of its lines that say each.
