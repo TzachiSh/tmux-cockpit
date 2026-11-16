@@ -21088,11 +21088,13 @@ NEWWIN_SH=$(command -v sh) MV_ED=$(tq "$MV/ed-argv") mvrun x --view %1 "$MV/w/$M
 is "end to end: the editor is handed +7 and the file's path whole" "+7"$'\n'"$MV/w/$MVQ" \
    "$(cat "$MV/argv" 2>/dev/null)"
 # #1177: a touch client's editor gets +N by its first word, read as sh reads it. An nvim stub
-# at a path holding the folder's blanks, spelled four ways; the viewer's e opens it at line 7
+# at a path holding the folder's blanks, spelled five ways; the viewer's e opens it at line 7
 mkdir -p "$MV/e"; cp "$MV/ed-argv" "$MV/e/nvim"
-for mvsp in single backslash mixed args; do
+for mvsp in single double backslash mixed args; do
     case $mvsp in
         single) mved=$(tq "$MV/e/nvim"); mvw= ;;
+        # inside "...", sh still reads \ " $ and ` : each is escaped first
+        double) mved="\"$(printf '%s' "$MV/e/nvim" | sed 's/[\\"$`]/\\&/g')\""; mvw= ;;
         backslash) mved=$(printf '%s' "$MV/e/nvim" | sed 's/./\\&/g'); mvw= ;;   # each character
         mixed) mved="$(tq "$MV/e")/nvim"; mvw= ;;
         args) mved="$(tq "$MV/e/nvim") -u NONE"; mvw=$'-u\nNONE\n' ;;
