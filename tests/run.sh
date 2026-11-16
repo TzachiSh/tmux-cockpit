@@ -10952,6 +10952,92 @@ is "a run whose work folder's list and out cannot be made ends 1 and leaves no w
             bash tests/par.sh </dev/null >/dev/null 2>&1; echo "$?|$(ls -A "$PQ/t" | tr '\n' ,)")"
 unset -f pq_mk pq_run; unset PQ Q pq_in pq_body pq_p pq_want
 
+echo "== tests/only.sh, tests/changed.sh: no HUP, INT or TERM cuts an exit trap short (#1171) =="
+# Both set an EXIT trap and nothing on HUP, INT or TERM, the shape par.sh had (#1127): bash then
+# ends through its own handler, and a second such signal while the first is handled, or one
+# while the exit trap of a run that ended on its own runs, kills it before the removal. only.sh
+# left its tests/.only.* file in the checkout, changed.sh its table in TMPDIR. So both trap the
+# three, and their exit traps ignore them first. Copies in a sandbox, held as #1127's: oend and
+# cend hold in the exit trap, right before the removal; owin and cwin hold there and also before
+# their work, where they write their traps down. only.sh runs fx.sh's one block through
+# ONLY_RUN, or ends 2 on a pattern no block matches; changed.sh reads the sandbox's run.sh. No
+# git, no make, no server.
+OC=$(mktmpd); mkdir -p "$OC/c/tests" "$OC/c/scripts" "$OC/s"
+oc_in='[ -p "$OC_H/pf" ] || mkfifo "$OC_H/pf"; exec 9<>"$OC_H/pf"; : > "$OC_H/in"; '
+oc_in="${oc_in}read -r -t 20 -u 9 _; "
+oc_body='mkfifo "$OC_H/pf"; exec 9<>"$OC_H/pf"; trap -p HUP INT TERM > "$OC_H/traps"; '
+oc_body="${oc_body}: > \"\$OC_H/started\"; read -r -t 20 -u 9 _"
+printf '%s\n' 'pass=0; fail=0; skipped=0' 'flop_left() { :; }' 'echo "== oc1 =="' : \
+    > "$OC/c/fx.sh"
+printf '%s\n' 'echo "== syntax =="' '# tests: scripts/tool' 'echo "== tool =="' \
+    > "$OC/c/tests/run.sh"
+echo ': a tool' > "$OC/c/scripts/tool"
+sed "s#rm -f -- \"\\\$OUT\"#$oc_in&#" "$DIR/tests/only.sh" > "$OC/c/tests/oend.sh"
+sed "/^bash -n /i $oc_body" "$OC/c/tests/oend.sh" > "$OC/c/tests/owin.sh"
+sed "s#rm -f -- \"\\\$TBL\"#$oc_in&#" "$DIR/tests/changed.sh" > "$OC/c/tests/cend.sh"
+sed "/^SCRIPTS=/i $oc_body" "$OC/c/tests/cend.sh" > "$OC/c/tests/cwin.sh"
+is "each copy holds where it should" "1 2 1 2" "$(for c in oend owin cend cwin; do
+    grep -c 'read -r -t 20 -u 9 _' "$OC/c/tests/$c.sh"; done | tr '\n' ' ' | sed 's/ $//')"
+oc_run() {                    # <copy> <pattern|--each> <signal> [2nd] -> status|TMPDIR|.only.*
+    local c="" g rc dfl=() a=("$2")   # the last signal goes to the group in the exit trap
+    [ "$2" != --each ] || a+=(scripts/tool)
+    rm -rf "${OC:?}/t" "${OC:?}/h"; rm -f "$OC/traps" "$OC/c/tests/".only.*
+    mkdir -p "$OC/t" "$OC/h"
+    for g in HUP INT TERM; do ! sig_dfl "$g" || dfl+=(--default-signal="$g"); done
+    ( cd "$OC/c" && exec env "${dfl[@]}" -u TMUX TMPDIR="$OC/t" TMUX_TMPDIR="$OC/s" \
+        OC_H="$OC/h" ONLY_RUN="$OC/c/fx.sh" setsid bash "tests/$1.sh" "${a[@]}" ) \
+        </dev/null >/dev/null 2>&1 & oc_p=$!
+    if [ $# -gt 3 ]; then until_out '?*' ls "$OC/h/started" >/dev/null
+    else until_out '?*' ls "$OC/h/in" >/dev/null
+    fi
+    read -r c 2>/dev/null < "/proc/$oc_p/comm"
+    if [ "$c" = bash ]; then
+        [ $# -lt 4 ] || { kill -"$3" "$oc_p" 2>/dev/null; shift; }
+        until_out '?*' ls "$OC/h/in" >/dev/null
+        kill -"$3" -- "-$oc_p" 2>/dev/null
+        printf '\n' 1<>"$OC/h/pf"       # ends the hold in the exit trap, if a run is left to read
+    fi
+    wait "$oc_p" 2>/dev/null; rc=$?
+    [ ! -e "$OC/h/traps" ] || mv "$OC/h/traps" "$OC/traps"
+    printf '%s|%s|%s' "$rc" "$(ls -A "$OC/t" | tr '\n' ,)" \
+        "$(ls -A "$OC/c/tests" | grep '^\.only' | tr '\n' ,)"
+}
+oc_traps() { tr '\n' ' ' 2>/dev/null < "$OC/traps" | sed 's/ $//'; }
+oc_sk="a signal in only.sh's or changed.sh's exit trap"
+if ! command -v setsid >/dev/null; then skip_ "$oc_sk (no setsid)"
+elif [ ! -r "/proc/$$/comm" ]; then skip_ "$oc_sk (no /proc)"
+elif ! sig_dfl HUP && [ "$(trap -p HUP)" = "trap -- '' SIGHUP" ]; then
+    skip_ "$oc_sk (SIGHUP is ignored and env cannot reset it)"
+else
+    is "only.sh: a HUP, then a HUP to its group in its exit trap, leaves no .only file" "129||" \
+       "$(oc_run owin '^oc1' HUP HUP)"
+    is "nor does a TERM after a TERM" "143||" "$(oc_run owin '^oc1' TERM TERM)"
+    is "changed.sh: a HUP, then a HUP to its group in its exit trap, leaves no table" "129||" \
+       "$(oc_run cwin --each HUP HUP)"
+    is "nor does a TERM after a TERM" "143||" "$(oc_run cwin --each TERM TERM)"
+    if ! sig_dfl INT; then
+        skip_ "an INT, and only.sh's and changed.sh's INT traps (env cannot reset SIGINT)"
+    else
+        oc_want="trap -- 'only_sig 1' SIGHUP trap -- 'only_sig 2' SIGINT"
+        oc_want="$oc_want trap -- 'only_sig 15' SIGTERM"
+        is "only.sh: nor a TERM after an INT" "130||" "$(oc_run owin '^oc1' INT TERM)"
+        is "only.sh's own traps take HUP, INT and TERM" "$oc_want" "$(oc_traps)"
+        is "changed.sh: nor a TERM after an INT" "130||" "$(oc_run cwin --each INT TERM)"
+        is "changed.sh's own traps take HUP, INT and TERM" "${oc_want//only_sig/chg_sig}" \
+           "$(oc_traps)"
+    fi
+    is "only.sh: a HUP to its group in the exit trap of a run that came to its end leaves none" \
+       "0||" "$(oc_run oend '^oc1' HUP)"
+    is "nor a TERM" "0||" "$(oc_run oend '^oc1' TERM)"
+    is "only.sh: a HUP while the exit trap of a run no block matched runs leaves nothing" "2||" \
+       "$(oc_run oend '^zz' HUP)"
+    is "nor a TERM" "2||" "$(oc_run oend '^zz' TERM)"
+    is "changed.sh: a HUP to its group in the exit trap of a run at its end leaves none" \
+       "0||" "$(oc_run cend --each HUP)"
+    is "nor a TERM" "0||" "$(oc_run cend --each TERM)"
+fi
+unset -f oc_run oc_traps; unset OC oc_in oc_body oc_p oc_want oc_sk
+
 echo "== tests/green.sh: the stamp hits on unchanged content, misses on one changed byte, and tool versions are in the key =="
 GROOT=$(mktmpd)
 mkdir -p "$GROOT/scripts/lib" "$GROOT/tests" "$GROOT/examples"
@@ -23208,8 +23294,9 @@ ir_run() {                    # <TMPDIR for the nested run> <label for the rows>
     irc=""; read -r irc 2>/dev/null < "/proc/$irp/comm"
     case "$irc" in only.sh|bash) kill -TERM -- "-$irp" 2>/dev/null ;; esac
     wait "$irp" 2>/dev/null
-    # only.sh ends at once; the script it runs ends after its EXIT trap's cleanup: wait for
-    # that, by the listener count, not a clock.
+    # only.sh traps TERM and runs its trap once the script it runs is done (#1171), so this
+    # wait returns after that script's EXIT trap's cleanup; the listener count below is read
+    # once it is over.
     until_out 0 grep -cF " $irs" /proc/net/unix
     # And for the run itself to be over: that socket closes early in its cleanup, and its own
     # server and socket go last. They are in the socket folder this run shares with it, where
