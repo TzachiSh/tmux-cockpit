@@ -9680,14 +9680,33 @@ echo "== tmux-review --deliver: the paste is gated atomically, so a pane that st
 # that outlived the agent and once against a live agent.
 if need_tmux "tmux-review --deliver atomic gate"; then :; else
 RG="cockpit-rgz-$$"; SOCKS="$SOCKS $RG"
+# Both shells start on RGRC (#1183). It records each line bash runs as an unknown command in
+# RGD/ran, then holds before readline until a line is pending on the tty: `read -t 0` reads
+# nothing. A paste made before the prompt is therefore always made before readline, and runs.
+# The hold is bounded at 400 x 0.05 s, 20 s, and decides no row: running out records
+# "expired", which a row below reads as red. The last line draws a prompt no paste can echo.
+RGD=$(mktmpd); RGRC="$RGD/rc"; : > "$RGD/ran"
+{ printf 'RG_D=%s\n' "$(tq "$RGD")"
+  printf '%s\n' \
+    'command_not_found_handle() { printf "%s\n" "$1" >> "$RG_D/ran"; return 127; }' \
+    'rg_end() { printf "end\n" > "$RG_D/end$TMUX_PANE"; }' \
+    'i=0; until read -t 0 || [ "$i" -ge 400 ]; do sleep 0.05; i=$((i+1)); done' \
+    '[ "$i" -lt 400 ] || echo expired >> "$RG_D/ran"' \
+    "PS1='rg-ready\\$ '"
+} > "$RGRC"
 APG=$("$TMUX_REAL" -L "$RG" -f /dev/null new-session -d -s t -x 100 -y 30 \
-    -P -F '#{pane_id}' 'exec -a claude bash' 2>/dev/null)
-NPG=$("$TMUX_REAL" -L "$RG" split-window -t t -P -F '#{pane_id}' 'exec bash' 2>/dev/null)
+    -P -F '#{pane_id}' "exec -a claude bash --rcfile $(tq "$RGRC")" 2>/dev/null)
+NPG=$("$TMUX_REAL" -L "$RG" split-window -t t -P -F '#{pane_id}' \
+    "exec bash --rcfile $(tq "$RGRC")" 2>/dev/null)
 # Each pane by its id, waited for on its process, as in the --deliver block above (#1079).
-pane_runs "$RG" "$APG" bash claude
-pane_runs "$RG" "$NPG" bash bash
+pane_runs "$RG" "$APG" bash claude --rcfile "$RGRC"
+pane_runs "$RG" "$NPG" bash bash --rcfile "$RGRC"
 "$TMUX_REAL" -L "$RG" set -g @cockpit_agents_glob \
     '|claude|codex|aider|cursor|opencode|gemini|crush|' >/dev/null 2>&1
+# Each shell's own prompt before anything is pasted into it, as the --deliver block waits
+# (#215): a paste before readline is up is echoed unbracketed, and bash runs it (#1183).
+shell_prompt "$RG" "$APG" '*rg-ready$*'
+shell_prompt "$RG" "$NPG" '*rg-ready$*'
 gcap() { "$TMUX_REAL" -L "$RG" capture-pane -p -J -t "$1"; }
 
 # The hazard the old code carried: once its stale check had passed, deliver()
@@ -9853,7 +9872,20 @@ case "$(rc_from_buffer rg-newok)" in
          "1 (buffers [$rg_bufs] pane $APG saw [$rg_seen] now [$rg_cmd] screen [$rg_scr])" ;;
 esac
 
+# Every line pasted above stayed in readline: none ran (#1183). C-u drops what readline holds
+# and, unlike C-c, sends no signal that could kill the recording child before it writes. Keys
+# are read in order, so rg_end runs only after every line queued before it has run.
+for rg_p in "$APG" "$NPG"; do
+    "$TMUX_REAL" -L "$RG" send-keys -t "$rg_p" C-u rg_end Enter >/dev/null 2>&1
+    until_file "$RGD/end$rg_p" end
+done
+is "no line pasted into either pane ran as a command (#1183)" "" \
+   "$(grep -vx expired "$RGD/ran" | tr '\n' ' ')"
+is "and each shell's hold ended on input, not on its 20 s bound" 0 \
+   "$(grep -cx expired "$RGD/ran")"
+
 "$TMUX_REAL" -L "$RG" kill-server >/dev/null 2>&1
+unset rg_p RGD RGRC
 fi
 
 echo "== tmux-review: a delivered review's comment store does not outlive the popup that made it =="
