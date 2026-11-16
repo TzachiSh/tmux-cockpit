@@ -21417,11 +21417,6 @@ if [ "\$k" = 2 ] && [ -e "$FB/answer.2" ]; then cat "$FB/answer.2"; else cat "$F
 exit \$(cat "$FB/rc")
 STUB
 chmod +x "$FB"/bin/*
-# The +N rows can't quote theirs: the script picks +N by the editor's first word, cut at a
-# blank and never unquoted (#1177). Their nvim sits in the folder the suite keeps free of
-# blanks (#992), unquoted and blank-free by design, so they hold under any TMPDIR. Copied
-# after the chmod above, so the copy is executable too.
-FBNV=$(mktemp -d "$COCKPIT_SUITE_NB/ct.XXXXXX"); cp "$FB/bin/nvim" "$FBNV/nvim"
 # from $FB: a #() that ran would drop its file in the server's cwd, never the checkout
 ( cd "$FB" &&
     PATH="$FB/bin:$PATH" "$TMUX_REAL" -L "$FBS" -f /dev/null new-session -d -s t -x 100 -y 30 \
@@ -21538,10 +21533,10 @@ for fbt in on off; do
 done
 # the viewer's e prints `edit N` (FBV): a touch client
 # gets a terminal editor at that line, a PC code
-FBV='edit 7\n' fb on "view $FBD/sub/n.txt\n" 0 "VISUAL=$FBNV/nvim"
+FBV='edit 7\n' fb on "view $FBD/sub/n.txt\n" 0 "VISUAL=$(tq "$FB/bin/nvim")"
 fbwait "$FB/ed.log"
 is "touch: the viewer's e opens a terminal editor at the line, not code" \
-    "$FBNV/nvim [+7] [$FBD/sub/n.txt]|0" \
+    "$FB/bin/nvim [+7] [$FBD/sub/n.txt]|0" \
    "$(cat "$FB/ed.log")|$(grep -c . "$FB/code.log")"
 FBV='edit 7\n' fb on "view $FBD/sub/n.txt\n" 0 "VISUAL=$FBEV"
 fbwait "$FB/ed.log"
@@ -21723,10 +21718,10 @@ is "touch, format-looking names: nothing ran" "" \
     "$(find "$FB" "$PWD" -maxdepth 3 -name PWN 2>/dev/null)"
 
 # an editor with arguments: the +N decision reads its first word only (#425)
-FBV='edit 7\n' fb on "view $FBD/sub/n.txt\n" 0 "VISUAL=$FBNV/nvim -u NONE"
+FBV='edit 7\n' fb on "view $FBD/sub/n.txt\n" 0 "VISUAL=$(tq "$FB/bin/nvim") -u NONE"
 fbwait "$FB/ed.log"
 is "touch: an editor with arguments keeps them and still gets +N" \
-   "$FBNV/nvim [-u] [NONE] [+7] [$FBD/sub/n.txt]" "$(cat "$FB/ed.log")"
+   "$FB/bin/nvim [-u] [NONE] [+7] [$FBD/sub/n.txt]" "$(cat "$FB/ed.log")"
 
 # a name tmux refuses as a window name still opens (#366): the name drops the control
 # characters and the bidi override, the editor gets the real path
@@ -21788,7 +21783,6 @@ env PATH="$FB/bin:$PATH" COCKPIT_TUI_BIN="$FB/bin/cockpit-tui" TMUX="$FBSOCK,0,0
     "$DIR/scripts/tmux-open-path" --browse "$FBP" </dev/null >"$FB/out" 2>&1
 is "a stale cockpit-tui is told apart" "1" "$(grep -c 'older than the plugin' "$FB/calls")"
 "$TMUX_REAL" -L "$FBS" kill-server >/dev/null 2>&1
-rm -rf "$FBNV"
 fi
 
 echo "== tmux-open-path --browse: the real cockpit-tui files, keys in, the exact path out (#372) =="
