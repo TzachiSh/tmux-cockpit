@@ -12382,8 +12382,13 @@ is "and the tool text survives with the TAB as a space" "Bash: col1 col2" \
 # bash, not sleep: a multicall coreutils (uutils) refuses to run as "zzz".
 TJZ=$(mktmpd); ln -sf "$(command -v bash)" "$TJZ/zzz"
 "$TMUX_REAL" -L "$TJ" set -g @cockpit_agents_glob '|zzz|' >/dev/null 2>&1
-"$TMUX_REAL" -L "$TJ" new-window -d -t t: "exec $TJZ/zzz -c 'read -r _'" >/dev/null 2>&1
-"$TMUX_REAL" -L "$TJ" new-window -d -t t: 'exec sleep 3600'    >/dev/null 2>&1
+TJZP=$("$TMUX_REAL" -L "$TJ" new-window -d -t t: -P -F '#{pane_id}' \
+    "exec $TJZ/zzz -c 'read -r _'" 2>/dev/null)
+TJSP=$("$TMUX_REAL" -L "$TJ" new-window -d -t t: -P -F '#{pane_id}' 'exec sleep 3600' 2>/dev/null)
+# Both running before the board reads them: right after new-window a pane reads tmux, then
+# the -c shell (bash), and the board would leave zzz out (#1182).
+pane_runs "$TJ" "$TJZP" zzz "$TJZ/zzz" -c 'read -r _'
+pane_runs "$TJ" "$TJSP" sleep sleep 3600
 TJIDS=$(COCKPIT_TMUX="tmux -L $TJ" "$COCKPIT_TUI_BIN" --json |
     sed -n 's/^    "id": "\(%[0-9]*\)".*/\1/p')
 TJCMDS=$(for i in $TJIDS; do \
