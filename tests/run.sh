@@ -4759,6 +4759,17 @@ oh_load "$oh_s" bln
 is "a key noted [\\037mine] on the pre-notes panel command stays the user's" "1" \
    "$("$TMUX_REAL" -L "$oh_s" list-keys -T prefix f | grep -c cockpit-panel)"
 "$TMUX_REAL" -L "$oh_s" kill-server >/dev/null 2>&1
+# A note of 0 is a note too. tmux's #{?key_note} reads the value 0 as false, so owned()
+# tests for an empty note with #{==:#{key_note},}, and this row pins that (#1161).
+oh_s="cockpit-ohb-$$-l0"; SOCKS="$SOCKS $oh_s"; oh_box bl0 plain
+oh_server "$oh_s" "$COCKPIT_TUI_BIN"; oh_p=$(cd -P "$OH/p/plain" && pwd)
+"$TMUX_REAL" -L "$oh_s" bind-key -N 0 f display-popup -E -e COCKPIT_PANEL_MODE=auto \
+    -w 94% -h 90% -T ' panel · #{pane_id} ' "$(tq "$oh_p/scripts/cockpit-panel") -p $oh_src"
+"$TMUX_REAL" -L "$oh_s" set -g @cockpit_panel_bound f \; set -g @cockpit_panel_key g
+oh_load "$oh_s" bl0
+is "a key noted [0] on the pre-notes panel command stays the user's" "1" \
+   "$("$TMUX_REAL" -L "$oh_s" list-keys -T prefix f | grep -c cockpit-panel)"
+"$TMUX_REAL" -L "$oh_s" kill-server >/dev/null 2>&1
 unset oh_b
 # The hints, missing and older, from folders holding # shapes. A message reaches the log
 # only when a client is attached to be shown it; ' command: ' lines hold the text as typed.
