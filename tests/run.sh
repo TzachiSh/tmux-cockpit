@@ -6115,8 +6115,14 @@ gbl_run() {                   # <TMPDIR length in bytes>
         skip_ "key give-back under a $1-byte TMPDIR (the suite's own TMPDIR is too long)"
         return
     fi
-    mkdir -p "$d"; tag="l$$-$1"
-    ( cd "$DIR" && TMPDIR="$d" COCKPIT_TEST_GBTAG="$tag" \
+    mkdir -p "$d" "$base/s"; tag="l$$-$1"
+    # Its servers in a socket folder of its own, swept below: in this run's folder, a nested
+    # run ended by KILL left servers this run's cleanup does not know (#1145).
+    if sock_long "$base/s"; then
+        skip_ "key give-back under a $1-byte TMPDIR (TMPDIR too long for the nested socket path)"
+        return
+    fi
+    ( cd "$DIR" && TMPDIR="$d" TMUX_TMPDIR="$base/s" COCKPIT_TEST_GBTAG="$tag" \
         exec tests/only.sh '^a reload that turns a cockpit key off or moves it' ) \
         </dev/null >"$base/log" 2>&1
     # Exit 0 is not enough: a block that skips exits 0 having tested nothing. Its FAIL and
@@ -6127,6 +6133,11 @@ gbl_run() {                   # <TMPDIR length in bytes>
     is "under a $1-byte TMPDIR the key give-back block passes, none skipped (#858)" "0" "$rc"
     is "and leaves no cockpit-gbt dir of its own in /tmp" "" \
        "$(ls -d /tmp/cockpit-gbt-"$tag".* 2>/dev/null)"
+    # tmux makes tmux-<uid> in TMUX_TMPDIR on its first call there; the nested run's server
+    # is its first.
+    is "and its servers' sockets were in a folder of its own" "own" \
+       "$([ -d "$base/s/tmux-$(id -u)" ] && echo own || echo none)"
+    sock_sweep "$base/s"
 }
 gbl_run 70
 gbl_run 90
