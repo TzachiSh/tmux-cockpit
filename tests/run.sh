@@ -574,6 +574,49 @@ until_out() {                 # <pattern> <cmd...>
     done
     return 1
 }
+# A pane's start, waited for on the pane's own process, never on #{pane_current_command}
+# (#1079). tmux names a pane from its foreground group's /proc cmdline. Where that read
+# fails or is empty, before the pane's process takes its tty and inside each exec, tmux
+# names it by the first word of the pane's start command: a pane started 'sleep 30' reads
+# sleep before sleep runs. And a pane started 'exec bash' reads bash already in the
+# `<default-shell> -c 'exec bash'` that starts it. So the wait reads #{pane_pid}'s comm (cut
+# to 15 bytes, as the kernel cuts it) and its whole argv, which that -c shell does not share.
+# The last reads stay in PR_COMM and PR_ARGV for a row to check. Where there is no /proc it
+# waits on the field, as before; the #1079 block says so with its SKIP rows.
+# In the prelude, so every block has it: bash defines a function where it reads it (#1145).
+pane_runs() {                 # <-L socket> <pane> <comm> <argv...> -> 0, or a bad row and 1
+    local s=${1:-} p=${2:-} c=${3:-} pid i want n argv=()
+    PR_COMM='' PR_ARGV=''
+    need_sock "$s" pane_runs || return 1
+    if [ $# -lt 4 ] || [ -z "$p" ] || [ -z "$c" ]; then
+        sock_bad "pane_runs takes a socket, a pane, a comm and an argv" \
+            "<socket> <pane> <comm> <argv...>" "$*"
+        return 1
+    fi
+    shift 3
+    if [ ! -d /proc/self ]; then
+        n=$1; case $n in /*) n=${n##*/} ;; esac
+        until_out "$n" "$TMUX_REAL" -L "$s" display-message -p -t "$p" '#{pane_current_command}'
+        return
+    fi
+    pid=$("$TMUX_REAL" -L "$s" display-message -p -t "$p" '#{pane_pid}' 2>/dev/null)
+    case $pid in ''|*[!0-9]*)
+        sock_bad "pane_runs: pane $p on $s has a pid (#1079)" "a pid" "${pid:-nothing}"
+        return 1 ;;
+    esac
+    printf -v want '[%s]' "$@"
+    for ((i = 1; i <= POLLS; i++)); do
+        PR_COMM='' argv=()
+        read -r PR_COMM 2>/dev/null < "/proc/$pid/comm"
+        mapfile -d '' -t argv 2>/dev/null < "/proc/$pid/cmdline"
+        printf -v PR_ARGV '[%s]' "${argv[@]}"
+        [ "$PR_COMM" = "${c:0:15}" ] && [ "$PR_ARGV" = "$want" ] && return 0
+        [ "$i" -lt "$POLLS" ] && sleep 0.1
+    done
+    sock_bad "pane $p never ran $want: its process $pid read comm [$PR_COMM], argv $PR_ARGV last" \
+        "comm [${c:0:15}], argv $want" "comm [$PR_COMM], argv $PR_ARGV"
+    return 1
+}
 # #195: an empty socket name never reaches tmux. `-L ''` itself errors, but TMUX=
 # takes the socket path before its first comma, and an empty path there, ",0,0" or
 # "", is the DEFAULT socket: the user's live server. A probe whose private server
@@ -23606,6 +23649,71 @@ PKEOF
 is "under a relative TMPDIR holding a=b and a space the shards run and the line is named" \
    "1|3|pk2|pk2 out;" "$(pk_run p 'a=b c')|$(pk_rec 0002)"
 unset -f pk_mk pk_run pk_rec; unset PK Q
+
+echo "== pane_runs: a pane's start is waited for on its own process, not its name (#1079) =="
+# While tmux's read of a pane's foreground group fails, it names the pane by the first word of
+# its start command; and a bash pane reads bash already in the `<default-shell> -c` shell that
+# starts it. A wait on #{pane_current_command} then ends before the process runs. Two starts
+# are held there, each on a fifo the block writes a line to. A 'sleep 30' whose PATH finds a
+# holder named sleep: the holder gives a pipeline the terminal (set -m) and the pipeline's
+# leader `true` exits, so tmux reads no cmdline and falls back to sleep. Its comm is sleep (the
+# script's name) and its argv[0] bash, so only the argv half holds pane_runs there. And a -c
+# shell that holds, then execs bash: comm and argv[0] are bash, and only the whole argv
+# differs. Each held start reads the waited-for name first, as the old wait did, or its row
+# pins nothing.
+if need_tmux "pane_runs"; then :; elif [ ! -d /proc/self ]; then
+    for _ in 1 2 3 4 5 6 7 8; do
+        skip_ "pane_runs (no /proc: a pane start is waited for on #{pane_current_command}, #1079)"
+    done
+else
+PRS="cockpit-pr1079-$$"; SOCKS="$SOCKS $PRS"; PRD=$(mktmpd); PRB=$(command -v bash)
+mkdir -p "$PRD/hold"; mkfifo "$PRD/f1" "$PRD/f2"
+"$TMUX_REAL" -L "$PRS" -f /dev/null new-session -d -s t -c "$PRD" 'exec sleep 300' \
+    >/dev/null 2>&1
+"$TMUX_REAL" -L "$PRS" set -g default-shell "$PRB" >/dev/null 2>&1
+{ printf '#!%s\nset -m\n' "$PRB"
+  printf 'true | { exec 9<>%q; printf x > %q; read -r -t 20 -u 9 _; }\n' "$PRD/f1" "$PRD/in1"
+  printf 'exec -a sleep %q "$@"\n' "$(command -v sleep)"
+} > "$PRD/hold/sleep"
+chmod +x "$PRD/hold/sleep"
+pr_cmd() { "$TMUX_REAL" -L "$PRS" display-message -p -t "$1" '#{pane_current_command}'; }
+pr_try() {                    # <polls> <pane> <comm> <argv...> -> <status>|<comm>|<argv> read
+    ( sock_bad() { :; }; POLLS=$1 pane_runs "$PRS" "${@:2}"; printf '%s|%s|%s' "$?" \
+        "$PR_COMM" "$PR_ARGV" )
+}
+# PATH on the tmux client, not new-window -e: tmux puts an unattached client's own PATH over
+# the pane's -e PATH (spawn.c), so an -e PATH never reaches the pane.
+PRP=$(PATH="$PRD/hold:$PATH" "$TMUX_REAL" -L "$PRS" new-window -d -P -F '#{pane_id}' \
+    -c "$PRD" 'sleep 30')
+until_file "$PRD/in1" x
+until_out sleep pr_cmd "$PRP"
+is "a start held before it runs sleep reads sleep, its start's first word" sleep \
+   "$(pr_cmd "$PRP")"
+is "pane_runs does not end on it: comm is sleep, the argv is the holder's" \
+   "1|sleep|[$PRB][$PRD/hold/sleep][30]" "$(pr_try 3 "$PRP" sleep sleep 30)"
+printf 'x\n' 1<>"$PRD/f1"
+is "and ends once the held start execs sleep" "0|sleep|[sleep][30]" \
+   "$(pr_try "$POLLS" "$PRP" sleep sleep 30)"
+PRWS="exec 9<>$(tq "$PRD/f2"); printf x > $(tq "$PRD/in2"); read -r -t 20 -u 9 _"
+PRWS+="; exec bash --norc --noprofile"
+PRW=$("$TMUX_REAL" -L "$PRS" new-window -d -P -F '#{pane_id}' -c "$PRD" "$PRWS")
+until_file "$PRD/in2" x
+is "a bash pane's -c shell, held, reads bash" bash "$(pr_cmd "$PRW")"
+is "pane_runs does not end on the -c shell, whose comm and argv[0] are bash" \
+   "1|bash|[bash][-c][$PRWS]" "$(pr_try 3 "$PRW" bash bash --norc --noprofile)"
+printf 'x\n' 1<>"$PRD/f2"
+is "and ends on the bash it execs" "0|bash|[bash][--norc][--noprofile]" \
+   "$(pr_try "$POLLS" "$PRW" bash bash --norc --noprofile)"
+is "pane_runs with no pane, comm or argv is a bad row and 1" \
+   "pane_runs takes a socket, a pane, a comm and an argv|1" \
+   "$( ( sock_bad() { printf '%s|' "$1"; }; pane_runs "$PRS"; printf '%s' "$?" ) )"
+is "pane_runs on a pane that is gone is a bad row and 1" \
+   "pane_runs: pane %99999 on $PRS has a pid (#1079)|1" \
+   "$( ( sock_bad() { printf '%s|' "$1"; }; pane_runs "$PRS" %99999 sleep sleep 30
+         printf '%s' "$?" ) )"
+"$TMUX_REAL" -L "$PRS" kill-server >/dev/null 2>&1
+unset -f pr_cmd pr_try; unset PRS PRD PRB PRP PRW PRWS
+fi
 
 flop_left
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
