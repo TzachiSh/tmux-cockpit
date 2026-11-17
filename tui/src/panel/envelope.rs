@@ -283,6 +283,19 @@ pub fn redact_screen(cap: &Capture) -> (String, String, usize) {
 /// a flow that sends the screen counts it: an Ask sends neither it nor the
 /// window (#965), and counts its code in `repo_hidden`.
 pub fn build_refs(flow: &Flow, cap: &Capture, turns: &[Turn], questions_left: usize, refs: &[RefItem]) -> Envelope {
+    build_with(flow, cap, turns, questions_left, Extra { refs })
+}
+
+/// What a call sends beside the screen and the turns: a write's basket refs
+/// (#365 child 5). Any other flow ignores them.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Extra<'a> {
+    pub refs: &'a [RefItem],
+}
+
+/// [`build_refs`], with what the call sends beside the screen and the turns.
+pub fn build_with(flow: &Flow, cap: &Capture, turns: &[Turn], left: usize, x: Extra) -> Envelope {
+    let (Extra { refs }, questions_left) = (x, left);
     let (screen, name, on_screen) = redact_screen(cap);
     let (mut screen_hidden, mut repo_hidden, mut turns_hidden) = (0, 0, 0);
     let screen = esc(&screen);
