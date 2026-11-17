@@ -2025,8 +2025,22 @@ else bad "one transition wakes two boards" "a wake in each log" "$(bw_wakes 1) a
 fi
 
 # SIGKILL runs nothing of the board's: its entry stays, and the next board to
-# start drops it and still wakes. The pid is this private server's own pane.
-kill -9 "$BWPID1" 2>/dev/null
+# start drops it and still wakes. The pid is this private server's own pane, read rows ago:
+# its name is checked at the kill, since a board that died meanwhile frees the number (#1213).
+# With /proc, so is the TMUX in its environment: other runs' boards, and the owner's, are named
+# cockpit-tui too. With ps alone there is no environment to read: the name is all.
+BWC="" BWE=""
+if [ -r "/proc/$BWPID1/comm" ]; then
+    read -r BWC 2>/dev/null < "/proc/$BWPID1/comm"
+    while IFS= read -r -d '' BWX; do
+        case "$BWX" in "TMUX=$SOCKDIR/$BW,"*) BWE=1 ;; esac
+    done 2>/dev/null < "/proc/$BWPID1/environ"
+elif [ ! -d /proc/self ]; then
+    BWC=$(ps -o comm= -p "$BWPID1" 2>/dev/null); BWC=${BWC##*/}; BWE=1
+fi
+is "board 1's pane pid still names this server's cockpit-tui at its SIGKILL (#1213)" \
+   "cockpit-tui|1" "$BWC|$BWE"
+[ "$BWC|$BWE" = "cockpit-tui|1" ] && kill -9 "$BWPID1" 2>/dev/null
 BWI=0; while kill -0 "$BWPID1" 2>/dev/null && [ "$BWI" -lt "$POLLS" ]; do sleep 0.1; BWI=$((BWI+1))
 done
 case "$(bw_list)" in *"cockpit-board-$BWPID1 ; "*) ok "a SIGKILLed board leaves its entry" ;;
@@ -15950,6 +15964,23 @@ av_kill() {                   # av_kill <pid>: SIGKILL a poller of ours, and the
     return 0
 }
 
+av_term() {                   # av_term <pid> <socket name>: TERM it if it is that server's poller
+    # A pid read from @cockpit_poll_pid outlives its poller, and the kernel hands the number on
+    # (AGENTS.md): it is checked here, at the kill, not rows before (#1213). By name, and by the
+    # TMUX in its environment: the name alone also fits another server's poller, the user's own
+    # among them. /proc only: each caller's block skips without it. Prints nothing when the
+    # TERM went, else "no signal: <why>", so a row shows a kill that did not happen (#1208).
+    local p=${1:-} c="" e on=""
+    case "$p" in ''|*[!0-9]*) printf 'no signal: pid [%s]' "$p"; return 1 ;; esac
+    [ -r "/proc/$p/comm" ] && read -r c 2>/dev/null < "/proc/$p/comm"
+    [ "$c" = agent-poll ] || { printf 'no signal: comm [%s]' "$c"; return 1; }
+    while IFS= read -r -d '' e; do
+        case "$e" in "TMUX=$SOCKDIR/${2:-},"*) on=1 ;; esac
+    done 2>/dev/null < "/proc/$p/environ"
+    [ -n "$on" ] || { printf 'no signal: not on [%s]' "${2:-}"; return 1; }
+    kill -TERM "$p" 2>/dev/null || { printf 'no signal: kill TERM'; return 1; }
+}
+
 echo "== agent-view: a background worker's hooks touch nothing (#174) =="
 av_setup
 # A hook in an agent-view background worker (CLAUDE_CODE_SESSION_KIND=bg) has no TMUX_PANE and
@@ -16343,7 +16374,8 @@ is "...the hook cost one extra tmux read over the plain notify (msg + batch + re
    "$(wc -l < "$AVLOG" | tr -d ' ')"
 is "...and exactly one poller is running" "1" "$(av_polls)"
 AVPOLLPID=$(av_tm show-option -gqv @cockpit_poll_pid)
-kill -TERM "$AVPOLLPID" 2>/dev/null
+is "the poller is sent a TERM, its pid checked at the kill (#1213)" "" \
+   "$(av_term "$AVPOLLPID" "$AV")"
 av_wait '[ -z "$(av_tm show-option -gqv @cockpit_poll_pid)" ]'
 is "SIGTERM unpublishes the poller's pid" "" "$(av_tm show-option -gqv @cockpit_poll_pid)"
 # A published pid that is not an agent-poll is not trusted, and not signalled.
@@ -16358,8 +16390,10 @@ is "...and takes the publication over" "yes" \
 is "...and the other process was never signalled" "yes" \
    "$(kill -0 "$AVSLEEP" 2>/dev/null && echo yes || echo no)"
 kill "$AVSLEEP" 2>/dev/null; wait "$AVSLEEP" 2>/dev/null
-kill -TERM "$(av_tm show-option -gqv @cockpit_poll_pid)" 2>/dev/null
+is "...which is sent a TERM, its pid checked at the kill (#1213)" "" \
+   "$(av_term "$(av_tm show-option -gqv @cockpit_poll_pid)" "$AV")"
 av_wait '[ -z "$(av_tm show-option -gqv @cockpit_poll_pid)" ]'
+is "...and unpublishes" "" "$(av_tm show-option -gqv @cockpit_poll_pid)"
 # off means never: no mark, no poller; the needs-input write is today's.
 av_tm set-option -g @cockpit_bg_poll off
 av_tm set-option -pu -t "$AVP" @cockpit_agentview
@@ -16367,6 +16401,50 @@ av_hook agent_needs_input
 is "@cockpit_bg_poll off: no mark and no poller" "|0|needs-input" \
    "$(avo @cockpit_agentview)|$(av_runs)|$(avo @panestate)"
 av_tm kill-server >/dev/null 2>&1
+fi
+
+echo "== agent-view: av_term sends its TERM only to the named server's poller (#1213) =="
+# The decoys are this shell's own children, each stopped, so a TERM sent to one stays pending
+# in its /proc/<pid>/status, read at once: no wait for a death that may be slow. Each ends by
+# reading a line from its fifo, never by a signal: a job bash reaps after a signal prints a
+# line that no row reads. The fifos are held open here from the start: a decoy's comm is set at
+# its execve, before it opens its fifo, and a line written to a fifo nobody holds is dropped.
+if [ ! -d /proc/self ]; then skip_ "av_term's decoys (no /proc)"; else
+AVTD=$(mktmpd); AVTS="cockpit-av-$$-term"
+printf '#!/bin/bash\nexec 3<> "$1"; read -r -t 20 -u 3 _\n' > "$AVTD/agent-poll"
+cp "$AVTD/agent-poll" "$AVTD/holder"; chmod +x "$AVTD/agent-poll" "$AVTD/holder"
+mkfifo "$AVTD/a.f" "$AVTD/h.f"
+exec 7<>"$AVTD/a.f" 8<>"$AVTD/h.f"
+av_tc() {                     # <pid> -> its comm, or nothing
+    local c=""; [ -r "/proc/$1/comm" ] && read -r c 2>/dev/null < "/proc/$1/comm"; echo "$c"
+}
+av_tst() { awk '{sub(/.*\) /, ""); print $1}' "/proc/$1/stat" 2>/dev/null; }
+av_tpend() {                  # <pid> -> 1 if a TERM (bit 14, 0x4000) is pending for it, else 0
+    awk '/^(ShdPnd|SigPnd):/ { c = substr($2, 13, 1); if (c != "" && index("4567cdef", c)) t = 1 }
+         END { print t + 0 }' "/proc/$1/status" 2>/dev/null
+}
+# an agent-poll by name, of another server whose name only extends this one's (so the "," after
+# the name is what tells them apart); and a process of this server, by another name
+env TMUX="$SOCKDIR/${AVTS}x,0,0" "$AVTD/agent-poll" "$AVTD/a.f" </dev/null 7>&- 8>&- & AVTA=$!
+env TMUX="$SOCKDIR/$AVTS,0,0" "$AVTD/holder" "$AVTD/h.f" </dev/null 7>&- 8>&- & AVTH=$!
+av_wait '[ "$(av_tc "$AVTA")" = agent-poll ] && [ "$(av_tc "$AVTH")" = holder ]'
+[ "$(av_tc "$AVTA")" = agent-poll ] && kill -STOP "$AVTA"
+[ "$(av_tc "$AVTH")" = holder ] && kill -STOP "$AVTH"
+av_wait '[ "$(av_tst "$AVTA")$(av_tst "$AVTH")" = TT ]'
+is "the decoys are up and stopped" "TT" "$(av_tst "$AVTA")$(av_tst "$AVTH")"
+is "an empty pid: no signal, and said" "no signal: pid []" "$(av_term "" "$AVTS")"
+is "a pid that is no number: no signal, and said" "no signal: pid [1x]" "$(av_term 1x "$AVTS")"
+is "this server's process by another name: no TERM, its name said" \
+   "no signal: comm [holder]|0" "$(av_term "$AVTH" "$AVTS")|$(av_tpend "$AVTH")"
+is "an agent-poll of another server: no TERM, the server said" \
+   "no signal: not on [$AVTS]|0" "$(av_term "$AVTA" "$AVTS")|$(av_tpend "$AVTA")"
+# each gets its line, kept in its held fifo until it reads it, then runs on and exits 0
+printf '\n' >&7; printf '\n' >&8
+[ "$(av_tc "$AVTA")" = agent-poll ] && kill -CONT "$AVTA"
+[ "$(av_tc "$AVTH")" = holder ] && kill -CONT "$AVTH"
+wait "$AVTA" 2>/dev/null; AVTRC=$?; wait "$AVTH" 2>/dev/null
+is "...and each decoy then exits by itself, 0" "0 0" "$AVTRC $?"
+exec 7>&- 8>&-
 fi
 
 echo "== agent-view: the poller owns one slot per server and lets go on every exit path (#174) =="
@@ -16476,9 +16554,10 @@ av_hook agent_needs_input
 is "a relayed agent_needs_input keeps the mark" "1" "$(avo @cockpit_agentview)"
 av_hook agent_completed
 is "a relayed agent_completed keeps the mark" "1" "$(avo @cockpit_agentview)"
-AVK=$(av_tm show-option -gqv @cockpit_poll_pid)
-kill -TERM "$AVK" 2>/dev/null
+is "the block's poller is sent a TERM, its pid checked at the kill (#1213)" "" \
+   "$(av_term "$(av_tm show-option -gqv @cockpit_poll_pid)" "$AV")"
 av_wait '[ -z "$(av_tm show-option -gqv @cockpit_poll_pid)" ]'
+is "...and unpublishes" "" "$(av_tm show-option -gqv @cockpit_poll_pid)"
 av_tm kill-server >/dev/null 2>&1
 fi
 
@@ -16669,7 +16748,12 @@ AVUP=$(av_pub)
 av_sweep
 is "a sweep with the poller alive starts none" "0" "$(av_runs)"
 is "...one poller on the server" "$AVUP" "$(av_pub)"
-kill -TERM "$AVUP"; av_wait '[ -z "$(av_pub)" ]'
+# The sweep's poller is no child of this shell, and its pid is no longer read for a kill: the
+# option tells it to leave, and it does at the end of its next one-second tick (#1213).
+av_tm set-option -g @cockpit_bg_poll off
+av_wait '[ -z "$(av_pub)" ] && [ "$(polls_on "$AV" /proc/[0-9]*)" = 0 ]'
+is "the sweep's poller leaves when the option says off" "|0" \
+   "$(av_pub)|$(polls_on "$AV" /proc/[0-9]*)"
 # A poller of our own, traced: the ticks are counted, never timed.
 : > "$AVTRACE"; : > "$AVCLOG"
 av_tm set-option -g @cockpit_bg_poll 1
