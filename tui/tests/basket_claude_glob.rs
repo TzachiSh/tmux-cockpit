@@ -20,12 +20,13 @@ impl Server {
     }
 
     /// A pane running a copy of bash named `name`: tmux reports that name.
-    fn pane(&self, name: &str) -> String {
+    fn pane(&self, name: &str) -> (String, Vec<String>) {
         let bin = self.dir.join(name);
         std::fs::copy("/bin/bash", &bin).unwrap();
         let cmd = format!("{} -c 'sleep 300; :'", bin.display());
         let d = self.dir.display().to_string();
-        self.tmux(&["new-window", "-d", "-P", "-F", "#{pane_id}", "-c", &d, &cmd])
+        let pane = self.tmux(&["new-window", "-d", "-P", "-F", "#{pane_id}", "-c", &d, &cmd]);
+        (pane, fake::started(&bin))
     }
 }
 
@@ -72,7 +73,7 @@ fn a_claude_the_agent_list_leaves_out_is_no_claude() {
     unsafe { fake::set_var(&fake::env_lock(), "COCKPIT_TMUX", format!("tmux -L {}", s.sock)) };
     // Each pane starts in its own row's turn, so a held row's hold is not spent
     // waiting on the rows before it, whatever their order (#1056).
-    type Start<'a> = &'a dyn Fn() -> String;
+    type Start<'a> = &'a dyn Fn() -> (String, Vec<String>);
     let held = || fake::held_pane(&s.sock, &s.dir, "2.1.318");
     let named = || fake::named_pane(&s.sock, &s.dir, "2.1.318");
     let rows: [(&str, Start, &str, bool); 4] = [
@@ -87,8 +88,8 @@ fn a_claude_the_agent_list_leaves_out_is_no_claude() {
         ("the version title, comm ahead of its argv", &named, "2.1.318", true),
     ];
     for (row, start, name, want) in rows {
-        let pane = start();
-        fake::settle(&s.sock, &pane, name);
+        let (pane, argv) = start();
+        fake::settle(&s.sock, &pane, name, &argv.iter().map(String::as_str).collect::<Vec<_>>());
         assert_eq!(basket::is_claude(&pane), want, "{row} ({pane})");
     }
     assert!(!basket::is_claude("%99999"), "a pane that is not there");
