@@ -98,7 +98,7 @@ fn bounded_child(s: &Path, test: &str, case: &str) -> (Option<i32>, String) {
 /// #1110: a guard-less check called on the thread that holds the lock panics, naming the
 /// `_held` form, where the take would wait for itself, and, reached through a helper, what
 /// the caller does instead. A guard-less start of a child does the same, with no helper to
-/// name (#1142). Run in a child, so a hang is a kill.
+/// name (#1142), `fake::spawn` among them (#1206). Run in a child, so a hang is a kill.
 #[test]
 fn a_guard_less_check_under_the_lock_names_its_held_form() {
     if let Some(case) = child_case() {
@@ -108,6 +108,7 @@ fn a_guard_less_check_under_the_lock_names_its_held_form() {
             "helper" => fake::fixed_env(),
             "handed" => drop(fake::handed(&["no-such-row-1142"], &[], &[], CHILD_FOR)),
             "by_hand" => drop(fake::run_by_hand("no-such-row-1142", &[])),
+            "spawn" => drop(fake::spawn(&mut Command::new("true"))),
             _ => drop(fake::checked_tmux()),
         }
         return;
@@ -132,8 +133,8 @@ fn a_guard_less_check_under_the_lock_names_its_held_form() {
         );
         (code, said.contains(&want), said.contains("call that helper"))
     };
-    let got = [start("handed", "handed"), start("by_hand", "run_by_hand")];
-    assert_eq!(got, [(Some(101), true, false); 2]);
+    let got = [start("handed", "handed"), start("by_hand", "run_by_hand"), start("spawn", "spawn")];
+    assert_eq!(got, [(Some(101), true, false); 3]);
 }
 
 /// #1132: a second take of the lock on the thread that holds it panics, naming what the

@@ -42,11 +42,11 @@ impl Drop for EnvHeld {
 /// refusal, not a poison panic. A thread that holds it must not join, or wait for the end
 /// of, a thread that calls a guard-less check (`fake::checked_state`, `fake::checked_tmux`,
 /// and through it `fake::fixed_env` and `fake::Server::start`) or a guard-less start of a
-/// child (`fake::handed`, and through it `fake::rows_pass_handed`, or `fake::run_by_hand`,
-/// which spawn under this lock, #1142): that call waits for this lock and the join for the
-/// call, for ever. No test does. The holder itself starts a child through
-/// `fake::handed_held` or `fake::run_by_hand_held`. A wait for such a thread to
-/// sleep, as the rows that hold a sibling's write do, ends. `fake::fixed_env` and
+/// child (`fake::handed`, and through it `fake::rows_pass_handed`, `fake::run_by_hand`, or
+/// `fake::spawn`, which spawn under this lock, #1142, #1206): that call waits for this lock
+/// and the join for the call, for ever. No test does. The holder itself starts a child
+/// through `fake::handed_held`, `fake::run_by_hand_held` or `fake::spawn_held`. A wait for
+/// such a thread to sleep, as the rows that hold a sibling's write do, ends. `fake::fixed_env` and
 /// `fake::Server::start` check under this lock and let it go before the tmux that follows
 /// (`fixed_env` takes it again for its own write), so a binary that writes TMUX or
 /// TMUX_TMPDIR in its own process must not call them: a sibling's value could reach that
