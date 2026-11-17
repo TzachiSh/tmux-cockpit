@@ -43,6 +43,40 @@ HERE=$(cd -P "$(dirname "$0")" && pwd)
 . "$HERE/lib.sh"
 
 SOCK="cockpit-gate-$$"
+# The exit trap ends what the run started, on every path. HUP, INT and TERM are trapped too,
+# and both traps ignore the three first, as tests/run.sh's do (#1107): with no trap of its own
+# bash ends through its own handler, and a second signal while that handler or the exit trap
+# ran killed it before the server and LOGDIR were gone (#1173). A trap runs once the command
+# in the foreground is done, so a signal to this pid alone waits for that command. Set before
+# the traps: under set -u an unset name would fail the exit trap.
+LOGDIR='' SOCK_PATH='' CLIENT_PID=''
+gate_clean() {
+    local c=""
+    trap '' HUP INT TERM
+    # By its socket. The pids `pgrep -f "tmux -L $SOCK"` matched took kill -9 unchecked: an
+    # editor's or a grep's with that text in its argv, or another run's whose socket name
+    # starts with this one's, cockpit-gate-1234 for cockpit-gate-123 (#1173).
+    tmux -L "$SOCK" kill-server 2>/dev/null
+    # The client ends with its server. This is the backstop, for the pid $! gave, and only
+    # while its name says it is still that script: a pid is handed out again once it is
+    # reaped (AGENTS.md, "Never signal a pid the hook has not verified").
+    if [ -n "$CLIENT_PID" ]; then
+        if [ -r "/proc/$CLIENT_PID/comm" ]; then
+            read -r c 2>/dev/null < "/proc/$CLIENT_PID/comm"
+        elif [ ! -d /proc/self ]; then
+            c=$(ps -o comm= -p "$CLIENT_PID" 2>/dev/null)   # macOS: ps prints a path
+        fi
+        [ "${c##*/}" != script ] || kill -9 "$CLIENT_PID" 2>/dev/null
+    fi
+    # kill-server does not always unlink the socket, and a run must not
+    # litter the socket dir with a file per run.
+    [ -z "$SOCK_PATH" ] || rm -f "$SOCK_PATH"
+    [ -z "$LOGDIR" ] || rm -rf "$LOGDIR"
+    return 0
+}
+gate_sig() { trap '' HUP INT TERM; exit $((128 + $1)); }
+trap gate_clean EXIT
+trap 'gate_sig 1' HUP; trap 'gate_sig 2' INT; trap 'gate_sig 15' TERM
 LOGDIR=$(mktemp -d) || exit 2
 # 3 sessions x 10 windows x 4 panes = 120 panes: big enough that a whole-server
 # walk is unmistakable, small enough to build in a few seconds.
@@ -56,19 +90,6 @@ REPS=${REPS:-3}
 SETTLE=${SETTLE:-0.5}     # seconds to let a forced redraw finish before counting
 BUDGET_RATIO=${BUDGET_RATIO:-1.0}       # server walks allowed per status redraw
 
-cleanup() {
-    tmux -L "$SOCK" kill-server 2>/dev/null
-    for p in $(pgrep -f "tmux -L $SOCK" 2>/dev/null); do
-        [ "$p" = "$$" ] || kill -9 "$p" 2>/dev/null
-    done
-    [ -n "${CLIENT_PID:-}" ] && kill -9 "$CLIENT_PID" 2>/dev/null
-    # kill-server does not always unlink the socket, and a run must not
-    # litter the socket dir with a file per run.
-    [ -n "${SOCK_PATH:-}" ] && rm -f "$SOCK_PATH" 2>/dev/null
-    rm -rf "$LOGDIR"
-    return 0
-}
-trap cleanup EXIT
 # srv is lib.sh's, which refuses an empty SOCK (#195)
 
 # status-interval 0: the forced redraw must be the ONLY redraw in the window.
