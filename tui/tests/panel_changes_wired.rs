@@ -416,6 +416,54 @@ fn a_frame_scrolled_off_the_list_does_not_mark() {
     assert_eq!((away, r.read()), (Some(old), Some(Seen { head: two, at: T1 })));
 }
 
+/// Under the size floor the card is drawn in the body's place: no list on
+/// screen, so nothing is marked until a frame shows the body (#1269).
+#[test]
+fn the_floor_card_marks_nothing_until_the_body_shows() {
+    let r = Rig::new("floor");
+    let two = commit(&r.repo, "two");
+    let mut a = r.app();
+    explain(&mut a, '1');
+    settle(&mut a);
+    answered(&mut a, &r.claude(ANSWERS));
+    let (head, _) = a.changes_shown().expect("the list");
+    assert!(!frame(&a, 20, 5).contains(&head), "the floor card drew the list");
+    a.shrunk(true);
+    a.frame(1);
+    let under = r.read();
+    a.shrunk(false);
+    a.frame(2);
+    let old = Seen {
+        head: r.first.clone(),
+        at: T0,
+    };
+    assert_eq!((under, r.read()), (Some(old), Some(Seen { head: two, at: T1 })));
+}
+
+/// The help overlay covers the list: nothing is marked until it closes (#1269).
+#[test]
+fn the_help_overlay_marks_nothing_until_it_closes() {
+    let r = Rig::new("help");
+    let two = commit(&r.repo, "two");
+    let mut a = r.app();
+    explain(&mut a, '1');
+    settle(&mut a);
+    answered(&mut a, &r.claude(ANSWERS));
+    key(&mut a, KeyCode::F(1));
+    let (head, _) = a.changes_shown().expect("the list");
+    assert!(a.help.is_some() && !frame(&a, 80, 20).contains(&head), "the list shows");
+    a.frame(1);
+    let under = r.read();
+    key(&mut a, KeyCode::Esc);
+    assert_eq!((a.help, a.view.clone()), (None, View::Answer { scroll: 0, armed: false }));
+    a.frame(2);
+    let old = Seen {
+        head: r.first.clone(),
+        at: T0,
+    };
+    assert_eq!((under, r.read()), (Some(old), Some(Seen { head: two, at: T1 })));
+}
+
 #[test]
 fn a_failed_or_cancelled_explain_leaves_last_seen_as_it_was() {
     for row in ["failed", "cancelled"] {

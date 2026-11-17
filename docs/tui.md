@@ -1550,7 +1550,8 @@ Explain shows it (`panel::look`):
   lands: the panel's loop wakes every 100 ms while a collect is under way, so
   it appears with no key pressed.
 - **Seen.** Last-seen is written once a frame has drawn the answer at its top
-  with the list on it, never earlier: a failed or cancelled Explain leaves it
+  with the list on it, never earlier: not under the size-floor card or the
+  help overlay, which are drawn in its place. A failed or cancelled Explain leaves it
   as it was, and a second question shows the same list with no new git or gh
   call. It takes the head and the time the collect started. With commits left
   out (git took too long) nothing is written. After a passing GitHub failure (a

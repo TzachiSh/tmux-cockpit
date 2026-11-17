@@ -575,7 +575,9 @@ impl App {
         }
         // the list is the body's first rows: a frame at the top with it drawn has shown it
         let top = matches!(self.view, View::Answer { scroll: 0, .. });
-        if top
+        // the floor card and the help overlay are drawn in the body's place (#1269)
+        let body = top && !self.tiny && self.help.is_none();
+        if body
             && self.changes_shown().is_some()
             && let Some(Err(e)) = self.changes.as_mut().and_then(Looks::drawn)
         {
