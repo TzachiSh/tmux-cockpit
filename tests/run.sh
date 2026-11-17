@@ -5227,9 +5227,10 @@ RFMOVE
 # A refused value whose first word is the key the name holds: the move loop splits the value
 # on its space and reads that word as the name's own key, so it gives nothing back, and a
 # cleared record then left the key cockpit's for good, past any later move. refused() gives
-# it back, as off would (#1226 review). <name> <default> <refused, as tmux.conf spells it>
-# <a plain key moved to after it>, on fd 3.
-while read -r rf_n rf_d rf_c rf_p <&3; do
+# it back, as off would (#1226 review). <name>|<default>|<refused, as tmux.conf spells it>|
+# <a plain key moved to after it>, on fd 3: a | between fields, since a refused value holds a
+# space that a plain read would split.
+while IFS='|' read -r rf_n rf_d rf_c rf_p <&3; do
     fresh_server -L "$rf_s" -f /dev/null -- -d -s t -x 120 -y 30 -c "$RF" || continue
     "$TMUX_REAL" -L "$rf_s" -f /dev/null set -g @cockpit_bg_poll off >/dev/null 2>&1
     reload_on "$rf_s" || continue
@@ -5247,8 +5248,8 @@ while read -r rf_n rf_d rf_c rf_p <&3; do
     is "$rf_w, then to $rf_p: $rf_d is tmux's own" \
        "$(rf_stock "$rf_d")" "$(rf_get list-keys -T prefix -F '#{key_command}' "$rf_d")"
 done 3<<'RFSPLIT'
-info i 'i x' y
-menu a 'a b' z
+info|i|'i x'|y
+menu|a|'a b'|z
 RFSPLIT
 # The same split onto a key the user bound since, with no note: owned() reads it as the
 # user's, so refused() gives nothing back and the user's binding stays as it was.
