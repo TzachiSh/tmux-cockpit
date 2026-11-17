@@ -610,6 +610,17 @@ pid_sig() {                   # <signal> <pid> <start>: signal it only if it sta
     [ "$s" = "$3" ] || { printf 'no signal: start [%s]' "$s"; return 1; }
     kill -"$1" "$p" 2>/dev/null || { printf 'no signal: kill %s' "$1"; return 1; }
 }
+# A pid that is no child of this shell's, read from a file or from pgrep, gets its start from
+# the same stat line as its parent: while the parent is one this shell knows, the number is
+# still that parent's child (#1227). No /proc: nothing, so pid_sig refuses.
+pid_kid() {                   # <pid> <parent> -> its start time, only while <parent> is its parent
+    local s="" a
+    case "${1:-}" in ''|*[!0-9]*) return 1 ;; esac
+    case "${2:-}" in ''|*[!0-9]*) return 1 ;; esac
+    [ -r "/proc/$1/stat" ] && read -r s 2>/dev/null < "/proc/$1/stat"
+    s=${s##*) }; read -ra a <<<"$s"
+    [ "${a[1]:-}" = "$2" ] && printf '%s' "${a[19]:-}"
+}
 # A pane's start, waited for on the pane's own process, never on #{pane_current_command}
 # (#1079). tmux names a pane from its foreground group's /proc cmdline. Where that read
 # fails or is empty, before the pane's process takes its tty and inside each exec, tmux
@@ -2166,12 +2177,13 @@ until_out 20 sh -c \
     "'$TMUX_REAL' -L '$SG' list-panes -a -F '#{pane_current_command}' | grep -c claude" >/dev/null
 SGA=$(sgt list-panes -t u: -F '#{pane_id}') SGP=$(sgt display-message -p '#{pid}')
 sgt set -w -t "$SGA" @cockpit_ctx_on 1
-SGN=""; read -r SGN 2>/dev/null < "/proc/$SGP/comm"
-# Only the private server's own pid is ever stopped: its comm names the tmux server. A run
-# that dies inside a stop must not leave it stopped: every client of it, the suite's own
-# cleanup too, would wait on it for good.
+SGS=$(pid_start "$SGP") SGN=""; read -r SGN 2>/dev/null < "/proc/$SGP/comm"
+# Only the private server's own pid is ever stopped: its comm names the tmux server, and each
+# STOP and CONT goes through pid_sig with the start read here (#1227). A run that dies inside
+# a stop must not leave it stopped: every client of it, the suite's own cleanup too, would
+# wait on it for good.
 case "$SGN" in
-    tmux*) trap 'trap "" HUP INT TERM; kill -CONT "$SGP" 2>/dev/null; cleanup' EXIT ;;
+    tmux*) trap 'trap "" HUP INT TERM; pid_sig CONT "$SGP" "$SGS" >/dev/null; cleanup' EXIT ;;
     *) SGP="" ;;
 esac
 sg_hook() {
@@ -2183,7 +2195,9 @@ sg_stall() {                  # <state>: the hook, with one stop at a random poi
     sg_hook "$1" & hp=$!
     while read -r c _ < "/proc/$SGP/schedstat"; [ $((c - c0)) -lt "$x" ] \
         && kill -0 "$hp" 2>/dev/null; do :; done
-    if kill -0 "$hp" 2>/dev/null; then kill -STOP "$SGP"; sleep 0.15; kill -CONT "$SGP"; fi
+    if kill -0 "$hp" 2>/dev/null && pid_sig STOP "$SGP" "$SGS" >/dev/null; then
+        sleep 0.15; pid_sig CONT "$SGP" "$SGS" >/dev/null
+    fi
     wait "$hp"
 }
 # One read per hook: the fleet's, then A's session's and window's sums.
@@ -2277,8 +2291,9 @@ SCX=$(sct split-window -d -P -F '#{pane_id}' -t c:1 -c "$SCD" 'exec -a claude sl
 sct set -p -t "$SCC" @panestate_ctx 12; sct set -p -t "$SCX" @panestate_ctx 345
 sct set -gw @cockpit_ctx_on '#{?#{m:*q*,#{R:xxxxxxxxxx,2000}},,1}'
 SCP=$(sct display-message -p '#{pid}') SCN=""; read -r SCN 2>/dev/null < "/proc/$SCP/comm"
+SCS=$(pid_start "$SCP")       # each STOP and CONT goes through pid_sig with it (#1227)
 case "$SCN" in
-    tmux*) trap 'trap "" HUP INT TERM; kill -CONT "$SCP" 2>/dev/null; cleanup' EXIT ;;
+    tmux*) trap 'trap "" HUP INT TERM; pid_sig CONT "$SCP" "$SCS" >/dev/null; cleanup' EXIT ;;
     *) SCP="" ;;
 esac
 sc_ctx() {                    # <percent>: agent-context on C
@@ -2292,8 +2307,8 @@ sc_stall() {                  # <command...>: run it, with one stop at a random 
     "$@" & hp=$!
     while read -r c _ < "/proc/$SCP/schedstat"; [ $((c - c0)) -lt "$x" ] \
         && kill -0 "$hp" 2>/dev/null; do :; done
-    if kill -0 "$hp" 2>/dev/null; then
-        kill -STOP "$SCP"; sleep 0.15; kill -CONT "$SCP"; SC_HIT=1
+    if kill -0 "$hp" 2>/dev/null && pid_sig STOP "$SCP" "$SCS" >/dev/null; then
+        sleep 0.15; pid_sig CONT "$SCP" "$SCS" >/dev/null; SC_HIT=1
     fi
     wait "$hp"; SC_RC=$?
 }
@@ -11124,6 +11139,7 @@ ps_end() {
 # bounded; past the bound the rows go on and ps_settle names what is left.
 ( cd "$PSROOT" && exec env -u PAR_BLOCKS "${ps_env[@]}" J=3 \
     timeout 60 tests/par.sh ) </dev/null >/dev/null 2>"$PSROOT/hung.err" & ps_to=$!
+ps_ts=$(pid_start "$ps_to")   # the exec'd timeout keeps it, and the TERM checks it (#1227)
 until_out '?*' ls "$PSROOT/t/ps3.in"
 for ps_s in 0001 0002 0004 0005; do
     until_file "$PSROOT/hung.err" "*shard $ps_s end rc=0*"
@@ -11133,7 +11149,7 @@ done
 ps_in=$(grep -cE '^par\.sh: shard 000[1245] end rc=0$' "$PSROOT/hung.err")
 is "every other shard's end line was in when the TERM went" "4" "$ps_in"
 ps_c=""; read -r ps_c 2>/dev/null < "/proc/$ps_to/comm"
-[ "$ps_c" != timeout ] || kill -TERM "$ps_to" 2>/dev/null
+[ "$ps_c" != timeout ] || pid_sig TERM "$ps_to" "$ps_ts" >/dev/null
 wait "$ps_to" 2>/dev/null
 is "a shard still running when the run is ended has a start line" "1" \
    "$(grep -c '^par\.sh: shard 0006 start: ps3: never ends$' "$PSROOT/hung.err")"
@@ -11184,7 +11200,7 @@ fi
 ps_end
 # ps_end and ps_ours stay for the next block, which unsets them.
 unset -f ps_live ps_left ps_settle ps_socks
-unset PSROOT PSS ps_env ps_rec Q ps_to ps_c ps_row ps_s ps_in ps_got
+unset PSROOT PSS ps_env ps_rec Q ps_to ps_ts ps_c ps_row ps_s ps_in ps_got
 
 echo "== tests/par.sh: ps_end ends a server by its pid, guessing no socket folder (#1095) =="
 # ps_end's second arm, for a sandbox with no socket folder of its own, ended each server by a
@@ -14623,8 +14639,10 @@ is "the panel never lists a board wake channel" "" \
     "$("$TMUX_REAL" -L "$PN" show-option -gqv @cockpit_board_wake)"
 
 # A popup torn down mid-call (SIGTERM, SIGHUP as its pty goes) or a binary killed
-# outright (SIGKILL) must not leave its claude running. Pids are checked first.
-pn_hang() {                   # <signal>  -> the claude pid, or empty; kills the panel with <signal>
+# outright (SIGKILL) must not leave its claude running. Pids are checked first: the claude's
+# start is read while cockpit-tui, checked by name, is its parent, and a kill left to do later
+# checks it (#1227).
+pn_hang() {                   # <signal>  -> "<claude pid> <start>", or empty; kills the panel
     rm -f "$PND/cpid" "$PND/ppid"; touch "$PND/hang"
     PNA=$("$TMUX_REAL" -L "$PN" new-window -d -P -F '#{pane_id}' -t t: 'exec cat')
     PNB=$("$TMUX_REAL" -L "$PN" new-window -d -P -F '#{pane_id}' -t t: \
@@ -14634,12 +14652,13 @@ pn_hang() {                   # <signal>  -> the claude pid, or empty; kills the
     "$TMUX_REAL" -L "$PN" send-keys -t "$PNB" -l 'hang'
     "$TMUX_REAL" -L "$PN" send-keys -t "$PNB" C-s
     until_file "$PND/ppid" '[0-9]*' || return 1
-    local tui comm=''
-    tui=$(cat "$PND/ppid")
+    local tui comm='' pc cst
+    tui=$(cat "$PND/ppid") pc=$(cat "$PND/cpid")
     [ -r "/proc/$tui/comm" ] && read -r comm 2>/dev/null < "/proc/$tui/comm"
     [ "$comm" = cockpit-tui ] || return 1
+    cst=$(pid_kid "$pc" "$tui") || return 1
     kill "-$1" "$tui"
-    cat "$PND/cpid"
+    printf '%s %s' "$pc" "$cst"
 }
 pn_dead() {                   # <pid>  gone, or a zombie nobody waits for
     local i st
@@ -14654,7 +14673,7 @@ if [ ! -d /proc/self ]; then
     skip_ "a killed panel takes its claude with it (no /proc to check pids by name)"
 else
     for sig in TERM KILL HUP; do
-        pc=$(pn_hang "$sig")
+        read -r pc pcs <<<"$(pn_hang "$sig")"
         if [ -z "$pc" ]; then
             bad "SIG$sig on the panel kills its claude" \
                 "a running fake claude under cockpit-tui" "none"
@@ -14662,7 +14681,7 @@ else
             ok "SIG$sig on the panel kills its claude"
         else
             bad "SIG$sig on the panel kills its claude" "pid $pc gone" "still running"
-            kill "$pc" 2>/dev/null
+            pid_sig TERM "$pc" "$pcs" >/dev/null
         fi
         pn_gone "$PNB"
     done
@@ -15693,7 +15712,7 @@ fi
 # A client with a chosen width, without a pty: control mode attaches over a
 # fifo opened read-write by this shell, so nothing has to feed it and there is
 # no writer process to reap. refresh-client -C is all #{client_width} needs.
-cw_open() {                   # <socket> <session> ; prints "<client> <fifo> <pid>"
+cw_open() {                   # <socket> <session> ; prints "<client> <fifo> <pid> <start>"
     local s=$1 t=$2 f c i
     f=$(mktemp -u) || return 1
     mkfifo "$f" || return 1
@@ -15701,7 +15720,7 @@ cw_open() {                   # <socket> <session> ; prints "<client> <fifo> <pi
     local pid=$! pst; pst=$(pid_start "$pid")
     for i in $(seq 1 40); do
         c=$("$TMUX_REAL" -L "$s" list-clients -F '#{client_name}' 2>/dev/null | head -1)
-        [ -n "$c" ] && { printf '%s %s %s' "$c" "$f" "$pid"; return 0; }
+        [ -n "$c" ] && { printf '%s %s %s %s' "$c" "$f" "$pid" "$pst"; return 0; }
         sleep 0.1
     done
     # Nothing is printed on failure, so the caller gets no pid and no path:
@@ -15711,8 +15730,10 @@ cw_open() {                   # <socket> <session> ; prints "<client> <fifo> <pi
 }
 # NEVER `kill "${pid:-0}"`: an empty pid becomes 0, and kill 0 signals the
 # whole process group -- the suite itself. Guard, do not default.
-cw_close() {                  # <pid> <fifo> ; either may be empty
-    [ -n "${1:-}" ] && kill "$1" >/dev/null 2>&1
+# The client is no child of this shell's: cw_open ran in a $(...) that has ended. Its start,
+# read at the fork and printed with it, is checked at the kill (#1227).
+cw_close() {                  # <pid> <fifo> <start> ; any may be empty
+    [ -n "${1:-}" ] && pid_sig TERM "$1" "${3:-}" >/dev/null
     [ -n "${2:-}" ] && rm -f "$2"
     return 0
 }
@@ -15736,8 +15757,11 @@ mkdir -p "$BQD/repo/.git"; printf 'ref: refs/heads/feat/jwt-rotation\n' > "$BQD/
 "$TMUX_REAL" -L "$BQ" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
 BQP=$("$TMUX_REAL" -L "$BQ" list-panes -t s: -F '#{pane_id}')
 TMUX="$SOCKDIR/$BQ,0,0" "$DIR/scripts/tmux-where" branch --set "$BQP" >/dev/null 2>&1
-read -r bqc bqf bqpid <<<"$(cw_open "$BQ" s)"
+read -r bqc bqf bqpid bqps <<<"$(cw_open "$BQ" s)"
 if [ -z "${bqc:-}" ]; then skip_ "the border budget (no control client)"; else
+# cw_close's check needs the start cw_open read at the fork: an empty one signals nothing
+is "cw_open prints its client's start beside its pid (#1227)" "1" \
+   "$([ -n "${bqps:-}" ] && [ "$bqps" = "$(pid_start "$bqpid")" ] && echo 1)"
 bqfit() { "$TMUX_REAL" -L "$BQ" display-message -p -c "$bqc" -t "$BQP" \
             '#{E:@cockpit_path_shown} #{E:@cockpit_branch_shown} #{E:@cockpit_ask_w}'; }
 bqrows() { "$TMUX_REAL" -L "$BQ" display-message -p -c "$bqc" -t "$BQP" \
@@ -15769,7 +15793,7 @@ esac
 cw_size "$BQ" "$bqc" 200
 is "at 200 columns the whole question fits beside path and branch" "1 1 68" "$(bqfit)"
 fi
-cw_close "${bqpid:-}" "${bqf:-}"
+cw_close "${bqpid:-}" "${bqf:-}" "${bqps:-}"
 "$TMUX_REAL" -L "$BQ" kill-server >/dev/null 2>&1
 fi
 
@@ -15823,7 +15847,7 @@ twp=$("$TMUX_REAL" -L "$TW" list-panes -t s: -F '#{pane_id}' | head -1)
 # The load's background sweep marks the agent window idle (○); run it here so it
 # cannot land mid-test.
 TMUX="$SOCKDIR/$TW,0,0" "$DIR/scripts/agent-state" sweep >/dev/null 2>&1
-read -r twc twf twpid <<<"$(cw_open "$TW" s)"
+read -r twc twf twpid twps <<<"$(cw_open "$TW" s)"
 if [ -z "${twc:-}" ]; then skip_ "the tab width ladder (no control client)"; else
 twtab() { "$TMUX_REAL" -L "$TW" display-message -p -c "$twc" -t s:t \
         '#{E:window-status-current-format}' 2>/dev/null | plain
@@ -15843,7 +15867,7 @@ is "eight windows at 200 columns keep their labels" "18 18 0" "$(twfit)"
 cw_size "$TW" "$twc" 56
 is "at 56 the others go compact; the current tab keeps 12" "12 1" "$(twfit | cut -d' ' -f1,3)"
 fi
-cw_close "${twpid:-}" "${twf:-}"
+cw_close "${twpid:-}" "${twf:-}" "${twps:-}"
 "$TMUX_REAL" -L "$TW" kill-server >/dev/null 2>&1
 fi
 
@@ -15871,7 +15895,7 @@ ggctx() {                     # <window> <percent>: the statusLine payload, as C
 # The sweep the window hooks run, now: every agent window idle (○) from the start,
 # so no later hook changes a tab under an assertion.
 TMUX="$SOCKDIR/$GG,0,0" "$DIR/scripts/agent-state" sweep >/dev/null 2>&1
-read -r ggc ggf ggpid <<<"$(cw_open "$GG" s)"
+read -r ggc ggf ggpid ggps <<<"$(cw_open "$GG" s)"
 if [ -z "${ggc:-}" ]; then skip_ "the context gauge (no control client)"; else
 ggcur() { "$TMUX_REAL" -L "$GG" display-message -p -c "$ggc" -t s:t \
         '#{E:window-status-current-format}' | plain
@@ -15901,7 +15925,7 @@ is "a compact tab shows the bare ◔" " 1 ○ ◔ " "$(ggoth)"
 "$TMUX_REAL" -L "$GG" set -p -t s:t @cockpit_title "abcdefghijk lmnopqrstuvwxyz" >/dev/null 2>&1
 is "a cut on a word boundary drops the space before the …" " 0 abcdefghijk… ○ ◔91% " "$(ggcur)"
 fi
-cw_close "${ggpid:-}" "${ggf:-}"
+cw_close "${ggpid:-}" "${ggf:-}" "${ggps:-}"
 "$TMUX_REAL" -L "$GG" kill-server >/dev/null 2>&1
 fi
 
@@ -16145,7 +16169,7 @@ htp=$("$TMUX_REAL" -L "$HT" list-panes -t s: -F '#{pane_id}' | head -1)
 "$TMUX_REAL" -L "$HT" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
 # the load's sweep, settled
 TMUX="$SOCKDIR/$HT,0,0" "$DIR/scripts/agent-state" sweep >/dev/null 2>&1
-read -r htc htf htpid <<<"$(cw_open "$HT" s)"
+read -r htc htf htpid htps <<<"$(cw_open "$HT" s)"
 if [ -z "${htc:-}" ]; then skip_ "the host-title tab ladder (no control client)"; else
 httab() { "$TMUX_REAL" -L "$HT" display-message -p -c "$htc" -t s: \
         '#{E:window-status-current-format}' 2>/dev/null | plain
@@ -16156,7 +16180,7 @@ is "an 80-column client cuts the host-titled tab to its budget" \
 cw_size "$HT" "$htc" 160
 is "a 160-column client draws the whole name" " 0 $HTN ○ " "$(httab)"
 fi
-cw_close "${htpid:-}" "${htf:-}"
+cw_close "${htpid:-}" "${htf:-}" "${htps:-}"
 "$TMUX_REAL" -L "$HT" kill-server >/dev/null 2>&1
 fi
 
@@ -16764,8 +16788,31 @@ is "its own start time: the TERM goes" "|1" "$(pid_sig TERM "$SQP" "$SQPS")|$(sq
 # its line waits in the fifo: without the TERM it reads it and exits 0
 printf '\n' >&8; [ "$(sq_c "$SQP")" = bash ] && kill -CONT "$SQP"; wait "$SQP" 2>/dev/null
 is "...and ends it once it runs on" "143" "$?"
-exec 7>&- 8>&-
+# A pid that is not this shell's child: pid_kid reads its start only under the parent named,
+# and cw_close, whose client's $(...) has ended, signals it only under the start cw_open
+# printed. A third decoy, stopped, stands for a number handed on.
+mkfifo "$SQD/k"; exec 9<>"$SQD/k"
+bash -c 'read -r _ < "$1"' _ "$SQD/k" </dev/null >/dev/null 2>&1 7>&- 8>&- 9>&- & SQK=$!
+SQKS=$(pid_start "$SQK") SQME=$BASHPID
+pid_sig STOP "$SQK" "$SQKS" >/dev/null; until_out T sq_st "$SQK" >/dev/null
+is "pid_kid gives the start of a child of the parent named" "[$SQKS]" \
+   "[$(pid_kid "$SQK" "$SQME")]"
+is "...and nothing under another parent" "[]" "[$(pid_kid "$SQK" 1)]"
+is "cw_close: another start time under the client's number gets no TERM" "0" \
+   "$(cw_close "$SQK" "" 1; sq_pend "$SQK")"
+is "cw_close: the start cw_open printed lets the TERM go" "1" \
+   "$(cw_close "$SQK" "" "$SQKS"; sq_pend "$SQK")"
+printf '\n' >&9; pid_sig CONT "$SQK" "$SQKS" >/dev/null; wait "$SQK" 2>/dev/null
+is "...and the third decoy ends on it once it runs on" "143" "$?"
+exec 7>&- 8>&- 9>&-
 fi
+# Text only, a revert guard: no line sends a bare kill to a pid variable that #1227 put behind
+# pid_sig. It sees those named sites only, not a pid reaching a kill under another name or a new
+# site. Its own pattern line holds "kill(", which the pattern, wanting a blank after it, skips.
+SQRE='(^|[^A-Za-z_])kill( +-[A-Z1-9][A-Z0-9]*)? +"\$(SGP|SCP|ps_to|pc|AVNP|AVSC|AVCH|AVA|AVB|'
+SQRE="${SQRE}AVC|AVL|AVTP|AVSLEEP|PDSLEEP|PSW1|PSW2|rg_holder|holder)\""
+is "text-only revert guard: no bare kill of the named pid variables" "0" \
+   "$(grep -cE "$SQRE" "$DIR/tests/run.sh")"
 
 echo "== agent-view: the poller owns one slot per server and lets go on every exit path (#174) =="
 av_setup
@@ -16789,8 +16836,9 @@ AVNS=$(av_nst "$AVNP"); av_kill "$AVNP"
 # the same process (its start time), and neither stopped nor dead
 case "$(av_nst "$AVNP")" in "S ${AVNS#* }"|"R ${AVNS#* }") AVYES=yes ;; *) AVYES=no ;; esac
 is "av_kill leaves a pid that is not this shell's child alone" "yes" "$AVYES"
-# ours to clean: the sleep from just above, checked by name before the signal
-[ "$(cat "/proc/$AVNP/comm" 2>/dev/null)" = sleep ] && kill "$AVNP" 2>/dev/null
+# ours to clean: the sleep from just above, checked by the start time read before av_kill, as
+# a name check alone passes any sleep (#1227)
+pid_sig TERM "$AVNP" "${AVNS#* }" >/dev/null
 av_start; AVA=$AVPID AVAS=$AVPS
 av_wait '[ "$(av_pub)" = "$AVA" ]'
 is "a poller publishes its own pid" "$AVA" "$(av_pub)"
@@ -16946,20 +16994,26 @@ av_tm set-option -g @cockpit_bg_poll 1
 # its own TERM just before that assignment.
 # The sleep must not outlive the poller. The trap records the sleep's pid from $! itself: a sleep
 # that records its own pid can be killed before it first runs, and then there is nothing to read.
-AVSP="$AVREC/sleep.pid"; rm -f "$AVSP"
+# It records the sleep's start beside it, read while the sleep is the poller's child, for the
+# kill below that cleans up after a sleep that did outlive it (#1227).
+# Under a folder whose name holds $ and ': the trap's text quotes the path (#1227).
+AVSP="$AVREC/a\$x'b"; mkdir -p "$AVSP"; AVSP="$AVSP/sleep.pid"; rm -f "$AVSP"
+AVST='[ "$BASH_COMMAND" = "sleeper=\$!" ] && { echo "$! $(sed "s/.*) //" /proc/$!/stat'
+AVST="$AVST | cut -d' ' -f20)\" > $(tq "$AVSP"); kill -TERM \$\$; }"
 av_tm set-option -g @cockpit_bg_poll 3600
 av_tm set-option -gu @cockpit_poll_pid
 env -u TMUX_PANE TMUX="$AVT" PATH="$AVBIN:$PATH" AV_JSON="$AVF/done.json" \
-    bash -c 'set -T; trap "$1" DEBUG; . "$0"' "$DIR/scripts/agent-poll" \
-    '[ "$BASH_COMMAND" = "sleeper=\$!" ] && { echo $! > "'"$AVSP"'"; kill -TERM $$; }' \
+    bash -c 'set -T; trap "$1" DEBUG; . "$0"' "$DIR/scripts/agent-poll" "$AVST" \
     </dev/null >/dev/null 2>&1 &
 AVA=$!
 av_reap "$AVA" && AVLEFT=yes || AVLEFT=no
 is "a TERM between the fork and the saved pid still ends the poller" "yes" "$AVLEFT"
-AVSC=$(cat "$AVSP" 2>/dev/null)
+AVSC="" AVSCS=""; read -r AVSC AVSCS 2>/dev/null < "$AVSP"
 is "...the sleep it had started was reached" "yes" "$([ -n "$AVSC" ] && echo yes || echo no)"
+is "...its pid and start written under a folder named with \$ and '" "1|1" \
+   "${AVSC:+1}|${AVSCS:+1}"
 av_wait "av_gone ${AVSC:-0}" && AVLEFT=yes || AVLEFT=no
-[ -z "$AVSC" ] || av_gone "$AVSC" || kill "$AVSC" 2>/dev/null
+[ -z "$AVSC" ] || av_gone "$AVSC" || pid_sig TERM "$AVSC" "$AVSCS" >/dev/null
 is "...and did not outlive it" "yes" "$AVLEFT"
 av_tm set-option -g @cockpit_bg_poll 1
 # A HUP that lands right after the claim has published the pid must not leave it there: the
@@ -16993,9 +17047,10 @@ is "...and it holds the slot" "$AVL" "$(av_pub)"
 # The sleep itself, in one look: a first look that found a tick's short-lived child and a second
 # that found nothing left AVCH empty, and `av_gone` then died on its missing pid.
 av_wait 'AVCH=$(pgrep -xP "$AVL" sleep | head -1); [ -n "$AVCH" ]'
+AVCHS=$(pid_kid "$AVCH" "$AVL")   # read while the poller is its parent (#1227)
 pid_sig TERM "$AVL" "$AVLS" >/dev/null; av_reap "$AVL"
 av_wait "av_gone $AVCH" && AVLEFT=yes || AVLEFT=no
-av_gone "$AVCH" || kill "$AVCH" 2>/dev/null
+av_gone "$AVCH" || pid_sig TERM "$AVCH" "$AVCHS" >/dev/null
 is "a poller stopped by a signal leaves no child behind" "yes" "$AVLEFT"
 wait "$AVA" "$AVB" 2>/dev/null
 av_tm kill-server >/dev/null 2>&1
