@@ -12,8 +12,9 @@
 //! binary can take for itself ([`fixed_env`], #957), the `claude` a rig
 //! answers a lookup with ([`rig_path`], #972), the rigs' private tmux servers
 //! ([`Server`], #1066), the waits for a pane's start-up ([`held_pane`],
-//! [`named_pane`] and [`settle`], #1056), and the environment lock every check
-//! reads under ([`env_lock`], #1110).
+//! [`named_pane`] and [`settle`], #1056), the environment lock every check
+//! reads under ([`env_lock`], #1110), and the canary a row holds set under it
+//! beside a child's start ([`beside_a_held_canary`], #1142).
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -355,6 +356,64 @@ impl Holds for EnvHeld {}
 #[allow(dead_code)]
 fn spawn_held(_lock: &impl Holds, c: &mut Command) -> std::io::Result<std::process::Child> {
     c.spawn()
+}
+
+/// Set by a row that starts a child beside a held canary, for that child alone: the file
+/// it writes the moment it starts (#1142).
+#[allow(dead_code)]
+pub const STARTED: &str = "COCKPIT_TEST_ENV_LOCK_STARTED";
+
+/// The variable [`beside_a_held_canary`] holds set under the lock, as a sibling holds
+/// its write.
+#[allow(dead_code)]
+pub const CANARY: &str = "COCKPIT_TEST_ENV_LOCK_CANARY";
+
+/// How long [`beside_a_held_canary`] waits for its child to start under the canary:
+/// 1000 polls of 5 ms. With the fix the child never starts while the lock is held, so
+/// every green run waits this out once.
+#[allow(dead_code)]
+pub const POLLS: usize = 1000;
+
+/// The child half of a row that starts a child beside a held canary, run as a row of
+/// its own binary: writes the file [`STARTED`] names, then finds [`CANARY`] unset.
+/// Where `STARTED` is unset it is no child and does nothing.
+#[allow(dead_code)]
+pub fn sees_no_canary() {
+    let Some(started) = std::env::var_os(STARTED) else {
+        return;
+    };
+    std::fs::write(started, "").unwrap();
+    assert_eq!(std::env::var_os(CANARY), None, "the child took a write held under the lock");
+}
+
+/// `start` on a thread of its own while this thread holds the lock with [`CANARY`] set,
+/// as a sibling holds its write: whether the child wrote `started` within [`POLLS`],
+/// then, once the canary is removed and the lock let go, what `start` returned. Never a
+/// fixed sleep: the poll ends at the child's start or at its bound.
+#[allow(dead_code)]
+pub fn beside_a_held_canary<F>(started: &Path, start: F) -> (bool, Result<(), String>)
+where
+    F: FnOnce() -> Result<(), String> + Send + 'static,
+{
+    let held = env_lock();
+    // SAFETY: the lock is held, and every write of this binary takes it.
+    unsafe { set_var(&held, CANARY, "/sibling-1142") };
+    let t = std::thread::spawn(start);
+    let mut began = false;
+    for _ in 0..POLLS {
+        if started.exists() {
+            began = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    // SAFETY: as above, still under the lock.
+    unsafe { remove_var(&held, CANARY) };
+    drop(held);
+    let ran = t
+        .join()
+        .unwrap_or_else(|e| Err(e.downcast_ref::<String>().cloned().unwrap_or_default()));
+    (began, ran)
 }
 
 /// [`handed`]'s body, its child started by `spawn`.

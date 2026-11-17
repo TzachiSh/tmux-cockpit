@@ -247,60 +247,15 @@ fn the_token_has_no_constructor_outside_test_env() {
     assert_eq!((ok, refused), (false, true), "{said}");
 }
 
-/// Set by the rows below for their child: the file it writes the moment it starts.
-const STARTED: &str = "COCKPIT_TEST_ENV_LOCK_STARTED";
-
-/// The variable those rows hold set under the lock, as a sibling holds its write.
-const CANARY: &str = "COCKPIT_TEST_ENV_LOCK_CANARY";
-
-/// The child half of the rows below: writes the file [`STARTED`] names, then finds
-/// [`CANARY`] unset. Where `STARTED` is unset it is no child and does nothing.
+/// The child half of the rows below, [`fake::sees_no_canary`] by this name in this binary.
 const SEES_NO_CANARY: &str = "a_child_sees_no_canary";
-
-/// How long a row below waits for its child to start under the canary: 1000 polls of
-/// 5 ms. With the fix the child never starts while the lock is held, so every green
-/// run waits this out once.
-const POLLS: usize = 1000;
 
 /// The bound a row below gives a handed child, which passes in well under a second.
 const CHILD_FOR: std::time::Duration = std::time::Duration::from_secs(60);
 
 #[test]
 fn a_child_sees_no_canary() {
-    let Some(started) = std::env::var_os(STARTED) else {
-        return;
-    };
-    std::fs::write(started, "").unwrap();
-    assert_eq!(std::env::var_os(CANARY), None, "the child took a write held under the lock");
-}
-
-/// `start` on a thread of its own while this thread holds the lock with [`CANARY`] set,
-/// as a sibling holds its write: whether the child wrote `started` within [`POLLS`],
-/// then, once the canary is removed and the lock let go, what `start` returned. Never a
-/// fixed sleep: the poll ends at the child's start or at its bound.
-fn beside_a_held_canary<F>(started: &Path, start: F) -> (bool, Result<(), String>)
-where
-    F: FnOnce() -> Result<(), String> + Send + 'static,
-{
-    let held = fake::env_lock();
-    // SAFETY: the lock is held, and every write of this binary takes it.
-    unsafe { fake::set_var(&held, CANARY, "/sibling-1142") };
-    let t = std::thread::spawn(start);
-    let mut began = false;
-    for _ in 0..POLLS {
-        if started.exists() {
-            began = true;
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
-    // SAFETY: as above, still under the lock.
-    unsafe { fake::remove_var(&held, CANARY) };
-    drop(held);
-    let ran = t
-        .join()
-        .unwrap_or_else(|e| Err(e.downcast_ref::<String>().cloned().unwrap_or_default()));
-    (began, ran)
+    fake::sees_no_canary();
 }
 
 /// Whether a [`fake::run_by_hand`] run of [`SEES_NO_CANARY`] passed: `Err` with all it
@@ -316,29 +271,29 @@ fn by_hand_passed((code, said): (Option<i32>, String)) -> Result<(), String> {
 
 /// #1142: a child `fake::handed` starts while a sibling holds the lock with a variable
 /// set waits for the lock to start, so it never takes that value. Without the fix the
-/// row is red unless the box stalls the starting thread past [`POLLS`] (about 5 s), when
+/// row is red unless the box stalls the starting thread past [`fake::POLLS`] (about 5 s), when
 /// the canary is gone before the spawn. With the fix it cannot go red by luck: the child
-/// cannot start while the row holds the lock. Each green run waits out [`POLLS`] once.
+/// cannot start while the row holds the lock. Each green run waits out [`fake::POLLS`] once.
 #[test]
 fn a_handed_child_starts_once_a_writer_lets_go() {
     let s = scratch("cockpit-env-handed");
     let started = s.join("started");
     let at = started.to_str().unwrap().to_string();
-    let got = beside_a_held_canary(&started, move || {
-        fake::handed(&[SEES_NO_CANARY], &[], &[(STARTED, &at)], CHILD_FOR).map(drop)
+    let got = fake::beside_a_held_canary(&started, move || {
+        fake::handed(&[SEES_NO_CANARY], &[], &[(fake::STARTED, &at)], CHILD_FOR).map(drop)
     });
     assert_eq!(got, (false, Ok(())));
 }
 
 /// #1142: as above, for a child `fake::run_by_hand` starts, red without the fix on the
-/// same terms. Each green run waits out [`POLLS`] once.
+/// same terms. Each green run waits out [`fake::POLLS`] once.
 #[test]
 fn a_child_run_by_hand_starts_once_a_writer_lets_go() {
     let s = scratch("cockpit-env-by-hand");
     let started = s.join("started");
     let at = started.to_str().unwrap().to_string();
-    let got = beside_a_held_canary(&started, move || {
-        by_hand_passed(fake::run_by_hand(SEES_NO_CANARY, &[(STARTED, &at)]))
+    let got = fake::beside_a_held_canary(&started, move || {
+        by_hand_passed(fake::run_by_hand(SEES_NO_CANARY, &[(fake::STARTED, &at)]))
     });
     assert_eq!(got, (false, Ok(())));
 }
@@ -349,7 +304,7 @@ fn a_child_run_by_hand_starts_once_a_writer_lets_go() {
 fn a_holder_starts_children_through_the_held_forms() {
     let s = scratch("cockpit-env-held-forms");
     let started = s.join("started");
-    let set = [(STARTED, started.to_str().unwrap())];
+    let set = [(fake::STARTED, started.to_str().unwrap())];
     let held = fake::env_lock();
     let handed = fake::handed_held(&held, &[SEES_NO_CANARY], &[], &set, CHILD_FOR).map(drop);
     let by_hand = by_hand_passed(fake::run_by_hand_held(&held, SEES_NO_CANARY, &set));
