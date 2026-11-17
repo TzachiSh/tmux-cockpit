@@ -207,13 +207,35 @@ key() {                       # <option> <default> -> the key, empty when off
     local k; k=$(keyopt "$1")
     case "$k" in off) ;; "") printf '%s' "$2" ;; *) printf '%s' "$k" ;; esac
 }
+# A key tmux refuses (unknown key: a b) binds nothing. The load says so, with the option
+# as written and tmux's own words, and records nothing: a key it never bound is not one
+# to give back. The caller drops the key, as off does, so no menu row replays it, and
+# never falls back to the default, which may be a key the user bound to something else
+# (#1210).
+refused() {                   # <name> <tmux's error> -> 1
+    local opt=@cockpit_${1}_key v e=${2%%$'\n'*}
+    [ "$1" = menu ] && opt=$menuopt
+    v=$(tmux show-option -gqv "$opt")
+    dmsg "tmux-cockpit: $opt [$v] binds nothing ($e); $1 stays unbound until the option is fixed"
+    tmux set-option -gu "@cockpit_${1}_bound"
+    return 1
+}
 # Every cockpit key is bound with a "cockpit: <name>" note and recorded in
 # @cockpit_<name>_bound, so the next load knows which keys were its own. A key that
 # ends in ; goes in escaped, or tmux reads that ; as the end of the command (#1152).
-ckey() {                      # <name> <key> <command...>
-    local n=$1 k; k=$(cockpit_key_arg "$2"); shift 2
-    tmux bind-key -N "$(cockpit_key_note "$n")" "$k" "$@"
+ckey() {                      # <name> <key> <command...> -> 1 when tmux refused the key
+    local n=$1 k err; k=$(cockpit_key_arg "$2"); shift 2
+    if ! err=$(tmux bind-key -N "$(cockpit_key_note "$n")" "$k" "$@" 2>&1); then
+        refused "$n" "$err"; return 1
+    fi
     tmux set-option -g "@cockpit_${n}_bound" "$k"
+}
+# The reload, move and fullscreen bindings are blocks, so they go in on stdin
+# (source-file -), and a key tmux refuses fails that as it fails bind-key (#1210).
+skey() {                      # <name> <key>, its bind-key block on stdin -> 1 when refused
+    local err
+    if ! err=$(tmux source-file - 2>&1); then refused "$1" "$err"; return 1; fi
+    tmux set-option -g "@cockpit_${1}_bound" "$(cockpit_key_arg "$2")"
 }
 
 # Every key is settled before any is bound or given back, so giving an old one
@@ -221,8 +243,9 @@ ckey() {                      # <name> <key> <command...>
 # menu's key; it still works, with a notice.
 menuk=$(keyopt @cockpit_menu_key)
 aik=$(keyopt @cockpit_ai_key)
+menuopt=@cockpit_menu_key     # the option the menu's key came from, for refused()
 if [ -z "$menuk" ] && [ -n "$aik" ]; then
-    menuk=$aik
+    menuk=$aik; menuopt=@cockpit_ai_key
     tmux display-message "tmux-cockpit: @cockpit_ai_key is now @cockpit_menu_key"
 fi
 case "$menuk" in off) menuk="" ;; "") menuk=a ;; esac
@@ -310,16 +333,16 @@ tmux bind-key b "${SRC_SET[@]}" set-option -pF @cockpit_branch_client '#{client_
 # which a display-popup size cannot express. The pane goes in for a new session's
 # folder: inside the popup the session's active pane may be the popup (#494).
 Q_TM=$(sq "$DIR/scripts/tm")
-[ -z "$sk" ] || ckey sessions "$sk" run-shell -b "$(fesc "$Q_TM") --popup '#{client_name}' '#{session_id}' '#{client_width}' '#{client_height}' '#{pane_id}'"
+[ -z "$sk" ] || ckey sessions "$sk" run-shell -b "$(fesc "$Q_TM") --popup '#{client_name}' '#{session_id}' '#{client_width}' '#{client_height}' '#{pane_id}'" || sk=""
 
 # run-shell sets no $TMUX_PANE, so the pane goes in as an argument (#45).
-[ -z "$jk" ] || ckey jump "$jk" run-shell "$(fesc "$(sq "$DIR/scripts/tmux-jump")") '#{pane_id}' '#{client_name}'"
+[ -z "$jk" ] || ckey jump "$jk" run-shell "$(fesc "$(sq "$DIR/scripts/tmux-jump")") '#{pane_id}' '#{client_name}'" || jk=""
 
 # The info screen is cockpit-tui's own (#252); esc or q closes it, so no `read`.
 # The binary reads $COCKPIT_GLYPHS, not @cockpit_glyphs (#293): read at open, so
 # setting the option needs no reload.
 [ -z "$ik" ] || ckey info "$ik" "${SRC_SET[@]}" display-popup -E -w "$PW" -h "$PH" -T ' info · #{pane_id} ' \
-    "g=\$(tmux show-option -gqv @cockpit_glyphs); exec env \${g:+COCKPIT_GLYPHS=\"\$g\"} $(sq "$COCKPIT_TUI_BIN") info $SRC_PANE"
+    "g=\$(tmux show-option -gqv @cockpit_glyphs); exec env \${g:+COCKPIT_GLYPHS=\"\$g\"} $(sq "$COCKPIT_TUI_BIN") info $SRC_PANE" || ik=""
 
 Q_PANEL=$(sq "$DIR/scripts/cockpit-panel")
 # Read at load like the key: a strict word, since the binary refuses any other.
@@ -332,7 +355,7 @@ case "$pmode" in
 esac
 if [ -n "$pk" ]; then
     ckey panel "$pk" "${SRC_SET[@]}" display-popup -E -e "COCKPIT_PANEL_MODE=${pmode:-auto}" -w 94% -h 90% \
-        -T ' panel · #{pane_id} ' "$Q_PANEL -p $SRC_PANE"
+        -T ' panel · #{pane_id} ' "$Q_PANEL -p $SRC_PANE" || pk=""
 fi
 
 # The board is wider than $PW: a 70% popup on 120 columns fits one tile column.
@@ -347,10 +370,10 @@ if [ -n "$bk" ]; then
     # Not SRC_PANE, for the same reason as the review window below (#45).
     if [ "$(tmux show-option -gqv @cockpit_board_window)" = on ]; then
         ckey board "$bk" run-shell "tmux new-window -n board -e COCKPIT_PANEL_MODE=${pmode:-auto} \
-$(sq "$(fesc "$Q_BOARD") -p '#{pane_id}' -c '#{client_name}'")"
+$(sq "$(fesc "$Q_BOARD") -p '#{pane_id}' -c '#{client_name}'")" || bk=""
     else
         # No #{session_name}: it named the client's session, not the agent's.
-        ckey board "$bk" "${pin[@]}" display-popup -E -e "COCKPIT_PANEL_MODE=${pmode:-auto}" -w 90% -h "$PH" -T ' board ' "$Q_BOARD -p $SRC_PANE"
+        ckey board "$bk" "${pin[@]}" display-popup -E -e "COCKPIT_PANEL_MODE=${pmode:-auto}" -w 90% -h "$PH" -T ' board ' "$Q_BOARD -p $SRC_PANE" || bk=""
     fi
 fi
 
@@ -361,9 +384,9 @@ fi
 if [ -n "$rk" ]; then
     if [ "$(tmux show-option -gqv @cockpit_review_window)" = on ]; then
         ckey review "$rk" run-shell "tmux new-window -n board -e COCKPIT_PANEL_MODE=${pmode:-auto} \
-$(sq "$(fesc "$Q_BOARD") -p '#{pane_id}' -c '#{client_name}'")"
+$(sq "$(fesc "$Q_BOARD") -p '#{pane_id}' -c '#{client_name}'")" || rk=""
     else
-        ckey review "$rk" "${pin[@]}" display-popup -E -e "COCKPIT_PANEL_MODE=${pmode:-auto}" -w 90% -h "$PH" -T ' board ' "$Q_BOARD -p $SRC_PANE"
+        ckey review "$rk" "${pin[@]}" display-popup -E -e "COCKPIT_PANEL_MODE=${pmode:-auto}" -w 90% -h "$PH" -T ' board ' "$Q_BOARD -p $SRC_PANE" || rk=""
     fi
 fi
 
@@ -399,8 +422,7 @@ if [ -n "$rlk" ]; then
         done
         printf '    display-message "config reloaded"\n'
         printf '}\n'
-    } | tmux source-file -
-    tmux set-option -g @cockpit_reload_bound "$(cockpit_key_arg "$rlk")"
+    } | skey reload "$rlk" || rlk=""
 fi
 
 # switch-client first: moving the last window out of the client's session would
@@ -418,8 +440,7 @@ if [ -n "$mk" ]; then
     run-shell -C "display-menu -T '#[align=centre] move ##{window_index}:##{window_name} to ' -x W -y W #{S/n:#{s|(#)|\\1\\1|:#{qa:session_name}} '' 'switch-client -t #{session_id} ; move-window -s #{@cockpit_move_src} -t #{session_id}: ; select-window -t #{@cockpit_move_src}' ,} '' 'new session...' n \"command-prompt -p 'new session:' 'set -g @cockpit_move_dst \\\"%%%\\\" ; if-shell -F \\\"####{@cockpit_move_dst}\\\" { new-session -s \\\"####{@cockpit_move_dst}\\\" -c \\\"####{@cockpit_move_cwd}\\\" ; move-window -k -s #{@cockpit_move_src} -t :^ }'\""
 }
 EOF
-    } | tmux source-file -
-    tmux set-option -g @cockpit_move_bound "$(cockpit_key_arg "$mk")"
+    } | skey move "$mk" || mk=""
 fi
 
 # The flag is the state, and unsetting inherits the config's value, so nothing is stashed.
@@ -438,8 +459,7 @@ if [ -n "$fsk" ]; then
     }
 }
 EOF
-    } | tmux source-file -
-    tmux set-option -g @cockpit_fullscreen_bound "$(cockpit_key_arg "$fsk")"
+    } | skey fullscreen "$fsk" || fsk=""
 fi
 
 # --- the menu and the taps ---------------------------------------------------------

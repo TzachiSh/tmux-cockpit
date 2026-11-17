@@ -5098,6 +5098,142 @@ unset -f soff_get soff_move
 unset SOFF soff_s soff_st soff_n soff_a soff_k
 fi
 
+echo "== a key tmux refuses binds nothing, records nothing, and says why (#1210) =="
+# ckey and the source-file binds never read tmux's answer: a key tmux refuses (unknown key:
+# a b) bound nothing, said nothing, and was still recorded in @cockpit_<name>_bound, and the
+# menu's row and the border's corner replayed it (#1210). info binds from argv (ckey) and
+# reload through source-file -, and each has a menu row. Each value is written as a tmux.conf
+# line, the way a user writes it.
+if need_tmux "a key tmux refuses"; then :
+elif ! ( . "$DIR/scripts/lib/vnum.sh"
+         v=$("$TMUX_REAL" -V); vnum_ge "${v#tmux }" 3.8 ); then
+    skip_ "a key tmux refuses (tmux below 3.8: the plugin refuses it)"
+else
+RF=$(mktmpd); rf_s="cockpit-rf-$$"; rf_st="cockpit-rfst-$$"
+rf_m="cockpit-rfm-$$"; rf_o="cockpit-rfo-$$"
+SOCKS="$SOCKS $rf_s $rf_st $rf_m $rf_o"
+rf_get() { "$TMUX_REAL" -L "$rf_s" -f /dev/null "$@" 2>&1; }
+rf_menu() { rf_get list-keys -T prefix -F '#{key_command}' a; }
+rf_conf() {                   # <socket> <name> <the value as tmux.conf spells it>
+    printf 'set -g @cockpit_%s_key %s\n' "$2" "$3" > "$RF/keys.conf"
+    "$TMUX_REAL" -L "$1" -f /dev/null source-file "$RF/keys.conf" >/dev/null 2>&1
+}
+rf_load() {                   # <name> <spelling> [a record planted first]: fresh server, one load
+    fresh_server -L "$rf_s" -f /dev/null -- -d -s t -x 120 -y 30 -c "$RF" || return 1
+    "$TMUX_REAL" -L "$rf_s" -f /dev/null set -g @cockpit_bg_poll off >/dev/null 2>&1
+    rf_conf "$rf_s" "$1" "$2"
+    [ -z "${3:-}" ] || rf_get set -g "@cockpit_$1_bound" "$3" >/dev/null
+    reload_on "$rf_s"
+}
+# The menu and the corner with the key off: a refused key leaves them as off does.
+rf_off_info='' rf_off_reload='' rf_off_corner=''
+rf_load info off && rf_off_info=$(rf_menu)
+rf_load reload off && rf_off_reload=$(rf_menu)
+rf_load sessions off &&
+    rf_off_corner=$(rf_get list-keys -T root -F '#{key_command}' MouseUp1Control0)
+# <name>|<the value as tmux.conf spells it>|<the value the option holds>, on fd 3: no tmux
+# call below can read the rows. No key carrying the note also pins that a refused key never
+# falls back to its default, which may be a key the user bound to something else.
+while IFS='|' read -r rf_n rf_c rf_v <&3; do
+    rf_load "$rf_n" "$rf_c" || continue
+    rf_w="@cockpit_${rf_n}_key written $rf_c"
+    is "$rf_w: the option holds [$rf_v]" "$rf_v" "$(rf_get show -gv "@cockpit_${rf_n}_key")"
+    is "$rf_w: @cockpit_${rf_n}_bound records nothing" "" \
+       "$(rf_get show -gqv "@cockpit_${rf_n}_bound")"
+    is "$rf_w: no key carries the note cockpit: $rf_n" "" \
+       "$(rf_get list-keys -T prefix -F "#{?#{==:#{key_note},cockpit: $rf_n},#{key_string},}")"
+    case $rf_n in info) rf_off=$rf_off_info ;; *) rf_off=$rf_off_reload ;; esac
+    is "$rf_w: the menu is the menu with $rf_n off" "$rf_off" "$(rf_menu)"
+done 3<<'RFROWS'
+info|'\\;'|\\;
+info|'a\;'|a\;
+info|'a b'|a b
+info|Foo|Foo
+reload|'\\;'|\\;
+reload|'a\;'|a\;
+reload|'a b'|a b
+reload|Foo|Foo
+RFROWS
+if rf_load sessions "'a\\;'"; then
+    is "@cockpit_sessions_key written 'a\\;': the corner is the corner with it off" \
+       "$rf_off_corner" "$(rf_get list-keys -T root -F '#{key_command}' MouseUp1Control0)"
+fi
+# A record a load before #1210 wrote for a refused key: the value is unchanged, so the move
+# loop leaves the record, and the load itself must clear it.
+while read -r rf_n <&3; do
+    rf_load "$rf_n" Foo Foo || continue
+    is "@cockpit_${rf_n}_key Foo, recorded by an earlier load: the record is cleared" "" \
+       "$(rf_get show -gqv "@cockpit_${rf_n}_bound")"
+done 3<<'RFSTALE'
+info
+reload
+RFSTALE
+# A key moved from its default to a refused value: the default goes back to tmux, as any
+# move gives it back (#258), and nothing is recorded for the refused one.
+fresh_server -L "$rf_st" -f /dev/null -- -d -s t -c "$RF"
+rf_stock() {                  # <key> -> tmux's own command for it, or its error
+    "$TMUX_REAL" -L "$rf_st" -f /dev/null list-keys -T prefix -F '#{key_command}' "$1" 2>&1
+}
+while read -r rf_n rf_d <&3; do
+    fresh_server -L "$rf_s" -f /dev/null -- -d -s t -x 120 -y 30 -c "$RF" || continue
+    "$TMUX_REAL" -L "$rf_s" -f /dev/null set -g @cockpit_bg_poll off >/dev/null 2>&1
+    reload_on "$rf_s" || continue
+    # Cockpit's before the move, so the give-back row below has a binding to undo.
+    is "@cockpit_${rf_n}_key at its default: $rf_d carries the note cockpit: $rf_n" \
+       "cockpit: $rf_n" "$(rf_get list-keys -T prefix -F '#{key_note}' "$rf_d")"
+    rf_conf "$rf_s" "$rf_n" "'a b'"
+    reload_on "$rf_s" || continue
+    is "@cockpit_${rf_n}_key moved off $rf_d to 'a b': $rf_d is tmux's own again" \
+       "$(rf_stock "$rf_d")" "$(rf_get list-keys -T prefix -F '#{key_command}' "$rf_d")"
+    is "@cockpit_${rf_n}_key moved off $rf_d to 'a b': @cockpit_${rf_n}_bound records nothing" \
+       "" "$(rf_get show -gqv "@cockpit_${rf_n}_bound")"
+done 3<<'RFMOVE'
+info i
+reload R
+RFMOVE
+"$TMUX_REAL" -L "$rf_st" kill-server >/dev/null 2>&1
+# The message: a dmsg is logged only with a client attached, so one is attached through an
+# outer server, in the shape of the #1086 block's oh_attach, and show-messages is read.
+rf_up() {                     # a server with a client on it -> 0 once the client is there
+    ( cd "$RF" && exec env -u TMUX_COCKPIT_DIR -u TMUX -u TMUX_PANE "$TMUX_REAL" -L "$rf_m" \
+        -f /dev/null new-session -d -s t -x 120 -y 30 -c "$RF" 'exec sleep 300' ) >/dev/null 2>&1
+    "$TMUX_REAL" -L "$rf_m" -f /dev/null set -g mouse on \; \
+        set -g @cockpit_bg_poll off >/dev/null 2>&1
+    ( cd "$RF" && exec env -u TMUX_COCKPIT_DIR -u TMUX -u TMUX_PANE "$TMUX_REAL" -L "$rf_o" \
+        -f /dev/null new-session -d -s o -x 300 -y 32 -c "$RF" \
+        "TERM=xterm-256color exec $(tq "$TMUX_REAL") -L $rf_m attach -t t" ) >/dev/null 2>&1
+    until_cap "$rf_o" o '*[!\ ]*' &&
+        until_out '?*' "$TMUX_REAL" -L "$rf_m" -f /dev/null list-clients -F '#{client_name}'
+}
+rf_said() {                   # <name> <text> -> how many logged messages are <text>
+    until_out "*$1 stays unbound*" "$TMUX_REAL" -L "$rf_m" -f /dev/null show-messages
+    "$TMUX_REAL" -L "$rf_m" -f /dev/null show-messages 2>/dev/null | grep -v ' command: ' |
+        grep -cF -- " $2"
+}
+if rf_up; then
+    rf_conf "$rf_m" jump "'a b'"
+    rf_t="tmux-cockpit: @cockpit_jump_key [a b] binds nothing (unknown key: a b);"
+    rf_t="$rf_t jump stays unbound until the option is fixed"
+    reload_on "$rf_m" &&
+        is "@cockpit_jump_key 'a b': one message names the option, the value and tmux's error" \
+           1 "$(rf_said jump "$rf_t")"
+    rf_conf "$rf_m" jump u; rf_conf "$rf_m" reload Foo
+    rf_t="tmux-cockpit: @cockpit_reload_key [Foo] binds nothing (unknown key: Foo);"
+    rf_t="$rf_t reload stays unbound until the option is fixed"
+    reload_on "$rf_m" &&
+        is "@cockpit_reload_key Foo: one message names the option, the value and tmux's error" \
+           1 "$(rf_said reload "$rf_t")"
+else
+    bad "a client attached for the #1210 message rows" "a client on $rf_m" "none"
+fi
+"$TMUX_REAL" -L "$rf_o" kill-server >/dev/null 2>&1
+"$TMUX_REAL" -L "$rf_m" kill-server >/dev/null 2>&1
+"$TMUX_REAL" -L "$rf_s" kill-server >/dev/null 2>&1
+unset -f rf_get rf_menu rf_conf rf_load rf_stock rf_up rf_said
+unset RF rf_s rf_st rf_m rf_o rf_n rf_c rf_v rf_w rf_d rf_t rf_off
+unset rf_off_info rf_off_reload rf_off_corner
+fi
+
 echo "== a message shows a name as written, and runs nothing in it (#1096) =="
 # tmux expands a display-message as a format, which runs a #( ), then draws it, reading ##
 # as # and #[ as a style: fesc got a name through the first step only, and an unescaped
