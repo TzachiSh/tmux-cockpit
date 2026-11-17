@@ -12,7 +12,7 @@
 //! binary can take for itself ([`fixed_env`], #957), the `claude` a rig
 //! answers a lookup with ([`rig_path`], #972), the rigs' private tmux servers
 //! ([`Server`], #1066), the waits for a pane's start-up ([`held_pane`],
-//! [`named_pane`] and [`settle`], #1056), the environment lock every check
+//! [`named_pane`] and [`settle`], #1056, #1184), the environment lock every check
 //! reads under ([`env_lock`], #1110), and the canary a row holds set under it
 //! beside a child's start ([`beside_a_held_canary`], #1142).
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
@@ -1139,6 +1139,7 @@ fn tmux_on(sock: &str, args: &[&str]) -> String {
 /// `sock` running a copy of bash named `name` in `dir`, but the pane's process
 /// holds 0.3 s before it execs `name` (#1056): the start-up window held open, so
 /// a read that does not wait for [`settle`] finds the `held` script, not `name`.
+/// The pane, and the argv its process has once settled ([`started`]).
 #[allow(dead_code)]
 pub fn held_pane(sock: &str, dir: &Path, name: &str) -> (String, Vec<String>) {
     let bin = dir.join(name);
@@ -1159,7 +1160,7 @@ pub fn held_pane(sock: &str, dir: &Path, name: &str) -> (String, Vec<String>) {
 /// shell: the gap inside an exec, where the kernel sets comm before the argv
 /// tmux reads (#1056). Where a process cannot write its own comm, the row would
 /// hold no such gap: it says SKIP with the cause ([`comm_skip`]) and starts a
-/// [`held_pane`]. So it does where there is no /proc, as `ps` gives no argv[0].
+/// [`held_pane`]. So it does where there is no /proc, as `ps` gives no argv.
 #[allow(dead_code)]
 pub fn named_pane(sock: &str, dir: &Path, name: &str) -> (String, Vec<String>) {
     if !Path::new("/proc/self").is_dir() {
@@ -1208,16 +1209,21 @@ pub fn comm_skip(comm: &Path) -> Option<String> {
     Some(format!("SKIP: {at} cannot be written ({e}): no comm-ahead row, a held one instead"))
 }
 
-/// Waits until the pane's own process, on the private server `sock`, has exec'd
-/// `name` (#1056). Not by pane_current_command: while a pane starts, tmux 3.8
-/// reads it as the pane's argv, then `tmux`, then the shell, then the name, so
-/// its first read can already be `name`. The pane's pid keeps through each exec.
-/// Two checks: its comm, which only moves forward, and the argv[0] tmux reads,
-/// as the kernel sets comm before the new argv and an exec's empty cmdline sends
-/// tmux back to the pane's start argv. Red, naming both reads last and the
-/// pane's screen, when it never gets there. On Linux no row pins the comm check,
-/// as argv[0] reads the name only after comm does. Without /proc it is the whole
-/// check.
+/// Waits until the pane's own process, on the private server `sock`, runs as
+/// `comm` with exactly the arguments `argv` (#1056, #1184). Not by
+/// pane_current_command: while a pane starts, tmux 3.8 reads it as the pane's
+/// argv, then `tmux`, then the shell, then the name, so its first read can
+/// already be the name. The pane's pid keeps through each exec.
+/// Two checks: its comm (cut to 15 bytes, as the kernel cuts it), which only
+/// moves forward, and its whole NUL-split cmdline, as the kernel sets comm
+/// before the new argv. Not argv[0] alone: tmux runs a one-string start as
+/// `<default-shell> -c '<string>'`, so a pane wanted as bash under a bash
+/// default shell reads comm bash and argv[0] bash before the bash it execs
+/// exists; only the rest of its argv tells them apart (#1184).
+/// Red, naming both reads last and the pane's screen, when it never gets there.
+/// On Linux no row pins the comm check, as the argv is the new one only after
+/// comm is. Without /proc there is no argv to read (`ps` gives one name): the
+/// check is comm alone, the whole name.
 #[allow(dead_code)]
 pub fn settle(sock: &str, pane: &str, comm: &str, argv: &[&str]) {
     if let Err(e) = settle_within(sock, pane, comm, argv, 500) {
@@ -1226,7 +1232,8 @@ pub fn settle(sock: &str, pane: &str, comm: &str, argv: &[&str]) {
 }
 
 /// [`settle`] bounded to `tries` reads, 10 ms apart: `Err` with what it read
-/// last where [`settle`] would be red (#1184).
+/// last where [`settle`] would be red, so a row can hold a pane short of its
+/// exec and see the wait not end there (#1184). It takes no env lock.
 #[allow(dead_code)]
 pub fn settle_within(sock: &str, pane: &str, comm: &str, argv: &[&str], tries: usize) -> Result<(), String> {
     let pid = tmux_on(sock, &["display-message", "-p", "-t", pane, "#{pane_pid}"]);
@@ -1250,9 +1257,10 @@ pub fn settle_within(sock: &str, pane: &str, comm: &str, argv: &[&str], tries: u
     ))
 }
 
-/// What [`settle`] reads of a process: its comm, and the last path part of the
-/// argv[0] in the cmdline tmux names a pane by. Where there is no /proc, `ps`
-/// gives one name (macOS prints a path), so there is no argv[0] to check: `None`.
+/// What [`settle`] reads of a process: its comm, and its cmdline split at each
+/// NUL, the argv tmux names a pane by. Where there is no /proc, `ps` gives one
+/// name (macOS prints a path, cut here to its last part), so there is no argv
+/// to check: `None`.
 #[allow(dead_code)]
 fn names(pid: &str) -> (String, Option<Vec<String>>) {
     if Path::new("/proc/self").is_dir() {
