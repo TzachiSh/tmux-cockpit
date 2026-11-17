@@ -5265,6 +5265,30 @@ done 3<<'RFSPLIT'
 info|i|'i x'|y
 menu|a|'a b'|z
 RFSPLIT
+# The same split when tmux's own binding cannot be read: refused() keeps the record, so the
+# next load gives the key back. The shim fails that read, in the shape of the #290 one (#1232).
+mkdir -p "$RF/gbfail"
+printf '%s\n' '#!/usr/bin/env bash' \
+    'case " $* " in *" start-server "*) echo "no answer" >&2; exit 1 ;; esac' \
+    "exec $(tq "$TMUX_REAL") \"\$@\"" > "$RF/gbfail/tmux"
+chmod +x "$RF/gbfail/tmux"
+if fresh_server -L "$rf_s" -f /dev/null -- -d -s t -x 120 -y 30 -c "$RF"; then
+    "$TMUX_REAL" -L "$rf_s" -f /dev/null set -g @cockpit_bg_poll off >/dev/null 2>&1
+    rf_w="@cockpit_info_key moved to 'i x', tmux's own i unreadable"
+    if reload_on "$rf_s" && rf_conf "$rf_s" info "'i x'" &&
+       reload_on "$rf_s" "PATH=$(tq "$RF/gbfail"):\"\$PATH\" $(tq "$DIR/cockpit.tmux")"; then
+        is "$rf_w: @cockpit_info_bound still records i" i \
+           "$(rf_get show -gqv @cockpit_info_bound)"
+        is "$rf_w: i still carries the note cockpit: info" "cockpit: info" \
+           "$(rf_get list-keys -T prefix -F '#{key_note}' i)"
+    fi
+    if reload_on "$rf_s"; then
+        is "$rf_w: the next load gives i back: i is tmux's own" \
+           "$(rf_stock i)" "$(rf_get list-keys -T prefix -F '#{key_command}' i)"
+        is "$rf_w: and @cockpit_info_bound records nothing" "" \
+           "$(rf_get show -gqv @cockpit_info_bound)"
+    fi
+fi
 # The same split onto a key the user bound since, with no note: owned() reads it as the
 # user's, so refused() gives nothing back and the user's binding stays as it was.
 if fresh_server -L "$rf_s" -f /dev/null -- -d -s t -x 120 -y 30 -c "$RF"; then

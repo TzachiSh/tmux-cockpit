@@ -220,7 +220,7 @@ refused() {                   # <name> <tmux's error> -> 1
     # The move loop splits the key list on spaces, so 'i x' after i reached it as i, the key
     # this name holds, and nothing was given back there. A record still naming a key this
     # name holds goes back here, as off's would. One that cannot be given back keeps its
-    # record, so the next load's move loop tries again (#1226 review).
+    # record, so refused() tries again on the next load (#1226 review).
     p=$(tmux show-option -gqv "@cockpit_${1}_bound")
     if [ -n "$p" ] && owned "$1" "$p" && ! give_back "$p"; then return 1; fi
     tmux set-option -gu "@cockpit_${1}_bound"
