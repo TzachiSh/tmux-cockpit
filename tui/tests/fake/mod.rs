@@ -452,8 +452,9 @@ where
 pub struct Handed {
     child: std::process::Child,
     pid: u32,
-    /// the TMUX_TMPDIR the child was started with, which its rigs' servers and panes carry
-    tmpdir: Option<std::ffi::OsString>,
+    /// the TMUX_TMPDIR the child was started with, which its rigs' servers and panes carry,
+    /// or why its environ gave no answer
+    tmpdir: Result<Option<std::ffi::OsString>, String>,
     /// whether the child is reaped: its pid, and so its group's id, may then be another's
     reaped: bool,
     /// its watchdog, until told the child's end; `None` once told, or where it did not start
@@ -619,7 +620,8 @@ impl Handed {
         if let Some(w) = self.watch.take() {
             w.end();
         }
-        let swept = sweep(self.pid, self.tmpdir.as_deref());
+        let tmpdir = self.tmpdir.as_ref().ok().and_then(|t| t.as_deref());
+        let swept = sweep(self.pid, tmpdir);
         let _ = self.child.wait();
         swept
     }
@@ -643,14 +645,31 @@ impl Drop for Handed {
     }
 }
 
-/// The TMUX_TMPDIR in `pid`'s /proc environ, the environment it was started with: `None`
-/// where it has none, or where /proc has no such process.
+/// The TMUX_TMPDIR in `pid`'s /proc environ, the environment it was started with, by
+/// [`tmpdir_in`], waiting 1 ms between reads.
 #[allow(dead_code)]
-fn tmpdir_of(pid: u32) -> Option<std::ffi::OsString> {
+fn tmpdir_of(pid: u32) -> Result<Option<std::ffi::OsString>, String> {
+    let at = format!("/proc/{pid}/environ");
+    let start = std::time::Instant::now();
+    let wait = || {
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        start.elapsed()
+    };
+    tmpdir_in(|| std::fs::read(&at).ok(), wait)
+}
+
+/// The TMUX_TMPDIR in a child's environ, as `read` gives it: `None` where it has none, or
+/// where `read` finds no such process. `wait` waits between reads and says how long since
+/// the first.
+#[allow(dead_code)]
+pub fn tmpdir_in(
+    mut read: impl FnMut() -> Option<Vec<u8>>,
+    _wait: impl FnMut() -> std::time::Duration,
+) -> Result<Option<std::ffi::OsString>, String> {
     use std::os::unix::ffi::OsStringExt;
-    let env = std::fs::read(format!("/proc/{pid}/environ")).ok()?;
-    let value = env.split(|b| *b == 0).find_map(|v| v.strip_prefix(b"TMUX_TMPDIR="))?;
-    Some(std::ffi::OsString::from_vec(value.to_vec()))
+    let Some(env) = read() else { return Ok(None) };
+    let value = env.split(|b| *b == 0).find_map(|v| v.strip_prefix(b"TMUX_TMPDIR="));
+    Ok(value.map(|v| std::ffi::OsString::from_vec(v.to_vec())))
 }
 
 /// Kills each server and pane of a rig of the child `pid` that carries `tmpdir`, its
@@ -1235,17 +1254,27 @@ pub fn servers_left(pid: u32) -> Vec<u32> {
 }
 
 /// For a row that started this binary again as `pid`: no server and no pane of
-/// its rigs is left. Polled for 10 s, since kill-server ends a server and its
-/// panes after the command returns. A red run ends what it found with KILL: each
-/// pid is read again, /proc/<pid> alone, by [`rig_process`] just before its own
-/// kill, so it names them and leaves none, and signals no process it did not just
-/// verify.
+/// its rigs is left. Red where [`servers_left_killed`] polled to its end, with what it
+/// read then, even none.
 #[allow(dead_code)]
 pub fn assert_no_server_left(pid: u32) {
+    if let Some(left) = servers_left_killed(pid) {
+        panic!("the child {pid} left its rigs' servers or panes, now killed: {left:?}");
+    }
+}
+
+/// The servers and panes of the rigs of the child `pid`: `None` once a poll finds none,
+/// polled for 10 s since kill-server ends a server and its panes after the command
+/// returns. Where every poll found some, what a read after them finds, each ended with
+/// KILL: read again, /proc/<pid> alone, by [`rig_process`] just before its own kill, so
+/// none is left, and no process is signalled that was not just verified. That read may
+/// find none, where the last ended after the last poll.
+#[allow(dead_code)]
+pub fn servers_left_killed(pid: u32) -> Option<Vec<u32>> {
     let step = std::time::Duration::from_millis(20);
     for _ in 0..500 {
         if servers_left(pid).is_empty() {
-            return;
+            return None;
         }
         std::thread::sleep(step);
     }
@@ -1256,7 +1285,7 @@ pub fn assert_no_server_left(pid: u32) {
             unsafe { libc::kill(*p as libc::pid_t, libc::SIGKILL) };
         }
     }
-    panic!("the child {pid} left its rigs' servers or panes, now killed: {left:?}");
+    Some(left)
 }
 
 /// cargo's runner for this repo, which a row starts itself to show what it hands
