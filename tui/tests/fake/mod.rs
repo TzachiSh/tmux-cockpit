@@ -443,11 +443,15 @@ where
 }
 
 /// A child [`handed`] started and has not yet read the end of: its pid, the files it
-/// writes to, and why it fails where it was handed less than asked.
+/// writes to, and why it fails where it was handed less than asked. The child leads a
+/// process group of its own, which its end at the bound kills, and so does a drop before
+/// its end was read, the unwind of a row that panicked (#1205).
 #[allow(dead_code)]
 pub struct Handed {
     child: std::process::Child,
     pid: u32,
+    /// whether the child is reaped: its pid, and so its group's id, may then be another's
+    reaped: bool,
     what: String,
     rows: usize,
     out: PathBuf,
@@ -504,6 +508,8 @@ fn start_handed(
     };
     // SAFETY: `hand_down` makes only async-signal-safe calls and allocates nothing.
     unsafe { c.pre_exec(hand_down) };
+    // a group of its own, so its end takes what it started along (#1205)
+    c.process_group(0);
     let child = spawn(&mut c);
     let pid = child.id();
     let want = signals.iter().fold(0u64, |m, &s| m | 1 << (s - 1));
@@ -517,6 +523,7 @@ fn start_handed(
     Handed {
         child,
         pid,
+        reaped: false,
         what,
         rows: rows.len(),
         out,
@@ -545,6 +552,7 @@ impl Handed {
     /// its pid where it passed every row it was handed.
     fn ended(&mut self) -> Option<Result<u32, String>> {
         let status = self.child.try_wait().unwrap()?;
+        self.reaped = true;
         let passed = std::fs::read_to_string(&self.out).unwrap_or_default();
         let all = passed.contains(&format!(" {} passed; 0 failed", self.rows));
         if let Some(why) = self.unhanded.take() {
@@ -559,9 +567,29 @@ impl Handed {
 
     /// The end at `bound`: the child killed and reaped, and the run's report.
     pub fn end_at_bound(&mut self, bound: std::time::Duration) -> String {
-        self.child.kill().unwrap();
-        self.child.wait().unwrap();
+        self.end();
         self.said(&format!("had not ended after {bound:?} and was killed"))
+    }
+
+    /// Kills the child's group, then the child, and reaps it, unless it is reaped already.
+    /// The group while its leader is unreaped, so the id is still this child's (POSIX
+    /// XBD 4.17). The pid as well: in a child that leads no group the killpg finds none
+    /// (ESRCH), and the wait would never end. A child that ended on its own is not killed
+    /// after: what it left running stays for the row that counts it (#1205).
+    fn end(&mut self) {
+        if std::mem::replace(&mut self.reaped, true) {
+            return;
+        }
+        // SAFETY: killpg takes plain integers; the group is this child's, unreaped.
+        unsafe { libc::killpg(self.pid as libc::pid_t, libc::SIGKILL) };
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+impl Drop for Handed {
+    fn drop(&mut self) {
+        self.end();
     }
 }
 

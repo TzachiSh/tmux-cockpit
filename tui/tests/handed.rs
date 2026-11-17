@@ -119,3 +119,19 @@ fn the_bound_ends_what_a_handed_child_started() {
     let got = ["kept", "orphan"].map(|how| (how, left_after(how, end)));
     assert_eq!(got, [("kept", vec![]), ("orphan", vec![])]);
 }
+
+/// #1205: a row that panics while its handed child runs takes that child along, and what
+/// the child started, in its unwind.
+#[test]
+#[cfg(target_os = "linux")]
+fn an_unwind_ends_a_handed_child_and_what_it_started() {
+    let end = |h: fake::Handed| {
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let _h = h;
+            panic!("#1205: a row's own panic");
+        }));
+        assert!(unwound.is_err());
+    };
+    let got = ["kept", "orphan"].map(|how| (how, left_after(how, end)));
+    assert_eq!(got, [("kept", vec![]), ("orphan", vec![])]);
+}
