@@ -349,7 +349,7 @@ impl Holds for std::sync::MutexGuard<'static, ()> {}
 impl Holds for EnvHeld {}
 
 /// `c` spawned while `_lock` is alive, so the child starts with no write a sibling holds
-/// under the lock (#1142). The one spawn of handed, handed_held, run_by_hand,
+/// under the lock (#1142). The one spawn of handed, handed_held, handed_start, run_by_hand,
 /// run_by_hand_held, [`spawn_held`] and [`spawn`], so a spawn there after the
 /// guard was let go does not build: the guard is gone before it can be lent. The file's
 /// other starts of a child stay outside the lock (#1206): each sets what its child reads
@@ -442,18 +442,52 @@ where
     (began, ran)
 }
 
-/// [`handed`]'s body, its child started by `spawn`.
+/// A child [`handed`] started and has not yet read the end of: its pid, the files it
+/// writes to, and why it fails where it was handed less than asked. The child leads a
+/// process group of its own, which its end at the bound kills, and so does a drop before
+/// its end was read, the unwind of a row that panicked (#1205).
 #[allow(dead_code)]
-fn handed_with(
+pub struct Handed {
+    child: std::process::Child,
+    pid: u32,
+    /// whether the child is reaped: its pid, and so its group's id, may then be another's
+    reaped: bool,
+    /// its slot in [`GROUPS`], cleared before the reap; `None` where all were taken
+    slot: Option<usize>,
+    what: String,
+    rows: usize,
+    out: PathBuf,
+    err: PathBuf,
+    unhanded: Option<String>,
+    // last, so the folder goes after the child's end is read
+    _dir: Scratch,
+}
+
+/// [`handed`]'s child, started as it starts it, for a row that ends it itself: by
+/// [`Handed::end_at_bound`], the bound's own end, without waiting the bound out (#1205).
+#[allow(dead_code)]
+pub fn handed_start(rows: &[&str], signals: &'static [libc::c_int], env: &[(&str, &str)]) -> Handed {
+    start_handed(rows, signals, env, |c| {
+        let spawned = {
+            let env = test_env::for_check("handed");
+            spawn_under(&env, c)
+        };
+        spawned.unwrap()
+    })
+}
+
+/// [`handed`]'s start, its child started by `spawn`.
+#[allow(dead_code)]
+fn start_handed(
     rows: &[&str],
     signals: &'static [libc::c_int],
     env: &[(&str, &str)],
-    bound: std::time::Duration,
     spawn: impl FnOnce(&mut Command) -> std::process::Child,
-) -> Result<u32, String> {
+) -> Handed {
     use std::os::unix::process::CommandExt;
     use std::sync::atomic::{AtomicUsize, Ordering};
     static RUNS: AtomicUsize = AtomicUsize::new(0);
+    forward_once();
     let run = RUNS.fetch_add(1, Ordering::SeqCst);
     let me = std::process::id();
     let dir = Scratch::fresh(std::env::temp_dir().join(format!("cockpit-handed-{me}-{run}")));
@@ -477,14 +511,14 @@ fn handed_with(
     };
     // SAFETY: `hand_down` makes only async-signal-safe calls and allocates nothing.
     unsafe { c.pre_exec(hand_down) };
-    let mut child = spawn(&mut c);
+    // a group of its own, so its end takes what it started along (#1205)
+    c.process_group(0);
+    let child = spawn(&mut c);
     let pid = child.id();
-    let what = rows.join(" ");
-    let said = |status: &str| {
-        let read = |p: &Path| std::fs::read(p).unwrap_or_default();
-        let read = |p: &Path| String::from_utf8_lossy(&read(p)).into_owned();
-        format!("{what} in a child: {status}\nstdout:\n{}\nstderr:\n{}", read(&out), read(&err))
-    };
+    // a signal between the spawn and this store finds no group to forward to
+    let slot = GROUPS
+        .iter()
+        .position(|g| g.compare_exchange(0, pid as i32, Ordering::SeqCst, Ordering::SeqCst).is_ok());
     let want = signals.iter().fold(0u64, |m, &s| m | 1 << (s - 1));
     let got = (status_bits(pid, "SigIgn:"), status_bits(pid, "SigBlk:"));
     let has = |bits: Option<u64>| bits.is_some_and(|b| b & want == want);
@@ -492,24 +526,188 @@ fn handed_with(
     let unhanded = Path::new("/proc/self").is_dir() && !(has(got.0) && has(got.1));
     let why = || format!("the child was not handed {want:#x} ignored and blocked: {got:x?}");
     let unhanded = unhanded.then(why);
+    let what = rows.join(" ");
+    Handed {
+        child,
+        pid,
+        reaped: false,
+        slot,
+        what,
+        rows: rows.len(),
+        out,
+        err,
+        unhanded,
+        _dir: dir,
+    }
+}
+
+#[allow(dead_code)]
+impl Handed {
+    /// The child's pid.
+    pub fn pid(&self) -> u32 {
+        self.pid
+    }
+
+    /// The run's report: how it ended, then all it wrote.
+    fn said(&self, status: &str) -> String {
+        let read = |p: &Path| std::fs::read(p).unwrap_or_default();
+        let read = |p: &Path| String::from_utf8_lossy(&read(p)).into_owned();
+        let (what, out, err) = (&self.what, read(&self.out), read(&self.err));
+        format!("{what} in a child: {status}\nstdout:\n{out}\nstderr:\n{err}")
+    }
+
+    /// `None` while the child runs; once it has ended, reaped, the run's result:
+    /// its pid where it passed every row it was handed.
+    fn ended(&mut self) -> Option<Result<u32, String>> {
+        if !self.exited() {
+            return None;
+        }
+        self.reaped = true;
+        self.forget();
+        let status = self.child.wait().unwrap();
+        let passed = std::fs::read_to_string(&self.out).unwrap_or_default();
+        let all = passed.contains(&format!(" {} passed; 0 failed", self.rows));
+        if let Some(why) = self.unhanded.take() {
+            return Some(Err(why));
+        }
+        Some(if status.success() && all {
+            Ok(self.pid)
+        } else {
+            Err(self.said(&status.to_string()))
+        })
+    }
+
+    /// The end at `bound`: the child killed and reaped, and the run's report.
+    pub fn end_at_bound(&mut self, bound: std::time::Duration) -> String {
+        self.end();
+        self.said(&format!("had not ended after {bound:?} and was killed"))
+    }
+
+    /// Kills the child's group, then the child, and reaps it, unless it is reaped already.
+    /// The group while its leader is unreaped, so the id is still this child's (POSIX
+    /// XBD 4.17). The pid as well: in a child that leads no group the killpg finds none
+    /// (ESRCH), and the wait would never end. A child that ended on its own is not killed
+    /// after: what it left running stays for the row that counts it (#1205).
+    fn end(&mut self) {
+        if std::mem::replace(&mut self.reaped, true) {
+            return;
+        }
+        // SAFETY: killpg takes plain integers; the group is this child's, unreaped.
+        unsafe { libc::killpg(self.pid as libc::pid_t, libc::SIGKILL) };
+        let _ = self.child.kill();
+        self.forget();
+        let _ = self.child.wait();
+    }
+
+    /// Whether the child has ended, read without reaping it, so its pid stays its own
+    /// until [`Handed::forget`] has cleared its slot. As data/agents.rs's `exited`:
+    /// `info` zeroed first, since xnu leaves it untouched where there is nothing to say (#619).
+    fn exited(&self) -> bool {
+        // SAFETY: a siginfo_t of zeros is a valid value.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        let flags = libc::WEXITED | libc::WNOHANG | libc::WNOWAIT;
+        // SAFETY: waitid writes only into `info`.
+        let r = unsafe { libc::waitid(libc::P_PID, self.pid as libc::id_t, &mut info, flags) };
+        r != 0 || info.si_signo != 0
+    }
+
+    /// Clears the child's slot in [`GROUPS`], before its reap: once reaped, its id may be
+    /// another process's.
+    fn forget(&mut self) {
+        if let Some(i) = self.slot.take() {
+            GROUPS[i].store(0, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+}
+
+impl Drop for Handed {
+    fn drop(&mut self) {
+        self.end();
+    }
+}
+
+// --- the runner's end by a signal reaches the handed children (#1205) ---
+
+/// The leaders of the groups of the handed children alive now, 0 in a free slot, for
+/// [`forward`]. More at once than this go unforwarded.
+#[allow(dead_code)]
+static GROUPS: [std::sync::atomic::AtomicI32; 64] = [const { std::sync::atomic::AtomicI32::new(0) }; 64];
+
+/// The process that installed [`forward`]: a child forked from it runs the handler too,
+/// until its exec, and must not kill this process's groups.
+#[allow(dead_code)]
+static FORWARDER: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+
+/// The signals a terminal or a supervisor ends a run with: ^C, a kill, a hang-up.
+#[allow(dead_code)]
+const FORWARDED: [libc::c_int; 3] = [libc::SIGINT, libc::SIGTERM, libc::SIGHUP];
+
+/// The handler of [`FORWARDED`]: kills each group in [`GROUPS`], then dies by `sig` as it
+/// would have without it. A handed child leads a group of its own, which a terminal's ^C
+/// does not reach: only the runner's foreground group gets it (POSIX XBD 11.1.9).
+#[allow(dead_code)]
+extern "C" fn forward(sig: libc::c_int) {
+    use std::sync::atomic::Ordering;
+    // SAFETY: getpid, killpg, signal and raise are async-signal-safe, and the loads are
+    // of lock-free atomics. `sig` is blocked here, so the raise lands once this returns,
+    // at its default action.
+    unsafe {
+        if libc::getpid() == FORWARDER.load(Ordering::SeqCst) {
+            for g in &GROUPS {
+                let p = g.load(Ordering::SeqCst);
+                if p > 0 {
+                    libc::killpg(p, libc::SIGKILL);
+                }
+            }
+        }
+        libc::signal(sig, libc::SIG_DFL);
+        libc::raise(sig);
+    }
+}
+
+/// Installs [`forward`] once, for each of [`FORWARDED`] at its default action. One the
+/// runner was started ignoring, by `&` from a script or by nohup, stays ignored: it ends
+/// nothing there, and so ends no child either (#1044).
+#[allow(dead_code)]
+fn forward_once() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        // SAFETY: getpid has no preconditions.
+        FORWARDER.store(unsafe { libc::getpid() }, std::sync::atomic::Ordering::SeqCst);
+        for s in FORWARDED {
+            // SAFETY: sigaction reads and writes only the structs passed, zeros a valid value.
+            unsafe {
+                let mut old: libc::sigaction = std::mem::zeroed();
+                if libc::sigaction(s, std::ptr::null(), &mut old) != 0 || old.sa_sigaction != libc::SIG_DFL {
+                    continue;
+                }
+                let mut new: libc::sigaction = std::mem::zeroed();
+                new.sa_sigaction = forward as extern "C" fn(libc::c_int) as libc::sighandler_t;
+                libc::sigemptyset(&mut new.sa_mask);
+                new.sa_flags = libc::SA_RESTART;
+                libc::sigaction(s, &new, std::ptr::null_mut());
+            }
+        }
+    });
+}
+
+/// [`handed`]'s body, its child started by `spawn`.
+#[allow(dead_code)]
+fn handed_with(
+    rows: &[&str],
+    signals: &'static [libc::c_int],
+    env: &[(&str, &str)],
+    bound: std::time::Duration,
+    spawn: impl FnOnce(&mut Command) -> std::process::Child,
+) -> Result<u32, String> {
+    let mut h = start_handed(rows, signals, env, spawn);
     let step = std::time::Duration::from_millis(20);
     for tries in 0.. {
-        if let Some(status) = child.try_wait().unwrap() {
-            let passed = std::fs::read_to_string(&out).unwrap_or_default();
-            let all = passed.contains(&format!(" {} passed; 0 failed", rows.len()));
-            if let Some(why) = unhanded {
-                return Err(why);
-            }
-            return if status.success() && all {
-                Ok(pid)
-            } else {
-                Err(said(&status.to_string()))
-            };
+        if let Some(run) = h.ended() {
+            return run;
         }
         if tries == bound.as_millis() / step.as_millis() {
-            child.kill().unwrap();
-            child.wait().unwrap();
-            return Err(said(&format!("had not ended after {bound:?} and was killed")));
+            return Err(h.end_at_bound(bound));
         }
         std::thread::sleep(step);
     }
