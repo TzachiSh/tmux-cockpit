@@ -867,7 +867,8 @@ fn a_fifo_or_a_device_at_the_last_seen_path_is_nothing_seen() {
         };
         let keep = open(false);
         let mut w = open(true);
-        std::io::Write::write_all(&mut w, format!("{} {T0}\n", "ab".repeat(20)).as_bytes()).unwrap();
+        let record = format!("{} {T0}\n", "ab".repeat(20));
+        std::io::Write::write_all(&mut w, record.as_bytes()).unwrap();
         drop(w);
         assert_eq!(read_unblocked(&r.store(), key), None, "a FIFO holding a record");
         drop(keep);
