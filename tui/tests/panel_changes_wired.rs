@@ -40,8 +40,8 @@ cat "$0.$1"
 exit "$(cat "$0.exit" 2>/dev/null || echo 0)"
 "#;
 
-/// A stand-in claude that keeps the prompt it was given and answers.
-const ANSWERS: &str = "#!/bin/sh\ncat > \"$0.stdin\"\nprintf 'it is'\n";
+/// A stand-in claude that reads the prompt and answers.
+const ANSWERS: &str = "#!/bin/sh\ncat >/dev/null\nprintf 'it is'\n";
 
 fn git(dir: &Path, args: &[&str]) -> String {
     let o = Command::new("git")
@@ -167,10 +167,6 @@ impl Rig {
             dir: self.s.join("cache"),
             effort: Effort::Medium,
         }
-    }
-
-    fn sent(&self) -> String {
-        std::fs::read_to_string(self.s.join("claude.stdin")).unwrap()
     }
 }
 
