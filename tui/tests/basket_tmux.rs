@@ -65,7 +65,7 @@ fn the_basket_round_trips_through_a_pane_option() {
     assert_eq!(basket::shown(Some(&pane), &one), "a.rs:1", "from the pane's folder");
 
     // the readonly guard: nothing is written, and the add says so. The token is held from
-    // the set to the remove; a sibling's handed child spawns without it all the same (#1142)
+    // the set to the remove, and a sibling's handed child waits for it to spawn (#1142)
     let held = fake::env_lock();
     unsafe { fake::set_var(&held, "COCKPIT_READONLY", "1") };
     let why = basket::write(&pane, &[]).unwrap_err();

@@ -1,7 +1,8 @@
 //! The environment lock `fake` owns (#1110): a check reads under it whichever form is
 //! called, a guard-less check on the thread that holds it fails every run in place of a
 //! wait for itself, as a second take of the lock there does (#1132), a panicked holder leaves the next check its own refusal, and the
-//! token a `_held` check takes is made by `fake` alone.
+//! token a `_held` check takes is made by `fake` alone. A child that `fake::handed` or
+//! `fake::run_by_hand` starts takes no write a sibling holds under the lock (#1142).
 mod fake;
 
 use std::path::Path;
@@ -60,11 +61,10 @@ fn a_guard_less_check_reads_once_a_writer_lets_go() {
     assert_eq!(got, rows.map(|(n, _, _)| (n, None)));
 }
 
-/// [`fake::run_by_hand`] under the lock, so the child takes no sibling's write of the
-/// race row with it.
+/// [`fake::run_by_hand_held`] under the lock, so the child takes no sibling's write of
+/// the race row with it.
 fn by_hand(test: &str, set: &[(&str, &str)]) -> (Option<i32>, String) {
-    let _env = fake::env_lock();
-    fake::run_by_hand(test, set)
+    fake::run_by_hand_held(&fake::env_lock(), test, set)
 }
 
 /// `test` of this binary in a child with `CHILD` at `case`, stdout and stderr in `s`:
@@ -97,7 +97,8 @@ fn bounded_child(s: &Path, test: &str, case: &str) -> (Option<i32>, String) {
 
 /// #1110: a guard-less check called on the thread that holds the lock panics, naming the
 /// `_held` form, where the take would wait for itself, and, reached through a helper, what
-/// the caller does instead. Run in a child, so a hang is a kill.
+/// the caller does instead. A guard-less start of a child does the same, with no helper to
+/// name (#1142). Run in a child, so a hang is a kill.
 #[test]
 fn a_guard_less_check_under_the_lock_names_its_held_form() {
     if let Some(case) = child_case() {
@@ -105,6 +106,8 @@ fn a_guard_less_check_under_the_lock_names_its_held_form() {
         match case.as_str() {
             "state" => fake::checked_state(),
             "helper" => fake::fixed_env(),
+            "handed" => drop(fake::handed(&["no-such-row-1142"], &[], &[], CHILD_FOR)),
+            "by_hand" => drop(fake::run_by_hand("no-such-row-1142", &[])),
             _ => drop(fake::checked_tmux()),
         }
         return;
@@ -121,6 +124,16 @@ fn a_guard_less_check_under_the_lock_names_its_held_form() {
     let helper = said.contains("fake::Server::start, call that helper before you take the lock");
     let got = [named("state", "checked_state"), named("tmux", "checked_tmux"), (code, helper)];
     assert_eq!(got, [(Some(101), true); 3]);
+    let start = |case: &str, form: &str| {
+        let (code, said) = bounded_child(&s, me, case);
+        let want = format!(
+            "fake::{form}() on a thread that holds fake::env_lock(): call \
+                            fake::{form}_held(&held, ..) (#1142)"
+        );
+        (code, said.contains(&want), said.contains("call that helper"))
+    };
+    let got = [start("handed", "handed"), start("by_hand", "run_by_hand")];
+    assert_eq!(got, [(Some(101), true, false); 2]);
 }
 
 /// #1132: a second take of the lock on the thread that holds it panics, naming what the
@@ -232,4 +245,114 @@ fn the_token_has_no_constructor_outside_test_env() {
     let (ok, said) = builds_beside_env(&s, "forged", forged);
     let refused = said.contains("error[E0451]") && said.contains("`_guard`");
     assert_eq!((ok, refused), (false, true), "{said}");
+}
+
+/// Set by the rows below for their child: the file it writes the moment it starts.
+const STARTED: &str = "COCKPIT_TEST_ENV_LOCK_STARTED";
+
+/// The variable those rows hold set under the lock, as a sibling holds its write.
+const CANARY: &str = "COCKPIT_TEST_ENV_LOCK_CANARY";
+
+/// The child half of the rows below: writes the file [`STARTED`] names, then finds
+/// [`CANARY`] unset. Where `STARTED` is unset it is no child and does nothing.
+const SEES_NO_CANARY: &str = "a_child_sees_no_canary";
+
+/// How long a row below waits for its child to start under the canary: 1000 polls of
+/// 5 ms. With the fix the child never starts while the lock is held, so every green
+/// run waits this out once.
+const POLLS: usize = 1000;
+
+/// The bound a row below gives a handed child, which passes in well under a second.
+const CHILD_FOR: std::time::Duration = std::time::Duration::from_secs(60);
+
+#[test]
+fn a_child_sees_no_canary() {
+    let Some(started) = std::env::var_os(STARTED) else {
+        return;
+    };
+    std::fs::write(started, "").unwrap();
+    assert_eq!(std::env::var_os(CANARY), None, "the child took a write held under the lock");
+}
+
+/// `start` on a thread of its own while this thread holds the lock with [`CANARY`] set,
+/// as a sibling holds its write: whether the child wrote `started` within [`POLLS`],
+/// then, once the canary is removed and the lock let go, what `start` returned. Never a
+/// fixed sleep: the poll ends at the child's start or at its bound.
+fn beside_a_held_canary<F>(started: &Path, start: F) -> (bool, Result<(), String>)
+where
+    F: FnOnce() -> Result<(), String> + Send + 'static,
+{
+    let held = fake::env_lock();
+    // SAFETY: the lock is held, and every write of this binary takes it.
+    unsafe { fake::set_var(&held, CANARY, "/sibling-1142") };
+    let t = std::thread::spawn(start);
+    let mut began = false;
+    for _ in 0..POLLS {
+        if started.exists() {
+            began = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    // SAFETY: as above, still under the lock.
+    unsafe { fake::remove_var(&held, CANARY) };
+    drop(held);
+    let ran = t
+        .join()
+        .unwrap_or_else(|e| Err(e.downcast_ref::<String>().cloned().unwrap_or_default()));
+    (began, ran)
+}
+
+/// Whether a [`fake::run_by_hand`] run of [`SEES_NO_CANARY`] passed: `Err` with all it
+/// wrote where it did not.
+fn by_hand_passed((code, said): (Option<i32>, String)) -> Result<(), String> {
+    let passed = said.contains(&format!("test {SEES_NO_CANARY} ... ok"));
+    if code == Some(0) && passed {
+        Ok(())
+    } else {
+        Err(format!("{code:?}: {said}"))
+    }
+}
+
+/// #1142: a child `fake::handed` starts while a sibling holds the lock with a variable
+/// set waits for the lock to start, so it never takes that value. Without the fix the
+/// row is red unless the box stalls the starting thread past [`POLLS`] (about 5 s), when
+/// the canary is gone before the spawn. With the fix it cannot go red by luck: the child
+/// cannot start while the row holds the lock. Each green run waits out [`POLLS`] once.
+#[test]
+fn a_handed_child_starts_once_a_writer_lets_go() {
+    let s = scratch("cockpit-env-handed");
+    let started = s.join("started");
+    let at = started.to_str().unwrap().to_string();
+    let got = beside_a_held_canary(&started, move || {
+        fake::handed(&[SEES_NO_CANARY], &[], &[(STARTED, &at)], CHILD_FOR).map(drop)
+    });
+    assert_eq!(got, (false, Ok(())));
+}
+
+/// #1142: as above, for a child `fake::run_by_hand` starts, red without the fix on the
+/// same terms. Each green run waits out [`POLLS`] once.
+#[test]
+fn a_child_run_by_hand_starts_once_a_writer_lets_go() {
+    let s = scratch("cockpit-env-by-hand");
+    let started = s.join("started");
+    let at = started.to_str().unwrap().to_string();
+    let got = beside_a_held_canary(&started, move || {
+        by_hand_passed(fake::run_by_hand(SEES_NO_CANARY, &[(STARTED, &at)]))
+    });
+    assert_eq!(got, (false, Ok(())));
+}
+
+/// #1142: a caller that holds the lock starts both children through the `_held` forms,
+/// where the plain forms would panic on the second take.
+#[test]
+fn a_holder_starts_children_through_the_held_forms() {
+    let s = scratch("cockpit-env-held-forms");
+    let started = s.join("started");
+    let set = [(STARTED, started.to_str().unwrap())];
+    let held = fake::env_lock();
+    let handed = fake::handed_held(&held, &[SEES_NO_CANARY], &[], &set, CHILD_FOR).map(drop);
+    let by_hand = by_hand_passed(fake::run_by_hand_held(&held, SEES_NO_CANARY, &set));
+    drop(held);
+    assert_eq!((handed, by_hand), (Ok(()), Ok(())));
 }
