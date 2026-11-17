@@ -16632,6 +16632,11 @@ av_once bind.json AV_JSON="$AVREC/wsid.json" >/dev/null
 is "...a job named W with such a session still leaves the worst of all written" \
    "||needs-input|fix the parser needs you" "$(avj "$AVJM")"
 is "...and binds its own pane, its name kept" "ww|W|" "$(avjs "$AVJW")"
+# A pane bound before the poller recorded sessions (an older poller, then an upgrade) has the
+# job and its name but no session: the next poll fills it in, with nothing else changed.
+AVJU=$(av_np "alpha"); av_bind; av_tm set-option -pu -t "$AVJU" @cockpit_job_session; av_bind
+is "a bound pane missing only its job session gets it on the next poll" "aa|alpha|s-aa" \
+   "$(avjs "$AVJU")"
 av_tm kill-server >/dev/null 2>&1
 fi
 

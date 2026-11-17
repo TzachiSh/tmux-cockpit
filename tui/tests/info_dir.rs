@@ -200,6 +200,56 @@ fn a_bound_viewer_reads_its_jobs_transcript_by_the_job_session() {
     assert_eq!((x.work.as_str(), x.work_from), (wt.as_str(), WorkFrom::Transcript));
 }
 
+/// #1267: the rig's fake tmux, answering @cockpit_session with `own` and
+/// @cockpit_job_session with `job`, and no @cockpit_transcript.
+fn session_shim(t: &Tmp, own: &str, job: &str) {
+    let d = t.0.display();
+    let sh = format!(
+        "#!/bin/sh\ncase \"$1\" in\nlist-panes) cat '{d}/rows' ;;\n\
+         display-message) case \"$5\" in *cockpit_tui_version*) cat '{d}/display' ;; \
+         *) cat '{d}/rows' ;; esac ;;\n\
+         show-option) case \"$*\" in *@cockpit_job_session*) echo '{job}' ;; \
+         *@cockpit_session*) echo '{own}' ;; \
+         *@cockpit_agents_glob*) echo '|claude|' ;; esac ;;\nesac\n"
+    );
+    fake::write_exec(&t.0.join("tmux"), &sh);
+}
+
+/// #1267: a pane sent to the background keeps its own @cockpit_session and gains
+/// its job's; info reads the pane's own transcript first, as the board does.
+#[test]
+fn the_panes_own_session_outranks_the_job_session_on_the_info_screen() {
+    let g = fake::env_lock();
+    let t = Tmp::new("ownrank");
+    let (own, job, cwd) = (t.sub("own"), t.sub("job"), t.sub("cwd"));
+    let env = rig(&t, &cwd, "", &own);
+    let projects = t.0.join("home/.claude/projects");
+    std::fs::create_dir_all(projects.join("-job")).unwrap();
+    let row = serde_json::json!({"type": "user", "cwd": job, "message": {}});
+    std::fs::write(projects.join("-job/sjob.jsonl"), format!("{row}\n")).unwrap();
+    session_shim(&t, "s1", "sjob");
+    set(&g, &t, &env);
+    assert_eq!(gather("%1").unwrap().work, own);
+}
+
+/// #1267: the info screen's session is the one its transcript came from, as
+/// `--json`'s is: the pane's own, else its bound job's. Rows: own, job only.
+#[test]
+fn the_info_session_is_the_panes_own_else_its_jobs() {
+    let g = fake::env_lock();
+    let t = Tmp::new("infosid");
+    let cwd = t.sub("cwd");
+    set(&g, &t, &rig(&t, &cwd, "", ""));
+    let plain = std::fs::read_to_string(t.0.join("display")).unwrap();
+    let mut f: Vec<&str> = plain.split('\u{1f}').collect();
+    f.extend(["bg_7", "alpha", "sjob"]);
+    std::fs::write(t.0.join("display"), f.join("\u{1f}")).unwrap();
+    let own = gather("%1").unwrap().sid;
+    f[9] = "";
+    std::fs::write(t.0.join("display"), f.join("\u{1f}")).unwrap();
+    assert_eq!((own, gather("%1").unwrap().sid), ("s1".to_string(), "sjob".to_string()));
+}
+
 /// #1066: started by hand with a caller's XDG_CACHE_HOME kept, this binary's rig
 /// refuses before a lookup can read or write the agents cache there.
 #[test]
