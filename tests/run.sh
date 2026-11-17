@@ -19640,7 +19640,7 @@ git -C "$BRR" worktree remove --force "$BRW" >/dev/null 2>&1
 rm -rf "$BRR" "$BRM" "$BRW"
 fi
 
-echo "== tmux-branch (#246): the script trusts nothing the binary prints =="
+echo "== tmux-branch (#246, #228): an older binary's action line is checked, then acted on =="
 BRR=$(mktmpd); BRM=$(mktmpd); br_repo "$BRR" "$BRM"
 BRX=$(mktmpd)
 cat > "$BRX/cockpit-tui" <<'EOS'
@@ -19663,15 +19663,64 @@ br_want() {                   # br_want <label> <answer> <expected text>
     esac
     is "$1: nothing was checked out" "main" "$(br_cur "$BRR")"
 }
-# Since #228 the binary runs switch, track and create itself; their checks are
-# act_refuses_what_tmux_branch_refused_and_checks_out_nothing in tui/tests/branch.rs.
-# The script acts on `goto <path>` alone, and on an empty answer, which is nothing.
-br_want "an unknown verb is refused"            'rm -rf /'            "unexpected answer"
-br_want "a switch line is not the script's any more" 'switch old'    "unexpected answer"
-br_want "a track line is not the script's any more" 'track origin/only-remote' "unexpected answer"
-br_want "a create line is not the script's any more" 'create fresh'  "unexpected answer"
-is "an empty answer switches nothing" "0 main" "$(br_stub '' >/dev/null; echo "$? $(br_cur "$BRR")")"
+# Since #228 the binary runs switch, track and create itself (its checks are
+# act_refuses_what_tmux_branch_refused_and_checks_out_nothing in tui/tests/branch.rs) and
+# prints nothing after one ran. The release a default install fetches (0.4.0) still prints
+# the action line, and the script's old-binary path checks and acts on it, as before.
+br_want "older binary: an unknown verb is refused" 'rm -rf /' "unexpected answer"
+br_want "older binary: an unknown answer names the stale binary" 'rm -rf /' \
+    "older than the plugin"
+br_want "older binary: a verb with no name is refused" 'switch' "not a branch name"
+br_want "older binary: a name git rejects is refused" 'switch ../x' "not a branch name"
+br_want "older binary: a branch that does not exist is refused" 'switch nope' "no such branch"
+br_want "older binary: track of a local branch is refused" 'track old' "no such branch"
+br_want "older binary: create with an invalid name is refused" 'create bad..name' \
+    "not a branch name"
+br_want "older binary: two lines are refused" $'switch old\nswitch main' "not a branch name"
+br_stub 'switch old' >/dev/null
+is "older binary: a switch line is acted on" "old" "$(br_cur "$BRR")"
+git -C "$BRR" switch -q main
+br_stub 'switch feat/$(touch${IFS}x);`id`' >/dev/null
+is "older binary: a metacharacter name is switched to literally" 'feat/$(touch${IFS}x);`id`' \
+    "$(br_cur "$BRR")"
+is "older binary: and no command in it ran" "none" \
+    "$([ -e "$BRR/x" ] || [ -e "$HOME/x" ] && echo ran || echo none)"
+git -C "$BRR" switch -q main
+br_stub 'track origin/only-remote' >/dev/null
+is "older binary: a track line makes a local branch from the remote one" "only-remote" \
+    "$(br_cur "$BRR")"
+git -C "$BRR" switch -q main
+br_stub 'create fresh' >/dev/null
+is "older binary: a create line makes the branch" "fresh" "$(br_cur "$BRR")"
+git -C "$BRR" switch -q main
+# The binary since #228 prints nothing once it acted: the script says nothing and acts on nothing.
+is "an empty answer prints nothing and switches nothing" "0 main|" \
+    "$(o=$(br_stub ''); echo "$? $(br_cur "$BRR")|$o")"
 rm -rf "$BRR" "$BRM" "$BRX"
+
+echo "== tmux-branch (#228): prefix b still switches with a binary that prints switch <name> =="
+# The whole popup flow: the key, display-popup, the script, and a stub cockpit-tui that
+# answers --version as the 0.4.0 release and `branch` with `switch old`, once.
+if need_tmux "prefix b with an older binary"; then :; else
+OBS="cockpit-ob-$$"; OBO="cockpit-obo-$$"; SOCKS="$SOCKS $OBS $OBO"; OBD=$(mktmpd)
+br_repo "$OBD/r" "$OBD/m"
+mkdir -p "$OBD/bin"
+printf '%s\n' '#!/bin/sh' 'case "$1" in' '--version) echo "cockpit-tui 0.4.0" ;;' \
+    "branch) [ -e $(tq "$OBD/used") ] && exit 1; : > $(tq "$OBD/used"); echo 'switch old' ;;" \
+    'esac' > "$OBD/bin/cockpit-tui"
+chmod +x "$OBD/bin/cockpit-tui"
+env COCKPIT_TUI_BIN="$OBD/bin/cockpit-tui" "$TMUX_REAL" -L "$OBS" -f /dev/null \
+    new-session -d -s t -x 120 -y 30 -c "$OBD/r" 'exec sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$OBS" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+"$TMUX_REAL" -L "$OBO" -f /dev/null new-session -d -s o -x 120 -y 32 \
+    "TERM=xterm-256color exec $TMUX_REAL -L $OBS attach -t t" >/dev/null 2>&1
+until_out '?*' "$TMUX_REAL" -L "$OBS" list-clients -F '#{client_name}'
+"$TMUX_REAL" -L "$OBO" send-keys -t o C-b b
+until_out old br_cur "$OBD/r"
+is "prefix b with a 0.4.0-style binary switches to the branch it names" "old" "$(br_cur "$OBD/r")"
+"$TMUX_REAL" -L "$OBO" kill-server >/dev/null 2>&1
+"$TMUX_REAL" -L "$OBS" kill-server >/dev/null 2>&1
+fi
 
 echo "== tmux-branch (#246): its refusals are unchanged =="
 BRN=$(mktmpd); BRR=$(mktmpd); br_repo "$BRR" "$(mktmpd)"
@@ -19704,8 +19753,42 @@ out=$(cd "${BRR%/*}" &&
 is "a relative directory reaches the binary as its absolute path" "picker for branch -C $BRR" "$out"
 rm -rf "$BRN" "$BRR"
 
-# The inherited GIT_DIR rows (#730) moved with the switch into the binary (#228):
-# an_inherited_git_dir_or_its_kin_never_switches_another_repo, tui/tests/branch_act_env.rs.
+echo "== tmux-branch: older binary, an inherited GIT_DIR or kin never switches another repo =="
+# The old-binary path (#228) still runs git switch in the shell; the binary's own switch has
+# its twin in tui/tests/branch_act_env.rs. The stub below prints the action line as 0.4.0 does.
+# A dotfiles setup can export GIT_DIR into tmux's environment, and the popup
+# inherits it. The picker lists the pane repo's branches (gitsafe strips the
+# four), so the switch must land there too. FAIL-first: on the old code each
+# variable below switched, or checked out into, the other repo. The last three
+# (#730): another object store and a bad attribute source failed the switch, and
+# a replace base held a swapped blob for conf's `a` that the checkout wrote.
+BRE=$(mktmpd)
+# answers once, then leaves like esc: a refused switch cannot loop. conf's `a`
+# differs from main's, so a switch writes the tree it checks out.
+printf '#!/bin/sh\n[ -e "%s/used" ] && exit 1\n: > "%s/used"; echo "switch conf"\n' "$BRE" "$BRE" \
+    > "$BRE/cockpit-tui"
+chmod +x "$BRE/cockpit-tui"
+for v in GIT_DIR=@/.git GIT_WORK_TREE=@ GIT_COMMON_DIR=@/.git GIT_INDEX_FILE=@/.git/index \
+         GIT_OBJECT_DIRECTORY=@/.git/objects GIT_ATTR_SOURCE=no-such-rev \
+         GIT_REPLACE_REF_BASE=refs/alt/; do
+    rm -rf "$BRE/pane" "$BRE/other" "$BRE/used"; br_repo "$BRE/pane" "$BRE/remote-${v%%=*}"
+    git -C "$BRE/pane" update-ref "refs/alt/$(git -C "$BRE/pane" rev-parse conf:a)" \
+        "$(echo swapped | git -C "$BRE/pane" hash-object -w --stdin)"
+    (
+      export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+      git init -q -b main "$BRE/other" && cd "$BRE/other" || exit 1
+      echo other > a; git add a; git commit -q -m init; git branch conf
+    ) >/dev/null 2>&1
+    brev=${v#*=}; brev=${brev//@/$BRE/other}
+    ( export "${v%%=*}=$brev"
+      env -u TMUX COCKPIT_TUI_BIN="$BRE/cockpit-tui" timeout 30 \
+          "$DIR/scripts/tmux-branch" "$BRE/pane" \
+          </dev/null >/dev/null 2>&1 )
+    is "older binary: ${v%%=*} inherited: the pane repo switches, the other stays" \
+       "conf 0 main 0" "$(br_cur "$BRE/pane") $(git -C "$BRE/pane" status --porcelain | grep -c .) \
+$(br_cur "$BRE/other") $(git -C "$BRE/other" status --porcelain | grep -c .)"
+done
+rm -rf "$BRE"
 
 # --- #303 branch popup: a branch another worktree holds jumps there -----------
 # cockpit-tui is a stub that answers `goto <path>`, once: the binary's half is in

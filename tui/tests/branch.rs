@@ -11,7 +11,7 @@ use cockpit_tui::branch::{self, Ui};
 use cockpit_tui::data::branches::{self, Branch};
 use cockpit_tui::pick::Outcome;
 use cockpit_tui::theme::Theme;
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 use fake::Scratch;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
@@ -397,9 +397,28 @@ fn f1_help_has_an_alt_enter_row_sized_for_scrolling() {
 
 // --- #228: the popup runs switch, track and create itself ----------------------
 
+/// The git `act` runs reads no config of the developer's and speaks English: a global
+/// `core.hooksPath` would hide the hook a test plants, and a translated git would fail
+/// the wording asserted. Set once for this binary, under the lock, never restored, as
+/// `fake::fixed_env` does; `act` runs git in this process, so the child's own env is no use.
+fn plain_git() {
+    let held = fake::env_lock();
+    static SET: std::sync::Once = std::sync::Once::new();
+    SET.call_once(|| {
+        // SAFETY: under the lock; every other reader here is a spawn, which std orders
+        // with this write (fake::fixed_env says the same of its three)
+        unsafe {
+            fake::set_var(&held, "GIT_CONFIG_GLOBAL", "/dev/null");
+            fake::set_var(&held, "GIT_CONFIG_NOSYSTEM", "1");
+            fake::set_var(&held, "LC_ALL", "C");
+        }
+    });
+}
+
 /// main with `a` = main; old and a shell-metacharacter name at main; conf with `a` =
-/// conf; a bare remote holding main as `only-remote`, fetched. On main.
+/// conf; a bare remote holding main as `only-remote`, fetched. On main. Git is plain.
 fn act_repo() -> (Scratch, Scratch) {
+    plain_git();
     let (r, rm, d) = (Scratch::new(), Scratch::new(), "2020-01-01T00:00:00Z");
     git(&r.0, d, &["init", "-q", "-b", "main", "."]);
     std::fs::write(r.0.join("a"), "main\n").unwrap();
@@ -462,6 +481,7 @@ fn act_refuses_what_tmux_branch_refused_and_checks_out_nothing() {
         ("create with an invalid name", "create bad..name", "not a branch name"),
         ("two lines", "switch old\nswitch main", "not a branch name"),
         ("goto, still the script's", "goto /tmp", "unexpected action"),
+        ("a remote's name alone", "track origin", "no such branch"),
     ] {
         let got = branch::act(r.s(), line.as_bytes());
         assert!(got.as_ref().is_err_and(|e| e.contains(want)), "{row}: {got:?}");
@@ -537,4 +557,23 @@ fn a_failed_action_is_a_note_and_its_message_fills_the_preview_until_the_next_ke
     press(&mut u, KeyCode::Up, KeyModifiers::NONE);
     assert!(!u.pick.header.starts_with('✕'), "{}", u.pick.header);
     assert_eq!(u.pick.preview.as_deref(), Some("* abc init"));
+}
+
+#[test]
+fn a_failed_actions_message_outlasts_a_late_graph_and_the_mouse_until_a_key() {
+    let mut u = ui(fixture());
+    u.failed("error: refused");
+    u.feed("main".into(), "* abc init\n");
+    assert_eq!(u.pick.preview.as_deref(), Some("error: refused"), "after a late graph");
+    let wheel = MouseEvent {
+        kind: MouseEventKind::ScrollDown,
+        column: 1,
+        row: 3,
+        modifiers: KeyModifiers::NONE,
+    };
+    u.mouse(wheel, BIG);
+    assert_eq!(u.pick.preview.as_deref(), Some("error: refused"), "after the wheel");
+    // Home: back on main whatever row the wheel left selected
+    press(&mut u, KeyCode::Home, KeyModifiers::NONE);
+    assert_eq!(u.pick.preview.as_deref(), Some("* abc init"), "a key brings the graph back");
 }

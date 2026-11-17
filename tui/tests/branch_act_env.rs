@@ -60,6 +60,13 @@ fn state(pane: &str, other: &str) -> String {
 #[test]
 fn an_inherited_git_dir_or_its_kin_never_switches_another_repo() {
     let held = fake::env_lock();
+    // SAFETY: the one test of this binary, under the lock it holds: git reads no config
+    // of the developer's (a global hooksPath or a filter) and speaks English
+    unsafe {
+        fake::set_var(&held, "GIT_CONFIG_GLOBAL", "/dev/null");
+        fake::set_var(&held, "GIT_CONFIG_NOSYSTEM", "1");
+        fake::set_var(&held, "LC_ALL", "C");
+    }
     for (var, val) in [
         ("GIT_DIR", "@/.git"),
         ("GIT_WORK_TREE", "@"),

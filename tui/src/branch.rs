@@ -32,6 +32,9 @@ pub struct Ui {
     cache: HashMap<String, String>,
     asked: HashSet<String>,
     tx: Option<Sender<String>>,
+    /// A failed action's message holds the preview: a graph arriving or a mouse event
+    /// leaves it, and only the next key clears it.
+    failed: bool,
 }
 
 fn pad(s: &str, w: usize) -> String {
@@ -83,6 +86,7 @@ impl Ui {
             cache: HashMap::new(),
             asked: HashSet::new(),
             tx,
+            failed: false,
         };
         u.pick.help_len = help(g).len();
         u.sync();
@@ -99,14 +103,19 @@ impl Ui {
     pub fn failed(&mut self, msg: &str) {
         self.note(msg.lines().find(|l| !l.trim().is_empty()).unwrap_or(msg));
         self.pick.preview = Some(msg.lines().map(pick::clean).collect::<Vec<_>>().join("\n"));
+        self.failed = true;
     }
 
     fn selected(&self) -> Option<&Branch> {
         self.branches.get(*self.pick.shown.get(self.pick.sel)?)
     }
 
-    /// Shows the cached graph of the selection, or asks the worker for it.
+    /// Shows the cached graph of the selection, or asks the worker for it. A failed
+    /// action's message stays until a key ([`Ui::failed`]).
     fn sync(&mut self) {
+        if self.failed {
+            return;
+        }
         let Some(b) = self.selected() else {
             self.pick.preview = None;
             return;
@@ -134,6 +143,7 @@ impl Ui {
     /// Nothing is chosen by a key that is no action, and a note is cleared by the next key.
     pub fn key(&mut self, k: KeyEvent, area: Rect) -> Outcome {
         self.pick.header = self.header.clone();
+        self.failed = false;
         let out = if k.code == KeyCode::Enter && k.modifiers.contains(KeyModifiers::ALT) {
             self.create()
         } else {

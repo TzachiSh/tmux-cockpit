@@ -2978,7 +2978,10 @@ filter driver the repo names blanked, a repo whose driver name holds `=` refused
 terminal. Git's own refusal (a dirty tree) is the `✕` note, its first line, with the
 whole message in the preview until the next key; the picker stays. The script reads
 `goto <path>` as untrusted too: a path that `git worktree list` names and that is
-still a directory.
+still a directory. A `cockpit-tui` that still prints `switch`, `track` or `create` lines
+(0.4.0, the release a default install fetches) gets the script's own checks and `git
+switch`, as before #228, until `TUI_MIN` passes that release; any other answer is
+refused with the stale-binary message.
 
 A branch name cannot contain a space, so the filter text `my branch` is refused with a
 note on `alt-↵`.
