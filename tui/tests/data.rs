@@ -684,9 +684,10 @@ fn planted_git_config_never_runs() {
     assert_eq!(pm, "+2 -1  ?1 new", "the hardened diff still measures the tree");
 }
 
-/// Set for one child alone by [`a_forced_hang_of_the_planted_filter_is_ended_once_it_forms`],
-/// so that its git keeps the ignored TERM it was handed and hangs. Only that row may
-/// set it: a reader must not copy it into a row that means to pass (#1075).
+/// Set by [`forced_child`] alone, for the child of
+/// [`a_forced_hang_of_the_planted_filter_is_ended_once_it_forms`], so that its git keeps
+/// the ignored TERM it was handed and hangs, and for #1206's row, whose child runs no
+/// git. A reader must not copy it into a row that means to pass (#1075).
 const KEEPS_TERM: &str = "COCKPIT_TEST_GIT_KEEPS_TERM";
 
 /// How long a handed run of the planted row may take: it passes in under a second,
@@ -801,21 +802,19 @@ fn planted_git_config_never_runs_in_a_binary_handed_an_ignored_term() {
     assert_eq!((run.as_ref().err(), left), (None, 0), "{run:?}");
 }
 
-/// #1075: the hang the reset prevents, forced in a child of this binary started with
-/// TERM ignored and the reset skipped, forms; once it has, the child is killed, and the
-/// clean-up leaves none of its processes.
-#[test]
+/// `row` of this binary in a child started with TERM ignored and [`KEEPS_TERM`] set, so
+/// its git skips the reset, with `tmp` for its TMPDIR, `env` set for it alone, and no
+/// stdio: the forced row's child. Spawned under fake's lock, held for the spawn alone,
+/// so it takes no write a sibling holds under it, as a data rig's PATH with its failing
+/// `git` first (#1206).
 #[cfg(target_os = "linux")]
-fn a_forced_hang_of_the_planted_filter_is_ended_once_it_forms() {
+fn forced_child(row: &str, tmp: &Path, env: &[(&str, &str)]) -> std::process::Child {
     use std::os::unix::process::CommandExt;
-    let name = format!("cockpit-tui-handed-git-forced-{}", std::process::id());
-    let tmp = fake::Scratch::fresh(std::env::temp_dir().join(name));
-    // resolved once and used for all: the child's TMPDIR, so git's cmdline, and each cwd
-    let canon = std::fs::canonicalize(&*tmp).unwrap();
     let mut c = std::process::Command::new(std::env::current_exe().unwrap());
-    c.args(["--exact", "planted_git_config_never_runs"])
-        .env("TMPDIR", &canon)
-        .env(KEEPS_TERM, "1");
+    c.args(["--exact", row])
+        .env("TMPDIR", tmp)
+        .env(KEEPS_TERM, "1")
+        .envs(env.iter().copied());
     c.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null());
     let ignore = || {
         // SAFETY: signal is async-signal-safe, and nothing here allocates.
@@ -823,7 +822,20 @@ fn a_forced_hang_of_the_planted_filter_is_ended_once_it_forms() {
         Ok(())
     };
     // SAFETY: `ignore` makes one async-signal-safe call and allocates nothing.
-    let mut child = unsafe { c.pre_exec(ignore) }.stderr(std::process::Stdio::null()).spawn().unwrap();
+    fake::spawn(unsafe { c.pre_exec(ignore) }.stderr(std::process::Stdio::null())).unwrap()
+}
+
+/// #1075: the hang the reset prevents, forced in a child of this binary started with
+/// TERM ignored and the reset skipped, forms; once it has, the child is killed, and the
+/// clean-up leaves none of its processes.
+#[test]
+#[cfg(target_os = "linux")]
+fn a_forced_hang_of_the_planted_filter_is_ended_once_it_forms() {
+    let name = format!("cockpit-tui-handed-git-forced-{}", std::process::id());
+    let tmp = fake::Scratch::fresh(std::env::temp_dir().join(name));
+    // resolved once and used for all: the child's TMPDIR, so git's cmdline, and each cwd
+    let canon = std::fs::canonicalize(&*tmp).unwrap();
+    let mut child = forced_child("planted_git_config_never_runs", &canon, &[]);
     let plant = format!("cockpit-tui-git-plant-{}", child.id());
     let dir = canon.join(&plant);
     let dir = dir.to_str().unwrap();
@@ -836,6 +848,38 @@ fn a_forced_hang_of_the_planted_filter_is_ended_once_it_forms() {
     let why = "git no longer hangs here: no git waited on a planted cat ignoring TERM";
     assert!(formed, "{why} within {FORM_BOUND:?}");
     assert_eq!(left, 0, "the clean-up left processes of the forced hang");
+}
+
+/// The child half of the row below, [`fake::sees_no_canary`] by this name in this binary.
+#[cfg(target_os = "linux")]
+const SEES_NO_CANARY: &str = "a_child_sees_no_canary";
+
+#[test]
+fn a_child_sees_no_canary() {
+    fake::sees_no_canary();
+}
+
+/// #1206: a child [`forced_child`] starts while a sibling holds fake's lock with a
+/// variable set, as a data rig holds its PATH, waits for the lock to start, so it never
+/// takes that value. Without the fix the row is red unless the box stalls the starting
+/// thread past [`fake::POLLS`] (about 5 s), when the canary is gone before the spawn.
+/// With the fix it cannot go red by luck: the child cannot start while the row holds the
+/// lock. Each green run waits out [`fake::POLLS`] once.
+#[test]
+#[cfg(target_os = "linux")]
+fn a_forced_child_starts_once_a_writer_lets_go() {
+    let name = format!("cockpit-tui-forced-canary-{}", std::process::id());
+    let tmp = fake::Scratch::fresh(std::env::temp_dir().join(name));
+    let started = tmp.join("started");
+    let (dir, at) = (tmp.to_path_buf(), started.to_str().unwrap().to_string());
+    let got = fake::beside_a_held_canary(&started, move || {
+        let st = forced_child(SEES_NO_CANARY, &dir, &[(fake::STARTED, &at)]).wait();
+        match st {
+            Ok(st) if st.success() => Ok(()),
+            st => Err(format!("{st:?}")),
+        }
+    });
+    assert_eq!(got, (false, Ok(())));
 }
 
 /// The board may start with a dotfiles setup's GIT_DIR, or one of its kin, in
