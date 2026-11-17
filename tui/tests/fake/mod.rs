@@ -1212,23 +1212,34 @@ pub fn comm_skip(comm: &Path) -> Option<String> {
 /// check.
 #[allow(dead_code)]
 pub fn settle(sock: &str, pane: &str, name: &str) {
+    if let Err(e) = settle_within(sock, pane, name, 500) {
+        panic!("{e}");
+    }
+}
+
+/// [`settle`] bounded to `tries` reads, 10 ms apart: `Err` with what it read
+/// last where [`settle`] would be red (#1184).
+#[allow(dead_code)]
+pub fn settle_within(sock: &str, pane: &str, name: &str, tries: usize) -> Result<(), String> {
     let pid = tmux_on(sock, &["display-message", "-p", "-t", pane, "#{pane_pid}"]);
     let mut last = (String::new(), None);
-    for _ in 0..500 {
+    for _ in 0..tries {
         last = names(&pid);
         let (comm, argv0) = &last;
         // /proc's comm is cut to 15 bytes; argv[0] and `ps` keep the whole name
         let comm_ok = comm == name || (argv0.is_some() && comm == name.get(..15).unwrap_or(name));
         // two checks: comm, then the argv[0] tmux reads, which the kernel sets after it
         if comm_ok && argv0.as_deref().is_none_or(|a| a == name) {
-            return;
+            return Ok(());
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     let (comm, argv0) = last;
     let last = format!("comm {comm:?}, argv[0] {argv0:?}");
     let screen = tmux_on(sock, &["capture-pane", "-p", "-t", pane]);
-    panic!("pane {pane} never ran {name}: its process {pid} read {last} last; screen {screen:?}");
+    Err(format!(
+        "pane {pane} never ran {name}: its process {pid} read {last} last; screen {screen:?}"
+    ))
 }
 
 /// What [`settle`] reads of a process: its comm, and the last path part of the
