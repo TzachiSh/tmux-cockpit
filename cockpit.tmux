@@ -161,13 +161,22 @@ notes=$(tmux show-option -gqv @cockpit_notes)
 # a scratch table named with its $$, reads how tmux prints it, and removes the table in
 # its own call, which runs even when the read fails: tmux stops a ; sequence at the
 # first failing command. A failed read leaves a raw \037, which tmux never prints raw:
-# the panel guess is off, never a match on everything.
-legacy_panel=$'\037'
+# the panel guess is off, never a match on everything. tmux's exit status says the read
+# failed; the load then says so in tmux's words, a panel key it could not judge waits in
+# @cockpit_giveback, and @cockpit_notes stays unset, so the next load reads again (#1131).
+# The scratch bind is acceptable: it is the plugin's own load, which binds keys anyway (#1128).
+legacy_panel=$'\037'; legacy_failed=""
 if [ -z "$notes" ]; then
     lt="cockpit-legacy-$$"
     lp=$(tmux bind-key -T "$lt" x display-popup "$(sq "$DIR/scripts/cockpit-panel") -p x" \; \
-        list-keys -T "$lt" -F '#{key_command}' x 2>/dev/null)
+        list-keys -T "$lt" -F '#{key_command}' x 2>&1) || legacy_failed=1
     tmux unbind-key -a -T "$lt" 2>/dev/null
+    if [ -n "$legacy_failed" ]; then
+        lp=${lp%%$'\n'*}
+        lp="tmux-cockpit: could not read how tmux prints the old panel key (${lp:-no answer});"
+        dmsg "$lp a panel key from before the key notes stays as it is; the next load tries again"
+        lp=""
+    fi
     case "$lp" in 'display-popup "'*' -p x"')
         lp=${lp#display-popup \"}; legacy_panel=${lp%' -p x"'} ;;
     esac
@@ -179,7 +188,7 @@ fi
 # note is empty has its command read, and only before the notes. The key goes in escaped:
 # a bare ; ended list-keys, which then listed the whole table, and one key with no note
 # made the old cockpit key read as the user's, so it was never given back (#1151).
-owned() {                     # <name> <key>
+owned() {                     # <name> <key> -> 0 ours, 1 the user's, 2 not known (#1131)
     local m f cmd ka
     ka=$(cockpit_key_arg "$2")
     f="#{?#{==:#{key_note},$(cockpit_key_note "$1")},noted,"
@@ -195,6 +204,7 @@ owned() {                     # <name> <key>
         menu:*'display-menu -T "#[align=centre]'*|panel:*"$legacy_panel"*)
             dmsg "tmux-cockpit: $2 was the $1 key before the key notes; giving it back"
             return 0 ;;
+        panel:*) [ -z "$legacy_failed" ] || return 2 ;;
     esac
     return 1
 }
@@ -305,7 +315,8 @@ done
 left=""
 for nk in ${todo[@]+"${todo[@]}"}; do
     takes "${nk%%:*}" "${nk#*:}" && continue      # its own key again: bound below
-    owned "${nk%%:*}" "${nk#*:}" || continue      # the user's now: nothing to give back
+    # The user's now: nothing to give back. Not known (#1131): it waits for the next load.
+    owned "${nk%%:*}" "${nk#*:}" || { [ $? = 2 ] && left="$left"$'\n'"$nk"; continue; }
     give_back "${nk#*:}" || left="$left"$'\n'"$nk"
 done
 # Space-joined unless a key holds a space or a tab. The list's last pair may end in ;,
@@ -540,8 +551,8 @@ if [ -n "$menuk" ]; then
     ckey menu "$menuk" display-menu -T '#[align=centre]#{session_name}' -x C -y C "${rows[@]}"
 fi
 # Every key this load binds carries its note now: owned() stops guessing, unless
-# a key it guessed is still waiting to be given back.
-[ -n "$notes" ] || [ -n "$left" ] || tmux set-option -g @cockpit_notes 1
+# a key it guessed is still waiting to be given back, or the scratch read failed (#1131).
+[ -n "$notes" ] || [ -n "$left" ] || [ -n "$legacy_failed" ] || tmux set-option -g @cockpit_notes 1
 
 # Taps act on release: a menu opened on the press is closed by its own release.
 # The border's corner, path and branch are control ranges 0-3 (4-6 stay yours);
