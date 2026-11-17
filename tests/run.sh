@@ -15847,7 +15847,7 @@ av_tm set-option -g @cockpit_bg_poll 3600
 av_hook() {                   # av_hook <type>: a front end's relayed notification, as a hook
     : > "$AVLOG"
     printf '{"notification_type":"%s","message":"m1"}' "$1" \
-        | env TMUX="$AVT" TMUX_PANE="$AVP" PATH="$AVREC:$PATH" \
+        | env -u COCKPIT_NO_AUTOSTART TMUX="$AVT" TMUX_PANE="$AVP" PATH="$AVREC:$PATH" \
             "$DIR/scripts/agent-state" notify >/dev/null 2>&1
 }
 av_runs() { grep -c '^run-shell -b ' "$AVLOG"; }
@@ -23057,7 +23057,7 @@ PD1=$(pd_tm list-panes -t t -F '#{pane_id}')
 PD2=$(pd_tm new-window -d -P -F '#{pane_id}' -c "$PD" 'exec -a claude bash')
 pd_hook() {                   # pd_hook <pane> [env...]: a relayed agent_needs_input from <pane>
     printf '{"notification_type":"agent_needs_input","message":"m"}' \
-        | env -u CLAUDE_CONFIG_DIR "${@:2}" TMUX="$PDT" TMUX_PANE="$1" \
+        | env -u CLAUDE_CONFIG_DIR -u COCKPIT_NO_AUTOSTART "${@:2}" TMUX="$PDT" TMUX_PANE="$1" \
             PATH="$PD/cks:$AVREC:$PATH" "$DIR/scripts/agent-state" notify >/dev/null 2>&1
 }
 pd_key() { printf '%s' "$1" | cksum | cut -d' ' -f1; }
@@ -23238,8 +23238,9 @@ for rdbad in "newline:"$'\n' "ESC:"$'\e'; do
     RDP=$(rd_tm list-panes -t t -F '#{pane_id}'); : > "$RDLOG"
     # A relayed agent_completed: mark_agentview, and no state of its own on the pane.
     printf '{"notification_type":"agent_completed"}' \
-        | env -u CLAUDE_CONFIG_DIR CLAUDE_CONFIG_DIR="$RD/a${rdbad#*:}b" TMUX="$SOCKDIR/$RDS,0,0" \
-            TMUX_PANE="$RDP" PATH="$AVREC:$PATH" "$DIR/scripts/agent-state" notify >/dev/null 2>&1
+        | env -u CLAUDE_CONFIG_DIR -u COCKPIT_NO_AUTOSTART CLAUDE_CONFIG_DIR="$RD/a${rdbad#*:}b" \
+            TMUX="$SOCKDIR/$RDS,0,0" TMUX_PANE="$RDP" PATH="$AVREC:$PATH" \
+            "$DIR/scripts/agent-state" notify >/dev/null 2>&1
     av_wait rd_live
     is "${rdbad%%:*} in the dir: not recorded, said so, and the default dir's poller started" \
        "|$RDMSG|yes" \
@@ -24133,6 +24134,47 @@ is "shell_prompt does not end on one prompt at the cursor while its Enter is unr
    "$(sp_try 3 "$SPU" '*sp-ready$*')"
 "$TMUX_REAL" -L "$SPS" kill-server >/dev/null 2>&1
 unset -f sp_try; unset SPS SPD SPP SPG SPU
+fi
+
+echo "== agent-view: COCKPIT_NO_AUTOSTART: a relayed notification starts no poller (#1111) =="
+av_setup
+if need_tmux "agent-view no autostart" || [ ! -d /proc/self ]; then :; else
+NA_LEFT=0
+na_srv() {                    # na_srv <tag>: a fresh server of av_srv's, with no poller yet
+    av_srv "$1"
+    av_tm set-environment -g AV_RC 1 \; set-option -g @cockpit_bg_poll 1
+}
+na_hook() {                   # na_hook <type> [env args...]: a relayed notification, as a hook
+    : > "$AVLOG"
+    printf '{"notification_type":"%s","message":"m1"}' "$1" \
+        | env -u CLAUDE_CONFIG_DIR "${@:2}" TMUX="$AVT" TMUX_PANE="$AVP" PATH="$AVREC:$PATH" \
+            "$DIR/scripts/agent-state" notify >/dev/null 2>&1
+}
+na_runs() { grep -c '^run-shell -b ' "$AVLOG"; }
+na_end() {                    # the server goes, and any poller it ran with it; counts those left
+    av_tm kill-server >/dev/null 2>&1
+    av_wait '[ "$(polls_on "$AV" /proc/[0-9]*)" = 0 ]'
+    NA_LEFT=$((NA_LEFT + $(polls_on "$AV" /proc/[0-9]*)))
+}
+na_srv off1
+na_hook agent_needs_input COCKPIT_NO_AUTOSTART=1
+is "COCKPIT_NO_AUTOSTART: a relayed agent_needs_input starts no poller" "0" "$(na_runs)"
+is "...and the pane is still marked as an agent view" "1" "$(avo @cockpit_agentview)"
+na_end
+na_srv off2
+na_hook agent_completed COCKPIT_NO_AUTOSTART=1
+is "...nor does agent_completed" "0" "$(na_runs)"
+na_end
+na_srv off3
+na_hook agent_needs_input COCKPIT_NO_AUTOSTART=1 CLAUDE_CONFIG_DIR="$AVWD/na-cfg"
+is "...nor one from a pane on a config dir of its own (#194)" "0" "$(na_runs)"
+na_end
+na_srv on
+na_hook agent_needs_input -u COCKPIT_NO_AUTOSTART
+is "without it the same notification starts one: the rig can start a poller" "1" "$(na_runs)"
+na_end
+is "no poller outlives the block's servers" "0" "$NA_LEFT"
+unset -f na_srv na_hook na_runs na_end; unset NA_LEFT
 fi
 
 flop_left
