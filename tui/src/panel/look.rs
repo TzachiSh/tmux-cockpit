@@ -122,9 +122,10 @@ impl Looks {
 
 /// A list with no repo key (outside any repo) or no head (no commit yet): no
 /// mark could ever be written, so it would open every Explain as a first look
-/// (#1269). The panel shows none.
+/// (#1269). The panel shows none. A head missing because git took too long is
+/// not that: the list keeps its GitHub items and says git was slow.
 fn unmarkable(c: &Changes) -> bool {
-    c.key.is_none() || c.head.is_none()
+    c.key.is_none() || (c.head.is_none() && !c.notes.contains(&Note::GitTimedOut))
 }
 
 /// The time a mark of `c` carries, `at` being when its collect started; `None`

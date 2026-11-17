@@ -587,6 +587,57 @@ fn a_pane_with_nothing_to_mark_shows_no_list() {
     }
 }
 
+/// The child half of the row below, in a process whose PATH starts with a git
+/// that sleeps on `rev-parse --verify`, so HEAD times out and the repo key does not.
+#[test]
+fn git_timeout_child() {
+    if std::env::var_os("WIRED_GIT_TIMEOUT_CHILD").is_none() {
+        return;
+    }
+    let r = Rig::new("gitslow");
+    let pr = r#"[{"number":7,"title":"seven","updatedAt":"2025-11-14T00:00:00Z"}]"#;
+    std::fs::write(r.bin.join("gh.pr"), pr).unwrap();
+    let mut l = Looks::new(r.collector(Duration::from_secs(20)));
+    l.ahead(r.repo.to_str().unwrap());
+    for _ in 0..6000 {
+        l.poll();
+        if !l.waiting() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let head = format!("what changed since you last looked, {SINCE}");
+    let lines = ["PR #7 seven".to_string(), "git: took too long, commits left out".into()];
+    assert_eq!((l.shown(), l.unseen()), (shown(&head, &lines), true));
+    eprintln!("the-git-timeout-list-was-shown");
+}
+
+/// A HEAD that git took too long to read is no "no commit yet": the list keeps
+/// its GitHub items and the timeout note (#1269).
+#[test]
+fn a_git_timeout_keeps_the_list_and_says_so() {
+    let name = format!("cockpit-wired-shim-{}", std::process::id());
+    let s = Scratch::fresh(std::env::temp_dir().join(name));
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let real = std::env::split_paths(&path).map(|d| d.join("git")).find(|g| g.is_file());
+    let real = real.expect("a git on PATH");
+    let body = format!(
+        "#!/bin/sh\nfor a; do [ \"$a\" = --verify ] && exec sleep 3; done\nexec '{}' \"$@\"\n",
+        real.display()
+    );
+    write_exec(&s.join("git"), &body);
+    let first = std::iter::once(s.to_path_buf()).chain(std::env::split_paths(&path));
+    let out = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "git_timeout_child", "--nocapture"])
+        .env("PATH", std::env::join_paths(first).unwrap())
+        .env("WIRED_GIT_TIMEOUT_CHILD", "1")
+        .output()
+        .unwrap();
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{said}");
+    assert!(said.lines().any(|l| l == "the-git-timeout-list-was-shown"), "{said}");
+}
+
 /// After `git checkout HEAD~1` the old tip is still held by its branch: no
 /// commit and no rewrite, and the checkout detached HEAD.
 #[test]
