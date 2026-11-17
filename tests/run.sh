@@ -21903,10 +21903,12 @@ STUB
 chmod +x "$OKT/tmux"; ln -s "$(command -v bash)" "$OKT/bash"
 for t in mktemp rm cat; do ln -s "$(command -v $t)" "$OKT/$t"; done   # the stderr capture
 okrun() {                     # okrun <key> [bin] -- the log after a pick answering <key>
-    # OKLC: a LOCPATH dir to run in its en_US.UTF-8 (#842)
+    # OKLC: a LOCPATH dir to run in its en_US.UTF-8 (#842); OKHOME: the HOME, else $OKT;
+    # OKLINE: the clicked line, else "a.txt b.txt"
     : > "$OKL"
     env -i ${OKLC:+"LOCPATH=$OKLC"} ${OKLC:+LC_ALL=en_US.UTF-8} \
-        PATH="$OKT" HOME="$OKT" TMUX_LOG="$OKL" CLICK_DIR="$OKT/w" CLICK_LINE="a.txt b.txt" \
+        PATH="$OKT" HOME="${OKHOME:-$OKT}" TMUX_LOG="$OKL" CLICK_DIR="$OKT/w" \
+        CLICK_LINE="${OKLINE:-a.txt b.txt}" \
         OPEN_EDITOR=ed PICK_KEY="$1" PICK_RC="${PICK_RC:-0}" COCKPIT_TUI_BIN="${2:-$OPTUI}" \
         bash "$DIR/scripts/tmux-open-path" ${OKARG---pick} %1 </dev/null >/dev/null 2>"$OKT/err"
     echo "rc=$?"; cat "$OKL"
@@ -21946,6 +21948,23 @@ esac
 # alt-c (pick's exit 10) copies the absolute path and opens nothing.
 is "alt-c copies the chosen candidate's path and opens nothing" \
    "rc=0"$'\n'"LOADBUF $OKT/w/b.txt"$'\n'"MSG cockpit: copied ~/w/b.txt" "$(PICK_RC=10 okrun 1)"
+# The ~ shortening matches HOME as text, never as a glob (#1179): with a HOME of $OKT/w* the
+# copied path was shown as "~", with $OKT/? as "~/b.txt". Neither HOME is a prefix of it.
+for h in "$OKT/w*" "$OKT/?"; do
+    is "a HOME of [${h#"$OKT"/}] is text, not a glob: the copied path is shown whole" \
+       "MSG cockpit: copied $OKT/w/b.txt" "$(OKHOME=$h PICK_RC=10 okrun 1 | grep '^MSG')"
+done
+# ...and in a pick row's label (#1179): candidates outside the clicked folder are shown
+# shortened by HOME. A pick stub records the rows it is handed; HOME is "$OKH/x*".
+OKH=$(mktmpd); mkdir -p "$OKH/x"; : > "$OKH/x/c.txt"; : > "$OKH/x/d.txt"
+printf '#!/bin/sh\ncat > %s\nprintf "0\\n"\n' "'$OKT/rows.got'" > "$OKT/pickrec"
+chmod +x "$OKT/pickrec"; : > "$OKT/rows.got"
+OKPL="a HOME of [x*] is text in a pick row's label: the path is shown whole"
+case $OKH in
+    *[[:space:]]*) skip_ "$OKPL (the clicked line splits on the blank in TMPDIR)" ;;
+    *) OKHOME="$OKH/x*" OKLINE="$OKH/x/c.txt $OKH/x/d.txt" okrun 0 "$OKT/pickrec" >/dev/null
+       is "$OKPL" "$OKH/x/c.txt|$OKH/x/d.txt" "$(cut -f2 "$OKT/rows.got" | paste -sd'|')" ;;
+esac
 case "$(PICK_RC=10 okrun 7)" in
     *LOADBUF*) bad "alt-c on a key that is not a candidate copies nothing" \
             "no load-buffer" "copied" ;;
@@ -22984,6 +23003,11 @@ FBV='edit x\n' fb off "view $FBD/sub/n.txt\n" 0
 is "a viewer line that is not an edit is not a close either: no browser" "1" "$(fbtn files)"
 fb off "copy $FBF\n" 0
 is "copy from the browser: no viewer, no second browser" "1" "$(fbtn files)"
+# #1179: the copied note shortens by HOME as text: under a HOME of "$FB/p*", which is no
+# prefix of the path, the note shows the path whole (it was "~").
+fb off "copy $FBF\n" 0 HOME="$FB/p*"
+is "copy from the browser under a HOME of [p*]: the note shows the path whole" "1" \
+   "$(grep -cF "[cockpit: copied $FBF]" "$FB/calls")"
 # a loop, not a call per view: under a cap of 8 nested calls, 15 views closed in a row
 # bring the browser back 15 times; a recursion would die at the cap
 FBR=15 fb off "view $FBD/sub/n.txt\n" 0 FUNCNEST=8
