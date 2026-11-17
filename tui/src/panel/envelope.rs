@@ -68,12 +68,13 @@ pub struct Turn {
     pub text: String,
 }
 
-/// The tags the envelope wraps text in: every tag [`build_refs`] opens, so
+/// The tags the envelope wraps text in: every tag [`build_with`] opens, so
 /// [`esc`] escapes a spaced closer of each (`tests/panel_closers.rs`).
-pub const SECTIONS: [&str; 14] = [
+pub const SECTIONS: [&str; 15] = [
     "screen",
     "window",
     "repo",
+    "changes",
     "refs",
     "ref",
     "request",
@@ -283,19 +284,23 @@ pub fn redact_screen(cap: &Capture) -> (String, String, usize) {
 /// a flow that sends the screen counts it: an Ask sends neither it nor the
 /// window (#965), and counts its code in `repo_hidden`.
 pub fn build_refs(flow: &Flow, cap: &Capture, turns: &[Turn], questions_left: usize, refs: &[RefItem]) -> Envelope {
-    build_with(flow, cap, turns, questions_left, Extra { refs })
+    build_with(flow, cap, turns, questions_left, Extra { refs, changes: None })
 }
 
 /// What a call sends beside the screen and the turns: a write's basket refs
-/// (#365 child 5). Any other flow ignores them.
+/// (#365 child 5) and Explain's what-changed list (#1000). Any other flow
+/// ignores both.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Extra<'a> {
     pub refs: &'a [RefItem],
+    pub changes: Option<&'a str>,
 }
 
-/// [`build_refs`], with what the call sends beside the screen and the turns.
+/// [`build_refs`], and for Explain the what-changed list (#1000, #935) in a
+/// `<changes>` block after the screen and its session line. The collector
+/// redacted each item; the block is redacted again here, as every section is.
 pub fn build_with(flow: &Flow, cap: &Capture, turns: &[Turn], left: usize, x: Extra) -> Envelope {
-    let (Extra { refs }, questions_left) = (x, left);
+    let (Extra { refs, changes }, questions_left) = (x, left);
     let (screen, name, on_screen) = redact_screen(cap);
     let (mut screen_hidden, mut repo_hidden, mut turns_hidden) = (0, 0, 0);
     let screen = esc(&screen);
@@ -363,6 +368,10 @@ pub fn build_with(flow: &Flow, cap: &Capture, turns: &[Turn], left: usize, x: Ex
                     st.as_str(),
                     st.text()
                 ));
+            }
+            if let Some(c) = changes {
+                let (c, _) = redact_clean(c);
+                parts.push(format!("<changes>\n{}\n</changes>", esc(&c)));
             }
         }
     }

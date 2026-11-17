@@ -7,6 +7,7 @@ pub mod capture;
 pub mod changes;
 pub mod envelope;
 pub mod flow;
+pub mod look;
 pub mod parse;
 pub mod prompts;
 pub mod redact;

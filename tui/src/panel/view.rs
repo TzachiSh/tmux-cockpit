@@ -639,6 +639,10 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
                 Style::new().fg(th.running),
             ));
             b.lines.push(plain(""));
+            if app.waits_for_changes() {
+                let what = "collecting what changed since you last looked";
+                b.lines.extend(many(what, w, "", meta));
+            }
             // split as the envelope counted it (#964): a write's path is the screen's (#937),
             // and only a write sends the repo block. An Ask sends its code, never the
             // screen (#965): the envelope counts the code's keys where a write's block goes.
@@ -852,6 +856,14 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
         }
         View::Answer { scroll, armed } => {
             let Some(r) = run else { return b };
+            // drawn from the collector's own lines, never the model's (#1000)
+            if let Some((head, lines)) = app.changes_shown() {
+                b.lines.extend(many(&head, w, "", label));
+                for l in &lines {
+                    b.lines.extend(many(l, w, "  ", meta));
+                }
+                b.lines.push(plain(""));
+            }
             for (you, t) in &r.log {
                 if *you {
                     b.lines.extend(many(&format!("you: {t}"), w, "", label));
@@ -1460,8 +1472,9 @@ pub fn run(app: &mut App) {
                 let _ = event::read();
             }
         }
-        // Ticking only while a call is out, so an idle panel costs no wakeups.
-        let ev = if app.req.is_some() {
+        // Ticking only while a call is out or waits for Explain's list (#1000), so
+        // an idle panel costs no wakeups.
+        let ev = if app.ticks() {
             match event::poll(Duration::from_millis(100)) {
                 Ok(true) => event::read().map(Some),
                 Ok(false) => Ok(None),

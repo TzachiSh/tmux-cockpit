@@ -1491,7 +1491,7 @@ not wired into Explain yet.
 
 `panel::changes` builds the list of what changed in a repo since the user last
 looked, in plain code, so the model that explains it cannot make an item up.
-It is not wired into Explain yet: nothing in the panel calls it.
+Explain sends it and draws it (#935, "Explain shows it" below).
 
 - **Last seen.** Per repo, the HEAD sha and a time in seconds, one line
   `<sha> <secs>` in `$XDG_CACHE_HOME/tmux-cockpit/panel/seen/<key>`
@@ -1532,6 +1532,39 @@ It is not wired into Explain yet: nothing in the panel calls it.
   for the CI call, which is skipped with its own note. Nothing is printed and nothing
   panics. `collect` blocks for at most the two budgets, so the wiring calls it
   off the drawing thread.
+
+Explain shows it (`panel::look`):
+
+- **When.** The collect starts when the Explain tile opens the question list, on
+  a thread of its own, so the user's pick hides its time. Only a pane whose
+  folder is this machine's gets one, by the rule the write's repo block uses: a
+  pane running ssh gets no list. A call waits for the list for at most the two
+  budgets and 1 s more (7 s), and the loop keeps drawing meanwhile. Past that,
+  the call goes without it and a note says so.
+- **Sent.** Each call of that Explain carries the list in a `<changes>` block
+  after the screen: `last looked <time>` (or `never; the newest commits`), the
+  items, `nothing new listed` when there are none, then the notes. The block is
+  redacted and escaped like every section. The prompt text does not change.
+- **Shown.** The first answer opens at its top, where the panel draws the list
+  from the collector's own lines, under `what changed since you last looked,
+  <time>` (`nothing new listed since ...` when empty, `first look here` with no
+  record).
+- **Seen.** Last-seen is written when a frame has drawn that answer at its top,
+  never earlier: a failed or cancelled Explain leaves it as it was, and a retry
+  or a second question sends the same list with no new git or gh call. It takes
+  the head and the time the collect started. With commits left out (git took
+  too long) nothing is written. After a passing GitHub failure (a timeout, gh
+  failing, the floor, the search limit) the head moves and the time stays, so
+  the next look searches GitHub from where the user last saw it.
+- **Limits.** The panel holds one `Collector` for its life, so the 60 s floor
+  and the 30 searches a minute last as long as that panel. Each new panel
+  (each `prefix f`) starts with none spent: #1000 allows no file but the
+  last-seen one. Past GitHub's own limit gh fails, and the list says so in one
+  note.
+- **HEAD moved back.** After `git checkout HEAD~1` the old tip is still held by
+  its branch: no commit is listed, no rewrite either. The list reads `nothing
+  new listed`, with the detached-HEAD note on a GitHub repo, and last-seen
+  becomes HEAD~1, so checking the tip out again lists its commit again.
 
 ### The panel on a small screen
 
