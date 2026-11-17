@@ -3,7 +3,8 @@
 # turn runs in a background worker that reports no state to the terminal showing it, so the
 # pane is written from `claude agents --json --all`:
 #   - a pane whose title names exactly one background job (the bind rule, JQ_PROG below) shows
-#     that job's state, and carries @cockpit_job <id> and @cockpit_job_name <name> while bound;
+#     that job's state, and carries @cockpit_job <id>, @cockpit_job_name <name> and
+#     @cockpit_job_session <the job's sessionId> while bound;
 #   - any other pane marked @cockpit_agentview (by agent-state notify) shows the worst background
 #     session, blocked > failed > working > done; none or stopped is idle.
 # One poller per tmux server and Claude config dir (#194), its pid in the global
@@ -95,12 +96,15 @@ PANE_FMT=".#{pane_id}$T.#{pane_current_command}$T.#{allow-set-title}"
 PANE_FMT="$PANE_FMT$T.#{?#{m/i:*|#{b:pane_current_command}|*,#{@cockpit_agents_glob}},1,0}"
 PANE_FMT="$PANE_FMT$T.#{@cockpit_agentview}$T.#{@cockpit_fg}"
 PANE_FMT="$PANE_FMT$T.#{@cockpit_job}$T.#{@cockpit_job_name}$T.#{@cockpit_job_state}"
+PANE_FMT="$PANE_FMT$T.#{@cockpit_job_session}"
 PANE_FMT="$PANE_FMT$T.#{@panestate}$T.#{$SLOT}$T.#{@cockpit_cfg}$T.#{pane_title}"
 
 # jq program. Input: claude's JSON. $panes: "<pane id> TAB <@cockpit_fg> TAB <title>" lines of
 # the panes that may be bound. Output, tab-separated: `W worst blockedname` (today's worst of
-# all), then per pane `M pane jobid state name` (bound) or `D pane` (its title names two or
-# more jobs).
+# all), then per pane `M pane jobid state .sid name` (bound) or `D pane` (its title names two or
+# more jobs). sid is the job's sessionId when it is [A-Za-z0-9_-]{1,64}, else empty: the board
+# reads the job's transcript by it, a path (#448). The "." keeps an empty one a field. \A and
+# \z, not ^ and $: jq's $ also matches before a final newline, which would split the line.
 # The bind rule (#448): the title, minus an optional leading "✳ " and with whitespace runs
 # collapsed, equals one background job's name, collapsed the same way; done jobs count; a
 # job without an id does not; an agent view's own title never binds. A pane with a foreground
@@ -120,6 +124,8 @@ JQ_PROG='
      else "idle" end) as $w
   | [$b[] | select((.id | type) == "string" and (.id | length) > 0)
      | {id: (.id | clean), state: ((.state // "none") | clean), name: ((.name // "") | norm),
+        sid: ((.sessionId // "") | tostring
+              | if test("\\A[A-Za-z0-9_-]{1,64}\\z") then . else "" end),
         at: (if (.startedAt | type) == "number" then .startedAt / 1000 else 0 end)}
      | select(.name != "")] as $jobs
   | [$panes | split("\n")[] | select(length > 0) | split("\t")
@@ -132,7 +138,7 @@ JQ_PROG='
     ($ps[] | . as $p | [$jobs[] | select(.name == $p.t)] as $m
      | if ($m | length) == 1
           and ($p.fg == "" or ($p.fg | test("^[0-9]{10,}$") and $m[0].at > ($p.fg | tonumber)))
-       then "M\t\($p.pane)\t\($m[0].id)\t\($m[0].state)\t\($m[0].name[0:120])"
+       then "M\t\($p.pane)\t\($m[0].id)\t\($m[0].state)\t.\($m[0].sid)\t\($m[0].name[0:120])"
        elif ($m | length) > 1 and $p.fg == "" then "D\t\($p.pane)" else empty end)'
 
 # A job's state as the pane shows it. An unknown one (research preview) is idle.
@@ -149,7 +155,8 @@ job_state() {                 # <claude state> -> the agent-state poll value
 # nor a foreground session's (its hooks own the state).
 unbind() {                    # <pane> <marked: 1|""> <fg mark|""> <@panestate> <@cockpit_job_state>
     tmux set-option -pu -t "$1" @cockpit_job \; set-option -pu -t "$1" @cockpit_job_name \; \
-        set-option -pu -t "$1" @cockpit_job_state 2>/dev/null
+        set-option -pu -t "$1" @cockpit_job_state \; \
+        set-option -pu -t "$1" @cockpit_job_session 2>/dev/null
     [ "$2" = 1 ] && return 0
     [ -n "$3" ] && return 0
     [ -n "$5" ] && [ "${4:-off}" = "$5" ] || return 0
@@ -176,11 +183,12 @@ claude_cmd() {
 # S_SERIOUS set when a pane is waiting on a read. Panes that cannot hold what they carry
 # are cleaned here. 1: no server and no pane.
 scan_panes() {
-    local rows id cmd allow glob view fg job jname jstate pstate owner cfg title marked
+    local rows id cmd allow glob view fg job jname jstate jsess pstate owner cfg title marked
     local seen=0 job_kept="" fgc
     S_LIVE="" S_BOUND="" S_CAND="" S_SIG="" S_ROWS=$'\n' S_SERIOUS="" S_OWN="" S_MINE=""
     rows=$(tmux list-panes -a -F "$PANE_FMT" 2>/dev/null) || return 1
-    while IFS=$T read -r id cmd allow glob view fg job jname jstate pstate owner cfg title; do
+    while IFS=$T read -r id cmd allow glob view fg job jname jstate jsess pstate owner cfg title
+    do
         [ -n "$id" ] || continue
         seen=1
         S_OWN=${owner#.}
@@ -188,7 +196,8 @@ scan_panes() {
         [ "${cfg#.}" = "$MYDIR" ] || continue
         S_MINE=1
         id=${id#.}; cmd=${cmd#.}; allow=${allow#.}; glob=${glob#.}; view=${view#.}
-        fg=${fg#.}; job=${job#.}; jname=${jname#.}; jstate=${jstate#.}; pstate=${pstate#.}
+        fg=${fg#.}; job=${job#.}; jname=${jname#.}; jstate=${jstate#.}; jsess=${jsess#.}
+        pstate=${pstate#.}
         title=${title#.}
         # A version title is an agent whatever the glob says, as the board's agentish reads it
         # (tui/src/data.rs): without this its marks were dropped below and it bound unmarked.
@@ -220,10 +229,10 @@ scan_panes() {
             fi
         fi
         if [ -n "$job" ] && [ -z "$job_kept" ]; then
-            unbind "$id" "$marked" "$fg" "$pstate" "$jstate"; job=""; jname=""; jstate=""
+            unbind "$id" "$marked" "$fg" "$pstate" "$jstate"; job=""; jname=""; jstate=""; jsess=""
         fi
         job_kept=""
-        S_ROWS="$S_ROWS$id$T.$job$T.$jname$T.$jstate$T.$pstate$T.$marked$T.$fg"$'\n'
+        S_ROWS="$S_ROWS$id$T.$job$T.$jname$T.$jstate$T.$pstate$T.$marked$T.$jsess$T.$fg"$'\n'
     done <<EOT
 $rows
 EOT
@@ -259,7 +268,7 @@ read_jobs() {
 }
 
 # What a bound pane carries now, from S_ROWS: sets row_job, row_name, row_jstate, row_pstate,
-# row_marked, row_fg.
+# row_marked, row_jsess, row_fg.
 pane_row() {                  # <pane>
     local r=${S_ROWS#*$'\n'"$1""$T"}
     r=${r%%$'\n'*}
@@ -267,20 +276,21 @@ pane_row() {                  # <pane>
     row_name=${r%%"$T"*}; r=${r#*"$T"}; row_name=${row_name#.}
     row_jstate=${r%%"$T"*}; r=${r#*"$T"}; row_jstate=${row_jstate#.}
     row_pstate=${r%%"$T"*}; r=${r#*"$T"}; row_pstate=${row_pstate#.}
-    row_marked=${r%%"$T"*}; row_marked=${row_marked#.}
+    row_marked=${r%%"$T"*}; r=${r#*"$T"}; row_marked=${row_marked#.}
+    row_jsess=${r%%"$T"*}; row_jsess=${row_jsess#.}
     row_fg=${r#*"$T"}; row_fg=${row_fg#.}
 }
 
 # Write what R_OUT says: a bound pane its job's state, a marked one the worst of all. Bound
 # before and not now: the title moved on, or a second job took the name.
 apply_jobs() {
-    local tag a b c d worst="" wname="" st new="" dups="" arg id bound_now=""
-    local bpane bid bstate bname
-    while IFS=$T read -r tag a b c d; do
+    local tag a b c d e worst="" wname="" st new="" dups="" arg id bound_now="" sess
+    local bpane bid bstate bsid bname
+    while IFS=$T read -r tag a b c d e; do
         case "$tag" in
             W) worst=$a; wname=$b ;;
             D) dups="$dups $a" ;;
-            M) new="$new$a$T$b$T$c$T$d"$'\n' ;;
+            M) new="$new$a$T$b$T$c$T$d$T$e"$'\n' ;;
         esac
     done <<EOT
 $R_OUT
@@ -291,21 +301,25 @@ EOT
     esac
     poll_err ""
     lastsig=$S_SIG; watched=$dups
-    while IFS=$T read -r bpane bid bstate bname; do
+    while IFS=$T read -r bpane bid bstate bsid bname; do
         [ -n "$bpane" ] || continue
         bound_now="$bound_now $bpane"; watched="$watched $bpane"
         pane_row "$bpane"
-        st=$(job_state "$bstate")
+        st=$(job_state "$bstate"); bsid=${bsid#.}
         # The job first: the state write below wakes every board (#502), and a board woken
         # before the name is set shows the bind a poll late.
         if [ "$row_job" != "$bid" ] || [ "$row_name" != "$bname" ] \
-            || [ "$row_jstate" != "$st" ]; then
+            || [ "$row_jstate" != "$st" ] || [ "$row_jsess" != "$bsid" ]; then
             # tmux takes an argument's trailing `;` for a separator; `\;` is a literal one.
             arg=$bname; case "$arg" in *\;) arg="${arg%;}\;" ;; esac
+            # The job's session, the board's way to its transcript (#448); none is unset.
+            sess=(set-option -pu -t "$bpane" @cockpit_job_session)
+            [ -z "$bsid" ] || sess=(set-option -p -t "$bpane" @cockpit_job_session "$bsid")
             # An ex-foreground session (sent to the background) is a viewer now: its mark goes.
             tmux set-option -p -t "$bpane" @cockpit_job "$bid" \; \
                 set-option -p -t "$bpane" @cockpit_job_name "$arg" \; \
                 set-option -p -t "$bpane" @cockpit_job_state "$st" \; \
+                "${sess[@]}" \; \
                 set-option -pu -t "$bpane" @cockpit_fg 2>/dev/null
         fi
         "$here/agent-state" poll "$st" "$bpane" "$bname needs you" >/dev/null 2>&1

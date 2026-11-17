@@ -16594,6 +16594,49 @@ is "the foreground mark goes when the pane leaves the agent" "" "$(avo @cockpit_
 av_tm respawn-pane -k -t "$AVF1" 'exec -a claude sleep 300'
 av_tm select-pane -t "$AVF1" -T "alpha"; av_bind
 is "...and a viewer later in that pane binds" "aa|alpha|running|" "$(avj "$AVF1")"
+# The bind carries the job's session, @cockpit_job_session: the viewer pane has no session of
+# its own, and the board reads the job's transcript by it (its repo, doing, subagents).
+AVJS=$(av_np "alpha"); av_bind
+is "a bound pane carries its job's session" "s-aa" "$(avo @cockpit_job_session "$AVJS")"
+av_tm select-pane -t "$AVJS" -T "gamma"; av_bind
+is "...a bind to another job carries that job's" "s-cc" "$(avo @cockpit_job_session "$AVJS")"
+av_tm select-pane -t "$AVJS" -T "something else"; av_bind
+is "...and the unbind takes it" "" "$(avo @cockpit_job_session "$AVJS")"
+AVJF=$(av_np "alpha"); av_tm set-option -p -t "$AVJF" @cockpit_agentview 1; av_bind
+av_fg "$AVJF" permission_prompt "perm fg"
+is "a foreground hook takes the job's session with the bind" "" \
+   "$(avo @cockpit_job_session "$AVJF")"
+# A session id goes into a path on the board: only [A-Za-z0-9_-]{1,64} is recorded.
+jq 'map(.sessionId = "../s aa")' "$AVF/bind.json" > "$AVREC/oddsid.json"
+AVJO=$(av_np "alpha"); av_once bind.json AV_JSON="$AVREC/oddsid.json" >/dev/null
+is "a job session that is no plain id is not recorded; the bind still is" "aa|" \
+   "$(avo @cockpit_job "$AVJO")|$(avo @cockpit_job_session "$AVJO")"
+# A trailing newline is no plain id either (#1267): jq's `$` matches before one, and the sid,
+# unlike the name, is not cleaned, so it split the M line and the bind lost its name.
+jq 'map(if .id == "aa" then .sessionId = "s-ab\n" else . end)' "$AVF/bind.json" \
+    > "$AVREC/nlsid.json"
+avjs() {                      # avjs <pane>: "<job>|<job name>|<job session>"
+    printf '%s|%s|%s' "$(avo @cockpit_job "$1")" "$(avo @cockpit_job_name "$1")" \
+        "$(avo @cockpit_job_session "$1")"
+}
+AVJN=$(av_np "alpha"); av_once bind.json AV_JSON="$AVREC/nlsid.json" >/dev/null
+is "a job session ending in a newline is not recorded; the bind keeps its name" "aa|alpha|" \
+   "$(avjs "$AVJN")"
+# ...and the split line's tail, for a job named W, read as a second W line and blanked the
+# worst of all: no pane was written that tick.
+jq '. + [{"pid": 50, "id": "ww", "cwd": "/x", "kind": "background", "startedAt": 1,
+    "sessionId": "s-ww\n", "name": "W", "status": "idle", "state": "working"}]' \
+    "$AVF/bind.json" > "$AVREC/wsid.json"
+AVJW=$(av_np "W"); AVJM=$(av_np "nothing"); av_tm set-option -p -t "$AVJM" @cockpit_agentview 1
+av_once bind.json AV_JSON="$AVREC/wsid.json" >/dev/null
+is "...a job named W with such a session still leaves the worst of all written" \
+   "||needs-input|fix the parser needs you" "$(avj "$AVJM")"
+is "...and binds its own pane, its name kept" "ww|W|" "$(avjs "$AVJW")"
+# A pane bound before the poller recorded sessions (an older poller, then an upgrade) has the
+# job and its name but no session: the next poll fills it in, with nothing else changed.
+AVJU=$(av_np "alpha"); av_bind; av_tm set-option -pu -t "$AVJU" @cockpit_job_session; av_bind
+is "a bound pane missing only its job session gets it on the next poll" "aa|alpha|s-aa" \
+   "$(avjs "$AVJU")"
 av_tm kill-server >/dev/null 2>&1
 fi
 

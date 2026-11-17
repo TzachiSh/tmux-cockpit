@@ -3392,9 +3392,10 @@ pub static EXTRAS: &[Extra] = &[
     },
 ];
 
-/// #301: `o` is offered on an ended agent whose @cockpit_session is a session id.
+/// #301: `o` is offered on an ended agent whose @cockpit_session is a session id. Not
+/// while the pane is bound to a job (#448): its session is then the job's, not the pane's.
 pub fn resumable(p: &Pane) -> bool {
-    p.ended && is_session_id(&p.sess)
+    p.ended && p.job.is_empty() && is_session_id(&p.sess)
 }
 
 /// A Claude session id as the hooks publish it: a UUID, lowercase hex in
