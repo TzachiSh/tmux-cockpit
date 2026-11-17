@@ -2027,12 +2027,20 @@ fi
 # SIGKILL runs nothing of the board's: its entry stays, and the next board to
 # start drops it and still wakes. The pid is this private server's own pane, read rows ago:
 # its name is checked at the kill, since a board that died meanwhile frees the number (#1213).
-BWC=""
-if [ -r "/proc/$BWPID1/comm" ]; then read -r BWC 2>/dev/null < "/proc/$BWPID1/comm"
-elif [ ! -d /proc/self ]; then BWC=$(ps -o comm= -p "$BWPID1" 2>/dev/null); BWC=${BWC##*/}
+# With /proc, so is the TMUX in its environment: other runs' boards, and the owner's, are named
+# cockpit-tui too. With ps alone there is no environment to read: the name is all.
+BWC="" BWE=""
+if [ -r "/proc/$BWPID1/comm" ]; then
+    read -r BWC 2>/dev/null < "/proc/$BWPID1/comm"
+    while IFS= read -r -d '' BWX; do
+        case "$BWX" in "TMUX=$SOCKDIR/$BW,"*) BWE=1 ;; esac
+    done 2>/dev/null < "/proc/$BWPID1/environ"
+elif [ ! -d /proc/self ]; then
+    BWC=$(ps -o comm= -p "$BWPID1" 2>/dev/null); BWC=${BWC##*/}; BWE=1
 fi
-is "board 1's pane pid still names a cockpit-tui at its SIGKILL (#1213)" "cockpit-tui" "$BWC"
-[ "$BWC" = cockpit-tui ] && kill -9 "$BWPID1" 2>/dev/null
+is "board 1's pane pid still names this server's cockpit-tui at its SIGKILL (#1213)" \
+   "cockpit-tui|1" "$BWC|$BWE"
+[ "$BWC|$BWE" = "cockpit-tui|1" ] && kill -9 "$BWPID1" 2>/dev/null
 BWI=0; while kill -0 "$BWPID1" 2>/dev/null && [ "$BWI" -lt "$POLLS" ]; do sleep 0.1; BWI=$((BWI+1))
 done
 case "$(bw_list)" in *"cockpit-board-$BWPID1 ; "*) ok "a SIGKILLed board leaves its entry" ;;
@@ -16174,12 +16182,14 @@ echo "== agent-view: av_term sends its TERM only to the named server's poller (#
 # The decoys are this shell's own children, each stopped, so a TERM sent to one stays pending
 # in its /proc/<pid>/status, read at once: no wait for a death that may be slow. Each ends by
 # reading a line from its fifo, never by a signal: a job bash reaps after a signal prints a
-# line that no row reads.
+# line that no row reads. The fifos are held open here from the start: a decoy's comm is set at
+# its execve, before it opens its fifo, and a line written to a fifo nobody holds is dropped.
 if [ ! -d /proc/self ]; then skip_ "av_term's decoys (no /proc)"; else
 AVTD=$(mktmpd); AVTS="cockpit-av-$$-term"
-printf '#!/bin/bash\nexec 3<> "$1"; read -r -u 3 _\n' > "$AVTD/agent-poll"
+printf '#!/bin/bash\nexec 3<> "$1"; read -r -t 20 -u 3 _\n' > "$AVTD/agent-poll"
 cp "$AVTD/agent-poll" "$AVTD/holder"; chmod +x "$AVTD/agent-poll" "$AVTD/holder"
 mkfifo "$AVTD/a.f" "$AVTD/h.f"
+exec 7<>"$AVTD/a.f" 8<>"$AVTD/h.f"
 av_tc() {                     # <pid> -> its comm, or nothing
     local c=""; [ -r "/proc/$1/comm" ] && read -r c 2>/dev/null < "/proc/$1/comm"; echo "$c"
 }
@@ -16188,9 +16198,10 @@ av_tpend() {                  # <pid> -> 1 if a TERM (bit 14, 0x4000) is pending
     awk '/^(ShdPnd|SigPnd):/ { c = substr($2, 13, 1); if (c != "" && index("4567cdef", c)) t = 1 }
          END { print t + 0 }' "/proc/$1/status" 2>/dev/null
 }
-# an agent-poll by name, of another server; and a process of this server, by another name
-env TMUX="$SOCKDIR/cockpit-av-$$-other,0,0" "$AVTD/agent-poll" "$AVTD/a.f" </dev/null & AVTA=$!
-env TMUX="$SOCKDIR/$AVTS,0,0" "$AVTD/holder" "$AVTD/h.f" </dev/null & AVTH=$!
+# an agent-poll by name, of another server whose name only extends this one's (so the "," after
+# the name is what tells them apart); and a process of this server, by another name
+env TMUX="$SOCKDIR/${AVTS}x,0,0" "$AVTD/agent-poll" "$AVTD/a.f" </dev/null 7>&- 8>&- & AVTA=$!
+env TMUX="$SOCKDIR/$AVTS,0,0" "$AVTD/holder" "$AVTD/h.f" </dev/null 7>&- 8>&- & AVTH=$!
 av_wait '[ "$(av_tc "$AVTA")" = agent-poll ] && [ "$(av_tc "$AVTH")" = holder ]'
 [ "$(av_tc "$AVTA")" = agent-poll ] && kill -STOP "$AVTA"
 [ "$(av_tc "$AVTH")" = holder ] && kill -STOP "$AVTH"
@@ -16202,12 +16213,13 @@ is "this server's process by another name: no TERM, its name said" \
    "no signal: comm [holder]|0" "$(av_term "$AVTH" "$AVTS")|$(av_tpend "$AVTH")"
 is "an agent-poll of another server: no TERM, the server said" \
    "no signal: not on [$AVTS]|0" "$(av_term "$AVTA" "$AVTS")|$(av_tpend "$AVTA")"
-# each gets its line (a read-write open never waits for a reader), then runs on and exits 0
-printf '\n' 1<> "$AVTD/a.f"; printf '\n' 1<> "$AVTD/h.f"
+# each gets its line, kept in its held fifo until it reads it, then runs on and exits 0
+printf '\n' >&7; printf '\n' >&8
 [ "$(av_tc "$AVTA")" = agent-poll ] && kill -CONT "$AVTA"
 [ "$(av_tc "$AVTH")" = holder ] && kill -CONT "$AVTH"
 wait "$AVTA" 2>/dev/null; AVTRC=$?; wait "$AVTH" 2>/dev/null
 is "...and each decoy then exits by itself, 0" "0 0" "$AVTRC $?"
+exec 7>&- 8>&-
 fi
 
 echo "== agent-view: the poller owns one slot per server and lets go on every exit path (#174) =="
