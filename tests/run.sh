@@ -19037,9 +19037,9 @@ exit 0
 STUB
 chmod +x "$TP/tmux"
 tpsize() {                    # tpsize <answer> <cols> <rows> [--needs] -- "-w W -h H"
-    local a=$1; shift
+    local x=$1; shift
     : > "$TP/log"
-    env -u TMUX PATH="$TP:$PATH" TP_LOG="$TP/log" TP_ANSWER="$(printf '%s' "$a" | tr '|' '\037')" \
+    env -u TMUX PATH="$TP:$PATH" TP_LOG="$TP/log" TP_ANSWER="$(printf '%s' "$x" | tr '|' '\037')" \
         "$DIR/scripts/tm" --popup /dev/pts/9 '$3' "$1" "$2" %7 "${@:3}" >/dev/null 2>&1
     sed 's/.*\(-w [0-9]* -h [0-9]*\).*/\1/' "$TP/log"
 }
