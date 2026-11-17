@@ -22220,15 +22220,24 @@ mvclick() { "$TMUX_REAL" -L "$MDI" run-shell \
         -b "$(printf %q "$DIR/scripts/tmux-open-path") $MVP" >/dev/null 2>&1
 }
 mvcap() { "$TMUX_REAL" -L "$MDO" capture-pane -p -t o; }
+# The footer is the frame's last row and can reach the outer pane after the body: a read
+# taken once the heading shows can miss it (#1243). Polled; a red row shows mv_state.
+# mv_state: the whole outer capture, then the inner windows as index:active:panes, so a red
+# row tells a popup in a window not shown apart from a blank pane or a dead server.
+mv_state() {
+    mvcap
+    printf 'windows: %s\n' "$("$TMUX_REAL" -L "$MDI" list-windows -t t \
+        -F '#{window_index}:#{window_active}:#{window_panes}' 2>&1 | tr '\n' ' ')"
+}
+mv_footer() {                 # <row name>
+    if until_cap "$MDO" o '*q close*'; then ok "$1"
+    else bad "$1" "q close" "$(mv_state)"; fi
+}
 mvclick
 if until_cap "$MDO" o '*# Heading*p1*'; then ok "a click on a .md shows it rendered in a popup"
 else bad "a click on a .md shows it rendered in a popup" "# Heading, then p1" "$(mvcap | head -8)"
 fi
-case "$(mvcap)" in
-    *"q close"*) ok "the viewer from a click says q close: no browser to go back to" ;;
-    *) bad "the viewer from a click says q close: no browser to go back to" "q close" \
-           "$(mvcap | tail -2)" ;;
-esac
+mv_footer "the viewer from a click says q close: no browser to go back to"
 # The client's top row is the popup's border, so the -T title is what is
 # read here; the viewer's own frame title is a row lower and is not the gate.
 case "$(mvcap | head -1)" in
@@ -22259,6 +22268,28 @@ fi
 # observable to poll; a #() job, had one started, runs in the background.
 sleep 0.5
 is "and nothing in the name ran" "" "$("$TMUX_REAL" -L "$MDI" show -gqv @pwned 2>/dev/null)"
+# A viewer that draws its footer a second after its body (#1243): read once when the body
+# shows, the footer is not there yet; mv_footer has to wait for it.
+cat > "$MVD/tui-late" <<'STUB'
+#!/bin/sh
+{ printf '# Heading\n\np0\n\np1\n'; sleep 1; printf 'q close\n'; } > /dev/tty
+read -r _ < /dev/tty
+STUB
+chmod +x "$MVD/tui-late"
+"$TMUX_REAL" -L "$MDI" set -gu @cockpit_md_view >/dev/null 2>&1
+"$TMUX_REAL" -L "$MDI" set-environment -g COCKPIT_TUI_BIN "$MVD/tui-late" >/dev/null 2>&1
+# kill-server ends this viewer, so md_view never removes its stderr file: it goes in $MVD
+"$TMUX_REAL" -L "$MDI" set-environment -g TMPDIR "$MVD" >/dev/null 2>&1
+# The editor rows above left the client on an editor window. On tmux master display-popup
+# is a floating pane in its target's window, not drawn over the shown one (tmux 34cd5da4).
+"$TMUX_REAL" -L "$MDI" select-window -t "$MVP" >/dev/null 2>&1
+mvclick
+if until_cap "$MDO" o '*# Heading*p1*'; then
+    mv_footer "a viewer whose footer comes late: the q close row waits for it (#1243)"
+else
+    bad "a viewer whose footer comes late: the q close row waits for it (#1243)" \
+        "# Heading, then p1" "$(mv_state)"
+fi
 "$TMUX_REAL" -L "$MDO" kill-server >/dev/null 2>&1
 "$TMUX_REAL" -L "$MDI" kill-server >/dev/null 2>&1
 fi
