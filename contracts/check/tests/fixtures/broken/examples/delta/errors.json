@@ -1,0 +1,6 @@
+{
+  "invalid-version-2.json": {
+    "keyword": "const",
+    "at": "$.schema_version"
+  }
+}

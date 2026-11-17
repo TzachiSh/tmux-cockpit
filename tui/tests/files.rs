@@ -654,6 +654,9 @@ fn the_label_drops_control_and_bidi_characters() {
 // --- the command line --------------------------------------------------------
 
 fn run(args: &[&str]) -> std::process::Output {
+    // the binary reads its theme from the caller's server by a plain tmux (theme.rs:84)
+    // where the runner did not clear the session: refused here first (#1066)
+    fake::checked_tmux();
     std::process::Command::new(env!("CARGO_BIN_EXE_cockpit-tui"))
         .args(args)
         .stdin(std::process::Stdio::null())
@@ -685,4 +688,26 @@ fn the_command_wants_exactly_one_existing_directory() {
 fn usage_names_the_files_screen() {
     let o = run(&["--help"]);
     assert!(String::from_utf8_lossy(&o.stdout).contains("files <dir>"));
+}
+
+/// #1066: this binary reads tmux through the product's plain `tmux`
+/// (`AGENT_GLOB` in `data.rs`, `Theme::load`). Under the runner that finds no server; started by
+/// hand from inside a tmux session it would read the caller's, so it is refused.
+#[test]
+fn the_binary_runs_with_no_tmux_session_of_the_callers() {
+    fake::checked_tmux();
+}
+
+/// #1066: the check sits in `run`, so a test that starts the built binary,
+/// started by hand with the caller's TMUX kept, is refused before the binary
+/// reads that server's theme.
+#[test]
+fn a_test_that_runs_the_binary_refuses_a_kept_session() {
+    let kept = [("TMUX", "/canary-1066,1,0")];
+    let (code, said) = fake::run_by_hand("the_command_wants_exactly_one_existing_directory", &kept);
+    assert_eq!(
+        (code, said.contains("tmux refused (#1066): TMUX set. ")),
+        (Some(101), true),
+        "{said}"
+    );
 }

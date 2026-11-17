@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "scope": "global",
+  "key": "global",
+  "checked_at": "2026-11-14T09:30:00.250Z",
+  "ttl_seconds": 60,
+  "revision": 0,
+  "owner_pane": "%12"
+}

@@ -41,11 +41,11 @@ done
 . "$DIR/scripts/lib/cmdname.sh" || exit 1
 BIN=$COCKPIT_TUI_BIN
 # In a popup a bare display-message picks the most recently active client.
-say=(display-message); is_pane "$PANE" && say+=(-t "$PANE")
+say() { if is_pane "$PANE"; then dmsg -t "$PANE" "$1"; else dmsg "$1"; fi; }
 
 # Required, but a broken install gets a message rather than a dead key.
 if [ ! -x "$BIN" ]; then
-    tmux "${say[@]}" "$(fesc "cockpit: board needs cockpit-tui: run $DIR/install.sh")" 2>/dev/null
+    say "cockpit: board needs cockpit-tui: run $DIR/install.sh" 2>/dev/null
     exit 0
 fi
 
@@ -73,7 +73,7 @@ while :; do
     # environment and must not mark the binary as its child.
     env -u CLAUDECODE COCKPIT_ACTION="$f" COCKPIT_LOG="$LOG" ${glyphs:+"COCKPIT_GLYPHS=$glyphs"} "$BIN" board ${args[@]+"${args[@]}"} 2>>"$LOG" || {
         rc=$?
-        tmux "${say[@]}" "$(fesc "cockpit: the board exited $rc — see $LOG")" 2>/dev/null
+        say "cockpit: the board exited $rc — see $LOG" 2>/dev/null
         exit 0
     }
 
@@ -112,7 +112,7 @@ while :; do
             COCKPIT_PANEL_NOTE="$note" "$DIR/scripts/cockpit-panel" -p "$target"
             ;;
         deliver)
-            tmux "${say[@]}" "cockpit: replying from the board is not wired up yet" 2>/dev/null
+            say "cockpit: replying from the board is not wired up yet" 2>/dev/null
             exit 0
             ;;
         # #228 verbs
@@ -211,7 +211,8 @@ while :; do
         # `request`, #288) or a newer one's.
         *)
             log "unknown verb [$verb $target]"
-            tmux "${say[@]}" "$(fesc "cockpit: the board sent \"$verb\", which this plugin does not know; prefix U updates the plugin and cockpit-tui")" 2>/dev/null
+            unk="cockpit: the board sent \"$verb\", which this plugin does not know"
+            say "$unk; prefix U updates the plugin and cockpit-tui" 2>/dev/null
             exit 0
             ;;
     esac

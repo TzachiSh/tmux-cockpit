@@ -43,10 +43,10 @@ elif [ "$#" -gt 2 ]; then
     printf 'usage: cockpit-panel -p <pane> [--ask <file> <a> <b>]\n' >&2; exit 2
 fi
 # In a popup a bare display-message picks the most recently active client.
-say=(display-message); is_pane "$PANE" && say+=(-t "$PANE")
+say_t=; is_pane "$PANE" && say_t=$PANE
 # Opened from the board, the outcome is the board's note on its return rather
 # than a status-line message; the board keeps a line starting with ✕ until a key.
-said() {                      # <ok|fail> <text> <display-message argv...>
+said() {                      # <ok|fail> <text> [dmsg flags...], default -t the pane
     local how=$1 text=$2; shift 2
     if [ -n "${COCKPIT_PANEL_NOTE:-}" ]; then
         [ "$how" = ok ] || text="✕ $text"
@@ -54,13 +54,16 @@ said() {                      # <ok|fail> <text> <display-message argv...>
         text=$(printf '%s' "$text" | LC_ALL=C tr '\000-\037\177' ' ')
         printf '%s\n' "$text" > "$COCKPIT_PANEL_NOTE" 2>/dev/null
     else
-        # A format: the pane's command, a path or a pane id must not expand.
-        tmux "$@" "$(fesc "$text")" 2>/dev/null
+        # The pane's command, a path or a pane id, shown as written (#1096).
+        if [ $# -gt 0 ]; then dmsg "$@" "$text" 2>/dev/null
+        else dmsg ${say_t:+-t "$say_t"} "$text" 2>/dev/null; fi
     fi
 }
 # The messages outside a paste; under COCKPIT_READONLY they go to the log only.
 tell() {
-    if [ -n "${COCKPIT_READONLY:-}" ] && [ -z "${COCKPIT_PANEL_NOTE:-}" ]; then log "readonly, not said: $1"; else said fail "$1" "${say[@]}"; fi
+    if [ -n "${COCKPIT_READONLY:-}" ] && [ -z "${COCKPIT_PANEL_NOTE:-}" ]; then
+        log "readonly, not said: $1"
+    else said fail "$1"; fi
 }
 
 if [ ! -x "$BIN" ]; then
@@ -125,14 +128,15 @@ act() {
     read -r want 2>/dev/null < "$f.cmd"
     now=$(tmux display -p -t "$target" '#{pane_current_command}' 2>/dev/null)
     if [ -z "$want" ] || [ "$now" != "$want" ]; then
-        said fail "cockpit: the pane now runs ${now:-nothing}, not ${want:-?}; nothing sent" display-message -t "$target"
+        said fail "cockpit: the pane now runs ${now:-nothing}, not ${want:-?}; nothing sent" \
+            -t "$target"
         log "$target now runs [$now], not [$want]; nothing sent"
         last="failed:the pane now runs ${now:-nothing}, not ${want:-?}"
         return 0
     fi
     if ! err=$(strip | tmux load-buffer -b "$buf" - 2>&1); then
         log "load-buffer failed for $target: ${err:-no error text}"
-        said fail "cockpit: could not load the paste buffer; nothing sent to $target" "${say[@]}"
+        said fail "cockpit: could not load the paste buffer; nothing sent to $target"
         last="failed:could not load the paste buffer"
         return 0
     fi
@@ -141,7 +145,7 @@ act() {
     if ! err=$(tmux paste-buffer -p -d -b "$buf" -t "$target" 2>&1); then
         tmux delete-buffer -b "$buf" 2>/dev/null
         log "paste-buffer failed for $target: ${err:-no error text}"
-        said fail "cockpit: could not paste into $target; nothing sent" "${say[@]}"
+        said fail "cockpit: could not paste into $target; nothing sent"
         last="failed:could not paste into $target"
         return 0
     fi
@@ -153,7 +157,7 @@ act() {
     fi
     if [ "$verb" != send ]; then
         n=$(strip | wc -m)
-        said ok "cockpit: inserted $((n)) chars into $target" "${say[@]}"
+        said ok "cockpit: inserted $((n)) chars into $target"
         return 0
     fi
     # Ink apps (Claude Code) can drop an Enter that lands in the same read as the
@@ -163,7 +167,7 @@ act() {
         sleep 0.05; i=$((i + 1))
     done
     tmux send-keys -t "$target" Enter 2>/dev/null
-    said ok "cockpit: sent to $target" "${say[@]}"
+    said ok "cockpit: sent to $target"
     return 0
 }
 # Stripped again on the way: the binary already did, but this is what reaches the pane.
@@ -184,12 +188,17 @@ taken=''; [ "${#ask[@]}" -gt 0 ] && [ -n "$kept" ] && taken=1
 glyphs=$(tmux show-option -gqv @cockpit_glyphs 2>/dev/null)   # #293: the binary reads only the env
 # #623: as it is; the binary keeps only the CLI's effort words, medium for the rest
 effort=$(tmux show-option -gqv @cockpit_panel_effort 2>/dev/null)
+# #1121: the ^Z help names the key the hidden-panel message names, read the same way.
+# None noted passes none, and one from the caller's environment is dropped: the binary
+# then says "the panel key". The binary checks the value again before drawing it.
+pkey=$(cockpit_noted_key panel @cockpit_panel_bound)
 while :; do
     rm -f "$f" "$f.text" "$f.cmd" "$f.state" "$f.basket"
     # CLAUDECODE leaks in from the agent's environment and must not mark the call as its child.
-    env -u CLAUDECODE COCKPIT_ACTION="$f" COCKPIT_LOG="$LOG" COCKPIT_PANEL_DROPPED="${dropped# }" \
+    env -u CLAUDECODE -u COCKPIT_PANEL_KEY COCKPIT_ACTION="$f" COCKPIT_LOG="$LOG" \
+        COCKPIT_PANEL_DROPPED="${dropped# }" \
         ${glyphs:+"COCKPIT_GLYPHS=$glyphs"} ${effort:+"COCKPIT_PANEL_EFFORT=$effort"} \
-        ${taken:+COCKPIT_PANEL_HIDE_TAKEN=1} \
+        ${taken:+COCKPIT_PANEL_HIDE_TAKEN=1} ${pkey:+"COCKPIT_PANEL_KEY=$pkey"} \
         "$BIN" panel "$PANE" ${resume[@]+"${resume[@]}"} ${ask[@]+"${ask[@]}"} 2>>"$LOG" || {
         rc=$?
         tell "cockpit: the panel exited $rc — see $LOG"
@@ -206,10 +215,17 @@ while :; do
             exit 0
         fi
         if [ -n "$saved" ] && mkdir -p "$HDIR" 2>/dev/null && chmod 700 "$HDIR" 2>/dev/null && mv -f "$f.state" "$saved"; then
-            hk=$(tmux show-option -gqv @cockpit_panel_bound 2>/dev/null)
+            # The key bound with the note "cockpit: panel", read from the binding as the
+            # jump notice reads its key (#1109): the record alone named a key moved by hand,
+            # stock find-window's f (#1112). Two noted: the recorded one (cockpit_noted_key,
+            # #1124). No noted key, or list-keys failing, leaves the generic words.
+            # Read again, not $pkey: the key may be rebound while the panel is open.
+            hk=$(cockpit_noted_key panel @cockpit_panel_bound)
             if [ -n "$hk" ]; then hk="prefix $hk"; else hk="the panel key"; fi
             msg="cockpit: hidden · $hk on $PANE brings it back"
-            if [ -n "${COCKPIT_READONLY:-}" ] && [ -z "${COCKPIT_PANEL_NOTE:-}" ]; then log "readonly, not said: $msg"; else said ok "$msg" "${say[@]}"; fi
+            if [ -n "${COCKPIT_READONLY:-}" ] && [ -z "${COCKPIT_PANEL_NOTE:-}" ]; then
+                log "readonly, not said: $msg"
+            else said ok "$msg"; fi
         else
             log "could not keep the hidden panel of $PANE at [${saved:-no server pid}]"
             tell "cockpit: could not keep the hidden panel; it is lost"

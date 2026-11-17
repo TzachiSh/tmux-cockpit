@@ -72,7 +72,9 @@ fn probe_in(chan: &str, probe: &mut Child) -> bool {
 
 /// The process environment: `q_unlists...` sets COCKPIT_TMUX in-process, and a
 /// set_var racing a spawn that reads environ is undefined. That test holds it
-/// for writing; every test that spawns holds it for reading.
+/// for writing; every test that spawns holds it for reading. Its writes take
+/// fake's lock too, after this one: the order is this lock, then fake's, as in
+/// every rig's `fake::Server::start`. No thread here takes them the other way (#1132).
 static ENV: RwLock<()> = RwLock::new(());
 
 enum EnvLock {
@@ -93,6 +95,8 @@ struct Rig {
     kids: Vec<Child>,
     sock: String,
     dir: PathBuf,
+    /// killed with its socket after the kids, before the folder goes
+    _server: fake::Server,
     // last, so it is released after Drop has taken the rest down
     _env: EnvLock,
 }
@@ -123,9 +127,11 @@ impl Rig {
     /// A `push_hold` child listing itself on this server; its index and log.
     fn hold(&mut self) -> (usize, PathBuf) {
         let log = self.dir.join(format!("tui{}.log", self.kids.len()));
+        let mut c = Command::new(example("push_hold"));
+        // a row's SIGTERM reaches the board's handler however the suite was started (#1061)
+        fake::at_default(&mut c, &[libc::SIGTERM]);
         self.kids.push(
-            Command::new(example("push_hold"))
-                .env("COCKPIT_TMUX", format!("tmux -L {}", self.sock))
+            c.env("COCKPIT_TMUX", format!("tmux -L {}", self.sock))
                 .env("COCKPIT_LOG", &log)
                 .env_remove("COCKPIT_READONLY")
                 .env_remove("TMUX")
@@ -155,13 +161,7 @@ impl Drop for Rig {
             let _ = k.kill();
             let _ = k.wait();
         }
-        self.tmux(&["kill-server"]);
-        // kill-server never unlinks the socket, by any exit path; the suite
-        // learned that after ~850 dead inodes piled up (tests/run.sh, the note above
-        // kill_socks).
-        let uid = unsafe { libc::getuid() };
-        let tmp = std::env::var("TMUX_TMPDIR").unwrap_or_else(|_| "/tmp".into());
-        let _ = std::fs::remove_file(PathBuf::from(tmp).join(format!("tmux-{uid}")).join(&self.sock));
+        self._server.stop();
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
@@ -180,20 +180,20 @@ fn rig_env(tag: &str, env: EnvLock) -> Option<Rig> {
     let dir = std::env::temp_dir().join(&sock);
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    // The server first: Push::start() lists its channel the moment it runs.
-    let _ = Command::new("tmux")
-        .args(["-L", &sock, "-f", "/dev/null", "new-session", "-d", "-c"])
-        .arg(&dir)
-        .args(["-s", "t", "sleep 300"])
-        .env_remove("TMUX")
-        .env_remove("TMUX_PANE")
-        .output();
-    Some(Rig {
+    // The server first: Push::start() lists its channel the moment it runs. Its
+    // start resets TERM and HUP, as every rig's does (fake::Server::start, #1061).
+    // Built first, so a start that panics still removes the folder.
+    let mut rig = Rig {
         kids: Vec::new(),
+        _server: fake::Server::new(&sock),
         sock,
         dir,
         _env: env,
-    })
+    };
+    rig._server.start(|c| {
+        c.args(["new-session", "-d", "-c"]).arg(&rig.dir).args(["-s", "t", "sleep 300"]);
+    });
+    Some(rig)
 }
 
 fn woke(log: &PathBuf, n: usize) -> bool {
@@ -289,11 +289,15 @@ fn one_wake_reaches_two_boards() {
 fn q_unlists_its_own_channel_and_only_its_own() {
     let w = EnvLock::Write(ENV.write().unwrap_or_else(|e| e.into_inner()));
     let Some(rig) = rig_env("push3", w) else { return };
+    // fake's lock after the rig: its server start takes and lets go of fake's lock for
+    // its check, which panics on a thread that holds it. Declared after `rig`, so it is
+    // let go before the rig's Drop runs.
+    let held = fake::env_lock();
     // SAFETY: the write lock keeps every other test of this binary from
     // spawning, so nothing reads the environment while it changes.
     unsafe {
-        std::env::set_var("COCKPIT_TMUX", format!("tmux -L {}", rig.sock));
-        std::env::remove_var("COCKPIT_READONLY");
+        fake::set_var(&held, "COCKPIT_TMUX", format!("tmux -L {}", rig.sock));
+        fake::remove_var(&held, "COCKPIT_READONLY");
     }
     let me = channel(std::process::id());
     let p = cockpit_tui::push::Push::start();
@@ -324,7 +328,7 @@ fn q_unlists_its_own_channel_and_only_its_own() {
     let _ = probe.kill();
     let _ = probe.wait();
     // SAFETY: as above, still under the write lock.
-    unsafe { std::env::remove_var("COCKPIT_TMUX") };
+    unsafe { fake::remove_var(&held, "COCKPIT_TMUX") };
     assert!(entered, "the probe never ran, so the wait was not tested");
     assert!(!latched, "q left {me} latched on the server");
 }
@@ -388,12 +392,11 @@ fn a_cockpit_tui_survives_sigusr1() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let stub = dir.join("tmux");
-    let d = dir.display();
-    fake::write_exec(
-        &stub,
-        &format!("#!/bin/sh\n: > {d}/ready\nwhile [ ! -e {d}/go ]; do sleep 0.05; done\nexit 1\n"),
-    );
-    let mut child = Command::new(env!("CARGO_BIN_EXE_cockpit-tui"))
+    fake::write_exec(&stub, &usr1_stub(&dir));
+    let mut c = Command::new(env!("CARGO_BIN_EXE_cockpit-tui"));
+    // USR1 at its default, so that only the board's own ignore keeps it alive (#1061)
+    fake::at_default(&mut c, &[libc::SIGUSR1]);
+    let mut child = c
         .args(["info", "--text", "%1"])
         .env("COCKPIT_TMUX", &stub)
         .env_remove("TMUX")
@@ -403,6 +406,10 @@ fn a_cockpit_tui_survives_sigusr1() {
         .spawn()
         .unwrap();
     let ready = until(|| dir.join("ready").exists());
+    // A blocked USR1 is never delivered, and the row then passes whatever the board
+    // does (#1061). The board ignores USR1 itself, so SigIgn tells nothing. Read where
+    // /proc is, checked only there.
+    let clear = !std::path::Path::new("/proc/self").is_dir() || usr1_unblocked(child.id(), |_| {});
     // our own unreaped child: the pid cannot have been recycled
     unsafe { libc::kill(child.id() as i32, libc::SIGUSR1) };
     std::fs::write(dir.join("go"), "").unwrap();
@@ -410,4 +417,194 @@ fn a_cockpit_tui_survives_sigusr1() {
     let _ = std::fs::remove_dir_all(&dir);
     assert!(ready, "info never reached its tmux read");
     assert_eq!(st.signal(), None, "SIGUSR1 killed a cockpit-tui: {st:?}");
+    assert!(clear, "USR1 was blocked in the board, which then never gets it");
+}
+
+/// The tmux stub of [`a_cockpit_tui_survives_sigusr1`] in `dir`: it writes `ready`,
+/// waits for `go` while `dir` is there, and fails the board's read. A red row removes
+/// `dir` once its board is dead, maybe before the stub saw `go`, and a wait on `go`
+/// alone then loops for good (#1075).
+fn usr1_stub(dir: &std::path::Path) -> String {
+    let d = dir.display().to_string().replace('\'', r"'\''");
+    let wait = r#"while [ -d "$d" ] && [ ! -e "$d/go" ]; do sleep 0.05; done"#;
+    format!("#!/bin/sh\nd='{d}'\n: > \"$d/ready\"\n{wait}\nexit 1\n")
+}
+
+/// #1075: the USR1 row's stub ends once its folder is removed, `go` never written.
+#[test]
+fn the_usr1_stub_ends_once_its_folder_is_gone() {
+    let dir = std::env::temp_dir().join(format!("cockpit-tui-usr1-stub-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    // beside the folder, so the removal leaves the script
+    let stub = dir.with_extension("sh");
+    fake::write_exec(&stub, &usr1_stub(&dir));
+    let mut child = Command::new(&stub).stdin(Stdio::null()).spawn().unwrap();
+    let ready = until(|| dir.join("ready").exists());
+    std::fs::remove_dir_all(&dir).unwrap();
+    let ended = until(|| child.try_wait().unwrap().is_some());
+    if !ended {
+        // our own unreaped child: the pid cannot have been recycled
+        child.kill().unwrap();
+        child.wait().unwrap();
+    }
+    let _ = std::fs::remove_file(&stub);
+    assert_eq!((ready, ended), (true, true), "the stub still waited with its folder gone");
+}
+
+/// Whether `pid` shows USR1 unblocked within [`CAP`], `after_read` handed each read
+/// of the USR1 bit of its SigBlk, None where /proc has none. Polled, never read once:
+/// a process inside a spawn of its own shows every signal blocked until the spawn
+/// returns, and a board in its tmux read may be there (#1061). The read lives here
+/// alone, so no row can read the mask once. A red with the mask still blocked costs
+/// the whole CAP, a green returns at once.
+fn usr1_unblocked(pid: u32, mut after_read: impl FnMut(Option<u64>)) -> bool {
+    let usr1_blocked = || {
+        let s = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+        let m = s.lines().find_map(|l| l.strip_prefix("SigBlk:"))?;
+        Some((u64::from_str_radix(m.trim(), 16).ok()? >> (libc::SIGUSR1 - 1)) & 1)
+    };
+    until(|| {
+        let bit = usr1_blocked();
+        after_read(bit);
+        bit == Some(0)
+    })
+}
+
+/// #1061: the two rows that signal a board, in this binary started again with TERM, HUP
+/// and USR1 ignored and blocked. Each holds there by its own reset, and the rig's server,
+/// told to go by a TERM it sends itself, is gone afterwards with its pane.
+#[test]
+#[cfg(target_os = "linux")]
+fn the_signalling_rows_hold_in_a_binary_handed_an_ignored_and_blocked_term_hup_and_usr1() {
+    let rows = [
+        "a_wake_reaches_the_loop_and_sigterm_takes_the_waiter_along",
+        "a_cockpit_tui_survives_sigusr1",
+    ];
+    let pid = fake::rows_pass_handed(&rows, &[libc::SIGTERM, libc::SIGHUP, libc::SIGUSR1]);
+    // as every rig's row does: a red run ends what the child left, each pid read again
+    // as the child's just before the kill (fake::assert_no_server_left, #1066)
+    fake::assert_no_server_left(pid);
+}
+
+/// [`Forked`] alone, so that its field is private and [`Forked::new`] the only way to build
+/// one: no code outside can write `Forked(0)` (#1075).
+mod forked {
+    /// A child this process forked, killed and reaped when this is dropped, on every path
+    /// of its row, a panic's too. It holds the pid `fork` returned and nothing else, and
+    /// that pid stays the child's until this reaps it (#1061).
+    pub struct Forked(libc::pid_t);
+
+    impl Forked {
+        /// None for a pid that is not positive: a kill of 0 signals this process's whole
+        /// group, and of -1 every process this user may signal (#1075).
+        pub fn new(pid: libc::pid_t) -> Option<Forked> {
+            // never `then_some(Forked(pid))`: it builds the Forked first, and dropping
+            // the one it refuses sends the very kill this check is here to stop
+            if pid > 0 { Some(Forked(pid)) } else { None }
+        }
+    }
+
+    impl Drop for Forked {
+        fn drop(&mut self) {
+            // SAFETY: the pid of this row's own child, not yet reaped.
+            unsafe {
+                libc::kill(self.0, libc::SIGKILL);
+                libc::waitpid(self.0, std::ptr::null_mut(), 0);
+            }
+        }
+    }
+}
+use forked::Forked;
+
+/// #1075: a Forked is never built on a pid that is not positive.
+#[test]
+fn a_forked_refuses_a_pid_that_is_not_positive() {
+    let made = [0, -1, i32::MIN].map(|pid| {
+        let f = Forked::new(pid);
+        let made = f.is_some();
+        // never dropped, whatever `new` did: a Forked holding 0 would kill this
+        // runner's whole group, and one holding -1 every process of ours
+        std::mem::forget(f);
+        made
+    });
+    assert_eq!(made, [false; 3], "built on 0, -1, i32::MIN");
+}
+
+/// #1075: dropping a Forked kills its child and reaps it, so no wait finds it after.
+#[test]
+fn a_dropped_forked_has_killed_and_reaped_its_child() {
+    // SAFETY: the child calls only poll and _exit, both async-signal-safe, allocates
+    // nothing, and ends after 6000 polls of 5 ms if nobody kills it.
+    let pid = unsafe { libc::fork() };
+    if pid == 0 {
+        // SAFETY: as above, in the child alone.
+        unsafe {
+            for _ in 0..6000 {
+                libc::poll(std::ptr::null_mut(), 0, 5);
+            }
+            libc::_exit(0);
+        }
+    }
+    assert!(pid > 0, "fork failed");
+    drop(Forked::new(pid).unwrap());
+    // SAFETY: our own child's pid; WNOHANG never waits.
+    let got = unsafe { libc::waitpid(pid, std::ptr::null_mut(), libc::WNOHANG) };
+    let err = std::io::Error::last_os_error().raw_os_error();
+    if got == 0 {
+        // SAFETY: still our own child, alive and unreaped, so its pid is not recycled.
+        unsafe { (libc::kill(pid, libc::SIGKILL), libc::waitpid(pid, std::ptr::null_mut(), 0)) };
+    }
+    assert_eq!((got, err), (-1, Some(libc::ECHILD)), "the child was left unreaped");
+}
+
+/// #1061: a mask blocked for a moment reads clear once it is lifted. A child of
+/// this process blocks every signal, as a board inside its own spawn shows, and
+/// lifts them when the row writes `go`, which it does after the first read. A
+/// single read sees the mask blocked and fails here every time.
+#[test]
+#[cfg(target_os = "linux")]
+fn a_mask_blocked_for_a_moment_reads_clear_once_it_is_lifted() {
+    let name = format!("cockpit-tui-mask-{}", std::process::id());
+    let dir = fake::Scratch::fresh(std::env::temp_dir().join(name));
+    let path = |name: &str| std::ffi::CString::new(dir.join(name).to_str().unwrap()).unwrap();
+    let (ready, go) = (path("ready"), path("go"));
+    // SAFETY: the child calls only sigfillset, sigprocmask, open, close, access, poll
+    // and _exit, each on the async-signal-safe list of `man 7 signal-safety`, on the
+    // paths made before the fork and a signal set on its own stack. It allocates
+    // nothing, and if nobody kills it ends by _exit after two waits of 6000 polls of
+    // 5 ms each: 60 s of polls, more on a loaded box (#1075).
+    let pid = unsafe { libc::fork() };
+    if pid == 0 {
+        // SAFETY: as above, in the child alone.
+        unsafe {
+            let mut all: libc::sigset_t = std::mem::zeroed();
+            libc::sigfillset(&mut all);
+            libc::sigprocmask(libc::SIG_BLOCK, &all, std::ptr::null_mut());
+            libc::close(libc::open(ready.as_ptr(), libc::O_CREAT | libc::O_WRONLY, 0o600));
+            // poll on no descriptors waits its 5 ms and returns
+            for _ in 0..6000 {
+                if libc::access(go.as_ptr(), libc::F_OK) == 0 {
+                    break;
+                }
+                libc::poll(std::ptr::null_mut(), 0, 5);
+            }
+            libc::sigprocmask(libc::SIG_UNBLOCK, &all, std::ptr::null_mut());
+            for _ in 0..6000 {
+                libc::poll(std::ptr::null_mut(), 0, 5);
+            }
+            libc::_exit(0);
+        }
+    }
+    assert!(pid > 0, "fork failed");
+    let _child = Forked::new(pid).unwrap();
+    let started = until(|| dir.join("ready").exists());
+    let mut reads = vec![];
+    let clear = usr1_unblocked(pid as u32, |bit| {
+        if reads.is_empty() {
+            std::fs::write(dir.join("go"), "").unwrap();
+        }
+        reads.push(bit);
+    });
+    assert_eq!((started, reads.first(), clear), (true, Some(&Some(1)), true), "{reads:?}");
 }

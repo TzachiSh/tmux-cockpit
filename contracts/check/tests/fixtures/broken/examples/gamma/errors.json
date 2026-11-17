@@ -1,0 +1,6 @@
+{
+  "invalid-key.json": {
+    "keyword": "pattern",
+    "at": "$.key"
+  }
+}

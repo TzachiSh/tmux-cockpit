@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "scope": "repo",
+  "key": "3f2a9c0d1e4b5a67",
+  "checked_at": "2026-11-14T09:30:00Z",
+  "ttl_seconds": 60,
+  "remaining_estimate": 27,
+  "revision": 4,
+  "owner_pane": "%12",
+  "title": "Fix the login bug"
+}

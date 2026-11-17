@@ -129,7 +129,7 @@ Some ranges you can mark with `#[range=control|N]…#[norange]`:
 ```tmux
 set -g @cockpit_statusbar off
 set -g status-right "#{E:@cockpit_fleet}#[range=control|2]#{E:@cockpit_where_path}#[norange] #[range=control|3]#{E:@cockpit_where_branch}#[norange]"
-run-shell ~/.tmux/plugins/tmux-cockpit/cockpit.tmux
+run-shell '~/.tmux/plugins/tmux-cockpit/cockpit.tmux'
 ```
 
 The branch is a pane option the hooks write (see below), so `status-interval`

@@ -3,42 +3,42 @@
 mod fake;
 
 use cockpit_tui::data::agents::{Background, Entry, Stage, flush, lookup_pid, lookups};
-use cockpit_tui::data::agents::{read_file, resolve};
+use cockpit_tui::data::agents::{is_lookup_child, read_file, resolve};
 use cockpit_tui::data::agents::{set_background, set_stage_hook};
 use cockpit_tui::data::list_panes;
 use fake::write_exec;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard};
-
-static ENV: Mutex<()> = Mutex::new(());
-type Lock = MutexGuard<'static, ()>;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// field 22 of a stat line is `start`
 fn stat(start: &str) -> String {
     format!("100 (cl aude) S 1 100 100 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 {start} 0 0\n")
 }
 
-struct Rig {
+struct Rig<'a> {
     dir: PathBuf,
     old: Vec<(&'static str, Option<String>)>,
     /// how long the drop waits for the lookups to end before it gives up
     wait: std::time::Duration,
-    _lock: Option<Lock>,
+    /// the shell the give-up execs: [`SH`], or a missing file for a box without one
+    sh: PathBuf,
+    held: fake::Held<'a>,
 }
 
 /// A lookup ends within the product's own 2.5 s deadline, so one still running after
 /// this is a thread that hangs, on a box however loaded (#969).
 const DROP_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
 
-/// Each variable back to the value it had, or unset again. The caller holds `ENV`.
-fn put_back(old: &[(&'static str, Option<String>)]) {
+/// Each variable back to the value it had, or unset again, under fake's lock.
+fn put_back(held: &fake::EnvHeld, old: &[(&'static str, Option<String>)]) {
     for (k, v) in old {
-        // SAFETY: the ENV mutex is held, as it was when these were set.
+        // SAFETY: fake's environment lock is held, as it was when these were set.
         unsafe {
             match v {
-                Some(v) => std::env::set_var(k, v),
-                None => std::env::remove_var(k),
+                Some(v) => fake::set_var(held, k, v),
+                None => fake::remove_var(held, k),
             }
         }
     }
@@ -56,21 +56,25 @@ fn lookups_end_within(bound: std::time::Duration) -> bool {
     true
 }
 
-impl Rig {
+impl Rig<'_> {
     /// One agent pane, pid 100, no @cockpit_session, in a fake proc root at start `5`.
     /// `claude` runs `claude_body` and logs one line per call to `forks`.
-    fn new(tag: &str, claude_body: &str) -> Rig {
+    fn new(tag: &str, claude_body: &str) -> Rig<'static> {
         Rig::with(tag, claude_body, true)
     }
 
     /// `board` false is a one-shot caller (`--json`, `--rows`): it waits for the lookup.
-    fn with(tag: &str, claude_body: &str, board: bool) -> Rig {
-        let lock = ENV.lock().unwrap_or_else(|e| e.into_inner());
-        Rig::build(tag, claude_body, board, Some(lock))
+    fn with(tag: &str, claude_body: &str, board: bool) -> Rig<'static> {
+        Rig::build(tag, claude_body, board, fake::Held::Own(fake::env_lock()))
     }
 
-    /// `lock` is `ENV`, held from here to the drop. None when the caller holds it.
-    fn build(tag: &str, claude_body: &str, board: bool, lock: Option<Lock>) -> Rig {
+    /// `held` is fake's environment lock, held from here to the rig's drop: [`Rig::with`]
+    /// hands the rig its own, a [`Dev`] lends its.
+    fn build<'a>(tag: &str, claude_body: &str, board: bool, held: fake::Held<'a>) -> Rig<'a> {
+        // every rig comes through here, `new`, `with` and `inside` alike: the runner unset
+        // the caller's log, cache and state, which a lookup uses (#1066), and a sibling
+        // writes XDG_CACHE_HOME under the lock this is checked under (#1110)
+        fake::checked_state_held(held.token());
         let dir = std::env::temp_dir().join(format!("cockpit-agents-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("bin")).unwrap();
@@ -106,27 +110,28 @@ impl Rig {
         ];
         let mut old: Vec<_> = vars.iter().map(|(k, _)| (*k, std::env::var(k).ok())).collect();
         old.push(("XDG_CACHE_HOME", std::env::var("XDG_CACHE_HOME").ok()));
-        // SAFETY: the ENV mutex is held until Drop restores these.
+        // SAFETY: fake's environment lock is held until Drop restores these.
         unsafe {
-            std::env::remove_var("XDG_CACHE_HOME");
+            fake::remove_var(held.token(), "XDG_CACHE_HOME");
             for (k, v) in &vars {
-                std::env::set_var(k, v);
+                fake::set_var(held.token(), k, v);
             }
         }
         let rig = Rig {
             dir,
             old,
             wait: DROP_WAIT,
-            _lock: lock,
+            sh: PathBuf::from(SH),
+            held,
         };
         // once the rig exists, so that a failure here drops it and the variables go back (#972)
         fake::assert_claude_is_the_rigs(&rig.dir);
         rig
     }
 
-    /// A board's rig inside `_dev`, which holds `ENV`: its drop puts back what `_dev` set.
-    fn inside(_dev: &Dev, tag: &str, claude_body: &str) -> Rig {
-        Rig::build(tag, claude_body, true, None)
+    /// A board's rig inside `dev`, which holds fake's lock: its drop puts back what `dev` set.
+    fn inside<'a>(dev: &'a Dev, tag: &str, claude_body: &str) -> Rig<'a> {
+        Rig::build(tag, claude_body, true, fake::Held::Lent(&dev.held))
     }
 
     fn proc_dir(&self, pid: &str, comm: &str, kids: &str) {
@@ -177,35 +182,78 @@ fn stub_of(pid: i32, dir: &std::path::Path) -> bool {
     dir.len() > 1 && cmd.windows(dir.len()).any(|w| w == dir.as_slice())
 }
 
+/// The shell the give-up becomes, by full path so that no PATH is searched for it (#988).
+const SH: &str = "/bin/sh";
+
+/// The give-up's last line, printed by [`SH`] from the environment the exec handed it,
+/// then SIGABRT under the same pid. The exec sets SIGPIPE back to its default, so the
+/// trap keeps a closed stderr from ending it by SIGPIPE first. `command` passes over a
+/// function of that name imported from the environment, which bash does even as `sh`.
+/// `${HOME-}` holds under an exported `SHELLOPTS=nounset`. `exit 134` only if the kill
+/// did not end it (#988).
+const SAY: &str = concat!(
+    r#"trap '' PIPE; command printf 'At the abort PATH began with %s and HOME was %s\n' "#,
+    r#""${PATH%%:*}" "${HOME-}" >&2; command kill -s ABRT "$$"; exit 134"#,
+);
+
+/// The give-up's last line as this binary writes it when there is no shell to exec.
+fn last_line(path: &str, home: &str) -> String {
+    let first = path.split(':').next().unwrap_or_default();
+    format!("At the abort PATH began with {first} and HOME was {home}\n")
+}
+
+/// The fallback's line ahead of the last: which path wrote it, and why (#988).
+fn exec_failed(sh: &Path, e: &std::io::Error) -> String {
+    format!("No shell from {}: {e}. The line below is this binary's own read.\n", sh.display())
+}
+
 /// The drop gave up: says so on the real stderr, past the harness's capture, and ends
 /// the run there. The variables stay the rig's and `dir` is left (#969).
-fn give_up(dir: &Path, bound: std::time::Duration) -> ! {
+fn give_up(dir: &Path, bound: std::time::Duration, sh: &Path) -> ! {
     use std::io::Write;
+    use std::os::unix::process::CommandExt;
     let me = std::thread::current();
     let (test, n) = (me.name().unwrap_or("the test that ran last"), lookups());
     let how = if std::thread::panicking() { ", while it was panicking" } else { "" };
-    // read at the last moment, so the text shows what a late lookup would have found
-    let path = std::env::var("PATH").unwrap_or_default();
-    let home = std::env::var("HOME").unwrap_or_default();
-    let first = path.split(':').next().unwrap_or_default();
     let msg = format!(
         "\nThe agents test rig stopped this test binary. This is the rig's guard for issue \
          #969, not a product crash.\n{n} lookup thread(s) were still running {bound:?} after \
          the rig of {test} began its drop{how}. Putting PATH and HOME back would let that \
          lookup start the real `claude`, so they stay the rig's and the run aborts here.\n\
          What to do: rerun {test} alone, with `cargo test --test agents -- --exact {test}`.\n\
-         The rig's folder was left behind: {}\n\
-         At the abort PATH began with {first} and HOME was {home}\n",
+         The rig's folder was left behind: {}\n",
         dir.display(),
     );
-    // nothing may follow this message but the abort: a put-back after it would hand a
-    // lookup still running the developer's `claude`, unseen by the message's last line (#969)
     let _ = std::io::stderr().write_all(msg.as_bytes());
+    // The last line is printed by the shell this process becomes. No line of this binary
+    // runs after the exec, so the line shows PATH and HOME as a late lookup would have
+    // found them, whatever was written above it (#988). An exec keeps an ignored action
+    // and the signal mask, which abort() would undo for itself: undone here, so that the
+    // shell's kill ends the process.
+    // SAFETY: sets the default action and unblocks SIGABRT on this thread, no handler.
+    unsafe {
+        libc::signal(libc::SIGABRT, libc::SIG_DFL);
+        let mut abrt: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut abrt);
+        libc::sigaddset(&mut abrt, libc::SIGABRT);
+        libc::pthread_sigmask(libc::SIG_UNBLOCK, &abrt, std::ptr::null_mut());
+    }
+    let failed = std::process::Command::new(sh).arg0("sh").args(["-c", SAY]).exec();
+    // No shell: the line from this binary's own read, which a put-back between this read
+    // and the abort would get past, as one anywhere after the read did before #988. The
+    // line ahead of it says so, for the reader of a give-up (#988).
+    let path = std::env::var("PATH").unwrap_or_default();
+    let home = std::env::var("HOME").unwrap_or_default();
+    let read = last_line(&path, &home);
+    let _ = std::io::stderr().write_all((exec_failed(sh, &failed) + &read).as_bytes());
     std::process::abort();
 }
 
-impl Drop for Rig {
+impl Drop for Rig<'_> {
     fn drop(&mut self) {
+        // a hook set under this rig ends with it, on a panic too: left set, it would
+        // run in every later test's lookups (#1024)
+        set_stage_hook(None);
         // a red run must not leave a stub looping on a file that never comes
         let _ = std::fs::write(self.dir.join("go"), "");
         // AGENTS.md: never signal a pid nobody verified. The stub may be long gone and
@@ -223,9 +271,9 @@ impl Drop for Rig {
         // no lookup is left, and for good if one never ends. The wait also covers the
         // cache write, which would make the dir again after it is removed (#608).
         if !lookups_end_within(self.wait) {
-            give_up(&self.dir, self.wait);
+            give_up(&self.dir, self.wait, &self.sh);
         }
-        put_back(&self.old);
+        put_back(self.held.token(), &self.old);
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
@@ -236,12 +284,12 @@ impl Drop for Rig {
 struct Dev {
     dir: PathBuf,
     old: Vec<(&'static str, Option<String>)>,
-    _lock: Lock,
+    held: fake::EnvHeld,
 }
 
 impl Dev {
     fn new(tag: &str) -> Dev {
-        let lock = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let held = fake::env_lock();
         let name = format!("cockpit-agents-{tag}-dev-{}", std::process::id());
         let dir = std::env::temp_dir().join(name);
         let _ = std::fs::remove_dir_all(&dir);
@@ -255,14 +303,14 @@ impl Dev {
         let vars = [("PATH", format!("{d}/bin:{path}")), ("HOME", d)];
         let mut old: Vec<_> = vars.iter().map(|(k, _)| (*k, std::env::var(k).ok())).collect();
         old.push(("XDG_CACHE_HOME", std::env::var("XDG_CACHE_HOME").ok()));
-        // SAFETY: the ENV mutex is held until Drop restores these.
+        // SAFETY: fake's environment lock is held until Drop restores these.
         unsafe {
-            std::env::remove_var("XDG_CACHE_HOME");
+            fake::remove_var(&held, "XDG_CACHE_HOME");
             for (k, v) in &vars {
-                std::env::set_var(k, v);
+                fake::set_var(&held, k, v);
             }
         }
-        Dev { dir, old, _lock: lock }
+        Dev { dir, old, held }
     }
 
     /// One line per start of the `claude` outside the rig.
@@ -273,7 +321,7 @@ impl Dev {
 
 impl Drop for Dev {
     fn drop(&mut self) {
-        put_back(&self.old);
+        put_back(&self.held, &self.old);
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
@@ -339,14 +387,38 @@ fn nor_does_one_pending_at_a_drop_during_a_panic() {
     assert_eq!(inside, 2, "both asks reached the rig's stub");
 }
 
+/// #1024: a rig dropped in a panic's unwind leaves no stage hook set for the next rig.
+#[test]
+fn a_rig_dropped_in_a_panic_leaves_no_stage_hook_set() {
+    static CALLS: AtomicUsize = AtomicUsize::new(0);
+    fn count(_at: Stage, _pid: u32) {
+        CALLS.fetch_add(1, Ordering::SeqCst);
+    }
+    // the dev holds the lock across both rigs, so no other test clears the hook in between
+    let dev = Dev::new("hookleft");
+    let red = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _r = Rig::inside(&dev, "hookleft", ONE);
+        set_stage_hook(Some(count));
+        panic!("a red between the set and the test's own clear");
+    }));
+    assert!(red.is_err(), "the forced panic did not fire");
+    Rig::inside(&dev, "hookleft2", ONE).sess();
+    assert_eq!(CALLS.load(Ordering::SeqCst), 0, "the hook ran in a later rig's lookup");
+}
+
 /// The child half of the give-up test: a lookup thread that never ends, and a rig
 /// whose drop waits 200 ms for it. Should the rig's HOME ever be put back under that
-/// thread, it asks again, and the `claude` outside the rig logs it.
+/// thread, it asks again, and the `claude` outside the rig logs it. `HUNG_LOOKUP_CHILD`
+/// says how the rig goes: `panic` drops it in a panic's unwind, `nosh` gives it a
+/// shell path that does not exist, and `return`, `ignored` and `blocked` drop it
+/// plainly. Any other value fails the child, so a misspelt mode cannot pass (#988).
 #[test]
 fn hung_lookup_child() {
-    if std::env::var_os("HUNG_LOOKUP_CHILD").is_none() {
+    let Ok(how) = std::env::var("HUNG_LOOKUP_CHILD") else {
         return;
-    }
+    };
+    let modes = ["return", "panic", "nosh", "ignored", "blocked"];
+    assert!(modes.contains(&how.as_str()), "no child mode {how:?}");
     fn hang(at: Stage, _pid: u32) {
         if at == Stage::Reaping {
             let home = std::env::var("HOME").unwrap();
@@ -366,21 +438,46 @@ fn hung_lookup_child() {
     std::fs::write(dev.dir.join("made"), "").unwrap();
     let mut r = Rig::inside(&dev, "hung", ONE);
     r.wait = std::time::Duration::from_millis(200);
+    if how == "nosh" {
+        r.sh = r.dir.join("no-such-sh");
+    }
     set_stage_hook(Some(hang));
     r.sess();
     wait_file(&r.dir.join("held"));
+    assert!(how != "panic", "a failed assert while the lookup hangs");
     drop(r);
     std::process::exit(3);
 }
 
-/// Runs the child half: its exit, its stderr, and the rig's and the dev's dirs it names.
-fn hung_lookup_run() -> (std::process::ExitStatus, String, PathBuf, PathBuf) {
+/// Runs the child half `how`: its exit, its stderr, and the rig's and the dev's dirs it
+/// names. `ignored` starts it with SIGABRT ignored and `blocked` with SIGABRT blocked,
+/// as a parent may hand either down (#988).
+fn hung_lookup_run(held: &fake::EnvHeld, how: &str) -> (std::process::ExitStatus, String, PathBuf, PathBuf) {
+    use std::os::unix::process::CommandExt;
     let mut child = std::process::Command::new(std::env::current_exe().unwrap());
     child
         .args(["--exact", "hung_lookup_child", "--test-threads=1"])
-        .env("HUNG_LOOKUP_CHILD", "1");
+        .env("HUNG_LOOKUP_CHILD", how);
+    let (ignore, block) = (how == "ignored", how == "blocked");
+    let hand_down = move || {
+        // SAFETY: sets an action or the mask, no handler.
+        unsafe {
+            let mut abrt: libc::sigset_t = std::mem::zeroed();
+            libc::sigemptyset(&mut abrt);
+            libc::sigaddset(&mut abrt, libc::SIGABRT);
+            if ignore {
+                libc::signal(libc::SIGABRT, libc::SIG_IGN);
+            }
+            if block {
+                libc::sigprocmask(libc::SIG_BLOCK, &abrt, std::ptr::null_mut());
+            }
+        }
+        Ok(())
+    };
+    // SAFETY: the calls above are async-signal-safe, made between fork and exec.
+    unsafe { child.pre_exec(hand_down) };
     let child = child.stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped());
-    let child = child.spawn().unwrap();
+    let child = fake::spawn_held(held, child).unwrap();
     let pid = child.id();
     let out = child.wait_with_output().unwrap();
     let left = |tag: &str| std::env::temp_dir().join(format!("cockpit-agents-{tag}-{pid}"));
@@ -392,12 +489,12 @@ fn hung_lookup_run() -> (std::process::ExitStatus, String, PathBuf, PathBuf) {
     )
 }
 
-/// #969: a drop whose lookup never ends does not put PATH and HOME back. It says
-/// why and aborts, and leaves its dirs, the made-up developer's `claude` unstarted.
-#[test]
-fn a_drop_whose_lookup_never_ends_aborts_with_the_variables_kept() {
-    let _r = Rig::new("giveup", ONE);
-    let (status, err, rig, dev) = hung_lookup_run();
+/// Runs the child half `how` and asserts the give-up of #969: SIGABRT, the message with
+/// the rig's own PATH and HOME on its last line, the dirs left, no `claude` outside the
+/// rig started. Returns the child's stderr and the rig's dir.
+fn gave_up(how: &str) -> (String, PathBuf) {
+    let r = Rig::new("giveup", ONE);
+    let (status, err, rig, dev) = hung_lookup_run(r.held.token(), how);
     let seen = (rig.join("go").exists(), dev.join("made").exists(), dev.join("outside").exists());
     let _ = (std::fs::remove_dir_all(&rig), std::fs::remove_dir_all(&dev));
     use std::os::unix::process::ExitStatusExt;
@@ -408,6 +505,134 @@ fn a_drop_whose_lookup_never_ends_aborts_with_the_variables_kept() {
     let said = ["not a product crash", "rerun hung_lookup_child alone", &left, &kept];
     assert!(said.iter().all(|s| err.contains(s)), "{err}");
     assert_eq!(seen, (true, true, false), "(rig dir left, dev dir left, no outside claude)");
+    (err, rig)
+}
+
+/// #969: a drop whose lookup never ends does not put PATH and HOME back. It says
+/// why and aborts, and leaves its dirs, the made-up developer's `claude` unstarted.
+#[test]
+fn a_drop_whose_lookup_never_ends_aborts_with_the_variables_kept() {
+    gave_up("return");
+}
+
+/// #988: the same when the rig drops in a panic's unwind, as after a failed assert.
+#[test]
+fn so_does_one_dropped_in_a_panics_unwind() {
+    let (err, _) = gave_up("panic");
+    assert!(err.contains("began its drop, while it was panicking."), "{err}");
+}
+
+/// #988: with no shell at the path, the binary reads PATH and HOME itself and aborts,
+/// and the line ahead of the last says that the shell could not be started, and why.
+#[test]
+fn so_does_one_with_no_shell_to_exec() {
+    let (err, rig) = gave_up("nosh");
+    let r = rig.display();
+    // spelt out, not built by `exec_failed`, so that the row pins the words: ENOENT
+    // as std words an OS error, with the text glibc, musl and macOS give it (#988)
+    let why = format!(
+        "No shell from {r}/no-such-sh: No such file or directory (os error 2). \
+         The line below is this binary's own read.\n"
+    );
+    let kept = format!("At the abort PATH began with {r}/bin and HOME was {r}\n");
+    assert!(err.contains(&(why + &kept)), "{err}");
+}
+
+/// #988: an ignored SIGABRT, which an exec hands down, does not keep the shell alive.
+#[test]
+fn so_does_one_started_with_sigabrt_ignored() {
+    gave_up("ignored");
+}
+
+/// #988: nor does a blocked one, which an exec hands down too.
+#[test]
+fn so_does_one_started_with_sigabrt_blocked() {
+    gave_up("blocked");
+}
+
+/// `script` under [`SH`] as the give-up starts it, with a core limit of 0, soft and
+/// hard, as the child half sets its own: a death that is meant leaves no core (#988).
+fn shell(script: &str) -> std::process::Command {
+    use std::os::unix::process::CommandExt;
+    let mut sh = std::process::Command::new(SH);
+    sh.arg0("sh").args(["-c", script]);
+    let no_core = || {
+        // SAFETY: setrlimit reads one struct.
+        unsafe { libc::setrlimit(libc::RLIMIT_CORE, &libc::rlimit { rlim_cur: 0, rlim_max: 0 }) };
+        Ok(())
+    };
+    // SAFETY: setrlimit is async-signal-safe and allocates nothing.
+    unsafe { sh.pre_exec(no_core) };
+    sh
+}
+
+/// #988: the shells these rows start die by SIGABRT with both core limits at 0, so a
+/// developer's own limit leaves no core file of theirs in `tui/`.
+#[test]
+fn the_rows_shells_die_with_no_core_limit() {
+    use std::os::unix::process::ExitStatusExt;
+    let out = shell(&format!("ulimit -c; ulimit -Hc; {SAY}")).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "0\n0\n", "soft, then hard");
+    assert_eq!(out.status.signal(), Some(libc::SIGABRT), "{:?}", out.status);
+}
+
+/// #988: a shell whose kill does not end it, here with SIGABRT ignored, exits 134 and
+/// never 0, which cargo would read as a pass.
+#[test]
+fn a_shell_that_outlives_its_kill_exits_134() {
+    use std::os::unix::process::CommandExt;
+    let mut sh = shell(SAY);
+    let ignore = || {
+        // SAFETY: sets an action, no handler.
+        unsafe { libc::signal(libc::SIGABRT, libc::SIG_IGN) };
+        Ok(())
+    };
+    // SAFETY: signal() is async-signal-safe, made between fork and exec.
+    let out = unsafe { sh.pre_exec(ignore) }.output().unwrap();
+    assert_eq!(out.status.code(), Some(134), "{:?}", out.status);
+}
+
+/// #988: with nobody left to read stderr the shell still dies by SIGABRT, as abort()
+/// does, though the exec has set SIGPIPE back to its default.
+#[test]
+fn the_shell_dies_by_sigabrt_on_a_stderr_nobody_reads() {
+    use std::os::unix::process::ExitStatusExt;
+    let (read, write) = std::io::pipe().unwrap();
+    drop(read);
+    let status = shell(SAY).stderr(write).status().unwrap();
+    assert_eq!(status.signal(), Some(libc::SIGABRT), "{status:?}");
+}
+
+/// Rows of a PATH's first entry and a HOME, each by name. `None` leaves HOME unset.
+const ODD: [(&str, Option<&str>); 9] = [
+    ("quotes", Some("q'x\"y")),
+    ("blank", Some("a b")),
+    ("percent", Some("%s%d%%")),
+    ("backslash", Some("a\\nb\\")),
+    ("newline", Some("a\nb")),
+    ("expansion", Some("$(id)`id`*")),
+    ("dash", Some("-n")),
+    ("empty", Some("")),
+    ("unset", None),
+];
+
+/// #988: the shell prints PATH's first entry and HOME whole, neither expanded nor
+/// read as a format, as this binary's own read would, and dies by SIGABRT.
+#[test]
+fn the_shell_prints_odd_values_whole() {
+    use std::os::unix::process::ExitStatusExt;
+    for (row, v) in ODD {
+        let path = format!("{}:/second:/third", v.unwrap_or("/first"));
+        let mut sh = shell(SAY);
+        sh.env_clear().env("PATH", &path);
+        if let Some(v) = v {
+            sh.env("HOME", v);
+        }
+        let out = sh.output().unwrap();
+        let want = last_line(&path, v.unwrap_or_default());
+        assert_eq!(String::from_utf8_lossy(&out.stderr), want, "row {row}");
+        assert_eq!(out.status.signal(), Some(libc::SIGABRT), "row {row}");
+    }
 }
 
 const ONE: &str = r#"printf '[{"pid":100,"sessionId":"s-100","cwd":"/launch","kind":"interactive"}]'"#;
@@ -445,10 +670,13 @@ fn now() -> u64 {
 fn the_rig_never_kills_a_pid_that_is_not_its_stub() {
     let mut other = {
         let r = Rig::new("reused", ONE);
-        // After Rig::new, which can wait on the ENV lock behind other rigs: a sleep started
+        // After Rig::new, which can wait on the lock behind other rigs: a sleep started
         // before it could end on its own and be blamed on the drop. An absolute path, since
-        // a bare `sleep` is the rig's bin/sleep, whose cmdline names the rig's dir.
-        let other = std::process::Command::new("/bin/sleep").arg("30").spawn().unwrap();
+        // a bare `sleep` is the rig's bin/sleep, whose cmdline names the rig's dir. TERM at
+        // its default and unblocked, whatever the suite was started with (#1061).
+        let mut sleep = std::process::Command::new("/bin/sleep");
+        fake::at_default(sleep.arg("30"), &[libc::SIGTERM]);
+        let other = sleep.spawn().unwrap();
         std::fs::write(r.dir.join("stubpid"), other.id().to_string()).unwrap();
         other
     };
@@ -689,27 +917,80 @@ fn a_key_that_is_not_digits_is_dropped() {
     assert!(s.by_pid.is_empty() && s.none.is_empty());
 }
 
+/// What the lookup thread holds back, between `spawn`'s return and the store (#976).
+#[derive(Clone, Copy, PartialEq)]
+enum Hold {
+    Nothing,
+    /// the store, until the test has read the stub's pid twice
+    Store,
+    /// the stub's pid, until the test has read stubpid empty, and then as `Store`
+    EmptyFile,
+}
+
+/// Polls of [`wait_in_flight`] that read a pid, and that read stubpid empty (#976).
+static PID_READS: AtomicUsize = AtomicUsize::new(0);
+static EMPTY_READS: AtomicUsize = AtomicUsize::new(0);
+
+/// On the lookup thread: polls until `done`, or the test's `go` on a red run, for a
+/// bounded count of polls.
+fn hold_until(done: impl Fn() -> bool) {
+    let go = Path::new(&std::env::var("HOME").unwrap()).join("go");
+    for _ in 0..1000 {
+        if done() || go.exists() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+/// Holds the store until the test has read the stub's pid twice while the board held
+/// none. A helper that walks on its first read of a pid walks inside the hold.
+fn hold_the_store(at: Stage, _pid: u32) {
+    if at == Stage::Spawned {
+        let from = PID_READS.load(Ordering::SeqCst);
+        hold_until(|| PID_READS.load(Ordering::SeqCst) >= from + 2);
+    }
+}
+
+/// Holds the stub's pid back until the test has read stubpid empty, then holds the
+/// store as [`hold_the_store`]. A helper that takes an empty read walks inside the hold.
+fn hold_an_empty_stubpid(at: Stage, pid: u32) {
+    if at == Stage::Spawned {
+        let from = EMPTY_READS.load(Ordering::SeqCst);
+        hold_until(|| EMPTY_READS.load(Ordering::SeqCst) > from);
+        let home = PathBuf::from(std::env::var("HOME").unwrap());
+        std::fs::write(home.join("released"), "").unwrap();
+        hold_the_store(at, pid);
+    }
+}
+
 /// The lookup is a child of the board, and the board sits in a pane: a walk of
 /// that pane's tree meets a `claude` and the pane, which runs no agent, turns
 /// into a row until the call ends.
-fn own_pane_stays_no_agent(tag: &str, grandchild: bool, by_ps: bool) {
-    let r = Rig::new(
-        tag,
-        &format!("echo $$ > $HOME/stubpid\nwhile [ ! -f $HOME/go ]; do sleep 0.02; done\n{ONE}"),
-    );
+fn own_pane_stays_no_agent(tag: &str, grandchild: bool, by_ps: bool, hold: Hold) {
+    const GO: &str = "while [ ! -f $HOME/go ]; do sleep 0.02; done\n";
+    let wait = if hold == Hold::EmptyFile {
+        ": > $HOME/stubpid\nwhile [ ! -f $HOME/released ]; do sleep 0.02; done\n"
+    } else {
+        ""
+    };
+    let r = Rig::new(tag, &format!("{wait}echo $$ > $HOME/stubpid\n{GO}{ONE}"));
     let row = ["%2", "w:1", "board", "bash", "-", "-", "-", "-", "/w", "200", "-", "-", "@2"].join("\u{1f}");
     let mut rows = std::fs::read_to_string(r.dir.join("rows")).unwrap();
     rows.push_str(&(row + "\n"));
     std::fs::write(r.dir.join("rows"), rows).unwrap();
     let root = r.dir.join("proc");
     r.proc_dir("200", "bash", "");
+    match hold {
+        Hold::Nothing => {}
+        Hold::Store => set_stage_hook(Some(hold_the_store)),
+        Hold::EmptyFile => set_stage_hook(Some(hold_an_empty_stubpid)),
+    }
     r.sess();
-    let pid = loop {
-        if let Ok(p) = std::fs::read_to_string(r.dir.join("stubpid")) {
-            break p.trim().to_string();
-        }
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    };
+    // `spawn` returns only after the exec, so the stub writes stubpid while the board
+    // may not hold its pid yet, and a walk then meets a child it does not know. And
+    // an empty read, between the stub's truncate and its write, checks nothing (#976).
+    let pid = wait_in_flight().to_string();
     // the stub is the board's child, and it is named claude
     std::fs::write(root.join("200/task/200/children"), &pid).unwrap();
     // the real `claude` forks helpers; one named claude, under the child, counts as the child
@@ -731,24 +1012,41 @@ fn own_pane_stays_no_agent(tag: &str, grandchild: bool, by_ps: bool) {
         write_exec(&r.dir.join("bin/ps"), &format!("#!/bin/sh\ncat {}/ps\n", r.dir.display()));
     }
     let ids: Vec<_> = list_panes().unwrap().into_iter().map(|p| p.id).collect();
+    set_stage_hook(None);
     assert_eq!(ids, ["%1"], "the board's own pane showed as an agent");
+    // an empty stubpid read names no child, and the walk then checks nothing (#1024)
+    assert!(is_lookup_child(&pid), "the walk met no lookup child: {pid:?}");
     std::fs::write(r.dir.join("go"), "").unwrap();
     r.wait_cache();
 }
 
 #[test]
 fn the_lookup_child_does_not_make_the_boards_own_pane_an_agent() {
-    own_pane_stays_no_agent("selfrow", false, false);
+    own_pane_stays_no_agent("selfrow", false, false, Hold::Nothing);
 }
 
 #[test]
 fn nor_does_a_claude_under_the_lookup_child() {
-    own_pane_stays_no_agent("selfrow2", true, false);
+    own_pane_stays_no_agent("selfrow2", true, false, Hold::Nothing);
 }
 
 #[test]
 fn the_ps_walk_skips_the_lookup_child_too() {
-    own_pane_stays_no_agent("selfrow3", true, true);
+    own_pane_stays_no_agent("selfrow3", true, true, Hold::Nothing);
+}
+
+/// #976: the board stores its child only once `spawn` has returned. Held there, a
+/// walk on the stub's pid alone meets a child the board does not know yet.
+#[test]
+fn the_own_pane_check_waits_for_the_board_to_hold_the_stub() {
+    own_pane_stays_no_agent("selfrow4", false, false, Hold::Store);
+}
+
+/// #976: the stub's `echo` truncates stubpid before it writes. Held empty there, a
+/// helper that takes the empty read walks a tree that is not the stub's.
+#[test]
+fn the_own_pane_check_takes_no_pid_from_an_empty_stubpid() {
+    own_pane_stays_no_agent("selfrow5", false, false, Hold::EmptyFile);
 }
 
 fn seeded_at(r: &Rig, age: u64, session: &str) {
@@ -781,18 +1079,31 @@ fn wait_forks(r: &Rig, n: usize) {
 /// count of polls, which a busy scheduler stretches past any window (#564).
 const GONE_BY: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// In a child test process: waits until the stub runs and the board holds its
-/// pid. The stub writes its pid before the board has stored it, and a hangup in
+/// Waits until the stub runs and the board holds its pid, and returns that pid.
+/// The stub writes its pid before the board has stored it, and a hangup in
 /// that gap finds no child to kill: the old tests raced it under load (#564).
-fn wait_in_flight() {
+/// An empty or missing stubpid never counts, even while the board holds none (#976).
+fn wait_in_flight() -> u32 {
     let stub = Path::new(&std::env::var("HOME").unwrap()).join("stubpid");
     let end = std::time::Instant::now() + GONE_BY;
     loop {
-        let pid = std::fs::read_to_string(&stub).unwrap_or_default().trim().parse::<u32>().ok();
-        if pid.is_some() && pid == lookup_pid() {
-            return;
+        let raw = std::fs::read_to_string(&stub).ok();
+        let pid = raw.as_deref().and_then(|s| s.trim().parse::<u32>().ok());
+        if pid.is_some() {
+            PID_READS.fetch_add(1, Ordering::SeqCst);
+        } else if raw.as_deref() == Some("") {
+            EMPTY_READS.fetch_add(1, Ordering::SeqCst);
         }
-        assert!(std::time::Instant::now() < end, "the lookup never started: {pid:?}");
+        if let Some(p) = pid
+            && pid == lookup_pid()
+        {
+            return p;
+        }
+        let board = lookup_pid();
+        assert!(
+            std::time::Instant::now() < end,
+            "the lookup never started: stubpid {pid:?}, board {board:?}"
+        );
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
 }
@@ -894,13 +1205,11 @@ fn quit_child() {
 #[test]
 fn the_board_quitting_kills_a_lookup_in_flight() {
     let r = Rig::new("quit", "echo $$ > $HOME/stubpid\nexec $HOME/bin/sleep 60");
-    let me = std::env::current_exe().unwrap();
-    let st = std::process::Command::new(me)
-        .args(["--exact", "quit_child", "--test-threads=1"])
+    let mut c = std::process::Command::new(std::env::current_exe().unwrap());
+    c.args(["--exact", "quit_child", "--test-threads=1"])
         .env("QUIT_CHILD", "1")
-        .stdout(std::process::Stdio::null())
-        .status()
-        .unwrap();
+        .stdout(std::process::Stdio::null());
+    let st = fake::spawn_held(r.held.token(), &mut c).unwrap().wait().unwrap();
     assert_eq!(st.code(), Some(0), "the child quit");
     let pid = std::fs::read_to_string(r.dir.join("stubpid")).unwrap();
     wait_gone(pid.trim());
@@ -969,14 +1278,8 @@ fn a_real_claude_beside_the_lookup_child_keeps_the_pane_an_agent() {
     std::fs::write(r.dir.join("rows"), rows).unwrap();
     r.proc_dir("200", "bash", "");
     r.sess();
-    let pid = loop {
-        if let Ok(p) = std::fs::read_to_string(r.dir.join("stubpid"))
-            && !p.is_empty()
-        {
-            break p.trim().to_string();
-        }
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    };
+    // as in the own-pane check: walk only once the board holds the stub (#976)
+    let pid = wait_in_flight().to_string();
     std::fs::write(r.dir.join("proc/200/task/200/children"), format!("{pid} 777")).unwrap();
     r.proc_dir(&pid, "claude", "");
     r.proc_dir("777", "claude", "");
@@ -1085,13 +1388,13 @@ fn spawned_hup_child() {
 #[test]
 fn a_hang_up_before_the_child_is_stored_still_takes_it() {
     let r = Rig::new("spawned", "exec $HOME/bin/sleep 60");
-    let me = std::env::current_exe().unwrap();
-    let st = std::process::Command::new(me)
-        .args(["--exact", "spawned_hup_child", "--test-threads=1"])
+    let mut c = std::process::Command::new(std::env::current_exe().unwrap());
+    // the board's handler runs for a HUP the suite handed down blocked only once unblocked
+    fake::at_default(&mut c, &[libc::SIGHUP]);
+    c.args(["--exact", "spawned_hup_child", "--test-threads=1"])
         .env("SPAWNED_HUP_CHILD", "1")
-        .stdout(std::process::Stdio::null())
-        .status()
-        .unwrap();
+        .stdout(std::process::Stdio::null());
+    let st = fake::spawn_held(r.held.token(), &mut c).unwrap().wait().unwrap();
     assert_eq!(st.code(), Some(0), "the handler's _exit(0), not the child's own exit");
     let pid = std::fs::read_to_string(r.dir.join("spawnedpid")).unwrap();
     wait_gone(pid.trim());
@@ -1148,14 +1451,12 @@ fn failed_spawn_child() {
 #[test]
 fn a_failed_lookup_spawn_leaves_no_count() {
     let r = Rig::new("nospawn", ONE);
-    let me = std::env::current_exe().unwrap();
-    let st = std::process::Command::new(me)
-        .args(["--exact", "failed_spawn_child", "--test-threads=1"])
+    let mut c = std::process::Command::new(std::env::current_exe().unwrap());
+    c.args(["--exact", "failed_spawn_child", "--test-threads=1"])
         .env("FAILED_SPAWN_CHILD", "1")
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .unwrap();
+        .stderr(std::process::Stdio::null());
+    let st = fake::spawn_held(r.held.token(), &mut c).unwrap().wait().unwrap();
     assert_eq!(st.code(), Some(0), "the child ran to its end");
     let got = std::fs::read_to_string(r.dir.join("counted")).unwrap();
     if got == "skip" {
@@ -1169,14 +1470,52 @@ fn a_failed_lookup_spawn_leaves_no_count() {
 #[test]
 fn a_signalled_board_kills_a_lookup_in_flight() {
     let r = Rig::new("sighup", "echo $$ > $HOME/stubpid\nexec $HOME/bin/sleep 60");
-    let me = std::env::current_exe().unwrap();
-    let st = std::process::Command::new(me)
-        .args(["--exact", "hup_child", "--test-threads=1"])
+    let mut c = std::process::Command::new(std::env::current_exe().unwrap());
+    // as in the row above: HUP unblocked, whatever the suite was started with (#1061)
+    fake::at_default(&mut c, &[libc::SIGHUP]);
+    c.args(["--exact", "hup_child", "--test-threads=1"])
         .env("HUP_CHILD", "1")
-        .stdout(std::process::Stdio::null())
-        .status()
-        .unwrap();
+        .stdout(std::process::Stdio::null());
+    let st = fake::spawn_held(r.held.token(), &mut c).unwrap().wait().unwrap();
     assert_eq!(st.code(), Some(0), "the handler's _exit(0), not the child's own exit");
     let pid = std::fs::read_to_string(r.dir.join("stubpid")).unwrap();
     wait_gone(pid.trim());
+}
+
+/// #1066: started by hand with a caller's COCKPIT_LOG kept, this binary's rig
+/// refuses before a lookup can write a line there. The runner unsets it.
+#[test]
+fn a_kept_cockpit_log_is_refused() {
+    let kept = [("COCKPIT_LOG", "/canary-1066/log")];
+    let (code, said) = fake::run_by_hand("a_failed_call_does_not_move_at", &kept);
+    let refused = said.contains("the caller's state refused (#1066): COCKPIT_LOG set. ");
+    assert_eq!((code, refused), (Some(101), true), "{said}");
+}
+
+/// #1066: a rig built by `Rig::with`, which skipped the check `Rig::new` made, now meets
+/// it too: started by hand with a caller's COCKPIT_LOG kept, the one-shot row is refused
+/// and the caller's log keeps its one line.
+#[test]
+fn a_one_shot_rig_with_a_kept_log_is_refused_and_writes_nothing() {
+    let log = std::env::temp_dir().join(format!("cockpit-agents-keptlog-{}", std::process::id()));
+    std::fs::write(&log, "marker\n").unwrap();
+    let kept = [("COCKPIT_LOG", log.to_str().unwrap())];
+    let (code, said) = fake::run_by_hand("a_one_shot_read_waits_for_the_lookup", &kept);
+    let left = std::fs::read_to_string(&log).unwrap();
+    std::fs::remove_file(&log).unwrap();
+    let refused = said.contains("the caller's state refused (#1066): COCKPIT_LOG set. ");
+    assert_eq!((code, refused, left.as_str()), (Some(101), true, "marker\n"), "{said}");
+}
+
+/// #1061: the three rows that signal a process they started, in this binary started
+/// again with TERM and HUP ignored and blocked. Each holds there by its own reset: the
+/// stand-in's TERM, and the HUP of the board child that raises it.
+#[test]
+fn the_signalling_rows_hold_in_a_binary_handed_an_ignored_and_blocked_term_and_hup() {
+    let rows = [
+        "the_rig_never_kills_a_pid_that_is_not_its_stub",
+        "a_hang_up_before_the_child_is_stored_still_takes_it",
+        "a_signalled_board_kills_a_lookup_in_flight",
+    ];
+    fake::rows_pass_handed(&rows, &[libc::SIGTERM, libc::SIGHUP]);
 }

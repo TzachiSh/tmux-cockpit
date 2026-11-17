@@ -1790,10 +1790,13 @@ fn an_overscrolled_help_moves_back_at_once() {
 
 #[test]
 fn golden_help() {
+    // the key cockpit-panel passes, set on the app: no environment write (#1121)
     let mut a = stepped();
+    a.set_panel_key("f");
     ch(&mut a, '?');
     goldens("help-steps", &a, 0);
     let mut a = app("work", "bash", "$ ");
+    a.set_panel_key("f");
     ch(&mut a, '1');
     key(&mut a, KeyCode::F(1));
     goldens("help-compose", &a, 0);
@@ -3794,4 +3797,12 @@ fn golden_question_batch() {
     ch(&mut a, '1');
     golden("panel-question-batch-80", &frame(&a, 80, 20, 0));
     golden("panel-question-batch-40", &frame(&a, 40, 12, 0));
+}
+
+/// #1066: this binary reads tmux through the product's plain `tmux`
+/// (`AGENT_GLOB` in `data.rs`). Under the runner that finds no server; started by
+/// hand from inside a tmux session it would read the caller's, so it is refused.
+#[test]
+fn the_binary_runs_with_no_tmux_session_of_the_callers() {
+    fake::checked_tmux();
 }

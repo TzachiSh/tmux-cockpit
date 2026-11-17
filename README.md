@@ -79,7 +79,7 @@ Then add this line to `~/.tmux.conf`, after the cockpit options you set and
 before tpm:
 
 ```tmux
-run-shell ~/.tmux/plugins/tmux-cockpit/cockpit.tmux
+run-shell '~/.tmux/plugins/tmux-cockpit/cockpit.tmux'
 ```
 
 `examples/tmux.conf` has the full block. `install.sh --check` reports what is

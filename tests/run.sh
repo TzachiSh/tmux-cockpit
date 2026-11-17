@@ -2,6 +2,11 @@
 # tmux-cockpit test rig.  Run:  tests/run.sh
 # Uses a throwaway state dir, so your live agent state is never touched.
 set -u
+# A caller's BASH_ENV is sourced by this very shell before its first line, and by every bash
+# it starts; ENV by an interactive sh, as a pane's shell can be. An unset would reach only
+# the children, so this file starts once more without them (#1099, #1115): make test,
+# only.sh and every par.sh shard all start here. "$BASH", the binary that was started.
+[ -z "${BASH_ENV+x}${ENV+x}" ] || exec env -u BASH_ENV -u ENV "$BASH" "$0" "$@"
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # Required (#199), and make test builds it first. Exported, so a copy of the
@@ -18,6 +23,7 @@ STATE=$(mktemp -d)
 # socket a long TMPDIR would push past 107 bytes (#766).
 SUITE_XRD=${XDG_RUNTIME_DIR:-}
 export XDG_RUNTIME_DIR="$STATE"
+SUITE_TT=                     # the socket folder the prelude makes below, when it makes one
 mkdir -p "$STATE/agent-state"
 
 # Private HOME: the example configs load ~/.tmux/plugins/* by path.
@@ -31,7 +37,11 @@ ln -s "$DIR" "$HOME/.tmux/plugins/tmux-cockpit"
 pass=0; fail=0; skipped=0
 ok()   { pass=$((pass+1)); printf '  \033[32mPASS\033[0m %s\n' "$1"; }
 bad()  { fail=$((fail+1))
-    printf '  \033[31mFAIL\033[0m %s\n     want [%s]\n     got  [%s]\n' "$1" "$2" "$3"
+    # Each further line of a want or a got starts "     | ": par.sh then tells a red row's
+    # own lines from a line some command printed beside it (#1153).
+    local m=$'\n     | '
+    printf '  \033[31mFAIL\033[0m %s\n     want [%s]\n     got  [%s]\n' "$1" \
+        "${2//$'\n'/$m}" "${3//$'\n'/$m}"
 }
 is()   { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "$2" "$3"; fi; }
 
@@ -61,20 +71,84 @@ ncols() {                     # <string> -> the columns it draws in
 TMUX_REAL=$(command -v tmux) || TMUX_REAL=tmux
 SUITE_SOCK="cockpit-suite-$$"
 SHIM=$(mktemp -d)
-# What the prelude itself makes: the suite's own server, its socket, $STATE and $SHIM. cleanup
-# ends them at the end; a prelude FATAL comes before `trap cleanup EXIT` is set, while
-# cleanup's other halves (kill_socks, $TMPS) do not exist yet, so it ends them through the same
-# function (#984). The socket path is SOCKDIR's, spelled out: SOCKDIR is set later.
+# What the prelude itself makes: the suite's own server, its socket, $STATE and $SHIM. The
+# socket path is SOCKDIR's, spelled out: SOCKDIR is set later.
+SUITE_NB=                     # a folder outside TMPDIR for the tmux wrapper, when one is made
 suite_clean() {
-    "$TMUX_REAL" -L "$SUITE_SOCK" kill-server >/dev/null 2>&1
-    rm -f "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/$SUITE_SOCK"
-    rm -rf -- "$STATE" "$SHIM"
+    trap '' HUP INT TERM          # nothing ends the cleanup once it runs (#1107)
+    # With no socket folder there is no server of the suite's: the one run that has none is
+    # the one whose folder could not be made, and a tmux call from it would go to tmux's
+    # default folder, /tmp/tmux-<uid> (#1098).
+    if [ -n "${TMUX_TMPDIR:-}" ] && [ -d "$TMUX_TMPDIR" ]; then
+        "$TMUX_REAL" -L "$SUITE_SOCK" kill-server >/dev/null 2>&1
+        rm -f "$TMUX_TMPDIR/tmux-$(id -u)/$SUITE_SOCK"
+    fi
+    rm -rf -- "$STATE" "$SHIM" ${SUITE_NB:+"$SUITE_NB"}
+    [ -z "$SUITE_TT" ] || suite_tt_end
 }
-fatal() {                     # <message>
-    printf '  \033[31mFATAL\033[0m %s\n' "$1" >&2
-    suite_clean
-    exit 1
+# The suite's own socket folder, at the end: rmdir and never rm -r, since a socket still in
+# it may be a server's that is still up. What is left is named, and the folder stays.
+suite_tt_end() {
+    rmdir "$SUITE_TT/tmux-$(id -u)" 2>/dev/null
+    rmdir "$SUITE_TT" 2>/dev/null || [ ! -e "$SUITE_TT" ] ||
+        echo "tests/run.sh: left in its socket folder $SUITE_TT: $(
+            cd "$SUITE_TT" && find . -mindepth 1 | sort | tr '\n' ' ')" >&2
 }
+# Armed here, before the server starts, and replaced by `trap cleanup EXIT` once cleanup's
+# other halves (kill_socks, $TMPS) exist. The server leaves this process group, so a TERM or
+# a HUP that ends the run in between never reaches it, and bash runs the EXIT trap on both:
+# without this a run ended there left the server and its pane behind for an hour (#900). A
+# prelude FATAL leaves through the same trap (#984).
+# HUP, INT and TERM are trapped as well, by the run itself, for the whole run, and every exit
+# trap of the run ignores all three as its first step (#1107). With no trap of its own on
+# them, bash ends through its own handler, and that handler kills the shell at once when a
+# second such signal arrives while the first is still being handled: before the EXIT trap
+# starts or in the middle of it. One signal sent twice is common: `timeout` sends its signal to
+# the run and then to the run's process group, and a run that took the first before the
+# second arrived left its socket, its state and its shim behind. A signal the run traps only
+# marks its trap to run. suite_sig ignores the three before it exits, for the step between its
+# `exit` and the exit trap's first line, where no line of the script runs and so no row of the
+# #1107 block can hold. suite_clean, cleanup and every other exit trap of the run's own shell
+# ignore them first as well, so once the exit trap has started any HUP, INT or TERM does
+# nothing, whether the run was ended by a signal, by `fatal` or by coming to its end. A signal
+# the run started with ignored (nohup) stays ignored.
+# The costs: bash runs a trap once the command in the foreground is done, so a signal sent to
+# the run's pid alone waits for that command (one sent to the group ends the command too). And
+# every command the cleanup starts inherits the ignored signals: a Ctrl-C during the cleanup
+# does nothing, and a command there that hangs can be ended only by KILL, or by a HUP or TERM
+# if it handles them itself, as a tmux client does.
+suite_sig() { trap '' HUP INT TERM; exit $((128 + $1)); }
+suite_sigs() { trap 'suite_sig 1' HUP; trap 'suite_sig 2' INT; trap 'suite_sig 15' TERM; }
+trap suite_clean EXIT; suite_sigs
+fatal() { printf '  \033[31mFATAL\033[0m %s\n' "$1" >&2; exit 1; }
+# A socket folder of the suite's own when its caller hands it none (#1098). With no
+# TMUX_TMPDIR, or one naming a folder that is not there, tmux puts every socket in
+# /tmp/tmux-<uid>, beside the user's own server. CI and the lanes set a private folder; a
+# plain `make test` had none. The folder is in /tmp and short, for the 107 bytes a socket
+# path can hold (#803). It holds sockets only, and suite_clean takes it away with rmdir, so
+# what a block left in it is named and stays. A caller's own folder is kept as it is.
+# Made here, with the trap above already armed, and by name first: mktemp only picks the
+# name, and mkdir makes the folder once the shell holds that name, so a run ended at any
+# point either has no folder yet or has one the trap removes. A plain mkdir, never -p: /tmp
+# is anyone's to write in, and a name that is already there is someone else's, not a folder
+# for the suite to take over. Three names are tried, then the run ends. Exported before
+# the first tmux call: a run inside this run finds it set and keeps it.
+# A relative one that names a folder is the caller's as well, and is kept, but as that
+# folder's full path: tmux reads the variable in every call, and a call made after a cd
+# would look for it from there, find nothing and fall back to /tmp.
+case ${TMUX_TMPDIR:-} in
+''|/*) ;;
+*) TMUX_TMPDIR=$(cd "$TMUX_TMPDIR" 2>/dev/null && pwd -P) || TMUX_TMPDIR=
+   export TMUX_TMPDIR ;;
+esac
+if [ -z "${TMUX_TMPDIR:-}" ] || [ ! -d "$TMUX_TMPDIR" ]; then
+    for _ in 1 2 3; do
+        SUITE_TT=$(mktemp -u /tmp/cs.XXXXXX) && mkdir -m 700 "$SUITE_TT" 2>/dev/null && break
+        SUITE_TT=
+    done
+    [ -n "$SUITE_TT" ] || fatal "no socket folder: could not make /tmp/cs.XXXXXX, three tries"
+    export TMUX_TMPDIR="$SUITE_TT"
+fi
 # Deferring when $TMUX is set is load-bearing: tmux exports it to everything it
 # runs, so cockpit.tmux launched by a run-shell inside one of the per-block
 # servers must talk to THAT server, not this one.
@@ -145,7 +219,29 @@ FLOPEOF
     } > "$1/tmux"
     chmod +x "$1/tmux"
 }
-FLOP="$STATE/flop"; mkdir -p "$FLOP"
+# "$TMUX_REAL" is this wrapper's path from here on, and some forty pane commands paste it in
+# unquoted ("exec $TMUX_REAL -L $X attach"). Under a TMPDIR holding a blank the path split
+# there, the client ended 127 and its server with it (#992). So the wrapper's folder holds no
+# blank: $STATE where that has none, else a folder made in the caller's runtime dir, as #766
+# does for a socket. Every run exports the blank-free folder it settled on, its own $STATE
+# when that has none: a prelude run inside a run (a block's sandbox) makes its folder in
+# there first, so it needs no runtime dir of its own, and the outer run's cleanup takes it
+# even when the inner one was ended by a KILL. With no such place the run ends here and
+# says so.
+FLOP="$STATE/flop"
+case $FLOP in
+*[[:space:]]*)
+    for flop_d in "${COCKPIT_SUITE_NB:-}" "$SUITE_XRD"; do
+        case $flop_d in ''|*[[:space:]]*) continue ;; esac
+        [ -d "$flop_d" ] && [ -w "$flop_d" ] && SUITE_NB=$(mktemp -d "$flop_d/cnb.XXXXXX") && break
+    done
+    [ -n "$SUITE_NB" ] || fatal "TMPDIR holds a blank, and the tmux wrapper needs a folder $(
+        )without one: set XDG_RUNTIME_DIR to a folder that exists, can be written to $(
+        )and has no blank in its path (#992)"
+    FLOP="$SUITE_NB/flop"; unset flop_d ;;
+esac
+export COCKPIT_SUITE_NB="${SUITE_NB:-$STATE}"
+mkdir -p "$FLOP"
 if [ -x "$TMUX_BIN" ]; then flop_write "$FLOP" "$TMUX_BIN"; TMUX_REAL="$FLOP/tmux"; fi
 flop_left() {                 # [dir] -> a bad row for each r.* whose call was never retried, and
                               # with no dir each socket refusal a subshell made (#195)
@@ -158,7 +254,46 @@ flop_left() {                 # [dir] -> a bad row for each r.* whose call was n
             "a retry with the same argv" "${a%.}, refused and never retried"
     done
     # the run's own tail (no dir): refusals a subshell made, whose count was lost (#195)
-    [ $# -gt 0 ] || sock_left
+    [ $# -gt 0 ] || { sock_left; beside_left; tt_left; }
+}
+# A TMPDIR holding a space: an unquoted path in a script the suite writes splits at it, and the
+# write lands on the part before the space, beside the run's scratch (#929). BESIDE is that
+# name, and the tail fails the run if it is newer than a stamp made here: a name an earlier
+# run left is still caught when this run writes to it again (#991). A directory that was there
+# at the start is left out: anything may change it (a TMPDIR under "/home/a b" names /home/a).
+# One the run made is not.
+BESIDE=
+case ${TMPDIR:-} in
+    *' '*) [ -d "${TMPDIR%% *}" ] || BESIDE=${TMPDIR%% *}
+           : > "$STATE/beside.stamp" ;;
+esac
+# A socket in the suite's own folder that cleanup does not know (#1098): not the suite's
+# server's, and not a name a block put in SOCKS. cleanup kills by those names and removes
+# their files, so a file of another name is a server nobody ends, or one a block killed and
+# left: either way the folder cannot be removed. Looked for only where the suite made the
+# folder. In a caller's own, other runs' sockets may sit beside this run's.
+tt_left() {
+    [ -n "$SUITE_TT" ] || return 0
+    local f n
+    for f in "$SUITE_TT/tmux-$(id -u)"/*; do
+        [ -e "$f" ] || [ -L "$f" ] || continue
+        n=${f##*/}
+        case " $SUITE_SOCK $SOCKS " in *" $n "*) continue ;; esac
+        bad "every socket in the suite's own folder is one cleanup knows (#1098)" \
+            "the suite's and the names in SOCKS" "$n"
+    done
+    # Anything beside tmux's own folder keeps the suite's from being removed, too.
+    for f in "$SUITE_TT"/* "$SUITE_TT"/.[!.]*; do
+        [ -e "$f" ] || [ -L "$f" ] || continue
+        [ "${f##*/}" != "tmux-$(id -u)" ] || continue
+        bad "the suite's own socket folder holds tmux's folder and nothing else (#1098)" \
+            "tmux-$(id -u) alone" "${f##*/}"
+    done
+}
+beside_left() {
+    [ -n "$BESIDE" ] && [ "$BESIDE" -nt "$STATE/beside.stamp" ] || return 0
+    bad "nothing the suite wrote landed beside its TMPDIR (#929)" "$BESIDE untouched" \
+        "$(ls -ld "$BESIDE" 2>&1)"
 }
 # The suite itself runs inside the user's tmux, so its own $TMUX would send
 # every bare call straight back to the live server. Drop it.
@@ -167,6 +302,53 @@ unset TMUX TMUX_PANE
 unset CLAUDE_CONFIG_DIR
 # The owner's live VS Code socket must not reach a block (#350).
 unset VSCODE_IPC_HOOK_CLI
+# A pane of a session that loaded the plugin has the live plugin's folder in this variable
+# (cockpit.tmux sets it in the server's environment), and the hooks fall back on it. Every
+# server a block starts would inherit it, and a script run there before the block loads its
+# own copy would be the live one's (#1073).
+unset TMUX_COCKPIT_DIR
+# What else a caller's environment can hand to a script under test (#1078). The scripts read
+# each folder as ${XDG_…:-$HOME/…}, so unset they stay under HOME, the suite's own or the
+# one a block sets for its box. Left set, install.sh linked tm into the caller's
+# XDG_BIN_HOME, the panel wrote its prompts under their XDG_CACHE_HOME, a dozen blocks
+# wrote to their COCKPIT_LOG and tmux-open-path ran their VISUAL. A block that wants one
+# sets it itself.
+unset XDG_STATE_HOME XDG_CONFIG_HOME XDG_BIN_HOME XDG_CACHE_HOME XDG_DATA_HOME
+unset COCKPIT_LOG VISUAL EDITOR
+# Switches: each changes what a script does, and so a row's verdict.
+unset COCKPIT_READONLY COCKPIT_PANEL_NOTE COCKPIT_REVIEW_BASE COCKPIT_PROC_DIR COCKPIT_POLL_KEY
+unset REVDIFF_CONFIG REVDIFF_EXCLUDE CLAUDE_CODE_SESSION_KIND
+# The tmux the board runs. A board a block starts without its own value would send its
+# commands, set-option among them, to whatever the caller's names: "tmux -L work" is a
+# documented use. Unset, the board runs the tmux on PATH, which is the suite's shim.
+unset COCKPIT_TMUX
+# The claude the panel runs, past PATH: the suite's stub is first on PATH (#982), and a
+# caller's COCKPIT_CLAUDE would be run in its place, with a real model call if it is the
+# real one. And the file a board writes its action to, which a board reads as "I was
+# started by a wrapper": with a caller's, a row that starts a bare board reads otherwise.
+unset COCKPIT_CLAUDE COCKPIT_ACTION
+# git's own names (#1099). GIT_DIR and its kin send every fixture's git to another
+# repository: with a caller's GIT_DIR the suite made a repository there, committed into it
+# and failed 383 rows. GIT_CONFIG_GLOBAL, GIT_CONFIG_SYSTEM and the GIT_CONFIG_KEY_<n>
+# family hand git a caller's settings, GIT_TEMPLATE_DIR its hooks for every git init,
+# GIT_TRACE a file to append to, GIT_EDITOR a program to run. So every exported GIT_ name
+# goes, by prefix: no list could spell the numbered ones. A block that needs one sets it
+# itself, as the fixtures do for the author's and the committer's name.
+for suite_v in $(compgen -e GIT_ 2>/dev/null); do unset "$suite_v"; done
+unset suite_v
+# The other names the scripts and the board read (#1100). None names a place to write; each
+# changes what a script does, and so a row's verdict. COCKPIT_TEST_TMUX_GUARD is the tui
+# tests' own guard, set by .cargo/config.toml for cargo: dropped here for the suite alone.
+unset NO_COLOR COCKPIT_GLYPHS COCKPIT_PANEL_MODEL COCKPIT_PANEL_EFFORT COCKPIT_PANEL_TIMEOUT
+unset COCKPIT_PANEL_MODE COCKPIT_PANEL_DROPPED COCKPIT_PANEL_HIDE_TAKEN COCKPIT_VIEW_ASK
+unset COCKPIT_VIEW_BACK COCKPIT_BASKET_PANE COCKPIT_FILES_STATE COCKPIT_TEST_TMUX_GUARD
+unset COCKPIT_GITHUB COCKPIT_TUI_RELEASES COCKPIT_TUI_REPO TM_SID TM_CLIENT TM_PANE TM_POPUP
+unset TM_NEEDS MD_EDIT REVIEW_PANE_ID
+# The key cockpit-panel tells the binary (#1121): a caller's would name a key in the help.
+unset COCKPIT_PANEL_KEY
+# The board's Termux test (#1115): a TERMUX_VERSION, or a PREFIX in Termux's own tree, opens
+# the panel as a tablet's, and a panel row reads another screen.
+unset TERMUX_VERSION PREFIX
 # The suite never runs the real VS Code (#350). Under WSL the Windows PATH brings
 # its code(1) in, and with the private HOME it installs a fresh ~/.vscode-server
 # (639 MB) and can open the owner's editor. So: no /mnt/<drive> entry on PATH, and
@@ -202,8 +384,29 @@ PATH="$SHIM:$SUITE_CLAUDE:$(path_without_mnt "$PATH")"; export PATH
 [ "$(command -v claude)" = "$SUITE_CLAUDE/claude" ] \
     || fatal "claude is not the suite's stub: $(command -v claude || echo none)"
 
-"$TMUX_REAL" -L "$SUITE_SOCK" -f /dev/null new-session -d -s suite \
-    'exec -a claude sleep 3600' >/dev/null 2>&1
+# The suite's pane lives exactly as long as this run: it watches this script's own pid ($$:
+# the script `make test` runs, the one only.sh builds, or one par.sh shard, each with a server
+# of its own) and ends within about a second of it. It used to be `sleep 3600`. A run longer
+# than an hour then lost its server (#981), and a run ended where no cleanup could reach, a
+# KILL or a signal while the server was still starting, left server and pane behind for the
+# rest of that hour (#1006). argv0 stays claude: pane_current_command must read as an agent.
+# tail --pid is GNU's and uutils's; the probe asks whether this tail accepts --pid under the
+# pane's argv0, and where it is refused the pane is a four-hour sleep. The longest run
+# measured took about 90 minutes, so four hours outlasts a run (#981) and a server left behind
+# still ends by itself; on such a platform it can stay for those four hours, which is #1022.
+# What the tail follows is an empty file in a folder of its own. uutils's tail follows by
+# inotify. On /dev/null the watch sits on the node itself, so the pane woke on every open of
+# /dev/null by any process on the box: 2% to 8% of a core for each pane beside the suite's
+# own blocks (#1029). On a regular file the watch sits on the folder that holds it, so
+# nothing else may be written into that folder. The path reaches the pane's shell in the
+# server's environment, never in the command string: a TMPDIR may hold a space.
+SUITE_IDLE="$STATE/pane/idle"; mkdir -p "$STATE/pane"; : > "$SUITE_IDLE"
+if ( exec -a claude tail --pid="$$" -n 0 /dev/null ) >/dev/null 2>&1; then
+    SUITE_PANE="exec -a claude tail --pid=$$ -f \"\$SUITE_IDLE\""
+else SUITE_PANE='exec -a claude sleep 14400'
+fi
+SUITE_IDLE="$SUITE_IDLE" "$TMUX_REAL" -L "$SUITE_SOCK" -f /dev/null new-session -d -s suite \
+    "$SUITE_PANE" >/dev/null 2>&1
 # No agent-view poller on the suite's server: a relayed agent_needs_input would start one, and
 # it runs the real `claude agents` (#174). The agent-view blocks use servers of their own.
 "$TMUX_REAL" -L "$SUITE_SOCK" set -g @cockpit_bg_poll off >/dev/null 2>&1
@@ -239,6 +442,38 @@ kill_socks() {
 $SOCKP
 EOF_SOCKP
 }
+# For a block that runs a suite nested under a TMUX_TMPDIR of its own (#1104): whether a
+# suite's socket there can bind, and the end of what servers it left. In the prelude, so a
+# block above the #1104 block has them too: bash defines a function where it reads it (#1145).
+sock_long() {                 # <TMUX_TMPDIR> -> true when a suite's socket under it,
+    # <it>/tmux-<uid>/cockpit-suite-<pid of up to 7 digits>, passes 107 bytes: none binds there
+    [ $# -eq 1 ] || { bad "sock_long takes one folder" "1" "$#"; return 0; }
+    [ $((${#1} + ${#UID} + 28)) -gt 107 ]
+}
+sock_sweep() {                # <TMUX_TMPDIR>... -> each server on a socket in its tmux-* folders
+    local d s                 # is ended by that socket, silently
+    for d; do
+        for s in "$d"/tmux-*/*; do
+            [ -S "$s" ] && "$TMUX_REAL" -S "$s" kill-server >/dev/null 2>&1
+        done
+    done
+}
+# How many servers listen on a socket under <dir>, from /proc/net/unix, which keeps a bound
+# path after its file is gone. Read once none is left or the polls run out: kill-server
+# returns before its server has closed the socket (#547, #573), so one read right after a
+# nested run's cleanup could count a server on its way out (#1228). One that stays is
+# counted. The caller checks that /proc/net/unix can be read.
+listeners_in() {              # <dir> -> the count
+    [ $# -eq 1 ] && [ -n "$1" ] || { bad "listeners_in takes one folder" "<dir>" "$*"; return 1; }
+    until_out 0 grep -cF " $1/" /proc/net/unix
+    grep -cF " $1/" /proc/net/unix
+}
+# For a block that ends a copy by signals. In the prelude, so the par.sh block above #900 has
+# it too: bash defines a function where it reads it (#1145).
+# A background child starts with INT ignored, and a suite under nohup starts with HUP ignored
+# (#524); bash cannot trap a signal it started with ignored. env hands the default back where
+# it can, and where it cannot the row for that signal is skipped with the reason.
+sig_dfl() { env --default-signal="$1" true 2>/dev/null; }
 
 # Several checks need a live tmux server to set per-pane options against. Skip
 # them cleanly rather than failing: a red suite should mean broken code, not
@@ -285,6 +520,10 @@ utf8_loc() {
 # hold neither, and the other characters curl rejects (# ? [ ] { }, a tab, a newline) can
 # reach a path only from the caller's TMPDIR prefix, which is not supported.
 file_url() { local p=${1//%/%25}; printf 'file://%s' "${p// /%20}"; }
+# A path for a script the suite writes, single-quoted with a ' inside as '\'', as
+# scripts/lib/hook.sh's shq does: a TMPDIR holding a space split it, and a stub wrote beside
+# the run's scratch (#929).
+tq() { printf "'%s'" "${1//\'/\'\\\'\'}"; }
 # The bootstrap (#228), tui-fetch and revdiff release dirs have a space in their own name
 # ("r el"), so a call site there reverted to a raw file:// fails at any TMPDIR. The #217
 # block's clones fail raw only under a TMPDIR holding a %XX escape, which git decodes, and its
@@ -343,6 +582,126 @@ until_out() {                 # <pattern> <cmd...>
         case "$("$@" 2>/dev/null)" in $pat) return 0 ;; esac
         sleep 0.1
     done
+    return 1
+}
+# A pid outlives its process (AGENTS.md, "Never signal a pid the hook has not verified"). bash
+# reaps a background child the moment it exits, with no `wait`, and the kernel can then hand the
+# number on: neither kill -0 nor `jobs -p`, which still lists the reaped job, says the pid is
+# still that child (#1227). Its start time does: read just after the `&`, while the pid is known
+# to be the child, and read again at the kill. A later process under the number starts later.
+# In the prelude, so every block has it (#1145).
+pid_start() {                 # <pid> -> its start time, or nothing when it is gone
+    local s="" a
+    case "${1:-}" in ''|*[!0-9]*) return 1 ;; esac
+    if [ -r "/proc/$1/stat" ]; then
+        read -r s 2>/dev/null < "/proc/$1/stat"; s=${s##*) }; read -ra a <<<"$s"; s=${a[19]:-}
+    elif [ ! -d /proc/self ]; then
+        s=$(ps -o lstart= -p "$1" 2>/dev/null)   # no /proc: to the second, so the pid as well
+    fi
+    printf '%s' "$s"
+}
+pid_sig() {                   # <signal> <pid> <start>: signal it only if it started then
+    # Prints nothing when the signal went, else "no signal: <why>", so a row can show a kill
+    # that did not happen (#1208).
+    local p=${2:-} s
+    case "$p" in ''|*[!0-9]*) printf 'no signal: pid [%s]' "$p"; return 1 ;; esac
+    [ -n "${3:-}" ] || { printf 'no signal: no start'; return 1; }
+    s=$(pid_start "$p")
+    [ "$s" = "$3" ] || { printf 'no signal: start [%s]' "$s"; return 1; }
+    kill -"$1" "$p" 2>/dev/null || { printf 'no signal: kill %s' "$1"; return 1; }
+}
+# A pid that is no child of this shell's, read from a file or from pgrep, gets its start from
+# the same stat line as its parent: while the parent is one this shell knows, the number is
+# still that parent's child (#1227). No /proc: nothing, so pid_sig refuses.
+pid_kid() {                   # <pid> <parent> -> its start time, only while <parent> is its parent
+    local s="" a
+    case "${1:-}" in ''|*[!0-9]*) return 1 ;; esac
+    case "${2:-}" in ''|*[!0-9]*) return 1 ;; esac
+    [ -r "/proc/$1/stat" ] && read -r s 2>/dev/null < "/proc/$1/stat"
+    s=${s##*) }; read -ra a <<<"$s"
+    [ "${a[1]:-}" = "$2" ] && printf '%s' "${a[19]:-}"
+}
+# A pane's start, waited for on the pane's own process, never on #{pane_current_command}
+# (#1079). tmux names a pane from its foreground group's /proc cmdline. Where that read
+# fails or is empty, before the pane's process takes its tty and inside each exec, tmux
+# names it by the first word of the pane's start command: a pane started 'sleep 30' reads
+# sleep before sleep runs. And a pane started 'exec bash' reads bash already in the
+# `<default-shell> -c 'exec bash'` that starts it. So the wait reads #{pane_pid}'s comm (cut
+# to 15 bytes, as the kernel cuts it) and its whole argv, which that -c shell does not share.
+# The last reads stay in PR_COMM and PR_ARGV for a row to check. Where there is no /proc it
+# waits on the field, as before; the #1079 block says so with its SKIP rows.
+# Pass a pane id from -P, not session:index: an index whose window has ended names another
+# window's pane, and the wait reads that pane's process. Anything else is refused.
+# In the prelude, so every block has it: bash defines a function where it reads it (#1145).
+pane_runs() {                 # <-L socket> <pane> <comm> <argv...> -> 0, or a bad row and 1
+    local s=${1:-} p=${2:-} c=${3:-} pid i want n argv=()
+    PR_COMM='' PR_ARGV=''
+    need_sock "$s" pane_runs || return 1
+    if [ $# -lt 4 ] || [ -z "$p" ] || [ -z "$c" ]; then
+        sock_bad "pane_runs takes a socket, a pane, a comm and an argv" \
+            "<socket> <pane> <comm> <argv...>" "$*"
+        return 1
+    fi
+    if ! [[ $p =~ ^%[0-9]+$ ]]; then
+        sock_bad "pane_runs takes a pane id from -P, not session:index" "%<digits>" "$p"
+        return 1
+    fi
+    shift 3
+    if [ ! -d /proc/self ]; then
+        n=$1; case $n in /*) n=${n##*/} ;; esac
+        until_out "$n" "$TMUX_REAL" -L "$s" display-message -p -t "$p" '#{pane_current_command}'
+        return
+    fi
+    pid=$("$TMUX_REAL" -L "$s" display-message -p -t "$p" '#{pane_pid}' 2>/dev/null)
+    case $pid in ''|*[!0-9]*)
+        sock_bad "pane_runs: pane $p on $s has a pid (#1079)" "a pid" "${pid:-nothing}"
+        return 1 ;;
+    esac
+    printf -v want '[%s]' "$@"
+    for ((i = 1; i <= POLLS; i++)); do
+        PR_COMM='' argv=()
+        read -r PR_COMM 2>/dev/null < "/proc/$pid/comm"
+        mapfile -d '' -t argv 2>/dev/null < "/proc/$pid/cmdline"
+        printf -v PR_ARGV '[%s]' "${argv[@]}"
+        [ "$PR_COMM" = "${c:0:15}" ] && [ "$PR_ARGV" = "$want" ] && return 0
+        [ "$i" -lt "$POLLS" ] && sleep 0.1
+    done
+    sock_bad "pane $p never ran $want: its process $pid read comm [$PR_COMM], argv $PR_ARGV last" \
+        "comm [${c:0:15}], argv $want" "comm [$PR_COMM], argv $PR_ARGV"
+    return 1
+}
+# A shell's own prompt, waited for after an empty line (#1183). A paste into a bash whose
+# readline is not up yet is echoed by the tty unbracketed, and bash then runs its lines (#215).
+# The Enter runs nothing at a prompt, and before readline it is an empty line; a shell held in
+# its rc file until a line is pending goes on with it. PATTERN is a case-pattern naming that
+# shell's own prompt, with no embedded quotes: '*[$#]*' also matches a pasted line's echo.
+# One prompt on screen is not enough: bash leaves readline when it reads the Enter, and a paste
+# made before the next prompt runs (#1196). So the wait ends when the line at the cursor is a
+# prompt AND the line above it is one too, the Enter's own. cursor_y and the screen come from
+# one tmux call per poll. A PROMPT_COMMAND that clears the screen or redraws in place defeats
+# it, and so does a call made while the line above the cursor is already a prompt.
+shell_prompt() {              # <-L socket> <pane> <pattern> -> 0, or a bad row and 1
+    local s=${1:-} p=${2:-} pat=${3:-} i y l=()
+    need_sock "$s" shell_prompt || return 1
+    if [ $# -ne 3 ] || [ -z "$p" ] || [ -z "$pat" ]; then
+        sock_bad "shell_prompt takes a socket, a pane and a prompt pattern" \
+            "<socket> <pane> <pattern>" "$*"
+        return 1
+    fi
+    "$TMUX_REAL" -L "$s" send-keys -t "$p" Enter >/dev/null 2>&1
+    for ((i = 1; i <= POLLS; i++)); do
+        # l[0] is cursor_y, and screen line n is l[n+1].
+        mapfile -t l < <("$TMUX_REAL" -L "$s" display-message -p -t "$p" '#{cursor_y}' \; \
+            capture-pane -p -t "$p" 2>/dev/null)
+        y=${l[0]:-}
+        if [[ $y =~ ^[0-9]+$ ]] && [ "$y" -ge 1 ]; then
+            # shellcheck disable=SC2254  # $pat is meant as a glob, not a literal
+            case ${l[y+1]-} in $pat) case ${l[y]-} in $pat) return 0 ;; esac ;; esac
+        fi
+        [ "$i" -lt "$POLLS" ] && sleep 0.1
+    done
+    sock_bad "pane $p on $s never drew its prompt $pat twice at the cursor (#1183)" \
+        "two prompts" "cursor_y [$y], lines [${l[y]-}] [${l[y+1]-}]"
     return 1
 }
 # #195: an empty socket name never reaches tmux. `-L ''` itself errors, but TMUX=
@@ -468,6 +827,7 @@ tdiff() {                     # <dir> [git diff args...]
     bash -c '. "$1/git.sh"; . "$1/review-diff.sh"; shift; tree_diff "$@"' _ "$DIR/scripts/lib" "$@"
 }
 cleanup() {
+    trap '' HUP INT TERM          # nothing ends the cleanup once it runs (#1107)
     kill_socks
     suite_clean
     while read -r t; do
@@ -479,6 +839,18 @@ cleanup() {
 }
 trap cleanup EXIT
 sv()    { tmux show-option -pqv -t "$PANE" @panestate 2>/dev/null; }
+# How many of the given /proc/<pid> folders are agent-poll processes of the private server on
+# socket <name>. The folders are an argument, so a row can hand it one whose process is gone
+# (#1137): the walk then counts it out and prints nothing, whichever read the exit beat.
+polls_on() {                  # <socket name> <proc dir>... -> the count
+    local s=$1 p n=0
+    shift
+    for p in "$@"; do
+        [ "$(cat "$p/comm" 2>/dev/null)" = agent-poll ] || continue
+        tr '\0' '\n' 2>/dev/null < "$p/environ" | grep -q "^TMUX=$SOCKDIR/$s," && n=$((n + 1))
+    done
+    echo "$n"
+}
 
 echo "== syntax =="
 for f in "$DIR"/cockpit.tmux "$DIR"/install.sh "$DIR"/scripts/* "$DIR"/scripts/lib/*; do
@@ -1117,11 +1489,12 @@ echo "== stale state is disbelieved =="
 if need_tmux "stale state"; then :; else
 # Hooks cannot fire if an agent is killed or crashes, so @panestate can outlive
 # the agent. The formats only believe it while the pane is actually running one.
-w=$(tmux new-window -d -P -F '#{window_index}' -n cockpit-test 'bash' 2>/dev/null)
+read -r w wp <<<"$(tmux new-window -d -P -F '#{window_index} #{pane_id}' -n cockpit-test \
+    'bash' 2>/dev/null)"
 if [ -n "$w" ]; then
     # The border style below is judged off pane_current_command, so wait for
-    # the shell to BE the pane's command rather than guess at the spawn.
-    until_out bash tmux display-message -p -t ":$w" '#{pane_current_command}'
+    # the shell to BE the pane's process rather than guess at the spawn (#1079).
+    pane_runs "$SUITE_SOCK" "$wp" bash bash
     tp2=$(tmux list-panes -t ":$w" -F '#{pane_id}' 2>/dev/null | head -1)
     tmux set -p -t "$tp2" @panestate needs-input >/dev/null 2>&1
     is "option is still set"        "needs-input" "$(tmux show-option -pqv -t "$tp2" @panestate)"
@@ -1269,10 +1642,17 @@ if locale -a 2>/dev/null | grep -qix 'c\.utf-\?8'; then
         >/dev/null 2>&1
     is "a subagent after a non-UTF-8 byte holds it under C.UTF-8" running "$(bgo @panestate)"
     # A 1 MB array with no subagent, then the same array ending in one, both under C.UTF-8.
-    BGARR=$(yes "{\"type\":\"shell\",\"command\":\"$(printf '%01000d' 0)\"}," \
-        | head -n 1000 | tr -d '\n')
+    # yes never ends on its own: head closes the pipe at 1000 lines, and where SIGPIPE is
+    # ignored (GitHub's runners) yes says so on stderr (#1137). Run so here, its stderr kept:
+    # without the 2>/dev/null the row below is red where yes is GNU coreutils, the
+    # ubuntu-24.04 and tmux-master legs as CI runs them.
+    BGYE=$(mktmpf)
+    BGARR=$( { trap '' PIPE
+               yes "{\"type\":\"shell\",\"command\":\"$(printf '%01000d' 0)\"}," 2>/dev/null \
+                   | head -n 1000 | tr -d '\n'; } 2>"$BGYE")
     is "the long array has 1000 shell entries" 1000 \
         "$(grep -o '"type":"shell"' <<< "$BGARR" | wc -l | tr -d ' ')"
+    is "and its yes, SIGPIPE ignored, leaves nothing on stderr (#1137)" "" "$(cat "$BGYE")"
     for bgw in done running; do
         bgx=${BGARR%,}; [ "$bgw" = running ] && bgx="$BGARR$BGT"
         bgst running "$BGU"; bgbig done "$(bgstop "$bgx")" LC_ALL=C.UTF-8
@@ -1281,6 +1661,7 @@ if locale -a 2>/dev/null | grep -qix 'c\.utf-\?8'; then
 else
     skip_ "a subagent after a non-UTF-8 byte holds it under C.UTF-8 (no C.UTF-8 locale)"
     skip_ "the long array has 1000 shell entries (no C.UTF-8 locale)"
+    skip_ "and its yes, SIGPIPE ignored, leaves nothing on stderr (no C.UTF-8 locale)"
     skip_ "a 1 MB array under C.UTF-8 ends done (no C.UTF-8 locale)"
     skip_ "a 1 MB array under C.UTF-8 ends running (no C.UTF-8 locale)"
 fi
@@ -1459,11 +1840,12 @@ fi
 # tests: cockpit.tmux
 echo "== spaced window names survive the formats =="
 if need_tmux "spaced window names"; then :; else
-sw=$(tmux new-window -d -P -F '#{window_index}' -n 'my project' 'sleep 30' 2>/dev/null)
+read -r sw swp <<<"$(tmux new-window -d -P -F '#{window_index} #{pane_id}' -n 'my project' \
+    'sleep 30' 2>/dev/null)"
 if [ -n "$sw" ]; then
     # automatic-rename fires on the pane's command, so waiting for that command
-    # to be there is what gives it its chance to clobber the name.
-    until_out sleep tmux display-message -p -t ":$sw" '#{pane_current_command}'
+    # to be there is what gives it its chance to clobber the name (#1079).
+    pane_runs "$SUITE_SOCK" "$swp" sleep sleep 30
     # automatic-rename must not clobber an explicit name, and the format must
     # carry the space through -- the old shell version truncated at it.
     is "explicit name keeps its space" "my project" \
@@ -1540,8 +1922,9 @@ is "the fleet counter still counts" '#[fg=themered bold]▲1#[default] ' \
 # The writes happen inside one tmux command now, so a server hook is what sees
 # them. Not -b: the hook's shell finishes before the hook's client returns.
 RTSETS="$RTS/sets"; : > "$RTSETS"
+"$TMUX_REAL" -L "$RT" set-environment -g CKLOG "$RTSETS" >/dev/null 2>&1
 "$TMUX_REAL" -L "$RT" set-hook -g after-set-option \
-    "run-shell 'echo \"#{hook_arguments}\" >> $RTSETS'" >/dev/null 2>&1
+    "run-shell 'echo \"#{hook_arguments}\" >> \"\$CKLOG\"'" >/dev/null 2>&1
 # An unchanged state still costs exactly one round-trip and writes nothing.
 rtsame=$(rtcall needs-input)
 is "an unchanged state costs one call and no writes" "1 0" \
@@ -1583,8 +1966,8 @@ pstrans() {                   # one real transition on this block's server
 # Two stand-in boards: a bare waiter on each channel, as the board's own child is.
 "$TMUX_REAL" -L "$PS" set -g @cockpit_board_wake \
     'wait-for -S cockpit-board-1 ; wait-for -S cockpit-board-2 ; ' >/dev/null 2>&1
-"$TMUX_REAL" -L "$PS" wait-for cockpit-board-1 & PSW1=$!
-"$TMUX_REAL" -L "$PS" wait-for cockpit-board-2 & PSW2=$!
+"$TMUX_REAL" -L "$PS" wait-for cockpit-board-1 & PSW1=$!; PSW1S=$(pid_start "$PSW1")
+"$TMUX_REAL" -L "$PS" wait-for cockpit-board-2 & PSW2=$!; PSW2S=$(pid_start "$PSW2")
 sleep 0.2
 # running, not done: needs-input is sticky and a done would fail the
 # transition's guard, so no transition would happen to push.
@@ -1594,7 +1977,7 @@ psgone() { local i; for i in $(seq 1 "$POLLS"); do kill -0 "$1" 2>/dev/null || r
 }
 if psgone "$PSW1" && psgone "$PSW2"; then ok "a transition wakes both listed boards"
 else bad "a transition wakes both listed boards" "both waiters returned" "one still waits"
-    kill "$PSW1" "$PSW2" 2>/dev/null
+    pid_sig TERM "$PSW1" "$PSW1S" >/dev/null; pid_sig TERM "$PSW2" "$PSW2S" >/dev/null
 fi
 wait "$PSW1" "$PSW2" 2>/dev/null
 # An exact count: the wake rides the one round-trip the transition already
@@ -1639,7 +2022,8 @@ bw_list() { "$TMUX_REAL" -L "$BW" show-option -gqv @cockpit_board_wake; }
 bw_open() {                   # <n>  -> BWW, BWPID: board <n> in its own window, its channel listed
     local i
     BWW=$("$TMUX_REAL" -L "$BW" new-window -d -P -F '#{pane_id}' -t t: \
-        "exec env XDG_STATE_HOME=$BWD/$1 COCKPIT_LOG=$BWD/tui$1.log $COCKPIT_TUI_BIN board")
+        "exec env XDG_STATE_HOME=$(tq "$BWD/$1") COCKPIT_LOG=$(tq "$BWD/tui$1.log") \
+$(tq "$COCKPIT_TUI_BIN") board")
     BWPID=$("$TMUX_REAL" -L "$BW" display -p -t "$BWW" '#{pane_pid}')
     for i in $(seq 1 "$POLLS"); do
         case "$(bw_list)" in *"cockpit-board-$BWPID ; "*) return 0 ;; esac
@@ -1670,8 +2054,8 @@ BWMS=-1
 bw_woke 1 $((BWN1 + 1)) \
     && BWMS=$(( ($(grep 'push wake' "$BWD/tui1.log" | sed -n "$((BWN1 + 1))p" | cut -d' ' -f1) - BWT0) / 1000 ))
 if [ "$BWMS" -ge 0 ] && [ "$BWMS" -lt 500 ]; then
+    # The figure is printed only by the red row's got: a green run prints rows alone (#1137).
     ok "a transition wakes the running board within 500 ms"
-    printf '    wake latency, hook start to the board loop: %s ms\n' "$BWMS"
 else
     bad "a transition wakes the running board within 500 ms" "a push wake under 500 ms" \
         "${BWMS} ms: $(cat "$BWD/tui1.log" 2>/dev/null)"
@@ -1688,8 +2072,22 @@ else bad "one transition wakes two boards" "a wake in each log" "$(bw_wakes 1) a
 fi
 
 # SIGKILL runs nothing of the board's: its entry stays, and the next board to
-# start drops it and still wakes. The pid is this private server's own pane.
-kill -9 "$BWPID1" 2>/dev/null
+# start drops it and still wakes. The pid is this private server's own pane, read rows ago:
+# its name is checked at the kill, since a board that died meanwhile frees the number (#1213).
+# With /proc, so is the TMUX in its environment: other runs' boards, and the owner's, are named
+# cockpit-tui too. With ps alone there is no environment to read: the name is all.
+BWC="" BWE=""
+if [ -r "/proc/$BWPID1/comm" ]; then
+    read -r BWC 2>/dev/null < "/proc/$BWPID1/comm"
+    while IFS= read -r -d '' BWX; do
+        case "$BWX" in "TMUX=$SOCKDIR/$BW,"*) BWE=1 ;; esac
+    done 2>/dev/null < "/proc/$BWPID1/environ"
+elif [ ! -d /proc/self ]; then
+    BWC=$(ps -o comm= -p "$BWPID1" 2>/dev/null); BWC=${BWC##*/}; BWE=1
+fi
+is "board 1's pane pid still names this server's cockpit-tui at its SIGKILL (#1213)" \
+   "cockpit-tui|1" "$BWC|$BWE"
+[ "$BWC|$BWE" = "cockpit-tui|1" ] && kill -9 "$BWPID1" 2>/dev/null
 BWI=0; while kill -0 "$BWPID1" 2>/dev/null && [ "$BWI" -lt "$POLLS" ]; do sleep 0.1; BWI=$((BWI+1))
 done
 case "$(bw_list)" in *"cockpit-board-$BWPID1 ; "*) ok "a SIGKILLed board leaves its entry" ;;
@@ -1779,13 +2177,13 @@ until_out 20 sh -c \
     "'$TMUX_REAL' -L '$SG' list-panes -a -F '#{pane_current_command}' | grep -c claude" >/dev/null
 SGA=$(sgt list-panes -t u: -F '#{pane_id}') SGP=$(sgt display-message -p '#{pid}')
 sgt set -w -t "$SGA" @cockpit_ctx_on 1
-SGN=""; read -r SGN 2>/dev/null < "/proc/$SGP/comm"
-# Only the private server's own pid is ever stopped: its comm names the tmux server. A run
-# that dies inside a stop must not leave it stopped: every client of it, the suite's own
-# cleanup too, would wait on it for good.
+SGS=$(pid_start "$SGP") SGN=""; read -r SGN 2>/dev/null < "/proc/$SGP/comm"
+# Only the private server's own pid is ever stopped: its comm names the tmux server, and each
+# STOP and CONT goes through pid_sig with the start read here (#1227). A run that dies inside
+# a stop must not leave it stopped: every client of it, the suite's own cleanup too, would
+# wait on it for good.
 case "$SGN" in
-    tmux*) trap 'kill -CONT "$SGP" 2>/dev/null; cleanup' EXIT; trap 'exit 130' INT
-           trap 'exit 143' TERM ;;
+    tmux*) trap 'trap "" HUP INT TERM; pid_sig CONT "$SGP" "$SGS" >/dev/null; cleanup' EXIT ;;
     *) SGP="" ;;
 esac
 sg_hook() {
@@ -1797,7 +2195,9 @@ sg_stall() {                  # <state>: the hook, with one stop at a random poi
     sg_hook "$1" & hp=$!
     while read -r c _ < "/proc/$SGP/schedstat"; [ $((c - c0)) -lt "$x" ] \
         && kill -0 "$hp" 2>/dev/null; do :; done
-    if kill -0 "$hp" 2>/dev/null; then kill -STOP "$SGP"; sleep 0.15; kill -CONT "$SGP"; fi
+    if kill -0 "$hp" 2>/dev/null && pid_sig STOP "$SGP" "$SGS" >/dev/null; then
+        sleep 0.15; pid_sig CONT "$SGP" "$SGS" >/dev/null
+    fi
     wait "$hp"
 }
 # One read per hook: the fleet's, then A's session's and window's sums.
@@ -1858,7 +2258,7 @@ else
     bad "the stalled server is the private one" "tmux*" "$SGN"
 fi
 sgt kill-server
-trap cleanup EXIT; trap - INT TERM
+trap cleanup EXIT
 fi
 
 echo "== the gauge cells' focus hook and agent-context, stopped mid-format, stay exact (#713) =="
@@ -1891,9 +2291,9 @@ SCX=$(sct split-window -d -P -F '#{pane_id}' -t c:1 -c "$SCD" 'exec -a claude sl
 sct set -p -t "$SCC" @panestate_ctx 12; sct set -p -t "$SCX" @panestate_ctx 345
 sct set -gw @cockpit_ctx_on '#{?#{m:*q*,#{R:xxxxxxxxxx,2000}},,1}'
 SCP=$(sct display-message -p '#{pid}') SCN=""; read -r SCN 2>/dev/null < "/proc/$SCP/comm"
+SCS=$(pid_start "$SCP")       # each STOP and CONT goes through pid_sig with it (#1227)
 case "$SCN" in
-    tmux*) trap 'kill -CONT "$SCP" 2>/dev/null; cleanup' EXIT; trap 'exit 130' INT
-           trap 'exit 143' TERM ;;
+    tmux*) trap 'trap "" HUP INT TERM; pid_sig CONT "$SCP" "$SCS" >/dev/null; cleanup' EXIT ;;
     *) SCP="" ;;
 esac
 sc_ctx() {                    # <percent>: agent-context on C
@@ -1902,12 +2302,15 @@ sc_ctx() {                    # <percent>: agent-context on C
 }
 sc_stall() {                  # <command...>: run it, with one stop at a random point of its CPU
     local x c0 c hp
-    x=$(( SCPER * (RANDOM % 100) / 100 )); read -r c0 _ < "/proc/$SCP/schedstat"
+    x=$(( SCPER * (RANDOM % 100) / 100 )); SC_X=$x SC_HIT=0   # SC_*: for a red row (#747)
+    read -r c0 _ < "/proc/$SCP/schedstat"
     "$@" & hp=$!
     while read -r c _ < "/proc/$SCP/schedstat"; [ $((c - c0)) -lt "$x" ] \
         && kill -0 "$hp" 2>/dev/null; do :; done
-    if kill -0 "$hp" 2>/dev/null; then kill -STOP "$SCP"; sleep 0.15; kill -CONT "$SCP"; fi
-    wait "$hp"
+    if kill -0 "$hp" 2>/dev/null && pid_sig STOP "$SCP" "$SCS" >/dev/null; then
+        sleep 0.15; pid_sig CONT "$SCP" "$SCS" >/dev/null; SC_HIT=1
+    fi
+    wait "$hp"; SC_RC=$?
 }
 sc_per() {                    # SCPER <- the server CPU of one call, from 8 of <command...>
     local c0 c i
@@ -1915,7 +2318,8 @@ sc_per() {                    # SCPER <- the server CPU of one call, from 8 of <
     for i in 1 2 3 4; do "$@" "$SCC" "$SCX" 7; "$@" "$SCX" "$SCC" 88; done
     read -r c _ < "/proc/$SCP/schedstat"; SCPER=$(( (c - c0) / 8 ))
 }
-sc_focus() { sct select-pane -t "$1"; }            # <to> <from> <pct>: the focus hook
+# <to> <from> <pct>: the focus hook. Its status reaches sc_stall's wait, its stderr one file.
+sc_focus() { "$TMUX_REAL" -L "$SC" select-pane -t "$1" 2> "$SCD/sel-err"; }
 sc_call() { sc_ctx "$3"; }                         # <to> <from> <pct>: agent-context
 SCF='#{@panestate_ctx}|#{@cockpit_ctx_all}|#{l:.}'
 sc_read() {                   # <pane>: its gauge and the cells, from a read that ends whole
@@ -1924,30 +2328,95 @@ sc_read() {                   # <pane>: its gauge and the cells, from a read tha
         && [ $((n += 1)) -lt 50 ]; do :; done
     printf '%s' "${g%|.}"
 }
+sc_ok() { [ "$1" = "$2" ] && echo right || echo "still wrong"; }    # <got> <want>
+sc_line() { tr '\n' ' ' 2>/dev/null < "$1" | sed 's/ $//'; }       # <file>: on one line
+# <pane> <want> <got> <before> <sel|ctx>: what a red call left (#747). A walk cut by tmux's time
+# limit stores the windows before the cut, a prefix sum of the wanted walk: "partial". The
+# value from before the call: "stale". Anything else: "other". The sums need the cells format
+# in the shape #{n:#{W:<one window>}}; in any other shape the value is "unclassified".
+sc_why() {
+    local c=${3#*|} f0 f p q act w1 walk i l s=0 d v=other
+    f0=$(sct show-options -gv @cockpit_fmt_cells); p=${f0#'#{n:#{W:'}; q=${p%'}}'}; f="#{n:$q}"
+    [ "$p" != "$f0" ] && [ "$q" != "$p" ] || v="unclassified (the cells format changed shape)"
+    read -r act w1 walk < <(sct display-message -p -t "$1" \
+        '#{pane_active} #{window_index} #{E:@cockpit_fmt_cells}')
+    if [ "$v" = other ]; then
+        d=$(( ${2#*|} - (0$(sct list-windows -t "$1" -F "+$f" | tr -d '\n')) ))
+        while read -r i l; do
+            [ "$c" = "$s" ] && v=partial
+            s=$(( s + l + (i == w1 ? d : 0) ))
+        done < <(sct list-windows -t "$1" -F "#{window_index} $f")
+        [ "$c" = "${4#*|}" ] && v=stale
+    fi
+    printf '%s: cells [%s], before the call [%s]; pane_active %s, the walk now [%s];' \
+        "$v" "$c" "${4#*|}" "$act" "$walk"
+    if [ "$5" = sel ]; then
+        printf ' select-pane exit %s, stderr [%s];' "$SC_RC" "$(sc_line "$SCD/sel-err")"
+    fi
+    printf ' stop sent %s, planned at %s of %s ns of server CPU for a call (schedstat)' \
+        "$SC_HIT" "$SC_X" "$SCPER"
+}
+# <pane> <got> <active pane>: put back what the wrong call left, after the writer step that
+# diagnosed it, so every later call measures what it would have measured without the step: the
+# diagnostics describe, they do not repair (#747). The active pane, the gauge, then the cells,
+# last: a select-pane fires the focus hook, which writes them.
+sc_back() {
+    sct select-pane -t "$3"
+    if [ -n "${2%%|*}" ]; then sct set -p -t "$1" @panestate_ctx "${2%%|*}"
+    else sct set -pu -t "$1" @panestate_ctx; fi
+    if [ -n "${2#*|}" ]; then sct set -t "$1" @cockpit_ctx_all "${2#*|}"
+    else sct set -u -t "$1" @cockpit_ctx_all; fi
+}
+SCA='#{P:#{?pane_active,#{pane_id},}}'                  # the window's active pane
+# agent-context exits 0 whatever its tmux call did, so only the uncut calls after a wrong one go
+# through the test's own tmux, which keeps their status and stderr (#747).
+sc_wrap() {                   # <percent>: agent-context on C, its tmux call's status kept
+    [ -x "$SCD/bin/tmux" ] || { mkdir -p "$SCD/bin"
+        printf '#!/bin/sh\n%s "$@" 2>> %s\nr=$?; echo "$r" >> %s; exit "$r"\n' \
+            "$(tq "$TMUX_REAL")" "$(tq "$SCD/ctx-err")" "$(tq "$SCD/ctx-rc")" > "$SCD/bin/tmux"
+        chmod +x "$SCD/bin/tmux"; }
+    PATH="$SCD/bin:$PATH" sc_ctx "$1"
+}
 if [ -n "$SCP" ]; then
-    sc_per sc_focus; scf=0 scf1=""
+    sc_per sc_focus; scf=0 scf1="" sch=0 scb=$(sc_read "$SCC")
     for i in $(seq 1 32); do
-        to=$SCC w=12; [ $((i % 2)) = 0 ] && to=$SCX w=345
-        sc_stall sc_focus "$to"
+        to=$SCC fr=$SCX w=12; [ $((i % 2)) = 0 ] && to=$SCX fr=$SCC w=345
+        sc_stall sc_focus "$to"; sch=$((sch + SC_HIT))
         g=$(sc_read "$to") w="$w|$((57 + 3 + ${#w}))"
-        [ "$g" = "$w" ] || { scf=$((scf + 1)); [ -n "$scf1" ] || scf1="change $i: [$g]"; }
+        if [ "$g" != "$w" ]; then
+            scf=$((scf + 1))
+            [ -n "$scf1" ] || { scf1="change $i: [$g]"; scd=$(sc_why "$to" "$w" "$g" "$scb" sel)
+                sca=$(sct display-message -p -t "$to" "$SCA")
+                sc_focus "$fr"; sc_focus "$to"; scr=$(sc_read "$to"); sc_back "$to" "$g" "$sca"
+                scd="$scd; after a change away and back: [$scr], $(sc_ok "$scr" "$w")"; }
+        fi
+        scb=$g
     done
     is "32 focus changes, each with the server stopped 150 ms mid-hook, leave the cells exact" \
-        "0" "$scf${scf1:+, first $scf1}"
-    sc_focus "$SCC"; sc_per sc_call; scf=0 scf1=""
+        "0" "$scf${scf1:+, first $scf1; $scd; stops sent while the client ran: $sch of 32}"
+    sc_focus "$SCC"; sc_per sc_call; scf=0 scf1="" sch=0 scb=$(sc_read "$SCC")
     for i in $(seq 1 32); do
         w=7; [ $((i % 2)) = 0 ] && w=88
-        sc_stall sc_ctx "$w"
-        g=$(sc_read "$SCC") w="$w|$((57 + 3 + ${#w}))"
-        [ "$g" = "$w" ] || { scf=$((scf + 1)); [ -n "$scf1" ] || scf1="call $i: [$g]"; }
+        sc_stall sc_ctx "$w"; sch=$((sch + SC_HIT))
+        g=$(sc_read "$SCC") wg=$w w="$w|$((57 + 3 + ${#w}))"
+        if [ "$g" != "$w" ]; then
+            scf=$((scf + 1))
+            [ -n "$scf1" ] || { scf1="call $i: [$g]"; scd=$(sc_why "$SCC" "$w" "$g" "$scb" ctx)
+                sca=$(sct display-message -p -t "$SCC" "$SCA")
+                sc_wrap 50; sc_wrap "$wg"; scr=$(sc_read "$SCC"); sc_back "$SCC" "$g" "$sca"
+                scd="$scd; after a call with 50, then $wg: [$scr], $(sc_ok "$scr" "$w")"
+                scd="$scd, their tmux exit [$(sc_line "$SCD/ctx-rc")]"
+                scd="$scd, stderr [$(sc_line "$SCD/ctx-err")]"; }
+        fi
+        scb=$g
     done
     is "and 32 agent-context calls stopped the same way leave C's gauge and the cells exact" \
-        "0" "$scf${scf1:+, first $scf1}"
+        "0" "$scf${scf1:+, first $scf1; $scd; stops sent while the client ran: $sch of 32}"
 else
     bad "the stalled server is the private one" "tmux*" "$SCN"
 fi
 sct kill-server
-trap cleanup EXIT; trap - INT TERM
+trap cleanup EXIT
 fi
 
 echo "== agent-state recount: ◆N counts panes with a pending review, off clears them =="
@@ -2242,7 +2711,8 @@ is "and passes through (no continue:false on a fresh turn)" "" "$(cat "$RGSTATE/
 # The concession: the agent names why the goal will not be met; the next Stop
 # ends the turn with that line as the reason, whatever stop_hook_active says.
 TMUX=$RGTMUX TMUX_PANE=$RGAP XDG_STATE_HOME="$RGSTATE" "$DIR/scripts/review-gate" --concede \
-    'push denied by the classifier; a "human" must run it'
+    'push denied by the classifier; a "human" must run it' >/dev/null
+# Its confirmation goes to stdout: the "--concede confirms on stdout" row below reads it (#1137).
 rg_run "$RGPAY"; is "a conceded Stop exits 0" "GRC=0" "$(rg_rc)"
 case "$(cat "$RGSTATE/out")" in
     *'"continue":false'*'push denied by the classifier; a \"human\" must run it'*) \
@@ -2367,6 +2837,7 @@ rg_ms() { local t=${EPOCHREALTIME:-${SECONDS}.000000}; t=${t/[.,]/}; echo $(( 10
 #    one write, under PIPE_BUF so atomic: the fields never arrive without it.
 printf 'RG-TAIL\n' | cat "$RGPAY" - > "$RGSTATE/pay-tail"
 ( exec 9>"$RGF"; cat "$RGSTATE/pay-tail" >&9; sleep 8 ) & rg_holder=$!   # a holder
+rg_hs=$(pid_start "$rg_holder")
 rg_t0=$(rg_ms)
 TMUX_PANE=%999999 TMUX_TMPDIR="$RGSTATE" XDG_STATE_HOME="$RGSTATE" \
     timeout 6 "$DIR/scripts/review-gate" >/dev/null 2>&1 < "$RGF"
@@ -2374,7 +2845,7 @@ rg_grc=$?
 rg_dt=$(( $(rg_ms) - rg_t0 ))
 # <> opens read-write, so open() never waits for a writer the holder may no longer be.
 rg_rest=""; IFS= read -r -t 3 rg_rest <> "$RGF"
-kill "$rg_holder" 2>/dev/null; wait "$rg_holder" 2>/dev/null
+pid_sig TERM "$rg_holder" "$rg_hs" >/dev/null; wait "$rg_holder" 2>/dev/null
 is "a payload whose writer keeps stdin open is not waited out" "0" "$rg_grc"
 [ "$rg_dt" -lt 4000 ] &&
     ok "and the read returns as soon as it has both fields (${rg_dt}ms)" ||
@@ -2382,12 +2853,13 @@ is "a payload whose writer keeps stdin open is not waited out" "0" "$rg_grc"
 is "and it stops reading at those fields" "RG-TAIL" "$rg_rest"
 # 2. Nothing ever arrives: the deadline is the backstop, and it must fire.
 ( exec 9>"$RGF"; sleep 8 ) & rg_holder=$!                     # a holder, not a wait
+rg_hs=$(pid_start "$rg_holder")
 rg_t0=$(rg_ms)
 TMUX_PANE=%999999 TMUX_TMPDIR="$RGSTATE" XDG_STATE_HOME="$RGSTATE" \
     timeout 6 "$DIR/scripts/review-gate" >/dev/null 2>&1 < "$RGF"
 rg_grc=$?
 rg_dt=$(( $(rg_ms) - rg_t0 ))
-kill "$rg_holder" 2>/dev/null; wait "$rg_holder" 2>/dev/null
+pid_sig TERM "$rg_holder" "$rg_hs" >/dev/null; wait "$rg_holder" 2>/dev/null
 is "a silent stdin does not hang the hook" "0" "$rg_grc"
 [ "$rg_dt" -lt 5000 ] &&
     ok "and it gives up inside its own deadline (${rg_dt}ms)" ||
@@ -2548,8 +3020,9 @@ wset "$WSR"; wset "$WSP"
 is "a repo pane gets its branch" "feat/x" "$(wsb "$WSR")"
 is "a pane outside a repo gets none" "" "$(wsb "$WSP")"
 WSLOG="$WSD/sets"; : > "$WSLOG"
+"$TMUX_REAL" -L "$WS" set-environment -g CKLOG "$WSLOG" >/dev/null 2>&1
 "$TMUX_REAL" -L "$WS" set-hook -g after-set-option \
-    "run-shell 'echo \"#{hook_arguments}\" >> $WSLOG'" >/dev/null 2>&1
+    "run-shell 'echo \"#{hook_arguments}\" >> \"\$CKLOG\"'" >/dev/null 2>&1
 wset "$WSR"; wset "$WSP"
 is "an unchanged branch writes nothing" "0" "$(wc -l < "$WSLOG" | tr -d ' ')"
 printf 'ref: refs/heads/main\n' > "$WSD/repo/.git/HEAD"
@@ -2681,7 +3154,9 @@ fi
 echo "== tmux-open-path: which token on the line is a file =="
 # A scratch tree with the shapes real output prints. --dry-run resolves without
 # touching tmux and without opening anything.
-OP=$(mktmpd); mkdir -p "$OP/src" "$OP/bin"
+# The folder's own name holds two blanks (as #1069 did): a path of this block's that
+# reaches the clicked line bare is split whatever TMPDIR is, so a plain run pins it (#990).
+OP="$(mktmpd)/o  p"; mkdir -p "$OP/src" "$OP/bin"
 : > "$OP/src/foo-bar.ts"; : > "$OP/README.md"; : > "$OP/bin/tm"
 # A bare-word name at the top level: only such a token can even reach the
 # call-wrapper rule, so "tm(12,3)" is what proves tsc's shape is not one.
@@ -2699,7 +3174,12 @@ is "hyphen does not split it" "$OP/src/foo-bar.ts::"   "$(op 'src/foo-bar.ts')"
 is "tsc file(12,3)"          "$OP/bin/tm:12:3"        "$(op 'bin/tm(12,3): error TS1005')"
 # [:punct:] contains / and ~, so a leading-punctuation strip using it removed the
 # first character of every absolute and ~ path.
-is "absolute path survives"  "$OP/README.md:5:2"      "$(op "absolute $OP/README.md:5:2 ok")"
+# The script splits the clicked line on blanks (#1178), so this row's absolute path sits in
+# the folder the suite keeps free of blanks (#992), blank-free by design: under any TMPDIR
+# it is one token. $OP's blanks would make it three.
+OPA=$(mktemp -d "$COCKPIT_SUITE_NB/ct.XXXXXX"); : > "$OPA/README.md"
+is "absolute path survives"  "$OPA/README.md:5:2"     "$(op "absolute $OPA/README.md:5:2 ok")"
+rm -rf "$OPA"
 is "quoted path"             "$OP/README.md::"        "$(op '"README.md":')"
 is "bracketed path"          "$OP/bin/tm::"           "$(op '(bin/tm)')"
 is "git diff a/ prefix"      "$OP/README.md::"        "$(op '--- a/README.md')"
@@ -2823,14 +3303,28 @@ tmfline=$(grep '^attach-session' "$TMF_LOG" 2>/dev/null | head -1)
 is "tm attaches with -d so the newest client takes the session" \
     "attach-session -d -t \$4" "$tmfline"
 rm -rf "$TMF"
+# A socket of a given name left in a folder: the file is looked at, and no tmux call is
+# made. The last row asks this of /tmp/tmux-<uid>, which may hold the user's own server,
+# and a tmux call there is one a guard on PATH refuses, which read as "none" (#1092).
+tc_left() { [ -S "$1/$2" ] && echo left || echo none; }   # <folder> <socket name>
+is "tc_left sees the block's own socket while its server is up, none of another name or folder" \
+   "left none none" \
+   "$(tc_left "$SOCKDIR" "$TC") $(tc_left "$SOCKDIR" "$TC-none") $(tc_left "$TCD" "$TC")"
 "$TMUX_REAL" -L "$TCO" kill-server >/dev/null 2>&1
 "$TMUX_REAL" -L "$TC" kill-server >/dev/null 2>&1
+# kill-server leaves the socket's file behind. Where SOCKDIR is /tmp/tmux-<uid> itself (a
+# caller who names /tmp as TMUX_TMPDIR; a run with none makes its own folder since #1098),
+# the last row would read the block's own file as a leak.
+rm -f "$SOCKDIR/$TC"
+is "the block's own socket file is gone once its server is killed" "none" \
+   "$(tc_left "$SOCKDIR" "$TC")"
 # tm found the server through a hardcoded /tmp path: under TMUX_TMPDIR it started a second
 # server there, on the shared /tmp, that no cleanup killed (#784). Nothing may answer on
-# either path once the block is done.
+# either path once the block is done. The /tmp half asks whether a socket's file is there,
+# which is stricter than whether a server answers on it.
 tc_up() { "$TMUX_REAL" -S "$1" has-session 2>/dev/null && echo up || echo none; }
 is "no server is left on the block's socket, in SOCKDIR or in /tmp" "none none" \
-   "$(tc_up "$SOCKDIR/$TC") $(tc_up "/tmp/tmux-$(id -u)/$TC")"
+   "$(tc_up "$SOCKDIR/$TC") $(tc_left "/tmp/tmux-$(id -u)" "$TC")"
 fi
 
 echo "== tmux-branch: local and remote branches =="
@@ -3215,10 +3709,10 @@ echo "== agent-state: notify must not hang on a silent stdin =="
 # Code does keep the hook's stdin open -- wedged the hook, and a wedged hook
 # blocks the agent that fired it.
 FIFO="$STATE/notify.fifo"; mkfifo "$FIFO"
-( exec 9>"$FIFO"; sleep 8 ) & holder=$!
+( exec 9>"$FIFO"; sleep 8 ) & holder=$!; holder_s=$(pid_start "$holder")
 timeout 6 "$DIR/scripts/agent-state" notify %999999 >/dev/null 2>&1 < "$FIFO"
 rc=$?
-kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
+pid_sig TERM "$holder" "$holder_s" >/dev/null; wait "$holder" 2>/dev/null
 is "notify gives up rather than wedging the hook" "0" "$rc"
 rm -f "$FIFO"
 
@@ -3729,7 +4223,16 @@ if ! command -v jq >/dev/null 2>&1; then skip_ "install.sh --check (no jq)"; els
 DC=$(mktmpd)
 DH="$DC/home"; DBIN="$DC/bin"; DSH="$DC/shim"; DNO="$DC/notmux"
 mkdir -p "$DH/.claude" "$DBIN" "$DSH" "$DNO" "$DC/tmuxtmp"
-printf '# mine\nrun-shell %s/cockpit.tmux\n' "$DIR" > "$DH/.tmux.conf"
+# The config holds the line install.sh itself gives for this checkout. A bare
+# run-shell $DIR/cockpit.tmux made the box "wired" only where $DIR is a path such a line
+# carries: from a checkout with a blank in its path the doctor warns, rightly (#1064).
+dcline() { ( . "$DIR/scripts/lib/confline.sh" && cockpit_conf_line "$1" ); }
+printf '# mine\n%s\n' "$(dcline "$DIR")" > "$DH/.tmux.conf"
+# This checkout's path is one a bare line carries wherever CI runs, so no row below
+# would notice the config going back to the bare line. This one reads the config itself.
+is "the block's own config holds no unquoted line for this checkout" "none" \
+   "$(. "$DIR/scripts/lib/confline.sh"
+      cockpit_conf_bare_line "$DH/.tmux.conf" "$DIR" || echo none)"
 dshim() { printf '#!/bin/sh\necho "%s"\n' "$2" > "$3/$1"; chmod +x "$3/$1"; }
 dshim revdiff "version: 1.13.0" "$DSH"
 # The no-tmux PATH carries only what install.sh itself needs, so "no tmux on
@@ -3822,6 +4325,16 @@ done
 mkdir -p "$DH/.config/tmux"; printf 'set -g @unrelated 1\n' > "$DH/.config/tmux/tmux.conf"
 dcout=$(dc "$DCP")
 is "an XDG config beside a wired ~/.tmux.conf is still ok" "1" "$(dcrow "$dcout" "ok config")"
+# The same from a plugin folder whose own path holds a blank, which no CI checkout has:
+# install.sh is copied there, the config is written as the block writes its own, and the
+# config row must be ok. With a bare line in dcline it is a warn row (#1064).
+DCO="$DC/od d"; mkdir -p "$DCO" "$DC/home2"
+cp "$DIR/install.sh" "$DCO/"; for u in scripts bin; do ln -s "$DIR/$u" "$DCO/$u"; done
+printf '# mine\n%s\n' "$(dcline "$DCO")" > "$DC/home2/.tmux.conf"
+is "a plugin folder with a blank in its path, wired as this block wires: an ok config row" "1" \
+   "$(env -u TMUX -u TMUX_PANE HOME="$DC/home2" XDG_BIN_HOME="$DBIN" \
+        XDG_CONFIG_HOME="$DC/home2/.config" TMUX_TMPDIR="$DC/tmuxtmp" PATH="$DCP" \
+        "$DCO/install.sh" --check 2>&1 | dcrows | grep -c -x 'ok config')"
 rm -rf "$DH/.config"
 
 # A config predating the precompute derives the dot and the banner at redraw time.
@@ -4012,6 +4525,1382 @@ is "and the XDG file is left alone" "# xdg" "$(cat "$BH/.config/tmux/tmux.conf")
 rm -rf "$BS"
 fi
 
+echo "== bootstrap.sh and install.sh give a line that loads the plugin from any folder (#1046) =="
+# bootstrap.sh appended `run-shell <folder>/cockpit.tmux` and install.sh printed it. tmux hands
+# that to sh bare: a blank in the folder's path split it and nothing loaded, and a $( ) in it
+# was run. Both now build the line with cockpit_conf_line (scripts/lib/confline.sh). Here a
+# copy of the plugin sits under each folder shape, bootstrap.sh runs from the copy on a faked
+# box (as the #228 block's), and a private server sources the config it wrote. Each copy's
+# cockpit.tmux also sets @cl_from to its own number, so a row can tell whose plugin loaded.
+if ! command -v curl >/dev/null 2>&1; then skip_ "the #1046 rows (no curl)"
+elif ! command -v sha256sum >/dev/null 2>&1; then skip_ "the #1046 rows (no sha256sum)"
+elif need_tmux "the line bootstrap.sh appends"; then :; else
+CL=$(mktmpd); CLREL="$CL/rel"; mkdir -p "$CL/p" "$CL/wd" "$CL/shim" "$CL/tmuxtmp" "$CL/pack"
+printf '#!/bin/sh\ntouch %s\nexit 99\n' "$(tq "$CL/SUDO_RAN")" > "$CL/shim/sudo"
+chmod +x "$CL/shim/sudo"
+cl_d="$CLREL/umputun/revdiff/releases/download/v1.13.0"; mkdir -p "$cl_d"
+printf '#!/bin/sh\necho "version: 1.13.0"\n' > "$CL/pack/revdiff"; chmod +x "$CL/pack/revdiff"
+for cl_a in linux_amd64 linux_arm64 darwin_amd64 darwin_arm64; do
+    ( cd "$CL/pack" && tar -czf "$cl_d/revdiff_1.13.0_$cl_a.tar.gz" revdiff )
+done
+( cd "$cl_d" && sha256sum revdiff_1.13.0_*.tar.gz > revdiff_1.13.0_checksums.txt )
+for cl_n in 1 2 3 4 5 6 7 8 9 10 11 12; do SOCKS="$SOCKS cockpit-cl-$$-$cl_n"; done
+cl_box() {                    # <n> <folder name> -- a copy of the plugin and a home for it
+    local p="$CL/p/$2" h="$CL/h$1" d
+    mkdir -p "$p" "$h/bin" "$h/.tmux/plugins"
+    for d in tpm tmux-sensible tmux-yank tmux-resurrect tmux-continuum tmux; do
+        mkdir -p "$h/.tmux/plugins/$d/.git"
+    done
+    cp "$DIR/bootstrap.sh" "$DIR/install.sh" "$DIR/cockpit.tmux" "$p/"
+    for d in scripts examples bin; do ln -s "$DIR/$d" "$p/$d"; done
+    printf '\ntmux set-option -g @cl_from %s\n' "$1" >> "$p/cockpit.tmux"
+    printf '# mine\n' > "$h/.tmux.conf"
+}
+cl_env() {                    # <n> <command...> -- on the faked box, home h<n>
+    local h="$CL/h$1"; shift
+    env -u TMUX -u TMUX_PANE HOME="$h" XDG_BIN_HOME="$h/bin" XDG_CONFIG_HOME="$h/.config" \
+        TMUX_TMPDIR="$CL/tmuxtmp" COCKPIT_GITHUB="$(file_url "$CLREL")" \
+        PATH="$CL/shim:$SHIM:/usr/bin:/bin" "$@" </dev/null 2>&1
+}
+cl_load() {                   # <n> [socket n] -> <@cl_from>|<prefix w bindings>, h<n> sourced
+    local h="$CL/h$1" s="cockpit-cl-$$-${2:-$1}"
+    ( cd "$CL/wd" && HOME="$h" exec "$TMUX_REAL" -L "$s" -f /dev/null new-session -d -s t \
+        -c "$CL/wd" 'exec sleep 300' ) >/dev/null 2>&1
+    ( cd "$CL/wd" && exec "$TMUX_REAL" -L "$s" source-file "$h/.tmux.conf" ) >/dev/null 2>&1
+    until_out '?*' "$TMUX_REAL" -L "$s" show-option -gqv @cl_from >/dev/null
+    printf '%s|%s' "$("$TMUX_REAL" -L "$s" show-option -gqv @cl_from 2>/dev/null)" \
+        "$("$TMUX_REAL" -L "$s" list-keys -T prefix w 2>/dev/null | grep -c cockpit_board)"
+    "$TMUX_REAL" -L "$s" kill-server >/dev/null 2>&1
+}
+cl_n=0
+# The $( ) holds no blank: tmux splits a bare line at one before sh sees it, and then sh
+# stops at the half it got. Whole, sh runs it, in the cwd of the client that sourced the config.
+for cl_f in 'plain' 'two  blanks' "a'quote" 'd$(id>pwned)x' 'd$HOME#{pane_id}' \
+        'C#Sharp#[x##y' 'q"t;s\b`id>pwned`x'; do
+    cl_n=$((cl_n + 1)); cl_box "$cl_n" "$cl_f"
+    ( cd "$CL/wd" && cl_env "$cl_n" "$CL/p/$cl_f/bootstrap.sh" --yes ) > "$CL/out$cl_n"
+    is "a folder named [$cl_f]: bootstrap.sh appends one line" "1" \
+       "$(grep -c 'cockpit\.tmux' "$CL/h$cl_n/.tmux.conf")"
+    is "and a server that sources the config loads that folder's plugin" "$cl_n|1" \
+       "$(cl_load "$cl_n")"
+    cp "$CL/h$cl_n/.tmux.conf" "$CL/conf$cl_n"
+    ( cd "$CL/wd" && cl_env "$cl_n" "$CL/p/$cl_f/bootstrap.sh" --yes ) > "$CL/again$cl_n"
+    is "and a second run appends nothing" "same" \
+       "$(cmp -s "$CL/h$cl_n/.tmux.conf" "$CL/conf$cl_n" && echo same || echo changed)"
+    is "and that run prints no notice: the line it finds is quoted" "0" \
+       "$(grep -c 'has no quotes around the path' "$CL/again$cl_n")"
+done
+# And by a shell: each config is run as a script, as a line pasted at a prompt would be.
+# sh finds no run-shell, and must not run a backtick or a $( ) on the way to saying so.
+for cl_f in "$CL"/conf[0-9]; do ( cd "$CL/wd" && sh "$cl_f" ) >/dev/null 2>&1; done
+is "nothing in a folder's name was run, by bootstrap.sh, by the server or by a shell" "" \
+   "$(find "$CL" -name pwned | tr '\n' ' ')"
+is "and no run reached for sudo" "absent" "$([ -e "$CL/SUDO_RAN" ] && echo present || echo absent)"
+
+# The first name is plain: the two plain-folder rows at the block's end skip by asking
+# this function, so a character wrongly added to its list must be red here (#1060).
+# Which folders a bare line carries, as measured on tmux 3.6 and 3.8: a # in front of a [
+# arrives whole, a ## run included, and so does one in front of a plain letter. tmux replaces
+# #S and the other one-letter names, a #, and a #{ }, and makes one # of a ##.
+is "cockpit_bare_carries: which # shapes a bare line carries" \
+   "plug-in_1.2:yes a#[b:yes a##[b:yes a#xb:yes a#:yes C#Sharp:no a#,b:no a##b:no a#{b:no $(:
+   )a#Wb:no a b:no " \
+   "$(. "$DIR/scripts/lib/confline.sh"
+      for cl_f in 'plug-in_1.2' 'a#[b' 'a##[b' 'a#xb' 'a#' 'C#Sharp' 'a#,b' 'a##b' 'a#{b' \
+              'a#Wb' 'a b'; do
+          cockpit_bare_carries "/p/$cl_f" && printf '%s:yes ' "$cl_f" || printf '%s:no ' "$cl_f"
+      done)"
+
+# Which line of a config is the old one: run or run-shell, a tab or a blank after it, an
+# optional -b, the path written out or with ~ for HOME, also a HOME with a / at its end.
+is "cockpit_conf_bare_line: the spellings of the old line, by line number" "3 1 3 none" \
+   "$(. "$DIR/scripts/lib/confline.sh"; HOME="$CL/h1"
+      printf '# a\n\n  run -b ~/pl ug/cockpit.tmux\n' > "$CL/sp1"
+      printf 'run-shell\t%s/pl ug/cockpit.tmux  \n' "$HOME" > "$CL/sp2"
+      printf 'run-shell "%s/pl ug/cockpit.tmux"\n' "$HOME" > "$CL/sp3"
+      printf '%s ' "$(cockpit_conf_bare_line "$CL/sp1" "$HOME/pl ug")" \
+          "$(cockpit_conf_bare_line "$CL/sp2" "$HOME/pl ug")"
+      HOME="$HOME/"; printf '%s ' "$(cockpit_conf_bare_line "$CL/sp1" "$CL/h1/pl ug")"
+      cockpit_conf_bare_line "$CL/sp3" "$CL/h1/pl ug" || printf none)"
+
+# A config that already holds the older line. bootstrap.sh never rewrites a config, so it
+# says what it found: only when the line is the bare one and the folder's path holds a
+# character such a line does not carry. Box 2 is the folder with blanks, box 1 the plain one.
+cl_p2="$CL/p/two  blanks"
+printf '# mine\n\nrun-shell %s/cockpit.tmux\n' "$cl_p2" > "$CL/h2/.tmux.conf"
+cp "$CL/h2/.tmux.conf" "$CL/conf2"
+cl_out=$( cd "$CL/wd" && cl_env 2 "$cl_p2/bootstrap.sh" --yes )
+cl_line=$(. "$DIR/scripts/lib/confline.sh" && cockpit_conf_line "$cl_p2")
+case "$cl_out" in
+    *"NOTE   line 3 of that file has no quotes around the path"*"the plugin might not load."*$(:
+      )"Replace line 3 with:"*"
+           $cl_line
+"*) ok "an old bare line and a folder with blanks: the notice names line 3 and gives the line" ;;
+    *) bad "an old bare line and a folder with blanks: the notice names line 3 and gives the line" \
+           "NOTE … line 3 … $cl_line" "$cl_out" ;;
+esac
+is "and the config is left as it was" "same" \
+   "$(cmp -s "$CL/h2/.tmux.conf" "$CL/conf2" && echo same || echo changed)"
+cl_said() {                   # <label> <literal text> <output that must hold it>
+    case "$3" in
+        *"$2"*) ok "$1" ;;
+        *) bad "$1" "$2" "$3" ;;
+    esac
+}
+cl_said "and install.sh --check warns on its config row, with the same line" \
+    "[ warn ] config         $CL/h2/.tmux.conf line 3 unquoted, might not load from this $(:
+        )folder; replace line 3 with $cl_line
+" "$(cl_env 2 "$cl_p2/install.sh" --check)
+"
+# The four places install.sh prints the line, each from the folder with blanks, on a home
+# of its own. The line is read whole, to its line end: a bare path is a red row.
+mkdir -p "$CL/h8/bin"
+cl_said "install.sh, no tmux config: the note gives the line" \
+    "No tmux config found. Create $CL/h8/.tmux.conf with:
+  $cl_line
+" "$(cl_env 8 "$cl_p2/install.sh")
+"
+cl_said "install.sh --check, no tmux config: the fix column gives the line" \
+    "no tmux config           run bootstrap.sh, or add $cl_line
+" "$(cl_env 8 "$cl_p2/install.sh" --check)
+"
+printf '# mine\n' > "$CL/h8/.tmux.conf"
+cl_out=$(cl_env 8 "$cl_p2/install.sh")
+cl_said "install.sh, a config that does not load the plugin: the note gives the line" \
+    "Add this to $CL/h8/.tmux.conf, AFTER every option using an #{agent_*} token:
+  $cl_line
+" "$cl_out
+"
+cl_said "install.sh --check on that config: the fix column gives the line" \
+    "$CL/h8/.tmux.conf run bootstrap.sh, or add $cl_line
+" "$(cl_env 8 "$cl_p2/install.sh" --check)
+"
+cl_said "install.sh with HOME unset: the note gives the line" \
+    "HOME is not set; add this to your tmux config by hand:
+  $cl_line
+" "$(env -u TMUX -u TMUX_PANE -u HOME -u XDG_CONFIG_HOME XDG_BIN_HOME="$CL/h8/bin" \
+        PATH="$CL/shim:$SHIM:/usr/bin:/bin" "$cl_p2/install.sh" </dev/null 2>&1)
+"
+# What the note printed, put where it says: the line under "Add this to", into that config.
+printf '%s\n' "$cl_out" | awk 'f { sub(/^  /, ""); print; exit } /^Add this to /{ f = 1 }' \
+    >> "$CL/h8/.tmux.conf"
+is "the line install.sh's note printed, added to that config, loads the folder's plugin" "2|1" \
+   "$(cl_load 8)"
+unset -f cl_said
+is "the line the notice gives loads the plugin once it replaces line 3" "2|1" \
+   "$(printf '# mine\n\n%s\n' "$cl_line" > "$CL/h2/.tmux.conf"; cl_load 2 11)"
+# A folder with a control character in its name: no line is shown, a terminal would act on it.
+cl_box 9 "e"$'\033'"[31msc"
+printf 'run-shell %s/cockpit.tmux\n' "$CL/p/e"$'\033'"[31msc" > "$CL/h9/.tmux.conf"
+cl_out=$( cd "$CL/wd" && cl_env 9 "$CL/p/e"$'\033'"[31msc/bootstrap.sh" --yes )
+is "an old bare line and a folder with an ESC in its name: the notice shows no line" "1|0" \
+   "$(printf '%s\n' "$cl_out" | grep -c 'holds a control character, so no line is shown')|$(
+      printf '%s\n' "$cl_out" | grep -c 'Replace line')"
+cl_said() {                   # <label> <literal text> <output that must hold it>
+    case "$3" in
+        *"$2"*) ok "$1" ;;
+        *) bad "$1" "$2" "$3" ;;
+    esac
+}
+cl_said "and install.sh --check on that box names the control character and gives no line" \
+    "unquoted, might not load from this folder; the folder path holds a control character: $(:
+    )move the folder
+" "$(cl_env 9 "$CL/p/e"$'\033'"[31msc/install.sh" --check)
+"
+unset -f cl_said
+# A newline in the folder's name goes into the line as \n. A stub stands for the plugin:
+# bootstrap.sh is not run from here, the row is about the line alone.
+mkdir -p "$CL/h10" "$CL/p/n"$'\n'" l"
+printf '#!/bin/sh\ntmux set-option -g @cl_from 10\n' > "$CL/p/n"$'\n'" l/cockpit.tmux"
+chmod +x "$CL/p/n"$'\n'" l/cockpit.tmux"
+( . "$DIR/scripts/lib/confline.sh" && cockpit_conf_line "$CL/p/n"$'\n'" l" ) > "$CL/h10/.tmux.conf"
+is "the line for a folder with a newline and a blank in its name is one line, and loads it" \
+   "1|10|0" "$(grep -c '' "$CL/h10/.tmux.conf")|$(cl_load 10)"
+# Without scripts/lib/confline.sh both scripts stop where they source it, before a step.
+mkdir -p "$CL/p/nolib/scripts/lib" "$CL/h12/bin"
+cp "$DIR/bootstrap.sh" "$DIR/install.sh" "$CL/p/nolib/"
+for cl_f in "$DIR"/scripts/lib/*; do      # every other lib is there: only this one stops it
+    [ "${cl_f##*/}" = confline.sh ] || ln -s "$cl_f" "$CL/p/nolib/scripts/lib/${cl_f##*/}"
+done
+cl_out=$( cd "$CL/wd" && cl_env 12 "$CL/p/nolib/bootstrap.sh" --yes ); cl_n=$?
+is "bootstrap.sh without confline.sh: exit 1, and no step was started" "1|0" \
+   "$cl_n|$(printf '%s\n' "$cl_out" | grep -c '^== ')"
+cl_out=$( cl_env 12 "$CL/p/nolib/install.sh" --check ); cl_n=$?
+is "install.sh --check without it: exit 1, and no row was printed" "1|0" \
+   "$cl_n|$(printf '%s\n' "$cl_out" | grep -c '^\[')"
+# The plain folder: a bare line works there, so nothing new is said. The run's output is
+# the same, byte for byte, whether the config holds the old line or the new one.
+# Under a TMPDIR whose own path a bare line does not carry, "plain" is not plain.
+if ! ( . "$DIR/scripts/lib/confline.sh" && cockpit_bare_carries "$CL" ); then
+    skip_ "an old bare line and a plain folder: same output (TMPDIR's path is not plain)"
+    skip_ "and install.sh --check passes its config row (TMPDIR's path is not plain)"
+else
+printf '# mine\nrun-shell %s/cockpit.tmux\n' "$CL/p/plain" > "$CL/h1/.tmux.conf"
+( cd "$CL/wd" && cl_env 1 "$CL/p/plain/bootstrap.sh" --yes ) > "$CL/bare1"
+is "an old bare line and a plain folder: the run says what a run with the new line says" "same" \
+   "$(cmp -s "$CL/bare1" "$CL/again1" && echo same || echo differs)"
+is "and install.sh --check passes its config row" "1" \
+   "$(cl_env 1 "$CL/p/plain/install.sh" --check |
+      grep -cF "[  ok  ] config         $CL/h1/.tmux.conf loads cockpit")"
+fi
+unset -f cl_box cl_env cl_load
+unset CL CLREL cl_d cl_a cl_n cl_f cl_p2 cl_out cl_line
+fi
+
+echo "== the plugin loads whole and the menu renames, from a folder of any name (#1050, #1071) =="
+# source-file reads its path as a glob pattern: under a folder named a\x it looked for ax,
+# and statusbar.conf with its @cockpit options never loaded (#1050). The menu's Rename rows
+# put the path in a tmux "..." string, whose parser ate a ', a ", a $ or a \ in it, and the
+# rename ran nothing (#1071). A copy of the plugin sits under each folder shape, as the
+# #1046 block's, loaded by the line cockpit_conf_line gives, and keys go to it through a
+# real attached client.
+if need_tmux "the plugin path shapes"; then :
+elif ! ( . "$DIR/scripts/lib/vnum.sh"
+         v=$("$TMUX_REAL" -V); vnum_ge "${v#tmux }" 3.8 ); then
+    skip_ "the plugin path shapes (tmux below 3.8: cockpit.tmux binds nothing there)"
+else
+PS=$(mktmpd); mkdir -p "$PS/p" "$PS/wd"
+for ps_n in 1 2 3 4 5 6 7 8 9; do SOCKS="$SOCKS cockpit-ps-$$-$ps_n cockpit-pso-$$-$ps_n"; done
+# Siblings the unescaped glob of a*b, a?c and a[d] would match: their statusbar.conf
+# sets a decoy option, so loading one reds the option row.
+for ps_f in aXb aYc ad; do
+    mkdir -p "$PS/p/$ps_f/scripts/lib"
+    echo "set -g @cockpit_decoy $ps_f" > "$PS/p/$ps_f/scripts/lib/statusbar.conf"
+done
+ps_opts() {                   # <socket> <folder> -> name=value per @cockpit option, folder as P
+    local n v q=${2//\'/\'\\\'\'}   # the folder as sq() writes it
+    "$TMUX_REAL" -L "$1" show-options -g 2>/dev/null | while read -r n _; do
+        case $n in @cockpit_sweep_seq) continue ;; @cockpit*) ;; *) continue ;; esac
+        v=$("$TMUX_REAL" -L "$1" show-options -gv "$n" 2>/dev/null)
+        v=${v//"$q"/P}            # only that form: a value that lost sq() stays unequal
+        printf '%s=%s\n' "$n" "$v"
+    done
+}
+ps_rename() {                 # <outer socket> <menu key> <prompt> <name>
+    "$TMUX_REAL" -L "$1" send-keys -t o C-b a
+    until_cap "$1" o '*Rename session*'
+    "$TMUX_REAL" -L "$1" send-keys -t o "$2"
+    until_cap "$1" o "*($3)*"
+    "$TMUX_REAL" -L "$1" send-keys -t o C-u
+    "$TMUX_REAL" -L "$1" send-keys -t o -l -- "$4"
+    "$TMUX_REAL" -L "$1" send-keys -t o Enter
+}
+ps_n=0
+for ps_f in plain 'a b' "a'q" 'a"q' 'a$HOMEq' 'a\x' 'a*b' 'a?c' 'a[d]'; do
+    ps_n=$((ps_n + 1)); ps_s="cockpit-ps-$$-$ps_n"; ps_o="cockpit-pso-$$-$ps_n"
+    ps_p="$PS/p/$ps_f"; mkdir -p "$ps_p"
+    cp "$DIR/bootstrap.sh" "$DIR/install.sh" "$DIR/cockpit.tmux" "$ps_p/"
+    for ps_d in scripts examples bin; do ln -s "$DIR/$ps_d" "$ps_p/$ps_d"; done
+    { echo 'set -g @cockpit_bg_poll off'
+      ( . "$DIR/scripts/lib/confline.sh"; cockpit_conf_line "$ps_p" ); echo; } > "$PS/conf$ps_n"
+    ( cd "$PS/wd" && exec env -u TMUX_COCKPIT_DIR -u TMUX -u TMUX_PANE "$TMUX_REAL" \
+        -L "$ps_s" -f /dev/null new-session -d -s t -x 120 -y 30 -c "$PS/wd" 'exec sleep 300'
+    ) >/dev/null 2>&1
+    "$TMUX_REAL" -L "$ps_s" source-file "$PS/conf$ps_n" >/dev/null 2>&1
+    until_out '*@cockpit_click_line*' "$TMUX_REAL" -L "$ps_s" list-keys -T root C-MouseDown3Pane
+    # The load's own sweep runs in the background; this one ends before the options are read.
+    "$TMUX_REAL" -L "$ps_s" run-shell "$(tq "$ps_p/scripts/agent-state") sweep" >/dev/null 2>&1
+    ps_opts "$ps_s" "$ps_p" > "$PS/opts$ps_n"
+    if [ "$ps_n" = 1 ]; then
+        is "the plain folder's load sets statusbar.conf's options" "1" \
+           "$(grep -c '^@cockpit_corner_fmt=' "$PS/opts1")"
+    else
+        is "a folder named [$ps_f]: every @cockpit option and its value are the plain one's" \
+           "" "$(diff "$PS/opts1" "$PS/opts$ps_n" | head -5)"
+    fi
+    ( cd "$PS/wd" && exec env -u TMUX_COCKPIT_DIR -u TMUX -u TMUX_PANE "$TMUX_REAL" \
+        -L "$ps_o" -f /dev/null new-session -d -s o -x 120 -y 32 -c "$PS/wd" \
+        "TERM=xterm-256color exec $(tq "$TMUX_REAL") -L $ps_s attach -t t" ) >/dev/null 2>&1
+    until_cap "$ps_o" o '*[!\ ]*'
+    until_out '?*' "$TMUX_REAL" -L "$ps_s" list-clients -F '#{client_name}'
+    ps_sid=$("$TMUX_REAL" -L "$ps_s" display-message -p -t t: '#{session_id}')
+    ps_rename "$ps_o" , rename-window "w$ps_n"
+    until_out "w$ps_n" "$TMUX_REAL" -L "$ps_s" display-message -p -t "$ps_sid:" '#{window_name}'
+    ps_rename "$ps_o" '$' rename-session "s$ps_n"
+    until_out "s$ps_n" "$TMUX_REAL" -L "$ps_s" display-message -p -t "$ps_sid:" '#{session_name}'
+    is "a folder named [$ps_f]: the menu's Rename window and Rename session rows rename" \
+       "w$ps_n|s$ps_n" "$("$TMUX_REAL" -L "$ps_s" display-message -p -t "$ps_sid:" \
+           '#{window_name}|#{session_name}')"
+    "$TMUX_REAL" -L "$ps_o" kill-server >/dev/null 2>&1
+    "$TMUX_REAL" -L "$ps_s" kill-server >/dev/null 2>&1
+done
+# gesc, the escape for source-file's glob: each of \ * ? [ behind a \, nothing else.
+is "gesc puts a \\ before each of \\ * ? [ and leaves the rest" \
+   "|/p/plain|/p/a\\\\x|/p/a\\*b|/p/a\\?c|/p/a\\[d]|/p/a'\$\"#{x}" \
+   "$(. "$DIR/scripts/lib/fmt.sh"
+      for ps_f in '' /p/plain '/p/a\x' '/p/a*b' '/p/a?c' '/p/a[d]' "/p/a'\$\"#{x}"; do
+          printf '%s|' "$(gesc "$ps_f")"
+      done | sed 's/|$//')"
+unset -f ps_opts ps_rename
+unset PS ps_n ps_s ps_o ps_f ps_p ps_d ps_sid
+fi
+
+echo "== a reload knows the pre-notes panel key, and the install hint shows a # (#1086, #1087) =="
+# owned() matched the raw folder against #{key_command}, which prints the pre-notes panel
+# key's argument sq()-quoted in a "..." with \ " $ escaped: a ' or a " in the folder hid
+# the key, and a reload took it for the user's (#1086). The cockpit-tui hints gave
+# display-message the raw folder, which reads a # as a format and runs a #( ) (#1087).
+if need_tmux "the legacy panel key and the install hint"; then :
+elif ! ( . "$DIR/scripts/lib/vnum.sh"
+         v=$("$TMUX_REAL" -V); vnum_ge "${v#tmux }" 3.8 ); then
+    skip_ "the legacy panel key and the install hint (tmux below 3.8: nothing binds there)"
+else
+OH=$(mktmpd); mkdir -p "$OH/p" "$OH/wd" "$OH/old"
+oh_st="cockpit-oh-$$-st"; SOCKS="$SOCKS $oh_st"
+for oh_n in 1 2 3 4 5 6 7 8 9 10 11 12 13 14; do
+    SOCKS="$SOCKS cockpit-oh-$$-$oh_n cockpit-ohc-$$-$oh_n"
+done
+# A cockpit-tui older than the plugin's floor, for the hint's second arm.
+printf '#!/bin/sh\necho "cockpit-tui 0.0.1"\n' > "$OH/old/cockpit-tui"
+chmod +x "$OH/old/cockpit-tui"
+oh_min=$(. "$DIR/scripts/lib/tui.sh" && printf '%s' "$TUI_MIN")
+oh_box() {                    # <n> <folder name> -> a copy of the plugin, its conf line
+    local p="$OH/p/$2" d
+    [ -e "$p/cockpit.tmux" ] || {
+        mkdir -p "$p"; cp "$DIR/cockpit.tmux" "$p/"
+        for d in scripts examples bin; do ln -s "$DIR/$d" "$p/$d"; done
+    }
+    ( . "$DIR/scripts/lib/confline.sh"; cockpit_conf_line "$p" ) > "$OH/conf$1"
+}
+oh_server() {                 # <socket> <cockpit-tui path> -- a server with no client
+    ( cd "$OH/wd" && exec env -u TMUX_COCKPIT_DIR -u TMUX -u TMUX_PANE COCKPIT_TUI_BIN="$2" \
+        "$TMUX_REAL" -L "$1" -f /dev/null new-session -d -s t -x 120 -y 30 -c "$OH/wd" \
+        'exec sleep 300' ) >/dev/null 2>&1
+}
+oh_attach() {                 # <socket> <client's socket>: a real client on <socket>
+    ( cd "$OH/wd" && exec env -u TMUX_COCKPIT_DIR -u TMUX -u TMUX_PANE "$TMUX_REAL" -L "$2" \
+        -f /dev/null new-session -d -s o -x 300 -y 32 -c "$OH/wd" \
+        "TERM=xterm-256color exec $(tq "$TMUX_REAL") -L $1 attach -t t" ) >/dev/null 2>&1
+    until_cap "$2" o '*[!\ ]*'
+    until_out '?*' "$TMUX_REAL" -L "$1" list-clients -F '#{client_name}'
+}
+oh_load() {                   # <socket> <n>
+    # From wd: a #( ) the load let run would run there, in this client's cwd.
+    ( cd "$OH/wd" && exec "$TMUX_REAL" -L "$1" source-file "$OH/conf$2" ) >/dev/null 2>&1
+    until_out '*@cockpit_click_line*' "$TMUX_REAL" -L "$1" list-keys -T root C-MouseDown3Pane
+}
+oh_server "$oh_st" "$COCKPIT_TUI_BIN"
+oh_stock=$("$TMUX_REAL" -L "$oh_st" list-keys -T prefix -F '#{key_command}' f 2>/dev/null)
+"$TMUX_REAL" -L "$oh_st" kill-server >/dev/null 2>&1
+# The panel key as cockpit.tmux bound it before the notes: from argv, no note.
+oh_src='"$(tmux display-message -p -t "\$${TMUX##*,}" "#{pane_id}")"'
+oh_n=0
+for oh_f in plain "a'q" 'a"q' 'a$HOMEq'; do
+    oh_n=$((oh_n + 1)); oh_s="cockpit-oh-$$-$oh_n"; oh_box "$oh_n" "$oh_f"
+    oh_server "$oh_s" "$COCKPIT_TUI_BIN"; oh_p=$(cd -P "$OH/p/$oh_f" && pwd)
+    "$TMUX_REAL" -L "$oh_s" bind-key f display-popup -E -e COCKPIT_PANEL_MODE=auto -w 94% \
+        -h 90% -T ' panel · #{pane_id} ' "$(tq "$oh_p/scripts/cockpit-panel") -p $oh_src"
+    "$TMUX_REAL" -L "$oh_s" set -g @cockpit_panel_bound f \; set -g @cockpit_panel_key g
+    oh_load "$oh_s" "$oh_n"
+    is "a folder named [$oh_f]: a reload gives the pre-notes panel key f back to tmux" \
+       "$oh_stock" "$("$TMUX_REAL" -L "$oh_s" list-keys -T prefix -F '#{key_command}' f)"
+    "$TMUX_REAL" -L "$oh_s" kill-server >/dev/null 2>&1
+done
+# A control byte or a byte outside UTF-8 in the folder: #{key_command} prints it as \t, \n,
+# \r, \033, \177 or \303, which the \ " $ escapes alone missed (#1097).
+for oh_b in 09:tab 0a:newline 0d:CR 1b:ESC 7f:DEL c3:lone-0xc3; do
+    oh_s="cockpit-ohb-$$-${oh_b%%:*}"; SOCKS="$SOCKS $oh_s"; printf -v oh_f 'a%bq' "\\x${oh_b%%:*}"
+    oh_box "b${oh_b%%:*}" "$oh_f"; oh_server "$oh_s" "$COCKPIT_TUI_BIN"
+    oh_p=$(cd -P "$OH/p/$oh_f" && pwd)
+    "$TMUX_REAL" -L "$oh_s" bind-key f display-popup -E -e COCKPIT_PANEL_MODE=auto -w 94% \
+        -h 90% -T ' panel · #{pane_id} ' "$(tq "$oh_p/scripts/cockpit-panel") -p $oh_src"
+    "$TMUX_REAL" -L "$oh_s" set -g @cockpit_panel_bound f \; set -g @cockpit_panel_key g
+    oh_load "$oh_s" "b${oh_b%%:*}"
+    is "a folder holding [${oh_b#*:}]: a reload gives the pre-notes panel key f back to tmux" \
+       "$oh_stock" "$("$TMUX_REAL" -L "$oh_s" list-keys -T prefix -F '#{key_command}' f)"
+    is "a folder holding [${oh_b#*:}]: the load leaves no key table of its own" "0" \
+       "$("$TMUX_REAL" -L "$oh_s" list-keys -F '#{key_table}' | grep -c '^cockpit-legacy')"
+    "$TMUX_REAL" -L "$oh_s" kill-server >/dev/null 2>&1
+done
+# The scratch read fails after its bind: tmux stops a ; sequence there, so the table must
+# go in a call of its own, and the guess is off, never a match on every command (#1097).
+mkdir -p "$OH/lkfail"
+printf '%s\n' '#!/usr/bin/env bash' 'case " $* " in *" list-keys -T cockpit-legacy-"*)' \
+    '    a=("$@"); for i in "${!a[@]}"; do [ "${a[i]}" = ";" ] && break; done' \
+    "    $(tq "$TMUX_REAL") \"\${a[@]:0:i}\"; echo 'list-keys: no answer' >&2; exit 1 ;;" \
+    esac "exec $(tq "$TMUX_REAL") \"\$@\"" > "$OH/lkfail/tmux"
+chmod +x "$OH/lkfail/tmux"
+oh_s="cockpit-ohb-$$-lk"; SOCKS="$SOCKS $oh_s"; oh_box blk lkfail
+oh_server "$oh_s" "$COCKPIT_TUI_BIN"; oh_p=$(cd -P "$OH/p/lkfail" && pwd)
+"$TMUX_REAL" -L "$oh_s" bind-key f display-popup -E -e COCKPIT_PANEL_MODE=auto -w 94% \
+    -h 90% -T ' panel · #{pane_id} ' "$(tq "$oh_p/scripts/cockpit-panel") -p $oh_src"
+"$TMUX_REAL" -L "$oh_s" set -g @cockpit_panel_bound f \; set -g @cockpit_panel_key g
+( cd "$OH/wd" && exec "$TMUX_REAL" -L "$oh_s" run-shell \
+    "PATH=$(tq "$OH/lkfail"):\"\$PATH\" $(tq "$oh_p/cockpit.tmux")" ) >/dev/null 2>&1
+is "a load whose scratch read fails leaves no key table of its own" "0" \
+   "$("$TMUX_REAL" -L "$oh_s" list-keys -F '#{key_table}' | grep -c '^cockpit-legacy')"
+is "and the load ends keeping the pre-notes key f: the guess is off" "1:1" \
+   "$("$TMUX_REAL" -L "$oh_s" list-keys -T root C-MouseDown3Pane | grep -c cockpit_click_line
+     ):$("$TMUX_REAL" -L "$oh_s" list-keys -T prefix f | grep -c cockpit-panel)"
+"$TMUX_REAL" -L "$oh_s" kill-server >/dev/null 2>&1
+# The same failed read with a client attached, since a message reaches the log only then:
+# the load says so in tmux's words, the old key f waits in @cockpit_giveback with
+# @cockpit_notes unset, and the next load reads again and gives f back (#1131).
+oh_s="cockpit-ohb-$$-lm"; oh_c="cockpit-ohc-$$-lm"; SOCKS="$SOCKS $oh_s $oh_c"
+oh_box blm lkfail; oh_p=$(cd -P "$OH/p/lkfail" && pwd)
+oh_server "$oh_s" "$COCKPIT_TUI_BIN"; oh_attach "$oh_s" "$oh_c"
+"$TMUX_REAL" -L "$oh_s" bind-key f display-popup -E -e COCKPIT_PANEL_MODE=auto -w 94% \
+    -h 90% -T ' panel · #{pane_id} ' "$(tq "$oh_p/scripts/cockpit-panel") -p $oh_src"
+"$TMUX_REAL" -L "$oh_s" set -g @cockpit_panel_bound f \; set -g @cockpit_panel_key g
+( cd "$OH/wd" && exec "$TMUX_REAL" -L "$oh_s" run-shell \
+    "PATH=$(tq "$OH/lkfail"):\"\$PATH\" $(tq "$oh_p/cockpit.tmux")" ) >/dev/null 2>&1
+is "a load whose scratch read fails says so: one message names the old panel key" "1" \
+   "$("$TMUX_REAL" -L "$oh_s" show-messages 2>/dev/null | grep -v ' command: ' |
+      grep -cF 'tmux-cockpit: could not read how tmux prints the old panel key (')"
+is "and the message carries tmux's error, list-keys: no answer" "1" \
+   "$("$TMUX_REAL" -L "$oh_s" show-messages 2>/dev/null | grep -v ' command: ' |
+      grep -cF 'the old panel key (list-keys: no answer);')"
+is "and f waits in @cockpit_giveback, @cockpit_notes unset" "panel:f|" \
+   "$("$TMUX_REAL" -L "$oh_s" show -gqv @cockpit_giveback)|$(
+      "$TMUX_REAL" -L "$oh_s" show -gqv @cockpit_notes)"
+( cd "$OH/wd" && exec "$TMUX_REAL" -L "$oh_s" run-shell "$(tq "$oh_p/cockpit.tmux")" ) \
+    >/dev/null 2>&1
+is "the next load reads it, gives f back to tmux, sets @cockpit_notes, nothing pending" \
+   "$oh_stock|1|" "$("$TMUX_REAL" -L "$oh_s" list-keys -T prefix -F '#{key_command}' f)|$(
+      "$TMUX_REAL" -L "$oh_s" show -gqv @cockpit_notes)|$(
+      "$TMUX_REAL" -L "$oh_s" show -gqv @cockpit_giveback)"
+"$TMUX_REAL" -L "$oh_c" kill-server >/dev/null 2>&1
+"$TMUX_REAL" -L "$oh_s" kill-server >/dev/null 2>&1
+# With no old key to judge, a failed read still leaves @cockpit_notes unset (#1131).
+oh_s="cockpit-ohb-$$-lz"; SOCKS="$SOCKS $oh_s"; oh_box blz lkfail
+oh_server "$oh_s" "$COCKPIT_TUI_BIN"
+( cd "$OH/wd" && exec "$TMUX_REAL" -L "$oh_s" run-shell \
+    "PATH=$(tq "$OH/lkfail"):\"\$PATH\" $(tq "$oh_p/cockpit.tmux")" ) >/dev/null 2>&1
+is "a failed read with no old key to judge leaves @cockpit_notes unset, nothing pending" "|" \
+   "$("$TMUX_REAL" -L "$oh_s" show -gqv @cockpit_notes)|$(
+      "$TMUX_REAL" -L "$oh_s" show -gqv @cockpit_giveback)"
+"$TMUX_REAL" -L "$oh_s" kill-server >/dev/null 2>&1
+# The read fails with two lines and the panel's own bind is refused in the same load:
+# refused() keeps the record of a key owned() cannot judge, the message quotes tmux's
+# first line, and once the panel key moves the next load gives f back (#1131).
+mkdir -p "$OH/lkbind"
+printf '%s\n' '#!/usr/bin/env bash' 'case " $* " in *" list-keys -T cockpit-legacy-"*)' \
+    '    a=("$@"); for i in "${!a[@]}"; do [ "${a[i]}" = ";" ] && break; done' \
+    "    $(tq "$TMUX_REAL") \"\${a[@]:0:i}\"" \
+    "    printf 'list-keys: first line\\nsecond line\\n' >&2; exit 1 ;;" \
+    '*" -N cockpit: panel "*) echo "bind-key: refused" >&2; exit 1 ;;' \
+    esac "exec $(tq "$TMUX_REAL") \"\$@\"" > "$OH/lkbind/tmux"
+chmod +x "$OH/lkbind/tmux"
+oh_s="cockpit-ohb-$$-lr"; oh_c="cockpit-ohc-$$-lr"; SOCKS="$SOCKS $oh_s $oh_c"
+oh_box blr lkfail; oh_server "$oh_s" "$COCKPIT_TUI_BIN"; oh_attach "$oh_s" "$oh_c"
+"$TMUX_REAL" -L "$oh_s" bind-key f display-popup -E -e COCKPIT_PANEL_MODE=auto -w 94% \
+    -h 90% -T ' panel · #{pane_id} ' "$(tq "$oh_p/scripts/cockpit-panel") -p $oh_src"
+"$TMUX_REAL" -L "$oh_s" set -g @cockpit_panel_bound f
+( cd "$OH/wd" && exec "$TMUX_REAL" -L "$oh_s" run-shell \
+    "PATH=$(tq "$OH/lkbind"):\"\$PATH\" $(tq "$oh_p/cockpit.tmux")" ) >/dev/null 2>&1
+is "a two-line error: the message quotes tmux's first line only" "1" \
+   "$("$TMUX_REAL" -L "$oh_s" show-messages 2>/dev/null | grep -v ' command: ' |
+      grep -cF 'the old panel key (list-keys: first line);')"
+is "a refused panel bind after a failed read keeps @cockpit_panel_bound f, notes unset" "f|" \
+   "$("$TMUX_REAL" -L "$oh_s" show -gqv @cockpit_panel_bound)|$(
+      "$TMUX_REAL" -L "$oh_s" show -gqv @cockpit_notes)"
+"$TMUX_REAL" -L "$oh_s" set -g @cockpit_panel_key g
+( cd "$OH/wd" && exec "$TMUX_REAL" -L "$oh_s" run-shell "$(tq "$oh_p/cockpit.tmux")" ) \
+    >/dev/null 2>&1
+is "and with the panel key moved to g, the next load gives f back to tmux" "$oh_stock|g|1|" \
+   "$("$TMUX_REAL" -L "$oh_s" list-keys -T prefix -F '#{key_command}' f)|$(
+      "$TMUX_REAL" -L "$oh_s" show -gqv @cockpit_panel_bound)|$(
+      "$TMUX_REAL" -L "$oh_s" show -gqv @cockpit_notes)|$(
+      "$TMUX_REAL" -L "$oh_s" show -gqv @cockpit_giveback)"
+"$TMUX_REAL" -L "$oh_c" kill-server >/dev/null 2>&1
+"$TMUX_REAL" -L "$oh_s" kill-server >/dev/null 2>&1
+# The guess is for a key with no note. A note that starts with \037 is a note, though cut
+# at its first \037 it read as empty, and the user's key went back to stock (#1135).
+oh_s="cockpit-ohb-$$-ln"; SOCKS="$SOCKS $oh_s"; oh_box bln plain
+oh_server "$oh_s" "$COCKPIT_TUI_BIN"; oh_p=$(cd -P "$OH/p/plain" && pwd)
+"$TMUX_REAL" -L "$oh_s" bind-key -N $'\037mine' f display-popup -E -e COCKPIT_PANEL_MODE=auto \
+    -w 94% -h 90% -T ' panel · #{pane_id} ' "$(tq "$oh_p/scripts/cockpit-panel") -p $oh_src"
+"$TMUX_REAL" -L "$oh_s" set -g @cockpit_panel_bound f \; set -g @cockpit_panel_key g
+oh_load "$oh_s" bln
+is "a key noted [\\037mine] on the pre-notes panel command stays the user's" "1" \
+   "$("$TMUX_REAL" -L "$oh_s" list-keys -T prefix f | grep -c cockpit-panel)"
+"$TMUX_REAL" -L "$oh_s" kill-server >/dev/null 2>&1
+# A note of 0 is a note too. tmux's #{?key_note} reads the value 0 as false, so owned()
+# tests for an empty note with #{==:#{key_note},}, and this row pins that (#1161).
+oh_s="cockpit-ohb-$$-l0"; SOCKS="$SOCKS $oh_s"; oh_box bl0 plain
+oh_server "$oh_s" "$COCKPIT_TUI_BIN"; oh_p=$(cd -P "$OH/p/plain" && pwd)
+"$TMUX_REAL" -L "$oh_s" bind-key -N 0 f display-popup -E -e COCKPIT_PANEL_MODE=auto \
+    -w 94% -h 90% -T ' panel · #{pane_id} ' "$(tq "$oh_p/scripts/cockpit-panel") -p $oh_src"
+"$TMUX_REAL" -L "$oh_s" set -g @cockpit_panel_bound f \; set -g @cockpit_panel_key g
+oh_load "$oh_s" bl0
+is "a key noted [0] on the pre-notes panel command stays the user's" "1" \
+   "$("$TMUX_REAL" -L "$oh_s" list-keys -T prefix f | grep -c cockpit-panel)"
+"$TMUX_REAL" -L "$oh_s" kill-server >/dev/null 2>&1
+unset oh_b
+# The hints, missing and older, from folders holding # shapes. A message reaches the log
+# only when a client is attached to be shown it; ' command: ' lines hold the text as typed.
+# The log keeps the text as sent, unexpanded, each # doubled for the draw; the status line
+# draws one # of each ##, and it stays drawn (display-time 0) until it is captured.
+for oh_f in 'a#Sb' 'a#{pane_id}b' 'a#[fg=red]b' 'a##x' 'a#(touch pwned)b'; do
+    for oh_arm in missing older; do
+        oh_n=$((oh_n + 1)); oh_s="cockpit-oh-$$-$oh_n"; oh_box "$oh_n" "$oh_f"
+        oh_p=$(cd -P "$OH/p/$oh_f" && pwd)
+        if [ "$oh_arm" = missing ]; then
+            oh_server "$oh_s" "$OH/none/cockpit-tui"
+            oh_want="tmux-cockpit: cockpit-tui is missing; run $oh_p/install.sh"
+        else
+            oh_server "$oh_s" "$OH/old/cockpit-tui"
+            oh_want="tmux-cockpit: cockpit-tui 0.0.1 is older than $oh_min; run $oh_p/install.sh"
+        fi
+        "$TMUX_REAL" -L "$oh_s" set -g display-time 0
+        oh_attach "$oh_s" "cockpit-ohc-$$-$oh_n"; oh_load "$oh_s" "$oh_n"
+        until_out '*install.sh*' sh -c "$(tq "$TMUX_REAL") -L $oh_s show-messages |
+            grep -v ' command: '"
+        is "a folder named [$oh_f], cockpit-tui $oh_arm: the hint is logged unexpanded" \
+           "1" "$("$TMUX_REAL" -L "$oh_s" show-messages 2>/dev/null | grep -v ' command: ' |
+                  grep -cF -- " ${oh_want//#/##}")"
+        oh_c="cockpit-ohc-$$-$oh_n"; until_cap "$oh_c" o '*install.sh*'
+        is "a folder named [$oh_f], cockpit-tui $oh_arm: the status line draws it whole" "1" \
+           "$("$TMUX_REAL" -L "$oh_c" capture-pane -p -t o | grep -cF -- "$oh_want")"
+        "$TMUX_REAL" -L "$oh_c" kill-server >/dev/null 2>&1
+        "$TMUX_REAL" -L "$oh_s" kill-server >/dev/null 2>&1
+    done
+done
+is "and no hint ran a #( ) from the folder's name" "" "$(find "$OH" -name pwned)"
+unset -f oh_box oh_server oh_attach oh_load
+unset OH oh_st oh_n oh_s oh_c oh_f oh_p oh_arm oh_want oh_min oh_stock oh_src
+fi
+
+echo "== a cockpit key on ;, M-; or C-; is bound, recorded, and keeps the menu (#1152) =="
+# tmux cuts a command-line argument that ends in ;: a lone ; ends the command, and M-; or C-;
+# loses its ; (#1152). A key on ; was never bound nor recorded, and a menu row replaying it
+# cut the menu's bind-key short, so prefix a went with it.
+# cockpit_key_arg: <key>|<its status and what it prints>.
+while IFS='|' read -r semi_k semi_w; do
+    is "cockpit_key_arg [$semi_k]: $semi_w" "$semi_w" \
+       "$(. "$DIR/scripts/lib/fmt.sh"; semi_o=$(cockpit_key_arg "$semi_k")
+          printf '%s [%s]' "$?" "$semi_o")"
+done <<'KAROWS'
+;|0 [\;]
+M-;|0 [M-\;]
+C-;|0 [C-\;]
+C-M-;|0 [C-M-\;]
+a|0 [a]
+|0 []
+\;|0 [\\;]
+KAROWS
+is "cockpit_key_arg twice, for a key inside a bound command: [;] prints [\\;]" '\\;' \
+   "$(. "$DIR/scripts/lib/fmt.sh"; cockpit_key_arg "$(cockpit_key_arg ';')")"
+is "cockpit_key_arg with no key, or two, says so and returns 2" \
+   "2 cockpit_key_arg: one key, got 0|2 cockpit_key_arg: one key, got 2" \
+   "$(. "$DIR/scripts/lib/fmt.sh"; semi_o=$(cockpit_key_arg 2>&1); printf '%s %s|' $? "$semi_o"
+      semi_o=$(cockpit_key_arg a b 2>&1); printf '%s %s' $? "$semi_o")"
+# cockpit_key_plain (#1209): a key option written '\;' in tmux.conf holds \;, the key ;.
+# <option value>|<its status and what it prints>.
+while IFS='|' read -r semi_k semi_w; do
+    is "cockpit_key_plain [$semi_k]: $semi_w" "$semi_w" \
+       "$(. "$DIR/scripts/lib/fmt.sh"; semi_o=$(cockpit_key_plain "$semi_k")
+          printf '%s [%s]' "$?" "$semi_o")"
+done <<'KPROWS'
+\;|0 [;]
+M-\;|0 [M-;]
+C-\;|0 [C-;]
+;|0 [;]
+M-;|0 [M-;]
+a|0 [a]
+off|0 [off]
+|0 []
+KPROWS
+is "cockpit_key_plain twice: [\\;] prints [;], and [;] stays [;]" "; ;" \
+   "$(. "$DIR/scripts/lib/fmt.sh"
+      printf '%s %s' "$(cockpit_key_plain "$(cockpit_key_plain '\;')")" "$(cockpit_key_plain ';')")"
+is "cockpit_key_plain with no value, or two, says so and returns 2" \
+   "2 cockpit_key_plain: one value, got 0|2 cockpit_key_plain: one value, got 2" \
+   "$(. "$DIR/scripts/lib/fmt.sh"; semi_o=$(cockpit_key_plain 2>&1); printf '%s %s|' $? "$semi_o"
+      semi_o=$(cockpit_key_plain a b 2>&1); printf '%s %s' $? "$semi_o")"
+if need_tmux "a cockpit key on ;"; then :
+else
+SEMI=$(mktmpd); semi_s="cockpit-semi-$$"; SOCKS="$SOCKS $semi_s"
+semi_load() {                 # <name> <the key as argv spells it>: a fresh server, one load
+    fresh_server -L "$semi_s" -f /dev/null -- -d -s t -x 120 -y 30 -c "$SEMI" || return 1
+    "$TMUX_REAL" -L "$semi_s" set -g @cockpit_bg_poll off >/dev/null 2>&1
+    "$TMUX_REAL" -L "$semi_s" set -g "@cockpit_$1_key" "$2" >/dev/null 2>&1
+    reload_on "$semi_s"
+}
+semi_get() { "$TMUX_REAL" -L "$semi_s" -f /dev/null "$@" 2>&1; }
+# <name> <the key as argv spells it> <the key as tmux stores it>. On fd 3: no tmux call
+# below can read the rows.
+while read -r semi_n semi_a semi_k <&3; do
+    semi_load "$semi_n" "$semi_a" || continue
+    is "@cockpit_${semi_n}_key [$semi_k]: the key carries the note cockpit: $semi_n" \
+       "cockpit: $semi_n" "$(semi_get list-keys -T prefix -F '#{key_note}' "$semi_a")"
+    is "@cockpit_${semi_n}_key [$semi_k]: @cockpit_${semi_n}_bound records it" \
+       "$semi_k" "$(semi_get show -gqv "@cockpit_${semi_n}_bound")"
+    [ "$semi_n" = menu ] || is "@cockpit_${semi_n}_key [$semi_k]: prefix a is still the menu" \
+       "cockpit: menu" "$(semi_get list-keys -T prefix -F '#{key_note}' a)"
+    case "$semi_n $semi_k" in
+        'sessions ;')
+            # A bare send-keys -K resends the key that ran it (#1203): never pressed here.
+            is "@cockpit_sessions_key [;]: the border's corner replays ;, never a bare -K" \
+               'switch-client -T prefix \; send-keys -K \;' \
+               "$(semi_get list-keys -T root -F '#{key_command}' MouseUp1Control0)" ;;
+        'jump ;')
+            is "the review notice's jump key reads ; back from its binding (#1124)" ";" \
+               "$(. "$DIR/scripts/lib/fmt.sh"
+                  tmux() { "$TMUX_REAL" -L "$semi_s" -f /dev/null "$@"; }
+                  cockpit_noted_key jump @cockpit_jump_bound)" ;;
+    esac
+done 3<<'SEMIROWS'
+jump \; ;
+sessions \; ;
+menu \; ;
+info \; ;
+panel \; ;
+board \; ;
+review \; ;
+reload \; ;
+move \; ;
+fullscreen \; ;
+jump M-\; M-;
+board M-\; M-;
+jump C-\; C-;
+board C-\; C-;
+SEMIROWS
+# A key option written with tmux's own escape, set -g @cockpit_jump_key '\;', holds \;, and a
+# load before #1152 bound it as ;: it is the key ; still, bound and recorded plain (#1209).
+# <name> <argv that stores it> <the key as list-keys argv spells it> <the key>, on fd 3.
+while read -r semi_n semi_a semi_l semi_k <&3; do
+    semi_load "$semi_n" "$semi_a" || continue
+    is "@cockpit_${semi_n}_key written [$semi_l]: $semi_k carries the note cockpit: $semi_n" \
+       "cockpit: $semi_n" "$(semi_get list-keys -T prefix -F '#{key_note}' "$semi_l")"
+    is "@cockpit_${semi_n}_key written [$semi_l]: @cockpit_${semi_n}_bound records $semi_k" \
+       "$semi_k" "$(semi_get show -gqv "@cockpit_${semi_n}_bound")"
+    [ "$semi_n" = menu ] || is "@cockpit_${semi_n}_key written [$semi_l]: prefix a is the menu" \
+       "cockpit: menu" "$(semi_get list-keys -T prefix -F '#{key_note}' a)"
+done 3<<'SEMIESC'
+jump \\; \; ;
+menu \\; \; ;
+board \\; \; ;
+reload \\; \; ;
+jump M-\\; M-\; M-;
+jump C-\\; C-\; C-;
+SEMIESC
+"$TMUX_REAL" -L "$semi_s" kill-server >/dev/null 2>&1
+unset -f semi_load semi_get
+unset SEMI semi_s semi_n semi_a semi_k semi_w
+unset semi_l
+fi
+
+echo "== a cockpit key moved off ;, M-; or C-; is given back to tmux (#1151) =="
+# owned() passed the old key to list-keys bare: a lone ; ended the command, which then
+# listed the whole table, and any key with no note made the answer "not cockpit's", so the
+# old key kept its cockpit command after the move (#1151). M-; and C-; reached list-keys as
+# M- and C-. F9, bound with no note, pins that condition here, not cockpit's own b.
+if need_tmux "a cockpit key moved off ;"; then :
+else
+SOFF=$(mktmpd); soff_s="cockpit-soff-$$"; soff_st="cockpit-soffst-$$"
+SOCKS="$SOCKS $soff_s $soff_st"
+fresh_server -L "$soff_st" -f /dev/null -- -d -s t -c "$SOFF"
+soff_get() { "$TMUX_REAL" -L "$1" -f /dev/null list-keys -T prefix -F '#{key_command}' "$2" 2>&1; }
+soff_move() {                 # <name> <the key as argv spells it> [the second load's command]
+    fresh_server -L "$soff_s" -f /dev/null -- -d -s t -x 120 -y 30 -c "$SOFF" || return 1
+    "$TMUX_REAL" -L "$soff_s" -f /dev/null set -g @cockpit_bg_poll off >/dev/null 2>&1
+    "$TMUX_REAL" -L "$soff_s" -f /dev/null set -g "@cockpit_$1_key" "$2" >/dev/null 2>&1
+    reload_on "$soff_s" || return 1
+    "$TMUX_REAL" -L "$soff_s" -f /dev/null bind-key -T prefix F9 display-message x >/dev/null 2>&1
+    "$TMUX_REAL" -L "$soff_s" -f /dev/null set -g "@cockpit_$1_key" j >/dev/null 2>&1
+    reload_on "$soff_s" ${3:+"$3"}
+}
+# <name> <the key as argv spells it> <the key as tmux stores it>, on fd 3 as above.
+while read -r soff_n soff_a soff_k <&3; do
+    soff_move "$soff_n" "$soff_a" || continue
+    is "@cockpit_${soff_n}_key moved off [$soff_k] to j: [$soff_k] is tmux's own again" \
+       "$(soff_get "$soff_st" "$soff_a")" "$(soff_get "$soff_s" "$soff_a")"
+    is "@cockpit_${soff_n}_key moved off [$soff_k] to j: nothing waits in @cockpit_giveback" \
+       "" "$("$TMUX_REAL" -L "$soff_s" -f /dev/null show -gqv @cockpit_giveback)"
+done 3<<'SOFFROWS'
+jump \; ;
+jump M-\; M-;
+jump C-\; C-;
+reload \; ;
+SOFFROWS
+# A key whose stock binding could not be read waits in @cockpit_giveback for the next load.
+# The shim fails that read; the list's last pair ends in ;, which tmux cut off it (#1151).
+mkdir -p "$SOFF/gbfail"
+printf '%s\n' '#!/usr/bin/env bash' \
+    'case " $* " in *" start-server "*) echo "no answer" >&2; exit 1 ;; esac' \
+    "exec $(tq "$TMUX_REAL") \"\$@\"" > "$SOFF/gbfail/tmux"
+chmod +x "$SOFF/gbfail/tmux"
+if soff_move jump '\;' "PATH=$(tq "$SOFF/gbfail"):\"\$PATH\" $(tq "$DIR/cockpit.tmux")"; then
+    is "a ; whose stock binding could not be read waits whole in @cockpit_giveback" \
+       "jump:;" "$("$TMUX_REAL" -L "$soff_s" -f /dev/null show -gqv @cockpit_giveback)"
+    reload_on "$soff_s"
+    is "and the next load gives it back: ; is tmux's own again" \
+       "$(soff_get "$soff_st" '\;')" "$(soff_get "$soff_s" '\;')"
+    is "and nothing waits in @cockpit_giveback after it" "" \
+       "$("$TMUX_REAL" -L "$soff_s" -f /dev/null show -gqv @cockpit_giveback)"
+fi
+"$TMUX_REAL" -L "$soff_s" kill-server >/dev/null 2>&1
+"$TMUX_REAL" -L "$soff_st" kill-server >/dev/null 2>&1
+unset -f soff_get soff_move
+unset SOFF soff_s soff_st soff_n soff_a soff_k
+fi
+
+echo "== a key tmux refuses binds nothing, records nothing, and says why (#1210) =="
+# ckey and the source-file binds never read tmux's answer: a key tmux refuses (unknown key:
+# a b) bound nothing, said nothing, and was still recorded in @cockpit_<name>_bound, and the
+# menu's row and the border's corner replayed it (#1210). info binds from argv (ckey) and
+# reload through source-file -, and each has a menu row. Each value is written as a tmux.conf
+# line, the way a user writes it.
+if need_tmux "a key tmux refuses"; then :
+elif ! ( . "$DIR/scripts/lib/vnum.sh"
+         v=$("$TMUX_REAL" -V); vnum_ge "${v#tmux }" 3.8 ); then
+    skip_ "a key tmux refuses (tmux below 3.8: the plugin refuses it)"
+else
+RF=$(mktmpd); rf_s="cockpit-rf-$$"; rf_st="cockpit-rfst-$$"
+rf_m="cockpit-rfm-$$"; rf_o="cockpit-rfo-$$"
+SOCKS="$SOCKS $rf_s $rf_st $rf_m $rf_o"
+rf_get() { "$TMUX_REAL" -L "$rf_s" -f /dev/null "$@" 2>&1; }
+rf_menu() { rf_get list-keys -T prefix -F '#{key_command}' a; }
+rf_conf() {                   # <socket> <name> <the value as tmux.conf spells it>
+    printf 'set -g @cockpit_%s_key %s\n' "$2" "$3" > "$RF/keys.conf"
+    "$TMUX_REAL" -L "$1" -f /dev/null source-file "$RF/keys.conf" >/dev/null 2>&1
+}
+rf_load() {                   # <name> <spelling> [a record planted first]: fresh server, one load
+    fresh_server -L "$rf_s" -f /dev/null -- -d -s t -x 120 -y 30 -c "$RF" || return 1
+    "$TMUX_REAL" -L "$rf_s" -f /dev/null set -g @cockpit_bg_poll off >/dev/null 2>&1
+    rf_conf "$rf_s" "$1" "$2"
+    [ -z "${3:-}" ] || rf_get set -g "@cockpit_$1_bound" "$3" >/dev/null
+    reload_on "$rf_s"
+}
+# The menu and the corner with the key off: a refused key leaves them as off does.
+rf_off_info='' rf_off_reload='' rf_off_corner=''
+rf_load info off && rf_off_info=$(rf_menu)
+rf_load reload off && rf_off_reload=$(rf_menu)
+rf_load sessions off &&
+    rf_off_corner=$(rf_get list-keys -T root -F '#{key_command}' MouseUp1Control0)
+# <name>|<the value as tmux.conf spells it>|<the value the option holds>, on fd 3: no tmux
+# call below can read the rows. No key carrying the note also pins that a refused key never
+# falls back to its default, which may be a key the user bound to something else.
+while IFS='|' read -r rf_n rf_c rf_v <&3; do
+    rf_load "$rf_n" "$rf_c" || continue
+    rf_w="@cockpit_${rf_n}_key written $rf_c"
+    is "$rf_w: the option holds [$rf_v]" "$rf_v" "$(rf_get show -gv "@cockpit_${rf_n}_key")"
+    is "$rf_w: @cockpit_${rf_n}_bound records nothing" "" \
+       "$(rf_get show -gqv "@cockpit_${rf_n}_bound")"
+    is "$rf_w: no key carries the note cockpit: $rf_n" "" \
+       "$(rf_get list-keys -T prefix -F "#{?#{==:#{key_note},cockpit: $rf_n},#{key_string},}")"
+    case $rf_n in info) rf_off=$rf_off_info ;; *) rf_off=$rf_off_reload ;; esac
+    is "$rf_w: the menu is the menu with $rf_n off" "$rf_off" "$(rf_menu)"
+done 3<<'RFROWS'
+info|'\\;'|\\;
+info|'a\;'|a\;
+info|'a b'|a b
+info|Foo|Foo
+reload|'\\;'|\\;
+reload|'a\;'|a\;
+reload|'a b'|a b
+reload|Foo|Foo
+RFROWS
+# Every other name with a key of its own, refused once as 'a b': the record, the note, and
+# the prefix-a menu (prefix a itself for the menu key) against a load with the name off.
+# board and review bind a second way, with their window option on (#1226 review).
+# <name>|<has a menu row: y or n>|<an option set on first, or ->, on fd 3.
+rf_load_with() {              # <name> <spelling> <an option set on first, or ->: one load
+    fresh_server -L "$rf_s" -f /dev/null -- -d -s t -x 120 -y 30 -c "$RF" || return 1
+    "$TMUX_REAL" -L "$rf_s" -f /dev/null set -g @cockpit_bg_poll off >/dev/null 2>&1
+    [ "$3" = - ] || rf_get set -g "$3" on >/dev/null
+    rf_conf "$rf_s" "$1" "$2"
+    reload_on "$rf_s"
+}
+while IFS='|' read -r rf_n rf_r rf_x <&3; do
+    rf_off=''
+    if [ "$rf_r" = y ]; then rf_load_with "$rf_n" off "$rf_x" || continue; rf_off=$(rf_menu); fi
+    rf_load_with "$rf_n" "'a b'" "$rf_x" || continue
+    rf_w="@cockpit_${rf_n}_key written 'a b'${rf_x#-}"
+    is "$rf_w: @cockpit_${rf_n}_bound records nothing" "" \
+       "$(rf_get show -gqv "@cockpit_${rf_n}_bound")"
+    is "$rf_w: no key carries the note cockpit: $rf_n" "" \
+       "$(rf_get list-keys -T prefix -F "#{?#{==:#{key_note},cockpit: $rf_n},#{key_string},}")"
+    if [ "$rf_r" = y ]; then
+        is "$rf_w: the menu is the menu with $rf_n off" "$rf_off" "$(rf_menu)"
+    fi
+done 3<<'RFALL'
+move|y|-
+fullscreen|y|-
+panel|y|-
+board|y|-
+board|y|@cockpit_board_window
+review|n|-
+review|n|@cockpit_review_window
+menu|y|-
+RFALL
+if rf_load sessions "'a\\;'"; then
+    is "@cockpit_sessions_key written 'a\\;': the corner is the corner with it off" \
+       "$rf_off_corner" "$(rf_get list-keys -T root -F '#{key_command}' MouseUp1Control0)"
+fi
+# A record a load before #1210 wrote for a refused key: the value is unchanged, so the move
+# loop leaves the record, and the load itself must clear it.
+while read -r rf_n <&3; do
+    rf_load "$rf_n" Foo Foo || continue
+    is "@cockpit_${rf_n}_key Foo, recorded by an earlier load: the record is cleared" "" \
+       "$(rf_get show -gqv "@cockpit_${rf_n}_bound")"
+done 3<<'RFSTALE'
+info
+reload
+RFSTALE
+# A key moved from its default to a refused value: the default goes back to tmux, as any
+# move gives it back (#258), and nothing is recorded for the refused one.
+fresh_server -L "$rf_st" -f /dev/null -- -d -s t -c "$RF"
+rf_stock() {                  # <key> -> tmux's own command for it, or its error
+    "$TMUX_REAL" -L "$rf_st" -f /dev/null list-keys -T prefix -F '#{key_command}' "$1" 2>&1
+}
+while read -r rf_n rf_d <&3; do
+    fresh_server -L "$rf_s" -f /dev/null -- -d -s t -x 120 -y 30 -c "$RF" || continue
+    "$TMUX_REAL" -L "$rf_s" -f /dev/null set -g @cockpit_bg_poll off >/dev/null 2>&1
+    reload_on "$rf_s" || continue
+    # Cockpit's before the move, so the give-back row below has a binding to undo.
+    is "@cockpit_${rf_n}_key at its default: $rf_d carries the note cockpit: $rf_n" \
+       "cockpit: $rf_n" "$(rf_get list-keys -T prefix -F '#{key_note}' "$rf_d")"
+    rf_conf "$rf_s" "$rf_n" "'a b'"
+    reload_on "$rf_s" || continue
+    is "@cockpit_${rf_n}_key moved off $rf_d to 'a b': $rf_d is tmux's own again" \
+       "$(rf_stock "$rf_d")" "$(rf_get list-keys -T prefix -F '#{key_command}' "$rf_d")"
+    is "@cockpit_${rf_n}_key moved off $rf_d to 'a b': @cockpit_${rf_n}_bound records nothing" \
+       "" "$(rf_get show -gqv "@cockpit_${rf_n}_bound")"
+done 3<<'RFMOVE'
+info i
+reload R
+RFMOVE
+# A refused value holding a space, whose words a move loop that split it read as keys: a first
+# word the name holds ('i x') gave nothing back, and a word naming the name and that key
+# ('q info:i') matched it as bound again. A cleared record then left the key cockpit's for
+# good, past any later move (#1226 review, #1229). The loop keeps the value whole and gives the
+# key back, as off would. <name>|<default>|<refused, as tmux.conf spells it>|
+# <a plain key moved to after it>, on fd 3: a | between fields, since a refused value holds a
+# space that a plain read would split.
+while IFS='|' read -r rf_n rf_d rf_c rf_p <&3; do
+    fresh_server -L "$rf_s" -f /dev/null -- -d -s t -x 120 -y 30 -c "$RF" || continue
+    "$TMUX_REAL" -L "$rf_s" -f /dev/null set -g @cockpit_bg_poll off >/dev/null 2>&1
+    reload_on "$rf_s" || continue
+    is "@cockpit_${rf_n}_key at its default: $rf_d carries the note cockpit: $rf_n" \
+       "cockpit: $rf_n" "$(rf_get list-keys -T prefix -F '#{key_note}' "$rf_d")"
+    rf_conf "$rf_s" "$rf_n" "$rf_c"
+    reload_on "$rf_s" || continue
+    rf_w="@cockpit_${rf_n}_key moved off $rf_d to $rf_c"
+    is "$rf_w: $rf_d is tmux's own again" \
+       "$(rf_stock "$rf_d")" "$(rf_get list-keys -T prefix -F '#{key_command}' "$rf_d")"
+    is "$rf_w: @cockpit_${rf_n}_bound records nothing" "" \
+       "$(rf_get show -gqv "@cockpit_${rf_n}_bound")"
+    rf_conf "$rf_s" "$rf_n" "$rf_p"
+    reload_on "$rf_s" || continue
+    is "$rf_w, then to $rf_p: $rf_d is tmux's own" \
+       "$(rf_stock "$rf_d")" "$(rf_get list-keys -T prefix -F '#{key_command}' "$rf_d")"
+done 3<<'RFSPLIT'
+info|i|'i x'|y
+menu|a|'a b'|z
+info|i|'q info:i'|y
+menu|a|'b menu:a'|z
+RFSPLIT
+# The same split when tmux's own binding cannot be read: the key waits in @cockpit_giveback,
+# so the next load gives it back. The shim fails that read, in the shape of the #290 one (#1232).
+mkdir -p "$RF/gbfail"
+printf '%s\n' '#!/usr/bin/env bash' \
+    'case " $* " in *" start-server "*) echo "no answer" >&2; exit 1 ;; esac' \
+    "exec $(tq "$TMUX_REAL") \"\$@\"" > "$RF/gbfail/tmux"
+chmod +x "$RF/gbfail/tmux"
+if fresh_server -L "$rf_s" -f /dev/null -- -d -s t -x 120 -y 30 -c "$RF"; then
+    "$TMUX_REAL" -L "$rf_s" -f /dev/null set -g @cockpit_bg_poll off >/dev/null 2>&1
+    rf_w="@cockpit_info_key moved to 'i x', tmux's own i unreadable"
+    if reload_on "$rf_s" && rf_conf "$rf_s" info "'i x'" &&
+       reload_on "$rf_s" "PATH=$(tq "$RF/gbfail"):\"\$PATH\" $(tq "$DIR/cockpit.tmux")"; then
+        is "$rf_w: info:i waits in @cockpit_giveback" info:i \
+           "$(rf_get show -gqv @cockpit_giveback)"
+        is "$rf_w: i still carries the note cockpit: info" "cockpit: info" \
+           "$(rf_get list-keys -T prefix -F '#{key_note}' i)"
+    fi
+    if reload_on "$rf_s"; then
+        is "$rf_w: the next load gives i back: i is tmux's own" \
+           "$(rf_stock i)" "$(rf_get list-keys -T prefix -F '#{key_command}' i)"
+        is "$rf_w: and @cockpit_info_bound records nothing" "" \
+           "$(rf_get show -gqv @cockpit_info_bound)"
+    fi
+fi
+# A key holding a space waits whole: the list puts each entry after a newline then, since a
+# space-joined list would split ' ' off its name (#1229).
+if fresh_server -L "$rf_s" -f /dev/null -- -d -s t -x 120 -y 30 -c "$RF"; then
+    "$TMUX_REAL" -L "$rf_s" -f /dev/null set -g @cockpit_bg_poll off >/dev/null 2>&1
+    rf_w="@cockpit_info_key moved off ' ' to y, tmux's own Space unreadable"
+    if reload_on "$rf_s" && rf_conf "$rf_s" info "' '" && reload_on "$rf_s" &&
+       rf_conf "$rf_s" info y &&
+       reload_on "$rf_s" "PATH=$(tq "$RF/gbfail"):\"\$PATH\" $(tq "$DIR/cockpit.tmux")"; then
+        is "$rf_w: info:<space> waits after a newline in @cockpit_giveback" $'\ninfo: ' \
+           "$(rf_get show -gqv @cockpit_giveback)"
+    fi
+    reload_on "$rf_s" &&
+        is "$rf_w: the next load gives Space back: Space is tmux's own" \
+           "$(rf_stock Space)" "$(rf_get list-keys -T prefix -F '#{key_command}' Space)"
+fi
+# The key the last load bound, its bind failing this load for a reason outside the key: the
+# record still names it, so refused() gives it back, as its message says (#1242). The shim
+# fails that one bind-key.
+mkdir -p "$RF/bindfail"
+printf '%s\n' '#!/usr/bin/env bash' \
+    'case " $* " in *" bind-key -N cockpit: info i "*) echo "bind failed" >&2; exit 1 ;; esac' \
+    "exec $(tq "$TMUX_REAL") \"\$@\"" > "$RF/bindfail/tmux"
+chmod +x "$RF/bindfail/tmux"
+if fresh_server -L "$rf_s" -f /dev/null -- -d -s t -x 120 -y 30 -c "$RF"; then
+    "$TMUX_REAL" -L "$rf_s" -f /dev/null set -g @cockpit_bg_poll off >/dev/null 2>&1
+    reload_on "$rf_s" &&
+        reload_on "$rf_s" "PATH=$(tq "$RF/bindfail"):\"\$PATH\" $(tq "$DIR/cockpit.tmux")" &&
+        is "@cockpit_info_key i, its bind failing for a reason outside the key: i is tmux's own" \
+           "$(rf_stock i)" "$(rf_get list-keys -T prefix -F '#{key_command}' i)"
+fi
+# The same split onto a key the user bound since, with no note: owned() reads it as the
+# user's, so the load gives nothing back and the user's binding stays as it was.
+if fresh_server -L "$rf_s" -f /dev/null -- -d -s t -x 120 -y 30 -c "$RF"; then
+    "$TMUX_REAL" -L "$rf_s" -f /dev/null set -g @cockpit_bg_poll off >/dev/null 2>&1
+    if reload_on "$rf_s"; then
+        rf_get bind-key -T prefix i display-message user-i >/dev/null
+        is "the user's own i, bound by hand after a load, carries no note" \
+           "|display-message user-i" \
+           "$(rf_get list-keys -T prefix -F '#{key_note}|#{key_command}' i)"
+        rf_conf "$rf_s" info "'i x'"
+        rf_w="@cockpit_info_key moved to 'i x' over the user's own i"
+        if reload_on "$rf_s"; then
+            is "$rf_w: i is left as the user bound it" "|display-message user-i" \
+               "$(rf_get list-keys -T prefix -F '#{key_note}|#{key_command}' i)"
+            is "$rf_w: @cockpit_info_bound records nothing" "" \
+               "$(rf_get show -gqv @cockpit_info_bound)"
+        fi
+    fi
+fi
+# A refused value's word naming another name and the key that name moves off in the same
+# load: a split move loop read it as that key bound again, and kept it cockpit's beside the
+# name's new key (#1229).
+if fresh_server -L "$rf_s" -f /dev/null -- -d -s t -x 120 -y 30 -c "$RF"; then
+    "$TMUX_REAL" -L "$rf_s" -f /dev/null set -g @cockpit_bg_poll off >/dev/null 2>&1
+    if reload_on "$rf_s"; then
+        is "@cockpit_jump_key at its default: u carries the note cockpit: jump" \
+           "cockpit: jump" "$(rf_get list-keys -T prefix -F '#{key_note}' u)"
+        rf_conf "$rf_s" jump y; rf_conf "$rf_s" info "'i jump:u'"
+        reload_on "$rf_s" &&
+            is "@cockpit_jump_key moved off u to y as info takes 'i jump:u': u is tmux's own" \
+               "$(rf_stock u)" "$(rf_get list-keys -T prefix -F '#{key_command}' u)"
+    fi
+fi
+# A key tmux binds with a space in it (' ' is Space, 'M- ' M-Space) is recorded with the
+# space, and a give-back list split on spaces lost it when the key moved on (#1229).
+# <name>|<default>|<the key as tmux.conf spells it>|<tmux's name for it>|<a key moved to
+# after it>, on fd 3.
+while IFS='|' read -r rf_n rf_d rf_c rf_k rf_p <&3; do
+    fresh_server -L "$rf_s" -f /dev/null -- -d -s t -x 120 -y 30 -c "$RF" || continue
+    "$TMUX_REAL" -L "$rf_s" -f /dev/null set -g @cockpit_bg_poll off >/dev/null 2>&1
+    reload_on "$rf_s" || continue
+    rf_conf "$rf_s" "$rf_n" "$rf_c"
+    reload_on "$rf_s" || continue
+    rf_w="@cockpit_${rf_n}_key moved off $rf_d to $rf_c"
+    is "$rf_w: $rf_k carries the note cockpit: $rf_n" \
+       "cockpit: $rf_n" "$(rf_get list-keys -T prefix -F '#{key_note}' "$rf_k")"
+    rf_conf "$rf_s" "$rf_n" "$rf_p"
+    reload_on "$rf_s" || continue
+    is "$rf_w, then to $rf_p: $rf_k is tmux's own again" \
+       "$(rf_stock "$rf_k")" "$(rf_get list-keys -T prefix -F '#{key_command}' "$rf_k")"
+done 3<<'RFSPACE'
+info|i|' '|Space|y
+info|i|'M- '|M-Space|y
+RFSPACE
+"$TMUX_REAL" -L "$rf_st" kill-server >/dev/null 2>&1
+# The message: a dmsg is logged only with a client attached, so one is attached through an
+# outer server, in the shape of the #1086 block's oh_attach, and show-messages is read.
+rf_up() {                     # a server with a client on it -> 0 once the client is there
+    ( cd "$RF" && exec env -u TMUX_COCKPIT_DIR -u TMUX -u TMUX_PANE "$TMUX_REAL" -L "$rf_m" \
+        -f /dev/null new-session -d -s t -x 120 -y 30 -c "$RF" 'exec sleep 300' ) >/dev/null 2>&1
+    "$TMUX_REAL" -L "$rf_m" -f /dev/null set -g mouse on \; \
+        set -g @cockpit_bg_poll off >/dev/null 2>&1
+    ( cd "$RF" && exec env -u TMUX_COCKPIT_DIR -u TMUX -u TMUX_PANE "$TMUX_REAL" -L "$rf_o" \
+        -f /dev/null new-session -d -s o -x 300 -y 32 -c "$RF" \
+        "TERM=xterm-256color exec $(tq "$TMUX_REAL") -L $rf_m attach -t t" ) >/dev/null 2>&1
+    until_cap "$rf_o" o '*[!\ ]*' &&
+        until_out '?*' "$TMUX_REAL" -L "$rf_m" -f /dev/null list-clients -F '#{client_name}'
+}
+rf_said() {                   # <name> <text> -> how many logged messages are <text>
+    until_out "*$1 stays unbound*" "$TMUX_REAL" -L "$rf_m" -f /dev/null show-messages
+    "$TMUX_REAL" -L "$rf_m" -f /dev/null show-messages 2>/dev/null | grep -v ' command: ' |
+        grep -cF -- " $2"
+}
+if rf_up; then
+    rf_conf "$rf_m" jump "'a b'"
+    rf_t="tmux-cockpit: @cockpit_jump_key [a b] binds nothing (unknown key: a b);"
+    rf_t="$rf_t jump stays unbound until the option is fixed"
+    reload_on "$rf_m" &&
+        is "@cockpit_jump_key 'a b': one message names the option, the value and tmux's error" \
+           1 "$(rf_said jump "$rf_t")"
+    rf_conf "$rf_m" jump u; rf_conf "$rf_m" reload Foo
+    rf_t="tmux-cockpit: @cockpit_reload_key [Foo] binds nothing (unknown key: Foo);"
+    rf_t="$rf_t reload stays unbound until the option is fixed"
+    reload_on "$rf_m" &&
+        is "@cockpit_reload_key Foo: one message names the option, the value and tmux's error" \
+           1 "$(rf_said reload "$rf_t")"
+    # The menu key read from @cockpit_ai_key, the old option: the message names that one.
+    "$TMUX_REAL" -L "$rf_m" -f /dev/null set -gu @cockpit_menu_key >/dev/null 2>&1
+    rf_conf "$rf_m" reload R; rf_conf "$rf_m" ai "'b c'"
+    rf_t="tmux-cockpit: @cockpit_ai_key [b c] binds nothing (unknown key: b c);"
+    rf_t="$rf_t menu stays unbound until the option is fixed"
+    reload_on "$rf_m" &&
+        is "@cockpit_ai_key 'b c': one message names @cockpit_ai_key, the value and tmux's error" \
+           1 "$(rf_said menu "$rf_t")"
+else
+    bad "a client attached for the #1210 message rows" "a client on $rf_m" "none"
+fi
+"$TMUX_REAL" -L "$rf_o" kill-server >/dev/null 2>&1
+"$TMUX_REAL" -L "$rf_m" kill-server >/dev/null 2>&1
+"$TMUX_REAL" -L "$rf_s" kill-server >/dev/null 2>&1
+unset -f rf_get rf_menu rf_conf rf_load rf_stock rf_up rf_said
+unset RF rf_s rf_st rf_m rf_o rf_n rf_c rf_v rf_w rf_d rf_t rf_off
+unset rf_off_info rf_off_reload rf_off_corner
+unset -f rf_load_with
+unset rf_r rf_x rf_p
+unset rf_k
+fi
+
+echo "== a message shows a name as written, and runs nothing in it (#1096) =="
+# tmux expands a display-message as a format, which runs a #( ), then draws it, reading ##
+# as # and #[ as a style: fesc got a name through the first step only, and an unescaped
+# message ran a #( (cockpit.tmux's @cockpit_panel_mode line). dmsg (fmt.sh) shows it as
+# written. Each kind of site is read where the user reads it, the drawn status line of a
+# client attached through an outer server, with names holding ##, #[...], #S and a #( whose
+# marker must not appear. A scan then holds every display-message of a variable to dmsg.
+if need_tmux "messages show names as written"; then :
+elif ! ( . "$DIR/scripts/lib/vnum.sh"
+         v=$("$TMUX_REAL" -V); vnum_ge "${v#tmux }" 3.8 ); then
+    skip_ "messages show names as written (tmux below 3.8: the plugin refuses it)"
+else
+DM=$(mktmpd); mkdir -p "$DM/wd" "$DM/m"
+for dm_n in 1 2 3 4 5 6; do SOCKS="$SOCKS cockpit-dm-$$-$dm_n cockpit-dmo-$$-$dm_n"; done
+dm_names=('a##x' 'a#[fg=red]b' 'a#Sb' 'a#(touch pwned)b')
+dm_up() {                     # <n> [new-session command] -> a server, a client on it
+    # Wide enough by construction: a message wider than the client is cut. The longest
+    # text here is a sentence and a name past the scratch folder's own path.
+    local s="cockpit-dm-$$-$1" o="cockpit-dmo-$$-$1" w=$(( ${#DM} + 150 ))
+    ( cd "$DM/wd" && exec env -u TMUX_COCKPIT_DIR -u TMUX -u TMUX_PANE "$TMUX_REAL" -L "$s" \
+        -f /dev/null new-session -d -s t -x "$w" -y 10 -c "$DM/wd" "${2:-exec sleep 300}" \
+        ) >/dev/null 2>&1
+    "$TMUX_REAL" -L "$s" set -g display-time 0 \; set -g status-left '' \; \
+        set -g status-right '' >/dev/null 2>&1
+    ( cd "$DM/wd" && exec env -u TMUX_COCKPIT_DIR -u TMUX -u TMUX_PANE "$TMUX_REAL" -L "$o" \
+        -f /dev/null new-session -d -s o -x "$w" -y 12 -c "$DM/wd" \
+        "TERM=xterm-256color exec $(tq "$TMUX_REAL") -L $s attach -t t" ) >/dev/null 2>&1
+    until_cap "$o" o '*[!\ ]*'
+    until_out '?*' "$TMUX_REAL" -L "$s" list-clients -F '#{client_name}'
+}
+dm_drawn() {                  # <n> <text> -> 1 once the client's status line draws <text>
+    local o="cockpit-dmo-$$-$1" i
+    for ((i = 1; i <= POLLS; i++)); do
+        "$TMUX_REAL" -L "$o" capture-pane -p -t o | grep -qF -- "$2" && { echo 1; return; }
+        sleep 0.1
+    done
+    echo 0
+}
+dm_line() {                   # <n> <text> -> 1 once the client's last line is <text>
+    local o="cockpit-dmo-$$-$1" i l
+    for ((i = 1; i <= POLLS; i++)); do
+        l=$("$TMUX_REAL" -L "$o" capture-pane -p -t o | tail -1)
+        l=${l%"${l##*[! ]}"}
+        [ "$l" = "$2" ] && { echo 1; return; }
+        sleep 0.1
+    done
+    echo 0
+}
+dm_down() {
+    "$TMUX_REAL" -L "cockpit-dmo-$$-$1" kill-server >/dev/null 2>&1
+    "$TMUX_REAL" -L "cockpit-dm-$$-$1" kill-server >/dev/null 2>&1
+}
+# Every call runs from $DM/wd: a #( a message let run would run in that client's cwd.
+dm_tmux() {                   # <n> <command...> with TMUX on server <n>, from wd
+    local n=$1; shift
+    ( cd "$DM/wd" && TMUX="$SOCKDIR/cockpit-dm-$$-$n,0,0" exec "$@" ) >/dev/null 2>&1
+}
+
+# 1. dmsg called with the text alone: tmux-rename's refusal, a staged name, no such window.
+dm_up 1
+for dm_f in "${dm_names[@]}"; do
+    "$TMUX_REAL" -L "cockpit-dm-$$-1" set -g @cockpit_rename_to "$dm_f" >/dev/null 2>&1
+    dm_tmux 1 "$DIR/scripts/tmux-rename" window @999
+    is "tmux-rename's refusal draws the name [$dm_f] as written" "1" \
+       "$(dm_drawn 1 "cockpit: could not rename window @999 to $dm_f")"
+done
+dm_down 1
+# 2. dmsg with -t: cockpit-board's "needs cockpit-tui", from a plugin copy in a folder
+# holding the name, cockpit-tui pointed at nothing.
+dm_up 2
+dm_p=$("$TMUX_REAL" -L "cockpit-dm-$$-2" display-message -p -t t: '#{pane_id}')
+for dm_f in "${dm_names[@]}"; do
+    mkdir -p "$DM/c/$dm_f"; cp -R "$DIR/scripts" "$DM/c/$dm_f/"
+    dm_d=$(cd -P "$DM/c/$dm_f" && pwd)
+    # Not env VAR=...: a folder holding a = would read as one more assignment.
+    COCKPIT_TUI_BIN="$DM/none/cockpit-tui" dm_tmux 2 "$dm_d/scripts/cockpit-board" -p "$dm_p"
+    is "cockpit-board's message draws the folder [$dm_f] as written" "1" \
+       "$(dm_drawn 2 "cockpit: board needs cockpit-tui: run $dm_d/install.sh")"
+done
+dm_down 2
+# 3. The delivery notice: the agent window named with each shape, stored literally:
+# rename-window expands its argument, so it gets the name fesc'd, which keeps a #[ as it
+# is and doubles every other #.
+dm_up 3 'exec -a claude bash'
+"$TMUX_REAL" -L "cockpit-dm-$$-3" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
+dm_p=$("$TMUX_REAL" -L "cockpit-dm-$$-3" display-message -p -t t: '#{pane_id}')
+dm_k=0
+for dm_f in "${dm_names[@]}"; do
+    dm_k=$((dm_k + 1))
+    "$TMUX_REAL" -L "cockpit-dm-$$-3" rename-window -t t:0 -- \
+        "$(. "$DIR/scripts/lib/fmt.sh" && fesc "$dm_f")" >/dev/null 2>&1
+    is "the agent window is named [$dm_f]" "$dm_f" \
+       "$("$TMUX_REAL" -L "cockpit-dm-$$-3" display-message -p -t t:0 '#{window_name}')"
+    printf '## src.go:%s (+)\n> foo\nDM fix\n\n' "$dm_k" > "$DM/store$dm_k"
+    dm_tmux 3 "$DIR/scripts/tmux-review" --deliver "$dm_p" "$DM/store$dm_k"
+    is "the delivery notice draws the window [$dm_f] as written" "1" \
+       "$(dm_drawn 3 "cockpit: review pasted into t:0 $dm_f ")"
+done
+dm_down 3
+# 4. cockpit.tmux's dmsg of "@cockpit_panel_mode is [$pmode]" (#1096): the value went in
+# raw, and its #( ran. Two rows pin the fix, and a revert reds both every time. The drawn
+# row below reds because an expanded value changes the drawn text. The dmsg scan reds
+# because it reads the source: it scans cockpit.tmux and scripts/ for a display-message
+# call whose text holds a variable or a $( ), a -p read, the version check and dmsg's own call
+# excepted. The pmode marker in the last row is a backstop only: its job dies with
+# cockpit.tmux's short-lived client, so a revert can leave none (#1118).
+dm_up 4
+"$TMUX_REAL" -L "cockpit-dm-$$-4" set -g mouse on \; \
+    set -g @cockpit_panel_mode "x#(touch $DM/m/pmode)y##z#[fg=red]w" >/dev/null 2>&1
+( cd "$DM/wd" && exec "$TMUX_REAL" -L "cockpit-dm-$$-4" run-shell "$(tq "$DIR/cockpit.tmux")" \
+    ) >/dev/null 2>&1
+is "an odd @cockpit_panel_mode is drawn as written" "1" \
+   "$(dm_drawn 4 "@cockpit_panel_mode is [x#(touch $DM/m/pmode)y##z#[fg=red]w]; use auto")"
+# A positive control, last on this server: a raw message whose #( must run. It shows that
+# #( runs here; it says nothing about the rows above (#1118). tmux kills a client's #(
+# jobs when that client exits, so the second run-shell keeps it until the marker exists
+# (#1113). The job's sleep 1 is a floor on its life, not a wait for a result: a client that
+# leaves early always takes it down. run-shell reads ## as # before the job's tmux sees it.
+"$TMUX_REAL" -L "cockpit-dm-$$-4" run-shell \
+    "tmux display-message 'x##(sleep 1; touch $DM/m/control)y' \; \
+        run-shell 'for i in \$(seq $POLLS); do [ -e $DM/m/control ] && break; sleep 0.1; done'" \
+    >/dev/null 2>&1
+until_out yes sh -c "[ -e $(tq "$DM/m/control") ] && echo yes"
+dm_down 4
+is "and no #( from a name or a value left a marker, where the control did (best effort, #1118)" \
+   "$DM/m/control " \
+   "$(find "$DM" \( -name pwned -o -name pmode -o -name control \) | tr '\n' ' ')"
+# 5. dmsg itself: a text that starts with - would read as a flag, and tmux showed nothing.
+# It gets a -- before it, and only it: the command any other text makes is unchanged.
+is "dmsg puts -- before a text that starts with -, and only there" \
+   "[display-message][-l][--][-x foo]|[display-message][-l][ -x]|[display-message][-l][x]|" \
+   "$(. "$DIR/scripts/lib/fmt.sh"
+      tmux() { printf '[%s]' "$@"; }
+      for dm_f in '-x foo' ' -x' 'x'; do dmsg "$dm_f"; printf '|'; done)"
+# cockpit_noted_key (#1124) puts the name into a tmux format, so it takes [a-z0-9-] only
+# and checks it before tmux is asked. Rows: <arguments>|<rc, what it says, each tmux call>.
+while IFS='|' read -r dm_f dm_w; do
+    is "cockpit_noted_key [$dm_f]: $dm_w" "$dm_w" \
+       "$(. "$DIR/scripts/lib/fmt.sh"
+          tmux() { printf 'asked;' >&3; }   # fd 3: the helper sends tmux's 2 away
+          # shellcheck disable=SC2086  # the row's words are the arguments
+          dm_f=$(cockpit_noted_key $dm_f 3>&1 2>&1); printf '%s %s' $? "$dm_f")"
+done <<'NKROWS'
+|2 cockpit_noted_key: bad name []
+a,b @cockpit_x_bound|2 cockpit_noted_key: bad name [a,b]
+a}b @cockpit_x_bound|2 cockpit_noted_key: bad name [a}b]
+jumpé @cockpit_x_bound|2 cockpit_noted_key: bad name [jumpé]
+jump|2 cockpit_noted_key: bad record option []
+fix-2 @cockpit_x_bound|0 asked;asked;
+NKROWS
+dm_up 5
+for dm_f in '-x foo' '--' '-' '-l' '-#[fg=red]' ' -x foo'; do
+    dm_tmux 5 bash -c '. "$1/scripts/lib/fmt.sh" && dmsg "$2"' _ "$DIR" "$dm_f"
+    is "dmsg draws [$dm_f] whole, as the client's whole status line" "1" "$(dm_line 5 "$dm_f")"
+done
+dm_down 5
+
+# 6. The notice's jump clause names the key bound as "cockpit: jump" (#1102). The option
+# is read at load, globally: a session's value, or a change with no reload, named a key
+# that was not the jump (x is stock kill-pane). The agent's session is t; the client
+# reads in session B, as a user elsewhere does.
+dm_up 6 'exec -a claude bash'
+dm_s="cockpit-dm-$$-6"
+"$TMUX_REAL" -L "$dm_s" set -g mouse on >/dev/null 2>&1
+( cd "$DM/wd" && exec "$TMUX_REAL" -L "$dm_s" run-shell "$(tq "$DIR/cockpit.tmux")" \
+    ) >/dev/null 2>&1
+until_out '*@cockpit_click_line*' "$TMUX_REAL" -L "$dm_s" list-keys -T root C-MouseDown3Pane
+"$TMUX_REAL" -L "$dm_s" new-session -d -s B -c "$DM/wd" 'exec sleep 300' \; \
+    switch-client -c "$("$TMUX_REAL" -L "$dm_s" list-clients -F '#{client_name}')" -t B \
+    >/dev/null 2>&1
+dm_p=$("$TMUX_REAL" -L "$dm_s" display-message -p -t t: '#{pane_id}')
+dm_note() {                   # <n> <case> <want>: name the window w<n>, deliver, read the line
+    "$TMUX_REAL" -L "$dm_s" rename-window -t t:0 -- "w$1" >/dev/null 2>&1
+    printf '## src.go:%s (+)\n> foo\nDM fix\n\n' "$1" > "$DM/jstore$1"
+    dm_tmux 6 "$DIR/scripts/tmux-review" --deliver "$dm_p" "$DM/jstore$1"
+    local want="cockpit: review pasted into t:0 w$1 · ↵ sends it$3" got
+    dm_line 6 "$want" >/dev/null
+    got=$("$TMUX_REAL" -L "cockpit-dmo-$$-6" capture-pane -p -t o | tail -1)
+    is "the notice names the bound jump key: $2" "$want" "${got%"${got##*[! ]}"}"
+}
+dm_note 0 "nothing set: the shipped default u, never the pre-#43 J" " · prefix u jumps"
+"$TMUX_REAL" -L "$dm_s" set -t t @cockpit_jump_key x \; set -t B @cockpit_jump_key y
+dm_note 1 "session values x and y, bound u" " · prefix u jumps"
+"$TMUX_REAL" -L "$dm_s" set -t t -u @cockpit_jump_key \; set -t B -u @cockpit_jump_key \; \
+    set -g @cockpit_jump_key j
+dm_note 2 "the global changed to j with no reload, bound u" " · prefix u jumps"
+"$TMUX_REAL" -L "$dm_s" set -gu @cockpit_jump_key \; set -gu @cockpit_jump_bound
+dm_note 3 "@cockpit_jump_bound never set, as an older load leaves it" " · prefix u jumps"
+"$TMUX_REAL" -L "$dm_s" bind-key -T prefix u run-shell true
+dm_note 4 "a jump bound with no note, as before the key notes: no clause" ""
+"$TMUX_REAL" -L "$dm_s" set -g @cockpit_jump_key off
+( cd "$DM/wd" && exec "$TMUX_REAL" -L "$dm_s" run-shell "$(tq "$DIR/cockpit.tmux")" \
+    ) >/dev/null 2>&1
+dm_note 5 "off, after a reload: no clause" ""
+"$TMUX_REAL" -L "$dm_s" set -g @cockpit_jump_key x
+( cd "$DM/wd" && exec "$TMUX_REAL" -L "$dm_s" run-shell "$(tq "$DIR/cockpit.tmux")" \
+    ) >/dev/null 2>&1
+dm_note 6 "x set globally before a load: the key the user configured" " · prefix x jumps"
+# The binding is the truth, the option a record of it: a key moved by hand, two keys that
+# both carry the note, and keys whose names need care, as tmux names them for the user.
+dm_jn=$(. "$DIR/scripts/lib/fmt.sh" && cockpit_key_note jump)
+"$TMUX_REAL" -L "$dm_s" unbind-key -T prefix x \; \
+    bind-key -T prefix -N "$dm_jn" k run-shell true >/dev/null 2>&1
+dm_note 7 "the binding moved by hand to k, the option still x" " · prefix k jumps"
+"$TMUX_REAL" -L "$dm_s" bind-key -T prefix -N "$dm_jn" x run-shell true >/dev/null 2>&1
+dm_note 8 "k and x both carry the note, the load recorded x: x, once" " · prefix x jumps"
+"$TMUX_REAL" -L "$dm_s" unbind-key -T prefix x \; unbind-key -T prefix k >/dev/null 2>&1
+dm_n=8
+for dm_f in Space C-x M-x "'" '#'; do
+    dm_n=$((dm_n + 1))
+    "$TMUX_REAL" -L "$dm_s" bind-key -T prefix -N "$dm_jn" "$dm_f" run-shell true >/dev/null 2>&1
+    dm_note "$dm_n" "the jump bound on [$dm_f]" " · prefix $dm_f jumps"
+    "$TMUX_REAL" -L "$dm_s" unbind-key -T prefix "$dm_f" >/dev/null 2>&1
+done
+"$TMUX_REAL" -L "$dm_s" set -g @cockpit_jump_key x
+( cd "$DM/wd" && exec "$TMUX_REAL" -L "$dm_s" run-shell "$(tq "$DIR/cockpit.tmux")" \
+    ) >/dev/null 2>&1
+# #1124: tmux prints a note's tab, \037 and newline raw. A user's note on c, listed before
+# x, holding the jump's note and one of them, was split into a key name (TAB) or an empty
+# key that matched the unset record, or read as the jump's note (its last line).
+for dm_f in "$dm_jn"$'\t'TAB "$dm_jn"$'\037'US "$dm_jn"$'\n'x $'X\n'"$dm_jn"; do
+    dm_n=$((dm_n + 1))
+    "$TMUX_REAL" -L "$dm_s" set -gu @cockpit_jump_bound \; \
+        bind-key -T prefix -N "$dm_f" c run-shell true >/dev/null 2>&1
+    dm_note "$dm_n" "c noted [$(printf %q "$dm_f")], no record: x" " · prefix x jumps"
+done
+"$TMUX_REAL" -L "$dm_s" unbind-key -T prefix c \; set -g @cockpit_jump_bound x >/dev/null 2>&1
+# The 72 columns an 80-column client draws, for a realistic place: session work, window 2,
+# named api. Read whole on a client wider than the notice, so a cut cannot pass.
+"$TMUX_REAL" -L "$dm_s" rename-session -t t work \; move-window -s work:0 -t work:2 \; \
+    rename-window -t work:2 api >/dev/null 2>&1
+printf '## src.go:20 (+)\n> foo\nDM fix\n\n' > "$DM/jstore-fit"
+dm_tmux 6 "$DIR/scripts/tmux-review" --deliver "$dm_p" "$DM/jstore-fit"
+dm_f="cockpit: review pasted into work:2 api · ↵ sends it · prefix x jumps"
+dm_line 6 "$dm_f" >/dev/null
+dm_d=$("$TMUX_REAL" -L "cockpit-dmo-$$-6" capture-pane -p -t o | tail -1)
+dm_k=$("$TMUX_REAL" -L "$dm_s" list-clients -F '#{client_width}' | head -1)
+is "the notice for work:2 api is drawn whole on a $dm_k-column client" "$dm_f" \
+   "${dm_d%"${dm_d##*[! ]}"}"
+is "and it fits the 72 columns an 80-column client shows" "yes" \
+   "$( [ "$(ncols "$dm_f")" -le 72 ] && [ "$dm_k" -gt 72 ] && echo yes \
+        || echo "no: $(ncols "$dm_f") columns on a $dm_k-column client" )"
+dm_down 6
+# The scan: each display-message call in cockpit.tmux or scripts/ that shows a variable or
+# a $( ) goes through dmsg. A \-continued line is joined first, then split at every
+# display-message, so each call is judged on its own text: a -p before its first quote is
+# a read, not a message. Allowed, each only in its own file and only when the call's
+# text, from display-message to the end of the line, is its exact text (#1108), so any
+# byte added to it is named:
+#   cockpit.tmux, the version check: it runs on a tmux below the floor, where -l (3.4)
+#     may not exist, and shows only that tmux's own -V output.
+#   scripts/lib/fmt.sh, dmsg itself.
+dm_scan() {                   # <file...> -> file:line of each display-message not via dmsg
+    awk '
+        BEGIN {
+            ver = " \"tmux-cockpit needs tmux 3.8 or newer (found $tmux_version);"
+            ver = ver " bootstrap.sh builds it\""
+            dm = " \"$@\" \"${t//#/##}\""
+        }
+        FNR == 1 { buf = "" }
+        { if (buf == "") start = FNR }
+        /\\$/ { buf = buf substr($0, 1, length($0) - 1) " "; next }
+        { l = buf $0; buf = "" }
+        l ~ /^[ \t]*#/ || l !~ /display-message/ { next }
+        {
+            n = split(l, seg, /display-message/)
+            for (i = 2; i <= n; i++) {
+                c = seg[i]
+                if (c ~ /^[^"'\''$]*[ \t]-p([ \t]|$)/) continue
+                if (FILENAME == "cockpit.tmux" && c == ver) continue
+                if (FILENAME == "scripts/lib/fmt.sh" && c == dm) continue
+                # \173 is an open brace, written so: only.sh and par.sh hoist this function
+                # by counting its braces, and the count must close with it (#1103).
+                if (c ~ /(^|[^\\])\$[A-Za-z_\173(@*0-9#!?]/) { print FILENAME ":" start; break }
+            }
+        }
+    ' "$@"
+}
+mapfile -t dm_files < <(cd "$DIR" && find scripts -type f | sort)
+is "every display-message of a variable in cockpit.tmux and scripts/ goes through dmsg" "" \
+   "$(cd "$DIR" && dm_scan cockpit.tmux "${dm_files[@]}" | tr '\n' ' ')"
+# Planted, one case a folder, each file at the path it would have in the plugin, since an
+# exception holds only in its own file. The scan runs from the case's folder.
+dm_plant() {                  # <case> <path> < text
+    mkdir -p "$DM/pl/$1/$(dirname "$2")"; cat > "$DM/pl/$1/$2"
+}
+dm_plant raw scripts/x <<'EOF'
+    tmux display-message "mode [$m]"
+EOF
+dm_plant fesc scripts/x <<'EOF'
+    tmux display-message \
+        "$(fesc "$y")"
+EOF
+dm_plant read-then-raw scripts/x <<'EOF'
+    p=$(tmux display-message -p '#{pane_id}'); tmux display-message "$p" 2>/dev/null
+EOF
+dm_plant raw-then-constant scripts/x <<'EOF'
+    tmux display-message "$client" \; display-message "done" 2>/dev/null
+EOF
+dm_plant notice scripts/lib/review-deliver.sh <<'EOF'
+    "delete-buffer -b $b ; display-message -d 0 '$notice_queue'"
+EOF
+# The version check's message as cockpit.tmux has it. Each version plant is that call with
+# bytes added, so it differs from the exception by those bytes alone.
+dm_v='"tmux-cockpit needs tmux 3.8 or newer (found $tmux_version); bootstrap.sh builds it"'
+dm_vp() {                     # <case> <the call's text after display-message> [path]
+    printf '    tmux display-message %s\n' "$2" | dm_plant "$1" "${3:-cockpit.tmux}"
+}
+printf '    tmux display-message %s; \\\n    tmux display-message "$DIR"\n' "$dm_v" |
+    dm_plant version-then-raw cockpit.tmux
+dm_vp version-then-var "${dm_v%\"}"' $DIR"'
+dm_vp var-before-found "${dm_v/ (found/ \$DIR (found}"
+dm_vp version-elsewhere "$dm_v" scripts/x
+dm_vp escaped-quote "${dm_v%\"}"'\" $DIR \""'
+dm_vp version-joined "$dm_v"'$DIR'
+dm_vp second-argument "$dm_v"' "$DIR"'
+dm_plant dmsg-call-elsewhere scripts/tmux-jump <<'EOF'
+  tmux display-message "$@" "${t//#/##}"
+EOF
+dm_plant dmsg-joined scripts/lib/fmt.sh <<'EOF'
+  tmux display-message "$@" "${t//#/##}"$x
+EOF
+for dm_f in raw:scripts/x fesc:scripts/x read-then-raw:scripts/x raw-then-constant:scripts/x \
+        notice:scripts/lib/review-deliver.sh version-then-raw:cockpit.tmux \
+        version-then-var:cockpit.tmux var-before-found:cockpit.tmux \
+        version-elsewhere:scripts/x escaped-quote:cockpit.tmux version-joined:cockpit.tmux \
+        second-argument:cockpit.tmux dmsg-call-elsewhere:scripts/tmux-jump \
+        dmsg-joined:scripts/lib/fmt.sh; do
+    is "the scan names a planted [${dm_f%%:*}]" "${dm_f#*:}:1" \
+       "$(cd "$DM/pl/${dm_f%%:*}" && dm_scan "${dm_f#*:}")"
+done
+dm_vp ok-version "$dm_v"
+dm_plant ok-dmsg scripts/lib/fmt.sh <<'EOF'
+  tmux display-message "$@" "${t//#/##}"
+EOF
+dm_plant ok-other scripts/x <<'EOF'
+    dmsg "$z"
+    tmux display-message -p "$w"
+    tmux display-message -d 0 "fixed text"
+EOF
+is "and names nothing in dmsg, a -p read, a fixed text or an exception in its own file" "" \
+   "$(for dm_f in ok-version:cockpit.tmux ok-dmsg:scripts/lib/fmt.sh ok-other:scripts/x; do
+          (cd "$DM/pl/${dm_f%%:*}" && dm_scan "${dm_f#*:}"); done)"
+unset -f dm_up dm_drawn dm_line dm_down dm_tmux dm_scan dm_note dm_plant dm_vp
+unset DM dm_n dm_f dm_p dm_d dm_k dm_names dm_files dm_s dm_jn dm_v
+fi
+
 echo "== HOME unset must not kill the path picker =="
 # set -u plus a bare $HOME: a "~/..." token on a clicked line aborted the script
 # outright wherever HOME is missing -- a stripped run-shell, a systemd tmux.
@@ -4027,7 +5916,10 @@ echo "== notify's deadline covers the whole read, not each line =="
 # no reader, so the next printf dies of SIGPIPE, or fails where that signal is
 # ignored, and the drip stops short of 8 (#135).
 DL=$(mktmpf)
-( for i in 1 2 3 4 5 6 7 8; do printf 'drip %s\n' "$i" || break; echo "$i" >> "$DL"; sleep 1
+# That failed printf is the row's mechanism: its own error goes, nothing else in the loop's
+# does (#1137).
+( for i in 1 2 3 4 5 6 7 8; do printf 'drip %s\n' "$i" 2>/dev/null || break
+    echo "$i" >> "$DL"; sleep 1
 done ) \
     | "$DIR/scripts/agent-state" notify %999999 >/dev/null 2>&1
 rc=${PIPESTATUS[1]}; n=$(wc -l < "$DL")
@@ -4829,6 +6721,18 @@ loaded_on "$GB" "a user's key running cockpit's own scripts is never given back"
     is "a user's key running cockpit's own scripts is never given back" "1" \
        "$(gb_live w | grep -c 'scripts/tm --popup x')"
 gb_set board unset; gb_load
+# A note that only starts like cockpit's is the user's. tmux prints a note's tab, \037 and
+# newline raw, and a note cut at its first \037 read as cockpit's (#1135).
+for gb_n in 'cockpit: board\037US' 'cockpit: board\tx' 'cockpit: board\nx' \
+            'X\ncockpit: board'; do
+    printf -v gb_v '%b' "$gb_n"
+    "$TMUX_REAL" -L "$GB" bind-key -N "$gb_v" w display-message mine >/dev/null 2>&1
+    gb_set board off; gb_load
+    gbr="a user's w noted [$gb_n] is never given back"
+    loaded_on "$GB" "$gbr" && is "$gbr" "1" "$(gb_live w | grep -c 'display-message mine')"
+    gb_set board unset; gb_load
+done
+unset gb_n gb_v
 # The stock binding itself, not read back through the same probe the fix uses.
 gb_set board off; gb_load
 loaded_on "$GB" "board off gives w back as tmux's own choose-tree -Zw, with its note" &&
@@ -4940,8 +6844,14 @@ gbl_run() {                   # <TMPDIR length in bytes>
         skip_ "key give-back under a $1-byte TMPDIR (the suite's own TMPDIR is too long)"
         return
     fi
-    mkdir -p "$d"; tag="l$$-$1"
-    ( cd "$DIR" && TMPDIR="$d" COCKPIT_TEST_GBTAG="$tag" \
+    mkdir -p "$d" "$base/s"; tag="l$$-$1"
+    # Its servers in a socket folder of its own, swept below: in this run's folder, a nested
+    # run ended by KILL left servers this run's cleanup does not know (#1145).
+    if sock_long "$base/s"; then
+        skip_ "key give-back under a $1-byte TMPDIR (TMPDIR too long for the nested socket path)"
+        return
+    fi
+    ( cd "$DIR" && TMPDIR="$d" TMUX_TMPDIR="$base/s" COCKPIT_TEST_GBTAG="$tag" \
         exec tests/only.sh '^a reload that turns a cockpit key off or moves it' ) \
         </dev/null >"$base/log" 2>&1
     # Exit 0 is not enough: a block that skips exits 0 having tested nothing. Its FAIL and
@@ -4952,6 +6862,11 @@ gbl_run() {                   # <TMPDIR length in bytes>
     is "under a $1-byte TMPDIR the key give-back block passes, none skipped (#858)" "0" "$rc"
     is "and leaves no cockpit-gbt dir of its own in /tmp" "" \
        "$(ls -d /tmp/cockpit-gbt-"$tag".* 2>/dev/null)"
+    # tmux makes tmux-<uid> in TMUX_TMPDIR on its first call there; the nested run's server
+    # is its first.
+    is "and its servers' sockets were in a folder of its own" "own" \
+       "$([ -d "$base/s/tmux-$(id -u)" ] && echo own || echo none)"
+    sock_sweep "$base/s"
 }
 gbl_run 70
 gbl_run 90
@@ -5991,7 +7906,10 @@ rm -rf "$HK9"
 HK15=$(mktmpd); mkdir -p "$HK15/.claude"
 printf '{"model":"opus"}' > "$HK15/.claude/settings.json"
 before=$(cat "$HK15/.claude/settings.json")
-(ulimit -f 1; HOME="$HK15" "$DIR/install.sh" --hooks) >/dev/null 2>&1
+# The outer subshell waits for the killed one, so its "File size limit exceeded" job report
+# goes to its own stderr, /dev/null, not the suite's. The exit after it keeps bash from
+# exec'ing the inner one in its place; -c 0 attempts no core (#1137).
+( (ulimit -f 1 -c 0; HOME="$HK15" "$DIR/install.sh" --hooks); exit ) >/dev/null 2>&1
 rc=$?
 if [ "$rc" -eq 0 ]; then
     bad "a write killed mid-flight (ulimit -f 1) does not exit 0" "a nonzero exit" "0"
@@ -6402,8 +8320,8 @@ is "and stores nothing" "" "$("$TMUX_REAL" -L "$CX" show-option -pqv -t "$CXP" @
 # An interrupted run must not leave the 60 s writer behind: the suite's EXIT
 # trap kills it until the block is done, then goes back to plain cleanup.
 CXFIFO="$STATE/agent-context-stall.fifo"; mkfifo "$CXFIFO"
-( exec 9>"$CXFIFO"; exec sleep 60 ) & holder=$!
-trap 'kill "$holder" 2>/dev/null; cleanup' EXIT
+( exec 9>"$CXFIFO"; exec sleep 60 ) & holder=$!; holder_s=$(pid_start "$holder")
+trap 'trap "" HUP INT TERM; pid_sig TERM "$holder" "$holder_s" >/dev/null; cleanup' EXIT
 start=$SECONDS
 TMUX="$CXTMUX" TMUX_PANE="$CXP" "$DIR/scripts/agent-context" >/dev/null 2>&1 < "$CXFIFO"
 took=$(( SECONDS - start ))
@@ -6413,7 +8331,7 @@ else
     bad "a stalling writer is abandoned in time" "back under 30s, while the writer still held on" \
         "${took}s"
 fi
-kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
+pid_sig TERM "$holder" "$holder_s" >/dev/null; wait "$holder" 2>/dev/null
 trap cleanup EXIT
 rm -f "$CXFIFO"
 "$TMUX_REAL" -L "$CX" kill-server >/dev/null 2>&1
@@ -6433,8 +8351,9 @@ CXP2=$("$TMUX_REAL" -L "$CX2" list-panes -t t -F '#{pane_id}')
 CXTMUX2="$SOCKDIR/$CX2,0,0"
 CXS=$(mktmpd)
 CXLOG="$CXS/setlog"; : > "$CXLOG"; CXCALLS="$CXS/calls"; : > "$CXCALLS"
+"$TMUX_REAL" -L "$CX2" set-environment -g CKLOG "$CXLOG" >/dev/null 2>&1
 "$TMUX_REAL" -L "$CX2" set-hook -g after-set-option \
-    "run-shell 'echo \"#{hook_arguments}\" >> $CXLOG'" >/dev/null 2>&1
+    "run-shell 'echo \"#{hook_arguments}\" >> \"\$CKLOG\"'" >/dev/null 2>&1
 cat > "$CXS/tmux" <<SHIMEOF
 #!/bin/sh
 printf '%s\n' "\$*" >> "$CXCALLS"
@@ -6508,7 +8427,7 @@ rvpsplant=$( (
   git init -q -b main r && cd r && printf '1\n' > core && git add -A && git commit -q -m first
   git -c protocol.file.allow=always submodule add -q "$RVPS/in" sub && git commit -q -m sub
   printf '1\n2\n' > core; dd if=/dev/null of=Core bs=1048576 seek=33
-  git config -f .git/modules/sub/config filter.mark.clean "touch $RVPS/PWNED; cat"
+  git config -f .git/modules/sub/config filter.mark.clean "touch $(tq "$RVPS/PWNED"); cat"
   printf '* filter=mark\n' > .git/modules/sub/info/attributes
   touch -t 203001010000 sub/f.txt; git status --porcelain >/dev/null
   ls "$RVPS" | grep -c '^PWNED$'
@@ -6604,7 +8523,9 @@ rqe_cmd() {                   # [VAR=value] -> the --loop root the popup was giv
     ( [ $# -eq 0 ] || export "${1%%=*}=${1#*=}"
       PATH="$RQESHIM:$PATH" XDG_STATE_HOME=$RQES "$DIR/scripts/tmux-review" --request "$RQEP" \
           >/dev/null 2>&1 )
-    sed -n 's/.* --loop \([^ ]*\) .*/\1/p' "$RQES/cmd" 2>/dev/null
+    # The root is %q-quoted in the popup's command: a blank in it is "\ ", not the root's end.
+    # A root that %q writes as $'...' (a control character in it) with a blank is still cut.
+    sed -nE 's/.* --loop ((\\.|[^ \\])*) .*/\1/p' "$RQES/cmd" 2>/dev/null
 }
 rqewant=$(printf '%q' "$(git -C "$RQED/pane" rev-parse --show-toplevel)")
 is "the popup reviews the pane repo's root, nothing inherited" "$rqewant" "$(rqe_cmd)"
@@ -7005,7 +8926,7 @@ is "a gitlink's planted clean filter fires under plain git status" "1" "$( (
   git init -q -b main r && cd r && printf '1\n' > a && git add -A && git commit -q -m first
   git -c protocol.file.allow=always submodule add -q "$RBFG/in" sub && git commit -q -m sub
   printf 'gl\n' > big.log; truncate -s 33M big.log
-  git config -f .git/modules/sub/config filter.mark.clean "touch $RBFG/PWNED; cat"
+  git config -f .git/modules/sub/config filter.mark.clean "touch $(tq "$RBFG/PWNED"); cat"
   printf '* filter=mark\n' > .git/modules/sub/info/attributes
   touch -t 203001010000 sub/f.txt; git status --porcelain >/dev/null
   ls "$RBFG" | grep -c '^PWNED$'; rm -f "$RBFG/PWNED"; touch -t 203101010000 sub/f.txt
@@ -7301,11 +9222,9 @@ RAAP=$("$TMUX_REAL" -L "$RA" list-panes -t t: -F '#{pane_id}')
 # new-window, not split-window: each control shell gets its own full-height
 # window; -p still targets RAAP explicitly, so which window the loop runs from
 # is moot.
-ra_shell() { local p i
+ra_shell() { local p       # waited for on its process: the name reads bash early (#1079)
     p=$("$TMUX_REAL" -L "$RA" new-window -d -t t: -P -F '#{pane_id}' 'exec bash')
-    for i in $(seq 1 40); do
-        [ "$("$TMUX_REAL" -L "$RA" display-message -p -t "$p" '#{pane_current_command}')" = bash ] \
-            && break; sleep 0.1; done; printf '%s' "$p"
+    pane_runs "$RA" "$p" bash bash; printf '%s' "$p"
 }
 RACTL=$(ra_shell)
 RASESS="$RASTATE/tmux-cockpit/review/${RAAP#%}-$(printf '%s' "$RADIR" | cksum | cut -d' ' -f1)"
@@ -7581,12 +9500,12 @@ GH=$(mktmpd); GHM="$GH/marker"
 # core.fsmonitor, textconv and the diff commands its caller's stdin, and a bare
 # cat there blocked forever whenever that was an open terminal or socket.
 for h in fsmon textconv dcmd extdiff clean proc gpg pager; do
-    printf '#!/bin/sh\necho %s >> %s\ncat </dev/null\n' "$h" "$GHM" > "$GH/$h"; chmod +x "$GH/$h"
+    printf '#!/bin/sh\necho %s >> %s\ncat </dev/null\n' "$h" "$(tq "$GHM")" > "$GH/$h"; chmod +x "$GH/$h"
 done
 ( cd "$GH" && mkdir r && cd r && git init -q -b main . \
   && printf 'a\n' > f.txt && printf '* diff=evil filter=evil\n' > .gitattributes \
   && git add -A && git -c user.name=t -c user.email=t@t commit -qm i && printf 'b\n' >> f.txt \
-  && mkdir -p hk && printf '#!/bin/sh\necho hook >> %s\n' "$GHM" > hk/post-checkout &&
+  && mkdir -p hk && printf '#!/bin/sh\necho hook >> %s\n' "$(tq "$GHM")" > hk/post-checkout &&
       chmod +x hk/post-checkout \
   && git config core.fsmonitor "$GH/fsmon" && git config diff.evil.textconv "$GH/textconv" \
   && git config diff.evil.command "$GH/dcmd" && git config diff.external "$GH/extdiff" \
@@ -7611,10 +9530,9 @@ echo "== a partial clone's lazy fetch cannot run the repo's planted remote confi
 # old/git shim drops GIT_NO_LAZY_FETCH as git < 2.44 does, leaving only the protocol pin.
 LF=$(mktmpd); LFM="$LF/marker"; mkdir "$LF/old" "$LF/hb"
 # The paths go into the generated scripts single-quoted: a space in TMPDIR split the marker's
-# path, and the script appended to a file outside the suite's scratch (#820). lfq escapes a '
+# path, and the script appended to a file outside the suite's scratch (#820). tq escapes a '
 # inside them as '\'', as scripts/lib/hook.sh's shq does, so a ' in TMPDIR holds too (#827).
-lfq() { printf "'%s'" "${1//\'/\'\\\'\'}"; }
-printf '#!/bin/sh\necho up >> %s\nexit 1\n' "$(lfq "$LFM")" > "$LF/up"; chmod +x "$LF/up"
+printf '#!/bin/sh\necho up >> %s\nexit 1\n' "$(tq "$LFM")" > "$LF/up"; chmod +x "$LF/up"
 ln -s "$LF/up" "$LF/hb/git-remote-foo"
 printf '#!/bin/sh\nunset GIT_NO_LAZY_FETCH\nexec '"'%s'"' "$@"\n' "$(command -v git)" \
     > "$LF/old/git"
@@ -7630,8 +9548,8 @@ chmod +x "$LF/old/git"
   && git switch -q main && printf 'b\n' >> f.txt && git commit -qam 2 \
   && git clone -q --filter=blob:none "$(file_url "$LF/src")" "$LF/c2" \
   && cd "$LF/c" && git fetch -q && git reset -q --soft origin/main \
-  && git config remote.origin.uploadpack "$(lfq "$LF/up")" \
-  && git config core.sshCommand "$(lfq "$LF/up")" \
+  && git config remote.origin.uploadpack "$(tq "$LF/up")" \
+  && git config core.sshCommand "$(tq "$LF/up")" \
   && git config protocol.file.allow always && git config protocol.ssh.allow always \
   && git config protocol.ext.allow always && git config protocol.foo.allow always ) >/dev/null 2>&1
 lf_paths() {
@@ -7666,7 +9584,7 @@ printf '%s\n' '#!/usr/bin/env bash' \
     '    fi; a+=("$1"); shift; done' \
     '[ "$LF_KEEP" = lazy ] || unset GIT_NO_LAZY_FETCH' \
     '[ "$LF_KEEP" = proto ] || unset GIT_ALLOW_PROTOCOL' \
-    "exec $(lfq "$(command -v git)") \"\${a[@]}\"" > "$LF/keep/git"
+    "exec $(tq "$(command -v git)") \"\${a[@]}\"" > "$LF/keep/git"
 chmod +x "$LF/keep/git"
 git -C "$LF/c" config remote.origin.url "$(file_url "$LF/src")"
 # With every guard stripped the remote fires, so the guard rows after test something. The diff
@@ -7694,7 +9612,7 @@ is "while switch --track through it fetches the branch's blob" "g" \
 ( . "$DIR/scripts/lib/git.sh"
 git -C "$LF/c2" worktree add -q --detach "$LF/wt" origin/side2 ) >/dev/null 2>&1
 is "and so does worktree add" "h" "$(cat "$LF/wt/h.txt" 2>/dev/null)"
-rm -rf "$LF"; unset LF LFM lfu lfx lfk; unset -f lf_paths lfq
+rm -rf "$LF"; unset LF LFM lfu lfx lfk; unset -f lf_paths
 
 echo "== tmux-review: a pane id that is not %<digits> never reaches tmux =="
 # The glob %[0-9]* let "%1;display-message PWNED" through, and deliver() splices
@@ -7945,7 +9863,7 @@ for td_a in "" nope . .. .:empty link sib:badls; do
                    chmod +x "$TDE/bin/ls" ;;
         *) td_w=${td_a%:empty} ;;
     esac
-    printf '#!/bin/sh\necho %s\n' "$td_w" > "$TDE/bin/mktemp"; chmod +x "$TDE/bin/mktemp"
+    printf '#!/bin/sh\necho %s\n' "$(tq "$td_w")" > "$TDE/bin/mktemp"; chmod +x "$TDE/bin/mktemp"
     td_o=$(cd "$TDE/cwd" && PATH="$TDE/bin:$PATH" bash -c \
         '. "$1/git.sh"; . "$1/review-diff.sh"; tree_diff "$2" --numstat' _ "$DIR/scripts/lib" \
         "$TDE/repo" 2>/dev/null; echo "rc=$?")
@@ -7969,24 +9887,18 @@ RDS="cockpit-rd-$$"; SOCKS="$SOCKS $RDS"
 # to 13 lines (ai lens §7.F) -- AP's half needs to clear ~20 pasted lines
 # without scrolling, or bash's readline garbles the unexecuted multi-line
 # buffer redraw (reproduced: a 15-row pane truncates and interleaves lines).
-"$TMUX_REAL" -L "$RDS" -f /dev/null new-session -d -s t -x 100 -y 60 \
-    'exec -a claude bash' >/dev/null 2>&1
-"$TMUX_REAL" -L "$RDS" split-window -t t 'exec bash' >/dev/null 2>&1
-# The two panes below are picked BY pane_current_command, so that is the thing
-# to wait for: sorted, it is exactly one claude and one bash.
-rds_cmds() { "$TMUX_REAL" -L "$RDS" list-panes -t t: -F '#{pane_current_command}' | sort |
-        tr '\n' ' '
-}
-until_out 'bash claude ' rds_cmds
+AP=$("$TMUX_REAL" -L "$RDS" -f /dev/null new-session -d -s t -x 100 -y 60 \
+    -P -F '#{pane_id}' 'exec -a claude bash' 2>/dev/null)
+NP=$("$TMUX_REAL" -L "$RDS" split-window -t t -P -F '#{pane_id}' 'exec bash' 2>/dev/null)
+# Each pane by its id, and each waited for on its process: picked by pane_current_command, a
+# pane read its start's first word (bash) before it ran, then tmux before its exec (#1079).
+pane_runs "$RDS" "$AP" bash claude
+pane_runs "$RDS" "$NP" bash bash
 # The suite's private socket has no cockpit.tmux run-shell to default this --
 # set it exactly as cockpit.tmux itself would (cockpit.tmux:136).
 "$TMUX_REAL" -L "$RDS" set -g @cockpit_agents_glob \
     '|claude|codex|aider|cursor|opencode|gemini|crush|' >/dev/null 2>&1
 
-AP=$("$TMUX_REAL" -L "$RDS" list-panes -t t: -F '#{pane_id} #{pane_current_command}' \
-     | awk '$2 == "claude" { print $1 }')
-NP=$("$TMUX_REAL" -L "$RDS" list-panes -t t: -F '#{pane_id} #{pane_current_command}' \
-     | awk '$2 == "bash" { print $1 }')
 # Both shells' prompts, before anything is typed or pasted into them: see pane B below.
 until_cap "$RDS" "$AP" '*[$#]*'
 until_cap "$RDS" "$NP" '*[$#]*'
@@ -8160,7 +10072,7 @@ echo "== tmux-review --deliver: concurrent deliveries do not cross-wire panes ==
 AP2=$("$TMUX_REAL" -L "$RDS" split-window -t t -P -F '#{pane_id}' 'exec -a claude bash')
 NP2=$("$TMUX_REAL" -L "$RDS" split-window -t t -P -F '#{pane_id}' 'exec bash')
 until_out claude "$TMUX_REAL" -L "$RDS" display-message -p -t "$AP2" '#{pane_current_command}'
-until_out bash "$TMUX_REAL" -L "$RDS" display-message -p -t "$NP2" '#{pane_current_command}'
+pane_runs "$RDS" "$NP2" bash bash  # its name reads bash before bash runs (#1079)
 # pane_current_command reads claude the moment exec -a runs, before bash has read
 # its rc files. A paste that lands before readline is up is echoed by the tty,
 # unbracketed, and bash then runs its lines: pane B showed only the prompt and
@@ -8414,19 +10326,33 @@ echo "== tmux-review --deliver: the paste is gated atomically, so a pane that st
 # that outlived the agent and once against a live agent.
 if need_tmux "tmux-review --deliver atomic gate"; then :; else
 RG="cockpit-rgz-$$"; SOCKS="$SOCKS $RG"
-"$TMUX_REAL" -L "$RG" -f /dev/null new-session -d -s t -x 100 -y 30 \
-    'exec -a claude bash' >/dev/null 2>&1
-"$TMUX_REAL" -L "$RG" split-window -t t 'exec bash' >/dev/null 2>&1
-# The two panes below are picked BY pane_current_command, so that is the wait.
-rg_cmds() { "$TMUX_REAL" -L "$RG" list-panes -t t: -F '#{pane_current_command}' | sort | tr '\n' ' '
-}
-until_out 'bash claude ' rg_cmds
+# Both shells start on RGRC (#1183). It records each line bash runs as an unknown command in
+# RGD/ran, then holds before readline until a line is pending on the tty: `read -t 0` reads
+# nothing. A paste made before the prompt is therefore always made before readline, and runs.
+# The hold is bounded at 400 x 0.05 s, 20 s, and decides no row: running out records
+# "expired", which a row below reads as red. The last line draws a prompt no paste can echo.
+RGD=$(mktmpd); RGRC="$RGD/rc"; : > "$RGD/ran"
+{ printf 'RG_D=%s\n' "$(tq "$RGD")"
+  printf '%s\n' \
+    'command_not_found_handle() { printf "%s\n" "$1" >> "$RG_D/ran"; return 127; }' \
+    'rg_end() { printf "end\n" > "$RG_D/end$TMUX_PANE"; }' \
+    'i=0; until read -t 0 || [ "$i" -ge 400 ]; do sleep 0.05; i=$((i+1)); done' \
+    '[ "$i" -lt 400 ] || echo expired >> "$RG_D/ran"' \
+    "PS1='rg-ready\\$ '"
+} > "$RGRC"
+APG=$("$TMUX_REAL" -L "$RG" -f /dev/null new-session -d -s t -x 100 -y 30 \
+    -P -F '#{pane_id}' "exec -a claude bash --rcfile $(tq "$RGRC")" 2>/dev/null)
+NPG=$("$TMUX_REAL" -L "$RG" split-window -t t -P -F '#{pane_id}' \
+    "exec bash --rcfile $(tq "$RGRC")" 2>/dev/null)
+# Each pane by its id, waited for on its process, as in the --deliver block above (#1079).
+pane_runs "$RG" "$APG" bash claude --rcfile "$RGRC"
+pane_runs "$RG" "$NPG" bash bash --rcfile "$RGRC"
 "$TMUX_REAL" -L "$RG" set -g @cockpit_agents_glob \
     '|claude|codex|aider|cursor|opencode|gemini|crush|' >/dev/null 2>&1
-APG=$("$TMUX_REAL" -L "$RG" list-panes -t t: -F '#{pane_id} #{pane_current_command}' \
-     | awk '$2 == "claude" { print $1 }')
-NPG=$("$TMUX_REAL" -L "$RG" list-panes -t t: -F '#{pane_id} #{pane_current_command}' \
-     | awk '$2 == "bash" { print $1 }')
+# Each shell's own prompt before anything is pasted into it, as the --deliver block waits
+# (#215): a paste before readline is up is echoed unbracketed, and bash runs it (#1183).
+shell_prompt "$RG" "$APG" '*rg-ready$*'
+shell_prompt "$RG" "$NPG" '*rg-ready$*'
 gcap() { "$TMUX_REAL" -L "$RG" capture-pane -p -J -t "$1"; }
 
 # The hazard the old code carried: once its stale check had passed, deliver()
@@ -8592,7 +10518,20 @@ case "$(rc_from_buffer rg-newok)" in
          "1 (buffers [$rg_bufs] pane $APG saw [$rg_seen] now [$rg_cmd] screen [$rg_scr])" ;;
 esac
 
+# Every line pasted above stayed in readline: none ran (#1183). C-u drops what readline holds
+# and, unlike C-c, sends no signal that could kill the recording child before it writes. Keys
+# are read in order, so rg_end runs only after every line queued before it has run.
+for rg_p in "$APG" "$NPG"; do
+    "$TMUX_REAL" -L "$RG" send-keys -t "$rg_p" C-u rg_end Enter >/dev/null 2>&1
+    until_file "$RGD/end$rg_p" end
+done
+is "no line pasted into either pane ran as a command (#1183)" "" \
+   "$(grep -vx expired "$RGD/ran" | tr '\n' ' ')"
+is "and each shell's hold ended on input, not on its 20 s bound" 0 \
+   "$(grep -cx expired "$RGD/ran")"
+
 "$TMUX_REAL" -L "$RG" kill-server >/dev/null 2>&1
+unset rg_p RGD RGRC
 fi
 
 echo "== tmux-review: a delivered review's comment store does not outlive the popup that made it =="
@@ -8909,10 +10848,10 @@ esac
 RB3O="cockpit-rb3o-$$"; SOCKS="$SOCKS $RB3O"
 mkdir -p "$RB3D/p/scripts"; cp "$DIR/cockpit.tmux" "$RB3D/p/"
 cp -r "$DIR"/scripts/. "$RB3D/p/scripts/"
-printf '#!/bin/sh\nprintf %%s "$*" > %s/args; sleep 30\n' "$RB3D" > "$RB3D/p/scripts/cockpit-board"
+printf '#!/bin/sh\nprintf %%s "$*" > %s; sleep 30\n' "$(tq "$RB3D/args")" > "$RB3D/p/scripts/cockpit-board"
 chmod +x "$RB3D/p/scripts/cockpit-board"
 "$TMUX_REAL" -L "$RB3" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
-"$TMUX_REAL" -L "$RB3" run-shell "$RB3D/p/cockpit.tmux" >/dev/null 2>&1
+"$TMUX_REAL" -L "$RB3" run-shell "$(tq "$RB3D/p/cockpit.tmux")" >/dev/null 2>&1
 RB3S=$("$TMUX_REAL" -L "$RB3" list-panes -t t:0 -F '#{pane_id}')
 "$TMUX_REAL" -L "$RB3O" -f /dev/null new-session -d -s o -x 100 -y 30 \
     "TERM=xterm-256color exec $TMUX_REAL -L $RB3 attach -t t" >/dev/null 2>&1
@@ -9050,8 +10989,47 @@ echo "== tests/par.sh: each shard says when it starts and ends, so a stalled one
 # their own TMPDIR, which every process they start inherits: the leftover count reads it.
 PSROOT=$(mktmpd); mkdir -p "$PSROOT/tests" "$PSROOT/t"
 cp "$DIR/tests/par.sh" "$PSROOT/tests/par.sh"
-awk '/^echo "== /{exit} {print}' "$DIR/tests/run.sh" > "$PSROOT/tests/run.sh"
+# The sandbox's servers get a socket folder of their own, so what a run leaves is found and
+# ended there, by folder: no /proc is needed, a dead socket file is seen as well as a live
+# server, and the default folder takes nothing from this block (#1032). A socket path past
+# 107 bytes binds nowhere: under so long a TMPDIR the sandbox has no folder of its own, the
+# rows that read the folder are skipped, and what a red row left is found through /proc.
+PSS="$PSROOT/s"; ps_env=(TMPDIR="$PSROOT/t" TMUX_TMPDIR="$PSS")
+if [ $((${#PSS} + ${#UID} + 30)) -gt 107 ]; then PSS=""; ps_env=(TMPDIR="$PSROOT/t")
+else mkdir -p "$PSS"
+fi
+# The sandbox's prelude is this script's, with four changes.
+# One line more in cleanup: the shard that runs ps5 takes a second at its top. A run ended
+# while a shard is there (or while its server is still starting) leaves that shard's server,
+# since no trap covers either moment (#900, #1006): the ended run below must wait for every
+# other shard, and this makes a missing wait leave 2.
+# Its pane watches this run's pid, not its own shard's. With its own, a server left behind
+# ends by itself inside a second, and the waits, the hold, the count and the cleanup below
+# could not turn a row red on any box whose tail takes --pid (#1032). With this run's, such
+# a server stays for the rows to count, and still ends with this run when the run is ended
+# from outside in the middle of the block, where no cleanup of this block's can reach: the
+# sandbox is a process group of its own, and this run's cleanup removes the socket folder
+# (#1035). Where tail has no --pid the pane is the prelude's fallback sleep, cut to five
+# minutes for the same reason: a sandbox run takes seconds.
+# And each server writes down where its socket is.
 Q='"'
+ps_rec="${Q}\$TMUX_REAL${Q} -L ${Q}\$SUITE_SOCK${Q} display-message -p '#{socket_path}'"
+awk -v h="    ! grep -q '^echo ${Q}== ps5: ' ${Q}\$0${Q} || sleep 1" -v pid="$$" \
+    -v rec="$ps_rec >> ${Q}\$TMPDIR/socks${Q}" '
+    /^echo "== /{exit}
+    /^    SUITE_PANE="exec -a claude tail --pid=\$\$ -f / { sub(/--pid=\$\$/, "--pid=" pid) }
+    /^else SUITE_PANE=.exec -a claude sleep 14400.$/ { sub(/14400/, "300") }
+    {print}
+    /^cleanup\(\) \{$/{print h}
+    /^"\$TMUX_REAL" -L "\$SUITE_SOCK" set -g @cockpit_bg_poll off >\/dev\/null 2>&1$/{print rec}
+' "$DIR/tests/run.sh" > "$PSROOT/tests/run.sh"
+is "the sandbox's cleanup holds for ps5" "1" \
+   "$(grep -c "ps5: ' .* || sleep 1" "$PSROOT/tests/run.sh")"
+is "the sandbox's pane watches this run's pid, and its fallback sleep is five minutes" "1 1" \
+   "$(grep -c "^    SUITE_PANE=${Q}exec -a claude tail --pid=$$ -f " "$PSROOT/tests/run.sh") $(
+      grep -c "^else SUITE_PANE='exec -a claude sleep 300'\$" "$PSROOT/tests/run.sh")"
+is "and its servers say where their socket is" "1" \
+   "$(grep -c "socket_path}' >> " "$PSROOT/tests/run.sh")"
 {
     printf 'echo %s== ps1: solo ==%s\n' "$Q" "$Q"
     printf 'is "ps1" 1 1\n\n'
@@ -9072,25 +11050,106 @@ Q='"'
 cp "$PSROOT/tests/run.sh" "$PSROOT/tests/run.green"
 {
     printf 'echo %s== ps3: never ends ==%s\n' "$Q" "$Q"
-    printf ': > "$TMPDIR/ps3.in"; sleep 287\n'
+    # Its TERM takes a second to end it, as a shard mid-cleanup does: the leftover count below
+    # must wait for that, and a count read at once sees it (#900).
+    printf ': > "$TMPDIR/ps3.in"; trap %ssleep 1; exit 0%s TERM; sleep 287 & wait $!\n' "$Q" "$Q"
 } >> "$PSROOT/tests/run.sh"
-ps_left() {                   # the processes still carrying the sandbox's TMPDIR
-    local p n=0
+ps_live() {                   # the sandbox's sockets a server still answers on, one a line
+    local f
+    [ -n "$PSS" ] || return 0
+    for f in "$PSS"/tmux-*/*; do
+        [ -S "$f" ] && "$TMUX_REAL" -S "$f" list-sessions >/dev/null 2>&1 && printf '%s\n' "$f"
+    done
+}
+ps_left() {                   # the processes still carrying the sandbox's TMPDIR; where
+    local p n=0               # /proc shows none, the servers still answering in its folder
     for p in /proc/[0-9]*; do
         tr '\0' '\n' 2>/dev/null < "$p/environ" | grep -qxF "TMPDIR=$PSROOT/t" && n=$((n + 1))
     done
+    [ "$n" != 0 ] || n=$(ps_live | wc -l)
+    printf '%s' "$((n))"
+}
+# The run's processes take their TERM, then exit: a count read once, right after the wait,
+# raced them (#900). So: polled until none is left, bounded by POLLS. A leftover past that is
+# a real one, and the row names each: pid, name, command line.
+ps_settle() {                 # -> 0, or "<count>:" and each leftover
+    local n p end=$((SECONDS + POLLS / 10))     # by the clock: one pass over /proc is slow
+    while n=$(ps_left); [ "$n" != 0 ] && [ "$SECONDS" -lt "$end" ]; do sleep 0.1; done
     printf '%s' "$n"
+    [ "$n" = 0 ] && return 0
+    printf ':'
+    for p in /proc/[0-9]*; do
+        tr '\0' '\n' 2>/dev/null < "$p/environ" | grep -qxF "TMPDIR=$PSROOT/t" || continue
+        printf ' [%s %s %s]' "${p#/proc/}" "$(cat "$p/comm" 2>/dev/null)" \
+            "$(tr '\0' ' ' 2>/dev/null < "$p/cmdline")"
+    done
+    printf ' sockets answering: %s' "$(ps_live | wc -l)"
+}
+# What a run left in the sandbox's socket folder, live or dead: the rows want none, and then
+# each is ended by its own socket, never by a pid, and its file removed (#1012, #1032). On
+# the fallback pane a server left behind would otherwise stay for that pane's four hours.
+ps_socks() {
+    [ -z "$PSS" ] || ( cd "$PSS" 2>/dev/null && ls -A tmux-*/ 2>/dev/null | tr '\n' ' ' )
+}
+ps_ours() {                   # </proc/PID>: it carries the sandbox's TMPDIR and is a tmux server
+    local c=""
+    tr '\0' '\n' 2>/dev/null < "$1/environ" | grep -qxF "TMPDIR=$PSROOT/t" || return 1
+    read -r c 2>/dev/null < "$1/comm"; [ "$c" = "tmux: server" ]
+}
+ps_end() {
+    local f p a n d i
+    if [ -n "$PSS" ]; then
+        for f in "$PSS"/tmux-*/*; do
+            [ -S "$f" ] || continue
+            "$TMUX_REAL" -S "$f" kill-server >/dev/null 2>&1
+            rm -f -- "$f"
+        done
+        return 0
+    fi
+    # No folder of its own (the long TMPDIR above): the servers carrying the sandbox's TMPDIR,
+    # each when the last -L of its argv is a suite's name (#1012). Each is ended by its pid,
+    # which needs no socket path. The path used to be built, and for a server with no
+    # TMUX_TMPDIR it fell back to /tmp/tmux-<uid>, the user's own server's folder: a guard
+    # there refused the kill-server, and the rm then took the socket file of a server it left
+    # running (#1095). The pid is checked again right before the signal, since pids are
+    # reused (AGENTS.md). The socket file goes once its server is gone, and only where the
+    # server's TMUX_TMPDIR names its folder: no folder is guessed. A server still up after
+    # $POLLS polls keeps its file, and one stderr line names it, so a leftover is not silent.
+    for p in /proc/[0-9]*; do
+        ps_ours "$p" || continue
+        a=$(tr '\0' ' ' 2>/dev/null < "$p/cmdline")
+        n=$(printf '%s\n' "$a" | grep -oE -- '-L [^ ]+ ' | tail -n 1)
+        n=${n#-L }; n=${n% }; [[ $n =~ ^cockpit-suite-[0-9]+$ ]] || continue
+        d=$(tr '\0' '\n' 2>/dev/null < "$p/environ" | sed -n 's/^TMUX_TMPDIR=//p')
+        ps_ours "$p" && kill "${p#/proc/}" 2>/dev/null || continue
+        for i in $(seq 1 "$POLLS"); do ps_ours "$p" || break; sleep 0.1; done
+        if ps_ours "$p"; then
+            printf 'ps_end: server %s (%s) still up after %s polls; its socket file stays\n' \
+                "${p#/proc/}" "$n" "$POLLS" >&2
+        elif [ -n "$d" ]; then rm -f -- "$d/tmux-$(id -u)/$n"
+        fi
+    done
 }
 # The run with a shard that never ends: once that shard is inside its block (past the
-# prelude, whose EXIT trap cleans up) and a finished shard's end line is out, it is ended
+# prelude, whose EXIT trap cleans up) and every other shard's end line is out, it is ended
 # from outside through timeout (whose 60 s is only a backstop), which hands the TERM to the
-# whole run's process group.
-( cd "$PSROOT" && exec env -u PAR_BLOCKS TMPDIR="$PSROOT/t" J=3 \
+# whole run's process group. Every other shard, not one: a shard still in its prelude or its
+# cleanup when the TERM lands can leave its server, and the two leftover rows then read 2
+# (#900: 12 of 650 such runs with one end line awaited, 0 of 650 with all four). Each wait is
+# bounded; past the bound the rows go on and ps_settle names what is left.
+( cd "$PSROOT" && exec env -u PAR_BLOCKS "${ps_env[@]}" J=3 \
     timeout 60 tests/par.sh ) </dev/null >/dev/null 2>"$PSROOT/hung.err" & ps_to=$!
+ps_ts=$(pid_start "$ps_to")   # the exec'd timeout keeps it, and the TERM checks it (#1227)
 until_out '?*' ls "$PSROOT/t/ps3.in"
-until_file "$PSROOT/hung.err" '*shard 0001 end rc=0*'
+for ps_s in 0001 0002 0004 0005; do
+    until_file "$PSROOT/hung.err" "*shard $ps_s end rc=0*"
+done
+# How many of the four end lines were in when the TERM went: a red leftover row says it, so
+# a log tells a wait that ran out (fewer than 4) from a server left with all four in (#1012).
+ps_in=$(grep -cE '^par\.sh: shard 000[1245] end rc=0$' "$PSROOT/hung.err")
+is "every other shard's end line was in when the TERM went" "4" "$ps_in"
 ps_c=""; read -r ps_c 2>/dev/null < "/proc/$ps_to/comm"
-[ "$ps_c" != timeout ] || kill -TERM "$ps_to" 2>/dev/null
+[ "$ps_c" != timeout ] || pid_sig TERM "$ps_to" "$ps_ts" >/dev/null
 wait "$ps_to" 2>/dev/null
 is "a shard still running when the run is ended has a start line" "1" \
    "$(grep -c '^par\.sh: shard 0006 start: ps3: never ends$' "$PSROOT/hung.err")"
@@ -9098,10 +11157,15 @@ is "and no end line" "0" "$(grep -c '^par\.sh: shard 0006 end' "$PSROOT/hung.err
 is "a shard that finished has both, with its status" "1 1" \
    "$(grep -c '^par\.sh: shard 0001 start: ps1: solo$' "$PSROOT/hung.err") $(
       grep -c '^par\.sh: shard 0001 end rc=0$' "$PSROOT/hung.err")"
-is "nothing the ended run started is left" "0" "$(ps_left)"
+ps_got=$(ps_settle); [ "$ps_got" = 0 ] || ps_got="$ps_got; end lines in at the TERM: $ps_in of 4"
+is "nothing the ended run started is left" "0" "$ps_got"
+if [ -z "$PSS" ]; then skip_ "the ended run's socket folder (the socket path would pass 107 bytes)"
+else is "and no socket of it, live or dead, is in the sandbox's folder" "" "$(ps_socks)"
+fi
+ps_end
 # A green run: the counts are what they were, and no new line reads as a row.
 cp "$PSROOT/tests/run.green" "$PSROOT/tests/run.sh"
-( cd "$PSROOT" && env -u PAR_BLOCKS TMPDIR="$PSROOT/t" J=3 tests/par.sh ) \
+( cd "$PSROOT" && env -u PAR_BLOCKS "${ps_env[@]}" J=3 tests/par.sh ) \
     </dev/null >"$PSROOT/green.out" 2>"$PSROOT/green.err"
 is "a green run counts its rows as before" "5 passed, 0 failed, 0 skipped" \
    "$(grep -oE '[0-9]+ passed, [0-9]+ failed, [0-9]+ skipped' "$PSROOT/green.out")"
@@ -9122,12 +11186,801 @@ ps_row="^  ($ESC\[[0-9;]*m)?(PASS|FAIL|SKIP)|passed,|failed,"
 is "the row pattern finds the green run's rows and its count" "6" \
    "$(grep -cE "$ps_row" "$PSROOT/green.out")"
 is "no new line reads as a row or a count" "0" "$(grep -cE "$ps_row" "$PSROOT/green.err")"
-is "nor is left behind" "0" "$(ps_left)"
-unset -f ps_left; unset PSROOT Q ps_to ps_c ps_row
+ps_got=$(ps_settle)
+is "nor is left behind" "0" "$ps_got"
+if [ -z "$PSS" ]; then skip_ "the green run's socket folder (the socket path would pass 107 bytes)"
+else
+    is "nor a socket, live or dead" "" "$(ps_socks)"
+    # 5 shards in the ended run and 4 in the green one, a server each. tmux resolves the
+    # folder before it binds, so the lines are held against the resolved name.
+    is "every server of both runs had its socket in the sandbox's folder: 9, none elsewhere" \
+       "9 " "$(wc -l < "$PSROOT/t/socks" | tr -d ' ') $(
+          grep -vF "$(cd "$PSS" && pwd -P)/" "$PSROOT/t/socks" | tr '\n' ' ')"
+fi
+ps_end
+# ps_end and ps_ours stay for the next block, which unsets them.
+unset -f ps_live ps_left ps_settle ps_socks
+unset PSROOT PSS ps_env ps_rec Q ps_to ps_ts ps_c ps_row ps_s ps_in ps_got
+
+echo "== tests/par.sh: ps_end ends a server by its pid, guessing no socket folder (#1095) =="
+# ps_end's second arm, for a sandbox with no socket folder of its own, ended each server by a
+# socket path it built from the server's TMUX_TMPDIR, and with none there it built one in
+# /tmp/tmux-<uid>, the user's own server's folder. A guard tmux refuses that folder: the
+# kill-server was refused, the rm took the file, and the server stayed with no socket (#1095).
+# No run reaches that today, since the suite always exports a TMUX_TMPDIR (#1098), so the arm
+# is called here directly, on servers of this block's own: A with no TMUX_TMPDIR in its
+# environment and its socket at a -S path in this block's folder (the -L in its argv is only a
+# name there, since -S wins), B with one, and C under a name that is not a suite's. The tmux
+# ps_end is handed refuses and records every call, as a guard on the folder would, and its rm
+# records its path and removes only what is in this block's folder. A path ps_end builds in
+# /tmp/tmux-<uid> is so only ever a line in a log.
+# Three stand-ins as well, scripts whose file name makes their name in /proc "tmux: server",
+# each with a suite's -L name in its argv and a socket file in this block's folder: D ignores
+# TERM, E takes half a second to exit on it, and F stops passing ps_ours between the scan and
+# the signal (a wrapper fails it from its second call), as a pid that is reused would. Each
+# pins one line of ps_end: no rm while the server is up, the bounded wait, the check right
+# before the signal (#1095). A stand-in ends with this run, or after 60 s, whichever is first.
+pe_start() {                  # <socket> <-L name> <TMUX_TMPDIR, or "" for none> -> its pid
+    env -u TMUX_TMPDIR ${3:+TMUX_TMPDIR="$3"} SUITE_IDLE="$SUITE_IDLE" TMPDIR="$PE/t" \
+        "$TMUX_REAL" -L "$2" -S "$1" -f /dev/null new-session -d -c "$PE" "$SUITE_PANE" \
+        >/dev/null 2>&1
+    "$TMUX_REAL" -S "$1" display-message -p '#{pid}' 2>/dev/null
+}
+pe_fake() {                   # <-L name> <ignore|slow|plain>: a stand-in, in the background
+    : > "$PE/f/tmux-$(id -u)/$1"
+    TMUX_TMPDIR="$PE/f" TMPDIR="$PE/t" PE_FIFO="$PE/fifo" PE_RUN=$$ \
+        "$PE/bin/tmux: server" -L "$1" "$2" </dev/null >/dev/null 2>&1 &
+}
+pe_state() {                  # <pid>... -> "up " or "gone " for each: a live "tmux: server"
+    local p c s
+    for p do
+        c=""; read -r c 2>/dev/null < "/proc/$p/comm"
+        s=$(sed -n 's/^State:[[:space:]]*\(.\).*/\1/p' "/proc/$p/status" 2>/dev/null)
+        if [ "$c" = "tmux: server" ] && [ "$s" != Z ]; then printf 'up '; else printf 'gone '; fi
+    done
+}
+pe_file() { if [ -e "$1" ]; then printf 'there'; else printf 'gone'; fi; }   # <path>
+PE=$(mktmpd); pe_n="cockpit-suite-1095$$"; pe_b="$PE/b/tmux-$(id -u)/$pe_n"
+pe_f="$PE/f/tmux-$(id -u)/$pe_n"
+mkdir -p "$PE/t" "${pe_b%/*}" "${pe_f%/*}" "$PE/bin"
+if [ ${#pe_b} -gt 107 ]; then
+    skip_ "ps_end by pid (a socket path in this block's folder would pass 107 bytes)"
+else
+    # On the run's exit cleanup's list, for a block cut short before its own end below.
+    SOCKP="$SOCKP$PE/a"$'\n'"$pe_b"$'\n'"$PE/c"$'\n'
+    pa=$(pe_start "$PE/a" "$pe_n" "")
+    pb=$(pe_start "$pe_b" "$pe_n" "$PE/b")
+    pc=$(pe_start "$PE/c" "cockpit-other-1095$$" "$PE/b")
+    mkfifo "$PE/fifo"
+    cat > "$PE/bin/tmux: server" <<'EOF'
+#!/bin/bash
+case $3 in
+ignore) trap '' TERM ;;
+slow) trap 'read -t 0.5 <> "$PE_FIFO"; exit 0' TERM ;;
+esac
+: > "$PE_FIFO.$3"
+# A fifo gone with the block's folder, as a cut-short run's cleanup takes it, ends the stand-in:
+# the read would fail at once and the loop spin until the run's pid is gone (#1104).
+while [ -d "/proc/$PE_RUN" ] && [ "$SECONDS" -lt 60 ]; do
+    read -t 1 <> "$PE_FIFO" || [ -p "$PE_FIFO" ] || exit 0
+done
+EOF
+    chmod +x "$PE/bin/tmux: server"
+    pe_fake "${pe_n}1" ignore; pd=$!
+    pe_fake "${pe_n}2" slow; pz=$!
+    pe_fake "${pe_n}3" plain; pf=$!
+    for pe_s in ignore slow plain; do until_out '?*' ls "$PE/fifo.$pe_s"; done
+    is "the block's three servers and three stand-ins are up" "up up up up up up " \
+       "$(pe_state "$pa" "$pb" "$pc" "$pd" "$pz" "$pf")"
+    printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> %s\nexit 97\n' "$(tq "$PE/tmux.log")" \
+        > "$PE/tmux"
+    chmod +x "$PE/tmux"
+    # POLLS=20: D makes ps_end wait every poll, two seconds; E needs five.
+    (
+        PSROOT=$PE; PSS=""; TMUX_REAL="$PE/tmux"; POLLS=20; pe_k=0
+        rm() {
+            printf '%s\n' "${@: -1}" >> "$PE/rm.log"
+            case ${@: -1} in "$PE"/*) command rm "$@" ;; *) return 1 ;; esac
+        }
+        eval "pe_ours_real() $(declare -f ps_ours | tail -n +2)"
+        ps_ours() {
+            if [ "$1" = "/proc/$pf" ]; then pe_k=$((pe_k + 1)); [ "$pe_k" = 1 ] || return 1; fi
+            pe_ours_real "$1"
+        }
+        ps_end
+    ) 2> "$PE/end.err"
+    is "both suite-named servers are ended, the one with no TMUX_TMPDIR too" "gone gone " \
+       "$(pe_state "$pa" "$pb")"
+    is "a server under another name is left running" "up " "$(pe_state "$pc")"
+    is "no path ps_end hands tmux or rm is outside this block's folder" "" \
+       "$(cat "$PE/tmux.log" "$PE/rm.log" 2>/dev/null | grep -vF -- "$PE/" | tr '\n' ' ')"
+    is "B's socket file goes; A's stays, since A names no folder" "gone there" \
+       "$(pe_file "$pe_b") $(pe_file "$PE/a")"
+    is "D, which ignores TERM, outlives the wait, and its socket file stays" "up there" \
+       "$(pe_state "$pd")$(pe_file "${pe_f}1")"
+    is "and ps_end says so on stderr: one line, naming its pid and socket name" "1 1" \
+       "$(wc -l < "$PE/end.err") $(grep -cF " $pd (${pe_n}1) " "$PE/end.err")"
+    is "E, slow to exit on TERM, is waited for: gone, and its socket file gone" "gone gone" \
+       "$(pe_state "$pz")$(pe_file "${pe_f}2")"
+    is "F, which fails the check right before the signal, is not signalled" "up there" \
+       "$(pe_state "$pf")$(pe_file "${pe_f}3")"
+    for pe_s in "$PE/a" "$pe_b" "$PE/c"; do
+        "$TMUX_REAL" -S "$pe_s" kill-server >/dev/null 2>&1
+    done
+    # The stand-ins are this shell's children: each still named so is killed, then reaped.
+    for pe_s in "$pd" "$pz" "$pf"; do
+        pe_c=""; read -r pe_c 2>/dev/null < "/proc/$pe_s/comm"
+        [ "$pe_c" != "tmux: server" ] || kill -KILL "$pe_s" 2>/dev/null
+    done
+    wait "$pd" "$pz" "$pf" 2>/dev/null
+fi
+rm -rf "$PE"
+unset -f pe_start pe_fake pe_state pe_file ps_end ps_ours
+unset PE pe_n pe_b pe_f pa pb pc pd pz pf pe_s pe_c
+
+echo "== tests/par.sh: a checkout under a path with a space runs every shard and nothing else (#1007) =="
+# par.sh joined its shard paths into one string and split it again, so a path holding a space
+# came apart: no shard ran, and bash was handed the path's first word as a script. A sandbox
+# as above, in a folder named "v1.2 proj", with a script beside it at that first word, "v1.2",
+# which says so if anything runs it. The dot is on purpose: a worker takes its shard id from
+# the text after the last dot, and with no dot in the first word that id holds a slash, the
+# log's redirect fails and bash is never reached, so the stray file would not be run and the
+# second row could not fail.
+PW=$(mktmpd); Q='"'
+pw_run() {                    # <checkout folder> <TMPDIR folder> -> status|summary|starts ends
+    local d="$PW/$1" t="$PW/$2" rc
+    mkdir -p "$d/tests" "$t"
+    cp "$DIR/tests/par.sh" "$d/tests/par.sh"
+    awk '/^echo "== /{exit} {print}' "$DIR/tests/run.sh" > "$d/tests/run.sh"
+    {
+        printf 'echo %s== pw1: one ==%s\nis "pw1" 1 1\n\n' "$Q" "$Q"
+        printf 'echo %s== pw2: two ==%s\nis "pw2" 1 1\n\n' "$Q" "$Q"
+    } >> "$d/tests/run.sh"
+    ( cd "$d" && env -u PAR_BLOCKS TMPDIR="$t" J=2 tests/par.sh ) \
+        </dev/null >"$PW/out" 2>"$PW/err"; rc=$?
+    printf '%s|%s|%s %s' "$rc" \
+        "$(grep -oE '[0-9]+ passed, [0-9]+ failed, [0-9]+ skipped' "$PW/out")" \
+        "$(grep -c '^par\.sh: shard [0-9]* start: ' "$PW/err")" \
+        "$(grep -c '^par\.sh: shard [0-9]* end rc=0$' "$PW/err")"
+}
+printf '#!/bin/sh\necho ran >> "$0.ran"\n' > "$PW/v1.2"; chmod +x "$PW/v1.2"
+is "under a path with a space both shards run and count" \
+   "0|2 passed, 0 failed, 0 skipped|2 2" "$(pw_run 'v1.2 proj' t)"
+is "and the file named like the path's first word is never run" "" \
+   "$(cat "$PW/v1.2.ran" 2>/dev/null)"
+is "nor is a shard file left in the checkout" "" "$(ls -A "$PW/v1.2 proj/tests" | grep '^\.par')"
+# The other two faults, in a run of their own: a quote stops the old xargs before any path is
+# split, so in the sandbox above the rows could not tell them apart. A ' in the checkout's
+# path is what a newline list through xargs -I{} choked on; a " and a $ in TMPDIR are what
+# broke, or expanded, when the work dir was pasted into the worker's script.
+is "under a path with a ' and a TMPDIR with a \" and a \$ both shards run and count" \
+   "0|2 passed, 0 failed, 0 skipped|2 2" "$(pw_run "pr'oj" 't"$HOME')"
+# A backslash in TMPDIR: par.sh handed its titles folder to awk with -v, which unescapes, so
+# "a\tb" became a tab, every title went to another name and each start line came out empty
+# (#1015). Shards ran and counted all the same, so the counts above could not see it.
+is "under a TMPDIR with a backslash each start line still carries its title" \
+   "0|2 passed, 0 failed, 0 skipped|2 2|pw1: one,pw2: two," \
+   "$(pw_run proj 'a\tb')|$(sed -n 's/^par\.sh: shard [0-9]* start: //p' "$PW/err" | sort |
+        tr '\n' ,)"
+unset -f pw_run; unset PW Q
+
+echo "== tests/par.sh: a run whose shards did not all report fails and says so (#1013) =="
+# A shard that never started left no log, no count and no fail mark, and the total left it out:
+# with no worker started par.sh printed "0 passed, 0 failed" and ended 0. Sandboxes as above.
+# Three checkouts: c, two good blocks; d, one whose shard sends its count nowhere; e, one
+# whose shard removes its own file and then fails a row. And an xargs of its own first on
+# PATH: none (the real one), dead (ends 1 and starts nothing), first (hands on only the first
+# shard), late (runs every worker, then ends 123).
+PX=$(mktmpd); Q='"'; mkdir -p "$PX/t" "$PX/dead" "$PX/first" "$PX/late"
+px_mk() {                     # <checkout> <block 1's body> <block 2's body>
+    mkdir -p "$PX/$1/tests"
+    cp "$DIR/tests/par.sh" "$PX/$1/tests/par.sh"
+    awk '/^echo "== /{exit} {print}' "$DIR/tests/run.sh" > "$PX/$1/tests/run.sh"
+    {
+        printf 'echo %s== px1: one ==%s\n%s\n\n' "$Q" "$Q" "$2"
+        printf 'echo %s== px2: two ==%s\n%s\n\n' "$Q" "$Q" "$3"
+    } >> "$PX/$1/tests/run.sh"
+}
+px_mk c 'is "px1" 1 1' 'is "px2" 1 1'
+px_mk d 'is "px1" 1 1' 'PAR_COUNT=/dev/null; is "px2" 1 1'
+px_mk e 'rm -f "$0"; is "px1" 1 2' 'is "px2" 1 1'
+px_x=$(tq "$(command -v xargs)")
+printf '#!/bin/sh\ncat >/dev/null\nexit 1\n' > "$PX/dead/xargs"
+printf '#!/bin/sh\ntr "\\0" "\\n" | head -n 1 | tr "\\n" "\\0" | exec %s "$@"\n' "$px_x" \
+    > "$PX/first/xargs"
+printf '#!/bin/sh\n%s "$@"\nexit 123\n' "$px_x" > "$PX/late/xargs"
+chmod +x "$PX/dead/xargs" "$PX/first/xargs" "$PX/late/xargs"
+px_run() {                    # <none|dead|first|late> [checkout] -> status|summary|what par.sh said
+    local rc
+    ( cd "$PX/${2:-c}" && PATH="$PX/$1:$PATH" exec env -u PAR_BLOCKS TMPDIR="$PX/t" J=2 \
+        tests/par.sh ) </dev/null >"$PX/out" 2>"$PX/err"; rc=$?
+    printf '%s|%s|%s' "$rc" \
+        "$(grep -oE '[0-9]+ passed, [0-9]+ failed, [0-9]+ skipped +\(J=2, [0-9]+ shards\)' \
+            "$PX/out" | tr -s ' ')" \
+        "$(grep -E '^par\.sh: (shard [0-9]+ (left|died)|[0-9]+ of [0-9]+ shards|xargs ended)' \
+            "$PX/err" | sed 's/^par\.sh: //; s/: the run was not whole//' | tr '\n' ';')"
+}
+is "with its own xargs both shards report and the run ends 0" \
+   "0|2 passed, 0 failed, 0 skipped (J=2, 2 shards)|" "$(px_run none)"
+is "an xargs that starts no worker fails the run, and each shard is named" \
+   "1|0 passed, 0 failed, 0 skipped (J=2, 2 shards)|shard 0001 left no log;shard 0002 left no log;xargs ended 1;0 of 2 shards reported a count;" \
+   "$(px_run dead)"
+is "one shard that never ran fails the run, the other still counts" \
+   "1|1 passed, 0 failed, 0 skipped (J=2, 2 shards)|shard 0002 left no log;1 of 2 shards reported a count;" \
+   "$(px_run first)"
+is "an xargs that ends badly after every worker ran fails the run by itself" \
+   "1|2 passed, 0 failed, 0 skipped (J=2, 2 shards)|xargs ended 123;" "$(px_run late)"
+is "a shard that ran and sent no count fails the run" \
+   "1|1 passed, 0 failed, 0 skipped (J=2, 2 shards)|shard 0002 died without reporting;1 of 2 shards reported a count;" \
+   "$(px_run none d)"
+is "a shard whose file is gone by the end still counts, and its failed row fails the run" \
+   "1|1 passed, 1 failed, 0 skipped (J=2, 2 shards)|" "$(px_run none e)"
+# A worker's last command was a printf to stderr, and its status was the worker's: a stderr
+# that takes no write made xargs end 123 on a run with nothing wrong.
+if [ -c /dev/full ]; then
+    is "a stderr that takes no write does not fail a good run" "0" \
+       "$(cd "$PX/c" && env -u PAR_BLOCKS TMPDIR="$PX/t" J=2 tests/par.sh </dev/null \
+            >/dev/null 2>/dev/full; echo $?)"
+else skip_ "par.sh under a full stderr (no /dev/full)"
+fi
+unset -f px_run px_mk; unset PX Q px_x
+
+echo "== tests/par.sh: a plan it could not make, or a shard gone before it ran, fails the run (#1017) =="
+# Two more ways par.sh ran less than it should and ended 0. An awk that failed wrote no plan,
+# and no plan read as "nothing selected". And the plan was a listing of the folder taken after
+# the shards were written, so a shard file gone by then was not a shard. A sandbox as above,
+# with a tool of its own first on PATH. awk0 fails every time; awkG writes no groups and ends
+# 0; awkS fails only where PAR_BLOCKS is applied; awkT only where the titles are written; awk1
+# only where the shards are written. trN fails where a shard's list of blocks is joined. bash1
+# removes shard 0001's file after its syntax check; bashA removes every shard's. Each stub
+# hands everything else to the real tool, and a bash removes only a file named .par.*.
+PY=$(mktmpd); Q='"'
+mkdir -p "$PY/c/tests" "$PY/t" "$PY/awk0" "$PY/awk1" "$PY/awkG" "$PY/awkS" "$PY/awkT" \
+    "$PY/trN" "$PY/bash1" "$PY/bashA"
+cp "$DIR/tests/par.sh" "$PY/c/tests/par.sh"
+awk '/^echo "== /{exit} {print}' "$DIR/tests/run.sh" > "$PY/c/tests/run.sh"
+{
+    printf 'echo %s== py1: one ==%s\nis "py1" 1 1\n\n' "$Q" "$Q"
+    printf 'echo %s== py2: two ==%s\nis "py2" 1 1\n\n' "$Q" "$Q"
+} >> "$PY/c/tests/run.sh"
+py_awk=$(tq "$(command -v awk)"); py_bash=$(tq "$(command -v bash)")
+printf '#!/bin/sh\nexit 1\n' > "$PY/awk0/awk"
+py_stub() {                   # <dir> <a pattern of the call's arguments> <status>
+    printf '#!/bin/sh\ncase "$*" in %s) exit %s ;; esac\nexec %s "$@"\n' "$2" "$3" "$py_awk" \
+        > "$PY/$1/awk"; chmod +x "$PY/$1/awk"
+}
+py_stub awk1 '*seen_block*' 1
+py_stub awkG "*'# group: '*" 0
+py_stub awkS "*'keep[\$1]'*" 1
+py_stub awkT "*'title[n]'*" 1
+printf '#!/bin/sh\n[ "$1,$2" != "\\n,," ] || exit 1\nexec %s "$@"\n' "$(tq "$(command -v tr)")" \
+    > "$PY/trN/tr"; chmod +x "$PY/trN/tr"
+for py_w in 1 A; do
+    case $py_w in 1) py_m='.par.*.0001' ;; *) py_m='.par.*' ;; esac
+    {
+        printf '#!/bin/sh\n[ "$1" = -n ] || exec %s "$@"\n%s "$@"; rc=$?\n' "$py_bash" "$py_bash"
+        printf 'case ${2##*/} in %s) rm -f -- "$2" ;; esac\nexit $rc\n' "$py_m"
+    } > "$PY/bash$py_w/bash"
+done
+chmod +x "$PY/awk0/awk" "$PY/awk1/awk" "$PY/bash1/bash" "$PY/bashA/bash"
+py_run() {                    # <none|awk0|awk1|bash1|bashA> [PAR_BLOCKS] -> status|stdout's last line|par.sh's lines
+    local rc
+    ( cd "$PY/c" && PATH="$PY/$1:$PATH" exec env -u PAR_BLOCKS ${2:+PAR_BLOCKS="$2"} \
+        TMPDIR="$PY/t" J=2 tests/par.sh ) </dev/null >"$PY/out" 2>"$PY/err"; rc=$?
+    printf '%s|%s|%s' "$rc" "$(tail -n 1 "$PY/out" | tr -s ' ' | sed 's/^ //')" \
+        "$(grep -E '^par\.sh: (awk failed|no block|shard [0-9]+ (left|died|would)|[0-9]+ of [0-9]+ shards)' \
+            "$PY/err" | sed 's/^par\.sh: //' | tr '\n' ';')"
+}
+is "with its own tools both shards run and the run ends 0" \
+   "0|2 passed, 0 failed, 0 skipped (J=2, 2 shards)|" "$(py_run none)"
+is "a PAR_BLOCKS that names no block is still nothing selected, and ends 0" \
+   "0|nothing selected|" "$(py_run none 99999)"
+is "an awk that fails makes no plan: the run ends 2 and says awk failed" \
+   "2||awk failed grouping the blocks (status 1): no run;" "$(py_run awk0)"
+is "an awk that fails while the shards are written ends the run the same way" \
+   "2||awk failed writing shard 0001 (status 1): no run;" "$(py_run awk1)"
+is "so does one that fails where PAR_BLOCKS is applied: no run of everything, or of nothing" \
+   "2||awk failed selecting PAR_BLOCKS (status 1): no run;" "$(py_run awkS 1)"
+is "an awk that ends 0 with no block grouped is no plan either" \
+   "2||no block found in tests/run.sh: no run;" "$(py_run awkG)"
+is "a shard whose list of blocks came through empty is not run as a shard of nothing" \
+   "2||shard 0001 would hold no block: no run;" "$(py_run trN)"
+is "an awk that fails on the titles costs the titles, not the run" \
+   "0|2 passed, 0 failed, 0 skipped (J=2, 2 shards)|awk failed writing the shard titles (status 1): start lines carry no title;" \
+   "$(py_run awkT)"
+is "a shard file gone before it ran is still a shard: the run fails and names it" \
+   "1|1 passed, 0 failed, 0 skipped (J=2, 2 shards)|shard 0001 died without reporting;1 of 2 shards reported a count;" \
+   "$(py_run bash1)"
+is "with every shard file gone the run fails and says none reported" \
+   "1|0 passed, 0 failed, 0 skipped (J=2, 2 shards)|shard 0001 died without reporting;shard 0002 died without reporting;0 of 2 shards reported a count;" \
+   "$(py_run bashA)"
+is "and none of those runs left a shard file in the checkout" "" \
+   "$(ls -A "$PY/c/tests" | grep '^\.par')"
+unset -f py_run py_stub; unset PY Q py_awk py_bash py_w py_m
+
+echo "== tests/par.sh: once its exit trap starts, no HUP, INT or TERM cuts it short (#1127) =="
+# par.sh trapped none of the three. bash then ends through its own handler, which runs the EXIT
+# trap and kills the shell when a second such signal lands while the first is handled: a run
+# `timeout` ended, signalling it and then its group, left its work folder and its .par.* shard
+# files (#1127). So par.sh traps the three, and its exit trap ignores them first, as run.sh
+# does (#1107). Copies of par.sh in a sandbox as the #1153 block's: row printers and one block,
+# no server, so no socket folder comes into it. end holds in its exit trap, right before the
+# removal; win holds there and also before its shards run, where it writes its traps down; sig
+# holds where win does, but as the exit trap's first line, before its ignore (#1223). Each
+# hold is a read on a fifo the copy holds open, ended by a line the row writes. Checkout c's
+# block passes; f's fails par.sh's syntax check, so end there ends 2 by a check.
+PQ=$(mktmpd); Q='"'; mkdir -p "$PQ/s"
+pq_in='[ -p "$PQ_H/pf" ] || mkfifo "$PQ_H/pf"; exec 9<>"$PQ_H/pf"; : > "$PQ_H/in"; '
+pq_in="${pq_in}read -r -t 20 -u 9 _; "
+pq_body='mkfifo "$PQ_H/pf"; exec 9<>"$PQ_H/pf"; trap -p HUP INT TERM > "$PQ_H/traps"; '
+pq_body="${pq_body}: > \"\$PQ_H/started\"; read -r -t 20 -u 9 _"
+pq_mk() {                     # <checkout> <its one block's body>
+    mkdir -p "$PQ/$1/tests"
+    { printf 'set -u\npass=0; fail=0; skipped=0\nflop_left() { :; }\n'
+      awk '/^ok\(\) /, /^is\(\) / { print } /^skip_\(\) / { print }' "$DIR/tests/run.sh"
+      printf 'echo %s== pq1 ==%s\n%s\n' "$Q" "$Q" "$2"
+    } > "$PQ/$1/tests/run.sh"
+    sed "s#rm -rf -- \"\\\$WORK\"#$pq_in&#" "$DIR/tests/par.sh" > "$PQ/$1/tests/end.sh"
+    sed "/^xrc=0\$/i $pq_body" "$PQ/$1/tests/end.sh" > "$PQ/$1/tests/win.sh"
+    # sig holds as par_clean's first line, before its ignore, where only par_sig's stands (#1223).
+    # A . for its brace: only.sh's extraction counts braces in strings too, and one left open
+    # here took the block's top-level lines into every shard.
+    sed "s#^par_clean() . #&$pq_in#" "$DIR/tests/par.sh" | sed "/^xrc=0\$/i $pq_body" \
+        > "$PQ/$1/tests/sig.sh"
+}
+pq_mk c 'is "pq1" 1 1'
+pq_mk f 'if true; then'
+is "each copy holds where it should" "1 2 2 1 1" "$({ for c in c/tests/end c/tests/win \
+    c/tests/sig f/tests/end; do grep -c 'read -r -t 20 -u 9 _' "$PQ/$c.sh"; done
+    grep -c '^par_clean() { \[ -p ' "$PQ/c/tests/sig.sh"; } | tr '\n' ' ' | sed 's/ $//')"
+pq_run() {                    # <copy> <checkout> <signal> [2nd] -> status|left in TMPDIR|.par.*
+    local c="" a="" g rc dfl=() k=$2 h=in # the last signal goes to the group in the exit trap
+    [ $# -lt 4 ] || h=started
+    rm -rf "${PQ:?}/t" "${PQ:?}/h"; rm -f "$PQ/traps" "$PQ/$k/tests/".par.*
+    mkdir -p "$PQ/t" "$PQ/h"
+    for g in HUP INT TERM; do ! sig_dfl "$g" || dfl+=(--default-signal="$g"); done
+    ( cd "$PQ/$2" && exec env "${dfl[@]}" -u TMUX -u PAR_BLOCKS TMPDIR="$PQ/t" \
+        TMUX_TMPDIR="$PQ/s" PQ_H="$PQ/h" J=1 setsid bash "tests/$1.sh" ) \
+        </dev/null >/dev/null 2>&1 & pq_p=$!
+    # signalled only once /proc names it, its comm bash and its argv[1] the copy; a failed check,
+    # a kill that fails or a hold never reached is named in place of the status (#1208)
+    if ! until_out '?*' ls "$PQ/h/$h" >/dev/null; then c="no hold: $h"
+    else
+        read -r c 2>/dev/null < "/proc/$pq_p/comm"
+        a=$(tr '\0' '\n' 2>/dev/null < "/proc/$pq_p/cmdline" | sed -n 2p)
+        if [ "$c" != bash ] || [ "$a" != "tests/$1.sh" ]; then c="no signal: comm [$c] argv [$a]"
+        else
+            c=""
+            [ $# -lt 4 ] || { kill -"$3" "$pq_p" 2>/dev/null || c="no signal: kill $3"; shift; }
+            if until_out '?*' ls "$PQ/h/in" >/dev/null; then
+                kill -"$3" -- "-$pq_p" 2>/dev/null || c="no signal: kill $3"
+            else c="no hold: in"
+            fi
+        fi
+    fi
+    # ends the hold in the exit trap, if a run is left to read
+    [ ! -p "$PQ/h/pf" ] || printf '\n' 1<>"$PQ/h/pf"
+    wait "$pq_p" 2>/dev/null; rc=$?
+    [ ! -e "$PQ/h/traps" ] || mv "$PQ/h/traps" "$PQ/traps"
+    printf '%s|%s|%s' "${c:-$rc}" "$(ls -A "$PQ/t" | tr '\n' ,)" \
+        "$(ls -A "$PQ/$k/tests" | grep '^\.par' | tr '\n' ,)"
+}
+if ! command -v setsid >/dev/null; then skip_ "a signal in par.sh's exit trap (no setsid)"
+elif [ ! -r "/proc/$$/comm" ]; then skip_ "a signal in par.sh's exit trap (no /proc)"
+elif ! sig_dfl HUP && [ "$(trap -p HUP)" = "trap -- '' SIGHUP" ]; then
+    skip_ "a signal in par.sh's exit trap (SIGHUP is ignored and env cannot reset it)"
+else
+    is "a HUP, then a HUP to its group in its exit trap, leaves no work folder or shard file" \
+       "129||" "$(pq_run win c HUP HUP)"
+    is "nor does a TERM after a TERM" "143||" "$(pq_run win c TERM TERM)"
+    if ! sig_dfl INT; then skip_ "an INT, and par.sh's INT trap (env cannot reset SIGINT)"
+    else
+        is "nor a TERM after an INT" "130||" "$(pq_run win c INT TERM)"
+        pq_want="trap -- 'par_sig 1' SIGHUP trap -- 'par_sig 2' SIGINT"
+        is "par.sh's own traps take HUP, INT and TERM" "$pq_want trap -- 'par_sig 15' SIGTERM" \
+           "$(tr '\n' ' ' 2>/dev/null < "$PQ/traps" | sed 's/ $//')"
+        # a Ctrl-C pressed twice, and one in the exit trap of a run at its end (#1219)
+        is "nor an INT after an INT" "130||" "$(pq_run win c INT INT)"
+        is "nor an INT to its group as its exit trap starts, after an INT" "130||" \
+           "$(pq_run sig c INT INT)"
+        is "nor an INT in the exit trap of a run that came to its end" "0||" "$(pq_run end c INT)"
+    fi
+    is "a TERM to its group as its exit trap starts, after a TERM, leaves nothing" "143||" \
+       "$(pq_run sig c TERM TERM)"
+    is "a HUP to its group while the exit trap of a run that came to its end runs leaves nothing" \
+       "0||" "$(pq_run end c HUP)"
+    is "nor a TERM" "0||" "$(pq_run end c TERM)"
+    is "a HUP while the exit trap of a run a check ended runs leaves nothing" "2||" \
+       "$(pq_run end f HUP)"
+    is "nor a TERM" "2||" "$(pq_run end f TERM)"
+fi
+# The trap was armed below the mkdir of the work folder's list and out, so a mkdir that failed
+# ended the run with the folder left (#1175). A mkdir of the block's own first on PATH fails
+# that call alone and hands every other to the real one. Here, not in #1017's block: that
+# block's stubs and sandbox are unset with it, and this one is about par.sh's exit paths.
+mkdir -p "$PQ/mk"; cp "$DIR/tests/par.sh" "$PQ/c/tests/par.sh"
+printf '#!/bin/sh\ncase "$*" in *"/list "*"/out") exit 1 ;; esac\nexec %s "$@"\n' \
+    "$(tq "$(command -v mkdir)")" > "$PQ/mk/mkdir"; chmod +x "$PQ/mk/mkdir"
+rm -rf "${PQ:?}/t"; mkdir -p "$PQ/t"
+is "a run whose work folder's list and out cannot be made ends 1 and leaves no work folder" \
+   "1|" "$(cd "$PQ/c" && PATH="$PQ/mk:$PATH" env -u PAR_BLOCKS -u TMUX TMPDIR="$PQ/t" J=1 \
+            bash tests/par.sh </dev/null >/dev/null 2>&1; echo "$?|$(ls -A "$PQ/t" | tr '\n' ,)")"
+unset -f pq_mk pq_run; unset PQ Q pq_in pq_body pq_p pq_want
+
+echo "== tests/freeze-rig/gate.sh: no signal leaves its server; it signals only its own (#1173) =="
+# Its cleanup ran on EXIT alone: a second HUP, INT or TERM while bash's own handler or that trap
+# ran killed it before its server and LOGDIR were gone, run.sh's shape before #1107. And it sent
+# kill -9 to each pid `pgrep -f "tmux -L $SOCK"` matched: any process with that text in its
+# argv, another run's too when that run's socket name starts with this one's. So it traps the
+# three, both traps ignore them first, its server ends by its socket, and the one pid it
+# signals, its client's $!, is checked by name first. Copies in a sandbox, run as `bash <copy>`
+# as the gate is, on a 1-pane server (S, W and P of 1) and an empty formats file: no bar, no
+# agent-state. gt-hold is a read on a fifo the row writes to. gate-run.sh holds once its client
+# is started and exits 5 after, so a run that went past the hold reads 5; gate-end.sh holds in
+# its exit trap too, right before the kill-server; gate-sig.sh holds as that trap's first line,
+# before its ignore, where only gate_sig's ignore stands; gate-pid.sh's CLIENT_PID is a process
+# of the row's, a pid handed out again. Each row's decoy, a process of its own whose argv holds
+# "tmux -L <the copy's socket>0", must outlive the run, as must the CLIENT_PID stand-in. A row
+# signals a copy only once /proc names it, and says so in place of a status when it does not
+# (#1208). Servers are on the suite's socket folder, each name in SOCKS.
+GT=$(mktmpd); mkdir -p "$GT/c" "$GT/bin"; : > "$GT/f.conf"
+printf '%s\n' '#!/bin/bash' '# <run|in> [client pid] [LOGDIR]' \
+    'printf "%s\n" "${2-}" "${3-}" > "$GT_H/$1.args"; echo "$$" >> "$GT_H/../pids"' \
+    'exec 9<>"$GT_H/$1.f"; : > "$GT_H/$1"; read -r -t 20 -u 9 _' > "$GT/bin/gt-hold"
+chmod +x "$GT/bin/gt-hold"
+cp "$DIR/tests/freeze-rig/lib.sh" "$DIR/tests/freeze-rig/loop.sh" "$GT/c/"
+sed '/^disown /a gt-hold run "$CLIENT_PID" "$LOGDIR"; exit 5' "$DIR/tests/freeze-rig/gate.sh" \
+    > "$GT/c/gate-run.sh"
+sed '/^    tmux -L "\$SOCK" kill-server/i gt-hold in "" "$LOGDIR"' "$GT/c/gate-run.sh" \
+    > "$GT/c/gate-end.sh"
+sed '/^gate_clean() {$/a gt-hold in "" "$LOGDIR"' "$GT/c/gate-run.sh" > "$GT/c/gate-sig.sh"
+sed 's/^CLIENT_PID=\$!$/&; CLIENT_PID=$GT_PID/' "$GT/c/gate-run.sh" > "$GT/c/gate-pid.sh"
+gt_up() {      # <pid> <comm> -> up when that pid runs under that name, else -
+    local c=""
+    [ -z "$1" ] || read -r c 2>/dev/null < "/proc/$1/comm"
+    if [ -n "$1" ] && [ "$c" = "$2" ]; then echo up; else echo -; fi
+}
+gt_run() {     # <copy> <conf> <signal to it alone at its run hold|-> [2nd, to its group in its
+    # exit trap] -> gt_out: status|TMPDIR|server|socket|client|decoys, the last four as gt_up's
+    local s=$1 c="" a="" k=run g rc sp="" cp="" d0 d1 dfl=()
+    [ "$2" = "$GT/f.conf" ] || k=in    # a conf it cannot source ends it before its client
+    rm -rf "${GT:?}/t" "${GT:?}/h"; mkdir -p "$GT/t" "$GT/h"
+    mkfifo "$GT/h/run.f" "$GT/h/in.f" "$GT/h/d.f"
+    for g in HUP INT TERM; do ! sig_dfl "$g" || dfl+=(--default-signal="$g"); done
+    # held open here, so a line written before a hold opens its fifo waits there for it
+    exec 7<>"$GT/h/run.f" 8<>"$GT/h/in.f" 6<>"$GT/h/d.f"
+    bash -c 'read -r -t 30 -u 9 _' gt-decoy 9<>"$GT/h/d.f" </dev/null >/dev/null 2>&1 & d0=$!
+    ( cd "$GT" && exec env "${dfl[@]}" -u TMUX -u TMUX_PANE TMPDIR="$GT/t" GT_H="$GT/h" \
+        GT_PID="$d0" S=1 W=1 P=1 PATH="$GT/bin:$PATH" setsid bash "$GT/c/$s" "$2" ) \
+        </dev/null >/dev/null 2>&1 &
+    gt_p=$!; SOCKS="$SOCKS cockpit-gate-$gt_p"; shift 2
+    bash -c 'read -r -t 30 -u 9 _' "vi tmux -L cockpit-gate-${gt_p}0" 9<>"$GT/h/d.f" \
+        </dev/null >/dev/null 2>&1 & d1=$!
+    if ! until_out '?*' ls "$GT/h/$k" >/dev/null; then c="no hold: $k"
+    else
+        read -r c 2>/dev/null < "/proc/$gt_p/comm"
+        a=$(tr '\0' '\n' 2>/dev/null < "/proc/$gt_p/cmdline" | sed -n 2p)
+        sp=$("$TMUX_REAL" -L "cockpit-gate-$gt_p" display -p '#{pid}' 2>/dev/null)
+        [ "$k" != run ] || cp=$(sed -n 1p "$GT/h/run.args")
+        # the pane's loop.sh has unlinked its fifo: TMPDIR holds LOGDIR alone
+        [ "$k" != run ] || until_out 1 eval 'ls -A "$GT/t" | wc -l' >/dev/null
+        if [ "$c" != bash ] || [ "$a" != "$GT/c/$s" ]; then c="no signal: comm [$c] argv [$a]"
+        else
+            c=""
+            # a kill that fails is named in place of the status, as a failed check is (#1208)
+            [ "$k" != run ] || [ "$1" = - ] || kill -"$1" "$gt_p" 2>/dev/null ||
+                c="no signal: kill $1"
+            shift
+            printf '\n' >&7
+            if [ $# -eq 0 ]; then :
+            elif until_out '?*' ls "$GT/h/in" >/dev/null; then
+                kill -"$1" -- "-$gt_p" 2>/dev/null || c="no signal: kill $1"
+            else c="no hold: in"
+            fi
+        fi
+    fi
+    printf '\n' >&7; printf '\n' >&8
+    wait "$gt_p" 2>/dev/null; rc=$?; exec 7>&- 8>&-
+    # the client ends once its server is gone, by itself or by the trap: waited for, not slept
+    [ -z "$cp" ] || until_out - gt_up "$cp" script >/dev/null
+    gt_out="${c:-$rc}|$(ls -A "$GT/t" | tr '\n' ,)|$(gt_up "$sp" 'tmux: server')"
+    gt_out="$gt_out|$([ -e "$SOCKDIR/cockpit-gate-$gt_p" ] && echo up || echo -)"
+    gt_out="$gt_out|$(gt_up "$cp" script)|$(gt_up "$d0" bash) $(gt_up "$d1" bash)"
+    printf '\n\n' >&6; wait "$d0" "$d1" 2>/dev/null; exec 6>&-
+}
+gt_alive() {   # the pids of holds still running
+    local p
+    [ -e "$GT/pids" ] || return 0
+    while read -r p; do [ "$(gt_up "$p" gt-hold)" = - ] || echo "$p"; done < "$GT/pids"
+}
+gt_sk="a signal to tests/freeze-rig/gate.sh"
+if [ "$HAVE_TMUX" != 1 ]; then skip_ "$gt_sk (no tmux)"
+elif ! command -v setsid >/dev/null; then skip_ "$gt_sk (no setsid)"
+elif ! command -v script >/dev/null; then skip_ "$gt_sk (no script)"
+elif [ ! -r "/proc/$$/comm" ]; then skip_ "$gt_sk (no /proc)"
+elif ! sig_dfl HUP && [ "$(trap -p HUP)" = "trap -- '' SIGHUP" ]; then
+    skip_ "$gt_sk (SIGHUP is ignored and env cannot reset it)"
+else
+    is "each copy holds or swaps where it should" "1 2 2 1" "$( {
+        for c in run end sig; do grep -c '^ *gt-hold ' "$GT/c/gate-$c.sh"; done
+        grep -c 'CLIENT_PID=\$GT_PID' "$GT/c/gate-pid.sh"; } | tr '\n' ' ' | sed 's/ $//')"
+    gt_run gate-run.sh "$GT/f.conf" TERM
+    is "a TERM to it alone ends its server, client and LOGDIR, and no decoy" "143||-|-|-|up up" \
+       "$gt_out"
+    gt_run gate-run.sh "$GT/f.conf" HUP; is "nor a HUP" "129||-|-|-|up up" "$gt_out"
+    if ! sig_dfl INT; then skip_ "an INT to gate.sh (env cannot reset SIGINT)"
+    else
+        gt_run gate-run.sh "$GT/f.conf" INT
+        is "an INT to it alone, in a command, ends the run there" "130||-|-|-|up up" "$gt_out"
+        gt_run gate-end.sh "$GT/f.conf" INT TERM
+        is "nor a TERM to its group in its exit trap after an INT" "130||-|-|-|up up" "$gt_out"
+        gt_run gate-end.sh "$GT/f.conf" INT INT
+        is "nor an INT to its group in its exit trap after an INT" "130||-|-|-|up up" "$gt_out"
+        gt_run gate-sig.sh "$GT/f.conf" INT INT
+        is "nor an INT to its group as its exit trap starts, after an INT" "130||-|-|-|up up" \
+           "$gt_out"
+        gt_run gate-end.sh "$GT/none.conf" - INT
+        is "an INT to its group in the exit trap of a run that ended 2 leaves nothing" \
+           "2||-|-|-|up up" "$gt_out"
+    fi
+    gt_run gate-end.sh "$GT/f.conf" HUP HUP
+    is "a HUP, then a HUP to its group in its exit trap, leaves nothing" "129||-|-|-|up up" \
+       "$gt_out"
+    gt_run gate-end.sh "$GT/f.conf" TERM TERM
+    is "nor a TERM after a TERM" "143||-|-|-|up up" "$gt_out"
+    gt_run gate-sig.sh "$GT/f.conf" TERM TERM
+    is "a TERM to its group as its exit trap starts, after a TERM, leaves nothing" \
+       "143||-|-|-|up up" "$gt_out"
+    gt_run gate-end.sh "$GT/none.conf" - HUP
+    is "a HUP to its group in the exit trap of a run that ended 2 leaves nothing" \
+       "2||-|-|-|up up" "$gt_out"
+    gt_run gate-end.sh "$GT/none.conf" - TERM; is "nor a TERM" "2||-|-|-|up up" "$gt_out"
+    gt_run gate-pid.sh "$GT/f.conf" TERM
+    is "a CLIENT_PID now naming another process is not signalled" "143||-|-|-|up up" "$gt_out"
+    is "no hold is left running" "" "$(until_out '' gt_alive; gt_alive)"
+fi
+for gt_s in $SOCKS; do case $gt_s in cockpit-gate-*) kill_sock "$gt_s" ;; esac; done
+unset -f gt_up gt_run gt_alive; unset GT gt_p gt_out gt_sk gt_s
+
+echo "== tests/only.sh, tests/changed.sh: no HUP, INT or TERM cuts an exit trap short (#1171) =="
+# Both set an EXIT trap and nothing on HUP, INT or TERM, the shape par.sh had (#1127): bash then
+# ends through its own handler, and a second such signal while the first is handled, or one
+# while the exit trap of a run that ended on its own runs, kills it before the removal. only.sh
+# left its tests/.only.* file in the checkout, changed.sh its table in TMPDIR. So both trap the
+# three, and their exit traps ignore them first. Copies in a sandbox, held as #1127's: oend and
+# cend hold in the exit trap, right before the removal; owin and cwin hold there and also before
+# their work, where they write their traps down; osig and csig hold where owin and cwin do, but
+# as the exit trap's first line (#1223). only.sh runs fx.sh's one block through ONLY_RUN, or
+# ends 2 on a pattern no block matches; changed.sh reads the sandbox's run.sh. No git, no make,
+# no server.
+OC=$(mktmpd); mkdir -p "$OC/c/tests" "$OC/c/scripts" "$OC/s"
+oc_in='[ -p "$OC_H/pf" ] || mkfifo "$OC_H/pf"; exec 9<>"$OC_H/pf"; : > "$OC_H/in"; '
+oc_in="${oc_in}read -r -t 20 -u 9 _; "
+oc_body='mkfifo "$OC_H/pf"; exec 9<>"$OC_H/pf"; trap -p HUP INT TERM > "$OC_H/traps"; '
+oc_body="${oc_body}: > \"\$OC_H/started\"; read -r -t 20 -u 9 _"
+printf '%s\n' 'pass=0; fail=0; skipped=0' 'flop_left() { :; }' 'echo "== oc1 =="' : \
+    > "$OC/c/fx.sh"
+printf '%s\n' 'echo "== syntax =="' '# tests: scripts/tool' 'echo "== tool =="' \
+    > "$OC/c/tests/run.sh"
+echo ': a tool' > "$OC/c/scripts/tool"
+sed "s#rm -f -- \"\\\$OUT\"#$oc_in&#" "$DIR/tests/only.sh" > "$OC/c/tests/oend.sh"
+sed "/^bash -n /i $oc_body" "$OC/c/tests/oend.sh" > "$OC/c/tests/owin.sh"
+sed "s#rm -f -- \"\\\$TBL\"#$oc_in&#" "$DIR/tests/changed.sh" > "$OC/c/tests/cend.sh"
+sed "/^SCRIPTS=/i $oc_body" "$OC/c/tests/cend.sh" > "$OC/c/tests/cwin.sh"
+# osig and csig hold where owin and cwin do, but as the exit trap's first line, before its
+# ignore, where only only_sig's or chg_sig's stands (#1223)
+sed "s#^only_clean() { #&$oc_in#" "$DIR/tests/only.sh" | sed "/^bash -n /i $oc_body" \
+    > "$OC/c/tests/osig.sh"
+sed "s#^chg_clean() { #&$oc_in#" "$DIR/tests/changed.sh" | sed "/^SCRIPTS=/i $oc_body" \
+    > "$OC/c/tests/csig.sh"
+is "each copy holds where it should" "1 2 2 1 2 2 1 1" "$({
+    for c in oend owin osig cend cwin csig; do
+        grep -c 'read -r -t 20 -u 9 _' "$OC/c/tests/$c.sh"; done
+    grep -c '^only_clean() { \[ -p ' "$OC/c/tests/osig.sh"
+    grep -c '^chg_clean() { \[ -p ' "$OC/c/tests/csig.sh"; } | tr '\n' ' ' | sed 's/ $//')"
+oc_run() {                    # <copy> <pattern|--each> <signal> [2nd] -> status|TMPDIR|.only.*
+    local c="" w="" g rc dfl=() a=("$2") h=in # the last signal goes to the group in the exit trap
+    [ $# -lt 4 ] || h=started
+    [ "$2" != --each ] || a+=(scripts/tool)
+    rm -rf "${OC:?}/t" "${OC:?}/h"; rm -f "$OC/traps" "$OC/c/tests/".only.*
+    mkdir -p "$OC/t" "$OC/h"
+    for g in HUP INT TERM; do ! sig_dfl "$g" || dfl+=(--default-signal="$g"); done
+    ( cd "$OC/c" && exec env "${dfl[@]}" -u TMUX TMPDIR="$OC/t" TMUX_TMPDIR="$OC/s" \
+        OC_H="$OC/h" ONLY_RUN="$OC/c/fx.sh" setsid bash "tests/$1.sh" "${a[@]}" ) \
+        </dev/null >/dev/null 2>&1 & oc_p=$!
+    # signalled only once /proc names it, its comm bash and its argv[1] the copy; a failed check,
+    # a kill that fails or a hold never reached is named in place of the status (#1208)
+    if ! until_out '?*' ls "$OC/h/$h" >/dev/null; then c="no hold: $h"
+    else
+        read -r c 2>/dev/null < "/proc/$oc_p/comm"
+        w=$(tr '\0' '\n' 2>/dev/null < "/proc/$oc_p/cmdline" | sed -n 2p)
+        if [ "$c" != bash ] || [ "$w" != "tests/$1.sh" ]; then c="no signal: comm [$c] argv [$w]"
+        else
+            c=""
+            [ $# -lt 4 ] || { kill -"$3" "$oc_p" 2>/dev/null || c="no signal: kill $3"; shift; }
+            if until_out '?*' ls "$OC/h/in" >/dev/null; then
+                kill -"$3" -- "-$oc_p" 2>/dev/null || c="no signal: kill $3"
+            else c="no hold: in"
+            fi
+        fi
+    fi
+    # ends the hold in the exit trap, if a run is left to read
+    [ ! -p "$OC/h/pf" ] || printf '\n' 1<>"$OC/h/pf"
+    wait "$oc_p" 2>/dev/null; rc=$?
+    [ ! -e "$OC/h/traps" ] || mv "$OC/h/traps" "$OC/traps"
+    printf '%s|%s|%s' "${c:-$rc}" "$(ls -A "$OC/t" | tr '\n' ,)" \
+        "$(ls -A "$OC/c/tests" | grep '^\.only' | tr '\n' ,)"
+}
+oc_traps() { tr '\n' ' ' 2>/dev/null < "$OC/traps" | sed 's/ $//'; }
+oc_sk="a signal in only.sh's or changed.sh's exit trap"
+if ! command -v setsid >/dev/null; then skip_ "$oc_sk (no setsid)"
+elif [ ! -r "/proc/$$/comm" ]; then skip_ "$oc_sk (no /proc)"
+elif ! sig_dfl HUP && [ "$(trap -p HUP)" = "trap -- '' SIGHUP" ]; then
+    skip_ "$oc_sk (SIGHUP is ignored and env cannot reset it)"
+else
+    is "only.sh: a HUP, then a HUP to its group in its exit trap, leaves no .only file" "129||" \
+       "$(oc_run owin '^oc1' HUP HUP)"
+    is "nor does a TERM after a TERM" "143||" "$(oc_run owin '^oc1' TERM TERM)"
+    is "changed.sh: a HUP, then a HUP to its group in its exit trap, leaves no table" "129||" \
+       "$(oc_run cwin --each HUP HUP)"
+    is "nor does a TERM after a TERM" "143||" "$(oc_run cwin --each TERM TERM)"
+    if ! sig_dfl INT; then
+        skip_ "an INT, and only.sh's and changed.sh's INT traps (env cannot reset SIGINT)"
+    else
+        oc_want="trap -- 'only_sig 1' SIGHUP trap -- 'only_sig 2' SIGINT"
+        oc_want="$oc_want trap -- 'only_sig 15' SIGTERM"
+        is "only.sh: nor a TERM after an INT" "130||" "$(oc_run owin '^oc1' INT TERM)"
+        is "only.sh's own traps take HUP, INT and TERM" "$oc_want" "$(oc_traps)"
+        is "changed.sh: nor a TERM after an INT" "130||" "$(oc_run cwin --each INT TERM)"
+        is "changed.sh's own traps take HUP, INT and TERM" "${oc_want//only_sig/chg_sig}" \
+           "$(oc_traps)"
+        # a Ctrl-C pressed twice, and one in the exit trap of a run at its end (#1219)
+        is "only.sh: nor an INT after an INT" "130||" "$(oc_run owin '^oc1' INT INT)"
+        is "nor an INT to its group as its exit trap starts, after an INT" "130||" \
+           "$(oc_run osig '^oc1' INT INT)"
+        is "nor an INT in the exit trap of a run that came to its end" "0||" \
+           "$(oc_run oend '^oc1' INT)"
+        is "changed.sh: nor an INT after an INT" "130||" "$(oc_run cwin --each INT INT)"
+        is "nor an INT to its group as its exit trap starts, after an INT" "130||" \
+           "$(oc_run csig --each INT INT)"
+        is "nor an INT in the exit trap of a run at its end" "0||" "$(oc_run cend --each INT)"
+    fi
+    is "only.sh: a TERM to its group as its exit trap starts, after a TERM, leaves no .only file" \
+       "143||" "$(oc_run osig '^oc1' TERM TERM)"
+    is "changed.sh: a TERM to its group as its exit trap starts, after a TERM, leaves no table" \
+       "143||" "$(oc_run csig --each TERM TERM)"
+    is "only.sh: a HUP to its group in the exit trap of a run that came to its end leaves none" \
+       "0||" "$(oc_run oend '^oc1' HUP)"
+    is "nor a TERM" "0||" "$(oc_run oend '^oc1' TERM)"
+    is "only.sh: a HUP while the exit trap of a run no block matched runs leaves nothing" "2||" \
+       "$(oc_run oend '^zz' HUP)"
+    is "nor a TERM" "2||" "$(oc_run oend '^zz' TERM)"
+    is "changed.sh: a HUP to its group in the exit trap of a run at its end leaves none" \
+       "0||" "$(oc_run cend --each HUP)"
+    is "nor a TERM" "0||" "$(oc_run cend --each TERM)"
+fi
+unset -f oc_run oc_traps; unset OC oc_in oc_body oc_p oc_want oc_sk
+
+echo "== tests/clean-run.sh, tui-refusers.sh: no HUP, INT or TERM leaves a temp path (#1172) =="
+# Neither trapped the three, and dash, the /bin/sh they run in on the CI images, runs no EXIT
+# trap when a signal it does not trap ends a script: clean-run.sh left its two dirs and its list
+# in TMPDIR, tui-refusers.sh its list of binaries. So both remove them in an exit trap, trap the
+# three, and ignore them first in both traps, as par.sh does (#1127). Each runs by its path, as
+# make starts it, so its comm is its file name; with any other comm the helper sends nothing and
+# says so in place of a status (#1208), and a hold never reached is named the same way. The hold
+# is cs-hold, a read on a fifo it holds open, ended by a line the row writes. clean-run.sh runs
+# it as its command, tui-refusers.sh's stub cargo runs it, and the -end copies run it in the exit
+# trap, right before the removal, the -sig copies as that trap's first line (#1223). dash runs
+# a trap once the command in the foreground is done, so a signal to the script alone lands when
+# the row ends the command's hold. No cargo, no make, no namespace, no server.
+CS=$(mktmpd); mkdir -p "$CS/c/tests" "$CS/c/tui" "$CS/bin"
+printf '%s\n' '#!/bin/bash' '# <run|in>: run is the command, held only where CS_RUN is hold' \
+    'if [ "$1" = run ]; then case ${CS_RUN-} in pass) exit 0 ;; fail) exit 3 ;; esac; fi' \
+    'echo "$$" >> "$CS_H/../pids"; exec 9<>"$CS_H/$1.f"; : > "$CS_H/$1"; read -r -t 20 -u 9 _' \
+    > "$CS/bin/cs-hold"
+printf '#!/bin/sh\nexec cs-hold run\n' > "$CS/bin/cargo"
+# its namespace run, every call but `unshare -rm true`, ends with CS_UNS
+printf '#!/bin/sh\n[ "$2" = true ] || exit "${CS_UNS:-0}"\n' > "$CS/bin/unshare"
+chmod +x "$CS/bin/cs-hold" "$CS/bin/cargo" "$CS/bin/unshare"
+cp "$DIR/tests/clean-run.sh" "$DIR/tests/tui-refusers.sh" "$CS/c/tests/"
+sed '/^    for d in "\$t" "\$x"; do$/i cs-hold in' "$DIR/tests/clean-run.sh" \
+    > "$CS/c/tests/cr-end.sh"
+sed 's#\[ -z "\$list" \] || rm -f#cs-hold in; &#' "$DIR/tests/tui-refusers.sh" \
+    > "$CS/c/tests/tr-end.sh"
+# the -sig copies hold as the exit trap's first line, before its ignore, where only cr_sig's or
+# tr_sig's stands (#1223)
+sed '/^cr_clean() {$/a cs-hold in' "$DIR/tests/clean-run.sh" > "$CS/c/tests/cr-sig.sh"
+sed 's#tr_clean() { #&cs-hold in; #' "$DIR/tests/tui-refusers.sh" > "$CS/c/tests/tr-sig.sh"
+chmod +x "$CS/c/tests/"*.sh
+cs_run() {   # <script> <its command: hold|pass|fail> [signal] [2nd] -> status|left in TMPDIR
+    local s=$1 c="" g rc dfl=() a=() k=run; shift
+    [ "$1" = hold ] || k=in      # a run that ends on its own holds in its exit trap alone
+    case $s in cr-*|clean-*) a=(cs-hold run) ;; esac
+    rm -rf "${CS:?}/t" "${CS:?}/h"; mkdir -p "$CS/t" "$CS/h"; mkfifo "$CS/h/run.f" "$CS/h/in.f"
+    for g in HUP INT TERM; do ! sig_dfl "$g" || dfl+=(--default-signal="$g"); done
+    ( cd "$CS" && exec env "${dfl[@]}" -u TMUX TMPDIR="$CS/t" CS_H="$CS/h" CS_RUN="$1" \
+        PATH="$CS/bin:$PATH" setsid "$CS/c/tests/$s" "${a[@]}" ) </dev/null >/dev/null 2>&1 &
+    cs_p=$!; shift
+    # held open here, so a line written before a hold opens its fifo waits there for it
+    exec 7<>"$CS/h/run.f" 8<>"$CS/h/in.f"
+    if ! until_out '?*' ls "$CS/h/$k" >/dev/null; then c="no hold: $k"
+    elif ! read -r c 2>/dev/null < "/proc/$cs_p/comm" || [ "$c" != "${s:0:15}" ]; then
+        c="no signal: comm [$c]"
+    else
+        c=""     # the first signal, where the command holds, goes to the script alone
+        if [ "$k" = run ] && [ $# -gt 0 ]; then
+            kill -"$1" "$cs_p" 2>/dev/null || c="no signal: kill $1"; shift
+        fi
+        printf '\n' >&7
+        if [ $# -eq 0 ]; then :
+        elif until_out '?*' ls "$CS/h/in" >/dev/null; then
+            kill -"$1" -- "-$cs_p" 2>/dev/null || c="no signal: kill $1"
+        else c="no hold: in"
+        fi
+    fi
+    printf '\n' >&7; printf '\n' >&8
+    wait "$cs_p" 2>/dev/null; rc=$?; exec 7>&- 8>&-
+    printf '%s|%s' "${c:-$rc}" "$(ls -A "$CS/t" | tr '\n' ,)"
+}
+cs_alive() {   # the pids of holds still running
+    local p c
+    [ -e "$CS/pids" ] || return 0
+    while read -r p; do
+        c=""; read -r c 2>/dev/null < "/proc/$p/comm"; [ "$c" != cs-hold ] || echo "$p"
+    done < "$CS/pids"
+}
+rm -rf "${CS:?}/t"; mkdir -p "$CS/t"
+is "tui-refusers.sh: its namespace run's status is its own, and nothing is left" "7|" \
+   "$(cd "$CS" && env -u TMUX TMPDIR="$CS/t" CS_RUN=pass CS_UNS=7 PATH="$CS/bin:$PATH" \
+        "$CS/c/tests/tui-refusers.sh" </dev/null >/dev/null 2>&1
+      printf '%s|%s' "$?" "$(ls -A "$CS/t" | tr '\n' ,)")"
+cs_sk="a signal to clean-run.sh or tui-refusers.sh"
+if ! command -v setsid >/dev/null; then skip_ "$cs_sk (no setsid)"
+elif [ ! -r "/proc/$$/comm" ]; then skip_ "$cs_sk (no /proc)"
+elif ! sig_dfl HUP && [ "$(trap -p HUP)" = "trap -- '' SIGHUP" ]; then
+    skip_ "$cs_sk (SIGHUP is ignored and env cannot reset it)"
+else
+    is "each -end and -sig copy holds in its exit trap, once" "1 1 1 1" \
+       "$(for c in cr-end tr-end cr-sig tr-sig; do grep -c 'cs-hold in' "$CS/c/tests/$c.sh"; done |
+          tr '\n' ' ' | sed 's/ $//')"
+    is "each -sig copy holds as its exit trap's first line" "cs-hold in|1" \
+       "$(sed -n '/^cr_clean() {$/{n;p;}' "$CS/c/tests/cr-sig.sh")|$(
+          grep -c "tr_clean() { cs-hold in; trap '' HUP INT TERM;" "$CS/c/tests/tr-sig.sh")"
+    for cs_s in clean-run.sh:cr-end.sh:cr-sig.sh tui-refusers.sh:tr-end.sh:tr-sig.sh; do
+        cs_g=${cs_s##*:}; cs_e=${cs_s#*:}; cs_e=${cs_e%:*}; cs_s=${cs_s%%:*}
+        is "$cs_s: a TERM to it alone while its command runs leaves no temp path" "143|" \
+           "$(cs_run "$cs_s" hold TERM)"
+        is "nor a HUP" "129|" "$(cs_run "$cs_s" hold HUP)"
+        is "$cs_s: a HUP, then a HUP to its group in its exit trap, leaves nothing" "129|" \
+           "$(cs_run "$cs_e" hold HUP HUP)"
+        is "nor a TERM after a TERM" "143|" "$(cs_run "$cs_e" hold TERM TERM)"
+        is "nor a TERM to its group as its exit trap starts, after a TERM" "143|" \
+           "$(cs_run "$cs_g" hold TERM TERM)"
+        if ! sig_dfl INT; then skip_ "an INT to $cs_s (env cannot reset SIGINT)"
+        else
+            is "$cs_s: nor an INT to it alone" "130|" "$(cs_run "$cs_s" hold INT)"
+            is "nor a TERM after an INT" "130|" "$(cs_run "$cs_e" hold INT TERM)"
+            is "nor an INT after an INT" "130|" "$(cs_run "$cs_e" hold INT INT)"
+            is "nor an INT to its group as its exit trap starts, after an INT" "130|" \
+               "$(cs_run "$cs_g" hold INT INT)"
+            is "$cs_s: nor an INT in the exit trap of a run at its end" "0|" \
+               "$(cs_run "$cs_e" pass INT)"
+        fi
+        is "$cs_s: a HUP to its group in the exit trap of a run at its end leaves nothing" \
+           "0|" "$(cs_run "$cs_e" pass HUP)"
+        is "nor a TERM" "0|" "$(cs_run "$cs_e" pass TERM)"
+    done
+    is "clean-run.sh: a HUP in the exit trap of a run whose command failed keeps its status" \
+       "3|" "$(cs_run cr-end.sh fail HUP)"
+    is "no hold is left running" "" "$(until_out '' cs_alive; cs_alive)"
+fi
+unset -f cs_run cs_alive; unset CS cs_p cs_s cs_e cs_g cs_sk
 
 echo "== tests/green.sh: the stamp hits on unchanged content, misses on one changed byte, and tool versions are in the key =="
 GROOT=$(mktmpd)
 mkdir -p "$GROOT/scripts/lib" "$GROOT/tests" "$GROOT/examples"
+# green.sh's find walks these four, as a checkout has them: absent, it says so on stderr (#1116)
+mkdir -p "$GROOT/tests/fixtures" "$GROOT/tests/freeze-rig" "$GROOT/tui" "$GROOT/skills"
 cp "$DIR/tests/green.sh" "$GROOT/tests/green.sh"
 for f in cockpit.tmux install.sh bootstrap.sh scripts/foo scripts/lib/bar tests/baz examples/qux; do
     printf 'a\n' > "$GROOT/$f"
@@ -9828,7 +12681,7 @@ echo "== the suite never reaches the network: install.sh fetches nothing under C
 NW=$(mktmpd); mkdir -p "$NW/p" "$NW/stub" "$NW/home" "$NW/bin"
 cp "$DIR/install.sh" "$NW/p/"; cp -r "$DIR/scripts" "$NW/p/"
 for t in gh curl cargo; do
-    printf '#!/bin/sh\necho "%s $*" >> %s/calls\nexit 1\n' "$t" "$NW" > "$NW/stub/$t"
+    printf '#!/bin/sh\necho "%s $*" >> %s\nexit 1\n' "$t" "$(tq "$NW/calls")" > "$NW/stub/$t"
     chmod +x "$NW/stub/$t"
 done
 # -u COCKPIT_TUI_BIN: the copy's own empty bin/, not the suite's current binary.
@@ -9852,6 +12705,564 @@ case "$(cat "$NW/calls" 2>/dev/null)" in
 esac
 unset -f nw
 rm -rf "$NW"
+
+echo "== nested runs: a helper runs them, one guards the socket path, one sweeps (#1104) =="
+# For the blocks below that run others nested, each with a TMUX_TMPDIR of its own: the run
+# itself (#1104). Its socket path guard and its sweep, sock_long and sock_sweep, are in the
+# prelude. Top-level, so only.sh and par.sh give these to every block below, as run.sh does: a
+# function is defined where it is read; no block unsets them.
+# tests/only.sh <pattern> from the checkout, with TMUX unset and the env words added (VAR=value
+# or -u VAR). Sets NEST_RC to its exit, NEST_OUT to its output, NEST_PASS and NEST_FAIL to the
+# number of its lines that say each.
+nest_run() {                  # <pattern> [env words...]
+    [ -n "${1:-}" ] || { bad "nest_run takes a pattern" "a pattern" "${1-none}"; return 2; }
+    local pat=$1
+    shift
+    NEST_OUT=$(cd "$DIR" && env -u TMUX "$@" tests/only.sh "$pat" 2>&1 </dev/null)
+    NEST_RC=$?
+    NEST_PASS=$(printf '%s\n' "$NEST_OUT" | grep -c 'PASS')
+    NEST_FAIL=$(printf '%s\n' "$NEST_OUT" | grep -c 'FAIL')
+}
+# For a row's got: a red nested run's own words, so the row names what failed in it.
+nest_fails() {                # -> ": <line>; <line>" of the last nest_run's FAIL and FATAL
+    local l                   # lines, colours cut; nothing when it printed none
+    l=$(printf '%s\n' "$NEST_OUT" | sed 's/\x1b\[[0-9;]*m//g; s/^ *//' | grep -E '^(FAIL|FATAL) ')
+    [ -z "$l" ] || printf ': %s' "${l//$'\n'/; }"
+}
+nh_red() {                    # <cmd...> -> the red rows it printed, by title, colours cut
+    "$@" | sed 's/\x1b\[[0-9;]*m//g' | sed -n 's/^ *FAIL //p' | tr '\n' ' '
+}
+# A file of blocks for nest_run, through ONLY_RUN: the prelude, then one green block and one
+# with a red row. Their titles are printed: only.sh and par.sh cut this file at a line that
+# starts one.
+NH=$(mktmpd); mkdir -p "$NH/s" "$NH/w/tmux-x" "$NH/w/other"
+{ sed '/^echo "== /,$d' "$DIR/tests/run.sh"
+  printf 'echo "%s nh green %s"\nis "nh one" a a\n' == ==
+  printf 'echo "%s nh red %s"\nis "nh two" a a\nis "nh three" a b\n' == ==
+  printf 'echo "%s nh fatal %s"\nfatal "nh stops here"\n' == ==
+} > "$NH/fx.sh"
+if need_tmux "nest_run"; then :
+elif sock_long "$NH/s"; then skip_ "nest_run (TMPDIR too long for the nested socket path)"
+else
+nest_run '^nh green' ONLY_RUN="$NH/fx.sh" TMUX_TMPDIR="$NH/s"
+is "nest_run of a green block: its exit, its PASS and its FAIL lines" "0 1 0" \
+   "$NEST_RC $NEST_PASS $NEST_FAIL"
+is "nest_fails of that green run: nothing" "" "$(nest_fails)"
+nest_run '^nh red' ONLY_RUN="$NH/fx.sh" TMUX_TMPDIR="$NH/s"
+is "nest_run of a block with a red row: the same three" "1 1 1" "$NEST_RC $NEST_PASS $NEST_FAIL"
+is "nest_fails of that run: its red row's FAIL line, for an outer row's got" ": FAIL nh three" \
+   "$(nest_fails)"
+nest_run '^nh fatal' ONLY_RUN="$NH/fx.sh" TMUX_TMPDIR="$NH/s"
+is "nest_fails of a run that ends by fatal: its FATAL line" "1: FATAL nh stops here" \
+   "$NEST_RC$(nest_fails)"
+sock_sweep "$NH/s"
+fi
+is "nest_run with no pattern, or an empty one, runs nothing: a red row of its own, and 2" \
+   "nest_run takes a pattern nest_run takes a pattern |2" \
+   "$(nh_red nest_run; nh_red nest_run '')|$(nest_run '' >/dev/null; echo $?)"
+is "sock_long with no folder: a red row of its own" "sock_long takes one folder " \
+   "$(nh_red sock_long)"
+# The guard's number against the kernel's: a socket path of 107 bytes binds, of 108 does not.
+# A folder of 79 bytes less the uid's, so a suite's socket under it, with a 7-digit pid, is 107.
+nh_f="$NH/$(printf 'f%.0s' $(seq 1 $((79 - ${#UID} - ${#NH} - 1))))"
+if need_tmux "sock_long's limit"; then :
+elif [ "$(uname -s)" = Darwin ]; then
+    skip_ "sock_long's limit (macOS's socket path limit is 103; not measured, #1146)"
+elif [ "${#nh_f}" -ne $((79 - ${#UID})) ]; then skip_ "sock_long's limit (TMPDIR too long)"
+else
+# On the run's exit cleanup's list before it starts, for a block cut short (#1104).
+SOCKP="$SOCKP$nh_f/tmux-$UID/cockpit-suite-1234567"$'\n'
+nh_up() {                     # <folder> -> up when a server binds at its suite socket path
+    local p="$1/tmux-$UID/cockpit-suite-1234567"
+    mkdir -p "${p%/*}"
+    "$TMUX_REAL" -S "$p" -f /dev/null new-session -d -c "$NH" 'exec sleep 300' >/dev/null 2>&1
+    "$TMUX_REAL" -S "$p" has-session 2>/dev/null && echo up || echo none
+}
+is "sock_long: at 107 bytes it says no and a server binds; at 108 it says yes and none does" \
+   "fits up|long none" \
+   "$(sock_long "$nh_f" && echo long || echo fits) $(nh_up "$nh_f")|$(
+      sock_long "${nh_f}g" && echo long || echo fits) $(nh_up "${nh_f}g")"
+sock_sweep "$nh_f"
+unset -f nh_up
+fi
+# In a tmux-* folder: a server, a dead socket, a file and a folder that are no socket. A server
+# in another folder beside it. The sweep runs with a tmux that notes each call it is handed.
+if need_tmux "sock_sweep"; then :; else
+nh_st() {                     # <socket>... -> up or gone for each
+    local s
+    for s; do
+        "$TMUX_REAL" -S "$s" has-session 2>/dev/null && printf 'up ' || printf 'gone '
+    done
+}
+nh_calls() {                  # -> the noted calls, the block's folder cut, comma after each
+    local l
+    while IFS= read -r l; do printf '%s,' "${l//"$NH/w/"/}"; done 2>/dev/null < "$NH/calls"
+}
+nh_x="$NH/w/tmux-x"
+# On the run's exit cleanup's list before they start, for a block cut short (#1104).
+SOCKP="$SOCKP$nh_x/srv"$'\n'"$nh_x/dead"$'\n'"$NH/w/other/srv"$'\n'
+: > "$nh_x/plain"; mkdir -p "$nh_x/sub"
+for nh_s in "$nh_x/srv" "$nh_x/dead" "$NH/w/other/srv"; do
+    "$TMUX_REAL" -S "$nh_s" -f /dev/null new-session -d -c "$NH" 'exec sleep 300' >/dev/null 2>&1
+done
+# tmux leaves the socket file of a server that ends: nothing listens on dead after this.
+"$TMUX_REAL" -S "$nh_x/dead" kill-server >/dev/null 2>&1
+until_out 'gone ' nh_st "$nh_x/dead"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> %s\nexec %s "$@"\n' "$(tq "$NH/calls")" \
+    "$(tq "$TMUX_REAL")" > "$NH/rec"
+chmod +x "$NH/rec"
+nh_b=$(nh_st "$nh_x/srv" "$NH/w/other/srv")
+( TMUX_REAL="$NH/rec"; sock_sweep "$NH/w" ) > "$NH/sweep.out" 2>&1
+is "sock_sweep calls kill-server on the sockets of a tmux-* folder alone; that server ends" \
+   "up up > gone up |-S tmux-x/dead kill-server,-S tmux-x/srv kill-server,|plain sub" \
+   "$nh_b> $(nh_st "$nh_x/srv" "$NH/w/other/srv")|$(nh_calls)|$(
+      [ -f "$nh_x/plain" ] && printf plain; [ -d "$nh_x/sub" ] && printf ' sub')"
+is "and the sweep prints nothing, though the dead socket's kill-server says no server" "" \
+   "$(cat "$NH/sweep.out")"
+"$TMUX_REAL" -S "$NH/w/other/srv" kill-server >/dev/null 2>&1
+unset -f nh_st nh_calls
+fi
+unset -f nh_red
+unset NH nh_f nh_s nh_b nh_x NEST_RC NEST_OUT NEST_PASS NEST_FAIL
+
+echo "== a stub the suite writes lands nothing beside a TMPDIR that holds a space (#929) =="
+# The block above again, through only.sh, under a TMPDIR named "my  tmp". Its recorders are
+# stubs whose log path is written into them: unquoted, that path splits at the space, the log
+# goes to "my" beside the TMPDIR and the control row finds no call. CI's own TMPDIR holds no
+# space, so this is the run that sees it there.
+NBS=$(mktmpd); mkdir -p "$NBS/my  tmp" "$NBS/s"
+if sock_long "$NBS/s"; then
+    skip_ "a stub beside a spaced TMPDIR (TMPDIR too long for the nested socket path)"
+else
+nest_run '^the suite never reaches the network' TMPDIR="$NBS/my  tmp" TMUX_TMPDIR="$NBS/s"
+is "the network block's run there exits 0 with no row failed" "0 0" \
+   "$NEST_RC $NEST_FAIL$(nest_fails)"
+is "and only the TMPDIR is beside it" "my  tmp,s," "$(ls -A "$NBS" | tr '\n' ,)"
+sock_sweep "$NBS/s"
+fi
+unset NBS NEST_RC NEST_OUT NEST_PASS NEST_FAIL
+
+echo "== the suite sees none of its caller's folders, log, editors or switches (#1078) =="
+cvs="XDG_STATE_HOME XDG_CONFIG_HOME XDG_BIN_HOME XDG_CACHE_HOME XDG_DATA_HOME COCKPIT_LOG"
+cvs="$cvs VISUAL EDITOR COCKPIT_READONLY COCKPIT_PANEL_NOTE COCKPIT_REVIEW_BASE"
+cvs="$cvs COCKPIT_PROC_DIR COCKPIT_POLL_KEY REVDIFF_CONFIG REVDIFF_EXCLUDE"
+cvs="$cvs CLAUDE_CODE_SESSION_KIND COCKPIT_TMUX COCKPIT_CLAUDE COCKPIT_ACTION"
+for cv in $cvs; do
+    is "$cv is not in the suite's environment" "unset" "${!cv-unset}"
+done
+# Unset before the suite's own server starts: a server keeps the environment it was started
+# with and hands it to every run-shell and pane, whatever the suite's shell drops later. The
+# server is asked whether it is there first: no server holds no variable either.
+if need_tmux "the suite's server's environment"; then :; else
+is "the suite's own server is up, and holds none of them in its environment" "up " \
+   "$(tmux has-session -t suite 2>/dev/null && printf 'up ' || printf 'down '
+      tmux show-environment -g 2>/dev/null | sed 's/^-//; s/=.*//' |
+          grep -xE "$(printf '%s' "$cvs" | tr ' ' '|')" | tr '\n' ' ')"
+fi
+unset cv cvs
+
+echo "== nothing of the caller's is written or run, canaries in its environment (#1078) =="
+# The block above and the blocks that wrote into a caller's folders, through only.sh, with
+# every one of those variables set as a caller might have it: a canary folder each for the
+# five XDG ones, a canary log, stub editors, a stub tmux and a stub claude that only leave
+# a mark, a value in each switch.
+# CI's environment has none of them, so this is the run that meets them there. One row per
+# variable, so a red one names it.
+CW=$(mktmpd); mkdir -p "$CW/s" "$CW/c"
+for cw in state config bin cache data; do mkdir -p "$CW/c/$cw"; echo seed > "$CW/c/$cw/seed"; done
+: > "$CW/c/log"
+for cw in visual editor; do
+    printf '#!/bin/sh\necho ran >> %s\nexit 0\n' "$(tq "$CW/c/$cw.ran")" > "$CW/c/$cw"
+    chmod +x "$CW/c/$cw"
+done
+# The caller's COCKPIT_TMUX: it reaches no server, and exits 1 as a tmux with none does. The
+# board splits the value on blanks, so the stub sits in the folder the suite keeps free of
+# blanks for stub tmuxes (#992), and the row holds under a TMPDIR with a blank too.
+# Their COCKPIT_CLAUDE: a stub by its full path, which calls no model.
+cw_ct=$(mktemp -d "$COCKPIT_SUITE_NB/ct.XXXXXX")
+for cw in "$cw_ct/tmux" "$CW/c/claude"; do
+    printf '#!/bin/sh\necho ran >> %s\nexit 1\n' "$(tq "$CW/c/${cw##*/}.ran")" > "$cw"
+    chmod +x "$cw"
+done
+: > "$CW/c/act"
+cw_ls() { ( cd "$CW/c/$1" && find . | sort | tr '\n' ' '; cat seed ); }
+if sock_long "$CW/s"; then
+    skip_ "canaries in the caller's environment (TMPDIR too long for the nested socket path)"
+else
+for cw in state config bin cache data; do cw_ls "$cw" > "$CW/$cw.before"; done
+nest_run "^the suite sees none of its caller|^install\.sh --check: one row|$(:
+        )^install\.sh --hooks merges additively|^cockpit-panel: a tap in the popup|$(:
+        )^tmux-open-path --folder|^tm: the kill picker|^cockpit-tui: --json names every|$(:
+        )^cockpit-board: x asks first" TMUX_TMPDIR="$CW/s" \
+    XDG_STATE_HOME="$CW/c/state" XDG_CONFIG_HOME="$CW/c/config" XDG_BIN_HOME="$CW/c/bin" \
+    XDG_CACHE_HOME="$CW/c/cache" XDG_DATA_HOME="$CW/c/data" COCKPIT_LOG="$CW/c/log" \
+    VISUAL="$(tq "$CW/c/visual")" EDITOR="$(tq "$CW/c/editor")" COCKPIT_READONLY=1 \
+    COCKPIT_PANEL_NOTE="$CW/c/note" \
+    COCKPIT_REVIEW_BASE=canary COCKPIT_PROC_DIR="$CW/c/proc" COCKPIT_POLL_KEY=canary \
+    REVDIFF_CONFIG="$CW/c/revdiff" REVDIFF_EXCLUDE=canary CLAUDE_CODE_SESSION_KIND=canary \
+    COCKPIT_TMUX="$cw_ct/tmux" COCKPIT_CLAUDE="$CW/c/claude" COCKPIT_ACTION="$CW/c/act"
+is "the blocks that wrote there, run under the canaries: exit 0, no row failed" "0 0" \
+   "$NEST_RC $NEST_FAIL$(nest_fails)"
+# A block renamed out of the pattern would drop from the run with every row still green.
+is "and all eight blocks of the pattern ran" "8" "$(printf '%s\n' "$NEST_OUT" | grep -c '^== ')"
+cw_unseen() {                 # <variable> -> 1 when the nested run's own row for it passed
+    printf '%s\n' "$NEST_OUT" | grep -c "PASS[^ ]* $1 is not in the suite's environment"
+}
+for cw in STATE:state CONFIG:config BIN:bin CACHE:cache DATA:data; do
+    is "XDG_${cw%:*}_HOME: the suite did not see it, and its folder is as it was" "1 same" \
+       "$(cw_unseen "XDG_${cw%:*}_HOME") $(cw_ls "${cw#*:}" | cmp -s - "$CW/${cw#*:}.before" &&
+           echo same || echo "changed: $(cw_ls "${cw#*:}")")"
+done
+is "COCKPIT_LOG: the suite did not see it, and the caller's log is empty" "1 0" \
+   "$(cw_unseen COCKPIT_LOG) $(wc -c < "$CW/c/log" | tr -d ' ')"
+for cw in VISUAL:visual EDITOR:editor; do
+    is "${cw%:*}: the suite did not see it, and the caller's editor was not run" "1 not run" \
+       "$(cw_unseen "${cw%:*}") $([ -e "$CW/c/${cw#*:}.ran" ] && echo ran || echo 'not run')"
+done
+# The one switch that names a file to write: a path in this block's folder, so a run that
+# does see it writes there and not into the checkout the nested run starts in.
+is "COCKPIT_PANEL_NOTE: the suite did not see it, and the caller's file was not written" \
+   "1 not written" \
+   "$(cw_unseen COCKPIT_PANEL_NOTE) $([ -e "$CW/c/note" ] && echo written || echo 'not written')"
+is "COCKPIT_TMUX: the suite did not see it, and the caller's tmux was not run" "1 not run" \
+   "$(cw_unseen COCKPIT_TMUX) $([ -e "$CW/c/tmux.ran" ] && echo ran || echo 'not run')"
+is "COCKPIT_CLAUDE: the suite did not see it, and the caller's claude was not run" "1 not run" \
+   "$(cw_unseen COCKPIT_CLAUDE) $([ -e "$CW/c/claude.ran" ] && echo ran || echo 'not run')"
+is "COCKPIT_ACTION: the suite did not see it, and the caller's file is empty" "1 0" \
+   "$(cw_unseen COCKPIT_ACTION) $(wc -c < "$CW/c/act" | tr -d ' ')"
+for cw in COCKPIT_READONLY COCKPIT_REVIEW_BASE COCKPIT_PROC_DIR \
+        COCKPIT_POLL_KEY REVDIFF_CONFIG REVDIFF_EXCLUDE CLAUDE_CODE_SESSION_KIND; do
+    is "$cw: the suite did not see it" "1" "$(cw_unseen "$cw")"
+done
+sock_sweep "$CW/s"
+fi
+unset -f cw_ls cw_unseen
+rm -rf "$cw_ct"
+unset CW cw cw_ct NEST_RC NEST_OUT NEST_PASS NEST_FAIL
+
+echo "== the suite sees none of git's names, no BASH_ENV, no other switch (#1099, #1100) =="
+# The names, for this block and the next. A function, not a variable: only.sh and par.sh
+# give every block the file's top-level functions, and a block's variables to that block
+# alone, so the next block in a shard of its own would find the list unset.
+gv_names() {
+    echo "GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY
+          GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CONFIG GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM
+          GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 GIT_CEILING_DIRECTORIES
+          GIT_TEMPLATE_DIR GIT_TRACE GIT_EDITOR BASH_ENV ENV NO_COLOR COCKPIT_GLYPHS
+          COCKPIT_PANEL_MODEL COCKPIT_PANEL_EFFORT COCKPIT_PANEL_TIMEOUT
+          COCKPIT_PANEL_MODE COCKPIT_PANEL_DROPPED COCKPIT_PANEL_HIDE_TAKEN
+          COCKPIT_VIEW_ASK COCKPIT_VIEW_BACK COCKPIT_BASKET_PANE COCKPIT_FILES_STATE
+          COCKPIT_TEST_TMUX_GUARD COCKPIT_GITHUB COCKPIT_TUI_RELEASES COCKPIT_TUI_REPO
+          TM_SID TM_CLIENT TM_PANE TM_POPUP TM_NEEDS MD_EDIT REVIEW_PANE_ID
+          COCKPIT_PANEL_KEY
+          TERMUX_VERSION PREFIX"
+}
+gvs=$(gv_names | tr '\n' ' ')
+for gv in $gvs; do
+    is "$gv is not in the suite's environment" "unset" "${!gv-unset}"
+done
+# By prefix, so a GIT_ name no list holds is caught too. The author's and the committer's
+# name and mail, with the values an earlier block exports for its fixtures, are the suite's
+# own; the same name with a caller's value is not (#1115).
+is "no other GIT_ name is exported" "" \
+   "$(compgen -e GIT_ | while IFS= read -r gv; do printf '%s=%s\n' "$gv" "${!gv}"; done |
+      grep -vxE 'GIT_(AUTHOR|COMMITTER)_(NAME=t|EMAIL=t@e)' | tr '\n' ' ')"
+# The server starts in the prelude, before any block exports a name: none is its own.
+if need_tmux "the suite's server's environment"; then :; else
+is "the suite's own server is up, and holds none of them in its environment" "up " \
+   "$(tmux has-session -t suite 2>/dev/null && printf 'up ' || printf 'down '
+      tmux show-environment -g 2>/dev/null | sed 's/^-//; s/=.*//' |
+          grep -E "^GIT_|^($(printf '%s' "$gvs" | tr ' ' '|'))\$" | tr '\n' ' ')"
+fi
+unset gv gvs
+
+echo "== git writes nothing where its caller's names point; no BASH_ENV is read (#1099) =="
+# The block above and three that make and commit into fixture repositories, through
+# only.sh, with every one of those names set as a caller might have it: folders and files of
+# a canary for git's, a stub editor, a BASH_ENV file that leaves a mark, a value in each
+# switch. CI's environment has none of them, so this is the run that meets them there.
+gvs=$(gv_names | tr '\n' ' ')
+GC=$(mktmpd); mkdir -p "$GC/s" "$GC/c/dir" "$GC/c/wt" "$GC/c/common" "$GC/c/obj" "$GC/c/alt" \
+    "$GC/c/tpl/hooks"
+: > "$GC/c/cfg"; : > "$GC/c/gcfg"; : > "$GC/c/scfg"
+printf '#!/bin/sh\necho ran >> %s\nexit 0\n' "$(tq "$GC/ed.ran")" > "$GC/c/ed"
+printf '#!/bin/sh\necho ran >> %s\n' "$(tq "$GC/hook.ran")" > "$GC/c/tpl/hooks/post-commit"
+chmod +x "$GC/c/ed" "$GC/c/tpl/hooks/post-commit"
+# Sourced by every bash that starts with it set, the one that runs the blocks included: a
+# git of its own that leaves a mark. The first shell sources it once before run.sh starts
+# again without it (#1115), so a mark means a git call from a shell that kept it.
+printf 'git() { echo ran >> %s; command git "$@"; }\n' "$(tq "$GC/benv.ran")" > "$GC/c/benv"
+gc_ls() { ( cd "$GC/c" && find . | sort | tr '\n' ' ' ); }
+if sock_long "$GC/s"; then
+    skip_ "canaries in git's names (TMPDIR too long for the nested socket path)"
+else
+gc_b=$(gc_ls)
+gc_e=(GIT_DIR="$GC/c/dir" GIT_WORK_TREE="$GC/c/wt" GIT_COMMON_DIR="$GC/c/common"
+    GIT_INDEX_FILE="$GC/c/index" GIT_OBJECT_DIRECTORY="$GC/c/obj"
+    GIT_ALTERNATE_OBJECT_DIRECTORIES="$GC/c/alt" GIT_CONFIG="$GC/c/cfg"
+    GIT_CONFIG_GLOBAL="$GC/c/gcfg" GIT_CONFIG_SYSTEM="$GC/c/scfg" GIT_CONFIG_COUNT=2
+    GIT_CONFIG_KEY_0=user.name GIT_CONFIG_VALUE_0=canary GIT_CEILING_DIRECTORIES=/
+    GIT_CONFIG_KEY_1=user.email GIT_CONFIG_VALUE_1=canary
+    GIT_TEMPLATE_DIR="$GC/c/tpl" GIT_TRACE="$GC/c/trace" GIT_EDITOR="$GC/c/ed"
+    BASH_ENV="$GC/c/benv" ENV="$GC/c/benv")
+for gv in $gvs; do
+    case $gv in GIT_*|BASH_ENV|ENV) ;; *) gc_e+=("$gv=canary") ;; esac
+done
+nest_run "^the suite sees none of git's names|$(:
+        )^tmux-where: detached HEAD and odd repos|^tmux-branch: local and remote branches|$(:
+        )^tree_diff: staged, unstaged and untracked changes are one diff" \
+    TMUX_TMPDIR="$GC/s" "${gc_e[@]}"
+is "the blocks that use git, run under the canaries: exit 0, no row failed" "0 0" \
+   "$NEST_RC $NEST_FAIL$(nest_fails)"
+is "and all four blocks of the pattern ran" "4" "$(printf '%s\n' "$NEST_OUT" | grep -c '^== ')"
+is "nothing was made or changed where git's names pointed" "$gc_b" "$(gc_ls)"
+is "the caller's git editor and its template's hook were not run" "not run, not run" \
+   "$([ -e "$GC/ed.ran" ] && printf 'ran, ' || printf 'not run, '
+      [ -e "$GC/hook.ran" ] && echo ran || echo 'not run')"
+is "no git the suite ran went through the caller's BASH_ENV" "0" \
+   "$(cat "$GC/benv.ran" 2>/dev/null | wc -l | tr -d ' ')"
+gc_unseen() {
+    printf '%s\n' "$NEST_OUT" | grep -c "PASS[^ ]* $1 is not in the suite's environment"
+}
+for gv in $gvs; do
+    is "$gv: the nested run did not see it" "1" "$(gc_unseen "$gv")"
+done
+sock_sweep "$GC/s"
+fi
+unset -f gc_ls gc_unseen gv_names
+unset GC gc_b gc_e gv gvs NEST_RC NEST_OUT NEST_PASS NEST_FAIL
+
+echo "== a server the suite starts holds no TMUX_COCKPIT_DIR (#1073) =="
+if need_tmux "a server's environment"; then :; else
+CDS="cockpit-cd-$$"; SOCKS="$SOCKS $CDS"; CDD=$(mktmpd)
+"$TMUX_REAL" -L "$CDS" -f /dev/null new-session -d -s t -c "$CDD" 'exec sleep 300' \
+    >/dev/null 2>&1
+is "the suite's own environment holds no TMUX_COCKPIT_DIR" "unset" "${TMUX_COCKPIT_DIR-unset}"
+# The server is asked whether it is there first: no server has no variable either.
+is "a server it starts is up, with none in its global environment" "up 0" \
+   "$("$TMUX_REAL" -L "$CDS" has-session -t t 2>/dev/null && printf 'up ' || printf 'down '
+      "$TMUX_REAL" -L "$CDS" show-environment -g 2>/dev/null | grep -c '^TMUX_COCKPIT_DIR=')"
+"$TMUX_REAL" -L "$CDS" kill-server >/dev/null 2>&1
+fi
+unset CDS CDD
+
+echo "== the suite drops a TMUX_COCKPIT_DIR its caller hands it (#1073) =="
+# The block above again, through only.sh, with the variable set as a pane of the live
+# session has it. CI's environment has none, so this is the run that meets one there.
+# The value names a folder that is not there: nothing may be run from it.
+CDN=$(mktmpd); mkdir -p "$CDN/s"
+if sock_long "$CDN/s"; then
+    skip_ "a caller's TMUX_COCKPIT_DIR (TMPDIR too long for the nested socket path)"
+else
+nest_run '^a server the suite starts holds no TMUX_COCKPIT_DIR' \
+    TMUX_COCKPIT_DIR="$CDN/live-plugin" TMUX_TMPDIR="$CDN/s"
+is "the block's run under a caller's TMUX_COCKPIT_DIR: both rows pass, exit 0" "0 2 0" \
+   "$NEST_RC $NEST_PASS $NEST_FAIL$(nest_fails)"
+sock_sweep "$CDN/s"
+fi
+unset CDN NEST_RC NEST_OUT NEST_PASS NEST_FAIL
+
+echo "== the suite's own server is on a socket under TMUX_TMPDIR, a folder that exists (#1098) =="
+# With no TMUX_TMPDIR, or one naming a folder that is not there, tmux falls back to
+# /tmp/tmux-<uid>, where the user's own server has its socket. The prelude makes a folder
+# then. Paths are compared resolved: tmux reports the socket's real path.
+if need_tmux "the suite's socket folder"; then :; else
+st_u=$(id -u)
+st_p=$("$TMUX_REAL" -L "$SUITE_SOCK" display-message -p '#{socket_path}' 2>/dev/null)
+st_d=$(cd "${st_p%/*}" 2>/dev/null && pwd -P)
+is "the suite's server answers on a socket in TMUX_TMPDIR's folder, which is there" \
+   "in $(cd "${TMUX_TMPDIR:-/nowhere}/tmux-$st_u" 2>/dev/null && pwd -P)" "in $st_d"
+# SUITE_TT is the folder the prelude made, empty when the caller's own was kept.
+is "that folder is the suite's own when its caller gave none: /tmp/cs.*, mode 700, not tmux's" \
+   "ok" "$(if [ -z "$SUITE_TT" ]; then echo ok; else
+       case $SUITE_TT in /tmp/cs.??????) ;; *) printf 'named %s ' "$SUITE_TT" ;; esac
+       case $(ls -ld "$SUITE_TT") in drwx------*) ;; *) printf 'not 700 ' ;; esac
+       [ "$st_d" != "$(cd "/tmp/tmux-$st_u" 2>/dev/null && pwd -P)" ] || printf 'the default '
+       [ "$TMUX_TMPDIR" = "$SUITE_TT" ] || printf 'not exported '
+       echo ok; fi)"
+# tmux reads TMUX_TMPDIR in every call: a relative one would be looked for from the folder
+# of the call (#1098). That folder is deeper than the checkout, so a relative name that
+# climbs from the checkout up to / stops short of / from here and names nothing.
+st_far="$STATE/$(pwd -P | sed 's|/[^/]*|d/|g')d"; mkdir -p "$st_far"
+is "a tmux call made from another folder reaches that same socket" "$st_p" \
+   "$(cd "$st_far" && "$TMUX_REAL" -L "$SUITE_SOCK" display-message -p '#{socket_path}' 2>&1)"
+# For the block below, which runs this one nested: the folder, and this run's pid.
+[ -z "${COCKPIT_ST_OUT:-}" ] ||
+    printf '%s\n%s\n' "${SUITE_TT:-kept $TMUX_TMPDIR}" "$$" > "$COCKPIT_ST_OUT"
+fi
+unset st_u st_p st_d st_far
+
+echo "== a run with no TMUX_TMPDIR puts no socket in /tmp/tmux-<uid>; its folder goes (#1098) =="
+# The block above through only.sh, started as a plain `make test` starts the suite: with no
+# TMUX_TMPDIR, with one naming a folder that is not there, with a caller's own, and with a
+# relative one. CI's bare leg aside, a run has a private folder, so this is the run that
+# meets the other starts. /tmp/tmux-<uid> is only listed; nothing is put there.
+SF=$(mktmpd); mkdir -p "$SF/own" "$SF/rel" "$SF/bin" "$SF/bin2"
+sf_u=$(id -u)
+sf_one="^the suite's own server is on a socket under TMUX_TMPDIR"
+sf_run() {                    # <pattern> <ONLY_RUN file or ''> <env words...>
+    # -> exit, PASS and FAIL rows | the folder the run reported | its names in /tmp/tmux-<uid>
+    local pat=$1 run=$2 sf_e=() f="" p=""
+    shift 2
+    [ -z "$run" ] || sf_e=(ONLY_RUN="$run")
+    rm -f "$SF/out"
+    nest_run "$pat" "$@" ${sf_e[@]+"${sf_e[@]}"} COCKPIT_ST_OUT="$SF/out"
+    printf '%s\n' "$NEST_OUT" > "$SF/log"
+    # 2>/dev/null before the input redirect: after it, bash reports a missing file first.
+    { IFS= read -r f; IFS= read -r p; } 2>/dev/null < "$SF/out"
+    # A run of the block above shows its FAIL lines; a fixture's are its row's to read.
+    printf '%s %s %s%s|' "$NEST_RC" "$NEST_PASS" "$NEST_FAIL" "$([ -n "$run" ] || nest_fails)"
+    case $f in
+        /tmp/cs.[A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9])
+            [ -e "$f" ] && printf 'made, still there|' || printf 'made, gone|' ;;
+        *) printf '%s|' "${f:-no folder reported}" ;;
+    esac
+    # That run's own names, by its pid: another run's sockets there are not this row's.
+    case $p in
+        ''|*[!0-9]*) printf 'no pid reported' ;;
+        *) ls -A "/tmp/tmux-$sf_u" 2>/dev/null | grep -- "-$p\$" | tr '\n' ' ' ;;
+    esac
+}
+sf_made() {                   # the folder the last sf_run reported, when it is one mktemp made
+    local f=""
+    IFS= read -r f 2>/dev/null < "$SF/out"
+    case $f in
+        /tmp/cs.[A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9])
+            printf '%s' "$f" ;;
+    esac
+}
+if need_tmux "a run with no TMUX_TMPDIR"; then :
+elif sock_long "$SF/own"; then
+    skip_ "a run with no TMUX_TMPDIR (TMPDIR too long for the nested socket path)"
+else
+is "no TMUX_TMPDIR: the rows pass, the folder it made is gone, /tmp/tmux-<uid> has none of it" \
+   "0 3 0|made, gone|" "$(sf_run "$sf_one" '' -u TMUX_TMPDIR)"
+is "a TMUX_TMPDIR naming a missing folder: the same, and that folder is not made" \
+   "0 3 0|made, gone| missing" \
+   "$(sf_run "$sf_one" '' TMUX_TMPDIR="$SF/none") $(
+      [ -e "$SF/none" ] && echo made || echo missing)"
+is "a caller's own TMUX_TMPDIR is kept, and its server's folder is in it" \
+   "0 3 0|kept $SF/own| in it" \
+   "$(sf_run "$sf_one" '' TMUX_TMPDIR="$SF/own") $(
+      [ -d "$SF/own/tmux-$sf_u" ] && echo 'in it' || echo 'not')"
+# $SF/rel as a relative name from the checkout, where the nested run starts: up to / and
+# down again, so a run that mishandled it writes nothing into the checkout.
+sf_abs=$(cd "$SF/rel" && pwd -P)
+sf_rel="$(cd "$DIR" && pwd -P | sed 's|/[^/]*|../|g')${sf_abs#/}"
+is "a relative TMUX_TMPDIR is kept as that folder's full path, and its server is in it" \
+   "0 3 0|kept $sf_abs| in it" \
+   "$(sf_run "$sf_one" '' TMUX_TMPDIR="$sf_rel") $(
+      [ -d "$SF/rel/tmux-$sf_u" ] && echo 'in it' || echo 'not')"
+sock_sweep "$SF/own" "$SF/rel"
+# The rest run this prelude with one block of the row's own. A block's title line is
+# printed, not written here: only.sh and par.sh cut this file at every line that starts one.
+sf_fix() {                    # <file> <a line put after the folder's export, or ''> < the block
+    { SF_INJ=$2 awk '{ print }
+          ENVIRON["SF_INJ"] != "" && $0 == "    export TMUX_TMPDIR=\"$SUITE_TT\"" {
+              print ENVIRON["SF_INJ"] }' <(sed '/^echo "== /,$d' "$DIR/tests/run.sh")
+      printf 'echo "%s fixture %s"\n' == ==
+      cat
+    } > "$1"
+}
+sf_tell='printf "%s\n%s\n" "$SUITE_TT" "$$" > "$COCKPIT_ST_OUT"'
+# The ways out of the prelude once the folder is made: each must take the folder with it,
+# which holds only while the exit trap is armed before the folder is made.
+sf_fix "$SF/fatal.sh" "    $sf_tell; fatal 'stopped here by the #1098 block'" <<'SFEOF'
+:
+SFEOF
+is "a FATAL in the prelude after the folder is made: exit 1, and the folder is gone" \
+   "1 0 0|made, gone|" "$(sf_run '^fixture' "$SF/fatal.sh" -u TMUX_TMPDIR)"
+sf_fix "$SF/term.sh" "    $sf_tell; kill -TERM \$\$" <<'SFEOF'
+:
+SFEOF
+is "a TERM there: ended by it, and the folder is gone" \
+   "143 0 0|made, gone|" "$(sf_run '^fixture' "$SF/term.sh" -u TMUX_TMPDIR)"
+# The prelude as it is, with a block that only reports.
+sf_fix "$SF/plain.sh" '' <<'SFEOF'
+printf '%s\n%s\n' "${SUITE_TT:-none made}" "$$" > "$COCKPIT_ST_OUT"
+SFEOF
+# A mktemp that notes the name it gives for the folder's template and ends the run right
+# there, as a signal inside the $(...) would: nothing may be left under that name.
+printf '#!/bin/sh\ncase "$*" in *cs.XXXXXX*) n=$(%s "$@") || exit 1\n' \
+    "$(tq "$(command -v mktemp)")" > "$SF/bin2/mktemp"
+printf '    printf "%%s\\n" "$n" > %s; kill -TERM "$PPID"; printf "%%s\\n" "$n"; exit 0 ;;\n' \
+    "$(tq "$SF/mk.name")" >> "$SF/bin2/mktemp"
+printf 'esac\nexec %s "$@"\n' "$(tq "$(command -v mktemp)")" >> "$SF/bin2/mktemp"
+chmod +x "$SF/bin2/mktemp"
+sf_o=$(sf_run '^fixture' "$SF/plain.sh" -u TMUX_TMPDIR PATH="$SF/bin2:$PATH")
+is "a run ended inside the folder's mktemp leaves no folder under the name it was given" \
+   "a name, nothing there" \
+   "$(sf_f=$(cat "$SF/mk.name" 2>/dev/null)
+      case $sf_f in /tmp/cs.??????) printf 'a name, ' ;; *) printf 'no name [%s], ' "$sf_f" ;; esac
+      [ -n "$sf_f" ] && [ -e "$sf_f" ] && echo "left: $sf_o" || echo 'nothing there')"
+# A red run of that row left the folder it found: taken away here, by the name it was given.
+sf_f=$(cat "$SF/mk.name" 2>/dev/null)
+case $sf_f in
+/tmp/cs.[A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9])
+    rmdir "$sf_f" 2>/dev/null ;;
+esac
+# A mktemp that gives, for the folder's template, a name that is already there: someone
+# else's folder in a place anyone can write to. The suite must not take it over. It tries
+# three names, then ends, and the folder is as it was.
+mkdir -p "$SF/taken" "$SF/bin3"; : > "$SF/taken/theirs"
+printf '#!/bin/sh\ncase "$*" in *cs.XXXXXX*) echo x >> %s; printf "%%s\\n" %s; exit 0 ;; esac\n' \
+    "$(tq "$SF/mk.tries")" "$(tq "$SF/taken")" > "$SF/bin3/mktemp"
+printf 'exec %s "$@"\n' "$(tq "$(command -v mktemp)")" >> "$SF/bin3/mktemp"
+chmod +x "$SF/bin3/mktemp"
+is "a name that is already there is not taken over: three tries, exit 1, the folder as it was" \
+   "1 0 0|no folder reported|no pid reported 1 3 theirs" \
+   "$(sf_run '^fixture' "$SF/plain.sh" -u TMUX_TMPDIR PATH="$SF/bin3:$PATH") $(
+      grep -c 'FATAL.* no socket folder: could not make /tmp/cs.XXXXXX, three' "$SF/log") $(
+      cat "$SF/mk.tries" 2>/dev/null | wc -l | tr -d ' ') $(ls -A "$SF/taken" | tr '\n' ' ' |
+          sed 's/ $//')"
+# A mktemp that fails for the folder's template and passes every other call on, and a tmux
+# that notes each call: a run with no folder must make none, its cleanup's included, since
+# with no TMUX_TMPDIR a call goes to /tmp/tmux-<uid>.
+printf '#!/bin/sh\ncase "$*" in *cs.XXXXXX*) exit 1 ;; esac\nexec %s "$@"\n' \
+    "$(tq "$(command -v mktemp)")" > "$SF/bin/mktemp"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> %s\nexec %s "$@"\n' \
+    "$(tq "$SF/tmux.calls")" "$(tq "$TMUX_REAL")" > "$SF/bin/tmux"
+chmod +x "$SF/bin/mktemp" "$SF/bin/tmux"
+is "the folder's mktemp failing: the run ends 1 before any block, says why, calls no tmux" \
+   "1 0 0|no folder reported|no pid reported 1 0" \
+   "$(sf_run '^fixture' "$SF/plain.sh" -u TMUX_TMPDIR PATH="$SF/bin:$PATH") $(
+      grep -c 'FATAL.* no socket folder: could not make /tmp/cs.XXXXXX, three' "$SF/log") $(
+      cat "$SF/tmux.calls" 2>/dev/null | wc -l | tr -d ' ')"
+# The tail's rows, tt_left: a server on a name the block puts in no list, one on a name it
+# does put in SOCKS, and a folder that is no socket. The run must fail on the first and the
+# last, by name, and not on the second; its folder stays, since a server is still on a
+# socket in it, and goes once that server is ended by its socket.
+sf_fix "$SF/leak.sh" '' <<'SFEOF'
+"$TMUX_REAL" -L "cockpit-stleak-$$" -f /dev/null new-session -d -s l -c "$STATE" \
+    'exec sleep 300' </dev/null >/dev/null 2>&1
+SOCKS="$SOCKS cockpit-stknown-$$"
+"$TMUX_REAL" -L "cockpit-stknown-$$" -f /dev/null new-session -d -s k -c "$STATE" \
+    'exec sleep 300' </dev/null >/dev/null 2>&1
+mkdir "$TMUX_TMPDIR/stray"
+printf '%s\n%s\n' "$SUITE_TT" "$$" > "$COCKPIT_ST_OUT"
+SFEOF
+sf_o=$(sf_run '^fixture' "$SF/leak.sh" -u TMUX_TMPDIR)
+sf_f=$(sf_made)
+if [ -n "$sf_f" ]; then
+    is "a socket no cleanup knows and a stray folder: a failed row each, the folder stays" \
+       "1 0 2|made, still there| 1 1 0 1" \
+       "$sf_o $(grep -c "FAIL.* every socket in the suite's own folder" "$SF/log") $(
+          grep -c "FAIL.* the suite's own socket folder holds tmux's folder" "$SF/log") $(
+          grep -c 'got .*cockpit-stknown-' "$SF/log") $(
+          grep -c "left in its socket folder $sf_f: .*cockpit-stleak-" "$SF/log")"
+    for sf_s in "$sf_f"/tmux-*/cockpit-stleak-*; do
+        [ -S "$sf_s" ] || continue
+        "$TMUX_REAL" -S "$sf_s" kill-server >/dev/null 2>&1; rm -f "$sf_s"
+    done
+    rmdir "$sf_f/stray" "$sf_f/tmux-$sf_u" "$sf_f" 2>/dev/null
+    is "and with that server ended by its socket and the stray folder gone, it is removed" \
+       "gone" "$([ -e "$sf_f" ] && echo "still there: $(ls -A "$sf_f"/* 2>&1)" || echo gone)"
+else
+    bad "the leak run reports the folder it made" "/tmp/cs.<6>" "$sf_o: $(tail -3 "$SF/log")"
+fi
+fi
+unset -f sf_run sf_made sf_fix
+unset SF sf_u sf_one sf_abs sf_rel sf_tell sf_s sf_o sf_f
 
 # tests: scripts/tui-fetch
 echo "== cockpit-tui builds install the executable cargo built, not a guessed path (#591) =="
@@ -10069,8 +13480,13 @@ is "and the tool text survives with the TAB as a space" "Bash: col1 col2" \
 # bash, not sleep: a multicall coreutils (uutils) refuses to run as "zzz".
 TJZ=$(mktmpd); ln -sf "$(command -v bash)" "$TJZ/zzz"
 "$TMUX_REAL" -L "$TJ" set -g @cockpit_agents_glob '|zzz|' >/dev/null 2>&1
-"$TMUX_REAL" -L "$TJ" new-window -d -t t: "exec $TJZ/zzz -c 'read -r _'" >/dev/null 2>&1
-"$TMUX_REAL" -L "$TJ" new-window -d -t t: 'exec sleep 3600'    >/dev/null 2>&1
+TJZP=$("$TMUX_REAL" -L "$TJ" new-window -d -t t: -P -F '#{pane_id}' \
+    "exec $TJZ/zzz -c 'read -r _'" 2>/dev/null)
+TJSP=$("$TMUX_REAL" -L "$TJ" new-window -d -t t: -P -F '#{pane_id}' 'exec sleep 3600' 2>/dev/null)
+# Both running before the board reads them: right after new-window a pane reads tmux, then
+# the -c shell (bash), and the board would leave zzz out (#1182).
+pane_runs "$TJ" "$TJZP" zzz "$TJZ/zzz" -c 'read -r _'
+pane_runs "$TJ" "$TJSP" sleep sleep 3600
 TJIDS=$(COCKPIT_TMUX="tmux -L $TJ" "$COCKPIT_TUI_BIN" --json |
     sed -n 's/^    "id": "\(%[0-9]*\)".*/\1/p')
 TJCMDS=$(for i in $TJIDS; do \
@@ -10103,7 +13519,7 @@ cp "$DIR/cockpit.tmux" "$BD/p/"
 cp -r "$DIR"/scripts/. "$BD/p/scripts/"
 # Nothing in a test may reach the network: the copy's tui-fetch only counts its
 # own runs, which is also how "once, in the background" is pinned.
-printf '#!/bin/sh\necho ran >> %s/fetched\n' "$BD" > "$BD/p/scripts/tui-fetch"
+printf '#!/bin/sh\necho ran >> %s\n' "$(tq "$BD/fetched")" > "$BD/p/scripts/tui-fetch"
 chmod +x "$BD/p/scripts/tui-fetch"
 
 # cockpit.tmux runs under run-shell, which inherits the SERVER's environment, so
@@ -10113,7 +13529,7 @@ chmod +x "$BD/p/scripts/tui-fetch"
 # forward would land on the user's own server.
 bshim() {                     # <dir> <socket> <version-to-report|"">
     mkdir -p "$1"
-    { printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> %s/argv\n' "$BD"
+    { printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> %s\n' "$(tq "$BD/argv")"
       [ -z "$3" ] || printf '[ "$1" = -V ] && { echo "tmux %s"; exit 0; }\n' "$3"
       printf 'exec %s -L %s "$@"\n' "$TMUX_REAL" "$2"
     } > "$1/tmux"
@@ -10136,7 +13552,7 @@ B="cockpit-bwz-$$"; SOCKS="$SOCKS $B"; bshim "$BD/s1" "$B" ""
 # -u: the server's environment is what cockpit.tmux reads, and this copy has no binary.
 env -u COCKPIT_TUI_BIN PATH="$BD/s1:$PATH" "$TMUX_REAL" -L "$B" -f /dev/null new-session -d -s t \
     'exec -a claude sleep 300' >/dev/null 2>&1
-"$TMUX_REAL" -L "$B" run-shell "$BD/p/cockpit.tmux" >/dev/null 2>&1; bloaded "$B"
+"$TMUX_REAL" -L "$B" run-shell "$(tq "$BD/p/cockpit.tmux")" >/dev/null 2>&1; bloaded "$B"
 bw=$(bkey "$B" w)
 # This copy has no binary on purpose: a broken install still binds the key,
 # and the wrapper says so at press time.
@@ -10190,7 +13606,7 @@ loaded_on "$B" "the menu replays no r beside the board's w" &&
     esac
 is "and a plain load fetches nothing" "no" "$([ -e "$BD/fetched" ] && echo yes || echo no)"
 # Required since #199: the load says so, offline, and names the fix.
-case "$(grep 'display-message tmux-cockpit: cockpit-tui' "$BD/argv" 2>/dev/null)" in
+case "$(grep 'display-message -l tmux-cockpit: cockpit-tui' "$BD/argv" 2>/dev/null)" in
     *"cockpit-tui is missing; run "*/install.sh) \
             ok "a load with no binary says it is missing and names install.sh" ;;
     *) bad "a load with no binary says it is missing and names install.sh" \
@@ -10208,8 +13624,8 @@ bver() {                      # <version> -> the load's cockpit-tui message, if 
     printf '#!/bin/sh\necho "cockpit-tui %s"\n' "$1" > "$BD/vtui"; chmod +x "$BD/vtui"
     COCKPIT_TUI_BIN="$BD/vtui" PATH="$BD/s7:$PATH" "$TMUX_REAL" -L "$b" -f /dev/null new-session \
         -d -s t 'sleep 300' >/dev/null 2>&1
-    "$TMUX_REAL" -L "$b" run-shell "$BD/p/cockpit.tmux" >/dev/null 2>&1; bloaded "$b"
-    grep 'display-message tmux-cockpit: cockpit-tui' "$BD/argv" 2>/dev/null
+    "$TMUX_REAL" -L "$b" run-shell "$(tq "$BD/p/cockpit.tmux")" >/dev/null 2>&1; bloaded "$b"
+    grep 'display-message -l tmux-cockpit: cockpit-tui' "$BD/argv" 2>/dev/null
     "$TMUX_REAL" -L "$b" kill-server >/dev/null 2>&1
 }
 bmsg=$(bver 0.0.1)
@@ -10230,7 +13646,7 @@ B2="cockpit-bw2-$$"; SOCKS="$SOCKS $B2"; bshim "$BD/s2" "$B2" ""
 PATH="$BD/s2:$PATH" "$TMUX_REAL" -L "$B2" -f /dev/null new-session -d -s t \
     'exec -a claude sleep 300' >/dev/null 2>&1
 "$TMUX_REAL" -L "$B2" set -g @cockpit_board_key off >/dev/null 2>&1
-"$TMUX_REAL" -L "$B2" run-shell "$BD/p/cockpit.tmux" >/dev/null 2>&1; bloaded "$B2"
+"$TMUX_REAL" -L "$B2" run-shell "$(tq "$BD/p/cockpit.tmux")" >/dev/null 2>&1; bloaded "$B2"
 loaded_on "$B2" "@cockpit_board_key off leaves w to stock tmux" &&
     case "$(bkey "$B2" w)" in
         *cockpit-board*) bad "@cockpit_board_key off leaves w to stock tmux" \
@@ -10250,7 +13666,7 @@ PATH="$BD/s3:$PATH" "$TMUX_REAL" -L "$B3" -f /dev/null new-session -d -s t \
     'exec -a claude sleep 300' >/dev/null 2>&1
 "$TMUX_REAL" -L "$B3" set -g @cockpit_popup_height 44% >/dev/null 2>&1
 "$TMUX_REAL" -L "$B3" set -g @cockpit_tui_fetch on >/dev/null 2>&1
-"$TMUX_REAL" -L "$B3" run-shell "$BD/p/cockpit.tmux" >/dev/null 2>&1; bloaded "$B3"
+"$TMUX_REAL" -L "$B3" run-shell "$(tq "$BD/p/cockpit.tmux")" >/dev/null 2>&1; bloaded "$B3"
 case "$(bkey "$B3" w)" in *'"44%"'*) ok "a set @cockpit_popup_height reaches the board too" ;;
     *) bad "a set @cockpit_popup_height reaches the board too" "-h 44%" "$(bkey "$B3" w)" ;;
 esac
@@ -10270,7 +13686,7 @@ B6="cockpit-bw6-$$"; SOCKS="$SOCKS $B6"; bshim "$BD/s6" "$B6" ""
 PATH="$BD/s6:$PATH" "$TMUX_REAL" -L "$B6" -f /dev/null new-session -d -s t \
     'exec -a claude sleep 300' >/dev/null 2>&1
 "$TMUX_REAL" -L "$B6" set -g @cockpit_board_window on >/dev/null 2>&1
-"$TMUX_REAL" -L "$B6" run-shell "$BD/p/cockpit.tmux" >/dev/null 2>&1; bloaded "$B6"
+"$TMUX_REAL" -L "$B6" run-shell "$(tq "$BD/p/cockpit.tmux")" >/dev/null 2>&1; bloaded "$B6"
 case "$(bkey "$B6" w)" in
     *new-window*cockpit-board*) ok "@cockpit_board_window on parks the board in a window" ;;
     *) bad "@cockpit_board_window on parks the board in a window" \
@@ -10287,7 +13703,7 @@ esac
 B4="cockpit-bw4-$$"; SOCKS="$SOCKS $B4"; bshim "$BD/s4" "$B4" 3.7; rm -f "$BD/argv"
 PATH="$BD/s4:$PATH" "$TMUX_REAL" -L "$B4" -f /dev/null new-session -d -s t \
     'exec -a claude sleep 300' >/dev/null 2>&1
-"$TMUX_REAL" -L "$B4" run-shell "$BD/p/cockpit.tmux" >/dev/null 2>&1
+"$TMUX_REAL" -L "$B4" run-shell "$(tq "$BD/p/cockpit.tmux")" >/dev/null 2>&1
 is "tmux 3.7 binds nothing" "" "$(grep -c 'bind-key' "$BD/argv" 2>/dev/null | grep -v '^0$')"
 case "$(cat "$BD/argv" 2>/dev/null)" in *'tmux-cockpit needs tmux 3.8 or newer (found 3.7)'*)
         ok "and says which tmux it needs" ;;
@@ -10298,7 +13714,7 @@ esac
 # is older than 3.7 (#545). The same server, a new answer to -V each load.
 for r in next-3.7:refuses v3.7:refuses next-3.8:loads next-3.9:loads master:loads 3.8:loads; do
     tv=${r%:*}; bshim "$BD/s4" "$B4" "$tv"; rm -f "$BD/argv"
-    "$TMUX_REAL" -L "$B4" run-shell "$BD/p/cockpit.tmux" >/dev/null 2>&1
+    "$TMUX_REAL" -L "$B4" run-shell "$(tq "$BD/p/cockpit.tmux")" >/dev/null 2>&1
     nm=$(grep -c 'needs tmux 3.8 or newer' "$BD/argv" 2>/dev/null)
     nb=$(grep -c bind-key "$BD/argv" 2>/dev/null)
     case "${nm:-0} ${nb:-0}" in
@@ -10327,12 +13743,13 @@ exit 0
 BDREC
 chmod +x "$BD/rec/tmux"
 for s in tmux-jump tmux-review cockpit-panel; do
-    printf '#!/bin/sh\nprintf "%s %%s\\n" "$*" >> %s/wargv\n' "$s" "$BD" > "$BD/p/scripts/$s"
+    printf '#!/bin/sh\nprintf "%s %%s\\n" "$*" >> %s\n' "$s" "$(tq "$BD/wargv")" > "$BD/p/scripts/$s"
     chmod +x "$BD/p/scripts/$s"
 done
 # The panel from the board writes its last line where the loop asks.
-printf '#!/bin/sh\nprintf "cockpit-panel %%s\\n" "$*" >> %s/wargv\n[ -z "$COCKPIT_PANEL_NOTE" ] || cat %s/pnote > "$COCKPIT_PANEL_NOTE"\n' \
-    "$BD" "$BD" > "$BD/p/scripts/cockpit-panel"
+{ printf '#!/bin/sh\nprintf "cockpit-panel %%s\\n" "$*" >> %s\n' "$(tq "$BD/wargv")"
+  printf '[ -z "$COCKPIT_PANEL_NOTE" ] || cat %s > "$COCKPIT_PANEL_NOTE"\n' "$(tq "$BD/pnote")"
+} > "$BD/p/scripts/cockpit-panel"
 printf 'cockpit: sent to %%1\n' > "$BD/pnote"
 # The line travels in a file rather than inside the fake binary's source: the
 # cases below are shell syntax, and re-quoting them into a script is the test
@@ -10363,7 +13780,7 @@ is "jump %9 goes to that pane and runs nothing else" \
 is "review %1 runs tmux-review on it and nothing else" "tmux-review -p %1;" "$(wact 'review %1')"
 is "panel %1 runs cockpit-panel on it and nothing else" "cockpit-panel -p %1;" "$(wact 'panel %1')"
 case "$(wact 'fix %1')" in
-    'display-message -t %3 cockpit: the board sent "fix", which this plugin does not know; prefix U updates the plugin and cockpit-tui;') \
+    'display-message -t %3 -l cockpit: the board sent "fix", which this plugin does not know; prefix U updates the plugin and cockpit-tui;') \
             ok "fix %1, the retired verb, runs nothing and says prefix U updates the binary" ;;
     *) bad "fix %1, the retired verb, runs nothing and says prefix U updates the binary" \
             "one display-message" "$(wact 'fix %1')" ;;
@@ -10419,12 +13836,12 @@ is "@cockpit_board_return off: panel too" "cockpit-panel -p %1;" "$(wact 'panel 
 is "and the board ran once again" "board;" "$(bruns)"
 rm -f "$BD/ret"
 # A board that fails ends the loop rather than spinning on it.
-printf '#!/bin/sh\nprintf x >> %s/bfail\nexit 3\n' "$BD" > "$BD/p/bin/cockpit-tui"
+printf '#!/bin/sh\nprintf x >> %s\nexit 3\n' "$(tq "$BD/bfail")" > "$BD/p/bin/cockpit-tui"
 : > "$BD/wargv"; rm -f "$BD/bfail"
 PATH="$BD/rec:$PATH" COCKPIT_LOG="$BD/tui.log" COCKPIT_TUI_BIN="$BD/p/bin/cockpit-tui" \
     "$BD/p/scripts/cockpit-board" -p %3 </dev/null >/dev/null 2>&1
 is "a board that exits non-zero runs once and says so" \
-    "x display-message -t %3 cockpit: the board exited 3 — see $BD/tui.log;" \
+    "x display-message -t %3 -l cockpit: the board exited 3 — see $BD/tui.log;" \
    "$(cat "$BD/bfail") $(tr '\n' ';' < "$BD/wargv")"
 
 # The binary is the one piece of this plugin that is not shell, so its one line
@@ -10436,7 +13853,7 @@ is "a verb written as a command substitution runs nothing"   "" "$(inject '$(tou
 is "a third field on the action line runs nothing"           "" "$(inject 'jump %9 extra')"
 is "a target that is not %<digits> runs nothing"             "" "$(inject 'jump %9x')"
 is "an upper-case verb runs nothing"                         "" "$(inject 'JUMP %9')"
-is "a verb from a newer binary runs nothing, and says so"    "display-message -t %3 cockpit: the board sent \"frobnicate\", which this plugin does not know; prefix U updates the plugin and cockpit-tui;" \
+is "a verb from a newer binary runs nothing, and says so"    "display-message -t %3 -l cockpit: the board sent \"frobnicate\", which this plugin does not know; prefix U updates the plugin and cockpit-tui;" \
     "$(inject 'frobnicate %9')"
 # The log is the assertion, not the argv: an ordinary q and a rejected line both
 # run nothing, and only the log tells a version skew from a normal close.
@@ -10459,17 +13876,17 @@ rm -f "$BD/p/bin/cockpit-tui"; : > "$BD/wargv"
 PATH="$BD/rec:$PATH" COCKPIT_LOG="$BD/tui.log" COCKPIT_TUI_BIN="$BD/p/bin/cockpit-tui" \
     "$BD/p/scripts/cockpit-board" -p 'not-a-pane' </dev/null >/dev/null 2>&1
 case "$(cat "$BD/wargv" 2>/dev/null)" in
-    'display-message cockpit: board needs'*) \
+    'display-message -l cockpit: board needs'*) \
             ok "a -p that is not a pane id drops the -t rather than passing it on" ;;
     *) bad "a -p that is not a pane id drops the -t rather than passing it on" \
-         "display-message cockpit: board needs ..." "$(cat "$BD/wargv" 2>/dev/null)" ;;
+         "display-message -l cockpit: board needs ..." "$(cat "$BD/wargv" 2>/dev/null)" ;;
 esac
 : > "$BD/wargv"
 PATH="$BD/rec:$PATH" COCKPIT_LOG="$BD/tui.log" COCKPIT_TUI_BIN="$BD/p/bin/cockpit-tui" \
     "$BD/p/scripts/cockpit-board" -p %3 </dev/null >/dev/null 2>&1
 brc=$?
 is "a missing binary says so once, on the pane the key was pressed in, and exits 0" \
-   "0 display-message -t %3 cockpit: board needs cockpit-tui: run $(cd -P "$BD/p" && pwd)/install.sh" \
+   "0 display-message -t %3 -l cockpit: board needs cockpit-tui: run $(cd -P "$BD/p" && pwd)/install.sh" \
    "$brc $(cat "$BD/wargv" 2>/dev/null)"
 
 # --- a plugin directory that is shell syntax -----------------------------------
@@ -10479,7 +13896,7 @@ is "a missing binary says so once, on the pane the key was pressed in, and exits
 # block above).
 BI=$(mktmpd); BIDIR="$BI/x'\$(touch $BI/OWNED)'y"
 mkdir -p "$BIDIR"; cp -r "$BD/p/." "$BIDIR/"
-printf '#!/bin/sh\nprintf "%%s\\n" "$*" > %s/args\n' "$BI" > "$BIDIR/scripts/cockpit-board"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" > %s\n' "$(tq "$BI/args")" > "$BIDIR/scripts/cockpit-board"
 chmod +x "$BIDIR/scripts/cockpit-board"
 BW_IN="cockpit-bwi-$$"; BW_OUT="cockpit-bwo-$$"; SOCKS="$SOCKS $BW_IN $BW_OUT"
 "$TMUX_REAL" -L "$BW_IN" -f /dev/null new-session -d -s s -x 100 -y 30 \
@@ -10513,7 +13930,7 @@ if need_tmux "the board's return trip"; then :; else
 RB="cockpit-rbz-$$"; SOCKS="$SOCKS $RB"; RBD=$(mktmpd)
 mkdir -p "$RBD/p" "$RBD/state"
 cp -r "$DIR"/scripts "$RBD/p/"
-printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> %s/rv\n' "$RBD" > "$RBD/p/scripts/tmux-review"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> %s\n' "$(tq "$RBD/rv")" > "$RBD/p/scripts/tmux-review"
 chmod +x "$RBD/p/scripts/tmux-review"
 "$TMUX_REAL" -L "$RB" -f /dev/null new-session -d -s t -x 120 -y 40 \
     'exec sleep 3600' >/dev/null 2>&1
@@ -10527,10 +13944,11 @@ for p in "${RBP[@]}"; do
 done
 # Tiles sort by state, then pane id: all running, so tile 2 is the second pane.
 RBX=${RBP[1]}
-RBENV="env COCKPIT_TUI_BIN=$COCKPIT_TUI_BIN XDG_STATE_HOME=$RBD/state COCKPIT_LOG=$RBD/tui.log"
+RBENV="env COCKPIT_TUI_BIN=$(tq "$COCKPIT_TUI_BIN") XDG_STATE_HOME=$(tq "$RBD/state") \
+COCKPIT_LOG=$(tq "$RBD/tui.log")"
 rb_open() {                   # -> RBW, the wrapper's pane, with tiles drawn
     RBW=$("$TMUX_REAL" -L "$RB" new-window -d -P -F '#{pane_id}' -t t: \
-        "$RBENV $RBD/p/scripts/cockpit-board -p ${RBP[0]}")
+        "$RBENV $(tq "$RBD/p/scripts/cockpit-board") -p ${RBP[0]}")
     until_cap "$RB" "$RBW" '*board · 3 agents*'
 }
 rb_gone() {                   # <pane>
@@ -10602,7 +14020,7 @@ printf '✕ cockpit: the pane now runs bash, not claude; nothing sent\n' > "$RBD
 # A pane that is no agent: whatever a board would write over it is a real one.
 printf 'cockpit-board-state 1\nsel %%0\n' > "$RBD/state/tmux-cockpit/board.state"
 rb_bin() { "$TMUX_REAL" -L "$RB" new-window -d -P -F '#{pane_id}' -t t: \
-        "$RBENV COCKPIT_READONLY=1 $COCKPIT_TUI_BIN board --note $1"
+        "$RBENV COCKPIT_READONLY=1 $(tq "$COCKPIT_TUI_BIN") board --note $(tq "$1")"
 }
 RBOK=$(rb_bin "$RBD/ok"); RBNO=$(rb_bin "$RBD/no")
 until_cap "$RB" "$RBOK" '*cockpit: sent to*' ||
@@ -10660,7 +14078,8 @@ for p in "${KBP[@]}"; do
 done
 kb_open() {                   # <pane> <action-dir> -> KBW, a board on that pane
     KBW=$("$TMUX_REAL" -L "$KB" new-window -d -P -F '#{pane_id}' -t t: \
-        "env COCKPIT_READONLY=1 XDG_STATE_HOME=$KBD/state COCKPIT_ACTION=$2/act $COCKPIT_TUI_BIN board --select $1")
+        "env COCKPIT_READONLY=1 XDG_STATE_HOME=$(tq "$KBD/state") COCKPIT_ACTION=$(tq "$2/act") \
+$(tq "$COCKPIT_TUI_BIN") board --select $1")
     until_cap "$KB" "$KBW" '*board · 2 agents*'
 }
 kb_cap() { "$TMUX_REAL" -L "$KB" capture-pane -p -J -t "$KBW" 2>/dev/null; }
@@ -10745,7 +14164,8 @@ for s in alpha beta; do
 done
 bf_open() {                   # -> BFW, a board in its own window, its list drawn
     BFW=$("$TMUX_REAL" -L "$BF" new-window -d -P -F '#{pane_id}' -t alpha: \
-        "env XDG_STATE_HOME=$BFD COCKPIT_LOG=$BFD/tui.log $COCKPIT_TUI_BIN board")
+        "env XDG_STATE_HOME=$(tq "$BFD") COCKPIT_LOG=$(tq "$BFD/tui.log") \
+$(tq "$COCKPIT_TUI_BIN") board")
     until_cap "$BF" "$BFW" '*2 sessions*'
 }
 bf_quit() {                   # q, then wait for the window to go
@@ -10798,7 +14218,8 @@ for s in alpha beta; do
 done
 bn_open() {                   # -> BNW, a board in its own window, its list drawn
     BNW=$("$TMUX_REAL" -L "$BN" new-window -d -P -F '#{pane_id}' -t alpha: \
-        "env XDG_STATE_HOME=$BND COCKPIT_LOG=$BND/tui.log $COCKPIT_TUI_BIN board")
+        "env XDG_STATE_HOME=$(tq "$BND") COCKPIT_LOG=$(tq "$BND/tui.log") \
+$(tq "$COCKPIT_TUI_BIN") board")
     until_cap "$BN" "$BNW" '*2 sessions*'
 }
 bn_cap() { "$TMUX_REAL" -L "$BN" capture-pane -p -t "$BNW"; }
@@ -10864,7 +14285,8 @@ for p in "${PVP[@]}"; do
     "$TMUX_REAL" -L "$PV" set -p -t "$p" @panestate running >/dev/null 2>&1
 done
 PVW=$("$TMUX_REAL" -L "$PV" new-window -d -P -F '#{pane_id}' -t t: -c "$PVD" \
-    "env XDG_STATE_HOME=$PVD COCKPIT_LOG=$PVD/tui.log $COCKPIT_TUI_BIN board")
+    "env XDG_STATE_HOME=$(tq "$PVD") COCKPIT_LOG=$(tq "$PVD/tui.log") \
+$(tq "$COCKPIT_TUI_BIN") board")
 pv_cap() { "$TMUX_REAL" -L "$PV" capture-pane -p -t "$PVW"; }
 # the list's first agent is alpha's: the same state, the lower pane id
 if until_cap "$PV" "$PVW" '*live · *screen-of-alpha*'; then
@@ -10898,6 +14320,48 @@ fi
 "$TMUX_REAL" -L "$PV" kill-server >/dev/null 2>&1
 fi
 
+echo "== cockpit-tui board: a guarded board says so and sends its server nothing (#1089) =="
+# Under the test guard (COCKPIT_TEST_TMUX_GUARD, which .cargo/config.toml sets for whatever
+# cargo starts) a plain tmux with TMUX set is refused, so a board in a pane reads nothing of
+# its server. Its loop then puts the way out on the footer, and the first refusal writes one
+# line to its log. A logging tmux sits first on the pane's PATH with COCKPIT_TMUX unset: it
+# sees no call from the guarded board, and does see the same board's with the guard lifted.
+if need_tmux "the guarded board's note"; then :; else
+TG="cockpit-tg-$$"; SOCKS="$SOCKS $TG"; TGD=$(mktmpd); mkdir -p "$TGD/bin"
+printf '#!/bin/sh\nprintf "%%s\\n" "$1" >> %s\nexec %s "$@"\n' "$(tq "$TGD/calls")" \
+    "$(tq "$TMUX_REAL")" > "$TGD/bin/tmux"
+chmod +x "$TGD/bin/tmux"
+"$TMUX_REAL" -L "$TG" -f /dev/null new-session -d -s t -x 100 -y 30 -c "$TGD" \
+    'exec sleep 3600' >/dev/null 2>&1
+tg_open() {                   # <switch> -> TGW, a board in its own window
+    TGW=$("$TMUX_REAL" -L "$TG" new-window -d -P -F '#{pane_id}' -t t: -c "$TGD" \
+        "env -u COCKPIT_TMUX PATH=$(tq "$TGD/bin:$PATH") COCKPIT_TEST_TMUX_GUARD=$1 \
+XDG_STATE_HOME=$(tq "$TGD") COCKPIT_LOG=$(tq "$TGD/tui.log") $(tq "$COCKPIT_TUI_BIN") board")
+}
+tg_cap() { "$TMUX_REAL" -L "$TG" capture-pane -p -t "$TGW"; }
+tg_calls() { cat "$TGD/calls" 2>/dev/null | wc -l | tr -d ' '; }
+tg_open 1
+if until_cap "$TG" "$TGW" '*COCKPIT_TEST_TMUX_GUARD=0 to lift*'; then
+    ok "a guarded board puts the way out on its footer"
+else bad "a guarded board puts the way out on its footer" "COCKPIT_TEST_TMUX_GUARD=0 to lift" \
+    "$(tg_cap)"
+fi
+"$TMUX_REAL" -L "$TG" send-keys -t "$TGW" q
+for i in $(seq 1 "$POLLS"); do   # the board gone, so its log is whole
+    "$TMUX_REAL" -L "$TG" list-panes -a -F '#{pane_id}' 2>/dev/null | grep -qx "$TGW" || break
+    sleep 0.1
+done
+is "its log holds one refusal line" 1 "$(grep -cF \
+    ' COCKPIT_TEST_TMUX_GUARD: tmux refused, a plain tmux with TMUX set or no TMUX_TMPDIR folder' \
+    "$TGD/tui.log" 2>/dev/null)"
+is "and the guarded board sent its server nothing" 0 "$(tg_calls)"
+tg_open 0
+for i in $(seq 1 "$POLLS"); do [ "$(tg_calls)" -gt 0 ] && break; sleep 0.1; done
+if [ "$(tg_calls)" -gt 0 ]; then ok "with the guard lifted the same wrapper sees its calls"
+else bad "with the guard lifted the same wrapper sees its calls" "a call" "$(tg_calls)"; fi
+"$TMUX_REAL" -L "$TG" kill-server >/dev/null 2>&1
+fi
+
 echo "== cockpit-tui board: a blank first capture replaces reading the screen (#284) =="
 # A pane no capture has reached and a blank capture both draw as empty, so the
 # redraw gate must carry whether the pick was read (read_gate). Its own fresh
@@ -10913,7 +14377,8 @@ for cmd in "printf '\\033[2J\\033[H'" 'echo other'; do
     "$TMUX_REAL" -L "$PB" set -p -t "$pbp" @panestate running >/dev/null 2>&1
 done
 PBW=$("$TMUX_REAL" -L "$PB" new-window -d -P -F '#{pane_id}' -t t: -c "$PBD" \
-    "env XDG_STATE_HOME=$PBD COCKPIT_LOG=$PBD/tui.log $COCKPIT_TUI_BIN board")
+    "env XDG_STATE_HOME=$(tq "$PBD") COCKPIT_LOG=$(tq "$PBD/tui.log") \
+$(tq "$COCKPIT_TUI_BIN") board")
 if until_cap "$PB" "$PBW" '*live · blank*'; then
     ok "a blank first capture shows, not reading the screen"
 else
@@ -10930,16 +14395,20 @@ echo "== cockpit-tui board: an idle board on a busy agent captures once a tick (
 # counts capture-pane calls over 5 s of an idle board: about one a second.
 if need_tmux "the right pane's capture rate"; then :; else
 PR="cockpit-pr-$$"; SOCKS="$SOCKS $PR"; PRD=$(mktmpd)
-printf '#!/bin/sh\nprintf "%%s\\n" "$1" >> %s/calls\nexec %s "$@"\n' "$PRD" \
-    "$TMUX_REAL" > "$PRD/tmux"
-chmod +x "$PRD/tmux"
+# COCKPIT_TMUX is an argv the board splits at blanks, so no quoting carries a path with one:
+# the stub sits in the run's blank-free folder (#992), which the run removes.
+PRT=$(mktemp -d "$COCKPIT_SUITE_NB/ct.XXXXXX")
+printf '#!/bin/sh\nprintf "%%s\\n" "$1" >> %s\nexec %s "$@"\n' "$(tq "$PRD/calls")" \
+    "$TMUX_REAL" > "$PRT/tmux"
+chmod +x "$PRT/tmux"
 "$TMUX_REAL" -L "$PR" -f /dev/null new-session -d -s t -x 120 -y 30 -c "$PRD" \
     'exec sleep 3600' >/dev/null 2>&1
 prp=$("$TMUX_REAL" -L "$PR" new-window -d -P -F '#{pane_id}' -t t: -c "$PRD" \
     "exec -a claude sh -c 'while :; do date +%s%N; sleep 0.05; done'")
 "$TMUX_REAL" -L "$PR" set -p -t "$prp" @panestate running >/dev/null 2>&1
 PRW=$("$TMUX_REAL" -L "$PR" new-window -d -P -F '#{pane_id}' -t t: -c "$PRD" \
-    "env COCKPIT_TMUX=$PRD/tmux XDG_STATE_HOME=$PRD COCKPIT_LOG=$PRD/tui.log $COCKPIT_TUI_BIN board")
+    "env COCKPIT_TMUX=$(tq "$PRT/tmux") XDG_STATE_HOME=$(tq "$PRD") \
+COCKPIT_LOG=$(tq "$PRD/tui.log") $(tq "$COCKPIT_TUI_BIN") board")
 if until_cap "$PR" "$PRW" '*live · *line*'; then
     : > "$PRD/calls"
     sleep 5   # a rate: the count over a fixed window is the measurement
@@ -10968,9 +14437,10 @@ echo "== cockpit-tui board: a held j recaptures, and fetches only on the tick (#
 # let happen.
 if need_tmux "a held j on the board"; then :; else
 PJ="cockpit-pj-$$"; SOCKS="$SOCKS $PJ"; PJD=$(mktmpd)
-printf '#!/bin/sh\nprintf "%%s\\n" "$1" >> %s/calls\nexec %s "$@"\n' \
-    "$PJD" "$TMUX_REAL" > "$PJD/tmux"
-chmod +x "$PJD/tmux"
+PJT=$(mktemp -d "$COCKPIT_SUITE_NB/ct.XXXXXX")    # as above: no blank (#992)
+printf '#!/bin/sh\nprintf "%%s\\n" "$1" >> %s\nexec %s "$@"\n' \
+    "$(tq "$PJD/calls")" "$TMUX_REAL" > "$PJT/tmux"
+chmod +x "$PJT/tmux"
 "$TMUX_REAL" -L "$PJ" -f /dev/null new-session -d -s t -x 120 -y 30 -c "$PJD" \
     'exec sleep 3600' >/dev/null 2>&1
 for s in alpha beta; do
@@ -10978,9 +14448,9 @@ for s in alpha beta; do
         "printf 'screen-of-$s\n'; exec -a claude sleep 3600")
     "$TMUX_REAL" -L "$PJ" set -p -t "$pjp" @panestate running >/dev/null 2>&1
 done
-PJENV="COCKPIT_TMUX=$PJD/tmux XDG_STATE_HOME=$PJD COCKPIT_LOG=$PJD/tui.log"
+PJENV="COCKPIT_TMUX=$(tq "$PJT/tmux") XDG_STATE_HOME=$(tq "$PJD") COCKPIT_LOG=$(tq "$PJD/tui.log")"
 PJW=$("$TMUX_REAL" -L "$PJ" new-window -d -P -F '#{pane_id}' -t t: -c "$PJD" \
-    "env $PJENV $COCKPIT_TUI_BIN board")
+    "env $PJENV $(tq "$COCKPIT_TUI_BIN") board")
 pj_n() { local n; n=$(grep -cx "$1" "$PJD/calls" 2>/dev/null); printf '%s' "${n:-0}"; }
 pj_key() {                    # <key>  one press, then poll for one more capture-pane
     local n i
@@ -11030,9 +14500,10 @@ echo "== cockpit-tui board: the tiles capture in one tmux call, fetch or capture
 # a capture after a list-panes is a fetch's, any other a capture-only job's.
 if need_tmux "the tiles' batched capture"; then :; else
 PB6="cockpit-pt-$$"; SOCKS="$SOCKS $PB6"; BTD=$(mktmpd)
-printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> %s/calls\nexec %s "$@"\n' \
-    "$BTD" "$TMUX_REAL" > "$BTD/tmux"
-chmod +x "$BTD/tmux"
+BTT=$(mktemp -d "$COCKPIT_SUITE_NB/ct.XXXXXX")    # as above: no blank (#992)
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> %s\nexec %s "$@"\n' \
+    "$(tq "$BTD/calls")" "$TMUX_REAL" > "$BTT/tmux"
+chmod +x "$BTT/tmux"
 "$TMUX_REAL" -L "$PB6" -f /dev/null new-session -d -s t -x 120 -y 40 -c "$BTD" \
     'exec sleep 3600' >/dev/null 2>&1
 for s in alpha beta gamma; do
@@ -11040,9 +14511,9 @@ for s in alpha beta gamma; do
         "printf 'screen-of-$s\n'; exec -a claude sleep 3600")
     "$TMUX_REAL" -L "$PB6" set -p -t "$btp" @panestate running >/dev/null 2>&1
 done
-BTENV="COCKPIT_TMUX=$BTD/tmux XDG_STATE_HOME=$BTD COCKPIT_LOG=$BTD/tui.log"
+BTENV="COCKPIT_TMUX=$(tq "$BTT/tmux") XDG_STATE_HOME=$(tq "$BTD") COCKPIT_LOG=$(tq "$BTD/tui.log")"
 BTW=$("$TMUX_REAL" -L "$PB6" new-window -d -P -F '#{pane_id}' -t t: -c "$BTD" \
-    "env $BTENV $COCKPIT_TUI_BIN board")
+    "env $BTENV $(tq "$COCKPIT_TUI_BIN") board")
 bt_caps() {                   # each capturing call: fetch|look, then how many it captured
     awk '/^list-panes/ { f = 1 }
          /capture-pane/ { print (f ? "fetch" : "look"), gsub(/capture-pane/, "&"); f = 0 }' \
@@ -11074,8 +14545,14 @@ echo "== cockpit-panel: insert pastes without Enter, send adds it, and the text 
 # The panel is the one wrapper that writes into a pane, so it is driven for real:
 # a fake claude, a target running cat, the panel in a second window, send-keys.
 if need_tmux "cockpit-panel end to end"; then :; else
-PN="cockpit-pn-$$"; SOCKS="$SOCKS $PN"; PND=$(mktmpd)
+# The folder's own name holds a blank, so that the paths this block pastes into a pane's
+# command string are odd whatever TMPDIR is: bare, sh split them (#990, C2c).
+PN="cockpit-pn-$$"; SOCKS="$SOCKS $PN"; PND="$(mktmpd)/p n"
 mkdir -p "$PND/bin" "$PND/cache" "$PND/cfg"
+# Without the blank the rows below would pass with a path pasted bare (#1069): it is the
+# blank in this name that makes them red then, whatever TMPDIR is (#1076).
+is "the block's own folder has a blank in its name" "blank" \
+   "$(case "${PND##*/}" in *' '*) echo blank ;; *) echo "none in ${PND##*/}" ;; esac)"
 # With $PND/hang present the fake records its pid and parent, then never answers.
 cat > "$PND/bin/claude" <<PNFAKE
 #!/bin/sh
@@ -11086,7 +14563,9 @@ PNFAKE
 chmod +x "$PND/bin/claude"
 "$TMUX_REAL" -L "$PN" -f /dev/null new-session -d -s t -x 120 -y 40 'exec sleep 300' >/dev/null 2>&1
 # The fake is found on PATH, as the real one would be; COCKPIT_CLAUDE would beat it.
-PNENV="env -u COCKPIT_CLAUDE 'PATH=$PND/bin:$SHIM:/usr/bin:/bin' XDG_CACHE_HOME=$PND/cache XDG_CONFIG_HOME=$PND/cfg COCKPIT_LOG=$PND/tui.log"
+PNENV="env -u COCKPIT_CLAUDE $(tq "PATH=$PND/bin:$SHIM:/usr/bin:/bin")"
+PNENV="$PNENV XDG_CACHE_HOME=$(tq "$PND/cache") XDG_CONFIG_HOME=$(tq "$PND/cfg")"
+PNENV="$PNENV COCKPIT_LOG=$(tq "$PND/tui.log")"
 pn_gone() {                   # <pane>  the wrapper has exited and its window with it
     local i
     for i in $(seq 1 "$POLLS"); do
@@ -11098,7 +14577,7 @@ pn_gone() {                   # <pane>  the wrapper has exited and its window wi
 pn_go() {                     # <target-cmd> <draft>  -> PNA target, PNB panel, at the result view
     PNA=$("$TMUX_REAL" -L "$PN" new-window -d -P -F '#{pane_id}' -t t: "$1")
     PNB=$("$TMUX_REAL" -L "$PN" new-window -d -P -F '#{pane_id}' -t t: \
-        "$PNENV $DIR/scripts/cockpit-panel -p $PNA")
+        "$PNENV $(tq "$DIR/scripts/cockpit-panel") -p $PNA")
     until_cap "$PN" "$PNB" '*will send*' || return 1
     "$TMUX_REAL" -L "$PN" send-keys -t "$PNB" 1
     "$TMUX_REAL" -L "$PN" send-keys -t "$PNB" -l "$2"
@@ -11160,23 +14639,26 @@ is "the panel never lists a board wake channel" "" \
     "$("$TMUX_REAL" -L "$PN" show-option -gqv @cockpit_board_wake)"
 
 # A popup torn down mid-call (SIGTERM, SIGHUP as its pty goes) or a binary killed
-# outright (SIGKILL) must not leave its claude running. Pids are checked first.
-pn_hang() {                   # <signal>  -> the claude pid, or empty; kills the panel with <signal>
+# outright (SIGKILL) must not leave its claude running. Pids are checked first: the claude's
+# start is read while cockpit-tui, checked by name, is its parent, and a kill left to do later
+# checks it (#1227).
+pn_hang() {                   # <signal>  -> "<claude pid> <start>", or empty; kills the panel
     rm -f "$PND/cpid" "$PND/ppid"; touch "$PND/hang"
     PNA=$("$TMUX_REAL" -L "$PN" new-window -d -P -F '#{pane_id}' -t t: 'exec cat')
     PNB=$("$TMUX_REAL" -L "$PN" new-window -d -P -F '#{pane_id}' -t t: \
-        "$PNENV $DIR/scripts/cockpit-panel -p $PNA")
+        "$PNENV $(tq "$DIR/scripts/cockpit-panel") -p $PNA")
     until_cap "$PN" "$PNB" '*will send*' || return 1
     "$TMUX_REAL" -L "$PN" send-keys -t "$PNB" 1
     "$TMUX_REAL" -L "$PN" send-keys -t "$PNB" -l 'hang'
     "$TMUX_REAL" -L "$PN" send-keys -t "$PNB" C-s
     until_file "$PND/ppid" '[0-9]*' || return 1
-    local tui comm=''
-    tui=$(cat "$PND/ppid")
+    local tui comm='' pc cst
+    tui=$(cat "$PND/ppid") pc=$(cat "$PND/cpid")
     [ -r "/proc/$tui/comm" ] && read -r comm 2>/dev/null < "/proc/$tui/comm"
     [ "$comm" = cockpit-tui ] || return 1
+    cst=$(pid_kid "$pc" "$tui") || return 1
     kill "-$1" "$tui"
-    cat "$PND/cpid"
+    printf '%s %s' "$pc" "$cst"
 }
 pn_dead() {                   # <pid>  gone, or a zombie nobody waits for
     local i st
@@ -11191,7 +14673,7 @@ if [ ! -d /proc/self ]; then
     skip_ "a killed panel takes its claude with it (no /proc to check pids by name)"
 else
     for sig in TERM KILL HUP; do
-        pc=$(pn_hang "$sig")
+        read -r pc pcs <<<"$(pn_hang "$sig")"
         if [ -z "$pc" ]; then
             bad "SIG$sig on the panel kills its claude" \
                 "a running fake claude under cockpit-tui" "none"
@@ -11199,7 +14681,7 @@ else
             ok "SIG$sig on the panel kills its claude"
         else
             bad "SIG$sig on the panel kills its claude" "pid $pc gone" "still running"
-            kill "$pc" 2>/dev/null
+            pid_sig TERM "$pc" "$pcs" >/dev/null
         fi
         pn_gone "$PNB"
     done
@@ -11355,6 +14837,9 @@ cat > "$PND/rec/tmux" <<PNREC
 [ "\$*" = "show-option -gqv @cockpit_glyphs" ] && exit 0
 # nor the @cockpit_panel_effort read (#623)
 [ "\$*" = "show-option -gqv @cockpit_panel_effort" ] && exit 0
+# nor the panel key's two reads (#1121): its record, and the binding noted cockpit: panel
+[ "\$*" = "show-option -gqv @cockpit_panel_bound" ] && exit 0
+[ "\$*" = "list-keys -T prefix -F #{?#{==:#{key_note},cockpit: panel},#{key_string},}" ] && exit 0
 # capture-pane counts its calls; "still" mode answers the same screen each time.
 if [ "\$1" = capture-pane ]; then
     echo x >> "$PND/caps"
@@ -11387,11 +14872,15 @@ exit 0
 PNSTUB
 chmod +x "$PND/rec/tmux" "$PND/p/bin/cockpit-tui"
 # <action-line> <text> [notext] -> every tmux argv the wrapper produced
+# The wrapper makes its resume file under TMPDIR. Here that is the block's folder, whose
+# name holds a blank, so the rows that cut the file's path out of the binary's argv meet
+# a path with a blank in every run (#990, C2c).
 pact() {
     : > "$PND/pargv"; printf '%s\n' "$1" > "$PND/line"; printf '%s' "$2" > "$PND/text"
     [ "${3:-}" = notext ] && rm -f "$PND/text"
     printf '%s\n' "${4:-zsh}" > "$PND/cmd"; printf '%s\n' "${5:-zsh}" > "$PND/now"
-    PATH="$PND/rec:$PATH" COCKPIT_LOG="$PND/tui.log" COCKPIT_TUI_BIN="$PND/p/bin/cockpit-tui" \
+    TMPDIR="$PND" PATH="$PND/rec:$PATH" COCKPIT_LOG="$PND/tui.log" \
+        COCKPIT_TUI_BIN="$PND/p/bin/cockpit-tui" \
         "$PND/p/scripts/cockpit-panel" -p %5 </dev/null >/dev/null 2>&1
     tr '\n' ';' < "$PND/pargv" | sed "s/cockpit-panel-[0-9]*/B/g"
 }
@@ -11401,7 +14890,8 @@ pact() {
 pask() {
     : > "$PND/bargv"; printf 'paste %%5\n' > "$PND/line"; printf 'hi' > "$PND/text"
     printf 'zsh\n' > "$PND/cmd"; printf 'zsh\n' > "$PND/now"
-    PATH="$PND/rec:$PATH" COCKPIT_LOG="$PND/tui.log" COCKPIT_TUI_BIN="$PND/p/bin/cockpit-tui" \
+    TMPDIR="$PND" PATH="$PND/rec:$PATH" COCKPIT_LOG="$PND/tui.log" \
+        COCKPIT_TUI_BIN="$PND/p/bin/cockpit-tui" \
         "$PND/p/scripts/cockpit-panel" -p %5 "$@" </dev/null >/dev/null 2>&1
     echo "rc=$?"; cat "$PND/bargv"
 }
@@ -11409,8 +14899,8 @@ is "--ask reaches the binary on the first run" "rc=0"$'\n'"panel %5 --ask /r/x.r
     "$(pask --ask /r/x.rs 3 7)"
 touch "$PND/state"
 is "and a run after an action resumes without it" \
-    "rc=0"$'\n'"panel %5 --ask /r/x.rs 3 7"$'\n'"panel %5 --resume ${PND}/RESUME --last ok" \
-   "$(pask --ask /r/x.rs 3 7 | sed "s#--resume [^ ]*/resume#--resume ${PND}/RESUME#")"
+    "rc=0"$'\n'"panel %5 --ask /r/x.rs 3 7"$'\n'"panel %5 --resume */resume --last ok" \
+   "$(pask --ask /r/x.rs 3 7 | sed 's| --resume .*/resume| --resume */resume|')"
 rm -f "$PND/state"
 for pa in "--ask /r/x.rs 7 3" "--ask /r/x.rs 0 1" "--ask /r/x.rs 01 2" "--ask /r/x.rs 3" \
     "--ask /r/x.rs 3 7 8" "--ask  3 7" "--x /r 1 2"; do
@@ -11455,21 +14945,21 @@ rm -f "$PND/state"; rm -rf "$PND/xdg"
 is "a plain run is not told the slot is taken" "" "$(cat "$PND/taken")"
 unset -f pask
 is "send %5 loads the text, pastes it bracketed, deletes the buffer, presses Enter, says so" \
-   "load-buffer -b B -;hi;paste-buffer -p -d -b B -t %5;send-keys -t %5 Enter;display-message -t %5 cockpit: sent to %5;" \
+   "load-buffer -b B -;hi;paste-buffer -p -d -b B -t %5;send-keys -t %5 Enter;display-message -t %5 -l cockpit: sent to %5;" \
    "$(pact 'send %5' hi)"
 is "paste %5 is the same without Enter, and says how much went in" \
-   "load-buffer -b B -;hi;paste-buffer -p -d -b B -t %5;display-message -t %5 cockpit: inserted 2 chars into %5;" \
+   "load-buffer -b B -;hi;paste-buffer -p -d -b B -t %5;display-message -t %5 -l cockpit: inserted 2 chars into %5;" \
    "$(pact 'paste %5' hi)"
 : > "$PND/tui.log"; touch "$PND/fail-load-buffer"
 is "a failed load-buffer pastes nothing and says so" \
-   "load-buffer -b B -;display-message -t %5 cockpit: could not load the paste buffer; nothing sent to %5;" \
+   "load-buffer -b B -;display-message -t %5 -l cockpit: could not load the paste buffer; nothing sent to %5;" \
    "$(pact 'paste %5' hi)"
 rm -f "$PND/fail-load-buffer"
 is "and logs tmux's error" "1" \
     "$(grep -c 'load-buffer failed for %5: boom load-buffer' "$PND/tui.log")"
 : > "$PND/tui.log"; touch "$PND/fail-paste-buffer"
 is "a failed paste-buffer drops the buffer, sends no Enter and says so" \
-   "load-buffer -b B -;hi;paste-buffer -p -d -b B -t %5;delete-buffer -b B;display-message -t %5 cockpit: could not paste into %5; nothing sent;" \
+   "load-buffer -b B -;hi;paste-buffer -p -d -b B -t %5;delete-buffer -b B;display-message -t %5 -l cockpit: could not paste into %5; nothing sent;" \
    "$(pact 'send %5' hi)"
 rm -f "$PND/fail-paste-buffer"
 is "and logs tmux's error" "1" \
@@ -11505,7 +14995,7 @@ is "and the files live in a private directory" "700" \
     "$(pact 'paste %5' hi >/dev/null; cat "$PND/dmode")"
 is "a missing text file pastes nothing" "" "$(pact 'send %5' hi notext)"
 is "a pane that runs something else by now gets nothing, and is told why" \
-   "display-message -t %5 cockpit: the pane now runs zsh, not claude; nothing sent;" \
+   "display-message -t %5 -l cockpit: the pane now runs zsh, not claude; nothing sent;" \
        "$(pact 'send %5' hi '' claude zsh)"
 # From the board the refusal is its note, which must stay one line: the board
 # refuses a two-line note, and a pane's command can carry a newline.
@@ -11525,28 +15015,37 @@ is "COCKPIT_READONLY runs the panel and sends tmux nothing, not even a message" 
     "$(COCKPIT_READONLY=1 pact 'send %5' hi)"
 is "and logs what it would have done" "1" "$(grep -c 'readonly, not sent: send %5' "$PND/tui.log")"
 is "a text that starts with - is pasted as text, not read as a flag" \
-   "load-buffer -b B -;-n hi;paste-buffer -p -d -b B -t %5;display-message -t %5 cockpit: inserted 5 chars into %5;" \
+   "load-buffer -b B -;-n hi;paste-buffer -p -d -b B -t %5;display-message -t %5 -l cockpit: inserted 5 chars into %5;" \
    "$(pact 'paste %5' '-n hi')"
 rm -f "$PND/bargv"; pact 'paste %5' hi >/dev/null
 is "with no state file the binary runs once" "panel %5" "$(cat "$PND/bargv")"
 touch "$PND/state"; rm -f "$PND/bargv"
 is "a state file beside the action reruns the binary on it, after the paste" \
-   "load-buffer -b B -;hi;paste-buffer -p -d -b B -t %5;display-message -t %5 cockpit: inserted 2 chars into %5;load-buffer -b B -;hi;paste-buffer -p -d -b B -t %5;display-message -t %5 cockpit: inserted 2 chars into %5;" \
+   "load-buffer -b B -;hi;paste-buffer -p -d -b B -t %5;display-message -t %5 -l cockpit: inserted 2 chars into %5;load-buffer -b B -;hi;paste-buffer -p -d -b B -t %5;display-message -t %5 -l cockpit: inserted 2 chars into %5;" \
    "$(pact 'paste %5' hi)"
+# The path is cut out of each run's line before the lines are joined: cut after, the greedy
+# pattern would take every run between the first --resume and the last /resume (#1076).
+pn_runs() { sed 's| --resume .*/resume| --resume */resume|' "$1" | tr '\n' ';'; }
+printf '%s\n' 'panel %5' 'panel %5 --resume /a b/resume --last WRONG' \
+    'panel %5 --resume /c/resume --last ok' > "$PND/three"
+is "three runs read back as three, a wrong one in the middle still there" \
+   "panel %5;panel %5 --resume */resume --last WRONG;panel %5 --resume */resume --last ok;" \
+   "$(pn_runs "$PND/three")"
 is "and tells it the paste went in" "panel %5;panel %5 --resume */resume --last ok;" \
-   "$(tr '\n' ';' < "$PND/bargv" | sed 's| --resume [^ ]*/resume| --resume */resume|')"
+   "$(pn_runs "$PND/bargv")"
+unset -f pn_runs
 rm -f "$PND/bargv"; pact 'send %5' hi '' claude zsh >/dev/null
 is "or why nothing was sent" \
     "panel %5 --resume */resume --last failed:the pane now runs zsh, not claude" \
-   "$(sed -n 2p "$PND/bargv" | sed 's| --resume [^ ]*/resume| --resume */resume|')"
+   "$(sed -n 2p "$PND/bargv" | sed 's| --resume .*/resume| --resume */resume|')"
 rm -f "$PND/bargv"; COCKPIT_READONLY=1 pact 'send %5' hi >/dev/null
 is "COCKPIT_READONLY reruns it too, saying nothing was sent" \
     "panel %5 --resume */resume --last failed:COCKPIT_READONLY is set; nothing sent" \
-   "$(sed -n 2p "$PND/bargv" | sed 's| --resume [^ ]*/resume| --resume */resume|')"
+   "$(sed -n 2p "$PND/bargv" | sed 's| --resume .*/resume| --resume */resume|')"
 rm -f "$PND/state"
 touch "$PND/crash"; : > "$PND/tui.log"
 is "a panel that exits non-zero is reported on the pane" \
-    "display-message -t %5 cockpit: the panel exited 3 — see $PND/tui.log;" \
+    "display-message -t %5 -l cockpit: the panel exited 3 — see $PND/tui.log;" \
    "$(pact 'paste %5' hi)"
 is "and under COCKPIT_READONLY only logged" "" "$(COCKPIT_READONLY=1 pact 'paste %5' hi)"
 is "the log says what it would have said" "1" \
@@ -11558,16 +15057,23 @@ echo "== cockpit-panel: ^Z hides the panel and the next run on the pane brings i
 # The wrapper in a window stands in for the popup prefix f opens: the window
 # closing is the popup closing, and a second run on the same pane is prefix f again.
 if need_tmux "cockpit-panel hide and resume"; then :; else
-PH="cockpit-ph-$$"; SOCKS="$SOCKS $PH"; PHD=$(mktmpd)
+# As the insert block's: a blank in the folder's own name (#990, C2c).
+PH="cockpit-ph-$$"; SOCKS="$SOCKS $PH"; PHD="$(mktmpd)/p h"
 mkdir -p "$PHD/bin" "$PHD/state"
+# Without the blank the rows below would pass with a path pasted bare (#1069): it is the
+# blank in this name that makes them red then, whatever TMPDIR is (#1076).
+is "the block's own folder has a blank in its name" "blank" \
+   "$(case "${PHD##*/}" in *' '*) echo blank ;; *) echo "none in ${PHD##*/}" ;; esac)"
 # Never asked: nothing in this block sends a request.
 printf '#!/bin/sh\ncat >/dev/null\necho "<text>NEVER CALLED</text>"\n' > "$PHD/bin/claude"
 chmod +x "$PHD/bin/claude"
 "$TMUX_REAL" -L "$PH" -f /dev/null new-session -d -s t -x 120 -y 40 'exec sleep 300' >/dev/null 2>&1
-PHENV="env -u COCKPIT_CLAUDE 'PATH=$PHD/bin:$SHIM:/usr/bin:/bin' XDG_STATE_HOME=$PHD/state XDG_CACHE_HOME=$PHD XDG_CONFIG_HOME=$PHD COCKPIT_LOG=$PHD/tui.log"
+PHENV="env -u COCKPIT_CLAUDE $(tq "PATH=$PHD/bin:$SHIM:/usr/bin:/bin")"
+PHENV="$PHENV XDG_STATE_HOME=$(tq "$PHD/state") XDG_CACHE_HOME=$(tq "$PHD")"
+PHENV="$PHENV XDG_CONFIG_HOME=$(tq "$PHD") COCKPIT_LOG=$(tq "$PHD/tui.log")"
 ph_open() {                   # <target>  -> PHB, the panel's pane, once it has drawn
     PHB=$("$TMUX_REAL" -L "$PH" new-window -d -P -F '#{pane_id}' -t t: \
-        "$PHENV $DIR/scripts/cockpit-panel -p $1")
+        "$PHENV $(tq "$DIR/scripts/cockpit-panel") -p $1")
     until_cap "$PH" "$PHB" '*panel*'
 }
 ph_gone() {                   # <pane>
@@ -11629,6 +15135,95 @@ fi
 is "and its file is removed" "" "$([ -e "$PHF" ] && echo there)"
 "$TMUX_REAL" -L "$PH" send-keys -t "$PHB" q
 ph_gone "$PHB"
+# #1112: the hidden message names the prefix key bound with the panel's note, read from
+# the binding as the jump notice reads its key (#1109), never @cockpit_panel_bound alone:
+# a key moved by hand leaves the record naming a key that is not the panel (stock f here).
+PHFC="$PHD/state/tmux-cockpit/panel/$("$TMUX_REAL" -L "$PH" display -p '#{pid}')-${PHC#%}.state"
+ph_hidden() {                 # -> the note the wrapper writes on ^Z, as the board reads it
+    rm -f "$PHD/note" "$PHFC"
+    PHB=$("$TMUX_REAL" -L "$PH" new-window -d -P -F '#{pane_id}' -t t: \
+        "$PHENV COCKPIT_PANEL_NOTE=$(tq "$PHD/note") $(tq "$DIR/scripts/cockpit-panel") -p $PHC")
+    until_cap "$PH" "$PHB" '*will send*'
+    "$TMUX_REAL" -L "$PH" send-keys -t "$PHB" C-z
+    ph_gone "$PHB"
+    cat "$PHD/note" 2>/dev/null
+}
+"$TMUX_REAL" -L "$PH" bind-key -N 'cockpit: panel' g display-message panel \; \
+    set-option -g @cockpit_panel_bound f
+is "a key moved by hand: the message names the noted key, not the record" \
+    "cockpit: hidden · prefix g on $PHC brings it back" "$(ph_hidden)"
+"$TMUX_REAL" -L "$PH" set-option -gu @cockpit_panel_bound
+is "no record: the noted key is named" \
+    "cockpit: hidden · prefix g on $PHC brings it back" "$(ph_hidden)"
+"$TMUX_REAL" -L "$PH" bind-key -N 'cockpit: panel' h display-message panel \; \
+    set-option -g @cockpit_panel_bound h
+is "two noted keys: the one the record names" \
+    "cockpit: hidden · prefix h on $PHC brings it back" "$(ph_hidden)"
+"$TMUX_REAL" -L "$PH" unbind-key g \; unbind-key h \; set-option -g @cockpit_panel_bound f
+is "no noted key: none is named, whatever the record says" \
+    "cockpit: hidden · the panel key on $PHC brings it back" "$(ph_hidden)"
+# #1124: a user's note on c, listed before g, holding the panel's note and a tab, a \037 or
+# a newline, all printed raw by tmux: never a key name, an empty key or the panel's note.
+"$TMUX_REAL" -L "$PH" bind-key -N 'cockpit: panel' g display-message panel \; \
+    set-option -gu @cockpit_panel_bound
+for ph_n in $'cockpit: panel\tTAB' $'cockpit: panel\037US' $'cockpit: panel\nx' \
+    $'X\ncockpit: panel'; do
+    "$TMUX_REAL" -L "$PH" bind-key -N "$ph_n" c display-message user
+    is "c noted [$(printf %q "$ph_n")], no record: the noted g" \
+        "cockpit: hidden · prefix g on $PHC brings it back" "$(ph_hidden)"
+done
+"$TMUX_REAL" -L "$PH" unbind-key c \; unbind-key g
+# #1121: the binary is told that key too, as COCKPIT_PANEL_KEY, for its ^Z help. None noted
+# passes none, and a value from the caller's environment does not reach it. A stub binary
+# records what it got.
+printf '#!/bin/sh\nprintf "[%%s]" "${COCKPIT_PANEL_KEY-unset}" > %s\n' "$(tq "$PHD/pkey")" \
+    > "$PHD/keytui"; chmod +x "$PHD/keytui"
+ph_pkey() {                   # [env words] -> [the COCKPIT_PANEL_KEY the binary got]
+    rm -f "$PHD/pkey"
+    "$TMUX_REAL" -L "$PH" new-window -d -t t: -c "$PHD" "$PHENV ${1:-} \
+COCKPIT_TUI_BIN=$(tq "$PHD/keytui") $(tq "$DIR/scripts/cockpit-panel") -p $PHC"
+    until_file "$PHD/pkey" '\[*\]'
+    cat "$PHD/pkey" 2>/dev/null
+}
+"$TMUX_REAL" -L "$PH" bind-key -N 'cockpit: panel' g display-message panel \; \
+    set-option -g @cockpit_panel_bound f
+is "the binary is told the noted key, not the record" "[g]" "$(ph_pkey)"
+"$TMUX_REAL" -L "$PH" unbind-key g \; bind-key -N 'cockpit: panel' '}' display-message panel
+is "a key named by a brace reaches the binary as written" "[}]" "$(ph_pkey)"
+"$TMUX_REAL" -L "$PH" unbind-key '}'
+is "no noted key: the binary is told none" "[unset]" "$(ph_pkey)"
+is "and a COCKPIT_PANEL_KEY from the caller does not reach it" "[unset]" \
+    "$(ph_pkey COCKPIT_PANEL_KEY=stale)"
+unset -f ph_pkey
+# #1121: the real binary reads COCKPIT_PANEL_KEY. A stub cannot show that read, only the
+# screen can: the ? list names the noted key, or says "the panel key" with none noted.
+ph_help() {                   # -> the ? list of a panel opened on $PHC, then closed
+    ph_open "$PHC"
+    "$TMUX_REAL" -L "$PH" send-keys -t "$PHB" '?'
+    until_cap "$PH" "$PHB" '*on this pane brings it back*'
+    ph_cap
+    "$TMUX_REAL" -L "$PH" send-keys -t "$PHB" q
+    until_cap "$PH" "$PHB" '*will send*'
+    "$TMUX_REAL" -L "$PH" send-keys -t "$PHB" q
+    ph_gone "$PHB"
+}
+"$TMUX_REAL" -L "$PH" bind-key -N 'cockpit: panel' g display-message panel
+phh=$(ph_help)
+case $phh in
+    *'hide; prefix g on this pane brings it back'*)
+        ok "the panel's ? list names the noted key" ;;
+    *) bad "the panel's ? list names the noted key" "prefix g on this pane" "$phh" ;;
+esac
+"$TMUX_REAL" -L "$PH" unbind-key g
+phh=$(ph_help)
+case $phh in
+    *'hide; the panel key on this pane brings it back'*)
+        ok "no noted key: the ? list says the panel key" ;;
+    *) bad "no noted key: the ? list says the panel key" "the panel key on this pane" "$phh" ;;
+esac
+unset -f ph_help; unset phh
+rm -f "$PHFC"
+unset -f ph_hidden
 unset -f ph_open ph_gone ph_cap
 "$TMUX_REAL" -L "$PH" kill-server >/dev/null 2>&1
 fi
@@ -11798,8 +15393,12 @@ echo "== cockpit-panel: a tap in the popup acts once, and x copies by OSC 52 =="
 # an SGR click written there is what a touch screen sends. Coordinates are read
 # off the outer capture, 1-based as the wire wants them.
 if need_tmux "taps in the popup"; then :; else
-TI="cockpit-tapi2-$$"; TO="cockpit-tapo2-$$"; SOCKS="$SOCKS $TI $TO"; TPD=$(mktmpd)
+TI="cockpit-tapi2-$$"; TO="cockpit-tapo2-$$"; SOCKS="$SOCKS $TI $TO"; TPD="$(mktmpd)/t p"
 mkdir -p "$TPD/bin"
+# Without the blank the rows below would pass with a path pasted bare (#1069): it is the
+# blank in this name that makes them red then, whatever TMPDIR is (#1076).
+is "the block's own folder has a blank in its name" "blank" \
+   "$(case "${TPD##*/}" in *' '*) echo blank ;; *) echo "none in ${TPD##*/}" ;; esac)"
 printf '#!/bin/sh\ncat >/dev/null\nprintf "<text>copied by tap</text>"\n' > "$TPD/bin/claude"
 chmod +x "$TPD/bin/claude"
 "$TMUX_REAL" -L "$TI" -f /dev/null new-session -d -s t -x 100 -y 30 'exec cat' >/dev/null 2>&1
@@ -11812,7 +15411,8 @@ tpa=$("$TMUX_REAL" -L "$TI" list-panes -F '#{pane_id}' | head -1)
 until_cap "$TO" o '*[!\ ]*' >/dev/null
 tpc=$("$TMUX_REAL" -L "$TI" list-clients -F '#{client_name}' | head -1)
 "$TMUX_REAL" -L "$TI" display-popup -c "$tpc" -w 80 -h 24 -e COCKPIT_PANEL_MODE=tablet -E \
-    "env 'PATH=$TPD/bin:$SHIM:/usr/bin:/bin' COCKPIT_LOG=$TPD/tui.log $DIR/scripts/cockpit-panel -p $tpa" \
+    "env $(tq "PATH=$TPD/bin:$SHIM:/usr/bin:/bin") COCKPIT_LOG=$(tq "$TPD/tui.log") $(:
+        )$(tq "$DIR/scripts/cockpit-panel") -p $tpa" \
         >/dev/null 2>&1 &
 # <label> <M|m> [button]  presses (M) or releases (m) on the label's first cell
 tp_at() {
@@ -12112,26 +15712,28 @@ fi
 # A client with a chosen width, without a pty: control mode attaches over a
 # fifo opened read-write by this shell, so nothing has to feed it and there is
 # no writer process to reap. refresh-client -C is all #{client_width} needs.
-cw_open() {                   # <socket> <session> ; prints "<client> <fifo> <pid>"
+cw_open() {                   # <socket> <session> ; prints "<client> <fifo> <pid> <start>"
     local s=$1 t=$2 f c i
     f=$(mktemp -u) || return 1
     mkfifo "$f" || return 1
     "$TMUX_REAL" -L "$s" -C attach -t "$t" <> "$f" >/dev/null 2>&1 &
-    local pid=$!
+    local pid=$! pst; pst=$(pid_start "$pid")
     for i in $(seq 1 40); do
         c=$("$TMUX_REAL" -L "$s" list-clients -F '#{client_name}' 2>/dev/null | head -1)
-        [ -n "$c" ] && { printf '%s %s %s' "$c" "$f" "$pid"; return 0; }
+        [ -n "$c" ] && { printf '%s %s %s %s' "$c" "$f" "$pid" "$pst"; return 0; }
         sleep 0.1
     done
     # Nothing is printed on failure, so the caller gets no pid and no path:
     # the half-built client and its fifo have to be reaped right here.
-    kill "$pid" >/dev/null 2>&1; rm -f "$f"
+    pid_sig TERM "$pid" "$pst" >/dev/null; rm -f "$f"
     return 1
 }
 # NEVER `kill "${pid:-0}"`: an empty pid becomes 0, and kill 0 signals the
 # whole process group -- the suite itself. Guard, do not default.
-cw_close() {                  # <pid> <fifo> ; either may be empty
-    [ -n "${1:-}" ] && kill "$1" >/dev/null 2>&1
+# The client is no child of this shell's: cw_open ran in a $(...) that has ended. Its start,
+# read at the fork and printed with it, is checked at the kill (#1227).
+cw_close() {                  # <pid> <fifo> <start> ; any may be empty
+    [ -n "${1:-}" ] && pid_sig TERM "$1" "${3:-}" >/dev/null
     [ -n "${2:-}" ] && rm -f "$2"
     return 0
 }
@@ -12155,8 +15757,11 @@ mkdir -p "$BQD/repo/.git"; printf 'ref: refs/heads/feat/jwt-rotation\n' > "$BQD/
 "$TMUX_REAL" -L "$BQ" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
 BQP=$("$TMUX_REAL" -L "$BQ" list-panes -t s: -F '#{pane_id}')
 TMUX="$SOCKDIR/$BQ,0,0" "$DIR/scripts/tmux-where" branch --set "$BQP" >/dev/null 2>&1
-read -r bqc bqf bqpid <<<"$(cw_open "$BQ" s)"
+read -r bqc bqf bqpid bqps <<<"$(cw_open "$BQ" s)"
 if [ -z "${bqc:-}" ]; then skip_ "the border budget (no control client)"; else
+# cw_close's check needs the start cw_open read at the fork: an empty one signals nothing
+is "cw_open prints its client's start beside its pid (#1227)" "1" \
+   "$([ -n "${bqps:-}" ] && [ "$bqps" = "$(pid_start "$bqpid")" ] && echo 1)"
 bqfit() { "$TMUX_REAL" -L "$BQ" display-message -p -c "$bqc" -t "$BQP" \
             '#{E:@cockpit_path_shown} #{E:@cockpit_branch_shown} #{E:@cockpit_ask_w}'; }
 bqrows() { "$TMUX_REAL" -L "$BQ" display-message -p -c "$bqc" -t "$BQP" \
@@ -12188,7 +15793,7 @@ esac
 cw_size "$BQ" "$bqc" 200
 is "at 200 columns the whole question fits beside path and branch" "1 1 68" "$(bqfit)"
 fi
-cw_close "${bqpid:-}" "${bqf:-}"
+cw_close "${bqpid:-}" "${bqf:-}" "${bqps:-}"
 "$TMUX_REAL" -L "$BQ" kill-server >/dev/null 2>&1
 fi
 
@@ -12242,7 +15847,7 @@ twp=$("$TMUX_REAL" -L "$TW" list-panes -t s: -F '#{pane_id}' | head -1)
 # The load's background sweep marks the agent window idle (○); run it here so it
 # cannot land mid-test.
 TMUX="$SOCKDIR/$TW,0,0" "$DIR/scripts/agent-state" sweep >/dev/null 2>&1
-read -r twc twf twpid <<<"$(cw_open "$TW" s)"
+read -r twc twf twpid twps <<<"$(cw_open "$TW" s)"
 if [ -z "${twc:-}" ]; then skip_ "the tab width ladder (no control client)"; else
 twtab() { "$TMUX_REAL" -L "$TW" display-message -p -c "$twc" -t s:t \
         '#{E:window-status-current-format}' 2>/dev/null | plain
@@ -12262,7 +15867,7 @@ is "eight windows at 200 columns keep their labels" "18 18 0" "$(twfit)"
 cw_size "$TW" "$twc" 56
 is "at 56 the others go compact; the current tab keeps 12" "12 1" "$(twfit | cut -d' ' -f1,3)"
 fi
-cw_close "${twpid:-}" "${twf:-}"
+cw_close "${twpid:-}" "${twf:-}" "${twps:-}"
 "$TMUX_REAL" -L "$TW" kill-server >/dev/null 2>&1
 fi
 
@@ -12290,7 +15895,7 @@ ggctx() {                     # <window> <percent>: the statusLine payload, as C
 # The sweep the window hooks run, now: every agent window idle (○) from the start,
 # so no later hook changes a tab under an assertion.
 TMUX="$SOCKDIR/$GG,0,0" "$DIR/scripts/agent-state" sweep >/dev/null 2>&1
-read -r ggc ggf ggpid <<<"$(cw_open "$GG" s)"
+read -r ggc ggf ggpid ggps <<<"$(cw_open "$GG" s)"
 if [ -z "${ggc:-}" ]; then skip_ "the context gauge (no control client)"; else
 ggcur() { "$TMUX_REAL" -L "$GG" display-message -p -c "$ggc" -t s:t \
         '#{E:window-status-current-format}' | plain
@@ -12320,7 +15925,7 @@ is "a compact tab shows the bare ◔" " 1 ○ ◔ " "$(ggoth)"
 "$TMUX_REAL" -L "$GG" set -p -t s:t @cockpit_title "abcdefghijk lmnopqrstuvwxyz" >/dev/null 2>&1
 is "a cut on a word boundary drops the space before the …" " 0 abcdefghijk… ○ ◔91% " "$(ggcur)"
 fi
-cw_close "${ggpid:-}" "${ggf:-}"
+cw_close "${ggpid:-}" "${ggf:-}" "${ggps:-}"
 "$TMUX_REAL" -L "$GG" kill-server >/dev/null 2>&1
 fi
 
@@ -12361,14 +15966,15 @@ esac
 AGF=$("$TMUX_REAL" -L "$AGS" list-keys -T cockpit | awk '$4=="t"' |
     sed -n "s/.*list-panes -a -F '\([^']*\)'.*/\1/p")
 "$TMUX_REAL" -L "$AGS" new-window -d -t ag: 'exec -a claude sleep 300' >/dev/null 2>&1
-"$TMUX_REAL" -L "$AGS" new-window -d -t ag: 'sleep 300' >/dev/null 2>&1
+AGP=$("$TMUX_REAL" -L "$AGS" new-window -d -t ag: -P -F '#{pane_id}' 'sleep 300' 2>/dev/null)
 "$TMUX_REAL" -L "$AGS" select-pane -t ag:0 -T 'alpha  two  spaces' >/dev/null 2>&1
 "$TMUX_REAL" -L "$AGS" select-pane -t ag:1 -T bravo >/dev/null 2>&1
 "$TMUX_REAL" -L "$AGS" select-pane -t ag:2 -T plain >/dev/null 2>&1
 "$TMUX_REAL" -L "$AGS" set-option -p -t ag:0 @panestate needs-input >/dev/null 2>&1
 "$TMUX_REAL" -L "$AGS" set-option -p -t ag:1 @panestate running >/dev/null 2>&1
-until_out '*claude*claude*sleep*' "$TMUX_REAL" -L "$AGS" list-panes -a \
+until_out '*claude*claude*' "$TMUX_REAL" -L "$AGS" list-panes -a \
     -F '#{pane_current_command}' >/dev/null
+pane_runs "$AGS" "$AGP" sleep sleep 300  # its name reads sleep before sleep runs (#1079)
 # The third pane is not an agent: its state column is the - sentinel, not a blank
 # that would slide the title one column left.
 is "two agent panes with their state, the plain pane with the sentinel, in fixed columns" \
@@ -12504,47 +16110,6 @@ rr_repo() {                   # -> $RRDIR, a repo whose one changed file has a l
     ) >/dev/null 2>&1
 }
 
-echo "== #105: the delivery notice names the configured jump key and fits 72 columns =="
-if need_tmux "#105 jump key notice"; then :; else
-RRJ="cockpit-rrj-$$"; SOCKS="$SOCKS $RRJ"
-"$TMUX_REAL" -L "$RRJ" -f /dev/null new-session -d -s t 'sleep 600' >/dev/null 2>&1
-# Rendered by tmux itself, not read: a format that looks right in a grep can
-# still expand to the wrong text -- which is exactly defect 1.
-RRJFMT=$(sed -n "s/^ *local jump='\(.*\)'\$/\1/p" "$DIR/scripts/lib/review-deliver.sh" | head -1)
-RRJMSG=$(sed -n 's/^ *local notice_paste="\(.*\)"$/\1/p' "$DIR/scripts/lib/review-deliver.sh" |
-    head -1)
-if [ -z "$RRJFMT" ] || [ -z "$RRJMSG" ]; then
-    bad "the notice builds its jump clause from a format" \
-        "local jump=... and local notice_paste=..." \
-        "jump:[$RRJFMT] notice:[$RRJMSG]"
-else
-    rr_notice() {             # rr_notice <key-or-unset> -> the notice as a client sees it
-        if [ "$1" = unset ]; then "$TMUX_REAL" -L "$RRJ" set -gu @cockpit_jump_key >/dev/null 2>&1
-        else "$TMUX_REAL" -L "$RRJ" set -g @cockpit_jump_key "$1" >/dev/null 2>&1; fi
-        local m=${RRJMSG//\$jump/$RRJFMT}
-        "$TMUX_REAL" -L "$RRJ" display-message -p "${m//\$where/work:2 api}"
-    }
-    case "$(rr_notice x)" in
-        *"prefix x"*) ok "with @cockpit_jump_key x the notice says prefix x" ;;
-        *) bad "with @cockpit_jump_key x the notice says prefix x" "prefix x" "$(rr_notice x)" ;;
-    esac
-    case "$(rr_notice off)" in
-        *prefix*) bad "with the key off the clause drops out rather than naming an unbound key" \
-                      "no prefix clause" "$(rr_notice off)" ;;
-        *) ok "with the key off the clause drops out rather than naming an unbound key" ;;
-    esac
-    case "$(rr_notice unset)" in
-        *"prefix u"*) ok "unset, it names the shipped default u, never the pre-#43 J" ;;
-        *) bad "unset, it names the shipped default u, never the pre-#43 J" "prefix u" \
-                "$(rr_notice unset)" ;;
-    esac
-    is "and the whole notice fits the 72 columns an 80-column client shows" "yes" \
-       "$( [ "$(ncols "$(rr_notice unset)")" -le 72 ] && echo yes \
-            || echo "no: $(ncols "$(rr_notice unset)") columns" )"
-fi
-"$TMUX_REAL" -L "$RRJ" kill-server >/dev/null 2>&1
-fi
-
 echo "== #105: one message prefix, and the popup refusals speak through tmux =="
 # On this theme a display-message is welded into status-right with no
 # separator, so there is one prefix for the whole plugin. The CLI entry paths
@@ -12604,7 +16169,7 @@ htp=$("$TMUX_REAL" -L "$HT" list-panes -t s: -F '#{pane_id}' | head -1)
 "$TMUX_REAL" -L "$HT" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
 # the load's sweep, settled
 TMUX="$SOCKDIR/$HT,0,0" "$DIR/scripts/agent-state" sweep >/dev/null 2>&1
-read -r htc htf htpid <<<"$(cw_open "$HT" s)"
+read -r htc htf htpid htps <<<"$(cw_open "$HT" s)"
 if [ -z "${htc:-}" ]; then skip_ "the host-title tab ladder (no control client)"; else
 httab() { "$TMUX_REAL" -L "$HT" display-message -p -c "$htc" -t s: \
         '#{E:window-status-current-format}' 2>/dev/null | plain
@@ -12615,7 +16180,7 @@ is "an 80-column client cuts the host-titled tab to its budget" \
 cw_size "$HT" "$htc" 160
 is "a 160-column client draws the whole name" " 0 $HTN ○ " "$(httab)"
 fi
-cw_close "${htpid:-}" "${htf:-}"
+cw_close "${htpid:-}" "${htf:-}" "${htps:-}"
 "$TMUX_REAL" -L "$HT" kill-server >/dev/null 2>&1
 fi
 
@@ -12634,8 +16199,9 @@ av_setup() {                  # the fixtures every agent-view block needs; each 
     # and bash cannot trap a signal it started with ignored: a poller's HUP trap never runs, and
     # its HUP rows fail with nothing wrong (#524). Those pollers start with the default back.
     AVDFL=(env); env --default-signal=HUP true 2>/dev/null && AVDFL=(env --default-signal=HUP)
-    # Where env cannot reset it, the HUP rows below go red: say why, once, above them.
-    [ "${AVDFL[*]}" = env ] && [ -n "$(trap -p HUP)" ] \
+    # Where env cannot reset it, the HUP rows below go red: say why, once, above them. The
+    # run traps HUP itself (#1107), so only the ignored form says it started ignored.
+    [ "${AVDFL[*]}" = env ] && [ "$(trap -p HUP)" = "trap -- '' SIGHUP" ] \
         && skip_ "the poller HUP rows: SIGHUP is ignored (nohup?) and env cannot reset it (#524)"
     AVF="$DIR/tests/fixtures/agent-view"
     AVBIN=$(mktmpd); ln -s "$AVF/claude" "$AVBIN/claude"
@@ -12689,6 +16255,23 @@ av_kill() {                   # av_kill <pid>: SIGKILL a poller of ours, and the
             && kill -9 "${k%%:*}" 2>/dev/null
     done
     return 0
+}
+
+av_term() {                   # av_term <pid> <socket name>: TERM it if it is that server's poller
+    # A pid read from @cockpit_poll_pid outlives its poller, and the kernel hands the number on
+    # (AGENTS.md): it is checked here, at the kill, not rows before (#1213). By name, and by the
+    # TMUX in its environment: the name alone also fits another server's poller, the user's own
+    # among them. /proc only: each caller's block skips without it. Prints nothing when the
+    # TERM went, else "no signal: <why>", so a row shows a kill that did not happen (#1208).
+    local p=${1:-} c="" e on=""
+    case "$p" in ''|*[!0-9]*) printf 'no signal: pid [%s]' "$p"; return 1 ;; esac
+    [ -r "/proc/$p/comm" ] && read -r c 2>/dev/null < "/proc/$p/comm"
+    [ "$c" = agent-poll ] || { printf 'no signal: comm [%s]' "$c"; return 1; }
+    while IFS= read -r -d '' e; do
+        case "$e" in "TMUX=$SOCKDIR/${2:-},"*) on=1 ;; esac
+    done 2>/dev/null < "/proc/$p/environ"
+    [ -n "$on" ] || { printf 'no signal: not on [%s]' "${2:-}"; return 1; }
+    kill -TERM "$p" 2>/dev/null || { printf 'no signal: kill TERM'; return 1; }
 }
 
 echo "== agent-view: a background worker's hooks touch nothing (#174) =="
@@ -12792,7 +16375,9 @@ case "$AVMSG" in
 esac
 # Compare-then-set: an unchanged state writes nothing, since every set redraws.
 AVSETS="$AVREC/sets"; : > "$AVSETS"
-av_tm set-hook -g after-set-option "run-shell 'echo \"#{hook_arguments}\" >> $AVSETS'"
+av_tm set-environment -g CKLOG "$AVSETS" >/dev/null 2>&1
+av_tm set-hook -g after-set-option \
+    "run-shell 'echo \"#{hook_arguments}\" >> \"\$CKLOG\"'"
 av_once blocked.json >/dev/null; av_once blocked.json >/dev/null
 : > "$AVSETS"; av_once blocked.json >/dev/null
 is "a poll that changes nothing writes nothing" "0" "$(wc -l < "$AVSETS" | tr -d ' ')"
@@ -12901,7 +16486,9 @@ is "a marked pane whose title names two jobs keeps the worst of all" \
    "||needs-input|fix the parser needs you" "$(avj "$AVMD")"
 # Compare-then-set: a second poll of the same bind writes nothing (every set redraws).
 AVSETS="$AVREC/bsets"; : > "$AVSETS"
-av_tm set-hook -g after-set-option "run-shell 'echo \"#{hook_arguments}\" >> $AVSETS'"
+av_tm set-environment -g CKLOG "$AVSETS" >/dev/null 2>&1
+av_tm set-hook -g after-set-option \
+    "run-shell 'echo \"#{hook_arguments}\" >> \"\$CKLOG\"'"
 av_bind; : > "$AVSETS"; av_bind
 is "a poll that changes nothing writes nothing, bound panes included" "0" \
    "$(wc -l < "$AVSETS" | tr -d ' ')"
@@ -13048,18 +16635,11 @@ av_tm set-option -g @cockpit_bg_poll 3600
 av_hook() {                   # av_hook <type>: a front end's relayed notification, as a hook
     : > "$AVLOG"
     printf '{"notification_type":"%s","message":"m1"}' "$1" \
-        | env TMUX="$AVT" TMUX_PANE="$AVP" PATH="$AVREC:$PATH" \
+        | env -u COCKPIT_NO_AUTOSTART TMUX="$AVT" TMUX_PANE="$AVP" PATH="$AVREC:$PATH" \
             "$DIR/scripts/agent-state" notify >/dev/null 2>&1
 }
 av_runs() { grep -c '^run-shell -b ' "$AVLOG"; }
-av_polls() {                  # live agent-poll processes on this server
-    local d n=0
-    for d in /proc/[0-9]*; do
-        [ "$(cat "$d/comm" 2>/dev/null)" = agent-poll ] || continue
-        tr '\0' '\n' < "$d/environ" 2>/dev/null | grep -q "^TMUX=$SOCKDIR/$AV," && n=$((n + 1))
-    done
-    echo "$n"
-}
+av_polls() { polls_on "$AV" /proc/[0-9]*; }   # live agent-poll processes on this server
 av_published() {              # the published pid is a live agent-poll
     local p; p=$(av_tm show-option -gqv @cockpit_poll_pid)
     [ -n "$p" ] && [ "$(cat "/proc/$p/comm" 2>/dev/null)" = agent-poll ]
@@ -13087,11 +16667,12 @@ is "...the hook cost one extra tmux read over the plain notify (msg + batch + re
    "$(wc -l < "$AVLOG" | tr -d ' ')"
 is "...and exactly one poller is running" "1" "$(av_polls)"
 AVPOLLPID=$(av_tm show-option -gqv @cockpit_poll_pid)
-kill -TERM "$AVPOLLPID" 2>/dev/null
+is "the poller is sent a TERM, its pid checked at the kill (#1213)" "" \
+   "$(av_term "$AVPOLLPID" "$AV")"
 av_wait '[ -z "$(av_tm show-option -gqv @cockpit_poll_pid)" ]'
 is "SIGTERM unpublishes the poller's pid" "" "$(av_tm show-option -gqv @cockpit_poll_pid)"
 # A published pid that is not an agent-poll is not trusted, and not signalled.
-sleep 300 & AVSLEEP=$!
+sleep 300 & AVSLEEP=$!; AVSLEEPS=$(pid_start "$AVSLEEP")
 av_tm set-option -g @cockpit_poll_pid "$AVSLEEP"
 av_hook agent_needs_input
 is "a stale pid naming another process is not trusted: a poller starts" "1" "$(av_runs)"
@@ -13101,9 +16682,11 @@ is "...and takes the publication over" "yes" \
         && av_published && echo yes || echo no)"
 is "...and the other process was never signalled" "yes" \
    "$(kill -0 "$AVSLEEP" 2>/dev/null && echo yes || echo no)"
-kill "$AVSLEEP" 2>/dev/null; wait "$AVSLEEP" 2>/dev/null
-kill -TERM "$(av_tm show-option -gqv @cockpit_poll_pid)" 2>/dev/null
+pid_sig TERM "$AVSLEEP" "$AVSLEEPS" >/dev/null; wait "$AVSLEEP" 2>/dev/null
+is "...which is sent a TERM, its pid checked at the kill (#1213)" "" \
+   "$(av_term "$(av_tm show-option -gqv @cockpit_poll_pid)" "$AV")"
 av_wait '[ -z "$(av_tm show-option -gqv @cockpit_poll_pid)" ]'
+is "...and unpublishes" "" "$(av_tm show-option -gqv @cockpit_poll_pid)"
 # off means never: no mark, no poller; the needs-input write is today's.
 av_tm set-option -g @cockpit_bg_poll off
 av_tm set-option -pu -t "$AVP" @cockpit_agentview
@@ -13112,6 +16695,124 @@ is "@cockpit_bg_poll off: no mark and no poller" "|0|needs-input" \
    "$(avo @cockpit_agentview)|$(av_runs)|$(avo @panestate)"
 av_tm kill-server >/dev/null 2>&1
 fi
+
+echo "== agent-view: av_term sends its TERM only to the named server's poller (#1213) =="
+# The decoys are this shell's own children, each stopped, so a TERM sent to one stays pending
+# in its /proc/<pid>/status, read at once: no wait for a death that may be slow. Each ends by
+# reading a line from its fifo, never by a signal: a job bash reaps after a signal prints a
+# line that no row reads. The fifos are held open here from the start: a decoy's comm is set at
+# its execve, before it opens its fifo, and a line written to a fifo nobody holds is dropped.
+if [ ! -d /proc/self ]; then skip_ "av_term's decoys (no /proc)"; else
+AVTD=$(mktmpd); AVTS="cockpit-av-$$-term"
+printf '#!/bin/bash\nexec 3<> "$1"; read -r -t 20 -u 3 _\n' > "$AVTD/agent-poll"
+cp "$AVTD/agent-poll" "$AVTD/holder"; chmod +x "$AVTD/agent-poll" "$AVTD/holder"
+mkfifo "$AVTD/a.f" "$AVTD/h.f"
+exec 7<>"$AVTD/a.f" 8<>"$AVTD/h.f"
+av_tc() {                     # <pid> -> its comm, or nothing
+    local c=""; [ -r "/proc/$1/comm" ] && read -r c 2>/dev/null < "/proc/$1/comm"; echo "$c"
+}
+av_tst() { awk '{sub(/.*\) /, ""); print $1}' "/proc/$1/stat" 2>/dev/null; }
+av_tpend() {                  # <pid> -> 1 if a TERM (bit 14, 0x4000) is pending for it, else 0
+    awk '/^(ShdPnd|SigPnd):/ { c = substr($2, 13, 1); if (c != "" && index("4567cdef", c)) t = 1 }
+         END { print t + 0 }' "/proc/$1/status" 2>/dev/null
+}
+# an agent-poll by name, of another server whose name only extends this one's (so the "," after
+# the name is what tells them apart); and a process of this server, by another name
+env TMUX="$SOCKDIR/${AVTS}x,0,0" "$AVTD/agent-poll" "$AVTD/a.f" </dev/null 7>&- 8>&- & AVTA=$!
+env TMUX="$SOCKDIR/$AVTS,0,0" "$AVTD/holder" "$AVTD/h.f" </dev/null 7>&- 8>&- & AVTH=$!
+av_wait '[ "$(av_tc "$AVTA")" = agent-poll ] && [ "$(av_tc "$AVTH")" = holder ]'
+[ "$(av_tc "$AVTA")" = agent-poll ] && kill -STOP "$AVTA"
+[ "$(av_tc "$AVTH")" = holder ] && kill -STOP "$AVTH"
+av_wait '[ "$(av_tst "$AVTA")$(av_tst "$AVTH")" = TT ]'
+is "the decoys are up and stopped" "TT" "$(av_tst "$AVTA")$(av_tst "$AVTH")"
+is "an empty pid: no signal, and said" "no signal: pid []" "$(av_term "" "$AVTS")"
+is "a pid that is no number: no signal, and said" "no signal: pid [1x]" "$(av_term 1x "$AVTS")"
+is "this server's process by another name: no TERM, its name said" \
+   "no signal: comm [holder]|0" "$(av_term "$AVTH" "$AVTS")|$(av_tpend "$AVTH")"
+is "an agent-poll of another server: no TERM, the server said" \
+   "no signal: not on [$AVTS]|0" "$(av_term "$AVTA" "$AVTS")|$(av_tpend "$AVTA")"
+# each gets its line, kept in its held fifo until it reads it, then runs on and exits 0
+printf '\n' >&7; printf '\n' >&8
+[ "$(av_tc "$AVTA")" = agent-poll ] && kill -CONT "$AVTA"
+[ "$(av_tc "$AVTH")" = holder ] && kill -CONT "$AVTH"
+wait "$AVTA" 2>/dev/null; AVTRC=$?; wait "$AVTH" 2>/dev/null
+is "...and each decoy then exits by itself, 0" "0 0" "$AVTRC $?"
+exec 7>&- 8>&-
+fi
+
+echo "== pid_sig: a signal goes only to the process whose start time was read (#1227) =="
+# A stopped child keeps a TERM pending, so /proc shows whether one was sent, with no clock. A
+# number that was handed on cannot be staged: a decoy's wrong start time stands for it. Each
+# child here waits on its own fifo, held open by this shell, and exits 0 once it reads a line.
+if [ ! -d /proc/self ]; then skip_ "pid_sig (no /proc to read a pending signal from)"
+else
+SQD=$(mktmpd); mkfifo "$SQD/r" "$SQD/p"; exec 7<>"$SQD/r" 8<>"$SQD/p"
+sq_pend() {                   # <pid> -> 1 if a TERM (bit 14, 0x4000) is pending for it, else 0
+    awk '/^(ShdPnd|SigPnd):/ { c = substr($2, 13, 1); if (c != "" && index("4567cdef", c)) t = 1 }
+         END { print t + 0 }' "/proc/$1/status" 2>/dev/null
+}
+sq_st() { awk '{sub(/.*\) /, ""); print $1}' "/proc/$1/stat" 2>/dev/null; }
+sq_c() {                      # <pid> -> its comm, or nothing
+    local c=""; [ -r "/proc/$1/comm" ] && read -r c 2>/dev/null < "/proc/$1/comm"; echo "$c"
+}
+sq_gone() { [ -e "/proc/$SQR" ] || echo gone; }
+# A child that left by itself is reaped at once, with no wait: its number is free to hand on.
+bash -c 'read -r _ < "$1"' _ "$SQD/r" </dev/null >/dev/null 2>&1 7>&- 8>&- & SQR=$!
+SQRS=$(pid_start "$SQR"); printf '\n' >&7; until_out gone sq_gone >/dev/null
+is "a child reaped before the kill: no kill on its number, and said" \
+   "1|gone|no signal: start []" "${SQRS:+1}|$(sq_gone)|$(pid_sig TERM "$SQR" "$SQRS")"
+# one gone before its start was read: an empty start must not match the empty read of a gone pid
+is "a child gone before its start was read: no kill on its number, and said" \
+   "no signal: no start" "$(pid_sig TERM "$SQR" "")"
+wait "$SQR" 2>/dev/null
+bash -c 'read -r _ < "$1"' _ "$SQD/p" </dev/null >/dev/null 2>&1 7>&- 8>&- & SQP=$!
+SQPS=$(pid_start "$SQP")
+[ "$(sq_c "$SQP")" = bash ] && kill -STOP "$SQP"; until_out T sq_st "$SQP" >/dev/null
+is "the decoy is up and stopped" "T" "$(sq_st "$SQP")"
+# A second, run through a link whose name holds ") ": its comm does too, so a cut at the first
+# ") " of its stat line, not the last, reads the wrong field. Field 22 is read here by awk alone.
+sq_f22() { awk '{ sub(/.*\) /, ""); print $20 }' "/proc/$1/stat" 2>/dev/null; }
+ln -s "$(command -v bash)" "$SQD/x) 1 2 3"
+"$SQD/x) 1 2 3" -c 'read -r _ < "$1"' _ "$SQD/r" </dev/null >/dev/null 2>&1 7>&- 8>&- & SQX=$!
+until_out 'x) 1 2 3' sq_c "$SQX" >/dev/null
+is "the second decoy's name holds a \") \"" "x) 1 2 3" "$(sq_c "$SQX")"
+SQW="$(sq_f22 "$SQP")|$(sq_f22 "$SQX")"
+case $SQW in [0-9]*'|'[0-9]*) ;; *) SQW="field 22 unread [$SQW]" ;; esac
+is "pid_start reads field 22 of each, past a \") \" in a name" \
+   "$SQW" "$(pid_start "$SQP")|$(pid_start "$SQX")"
+printf '\n' >&7; wait "$SQX" 2>/dev/null
+is "a pid that is no number: no signal, and said" "no signal: pid [1x]" "$(pid_sig TERM 1x 1)"
+is "another start time under its number: no TERM, the one read said" \
+   "no signal: start [$SQPS]|0" "$(pid_sig TERM "$SQP" 1)|$(sq_pend "$SQP")"
+is "its own start time: the TERM goes" "|1" "$(pid_sig TERM "$SQP" "$SQPS")|$(sq_pend "$SQP")"
+# its line waits in the fifo: without the TERM it reads it and exits 0
+printf '\n' >&8; [ "$(sq_c "$SQP")" = bash ] && kill -CONT "$SQP"; wait "$SQP" 2>/dev/null
+is "...and ends it once it runs on" "143" "$?"
+# A pid that is not this shell's child: pid_kid reads its start only under the parent named,
+# and cw_close, whose client's $(...) has ended, signals it only under the start cw_open
+# printed. A third decoy, stopped, stands for a number handed on.
+mkfifo "$SQD/k"; exec 9<>"$SQD/k"
+bash -c 'read -r _ < "$1"' _ "$SQD/k" </dev/null >/dev/null 2>&1 7>&- 8>&- 9>&- & SQK=$!
+SQKS=$(pid_start "$SQK") SQME=$BASHPID
+pid_sig STOP "$SQK" "$SQKS" >/dev/null; until_out T sq_st "$SQK" >/dev/null
+is "pid_kid gives the start of a child of the parent named" "[$SQKS]" \
+   "[$(pid_kid "$SQK" "$SQME")]"
+is "...and nothing under another parent" "[]" "[$(pid_kid "$SQK" 1)]"
+is "cw_close: another start time under the client's number gets no TERM" "0" \
+   "$(cw_close "$SQK" "" 1; sq_pend "$SQK")"
+is "cw_close: the start cw_open printed lets the TERM go" "1" \
+   "$(cw_close "$SQK" "" "$SQKS"; sq_pend "$SQK")"
+printf '\n' >&9; pid_sig CONT "$SQK" "$SQKS" >/dev/null; wait "$SQK" 2>/dev/null
+is "...and the third decoy ends on it once it runs on" "143" "$?"
+exec 7>&- 8>&- 9>&-
+fi
+# Text only, a revert guard: no line sends a bare kill to a pid variable that #1227 put behind
+# pid_sig. It sees those named sites only, not a pid reaching a kill under another name or a new
+# site. Its own pattern line holds "kill(", which the pattern, wanting a blank after it, skips.
+SQRE='(^|[^A-Za-z_])kill( +-[A-Z1-9][A-Z0-9]*)? +"\$(SGP|SCP|ps_to|pc|AVNP|AVSC|AVCH|AVA|AVB|'
+SQRE="${SQRE}AVC|AVL|AVTP|AVSLEEP|PDSLEEP|PSW1|PSW2|rg_holder|holder)\""
+is "text-only revert guard: no bare kill of the named pid variables" "0" \
+   "$(grep -cE "$SQRE" "$DIR/tests/run.sh")"
 
 echo "== agent-view: the poller owns one slot per server and lets go on every exit path (#174) =="
 av_setup
@@ -13123,7 +16824,7 @@ av_tm set-option -p -t "$AVP" @cockpit_agentview 1
 av_start() {                  # a poller outside the hook path; its pid in AVPID
     "${AVDFL[@]}" -u TMUX_PANE TMUX="$AVT" PATH="$AVBIN:$PATH" AV_JSON="$AVF/done.json" \
         "$DIR/scripts/agent-poll" </dev/null >/dev/null 2>&1 &
-    AVPID=$!
+    AVPID=$!; AVPS=$(pid_start "$AVPID")
 }
 av_pub() { av_tm show-option -gqv @cockpit_poll_pid; }
 # av_kill signals only this shell's own child: a pid bash has reaped may be someone else's by
@@ -13135,9 +16836,10 @@ AVNS=$(av_nst "$AVNP"); av_kill "$AVNP"
 # the same process (its start time), and neither stopped nor dead
 case "$(av_nst "$AVNP")" in "S ${AVNS#* }"|"R ${AVNS#* }") AVYES=yes ;; *) AVYES=no ;; esac
 is "av_kill leaves a pid that is not this shell's child alone" "yes" "$AVYES"
-# ours to clean: the sleep from just above, checked by name before the signal
-[ "$(cat "/proc/$AVNP/comm" 2>/dev/null)" = sleep ] && kill "$AVNP" 2>/dev/null
-av_start; AVA=$AVPID
+# ours to clean: the sleep from just above, checked by the start time read before av_kill, as
+# a name check alone passes any sleep (#1227)
+pid_sig TERM "$AVNP" "${AVNS#* }" >/dev/null
+av_start; AVA=$AVPID AVAS=$AVPS
 av_wait '[ "$(av_pub)" = "$AVA" ]'
 is "a poller publishes its own pid" "$AVA" "$(av_pub)"
 av_wait '[ "$(avo @panestate)" = done ]'
@@ -13150,23 +16852,27 @@ is "...without unpublishing the first one's pid on its way out" "yes" \
 # The slot is released only if it is still ours: a poller whose slot was taken over lets go
 # of nothing (the number written here stands for the later poller's).
 av_tm set-option -g @cockpit_poll_pid 999999
-kill -TERM "$AVA"; av_wait "av_gone \$AVA" || av_kill "$AVA"; wait "$AVA" 2>/dev/null
+pid_sig TERM "$AVA" "$AVAS" >/dev/null
+av_wait "av_gone \$AVA" || av_kill "$AVA"; wait "$AVA" 2>/dev/null
 is "a poller whose slot was taken over does not release the new owner's pid" "999999" "$(av_pub)"
 av_tm set-option -gu @cockpit_poll_pid
-av_start; AVA=$AVPID
+av_start; AVA=$AVPID AVAS=$AVPS
 av_wait '[ "$(av_pub)" = "$AVA" ]'
 # (The poller no longer leaves when no marked pane is an agent: see the #448 blocks below.)
-kill -TERM "$AVA"; av_wait "av_gone \$AVA" || av_kill "$AVA"; wait "$AVA" 2>/dev/null
-av_start; AVC=$AVPID
+pid_sig TERM "$AVA" "$AVAS" >/dev/null
+av_wait "av_gone \$AVA" || av_kill "$AVA"; wait "$AVA" 2>/dev/null
+av_start; AVC=$AVPID AVCS=$AVPS
 av_wait '[ "$(av_pub)" = "$AVC" ]'
-kill -TERM "$AVC"; av_wait "av_gone \$AVC" || av_kill "$AVC"; wait "$AVC" 2>/dev/null
-is "SIGTERM unpublishes" "" "$(av_pub)"
-av_start; AVC=$AVPID
+AVSIG=$(pid_sig TERM "$AVC" "$AVCS")
+av_wait "av_gone \$AVC" || av_kill "$AVC"; wait "$AVC" 2>/dev/null
+is "SIGTERM unpublishes" "|" "$AVSIG|$(av_pub)"
+av_start; AVC=$AVPID AVCS=$AVPS
 av_wait '[ "$(av_pub)" = "$AVC" ]'
-kill -HUP "$AVC"; av_wait "av_gone \$AVC" || av_kill "$AVC"; wait "$AVC" 2>/dev/null
-is "SIGHUP unpublishes" "" "$(av_pub)"
+AVSIG=$(pid_sig HUP "$AVC" "$AVCS")
+av_wait "av_gone \$AVC" || av_kill "$AVC"; wait "$AVC" 2>/dev/null
+is "SIGHUP unpublishes" "|" "$AVSIG|$(av_pub)"
 av_tm set-option -g @cockpit_bg_poll off
-av_start; AVC=$AVPID
+av_start; AVC=$AVPID AVCS=$AVPS
 av_wait "av_gone \$AVC" || av_kill "$AVC"; wait "$AVC" 2>/dev/null
 is "@cockpit_bg_poll off: the poller never publishes" "" "$(av_pub)"
 av_tm kill-server >/dev/null 2>&1
@@ -13220,9 +16926,10 @@ av_hook agent_needs_input
 is "a relayed agent_needs_input keeps the mark" "1" "$(avo @cockpit_agentview)"
 av_hook agent_completed
 is "a relayed agent_completed keeps the mark" "1" "$(avo @cockpit_agentview)"
-AVK=$(av_tm show-option -gqv @cockpit_poll_pid)
-kill -TERM "$AVK" 2>/dev/null
+is "the block's poller is sent a TERM, its pid checked at the kill (#1213)" "" \
+   "$(av_term "$(av_tm show-option -gqv @cockpit_poll_pid)" "$AV")"
 av_wait '[ -z "$(av_tm show-option -gqv @cockpit_poll_pid)" ]'
+is "...and unpublishes" "" "$(av_tm show-option -gqv @cockpit_poll_pid)"
 av_tm kill-server >/dev/null 2>&1
 fi
 
@@ -13237,7 +16944,7 @@ AVRACE=$(mktmpd); ln -s "$AVF/tmux-race" "$AVRACE/tmux"
 av_startx() {                 # av_startx [NAME=value...]: a poller of our own; pid in AVPID
     env -u TMUX_PANE TMUX="$AVT" PATH="$AVBIN:$PATH" AV_JSON="$AVF/done.json" "$@" \
         "$DIR/scripts/agent-poll" </dev/null >/dev/null 2>&1 &
-    AVPID=$!
+    AVPID=$!; AVPS=$(pid_start "$AVPID")
 }
 av_pub() { av_tm show-option -gqv @cockpit_poll_pid; }
 av_reap() {                   # av_reap <pid>: 0 if it left by itself; else kills it and returns 1
@@ -13251,7 +16958,7 @@ av_startx PATH="$AVRACE:$AVBIN:$PATH" AV_REAL="$TMUX_REAL" AV_RACE=999999
 AVA=$AVPID; av_reap "$AVA" && AVLEFT=yes || AVLEFT=no
 is "an empty slot taken by someone else meanwhile: the poller leaves" "yes" "$AVLEFT"
 is "...and the slot is still theirs" "999999" "$(av_pub)"
-sleep 300 & AVSLEEP=$!
+sleep 300 & AVSLEEP=$!; AVSLEEPS=$(pid_start "$AVSLEEP")
 av_tm set-option -g @cockpit_poll_pid "$AVSLEEP"
 av_startx PATH="$AVRACE:$AVBIN:$PATH" AV_REAL="$TMUX_REAL" AV_RACE=999999
 AVA=$AVPID; av_reap "$AVA" && AVLEFT=yes || AVLEFT=no
@@ -13259,7 +16966,7 @@ is "a stale slot taken by someone else meanwhile: the poller leaves" "yes" "$AVL
 is "...the slot is still theirs" "999999" "$(av_pub)"
 is "...and the process the stale pid named was not signalled" "yes" \
    "$(kill -0 "$AVSLEEP" 2>/dev/null && echo yes || echo no)"
-kill "$AVSLEEP" 2>/dev/null; wait "$AVSLEEP" 2>/dev/null
+pid_sig TERM "$AVSLEEP" "$AVSLEEPS" >/dev/null; wait "$AVSLEEP" 2>/dev/null
 # A poller that loses its slot after the claim notices on its next tick.
 av_tm set-option -gu @cockpit_poll_pid
 av_startx; AVA=$AVPID
@@ -13287,20 +16994,26 @@ av_tm set-option -g @cockpit_bg_poll 1
 # its own TERM just before that assignment.
 # The sleep must not outlive the poller. The trap records the sleep's pid from $! itself: a sleep
 # that records its own pid can be killed before it first runs, and then there is nothing to read.
-AVSP="$AVREC/sleep.pid"; rm -f "$AVSP"
+# It records the sleep's start beside it, read while the sleep is the poller's child, for the
+# kill below that cleans up after a sleep that did outlive it (#1227).
+# Under a folder whose name holds $ and ': the trap's text quotes the path (#1227).
+AVSP="$AVREC/a\$x'b"; mkdir -p "$AVSP"; AVSP="$AVSP/sleep.pid"; rm -f "$AVSP"
+AVST='[ "$BASH_COMMAND" = "sleeper=\$!" ] && { echo "$! $(sed "s/.*) //" /proc/$!/stat'
+AVST="$AVST | cut -d' ' -f20)\" > $(tq "$AVSP"); kill -TERM \$\$; }"
 av_tm set-option -g @cockpit_bg_poll 3600
 av_tm set-option -gu @cockpit_poll_pid
 env -u TMUX_PANE TMUX="$AVT" PATH="$AVBIN:$PATH" AV_JSON="$AVF/done.json" \
-    bash -c 'set -T; trap "$1" DEBUG; . "$0"' "$DIR/scripts/agent-poll" \
-    '[ "$BASH_COMMAND" = "sleeper=\$!" ] && { echo $! > "'"$AVSP"'"; kill -TERM $$; }' \
+    bash -c 'set -T; trap "$1" DEBUG; . "$0"' "$DIR/scripts/agent-poll" "$AVST" \
     </dev/null >/dev/null 2>&1 &
 AVA=$!
 av_reap "$AVA" && AVLEFT=yes || AVLEFT=no
 is "a TERM between the fork and the saved pid still ends the poller" "yes" "$AVLEFT"
-AVSC=$(cat "$AVSP" 2>/dev/null)
+AVSC="" AVSCS=""; read -r AVSC AVSCS 2>/dev/null < "$AVSP"
 is "...the sleep it had started was reached" "yes" "$([ -n "$AVSC" ] && echo yes || echo no)"
+is "...its pid and start written under a folder named with \$ and '" "1|1" \
+   "${AVSC:+1}|${AVSCS:+1}"
 av_wait "av_gone ${AVSC:-0}" && AVLEFT=yes || AVLEFT=no
-[ -z "$AVSC" ] || av_gone "$AVSC" || kill "$AVSC" 2>/dev/null
+[ -z "$AVSC" ] || av_gone "$AVSC" || pid_sig TERM "$AVSC" "$AVSCS" >/dev/null
 is "...and did not outlive it" "yes" "$AVLEFT"
 av_tm set-option -g @cockpit_bg_poll 1
 # A HUP that lands right after the claim has published the pid must not leave it there: the
@@ -13322,21 +17035,22 @@ av_tm set-option -g @cockpit_bg_poll 1
 # hour, so only a signal can end a poller and only release can end its sleep.
 av_tm set-option -g @cockpit_bg_poll 3600
 av_tm set-option -gu @cockpit_poll_pid
-av_startx; AVA=$AVPID; av_startx; AVB=$AVPID
+av_startx; AVA=$AVPID AVAS=$AVPS; av_startx; AVB=$AVPID AVBS=$AVPS
 av_alive_count() {
     local n=0; av_gone "$AVA" || n=$((n + 1)); av_gone "$AVB" || n=$((n + 1)); echo "$n"
 }
 av_wait '[ "$(av_alive_count)" = 1 ]'
 is "two simultaneous starts leave exactly one poller" "1" "$(av_alive_count)"
-if av_gone "$AVA"; then AVL=$AVB; else AVL=$AVA; fi
+if av_gone "$AVA"; then AVL=$AVB AVLS=$AVBS; else AVL=$AVA AVLS=$AVAS; fi
 is "...and it holds the slot" "$AVL" "$(av_pub)"
 # Its sleep child goes with it.
 # The sleep itself, in one look: a first look that found a tick's short-lived child and a second
 # that found nothing left AVCH empty, and `av_gone` then died on its missing pid.
 av_wait 'AVCH=$(pgrep -xP "$AVL" sleep | head -1); [ -n "$AVCH" ]'
-kill -TERM "$AVL"; av_reap "$AVL"
+AVCHS=$(pid_kid "$AVCH" "$AVL")   # read while the poller is its parent (#1227)
+pid_sig TERM "$AVL" "$AVLS" >/dev/null; av_reap "$AVL"
 av_wait "av_gone $AVCH" && AVLEFT=yes || AVLEFT=no
-av_gone "$AVCH" || kill "$AVCH" 2>/dev/null
+av_gone "$AVCH" || pid_sig TERM "$AVCH" "$AVCHS" >/dev/null
 is "a poller stopped by a signal leaves no child behind" "yes" "$AVLEFT"
 wait "$AVA" "$AVB" 2>/dev/null
 av_tm kill-server >/dev/null 2>&1
@@ -13355,7 +17069,10 @@ av_tm set -g @cockpit_agents_glob '|claude|codex|'
 AVWK="$AVREC/woke"; : > "$AVWK"
 AVWP=$(av_np "alpha")
 AVWF="'#{@cockpit_job}' '#{@cockpit_job_name}'"   # the pane's job and name, at the wake
-av_tm set -g @cockpit_board_wake "run-shell -t $AVWP \"printf '%s|%s\\\\n' $AVWF >> $AVWK\" ; "
+# The log's path comes from the server environment, escaped so the shell expands it, not tmux.
+av_tm set-environment -g CKWK "$AVWK"
+av_tm set -g @cockpit_board_wake \
+    "run-shell -t $AVWP \"printf '%s|%s\\\\n' $AVWF >> \\\"\\\$CKWK\\\"\" ; "
 av_once bind.json >/dev/null
 is "a new bind's wake already sees its job and name" "aa|alpha" "$(sed -n 1p "$AVWK")"
 av_tm select-pane -t "$AVWP" -T "fix the parser"
@@ -13410,13 +17127,18 @@ AVUP=$(av_pub)
 av_sweep
 is "a sweep with the poller alive starts none" "0" "$(av_runs)"
 is "...one poller on the server" "$AVUP" "$(av_pub)"
-kill -TERM "$AVUP"; av_wait '[ -z "$(av_pub)" ]'
+# The sweep's poller is no child of this shell, and its pid is no longer read for a kill: the
+# option tells it to leave, and it does at the end of its next one-second tick (#1213).
+av_tm set-option -g @cockpit_bg_poll off
+av_wait '[ -z "$(av_pub)" ] && [ "$(polls_on "$AV" /proc/[0-9]*)" = 0 ]'
+is "the sweep's poller leaves when the option says off" "|0" \
+   "$(av_pub)|$(polls_on "$AV" /proc/[0-9]*)"
 # A poller of our own, traced: the ticks are counted, never timed.
 : > "$AVTRACE"; : > "$AVCLOG"
 av_tm set-option -g @cockpit_bg_poll 1
 env -u TMUX_PANE TMUX="$AVT" PATH="$AVBIN:$PATH" AV_JSON="$AVLIVE" AV_CLAUDELOG="$AVCLOG" \
     AV_DELAY=0.3 bash -x "$DIR/scripts/agent-poll" </dev/null >/dev/null 2>"$AVTRACE" &
-AVTP=$!
+AVTP=$!; AVTPS=$(pid_start "$AVTP")
 av_wait '[ "$(av_pub)" = "$AVTP" ]'
 av_wait '[ "$(av_reads)" -ge 1 ]'
 av_after 4
@@ -13457,7 +17179,8 @@ is "...and binds the tick the other one is gone" "dd|twin|running|" "$(avj "$AVV
 # A read nobody waits on that fails is tried once per change of the panes, not every tick.
 av_tm select-pane -t "$AVV" -T "nothing"
 av_wait '[ "$(avj "$AVV")" = "|||" ]'
-kill -TERM "$AVTP"; av_wait "av_gone $AVTP" || av_kill "$AVTP"; wait "$AVTP" 2>/dev/null
+pid_sig TERM "$AVTP" "$AVTPS" >/dev/null
+av_wait "av_gone $AVTP" || av_kill "$AVTP"; wait "$AVTP" 2>/dev/null
 : > "$AVTRACE"; : > "$AVCLOG"
 env -u TMUX_PANE TMUX="$AVT" PATH="$AVBIN:$PATH" AV_JSON="$AVLIVE" AV_CLAUDELOG="$AVCLOG" \
     AV_RC=1 bash -x "$DIR/scripts/agent-poll" </dev/null >/dev/null 2>"$AVTRACE" &
@@ -13601,7 +17324,7 @@ is "git.sh blanks the same drivers as git-flags --filters" \
    "$(gs_argv status | grep -x -B1 'filter\..*' | grep -v '^--$' | paste -d' ' - - | LC_ALL=C sort)"
 # The worktree hook needs no binary: a cockpit-tui on PATH and at COCKPIT_TUI_BIN
 # that only leaves a mark, and git.sh still hands git every flag.
-printf '#!/bin/sh\necho ran >> %s/tuiran\n' "$GD" > "$GD/bin/cockpit-tui"
+printf '#!/bin/sh\necho ran >> %s\n' "$(tq "$GD/tuiran")" > "$GD/bin/cockpit-tui"
 chmod +x "$GD/bin/cockpit-tui"
 is "git.sh never runs cockpit-tui, and still hands git every flag" "$("$DSB" git-flags)" \
    "$(COCKPIT_TUI_BIN="$GD/bin/cockpit-tui" gs_argv status | sed '/^-c$/{N;/\nfilter\./d}' |
@@ -13618,7 +17341,7 @@ unset -f gs_argv
 GD=$(mktmpd)
 ( git init -q "$GD/r" && cd "$GD/r" && printf 'hi\n' > x &&
     printf 'x filter=a=b\n' > .gitattributes \
-  && git config 'filter.a=b.clean' "touch $GD/PWNED" ) >/dev/null 2>&1
+  && git config 'filter.a=b.clean' "touch $(tq "$GD/PWNED")" ) >/dev/null 2>&1
 git -C "$GD/r" -c 'filter.a=b.clean=' add x >/dev/null 2>&1
 is "a=b's plant fires under git -c filter.a=b.clean=" "yes" "$([ -e "$GD/PWNED" ] && echo yes)"
 git -C "$GD/r" read-tree --empty; rm -f "$GD/PWNED"
@@ -13651,8 +17374,8 @@ ds_subs() {                   # <dir>: $1/r, a.txt changed, n.txt new, submodule
       printf 'y\n' > bump/g.txt && git -C bump add g.txt && git -C bump commit -q -m bump &&
           printf 'b\n' > a.txt
       printf 'n\n' > n.txt
-      git config -f .git/modules/sub/config filter.mark.clean "touch $1/PWNED.sub; cat"
-      git config -f "$e/.git/config" filter.mark.clean "touch $1/PWNED.emb; cat"
+      git config -f .git/modules/sub/config filter.mark.clean "touch $(tq "$1/PWNED").sub; cat"
+      git config -f "$e/.git/config" filter.mark.clean "touch $(tq "$1/PWNED").emb; cat"
       printf '* filter=mark\n' | tee .git/modules/sub/info/attributes > "$e/.git/info/attributes"
       touch -t 203001010000 sub/f.txt "$e/e.txt"; git status --porcelain >/dev/null
       ls "$1" | grep -c '^PWNED\.'; rm -f "$1"/PWNED.*; touch -t 203101010000 sub/f.txt "$e/e.txt"
@@ -13719,7 +17442,7 @@ is "unborn HEAD, a staged embedded repo: its plant fires under plain git status"
          cd "$GD" && git init -q -b main r && cd r && git init -q -b main e &&
              printf 'e\n' > e/e.txt
          git -C e add -A && git -C e commit -q -m e && git add e
-         git config -f e/.git/config filter.mark.clean "touch $GD/PWNED; cat"
+         git config -f e/.git/config filter.mark.clean "touch $(tq "$GD/PWNED"); cat"
          printf '* filter=mark\n' > e/.git/info/attributes
          touch -t 203001010000 e/e.txt; git status --porcelain >/dev/null
          ls "$GD" | grep -c '^PWNED$'; rm -f "$GD/PWNED"; \
@@ -13787,7 +17510,8 @@ for at in "index staged" pathspec gitlinks; do
     printf 'keep\n' > "$GD/victim"
     cat > "$GD/bin/mktemp" <<STUB
 #!/bin/sh
-d=$GD/race; rm -rf "\$d" "\$d.f"; mkdir -m 700 "\$d"
+d=$(tq "$GD/race"); rm -rf "\$d" "\$d.f"; mkdir -m 700 "\$d"
+echo "\$d" >> $(tq "$GD/race.log")
 for n in $at; do ln -s "$GD/victim" "\$d/\$n"; done
 case "\$1" in -d) echo "\$d" ;; *) ln -s "$GD/victim" "\$d.f"; echo "\$d.f" ;; esac
 STUB
@@ -13795,7 +17519,9 @@ STUB
     PATH="$GD/bin:$PATH" ap_run "$GD/r" >/dev/null
     is "a symlink raced in at $at: the victim keeps its 5 bytes" "5" "$(wc -c < "$GD/victim")"
 done
-rm -rf "$GD/bin/mktemp" "$GD/race" "$GD/race.f"; ap_unref "$GD/r"
+is "the shim handed back its raced dir each time, and no other" "$GD/race" \
+   "$(sort -u "$GD/race.log" 2>/dev/null)"
+rm -rf "$GD/bin/mktemp" "$GD/race" "$GD/race.f" "$GD/race.log"; ap_unref "$GD/r"
 ds_redirty 204001010000
 is "approve exits 0 and runs no gitlink's clean filter" "0|" \
    "$(TMPDIR="$GD/tmp" ap_run "$GD/r")|$(ls "$GD" | grep '^PWNED')"
@@ -13903,7 +17629,7 @@ TMUX_PANE=%99 "$TMUX_REAL" -L "$TPI" -f /dev/null new-session -d -s one \
     "TERM=xterm-256color exec $TMUX_REAL -L $TPI attach -t one" >/dev/null 2>&1
 until_out '?*' "$TMUX_REAL" -L "$TPI" list-clients -F '#{client_name}'
 tpc=$("$TMUX_REAL" -L "$TPI" list-clients -F '#{client_name}' 2>/dev/null)
-"$TMUX_REAL" -L "$TPI" display-popup -c "$tpc" -E "$DIR/scripts/tm two; touch $TPD/done" \
+"$TMUX_REAL" -L "$TPI" display-popup -c "$tpc" -E "$DIR/scripts/tm two; touch $(tq "$TPD/done")" \
     >/dev/null 2>&1 &
 until_out 1 sh -c "[ -e '$TPD/done' ] && echo 1"
 if [ -e "$TPD/done" ]; then ok "tm returned, so the popup closed"
@@ -14419,8 +18145,10 @@ if need_tmux "the board's kill verb"; then :; else
 KV="cockpit-kv-$$"; SOCKS="$SOCKS $KV"; KD=$(mktmpd)
 mkdir -p "$KD/p" "$KD/state"
 cp -r "$DIR"/scripts "$KD/p/"
-printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> %s/rv\n[ ! -e %s/rvout ] || cat %s/rvout\nexit "$(cat %s/rvrc 2>/dev/null || echo 0)"\n' \
-    "$KD" "$KD" "$KD" "$KD" > "$KD/p/scripts/tmux-review"
+{ printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> %s\n' "$(tq "$KD/rv")"
+  printf '[ ! -e %s ] || cat %s\n' "$(tq "$KD/rvout")" "$(tq "$KD/rvout")"
+  printf 'exit "$(cat %s 2>/dev/null || echo 0)"\n' "$(tq "$KD/rvrc")"
+} > "$KD/p/scripts/tmux-review"
 chmod +x "$KD/p/scripts/tmux-review"
 # The binary acts once, then exits with no action (the ordinary q). It writes
 # $COCKPIT_ACTION.expect before the line, as the board does, when asked to.
@@ -14451,12 +18179,15 @@ kv_alive() { "$TMUX_REAL" -L "$KV" list-panes -a -F '#{pane_id}' 2>/dev/null | g
 }
 # <action-line> [expect]: one trip through the wrapper; the note it left
 kv_run() {
-    rm -f "$KD/once" "$KD/twice" "$KD/line2" "$KD/done" "$KD/link" "$KD/expect" "$KD/rv"
+    # Not rv: the request row empties it before its trip and reads it after (#1116).
+    rm -f "$KD/once" "$KD/twice" "$KD/line2" "$KD/done" "$KD/link" "$KD/expect"
     : > "$KD/bargv"; printf '%s\n' "$1" > "$KD/line"
     [ $# -lt 2 ] || printf '%s\n' "$2" > "$KD/expect"
     [ "${KV_LINK:-}" != 1 ] || : > "$KD/link"
     "$TMUX_REAL" -L "$KV" new-window -d -t t: \
-        "${KV_SHIM:+export PATH=\"$KV_SHIM:\$PATH\"; }env COCKPIT_TUI_BIN=$KD/bin XDG_STATE_HOME=$KD/state COCKPIT_LOG=$KD/tui.log $KD/p/scripts/cockpit-board -p $KVHOME; echo x > $KD/done"
+        "${KV_SHIM:+export PATH=\"$KV_SHIM:\$PATH\"; }env COCKPIT_TUI_BIN=$(tq "$KD/bin") \
+XDG_STATE_HOME=$(tq "$KD/state") COCKPIT_LOG=$(tq "$KD/tui.log") \
+$(tq "$KD/p/scripts/cockpit-board") -p $KVHOME; echo x > $(tq "$KD/done")"
     until_file "$KD/done" 'x'
     # the second run's argv is `board --select %N --note <file>` and then the note
     sed -n '3,$p' "$KD/bargv"
@@ -14493,8 +18224,10 @@ C=$(kv_win claude); CW=$(kv_id "$C")
 C2=$("$TMUX_REAL" -L "$KV" split-window -d -P -F '#{pane_id}' -t "$C" 'exec sleep 3600')
 D=$(kv_win claude)
 mkdir -p "$KD/shim"
-printf '#!/bin/sh\nif [ "$1" = if-shell ] && [ -e %s/race ]; then rm -f %s/race; %s join-pane -d -s %s -t %s; fi\nexec %s "$@"\n' \
-    "$KD" "$KD" "$TMUX_REAL" "$C" "$D" "$TMUX_REAL" > "$KD/shim/tmux"
+{ printf '#!/bin/sh\nif [ "$1" = if-shell ] && [ -e %s ]; then rm -f %s\n' \
+      "$(tq "$KD/race")" "$(tq "$KD/race")"
+  printf '    %s join-pane -d -s %s -t %s\nfi\nexec %s "$@"\n' "$TMUX_REAL" "$C" "$D" "$TMUX_REAL"
+} > "$KD/shim/tmux"
 chmod +x "$KD/shim/tmux"; : > "$KD/race"; KV_SHIM=$KD/shim
 kv_run "kill $C" "$C $CW" >/dev/null
 KV_SHIM=
@@ -14546,7 +18279,9 @@ rm -f "$KD/once" "$KD/twice" "$KD/done" "$KD/link" "$KD/rv"; : > "$KD/bargv"
 printf 'kill %s\n' "$V" > "$KD/line"; printf '%s %s\n' "$V2" "$V2W" > "$KD/expect"
 printf 'kill %s\n' "$V2" > "$KD/line2"
 "$TMUX_REAL" -L "$KV" new-window -d -t t: \
-    "env COCKPIT_TUI_BIN=$KD/bin XDG_STATE_HOME=$KD/state COCKPIT_LOG=$KD/tui.log $KD/p/scripts/cockpit-board -p $KVHOME 2>$KD/err; echo x > $KD/done"
+    "env COCKPIT_TUI_BIN=$(tq "$KD/bin") XDG_STATE_HOME=$(tq "$KD/state") \
+COCKPIT_LOG=$(tq "$KD/tui.log") $(tq "$KD/p/scripts/cockpit-board") -p $KVHOME \
+2>$(tq "$KD/err"); echo x > $(tq "$KD/done")"
 until_file "$KD/done" 'x'
 case "$(tail -n 1 "$KD/bargv")" in
     '✕ cockpit: not killed: the board named no window'*) \
@@ -14617,7 +18352,7 @@ echo "== cockpit-board: resume %N runs claude --resume <id> in a new pane at the
 if need_tmux "the board's resume verb"; then :; else
 RS="cockpit-rs-$$"; SOCKS="$SOCKS $RS"; RSD=$(mktmpd)
 mkdir -p "$RSD/stub" "$RSD/state" "$RSD/work" "$RSD/wt" "$RSD/d#(touch \$RSPWN)"
-printf '#!/bin/sh\nprintf "[%%s]" "$PWD" "$@" > %s/ran\nexec sleep 3600\n' "$RSD" \
+printf '#!/bin/sh\nprintf "[%%s]" "$PWD" "$@" > %s\nexec sleep 3600\n' "$(tq "$RSD/ran")" \
     > "$RSD/stub/claude"
 chmod +x "$RSD/stub/claude"
 cat > "$RSD/bin" <<RSBIN
@@ -14650,9 +18385,9 @@ rs_run() {                    # <action-line> <expect>: one trip; the note it le
     # RS_ENV: NAME=value words for the board's environment, a locale for one (#830);
     # RS_STUB and RS_PATH: another stub dir and the PATH after it (#895)
     local cmd="env ${RS_ENV:-} PATH=\"${RS_STUB:-$RSD/stub}:${RS_PATH:-\$PATH}\""
-    cmd+=" COCKPIT_TUI_BIN=$RSD/bin"
-    cmd+=" XDG_STATE_HOME=$RSD/state COCKPIT_LOG=$RSD/tui.log"
-    cmd+=" $DIR/scripts/cockpit-board -p $RSHOME; echo x > $RSD/done"
+    cmd+=" COCKPIT_TUI_BIN=$(tq "$RSD/bin")"
+    cmd+=" XDG_STATE_HOME=$(tq "$RSD/state") COCKPIT_LOG=$(tq "$RSD/tui.log")"
+    cmd+=" $(tq "$DIR/scripts/cockpit-board") -p $RSHOME; echo x > $(tq "$RSD/done")"
     "$TMUX_REAL" -L "$RS" new-window -d -t t: "$cmd"
     until_file "$RSD/done" 'x'
     sed -n '3,$p' "$RSD/bargv"
@@ -14745,7 +18480,7 @@ if RSLOC=$(utf8_loc); then
         "$TMUX_REAL" -L "$RS" set -p -t "$RL" @panestate running
         "$TMUX_REAL" -L "$RS" set -p -t "$RL" @cockpit_session "$SID"
         R=$(rs_agent "$SID")
-        RS_ENV="LOCPATH=$RSLOC LC_ALL=en_US.UTF-8" rs_run "resume $R" "$SID" >/dev/null
+        RS_ENV="LOCPATH=$(tq "$RSLOC") LC_ALL=en_US.UTF-8" rs_run "resume $R" "$SID" >/dev/null
         until_file "$RSD/ran" '?*'
         is "in en_US.UTF-8 a session in a $rsu pane is no live copy: the resume runs" \
             "[$RSD/work][--resume][$SID]" "$(cat "$RSD/ran" 2>/dev/null)"
@@ -14817,7 +18552,9 @@ until_file "$RSD/ran" '?*'
 is "under dash the resume runs claude --resume <id>" "[$RSD/work][--resume][$SID]" \
     "$(cat "$RSD/ran" 2>/dev/null)"
 RN=$("$TMUX_REAL" -L "$RS" list-panes -t "$R" -F '#{pane_id}' | grep -vx -- "$R")
-until_out claude "$TMUX_REAL" -L "$RS" display -p -t "$RN" '#{pane_current_command}'
+# The stub's exec -a claude, on its process: the name reads claude, the first word of the
+# board's "exec claude --resume", inside that exec too (#1079).
+pane_runs "$RS" "$RN" idle claude -c 'sleep 3600; :'
 is "and the resumed pane reads claude, not the shell" "claude" \
     "$("$TMUX_REAL" -L "$RS" display -p -t "$RN" '#{pane_current_command}')"
 is "so the agent glob calls it an agent" "1" "$("$TMUX_REAL" -L "$RS" display -p -t "$RN" \
@@ -14867,7 +18604,7 @@ EBX=$("$TMUX_REAL" -L "$EB" new-window -d -n nosid -c "$EBD" -P -F '#{pane_id}' 
 # in the pane's process tree under a foreground `sleep`. Live, so it keeps ▲.
 ln -s "$(command -v sleep)" "$EBD/claude"
 EBT=$("$TMUX_REAL" -L "$EB" new-window -d -n editing -c "$EBD" -P -F '#{pane_id}' -t t: \
-    "sh -c '$EBD/claude 3600 & exec sleep 3600'")
+    "sh -c $(tq "$(tq "$EBD/claude") 3600 & exec sleep 3600")")
 "$TMUX_REAL" -L "$EB" set -p -t "$EBT" @panestate needs-input
 "$TMUX_REAL" -L "$EB" set -p -t "$EBT" @panestate_msg 'Allow this edit?'
 until_out sleep "$TMUX_REAL" -L "$EB" display -p -t "$EBT" '#{pane_current_command}' \
@@ -14875,7 +18612,8 @@ until_out sleep "$TMUX_REAL" -L "$EB" display -p -t "$EBT" '#{pane_current_comma
         "$("$TMUX_REAL" -L "$EB" display -p -t "$EBT" '#{pane_current_command}')"
 eb_open() {                   # <pane> <action-dir> -> EBW, a board on that pane
     EBW=$("$TMUX_REAL" -L "$EB" new-window -d -P -F '#{pane_id}' -t t: \
-        "env COCKPIT_READONLY=1 XDG_STATE_HOME=$EBD/state COCKPIT_ACTION=$2/act $COCKPIT_TUI_BIN board --select $1")
+        "env COCKPIT_READONLY=1 XDG_STATE_HOME=$(tq "$EBD/state") COCKPIT_ACTION=$(tq "$2/act") \
+$(tq "$COCKPIT_TUI_BIN") board --select $1")
     until_cap "$EB" "$EBW" '*board · 4 agents*'
 }
 eb_cap() { "$TMUX_REAL" -L "$EB" capture-pane -p -J -t "$EBW" 2>/dev/null; }
@@ -14935,7 +18673,7 @@ echo "== cockpit-board: @cockpit_glyphs reaches the binary as COCKPIT_GLYPHS (#2
 # binary records what it got and exits with no action.
 if need_tmux "the board's glyphs"; then :; else
 GL="cockpit-gl-$$"; SOCKS="$SOCKS $GL"; GD=$(mktmpd)
-printf '#!/bin/sh\nprintf "[%%s]" "${COCKPIT_GLYPHS:-}" > %s/g\n' "$GD" > "$GD/bin"
+printf '#!/bin/sh\nprintf "[%%s]" "${COCKPIT_GLYPHS:-}" > %s\n' "$(tq "$GD/g")" > "$GD/bin"
 chmod +x "$GD/bin"
 "$TMUX_REAL" -L "$GL" -f /dev/null new-session -d -s t -x 100 -y 30 \
     'exec sleep 3600' >/dev/null 2>&1
@@ -14943,7 +18681,8 @@ GLP=$("$TMUX_REAL" -L "$GL" list-panes -t t -F '#{pane_id}')
 gl_run() {
     rm -f "$GD/g"
     "$TMUX_REAL" -L "$GL" new-window -d -t t: \
-        "env -u COCKPIT_GLYPHS COCKPIT_TUI_BIN=$GD/bin XDG_STATE_HOME=$GD COCKPIT_LOG=$GD/tui.log $DIR/scripts/cockpit-board -p $GLP"
+        "env -u COCKPIT_GLYPHS COCKPIT_TUI_BIN=$(tq "$GD/bin") XDG_STATE_HOME=$(tq "$GD") \
+COCKPIT_LOG=$(tq "$GD/tui.log") $(tq "$DIR/scripts/cockpit-board") -p $GLP"
     until_file "$GD/g" '\[*\]'
     cat "$GD/g" 2>/dev/null
 }
@@ -14963,8 +18702,8 @@ echo "== cockpit-panel: @cockpit_glyphs reaches the binary as COCKPIT_GLYPHS (#2
 # (#272); the stub records both, so neither can fall out of the merged line.
 if need_tmux "the panel's glyphs"; then :; else
 GP="cockpit-gp-$$"; SOCKS="$SOCKS $GP"; GPD=$(mktmpd)
-printf '#!/bin/sh\nprintf "[%%s] D=[%%s]" "${COCKPIT_GLYPHS:-}" "${COCKPIT_PANEL_DROPPED:-}" > %s/g\n' \
-    "$GPD" > "$GPD/bin"; chmod +x "$GPD/bin"
+printf '#!/bin/sh\nprintf "[%%s] D=[%%s]" "${COCKPIT_GLYPHS:-}" "${COCKPIT_PANEL_DROPPED:-}" > %s\n' \
+    "$(tq "$GPD/g")" > "$GPD/bin"; chmod +x "$GPD/bin"
 "$TMUX_REAL" -L "$GP" -f /dev/null new-session -d -s t -x 100 -y 30 \
     'exec sleep 3600' >/dev/null 2>&1
 GPP=$("$TMUX_REAL" -L "$GP" list-panes -t t -F '#{pane_id}')
@@ -14973,7 +18712,8 @@ gp_run() {
     rm -f "$GPD/g"; mkdir -p "$GPD/tmux-cockpit/panel"
     : > "$GPD/tmux-cockpit/panel/$GPS-9999.state"     # a hide left by a pane that is gone
     "$TMUX_REAL" -L "$GP" new-window -d -t t: \
-        "env -u COCKPIT_GLYPHS COCKPIT_TUI_BIN=$GPD/bin XDG_STATE_HOME=$GPD COCKPIT_LOG=$GPD/tui.log $DIR/scripts/cockpit-panel -p $GPP"
+        "env -u COCKPIT_GLYPHS COCKPIT_TUI_BIN=$(tq "$GPD/bin") XDG_STATE_HOME=$(tq "$GPD") \
+COCKPIT_LOG=$(tq "$GPD/tui.log") $(tq "$DIR/scripts/cockpit-panel") -p $GPP"
     until_file "$GPD/g" '\[*\]'
     cat "$GPD/g" 2>/dev/null
 }
@@ -14994,7 +18734,7 @@ echo "== cockpit-panel: @cockpit_panel_effort reaches the binary as COCKPIT_PANE
 # only the CLI's words, so the wrapper passes the value as it is, as one word.
 if need_tmux "the panel's effort"; then :; else
 GE="cockpit-ge-$$"; SOCKS="$SOCKS $GE"; GED=$(mktmpd)
-printf '#!/bin/sh\nprintf "[%%s]" "${COCKPIT_PANEL_EFFORT-unset}" > %s/e\n' "$GED" > "$GED/bin"
+printf '#!/bin/sh\nprintf "[%%s]" "${COCKPIT_PANEL_EFFORT-unset}" > %s\n' "$(tq "$GED/e")" > "$GED/bin"
 chmod +x "$GED/bin"
 "$TMUX_REAL" -L "$GE" -f /dev/null new-session -d -s t -x 100 -y 30 -c "$GED" 'exec sleep 3600' \
     >/dev/null 2>&1
@@ -15002,8 +18742,8 @@ GEP=$("$TMUX_REAL" -L "$GE" list-panes -t t -F '#{pane_id}')
 ge_run() {
     rm -f "$GED/e"
     "$TMUX_REAL" -L "$GE" new-window -d -t t: -c "$GED" \
-        "env -u COCKPIT_PANEL_EFFORT COCKPIT_TUI_BIN=$GED/bin XDG_STATE_HOME=$GED \
-COCKPIT_LOG=$GED/tui.log $DIR/scripts/cockpit-panel -p $GEP"
+        "env -u COCKPIT_PANEL_EFFORT COCKPIT_TUI_BIN=$(tq "$GED/bin") XDG_STATE_HOME=$(tq "$GED") \
+COCKPIT_LOG=$(tq "$GED/tui.log") $(tq "$DIR/scripts/cockpit-panel") -p $GEP"
     until_file "$GED/e" '\[*\]'
     cat "$GED/e" 2>/dev/null
 }
@@ -15041,10 +18781,11 @@ sv_pane() {
     # retries the new-session that can reach it (#547, #573).
     "$TMUX_REAL" -L "$SVO" kill-server >/dev/null 2>&1
     { printf '#!/bin/sh\n'; printf '%q ' "$@"
-        printf '2> "%s/err"\necho $? > "%s/rc"\nexec sleep 30\n' "$d" "$d"; } > "$d/run"
+        printf '2> %s\necho $? > %s\nexec sleep 30\n' "$(tq "$d/err")" "$(tq "$d/rc")"
+    } > "$d/run"
     chmod +x "$d/run"; : > "$d/err"; rm -f "$d/rc"
     fresh_server -L "$SVO" -f /dev/null -- -d -s t -x "${SVCOLS:-100}" -y "${SVROWS:-24}" \
-        "TERM=xterm-256color $d/run"
+        "TERM=xterm-256color $(tq "$d/run")"
 }
 # sv_ui <dir> [tui args...] -- cockpit-tui sessions, the action files under <dir>/act
 sv_ui() {
@@ -15101,6 +18842,15 @@ TMUX_REAL="$SVD/flop-tmux" sv_pane "$SVD" sh -c 'echo pane-up; exec sleep 30'
 sv_cap '*pane-up*' && ok "a new-session refused by a dying server is retried until the pane runs" \
     || bad "a new-session refused by a dying server is retried until the pane runs" "pane-up" \
         "$("$TMUX_REAL" -L "$SVO" capture-pane -p -t t 2>&1 | head -3)"
+# sv_pane pasted its folder bare into the pane command, and in double quotes into the
+# script the pane runs. Under a TMPDIR with a blank sh split the first, so no pane of
+# these blocks ran (#990); a " or a $ in the path broke the second. Here the folder
+# itself holds all three, so the row is red without tq whatever TMPDIR is.
+SVQ="$SVD/s p\"q\$x"; mkdir -p "$SVQ"
+sv_pane "$SVQ" sh -c 'echo oops >&2; exit 7'
+until_out '7' cat "$SVQ/rc"
+is "sv_pane from a folder with a blank, a \" and a \$ in its path: rc and stderr land beside it" \
+   "7|oops" "$(cat "$SVQ/rc" 2>/dev/null)|$(cat "$SVQ/err" 2>/dev/null)"
 sv_ui "$SVD" --current "$SVA"
 sv_cap '*beta*gamma*alpha*(here)*' &&
     ok "the rows are drawn: waiting first, your own session last and marked" \
@@ -15426,9 +19176,9 @@ exit 0
 STUB
 chmod +x "$TP/tmux"
 tpsize() {                    # tpsize <answer> <cols> <rows> [--needs] -- "-w W -h H"
-    local a=$1; shift
+    local x=$1; shift
     : > "$TP/log"
-    env -u TMUX PATH="$TP:$PATH" TP_LOG="$TP/log" TP_ANSWER="$(printf '%s' "$a" | tr '|' '\037')" \
+    env -u TMUX PATH="$TP:$PATH" TP_LOG="$TP/log" TP_ANSWER="$(printf '%s' "$x" | tr '|' '\037')" \
         "$DIR/scripts/tm" --popup /dev/pts/9 '$3' "$1" "$2" %7 "${@:3}" >/dev/null 2>&1
     sed 's/.*\(-w [0-9]* -h [0-9]*\).*/\1/' "$TP/log"
 }
@@ -17001,7 +20751,8 @@ ss_clear
 SSBIG="$SSD/big.json"; {
     printf '{"session_id":"%s","transcript_path":"%s","prompt":"' $SSU1 "$SSROOT/-p/$SSU1.jsonl"
     head -c 500000 /dev/zero | tr '\0' x; printf '"}\n'; } > "$SSBIG"
-cat "$SSBIG" | env HOME="$SSH" "$DIR/scripts/agent-state" session "$SSP"
+# The hook reads 4096 bytes and leaves: GNU cat, SIGPIPE ignored, reports the rest (#1137).
+cat "$SSBIG" 2>/dev/null | env HOME="$SSH" "$DIR/scripts/agent-state" session "$SSP"
 is "a 500 KB prompt after the ids: both still found" "$SSU1 $SSROOT/-p/$SSU1.jsonl" \
     "$(ss_opt session) $(ss_opt transcript)"
 ss_unread() { { env HOME="$SSH" "$DIR/scripts/agent-state" session "$SSP"; wc -c
@@ -17103,7 +20854,7 @@ fe_ran() { [ -e "$FED/pwned" ] && echo ran || echo none; }
 # kills a #() job when the client that expanded it goes, so this run-shell
 # holds its client until the job has landed (or 5 s pass).
 "$TMUX_REAL" -L "$FE" \
-    run-shell "true '#(touch \$FEMK)'; i=0; while [ ! -e '$FED/pwned' ] && [ \$i -lt 50 ]; do sleep 0.1; i=\$((i+1)); done" >/dev/null 2>&1
+    run-shell "true '#(touch \"\$FEMK\")'; i=0; while [ ! -e '$FED/pwned' ] && [ \$i -lt 50 ]; do sleep 0.1; i=\$((i+1)); done" >/dev/null 2>&1
 until_out ran fe_ran; is "control: an unescaped #() in run-shell runs" "ran" "$(fe_ran)"
 rm -f "$FED/pwned"
 
@@ -17131,30 +20882,40 @@ esac
 # review-revdiff: the no-diff message names the repo dir (a worktree is named
 # after its branch). A stub revdiff: the message comes before it would run.
 FEBIN=$(mktmpd); printf '#!/bin/sh\nexit 0\n' > "$FEBIN/revdiff"; chmod +x "$FEBIN/revdiff"
-FER="$FED/x#(touch \$FEMK)"; mkdir -p "$FER"
+FER="$FED/x##y#[z#(touch \$FEMK)"; mkdir -p "$FER"
 ( cd "$FER" && git init -q -b main . &&
     git -c user.name=t -c user.email=t@e commit -q --allow-empty -m init ) >/dev/null 2>&1
 mkdir -p "$FED/rs"
 TMUX=$FETMUX PATH="$FEBIN:$PATH" "$DIR/scripts/tmux-review" --loop "$FER" "$FED/rs/comments.md" \
     </dev/null >/dev/null 2>&1
 fe_want="cockpit: no uncommitted changes in $FER"
-until_out "*no uncommitted changes in $FED/x*" fe_msgs
-case "$(fe_msgs)" in
+# This row pins what is seen: the client's drawn status line, not the message log, which
+# since #1096 holds each # doubled as dmsg sent it. display-time 0 keeps it drawn, and
+# stays on for the rest of this block. A message wider than the client is cut, so the
+# client grows to the scratch folder's length plus room for both rows' texts past it.
+"$TMUX_REAL" -L "$FE" set -g display-time 0 >/dev/null 2>&1
+fe_w=$(( ${#FED} + 120 ))
+"$TMUX_REAL" -L "$FEO" resize-window -t o -x "$fe_w" >/dev/null 2>&1
+until_out "$fe_w" "$TMUX_REAL" -L "$FE" list-clients -F '#{client_width}'
+fe_seen() { "$TMUX_REAL" -L "$FEO" capture-pane -p -t o 2>/dev/null; }
+until_cap "$FEO" o "*$fe_want*"
+case "$(fe_seen)" in
     *"$fe_want"*) ok "review-revdiff's no-diff message shows the dir literally" ;;
     *) bad "review-revdiff's no-diff message shows the dir literally" "$fe_want" \
-            "$(fe_msgs | tail -1)" ;;
+            "$(fe_seen | grep -F 'cockpit:' | tail -1)" ;;
 esac
 
 # review-fleet: the session dir in "could not create" (XDG_STATE_HOME is a file).
-FES="$FED/st#(touch \$FEMK)"; : > "$FES"
+FES="$FED/st##y#[z#(touch \$FEMK)"; : > "$FES"
 TMUX=$FETMUX XDG_STATE_HOME=$FES REVIEW_PANE_ID=$FEP "$DIR/scripts/tmux-review" \
     </dev/null >/dev/null 2>&1
-until_out "*could not create $FED/st*" fe_msgs
-case "$(fe_msgs)" in
+# This row pins what is seen, as the one above: it waits for its own message drawn.
+until_cap "$FEO" o "*cockpit: could not create $FES/*"
+case "$(fe_seen)" in
     *"cockpit: could not create $FES/"*) \
             ok "review-fleet's could-not-create message shows the path literally" ;;
     *) bad "review-fleet's could-not-create message shows the path literally" \
-            "cockpit: could not create $FES/..." "$(fe_msgs | tail -1)" ;;
+            "cockpit: could not create $FES/..." "$(fe_seen | grep -F 'cockpit:' | tail -1)" ;;
 esac
 
 # Nothing above ran the payload. The run-shell is the one tmux would run, and
@@ -17362,8 +21123,9 @@ TMUX="$SOCKDIR/$SB,0,0" "$DIR/scripts/agent-state" sweep >/dev/null 2>&1
 is "a killed pane's subagents leave the sum at the sweep" "▲1 " "$(sbf)"
 # Compare-then-set: every set redraws. A server hook sees the writes inside the one call.
 sbst done "$(sbstop "$SBT,$SBT")"; SBSETS=$(mktmpf)
+"$TMUX_REAL" -L "$SB" set-environment -g CKLOG "$SBSETS" >/dev/null 2>&1
 "$TMUX_REAL" -L "$SB" set-hook -g after-set-option \
-    "run-shell 'echo \"#{hook_arguments}\" >> $SBSETS'"
+    "run-shell 'echo \"#{hook_arguments}\" >> \"\$CKLOG\"'"
 sbst done "$(sbstop "$SBT,$SBT")"
 is "an unchanged count is not set again" "0" "$(grep -c '@cockpit_subs' "$SBSETS")"
 sbst done "$(sbstop "$SBT,$SBT,$SBT")"
@@ -17422,7 +21184,7 @@ if need_tmux "git.sh refusal in tmux-review"; then :; else
 RF="cockpit-rf-$$"; SOCKS="$SOCKS $RF"; GD=$(mktmpd); RFS=$(mktmpd)
 ( git init -q "$GD/r" && cd "$GD/r" && printf 'hi\n' > x &&
     printf 'x filter=a=b\n' > .gitattributes \
-  && git config 'filter.a=b.clean' "touch $GD/PWNED" ) >/dev/null 2>&1
+  && git config 'filter.a=b.clean' "touch $(tq "$GD/PWNED")" ) >/dev/null 2>&1
 ( git init -q -b main "$GD/ok" && cd "$GD/ok" && printf 'a\n' > y && git add y \
   && git -c user.name=t -c user.email=t@t commit -qm i && printf 'a\nb\n' > y ) >/dev/null 2>&1
 "$TMUX_REAL" -L "$RF" -f /dev/null new-session -d -s t -x 100 -y 30 -c "$GD/r" \
@@ -17549,17 +21311,444 @@ sed 's|^PATH="\$SHIM:\$SUITE_CLAUDE:|PATH="$SHIM:|' "$DIR/tests/run.sh" > "$FD/s
 sed '/^PANE=\$(tmux list-panes -a/a PANE=""' "$DIR/tests/run.sh" > "$FD/srv.sh"
 is "both FATAL mutants differ from the script" "1 1" \
    "$(cmp -s "$FD/stub.sh" "$DIR/tests/run.sh"; echo $?) $(cmp -s "$FD/srv.sh" "$DIR/tests/run.sh"; echo $?)"
+# The nested run's tail refuses --pid, so its pane is the four-hour sleep. With the pane
+# watching the run's pid, a server the cleanup never reached ended about a second after the
+# run, inside listeners_in's polls, and the listener field read 0 (#1228).
+mkdir -p "$FD/notail"
+printf '#!/bin/sh\ncase " $* " in *" --pid="*) exit 1 ;; esac\nexec %s "$@"\n' \
+    "$(tq "$(command -v tail)")" > "$FD/notail/tail"; chmod +x "$FD/notail/tail"
 for fx in stub srv; do
-    fo=$(cd "$DIR" && env -u TMUX ONLY_RUN="$FD/$fx.sh" TMPDIR="$FD/t" TMUX_TMPDIR="$FD/s" \
-        tests/only.sh '^syntax' 2>&1 </dev/null); forc=$?
-    is "a prelude FATAL ($fx) exits 1 and leaves no dir, server or socket behind" "1|FATAL||" \
-       "$forc|$(printf '%s' "$fo" | grep -o FATAL | head -1)|$(ls -A "$FD/t")|$(
-        ls -A "$FD"/s/tmux-* 2>/dev/null)"
-    # Whatever a red run left: ended by its own socket, then removed.
-    for fs in "$FD"/s/tmux-*/*; do [ -S "$fs" ] && "$TMUX_REAL" -S "$fs" kill-server >/dev/null 2>&1; done
+    # The nested socket is $FD/s/tmux-<uid>/cockpit-suite-<pid>: past 107 bytes no server binds,
+    # and the srv row would pass with none to clean up.
+    if [ "$fx" = srv ] && sock_long "$FD/s"; then
+        skip_ "a prelude FATAL (srv) (TMPDIR too long for the nested socket path)"; continue
+    fi
+    nest_run '^syntax' ONLY_RUN="$FD/$fx.sh" TMPDIR="$FD/t" TMUX_TMPDIR="$FD/s" \
+        PATH="$FD/notail:$PATH"
+    fx_got="$NEST_RC|$(printf '%s' "$NEST_OUT" | grep -o FATAL | head -1)|$(ls -A "$FD/t")|$(
+        ls -A "$FD"/s/tmux-* 2>/dev/null)|$(
+        if [ -r /proc/net/unix ]; then listeners_in "$FD/s"; else echo 0; fi)"
+    # Whatever a red run left: ended by its own socket, then removed. A server whose socket
+    # file the cleanup removed has none to be reached by: only a tmux server, started as a
+    # suite's, whose TMUX_TMPDIR is ours, ended by TERM. The row is read first and printed
+    # after, so a red one names the pids TERM went to, or none; a green one is as before (#1237).
+    sock_sweep "$FD/s"
+    fx_term=""
+    for p in /proc/[0-9]*; do
+        c=""; read -r c 2>/dev/null < "$p/comm"
+        [ "$c" = "tmux: server" ] || continue
+        case $(tr '\0' ' ' 2>/dev/null < "$p/cmdline") in
+            *" -L cockpit-suite-"*) ;;
+            *) continue ;;
+        esac
+        tr '\0' '\n' 2>/dev/null < "$p/environ" | grep -qxF "TMUX_TMPDIR=$FD/s" || continue
+        kill -TERM "${p#/proc/}" && fx_term="$fx_term ${p#/proc/}"
+    done
+    [ "$fx_got" = "1|FATAL|||0" ] || fx_got="$fx_got; TERM sent to:${fx_term:- none}"
+    is "a prelude FATAL ($fx) exits 1 and leaves no dir, socket or listening server behind" \
+       "1|FATAL|||0" "$fx_got"
     rm -rf "${FD:?}/t/"* "${FD:?}/s/"*
 done
-unset FD fo forc fx fs
+unset FD fx fx_got fx_term p c NEST_RC NEST_OUT NEST_PASS NEST_FAIL
+
+# For the #900 and #1107 blocks, which end prelude copies by signals; unset after #1107's.
+# sig_dfl, its pair, is in the prelude.
+sig_left() {                  # <a copy's TMPDIR> -> the processes carrying it: "0", or count and
+    local p n o end=$((SECONDS + 10))    # names. Read again, up to 10 s: one on its way
+    # out is none, and a pane that watches its run's pid takes about a second to see it gone
+    while :; do
+        n=0 o=""
+        for p in /proc/[0-9]*; do
+            tr '\0' '\n' 2>/dev/null < "$p/environ" | grep -qxF "TMPDIR=$1" || continue
+            n=$((n + 1)); o="$o [$(tr '\0' ' ' 2>/dev/null < "$p/cmdline")]"
+        done
+        [ "$n" != 0 ] && [ "$SECONDS" -lt "$end" ] || break
+        sleep 0.1
+    done
+    printf '%s%s' "$n" "$o"
+}
+# The nested runs' tail refuses --pid, so a pane is the four-hour sleep. With the pane watching
+# the run's pid, a server the cleanup never reached ended about a second after the run, inside
+# sig_left's wait, and the rows passed with that cleanup cut (#1240, as #1236 for #849 and #984).
+pane_argv() {                 # <a copy's TMUX_TMPDIR> -> its suite server's pane's argv, a line
+    local s p=""
+    for s in "$1"/tmux-*/cockpit-suite-*; do
+        [ -S "$s" ] && p=$("$TMUX_REAL" -S "$s" display-message -p -t suite '#{pane_pid}')
+    done 2>/dev/null
+    tr '\0' ' ' 2>/dev/null < "/proc/${p:-0}/cmdline"; echo
+}
+# A server whose socket file the cleanup removed has none for sock_sweep to reach: only a tmux
+# server, started as a suite's, whose TMUX_TMPDIR is the copy's, ended by TERM (#1236).
+srv_term() {                  # <a copy's TMUX_TMPDIR> -> each such server is sent a TERM
+    local p c
+    for p in /proc/[0-9]*; do
+        c=""; read -r c 2>/dev/null < "$p/comm"
+        [ "$c" = "tmux: server" ] || continue
+        case $(tr '\0' ' ' 2>/dev/null < "$p/cmdline") in
+            *" -L cockpit-suite-"*) ;;
+            *) continue ;;
+        esac
+        tr '\0' '\n' 2>/dev/null < "$p/environ" | grep -qxF "TMUX_TMPDIR=$1" \
+            && kill -TERM "${p#/proc/}"
+    done
+    return 0
+}
+
+echo "== run.sh: a run ended by a signal in its prelude leaves no server, socket or temp dir (#900) =="
+# The suite's server leaves the run's process group, so a signal that ends the run never
+# reaches it: only the run's own EXIT trap can end it. That trap used to be set long after the
+# server started, and a par.sh shard ended in between left the server and its pane behind for
+# an hour (#900). Two copies of the prelude here, each holding still at one place until a
+# signal ends it: win, right after the server starts; ctl, after `trap cleanup EXIT`. The hold
+# is a read on a fifo the script holds open, so no child of it is left to count.
+SG=$(mktmpd); mkdir -p "$SG/tests"
+awk '/^echo "== /{exit} {print}' "$DIR/tests/run.sh" > "$SG/tests/pre.sh"
+sg_hold='mkfifo "$TMPDIR/pf"; exec 9<>"$TMPDIR/pf"; : > "$TMPDIR/started"; read -r -t 20 -u 9 _'
+sed "/^    \"\\\$SUITE_PANE\" >\\/dev\\/null 2>&1\$/a $sg_hold" \
+    "$SG/tests/pre.sh" > "$SG/tests/win.sh"
+sed "/^trap cleanup EXIT\$/a $sg_hold" "$SG/tests/pre.sh" > "$SG/tests/ctl.sh"
+is "each copy holds at one place" "1 1" \
+   "$(grep -c 'exec 9<>' "$SG/tests/win.sh") $(grep -c 'exec 9<>' "$SG/tests/ctl.sh")"
+mkdir -p "$SG/notail"
+printf '#!/bin/sh\ncase " $* " in *" --pid="*) exit 1 ;; esac\nexec %s "$@"\n' \
+    "$(tq "$(command -v tail)")" > "$SG/notail/tail"; chmod +x "$SG/notail/tail"
+# <signal> <copy> [a folder to put first on PATH] -> status|carriers|left in TMPDIR|listeners;
+# with the folder, the pane's argv is added to $SG/panes
+sg_run() {
+    local c="" rc
+    rm -rf "${SG:?}/t" "${SG:?}/s"; mkdir -p "$SG/t" "$SG/s"
+    local d=(); ! sig_dfl "$1" || d=(--default-signal="$1")
+    ( cd "$SG" && PATH="${3:+$3:}$PATH" exec env "${d[@]}" -u TMUX TMPDIR="$SG/t" \
+        TMUX_TMPDIR="$SG/s" bash "tests/$2.sh" ) </dev/null >/dev/null 2>&1 & sg_p=$!
+    until_out '?*' ls "$SG/t/started" >/dev/null
+    [ -z "${3:-}" ] || pane_argv "$SG/s" >> "$SG/panes"
+    read -r c 2>/dev/null < "/proc/$sg_p/comm"
+    [ "$c" != bash ] || kill -"$1" "$sg_p" 2>/dev/null
+    wait "$sg_p" 2>/dev/null; rc=$?
+    printf '%s|%s|%s|%s' "$rc" "$(sig_left "$SG/t")" "$(ls -A "$SG/t" | tr '\n' ,)" \
+        "$(listeners_in "$SG/s")"
+    # Whatever a red run left: ended by its own socket, or by srv_term when that is gone.
+    sock_sweep "$SG/s"; srv_term "$SG/s"
+}
+# Whether this box's tail takes --pid, asked here and not read from the prelude's own answer:
+# a prelude that fell back to the sleep on a box whose tail has --pid must turn rows red, not
+# skip them (#1023). The run is a tail -f on a pid already gone, which ends by itself.
+( : ) & sg_gone=$!; wait "$sg_gone" 2>/dev/null
+timeout 10 tail --pid="$sg_gone" -f /dev/null >/dev/null 2>&1
+case $? in
+    0) sg_haspid=1 ;;
+    124) sg_haspid=late       # no answer is not "no --pid": said here, and the rows that
+                              # need the answer are skipped, not read as the fallback
+         bad "the block's own tail run answered inside 10 s" "0 or a refusal" "timed out" ;;
+    *) sg_haspid=0 ;;
+esac
+if [ ! -r /proc/net/unix ]; then skip_ "a signal in the prelude (no /proc/net/unix)"
+elif sock_long "$SG/s"; then
+    skip_ "a signal in the prelude (TMPDIR too long for the nested socket path)"
+else
+    is "a TERM right after the server starts leaves no process, dir or socket" \
+       "143|0|pf,started,|0" "$(sg_run TERM win "$SG/notail")"
+    # The run traps HUP itself (#1107): only the ignored form says it started ignored.
+    if ! sig_dfl HUP && [ "$(trap -p HUP)" = "trap -- '' SIGHUP" ]; then
+        skip_ "a HUP in the prelude (SIGHUP is ignored and env cannot reset it)"
+    else is "a HUP there leaves none either" "129|0|pf,started,|0" \
+            "$(sg_run HUP win "$SG/notail")"
+    fi
+    if ! sig_dfl INT; then skip_ "an INT in the prelude (env cannot reset an ignored SIGINT)"
+    else is "nor does an INT" "130|0|pf,started,|0" "$(sg_run INT win "$SG/notail")"
+    fi
+    is "a TERM after the trap is set leaves none" "143|0|pf,started,|0" \
+       "$(sg_run TERM ctl "$SG/notail")"
+    is "in those runs the pane was the four-hour sleep, so only the cleanup ended the server" \
+       "claude 14400 " "$(sort -u "$SG/panes")"
+    # A KILL reaches no trap, so nothing is cleaned: the temp dirs stay, and so would the
+    # server. What ends it is its own pane, which watches the run's pid (#981, #1006): this
+    # run keeps the tail on PATH. Read
+    # here: the status, the processes left and the listeners; the wait is sig_left's, bounded.
+    if [ "$sg_haspid" = 0 ]; then
+        skip_ "a KILL in the prelude (this tail has no --pid: the pane is a sleep)"
+    elif [ "$sg_haspid" = late ]; then
+        skip_ "a KILL in the prelude (the block's own tail run timed out)"
+    else
+        is "a KILL there leaves no process: the pane ended with its run" "137|0|0" \
+           "$(sg_run KILL win | cut -d'|' -f1,2,4)"
+    fi
+fi
+# The pane's own command line, from a copy of the prelude that writes it down and ends: with
+# the tail on PATH, and with one that refuses --pid, as BSD's and macOS's do.
+{
+    cat "$SG/tests/pre.sh"
+    printf '%s\n' 'echo "$$" > "$TMPDIR/pid"' \
+        'tr "\0" " " < "/proc/$(tmux display-message -p -t "$PANE" "#{pane_pid}")/cmdline" > "$TMPDIR/argv"'
+} > "$SG/tests/pan.sh"
+sg_pane() {                   # [a folder to put first on PATH] -> the pane's argv, its pid as
+    local a                   # PID and the copy's state folder as STATE
+    rm -rf "${SG:?}/t" "${SG:?}/s"; mkdir -p "$SG/t" "$SG/s"
+    ( cd "$SG" && PATH="${1:+$1:}$PATH" exec env -u TMUX TMPDIR="$SG/t" TMUX_TMPDIR="$SG/s" \
+        bash tests/pan.sh ) </dev/null >/dev/null 2>&1
+    a=$(sed "s/--pid=$(cat "$SG/t/pid" 2>/dev/null) /--pid=PID /" "$SG/t/argv" 2>/dev/null; echo .)
+    a=${a%.}; printf '%s' "${a/"$SG/t/"tmp.*"/pane/idle"/STATE/pane/idle}"
+}
+if [ ! -r "/proc/$$/cmdline" ]; then skip_ "the suite pane's command line (no /proc)"
+elif [ "$sg_haspid" = late ]; then
+    skip_ "the suite pane's command line (the block's own tail run timed out)"
+elif [ "$sg_haspid" = 0 ]; then
+    is "this tail has no --pid, so the pane is the four-hour sleep" \
+       "claude 14400 " "$(sg_pane)"
+else
+    is "the pane watches the pid of the very script that started it" \
+       "claude --pid=PID -f STATE/pane/idle " "$(sg_pane)"
+    is "where tail refuses --pid the pane is the four-hour sleep" \
+       "claude 14400 " "$(sg_pane "$SG/notail")"
+    is "and this run's own pane watches this run" "claude --pid=$$ -f $STATE/pane/idle " \
+       "$(tr '\0' ' ' < "/proc/$(tmux display-message -p -t "$PANE" '#{pane_pid}')/cmdline")"
+    # At a TMPDIR with no space the pane's argv reads the same with the path pasted in.
+    is "the path is not in the pane's command string" \
+       'exec -a claude tail --pid=PID -f "$SUITE_IDLE"' "${SUITE_PANE/--pid=$$ /--pid=PID }"
+    # uutils's tail wakes on a write to anything beside the file it follows (#1029).
+    is "the file it follows is alone in its folder, and empty" "idle 0" \
+       "$(ls -A "$STATE/pane" | tr '\n' ' ')$(wc -c < "$STATE/pane/idle")"
+fi
+unset -f sg_run sg_pane; unset SG sg_hold sg_p sg_gone sg_haspid
+
+echo "== run.sh: once the run's exit trap starts, no HUP, INT or TERM cuts it short (#1107) =="
+# bash ends on a signal it has no trap for through its own handler, which runs the EXIT trap,
+# and a second such signal that lands while the first is handled kills the shell there and
+# then. `timeout` sends its signal to the run and then to the run's group: a run that took the
+# first before the second came left its socket, its state and its shim behind (#1107). So the
+# run traps the three itself, and every exit trap of its ignores them first. Four copies of the
+# prelude. win holds after its server starts, ctl after `trap cleanup EXIT`; each writes its
+# traps down there, a first signal ends it, and a second goes to its group while its cleanup
+# holds. fat ends by `fatal` after its server starts and end at the prelude's end; one signal
+# goes to the group while the cleanup holds. Each hold is a read on a fifo, and the block ends
+# the cleanup's by writing a line to it. The moment between bash's own handler and the trap
+# runs no line, so no hold pins it: the traps row does, as with the run's own traps set there
+# that handler never runs.
+S2=$(mktmpd); mkdir -p "$S2/tests"
+s2_hold='mkfifo "$TMPDIR/pf"; exec 9<>"$TMPDIR/pf"; trap -p HUP INT TERM > "$TMPDIR/traps"
+: > "$TMPDIR/started"; read -r -t 20 -u 9 _'
+s2_in='[ -e "$TMPDIR/in" ] || { [ -p "$TMPDIR/pf" ] || mkfifo "$TMPDIR/pf"
+exec 9<>"$TMPDIR/pf"; : > "$TMPDIR/in"; read -r -t 20 -u 9 _; }'
+s2_in=${s2_in//$'\n'/\\$'\n'} s2_hold=${s2_hold//$'\n'/\\$'\n'}
+awk '/^echo "== /{exit} {print}' "$DIR/tests/run.sh" | sed \
+    -e '/^    if \[ -n "${TMUX_TMPDIR:-}" \] && \[ -d "$TMUX_TMPDIR" \]; then$/i '"$s2_in" \
+    -e '/^    kill_socks$/i '"$s2_in" > "$S2/tests/end.sh"
+s2_pane='/^    "\$SUITE_PANE" >\/dev\/null 2>&1$/a '
+sed "$s2_pane$s2_hold" "$S2/tests/end.sh" > "$S2/tests/win.sh"
+sed "/^trap cleanup EXIT\$/a $s2_hold" "$S2/tests/end.sh" > "$S2/tests/ctl.sh"
+sed "${s2_pane}fatal 'the #1107 copy ends here'" "$S2/tests/end.sh" > "$S2/tests/fat.sh"
+is "each copy holds where it should, and fat ends by fatal" "3 3 2 2 1" "$({
+    for c in win ctl end fat; do grep -c 'read -r -t 20 -u 9 _' "$S2/tests/$c.sh"; done
+    grep -c "^fatal 'the #1107" "$S2/tests/fat.sh"; } | tr '\n' ' ' | sed 's/ $//')"
+# The nested runs' tail refuses --pid (pane_argv, #1240); each run's pane argv goes to $S2/panes
+mkdir -p "$S2/notail"
+printf '#!/bin/sh\ncase " $* " in *" --pid="*) exit 1 ;; esac\nexec %s "$@"\n' \
+    "$(tq "$(command -v tail)")" > "$S2/notail/tail"; chmod +x "$S2/notail/tail"
+s2_run() {                    # <copy> <signal> [2nd] -> status|carriers|left|listeners|sockets
+    local c="" a="" rc g d=() k=$1 h=in  # the last signal goes to the group in the cleanup
+    [ $# -lt 3 ] || h=started
+    rm -rf "${S2:?}/t" "${S2:?}/s"; mkdir -p "$S2/t" "$S2/s"
+    for g in HUP INT TERM; do ! sig_dfl "$g" || d+=(--default-signal="$g"); done
+    ( cd "$S2" && PATH="$S2/notail:$PATH" exec env "${d[@]}" -u TMUX TMPDIR="$S2/t" \
+        TMUX_TMPDIR="$S2/s" setsid bash "tests/$k.sh" ) </dev/null >/dev/null 2>&1 & s2_p=$!
+    # signalled only once /proc names it, its comm bash and its argv[1] the copy; a failed check,
+    # a kill that fails or a hold never reached is named in place of the status (#1208)
+    if ! until_out '?*' ls "$S2/t/$h" >/dev/null; then c="no hold: $h"
+    else
+        pane_argv "$S2/s" >> "$S2/panes"
+        read -r c 2>/dev/null < "/proc/$s2_p/comm"
+        a=$(tr '\0' '\n' 2>/dev/null < "/proc/$s2_p/cmdline" | sed -n 2p)
+        if [ "$c" != bash ] || [ "$a" != "tests/$k.sh" ]; then c="no signal: comm [$c] argv [$a]"
+        else
+            c=""
+            [ $# -lt 3 ] || { kill -"$2" "$s2_p" 2>/dev/null || c="no signal: kill $2"; shift; }
+            if until_out '?*' ls "$S2/t/in" >/dev/null; then
+                kill -"$2" -- "-$s2_p" 2>/dev/null || c="no signal: kill $2"
+            else c="no hold: in"
+            fi
+        fi
+    fi
+    # ends the hold in the cleanup, if a run is left to read
+    [ ! -p "$S2/t/pf" ] || printf '\n' 1<>"$S2/t/pf"
+    wait "$s2_p" 2>/dev/null; rc=$?
+    [ ! -e "$S2/t/traps" ] || mv "$S2/t/traps" "$S2/traps.$k"
+    printf '%s|%s|%s|%s|%s' "${c:-$rc}" "$(sig_left "$S2/t")" "$(ls -A "$S2/t" | tr '\n' ,)" \
+        "$(listeners_in "$S2/s")" "$(ls -A "$S2"/s/tmux-* 2>/dev/null | tr '\n' ,)"
+    # Whatever a red run left: ended by its own socket, or by srv_term when that is gone.
+    sock_sweep "$S2/s"; srv_term "$S2/s"
+}
+if [ ! -r /proc/net/unix ]; then skip_ "a signal in the exit trap (no /proc/net/unix)"
+elif ! command -v setsid >/dev/null; then skip_ "a signal in the exit trap (no setsid)"
+elif sock_long "$S2/s"; then
+    skip_ "a signal in the exit trap (TMPDIR too long for the nested socket path)"
+elif ! sig_dfl HUP && [ "$(trap -p HUP)" = "trap -- '' SIGHUP" ]; then
+    skip_ "a signal in the exit trap (SIGHUP is ignored and env cannot reset it)"
+else
+    is "a HUP while the exit trap runs, after a HUP, leaves no process, dir or socket" \
+       "129|0|in,pf,started,|0|" "$(s2_run win HUP HUP)"
+    is "nor does a TERM after a TERM" "143|0|in,pf,started,|0|" "$(s2_run win TERM TERM)"
+    is "nor a HUP after a HUP once \`trap cleanup EXIT\` is set" "129|0|in,pf,started,|0|" \
+       "$(s2_run ctl HUP HUP)"
+    if ! sig_dfl INT; then skip_ "an INT, and the run's INT trap (env cannot reset SIGINT)"
+    else
+        is "nor a TERM after an INT" "130|0|in,pf,started,|0|" "$(s2_run win INT TERM)"
+        s2_want="trap -- 'suite_sig 1' SIGHUP trap -- 'suite_sig 2' SIGINT"
+        s2_want="$s2_want trap -- 'suite_sig 15' SIGTERM"
+        is "the run's own traps take HUP, INT and TERM there, and after \`trap cleanup EXIT\`" \
+           "$s2_want|$s2_want" "$(tr '\n' ' ' < "$S2/traps.win" | sed 's/ $//')|$(
+              tr '\n' ' ' < "$S2/traps.ctl" | sed 's/ $//')"
+        # a Ctrl-C pressed twice, and one in the exit trap of a run at its end (#1219)
+        is "nor an INT after an INT" "130|0|in,pf,started,|0|" "$(s2_run win INT INT)"
+        is "nor an INT while the exit trap of a run that came to its end runs" "0|0|in,pf,|0|" \
+           "$(s2_run end INT)"
+    fi
+    is "a HUP while the exit trap of a fatal runs leaves nothing" "1|0|in,pf,|0|" \
+       "$(s2_run fat HUP)"
+    is "nor a TERM" "1|0|in,pf,|0|" "$(s2_run fat TERM)"
+    is "a HUP while the exit trap of a run that came to its end runs leaves nothing" \
+       "0|0|in,pf,|0|" "$(s2_run end HUP)"
+    is "nor a TERM" "0|0|in,pf,|0|" "$(s2_run end TERM)"
+    is "in every run the pane was the four-hour sleep, so only the cleanup ended the server" \
+       "claude 14400 " "$(sort -u "$S2/panes")"
+fi
+unset -f s2_run sig_left pane_argv srv_term; unset S2 s2_hold s2_in s2_pane s2_p s2_want
+
+echo "== run.sh: under a TMPDIR with a blank the tmux wrapper sits where no blank is (#992) =="
+# "$TMUX_REAL" is the #573 wrapper's path, pasted unquoted into some forty pane commands. It
+# sat under $STATE, so a blank in TMPDIR split it and every outer client ended 127. A copy
+# of the prelude here that ends after writing down its TMUX_REAL, its server's socket and
+# the folder a child of it is handed, run under a TMPDIR folder named "a b": with a runtime
+# dir, with none, with one that holds a blank itself, and with the folder an outer run hands
+# down. The runtime dirs are the block's own, in the outer run's blank-free folder.
+NB=$(mktmpd); mkdir -p "$NB/tests" "$NB/a b" "$NB/a"$'\t'"b" "$NB/plain" "$NB/r t" "$NB/s"
+{
+    awk '/^echo "== /{exit} {print}' "$DIR/tests/run.sh"
+    printf '%s\n' 'printf "%s\n" "$TMUX_REAL" > "$TMPDIR/real"' \
+        '"$TMUX_REAL" -L "$SUITE_SOCK" display-message -p "#{socket_path}" > "$TMPDIR/sock"' \
+        'sh -c '\''printf "%s\n" "${COCKPIT_SUITE_NB:-}"'\'' > "$TMPDIR/handed"'
+} > "$NB/tests/pre.sh"
+nb_rt=$(mktemp -d "$COCKPIT_SUITE_NB/rt.XXXXXX")
+nb_rt2=$(mktemp -d "$COCKPIT_SUITE_NB/rt.XXXXXX")
+nb_ss=$(cd "$NB/s" && pwd -P)
+# <TMPDIR folder> [VAR=value...] -> status|where the wrapper was|where the server's socket
+# was|what a child was handed: "own" is the folder that holds this run's wrapper
+nb_run() {
+    local rc w k h t="$NB/$1"
+    rm -f "$t/real" "$t/sock" "$t/handed"
+    ( cd "$NB" && exec env -u TMUX -u COCKPIT_SUITE_NB -u XDG_RUNTIME_DIR "${@:2}" \
+        TMPDIR="$t" TMUX_TMPDIR="$NB/s" bash tests/pre.sh ) </dev/null >/dev/null 2>"$NB/err"
+    rc=$?
+    w=$(cat "$t/real" 2>/dev/null); k=$(cat "$t/sock" 2>/dev/null); h=$(cat "$t/handed" 2>/dev/null)
+    rm -f "$t/real" "$t/sock" "$t/handed"
+    [ -z "$w" ] || [ "$h" != "${w%/flop/tmux}" ] || h=own
+    case $w in
+    "$nb_rt"/cnb.??????/flop/tmux) w=RT/flop/tmux ;;
+    "$nb_rt2"/cnb.??????/flop/tmux) w=RT2/flop/tmux ;;
+    "$t"/tmp.*/flop/tmux) w=STATE/flop/tmux ;;
+    esac
+    case $k in "$nb_ss"/tmux-*/cockpit-suite-*) k=S ;; esac
+    printf '%s|%s|%s|%s' "$rc" "$w" "$k" "$h"
+}
+nb_no() { grep -c 'set XDG_RUNTIME_DIR to a folder that exists' "$NB/err"; }
+# The nested socket is $NB/s/tmux-<uid>/cockpit-suite-<pid>: past 107 bytes no server binds.
+if sock_long "$NB/s"; then
+    skip_ "the tmux wrapper under a TMPDIR with a blank (the socket path would pass 107 bytes)"
+else
+    # S: the inner server's socket is in the block's own folder, never the default one. own:
+    # the run hands its children the folder its wrapper is in.
+    is "with a blank in TMPDIR the wrapper is in a folder made in the runtime dir" \
+       "0|RT/flop/tmux|S|own" "$(nb_run 'a b' XDG_RUNTIME_DIR="$nb_rt")"
+    is "and the run took that folder away again, and left nothing in its TMPDIR" "|" \
+       "$(ls -A "$nb_rt")|$(ls -A "$NB/a b")"
+    is "a tab in TMPDIR is a blank too" \
+       "0|RT/flop/tmux|S|own|" "$(nb_run "a"$'\t'"b" XDG_RUNTIME_DIR="$nb_rt")|$(ls -A "$nb_rt")"
+    is "the folder an outer run hands down comes before the runtime dir" \
+       "0|RT/flop/tmux|S|own||" \
+       "$(nb_run 'a b' COCKPIT_SUITE_NB="$nb_rt" XDG_RUNTIME_DIR="$nb_rt2")|$(
+          ls -A "$nb_rt")|$(ls -A "$nb_rt2")"
+    is "with no runtime dir the run ends, says what it needs and leaves nothing" \
+       "1||||1|" "$(nb_run 'a b')|$(nb_no)|$(ls -A "$NB/a b")"
+    is "a runtime dir that holds a blank itself is no such folder" \
+       "1||||1|" "$(nb_run 'a b' XDG_RUNTIME_DIR="$NB/r t")|$(nb_no)|$(ls -A "$NB/r t")"
+    case $NB in
+    *[[:space:]]*) skip_ "the wrapper under a TMPDIR with no blank (this run's own holds one)" ;;
+    *) is "without a blank the wrapper stays in the run's own state folder, handed on too" \
+          "0|STATE/flop/tmux|S|own|" "$(nb_run plain XDG_RUNTIME_DIR="$nb_rt")|$(ls -A "$nb_rt")" ;;
+    esac
+    is "no inner run left a socket file in the block's folder" "" \
+       "$(cd "$NB/s" && ls -A tmux-*/ 2>/dev/null | tr '\n' ' ')"
+fi
+rm -rf -- "$nb_rt" "$nb_rt2"
+unset -f nb_run nb_no; unset NB nb_rt nb_rt2 nb_ss
+
+# tests: README.md examples/tmux.conf examples/full.tmux.conf docs/install.md docs/status-bar.md cockpit.tmux
+echo "== the install line loads the plugin whatever the path to HOME holds (#1043) =="
+# The line was `run-shell ~/.tmux/plugins/tmux-cockpit/cockpit.tmux`. tmux expanded the ~ and
+# handed the path to sh bare: with a space in HOME's path sh split it and nothing loaded
+# (tmux says so only on a reload, "returned 127"), and with a $( ) in it sh ran what was
+# inside. In single quotes tmux hands the ~ on as it is and sh expands it, unsplit and
+# unread. Six places give the line, cockpit.tmux's own first comment among them. Each must
+# hold it, and no page, example or comment may load cockpit.tmux in any other form but the
+# three the docs give. Then both example configs are sourced on a server whose HOME holds a
+# blank, and one whose HOME holds a command to run.
+IL="run-shell '~/.tmux/plugins/tmux-cockpit/cockpit.tmux'"
+il_n=""
+for il_f in README.md examples/tmux.conf examples/full.tmux.conf docs/install.md \
+        docs/status-bar.md; do
+    grep -qxF -- "$IL" "$DIR/$il_f" || il_n="$il_n$il_f "
+done
+grep -qxF -- "# tmux-cockpit. Load with:  $IL" "$DIR/cockpit.tmux" || il_n="${il_n}cockpit.tmux "
+is "the README, both examples, both docs pages and cockpit.tmux each give the install line" \
+   "" "$il_n"
+# Any spelling: `run` for `run-shell`, a flag, an indent, other quotes, another page, a line
+# of prose. Each `run … cockpit.tmux` is cut out of its line and must be one of the three
+# forms the docs give: the line above, the one for a plugin folder with a space, and the one
+# with a full path, for a server started with no HOME.
+# A line ending in \ is joined to the next first. `ru`, `run-sh` and the other short spellings
+# tmux takes count, and so does an if-shell that holds the line. The skills' pages are read
+# too. awk's own exit is part of the answer: a page that is gone, or an awk that did not
+# run, is a red row and not an empty list (#1046).
+# bootstrap.sh and install.sh hold no line to read: both build theirs with cockpit_conf_line,
+# and the #1046 block, further up, runs what they give.
+is "and no page, example or comment loads cockpit.tmux in another form: file:line of each" "rc=0" \
+   "$(cd "$DIR" && A="$IL" B="run-shell '\"\$HOME/my plugins/tmux-cockpit/cockpit.tmux\"'" \
+        C="run-shell \"'/full/path/to/tmux-cockpit/cockpit.tmux'\"" \
+      awk '{ if (held != "") { s = held $0 } else { s = $0; at = FNR }
+             if (s ~ /\\$/) { held = substr(s, 1, length(s) - 1); next }
+             held = ""
+             while (match(s, /(ru(n(-[a-z]*)?)?|if(-s[a-z]*)?)[ \t][^`]*cockpit\.tmux['"'"'"]*/)) {
+                 m = substr(s, RSTART, RLENGTH); s = substr(s, RSTART + RLENGTH)
+                 if (m != ENVIRON["A"] && m != ENVIRON["B"] && m != ENVIRON["C"]) {
+                     printf "%s:%d ", FILENAME, at; break } } }' \
+          ./*.md docs/*.md docs/*/*.md skills/*/*.md examples/* cockpit.tmux; echo "rc=$?")"
+if need_tmux "the install line under a HOME with a blank"; then :; else
+ILD=$(mktmpd); mkdir -p "$ILD/wd"
+# A server each, by number: the rows call this in a subshell, so the names are registered
+# here, and a second server on one socket would meet the #573 guard.
+SOCKS="$SOCKS cockpit-il-$$-1 cockpit-il-$$-2 cockpit-il-$$-3"
+il_load() {                   # <n> <HOME's folder name> <example config> -> binding|agents set
+    local h="$ILD/$2" s="cockpit-il-$$-$1" a
+    mkdir -p "$h/.tmux/plugins"; [ -e "$h/.tmux/plugins/tmux-cockpit" ] ||
+        ln -s "$DIR" "$h/.tmux/plugins/tmux-cockpit"
+    ( cd "$ILD/wd" && HOME="$h" exec "$TMUX_REAL" -L "$s" -f /dev/null new-session -d -s t \
+        -c "$ILD/wd" 'exec sleep 300' ) >/dev/null 2>&1
+    # From the block's own folder: what a bare line runs out of the path, it runs in the
+    # cwd of the client that sourced the config, and the last row looks for it here.
+    ( cd "$ILD/wd" && exec "$TMUX_REAL" -L "$s" source-file "$DIR/examples/$3" ) >/dev/null 2>&1
+    until_out '?*' "$TMUX_REAL" -L "$s" show-option -gqv @cockpit_agents >/dev/null
+    a=$("$TMUX_REAL" -L "$s" show-option -gqv @cockpit_agents 2>/dev/null)
+    printf '%s|%s' "$("$TMUX_REAL" -L "$s" list-keys -T prefix w 2>/dev/null |
+        grep -c cockpit_board)" "${a:+set}"
+    "$TMUX_REAL" -L "$s" kill-server >/dev/null 2>&1
+}
+is "examples/tmux.conf loads under a HOME with a blank in its path" "1|set" \
+   "$(il_load 1 'h ome' tmux.conf)"
+is "and examples/full.tmux.conf does" "1|set" "$(il_load 2 'h ome' full.tmux.conf)"
+is "under a HOME whose path holds a \$( ) it loads, and nothing in the path is run" "1|set|" \
+   "$(il_load 3 'h$(touch pwned)x' tmux.conf)|$(find "$ILD" -name pwned | tr '\n' ' ')"
+unset -f il_load; unset ILD
+fi
+unset IL il_n il_f
 
 echo "== tests/only.sh: a pattern with \\( and ^ selects the block, no match is an error (#241) =="
 OD=$(mktemp -d)
@@ -17582,14 +21771,17 @@ echo "== tmux-open-path (#264): several candidates go through cockpit-tui pick =
 # key is pressed, and the editor shim's log is the only thing the asserts read.
 if need_tmux "open-at-line via pick"; then :; else
 OL="cockpit-ol-$$"; SOCKS="$SOCKS $OL"
-OLD=$(mktmpd); OLLOG="$OLD/log"; OLED="$OLD/ed"; : > "$OLLOG"
+# The folder's own name holds two blanks (as #1069 did), so a path of it pasted bare into
+# the editor setting is split in a plain run too (#990).
+OLD="$(mktmpd)/o  l"; mkdir -p "$OLD"; OLLOG="$OLD/log"; OLED="$OLD/ed"; : > "$OLLOG"
 mkdir -p "$OLD/w/sub"; : > "$OLD/w/one.txt"; : > "$OLD/w/two.txt"; : > "$OLD/w/three.txt"
 # The editor runs in a new window after the script has exited (#610). The shim
 # waits while $OLD/hold is there, so every row meets that order, the late one.
-printf '#!/bin/sh\nwhile [ -e %s/hold ]; do sleep 0.05; done\necho "OPEN $*" >> %s\n' \
-    "$OLD" "$OLLOG" > "$OLED"; chmod +x "$OLED"
+printf '#!/bin/sh\nwhile [ -e %s ]; do sleep 0.05; done\necho "OPEN $*" >> %s\n' \
+    "$(tq "$OLD/hold")" "$(tq "$OLLOG")" > "$OLED"; chmod +x "$OLED"
 "$TMUX_REAL" -L "$OL" -f /dev/null new-session -d -s t -x 100 -y 28 -c "$OLD/w" >/dev/null 2>&1
-"$TMUX_REAL" -L "$OL" set -g @cockpit_editor "$OLED" >/dev/null 2>&1
+# the option is a command, pasted unquoted into the window's: the path goes in quoted (#990)
+"$TMUX_REAL" -L "$OL" set -g @cockpit_editor "$(tq "$OLED")" >/dev/null 2>&1
 OLP=$("$TMUX_REAL" -L "$OL" list-panes -t t -F '#{pane_id}' | head -1)
 "$TMUX_REAL" -L "$OL" set-option -p -t "$OLP" @cockpit_click_line \
     "one.txt two.txt:7 sub/ three.txt" >/dev/null 2>&1
@@ -17640,7 +21832,10 @@ echo "== tmux-open-path (#264): the key from pick is checked, a missing binary i
 # The stub answers with PICK_KEY. Anything that is not an index into the list is
 # refused with a message and nothing opens.
 optui_setup
-OKT=$(mktmpd); OKL="$OKT/log"; : > "$OKL"; mkdir -p "$OKT/w"; : > "$OKT/w/a.txt"; : > "$OKT/w/b.txt"
+# The folder's own name holds two blanks (as #1069 did), so a want that carries one of its
+# paths raw where the script %q-quotes it is red in a plain run too (#990).
+OKT="$(mktmpd)/o  k"; mkdir -p "$OKT/w"; OKL="$OKT/log"; : > "$OKL"
+: > "$OKT/w/a.txt"; : > "$OKT/w/b.txt"
 cat > "$OKT/tmux" <<'STUB'
 #!/usr/bin/env bash
 case "$1" in
@@ -17673,7 +21868,9 @@ okrun() {                     # okrun <key> [bin] -- the log after a pick answer
         bash "$DIR/scripts/tmux-open-path" ${OKARG---pick} %1 </dev/null >/dev/null 2>"$OKT/err"
     echo "rc=$?"; cat "$OKL"
 }
-is "key 1 opens the second candidate" "rc=0"$'\n'"NEWWIN ed  $OKT/w/b.txt" "$(okrun 1)"
+# The window's command carries the file %q-quoted, as the script's shq writes it (#990)
+OKQB=$(printf %q "$OKT/w/b.txt")
+is "key 1 opens the second candidate" "rc=0"$'\n'"NEWWIN ed  $OKQB" "$(okrun 1)"
 for k in 2 99 -1 abc '0;x' ''; do
     case "$(okrun "$k")" in
         *NEWWIN*) bad "key [$k] is not a candidate: nothing opens" "no new window" "opened" ;;
@@ -17691,7 +21888,7 @@ if OKLOC=$(utf8_loc); then
            "rc=1|MSG cockpit: the picker named something that is not a candidate|" \
            "$(OKLC=$OKLOC okrun "$k" | paste -sd'|')|$(cat "$OKT/err")"
     done
-    is "in en_US.UTF-8 key 1 still opens the second candidate" "rc=0|NEWWIN ed  $OKT/w/b.txt|" \
+    is "in en_US.UTF-8 key 1 still opens the second candidate" "rc=0|NEWWIN ed  $OKQB|" \
        "$(OKLC=$OKLOC okrun 1 | paste -sd'|')|$(cat "$OKT/err")"
 else
     bad "a UTF-8 locale whose regex [0-9] matches ² and ١ loads (localedef en_US.UTF-8)" \
@@ -17745,15 +21942,22 @@ echo "== tmux-open-path (#264): a path with #(...), #{...} and #S in it reaches 
 # PATH records what the script gave tmux (a #() job would run async, #255).
 if need_tmux "hostile path escape"; then :; else
 HX="cockpit-hx-$$"; SOCKS="$SOCKS $HX"
-HXD=$(mktmpd); HXB="$HXD/bin"; HXL="$HXD/argv.log"; HXA="$HXD/editor.log"
+# The folder's own name holds a blank, a ' and a ", so a path of it pasted bare into the
+# editor setting is split, and one typed in "..." or '...' into a shim or the pick line ends
+# its string, in a plain run too (#990, #1181). The pick's tui and the real tmux are reached
+# through this folder as well, so their quoting is pinned with the rest.
+HXD="$(mktmpd)/h '\" x"; HXB="$HXD/bin"; HXL="$HXD/argv.log"; HXA="$HXD/editor.log"
 mkdir -p "$HXB" "$HXD/w/d#S"
 optui_setup
+cp "$OPTUI" "$HXD/tui"; ln -s "$TMUX_REAL" "$HXD/real-tmux"
 HXED="$HXD/ed"
-printf '#!/bin/sh\nfor a in "$@"; do printf "%%s\\n" "$a"; done >> "%s"\n' "$HXA" > "$HXED"
+# Each path in a generated script goes in through tq: in "..." a " or $ in TMPDIR would end
+# the string or expand (#990)
+printf '#!/bin/sh\nfor a in "$@"; do printf "%%s\\n" "$a"; done >> %s\n' "$(tq "$HXA")" > "$HXED"
 chmod +x "$HXED"
 HN='a#(touch${IFS}F)#{pid}#S.txt'; HW="$HXD/w/d#S"; : > "$HW/$HN"
-printf '#!/bin/sh\nfor a in "$@"; do printf "%%s\\n" "$a"; done >> "%s"\nexec %s "$@"\n' "$HXL" \
-    "$TMUX_REAL" > "$HXB/tmux"
+printf '#!/bin/sh\nfor a in "$@"; do printf "%%s\\n" "$a"; done >> %s\nexec %s "$@"\n' \
+    "$(tq "$HXL")" "$(tq "$HXD/real-tmux")" > "$HXB/tmux"
 printf '#!/bin/sh\nexit 0\n' > "$HXB/code"; chmod +x "$HXB/tmux" "$HXB/code"
 "$TMUX_REAL" -L "$HX" -f /dev/null new-session -d -s t -x 100 -y 28 -c "$HXD/w" >/dev/null 2>&1
 "$TMUX_REAL" -L "$HX" set -g remain-on-exit on >/dev/null 2>&1   # the shim editor exits at once
@@ -17764,16 +21968,19 @@ until_out "*d#S" "$TMUX_REAL" -L "$HX" display-message -p -t "$HXP" '#{pane_curr
 hxgo() {                      # hxgo <n> -- run the pick re-entry; wait for it
     : > "$HXL"; : > "$HXA"
     "$TMUX_REAL" -L "$HX" send-keys \
-        -t "$HXP" "clear; PATH='$HXB':\$PATH COCKPIT_TUI_BIN='$OPTUI' '$DIR/scripts/tmux-open-path' --pick '$HXP'; echo HXDONE$1=\$?" Enter
+        -t "$HXP" "clear; PATH=$(tq "$HXB"):\$PATH COCKPIT_TUI_BIN=$(tq "$HXD/tui") $(
+        )'$DIR/scripts/tmux-open-path' --pick '$HXP'; echo HXDONE$1=\$?" Enter
     until_cap "$HX" "$HXP" "*HXDONE$1=[0-9]*"
 }
 # The script's own formats (#{window_id}) are legitimate, so only the lines that
 # carry the hostile name count; with every doubled ## taken out, any # left is
 # live: #(..) and #{..} but also the one-letter #S, which shq does not touch.
-# $1 drops the editor command's line, which must carry the real name.
-hxlive() { grep -F 'touch' "$HXL" | grep -v "^$HXED " | sed 's/##//g' | grep -c '#'; }
+# $1 drops the editor command's line, which must carry the real name. The option is a
+# command, pasted unquoted into the window's, so the path goes in quoted and the line is
+# found by that text, as a fixed string: a path read as a regex breaks on its own ' (#990).
+hxlive() { grep -F 'touch' "$HXL" | grep -vF -- "$(tq "$HXED") " | sed 's/##//g' | grep -c '#'; }
 hxseen() { grep -c -F 'touch' "$HXL"; }
-"$TMUX_REAL" -L "$HX" set -g @cockpit_editor "$HXED" >/dev/null 2>&1
+"$TMUX_REAL" -L "$HX" set -g @cockpit_editor "$(tq "$HXED")" >/dev/null 2>&1
 hxgo 1
 is "terminal editor: the name and directory arguments carry no live # format" "0" "$(hxlive)"
 is "and the hostile name did reach tmux (the check saw it)" "yes" \
@@ -17805,7 +22012,7 @@ if need_tmux "git.sh refusal in tmux-branch"; then :; else
 BQ="cockpit-bq2-$$"; SOCKS="$SOCKS $BQ"; GD=$(mktmpd)
 ( git init -q "$GD/r" && cd "$GD/r" && printf 'hi\n' > x &&
     printf 'x filter=a=b\n' > .gitattributes \
-  && git config 'filter.a=b.clean' "touch $GD/PWNED" ) >/dev/null 2>&1
+  && git config 'filter.a=b.clean' "touch $(tq "$GD/PWNED")" ) >/dev/null 2>&1
 ( git init -q -b main "$GD/ok" && cd "$GD/ok" && printf 'a\n' > y && git add y \
   && git -c user.name=t -c user.email=t@t commit -qm i && git branch other &&
       git worktree add -q "$GD/ok-wt" other ) >/dev/null 2>&1
@@ -18052,7 +22259,9 @@ is "and no VS Code server was installed into the suite's HOME" "absent" \
 echo "== tmux-open-path (#283): a lone markdown file opens in the viewer, the rest as before =="
 # A tmux stub logs what the script asks of tmux, and a cockpit-tui stub answers
 # pick with PICK_KEY and view with VIEW_OUT, logging its own argv. No server.
-MV=$(mktmpd); MVL="$MV/log"; mkdir -p "$MV/bin" "$MV/w/d.md"
+# The folder's own name holds two blanks (as #1069 did), so a want that carries one of its
+# paths raw where the script %q-quotes it is red in a plain run too (#990).
+MV="$(mktmpd)/m  v"; MVL="$MV/log"; mkdir -p "$MV/bin" "$MV/w/d.md"
 MVB=$'b\xe2\x80\xaeq\x1b[2Jz.md'   # a bidi override and an escape in the name
 for f in a.md B.MD c.markdown e.mdown g.mkd n.md.txt t.txt 'h#(x)#{y}.md' "$MVB"; do : > "$MV/w/$f"
 done
@@ -18073,7 +22282,9 @@ case "$1" in
           *pane_width*)        printf '90 30\n' ;;
           *)                   printf 'MSG %s\n' "${!#}" >> "$TMUX_LOG" ;;
       esac ;;
-  new-window) printf 'NEWWIN %s\n' "${!#}" >> "$TMUX_LOG"; exit "${NEWWIN_RC:-0}" ;;
+  # NEWWIN_SH: the window's command also runs, through that sh, as tmux runs it (#990)
+  new-window) printf 'NEWWIN %s\n' "${!#}" >> "$TMUX_LOG"
+      [ -z "${NEWWIN_SH:-}" ] || "$NEWWIN_SH" -c "${!#}"; exit "${NEWWIN_RC:-0}" ;;
   display-popup) shift; { printf 'POPUP'; printf ' [%s]' "$@"; echo; } >> "$TMUX_LOG"; exit "${POPUP_RC:-0}" ;;
   list-clients) [ -z "${NO_CLIENT:-}" ] && printf 'c\n' ;;
 esac
@@ -18109,12 +22320,16 @@ mvrun() {                     # mvrun <click line> <args...> -- the log after on
         VIEW_ERR="${VIEW_ERR:-}" VIEW_RC="${VIEW_RC:-}" PICK_KEY="${PICK_KEY:-0}" \
             POPUP_RC="${POPUP_RC:-}" NO_CLIENT="${NO_CLIENT:-}" NEWWIN_RC="${NEWWIN_RC:-}" \
         VIEW_ONCE="${VIEW_ONCE:-}" VIEW_ENV="${VIEW_ENV:-}" ${FUNCNEST:+FUNCNEST="$FUNCNEST"} \
+            NEWWIN_SH="${NEWWIN_SH:-}" \
         bash "${MV_SCRIPT:-$DIR/scripts/tmux-open-path}" "${@:2}" </dev/null >/dev/null 2>"$MV/err"
     printf '%s' "$?" > "$MV/rc"   # for a row that must tell "opens nothing" from a crash (#842)
     cat "$MVL"
 }
+# A command the script builds carries the file %q-quoted, as its shq writes it; the
+# argv logged by the stubs carries it raw (#990)
+MVQA=$(printf %q "$MV/w/a.md")
 is "a lone .md opens a popup the pane's size over it, which re-enters with --view" \
-   "POPUP [-t] [%1] [-E] [-x] [P] [-y] [P] [-w] [90] [-h] [30] [-d] [$MV/w] [-T] [ a.md ] [$(printf %q "$DIR/scripts/tmux-open-path") --view %1 $MV/w/a.md '']" \
+   "POPUP [-t] [%1] [-E] [-x] [P] [-y] [P] [-w] [90] [-h] [30] [-d] [$MV/w] [-T] [ a.md ] [$(printf %q "$DIR/scripts/tmux-open-path") --view %1 $MVQA '']" \
    "$(mvrun 'see a.md' %1)"
 for f in B.MD c.markdown e.mdown g.mkd 'a.md:12'; do
     case "$(mvrun "$f" %1)" in
@@ -18123,15 +22338,16 @@ for f in B.MD c.markdown e.mdown g.mkd 'a.md:12'; do
     esac
 done
 case "$(mvrun 'a.md:12' %1)" in
-    *"--view %1 $MV/w/a.md 12]") ok "and a clicked :line goes with it" ;;
+    *"--view %1 $MVQA 12]") ok "and a clicked :line goes with it" ;;
     *) bad "and a clicked :line goes with it" "--view %1 .../a.md 12" "$(mvrun 'a.md:12' %1)" ;;
 esac
 for f in n.md.txt t.txt d.md; do
-    is "$f is not markdown: the editor, at once" "NEWWIN ed  $MV/w/$f" "$(mvrun "$f" %1)"
+    is "$f is not markdown: the editor, at once" "NEWWIN ed  $(printf %q "$MV/w/$f")" \
+       "$(mvrun "$f" %1)"
 done
-is "@cockpit_md_view off: a .md goes straight to the editor" "NEWWIN ed  $MV/w/a.md" \
+is "@cockpit_md_view off: a .md goes straight to the editor" "NEWWIN ed  $MVQA" \
     "$(MD_VIEW=off mvrun a.md %1)"
-is "no client on the pane's session: the editor, and no popup" "NEWWIN ed  $MV/w/a.md" \
+is "no client on the pane's session: the editor, and no popup" "NEWWIN ed  $MVQA" \
     "$(NO_CLIENT=1 mvrun a.md %1)"
 # tmux hands back the popup command's status: 129 is the client detaching
 # mid-view, 3 any exit 3. Neither is a refusal, so no editor opens behind them.
@@ -18144,7 +22360,7 @@ for rc in 129 3; do
                 "$(POPUP_RC=$rc mvrun a.md %1)" ;;
     esac
 done
-is "no cockpit-tui: a .md goes straight to the editor" "NEWWIN ed  $MV/w/a.md" \
+is "no cockpit-tui: a .md goes straight to the editor" "NEWWIN ed  $MVQA" \
     "$(MV_BIN="$MV/none" mvrun a.md %1)"
 is "the popup's title and directory spell each # as ##" "[-d] [$MV/w] [-T] [ h##(x)##{y}.md ]" \
    "$(mvrun 'h#(x)#{y}.md' %1 | grep -o '\[-d\] \[[^]]*\] \[-T\] \[[^]]*\]')"
@@ -18152,16 +22368,16 @@ is "the popup's title drops a bidi override and control characters" "[-T] [ bq[2
    "$(mvrun "$MVB" %1 | grep -o '\[-T\] \[[^]]*\]')"
 # --view is the popup's re-entry: the viewer runs in it, and e comes back here.
 is "--view runs the viewer at the line and opens the editor where e left it" \
-   "VIEW [view] [--line] [7] [--] [$MV/w/a.md]"$'\n'"NEWWIN ed +12 $MV/w/a.md" \
+   "VIEW [view] [--line] [7] [--] [$MV/w/a.md]"$'\n'"NEWWIN ed +12 $MVQA" \
    "$(VIEW_OUT='edit 12' mvrun '' --view %1 "$MV/w/a.md" 7)"
 # a touch client: the viewer's e opens a terminal editor, at +N for the editors that take it
 for e in vi vim nvim nano emacs micro; do
     is "--view on touch, e: $e gets +12" \
-        "VIEW [view] [--line] [7] [--] [$MV/w/a.md]"$'\n'"NEWWIN $e +12 $MV/w/a.md" \
+        "VIEW [view] [--line] [7] [--] [$MV/w/a.md]"$'\n'"NEWWIN $e +12 $MVQA" \
        "$(TOUCH=1 MV_ED=$e VIEW_OUT='edit 12' mvrun '' --view %1 "$MV/w/a.md" 7)"
 done
 is "--view on touch, e: an editor outside the list gets the file only" \
-   "VIEW [view] [--line] [7] [--] [$MV/w/a.md]"$'\n'"NEWWIN ed $MV/w/a.md" \
+   "VIEW [view] [--line] [7] [--] [$MV/w/a.md]"$'\n'"NEWWIN ed $MVQA" \
    "$(TOUCH=1 VIEW_OUT='edit 12' mvrun '' --view %1 "$MV/w/a.md" 7)"
 is "--view without a line passes none" "VIEW [view] [--] [$MV/w/a.md]" \
     "$(mvrun '' --view %1 "$MV/w/a.md" '')"
@@ -18172,29 +22388,57 @@ for o in 'edit 3; touch x' 'edit' 'edit x' 'open 3' 'edit 3 4'; do
     esac
 done
 case "$(VIEW_ERR='cockpit-tui: unknown screen view' mvrun '' --view %1 "$MV/w/a.md" '')" in
-    *"NEWWIN ed  $MV/w/a.md"*"older than the plugin"*|*"older than the plugin"*"NEWWIN ed  $MV/w/a.md"*)
+    *"NEWWIN ed  $MVQA"*"older than the plugin"*|*"older than the plugin"*"NEWWIN ed  $MVQA"*)
         ok "a cockpit-tui without view is called stale, and the editor opens" ;;
     *) bad "a cockpit-tui without view is called stale, and the editor opens" \
             "the stale note and the editor" \
          "$(VIEW_ERR='cockpit-tui: unknown screen view' mvrun '' --view %1 "$MV/w/a.md" '')" ;;
 esac
 case "$(VIEW_ERR=boom VIEW_RC=3 mvrun '' --view %1 "$MV/w/a.md" '')" in
-    *"viewer exited 3"*"NEWWIN ed  $MV/w/a.md"*|*"NEWWIN ed  $MV/w/a.md"*"viewer exited 3"*)
+    *"viewer exited 3"*"NEWWIN ed  $MVQA"*|*"NEWWIN ed  $MVQA"*"viewer exited 3"*)
         ok "a viewer that fails says so, and the editor opens" ;;
     *) bad "a viewer that fails says so, and the editor opens" "the note and the editor" \
          "$(VIEW_ERR=boom VIEW_RC=3 mvrun '' --view %1 "$MV/w/a.md" '')" ;;
 esac
 # From the picker's popup the viewer draws in place: tmux has one popup per client.
 is "a .md chosen in the picker opens the viewer in the picker's own popup" \
-   "VIEW [view] [--] [$MV/w/a.md]"$'\n'"NEWWIN ed +5 $MV/w/a.md" \
+   "VIEW [view] [--] [$MV/w/a.md]"$'\n'"NEWWIN ed +5 $MVQA" \
        "$(VIEW_OUT='edit 5' PICK_KEY=0 mvrun 'a.md t.txt' --pick %1)"
 # a refused new-window is said, not swallowed (#366): the editor row and the touch row
 is "a window tmux refuses to open is a note, from the editor path" \
-   "NEWWIN ed  $MV/w/t.txt"$'\n'"MSG cockpit: tmux could not open a window for t.txt" \
-       "$(NEWWIN_RC=1 mvrun 'x' --view %1 "$MV/w/t.txt" '')"
+   "NEWWIN ed  $(printf %q "$MV/w/t.txt")"$'\n'"MSG cockpit: tmux could not open a window for $(
+       )t.txt" "$(NEWWIN_RC=1 mvrun 'x' --view %1 "$MV/w/t.txt" '')"
 is "and from the touch client's terminal editor" \
-   "VIEW [view] [--] [$MV/w/a.md]"$'\n'"NEWWIN ed $MV/w/a.md"$'\n'"MSG cockpit: tmux could not open a window for a.md" \
+   "VIEW [view] [--] [$MV/w/a.md]"$'\n'"NEWWIN ed $MVQA"$'\n'"MSG cockpit: tmux could not open a window for a.md" \
    "$(NEWWIN_RC=1 VIEW_OUT='edit 5' TOUCH=1 mvrun 'x' --view %1 "$MV/w/a.md" '')"
+# End to end (#990): the stub tmux runs the window's command through sh, and a stub editor
+# writes the argv it is handed, one argument per line, to $MV/argv. A want built by printf %q
+# only matches the script's quoting; this one reads what the editor got, so a quoting slip in
+# the script shows here under any TMPDIR. The name holds two blanks, a ', a ", a $ and a %.
+MVQ="q a  b'c\"d\$e%f.txt"; : > "$MV/w/$MVQ"
+printf '#!/bin/sh\nfor a in "$@"; do printf "%%s\\n" "$a"; done > %s\n' "$(tq "$MV/argv")" \
+    > "$MV/ed-argv"; chmod +x "$MV/ed-argv"; rm -f "$MV/argv"
+NEWWIN_SH=$(command -v sh) MV_ED=$(tq "$MV/ed-argv") mvrun x --view %1 "$MV/w/$MVQ" 7 >/dev/null
+is "end to end: the editor is handed +7 and the file's path whole" "+7"$'\n'"$MV/w/$MVQ" \
+   "$(cat "$MV/argv" 2>/dev/null)"
+# #1177: a touch client's editor gets +N by its first word, read as sh reads it. An nvim stub
+# at a path holding the folder's blanks, spelled five ways; the viewer's e opens it at line 7
+mkdir -p "$MV/e"; cp "$MV/ed-argv" "$MV/e/nvim"
+for mvsp in single double backslash mixed args; do
+    case $mvsp in
+        single) mved=$(tq "$MV/e/nvim"); mvw= ;;
+        # inside "...", sh still reads \ " $ and ` : each is escaped first
+        double) mved="\"$(printf '%s' "$MV/e/nvim" | sed 's/[\\"$`]/\\&/g')\""; mvw= ;;
+        backslash) mved=$(printf '%s' "$MV/e/nvim" | sed 's/./\\&/g'); mvw= ;;   # each character
+        mixed) mved="$(tq "$MV/e")/nvim"; mvw= ;;
+        args) mved="$(tq "$MV/e/nvim") -u NONE"; mvw=$'-u\nNONE\n' ;;
+    esac
+    rm -f "$MV/argv"
+    NEWWIN_SH=$(command -v sh) TOUCH=1 VIEW_OUT='edit 7' MV_ED=$mved \
+        mvrun x --view %1 "$MV/w/a.md" '' >/dev/null
+    is "touch, an nvim path with blanks ($mvsp): the editor is handed +7 and the file" \
+       "$mvw+7"$'\n'"$MV/w/a.md" "$(cat "$MV/argv" 2>/dev/null)"
+done
 # In a UTF-8 locale [0-9] also matches ² and ١. The viewer's `edit ²` is no edit: nothing
 # opens, on a touch client or not (#842). The edit 5 rows above are the ASCII answers.
 if MVLOC=$(utf8_loc); then
@@ -18207,9 +22451,9 @@ if MVLOC=$(utf8_loc); then
         done
     done
     # term_edit's own check: no caller hands it a line that is not ASCII now, so it runs
-    # alone here, with a stub tmux that prints the window's command.
+    # alone here, with editor_bin (#1177) and a stub tmux that prints the window's command.
     ter() { env LOCPATH="$MVLOC" LC_ALL=en_US.UTF-8 bash -c '
-            eval "$(sed -n "/^term_edit() {/,/^}/p" "$1")"
+            eval "$(sed -n "/^editor_bin() {/,/^}/p; /^term_edit() {/,/^}/p" "$1")"
             tmux() { case $1 in show-options) echo nvim ;; new-window) printf %s "${!#}" ;; esac; }
             plain_name() { printf %s "$1"; }; fesc() { printf %s "$1"; }; shq() { printf %s "$1"; }
             win=@0; term_edit /w/n.txt "$2"' _ "$DIR/scripts/tmux-open-path" "$1"; }
@@ -18256,9 +22500,10 @@ for bp in 'x' '%' '%1;x' '%1 %2' '-t'; do
 done
 for o in 'ask 7 3' 'ask 0 1' 'ask 01 2' 'ask 1' 'ask 1 2 3' 'ask a b' 'ask 1234567890 1234567891' \
          "ask 1 2"$'\n'"ask 3 4" 'ask 1 2; touch x' ' ask 1 2' 'ask  1 2'; do
+    mvo=${o//$'\n'/'\n'}      # a newline in a title split its row in two (#1137)
     case "$(askrun "$o" --view %1 "$MV/w/a.md" '')" in
-        *PANEL*) bad "the viewer's [$o] is not an ask: no panel" "no PANEL" "a panel" ;;
-        *) ok "the viewer's [$o] is not an ask: no panel" ;;
+        *PANEL*) bad "the viewer's [$mvo] is not an ask: no panel" "no PANEL" "a panel" ;;
+        *) ok "the viewer's [$mvo] is not an ask: no panel" ;;
     esac
 done
 # In a UTF-8 locale [1-9] and [0-9] also match ² and ١: `ask ² 3` reached [ -gt ], which
@@ -18358,13 +22603,16 @@ echo "== tmux-open-path (#283): the viewer in a real popup, e to the editor, a h
 # client, keys go in through it, and an editor shim's log is what the asserts read.
 if need_tmux "markdown viewer popup"; then :; else
 MDI="cockpit-mdi-$$"; MDO="cockpit-mdo-$$"; SOCKS="$SOCKS $MDI $MDO"   # not the move menu's mvo
-MVD=$(mktmpd); mkdir -p "$MVD/w"; MVE="$MVD/ed.log"; : > "$MVE"
-printf '#!/bin/sh\necho "OPEN $*" >> %s\n' "$MVE" > "$MVD/ed"; chmod +x "$MVD/ed"
+# The folder's own name holds two blanks (as #1069 did), so a path of it pasted bare into
+# the editor setting is split in a plain run too (#990).
+MVD="$(mktmpd)/m  d"; mkdir -p "$MVD/w"; MVE="$MVD/ed.log"; : > "$MVE"
+printf '#!/bin/sh\necho "OPEN $*" >> %s\n' "$(tq "$MVE")" > "$MVD/ed"; chmod +x "$MVD/ed"
 MVN='r#(tmux${IFS}set${IFS}-g${IFS}@pwned${IFS}yes).md'   # no spaces: the line splits on them
 { printf '# Heading\n\n'; for i in $(seq 0 40); do printf 'p%s\n\n' "$i"; done; } > "$MVD/w/$MVN"
 "$TMUX_REAL" -L "$MDI" -f /dev/null new-session -d -s t -x 100 -y 30 -c "$MVD/w" \
     'exec sleep 300' >/dev/null 2>&1
-"$TMUX_REAL" -L "$MDI" set -g @cockpit_editor "$MVD/ed" >/dev/null 2>&1
+# the option is a command, pasted unquoted into the window's: the path goes in quoted (#990)
+"$TMUX_REAL" -L "$MDI" set -g @cockpit_editor "$(tq "$MVD/ed")" >/dev/null 2>&1
 "$TMUX_REAL" -L "$MDI" set -g remain-on-exit on >/dev/null 2>&1   # the shim editor exits at once
 MVP=$("$TMUX_REAL" -L "$MDI" list-panes -t t -F '#{pane_id}' | head -1)
 "$TMUX_REAL" -L "$MDI" set-option -p -t "$MVP" @cockpit_click_line "see $MVN" >/dev/null 2>&1
@@ -18375,15 +22623,24 @@ mvclick() { "$TMUX_REAL" -L "$MDI" run-shell \
         -b "$(printf %q "$DIR/scripts/tmux-open-path") $MVP" >/dev/null 2>&1
 }
 mvcap() { "$TMUX_REAL" -L "$MDO" capture-pane -p -t o; }
+# The footer is the frame's last row and can reach the outer pane after the body: a read
+# taken once the heading shows can miss it (#1243). Polled; a red row shows mv_state.
+# mv_state: the whole outer capture, then the inner windows as index:active:panes, so a red
+# row tells a popup in a window not shown apart from a blank pane or a dead server.
+mv_state() {
+    mvcap
+    printf 'windows: %s\n' "$("$TMUX_REAL" -L "$MDI" list-windows -t t \
+        -F '#{window_index}:#{window_active}:#{window_panes}' 2>&1 | tr '\n' ' ')"
+}
+mv_footer() {                 # <row name>
+    if until_cap "$MDO" o '*q close*'; then ok "$1"
+    else bad "$1" "q close" "$(mv_state)"; fi
+}
 mvclick
 if until_cap "$MDO" o '*# Heading*p1*'; then ok "a click on a .md shows it rendered in a popup"
 else bad "a click on a .md shows it rendered in a popup" "# Heading, then p1" "$(mvcap | head -8)"
 fi
-case "$(mvcap)" in
-    *"q close"*) ok "the viewer from a click says q close: no browser to go back to" ;;
-    *) bad "the viewer from a click says q close: no browser to go back to" "q close" \
-           "$(mvcap | tail -2)" ;;
-esac
+mv_footer "the viewer from a click says q close: no browser to go back to"
 # The client's top row is the popup's border, so the -T title is what is
 # read here; the viewer's own frame title is a row lower and is not the gate.
 case "$(mvcap | head -1)" in
@@ -18414,6 +22671,28 @@ fi
 # observable to poll; a #() job, had one started, runs in the background.
 sleep 0.5
 is "and nothing in the name ran" "" "$("$TMUX_REAL" -L "$MDI" show -gqv @pwned 2>/dev/null)"
+# A viewer that draws its footer a second after its body (#1243): read once when the body
+# shows, the footer is not there yet; mv_footer has to wait for it.
+cat > "$MVD/tui-late" <<'STUB'
+#!/bin/sh
+{ printf '# Heading\n\np0\n\np1\n'; sleep 1; printf 'q close\n'; } > /dev/tty
+read -r _ < /dev/tty
+STUB
+chmod +x "$MVD/tui-late"
+"$TMUX_REAL" -L "$MDI" set -gu @cockpit_md_view >/dev/null 2>&1
+"$TMUX_REAL" -L "$MDI" set-environment -g COCKPIT_TUI_BIN "$MVD/tui-late" >/dev/null 2>&1
+# kill-server ends this viewer, so md_view never removes its stderr file: it goes in $MVD
+"$TMUX_REAL" -L "$MDI" set-environment -g TMPDIR "$MVD" >/dev/null 2>&1
+# The editor rows above left the client on an editor window. On tmux master display-popup
+# is a floating pane in its target's window, not drawn over the shown one (tmux 34cd5da4).
+"$TMUX_REAL" -L "$MDI" select-window -t "$MVP" >/dev/null 2>&1
+mvclick
+if until_cap "$MDO" o '*# Heading*p1*'; then
+    mv_footer "a viewer whose footer comes late: the q close row waits for it (#1243)"
+else
+    bad "a viewer whose footer comes late: the q close row waits for it (#1243)" \
+        "# Heading, then p1" "$(mv_state)"
+fi
 "$TMUX_REAL" -L "$MDO" kill-server >/dev/null 2>&1
 "$TMUX_REAL" -L "$MDI" kill-server >/dev/null 2>&1
 fi
@@ -18426,7 +22705,9 @@ echo "== tmux-open-path --folder: the file browser, and what is done with the li
 # wrapper that logs every call before it runs, so "nothing was opened" is read
 # from the calls, never from a sleep.
 if need_tmux "folder browser"; then :; else
-FB=$(mktmpd); FBS="cockpit-fb-$$"; SOCKS="$SOCKS $FBS"
+# The folder's own name holds two blanks (as #1069 did), so a path of it pasted bare into
+# the editor setting is split in a plain run too (#990).
+FB="$(mktmpd)/f  b"; FBS="cockpit-fb-$$"; SOCKS="$SOCKS $FBS"
 FBD="$FB/proj"; mkdir -p "$FB/bin" "$FBD/sub"
 FBF="$FBD/a b's.txt"; : > "$FBF"; mkfifo "$FBD/fifo"; ln -s /dev/null "$FBD/devnull"
 : > "$FBD/sub/n.md"; : > "$FBD/sub/n.txt"
@@ -18448,6 +22729,9 @@ for e in ed-cockpit ed-visual ed-editor nvim; do
 mv -f "$FB/ed.log.\$\$" "$FB/ed.log"
 STUB
 done
+# An editor setting is a command that tmux-open-path pastes into new-window's sh command
+# unquoted, so a stub's path goes in single-quoted: a TMPDIR holding a blank splits it (#990)
+FBEC=$(tq "$FB/bin/ed-cockpit"); FBEV=$(tq "$FB/bin/ed-visual"); FBEE=$(tq "$FB/bin/ed-editor")
 cat > "$FB/bin/tmux" <<STUB
 #!/bin/sh
 printf '%s' "\$1" >> "$FB/calls"; for a in "\$@"; do printf ' [%s]' "\$a" >> "$FB/calls"; done; echo >> "$FB/calls"
@@ -18578,25 +22862,25 @@ case "$(cat "$FB/code.log")" in
 esac
 
 # a touch client: a terminal editor window instead, never VS Code
-fb on "open $FBF\n" 0 "VISUAL=$FB/bin/ed-visual" "EDITOR=$FB/bin/ed-editor"
+fb on "open $FBF\n" 0 "VISUAL=$FBEV" "EDITOR=$FBEE"
 fbwait "$FB/ed.log"
 is "touch: one window, no code" "1|0|2" "$(fbn new-window)|$(fbn run-shell)|$(fbwin)"
 is "touch: \$VISUAL opens the exact path" "$FB/bin/ed-visual [$FBF]" "$(cat "$FB/ed.log")"
 is "touch: code never ran" "" "$(cat "$FB/code.log")"
-fb on "open $FBF\n" 0 "EDITOR=$FB/bin/ed-editor"
+fb on "open $FBF\n" 0 "EDITOR=$FBEE"
 fbwait "$FB/ed.log"
 is "touch: \$EDITOR when there is no \$VISUAL" "$FB/bin/ed-editor [$FBF]" "$(cat "$FB/ed.log")"
 fb on "open $FBF\n" 0 "VISUAL=" "EDITOR="
 fbwait "$FB/ed.log"
 is "touch: nvim when nothing is set" "$FB/bin/nvim [$FBF]" "$(cat "$FB/ed.log")"
-"$TMUX_REAL" -L "$FBS" set -g @cockpit_editor "$FB/bin/ed-cockpit"
-fb on "open $FBF\n" 0 "VISUAL=$FB/bin/ed-visual"
+"$TMUX_REAL" -L "$FBS" set -g @cockpit_editor "$FBEC"
+fb on "open $FBF\n" 0 "VISUAL=$FBEV"
 fbwait "$FB/ed.log"
 is "touch: @cockpit_editor beats \$VISUAL" "$FB/bin/ed-cockpit [$FBF]" "$(cat "$FB/ed.log")"
 "$TMUX_REAL" -L "$FBS" set -gu @cockpit_editor
 # the editor window is named for the file and sits in its folder
 # (a .txt: a markdown file goes to the viewer instead, #283)
-fb on "open $FBD/sub/n.txt\n" 0 "VISUAL=$FB/bin/ed-visual"
+fb on "open $FBD/sub/n.txt\n" 0 "VISUAL=$FBEV"
 is "touch: the window is named for the file and starts in its folder" "n.txt $FBD/sub" \
    "$("$TMUX_REAL" -L "$FBS" list-windows -t t -F '#{window_name} #{pane_start_path}' |
        grep -Fx "n.txt $FBD/sub")"
@@ -18607,7 +22891,7 @@ is "touch: and that window's editor got the file" \
 # view: any regular file goes to the viewer, drawn in the browser's popup, touch or not (#406)
 for fbt in on off; do
     for fbv in n.md n.txt; do
-        fb "$fbt" "view $FBD/sub/$fbv\n" 0 "VISUAL=$FB/bin/ed-visual"
+        fb "$fbt" "view $FBD/sub/$fbv\n" 0 "VISUAL=$FBEV"
         is "$fbt: view $fbv opens the viewer on the exact path" "view -- $FBD/sub/$fbv" \
            "$(grep '^view' "$FB/tui.calls")"
         is "$fbt: and no editor, no code, no window opens for $fbv" "0|0" \
@@ -18616,12 +22900,12 @@ for fbt in on off; do
 done
 # the viewer's e prints `edit N` (FBV): a touch client
 # gets a terminal editor at that line, a PC code
-FBV='edit 7\n' fb on "view $FBD/sub/n.txt\n" 0 "VISUAL=$FB/bin/nvim"
+FBV='edit 7\n' fb on "view $FBD/sub/n.txt\n" 0 "VISUAL=$(tq "$FB/bin/nvim")"
 fbwait "$FB/ed.log"
 is "touch: the viewer's e opens a terminal editor at the line, not code" \
     "$FB/bin/nvim [+7] [$FBD/sub/n.txt]|0" \
    "$(cat "$FB/ed.log")|$(grep -c . "$FB/code.log")"
-FBV='edit 7\n' fb on "view $FBD/sub/n.txt\n" 0 "VISUAL=$FB/bin/ed-visual"
+FBV='edit 7\n' fb on "view $FBD/sub/n.txt\n" 0 "VISUAL=$FBEV"
 fbwait "$FB/ed.log"
 is "touch: an editor with no +N known gets the file only" "$FB/bin/ed-visual [$FBD/sub/n.txt]" \
     "$(cat "$FB/ed.log")"
@@ -18649,7 +22933,7 @@ FBV='edit 7\n' fb off "view $FBD/sub/n.txt\n" 0
 fbwait "$FB/code.log"
 is "the viewer's e: the editor opens, the browser does not come back" "1|1" \
    "$(fbtn files)|$(grep -c 'n.txt:7' "$FB/code.log")"
-FBV='edit 7\n' fb on "view $FBD/sub/n.txt\n" 0 "VISUAL=$FB/bin/ed-visual"
+FBV='edit 7\n' fb on "view $FBD/sub/n.txt\n" 0 "VISUAL=$FBEV"
 fbwait "$FB/ed.log"
 is "touch, the viewer's e: the editor window opens, the browser does not come back" "1|1" \
    "$(fbtn files)|$(fbn new-window)"
@@ -18735,7 +23019,7 @@ is "the viewed file's folder gone: the browser comes back in the start folder" \
 is "and no error page: no exit line, no key waited for" "0" "$(grep -c 'files exited' "$FB/out")"
 # back from a view, alt-e's editor window still starts in the pane's folder:
 # the loop's folder is its own, never the script's
-"$TMUX_REAL" -L "$FBS" set -g @cockpit_editor "$FB/bin/ed-cockpit"
+"$TMUX_REAL" -L "$FBS" set -g @cockpit_editor "$FBEC"
 for w in $("$TMUX_REAL" -L "$FBS" list-windows -t t -F '#{window_index}' | sed 1d); do
     "$TMUX_REAL" -L "$FBS" kill-window -t "t:$w"; done
 FBR=2 FBA2="open $FBF\n" fb off "view $FBD/sub/n.txt\n" 0
@@ -18753,7 +23037,7 @@ FBASK="panel -p $FBP --ask $FBD/sub/n.txt 1 1|view --line 1 -- $FBD/sub/n.txt"
 is "ask, then q in the viewer it reopens: back to the browser, on the file" \
    "files $FBD|view -- $FBD/sub/n.txt|$FBASK|files $FBD/sub --select n.txt" "$(fbtui)"
 # open on a markdown file on a touch client is a terminal editor, never the viewer
-fb on "open $FBD/sub/n.md\n" 0 "VISUAL=$FB/bin/ed-visual"
+fb on "open $FBD/sub/n.md\n" 0 "VISUAL=$FBEV"
 fbwait "$FB/ed.log"
 is "touch: open on a markdown file goes to term_edit, not the viewer" \
     "$FB/bin/ed-visual [$FBD/sub/n.md]|files $FBD" \
@@ -18789,7 +23073,7 @@ rm -f "$FBC"
 
 # names that are tmux formats: -n and -c expand #(), so term_edit escapes both
 FBH="$FBD/#(touch\${IFS}PWN)dir"; mkdir -p "$FBH"; FBHF="$FBH/#(touch\${IFS}PWN).txt"; : > "$FBHF"
-fb on "open $FBHF\n" 0 "VISUAL=$FB/bin/ed-visual"
+fb on "open $FBHF\n" 0 "VISUAL=$FBEV"
 fbwait "$FB/ed.log"
 is "touch, format-looking names: the editor got the exact path" "$FB/bin/ed-visual [$FBHF]" \
     "$(cat "$FB/ed.log")"
@@ -18801,7 +23085,7 @@ is "touch, format-looking names: nothing ran" "" \
     "$(find "$FB" "$PWD" -maxdepth 3 -name PWN 2>/dev/null)"
 
 # an editor with arguments: the +N decision reads its first word only (#425)
-FBV='edit 7\n' fb on "view $FBD/sub/n.txt\n" 0 "VISUAL=$FB/bin/nvim -u NONE"
+FBV='edit 7\n' fb on "view $FBD/sub/n.txt\n" 0 "VISUAL=$(tq "$FB/bin/nvim") -u NONE"
 fbwait "$FB/ed.log"
 is "touch: an editor with arguments keeps them and still gets +N" \
    "$FB/bin/nvim [-u] [NONE] [+7] [$FBD/sub/n.txt]" "$(cat "$FB/ed.log")"
@@ -18812,7 +23096,7 @@ FBC="$FBD/e"$'\e]2;OWNED\a'"x.txt"; : > "$FBC"
 FBB="$FBD/p"$'\xe2\x80\xae'"q.txt"; : > "$FBB"
 for row in "$FBC|e]2;OWNEDx.txt" "$FBB|pq.txt"; do
     for t in on off; do
-        "$TMUX_REAL" -L "$FBS" set -g @cockpit_editor "$FB/bin/ed-cockpit"
+        "$TMUX_REAL" -L "$FBS" set -g @cockpit_editor "$FBEC"
         for w in $("$TMUX_REAL" -L "$FBS" list-windows -t t -F '#{window_index}' | sed 1d); do
             "$TMUX_REAL" -L "$FBS" kill-window -t "t:$w"; done
         fb "$t" "open ${row%%|*}\n" 0
@@ -18853,7 +23137,7 @@ for row in "two lines|open $FBF\\nopen $FBF" "unknown verb|rm $FBF" "missing pat
            "view of a relative path|view proj/sub/n.md" "view, two lines|view $FBF\\nview $FBF" \
            "view, upper case|VIEW $FBF" "view, no path|view"; do
     for t in on off; do
-        fb "$t" "${row#*|}\n" 0 "VISUAL=$FB/bin/ed-visual"
+        fb "$t" "${row#*|}\n" 0 "VISUAL=$FBEV"
         is "refused (${row%%|*}, touch $t): no editor, no code, no copy" "0|0|0|1" \
            "$(fbn run-shell)|$(fbn new-window)|$(fbn load-buffer)|$(fbnotes)"
     done
@@ -19665,11 +23949,32 @@ printf '%s\n' "$SID" > "\$COCKPIT_ACTION.expect"
 printf 'resume %s\n' "$ACS" > "\$COCKPIT_ACTION"
 ACBIN
 chmod +x "$ACD/bin"
-ac new-window -d -t t: -c "$ACD" "env COCKPIT_TUI_BIN=$ACD/bin XDG_STATE_HOME=$ACD/state \
-COCKPIT_LOG=$ACD/tui.log $DIR/scripts/cockpit-board -p $ACH; echo x > $ACD/done"
+# A claude of the row's own, first on the window's PATH (#978): were the refusal to fail,
+# cockpit-board's resume would run `claude --resume`, and it must reach this, which logs its
+# argv, never one a developer's PATH holds.
+mkdir -p "$ACD/stub"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "${0%%/*}/ran"\nexit 0\n' > "$ACD/stub/claude"
+chmod +x "$ACD/stub/claude"
+# The window says which claude it would run, so a row sees the stub is the one reached.
+ac new-window -d -t t: -c "$ACD" "PATH=\"$ACD/stub:\$PATH\"; export PATH; \
+command -v claude > $(tq "$ACD/which"); env COCKPIT_TUI_BIN=$(tq "$ACD/bin") \
+XDG_STATE_HOME=$(tq "$ACD/state") COCKPIT_LOG=$(tq "$ACD/tui.log") \
+$(tq "$DIR/scripts/cockpit-board") -p $ACH; \
+echo x > $(tq "$ACD/done")"
 until_file "$ACD/done" 'x'
 is "resume: a session live in OPENCODE is not opened twice" \
     "✕ cockpit: ${SID:0:8} is already running in $ACO" "$(cat "$ACD/note" 2>/dev/null)"
+is "the window's claude is the row's own" "$ACD/stub/claude" "$(cat "$ACD/which" 2>/dev/null)"
+# The stub writes its line a moment before or after `done` appears, and a read right at `done`
+# can come first (#1001). A claude started for the resume runs in a pane, by a split or in a
+# window of its own, and that pane closes after the stub's write. So: wait until the server
+# holds its five panes again, an x for each, and no more. The row reads that count too: a
+# wait that ran out means something is still running, and must not pass. The five are
+# written out, not read from the format beforehand: a format that printed nothing would
+# then agree with itself (#1030).
+until_out xxxxx ac display -p '#{S:#{W:#{P:x}}}'
+is "and no claude was started for it" "xxxxx|" \
+    "$(ac display -p '#{S:#{W:#{P:x}}}')|$(cat "$ACD/stub/ran" 2>/dev/null)"
 ac kill-server >/dev/null 2>&1
 unset -f ac ac_pane ac_each ac_wd ac_jump ac_deliver
 
@@ -19787,7 +24092,7 @@ PD1=$(pd_tm list-panes -t t -F '#{pane_id}')
 PD2=$(pd_tm new-window -d -P -F '#{pane_id}' -c "$PD" 'exec -a claude bash')
 pd_hook() {                   # pd_hook <pane> [env...]: a relayed agent_needs_input from <pane>
     printf '{"notification_type":"agent_needs_input","message":"m"}' \
-        | env -u CLAUDE_CONFIG_DIR "${@:2}" TMUX="$PDT" TMUX_PANE="$1" \
+        | env -u CLAUDE_CONFIG_DIR -u COCKPIT_NO_AUTOSTART "${@:2}" TMUX="$PDT" TMUX_PANE="$1" \
             PATH="$PD/cks:$AVREC:$PATH" "$DIR/scripts/agent-state" notify >/dev/null 2>&1
 }
 pd_key() { printf '%s' "$1" | cksum | cut -d' ' -f1; }
@@ -19834,13 +24139,13 @@ is "a dir poller whose last pane went leaves and unpublishes, its dir too" "||" 
 is "...and the default poller stays" "yes" "$(pd_yn pd_live @cockpit_poll_pid)"
 # A dir slot whose poller is gone and whose dir no pane holds: the sweep takes it back, by
 # compare-and-set, and the process at that pid is not signalled.
-sleep 300 & PDSLEEP=$!
+sleep 300 & PDSLEEP=$!; PDSLEEPS=$(pid_start "$PDSLEEP")
 pd_tm set -g @cockpit_poll_pid_99 "$PDSLEEP" \; set -g @cockpit_poll_dir_99 "$PD/gone"
 env -u COCKPIT_NO_AUTOSTART -u TMUX_PANE TMUX="$PDT" PATH="$AVREC:$PATH" \
     "$DIR/scripts/agent-state" sweep </dev/null >/dev/null 2>&1
 is "a sweep takes back a dead dir slot no pane holds, and signals nothing" "|yes" \
    "$(pd_opt @cockpit_poll_pid_99)|$(pd_yn kill -0 "$PDSLEEP")"
-kill "$PDSLEEP" 2>/dev/null; wait "$PDSLEEP" 2>/dev/null
+pid_sig TERM "$PDSLEEP" "$PDSLEEPS" >/dev/null; wait "$PDSLEEP" 2>/dev/null
 # Two dirs on one cksum never share a slot: a stubbed cksum gives both the key 7.
 printf '#!/bin/sh\necho "7 1"\n' > "$PD/cks/cksum"; chmod +x "$PD/cks/cksum"
 pd_tm set -g @cockpit_poll_dir_7 "$PD/first" \; set -gu @cockpit_poll_err
@@ -19856,14 +24161,7 @@ is "...and a poller for it refuses the slot at its claim" "|config dirs share a 
    "$(pd_opt @cockpit_poll_pid_7)|$(pd_opt @cockpit_poll_err)"
 rm -f "$PD/cks/cksum"
 pd_tm kill-server
-pd_polls() {                  # live agent-poll processes on this block's server
-    local d n=0
-    for d in /proc/[0-9]*; do
-        [ "$(cat "$d/comm" 2>/dev/null)" = agent-poll ] || continue
-        tr '\0' '\n' < "$d/environ" 2>/dev/null | grep -q "^TMUX=$SOCKDIR/$PDS," && n=$((n + 1))
-    done
-    echo "$n"
-}
+pd_polls() { polls_on "$PDS" /proc/[0-9]*; }   # live agent-poll processes on this block's server
 av_wait '[ "$(pd_polls)" = 0 ]'
 is "the pollers leave with their server" "0" "$(pd_polls)"
 rm -rf "$PD"
@@ -19966,14 +24264,7 @@ rd_live() {                   # a live agent-poll holds the default dir's slot
     local p; p=$(rd_tm show-option -gqv @cockpit_poll_pid)
     [ -n "$p" ] && [ "$(cat "/proc/$p/comm" 2>/dev/null)" = agent-poll ]
 }
-rd_polls() {                  # live agent-poll processes on this block's server
-    local d n=0
-    for d in /proc/[0-9]*; do
-        [ "$(cat "$d/comm" 2>/dev/null)" = agent-poll ] || continue
-        tr '\0' '\n' < "$d/environ" 2>/dev/null | grep -q "^TMUX=$SOCKDIR/$RDS," && n=$((n + 1))
-    done
-    echo "$n"
-}
+rd_polls() { polls_on "$RDS" /proc/[0-9]*; }   # live agent-poll processes on this block's server
 for rdbad in "newline:"$'\n' "ESC:"$'\e'; do
     fresh_server -L "$RDS" -f /dev/null -- -d -s t -x 80 -y 24 -c "$RD" 'exec -a claude bash'
     rd_tm set -g @cockpit_agents_glob '|claude|' \; set -g @cockpit_bg_poll 1 \; \
@@ -19982,8 +24273,9 @@ for rdbad in "newline:"$'\n' "ESC:"$'\e'; do
     RDP=$(rd_tm list-panes -t t -F '#{pane_id}'); : > "$RDLOG"
     # A relayed agent_completed: mark_agentview, and no state of its own on the pane.
     printf '{"notification_type":"agent_completed"}' \
-        | env -u CLAUDE_CONFIG_DIR CLAUDE_CONFIG_DIR="$RD/a${rdbad#*:}b" TMUX="$SOCKDIR/$RDS,0,0" \
-            TMUX_PANE="$RDP" PATH="$AVREC:$PATH" "$DIR/scripts/agent-state" notify >/dev/null 2>&1
+        | env -u CLAUDE_CONFIG_DIR -u COCKPIT_NO_AUTOSTART CLAUDE_CONFIG_DIR="$RD/a${rdbad#*:}b" \
+            TMUX="$SOCKDIR/$RDS,0,0" TMUX_PANE="$RDP" PATH="$AVREC:$PATH" \
+            "$DIR/scripts/agent-state" notify >/dev/null 2>&1
     av_wait rd_live
     is "${rdbad%%:*} in the dir: not recorded, said so, and the default dir's poller started" \
        "|$RDMSG|yes" \
@@ -20036,6 +24328,35 @@ is "a dir a test made unreadable is named, and nothing of the run is left outsid
    "$(TMPDIR=$CRL cr 'mkdir "$TMPDIR/locked" && touch "$TMPDIR/locked/f" &&
        chmod 000 "$TMPDIR/locked"') left=$(ls -A "$CRL" | wc -l)"
 chmod -R u+rwx "$CRL" 2>/dev/null; rm -rf "$CRL"
+
+echo "== tests/tui-refusers.sh: with no user namespace it starts no test binary (#1089) =="
+# Outside its namespace a test binary's plain tmux would reach /tmp/tmux-<uid>, so where
+# unshare fails or is missing the script says so and builds and starts nothing: a stub
+# cargo, which every binary would come from, and a stub binary each record a call.
+TRF=$(mktmpd)
+mkdir "$TRF/fail" "$TRF/none"
+printf '#!/bin/sh\nexit 1\n' > "$TRF/fail/unshare"
+printf '#!/bin/sh\necho "$*" >> "$0.calls"\n' > "$TRF/fail/cargo"
+cp "$TRF/fail/cargo" "$TRF/none/cargo"
+cp "$TRF/fail/cargo" "$TRF/bin"
+chmod +x "$TRF/fail/unshare" "$TRF/fail/cargo" "$TRF/none/cargo" "$TRF/bin"
+echo "$TRF/bin" > "$TRF/list"
+trf() {   # <PATH> <args...>: what the script printed, its status, and the calls recorded
+    local p=$1 o r; shift
+    o=$(PATH=$p "$DIR/tests/tui-refusers.sh" "$@" 2>&1); r=$?
+    printf '%s rc=%s calls=%s' "$o" "$r" "$(cat "$TRF"/*/*.calls "$TRF"/*.calls 2>/dev/null | wc -l)"
+}
+TRS="tui-refusers.sh: no user and mount namespace here (unshare -rm), so no test binary was started"
+is "an unshare that fails: one line, exit 1, nothing built or started" \
+   "$TRS rc=1 calls=0" "$(trf "$TRF/fail:/usr/bin:/bin")"
+is "no unshare on PATH: the same" "$TRS rc=1 calls=0" "$(trf "$TRF/none")"
+TRI="tui-refusers.sh: --inside not in a namespace of its own, so no test binary was started"
+is "its inner half started outside a namespace starts no binary" \
+   "$TRI rc=1 calls=0" "$(trf "$TRF/fail:/usr/bin:/bin" --inside "$TRF/list")"
+is "...nor handed the namespaces it runs in, as a call inside a container's would be" \
+   "$TRI rc=1 calls=0" "$(trf "$TRF/fail:/usr/bin:/bin" --inside "$TRF/list" \
+       "$(readlink /proc/self/ns/user)/$(readlink /proc/self/ns/mnt)")"
+rm -rf "$TRF"
 
 
 # tests: scripts/agent-poll
@@ -20145,25 +24466,34 @@ elif [ ! -r /proc/net/unix ] || ! command -v setsid >/dev/null 2>&1; then
 else
 # The nested run's TMPDIR, plain and with two spaces and a % (#818): the block's server
 # command and the cleanup's socket list must keep such a path whole.
+ir_gone() { kill -0 -- "-$1" 2>/dev/null || echo gone; }   # <group>: gone when it is empty
+ir_state() {                  # <pid> -> its state letter, read without reaping it, or nothing
+    local s=""                # the field after the LAST ')': the name before it may hold one
+    read -r s 2>/dev/null < "/proc/$1/stat"
+    s=${s##*') '}; printf '%s' "${s%% *}"
+}
+ir_over() {                   # <pid> -> "over" once it has exited: Z, or reaped and gone
+    local s; s=$(ir_state "$1"); [ -n "$s" ] && [ "$s" != Z ] || echo over
+}
 ir_run() {                    # <TMPDIR for the nested run> <label for the rows> [spaced]
-    local d=$1 l=$2 irp irs irl irc
+    local irt=$1 l=$2 irp irs irl irc
     # The caller's runtime dir, as the suite itself had it: the block's short-socket fallback.
-    ( cd "$DIR" && TMPDIR="$d" XDG_RUNTIME_DIR="$SUITE_XRD" COCKPIT_TEST_RV_HOLD="$d/held" \
-        exec setsid tests/only.sh '^revdiff: the doctor grades it' ) </dev/null >"$d/log" 2>&1 &
+    ( cd "$DIR" && TMPDIR="$irt" XDG_RUNTIME_DIR="$SUITE_XRD" COCKPIT_TEST_RV_HOLD="$irt/held" \
+        exec setsid tests/only.sh '^revdiff: the doctor grades it' ) </dev/null >"$irt/log" 2>&1 &
     irp=$!
     # Held, or the run is over (it never reached the hold): whichever comes first.
     POLLS=600 until_out '?*' \
-        sh -c "[ -s '$d/held' ] && echo held || kill -0 $irp || echo gone"
-    irs=$(cat "$d/held" 2>/dev/null)
+        sh -c "[ -s '$irt/held' ] && echo held || kill -0 $irp || echo gone"
+    irs=$(cat "$irt/held" 2>/dev/null)
     irl=0; [ -z "$irs" ] || irl=$(grep -cF " $irs" /proc/net/unix)
     if [ -z "$irs" ]; then
         wait "$irp" 2>/dev/null
         # skip_ prints a colour code between SKIP and the reason.
-        if grep -q "SKIP.* the revdiff on the server's PATH" "$d/log"; then
+        if grep -q "SKIP.* the revdiff on the server's PATH" "$irt/log"; then
             skip_ "revdiff interrupt, $l (its server row skipped: it never held)"
         else
             bad "$l: the revdiff block, run on its own, held with its server up" "held" \
-                "$(tail -3 "$d/log" | tr '\n' ' ')"
+                "$(tail -3 "$irt/log" | tr '\n' ' ')"
         fi
         return
     fi
@@ -20182,10 +24512,27 @@ ir_run() {                    # <TMPDIR for the nested run> <label for the rows>
     # still that run.
     irc=""; read -r irc 2>/dev/null < "/proc/$irp/comm"
     case "$irc" in only.sh|bash) kill -TERM -- "-$irp" 2>/dev/null ;; esac
+    # only.sh traps TERM and runs its trap once the script it runs is done (#1171), so it exits
+    # only after that script's EXIT trap's cleanup. Its state is polled, not waited on: a bare
+    # wait has no bound. bash reaps its own child when it exits, keeping the status for `wait`,
+    # so the stat file is gone (a probe of `setsid sleep 0 &` read R, then no stat file, before
+    # its wait returned 0); a parent that is not bash leaves a zombie, Z. Either is over. Once
+    # reaped the pid can be reused: another process's state there gives a bounded red, never a
+    # signal. With neither inside the polls the row is red and nothing waits; a group still
+    # alive here is left running: nothing in this run or par.sh ends it (#814, #1171, #1201).
+    if ! until_out over ir_over "$irp"; then
+        bad "$l: the interrupted run's only.sh was over inside the wait" "Z or gone" \
+            "$(ir_state "$irp")"
+        return
+    fi
     wait "$irp" 2>/dev/null
-    # only.sh ends at once; the script it runs ends after its EXIT trap's cleanup: wait for
-    # that, by the listener count, not a clock.
     until_out 0 grep -cF " $irs" /proc/net/unix
+    # And for the run itself to be over: that socket closes early in its cleanup, and its own
+    # server and socket go last. They are in the socket folder this run shares with it, where
+    # this run's tail looks for what was left (#1098): the group is empty once the trap is done.
+    until_out gone ir_gone "$irp" ||
+        bad "$l: the interrupted run was over inside the wait" "its process group empty" \
+            "still running"
     is "$l: after TERM no server listens on the revdiff block's socket" "0" \
        "$(grep -cF " $irs" /proc/net/unix)"
 }
@@ -20205,32 +24552,59 @@ echo "== a TMPDIR holding a \$, a \` and a ' leaves no suite server behind (#849
 # The ` and ' are there too: a guard that escaped only $ passed with a $ alone. The nested run
 # reads the live tests/run.sh, not a par.sh snapshot, and inherits this suite's PATH shim, so
 # its server's cmdline carries two -L names; tmux takes the last, its own.
+# First listeners_in, the read the listener rows take, with a grep on PATH standing in for the
+# table (#1228): a server two reads count and later ones do not, as one on its way out after
+# kill-server, and one every read counts, as one the cleanup never reached. Two, not one: a
+# read that skipped the first count and then read once would pass with one. Scripts, not shell
+# functions: a function named grep reads to shellcheck as one handed to a later xargs.
+LI=$(mktmpd); mkdir -p "$LI/count" "$LI/one"; echo 0 > "$LI/n"
+printf '#!/bin/sh\nread -r n < %s\necho $((n + 1)) > %s\n[ "$n" -gt 1 ] && echo 0 || echo 1\n' \
+    "$(tq "$LI/n")" "$(tq "$LI/n")" > "$LI/count/grep"
+printf '#!/bin/sh\necho 1\n' > "$LI/one/grep"; chmod +x "$LI/count/grep" "$LI/one/grep"
+is "listeners_in: a listener two reads count and later ones do not reads 0" "0" \
+   "$(PATH="$LI/count:$PATH" listeners_in "$LI/s")"
+is "listeners_in: a listener every read counts reads 1" "1" \
+   "$(PATH="$LI/one:$PATH" POLLS=2 listeners_in "$LI/s")"
+is "listeners_in with no folder is a bad row, and reads nothing" "listeners_in takes one folder|" \
+   "$(bad() { printf '%s|' "$1"; }; listeners_in)"
+unset LI
 if need_tmux "a \$ in TMPDIR"; then :
 elif [ ! -r /proc/net/unix ]; then skip_ "a \$ in TMPDIR (no /proc/net/unix)"
 else
 DS=$(mktmpd); DST="$DS/d\$x\`y'z"; DSS="$DS/s"; mkdir -p "$DST" "$DSS"
 # The nested socket is $DSS/tmux-<uid>/cockpit-suite-<pid>: past 107 bytes the server cannot
 # bind, which is the long-TMPDIR class, not this one.
-if [ $((${#DSS} + ${#UID} + 28)) -gt 107 ]; then
+if sock_long "$DSS"; then
     skip_ "a \$ in TMPDIR (TMPDIR too long for the nested socket path)"
 else
-( cd "$DIR" && TMPDIR="$DST" TMUX_TMPDIR="$DSS" exec tests/only.sh '^cmdname.sh: cmd_base cuts' ) \
-    </dev/null >"$DS/log" 2>&1
+# The nested run's tail refuses --pid, so its pane is the four-hour sleep. With the pane
+# watching the run's pid, a server the cleanup never reached ended about a second after the
+# run, inside listeners_in's polls, and the row below passed with the #849 bug in (#1228).
+mkdir -p "$DS/notail"
+printf '#!/bin/sh\ncase " $* " in *" --pid="*) exit 1 ;; esac\nexec %s "$@"\n' \
+    "$(tq "$(command -v tail)")" > "$DS/notail/tail"; chmod +x "$DS/notail/tail"
+( cd "$DIR" && PATH="$DS/notail:$PATH" TMPDIR="$DST" TMUX_TMPDIR="$DSS" \
+    exec tests/only.sh '^cmdname.sh: cmd_base cuts' ) </dev/null >"$DS/log" 2>&1
 dsr=$?; [ "$dsr" = 0 ] || dsr="$dsr: $(tail -3 "$DS/log" | tr '\n' ' ')"
 is "the nested run of one block under a TMPDIR holding \$, \` and ' passes" "0" "$dsr"
-is "after it no server listens in its socket dir" "0" "$(grep -cF " $DSS/" /proc/net/unix)"
-is "and no socket file is left there" "" "$(find "$DSS" -type s 2>/dev/null)"
+dsl=$(listeners_in "$DSS"); dsf=$(find "$DSS" -type s 2>/dev/null)
 # A server the run left: only a tmux server, started as a suite's, whose TMUX_TMPDIR is ours.
+# The rows are read first and printed after, so a red listener row names the pids TERM went
+# to, or none; a green one is as before (#1237).
+dsk=""
 for p in /proc/[0-9]*; do
     c=""; read -r c 2>/dev/null < "$p/comm"
     [ "$c" = "tmux: server" ] || continue
     a=$(tr '\0' ' ' 2>/dev/null < "$p/cmdline")
     case $a in *" -L cockpit-suite-"*) ;; *) continue ;; esac
-    tr '\0' '\n' 2>/dev/null < "$p/environ" | grep -qxF "TMUX_TMPDIR=$DSS" \
-        && kill -TERM "${p#/proc/}"
+    tr '\0' '\n' 2>/dev/null < "$p/environ" | grep -qxF "TMUX_TMPDIR=$DSS" || continue
+    kill -TERM "${p#/proc/}" && dsk="$dsk ${p#/proc/}"
 done
+[ "$dsl" = 0 ] || dsl="$dsl; TERM sent to:${dsk:- none}"
+is "after it no server listens in its socket dir" "0" "$dsl"
+is "and no socket file is left there" "" "$dsf"
 fi
-unset DS DST DSS dsr p c a
+unset DS DST DSS dsr dsl dsf dsk p c a
 fi
 
 
@@ -20258,9 +24632,11 @@ GS_SH="env PATH='${GSD//\'/\'\\\'\'}/bin:/usr/bin:/bin' bash --norc --noprofile"
 # nothing): it must be the fixture's own copy, else the row fails and nothing more is typed,
 # so a real agent on some PATH is never started.
 gs_typed() {                  # <server fn> <typed> <shown>: a repo window running it in GS_P
-    local p r; GS_P=""
+    local p r s=""; GS_P=""
+    case $1 in gs) s=$GS ;; gg) s=$GG ;; esac
     p=$("$1" new-window -d -P -F '#{pane_id}' -t t: -c "$GSD/r" "$GS_SH")
-    until_out bash "$1" display -p -t "$p" '#{pane_current_command}'
+    # the prompt's own bash: the -c shell that runs GS_SH reads bash before it (#1079)
+    pane_runs "$s" "$p" bash bash --norc --noprofile
     rm -f "$GSD/cv"
     "$1" send-keys -t "$p" \
         "{ command -v $(printf %q "$2"); echo .; } > $(printf %q "$GSD/cv")" Enter
@@ -20424,10 +24800,8 @@ done | xargs -0 ln -s -t "$NT/bin" 2>/dev/null
 # gtimeout: the real timeout under that name, by its own path (a multicall timeout will not
 # run as gtimeout), logging what it was handed and how it ended, so a row sees it ran. Both
 # paths single-quoted, a ' in them as '\'': a space in TMPDIR split the log's (#893).
-ntq() { printf "'%s'" "${1//\'/\'\\\'\'}"; }
 printf '#!/bin/sh\n%s "$@"; rc=$?\necho "$rc $*" >> %s\nexit $rc\n' \
-    "$(ntq "$(command -v timeout)")" "$(ntq "$NT/g.log")" > "$NT/bin/gtimeout"
-unset -f ntq
+    "$(tq "$(command -v timeout)")" "$(tq "$NT/g.log")" > "$NT/bin/gtimeout"
 chmod +x "$NT/bin/gtimeout"
 printf '#!/bin/sh\nexec sleep 20\n' > "$NT/fake/claude"; cp "$NT/fake/claude" "$NT/fake/tui"
 chmod +x "$NT/fake/claude" "$NT/fake/tui"
@@ -20533,15 +24907,26 @@ echo "== the #746 block holds under a TMPDIR with two spaces (#893) =="
 if need_tmux "the #746 block under a spaced TMPDIR"; then :
 elif ! command -v timeout >/dev/null 2>&1; then skip_ "the #746 block under a spaced TMPDIR (no timeout)"
 else
-SPB=$(mktmpd); SPT="$SPB/my  tmp"; mkdir -p "$SPT"
-( cd "$DIR" && TMPDIR="$SPT" exec timeout 120 tests/only.sh '^the four bounded reads end' ) \
-    </dev/null > "$SPB/log" 2>&1
+SPB=$(mktmpd); SPT="$SPB/my  tmp"; mkdir -p "$SPT" "$SPB/s"
+# Its servers in a socket folder of its own, swept below: in this run's folder, a nested run
+# ended by KILL left servers this run's cleanup does not know (#1145).
+if sock_long "$SPB/s"; then
+    skip_ "the #746 block under a spaced TMPDIR (TMPDIR too long for the nested socket path)"
+else
+( cd "$DIR" && TMPDIR="$SPT" TMUX_TMPDIR="$SPB/s" \
+    exec timeout 120 tests/only.sh '^the four bounded reads end' ) </dev/null > "$SPB/log" 2>&1
 sp_n=$(sed 's/\x1b\[[0-9;]*m//g' "$SPB/log" | grep -E '[0-9]+ passed, [0-9]+ failed' | tail -1)
 is "the #746 block, under a TMPDIR with two spaces, passes whole" "ok" \
    "$(case $sp_n in "" | *" 0 passed"*) echo "none: $(tail -2 "$SPB/log" | tr '\n' ' ')" ;;
         *" 0 failed"*) echo ok ;; *) echo "$sp_n" ;; esac)"
 is "and writes nothing beside that TMPDIR" "absent" \
    "$([ -e "$SPB/my" ] && echo present || echo absent)"
+# tmux makes tmux-<uid> in TMUX_TMPDIR on its first call there; the nested run's server is
+# its first.
+is "and its servers' sockets were in a folder of its own" "own" \
+   "$([ -d "$SPB/s/tmux-$(id -u)" ] && echo own || echo none)"
+sock_sweep "$SPB/s"
+fi
 rm -rf "$SPB"; unset SPB SPT sp_n
 fi
 
@@ -20595,6 +24980,263 @@ if CNLOC=$(utf8_loc); then
 else
     bad "a UTF-8 locale whose regex [0-9] matches ² and ١ loads (localedef en_US.UTF-8)" \
         "loaded" "none"
+fi
+
+echo "== polls_on: a poller gone in mid-walk is not counted, and nothing reaches stderr (#1137) =="
+# A redirect applies left to right: with 2>/dev/null after `< file`, a pid gone between the
+# comm read and the environ read had bash report the failed open on the suite's stderr. Both
+# moments a poller can exit in: before its comm is read (a child already reaped, its /proc
+# folder gone) and after (a folder whose comm says agent-poll, with no environ left).
+PO=$(mktmpd); mkdir "$PO/9"; echo agent-poll > "$PO/9/comm"
+po_pid=$(sh -c 'echo "$$"')   # reaped once the substitution returns
+is "a poller gone before its comm or its environ is read: not counted, nothing on stderr" \
+   "0|" "$(polls_on x "/proc/$po_pid" "$PO/9" 2>"$PO/err")|$(cat "$PO/err")"
+unset PO po_pid
+
+echo "== tests/par.sh: a shard line that is not a title, a row or a FATAL fails the run (#1153) =="
+# par.sh reads every shard's log once the shards are done. A line that is not a block's title,
+# a row (a red row's want and got, each further line behind "     | ") or a FATAL is named on
+# its stderr, one record of tab-separated fields per line, and fails the run. A sandbox as
+# the par.sh blocks use, with one change: its prelude is run.sh's row printers alone. The
+# check reads lines, and a fixture block needs no server.
+is "bad starts each further line of a want or a got with '     | ' (#1153)" \
+   "  FAIL r|     want [w1|     | w2]|     got  [g1|     | |     | g3]" \
+   "$(bad r $'w1\nw2' $'g1\n\ng3' | sed 's/\x1b\[[0-9;]*m//g' | tr '\n' '|' | sed 's/|$//')"
+NEST_OUT=$(bad r1 a $'x\n  FAIL inner')
+is "nest_fails names a red row once, not a further line of its got that reads FAIL" \
+   ": FAIL r1" "$(nest_fails)"
+unset NEST_OUT
+PK=$(mktmpd); Q='"'; mkdir -p "$PK/t" "$PK/p/a=b c"
+# A checkout: par.sh, then ok, bad, is and skip_ as run.sh has them, then one solo block per
+# body read on stdin, the bodies split at "--" lines. Ranges, not brace counts: par.sh and
+# only.sh end a function where its braces balance.
+pk_mk() {                     # <checkout>
+    mkdir -p "$PK/$1/tests"
+    cp "$DIR/tests/par.sh" "$PK/$1/tests/par.sh"
+    { printf 'set -u\npass=0; fail=0; skipped=0\nflop_left() { :; }\n'
+      awk '/^ok\(\) /, /^is\(\) / { print } /^skip_\(\) / { print }' "$DIR/tests/run.sh"
+      awk -v q="$Q" 'NR == 1 || /^--$/ { n++; printf "\necho %s== pk%d ==%s\n", q, n, q }
+                     !/^--$/'
+    } > "$PK/$1/tests/run.sh"
+}
+pk_run() {                    # <checkout> [TMPDIR] -> par.sh's status; its streams in out, err
+    ( cd "$PK/$1" && exec env -u PAR_BLOCKS TMPDIR="${2:-$PK/t}" J=2 tests/par.sh ) \
+        </dev/null >"$PK/out" 2>"$PK/err"
+    echo "$?"
+}
+# One shard's records as line|block|text; a bash error's "<path>: line N: " is cut from the
+# text, so no row reads a path.
+pk_rec() {                    # <shard id>
+    awk -F'\t' -v s="shard=$1" '$1 == "par.sh: stray line" && $2 == s {
+        l = $3; b = $4; t = $5; sub(/^line=/, "", l); sub(/^block=/, "", b)
+        sub(/^text=/, "", t); sub(/^.*: line [0-9]+: /, "", t); printf "%s|%s|%s;", l, b, t }' \
+        < "$PK/err"
+}
+pk_mk g <<'PKEOF'
+is "pk1 green" a a
+--
+skip_ "pk2 skipped"
+PKEOF
+is "a run whose shards print titles and rows alone ends 0 and names no line" "0|0" \
+   "$(pk_run g)|$(grep -c '^par\.sh: stray line' "$PK/err")"
+pk_mk c <<'PKEOF'
+is "pk1 green" a a
+--
+is "pk2 row" a a; echo "pk2 out"
+--
+echo "pk3 err" >&2; is "pk3 row" a a
+--
+bad "pk4 red" a $'g1\n== pk4 lookalike ==\n  PASS lookalike\nplain'
+--
+bad "pk5 red" a b | awk 'NR == 2 { print "pk5 inside" } 1'; fail=$((fail + 1))
+--
+echo "$pk_nope"
+--
+is "pk7 row" a a; printf '     want [w]\n     got  [g]\n     | c\n'; bad "pk7 red" a $'g1\ng2'
+PKEOF
+is "a line on a shard's stdout that is no row fails the run, named by shard, line, block" \
+   "1|3|pk2|pk2 out;" "$(pk_run c)|$(pk_rec 0002)"
+is "a line on a shard's stderr the same" "2|pk3|pk3 err;" "$(pk_rec 0003)"
+is "a red row whose got runs over lines is one red row: no line of it named" "1|" \
+   "$(grep -c 'FAIL.* pk4 red$' "$PK/out")|$(pk_rec 0004)"
+is "a line between a red row's FAIL and its want is named" "3|pk5|pk5 inside;" \
+   "$(pk_rec 0005)"
+is "a shard that died is named as died, and so is the line it died with" \
+   "1|2|pk6|pk_nope: unbound variable;" \
+   "$(grep -c '^par\.sh: shard 0006 died without reporting$' "$PK/err")|$(pk_rec 0006)"
+# A want, a got and a further line count only in a red row's place: after a PASS row each is
+# named, and the real red row that follows them names nothing.
+is "a want, a got and a further line out of a red row's place are each named" \
+   "3|pk7|     want [w];4|pk7|     got  [g];5|pk7|     | c;" "$(pk_rec 0007)"
+# A relative TMPDIR holding = and a space. par.sh makes its work folder absolute, so no awk
+# operand it builds from that folder reads as a name=value assignment (#1159).
+pk_mk p <<'PKEOF'
+is "pk1 green" a a
+--
+is "pk2 row" a a; echo "pk2 out"
+PKEOF
+is "under a relative TMPDIR holding a=b and a space the shards run and the line is named" \
+   "1|3|pk2|pk2 out;" "$(pk_run p 'a=b c')|$(pk_rec 0002)"
+unset -f pk_mk pk_run pk_rec; unset PK Q
+
+echo "== pane_runs: a pane's start is waited for on its own process, not its name (#1079) =="
+# While tmux's read of a pane's foreground group fails, it names the pane by the first word of
+# its start command; and a bash pane reads bash already in the `<default-shell> -c` shell that
+# starts it. A wait on #{pane_current_command} then ends before the process runs. Two starts
+# are held there, each on a fifo the block writes a line to. A 'sleep 30' whose PATH finds a
+# holder named sleep: the holder gives a pipeline the terminal (set -m) and the pipeline's
+# leader `true` exits, so tmux reads no cmdline and falls back to sleep. Its comm is sleep (the
+# script's name) and its argv[0] bash, so only the argv half holds pane_runs there. And a -c
+# shell that holds, then execs bash: comm and argv[0] are bash, and only the whole argv
+# differs. Each held start reads the waited-for name first, as the old wait did, or its row
+# pins nothing.
+if need_tmux "pane_runs"; then :; elif [ ! -d /proc/self ]; then
+    for _ in 1 2 3 4 5 6 7 8 9; do
+        skip_ "pane_runs (no /proc: a pane start is waited for on #{pane_current_command}, #1079)"
+    done
+else
+PZS="cockpit-pr1079-$$"; SOCKS="$SOCKS $PZS"; PZD=$(mktmpd); PZB=$(command -v bash)
+mkdir -p "$PZD/hold"; mkfifo "$PZD/f1" "$PZD/f2"
+"$TMUX_REAL" -L "$PZS" -f /dev/null new-session -d -s t -c "$PZD" 'exec sleep 300' \
+    >/dev/null 2>&1
+"$TMUX_REAL" -L "$PZS" set -g default-shell "$PZB" >/dev/null 2>&1
+{ printf '#!%s\nset -m\n' "$PZB"
+  printf 'true | { exec 9<>%q; printf x > %q; read -r -t 20 -u 9 _; }\n' "$PZD/f1" "$PZD/in1"
+  printf 'exec -a sleep %q "$@"\n' "$(command -v sleep)"
+} > "$PZD/hold/sleep"
+chmod +x "$PZD/hold/sleep"
+pr_cmd() { "$TMUX_REAL" -L "$PZS" display-message -p -t "$1" '#{pane_current_command}'; }
+pr_try() {                    # <polls> <pane> <comm> <argv...> -> <status>|<comm>|<argv> read
+    ( sock_bad() { :; }; POLLS=$1 pane_runs "$PZS" "${@:2}"; printf '%s|%s|%s' "$?" \
+        "$PR_COMM" "$PR_ARGV" )
+}
+# PATH on the tmux client, not new-window -e: tmux puts an unattached client's own PATH over
+# the pane's -e PATH (spawn.c), so an -e PATH never reaches the pane.
+PZP=$(PATH="$PZD/hold:$PATH" "$TMUX_REAL" -L "$PZS" new-window -d -P -F '#{pane_id}' \
+    -c "$PZD" 'sleep 30')
+until_file "$PZD/in1" x
+until_out sleep pr_cmd "$PZP"
+is "a start held before it runs sleep reads sleep, its start's first word" sleep \
+   "$(pr_cmd "$PZP")"
+is "pane_runs does not end on it: comm is sleep, the argv is the holder's" \
+   "1|sleep|[$PZB][$PZD/hold/sleep][30]" "$(pr_try 3 "$PZP" sleep sleep 30)"
+printf 'x\n' 1<>"$PZD/f1"
+is "and ends once the held start execs sleep" "0|sleep|[sleep][30]" \
+   "$(pr_try "$POLLS" "$PZP" sleep sleep 30)"
+PZWS="exec 9<>$(tq "$PZD/f2"); printf x > $(tq "$PZD/in2"); read -r -t 20 -u 9 _"
+PZWS+="; exec bash --norc --noprofile"
+PZW=$("$TMUX_REAL" -L "$PZS" new-window -d -P -F '#{pane_id}' -c "$PZD" "$PZWS")
+until_file "$PZD/in2" x
+is "a bash pane's -c shell, held, reads bash" bash "$(pr_cmd "$PZW")"
+is "pane_runs does not end on the -c shell, whose comm and argv[0] are bash" \
+   "1|bash|[bash][-c][$PZWS]" "$(pr_try 3 "$PZW" bash bash --norc --noprofile)"
+printf 'x\n' 1<>"$PZD/f2"
+is "and ends on the bash it execs" "0|bash|[bash][--norc][--noprofile]" \
+   "$(pr_try "$POLLS" "$PZW" bash bash --norc --noprofile)"
+is "pane_runs with no pane, comm or argv is a bad row and 1" \
+   "pane_runs takes a socket, a pane, a comm and an argv|1" \
+   "$( ( sock_bad() { printf '%s|' "$1"; }; pane_runs "$PZS"; printf '%s' "$?" ) )"
+is "pane_runs on a pane that is gone is a bad row and 1" \
+   "pane_runs: pane %99999 on $PZS has a pid (#1079)|1" \
+   "$( ( sock_bad() { printf '%s|' "$1"; }; pane_runs "$PZS" %99999 sleep sleep 30
+         printf '%s' "$?" ) )"
+is "pane_runs on a session:index target is a bad row and 1, before any tmux call" \
+   "pane_runs takes a pane id from -P, not session:index|1" \
+   "$( ( sock_bad() { printf '%s|' "$1"; }; pane_runs "$PZS" t:0 sleep sleep 30
+         printf '%s' "$?" ) )"
+"$TMUX_REAL" -L "$PZS" kill-server >/dev/null 2>&1
+unset -f pr_cmd pr_try; unset PZS PZD PZB PZP PZW PZWS
+fi
+
+echo "== shell_prompt: a shell is waited for on its own prompt, after an empty line (#1183) =="
+if need_tmux "shell_prompt"; then :; else
+SPS="cockpit-sp1183-$$"; SOCKS="$SOCKS $SPS"; SPD=$(mktmpd); mkfifo "$SPD/f"
+# The rc holds before readline on a fifo, deaf to the tty, then draws its own prompt.
+printf 'exec 9<>%s; printf x > %s; read -r -t 20 -u 9 _; exec 9<&-\n' \
+    "$(tq "$SPD/f")" "$(tq "$SPD/in")" > "$SPD/rc"
+printf '%s\n' "PS1='sp-ready\\$ '" >> "$SPD/rc"
+SPP=$("$TMUX_REAL" -L "$SPS" -f /dev/null new-session -d -s t -c "$SPD" -P -F '#{pane_id}' \
+    "exec bash --rcfile $(tq "$SPD/rc")" 2>/dev/null)
+until_file "$SPD/in" x
+sp_try() {                    # <polls> <pane> <pattern> -> the status shell_prompt returned
+    ( sock_bad() { :; }; POLLS=$1 shell_prompt "$SPS" "${@:2}"; printf '%s' "$?" )
+}
+is "a shell held in its rc file has drawn no prompt" held \
+   "$(case "$("$TMUX_REAL" -L "$SPS" capture-pane -p -J -t "$SPP")" in
+        *sp-ready*) echo drawn ;; *) echo held ;; esac)"
+is "shell_prompt does not end on it" 1 "$(sp_try 3 "$SPP" '*sp-ready$*')"
+printf 'x\n' 1<>"$SPD/f"
+is "once released, shell_prompt ends on its own prompt and not on another's" "0|1" \
+   "$(sp_try "$POLLS" "$SPP" '*sp-ready$*')|$(sp_try 3 "$SPP" '*rg-ready$*')"
+is "shell_prompt with no pattern is a bad row and 1, before any tmux call" \
+   "shell_prompt takes a socket, a pane and a prompt pattern|1" \
+   "$( ( sock_bad() { printf '%s|' "$1"; }; shell_prompt "$SPS" "$SPP"; printf '%s' "$?" ) )"
+# A shell already at its prompt whose next prompt is held: PROMPT_COMMAND blocks on a fifo the
+# second time it runs, the gap after bash read the Enter and left readline (#1196).
+mkfifo "$SPD/g" "$SPD/u"
+{ printf 'sp_g=%s; sp_n=0\n' "$(tq "$SPD/g")"
+  printf '%s\n' "PS1='sp-ready\\$ '" \
+      'PROMPT_COMMAND='\''sp_n=$((sp_n+1)); [ "$sp_n" != 2 ] || read -r -t 20 _ <> "$sp_g"'\'
+} > "$SPD/rcg"
+SPG=$("$TMUX_REAL" -L "$SPS" new-window -d -P -F '#{pane_id}' -c "$SPD" \
+    "exec bash --rcfile $(tq "$SPD/rcg")" 2>/dev/null)
+until_cap "$SPS" "$SPG" '*sp-ready$*'
+is "on a shell at its prompt, shell_prompt does not end while the next prompt is held" 1 \
+   "$(sp_try 3 "$SPG" '*sp-ready$*')"
+printf 'x\n' 1<>"$SPD/g"
+is "and ends once that prompt is drawn" 0 "$(sp_try "$POLLS" "$SPG" '*sp-ready$*')"
+# A prompt at the cursor whose Enter is still unread: the rc prints one, unechoed, and holds.
+{ printf 'stty -echo; printf %s %s\n' "$(tq '\n%s')" "$(tq 'sp-ready$ ')"
+  printf 'read -r -t 20 _ <> %s; stty echo\n' "$(tq "$SPD/u")"
+} > "$SPD/rcu"
+SPU=$("$TMUX_REAL" -L "$SPS" new-window -d -P -F '#{pane_id}' -c "$SPD" \
+    "exec bash --rcfile $(tq "$SPD/rcu")" 2>/dev/null)
+until_cap "$SPS" "$SPU" '*sp-ready$*'
+is "shell_prompt does not end on one prompt at the cursor while its Enter is unread" 1 \
+   "$(sp_try 3 "$SPU" '*sp-ready$*')"
+"$TMUX_REAL" -L "$SPS" kill-server >/dev/null 2>&1
+unset -f sp_try; unset SPS SPD SPP SPG SPU
+fi
+
+echo "== agent-view: COCKPIT_NO_AUTOSTART: a relayed notification starts no poller (#1111) =="
+av_setup
+if need_tmux "agent-view no autostart" || [ ! -d /proc/self ]; then :; else
+NA_LEFT=0
+na_srv() {                    # na_srv <tag>: a fresh server of av_srv's, with no poller yet
+    av_srv "$1"
+    av_tm set-environment -g AV_RC 1 \; set-option -g @cockpit_bg_poll 1
+}
+na_hook() {                   # na_hook <type> [env args...]: a relayed notification, as a hook
+    : > "$AVLOG"
+    printf '{"notification_type":"%s","message":"m1"}' "$1" \
+        | env -u CLAUDE_CONFIG_DIR "${@:2}" TMUX="$AVT" TMUX_PANE="$AVP" PATH="$AVREC:$PATH" \
+            "$DIR/scripts/agent-state" notify >/dev/null 2>&1
+}
+na_runs() { grep -c '^run-shell -b ' "$AVLOG"; }
+na_end() {                    # the server goes, and any poller it ran with it; counts those left
+    av_tm kill-server >/dev/null 2>&1
+    av_wait '[ "$(polls_on "$AV" /proc/[0-9]*)" = 0 ]'
+    NA_LEFT=$((NA_LEFT + $(polls_on "$AV" /proc/[0-9]*)))
+}
+na_srv off1
+na_hook agent_needs_input COCKPIT_NO_AUTOSTART=1
+is "COCKPIT_NO_AUTOSTART: a relayed agent_needs_input starts no poller" "0" "$(na_runs)"
+is "...and the pane is still marked as an agent view" "1" "$(avo @cockpit_agentview)"
+na_end
+na_srv off2
+na_hook agent_completed COCKPIT_NO_AUTOSTART=1
+is "...nor does agent_completed" "0" "$(na_runs)"
+na_end
+na_srv off3
+na_hook agent_needs_input COCKPIT_NO_AUTOSTART=1 CLAUDE_CONFIG_DIR="$AVWD/na-cfg"
+is "...nor one from a pane on a config dir of its own (#194)" "0" "$(na_runs)"
+na_end
+na_srv on
+na_hook agent_needs_input -u COCKPIT_NO_AUTOSTART
+is "without it the same notification starts one: the rig can start a poller" "1" "$(na_runs)"
+na_end
+is "no poller outlives the block's servers" "0" "$NA_LEFT"
+unset -f na_srv na_hook na_runs na_end; unset NA_LEFT
 fi
 
 flop_left

@@ -1,6 +1,8 @@
 //! ^B's `d` and `D` on a real tmux (#365 child 5): each change is written to
 //! the pane's basket before the list shows it. A private `-L` server, never the
 //! user's; one test, as it sets COCKPIT_TMUX.
+mod fake;
+
 use cockpit_tui::basket;
 use cockpit_tui::panel::app::{App, View};
 use cockpit_tui::panel::capture::Capture;
@@ -11,7 +13,8 @@ use std::process::Command;
 struct Server {
     sock: String,
     dir: std::path::PathBuf,
-    path: String,
+    /// killed with its socket before the folder goes
+    _server: fake::Server,
 }
 
 impl Server {
@@ -23,10 +26,7 @@ impl Server {
 
 impl Drop for Server {
     fn drop(&mut self) {
-        let _ = Command::new("tmux").args(["-L", &self.sock, "kill-server"]).status();
-        if self.path.ends_with(&self.sock) {
-            let _ = std::fs::remove_file(&self.path);
-        }
+        self._server.stop();
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
@@ -41,22 +41,21 @@ fn d_and_shift_d_write_the_basket_before_the_list_shows_it() {
     let dir = std::env::temp_dir().join(&sock);
     std::fs::create_dir_all(&dir).unwrap();
     let dir = dir.canonicalize().unwrap();
-    let mut new = Command::new("tmux");
-    new.args(["-L", &sock, "-f", "/dev/null", "new-session", "-d", "-c"])
-        .arg(&dir)
-        .arg("sleep 300");
-    if !new.status().is_ok_and(|s| s.success()) {
+    // built first, so a start that fails or panics still removes the folder
+    let mut s = Server {
+        _server: fake::Server::new(&sock),
+        sock,
+        dir,
+    };
+    if !s._server.start(|c| {
+        c.args(["new-session", "-d", "-c"]).arg(&s.dir).arg("sleep 300");
+    }) {
         eprintln!("SKIP: no tmux");
         return;
     }
-    let mut s = Server {
-        sock,
-        dir,
-        path: String::new(),
-    };
-    s.path = s.tmux(&["display-message", "-p", "#{socket_path}"]);
-    // SAFETY: the only test in this binary; nothing else reads the env meanwhile.
-    unsafe { std::env::set_var("COCKPIT_TMUX", format!("tmux -L {}", s.sock)) };
+    // SAFETY: the one test of this binary that writes the env; the others read it only
+    // in their spawns, which std orders with this write (fake::rows_pass_handed).
+    unsafe { fake::set_var(&fake::env_lock(), "COCKPIT_TMUX", format!("tmux -L {}", s.sock)) };
     let pane = s.tmux(&["display-message", "-p", "#{pane_id}"]);
     let refs: Vec<Ref> = ["a.rs", "b.rs", "c.rs"]
         .iter()
@@ -83,4 +82,15 @@ fn d_and_shift_d_write_the_basket_before_the_list_shows_it() {
     key(&mut a, KeyCode::Char('D'), KeyModifiers::SHIFT);
     assert!(basket::read(&pane).unwrap().is_empty() && a.basket.is_empty(), "D empties it");
     assert_eq!(s.tmux(&["show-options", "-pqv", "-t", &pane, basket::OPTION]), "", "unset");
+}
+
+/// #1061, #1066: this binary's rig row, started again with TERM and HUP ignored and blocked, as a
+/// suite under nohup or with them blocked hands them down: the rig's server, told to
+/// go by a TERM it sends itself, is gone afterwards with its panes.
+#[test]
+#[cfg(target_os = "linux")]
+fn the_rig_rows_leave_no_server_handed_a_blocked_term_and_hup() {
+    let rows = ["d_and_shift_d_write_the_basket_before_the_list_shows_it"];
+    let pid = fake::rows_pass_handed(&rows, &[libc::SIGTERM, libc::SIGHUP]);
+    fake::assert_no_server_left(pid);
 }

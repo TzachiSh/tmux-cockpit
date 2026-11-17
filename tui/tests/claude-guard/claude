@@ -1,0 +1,14 @@
+#!/bin/sh
+# Not claude. tui/tests/claude-guard/runner copies this into a folder first on
+# a test binary's PATH, so a test that would start the developer's claude
+# starts this (#973). It adds one line to `reached` beside itself, which fails
+# that binary once it has ended, says why, and exits 126. It reads no stdin.
+# The file is the runner's: started by hand from the checkout, where there is
+# none, this writes nothing.
+args=
+for a in "$@"; do args="$args [$a]"; done
+line="claude-guard: error: refused to start claude for a test ppid=$PPID cwd=$PWD argv=claude$args"
+log=${0%/*}/reached
+[ ! -f "$log" ] || printf '%s\n' "$line" >> "$log"
+printf '%s\n' "$line" >&2
+exit 126

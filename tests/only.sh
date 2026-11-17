@@ -13,7 +13,14 @@ set -u
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUN="${ONLY_RUN:-$DIR/tests/run.sh}"
 OUT=$(mktemp "$DIR/tests/.only.XXXXXX") || exit 1   # under tests/: the prelude derives DIR from BASH_SOURCE
-trap 'rm -f -- "$OUT"' EXIT
+# HUP, INT and TERM are trapped here, and the exit trap ignores all three first, as par.sh
+# does (#1127, #1171). With no trap of its own, bash ends through its own handler, which kills
+# the shell when a second such signal lands while the first is handled, and the .only file
+# stays in tests/. The cost: a signal sent to this pid alone waits for the block run below.
+only_clean() { trap '' HUP INT TERM; rm -f -- "$OUT"; }
+only_sig() { trap '' HUP INT TERM; exit $((128 + $1)); }
+trap only_clean EXIT
+trap 'only_sig 1' HUP; trap 'only_sig 2' INT; trap 'only_sig 15' TERM
 # The pattern goes through the environment: awk -v would unescape \( to (.
 PAT="$1" awk '
     /^echo "== / && !seen_block { seen_block = 1 }

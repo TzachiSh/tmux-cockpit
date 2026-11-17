@@ -8,6 +8,9 @@ use fake::write_exec;
 
 #[test]
 fn one_fetch_is_one_tmux_call_and_cockpit_dir_comes_off_it() {
+    // first, before the rig's folder: the runner unset the caller's
+    // agents cache and state folder, which a lookup uses (#1066)
+    fake::checked_state();
     let dir = std::env::temp_dir().join(format!("cockpit-tui-forks-dirs-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("bin")).unwrap();
@@ -35,15 +38,18 @@ fn one_fetch_is_one_tmux_call_and_cockpit_dir_comes_off_it() {
     write_exec(&dir.join("bin/git"), &format!("#!/bin/sh\necho \"$2\" >> {d}/git\nexit 1\n"));
     write_exec(&dir.join("bin/ps"), "#!/bin/sh\n");
     let path = fake::rig_path(&dir.join("bin"));
-    // SAFETY: this test binary holds exactly one test, so nothing runs beside it.
+    let held = fake::env_lock();
+    // SAFETY: the one test of this binary that writes the env. The other reads it only
+    // in its spawn, which std orders with these writes (fake::run_by_hand).
     unsafe {
-        std::env::set_var("PATH", path);
-        std::env::set_var("COCKPIT_TMUX", format!("{d}/bin/tmux"));
-        std::env::set_var("HOME", &d);
-        std::env::set_var("COCKPIT_READONLY", "1");
+        fake::set_var(&held, "PATH", path);
+        fake::set_var(&held, "COCKPIT_TMUX", format!("{d}/bin/tmux"));
+        fake::set_var(&held, "HOME", &d);
+        fake::set_var(&held, "COCKPIT_READONLY", "1");
         // #505: no proc under it, so the walk asks the fake ps, not the live pid of the same number
-        std::env::set_var("COCKPIT_PROC_DIR", format!("{d}/proc"));
+        fake::set_var(&held, "COCKPIT_PROC_DIR", format!("{d}/proc"));
     }
+    drop(held);
     fake::assert_claude_is_the_rigs(&dir);
 
     assert_eq!(list_panes().unwrap().len(), 3);
@@ -63,4 +69,14 @@ fn one_fetch_is_one_tmux_call_and_cockpit_dir_comes_off_it() {
     want.sort();
     assert_eq!(trees, want, "@cockpit_dir when it is a directory, else the cwd");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// #1066: started by hand with a caller's XDG_CACHE_HOME kept, this binary's rig
+/// refuses before a lookup can read or write the agents cache there.
+#[test]
+fn a_kept_agents_cache_is_refused() {
+    let kept = [("XDG_CACHE_HOME", "/canary-1066/cache")];
+    let (code, said) = fake::run_by_hand("one_fetch_is_one_tmux_call_and_cockpit_dir_comes_off_it", &kept);
+    let refused = said.contains("the caller's state refused (#1066): XDG_CACHE_HOME set. ");
+    assert_eq!((code, refused), (Some(101), true), "{said}");
 }

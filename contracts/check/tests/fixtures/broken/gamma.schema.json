@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:tmux-cockpit:contracts:gamma",
+  "description": "Breaks the anchor rule twice: a $defs pattern with no closing $, and a top-level |.",
+  "type": "object",
+  "properties": {
+    "schema_version": { "const": 1 },
+    "key": { "$ref": "#/$defs/key" },
+    "scope": { "type": "string", "pattern": "^repo|global$" }
+  },
+  "required": ["schema_version", "key"],
+  "additionalProperties": false,
+  "$defs": {
+    "key": { "type": "string", "pattern": "^[0-9a-f]{16}" }
+  }
+}

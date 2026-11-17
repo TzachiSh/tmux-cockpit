@@ -230,16 +230,19 @@ fn a_fix_with_explore_on_sends_the_fix_prompt() {
 #[test]
 fn launch_sends_an_exploring_write_through_the_read_only_argv() {
     let guard = scratch("launch");
-    let d = &guard.0;
+    launched_in(&guard.0);
+}
+
+/// The test above with its fake, its repo and its call's dir in `d`.
+fn launched_in(d: &Path) {
     let repo = d.join("repo");
     std::fs::create_dir_all(&repo).unwrap();
     let fake = d.join("claude");
-    // cwd first, and argv renamed in whole: the test never reads a file half written
-    let body = format!(
-        "#!/bin/sh\npwd > {0}/cwd\nprintf '%s\\n' \"$@\" > {0}/argv.tmp\nmv {0}/argv.tmp {0}/argv\nexec sleep 1000\n",
-        d.display()
-    );
-    fake_at(&fake, &body);
+    // cwd first, and argv renamed in whole: the test never reads a file half written.
+    // The folder comes from $0, quoted, never pasted in: sh splits a pasted one at a space (#1202)
+    let body = "#!/bin/sh\nd=\"${0%/*}\"\npwd > \"$d/cwd\"\nprintf '%s\\n' \"$@\" > \"$d/argv.tmp\"\n\
+                mv \"$d/argv.tmp\" \"$d/argv\"\nexec sleep 1000\n";
+    fake_at(&fake, body);
     let call = Call {
         claude: fake.display().to_string(),
         timeout: Duration::from_secs(60),
@@ -436,12 +439,18 @@ fn a_plain_project_folder_is_allowed() {
 /// A pane folder and a fake claude that prints `out` on stdout and exits `code`.
 fn faked(tag: &str, out: &str, code: i32) -> (Scratch, Call, String) {
     let g = scratch(tag);
-    let d = &g.0;
+    let (call, repo) = faked_in(&g.0, out, code);
+    (g, call, repo)
+}
+
+/// [`faked`] in `d`, which the caller removes.
+fn faked_in(d: &Path, out: &str, code: i32) -> (Call, String) {
     let repo = d.join("repo");
     std::fs::create_dir_all(&repo).unwrap();
     std::fs::write(d.join("out"), out.replace("$R", &repo.display().to_string())).unwrap();
     let fake = d.join("claude");
-    let body = format!("#!/bin/sh\ncat >/dev/null\ncat {}/out\nexit {code}\n", d.display());
+    // the folder from $0, quoted (#1202)
+    let body = format!("#!/bin/sh\ncat >/dev/null\ncat \"${{0%/*}}/out\"\nexit {code}\n");
     fake_at(&fake, &body);
     let call = Call {
         claude: fake.display().to_string(),
@@ -449,7 +458,32 @@ fn faked(tag: &str, out: &str, code: i32) -> (Scratch, Call, String) {
         dir: d.join("cache"),
         effort: Effort::Medium,
     };
-    (g, call, repo.display().to_string())
+    (call, repo.display().to_string())
+}
+
+/// #1202: both stand-ins in folders whose names hold a space, a single quote and
+/// a `$`, made here, so the row needs no odd TMPDIR. A path pasted into the script
+/// is cut at the space, or ends it at the quote; one from `$0` holds. The folders
+/// sit in this row's scratch, so a cut path (`<scratch>/sp`) lands there too, and
+/// nothing but the two may be left in it.
+#[test]
+fn the_stand_ins_hold_a_folder_with_a_space_a_quote_and_a_dollar() {
+    let g = scratch("odd");
+    let mut names = ["sp ace", "it's $x"];
+    for name in names {
+        let d = g.join(name);
+        launched_in(&d);
+        let (call, repo) = faked_in(&d.join("f"), &format!("[{OK}]"), 0);
+        let a = answered(&call, &repo, true);
+        assert_eq!(note(&a).map(|n| n.1), Some("read no files"), "{name}: {:?}", a.view);
+    }
+    let mut left: Vec<String> = std::fs::read_dir(&g.0)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    left.sort();
+    names.sort();
+    assert_eq!(left, names, "nothing beside the two folders");
 }
 
 /// A write on `repo`, explore on or off, launched and polled to its answer.
@@ -763,4 +797,36 @@ fn a_separate_git_dir_explores_its_tree() {
     );
     assert!(repo.join(".git").is_file());
     assert_eq!(root_of(&repo.join("src")), Some(canon(&repo)));
+}
+
+/// #1066: this binary reads tmux through the product's plain `tmux`
+/// (`AGENT_GLOB` in `data.rs`). Under the runner that finds no server; started by
+/// hand from inside a tmux session it would read the caller's, so it is refused.
+#[test]
+fn the_binary_runs_with_no_tmux_session_of_the_callers() {
+    fake::checked_tmux();
+}
+
+/// #1066: this binary's other tests, started again through the runner beside a
+/// stand-in for the caller's tmux server whose agent list names ssh. They pass
+/// as they do with no server, and send it nothing. Three of them read their
+/// verdicts from that list where it is reached: the two ssh rows here and
+/// panel_hide's.
+#[test]
+fn the_tests_send_the_callers_tmux_server_nothing() {
+    fake::tests_beside_a_server("the_tests_send_the_callers_tmux_server_nothing");
+}
+
+/// #1066: the check sits in fake::fixed_env, so a test of this binary that comes
+/// through it, started by hand with the caller's TMUX kept, is refused itself,
+/// not only the check row.
+#[test]
+fn a_test_through_fixed_env_refuses_a_kept_session() {
+    let kept = [("TMUX", "/canary-1066,1,0")];
+    let (code, said) = fake::run_by_hand("an_agent_window_may_explore", &kept);
+    assert_eq!(
+        (code, said.contains("tmux refused (#1066): TMUX set. ")),
+        (Some(101), true),
+        "{said}"
+    );
 }

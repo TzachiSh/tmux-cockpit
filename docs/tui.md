@@ -51,6 +51,14 @@ That needs **Rust >= 1.88** (ratatui 0.30's floor; Debian 13 ships 1.85 and
 Ubuntu 24.04 ships 1.75). On an older toolchain the fetch path refuses by name
 rather than dumping a compiler error, and keeps any binary you already have.
 
+A debug build, and anything cargo starts in the checkout (`cargo run` too, since
+`.cargo/config.toml` sets `COCKPIT_TEST_TMUX_GUARD`), refuses the tmux reads and
+writes that would reach your own server, and the board says so once in its
+footer. It is the tests' guard: a test started by hand then reads and writes
+none of your session (#1089). To run a debug board against your own session, run
+`COCKPIT_TEST_TMUX_GUARD=0 cargo run -- board` in `tui/` from a pane inside it;
+`make tui` builds the release binary, which has no guard.
+
 `make check` builds the binary first; the suite needs cargo. `make tui-test`
 runs cargo's tests, clippy, fmt and a rustdoc pass that fails on a doc link
 naming nothing, on the `rust-version` toolchain through rustup (CI's, so the
@@ -64,6 +72,37 @@ and that value is split on whitespace. They build their projects under it, and
 the panel refuses a read dir whose path holds a glob character. Some stubs
 write the path into a shell script unquoted. Under a `TMPDIR` with a space, a
 quote or a glob character many unrelated tests fail.
+
+Every test binary runs behind a guard against the developer's own `claude`
+(#973). The repo's `.cargo/config.toml` gives cargo a runner,
+`tui/tests/claude-guard/runner`, so a `cargo test` started anywhere inside the
+checkout, `make tui-test` included, starts each test binary through that script
+with a `claude` that refuses first on its `PATH`. A rig's own stub still comes
+before it. The refusal exits 126, the product reads that as no answer and the
+test may pass all the same, so the runner fails the binary once it has ended,
+with one line that names it and one line for each start:
+
+```
+claude-guard: error: a test started claude, not its rig's own stub (docs/tui.md) binary=<the test binary>
+claude-guard: error: refused to start claude for a test ppid=<pid> cwd=<dir> argv=claude [agents] [--json]
+```
+
+cargo then says how to rerun that binary: `cargo test --test <name>`, from
+`tui/`. Add `-- --exact <test>` to find the test, since a filtered run is
+checked the same way. The fix belongs in the rig: `fake::rig_path` and
+`fake::assert_claude_is_the_rigs` (#972). `cargo run` and
+`cargo run --example panel_eval` go through the same script, which starts them
+with no guard, as cargo alone would but for one thing a shell cannot hand on.
+The guard is absent from a run started outside the checkout with
+`--manifest-path`, from a test binary started by hand or under a debugger
+(`tui/tests/claude-guard/runner <binary>` starts one behind it), from a test
+that builds its `PATH` from nothing, and on a target the config names no
+runner for. There one test of `tui/tests/claude_guard.rs` fails and says which
+lines to add, in a run that includes that binary. A filtered run there, such as
+`cargo test --test agents`, has no guard and says nothing.
+`docs/testing.md` has the targets, the switch that lifts the guard, what a
+cargo runner of your own does to it, and what the script changes for
+`cargo run`.
 
 The binary lives in the plugin's own `bin/` and is gitignored. `install.sh`
 runs `scripts/tui-fetch --required` and exits 1 when no working binary is
@@ -208,7 +247,7 @@ Set these before the plugin's `run-shell` line, like every other cockpit option.
 | `@cockpit_panel_bound` | (state) | the key the last load bound the panel to. Every cockpit key keeps one (`@cockpit_<name>_bound`, `<name>` as in its `@cockpit_<name>_key`), so a reload that turns a key off or moves it gives the old one back to stock |
 | `@cockpit_board_client` | (state) | a pane option: the client that pressed the board or review key there in its popup form, so the board's jump moves that client and not the most recently active one. Read and cleared when the board starts; the window forms pass `-c` instead |
 | `@cockpit_branch_client` | (state) | a pane option: the client that pressed `prefix b` there, so the branch popup's jump to another worktree moves that client and not the most recently active one. Read and cleared when `tmux-branch` starts |
-| `@cockpit_giveback` | (state) | `<name>:<key>` words: old keys a reload could not give back to stock (tmux's own binding could not be read), retried on the next load |
+| `@cockpit_giveback` | (state) | `<name>:<key>` words joined by spaces, or one per line each after a newline when a key holds a space or a tab (#1229): old keys a reload could not give back to stock (tmux's own binding could not be read), or an old panel key it could not tell from the user's (its scratch read failed, #1131), retried on the next load |
 
 The popup is `-w 90%`, wider than the 70% the pickers use, because a 70% popup
 on a 120-column terminal is an 84-column board, which is one tile column. The
@@ -229,6 +268,7 @@ Read-only, and owned by bash: `@cockpit_session`, `@cockpit_dir`, `@panestate`,
 |----------|------|
 | `COCKPIT_ACTION` | file the one action line is written to. Unset sends it to stdout |
 | `COCKPIT_TMUX` | overrides the tmux argv. The value is split on whitespace, so `tmux -L sock` works, but a tmux path holding a space can't be named here: reach it through a wrapper script or a symlink. Unset follows `$TMUX` to whatever socket the pane is on |
+| `COCKPIT_TEST_TMUX_GUARD` | the test guard on tmux, on in any debug build and wherever this is set to anything but `0` (`.cargo/config.toml` sets it for whatever cargo starts, `cargo run` included). The basket then runs tmux only on a `-L`/`-S` server or a stub. Every other tmux call, through `data::tmux` (the agent list, the theme, the pane reads, `tmux_set`), push's `wait-for` and the board's tile previews, runs a plain `tmux` only with `TMUX` unset and `TMUX_TMPDIR` an existing folder, as cargo's runner starts a test binary, and reads anything else as tmux giving no value (#1089): a test binary started by hand reads nothing of the caller's server, in whatever test. `COCKPIT_TEST_TMUX_GUARD=0 cargo run` lifts it from inside tmux. The board's footer says so once per run, until a key. A release build run outside cargo, as the plugin runs it, has it off |
 | `COCKPIT_LOG` | append target. The binding sets it to `${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/tui.log` |
 | `COCKPIT_PROC_DIR` | the proc root the pane-tree walk reads (default `/proc`); a test seam. A root without `self/task` or without `children` files sends the lookup to `ps` |
 | `COCKPIT_READONLY` | any non-empty value: never write to a tmux server, the pid included. The panel wrapper then pastes and sends nothing and logs what it would have done |
@@ -240,6 +280,7 @@ Read-only, and owned by bash: `@cockpit_session`, `@cockpit_dir`, `@panestate`,
 | `COCKPIT_PANEL_EFFORT` | the `--effort` of every panel call, from `@cockpit_panel_effort`. One of `low`, `medium`, `high`, `xhigh`, `max`; unset, empty or any other value is `medium`, so the text itself never reaches claude's argv. The call goes without `CLAUDE_CODE_EFFORT_LEVEL`, which claude ranks over `--effort` |
 | `COCKPIT_PANEL_NOTE` | set by `scripts/cockpit-board` for `scripts/cockpit-panel`: the file the panel wrapper writes its last line to instead of a `display-message`, a failure starting with `✕`. Unset (`prefix f`), the message goes to the status line as before |
 | `COCKPIT_PANEL_DROPPED` | set by `scripts/cockpit-panel` for the binary: the pane ids, space-separated, whose hidden panels it just dropped because the pane is gone. The binary shows them in an info note; anything but `%N` words is ignored |
+| `COCKPIT_PANEL_KEY` | set by `scripts/cockpit-panel` for the binary: the prefix key bound with the note `cockpit: panel`, read as the hidden-panel message reads it (#1121). The `?` list's `^Z` row names it: `hide; prefix <key> on this pane brings it back`. Unset, or a value that is not 1 to 16 bytes of printable ASCII without a space, gives `hide; the panel key on this pane brings it back`. The wrapper drops one from its own environment |
 | `COCKPIT_PANEL_CALL` | set to `1` in the panel's `claude -p` child, never read by the binary: a hook can skip the call by it |
 
 The binding runs the binary under `env -u CLAUDECODE`, which is required inside
@@ -266,6 +307,7 @@ when it did not, and carried the facts a case requires, plus the latency. It
 calls `claude` once per case, so it is run by hand and never from `make test`;
 `--check` only validates the cases, and `cargo test` runs that check too. To
 compare a prompt edit, put it in the override file above and run again: the
+rig reads the overrides, and its unit tests under `cargo test` do not (#1088). The
 summary prints a hash of the system prompt it sent, and a pass count per case
 over the runs (3 by default: one run is not enough to judge a change). It also
 prints asking as FPR (asked on a write case) and FNR (no question on an ask
@@ -1706,8 +1748,17 @@ Backspace.
   `...; the pane now runs vim, not bash, so a paste is refused`.
 - **One state per pane.** `prefix f` on another pane opens a fresh panel and
   the hidden one stays. The wrapper says `cockpit: hidden · prefix f on %N
-  brings it back` (the bound key, from `@cockpit_panel_bound`); opened from
+  brings it back` (the prefix key bound with the note `cockpit: panel`, read from
+  the binding, as the review notice reads the jump key; `@cockpit_panel_bound`
+  only picks between two noted keys, and with none the message says `the panel
+  key`, #1112); opened from
   the board, that is the board's note and the board comes back, as after `esc`.
+- **The help names the same key.** The `?` list's `^Z` row says `hide; prefix
+  <key> on this pane brings it back`, the key the wrapper passes as
+  `COCKPIT_PANEL_KEY` (#1121). The binary draws only 1 to 16 bytes of printable
+  ASCII without a space: tmux 3.8 names a keyboard key with all three modifiers
+  in at most 13 (`C-M-S-KPEnter`). A longer value, a control byte, a UTF-8 key
+  or no key at all gives `hide; the panel key on this pane brings it back`.
 - **Stale state is dropped, with a note.** A file older than 24 h
   (`action::HIDE_AGE`) is refused (`the hidden panel was dropped: it is older
   than 24 h`), and the wrapper also deletes any older than a day. A hidden
@@ -2030,6 +2081,28 @@ panel with the reason in a warn note.
 - Goldens: new `view-{40,80,120}`, `view-ascii-80`, `view-nocolor-80`,
   `view-find-80`, `view-note-60`, `view-help-60`, `view-empty-60` and
   `view-floor`. No other golden moved.
+
+### Contract changes for the store (for #61)
+
+- #1020: a new module, `store`, and `pub mod store;` in `lib.rs`. Nothing
+  calls it and no schema is read at run time: it lays the interface for a
+  later storage change (contracts/README.md), and the backend is not chosen.
+- `Store` has three methods: `get(&Key) -> Option<(Value, Revision)>`,
+  `put_if_revision(&Key, &Value, Option<Revision>) -> Result<Revision,
+  PutError>`, where `None` creates only, and `watch(&Key) -> Watch`. Values are
+  `serde_json::Value`, already a dependency: the schemas describe JSON, so no
+  caller parses bytes, and a NATS backend serialises at its edge.
+  `PutError` is `Conflict { current }`, `Busy` (the lock wait ran out),
+  `TooLarge` or `Io { path, error }`, which names the file it failed on.
+- `LocalStore` keeps one file per key under `$XDG_STATE_HOME/tmux-cockpit/store`
+  (folder 0700): `cockpit-store 1`, `rev <n>`, the value as one line of JSON.
+  A put takes `<key>~lock` with `LOCK_NB` retries for up to a second, checks
+  the revision, records the new one in the lock (so a key that reads as no
+  value never gets an old revision back), writes `<key>~tmp` (`O_EXCL`,
+  `O_NOFOLLOW`, 0600), fsyncs it and renames it over the key. A read takes a
+  regular file of at most 64 KiB, opened `O_NOFOLLOW | O_NONBLOCK`. Anything
+  else reads as no value.
+- No new dependency, no `Cargo.toml` change.
 
 ### The triage overlay
 
@@ -2530,6 +2603,7 @@ workspace, no crate split.
 | `sessions` | the `cockpit-tui sessions` view (#245) on `pick`'s screen; `data::sessions` the one `list-panes -a` read, the order and the freeze |
 | `panel` | the type-panel port: capture, redaction, prompt envelope, the `claude -p` request, reply parsing; `panel::action` the action, text, cmd and state files |
 | `highlight` | the code lexer (#282) and `split`, the one fence rule the panel's view and its reply parsing share (#283) |
+| `store` | the `Store` trait (`get`, `put_if_revision`, `watch`), `Key`, `Revision` and `LocalStore`, one 0600 file per key under XDG state (#1020); unwired, nothing calls it |
 
 Every mutating action stays a shell script: the binary prints
 `<verb> <pane-id>` and a wrapper runs it.

@@ -5,25 +5,21 @@ mod fake;
 
 use cockpit_tui::theme::Theme;
 use ratatui::style::Color;
-use std::sync::Mutex;
-
-static ENV: Mutex<()> = Mutex::new(());
-
 fn load(options: &str) -> Theme {
-    let _guard = ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let held = fake::env_lock();
     let dir = std::env::temp_dir().join(format!("cockpit-theme-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let out = dir.join("options");
     std::fs::write(&out, options).unwrap();
     let bin = dir.join("tmux");
     fake::write_exec(&bin, &format!("#!/bin/sh\ncat '{}'\n", out.display()));
-    // SAFETY: every test here takes ENV first, so no other thread reads these.
+    // SAFETY: every test here takes fake's environment lock first, so no other thread reads these.
     unsafe {
-        std::env::remove_var("NO_COLOR");
-        std::env::set_var("COCKPIT_TMUX", &bin);
+        fake::remove_var(&held, "NO_COLOR");
+        fake::set_var(&held, "COCKPIT_TMUX", &bin);
     }
     let th = Theme::load();
-    unsafe { std::env::remove_var("COCKPIT_TMUX") };
+    unsafe { fake::remove_var(&held, "COCKPIT_TMUX") };
     std::fs::remove_dir_all(&dir).ok();
     th
 }
@@ -96,23 +92,23 @@ fn the_theme_option_overrides_the_client() {
 
 #[test]
 fn no_color_ignores_a_light_client() {
-    let _guard = ENV.lock().unwrap_or_else(|e| e.into_inner());
-    // SAFETY: ENV is held, so no other test thread reads these.
+    let held = fake::env_lock();
+    // SAFETY: the lock is held, so no other test thread reads these.
     unsafe {
-        std::env::set_var("NO_COLOR", "1");
-        std::env::set_var("COCKPIT_TMUX", "/nonexistent/tmux");
+        fake::set_var(&held, "NO_COLOR", "1");
+        fake::set_var(&held, "COCKPIT_TMUX", "/nonexistent/tmux");
     }
     let th = Theme::load();
     unsafe {
-        std::env::remove_var("NO_COLOR");
-        std::env::remove_var("COCKPIT_TMUX");
+        fake::remove_var(&held, "NO_COLOR");
+        fake::remove_var(&held, "COCKPIT_TMUX");
     }
     assert_eq!(th.needs, Color::Reset);
 }
 
 #[test]
 fn a_failed_client_theme_read_keeps_the_roles() {
-    let _guard = ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let held = fake::env_lock();
     let dir = std::env::temp_dir().join(format!("cockpit-theme-fail-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let out = dir.join("options");
@@ -124,13 +120,13 @@ fn a_failed_client_theme_read_keeps_the_roles() {
         out.display()
     );
     fake::write_exec(&bin, &script);
-    // SAFETY: ENV is held, so no other test thread reads these.
+    // SAFETY: the lock is held, so no other test thread reads these.
     unsafe {
-        std::env::remove_var("NO_COLOR");
-        std::env::set_var("COCKPIT_TMUX", &bin);
+        fake::remove_var(&held, "NO_COLOR");
+        fake::set_var(&held, "COCKPIT_TMUX", &bin);
     }
     let th = Theme::load();
-    unsafe { std::env::remove_var("COCKPIT_TMUX") };
+    unsafe { fake::remove_var(&held, "COCKPIT_TMUX") };
     std::fs::remove_dir_all(&dir).ok();
     assert_eq!(th.needs, DARK);
 }

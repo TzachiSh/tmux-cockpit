@@ -85,9 +85,12 @@ shq() { printf "'%s'" "${1//\'/\'\\\'\'}"; }
 # Start a poller, detached (run-shell -b), so the caller never waits for it. Two starts at once
 # are fine: the slot is a compare-and-set in the server and the loser exits. With a dir, the
 # poller runs with CLAUDE_CONFIG_DIR set to it; without, with none, so the server's own value
-# does not choose the dir for panes whose claude used the default.
+# does not choose the dir for panes whose claude used the default. Every automatic start comes
+# here, the sweeps' and a relayed notification's, so COCKPIT_NO_AUTOSTART in the caller's
+# environment stops each of them (#1111).
 start_poller() {              # <scripts dir> [<config dir>]
     local cmd key have dir=${2:-}
+    [ -z "${COCKPIT_NO_AUTOSTART:-}" ] || return 0
     # shellcheck source=fmt.sh
     . "${BASH_SOURCE[0]%/*}/fmt.sh" 2>/dev/null || return 0
     if [ -z "$dir" ]; then
@@ -116,7 +119,7 @@ start_poller() {              # <scripts dir> [<config dir>]
 # where a hook has seen a config dir (@cockpit_cfg_any) pays a list-panes for the dirs.
 ensure_poller() {             # <scripts dir>
     local info pid any
-    # COCKPIT_NO_AUTOSTART: the test suite's servers, which must not run the real claude.
+    # COCKPIT_NO_AUTOSTART: start_poller refuses it (#1111); this return also skips the reads.
     [ -z "${COCKPIT_NO_AUTOSTART:-}" ] || return 0
     info=$(tmux display-message -p '#{@cockpit_poll_pid}|#{@cockpit_bg_poll}|#{@cockpit_cfg_any}' \
         2>/dev/null) || return 0

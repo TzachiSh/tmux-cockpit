@@ -67,6 +67,11 @@ mod judge;
 mod overlap;
 #[path = "panel_eval/purpose.rs"]
 mod purpose;
+// the test binaries' own helpers, loaded whole rather than copied, so this one
+// takes the same fixed environment and canary row they do (#1088)
+#[cfg(test)]
+#[path = "../tests/fake/mod.rs"]
+mod fake;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Expect {
@@ -1090,15 +1095,17 @@ fn hermetic_wanted(var: Option<OsString>) -> bool {
 /// # Safety
 /// No other thread may read or write the environment meanwhile.
 unsafe fn hand_off(real: &str, hermetic: bool) -> bool {
+    let held = test_env::env_lock();
     // SAFETY: the caller's
     unsafe {
-        std::env::set_var(AS_CLAUDE, real);
+        test_env::set_var(&held, AS_CLAUDE, real);
         if hermetic {
-            std::env::set_var(HERMETIC, "1");
+            test_env::set_var(&held, HERMETIC, "1");
         } else {
-            std::env::remove_var(HERMETIC);
+            test_env::remove_var(&held, HERMETIC);
         }
     }
+    drop(held);
     hermetic_wanted(std::env::var_os(HERMETIC))
 }
 
@@ -2768,6 +2775,19 @@ fn summary(cases: &[Case], done: &[(usize, u128, Option<Grade>)], hashes: &[u64]
 mod tests {
     use super::*;
 
+    /// XDG_CONFIG_HOME at [`fake::NO_HOME`] for the whole binary, set on the first call and
+    /// never restored, so a developer's prompt overrides never reach a test (#1088). Absolute,
+    /// so the lookup (`panel::xdg`) never falls back to HOME, and HOME is left as it is: rig
+    /// children inherit it, and a value that changed with test order would reach them. A test
+    /// that reads a prompt in this process calls this first.
+    fn pinned_config() {
+        static SET: std::sync::Once = std::sync::Once::new();
+        let held = fake::env_lock();
+        // SAFETY: std's getenv and setenv share one lock; every read here is a Rust read,
+        // and a child takes its copy at the spawn, under that lock.
+        SET.call_once(|| unsafe { fake::set_var(&held, "XDG_CONFIG_HOME", fake::NO_HOME) });
+    }
+
     const ONE: &str = "# a comment\n=== crash\nkind: bug\nwindow: bash · bash · /home/u\nexpect: write\n\
                        must: net-proxy; line 88\n--- screen\n$ net-proxy\nboom\n--- request\nfix this\n";
 
@@ -3305,6 +3325,7 @@ mod tests {
 
     #[test]
     fn the_summary_names_the_router_file_as_the_prompts_source() {
+        pinned_config();
         let d = scratch("router-src");
         let p = d.0.join("router.txt");
         std::fs::write(&p, "route it").unwrap();
@@ -3610,6 +3631,7 @@ mod tests {
     /// with its three questions, and the profile, for a text and an exploring write.
     #[test]
     fn the_rig_sends_the_panels_own_call() {
+        pinned_config();
         use cockpit_tui::panel::app::{EXPLORE_BUDGET_USD, EXPLORE_TIMEOUT};
         use cockpit_tui::panel::capture::window_kind;
         use cockpit_tui::panel::envelope::build;
@@ -3643,6 +3665,7 @@ mod tests {
     /// from a second read of the override folder.
     #[test]
     fn the_rows_prompt_hash_is_the_calls_own() {
+        pinned_config();
         use cockpit_tui::panel::capture::window_kind;
         use cockpit_tui::panel::prompts::{self, Ctx};
         let c = &parse_cases(ONE).unwrap()[0];
@@ -3653,6 +3676,15 @@ mod tests {
         };
         assert_eq!(panel_call(c, "/r", false).3, prompts::write_noted(&ctx).2);
         assert_eq!(panel_call(c, "/r", true).3, prompts::write_explore_noted(&ctx).2);
+    }
+
+    /// #1088: this binary's tests, started again with a canary XDG_CONFIG_HOME holding a
+    /// prompt override for each prompt, as a developer who keeps overrides starts them: no
+    /// test opens one. The rig's main reads them on purpose; its tests do not.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn the_tests_leave_the_callers_prompt_overrides_alone() {
+        assert_eq!(fake::tests_leave_alone(&["XDG_CONFIG_HOME"]), Vec::<String>::new());
     }
 
     const ANSWERED: &str = "=== cache\nkind: feature\nwindow: bash · bash · /home/u\nexpect: write\n\
@@ -3681,6 +3713,7 @@ mod tests {
     /// and one question fewer for each one asked.
     #[test]
     fn the_rig_sends_a_conversation_with_the_questions_it_used() {
+        pinned_config();
         use cockpit_tui::panel::envelope::build;
         let c = &parse_cases(ANSWERED).unwrap()[0];
         let cap = Capture {
@@ -3739,6 +3772,7 @@ mod tests {
     /// own ^S renders them: mentions for claude, bare refs for another window.
     #[test]
     fn the_rig_sends_refs_as_the_panel_does() {
+        pinned_config();
         let cases = parse_cases(REFS).unwrap();
         let d = Gone(stage(&cases).unwrap().expect("a stage"));
         let path = pane_path(&cases[0], Some(&d.0));
@@ -3764,6 +3798,7 @@ mod tests {
 
     #[test]
     fn an_exploring_refs_case_marks_a_ref_outside_its_fixture() {
+        pinned_config();
         let cases = parse_cases(OUT).unwrap();
         let d = Gone(stage(&cases).unwrap().expect("a stage"));
         let path = pane_path(&cases[0], Some(&d.0));
@@ -3817,6 +3852,7 @@ mod tests {
     /// panic message gives the kind of failure, never a ref path or the pane's.
     #[test]
     fn a_held_out_unstaged_ref_panic_shows_no_ref_path() {
+        pinned_config();
         let d = scratch("unstaged");
         let pane = d.0.join("MADE-UP-pane").display().to_string();
         let refs = "src/cart.go:40-72\nREADME.md\n../shared/money.go:3\n";
@@ -6773,6 +6809,7 @@ esac
         /// request, echoes it on stderr and fails; the line and row show the class.
         #[test]
         fn a_held_out_failed_call_prints_only_its_class() {
+            pinned_config();
             let dir = scratch("quiet-err");
             let cases = parse_cases(QUIET).unwrap();
             let c = cases.iter().find(|c| c.id == "held-q").unwrap();

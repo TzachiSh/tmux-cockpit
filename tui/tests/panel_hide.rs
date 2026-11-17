@@ -339,6 +339,7 @@ fn a_question_with_no_run_is_refused() {
 #[test]
 fn the_help_footer_and_buttons_name_the_hide_key() {
     let mut a = app("bash");
+    a.set_panel_key("f"); // what cockpit-panel passes for the stock binding (#1121)
     key(&mut a, KeyCode::Char('2'));
     let th = Theme::fixed();
     let keys = cockpit_tui::panel::view::keys(&a, &th.g);
@@ -550,4 +551,12 @@ fn a_batch_state_out_of_place_is_refused() {
     assert!(refused("batch-at", &first_at_1).contains("a question out of its batch"));
     let none_shown = rewritten(&good, |v| v["run"]["qstack"] = serde_json::json!([]));
     assert!(refused("batch-ahead", &none_shown).contains("questions to come with none on screen"));
+}
+
+/// #1066: this binary reads tmux through the product's plain `tmux`
+/// (`AGENT_GLOB` in `data.rs`). Under the runner that finds no server; started by
+/// hand from inside a tmux session it would read the caller's, so it is refused.
+#[test]
+fn the_binary_runs_with_no_tmux_session_of_the_callers() {
+    fake::checked_tmux();
 }

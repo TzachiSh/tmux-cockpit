@@ -1,5 +1,5 @@
 //! What the environment drives: the child's env, `Call::from_env`, overrides and
-//! the capture. Env vars are process-global, so every test holds `ENV`.
+//! the capture. Env vars are process-global, so every test holds fake's environment lock.
 mod fake;
 
 use cockpit_tui::panel::capture::{capture, capture_within, repo_state_within};
@@ -9,10 +9,7 @@ use cockpit_tui::panel::request::{Call, Effort, Request};
 use cockpit_tui::panel::route::route;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
-
-static ENV: Mutex<()> = Mutex::new(());
 
 /// What a row checking the repo block's parts waits for it. The panel's 300 ms
 /// `REPO_BUDGET` leaves a part out on a loaded box (#596).
@@ -26,7 +23,7 @@ const HUNG_BUDGET: Duration = Duration::from_secs(2);
 struct Env {
     old: Vec<(&'static str, Option<String>)>,
     dir: PathBuf,
-    _lock: MutexGuard<'static, ()>,
+    held: fake::EnvHeld,
 }
 
 impl Env {
@@ -34,21 +31,21 @@ impl Env {
     /// TMPDIR with one would give it, so a `$D` left unquoted in a fake's body
     /// fails the row that runs that fake (#757).
     fn new(tag: &str, vars: &[(&'static str, Option<String>)]) -> Env {
-        let lock = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let lock = fake::env_lock();
         let dir = std::env::temp_dir().join(format!("cockpit panel-env-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let old = vars.iter().map(|(k, _)| (*k, std::env::var(k).ok())).collect();
         for (k, v) in vars {
-            // SAFETY: ENV is held for the guard's lifetime and every test here takes it.
+            // SAFETY: the lock is held for the guard's lifetime and every test here takes it.
             unsafe {
                 match v {
-                    Some(v) => std::env::set_var(k, v.replace("$D", &dir.display().to_string())),
-                    None => std::env::remove_var(k),
+                    Some(v) => fake::set_var(&lock, k, v.replace("$D", &dir.display().to_string())),
+                    None => fake::remove_var(&lock, k),
                 }
             }
         }
-        Env { old, dir, _lock: lock }
+        Env { old, dir, held: lock }
     }
 
     fn exec(&self, name: &str, body: &str) -> String {
@@ -64,8 +61,8 @@ impl Drop for Env {
             // SAFETY: as above.
             unsafe {
                 match v {
-                    Some(v) => std::env::set_var(k, v),
-                    None => std::env::remove_var(k),
+                    Some(v) => fake::set_var(&self.held, k, v),
+                    None => fake::remove_var(&self.held, k),
                 }
             }
         }
@@ -336,7 +333,7 @@ fn a_shell_pane_with_no_window_name_keeps_its_fields() {
     assert!(std::fs::read_to_string(e.dir.join("args")).unwrap().contains("-S -80"));
 }
 
-/// `n` threads outside ENV that fork until the storm is stopped or dropped, as capture()'s
+/// `n` threads outside the lock that fork until the storm is stopped or dropped, as capture()'s
 /// repo worker does after its test returns (#544 moved it out of the test).
 struct ForkStorm {
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -607,8 +604,8 @@ fn an_inherited_git_variable_never_moves_the_repo_block() {
             let block = |p: &str| repo_state_within(p, "", BUDGET);
             let want = block(&pane);
             assert!(want.starts_with(&format!("branch: main\nroot: {pane}\n")), "{want}");
-            // SAFETY: `e` holds ENV, and its drop puts every REDIRECT var back.
-            unsafe { std::env::set_var(var, val.replace("$D", &e.dir.display().to_string())) };
+            // SAFETY: `e` holds the lock, and its drop puts every REDIRECT var back.
+            unsafe { fake::set_var(&e.held, var, val.replace("$D", &e.dir.display().to_string())) };
             block(&pane) != want
         })
         .map(|(var, _)| var)
@@ -898,4 +895,47 @@ fn a_value_the_user_set_reaches_the_call_unchanged_and_the_rest_are_set() {
 fn the_panels_own_environment_stays_without_the_three() {
     let (_, own) = call_env("quiet-own", &[]);
     assert_eq!(own, [None, None, None], "the panel's own env after a call, {QUIET:?}");
+}
+
+// --- #970: an ask's walk up for a `.git` stops at the user's HOME ---
+
+/// `ask::load` hands `load_in` the HOME of this moment, so neither a `.git` in
+/// HOME (dotfiles) nor one above it is a project, and a file in a plain folder
+/// under HOME has that folder as its repo. A `.git` is planted in HOME and one
+/// in the dir HOME sits in. A walk that looks in HOME finds HOME's first, before
+/// the developer's checkout or a `.git` above the temp dir, and the read check
+/// refuses that folder for being HOME or holding it. A home set too low has no
+/// project at all. Paths are canonical, and HOME's value goes through `load`'s
+/// own canonicalizing, so a linked temp dir holds.
+#[test]
+fn an_asks_walk_up_stops_at_home() {
+    let e = Env::new("askhome", &[("HOME", Some("$D/home".into()))]);
+    let d = e.dir.canonicalize().unwrap();
+    std::fs::create_dir_all(d.join(".git")).unwrap();
+    std::fs::create_dir_all(d.join("home/.git")).unwrap();
+    std::fs::create_dir_all(d.join("home/notes")).unwrap();
+    let f = d.join("home/notes/x.md");
+    std::fs::write(&f, "a\nb\n").unwrap();
+    let got = cockpit_tui::panel::ask::load(&f, 1, 2).map(|a| a.repo);
+    assert_eq!(got, Ok(d.join("home/notes")), "a plain folder under HOME, a .git in and above it");
+}
+
+/// #1066: this binary reads tmux through the product's plain `tmux`
+/// (`AGENT_GLOB` in `data.rs`). Under the runner that finds no server; started by
+/// hand from inside a tmux session it would read the caller's, so it is refused.
+#[test]
+fn the_binary_runs_with_no_tmux_session_of_the_callers() {
+    // sibling rows set TMUX_TMPDIR and unset TMUX for the whole process under fake's lock,
+    // which the check takes for its read (#1089, #1110)
+    fake::checked_tmux();
+}
+
+/// #1089: started with no TMUX_TMPDIR, no test of this binary reaches a plain `tmux`:
+/// the product's own call refuses it, and a stub first on PATH gets no call.
+#[test]
+fn started_bare_no_test_reaches_a_plain_tmux() {
+    // the lock: this reads PATH, which sibling rows set for the whole process
+    let _l = fake::env_lock();
+    let calls = fake::unchecked_tmux_calls("started_bare_no_test_reaches_a_plain_tmux");
+    assert_eq!(calls, Vec::<String>::new());
 }

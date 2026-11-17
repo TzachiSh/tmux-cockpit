@@ -1,6 +1,8 @@
 //! #282: code in the panel's Result, Steps and Answer views is coloured, fenced
 //! blocks only, by the same rows the plain text wraps to.
 //! COCKPIT_BLESS=1 cargo test rewrites the goldens.
+mod fake;
+
 use cockpit_tui::panel::app::{App, View};
 use cockpit_tui::panel::capture::Capture;
 use cockpit_tui::panel::view::render;
@@ -258,4 +260,20 @@ fn a_tab_indented_heredoc_end_closes_in_the_panel() {
     let b = buffer(&a, 60, 16, &th);
     assert_eq!(fg(&b, "if true"), th.accent, "\n{}", roles(&b, &th));
     assert_eq!(fg(&b, "body"), th.done);
+}
+
+/// #1066: this binary reads tmux through the product's plain `tmux`
+/// (`AGENT_GLOB` in `data.rs`). Under the runner that finds no server; started by
+/// hand from inside a tmux session it would read the caller's, so it is refused.
+#[test]
+fn the_binary_runs_with_no_tmux_session_of_the_callers() {
+    fake::checked_tmux();
+}
+
+/// #1089: started with no TMUX_TMPDIR, no test of this binary reaches a plain `tmux`:
+/// the product's own call refuses it, and a stub first on PATH gets no call.
+#[test]
+fn started_bare_no_test_reaches_a_plain_tmux() {
+    let calls = fake::unchecked_tmux_calls("started_bare_no_test_reaches_a_plain_tmux");
+    assert_eq!(calls, Vec::<String>::new());
 }

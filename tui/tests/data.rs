@@ -8,48 +8,52 @@ use cockpit_tui::data::{Pane, git_facts, list_panes, preview, screen, split_curs
 use fake::write_exec;
 use std::fs::{FileTimes, OpenOptions};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard};
 
-/// PATH, HOME and COCKPIT_* are process-global while cargo runs tests on
-/// threads, so every rig holds this for its lifetime and puts the vars back.
-static ENV: Mutex<()> = Mutex::new(());
+/// `vars` set under fake's lock, whose token this keeps, and put back when it drops.
+struct Env<'a> {
+    old: Vec<(&'static str, Option<String>)>,
+    held: fake::Held<'a>,
+}
 
-struct Env(Vec<(&'static str, Option<String>)>);
-
-impl Env {
-    fn set(vars: &[(&'static str, String)]) -> Self {
+impl<'a> Env<'a> {
+    fn set(held: fake::Held<'a>, vars: &[(&'static str, String)]) -> Self {
         let old = vars.iter().map(|(k, _)| (*k, std::env::var(k).ok())).collect();
         for (k, v) in vars {
-            // SAFETY: the ENV mutex is held for the whole lifetime of this guard.
-            unsafe { std::env::set_var(k, v) };
+            // SAFETY: fake's environment lock is held for the whole lifetime of this guard.
+            unsafe { fake::set_var(held.token(), k, v) };
         }
-        Env(old)
+        Env { old, held }
     }
 }
 
-impl Drop for Env {
+impl Drop for Env<'_> {
     fn drop(&mut self) {
-        for (k, v) in &self.0 {
+        let held = self.held.token();
+        for (k, v) in &self.old {
             // SAFETY: as above.
             unsafe {
                 match v {
-                    Some(v) => std::env::set_var(k, v),
-                    None => std::env::remove_var(k),
+                    Some(v) => fake::set_var(held, k, v),
+                    None => fake::remove_var(held, k),
                 }
             }
         }
     }
 }
 
+/// PATH, HOME and COCKPIT_* are process-global while cargo runs tests on threads, so
+/// every rig holds fake's environment lock for its lifetime and puts the vars back.
 pub struct Rig {
     dir: PathBuf,
-    _env: Env,
-    _lock: MutexGuard<'static, ()>,
+    env: Env<'static>,
 }
 
 impl Rig {
     fn new(tag: &str) -> Rig {
-        let lock = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        // the runner unset the caller's log, cache and state, which a lookup uses (#1066);
+        // checked under the lock, as a sibling sets COCKPIT_LOG under it (#1089, #1110)
+        let lock = fake::env_lock();
+        fake::checked_state_held(&lock);
         let dir = std::env::temp_dir().join(format!("cockpit-tui-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("bin")).unwrap();
@@ -72,20 +76,24 @@ impl Rig {
         write_exec(&dir.join("bin/git"), "#!/bin/sh\nexit 1\n");
         std::fs::write(dir.join("rows"), "").unwrap();
         std::fs::write(dir.join("ps"), "").unwrap();
-        let env = Env::set(&[
-            ("PATH", format!("{d}/bin:{}", std::env::var("PATH").unwrap_or_default())),
-            ("COCKPIT_TMUX", format!("{d}/bin/tmux")),
-            // no proc under it: the walk falls back to the fake `ps`, not the box's pids
-            ("COCKPIT_PROC_DIR", format!("{d}/proc")),
-            ("HOME", d),
-            ("COCKPIT_READONLY", "1".into()),
-        ]);
+        let env = Env::set(
+            fake::Held::Own(lock),
+            &[
+                ("PATH", format!("{d}/bin:{}", std::env::var("PATH").unwrap_or_default())),
+                ("COCKPIT_TMUX", format!("{d}/bin/tmux")),
+                // no proc under it: the walk falls back to the fake `ps`, not the box's pids
+                ("COCKPIT_PROC_DIR", format!("{d}/proc")),
+                ("HOME", d),
+                ("COCKPIT_READONLY", "1".into()),
+            ],
+        );
         fake::assert_claude_is_the_rigs(&dir);
-        Rig {
-            dir,
-            _env: env,
-            _lock: lock,
-        }
+        Rig { dir, env }
+    }
+
+    /// The token of fake's lock, which the rig holds for its life.
+    fn held(&self) -> &fake::EnvHeld {
+        self.env.held.token()
     }
 
     fn rows(&self, rows: &[String]) {
@@ -545,26 +553,22 @@ fn an_open_question_further_back_than_64k_is_still_found() {
 const BASH_ROW: &str = "{\"type\":\"assistant\",\"timestamp\":\"2026-08-27T00:00:01.000Z\",\"message\":{\"stop_reason\":\"tool_use\",\
      \"content\":[{\"type\":\"tool_use\",\"id\":\"t1\",\"name\":\"Bash\",\"input\":{\"command\":\"echo one\"}}]}}\n";
 
-/// A real repo under $TMPDIR, with the ENV lock held so no Rig's git shim is
+/// A real repo under $TMPDIR, with fake's environment lock held so no Rig's git shim is
 /// on PATH, and the box's own git config kept out.
 struct Repo {
     dir: PathBuf,
-    _env: Env,
-    _lock: MutexGuard<'static, ()>,
+    env: Env<'static>,
 }
 
 impl Repo {
     fn new(tag: &str) -> Repo {
-        let lock = ENV.lock().unwrap_or_else(|e| e.into_inner());
-        let env = Env::set(&[("GIT_CONFIG_GLOBAL", "/dev/null".into()), ("GIT_CONFIG_NOSYSTEM", "1".into())]);
+        let lock = fake::env_lock();
+        let vars = [("GIT_CONFIG_GLOBAL", "/dev/null".into()), ("GIT_CONFIG_NOSYSTEM", "1".into())];
+        let env = Env::set(fake::Held::Own(lock), &vars);
         let dir = std::env::temp_dir().join(format!("cockpit-tui-git-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let r = Repo {
-            dir,
-            _env: env,
-            _lock: lock,
-        };
+        let r = Repo { dir, env };
         r.git(&["init", "-q", "-b", "main", "."]);
         r.write("f", "a\n");
         r.git(&["add", "-A"]);
@@ -572,13 +576,15 @@ impl Repo {
         r
     }
 
+    /// git with TERM at its default and unblocked: the planted process filter is
+    /// ended by a TERM from git, and with TERM ignored its `cat` and this git wait
+    /// on each other for good (#1075). [`KEEPS_TERM`] set skips the reset.
     fn git(&self, args: &[&str]) -> std::process::Output {
-        std::process::Command::new("git")
-            .arg("-C")
-            .arg(&self.dir)
-            .args(args)
-            .output()
-            .unwrap()
+        let mut c = std::process::Command::new("git");
+        if std::env::var_os(KEEPS_TERM).is_none() {
+            fake::at_default(&mut c, &[libc::SIGTERM]);
+        }
+        c.arg("-C").arg(&self.dir).args(args).output().unwrap()
     }
 
     fn write(&self, name: &str, body: &str) {
@@ -678,6 +684,204 @@ fn planted_git_config_never_runs() {
     assert_eq!(pm, "+2 -1  ?1 new", "the hardened diff still measures the tree");
 }
 
+/// Set by [`forced_child`] alone, for the child of
+/// [`a_forced_hang_of_the_planted_filter_is_ended_once_it_forms`], so that its git keeps
+/// the ignored TERM it was handed and hangs, and for #1206's row, whose child runs no
+/// git. A reader must not copy it into a row that means to pass (#1075).
+const KEEPS_TERM: &str = "COCKPIT_TEST_GIT_KEEPS_TERM";
+
+/// How long a handed run of the planted row may take: it passes in under a second,
+/// so this bounds a hang and measures nothing (#1075).
+const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How long the forced row waits for its hang to form. The planted row reaches its
+/// first filtered git after a dozen plain ones, well under a second on an idle box, so
+/// 10 s holds at four times slower and more. Only a red waits it out (#1075).
+const FORM_BOUND: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Whether `f` holds within `bound`, polled.
+fn until(bound: std::time::Duration, mut f: impl FnMut() -> bool) -> bool {
+    let t0 = std::time::Instant::now();
+    while !f() {
+        if t0.elapsed() >= bound {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    true
+}
+
+/// Whether `pid` is a process of this user's, read from /proc.
+fn ours(pid: i32) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    // SAFETY: getuid cannot fail and touches no memory.
+    let me = unsafe { libc::getuid() };
+    std::fs::metadata(format!("/proc/{pid}")).is_ok_and(|m| m.uid() == me)
+}
+
+/// Whether `pid` is ours, its comm `git`, and an argument of its cmdline `dir` whole.
+fn a_git_in(pid: i32, dir: &str) -> bool {
+    let comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).unwrap_or_default();
+    let cmd = std::fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
+    let named = cmd.split(|&b| b == 0).any(|a| a == dir.as_bytes());
+    ours(pid) && comm.trim_end() == "git" && named
+}
+
+/// Pids with `pred`, read from /proc.
+fn pids_where(pred: impl Fn(i32) -> bool) -> Vec<i32> {
+    let all = std::fs::read_dir("/proc").into_iter().flatten().flatten();
+    let pids = all.filter_map(|e| e.file_name().to_str()?.parse::<i32>().ok());
+    pids.filter(|&p| pred(p)).collect()
+}
+
+/// Ends a handed child's hung git in `dir`, and with it the filter it waits on,
+/// which then sees its stdin close. Each pid is read again as that git right
+/// before the kill, and is left alone if the read fails or no longer matches.
+fn end_hung_gits(dir: &str) {
+    for pid in pids_where(|p| a_git_in(p, dir)) {
+        if a_git_in(pid, dir) {
+            // SAFETY: a pid read just now as our own git working in this row's folder.
+            unsafe { libc::kill(pid, libc::SIGKILL) };
+        }
+    }
+}
+
+/// How many processes of ours have a cwd under `dir`, once none is left or after a
+/// poll of [`HANG_BOUND`]. `dir` must have its links resolved, as the kernel gives a
+/// cwd. A zombie has no cwd and is not counted.
+fn left_under(dir: &Path) -> usize {
+    let under = |p: i32| ours(p) && std::fs::read_link(format!("/proc/{p}/cwd")).is_ok_and(|c| c.starts_with(dir));
+    until(HANG_BOUND, || pids_where(under).is_empty());
+    pids_where(under).len()
+}
+
+/// Whether the hang has formed in `dir`: a cat of ours working there with TERM
+/// ignored, and a git of ours naming `dir` waiting on its child (#1075). `dir` is
+/// resolved, so a cwd, which the kernel gives resolved, and git's cmdline, which
+/// holds the TMPDIR the row handed down, both carry this one form.
+fn hang_formed(dir: &str) -> bool {
+    let read = |p: i32, f: &str| std::fs::read_to_string(format!("/proc/{p}/{f}")).unwrap_or_default();
+    let term = 1u64 << (libc::SIGTERM - 1);
+    let ignores_term = |p: i32| {
+        let st = read(p, "status");
+        let bits = st.lines().find_map(|l| l.strip_prefix("SigIgn:"));
+        bits.and_then(|b| u64::from_str_radix(b.trim(), 16).ok())
+            .is_some_and(|b| b & term != 0)
+    };
+    let in_dir = |p: i32| std::fs::read_link(format!("/proc/{p}/cwd")).is_ok_and(|c| c == Path::new(dir));
+    let cat = |p: i32| ours(p) && read(p, "comm").trim_end() == "cat" && in_dir(p) && ignores_term(p);
+    let waiting = |p: i32| a_git_in(p, dir) && read(p, "wchan") == "do_wait";
+    !pids_where(cat).is_empty() && !pids_where(waiting).is_empty()
+}
+
+/// [`planted_git_config_never_runs`] in this binary handed an ignored and blocked
+/// TERM, with a TMPDIR of its own: the run, and how many of the processes it
+/// started are left once any hung git is ended.
+fn planted_row_handed() -> (Result<u32, String>, usize) {
+    let name = format!("cockpit-tui-handed-git-held-{}", std::process::id());
+    let tmp = fake::Scratch::fresh(std::env::temp_dir().join(name));
+    // resolved once and used for all: the child's TMPDIR, so git's cmdline, and each cwd
+    let canon = std::fs::canonicalize(&*tmp).unwrap();
+    let env = [("TMPDIR", canon.to_str().unwrap())];
+    let row = ["planted_git_config_never_runs"];
+    let run = fake::handed(&row, &[libc::SIGTERM], &env, HANG_BOUND);
+    for e in std::fs::read_dir(&canon).unwrap().flatten() {
+        if e.file_name().to_string_lossy().starts_with("cockpit-tui-git-plant-") {
+            end_hung_gits(e.path().to_str().unwrap());
+        }
+    }
+    (run, left_under(&canon))
+}
+
+/// #1075: the planted row passes in a binary started with TERM ignored and blocked,
+/// held there by its own git's reset, and leaves nothing behind.
+#[test]
+#[cfg(target_os = "linux")]
+fn planted_git_config_never_runs_in_a_binary_handed_an_ignored_term() {
+    let (run, left) = planted_row_handed();
+    assert_eq!((run.as_ref().err(), left), (None, 0), "{run:?}");
+}
+
+/// `row` of this binary in a child started with TERM ignored and [`KEEPS_TERM`] set, so
+/// its git skips the reset, with `tmp` for its TMPDIR, `env` set for it alone, and no
+/// stdio: the forced row's child. Spawned under fake's lock, held for the spawn alone,
+/// so it takes no write a sibling holds under it, as a data rig's PATH with its failing
+/// `git` first (#1206).
+#[cfg(target_os = "linux")]
+fn forced_child(row: &str, tmp: &Path, env: &[(&str, &str)]) -> std::process::Child {
+    use std::os::unix::process::CommandExt;
+    let mut c = std::process::Command::new(std::env::current_exe().unwrap());
+    c.args(["--exact", row])
+        .env("TMPDIR", tmp)
+        .env(KEEPS_TERM, "1")
+        .envs(env.iter().copied());
+    c.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null());
+    let ignore = || {
+        // SAFETY: signal is async-signal-safe, and nothing here allocates.
+        unsafe { libc::signal(libc::SIGTERM, libc::SIG_IGN) };
+        Ok(())
+    };
+    // SAFETY: `ignore` makes one async-signal-safe call and allocates nothing.
+    fake::spawn(unsafe { c.pre_exec(ignore) }.stderr(std::process::Stdio::null())).unwrap()
+}
+
+/// #1075: the hang the reset prevents, forced in a child of this binary started with
+/// TERM ignored and the reset skipped, forms; once it has, the child is killed, and the
+/// clean-up leaves none of its processes.
+#[test]
+#[cfg(target_os = "linux")]
+fn a_forced_hang_of_the_planted_filter_is_ended_once_it_forms() {
+    let name = format!("cockpit-tui-handed-git-forced-{}", std::process::id());
+    let tmp = fake::Scratch::fresh(std::env::temp_dir().join(name));
+    // resolved once and used for all: the child's TMPDIR, so git's cmdline, and each cwd
+    let canon = std::fs::canonicalize(&*tmp).unwrap();
+    let mut child = forced_child("planted_git_config_never_runs", &canon, &[]);
+    let plant = format!("cockpit-tui-git-plant-{}", child.id());
+    let dir = canon.join(&plant);
+    let dir = dir.to_str().unwrap();
+    let formed = until(FORM_BOUND, || hang_formed(dir));
+    // our own unreaped child: the pid cannot have been recycled
+    child.kill().unwrap();
+    child.wait().unwrap();
+    end_hung_gits(dir);
+    let left = left_under(&canon);
+    let why = "git no longer hangs here: no git waited on a planted cat ignoring TERM";
+    assert!(formed, "{why} within {FORM_BOUND:?}");
+    assert_eq!(left, 0, "the clean-up left processes of the forced hang");
+}
+
+/// The child half of the row below, [`fake::sees_no_canary`] by this name in this binary.
+#[cfg(target_os = "linux")]
+const SEES_NO_CANARY: &str = "a_child_sees_no_canary";
+
+#[test]
+fn a_child_sees_no_canary() {
+    fake::sees_no_canary();
+}
+
+/// #1206: a child [`forced_child`] starts while a sibling holds fake's lock with a
+/// variable set, as a data rig holds its PATH, waits for the lock to start, so it never
+/// takes that value. Without the fix the row is red unless the box stalls the starting
+/// thread past [`fake::POLLS`] (about 5 s), when the canary is gone before the spawn.
+/// With the fix it cannot go red by luck: the child cannot start while the row holds the
+/// lock. Each green run waits out [`fake::POLLS`] once.
+#[test]
+#[cfg(target_os = "linux")]
+fn a_forced_child_starts_once_a_writer_lets_go() {
+    let name = format!("cockpit-tui-forced-canary-{}", std::process::id());
+    let tmp = fake::Scratch::fresh(std::env::temp_dir().join(name));
+    let started = tmp.join("started");
+    let (dir, at) = (tmp.to_path_buf(), started.to_str().unwrap().to_string());
+    let got = fake::beside_a_held_canary(&started, move || {
+        let st = forced_child(SEES_NO_CANARY, &dir, &[(fake::STARTED, &at)]).wait();
+        match st {
+            Ok(st) if st.success() => Ok(()),
+            st => Err(format!("{st:?}")),
+        }
+    });
+    assert_eq!(got, (false, Ok(())));
+}
+
 /// The board may start with a dotfiles setup's GIT_DIR, or one of its kin, in
 /// its environment: a row's name, branch, diff count and root stay the pane repo's.
 #[test]
@@ -709,7 +913,7 @@ fn an_inherited_git_variable_never_moves_a_boards_row() {
     let moved: Vec<&str> = rows
         .into_iter()
         .filter(|(var, val)| {
-            let _e = Env::set(&[(var, val.clone())]); // `r` holds ENV
+            let _e = Env::set(fake::Held::Lent(r.env.held.token()), &[(var, val.clone())]);
             git_facts(&r.path()) != want
         })
         .map(|(var, _)| var)
@@ -946,7 +1150,7 @@ fn the_window_id_is_the_thirteenth_field() {
 fn the_log_rotates_past_its_cap() {
     let r = Rig::new("logrot");
     let log = r.dir.join("tui.log");
-    let _env = Env::set(&[("COCKPIT_LOG", log.display().to_string())]);
+    let _env = Env::set(fake::Held::Lent(r.held()), &[("COCKPIT_LOG", log.display().to_string())]);
     let rot = r.dir.join("tui.log.1");
     std::fs::write(&rot, "older\n").unwrap();
     let full = "x".repeat(cockpit_tui::data::LOG_CAP as usize + 1);
@@ -1863,4 +2067,51 @@ fn an_unborn_repo_counts_its_staged_lines_beside_an_untracked_file() {
     r.git(&["add", "s"]);
     r.write("u", "z\n");
     assert_eq!(diffstat(&[&r.path()]), ("2\t0\t1\t+2 -0  ?1 new\n".into(), 0));
+}
+
+/// #1066: started by hand with a caller's COCKPIT_LOG kept, this binary's rig
+/// refuses before a lookup can write a line there. The runner unsets it.
+#[test]
+fn a_kept_cockpit_log_is_refused() {
+    let kept = [("COCKPIT_LOG", "/canary-1066/log")];
+    let (code, said) = fake::run_by_hand("the_window_id_is_the_thirteenth_field", &kept);
+    let refused = said.contains("the caller's state refused (#1066): COCKPIT_LOG set. ");
+    assert_eq!((code, refused), (Some(101), true), "{said}");
+}
+
+/// #1066: started by hand with a caller's XDG_CACHE_HOME kept, this binary's rig
+/// refuses before a lookup can read or write the agents cache there.
+#[test]
+fn a_kept_agents_cache_is_refused() {
+    let kept = [("XDG_CACHE_HOME", "/canary-1066/cache")];
+    let (code, said) = fake::run_by_hand("the_window_id_is_the_thirteenth_field", &kept);
+    let refused = said.contains("the caller's state refused (#1066): XDG_CACHE_HOME set. ");
+    assert_eq!((code, refused), (Some(101), true), "{said}");
+}
+
+/// #1089: a rig checks under fake's environment lock, so a sibling's COCKPIT_LOG, set under
+/// it as `the_log_rotates_past_its_cap` sets it, is never read as the caller's. Nothing in
+/// the thread can sleep before `Rig::new`'s check: a send on an unbounded channel, then the
+/// check's three `var_os` reads, whose env lock only a `set_var` holds, and every writer
+/// here holds the lock. So "asleep" is the wait at the lock, and a check that read outside
+/// it would panic. Since #1110 none can: the `_held` check needs the lock's token, and the
+/// guard-less one takes the lock itself.
+#[test]
+#[cfg(target_os = "linux")]
+fn a_rig_checks_only_once_it_holds_the_lock() {
+    let held = Rig::new("held");
+    let log = held.dir.join("tui.log").display().to_string();
+    let env = Env::set(fake::Held::Lent(held.held()), &[("COCKPIT_LOG", log)]);
+    let (tx, rx) = std::sync::mpsc::channel();
+    let t = std::thread::spawn(move || {
+        tx.send(unsafe { libc::gettid() }).unwrap();
+        drop(Rig::new("waits"));
+    });
+    fake::asleep_or_done(&t, rx.recv().unwrap());
+    // the variable goes back under the rig's lock, then the rig and the lock go
+    drop(env);
+    drop(held);
+    // without the fix the payload is the refusal, naming COCKPIT_LOG
+    let why = t.join().err().map(|e| e.downcast_ref::<String>().cloned().unwrap_or_default());
+    assert_eq!(why, None, "the waiting rig panicked");
 }

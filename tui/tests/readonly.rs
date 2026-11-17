@@ -5,33 +5,29 @@ mod fake;
 
 use cockpit_tui::data::tmux_set;
 use cockpit_tui::push::Push;
-use std::sync::Mutex;
+/// COCKPIT_* are process-global and cargo runs tests on threads, so every test that
+/// touches them serialises on fake's environment lock and puts them back on the way out.
+struct Env<'a>(&'a fake::EnvHeld, Vec<(&'static str, Option<String>)>);
 
-/// COCKPIT_* are process-global and cargo runs tests on threads, so every test
-/// that touches them serialises here and puts them back on the way out.
-static ENV: Mutex<()> = Mutex::new(());
-
-struct Env(Vec<(&'static str, Option<String>)>);
-
-impl Env {
-    fn set(vars: &[(&'static str, &str)]) -> Self {
+impl<'a> Env<'a> {
+    fn set(held: &'a fake::EnvHeld, vars: &[(&'static str, &str)]) -> Self {
         let old = vars.iter().map(|(k, _)| (*k, std::env::var(k).ok())).collect();
         for (k, v) in vars {
-            // SAFETY: the ENV mutex is held for the whole lifetime of this guard.
-            unsafe { std::env::set_var(k, v) };
+            // SAFETY: fake's environment lock is held for the whole lifetime of this guard.
+            unsafe { fake::set_var(held, k, v) };
         }
-        Env(old)
+        Env(held, old)
     }
 }
 
-impl Drop for Env {
+impl Drop for Env<'_> {
     fn drop(&mut self) {
-        for (k, v) in &self.0 {
+        for (k, v) in &self.1 {
             // SAFETY: as above.
             unsafe {
                 match v {
-                    Some(v) => std::env::set_var(k, v),
-                    None => std::env::remove_var(k),
+                    Some(v) => fake::set_var(self.0, k, v),
+                    None => fake::remove_var(self.0, k),
                 }
             }
         }
@@ -72,10 +68,10 @@ fn a_scratch_dir_is_removed_on_a_pass_and_on_a_panic() {
 
 #[test]
 fn readonly_writes_nothing_not_even_the_wake_channel() {
-    let _lock = ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let held = fake::env_lock();
     let dir = scratch("ro");
     let (bin, log) = shim(&dir);
-    let _env = Env::set(&[("COCKPIT_TMUX", &bin), ("COCKPIT_READONLY", "1")]);
+    let _env = Env::set(&held, &[("COCKPIT_TMUX", &bin), ("COCKPIT_READONLY", "1")]);
 
     tmux_set(&["set-option", "-g", "@cockpit_board_wake", "1234"]);
     drop(Push::start()); // start lists its channel, Drop unlists it; neither may run
@@ -87,10 +83,10 @@ fn readonly_writes_nothing_not_even_the_wake_channel() {
 /// above is not passing because the shim is broken.
 #[test]
 fn without_readonly_the_write_reaches_tmux() {
-    let _lock = ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let held = fake::env_lock();
     let dir = scratch("rw");
     let (bin, log) = shim(&dir);
-    let _env = Env::set(&[("COCKPIT_TMUX", &bin), ("COCKPIT_READONLY", "")]);
+    let _env = Env::set(&held, &[("COCKPIT_TMUX", &bin), ("COCKPIT_READONLY", "")]);
 
     tmux_set(&["set-option", "-g", "@cockpit_board_wake", "1234"]);
 

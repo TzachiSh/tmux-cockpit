@@ -1,5 +1,7 @@
 //! The basket on a real tmux, a private `-L` server, never the user's. One
 //! test in this binary: it points `COCKPIT_TMUX` at that server for the process.
+mod fake;
+
 use cockpit_tui::basket;
 use cockpit_tui::refs::Ref;
 use std::process::Command;
@@ -7,8 +9,8 @@ use std::process::Command;
 struct Server {
     sock: String,
     dir: std::path::PathBuf,
-    /// the socket file, which kill-server leaves behind
-    path: String,
+    /// killed with its socket before the folder goes
+    _server: fake::Server,
 }
 
 impl Server {
@@ -17,20 +19,16 @@ impl Server {
         let dir = std::env::temp_dir().join(&sock);
         std::fs::create_dir_all(&dir).ok()?;
         let dir = dir.canonicalize().ok()?;
-        let ok = Command::new("tmux")
-            .args(["-L", &sock, "-f", "/dev/null", "new-session", "-d", "-c"])
-            .arg(&dir)
-            .arg("sleep 300")
-            .status()
-            .ok()?
-            .success();
-        let mut s = ok.then_some(Server {
+        // built first, so a start that fails or panics still removes the folder
+        let mut s = Server {
+            _server: fake::Server::new(&sock),
             sock,
             dir,
-            path: String::new(),
-        })?;
-        s.path = s.tmux(&["display-message", "-p", "#{socket_path}"]);
-        Some(s)
+        };
+        let ok = s._server.start(|c| {
+            c.args(["new-session", "-d", "-c"]).arg(&s.dir).arg("sleep 300");
+        });
+        ok.then_some(s)
     }
 
     fn tmux(&self, args: &[&str]) -> String {
@@ -41,10 +39,7 @@ impl Server {
 
 impl Drop for Server {
     fn drop(&mut self) {
-        let _ = Command::new("tmux").args(["-L", &self.sock, "kill-server"]).status();
-        if self.path.ends_with(&self.sock) {
-            let _ = std::fs::remove_file(&self.path);
-        }
+        self._server.stop();
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
@@ -55,8 +50,9 @@ fn the_basket_round_trips_through_a_pane_option() {
         eprintln!("SKIP: no tmux");
         return;
     };
-    // SAFETY: the only test in this binary; nothing else reads the env meanwhile.
-    unsafe { std::env::set_var("COCKPIT_TMUX", format!("tmux -L {}", s.sock)) };
+    // SAFETY: the one test of this binary that writes the env; the others read it only
+    // in their spawns, which std orders with this write (fake::rows_pass_handed).
+    unsafe { fake::set_var(&fake::env_lock(), "COCKPIT_TMUX", format!("tmux -L {}", s.sock)) };
     let pane = s.tmux(&["display-message", "-p", "#{pane_id}"]);
     let f = s.dir.join("a.rs");
     std::fs::write(&f, "x\n").unwrap();
@@ -68,10 +64,13 @@ fn the_basket_round_trips_through_a_pane_option() {
     assert_eq!(basket::read(&pane).unwrap().len(), 2);
     assert_eq!(basket::shown(Some(&pane), &one), "a.rs:1", "from the pane's folder");
 
-    // the readonly guard: nothing is written, and the add says so
-    unsafe { std::env::set_var("COCKPIT_READONLY", "1") };
+    // the readonly guard: nothing is written, and the add says so. The token is held from
+    // the set to the remove, and a sibling's handed child waits for it to spawn (#1142)
+    let held = fake::env_lock();
+    unsafe { fake::set_var(&held, "COCKPIT_READONLY", "1") };
     let why = basket::write(&pane, &[]).unwrap_err();
-    unsafe { std::env::remove_var("COCKPIT_READONLY") };
+    unsafe { fake::remove_var(&held, "COCKPIT_READONLY") };
+    drop(held);
     assert!(why.contains("COCKPIT_READONLY"), "{why}");
     assert_eq!(basket::read(&pane).unwrap().len(), 2, "unchanged under readonly");
 
@@ -123,4 +122,29 @@ fn the_basket_round_trips_through_a_pane_option() {
         "",
         "unset when empty"
     );
+}
+
+/// #1061, #1066: this binary's rig row, started again with TERM and HUP ignored and blocked, as a
+/// suite under nohup or with them blocked hands them down: the rig's server, told to
+/// go by a TERM it sends itself, is gone afterwards with its panes.
+#[test]
+#[cfg(target_os = "linux")]
+fn the_rig_rows_leave_no_server_handed_a_blocked_term_and_hup() {
+    let rows = ["the_basket_round_trips_through_a_pane_option"];
+    let pid = fake::rows_pass_handed(&rows, &[libc::SIGTERM, libc::SIGHUP]);
+    fake::assert_no_server_left(pid);
+}
+
+/// #1066: started by hand from a caller's session, `TMUX` kept, the rig's server start
+/// refuses before tmux runs: status 101, the refusal, and nothing in the socket folder the
+/// row hands it, where a server would have put its `tmux-<uid>` folder and socket.
+#[test]
+fn a_rig_started_by_hand_from_a_session_is_refused_before_its_server() {
+    let folder = std::env::temp_dir().join(format!("cockpit-basket-kept-{}", std::process::id()));
+    let folder = fake::Scratch::fresh(folder);
+    let kept = [("TMUX", "/canary-1066/server,1,0"), ("TMUX_TMPDIR", folder.to_str().unwrap())];
+    let (code, said) = fake::run_by_hand("the_basket_round_trips_through_a_pane_option", &kept);
+    let left: Vec<_> = std::fs::read_dir(&folder.0).unwrap().map(|e| e.unwrap().file_name()).collect();
+    let refused = said.contains("tmux refused (#1066): TMUX set. ");
+    assert_eq!((code, refused, left.len()), (Some(101), true, 0), "{left:?} {said}");
 }

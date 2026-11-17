@@ -134,3 +134,20 @@ fn a_tmux_that_does_not_start_reads_none_for_every_tile() {
     let got = board::previews(&["/nonexistent/tmux".to_string()], &caps(&["%1", "%2"]));
     assert_eq!(got, vec![("%1".to_string(), None), ("%2".to_string(), None)]);
 }
+
+/// #1061, #1066: this binary's rig rows, started again with TERM and HUP ignored and blocked, as a
+/// suite under nohup or with them blocked hands them down: the rig's server, told to
+/// go by a TERM it sends itself, is gone afterwards with its panes.
+#[test]
+#[cfg(target_os = "linux")]
+fn the_rig_rows_leave_no_server_handed_a_blocked_term_and_hup() {
+    let rows = [
+        "every_tile_is_one_tmux_call",
+        "the_batch_reads_what_each_capture_alone_reads",
+        "a_pane_gone_mid_batch_reads_none_and_the_rest_go_again",
+        "the_last_pane_gone_costs_no_second_call",
+        "a_mark_in_the_output_falls_back_to_a_call_per_pane",
+    ];
+    let pid = fake::rows_pass_handed(&rows, &[libc::SIGTERM, libc::SIGHUP]);
+    fake::assert_no_server_left(pid);
+}
