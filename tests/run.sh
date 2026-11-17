@@ -4927,6 +4927,40 @@ is "a failed read with no old key to judge leaves @cockpit_notes unset, nothing 
    "$("$TMUX_REAL" -L "$oh_s" show -gqv @cockpit_notes)|$(
       "$TMUX_REAL" -L "$oh_s" show -gqv @cockpit_giveback)"
 "$TMUX_REAL" -L "$oh_s" kill-server >/dev/null 2>&1
+# The read fails with two lines and the panel's own bind is refused in the same load:
+# refused() keeps the record of a key owned() cannot judge, the message quotes tmux's
+# first line, and once the panel key moves the next load gives f back (#1131).
+mkdir -p "$OH/lkbind"
+printf '%s\n' '#!/usr/bin/env bash' 'case " $* " in *" list-keys -T cockpit-legacy-"*)' \
+    '    a=("$@"); for i in "${!a[@]}"; do [ "${a[i]}" = ";" ] && break; done' \
+    "    $(tq "$TMUX_REAL") \"\${a[@]:0:i}\"" \
+    "    printf 'list-keys: first line\\nsecond line\\n' >&2; exit 1 ;;" \
+    '*" -N cockpit: panel "*) echo "bind-key: refused" >&2; exit 1 ;;' \
+    esac "exec $(tq "$TMUX_REAL") \"\$@\"" > "$OH/lkbind/tmux"
+chmod +x "$OH/lkbind/tmux"
+oh_s="cockpit-ohb-$$-lr"; oh_c="cockpit-ohc-$$-lr"; SOCKS="$SOCKS $oh_s $oh_c"
+oh_box blr lkfail; oh_server "$oh_s" "$COCKPIT_TUI_BIN"; oh_attach "$oh_s" "$oh_c"
+"$TMUX_REAL" -L "$oh_s" bind-key f display-popup -E -e COCKPIT_PANEL_MODE=auto -w 94% \
+    -h 90% -T ' panel · #{pane_id} ' "$(tq "$oh_p/scripts/cockpit-panel") -p $oh_src"
+"$TMUX_REAL" -L "$oh_s" set -g @cockpit_panel_bound f
+( cd "$OH/wd" && exec "$TMUX_REAL" -L "$oh_s" run-shell \
+    "PATH=$(tq "$OH/lkbind"):\"\$PATH\" $(tq "$oh_p/cockpit.tmux")" ) >/dev/null 2>&1
+is "a two-line error: the message quotes tmux's first line only" "1" \
+   "$("$TMUX_REAL" -L "$oh_s" show-messages 2>/dev/null | grep -v ' command: ' |
+      grep -cF 'the old panel key (list-keys: first line);')"
+is "a refused panel bind after a failed read keeps @cockpit_panel_bound f, notes unset" "f|" \
+   "$("$TMUX_REAL" -L "$oh_s" show -gqv @cockpit_panel_bound)|$(
+      "$TMUX_REAL" -L "$oh_s" show -gqv @cockpit_notes)"
+"$TMUX_REAL" -L "$oh_s" set -g @cockpit_panel_key g
+( cd "$OH/wd" && exec "$TMUX_REAL" -L "$oh_s" run-shell "$(tq "$oh_p/cockpit.tmux")" ) \
+    >/dev/null 2>&1
+is "and with the panel key moved to g, the next load gives f back to tmux" "$oh_stock|g|1|" \
+   "$("$TMUX_REAL" -L "$oh_s" list-keys -T prefix -F '#{key_command}' f)|$(
+      "$TMUX_REAL" -L "$oh_s" show -gqv @cockpit_panel_bound)|$(
+      "$TMUX_REAL" -L "$oh_s" show -gqv @cockpit_notes)|$(
+      "$TMUX_REAL" -L "$oh_s" show -gqv @cockpit_giveback)"
+"$TMUX_REAL" -L "$oh_c" kill-server >/dev/null 2>&1
+"$TMUX_REAL" -L "$oh_s" kill-server >/dev/null 2>&1
 # The guess is for a key with no note. A note that starts with \037 is a note, though cut
 # at its first \037 it read as empty, and the user's key went back to stock (#1135).
 oh_s="cockpit-ohb-$$-ln"; SOCKS="$SOCKS $oh_s"; oh_box bln plain

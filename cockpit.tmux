@@ -230,9 +230,13 @@ refused() {                   # <name> <tmux's error> -> 1
     # The move loop gave back any key a record named that differs from this value (#1229). A
     # record left here is this very key: the last load bound it, and this load's bind failed
     # for a reason outside the key. It goes back, as off's would, so the message holds. One
-    # that cannot be given back keeps its record, and the next load tries again (#1226).
+    # that cannot be given back keeps its record, and the next load tries again (#1226). So does
+    # a key owned() cannot judge: a panel bind refused in a load whose read failed (#1131).
     p=$(tmux show-option -gqv "@cockpit_${1}_bound")
-    if [ -n "$p" ] && owned "$1" "$p" && ! give_back "$p"; then return 1; fi
+    if [ -n "$p" ]; then
+        owned "$1" "$p"
+        case $? in 0) give_back "$p" || return 1 ;; 2) return 1 ;; esac
+    fi
     tmux set-option -gu "@cockpit_${1}_bound"
     return 1
 }
