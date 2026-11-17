@@ -1,6 +1,7 @@
 //! Explain wired to the what-changed collector (#1000, step 2 of #935): the
-//! list goes with each call of an Explain in a `<changes>` block, the first
-//! answer draws it at its top, and last-seen moves once a frame showed it.
+//! collect starts when the question list opens, no call waits for it, the
+//! request does not carry it, the first answer draws it at its top when it
+//! lands, and last-seen moves once a frame showed it there.
 //! Fixture repos under the temp dir, never the user's; the rig's own `gh` and
 //! `claude`, each started by its full path, so no row reaches a real one.
 mod fake;
@@ -212,12 +213,29 @@ fn answered(a: &mut App, call: &Call) {
     panic!("no answer came");
 }
 
-/// The `<changes>` block of the pending call's prompt.
-fn block(a: &App) -> Option<String> {
-    let (_, prompt, _) = a.request_parts()?;
-    let at = prompt.find("<changes>\n")?;
-    let end = prompt[at..].find("\n</changes>")?;
-    Some(prompt[at + "<changes>\n".len()..at + end].to_string())
+/// Polls the panel as its loop does until the list is drawn: a count, never a clock.
+fn landed(a: &mut App) -> (String, Vec<String>) {
+    for _ in 0..6000 {
+        a.poll();
+        if let Some(s) = a.changes_shown() {
+            return s;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    panic!("the list never landed");
+}
+
+fn hold(r: &Rig) {
+    std::fs::write(r.bin.join("gh.hold"), "").unwrap();
+}
+
+fn release(r: &Rig) {
+    std::fs::remove_file(r.bin.join("gh.hold")).unwrap();
+}
+
+/// What the Answer draws atop the transcript: its heading and its lines.
+fn shown(head: &str, lines: &[String]) -> Option<(String, Vec<String>)> {
+    Some((head.to_string(), lines.to_vec()))
 }
 
 fn frame(a: &App, w: u16, h: u16) -> String {
@@ -239,52 +257,99 @@ fn the_fixed_environment_replaces_values_already_set() {
 }
 
 #[test]
-fn explain_sends_the_list_in_a_changes_block_before_the_conversation() {
-    let r = Rig::new("block");
-    let (two, three) = (commit(&r.repo, "two"), commit(&r.repo, "three"));
+fn the_collect_starts_when_the_question_list_opens() {
+    let r = Rig::new("tile");
+    hold(&r);
     let mut a = r.app();
-    explain(&mut a, '1');
-    settle(&mut a);
-    let want = format!("last looked {SINCE}\n{} three\n{} two", short(&three), short(&two));
-    assert_eq!(block(&a).as_deref(), Some(want.as_str()));
-    let (_, prompt, _) = a.request_parts().unwrap();
-    let at = |t: &str| prompt.find(t).unwrap_or_else(|| panic!("no {t} in {prompt}"));
-    assert!(at("</screen>") < at("<changes>") && at("</changes>") < at("<conversation>"));
+    let i = a.tiles().iter().position(|t| t.0 == Tile::Explain).unwrap();
+    key(&mut a, KeyCode::Char(char::from(b'1' + i as u8)));
+    let started = a.changes.as_ref().unwrap().waiting();
+    release(&r);
+    assert!(matches!(a.view, View::ExplainAsk { .. }), "{:?}", a.view);
+    assert!(started, "no collect under way on the question list");
 }
 
 #[test]
-fn a_call_waits_for_the_list_and_the_loop_keeps_ticking() {
-    let r = Rig::new("wait");
-    let two = commit(&r.repo, "two");
-    let call = r.claude(ANSWERS);
-    std::fs::write(r.bin.join("gh.hold"), "").unwrap();
-    // a short budget: a collect on this thread would end the hold by a timeout
-    let mut a = r.app_with("bash", Duration::from_secs(5));
+fn explain_never_waits_for_the_list() {
+    let r = Rig::new("nowait");
+    commit(&r.repo, "two");
+    hold(&r);
+    let mut a = r.app();
     explain(&mut a, '1');
-    a.launch(&call);
-    let held = (a.req.is_none(), a.pending, a.ticks());
-    std::fs::remove_file(r.bin.join("gh.hold")).unwrap();
-    assert_eq!(held, (true, true, true), "(no call yet, still pending, ticking)");
+    a.launch(&r.claude(ANSWERS));
+    let out = a.req.is_some();
+    release(&r);
+    assert!(out, "the call waited for the list");
+    // both finish before the rig's folder goes
     settle(&mut a);
-    answered(&mut a, &call);
-    let want = format!("<changes>\nlast looked {SINCE}\n{} two\n</changes>", short(&two));
-    assert!(r.sent().contains(&want), "{}", r.sent());
+    for _ in 0..6000 {
+        if a.poll() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    panic!("no answer came");
+}
+
+/// #935 task 4 adds the list to the request with its prompt text; until then
+/// the request is the one an App with no collector sends.
+#[test]
+fn the_request_is_the_same_with_the_list_collected() {
+    let r = Rig::new("bytes");
+    let two = commit(&r.repo, "two");
+    let mut a = r.app();
+    explain(&mut a, '1');
+    let (_, lines) = landed(&mut a);
+    assert_eq!(lines, [format!("{} two", short(&two))]);
+    let (_, prompt, _) = a.request_parts().unwrap();
+    let turns = [Turn {
+        role: Role::User,
+        text: QUICK[0].1.into(),
+    }];
+    // Explain's 6 rounds, none asked yet
+    assert_eq!(prompt, build_refs(&Flow::Explain, &a.cap, &turns, 6, &[]).text);
 }
 
 #[test]
 fn the_list_is_drawn_atop_the_first_answer_opened_at_its_top() {
     let r = Rig::new("drawn");
-    let two = commit(&r.repo, "two");
+    let (two, three) = (commit(&r.repo, "two"), commit(&r.repo, "three"));
     let mut a = r.app();
     explain(&mut a, '1');
     settle(&mut a);
     answered(&mut a, &r.claude(ANSWERS));
     assert_eq!(a.view, View::Answer { scroll: 0, armed: false });
+    let head = format!("what changed since you last looked, {SINCE}");
+    let lines = [format!("{} three", short(&three)), format!("{} two", short(&two))];
+    assert_eq!(a.changes_shown(), shown(&head, &lines));
     let f = frame(&a, 80, 20);
     let at = |t: &str| f.find(t).unwrap_or_else(|| panic!("no {t:?} in\n{f}"));
-    let head = at(&format!("what changed since you last looked, {SINCE}"));
-    assert!(head < at(&format!("{} two", short(&two))));
-    assert!(at(&format!("{} two", short(&two))) < at(&format!("you: {}", QUICK[0].0)));
+    assert!(at(&head) < at(&lines[1]) && at(&lines[1]) < at(&format!("you: {}", QUICK[0].0)));
+}
+
+/// The answer lands first; the list lands while the user reads it.
+#[test]
+fn a_list_landing_after_the_answer_is_drawn_atop_it_and_marked_then() {
+    let r = Rig::new("late");
+    let two = commit(&r.repo, "two");
+    hold(&r);
+    let mut a = r.app();
+    explain(&mut a, '1');
+    answered(&mut a, &r.claude(ANSWERS));
+    let open = (a.view.clone(), a.changes_shown(), a.ticks());
+    a.frame(1);
+    let before = r.read();
+    release(&r);
+    assert_eq!(open, (View::Answer { scroll: 0, armed: false }, None, true));
+    let old = Seen {
+        head: r.first.clone(),
+        at: T0,
+    };
+    assert_eq!(before, Some(old), "marked before the list was drawn");
+    let (head, _) = landed(&mut a);
+    assert!(frame(&a, 80, 20).contains(&head));
+    a.frame(2);
+    assert_eq!(r.read(), Some(Seen { head: two, at: T1 }));
 }
 
 #[test]
@@ -333,19 +398,18 @@ fn a_failed_or_cancelled_explain_leaves_last_seen_as_it_was() {
 #[test]
 fn a_second_question_reuses_the_unseen_list() {
     let r = Rig::new("reuse");
-    commit(&r.repo, "two");
+    let two = commit(&r.repo, "two");
     let mut a = r.app();
     explain(&mut a, '1');
     settle(&mut a);
-    let first = block(&a);
     key(&mut a, KeyCode::Esc);
     assert!(matches!(a.view, View::ExplainAsk { .. }), "{:?}", a.view);
     // a commit made since: a second collect would list it
     commit(&r.repo, "three");
     key(&mut a, KeyCode::Char('2'));
     settle(&mut a);
-    assert!(first.is_some());
-    assert_eq!(block(&a), first);
+    let (_, lines) = a.changes_shown().expect("the list");
+    assert_eq!(lines, [format!("{} two", short(&two))]);
 }
 
 #[test]
@@ -363,9 +427,9 @@ fn an_explain_after_the_list_was_seen_lists_from_the_new_last_seen() {
     let three = commit(&r.repo, "three");
     explain(&mut a, '1');
     settle(&mut a);
-    let floor = "GitHub: checked under 60 s ago, again in 60 s";
-    let want = format!("last looked 2025-11-13T02:15:00Z\n{} three\n{floor}", short(&three));
-    assert_eq!(block(&a).as_deref(), Some(want.as_str()));
+    let head = "what changed since you last looked, 2025-11-13T02:15:00Z";
+    let floor = "GitHub: checked under 60 s ago, again in 60 s".to_string();
+    assert_eq!(a.changes_shown(), shown(head, &[format!("{} three", short(&three)), floor]));
 }
 
 /// What a mark of a list carries: rows named, `at` = [`T1`], an old record at [`T0`].
@@ -415,13 +479,13 @@ fn a_pane_on_another_machine_collects_nothing() {
     let r = Rig::new("ssh");
     commit(&r.repo, "two");
     // a collect started would hold in gh, so the row cannot pass by a race
-    std::fs::write(r.bin.join("gh.hold"), "").unwrap();
+    hold(&r);
     let mut a = r.app_with("ssh", Duration::from_secs(5));
     explain(&mut a, '1');
     let waiting = a.changes.as_ref().unwrap().waiting();
-    std::fs::remove_file(r.bin.join("gh.hold")).unwrap();
+    release(&r);
     assert!(!waiting, "a collect started");
-    assert_eq!((block(&a), r.starts()), (None, 0));
+    assert_eq!((a.changes_shown(), r.starts()), (None, 0));
 }
 
 /// After `git checkout HEAD~1` the old tip is still held by its branch: no
@@ -434,27 +498,7 @@ fn the_head_moved_back_lists_nothing_new() {
     let mut a = r.app();
     explain(&mut a, '1');
     settle(&mut a);
-    let detached = "GitHub: HEAD is detached, CI left out";
-    let want = format!("last looked {SINCE}\nnothing new listed\n{detached}");
-    assert_eq!(block(&a).as_deref(), Some(want.as_str()));
-    answered(&mut a, &r.claude(ANSWERS));
-    let f = frame(&a, 80, 20);
-    assert!(f.contains(&format!("nothing new listed since you last looked, {SINCE}")), "{f}");
-    assert!(f.contains(detached), "{f}");
-}
-
-#[test]
-fn an_app_with_no_collector_sends_explain_as_before() {
-    let r = Rig::new("none");
-    commit(&r.repo, "two");
-    let mut a = r.app();
-    a.changes = None;
-    explain(&mut a, '1');
-    let (_, prompt, _) = a.request_parts().unwrap();
-    let turns = [Turn {
-        role: Role::User,
-        text: QUICK[0].1.into(),
-    }];
-    // Explain's 6 rounds, none asked yet
-    assert_eq!(prompt, build_refs(&Flow::Explain, &a.cap, &turns, 6, &[]).text);
+    let head = format!("nothing new listed since you last looked, {SINCE}");
+    let detached = ["GitHub: HEAD is detached, CI left out".to_string()];
+    assert_eq!(a.changes_shown(), shown(&head, &detached));
 }

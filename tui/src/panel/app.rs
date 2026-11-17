@@ -2,8 +2,7 @@
 //! terminal here, so every transition is a unit test away.
 use super::action::{Hidden, hide_body, sanitize, state_body};
 use super::capture::{Capture, REPO_BUDGET, SSH_LIKE, Session, is_local, session_state, toplevel, window_kind};
-use super::envelope::{Envelope, Flow, OutType, RefItem, Role, Turn, redact_screen, ref_items};
-use super::envelope::{Extra, build_with};
+use super::envelope::{Envelope, Flow, OutType, RefItem, Role, Turn, build_refs, redact_screen, ref_items};
 use super::look::Looks;
 use super::parse::{self, Opt, Query, Reply, Step};
 use super::prompts::{self, Ctx};
@@ -346,7 +345,7 @@ pub struct App {
     first_guard: u64,
     guard: u64,
     /// What changed since the user last looked (#1000, #935): Explain's list,
-    /// from the collector the panel holds for its life. `None` sends no list:
+    /// from the collector the panel holds for its life. `None` collects nothing:
     /// [`App::new`] installs none, the panel's `main` does.
     pub changes: Option<Looks>,
 }
@@ -574,10 +573,10 @@ impl App {
             self.guard = if self.seen.is_none() { self.first_guard } else { TAP_GUARD_MS };
             (self.seen, self.seen_at) = (seen, now);
         }
-        // the list is the body's first rows: a frame at the top has shown it
-        let explain = self.run.as_ref().is_some_and(|r| r.flow == Flow::Explain);
-        if explain
-            && matches!(self.view, View::Answer { scroll: 0, .. })
+        // the list is the body's first rows: a frame at the top with it drawn has shown it
+        let top = matches!(self.view, View::Answer { scroll: 0, .. });
+        if top
+            && self.changes_shown().is_some()
             && let Some(Err(e)) = self.changes.as_mut().and_then(Looks::drawn)
         {
             eprintln!("cockpit-tui: what changed: last seen not saved: {e}");
@@ -585,15 +584,11 @@ impl App {
     }
 
     /// The event loop wakes every 100 ms rather than wait for a key: a call is
-    /// out, or one waits for Explain's list (#1000).
+    /// out, or an Explain's list is still being collected, so it is drawn when it
+    /// lands even while the user reads the answer and presses nothing (#1000).
     pub fn ticks(&self) -> bool {
-        self.req.is_some() || self.waits_for_changes()
-    }
-
-    /// An Explain call held until its list is collected (#1000).
-    pub fn waits_for_changes(&self) -> bool {
         let explain = self.run.as_ref().is_some_and(|r| r.flow == Flow::Explain);
-        explain && self.pending && self.changes.as_ref().is_some_and(Looks::waiting)
+        self.req.is_some() || (explain && self.changes.as_ref().is_some_and(Looks::waiting))
     }
 
     /// Starts collecting what changed for Explain, in a pane whose folder is
@@ -1230,15 +1225,7 @@ impl App {
 
     fn envelope(&self, r: &Run) -> Envelope {
         let refs = self.write_refs(&r.flow);
-        let changes = match r.flow {
-            Flow::Explain => self.changes.as_ref().and_then(Looks::body),
-            _ => None,
-        };
-        let x = Extra {
-            refs: &refs,
-            changes: changes.as_deref(),
-        };
-        build_with(&r.flow, &self.cap, &r.turns, r.max.saturating_sub(r.rounds), x)
+        build_refs(&r.flow, &self.cap, &r.turns, r.max.saturating_sub(r.rounds), &refs)
     }
 
     /// The basket's refs as a Write names them (#365 child 5): as the pane's
@@ -1321,27 +1308,12 @@ impl App {
 
     /// Forks the pending call, if there is one.
     pub fn launch(&mut self, call: &Call) {
-        let explain = self.run.as_ref().is_some_and(|r| r.flow == Flow::Explain);
-        let looks = self.changes.as_mut().filter(|_| explain && self.pending);
-        if let Some(l) = looks {
-            l.poll();
-            // the list is collected off this thread: the call holds, the loop ticks
-            if l.waiting() {
-                return;
-            }
-            if l.late() {
-                self.say(Level::Warn, "what changed took too long; sent without it");
-            }
-        }
         if !std::mem::take(&mut self.pending) {
             return;
         }
         if let Some(((system, prompt, model), note, _)) = self.request_noted() {
             if let Some(n) = note {
                 self.say(Level::Warn, n);
-            }
-            if explain && let Some(l) = self.changes.as_mut() {
-                l.sent();
             }
             let p = self.run.as_ref().map_or(Profile::TEXT, |r| self.profile_for(&r.flow));
             self.timeout = p.timeout.unwrap_or(call.timeout);
@@ -1367,6 +1339,10 @@ impl App {
 
     /// Takes a finished call's answer, if one has arrived.
     pub fn poll(&mut self) -> bool {
+        // Explain's list, collected on its own thread (#1000): taken before the frame draws
+        if let Some(l) = self.changes.as_mut() {
+            l.poll();
+        }
         let Some(a) = self.req.as_mut().and_then(Request::poll) else {
             return false;
         };
@@ -1606,9 +1582,11 @@ impl App {
                 r.ready = ready;
             }
         }
-        // the list that went with this Explain is the body's top: open there (#1000)
-        let unseen = self.changes.as_ref().is_some_and(Looks::unseen);
-        let top = unseen && self.changes_shown().is_some();
+        // the first answer of an Explain whose list is not yet seen opens at its top,
+        // where the list is drawn, now or once it lands (#1000)
+        let explain = self.run.as_ref().filter(|r| r.flow == Flow::Explain);
+        let first = explain.is_some_and(|r| r.log.iter().filter(|l| !l.0).count() == 1);
+        let top = first && self.changes.as_ref().is_some_and(Looks::unseen);
         self.view = View::Answer {
             scroll: if top { 0 } else { usize::MAX },
             armed: false,

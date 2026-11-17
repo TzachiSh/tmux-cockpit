@@ -1,7 +1,8 @@
 //! Explain's what-changed list (#1000, step 2 of #935). The collect runs on a
-//! thread of its own once the user heads for Explain. Each call of that Explain
-//! sends the list, and the first answer draws it at its top. It is marked seen
-//! once a frame showed it.
+//! thread of its own once the user heads for Explain, and the panel draws the
+//! list atop that Explain's first answer when it lands. No call waits for it,
+//! and the request does not carry it: #935 task 4 adds it with its prompt
+//! text. It is marked seen once a frame showed it.
 //!
 //! The panel holds one [`Collector`] for its life, so the 60 s floor and the
 //! searches a minute are this process's: a new panel starts with none spent.
@@ -12,13 +13,13 @@ use std::sync::mpsc::{Receiver, TryRecvError, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// A call waits this long past the collector's own two budgets.
+/// How long past the collector's own two budgets its thread may still answer.
 pub const SLACK: Duration = Duration::from_secs(1);
 
 /// The panel's collector and the list of the Explain under way.
 pub struct Looks {
     collector: Arc<Mutex<Collector>>,
-    /// The collector's git and gh budgets and [`SLACK`]: a call's longest wait.
+    /// The collector's git and gh budgets and [`SLACK`]: a collect's longest time.
     wait: Duration,
     store: PathBuf,
     cur: Option<Look>,
@@ -29,8 +30,6 @@ struct Look {
     until: Instant,
     /// The list, and the collector's time when the collect started.
     got: Option<(Changes, u64)>,
-    /// It went with a call, so that Explain's answer draws it.
-    sent: bool,
     /// An answer drew it: the next Explain collects again.
     done: bool,
 }
@@ -47,9 +46,11 @@ impl Looks {
 
     /// Starts a collect for the repo `dir` is in, unless one is under way or
     /// its list is not yet seen: a cancelled or failed Explain keeps its list.
+    /// A thread that ended with no list is started again.
     pub fn ahead(&mut self, dir: &str) {
         self.poll();
-        if self.cur.as_ref().is_some_and(|l| !l.done) {
+        let gone = |l: &Look| l.rx.is_none() && l.got.is_none();
+        if self.cur.as_ref().is_some_and(|l| !l.done && !gone(l)) {
             return;
         }
         let (tx, rx) = channel();
@@ -63,7 +64,6 @@ impl Looks {
             rx: Some(rx),
             until: Instant::now() + self.wait,
             got: None,
-            sent: false,
             done: false,
         });
     }
@@ -79,44 +79,20 @@ impl Looks {
         }
     }
 
-    /// A collect is under way and inside its wait: a call holds for it.
+    /// A collect is under way, inside the collector's budgets: the loop ticks
+    /// so the list is drawn when it lands.
     pub fn waiting(&self) -> bool {
         self.cur.as_ref().is_some_and(|l| l.rx.is_some() && Instant::now() < l.until)
     }
 
-    /// A collect was started and its wait ran out with no list.
-    pub fn late(&self) -> bool {
-        self.cur.as_ref().is_some_and(|l| l.got.is_none() && !self.waiting())
-    }
-
-    /// The `<changes>` body a call sends, once the list is in.
-    pub fn body(&self) -> Option<String> {
-        let (c, _) = self.cur.as_ref()?.got.as_ref()?;
-        let since = match &c.seen {
-            Some(s) => format!("last looked {}", utc(s.at)),
-            None => "last looked never; the newest commits".to_string(),
-        };
-        let none = c.items.is_empty().then(|| "nothing new listed".to_string());
-        let lines: Vec<String> = [since].into_iter().chain(none).chain(c.lines()).collect();
-        Some(lines.join("\n"))
-    }
-
-    /// The list went with a call.
-    pub fn sent(&mut self) {
-        if let Some(l) = self.cur.as_mut().filter(|l| l.got.is_some()) {
-            l.sent = true;
-        }
-    }
-
-    /// A list that went with a call and no answer has drawn yet.
+    /// A collect started, or its list in, that no answer has drawn yet.
     pub fn unseen(&self) -> bool {
-        self.cur.as_ref().is_some_and(|l| l.sent && !l.done)
+        self.cur.as_ref().is_some_and(|l| !l.done)
     }
 
-    /// The heading and the lines the Answer draws: only a list that went with a call.
+    /// The heading and the lines the Answer draws, once the list is in.
     pub fn shown(&self) -> Option<(String, Vec<String>)> {
-        let l = self.cur.as_ref().filter(|l| l.sent)?;
-        let (c, _) = l.got.as_ref()?;
+        let (c, _) = self.cur.as_ref()?.got.as_ref()?;
         let head = match (&c.seen, c.items.is_empty()) {
             (Some(s), false) => format!("what changed since you last looked, {}", utc(s.at)),
             (Some(s), true) => format!("nothing new listed since you last looked, {}", utc(s.at)),
@@ -129,7 +105,7 @@ impl Looks {
     /// An answer drew the list: the record [`mark_at`] allows is written,
     /// once. `None` when nothing was to be written.
     pub fn drawn(&mut self) -> Option<std::io::Result<()>> {
-        let l = self.cur.as_mut().filter(|l| l.sent && !l.done)?;
+        let l = self.cur.as_mut().filter(|l| l.got.is_some() && !l.done)?;
         l.done = true;
         let (c, at) = l.got.as_ref()?;
         let at = mark_at(c, *at)?;

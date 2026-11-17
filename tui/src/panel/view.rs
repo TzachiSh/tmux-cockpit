@@ -639,10 +639,6 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
                 Style::new().fg(th.running),
             ));
             b.lines.push(plain(""));
-            if app.waits_for_changes() {
-                let what = "collecting what changed since you last looked";
-                b.lines.extend(many(what, w, "", meta));
-            }
             // split as the envelope counted it (#964): a write's path is the screen's (#937),
             // and only a write sends the repo block. An Ask sends its code, never the
             // screen (#965): the envelope counts the code's keys where a write's block goes.
@@ -1472,8 +1468,8 @@ pub fn run(app: &mut App) {
                 let _ = event::read();
             }
         }
-        // Ticking only while a call is out or waits for Explain's list (#1000), so
-        // an idle panel costs no wakeups.
+        // Ticking only while a call is out or Explain's list is being collected
+        // (#1000), so an idle panel costs no wakeups.
         let ev = if app.ticks() {
             match event::poll(Duration::from_millis(100)) {
                 Ok(true) => event::read().map(Some),

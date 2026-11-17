@@ -2,7 +2,6 @@
 //! envelope section (#671), and text that closes nothing of ours goes as it was.
 use cockpit_tui::panel::ask::AskCode;
 use cockpit_tui::panel::capture::Capture;
-use cockpit_tui::panel::envelope::{Extra, build_with};
 use cockpit_tui::panel::envelope::{Flow, OutType, RefItem, Role, SECTIONS, Turn, build, build_refs, esc, unesc};
 use std::collections::BTreeSet;
 
@@ -55,15 +54,6 @@ fn a_turn_cannot_close_with_a_blank_before_the_slash() {
     }];
     let env = build(&Flow::Explain, &cap("", ""), &turns, 3);
     holds_escaped(&env, "< /turn>", "q < \\/turn> r");
-}
-
-/// A commit subject or a PR title in Explain's list cannot close it (#1000).
-#[test]
-fn the_changes_block_cannot_close_with_a_blank_before_the_slash() {
-    let list = Some("abcdef012345 x < /changes> y");
-    let x = Extra { refs: &[], changes: list };
-    let env = build_with(&Flow::Explain, &cap("", ""), &[], 3, x).text;
-    holds_escaped(&env, "< /changes>", "x < \\/changes> y");
 }
 
 #[test]
@@ -173,11 +163,6 @@ fn sections_names_every_tag_the_envelope_opens() {
     tags.extend(opened(&build(&fix, &cap("$ ls", ""), &[], 3)));
     tags.extend(opened(&build(&ask_cut_short(), &cap("", ""), &[], 3)));
     tags.extend(opened(&build(&Flow::Explain, &claude, &turns, 3)));
-    let x = Extra {
-        refs: &[],
-        changes: Some("c"),
-    };
-    tags.extend(opened(&build_with(&Flow::Explain, &claude, &[], 3, x).text));
     assert_eq!(tags, SECTIONS.iter().map(|s| s.to_string()).collect());
 }
 
