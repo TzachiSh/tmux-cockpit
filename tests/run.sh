@@ -20857,23 +20857,42 @@ sed 's|^PATH="\$SHIM:\$SUITE_CLAUDE:|PATH="$SHIM:|' "$DIR/tests/run.sh" > "$FD/s
 sed '/^PANE=\$(tmux list-panes -a/a PANE=""' "$DIR/tests/run.sh" > "$FD/srv.sh"
 is "both FATAL mutants differ from the script" "1 1" \
    "$(cmp -s "$FD/stub.sh" "$DIR/tests/run.sh"; echo $?) $(cmp -s "$FD/srv.sh" "$DIR/tests/run.sh"; echo $?)"
+# The nested run's tail refuses --pid, so its pane is the four-hour sleep. With the pane
+# watching the run's pid, a server the cleanup never reached ended about a second after the
+# run, inside listeners_in's polls, and the listener field read 0 (#1228).
+mkdir -p "$FD/notail"
+printf '#!/bin/sh\ncase " $* " in *" --pid="*) exit 1 ;; esac\nexec %s "$@"\n' \
+    "$(tq "$(command -v tail)")" > "$FD/notail/tail"; chmod +x "$FD/notail/tail"
 for fx in stub srv; do
     # The nested socket is $FD/s/tmux-<uid>/cockpit-suite-<pid>: past 107 bytes no server binds,
     # and the srv row would pass with none to clean up.
     if [ "$fx" = srv ] && sock_long "$FD/s"; then
         skip_ "a prelude FATAL (srv) (TMPDIR too long for the nested socket path)"; continue
     fi
-    nest_run '^syntax' ONLY_RUN="$FD/$fx.sh" TMPDIR="$FD/t" TMUX_TMPDIR="$FD/s"
+    nest_run '^syntax' ONLY_RUN="$FD/$fx.sh" TMPDIR="$FD/t" TMUX_TMPDIR="$FD/s" \
+        PATH="$FD/notail:$PATH"
     is "a prelude FATAL ($fx) exits 1 and leaves no dir, socket or listening server behind" \
        "1|FATAL|||0" \
        "$NEST_RC|$(printf '%s' "$NEST_OUT" | grep -o FATAL | head -1)|$(ls -A "$FD/t")|$(
         ls -A "$FD"/s/tmux-* 2>/dev/null)|$(
         if [ -r /proc/net/unix ]; then listeners_in "$FD/s"; else echo 0; fi)"
-    # Whatever a red run left: ended by its own socket, then removed.
+    # Whatever a red run left: ended by its own socket, then removed. A server whose socket
+    # file the cleanup removed has none to be reached by: only a tmux server, started as a
+    # suite's, whose TMUX_TMPDIR is ours, ended by TERM.
     sock_sweep "$FD/s"
+    for p in /proc/[0-9]*; do
+        c=""; read -r c 2>/dev/null < "$p/comm"
+        [ "$c" = "tmux: server" ] || continue
+        case $(tr '\0' ' ' 2>/dev/null < "$p/cmdline") in
+            *" -L cockpit-suite-"*) ;;
+            *) continue ;;
+        esac
+        tr '\0' '\n' 2>/dev/null < "$p/environ" | grep -qxF "TMUX_TMPDIR=$FD/s" \
+            && kill -TERM "${p#/proc/}"
+    done
     rm -rf "${FD:?}/t/"* "${FD:?}/s/"*
 done
-unset FD fx NEST_RC NEST_OUT NEST_PASS NEST_FAIL
+unset FD fx p c NEST_RC NEST_OUT NEST_PASS NEST_FAIL
 
 # For the #900 and #1107 blocks, which end prelude copies by signals; unset after #1107's.
 # sig_dfl, its pair, is in the prelude.
@@ -23991,16 +24010,19 @@ echo "== a TMPDIR holding a \$, a \` and a ' leaves no suite server behind (#849
 # The ` and ' are there too: a guard that escaped only $ passed with a $ alone. The nested run
 # reads the live tests/run.sh, not a par.sh snapshot, and inherits this suite's PATH shim, so
 # its server's cmdline carries two -L names; tmux takes the last, its own.
-# First listeners_in, the read the listener rows take, with grep standing in for the table
-# (#1228): a server one read counts and the next does not, as one on its way out after
-# kill-server, and one every read counts, as one the cleanup never reached.
-LI=$(mktmpd)
-is "listeners_in: a listener one read counts and the next does not reads 0" "0" "$(
-    grep() { local n; read -r n < "$LI/n"; echo $((n + 1)) > "$LI/n"
-             [ "$n" -gt 0 ] && echo 0 || echo 1; }
-    echo 0 > "$LI/n"; listeners_in "$LI/s")"
+# First listeners_in, the read the listener rows take, with a grep on PATH standing in for the
+# table (#1228): a server two reads count and later ones do not, as one on its way out after
+# kill-server, and one every read counts, as one the cleanup never reached. Two, not one: a
+# read that skipped the first count and then read once would pass with one. Scripts, not shell
+# functions: a function named grep reads to shellcheck as one handed to a later xargs.
+LI=$(mktmpd); mkdir -p "$LI/count" "$LI/one"; echo 0 > "$LI/n"
+printf '#!/bin/sh\nread -r n < %s\necho $((n + 1)) > %s\n[ "$n" -gt 1 ] && echo 0 || echo 1\n' \
+    "$(tq "$LI/n")" "$(tq "$LI/n")" > "$LI/count/grep"
+printf '#!/bin/sh\necho 1\n' > "$LI/one/grep"; chmod +x "$LI/count/grep" "$LI/one/grep"
+is "listeners_in: a listener two reads count and later ones do not reads 0" "0" \
+   "$(PATH="$LI/count:$PATH" listeners_in "$LI/s")"
 is "listeners_in: a listener every read counts reads 1" "1" \
-   "$(grep() { echo 1; }; POLLS=2 listeners_in "$LI/s")"
+   "$(PATH="$LI/one:$PATH" POLLS=2 listeners_in "$LI/s")"
 is "listeners_in with no folder is a bad row, and reads nothing" "listeners_in takes one folder|" \
    "$(bad() { printf '%s|' "$1"; }; listeners_in)"
 unset LI
