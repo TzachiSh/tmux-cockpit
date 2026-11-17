@@ -10962,8 +10962,9 @@ echo "== tests/freeze-rig/gate.sh: no signal leaves its server; it signals only 
 # as the gate is, on a 1-pane server (S, W and P of 1) and an empty formats file: no bar, no
 # agent-state. gt-hold is a read on a fifo the row writes to. gate-run.sh holds once its client
 # is started and exits 5 after, so a run that went past the hold reads 5; gate-end.sh holds in
-# its exit trap too, right before the kill-server; gate-pid.sh's CLIENT_PID is a process of the
-# row's, a pid handed out again. Each row's decoy, a process of its own whose argv holds
+# its exit trap too, right before the kill-server; gate-sig.sh holds as that trap's first line,
+# before its ignore, where only gate_sig's ignore stands; gate-pid.sh's CLIENT_PID is a process
+# of the row's, a pid handed out again. Each row's decoy, a process of its own whose argv holds
 # "tmux -L <the copy's socket>0", must outlive the run, as must the CLIENT_PID stand-in. A row
 # signals a copy only once /proc names it, and says so in place of a status when it does not
 # (#1208). Servers are on the suite's socket folder, each name in SOCKS.
@@ -10977,6 +10978,7 @@ sed '/^disown /a gt-hold run "$CLIENT_PID" "$LOGDIR"; exit 5' "$DIR/tests/freeze
     > "$GT/c/gate-run.sh"
 sed '/^    tmux -L "\$SOCK" kill-server/i gt-hold in "" "$LOGDIR"' "$GT/c/gate-run.sh" \
     > "$GT/c/gate-end.sh"
+sed '/^gate_clean() {$/a gt-hold in "" "$LOGDIR"' "$GT/c/gate-run.sh" > "$GT/c/gate-sig.sh"
 sed 's/^CLIENT_PID=\$!$/&; CLIENT_PID=$GT_PID/' "$GT/c/gate-run.sh" > "$GT/c/gate-pid.sh"
 gt_up() {      # <pid> <comm> -> up when that pid runs under that name, else -
     local c=""
@@ -10984,7 +10986,7 @@ gt_up() {      # <pid> <comm> -> up when that pid runs under that name, else -
     if [ -n "$1" ] && [ "$c" = "$2" ]; then echo up; else echo -; fi
 }
 gt_run() {     # <copy> <conf> <signal to it alone at its run hold|-> [2nd, to its group in its
-    # exit trap] -> gt_out: status|TMPDIR|socket|server|client|decoys, the last four as gt_up's
+    # exit trap] -> gt_out: status|TMPDIR|server|socket|client|decoys, the last four as gt_up's
     local s=$1 c="" a="" k=run g rc sp="" cp="" d0 d1 dfl=()
     [ "$2" = "$GT/f.conf" ] || k=in    # a conf it cannot source ends it before its client
     rm -rf "${GT:?}/t" "${GT:?}/h"; mkdir -p "$GT/t" "$GT/h"
@@ -11044,8 +11046,8 @@ elif [ ! -r "/proc/$$/comm" ]; then skip_ "$gt_sk (no /proc)"
 elif ! sig_dfl HUP && [ "$(trap -p HUP)" = "trap -- '' SIGHUP" ]; then
     skip_ "$gt_sk (SIGHUP is ignored and env cannot reset it)"
 else
-    is "each copy holds or swaps where it should" "1 2 1" "$( {
-        for c in run end; do grep -c '^ *gt-hold ' "$GT/c/gate-$c.sh"; done
+    is "each copy holds or swaps where it should" "1 2 2 1" "$( {
+        for c in run end sig; do grep -c '^ *gt-hold ' "$GT/c/gate-$c.sh"; done
         grep -c 'CLIENT_PID=\$GT_PID' "$GT/c/gate-pid.sh"; } | tr '\n' ' ' | sed 's/ $//')"
     gt_run gate-run.sh "$GT/f.conf" TERM
     is "a TERM to it alone ends its server, client and LOGDIR, and no decoy" "143||-|-|-|up up" \
@@ -11059,6 +11061,9 @@ else
         is "nor a TERM to its group in its exit trap after an INT" "130||-|-|-|up up" "$gt_out"
         gt_run gate-end.sh "$GT/f.conf" INT INT
         is "nor an INT to its group in its exit trap after an INT" "130||-|-|-|up up" "$gt_out"
+        gt_run gate-sig.sh "$GT/f.conf" INT INT
+        is "nor an INT to its group as its exit trap starts, after an INT" "130||-|-|-|up up" \
+           "$gt_out"
         gt_run gate-end.sh "$GT/none.conf" - INT
         is "an INT to its group in the exit trap of a run that ended 2 leaves nothing" \
            "2||-|-|-|up up" "$gt_out"
@@ -11068,6 +11073,9 @@ else
        "$gt_out"
     gt_run gate-end.sh "$GT/f.conf" TERM TERM
     is "nor a TERM after a TERM" "143||-|-|-|up up" "$gt_out"
+    gt_run gate-sig.sh "$GT/f.conf" TERM TERM
+    is "a TERM to its group as its exit trap starts, after a TERM, leaves nothing" \
+       "143||-|-|-|up up" "$gt_out"
     gt_run gate-end.sh "$GT/none.conf" - HUP
     is "a HUP to its group in the exit trap of a run that ended 2 leaves nothing" \
        "2||-|-|-|up up" "$gt_out"
