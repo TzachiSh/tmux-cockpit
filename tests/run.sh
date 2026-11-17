@@ -5248,10 +5248,11 @@ done 3<<'RFMOVE'
 info i
 reload R
 RFMOVE
-# A refused value whose first word is the key the name holds: the move loop splits the value
-# on its space and reads that word as the name's own key, so it gives nothing back, and a
-# cleared record then left the key cockpit's for good, past any later move. refused() gives
-# it back, as off would (#1226 review). <name>|<default>|<refused, as tmux.conf spells it>|
+# A refused value holding a space, whose words a move loop that split it read as keys: a first
+# word the name holds ('i x') gave nothing back, and a word naming the name and that key
+# ('q info:i') matched it as bound again. A cleared record then left the key cockpit's for
+# good, past any later move (#1226 review, #1229). The loop keeps the value whole and gives the
+# key back, as off would. <name>|<default>|<refused, as tmux.conf spells it>|
 # <a plain key moved to after it>, on fd 3: a | between fields, since a refused value holds a
 # space that a plain read would split.
 while IFS='|' read -r rf_n rf_d rf_c rf_p <&3; do
@@ -5274,9 +5275,11 @@ while IFS='|' read -r rf_n rf_d rf_c rf_p <&3; do
 done 3<<'RFSPLIT'
 info|i|'i x'|y
 menu|a|'a b'|z
+info|i|'q info:i'|y
+menu|a|'b menu:a'|z
 RFSPLIT
-# The same split when tmux's own binding cannot be read: refused() keeps the record, so the
-# next load gives the key back. The shim fails that read, in the shape of the #290 one (#1232).
+# The same split when tmux's own binding cannot be read: the key waits in @cockpit_giveback,
+# so the next load gives it back. The shim fails that read, in the shape of the #290 one (#1232).
 mkdir -p "$RF/gbfail"
 printf '%s\n' '#!/usr/bin/env bash' \
     'case " $* " in *" start-server "*) echo "no answer" >&2; exit 1 ;; esac' \
@@ -5287,8 +5290,8 @@ if fresh_server -L "$rf_s" -f /dev/null -- -d -s t -x 120 -y 30 -c "$RF"; then
     rf_w="@cockpit_info_key moved to 'i x', tmux's own i unreadable"
     if reload_on "$rf_s" && rf_conf "$rf_s" info "'i x'" &&
        reload_on "$rf_s" "PATH=$(tq "$RF/gbfail"):\"\$PATH\" $(tq "$DIR/cockpit.tmux")"; then
-        is "$rf_w: @cockpit_info_bound still records i" i \
-           "$(rf_get show -gqv @cockpit_info_bound)"
+        is "$rf_w: info:i waits in @cockpit_giveback" info:i \
+           "$(rf_get show -gqv @cockpit_giveback)"
         is "$rf_w: i still carries the note cockpit: info" "cockpit: info" \
            "$(rf_get list-keys -T prefix -F '#{key_note}' i)"
     fi
@@ -5299,8 +5302,38 @@ if fresh_server -L "$rf_s" -f /dev/null -- -d -s t -x 120 -y 30 -c "$RF"; then
            "$(rf_get show -gqv @cockpit_info_bound)"
     fi
 fi
+# A key holding a space waits whole: the list puts each entry after a newline then, since a
+# space-joined list would split ' ' off its name (#1229).
+if fresh_server -L "$rf_s" -f /dev/null -- -d -s t -x 120 -y 30 -c "$RF"; then
+    "$TMUX_REAL" -L "$rf_s" -f /dev/null set -g @cockpit_bg_poll off >/dev/null 2>&1
+    rf_w="@cockpit_info_key moved off ' ' to y, tmux's own Space unreadable"
+    if reload_on "$rf_s" && rf_conf "$rf_s" info "' '" && reload_on "$rf_s" &&
+       rf_conf "$rf_s" info y &&
+       reload_on "$rf_s" "PATH=$(tq "$RF/gbfail"):\"\$PATH\" $(tq "$DIR/cockpit.tmux")"; then
+        is "$rf_w: info:<space> waits after a newline in @cockpit_giveback" $'\ninfo: ' \
+           "$(rf_get show -gqv @cockpit_giveback)"
+    fi
+    reload_on "$rf_s" &&
+        is "$rf_w: the next load gives Space back: Space is tmux's own" \
+           "$(rf_stock Space)" "$(rf_get list-keys -T prefix -F '#{key_command}' Space)"
+fi
+# The key the last load bound, its bind failing this load for a reason outside the key: the
+# record still names it, so refused() gives it back, as its message says (#1242). The shim
+# fails that one bind-key.
+mkdir -p "$RF/bindfail"
+printf '%s\n' '#!/usr/bin/env bash' \
+    'case " $* " in *" bind-key -N cockpit: info i "*) echo "bind failed" >&2; exit 1 ;; esac' \
+    "exec $(tq "$TMUX_REAL") \"\$@\"" > "$RF/bindfail/tmux"
+chmod +x "$RF/bindfail/tmux"
+if fresh_server -L "$rf_s" -f /dev/null -- -d -s t -x 120 -y 30 -c "$RF"; then
+    "$TMUX_REAL" -L "$rf_s" -f /dev/null set -g @cockpit_bg_poll off >/dev/null 2>&1
+    reload_on "$rf_s" &&
+        reload_on "$rf_s" "PATH=$(tq "$RF/bindfail"):\"\$PATH\" $(tq "$DIR/cockpit.tmux")" &&
+        is "@cockpit_info_key i, its bind failing for a reason outside the key: i is tmux's own" \
+           "$(rf_stock i)" "$(rf_get list-keys -T prefix -F '#{key_command}' i)"
+fi
 # The same split onto a key the user bound since, with no note: owned() reads it as the
-# user's, so refused() gives nothing back and the user's binding stays as it was.
+# user's, so the load gives nothing back and the user's binding stays as it was.
 if fresh_server -L "$rf_s" -f /dev/null -- -d -s t -x 120 -y 30 -c "$RF"; then
     "$TMUX_REAL" -L "$rf_s" -f /dev/null set -g @cockpit_bg_poll off >/dev/null 2>&1
     if reload_on "$rf_s"; then
@@ -5318,6 +5351,41 @@ if fresh_server -L "$rf_s" -f /dev/null -- -d -s t -x 120 -y 30 -c "$RF"; then
         fi
     fi
 fi
+# A refused value's word naming another name and the key that name moves off in the same
+# load: a split move loop read it as that key bound again, and kept it cockpit's beside the
+# name's new key (#1229).
+if fresh_server -L "$rf_s" -f /dev/null -- -d -s t -x 120 -y 30 -c "$RF"; then
+    "$TMUX_REAL" -L "$rf_s" -f /dev/null set -g @cockpit_bg_poll off >/dev/null 2>&1
+    if reload_on "$rf_s"; then
+        is "@cockpit_jump_key at its default: u carries the note cockpit: jump" \
+           "cockpit: jump" "$(rf_get list-keys -T prefix -F '#{key_note}' u)"
+        rf_conf "$rf_s" jump y; rf_conf "$rf_s" info "'i jump:u'"
+        reload_on "$rf_s" &&
+            is "@cockpit_jump_key moved off u to y as info takes 'i jump:u': u is tmux's own" \
+               "$(rf_stock u)" "$(rf_get list-keys -T prefix -F '#{key_command}' u)"
+    fi
+fi
+# A key tmux binds with a space in it (' ' is Space, 'M- ' M-Space) is recorded with the
+# space, and a give-back list split on spaces lost it when the key moved on (#1229).
+# <name>|<default>|<the key as tmux.conf spells it>|<tmux's name for it>|<a key moved to
+# after it>, on fd 3.
+while IFS='|' read -r rf_n rf_d rf_c rf_k rf_p <&3; do
+    fresh_server -L "$rf_s" -f /dev/null -- -d -s t -x 120 -y 30 -c "$RF" || continue
+    "$TMUX_REAL" -L "$rf_s" -f /dev/null set -g @cockpit_bg_poll off >/dev/null 2>&1
+    reload_on "$rf_s" || continue
+    rf_conf "$rf_s" "$rf_n" "$rf_c"
+    reload_on "$rf_s" || continue
+    rf_w="@cockpit_${rf_n}_key moved off $rf_d to $rf_c"
+    is "$rf_w: $rf_k carries the note cockpit: $rf_n" \
+       "cockpit: $rf_n" "$(rf_get list-keys -T prefix -F '#{key_note}' "$rf_k")"
+    rf_conf "$rf_s" "$rf_n" "$rf_p"
+    reload_on "$rf_s" || continue
+    is "$rf_w, then to $rf_p: $rf_k is tmux's own again" \
+       "$(rf_stock "$rf_k")" "$(rf_get list-keys -T prefix -F '#{key_command}' "$rf_k")"
+done 3<<'RFSPACE'
+info|i|' '|Space|y
+info|i|'M- '|M-Space|y
+RFSPACE
 "$TMUX_REAL" -L "$rf_st" kill-server >/dev/null 2>&1
 # The message: a dmsg is logged only with a client attached, so one is attached through an
 # outer server, in the shape of the #1086 block's oh_attach, and show-messages is read.
@@ -5369,6 +5437,7 @@ unset RF rf_s rf_st rf_m rf_o rf_n rf_c rf_v rf_w rf_d rf_t rf_off
 unset rf_off_info rf_off_reload rf_off_corner
 unset -f rf_load_with
 unset rf_r rf_x rf_p
+unset rf_k
 fi
 
 echo "== a message shows a name as written, and runs nothing in it (#1096) =="
