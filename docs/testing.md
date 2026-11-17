@@ -407,8 +407,13 @@ rig leaves no socket here for the runner to see. The rows that ask `/proc`
 catch it (`fake::assert_no_server_left`), and the runner ends no process. A
 handed child killed at its bound or in a row's unwind never gets to that check,
 so `fake::Handed`'s end kills that child's rig servers and panes itself and
-removes those servers' sockets (#1233). Killed by a signal it does not trap, KILL among
-them, the runner leaves its `/tmp/ct.<6>` folder behind, empty. Under a plain
+removes those servers' sockets (#1233). A handed child leads a process group of
+its own, which a signal to the runner's group does not reach. Its watchdog, a
+shell in that group reading a pipe only the test binary writes, kills the group
+once the binary dies, by any signal, KILL and QUIT among them (#1241). It does
+not reach the rigs' servers and panes either, so a binary killed while a handed
+child runs leaves them (see #1249). Killed by a signal it does not trap, KILL
+among them, the runner leaves its `/tmp/ct.<6>` folder behind, empty. Under a plain
 `cargo test` nothing names it. That folder is the cost. Nothing sweeps it, and
 it is safe to remove once no test is running. `make tui-test-clean` hands the
 runner a list in `COCKPIT_TEST_CLEAN_RUN_CT_LIST`, the gate's own bookkeeping,

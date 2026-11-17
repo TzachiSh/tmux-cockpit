@@ -353,11 +353,11 @@ impl Holds for EnvHeld {}
 /// run_by_hand_held, [`spawn_held`] and [`spawn`], so a spawn there after the
 /// guard was let go does not build: the guard is gone before it can be lent. The file's
 /// other starts of a child stay outside the lock (#1206): each sets what its child reads
-/// itself, or lives only in binaries with no transient writer, one that sets a value
-/// under the lock and puts it back later. And `write_exec`'s `cp`, like panel_env's
-/// ForkStorm threads, runs under a holder or beside one, where a take here would panic
-/// on the holder's thread or wait on it for ever; `Server::stop` and `StandIn`'s Drop
-/// run in a drop, where that panic would abort an unwind.
+/// itself, as [`Watch::start`] does, or lives only in binaries with no transient writer,
+/// one that sets a value under the lock and puts it back later. And `write_exec`'s `cp`,
+/// like panel_env's ForkStorm threads, runs under a holder or beside one, where a take
+/// here would panic on the holder's thread or wait on it for ever; `Server::stop` and
+/// `StandIn`'s Drop run in a drop, where that panic would abort an unwind.
 #[allow(dead_code)]
 fn spawn_under(_lock: &impl Holds, c: &mut Command) -> std::io::Result<std::process::Child> {
     c.spawn()
@@ -446,7 +446,8 @@ where
 /// writes to, and why it fails where it was handed less than asked. The child leads a
 /// process group of its own, which its end at the bound kills, and so does a drop before
 /// its end was read, the unwind of a row that panicked (#1205). That end also kills its
-/// rigs' servers and panes, which lead sessions of their own (#1233).
+/// rigs' servers and panes, which lead sessions of their own (#1233). Its [`Watch`] kills
+/// that group when this process dies by any signal, one it cannot catch included (#1241).
 #[allow(dead_code)]
 pub struct Handed {
     child: std::process::Child,
@@ -455,12 +456,14 @@ pub struct Handed {
     tmpdir: Option<std::ffi::OsString>,
     /// whether the child is reaped: its pid, and so its group's id, may then be another's
     reaped: bool,
-    /// its slot in [`GROUPS`], cleared before the reap; `None` where all were taken
-    slot: Option<usize>,
+    /// its watchdog, until told the child's end; `None` once told, or where it did not start
+    watch: Option<Watch>,
     what: String,
     rows: usize,
     out: PathBuf,
     err: PathBuf,
+    /// why the run fails though its rows passed: the child was handed less than asked, or
+    /// started with no watchdog
     unhanded: Option<String>,
     // last, so the folder goes after the child's end is read
     _dir: Scratch,
@@ -490,7 +493,6 @@ fn start_handed(
     use std::os::unix::process::CommandExt;
     use std::sync::atomic::{AtomicUsize, Ordering};
     static RUNS: AtomicUsize = AtomicUsize::new(0);
-    forward_once();
     let run = RUNS.fetch_add(1, Ordering::SeqCst);
     let me = std::process::id();
     let dir = Scratch::fresh(std::env::temp_dir().join(format!("cockpit-handed-{me}-{run}")));
@@ -518,26 +520,27 @@ fn start_handed(
     c.process_group(0);
     let child = spawn(&mut c);
     let pid = child.id();
+    // A runner that dies between the spawn above and this start leaves the child unwatched,
+    // its group never killed (#1241). The child is unreaped here, so its group is there to
+    // join even where it has ended already.
+    let watch = Watch::start(pid);
+    let unwatched = watch.as_ref().err().map(|e| format!("no watchdog for the child: {e}"));
     // read from the child's own /proc, as it was started, so its end reads no environment
     let tmpdir = tmpdir_of(pid);
-    // a signal between the spawn and this store finds no group to forward to
-    let slot = GROUPS
-        .iter()
-        .position(|g| g.compare_exchange(0, pid as i32, Ordering::SeqCst, Ordering::SeqCst).is_ok());
     let want = signals.iter().fold(0u64, |m, &s| m | 1 << (s - 1));
     let got = (status_bits(pid, "SigIgn:"), status_bits(pid, "SigBlk:"));
     let has = |bits: Option<u64>| bits.is_some_and(|b| b & want == want);
     // a child handed less runs on to its end: killed now, it would leave what it began
     let unhanded = Path::new("/proc/self").is_dir() && !(has(got.0) && has(got.1));
     let why = || format!("the child was not handed {want:#x} ignored and blocked: {got:x?}");
-    let unhanded = unhanded.then(why);
+    let unhanded = unhanded.then(why).or(unwatched);
     let what = rows.join(" ");
     Handed {
         child,
         pid,
         tmpdir,
         reaped: false,
-        slot,
+        watch: watch.ok(),
         what,
         rows: rows.len(),
         out,
@@ -562,19 +565,24 @@ impl Handed {
         format!("{what} in a child: {status}\nstdout:\n{out}\nstderr:\n{err}")
     }
 
-    /// `None` while the child runs; once it has ended, reaped, the run's result:
-    /// its pid where it passed every row it was handed.
+    /// `None` while the child runs; once it has ended, reaped, the run's result: its pid
+    /// where it passed every row it was handed and its watchdog, told the end, went quietly.
     fn ended(&mut self) -> Option<Result<u32, String>> {
         if !self.exited() {
             return None;
         }
         self.reaped = true;
-        self.forget();
+        let watched = self.watch.take().map(Watch::end);
         let status = self.child.wait().unwrap();
         let passed = std::fs::read_to_string(&self.out).unwrap_or_default();
         let all = passed.contains(&format!(" {} passed; 0 failed", self.rows));
         if let Some(why) = self.unhanded.take() {
             return Some(Err(why));
+        }
+        // one that did not go quietly killed what the child left, which a row may count
+        if let Some(w) = watched.filter(|w| !w.is_some_and(|s| s.success())) {
+            let how = format!("{status}, and its watchdog, told the end, ended {w:?}");
+            return Some(Err(self.said(&how)));
         }
         Some(if status.success() && all {
             Ok(self.pid)
@@ -599,7 +607,8 @@ impl Handed {
     /// reach, and the row that would sweep them runs no further at the bound (#1233): they
     /// go by [`sweep`], while the unreaped child still holds the pid their sockets are named
     /// by. A child that ended on its own is not killed after: what it left running stays for
-    /// the row that counts it (#1205).
+    /// the row that counts it (#1205). Its watchdog, in the group, goes with it and is
+    /// reaped (#1241).
     fn end(&mut self) -> Vec<u32> {
         if std::mem::replace(&mut self.reaped, true) {
             return vec![];
@@ -607,14 +616,16 @@ impl Handed {
         // SAFETY: killpg takes plain integers; the group is this child's, unreaped.
         unsafe { libc::killpg(self.pid as libc::pid_t, libc::SIGKILL) };
         let _ = self.child.kill();
-        self.forget();
+        if let Some(w) = self.watch.take() {
+            w.end();
+        }
         let swept = sweep(self.pid, self.tmpdir.as_deref());
         let _ = self.child.wait();
         swept
     }
 
-    /// Whether the child has ended, read without reaping it, so its pid stays its own
-    /// until [`Handed::forget`] has cleared its slot. As data/agents.rs's `exited`:
+    /// Whether the child has ended, read without reaping it, so its pid, and its group's
+    /// id, stays its own until [`Handed::ended`] reaps it. As data/agents.rs's `exited`:
     /// `info` zeroed first, since xnu leaves it untouched where there is nothing to say (#619).
     fn exited(&self) -> bool {
         // SAFETY: a siginfo_t of zeros is a valid value.
@@ -623,14 +634,6 @@ impl Handed {
         // SAFETY: waitid writes only into `info`.
         let r = unsafe { libc::waitid(libc::P_PID, self.pid as libc::id_t, &mut info, flags) };
         r != 0 || info.si_signo != 0
-    }
-
-    /// Clears the child's slot in [`GROUPS`], before its reap: once reaped, its id may be
-    /// another process's.
-    fn forget(&mut self) {
-        if let Some(i) = self.slot.take() {
-            GROUPS[i].store(0, std::sync::atomic::Ordering::SeqCst);
-        }
     }
 }
 
@@ -692,69 +695,56 @@ fn sweep(pid: u32, tmpdir: Option<&std::ffi::OsStr>) -> Vec<u32> {
     killed
 }
 
-// --- the runner's end by a signal reaches the handed children (#1205) ---
+// --- the runner's death, by any signal, ends its handed children (#1241) ---
 
-/// The leaders of the groups of the handed children alive now, 0 in a free slot, for
-/// [`forward`]. More at once than this go unforwarded.
+/// The watchdog of a handed child: a shell in that child's process group that reads a pipe
+/// whose one write end this process holds. Told the child's end by [`Watch::end`], it ends
+/// and kills nothing. When this process dies, by any signal, QUIT and KILL among them, the
+/// kernel closes that end, the read sees end-of-file (pipe(7)), and the shell kills every
+/// process of its own group (kill(2), pid 0): the child, what the child started, and
+/// itself. Its own group, so a reused id is never hit. A handler in this process could
+/// do none of that for a KILL, and a QUIT reached it only from a terminal (#1241). It does
+/// not reach the rigs' servers and panes, which lead sessions of their own: see #1249.
+///
+/// The write end is close-on-exec from its creation: std makes a piped stdin by
+/// `pipe2(.., O_CLOEXEC)` on Linux (library/std/src/sys/pal/unix/pipe.rs). A child another
+/// thread starts at the same instant therefore holds it only until its exec, and cannot
+/// keep the watchdog from its end-of-file. The start sets all its child reads: an absolute
+/// path, no environment, and `/` for a cwd. It reads no variable a sibling holds under
+/// [`env_lock`]'s lock, so it stays outside that lock (#1206).
 #[allow(dead_code)]
-static GROUPS: [std::sync::atomic::AtomicI32; 64] = [const { std::sync::atomic::AtomicI32::new(0) }; 64];
+pub struct Watch(std::process::Child);
 
-/// The process that installed [`forward`]: a child forked from it runs the handler too,
-/// until its exec, and must not kill this process's groups.
 #[allow(dead_code)]
-static FORWARDER: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
-
-/// The signals a terminal or a supervisor ends a run with: ^C, a kill, a hang-up.
-#[allow(dead_code)]
-const FORWARDED: [libc::c_int; 3] = [libc::SIGINT, libc::SIGTERM, libc::SIGHUP];
-
-/// The handler of [`FORWARDED`]: kills each group in [`GROUPS`], then dies by `sig` as it
-/// would have without it. A handed child leads a group of its own, which a terminal's ^C
-/// does not reach: only the runner's foreground group gets it (POSIX XBD 11.1.9).
-#[allow(dead_code)]
-extern "C" fn forward(sig: libc::c_int) {
-    use std::sync::atomic::Ordering;
-    // SAFETY: getpid, killpg, signal and raise are async-signal-safe, and the loads are
-    // of lock-free atomics. `sig` is blocked here, so the raise lands once this returns,
-    // at its default action.
-    unsafe {
-        if libc::getpid() == FORWARDER.load(Ordering::SeqCst) {
-            for g in &GROUPS {
-                let p = g.load(Ordering::SeqCst);
-                if p > 0 {
-                    libc::killpg(p, libc::SIGKILL);
-                }
-            }
-        }
-        libc::signal(sig, libc::SIG_DFL);
-        libc::raise(sig);
+impl Watch {
+    /// Starts the watchdog of the group `pid` leads. The leader must be unreaped: one that
+    /// has ended and is not yet reaped still holds its group's id, and the watchdog joins it.
+    pub fn start(pid: u32) -> std::io::Result<Watch> {
+        use std::os::unix::process::CommandExt;
+        use std::process::Stdio;
+        let mut c = Command::new("/bin/sh");
+        c.args(["-c", r#"read -r said; [ "$said" = end ] || kill -s KILL 0"#]);
+        c.env_clear().current_dir("/").process_group(pid as i32);
+        c.stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null());
+        c.spawn().map(Watch)
     }
-}
 
-/// Installs [`forward`] once, for each of [`FORWARDED`] at its default action. One the
-/// runner was started ignoring, by `&` from a script or by nohup, stays ignored: it ends
-/// nothing there, and so ends no child either (#1044).
-#[allow(dead_code)]
-fn forward_once() {
-    static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(|| {
-        // SAFETY: getpid has no preconditions.
-        FORWARDER.store(unsafe { libc::getpid() }, std::sync::atomic::Ordering::SeqCst);
-        for s in FORWARDED {
-            // SAFETY: sigaction reads and writes only the structs passed, zeros a valid value.
-            unsafe {
-                let mut old: libc::sigaction = std::mem::zeroed();
-                if libc::sigaction(s, std::ptr::null(), &mut old) != 0 || old.sa_sigaction != libc::SIG_DFL {
-                    continue;
-                }
-                let mut new: libc::sigaction = std::mem::zeroed();
-                new.sa_sigaction = forward as extern "C" fn(libc::c_int) as libc::sighandler_t;
-                libc::sigemptyset(&mut new.sa_mask);
-                new.sa_flags = libc::SA_RESTART;
-                libc::sigaction(s, &new, std::ptr::null_mut());
-            }
+    /// The watchdog's pid.
+    pub fn pid(&self) -> u32 {
+        self.0.id()
+    }
+
+    /// Tells the watchdog the child's end, then reaps it: how it ended, a success where it
+    /// went quietly, or `None` where the wait failed. A write that fails finds it gone
+    /// already, killed with its group. It runs in a drop during an unwind, so it never
+    /// panics.
+    pub fn end(mut self) -> Option<std::process::ExitStatus> {
+        use std::io::Write;
+        if let Some(mut said) = self.0.stdin.take() {
+            let _ = said.write_all(b"end\n");
         }
-    });
+        self.0.wait().ok()
+    }
 }
 
 /// [`handed`]'s body, its child started by `spawn`.

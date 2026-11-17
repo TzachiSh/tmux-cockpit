@@ -223,7 +223,8 @@ fn left_after_a_signal(sig: libc::c_int) -> (Option<i32>, Vec<u32>) {
 }
 
 /// #1205: a handed child leads a group of its own, which a ^C at the terminal does not
-/// reach. INT, TERM or HUP to the runner kills that group before the runner dies by it.
+/// reach. INT, TERM or HUP to the runner ends that group too: once the runner has died by
+/// it, the child's watchdog kills the group (#1241).
 #[test]
 #[cfg(target_os = "linux")]
 fn a_signal_to_the_runner_ends_its_handed_children() {
@@ -299,6 +300,43 @@ fn a_handed_start_leaves_its_runners_signal_dispositions() {
     let run = |sig| fake::handed(&[DISPOSES], sig, &env, fake::HANDED_FOR).err();
     let got = rows.map(|(name, sig)| (name, run(sig)));
     assert_eq!(got, rows.map(|(name, _)| (name, None)));
+}
+
+/// `pid`'s process group, field 5 of its /proc stat: `None` where it is gone.
+#[cfg(target_os = "linux")]
+fn group_of(pid: u32) -> Option<u32> {
+    let s = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    s.rsplit_once(") ")?.1.split(' ').nth(2)?.parse().ok()
+}
+
+/// Whether the child `pid` has ended, waited for and read without reaping it: a zombie
+/// from then on, until its reap.
+#[cfg(target_os = "linux")]
+fn ended_unreaped(pid: u32) -> bool {
+    // SAFETY: a siginfo_t of zeros is a valid value.
+    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    let flags = libc::WEXITED | libc::WNOWAIT;
+    // SAFETY: waitid writes only into `info`; `pid` is this row's own child.
+    unsafe { libc::waitid(libc::P_PID, pid as libc::id_t, &mut info, flags) == 0 }
+}
+
+/// #1241: a watchdog joins the group of a leader that has ended and is not yet reaped, as a
+/// handed child that ends at once may have by its watchdog's start: until its reap, that
+/// leader still holds its group's id. Told the end, the watchdog then goes quietly.
+#[test]
+#[cfg(target_os = "linux")]
+fn a_watchdog_joins_the_group_of_an_ended_unreaped_leader() {
+    use std::os::unix::process::CommandExt;
+    let mut c = Command::new("/bin/sh");
+    c.args(["-c", "exit 0"]).current_dir("/").stdin(Stdio::null()).process_group(0);
+    let mut child = fake::spawn(&mut c).unwrap();
+    let pid = child.id();
+    let zombie = ended_unreaped(pid) && stat(pid).is_some_and(|(s, _)| s == 'Z');
+    let w = fake::Watch::start(pid).ok();
+    let group = w.as_ref().and_then(|w| group_of(w.pid()));
+    let quiet = w.map(|w| w.end().is_some_and(|s| s.success()));
+    child.wait().unwrap();
+    assert_eq!((zombie, group, quiet), (true, Some(pid), Some(true)));
 }
 
 /// The `sleep` a child half in mode `left` wrote to `file`, with its start time.
