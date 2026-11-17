@@ -50,7 +50,11 @@ impl Drop for EnvHeld {
 /// `fake::Server::start` check under this lock and let it go before the tmux that follows
 /// (`fixed_env` takes it again for its own write), so a binary that writes TMUX or
 /// TMUX_TMPDIR in its own process must not call them: a sibling's value could reach that
-/// tmux. None does (panel_env, env_lock).
+/// tmux. None does (panel_env, env_lock). A binary that gains a transient writer, one
+/// that sets a value under this lock and puts it back later, routes that binary's own
+/// starts of a child through `fake::spawn`, or `fake::spawn_held` under a
+/// holder's token: a child started without the lock takes whatever a sibling holds set
+/// at its fork (#1206).
 /// On a thread that holds it already the take would wait for itself, so that call panics
 /// instead, naming what the holder does (#1132).
 pub fn env_lock() -> EnvHeld {

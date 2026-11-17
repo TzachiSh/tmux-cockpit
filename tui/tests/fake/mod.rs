@@ -352,7 +352,12 @@ impl Holds for EnvHeld {}
 /// under the lock (#1142). The one spawn of handed, handed_held, run_by_hand,
 /// run_by_hand_held, [`spawn_held`] and [`spawn`], so a spawn there after the
 /// guard was let go does not build: the guard is gone before it can be lent. The file's
-/// other starts of a child do not come through here (#1206).
+/// other starts of a child stay outside the lock (#1206): each sets what its child reads
+/// itself, or lives only in binaries with no transient writer, one that sets a value
+/// under the lock and puts it back later. And `write_exec`'s `cp`, like panel_env's
+/// ForkStorm threads, runs under a holder or beside one, where a take here would panic
+/// on the holder's thread or wait on it for ever; `Server::stop` and `StandIn`'s Drop
+/// run in a drop, where that panic would abort an unwind.
 #[allow(dead_code)]
 fn spawn_under(_lock: &impl Holds, c: &mut Command) -> std::io::Result<std::process::Child> {
     c.spawn()

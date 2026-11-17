@@ -464,9 +464,10 @@ review: a diff to `tui/test-env` adds no `pub` item that writes the environment
 or hands out an `EnvHeld`. Its two writers both take the token, so every write
 in the package takes the lock: a binary whose one test writes takes it for the
 writes alone, where it serves the type and closes no race (#1132). What the
-token does not stop, an `unsafe` forgery (#1147), and the rule for a thread
-that holds the lock while a child is started (#1142) are in the crate's own
-docs, `tui/test-env/src/lib.rs`.
+token does not stop, an `unsafe` forgery (#1147), the rule for a thread
+that holds the lock while a child is started (#1142), and which starts of a
+child take the lock (#1206) are in the crate's own docs,
+`tui/test-env/src/lib.rs`.
 
 `tmux_reach.rs` holds the one rule the lint cannot name: no `extern` block under
 `tui/tests` or `tui/examples`. A `setenv` declared there would be a function no
