@@ -21154,6 +21154,32 @@ sig_left() {                  # <a copy's TMPDIR> -> the processes carrying it: 
     done
     printf '%s%s' "$n" "$o"
 }
+# The nested runs' tail refuses --pid, so a pane is the four-hour sleep. With the pane watching
+# the run's pid, a server the cleanup never reached ended about a second after the run, inside
+# sig_left's wait, and the rows passed with that cleanup cut (#1240, as #1236 for #849 and #984).
+pane_argv() {                 # <a copy's TMUX_TMPDIR> -> its suite server's pane's argv, a line
+    local s p=""
+    for s in "$1"/tmux-*/cockpit-suite-*; do
+        [ -S "$s" ] && p=$("$TMUX_REAL" -S "$s" display-message -p -t suite '#{pane_pid}')
+    done 2>/dev/null
+    tr '\0' ' ' 2>/dev/null < "/proc/${p:-0}/cmdline"; echo
+}
+# A server whose socket file the cleanup removed has none for sock_sweep to reach: only a tmux
+# server, started as a suite's, whose TMUX_TMPDIR is the copy's, ended by TERM (#1236).
+srv_term() {                  # <a copy's TMUX_TMPDIR> -> each such server is sent a TERM
+    local p c
+    for p in /proc/[0-9]*; do
+        c=""; read -r c 2>/dev/null < "$p/comm"
+        [ "$c" = "tmux: server" ] || continue
+        case $(tr '\0' ' ' 2>/dev/null < "$p/cmdline") in
+            *" -L cockpit-suite-"*) ;;
+            *) continue ;;
+        esac
+        tr '\0' '\n' 2>/dev/null < "$p/environ" | grep -qxF "TMUX_TMPDIR=$1" \
+            && kill -TERM "${p#/proc/}"
+    done
+    return 0
+}
 
 echo "== run.sh: a run ended by a signal in its prelude leaves no server, socket or temp dir (#900) =="
 # The suite's server leaves the run's process group, so a signal that ends the run never
@@ -21170,20 +21196,26 @@ sed "/^    \"\\\$SUITE_PANE\" >\\/dev\\/null 2>&1\$/a $sg_hold" \
 sed "/^trap cleanup EXIT\$/a $sg_hold" "$SG/tests/pre.sh" > "$SG/tests/ctl.sh"
 is "each copy holds at one place" "1 1" \
    "$(grep -c 'exec 9<>' "$SG/tests/win.sh") $(grep -c 'exec 9<>' "$SG/tests/ctl.sh")"
-sg_run() {                    # <signal> <copy> -> status|carriers|left in TMPDIR|listeners
+mkdir -p "$SG/notail"
+printf '#!/bin/sh\ncase " $* " in *" --pid="*) exit 1 ;; esac\nexec %s "$@"\n' \
+    "$(tq "$(command -v tail)")" > "$SG/notail/tail"; chmod +x "$SG/notail/tail"
+# <signal> <copy> [a folder to put first on PATH] -> status|carriers|left in TMPDIR|listeners;
+# with the folder, the pane's argv is added to $SG/panes
+sg_run() {
     local c="" rc
     rm -rf "${SG:?}/t" "${SG:?}/s"; mkdir -p "$SG/t" "$SG/s"
     local d=(); ! sig_dfl "$1" || d=(--default-signal="$1")
-    ( cd "$SG" && exec env "${d[@]}" -u TMUX TMPDIR="$SG/t" TMUX_TMPDIR="$SG/s" \
-        bash "tests/$2.sh" ) </dev/null >/dev/null 2>&1 & sg_p=$!
+    ( cd "$SG" && PATH="${3:+$3:}$PATH" exec env "${d[@]}" -u TMUX TMPDIR="$SG/t" \
+        TMUX_TMPDIR="$SG/s" bash "tests/$2.sh" ) </dev/null >/dev/null 2>&1 & sg_p=$!
     until_out '?*' ls "$SG/t/started" >/dev/null
+    [ -z "${3:-}" ] || pane_argv "$SG/s" >> "$SG/panes"
     read -r c 2>/dev/null < "/proc/$sg_p/comm"
     [ "$c" != bash ] || kill -"$1" "$sg_p" 2>/dev/null
     wait "$sg_p" 2>/dev/null; rc=$?
     printf '%s|%s|%s|%s' "$rc" "$(sig_left "$SG/t")" "$(ls -A "$SG/t" | tr '\n' ,)" \
         "$(listeners_in "$SG/s")"
-    # Whatever a red run left: ended by its own socket, never by a pid.
-    sock_sweep "$SG/s"
+    # Whatever a red run left: ended by its own socket, or by srv_term when that is gone.
+    sock_sweep "$SG/s"; srv_term "$SG/s"
 }
 # Whether this box's tail takes --pid, asked here and not read from the prelude's own answer:
 # a prelude that fell back to the sleep on a box whose tail has --pid must turn rows red, not
@@ -21202,18 +21234,23 @@ elif sock_long "$SG/s"; then
     skip_ "a signal in the prelude (TMPDIR too long for the nested socket path)"
 else
     is "a TERM right after the server starts leaves no process, dir or socket" \
-       "143|0|pf,started,|0" "$(sg_run TERM win)"
+       "143|0|pf,started,|0" "$(sg_run TERM win "$SG/notail")"
     # The run traps HUP itself (#1107): only the ignored form says it started ignored.
     if ! sig_dfl HUP && [ "$(trap -p HUP)" = "trap -- '' SIGHUP" ]; then
         skip_ "a HUP in the prelude (SIGHUP is ignored and env cannot reset it)"
-    else is "a HUP there leaves none either" "129|0|pf,started,|0" "$(sg_run HUP win)"
+    else is "a HUP there leaves none either" "129|0|pf,started,|0" \
+            "$(sg_run HUP win "$SG/notail")"
     fi
     if ! sig_dfl INT; then skip_ "an INT in the prelude (env cannot reset an ignored SIGINT)"
-    else is "nor does an INT" "130|0|pf,started,|0" "$(sg_run INT win)"
+    else is "nor does an INT" "130|0|pf,started,|0" "$(sg_run INT win "$SG/notail")"
     fi
-    is "a TERM after the trap is set leaves none" "143|0|pf,started,|0" "$(sg_run TERM ctl)"
+    is "a TERM after the trap is set leaves none" "143|0|pf,started,|0" \
+       "$(sg_run TERM ctl "$SG/notail")"
+    is "in those runs the pane was the four-hour sleep, so only the cleanup ended the server" \
+       "claude 14400 " "$(sort -u "$SG/panes")"
     # A KILL reaches no trap, so nothing is cleaned: the temp dirs stay, and so would the
-    # server. What ends it is its own pane, which watches the run's pid (#981, #1006). Read
+    # server. What ends it is its own pane, which watches the run's pid (#981, #1006): this
+    # run keeps the tail on PATH. Read
     # here: the status, the processes left and the listeners; the wait is sig_left's, bounded.
     if [ "$sg_haspid" = 0 ]; then
         skip_ "a KILL in the prelude (this tail has no --pid: the pane is a sleep)"
@@ -21231,9 +21268,6 @@ fi
     printf '%s\n' 'echo "$$" > "$TMPDIR/pid"' \
         'tr "\0" " " < "/proc/$(tmux display-message -p -t "$PANE" "#{pane_pid}")/cmdline" > "$TMPDIR/argv"'
 } > "$SG/tests/pan.sh"
-mkdir -p "$SG/notail"
-printf '#!/bin/sh\ncase " $* " in *" --pid="*) exit 1 ;; esac\nexec %s "$@"\n' \
-    "$(tq "$(command -v tail)")" > "$SG/notail/tail"; chmod +x "$SG/notail/tail"
 sg_pane() {                   # [a folder to put first on PATH] -> the pane's argv, its pid as
     local a                   # PID and the copy's state folder as STATE
     rm -rf "${SG:?}/t" "${SG:?}/s"; mkdir -p "$SG/t" "$SG/s"
@@ -21293,17 +21327,22 @@ sed "${s2_pane}fatal 'the #1107 copy ends here'" "$S2/tests/end.sh" > "$S2/tests
 is "each copy holds where it should, and fat ends by fatal" "3 3 2 2 1" "$({
     for c in win ctl end fat; do grep -c 'read -r -t 20 -u 9 _' "$S2/tests/$c.sh"; done
     grep -c "^fatal 'the #1107" "$S2/tests/fat.sh"; } | tr '\n' ' ' | sed 's/ $//')"
+# The nested runs' tail refuses --pid (pane_argv, #1240); each run's pane argv goes to $S2/panes
+mkdir -p "$S2/notail"
+printf '#!/bin/sh\ncase " $* " in *" --pid="*) exit 1 ;; esac\nexec %s "$@"\n' \
+    "$(tq "$(command -v tail)")" > "$S2/notail/tail"; chmod +x "$S2/notail/tail"
 s2_run() {                    # <copy> <signal> [2nd] -> status|carriers|left|listeners|sockets
     local c="" a="" rc g d=() k=$1 h=in  # the last signal goes to the group in the cleanup
     [ $# -lt 3 ] || h=started
     rm -rf "${S2:?}/t" "${S2:?}/s"; mkdir -p "$S2/t" "$S2/s"
     for g in HUP INT TERM; do ! sig_dfl "$g" || d+=(--default-signal="$g"); done
-    ( cd "$S2" && exec env "${d[@]}" -u TMUX TMPDIR="$S2/t" TMUX_TMPDIR="$S2/s" \
-        setsid bash "tests/$k.sh" ) </dev/null >/dev/null 2>&1 & s2_p=$!
+    ( cd "$S2" && PATH="$S2/notail:$PATH" exec env "${d[@]}" -u TMUX TMPDIR="$S2/t" \
+        TMUX_TMPDIR="$S2/s" setsid bash "tests/$k.sh" ) </dev/null >/dev/null 2>&1 & s2_p=$!
     # signalled only once /proc names it, its comm bash and its argv[1] the copy; a failed check,
     # a kill that fails or a hold never reached is named in place of the status (#1208)
     if ! until_out '?*' ls "$S2/t/$h" >/dev/null; then c="no hold: $h"
     else
+        pane_argv "$S2/s" >> "$S2/panes"
         read -r c 2>/dev/null < "/proc/$s2_p/comm"
         a=$(tr '\0' '\n' 2>/dev/null < "/proc/$s2_p/cmdline" | sed -n 2p)
         if [ "$c" != bash ] || [ "$a" != "tests/$k.sh" ]; then c="no signal: comm [$c] argv [$a]"
@@ -21322,8 +21361,8 @@ s2_run() {                    # <copy> <signal> [2nd] -> status|carriers|left|li
     [ ! -e "$S2/t/traps" ] || mv "$S2/t/traps" "$S2/traps.$k"
     printf '%s|%s|%s|%s|%s' "${c:-$rc}" "$(sig_left "$S2/t")" "$(ls -A "$S2/t" | tr '\n' ,)" \
         "$(listeners_in "$S2/s")" "$(ls -A "$S2"/s/tmux-* 2>/dev/null | tr '\n' ,)"
-    # Whatever a red run left: ended by its own socket, never by a pid.
-    sock_sweep "$S2/s"
+    # Whatever a red run left: ended by its own socket, or by srv_term when that is gone.
+    sock_sweep "$S2/s"; srv_term "$S2/s"
 }
 if [ ! -r /proc/net/unix ]; then skip_ "a signal in the exit trap (no /proc/net/unix)"
 elif ! command -v setsid >/dev/null; then skip_ "a signal in the exit trap (no setsid)"
@@ -21356,8 +21395,10 @@ else
     is "a HUP while the exit trap of a run that came to its end runs leaves nothing" \
        "0|0|in,pf,|0|" "$(s2_run end HUP)"
     is "nor a TERM" "0|0|in,pf,|0|" "$(s2_run end TERM)"
+    is "in every run the pane was the four-hour sleep, so only the cleanup ended the server" \
+       "claude 14400 " "$(sort -u "$S2/panes")"
 fi
-unset -f s2_run sig_left; unset S2 s2_hold s2_in s2_pane s2_p s2_want
+unset -f s2_run sig_left pane_argv srv_term; unset S2 s2_hold s2_in s2_pane s2_p s2_want
 
 echo "== run.sh: under a TMPDIR with a blank the tmux wrapper sits where no blank is (#992) =="
 # "$TMUX_REAL" is the #573 wrapper's path, pasted unquoted into some forty pane commands. It
