@@ -142,3 +142,72 @@ fn an_unwind_ends_a_handed_child_and_what_it_started() {
     let got = ["kept", "orphan"].map(|how| (how, left_after(how, end)));
     assert_eq!(got, [("kept", vec![]), ("orphan", vec![])]);
 }
+
+/// Set for [`starts_a_handed_child_and_parks`] alone: the file its handed child's shell
+/// writes the pids to. Its `.ready` beside it is written once that child is started.
+#[cfg(target_os = "linux")]
+const OUTER: &str = "COCKPIT_TEST_HANDED_OUTER";
+
+/// The name of [`starts_a_handed_child_and_parks`].
+#[cfg(target_os = "linux")]
+const PARKS: &str = "starts_a_handed_child_and_parks";
+
+/// The outer child half: starts [`forks_a_sleep_and_hangs`] as `fake::handed` starts a
+/// child, says so, then no end but a signal. Only where [`OUTER`] names a file a row made.
+#[test]
+#[cfg(target_os = "linux")]
+fn starts_a_handed_child_and_parks() {
+    let Some(at) = std::env::var_os(OUTER).filter(|p| Path::new(p).is_file()) else {
+        return;
+    };
+    let env = [(PIDS, at.to_str().unwrap()), (HOW, "kept")];
+    let _h = fake::handed_start(&[FORKS], &[], &env);
+    std::fs::write(Path::new(&at).with_extension("ready"), "").unwrap();
+    loop {
+        std::thread::park();
+    }
+}
+
+/// [`starts_a_handed_child_and_parks`] in a child of this binary with the three signals at
+/// their default, sent `sig` once its handed child's `sleep` runs: the signal it died by,
+/// and the pids of that `sleep` and that handed child still running, each then killed.
+#[cfg(target_os = "linux")]
+fn left_after_a_signal(sig: libc::c_int) -> (Option<i32>, Vec<u32>) {
+    use std::os::unix::process::ExitStatusExt;
+    let top = Path::new(env!("CARGO_TARGET_TMPDIR"));
+    let s = fake::Scratch::fresh(top.join(format!("handed-sig{sig}-{}", std::process::id())));
+    let file = s.join("pids");
+    std::fs::write(&file, "").unwrap();
+    let mut c = Command::new(std::env::current_exe().unwrap());
+    // its own handed folder under this one: it dies by the signal, and drops nothing
+    c.args(["--exact", PARKS]).env(OUTER, &file).env("TMPDIR", &*s);
+    c.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    fake::at_default(&mut c, &[libc::SIGINT, libc::SIGTERM, libc::SIGHUP]);
+    let mut outer = fake::spawn(&mut c).unwrap();
+    // read while both run: once the signal has ended them, their stat is gone
+    let mut both = None;
+    within(|| {
+        both = pids(&file).filter(|_| file.with_extension("ready").exists());
+        both.is_some()
+    });
+    // SAFETY: kill only signals; `outer` is this row's own child, not yet reaped.
+    unsafe { libc::kill(outer.id() as libc::pid_t, sig) };
+    if !within(|| outer.try_wait().unwrap().is_some()) {
+        outer.kill().unwrap();
+    }
+    let died = outer.wait().unwrap().signal();
+    let Some(both) = both else {
+        panic!("signal {sig}: the handed child's sleep never wrote its pid");
+    };
+    (died, left_running(both))
+}
+
+/// #1205: a handed child leads a group of its own, which a ^C at the terminal does not
+/// reach. INT, TERM or HUP to the runner kills that group before the runner dies by it.
+#[test]
+#[cfg(target_os = "linux")]
+fn a_signal_to_the_runner_ends_its_handed_children() {
+    let rows = [("INT", libc::SIGINT), ("TERM", libc::SIGTERM), ("HUP", libc::SIGHUP)];
+    let got = rows.map(|(name, sig)| (name, left_after_a_signal(sig)));
+    assert_eq!(got, rows.map(|(name, sig)| (name, (Some(sig), vec![]))));
+}
