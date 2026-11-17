@@ -349,7 +349,7 @@ impl Holds for std::sync::MutexGuard<'static, ()> {}
 impl Holds for EnvHeld {}
 
 /// `c` spawned while `_lock` is alive, so the child starts with no write a sibling holds
-/// under the lock (#1142). The one spawn of handed, handed_held, run_by_hand,
+/// under the lock (#1142). The one spawn of handed, handed_held, handed_start, run_by_hand,
 /// run_by_hand_held, [`spawn_held`] and [`spawn`], so a spawn there after the
 /// guard was let go does not build: the guard is gone before it can be lent. The file's
 /// other starts of a child stay outside the lock (#1206): each sets what its child reads
@@ -455,6 +455,19 @@ pub struct Handed {
     unhanded: Option<String>,
     // last, so the folder goes after the child's end is read
     _dir: Scratch,
+}
+
+/// [`handed`]'s child, started as it starts it, for a row that ends it itself: by
+/// [`Handed::end_at_bound`], the bound's own end, without waiting the bound out (#1205).
+#[allow(dead_code)]
+pub fn handed_start(rows: &[&str], signals: &'static [libc::c_int], env: &[(&str, &str)]) -> Handed {
+    start_handed(rows, signals, env, |c| {
+        let spawned = {
+            let env = test_env::for_check("handed");
+            spawn_under(&env, c)
+        };
+        spawned.unwrap()
+    })
 }
 
 /// [`handed`]'s start, its child started by `spawn`.
