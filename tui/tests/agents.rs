@@ -452,7 +452,7 @@ fn hung_lookup_child() {
 /// Runs the child half `how`: its exit, its stderr, and the rig's and the dev's dirs it
 /// names. `ignored` starts it with SIGABRT ignored and `blocked` with SIGABRT blocked,
 /// as a parent may hand either down (#988).
-fn hung_lookup_run(how: &str) -> (std::process::ExitStatus, String, PathBuf, PathBuf) {
+fn hung_lookup_run(held: &fake::EnvHeld, how: &str) -> (std::process::ExitStatus, String, PathBuf, PathBuf) {
     use std::os::unix::process::CommandExt;
     let mut child = std::process::Command::new(std::env::current_exe().unwrap());
     child
@@ -477,7 +477,7 @@ fn hung_lookup_run(how: &str) -> (std::process::ExitStatus, String, PathBuf, Pat
     // SAFETY: the calls above are async-signal-safe, made between fork and exec.
     unsafe { child.pre_exec(hand_down) };
     let child = child.stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped());
-    let child = child.spawn().unwrap();
+    let child = fake::spawn_held(held, child).unwrap();
     let pid = child.id();
     let out = child.wait_with_output().unwrap();
     let left = |tag: &str| std::env::temp_dir().join(format!("cockpit-agents-{tag}-{pid}"));
@@ -493,8 +493,8 @@ fn hung_lookup_run(how: &str) -> (std::process::ExitStatus, String, PathBuf, Pat
 /// the rig's own PATH and HOME on its last line, the dirs left, no `claude` outside the
 /// rig started. Returns the child's stderr and the rig's dir.
 fn gave_up(how: &str) -> (String, PathBuf) {
-    let _r = Rig::new("giveup", ONE);
-    let (status, err, rig, dev) = hung_lookup_run(how);
+    let r = Rig::new("giveup", ONE);
+    let (status, err, rig, dev) = hung_lookup_run(r.held.token(), how);
     let seen = (rig.join("go").exists(), dev.join("made").exists(), dev.join("outside").exists());
     let _ = (std::fs::remove_dir_all(&rig), std::fs::remove_dir_all(&dev));
     use std::os::unix::process::ExitStatusExt;
@@ -1205,13 +1205,11 @@ fn quit_child() {
 #[test]
 fn the_board_quitting_kills_a_lookup_in_flight() {
     let r = Rig::new("quit", "echo $$ > $HOME/stubpid\nexec $HOME/bin/sleep 60");
-    let me = std::env::current_exe().unwrap();
-    let st = std::process::Command::new(me)
-        .args(["--exact", "quit_child", "--test-threads=1"])
+    let mut c = std::process::Command::new(std::env::current_exe().unwrap());
+    c.args(["--exact", "quit_child", "--test-threads=1"])
         .env("QUIT_CHILD", "1")
-        .stdout(std::process::Stdio::null())
-        .status()
-        .unwrap();
+        .stdout(std::process::Stdio::null());
+    let st = fake::spawn_held(r.held.token(), &mut c).unwrap().wait().unwrap();
     assert_eq!(st.code(), Some(0), "the child quit");
     let pid = std::fs::read_to_string(r.dir.join("stubpid")).unwrap();
     wait_gone(pid.trim());
@@ -1393,12 +1391,10 @@ fn a_hang_up_before_the_child_is_stored_still_takes_it() {
     let mut c = std::process::Command::new(std::env::current_exe().unwrap());
     // the board's handler runs for a HUP the suite handed down blocked only once unblocked
     fake::at_default(&mut c, &[libc::SIGHUP]);
-    let st = c
-        .args(["--exact", "spawned_hup_child", "--test-threads=1"])
+    c.args(["--exact", "spawned_hup_child", "--test-threads=1"])
         .env("SPAWNED_HUP_CHILD", "1")
-        .stdout(std::process::Stdio::null())
-        .status()
-        .unwrap();
+        .stdout(std::process::Stdio::null());
+    let st = fake::spawn_held(r.held.token(), &mut c).unwrap().wait().unwrap();
     assert_eq!(st.code(), Some(0), "the handler's _exit(0), not the child's own exit");
     let pid = std::fs::read_to_string(r.dir.join("spawnedpid")).unwrap();
     wait_gone(pid.trim());
@@ -1455,14 +1451,12 @@ fn failed_spawn_child() {
 #[test]
 fn a_failed_lookup_spawn_leaves_no_count() {
     let r = Rig::new("nospawn", ONE);
-    let me = std::env::current_exe().unwrap();
-    let st = std::process::Command::new(me)
-        .args(["--exact", "failed_spawn_child", "--test-threads=1"])
+    let mut c = std::process::Command::new(std::env::current_exe().unwrap());
+    c.args(["--exact", "failed_spawn_child", "--test-threads=1"])
         .env("FAILED_SPAWN_CHILD", "1")
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .unwrap();
+        .stderr(std::process::Stdio::null());
+    let st = fake::spawn_held(r.held.token(), &mut c).unwrap().wait().unwrap();
     assert_eq!(st.code(), Some(0), "the child ran to its end");
     let got = std::fs::read_to_string(r.dir.join("counted")).unwrap();
     if got == "skip" {
@@ -1479,12 +1473,10 @@ fn a_signalled_board_kills_a_lookup_in_flight() {
     let mut c = std::process::Command::new(std::env::current_exe().unwrap());
     // as in the row above: HUP unblocked, whatever the suite was started with (#1061)
     fake::at_default(&mut c, &[libc::SIGHUP]);
-    let st = c
-        .args(["--exact", "hup_child", "--test-threads=1"])
+    c.args(["--exact", "hup_child", "--test-threads=1"])
         .env("HUP_CHILD", "1")
-        .stdout(std::process::Stdio::null())
-        .status()
-        .unwrap();
+        .stdout(std::process::Stdio::null());
+    let st = fake::spawn_held(r.held.token(), &mut c).unwrap().wait().unwrap();
     assert_eq!(st.code(), Some(0), "the handler's _exit(0), not the child's own exit");
     let pid = std::fs::read_to_string(r.dir.join("stubpid")).unwrap();
     wait_gone(pid.trim());
