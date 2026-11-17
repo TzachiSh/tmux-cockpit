@@ -11010,10 +11010,14 @@ gt_run() {     # <copy> <conf> <signal to it alone at its run hold|-> [2nd, to i
         if [ "$c" != bash ] || [ "$a" != "$GT/c/$s" ]; then c="no signal: comm [$c] argv [$a]"
         else
             c=""
-            [ "$k" != run ] || [ "$1" = - ] || kill -"$1" "$gt_p" 2>/dev/null; shift
+            # a kill that fails is named in place of the status, as a failed check is (#1208)
+            [ "$k" != run ] || [ "$1" = - ] || kill -"$1" "$gt_p" 2>/dev/null ||
+                c="no signal: kill $1"
+            shift
             printf '\n' >&7
             if [ $# -eq 0 ]; then :
-            elif until_out '?*' ls "$GT/h/in" >/dev/null; then kill -"$1" -- "-$gt_p" 2>/dev/null
+            elif until_out '?*' ls "$GT/h/in" >/dev/null; then
+                kill -"$1" -- "-$gt_p" 2>/dev/null || c="no signal: kill $1"
             else c="no hold: in"
             fi
         fi
@@ -11053,6 +11057,11 @@ else
         is "an INT to it alone, in a command, ends the run there" "130||-|-|-|up up" "$gt_out"
         gt_run gate-end.sh "$GT/f.conf" INT TERM
         is "nor a TERM to its group in its exit trap after an INT" "130||-|-|-|up up" "$gt_out"
+        gt_run gate-end.sh "$GT/f.conf" INT INT
+        is "nor an INT to its group in its exit trap after an INT" "130||-|-|-|up up" "$gt_out"
+        gt_run gate-end.sh "$GT/none.conf" - INT
+        is "an INT to its group in the exit trap of a run that ended 2 leaves nothing" \
+           "2||-|-|-|up up" "$gt_out"
     fi
     gt_run gate-end.sh "$GT/f.conf" HUP HUP
     is "a HUP, then a HUP to its group in its exit trap, leaves nothing" "129||-|-|-|up up" \
