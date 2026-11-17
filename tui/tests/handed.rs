@@ -1,6 +1,7 @@
-//! What a child `fake::handed` started leaves behind once that child is ended (#1205): the
-//! processes it started itself, a `sleep` its shell waits for and one its shell left as an
-//! orphan, go with it.
+//! What a child `fake::handed` started leaves behind once that child is ended (#1205), or
+//! once its runner dies by any signal (#1241): the processes it started itself, a `sleep`
+//! its shell waits for and one its shell left as an orphan, go with it. A child that ends
+//! on its own leaves them, for the row that counts them.
 mod fake;
 
 use std::path::Path;
@@ -10,21 +11,25 @@ use std::process::{Command, Stdio};
 /// parent's, the child half, to.
 const PIDS: &str = "COCKPIT_TEST_HANDED_PIDS";
 
-/// Set beside [`PIDS`]: `kept`, the shell waits for its `sleep`, or `orphan`, it exits.
+/// Set beside [`PIDS`]: `kept`, the shell waits for its `sleep`, or `orphan`, it exits. Or
+/// `left`: it exits, and the child half writes the `sleep`'s pid and start time to the
+/// file's `.left` and ends.
 const HOW: &str = "COCKPIT_TEST_HANDED_HOW";
 
 /// The child half's name, [`forks_a_sleep_and_hangs`].
 #[cfg(target_os = "linux")]
 const FORKS: &str = "forks_a_sleep_and_hangs";
 
-/// The child half: a shell that starts a `sleep` and writes both pids, then no end. Only
-/// where [`PIDS`] names a file a row made, so a value exported in a shell does nothing.
+/// The child half: a shell that starts a `sleep` and writes both pids, then no end, but in
+/// mode `left` (see [`HOW`]). Only where [`PIDS`] names a file a row made, so a value
+/// exported in a shell does nothing.
 #[test]
 fn forks_a_sleep_and_hangs() {
     let Some(at) = std::env::var_os(PIDS).filter(|p| Path::new(p).is_file()) else {
         return;
     };
-    let tail = if std::env::var(HOW).as_deref() == Ok("kept") { "wait" } else { ":" };
+    let how = std::env::var(HOW).unwrap_or_default();
+    let tail = if how == "kept" { "wait" } else { ":" };
     // written aside and renamed, so a reader never sees half of it
     let body = format!("sleep 1000 & echo \"$! $PPID\" > \"$1.new\" && mv \"$1.new\" \"$1\"; {tail}");
     let mut sh = Command::new("sh")
@@ -34,6 +39,15 @@ fn forks_a_sleep_and_hangs() {
         .spawn()
         .unwrap();
     sh.wait().unwrap();
+    // read while both run: once this half has ended, the row cannot read its stat
+    #[cfg(target_os = "linux")]
+    {
+        if how == "left" {
+            let [(p, t), _] = pids(Path::new(&at)).unwrap();
+            std::fs::write(Path::new(&at).with_extension("left"), format!("{p} {t}")).unwrap();
+            return;
+        }
+    }
     loop {
         std::thread::park();
     }
@@ -160,6 +174,11 @@ fn starts_a_handed_child_and_parks() {
     let Some(at) = std::env::var_os(OUTER).filter(|p| Path::new(p).is_file()) else {
         return;
     };
+    // a QUIT dumps core, a file in the cwd where core_pattern names one: none from here.
+    // The flag goes as the unsigned long prctl reads it, so no upper bit is left undefined.
+    let off: libc::c_ulong = 0;
+    // SAFETY: prctl with these arguments sets only this process's dumpable flag.
+    unsafe { libc::prctl(libc::PR_SET_DUMPABLE, off) };
     let env = [(PIDS, at.to_str().unwrap()), (HOW, "kept")];
     let _h = fake::handed_start(&[FORKS], &[], &env);
     std::fs::write(Path::new(&at).with_extension("ready"), "").unwrap();
@@ -168,9 +187,10 @@ fn starts_a_handed_child_and_parks() {
     }
 }
 
-/// [`starts_a_handed_child_and_parks`] in a child of this binary with the three signals at
-/// their default, sent `sig` once its handed child's `sleep` runs: the signal it died by,
-/// and the pids of that `sleep` and that handed child still running, each then killed.
+/// [`starts_a_handed_child_and_parks`] in a child of this binary with the four signals a
+/// terminal or a supervisor sends at their default, sent `sig` once its handed child's
+/// `sleep` runs: the signal it died by, and the pids of that `sleep` and that handed child
+/// still running, each then killed.
 #[cfg(target_os = "linux")]
 fn left_after_a_signal(sig: libc::c_int) -> (Option<i32>, Vec<u32>) {
     use std::os::unix::process::ExitStatusExt;
@@ -182,7 +202,7 @@ fn left_after_a_signal(sig: libc::c_int) -> (Option<i32>, Vec<u32>) {
     // its own handed folder under this one: it dies by the signal, and drops nothing
     c.args(["--exact", PARKS]).env(OUTER, &file).env("TMPDIR", &*s);
     c.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
-    fake::at_default(&mut c, &[libc::SIGINT, libc::SIGTERM, libc::SIGHUP]);
+    fake::at_default(&mut c, &[libc::SIGINT, libc::SIGTERM, libc::SIGHUP, libc::SIGQUIT]);
     let mut outer = fake::spawn(&mut c).unwrap();
     // read while both run: once the signal has ended them, their stat is gone
     let mut both = None;
@@ -203,13 +223,149 @@ fn left_after_a_signal(sig: libc::c_int) -> (Option<i32>, Vec<u32>) {
 }
 
 /// #1205: a handed child leads a group of its own, which a ^C at the terminal does not
-/// reach. INT, TERM or HUP to the runner kills that group before the runner dies by it.
+/// reach. INT, TERM or HUP to the runner ends that group too: once the runner has died by
+/// it, the child's watchdog kills the group (#1241).
 #[test]
 #[cfg(target_os = "linux")]
 fn a_signal_to_the_runner_ends_its_handed_children() {
     let rows = [("INT", libc::SIGINT), ("TERM", libc::SIGTERM), ("HUP", libc::SIGHUP)];
     let got = rows.map(|(name, sig)| (name, left_after_a_signal(sig)));
     assert_eq!(got, rows.map(|(name, sig)| (name, (Some(sig), vec![]))));
+}
+
+/// #1241: so do a QUIT, the keyboard's other one, which reaches only the terminal's
+/// foreground group, and a KILL, which no handler sees, as a KILL to the runner's group or
+/// `timeout -s KILL` sends it.
+#[test]
+#[cfg(target_os = "linux")]
+fn a_quit_or_a_kill_to_the_runner_ends_its_handed_children() {
+    let rows = [("QUIT", libc::SIGQUIT), ("KILL", libc::SIGKILL)];
+    let got = rows.map(|(name, sig)| (name, left_after_a_signal(sig)));
+    assert_eq!(got, rows.map(|(name, sig)| (name, (Some(sig), vec![]))));
+}
+
+/// Set for [`reads_its_dispositions_around_a_handed_start`] alone, to a file a row made.
+#[cfg(target_os = "linux")]
+const DISPOSED: &str = "COCKPIT_TEST_HANDED_DISPOSED";
+
+/// The name of [`reads_its_dispositions_around_a_handed_start`].
+#[cfg(target_os = "linux")]
+const DISPOSES: &str = "reads_its_dispositions_around_a_handed_start";
+
+/// This process's ignored and caught signals: the SigIgn and SigCgt bits of its /proc status.
+#[cfg(target_os = "linux")]
+fn dispositions() -> (Option<u64>, Option<u64>) {
+    let s = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+    let bits = |f: &str| {
+        s.lines()
+            .find_map(|l| l.strip_prefix(f))
+            .and_then(|b| u64::from_str_radix(b.trim(), 16).ok())
+    };
+    (bits("SigIgn:"), bits("SigCgt:"))
+}
+
+/// The disposition child half: its signal dispositions are the same after a
+/// `fake::handed_start` as before it. Its handed child runs [`forks_a_sleep_and_hangs`]
+/// with no [`PIDS`], and so ends at once. Only where [`DISPOSED`] names a file a row made.
+#[test]
+#[cfg(target_os = "linux")]
+fn reads_its_dispositions_around_a_handed_start() {
+    if !std::env::var_os(DISPOSED).is_some_and(|p| Path::new(&p).is_file()) {
+        return;
+    }
+    let before = dispositions();
+    let h = fake::handed_start(&[FORKS], &[], &[]);
+    let after = dispositions();
+    drop(h);
+    assert_eq!(after, before, "a handed start changed its runner's signal dispositions");
+}
+
+/// #1241, #1044: a handed start changes no signal disposition of its runner. A signal the
+/// runner was started ignoring, as `&` or nohup start it, stays ignored, and no signal at its
+/// default gets a handler. Each case starts this binary with that one signal ignored.
+#[test]
+#[cfg(target_os = "linux")]
+fn a_handed_start_leaves_its_runners_signal_dispositions() {
+    let top = Path::new(env!("CARGO_TARGET_TMPDIR"));
+    let s = fake::Scratch::fresh(top.join(format!("handed-disposed-{}", std::process::id())));
+    let file = s.join("ours");
+    std::fs::write(&file, "").unwrap();
+    let env = [(DISPOSED, file.to_str().unwrap())];
+    let rows: [(&str, &'static [libc::c_int]); 4] = [
+        ("INT", &[libc::SIGINT]),
+        ("TERM", &[libc::SIGTERM]),
+        ("HUP", &[libc::SIGHUP]),
+        ("QUIT", &[libc::SIGQUIT]),
+    ];
+    let run = |sig| fake::handed(&[DISPOSES], sig, &env, fake::HANDED_FOR).err();
+    let got = rows.map(|(name, sig)| (name, run(sig)));
+    assert_eq!(got, rows.map(|(name, _)| (name, None)));
+}
+
+/// `pid`'s process group, field 5 of its /proc stat: `None` where it is gone.
+#[cfg(target_os = "linux")]
+fn group_of(pid: u32) -> Option<u32> {
+    let s = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    s.rsplit_once(") ")?.1.split(' ').nth(2)?.parse().ok()
+}
+
+/// Whether the child `pid` has ended, waited for and read without reaping it: a zombie
+/// from then on, until its reap.
+#[cfg(target_os = "linux")]
+fn ended_unreaped(pid: u32) -> bool {
+    // SAFETY: a siginfo_t of zeros is a valid value.
+    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    let flags = libc::WEXITED | libc::WNOWAIT;
+    // SAFETY: waitid writes only into `info`; `pid` is this row's own child.
+    unsafe { libc::waitid(libc::P_PID, pid as libc::id_t, &mut info, flags) == 0 }
+}
+
+/// #1241: a watchdog joins the group of a leader that has ended and is not yet reaped, as a
+/// handed child that ends at once may have by its watchdog's start: until its reap, that
+/// leader still holds its group's id. Told the end, the watchdog then goes quietly.
+#[test]
+#[cfg(target_os = "linux")]
+fn a_watchdog_joins_the_group_of_an_ended_unreaped_leader() {
+    use std::os::unix::process::CommandExt;
+    let mut c = Command::new("/bin/sh");
+    c.args(["-c", "exit 0"]).current_dir("/").stdin(Stdio::null()).process_group(0);
+    let mut child = fake::spawn(&mut c).unwrap();
+    let pid = child.id();
+    let zombie = ended_unreaped(pid) && stat(pid).is_some_and(|(s, _)| s == 'Z');
+    let w = fake::Watch::start(pid).ok();
+    let group = w.as_ref().and_then(|w| group_of(w.pid()));
+    let quiet = w.map(|w| w.end().is_some_and(|s| s.success()));
+    child.wait().unwrap();
+    assert_eq!((zombie, group, quiet), (true, Some(pid), Some(true)));
+}
+
+/// The `sleep` a child half in mode `left` wrote to `file`, with its start time.
+#[cfg(target_os = "linux")]
+fn left_sleep(file: &Path) -> Option<(u32, u64)> {
+    let text = std::fs::read_to_string(file).ok()?;
+    let mut it = text.split_whitespace();
+    Some((it.next()?.parse().ok()?, it.next()?.parse().ok()?))
+}
+
+/// #1241: a handed child that ends on its own leaves what it started for the row that
+/// counts it, as data.rs's planted row counts a hung git: here a `sleep` its shell left as
+/// an orphan, still running once the child's end is read, then killed by this row.
+#[test]
+#[cfg(target_os = "linux")]
+fn a_handed_childs_own_end_leaves_what_it_started() {
+    let top = Path::new(env!("CARGO_TARGET_TMPDIR"));
+    let s = fake::Scratch::fresh(top.join(format!("handed-left-{}", std::process::id())));
+    let file = s.join("pids");
+    std::fs::write(&file, "").unwrap();
+    let env = [(PIDS, file.to_str().unwrap()), (HOW, "left")];
+    let ran = fake::handed(&[FORKS], &[], &env, fake::HANDED_FOR).map(drop);
+    let sleep = left_sleep(&file.with_extension("left"));
+    let left = sleep.is_some_and(|(p, t)| alive(p, t));
+    if let Some((p, _)) = sleep.filter(|&(p, t)| alive(p, t)) {
+        // SAFETY: kill only signals; `p` was read again as this row's own just above.
+        unsafe { libc::kill(p as libc::pid_t, libc::SIGKILL) };
+    }
+    assert_eq!((ran, left), (Ok(()), true));
 }
 
 // --- a handed child's rig servers, in sessions of their own (#1233) ---
