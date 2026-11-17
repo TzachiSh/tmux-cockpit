@@ -21115,15 +21115,15 @@ for fx in stub srv; do
     fi
     nest_run '^syntax' ONLY_RUN="$FD/$fx.sh" TMPDIR="$FD/t" TMUX_TMPDIR="$FD/s" \
         PATH="$FD/notail:$PATH"
-    is "a prelude FATAL ($fx) exits 1 and leaves no dir, socket or listening server behind" \
-       "1|FATAL|||0" \
-       "$NEST_RC|$(printf '%s' "$NEST_OUT" | grep -o FATAL | head -1)|$(ls -A "$FD/t")|$(
+    fx_got="$NEST_RC|$(printf '%s' "$NEST_OUT" | grep -o FATAL | head -1)|$(ls -A "$FD/t")|$(
         ls -A "$FD"/s/tmux-* 2>/dev/null)|$(
         if [ -r /proc/net/unix ]; then listeners_in "$FD/s"; else echo 0; fi)"
     # Whatever a red run left: ended by its own socket, then removed. A server whose socket
     # file the cleanup removed has none to be reached by: only a tmux server, started as a
-    # suite's, whose TMUX_TMPDIR is ours, ended by TERM.
+    # suite's, whose TMUX_TMPDIR is ours, ended by TERM. The row is read first and printed
+    # after, so a red one names the pids TERM went to, or none; a green one is as before (#1237).
     sock_sweep "$FD/s"
+    fx_term=""
     for p in /proc/[0-9]*; do
         c=""; read -r c 2>/dev/null < "$p/comm"
         [ "$c" = "tmux: server" ] || continue
@@ -21131,12 +21131,15 @@ for fx in stub srv; do
             *" -L cockpit-suite-"*) ;;
             *) continue ;;
         esac
-        tr '\0' '\n' 2>/dev/null < "$p/environ" | grep -qxF "TMUX_TMPDIR=$FD/s" \
-            && kill -TERM "${p#/proc/}"
+        tr '\0' '\n' 2>/dev/null < "$p/environ" | grep -qxF "TMUX_TMPDIR=$FD/s" || continue
+        kill -TERM "${p#/proc/}" && fx_term="$fx_term ${p#/proc/}"
     done
+    [ "$fx_got" = "1|FATAL|||0" ] || fx_got="$fx_got; TERM sent to:${fx_term:- none}"
+    is "a prelude FATAL ($fx) exits 1 and leaves no dir, socket or listening server behind" \
+       "1|FATAL|||0" "$fx_got"
     rm -rf "${FD:?}/t/"* "${FD:?}/s/"*
 done
-unset FD fx p c NEST_RC NEST_OUT NEST_PASS NEST_FAIL
+unset FD fx fx_got fx_term p c NEST_RC NEST_OUT NEST_PASS NEST_FAIL
 
 # For the #900 and #1107 blocks, which end prelude copies by signals; unset after #1107's.
 # sig_dfl, its pair, is in the prelude.
@@ -24333,19 +24336,24 @@ printf '#!/bin/sh\ncase " $* " in *" --pid="*) exit 1 ;; esac\nexec %s "$@"\n' \
     exec tests/only.sh '^cmdname.sh: cmd_base cuts' ) </dev/null >"$DS/log" 2>&1
 dsr=$?; [ "$dsr" = 0 ] || dsr="$dsr: $(tail -3 "$DS/log" | tr '\n' ' ')"
 is "the nested run of one block under a TMPDIR holding \$, \` and ' passes" "0" "$dsr"
-is "after it no server listens in its socket dir" "0" "$(listeners_in "$DSS")"
-is "and no socket file is left there" "" "$(find "$DSS" -type s 2>/dev/null)"
+dsl=$(listeners_in "$DSS"); dsf=$(find "$DSS" -type s 2>/dev/null)
 # A server the run left: only a tmux server, started as a suite's, whose TMUX_TMPDIR is ours.
+# The rows are read first and printed after, so a red listener row names the pids TERM went
+# to, or none; a green one is as before (#1237).
+dsk=""
 for p in /proc/[0-9]*; do
     c=""; read -r c 2>/dev/null < "$p/comm"
     [ "$c" = "tmux: server" ] || continue
     a=$(tr '\0' ' ' 2>/dev/null < "$p/cmdline")
     case $a in *" -L cockpit-suite-"*) ;; *) continue ;; esac
-    tr '\0' '\n' 2>/dev/null < "$p/environ" | grep -qxF "TMUX_TMPDIR=$DSS" \
-        && kill -TERM "${p#/proc/}"
+    tr '\0' '\n' 2>/dev/null < "$p/environ" | grep -qxF "TMUX_TMPDIR=$DSS" || continue
+    kill -TERM "${p#/proc/}" && dsk="$dsk ${p#/proc/}"
 done
+[ "$dsl" = 0 ] || dsl="$dsl; TERM sent to:${dsk:- none}"
+is "after it no server listens in its socket dir" "0" "$dsl"
+is "and no socket file is left there" "" "$dsf"
 fi
-unset DS DST DSS dsr p c a
+unset DS DST DSS dsr dsl dsf dsk p c a
 fi
 
 
