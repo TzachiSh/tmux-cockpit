@@ -213,12 +213,16 @@ key() {                       # <option> <default> -> the key, empty when off
 # never falls back to the default, which may be a key the user bound to something else
 # (#1210).
 refused() {                   # <name> <tmux's error> -> 1
-    local opt=@cockpit_${1}_key v e=${2%%$'\n'*}
+    local opt=@cockpit_${1}_key v e=${2%%$'\n'*} p
     [ "$1" = menu ] && opt=$menuopt
     v=$(tmux show-option -gqv "$opt")
     dmsg "tmux-cockpit: $opt [$v] binds nothing ($e); $1 stays unbound until the option is fixed"
-    # The move loop already gave back a key a record named, as off's (#1229): a record left
-    # here names this refused value itself, which binds nothing to give back.
+    # The move loop gave back any key a record named that differs from this value (#1229). A
+    # record left here is this very key: the last load bound it, and this load's bind failed
+    # for a reason outside the key. It goes back, as off's would, so the message holds. One
+    # that cannot be given back keeps its record, and the next load tries again (#1226).
+    p=$(tmux show-option -gqv "@cockpit_${1}_bound")
+    if [ -n "$p" ] && owned "$1" "$p" && ! give_back "$p"; then return 1; fi
     tmux set-option -gu "@cockpit_${1}_bound"
     return 1
 }
@@ -283,8 +287,8 @@ takes() {                     # <name> <key> -> 0 when <name> binds <key> this l
     done
     return 1
 }
-# @cockpit_giveback is one "<name>:<key>" per line, each after a newline: tmux binds no
-# key holding one. A list with no leading newline was written before #1229, space-joined.
+# @cockpit_giveback is "<name>:<key>" entries joined by spaces. When a key holds a space
+# (' ' is Space), each entry goes after a newline instead: tmux binds no key holding one.
 todo=()
 gb=$(tmux show-option -gqv @cockpit_giveback)
 case $gb in
@@ -304,8 +308,11 @@ for nk in ${todo[@]+"${todo[@]}"}; do
     owned "${nk%%:*}" "${nk#*:}" || continue      # the user's now: nothing to give back
     give_back "${nk#*:}" || left="$left"$'\n'"$nk"
 done
-# The list's last pair may end in ;, which tmux would cut off it (#1151).
-if [ -n "$left" ]; then tmux set-option -g @cockpit_giveback "$(cockpit_key_arg "$left")"
+# Space-joined unless a key holds a space or a tab. The list's last pair may end in ;,
+# which tmux would cut off it (#1151).
+if [ -n "$left" ]; then
+    case ${left#?} in *[$' \t']*) ;; *) left=${left//$'\n'/ }; left=${left# } ;; esac
+    tmux set-option -g @cockpit_giveback "$(cockpit_key_arg "$left")"
 else tmux set-option -gu @cockpit_giveback; fi
 unset -f takes
 

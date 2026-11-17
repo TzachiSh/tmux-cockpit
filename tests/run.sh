@@ -5280,7 +5280,7 @@ if fresh_server -L "$rf_s" -f /dev/null -- -d -s t -x 120 -y 30 -c "$RF"; then
     rf_w="@cockpit_info_key moved to 'i x', tmux's own i unreadable"
     if reload_on "$rf_s" && rf_conf "$rf_s" info "'i x'" &&
        reload_on "$rf_s" "PATH=$(tq "$RF/gbfail"):\"\$PATH\" $(tq "$DIR/cockpit.tmux")"; then
-        is "$rf_w: info:i waits in @cockpit_giveback" $'\ninfo:i' \
+        is "$rf_w: info:i waits in @cockpit_giveback" info:i \
            "$(rf_get show -gqv @cockpit_giveback)"
         is "$rf_w: i still carries the note cockpit: info" "cockpit: info" \
            "$(rf_get list-keys -T prefix -F '#{key_note}' i)"
@@ -5291,6 +5291,36 @@ if fresh_server -L "$rf_s" -f /dev/null -- -d -s t -x 120 -y 30 -c "$RF"; then
         is "$rf_w: and @cockpit_info_bound records nothing" "" \
            "$(rf_get show -gqv @cockpit_info_bound)"
     fi
+fi
+# A key holding a space waits whole: the list puts each entry after a newline then, since a
+# space-joined list would split ' ' off its name (#1229).
+if fresh_server -L "$rf_s" -f /dev/null -- -d -s t -x 120 -y 30 -c "$RF"; then
+    "$TMUX_REAL" -L "$rf_s" -f /dev/null set -g @cockpit_bg_poll off >/dev/null 2>&1
+    rf_w="@cockpit_info_key moved off ' ' to y, tmux's own Space unreadable"
+    if reload_on "$rf_s" && rf_conf "$rf_s" info "' '" && reload_on "$rf_s" &&
+       rf_conf "$rf_s" info y &&
+       reload_on "$rf_s" "PATH=$(tq "$RF/gbfail"):\"\$PATH\" $(tq "$DIR/cockpit.tmux")"; then
+        is "$rf_w: info:<space> waits after a newline in @cockpit_giveback" $'\ninfo: ' \
+           "$(rf_get show -gqv @cockpit_giveback)"
+    fi
+    reload_on "$rf_s" &&
+        is "$rf_w: the next load gives Space back: Space is tmux's own" \
+           "$(rf_stock Space)" "$(rf_get list-keys -T prefix -F '#{key_command}' Space)"
+fi
+# The key the last load bound, its bind failing this load for a reason outside the key: the
+# record still names it, so refused() gives it back, as its message says (#1242). The shim
+# fails that one bind-key.
+mkdir -p "$RF/bindfail"
+printf '%s\n' '#!/usr/bin/env bash' \
+    'case " $* " in *" bind-key -N cockpit: info i "*) echo "bind failed" >&2; exit 1 ;; esac' \
+    "exec $(tq "$TMUX_REAL") \"\$@\"" > "$RF/bindfail/tmux"
+chmod +x "$RF/bindfail/tmux"
+if fresh_server -L "$rf_s" -f /dev/null -- -d -s t -x 120 -y 30 -c "$RF"; then
+    "$TMUX_REAL" -L "$rf_s" -f /dev/null set -g @cockpit_bg_poll off >/dev/null 2>&1
+    reload_on "$rf_s" &&
+        reload_on "$rf_s" "PATH=$(tq "$RF/bindfail"):\"\$PATH\" $(tq "$DIR/cockpit.tmux")" &&
+        is "@cockpit_info_key i, its bind failing for a reason outside the key: i is tmux's own" \
+           "$(rf_stock i)" "$(rf_get list-keys -T prefix -F '#{key_command}' i)"
 fi
 # The same split onto a key the user bound since, with no note: owned() reads it as the
 # user's, so the load gives nothing back and the user's binding stays as it was.
