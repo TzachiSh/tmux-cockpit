@@ -198,6 +198,22 @@ the run of the blocks it picked. A signal sent to its pid alone waits for that
 run to finish. A signal sent to its group ends that run too, and only.sh exits
 once the run's own cleanup is done.
 
+`tests/clean-run.sh` (`make tui-test-clean`) and `tests/tui-refusers.sh` do the
+same in sh (#1172). They had no trap at all, and dash, the `/bin/sh` of Debian,
+Ubuntu and the CI images, runs no EXIT trap when a signal it does not trap ends a
+script, so any HUP, INT or TERM left clean-run.sh's two folders and its list, or
+tui-refusers.sh's list of binaries, in `TMPDIR`. dash also runs a trap only once
+the command in the foreground is done. A signal sent to clean-run.sh's pid alone
+now waits for the whole `make tui-test` it runs, and one to tui-refusers.sh's
+waits for its `cargo test --no-run` build or its namespace run. Before, the
+script ended at once and that command ran on, writing into a folder nobody
+removed. A signal sent to the group, a Ctrl-C or a plain `timeout`, reaches the
+command too, and the script removes its paths once it ends. A cancelled CI job
+is neither: GitHub's runner sends INT and then TERM to the step's shell alone,
+and kills the process tree only if that shell is still running. Once the job
+ends, the runner kills the processes the job left. Neither script gets a signal
+it traps there, so neither cleans up, before this change or after it.
+
 Those rows hold only where the suite made the folder. In a folder you named,
 other runs' sockets may sit beside this run's, so nothing is asked of it. On
 CI one leg, the one marked `bare` in `shell-suite.yml`'s matrix (the
