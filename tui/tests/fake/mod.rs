@@ -618,7 +618,11 @@ impl Handed {
     pub fn end_at_bound(&mut self, bound: std::time::Duration) -> String {
         let swept = self.end();
         let how = format!("had not ended after {bound:?} and was killed");
-        self.said(&format!("{how}, its rigs' servers and panes {swept:?} with it"))
+        let by = match &self.tmpdir {
+            Err(why) => format!(" (no sweep by TMUX_TMPDIR: {why})"),
+            Ok(_) => String::new(),
+        };
+        self.said(&format!("{how}, its rigs' servers and panes {swept:?} with it{by}"))
     }
 
     /// Kills the child's group, then the child, then its rigs' servers and panes, and reaps
@@ -679,18 +683,36 @@ fn tmpdir_of(pid: u32) -> Result<Option<std::ffi::OsString>, String> {
     tmpdir_in(|| std::fs::read(&at).ok(), wait)
 }
 
+/// How long [`tmpdir_in`] reads a child's environ again while it reads empty: past any
+/// exec on a loaded box, since an answer given up too soon sweeps nothing (#1255).
+#[allow(dead_code)]
+pub const ENVIRON_FOR: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// The TMUX_TMPDIR in a child's environ, as `read` gives it: `None` where it has none, or
 /// where `read` finds no such process. `wait` waits between reads and says how long since
-/// the first.
+/// the first. An empty read is no answer: std's spawn returns once the child's exec has
+/// closed its close-on-exec files, before the kernel sets where the new environ lies, and
+/// /proc reads it empty until then (#1255). It is read again for up to [`ENVIRON_FOR`],
+/// then an `Err` says so. A zombie's environ is a failed read, not an empty one, on v6.17,
+/// which refuses the open once the mm is gone (fs/proc/base.c, `__mem_open`, ESRCH), and
+/// on 6.18, where #1260's review measured EACCES: it answers `None` at once. Only a kernel
+/// that opens it and reads it empty costs a zombie that wait.
 #[allow(dead_code)]
 pub fn tmpdir_in(
     mut read: impl FnMut() -> Option<Vec<u8>>,
-    _wait: impl FnMut() -> std::time::Duration,
+    mut wait: impl FnMut() -> std::time::Duration,
 ) -> Result<Option<std::ffi::OsString>, String> {
     use std::os::unix::ffi::OsStringExt;
-    let Some(env) = read() else { return Ok(None) };
-    let value = env.split(|b| *b == 0).find_map(|v| v.strip_prefix(b"TMUX_TMPDIR="));
-    Ok(value.map(|v| std::ffi::OsString::from_vec(v.to_vec())))
+    loop {
+        let Some(env) = read() else { return Ok(None) };
+        if !env.is_empty() {
+            let value = env.split(|b| *b == 0).find_map(|v| v.strip_prefix(b"TMUX_TMPDIR="));
+            return Ok(value.map(|v| std::ffi::OsString::from_vec(v.to_vec())));
+        }
+        if wait() >= ENVIRON_FOR {
+            return Err(format!("environ still empty after {} s", ENVIRON_FOR.as_secs()));
+        }
+    }
 }
 
 /// Kills each server and pane of a rig of the child `pid` that carries `tmpdir`, its
