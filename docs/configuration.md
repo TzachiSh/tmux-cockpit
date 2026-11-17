@@ -16,6 +16,9 @@
 | `prefix + R` | reload the tmux config — the file tmux actually loaded, XDG included — `@cockpit_reload_key` rebinds, `off` disables |
 | `prefix + M` | move this window to another session, or a new one, picked from a menu; the client follows it, and moving your last window out will not detach you (replaces stock `select-pane -M`) — `@cockpit_move_key` rebinds, `off` restores stock; also `prefix + a M` |
 
+A `;` key is written `';'` or `'\;'` in tmux.conf; a bare `;` ends the `set`
+command there, and tmux refuses it.
+
 Every key on one page, a line each: [KEYS.md](../KEYS.md).
 
 ## Review options
