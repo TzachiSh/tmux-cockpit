@@ -103,7 +103,8 @@ PANE_FMT="$PANE_FMT$T.#{@panestate}$T.#{$SLOT}$T.#{@cockpit_cfg}$T.#{pane_title}
 # the panes that may be bound. Output, tab-separated: `W worst blockedname` (today's worst of
 # all), then per pane `M pane jobid state .sid name` (bound) or `D pane` (its title names two or
 # more jobs). sid is the job's sessionId when it is [A-Za-z0-9_-]{1,64}, else empty: the board
-# reads the job's transcript by it, a path (#448). The "." keeps an empty one a field.
+# reads the job's transcript by it, a path (#448). The "." keeps an empty one a field. \A and
+# \z, not ^ and $: jq's $ also matches before a final newline, which would split the line.
 # The bind rule (#448): the title, minus an optional leading "✳ " and with whitespace runs
 # collapsed, equals one background job's name, collapsed the same way; done jobs count; a
 # job without an id does not; an agent view's own title never binds. A pane with a foreground
@@ -124,7 +125,7 @@ JQ_PROG='
   | [$b[] | select((.id | type) == "string" and (.id | length) > 0)
      | {id: (.id | clean), state: ((.state // "none") | clean), name: ((.name // "") | norm),
         sid: ((.sessionId // "") | tostring
-              | if test("^[A-Za-z0-9_-]{1,64}$") then . else "" end),
+              | if test("\\A[A-Za-z0-9_-]{1,64}\\z") then . else "" end),
         at: (if (.startedAt | type) == "number" then .startedAt / 1000 else 0 end)}
      | select(.name != "")] as $jobs
   | [$panes | split("\n")[] | select(length > 0) | split("\t")
