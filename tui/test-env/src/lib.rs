@@ -77,9 +77,15 @@ pub fn env_poisoned() -> bool {
 pub fn for_check(form: &str) -> MutexGuard<'static, ()> {
     if HOLDS.get() {
         let held = "on a thread that holds fake::env_lock(): call";
-        let helper = "or, called through fake::fixed_env or fake::Server::start, call that \
-                      helper before you take the lock";
-        panic!("fake::{form}() {held} fake::{form}_held(&held), {helper} (#1110)");
+        // a check is also reached through a helper; a start of a child is not (#1142)
+        let (args, helper) = if form.starts_with("checked_") {
+            let helper = ", or, called through fake::fixed_env or fake::Server::start, call \
+                          that helper before you take the lock (#1110)";
+            ("", helper)
+        } else {
+            (", ..", " (#1142)")
+        };
+        panic!("fake::{form}() {held} fake::{form}_held(&held{args}){helper}");
     }
     ENV.lock().unwrap_or_else(|e| e.into_inner())
 }
