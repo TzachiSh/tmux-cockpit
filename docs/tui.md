@@ -247,7 +247,7 @@ Set these before the plugin's `run-shell` line, like every other cockpit option.
 | `@cockpit_panel_bound` | (state) | the key the last load bound the panel to. Every cockpit key keeps one (`@cockpit_<name>_bound`, `<name>` as in its `@cockpit_<name>_key`), so a reload that turns a key off or moves it gives the old one back to stock |
 | `@cockpit_board_client` | (state) | a pane option: the client that pressed the board or review key there in its popup form, so the board's jump moves that client and not the most recently active one. Read and cleared when the board starts; the window forms pass `-c` instead |
 | `@cockpit_branch_client` | (state) | a pane option: the client that pressed `prefix b` there, so the branch popup's jump to another worktree moves that client and not the most recently active one. Read and cleared when `tmux-branch` starts |
-| `@cockpit_giveback` | (state) | `<name>:<key>` words joined by spaces, or one per line each after a newline when a key holds a space or a tab (#1229): old keys a reload could not give back to stock (tmux's own binding could not be read), retried on the next load |
+| `@cockpit_giveback` | (state) | `<name>:<key>` words joined by spaces, or one per line each after a newline when a key holds a space or a tab (#1229): old keys a reload could not give back to stock (tmux's own binding could not be read), or an old panel key it could not tell from the user's (its scratch read failed, #1131), retried on the next load |
 
 The popup is `-w 90%`, wider than the 70% the pickers use, because a 70% popup
 on a 120-column terminal is an 84-column board, which is one tile column. The
