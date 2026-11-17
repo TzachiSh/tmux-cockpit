@@ -4947,6 +4947,29 @@ is "cockpit_key_arg with no key, or two, says so and returns 2" \
    "2 cockpit_key_arg: one key, got 0|2 cockpit_key_arg: one key, got 2" \
    "$(. "$DIR/scripts/lib/fmt.sh"; semi_o=$(cockpit_key_arg 2>&1); printf '%s %s|' $? "$semi_o"
       semi_o=$(cockpit_key_arg a b 2>&1); printf '%s %s' $? "$semi_o")"
+# cockpit_key_plain (#1209): a key option written '\;' in tmux.conf holds \;, the key ;.
+# <option value>|<its status and what it prints>.
+while IFS='|' read -r semi_k semi_w; do
+    is "cockpit_key_plain [$semi_k]: $semi_w" "$semi_w" \
+       "$(. "$DIR/scripts/lib/fmt.sh"; semi_o=$(cockpit_key_plain "$semi_k")
+          printf '%s [%s]' "$?" "$semi_o")"
+done <<'KPROWS'
+\;|0 [;]
+M-\;|0 [M-;]
+C-\;|0 [C-;]
+;|0 [;]
+M-;|0 [M-;]
+a|0 [a]
+off|0 [off]
+|0 []
+KPROWS
+is "cockpit_key_plain twice: [\\;] prints [;], and [;] stays [;]" "; ;" \
+   "$(. "$DIR/scripts/lib/fmt.sh"
+      printf '%s %s' "$(cockpit_key_plain "$(cockpit_key_plain '\;')")" "$(cockpit_key_plain ';')")"
+is "cockpit_key_plain with no value, or two, says so and returns 2" \
+   "2 cockpit_key_plain: one value, got 0|2 cockpit_key_plain: one value, got 2" \
+   "$(. "$DIR/scripts/lib/fmt.sh"; semi_o=$(cockpit_key_plain 2>&1); printf '%s %s|' $? "$semi_o"
+      semi_o=$(cockpit_key_plain a b 2>&1); printf '%s %s' $? "$semi_o")"
 if need_tmux "a cockpit key on ;"; then :
 else
 SEMI=$(mktmpd); semi_s="cockpit-semi-$$"; SOCKS="$SOCKS $semi_s"
@@ -4975,7 +4998,8 @@ while read -r semi_n semi_a semi_k <&3; do
                "$(semi_get list-keys -T root -F '#{key_command}' MouseUp1Control0)" ;;
         'jump ;')
             is "the review notice's jump key reads ; back from its binding (#1124)" ";" \
-               "$(. "$DIR/scripts/lib/fmt.sh"; tmux() { "$TMUX_REAL" -L "$semi_s" -f /dev/null "$@"; }
+               "$(. "$DIR/scripts/lib/fmt.sh"
+                  tmux() { "$TMUX_REAL" -L "$semi_s" -f /dev/null "$@"; }
                   cockpit_noted_key jump @cockpit_jump_bound)" ;;
     esac
 done 3<<'SEMIROWS'
@@ -4994,9 +5018,29 @@ board M-\; M-;
 jump C-\; C-;
 board C-\; C-;
 SEMIROWS
+# A key option written with tmux's own escape, set -g @cockpit_jump_key '\;', holds \;, and a
+# load before #1152 bound it as ;: it is the key ; still, bound and recorded plain (#1209).
+# <name> <argv that stores it> <the key as list-keys argv spells it> <the key>, on fd 3.
+while read -r semi_n semi_a semi_l semi_k <&3; do
+    semi_load "$semi_n" "$semi_a" || continue
+    is "@cockpit_${semi_n}_key written [$semi_l]: $semi_k carries the note cockpit: $semi_n" \
+       "cockpit: $semi_n" "$(semi_get list-keys -T prefix -F '#{key_note}' "$semi_l")"
+    is "@cockpit_${semi_n}_key written [$semi_l]: @cockpit_${semi_n}_bound records $semi_k" \
+       "$semi_k" "$(semi_get show -gqv "@cockpit_${semi_n}_bound")"
+    [ "$semi_n" = menu ] || is "@cockpit_${semi_n}_key written [$semi_l]: prefix a is the menu" \
+       "cockpit: menu" "$(semi_get list-keys -T prefix -F '#{key_note}' a)"
+done 3<<'SEMIESC'
+jump \\; \; ;
+menu \\; \; ;
+board \\; \; ;
+reload \\; \; ;
+jump M-\\; M-\; M-;
+jump C-\\; C-\; C-;
+SEMIESC
 "$TMUX_REAL" -L "$semi_s" kill-server >/dev/null 2>&1
 unset -f semi_load semi_get
 unset SEMI semi_s semi_n semi_a semi_k semi_w
+unset semi_l
 fi
 
 echo "== a cockpit key moved off ;, M-; or C-; is given back to tmux (#1151) =="

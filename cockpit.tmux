@@ -189,6 +189,7 @@ owned() {                     # <name> <key>
         bare) [ -z "$notes" ] || return 1 ;;
         *) return 1 ;;
     esac
+    # Escaped like the first: no load before the notes recorded a ; key, so no row reaches this.
     cmd=$(tmux list-keys -T prefix -F '#{key_command}' "$ka" 2>/dev/null)
     case "$1:$cmd" in
         menu:*'display-menu -T "#[align=centre]'*|panel:*"$legacy_panel"*)
@@ -200,8 +201,10 @@ owned() {                     # <name> <key>
 
 # Lowercase keys: a Shift-letter chord dies under Caps Lock or a non-Latin layout.
 # Each effective key stays in a variable (empty = off) for the agents menu.
+# Every key option is read here: a value written '\;' is the key ; (#1209).
+keyopt() { cockpit_key_plain "$(tmux show-option -gqv "$1")"; }    # <option>
 key() {                       # <option> <default> -> the key, empty when off
-    local k; k=$(tmux show-option -gqv "$1")
+    local k; k=$(keyopt "$1")
     case "$k" in off) ;; "") printf '%s' "$2" ;; *) printf '%s' "$k" ;; esac
 }
 # Every cockpit key is bound with a "cockpit: <name>" note and recorded in
@@ -216,8 +219,8 @@ ckey() {                      # <name> <key> <command...>
 # Every key is settled before any is bound or given back, so giving an old one
 # back can never undo a binding this load makes. @cockpit_ai_key was the agents
 # menu's key; it still works, with a notice.
-menuk=$(tmux show-option -gqv @cockpit_menu_key)
-aik=$(tmux show-option -gqv @cockpit_ai_key)
+menuk=$(keyopt @cockpit_menu_key)
+aik=$(keyopt @cockpit_ai_key)
 if [ -z "$menuk" ] && [ -n "$aik" ]; then
     menuk=$aik
     tmux display-message "tmux-cockpit: @cockpit_ai_key is now @cockpit_menu_key"

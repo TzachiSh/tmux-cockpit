@@ -59,6 +59,13 @@ cockpit_key_arg() {           # <key>
   case $1 in *';') printf '%s\\;' "${1%;}" ;; *) printf '%s' "$1" ;; esac
 }
 
+# A key option as tmux's own config spells a ; key: set -g @cockpit_jump_key '\;' holds the
+# two characters \;, which a load bound as ; before #1152. A trailing \; reads as ; (#1209).
+cockpit_key_plain() {         # <option value> -> the key
+  [ $# -eq 1 ] || { echo "cockpit_key_plain: one value, got $#" >&2; return 2; }
+  case $1 in *'\;') printf '%s;' "${1%??}" ;; *) printf '%s' "$1" ;; esac
+}
+
 # The prefix key bound with that note, read from the binding: a record names a key moved by
 # hand (#1102, #1112). Two keys noted: the one the record option names, else the first tmux
 # lists. tmux compares the note itself, since it prints a note's tab, \037 and newline raw,
