@@ -173,6 +173,33 @@ fn gather_reads_the_bound_job_cleaned() {
     assert_eq!(gather("%1").unwrap().job, None);
 }
 
+/// #448: a viewer pane bound to a background job has no @cockpit_session or
+/// @cockpit_transcript; info finds the job's transcript, under the job's own project
+/// dir, by @cockpit_job_session, as the board does, and works in its cwd.
+#[test]
+fn a_bound_viewer_reads_its_jobs_transcript_by_the_job_session() {
+    let g = fake::env_lock();
+    let t = Tmp::new("jobsess");
+    let (wt, cwd) = (t.sub("wt"), t.sub("cwd"));
+    let env = rig(&t, &cwd, "", &wt);
+    let projects = t.0.join("home/.claude/projects");
+    std::fs::create_dir_all(projects.join("-job")).unwrap();
+    let from = projects.join(slug(&cwd)).join("s1.jsonl");
+    std::fs::rename(from, projects.join("-job/sjob.jsonl")).unwrap();
+    let d = t.0.display();
+    let sh = format!(
+        "#!/bin/sh\ncase \"$1\" in\nlist-panes) cat '{d}/rows' ;;\n\
+         display-message) case \"$5\" in *cockpit_tui_version*) cat '{d}/display' ;; \
+         *) cat '{d}/rows' ;; esac ;;\n\
+         show-option) case \"$*\" in *@cockpit_job_session*) echo sjob ;; \
+         *@cockpit_agents_glob*) echo '|claude|' ;; esac ;;\nesac\n"
+    );
+    fake::write_exec(&t.0.join("tmux"), &sh);
+    set(&g, &t, &env);
+    let x = gather("%1").unwrap();
+    assert_eq!((x.work.as_str(), x.work_from), (wt.as_str(), WorkFrom::Transcript));
+}
+
 /// #1066: started by hand with a caller's XDG_CACHE_HOME kept, this binary's rig
 /// refuses before a lookup can read or write the agents cache there.
 #[test]

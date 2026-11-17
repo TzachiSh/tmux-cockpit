@@ -16594,6 +16594,23 @@ is "the foreground mark goes when the pane leaves the agent" "" "$(avo @cockpit_
 av_tm respawn-pane -k -t "$AVF1" 'exec -a claude sleep 300'
 av_tm select-pane -t "$AVF1" -T "alpha"; av_bind
 is "...and a viewer later in that pane binds" "aa|alpha|running|" "$(avj "$AVF1")"
+# The bind carries the job's session, @cockpit_job_session: the viewer pane has no session of
+# its own, and the board reads the job's transcript by it (its repo, doing, subagents).
+AVJS=$(av_np "alpha"); av_bind
+is "a bound pane carries its job's session" "s-aa" "$(avo @cockpit_job_session "$AVJS")"
+av_tm select-pane -t "$AVJS" -T "gamma"; av_bind
+is "...a bind to another job carries that job's" "s-cc" "$(avo @cockpit_job_session "$AVJS")"
+av_tm select-pane -t "$AVJS" -T "something else"; av_bind
+is "...and the unbind takes it" "" "$(avo @cockpit_job_session "$AVJS")"
+AVJF=$(av_np "alpha"); av_tm set-option -p -t "$AVJF" @cockpit_agentview 1; av_bind
+av_fg "$AVJF" permission_prompt "perm fg"
+is "a foreground hook takes the job's session with the bind" "" \
+   "$(avo @cockpit_job_session "$AVJF")"
+# A session id goes into a path on the board: only [A-Za-z0-9_-]{1,64} is recorded.
+jq 'map(.sessionId = "../s aa")' "$AVF/bind.json" > "$AVREC/oddsid.json"
+AVJO=$(av_np "alpha"); av_once bind.json AV_JSON="$AVREC/oddsid.json" >/dev/null
+is "a job session that is no plain id is not recorded; the bind still is" "aa|" \
+   "$(avo @cockpit_job "$AVJO")|$(avo @cockpit_job_session "$AVJO")"
 av_tm kill-server >/dev/null 2>&1
 fi
 
