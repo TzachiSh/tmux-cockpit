@@ -424,11 +424,15 @@ impl Drop for RigSocket {
     }
 }
 
-/// The rig child half started by [`fake::handed_start`] and ended by `end` once its
-/// server runs: the child's pid, its server's socket and the folder its pane runs in, or
-/// `None` where tmux is not there.
+/// A handed child's TMUX_TMPDIR as read from its environ, or why that read gave no answer.
 #[cfg(target_os = "linux")]
-fn rig_ended(end: impl FnOnce(fake::Handed)) -> Option<(u32, RigSocket, fake::Scratch)> {
+type Stored = Result<Option<std::ffi::OsString>, String>;
+
+/// The rig child half started by [`fake::handed_start`] and ended by `end` once its
+/// server runs: the child's pid, its server's socket, the folder its pane runs in and the
+/// TMUX_TMPDIR its end swept by, or `None` where tmux is not there.
+#[cfg(target_os = "linux")]
+fn rig_ended(end: impl FnOnce(fake::Handed)) -> Option<(u32, RigSocket, fake::Scratch, Stored)> {
     let top = Path::new(env!("CARGO_TARGET_TMPDIR"));
     // one folder per call: the rows that call this run at once in one process
     static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
@@ -445,13 +449,27 @@ fn rig_ended(end: impl FnOnce(fake::Handed)) -> Option<(u32, RigSocket, fake::Sc
     let read = || std::fs::read_to_string(&file).unwrap_or_default();
     let ready = within(|| !read().is_empty());
     let said = read();
+    let stored = h.tmpdir();
     end(h);
     assert!(ready, "the rig child half never wrote its server's pid");
     if said == "none" {
         eprintln!("SKIP: no tmux on PATH");
         return None;
     }
-    Some((pid, sock, s))
+    Some((pid, sock, s, stored))
+}
+
+/// What a rig child half's end leaves: no server or pane, each killed here where one is,
+/// and no socket. Its end swept by the TMUX_TMPDIR it read from the child's environ, which
+/// must be this binary's: a red names that read, `Ok(None)` or an `Err` where it gave no
+/// answer, as a read inside the child's exec does (#1255), or another folder, beside what
+/// was left, `Some` where a poll of 10 s never found none.
+#[cfg(target_os = "linux")]
+fn assert_rig_gone(pid: u32, sock: &RigSocket, stored: Stored) {
+    let left = fake::servers_left_killed(pid);
+    let want = (Ok(Some(fake::checked_tmux().into_os_string())), None);
+    assert_eq!((stored, left), want, "the child {pid}: its TMUX_TMPDIR as read, its rigs left");
+    assert!(!sock.0.exists(), "{} is left", sock.0.display());
 }
 
 /// #1233: the bound's end takes along the servers and panes of the rigs its child started,
@@ -459,11 +477,11 @@ fn rig_ended(end: impl FnOnce(fake::Handed)) -> Option<(u32, RigSocket, fake::Sc
 #[test]
 #[cfg(target_os = "linux")]
 fn the_bound_ends_a_handed_childs_rig_servers() {
-    let Some((pid, sock, _dir)) = rig_ended(|mut h| drop(h.end_at_bound(fake::HANDED_FOR))) else {
+    let end = |mut h: fake::Handed| drop(h.end_at_bound(fake::HANDED_FOR));
+    let Some((pid, sock, _dir, stored)) = rig_ended(end) else {
         return;
     };
-    fake::assert_no_server_left(pid);
-    assert!(!sock.0.exists(), "{} is left", sock.0.display());
+    assert_rig_gone(pid, &sock, stored);
 }
 
 /// #1233: so does the unwind of a row that panicked while its handed child ran.
@@ -477,9 +495,54 @@ fn an_unwind_ends_a_handed_childs_rig_servers() {
         }));
         assert!(unwound.is_err());
     };
-    let Some((pid, sock, _dir)) = rig_ended(end) else {
+    let Some((pid, sock, _dir, stored)) = rig_ended(end) else {
         return;
     };
-    fake::assert_no_server_left(pid);
-    assert!(!sock.0.exists(), "{} is left", sock.0.display());
+    assert_rig_gone(pid, &sock, stored);
+}
+
+/// One scripted read of a child's environ each: what it gives, `None` for a process gone.
+#[cfg(target_os = "linux")]
+type Script<'a> = &'a [Option<&'a [u8]>];
+
+/// [`fake::tmpdir_in`] fed `script`, then empty reads, then from the 10001st read a process
+/// gone, so a wait with no bound still ends. Its clock moves 1 ms a wait and never
+/// sleeps. What it answered, and the reads it took.
+#[cfg(target_os = "linux")]
+fn scripted(script: Script) -> (Stored, usize) {
+    let (reads, waits) = (std::cell::Cell::new(0), std::cell::Cell::new(0));
+    let read = || {
+        let n = reads.replace(reads.get() + 1);
+        match script.get(n) {
+            Some(r) => r.map(<[u8]>::to_vec),
+            None => (n < 10_000).then(Vec::new),
+        }
+    };
+    let wait = || {
+        waits.set(waits.get() + 1);
+        std::time::Duration::from_millis(waits.get())
+    };
+    (fake::tmpdir_in(read, wait), reads.get())
+}
+
+/// #1255: a child's TMUX_TMPDIR is read once its exec has an environ. std's spawn returns
+/// once the exec has closed the child's close-on-exec files, before the kernel has set
+/// where its environ lies, and /proc reads it empty until then. An empty read is read
+/// again, for up to 5 s; an environ without the variable, or no process, answers at once.
+#[test]
+#[cfg(target_os = "linux")]
+fn a_childs_tmpdir_is_read_once_its_exec_has_an_environ() {
+    let (empty, unset, full): (&[u8], &[u8], &[u8]) = (b"", b"A=1\0", b"A=1\0TMUX_TMPDIR=/t\0");
+    let dir = || -> Stored { Ok(Some("/t".into())) };
+    let never = Err("environ still empty after 5 s".to_string());
+    let rows: [(&str, Script, (Stored, usize)); 5] = [
+        ("mid-exec", &[Some(empty), Some(full)], (dir(), 2)),
+        ("mid-exec twice", &[Some(empty), Some(empty), Some(full)], (dir(), 3)),
+        ("unset", &[Some(unset)], (Ok(None), 1)),
+        ("gone", &[None], (Ok(None), 1)),
+        ("never", &[], (never, 5000)),
+    ];
+    let got: Vec<_> = rows.iter().map(|&(name, script, _)| (name, scripted(script))).collect();
+    let want: Vec<_> = rows.into_iter().map(|(name, _, want)| (name, want)).collect();
+    assert_eq!(got, want);
 }

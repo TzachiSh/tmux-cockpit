@@ -558,6 +558,12 @@ impl Handed {
         self.pid
     }
 
+    /// The TMUX_TMPDIR read from the child's environ at its start, or why that read gave no
+    /// answer: what its end sweeps by (#1255).
+    pub fn tmpdir(&self) -> Result<Option<std::ffi::OsString>, String> {
+        self.tmpdir.clone()
+    }
+
     /// The run's report: how it ended, then all it wrote.
     fn said(&self, status: &str) -> String {
         let read = |p: &Path| std::fs::read(p).unwrap_or_default();
