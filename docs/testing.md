@@ -142,6 +142,27 @@ killed leaves an entry that signals a channel nobody waits on. With
 run with none of the nineteen exported left nothing: everything went under the
 suite's own `HOME`, which it deletes.
 
+### The poller switch, `COCKPIT_NO_AUTOSTART`
+
+A load of `cockpit.tmux` and every window or pane change run `agent-state sweep`,
+and a relayed agent notification (`agent_needs_input`, `agent_completed`) runs
+`agent-state notify`. Each can start `scripts/agent-poll`, which runs
+`claude agents --json --all` by `PATH` (#448, #174). With `COCKPIT_NO_AUTOSTART`
+set and not empty, none of them starts a poller (#1111). A notification still
+marks its pane as an agent view, so a poller a block starts itself serves it.
+
+The switch is read in the environment of whatever would start the poller. tmux
+runs the sweeps of the load and the hooks with the server's global environment,
+copied from the process that started the server, so start the server with the
+switch set. A notification reads the hook's own environment, which for a real
+`claude` in a pane is the pane's, copied from the server's.
+
+The suite exports it for every block. The agent-view blocks that need a poller
+unset it where they call the sweep or the hook. Start a probe or review server
+with it set, and with `@cockpit_bg_poll off` in its config before the load. A
+stub `claude` first on `PATH` is still needed: the board, `cockpit-tui info` and
+the panel run `claude` from a key, not from a load.
+
 ### The suite's tmux sockets
 
 Every tmux server the suite starts is on a socket of its own name, under

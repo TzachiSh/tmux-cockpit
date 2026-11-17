@@ -438,8 +438,9 @@ debounce, so a burst starts one. An agent-view notification starts it too. A sta
 compare-and-set on the slot, so a second one exits. It stays for as long as the server
 does and leaves when the server goes. It does not leave when no job exists, because
 nothing a job does can start it again, and an agent that begins a viewer in a shell
-fires no window event. `@cockpit_bg_poll off` never starts it. No foreground hook starts it, so a
-plain `Stop` costs what it did.
+fires no window event. `@cockpit_bg_poll off` never starts it, and neither does a sweep or
+notification run with `COCKPIT_NO_AUTOSTART` set, the switch for tests and probes
+(docs/testing.md, #1111). No foreground hook starts it, so a plain `Stop` costs what it did.
 
 **One poller per config dir.** A pane's hooks run with the `CLAUDE_CONFIG_DIR` its
 `claude` uses, so each hook records it on the pane as `@cockpit_cfg`, and a pane on
