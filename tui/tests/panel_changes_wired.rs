@@ -9,7 +9,6 @@ use cockpit_tui::panel::app::{App, QUICK, Tile, View};
 use cockpit_tui::panel::capture::Capture;
 use cockpit_tui::panel::changes::{Changes, Collector, Gh, Note, Seen};
 use cockpit_tui::panel::changes::{mark_seen, read_seen, repo_key};
-use cockpit_tui::panel::envelope::{Flow, Role, Turn, build_refs};
 use cockpit_tui::panel::look::{Looks, mark_at};
 use cockpit_tui::panel::request::{Call, Effort};
 use cockpit_tui::panel::view::render;
@@ -42,6 +41,19 @@ exit "$(cat "$0.exit" 2>/dev/null || echo 0)"
 
 /// A stand-in claude that reads the prompt and answers.
 const ANSWERS: &str = "#!/bin/sh\ncat >/dev/null\nprintf 'it is'\n";
+
+/// A stand-in claude that keeps the whole request it got: its argv one per
+/// line, the system prompt file's text, and the user prompt on stdin.
+const RECORDS: &str = r#"#!/bin/sh
+printf '%s\n' "$@" > "$0.argv"
+prev=
+for a; do
+    [ "$prev" = --system-prompt-file ] && cat "$a" > "$0.system"
+    prev=$a
+done
+cat > "$0.stdin"
+printf 'it is'
+"#;
 
 fn git(dir: &Path, args: &[&str]) -> String {
     let o = Command::new("git")
@@ -159,7 +171,12 @@ impl Rig {
 
     /// A claude by its full path, with `body`.
     fn claude(&self, body: &str) -> Call {
-        let bin = self.s.join("claude");
+        self.claude_at("claude", body)
+    }
+
+    /// A claude by its full path `name` under the rig, with `body`.
+    fn claude_at(&self, name: &str, body: &str) -> Call {
+        let bin = self.s.join(name);
         write_exec(&bin, body);
         Call {
             claude: bin.display().to_string(),
@@ -168,6 +185,16 @@ impl Rig {
             effort: Effort::Medium,
         }
     }
+}
+
+/// What the [`RECORDS`] claude `name` got: its argv, with the system prompt
+/// file's path as `<file>`, that file's text, and its stdin.
+fn request(r: &Rig, name: &str) -> (Vec<String>, String, String) {
+    let read = |what: &str| std::fs::read_to_string(r.s.join(format!("{name}.{what}"))).unwrap();
+    let mut argv: Vec<String> = read("argv").lines().map(String::from).collect();
+    let at = argv.iter().position(|a| a == "--system-prompt-file").expect("a system prompt file");
+    argv[at + 1] = "<file>".into();
+    (argv, read("system"), read("stdin"))
 }
 
 fn key(a: &mut App, c: KeyCode) {
@@ -288,7 +315,8 @@ fn explain_never_waits_for_the_list() {
 }
 
 /// #935 task 4 adds the list to the request with its prompt text; until then
-/// the request is the one an App with no collector sends.
+/// the whole request, system prompt, argv and user prompt alike, is the one
+/// an App with no collector sends for the same screen and question.
 #[test]
 fn the_request_is_the_same_with_the_list_collected() {
     let r = Rig::new("bytes");
@@ -297,13 +325,12 @@ fn the_request_is_the_same_with_the_list_collected() {
     explain(&mut a, '1');
     let (_, lines) = landed(&mut a);
     assert_eq!(lines, [format!("{} two", short(&two))]);
-    let (_, prompt, _) = a.request_parts().unwrap();
-    let turns = [Turn {
-        role: Role::User,
-        text: QUICK[0].1.into(),
-    }];
-    // Explain's 6 rounds, none asked yet
-    assert_eq!(prompt, build_refs(&Flow::Explain, &a.cap, &turns, 6, &[]).text);
+    answered(&mut a, &r.claude_at("with", RECORDS));
+    let mut b = r.app();
+    b.changes = None;
+    explain(&mut b, '1');
+    answered(&mut b, &r.claude_at("without", RECORDS));
+    assert_eq!(request(&r, "with"), request(&r, "without"));
 }
 
 #[test]
@@ -363,6 +390,30 @@ fn last_seen_is_written_once_the_answer_is_drawn_and_not_before() {
         at: T0,
     };
     assert_eq!((before, r.read()), (Some(old), Some(Seen { head: two, at: T1 })));
+}
+
+/// The list is the body's top rows: a frame scrolled away from them has not
+/// shown it, so it marks nothing; one back at the top does.
+#[test]
+fn a_frame_scrolled_off_the_list_does_not_mark() {
+    let r = Rig::new("scrolled");
+    let two = commit(&r.repo, "two");
+    let mut a = r.app();
+    explain(&mut a, '1');
+    settle(&mut a);
+    answered(&mut a, &r.claude(ANSWERS));
+    assert!(a.changes_shown().is_some());
+    // as the user's scroll leaves it, before any frame at the top
+    a.view = View::Answer { scroll: 3, armed: false };
+    a.frame(1);
+    let away = r.read();
+    a.view = View::Answer { scroll: 0, armed: false };
+    a.frame(2);
+    let old = Seen {
+        head: r.first.clone(),
+        at: T0,
+    };
+    assert_eq!((away, r.read()), (Some(old), Some(Seen { head: two, at: T1 })));
 }
 
 #[test]
