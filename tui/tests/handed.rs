@@ -100,6 +100,13 @@ fn left_after(how: &str, end: impl FnOnce(fake::Handed)) -> Vec<u32> {
     let Some(both) = both else {
         panic!("{how}: the child half's sleep never wrote its pid");
     };
+    left_running(both)
+}
+
+/// Of `both`, as [`pids`] read them, the pids still running once each is gone or a poll
+/// has run out, each then killed, read again as itself just before.
+#[cfg(target_os = "linux")]
+fn left_running(both: [(u32, u64); 2]) -> Vec<u32> {
     within(|| both.iter().all(|&(p, t)| !alive(p, t)));
     let left: Vec<_> = both.into_iter().filter(|&(p, t)| alive(p, t)).collect();
     for &(p, t) in &left {
