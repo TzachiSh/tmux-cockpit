@@ -16611,6 +16611,27 @@ jq 'map(.sessionId = "../s aa")' "$AVF/bind.json" > "$AVREC/oddsid.json"
 AVJO=$(av_np "alpha"); av_once bind.json AV_JSON="$AVREC/oddsid.json" >/dev/null
 is "a job session that is no plain id is not recorded; the bind still is" "aa|" \
    "$(avo @cockpit_job "$AVJO")|$(avo @cockpit_job_session "$AVJO")"
+# A trailing newline is no plain id either (#1267): jq's `$` matches before one, and the sid,
+# unlike the name, is not cleaned, so it split the M line and the bind lost its name.
+jq 'map(if .id == "aa" then .sessionId = "s-ab\n" else . end)' "$AVF/bind.json" \
+    > "$AVREC/nlsid.json"
+avjs() {                      # avjs <pane>: "<job>|<job name>|<job session>"
+    printf '%s|%s|%s' "$(avo @cockpit_job "$1")" "$(avo @cockpit_job_name "$1")" \
+        "$(avo @cockpit_job_session "$1")"
+}
+AVJN=$(av_np "alpha"); av_once bind.json AV_JSON="$AVREC/nlsid.json" >/dev/null
+is "a job session ending in a newline is not recorded; the bind keeps its name" "aa|alpha|" \
+   "$(avjs "$AVJN")"
+# ...and the split line's tail, for a job named W, read as a second W line and blanked the
+# worst of all: no pane was written that tick.
+jq '. + [{"pid": 50, "id": "ww", "cwd": "/x", "kind": "background", "startedAt": 1,
+    "sessionId": "s-ww\n", "name": "W", "status": "idle", "state": "working"}]' \
+    "$AVF/bind.json" > "$AVREC/wsid.json"
+AVJW=$(av_np "W"); AVJM=$(av_np "nothing"); av_tm set-option -p -t "$AVJM" @cockpit_agentview 1
+av_once bind.json AV_JSON="$AVREC/wsid.json" >/dev/null
+is "...a job named W with such a session still leaves the worst of all written" \
+   "||needs-input|fix the parser needs you" "$(avj "$AVJM")"
+is "...and binds its own pane, its name kept" "ww|W|" "$(avjs "$AVJW")"
 av_tm kill-server >/dev/null 2>&1
 fi
 
