@@ -321,8 +321,8 @@ pub fn handed(
 ) -> Result<u32, String> {
     handed_with(rows, signals, env, bound, |c| {
         let spawned = {
-            let _env = test_env::for_check("handed");
-            c.spawn()
+            let env = test_env::for_check("handed");
+            spawn_held(&env, c)
         };
         spawned.unwrap()
     })
@@ -331,13 +331,28 @@ pub fn handed(
 /// [`handed`] for a caller that holds [`env_lock`]'s lock, as `held` proves.
 #[allow(dead_code)]
 pub fn handed_held(
-    _held: &EnvHeld,
+    held: &EnvHeld,
     rows: &[&str],
     signals: &'static [libc::c_int],
     env: &[(&str, &str)],
     bound: std::time::Duration,
 ) -> Result<u32, String> {
-    handed_with(rows, signals, env, bound, |c| c.spawn().unwrap())
+    handed_with(rows, signals, env, bound, |c| spawn_held(held, c).unwrap())
+}
+
+/// What shows that this thread holds [`env_lock`]'s lock at a spawn: the guard a
+/// guard-less start takes for it, or a holder's token.
+#[allow(dead_code)]
+trait Holds {}
+impl Holds for std::sync::MutexGuard<'static, ()> {}
+impl Holds for EnvHeld {}
+
+/// `c` spawned while `_lock` is alive, so the child starts with no write a sibling holds
+/// under the lock (#1142). Every start of a child here goes through this, so a spawn after
+/// the guard was let go does not build: the guard is gone before it can be lent.
+#[allow(dead_code)]
+fn spawn_held(_lock: &impl Holds, c: &mut Command) -> std::io::Result<std::process::Child> {
+    c.spawn()
 }
 
 /// [`handed`]'s body, its child started by `spawn`.
@@ -581,16 +596,16 @@ fn state_refusal() -> Option<String> {
 pub fn run_by_hand(test: &str, set: &[(&str, &str)]) -> (Option<i32>, String) {
     let mut c = by_hand(test, set);
     let spawned = {
-        let _env = test_env::for_check("run_by_hand");
-        c.spawn()
+        let env = test_env::for_check("run_by_hand");
+        spawn_held(&env, &mut c)
     };
     said_by_hand(spawned.unwrap())
 }
 
 /// [`run_by_hand`] for a caller that holds [`env_lock`]'s lock, as `held` proves.
 #[allow(dead_code)]
-pub fn run_by_hand_held(_held: &EnvHeld, test: &str, set: &[(&str, &str)]) -> (Option<i32>, String) {
-    said_by_hand(by_hand(test, set).spawn().unwrap())
+pub fn run_by_hand_held(held: &EnvHeld, test: &str, set: &[(&str, &str)]) -> (Option<i32>, String) {
+    said_by_hand(spawn_held(held, &mut by_hand(test, set)).unwrap())
 }
 
 /// [`run_by_hand`]'s command. Its own pipes: a spawn hands the child this
