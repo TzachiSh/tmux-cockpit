@@ -555,6 +555,38 @@ fn a_pane_on_another_machine_collects_nothing() {
     assert_eq!((a.changes_shown(), r.starts()), (None, 0));
 }
 
+/// Outside any repo, or in one with no commit yet, the list can never be
+/// marked seen: the answer opens at its bottom as before, with no list (#1269).
+#[test]
+fn a_pane_with_nothing_to_mark_shows_no_list() {
+    for row in ["not a repo", "no commit yet"] {
+        let r = Rig::new(&row.replace(' ', ""));
+        let dir = r.s.join("plain");
+        std::fs::create_dir_all(&dir).unwrap();
+        if row == "no commit yet" {
+            git(&dir, &["init", "-q", "-b", "main"]);
+        }
+        let cap = Capture {
+            name: "w".into(),
+            cmd: "bash".into(),
+            path: dir.display().to_string(),
+            screen: "$ ".into(),
+            ..Default::default()
+        };
+        let mut a = App::new("%3", cap);
+        a.changes = Some(Looks::new(r.collector(Duration::from_secs(20))));
+        explain(&mut a, '1');
+        settle(&mut a);
+        answered(&mut a, &r.claude(ANSWERS));
+        let at = View::Answer {
+            scroll: usize::MAX,
+            armed: false,
+        };
+        assert_eq!((a.view.clone(), a.changes_shown()), (at, None), "row {row}");
+        assert!(!frame(&a, 80, 20).contains("first look"), "row {row}");
+    }
+}
+
 /// After `git checkout HEAD~1` the old tip is still held by its branch: no
 /// commit and no rewrite, and the checkout detached HEAD.
 #[test]

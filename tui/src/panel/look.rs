@@ -85,14 +85,20 @@ impl Looks {
         self.cur.as_ref().is_some_and(|l| l.rx.is_some() && Instant::now() < l.until)
     }
 
-    /// A collect started, or its list in, that no answer has drawn yet.
+    /// A collect started, or its list in, that no answer has drawn yet. A list
+    /// that can never be marked seen is none ([`unmarkable`]).
     pub fn unseen(&self) -> bool {
-        self.cur.as_ref().is_some_and(|l| !l.done)
+        let none = |l: &Look| l.got.as_ref().is_some_and(|(c, _)| unmarkable(c));
+        self.cur.as_ref().is_some_and(|l| !l.done && !none(l))
     }
 
-    /// The heading and the lines the Answer draws, once the list is in.
+    /// The heading and the lines the Answer draws, once the list is in; none for
+    /// a list that can never be marked seen ([`unmarkable`]).
     pub fn shown(&self) -> Option<(String, Vec<String>)> {
         let (c, _) = self.cur.as_ref()?.got.as_ref()?;
+        if unmarkable(c) {
+            return None;
+        }
         let head = match (&c.seen, c.items.is_empty()) {
             (Some(s), false) => format!("what changed since you last looked, {}", utc(s.at)),
             (Some(s), true) => format!("nothing new listed since you last looked, {}", utc(s.at)),
@@ -112,6 +118,13 @@ impl Looks {
         let (key, head) = (c.key.as_deref()?, c.head.as_deref()?);
         Some(mark_seen(&self.store, key, head, at))
     }
+}
+
+/// A list with no repo key (outside any repo) or no head (no commit yet): no
+/// mark could ever be written, so it would open every Explain as a first look
+/// (#1269). The panel shows none.
+fn unmarkable(c: &Changes) -> bool {
+    c.key.is_none() || c.head.is_none()
 }
 
 /// The time a mark of `c` carries, `at` being when its collect started; `None`
