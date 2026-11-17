@@ -11321,7 +11321,8 @@ echo "== tests/par.sh: once its exit trap starts, no HUP, INT or TERM cuts it sh
 # files (#1127). So par.sh traps the three, and its exit trap ignores them first, as run.sh
 # does (#1107). Copies of par.sh in a sandbox as the #1153 block's: row printers and one block,
 # no server, so no socket folder comes into it. end holds in its exit trap, right before the
-# removal; win holds there and also before its shards run, where it writes its traps down. Each
+# removal; win holds there and also before its shards run, where it writes its traps down; sig
+# holds where win does, but as the exit trap's first line, before its ignore (#1223). Each
 # hold is a read on a fifo the copy holds open, ended by a line the row writes. Checkout c's
 # block passes; f's fails par.sh's syntax check, so end there ends 2 by a check.
 PQ=$(mktmpd); Q='"'; mkdir -p "$PQ/s"
@@ -11337,32 +11338,47 @@ pq_mk() {                     # <checkout> <its one block's body>
     } > "$PQ/$1/tests/run.sh"
     sed "s#rm -rf -- \"\\\$WORK\"#$pq_in&#" "$DIR/tests/par.sh" > "$PQ/$1/tests/end.sh"
     sed "/^xrc=0\$/i $pq_body" "$PQ/$1/tests/end.sh" > "$PQ/$1/tests/win.sh"
+    # sig holds as par_clean's first line, before its ignore, where only par_sig's stands (#1223).
+    # A . for its brace: only.sh's extraction counts braces in strings too, and one left open
+    # here took the block's top-level lines into every shard.
+    sed "s#^par_clean() . #&$pq_in#" "$DIR/tests/par.sh" | sed "/^xrc=0\$/i $pq_body" \
+        > "$PQ/$1/tests/sig.sh"
 }
 pq_mk c 'is "pq1" 1 1'
 pq_mk f 'if true; then'
-is "each copy holds where it should" "1 2 1" "$(for c in c/tests/end c/tests/win f/tests/end; do
-    grep -c 'read -r -t 20 -u 9 _' "$PQ/$c.sh"; done | tr '\n' ' ' | sed 's/ $//')"
+is "each copy holds where it should" "1 2 2 1 1" "$({ for c in c/tests/end c/tests/win \
+    c/tests/sig f/tests/end; do grep -c 'read -r -t 20 -u 9 _' "$PQ/$c.sh"; done
+    grep -c '^par_clean() { \[ -p ' "$PQ/c/tests/sig.sh"; } | tr '\n' ' ' | sed 's/ $//')"
 pq_run() {                    # <copy> <checkout> <signal> [2nd] -> status|left in TMPDIR|.par.*
-    local c="" g rc dfl=() k=$2 # the last signal goes to the group while the exit trap holds
+    local c="" a="" g rc dfl=() k=$2 h=in # the last signal goes to the group in the exit trap
+    [ $# -lt 4 ] || h=started
     rm -rf "${PQ:?}/t" "${PQ:?}/h"; rm -f "$PQ/traps" "$PQ/$k/tests/".par.*
     mkdir -p "$PQ/t" "$PQ/h"
     for g in HUP INT TERM; do ! sig_dfl "$g" || dfl+=(--default-signal="$g"); done
     ( cd "$PQ/$2" && exec env "${dfl[@]}" -u TMUX -u PAR_BLOCKS TMPDIR="$PQ/t" \
         TMUX_TMPDIR="$PQ/s" PQ_H="$PQ/h" J=1 setsid bash "tests/$1.sh" ) \
         </dev/null >/dev/null 2>&1 & pq_p=$!
-    if [ $# -gt 3 ]; then until_out '?*' ls "$PQ/h/started" >/dev/null
-    else until_out '?*' ls "$PQ/h/in" >/dev/null
+    # signalled only once /proc names it, its comm bash and its argv[1] the copy; a failed check,
+    # a kill that fails or a hold never reached is named in place of the status (#1208)
+    if ! until_out '?*' ls "$PQ/h/$h" >/dev/null; then c="no hold: $h"
+    else
+        read -r c 2>/dev/null < "/proc/$pq_p/comm"
+        a=$(tr '\0' '\n' 2>/dev/null < "/proc/$pq_p/cmdline" | sed -n 2p)
+        if [ "$c" != bash ] || [ "$a" != "tests/$1.sh" ]; then c="no signal: comm [$c] argv [$a]"
+        else
+            c=""
+            [ $# -lt 4 ] || { kill -"$3" "$pq_p" 2>/dev/null || c="no signal: kill $3"; shift; }
+            if until_out '?*' ls "$PQ/h/in" >/dev/null; then
+                kill -"$3" -- "-$pq_p" 2>/dev/null || c="no signal: kill $3"
+            else c="no hold: in"
+            fi
+        fi
     fi
-    read -r c 2>/dev/null < "/proc/$pq_p/comm"
-    if [ "$c" = bash ]; then
-        [ $# -lt 4 ] || { kill -"$3" "$pq_p" 2>/dev/null; shift; }
-        until_out '?*' ls "$PQ/h/in" >/dev/null
-        kill -"$3" -- "-$pq_p" 2>/dev/null
-        printf '\n' 1<>"$PQ/h/pf"       # ends the hold in the exit trap, if a run is left to read
-    fi
+    # ends the hold in the exit trap, if a run is left to read
+    [ ! -p "$PQ/h/pf" ] || printf '\n' 1<>"$PQ/h/pf"
     wait "$pq_p" 2>/dev/null; rc=$?
     [ ! -e "$PQ/h/traps" ] || mv "$PQ/h/traps" "$PQ/traps"
-    printf '%s|%s|%s' "$rc" "$(ls -A "$PQ/t" | tr '\n' ,)" \
+    printf '%s|%s|%s' "${c:-$rc}" "$(ls -A "$PQ/t" | tr '\n' ,)" \
         "$(ls -A "$PQ/$k/tests" | grep '^\.par' | tr '\n' ,)"
 }
 if ! command -v setsid >/dev/null; then skip_ "a signal in par.sh's exit trap (no setsid)"
@@ -11379,7 +11395,14 @@ else
         pq_want="trap -- 'par_sig 1' SIGHUP trap -- 'par_sig 2' SIGINT"
         is "par.sh's own traps take HUP, INT and TERM" "$pq_want trap -- 'par_sig 15' SIGTERM" \
            "$(tr '\n' ' ' 2>/dev/null < "$PQ/traps" | sed 's/ $//')"
+        # a Ctrl-C pressed twice, and one in the exit trap of a run at its end (#1219)
+        is "nor an INT after an INT" "130||" "$(pq_run win c INT INT)"
+        is "nor an INT to its group as its exit trap starts, after an INT" "130||" \
+           "$(pq_run sig c INT INT)"
+        is "nor an INT in the exit trap of a run that came to its end" "0||" "$(pq_run end c INT)"
     fi
+    is "a TERM to its group as its exit trap starts, after a TERM, leaves nothing" "143||" \
+       "$(pq_run sig c TERM TERM)"
     is "a HUP to its group while the exit trap of a run that came to its end runs leaves nothing" \
        "0||" "$(pq_run end c HUP)"
     is "nor a TERM" "0||" "$(pq_run end c TERM)"
@@ -11542,9 +11565,10 @@ echo "== tests/only.sh, tests/changed.sh: no HUP, INT or TERM cuts an exit trap 
 # left its tests/.only.* file in the checkout, changed.sh its table in TMPDIR. So both trap the
 # three, and their exit traps ignore them first. Copies in a sandbox, held as #1127's: oend and
 # cend hold in the exit trap, right before the removal; owin and cwin hold there and also before
-# their work, where they write their traps down. only.sh runs fx.sh's one block through
-# ONLY_RUN, or ends 2 on a pattern no block matches; changed.sh reads the sandbox's run.sh. No
-# git, no make, no server.
+# their work, where they write their traps down; osig and csig hold where owin and cwin do, but
+# as the exit trap's first line (#1223). only.sh runs fx.sh's one block through ONLY_RUN, or
+# ends 2 on a pattern no block matches; changed.sh reads the sandbox's run.sh. No git, no make,
+# no server.
 OC=$(mktmpd); mkdir -p "$OC/c/tests" "$OC/c/scripts" "$OC/s"
 oc_in='[ -p "$OC_H/pf" ] || mkfifo "$OC_H/pf"; exec 9<>"$OC_H/pf"; : > "$OC_H/in"; '
 oc_in="${oc_in}read -r -t 20 -u 9 _; "
@@ -11559,10 +11583,20 @@ sed "s#rm -f -- \"\\\$OUT\"#$oc_in&#" "$DIR/tests/only.sh" > "$OC/c/tests/oend.s
 sed "/^bash -n /i $oc_body" "$OC/c/tests/oend.sh" > "$OC/c/tests/owin.sh"
 sed "s#rm -f -- \"\\\$TBL\"#$oc_in&#" "$DIR/tests/changed.sh" > "$OC/c/tests/cend.sh"
 sed "/^SCRIPTS=/i $oc_body" "$OC/c/tests/cend.sh" > "$OC/c/tests/cwin.sh"
-is "each copy holds where it should" "1 2 1 2" "$(for c in oend owin cend cwin; do
-    grep -c 'read -r -t 20 -u 9 _' "$OC/c/tests/$c.sh"; done | tr '\n' ' ' | sed 's/ $//')"
+# osig and csig hold where owin and cwin do, but as the exit trap's first line, before its
+# ignore, where only only_sig's or chg_sig's stands (#1223)
+sed "s#^only_clean() { #&$oc_in#" "$DIR/tests/only.sh" | sed "/^bash -n /i $oc_body" \
+    > "$OC/c/tests/osig.sh"
+sed "s#^chg_clean() { #&$oc_in#" "$DIR/tests/changed.sh" | sed "/^SCRIPTS=/i $oc_body" \
+    > "$OC/c/tests/csig.sh"
+is "each copy holds where it should" "1 2 2 1 2 2 1 1" "$({
+    for c in oend owin osig cend cwin csig; do
+        grep -c 'read -r -t 20 -u 9 _' "$OC/c/tests/$c.sh"; done
+    grep -c '^only_clean() { \[ -p ' "$OC/c/tests/osig.sh"
+    grep -c '^chg_clean() { \[ -p ' "$OC/c/tests/csig.sh"; } | tr '\n' ' ' | sed 's/ $//')"
 oc_run() {                    # <copy> <pattern|--each> <signal> [2nd] -> status|TMPDIR|.only.*
-    local c="" g rc dfl=() a=("$2")   # the last signal goes to the group in the exit trap
+    local c="" w="" g rc dfl=() a=("$2") h=in # the last signal goes to the group in the exit trap
+    [ $# -lt 4 ] || h=started
     [ "$2" != --each ] || a+=(scripts/tool)
     rm -rf "${OC:?}/t" "${OC:?}/h"; rm -f "$OC/traps" "$OC/c/tests/".only.*
     mkdir -p "$OC/t" "$OC/h"
@@ -11570,19 +11604,27 @@ oc_run() {                    # <copy> <pattern|--each> <signal> [2nd] -> status
     ( cd "$OC/c" && exec env "${dfl[@]}" -u TMUX TMPDIR="$OC/t" TMUX_TMPDIR="$OC/s" \
         OC_H="$OC/h" ONLY_RUN="$OC/c/fx.sh" setsid bash "tests/$1.sh" "${a[@]}" ) \
         </dev/null >/dev/null 2>&1 & oc_p=$!
-    if [ $# -gt 3 ]; then until_out '?*' ls "$OC/h/started" >/dev/null
-    else until_out '?*' ls "$OC/h/in" >/dev/null
+    # signalled only once /proc names it, its comm bash and its argv[1] the copy; a failed check,
+    # a kill that fails or a hold never reached is named in place of the status (#1208)
+    if ! until_out '?*' ls "$OC/h/$h" >/dev/null; then c="no hold: $h"
+    else
+        read -r c 2>/dev/null < "/proc/$oc_p/comm"
+        w=$(tr '\0' '\n' 2>/dev/null < "/proc/$oc_p/cmdline" | sed -n 2p)
+        if [ "$c" != bash ] || [ "$w" != "tests/$1.sh" ]; then c="no signal: comm [$c] argv [$w]"
+        else
+            c=""
+            [ $# -lt 4 ] || { kill -"$3" "$oc_p" 2>/dev/null || c="no signal: kill $3"; shift; }
+            if until_out '?*' ls "$OC/h/in" >/dev/null; then
+                kill -"$3" -- "-$oc_p" 2>/dev/null || c="no signal: kill $3"
+            else c="no hold: in"
+            fi
+        fi
     fi
-    read -r c 2>/dev/null < "/proc/$oc_p/comm"
-    if [ "$c" = bash ]; then
-        [ $# -lt 4 ] || { kill -"$3" "$oc_p" 2>/dev/null; shift; }
-        until_out '?*' ls "$OC/h/in" >/dev/null
-        kill -"$3" -- "-$oc_p" 2>/dev/null
-        printf '\n' 1<>"$OC/h/pf"       # ends the hold in the exit trap, if a run is left to read
-    fi
+    # ends the hold in the exit trap, if a run is left to read
+    [ ! -p "$OC/h/pf" ] || printf '\n' 1<>"$OC/h/pf"
     wait "$oc_p" 2>/dev/null; rc=$?
     [ ! -e "$OC/h/traps" ] || mv "$OC/h/traps" "$OC/traps"
-    printf '%s|%s|%s' "$rc" "$(ls -A "$OC/t" | tr '\n' ,)" \
+    printf '%s|%s|%s' "${c:-$rc}" "$(ls -A "$OC/t" | tr '\n' ,)" \
         "$(ls -A "$OC/c/tests" | grep '^\.only' | tr '\n' ,)"
 }
 oc_traps() { tr '\n' ' ' 2>/dev/null < "$OC/traps" | sed 's/ $//'; }
@@ -11608,7 +11650,21 @@ else
         is "changed.sh: nor a TERM after an INT" "130||" "$(oc_run cwin --each INT TERM)"
         is "changed.sh's own traps take HUP, INT and TERM" "${oc_want//only_sig/chg_sig}" \
            "$(oc_traps)"
+        # a Ctrl-C pressed twice, and one in the exit trap of a run at its end (#1219)
+        is "only.sh: nor an INT after an INT" "130||" "$(oc_run owin '^oc1' INT INT)"
+        is "nor an INT to its group as its exit trap starts, after an INT" "130||" \
+           "$(oc_run osig '^oc1' INT INT)"
+        is "nor an INT in the exit trap of a run that came to its end" "0||" \
+           "$(oc_run oend '^oc1' INT)"
+        is "changed.sh: nor an INT after an INT" "130||" "$(oc_run cwin --each INT INT)"
+        is "nor an INT to its group as its exit trap starts, after an INT" "130||" \
+           "$(oc_run csig --each INT INT)"
+        is "nor an INT in the exit trap of a run at its end" "0||" "$(oc_run cend --each INT)"
     fi
+    is "only.sh: a TERM to its group as its exit trap starts, after a TERM, leaves no .only file" \
+       "143||" "$(oc_run osig '^oc1' TERM TERM)"
+    is "changed.sh: a TERM to its group as its exit trap starts, after a TERM, leaves no table" \
+       "143||" "$(oc_run csig --each TERM TERM)"
     is "only.sh: a HUP to its group in the exit trap of a run that came to its end leaves none" \
        "0||" "$(oc_run oend '^oc1' HUP)"
     is "nor a TERM" "0||" "$(oc_run oend '^oc1' TERM)"
@@ -11630,9 +11686,9 @@ echo "== tests/clean-run.sh, tui-refusers.sh: no HUP, INT or TERM leaves a temp 
 # says so in place of a status (#1208), and a hold never reached is named the same way. The hold
 # is cs-hold, a read on a fifo it holds open, ended by a line the row writes. clean-run.sh runs
 # it as its command, tui-refusers.sh's stub cargo runs it, and the -end copies run it in the exit
-# trap, right before the removal. dash runs a trap once the command in the foreground is done,
-# so a signal to the script alone lands when the row ends the command's hold. No cargo, no make,
-# no namespace, no server.
+# trap, right before the removal, the -sig copies as that trap's first line (#1223). dash runs
+# a trap once the command in the foreground is done, so a signal to the script alone lands when
+# the row ends the command's hold. No cargo, no make, no namespace, no server.
 CS=$(mktmpd); mkdir -p "$CS/c/tests" "$CS/c/tui" "$CS/bin"
 printf '%s\n' '#!/bin/bash' '# <run|in>: run is the command, held only where CS_RUN is hold' \
     'if [ "$1" = run ]; then case ${CS_RUN-} in pass) exit 0 ;; fail) exit 3 ;; esac; fi' \
@@ -11647,6 +11703,10 @@ sed '/^    for d in "\$t" "\$x"; do$/i cs-hold in' "$DIR/tests/clean-run.sh" \
     > "$CS/c/tests/cr-end.sh"
 sed 's#\[ -z "\$list" \] || rm -f#cs-hold in; &#' "$DIR/tests/tui-refusers.sh" \
     > "$CS/c/tests/tr-end.sh"
+# the -sig copies hold as the exit trap's first line, before its ignore, where only cr_sig's or
+# tr_sig's stands (#1223)
+sed '/^cr_clean() {$/a cs-hold in' "$DIR/tests/clean-run.sh" > "$CS/c/tests/cr-sig.sh"
+sed 's#tr_clean() { #&cs-hold in; #' "$DIR/tests/tui-refusers.sh" > "$CS/c/tests/tr-sig.sh"
 chmod +x "$CS/c/tests/"*.sh
 cs_run() {   # <script> <its command: hold|pass|fail> [signal] [2nd] -> status|left in TMPDIR
     local s=$1 c="" g rc dfl=() a=() k=run; shift
@@ -11696,22 +11756,29 @@ elif [ ! -r "/proc/$$/comm" ]; then skip_ "$cs_sk (no /proc)"
 elif ! sig_dfl HUP && [ "$(trap -p HUP)" = "trap -- '' SIGHUP" ]; then
     skip_ "$cs_sk (SIGHUP is ignored and env cannot reset it)"
 else
-    is "each -end copy holds in its exit trap, once" "1 1" \
-       "$(for c in cr-end tr-end; do grep -c 'cs-hold in' "$CS/c/tests/$c.sh"; done | tr '\n' ' ' |
-          sed 's/ $//')"
-    for cs_s in clean-run.sh:cr-end.sh tui-refusers.sh:tr-end.sh; do
-        cs_e=${cs_s#*:}; cs_s=${cs_s%:*}
+    is "each -end and -sig copy holds in its exit trap, once" "1 1 1 1" \
+       "$(for c in cr-end tr-end cr-sig tr-sig; do grep -c 'cs-hold in' "$CS/c/tests/$c.sh"; done |
+          tr '\n' ' ' | sed 's/ $//')"
+    is "each -sig copy holds as its exit trap's first line" "cs-hold in|1" \
+       "$(sed -n '/^cr_clean() {$/{n;p;}' "$CS/c/tests/cr-sig.sh")|$(
+          grep -c "tr_clean() { cs-hold in; trap '' HUP INT TERM;" "$CS/c/tests/tr-sig.sh")"
+    for cs_s in clean-run.sh:cr-end.sh:cr-sig.sh tui-refusers.sh:tr-end.sh:tr-sig.sh; do
+        cs_g=${cs_s##*:}; cs_e=${cs_s#*:}; cs_e=${cs_e%:*}; cs_s=${cs_s%%:*}
         is "$cs_s: a TERM to it alone while its command runs leaves no temp path" "143|" \
            "$(cs_run "$cs_s" hold TERM)"
         is "nor a HUP" "129|" "$(cs_run "$cs_s" hold HUP)"
         is "$cs_s: a HUP, then a HUP to its group in its exit trap, leaves nothing" "129|" \
            "$(cs_run "$cs_e" hold HUP HUP)"
         is "nor a TERM after a TERM" "143|" "$(cs_run "$cs_e" hold TERM TERM)"
+        is "nor a TERM to its group as its exit trap starts, after a TERM" "143|" \
+           "$(cs_run "$cs_g" hold TERM TERM)"
         if ! sig_dfl INT; then skip_ "an INT to $cs_s (env cannot reset SIGINT)"
         else
             is "$cs_s: nor an INT to it alone" "130|" "$(cs_run "$cs_s" hold INT)"
             is "nor a TERM after an INT" "130|" "$(cs_run "$cs_e" hold INT TERM)"
             is "nor an INT after an INT" "130|" "$(cs_run "$cs_e" hold INT INT)"
+            is "nor an INT to its group as its exit trap starts, after an INT" "130|" \
+               "$(cs_run "$cs_g" hold INT INT)"
             is "$cs_s: nor an INT in the exit trap of a run at its end" "0|" \
                "$(cs_run "$cs_e" pass INT)"
         fi
@@ -11723,7 +11790,7 @@ else
        "3|" "$(cs_run cr-end.sh fail HUP)"
     is "no hold is left running" "" "$(until_out '' cs_alive; cs_alive)"
 fi
-unset -f cs_run cs_alive; unset CS cs_p cs_s cs_e cs_sk
+unset -f cs_run cs_alive; unset CS cs_p cs_s cs_e cs_g cs_sk
 
 echo "== tests/green.sh: the stamp hits on unchanged content, misses on one changed byte, and tool versions are in the key =="
 GROOT=$(mktmpd)
@@ -21158,24 +21225,33 @@ is "each copy holds where it should, and fat ends by fatal" "3 3 2 2 1" "$({
     for c in win ctl end fat; do grep -c 'read -r -t 20 -u 9 _' "$S2/tests/$c.sh"; done
     grep -c "^fatal 'the #1107" "$S2/tests/fat.sh"; } | tr '\n' ' ' | sed 's/ $//')"
 s2_run() {                    # <copy> <signal> [2nd] -> status|carriers|left|listeners|sockets
-    local c="" rc g d=() k=$1     # the last signal goes to the group while the cleanup holds
+    local c="" a="" rc g d=() k=$1 h=in  # the last signal goes to the group in the cleanup
+    [ $# -lt 3 ] || h=started
     rm -rf "${S2:?}/t" "${S2:?}/s"; mkdir -p "$S2/t" "$S2/s"
     for g in HUP INT TERM; do ! sig_dfl "$g" || d+=(--default-signal="$g"); done
     ( cd "$S2" && exec env "${d[@]}" -u TMUX TMPDIR="$S2/t" TMUX_TMPDIR="$S2/s" \
         setsid bash "tests/$k.sh" ) </dev/null >/dev/null 2>&1 & s2_p=$!
-    if [ $# -gt 2 ]; then until_out '?*' ls "$S2/t/started" >/dev/null
-    else until_out '?*' ls "$S2/t/in" >/dev/null
+    # signalled only once /proc names it, its comm bash and its argv[1] the copy; a failed check,
+    # a kill that fails or a hold never reached is named in place of the status (#1208)
+    if ! until_out '?*' ls "$S2/t/$h" >/dev/null; then c="no hold: $h"
+    else
+        read -r c 2>/dev/null < "/proc/$s2_p/comm"
+        a=$(tr '\0' '\n' 2>/dev/null < "/proc/$s2_p/cmdline" | sed -n 2p)
+        if [ "$c" != bash ] || [ "$a" != "tests/$k.sh" ]; then c="no signal: comm [$c] argv [$a]"
+        else
+            c=""
+            [ $# -lt 3 ] || { kill -"$2" "$s2_p" 2>/dev/null || c="no signal: kill $2"; shift; }
+            if until_out '?*' ls "$S2/t/in" >/dev/null; then
+                kill -"$2" -- "-$s2_p" 2>/dev/null || c="no signal: kill $2"
+            else c="no hold: in"
+            fi
+        fi
     fi
-    read -r c 2>/dev/null < "/proc/$s2_p/comm"
-    if [ "$c" = bash ]; then
-        [ $# -lt 3 ] || { kill -"$2" "$s2_p" 2>/dev/null; shift; }
-        until_out '?*' ls "$S2/t/in" >/dev/null
-        kill -"$2" -- "-$s2_p" 2>/dev/null
-        printf '\n' 1<>"$S2/t/pf"       # ends the hold in the cleanup, if a run is left to read
-    fi
+    # ends the hold in the cleanup, if a run is left to read
+    [ ! -p "$S2/t/pf" ] || printf '\n' 1<>"$S2/t/pf"
     wait "$s2_p" 2>/dev/null; rc=$?
     [ ! -e "$S2/t/traps" ] || mv "$S2/t/traps" "$S2/traps.$k"
-    printf '%s|%s|%s|%s|%s' "$rc" "$(sig_left "$S2/t")" "$(ls -A "$S2/t" | tr '\n' ,)" \
+    printf '%s|%s|%s|%s|%s' "${c:-$rc}" "$(sig_left "$S2/t")" "$(ls -A "$S2/t" | tr '\n' ,)" \
         "$(listeners_in "$S2/s")" "$(ls -A "$S2"/s/tmux-* 2>/dev/null | tr '\n' ,)"
     # Whatever a red run left: ended by its own socket, never by a pid.
     sock_sweep "$S2/s"
@@ -21200,6 +21276,10 @@ else
         is "the run's own traps take HUP, INT and TERM there, and after \`trap cleanup EXIT\`" \
            "$s2_want|$s2_want" "$(tr '\n' ' ' < "$S2/traps.win" | sed 's/ $//')|$(
               tr '\n' ' ' < "$S2/traps.ctl" | sed 's/ $//')"
+        # a Ctrl-C pressed twice, and one in the exit trap of a run at its end (#1219)
+        is "nor an INT after an INT" "130|0|in,pf,started,|0|" "$(s2_run win INT INT)"
+        is "nor an INT while the exit trap of a run that came to its end runs" "0|0|in,pf,|0|" \
+           "$(s2_run end INT)"
     fi
     is "a HUP while the exit trap of a fatal runs leaves nothing" "1|0|in,pf,|0|" \
        "$(s2_run fat HUP)"
