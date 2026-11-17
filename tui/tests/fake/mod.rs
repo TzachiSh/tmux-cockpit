@@ -323,7 +323,7 @@ pub fn handed(
     handed_with(rows, signals, env, bound, |c| {
         let spawned = {
             let env = test_env::for_check("handed");
-            spawn_held(&env, c)
+            spawn_under(&env, c)
         };
         spawned.unwrap()
     })
@@ -349,13 +349,34 @@ impl Holds for std::sync::MutexGuard<'static, ()> {}
 impl Holds for EnvHeld {}
 
 /// `c` spawned while `_lock` is alive, so the child starts with no write a sibling holds
-/// under the lock (#1142). The one spawn of handed, handed_held, run_by_hand and
-/// run_by_hand_held, so a spawn there after the guard was let go does not build: the
-/// guard is gone before it can be lent. The file's other starts of a child do not come
-/// through here (#1206).
+/// under the lock (#1142). The one spawn of handed, handed_held, run_by_hand,
+/// run_by_hand_held, [`spawn_held`] and [`spawn`], so a spawn there after the
+/// guard was let go does not build: the guard is gone before it can be lent. The file's
+/// other starts of a child do not come through here (#1206).
 #[allow(dead_code)]
-fn spawn_held(_lock: &impl Holds, c: &mut Command) -> std::io::Result<std::process::Child> {
+fn spawn_under(_lock: &impl Holds, c: &mut Command) -> std::io::Result<std::process::Child> {
     c.spawn()
+}
+
+/// `c` spawned by a caller that holds [`env_lock`]'s lock, as `held` proves: a row that
+/// starts a child of its own while its rig lives (#1206). It takes an [`EnvHeld`] alone,
+/// which only [`env_lock`] makes, so a token let go before the spawn does not build. The
+/// generic [`spawn_under`] stays private: public, it would take any
+/// `MutexGuard<'static, ()>`, one a test file makes from a static `Mutex` of its own as
+/// well as this lock's. The wait is the caller's.
+#[allow(dead_code)]
+pub fn spawn_held(held: &EnvHeld, c: &mut Command) -> std::io::Result<std::process::Child> {
+    spawn_under(held, c)
+}
+
+/// `c` spawned under [`env_lock`]'s lock, taken for the spawn alone, so the child starts
+/// with no write a sibling holds under it, and the wait, the caller's, holds nothing
+/// (#1206). For a row that starts a child of its own and holds no rig; on a thread that
+/// holds the lock already it panics, naming [`spawn_held`].
+#[allow(dead_code)]
+pub fn spawn(c: &mut Command) -> std::io::Result<std::process::Child> {
+    let env = test_env::for_check("spawn");
+    spawn_under(&env, c)
 }
 
 /// Set by a row that starts a child beside a held canary, for that child alone: the file
@@ -658,7 +679,7 @@ pub fn run_by_hand(test: &str, set: &[(&str, &str)]) -> (Option<i32>, String) {
     let mut c = by_hand(test, set);
     let spawned = {
         let env = test_env::for_check("run_by_hand");
-        spawn_held(&env, &mut c)
+        spawn_under(&env, &mut c)
     };
     said_by_hand(spawned.unwrap())
 }
