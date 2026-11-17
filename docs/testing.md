@@ -207,8 +207,11 @@ the command in the foreground is done. A signal sent to clean-run.sh's pid alone
 now waits for the whole `make tui-test` it runs, and one to tui-refusers.sh's
 waits for its `cargo test --no-run` build or its namespace run. Before, the
 script ended at once and that command ran on, writing into a folder nobody
-removed. A signal sent to the group, a Ctrl-C, a plain `timeout` or a cancelled
-CI job, reaches the command too, and the script removes its paths once it ends.
+removed. A signal sent to the group, a Ctrl-C or a plain `timeout`, reaches the
+command too, and the script removes its paths once it ends. A cancelled CI job
+is neither: GitHub's runner sends INT and then TERM to the step's shell alone,
+then kills the process tree, so neither script cleans up there, before this
+change or after it.
 
 Those rows hold only where the suite made the folder. In a folder you named,
 other runs' sockets may sit beside this run's, so nothing is asked of it. On
