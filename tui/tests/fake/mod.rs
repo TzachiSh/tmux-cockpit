@@ -442,15 +442,29 @@ where
     (began, ran)
 }
 
-/// [`handed`]'s body, its child started by `spawn`.
+/// A child [`handed`] started and has not yet read the end of: its pid, the files it
+/// writes to, and why it fails where it was handed less than asked.
 #[allow(dead_code)]
-fn handed_with(
+pub struct Handed {
+    child: std::process::Child,
+    pid: u32,
+    what: String,
+    rows: usize,
+    out: PathBuf,
+    err: PathBuf,
+    unhanded: Option<String>,
+    // last, so the folder goes after the child's end is read
+    _dir: Scratch,
+}
+
+/// [`handed`]'s start, its child started by `spawn`.
+#[allow(dead_code)]
+fn start_handed(
     rows: &[&str],
     signals: &'static [libc::c_int],
     env: &[(&str, &str)],
-    bound: std::time::Duration,
     spawn: impl FnOnce(&mut Command) -> std::process::Child,
-) -> Result<u32, String> {
+) -> Handed {
     use std::os::unix::process::CommandExt;
     use std::sync::atomic::{AtomicUsize, Ordering};
     static RUNS: AtomicUsize = AtomicUsize::new(0);
@@ -477,14 +491,8 @@ fn handed_with(
     };
     // SAFETY: `hand_down` makes only async-signal-safe calls and allocates nothing.
     unsafe { c.pre_exec(hand_down) };
-    let mut child = spawn(&mut c);
+    let child = spawn(&mut c);
     let pid = child.id();
-    let what = rows.join(" ");
-    let said = |status: &str| {
-        let read = |p: &Path| std::fs::read(p).unwrap_or_default();
-        let read = |p: &Path| String::from_utf8_lossy(&read(p)).into_owned();
-        format!("{what} in a child: {status}\nstdout:\n{}\nstderr:\n{}", read(&out), read(&err))
-    };
     let want = signals.iter().fold(0u64, |m, &s| m | 1 << (s - 1));
     let got = (status_bits(pid, "SigIgn:"), status_bits(pid, "SigBlk:"));
     let has = |bits: Option<u64>| bits.is_some_and(|b| b & want == want);
@@ -492,24 +500,75 @@ fn handed_with(
     let unhanded = Path::new("/proc/self").is_dir() && !(has(got.0) && has(got.1));
     let why = || format!("the child was not handed {want:#x} ignored and blocked: {got:x?}");
     let unhanded = unhanded.then(why);
+    let what = rows.join(" ");
+    Handed {
+        child,
+        pid,
+        what,
+        rows: rows.len(),
+        out,
+        err,
+        unhanded,
+        _dir: dir,
+    }
+}
+
+#[allow(dead_code)]
+impl Handed {
+    /// The child's pid.
+    pub fn pid(&self) -> u32 {
+        self.pid
+    }
+
+    /// The run's report: how it ended, then all it wrote.
+    fn said(&self, status: &str) -> String {
+        let read = |p: &Path| std::fs::read(p).unwrap_or_default();
+        let read = |p: &Path| String::from_utf8_lossy(&read(p)).into_owned();
+        let (what, out, err) = (&self.what, read(&self.out), read(&self.err));
+        format!("{what} in a child: {status}\nstdout:\n{out}\nstderr:\n{err}")
+    }
+
+    /// `None` while the child runs; once it has ended, reaped, the run's result:
+    /// its pid where it passed every row it was handed.
+    fn ended(&mut self) -> Option<Result<u32, String>> {
+        let status = self.child.try_wait().unwrap()?;
+        let passed = std::fs::read_to_string(&self.out).unwrap_or_default();
+        let all = passed.contains(&format!(" {} passed; 0 failed", self.rows));
+        if let Some(why) = self.unhanded.take() {
+            return Some(Err(why));
+        }
+        Some(if status.success() && all {
+            Ok(self.pid)
+        } else {
+            Err(self.said(&status.to_string()))
+        })
+    }
+
+    /// The end at `bound`: the child killed and reaped, and the run's report.
+    pub fn end_at_bound(&mut self, bound: std::time::Duration) -> String {
+        self.child.kill().unwrap();
+        self.child.wait().unwrap();
+        self.said(&format!("had not ended after {bound:?} and was killed"))
+    }
+}
+
+/// [`handed`]'s body, its child started by `spawn`.
+#[allow(dead_code)]
+fn handed_with(
+    rows: &[&str],
+    signals: &'static [libc::c_int],
+    env: &[(&str, &str)],
+    bound: std::time::Duration,
+    spawn: impl FnOnce(&mut Command) -> std::process::Child,
+) -> Result<u32, String> {
+    let mut h = start_handed(rows, signals, env, spawn);
     let step = std::time::Duration::from_millis(20);
     for tries in 0.. {
-        if let Some(status) = child.try_wait().unwrap() {
-            let passed = std::fs::read_to_string(&out).unwrap_or_default();
-            let all = passed.contains(&format!(" {} passed; 0 failed", rows.len()));
-            if let Some(why) = unhanded {
-                return Err(why);
-            }
-            return if status.success() && all {
-                Ok(pid)
-            } else {
-                Err(said(&status.to_string()))
-            };
+        if let Some(run) = h.ended() {
+            return run;
         }
         if tries == bound.as_millis() / step.as_millis() {
-            child.kill().unwrap();
-            child.wait().unwrap();
-            return Err(said(&format!("had not ended after {bound:?} and was killed")));
+            return Err(h.end_at_bound(bound));
         }
         std::thread::sleep(step);
     }
