@@ -11038,6 +11038,98 @@ else
 fi
 unset -f oc_run oc_traps; unset OC oc_in oc_body oc_p oc_want oc_sk
 
+echo "== tests/clean-run.sh, tui-refusers.sh: no HUP, INT or TERM leaves a temp path (#1172) =="
+# Neither trapped the three, and dash, the /bin/sh they run in on the CI images, runs no EXIT
+# trap when a signal it does not trap ends a script: clean-run.sh left its two dirs and its list
+# in TMPDIR, tui-refusers.sh its list of binaries. So both remove them in an exit trap, trap the
+# three, and ignore them first in both traps, as par.sh does (#1127). Each runs by its path, as
+# make starts it, so its comm is its file name; with any other comm the helper sends nothing and
+# says so in place of a status (#1208), and a hold never reached is named the same way. The hold
+# is cs-hold, a read on a fifo it holds open, ended by a line the row writes. clean-run.sh runs
+# it as its command, tui-refusers.sh's stub cargo runs it, and the -end copies run it in the exit
+# trap, right before the removal. dash runs a trap once the command in the foreground is done,
+# so a signal to the script alone lands when the row ends the command's hold. No cargo, no make,
+# no namespace, no server.
+CS=$(mktmpd); mkdir -p "$CS/c/tests" "$CS/c/tui" "$CS/bin"
+printf '%s\n' '#!/bin/bash' '# <run|in>: run is the command, held only where CS_RUN is hold' \
+    'if [ "$1" = run ]; then case ${CS_RUN-} in pass) exit 0 ;; fail) exit 3 ;; esac; fi' \
+    'echo "$$" >> "$CS_H/../pids"; exec 9<>"$CS_H/$1.f"; : > "$CS_H/$1"; read -r -t 20 -u 9 _' \
+    > "$CS/bin/cs-hold"
+printf '#!/bin/sh\nexec cs-hold run\n' > "$CS/bin/cargo"
+printf '#!/bin/sh\nexit 0\n' > "$CS/bin/unshare"
+chmod +x "$CS/bin/cs-hold" "$CS/bin/cargo" "$CS/bin/unshare"
+cp "$DIR/tests/clean-run.sh" "$DIR/tests/tui-refusers.sh" "$CS/c/tests/"
+sed '/^    for d in "\$t" "\$x"; do$/i cs-hold in' "$DIR/tests/clean-run.sh" \
+    > "$CS/c/tests/cr-end.sh"
+sed 's#\[ -z "\$list" \] || rm -f#cs-hold in; &#' "$DIR/tests/tui-refusers.sh" \
+    > "$CS/c/tests/tr-end.sh"
+chmod +x "$CS/c/tests/"*.sh
+cs_run() {   # <script> <its command: hold|pass|fail> [signal] [2nd] -> status|left in TMPDIR
+    local s=$1 c="" g rc dfl=() a=() k=run; shift
+    [ "$1" = hold ] || k=in      # a run that ends on its own holds in its exit trap alone
+    case $s in cr-*|clean-*) a=(cs-hold run) ;; esac
+    rm -rf "${CS:?}/t" "${CS:?}/h"; mkdir -p "$CS/t" "$CS/h"; mkfifo "$CS/h/run.f" "$CS/h/in.f"
+    for g in HUP INT TERM; do ! sig_dfl "$g" || dfl+=(--default-signal="$g"); done
+    ( cd "$CS" && exec env "${dfl[@]}" -u TMUX TMPDIR="$CS/t" CS_H="$CS/h" CS_RUN="$1" \
+        PATH="$CS/bin:$PATH" setsid "$CS/c/tests/$s" "${a[@]}" ) </dev/null >/dev/null 2>&1 &
+    cs_p=$!; shift
+    # held open here, so a line written before a hold opens its fifo waits there for it
+    exec 7<>"$CS/h/run.f" 8<>"$CS/h/in.f"
+    if ! until_out '?*' ls "$CS/h/$k" >/dev/null; then c="no hold: $k"
+    elif ! read -r c 2>/dev/null < "/proc/$cs_p/comm" || [ "$c" != "${s:0:15}" ]; then
+        c="no signal: comm [$c]"
+    else
+        c=""     # the first signal, where the command holds, goes to the script alone
+        [ "$k" != run ] || [ $# -eq 0 ] || { kill -"$1" "$cs_p" 2>/dev/null; shift; }
+        printf '\n' >&7
+        if [ $# -eq 0 ]; then :
+        elif until_out '?*' ls "$CS/h/in" >/dev/null; then kill -"$1" -- "-$cs_p" 2>/dev/null
+        else c="no hold: in"
+        fi
+    fi
+    printf '\n' >&7; printf '\n' >&8
+    wait "$cs_p" 2>/dev/null; rc=$?; exec 7>&- 8>&-
+    printf '%s|%s' "${c:-$rc}" "$(ls -A "$CS/t" | tr '\n' ,)"
+}
+cs_alive() {   # the pids of holds still running
+    local p c
+    [ -e "$CS/pids" ] || return 0
+    while read -r p; do
+        c=""; read -r c 2>/dev/null < "/proc/$p/comm"; [ "$c" != cs-hold ] || echo "$p"
+    done < "$CS/pids"
+}
+cs_sk="a signal to clean-run.sh or tui-refusers.sh"
+if ! command -v setsid >/dev/null; then skip_ "$cs_sk (no setsid)"
+elif [ ! -r "/proc/$$/comm" ]; then skip_ "$cs_sk (no /proc)"
+elif ! sig_dfl HUP && [ "$(trap -p HUP)" = "trap -- '' SIGHUP" ]; then
+    skip_ "$cs_sk (SIGHUP is ignored and env cannot reset it)"
+else
+    is "each -end copy holds in its exit trap, once" "1 1" \
+       "$(for c in cr-end tr-end; do grep -c 'cs-hold in' "$CS/c/tests/$c.sh"; done | tr '\n' ' ' |
+          sed 's/ $//')"
+    for cs_s in clean-run.sh:cr-end.sh tui-refusers.sh:tr-end.sh; do
+        cs_e=${cs_s#*:}; cs_s=${cs_s%:*}
+        is "$cs_s: a TERM to it alone while its command runs leaves no temp path" "143|" \
+           "$(cs_run "$cs_s" hold TERM)"
+        is "nor a HUP" "129|" "$(cs_run "$cs_s" hold HUP)"
+        is "$cs_s: a HUP, then a HUP to its group in its exit trap, leaves nothing" "129|" \
+           "$(cs_run "$cs_e" hold HUP HUP)"
+        is "nor a TERM after a TERM" "143|" "$(cs_run "$cs_e" hold TERM TERM)"
+        if ! sig_dfl INT; then skip_ "an INT to $cs_s (env cannot reset SIGINT)"
+        else
+            is "$cs_s: nor an INT to it alone" "130|" "$(cs_run "$cs_s" hold INT)"
+            is "nor a TERM after an INT" "130|" "$(cs_run "$cs_e" hold INT TERM)"
+        fi
+        is "$cs_s: a HUP to its group in the exit trap of a run at its end leaves nothing" \
+           "0|" "$(cs_run "$cs_e" pass HUP)"
+        is "nor a TERM" "0|" "$(cs_run "$cs_e" pass TERM)"
+    done
+    is "clean-run.sh: a HUP in the exit trap of a run whose command failed keeps its status" \
+       "3|" "$(cs_run cr-end.sh fail HUP)"
+    is "no hold is left running" "" "$(until_out '' cs_alive; cs_alive)"
+fi
+unset -f cs_run cs_alive; unset CS cs_p cs_s cs_e cs_sk
+
 echo "== tests/green.sh: the stamp hits on unchanged content, misses on one changed byte, and tool versions are in the key =="
 GROOT=$(mktmpd)
 mkdir -p "$GROOT/scripts/lib" "$GROOT/tests" "$GROOT/examples"

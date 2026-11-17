@@ -21,14 +21,21 @@ if [ "${1-}" != --inside ]; then
         exit 1
     fi
     here=$(cd "$(dirname "$0")" && pwd) || exit 1
+    # The exit trap removes the list, on every path. HUP, INT and TERM are trapped too, and
+    # both traps ignore the three first, as par.sh's do (#1127): dash runs no EXIT trap when
+    # a signal it does not trap ends the script (#1172). Set first: under set -u an unset
+    # list would fail the trap.
+    list=''
+    tr_clean() { trap '' HUP INT TERM; [ -z "$list" ] || rm -f -- "$list"; }
+    tr_sig() { trap '' HUP INT TERM; exit $((128 + $1)); }
+    trap tr_clean EXIT
+    trap 'tr_sig 1' HUP; trap 'tr_sig 2' INT; trap 'tr_sig 15' TERM
     list=$(mktemp) || exit 1
     (cd "$here/../tui" && cargo test --locked --no-run --message-format=json 2>/dev/null) |
         grep '"profile":{[^}]*"test":true' | sed -n 's/.*"executable":"\([^"]*\)".*/\1/p' | sort -u >"$list"
     ns=$(readlink /proc/self/ns/user)/$(readlink /proc/self/ns/mnt)
     unshare -rm "$here/tui-refusers.sh" --inside "$list" "$ns"
-    rc=$?
-    rm -f "$list"
-    exit "$rc"
+    exit
 fi
 
 # --inside is for the line above alone, which hands it the user and mount
