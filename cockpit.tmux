@@ -213,10 +213,16 @@ key() {                       # <option> <default> -> the key, empty when off
 # never falls back to the default, which may be a key the user bound to something else
 # (#1210).
 refused() {                   # <name> <tmux's error> -> 1
-    local opt=@cockpit_${1}_key v e=${2%%$'\n'*}
+    local opt=@cockpit_${1}_key v e=${2%%$'\n'*} p
     [ "$1" = menu ] && opt=$menuopt
     v=$(tmux show-option -gqv "$opt")
     dmsg "tmux-cockpit: $opt [$v] binds nothing ($e); $1 stays unbound until the option is fixed"
+    # The move loop splits the key list on spaces, so 'i x' after i reached it as i, the key
+    # this name holds, and nothing was given back there. A record still naming a key this
+    # name holds goes back here, as off's would. One that cannot be given back keeps its
+    # record, so the next load's move loop tries again (#1226 review).
+    p=$(tmux show-option -gqv "@cockpit_${1}_bound")
+    if [ -n "$p" ] && owned "$1" "$p" && ! give_back "$p"; then return 1; fi
     tmux set-option -gu "@cockpit_${1}_bound"
     return 1
 }
@@ -333,16 +339,19 @@ tmux bind-key b "${SRC_SET[@]}" set-option -pF @cockpit_branch_client '#{client_
 # which a display-popup size cannot express. The pane goes in for a new session's
 # folder: inside the popup the session's active pane may be the popup (#494).
 Q_TM=$(sq "$DIR/scripts/tm")
-[ -z "$sk" ] || ckey sessions "$sk" run-shell -b "$(fesc "$Q_TM") --popup '#{client_name}' '#{session_id}' '#{client_width}' '#{client_height}' '#{pane_id}'" || sk=""
+[ -z "$sk" ] || ckey sessions "$sk" run-shell -b "$(fesc "$Q_TM") --popup '#{client_name}' '#{session_id}' '#{client_width}' '#{client_height}' '#{pane_id}'" \
+    || sk=""
 
 # run-shell sets no $TMUX_PANE, so the pane goes in as an argument (#45).
-[ -z "$jk" ] || ckey jump "$jk" run-shell "$(fesc "$(sq "$DIR/scripts/tmux-jump")") '#{pane_id}' '#{client_name}'" || jk=""
+[ -z "$jk" ] || ckey jump "$jk" run-shell "$(fesc "$(sq "$DIR/scripts/tmux-jump")") '#{pane_id}' '#{client_name}'" \
+    || jk=""
 
 # The info screen is cockpit-tui's own (#252); esc or q closes it, so no `read`.
 # The binary reads $COCKPIT_GLYPHS, not @cockpit_glyphs (#293): read at open, so
 # setting the option needs no reload.
 [ -z "$ik" ] || ckey info "$ik" "${SRC_SET[@]}" display-popup -E -w "$PW" -h "$PH" -T ' info · #{pane_id} ' \
-    "g=\$(tmux show-option -gqv @cockpit_glyphs); exec env \${g:+COCKPIT_GLYPHS=\"\$g\"} $(sq "$COCKPIT_TUI_BIN") info $SRC_PANE" || ik=""
+    "g=\$(tmux show-option -gqv @cockpit_glyphs); exec env \${g:+COCKPIT_GLYPHS=\"\$g\"} $(sq "$COCKPIT_TUI_BIN") info $SRC_PANE" \
+        || ik=""
 
 Q_PANEL=$(sq "$DIR/scripts/cockpit-panel")
 # Read at load like the key: a strict word, since the binary refuses any other.
@@ -373,7 +382,8 @@ if [ -n "$bk" ]; then
 $(sq "$(fesc "$Q_BOARD") -p '#{pane_id}' -c '#{client_name}'")" || bk=""
     else
         # No #{session_name}: it named the client's session, not the agent's.
-        ckey board "$bk" "${pin[@]}" display-popup -E -e "COCKPIT_PANEL_MODE=${pmode:-auto}" -w 90% -h "$PH" -T ' board ' "$Q_BOARD -p $SRC_PANE" || bk=""
+        ckey board "$bk" "${pin[@]}" display-popup -E -e "COCKPIT_PANEL_MODE=${pmode:-auto}" -w 90% -h "$PH" -T ' board ' "$Q_BOARD -p $SRC_PANE" \
+            || bk=""
     fi
 fi
 
@@ -386,7 +396,8 @@ if [ -n "$rk" ]; then
         ckey review "$rk" run-shell "tmux new-window -n board -e COCKPIT_PANEL_MODE=${pmode:-auto} \
 $(sq "$(fesc "$Q_BOARD") -p '#{pane_id}' -c '#{client_name}'")" || rk=""
     else
-        ckey review "$rk" "${pin[@]}" display-popup -E -e "COCKPIT_PANEL_MODE=${pmode:-auto}" -w 90% -h "$PH" -T ' board ' "$Q_BOARD -p $SRC_PANE" || rk=""
+        ckey review "$rk" "${pin[@]}" display-popup -E -e "COCKPIT_PANEL_MODE=${pmode:-auto}" -w 90% -h "$PH" -T ' board ' "$Q_BOARD -p $SRC_PANE" \
+            || rk=""
     fi
 fi
 

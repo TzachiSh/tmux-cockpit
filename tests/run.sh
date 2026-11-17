@@ -5154,6 +5154,39 @@ reload|'a\;'|a\;
 reload|'a b'|a b
 reload|Foo|Foo
 RFROWS
+# Every other name with a key of its own, refused once as 'a b': the record, the note, and
+# the prefix-a menu (prefix a itself for the menu key) against a load with the name off.
+# board and review bind a second way, with their window option on (#1226 review).
+# <name>|<has a menu row: y or n>|<an option set on first, or ->, on fd 3.
+rf_load_with() {              # <name> <spelling> <an option set on first, or ->: one load
+    fresh_server -L "$rf_s" -f /dev/null -- -d -s t -x 120 -y 30 -c "$RF" || return 1
+    "$TMUX_REAL" -L "$rf_s" -f /dev/null set -g @cockpit_bg_poll off >/dev/null 2>&1
+    [ "$3" = - ] || rf_get set -g "$3" on >/dev/null
+    rf_conf "$rf_s" "$1" "$2"
+    reload_on "$rf_s"
+}
+while IFS='|' read -r rf_n rf_r rf_x <&3; do
+    rf_off=''
+    if [ "$rf_r" = y ]; then rf_load_with "$rf_n" off "$rf_x" || continue; rf_off=$(rf_menu); fi
+    rf_load_with "$rf_n" "'a b'" "$rf_x" || continue
+    rf_w="@cockpit_${rf_n}_key written 'a b'${rf_x#-}"
+    is "$rf_w: @cockpit_${rf_n}_bound records nothing" "" \
+       "$(rf_get show -gqv "@cockpit_${rf_n}_bound")"
+    is "$rf_w: no key carries the note cockpit: $rf_n" "" \
+       "$(rf_get list-keys -T prefix -F "#{?#{==:#{key_note},cockpit: $rf_n},#{key_string},}")"
+    if [ "$rf_r" = y ]; then
+        is "$rf_w: the menu is the menu with $rf_n off" "$rf_off" "$(rf_menu)"
+    fi
+done 3<<'RFALL'
+move|y|-
+fullscreen|y|-
+panel|y|-
+board|y|-
+board|y|@cockpit_board_window
+review|n|-
+review|n|@cockpit_review_window
+menu|y|-
+RFALL
 if rf_load sessions "'a\\;'"; then
     is "@cockpit_sessions_key written 'a\\;': the corner is the corner with it off" \
        "$rf_off_corner" "$(rf_get list-keys -T root -F '#{key_command}' MouseUp1Control0)"
@@ -5191,6 +5224,51 @@ done 3<<'RFMOVE'
 info i
 reload R
 RFMOVE
+# A refused value whose first word is the key the name holds: the move loop splits the value
+# on its space and reads that word as the name's own key, so it gives nothing back, and a
+# cleared record then left the key cockpit's for good, past any later move. refused() gives
+# it back, as off would (#1226 review). <name> <default> <refused, as tmux.conf spells it>
+# <a plain key moved to after it>, on fd 3.
+while read -r rf_n rf_d rf_c rf_p <&3; do
+    fresh_server -L "$rf_s" -f /dev/null -- -d -s t -x 120 -y 30 -c "$RF" || continue
+    "$TMUX_REAL" -L "$rf_s" -f /dev/null set -g @cockpit_bg_poll off >/dev/null 2>&1
+    reload_on "$rf_s" || continue
+    is "@cockpit_${rf_n}_key at its default: $rf_d carries the note cockpit: $rf_n" \
+       "cockpit: $rf_n" "$(rf_get list-keys -T prefix -F '#{key_note}' "$rf_d")"
+    rf_conf "$rf_s" "$rf_n" "$rf_c"
+    reload_on "$rf_s" || continue
+    rf_w="@cockpit_${rf_n}_key moved off $rf_d to $rf_c"
+    is "$rf_w: $rf_d is tmux's own again" \
+       "$(rf_stock "$rf_d")" "$(rf_get list-keys -T prefix -F '#{key_command}' "$rf_d")"
+    is "$rf_w: @cockpit_${rf_n}_bound records nothing" "" \
+       "$(rf_get show -gqv "@cockpit_${rf_n}_bound")"
+    rf_conf "$rf_s" "$rf_n" "$rf_p"
+    reload_on "$rf_s" || continue
+    is "$rf_w, then to $rf_p: $rf_d is tmux's own" \
+       "$(rf_stock "$rf_d")" "$(rf_get list-keys -T prefix -F '#{key_command}' "$rf_d")"
+done 3<<'RFSPLIT'
+info i 'i x' y
+menu a 'a b' z
+RFSPLIT
+# The same split onto a key the user bound since, with no note: owned() reads it as the
+# user's, so refused() gives nothing back and the user's binding stays as it was.
+if fresh_server -L "$rf_s" -f /dev/null -- -d -s t -x 120 -y 30 -c "$RF"; then
+    "$TMUX_REAL" -L "$rf_s" -f /dev/null set -g @cockpit_bg_poll off >/dev/null 2>&1
+    if reload_on "$rf_s"; then
+        rf_get bind-key -T prefix i display-message user-i >/dev/null
+        is "the user's own i, bound by hand after a load, carries no note" \
+           "|display-message user-i" \
+           "$(rf_get list-keys -T prefix -F '#{key_note}|#{key_command}' i)"
+        rf_conf "$rf_s" info "'i x'"
+        rf_w="@cockpit_info_key moved to 'i x' over the user's own i"
+        if reload_on "$rf_s"; then
+            is "$rf_w: i is left as the user bound it" "|display-message user-i" \
+               "$(rf_get list-keys -T prefix -F '#{key_note}|#{key_command}' i)"
+            is "$rf_w: @cockpit_info_bound records nothing" "" \
+               "$(rf_get show -gqv @cockpit_info_bound)"
+        fi
+    fi
+fi
 "$TMUX_REAL" -L "$rf_st" kill-server >/dev/null 2>&1
 # The message: a dmsg is logged only with a client attached, so one is attached through an
 # outer server, in the shape of the #1086 block's oh_attach, and show-messages is read.
@@ -5223,6 +5301,14 @@ if rf_up; then
     reload_on "$rf_m" &&
         is "@cockpit_reload_key Foo: one message names the option, the value and tmux's error" \
            1 "$(rf_said reload "$rf_t")"
+    # The menu key read from @cockpit_ai_key, the old option: the message names that one.
+    "$TMUX_REAL" -L "$rf_m" -f /dev/null set -gu @cockpit_menu_key >/dev/null 2>&1
+    rf_conf "$rf_m" reload R; rf_conf "$rf_m" ai "'b c'"
+    rf_t="tmux-cockpit: @cockpit_ai_key [b c] binds nothing (unknown key: b c);"
+    rf_t="$rf_t menu stays unbound until the option is fixed"
+    reload_on "$rf_m" &&
+        is "@cockpit_ai_key 'b c': one message names @cockpit_ai_key, the value and tmux's error" \
+           1 "$(rf_said menu "$rf_t")"
 else
     bad "a client attached for the #1210 message rows" "a client on $rf_m" "none"
 fi
@@ -5232,6 +5318,8 @@ fi
 unset -f rf_get rf_menu rf_conf rf_load rf_stock rf_up rf_said
 unset RF rf_s rf_st rf_m rf_o rf_n rf_c rf_v rf_w rf_d rf_t rf_off
 unset rf_off_info rf_off_reload rf_off_corner
+unset -f rf_load_with
+unset rf_r rf_x rf_p
 fi
 
 echo "== a message shows a name as written, and runs nothing in it (#1096) =="
