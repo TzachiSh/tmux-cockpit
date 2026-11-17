@@ -483,6 +483,21 @@ pub fn handed_start(rows: &[&str], signals: &'static [libc::c_int], env: &[(&str
     })
 }
 
+/// [`handed_start`]'s child with no environment at all, so its /proc environ reads empty
+/// for its whole life, for a row that checks what the start stored from that read,
+/// [`Handed::tmpdir`] (#1255).
+#[allow(dead_code)]
+pub fn handed_start_bare(rows: &[&str]) -> Handed {
+    start_handed(rows, &[], &[], |c| {
+        c.env_clear();
+        let spawned = {
+            let env = test_env::for_check("handed");
+            spawn_under(&env, c)
+        };
+        spawned.unwrap()
+    })
+}
+
 /// [`handed`]'s start, its child started by `spawn`.
 #[allow(dead_code)]
 fn start_handed(

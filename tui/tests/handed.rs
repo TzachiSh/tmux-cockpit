@@ -546,3 +546,40 @@ fn a_childs_tmpdir_is_read_once_its_exec_has_an_environ() {
     let want: Vec<_> = rows.into_iter().map(|(name, _, want)| (name, want)).collect();
     assert_eq!(got, want);
 }
+
+/// The name of [`parks_with_an_empty_environ`].
+#[cfg(target_os = "linux")]
+const BARE: &str = "parks_with_an_empty_environ";
+
+/// The bare child half: no end but a signal where its environment is empty, as only
+/// [`fake::handed_start_bare`] starts it. A test run always has an environment, so
+/// anywhere else it returns at once.
+#[test]
+#[cfg(target_os = "linux")]
+fn parks_with_an_empty_environ() {
+    if std::env::vars_os().next().is_some() {
+        return;
+    }
+    loop {
+        std::thread::park();
+    }
+}
+
+/// #1255: a handed start reads its child's environ through the retry. A child started with
+/// no environment, alive and parked, reads empty for the whole bound: its start reads it
+/// again for 5 s, which this row spends, then stores the `Err` that says so. A single read
+/// stores `Ok(None)`, or with no wait the same `Err` at once, so the row also asserts that
+/// the start took the bound. That bound is the floor of a wait that only ends past it, so
+/// no load turns it red. The child is killed and reaped at the end, red or green.
+#[test]
+#[cfg(target_os = "linux")]
+fn a_handed_childs_empty_environ_is_read_for_the_whole_bound() {
+    let began = std::time::Instant::now();
+    let mut h = fake::handed_start_bare(&[BARE]);
+    let waited = began.elapsed() >= std::time::Duration::from_secs(5);
+    let stored = h.tmpdir();
+    let alive = stat(h.pid()).is_some_and(|(s, _)| s != 'Z');
+    drop(h.end_at_bound(fake::HANDED_FOR));
+    let want = Err("environ still empty after 5 s".to_string());
+    assert_eq!((stored, waited, alive), (want, true, true));
+}
