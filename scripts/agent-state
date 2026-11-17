@@ -472,7 +472,9 @@ body="$body ; run-shell -C '#{@cockpit_board_wake}'"
 unmark=()
 if [ -n "$fgown" ]; then
     fgset="set-option -p -t $pane @cockpit_fg $fgnow"
-    for o in job job_name job_state; do fgset="$fgset ; set-option -pu -t $pane @cockpit_$o"; done
+    for o in job job_name job_state job_session; do
+        fgset="$fgset ; set-option -pu -t $pane @cockpit_$o"
+    done
     fgcond='#{?#{@cockpit_fg},0,1}'
     [ -z "$ended" ] || { fgset="set-option -pu -t $pane @cockpit_fg"; fgcond='#{@cockpit_fg}'; }
     unmark=(if-shell -F -t "$pane" '#{@cockpit_agentview}' \
