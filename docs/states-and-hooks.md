@@ -402,14 +402,14 @@ A bound pane shows J's state, and carries `@cockpit_job` (the id), `@cockpit_job
 `[A-Za-z0-9_-]{1,64}`, since the board builds a path from it). The viewer fires no hook, so
 the pane has no `@cockpit_session`; the board reads J's session in its place and shows J's
 transcript: its work dir, branch, doing line and subagents (#448). The state stays the
-poller's: the transcript never sets it on a bound pane. The board draws the name, `→ <name>`, in place of the pane's title, and
-the info screen and `--json` carry it (#460). All three are cleared, with
-`@cockpit_job_state` (what the poller last wrote), as soon as the rule stops holding:
-the title changed, the pane left `claude`, or a second job took the name. The state is
-taken back only if `@panestate` still holds what the poller wrote, and never on a pane a
-foreground session owns. A pane marked `@cockpit_agentview` that is not bound shows
-the worst state of all background jobs (blocked, then failed, working, done), as before.
-An unmarked pane that is not bound is not the poller's.
+poller's: the transcript never sets it on a bound pane. The board draws the name,
+`→ <name>`, in place of the pane's title, and the info screen and `--json` carry it
+(#460). All three are cleared, with `@cockpit_job_state` (what the poller last wrote), as
+soon as the rule stops holding: the title changed, the pane left `claude`, or a second job
+took the name. The state is taken back only if `@panestate` still holds what the poller
+wrote, and never on a pane a foreground session owns. A pane marked `@cockpit_agentview`
+that is not bound shows the worst state of all background jobs (blocked, then failed,
+working, done), as before. An unmarked pane that is not bound is not the poller's.
 
 **Residual false bind.** The title is set when the viewer's session emits one, not
 on every frame, and a `claude attach Y` on an idle job may emit none. A pane that ran

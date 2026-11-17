@@ -830,8 +830,9 @@ job's session id), all cleared when the bind ends. The board draws the name (#46
 viewer runs no hook, so the pane has no `@cockpit_session`: the board reads the job's
 session instead, and the row's dir, branch, doing line and subagents come from the job's
 transcript, not the viewer's launch dir (#448). A row's state is the bound job's alone,
-never the transcript's, and the
-rule, its residual false bind and how the poller starts are in
+never the transcript's. The info screen's `session` row is the pane's own session, else
+the job's, as `--json`'s is (#1267). The rule, its residual false bind and how the poller
+starts are in
 [states-and-hooks.md](states-and-hooks.md#agent-view-and-background-jobs).
 
 **Subagents (#313).** An agent with subagents running or failed carries a

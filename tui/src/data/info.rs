@@ -251,6 +251,8 @@ pub fn gather(pane: &str) -> Result<Facts, String> {
         q("#{@cockpit_job}"),
         // a newline is a space, as in the board's FIELDS
         format!("#{{s/\n/ /:{}}}", q("#{@cockpit_job_name}")),
+        // #1267: 15, optional, the bound job's session: the session of a pane that has none
+        q("#{@cockpit_job_session}"),
     ]
     .join(&SEP.to_string());
     let out = super::tmux(&["display-message", "-p", "-t", pane, &fmt]).unwrap_or_default();
@@ -267,7 +269,11 @@ pub fn gather(pane: &str) -> Result<Facts, String> {
         msg: clean(f[6]),
         review: clean(f[7]),
         spool: clean(f[8]),
-        sid: clean(f[9]),
+        // #1267: the session the transcript came from, as --json's: own, else the job's
+        sid: match clean(f[9]) {
+            s if s.is_empty() => f.get(15).map(|s| clean(s)).unwrap_or_default(),
+            s => s,
+        },
         title: clean(f[10]),
         agent: super::is_agent(f[0]),
         tui: tui_row(f[12]),
