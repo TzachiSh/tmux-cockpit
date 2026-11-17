@@ -1131,16 +1131,33 @@ impl Drop for StandIn {
 /// and pane, so a server another run leaked under a reused pid is never taken.
 #[allow(dead_code)]
 fn rig_process(p: u32, pid: u32) -> bool {
+    rig_of(p, pid, std::env::var_os("TMUX_TMPDIR").as_deref()).is_some()
+}
+
+/// What [`rig_of`] found a process to be.
+#[allow(dead_code)]
+enum Rig {
+    /// a server, with the name its `-L` gives its socket
+    Server(String),
+    Pane,
+}
+
+/// [`rig_process`]'s reading of the process `p` for the child `pid`, with `tmpdir` for the
+/// TMUX_TMPDIR it must carry: a server of a rig of that child, a pane of one, or `None`.
+#[allow(dead_code)]
+fn rig_of(p: u32, pid: u32, tmpdir: Option<&std::ffi::OsStr>) -> Option<Rig> {
     let at = Path::new("/proc").join(p.to_string());
     let rigs = |sock: &str| sock.starts_with("cockpit-") && sock.ends_with(&format!("-{pid}"));
-    let own = std::env::var_os("TMUX_TMPDIR").map(|d| {
+    let own = tmpdir.map(|d| {
         let mut v = b"TMUX_TMPDIR=".to_vec();
-        v.extend_from_slice(std::os::unix::ffi::OsStrExt::as_bytes(d.as_os_str()));
+        v.extend_from_slice(std::os::unix::ffi::OsStrExt::as_bytes(d));
         v
     });
     let line = std::fs::read(at.join("cmdline")).unwrap_or_default();
     let args: Vec<String> = line.split(|b| *b == 0).map(|a| String::from_utf8_lossy(a).into_owned()).collect();
-    let server = args.first().is_some_and(|a| a.rsplit('/').next() == Some("tmux")) && args.windows(2).any(|w| w[0] == "-L" && rigs(&w[1]));
+    let tmux = args.first().is_some_and(|a| a.rsplit('/').next() == Some("tmux"));
+    let named = args.windows(2).find(|w| w[0] == "-L" && rigs(&w[1]));
+    let server = named.filter(|_| tmux).map(|w| w[1].clone());
     let env = std::fs::read(at.join("environ")).unwrap_or_default();
     let vars: Vec<&[u8]> = env.split(|b| *b == 0).collect();
     let pane = vars.iter().filter_map(|v| v.strip_prefix(b"TMUX=")).any(|v| {
@@ -1148,7 +1165,8 @@ fn rig_process(p: u32, pid: u32) -> bool {
         rigs(sock.rsplit('/').next().unwrap_or_default())
     });
     let ours = own.is_some_and(|o| vars.contains(&o.as_slice()));
-    (server || pane) && ours
+    let found = server.map(Rig::Server).or(pane.then_some(Rig::Pane));
+    found.filter(|_| ours)
 }
 
 /// The processes [`rig_process`] takes for `pid`, read from /proc. Linux only, as are
