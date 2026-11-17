@@ -278,7 +278,10 @@ fn a_child_sees_no_canary() {
 /// as a sibling holds its write: whether the child wrote `started` within [`POLLS`],
 /// then, once the canary is removed and the lock let go, what `start` returned. Never a
 /// fixed sleep: the poll ends at the child's start or at its bound.
-fn beside_a_held_canary(started: &Path, start: impl FnOnce() -> Result<(), String> + Send + 'static) -> (bool, Result<(), String>) {
+fn beside_a_held_canary<F>(started: &Path, start: F) -> (bool, Result<(), String>)
+where
+    F: FnOnce() -> Result<(), String> + Send + 'static,
+{
     let held = fake::env_lock();
     // SAFETY: the lock is held, and every write of this binary takes it.
     unsafe { fake::set_var(&held, CANARY, "/sibling-1142") };
@@ -312,8 +315,10 @@ fn by_hand_passed((code, said): (Option<i32>, String)) -> Result<(), String> {
 }
 
 /// #1142: a child `fake::handed` starts while a sibling holds the lock with a variable
-/// set waits for the lock to start, so it never takes that value. Each green run waits
-/// out [`POLLS`] once.
+/// set waits for the lock to start, so it never takes that value. Without the fix the
+/// row is red unless the box stalls the starting thread past [`POLLS`] (about 5 s), when
+/// the canary is gone before the spawn. With the fix it cannot go red by luck: the child
+/// cannot start while the row holds the lock. Each green run waits out [`POLLS`] once.
 #[test]
 fn a_handed_child_starts_once_a_writer_lets_go() {
     let s = scratch("cockpit-env-handed");
@@ -325,8 +330,8 @@ fn a_handed_child_starts_once_a_writer_lets_go() {
     assert_eq!(got, (false, Ok(())));
 }
 
-/// #1142: as above, for a child `fake::run_by_hand` starts. Each green run waits out
-/// [`POLLS`] once.
+/// #1142: as above, for a child `fake::run_by_hand` starts, red without the fix on the
+/// same terms. Each green run waits out [`POLLS`] once.
 #[test]
 fn a_child_run_by_hand_starts_once_a_writer_lets_go() {
     let s = scratch("cockpit-env-by-hand");

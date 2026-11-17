@@ -348,8 +348,10 @@ impl Holds for std::sync::MutexGuard<'static, ()> {}
 impl Holds for EnvHeld {}
 
 /// `c` spawned while `_lock` is alive, so the child starts with no write a sibling holds
-/// under the lock (#1142). Every start of a child here goes through this, so a spawn after
-/// the guard was let go does not build: the guard is gone before it can be lent.
+/// under the lock (#1142). The one spawn of handed, handed_held, run_by_hand and
+/// run_by_hand_held, so a spawn there after the guard was let go does not build: the
+/// guard is gone before it can be lent. The file's other starts of a child do not come
+/// through here (#1206).
 #[allow(dead_code)]
 fn spawn_held(_lock: &impl Holds, c: &mut Command) -> std::io::Result<std::process::Child> {
     c.spawn()

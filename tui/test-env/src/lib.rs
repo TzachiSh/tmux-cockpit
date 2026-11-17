@@ -72,8 +72,8 @@ pub fn env_poisoned() -> bool {
 /// guard-less start of a child, recovered as in [`env_lock`]. On a thread that holds it
 /// already the take would wait for itself, so that call panics instead, naming the form
 /// that takes the holder's token, and, for a call that came through a helper, what the
-/// caller does instead. For `fake`'s checks
-/// and starts alone: the guard it returns writes nothing.
+/// caller does instead. For `fake`'s checks and starts alone: the guard it returns
+/// writes nothing.
 pub fn for_check(form: &str) -> MutexGuard<'static, ()> {
     if HOLDS.get() {
         let held = "on a thread that holds fake::env_lock(): call";
