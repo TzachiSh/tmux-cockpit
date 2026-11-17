@@ -1545,8 +1545,9 @@ Explain shows it (`panel::look`):
   record). A pane outside any repo, or in a repo with no commit yet, gets no
   list: nothing there could be marked seen. A HEAD git took too long to read
   is not that: the list keeps its GitHub items and the timeout note. The
-  request does not carry it yet: #935 task 4 adds it together with the prompt text that tells the model
-  what to do with it. The prompt text does not change.
+  request does not carry it yet: #935 task 4 adds it together with the
+  prompt text that tells the model what to do with it. The prompt text does
+  not change.
 - **Answer first.** The first answer of an Explain whose list is not yet seen
   opens at its top. A list that lands after the answer is drawn there when it
   lands: the panel's loop wakes every 100 ms while a collect is under way, so
