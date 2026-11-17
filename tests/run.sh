@@ -19695,7 +19695,7 @@ is "older binary: a create line makes the branch" "fresh" "$(br_cur "$BRR")"
 git -C "$BRR" switch -q main
 # The binary since #228 prints nothing once it acted: the script says nothing and acts on nothing.
 is "an empty answer prints nothing and switches nothing" "0 main|" \
-    "$(o=$(br_stub ''); echo "$? $(br_cur "$BRR")|$o")"
+    "$(bre=$(br_stub ''); echo "$? $(br_cur "$BRR")|$bre")"
 rm -rf "$BRR" "$BRM" "$BRX"
 
 echo "== tmux-branch (#228): prefix b still switches with a binary that prints switch <name> =="
