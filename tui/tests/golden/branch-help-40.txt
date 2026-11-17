@@ -9,6 +9,6 @@
 "│ click      select the row, ↵ choose… │"
 "│ wheel      scroll                    │"
 "│ choose                               │"
-"│ ↵          print this row's key, ex… │"
-"│ alt-↵      print create <filter tex… │"
+"│ ↵          switch to it, or its wor… │"
+"│ alt-↵      create a branch named by… │"
 "╰ ↑↓ scroll  any other key closes ─────╯"

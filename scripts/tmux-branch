@@ -77,41 +77,6 @@ git rev-parse --git-dir >/dev/null 2>&1 || fail "cockpit: not a git repository: 
 
 redraw() { [ -n "${TMUX:-}" ] && tmux refresh-client -S 2>/dev/null; return 0; }
 
-current=$(git symbolic-ref --quiet --short HEAD 2>/dev/null || printf '')
-
-# Failures are common (dirty tree, branch held by a worktree); git's own message
-# names the cause, so show it verbatim.
-switch_to() {
-    local target=$1 out
-    if [ "$target" = "$current" ]; then
-        printf 'already on %s\n' "$target"; redraw; sleep 0.4; return 0
-    fi
-    if out=$(git switch "$target" 2>&1); then
-        printf '%s\n' "$out"; redraw; sleep 0.6; return 0
-    fi
-    printf '%s\n' "$out" >&2; pause; return 1
-}
-
-switch_remote() {  # origin/foo -> local foo tracking it
-    local ref=$1 out
-    if out=$(git switch --track "$ref" 2>&1); then
-        printf '%s\n' "$out"; redraw; sleep 0.6; return 0
-    fi
-    printf '%s\n' "$out" >&2; pause; return 1
-}
-
-create() {
-    local name=$1 out
-    # Return, not exit: the caller loops back into the picker.
-    if ! git check-ref-format --branch "$name" >/dev/null 2>&1; then
-        printf 'invalid branch name: %s\n' "$name" >&2; pause; return 1
-    fi
-    if out=$(git switch -c "$name" 2>&1); then
-        printf '%s\n' "$out"; redraw; sleep 0.6; return 0
-    fi
-    printf '%s\n' "$out" >&2; pause; return 1
-}
-
 # A pane's directory belongs to the deepest worktree that contains it, so a pane
 # in a worktree nested under the checkout is not a pane of the checkout.
 owner_of() {                  # <dir>  sets OWNER to the worktree path holding it, or ""
@@ -273,28 +238,15 @@ goto() {
     printf 'cockpit: could not open a window in %s\n' "$path" >&2; pause; return 1
 }
 
-# cockpit-tui draws the picker and prints one action line. This script reads it as
-# untrusted text: a fixed verb, one line, a name git accepts and a ref that exists.
+# cockpit-tui runs switch, track and create itself and shows git's refusal in the
+# popup (#228); it exits 0 with nothing printed once one ran. What it still prints is
+# `goto <path>`, read here as untrusted text: goto checks the path against git's list.
 act() {
-    local line=$1 verb arg ns
-    verb=${line%% *}; arg=${line#* }
-    case "$verb" in
-        switch) ns=heads ;;
-        track)  ns=remotes ;;
-        create) ns= ;;
-        goto)   goto "$arg"; return ;;
-        *)      printf 'cockpit: unexpected answer from cockpit-tui: %s\n' "$line" >&2; pause; return 1 ;;
-    esac
-    if [ "$line" = "$verb" ] || [ -z "$arg" ] || [[ $line == *$'\n'* ]] \
-       || ! git check-ref-format --branch "$arg" >/dev/null 2>&1; then
-        printf 'cockpit: not a branch name: %s\n' "$arg" >&2; pause; return 1
-    fi
-    case "$verb" in
-        create) create "$arg" ;;
-        *)
-            git show-ref --quiet --verify "refs/$ns/$arg" \
-                || { printf 'cockpit: no such branch: %s\n' "$arg" >&2; pause; return 1; }
-            if [ "$verb" = switch ]; then switch_to "$arg"; else switch_remote "$arg"; fi ;;
+    local line=$1
+    case "$line" in
+        '')       redraw; return 0 ;;
+        "goto "*) goto "${line#goto }"; return ;;
+        *)        printf 'cockpit: unexpected answer from cockpit-tui: %s\n' "$line" >&2; pause; return 1 ;;
     esac
 }
 

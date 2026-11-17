@@ -111,6 +111,40 @@ pub(crate) fn git(dir: &str, extra: &[String], index: Option<&Path>, args: &[&st
     run(dir, extra, index, args).1
 }
 
+/// How many of [`SAFE`]'s entries a git that writes the work tree takes: all but the
+/// protocol pins. A user's switch may lazy-fetch a partial clone's blobs, as
+/// `scripts/lib/git.sh` lets its `switch` do; every read keeps the pins.
+pub const WRITE_SAFE: usize = 9;
+
+/// The refusal for a repo whose filter driver name holds `=`, in `scripts/lib/git.sh`'s
+/// words (#331): such a driver cannot be blanked by `-c`, so nothing that writes runs.
+pub const REFUSAL: &str = "cockpit: refusing this repo: a git filter driver name contains '=' (see #331)";
+
+/// A git that writes the work tree (a branch switch): [`SAFE`] up to [`WRITE_SAFE`],
+/// every filter driver the repo names blanked ([`no_filters`]), the [`REDIRECT`] and
+/// [`PATHSPEC`] variables gone, no prompt on the terminal the popup holds. Either way
+/// the text is git's own words (stderr, where `switch` says what it did, else
+/// stdout); `Err` may also be [`REFUSAL`].
+pub fn git_write(dir: &str, args: &[&str]) -> Result<String, String> {
+    let drv = no_filters(dir).ok_or_else(|| REFUSAL.to_string())?;
+    let mut c = Command::new("git");
+    for v in REDIRECT.iter().chain(&PATHSPEC) {
+        c.env_remove(v);
+    }
+    c.arg("-C")
+        .arg(dir)
+        .args(&SAFE[..WRITE_SAFE])
+        .args(&drv)
+        .args(args)
+        .stdin(Stdio::null())
+        .env("GIT_TERMINAL_PROMPT", "0");
+    let o = c.output().map_err(|e| format!("cockpit: could not run git: {e}"))?;
+    let (err, out) = (String::from_utf8_lossy(&o.stderr), String::from_utf8_lossy(&o.stdout));
+    let said = if err.trim().is_empty() { out } else { err };
+    let said = said.trim_end().to_string();
+    if o.status.success() { Ok(said) } else { Err(said) }
+}
+
 /// Filter drivers are named in config, so each one the repo defines is blanked
 /// by name; an empty driver is no filter, and `required=false` keeps it legal.
 /// None when a name holds `=`: git splits `-c` at the first one, so
@@ -561,6 +595,14 @@ pub fn diffstat(args: &[String]) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_write_takes_every_safe_flag_but_the_protocol_pins() {
+        let (kept, pins) = SAFE.split_at(WRITE_SAFE);
+        assert!(kept.iter().all(|f| !f.starts_with("protocol.")), "{kept:?}");
+        assert!(kept.contains(&"core.hooksPath=/dev/null"), "{kept:?}");
+        assert!(pins.chunks(2).all(|p| p[0] == "-c" && p[1].starts_with("protocol.")), "{pins:?}");
+    }
 
     fn specs(lens: &[usize]) -> Vec<OsString> {
         lens.iter().map(|n| OsString::from("p".repeat(*n))).collect()

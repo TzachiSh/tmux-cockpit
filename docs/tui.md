@@ -2928,14 +2928,16 @@ steps, and a failed or cancelled write leave the basket as it was.
 ## `cockpit-tui branch` (#246)
 
 The branch popup behind `prefix b` and the status-bar branch click, built on the
-shared picker (`pick.rs`). `scripts/tmux-branch` runs `cockpit-tui branch -C <dir>`
-and acts on the one line it prints; the binary never mutates.
+shared picker (`pick.rs`). `scripts/tmux-branch` runs `cockpit-tui branch -C <dir>`.
+The popup runs switch, track and create itself and exits 0 with nothing printed
+(#228); for a branch another worktree holds it prints `goto <worktree path>` for the
+script, which finds the pane in that tree.
 
 | key | does |
 |---|---|
 | type | filters the list (case-insensitive substring) |
-| `↵` | prints `switch <branch>`, `track <remote>/<branch>` on a remote-only row, or `goto <worktree path>` on a branch another worktree holds (#303) |
-| `alt-↵` | prints `create <name>` from the filter text, after `git check-ref-format --branch` accepts it |
+| `↵` | `git switch <branch>`, `git switch --track <remote>/<branch>` on a remote-only row, or prints `goto <worktree path>` on a branch another worktree holds (#303) |
+| `alt-↵` | `git switch -c <name>` from the filter text, after `git check-ref-format --branch` accepts it |
 | `esc` `^C` | cancels, prints nothing, exit 1 |
 
 Rows are local branches by most recent commit, then remote-only branches. `●` marks
@@ -2965,12 +2967,18 @@ branch gets no `⑂`, and `↵` reaches `git switch`, which refuses it. The prev
 per branch; it shows `loading…` until it arrives, and below 60 columns it is hidden.
 
 Every git read uses the `gitsafe` flags. A branch name is untrusted text: control and
-bidi characters are dropped from what is drawn, and the line printed carries the exact
-ref. The script treats that line as untrusted too: a verb from `switch track create goto`, one
-line, a name `git check-ref-format --branch` accepts (for `goto`, a path that `git worktree
-list` names and that is still a directory), and for `switch`/`track` a ref that
-exists under `refs/heads` or `refs/remotes`. Git's own refusal (a dirty tree) is shown
-verbatim with `[any key]`, then the picker opens again.
+bidi characters are dropped from what is drawn, and the action line carries the exact
+ref. Before it runs, the line is checked as untrusted text (`branch::parse`): a verb
+from `switch track create`, one line, a name `git check-ref-format --branch` accepts,
+and for `switch`/`track` a ref that exists under `refs/heads` or `refs/remotes`. The
+switch runs through `gitsafe::git_write`: the `gitsafe` flags but the protocol pins (a
+switch may lazy-fetch a partial clone's blobs, as `scripts/lib/git.sh` lets it), every
+filter driver the repo names blanked, a repo whose driver name holds `=` refused
+(#331), the inherited `GIT_DIR` and its kin unset, and no prompt on the popup's
+terminal. Git's own refusal (a dirty tree) is the `✕` note, its first line, with the
+whole message in the preview until the next key; the picker stays. The script reads
+`goto <path>` as untrusted too: a path that `git worktree list` names and that is
+still a directory.
 
 A branch name cannot contain a space, so the filter text `my branch` is refused with a
 note on `alt-↵`.

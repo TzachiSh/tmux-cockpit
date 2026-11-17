@@ -19614,18 +19614,18 @@ is "and no #( ) in it ran, in the repo, the home dir or the server's start dir" 
        echo none)"
 git -C "$BRR" switch -q main
 
-# git's own refusal is shown verbatim, [any key] returns to the picker.
+# git's own refusal is the popup's ✕ note, verbatim, and the picker stays (#228):
+# no [any key] screen in between.
 echo dirty > "$BRR/a"
 br_run; br_type conf; until_cap "$BRS" "$BRP" '*branch> conf*'; br_key Enter
-if until_cap "$BRS" "$BRP" '*any key*'; then ok "a refused switch shows git's message and [any key]"
-else bad "a refused switch shows git's message and [any key]" "[any key]" "$(br_cap | head -8)"; fi
+if until_cap "$BRS" "$BRP" '*✕*overwritten*'; then ok "a refused switch is git's wording on the ✕ note"
+else bad "a refused switch is git's wording on the ✕ note" "✕ … overwritten" "$(br_cap | head -8)"; fi
 case "$(br_cap)" in
-    *overwritten*) ok "git's wording is verbatim" ;;
-    *) bad "git's wording is verbatim" "git's 'would be overwritten' error" "$(br_cap | head -8)" ;;
+    *'any key'*) bad "the picker stays, with no [any key] screen" "branch> conf" "$(br_cap | head -8)" ;;
+    *'branch> conf'*) ok "the picker stays, with no [any key] screen" ;;
+    *) bad "the picker stays, with no [any key] screen" "branch> conf" "$(br_cap | head -8)" ;;
 esac
-br_key Space
-if until_cap "$BRS" "$BRP" '*branch>*'; then ok "any key returns to the picker"
-else bad "any key returns to the picker" "the picker again" "$(br_cap | head -4)"; fi
+is "and the refused switch switched nothing" "main" "$(br_cur "$BRR")"
 br_key Escape; br_done
 git -C "$BRR" checkout -q -- a
 
@@ -19663,26 +19663,14 @@ br_want() {                   # br_want <label> <answer> <expected text>
     esac
     is "$1: nothing was checked out" "main" "$(br_cur "$BRR")"
 }
+# Since #228 the binary runs switch, track and create itself; their checks are
+# act_refuses_what_tmux_branch_refused_and_checks_out_nothing in tui/tests/branch.rs.
+# The script acts on `goto <path>` alone, and on an empty answer, which is nothing.
 br_want "an unknown verb is refused"            'rm -rf /'            "unexpected answer"
-br_want "a verb with no name is refused"        'switch'              "not a branch name"
-br_want "a name git rejects is refused"         'switch ../x'         "not a branch name"
-br_want "a branch that does not exist is refused" 'switch nope'       "no such branch"
-br_want "track of a local branch is refused"    'track old'           "no such branch"
-br_want "create with an invalid name is refused" 'create bad..name'   "not a branch name"
-br_want "two lines are refused"                 $'switch old\nswitch main' "not a branch name"
-br_stub 'switch old' >/dev/null
-is "a good answer is acted on" "old" "$(br_cur "$BRR")"
-git -C "$BRR" switch -q main
-br_stub 'switch feat/$(touch${IFS}x);`id`' >/dev/null
-is "a metacharacter name is switched to literally" 'feat/$(touch${IFS}x);`id`' "$(br_cur "$BRR")"
-is "and no command in it ran" "none" \
-    "$([ -e "$BRR/x" ] || [ -e "$HOME/x" ] && echo ran || echo none)"
-git -C "$BRR" switch -q main
-br_stub 'track origin/only-remote' >/dev/null
-is "track makes a local branch from the remote one" "only-remote" "$(br_cur "$BRR")"
-git -C "$BRR" switch -q main
-br_stub 'create fresh' >/dev/null
-is "create makes the branch" "fresh" "$(br_cur "$BRR")"
+br_want "a switch line is not the script's any more" 'switch old'    "unexpected answer"
+br_want "a track line is not the script's any more" 'track origin/only-remote' "unexpected answer"
+br_want "a create line is not the script's any more" 'create fresh'  "unexpected answer"
+is "an empty answer switches nothing" "0 main" "$(br_stub '' >/dev/null; echo "$? $(br_cur "$BRR")")"
 rm -rf "$BRR" "$BRM" "$BRX"
 
 echo "== tmux-branch (#246): its refusals are unchanged =="
@@ -19716,40 +19704,8 @@ out=$(cd "${BRR%/*}" &&
 is "a relative directory reaches the binary as its absolute path" "picker for branch -C $BRR" "$out"
 rm -rf "$BRN" "$BRR"
 
-echo "== tmux-branch: an inherited GIT_DIR or its kin never switches another repo =="
-# A dotfiles setup can export GIT_DIR into tmux's environment, and the popup
-# inherits it. The picker lists the pane repo's branches (gitsafe strips the
-# four), so the switch must land there too. FAIL-first: on the old code each
-# variable below switched, or checked out into, the other repo. The last three
-# (#730): another object store and a bad attribute source failed the switch, and
-# a replace base held a swapped blob for conf's `a` that the checkout wrote.
-BRE=$(mktmpd)
-# answers once, then leaves like esc: a refused switch cannot loop. conf's `a`
-# differs from main's, so a switch writes the tree it checks out.
-printf '#!/bin/sh\n[ -e "%s/used" ] && exit 1\n: > "%s/used"; echo "switch conf"\n' "$BRE" "$BRE" \
-    > "$BRE/cockpit-tui"
-chmod +x "$BRE/cockpit-tui"
-for v in GIT_DIR=@/.git GIT_WORK_TREE=@ GIT_COMMON_DIR=@/.git GIT_INDEX_FILE=@/.git/index \
-         GIT_OBJECT_DIRECTORY=@/.git/objects GIT_ATTR_SOURCE=no-such-rev \
-         GIT_REPLACE_REF_BASE=refs/alt/; do
-    rm -rf "$BRE/pane" "$BRE/other" "$BRE/used"; br_repo "$BRE/pane" "$BRE/remote-${v%%=*}"
-    git -C "$BRE/pane" update-ref "refs/alt/$(git -C "$BRE/pane" rev-parse conf:a)" \
-        "$(echo swapped | git -C "$BRE/pane" hash-object -w --stdin)"
-    (
-      export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
-      git init -q -b main "$BRE/other" && cd "$BRE/other" || exit 1
-      echo other > a; git add a; git commit -q -m init; git branch conf
-    ) >/dev/null 2>&1
-    brev=${v#*=}; brev=${brev//@/$BRE/other}
-    ( export "${v%%=*}=$brev"
-      env -u TMUX COCKPIT_TUI_BIN="$BRE/cockpit-tui" timeout 30 \
-          "$DIR/scripts/tmux-branch" "$BRE/pane" \
-          </dev/null >/dev/null 2>&1 )
-    is "${v%%=*} inherited: the pane repo switches, the other stays (branch, dirty files)" \
-       "conf 0 main 0" "$(br_cur "$BRE/pane") $(git -C "$BRE/pane" status --porcelain | grep -c .) \
-$(br_cur "$BRE/other") $(git -C "$BRE/other" status --porcelain | grep -c .)"
-done
-rm -rf "$BRE"
+# The inherited GIT_DIR rows (#730) moved with the switch into the binary (#228):
+# an_inherited_git_dir_or_its_kin_never_switches_another_repo, tui/tests/branch_act_env.rs.
 
 # --- #303 branch popup: a branch another worktree holds jumps there -----------
 # cockpit-tui is a stub that answers `goto <path>`, once: the binary's half is in
