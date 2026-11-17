@@ -22,7 +22,10 @@ thread_local! {
 
 /// Proof that this thread holds the binary's environment lock. Only [`env_lock`] makes
 /// one, so a `_held` check handed it reads under that lock and no other: a guard of
-/// another `Mutex<()>` is not one.
+/// another `Mutex<()>` is not one. That holds for safe code alone. An `unsafe` block can
+/// make one without the lock, by a `transmute` of another `MutexGuard<'_, ()>` or a
+/// `ptr::read` copy of a token kept after the real one drops (#1147). So the token
+/// catches a mistake, not a forgery: only a review of the diff sees one.
 pub struct EnvHeld {
     _guard: MutexGuard<'static, ()>,
 }
@@ -38,8 +41,11 @@ impl Drop for EnvHeld {
 /// in a `Drop` that runs before the token's, and the next check is to give its own
 /// refusal, not a poison panic. A thread that holds it must not join, or wait for the end
 /// of, a thread that calls a guard-less check (`fake::checked_state`, `fake::checked_tmux`,
-/// and through it `fake::fixed_env` and `fake::Server::start`): that check waits for this
-/// lock and the join for the check, for ever. No test does. A wait for such a thread to
+/// and through it `fake::fixed_env` and `fake::Server::start`) or a guard-less start of a
+/// child (`fake::handed`, and through it `fake::rows_pass_handed`, or `fake::run_by_hand`,
+/// which spawn under this lock, #1142): that call waits for this lock and the join for the
+/// call, for ever. No test does. The holder itself starts a child through
+/// `fake::handed_held` or `fake::run_by_hand_held`. A wait for such a thread to
 /// sleep, as the rows that hold a sibling's write do, ends. `fake::fixed_env` and
 /// `fake::Server::start` check under this lock and let it go before the tmux that follows
 /// (`fixed_env` takes it again for its own write), so a binary that writes TMUX or
@@ -62,11 +68,12 @@ pub fn env_poisoned() -> bool {
     ENV.is_poisoned()
 }
 
-/// The lock for the read of a guard-less check named `form`, recovered as in
-/// [`env_lock`]. On a thread that holds it already the take would wait for itself, so
-/// that call panics instead, naming the form that takes the holder's token, and, for a
-/// call that came through a helper, what the caller does instead. For `fake`'s checks
-/// alone: the guard it returns writes nothing.
+/// The lock for the read of a guard-less check named `form`, or for the spawn of a
+/// guard-less start of a child, recovered as in [`env_lock`]. On a thread that holds it
+/// already the take would wait for itself, so that call panics instead, naming the form
+/// that takes the holder's token, and, for a call that came through a helper, what the
+/// caller does instead. For `fake`'s checks
+/// and starts alone: the guard it returns writes nothing.
 pub fn for_check(form: &str) -> MutexGuard<'static, ()> {
     if HOLDS.get() {
         let held = "on a thread that holds fake::env_lock(): call";

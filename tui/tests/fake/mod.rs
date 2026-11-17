@@ -308,7 +308,9 @@ fn status_bits(pid: u32, field: &str) -> Option<u64> {
 /// blocked, read right after its exec, so a helper that hands nothing down
 /// fails. The child writes to files in a folder of its own and never to a pipe,
 /// which a red row writing more than a pipe holds would fill and then wait on
-/// for the whole bound (#1061).
+/// for the whole bound (#1061). The spawn takes [`env_lock`]'s lock and the wait
+/// does not, so the child starts with no write a sibling holds under it (#1142).
+/// Under that lock already, [`handed_held`]: the rule for a holder is test-env's.
 #[allow(dead_code)]
 pub fn handed(
     rows: &[&str],
@@ -316,6 +318,36 @@ pub fn handed(
     // variables set for the child alone
     env: &[(&str, &str)],
     bound: std::time::Duration,
+) -> Result<u32, String> {
+    handed_with(rows, signals, env, bound, |c| {
+        let spawned = {
+            let _env = test_env::for_check("handed");
+            c.spawn()
+        };
+        spawned.unwrap()
+    })
+}
+
+/// [`handed`] for a caller that holds [`env_lock`]'s lock, as `held` proves.
+#[allow(dead_code)]
+pub fn handed_held(
+    _held: &EnvHeld,
+    rows: &[&str],
+    signals: &'static [libc::c_int],
+    env: &[(&str, &str)],
+    bound: std::time::Duration,
+) -> Result<u32, String> {
+    handed_with(rows, signals, env, bound, |c| c.spawn().unwrap())
+}
+
+/// [`handed`]'s body, its child started by `spawn`.
+#[allow(dead_code)]
+fn handed_with(
+    rows: &[&str],
+    signals: &'static [libc::c_int],
+    env: &[(&str, &str)],
+    bound: std::time::Duration,
+    spawn: impl FnOnce(&mut Command) -> std::process::Child,
 ) -> Result<u32, String> {
     use std::os::unix::process::CommandExt;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -342,7 +374,8 @@ pub fn handed(
         Ok(())
     };
     // SAFETY: `hand_down` makes only async-signal-safe calls and allocates nothing.
-    let mut child = unsafe { c.pre_exec(hand_down) }.spawn().unwrap();
+    unsafe { c.pre_exec(hand_down) };
+    let mut child = spawn(&mut c);
     let pid = child.id();
     let what = rows.join(" ");
     let said = |status: &str| {
@@ -542,13 +575,39 @@ fn state_refusal() -> Option<String> {
 /// `test` of this binary, alone, in a child started by hand with `set` in its
 /// environment and no runner between it and this one: how it ended and all it
 /// wrote, for a row that holds a refusal word for word. Not the row's own name.
+/// As in [`handed`], the spawn takes [`env_lock`]'s lock and the wait does not
+/// (#1142). Under that lock already, [`run_by_hand_held`].
 #[allow(dead_code)]
 pub fn run_by_hand(test: &str, set: &[(&str, &str)]) -> (Option<i32>, String) {
+    let mut c = by_hand(test, set);
+    let spawned = {
+        let _env = test_env::for_check("run_by_hand");
+        c.spawn()
+    };
+    said_by_hand(spawned.unwrap())
+}
+
+/// [`run_by_hand`] for a caller that holds [`env_lock`]'s lock, as `held` proves.
+#[allow(dead_code)]
+pub fn run_by_hand_held(_held: &EnvHeld, test: &str, set: &[(&str, &str)]) -> (Option<i32>, String) {
+    said_by_hand(by_hand(test, set).spawn().unwrap())
+}
+
+/// [`run_by_hand`]'s command. Its own pipes: a spawn hands the child this
+/// process's stdout and stderr unless told otherwise, where `output` makes pipes.
+#[allow(dead_code)]
+fn by_hand(test: &str, set: &[(&str, &str)]) -> Command {
+    use std::process::Stdio;
     let mut c = Command::new(std::env::current_exe().unwrap());
-    c.args(["--exact", test])
-        .envs(set.iter().copied())
-        .stdin(std::process::Stdio::null());
-    let out = c.output().unwrap();
+    c.args(["--exact", test]).envs(set.iter().copied());
+    c.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    c
+}
+
+/// How `child`, a [`run_by_hand`] child, ended and all it wrote.
+#[allow(dead_code)]
+fn said_by_hand(child: std::process::Child) -> (Option<i32>, String) {
+    let out = child.wait_with_output().unwrap();
     let said = String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr);
     (out.status.code(), said)
 }
