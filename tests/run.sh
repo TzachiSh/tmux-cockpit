@@ -16674,6 +16674,18 @@ bash -c 'read -r _ < "$1"' _ "$SQD/p" </dev/null >/dev/null 2>&1 7>&- 8>&- & SQP
 SQPS=$(pid_start "$SQP")
 [ "$(sq_c "$SQP")" = bash ] && kill -STOP "$SQP"; until_out T sq_st "$SQP" >/dev/null
 is "the decoy is up and stopped" "T" "$(sq_st "$SQP")"
+# A second, run through a link whose name holds ") ": its comm does too, so a cut at the first
+# ") " of its stat line, not the last, reads the wrong field. Field 22 is read here by awk alone.
+sq_f22() { awk '{ sub(/.*\) /, ""); print $20 }' "/proc/$1/stat" 2>/dev/null; }
+ln -s "$(command -v bash)" "$SQD/x) 1 2 3"
+"$SQD/x) 1 2 3" -c 'read -r _ < "$1"' _ "$SQD/r" </dev/null >/dev/null 2>&1 7>&- 8>&- & SQX=$!
+until_out 'x) 1 2 3' sq_c "$SQX" >/dev/null
+is "the second decoy's name holds a \") \"" "x) 1 2 3" "$(sq_c "$SQX")"
+SQW="$(sq_f22 "$SQP")|$(sq_f22 "$SQX")"
+case $SQW in [0-9]*'|'[0-9]*) ;; *) SQW="field 22 unread [$SQW]" ;; esac
+is "pid_start reads field 22 of each, past a \") \" in a name" \
+   "$SQW" "$(pid_start "$SQP")|$(pid_start "$SQX")"
+printf '\n' >&7; wait "$SQX" 2>/dev/null
 is "a pid that is no number: no signal, and said" "no signal: pid [1x]" "$(pid_sig TERM 1x 1)"
 is "another start time under its number: no TERM, the one read said" \
    "no signal: start [$SQPS]|0" "$(pid_sig TERM "$SQP" 1)|$(sq_pend "$SQP")"
