@@ -43,14 +43,16 @@ tracked() {
     local f
     # tui/ too, since the suite runs the binary built from it (#199). And every
     # other file a block reads by path: docs/tui.md, the Makefile, all of
-    # tests/fixtures, skills/ (install.sh links it). The #672 block in run.sh
+    # tests/fixtures, skills/ (install.sh links it), and tests/freeze-rig: the
+    # #1173 block reads gate.sh and its helpers. The #672 block in run.sh
     # fails on one missing here.
     { for f in cockpit.tmux install.sh bootstrap.sh Makefile docs/tui.md \
                scripts/* scripts/lib/* tests/* examples/*; do
           case $f in tests/.*) continue ;; esac
           [ -f "$f" ] && printf '%s\n' "$f"
       done
-      find tests/fixtures tui skills -path tui/target -prune -o -type f -print; } | sort
+      find tests/fixtures tests/freeze-rig tui skills -path tui/target -prune -o -type f -print
+    } | sort
 }
 
 manifest() {

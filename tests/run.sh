@@ -11127,6 +11127,141 @@ is "a run whose work folder's list and out cannot be made ends 1 and leaves no w
             bash tests/par.sh </dev/null >/dev/null 2>&1; echo "$?|$(ls -A "$PQ/t" | tr '\n' ,)")"
 unset -f pq_mk pq_run; unset PQ Q pq_in pq_body pq_p pq_want
 
+echo "== tests/freeze-rig/gate.sh: no signal leaves its server; it signals only its own (#1173) =="
+# Its cleanup ran on EXIT alone: a second HUP, INT or TERM while bash's own handler or that trap
+# ran killed it before its server and LOGDIR were gone, run.sh's shape before #1107. And it sent
+# kill -9 to each pid `pgrep -f "tmux -L $SOCK"` matched: any process with that text in its
+# argv, another run's too when that run's socket name starts with this one's. So it traps the
+# three, both traps ignore them first, its server ends by its socket, and the one pid it
+# signals, its client's $!, is checked by name first. Copies in a sandbox, run as `bash <copy>`
+# as the gate is, on a 1-pane server (S, W and P of 1) and an empty formats file: no bar, no
+# agent-state. gt-hold is a read on a fifo the row writes to. gate-run.sh holds once its client
+# is started and exits 5 after, so a run that went past the hold reads 5; gate-end.sh holds in
+# its exit trap too, right before the kill-server; gate-sig.sh holds as that trap's first line,
+# before its ignore, where only gate_sig's ignore stands; gate-pid.sh's CLIENT_PID is a process
+# of the row's, a pid handed out again. Each row's decoy, a process of its own whose argv holds
+# "tmux -L <the copy's socket>0", must outlive the run, as must the CLIENT_PID stand-in. A row
+# signals a copy only once /proc names it, and says so in place of a status when it does not
+# (#1208). Servers are on the suite's socket folder, each name in SOCKS.
+GT=$(mktmpd); mkdir -p "$GT/c" "$GT/bin"; : > "$GT/f.conf"
+printf '%s\n' '#!/bin/bash' '# <run|in> [client pid] [LOGDIR]' \
+    'printf "%s\n" "${2-}" "${3-}" > "$GT_H/$1.args"; echo "$$" >> "$GT_H/../pids"' \
+    'exec 9<>"$GT_H/$1.f"; : > "$GT_H/$1"; read -r -t 20 -u 9 _' > "$GT/bin/gt-hold"
+chmod +x "$GT/bin/gt-hold"
+cp "$DIR/tests/freeze-rig/lib.sh" "$DIR/tests/freeze-rig/loop.sh" "$GT/c/"
+sed '/^disown /a gt-hold run "$CLIENT_PID" "$LOGDIR"; exit 5' "$DIR/tests/freeze-rig/gate.sh" \
+    > "$GT/c/gate-run.sh"
+sed '/^    tmux -L "\$SOCK" kill-server/i gt-hold in "" "$LOGDIR"' "$GT/c/gate-run.sh" \
+    > "$GT/c/gate-end.sh"
+sed '/^gate_clean() {$/a gt-hold in "" "$LOGDIR"' "$GT/c/gate-run.sh" > "$GT/c/gate-sig.sh"
+sed 's/^CLIENT_PID=\$!$/&; CLIENT_PID=$GT_PID/' "$GT/c/gate-run.sh" > "$GT/c/gate-pid.sh"
+gt_up() {      # <pid> <comm> -> up when that pid runs under that name, else -
+    local c=""
+    [ -z "$1" ] || read -r c 2>/dev/null < "/proc/$1/comm"
+    if [ -n "$1" ] && [ "$c" = "$2" ]; then echo up; else echo -; fi
+}
+gt_run() {     # <copy> <conf> <signal to it alone at its run hold|-> [2nd, to its group in its
+    # exit trap] -> gt_out: status|TMPDIR|server|socket|client|decoys, the last four as gt_up's
+    local s=$1 c="" a="" k=run g rc sp="" cp="" d0 d1 dfl=()
+    [ "$2" = "$GT/f.conf" ] || k=in    # a conf it cannot source ends it before its client
+    rm -rf "${GT:?}/t" "${GT:?}/h"; mkdir -p "$GT/t" "$GT/h"
+    mkfifo "$GT/h/run.f" "$GT/h/in.f" "$GT/h/d.f"
+    for g in HUP INT TERM; do ! sig_dfl "$g" || dfl+=(--default-signal="$g"); done
+    # held open here, so a line written before a hold opens its fifo waits there for it
+    exec 7<>"$GT/h/run.f" 8<>"$GT/h/in.f" 6<>"$GT/h/d.f"
+    bash -c 'read -r -t 30 -u 9 _' gt-decoy 9<>"$GT/h/d.f" </dev/null >/dev/null 2>&1 & d0=$!
+    ( cd "$GT" && exec env "${dfl[@]}" -u TMUX -u TMUX_PANE TMPDIR="$GT/t" GT_H="$GT/h" \
+        GT_PID="$d0" S=1 W=1 P=1 PATH="$GT/bin:$PATH" setsid bash "$GT/c/$s" "$2" ) \
+        </dev/null >/dev/null 2>&1 &
+    gt_p=$!; SOCKS="$SOCKS cockpit-gate-$gt_p"; shift 2
+    bash -c 'read -r -t 30 -u 9 _' "vi tmux -L cockpit-gate-${gt_p}0" 9<>"$GT/h/d.f" \
+        </dev/null >/dev/null 2>&1 & d1=$!
+    if ! until_out '?*' ls "$GT/h/$k" >/dev/null; then c="no hold: $k"
+    else
+        read -r c 2>/dev/null < "/proc/$gt_p/comm"
+        a=$(tr '\0' '\n' 2>/dev/null < "/proc/$gt_p/cmdline" | sed -n 2p)
+        sp=$("$TMUX_REAL" -L "cockpit-gate-$gt_p" display -p '#{pid}' 2>/dev/null)
+        [ "$k" != run ] || cp=$(sed -n 1p "$GT/h/run.args")
+        # the pane's loop.sh has unlinked its fifo: TMPDIR holds LOGDIR alone
+        [ "$k" != run ] || until_out 1 eval 'ls -A "$GT/t" | wc -l' >/dev/null
+        if [ "$c" != bash ] || [ "$a" != "$GT/c/$s" ]; then c="no signal: comm [$c] argv [$a]"
+        else
+            c=""
+            # a kill that fails is named in place of the status, as a failed check is (#1208)
+            [ "$k" != run ] || [ "$1" = - ] || kill -"$1" "$gt_p" 2>/dev/null ||
+                c="no signal: kill $1"
+            shift
+            printf '\n' >&7
+            if [ $# -eq 0 ]; then :
+            elif until_out '?*' ls "$GT/h/in" >/dev/null; then
+                kill -"$1" -- "-$gt_p" 2>/dev/null || c="no signal: kill $1"
+            else c="no hold: in"
+            fi
+        fi
+    fi
+    printf '\n' >&7; printf '\n' >&8
+    wait "$gt_p" 2>/dev/null; rc=$?; exec 7>&- 8>&-
+    # the client ends once its server is gone, by itself or by the trap: waited for, not slept
+    [ -z "$cp" ] || until_out - gt_up "$cp" script >/dev/null
+    gt_out="${c:-$rc}|$(ls -A "$GT/t" | tr '\n' ,)|$(gt_up "$sp" 'tmux: server')"
+    gt_out="$gt_out|$([ -e "$SOCKDIR/cockpit-gate-$gt_p" ] && echo up || echo -)"
+    gt_out="$gt_out|$(gt_up "$cp" script)|$(gt_up "$d0" bash) $(gt_up "$d1" bash)"
+    printf '\n\n' >&6; wait "$d0" "$d1" 2>/dev/null; exec 6>&-
+}
+gt_alive() {   # the pids of holds still running
+    local p
+    [ -e "$GT/pids" ] || return 0
+    while read -r p; do [ "$(gt_up "$p" gt-hold)" = - ] || echo "$p"; done < "$GT/pids"
+}
+gt_sk="a signal to tests/freeze-rig/gate.sh"
+if [ "$HAVE_TMUX" != 1 ]; then skip_ "$gt_sk (no tmux)"
+elif ! command -v setsid >/dev/null; then skip_ "$gt_sk (no setsid)"
+elif ! command -v script >/dev/null; then skip_ "$gt_sk (no script)"
+elif [ ! -r "/proc/$$/comm" ]; then skip_ "$gt_sk (no /proc)"
+elif ! sig_dfl HUP && [ "$(trap -p HUP)" = "trap -- '' SIGHUP" ]; then
+    skip_ "$gt_sk (SIGHUP is ignored and env cannot reset it)"
+else
+    is "each copy holds or swaps where it should" "1 2 2 1" "$( {
+        for c in run end sig; do grep -c '^ *gt-hold ' "$GT/c/gate-$c.sh"; done
+        grep -c 'CLIENT_PID=\$GT_PID' "$GT/c/gate-pid.sh"; } | tr '\n' ' ' | sed 's/ $//')"
+    gt_run gate-run.sh "$GT/f.conf" TERM
+    is "a TERM to it alone ends its server, client and LOGDIR, and no decoy" "143||-|-|-|up up" \
+       "$gt_out"
+    gt_run gate-run.sh "$GT/f.conf" HUP; is "nor a HUP" "129||-|-|-|up up" "$gt_out"
+    if ! sig_dfl INT; then skip_ "an INT to gate.sh (env cannot reset SIGINT)"
+    else
+        gt_run gate-run.sh "$GT/f.conf" INT
+        is "an INT to it alone, in a command, ends the run there" "130||-|-|-|up up" "$gt_out"
+        gt_run gate-end.sh "$GT/f.conf" INT TERM
+        is "nor a TERM to its group in its exit trap after an INT" "130||-|-|-|up up" "$gt_out"
+        gt_run gate-end.sh "$GT/f.conf" INT INT
+        is "nor an INT to its group in its exit trap after an INT" "130||-|-|-|up up" "$gt_out"
+        gt_run gate-sig.sh "$GT/f.conf" INT INT
+        is "nor an INT to its group as its exit trap starts, after an INT" "130||-|-|-|up up" \
+           "$gt_out"
+        gt_run gate-end.sh "$GT/none.conf" - INT
+        is "an INT to its group in the exit trap of a run that ended 2 leaves nothing" \
+           "2||-|-|-|up up" "$gt_out"
+    fi
+    gt_run gate-end.sh "$GT/f.conf" HUP HUP
+    is "a HUP, then a HUP to its group in its exit trap, leaves nothing" "129||-|-|-|up up" \
+       "$gt_out"
+    gt_run gate-end.sh "$GT/f.conf" TERM TERM
+    is "nor a TERM after a TERM" "143||-|-|-|up up" "$gt_out"
+    gt_run gate-sig.sh "$GT/f.conf" TERM TERM
+    is "a TERM to its group as its exit trap starts, after a TERM, leaves nothing" \
+       "143||-|-|-|up up" "$gt_out"
+    gt_run gate-end.sh "$GT/none.conf" - HUP
+    is "a HUP to its group in the exit trap of a run that ended 2 leaves nothing" \
+       "2||-|-|-|up up" "$gt_out"
+    gt_run gate-end.sh "$GT/none.conf" - TERM; is "nor a TERM" "2||-|-|-|up up" "$gt_out"
+    gt_run gate-pid.sh "$GT/f.conf" TERM
+    is "a CLIENT_PID now naming another process is not signalled" "143||-|-|-|up up" "$gt_out"
+    is "no hold is left running" "" "$(until_out '' gt_alive; gt_alive)"
+fi
+for gt_s in $SOCKS; do case $gt_s in cockpit-gate-*) kill_sock "$gt_s" ;; esac; done
+unset -f gt_up gt_run gt_alive; unset GT gt_p gt_out gt_sk gt_s
+
 echo "== tests/only.sh, tests/changed.sh: no HUP, INT or TERM cuts an exit trap short (#1171) =="
 # Both set an EXIT trap and nothing on HUP, INT or TERM, the shape par.sh had (#1127): bash then
 # ends through its own handler, and a second such signal while the first is handled, or one
@@ -11320,8 +11455,8 @@ unset -f cs_run cs_alive; unset CS cs_p cs_s cs_e cs_sk
 echo "== tests/green.sh: the stamp hits on unchanged content, misses on one changed byte, and tool versions are in the key =="
 GROOT=$(mktmpd)
 mkdir -p "$GROOT/scripts/lib" "$GROOT/tests" "$GROOT/examples"
-# green.sh's find walks these three, as a checkout has them: absent, it says so on stderr (#1116)
-mkdir -p "$GROOT/tests/fixtures" "$GROOT/tui" "$GROOT/skills"
+# green.sh's find walks these four, as a checkout has them: absent, it says so on stderr (#1116)
+mkdir -p "$GROOT/tests/fixtures" "$GROOT/tests/freeze-rig" "$GROOT/tui" "$GROOT/skills"
 cp "$DIR/tests/green.sh" "$GROOT/tests/green.sh"
 for f in cockpit.tmux install.sh bootstrap.sh scripts/foo scripts/lib/bar tests/baz examples/qux; do
     printf 'a\n' > "$GROOT/$f"
