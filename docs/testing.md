@@ -210,8 +210,9 @@ script ended at once and that command ran on, writing into a folder nobody
 removed. A signal sent to the group, a Ctrl-C or a plain `timeout`, reaches the
 command too, and the script removes its paths once it ends. A cancelled CI job
 is neither: GitHub's runner sends INT and then TERM to the step's shell alone,
-then kills the process tree, so neither script cleans up there, before this
-change or after it.
+and kills the process tree only if that shell is still running. Once the job
+ends, the runner kills the processes the job left. Neither script gets a signal
+it traps there, so neither cleans up, before this change or after it.
 
 Those rows hold only where the suite made the folder. In a folder you named,
 other runs' sockets may sit beside this run's, so nothing is asked of it. On

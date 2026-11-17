@@ -11056,7 +11056,8 @@ printf '%s\n' '#!/bin/bash' '# <run|in>: run is the command, held only where CS_
     'echo "$$" >> "$CS_H/../pids"; exec 9<>"$CS_H/$1.f"; : > "$CS_H/$1"; read -r -t 20 -u 9 _' \
     > "$CS/bin/cs-hold"
 printf '#!/bin/sh\nexec cs-hold run\n' > "$CS/bin/cargo"
-printf '#!/bin/sh\nexit 0\n' > "$CS/bin/unshare"
+# its namespace run, every call but `unshare -rm true`, ends with CS_UNS
+printf '#!/bin/sh\n[ "$2" = true ] || exit "${CS_UNS:-0}"\n' > "$CS/bin/unshare"
 chmod +x "$CS/bin/cs-hold" "$CS/bin/cargo" "$CS/bin/unshare"
 cp "$DIR/tests/clean-run.sh" "$DIR/tests/tui-refusers.sh" "$CS/c/tests/"
 sed '/^    for d in "\$t" "\$x"; do$/i cs-hold in' "$DIR/tests/clean-run.sh" \
@@ -11080,10 +11081,13 @@ cs_run() {   # <script> <its command: hold|pass|fail> [signal] [2nd] -> status|l
         c="no signal: comm [$c]"
     else
         c=""     # the first signal, where the command holds, goes to the script alone
-        [ "$k" != run ] || [ $# -eq 0 ] || { kill -"$1" "$cs_p" 2>/dev/null; shift; }
+        if [ "$k" = run ] && [ $# -gt 0 ]; then
+            kill -"$1" "$cs_p" 2>/dev/null || c="no signal: kill $1"; shift
+        fi
         printf '\n' >&7
         if [ $# -eq 0 ]; then :
-        elif until_out '?*' ls "$CS/h/in" >/dev/null; then kill -"$1" -- "-$cs_p" 2>/dev/null
+        elif until_out '?*' ls "$CS/h/in" >/dev/null; then
+            kill -"$1" -- "-$cs_p" 2>/dev/null || c="no signal: kill $1"
         else c="no hold: in"
         fi
     fi
@@ -11098,6 +11102,11 @@ cs_alive() {   # the pids of holds still running
         c=""; read -r c 2>/dev/null < "/proc/$p/comm"; [ "$c" != cs-hold ] || echo "$p"
     done < "$CS/pids"
 }
+rm -rf "${CS:?}/t"; mkdir -p "$CS/t"
+is "tui-refusers.sh: its namespace run's status is its own, and nothing is left" "7|" \
+   "$(cd "$CS" && env -u TMUX TMPDIR="$CS/t" CS_RUN=pass CS_UNS=7 PATH="$CS/bin:$PATH" \
+        "$CS/c/tests/tui-refusers.sh" </dev/null >/dev/null 2>&1
+      printf '%s|%s' "$?" "$(ls -A "$CS/t" | tr '\n' ,)")"
 cs_sk="a signal to clean-run.sh or tui-refusers.sh"
 if ! command -v setsid >/dev/null; then skip_ "$cs_sk (no setsid)"
 elif [ ! -r "/proc/$$/comm" ]; then skip_ "$cs_sk (no /proc)"
@@ -11119,6 +11128,9 @@ else
         else
             is "$cs_s: nor an INT to it alone" "130|" "$(cs_run "$cs_s" hold INT)"
             is "nor a TERM after an INT" "130|" "$(cs_run "$cs_e" hold INT TERM)"
+            is "nor an INT after an INT" "130|" "$(cs_run "$cs_e" hold INT INT)"
+            is "$cs_s: nor an INT in the exit trap of a run at its end" "0|" \
+               "$(cs_run "$cs_e" pass INT)"
         fi
         is "$cs_s: a HUP to its group in the exit trap of a run at its end leaves nothing" \
            "0|" "$(cs_run "$cs_e" pass HUP)"
