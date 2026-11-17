@@ -857,6 +857,21 @@ fn a_fifo_or_a_device_at_the_last_seen_path_is_nothing_seen() {
     let at = r.store().join(key);
     assert!(Command::new("mkfifo").arg(&at).status().unwrap().success());
     assert_eq!(read_unblocked(&r.store(), key), None, "a FIFO");
+    {
+        // A FIFO holding a record that parses, its writer gone and a reader keeping
+        // it: only the file check tells it from a file (#1003).
+        use std::os::unix::fs::OpenOptionsExt;
+        let open = |w: bool| {
+            let mut o = std::fs::OpenOptions::new();
+            o.read(!w).write(w).custom_flags(libc::O_NONBLOCK).open(&at).unwrap()
+        };
+        let keep = open(false);
+        let mut w = open(true);
+        std::io::Write::write_all(&mut w, format!("{} {T0}\n", "ab".repeat(20)).as_bytes()).unwrap();
+        drop(w);
+        assert_eq!(read_unblocked(&r.store(), key), None, "a FIFO holding a record");
+        drop(keep);
+    }
     std::fs::remove_file(&at).unwrap();
     std::os::unix::fs::symlink("/dev/zero", &at).unwrap();
     assert_eq!(read_unblocked(&r.store(), key), None, "a device");

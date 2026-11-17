@@ -1508,8 +1508,9 @@ It is not wired into Explain yet: nothing in the panel calls it.
   Each item cites the commit's first 12 hex digits. A last-seen sha that is not
   behind HEAD but that a ref still holds (another branch after a checkout, or
   HEAD moved back) lists the commits on HEAD that are not behind it. One that
-  no ref holds, after a force-push, a reset or a deleted branch, or that is not
-  in the repo, gives one item instead: `history rewritten since <time>`.
+  no branch, tag, remote-tracking ref or stash holds any more (a force-push or
+  a reset whose old commits nothing else keeps, a deleted branch), or that is
+  not in the repo, gives one item instead: `history rewritten since <time>`.
 - **GitHub.** With `origin` on github.com: `gh pr list` and `gh issue list`,
   searched for `updated:>=<last seen>`, and `gh run list` for the branch's
   latest run, each with `-R github.com/<owner>/<repo>` and started from `/`, so
