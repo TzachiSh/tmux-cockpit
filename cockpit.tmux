@@ -213,16 +213,12 @@ key() {                       # <option> <default> -> the key, empty when off
 # never falls back to the default, which may be a key the user bound to something else
 # (#1210).
 refused() {                   # <name> <tmux's error> -> 1
-    local opt=@cockpit_${1}_key v e=${2%%$'\n'*} p
+    local opt=@cockpit_${1}_key v e=${2%%$'\n'*}
     [ "$1" = menu ] && opt=$menuopt
     v=$(tmux show-option -gqv "$opt")
     dmsg "tmux-cockpit: $opt [$v] binds nothing ($e); $1 stays unbound until the option is fixed"
-    # The move loop splits the key list on spaces, so 'i x' after i reached it as i, the key
-    # this name holds, and nothing was given back there. A record still naming a key this
-    # name holds goes back here, as off's would. One that cannot be given back keeps its
-    # record, so refused() tries again on the next load (#1226 review).
-    p=$(tmux show-option -gqv "@cockpit_${1}_bound")
-    if [ -n "$p" ] && owned "$1" "$p" && ! give_back "$p"; then return 1; fi
+    # The move loop already gave back a key a record named, as off's (#1229): a record left
+    # here names this refused value itself, which binds nothing to give back.
     tmux set-option -gu "@cockpit_${1}_bound"
     return 1
 }
@@ -274,29 +270,44 @@ tmux list-keys -T prefix -F "#{key_string}"$'\037'"#{key_command}" 2>/dev/null \
 # A reload that turns a key off or moves it gives the old key back, unless it is
 # no longer ours: the user bound it since. A key another cockpit key takes this
 # load is given back too, then bound again below. One that could not be given
-# back waits in @cockpit_giveback ("<name>:<key> ...") for the next load, since
-# the <name>'s own record moves on to its new key.
-now=" menu:$menuk sessions:$sk jump:$jk info:$ik panel:$pk board:$bk review:$rk"
-now="$now reload:$rlk move:$mk fullscreen:$fsk "
-todo=$(tmux show-option -gqv @cockpit_giveback)
-set -f
-for nk in $now; do
-    n=${nk%%:*}
+# back waits in @cockpit_giveback for the next load, since the <name>'s own record
+# moves on to its new key. Each name and key stays whole: a list split on spaces read
+# a value's stray word ('q info:i') as a name's own key and kept the old key bound,
+# and tmux binds a key holding a space (' ', 'M- '), whose record then split (#1229).
+now=(menu "$menuk" sessions "$sk" jump "$jk" info "$ik" panel "$pk" board "$bk"
+     review "$rk" reload "$rlk" move "$mk" fullscreen "$fsk")
+takes() {                     # <name> <key> -> 0 when <name> binds <key> this load
+    local i
+    for ((i = 0; i < ${#now[@]}; i += 2)); do
+        [ "${now[i]}" = "$1" ] && { [ "${now[i+1]}" = "$2" ]; return; }
+    done
+    return 1
+}
+# @cockpit_giveback is one "<name>:<key>" per line, each after a newline: tmux binds no
+# key holding one. A list with no leading newline was written before #1229, space-joined.
+todo=()
+gb=$(tmux show-option -gqv @cockpit_giveback)
+case $gb in
+    $'\n'*) while IFS= read -r nk; do [ -z "$nk" ] || todo+=("$nk"); done <<< "${gb#?}" ;;
+    *) set -f; for nk in $gb; do todo+=("$nk"); done; set +f ;;
+esac
+for ((i = 0; i < ${#now[@]}; i += 2)); do
+    n=${now[i]}
     prev=$(tmux show-option -gqv "@cockpit_${n}_bound")
-    [ -n "$prev" ] && [ "$prev" != "${nk#*:}" ] || continue
-    todo="$todo $n:$prev"
+    [ -n "$prev" ] && [ "$prev" != "${now[i+1]}" ] || continue
+    todo+=("$n:$prev")
     tmux set-option -gu "@cockpit_${n}_bound"
 done
 left=""
-for nk in $todo; do
-    case "$now" in *" $nk "*) continue ;; esac     # its own key again: bound below
+for nk in ${todo[@]+"${todo[@]}"}; do
+    takes "${nk%%:*}" "${nk#*:}" && continue      # its own key again: bound below
     owned "${nk%%:*}" "${nk#*:}" || continue      # the user's now: nothing to give back
-    give_back "${nk#*:}" || left="$left $nk"
+    give_back "${nk#*:}" || left="$left"$'\n'"$nk"
 done
-set +f
 # The list's last pair may end in ;, which tmux would cut off it (#1151).
-if [ -n "$left" ]; then tmux set-option -g @cockpit_giveback "$(cockpit_key_arg "${left# }")"
+if [ -n "$left" ]; then tmux set-option -g @cockpit_giveback "$(cockpit_key_arg "$left")"
 else tmux set-option -gu @cockpit_giveback; fi
+unset -f takes
 
 Q_BRANCH=$(sq "$DIR/scripts/tmux-branch")
 Q_OPEN=$(sq "$DIR/scripts/tmux-open-path")
