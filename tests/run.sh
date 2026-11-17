@@ -584,6 +584,32 @@ until_out() {                 # <pattern> <cmd...>
     done
     return 1
 }
+# A pid outlives its process (AGENTS.md, "Never signal a pid the hook has not verified"). bash
+# reaps a background child the moment it exits, with no `wait`, and the kernel can then hand the
+# number on: neither kill -0 nor `jobs -p`, which still lists the reaped job, says the pid is
+# still that child (#1227). Its start time does: read just after the `&`, while the pid is known
+# to be the child, and read again at the kill. A later process under the number starts later.
+# In the prelude, so every block has it (#1145).
+pid_start() {                 # <pid> -> its start time, or nothing when it is gone
+    local s="" a
+    case "${1:-}" in ''|*[!0-9]*) return 1 ;; esac
+    if [ -r "/proc/$1/stat" ]; then
+        read -r s 2>/dev/null < "/proc/$1/stat"; s=${s##*) }; read -ra a <<<"$s"; s=${a[19]:-}
+    elif [ ! -d /proc/self ]; then
+        s=$(ps -o lstart= -p "$1" 2>/dev/null)   # no /proc: to the second, so the pid as well
+    fi
+    printf '%s' "$s"
+}
+pid_sig() {                   # <signal> <pid> <start>: signal it only if it started then
+    # Prints nothing when the signal went, else "no signal: <why>", so a row can show a kill
+    # that did not happen (#1208).
+    local p=${2:-} s
+    case "$p" in ''|*[!0-9]*) printf 'no signal: pid [%s]' "$p"; return 1 ;; esac
+    [ -n "${3:-}" ] || { printf 'no signal: no start'; return 1; }
+    s=$(pid_start "$p")
+    [ "$s" = "$3" ] || { printf 'no signal: start [%s]' "$s"; return 1; }
+    kill -"$1" "$p" 2>/dev/null || { printf 'no signal: kill %s' "$1"; return 1; }
+}
 # A pane's start, waited for on the pane's own process, never on #{pane_current_command}
 # (#1079). tmux names a pane from its foreground group's /proc cmdline. Where that read
 # fails or is empty, before the pane's process takes its tty and inside each exec, tmux
@@ -1929,8 +1955,8 @@ pstrans() {                   # one real transition on this block's server
 # Two stand-in boards: a bare waiter on each channel, as the board's own child is.
 "$TMUX_REAL" -L "$PS" set -g @cockpit_board_wake \
     'wait-for -S cockpit-board-1 ; wait-for -S cockpit-board-2 ; ' >/dev/null 2>&1
-"$TMUX_REAL" -L "$PS" wait-for cockpit-board-1 & PSW1=$!
-"$TMUX_REAL" -L "$PS" wait-for cockpit-board-2 & PSW2=$!
+"$TMUX_REAL" -L "$PS" wait-for cockpit-board-1 & PSW1=$!; PSW1S=$(pid_start "$PSW1")
+"$TMUX_REAL" -L "$PS" wait-for cockpit-board-2 & PSW2=$!; PSW2S=$(pid_start "$PSW2")
 sleep 0.2
 # running, not done: needs-input is sticky and a done would fail the
 # transition's guard, so no transition would happen to push.
@@ -1940,7 +1966,7 @@ psgone() { local i; for i in $(seq 1 "$POLLS"); do kill -0 "$1" 2>/dev/null || r
 }
 if psgone "$PSW1" && psgone "$PSW2"; then ok "a transition wakes both listed boards"
 else bad "a transition wakes both listed boards" "both waiters returned" "one still waits"
-    kill "$PSW1" "$PSW2" 2>/dev/null
+    pid_sig TERM "$PSW1" "$PSW1S" >/dev/null; pid_sig TERM "$PSW2" "$PSW2S" >/dev/null
 fi
 wait "$PSW1" "$PSW2" 2>/dev/null
 # An exact count: the wake rides the one round-trip the transition already
@@ -2796,6 +2822,7 @@ rg_ms() { local t=${EPOCHREALTIME:-${SECONDS}.000000}; t=${t/[.,]/}; echo $(( 10
 #    one write, under PIPE_BUF so atomic: the fields never arrive without it.
 printf 'RG-TAIL\n' | cat "$RGPAY" - > "$RGSTATE/pay-tail"
 ( exec 9>"$RGF"; cat "$RGSTATE/pay-tail" >&9; sleep 8 ) & rg_holder=$!   # a holder
+rg_hs=$(pid_start "$rg_holder")
 rg_t0=$(rg_ms)
 TMUX_PANE=%999999 TMUX_TMPDIR="$RGSTATE" XDG_STATE_HOME="$RGSTATE" \
     timeout 6 "$DIR/scripts/review-gate" >/dev/null 2>&1 < "$RGF"
@@ -2803,7 +2830,7 @@ rg_grc=$?
 rg_dt=$(( $(rg_ms) - rg_t0 ))
 # <> opens read-write, so open() never waits for a writer the holder may no longer be.
 rg_rest=""; IFS= read -r -t 3 rg_rest <> "$RGF"
-kill "$rg_holder" 2>/dev/null; wait "$rg_holder" 2>/dev/null
+pid_sig TERM "$rg_holder" "$rg_hs" >/dev/null; wait "$rg_holder" 2>/dev/null
 is "a payload whose writer keeps stdin open is not waited out" "0" "$rg_grc"
 [ "$rg_dt" -lt 4000 ] &&
     ok "and the read returns as soon as it has both fields (${rg_dt}ms)" ||
@@ -2811,12 +2838,13 @@ is "a payload whose writer keeps stdin open is not waited out" "0" "$rg_grc"
 is "and it stops reading at those fields" "RG-TAIL" "$rg_rest"
 # 2. Nothing ever arrives: the deadline is the backstop, and it must fire.
 ( exec 9>"$RGF"; sleep 8 ) & rg_holder=$!                     # a holder, not a wait
+rg_hs=$(pid_start "$rg_holder")
 rg_t0=$(rg_ms)
 TMUX_PANE=%999999 TMUX_TMPDIR="$RGSTATE" XDG_STATE_HOME="$RGSTATE" \
     timeout 6 "$DIR/scripts/review-gate" >/dev/null 2>&1 < "$RGF"
 rg_grc=$?
 rg_dt=$(( $(rg_ms) - rg_t0 ))
-kill "$rg_holder" 2>/dev/null; wait "$rg_holder" 2>/dev/null
+pid_sig TERM "$rg_holder" "$rg_hs" >/dev/null; wait "$rg_holder" 2>/dev/null
 is "a silent stdin does not hang the hook" "0" "$rg_grc"
 [ "$rg_dt" -lt 5000 ] &&
     ok "and it gives up inside its own deadline (${rg_dt}ms)" ||
@@ -3666,10 +3694,10 @@ echo "== agent-state: notify must not hang on a silent stdin =="
 # Code does keep the hook's stdin open -- wedged the hook, and a wedged hook
 # blocks the agent that fired it.
 FIFO="$STATE/notify.fifo"; mkfifo "$FIFO"
-( exec 9>"$FIFO"; sleep 8 ) & holder=$!
+( exec 9>"$FIFO"; sleep 8 ) & holder=$!; holder_s=$(pid_start "$holder")
 timeout 6 "$DIR/scripts/agent-state" notify %999999 >/dev/null 2>&1 < "$FIFO"
 rc=$?
-kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
+pid_sig TERM "$holder" "$holder_s" >/dev/null; wait "$holder" 2>/dev/null
 is "notify gives up rather than wedging the hook" "0" "$rc"
 rm -f "$FIFO"
 
@@ -8277,8 +8305,8 @@ is "and stores nothing" "" "$("$TMUX_REAL" -L "$CX" show-option -pqv -t "$CXP" @
 # An interrupted run must not leave the 60 s writer behind: the suite's EXIT
 # trap kills it until the block is done, then goes back to plain cleanup.
 CXFIFO="$STATE/agent-context-stall.fifo"; mkfifo "$CXFIFO"
-( exec 9>"$CXFIFO"; exec sleep 60 ) & holder=$!
-trap 'trap "" HUP INT TERM; kill "$holder" 2>/dev/null; cleanup' EXIT
+( exec 9>"$CXFIFO"; exec sleep 60 ) & holder=$!; holder_s=$(pid_start "$holder")
+trap 'trap "" HUP INT TERM; pid_sig TERM "$holder" "$holder_s" >/dev/null; cleanup' EXIT
 start=$SECONDS
 TMUX="$CXTMUX" TMUX_PANE="$CXP" "$DIR/scripts/agent-context" >/dev/null 2>&1 < "$CXFIFO"
 took=$(( SECONDS - start ))
@@ -8288,7 +8316,7 @@ else
     bad "a stalling writer is abandoned in time" "back under 30s, while the writer still held on" \
         "${took}s"
 fi
-kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
+pid_sig TERM "$holder" "$holder_s" >/dev/null; wait "$holder" 2>/dev/null
 trap cleanup EXIT
 rm -f "$CXFIFO"
 "$TMUX_REAL" -L "$CX" kill-server >/dev/null 2>&1
@@ -15670,7 +15698,7 @@ cw_open() {                   # <socket> <session> ; prints "<client> <fifo> <pi
     f=$(mktemp -u) || return 1
     mkfifo "$f" || return 1
     "$TMUX_REAL" -L "$s" -C attach -t "$t" <> "$f" >/dev/null 2>&1 &
-    local pid=$!
+    local pid=$! pst; pst=$(pid_start "$pid")
     for i in $(seq 1 40); do
         c=$("$TMUX_REAL" -L "$s" list-clients -F '#{client_name}' 2>/dev/null | head -1)
         [ -n "$c" ] && { printf '%s %s %s' "$c" "$f" "$pid"; return 0; }
@@ -15678,7 +15706,7 @@ cw_open() {                   # <socket> <session> ; prints "<client> <fifo> <pi
     done
     # Nothing is printed on failure, so the caller gets no pid and no path:
     # the half-built client and its fifo have to be reaped right here.
-    kill "$pid" >/dev/null 2>&1; rm -f "$f"
+    pid_sig TERM "$pid" "$pst" >/dev/null; rm -f "$f"
     return 1
 }
 # NEVER `kill "${pid:-0}"`: an empty pid becomes 0, and kill 0 signals the
@@ -16620,7 +16648,7 @@ is "the poller is sent a TERM, its pid checked at the kill (#1213)" "" \
 av_wait '[ -z "$(av_tm show-option -gqv @cockpit_poll_pid)" ]'
 is "SIGTERM unpublishes the poller's pid" "" "$(av_tm show-option -gqv @cockpit_poll_pid)"
 # A published pid that is not an agent-poll is not trusted, and not signalled.
-sleep 300 & AVSLEEP=$!
+sleep 300 & AVSLEEP=$!; AVSLEEPS=$(pid_start "$AVSLEEP")
 av_tm set-option -g @cockpit_poll_pid "$AVSLEEP"
 av_hook agent_needs_input
 is "a stale pid naming another process is not trusted: a poller starts" "1" "$(av_runs)"
@@ -16630,7 +16658,7 @@ is "...and takes the publication over" "yes" \
         && av_published && echo yes || echo no)"
 is "...and the other process was never signalled" "yes" \
    "$(kill -0 "$AVSLEEP" 2>/dev/null && echo yes || echo no)"
-kill "$AVSLEEP" 2>/dev/null; wait "$AVSLEEP" 2>/dev/null
+pid_sig TERM "$AVSLEEP" "$AVSLEEPS" >/dev/null; wait "$AVSLEEP" 2>/dev/null
 is "...which is sent a TERM, its pid checked at the kill (#1213)" "" \
    "$(av_term "$(av_tm show-option -gqv @cockpit_poll_pid)" "$AV")"
 av_wait '[ -z "$(av_tm show-option -gqv @cockpit_poll_pid)" ]'
@@ -16688,6 +16716,57 @@ is "...and each decoy then exits by itself, 0" "0 0" "$AVTRC $?"
 exec 7>&- 8>&-
 fi
 
+echo "== pid_sig: a signal goes only to the process whose start time was read (#1227) =="
+# A stopped child keeps a TERM pending, so /proc shows whether one was sent, with no clock. A
+# number that was handed on cannot be staged: a decoy's wrong start time stands for it. Each
+# child here waits on its own fifo, held open by this shell, and exits 0 once it reads a line.
+if [ ! -d /proc/self ]; then skip_ "pid_sig (no /proc to read a pending signal from)"
+else
+SQD=$(mktmpd); mkfifo "$SQD/r" "$SQD/p"; exec 7<>"$SQD/r" 8<>"$SQD/p"
+sq_pend() {                   # <pid> -> 1 if a TERM (bit 14, 0x4000) is pending for it, else 0
+    awk '/^(ShdPnd|SigPnd):/ { c = substr($2, 13, 1); if (c != "" && index("4567cdef", c)) t = 1 }
+         END { print t + 0 }' "/proc/$1/status" 2>/dev/null
+}
+sq_st() { awk '{sub(/.*\) /, ""); print $1}' "/proc/$1/stat" 2>/dev/null; }
+sq_c() {                      # <pid> -> its comm, or nothing
+    local c=""; [ -r "/proc/$1/comm" ] && read -r c 2>/dev/null < "/proc/$1/comm"; echo "$c"
+}
+sq_gone() { [ -e "/proc/$SQR" ] || echo gone; }
+# A child that left by itself is reaped at once, with no wait: its number is free to hand on.
+bash -c 'read -r _ < "$1"' _ "$SQD/r" </dev/null >/dev/null 2>&1 7>&- 8>&- & SQR=$!
+SQRS=$(pid_start "$SQR"); printf '\n' >&7; until_out gone sq_gone >/dev/null
+is "a child reaped before the kill: no kill on its number, and said" \
+   "1|gone|no signal: start []" "${SQRS:+1}|$(sq_gone)|$(pid_sig TERM "$SQR" "$SQRS")"
+# one gone before its start was read: an empty start must not match the empty read of a gone pid
+is "a child gone before its start was read: no kill on its number, and said" \
+   "no signal: no start" "$(pid_sig TERM "$SQR" "")"
+wait "$SQR" 2>/dev/null
+bash -c 'read -r _ < "$1"' _ "$SQD/p" </dev/null >/dev/null 2>&1 7>&- 8>&- & SQP=$!
+SQPS=$(pid_start "$SQP")
+[ "$(sq_c "$SQP")" = bash ] && kill -STOP "$SQP"; until_out T sq_st "$SQP" >/dev/null
+is "the decoy is up and stopped" "T" "$(sq_st "$SQP")"
+# A second, run through a link whose name holds ") ": its comm does too, so a cut at the first
+# ") " of its stat line, not the last, reads the wrong field. Field 22 is read here by awk alone.
+sq_f22() { awk '{ sub(/.*\) /, ""); print $20 }' "/proc/$1/stat" 2>/dev/null; }
+ln -s "$(command -v bash)" "$SQD/x) 1 2 3"
+"$SQD/x) 1 2 3" -c 'read -r _ < "$1"' _ "$SQD/r" </dev/null >/dev/null 2>&1 7>&- 8>&- & SQX=$!
+until_out 'x) 1 2 3' sq_c "$SQX" >/dev/null
+is "the second decoy's name holds a \") \"" "x) 1 2 3" "$(sq_c "$SQX")"
+SQW="$(sq_f22 "$SQP")|$(sq_f22 "$SQX")"
+case $SQW in [0-9]*'|'[0-9]*) ;; *) SQW="field 22 unread [$SQW]" ;; esac
+is "pid_start reads field 22 of each, past a \") \" in a name" \
+   "$SQW" "$(pid_start "$SQP")|$(pid_start "$SQX")"
+printf '\n' >&7; wait "$SQX" 2>/dev/null
+is "a pid that is no number: no signal, and said" "no signal: pid [1x]" "$(pid_sig TERM 1x 1)"
+is "another start time under its number: no TERM, the one read said" \
+   "no signal: start [$SQPS]|0" "$(pid_sig TERM "$SQP" 1)|$(sq_pend "$SQP")"
+is "its own start time: the TERM goes" "|1" "$(pid_sig TERM "$SQP" "$SQPS")|$(sq_pend "$SQP")"
+# its line waits in the fifo: without the TERM it reads it and exits 0
+printf '\n' >&8; [ "$(sq_c "$SQP")" = bash ] && kill -CONT "$SQP"; wait "$SQP" 2>/dev/null
+is "...and ends it once it runs on" "143" "$?"
+exec 7>&- 8>&-
+fi
+
 echo "== agent-view: the poller owns one slot per server and lets go on every exit path (#174) =="
 av_setup
 if need_tmux "agent-view poller" || [ ! -d /proc/self ]; then :; else
@@ -16698,7 +16777,7 @@ av_tm set-option -p -t "$AVP" @cockpit_agentview 1
 av_start() {                  # a poller outside the hook path; its pid in AVPID
     "${AVDFL[@]}" -u TMUX_PANE TMUX="$AVT" PATH="$AVBIN:$PATH" AV_JSON="$AVF/done.json" \
         "$DIR/scripts/agent-poll" </dev/null >/dev/null 2>&1 &
-    AVPID=$!
+    AVPID=$!; AVPS=$(pid_start "$AVPID")
 }
 av_pub() { av_tm show-option -gqv @cockpit_poll_pid; }
 # av_kill signals only this shell's own child: a pid bash has reaped may be someone else's by
@@ -16712,7 +16791,7 @@ case "$(av_nst "$AVNP")" in "S ${AVNS#* }"|"R ${AVNS#* }") AVYES=yes ;; *) AVYES
 is "av_kill leaves a pid that is not this shell's child alone" "yes" "$AVYES"
 # ours to clean: the sleep from just above, checked by name before the signal
 [ "$(cat "/proc/$AVNP/comm" 2>/dev/null)" = sleep ] && kill "$AVNP" 2>/dev/null
-av_start; AVA=$AVPID
+av_start; AVA=$AVPID AVAS=$AVPS
 av_wait '[ "$(av_pub)" = "$AVA" ]'
 is "a poller publishes its own pid" "$AVA" "$(av_pub)"
 av_wait '[ "$(avo @panestate)" = done ]'
@@ -16725,23 +16804,27 @@ is "...without unpublishing the first one's pid on its way out" "yes" \
 # The slot is released only if it is still ours: a poller whose slot was taken over lets go
 # of nothing (the number written here stands for the later poller's).
 av_tm set-option -g @cockpit_poll_pid 999999
-kill -TERM "$AVA"; av_wait "av_gone \$AVA" || av_kill "$AVA"; wait "$AVA" 2>/dev/null
+pid_sig TERM "$AVA" "$AVAS" >/dev/null
+av_wait "av_gone \$AVA" || av_kill "$AVA"; wait "$AVA" 2>/dev/null
 is "a poller whose slot was taken over does not release the new owner's pid" "999999" "$(av_pub)"
 av_tm set-option -gu @cockpit_poll_pid
-av_start; AVA=$AVPID
+av_start; AVA=$AVPID AVAS=$AVPS
 av_wait '[ "$(av_pub)" = "$AVA" ]'
 # (The poller no longer leaves when no marked pane is an agent: see the #448 blocks below.)
-kill -TERM "$AVA"; av_wait "av_gone \$AVA" || av_kill "$AVA"; wait "$AVA" 2>/dev/null
-av_start; AVC=$AVPID
+pid_sig TERM "$AVA" "$AVAS" >/dev/null
+av_wait "av_gone \$AVA" || av_kill "$AVA"; wait "$AVA" 2>/dev/null
+av_start; AVC=$AVPID AVCS=$AVPS
 av_wait '[ "$(av_pub)" = "$AVC" ]'
-kill -TERM "$AVC"; av_wait "av_gone \$AVC" || av_kill "$AVC"; wait "$AVC" 2>/dev/null
-is "SIGTERM unpublishes" "" "$(av_pub)"
-av_start; AVC=$AVPID
+AVSIG=$(pid_sig TERM "$AVC" "$AVCS")
+av_wait "av_gone \$AVC" || av_kill "$AVC"; wait "$AVC" 2>/dev/null
+is "SIGTERM unpublishes" "|" "$AVSIG|$(av_pub)"
+av_start; AVC=$AVPID AVCS=$AVPS
 av_wait '[ "$(av_pub)" = "$AVC" ]'
-kill -HUP "$AVC"; av_wait "av_gone \$AVC" || av_kill "$AVC"; wait "$AVC" 2>/dev/null
-is "SIGHUP unpublishes" "" "$(av_pub)"
+AVSIG=$(pid_sig HUP "$AVC" "$AVCS")
+av_wait "av_gone \$AVC" || av_kill "$AVC"; wait "$AVC" 2>/dev/null
+is "SIGHUP unpublishes" "|" "$AVSIG|$(av_pub)"
 av_tm set-option -g @cockpit_bg_poll off
-av_start; AVC=$AVPID
+av_start; AVC=$AVPID AVCS=$AVPS
 av_wait "av_gone \$AVC" || av_kill "$AVC"; wait "$AVC" 2>/dev/null
 is "@cockpit_bg_poll off: the poller never publishes" "" "$(av_pub)"
 av_tm kill-server >/dev/null 2>&1
@@ -16813,7 +16896,7 @@ AVRACE=$(mktmpd); ln -s "$AVF/tmux-race" "$AVRACE/tmux"
 av_startx() {                 # av_startx [NAME=value...]: a poller of our own; pid in AVPID
     env -u TMUX_PANE TMUX="$AVT" PATH="$AVBIN:$PATH" AV_JSON="$AVF/done.json" "$@" \
         "$DIR/scripts/agent-poll" </dev/null >/dev/null 2>&1 &
-    AVPID=$!
+    AVPID=$!; AVPS=$(pid_start "$AVPID")
 }
 av_pub() { av_tm show-option -gqv @cockpit_poll_pid; }
 av_reap() {                   # av_reap <pid>: 0 if it left by itself; else kills it and returns 1
@@ -16827,7 +16910,7 @@ av_startx PATH="$AVRACE:$AVBIN:$PATH" AV_REAL="$TMUX_REAL" AV_RACE=999999
 AVA=$AVPID; av_reap "$AVA" && AVLEFT=yes || AVLEFT=no
 is "an empty slot taken by someone else meanwhile: the poller leaves" "yes" "$AVLEFT"
 is "...and the slot is still theirs" "999999" "$(av_pub)"
-sleep 300 & AVSLEEP=$!
+sleep 300 & AVSLEEP=$!; AVSLEEPS=$(pid_start "$AVSLEEP")
 av_tm set-option -g @cockpit_poll_pid "$AVSLEEP"
 av_startx PATH="$AVRACE:$AVBIN:$PATH" AV_REAL="$TMUX_REAL" AV_RACE=999999
 AVA=$AVPID; av_reap "$AVA" && AVLEFT=yes || AVLEFT=no
@@ -16835,7 +16918,7 @@ is "a stale slot taken by someone else meanwhile: the poller leaves" "yes" "$AVL
 is "...the slot is still theirs" "999999" "$(av_pub)"
 is "...and the process the stale pid named was not signalled" "yes" \
    "$(kill -0 "$AVSLEEP" 2>/dev/null && echo yes || echo no)"
-kill "$AVSLEEP" 2>/dev/null; wait "$AVSLEEP" 2>/dev/null
+pid_sig TERM "$AVSLEEP" "$AVSLEEPS" >/dev/null; wait "$AVSLEEP" 2>/dev/null
 # A poller that loses its slot after the claim notices on its next tick.
 av_tm set-option -gu @cockpit_poll_pid
 av_startx; AVA=$AVPID
@@ -16898,19 +16981,19 @@ av_tm set-option -g @cockpit_bg_poll 1
 # hour, so only a signal can end a poller and only release can end its sleep.
 av_tm set-option -g @cockpit_bg_poll 3600
 av_tm set-option -gu @cockpit_poll_pid
-av_startx; AVA=$AVPID; av_startx; AVB=$AVPID
+av_startx; AVA=$AVPID AVAS=$AVPS; av_startx; AVB=$AVPID AVBS=$AVPS
 av_alive_count() {
     local n=0; av_gone "$AVA" || n=$((n + 1)); av_gone "$AVB" || n=$((n + 1)); echo "$n"
 }
 av_wait '[ "$(av_alive_count)" = 1 ]'
 is "two simultaneous starts leave exactly one poller" "1" "$(av_alive_count)"
-if av_gone "$AVA"; then AVL=$AVB; else AVL=$AVA; fi
+if av_gone "$AVA"; then AVL=$AVB AVLS=$AVBS; else AVL=$AVA AVLS=$AVAS; fi
 is "...and it holds the slot" "$AVL" "$(av_pub)"
 # Its sleep child goes with it.
 # The sleep itself, in one look: a first look that found a tick's short-lived child and a second
 # that found nothing left AVCH empty, and `av_gone` then died on its missing pid.
 av_wait 'AVCH=$(pgrep -xP "$AVL" sleep | head -1); [ -n "$AVCH" ]'
-kill -TERM "$AVL"; av_reap "$AVL"
+pid_sig TERM "$AVL" "$AVLS" >/dev/null; av_reap "$AVL"
 av_wait "av_gone $AVCH" && AVLEFT=yes || AVLEFT=no
 av_gone "$AVCH" || kill "$AVCH" 2>/dev/null
 is "a poller stopped by a signal leaves no child behind" "yes" "$AVLEFT"
@@ -17000,7 +17083,7 @@ is "the sweep's poller leaves when the option says off" "|0" \
 av_tm set-option -g @cockpit_bg_poll 1
 env -u TMUX_PANE TMUX="$AVT" PATH="$AVBIN:$PATH" AV_JSON="$AVLIVE" AV_CLAUDELOG="$AVCLOG" \
     AV_DELAY=0.3 bash -x "$DIR/scripts/agent-poll" </dev/null >/dev/null 2>"$AVTRACE" &
-AVTP=$!
+AVTP=$!; AVTPS=$(pid_start "$AVTP")
 av_wait '[ "$(av_pub)" = "$AVTP" ]'
 av_wait '[ "$(av_reads)" -ge 1 ]'
 av_after 4
@@ -17041,7 +17124,8 @@ is "...and binds the tick the other one is gone" "dd|twin|running|" "$(avj "$AVV
 # A read nobody waits on that fails is tried once per change of the panes, not every tick.
 av_tm select-pane -t "$AVV" -T "nothing"
 av_wait '[ "$(avj "$AVV")" = "|||" ]'
-kill -TERM "$AVTP"; av_wait "av_gone $AVTP" || av_kill "$AVTP"; wait "$AVTP" 2>/dev/null
+pid_sig TERM "$AVTP" "$AVTPS" >/dev/null
+av_wait "av_gone $AVTP" || av_kill "$AVTP"; wait "$AVTP" 2>/dev/null
 : > "$AVTRACE"; : > "$AVCLOG"
 env -u TMUX_PANE TMUX="$AVT" PATH="$AVBIN:$PATH" AV_JSON="$AVLIVE" AV_CLAUDELOG="$AVCLOG" \
     AV_RC=1 bash -x "$DIR/scripts/agent-poll" </dev/null >/dev/null 2>"$AVTRACE" &
@@ -24000,13 +24084,13 @@ is "a dir poller whose last pane went leaves and unpublishes, its dir too" "||" 
 is "...and the default poller stays" "yes" "$(pd_yn pd_live @cockpit_poll_pid)"
 # A dir slot whose poller is gone and whose dir no pane holds: the sweep takes it back, by
 # compare-and-set, and the process at that pid is not signalled.
-sleep 300 & PDSLEEP=$!
+sleep 300 & PDSLEEP=$!; PDSLEEPS=$(pid_start "$PDSLEEP")
 pd_tm set -g @cockpit_poll_pid_99 "$PDSLEEP" \; set -g @cockpit_poll_dir_99 "$PD/gone"
 env -u COCKPIT_NO_AUTOSTART -u TMUX_PANE TMUX="$PDT" PATH="$AVREC:$PATH" \
     "$DIR/scripts/agent-state" sweep </dev/null >/dev/null 2>&1
 is "a sweep takes back a dead dir slot no pane holds, and signals nothing" "|yes" \
    "$(pd_opt @cockpit_poll_pid_99)|$(pd_yn kill -0 "$PDSLEEP")"
-kill "$PDSLEEP" 2>/dev/null; wait "$PDSLEEP" 2>/dev/null
+pid_sig TERM "$PDSLEEP" "$PDSLEEPS" >/dev/null; wait "$PDSLEEP" 2>/dev/null
 # Two dirs on one cksum never share a slot: a stubbed cksum gives both the key 7.
 printf '#!/bin/sh\necho "7 1"\n' > "$PD/cks/cksum"; chmod +x "$PD/cks/cksum"
 pd_tm set -g @cockpit_poll_dir_7 "$PD/first" \; set -gu @cockpit_poll_err
