@@ -211,3 +211,119 @@ fn a_signal_to_the_runner_ends_its_handed_children() {
     let got = rows.map(|(name, sig)| (name, left_after_a_signal(sig)));
     assert_eq!(got, rows.map(|(name, sig)| (name, (Some(sig), vec![]))));
 }
+
+// --- a handed child's rig servers, in sessions of their own (#1233) ---
+
+/// Set for [`starts_a_rig_and_hangs`] alone: the file it writes its server's pid to, or
+/// `none` where tmux is not there to run.
+#[cfg(target_os = "linux")]
+const RIG: &str = "COCKPIT_TEST_HANDED_RIG";
+
+/// The name of [`starts_a_rig_and_hangs`].
+#[cfg(target_os = "linux")]
+const RIGS: &str = "starts_a_rig_and_hangs";
+
+/// The rig child half: a private server on `cockpit-handed-<its pid>`, the name a sweep by
+/// that pid takes for a rig's, with one pane in the row's folder, then no end. The server
+/// forks off and leads a session of its own, out of the child's group. Only where [`RIG`]
+/// names a file a row made.
+#[test]
+#[cfg(target_os = "linux")]
+fn starts_a_rig_and_hangs() {
+    let Some(at) = std::env::var_os(RIG).filter(|p| Path::new(p).is_file()) else {
+        return;
+    };
+    let at = Path::new(&at);
+    let dir = at.parent().unwrap();
+    let mut s = fake::Server::new(&format!("cockpit-handed-{}", std::process::id()));
+    let started = s.start(|c| {
+        c.args(["new-session", "-d", "-c"]).arg(dir).arg("sleep 1000");
+    });
+    let said = if started {
+        let o = Command::new("tmux")
+            .args(["-L", &s.sock, "display-message", "-p", "#{pid}"])
+            .output();
+        String::from_utf8_lossy(&o.unwrap().stdout).trim().to_string()
+    } else {
+        "none".to_string()
+    };
+    // written aside and renamed, so a reader never sees half of it
+    std::fs::write(at.with_extension("new"), said).unwrap();
+    std::fs::rename(at.with_extension("new"), at).unwrap();
+    loop {
+        std::thread::park();
+    }
+}
+
+/// The socket of a rig child half's server, at the exact path tmux gives the name
+/// `cockpit-handed-<pid>` in this binary's TMUX_TMPDIR, removed when dropped: a red run
+/// kills that server, and a killed server leaves its socket for the runner to name.
+#[cfg(target_os = "linux")]
+struct RigSocket(std::path::PathBuf);
+
+#[cfg(target_os = "linux")]
+impl Drop for RigSocket {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// The rig child half started by [`fake::handed_start`] and ended by `end` once its
+/// server runs: the child's pid, its server's socket and the folder its pane runs in, or
+/// `None` where tmux is not there.
+#[cfg(target_os = "linux")]
+fn rig_ended(end: impl FnOnce(fake::Handed)) -> Option<(u32, RigSocket, fake::Scratch)> {
+    let top = Path::new(env!("CARGO_TARGET_TMPDIR"));
+    // one folder per call: the rows that call this run at once in one process
+    static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let s = fake::Scratch::fresh(top.join(format!("handed-rig-{}-{n}", std::process::id())));
+    let file = s.join("server");
+    std::fs::write(&file, "").unwrap();
+    let h = fake::handed_start(&[RIGS], &[], &[(RIG, file.to_str().unwrap())]);
+    let pid = h.pid();
+    // SAFETY: getuid has no preconditions.
+    let uid = unsafe { libc::getuid() };
+    let name = format!("cockpit-handed-{pid}");
+    let sock = RigSocket(fake::checked_tmux().join(format!("tmux-{uid}")).join(name));
+    let read = || std::fs::read_to_string(&file).unwrap_or_default();
+    let ready = within(|| !read().is_empty());
+    let said = read();
+    end(h);
+    assert!(ready, "the rig child half never wrote its server's pid");
+    if said == "none" {
+        eprintln!("SKIP: no tmux on PATH");
+        return None;
+    }
+    Some((pid, sock, s))
+}
+
+/// #1233: the bound's end takes along the servers and panes of the rigs its child started,
+/// which lead sessions of their own, and their sockets.
+#[test]
+#[cfg(target_os = "linux")]
+fn the_bound_ends_a_handed_childs_rig_servers() {
+    let Some((pid, sock, _dir)) = rig_ended(|mut h| drop(h.end_at_bound(fake::HANDED_FOR))) else {
+        return;
+    };
+    fake::assert_no_server_left(pid);
+    assert!(!sock.0.exists(), "{} is left", sock.0.display());
+}
+
+/// #1233: so does the unwind of a row that panicked while its handed child ran.
+#[test]
+#[cfg(target_os = "linux")]
+fn an_unwind_ends_a_handed_childs_rig_servers() {
+    let end = |h: fake::Handed| {
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let _h = h;
+            panic!("#1233: a row's own panic");
+        }));
+        assert!(unwound.is_err());
+    };
+    let Some((pid, sock, _dir)) = rig_ended(end) else {
+        return;
+    };
+    fake::assert_no_server_left(pid);
+    assert!(!sock.0.exists(), "{} is left", sock.0.display());
+}

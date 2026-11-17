@@ -404,7 +404,10 @@ the binary with status 1, or with the binary's own status where that failed,
 after any report of the claude guard. A rig removes its server's socket file
 when it is dropped, even where kill-server failed, so a server that outlives its
 rig leaves no socket here for the runner to see. The rows that ask `/proc`
-catch it (`fake::assert_no_server_left`), and the runner ends no process. Killed by a signal it does not trap, KILL among
+catch it (`fake::assert_no_server_left`), and the runner ends no process. A
+handed child killed at its bound or in a row's unwind never gets to that check,
+so `fake::Handed`'s end kills that child's rig servers and panes itself and
+removes those servers' sockets (#1233). Killed by a signal it does not trap, KILL among
 them, the runner leaves its `/tmp/ct.<6>` folder behind, empty. Under a plain
 `cargo test` nothing names it. That folder is the cost. Nothing sweeps it, and
 it is safe to remove once no test is running. `make tui-test-clean` hands the

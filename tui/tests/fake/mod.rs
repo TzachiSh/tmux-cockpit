@@ -445,11 +445,14 @@ where
 /// A child [`handed`] started and has not yet read the end of: its pid, the files it
 /// writes to, and why it fails where it was handed less than asked. The child leads a
 /// process group of its own, which its end at the bound kills, and so does a drop before
-/// its end was read, the unwind of a row that panicked (#1205).
+/// its end was read, the unwind of a row that panicked (#1205). That end also kills its
+/// rigs' servers and panes, which lead sessions of their own (#1233).
 #[allow(dead_code)]
 pub struct Handed {
     child: std::process::Child,
     pid: u32,
+    /// the TMUX_TMPDIR the child was started with, which its rigs' servers and panes carry
+    tmpdir: Option<std::ffi::OsString>,
     /// whether the child is reaped: its pid, and so its group's id, may then be another's
     reaped: bool,
     /// its slot in [`GROUPS`], cleared before the reap; `None` where all were taken
@@ -515,6 +518,8 @@ fn start_handed(
     c.process_group(0);
     let child = spawn(&mut c);
     let pid = child.id();
+    // read from the child's own /proc, as it was started, so its end reads no environment
+    let tmpdir = tmpdir_of(pid);
     // a signal between the spawn and this store finds no group to forward to
     let slot = GROUPS
         .iter()
@@ -530,6 +535,7 @@ fn start_handed(
     Handed {
         child,
         pid,
+        tmpdir,
         reaped: false,
         slot,
         what,
@@ -577,26 +583,34 @@ impl Handed {
         })
     }
 
-    /// The end at `bound`: the child killed and reaped, and the run's report.
+    /// The end at `bound`: the child killed and reaped, and the run's report, which names
+    /// the servers and panes of its rigs killed with it.
     pub fn end_at_bound(&mut self, bound: std::time::Duration) -> String {
-        self.end();
-        self.said(&format!("had not ended after {bound:?} and was killed"))
+        let swept = self.end();
+        let how = format!("had not ended after {bound:?} and was killed");
+        self.said(&format!("{how}, its rigs' servers and panes {swept:?} with it"))
     }
 
-    /// Kills the child's group, then the child, and reaps it, unless it is reaped already.
-    /// The group while its leader is unreaped, so the id is still this child's (POSIX
-    /// XBD 4.17). The pid as well: in a child that leads no group the killpg finds none
-    /// (ESRCH), and the wait would never end. A child that ended on its own is not killed
-    /// after: what it left running stays for the row that counts it (#1205).
-    fn end(&mut self) {
+    /// Kills the child's group, then the child, then its rigs' servers and panes, and reaps
+    /// it, unless it is reaped already: the pids of those servers and panes. The group while
+    /// its leader is unreaped, so the id is still this child's (POSIX XBD 4.17). The pid as
+    /// well: in a child that leads no group the killpg finds none (ESRCH), and the wait
+    /// would never end. The servers and panes lead sessions of their own, out of the group's
+    /// reach, and the row that would sweep them runs no further at the bound (#1233): they
+    /// go by [`sweep`], while the unreaped child still holds the pid their sockets are named
+    /// by. A child that ended on its own is not killed after: what it left running stays for
+    /// the row that counts it (#1205).
+    fn end(&mut self) -> Vec<u32> {
         if std::mem::replace(&mut self.reaped, true) {
-            return;
+            return vec![];
         }
         // SAFETY: killpg takes plain integers; the group is this child's, unreaped.
         unsafe { libc::killpg(self.pid as libc::pid_t, libc::SIGKILL) };
         let _ = self.child.kill();
         self.forget();
+        let swept = sweep(self.pid, self.tmpdir.as_deref());
         let _ = self.child.wait();
+        swept
     }
 
     /// Whether the child has ended, read without reaping it, so its pid stays its own
@@ -624,6 +638,58 @@ impl Drop for Handed {
     fn drop(&mut self) {
         self.end();
     }
+}
+
+/// The TMUX_TMPDIR in `pid`'s /proc environ, the environment it was started with: `None`
+/// where it has none, or where /proc has no such process.
+#[allow(dead_code)]
+fn tmpdir_of(pid: u32) -> Option<std::ffi::OsString> {
+    use std::os::unix::ffi::OsStringExt;
+    let env = std::fs::read(format!("/proc/{pid}/environ")).ok()?;
+    let value = env.split(|b| *b == 0).find_map(|v| v.strip_prefix(b"TMUX_TMPDIR="))?;
+    Some(std::ffi::OsString::from_vec(value.to_vec()))
+}
+
+/// Kills each server and pane of a rig of the child `pid` that carries `tmpdir`, its
+/// TMUX_TMPDIR, as [`rig_of`] reads it from /proc again just before that kill, then removes
+/// the socket of each server it killed, at the exact `<tmpdir>/tmux-<uid>/<name>` and only
+/// there. Passes until one finds none, at most 500 of 20 ms: a pane a server forked as it
+/// was killed is found by the next. The pids it killed. It runs in a drop during an unwind,
+/// so nothing in it panics, and it reads no environment, so it takes no lock (#1233).
+#[allow(dead_code)]
+fn sweep(pid: u32, tmpdir: Option<&std::ffi::OsStr>) -> Vec<u32> {
+    let Some(tmpdir) = tmpdir else { return vec![] };
+    let (mut killed, mut socks) = (vec![], vec![]);
+    for _ in 0..500 {
+        let Ok(d) = std::fs::read_dir("/proc") else { break };
+        let pid_of = |e: std::fs::DirEntry| e.file_name().to_str()?.parse::<u32>().ok();
+        let pids: Vec<u32> = d.flatten().filter_map(pid_of).collect();
+        let mut found = false;
+        for p in pids {
+            let Some(rig) = rig_of(p, pid, Some(tmpdir)) else { continue };
+            found = true;
+            // SAFETY: kill only signals; `p` was read just above as a rig's of this child.
+            unsafe { libc::kill(p as libc::pid_t, libc::SIGKILL) };
+            if !killed.contains(&p) {
+                killed.push(p);
+            }
+            // a name with no `/` stays in the folder; one socket per name
+            let Rig::Server(name) = rig else { continue };
+            if !name.contains('/') && !socks.contains(&name) {
+                socks.push(name);
+            }
+        }
+        if !found {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    // SAFETY: getuid has no preconditions.
+    let folder = Path::new(tmpdir).join(format!("tmux-{}", unsafe { libc::getuid() }));
+    for name in socks {
+        let _ = std::fs::remove_file(folder.join(name));
+    }
+    killed
 }
 
 // --- the runner's end by a signal reaches the handed children (#1205) ---
@@ -1131,16 +1197,33 @@ impl Drop for StandIn {
 /// and pane, so a server another run leaked under a reused pid is never taken.
 #[allow(dead_code)]
 fn rig_process(p: u32, pid: u32) -> bool {
+    rig_of(p, pid, std::env::var_os("TMUX_TMPDIR").as_deref()).is_some()
+}
+
+/// What [`rig_of`] found a process to be.
+#[allow(dead_code)]
+enum Rig {
+    /// a server, with the name its `-L` gives its socket
+    Server(String),
+    Pane,
+}
+
+/// [`rig_process`]'s reading of the process `p` for the child `pid`, with `tmpdir` for the
+/// TMUX_TMPDIR it must carry: a server of a rig of that child, a pane of one, or `None`.
+#[allow(dead_code)]
+fn rig_of(p: u32, pid: u32, tmpdir: Option<&std::ffi::OsStr>) -> Option<Rig> {
     let at = Path::new("/proc").join(p.to_string());
     let rigs = |sock: &str| sock.starts_with("cockpit-") && sock.ends_with(&format!("-{pid}"));
-    let own = std::env::var_os("TMUX_TMPDIR").map(|d| {
+    let own = tmpdir.map(|d| {
         let mut v = b"TMUX_TMPDIR=".to_vec();
-        v.extend_from_slice(std::os::unix::ffi::OsStrExt::as_bytes(d.as_os_str()));
+        v.extend_from_slice(std::os::unix::ffi::OsStrExt::as_bytes(d));
         v
     });
     let line = std::fs::read(at.join("cmdline")).unwrap_or_default();
     let args: Vec<String> = line.split(|b| *b == 0).map(|a| String::from_utf8_lossy(a).into_owned()).collect();
-    let server = args.first().is_some_and(|a| a.rsplit('/').next() == Some("tmux")) && args.windows(2).any(|w| w[0] == "-L" && rigs(&w[1]));
+    let tmux = args.first().is_some_and(|a| a.rsplit('/').next() == Some("tmux"));
+    let named = args.windows(2).find(|w| w[0] == "-L" && rigs(&w[1]));
+    let server = named.filter(|_| tmux).map(|w| w[1].clone());
     let env = std::fs::read(at.join("environ")).unwrap_or_default();
     let vars: Vec<&[u8]> = env.split(|b| *b == 0).collect();
     let pane = vars.iter().filter_map(|v| v.strip_prefix(b"TMUX=")).any(|v| {
@@ -1148,7 +1231,8 @@ fn rig_process(p: u32, pid: u32) -> bool {
         rigs(sock.rsplit('/').next().unwrap_or_default())
     });
     let ours = own.is_some_and(|o| vars.contains(&o.as_slice()));
-    (server || pane) && ours
+    let found = server.map(Rig::Server).or(pane.then_some(Rig::Pane));
+    found.filter(|_| ours)
 }
 
 /// The processes [`rig_process`] takes for `pid`, read from /proc. Linux only, as are
