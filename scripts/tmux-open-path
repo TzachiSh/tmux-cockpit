@@ -93,7 +93,7 @@ open_one() {
         wn=$(plain_name "${file##*/}")
         at=$(at_line "$editor" "$ln")
         tmux new-window -t "$win" -a -c "$(fesc "$dir")" -n "$(fesc "$wn")" \
-             "$editor $at $(shq "$file")" \
+             "$editor ${at:+$at }$(shq "$file")" \
             || note "cockpit: tmux could not open a window for ${wn:-a file}"
         return
     fi
@@ -206,13 +206,16 @@ touch_client() {
 # The name of the program the editor command runs, as sh reads it, its folder dropped
 # (#1177): the first word past leading NAME=value words and one `env` (#1188). '...',
 # "..." (with \$ \` \" \\ inside) and a backslash are unquoted, leading blanks skipped,
-# and nothing expands or runs. Its limits, none of which gives +N to a program that runs
-# (#1191): a word that is wholly "$VAR" or $'...' is read literally; an option after `env`
-# (env -i nvim) ends the walk; and a newline or a backslash-newline in a word, an operator
-# joined to one (nvim; or nvim>log), a leading redirection (>/dev/null nvim), an empty
-# quoted word ('' nvim) or a quoted NAME=value read differently from sh.
+# and nothing expands or runs. A NAME=value word that holds one of ; & | < > ( ) ` $ or a
+# newline ends the walk with no name: sh may run another program there (X=1;hx nvim).
+# Its limits (#1191), none of which gives +N to a program that runs: a word that is wholly
+# "$VAR" or $'...' is read literally; an option after `env` (env -i nvim) ends the walk;
+# and a newline or a backslash-newline in a word, an operator joined to one (nvim; or
+# nvim>log), an empty quoted word ('' nvim) or a quoted NAME=value read differently from
+# sh. Two that can: a leading redirection reads as the name of its target (>/x/vim hx), and
+# nothing past the name is read (nvim && hx). Either hands the second program the +N.
 editor_bin() {
-    local s=$1 w c q i=0 env=0
+    local s=$1 w c q i=0 env=0 ops=$';&|<>()`$\n'
     while :; do
         w='' q=''
         while [ "$i" -lt "${#s}" ]; do
@@ -238,7 +241,8 @@ editor_bin() {
             *=*) case ${w%%=*} in
                      ''|[0123456789]*) ;;
                      *[!abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_]*) ;;
-                     *) continue ;;
+                     *) [[ $w == *["$ops"]* ]] && { w=''; break; }
+                        continue ;;
                  esac ;;
         esac
         if [ "$env" -eq 0 ] && [ "${w##*/}" = env ]; then env=1; continue; fi
@@ -247,13 +251,15 @@ editor_bin() {
     printf %s "${w##*/}"
 }
 
-# The +N that takes the editor to line <ln>, or nothing (#1188): the vi family, nano,
-# emacs and micro read +N as a line, and another editor may open "+12" as a file. The
-# one rule for every window an editor opens in.
+# The +N that takes the editor to line <ln>, or nothing (#1188): vi, vim and vim's names
+# gvim, view and rvim, nvim, nano, emacs, emacsclient and micro read +N as a line, and
+# another editor may open "+12" as a file. The one rule for every window an editor opens in.
 at_line() {                   # at_line <editor command> <ln>
     # [0123456789], not [0-9]: in a UTF-8 locale [0-9] also matches ² and ١ (#842)
     [[ $2 =~ ^[0123456789]+$ ]] || return 0
-    case $(editor_bin "$1") in vi|vim|nvim|nano|emacs|micro) printf +%s "$2" ;; esac
+    case $(editor_bin "$1") in
+        vi|vim|gvim|view|rvim|nvim|nano|emacs|emacsclient|micro) printf +%s "$2" ;;
+    esac
 }
 
 # A terminal editor in a window of its own, in the file's folder; never VS Code.
