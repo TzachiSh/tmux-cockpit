@@ -222,6 +222,13 @@ fn elsewhere(dir: &str) -> Vec<(String, String)> {
         .collect()
 }
 
+/// Every worktree path of `dir`'s repo, the main checkout included, as [`worktrees`]
+/// lists them: what goto may go to (#303).
+pub fn worktree_paths(dir: &str) -> Vec<String> {
+    let top = git(dir, &[], None, &["rev-parse", "--show-toplevel"]);
+    worktrees(dir, top.trim_end_matches('\n')).into_iter().map(|(p, _)| p).collect()
+}
+
 /// The branch checked out in `dir`'s tree, or "" on a detached HEAD.
 pub fn current(dir: &str) -> String {
     let cur = git(dir, &[], None, &["symbolic-ref", "--quiet", "--short", "HEAD"]);

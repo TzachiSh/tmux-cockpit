@@ -272,6 +272,8 @@ Read-only, and owned by bash: `@cockpit_session`, `@cockpit_dir`, `@panestate`,
 | `COCKPIT_LOG` | append target. The binding sets it to `${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/tui.log` |
 | `COCKPIT_PROC_DIR` | the proc root the pane-tree walk reads (default `/proc`); a test seam. A root without `self/task` or without `children` files sends the lookup to `ps` |
 | `COCKPIT_READONLY` | any non-empty value: never write to a tmux server, the pid included. The panel wrapper then pastes and sends nothing and logs what it would have done |
+| `COCKPIT_BRANCH_PANE` | set by `scripts/tmux-branch` for `branch`: the pane the popup came from, beside which goto opens its new window. Anything but `%<digits>` is none |
+| `COCKPIT_BRANCH_CLIENT` | set by `scripts/tmux-branch` for `branch`: the client that pressed `prefix b` (#360), the one goto's `switch-client -c` moves. Empty, or holding a control character, is none: a bare `switch-client` |
 | `COCKPIT_GLYPHS` | `ascii` swaps the glyphs *and* the borders for the ambiguous-width fallback tier; the panel then prints nothing but ASCII, its key names included (`enter`, `tab`, `bksp`, `left`, `up/dn`). `nerd` draws the default, but for the subagent badge's nf-oct-workflow (U+F52E) in place of `✦`. The wrappers and the `prefix i` popup set it from `@cockpit_glyphs` (#293) |
 | `COCKPIT_CLAUDE` | the panel's `claude` binary. Unset is `claude` on `PATH` |
 | `COCKPIT_PANEL_TIMEOUT` | seconds before the panel kills its `claude -p` call. Default 120 |
@@ -2935,22 +2937,27 @@ steps, and a failed or cancelled write leave the basket as it was.
 
 The branch popup behind `prefix b` and the status-bar branch click, built on the
 shared picker (`pick.rs`). `scripts/tmux-branch` runs `cockpit-tui branch -C <dir>`.
-The popup runs switch, track and create itself and exits 0 with nothing printed
-(#228); for a branch another worktree holds it prints `goto <worktree path>` for the
-script, which finds the pane in that tree.
+The popup runs switch, track, create and the goto to another worktree itself, and
+exits 0 with nothing printed (#228). The script hands goto the pane the popup came
+from and the client that pressed the key in `COCKPIT_BRANCH_PANE` and
+`COCKPIT_BRANCH_CLIENT`, not as flags, which a 0.4.0 binary would refuse.
 
 | key | does |
 |---|---|
 | type | filters the list (case-insensitive substring) |
-| `↵` | `git switch <branch>`, `git switch --track <remote>/<branch>` on a remote-only row, or prints `goto <worktree path>` on a branch another worktree holds (#303) |
+| `↵` | `git switch <branch>`, `git switch --track <remote>/<branch>` on a remote-only row, or a goto to the worktree that holds the branch (#303) |
 | `alt-↵` | `git switch -c <name>` from the filter text, after `git check-ref-format --branch` accepts it |
 | `esc` `^C` | cancels, prints nothing, exit 1 |
 
 Rows are local branches by most recent commit, then remote-only branches. `●` marks
 the current branch. `⑂` marks a branch checked out in another worktree: git refuses
-to switch to it, so `↵` prints `goto <worktree path>` and the script selects the pane
-working in that tree (an agent's first), or opens a window there; a path with a newline
-in it gives a `✕` note and prints nothing. That needs git 2.36 or later, for
+to switch to it, so `↵` selects the pane working in that tree, or opens a window there
+beside the pane the popup came from, and never `cd`s a pane. A pane's tree is the
+deepest worktree holding its work dir: `@cockpit_dir` when it is a directory, else, for
+an agent's pane, its transcript's cwd as `workdir` reads it, else its cwd. An agent's
+pane, by `@panestate`, the agent glob or a version-shaped command, comes before a shell;
+the process tree is not walked for this, so a wrapper with no `@panestate` counts as a
+shell. A path with a newline in it gives a `✕` note and does nothing. That needs git 2.36 or later, for
 `worktree list -z`. Older git (2.7 to 2.35) prints a newline path across two lines.
 A tree with one is usually left out, since its second line is no worktree attribute,
 but a crafted name can print lines that read like git's own and pair its branch with
@@ -2982,12 +2989,13 @@ switch may lazy-fetch a partial clone's blobs, as `scripts/lib/git.sh` lets it),
 filter driver the repo names blanked, a repo whose driver name holds `=` refused
 (#331), the inherited `GIT_DIR` and its kin unset, and no prompt on the popup's
 terminal. Git's own refusal (a dirty tree) is the `✕` note, its first line, with the
-whole message in the preview until the next key; the picker stays. The script reads
-`goto <path>` as untrusted too: a path that `git worktree list` names and that is
-still a directory. A `cockpit-tui` that still prints `switch`, `track` or `create` lines
-(0.4.0, the release a default install fetches) gets the script's own checks and `git
-switch`, as before #228, until `TUI_MIN` passes that release; any other answer is
-refused with the stale-binary message.
+whole message in the preview until the next key; the picker stays. goto checks its
+path the same way before it acts: a path that `git worktree list` names, else `not a
+worktree of this repository`, and still a directory, else `is gone`. A `cockpit-tui`
+that still prints `switch`, `track`, `create` or `goto` lines (0.4.0, the release a
+default install fetches) gets the script's own checks, `git switch` and goto, as before
+#228, until `TUI_MIN` passes that release; any other answer is refused with the
+stale-binary message.
 
 A branch name cannot contain a space, so the filter text `my branch` is refused with a
 note on `alt-↵`.

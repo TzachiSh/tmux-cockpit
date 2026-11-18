@@ -1036,6 +1036,44 @@ pub fn workdir(pane: &str) -> Option<String> {
     fleet::work_dirs(&[cands]).pop().filter(|d| std::path::Path::new(d).is_dir())
 }
 
+/// One pane as the branch popup's goto reads it (#303, #470).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaneDir {
+    pub id: String,
+    /// @panestate, or a command the agent glob or the version shape names
+    pub agent: bool,
+    pub dir: String,
+}
+
+/// Every pane's work dir off one `list-panes -a`, as `scripts/lib/workdir.sh` gave it to
+/// goto. The agent test leaves out the process tree, a `ps` per shell pane, as the
+/// script did; only an agent whose @cockpit_dir is no dir has its transcript read, as
+/// [`workdir`] reads it. `None` when list-panes failed.
+pub fn pane_dirs() -> Option<Vec<PaneDir>> {
+    let out = tmux(&["list-panes", "-a", "-F", FIELDS])?;
+    Some(out.lines().filter_map(|l| pane_dir(&l.split(SEP).collect::<Vec<_>>())).collect())
+}
+
+fn pane_dir(f: &[&str]) -> Option<PaneDir> {
+    if f.len() < 13 || !crate::panel::is_pane(f[0]) {
+        return None;
+    }
+    let agent = !unsentinel(f[4]).is_empty() || agentish(f[3]);
+    let opt = f.get(13).copied().unwrap_or_default();
+    let holds = std::path::Path::new(opt).is_absolute() && std::path::Path::new(opt).is_dir();
+    // row_pane forks no ps here: @panestate or an agentish command is an agent's without its tree
+    let said = (agent && !holds)
+        .then(|| row_pane(f, &mut None, false).map(|(mut p, _)| work_candidates(&mut p, f)[1].clone()))
+        .flatten()
+        .unwrap_or_default();
+    let dir = fleet::work_dirs(&[[opt.to_string(), said, f[8].to_string()]]).pop()?;
+    Some(PaneDir {
+        id: f[0].to_string(),
+        agent,
+        dir,
+    })
+}
+
 /// #519: the board's agent test for one pane (`row_pane`: @panestate, an agentish
 /// command, a version-shaped name, the process tree), so the info screen cannot
 /// decide differently from the board which panes have a transcript to read.
