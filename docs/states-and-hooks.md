@@ -532,7 +532,10 @@ prompt in the same cwd leaves that value alone; its next `cd` replaces it.
 The first hook of a session records the `@cockpit_dir` it found, empty or not, in
 `@cockpit_dir_before`. `SessionEnd` runs `agent-state end`, which puts that value back and
 clears `@cockpit_cwd` and the record (#323): a dir set by hand before the agent started stays,
-and one set during the session, by the hooks, the agent or by hand, goes. A session begun
+and one set during the session, by the hooks, the agent or by hand, goes. A session killed
+without `SessionEnd` leaves its record, so the next session's `end` restores the value the
+crashed session found at its start, which also undoes the crashed session's own writes; a dir set by hand
+between the crash and the next session is lost, as one set mid-session is. A session begun
 before this change has no record; then the dir goes only if it equals `@cockpit_cwd`. The
 `end` entry comes with `install.sh --hooks`, which merges additively: rerun it after updating.
 
