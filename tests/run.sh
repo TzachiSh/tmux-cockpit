@@ -7014,9 +7014,10 @@ fi
 echo "== a press a stranded drag flag turns into a drag end still lands (#53) =="
 # #21's stranded flag, on a pane or a border: the next press there arrives as
 # MouseDragEnd1Pane or MouseDragEnd1Border, unbound in stock's root table, so the
-# click selected nothing. The plugin binds both to stock's press actions. Panes 0
-# and 1 run a silent sleep; pane 2 is an app with SGR button-event mouse reporting,
-# whose tty echoes each report tmux writes to it, ESC as ^[.
+# click selected nothing. Its release arrives as MouseUp1Pane or MouseUp1Border,
+# which the plugin binds to stock's press actions; a real drag ends in a drag end
+# and keeps focus. Panes 0 and 1 run a silent sleep; pane 2 is an app with SGR
+# button-event mouse reporting, whose tty echoes each report tmux writes to it.
 if need_tmux "stranded drag on a pane"; then :; else
 OUTER="cockpit-drg-outer-$$"; INNER="cockpit-drg-inner-$$"
 SOCKS="$SOCKS $OUTER $INNER"
@@ -7033,6 +7034,9 @@ case "$("$TMUX_REAL" -L "$INNER" list-keys -T cockpit)" in
             "$DIR/scripts/tmux-open-path in the cockpit keys" "absent" ;;
 esac
 "$TMUX_REAL" -L "$INNER" set -g status-left '#S ' >/dev/null 2>&1
+# F12 through the client queues behind every mouse key before it, so once it has run
+# so has their binding: drg_sync reads state with no clock deciding when.
+"$TMUX_REAL" -L "$INNER" bind -n F12 set -g @drg_sync 1 >/dev/null 2>&1
 # The arming popup turns SGR mouse mode on, says RDY, and says ATE once a report
 # reaches it: the release it eats is seen eaten, not raced against display-popup -C.
 "$TMUX_REAL" -L "$INNER" bind -n MouseDown1StatusLeft display-popup -T STRAND -E \
@@ -7052,6 +7056,11 @@ drg_sgr() { printf '\033[<%s;%s;%s%s' "$@" | od -An -tx1 | tr -s ' \n' ' '; }
 drg_act() { "$TMUX_REAL" -L "$INNER" display-message -p -t t:DRAGWIN '#{pane_id}'; }
 drg_rx() { "$TMUX_REAL" -L "$INNER" capture-pane -p -J -t "$P2" | tr -d '\n'; }
 drg_new() { local a; a=$(drg_rx); printf '%s' "${a#"$DRX"}"; }   # echoed since DRX
+drg_sync() {
+    "$TMUX_REAL" -L "$INNER" set -g @drg_sync 0 >/dev/null 2>&1
+    "$TMUX_REAL" -L "$OUTER" send-keys -t "$OP" F12 >/dev/null 2>&1
+    until_out 1 "$TMUX_REAL" -L "$INNER" show -gv @drg_sync
+}
 # #21's arming: a press on the session name with a one-cell twitch in the same
 # write sets the flag before the popup exists; the popup eats the release.
 drg_arm() {
@@ -7072,7 +7081,9 @@ DRG_ROWS=("a real drag inside a mouse app still ends with its release"
     "a click after a popup ate a release still selects the pane"
     "a border click after a popup ate a release still selects the pane at its left"
     "a click on a mouse app after a popup ate a release selects it"
-    "and the app gets that press and its release")
+    "and the app gets that press and its release"
+    "a copy-mode drag released over another pane keeps focus where it began"
+    "a plain click on a mouse app gives it its press and its release once")
 # APP is printed after the mouse modes are on, so a report sent after it is not dropped.
 if until_cap "$OUTER" "$OP" '*DRAGWIN*' && until_cap "$INNER" t:DRAGWIN.2 '*APP*'; then
     IC=$("$TMUX_REAL" -L "$INNER" list-clients -F '#{client_name}' | head -1)
@@ -7089,25 +7100,42 @@ if until_cap "$OUTER" "$OP" '*DRAGWIN*' && until_cap "$INNER" t:DRAGWIN.2 '*APP*
     until_out '*m' drg_new
     is "${DRG_ROWS[0]}" '^[[<0;3;3M^[[<32;4;3M^[[<0;4;3m' "$(drg_new)"
 
+    # A drag from pane 0 into copy mode, released over pane 1: the release is the
+    # drag end, resolved to pane 1, and selects nothing there.
+    "$TMUX_REAL" -L "$INNER" select-pane -t "$P0" >/dev/null 2>&1
+    drg_send "$(drg_sgr 0 5 "$Y" M) $(drg_sgr 32 6 "$Y" M)"
+    drg_send "$(drg_sgr 32 "$((L1 + 5))" "$Y" M)"
+    drg_send "$(drg_sgr 0 "$((L1 + 5))" "$Y" m)"; drg_sync
+    is "${DRG_ROWS[5]}" "$P0" "$(drg_act)"
+    "$TMUX_REAL" -L "$INNER" send-keys -t "$P0" -X cancel >/dev/null 2>&1
+
+    # A plain click on the app from pane 1: stock's MouseDown1Pane hands on the
+    # press, the plugin's MouseUp1Pane the release.
+    "$TMUX_REAL" -L "$INNER" select-pane -t "$P1" >/dev/null 2>&1; DRX=$(drg_rx)
+    drg_send "$(drg_sgr 0 "$((L2 + 3))" "$((Y + 2))" M)"
+    drg_send "$(drg_sgr 0 "$((L2 + 3))" "$((Y + 2))" m)"; until_out '*m' drg_new
+    is "${DRG_ROWS[6]}" '^[[<0;3;5M^[[<0;3;5m' "$(drg_new)"
+
     "$TMUX_REAL" -L "$INNER" select-pane -t "$P0" >/dev/null 2>&1
     if drg_arm; then
-        drg_send "$(drg_sgr 0 "$((L1 + 3))" "$Y" M)"; until_out "$P1" drg_act
+        drg_send "$(drg_sgr 0 "$((L1 + 3))" "$Y" M)"
+        drg_send "$(drg_sgr 0 "$((L1 + 3))" "$Y" m)"; until_out "$P1" drg_act
         is "${DRG_ROWS[1]}" "$P1" "$(drg_act)"
-        drg_send "$(drg_sgr 0 "$((L1 + 3))" "$Y" m)"
     else bad "${DRG_ROWS[1]}" "a popup that ate a release" "none"; fi
 
     "$TMUX_REAL" -L "$INNER" select-pane -t "$P2" >/dev/null 2>&1
     if drg_arm; then             # the border column right of pane 0, 1-based
-        drg_send "$(drg_sgr 0 "$((R0 + 2))" "$Y" M)"; until_out "$P0" drg_act
+        drg_send "$(drg_sgr 0 "$((R0 + 2))" "$Y" M)"
+        drg_send "$(drg_sgr 0 "$((R0 + 2))" "$Y" m)"; until_out "$P0" drg_act
         is "${DRG_ROWS[2]}" "$P0" "$(drg_act)"
-        drg_send "$(drg_sgr 0 "$((R0 + 2))" "$Y" m)"
     else bad "${DRG_ROWS[2]}" "a popup that ate a release" "none"; fi
 
     "$TMUX_REAL" -L "$INNER" select-pane -t "$P0" >/dev/null 2>&1; DRX=$(drg_rx)
     if drg_arm; then
-        drg_send "$(drg_sgr 0 "$((L2 + 3))" "$((Y + 1))" M)"; until_out "$P2" drg_act
+        drg_send "$(drg_sgr 0 "$((L2 + 3))" "$((Y + 1))" M)"
+        drg_send "$(drg_sgr 0 "$((L2 + 3))" "$((Y + 1))" m)"; until_out "$P2" drg_act
         is "${DRG_ROWS[3]}" "$P2" "$(drg_act)"
-        drg_send "$(drg_sgr 0 "$((L2 + 3))" "$((Y + 1))" m)"; until_out '*m' drg_new
+        until_out '*m' drg_new
         is "${DRG_ROWS[4]}" '^[[<0;3;4M^[[<0;3;4m' "$(drg_new)"
     else
         bad "${DRG_ROWS[3]}" "a popup that ate a release" "none"

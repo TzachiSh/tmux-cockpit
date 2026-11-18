@@ -388,12 +388,14 @@ tmux bind-key -T cockpit t display-popup -E -w 78% -h 40% -T ' agents ' \
 # tmux keeps its drag flag when a popup eats the release and turns the next press
 # into MouseDragEnd1<where>, losing a tab click (#21). Stock leaves this unbound.
 tmux bind-key -n MouseDragEnd1Status switch-client -t =
-# The same lost press on a pane or a border (#53): while the flag is set, tmux 3.8's
-# server-client.c turns any press into a drag end at the press's own spot. These are stock's
-# MouseDown1Pane and MouseDown1Border. send-keys -M keeps the press for an app with mouse
-# mode on, and the release that ends a real drag inside one, which lands here too.
-tmux bind-key -n MouseDragEnd1Pane select-pane -t= '\;' send-keys -M
-tmux bind-key -n MouseDragEnd1Border select-pane -t=
+# The same lost press on a pane or a border (#53) is caught on its release. While the flag
+# is set, tmux 3.8's server-client.c turns the press into a drag end, which stock forwards
+# unbound, and its release then arrives as MouseUp1Pane or MouseUp1Border. A real drag's
+# release is the drag end itself, so a drag that ends over another pane keeps focus. These
+# do what stock's MouseDown1Pane and MouseDown1Border do, and send-keys -M hands the release
+# on, as stock's unbound key did. A root MouseUp1Pane or MouseUp1Border of yours is replaced.
+tmux bind-key -n MouseUp1Pane select-pane -t= '\;' send-keys -M
+tmux bind-key -n MouseUp1Border select-pane -t=
 # A goto moves the pressing client, not the most recently active one (#360). The
 # popup cannot pass #{client_name}, so the key leaves it on the pane, as the board's.
 tmux bind-key b "${SRC_SET[@]}" set-option -pF @cockpit_branch_client '#{client_name}' '\;' \
