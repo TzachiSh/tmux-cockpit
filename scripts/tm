@@ -33,6 +33,8 @@ tm_d=${BASH_SOURCE[0]}; case $tm_d in (*/*) ;; (*) tm_d=./$tm_d ;; esac
 case $tm_d in */*) tm_d=${tm_d%/*} ;; *) tm_d=. ;; esac
 # shellcheck source=lib/fmt.sh
 . "$tm_d/lib/fmt.sh" || die "cockpit: tm could not load lib/fmt.sh"
+# shellcheck source=lib/tmpdir.sh
+. "$tm_d/lib/tmpdir.sh" || die "cockpit: tm could not load lib/tmpdir.sh"
 
 # \037 between fields: tab is IFS whitespace and a run of empty fields would
 # collapse.
@@ -287,8 +289,9 @@ side() { local l=''; IFS= read -r l < "$1" 2>/dev/null; printf '%s' "$l"; }
 pick() {
   local verb arg rest rc live new typed glyphs d
   local -a a
-  # Global, not local: the EXIT trap runs after this function has returned.
-  PICK_DIR=$(mktemp -d) || die "cockpit: no temp dir for the picker"
+  # Global, not local: the EXIT trap runs after this function has returned. Taken only when
+  # it is a fresh dir of the user's own, as the trap removes it (#947).
+  own_tmpdir PICK_DIR || die "cockpit: no temp dir for the picker"
   d=$PICK_DIR
   trap 'rm -rf "$PICK_DIR"' EXIT
   trap 'exit 130' INT TERM HUP
