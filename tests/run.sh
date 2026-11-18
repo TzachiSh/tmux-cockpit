@@ -4417,8 +4417,39 @@ is "a relative link: review-gate runs the tmux-review beside the real file" \
     "tmux-review --delta %1" "$(rlk_sib "$RLK/a/b/bin/review-gate" <<< "$rlk_stop")"
 is "a relative link: tmux-review's approve runs the agent-state beside the real file" \
     "agent-state recount %1" "$(rlk_sib "$RLK/a/b/bin/tmux-review" --request %1 </dev/null)"
-# The form, counted whole: four lines, the same name in each, any indent (#1283). A copy
-# that drifts from it, or the old one-hop line, is not counted.
+# A script run by a bare name from its own folder, with no link (#1287): BASH_SOURCE holds
+# no folder, so a ${d%/*} cut left the name itself. A copy beside a link to lib/.
+mkdir -p "$RLK/z/scripts"; ln -s "$DIR/scripts/lib" "$RLK/z/scripts/lib"
+cp "$DIR/scripts/tmux-open-path" "$DIR/scripts/tmux-where" "$RLK/z/scripts/"
+is "a bare name, no link: a lookup at the top of the script loads its lib" "$RLK/o/README.md::" \
+    "$(cd "$RLK/z/scripts" &&
+        bash tmux-open-path --dry-run "$RLK/o" 'see README.md ok' 2>/dev/null)"
+is "a bare name, no link: a lookup inside a function loads its lib (the detached hash)" \
+    " @$(git -C "$RLK/g" rev-parse --short HEAD)" \
+    "$(cd "$RLK/z/scripts" && bash tmux-where branch 1 "$RLK/g" claude 2>/dev/null | plain)"
+# cockpit-board, cockpit-panel and tui-fetch take the plugin root as the parent of their own
+# folder (#1290). Through a link that was the link's folder, and their first lib failed to
+# load (exit 1). An unknown option is refused (exit 2) only after it loaded.
+for rlk_s in cockpit-board cockpit-panel tui-fetch; do
+    ln -s "../../../repo/scripts/$rlk_s" "$RLK/a/b/bin/$rlk_s"
+    is "a relative link: $rlk_s finds the plugin root past it" "2" \
+        "$(cd "$RLK/u/v/w/x" && "$RLK/a/b/bin/$rlk_s" --bogus >/dev/null 2>&1; echo $?)"
+done
+# cockpit.tmux reached through a relative link to the file itself (#1290). Its DIR goes into
+# TMUX_COCKPIT_DIR and every binding, so it must be the real plugin folder.
+if need_tmux "cockpit.tmux through a relative link to the file"; then :; else
+    RLKS="cockpit-rlk-$$"; SOCKS="$SOCKS $RLKS"
+    ln -s ../../../repo/cockpit.tmux "$RLK/a/b/bin/cockpit.tmux"
+    env -u TMUX_COCKPIT_DIR "$TMUX_REAL" -L "$RLKS" -f /dev/null new-session -d -s t \
+        -c "$RLK/u/v/w/x" 'exec sleep 300' >/dev/null 2>&1
+    "$TMUX_REAL" -L "$RLKS" run-shell "$RLK/a/b/bin/cockpit.tmux" >/dev/null 2>&1
+    is "a relative link to cockpit.tmux: TMUX_COCKPIT_DIR names the real plugin folder" \
+        "TMUX_COCKPIT_DIR=$(cd -P "$DIR" && pwd)" \
+        "$("$TMUX_REAL" -L "$RLKS" show-environment -g TMUX_COCKPIT_DIR 2>/dev/null)"
+    "$TMUX_REAL" -L "$RLKS" kill-server >/dev/null 2>&1
+fi
+# The form, counted whole: four lines, the same name in each, any indent (#1283, #1287). A
+# copy that drifts from it, or an older form, is not counted.
 rlk_count() {
     awk '{ t = $0; sub(/^[ \t]+/, "", t) }
         FNR == 1 { st = 0 }
@@ -4426,17 +4457,104 @@ rlk_count() {
         st == 2 { st = (t == l3) ? 3 : 0; next }
         st == 1 { st = (t == l2) ? 2 : 0; next }
         { u = t; sub(/^local /, "", u) }
-        u ~ /^[A-Za-z_][A-Za-z_0-9]*=\$\{BASH_SOURCE\[0\]\}$/ {
-            v = u; sub(/=.*/, "", v); s = "$" v; q = "\"" s "\""; st = 1
-            l2 = "[ -L " q " ] && " v "=$(case " s " in (*/*) ;; (*) " v "=./" s " ;; esac; n=0"
+        u ~ /^[A-Za-z_][A-Za-z_0-9]*=\$\{BASH_SOURCE\[0\]\}; / {
+            v = u; sub(/=.*/, "", v); s = "$" v; q = "\"" s "\""
+            st = (u == v "=${BASH_SOURCE[0]}; case " s " in (*/*) ;; (*) " v "=./" s " ;; esac")
+            l2 = "[ -L " q " ] && " v "=$(n=0"
             l3 = "while [ -L " q " ] && [ $((n += 1)) -le 40 ] && t=$(readlink " q "); do"
             l4 = "case $t in (/*) " v "=$t ;; (*) " v "=${" v "%/*}/$t ;; esac"
             l4 = l4 "; done; printf %s " q ")" }
         END { print n + 0 }' "$@"
 }
-rlk_f=(); for rlk_s in "$DIR"/scripts/*; do [ -f "$rlk_s" ] && rlk_f+=("$rlk_s"); done
-is "all 21 self-locating sites carry the whole four-line form" "21" "$(rlk_count "${rlk_f[@]}")"
-rm -rf "$RLK"; unset RLK rlk_s rlk_f rlk_stop; unset -f rlk_op rlk_count rlk_sib
+# install.sh and bootstrap.sh reached through a relative link to the file itself (#1290), in
+# modes that write nothing, with HOME a folder of the block's. bootstrap.sh's link sits in a
+# folder with no install.sh beside it: its --check execs "$DIR/install.sh".
+ln -s ../../../repo/install.sh "$RLK/a/b/bin/install.sh"
+ln -s ../../repo/bootstrap.sh "$RLK/c/bin/bootstrap.sh"
+mkdir -p "$RLK/h"
+rlk_root() {                  # <link> <args>... -> "<exit> <last line of stdout>"
+    local o rc
+    o=$(cd "$RLK/u/v/w/x" &&
+        env -u XDG_CONFIG_HOME HOME="$RLK/h" XDG_BIN_HOME="$RLK/h/bin" "$@" 2>/dev/null)
+    rc=$?
+    printf '%s %s' "$rc" "${o##*$'\n'}"
+}
+if ! command -v jq >/dev/null 2>&1; then
+    skip_ "a relative link: install.sh finds the plugin root past it (no jq)"
+    skip_ "a relative link: bootstrap.sh finds the plugin root past it (no jq)"
+else
+    is "a relative link: install.sh finds the plugin root past it (--hooks --dry-run)" \
+        "0 dry-run: nothing written" "$(rlk_root "$RLK/a/b/bin/install.sh" --hooks --dry-run)"
+    # The doctor's exit is its worst row, 0 to 2; a missing install.sh is 127.
+    is "a relative link: bootstrap.sh finds the plugin root past it (--check runs the doctor)" \
+        "doctor" "$(rlk_root "$RLK/c/bin/bootstrap.sh" --check | {
+            read -r rlk_n _
+            case $rlk_n in 0|1|2) echo doctor ;; *) echo "exit $rlk_n" ;; esac; })"
+fi
+# Every site, listed by file: a new one means a line here, never only a new total. 27 sites
+# in 19 files: #1290 added cockpit-board, cockpit-panel, tui-fetch and the three at the root.
+rlk_sites='bootstrap.sh:1
+cockpit.tmux:1
+install.sh:1
+scripts/agent-context:1
+scripts/agent-poll:1
+scripts/agent-state:7
+scripts/cockpit-board:1
+scripts/cockpit-panel:1
+scripts/review-gate:1
+scripts/tm:2
+scripts/tmux-branch:1
+scripts/tmux-jump:1
+scripts/tmux-open-path:2
+scripts/tmux-rename:1
+scripts/tmux-review:1
+scripts/tmux-where:1
+scripts/tui-fetch:1
+scripts/worktree-create:1
+scripts/worktree-remove:1'
+is "all 27 self-locating sites carry the whole four-line form, file by file" "$rlk_sites" \
+    "$(cd "$DIR" && for rlk_s in scripts/* install.sh bootstrap.sh cockpit.tmux; do
+        [ -f "$rlk_s" ] || continue
+        rlk_n=$(rlk_count "$rlk_s"); [ "$rlk_n" -eq 0 ] || printf '%s:%s\n' "$rlk_s" "$rlk_n"
+    done | LC_ALL=C sort)"
+rm -rf "$RLK"; unset RLK RLKS rlk_s rlk_stop rlk_sites rlk_n
+unset -f rlk_op rlk_count rlk_sib rlk_root
+
+echo "== install.sh --hooks names a settings.json link cycle, not a dangling link (#1288) =="
+# resolve_link followed a chain with no bound, and -e is false on a cycle, so a cycle read as
+# a dangling link. A two-link cycle, each run under timeout: an unbounded walk fails its row.
+if ! command -v jq >/dev/null 2>&1; then
+    skip_ "--hooks on a settings.json link cycle (no jq)"
+    skip_ "--hooks --remove on a settings.json link cycle (no jq)"
+    skip_ "--hooks on a dangling settings.json link (no jq)"
+elif ! command -v timeout >/dev/null 2>&1; then
+    skip_ "--hooks on a settings.json link cycle (no timeout)"
+    skip_ "--hooks --remove on a settings.json link cycle (no timeout)"
+    skip_ "--hooks on a dangling settings.json link (no timeout)"
+else
+    LCY=$(mktmpd); mkdir -p "$LCY/c/.claude" "$LCY/d/.claude"
+    ln -s b.json "$LCY/c/.claude/settings.json"; ln -s settings.json "$LCY/c/.claude/b.json"
+    ln -s nowhere.json "$LCY/d/.claude/settings.json"
+    lcy_run() {               # <home> <install.sh args>... -> "<exit> <cycle|dangling|[stderr]>"
+        local h=$1 e rc
+        shift
+        e=$(HOME="$h" XDG_BIN_HOME="$h/bin" timeout 10 "$DIR/install.sh" "$@" 2>&1 >/dev/null)
+        rc=$?
+        case $e in
+            *"is a symlink cycle"*) e=cycle ;;
+            *"dangling symlink"*) e=dangling ;;
+            *) e="[$e]" ;;
+        esac
+        printf '%s %s' "$rc" "$e"
+    }
+    is "--hooks on a settings.json link cycle refuses and names the cycle" "1 cycle" \
+        "$(lcy_run "$LCY/c" --hooks)"
+    is "--hooks --remove on a settings.json link cycle refuses and names the cycle" "1 cycle" \
+        "$(lcy_run "$LCY/c" --hooks --remove)"
+    is "--hooks on a dangling settings.json link still says dangling" "1 dangling" \
+        "$(lcy_run "$LCY/d" --hooks)"
+    rm -rf "$LCY"; unset LCY; unset -f lcy_run
+fi
 
 echo "== install.sh only ever touches its own links =="
 IB=$(mktmpd); IL="$IB/link"; ln -s "$DIR" "$IL"; IBIN="$IB/bin"; mkdir -p "$IBIN"

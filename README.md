@@ -47,6 +47,9 @@ screenshot and a red/green colourblind reader.
 ### Requirements
 
 - tmux 3.8 or newer. Below it the plugin says so and binds nothing.
+- bash 4 or newer as the `bash` on your `PATH`, whatever your login shell is.
+  The review popup and the branch, path and session pickers check for it and
+  stop with a message on an older bash. macOS ships 3.2: `brew install bash`.
 - jq, for `install.sh --hooks` and the review gate.
 - Claude Code, or any agent that can run a command on lifecycle events.
 - The `cockpit-tui` binary, which draws the board and the panel. `install.sh`
