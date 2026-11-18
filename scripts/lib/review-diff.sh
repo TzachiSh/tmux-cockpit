@@ -407,12 +407,16 @@ next_base() {                 # <dir> <current-mode>
 # git(1) says of GIT_CEILING_DIRECTORIES, the walk never goes up into one. git's own
 # search found no repo, and this second-guesses it: no exit code or output of git's
 # tells "no repo" from "a repo refused", only its words (#1286). Both sides are physical
-# paths, as git's are: it walks up from getcwd() after its -C, and resolves each ceiling
-# entry's symlinks (setup.c, canonicalize_ceiling_entry): an entry that is not absolute or
-# does not resolve is dropped, and one after an empty entry is kept as written. A walk up
-# the logical path would miss the repo a symlink points into. A dir that does not resolve
-# is no answer: 0, then 2, a kept mark. Left out is GIT_DISCOVERY_ACROSS_FILESYSTEM's
-# stop at a filesystem boundary: it can find a .git git would not reach, also the safe side.
+# paths, as git's are: it walks up from getcwd() after its -C, and git(1) says of the
+# ceiling list: "Normally, Git has to read the entries in this list and resolve any
+# symlink that might be present in order to compare them with the current directory."
+# and "you can add an empty entry to the list to tell Git that the subsequent entries
+# are not symlinks and needn't be resolved". setup.c (canonicalize_ceiling_entry) also
+# drops an entry that is not absolute or does not resolve. A walk up the logical path
+# would miss the repo a symlink points into. Every gap errs toward 2, a kept mark: a dir
+# that does not resolve is no answer (0); a dropped or unmatched ceiling only walks on;
+# and GIT_DISCOVERY_ACROSS_FILESYSTEM's stop at a filesystem boundary is left out, so
+# the walk can find a .git git would not reach.
 git_entry_above() {           # <dir>
     local d up c raw lit=''
     local -a ceil=()
