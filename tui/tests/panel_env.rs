@@ -2,6 +2,7 @@
 //! the capture. Env vars are process-global, so every test holds fake's environment lock.
 mod fake;
 
+use cockpit_tui::data::gitsafe::PATHSPEC;
 use cockpit_tui::panel::capture::{capture, capture_within, repo_state_within};
 use cockpit_tui::panel::envelope::{Flow, OutType};
 use cockpit_tui::panel::prompts::{self, Ctx};
@@ -611,6 +612,20 @@ fn an_inherited_git_variable_never_moves_the_repo_block() {
         .map(|(var, _)| var)
         .collect();
     assert_eq!(moved, Vec::<&str>::new(), "these moved the block");
+}
+
+/// No git the panel starts inherits a pathspec mode (#522). No call passes a
+/// pathspec yet, so the fake git reports the modes it was handed.
+#[test]
+fn the_repo_blocks_git_inherits_no_pathspec_mode() {
+    let path = format!("$D:{}", std::env::var("PATH").unwrap_or_default());
+    let mut vars = vec![("PATH", Some(path))];
+    vars.extend(PATHSPEC.iter().map(|v| (*v, Some("1".to_string()))));
+    let e = Env::new("repo-pathspec", &vars);
+    fake_git(&e, "status", "{ echo ran; env | grep _PATHSPECS=; } > \"$D/seen\"");
+    repo_state_within(&e.dir.display().to_string(), "", BUDGET);
+    let seen = std::fs::read_to_string(e.dir.join("seen")).unwrap_or_default();
+    assert_eq!(seen, "ran\n", "status ran once, with no GIT_*_PATHSPECS");
 }
 
 #[test]

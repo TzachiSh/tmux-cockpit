@@ -1342,7 +1342,8 @@ folder, then writing`, and tablet mode has an `[ explore ]` button.
   which replacement refs under that base counted a file's `+1 -0` as `+2 -3`,
   and `GIT_NO_REPLACE_OBJECTS`, with which the repo's own `refs/replace/`
   stopped applying. The
-  board's diff count also drops `GIT_LITERAL_PATHSPECS`,
+  board's diff count, and every git the panel starts (#522), also drop
+  `GIT_LITERAL_PATHSPECS`,
   `GIT_GLOB_PATHSPECS`, `GIT_NOGLOB_PATHSPECS` and `GIT_ICASE_PATHSPECS`
   (`gitsafe::PATHSPEC`, #673): each changes what a `:(literal)` or
   `:(exclude,literal)` pathspec matches. `tmux-review`, its diff engine and
