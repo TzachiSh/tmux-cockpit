@@ -10411,7 +10411,7 @@ echo "== own_tmpdir takes mktemp's answer only when it is a fresh dir of the use
 # nothing; each answer is judged from a cwd under scratch.
 #   fail    mktemp exits 1            nope   a name that does not resolve
 #   ''      an empty answer, exit 0   /      never empty, and a user's only as root
-#   .       an empty cwd              link   a symlink to an empty dir of the user's
+#   .       the cwd                   link   a symlink to an empty dir of the user's
 #   full    a dir with a file in it   badls  an empty dir, and an ls that fails
 OT=$(mktmpd); mkdir -p "$OT/bin" "$OT/cwd/sub" "$OT/e" "$OT/full" "$OT/t"
 echo keep > "$OT/full/canary"; ln -s "$OT/e" "$OT/link"
