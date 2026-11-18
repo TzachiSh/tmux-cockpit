@@ -7,6 +7,7 @@
 #                                          in-flight set to its .live file (#403, #423)
 #          agent-state session [pane-id]   save the payload's session_id, transcript_path (#302)
 #                                          and cwd as @cockpit_dir (#312)
+#          agent-state end [pane-id]   SessionEnd: clears the dir and cwd the hooks wrote (#323)
 #          agent-state sweep [seq]   every window's and session's summaries (tmux hooks), and
 #                                          the agent-poll that serves the server (#448)
 #          agent-state poll <running|needs-input|error|done|off> <pane-id> [ask]   (agent-poll)
@@ -349,6 +350,16 @@ session)
             case "$tp" in "$root"/*) tmux set-option -p -t "$pane" @cockpit_transcript "$tp" 2>/dev/null ;; esac
         fi
     fi
+    exit 0
+    ;;
+end)
+    # SessionEnd (#323): the ended session's tree leaves the board. A verb of its own, since
+    # `off` also runs at idle, which must keep the tree. Only what the hooks wrote goes: they
+    # write @cockpit_dir and @cockpit_cwd together, so a dir that differs from the cwd was set
+    # by hand and stays. The test reads 1 only when whole (see put): a cut keeps the dir.
+    tmux if-shell -F -t "$pane" '#{?#{==:#{@cockpit_dir},#{@cockpit_cwd}},1,0}' \
+        "set-option -pu -t $pane @cockpit_dir" ';' \
+        set-option -pu -t "$pane" @cockpit_cwd >/dev/null 2>&1
     exit 0
     ;;
 wake)
