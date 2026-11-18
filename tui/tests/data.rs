@@ -1857,6 +1857,31 @@ fn an_attachment_or_system_row_after_the_interrupt_keeps_the_override() {
     assert_eq!(ids.map(|id| get(&ps, id).state.as_str()), [""; 2], "attachment, system");
 }
 
+/// #1333: a local slash command and shell mode start no model turn, so their harness rows
+/// keep the override. Rows: a command and its stdout, a shell command and its stdout, the
+/// isMeta caveat a local command writes.
+#[test]
+fn local_commands_and_shell_mode_after_the_interrupt_keep_the_override() {
+    let r = Rig::new("a3local");
+    let say = |t: &str, meta: bool| {
+        let v = serde_json::json!({"type": "user", "isMeta": meta,
+            "timestamp": "2026-08-27T00:00:08.000Z", "message": {"content": t}});
+        format!("{v}\n")
+    };
+    let model = say("<command-name>/model</command-name>", false)
+        + &say("<local-command-stdout>Set model</local-command-stdout>", false);
+    let shell = say("<bash-input>ls</bash-input>", false) + &say("<bash-stdout>x</bash-stdout>", false);
+    let caveat = say("<local-command-caveat>Caveat: generated</local-command-caveat>", true);
+    r.transcript("s1", &(stopped_turn() + &model));
+    r.transcript("s2", &(stopped_turn() + &shell));
+    r.transcript("s3", &(stopped_turn() + &caveat));
+    let ids = ["%1", "%2", "%3"];
+    r.rows(&ids.map(|id| hooked(id, "running", &format!("s{}", &id[1..]))));
+    let ps = list_panes().unwrap();
+    let got = ids.map(|id| get(&ps, id).state.as_str());
+    assert_eq!(got, [""; 3], "local command, shell mode, isMeta caveat");
+}
+
 /// #1330 A3: needs-input from the hooks is not overridden, nor are error and done: only
 /// a stale running gives way to the interrupt.
 #[test]
