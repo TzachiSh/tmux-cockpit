@@ -6,7 +6,13 @@
 set -u
 
 # A failed cd must stop here, not bind every key to /scripts/...
-DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
+# The plugin root holds the REAL file: `me` follows any chain of links, a relative
+# target read from its own link's folder (#1290).
+me=${BASH_SOURCE[0]}; case $me in (*/*) ;; (*) me=./$me ;; esac
+[ -L "$me" ] && me=$(n=0
+    while [ -L "$me" ] && [ $((n += 1)) -le 40 ] && t=$(readlink "$me"); do
+        case $t in (/*) me=$t ;; (*) me=${me%/*}/$t ;; esac; done; printf %s "$me")
+DIR="$(cd -P "$(dirname "$me")" && pwd)" || exit 1
 
 # COCKPIT_TUI_BIN, TUI_MIN and vnum, before anything reads them.
 # shellcheck source=scripts/lib/tui.sh

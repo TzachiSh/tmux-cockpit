@@ -51,17 +51,17 @@ file or by another tool's link, reports anything it could not create, and
 `--uninstall` removes only links that point back into the plugin (and reports
 anything it could not remove). `install.sh --help` prints usage and exits.
 
-A link you make yourself works too, for the commands `install.sh` links (`tm`,
-`tmux-branch`, `tmux-open-path`) and for the other scripts in `scripts/`, the
-hooks included, all but three named below: one with a relative target, as GNU
-stow makes, or a link to a link. Each of them follows the chain to the real
-file, reads a relative target from the folder of the link that holds it, and
-finds `lib/` and its sibling scripts beside the real file (#1283). Before that
-fix only one step was followed, and a relative target was read from the folder
-you ran the command in. `cockpit-board`, `cockpit-panel` and `tui-fetch` are
-not covered: they take the plugin folder from the folder of the path they were
-started by, which through a link is the link's own folder. `install.sh` does not
-link them, and `cockpit.tmux` runs them by their full path.
+A link you make yourself works too, to any of the plugin's scripts: the commands
+`install.sh` links (`tm`, `tmux-branch`, `tmux-open-path`), the rest of
+`scripts/` with the hooks, and `cockpit.tmux`, `install.sh` and `bootstrap.sh`
+themselves. It may have a relative target, as GNU stow makes, or be a link to a
+link. Each script follows the chain to the real file, reads a relative target
+from the folder of the link that holds it, and finds `lib/`, its sibling scripts
+and the plugin folder beside the real file (#1283, #1290). Before that only one
+step was followed, a relative target was read from the folder you ran the
+command in, and a few scripts took the link's own folder for the plugin's. A
+script run by a bare name from its own folder (`bash agent-state`) finds them
+too (#1287).
 
 `install.sh --check` is the doctor. It writes nothing and fixes nothing: one
 row per thing that can be wrong (tmux, cockpit-tui, jq, revdiff, `$PATH` order, the
