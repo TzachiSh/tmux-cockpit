@@ -294,10 +294,7 @@ needs-input|error)
     # PermissionRequest and PostToolUseFailure name the tool (#1330). The poller has no
     # payload, and a terminal is a person typing the command.
     [ -z "$poll" ] && [ ! -t 0 ] || state_only=1
-    d=${BASH_SOURCE[0]}; case $d in (*/*) ;; (*) d=./$d ;; esac
-    [ -L "$d" ] && d=$(n=0
-        while [ -L "$d" ] && [ $((n += 1)) -le 40 ] && t=$(readlink "$d"); do
-            case $t in (/*) d=$t ;; (*) d=${d%/*}/$t ;; esac; done; printf %s "$d")
+    # $d is the script's own path, resolved once at the top: nothing on this path reassigns it.
     # shellcheck source=lib/hook.sh
     if [ -n "${state_only:-}" ]; then :
     elif ! . "${d%/*}/lib/hook.sh" 2>/dev/null; then :
