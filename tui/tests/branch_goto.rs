@@ -86,11 +86,15 @@ impl Rig {
         std::fs::write(self.t.join("rows"), rows.join("\n") + "\n").unwrap();
     }
 
+    /// Every tmux call goto made, one argv each.
+    fn calls(&self) -> Vec<Vec<String>> {
+        let calls = std::fs::read_to_string(self.t.join("calls")).unwrap_or_default();
+        calls.lines().map(|l| l.split(US).map(String::from).collect()).collect()
+    }
+
     /// The tmux writes goto made, one argv each.
     fn writes(&self) -> Vec<Vec<String>> {
-        let calls = std::fs::read_to_string(self.t.join("calls")).unwrap_or_default();
-        let argv = calls.lines().map(|l| l.split(US).map(String::from).collect::<Vec<_>>());
-        argv.filter(|a| WRITES.contains(&a[0].as_str())).collect()
+        self.calls().into_iter().filter(|a| WRITES.contains(&a[0].as_str())).collect()
     }
 
     fn goto(&self, path: &str, from: &Origin) -> Result<String, String> {
@@ -106,6 +110,18 @@ fn sel(id: &str) -> Vec<Vec<String>> {
         v(&["select-window", "-t", id]),
         v(&["select-pane", "-t", id]),
     ]
+}
+
+/// #1248: goto's one pane scan skips cockpit's own popups, with the board's filter: its
+/// `list-panes` carries `-f` and `data::NOT_POPUP`, and no other scan runs.
+#[test]
+fn the_pane_scan_skips_cockpits_popups() {
+    let r = Rig::new("popup");
+    r.rows(&[row("%2", "bash", "-", "-", &r.p("w"), "102", "")]);
+    assert_eq!(r.goto(&r.p("w"), &Origin::default()), Ok(String::new()));
+    let scans: Vec<Vec<String>> = r.calls().into_iter().filter(|a| a[0] == "list-panes").collect();
+    assert_eq!(scans.len(), 1, "{scans:?}");
+    assert_eq!(scans[0][1..4], ["-a", "-f", cockpit_tui::data::NOT_POPUP], "{scans:?}");
 }
 
 #[test]
