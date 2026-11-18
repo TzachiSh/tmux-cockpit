@@ -2757,25 +2757,38 @@ rgo() {                       # <dir> <env...> -> D=<--delta's exit>
     "$TMUX_REAL" -L "$RG" run-shell "$rgo_env $2 XDG_STATE_HOME=$(printf '%q' "$RGSTATE") \
         '$DIR/scripts/tmux-review' --delta $RGAP; echo D=\$?" 2>/dev/null | tail -1
 }
-is "git itself refuses the repo under GIT_TEST_ASSUME_DIFFERENT_OWNER (exit 128)" "128" \
-    "$(GIT_CONFIG_GLOBAL="$RGO/gitconfig" GIT_CONFIG_NOSYSTEM=1 \
-        GIT_TEST_ASSUME_DIFFERENT_OWNER=1 \
-        git -C "$RGO/own" rev-parse --is-inside-work-tree >/dev/null 2>&1; echo $?)"
-is "--delta in a repo git refuses for its owner cannot tell (exit 2)" "D=2" \
-    "$(rgo "$RGO/own" "$rgo_own")"
+# The switch is a test knob. A git that ignores it trusts the repo, and the two rows on it
+# would test nothing: unless a plain rev-parse there works without it and fails with it,
+# in the rows' own env, they SKIP.
+rgo_git() {                   # <env...>: rev-parse in $RGO/own
+    bash -c "$rgo_env $1 git -C $(printf '%q' "$RGO/own") rev-parse --is-inside-work-tree" \
+        >/dev/null 2>&1
+}
+rgo_knob=""; if rgo_git "" && ! rgo_git "$rgo_own"; then rgo_knob=1; fi
+rgo_skip="this git ignores GIT_TEST_ASSUME_DIFFERENT_OWNER, so it trusts the repo"
+if [ -n "$rgo_knob" ]; then
+    is "--delta in a repo git refuses for its owner cannot tell (exit 2)" "D=2" \
+        "$(rgo "$RGO/own" "$rgo_own")"
+else
+    skip_ "--delta in a repo git refuses for its owner: $rgo_skip"
+fi
 is "--delta under a .git file naming a gone gitdir cannot tell (exit 2)" "D=2" \
     "$(rgo "$RGO/badfile" "GIT_CEILING_DIRECTORIES=$(printf '%q' "$RGO")")"
 is "--delta with no .git up to the ceiling is no repo (exit 1)" "D=1" \
     "$(rgo "$RGO/none" "GIT_CEILING_DIRECTORIES=$(printf '%q' "$RGO")")"
 is "--delta never looks for a .git above a ceiling, as git does not (exit 1)" "D=1" \
     "$(rgo "$RGO/top/ceil/plain" "GIT_CEILING_DIRECTORIES=$(printf '%q' "$RGO/top/ceil")")"
-"$TMUX_REAL" -L "$RG" set-option -p -t "$RGAP" @cockpit_review pending
-"$TMUX_REAL" -L "$RG" set-option -p -t "$RGAP" @cockpit_dir "$RGO/own"
-RG_PRE="$rgo_env $rgo_own " rg_run "$RGPAY"
-is "and the Stop hook keeps the pending mark on a repo git refuses" "pending|GRC=0" \
-    "$("$TMUX_REAL" -L "$RG" show-option -pqv -t "$RGAP" @cockpit_review)|$(rg_rc)"
+if [ -n "$rgo_knob" ]; then
+    "$TMUX_REAL" -L "$RG" set-option -p -t "$RGAP" @cockpit_review pending
+    "$TMUX_REAL" -L "$RG" set-option -p -t "$RGAP" @cockpit_dir "$RGO/own"
+    RG_PRE="$rgo_env $rgo_own " rg_run "$RGPAY"
+    is "and the Stop hook keeps the pending mark on a repo git refuses" "pending|GRC=0" \
+        "$("$TMUX_REAL" -L "$RG" show-option -pqv -t "$RGAP" @cockpit_review)|$(rg_rc)"
+else
+    skip_ "the Stop hook on a repo git refuses: $rgo_skip"
+fi
 "$TMUX_REAL" -L "$RG" set-option -pu -t "$RGAP" @cockpit_dir
-unset RGO rgo_env rgo_own; unset -f rgo
+unset RGO rgo_env rgo_own rgo_knob rgo_skip; unset -f rgo rgo_git
 # Only exit 1, no difference, clears a pending mark.
 printf 'a\n' > "$RGDIR/f"; rg_run "$RGPAY"
 is "a clean tree clears a pending mark" "|GRC=0" \
