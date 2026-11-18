@@ -3,7 +3,10 @@
 ## Ctrl+double-click a line to pick a path off it
 
 **Ctrl+double-click** any line of pane output. Every whitespace-separated token
-on that line that resolves to a real file becomes a candidate.
+on that line that resolves to a real file becomes a candidate. So a path that
+holds a space is never found whole, quoted or escaped alike: `my notes/todo.md`
+is the tokens `my` and `notes/todo.md`, and only a piece that names a file of
+its own is offered.
 
 **One candidate opens at once**, a folder included: there is nothing to choose,
 so no popup appears. **Several** open a `cockpit-tui pick` popup with the list:

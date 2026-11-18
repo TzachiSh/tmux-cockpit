@@ -23119,7 +23119,8 @@ if need_tmux "open-at-line via pick"; then :; else
 OL="cockpit-ol-$$"; SOCKS="$SOCKS $OL"
 # The folder's own name holds two blanks (as #1069 did), so a path of it pasted bare into
 # the editor setting is split in a plain run too (#990).
-OLD="$(mktmpd)/o  l"; mkdir -p "$OLD"; OLLOG="$OLD/log"; OLED="$OLD/ed"; : > "$OLLOG"
+# The shim is named nvim: only an editor that reads +N as a line is handed one (#1188).
+OLD="$(mktmpd)/o  l"; mkdir -p "$OLD"; OLLOG="$OLD/log"; OLED="$OLD/nvim"; : > "$OLLOG"
 mkdir -p "$OLD/w/sub"; : > "$OLD/w/one.txt"; : > "$OLD/w/two.txt"; : > "$OLD/w/three.txt"
 # The editor runs in a new window after the script has exited (#610). The shim
 # waits while $OLD/hold is there, so every row meets that order, the late one.
@@ -23740,8 +23741,8 @@ is "the popup's title drops a bidi override and control characters" "[-T] [ bq[2
    "$(mvrun "$MVB" %1 | grep -o '\[-T\] \[[^]]*\]')"
 # --view is the popup's re-entry: the viewer runs in it, and e comes back here.
 is "--view runs the viewer at the line and opens the editor where e left it" \
-   "VIEW [view] [--line] [7] [--] [$MV/w/a.md]"$'\n'"NEWWIN ed +12 $MVQA" \
-   "$(VIEW_OUT='edit 12' mvrun '' --view %1 "$MV/w/a.md" 7)"
+   "VIEW [view] [--line] [7] [--] [$MV/w/a.md]"$'\n'"NEWWIN nvim +12 $MVQA" \
+   "$(MV_ED=nvim VIEW_OUT='edit 12' mvrun '' --view %1 "$MV/w/a.md" 7)"
 # a touch client: the viewer's e opens a terminal editor, at +N for the editors that take it
 for e in vi vim nvim nano emacs micro; do
     is "--view on touch, e: $e gets +12" \
@@ -23774,8 +23775,8 @@ case "$(VIEW_ERR=boom VIEW_RC=3 mvrun '' --view %1 "$MV/w/a.md" '')" in
 esac
 # From the picker's popup the viewer draws in place: tmux has one popup per client.
 is "a .md chosen in the picker opens the viewer in the picker's own popup" \
-   "VIEW [view] [--] [$MV/w/a.md]"$'\n'"NEWWIN ed +5 $MVQA" \
-       "$(VIEW_OUT='edit 5' PICK_KEY=0 mvrun 'a.md t.txt' --pick %1)"
+   "VIEW [view] [--] [$MV/w/a.md]"$'\n'"NEWWIN nvim +5 $MVQA" \
+       "$(MV_ED=nvim VIEW_OUT='edit 5' PICK_KEY=0 mvrun 'a.md t.txt' --pick %1)"
 # a refused new-window is said, not swallowed (#366): the editor row and the touch row
 is "a window tmux refuses to open is a note, from the editor path" \
    "NEWWIN ed  $(printf %q "$MV/w/t.txt")"$'\n'"MSG cockpit: tmux could not open a window for $(
@@ -23790,12 +23791,13 @@ is "and from the touch client's terminal editor" \
 MVQ="q a  b'c\"d\$e%f.txt"; : > "$MV/w/$MVQ"
 printf '#!/bin/sh\nfor a in "$@"; do printf "%%s\\n" "$a"; done > %s\n' "$(tq "$MV/argv")" \
     > "$MV/ed-argv"; chmod +x "$MV/ed-argv"; rm -f "$MV/argv"
-NEWWIN_SH=$(command -v sh) MV_ED=$(tq "$MV/ed-argv") mvrun x --view %1 "$MV/w/$MVQ" 7 >/dev/null
+# named nvim: only an editor that reads +N as a line is handed one (#1188)
+mkdir -p "$MV/e"; cp "$MV/ed-argv" "$MV/e/nvim"
+NEWWIN_SH=$(command -v sh) MV_ED=$(tq "$MV/e/nvim") mvrun x --view %1 "$MV/w/$MVQ" 7 >/dev/null
 is "end to end: the editor is handed +7 and the file's path whole" "+7"$'\n'"$MV/w/$MVQ" \
    "$(cat "$MV/argv" 2>/dev/null)"
 # #1177: a touch client's editor gets +N by its first word, read as sh reads it. An nvim stub
 # at a path holding the folder's blanks, spelled five ways; the viewer's e opens it at line 7
-mkdir -p "$MV/e"; cp "$MV/ed-argv" "$MV/e/nvim"
 for mvsp in single double backslash mixed args; do
     case $mvsp in
         single) mved=$(tq "$MV/e/nvim"); mvw= ;;
@@ -23811,6 +23813,24 @@ for mvsp in single double backslash mixed args; do
     is "touch, an nvim path with blanks ($mvsp): the editor is handed +7 and the file" \
        "$mvw+7"$'\n'"$MV/w/a.md" "$(cat "$MV/argv" 2>/dev/null)"
 done
+# #1188: one +N rule for both windows an editor opens in, the touch client's and the other,
+# by the program the command runs: past NAME=value words and one env. mvat prints what the
+# window's command holds between the editor and the file: +N, or nothing.
+mvat() {                      # mvat <editor> <file> <line>; TOUCH and VIEW_OUT from the caller
+    local l
+    l=$(MV_ED=$1 mvrun '' --view %1 "$2" "$3" | sed -n 's/^NEWWIN //p')
+    [ -n "$l" ] || { printf 'no window'; return; }
+    l=${l#"$1"}; l=${l%"$(printf %q "$2")"}; l=${l# }; printf %s "${l% }"
+}
+for mvt in 0 1; do
+    for row in 'hx|' 'code --wait|' 'env -i nvim|' 'X=1 nvim|+12' 'env X=1 nvim|+12' \
+               '/usr/bin/env A=1 B=2 vim|+12' 'X=1 env Y=2 nano|+12'; do
+        is "touch=$mvt, the viewer's e with editor [${row%|*}]: [${row#*|}] before the file" \
+           "${row#*|}" "$(TOUCH=${mvt#0} VIEW_OUT='edit 12' mvat "${row%|*}" "$MV/w/a.md" 7)"
+    done
+done
+# the line is checked on the way in, not pasted into the window's command
+is "--view at line [7;x]: nvim gets no +N" "" "$(mvat nvim "$MV/w/t.txt" '7;x')"
 # In a UTF-8 locale [0-9] also matches ² and ١. The viewer's `edit ²` is no edit: nothing
 # opens, on a touch client or not (#842). The edit 5 rows above are the ASCII answers.
 if MVLOC=$(utf8_loc); then
@@ -23825,7 +23845,8 @@ if MVLOC=$(utf8_loc); then
     # term_edit's own check: no caller hands it a line that is not ASCII now, so it runs
     # alone here, with editor_bin (#1177) and a stub tmux that prints the window's command.
     ter() { env LOCPATH="$MVLOC" LC_ALL=en_US.UTF-8 bash -c '
-            eval "$(sed -n "/^editor_bin() {/,/^}/p; /^term_edit() {/,/^}/p" "$1")"
+            eval "$(sed -n "/^editor_bin() {/,/^}/p; /^at_line() {/,/^}/p
+                            /^term_edit() {/,/^}/p" "$1")"
             tmux() { case $1 in show-options) echo nvim ;; new-window) printf %s "${!#}" ;; esac; }
             plain_name() { printf %s "$1"; }; fesc() { printf %s "$1"; }; shq() { printf %s "$1"; }
             win=@0; term_edit /w/n.txt "$2"' _ "$DIR/scripts/tmux-open-path" "$1"; }
@@ -23978,13 +23999,14 @@ MDI="cockpit-mdi-$$"; MDO="cockpit-mdo-$$"; SOCKS="$SOCKS $MDI $MDO"   # not the
 # The folder's own name holds two blanks (as #1069 did), so a path of it pasted bare into
 # the editor setting is split in a plain run too (#990).
 MVD="$(mktmpd)/m  d"; mkdir -p "$MVD/w"; MVE="$MVD/ed.log"; : > "$MVE"
-printf '#!/bin/sh\necho "OPEN $*" >> %s\n' "$(tq "$MVE")" > "$MVD/ed"; chmod +x "$MVD/ed"
+# named nvim: only an editor that reads +N as a line is handed one (#1188)
+printf '#!/bin/sh\necho "OPEN $*" >> %s\n' "$(tq "$MVE")" > "$MVD/nvim"; chmod +x "$MVD/nvim"
 MVN='r#(tmux${IFS}set${IFS}-g${IFS}@pwned${IFS}yes).md'   # no spaces: the line splits on them
 { printf '# Heading\n\n'; for i in $(seq 0 40); do printf 'p%s\n\n' "$i"; done; } > "$MVD/w/$MVN"
 "$TMUX_REAL" -L "$MDI" -f /dev/null new-session -d -s t -x 100 -y 30 -c "$MVD/w" \
     'exec sleep 300' >/dev/null 2>&1
 # the option is a command, pasted unquoted into the window's: the path goes in quoted (#990)
-"$TMUX_REAL" -L "$MDI" set -g @cockpit_editor "$(tq "$MVD/ed")" >/dev/null 2>&1
+"$TMUX_REAL" -L "$MDI" set -g @cockpit_editor "$(tq "$MVD/nvim")" >/dev/null 2>&1
 "$TMUX_REAL" -L "$MDI" set -g remain-on-exit on >/dev/null 2>&1   # the shim editor exits at once
 MVP=$("$TMUX_REAL" -L "$MDI" list-panes -t t -F '#{pane_id}' | head -1)
 "$TMUX_REAL" -L "$MDI" set-option -p -t "$MVP" @cockpit_click_line "see $MVN" >/dev/null 2>&1
