@@ -21226,6 +21226,28 @@ sc_clear; sc "$SCD/a"
 is "the pane's state is untouched" "" "$(tmux show-option -pqv -t "$SCP" @panestate)"
 is "tmux-review --dir follows the saved tree" "$SCD/a" \
     "$("$DIR/scripts/tmux-review" --dir "$SCP" 2>/dev/null)"
+# #323: SessionEnd's `end` clears what the hooks wrote; a hand-set @cockpit_dir stays, and
+# the idle path clears nothing. Each row: dir:cwd after.
+sc_cwd() { tmux show-option -pqv -t "$SCP" @cockpit_cwd; }
+sc_end() { env -u CLAUDE_CONFIG_DIR HOME="$SCH" "$DIR/scripts/agent-state" end "$SCP" \
+        < /dev/null; }
+sc_clear; sc "$SCD/a"; sc_end
+is "SessionEnd: a hook-written @cockpit_dir and @cockpit_cwd are both cleared" ":" \
+    "$(sc_dir):$(sc_cwd)"
+sc_clear; sc "$SCD/a"; scc "$SCD/a" "$SCD/semi;"; sc_end
+is "and so are a CwdChanged's, a ; ending the path" ":" "$(sc_dir):$(sc_cwd)"
+sc_clear; tmux set-option -p -t "$SCP" @cockpit_dir "$SCD/w"; sc_end
+is "a hand-set @cockpit_dir with no hook value is kept" "$SCD/w:" "$(sc_dir):$(sc_cwd)"
+sc_clear; sc "$SCD/a"; tmux set-option -p -t "$SCP" @cockpit_dir "$SCD/w"; sc_end
+is "one hand-set after the hook wrote: the dir is kept, the cwd cleared" "$SCD/w:" \
+    "$(sc_dir):$(sc_cwd)"
+sc_clear; sc "$SCD/a"
+printf '{"hook_event_name":"Notification","notification_type":"idle_prompt"}\n' |
+    "$DIR/scripts/agent-state" notify "$SCP" >/dev/null 2>&1
+"$DIR/scripts/agent-state" off "$SCP" < /dev/null >/dev/null 2>&1
+is "the idle notify and a plain off clear neither" "$SCD/a:$SCD/a" "$(sc_dir):$(sc_cwd)"
+is "end on a gone pane: exit 0, nothing printed" "0:" \
+    "$("$DIR/scripts/agent-state" end %999999 < /dev/null 2>&1; echo "$?:")"
 tmux kill-pane -t "$SCP" >/dev/null 2>&1
 rm -rf "$SCD"
 fi
@@ -21234,6 +21256,9 @@ echo "== hook wiring: CwdChanged saves the cwd (#312) =="
 is "CwdChanged runs agent-state session, with no matcher (it takes none)" "1 0" \
    "$(jq -r '[.hooks.CwdChanged[]? | select(.hooks[].command | test("agent-state session$"))]
         | "\(length) \(map(select(has("matcher"))) | length)"' "$DIR/examples/claude-hooks.json")"
+is "SessionEnd runs agent-state end once, beside off (#323)" "1" \
+   "$(jq '[.hooks.SessionEnd[]?.hooks[].command | select(test("agent-state end$"))] | length' \
+        "$DIR/examples/claude-hooks.json")"
 
 echo "== agent-state: @cockpit_subs counts the Stop's background subagents, and the bar's ✦N sums them (#313) =="
 # No SubagentStart/Stop counter: #317 found it drifts. Each Stop's background_tasks is the
@@ -23635,7 +23660,7 @@ slcmds() { jq -r '.hooks | to_entries[] | .key as $k | .value[].hooks[].command
         tr '\n' ' ' | sed 's/ $//'
     }
 is "the example wires each new command once, on its event, and keeps the old ones" \
-   "SessionEnd:off SessionEnd:sub-end SubagentStart:running SubagentStart:sub-start SubagentStop:sub-stop TeammateIdle:sub-idle TeammateIdle:wake" \
+   "SessionEnd:end SessionEnd:off SessionEnd:sub-end SubagentStart:running SubagentStart:sub-start SubagentStop:sub-stop TeammateIdle:sub-idle TeammateIdle:wake" \
    "$(slcmds "$SLEX" | tr ' ' '\n' |
        grep -E '^(SessionEnd|SubagentStart|SubagentStop|TeammateIdle):' | tr '\n' ' ' |
        sed 's/ $//')"
