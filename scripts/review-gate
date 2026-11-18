@@ -31,7 +31,10 @@ fi
 [ "${1:-}" = --pretool ] && exit 0
 case "$pane" in %[0-9]*) ;; *) exit 0 ;; esac
 
-d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")
+d=${BASH_SOURCE[0]}
+[ -L "$d" ] && d=$(case $d in (*/*) ;; (*) d=./$d ;; esac; n=0
+    while [ -L "$d" ] && [ $((n += 1)) -le 40 ] && t=$(readlink "$d"); do
+        case $t in (/*) d=$t ;; (*) d=${d%/*}/$t ;; esac; done; printf %s "$d")
 # shellcheck source=lib/hook.sh
 . "${d%/*}/lib/hook.sh" 2>/dev/null || exit 0
 
@@ -56,7 +59,8 @@ json() {                            # <text> -> the JSON string body
     printf '%s' "${s//[$'\001'-$'\037']/}"
 }
 
-here=$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# The sibling scripts sit beside the real script: d, resolved above, not a link (#1283).
+here=$(cd -P "$(dirname "$d")" && pwd)
 
 # Stops at the fields it needs: Claude Code keeps stdin open past the payload. Capped at 4 KB
 # (#315): last_assistant_message can be any size, and the Stop example puts the fields used

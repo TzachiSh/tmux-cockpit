@@ -4351,6 +4351,93 @@ $(git -C "$WGE/other" --no-optional-locks status --porcelain | grep -c .)"
 done
 rm -rf "$WGE"; unset wge_var wge_val wge_was wge_got
 
+echo "== a script reached through a relative link or a chain of links finds its lib/ (#1283) =="
+# readlink prints a link's target as written. Each script read a relative target from the
+# caller's cwd, not from the link's folder, and followed a link to a link one step only. The
+# runs are from a folder whose only shared parent with the links is $RLK, so a ../ in a target
+# cannot line up by chance. repo is a link to the checkout: the targets stay relative.
+RLK=$(mktmpd); ln -s "$DIR" "$RLK/repo"
+mkdir -p "$RLK/a/b/bin" "$RLK/c/bin" "$RLK/u/v/w/x" "$RLK/o"
+for rlk_s in tmux-open-path tm tmux-where; do
+    ln -s "../../../repo/scripts/$rlk_s" "$RLK/a/b/bin/$rlk_s"
+done
+ln -s ../../a/b/bin/tmux-open-path "$RLK/c/bin/tmux-open-path"    # a link to a link
+ln -s tmux-open-path "$RLK/a/b/bin/top"                           # a bare name, same folder
+: > "$RLK/o/README.md"
+rlk_op() { (cd "$RLK/u/v/w/x" && "$1" --dry-run "$RLK/o" 'see README.md ok' 2>/dev/null); }
+is "a relative link: a lookup at the top of the script loads its lib" "$RLK/o/README.md::" \
+    "$(rlk_op "$RLK/a/b/bin/tmux-open-path")"
+is "a link to a relative link: every step is followed" "$RLK/o/README.md::" \
+    "$(rlk_op "$RLK/c/bin/tmux-open-path")"
+is "a bare-name target is read from its own link's folder" "$RLK/o/README.md::" \
+    "$(rlk_op "$RLK/a/b/bin/top")"
+# BASH_SOURCE is then the bare name too, with no folder to cut a target's folder from.
+is "run by a bare name from the link's folder" "$RLK/o/README.md::" \
+    "$(cd "$RLK/a/b/bin" && bash top --dry-run "$RLK/o" 'see README.md ok' 2>/dev/null)"
+is "a relative link: tm's lookup, cut by its own case, loads its lib before -h" "0" \
+    "$(cd "$RLK/u/v/w/x" && "$RLK/a/b/bin/tm" -h >/dev/null 2>&1; echo $?)"
+(
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main "$RLK/g" && : > "$RLK/g/a" && git -C "$RLK/g" add a &&
+      git -C "$RLK/g" commit -q -m g && git -C "$RLK/g" checkout -q --detach
+) >/dev/null 2>&1
+is "a relative link: a lookup inside a function loads its lib (the detached hash)" \
+    " @$(git -C "$RLK/g" rev-parse --short HEAD)" \
+    "$(cd "$RLK/u/v/w/x" && "$RLK/a/b/bin/tmux-where" branch 1 "$RLK/g" claude 2>/dev/null |
+        plain)"
+# review-gate and tmux-review run sibling scripts, which sit beside the real file. A copy of
+# each beside stub siblings shows the folder they were looked for in. tmux is a stub here.
+mkdir -p "$RLK/tb" "$RLK/x/scripts" "$RLK/y/scripts"
+cat > "$RLK/tb/tmux" <<'STUB'
+#!/bin/sh
+for a; do l=$a; done
+case $1 in
+    display-message) case $l in *session_attached*) echo 1 ;;
+        *pane_current_path*) printf '%%1\0370\037\037sh\037\037%s\n' "$RLK_REPO" ;; esac ;;
+    display-popup) r=${l##*> }; eval "r=$r"; echo 21 > "$r" ;;
+esac
+exit 0
+STUB
+for rlk_s in x/scripts/tmux-review x/scripts/agent-state y/scripts/agent-state; do
+    printf '#!/bin/sh\necho "${0##*/} $*" >> "$RLK_SIB"\nexit 1\n' > "$RLK/$rlk_s"
+done
+chmod +x "$RLK/tb/tmux" "$RLK"/[xy]/scripts/*
+cp "$DIR/scripts/review-gate" "$RLK/x/scripts/"; cp "$DIR/scripts/tmux-review" "$RLK/y/scripts/"
+ln -s "$DIR/scripts/lib" "$RLK/x/scripts/lib"; ln -s "$DIR/scripts/lib" "$RLK/y/scripts/lib"
+ln -s ../../../x/scripts/review-gate "$RLK/a/b/bin/review-gate"
+ln -s ../../../y/scripts/tmux-review "$RLK/a/b/bin/tmux-review"
+rlk_sib() {                   # <command>... -> the sibling calls it made, one per line
+    : > "$RLK/sib.log"
+    (cd "$RLK/u/v/w/x" && PATH="$RLK/tb:$PATH" RLK_SIB="$RLK/sib.log" RLK_REPO="$RLK/g" \
+        XDG_STATE_HOME="$RLK/st" TMUX_PANE=%1 "$@" >/dev/null 2>&1)
+    cat "$RLK/sib.log"
+}
+rlk_stop='{"session_id":"s","transcript_path":"","stop_hook_active":false}'
+is "a relative link: review-gate runs the tmux-review beside the real file" \
+    "tmux-review --delta %1" "$(rlk_sib "$RLK/a/b/bin/review-gate" <<< "$rlk_stop")"
+is "a relative link: tmux-review's approve runs the agent-state beside the real file" \
+    "agent-state recount %1" "$(rlk_sib "$RLK/a/b/bin/tmux-review" --request %1 </dev/null)"
+# The form, counted whole: four lines, the same name in each, any indent (#1283). A copy
+# that drifts from it, or the old one-hop line, is not counted.
+rlk_count() {
+    awk '{ t = $0; sub(/^[ \t]+/, "", t) }
+        FNR == 1 { st = 0 }
+        st == 3 { st = 0; if (t == l4) n++; next }
+        st == 2 { st = (t == l3) ? 3 : 0; next }
+        st == 1 { st = (t == l2) ? 2 : 0; next }
+        { u = t; sub(/^local /, "", u) }
+        u ~ /^[A-Za-z_][A-Za-z_0-9]*=\$\{BASH_SOURCE\[0\]\}$/ {
+            v = u; sub(/=.*/, "", v); s = "$" v; q = "\"" s "\""; st = 1
+            l2 = "[ -L " q " ] && " v "=$(case " s " in (*/*) ;; (*) " v "=./" s " ;; esac; n=0"
+            l3 = "while [ -L " q " ] && [ $((n += 1)) -le 40 ] && t=$(readlink " q "); do"
+            l4 = "case $t in (/*) " v "=$t ;; (*) " v "=${" v "%/*}/$t ;; esac"
+            l4 = l4 "; done; printf %s " q ")" }
+        END { print n + 0 }' "$@"
+}
+rlk_f=(); for rlk_s in "$DIR"/scripts/*; do [ -f "$rlk_s" ] && rlk_f+=("$rlk_s"); done
+is "all 21 self-locating sites carry the whole four-line form" "21" "$(rlk_count "${rlk_f[@]}")"
+rm -rf "$RLK"; unset RLK rlk_s rlk_f rlk_stop; unset -f rlk_op rlk_count rlk_sib
+
 echo "== install.sh only ever touches its own links =="
 IB=$(mktmpd); IL="$IB/link"; ln -s "$DIR" "$IL"; IBIN="$IB/bin"; mkdir -p "$IBIN"
 # HOME="$IB" on every call below, and a ~/.claude to find: install.sh also links
@@ -5336,6 +5423,131 @@ done
 is "and no hint ran a #( ) from the folder's name" "" "$(find "$OH" -name pwned)"
 unset -f oh_box oh_server oh_attach oh_load
 unset OH oh_st oh_n oh_s oh_c oh_f oh_p oh_arm oh_want oh_min oh_stock oh_src
+fi
+
+echo "== a load hint at a server's first start reaches the first client once (#1216) =="
+# The cockpit-tui hints went through display-message alone. At a server's first start the
+# config loads before any client has a session, so the message went to no one (#1216). A real
+# first start: an outer server's pane runs the inner tmux, whose config holds the conf line.
+if need_tmux "the first-start hint"; then :
+elif ! ( . "$DIR/scripts/lib/vnum.sh"
+         v=$("$TMUX_REAL" -V); vnum_ge "${v#tmux }" 3.8 ); then
+    skip_ "the first-start hint (tmux below 3.8: the plugin loads nothing there)"
+else
+FH=$(mktmpd); mkdir -p "$FH/wd" "$FH/p"
+for fh_n in 1 2 3 4; do
+    for fh_s in fh fho fhp fhq; do SOCKS="$SOCKS cockpit-$fh_s-$$-$fh_n"; done
+done
+fh_box() {                    # <name> -> a copy of the plugin in $FH/p/<name>, its full path
+    local p="$FH/p/$1" d
+    mkdir -p "$p"; cp "$DIR/cockpit.tmux" "$p/"
+    for d in scripts examples bin; do ln -s "$DIR/$d" "$p/$d"; done
+    (cd -P "$p" && pwd)
+}
+fh_conf() {                   # <n> <plugin folder> -> $FH/conf<n>, mouse on, the plugin's line
+    { printf 'set -g mouse on\nset -g display-time 0\n'
+      ( . "$DIR/scripts/lib/confline.sh"; cockpit_conf_line "$2" ); echo; } > "$FH/conf$1"
+}
+fh_outer() {                  # <outer socket> <command for its pane>: a real client's terminal
+    ( cd "$FH/wd" && exec env -u TMUX_COCKPIT_DIR -u TMUX -u TMUX_PANE \
+        COCKPIT_TUI_BIN="$FH/none/cockpit-tui" "$TMUX_REAL" -L "$1" -f /dev/null \
+        new-session -d -s o -x 300 -y 30 -c "$FH/wd" "TERM=xterm-256color exec $2" ) \
+        >/dev/null 2>&1
+}
+fh_in() {                     # <n> -> the inner tmux's argv start, quoted for a pane's sh
+    printf '%s -L cockpit-fh-%s-%s' "$(tq "$TMUX_REAL")" "$$" "$1"
+}
+fh_cap() { "$TMUX_REAL" -L "$1" capture-pane -p -J -t o 2>/dev/null | grep -cF -- "$2"; }
+fh_log() {                    # <n> <text> -> how many shown messages carry the text
+    "$TMUX_REAL" -L "cockpit-fh-$$-$1" show-messages 2>/dev/null | grep -v ' command: ' |
+        grep -cF -- " $2"
+}
+fh_reloaded() {               # <n> <hint count> -> 1 once the reload's binding has spoken
+    # The load's own dmsg puts the hint in the log as well, so the binding's turn is the
+    # count reaching <hint count>, or a "config reloaded" in the log.
+    [ "$(fh_log "$1" "$fh_want")" -ge "$2" ] || [ "$(fh_log "$1" 'config reloaded')" -ge 1 ] &&
+        echo 1
+}
+fh_hook() {                   # <n> -> 1 while the one-shot is armed, 0 once it is gone
+    "$TMUX_REAL" -L "cockpit-fh-$$-$1" show-hooks -g 2>/dev/null |
+        grep -c '^client-session-changed\[10\]'
+}
+fh_p=$(fh_box plain); fh_want="tmux-cockpit: cockpit-tui is missing; run $fh_p/install.sh"
+fh_conf 1 "$fh_p"
+# 1: the first client of a new-session start.
+fh_outer "cockpit-fho-$$-1" "$(fh_in 1) -f $(tq "$FH/conf1") new-session -s t -c $(tq "$FH/wd")"
+until_out '?*' "$TMUX_REAL" -L "cockpit-fh-$$-1" list-clients -F '#{client_name}'
+until_cap "cockpit-fho-$$-1" o "*$fh_want*"
+is "a first start: the first client is shown the hint, and the log holds it once" "1|1" \
+   "$(fh_cap "cockpit-fho-$$-1" "$fh_want")|$(fh_log 1 "$fh_want")"
+# A second client of the same server: the hook has gone, nothing more is shown.
+fh_outer "cockpit-fhp-$$-1" "$(fh_in 1) attach -t t"
+until_out '*?*?*' sh -c "$(tq "$TMUX_REAL") -L cockpit-fh-$$-1 list-clients -F x | tr -d '\n'"
+until_cap "cockpit-fhp-$$-1" o '*[!\ ]*'
+is "a first client is shown the hint, a second is not, the hook is gone" "1|0|1|0" \
+   "$(fh_cap "cockpit-fho-$$-1" "$fh_want")|$(fh_cap "cockpit-fhp-$$-1" "$fh_want")|$(
+      fh_log 1 "$fh_want")|$(fh_hook 1)"
+# The reload key on the first client: the hint in place of "config reloaded", and the hook
+# stays gone, so a client after the reload is not shown it again. Then, with cockpit-tui
+# there, a reload says "config reloaded": each load starts with no hint.
+"$TMUX_REAL" -L "cockpit-fhp-$$-1" kill-server >/dev/null 2>&1
+"$TMUX_REAL" -L "cockpit-fho-$$-1" send-keys -t o C-b R
+until_out 1 fh_reloaded 1 3
+fh_r1="$(fh_cap "cockpit-fho-$$-1" "$fh_want")|$(fh_cap "cockpit-fho-$$-1" 'config reloaded')"
+fh_r1="$fh_r1|$(fh_hook 1)"
+fh_outer "cockpit-fhq-$$-1" "$(fh_in 1) attach -t t"
+until_cap "cockpit-fhq-$$-1" o '*[!\ ]*'
+fh_r1="$fh_r1|$(fh_cap "cockpit-fhq-$$-1" "$fh_want")"
+"$TMUX_REAL" -L "cockpit-fh-$$-1" set-environment -g COCKPIT_TUI_BIN "$COCKPIT_TUI_BIN"
+"$TMUX_REAL" -L "cockpit-fho-$$-1" send-keys -t o C-b R
+until_cap "cockpit-fho-$$-1" o '*config reloaded*'
+is "a reload shows the hint in place of config reloaded, arms nothing; fixed, it says reloaded" \
+   "1|0|0|0|1|" "$fh_r1|$(fh_cap "cockpit-fho-$$-1" 'config reloaded')|$(
+      "$TMUX_REAL" -L "cockpit-fh-$$-1" show -gqv @cockpit_load_hint)"
+# 2: new-session -d first, with no client, then a client attaches.
+fh_conf 2 "$fh_p"
+( cd "$FH/wd" && exec env -u TMUX_COCKPIT_DIR -u TMUX -u TMUX_PANE \
+    COCKPIT_TUI_BIN="$FH/none/cockpit-tui" "$TMUX_REAL" -L "cockpit-fh-$$-2" -f "$FH/conf2" \
+    new-session -d -s t -x 120 -y 30 -c "$FH/wd" 'exec sleep 300' ) >/dev/null 2>&1
+fh_outer "cockpit-fho-$$-2" "$(fh_in 2) attach -t t"
+until_out '?*' "$TMUX_REAL" -L "cockpit-fh-$$-2" list-clients -F '#{client_name}'
+until_cap "cockpit-fho-$$-2" o "*$fh_want*"
+is "a new-session -d start, then an attach: the client is shown the hint once" "1|1|0" \
+   "$(fh_cap "cockpit-fho-$$-2" "$fh_want")|$(fh_log 2 "$fh_want")|$(fh_hook 2)"
+# 3: a plugin folder holding # shapes. The hint is drawn as written, and nothing in it runs.
+fh_p=$(fh_box 'h#Sh#{pane_id}h#[fg=red]h##h#(touch pwned)h')
+fh_w3="tmux-cockpit: cockpit-tui is missing; run $fh_p/install.sh"
+fh_conf 3 "$fh_p"
+fh_outer "cockpit-fho-$$-3" "$(fh_in 3) -f $(tq "$FH/conf3") new-session -s t -c $(tq "$FH/wd")"
+until_out '?*' "$TMUX_REAL" -L "cockpit-fh-$$-3" list-clients -F '#{client_name}'
+until_cap "cockpit-fho-$$-3" o '*cockpit-tui is missing*'
+is "a folder holding # shapes: the first client is shown the hint as written, nothing ran" \
+   "1|" "$(fh_cap "cockpit-fho-$$-3" "$fh_w3")|$(find "$FH" -name pwned)"
+# 4: a hook armed by a -d start, then the cause fixed and the config loaded again with no
+# client: that load keeps no hint, and the old hook goes with it, or the next client would
+# be shown an empty message.
+fh_conf 4 "$(cd -P "$FH/p/plain" && pwd)"
+( cd "$FH/wd" && exec env -u TMUX_COCKPIT_DIR -u TMUX -u TMUX_PANE \
+    COCKPIT_TUI_BIN="$FH/none/cockpit-tui" "$TMUX_REAL" -L "cockpit-fh-$$-4" -f "$FH/conf4" \
+    new-session -d -s t -x 120 -y 30 -c "$FH/wd" 'exec sleep 300' ) >/dev/null 2>&1
+fh_r4=$(fh_hook 4)
+"$TMUX_REAL" -L "cockpit-fh-$$-4" set-environment -g COCKPIT_TUI_BIN "$COCKPIT_TUI_BIN"
+( cd "$FH/wd" && exec "$TMUX_REAL" -L "cockpit-fh-$$-4" source-file "$FH/conf4" ) >/dev/null 2>&1
+fh_r4="$fh_r4|$(fh_hook 4)"
+fh_outer "cockpit-fho-$$-4" "$(fh_in 4) attach -t t"
+until_out '?*' "$TMUX_REAL" -L "cockpit-fh-$$-4" list-clients -F '#{client_name}'
+until_cap "cockpit-fho-$$-4" o '*[!\ ]*'
+is "a hook a -d start armed goes with a later load that keeps no hint: nothing shown" \
+   "1|0|0|0" "$fh_r4|$(fh_cap "cockpit-fho-$$-4" "$fh_want")|$(
+      "$TMUX_REAL" -L "cockpit-fh-$$-4" show-messages 2>/dev/null | grep -v ' command: ' |
+      grep -c ' message: *$')"
+for fh_n in 1 2 3 4; do
+    for fh_s in fhq fhp fho fh; do
+        "$TMUX_REAL" -L "cockpit-$fh_s-$$-$fh_n" kill-server >/dev/null 2>&1
+    done
+done
+unset -f fh_box fh_conf fh_outer fh_in fh_cap fh_log fh_reloaded fh_hook
+unset FH fh_n fh_s fh_p fh_want fh_w3 fh_r1 fh_r4
 fi
 
 echo "== a cockpit key on ;, M-; or C-; is bound, recorded, and keeps the menu (#1152) =="
