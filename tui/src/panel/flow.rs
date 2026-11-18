@@ -557,7 +557,64 @@ pub fn render(src: &str, w: usize) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::Row;
+    use super::{Actor, Flow, Row, Shape, Status, Step, draw, fit, ladder, list, parse, shape};
+
+    /// A character no drawn line may hold: a control, a bidi control, U+2028/U+2029.
+    fn unsafe_char(c: char) -> bool {
+        let bidi = matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}');
+        c.is_control() || bidi || matches!(c, '\u{2028}' | '\u{2029}')
+    }
+
+    /// Every text field set directly, each holding `bad` (#955).
+    fn hand_built(bad: &str) -> Flow {
+        let actor = |id: &str| Actor {
+            id: id.into(),
+            name: format!("{id}{bad}name"),
+        };
+        let step = Step {
+            from: 0,
+            to: 1,
+            dashed: false,
+            label: format!("deploy{bad}it"),
+            status: Some(Status::Running),
+            time: Some(format!("1{bad}2")),
+            notes: vec![format!("note{bad}here")],
+        };
+        Flow {
+            actors: vec![actor("A"), actor("B")],
+            steps: vec![step],
+            lead: vec![format!("lead{bad}line")],
+            need: vec![format!("need{bad}this")],
+            autonumber: true,
+        }
+    }
+
+    #[test]
+    fn a_hand_built_flow_draws_no_control_or_bidi_character() {
+        let rows = [("RLO and BEL", "\u{202E}\u{7}"), ("LRI, LS, newline", "\u{2066}\u{2028}\n")];
+        for (row, bad) in rows {
+            let f = hand_built(bad);
+            for (w, want) in [(100, Shape::Ladder), (40, Shape::List)] {
+                assert_eq!(shape(&f, w), want, "{row} w={w}");
+                let out = draw(&f, w);
+                let hit = out.iter().find(|l| l.chars().any(unsafe_char));
+                assert_eq!(hit, None, "{row} w={w}");
+            }
+        }
+    }
+
+    /// Cleaning at draw time changes nothing in a parsed flow: its text is clean already.
+    #[test]
+    fn a_parsed_flow_draws_as_its_layout_fitted() {
+        let src = "sequenceDiagram\nautonumber\nparticipant A as Ann ↳\nNote over A: lead\n\
+                   A->>B: go ✓ │ …\n%% status: running 09:30\nNote over B: NEED FROM YOU: ok\n";
+        let f = parse(src).expect("sample parses");
+        type Layout = fn(&Flow, usize) -> Vec<String>;
+        for (w, layout) in [(100, ladder as Layout), (40, list as Layout)] {
+            let plain: Vec<String> = layout(&f, w).iter().map(|l| fit(l, w)).collect();
+            assert_eq!(draw(&f, w), plain, "w={w}");
+        }
+    }
 
     /// No layout writes over a wide cell today; this pins the rule for the next one.
     #[test]
