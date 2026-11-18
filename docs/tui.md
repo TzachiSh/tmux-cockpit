@@ -1498,7 +1498,7 @@ not wired into Explain yet.
 
 `panel::changes` builds the list of what changed in a repo since the user last
 looked, in plain code, so the model that explains it cannot make an item up.
-It is not wired into Explain yet: nothing in the panel calls it.
+Explain draws it (#935, "Explain shows it" below).
 
 - **Last seen.** Per repo, the HEAD sha and a time in seconds, one line
   `<sha> <secs>` in `$XDG_CACHE_HOME/tmux-cockpit/panel/seen/<key>`
@@ -1539,6 +1539,43 @@ It is not wired into Explain yet: nothing in the panel calls it.
   for the CI call, which is skipped with its own note. Nothing is printed and nothing
   panics. `collect` blocks for at most the two budgets, so the wiring calls it
   off the drawing thread.
+
+Explain shows it (`panel::look`):
+
+- **When.** The collect starts when the Explain tile opens the question list, on
+  a thread of its own, so the user's pick hides its time. Only a pane whose
+  folder is this machine's gets one, by the rule the write's repo block uses: a
+  pane running ssh gets no list. No call waits for it.
+- **Shown, not sent.** The panel draws the list atop the Explain's answer,
+  from the collector's own lines, under `what changed since you last looked,
+  <time>` (`nothing new listed since ...` when empty, `first look here` with no
+  record). A pane outside any repo, or in a repo with no commit yet, gets no
+  list: nothing there could be marked seen. A HEAD git took too long to read
+  is not that: the list keeps its GitHub items and the timeout note. The
+  request does not carry it yet: #935 task 4 adds it together with the
+  prompt text that tells the model what to do with it. The prompt text does
+  not change.
+- **Answer first.** The first answer of an Explain whose list is not yet seen
+  opens at its top. A list that lands after the answer is drawn there when it
+  lands: the panel's loop wakes every 100 ms while a collect is under way, so
+  it appears with no key pressed.
+- **Seen.** Last-seen is written once a frame has drawn the answer at its top
+  with the list on it, never earlier: not under the size-floor card or the
+  help overlay, which are drawn in its place. A failed or cancelled Explain leaves it
+  as it was, and a second question shows the same list with no new git or gh
+  call. It takes the head and the time the collect started. With commits left
+  out (git took too long) nothing is written. After a passing GitHub failure (a
+  timeout, gh failing, the floor, the search limit) the head moves and the
+  time stays, so the next look searches GitHub from where the user last saw it.
+- **Limits.** The panel holds one `Collector` for its life, so the 60 s floor
+  and the 30 searches a minute last as long as that panel. Each new panel
+  (each `prefix f`) starts with none spent: #1000 allows no file but the
+  last-seen one. Past GitHub's own limit gh fails, and the list says so in one
+  note.
+- **HEAD moved back.** After `git checkout HEAD~1` the old tip is still held by
+  its branch: no commit is listed, no rewrite either. The list reads `nothing
+  new listed`, with the detached-HEAD note on a GitHub repo, and last-seen
+  becomes HEAD~1, so checking the tip out again lists its commit again.
 
 ### The panel on a small screen
 
@@ -2987,7 +3024,8 @@ and for `switch`/`track` a ref that exists under `refs/heads` or `refs/remotes`.
 switch runs through `gitsafe::git_write`: the `gitsafe` flags but the protocol pins (a
 switch may lazy-fetch a partial clone's blobs, as `scripts/lib/git.sh` lets it), every
 filter driver the repo names blanked, a repo whose driver name holds `=` refused
-(#331), the inherited `GIT_DIR` and its kin unset, and no prompt on the popup's
+(#331), no submodule checked out (`-c submodule.recurse=false`: a submodule's own
+config names drivers no blanking reads, #1272), the inherited `GIT_DIR` and its kin unset, and no prompt on the popup's
 terminal. Git's own refusal (a dirty tree) is the `✕` note, its first line, with the
 whole message in the preview until the next key; the picker stays. goto checks its
 path the same way before it acts: a path that `git worktree list` names, else `not a

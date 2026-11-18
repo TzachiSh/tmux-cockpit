@@ -57,7 +57,11 @@ git() {
     case ${!i-} in
         # A lazy fetch runs the remote the repo names. GIT_ALLOW_PROTOCOL= refuses every transport,
         # a remote helper too, on git < 2.44. Only a user's switch or the worktree hook's add may fetch.
-        switch|worktree) command git "${GIT_SAFE[@]}" ${drv[@]+"${drv[@]}"} "$@" ;;
+        # A switch checks out no submodule: a submodule's own config names drivers the
+        # scan above never read (#1272).
+        switch) command git "${GIT_SAFE[@]}" -c submodule.recurse=false \
+                    ${drv[@]+"${drv[@]}"} "$@" ;;
+        worktree) command git "${GIT_SAFE[@]}" ${drv[@]+"${drv[@]}"} "$@" ;;
         *) GIT_NO_LAZY_FETCH=1 GIT_ALLOW_PROTOCOL='' command git "${GIT_SAFE[@]}" "${GIT_NOFETCH[@]}" ${drv[@]+"${drv[@]}"} "$@" ;;
     esac
 }

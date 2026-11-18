@@ -23,7 +23,8 @@ tree, say), or the worktree to go to is gone, the popup stays open: the first li
 is the `✕` note above the list, and the whole message takes the preview's place
 until the next key. With an older `cockpit-tui` (0.4.0, the current release) the
 script still runs the switch and the goto, and a refusal is its `[any key]` screen,
-as before.
+as before. With `submodule.recurse` set, the popup's switch leaves each submodule
+where it was: run `git submodule update` yourself (#1272).
 
 The click target is the branch on the active pane's top border (a control
 range, `control|3`, acting on release). When the border has no room for it, the

@@ -534,6 +534,55 @@ fn the_switch_blanks_the_repos_filter_driver() {
     assert!(!smudged.exists(), "the repo's smudge ran");
 }
 
+/// The act repo with submodule `sub` (`*.t filter=evil`, two commits to f.t) on its newer
+/// commit, and branch `oldsub` pinning the older one. The smudge, named in the submodule's
+/// own config, touches the file returned; the superproject sets submodule.recurse.
+fn sub_repo() -> (Scratch, Scratch, Scratch, std::path::PathBuf) {
+    let (r, rm) = act_repo();
+    let (sub, d) = (Scratch::new(), "2020-01-01T00:00:00Z");
+    git(&sub.0, d, &["init", "-q", "-b", "main", "."]);
+    std::fs::write(sub.0.join(".gitattributes"), "*.t filter=evil\n").unwrap();
+    for v in ["one", "two"] {
+        std::fs::write(sub.0.join("f.t"), format!("{v}\n")).unwrap();
+        git(&sub.0, d, &["add", "-A"]);
+        git(&sub.0, d, &["commit", "-q", "-m", v]);
+    }
+    let add = ["-c", "protocol.file.allow=always", "submodule", "add", "-q", sub.s(), "sub"];
+    git(&r.0, d, &add);
+    git(&r.0, d, &["commit", "-q", "-m", "sub"]);
+    git(&r.0, d, &["switch", "-q", "-c", "oldsub"]);
+    git(&r.0.join("sub"), d, &["checkout", "-q", "HEAD~1"]);
+    git(&r.0, d, &["add", "sub"]);
+    git(&r.0, d, &["commit", "-q", "-m", "oldsub"]);
+    git(&r.0, d, &["switch", "-q", "main"]);
+    git(&r.0.join("sub"), d, &["checkout", "-q", "main"]);
+    let smudged = r.0.join("smudged");
+    let smudge = format!("touch '{}'; cat", smudged.display());
+    git(&r.0.join("sub"), d, &["config", "filter.evil.smudge", &smudge]);
+    git(&r.0, d, &["config", "submodule.recurse", "true"]);
+    (r, rm, sub, smudged)
+}
+
+#[test]
+fn the_switch_runs_no_filter_driver_a_submodules_own_config_names() {
+    let (r, _rm, _sub, smudged) = sub_repo();
+    assert_eq!(out(&r.0.join("sub"), &["log", "-1", "--format=%s"]), "two", "fixture: newer");
+    acted(&r, b"switch oldsub");
+    assert_eq!(branches::current(r.s()), "oldsub");
+    assert!(!smudged.exists(), "the submodule's smudge ran");
+}
+
+#[test]
+fn a_track_runs_no_filter_driver_a_submodules_own_config_names() {
+    let (r, _rm, _sub, smudged) = sub_repo();
+    let (d, quiet) = ("2020-01-01T00:00:00Z", ["-c", "submodule.recurse=false"]);
+    git(&r.0, d, &[&quiet[..], &["push", "-q", "origin", "oldsub:remote-oldsub"]].concat());
+    git(&r.0, d, &[&quiet[..], &["fetch", "-q", "origin"]].concat());
+    acted(&r, b"track origin/remote-oldsub");
+    assert_eq!(branches::current(r.s()), "remote-oldsub");
+    assert!(!smudged.exists(), "the submodule's smudge ran");
+}
+
 #[test]
 fn the_switch_runs_no_hook() {
     let (r, _rm) = act_repo();

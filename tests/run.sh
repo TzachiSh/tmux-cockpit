@@ -3702,6 +3702,20 @@ case "$(cat "$VOUT")" in
             "$(cat "$VOUT")" ;;
 esac
 rm -f "$VTMUX/code"
+# #1179: the opened note shortens by HOME as text. A home literally named "*" in the click
+# folder still holds the shim; as a glob it matched the whole path, shown as "~:12".
+VGH="$VQ/*"; mkdir -p "$VGH"; ln -s "$VH/.vscode-server" "$VGH/.vscode-server"
+: > "$VOUT"
+env -i COCKPIT_TUI_BIN="$OPTUI" PATH="$VTMUX" HOME="$VGH" VLOG="$VLOG" XDG_RUNTIME_DIR="$VSK" \
+    TMUX_LOG="$VOUT" CLICK_DIR="$VQ" CLICK_LINE="it's.txt:12" \
+    bash "$DIR/scripts/tmux-open-path" --pick %1 </dev/null >/dev/null 2>&1
+is "through the shim under a HOME named [*]: the opened note shows the path whole" "1" \
+   "$(grep -cF "cockpit: opened $VQ/it's.txt:12" "$VOUT")"
+# Removed only when it is the folder named "*" inside $VQ, never by the quotes alone.
+case $VGH in
+    "$VQ"/'*') rm -rf -- "${VGH:?}" ;;
+    *) bad "the HOME named [*] is the one inside the click folder" "$VQ/*" "$VGH" ;;
+esac
 
 echo "== agent-state: notify must not hang on a silent stdin =="
 # The Notification hook piped JSON in and the script read it with cat, which
@@ -19739,7 +19753,29 @@ git -C "$BRR" switch -q main
 # The binary since #228 prints nothing once it acted: the script says nothing and acts on nothing.
 is "an empty answer prints nothing and switches nothing" "0 main|" \
     "$(bre=$(br_stub ''); echo "$? $(br_cur "$BRR")|$bre")"
-rm -rf "$BRR" "$BRM" "$BRX"
+# #1272: lib/git.sh blanks the drivers the superproject's config names. With submodule.recurse
+# set, a switch that moves a submodule checks it out, and the submodule's own config names a
+# driver that scan never read. The binary's twin is in tui/tests/branch.rs.
+BRSM=$(mktmpd)
+(
+    export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+    git init -q -b main "$BRSM/sub" && cd "$BRSM/sub" || exit 1
+    echo '*.t filter=evil' > .gitattributes; echo one > f.t; git add -A; git commit -q -m one
+    echo two > f.t; git commit -q -am two
+    git init -q -b main "$BRSM/sup" && cd "$BRSM/sup" || exit 1
+    git -c protocol.file.allow=always submodule add -q "$BRSM/sub" sub; git commit -q -m sub
+    git switch -q -c oldsub; git -C sub checkout -q HEAD~1; git add sub; git commit -q -m oldsub
+    git switch -q main; git -C sub checkout -q main
+    git -C sub config filter.evil.smudge "touch $(tq "$BRSM/smudged"); cat"
+    git config submodule.recurse true
+) >/dev/null 2>&1
+rm -f "$BRX/out.used"; printf 'switch oldsub\n' > "$BRX/out"
+env -u TMUX COCKPIT_TUI_BIN="$BRX/cockpit-tui" BR_STUB_OUT="$BRX/out" \
+    "$DIR/scripts/tmux-branch" "$BRSM/sup" </dev/null >/dev/null 2>&1
+is "older binary: a switch runs no filter driver a submodule's own config names (#1272)" \
+    "oldsub two none" "$(br_cur "$BRSM/sup") $(git -C "$BRSM/sup/sub" log -1 --format=%s 2>&1) \
+$([ -e "$BRSM/smudged" ] && echo ran || echo none)"
+rm -rf "$BRR" "$BRM" "$BRX" "$BRSM"
 
 echo "== tmux-branch (#228): prefix b still switches with a binary that prints switch <name> =="
 # The whole popup flow: the key, display-popup, the script, and a stub cockpit-tui that
@@ -22028,10 +22064,12 @@ STUB
 chmod +x "$OKT/tmux"; ln -s "$(command -v bash)" "$OKT/bash"
 for t in mktemp rm cat; do ln -s "$(command -v $t)" "$OKT/$t"; done   # the stderr capture
 okrun() {                     # okrun <key> [bin] -- the log after a pick answering <key>
-    # OKLC: a LOCPATH dir to run in its en_US.UTF-8 (#842)
+    # OKLC: a LOCPATH dir to run in its en_US.UTF-8 (#842); OKHOME: the HOME, else $OKT;
+    # OKLINE: the clicked line, else "a.txt b.txt"
     : > "$OKL"
     env -i ${OKLC:+"LOCPATH=$OKLC"} ${OKLC:+LC_ALL=en_US.UTF-8} \
-        PATH="$OKT" HOME="$OKT" TMUX_LOG="$OKL" CLICK_DIR="$OKT/w" CLICK_LINE="a.txt b.txt" \
+        PATH="$OKT" HOME="${OKHOME:-$OKT}" TMUX_LOG="$OKL" CLICK_DIR="$OKT/w" \
+        CLICK_LINE="${OKLINE:-a.txt b.txt}" \
         OPEN_EDITOR=ed PICK_KEY="$1" PICK_RC="${PICK_RC:-0}" COCKPIT_TUI_BIN="${2:-$OPTUI}" \
         bash "$DIR/scripts/tmux-open-path" ${OKARG---pick} %1 </dev/null >/dev/null 2>"$OKT/err"
     echo "rc=$?"; cat "$OKL"
@@ -22071,6 +22109,23 @@ esac
 # alt-c (pick's exit 10) copies the absolute path and opens nothing.
 is "alt-c copies the chosen candidate's path and opens nothing" \
    "rc=0"$'\n'"LOADBUF $OKT/w/b.txt"$'\n'"MSG cockpit: copied ~/w/b.txt" "$(PICK_RC=10 okrun 1)"
+# The ~ shortening matches HOME as text, never as a glob (#1179): with a HOME of $OKT/w* the
+# copied path was shown as "~", with $OKT/? as "~/b.txt". Neither HOME is a prefix of it.
+for h in "$OKT/w*" "$OKT/?"; do
+    is "a HOME of [${h#"$OKT"/}] is text, not a glob: the copied path is shown whole" \
+       "MSG cockpit: copied $OKT/w/b.txt" "$(OKHOME=$h PICK_RC=10 okrun 1 | grep '^MSG')"
+done
+# ...and in a pick row's label (#1179): candidates outside the clicked folder are shown
+# shortened by HOME. A pick stub records the rows it is handed; HOME is "$OKH/x*".
+OKH=$(mktmpd); mkdir -p "$OKH/x"; : > "$OKH/x/c.txt"; : > "$OKH/x/d.txt"
+printf '#!/bin/sh\ncat > %s\nprintf "0\\n"\n' "'$OKT/rows.got'" > "$OKT/pickrec"
+chmod +x "$OKT/pickrec"; : > "$OKT/rows.got"
+OKPL="a HOME of [x*] is text in a pick row's label: the path is shown whole"
+case $OKH in
+    *[[:space:]]*) skip_ "$OKPL (the clicked line splits on the blank in TMPDIR)" ;;
+    *) OKHOME="$OKH/x*" OKLINE="$OKH/x/c.txt $OKH/x/d.txt" okrun 0 "$OKT/pickrec" >/dev/null
+       is "$OKPL" "$OKH/x/c.txt|$OKH/x/d.txt" "$(cut -f2 "$OKT/rows.got" | paste -sd'|')" ;;
+esac
 case "$(PICK_RC=10 okrun 7)" in
     *LOADBUF*) bad "alt-c on a key that is not a candidate copies nothing" \
             "no load-buffer" "copied" ;;
@@ -22133,10 +22188,11 @@ HXP=$("$TMUX_REAL" -L "$HX" list-panes -t t -F '#{pane_id}' | head -1)
 "$TMUX_REAL" -L "$HX" send-keys -t "$HXP" "cd 'd#S'" Enter
 until_out "*d#S" "$TMUX_REAL" -L "$HX" display-message -p -t "$HXP" '#{pane_current_path}'
 "$TMUX_REAL" -L "$HX" set-option -p -t "$HXP" @cockpit_click_line "see $HN" >/dev/null 2>&1
-hxgo() {                      # hxgo <n> -- run the pick re-entry; wait for it
+hxgo() {                      # hxgo <n> -- run the pick re-entry; wait for it. HXHOME: its HOME
     : > "$HXL"; : > "$HXA"
     "$TMUX_REAL" -L "$HX" send-keys \
-        -t "$HXP" "clear; PATH=$(tq "$HXB"):\$PATH COCKPIT_TUI_BIN=$(tq "$HXD/tui") $(
+        -t "$HXP" "clear; ${HXHOME:+HOME=$(tq "$HXHOME") }PATH=$(tq "$HXB"):\$PATH $(
+        )COCKPIT_TUI_BIN=$(tq "$HXD/tui") $(
         )'$DIR/scripts/tmux-open-path' --pick '$HXP'; echo HXDONE$1=\$?" Enter
     until_cap "$HX" "$HXP" "*HXDONE$1=[0-9]*"
 }
@@ -22171,6 +22227,12 @@ else
     bad "and the server ran the suite's stub code, no other" 1 \
         "$(cat "$STATE/code.argv" 2>/dev/null)"
 fi
+# After the code.argv count above, which reads the first click's argv only.
+# #1179: under a HOME of "$HW*", which is no prefix of the file, the note shows it whole
+# (as a glob it matched the whole path, shown as "~").
+HXHOME="$HW*" hxgo 3
+is "under a HOME of [$(basename "$HW")*] the opened note shows the path whole" "1" \
+   "$(grep -c -F "cockpit: opened ${HW//#/##}/a##(touch\${IFS}F)##{pid}##S.txt" "$HXL")"
 "$TMUX_REAL" -L "$HX" kill-server >/dev/null 2>&1
 fi
 
@@ -23109,6 +23171,11 @@ FBV='edit x\n' fb off "view $FBD/sub/n.txt\n" 0
 is "a viewer line that is not an edit is not a close either: no browser" "1" "$(fbtn files)"
 fb off "copy $FBF\n" 0
 is "copy from the browser: no viewer, no second browser" "1" "$(fbtn files)"
+# #1179: the copied note shortens by HOME as text: under a HOME of "$FB/p*", which is no
+# prefix of the path, the note shows the path whole (it was "~").
+fb off "copy $FBF\n" 0 HOME="$FB/p*"
+is "copy from the browser under a HOME of [p*]: the note shows the path whole" "1" \
+   "$(grep -cF "[cockpit: copied $FBF]" "$FB/calls")"
 # a loop, not a call per view: under a cap of 8 nested calls, 15 views closed in a row
 # bring the browser back 15 times; a recursion would die at the cap
 FBR=15 fb off "view $FBD/sub/n.txt\n" 0 FUNCNEST=8
