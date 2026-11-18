@@ -505,14 +505,16 @@ previous session's file. A missing or refused field leaves the option as it was.
 (`data::transcript::file`) takes `@cockpit_transcript` if it still resolves under the
 projects tree, then `@cockpit_session`, then `claude agents --json`. `last_assistant_message`
 is never stored: free text in an option is the #289 hazard. `Stop` still refreshes
-`@cockpit_session` through `review-gate`.
+`@cockpit_session` through `review-gate`, with the same UUID test and transcript drop
+(#315), and only when its read of the pane's options is whole (#707).
 
-The read is capped at 4 KB: `UserPromptSubmit` carries the whole prompt and bash reads a pipe
-a byte at a time. Claude sends the ids first; one past the cap, or cut by it, is skipped and the
-old value stays. The hook checks the path against the projects tree of the `CLAUDE_CONFIG_DIR`
-claude runs with; the reader uses its own environment's (usually the tmux server's). Export
-`CLAUDE_CONFIG_DIR` where tmux starts, not only in a shell, or the reader refuses the stored path
-and falls back to `@cockpit_session`.
+The read is capped at 4 KB, `review-gate`'s too: `UserPromptSubmit` carries the whole prompt,
+`Stop` the whole final message, and bash reads a pipe a byte at a time. Claude sends the ids
+first; one past the cap, or cut by it, is skipped and the old value stays. The hook checks
+the path against the projects tree of the `CLAUDE_CONFIG_DIR` claude runs with; the reader
+uses its own environment's (usually the tmux server's). Export `CLAUDE_CONFIG_DIR` where tmux
+starts, not only in a shell, or the reader refuses the stored path and falls back to
+`@cockpit_session`.
 
 ## Working tree
 
