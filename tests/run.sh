@@ -7717,18 +7717,27 @@ for gb_c in full:nonempty cwd:cwd -:dash; do
        grep -cF "own binding for w (no temp dir, own_tmpdir: ${gb_c#*:})")"
     gb_load; gb_set board unset; gb_load
 done
-# tmpdir.sh missing from the plugin: the load still completes, and give_back, with no dir it
-# may take, leaves w bound and pending and says why (#947).
+# lib/tmpdir.sh missing from the plugin, or empty, as a cut copy is: the load still completes,
+# and give_back, with no dir it may take, leaves w bound and pending and says why (#947). An
+# empty file sources with status 0 and defines nothing: keyed on that status, no stand-in was
+# defined, give_back's own_tmpdir was "command not found", and its read of the unset
+# own_tmpdir_why under set -u ended the whole plugin load. The message is counted as new since
+# the row's own load.
 gb_p=$GBD/nolib947; mkdir -p "$gb_p"; cp -R "$DIR/cockpit.tmux" "$DIR/scripts" "$gb_p/"
-rm -f "$gb_p/scripts/lib/tmpdir.sh"
 ln -s "$DIR/examples" "$gb_p/examples"; ln -s "$DIR/bin" "$gb_p/bin"
-gb_set board off
-reload_on "$GB" "'$gb_p/cockpit.tmux'"
-is "a plugin without lib/tmpdir.sh loads, leaves w bound and pending, and says why" \
-   "cockpit: board|board:w|1" "$(gb_note w)|$(gb_left)|$(gb_msgs |
-   grep -cF 'own binding for w (no temp dir, own_tmpdir: tmpdir.sh did not load)')"
-gb_load; gb_set board unset; gb_load
-unset -f gb_msgs; unset gb_c gb_w gb_a gb_k gb_p
+gb_why='own binding for w (no temp dir, own_tmpdir: tmpdir.sh did not load)'
+for gb_c in without empty; do
+    if [ "$gb_c" = without ]; then rm -f "$gb_p/scripts/lib/tmpdir.sh"
+    else : > "$gb_p/scripts/lib/tmpdir.sh"; fi
+    gb_n=$(gb_msgs | grep -cF "$gb_why")
+    gb_set board off
+    reload_on "$GB" "'$gb_p/cockpit.tmux'"
+    is "a plugin $gb_c lib/tmpdir.sh loads, leaves w bound and pending, and says why" \
+       "cockpit: board|board:w|1" \
+       "$(gb_note w)|$(gb_left)|$(( $(gb_msgs | grep -cF "$gb_why") - gb_n ))"
+    gb_load; gb_set board unset; gb_load
+done
+unset -f gb_msgs; unset gb_c gb_w gb_a gb_k gb_p gb_n gb_why
 # ; is a command separator to tmux: the tmux-fixer sweep must still give it back.
 "$TMUX_REAL" -L "$GB" bind-key -T prefix '\;' display-popup -E "/old/scripts/tmux-fixer -p %1" \
     >/dev/null 2>&1
@@ -10985,9 +10994,13 @@ echo "== bootstrap.sh's tmux build and revdiff fetch rm -rf no dir mktemp did no
 # rows off fetch_tool. Every plugin is cloned already and ~/.tmux.conf loads cockpit, so no
 # other step acts. The third field counts make, cc and gcc calls: the build never compiles, as
 # the download before it fails.
+# quote: the build's dir is the real mktemp's, under a TMPDIR whose name holds a ', and the curl
+# stub serves a local tarball whose configure only leaves a mark and fails, so make is never
+# reached. The build ran its command in a "cd '<dir>' ..." string, which such a dir broke.
 bt_mk=$(PATH=/usr/bin:/bin command -v mktemp)
-bt_run() {                    # <tmux|revdiff> <full|cwd|-> <check> -> "<kept|gone>|<FAIL>|<cc>"
-    local s=$1 w=$2 o a k c what
+bt_v=$(sed -n 's/.*TMUX_BUILD=\([0-9.]*\).*/\1/p' "$DIR/bootstrap.sh")
+bt_run() {      # <tmux|revdiff> <full|cwd|-|quote> <check> -> "<kept|gone|ran|not>|<FAIL>|<cc>"
+    local s=$1 w=$2 o a k c what t=${TMPDIR:-/tmp}
     o=$(mktmpd); mkdir -p "$o/bin" "$o/cwd/-" "$o/full" "$o/rel" "$o/h/.tmux/plugins"
     echo keep > "$o/full/canary"; echo keep > "$o/cwd/-/canary"; : > "$o/calls"
     for c in tpm tmux-sensible tmux-yank tmux-resurrect tmux-continuum; do
@@ -10995,22 +11008,33 @@ bt_run() {                    # <tmux|revdiff> <full|cwd|-> <check> -> "<kept|go
     done
     printf '# mine\nrun-shell %s/cockpit.tmux\n' "$DIR" > "$o/h/.tmux.conf"
     case $w in full) a=$o/full k=$o/full/canary ;; cwd) a=$o/cwd k=$o/cwd ;;
-               *) a=- k=$o/cwd/-/canary ;; esac
+               quote) a='' k=$o/configured ;; *) a=- k=$o/cwd/-/canary ;; esac
     for c in sudo apt-get dnf pacman zypper brew git curl wget gh cargo make cc gcc; do
         printf '#!/bin/sh\necho "%s $*" >> %s\n' "$c" "$(tq "$o/calls")" > "$o/bin/$c"
         case $c in sudo|apt-get) echo 'exit 0' ;; *) echo 'exit 1' ;; esac >> "$o/bin/$c"
     done
-    printf '#!/bin/sh\ncase $1 in -d) printf "%%s\\n" %s ;; *) exec %s "$@" ;; esac\n' \
-        "$(tq "$a")" "$(tq "$bt_mk")" > "$o/bin/mktemp"
+    if [ "$w" = quote ]; then
+        t=$o/q\'d; mkdir -p "$t" "$o/pack/tmux-$bt_v"
+        printf '#!/bin/sh\necho ran > %s\nexit 1\n' "$(tq "$k")" > "$o/pack/tmux-$bt_v/configure"
+        chmod +x "$o/pack/tmux-$bt_v/configure"; (cd "$o/pack" && tar -czf ../t.tgz "tmux-$bt_v")
+        { printf '#!/bin/sh\necho "curl $*" >> %s\n' "$(tq "$o/calls")"
+          printf 'while [ $# -gt 0 ]; do [ "$1" = -o ] && exec cp %s "$2"; shift; done\nexit 1\n' \
+              "$(tq "$o/t.tgz")"; } > "$o/bin/curl"
+    else
+        printf '#!/bin/sh\ncase $1 in -d) printf "%%s\\n" %s ;; *) exec %s "$@" ;; esac\n' \
+            "$(tq "$a")" "$(tq "$bt_mk")" > "$o/bin/mktemp"
+    fi
     if [ "$s" = tmux ]; then c=3.7 what='the tmux build'
         printf '#!/bin/sh\necho "version: 1.13.0"\n' > "$o/bin/revdiff"
     else c=3.8 what=revdiff; fi
     printf '#!/bin/sh\ncase $1 in -V) echo "tmux %s" ;; esac\nexit 0\n' "$c" > "$o/bin/tmux"
     chmod +x "$o/bin/"*
     (cd "$o/cwd" && env -u TMUX -u TMUX_PANE HOME="$o/h" PATH="$o/bin:/usr/bin:/bin" \
-        COCKPIT_GITHUB="$(file_url "$o/rel")" timeout 60 "$DIR/bootstrap.sh" </dev/null \
-        >"$o/out" 2>&1)
-    printf '%s|%s|%s' "$([ -e "$k" ] && echo kept || echo gone)" \
+        TMPDIR="$t" COCKPIT_GITHUB="$(file_url "$o/rel")" timeout 60 \
+        "$DIR/bootstrap.sh" </dev/null >"$o/out" 2>&1)
+    if [ "$w" = quote ]; then c=$([ -e "$k" ] && echo ran || echo not)
+    else c=$([ -e "$k" ] && echo kept || echo gone); fi
+    printf '%s|%s|%s' "$c" \
         "$(grep -cxF "  FAIL:  no temp dir for $what (own_tmpdir: $3)" "$o/out")" \
         "$(grep -cE '^(make|cc|gcc) ' "$o/calls")"
 }
@@ -11029,7 +11053,9 @@ for bt_c in full:nonempty cwd:cwd -:dash; do
            "kept|1|0" "$(bt_run revdiff "$bt_w" "${bt_c#*:}")"
     else skip_ "fetch_tool and a mktemp answering [$bt_w] (no prebuilt revdiff here)"; fi
 done
-unset -f bt_run; unset bt_mk bt_c bt_w bt_f
+is "the tmux build runs its steps in a temp dir whose path holds a ', and compiles nothing" \
+   "ran|0|0" "$(bt_run tmux quote none)"
+unset -f bt_run; unset bt_mk bt_v bt_c bt_w bt_f
 
 # group: deliver
 echo "== tmux-review --deliver: guards refuse before anything is pasted =="

@@ -125,8 +125,10 @@ build_tmux() {
     printf '  note:  tmux publishes no checksums; TLS only\n'
     run "download tmux $TMUX_BUILD" curl -fsSL --retry 2 --max-time 120 -o "$tmp/t.tgz" \
         "${COCKPIT_GITHUB:-https://github.com}/tmux/tmux/releases/download/$TMUX_BUILD/tmux-$TMUX_BUILD.tar.gz" || return 1
-    run "build tmux $TMUX_BUILD into ~/.local" bash -c "cd '$tmp' && tar xzf t.tgz && cd tmux-$TMUX_BUILD \
-        && ./configure --prefix='$HOME/.local' && make -j\$(nproc 2>/dev/null || echo 2) && make install"
+    # The paths are arguments, not text in the command: a ' in TMPDIR or HOME broke the string.
+    run "build tmux $TMUX_BUILD into ~/.local" bash -c 'cd -- "$1" && tar xzf t.tgz &&
+        cd "tmux-$2" && ./configure --prefix="$3/.local" &&
+        make -j"$(nproc 2>/dev/null || echo 2)" && make install' _ "$tmp" "$TMUX_BUILD" "$HOME"
 }
 
 step "tmux version"

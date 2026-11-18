@@ -34,8 +34,10 @@ sq() { printf "'%s'" "${1//\'/\'\\\'\'}"; }   # close, escaped quote, reopen
 . "$DIR/scripts/lib/fmt.sh" || exit 1
 # own_tmpdir, for give_back's probe dir (#947). A failed load must not stop the plugin's: the
 # stand-in refuses every dir, so give_back leaves each key bound and pending, and says why.
+# Keyed on the function, not on the source's status: an empty or cut file sources with 0.
 # shellcheck source=scripts/lib/tmpdir.sh
-. "$DIR/scripts/lib/tmpdir.sh" 2>/dev/null ||
+. "$DIR/scripts/lib/tmpdir.sh" 2>/dev/null
+declare -F own_tmpdir >/dev/null ||
     own_tmpdir() { own_tmpdir_why='tmpdir.sh did not load'; return 1; }
 
 # A hint the user must act on (#1216). dmsg shows it to a client that is there now, but at a
@@ -161,7 +163,8 @@ give_back() {                 # <key> -> 1 when tmux's own binding could not be 
     # taken only when it is a fresh dir of the user's own, as the rm -rf below removes it (#947).
     if ! own_tmpdir d /tmp/cockpit-gb.XXXXXX 2>/dev/null &&
        ! own_tmpdir d "${TMPDIR:-/tmp}/cockpit-gb.XXXXXX" 2>/dev/null; then
-        err="no temp dir, own_tmpdir: $own_tmpdir_why"
+        # :-unknown: an empty or cut tmpdir.sh leaves it unset, and set -u would end the load.
+        err="no temp dir, own_tmpdir: ${own_tmpdir_why:-unknown}"
     elif out=$(env -u TMUX tmux -S "$d/s" -f /dev/null start-server \; \
             list-keys -T prefix -F "#{key_repeat}"$'\037'"#{key_note}"$'\037'"#{key_command}" -- "$k" 2>"$d/err") \
             && [ -n "$out" ]; then
