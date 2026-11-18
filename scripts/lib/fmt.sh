@@ -104,7 +104,7 @@ cockpit_noted_key() {         # <name> <record option> -> the key
 # shellcheck disable=SC2034  # read by the scripts that source this
 COCKPIT_POPUP_MARK='COCKPIT_POPUP=1 '
 # shellcheck disable=SC2034  # read by the scripts that source this
-COCKPIT_NOT_POPUP='#{?pane_modal_flag,#{?#{m:"COCKPIT_POPUP=1 *,#{pane_start_command}},0,1},1}'
+COCKPIT_NOT_POPUP='#{?pane_modal_flag,1,1}'
 
 # A file name as a title: no control character and no bidi mark, which would
 # reorder what the eye reads (U+061C, U+200E-F, U+202A-E, U+2066-9, as UTF-8). tmux
