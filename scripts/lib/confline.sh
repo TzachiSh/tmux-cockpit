@@ -111,14 +111,16 @@ cockpit_conf_wired_line() {   # <config file> <plugin folder> -> line number
     return 1
 }
 
-# Does tpm load this folder's plugin? From tpm's scripts/helpers/plugin_functions.sh:
-# _get_user_tmux_conf picks ONE user config, the XDG tmux.conf when it is a file, else
-# ~/.tmux.conf, and tpm_plugins_list_helper reads @plugin lines from that one alone. Its awk
+# Does tpm load this folder's plugin? Read in tpm at commit 99469c4a, its
+# scripts/helpers/plugin_functions.sh: _get_user_tmux_conf (line 21) picks ONE user config,
+# the XDG tmux.conf when it is a file, else ~/.tmux.conf, and _tmux_conf_contents (line 37)
+# with tpm_plugins_list_helper (line 77) reads @plugin lines from that file alone. That awk
 # takes a line matching ^[ \t]*set(-option)? +-g +@plugin (blanks only between the words,
 # @plugin a prefix, so @plugins counts too), removes the quotes and takes field 4. tpm runs
 # every *.tmux in <plugin path>/<basename of field 4, less .git and a #branch>. The plugin
 # path is ~/.tmux/plugins, or the XDG tmux folder's plugins when an XDG tmux.conf is there
-# (tpm, set_default_tpm_path). tpm itself starts from a run line in any config tmux loads.
+# (tpm's tpm, set_default_tpm_path, line 26). tpm itself starts from a run line in any
+# config tmux loads.
 # Prints the config that names the plugin, tpm's own first. 0: it loads. 2: a line names
 # this folder's name, but tpm does not read that config, tpm's run line is missing, or the
 # folder is not where tpm looks (a TMUX_PLUGIN_MANAGER_PATH this cannot read among them).
