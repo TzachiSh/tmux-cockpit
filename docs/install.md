@@ -46,10 +46,9 @@ space, a quote, a `$` or another character `sh` reads, it might not load. There
 and `install.sh --check` gives the same as a warning on its config row. Neither
 edits your config.
 
-Both say the same about a line that holds the path in single or in double
-quotes alone, such as `run-shell '/my plugins/tmux-cockpit/cockpit.tmux'`, or
-the same with `run -b`. tmux takes those quotes off, and `sh` reads the path
-unquoted, so a space in it splits it. In `'~/<rest>'` only the rest counts:
+Both say the same about a line that holds the full path in single quotes
+alone, or in double quotes alone, with or without `-b`. tmux takes those quotes
+off, and `sh` reads the path unquoted, so a space in it splits it. In `'~/<rest>'` only the rest counts:
 `sh` puts your home directory in for the `~` and does not split it (#1303).
 
 `install.sh` only ever creates symlinks, skips a name already taken by a real
