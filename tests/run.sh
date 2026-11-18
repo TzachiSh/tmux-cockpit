@@ -10481,8 +10481,10 @@ echo "== own_tmpdir takes mktemp's answer only when it is a fresh dir of the use
 #   ''      an empty answer, exit 0   /      never empty, and a user's only as root
 #   .       the cwd                   link   a symlink to an empty dir of the user's
 #   full    a dir with a file in it   badls  an empty dir, and an ls that fails
+#   link/   link/.   the same link, which -L alone follows to its target
 OT=$(mktmpd); mkdir -p "$OT/bin" "$OT/cwd/sub" "$OT/e" "$OT/full" "$OT/t"
-echo keep > "$OT/full/canary"; ln -s "$OT/e" "$OT/link"
+echo keep > "$OT/full/canary"; ln -s "$OT/e" "$OT/link"; ln -s "$OT/t" "$OT/tl"
+# OT_TMPDIR replaces TMPDIR, and OT_OLDPWD sets OLDPWD, for the one call.
 ot_run() {                    # <answer|fail|real> -> "<status> <why> [<var>]", from $OT/cwd
     case $1 in
         fail) printf '#!/bin/sh\nexit 1\n' > "$OT/bin/mktemp" ;;
@@ -10490,13 +10492,15 @@ ot_run() {                    # <answer|fail|real> -> "<status> <why> [<var>]", 
         *)    printf '#!/bin/sh\nprintf "%%s\\n" %s\n' "$(tq "$1")" > "$OT/bin/mktemp" ;;
     esac
     [ ! -e "$OT/bin/mktemp" ] || chmod +x "$OT/bin/mktemp"
-    (cd "$OT/cwd" && PATH="$OT/bin:$PATH" TMPDIR="$OT/t" bash -c \
+    (cd "$OT/cwd" && env ${OT_OLDPWD:+OLDPWD="$OT_OLDPWD"} PATH="$OT/bin:$PATH" \
+        TMPDIR="${OT_TMPDIR:-$OT/t}" bash -c \
         '. "$1"; own_tmpdir v; printf "%s %s [%s]" "$?" "$own_tmpdir_why" "$v"' _ \
         "$DIR/scripts/lib/tmpdir.sh" 2>/dev/null)
 }
-for ot_c in fail:mktemp :answer nope:resolve /:root .:cwd link:symlink full:nonempty; do
+for ot_c in fail:mktemp :answer -x:dash nope:resolve /:root .:cwd link:symlink link/:symlink \
+    link/.:symlink full:nonempty; do
     ot_a=${ot_c%:*}
-    case $ot_a in link|full) ot_a=$OT/$ot_a ;; esac
+    case $ot_a in link*|full) ot_a=$OT/$ot_a ;; esac
     is "a mktemp answering [${ot_c%:*}] is refused by the ${ot_c##*:} check" \
        "1 ${ot_c##*:} []" "$(ot_run "$ot_a")"
 done
@@ -10510,8 +10514,25 @@ printf '#!/bin/sh\nexit 2\n' > "$OT/bin/ls"; chmod +x "$OT/bin/ls"
 is "an empty dir an ls cannot list is refused by the nonempty check: it fails closed" \
    "1 nonempty []" "$(ot_run "$OT/e")"
 rm -f "$OT/bin/ls"
+# cd -- - goes to $OLDPWD and prints it: an answer of - is refused before any cd, by its own
+# check, with OLDPWD naming an empty dir of the user's that every later check would pass.
+is "a mktemp answering [-], OLDPWD an empty dir of the user's, is refused by the dash check" \
+   "1 dash []" "$(OT_OLDPWD="$OT/e" ot_run -)"
+# cd reads CDPATH for a relative name, and prints the dir it found there: own_tmpdir clears it,
+# so a name that is only under CDPATH does not resolve. Kept, the two-line path it printed
+# was refused by the owner check, by accident.
+mkdir -p "$OT/cdp/elsewhere"
+is "an answer that resolves only through CDPATH is refused by the resolve check" \
+   "1 resolve []" "$(CDPATH="$OT/cdp" ot_run elsewhere)"
 is "a relative answer naming an empty dir of the user's is taken, as its absolute path" \
    "0  [$(cd "$OT/cwd/sub" && pwd -P)]" "$(ot_run sub)"
+is "an empty dir of the user's, named absolute, is taken" \
+   "0  [$(cd "$OT/e" && pwd -P)]" "$(ot_run "$OT/e")"
+is "and named with a trailing /, the same dir is taken" \
+   "0  [$(cd "$OT/e" && pwd -P)]" "$(ot_run "$OT/e/")"
+ot_o=$(OT_TMPDIR="$OT/tl" ot_run real); ot_v=${ot_o#*[}; ot_v=${ot_v%]}
+is "the real mktemp under a TMPDIR that is a symlink is taken, as the physical path" \
+   "0  |$(cd "$OT/t" && pwd -P)" "${ot_o%%[*}|${ot_v%/*}"
 ot_o=$(ot_run real); ot_v=${ot_o#*[}; ot_v=${ot_v%]}
 is "the real mktemp's answer is taken: status 0, no reason, a dir under TMPDIR" \
    "0  |$(cd "$OT/t" && pwd -P)" "${ot_o%%[*}|${ot_v%/*}"
