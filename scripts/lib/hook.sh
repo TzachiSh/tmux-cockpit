@@ -16,6 +16,38 @@ read_payload() {              # <stop-cmd...>: ends the read early once it succe
     done
 }
 
+# The same read, capped at <cap> bytes (#308, #315): bash reads a pipe a byte at a time, and
+# a payload can carry a whole prompt or final message. A key past the cap is not seen.
+# Bytes, not characters: a UTF-8 locale would count `read -n` in characters. The locale is
+# put back on return; <stop-cmd> runs under C too. A cap that is no number reads nothing.
+read_capped() {               # <cap> <stop-cmd...>
+    payload="" chunk=""
+    case "${1:-}" in ''|*[!0-9]*) return 1 ;; esac
+    local LC_ALL=C cap=$1 deadline=$(( SECONDS + 2 )) left
+    shift
+    while left=$(( deadline - SECONDS )); [ "$left" -gt 0 ] && [ ${#payload} -lt "$cap" ]; do
+        IFS= read -r -n $(( cap - ${#payload} )) -t "$left" chunk ||
+            { payload="$payload$chunk"; break; }
+        payload="$payload$chunk
+"; chunk=""
+        "$@" && break
+    done
+}
+
+# A session id is saved only as a UUID (#308); a value cut by a cap fails the test. A new id
+# drops the old transcript, which is not its transcript (/clear, --resume). 0 only when the
+# id is new to the pane: <old> is the id read before, from a read known to be whole (#707).
+save_session() {              # <pane> <sid> <old>
+    local uuid='^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+    local r=1
+    [[ ${2:-} =~ $uuid ]] || return 1
+    if [ "${3:-}" != "$2" ]; then
+        r=0; tmux set-option -pu -t "$1" @cockpit_transcript 2>/dev/null
+    fi
+    tmux set-option -p -t "$1" @cockpit_session "$2" 2>/dev/null
+    return $r
+}
+
 # "key":"value" in $payload -> REPLY, raw. Not a JSON parser: an escaped quote
 # inside the value truncates it.
 json_str() {                  # <key>
