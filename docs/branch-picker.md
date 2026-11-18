@@ -1,8 +1,8 @@
 # Branch popup
 
 `prefix + b` and a tap on the branch on the border open a `cockpit-tui branch`
-popup (#246). The keys, the preview and what `scripts/tmux-branch` checks before
-it acts are in [tui.md](tui.md#cockpit-tui-branch-246).
+popup (#246). The keys, the preview and what the popup checks before it acts
+are in [tui.md](tui.md#cockpit-tui-branch-246).
 
 If `cockpit-tui` is older than the plugin (it exits 2 with `unknown screen`),
 the popup says so and names `make tui` and `scripts/tui-fetch` (#276).
@@ -19,8 +19,10 @@ the tree when no pane is there. An agent pane with no session id counts by its
 `@cockpit_dir`, else its launch dir, as in [review.md](review.md); the board's
 row may show its transcript's tree. It never `cd`s a pane. The header says
 `detached HEAD` when no branch is checked out. When git refuses a switch (a dirty
-tree, say) you read its message, press a key, and the popup opens again instead
-of closing.
+tree, say) the popup stays open: git's first line is the `✕` note above the list,
+and its whole message takes the preview's place until the next key. With an older
+`cockpit-tui` (0.4.0, the current release) the script still runs the switch, and a
+refusal is its `[any key]` screen, as before.
 
 The click target is the branch on the active pane's top border (a control
 range, `control|3`, acting on release). When the border has no room for it, the

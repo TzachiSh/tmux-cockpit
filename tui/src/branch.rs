@@ -1,13 +1,15 @@
 //! `cockpit-tui branch`: the branch popup (#246). It lists the repo's branches in
-//! the shared picker, previews the selection's graph, and prints one action
-//! line. It never mutates; `scripts/tmux-branch` validates the line and acts.
+//! the shared picker and previews the selection's graph. A chosen row is an action
+//! line: `switch <branch>`, `track <remote>/<branch>`, `create <name>` or, for a
+//! branch another worktree holds, `goto <worktree path>` (#303).
 //!
-//! The line is `switch <branch>`, `track <remote>/<branch>`, `create <name>` or,
-//! for a branch another worktree holds, `goto <worktree path>` (#303).
-//! A name is validated here with git's own rule (the same one the script runs
-//! again), so a bad name is a note on this screen and not a failed action.
+//! The popup runs switch, track and create itself ([`act`], #228), so a git refusal
+//! is a note on this screen and the picker stays. `goto` is still printed for
+//! `scripts/tmux-branch`, which finds the pane in that tree. A name is validated with
+//! git's own rule before anything runs.
 use crate::chrome;
 use crate::data::branches::{self, Branch};
+use crate::data::gitsafe;
 use crate::pick::{self, Opts, Outcome, Pick, Row};
 use crate::theme::{Glyphs, Theme};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent};
@@ -30,6 +32,9 @@ pub struct Ui {
     cache: HashMap<String, String>,
     asked: HashSet<String>,
     tx: Option<Sender<String>>,
+    /// A failed action's message holds the preview: a graph arriving or a mouse event
+    /// leaves it, and only the next key clears it.
+    failed: bool,
 }
 
 fn pad(s: &str, w: usize) -> String {
@@ -81,6 +86,7 @@ impl Ui {
             cache: HashMap::new(),
             asked: HashSet::new(),
             tx,
+            failed: false,
         };
         u.pick.help_len = help(g).len();
         u.sync();
@@ -92,12 +98,24 @@ impl Ui {
         self.pick.header = format!("{x} {}", pick::clean(t));
     }
 
+    /// An action that failed: its first non-blank line is the note, and the whole
+    /// text takes the preview's place until the next key brings the graph back.
+    pub fn failed(&mut self, msg: &str) {
+        self.note(msg.lines().find(|l| !l.trim().is_empty()).unwrap_or(msg));
+        self.pick.preview = Some(msg.lines().map(pick::clean).collect::<Vec<_>>().join("\n"));
+        self.failed = true;
+    }
+
     fn selected(&self) -> Option<&Branch> {
         self.branches.get(*self.pick.shown.get(self.pick.sel)?)
     }
 
-    /// Shows the cached graph of the selection, or asks the worker for it.
+    /// Shows the cached graph of the selection, or asks the worker for it. A failed
+    /// action's message stays until a key ([`Ui::failed`]).
     fn sync(&mut self) {
+        if self.failed {
+            return;
+        }
         let Some(b) = self.selected() else {
             self.pick.preview = None;
             return;
@@ -125,6 +143,7 @@ impl Ui {
     /// Nothing is chosen by a key that is no action, and a note is cleared by the next key.
     pub fn key(&mut self, k: KeyEvent, area: Rect) -> Outcome {
         self.pick.header = self.header.clone();
+        self.failed = false;
         let out = if k.code == KeyCode::Enter && k.modifiers.contains(KeyModifiers::ALT) {
             self.create()
         } else {
@@ -176,6 +195,53 @@ pub fn worker(dir: String, all: Vec<Branch>) -> (Sender<String>, Receiver<(Strin
     (tx, orx)
 }
 
+/// A checked action line: the verb and the name it names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Action {
+    Switch(String),
+    Track(String),
+    Create(String),
+}
+
+/// An action line read as untrusted text, as `scripts/tmux-branch`'s `act` read it: a
+/// verb from `switch track create`, one line, a name git's own rule accepts, and for
+/// switch and track a ref that exists under `refs/heads` or `refs/remotes`. `Err` is
+/// the line the popup shows.
+pub fn parse(dir: &str, line: &[u8]) -> Result<Action, String> {
+    let owned = String::from_utf8_lossy(line);
+    let line: &str = &owned;
+    let (verb, arg) = line.split_once(' ').unwrap_or((line, ""));
+    let ns = match verb {
+        "switch" => "heads",
+        "track" => "remotes",
+        "create" => "",
+        _ => return Err(format!("cockpit: unexpected action: {line}")),
+    };
+    if line.contains('\n') || !branches::valid_name(dir, arg) {
+        return Err(format!("cockpit: not a branch name: {arg}"));
+    }
+    if !ns.is_empty() && !branches::has_ref(dir, &format!("refs/{ns}/{arg}")) {
+        return Err(format!("cockpit: no such branch: {arg}"));
+    }
+    let arg = arg.to_string();
+    Ok(match verb {
+        "switch" => Action::Switch(arg),
+        "track" => Action::Track(arg),
+        _ => Action::Create(arg),
+    })
+}
+
+/// Runs a chosen line in `dir`'s tree, through [`gitsafe::git_write`]. `Ok` is what git
+/// said it did (`Switched to branch …`); `Err` is the parse refusal or git's own words.
+pub fn act(dir: &str, line: &[u8]) -> Result<String, String> {
+    let run = |args: &[&str]| gitsafe::git_write(dir, args);
+    match parse(dir, line)? {
+        Action::Switch(b) => run(&["switch", &b]),
+        Action::Track(r) => run(&["switch", "--track", &r]),
+        Action::Create(n) => run(&["switch", "-c", &n]),
+    }
+}
+
 const USAGE: &str = "cockpit-tui branch [-C <dir>]";
 
 pub fn parse_args(args: &[String]) -> Result<String, String> {
@@ -214,7 +280,11 @@ pub fn help(g: &Glyphs) -> Vec<(String, String)> {
     let mut rows = pick::help_rows(g);
     let alt = if g.ascii { "alt-enter" } else { "alt-↵" };
     let at = rows.iter().position(|(k, _)| k == g.key_enter).map_or(rows.len(), |i| i + 1);
-    rows.insert(at, (alt.to_string(), "print create <filter text>, exit".to_string()));
+    // ↵ acts here (#228); pick's own row says it prints the row's key
+    if at > 0 && rows[at - 1].0 == g.key_enter {
+        rows[at - 1].1 = "switch to it, or its worktree".to_string();
+    }
+    rows.insert(at, (alt.to_string(), "create a branch named by the filter text".to_string()));
     rows
 }
 
@@ -236,8 +306,9 @@ pub fn header(dir: &str, bs: &[Branch], g: &Glyphs) -> String {
     format!("on {cur} {} {}", g.dot, leaf.unwrap_or_default())
 }
 
-/// Exit 0 with the action line on stdout, 1 for esc, 2 for a bad argument, no
-/// repository or no terminal.
+/// Exit 0 with nothing on stdout once switch, track or create ran (git's own line goes
+/// to stderr), 0 with the line on stdout for a `goto`, 1 for esc, 2 for a bad argument,
+/// no repository or no terminal. A failed action is a note, and the picker stays.
 pub fn main(args: &[String]) -> i32 {
     let dir = match parse_args(args) {
         Ok(d) => d,
@@ -260,6 +331,7 @@ pub fn main(args: &[String]) -> i32 {
     let (tx, rx) = worker(dir.clone(), bs.clone());
     let mut ui = Ui::new(&dir, bs, &head, &th.g, Some(tx));
     let mut dirty = true;
+    let mut acted: Option<String> = None;
     let out = loop {
         while let Ok((b, t)) = rx.try_recv() {
             ui.feed(b, &t);
@@ -282,6 +354,13 @@ pub fn main(args: &[String]) -> i32 {
         match event::read() {
             Ok(Event::Key(k)) if k.kind != KeyEventKind::Release => match ui.key(k, pick::screen(&term)) {
                 Outcome::Continue => {}
+                Outcome::Choose(line) if !line.starts_with(b"goto ") => match act(&dir, &line) {
+                    Ok(said) => {
+                        acted = Some(said);
+                        break Outcome::Cancel;
+                    }
+                    Err(e) => ui.failed(&e),
+                },
                 o => break o,
             },
             Ok(Event::Mouse(m)) => ui.mouse(m, pick::screen(&term)),
@@ -292,5 +371,12 @@ pub fn main(args: &[String]) -> i32 {
     };
     drop(term);
     pick::restore_tty();
+    // git's own line, on the terminal the screen gave back, as the script printed it
+    if let Some(said) = acted {
+        if !said.is_empty() {
+            eprintln!("{said}");
+        }
+        return 0;
+    }
     pick::answer(&mut std::io::stdout().lock(), &out)
 }

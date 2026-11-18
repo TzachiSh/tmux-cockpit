@@ -222,10 +222,24 @@ fn elsewhere(dir: &str) -> Vec<(String, String)> {
         .collect()
 }
 
+/// The branch checked out in `dir`'s tree, or "" on a detached HEAD.
+pub fn current(dir: &str) -> String {
+    let cur = git(dir, &[], None, &["symbolic-ref", "--quiet", "--short", "HEAD"]);
+    cur.trim_end_matches('\n').to_string()
+}
+
+/// True when the full ref `r` (`refs/heads/x`, `refs/remotes/o/x`) exists. A
+/// for-each-ref pattern also matches the refs below it, so the line must be `r` itself.
+pub fn has_ref(dir: &str, r: &str) -> bool {
+    git(dir, &[], None, &["for-each-ref", "--format=%(refname)", r])
+        .lines()
+        .any(|l| l == r)
+}
+
 /// Local branches by most recent commit, then remote-only ones the same way.
 pub fn list(dir: &str) -> Vec<Branch> {
-    let cur = git(dir, &[], None, &["symbolic-ref", "--quiet", "--short", "HEAD"]);
-    let cur = cur.trim_end_matches('\n');
+    let cur = current(dir);
+    let cur = cur.as_str();
     let wt = elsewhere(dir);
     let local = refs(dir, "refs/heads");
     let mut out: Vec<Branch> = local

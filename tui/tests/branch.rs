@@ -1,16 +1,17 @@
-//! The branch popup (#246): what git is asked, which key prints which action
-//! line, and goldens at 40/60/80/120 and the floor. Scratch repos only; no
-//! tmux, no tty, no clock -- commit dates are fixed and goldens use literal ages.
+//! The branch popup (#246): what git is asked, which key gives which action
+//! line, what the popup's own switch, track and create do (#228), and goldens at
+//! 40/60/80/120 and the floor. Scratch repos only; no tmux, no tty, no clock --
+//! commit dates are fixed and goldens use literal ages.
 //!
 //! COCKPIT_BLESS=1 cargo test  rewrites the goldens.
-#[allow(dead_code)] // for its Scratch guard only, not write_exec
+#[allow(dead_code)] // for its Scratch guard and write_exec only
 mod fake;
 
 use cockpit_tui::branch::{self, Ui};
 use cockpit_tui::data::branches::{self, Branch};
 use cockpit_tui::pick::Outcome;
 use cockpit_tui::theme::Theme;
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 use fake::Scratch;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
@@ -392,4 +393,187 @@ fn f1_help_has_an_alt_enter_row_sized_for_scrolling() {
     press(&mut u, KeyCode::F(1), KeyModifiers::NONE);
     assert_eq!(u.pick.help, Some(0));
     golden("branch-help-40", &draw(40, 14, &u));
+}
+
+// --- #228: the popup runs switch, track and create itself ----------------------
+
+/// The git `act` runs reads no config of the developer's and speaks English: a global
+/// `core.hooksPath` would hide the hook a test plants, and a translated git would fail
+/// the wording asserted. Set once for this binary, under the lock, never restored, as
+/// `fake::fixed_env` does; `act` runs git in this process, so the child's own env is no use.
+fn plain_git() {
+    let held = fake::env_lock();
+    static SET: std::sync::Once = std::sync::Once::new();
+    SET.call_once(|| {
+        // SAFETY: under the lock; every other reader here is a spawn, which std orders
+        // with this write (fake::fixed_env says the same of its three)
+        unsafe {
+            fake::set_var(&held, "GIT_CONFIG_GLOBAL", "/dev/null");
+            fake::set_var(&held, "GIT_CONFIG_NOSYSTEM", "1");
+            fake::set_var(&held, "LC_ALL", "C");
+        }
+    });
+}
+
+/// main with `a` = main; old and a shell-metacharacter name at main; conf with `a` =
+/// conf; a bare remote holding main as `only-remote`, fetched. On main. Git is plain.
+fn act_repo() -> (Scratch, Scratch) {
+    plain_git();
+    let (r, rm, d) = (Scratch::new(), Scratch::new(), "2020-01-01T00:00:00Z");
+    git(&r.0, d, &["init", "-q", "-b", "main", "."]);
+    std::fs::write(r.0.join("a"), "main\n").unwrap();
+    git(&r.0, d, &["add", "a"]);
+    git(&r.0, d, &["commit", "-q", "-m", "main"]);
+    git(&r.0, d, &["branch", "old"]);
+    git(&r.0, d, &["branch", "feat/$(touch${IFS}x);`id`"]);
+    git(&r.0, d, &["switch", "-q", "-c", "conf"]);
+    std::fs::write(r.0.join("a"), "conf\n").unwrap();
+    git(&r.0, d, &["commit", "-q", "-am", "conf"]);
+    git(&r.0, d, &["switch", "-q", "main"]);
+    git(&rm.0, d, &["init", "-q", "--bare", "."]);
+    git(&r.0, d, &["remote", "add", "origin", rm.s()]);
+    git(&r.0, d, &["push", "-q", "origin", "main:only-remote"]);
+    git(&r.0, d, &["fetch", "-q", "origin"]);
+    (r, rm)
+}
+
+fn out(dir: &Path, args: &[&str]) -> String {
+    let o = Command::new("git").arg("-C").arg(dir).args(args).output().unwrap();
+    String::from_utf8_lossy(&o.stdout).trim_end().to_string()
+}
+
+/// `act` on `line`, which must succeed; what git said.
+fn acted(r: &Scratch, line: &[u8]) -> String {
+    branch::act(r.s(), line).unwrap_or_else(|e| panic!("{}: {e}", String::from_utf8_lossy(line)))
+}
+
+#[test]
+fn act_switch_checks_out_the_local_branch_and_returns_gits_line() {
+    let (r, _rm) = act_repo();
+    assert_eq!(acted(&r, b"switch old"), "Switched to branch 'old'");
+    assert_eq!(branches::current(r.s()), "old");
+}
+
+#[test]
+fn act_track_makes_a_local_branch_that_tracks_the_remote_one() {
+    let (r, _rm) = act_repo();
+    acted(&r, b"track origin/only-remote");
+    assert_eq!(branches::current(r.s()), "only-remote");
+    assert_eq!(out(&r.0, &["rev-parse", "--abbrev-ref", "@{upstream}"]), "origin/only-remote");
+}
+
+#[test]
+fn act_create_makes_the_branch_and_checks_it_out() {
+    let (r, _rm) = act_repo();
+    acted(&r, b"create fresh");
+    assert_eq!(branches::current(r.s()), "fresh");
+}
+
+#[test]
+fn act_refuses_what_tmux_branch_refused_and_checks_out_nothing() {
+    let (r, _rm) = act_repo();
+    for (row, line, want) in [
+        ("an unknown verb", "rm -rf /", "unexpected action"),
+        ("a verb with no name", "switch", "not a branch name"),
+        ("a name git rejects", "switch ../x", "not a branch name"),
+        ("a branch that does not exist", "switch nope", "no such branch"),
+        ("track of a local branch", "track old", "no such branch"),
+        ("create with an invalid name", "create bad..name", "not a branch name"),
+        ("two lines", "switch old\nswitch main", "not a branch name"),
+        ("goto, still the script's", "goto /tmp", "unexpected action"),
+        ("a remote's name alone", "track origin", "no such branch"),
+    ] {
+        let got = branch::act(r.s(), line.as_bytes());
+        assert!(got.as_ref().is_err_and(|e| e.contains(want)), "{row}: {got:?}");
+        assert_eq!(branches::current(r.s()), "main", "{row}: nothing checked out");
+    }
+}
+
+#[test]
+fn act_switches_to_a_metacharacter_name_literally() {
+    let (r, _rm) = act_repo();
+    let name = "feat/$(touch${IFS}x);`id`";
+    acted(&r, format!("switch {name}").as_bytes());
+    assert_eq!(branches::current(r.s()), name);
+    assert!(!r.0.join("x").exists(), "a command in the name ran");
+}
+
+#[test]
+fn a_dirty_tree_refusal_is_gits_own_words_and_switches_nothing() {
+    let (r, _rm) = act_repo();
+    std::fs::write(r.0.join("a"), "dirty\n").unwrap();
+    let got = branch::act(r.s(), b"switch conf");
+    assert!(got.as_ref().is_err_and(|e| e.contains("overwritten")), "{got:?}");
+    assert_eq!(branches::current(r.s()), "main");
+    assert_eq!(std::fs::read_to_string(r.0.join("a")).unwrap(), "dirty\n");
+}
+
+#[test]
+fn a_filter_driver_named_with_an_equals_sign_refuses_the_switch() {
+    let (r, _rm) = act_repo();
+    git(&r.0, "2020-01-01T00:00:00Z", &["config", "filter.a=b.smudge", "true"]);
+    let want = Err(cockpit_tui::data::gitsafe::REFUSAL.to_string());
+    assert_eq!(branch::act(r.s(), b"switch conf"), want);
+    assert_eq!(branches::current(r.s()), "main");
+}
+
+#[test]
+fn the_switch_blanks_the_repos_filter_driver() {
+    let (r, _rm) = act_repo();
+    let (smudged, d) = (r.0.join("smudged"), "2020-01-01T00:00:00Z");
+    // attr changes `a`, so the switch writes it and a live smudge would run
+    git(&r.0, d, &["switch", "-q", "-c", "attr"]);
+    std::fs::write(r.0.join(".gitattributes"), "a filter=x\n").unwrap();
+    std::fs::write(r.0.join("a"), "attr\n").unwrap();
+    git(&r.0, d, &["add", ".gitattributes", "a"]);
+    git(&r.0, d, &["commit", "-q", "-m", "attr"]);
+    git(&r.0, d, &["switch", "-q", "main"]);
+    let smudge = format!("touch '{}'; cat", smudged.display());
+    git(&r.0, d, &["config", "filter.x.smudge", &smudge]);
+    acted(&r, b"switch attr");
+    assert!(!smudged.exists(), "the repo's smudge ran");
+}
+
+#[test]
+fn the_switch_runs_no_hook() {
+    let (r, _rm) = act_repo();
+    let hooked = r.0.join("hooked");
+    let body = format!("#!/bin/sh\ntouch '{}'\n", hooked.display());
+    std::fs::create_dir_all(r.0.join(".git/hooks")).unwrap();
+    fake::write_exec(&r.0.join(".git/hooks/post-checkout"), &body);
+    acted(&r, b"switch conf");
+    assert!(!hooked.exists(), "the repo's post-checkout hook ran");
+}
+
+#[test]
+fn a_failed_action_is_a_note_and_its_message_fills_the_preview_until_the_next_key() {
+    let mut u = ui(fixture());
+    u.feed("main".into(), "* abc init\n");
+    let msg = "\nerror: your local changes would be overwritten\n  a\nAborting";
+    u.failed(msg);
+    assert_eq!(u.pick.header, "✕ error: your local changes would be overwritten");
+    assert_eq!(u.pick.preview.as_deref(), Some(msg));
+    press(&mut u, KeyCode::Down, KeyModifiers::NONE);
+    press(&mut u, KeyCode::Up, KeyModifiers::NONE);
+    assert!(!u.pick.header.starts_with('✕'), "{}", u.pick.header);
+    assert_eq!(u.pick.preview.as_deref(), Some("* abc init"));
+}
+
+#[test]
+fn a_failed_actions_message_outlasts_a_late_graph_and_the_mouse_until_a_key() {
+    let mut u = ui(fixture());
+    u.failed("error: refused");
+    u.feed("main".into(), "* abc init\n");
+    assert_eq!(u.pick.preview.as_deref(), Some("error: refused"), "after a late graph");
+    let wheel = MouseEvent {
+        kind: MouseEventKind::ScrollDown,
+        column: 1,
+        row: 3,
+        modifiers: KeyModifiers::NONE,
+    };
+    u.mouse(wheel, BIG);
+    assert_eq!(u.pick.preview.as_deref(), Some("error: refused"), "after the wheel");
+    // Home: back on main whatever row the wheel left selected
+    press(&mut u, KeyCode::Home, KeyModifiers::NONE);
+    assert_eq!(u.pick.preview.as_deref(), Some("* abc init"), "a key brings the graph back");
 }
