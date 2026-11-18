@@ -3945,6 +3945,19 @@ for rdir in '$HOME/elsewhere' '~/elsewhere'; do
   esac
   is "and it waited for it ($rdir)" "3" "$(cat "$TMS/log.polls" 2>/dev/null)"
 done
+# #1273: HOME and HOSTNAME go into the dir as text. Unquoted in the replacement, an & in
+# them stood for the matched text ($HOME, $HOSTNAME, ~) under bash 5.2's patsub_replacement.
+TMAH="$TMS/h&1"; mkdir -p "$TMAH/elsewhere/h&2" "$TMAH/.tmux/plugins/tmux-resurrect"
+: > "$TMAH/elsewhere/last"; : > "$TMAH/elsewhere/h&2/last"
+for TMAR in '$HOME/elsewhere' '~/elsewhere' '$HOME/elsewhere/$HOSTNAME'; do
+  : > "$TMS/log"; rm -f "$TMS/log.polls"
+  err=$(env -u TMUX HOME="$TMAH" HOSTNAME='h&2' PATH="$TMS" TM_RDIR="$TMAR" TM_RESTORE=1 \
+        TM_LOG="$TMS/log" "$DIR/scripts/tm" </dev/null 2>&1 >/dev/null)
+  case "$err" in
+      *'Sessions:'*alpha*) ok "a HOME and HOSTNAME holding & stay text in $TMAR" ;;
+      *) bad "a HOME and HOSTNAME holding & stay text in $TMAR" "the restored picker" "$err" ;;
+  esac
+done
 
 # That option REPLACES the defaults, it does not add to them: continuum will
 # read only it, so a stale save in a default directory promises nothing.
