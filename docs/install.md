@@ -71,10 +71,18 @@ too (#1287).
 
 `install.sh --check` is the doctor. It writes nothing and fixes nothing: one
 row per thing that can be wrong (tmux, cockpit-tui, jq, revdiff, `$PATH` order, the
-config, the hooks, truecolor, the popup border), the fix beside it, and the
-exit is the worst row, 0 ok or skipped, 1 warnings, 2 something is broken.
-Rows it cannot answer from where you ran it, such as truecolor outside tmux,
+config, CRLF line endings in a plugin checkout, the hooks, truecolor, the popup border),
+the fix beside it, and the exit is the worst row, 0 ok or skipped, 1 warnings, 2 something
+is broken. Rows it cannot answer from where you ran it, such as truecolor outside tmux,
 come out `skip` and count as 0. `bootstrap.sh --check` runs the same thing.
+
+The `crlf` row reads cockpit's own checkout and each plugin folder tpm may clone into, and
+names every one whose files git stores with LF but the folder holds with CRLF, as a copy
+from Windows leaves them: tmux reads each CR as part of the line, and a theme stops loading.
+Cockpit's own folder is a fail, any other plugin a warn. The fix column gives the `git -C
+<folder> ... checkout-index -f -a` that restores the files from git, and says it overwrites
+edits to tracked files.
+Neither script runs it: `bootstrap.sh` only notes each such folder and points here (#188).
 
 `bootstrap.sh` fetches the pinned revdiff into `${XDG_BIN_HOME:-~/.local/bin}`
 when none at the pinned version is on `PATH`, sha256 verified, with no sudo.
