@@ -252,11 +252,14 @@ cockpit_conf_lines() {        # <file>... -> their lines
 # every *.tmux in <plugin path>/<basename of field 4, less .git and a #branch>. The plugin
 # path is ~/.tmux/plugins, or the XDG tmux folder's plugins when an XDG tmux.conf is there
 # (tpm's tpm, set_default_tpm_path, line 26). tpm itself starts from a run line in any
-# config tmux loads: one whose path ends in /tpm/tpm, as a clone of tpm has it, or one word
-# whose last path part is tpm, as a distro package has it (Debian's
-# /usr/share/tmux-plugin-manager/tpm). A word with no / is no path, and a line with a blank,
-# as `run 'git clone <url> ~/.tmux/plugins/tpm'`, is no run of tpm unless it ends in
-# /tpm/tpm. A blank and a # end the line there, as tmux reads a comment (#1302).
+# config tmux loads: one whose path ends in /tpm/tpm, as a clone of tpm has it, or the path
+# Debian's and Arch's packages install, /usr/share/tmux-plugin-manager/tpm. Any other path
+# that ends in tpm is no run of tpm. A script of the user's named tpm would read as one,
+# and then the plugin silently never loads, where rc 2 prints a fix line (#1302).
+# A trailing comment comes off first, at the first blank followed by a #. tmux starts a
+# comment only at a # it reads between words, and keeps one inside quotes (cmd-parse.y,
+# yylex() and yylex_token()). So a ' #' inside a quoted path ends the path here, where
+# tmux keeps it, and that line gives the loud rc 2, a "cannot tell" (#1302).
 # A line names this plugin when its name is this folder's name or <plugin path>/<name> is
 # this folder, -ef, through a symlink too. Prints the config that names it, tpm's own
 # first, and sets cockpit_tpm_file to it. 0: it loads, the line in tpm's config,
@@ -285,9 +288,7 @@ cockpit_conf_tpm() {          # <plugin folder> <config>... -> the config naming
                 arg=${cockpit_arg%%[[:space:]]#*}; arg=${arg%"${arg##*[![:space:]]}"}
                 arg=${arg//\'/}; arg=${arg//\"/}
                 case "$arg" in
-                    */tpm/tpm) run=1 ;;
-                    *[[:space:]]*) ;;
-                    */tpm) run=1 ;;
+                    */tpm/tpm|/usr/share/tmux-plugin-manager/tpm) run=1 ;;
                 esac
                 continue
             fi
