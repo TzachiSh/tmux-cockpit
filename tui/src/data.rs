@@ -859,6 +859,13 @@ const FIELDS: &str = concat!(
     "\u{1f}#{s/\n/ /:#{s/\t/ /:#{s/\u{1f}/ /:#{@cockpit_job_session}}}}",
 );
 
+/// #1248: true for every pane but cockpit's own popup, a `list-panes -f` filter. On tmux
+/// next-3.9 display-popup makes a modal floating pane, which a scan would list. Each cockpit
+/// popup's command starts with `COCKPIT_POPUP=1 `, which #{pane_start_command} prints
+/// double-quoted, so a user's own modal pane still counts. The flag is read as true or false:
+/// tmux 3.8 prints 0 or 1, never empty. A copy of scripts/lib/fmt.sh's `COCKPIT_NOT_POPUP`.
+pub const NOT_POPUP: &str = "#{?pane_modal_flag,#{?#{m:\"COCKPIT_POPUP=1 *,#{pane_start_command}},0,1},1}";
+
 /// `-` back to empty. A sentinelled option whose real value is a bare `-` would
 /// read as unset; none of these ever holds one.
 fn unsentinel(s: &str) -> String {
@@ -911,7 +918,7 @@ pub fn list_panes() -> Option<Vec<Pane>> {
 /// `list_panes`, plus every tmux session name off the same read, agents or
 /// not: a session always holds a pane, so these are all of them.
 pub fn list_fleet() -> Option<(Vec<Pane>, std::collections::BTreeSet<String>)> {
-    let out = tmux(&["list-panes", "-a", "-F", FIELDS])?;
+    let out = tmux(&["list-panes", "-a", "-f", NOT_POPUP, "-F", FIELDS])?;
     let mut sessions = std::collections::BTreeSet::new();
     let mut procs_t = None;
     let (mut ps, mut dirs) = (vec![], vec![]);

@@ -248,6 +248,7 @@ goto() {
     fi
     # One tree per pane, the one tmux-review reviews (#470): the binary is asked
     # for each pane whose answer could differ from the rule without it.
+    # -f: cockpit's own popup is a pane on tmux next-3.9 and never one to go to (#1248)
     while IFS= read -r row; do
         workdir_row "$row"
         [[ $WD_ID =~ ^%[0-9]+$ ]] || continue
@@ -257,7 +258,7 @@ goto() {
         owner_of "$WORKDIR"
         [ "$OWNER" = "$path" ] || continue
         if [ "$WD_AGENT" = 1 ]; then ag=${ag:-$WD_ID}; else sh=${sh:-$WD_ID}; fi
-    done < <(tmux list-panes -a -F "$WORKDIR_FMT" 2>/dev/null)
+    done < <(tmux list-panes -a -f "$COCKPIT_NOT_POPUP" -F "$WORKDIR_FMT" 2>/dev/null)
     id=${ag:-$sh}
     if [ -n "$id" ]; then
         # switch-client fails without a client; the selection below still applies.

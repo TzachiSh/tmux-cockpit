@@ -3945,6 +3945,19 @@ for rdir in '$HOME/elsewhere' '~/elsewhere'; do
   esac
   is "and it waited for it ($rdir)" "3" "$(cat "$TMS/log.polls" 2>/dev/null)"
 done
+# #1273: HOME and HOSTNAME go into the dir as text. Unquoted in the replacement, an & in
+# them stood for the matched text ($HOME, $HOSTNAME, ~) under bash 5.2's patsub_replacement.
+TMAH="$TMS/h&1"; mkdir -p "$TMAH/elsewhere/h&2" "$TMAH/.tmux/plugins/tmux-resurrect"
+: > "$TMAH/elsewhere/last"; : > "$TMAH/elsewhere/h&2/last"
+for TMAR in '$HOME/elsewhere' '~/elsewhere' '$HOME/elsewhere/$HOSTNAME'; do
+  : > "$TMS/log"; rm -f "$TMS/log.polls"
+  err=$(env -u TMUX HOME="$TMAH" HOSTNAME='h&2' PATH="$TMS" TM_RDIR="$TMAR" TM_RESTORE=1 \
+        TM_LOG="$TMS/log" "$DIR/scripts/tm" </dev/null 2>&1 >/dev/null)
+  case "$err" in
+      *'Sessions:'*alpha*) ok "a HOME and HOSTNAME holding & stay text in $TMAR" ;;
+      *) bad "a HOME and HOSTNAME holding & stay text in $TMAR" "the restored picker" "$err" ;;
+  esac
+done
 
 # That option REPLACES the defaults, it does not add to them: continuum will
 # read only it, so a stale save in a default directory promises nothing.
@@ -8543,6 +8556,12 @@ rqe_cmd() {                   # [VAR=value] -> the --loop root the popup was giv
 }
 rqewant=$(printf '%q' "$(git -C "$RQED/pane" rev-parse --show-toplevel)")
 is "the popup reviews the pane repo's root, nothing inherited" "$rqewant" "$(rqe_cmd)"
+# #1248: the same command starts with lib/fmt.sh's popup mark, which the pane scans skip
+case "$(cat "$RQES/cmd" 2>/dev/null)" in
+    'COCKPIT_POPUP=1 REVIEW_PANE_ID='*) ok "...and the popup's command starts with the mark" ;;
+    *) bad "...and the popup's command starts with the mark" "COCKPIT_POPUP=1 REVIEW_PANE_ID=..." \
+           "$(cat "$RQES/cmd" 2>/dev/null)" ;;
+esac
 for v in GIT_DIR=@/.git GIT_WORK_TREE=@ GIT_COMMON_DIR=@/.git GIT_INDEX_FILE=@/.git/index; do
     rqev=${v#*=}; rqev=${rqev//@/$RQED/other}
     is "${v%%=*} naming another repo: the popup still reviews the pane repo" "$rqewant" \
@@ -19270,7 +19289,7 @@ esac
 is "--needs sizes for the needs-you band" "-w 56 -h 14" "$(tpsize '7|4||||' 56 30 --needs)"
 tpsize '7|3||||' 200 50 >/dev/null
 case "$(cat "$TP/log")" in
-    "-c /dev/pts/9 -t \$3 -w 140 -h 14 -T  sessions  -E TM_POPUP=1 TM_SID=\\\$3 TM_CLIENT=/dev/pts/9 TM_PANE=%7 "*/tm) \
+    "-c /dev/pts/9 -t \$3 -w 140 -h 14 -T  sessions  -E COCKPIT_POPUP=1 TM_POPUP=1 TM_SID=\\\$3 TM_CLIENT=/dev/pts/9 TM_PANE=%7 "*/tm) \
             ok "the popup goes to that client, in its session" ;;
     *) bad "the popup goes to that client, in its session" \
             "-c /dev/pts/9 -t \$3 ... TM_SID=\\\$3 TM_CLIENT=/dev/pts/9 TM_PANE=%7 .../tm" \
@@ -22563,7 +22582,7 @@ mvrun() {                     # mvrun <click line> <args...> -- the log after on
 # argv logged by the stubs carries it raw (#990)
 MVQA=$(printf %q "$MV/w/a.md")
 is "a lone .md opens a popup the pane's size over it, which re-enters with --view" \
-   "POPUP [-t] [%1] [-E] [-x] [P] [-y] [P] [-w] [90] [-h] [30] [-d] [$MV/w] [-T] [ a.md ] [$(printf %q "$DIR/scripts/tmux-open-path") --view %1 $MVQA '']" \
+   "POPUP [-t] [%1] [-E] [-x] [P] [-y] [P] [-w] [90] [-h] [30] [-d] [$MV/w] [-T] [ a.md ] [COCKPIT_POPUP=1 $(printf %q "$DIR/scripts/tmux-open-path") --view %1 $MVQA '']" \
    "$(mvrun 'see a.md' %1)"
 for f in B.MD c.markdown e.mdown g.mkd 'a.md:12'; do
     case "$(mvrun "$f" %1)" in
@@ -24123,8 +24142,9 @@ ac_wd() {                     # ac_wd <pane> -> cockpit-tui workdir's exit code
 is "the board: cursor, OPENCODE, CLAUDE are agents, snooze is not" "0 0 0 1" \
     "$(ac_wd "$ACU") $(ac_wd "$ACO") $(ac_wd "$ACL") $(ac_wd "$ACS")"
 
-# prefix t's popup: its list-panes command, as the binding holds it, run on this server.
-ac_t=$(ac list-keys -T cockpit t | sed -n 's/.* "\(tmux list-panes .*\)"$/\1/p')
+# prefix t's popup: its list-panes command, as the binding holds it, run on this server. It
+# starts with the popup mark, an assignment sh takes as it is (#1248).
+ac_t=$(ac list-keys -T cockpit t | sed -n 's/.* "\(COCKPIT_POPUP=1 tmux list-panes .*\)"$/\1/p')
 for p in "$ACU" "$ACO" "$ACL" "$ACS"; do ac set -p -t "$p" @panestate needs-input; done
 is "prefix t: the state of cursor, OPENCODE, CLAUDE, and - for snooze" \
     "needs-input needs-input needs-input - " \
@@ -25476,6 +25496,240 @@ is "without it the same notification starts one: the rig can start a poller" "1"
 na_end
 is "no poller outlives the block's servers" "0" "$NA_LEFT"
 unset -f na_srv na_hook na_runs na_end; unset NA_LEFT
+fi
+
+echo "== agent-state: cockpit's popup is no agent in the counts, a user's modal pane is (#1248) =="
+# tmux next-3.9 makes display-popup a modal floating pane, which the #{P:} walks reach. Tag 3.8
+# makes the same kind of pane with new-pane -O: one started with cockpit's mark (lib/fmt.sh),
+# one a user's own, both claude and both waiting on the user. Only the user's counts.
+# A new window in <dir> and, over its pane, a modal pane in <pane dir> running <cmd>: its id.
+# A <cmd> that starts with lib/fmt.sh's mark is a cockpit popup's. Outside the if: the next
+# blocks use it too.
+mp_modal() {                  # mp_modal <socket> <dir> <pane dir> <cmd>
+    local w
+    w=$("$TMUX_REAL" -L "$1" new-window -d -t t: -c "$2" -P -F '#{pane_id}' 'exec sleep 300')
+    "$TMUX_REAL" -L "$1" new-pane -O -t "$w" -c "$3" -P -F '#{pane_id}' "$4"
+}
+if need_tmux "agent-state popup"; then :; else
+MPS="cockpit-mp-$$"; SOCKS="$SOCKS $MPS"; MPD=$(mktmpd)
+mp_tm() { "$TMUX_REAL" -L "$MPS" "$@"; }
+mp_tm -f /dev/null new-session -d -s t -x 120 -y 30 -c "$MPD" 'exec sleep 300' >/dev/null 2>&1
+mp_tm set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
+MPP=$(mp_modal "$MPS" "$MPD" "$MPD" 'COCKPIT_POPUP=1 exec -a claude sleep 300')
+MPU=$(mp_modal "$MPS" "$MPD" "$MPD" 'exec -a claude sleep 300')
+mpf() { mp_tm display -p -t "$1" '#{pane_modal_flag}'; }
+is "new-pane -O made two modal panes, the ground this block stands on" "1 1" \
+   "$(mpf "$MPP") $(mpf "$MPU")"
+pane_runs "$MPS" "$MPP" sleep claude 300 && pane_runs "$MPS" "$MPU" sleep claude 300
+for p in "$MPP" "$MPU"; do
+    TMUX="$SOCKDIR/$MPS,0,0" "$DIR/scripts/agent-state" needs-input "$p" >/dev/null 2>&1
+done
+is "the fleet counts the user's modal claude waiting, and not cockpit's popup" \
+   '#[fg=themered bold]▲1#[default] ' "$(mp_tm show-option -gqv @cockpit_fleet)"
+is "...the session count agrees" "1" "$(mp_tm show-option -qv -t t: @cockpit_sess_nb)"
+mpw() { mp_tm show-option -wqv -t "$1" @cockpit_win_state; }
+is "...and the popup's window shows no state, the user's needs-input" "|needs-input" \
+   "$(mpw "$MPP")|$(mpw "$MPU")"
+mp_tm kill-server >/dev/null 2>&1
+unset -f mp_tm mpf mpw
+fi
+
+echo "== agent-poll: cockpit's own popup is no pane it polls, a user's modal pane is (#1248) =="
+av_setup
+if need_tmux "agent-poll popup"; then :; else
+av_srv popup
+MPAP=$(mp_modal "$AV" "$AVWD" "$AVWD" 'COCKPIT_POPUP=1 exec -a claude bash')
+MPAU=$(mp_modal "$AV" "$AVWD" "$AVWD" 'exec -a claude bash')
+for p in "$MPAP" "$MPAU"; do av_tm set-option -p -t "$p" @cockpit_agentview 1; done
+pane_runs "$AV" "$MPAP" bash claude && pane_runs "$AV" "$MPAU" bash claude
+av_once blocked.json >/dev/null
+is "a poll writes the user's modal agent view, and not cockpit's popup" "|needs-input" \
+   "$(avo @panestate "$MPAP")|$(avo @panestate "$MPAU")"
+av_tm kill-server >/dev/null 2>&1
+fi
+
+echo "== tmux-jump: cockpit's own popup is no pane to jump to, a user's modal pane is (#1248) =="
+if need_tmux "tmux-jump popup"; then :; else
+MPJ="cockpit-mpj-$$"; SOCKS="$SOCKS $MPJ"; MPJD=$(mktmpd)
+"$TMUX_REAL" -L "$MPJ" -f /dev/null new-session -d -s t -x 120 -y 30 -c "$MPJD" \
+    'exec sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$MPJ" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
+MPJO=$("$TMUX_REAL" -L "$MPJ" display -p -t t: '#{pane_id}')
+# The popup first: tmux-jump takes the lowest pane id of the blocked ones.
+MPJP=$(mp_modal "$MPJ" "$MPJD" "$MPJD" 'COCKPIT_POPUP=1 exec -a claude sleep 300')
+MPJU=$(mp_modal "$MPJ" "$MPJD" "$MPJD" 'exec -a claude sleep 300')
+pane_runs "$MPJ" "$MPJP" sleep claude 300 && pane_runs "$MPJ" "$MPJU" sleep claude 300
+for p in "$MPJP" "$MPJU"; do
+    "$TMUX_REAL" -L "$MPJ" set-option -p -t "$p" @panestate needs-input >/dev/null 2>&1
+done
+"$TMUX_REAL" -L "$MPJ" select-window -t "$MPJO" >/dev/null 2>&1
+TMUX="$SOCKDIR/$MPJ,0,0" "$DIR/scripts/tmux-jump" "$MPJO" >/dev/null 2>&1
+is "a jump lands on the user's waiting modal pane, never on cockpit's popup" "$MPJU" \
+   "$("$TMUX_REAL" -L "$MPJ" display -p -t t: '#{pane_id}')"
+"$TMUX_REAL" -L "$MPJ" kill-server >/dev/null 2>&1
+fi
+
+echo "== tmux-branch: goto never picks cockpit's own popup, a user's modal pane it does (#1248) =="
+if need_tmux "branch goto popup"; then :; else
+# shellcheck source=../scripts/lib/fmt.sh
+. "$DIR/scripts/lib/fmt.sh"   # bg_server's fesc
+MPBR=$(mktmpd); MPBM=$(mktmpd); br_repo "$MPBR" "$MPBM"
+MPBD=$(mktmpd); MPBW="$MPBD/wt"
+git -C "$MPBR" worktree add -q "$MPBW" held >/dev/null 2>&1
+MPB="cockpit-mpb-$$"; SOCKS="$SOCKS $MPB"
+bg_server "$MPB" "$MPBD"   # the origin pane is in neither tree
+MPBO=$("$TMUX_REAL" -L "$MPB" list-panes -a -F '#{pane_id}' | head -1)
+MPBP=$(mp_modal "$MPB" "$MPBD" "$MPBW" 'COCKPIT_POPUP=1 exec sleep 300')
+until_out "$MPBW" "$TMUX_REAL" -L "$MPB" display -p -t "$MPBP" '#{pane_current_path}'
+"$TMUX_REAL" -L "$MPB" select-window -t "$MPBO"
+bg_goto "$MPB" "$MPBO" "$MPBR" "$MPBW"
+is "with only cockpit's popup in the tree, goto opens a window there" "3 no" \
+   "$(bg_windows "$MPB") $([ "$(bg_active "$MPB")" = "$MPBP" ] && echo yes || echo no)"
+"$TMUX_REAL" -L "$MPB" kill-window -t "$(bg_active "$MPB")" >/dev/null 2>&1
+MPBU=$(mp_modal "$MPB" "$MPBD" "$MPBW" 'exec sleep 300')
+until_out "$MPBW" "$TMUX_REAL" -L "$MPB" display -p -t "$MPBU" '#{pane_current_path}'
+"$TMUX_REAL" -L "$MPB" select-window -t "$MPBO"
+bg_goto "$MPB" "$MPBO" "$MPBR" "$MPBW"
+is "a user's modal pane in the tree is the one goto selects" "$MPBU" "$(bg_active "$MPB")"
+"$TMUX_REAL" -L "$MPB" kill-server >/dev/null 2>&1
+rm -rf "$MPBR" "$MPBM" "$MPBD"
+fi
+
+echo "== display-popup hands its command's exit status back to the tmux that ran it (#1248) =="
+# scripts/lib/review-fleet.sh reads the loop's status from <sess>/rc; this row is what its
+# comment cites for the popup's own status. A popup needs a client: one attaches from a second
+# server.
+if need_tmux "display-popup status"; then :; else
+MPX="cockpit-mpx-$$"; MPXO="cockpit-mpxo-$$"; SOCKS="$SOCKS $MPX $MPXO"; MPXD=$(mktmpd)
+"$TMUX_REAL" -L "$MPX" -f /dev/null new-session -d -s t -x 80 -y 24 -c "$MPXD" \
+    'exec sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$MPXO" -f /dev/null new-session -d -s o -x 80 -y 26 -c "$MPXD" \
+    "TERM=xterm-256color exec $(printf %q "$TMUX_REAL") -L $MPX attach -t t" >/dev/null 2>&1
+until_out '?*' "$TMUX_REAL" -L "$MPX" list-clients -F '#{client_name}'
+MPXC=$("$TMUX_REAL" -L "$MPX" list-clients -F '#{client_name}' | head -1)
+mpx_rc() { timeout 20 "$TMUX_REAL" -L "$MPX" display-popup -c "$MPXC" -E "exit $1"; echo $?; }
+is "a popup whose command exits 3 returns 3, and one that exits 0 returns 0" "3 0" \
+   "$(mpx_rc 3) $(mpx_rc 0)"
+# Where display-popup makes a pane (tmux next-3.9), a real cockpit popup is what the scans must
+# skip. Opened on the client by run-shell -b, so nothing here waits for it; -C closes it. It
+# is modal, started with the mark, left out by the -f filter and by agent-state's fleet sum,
+# and an unmarked popup is still listed. A tmux whose popup is an overlay (3.8 and older), or
+# one where no pane appears, skips the row and says why.
+# shellcheck source=../scripts/lib/fmt.sh
+. "$DIR/scripts/lib/fmt.sh"
+"$TMUX_REAL" -L "$MPX" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
+mpx_n() { "$TMUX_REAL" -L "$MPX" list-panes -a "$@" -F '#{pane_id}' | grep -c .; }
+mpx_open() {                  # mpx_open <command>: a popup on the client, nothing waits on it
+    "$TMUX_REAL" -L "$MPX" run-shell -b \
+        "$(printf %q "$TMUX_REAL") -L $MPX display-popup -c $MPXC -E $(printf %q "$1")" \
+        >/dev/null 2>&1
+}
+mpx_close() { "$TMUX_REAL" -L "$MPX" display-popup -C -c "$MPXC" >/dev/null 2>&1; }
+MPXV=$("$TMUX_REAL" -V); MPXB=$(mpx_n)
+case $MPXV in 'tmux '[12].*|'tmux 3.'[0-8]*) MPXP="" ;; *)
+    mpx_open "${COCKPIT_POPUP_MARK-}exec -a claude sleep 300"
+    until_out "$((MPXB + 1))" mpx_n
+    MPXP=$("$TMUX_REAL" -L "$MPX" list-panes -a -f '#{pane_modal_flag}' -F '#{pane_id}') ;;
+esac
+if [ -z "$MPXP" ]; then
+    skip_ "a cockpit display-popup is no pane to the scans: no popup pane on $MPXV (an overlay)"
+else
+    is "the popup is a modal pane started with the mark" '1|"COCKPIT_POPUP=1 ' \
+       "$("$TMUX_REAL" -L "$MPX" display -p -t "$MPXP" \
+           '#{pane_modal_flag}|#{=17:pane_start_command}')"
+    is "list-panes counts it, the scans' filter does not" "$((MPXB + 1)) $MPXB" \
+       "$(mpx_n) $(mpx_n -f "${COCKPIT_NOT_POPUP-}")"
+    TMUX="$SOCKDIR/$MPX,0,0" "$DIR/scripts/agent-state" needs-input "$MPXP" >/dev/null 2>&1
+    is "a claude in it waiting is no ▲ in the fleet" "" \
+       "$("$TMUX_REAL" -L "$MPX" show-option -gqv @cockpit_fleet)"
+    mpx_close; until_out "$MPXB" mpx_n
+    mpx_open "exec sleep 300"; until_out "$((MPXB + 1))" mpx_n
+    is "a popup without the mark is still listed through the filter" "$((MPXB + 1))" \
+       "$(mpx_n -f "${COCKPIT_NOT_POPUP-}")"
+    mpx_close; until_out "$MPXB" mpx_n
+fi
+unset -f mpx_n mpx_open mpx_close
+"$TMUX_REAL" -L "$MPXO" kill-server >/dev/null 2>&1
+"$TMUX_REAL" -L "$MPX" kill-server >/dev/null 2>&1
+unset -f mpx_rc
+fi
+
+echo "== every popup key cockpit.tmux binds starts its command with the scans' mark (#1248) =="
+# The scans skip a modal pane whose command starts with lib/fmt.sh's mark, so a popup without it
+# would count as a pane on tmux next-3.9. The six popup keys a default load binds: t, b, f, i, r
+# and w. tmux prints a bound command's argument as #{pane_start_command} prints a pane's: both
+# go through args_escape, which double-quotes a string with a space.
+if need_tmux "popup marks"; then :; else
+MPK="cockpit-mpk-$$"; SOCKS="$SOCKS $MPK"; MPKD=$(mktmpd)
+"$TMUX_REAL" -L "$MPK" -f /dev/null new-session -d -s t -x 120 -y 30 -c "$MPKD" \
+    'exec sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$MPK" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+MPKL=$("$TMUX_REAL" -L "$MPK" list-keys -F '#{key_command}' 2>/dev/null)
+is "six keys open a popup, and each popup's command starts with the mark" "6 6" \
+   "$(grep -c 'display-popup' <<<"$MPKL") $(grep -c 'display-popup.* "COCKPIT_POPUP=1 ' <<<"$MPKL")"
+"$TMUX_REAL" -L "$MPK" kill-server >/dev/null 2>&1
+fi
+
+echo "== tmux-open-path: its folder and pick popups start their commands with the mark (#1248) =="
+# A stub tmux that logs each popup's command, its last argument; no server. The folder browser
+# (--folder) and the picker a line of several matches opens.
+optui_setup
+MPO=$(mktmpd); mkdir "$MPO/bin" "$MPO/w"; : > "$MPO/w/f.txt"; : > "$MPO/w/g.txt"
+cat > "$MPO/bin/tmux" <<'STUB'
+#!/usr/bin/env bash
+case "$1" in
+  show-options) case " $* " in *@cockpit_click_line*) printf '%s\n' "${CLICK_LINE:-}" ;; esac ;;
+  display-message)
+      case " $* " in
+          *pane_current_path*) printf '%s\n' "$CLICK_DIR" ;;
+          *window_id*)         printf '@0\n' ;;
+      esac ;;
+  display-popup) printf '%s\n' "${!#}" >> "$TMUX_LOG" ;;
+esac
+exit 0
+STUB
+chmod +x "$MPO/bin/tmux"
+mpo_run() {                   # mpo_run <click line> [args...]: the commands of the popups it opened
+    : > "$MPO/log"
+    env -u TMUX -u TMUX_PANE PATH="$MPO/bin:$PATH" TMUX_LOG="$MPO/log" CLICK_DIR="$MPO/w" \
+        CLICK_LINE="$1" COCKPIT_TUI_BIN="$OPTUI" \
+        bash "$DIR/scripts/tmux-open-path" "${@:2}" %1 </dev/null >/dev/null 2>&1
+    cat "$MPO/log"
+}
+case "$(mpo_run '' --folder)" in
+    'COCKPIT_POPUP=1 '*' --browse %1') ok "the folder browser's popup starts with the mark" ;;
+    *) bad "the folder browser's popup starts with the mark" "COCKPIT_POPUP=1 ... --browse %1" \
+           "$(mpo_run '' --folder)" ;;
+esac
+case "$(mpo_run 'f.txt g.txt')" in
+    'COCKPIT_POPUP=1 '*' --pick %1') ok "the picker's popup starts with the mark" ;;
+    *) bad "the picker's popup starts with the mark" "COCKPIT_POPUP=1 ... --pick %1" \
+           "$(mpo_run 'f.txt g.txt')" ;;
+esac
+unset -f mpo_run
+
+echo "== the popup filter: only a modal pane whose command starts with the mark (#1248) =="
+# lib/fmt.sh's COCKPIT_NOT_POPUP read on four panes of a private server: 0 skips, 1 keeps. The
+# pattern starts with the " args_escape puts before a string with a space, and holds a space
+# itself; a row per way it could match too much or too little.
+if need_tmux "popup filter pattern"; then :; else
+# shellcheck source=../scripts/lib/fmt.sh
+. "$DIR/scripts/lib/fmt.sh"
+MPF="cockpit-mpf-$$"; SOCKS="$SOCKS $MPF"; MPFD=$(mktmpd)
+"$TMUX_REAL" -L "$MPF" -f /dev/null new-session -d -s t -x 120 -y 30 -c "$MPFD" \
+    'exec sleep 300' >/dev/null 2>&1
+mpf_is() {                    # mpf_is <row> <want> <pane>
+    is "$1" "$2" "$("$TMUX_REAL" -L "$MPF" display -p -t "$3" "${COCKPIT_NOT_POPUP-}")"
+}
+mpf_is "a modal pane started with the mark is skipped" 0 \
+    "$(mp_modal "$MPF" "$MPFD" "$MPFD" "COCKPIT_POPUP=1 exec sleep 300")"
+mpf_is "a modal pane with the mark past its start is kept" 1 \
+    "$(mp_modal "$MPF" "$MPFD" "$MPFD" ": COCKPIT_POPUP=1 ; exec sleep 300")"
+mpf_is "a user's modal pane is kept" 1 "$(mp_modal "$MPF" "$MPFD" "$MPFD" "exec sleep 300")"
+mpf_is "a pane started with the mark that is not modal is kept" 1 \
+    "$("$TMUX_REAL" -L "$MPF" new-window -d -P -F '#{pane_id}' "COCKPIT_POPUP=1 exec sleep 300")"
+"$TMUX_REAL" -L "$MPF" kill-server >/dev/null 2>&1
+unset -f mpf_is
 fi
 
 flop_left

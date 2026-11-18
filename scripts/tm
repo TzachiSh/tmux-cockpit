@@ -78,7 +78,7 @@ saved() {
   local dir
   dir=$(tmux show-option -gqv @resurrect-dir)
   # The same three substitutions resurrect's sed does.
-  dir=${dir//'$HOME'/$HOME}; dir=${dir//'$HOSTNAME'/${HOSTNAME:-}}; dir=${dir//\~/$HOME}
+  dir=${dir//'$HOME'/"$HOME"}; dir=${dir//'$HOSTNAME'/"${HOSTNAME:-}"}; dir=${dir//\~/"$HOME"}
   [ -n "$dir" ] || dir=$(default_dir)
   [ -e "$dir/last" ]
 }
@@ -232,7 +232,8 @@ popup() {  # popup CLIENT SESSION_ID CLIENT_WIDTH CLIENT_HEIGHT PANE [--needs]
     tmux new-window -t "$sid:" -n sessions "$cmd"
     return
   fi
-  tmux display-popup -c "$client" -t "$sid" -w "$w" -h "$h" -T ' sessions ' -E "$cmd"
+  tmux display-popup -c "$client" -t "$sid" -w "$w" -h "$h" -T ' sessions ' \
+    -E "$COCKPIT_POPUP_MARK$cmd"
 }
 
 clamp() {  # clamp VAR LOW HIGH -- HIGH wins when the two cross

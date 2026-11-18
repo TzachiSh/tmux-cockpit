@@ -142,7 +142,7 @@ md_view() {
         # -d and -T expand formats, the command does not (#289)
         tmux display-popup -t "$pane" -E -x P -y P -w "${size% *}" -h "${size#* }" \
             -d "$(fesc "$dir")" -T "$(fesc " $title ")" \
-            "$(shq "$0") --view $(shq "$pane") $(shq "$file") $(shq "$ln")"
+            "$COCKPIT_POPUP_MARK$(shq "$0") --view $(shq "$pane") $(shq "$file") $(shq "$ln")"
         return 0
     fi
     # the viewer's ? (#365): the panel opens in this popup, then the viewer again
@@ -317,7 +317,8 @@ browse_folder() {
         pw=$(tmux show-option -gqv @cockpit_popup_width);  pw=${pw:-70%}
         ph=$(tmux show-option -gqv @cockpit_popup_height); ph=${ph:-70%}
         tmux display-popup -t "$pane" -E -w "$pw" -h "$ph" \
-            -T " files · #{b:pane_current_path} " "$(shq "$0") --browse $(shq "$pane")"
+            -T " files · #{b:pane_current_path} " \
+            "$COCKPIT_POPUP_MARK$(shq "$0") --browse $(shq "$pane")"
         return 0
     fi
     while :; do
@@ -505,7 +506,7 @@ if [ "$PICK" -eq 0 ]; then
     ph=$(tmux show-option -gqv @cockpit_popup_height); ph=${ph:-70%}
     tmux display-popup -t "$pane" -E -w "$pw" -h "$ph" \
         -T " open path · #{b:pane_current_path} " \
-        "$(shq "$0") --pick $(shq "$pane")"
+        "$COCKPIT_POPUP_MARK$(shq "$0") --pick $(shq "$pane")"
     exit 0
 fi
 

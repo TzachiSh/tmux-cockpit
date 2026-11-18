@@ -46,7 +46,11 @@ else
 fi
 # Window, session and fleet summaries are precomputed here so status redraws walk no
 # panes (tmux#2774/#3352). They refresh only on a transition in that window or session.
-agent='#{m/i:*|#{b:pane_current_command}|*,#{@cockpit_agents_glob}}'
+# Cockpit's own popup is no agent (#1248): on tmux next-3.9 it is a pane the #{P:} walks reach.
+d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")
+# shellcheck source=lib/fmt.sh
+. "${d%/*}/lib/fmt.sh" 2>/dev/null || exit 0
+agent="#{?$COCKPIT_NOT_POPUP,#{m/i:*|#{b:pane_current_command}|*,#{@cockpit_agents_glob}},0}"
 
 # Worst state in the window: needs-input > error > running > done > idle ("A" = agent with no state).
 fmt_state="#{?#{m:*needs-input*,#{P:#{?$agent,#{@panestate},} }},needs-input,#{?#{m:*error*,#{P:#{?$agent,#{@panestate},} }},error,#{?#{m:*running*,#{P:#{?$agent,#{@panestate},} }},running,#{?#{m:*done*,#{P:#{?$agent,#{@panestate},} }},done,#{?#{m:*A*,#{P:#{?$agent,A,}}},idle,}}}}}"
