@@ -4351,6 +4351,42 @@ $(git -C "$WGE/other" --no-optional-locks status --porcelain | grep -c .)"
 done
 rm -rf "$WGE"; unset wge_var wge_val wge_was wge_got
 
+echo "== a script reached through a relative link or a chain of links finds its lib/ (#1283) =="
+# readlink prints a link's target as written. Each script read a relative target from the
+# caller's cwd, not from the link's folder, and followed a link to a link one step only. The
+# runs are from a folder whose only shared parent with the links is $RLK, so a ../ in a target
+# cannot line up by chance. repo is a link to the checkout: the targets stay relative.
+RLK=$(mktmpd); ln -s "$DIR" "$RLK/repo"
+mkdir -p "$RLK/a/b/bin" "$RLK/c/bin" "$RLK/u/v/w/x" "$RLK/o"
+for rlk_s in tmux-open-path tm tmux-where; do
+    ln -s "../../../repo/scripts/$rlk_s" "$RLK/a/b/bin/$rlk_s"
+done
+ln -s ../../a/b/bin/tmux-open-path "$RLK/c/bin/tmux-open-path"    # a link to a link
+ln -s tmux-open-path "$RLK/a/b/bin/top"                           # a bare name, same folder
+: > "$RLK/o/README.md"
+rlk_op() { (cd "$RLK/u/v/w/x" && "$1" --dry-run "$RLK/o" 'see README.md ok' 2>/dev/null); }
+is "a relative link: a lookup at the top of the script loads its lib" "$RLK/o/README.md::" \
+    "$(rlk_op "$RLK/a/b/bin/tmux-open-path")"
+is "a link to a relative link: every step is followed" "$RLK/o/README.md::" \
+    "$(rlk_op "$RLK/c/bin/tmux-open-path")"
+is "a bare-name target is read from its own link's folder" "$RLK/o/README.md::" \
+    "$(rlk_op "$RLK/a/b/bin/top")"
+# BASH_SOURCE is then the bare name too, with no folder to cut a target's folder from.
+is "run by a bare name from the link's folder" "$RLK/o/README.md::" \
+    "$(cd "$RLK/a/b/bin" && bash top --dry-run "$RLK/o" 'see README.md ok' 2>/dev/null)"
+is "a relative link: tm's lookup, cut by its own case, loads its lib before -h" "0" \
+    "$(cd "$RLK/u/v/w/x" && "$RLK/a/b/bin/tm" -h >/dev/null 2>&1; echo $?)"
+(
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main "$RLK/g" && : > "$RLK/g/a" && git -C "$RLK/g" add a &&
+      git -C "$RLK/g" commit -q -m g && git -C "$RLK/g" checkout -q --detach
+) >/dev/null 2>&1
+is "a relative link: a lookup inside a function loads its lib (the detached hash)" \
+    " @$(git -C "$RLK/g" rev-parse --short HEAD)" \
+    "$(cd "$RLK/u/v/w/x" && "$RLK/a/b/bin/tmux-where" branch 1 "$RLK/g" claude 2>/dev/null |
+        plain)"
+rm -rf "$RLK"; unset RLK rlk_s; unset -f rlk_op
+
 echo "== install.sh only ever touches its own links =="
 IB=$(mktmpd); IL="$IB/link"; ln -s "$DIR" "$IL"; IBIN="$IB/bin"; mkdir -p "$IBIN"
 # HOME="$IB" on every call below, and a ~/.claude to find: install.sh also links
