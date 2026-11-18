@@ -59,8 +59,10 @@ json() {                            # <text> -> the JSON string body
 here=$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 # Stops at the fields it needs: Claude Code keeps stdin open past the payload. Capped at 4 KB
-# (#315): last_assistant_message can be any size. stop_hook_active comes before it in the
-# Stop payload, so it is inside the cap unless transcript_path and cwd fill it first.
+# (#315): last_assistant_message can be any size, and the Stop example puts the fields used
+# here before it. Common fields it does not place (scratchpad_dir and others) may come
+# earlier: if the stop_hook_active token does not end within the first 4096 bytes, it reads
+# false and that Stop resets the rewake count.
 read_capped 4096 have_fields
 case "$payload" in *'"stop_hook_active":true'*|*'"stop_hook_active": true'*) active=true ;; *) active=false ;; esac
 
