@@ -2404,8 +2404,8 @@ is agreed; changing any of it takes a comment on
 ```
 id, wher, name, cmd, state, title, msg, sess, path, dir, root, spool, pinned,
 delivered, pid, review, doing, said, asked, loc, pm,
-since: Option<u64>, asked_since: Option<u64>, idle_since: Option<u64>, job,
-model, ctx: Option<u64>
+since: Option<u64>, asked_since: Option<u64>, idle_since: Option<u64>, win,
+subs_n, subs, ended, job, topic, doing_failed, model, ctx: Option<u64>
 ```
 
 Derives `Default, Clone, Hash, PartialEq`. The durations are `u64` and not
