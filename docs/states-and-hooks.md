@@ -42,7 +42,7 @@ timer.
 | `UserPromptSubmit` | `running` |
 | `UserPromptSubmit` (2nd) | `session` — the same save, so `/clear` and `--resume` (a new `session_id`) are followed from the first prompt |
 | `CwdChanged` | `session` — saves the payload's `new_cwd` as `@cockpit_dir`, so the board shows the repo the agent `cd`'d into (see [Working tree](#working-tree)) |
-| `PermissionRequest` | `needs-input` — `@panestate_msg` names the tool; for `Bash` only the command's program, `Bash: git`, never its arguments or paths (#1330) |
+| `PermissionRequest` | `needs-input` — `@panestate_msg` names the tool; for `Bash` only the command's program, `Bash: git`, never its arguments or paths (#1330). The program is the first word with its path dropped, and only when that whole word is letters, digits and `._/+-`: anything else, `FOO=1 git` included, reads plain `Bash` (#1334) |
 | `PostToolUse` | `running` |
 | `PostToolUse` (matcher `TaskStop`) | `sub-taskstop` — records the stopped agent in the subagent log, since a TaskStop mid-turn fires no `SubagentStop` for a plain agent (see [Subagent event log](#subagent-event-log)); no pane state |
 | `PostToolUseFailure` | `error`, with `@panestate_msg` set to `<tool> failed`, the tool name only. Not when `is_interrupt` is true: a tool stopped with Esc did not fail (#1330). Only the payload's first 4 KB is read: an `is_interrupt` past it, behind a large `tool_input`, is not seen, and the error shows (#1334) |

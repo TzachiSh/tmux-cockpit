@@ -247,14 +247,12 @@ subs_build() {
     subs_cmd=(if-shell -F -t "$pane" "$cond" "$body")
 }
 
-# safe_word <text> <cap> [/] -> REPLY: the run of [A-Za-z0-9._-] that starts <text>, at most
-# <cap> bytes; with /, the run may hold slashes and only its last part is kept. Nothing else
-# ever leaves it: the text is untrusted and lands in a tmux option the bar and board print.
-# The letters are spelled out, not a range: a range follows the locale.
+# safe_word <text> <cap> -> REPLY: the run of [A-Za-z0-9._-] that starts <text>, at most <cap>
+# bytes. Nothing else ever leaves it: the text is untrusted and lands in a tmux option the bar
+# and board print. The letters are spelled out, not a range: a range follows the locale.
 al=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789
 safe_word() {
-    local w
-    if [ -n "${3:-}" ]; then w=${1%%[!"$al"._/-]*}; w=${w##*/}; else w=${1%%[!"$al"._-]*}; fi
+    local w=${1%%[!"$al"._-]*}
     REPLY=${w:0:$2}
 }
 # tool_name <- the payload's "tool_name", only when its string is whole: one cut by a cap or
@@ -264,28 +262,21 @@ tool_name() {
     local LC_ALL=C re='"tool_name": ?"([^"\\]*)"'
     REPLY=""; [[ $payload =~ $re ]] && safe_word "${BASH_REMATCH[1]}" 64
 }
-# prog_name <- the program a Bash tool_input's command runs: its first word after any leading
-# NAME=value, kept to safe_word's bytes, path dropped, 32 at most. Never an argument or a
-# path (#1330): the board shows it to anyone at the screen. A quote, `$(` or `;` ends the word
-# where it stands, so `ls;cat f` is `ls` and `$(id)` is nothing. JSON's \n, \t and \r are
-# blanks. The value need not be whole: a word cut by the 4 KB cap is cut short, no more.
+# prog_name <- the program a Bash tool_input's command runs: its first word, path dropped, 32
+# at most, and only when that whole word is [A-Za-z0-9._/+-]. Anything else names no program,
+# and the ask reads plain "Bash": a word with `=`, a quote, `(`, `;` or `$` may carry a
+# value, an argument or a path, and the board shows it to anyone at the screen (#1330). So
+# `FOO=1 git` names none either (#1334: skipping NAME=value leaked a value three times).
+# JSON's \n, \t and \r are blanks. A word cut by the 4 KB cap is cut short, no more.
 prog_name() {
-    local LC_ALL=C s w n re='"command": ?"([^"]*)'
+    local LC_ALL=C s w re='"command": ?"([^"]*)'
     REPLY=""
     s=${payload#*\"tool_input\"}
     [ "$s" != "$payload" ] && [[ $s =~ $re ]] || return 0
     s=${BASH_REMATCH[1]}; s=${s//\\[ntr]/ }
-    while :; do
-        s=${s#"${s%%[! $'\t']*}"}; w=${s%%[ $'\t']*}
-        # A value that quotes, escapes or expands may hold a blank, so the word after it
-        # could be a piece of the value: no program then. Nor for a quoted program.
-        case $w in [\"\']*) return 0 ;; *=*) case $w in *[\"\'\\\$\`]*) return 0 ;; esac ;; esac
-        case $w in *=*) n=${w%%=*}
-            case $n in ''|[0-9]*|*[!"$al"_]*) ;; *) s=${s#"$w"}; continue ;; esac ;;
-        esac
-        break
-    done
-    safe_word "$w" 32 /
+    s=${s#"${s%%[! $'\t']*}"}; w=${s%%[ $'\t']*}
+    case $w in ''|*[!"$al"._/+-]*) return 0 ;; esac
+    w=${w##*/}; REPLY=${w:0:32}
 }
 
 is_event() { case "$payload" in *"\"hook_event_name\":\"$1\""*) return 0 ;;
