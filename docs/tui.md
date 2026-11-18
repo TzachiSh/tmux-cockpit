@@ -1491,9 +1491,13 @@ not wired into Explain yet.
   shows after a `↳`: under the step before it, or under the header when it
   comes before the first step. A long note wraps onto more rows.
 - **Width.** No line is wider than the width, measured with `unicode-width` by
-  grapheme cluster. Text goes through `action::sanitize` first, so bidi
-  controls, U+2028/U+2029 and control characters never reach a line; a tab is
-  a space. Nothing panics, even on a `Flow` built by hand.
+  grapheme cluster. Bidi controls, U+2028/U+2029 and control characters never
+  reach a line. `parse` cleans each name, label and note as it reads it:
+  `action::sanitize` drops those characters, a tab becomes a space and a
+  newline U+FFFD. `draw` cleans each drawn line the same way before cutting it
+  to the width, so a `Flow` built by hand, its fields set directly, is safe
+  too; on a parsed flow that second pass changes nothing (#955). Nothing
+  panics, even on a `Flow` built by hand.
 - **Goldens:** `flow-base-{40,60,100}`, `flow-status-{40,60,100}` and
   `flow-wide-{60,100}`.
 
