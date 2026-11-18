@@ -7,7 +7,10 @@
 # new name, so it goes through fesc here: a " ; # or #(...) is just a name.
 set -u
 
-d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")
+d=${BASH_SOURCE[0]}
+[ -L "$d" ] && d=$(case $d in (*/*) ;; (*) d=./$d ;; esac; n=0
+    while [ -L "$d" ] && [ $((n += 1)) -le 40 ] && t=$(readlink "$d"); do
+        case $t in (/*) d=$t ;; (*) d=${d%/*}/$t ;; esac; done; printf %s "$d")
 case $d in */*) d=${d%/*} ;; *) d=. ;; esac
 # shellcheck source=lib/fmt.sh
 . "$d/lib/fmt.sh" || exit 1
