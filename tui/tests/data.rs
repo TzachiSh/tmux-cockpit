@@ -2318,3 +2318,123 @@ fn a_rig_checks_only_once_it_holds_the_lock() {
     let why = t.join().err().map(|e| e.downcast_ref::<String>().cloned().unwrap_or_default());
     assert_eq!(why, None, "the waiting rig panicked");
 }
+
+// ------------------------------------------- model and context on the card (#1330 A2)
+
+/// A main-thread model call: `model`, its usage (input, cache_read, cache_creation,
+/// output) and an end_turn text row.
+fn usage_row(model: &str, u: [u64; 4]) -> String {
+    let v = serde_json::json!({"type": "assistant", "timestamp": "2026-08-27T00:00:07.000Z",
+        "message": {"model": model, "stop_reason": "end_turn", "content": [{"type": "text", "text": "ok"}],
+        "usage": {"input_tokens": u[0], "cache_read_input_tokens": u[1],
+            "cache_creation_input_tokens": u[2], "output_tokens": u[3]}}});
+    format!("{v}\n")
+}
+
+/// The tile of `%1` read off `body` through the fetch, drawn alone on a 60x8 board:
+/// its bottom border row.
+fn card_foot(tag: &str, body: &str) -> String {
+    use cockpit_tui::board::{self, View};
+    use cockpit_tui::theme::Theme;
+    let r = Rig::new(tag);
+    r.transcript("s1", body);
+    r.rows(&[hooked("%1", "done", "s1")]);
+    let ps = list_panes().unwrap();
+    let one = [get(&ps, "%1").clone()];
+    let th = Theme::fixed();
+    let pvs = [Some(String::new())];
+    let v = View {
+        panes: &one,
+        pvs: &pvs,
+        th: &th,
+        sel: 0,
+        top: 0,
+        active: "",
+        note: None,
+        help: None,
+        stale: None,
+        lost: false,
+        never: false,
+        list: None,
+        confirm: None,
+    };
+    let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, 8)).unwrap();
+    t.draw(|f| board::render(f, f.area(), &v)).unwrap();
+    let screen = t.backend().to_string();
+    let rows: Vec<&str> = screen.lines().map(|l| l.trim_matches('"')).collect();
+    rows.iter()
+        .rev()
+        .find(|l| l.starts_with(['└', '┗']))
+        .unwrap_or_else(|| panic!("no bottom border:\n{screen}"))
+        .to_string()
+}
+
+/// #1330 A2: the newest assistant row's model and context (input + cache_read +
+/// cache_creation, never output) show on the card's bottom border.
+#[test]
+fn the_newest_model_call_shows_its_model_and_context_on_the_card() {
+    let foot = card_foot(
+        "a2main",
+        &(typed_row("go") + &usage_row("claude-opus-4-5-20251101", [10, 80_000, 4_000, 9_000])),
+    );
+    assert!(foot.contains("opus · 84k "), "{foot}");
+}
+
+/// #1330 A2: the newest row with usage wins, not the biggest.
+#[test]
+fn an_older_row_with_bigger_usage_does_not_win() {
+    let body = usage_row("claude-opus-4-5", [5, 150_000, 0, 0]) + &usage_row("claude-opus-4-5", [5, 84_000, 0, 0]);
+    let foot = card_foot("a2older", &body);
+    assert!(foot.contains("opus · 84k "), "{foot}");
+}
+
+/// #1330 A2: a transcript with no usage puts nothing on the border.
+#[test]
+fn no_usage_puts_nothing_on_the_card_border() {
+    let foot = card_foot("a2none", &(typed_row("go") + &bash_row("ls")));
+    assert!(foot.chars().all(|c| "└┗─━┘┛ ".contains(c)), "{foot}");
+}
+
+/// #1330 A2: an id not of the `claude-<word>-` shape is shown raw, cut at 12 columns, its
+/// control and bidi characters dropped; it is never turned into a family name.
+#[test]
+fn an_unknown_model_id_shows_raw_and_cut() {
+    let foot = card_foot("a2raw", &usage_row("claude-3-5-son\u{202e}net\u{1b}-x", [1, 2_000, 0, 0]));
+    assert!(foot.contains(" claude-3-5-… · 2k "), "{foot}");
+    let foot = card_foot("a2raw2", &usage_row("gpt", [1, 2_000, 0, 0]));
+    assert!(foot.contains(" gpt · 2k "), "{foot}");
+}
+
+/// #1330 A2: thousands are floored, never rounded up; under 1000 is the raw count.
+#[test]
+fn context_is_floored_to_thousands_and_raw_under_1000() {
+    let foot = card_foot("a2floor", &usage_row("claude-sonnet-4-5", [999, 84_000, 0, 0]));
+    assert!(foot.contains(" sonnet · 84k "), "{foot}");
+    let foot = card_foot("a2small", &usage_row("claude-haiku-4-5", [950, 0, 0, 0]));
+    assert!(foot.contains(" haiku · 950 "), "{foot}");
+}
+
+/// #1330 A2: a sidechain row, a subagent's, never speaks for the lead.
+#[test]
+fn a_sidechain_row_does_not_change_the_leads_model_or_context() {
+    let side = serde_json::json!({"type": "assistant", "isSidechain": true, "timestamp": "2026-08-27T00:00:08.000Z",
+        "message": {"model": "claude-haiku-4-5", "stop_reason": "end_turn", "content": [{"type": "text", "text": "x"}],
+        "usage": {"input_tokens": 5, "cache_read_input_tokens": 3_000, "cache_creation_input_tokens": 0, "output_tokens": 1}}});
+    let foot = card_foot("a2side", &(usage_row("claude-opus-4-5", [10, 84_000, 0, 0]) + &format!("{side}\n")));
+    assert!(foot.contains(" opus · 84k "), "{foot}");
+}
+
+/// #1330 A2: a row whose usage sums to 0 made no model call; it does not hide the last one.
+#[test]
+fn a_zero_usage_row_does_not_hide_the_last_model_call() {
+    let body = usage_row("claude-opus-4-5", [10, 84_000, 0, 0]) + &usage_row("<synthetic>", [0, 0, 0, 0]);
+    let foot = card_foot("a2zero", &body);
+    assert!(foot.contains(" opus · 84k "), "{foot}");
+}
+
+/// #1330 A2: a newer typed prompt does not clear the context: it stays the last turn's size.
+#[test]
+fn a_newer_prompt_keeps_the_last_turns_context() {
+    let foot = card_foot("a2prompt", &(usage_row("claude-opus-4-5", [10, 84_000, 0, 0]) + &typed_row("next")));
+    assert!(foot.contains(" opus · 84k "), "{foot}");
+}
