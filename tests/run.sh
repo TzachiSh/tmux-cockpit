@@ -19753,7 +19753,29 @@ git -C "$BRR" switch -q main
 # The binary since #228 prints nothing once it acted: the script says nothing and acts on nothing.
 is "an empty answer prints nothing and switches nothing" "0 main|" \
     "$(bre=$(br_stub ''); echo "$? $(br_cur "$BRR")|$bre")"
-rm -rf "$BRR" "$BRM" "$BRX"
+# #1272: lib/git.sh blanks the drivers the superproject's config names. With submodule.recurse
+# set, a switch that moves a submodule checks it out, and the submodule's own config names a
+# driver that scan never read. The binary's twin is in tui/tests/branch.rs.
+BRSM=$(mktmpd)
+(
+    export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+    git init -q -b main "$BRSM/sub" && cd "$BRSM/sub" || exit 1
+    echo '*.t filter=evil' > .gitattributes; echo one > f.t; git add -A; git commit -q -m one
+    echo two > f.t; git commit -q -am two
+    git init -q -b main "$BRSM/sup" && cd "$BRSM/sup" || exit 1
+    git -c protocol.file.allow=always submodule add -q "$BRSM/sub" sub; git commit -q -m sub
+    git switch -q -c oldsub; git -C sub checkout -q HEAD~1; git add sub; git commit -q -m oldsub
+    git switch -q main; git -C sub checkout -q main
+    git -C sub config filter.evil.smudge "touch $(tq "$BRSM/smudged"); cat"
+    git config submodule.recurse true
+) >/dev/null 2>&1
+rm -f "$BRX/out.used"; printf 'switch oldsub\n' > "$BRX/out"
+env -u TMUX COCKPIT_TUI_BIN="$BRX/cockpit-tui" BR_STUB_OUT="$BRX/out" \
+    "$DIR/scripts/tmux-branch" "$BRSM/sup" </dev/null >/dev/null 2>&1
+is "older binary: a switch runs no filter driver a submodule's own config names (#1272)" \
+    "oldsub two none" "$(br_cur "$BRSM/sup") $(git -C "$BRSM/sup/sub" log -1 --format=%s 2>&1) \
+$([ -e "$BRSM/smudged" ] && echo ran || echo none)"
+rm -rf "$BRR" "$BRM" "$BRX" "$BRSM"
 
 echo "== tmux-branch (#228): prefix b still switches with a binary that prints switch <name> =="
 # The whole popup flow: the key, display-popup, the script, and a stub cockpit-tui that

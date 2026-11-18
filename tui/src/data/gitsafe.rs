@@ -121,8 +121,10 @@ pub const WRITE_SAFE: usize = 9;
 pub const REFUSAL: &str = "cockpit: refusing this repo: a git filter driver name contains '=' (see #331)";
 
 /// A git that writes the work tree (a branch switch): [`SAFE`] up to [`WRITE_SAFE`],
-/// every filter driver the repo names blanked ([`no_filters`]), the [`REDIRECT`] and
-/// [`PATHSPEC`] variables gone, no prompt on the terminal the popup holds. Either way
+/// every filter driver the repo names blanked ([`no_filters`]), no submodule checked
+/// out, the [`REDIRECT`] and [`PATHSPEC`] variables gone, no prompt on the terminal the
+/// popup holds. A submodule's own config names drivers [`no_filters`] never reads, and
+/// `submodule.recurse` would have the switch check that submodule out (#1272). Either way
 /// the text is git's own words (stderr, where `switch` says what it did, else
 /// stdout); `Err` may also be [`REFUSAL`].
 pub fn git_write(dir: &str, args: &[&str]) -> Result<String, String> {
@@ -134,6 +136,7 @@ pub fn git_write(dir: &str, args: &[&str]) -> Result<String, String> {
     c.arg("-C")
         .arg(dir)
         .args(&SAFE[..WRITE_SAFE])
+        .args(["-c", "submodule.recurse=false"])
         .args(&drv)
         .args(args)
         .stdin(Stdio::null())

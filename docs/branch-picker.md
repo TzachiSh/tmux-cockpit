@@ -22,7 +22,9 @@ row may show its transcript's tree. It never `cd`s a pane. The header says
 tree, say) the popup stays open: git's first line is the `✕` note above the list,
 and its whole message takes the preview's place until the next key. With an older
 `cockpit-tui` (0.4.0, the current release) the script still runs the switch, and a
-refusal is its `[any key]` screen, as before.
+refusal is its `[any key]` screen, as before. With `submodule.recurse` set, the
+popup's switch leaves each submodule where it was: run `git submodule update`
+yourself (#1272).
 
 The click target is the branch on the active pane's top border (a control
 range, `control|3`, acting on release). When the border has no room for it, the
