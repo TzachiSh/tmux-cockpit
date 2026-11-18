@@ -2749,7 +2749,7 @@ unset RGCP rgl rg_lib
 RGO=$(mktmpd); : > "$RGO/gitconfig"
 mkdir -p "$RGO/none" "$RGO/badfile" "$RGO/top/ceil/plain" "$RGO/own/sub/api" "$RGO/home"
 git init -q "$RGO/own" >/dev/null 2>&1; git init -q "$RGO/top" >/dev/null 2>&1
-ln -s "$RGO/own/sub" "$RGO/home/work"
+ln -s "$RGO/own/sub" "$RGO/home/work"; ln -s "$RGO/top/ceil" "$RGO/cl"
 printf 'gitdir: %s/gone\n' "$RGO" > "$RGO/badfile/.git"
 rgo_env="GIT_CONFIG_GLOBAL=$(printf '%q' "$RGO/gitconfig") GIT_CONFIG_NOSYSTEM=1"
 rgo_own="GIT_TEST_ASSUME_DIFFERENT_OWNER=1 GIT_CEILING_DIRECTORIES=$(printf '%q' "$RGO")"
@@ -2786,6 +2786,9 @@ is "--delta with no .git up to the ceiling is no repo (exit 1)" "D=1" \
     "$(rgo "$RGO/none" "GIT_CEILING_DIRECTORIES=$(printf '%q' "$RGO")")"
 is "--delta never looks for a .git above a ceiling, as git does not (exit 1)" "D=1" \
     "$(rgo "$RGO/top/ceil/plain" "GIT_CEILING_DIRECTORIES=$(printf '%q' "$RGO/top/ceil")")"
+# git resolves a ceiling entry's symlinks before it compares (setup.c), so does the walk.
+is "--delta stops at a ceiling named through a symlink, as git does (exit 1)" "D=1" \
+    "$(rgo "$RGO/top/ceil/plain" "GIT_CEILING_DIRECTORIES=$(printf '%q' "$RGO/cl")")"
 if [ -n "$rgo_knob" ]; then
     "$TMUX_REAL" -L "$RG" set-option -p -t "$RGAP" @cockpit_review pending
     "$TMUX_REAL" -L "$RG" set-option -p -t "$RGAP" @cockpit_dir "$RGO/own"
