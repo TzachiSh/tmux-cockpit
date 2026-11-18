@@ -535,8 +535,9 @@ pub fn draw(f: &Flow, w: usize) -> Vec<String> {
         Shape::Ladder => ladder(f, w),
         Shape::List => list(f, w),
     };
-    // The layouts aim to fit; this makes it a guarantee.
-    lines.into_iter().map(|l| fit(&l, w)).collect()
+    // The layouts aim to fit; this makes it a guarantee. A Flow built by hand
+    // never went through parse's clean, so each line is cleaned here (#955).
+    lines.into_iter().map(|l| fit(&clean(&l), w)).collect()
 }
 
 /// What the caller shows for source that does not parse: the reason, then the
