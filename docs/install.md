@@ -105,6 +105,12 @@ every `set -g` in your config, so the cockpit options you set are in place when
 the plugin reads them. No theme plugin is needed: the plugin draws the bar and
 its own palette ([status-bar.md](status-bar.md#colours)).
 
+A tpm from a distro package runs from that package's path, such as Debian's
+`run '/usr/share/tmux-plugin-manager/tpm'`, and `install.sh --check` takes
+that line as tpm's too. When its config row fails on an `@plugin` line, the fix
+column names each check that failed: the line sits in a config tpm does not
+read, no line runs tpm, or tpm's plugin folder holds another copy (#1302).
+
 Wire the hooks into `~/.claude/settings.json`:
 
 ```sh

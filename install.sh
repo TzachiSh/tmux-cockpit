@@ -158,9 +158,9 @@ if [ "$check" -eq 1 ]; then
         cockpit_conf_wired "$DIR" "${cfs[@]}"
         case $? in
             0) wired=1; conf=$cockpit_wired ;;
-            2) conf=$cockpit_wired
-               wire_fix="a tpm @plugin line names cockpit, but tpm's run line, or $DIR"
-               wire_fix="$wire_fix as tpm's plugin folder, is not there" ;;
+            2) conf=$cockpit_wired      # the fix names each check that failed (#1302)
+               wire_fix="a tpm @plugin line names cockpit, not confirmed:"
+               wire_fix="$wire_fix $(cockpit_conf_tpm_text "$DIR")" ;;
             *) # A line that names the plugin and loads no copy from here: say which, and
                # which folder it runs, since bootstrap.sh then appends nothing (#1067).
                if cockpit_conf_mention "$DIR" "${cfs[@]}"; then
@@ -566,8 +566,8 @@ else
                "$HOME/.tmux.conf" "$(cockpit_conf_line "$DIR")" >&2
     elif [ "$wst" -eq 2 ]; then
         # --check fails this row; a run-shell line beside tpm's would load the plugin twice.
-        printf '\ntpm seems to manage cockpit in %s, not confirmed: %s\nRun install.sh --check.\n' \
-               "$cockpit_wired" "no tpm run line, or $DIR is not in tpm's plugin folder." >&2
+        printf '\ntpm seems to manage cockpit in %s, not confirmed: %s.\n%s\n' "$cockpit_wired" \
+               "$(cockpit_conf_tpm_text "$DIR")" 'Run install.sh --check.' >&2
     elif [ "$wst" -ne 0 ] && cockpit_conf_mention "$DIR" "${cfs[@]}"; then
         # bootstrap.sh appends nothing here, and a line added by hand could load two copies.
         # One decision, one message: the line bootstrap.sh prints (#1067).
