@@ -220,7 +220,8 @@ cockpit_conf_tpm_where() {
 cockpit_conf_tpm_sourced() {  # <tpm's config> -> cockpit_tpm_src
     local l w g q="['\"]" nq="[^'\"]" re
     local -a ws gs
-    re="^[[:space:]]*source(-file)?[[:space:]]+(-q+[[:space:]]+)?$q?($nq+)$q?(.*)\$"
+    # {0,1} for tpm's ?: a ? after a ) reads as a jq 1.7 postfix to the #481 scan.
+    re="^[[:space:]]*source(-file){0,1}[[:space:]]+(-q+[[:space:]]+){0,1}$q?($nq+)$q?(.*)\$"
     cockpit_tpm_src=()
     [ -r "$1" ] || return 0
     while IFS= read -r l || [ -n "$l" ]; do
