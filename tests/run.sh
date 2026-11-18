@@ -5246,6 +5246,43 @@ is "an @plugin line tpm does not read: bootstrap.sh says tpm seems to, and appen
       cmp -s "$cl_x/tmux.conf" "$CL/xdg15" && echo same || echo changed)"
 is "and install.sh --check fails its config row" "1" \
    "$(cl_env 15 "$cl_t/install.sh" --check | grep -c '^\[ fail \] config ')"
+# A plugin folder reached through a symlink, ~/.tmux/plugins/tmux-cockpit linked to a
+# checkout (#1067): the folder is its physical path, and the config names the link.
+is "cockpit_conf_wired_line: a symlinked plugin folder, the lines that load it" \
+   "docs:1 bare:1 double:1 home:1 sq-in-dq:none dq-in-sq:none other:none " \
+   "$(. "$DIR/scripts/lib/confline.sh"; HOME="$CL/h16"; cl_s="$CL/src16/cockpit-co"
+      cl_o="$CL/other16/tmux-cockpit"; cl_r='/.tmux/plugins/tmux-cockpit/cockpit.tmux'
+      mkdir -p "$HOME/.tmux/plugins" "$cl_s" "$cl_o"; : > "$cl_s/cockpit.tmux"
+      : > "$cl_o/cockpit.tmux"; ln -s "$cl_s" "$HOME/.tmux/plugins/tmux-cockpit"
+      for cl_f in "docs|run-shell '~$cl_r'" "bare|run-shell ~$cl_r" \
+          "double|run-shell \"~$cl_r\"" "home|run-shell '\"\$HOME$cl_r\"'" \
+          "sq-in-dq|run-shell \"'~$cl_r'\"" "dq-in-sq|run-shell '\"~$cl_r\"'" \
+          "other|run-shell '$cl_o/cockpit.tmux'"; do
+          printf '%s\n' "${cl_f#*|}" > "$CL/wl"
+          printf '%s:%s ' "${cl_f%%|*}" "$(cockpit_conf_wired_line "$CL/wl" "$cl_s" || printf none)"
+      done)"
+is "cockpit_conf_tpm: a plugin folder tpm reaches through a symlink loads" "0" \
+   "$(. "$DIR/scripts/lib/confline.sh"; unset XDG_CONFIG_HOME; HOME="$CL/h16"
+      printf '%s\n' "set -g @plugin 'o/tmux-cockpit'" "run '~/.tmux/plugins/tpm/tpm'" \
+          > "$HOME/.tmux.conf"
+      cockpit_conf_tpm "$CL/src16/cockpit-co" "$HOME/.tmux.conf" >/dev/null; printf '%s' "$?")"
+# The same on a box: the copy's folder linked in as ~/.tmux/plugins/tmux-cockpit.
+cl_box 17 co17; cl_t="$CL/h17/.tmux/plugins/tmux-cockpit"; ln -s "$CL/p/co17" "$cl_t"
+printf "run-shell '~/.tmux/plugins/tmux-cockpit/cockpit.tmux'\n" > "$CL/h17/.tmux.conf"
+cp "$CL/h17/.tmux.conf" "$CL/conf17"
+( cd "$CL/wd" && cl_env 17 "$cl_t/bootstrap.sh" --yes ) >/dev/null
+is "a symlinked plugin folder and the docs line: bootstrap.sh appends nothing" "same" \
+   "$(cmp -s "$CL/h17/.tmux.conf" "$CL/conf17" && echo same || echo changed)"
+cp "$CL/conf17" "$CL/h17/.tmux.conf"
+is "and install.sh --check on that box passes its config row" "1" \
+   "$(cl_env 17 "$cl_t/install.sh" --check |
+      grep -cF "[  ok  ] config         $CL/h17/.tmux.conf loads cockpit")"
+cl_box 18 co18; cl_t="$CL/h18/.tmux/plugins/tmux-cockpit"; ln -s "$CL/p/co18" "$cl_t"
+printf '%s\n' "set -g @plugin 'o/tmux-cockpit'" "run '~/.tmux/plugins/tpm/tpm'" \
+    > "$CL/h18/.tmux.conf"
+is "a symlinked plugin folder tpm loads: install.sh --check passes its config row" "1" \
+   "$(cl_env 18 "$cl_t/install.sh" --check |
+      grep -cF "[  ok  ] config         $CL/h18/.tmux.conf loads cockpit")"
 # The plain folder: a bare line works there, so nothing new is said. The run's output is
 # the same, byte for byte, whether the config holds the old line or the new one.
 # Under a TMPDIR whose own path a bare line does not carry, "plain" is not plain.

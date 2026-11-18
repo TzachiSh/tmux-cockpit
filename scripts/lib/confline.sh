@@ -87,6 +87,10 @@ cockpit_conf_bare_line() {    # <config file> <plugin folder> -> line number
 # naming the file and another folder's path are no load (#1067). It takes run-shell
 # "<path>", where cockpit_conf_bare_line does not: that one finds only the unquoted line
 # (#1046).
+# The folder is a physical path (cd -P), and a config names it through any symlink, as
+# ~/.tmux/plugins/tmux-cockpit linked to a checkout. So an argument no spelling matches is
+# taken as the file it names (cockpit_conf_arg_path) and is a load when that is this
+# folder's cockpit.tmux, -ef: the same file. Another folder's copy is another file.
 # An if-shell or a source-file that reaches a line is not followed.
 cockpit_conf_wired_line() {   # <config file> <plugin folder> -> line number
     local f=$1 p="$2/cockpit.tmux" r='' l n=0 h=${HOME:-} c
@@ -107,8 +111,49 @@ cockpit_conf_wired_line() {   # <config file> <plugin folder> -> line number
         for c in "${forms[@]}"; do
             [ "$cockpit_arg" = "$c" ] && { printf '%s\n' "$n"; return 0; }
         done
+        cockpit_conf_arg_path "$cockpit_arg" || continue
+        case $cockpit_path in /*) ;; *) continue ;; esac
+        [ "$cockpit_path" -ef "$p" ] && { printf '%s\n' "$n"; return 0; }
     done < "$f"
     return 1
+}
+
+# The file a run argument names once tmux and sh have taken their quotes off, with HOME put
+# in for a leading ~/, $HOME/ or ${HOME}/ where one of them expands it. tmux expands both ~
+# and $ outside quotes and inside double quotes (tmux(1), PARSING SYNTAX), and sh expands
+# both in an unquoted word. So bare, "<s>" and '<s>' (sh then sees <s> unquoted) take all
+# three. '"<s>"' takes $HOME and ${HOME}, as sh's double quotes leave a ~ alone. "'<s>'"
+# expands nothing, as sh's single quotes keep <s> as written. Any other shape, a quote
+# inside one of these, a \ or a trailing comment, is no path. Set in cockpit_path (#1067).
+cockpit_conf_arg_path() {     # <run argument> -> cockpit_path
+    local a=$1 h=${HOME:-} t=all i
+    h=${h%/}; cockpit_path=''
+    case $a in
+        \'*\')
+            i=${a#\'}; i=${i%\'}
+            case $i in
+                *\'*) return 1 ;;
+                \"*\") i=${i#\"}; i=${i%\"}; t=var
+                       case $i in *[\"\\]*) return 1 ;; esac ;;
+            esac ;;
+        \"*\")
+            i=${a#\"}; i=${i%\"}
+            case $i in
+                *[\"\\]*) return 1 ;;
+                \'*\') i=${i#\'}; i=${i%\'}; t=none
+                       case $i in *\'*) return 1 ;; esac ;;
+            esac ;;
+        *[\'\"\\]*) return 1 ;;
+        *) i=$a ;;
+    esac
+    if [ -n "$h" ] && [ "$t" != none ]; then
+        case $i in
+            '~/'*) [ "$t" = var ] || i="$h/${i#\~/}" ;;
+            '$HOME/'*) i="$h/${i#\$HOME/}" ;;
+            '${HOME}/'*) i="$h/${i#\$\{HOME\}/}" ;;
+        esac
+    fi
+    cockpit_path=$i
 }
 
 # Does tpm load this folder's plugin? Read in tpm at commit 99469c4a, its
@@ -121,18 +166,19 @@ cockpit_conf_wired_line() {   # <config file> <plugin folder> -> line number
 # path is ~/.tmux/plugins, or the XDG tmux folder's plugins when an XDG tmux.conf is there
 # (tpm's tpm, set_default_tpm_path, line 26). tpm itself starts from a run line in any
 # config tmux loads.
-# Prints the config that names the plugin, tpm's own first. 0: it loads. 2: a line names
-# this folder's name, but tpm does not read that config, tpm's run line is missing, or the
-# folder is not where tpm looks (a TMUX_PLUGIN_MANAGER_PATH this cannot read among them).
-# 1: no @plugin line names it (#1067).
+# A line names this plugin when its name is this folder's name or <plugin path>/<name> is
+# this folder, -ef, through a symlink too. Prints the config that names it, tpm's own
+# first. 0: it loads, the line in tpm's config, <plugin path>/<name> this folder and tpm's
+# run line there. 2: a line names it but one of those three fails (a
+# TMUX_PLUGIN_MANAGER_PATH this cannot read among them). 1: no @plugin line names it (#1067).
 cockpit_conf_tpm() {          # <plugin folder> <config>... -> the config naming it
-    local d=$1 x="${XDG_CONFIG_HOME:-${HOME:-}/.config}/tmux" pd tc l c spec arg nm
-    local f='' t='' run=0 re='^[[:blank:]]*set(-option)? +-g +@plugin'
+    local d=$1 x="${XDG_CONFIG_HOME:-${HOME:-}/.config}/tmux" pd tc l c spec arg nm hm
+    local f='' t='' run=0 hit=0 re='^[[:blank:]]*set(-option)? +-g +@plugin'
     shift
     pd="${HOME:-}/.tmux/plugins"; tc="${HOME:-}/.tmux.conf"
     [ ! -f "$x/tmux.conf" ] || { pd="$x/plugins"; tc="$x/tmux.conf"; }
     for c in "$@"; do
-        nm=0
+        nm=0; hm=0
         while IFS= read -r l || [ -n "$l" ]; do
             if cockpit_conf_run_arg "$l"; then
                 arg=${cockpit_arg//\'/}; arg=${arg//\"/}
@@ -144,13 +190,15 @@ cockpit_conf_tpm() {          # <plugin folder> <config>... -> the config naming
             read -r _ _ _ spec _ <<< "$l"
             spec=${spec%%#*}; spec=${spec%.git}; spec=${spec##*/}
             [ "$spec" != "${d##*/}" ] || nm=1
+            # What tpm runs is <plugin path>/<spec>: that folder, through any symlink.
+            [ -z "$spec" ] || [ ! "$pd/$spec" -ef "$d" ] || { nm=1; hm=1; }
         done < "$c"
         [ "$nm" -eq 1 ] || continue
         [ -n "$f" ] || f=$c
-        [ -n "$t" ] || { [ "$c" -ef "$tc" ] && t=$c; }
+        if [ -z "$t" ] && [ "$c" -ef "$tc" ]; then t=$c; hit=$hm; fi
     done
     [ -n "$f" ] || return 1
-    if [ -n "$t" ] && [ "$run" -eq 1 ] && [ "${d%/*}" -ef "$pd" ]; then
+    if [ -n "$t" ] && [ "$hit" -eq 1 ] && [ "$run" -eq 1 ]; then
         printf '%s\n' "$t"; return 0
     fi
     printf '%s\n' "${t:-$f}"
