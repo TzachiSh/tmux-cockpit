@@ -2581,11 +2581,11 @@ rg_wait() {
     local i; for i in $(seq 1 60); do [ "$(rg_n)" -gt "$1" ] && return 0; sleep 0.1; done; return 1
 }
 # <stdin-file>  runs the hook inside the session as
-# the pane's own hook would, RC on the control pane
+# the pane's own hook would, RC on the control pane. RG_GATE: another copy of the hook.
 rg_run() {
-    local n0; n0=$(rg_n)
+    local n0 gate; n0=$(rg_n); gate=$(printf '%q' "${RG_GATE:-$DIR/scripts/review-gate}")
     "$TMUX_REAL" -L "$RG" send-keys -t "$RGCTL" \
-        "${RG_PRE:-}TMUX_PANE=$RGAP XDG_STATE_HOME=$(printf '%q' "$RGSTATE") '$DIR/scripts/review-gate' < $(printf '%q' "$1") > $(printf '%q' "$RGSTATE/out") 2> $(printf '%q' "$RGSTATE/err"); echo GRC=\$?" Enter
+        "${RG_PRE:-}TMUX_PANE=$RGAP XDG_STATE_HOME=$(printf '%q' "$RGSTATE") $gate < $(printf '%q' "$1") > $(printf '%q' "$RGSTATE/out") 2> $(printf '%q' "$RGSTATE/err"); echo GRC=\$?" Enter
     rg_wait "$n0"
 }
 rg_rc() { "$TMUX_REAL" -L "$RG" capture-pane -p -J -S - -t "$RGCTL" | grep -o 'GRC=[0-9]*' | tail -1
@@ -2626,6 +2626,23 @@ is "and the Stop hook leaves the pending mark as it is" "pending|GRC=0" \
 RG_PRE="PATH=$(printf '%q' "$RGMK"):\$PATH " rg_run "$RGPAY"
 is "and from no mark, the Stop hook sets none" "|GRC=0" \
     "$("$TMUX_REAL" -L "$RG" show-option -pqv -t "$RGAP" @cockpit_review)|$(rg_rc)"
+# A tmux-review the hook cannot run (#959) is no clean tree either: 126 (not executable)
+# and 127 (missing) leave the mark as it is. A copy of scripts/, so the checkout is untouched.
+RGCP=$(mktmpd); cp -R "$DIR/scripts" "$RGCP/" && chmod -x "$RGCP/scripts/tmux-review"
+"$TMUX_REAL" -L "$RG" set-option -p -t "$RGAP" @cockpit_review pending
+RG_GATE="$RGCP/scripts/review-gate" rg_run "$RGPAY"
+is "a tmux-review the hook cannot execute (126) leaves the pending mark" "pending|GRC=0" \
+    "$("$TMUX_REAL" -L "$RG" show-option -pqv -t "$RGAP" @cockpit_review)|$(rg_rc)"
+rm -f -- "$RGCP/scripts/tmux-review"
+RG_GATE="$RGCP/scripts/review-gate" rg_run "$RGPAY"
+is "a missing tmux-review (127) leaves the pending mark" "pending|GRC=0" \
+    "$("$TMUX_REAL" -L "$RG" show-option -pqv -t "$RGAP" @cockpit_review)|$(rg_rc)"
+unset RGCP
+# Only exit 1, no difference, clears a pending mark.
+printf 'a\n' > "$RGDIR/f"; rg_run "$RGPAY"
+is "a clean tree clears a pending mark" "|GRC=0" \
+    "$("$TMUX_REAL" -L "$RG" show-option -pqv -t "$RGAP" @cockpit_review)|$(rg_rc)"
+printf 'a\nb\n' > "$RGDIR/f"
 # The rows after this one read a pending mark: the readable diff puts it back.
 rg_run "$RGPAY"
 unset RGMK rgd
