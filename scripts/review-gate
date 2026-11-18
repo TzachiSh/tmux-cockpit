@@ -93,8 +93,9 @@ flag_pane() {
     review=${cur%%"$sep"*}; title_cur=${cur#*"$sep"}
 
     # 0 is a change to review, 1 a clean tree. Anything else leaves the mark as it is:
-    # 2, the diff or the pane's work dir could not be read (#944, #959), 3, tmux-review
-    # could not load, and 126, 127 or a signal, it could not run (#959), are neither.
+    # 2, the diff, the pane's work dir or its repo could not be read (#944, #959, #1286),
+    # 3, tmux-review could not load, and 126, 127 or a signal, it could not run (#959),
+    # are neither.
     "$here/tmux-review" --delta "$pane" >/dev/null 2>&1
     case $? in 0) want=pending ;; 1) want="" ;; *) want=$review ;; esac
     if [ "$review" != "$want" ]; then

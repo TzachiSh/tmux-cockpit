@@ -403,17 +403,42 @@ next_base() {                 # <dir> <current-mode>
     printf '%s\n' "$first"
 }
 
+# 0 when DIR or a dir above it holds a .git, file or dir, up to the first ceiling: as
+# git(1) says of GIT_CEILING_DIRECTORIES, the walk never goes up into one. git's own
+# search found no repo, and this second-guesses it: no exit code or output of git's
+# tells "no repo" from "a repo refused", only its words (#1286).
+git_entry_above() {           # <absolute dir>
+    local d=$1 up c
+    local -a ceil=()
+    IFS=: read -r -a ceil <<< "${GIT_CEILING_DIRECTORIES-}"
+    while :; do
+        { [ -e "$d/.git" ] || [ -L "$d/.git" ]; } && return 0
+        case $d in ''|/) return 1 ;; esac
+        up=${d%/*}; up=${up:-/}
+        for c in "${ceil[@]}"; do
+            [ -n "$c" ] && [ "${c%/}" = "${up%/}" ] && return 1
+        done
+        d=$up
+    done
+}
+
 # Exit 0 when PANE's tree differs from its review base -- the Stop hook's
 # question -- 1 when it does not, and 2 when that cannot be told: a tree_diff that fails
-# prints nothing too, and is no clean tree (#944), nor is a pane with no work dir (#959).
+# prints nothing too, and is no clean tree (#944), nor is a pane with no work dir (#959),
+# nor a repo git refuses or cannot read (#1286).
 # Reads the mode the pane's own review chose with b, if any.
 delta_mode() {                # <pane>
     local pane=$1 dir root sess mode
     dir=$(pane_workdir "$pane")
     [ -n "$dir" ] || return 2          # no work dir for the pane: it cannot tell (#959)
     root=$(git_root "$dir")
-    # Outside any git tree there is nothing to review: 1, which clears the mark.
-    git -C "$root" --no-optional-locks rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 1
+    # Outside any git tree there is nothing to review: 1, which clears the mark. git fails
+    # with the same 128 for a repo it refuses (safe.directory) or cannot read, so a .git
+    # on the walk up means it cannot tell: 2, which keeps the mark (#1286).
+    if ! git -C "$root" --no-optional-locks rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        git_entry_above "$dir" && return 2
+        return 1
+    fi
     sess=$(session_dir "$pane" "$root")
     mode=$(cat -- "$sess/comments.md.base" 2>/dev/null)
     export COCKPIT_REVIEW_BASE=${mode:-auto}
