@@ -114,9 +114,10 @@ its own palette ([status-bar.md](status-bar.md#colours)).
 Debian's and Arch's packages install tpm as
 `/usr/share/tmux-plugin-manager/tpm`, and `install.sh --check` takes a run
 line for that path as tpm's too. A tpm anywhere else counts when its path ends
-in `/tpm/tpm`, as a clone of tpm has it. When its config row fails on an `@plugin` line, the fix
-column names each check that failed: the line sits in a config tpm does not
-read, no line runs tpm, or tpm's plugin folder holds another copy (#1302).
+in `/tpm/tpm`, as a clone of tpm has it. When its config row fails on an
+`@plugin` line, the fix column names each check that failed: the line sits in
+a config tpm does not read, no line runs tpm, or tpm's plugin folder holds
+another copy (#1302).
 
 tpm also reads `@plugin` lines, and its run line, from a file its config
 sources with `source-file`, one level down. `install.sh --check` and
