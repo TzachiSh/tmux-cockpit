@@ -78,7 +78,7 @@ saved() {
   local dir
   dir=$(tmux show-option -gqv @resurrect-dir)
   # The same three substitutions resurrect's sed does.
-  dir=${dir//'$HOME'/$HOME}; dir=${dir//'$HOSTNAME'/${HOSTNAME:-}}; dir=${dir//\~/$HOME}
+  dir=${dir//'$HOME'/"$HOME"}; dir=${dir//'$HOSTNAME'/"${HOSTNAME:-}"}; dir=${dir//\~/"$HOME"}
   [ -n "$dir" ] || dir=$(default_dir)
   [ -e "$dir/last" ]
 }
