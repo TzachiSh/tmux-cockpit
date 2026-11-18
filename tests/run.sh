@@ -5122,7 +5122,8 @@ cp "$CL/conf13" "$CL/h15/.tmux.conf"; cp "$cl_x/tmux.conf" "$CL/xdg15"
 cl_out=$( cd "$CL/wd" && cl_env 15 "$cl_t/bootstrap.sh" --yes )
 is "an @plugin line tpm does not read: bootstrap.sh says tpm seems to, and appends to neither" \
    "1|same|same" \
-   "$(printf '%s\n' "$cl_out" | grep -cF "tpm seems to manage cockpit in $CL/h15/.tmux.conf")|$(
+   "$(printf '%s\n' "$cl_out" |
+      grep -cF "tpm seems to manage cockpit in $CL/h15/.tmux.conf; run install.sh --check")|$(
       cmp -s "$CL/h15/.tmux.conf" "$CL/conf13" && echo same || echo changed)|$(
       cmp -s "$cl_x/tmux.conf" "$CL/xdg15" && echo same || echo changed)"
 is "and install.sh --check fails its config row" "1" \
