@@ -10483,8 +10483,9 @@ cd "$1" || exit 1
 PATH="$2:$PATH" env -u TMUX -u TMUX_PANE COCKPIT_TUI_BIN="$3" timeout 30 "$4"
 echo "$?" > "$5.t" && mv "$5.t" "$5"
 RUNTM
-            "$TMUX_REAL" -L "$OSS" -f /dev/null new-session -d -c "$o/cwd" sh "$o/run-tm" \
-                "$o/cwd" "$o/bin" "$o/tui" "$DIR/scripts/tm" "$o/rc" >/dev/null 2>&1
+            # fresh_server: the second tm row starts a server on the socket the first killed.
+            fresh_server -L "$OSS" -f /dev/null -- -d -c "$o/cwd" sh "$o/run-tm" \
+                "$o/cwd" "$o/bin" "$o/tui" "$DIR/scripts/tm" "$o/rc"
             local i; for i in $(seq 1 $((POLLS * 4))); do [ -s "$o/rc" ] && break; sleep 0.1; done
             "$TMUX_REAL" -L "$OSS" kill-server >/dev/null 2>&1
             r=$(cat "$o/rc" 2>/dev/null) ;;
