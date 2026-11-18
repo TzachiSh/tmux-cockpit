@@ -4962,20 +4962,21 @@ bsnamed() {                   # bsnamed <config line>
     bsout=$(bs)
     printf '%s|%s' "$(cmp -s "$BH/.tmux.conf" "$BS/named.conf" && echo same || echo changed)" \
         "$(printf '%s\n' "$bsout" |
-           grep -cF "$BH/.tmux.conf line 2 names cockpit; run install.sh --check")"
+           grep -cF "have   $BH/.tmux.conf line 2 names cockpit; run install.sh --check")"
 }
 is "a bind that names cockpit.tmux: nothing appended, and the run says to run --check" \
    "same|1" "$(bsnamed "bind e new-window \"vi '$DIR/cockpit.tmux'\"")"
 is "another copy's run line: nothing appended, and the run says to run --check" "same|1" \
    "$(bsnamed "run-shell '$BS/elsewhere/tmux-cockpit/cockpit.tmux'")"
 unset -f bsnamed
-# install.sh, which bootstrap.sh runs, then gives no line to add by hand either.
+# install.sh, which bootstrap.sh runs, then gives no line to add by hand either: its
+# closing note is bootstrap.sh's own line, on a line of its own (#1067).
 printf "# mine\nrun-shell '%s/elsewhere/tmux-cockpit/cockpit.tmux'\n" "$BS" > "$BH/.tmux.conf"
 bsout=$(bs)
 is "and install.sh's closing note on that box says to run --check, with no line to add" \
-   "yes|0" "$(printf '%s\n' "$bsout" |
-      grep -qF "$BH/.tmux.conf line 2 names cockpit, but loads none from $DIR." &&
-      echo yes || echo no)|$(printf '%s\n' "$bsout" | grep -c '^Add this to')"
+   "1|0" "$(printf '%s\n' "$bsout" |
+      grep -cxF "$BH/.tmux.conf line 2 names cockpit; run install.sh --check")|$(
+      printf '%s\n' "$bsout" | grep -c '^Add this to')"
 rm -rf "$BS"
 fi
 
