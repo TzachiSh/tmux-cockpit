@@ -403,9 +403,11 @@ consider() {  # consider <path> <line> <col> — record it if it exists
         "~") p="$H" ;;
         "~/"*) p="$H/${p#\~/}" ;;
     esac
+    # A dead pane has no folder: a relative path names nothing there, neither under / nor
+    # under the repo of this script's cwd, which `git -C ''` would answer for.
     case "$p" in
         /*) abs=$p ;;
-        *)  abs=$base/$p ;;
+        *)  [ -n "$dir" ] || return 1; abs=$base/$p ;;
     esac
     [ -e "$abs" ] || return 1
     abs=${abs//\/.\//\/}                    # "dir/./bin/x" reads badly in the message
@@ -480,8 +482,8 @@ try_raw() {
     return 1
 }
 
-# A path a tool printed from the repo's top, clicked in a subfolder (#1289): a
-# token the pane's folder misses in every shape is tried again from the top.
+# A path a tool printed from the repo's top, clicked in a subfolder (#1289): a token
+# holding a / that the pane's folder misses in every shape is tried again from the top.
 # git is asked once per click, at the first such token, so a click whose tokens
 # all resolve asks nothing. git-env.sh's unsets stay in the subshell: tmux's
 # GIT_DIR (a dotfiles setup) names no other tree, and the rest keeps its env.
@@ -510,6 +512,9 @@ for raw in $line; do
     strip_ends "$raw"; tok=$TOK
     [ -n "$tok" ] || continue
     try_raw "$tok" && continue
+    # Only a token holding a / goes to the top: a word of prose naming a folder there would
+    # turn a direct open into the picker.
+    [[ $tok == */* ]] || continue
     repo_top || continue
     base=$root; try_raw "$tok"; base=$dir
 done

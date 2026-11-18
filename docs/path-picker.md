@@ -21,7 +21,9 @@ like a path is dropped.
 A relative path resolves against the pane's folder first. One that is not there
 is tried again from the top of the pane's git repo, so `tui/src/main.rs:12`,
 printed by a tool run at the top, opens from a subfolder too. A name found in
-the pane's folder always wins.
+the pane's folder always wins. The retry needs a `/` in the token, so a plain
+word that names a folder at the top is not a candidate. A pane with no folder,
+such as a dead one, opens only absolute and `~` paths.
 
 **`alt-c` copies the highlighted row's path** instead of opening it: the
 absolute path goes to the tmux buffer and, as OSC 52, to the clipboard, for
