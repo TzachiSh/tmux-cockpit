@@ -202,6 +202,47 @@ cockpit_conf_tpm_where() {
     [ ! -f "$x/tmux.conf" ] || { cockpit_tpm_dir="$x/plugins"; cockpit_tpm_conf="$x/tmux.conf"; }
 }
 
+# The files tpm also reads @plugin lines from: those a source or source-file line in its
+# config names, one level down, read as tpm reads them. At tpm 99469c4a,
+# scripts/helpers/plugin_functions.sh _sourced_files (line 47) runs
+# sed -E 's/^[[:space:]]*source(-file)?[[:space:]]+(-q+[[:space:]]+)?['"]?([^'"]+)['"]?/\3/p'
+# over that config, and _tmux_conf_contents (line 35) reads each word of what it prints,
+# unquoted, so split at blanks and globbed, after _manual_expansion (line 5) makes a leading
+# ~ HOME, then a leading $HOME. ${HOME} is left as it is. A word starting with -, a path
+# not from / (tpm reads it from a folder this cannot know), and a file that is not there
+# are skipped. Sets cockpit_tpm_src to the files, in order (#1304).
+cockpit_conf_tpm_sourced() {  # <tpm's config> -> cockpit_tpm_src
+    local l w g q="['\"]" nq="[^'\"]" re
+    local -a ws gs
+    re="^[[:space:]]*source(-file)?[[:space:]]+(-q+[[:space:]]+)?$q?($nq+)$q?(.*)\$"
+    cockpit_tpm_src=()
+    [ -r "$1" ] || return 0
+    while IFS= read -r l || [ -n "$l" ]; do
+        [[ $l =~ $re ]] || continue
+        read -ra ws <<< "${BASH_REMATCH[3]}${BASH_REMATCH[4]}"
+        [ "${#ws[@]}" -gt 0 ] || continue
+        for w in "${ws[@]}"; do
+            case $w in -*) continue ;; esac
+            w=${w/#\~/${HOME:-}}; w=${w/#\$HOME/${HOME:-}}
+            case $w in /*) ;; *) continue ;; esac
+            # shellcheck disable=SC2206 # unquoted on purpose: tpm globs the word
+            gs=($w)
+            for g in "${gs[@]}"; do
+                [ ! -f "$g" ] || [ ! -r "$g" ] || cockpit_tpm_src+=("$g")
+            done
+        done
+    done < "$1"
+}
+
+# The lines of each file in turn, with no external command: install.sh --check runs on a
+# PATH that may hold no cat (#1304).
+cockpit_conf_lines() {        # <file>... -> their lines
+    local f l
+    for f in "$@"; do
+        while IFS= read -r l || [ -n "$l" ]; do printf '%s\n' "$l"; done < "$f"
+    done
+}
+
 # Does tpm load this folder's plugin? Read in tpm at commit 99469c4a, its
 # scripts/helpers/plugin_functions.sh: _get_user_tmux_conf (line 21) picks ONE user config,
 # the XDG tmux.conf when it is a file, else ~/.tmux.conf, and _tmux_conf_contents (line 37)
@@ -226,12 +267,18 @@ cockpit_conf_tpm_where() {
 # line of tpm) and folder (tpm runs cockpit_tpm_runs, not this folder) (#1302).
 cockpit_conf_tpm() {          # <plugin folder> <config>... -> the config naming it
     local d=$1 pd tc l c spec arg nm hm sp
+    local -a fl
     local f='' t='' tn='' run=0 hit=0 re='^[[:blank:]]*set(-option)? +-g +@plugin'
     shift
     cockpit_tpm_file=''; cockpit_tpm_why=''; cockpit_tpm_runs=''
     cockpit_conf_tpm_where; pd=$cockpit_tpm_dir; tc=$cockpit_tpm_conf
     for c in "$@"; do
-        nm=0; hm=0; sp=''
+        nm=0; hm=0; sp=''; fl=("$c")
+        # tpm's config with the files it sources, as tpm reads them (#1304).
+        if [ "$c" -ef "$tc" ]; then
+            cockpit_conf_tpm_sourced "$c"
+            [ "${#cockpit_tpm_src[@]}" -eq 0 ] || fl+=("${cockpit_tpm_src[@]}")
+        fi
         while IFS= read -r l || [ -n "$l" ]; do
             if cockpit_conf_run_arg "$l"; then
                 # A trailing comment off first, as docs/install.md's own tpm line has.
@@ -251,7 +298,7 @@ cockpit_conf_tpm() {          # <plugin folder> <config>... -> the config naming
             [ "$spec" != "${d##*/}" ] || { nm=1; [ -n "$sp" ] || sp=$spec; }
             # What tpm runs is <plugin path>/<spec>: that folder, through any symlink.
             [ -z "$spec" ] || [ ! "$pd/$spec" -ef "$d" ] || { nm=1; hm=1; }
-        done < "$c"
+        done < <(cockpit_conf_lines "${fl[@]}")
         [ "$nm" -eq 1 ] || continue
         [ -n "$f" ] || f=$c
         if [ -z "$t" ] && [ "$c" -ef "$tc" ]; then t=$c; hit=$hm; tn=$sp; fi
@@ -309,19 +356,27 @@ cockpit_conf_wired() {        # <plugin folder> <readable config>... -> cockpit_
 # pattern) naming tmux-cockpit or this folder's name. bootstrap.sh appends no run line when
 # one is there, even one the readers above call no load: that line may run a copy of the
 # plugin by a route they do not follow, and two copies loading is worse than none (#1067).
+# An @plugin line in a file tpm's config sources counts too, as tpm reads it there
+# (cockpit_conf_tpm_sourced). A cockpit.tmux line there is not looked for: nothing here
+# follows source-file the way tmux does (#1304).
 # Sets cockpit_mention_file, cockpit_mention_n and cockpit_mention_line; 1 when none.
 cockpit_conf_mention() {      # <plugin folder> <config>... -> cockpit_mention_*
-    local d=$1 c l t n spec re='^[[:blank:]]*set(-option)? +-g +@plugin'
+    local d=$1 c l t n spec top=1 re='^[[:blank:]]*set(-option)? +-g +@plugin'
+    local -a fs
     shift
     cockpit_mention_file=''; cockpit_mention_n=0; cockpit_mention_line=''
-    for c in "$@"; do
+    cockpit_conf_tpm_where; cockpit_conf_tpm_sourced "$cockpit_tpm_conf"
+    fs=("$@" '')              # the empty entry: the sourced files follow it
+    [ "${#cockpit_tpm_src[@]}" -eq 0 ] || fs+=("${cockpit_tpm_src[@]}")
+    for c in "${fs[@]}"; do
+        [ -n "$c" ] || { top=0; continue; }
         n=0
         while IFS= read -r l || [ -n "$l" ]; do
             n=$((n + 1))
             t=${l#"${l%%[![:space:]]*}"}
             case $t in ''|'#'*) continue ;; esac
             case $t in
-                *cockpit.tmux*) ;;
+                *cockpit.tmux*) [ "$top" -eq 1 ] || continue ;;
                 *)  [[ $l =~ $re ]] || continue
                     t=${l//\'/}; t=${t//\"/}
                     read -r _ _ _ spec _ <<< "$t"
