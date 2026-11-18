@@ -81,7 +81,7 @@ names every one whose files git stores with LF but the folder holds with CRLF, a
 from Windows leaves them: tmux reads each CR as part of the line, and a theme stops loading.
 Cockpit's own folder is a fail, any other plugin a warn. The fix column gives the `git -C
 <folder> ... checkout-index -f -a` that restores the files from git, and says it overwrites
-edits to tracked files, with a count of the files that have edits beyond line endings.
+edits to tracked files.
 Neither script runs it: `bootstrap.sh` only notes each such folder and points here (#188).
 
 `bootstrap.sh` fetches the pinned revdiff into `${XDG_BIN_HOME:-~/.local/bin}`

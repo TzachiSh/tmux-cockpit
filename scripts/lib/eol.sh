@@ -26,22 +26,6 @@ eol_crlf() {                  # eol_crlf <dir>
     return 0
 }
 
-# Sets eol_edits to the files with an edit beyond line endings and file modes, which the
-# restore drops along with the CRs. Under core.autocrlf=true git turns CRLF into LF before
-# it compares, on any version: --ignore-cr-at-eol is unknown below git 2.16, and --name-only
-# honours it only from 2.51.1, so a CR-only file counted as an edit there (#1318). `-- .`
-# keeps the count inside the folder when it sits in a parent repository. Read only: git diff
-# leaves the index alone. 1, eol_edits empty, when git diff fails: cannot tell.
-eol_edited() {                # eol_edited <dir>
-    local out
-    eol_edits=''
-    out=$(git -C "$1" -c core.autocrlf=true -c core.fileMode=false \
-        diff --name-only -- . 2>/dev/null) || return 1
-    eol_edits=0
-    [ -z "$out" ] || eol_edits=$(printf '%s\n' "$out" | wc -l)
-    eol_edits=$((eol_edits + 0))
-}
-
 # "1 file", "2 files".
 eol_files() {                 # eol_files <n>
     if [ "$1" -eq 1 ]; then printf '1 file'; else printf '%s files' "$1"; fi

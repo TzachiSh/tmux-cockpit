@@ -216,13 +216,6 @@ if [ "$check" -eq 1 ]; then
             [ "$eol_n" -gt 0 ] || continue
             eol_bad=1
             eol_fix="$(eol_fix_cmd "$eol_d") (overwrites edits to tracked files)"
-            if ! eol_edited "$eol_d"; then
-                eol_fix="$eol_fix; git diff failed, so whether it drops other edits is unknown"
-            elif [ "$eol_edits" -eq 1 ]; then
-                eol_fix="$eol_fix; 1 file also has edits that this drops"
-            elif [ "$eol_edits" -gt 1 ]; then
-                eol_fix="$eol_fix; $eol_edits files also have edits that this drops"
-            fi
             eol_found="$(eol_files "$eol_n") in ${eol_d##*/}"
             if [ "$eol_d" = "$DIR" ]; then row fail crlf "$eol_found" "$eol_fix"
             else row warn crlf "$eol_found" "$eol_fix"
