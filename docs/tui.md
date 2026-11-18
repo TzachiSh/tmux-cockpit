@@ -3189,7 +3189,7 @@ the pane moved to another window, if the file is missing, empty, names another
 pane, is a bare `@<digits>` (an older binary's, whose confirm promised the
 window) or a symlink, or if the pane is gone. The `✓` note and the log carry
 the pane and the `session:index` and name of its window.
-The board key waits on the board's verb hook (not shipped).
+The board's key for it is `x`, one of its extra actions (#228).
 
 ## The agents cache (#492)
 
