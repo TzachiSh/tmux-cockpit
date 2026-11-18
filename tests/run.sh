@@ -14115,6 +14115,25 @@ case "$tfout" in
 esac
 is "and leaves the working binary in place" "cockpit-tui 0.5.0" "$(tf_ver)"
 
+# Releases after v0.4.0 list the Linux x86_64 asset alone (dist-workspace.toml). A Mac keeps
+# its target, so a pin up to v0.4.0 still fetches its asset, and past that it is told there
+# is none and goes to the source build, as Linux aarch64 does: never the uname `*)` arm,
+# which only prints a hint and builds nothing.
+mkdir -p "$TF/un" "$TF/r el/cockpit-tui-v0.8.1"
+printf '#!/bin/sh\ncase "$1" in -s) echo Darwin ;; -m) echo arm64 ;; *) exec %s "$@" ;; esac\n' \
+    /usr/bin/uname > "$TF/un/uname"
+chmod +x "$TF/un/uname"
+printf '%s  cockpit-tui-x86_64-unknown-linux-musl.tar.gz\n' 0000 \
+    > "$TF/r el/cockpit-tui-v0.8.1/sha256.sum"
+tfout=$(PATH="$TF/un:$TF/shim:$PATH"; tf "$TFR" --version cockpit-tui-v0.8.1)
+is "a Mac against a Linux-only release is told its target has no binary" "1" \
+    "$(printf '%s\n' "$tfout" | grep -cxF \
+        'tui-fetch: no binary for this platform in cockpit-tui-v0.8.1 (aarch64-apple-darwin)')"
+case "$tfout" in
+    *"needs Rust >= 1.99"*) ok "and goes on to the source build" ;;
+    *) bad "and goes on to the source build" "needs Rust >= 1.99" "$tfout" ;;
+esac
+
 tf_release cockpit-tui-v0.9.0 0.9.0 flat
 tfout=$(tf "$TFR" --version cockpit-tui-v0.9.0)
 is "an archive with no wrapping directory installs too" "cockpit-tui 0.9.0" "$(tf_ver)"

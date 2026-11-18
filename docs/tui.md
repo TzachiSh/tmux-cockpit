@@ -30,6 +30,9 @@ The binary ships as a release asset. `install.sh` fetches it. With
 background: tmux starting, `prefix R`, and tpm's update key `prefix U`, which
 reloads the config after updating. Otherwise run `scripts/tui-fetch` yourself,
 or build it with `make tui`.
+Releases after `cockpit-tui-v0.4.0` carry a Linux x86_64 asset only. On macOS
+and Linux aarch64, tui-fetch finds no asset for the platform and builds from
+source, which needs Rust (below).
 Either way: uname picks the asset, the `.sha256` is fetched first and verified,
 and only a verified file is installed. A checksum mismatch, an unfetchable manifest or a
 platform with no asset all leave whatever binary is already there and say so
