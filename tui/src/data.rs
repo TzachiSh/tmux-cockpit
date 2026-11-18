@@ -90,12 +90,18 @@ pub fn readonly() -> bool {
     std::env::var_os("COCKPIT_READONLY").is_some_and(|v| !v.is_empty())
 }
 
-/// The only tmux write path, so `COCKPIT_READONLY` needs a single guard.
-pub fn tmux_set(args: &[&str]) {
+/// The only tmux write path, so `COCKPIT_READONLY` needs a single guard. `None` under
+/// it, as for a failed call: a caller that needs the write to land says so itself.
+pub fn tmux_write(args: &[&str]) -> Option<String> {
     if readonly() {
-        return;
+        return None;
     }
-    let _ = tmux(args); // best effort: a failed unpublish is not actionable
+    tmux(args)
+}
+
+/// [`tmux_write`], its answer dropped.
+pub fn tmux_set(args: &[&str]) {
+    let _ = tmux_write(args); // best effort: a failed unpublish is not actionable
 }
 
 /// #291: past this, `tui.log` becomes `tui.log.1` (one generation kept).
