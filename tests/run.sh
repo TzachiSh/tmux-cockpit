@@ -5251,7 +5251,7 @@ elif ! ( . "$DIR/scripts/lib/vnum.sh"
     skip_ "the first-start hint (tmux below 3.8: the plugin loads nothing there)"
 else
 FH=$(mktmpd); mkdir -p "$FH/wd" "$FH/p"
-for fh_n in 1 2 3; do
+for fh_n in 1 2 3 4; do
     for fh_s in fh fho fhp fhq; do SOCKS="$SOCKS cockpit-$fh_s-$$-$fh_n"; done
 done
 fh_box() {                    # <name> -> a copy of the plugin in $FH/p/<name>, its full path
@@ -5339,13 +5339,31 @@ until_out '?*' "$TMUX_REAL" -L "cockpit-fh-$$-3" list-clients -F '#{client_name}
 until_cap "cockpit-fho-$$-3" o '*cockpit-tui is missing*'
 is "a folder holding # shapes: the first client is shown the hint as written, nothing ran" \
    "1|" "$(fh_cap "cockpit-fho-$$-3" "$fh_w3")|$(find "$FH" -name pwned)"
-for fh_n in 1 2 3; do
+# 4: a hook armed by a -d start, then the cause fixed and the config loaded again with no
+# client: that load keeps no hint, and the old hook goes with it, or the next client would
+# be shown an empty message.
+fh_conf 4 "$(cd -P "$FH/p/plain" && pwd)"
+( cd "$FH/wd" && exec env -u TMUX_COCKPIT_DIR -u TMUX -u TMUX_PANE \
+    COCKPIT_TUI_BIN="$FH/none/cockpit-tui" "$TMUX_REAL" -L "cockpit-fh-$$-4" -f "$FH/conf4" \
+    new-session -d -s t -x 120 -y 30 -c "$FH/wd" 'exec sleep 300' ) >/dev/null 2>&1
+fh_r4=$(fh_hook 4)
+"$TMUX_REAL" -L "cockpit-fh-$$-4" set-environment -g COCKPIT_TUI_BIN "$COCKPIT_TUI_BIN"
+( cd "$FH/wd" && exec "$TMUX_REAL" -L "cockpit-fh-$$-4" source-file "$FH/conf4" ) >/dev/null 2>&1
+fh_r4="$fh_r4|$(fh_hook 4)"
+fh_outer "cockpit-fho-$$-4" "$(fh_in 4) attach -t t"
+until_out '?*' "$TMUX_REAL" -L "cockpit-fh-$$-4" list-clients -F '#{client_name}'
+until_cap "cockpit-fho-$$-4" o '*[!\ ]*'
+is "a hook a -d start armed goes with a later load that keeps no hint: nothing shown" \
+   "1|0|0|0" "$fh_r4|$(fh_cap "cockpit-fho-$$-4" "$fh_want")|$(
+      "$TMUX_REAL" -L "cockpit-fh-$$-4" show-messages 2>/dev/null | grep -v ' command: ' |
+      grep -c ' message: *$')"
+for fh_n in 1 2 3 4; do
     for fh_s in fhq fhp fho fh; do
         "$TMUX_REAL" -L "cockpit-$fh_s-$$-$fh_n" kill-server >/dev/null 2>&1
     done
 done
 unset -f fh_box fh_conf fh_outer fh_in fh_cap fh_log fh_reloaded fh_hook
-unset FH fh_n fh_s fh_p fh_want fh_w3 fh_r1
+unset FH fh_n fh_s fh_p fh_want fh_w3 fh_r1 fh_r4
 fi
 
 echo "== a cockpit key on ;, M-; or C-; is bound, recorded, and keeps the menu (#1152) =="
