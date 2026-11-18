@@ -15,11 +15,11 @@
 set -uo pipefail
 
 # bash 4+: on 3.2 `declare -A` fails and the assignment quietly makes an
-# indexed array, so fail loudly instead.
+# indexed array, so fail loudly instead. 3, as for a lib that fails to load (#959).
 if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
     printf '%s needs bash 4 or newer (found %s). On macOS: brew install bash\n' \
            "${BASH_SOURCE[0]##*/}" "${BASH_VERSION:-unknown}" >&2
-    exit 1
+    exit 3
 fi
 
 # Not `$0`: through install.sh's symlink or a PATH lookup this must still
@@ -29,24 +29,25 @@ SELF="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE
 # lib/ sits beside the REAL script; install.sh links it by absolute path.
 d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")
 LIBDIR=${d%/*}/lib
+# A lib that fails to load exits 3, here and in need() below: 1 and 2 are verdicts (#959).
 # Every git call, revdiff's too, is about the pane's own repo: a popup inherits
 # tmux's environment, where a dotfiles setup's GIT_DIR would point all of them
 # at another, and a pathspec mode would change what this script's pathspecs
 # match (#673). Here, before any mode runs, so a new mode cannot miss it.
 # shellcheck source=lib/git-env.sh
-. "$LIBDIR/git-env.sh" || exit 1
+. "$LIBDIR/git-env.sh" || exit 3
 # shellcheck source=lib/git.sh
-. "$LIBDIR/git.sh" || exit 1
+. "$LIBDIR/git.sh" || exit 3
 
 # tmux runs run-shell and popup strings through sh: every path in one is quoted.
 shq() { printf '%q' "$1"; }
 
 # shellcheck source=lib/pane.sh
-. "$LIBDIR/pane.sh" || exit 1
+. "$LIBDIR/pane.sh" || exit 3
 # shellcheck source=lib/fmt.sh
-. "$LIBDIR/fmt.sh" || exit 1
+. "$LIBDIR/fmt.sh" || exit 3
 # shellcheck source=lib/workdir.sh
-. "$LIBDIR/workdir.sh" || exit 1
+. "$LIBDIR/workdir.sh" || exit 3
 
 # How a pane names itself in the prompt. An unset pane_title reads as
 # #{host_short}, not empty, so the window name stands in.
@@ -74,7 +75,9 @@ tmux-review — review an agent's uncommitted diff, one comment at a time.
   tmux-review --deliver <pane> <store>   paste it typed-but-unsent into <pane>; a busy pane gets it queued for its next Stop
   tmux-review --done <store>            after a by-hand --deliver: archive the batch, drop the scratch
   tmux-review --delta <pane>            exit 0 when <pane>'s tree differs from its review base,
-                                        1 when not, 2 when the diff cannot be read
+                                        1 when not, 2 when it cannot tell (no work dir,
+                                        or the diff cannot be read),
+                                        3 when it cannot load: bash older than 4, or a library
   tmux-review --request <pane>          the agent asks: one popup on <pane>; the batch on stdout, exit 10
   tmux-review --dir <pane>              the tree <pane> works in, as the board shows it
 In revdiff: its own keys (? lists them); q saves the comments, Q discards.
@@ -102,10 +105,11 @@ while [ $# -gt 0 ]; do
 done
 [ -z "$REVIEW_PANE_ID" ] || is_pane "$REVIEW_PANE_ID" || { usage; exit 2; }
 
-# Each mode sources only the libs it calls.
+# Each mode sources only the libs it calls. A lib that fails to load exits 3: --delta's 1
+# means a clean tree and 2 a diff it cannot read, and the Stop hook acts on both (#959).
 need() {
     local l
-    for l; do . "$LIBDIR/$l" || exit 1; done
+    for l; do . "$LIBDIR/$l" || exit 3; done
 }
 case "${1:-}" in
     --delta)                    need review-diff.sh ;;
