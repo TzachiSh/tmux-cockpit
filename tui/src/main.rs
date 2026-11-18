@@ -50,6 +50,9 @@ fn panel(args: &[String]) {
         std::process::exit(1);
     };
     let mut a = app::App::new(pane, cap);
+    // Explain's what-changed list (#1000): one collector for the panel's life
+    let collector = cockpit_tui::panel::changes::Collector::from_env();
+    a.changes = Some(cockpit_tui::panel::look::Looks::new(collector));
     a.tablet = tablet;
     a.termux = cockpit_tui::panel::is_termux();
     // other panes' hidden panels the wrapper dropped: their panes are gone

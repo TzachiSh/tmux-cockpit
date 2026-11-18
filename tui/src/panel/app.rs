@@ -3,6 +3,7 @@
 use super::action::{Hidden, hide_body, sanitize, state_body};
 use super::capture::{Capture, REPO_BUDGET, SSH_LIKE, Session, is_local, session_state, toplevel, window_kind};
 use super::envelope::{Envelope, Flow, OutType, RefItem, Role, Turn, build_refs, redact_screen, ref_items};
+use super::look::Looks;
 use super::parse::{self, Opt, Query, Reply, Step};
 use super::prompts::{self, Ctx};
 use super::request::{Call, Fail, Profile, Request, read_dir_ok};
@@ -343,6 +344,10 @@ pub struct App {
     /// The guard for the first view: longer after a resume.
     first_guard: u64,
     guard: u64,
+    /// What changed since the user last looked (#1000, #935): Explain's list,
+    /// from the collector the panel holds for its life. `None` collects nothing:
+    /// [`App::new`] installs none, the panel's `main` does.
+    pub changes: Option<Looks>,
 }
 
 /// The secrets a call's envelope hid, by where they were: the screen with its
@@ -409,6 +414,7 @@ impl App {
             seen_at: 0,
             first_guard: TAP_GUARD_MS,
             guard: TAP_GUARD_MS,
+            changes: None,
         }
     }
 
@@ -567,6 +573,39 @@ impl App {
             self.guard = if self.seen.is_none() { self.first_guard } else { TAP_GUARD_MS };
             (self.seen, self.seen_at) = (seen, now);
         }
+        // the list is the body's first rows: a frame at the top with it drawn has shown it
+        let top = matches!(self.view, View::Answer { scroll: 0, .. });
+        // the floor card and the help overlay are drawn in the body's place (#1269)
+        let body = top && !self.tiny && self.help.is_none();
+        if body
+            && self.changes_shown().is_some()
+            && let Some(Err(e)) = self.changes.as_mut().and_then(Looks::drawn)
+        {
+            eprintln!("cockpit-tui: what changed: last seen not saved: {e}");
+        }
+    }
+
+    /// The event loop wakes every 100 ms rather than wait for a key: a call is
+    /// out, or an Explain's list is still being collected, so it is drawn when it
+    /// lands even while the user reads the answer and presses nothing (#1000).
+    pub fn ticks(&self) -> bool {
+        let explain = self.run.as_ref().is_some_and(|r| r.flow == Flow::Explain);
+        self.req.is_some() || (explain && self.changes.as_ref().is_some_and(Looks::waiting))
+    }
+
+    /// Starts collecting what changed for Explain, in a pane whose folder is
+    /// this machine's: the repo block's rule.
+    fn look_ahead(&mut self) {
+        let here = self.local && !self.cap.path.is_empty();
+        if let Some(l) = self.changes.as_mut().filter(|_| here) {
+            l.ahead(&self.cap.path);
+        }
+    }
+
+    /// The list atop an Explain's answer: a heading and its lines.
+    pub fn changes_shown(&self) -> Option<(String, Vec<String>)> {
+        let explain = self.run.as_ref().is_some_and(|r| r.flow == Flow::Explain);
+        self.changes.as_ref().filter(|_| explain)?.shown()
     }
 
     /// The wheel is Up and Down, except in a text box, where those keys move the
@@ -881,7 +920,11 @@ impl App {
             Tile::WritePrompt => self.compose(OutType::Prompt),
             Tile::WriteCommand => self.compose(OutType::Command),
             Tile::Compose => self.compose(OutType::Auto),
-            Tile::Explain => self.view = View::ExplainAsk { sel: 0 },
+            Tile::Explain => {
+                // while the user picks a question (#1000)
+                self.look_ahead();
+                self.view = View::ExplainAsk { sel: 0 };
+            }
             // under the tablet floor the flip would strand the user on the card
             Tile::Mode if !self.tablet && self.size.is_some_and(|(w, h)| w < TABLET_MIN_W || h < TABLET_MIN_H) => {
                 self.say(
@@ -1135,6 +1178,8 @@ impl App {
             role: Role::User,
             text: question.into(),
         }];
+        // the tile started it, unless a hidden panel came back on the questions
+        self.look_ahead();
         self.start(Flow::Explain, turns, vec![(true, shown.into())], ROUNDS_EXPLAIN, back);
     }
 
@@ -1296,6 +1341,10 @@ impl App {
 
     /// Takes a finished call's answer, if one has arrived.
     pub fn poll(&mut self) -> bool {
+        // Explain's list, collected on its own thread (#1000): taken before the frame draws
+        if let Some(l) = self.changes.as_mut() {
+            l.poll();
+        }
         let Some(a) = self.req.as_mut().and_then(Request::poll) else {
             return false;
         };
@@ -1535,8 +1584,13 @@ impl App {
                 r.ready = ready;
             }
         }
+        // the first answer of an Explain whose list is not yet seen opens at its top,
+        // where the list is drawn, now or once it lands (#1000)
+        let explain = self.run.as_ref().filter(|r| r.flow == Flow::Explain);
+        let first = explain.is_some_and(|r| r.log.iter().filter(|l| !l.0).count() == 1);
+        let top = first && self.changes.as_ref().is_some_and(Looks::unseen);
         self.view = View::Answer {
-            scroll: usize::MAX,
+            scroll: if top { 0 } else { usize::MAX },
             armed: false,
         };
     }

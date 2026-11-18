@@ -1,7 +1,8 @@
 //! What changed in a repo since the user last looked (#1000, task 2 of #935):
 //! commits from git, PRs, issues and the branch's latest CI run from `gh`, as
 //! a list built in plain code, so the model that explains it cannot make an
-//! item up. Unwired: nothing in the panel calls it yet.
+//! item up. The panel's Explain runs it off the drawing thread and marks the
+//! list seen once an answer drew it ([`super::look`], #935).
 //!
 //! - **Last seen.** Per repo, the HEAD sha and a time in seconds, in
 //!   `$XDG_CACHE_HOME/tmux-cockpit/panel/seen/<key>`, mode 600 in a mode 700
@@ -391,6 +392,11 @@ impl Collector {
             since.map(|d| d.as_secs()).unwrap_or(0)
         };
         Collector::new(Gh::from_env(), seen_dir(), Box::new(now))
+    }
+
+    /// Seconds since the epoch, by the clock the floor reads.
+    pub fn now(&self) -> u64 {
+        (self.clock)()
     }
 
     /// The list for the repo `dir` is in; `dir` must be absolute, as `git -C ""`
