@@ -10997,9 +10997,11 @@ echo "== bootstrap.sh's tmux build and revdiff fetch rm -rf no dir mktemp did no
 # quote: the build's dir is the real mktemp's, under a TMPDIR whose name holds a ', and the curl
 # stub serves a local tarball whose configure only leaves a mark and fails, so make is never
 # reached. The build ran its command in a "cd '<dir>' ..." string, which such a dir broke.
+# prefix: the same tarball under a plain TMPDIR. Its configure logs its argv, and the row reads
+# the --prefix it got, the row's own folder shown as <o>: the build installs into HOME/.local.
 bt_mk=$(PATH=/usr/bin:/bin command -v mktemp)
 bt_v=$(sed -n 's/.*TMUX_BUILD=\([0-9.]*\).*/\1/p' "$DIR/bootstrap.sh")
-bt_run() {      # <tmux|revdiff> <full|cwd|-|quote> <check> -> "<kept|gone|ran|not>|<FAIL>|<cc>"
+bt_run() {      # <tmux|revdiff> <full|cwd|-|quote|prefix> <check> -> "<dir|mark>|<FAIL>|<cc>"
     local s=$1 w=$2 o a k c what t=${TMPDIR:-/tmp}
     o=$(mktmpd); mkdir -p "$o/bin" "$o/cwd/-" "$o/full" "$o/rel" "$o/h/.tmux/plugins"
     echo keep > "$o/full/canary"; echo keep > "$o/cwd/-/canary"; : > "$o/calls"
@@ -11008,14 +11010,16 @@ bt_run() {      # <tmux|revdiff> <full|cwd|-|quote> <check> -> "<kept|gone|ran|n
     done
     printf '# mine\nrun-shell %s/cockpit.tmux\n' "$DIR" > "$o/h/.tmux.conf"
     case $w in full) a=$o/full k=$o/full/canary ;; cwd) a=$o/cwd k=$o/cwd ;;
-               quote) a='' k=$o/configured ;; *) a=- k=$o/cwd/-/canary ;; esac
+               quote|prefix) a='' k=$o/configured ;; *) a=- k=$o/cwd/-/canary ;; esac
     for c in sudo apt-get dnf pacman zypper brew git curl wget gh cargo make cc gcc; do
         printf '#!/bin/sh\necho "%s $*" >> %s\n' "$c" "$(tq "$o/calls")" > "$o/bin/$c"
         case $c in sudo|apt-get) echo 'exit 0' ;; *) echo 'exit 1' ;; esac >> "$o/bin/$c"
     done
-    if [ "$w" = quote ]; then
-        t=$o/q\'d; mkdir -p "$t" "$o/pack/tmux-$bt_v"
-        printf '#!/bin/sh\necho ran > %s\nexit 1\n' "$(tq "$k")" > "$o/pack/tmux-$bt_v/configure"
+    if [ -z "$a" ]; then
+        if [ "$w" = quote ]; then t=$o/q\'d; else t=$o/plain; fi
+        mkdir -p "$t" "$o/pack/tmux-$bt_v"
+        printf '#!/bin/sh\nprintf "%%s\\n" "$@" > %s\nexit 1\n' "$(tq "$k")" \
+            > "$o/pack/tmux-$bt_v/configure"
         chmod +x "$o/pack/tmux-$bt_v/configure"; (cd "$o/pack" && tar -czf ../t.tgz "tmux-$bt_v")
         { printf '#!/bin/sh\necho "curl $*" >> %s\n' "$(tq "$o/calls")"
           printf 'while [ $# -gt 0 ]; do [ "$1" = -o ] && exec cp %s "$2"; shift; done\nexit 1\n' \
@@ -11032,8 +11036,11 @@ bt_run() {      # <tmux|revdiff> <full|cwd|-|quote> <check> -> "<kept|gone|ran|n
     (cd "$o/cwd" && env -u TMUX -u TMUX_PANE HOME="$o/h" PATH="$o/bin:/usr/bin:/bin" \
         TMPDIR="$t" COCKPIT_GITHUB="$(file_url "$o/rel")" timeout 60 \
         "$DIR/bootstrap.sh" </dev/null >"$o/out" 2>&1)
-    if [ "$w" = quote ]; then c=$([ -e "$k" ] && echo ran || echo not)
-    else c=$([ -e "$k" ] && echo kept || echo gone); fi
+    case $w in
+        quote) c=$([ -e "$k" ] && echo ran || echo not) ;;
+        prefix) c=$(grep -- '^--prefix=' "$k" 2>/dev/null); c=${c/#"--prefix=$o"/--prefix=<o>} ;;
+        *) c=$([ -e "$k" ] && echo kept || echo gone) ;;
+    esac
     printf '%s|%s|%s' "$c" \
         "$(grep -cxF "  FAIL:  no temp dir for $what (own_tmpdir: $3)" "$o/out")" \
         "$(grep -cE '^(make|cc|gcc) ' "$o/calls")"
@@ -11055,6 +11062,8 @@ for bt_c in full:nonempty cwd:cwd -:dash; do
 done
 is "the tmux build runs its steps in a temp dir whose path holds a ', and compiles nothing" \
    "ran|0|0" "$(bt_run tmux quote none)"
+is "the tmux build configures with --prefix in the user's HOME, and compiles nothing" \
+   "--prefix=<o>/h/.local|0|0" "$(bt_run tmux prefix none)"
 unset -f bt_run; unset bt_mk bt_v bt_c bt_w bt_f
 
 # group: deliver
