@@ -182,7 +182,8 @@ else
     for eol_d in "${eol_list[@]}"; do
         eol_crlf "$eol_d" && [ "$eol_n" -gt 0 ] || continue
         eol_bad=1
-        note "CRLF   $eol_d: $eol_n files git stores with LF; run install.sh --check"
+        note "CRLF   $eol_d: $(eol_files "$eol_n") git stores with LF;" \
+             "run $DIR/install.sh --check"
     done
     [ "$eol_bad" -eq 1 ] || note "have   no CRLF in a checkout"
 fi

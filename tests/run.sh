@@ -5238,10 +5238,12 @@ printf '#!/bin/sh\nexit 99\n' > "$EO/stub/sudo"; chmod +x "$EO/stub/"*
 eo_git() { git -c user.name=t -c user.email=t@e -c commit.gpgsign=false "$@"; }
 eo_lf() { printf '%%if 1\nset -g @eo 1\n%%endif\n' > "$1/a.conf"; }
 eo_cr() { printf '%%if 1\r\nset -g @eo 1\r\n%%endif\r\n' > "$1/a.conf"; }
-eo_repo() {                   # <dir> -- a checkout: a.conf in LF, a PNG holding \r\n, a link
+eo_repo() {                   # <dir> [noattr] -- a.conf in LF, a PNG holding \r\n, a link
     mkdir -p "$1" && git init -q "$1" >/dev/null 2>&1 && eo_lf "$1" &&
-    printf '* text=auto\n' > "$1/.gitattributes" && cp "$EO/png" "$1/i.png" &&
-    ln -s a.conf "$1/l" && git -C "$1" add .gitattributes a.conf i.png l &&
+    cp "$EO/png" "$1/i.png" && ln -s a.conf "$1/l" && git -C "$1" add a.conf i.png l || return 1
+    [ "${2:-}" = noattr ] ||
+        { printf '* text=auto\n' > "$1/.gitattributes" && git -C "$1" add .gitattributes; } ||
+        return 1
     eo_git -C "$1" commit -q -m i
 }
 for eo_d in "$EOC" "$EP1" "$EP2"; do eo_repo "$eo_d"; done
@@ -5286,11 +5288,48 @@ printf '%%if 1\nset -g @eo 1\r\n%%endif\n' > "$EP1/a.conf"
 is "one CRLF line in a file (w/mixed) is a warn row too" "0|1|0" "$(eocrlf "$(eo_chk)")"
 printf '%%if 1\r\nset -g @eo 2\r\n%%endif\r\n' > "$EP1/a.conf"
 is "a file edited beyond its line endings: the fix says the restore drops that edit" "1" \
-   "$(eo_chk | grep -cF '1 files also have edits that this drops')"
+   "$(eo_chk | grep -cF '; 1 file also has edits that this drops')"
 eo_lf "$EP1"
 for eo_d in bash dirname; do ln -s "$(command -v "$eo_d")" "$EO/nogit/$eo_d"; done
 is "no git on PATH: a skip crlf row that says so" "1" \
    "$(eo_chk "$EO/nogit" | grep -cE '^\[ skip \] crlf +git not found')"
+
+# A plugin with no .gitattributes, as most have: git compares the CRLF file as it is. On git
+# below 2.51.1 the count took a CR-only file for an edit, and the fix said the restore drops
+# edits it does not (#1318). The count runs under core.autocrlf=true, on any version.
+EP5="$EH/.tmux/plugins/p5"; eo_repo "$EP5" noattr
+printf 'x\n' > "$EP5/b.conf"; git -C "$EP5" add b.conf && eo_git -C "$EP5" commit -q -m b
+eo_cr "$EP5"; printf 'x\r\n' > "$EP5/b.conf"; eo=$(eo_chk)
+is "no .gitattributes and CR-only changes: a warn row that names no edit to drop" "1|0" \
+   "$(eorow "$eo" 'warn crlf')|$(printf '%s\n' "$eo" | grep -c 'also ha')"
+printf 'y\r\n' > "$EP5/b.conf"
+is "and one of its two CRLF files edited too: 1 file has edits the restore drops" "1" \
+   "$(eo_chk | grep -cF '; 1 file also has edits that this drops')"
+printf 'x\r\n' > "$EP5/b.conf"; chmod +x "$EP5/b.conf"
+is "a mode change beside the CRs is no edit to drop" "0" "$(eo_chk | grep -c 'also ha')"
+# A git whose diff fails, as on an option it does not know: no count, and the fix says so.
+mkdir -p "$EO/gitbad"
+printf '#!/bin/sh\ncase " $* " in *" diff "*) exit 129 ;; esac\nexec %s "$@"\n' \
+    "$(tq "$(command -v git)")" > "$EO/gitbad/git"; chmod +x "$EO/gitbad/git"
+is "git diff failing: the fix says whether the restore drops edits is unknown, not 0" "1|0" \
+   "$(eo=$(eo_chk "$EO/gitbad:$EOPATH")
+      printf '%s\n' "$eo" | grep -c 'whether it drops other edits is unknown')|$(
+      printf '%s\n' "$eo" | grep -c 'also ha')"
+rm -rf "$EP5"
+# A plugin folder tracked by a dotfiles repository around it: the count stays in the folder,
+# and the repository's edit elsewhere is no edit the restore drops.
+EDF="$EH/.config/tmux"; git init -q "$EDF" >/dev/null 2>&1; mkdir -p "$EDF/plugins/p4"
+printf 'a\n' > "$EDF/plugins/p4/a.conf"; printf 'k\n' > "$EDF/keep.conf"
+git -C "$EDF" add plugins/p4/a.conf keep.conf && eo_git -C "$EDF" commit -q -m d
+printf 'a\r\n' > "$EDF/plugins/p4/a.conf"; printf 'edited\n' > "$EDF/keep.conf"; eo=$(eo_chk)
+is "a plugin folder in a dotfiles repository: a warn row, and its parent's edit is not its" \
+   "1|0" "$(eorow "$eo" 'warn crlf')|$(printf '%s\n' "$eo" | grep -c 'also ha')"
+rm -rf "$EDF/.git" "$EDF/plugins/p4" "$EDF/keep.conf"
+# tpm's XDG folder holding a link to cockpit's folder: the same folder, so one fail row.
+ln -s "$EOC" "$EDF/plugins/tmux-cockpit"; eo_cr "$EOC"
+is "a tpm folder's link to cockpit's own folder: one fail row, no warn row for the link" \
+   "0|0|1" "$(eocrlf "$(eo_chk)")"
+eo_lf "$EOC"; rm -f "$EDF/plugins/tmux-cockpit"
 
 # The named command, run as printed, on a checkout of its own.
 EOR="$EO/r"; eo_repo "$EOR"; eo_cr "$EOR"
@@ -5319,7 +5358,7 @@ eo_sum() { ( cd "$1" && find . -path ./.git -prune -o -type f -print | LC_ALL=C 
     xargs sha256sum ); }
 eosect() { printf '%s\n' "$1" | awk '/^== /{ f = ($0 == "== line endings =="); next } f && NF'; }
 eonote() { eosect "$1" |
-    grep -cxF "  CRLF   $2: 1 files git stores with LF; run install.sh --check"; }
+    grep -cxF "  CRLF   $2: 1 file git stores with LF; run $EOC/install.sh --check"; }
 eo_cr "$EOC"; eo_cr "$EP1"; eo_was=$(eo_sum "$EOC"; eo_sum "$EP1")
 eo=$(eo_bs --yes)
 is "bootstrap.sh: each CRLF checkout gets one note pointing at install.sh --check" "1|1" \
