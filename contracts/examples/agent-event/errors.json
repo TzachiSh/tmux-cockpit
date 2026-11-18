@@ -1,0 +1,30 @@
+{
+  "invalid-answer-text.json": {
+    "keyword": "additionalProperties",
+    "at": "$"
+  },
+  "invalid-outcome-on-tool.json": {
+    "keyword": "falseSchema",
+    "at": "$.outcome"
+  },
+  "invalid-turn-end-no-outcome.json": {
+    "keyword": "required",
+    "at": "$"
+  },
+  "invalid-agent-uppercase.json": {
+    "keyword": "pattern",
+    "at": "$.agent"
+  },
+  "invalid-version-2.json": {
+    "keyword": "const",
+    "at": "$.schema_version"
+  },
+  "invalid-subagent-kind.json": {
+    "keyword": "enum",
+    "at": "$.kind"
+  },
+  "invalid-kind-underscore.json": {
+    "keyword": "enum",
+    "at": "$.kind"
+  }
+}
