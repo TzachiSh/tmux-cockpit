@@ -77,9 +77,10 @@ git rev-parse --git-dir >/dev/null 2>&1 || fail "cockpit: not a git repository: 
 
 redraw() { [ -n "${TMUX:-}" ] && tmux refresh-client -S 2>/dev/null; return 0; }
 
-# The old-binary path: this switch, track and create (and their checks in act) serve a
-# cockpit-tui that still prints action lines (0.4.0, the release at the time). They go
-# once TUI_MIN is raised to the first release whose branch screen acts itself (#228).
+# The old-binary path: this switch, track, create and goto (and their checks in act)
+# serve a cockpit-tui that still prints action lines (0.4.0, the release at the time).
+# They go once TUI_MIN is raised to the first release whose branch screen acts itself
+# (#228, #1271), and with them the workdir.sh and fmt.sh loads only goto uses.
 current=$(git symbolic-ref --quiet --short HEAD 2>/dev/null || printf '')
 
 # Failures are common (dirty tree, branch held by a worktree); git's own message
@@ -277,10 +278,10 @@ goto() {
     printf 'cockpit: could not open a window in %s\n' "$path" >&2; pause; return 1
 }
 
-# cockpit-tui draws the picker and prints one action line. This script reads it as
-# untrusted text: a fixed verb, one line, a name git accepts and a ref that exists.
-# Since #228 the binary runs switch, track and create itself and prints nothing after
-# one ran, or `goto <path>`; switch, track and create lines come from an older binary.
+# cockpit-tui draws the picker. Since #228 it runs every action itself, goto included,
+# and prints nothing after one ran; an action line comes from an older binary. This
+# script reads one as untrusted text: a fixed verb, one line, a name git accepts and a
+# ref that exists, or a path git lists.
 act() {
     local line=$1 verb arg ns
     [ -n "$line" ] || { redraw; return 0; }
@@ -316,6 +317,9 @@ if [ -n "$err" ]; then trap 'rm -f -- "$err"' EXIT; trap 'exit 130' INT TERM HUP
 # The binary reads $COCKPIT_GLYPHS, never the option (#293), as tm passes it.
 glyphs=$(tmux show-option -gqv @cockpit_glyphs 2>/dev/null)
 [ -z "$glyphs" ] || export COCKPIT_GLYPHS="$glyphs"
+# goto's origin pane and pinned client, in the environment: a 0.4.0 binary exits 2 on
+# a flag it does not know, and ignores a variable. Set here, so none is inherited.
+export COCKPIT_BRANCH_PANE="$PANE_ID" COCKPIT_BRANCH_CLIENT="$CLIENT"
 # A failed action returns to the picker; esc leaves.
 while :; do
     if [ -n "$err" ]; then
