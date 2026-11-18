@@ -3702,6 +3702,20 @@ case "$(cat "$VOUT")" in
             "$(cat "$VOUT")" ;;
 esac
 rm -f "$VTMUX/code"
+# #1179: the opened note shortens by HOME as text. A home literally named "*" in the click
+# folder still holds the shim; as a glob it matched the whole path, shown as "~:12".
+VGH="$VQ/*"; mkdir -p "$VGH"; ln -s "$VH/.vscode-server" "$VGH/.vscode-server"
+: > "$VOUT"
+env -i COCKPIT_TUI_BIN="$OPTUI" PATH="$VTMUX" HOME="$VGH" VLOG="$VLOG" XDG_RUNTIME_DIR="$VSK" \
+    TMUX_LOG="$VOUT" CLICK_DIR="$VQ" CLICK_LINE="it's.txt:12" \
+    bash "$DIR/scripts/tmux-open-path" --pick %1 </dev/null >/dev/null 2>&1
+is "through the shim under a HOME named [*]: the opened note shows the path whole" "1" \
+   "$(grep -cF "cockpit: opened $VQ/it's.txt:12" "$VOUT")"
+# Removed only when it is the folder named "*" inside $VQ, never by the quotes alone.
+case $VGH in
+    "$VQ"/'*') rm -rf -- "${VGH:?}" ;;
+    *) bad "the HOME named [*] is the one inside the click folder" "$VQ/*" "$VGH" ;;
+esac
 
 echo "== agent-state: notify must not hang on a silent stdin =="
 # The Notification hook piped JSON in and the script read it with cat, which
@@ -22027,10 +22041,11 @@ HXP=$("$TMUX_REAL" -L "$HX" list-panes -t t -F '#{pane_id}' | head -1)
 "$TMUX_REAL" -L "$HX" send-keys -t "$HXP" "cd 'd#S'" Enter
 until_out "*d#S" "$TMUX_REAL" -L "$HX" display-message -p -t "$HXP" '#{pane_current_path}'
 "$TMUX_REAL" -L "$HX" set-option -p -t "$HXP" @cockpit_click_line "see $HN" >/dev/null 2>&1
-hxgo() {                      # hxgo <n> -- run the pick re-entry; wait for it
+hxgo() {                      # hxgo <n> -- run the pick re-entry; wait for it. HXHOME: its HOME
     : > "$HXL"; : > "$HXA"
     "$TMUX_REAL" -L "$HX" send-keys \
-        -t "$HXP" "clear; PATH=$(tq "$HXB"):\$PATH COCKPIT_TUI_BIN=$(tq "$HXD/tui") $(
+        -t "$HXP" "clear; ${HXHOME:+HOME=$(tq "$HXHOME") }PATH=$(tq "$HXB"):\$PATH $(
+        )COCKPIT_TUI_BIN=$(tq "$HXD/tui") $(
         )'$DIR/scripts/tmux-open-path' --pick '$HXP'; echo HXDONE$1=\$?" Enter
     until_cap "$HX" "$HXP" "*HXDONE$1=[0-9]*"
 }
@@ -22065,6 +22080,12 @@ else
     bad "and the server ran the suite's stub code, no other" 1 \
         "$(cat "$STATE/code.argv" 2>/dev/null)"
 fi
+# After the code.argv count above, which reads the first click's argv only.
+# #1179: under a HOME of "$HW*", which is no prefix of the file, the note shows it whole
+# (as a glob it matched the whole path, shown as "~").
+HXHOME="$HW*" hxgo 3
+is "under a HOME of [$(basename "$HW")*] the opened note shows the path whole" "1" \
+   "$(grep -c -F "cockpit: opened ${HW//#/##}/a##(touch\${IFS}F)##{pid}##S.txt" "$HXL")"
 "$TMUX_REAL" -L "$HX" kill-server >/dev/null 2>&1
 fi
 
