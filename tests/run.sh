@@ -3478,6 +3478,116 @@ fi
 is "nested (Write(path))"    "$OP/README.md::"        "$(op '(Write(README.md))')"
 rm -rf "$OP"
 
+# tests: scripts/lib/git-env.sh
+echo "== tmux-open-path: a path the pane's folder misses is tried from the repo's top (#1289) =="
+# cargo, a git diff and a grep run at the top print paths from there. Clicked in a
+# subfolder, they resolved against the pane's folder alone and nothing opened. A
+# token missed there in every shape is now tried from `git rev-parse --show-toplevel`.
+# The repo's folder holds two blanks, as $OP's does.
+GR=$(mktmpd); GRR="$GR/r  t"; GRS="$GRR/sub"
+mkdir -p "$GRR/tui/src" "$GRS/d" "$GRR/d" "$GR/other/tui/src" "$GR/out/a" "$GR/gs" "$GR/nogit"
+: > "$GRR/tui/src/main.rs"; : > "$GRR/d/both"; : > "$GRS/d/both"; : > "$GRR/d/n"; : > "$GRS/d/n:5"
+: > "$GRS/both"; : > "$GR/other/tui/src/main.rs"
+git init -q "$GRR"; git init -q "$GR/other"
+# git as the script finds it on PATH: each call leaves a line, then the real git runs.
+printf '#!/bin/sh\necho x >> %s\nexec %s "$@"\n' \
+    "$(tq "$GR/gs/calls")" "$(tq "$(command -v git)")" > "$GR/gs/git"
+chmod +x "$GR/gs/git"
+# <cwd> <line>: the click's candidates, stderr included. The ceiling keeps git from
+# finding a repo above the fixture, whatever TMPDIR sits in.
+gr() { env GIT_CEILING_DIRECTORIES="$GR" PATH="$GR/gs:$PATH" \
+           "$DIR/scripts/tmux-open-path" --dry-run "$1" "$2" 2>&1; }
+# git calls since the last ask
+grn() { local n=0; [ -f "$GR/gs/calls" ] && n=$(wc -l < "$GR/gs/calls"); rm -f "$GR/gs/calls"
+        printf '%s' "$((n))"; }
+
+is "from a subfolder, a path printed from the top opens there, at its line" \
+   "$GRR/tui/src/main.rs:12:3" "$(gr "$GRS" 'error at tui/src/main.rs:12:3')"
+is "and a git diff's b/ path from a subfolder opens from the top" \
+   "$GRR/tui/src/main.rs::" "$(gr "$GRS" '+++ b/tui/src/main.rs')"
+is "a name in both the pane's folder and the top opens the pane's" "$GRS/d/both::" \
+   "$(gr "$GRS" 'see d/both')"
+# Every shape is tried in the pane's folder first: its d/n:5 is not the top's d/n at line 5.
+is "a token the pane's folder resolves in any shape keeps it" "$GRS/d/n:5::" \
+   "$(gr "$GRS" 'd/n:5')"
+is "outside a repo a miss opens nothing and prints nothing" "" \
+   "$(gr "$GR/out/a" 'tui/src/main.rs:12:3')"
+# The script ran: its both resolves. Its miss asks no git that is not there.
+is "with no git on PATH a miss opens nothing and prints nothing" "$GRS/both::" \
+   "$(env PATH="$GR/nogit" "$BASH" "$DIR/scripts/tmux-open-path" --dry-run "$GRS" \
+          'both tui/src/main.rs:12:3' 2>&1)"
+# A dotfiles setup exports GIT_DIR and GIT_WORK_TREE into tmux; git-env.sh drops them.
+is "a GIT_DIR tmux inherited names no other tree: the pane's own top opens" \
+   "$GRR/tui/src/main.rs:12:3" \
+   "$(GIT_DIR="$GR/other/.git" GIT_WORK_TREE="$GR/other" gr "$GRS" 'tui/src/main.rs:12:3')"
+git -C "$GRR" -c user.name=t -c user.email=t@e commit -q --allow-empty -m t
+git -C "$GRR" worktree add -q "$GR/wt" 2>/dev/null
+mkdir -p "$GR/wt/sub" "$GR/wt/tui/src"; : > "$GR/wt/tui/src/main.rs"
+is "in a linked worktree's subfolder, that worktree's top opens" "$GR/wt/tui/src/main.rs:12:3" \
+   "$(gr "$GR/wt/sub" 'tui/src/main.rs:12:3')"
+grn >/dev/null
+# Write(d/both) resolves only through the unwrap: the top waits for that too.
+gr "$GRS" 'd/both d/n:5 Write(d/both)' >/dev/null
+is "a click whose tokens all resolve asks git nothing" "0" "$(grn)"
+gr "$GRS" 'tui/src/main.rs:12:3 no/pe also/nope' >/dev/null
+is "a click with three misses asks git once" "1" "$(grn)"
+GRL=''; for gri in $(seq 500); do GRL+="no/pe$gri "; done
+gr "$GRS" "$GRL" >/dev/null
+is "a 500-token line of misses asks git once" "1" "$(grn)"
+# Only a token holding a / is tried from the top: a word of prose that names a folder there
+# would turn a direct open into the picker.
+mkdir -p "$GRR/docs" "$GRR/scripts" "$GRS/src"; : > "$GRS/src/a.rs"
+is "a word with no / is not tried from the top" "$GRS/src/a.rs:3:" \
+   "$(gr "$GRS" 'error in src/a.rs:3, see the docs or scripts')"
+
+# A dead pane (remain-on-exit) has an empty folder, and the click's run-shell runs in the
+# session's start folder. A relative token then resolved against / on its own, and
+# `git -C ''` answered for the start folder's repo. A tmux stub answers the script's
+# queries and logs what it would open.
+mkdir -p "$GR/et"
+cat > "$GR/et/tmux" <<'STUB'
+#!/usr/bin/env bash
+case "$1" in
+  show-options) case " $* " in *@cockpit_click_line*) printf '%s\n' "$CLICK_LINE" ;;
+                               *@cockpit_editor*) printf 'nvim\n' ;; esac ;;
+  display-message) case " $* " in *pane_current_path*) printf '\n' ;;
+                                  *window_id*) printf '@0\n' ;;
+                                  *) printf 'MSG %s\n' "$*" >> "$TMUX_LOG" ;; esac ;;
+  new-window) printf 'NEWWIN %s\n' "${!#}" >> "$TMUX_LOG" ;;
+esac
+exit 0
+STUB
+chmod +x "$GR/et/tmux"
+# <line> [path]: a click in a pane with no folder, run from $GRS. "no file", or "opened"
+# and the path when the editor's command names it.
+grd() {
+    local log
+    : > "$GR/et/log"
+    ( cd "$GRS" && env GIT_CEILING_DIRECTORIES="$GR" PATH="$GR/et:$GR/gs:$PATH" \
+          TMUX_LOG="$GR/et/log" CLICK_LINE="$1" "$DIR/scripts/tmux-open-path" %1 \
+          </dev/null >/dev/null 2>&1 )
+    log=$(cat "$GR/et/log")
+    case $log in
+        *"no file on that line"*) printf 'no file' ;;
+        *NEWWIN*" $(printf %q "${2-}")") printf 'opened %s' "$2" ;;
+        *NEWWIN*) printf 'opened elsewhere' ;;
+        *) printf 'other: %s' "$log" ;;
+    esac
+}
+is "a click in a pane with no folder opens nothing from the cwd's repo" "no file" \
+   "$(grd 'tui/src/main.rs:12')"
+# /bin/sh is on every runner: the token names it only when read against /.
+is "a click in a pane with no folder resolves no relative path against /" "no file" \
+   "$(grd 'see bin/sh')"
+# Absolute and ~ paths name their file without the pane's folder, as before.
+GRA=$(mktemp -d "$COCKPIT_SUITE_NB/ct.XXXXXX"); : > "$GRA/abs.txt"
+is "a click in a pane with no folder still opens an absolute path" "opened $GRA/abs.txt" \
+   "$(grd "$GRA/abs.txt" "$GRA/abs.txt")"
+: > "$HOME/grd-1289.txt"
+is "a click in a pane with no folder still opens a ~ path" "opened $HOME/grd-1289.txt" \
+   "$(grd 'see ~/grd-1289.txt' "$HOME/grd-1289.txt")"
+rm -rf "$GR" "$GRA" "$HOME/grd-1289.txt"
+
 # tests: scripts/tmux-branch
 echo "== tm: a session created from the picker starts in the pane's directory (#41) =="
 # tm runs in a popup, whose cwd is the CURRENT session's start directory, and
