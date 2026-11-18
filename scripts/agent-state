@@ -330,8 +330,8 @@ session)
     seen=${rest%%"$us"*} was=${rest#*"$us"}
     # @cockpit_dir_before (#323): the dir as this session found it, which SessionEnd's `off`
     # puts back. Written once, by the first hook with none, so later writes never move it;
-    # `end` drops it. "=" + the value, so an empty dir is a record too: a format reads an unset
-    # option and an empty one alike.
+    # SessionEnd's `off` drops it. "=" + the value, so an empty dir is a record too: a format
+    # reads an unset option and an empty one alike.
     if [ "$rec" = 0 ]; then
         arg="=$was"; case "$arg" in *\;) arg="${arg%;}\\;" ;; esac
         tmux set-option -p -t "$pane" @cockpit_dir_before "$arg" 2>/dev/null
@@ -524,13 +524,13 @@ fi
 # what the hooks and the agent set goes, a dir set by hand before the agent started stays.
 # @cockpit_cwd and the record go with it, in this same call. Only at SessionEnd, read from the
 # payload: `off` also runs at SessionStart. Not when the reason is clear or resume: a new
-# session follows in this pane at once, and its hooks run beside these (one event's hooks run
-# in parallel), so a restore could land after its first write. The reasons are clear, resume,
+# session follows in this pane at once, and nothing makes this hook finish before that
+# session's first hook writes, so a restore could land after it. The reasons are clear, resume,
 # logout, prompt_input_exit and other (https://code.claude.com/docs/en/hooks, SessionEnd).
 # The record stays, and that session's end puts it back. The record is read as a value, not
-# a format, so no #707 cut can write a cut value. With no
-# record (a session begun before #323), the hooks' rule: they write the dir and @cockpit_cwd
-# together, so a dir that differs from the cwd stays; that test reads 1 only when whole.
+# a format, so no #707 cut can write a cut value. With no record (a session begun before
+# #323), the hooks' rule: they write the dir and @cockpit_cwd together, so a dir that differs
+# from the cwd stays; that test reads 1 only when whole.
 if [ -n "$ended" ]; then
     case "$payload" in
     *'"reason":"clear"'*|*'"reason": "clear"'*|*'"reason":"resume"'*|*'"reason": "resume"'*) ;;
