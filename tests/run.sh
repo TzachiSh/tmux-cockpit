@@ -5429,9 +5429,10 @@ cl_out=$( cl_env 12 "$CL/p/nolib/install.sh" --check ); cl_n=$?
 is "install.sh --check without it: exit 1, and no row was printed" "1|0" \
    "$cl_n|$(printf '%s\n' "$cl_out" | grep -c '^\[')"
 # Which lines run this folder's cockpit.tmux (#1067), each alone in a config: its line
-# number, or none. A comment, another folder and a bind only name the file.
+# number, or none. A comment, another folder and a bind only name the file. A trailing
+# comment is taken off since #1304, so `trailing` is a load: it read none before (#1067).
 is "cockpit_conf_wired_line: the spellings that load this folder, and those that do not" \
-   "comment:none bind:none other:none tilde:1 trailing:none bare:1 single:1 single-tilde:1 $(:
+   "comment:none bind:none other:none tilde:1 trailing:1 bare:1 single:1 single-tilde:1 $(:
    )double:1 run-b:1 home:1 home-braced:1 printed:1 " \
    "$(. "$DIR/scripts/lib/confline.sh"; HOME="$CL/h1"; cl_p="$HOME/pl ug"
       cl_r='/pl ug/cockpit.tmux'
@@ -5590,6 +5591,24 @@ is "and its fix names the check that failed: tpm reads only the XDG config" "1" 
 is "and install.sh's closing note names it too" "1" \
    "$(cl_env 15 "$cl_t/install.sh" | grep -cxF "tpm seems to manage cockpit in $(:
       )$CL/h15/.tmux.conf, not confirmed: tpm reads @plugin lines only from $cl_x/tmux.conf.")"
+# A trailing comment after the run line's path comes off, as tmux reads it: the line loads
+# (#1304, found in #1313's review). A ' #' inside the quotes ends the path there too, where
+# tmux keeps it, so that line is no load, the loud side. The line cockpit_conf_line prints
+# for a folder whose path holds ' #' escapes the #, and loads.
+is "cockpit_conf_wired_line: a trailing comment comes off, a ' #' in the quotes is no load" \
+   "docs:1 double:1 printed:1 hash-in-quotes:none hash-printed:1 " \
+   "$(. "$DIR/scripts/lib/confline.sh"; HOME="$CL/h24"; cl_p="$HOME/.tmux/plugins/tmux-cockpit"
+      cl_e="$HOME/a #b"; mkdir -p "$cl_p" "$cl_e"
+      : > "$cl_p/cockpit.tmux"; : > "$cl_e/cockpit.tmux"
+      for cl_f in "docs|run-shell '~/.tmux/plugins/tmux-cockpit/cockpit.tmux'   # cockpit|$cl_p" \
+          "double|run-shell \"$cl_p/cockpit.tmux\" # mine|$cl_p" \
+          "printed|$(cockpit_conf_line "$cl_p") # mine|$cl_p" \
+          "hash-in-quotes|run-shell '$cl_e/cockpit.tmux' # mine|$cl_e" \
+          "hash-printed|$(cockpit_conf_line "$cl_e")|$cl_e"; do
+          IFS='|' read -r cl_k cl_a cl_d <<< "$cl_f"
+          printf '%s\n' "$cl_a" > "$CL/wl"
+          printf '%s:%s ' "$cl_k" "$(cockpit_conf_wired_line "$CL/wl" "$cl_d" || printf none)"
+      done)"
 # tpm's config sources its @plugin line from ~/.tmux/plugins.conf, and tpm loads the plugin
 # from it: bootstrap.sh appends nothing, and --check passes the config row (#1304).
 cl_box 22 srcx; cl_t="$CL/h22/.tmux/plugins/tmux-cockpit"; mv "$CL/p/srcx" "$cl_t"

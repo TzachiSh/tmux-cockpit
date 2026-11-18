@@ -46,6 +46,11 @@ cockpit_bare_carries() {      # <path> -> 0 when a bare line carries it
 # The argument of a config line that runs a shell command: run-shell, or run, an optional
 # -b, then the rest of the line, blanks trimmed. Set in cockpit_arg, with no subshell per
 # line. Returns 1, cockpit_arg empty, for any other line: one starting with # among them.
+# A trailing comment comes off, at the first blank followed by a #, as docs/install.md's own
+# tpm line has one. tmux starts a comment only at a # it reads between words, and keeps one
+# inside quotes (cmd-parse.y, yylex() and yylex_token()). So a ' #' inside a quoted path
+# ends the path here, where tmux keeps it: such a line runs nothing this file can name, and
+# the callers say so loudly (#1302, #1304).
 cockpit_conf_run_arg() {      # <config line> -> cockpit_arg
     local l=$1
     cockpit_arg=''
@@ -57,6 +62,7 @@ cockpit_conf_run_arg() {      # <config line> -> cockpit_arg
     esac
     l=${l#"${l%%[![:space:]]*}"}
     case "$l" in -b[[:space:]]*) l=${l#-b}; l=${l#"${l%%[![:space:]]*}"} ;; esac
+    l=${l%%[[:space:]]#*}; l=${l%"${l##*[![:space:]]}"}
     cockpit_arg=$l
 }
 
@@ -124,7 +130,7 @@ cockpit_conf_wired_line() {   # <config file> <plugin folder> -> line number
 # both in an unquoted word. So bare, "<s>" and '<s>' (sh then sees <s> unquoted) take all
 # three. '"<s>"' takes $HOME and ${HOME}, as sh's double quotes leave a ~ alone. "'<s>'"
 # expands nothing, as sh's single quotes keep <s> as written. Any other shape, a quote
-# inside one of these, a \ or a trailing comment, is no path. Set in cockpit_path (#1067).
+# inside one of these or a \, is no path. Set in cockpit_path (#1067).
 cockpit_conf_arg_path() {     # <run argument> -> cockpit_path
     local a=$1 h=${HOME:-} t=all i
     h=${h%/}; cockpit_path=''
@@ -256,10 +262,8 @@ cockpit_conf_lines() {        # <file>... -> their lines
 # Debian's and Arch's packages install, /usr/share/tmux-plugin-manager/tpm. Any other path
 # that ends in tpm is no run of tpm. A script of the user's named tpm would read as one,
 # and then the plugin silently never loads, where rc 2 prints a fix line (#1302).
-# A trailing comment comes off first, at the first blank followed by a #. tmux starts a
-# comment only at a # it reads between words, and keeps one inside quotes (cmd-parse.y,
-# yylex() and yylex_token()). So a ' #' inside a quoted path ends the path here, where
-# tmux keeps it, and that line gives the loud rc 2, a "cannot tell" (#1302).
+# cockpit_conf_run_arg takes a trailing comment off first. A ' #' inside a quoted path ends
+# the path there, where tmux keeps it, and that line gives the loud rc 2, a "cannot tell".
 # A line names this plugin when its name is this folder's name or <plugin path>/<name> is
 # this folder, -ef, through a symlink too. Prints the config that names it, tpm's own
 # first, and sets cockpit_tpm_file to it. 0: it loads, the line in tpm's config,
@@ -284,9 +288,7 @@ cockpit_conf_tpm() {          # <plugin folder> <config>... -> the config naming
         fi
         while IFS= read -r l || [ -n "$l" ]; do
             if cockpit_conf_run_arg "$l"; then
-                # A trailing comment off first, as docs/install.md's own tpm line has.
-                arg=${cockpit_arg%%[[:space:]]#*}; arg=${arg%"${arg##*[![:space:]]}"}
-                arg=${arg//\'/}; arg=${arg//\"/}
+                arg=${cockpit_arg//\'/}; arg=${arg//\"/}
                 case "$arg" in
                     */tpm/tpm|/usr/share/tmux-plugin-manager/tpm) run=1 ;;
                 esac
