@@ -232,7 +232,8 @@ popup() {  # popup CLIENT SESSION_ID CLIENT_WIDTH CLIENT_HEIGHT PANE [--needs]
     tmux new-window -t "$sid:" -n sessions "$cmd"
     return
   fi
-  tmux display-popup -c "$client" -t "$sid" -w "$w" -h "$h" -T ' sessions ' -E "$cmd"
+  tmux display-popup -c "$client" -t "$sid" -w "$w" -h "$h" -T ' sessions ' \
+    -E "$COCKPIT_POPUP_MARK$cmd"
 }
 
 clamp() {  # clamp VAR LOW HIGH -- HIGH wins when the two cross

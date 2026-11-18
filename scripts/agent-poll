@@ -186,7 +186,8 @@ scan_panes() {
     local rows id cmd allow glob view fg job jname jstate jsess pstate owner cfg title marked
     local seen=0 job_kept="" fgc
     S_LIVE="" S_BOUND="" S_CAND="" S_SIG="" S_ROWS=$'\n' S_SERIOUS="" S_OWN="" S_MINE=""
-    rows=$(tmux list-panes -a -F "$PANE_FMT" 2>/dev/null) || return 1
+    # -f: cockpit's own popup is a pane on tmux next-3.9, and no agent (#1248)
+    rows=$(tmux list-panes -a -f "$COCKPIT_NOT_POPUP" -F "$PANE_FMT" 2>/dev/null) || return 1
     while IFS=$T read -r id cmd allow glob view fg job jname jstate jsess pstate owner cfg title
     do
         [ -n "$id" ] || continue

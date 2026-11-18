@@ -41,9 +41,10 @@ $(shq "$dir"); then $(shq "$SELF") --done $(shq "$store"); fi")"
 # --- --request: the agent asks ----------------------------------------------
 # Run from the agent's own Bash tool (the cockpit-review skill): one popup on the
 # pane, and the batch back on stdout with exit 10. The loop's exit code decides,
-# not the store. display-popup returns tmux's status, not the command's, so the
-# popup writes it to <sess>/rc. A timed-out launcher leaves the popup running;
-# running it again resumes the pinned comments.
+# not the store: the popup writes it to <sess>/rc, read below. display-popup hands
+# back the command's own status as well (a #1248 row shows it), which nothing here
+# reads. A timed-out launcher leaves the popup running; running it again resumes
+# the pinned comments.
 request() {                   # <pane>
     local pane=$1 dir root sess store pw ph rc t cmd
     is_pane "$pane" || { usage; exit 2; }
@@ -68,7 +69,7 @@ request() {                   # <pane>
     cmd="REVIEW_PANE_ID=$(shq "$pane") $(shq "$SELF") --loop $(shq "$root") $(shq "$store");"
     cmd="$cmd echo \$? > $(shq "$sess/rc")"
     tmux display-popup -E -t "$pane" -w "$pw" -h "$ph" \
-        -T "$(fesc " review · requested · $t ")" "$cmd" 2>/dev/null
+        -T "$(fesc " review · requested · $t ")" "$COCKPIT_POPUP_MARK$cmd" 2>/dev/null
     rc=$(cat -- "$sess/rc" 2>/dev/null); rm -f -- "$sess/rc"
     case "$rc" in
         126) printf 'tmux-review: revdiff failed\n' >&2
