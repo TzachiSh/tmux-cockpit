@@ -10912,6 +10912,63 @@ done
 unset -f os_site; unset OSS os_w
 fi
 
+echo "== bootstrap.sh's tmux build and revdiff fetch rm -rf no dir mktemp did not make (#947) =="
+# build_tmux and fetch_tool each armed rm -rf, at RETURN, on whatever mktemp -d answered. Here a
+# mktemp earlier on PATH answers -d with a dir that exists: one with a canary, the run's own
+# cwd, or - with a dir named - in the cwd (rm -rf - takes ./-). The step fails as a failed
+# mktemp does, prints which check refused, and the dir stays. A faked box, and nothing leaves
+# it: HOME is a folder of the row's, given as a prefix; PATH is a stub folder, then /usr/bin and
+# /bin. sudo, every package manager bootstrap.sh knows, git, curl, wget, gh and cargo are stubs
+# that log and do nothing; the apt-get stub makes every box an apt box, so the build is reached
+# the same way everywhere. COCKPIT_GITHUB is an empty file:// dir. The tmux stub prints a
+# version: 3.7 is built, 3.8 is kept; a revdiff stub at the pin keeps the build rows off
+# fetch_tool. Every plugin is cloned already and ~/.tmux.conf loads cockpit, so no other step
+# acts.
+bt_mk=$(PATH=/usr/bin:/bin command -v mktemp)
+bt_run() {                    # <tmux|revdiff> <full|cwd|-> <check> -> "<kept|gone>|<FAIL lines>"
+    local s=$1 w=$2 o a k c what
+    o=$(mktmpd); mkdir -p "$o/bin" "$o/cwd/-" "$o/full" "$o/rel" "$o/h/.tmux/plugins"
+    echo keep > "$o/full/canary"; echo keep > "$o/cwd/-/canary"
+    for c in tpm tmux-sensible tmux-yank tmux-resurrect tmux-continuum; do
+        mkdir -p "$o/h/.tmux/plugins/$c/.git"
+    done
+    printf '# mine\nrun-shell %s/cockpit.tmux\n' "$DIR" > "$o/h/.tmux.conf"
+    case $w in full) a=$o/full k=$o/full/canary ;; cwd) a=$o/cwd k=$o/cwd ;;
+               *) a=- k=$o/cwd/-/canary ;; esac
+    for c in sudo apt-get dnf pacman zypper brew git curl wget gh cargo; do
+        printf '#!/bin/sh\necho "%s $*" >> %s\n' "$c" "$(tq "$o/calls")" > "$o/bin/$c"
+        case $c in sudo|apt-get) echo 'exit 0' ;; *) echo 'exit 1' ;; esac >> "$o/bin/$c"
+    done
+    printf '#!/bin/sh\ncase $1 in -d) printf "%%s\\n" %s ;; *) exec %s "$@" ;; esac\n' \
+        "$(tq "$a")" "$(tq "$bt_mk")" > "$o/bin/mktemp"
+    if [ "$s" = tmux ]; then c=3.7 what='the tmux build'
+        printf '#!/bin/sh\necho "version: 1.13.0"\n' > "$o/bin/revdiff"
+    else c=3.8 what=revdiff; fi
+    printf '#!/bin/sh\ncase $1 in -V) echo "tmux %s" ;; esac\nexit 0\n' "$c" > "$o/bin/tmux"
+    chmod +x "$o/bin/"*
+    (cd "$o/cwd" && env -u TMUX -u TMUX_PANE HOME="$o/h" PATH="$o/bin:/usr/bin:/bin" \
+        COCKPIT_GITHUB="$(file_url "$o/rel")" timeout 60 "$DIR/bootstrap.sh" </dev/null \
+        >"$o/out" 2>&1)
+    printf '%s|%s' "$([ -e "$k" ] && echo kept || echo gone)" \
+        "$(grep -cxF "  FAIL:  no temp dir for $what (own_tmpdir: $3)" "$o/out")"
+}
+# fetch_tool is reached only where a prebuilt revdiff exists, and on Linux: on macOS the brew
+# stub takes the step.
+case "$(uname -s)/$(uname -m)" in
+    Linux/x86_64|Linux/amd64|Linux/aarch64|Linux/arm64) bt_f=1 ;;
+    *) bt_f='' ;;
+esac
+for bt_c in full:nonempty cwd:cwd -:dash; do
+    bt_w=${bt_c%:*}
+    is "the tmux build: a mktemp answering [$bt_w] is refused, says why, and the dir stays" \
+       "kept|1" "$(bt_run tmux "$bt_w" "${bt_c#*:}")"
+    if [ -n "$bt_f" ]; then
+        is "fetch_tool: a mktemp answering [$bt_w] is refused, says why, and the dir stays" \
+           "kept|1" "$(bt_run revdiff "$bt_w" "${bt_c#*:}")"
+    else skip_ "fetch_tool and a mktemp answering [$bt_w] (no prebuilt revdiff here)"; fi
+done
+unset -f bt_run; unset bt_mk bt_c bt_w bt_f
+
 # group: deliver
 echo "== tmux-review --deliver: guards refuse before anything is pasted =="
 if need_tmux "tmux-review --deliver"; then :; else
