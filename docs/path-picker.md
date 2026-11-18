@@ -3,7 +3,10 @@
 ## Ctrl+double-click a line to pick a path off it
 
 **Ctrl+double-click** any line of pane output. Every whitespace-separated token
-on that line that resolves to a real file becomes a candidate.
+on that line that resolves to a real file becomes a candidate. So a path that
+holds a space is never found whole, quoted or escaped alike: `my notes/todo.md`
+is the tokens `my` and `notes/todo.md`, and only a piece that names a file of
+its own is offered.
 
 **One candidate opens at once**, a folder included: there is nothing to choose,
 so no popup appears. **Several** open a `cockpit-tui pick` popup with the list:
@@ -75,7 +78,7 @@ the top row it showed; a clicked `README.md:40` opens the viewer at line 40.
 `set -g @cockpit_md_view off` sends markdown to the editor directly, as before, and
 the file browser's `↵` stops viewing too: every file goes to the editor. On a touch client the
 viewer's `e` opens the terminal editor (see above), at the line when the editor takes `+N`
-(vi, vim, nvim, nano, emacs, micro), instead of VS Code on the PC.
+(see the editor list below), instead of VS Code on the PC.
 The viewer's keys are in [docs/tui.md](tui.md#the-markdown-viewer-283).
 
 Rows keep their line numbers — a clicked `src/app.ts:31` reads as
@@ -173,6 +176,11 @@ Opens in VS Code at the line. For a terminal editor instead:
 ```tmux
 set -g @cockpit_editor nvim   # new window next to the one you clicked, at +LINE
 ```
+
+The line goes to the editor as `+LINE` only when the editor reads it as one:
+vi, vim, gvim, view, rvim, nvim, nano, emacs, emacsclient and micro, named past
+any leading `NAME=value` words and one `env`. Every other editor gets the file
+only, in every window the picker opens, so it never opens a file named `+12`.
 
 Keep it a **terminal** editor: it runs inside that new tmux window. On a touch
 client (`@cockpit_is_touch`), two paths skip VS Code: `e` in the viewer and
