@@ -48,8 +48,9 @@ edits your config.
 
 Both say the same about a line that holds the full path in single quotes
 alone, or in double quotes alone, with or without `-b`. tmux takes those quotes
-off, and `sh` reads the path unquoted, so a space in it splits it. In `'~/<rest>'` only the rest counts:
-`sh` puts your home directory in for the `~` and does not split it (#1303).
+off, and `sh` reads the path unquoted, so a space in it splits it. In
+`'~/<rest>'` only the rest counts: `sh` puts your home directory in for the `~`
+and does not split it (#1303).
 
 `install.sh` only ever creates symlinks, skips a name already taken by a real
 file or by another tool's link, reports anything it could not create, and
@@ -110,9 +111,10 @@ every `set -g` in your config, so the cockpit options you set are in place when
 the plugin reads them. No theme plugin is needed: the plugin draws the bar and
 its own palette ([status-bar.md](status-bar.md#colours)).
 
-A tpm from a distro package runs from that package's path, such as Debian's
-`run '/usr/share/tmux-plugin-manager/tpm'`, and `install.sh --check` takes
-that line as tpm's too. When its config row fails on an `@plugin` line, the fix
+Debian's and Arch's packages install tpm as
+`/usr/share/tmux-plugin-manager/tpm`, and `install.sh --check` takes a run
+line for that path as tpm's too. A tpm anywhere else counts when its path ends
+in `/tpm/tpm`, as a clone of tpm has it. When its config row fails on an `@plugin` line, the fix
 column names each check that failed: the line sits in a config tpm does not
 read, no line runs tpm, or tpm's plugin folder holds another copy (#1302).
 

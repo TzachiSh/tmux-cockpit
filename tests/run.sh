@@ -5492,10 +5492,13 @@ is "cockpit_conf_tpm: an @plugin line in ~/.tmux.conf beside an XDG tmux.conf is
           > "$HOME/.tmux.conf"
       cockpit_conf_tpm "$CL/x14/tmux/plugins/tmux-cockpit" "$CL/x14/tmux/tmux.conf" \
           "$HOME/.tmux.conf" >/dev/null; printf '%s' "$?")"
-# tpm's run line (#1302): a path ending in /tpm/tpm, or one word whose last path part is tpm,
-# as Debian's package has it. A trailing comment, as on docs/install.md's line, is not part of it.
+# tpm's run line (#1302): a path ending in /tpm/tpm, or the one Debian's and Arch's packages
+# install. Any other path ending in tpm is the loud rc 2, a user's own script among them. A
+# trailing comment, as on docs/install.md's line, is not part of it. A ' #' inside the quotes
+# ends the path too, the first one: rc 2, where tmux would keep it.
 is "cockpit_conf_tpm: the run lines that start tpm" \
-   "clone:0 debian:0 brew:0 docs:0 spaced:0 git-clone:2 no-slash:2 " \
+   "clone:0 debian:0 brew:0 docs:0 spaced:0 git-clone:2 no-slash:2 home-bin:2 dot:2 $(:
+   )hash-in-quotes:2 " \
    "$(. "$DIR/scripts/lib/confline.sh"; unset XDG_CONFIG_HOME; HOME="$CL/h14"
       cl_p="$HOME/.tmux/plugins/tmux-cockpit"; cl_l="set -g @plugin 'o/tmux-cockpit'"
       mkdir -p "$cl_p"
@@ -5505,7 +5508,8 @@ is "cockpit_conf_tpm: the run lines that start tpm" \
           "docs|run '~/.tmux/plugins/tpm/tpm'             # last" \
           "spaced|run-shell '/my tools/tpm/tpm'" \
           "git-clone|run 'git clone https://github.com/tmux-plugins/tpm ~/.tmux/plugins/tpm'" \
-          "no-slash|run tpm"; do
+          "no-slash|run tpm" "home-bin|run '~/bin/tpm'" "dot|run './tpm'" \
+          "hash-in-quotes|run '/opt/my #tools/tpm/tpm' # mine"; do
           printf '%s\n%s\n' "$cl_l" "${cl_f#*|}" > "$HOME/.tmux.conf"
           cockpit_conf_tpm "$cl_p" "$HOME/.tmux.conf" >/dev/null
           printf '%s:%s ' "${cl_f%%|*}" "$?"
