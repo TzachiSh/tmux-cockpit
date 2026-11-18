@@ -2401,7 +2401,7 @@ fn no_usage_puts_nothing_on_the_card_border() {
 fn an_unknown_model_id_shows_raw_and_cut() {
     let foot = card_foot("a2raw", &usage_row("claude-3-5-son\u{202e}net\u{1b}-x", [1, 2_000, 0, 0]));
     assert!(foot.contains(" claude-3-5-… · 2k "), "{foot}");
-    let foot = card_foot("a2raw2", &usage_row("gpt", [1, 2_000, 0, 0]));
+    let foot = card_foot("a2raw2", &usage_row("g\u{202e}p\u{1b}t", [1, 2_000, 0, 0]));
     assert!(foot.contains(" gpt · 2k "), "{foot}");
 }
 
