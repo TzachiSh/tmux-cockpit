@@ -2741,6 +2741,41 @@ RG_GATE="$RGCP/scripts/review-gate" rg_run "$RGPAY"
 is "and the Stop hook leaves the pending mark under bash 3" "pending|GRC=0" \
     "$("$TMUX_REAL" -L "$RG" show-option -pqv -t "$RGAP" @cockpit_review)|$(rg_rc)"
 unset RGCP rgl rg_lib
+# #1286: git exits 128 alike for no repo and for a repo it refuses or cannot read, so a
+# .git on the walk up is no answer (2), and none below the first ceiling is no repo (1).
+# @cockpit_dir points --delta at each dir. An empty global config and no system one: a
+# safe.directory=* there would hide the refusal. GIT_TEST_ASSUME_DIFFERENT_OWNER is git's
+# own switch for a repo another uid owns (setup.c, ensure_valid_ownership).
+RGO=$(mktmpd); : > "$RGO/gitconfig"
+mkdir -p "$RGO/none" "$RGO/badfile" "$RGO/top/ceil/plain"
+git init -q "$RGO/own" >/dev/null 2>&1; git init -q "$RGO/top" >/dev/null 2>&1
+printf 'gitdir: %s/gone\n' "$RGO" > "$RGO/badfile/.git"
+rgo_env="GIT_CONFIG_GLOBAL=$(printf '%q' "$RGO/gitconfig") GIT_CONFIG_NOSYSTEM=1"
+rgo_own="GIT_TEST_ASSUME_DIFFERENT_OWNER=1 GIT_CEILING_DIRECTORIES=$(printf '%q' "$RGO")"
+rgo() {                       # <dir> <env...> -> D=<--delta's exit>
+    "$TMUX_REAL" -L "$RG" set-option -p -t "$RGAP" @cockpit_dir "$1" >/dev/null 2>&1
+    "$TMUX_REAL" -L "$RG" run-shell "$rgo_env $2 XDG_STATE_HOME=$(printf '%q' "$RGSTATE") \
+        '$DIR/scripts/tmux-review' --delta $RGAP; echo D=\$?" 2>/dev/null | tail -1
+}
+is "git itself refuses the repo under GIT_TEST_ASSUME_DIFFERENT_OWNER (exit 128)" "128" \
+    "$(GIT_CONFIG_GLOBAL="$RGO/gitconfig" GIT_CONFIG_NOSYSTEM=1 \
+        GIT_TEST_ASSUME_DIFFERENT_OWNER=1 \
+        git -C "$RGO/own" rev-parse --is-inside-work-tree >/dev/null 2>&1; echo $?)"
+is "--delta in a repo git refuses for its owner cannot tell (exit 2)" "D=2" \
+    "$(rgo "$RGO/own" "$rgo_own")"
+is "--delta under a .git file naming a gone gitdir cannot tell (exit 2)" "D=2" \
+    "$(rgo "$RGO/badfile" "GIT_CEILING_DIRECTORIES=$(printf '%q' "$RGO")")"
+is "--delta with no .git up to the ceiling is no repo (exit 1)" "D=1" \
+    "$(rgo "$RGO/none" "GIT_CEILING_DIRECTORIES=$(printf '%q' "$RGO")")"
+is "--delta never looks for a .git above a ceiling, as git does not (exit 1)" "D=1" \
+    "$(rgo "$RGO/top/ceil/plain" "GIT_CEILING_DIRECTORIES=$(printf '%q' "$RGO/top/ceil")")"
+"$TMUX_REAL" -L "$RG" set-option -p -t "$RGAP" @cockpit_review pending
+"$TMUX_REAL" -L "$RG" set-option -p -t "$RGAP" @cockpit_dir "$RGO/own"
+RG_PRE="$rgo_env $rgo_own " rg_run "$RGPAY"
+is "and the Stop hook keeps the pending mark on a repo git refuses" "pending|GRC=0" \
+    "$("$TMUX_REAL" -L "$RG" show-option -pqv -t "$RGAP" @cockpit_review)|$(rg_rc)"
+"$TMUX_REAL" -L "$RG" set-option -pu -t "$RGAP" @cockpit_dir
+unset RGO rgo_env rgo_own; unset -f rgo
 # Only exit 1, no difference, clears a pending mark.
 printf 'a\n' > "$RGDIR/f"; rg_run "$RGPAY"
 is "a clean tree clears a pending mark" "|GRC=0" \
