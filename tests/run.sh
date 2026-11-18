@@ -10829,6 +10829,138 @@ for td_a in "" nope . .. .:empty link sib:badls; do
 done
 unset -f td_k; unset TDE td_a td_o td_w
 
+echo "== own_tmpdir takes mktemp's answer only when it is a fresh dir of the user's own (#947) =="
+# lib/tmpdir.sh, the check every rm -rf'd temp dir goes through. own_tmpdir_why names the first
+# check that refused, in a fixed order, so each row is one only its own check refuses first: a
+# check taken out moves its row on to the next check, or to accepted. The helper removes
+# nothing; each answer is judged from a cwd under scratch.
+#   fail    mktemp exits 1            nope   a name that does not resolve
+#   ''      an empty answer, exit 0   /      never empty, and a user's only as root
+#   .       the cwd                   link   a symlink to an empty dir of the user's
+#   full    a dir with a file in it   badls  an empty dir, and an ls that fails
+#   link/   link/.   the same link, which -L alone follows to its target
+OT=$(mktmpd); mkdir -p "$OT/bin" "$OT/cwd/sub" "$OT/e" "$OT/full" "$OT/t"
+echo keep > "$OT/full/canary"; ln -s "$OT/e" "$OT/link"; ln -s "$OT/t" "$OT/tl"
+# OT_TMPDIR replaces TMPDIR, and OT_OLDPWD sets OLDPWD, for the one call.
+ot_run() {                    # <answer|fail|real> -> "<status> <why> [<var>]", from $OT/cwd
+    case $1 in
+        fail) printf '#!/bin/sh\nexit 1\n' > "$OT/bin/mktemp" ;;
+        real) rm -f "$OT/bin/mktemp" ;;
+        *)    printf '#!/bin/sh\nprintf "%%s\\n" %s\n' "$(tq "$1")" > "$OT/bin/mktemp" ;;
+    esac
+    [ ! -e "$OT/bin/mktemp" ] || chmod +x "$OT/bin/mktemp"
+    (cd "$OT/cwd" && env ${OT_OLDPWD:+OLDPWD="$OT_OLDPWD"} PATH="$OT/bin:$PATH" \
+        TMPDIR="${OT_TMPDIR:-$OT/t}" bash -c \
+        '. "$1"; own_tmpdir v; printf "%s %s [%s]" "$?" "$own_tmpdir_why" "$v"' _ \
+        "$DIR/scripts/lib/tmpdir.sh" 2>/dev/null)
+}
+for ot_c in fail:mktemp :answer -x:dash nope:resolve /:root .:cwd link:symlink link/:symlink \
+    link/.:symlink full:nonempty; do
+    ot_a=${ot_c%:*}
+    case $ot_a in link*|full) ot_a=$OT/$ot_a ;; esac
+    is "a mktemp answering [${ot_c%:*}] is refused by the ${ot_c##*:} check" \
+       "1 ${ot_c##*:} []" "$(ot_run "$ot_a")"
+done
+# -O, not a uid test: it holds for root and for a container whose user owns /usr alike, and
+# either way the owner check has nothing there to refuse, so the row could not test it.
+if [ -O /usr ]; then skip_ "own_tmpdir: /usr is this user's own (root or a container), no owner row"
+else is "a mktemp answering /usr, a dir the user does not own, is refused by the owner check" \
+        "1 owner []" "$(ot_run /usr)"
+fi
+printf '#!/bin/sh\nexit 2\n' > "$OT/bin/ls"; chmod +x "$OT/bin/ls"
+is "an empty dir an ls cannot list is refused by the nonempty check: it fails closed" \
+   "1 nonempty []" "$(ot_run "$OT/e")"
+rm -f "$OT/bin/ls"
+# cd -- - goes to $OLDPWD and prints it: an answer of - is refused before any cd, by its own
+# check, with OLDPWD naming an empty dir of the user's that every later check would pass.
+is "a mktemp answering [-], OLDPWD an empty dir of the user's, is refused by the dash check" \
+   "1 dash []" "$(OT_OLDPWD="$OT/e" ot_run -)"
+# cd reads CDPATH for a relative name, and prints the dir it found there: own_tmpdir clears it,
+# so a name that is only under CDPATH does not resolve. Kept, the two-line path it printed
+# was refused by the owner check, by accident.
+mkdir -p "$OT/cdp/elsewhere"
+is "an answer that resolves only through CDPATH is refused by the resolve check" \
+   "1 resolve []" "$(CDPATH="$OT/cdp" ot_run elsewhere)"
+is "a relative answer naming an empty dir of the user's is taken, as its absolute path" \
+   "0  [$(cd "$OT/cwd/sub" && pwd -P)]" "$(ot_run sub)"
+is "an empty dir of the user's, named absolute, is taken" \
+   "0  [$(cd "$OT/e" && pwd -P)]" "$(ot_run "$OT/e")"
+is "and named with a trailing /, the same dir is taken" \
+   "0  [$(cd "$OT/e" && pwd -P)]" "$(ot_run "$OT/e/")"
+ot_o=$(OT_TMPDIR="$OT/tl" ot_run real); ot_v=${ot_o#*[}; ot_v=${ot_v%]}
+is "the real mktemp under a TMPDIR that is a symlink is taken, as the physical path" \
+   "0  |$(cd "$OT/t" && pwd -P)" "${ot_o%%[*}|${ot_v%/*}"
+ot_o=$(ot_run real); ot_v=${ot_o#*[}; ot_v=${ot_v%]}
+is "the real mktemp's answer is taken: status 0, no reason, a dir under TMPDIR" \
+   "0  |$(cd "$OT/t" && pwd -P)" "${ot_o%%[*}|${ot_v%/*}"
+is "and only its user can open it" "drwx------" "$(ls -ld "$ot_v" 2>/dev/null | cut -c1-10)"
+for ot_a in '' 1x _ot_a; do
+    ot_o=$(bash -c '. "$1"; own_tmpdir ${2:+"$2"} 2>&1 >/dev/null; echo "rc=$?"' _ \
+        "$DIR/scripts/lib/tmpdir.sh" "$ot_a")
+    is "own_tmpdir with <var> [$ot_a] fails with status 2, naming <var>" "rc=2|1" \
+       "${ot_o##*$'\n'}|$(printf '%s\n' "$ot_o" | grep -c '<var>')"
+done
+rm -rf "$OT"; unset -f ot_run; unset OT ot_c ot_a ot_o ot_v
+
+echo "== board, panel, tm and tui-fetch rm -rf no dir their mktemp did not make (#947) =="
+# Each armed rm -rf on whatever mktemp -d answered. Here a mktemp earlier on PATH answers a
+# dir that exists: one with a canary in it, or the site's own empty cwd. The site takes the
+# path it takes on a failed mktemp, and the dir stays. Nothing reaches a server: TMUX is unset
+# and a stub tmux comes first on PATH, answering one session name and nothing else (tm runs in
+# a pane of a private server for its tty, the stub still first). tui-fetch's curl and gh are
+# stubs that log and fail, so nothing is fetched; the row counts its curl calls.
+if need_tmux "own_tmpdir at the four sites"; then :; else
+OSS="cockpit-ot947-$$"; SOCKS="$SOCKS $OSS"
+os_site() {                   # <site> <full|cwd> -> "<kept|gone>|<status or curl=N>"
+    local s=$1 w=$2 o r
+    o=$(mktmpd); mkdir -p "$o/bin" "$o/cwd" "$o/full" "$o/state"; echo keep > "$o/full/canary"
+    printf '#!/bin/sh\nprintf "%%s\\n" %s\n' "$(tq "$o/$w")" > "$o/bin/mktemp"
+    printf '#!/bin/sh\ncase $1 in list-sessions) echo a ;; esac\nexit 0\n' > "$o/bin/tmux"
+    printf '#!/bin/sh\necho x >> %s\nexit 22\n' "$(tq "$o/curl.log")" > "$o/bin/curl"
+    printf '#!/bin/sh\nexit 1\n' > "$o/bin/gh"; printf '#!/bin/sh\nexit 1\n' > "$o/tui"
+    chmod +x "$o/bin/"* "$o/tui"
+    case $s in
+        tm)
+            # <cwd> <stub bin> <tui> <tm> <rc file>: the pane's stdin is its tty, as the picker
+            # needs. The status lands whole, by a rename.
+            cat > "$o/run-tm" <<'RUNTM'
+#!/bin/sh
+cd "$1" || exit 1
+PATH="$2:$PATH" env -u TMUX -u TMUX_PANE COCKPIT_TUI_BIN="$3" timeout 30 "$4"
+echo "$?" > "$5.t" && mv "$5.t" "$5"
+RUNTM
+            # fresh_server: the second tm row starts a server on the socket the first killed.
+            fresh_server -L "$OSS" -f /dev/null -- -d -c "$o/cwd" sh "$o/run-tm" \
+                "$o/cwd" "$o/bin" "$o/tui" "$DIR/scripts/tm" "$o/rc"
+            local i; for i in $(seq 1 $((POLLS * 4))); do [ -s "$o/rc" ] && break; sleep 0.1; done
+            "$TMUX_REAL" -L "$OSS" kill-server >/dev/null 2>&1
+            r=$(cat "$o/rc" 2>/dev/null) ;;
+        tui-fetch)
+            (cd "$o/cwd" && PATH="$o/bin:$PATH" env -u TMUX -u TMUX_PANE -u COCKPIT_TUI_OFFLINE \
+                COCKPIT_TUI_BIN="$o/p/bin/cockpit-tui" \
+                COCKPIT_TUI_RELEASES=http://no-such-host.invalid timeout 30 "$DIR/scripts/tui-fetch" </dev/null >/dev/null 2>&1)
+            r=$( (wc -l < "$o/curl.log") 2>/dev/null | tr -d ' '); r=curl=${r:-0} ;;
+        *)
+            (cd "$o/cwd" && PATH="$o/bin:$PATH" env -u TMUX -u TMUX_PANE COCKPIT_TUI_BIN="$o/tui" \
+                COCKPIT_LOG="$o/log" XDG_STATE_HOME="$o/state" timeout 30 "$DIR/scripts/$s" \
+                ${3:+"$3"} ${4:+"$4"} </dev/null >/dev/null 2>&1); r=$? ;;
+    esac
+    if { [ "$w" = full ] && [ -e "$o/full/canary" ]; } || { [ "$w" = cwd ] && [ -d "$o/cwd" ]; }
+    then printf 'kept|%s' "$r"; else printf 'gone|%s' "$r"; fi
+}
+for os_w in full cwd; do
+    is "cockpit-board: a mktemp answering an existing dir ($os_w) is refused, the dir stays" \
+       "kept|1" "$(os_site cockpit-board "$os_w")"
+    is "cockpit-panel: a mktemp answering an existing dir ($os_w) is refused, the dir stays" \
+       "kept|1" "$(os_site cockpit-panel "$os_w" -p %0)"
+    is "tm: a mktemp answering an existing dir ($os_w) ends the picker, the dir stays" \
+       "kept|1" "$(os_site tm "$os_w")"
+    is "tui-fetch: a mktemp answering an existing dir ($os_w) fetches nothing, the dir stays" \
+       "kept|curl=0" "$(os_site tui-fetch "$os_w")"
+done
+unset -f os_site; unset OSS os_w
+fi
+
 # group: deliver
 echo "== tmux-review --deliver: guards refuse before anything is pasted =="
 if need_tmux "tmux-review --deliver"; then :; else
@@ -13210,7 +13342,7 @@ elif ! command -v sha256sum >/dev/null 2>&1; then skip_ "tui-fetch (no sha256sum
 TF=$(mktmpd); mkdir -p "$TF/plugin/scripts/lib" "$TF/build" "$TF/curlshim" "$TF/shim"
 cp "$DIR/scripts/tui-fetch" "$TF/plugin/scripts/"
 cp "$DIR/scripts/lib/vnum.sh" "$DIR/scripts/lib/tui.sh" "$DIR/scripts/lib/cargo-build.sh" \
-    "$DIR/scripts/lib/git-env.sh" "$TF/plugin/scripts/lib/"
+    "$DIR/scripts/lib/git-env.sh" "$DIR/scripts/lib/tmpdir.sh" "$TF/plugin/scripts/lib/"
 TFB="$TF/plugin/bin/cockpit-tui"; TFR=$(file_url "$TF/r el"); TFGONE=$(file_url "$TF/no-such-host")
 # Counting curl, not timing it: "a 404 is retried" is a fork count, never a clock.
 printf '#!/bin/sh\necho x >> "%s"\nexec %s "$@"\n' "$TF/curlcount" "$(command -v curl)" \

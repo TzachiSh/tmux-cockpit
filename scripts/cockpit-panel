@@ -24,6 +24,8 @@ LOG=${COCKPIT_LOG:-${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/tui.log}
 . "$DIR/scripts/lib/fmt.sh" || exit 1
 # shellcheck source=lib/basket.sh
 . "$DIR/scripts/lib/basket.sh" || exit 1
+# shellcheck source=lib/tmpdir.sh
+. "$DIR/scripts/lib/tmpdir.sh" || exit 1
 BIN=$COCKPIT_TUI_BIN
 
 # $EPOCHREALTIME needs bash 5, and no portable `date` flag gives microseconds.
@@ -99,8 +101,10 @@ if [ -n "$saved" ] && [ -d "$HDIR" ]; then
     done
 fi
 # A private 0700 directory: a name beside a mktemp file in a shared /tmp is
-# one another user can create first, and its text would be pasted.
-d=$(mktemp -d) || exit 1
+# one another user can create first, and its text would be pasted. Taken only when it is a
+# fresh dir of the user's own, as the trap removes it: a refusal ends the panel as a failed
+# mktemp does (#947).
+d=''; own_tmpdir d || exit 1
 f="$d/act"
 buf="cockpit-panel-$$"
 trap 'rm -rf "$d"' EXIT

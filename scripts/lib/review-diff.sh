@@ -11,6 +11,9 @@
 # runs. ICASE widens each ':(exclude,literal)'.
 # shellcheck source=git-env.sh
 . "${BASH_SOURCE[0]%/*}/git-env.sh" || return 1
+# scratch_index's temp dir, taken only when it is a fresh one of the user's own (#943).
+# shellcheck source=tmpdir.sh
+. "${BASH_SOURCE[0]%/*}/tmpdir.sh" || return 1
 
 # Files git would have to hash in full: 100 ms at 32 MB, 26 s at 1 GB, measured.
 BIGCAP=$(( 32 * 1024 * 1024 ))
@@ -310,19 +313,11 @@ scratch_done() { rm -rf -- "$tmp"; trap - EXIT HUP INT TERM; }
 # gone, and the caller must run no add.
 scratch_index() {             # <dir> <gitdir>
     local dir=$1 gd=$2
-    tmp=$(mktemp -d) || return 1
-    case $tmp in /*) ;; ?*) tmp=$PWD/$tmp ;; esac   # git reads GIT_INDEX_FILE from -C's dir
     # rm -rf is armed only on an empty dir of the user's own (#943): an empty answer once
-    # became $PWD/, and its trap removed the caller's cwd. So: no symlink, the user's, empty
-    # as mktemp -d makes it, and neither / nor the cwd. Each test fails closed: an ls that
-    # cannot run or read the dir is a refusal, not an empty listing. No trap is set unless all
-    # hold.
-    local real ents
-    real=$(cd -- "$tmp" 2>/dev/null && pwd -P) || real=""
-    if [ -z "$real" ] || [ "$real" = / ] || [ "$real" = "$(pwd -P)" ] || [ -L "$tmp" ] \
-        || [ ! -O "$tmp" ] || ! ents=$(ls -A -- "$tmp" 2>/dev/null) || [ -n "$ents" ]; then
-        tmp=""; return 1
-    fi
+    # became $PWD/, and its trap removed the caller's cwd. lib/tmpdir.sh holds the checks, and
+    # the path it gives is absolute, as git reads GIT_INDEX_FILE from -C's dir. No trap is
+    # set unless all hold.
+    own_tmpdir tmp || return 1
     trap 'rm -rf -- "$tmp"' EXIT; trap 'trap "" HUP INT TERM; exit 143' HUP INT TERM
     idx=$tmp/index
     { (set -C; cat -- "$gd/index" > "$idx") && touch -r "$gd/index" -- "$idx"; } 2>/dev/null \

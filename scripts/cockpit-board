@@ -45,6 +45,8 @@ done
 . "$DIR/scripts/lib/fmt.sh" || exit 1
 # shellcheck source=lib/cmdname.sh
 . "$DIR/scripts/lib/cmdname.sh" || exit 1
+# shellcheck source=lib/tmpdir.sh
+. "$DIR/scripts/lib/tmpdir.sh" || exit 1
 BIN=$COCKPIT_TUI_BIN
 # In a popup a bare display-message picks the most recently active client.
 say() { if is_pane "$PANE"; then dmsg -t "$PANE" "$1"; else dmsg "$1"; fi; }
@@ -57,8 +59,9 @@ fi
 
 mkdir -p "$(dirname "$LOG")" 2>/dev/null
 # A private 0700 directory: the note is shown on the board, so no other user
-# may get to write it first.
-d=$(mktemp -d) || exit 1
+# may get to write it first. Taken only when it is a fresh dir of the user's own, as the
+# trap removes it: a refusal ends the board as a failed mktemp does (#947).
+d=''; own_tmpdir d || exit 1
 f="$d/act" note="$d/note"
 trap 'rm -rf "$d"' EXIT
 
