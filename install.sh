@@ -568,6 +568,10 @@ else
         # --check fails this row; a run-shell line beside tpm's would load the plugin twice.
         printf '\ntpm seems to manage cockpit in %s, not confirmed: %s\nRun install.sh --check.\n' \
                "$cockpit_wired" "no tpm run line, or $DIR is not in tpm's plugin folder." >&2
+    elif [ "$wst" -ne 0 ] && cockpit_conf_mention "$DIR" "${cfs[@]}"; then
+        # bootstrap.sh appends nothing here, and a line added by hand could load two copies.
+        printf '\n%s line %s names cockpit, but loads none from %s.\nRun install.sh --check.\n' \
+               "$cockpit_mention_file" "$cockpit_mention_n" "$DIR" >&2
     elif [ "$wst" -ne 0 ]; then
         printf '\nAdd this to %s, AFTER every option using an #{agent_*} token:\n  %s\n' \
                "$conf" "$(cockpit_conf_line "$DIR")" >&2

@@ -4969,6 +4969,13 @@ is "a bind that names cockpit.tmux: nothing appended, and the run says to run --
 is "another copy's run line: nothing appended, and the run says to run --check" "same|1" \
    "$(bsnamed "run-shell '$BS/elsewhere/tmux-cockpit/cockpit.tmux'")"
 unset -f bsnamed
+# install.sh, which bootstrap.sh runs, then gives no line to add by hand either.
+printf "# mine\nrun-shell '%s/elsewhere/tmux-cockpit/cockpit.tmux'\n" "$BS" > "$BH/.tmux.conf"
+bsout=$(bs)
+is "and install.sh's closing note on that box says to run --check, with no line to add" \
+   "yes|0" "$(printf '%s\n' "$bsout" |
+      grep -qF "$BH/.tmux.conf line 2 names cockpit, but loads none from $DIR." &&
+      echo yes || echo no)|$(printf '%s\n' "$bsout" | grep -c '^Add this to')"
 rm -rf "$BS"
 fi
 
