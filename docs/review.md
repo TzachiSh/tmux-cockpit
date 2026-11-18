@@ -121,9 +121,9 @@ cannot read) is not a clean tree: the review ends with
 `cockpit: could not read the diff in <dir>`, keeps the pinned comments, and an
 agent's `tmux-review --request` gets `no review opened` and that reason, status
 1. The Stop hook's ◆ then stays as it was: such a diff neither sets nor clears
-it (#944). The same holds when tmux-review cannot run at all, or when one of
-its libraries fails to load (status 3): only a tree with no difference clears
-the ◆ (#959).
+it (#944). The same holds when tmux-review cannot run at all, or when it
+cannot load, under bash older than 4 or with a library that fails (status 3):
+only a tree with no difference clears the ◆ (#959).
 
 **Big files are counted, not hashed.** To tell whether a file changed at all
 git hashes the whole of it, about 100 ms at 32 MB and 26 s at 1 GB. So when the
