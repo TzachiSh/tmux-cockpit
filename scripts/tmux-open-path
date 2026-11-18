@@ -480,6 +480,23 @@ try_raw() {
     return 1
 }
 
+# A path a tool printed from the repo's top, clicked in a subfolder (#1289): a
+# token the pane's folder misses in every shape is tried again from the top.
+# git is asked once per click, at the first such token, so a click whose tokens
+# all resolve asks nothing. git-env.sh's unsets stay in the subshell: tmux's
+# GIT_DIR (a dotfiles setup) names no other tree, and the rest keeps its env.
+root='' rooted=0
+repo_top() {
+    if [ "$rooted" -eq 0 ]; then
+        rooted=1
+        # shellcheck source=lib/git-env.sh
+        root=$(. "${d%/*}/lib/git-env.sh" 2>/dev/null && exec git -c core.fsmonitor= \
+            -c core.hooksPath=/dev/null -C "$dir" rev-parse --show-toplevel 2>/dev/null) || root=''
+        [ "$root" != "$dir" ] || root=''
+    fi
+    [ -n "$root" ]
+}
+
 # The folder a relative candidate resolves against.
 base=$dir
 # set -f: word splitting also globs, and "rm *" on a line expanded against the
@@ -492,7 +509,9 @@ for raw in $line; do
     [ "$ntok" -gt 500 ] && break
     strip_ends "$raw"; tok=$TOK
     [ -n "$tok" ] || continue
-    try_raw "$tok"
+    try_raw "$tok" && continue
+    repo_top || continue
+    base=$root; try_raw "$tok"; base=$dir
 done
 set +f
 

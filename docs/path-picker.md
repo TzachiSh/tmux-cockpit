@@ -18,6 +18,11 @@ path is real but the token around it is not; `file(12,3)` stays a *location*,
 not a wrapper. Existence on disk is the filter, so a word that merely looks
 like a path is dropped.
 
+A relative path resolves against the pane's folder first. One that is not there
+is tried again from the top of the pane's git repo, so `tui/src/main.rs:12`,
+printed by a tool run at the top, opens from a subfolder too. A name found in
+the pane's folder always wins.
+
 **`alt-c` copies the highlighted row's path** instead of opening it: the
 absolute path goes to the tmux buffer and, as OSC 52, to the clipboard, for
 pasting into an agent's prompt. It reaches the system clipboard only if your

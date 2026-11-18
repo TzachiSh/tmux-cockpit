@@ -3361,6 +3361,62 @@ fi
 is "nested (Write(path))"    "$OP/README.md::"        "$(op '(Write(README.md))')"
 rm -rf "$OP"
 
+# tests: scripts/lib/git-env.sh
+echo "== tmux-open-path: a path the pane's folder misses is tried from the repo's top (#1289) =="
+# cargo, a git diff and a grep run at the top print paths from there. Clicked in a
+# subfolder, they resolved against the pane's folder alone and nothing opened. A
+# token missed there in every shape is now tried from `git rev-parse --show-toplevel`.
+# The repo's folder holds two blanks, as $OP's does.
+GR=$(mktmpd); GRR="$GR/r  t"; GRS="$GRR/sub"
+mkdir -p "$GRR/tui/src" "$GRS" "$GR/other/tui/src" "$GR/out/a" "$GR/gs" "$GR/nogit"
+: > "$GRR/tui/src/main.rs"; : > "$GRR/both"; : > "$GRS/both"; : > "$GRR/n"; : > "$GRS/n:5"
+: > "$GR/other/tui/src/main.rs"
+git init -q "$GRR"; git init -q "$GR/other"
+# git as the script finds it on PATH: each call leaves a line, then the real git runs.
+printf '#!/bin/sh\necho x >> %s\nexec %s "$@"\n' \
+    "$(tq "$GR/gs/calls")" "$(tq "$(command -v git)")" > "$GR/gs/git"
+chmod +x "$GR/gs/git"
+# <cwd> <line>: the click's candidates, stderr included. The ceiling keeps git from
+# finding a repo above the fixture, whatever TMPDIR sits in.
+gr() { env GIT_CEILING_DIRECTORIES="$GR" PATH="$GR/gs:$PATH" \
+           "$DIR/scripts/tmux-open-path" --dry-run "$1" "$2" 2>&1; }
+# git calls since the last ask
+grn() { local n=0; [ -f "$GR/gs/calls" ] && n=$(wc -l < "$GR/gs/calls"); rm -f "$GR/gs/calls"
+        printf '%s' "$((n))"; }
+
+is "from a subfolder, a path printed from the top opens there, at its line" \
+   "$GRR/tui/src/main.rs:12:3" "$(gr "$GRS" 'error at tui/src/main.rs:12:3')"
+is "and a git diff's b/ path from a subfolder opens from the top" \
+   "$GRR/tui/src/main.rs::" "$(gr "$GRS" '+++ b/tui/src/main.rs')"
+is "a name in both the pane's folder and the top opens the pane's" "$GRS/both::" \
+   "$(gr "$GRS" 'see both')"
+# Every shape is tried in the pane's folder first: its n:5 is not the top's n at line 5.
+is "a token the pane's folder resolves in any shape keeps it" "$GRS/n:5::" "$(gr "$GRS" 'n:5')"
+is "outside a repo a miss opens nothing and prints nothing" "" \
+   "$(gr "$GR/out/a" 'tui/src/main.rs:12:3')"
+# The script ran: its both resolves. Its miss asks no git that is not there.
+is "with no git on PATH a miss opens nothing and prints nothing" "$GRS/both::" \
+   "$(env PATH="$GR/nogit" "$BASH" "$DIR/scripts/tmux-open-path" --dry-run "$GRS" \
+          'both tui/src/main.rs:12:3' 2>&1)"
+# A dotfiles setup exports GIT_DIR and GIT_WORK_TREE into tmux; git-env.sh drops them.
+is "a GIT_DIR tmux inherited names no other tree: the pane's own top opens" \
+   "$GRR/tui/src/main.rs:12:3" \
+   "$(GIT_DIR="$GR/other/.git" GIT_WORK_TREE="$GR/other" gr "$GRS" 'tui/src/main.rs:12:3')"
+git -C "$GRR" -c user.name=t -c user.email=t@e commit -q --allow-empty -m t
+git -C "$GRR" worktree add -q "$GR/wt" 2>/dev/null
+mkdir -p "$GR/wt/sub" "$GR/wt/tui/src"; : > "$GR/wt/tui/src/main.rs"
+is "in a linked worktree's subfolder, that worktree's top opens" "$GR/wt/tui/src/main.rs:12:3" \
+   "$(gr "$GR/wt/sub" 'tui/src/main.rs:12:3')"
+grn >/dev/null
+gr "$GRS" 'both n:5' >/dev/null
+is "a click whose tokens all resolve asks git nothing" "0" "$(grn)"
+gr "$GRS" 'tui/src/main.rs:12:3 nope also/nope' >/dev/null
+is "a click with three misses asks git once" "1" "$(grn)"
+GRL=''; for gri in $(seq 500); do GRL+="nope$gri "; done
+gr "$GRS" "$GRL" >/dev/null
+is "a 500-token line of misses asks git once" "1" "$(grn)"
+rm -rf "$GR"
+
 # tests: scripts/tmux-branch
 echo "== tm: a session created from the picker starts in the pane's directory (#41) =="
 # tm runs in a popup, whose cwd is the CURRENT session's start directory, and
