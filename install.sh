@@ -54,6 +54,8 @@ esac; done
 . "$DIR/scripts/lib/confline.sh" || exit 1
 # shellcheck source=scripts/lib/tui.sh
 . "$DIR/scripts/lib/tui.sh" || exit 1
+# shellcheck source=scripts/lib/eol.sh
+. "$DIR/scripts/lib/eol.sh" || exit 1
 
 # A builtin, not awk: the fail rows must still be right on an empty PATH.
 fld() {                       # fld <field> <version line>
@@ -191,6 +193,30 @@ if [ "$check" -eq 1 ]; then
     elif [ "$wired" -eq 1 ]; then row ok config "$conf loads cockpit"
     elif [ -n "$conf" ];    then row fail config "$conf" "$wire_fix"
     else row fail config 'no tmux config' "$wire_fix"
+    fi
+
+    # Files git stores with LF and the tree holds with CRLF: tmux reads each CR as text and a
+    # plugin's config stops loading (#188). The command that restores them is named, never
+    # run: it overwrites edits to tracked files, so it is the user's step.
+    if ! command -v git >/dev/null 2>&1; then row skip crlf 'git not found'
+    else
+        eol_dirs "$DIR"; eol_read=0; eol_bad=0
+        for eol_d in "${eol_list[@]}"; do
+            eol_crlf "$eol_d" || continue
+            eol_read=$((eol_read + 1))
+            [ "$eol_n" -gt 0 ] || continue
+            eol_bad=1; eol_edited "$eol_d"
+            eol_fix="$(eol_fix_cmd "$eol_d") (overwrites edits to tracked files)"
+            [ "$eol_edits" -eq 0 ] ||
+                eol_fix="$eol_fix; $eol_edits files also have edits that this drops"
+            if [ "$eol_d" = "$DIR" ]; then row fail crlf "$eol_n files in ${eol_d##*/}" "$eol_fix"
+            else row warn crlf "$eol_n files in ${eol_d##*/}" "$eol_fix"
+            fi
+        done
+        if [ "$eol_bad" -eq 1 ]; then :
+        elif [ "$eol_read" -eq 0 ]; then row skip crlf 'no git checkout to read'
+        else row ok crlf "no CRLF in $eol_read checkouts"
+        fi
     fi
 
     # These formats re-expand per pane on every redraw, so a #{P:} walk in them freezes tmux.
