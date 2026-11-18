@@ -414,7 +414,8 @@ next_base() {                 # <dir> <current-mode>
 # are not symlinks and needn't be resolved". setup.c (canonicalize_ceiling_entry) also
 # drops an entry that is not absolute or does not resolve. A walk up the logical path
 # would miss the repo a symlink points into. Every gap errs toward 2, a kept mark: a dir
-# that does not resolve is no answer (0); a dropped or unmatched ceiling only walks on;
+# that does not resolve is no answer (0); dropping a relative or unresolvable ceiling
+# entry, as setup.c does, widens the walk, and so does a ceiling that matches nothing;
 # and GIT_DISCOVERY_ACROSS_FILESYSTEM's stop at a filesystem boundary is left out, so
 # the walk can find a .git git would not reach.
 git_entry_above() {           # <dir>
