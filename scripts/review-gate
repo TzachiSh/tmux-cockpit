@@ -31,8 +31,8 @@ fi
 [ "${1:-}" = --pretool ] && exit 0
 case "$pane" in %[0-9]*) ;; *) exit 0 ;; esac
 
-d=${BASH_SOURCE[0]}
-[ -L "$d" ] && d=$(case $d in (*/*) ;; (*) d=./$d ;; esac; n=0
+d=${BASH_SOURCE[0]}; case $d in (*/*) ;; (*) d=./$d ;; esac
+[ -L "$d" ] && d=$(n=0
     while [ -L "$d" ] && [ $((n += 1)) -le 40 ] && t=$(readlink "$d"); do
         case $t in (/*) d=$t ;; (*) d=${d%/*}/$t ;; esac; done; printf %s "$d")
 # shellcheck source=lib/hook.sh

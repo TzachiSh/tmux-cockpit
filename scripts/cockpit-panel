@@ -8,7 +8,13 @@
 # The action comes back through a file, never $(…): ratatui paints on stdout.
 set -u
 
-DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || exit 1
+# The plugin root is the parent of the REAL scripts/: `me` follows any chain of links,
+# a relative target read from its own link's folder (#1290). Not d: d is a temp dir below.
+me=${BASH_SOURCE[0]}; case $me in (*/*) ;; (*) me=./$me ;; esac
+[ -L "$me" ] && me=$(n=0
+    while [ -L "$me" ] && [ $((n += 1)) -le 40 ] && t=$(readlink "$me"); do
+        case $t in (/*) me=$t ;; (*) me=${me%/*}/$t ;; esac; done; printf %s "$me")
+DIR="$(cd -P "$(dirname "$me")/.." && pwd)" || exit 1
 LOG=${COCKPIT_LOG:-${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/tui.log}
 # shellcheck source=lib/pane.sh
 . "$DIR/scripts/lib/pane.sh" || exit 1

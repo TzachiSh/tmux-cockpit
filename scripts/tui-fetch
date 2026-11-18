@@ -8,7 +8,13 @@
 # COCKPIT_TUI_OFFLINE (no gh, curl or cargo: the suite sets it), COCKPIT_TUI_BIN.
 set -u
 
-DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# The plugin root is the parent of the REAL scripts/: `me` follows any chain of links,
+# a relative target read from its own link's folder (#1290).
+me=${BASH_SOURCE[0]}; case $me in (*/*) ;; (*) me=./$me ;; esac
+[ -L "$me" ] && me=$(n=0
+    while [ -L "$me" ] && [ $((n += 1)) -le 40 ] && t=$(readlink "$me"); do
+        case $t in (/*) me=$t ;; (*) me=${me%/*}/$t ;; esac; done; printf %s "$me")
+DIR="$(cd -P "$(dirname "$me")/.." && pwd)"
 # shellcheck source=lib/tui.sh
 . "$DIR/scripts/lib/tui.sh" || exit 1    # COCKPIT_TUI_BIN, TUI_MIN, TUI_TAG, vnum
 # The repo gh downloads from is the plugin checkout's origin. tmux's environment, which
