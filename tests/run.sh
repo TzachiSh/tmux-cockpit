@@ -5640,8 +5640,10 @@ is "a sourced @plugin line naming tmux-cockpit: bootstrap.sh appends nothing, an
       cmp -s "$CL/h23/.tmux.conf" "$CL/conf23" && echo same || echo changed)"
 # A plugin folder reached through a symlink, ~/.tmux/plugins/tmux-cockpit linked to a
 # checkout (#1067): the folder is its physical path, and the config names the link.
+# docs-comment is the docs line with a trailing comment: no spelling of the physical path
+# matches it, so it loads only when the comment is off before cockpit_conf_arg_path (#1304).
 is "cockpit_conf_wired_line: a symlinked plugin folder, the lines that load it" \
-   "docs:1 bare:1 double:1 home:1 sq-in-dq:none dq-in-sq:none other:none " \
+   "docs:1 bare:1 double:1 home:1 sq-in-dq:none dq-in-sq:none other:none docs-comment:1 " \
    "$(. "$DIR/scripts/lib/confline.sh"; HOME="$CL/h16"; cl_s="$CL/src16/cockpit-co"
       cl_o="$CL/other16/tmux-cockpit"; cl_r='/.tmux/plugins/tmux-cockpit/cockpit.tmux'
       mkdir -p "$HOME/.tmux/plugins" "$cl_s" "$cl_o"; : > "$cl_s/cockpit.tmux"
@@ -5649,7 +5651,7 @@ is "cockpit_conf_wired_line: a symlinked plugin folder, the lines that load it" 
       for cl_f in "docs|run-shell '~$cl_r'" "bare|run-shell ~$cl_r" \
           "double|run-shell \"~$cl_r\"" "home|run-shell '\"\$HOME$cl_r\"'" \
           "sq-in-dq|run-shell \"'~$cl_r'\"" "dq-in-sq|run-shell '\"~$cl_r\"'" \
-          "other|run-shell '$cl_o/cockpit.tmux'"; do
+          "other|run-shell '$cl_o/cockpit.tmux'" "docs-comment|run-shell '~$cl_r' # note"; do
           printf '%s\n' "${cl_f#*|}" > "$CL/wl"
           printf '%s:%s ' "${cl_f%%|*}" "$(cockpit_conf_wired_line "$CL/wl" "$cl_s" || printf none)"
       done)"
