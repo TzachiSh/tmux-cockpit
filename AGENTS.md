@@ -7,7 +7,10 @@ running tmux server (the attached working session). Rebinding something like
 `MouseDown1Status` on the live server hijacks the user's real clicks while they
 work, and logging shims flood their session.
 
-Run every experiment on a throwaway private server and kill it after:
+Run every experiment on a throwaway private server and kill it after. Run the
+sketch in one tool-shell call. Each call is a new shell, so `$$` differs and
+`$t` is gone. A later call must carry the socket name and the folder over by
+value.
 
 ```sh
 d=$(mktemp -d); t=$(mktemp -d)
@@ -22,14 +25,22 @@ Start the server without the live session's variables (#1072). A tool shell
 inherits `TMUX`, `TMUX_PANE` and `TMUX_COCKPIT_DIR` from the owner's pane. With
 `TMUX` set, a bare `tmux` talks to the live server. With `TMUX_COCKPIT_DIR` set,
 a server whose plugin load stops early keeps the live plugin's folder, and a
-probe then runs the live scripts. #1091 records a tool shell that wrote to the
-live server this way.
+probe then runs the live scripts.
+
+Start every tool-shell command line with
+`unset TMUX TMUX_PANE TMUX_COCKPIT_DIR`, before anything in it can call tmux.
+The tool shell keeps no state, so an unset in an earlier call is gone. Never
+`eval`, `source` or `sed`-extract any part of `cockpit.tmux` or `scripts/` in a
+tool shell. Check plugin lines only by loading a whole copy on a private `-L`
+server. #1091 records a lane that ran a `sed` range of `cockpit.tmux` through
+`eval` with `TMUX` set, and it rebound the owner's keys on the live server.
 
 `TMUX_TMPDIR` must name a folder that already exists. tmux keeps its sockets in
-`tmux-<uid>` under it. Up to tmux 3.8 it skips a folder that is not there and
-uses `/tmp/tmux-<uid>`, the live server's folder. Give the same `TMUX_TMPDIR` to
-every call to that server, the `kill-server` too. Without it, `-L probe$$` looks
-in `/tmp/tmux-<uid>` and misses the server or finds another one.
+`tmux-<uid>` under it. From tmux 3.2 to 3.8 it skips a folder that is not there
+and uses `/tmp/tmux-<uid>`, the live server's folder. Give the same
+`TMUX_TMPDIR` to every call to that server, the `kill-server` too. Without it,
+`-L probe$$` looks in `/tmp/tmux-<uid>` and misses the server or finds another
+one.
 
 Put the unsets and the folder in one `env` call. An inner `env -u VAR` undoes an
 outer `env VAR=x`, since the inner call runs last. `tests/run.sh` already does
