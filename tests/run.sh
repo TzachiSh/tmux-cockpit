@@ -21152,7 +21152,7 @@ SCDEL="$SCD/"$'\177'x
 mkdir -p "$SCHASH" "$SCTAB" "$SCSOH" "$SCDEL" "$SCD/b\\s"; : > "$SCD/file"
 SCP=$(tmux new-window -d -P -F '#{pane_id}' 'exec -a claude sleep 600')
 sc_dir() { tmux show-option -pqv -t "$SCP" @cockpit_dir; }
-sc_clear() { local o; for o in dir cwd session transcript; do
+sc_clear() { local o; for o in dir cwd session transcript dir_before; do
         tmux set-option -pu -t "$SCP" "@cockpit_$o"; done
 }
 # Run from $SCD, so the relative row names a directory that exists from where the hook runs.
@@ -21226,26 +21226,45 @@ sc_clear; sc "$SCD/a"
 is "the pane's state is untouched" "" "$(tmux show-option -pqv -t "$SCP" @panestate)"
 is "tmux-review --dir follows the saved tree" "$SCD/a" \
     "$("$DIR/scripts/tmux-review" --dir "$SCP" 2>/dev/null)"
-# #323: SessionEnd's `end` clears what the hooks wrote; a hand-set @cockpit_dir stays, and
-# the idle path clears nothing. Each row: dir:cwd after.
+# #323: SessionEnd's `end` puts @cockpit_dir back to what the session found at its start,
+# and drops @cockpit_cwd and that record. The idle path clears nothing. Rows: dir:cwd:record.
 sc_cwd() { tmux show-option -pqv -t "$SCP" @cockpit_cwd; }
+sc_rec() { tmux show-option -pqv -t "$SCP" @cockpit_dir_before; }
+sc_all() { echo "$(sc_dir):$(sc_cwd):$(sc_rec)"; }
+sc_hand() { tmux set-option -p -t "$SCP" @cockpit_dir "$1"; }
 sc_end() { env -u CLAUDE_CONFIG_DIR HOME="$SCH" "$DIR/scripts/agent-state" end "$SCP" \
         < /dev/null; }
-sc_clear; sc "$SCD/a"; sc_end
-is "SessionEnd: a hook-written @cockpit_dir and @cockpit_cwd are both cleared" ":" \
-    "$(sc_dir):$(sc_cwd)"
+sc_clear; sc "$SCD/a"
+is "the first hook records the dir it found, an empty one as =" "$SCD/a:$SCD/a:=" "$(sc_all)"
+sc_end
+is "SessionEnd: a hook-written dir and cwd are cleared, and the record" "::" "$(sc_all)"
 sc_clear; sc "$SCD/a"; scc "$SCD/a" "$SCD/semi;"; sc_end
-is "and so are a CwdChanged's, a ; ending the path" ":" "$(sc_dir):$(sc_cwd)"
-sc_clear; tmux set-option -p -t "$SCP" @cockpit_dir "$SCD/w"; sc_end
-is "a hand-set @cockpit_dir with no hook value is kept" "$SCD/w:" "$(sc_dir):$(sc_cwd)"
-sc_clear; sc "$SCD/a"; tmux set-option -p -t "$SCP" @cockpit_dir "$SCD/w"; sc_end
-is "one hand-set after the hook wrote: the dir is kept, the cwd cleared" "$SCD/w:" \
-    "$(sc_dir):$(sc_cwd)"
+is "and so are a CwdChanged's, a ; ending the path" "::" "$(sc_all)"
+sc_clear; sc_hand "$SCD/w"; sc "$SCD/a"
+is "a dir set by hand before the start is the record" "=$SCD/w" "$(sc_rec)"
+sc_end
+is "and SessionEnd puts it back" "$SCD/w::" "$(sc_all)"
+sc_clear; sc_hand "$SCD/w"; sc "$SCD/a"; scc "$SCD/a" "$SCD/b"; sc_end
+is "a cd later does not move the record" "$SCD/w::" "$(sc_all)"
+sc_clear; sc "$SCD/a"; sc_hand "$SCD/w"; sc "$SCD/a"; sc_end
+is "a dir the agent set mid-session goes, back to the empty record" "::" "$(sc_all)"
+sc_clear; sc_hand "$SCD/w"; sc "$SCD/a"; sc_hand "$SCD/b"; sc "$SCD/a"; sc_end
+is "and back to a hand-set record" "$SCD/w::" "$(sc_all)"
+sc_clear; sc "$SCD/a"; tmux set-option -pu -t "$SCP" @cockpit_dir_before; sc_end
+is "no record (begun before #323): a hook-written dir still goes" "::" "$(sc_all)"
+sc_clear; sc "$SCD/a"; sc_hand "$SCD/w"; tmux set-option -pu -t "$SCP" @cockpit_dir_before
+sc_end
+is "no record: a dir that differs from the cwd stays" "$SCD/w::" "$(sc_all)"
+sc_clear; sc_hand "$SCD/w"; sc_end
+is "no record and no hook value: a hand-set dir stays" "$SCD/w::" "$(sc_all)"
 sc_clear; sc "$SCD/a"
 printf '{"hook_event_name":"Notification","notification_type":"idle_prompt"}\n' |
     "$DIR/scripts/agent-state" notify "$SCP" >/dev/null 2>&1
 "$DIR/scripts/agent-state" off "$SCP" < /dev/null >/dev/null 2>&1
-is "the idle notify and a plain off clear neither" "$SCD/a:$SCD/a" "$(sc_dir):$(sc_cwd)"
+is "the idle notify and a plain off clear nothing" "$SCD/a:$SCD/a:=" "$(sc_all)"
+sc_clear; sc "$SCD/a"; sc_end; sc "$SCD/a"
+is "after SessionEnd the next hook in the same cwd writes the dir again" "$SCD/a:$SCD/a:=" \
+    "$(sc_all)"
 is "end on a gone pane: exit 0, nothing printed" "0:" \
     "$("$DIR/scripts/agent-state" end %999999 < /dev/null 2>&1; echo "$?:")"
 tmux kill-pane -t "$SCP" >/dev/null 2>&1
