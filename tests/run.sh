@@ -2747,19 +2747,20 @@ unset RGCP rgl rg_lib
 # safe.directory=* there would hide the refusal. GIT_TEST_ASSUME_DIFFERENT_OWNER is git's
 # own switch for a repo another uid owns (setup.c, ensure_valid_ownership).
 RGO=$(mktmpd); : > "$RGO/gitconfig"
-mkdir -p "$RGO/none" "$RGO/badfile" "$RGO/top/ceil/plain"
+mkdir -p "$RGO/none" "$RGO/badfile" "$RGO/top/ceil/plain" "$RGO/own/sub/api" "$RGO/home"
 git init -q "$RGO/own" >/dev/null 2>&1; git init -q "$RGO/top" >/dev/null 2>&1
+ln -s "$RGO/own/sub" "$RGO/home/work"
 printf 'gitdir: %s/gone\n' "$RGO" > "$RGO/badfile/.git"
 rgo_env="GIT_CONFIG_GLOBAL=$(printf '%q' "$RGO/gitconfig") GIT_CONFIG_NOSYSTEM=1"
 rgo_own="GIT_TEST_ASSUME_DIFFERENT_OWNER=1 GIT_CEILING_DIRECTORIES=$(printf '%q' "$RGO")"
 rgo() {                       # <dir> <env...> -> D=<--delta's exit>
     "$TMUX_REAL" -L "$RG" set-option -p -t "$RGAP" @cockpit_dir "$1" >/dev/null 2>&1
     "$TMUX_REAL" -L "$RG" run-shell "$rgo_env $2 XDG_STATE_HOME=$(printf '%q' "$RGSTATE") \
-        '$DIR/scripts/tmux-review' --delta $RGAP; echo D=\$?" 2>/dev/null | tail -1
+        $(tq "$DIR/scripts/tmux-review") --delta $RGAP; echo D=\$?" 2>/dev/null | tail -1
 }
-# The switch is a test knob. A git that ignores it trusts the repo, and the two rows on it
-# would test nothing: unless a plain rev-parse there works without it and fails with it,
-# in the rows' own env, they SKIP.
+# The switch is a test knob. A git that ignores it trusts the repo, and the three rows on
+# it would test nothing: unless a plain rev-parse there works without it and fails with
+# it, in the rows' own env, they SKIP.
 rgo_git() {                   # <env...>: rev-parse in $RGO/own
     bash -c "$rgo_env $1 git -C $(printf '%q' "$RGO/own") rev-parse --is-inside-work-tree" \
         >/dev/null 2>&1
@@ -2771,6 +2772,13 @@ if [ -n "$rgo_knob" ]; then
         "$(rgo "$RGO/own" "$rgo_own")"
 else
     skip_ "--delta in a repo git refuses for its owner: $rgo_skip"
+fi
+# git walks up the physical path, so a symlink into the repo's subdir finds the repo's .git.
+if [ -n "$rgo_knob" ]; then
+    is "--delta through a symlink into a refused repo's subdir cannot tell (exit 2)" "D=2" \
+        "$(rgo "$RGO/home/work/api" "$rgo_own")"
+else
+    skip_ "--delta through a symlink into a refused repo's subdir: $rgo_skip"
 fi
 is "--delta under a .git file naming a gone gitdir cannot tell (exit 2)" "D=2" \
     "$(rgo "$RGO/badfile" "GIT_CEILING_DIRECTORIES=$(printf '%q' "$RGO")")"
