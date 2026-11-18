@@ -2653,7 +2653,7 @@ case "\$*" in *display-message*cockpit_session*) ;; *) exec "$SHIM/tmux" "\$@" ;
         { for (i = k + 1; i <= NF; i++) \$i = ""; print }'
 RGIKEOF
 chmod +x "$RGIKD/tmux"
-for rgi_k in 1 2 3; do
+for rgi_k in 1 2 3 4; do
     rgi_set "$RGIU1" T1; rgi_pay "$RGIU2"
     RG_PRE="PATH=$(printf '%q' "$RGIKD"):\$PATH RG_CUT=$rgi_k " rg_run "$RGIF"
     is "a Stop whose read is cut after field $rgi_k saves no session, keeps the transcript" \
@@ -2767,6 +2767,20 @@ is "and says it in one message" "1" "$(rge_n M)"
 RG_PRE="PATH=$(printf '%q' "$RGE"):$(printf '%q' "$RGMK"):\$PATH " rg_run "$RGPAY"
 is "the same reason on the next Stop gives no second message" "1" "$(rge_n M)"
 is "and writes the option no second time" "1" "$(rge_n S)"
+# A #707 cut after field 1 empties the reason read back: no whole read, no write (#1312).
+mkdir "$RGE/cut"
+cat > "$RGE/cut/tmux" <<RGEEOF
+#!/bin/sh
+t=$(printf '%q' "$RGE/tmux")
+case "\$*" in *display-message*cockpit_session*) ;; *) exec "\$t" "\$@" ;; esac
+"\$t" "\$@" | awk 'BEGIN { FS = OFS = "\037" } { for (i = 2; i <= NF; i++) \$i = ""; print }'
+RGEEOF
+chmod +x "$RGE/cut/tmux"
+RG_PRE="PATH=$(printf '%q' "$RGE/cut"):$(printf '%q' "$RGMK"):\$PATH " rg_run "$RGPAY"
+is "a read cut short with the same reason gives no second message" "1" "$(rge_n M)"
+is "and writes the option no second time" "1" "$(rge_n S)"
+RG_PRE="PATH=$(printf '%q' "$RGE/cut"):\$PATH " rg_run "$RGPAY"; RG_PRE=$rge_pre rg_run "$RGPAY"
+is "a change to review (0) on a cut read is unset by the next whole read" "" "$(rge_err)"
 printf 'return 1\n' > "$RGEC/scripts/lib/review-diff.sh"
 RG_PRE=$rge_pre RG_GATE="$RGEC/scripts/review-gate" rg_run "$RGPAY"
 is "a tmux-review that cannot load (3) gives its own reason" "tmux-review cannot load" \

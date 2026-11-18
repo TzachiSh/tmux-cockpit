@@ -117,8 +117,9 @@ flag_pane() {
         "$here/agent-state" recount "$pane"
     fi
     # Written and said only on a change: the option is what remembers the last reason, since
-    # each Stop is a new process (agent-poll's poll_err shape).
-    if [ "$err" != "$err_cur" ]; then
+    # each Stop is a new process (agent-poll's poll_err shape). Only after a whole read, as the
+    # session is: a #707 cut empties err_cur, and the next whole read settles it (#1312).
+    if [ "$whole" = 1 ] && [ "$err" != "$err_cur" ]; then
         if [ -n "$err" ]; then
             tmux set-option -p -t "$pane" @cockpit_review_err "$err" 2>/dev/null
             # shellcheck source=lib/fmt.sh
