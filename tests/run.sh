@@ -4953,7 +4953,7 @@ is "install.sh --check without it: exit 1, and no row was printed" "1|0" \
 # Which lines run this folder's cockpit.tmux (#1067), each alone in a config: its line
 # number, or none. A comment, another folder and a bind only name the file.
 is "cockpit_conf_wired_line: the spellings that load this folder, and those that do not" \
-   "comment:none other:none bind:none trailing:none bare:1 tilde:1 single:1 single-tilde:1 $(:
+   "comment:none bind:none other:none tilde:1 trailing:none bare:1 single:1 single-tilde:1 $(:
    )double:1 run-b:1 home:1 home-braced:1 printed:1 " \
    "$(. "$DIR/scripts/lib/confline.sh"; HOME="$CL/h1"; cl_p="$HOME/pl ug"
       cl_r='/pl ug/cockpit.tmux'
@@ -4970,7 +4970,7 @@ is "cockpit_conf_wired_line: the spellings that load this folder, and those that
       done)"
 # tpm (#1067): 0 it loads this folder, 2 an @plugin line names it unconfirmed, 1 none does.
 is "cockpit_conf_tpm: which configs tpm loads this folder's plugin from" \
-   "loads:0 set-option-git-branch:0 no-run:2 run-commented:2 elsewhere:2 plugin-commented:1 $(:
+   "loads:0 no-run:2 elsewhere:2 set-option-git-branch:0 run-commented:2 plugin-commented:1 $(:
    )other-name:1 " \
    "$(. "$DIR/scripts/lib/confline.sh"; unset XDG_CONFIG_HOME; HOME="$CL/h14"
       cl_p="$HOME/.tmux/plugins/tmux-cockpit"; cl_e="$CL/elsewhere/tmux-cockpit"
