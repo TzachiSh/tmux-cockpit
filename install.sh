@@ -144,18 +144,39 @@ if [ "$check" -eq 1 ]; then
         *) row fail PATH 'not on PATH' "add $BIN to PATH" ;;
     esac
 
-    conf=''; wired=0
-    # tmux loads both, so the run-shell line in either wires the box.
+    conf=''; wired=0; cfs=()
+    # tmux loads both, so the run-shell line in either wires the box. A line that only
+    # names cockpit.tmux, a comment or another folder's path, does not (#1067).
     cxdg="${XDG_CONFIG_HOME:-${HOME:-}/.config}/tmux/tmux.conf"; chome="${HOME:-}/.tmux.conf"
     for c in "$cxdg" "$chome"; do
         [ -r "$c" ] || continue
         [ -n "$conf" ] || conf="$c"        # the first readable one names a fail row
-        while read -r l || [ -n "$l" ]; do
-            case "$l" in *cockpit.tmux*) wired=1; conf="$c"; break ;; esac
-        done < "$c"
-        [ "$wired" -eq 1 ] && break
+        cfs+=("$c")
     done
     wire_fix="run bootstrap.sh, or add $(cockpit_conf_line "$DIR")"
+    if [ "${#cfs[@]}" -gt 0 ]; then
+        cockpit_conf_wired "$DIR" "${cfs[@]}"
+        case $? in
+            0) wired=1; conf=$cockpit_wired ;;
+            2) conf=$cockpit_wired
+               wire_fix="a tpm @plugin line names cockpit, but tpm's run line, or $DIR"
+               wire_fix="$wire_fix as tpm's plugin folder, is not there" ;;
+            *) # A line that names the plugin and loads no copy from here: say which, and
+               # which folder it runs, since bootstrap.sh then appends nothing (#1067).
+               if cockpit_conf_mention "$DIR" "${cfs[@]}"; then
+                   conf="$cockpit_mention_file line $cockpit_mention_n"
+                   wire_fix="names cockpit but loads none from $DIR"
+                   if cockpit_conf_run_arg "$cockpit_mention_line" &&
+                      cockpit_conf_arg_path "$cockpit_arg"; then
+                       case $cockpit_path in
+                           /*) wire_fix="runs the copy in ${cockpit_path%/*}, not $DIR" ;;
+                       esac
+                   fi
+                   wire_fix="$wire_fix: keep one copy; this one's line is"
+                   wire_fix="$wire_fix $(cockpit_conf_line "$DIR")"
+               fi ;;
+        esac
+    fi
     # A line with no quote around the path might not load from this folder (#1046, #1060).
     if [ "$wired" -eq 1 ] && ! cockpit_bare_carries "$DIR" &&
        n=$(cockpit_conf_bare_line "$conf" "$DIR"); then
@@ -533,16 +554,26 @@ if [ -z "${HOME:-}" ]; then
         "$(cockpit_conf_line "$DIR")" >&2
 else
     # tmux loads both, so the run-shell line in either wires it, as --check reads it.
-    conf=""; wired=0
+    conf=""; wst=1; cfs=()
     for c in "${XDG_CONFIG_HOME:-$HOME/.config}/tmux/tmux.conf" "$HOME/.tmux.conf"; do
         [ -r "$c" ] || continue
         [ -n "$conf" ] || conf="$c"
-        grep -q 'cockpit\.tmux' "$c" && { wired=1; break; }
+        cfs+=("$c")
     done
+    [ "${#cfs[@]}" -eq 0 ] || { cockpit_conf_wired "$DIR" "${cfs[@]}"; wst=$?; }
     if [ -z "$conf" ]; then
         printf '\nNo tmux config found. Create %s with:\n  %s\n' \
                "$HOME/.tmux.conf" "$(cockpit_conf_line "$DIR")" >&2
-    elif [ "$wired" -eq 0 ]; then
+    elif [ "$wst" -eq 2 ]; then
+        # --check fails this row; a run-shell line beside tpm's would load the plugin twice.
+        printf '\ntpm seems to manage cockpit in %s, not confirmed: %s\nRun install.sh --check.\n' \
+               "$cockpit_wired" "no tpm run line, or $DIR is not in tpm's plugin folder." >&2
+    elif [ "$wst" -ne 0 ] && cockpit_conf_mention "$DIR" "${cfs[@]}"; then
+        # bootstrap.sh appends nothing here, and a line added by hand could load two copies.
+        # One decision, one message: the line bootstrap.sh prints (#1067).
+        printf '\n%s line %s names cockpit; run install.sh --check\n' \
+               "$cockpit_mention_file" "$cockpit_mention_n" >&2
+    elif [ "$wst" -ne 0 ]; then
         printf '\nAdd this to %s, AFTER every option using an #{agent_*} token:\n  %s\n' \
                "$conf" "$(cockpit_conf_line "$DIR")" >&2
     fi

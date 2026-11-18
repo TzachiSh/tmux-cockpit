@@ -3429,6 +3429,116 @@ fi
 is "nested (Write(path))"    "$OP/README.md::"        "$(op '(Write(README.md))')"
 rm -rf "$OP"
 
+# tests: scripts/lib/git-env.sh
+echo "== tmux-open-path: a path the pane's folder misses is tried from the repo's top (#1289) =="
+# cargo, a git diff and a grep run at the top print paths from there. Clicked in a
+# subfolder, they resolved against the pane's folder alone and nothing opened. A
+# token missed there in every shape is now tried from `git rev-parse --show-toplevel`.
+# The repo's folder holds two blanks, as $OP's does.
+GR=$(mktmpd); GRR="$GR/r  t"; GRS="$GRR/sub"
+mkdir -p "$GRR/tui/src" "$GRS/d" "$GRR/d" "$GR/other/tui/src" "$GR/out/a" "$GR/gs" "$GR/nogit"
+: > "$GRR/tui/src/main.rs"; : > "$GRR/d/both"; : > "$GRS/d/both"; : > "$GRR/d/n"; : > "$GRS/d/n:5"
+: > "$GRS/both"; : > "$GR/other/tui/src/main.rs"
+git init -q "$GRR"; git init -q "$GR/other"
+# git as the script finds it on PATH: each call leaves a line, then the real git runs.
+printf '#!/bin/sh\necho x >> %s\nexec %s "$@"\n' \
+    "$(tq "$GR/gs/calls")" "$(tq "$(command -v git)")" > "$GR/gs/git"
+chmod +x "$GR/gs/git"
+# <cwd> <line>: the click's candidates, stderr included. The ceiling keeps git from
+# finding a repo above the fixture, whatever TMPDIR sits in.
+gr() { env GIT_CEILING_DIRECTORIES="$GR" PATH="$GR/gs:$PATH" \
+           "$DIR/scripts/tmux-open-path" --dry-run "$1" "$2" 2>&1; }
+# git calls since the last ask
+grn() { local n=0; [ -f "$GR/gs/calls" ] && n=$(wc -l < "$GR/gs/calls"); rm -f "$GR/gs/calls"
+        printf '%s' "$((n))"; }
+
+is "from a subfolder, a path printed from the top opens there, at its line" \
+   "$GRR/tui/src/main.rs:12:3" "$(gr "$GRS" 'error at tui/src/main.rs:12:3')"
+is "and a git diff's b/ path from a subfolder opens from the top" \
+   "$GRR/tui/src/main.rs::" "$(gr "$GRS" '+++ b/tui/src/main.rs')"
+is "a name in both the pane's folder and the top opens the pane's" "$GRS/d/both::" \
+   "$(gr "$GRS" 'see d/both')"
+# Every shape is tried in the pane's folder first: its d/n:5 is not the top's d/n at line 5.
+is "a token the pane's folder resolves in any shape keeps it" "$GRS/d/n:5::" \
+   "$(gr "$GRS" 'd/n:5')"
+is "outside a repo a miss opens nothing and prints nothing" "" \
+   "$(gr "$GR/out/a" 'tui/src/main.rs:12:3')"
+# The script ran: its both resolves. Its miss asks no git that is not there.
+is "with no git on PATH a miss opens nothing and prints nothing" "$GRS/both::" \
+   "$(env PATH="$GR/nogit" "$BASH" "$DIR/scripts/tmux-open-path" --dry-run "$GRS" \
+          'both tui/src/main.rs:12:3' 2>&1)"
+# A dotfiles setup exports GIT_DIR and GIT_WORK_TREE into tmux; git-env.sh drops them.
+is "a GIT_DIR tmux inherited names no other tree: the pane's own top opens" \
+   "$GRR/tui/src/main.rs:12:3" \
+   "$(GIT_DIR="$GR/other/.git" GIT_WORK_TREE="$GR/other" gr "$GRS" 'tui/src/main.rs:12:3')"
+git -C "$GRR" -c user.name=t -c user.email=t@e commit -q --allow-empty -m t
+git -C "$GRR" worktree add -q "$GR/wt" 2>/dev/null
+mkdir -p "$GR/wt/sub" "$GR/wt/tui/src"; : > "$GR/wt/tui/src/main.rs"
+is "in a linked worktree's subfolder, that worktree's top opens" "$GR/wt/tui/src/main.rs:12:3" \
+   "$(gr "$GR/wt/sub" 'tui/src/main.rs:12:3')"
+grn >/dev/null
+# Write(d/both) resolves only through the unwrap: the top waits for that too.
+gr "$GRS" 'd/both d/n:5 Write(d/both)' >/dev/null
+is "a click whose tokens all resolve asks git nothing" "0" "$(grn)"
+gr "$GRS" 'tui/src/main.rs:12:3 no/pe also/nope' >/dev/null
+is "a click with three misses asks git once" "1" "$(grn)"
+GRL=''; for gri in $(seq 500); do GRL+="no/pe$gri "; done
+gr "$GRS" "$GRL" >/dev/null
+is "a 500-token line of misses asks git once" "1" "$(grn)"
+# Only a token holding a / is tried from the top: a word of prose that names a folder there
+# would turn a direct open into the picker.
+mkdir -p "$GRR/docs" "$GRR/scripts" "$GRS/src"; : > "$GRS/src/a.rs"
+is "a word with no / is not tried from the top" "$GRS/src/a.rs:3:" \
+   "$(gr "$GRS" 'error in src/a.rs:3, see the docs or scripts')"
+
+# A dead pane (remain-on-exit) has an empty folder, and the click's run-shell runs in the
+# session's start folder. A relative token then resolved against / on its own, and
+# `git -C ''` answered for the start folder's repo. A tmux stub answers the script's
+# queries and logs what it would open.
+mkdir -p "$GR/et"
+cat > "$GR/et/tmux" <<'STUB'
+#!/usr/bin/env bash
+case "$1" in
+  show-options) case " $* " in *@cockpit_click_line*) printf '%s\n' "$CLICK_LINE" ;;
+                               *@cockpit_editor*) printf 'nvim\n' ;; esac ;;
+  display-message) case " $* " in *pane_current_path*) printf '\n' ;;
+                                  *window_id*) printf '@0\n' ;;
+                                  *) printf 'MSG %s\n' "$*" >> "$TMUX_LOG" ;; esac ;;
+  new-window) printf 'NEWWIN %s\n' "${!#}" >> "$TMUX_LOG" ;;
+esac
+exit 0
+STUB
+chmod +x "$GR/et/tmux"
+# <line> [path]: a click in a pane with no folder, run from $GRS. "no file", or "opened"
+# and the path when the editor's command names it.
+grd() {
+    local log
+    : > "$GR/et/log"
+    ( cd "$GRS" && env GIT_CEILING_DIRECTORIES="$GR" PATH="$GR/et:$GR/gs:$PATH" \
+          TMUX_LOG="$GR/et/log" CLICK_LINE="$1" "$DIR/scripts/tmux-open-path" %1 \
+          </dev/null >/dev/null 2>&1 )
+    log=$(cat "$GR/et/log")
+    case $log in
+        *"no file on that line"*) printf 'no file' ;;
+        *NEWWIN*" $(printf %q "${2-}")") printf 'opened %s' "$2" ;;
+        *NEWWIN*) printf 'opened elsewhere' ;;
+        *) printf 'other: %s' "$log" ;;
+    esac
+}
+is "a click in a pane with no folder opens nothing from the cwd's repo" "no file" \
+   "$(grd 'tui/src/main.rs:12')"
+# /bin/sh is on every runner: the token names it only when read against /.
+is "a click in a pane with no folder resolves no relative path against /" "no file" \
+   "$(grd 'see bin/sh')"
+# Absolute and ~ paths name their file without the pane's folder, as before.
+GRA=$(mktemp -d "$COCKPIT_SUITE_NB/ct.XXXXXX"); : > "$GRA/abs.txt"
+is "a click in a pane with no folder still opens an absolute path" "opened $GRA/abs.txt" \
+   "$(grd "$GRA/abs.txt" "$GRA/abs.txt")"
+: > "$HOME/grd-1289.txt"
+is "a click in a pane with no folder still opens a ~ path" "opened $HOME/grd-1289.txt" \
+   "$(grd 'see ~/grd-1289.txt' "$HOME/grd-1289.txt")"
+rm -rf "$GR" "$GRA" "$HOME/grd-1289.txt"
+
 # tests: scripts/tmux-branch
 echo "== tm: a session created from the picker starts in the pane's directory (#41) =="
 # tm runs in a popup, whose cwd is the CURRENT session's start directory, and
@@ -4665,7 +4775,20 @@ printf 'run-shell %s/cockpit.tmux\n' "$DIR" > "$IW/h/.tmux.conf"
 is "wired in ~/.tmux.conf beside an unwired XDG config: no note" "" "$(iw_note)"
 rm "$IW/h/.tmux.conf"
 is "wired in neither: the note names the first config" "$IW/h/.config/tmux/tmux.conf" "$(iw_note)"
-unset -f iw_note
+# A line that only names cockpit.tmux loads nothing, so the note still asks for one (#1067).
+printf '# run-shell %s/cockpit.tmux\n' "$DIR" > "$IW/h/.tmux.conf"
+is "a commented-out line wires nothing: the note names the first config" \
+   "$IW/h/.config/tmux/tmux.conf" "$(iw_note)"
+# A tpm @plugin line names this folder and no tpm run line confirms it: the note says so and
+# gives no run-shell line, which beside tpm's would load the plugin twice.
+printf "set -g @plugin 'o/%s'\n" "${DIR##*/}" > "$IW/h/.tmux.conf"
+iw_out=$(env -u XDG_CONFIG_HOME HOME="$IW/h" XDG_BIN_HOME="$IW/bin" "$DIR/install.sh" \
+             2>&1 >/dev/null)
+is "a tpm @plugin line tpm does not confirm: the note names its config, and no line to add" \
+   "$IW/h/.tmux.conf|0" \
+   "$(printf '%s\n' "$iw_out" | sed -n 's/^tpm seems to manage cockpit in \(.*\), not .*/\1/p')|$(
+      printf '%s\n' "$iw_out" | grep -c '^Add this to')"
+unset -f iw_note; unset iw_out
 rm -rf "$IW"
 
 echo "== install.sh --check: one row per thing that can be wrong, exit on the worst =="
@@ -4861,6 +4984,27 @@ rm -rf "$DH/.config"; cp "$DC/conf.bak" "$DH/.tmux.conf"
 printf 'set -g pane-border-format "#{?pane_active,,\\\n#{P:#{@panestate} }}"\n' >> "$DH/.tmux.conf"
 dcout=$(dc "$DCP")
 is "a walk on a continuation line is still a warn row" "1" "$(dcrow "$dcout" "warn formats")"
+# Wired is a line that runs this folder's cockpit.tmux, not one that names it (#1067).
+dcwire() { printf '%s\n' "$1" > "$DH/.tmux.conf"; dcrow "$(dc "$DCP")" "$2 config"; }
+is "a commented-out line is a fail config row" "1" "$(dcwire "# $(dcline "$DIR")" fail)"
+is "another folder's line is a fail config row" "1" \
+   "$(dcwire "run-shell '$DC/elsewhere/${DIR##*/}/cockpit.tmux'" fail)"
+is "a bind that names the file is a fail config row" "1" \
+   "$(dcwire "bind e new-window \"vi '$DIR/cockpit.tmux'\"" fail)"
+is "the path in single quotes is an ok config row" "1" \
+   "$(dcwire "run-shell '$DIR/cockpit.tmux'" ok)"
+is "run -b with the path in double quotes is an ok config row" "1" \
+   "$(dcwire "run -b \"$DIR/cockpit.tmux\"" ok)"
+# An @plugin line for this folder with no tpm run line: a fail row whose fix names tpm.
+printf "set -g @plugin 'o/%s'\n" "${DIR##*/}" > "$DH/.tmux.conf"; dcout=$(dc "$DCP")
+is "a tpm @plugin line with no tpm run line is a fail config row, its fix naming tpm" "1|1" \
+   "$(dcrow "$dcout" "fail config")|$(printf '%s\n' "$dcout" | grep -c 'a tpm @plugin line')"
+# bootstrap.sh appends nothing beside another copy's line, so the fail row says which copy
+# that line runs (#1067).
+printf "run-shell '%s/elsewhere/%s/cockpit.tmux'\n" "$DC" "${DIR##*/}" > "$DH/.tmux.conf"
+is "another folder's line: the fail config row names the folder that line runs" "1" \
+   "$(dc "$DCP" | grep -cF "runs the copy in $DC/elsewhere/${DIR##*/}, not $DIR")"
+unset -f dcwire
 cp "$DC/conf.bak" "$DH/.tmux.conf"
 dcout=$(env -u TMUX HOME="$DH" "$DIR/install.sh" --check --hooks 2>&1); dcrc=$?
 is "--check runs alone: with --hooks it exits 2" "2" "$dcrc"
@@ -4975,6 +5119,42 @@ bsout=$(bs)
 bssaid "an unrelated XDG tmux.conf beside a wired ~/.tmux.conf is already wired" \
     "already loads cockpit.tmux" "$bsout"
 is "and the XDG file is left alone" "# xdg" "$(cat "$BH/.config/tmux/tmux.conf")"
+# A commented-out line loads nothing, so the line is appended under it (#1067).
+rm -rf "$BH/.config"; printf '# run-shell %s/cockpit.tmux\n' "$DIR" > "$BH/.tmux.conf"
+bs >/dev/null 2>&1
+is "a config with only a commented-out line gets the run-shell line appended" "1" \
+   "$(grep -c '^run-shell ' "$BH/.tmux.conf")"
+# A tpm @plugin line names this folder and no tpm run line confirms it. A run-shell line
+# beside tpm's would load the plugin twice, so nothing is appended and the run says why.
+printf "# mine\nset -g @plugin 'o/%s'\n" "${DIR##*/}" > "$BH/.tmux.conf"
+cp "$BH/.tmux.conf" "$BS/tpm.conf"; bsout=$(bs)
+is "a tpm @plugin line tpm does not confirm: nothing appended" "same" \
+   "$(cmp -s "$BH/.tmux.conf" "$BS/tpm.conf" && echo same || echo changed)"
+bssaid "and the run says tpm seems to manage cockpit" \
+    "tpm seems to manage cockpit in $BH/.tmux.conf; run install.sh --check" "$bsout"
+# A line outside a comment that names cockpit.tmux and loads nothing from this folder, a
+# bind or another copy's run line: one more line could load two copies, so nothing is
+# appended and the run says to run --check (#1067). <unchanged>|<notes saying so>.
+bsnamed() {                   # bsnamed <config line>
+    printf '# mine\n%s\n' "$1" > "$BH/.tmux.conf"; cp "$BH/.tmux.conf" "$BS/named.conf"
+    bsout=$(bs)
+    printf '%s|%s' "$(cmp -s "$BH/.tmux.conf" "$BS/named.conf" && echo same || echo changed)" \
+        "$(printf '%s\n' "$bsout" |
+           grep -cF "have   $BH/.tmux.conf line 2 names cockpit; run install.sh --check")"
+}
+is "a bind that names cockpit.tmux: nothing appended, and the run says to run --check" \
+   "same|1" "$(bsnamed "bind e new-window \"vi '$DIR/cockpit.tmux'\"")"
+is "another copy's run line: nothing appended, and the run says to run --check" "same|1" \
+   "$(bsnamed "run-shell '$BS/elsewhere/tmux-cockpit/cockpit.tmux'")"
+unset -f bsnamed
+# install.sh, which bootstrap.sh runs, then gives no line to add by hand either: its
+# closing note is bootstrap.sh's own line, on a line of its own (#1067).
+printf "# mine\nrun-shell '%s/elsewhere/tmux-cockpit/cockpit.tmux'\n" "$BS" > "$BH/.tmux.conf"
+bsout=$(bs)
+is "and install.sh's closing note on that box says to run --check, with no line to add" \
+   "1|0" "$(printf '%s\n' "$bsout" |
+      grep -cxF "$BH/.tmux.conf line 2 names cockpit; run install.sh --check")|$(
+      printf '%s\n' "$bsout" | grep -c '^Add this to')"
 rm -rf "$BS"
 fi
 
@@ -5181,6 +5361,134 @@ is "bootstrap.sh without confline.sh: exit 1, and no step was started" "1|0" \
 cl_out=$( cl_env 12 "$CL/p/nolib/install.sh" --check ); cl_n=$?
 is "install.sh --check without it: exit 1, and no row was printed" "1|0" \
    "$cl_n|$(printf '%s\n' "$cl_out" | grep -c '^\[')"
+# Which lines run this folder's cockpit.tmux (#1067), each alone in a config: its line
+# number, or none. A comment, another folder and a bind only name the file.
+is "cockpit_conf_wired_line: the spellings that load this folder, and those that do not" \
+   "comment:none bind:none other:none tilde:1 trailing:none bare:1 single:1 single-tilde:1 $(:
+   )double:1 run-b:1 home:1 home-braced:1 printed:1 " \
+   "$(. "$DIR/scripts/lib/confline.sh"; HOME="$CL/h1"; cl_p="$HOME/pl ug"
+      cl_r='/pl ug/cockpit.tmux'
+      for cl_f in "comment|# run-shell '$cl_p/cockpit.tmux'" \
+          "bind|bind e run '$cl_p/cockpit.tmux'" \
+          "other|run-shell '$CL/elsewhere/pl ug/cockpit.tmux'" "tilde|run ~$cl_r" \
+          "trailing|run-shell '$cl_p/cockpit.tmux' # mine" "bare|run-shell $cl_p/cockpit.tmux" \
+          "single|run-shell '$cl_p/cockpit.tmux'" "single-tilde|run-shell '~$cl_r'" \
+          "double|run-shell \"$cl_p/cockpit.tmux\"" "run-b|run -b \"$cl_p/cockpit.tmux\"" \
+          "home|run-shell '\"\$HOME$cl_r\"'" "home-braced|run-shell '\"\${HOME}$cl_r\"'" \
+          "printed|$(cockpit_conf_line "$cl_p")"; do
+          printf '%s\n' "${cl_f#*|}" > "$CL/wl"
+          printf '%s:%s ' "${cl_f%%|*}" "$(cockpit_conf_wired_line "$CL/wl" "$cl_p" || printf none)"
+      done)"
+# tpm (#1067): 0 it loads this folder, 2 an @plugin line names it unconfirmed, 1 none does.
+is "cockpit_conf_tpm: which configs tpm loads this folder's plugin from" \
+   "loads:0 no-run:2 elsewhere:2 set-option-git-branch:0 run-commented:2 plugin-commented:1 $(:
+   )other-name:1 " \
+   "$(. "$DIR/scripts/lib/confline.sh"; unset XDG_CONFIG_HOME; HOME="$CL/h14"
+      cl_p="$HOME/.tmux/plugins/tmux-cockpit"; cl_e="$CL/elsewhere/tmux-cockpit"
+      mkdir -p "$cl_p" "$cl_e"; cl_r="run '~/.tmux/plugins/tpm/tpm'"
+      cl_l="set -g @plugin 'o/tmux-cockpit'"; cl_g='"git@github.com:o/tmux-cockpit.git#v2"'
+      cl_h='run -b "$HOME/.tmux/plugins/tpm/tpm"'
+      for cl_f in "loads|$cl_p|$cl_l|$cl_r" "no-run|$cl_p|$cl_l|" "elsewhere|$cl_e|$cl_l|$cl_r" \
+          "set-option-git-branch|$cl_p|set-option -g @plugin $cl_g|$cl_h" \
+          "run-commented|$cl_p|$cl_l|# $cl_r" "plugin-commented|$cl_p|# $cl_l|$cl_r" \
+          "other-name|$cl_p|set -g @plugin 'o/tmux-other'|$cl_r"; do
+          IFS='|' read -r cl_k cl_d cl_a cl_b <<< "$cl_f"
+          printf '%s\n%s\n' "$cl_a" "$cl_b" > "$HOME/.tmux.conf"
+          cockpit_conf_tpm "$cl_d" "$HOME/.tmux.conf" >/dev/null; printf '%s:%s ' "$cl_k" "$?"
+      done)"
+# tpm's own pattern, ^[ \t]*set(-option)? +-g +@plugin: a tab between the words is no
+# @plugin line, a run of blanks is one, and so is @plugins, a name it starts with (#1067).
+is "cockpit_conf_tpm: an @plugin line is one where tpm's own pattern matches" \
+   "tab:1 blanks:0 plugins:0 " \
+   "$(. "$DIR/scripts/lib/confline.sh"; unset XDG_CONFIG_HOME; HOME="$CL/h14"
+      cl_p="$HOME/.tmux/plugins/tmux-cockpit"; cl_r="run '~/.tmux/plugins/tpm/tpm'"
+      for cl_f in "tab|set"$'\t'"-g @plugin 'o/tmux-cockpit'" \
+          "blanks|  set-option   -g  @plugin 'o/tmux-cockpit'" \
+          "plugins|set -g @plugins 'o/tmux-cockpit'"; do
+          printf '%s\n%s\n' "${cl_f#*|}" "$cl_r" > "$HOME/.tmux.conf"
+          cockpit_conf_tpm "$cl_p" "$HOME/.tmux.conf" >/dev/null; printf '%s:%s ' "${cl_f%%|*}" "$?"
+      done)"
+# With an XDG tmux.conf, tpm's plugin folder is the XDG one, not ~/.tmux/plugins.
+is "cockpit_conf_tpm: an XDG tmux.conf moves tpm's plugin folder there" "0 2" \
+   "$(. "$DIR/scripts/lib/confline.sh"; HOME="$CL/h14"; XDG_CONFIG_HOME="$CL/x14"
+      mkdir -p "$CL/x14/tmux/plugins/tmux-cockpit"; cl_c="$CL/x14/tmux/tmux.conf"
+      printf '%s\n' "set -g @plugin 'o/tmux-cockpit'" "run '~/.tmux/plugins/tpm/tpm'" > "$cl_c"
+      cockpit_conf_tpm "$CL/x14/tmux/plugins/tmux-cockpit" "$cl_c" >/dev/null; printf '%s ' "$?"
+      cockpit_conf_tpm "$HOME/.tmux/plugins/tmux-cockpit" "$cl_c" >/dev/null; printf '%s' "$?")"
+# tpm reads @plugin lines from one config, the XDG one when it is there: an @plugin line in
+# ~/.tmux.conf beside it is one tpm never sees, even with tpm's run line there (#1067).
+is "cockpit_conf_tpm: an @plugin line in ~/.tmux.conf beside an XDG tmux.conf is not tpm's" \
+   "2" \
+   "$(. "$DIR/scripts/lib/confline.sh"; HOME="$CL/h14"; XDG_CONFIG_HOME="$CL/x14"
+      printf '# xdg\n' > "$CL/x14/tmux/tmux.conf"
+      printf '%s\n' "set -g @plugin 'o/tmux-cockpit'" "run '~/.tmux/plugins/tpm/tpm'" \
+          > "$HOME/.tmux.conf"
+      cockpit_conf_tpm "$CL/x14/tmux/plugins/tmux-cockpit" "$CL/x14/tmux/tmux.conf" \
+          "$HOME/.tmux.conf" >/dev/null; printf '%s' "$?")"
+# A box tpm wires: the plugin in ~/.tmux/plugins/tmux-cockpit, an @plugin line, tpm's run line.
+cl_box 13 tpmx; cl_t="$CL/h13/.tmux/plugins/tmux-cockpit"; mv "$CL/p/tpmx" "$cl_t"
+printf '%s\n' "set -g @plugin 'o/tmux-cockpit'" "run '~/.tmux/plugins/tpm/tpm'" \
+    > "$CL/h13/.tmux.conf"
+cp "$CL/h13/.tmux.conf" "$CL/conf13"
+( cd "$CL/wd" && cl_env 13 "$cl_t/bootstrap.sh" --yes ) >/dev/null
+is "a config tpm loads the plugin from: bootstrap.sh appends nothing" "same" \
+   "$(cmp -s "$CL/h13/.tmux.conf" "$CL/conf13" && echo same || echo changed)"
+# The config as written: a line bootstrap.sh appended would wire the box by itself.
+cp "$CL/conf13" "$CL/h13/.tmux.conf"
+is "and install.sh --check on that config as written passes its config row" "1" \
+   "$(cl_env 13 "$cl_t/install.sh" --check |
+      grep -cF "[  ok  ] config         $CL/h13/.tmux.conf loads cockpit")"
+# The same lines in ~/.tmux.conf, beside an XDG tmux.conf and with the plugin in the XDG
+# plugins folder: tpm reads only the XDG config, so it never sees the @plugin line (#1067).
+cl_box 15 tpmy; cl_x="$CL/h15/.config/tmux"; mkdir -p "$cl_x/plugins"
+cl_t="$cl_x/plugins/tmux-cockpit"; mv "$CL/p/tpmy" "$cl_t"; printf '# xdg\n' > "$cl_x/tmux.conf"
+cp "$CL/conf13" "$CL/h15/.tmux.conf"; cp "$cl_x/tmux.conf" "$CL/xdg15"
+cl_out=$( cd "$CL/wd" && cl_env 15 "$cl_t/bootstrap.sh" --yes )
+is "an @plugin line tpm does not read: bootstrap.sh says tpm seems to, and appends to neither" \
+   "1|same|same" \
+   "$(printf '%s\n' "$cl_out" |
+      grep -cF "tpm seems to manage cockpit in $CL/h15/.tmux.conf; run install.sh --check")|$(
+      cmp -s "$CL/h15/.tmux.conf" "$CL/conf13" && echo same || echo changed)|$(
+      cmp -s "$cl_x/tmux.conf" "$CL/xdg15" && echo same || echo changed)"
+is "and install.sh --check fails its config row" "1" \
+   "$(cl_env 15 "$cl_t/install.sh" --check | grep -c '^\[ fail \] config ')"
+# A plugin folder reached through a symlink, ~/.tmux/plugins/tmux-cockpit linked to a
+# checkout (#1067): the folder is its physical path, and the config names the link.
+is "cockpit_conf_wired_line: a symlinked plugin folder, the lines that load it" \
+   "docs:1 bare:1 double:1 home:1 sq-in-dq:none dq-in-sq:none other:none " \
+   "$(. "$DIR/scripts/lib/confline.sh"; HOME="$CL/h16"; cl_s="$CL/src16/cockpit-co"
+      cl_o="$CL/other16/tmux-cockpit"; cl_r='/.tmux/plugins/tmux-cockpit/cockpit.tmux'
+      mkdir -p "$HOME/.tmux/plugins" "$cl_s" "$cl_o"; : > "$cl_s/cockpit.tmux"
+      : > "$cl_o/cockpit.tmux"; ln -s "$cl_s" "$HOME/.tmux/plugins/tmux-cockpit"
+      for cl_f in "docs|run-shell '~$cl_r'" "bare|run-shell ~$cl_r" \
+          "double|run-shell \"~$cl_r\"" "home|run-shell '\"\$HOME$cl_r\"'" \
+          "sq-in-dq|run-shell \"'~$cl_r'\"" "dq-in-sq|run-shell '\"~$cl_r\"'" \
+          "other|run-shell '$cl_o/cockpit.tmux'"; do
+          printf '%s\n' "${cl_f#*|}" > "$CL/wl"
+          printf '%s:%s ' "${cl_f%%|*}" "$(cockpit_conf_wired_line "$CL/wl" "$cl_s" || printf none)"
+      done)"
+is "cockpit_conf_tpm: a plugin folder tpm reaches through a symlink loads" "0" \
+   "$(. "$DIR/scripts/lib/confline.sh"; unset XDG_CONFIG_HOME; HOME="$CL/h16"
+      printf '%s\n' "set -g @plugin 'o/tmux-cockpit'" "run '~/.tmux/plugins/tpm/tpm'" \
+          > "$HOME/.tmux.conf"
+      cockpit_conf_tpm "$CL/src16/cockpit-co" "$HOME/.tmux.conf" >/dev/null; printf '%s' "$?")"
+# The same on a box: the copy's folder linked in as ~/.tmux/plugins/tmux-cockpit.
+cl_box 17 co17; cl_t="$CL/h17/.tmux/plugins/tmux-cockpit"; ln -s "$CL/p/co17" "$cl_t"
+printf "run-shell '~/.tmux/plugins/tmux-cockpit/cockpit.tmux'\n" > "$CL/h17/.tmux.conf"
+cp "$CL/h17/.tmux.conf" "$CL/conf17"
+( cd "$CL/wd" && cl_env 17 "$cl_t/bootstrap.sh" --yes ) >/dev/null
+is "a symlinked plugin folder and the docs line: bootstrap.sh appends nothing" "same" \
+   "$(cmp -s "$CL/h17/.tmux.conf" "$CL/conf17" && echo same || echo changed)"
+cp "$CL/conf17" "$CL/h17/.tmux.conf"
+is "and install.sh --check on that box passes its config row" "1" \
+   "$(cl_env 17 "$cl_t/install.sh" --check |
+      grep -cF "[  ok  ] config         $CL/h17/.tmux.conf loads cockpit")"
+cl_box 18 co18; cl_t="$CL/h18/.tmux/plugins/tmux-cockpit"; ln -s "$CL/p/co18" "$cl_t"
+printf '%s\n' "set -g @plugin 'o/tmux-cockpit'" "run '~/.tmux/plugins/tpm/tpm'" \
+    > "$CL/h18/.tmux.conf"
+is "a symlinked plugin folder tpm loads: install.sh --check passes its config row" "1" \
+   "$(cl_env 18 "$cl_t/install.sh" --check |
+      grep -cF "[  ok  ] config         $CL/h18/.tmux.conf loads cockpit")"
 # The plain folder: a bare line works there, so nothing new is said. The run's output is
 # the same, byte for byte, whether the config holds the old line or the new one.
 # Under a TMPDIR whose own path a bare line does not carry, "plain" is not plain.
@@ -5197,7 +5505,7 @@ is "and install.sh --check passes its config row" "1" \
       grep -cF "[  ok  ] config         $CL/h1/.tmux.conf loads cockpit")"
 fi
 unset -f cl_box cl_env cl_load
-unset CL CLREL cl_d cl_a cl_n cl_f cl_p2 cl_out cl_line
+unset CL CLREL cl_d cl_a cl_n cl_f cl_p2 cl_out cl_line cl_t cl_x
 fi
 
 echo "== the plugin loads whole and the menu renames, from a folder of any name (#1050, #1071) =="
@@ -10472,6 +10780,138 @@ for td_a in "" nope . .. .:empty link sib:badls; do
 done
 unset -f td_k; unset TDE td_a td_o td_w
 
+echo "== own_tmpdir takes mktemp's answer only when it is a fresh dir of the user's own (#947) =="
+# lib/tmpdir.sh, the check every rm -rf'd temp dir goes through. own_tmpdir_why names the first
+# check that refused, in a fixed order, so each row is one only its own check refuses first: a
+# check taken out moves its row on to the next check, or to accepted. The helper removes
+# nothing; each answer is judged from a cwd under scratch.
+#   fail    mktemp exits 1            nope   a name that does not resolve
+#   ''      an empty answer, exit 0   /      never empty, and a user's only as root
+#   .       the cwd                   link   a symlink to an empty dir of the user's
+#   full    a dir with a file in it   badls  an empty dir, and an ls that fails
+#   link/   link/.   the same link, which -L alone follows to its target
+OT=$(mktmpd); mkdir -p "$OT/bin" "$OT/cwd/sub" "$OT/e" "$OT/full" "$OT/t"
+echo keep > "$OT/full/canary"; ln -s "$OT/e" "$OT/link"; ln -s "$OT/t" "$OT/tl"
+# OT_TMPDIR replaces TMPDIR, and OT_OLDPWD sets OLDPWD, for the one call.
+ot_run() {                    # <answer|fail|real> -> "<status> <why> [<var>]", from $OT/cwd
+    case $1 in
+        fail) printf '#!/bin/sh\nexit 1\n' > "$OT/bin/mktemp" ;;
+        real) rm -f "$OT/bin/mktemp" ;;
+        *)    printf '#!/bin/sh\nprintf "%%s\\n" %s\n' "$(tq "$1")" > "$OT/bin/mktemp" ;;
+    esac
+    [ ! -e "$OT/bin/mktemp" ] || chmod +x "$OT/bin/mktemp"
+    (cd "$OT/cwd" && env ${OT_OLDPWD:+OLDPWD="$OT_OLDPWD"} PATH="$OT/bin:$PATH" \
+        TMPDIR="${OT_TMPDIR:-$OT/t}" bash -c \
+        '. "$1"; own_tmpdir v; printf "%s %s [%s]" "$?" "$own_tmpdir_why" "$v"' _ \
+        "$DIR/scripts/lib/tmpdir.sh" 2>/dev/null)
+}
+for ot_c in fail:mktemp :answer -x:dash nope:resolve /:root .:cwd link:symlink link/:symlink \
+    link/.:symlink full:nonempty; do
+    ot_a=${ot_c%:*}
+    case $ot_a in link*|full) ot_a=$OT/$ot_a ;; esac
+    is "a mktemp answering [${ot_c%:*}] is refused by the ${ot_c##*:} check" \
+       "1 ${ot_c##*:} []" "$(ot_run "$ot_a")"
+done
+# -O, not a uid test: it holds for root and for a container whose user owns /usr alike, and
+# either way the owner check has nothing there to refuse, so the row could not test it.
+if [ -O /usr ]; then skip_ "own_tmpdir: /usr is this user's own (root or a container), no owner row"
+else is "a mktemp answering /usr, a dir the user does not own, is refused by the owner check" \
+        "1 owner []" "$(ot_run /usr)"
+fi
+printf '#!/bin/sh\nexit 2\n' > "$OT/bin/ls"; chmod +x "$OT/bin/ls"
+is "an empty dir an ls cannot list is refused by the nonempty check: it fails closed" \
+   "1 nonempty []" "$(ot_run "$OT/e")"
+rm -f "$OT/bin/ls"
+# cd -- - goes to $OLDPWD and prints it: an answer of - is refused before any cd, by its own
+# check, with OLDPWD naming an empty dir of the user's that every later check would pass.
+is "a mktemp answering [-], OLDPWD an empty dir of the user's, is refused by the dash check" \
+   "1 dash []" "$(OT_OLDPWD="$OT/e" ot_run -)"
+# cd reads CDPATH for a relative name, and prints the dir it found there: own_tmpdir clears it,
+# so a name that is only under CDPATH does not resolve. Kept, the two-line path it printed
+# was refused by the owner check, by accident.
+mkdir -p "$OT/cdp/elsewhere"
+is "an answer that resolves only through CDPATH is refused by the resolve check" \
+   "1 resolve []" "$(CDPATH="$OT/cdp" ot_run elsewhere)"
+is "a relative answer naming an empty dir of the user's is taken, as its absolute path" \
+   "0  [$(cd "$OT/cwd/sub" && pwd -P)]" "$(ot_run sub)"
+is "an empty dir of the user's, named absolute, is taken" \
+   "0  [$(cd "$OT/e" && pwd -P)]" "$(ot_run "$OT/e")"
+is "and named with a trailing /, the same dir is taken" \
+   "0  [$(cd "$OT/e" && pwd -P)]" "$(ot_run "$OT/e/")"
+ot_o=$(OT_TMPDIR="$OT/tl" ot_run real); ot_v=${ot_o#*[}; ot_v=${ot_v%]}
+is "the real mktemp under a TMPDIR that is a symlink is taken, as the physical path" \
+   "0  |$(cd "$OT/t" && pwd -P)" "${ot_o%%[*}|${ot_v%/*}"
+ot_o=$(ot_run real); ot_v=${ot_o#*[}; ot_v=${ot_v%]}
+is "the real mktemp's answer is taken: status 0, no reason, a dir under TMPDIR" \
+   "0  |$(cd "$OT/t" && pwd -P)" "${ot_o%%[*}|${ot_v%/*}"
+is "and only its user can open it" "drwx------" "$(ls -ld "$ot_v" 2>/dev/null | cut -c1-10)"
+for ot_a in '' 1x _ot_a; do
+    ot_o=$(bash -c '. "$1"; own_tmpdir ${2:+"$2"} 2>&1 >/dev/null; echo "rc=$?"' _ \
+        "$DIR/scripts/lib/tmpdir.sh" "$ot_a")
+    is "own_tmpdir with <var> [$ot_a] fails with status 2, naming <var>" "rc=2|1" \
+       "${ot_o##*$'\n'}|$(printf '%s\n' "$ot_o" | grep -c '<var>')"
+done
+rm -rf "$OT"; unset -f ot_run; unset OT ot_c ot_a ot_o ot_v
+
+echo "== board, panel, tm and tui-fetch rm -rf no dir their mktemp did not make (#947) =="
+# Each armed rm -rf on whatever mktemp -d answered. Here a mktemp earlier on PATH answers a
+# dir that exists: one with a canary in it, or the site's own empty cwd. The site takes the
+# path it takes on a failed mktemp, and the dir stays. Nothing reaches a server: TMUX is unset
+# and a stub tmux comes first on PATH, answering one session name and nothing else (tm runs in
+# a pane of a private server for its tty, the stub still first). tui-fetch's curl and gh are
+# stubs that log and fail, so nothing is fetched; the row counts its curl calls.
+if need_tmux "own_tmpdir at the four sites"; then :; else
+OSS="cockpit-ot947-$$"; SOCKS="$SOCKS $OSS"
+os_site() {                   # <site> <full|cwd> -> "<kept|gone>|<status or curl=N>"
+    local s=$1 w=$2 o r
+    o=$(mktmpd); mkdir -p "$o/bin" "$o/cwd" "$o/full" "$o/state"; echo keep > "$o/full/canary"
+    printf '#!/bin/sh\nprintf "%%s\\n" %s\n' "$(tq "$o/$w")" > "$o/bin/mktemp"
+    printf '#!/bin/sh\ncase $1 in list-sessions) echo a ;; esac\nexit 0\n' > "$o/bin/tmux"
+    printf '#!/bin/sh\necho x >> %s\nexit 22\n' "$(tq "$o/curl.log")" > "$o/bin/curl"
+    printf '#!/bin/sh\nexit 1\n' > "$o/bin/gh"; printf '#!/bin/sh\nexit 1\n' > "$o/tui"
+    chmod +x "$o/bin/"* "$o/tui"
+    case $s in
+        tm)
+            # <cwd> <stub bin> <tui> <tm> <rc file>: the pane's stdin is its tty, as the picker
+            # needs. The status lands whole, by a rename.
+            cat > "$o/run-tm" <<'RUNTM'
+#!/bin/sh
+cd "$1" || exit 1
+PATH="$2:$PATH" env -u TMUX -u TMUX_PANE COCKPIT_TUI_BIN="$3" timeout 30 "$4"
+echo "$?" > "$5.t" && mv "$5.t" "$5"
+RUNTM
+            # fresh_server: the second tm row starts a server on the socket the first killed.
+            fresh_server -L "$OSS" -f /dev/null -- -d -c "$o/cwd" sh "$o/run-tm" \
+                "$o/cwd" "$o/bin" "$o/tui" "$DIR/scripts/tm" "$o/rc"
+            local i; for i in $(seq 1 $((POLLS * 4))); do [ -s "$o/rc" ] && break; sleep 0.1; done
+            "$TMUX_REAL" -L "$OSS" kill-server >/dev/null 2>&1
+            r=$(cat "$o/rc" 2>/dev/null) ;;
+        tui-fetch)
+            (cd "$o/cwd" && PATH="$o/bin:$PATH" env -u TMUX -u TMUX_PANE -u COCKPIT_TUI_OFFLINE \
+                COCKPIT_TUI_BIN="$o/p/bin/cockpit-tui" \
+                COCKPIT_TUI_RELEASES=http://no-such-host.invalid timeout 30 "$DIR/scripts/tui-fetch" </dev/null >/dev/null 2>&1)
+            r=$( (wc -l < "$o/curl.log") 2>/dev/null | tr -d ' '); r=curl=${r:-0} ;;
+        *)
+            (cd "$o/cwd" && PATH="$o/bin:$PATH" env -u TMUX -u TMUX_PANE COCKPIT_TUI_BIN="$o/tui" \
+                COCKPIT_LOG="$o/log" XDG_STATE_HOME="$o/state" timeout 30 "$DIR/scripts/$s" \
+                ${3:+"$3"} ${4:+"$4"} </dev/null >/dev/null 2>&1); r=$? ;;
+    esac
+    if { [ "$w" = full ] && [ -e "$o/full/canary" ]; } || { [ "$w" = cwd ] && [ -d "$o/cwd" ]; }
+    then printf 'kept|%s' "$r"; else printf 'gone|%s' "$r"; fi
+}
+for os_w in full cwd; do
+    is "cockpit-board: a mktemp answering an existing dir ($os_w) is refused, the dir stays" \
+       "kept|1" "$(os_site cockpit-board "$os_w")"
+    is "cockpit-panel: a mktemp answering an existing dir ($os_w) is refused, the dir stays" \
+       "kept|1" "$(os_site cockpit-panel "$os_w" -p %0)"
+    is "tm: a mktemp answering an existing dir ($os_w) ends the picker, the dir stays" \
+       "kept|1" "$(os_site tm "$os_w")"
+    is "tui-fetch: a mktemp answering an existing dir ($os_w) fetches nothing, the dir stays" \
+       "kept|curl=0" "$(os_site tui-fetch "$os_w")"
+done
+unset -f os_site; unset OSS os_w
+fi
+
 # group: deliver
 echo "== tmux-review --deliver: guards refuse before anything is pasted =="
 if need_tmux "tmux-review --deliver"; then :; else
@@ -12853,7 +13293,7 @@ elif ! command -v sha256sum >/dev/null 2>&1; then skip_ "tui-fetch (no sha256sum
 TF=$(mktmpd); mkdir -p "$TF/plugin/scripts/lib" "$TF/build" "$TF/curlshim" "$TF/shim"
 cp "$DIR/scripts/tui-fetch" "$TF/plugin/scripts/"
 cp "$DIR/scripts/lib/vnum.sh" "$DIR/scripts/lib/tui.sh" "$DIR/scripts/lib/cargo-build.sh" \
-    "$DIR/scripts/lib/git-env.sh" "$TF/plugin/scripts/lib/"
+    "$DIR/scripts/lib/git-env.sh" "$DIR/scripts/lib/tmpdir.sh" "$TF/plugin/scripts/lib/"
 TFB="$TF/plugin/bin/cockpit-tui"; TFR=$(file_url "$TF/r el"); TFGONE=$(file_url "$TF/no-such-host")
 # Counting curl, not timing it: "a 404 is retried" is a fork count, never a clock.
 printf '#!/bin/sh\necho x >> "%s"\nexec %s "$@"\n' "$TF/curlcount" "$(command -v curl)" \

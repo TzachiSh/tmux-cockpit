@@ -403,9 +403,11 @@ consider() {  # consider <path> <line> <col> — record it if it exists
         "~") p="$H" ;;
         "~/"*) p="$H/${p#\~/}" ;;
     esac
+    # A dead pane has no folder: a relative path names nothing there, neither under / nor
+    # under the repo of this script's cwd, which `git -C ''` would answer for.
     case "$p" in
         /*) abs=$p ;;
-        *)  abs=$dir/$p ;;
+        *)  [ -n "$dir" ] || return 1; abs=$base/$p ;;
     esac
     [ -e "$abs" ] || return 1
     abs=${abs//\/.\//\/}                    # "dir/./bin/x" reads badly in the message
@@ -461,6 +463,44 @@ try_token() {
     return 1
 }
 
+# One stripped token: its own shapes, then the inside of a wrapper. 0 when it
+# recorded something.
+try_raw() {
+    local tok=$1 inner
+    try_token "$tok" && return 0
+    # Claude Code's Write(path), Read(path:12): unwrap and try the inside, but
+    # not tsc's file(12,3). Two statements: in one `[[ ]] && [[ ]]` chain bash
+    # clears BASH_REMATCH before the second expands, and set -u dies.
+    if [[ $tok =~ ^[A-Za-z_][A-Za-z0-9_-]*\((.+)\)$ ]]; then
+        inner=${BASH_REMATCH[1]}
+        # [0123456789], not [0-9]: in a UTF-8 locale [0-9] also matches ² and ١ (#842)
+        if ! [[ $inner =~ ^[0123456789]+,[0123456789]+$ ]]; then
+            strip_ends "$inner"
+            [ -n "$TOK" ] && try_token "$TOK" && return 0
+        fi
+    fi
+    return 1
+}
+
+# A path a tool printed from the repo's top, clicked in a subfolder (#1289): a token
+# holding a / that the pane's folder misses in every shape is tried again from the top.
+# git is asked once per click, at the first such token, so a click whose tokens
+# all resolve asks nothing. git-env.sh's unsets stay in the subshell: tmux's
+# GIT_DIR (a dotfiles setup) names no other tree, and the rest keeps its env.
+root='' rooted=0
+repo_top() {
+    if [ "$rooted" -eq 0 ]; then
+        rooted=1
+        # shellcheck source=lib/git-env.sh
+        root=$(. "${d%/*}/lib/git-env.sh" 2>/dev/null && exec git -c core.fsmonitor= \
+            -c core.hooksPath=/dev/null -C "$dir" rev-parse --show-toplevel 2>/dev/null) || root=''
+        [ "$root" != "$dir" ] || root=''
+    fi
+    [ -n "$root" ]
+}
+
+# The folder a relative candidate resolves against.
+base=$dir
 # set -f: word splitting also globs, and "rm *" on a line expanded against the
 # server's cwd into files that existed and got opened.
 set -f
@@ -471,18 +511,12 @@ for raw in $line; do
     [ "$ntok" -gt 500 ] && break
     strip_ends "$raw"; tok=$TOK
     [ -n "$tok" ] || continue
-    try_token "$tok" && continue
-    # Claude Code's Write(path), Read(path:12): unwrap and try the inside, but
-    # not tsc's file(12,3). Two statements: in one `[[ ]] && [[ ]]` chain bash
-    # clears BASH_REMATCH before the second expands, and set -u dies.
-    if [[ $tok =~ ^[A-Za-z_][A-Za-z0-9_-]*\((.+)\)$ ]]; then
-        inner=${BASH_REMATCH[1]}
-        # [0123456789], not [0-9]: in a UTF-8 locale [0-9] also matches ² and ١ (#842)
-        if ! [[ $inner =~ ^[0123456789]+,[0123456789]+$ ]]; then
-            strip_ends "$inner"
-            [ -n "$TOK" ] && try_token "$TOK" && continue
-        fi
-    fi
+    try_raw "$tok" && continue
+    # Only a token holding a / goes to the top: a word of prose naming a folder there would
+    # turn a direct open into the picker.
+    [[ $tok == */* ]] || continue
+    repo_top || continue
+    base=$root; try_raw "$tok"; base=$dir
 done
 set +f
 
