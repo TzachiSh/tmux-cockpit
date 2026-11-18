@@ -9,7 +9,13 @@
 # Lines 2-9 are the --help text. Every step is skippable and idempotent: a rerun upgrades.
 set -uo pipefail
 
-DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The plugin root holds the REAL file: `me` follows any chain of links, a relative
+# target read from its own link's folder (#1290).
+me=${BASH_SOURCE[0]}; case $me in (*/*) ;; (*) me=./$me ;; esac
+[ -L "$me" ] && me=$(n=0
+    while [ -L "$me" ] && [ $((n += 1)) -le 40 ] && t=$(readlink "$me"); do
+        case $t in (/*) me=$t ;; (*) me=${me%/*}/$t ;; esac; done; printf %s "$me")
+DIR="$(cd -P "$(dirname "$me")" && pwd)"
 PLUGINS="${XDG_CONFIG_HOME:-$HOME}/.tmux/plugins"
 [ -d "$HOME/.tmux/plugins" ] && PLUGINS="$HOME/.tmux/plugins"
 

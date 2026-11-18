@@ -26,8 +26,8 @@ command -v tmux >/dev/null || die "cockpit: tmux is not installed · install tmu
 # fesc, the format escaper: lib/ sits beside the real script, not the install
 # symlink. Parameter expansion, not dirname: tm runs on a PATH that may hold
 # nothing but tmux.
-tm_d=${BASH_SOURCE[0]}
-[ -L "$tm_d" ] && tm_d=$(case $tm_d in (*/*) ;; (*) tm_d=./$tm_d ;; esac; n=0
+tm_d=${BASH_SOURCE[0]}; case $tm_d in (*/*) ;; (*) tm_d=./$tm_d ;; esac
+[ -L "$tm_d" ] && tm_d=$(n=0
     while [ -L "$tm_d" ] && [ $((n += 1)) -le 40 ] && t=$(readlink "$tm_d"); do
         case $t in (/*) tm_d=$t ;; (*) tm_d=${tm_d%/*}/$t ;; esac; done; printf %s "$tm_d")
 case $tm_d in */*) tm_d=${tm_d%/*} ;; *) tm_d=. ;; esac
@@ -41,8 +41,8 @@ US=$'\037'
 # lib/ sits beside the real script, not the install symlink. Loaded when the
 # picker opens: `tm <name>` and `tm -l` never need it.
 load_tui() {
-  local d=${BASH_SOURCE[0]}
-  [ -L "$d" ] && d=$(case $d in (*/*) ;; (*) d=./$d ;; esac; n=0
+  local d=${BASH_SOURCE[0]}; case $d in (*/*) ;; (*) d=./$d ;; esac
+  [ -L "$d" ] && d=$(n=0
       while [ -L "$d" ] && [ $((n += 1)) -le 40 ] && t=$(readlink "$d"); do
           case $t in (/*) d=$t ;; (*) d=${d%/*}/$t ;; esac; done; printf %s "$d")
   # shellcheck source=lib/tui.sh
