@@ -27,7 +27,8 @@ pub(crate) fn under(root: &Path, path: &str) -> Option<PathBuf> {
 }
 
 /// The transcript of a pane's session: @cockpit_transcript (the hook's `transcript_path`),
-/// else @cockpit_session, else `claude agents --json` joined on the pane's process tree;
+/// else @cockpit_session, else @cockpit_job_session (a viewer's bound job, #448), else
+/// `claude agents --json` joined on the pane's process tree;
 /// then [`locate`], the lookup the board shares. `cwd` is the pane's pane_current_path.
 pub fn file(pane: &str, cwd: &str) -> Option<PathBuf> {
     if pane.is_empty() {
@@ -39,6 +40,9 @@ pub fn file(pane: &str, cwd: &str) -> Option<PathBuf> {
         return Some(p);
     }
     let mut sid = one(&["show-option", "-pqv", "-t", pane, "@cockpit_session"]);
+    if sid.is_empty() {
+        sid = one(&["show-option", "-pqv", "-t", pane, "@cockpit_job_session"]);
+    }
     if sid.is_empty() {
         let pp: i64 = one(&["display-message", "-p", "-t", pane, "#{pane_pid}"]).parse().ok()?;
         sid = agents().into_iter().find(|(pid, _)| descends(*pid, pp)).map(|(_, s)| s)?;

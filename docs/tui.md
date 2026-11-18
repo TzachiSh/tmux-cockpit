@@ -172,7 +172,7 @@ In the tiles (`v`):
 | `i` | info for the selected pane; any key comes back to the board |
 | `a` | answer a `▲` agent, ask any other; the footer says which. Phase 1 jumps on a `▲` and notes it on the rest; phase 2 opens the reply overlay |
 | `x` | kill the agent's pane, after a confirm (`kill %N`); the window's other panes stay. On an ended agent it closes the pane left behind |
-| `o` | on an ended agent whose `@cockpit_session` is a session id: `claude --resume <id>` in a new pane beside it, at the pane's cwd (`resume %N`). Not offered anywhere else |
+| `o` | on an ended agent whose `@cockpit_session` is a session id: `claude --resume <id>` in a new pane beside it, at the pane's cwd (`resume %N`). Not offered anywhere else, nor on a pane still bound to a background job (#448) |
 | `?` | the keys: full-popup, one column, generated from the key table itself, with a legend of the tile glyphs. `↑↓` `j` `k` `PgUp` `PgDn` scroll it; any other key closes it |
 | `v` | the list |
 | `^L` | refetch and redraw now |
@@ -825,9 +825,14 @@ the list for `v` to come back.
 **Background jobs (#448).** A pane that shows a background job (the agent view,
 `claude attach`) takes its state from the job, not from hooks: `scripts/agent-poll`
 binds it when the pane's title names exactly one job, and records the job on the pane
-as `@cockpit_job` (id) and `@cockpit_job_name` (name), both cleared when the bind
-ends. The board does not draw them yet (#460). A row's state is the bound job's, and the
-rule, its residual false bind and how the poller starts are in
+as `@cockpit_job` (id), `@cockpit_job_name` (name) and `@cockpit_job_session` (the
+job's session id), all cleared when the bind ends. The board draws the name (#460). The
+viewer runs no hook, so the pane has no `@cockpit_session`: the board reads the job's
+session instead, and the row's dir, branch, doing line and subagents come from the job's
+transcript, not the viewer's launch dir (#448). A row's state is the bound job's alone,
+never the transcript's. The info screen's `session` row is the pane's own session, else
+the job's, as `--json`'s is (#1267). The rule, its residual false bind and how the poller
+starts are in
 [states-and-hooks.md](states-and-hooks.md#agent-view-and-background-jobs).
 
 **Subagents (#313).** An agent with subagents running or failed carries a
@@ -2375,8 +2380,9 @@ file under the projects dir (`$CLAUDE_CONFIG_DIR/projects`, else
 else `<projects>/<cwd's slug>/<session>.jsonl`, else the first
 `<projects>/*/<session>.jsonl`, sorted. The board polls, so it keeps that last step's
 find until the file is gone and a miss for 10 s; the info screen looks once. How the
-session id is found is each one's own: `@cockpit_session`, else `claude agents` on
-the board and the info screen, and never for `workdir`.
+session id is found is each one's own: `@cockpit_session`, else a bound viewer's
+`@cockpit_job_session` (#448), else `claude agents` on the board and the info screen,
+and never for `workdir`.
 
 **`job` (#460):** `@cockpit_job_name`, the background job agent-poll bound this
 viewer pane to by its title (docs/states-and-hooks.md), with control and bidi
@@ -2965,14 +2971,16 @@ steps, and a failed or cancelled write leave the basket as it was.
 ## `cockpit-tui branch` (#246)
 
 The branch popup behind `prefix b` and the status-bar branch click, built on the
-shared picker (`pick.rs`). `scripts/tmux-branch` runs `cockpit-tui branch -C <dir>`
-and acts on the one line it prints; the binary never mutates.
+shared picker (`pick.rs`). `scripts/tmux-branch` runs `cockpit-tui branch -C <dir>`.
+The popup runs switch, track and create itself and exits 0 with nothing printed
+(#228); for a branch another worktree holds it prints `goto <worktree path>` for the
+script, which finds the pane in that tree.
 
 | key | does |
 |---|---|
 | type | filters the list (case-insensitive substring) |
-| `↵` | prints `switch <branch>`, `track <remote>/<branch>` on a remote-only row, or `goto <worktree path>` on a branch another worktree holds (#303) |
-| `alt-↵` | prints `create <name>` from the filter text, after `git check-ref-format --branch` accepts it |
+| `↵` | `git switch <branch>`, `git switch --track <remote>/<branch>` on a remote-only row, or prints `goto <worktree path>` on a branch another worktree holds (#303) |
+| `alt-↵` | `git switch -c <name>` from the filter text, after `git check-ref-format --branch` accepts it |
 | `esc` `^C` | cancels, prints nothing, exit 1 |
 
 Rows are local branches by most recent commit, then remote-only branches. `●` marks
@@ -3002,12 +3010,21 @@ branch gets no `⑂`, and `↵` reaches `git switch`, which refuses it. The prev
 per branch; it shows `loading…` until it arrives, and below 60 columns it is hidden.
 
 Every git read uses the `gitsafe` flags. A branch name is untrusted text: control and
-bidi characters are dropped from what is drawn, and the line printed carries the exact
-ref. The script treats that line as untrusted too: a verb from `switch track create goto`, one
-line, a name `git check-ref-format --branch` accepts (for `goto`, a path that `git worktree
-list` names and that is still a directory), and for `switch`/`track` a ref that
-exists under `refs/heads` or `refs/remotes`. Git's own refusal (a dirty tree) is shown
-verbatim with `[any key]`, then the picker opens again.
+bidi characters are dropped from what is drawn, and the action line carries the exact
+ref. Before it runs, the line is checked as untrusted text (`branch::parse`): a verb
+from `switch track create`, one line, a name `git check-ref-format --branch` accepts,
+and for `switch`/`track` a ref that exists under `refs/heads` or `refs/remotes`. The
+switch runs through `gitsafe::git_write`: the `gitsafe` flags but the protocol pins (a
+switch may lazy-fetch a partial clone's blobs, as `scripts/lib/git.sh` lets it), every
+filter driver the repo names blanked, a repo whose driver name holds `=` refused
+(#331), the inherited `GIT_DIR` and its kin unset, and no prompt on the popup's
+terminal. Git's own refusal (a dirty tree) is the `✕` note, its first line, with the
+whole message in the preview until the next key; the picker stays. The script reads
+`goto <path>` as untrusted too: a path that `git worktree list` names and that is
+still a directory. A `cockpit-tui` that still prints `switch`, `track` or `create` lines
+(0.4.0, the release a default install fetches) gets the script's own checks and `git
+switch`, as before #228, until `TUI_MIN` passes that release; any other answer is
+refused with the stale-binary message.
 
 A branch name cannot contain a space, so the filter text `my branch` is refused with a
 note on `alt-↵`.
@@ -3097,7 +3114,8 @@ close it, `↑↓` `j` `k` `PgUp` `PgDn` scroll, `?` lists the keys.
 work dir by the board's rule (`dir` in `--json` above), for scripts. The screen's
 root, base and review dir follow that work dir (#500), as `prefix r` does since it
 asks `workdir` for its tree (#470), so the two name the same tree again, with one
-exception: a pane with no `@cockpit_session` has no transcript `workdir` will read
+exception: a pane with no `@cockpit_session` (and no bound job's session, #448) has
+no transcript `workdir` will read
 (it never runs `claude agents`), so its `prefix r` tree is `@cockpit_dir`, else the
 launch dir, while the screen, which may ask `claude agents`, can follow the
 transcript to a worktree (#508 finding 10). The path is decoded as lossy UTF-8, as
@@ -3110,7 +3128,8 @@ path alone on one line, for tmux-review and goto. It reads the pane with one
 `display-message` of the board's own format and runs the fetch's per-row code
 (`row_pane`, `work_candidates`, `fleet::work_dirs`), so its agent test and its
 order are the board's. Unlike the fetch it never runs `claude agents`: a pane
-with no `@cockpit_session` has no transcript to read, so its dir is
+with no `@cockpit_session` and no bound job's `@cockpit_job_session` (#448) has no
+transcript to read, so its dir is
 `@cockpit_dir`, else its launch dir. Lossy UTF-8, as above. Exit 0 with the
 line; exit 1 and nothing on stdout when the pane is not there, is not an
 agent's, or its dir is not on disk (#507): a removed launch dir, or a name that is

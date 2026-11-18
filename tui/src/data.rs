@@ -465,8 +465,9 @@ fn read_transcript(p: &mut Pane, opt: &str) -> String {
         return String::new();
     };
     let fa = read_facts(&t.to_string_lossy());
-    // @panestate wins; the transcript speaks only for panes the hooks never touched.
-    if p.state == State::Unknown {
+    // @panestate wins; the transcript speaks only for panes the hooks never touched. A
+    // pane bound to a job is the poller's: no @panestate is its idle, never unknown (#448).
+    if p.state == State::Unknown && p.job.is_empty() {
         p.state = fa.state;
     }
     // #453: the hook's text is generic; an open question says what is owed
@@ -848,6 +849,8 @@ const FIELDS: &str = concat!(
     // #454: 17 the pane's own title, the topic Claude sets, as the status bar reads it:
     // `✳ ` off, and nothing when it is still tmux's default, the host name
     "\u{1f}#{?#{==:#{pane_title},#{host_short}},,#{s/\n/ /:#{s/\t/ /:#{s/\u{1f}/ /:#{s/^✳ //:#{pane_title}}}}}}",
+    // #448: 18 the bound job's session, agent-poll's; the session of a pane that has none
+    "\u{1f}#{s/\n/ /:#{s/\t/ /:#{s/\u{1f}/ /:#{@cockpit_job_session}}}}",
 );
 
 /// `-` back to empty. A sentinelled option whose real value is a bare `-` would
@@ -908,7 +911,7 @@ pub fn list_fleet() -> Option<(Vec<Pane>, std::collections::BTreeSet<String>)> {
     let (mut ps, mut dirs) = (vec![], vec![]);
     for l in out.lines() {
         let f: Vec<&str> = l.split(SEP).collect();
-        // FIELDS has 18; the 13 before @cockpit_dir are the floor, so an older format reads
+        // FIELDS has 19; the 13 before @cockpit_dir are the floor, so an older format reads
         if f.len() < 13 {
             continue;
         }
@@ -924,8 +927,6 @@ pub fn list_fleet() -> Option<(Vec<Pane>, std::collections::BTreeSet<String>)> {
         dirs.push(work_candidates(&mut p, &f));
         (p.pinned, p.delivered) = spool_counts(&p.spool);
         p.subs_n = f.get(14).and_then(|n| n.parse().ok()).unwrap_or(0);
-        // a pane title, so untrusted: control and bidi characters go
-        p.job = crate::pick::clean(f.get(16).copied().unwrap_or_default()).trim().to_string();
         // a pane title, so untrusted too
         p.topic = crate::pick::clean(f.get(17).copied().unwrap_or_default()).trim().to_string();
         if let Some(d) = subagents::dir_of(f.get(15).copied().unwrap_or_default(), &p.sess, &p.path) {
@@ -979,13 +980,20 @@ fn row_pane(f: &[&str], procs_t: &mut Option<Procs>, want_ended: bool) -> RowPan
         state: raw.as_str().into(),
         title: unsentinel(f[5]),
         msg: unsentinel(f[6]),
-        sess: unsentinel(f[7]),
+        // #448: a viewer bound to a background job runs no hook, so it has no session
+        // of its own; the job's, which agent-poll records, finds the job's transcript
+        sess: match unsentinel(f[7]) {
+            s if s.is_empty() => f.get(18).copied().unwrap_or_default().to_string(),
+            s => s,
+        },
         path: f[8].into(),
         pid: f[9].into(),
         review: unsentinel(f[10]),
         spool: unsentinel(f[11]),
         win: f[12].into(),
         ended: want_ended && ended(&raw, live, AGENT_GLOB.with(|g| !g.is_empty())),
+        // a pane title, so untrusted: control and bidi characters go
+        job: crate::pick::clean(f.get(16).copied().unwrap_or_default()).trim().to_string(),
         ..Default::default()
     };
     let by = if by_cmd {

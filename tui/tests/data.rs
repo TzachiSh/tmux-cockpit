@@ -4,7 +4,7 @@
 mod fake;
 
 use cockpit_tui::data::gitsafe::{SAFE, no_filters, tree_stat};
-use cockpit_tui::data::{Pane, git_facts, list_panes, preview, screen, split_cursor, view};
+use cockpit_tui::data::{Pane, State, git_facts, list_panes, preview, screen, split_cursor, view};
 use fake::write_exec;
 use std::fs::{FileTimes, OpenOptions};
 use std::path::{Path, PathBuf};
@@ -1842,6 +1842,73 @@ fn the_bound_job_name_is_read_cleaned_and_absent_is_none() {
     let v: serde_json::Value = serde_json::from_str(&cockpit_tui::fleet::rows_json(&ps)).unwrap();
     let job_of = |id: &str| v.as_array().unwrap().iter().find(|o| o["id"] == id).unwrap()["job"].clone();
     assert_eq!((job_of("%1"), job_of("%2")), ("nightly[31m sweep".into(), "".into()));
+}
+
+/// #448: a viewer pane bound to job `alpha`: `sess` is @cockpit_session (field 7),
+/// `job_sess` the job's session agent-poll recorded, @cockpit_job_session (field 18).
+fn bound_row(state: &str, sess: &str, job_sess: &str) -> String {
+    let base = row("%1", "claude", state, sess, "100");
+    format!("{base}\u{1f}\u{1f}\u{1f}\u{1f}alpha\u{1f}\u{1f}{job_sess}")
+}
+
+/// #448: a bound viewer's job transcript, under the job's own project dir, says it
+/// works in `wt` and runs `make`; the pane itself has no session. Pane %1.
+fn bound_viewer(r: &Rig, wt: &str) -> Pane {
+    r.transcript_in("-job", "sjob", &(cwd_row(wt, false) + &bash_row("make")));
+    r.rows(&[bound_row("running", "-", "sjob")]);
+    get(&list_panes().unwrap(), "%1").clone()
+}
+
+/// #448: the viewer's work dir is its job's transcript cwd, not the viewer's launch dir.
+#[test]
+fn a_bound_viewer_works_in_its_jobs_transcript_cwd() {
+    let r = Rig::new("jobdir");
+    let wt = r.sub("wt");
+    assert_eq!(bound_viewer(&r, &wt).dir, wt);
+}
+
+/// #448: the viewer's doing line is its job's last tool, from the same transcript.
+#[test]
+fn a_bound_viewer_shows_what_its_job_is_doing() {
+    let r = Rig::new("jobdoing");
+    let wt = r.sub("wt");
+    assert_eq!(bound_viewer(&r, &wt).doing, "Bash: make");
+}
+
+/// #448: the job's session is a fallback only: the pane's own session outranks it.
+#[test]
+fn the_panes_own_session_outranks_the_job_session() {
+    let r = Rig::new("jobrank");
+    let (own, job) = (r.sub("own"), r.sub("job"));
+    r.transcript("s1", &cwd_row(&own, false));
+    r.transcript_in("-job", "sjob", &cwd_row(&job, false));
+    r.rows(&[bound_row("running", "s1", "sjob")]);
+    assert_eq!(get(&list_panes().unwrap(), "%1").dir, own);
+}
+
+/// #448: a bound pane's state is the poller's alone: with no @panestate (a stopped
+/// job) a transcript stopped mid-tool does not make it running.
+#[test]
+fn a_bound_pane_takes_no_state_from_its_jobs_transcript() {
+    let r = Rig::new("jobstate");
+    r.transcript_in("-job", "sjob", &bash_row("make"));
+    r.rows(&[bound_row("-", "-", "sjob")]);
+    assert_eq!(get(&list_panes().unwrap(), "%1").state, State::Unknown);
+}
+
+/// #448: `o` resumes an ended agent's session; an ended pane still bound to a job
+/// shows the job's session, which is not the pane's to resume. Rows: bound, unbound.
+#[test]
+fn an_ended_bound_viewer_is_not_offered_resume() {
+    let sess = "0123abcd-0123-4567-89ab-0123456789ab".to_string();
+    let p = |job: &str| Pane {
+        ended: true,
+        sess: sess.clone(),
+        job: job.into(),
+        ..Default::default()
+    };
+    let offered = |job| cockpit_tui::board::resumable(&p(job));
+    assert_eq!((offered("alpha"), offered("")), (false, true));
 }
 
 /// #477: the board's message and the info screen's ask row agree on whether a

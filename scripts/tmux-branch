@@ -77,6 +77,9 @@ git rev-parse --git-dir >/dev/null 2>&1 || fail "cockpit: not a git repository: 
 
 redraw() { [ -n "${TMUX:-}" ] && tmux refresh-client -S 2>/dev/null; return 0; }
 
+# The old-binary path: this switch, track and create (and their checks in act) serve a
+# cockpit-tui that still prints action lines (0.4.0, the release at the time). They go
+# once TUI_MIN is raised to the first release whose branch screen acts itself (#228).
 current=$(git symbolic-ref --quiet --short HEAD 2>/dev/null || printf '')
 
 # Failures are common (dirty tree, branch held by a worktree); git's own message
@@ -275,15 +278,19 @@ goto() {
 
 # cockpit-tui draws the picker and prints one action line. This script reads it as
 # untrusted text: a fixed verb, one line, a name git accepts and a ref that exists.
+# Since #228 the binary runs switch, track and create itself and prints nothing after
+# one ran, or `goto <path>`; switch, track and create lines come from an older binary.
 act() {
     local line=$1 verb arg ns
+    [ -n "$line" ] || { redraw; return 0; }
     verb=${line%% *}; arg=${line#* }
     case "$verb" in
         switch) ns=heads ;;
         track)  ns=remotes ;;
         create) ns= ;;
         goto)   goto "$arg"; return ;;
-        *)      printf 'cockpit: unexpected answer from cockpit-tui: %s\n' "$line" >&2; pause; return 1 ;;
+        *)      printf 'cockpit: unexpected answer from cockpit-tui: %s\ncockpit: %s\n' \
+                    "$line" "$TUI_STALE_MSG" >&2; pause; return 1 ;;
     esac
     if [ "$line" = "$verb" ] || [ -z "$arg" ] || [[ $line == *$'\n'* ]] \
        || ! git check-ref-format --branch "$arg" >/dev/null 2>&1; then

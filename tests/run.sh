@@ -3702,6 +3702,20 @@ case "$(cat "$VOUT")" in
             "$(cat "$VOUT")" ;;
 esac
 rm -f "$VTMUX/code"
+# #1179: the opened note shortens by HOME as text. A home literally named "*" in the click
+# folder still holds the shim; as a glob it matched the whole path, shown as "~:12".
+VGH="$VQ/*"; mkdir -p "$VGH"; ln -s "$VH/.vscode-server" "$VGH/.vscode-server"
+: > "$VOUT"
+env -i COCKPIT_TUI_BIN="$OPTUI" PATH="$VTMUX" HOME="$VGH" VLOG="$VLOG" XDG_RUNTIME_DIR="$VSK" \
+    TMUX_LOG="$VOUT" CLICK_DIR="$VQ" CLICK_LINE="it's.txt:12" \
+    bash "$DIR/scripts/tmux-open-path" --pick %1 </dev/null >/dev/null 2>&1
+is "through the shim under a HOME named [*]: the opened note shows the path whole" "1" \
+   "$(grep -cF "cockpit: opened $VQ/it's.txt:12" "$VOUT")"
+# Removed only when it is the folder named "*" inside $VQ, never by the quotes alone.
+case $VGH in
+    "$VQ"/'*') rm -rf -- "${VGH:?}" ;;
+    *) bad "the HOME named [*] is the one inside the click folder" "$VQ/*" "$VGH" ;;
+esac
 
 echo "== agent-state: notify must not hang on a silent stdin =="
 # The Notification hook piped JSON in and the script read it with cat, which
@@ -16594,6 +16608,49 @@ is "the foreground mark goes when the pane leaves the agent" "" "$(avo @cockpit_
 av_tm respawn-pane -k -t "$AVF1" 'exec -a claude sleep 300'
 av_tm select-pane -t "$AVF1" -T "alpha"; av_bind
 is "...and a viewer later in that pane binds" "aa|alpha|running|" "$(avj "$AVF1")"
+# The bind carries the job's session, @cockpit_job_session: the viewer pane has no session of
+# its own, and the board reads the job's transcript by it (its repo, doing, subagents).
+AVJS=$(av_np "alpha"); av_bind
+is "a bound pane carries its job's session" "s-aa" "$(avo @cockpit_job_session "$AVJS")"
+av_tm select-pane -t "$AVJS" -T "gamma"; av_bind
+is "...a bind to another job carries that job's" "s-cc" "$(avo @cockpit_job_session "$AVJS")"
+av_tm select-pane -t "$AVJS" -T "something else"; av_bind
+is "...and the unbind takes it" "" "$(avo @cockpit_job_session "$AVJS")"
+AVJF=$(av_np "alpha"); av_tm set-option -p -t "$AVJF" @cockpit_agentview 1; av_bind
+av_fg "$AVJF" permission_prompt "perm fg"
+is "a foreground hook takes the job's session with the bind" "" \
+   "$(avo @cockpit_job_session "$AVJF")"
+# A session id goes into a path on the board: only [A-Za-z0-9_-]{1,64} is recorded.
+jq 'map(.sessionId = "../s aa")' "$AVF/bind.json" > "$AVREC/oddsid.json"
+AVJO=$(av_np "alpha"); av_once bind.json AV_JSON="$AVREC/oddsid.json" >/dev/null
+is "a job session that is no plain id is not recorded; the bind still is" "aa|" \
+   "$(avo @cockpit_job "$AVJO")|$(avo @cockpit_job_session "$AVJO")"
+# A trailing newline is no plain id either (#1267): jq's `$` matches before one, and the sid,
+# unlike the name, is not cleaned, so it split the M line and the bind lost its name.
+jq 'map(if .id == "aa" then .sessionId = "s-ab\n" else . end)' "$AVF/bind.json" \
+    > "$AVREC/nlsid.json"
+avjs() {                      # avjs <pane>: "<job>|<job name>|<job session>"
+    printf '%s|%s|%s' "$(avo @cockpit_job "$1")" "$(avo @cockpit_job_name "$1")" \
+        "$(avo @cockpit_job_session "$1")"
+}
+AVJN=$(av_np "alpha"); av_once bind.json AV_JSON="$AVREC/nlsid.json" >/dev/null
+is "a job session ending in a newline is not recorded; the bind keeps its name" "aa|alpha|" \
+   "$(avjs "$AVJN")"
+# ...and the split line's tail, for a job named W, read as a second W line and blanked the
+# worst of all: no pane was written that tick.
+jq '. + [{"pid": 50, "id": "ww", "cwd": "/x", "kind": "background", "startedAt": 1,
+    "sessionId": "s-ww\n", "name": "W", "status": "idle", "state": "working"}]' \
+    "$AVF/bind.json" > "$AVREC/wsid.json"
+AVJW=$(av_np "W"); AVJM=$(av_np "nothing"); av_tm set-option -p -t "$AVJM" @cockpit_agentview 1
+av_once bind.json AV_JSON="$AVREC/wsid.json" >/dev/null
+is "...a job named W with such a session still leaves the worst of all written" \
+   "||needs-input|fix the parser needs you" "$(avj "$AVJM")"
+is "...and binds its own pane, its name kept" "ww|W|" "$(avjs "$AVJW")"
+# A pane bound before the poller recorded sessions (an older poller, then an upgrade) has the
+# job and its name but no session: the next poll fills it in, with nothing else changed.
+AVJU=$(av_np "alpha"); av_bind; av_tm set-option -pu -t "$AVJU" @cockpit_job_session; av_bind
+is "a bound pane missing only its job session gets it on the next poll" "aa|alpha|s-aa" \
+   "$(avjs "$AVJU")"
 av_tm kill-server >/dev/null 2>&1
 fi
 
@@ -19614,18 +19671,18 @@ is "and no #( ) in it ran, in the repo, the home dir or the server's start dir" 
        echo none)"
 git -C "$BRR" switch -q main
 
-# git's own refusal is shown verbatim, [any key] returns to the picker.
+# git's own refusal is the popup's ✕ note, verbatim, and the picker stays (#228):
+# no [any key] screen in between.
 echo dirty > "$BRR/a"
 br_run; br_type conf; until_cap "$BRS" "$BRP" '*branch> conf*'; br_key Enter
-if until_cap "$BRS" "$BRP" '*any key*'; then ok "a refused switch shows git's message and [any key]"
-else bad "a refused switch shows git's message and [any key]" "[any key]" "$(br_cap | head -8)"; fi
+if until_cap "$BRS" "$BRP" '*✕*overwritten*'; then ok "a refused switch is git's wording on the ✕ note"
+else bad "a refused switch is git's wording on the ✕ note" "✕ … overwritten" "$(br_cap | head -8)"; fi
 case "$(br_cap)" in
-    *overwritten*) ok "git's wording is verbatim" ;;
-    *) bad "git's wording is verbatim" "git's 'would be overwritten' error" "$(br_cap | head -8)" ;;
+    *'any key'*) bad "the picker stays, with no [any key] screen" "branch> conf" "$(br_cap | head -8)" ;;
+    *'branch> conf'*) ok "the picker stays, with no [any key] screen" ;;
+    *) bad "the picker stays, with no [any key] screen" "branch> conf" "$(br_cap | head -8)" ;;
 esac
-br_key Space
-if until_cap "$BRS" "$BRP" '*branch>*'; then ok "any key returns to the picker"
-else bad "any key returns to the picker" "the picker again" "$(br_cap | head -4)"; fi
+is "and the refused switch switched nothing" "main" "$(br_cur "$BRR")"
 br_key Escape; br_done
 git -C "$BRR" checkout -q -- a
 
@@ -19640,7 +19697,7 @@ git -C "$BRR" worktree remove --force "$BRW" >/dev/null 2>&1
 rm -rf "$BRR" "$BRM" "$BRW"
 fi
 
-echo "== tmux-branch (#246): the script trusts nothing the binary prints =="
+echo "== tmux-branch (#246, #228): an older binary's action line is checked, then acted on =="
 BRR=$(mktmpd); BRM=$(mktmpd); br_repo "$BRR" "$BRM"
 BRX=$(mktmpd)
 cat > "$BRX/cockpit-tui" <<'EOS'
@@ -19663,27 +19720,64 @@ br_want() {                   # br_want <label> <answer> <expected text>
     esac
     is "$1: nothing was checked out" "main" "$(br_cur "$BRR")"
 }
-br_want "an unknown verb is refused"            'rm -rf /'            "unexpected answer"
-br_want "a verb with no name is refused"        'switch'              "not a branch name"
-br_want "a name git rejects is refused"         'switch ../x'         "not a branch name"
-br_want "a branch that does not exist is refused" 'switch nope'       "no such branch"
-br_want "track of a local branch is refused"    'track old'           "no such branch"
-br_want "create with an invalid name is refused" 'create bad..name'   "not a branch name"
-br_want "two lines are refused"                 $'switch old\nswitch main' "not a branch name"
+# Since #228 the binary runs switch, track and create itself (its checks are
+# act_refuses_what_tmux_branch_refused_and_checks_out_nothing in tui/tests/branch.rs) and
+# prints nothing after one ran. The release a default install fetches (0.4.0) still prints
+# the action line, and the script's old-binary path checks and acts on it, as before.
+br_want "older binary: an unknown verb is refused" 'rm -rf /' "unexpected answer"
+br_want "older binary: an unknown answer names the stale binary" 'rm -rf /' \
+    "older than the plugin"
+br_want "older binary: a verb with no name is refused" 'switch' "not a branch name"
+br_want "older binary: a name git rejects is refused" 'switch ../x' "not a branch name"
+br_want "older binary: a branch that does not exist is refused" 'switch nope' "no such branch"
+br_want "older binary: track of a local branch is refused" 'track old' "no such branch"
+br_want "older binary: create with an invalid name is refused" 'create bad..name' \
+    "not a branch name"
+br_want "older binary: two lines are refused" $'switch old\nswitch main' "not a branch name"
 br_stub 'switch old' >/dev/null
-is "a good answer is acted on" "old" "$(br_cur "$BRR")"
+is "older binary: a switch line is acted on" "old" "$(br_cur "$BRR")"
 git -C "$BRR" switch -q main
 br_stub 'switch feat/$(touch${IFS}x);`id`' >/dev/null
-is "a metacharacter name is switched to literally" 'feat/$(touch${IFS}x);`id`' "$(br_cur "$BRR")"
-is "and no command in it ran" "none" \
+is "older binary: a metacharacter name is switched to literally" 'feat/$(touch${IFS}x);`id`' \
+    "$(br_cur "$BRR")"
+is "older binary: and no command in it ran" "none" \
     "$([ -e "$BRR/x" ] || [ -e "$HOME/x" ] && echo ran || echo none)"
 git -C "$BRR" switch -q main
 br_stub 'track origin/only-remote' >/dev/null
-is "track makes a local branch from the remote one" "only-remote" "$(br_cur "$BRR")"
+is "older binary: a track line makes a local branch from the remote one" "only-remote" \
+    "$(br_cur "$BRR")"
 git -C "$BRR" switch -q main
 br_stub 'create fresh' >/dev/null
-is "create makes the branch" "fresh" "$(br_cur "$BRR")"
+is "older binary: a create line makes the branch" "fresh" "$(br_cur "$BRR")"
+git -C "$BRR" switch -q main
+# The binary since #228 prints nothing once it acted: the script says nothing and acts on nothing.
+is "an empty answer prints nothing and switches nothing" "0 main|" \
+    "$(bre=$(br_stub ''); echo "$? $(br_cur "$BRR")|$bre")"
 rm -rf "$BRR" "$BRM" "$BRX"
+
+echo "== tmux-branch (#228): prefix b still switches with a binary that prints switch <name> =="
+# The whole popup flow: the key, display-popup, the script, and a stub cockpit-tui that
+# answers --version as the 0.4.0 release and `branch` with `switch old`, once.
+if need_tmux "prefix b with an older binary"; then :; else
+OBS="cockpit-ob-$$"; OBO="cockpit-obo-$$"; SOCKS="$SOCKS $OBS $OBO"; OBD=$(mktmpd)
+br_repo "$OBD/r" "$OBD/m"
+mkdir -p "$OBD/bin"
+printf '%s\n' '#!/bin/sh' 'case "$1" in' '--version) echo "cockpit-tui 0.4.0" ;;' \
+    "branch) [ -e $(tq "$OBD/used") ] && exit 1; : > $(tq "$OBD/used"); echo 'switch old' ;;" \
+    'esac' > "$OBD/bin/cockpit-tui"
+chmod +x "$OBD/bin/cockpit-tui"
+env COCKPIT_TUI_BIN="$OBD/bin/cockpit-tui" "$TMUX_REAL" -L "$OBS" -f /dev/null \
+    new-session -d -s t -x 120 -y 30 -c "$OBD/r" 'exec sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$OBS" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+"$TMUX_REAL" -L "$OBO" -f /dev/null new-session -d -s o -x 120 -y 32 \
+    "TERM=xterm-256color exec $TMUX_REAL -L $OBS attach -t t" >/dev/null 2>&1
+until_out '?*' "$TMUX_REAL" -L "$OBS" list-clients -F '#{client_name}'
+"$TMUX_REAL" -L "$OBO" send-keys -t o C-b b
+until_out old br_cur "$OBD/r"
+is "prefix b with a 0.4.0-style binary switches to the branch it names" "old" "$(br_cur "$OBD/r")"
+"$TMUX_REAL" -L "$OBO" kill-server >/dev/null 2>&1
+"$TMUX_REAL" -L "$OBS" kill-server >/dev/null 2>&1
+fi
 
 echo "== tmux-branch (#246): its refusals are unchanged =="
 BRN=$(mktmpd); BRR=$(mktmpd); br_repo "$BRR" "$(mktmpd)"
@@ -19716,7 +19810,9 @@ out=$(cd "${BRR%/*}" &&
 is "a relative directory reaches the binary as its absolute path" "picker for branch -C $BRR" "$out"
 rm -rf "$BRN" "$BRR"
 
-echo "== tmux-branch: an inherited GIT_DIR or its kin never switches another repo =="
+echo "== tmux-branch: older binary, an inherited GIT_DIR or kin never switches another repo =="
+# The old-binary path (#228) still runs git switch in the shell; the binary's own switch has
+# its twin in tui/tests/branch_act_env.rs. The stub below prints the action line as 0.4.0 does.
 # A dotfiles setup can export GIT_DIR into tmux's environment, and the popup
 # inherits it. The picker lists the pane repo's branches (gitsafe strips the
 # four), so the switch must land there too. FAIL-first: on the old code each
@@ -19745,7 +19841,7 @@ for v in GIT_DIR=@/.git GIT_WORK_TREE=@ GIT_COMMON_DIR=@/.git GIT_INDEX_FILE=@/.
       env -u TMUX COCKPIT_TUI_BIN="$BRE/cockpit-tui" timeout 30 \
           "$DIR/scripts/tmux-branch" "$BRE/pane" \
           </dev/null >/dev/null 2>&1 )
-    is "${v%%=*} inherited: the pane repo switches, the other stays (branch, dirty files)" \
+    is "older binary: ${v%%=*} inherited: the pane repo switches, the other stays" \
        "conf 0 main 0" "$(br_cur "$BRE/pane") $(git -C "$BRE/pane" status --porcelain | grep -c .) \
 $(br_cur "$BRE/other") $(git -C "$BRE/other" status --porcelain | grep -c .)"
 done
@@ -21860,10 +21956,12 @@ STUB
 chmod +x "$OKT/tmux"; ln -s "$(command -v bash)" "$OKT/bash"
 for t in mktemp rm cat; do ln -s "$(command -v $t)" "$OKT/$t"; done   # the stderr capture
 okrun() {                     # okrun <key> [bin] -- the log after a pick answering <key>
-    # OKLC: a LOCPATH dir to run in its en_US.UTF-8 (#842)
+    # OKLC: a LOCPATH dir to run in its en_US.UTF-8 (#842); OKHOME: the HOME, else $OKT;
+    # OKLINE: the clicked line, else "a.txt b.txt"
     : > "$OKL"
     env -i ${OKLC:+"LOCPATH=$OKLC"} ${OKLC:+LC_ALL=en_US.UTF-8} \
-        PATH="$OKT" HOME="$OKT" TMUX_LOG="$OKL" CLICK_DIR="$OKT/w" CLICK_LINE="a.txt b.txt" \
+        PATH="$OKT" HOME="${OKHOME:-$OKT}" TMUX_LOG="$OKL" CLICK_DIR="$OKT/w" \
+        CLICK_LINE="${OKLINE:-a.txt b.txt}" \
         OPEN_EDITOR=ed PICK_KEY="$1" PICK_RC="${PICK_RC:-0}" COCKPIT_TUI_BIN="${2:-$OPTUI}" \
         bash "$DIR/scripts/tmux-open-path" ${OKARG---pick} %1 </dev/null >/dev/null 2>"$OKT/err"
     echo "rc=$?"; cat "$OKL"
@@ -21903,6 +22001,23 @@ esac
 # alt-c (pick's exit 10) copies the absolute path and opens nothing.
 is "alt-c copies the chosen candidate's path and opens nothing" \
    "rc=0"$'\n'"LOADBUF $OKT/w/b.txt"$'\n'"MSG cockpit: copied ~/w/b.txt" "$(PICK_RC=10 okrun 1)"
+# The ~ shortening matches HOME as text, never as a glob (#1179): with a HOME of $OKT/w* the
+# copied path was shown as "~", with $OKT/? as "~/b.txt". Neither HOME is a prefix of it.
+for h in "$OKT/w*" "$OKT/?"; do
+    is "a HOME of [${h#"$OKT"/}] is text, not a glob: the copied path is shown whole" \
+       "MSG cockpit: copied $OKT/w/b.txt" "$(OKHOME=$h PICK_RC=10 okrun 1 | grep '^MSG')"
+done
+# ...and in a pick row's label (#1179): candidates outside the clicked folder are shown
+# shortened by HOME. A pick stub records the rows it is handed; HOME is "$OKH/x*".
+OKH=$(mktmpd); mkdir -p "$OKH/x"; : > "$OKH/x/c.txt"; : > "$OKH/x/d.txt"
+printf '#!/bin/sh\ncat > %s\nprintf "0\\n"\n' "'$OKT/rows.got'" > "$OKT/pickrec"
+chmod +x "$OKT/pickrec"; : > "$OKT/rows.got"
+OKPL="a HOME of [x*] is text in a pick row's label: the path is shown whole"
+case $OKH in
+    *[[:space:]]*) skip_ "$OKPL (the clicked line splits on the blank in TMPDIR)" ;;
+    *) OKHOME="$OKH/x*" OKLINE="$OKH/x/c.txt $OKH/x/d.txt" okrun 0 "$OKT/pickrec" >/dev/null
+       is "$OKPL" "$OKH/x/c.txt|$OKH/x/d.txt" "$(cut -f2 "$OKT/rows.got" | paste -sd'|')" ;;
+esac
 case "$(PICK_RC=10 okrun 7)" in
     *LOADBUF*) bad "alt-c on a key that is not a candidate copies nothing" \
             "no load-buffer" "copied" ;;
@@ -21965,10 +22080,11 @@ HXP=$("$TMUX_REAL" -L "$HX" list-panes -t t -F '#{pane_id}' | head -1)
 "$TMUX_REAL" -L "$HX" send-keys -t "$HXP" "cd 'd#S'" Enter
 until_out "*d#S" "$TMUX_REAL" -L "$HX" display-message -p -t "$HXP" '#{pane_current_path}'
 "$TMUX_REAL" -L "$HX" set-option -p -t "$HXP" @cockpit_click_line "see $HN" >/dev/null 2>&1
-hxgo() {                      # hxgo <n> -- run the pick re-entry; wait for it
+hxgo() {                      # hxgo <n> -- run the pick re-entry; wait for it. HXHOME: its HOME
     : > "$HXL"; : > "$HXA"
     "$TMUX_REAL" -L "$HX" send-keys \
-        -t "$HXP" "clear; PATH=$(tq "$HXB"):\$PATH COCKPIT_TUI_BIN=$(tq "$HXD/tui") $(
+        -t "$HXP" "clear; ${HXHOME:+HOME=$(tq "$HXHOME") }PATH=$(tq "$HXB"):\$PATH $(
+        )COCKPIT_TUI_BIN=$(tq "$HXD/tui") $(
         )'$DIR/scripts/tmux-open-path' --pick '$HXP'; echo HXDONE$1=\$?" Enter
     until_cap "$HX" "$HXP" "*HXDONE$1=[0-9]*"
 }
@@ -22003,6 +22119,12 @@ else
     bad "and the server ran the suite's stub code, no other" 1 \
         "$(cat "$STATE/code.argv" 2>/dev/null)"
 fi
+# After the code.argv count above, which reads the first click's argv only.
+# #1179: under a HOME of "$HW*", which is no prefix of the file, the note shows it whole
+# (as a glob it matched the whole path, shown as "~").
+HXHOME="$HW*" hxgo 3
+is "under a HOME of [$(basename "$HW")*] the opened note shows the path whole" "1" \
+   "$(grep -c -F "cockpit: opened ${HW//#/##}/a##(touch\${IFS}F)##{pid}##S.txt" "$HXL")"
 "$TMUX_REAL" -L "$HX" kill-server >/dev/null 2>&1
 fi
 
@@ -22941,6 +23063,11 @@ FBV='edit x\n' fb off "view $FBD/sub/n.txt\n" 0
 is "a viewer line that is not an edit is not a close either: no browser" "1" "$(fbtn files)"
 fb off "copy $FBF\n" 0
 is "copy from the browser: no viewer, no second browser" "1" "$(fbtn files)"
+# #1179: the copied note shortens by HOME as text: under a HOME of "$FB/p*", which is no
+# prefix of the path, the note shows the path whole (it was "~").
+fb off "copy $FBF\n" 0 HOME="$FB/p*"
+is "copy from the browser under a HOME of [p*]: the note shows the path whole" "1" \
+   "$(grep -cF "[cockpit: copied $FBF]" "$FB/calls")"
 # a loop, not a call per view: under a cap of 8 nested calls, 15 views closed in a row
 # bring the browser back 15 times; a recursion would die at the cap
 FBR=15 fb off "view $FBD/sub/n.txt\n" 0 FUNCNEST=8

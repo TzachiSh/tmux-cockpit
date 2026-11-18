@@ -175,7 +175,8 @@ by the config load and by window events, reads `claude agents --json --all`
 and writes the state. A pane is bound to a job when it runs `claude`, has
 `allow-set-title` on, and its title (the optional `✳ ` off, whitespace runs
 collapsed) equals the name of exactly one background job. The pane then shows that
-job's state, and `@cockpit_job` and `@cockpit_job_name` say which job. Any other
+job's state, and `@cockpit_job`, `@cockpit_job_name` and `@cockpit_job_session` say
+which job (the session is how the board reads the job's transcript). Any other
 pane marked as an agent view shows the worst state of all jobs, as before. A
 title is a hint, not an identity: a fresh `claude attach Y` that has not yet
 printed a title still shows the old name, and so the old job, until it does (a second
