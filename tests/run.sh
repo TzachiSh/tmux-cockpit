@@ -5429,8 +5429,9 @@ cl_out=$( cl_env 12 "$CL/p/nolib/install.sh" --check ); cl_n=$?
 is "install.sh --check without it: exit 1, and no row was printed" "1|0" \
    "$cl_n|$(printf '%s\n' "$cl_out" | grep -c '^\[')"
 # Which lines run this folder's cockpit.tmux (#1067), each alone in a config: its line
-# number, or none. A comment, another folder and a bind only name the file. A trailing
-# comment is taken off since #1304, so `trailing` is a load: it read none before (#1067).
+# number, or none. A comment, another folder and a bind only name the file. `trailing`
+# wanted none (#1067) and wants 1 since #1304: tmux's parser ends the line at a # it reads
+# between words (cmd-parse.y, yylex()), so that line does load.
 is "cockpit_conf_wired_line: the spellings that load this folder, and those that do not" \
    "comment:none bind:none other:none tilde:1 trailing:1 bare:1 single:1 single-tilde:1 $(:
    )double:1 run-b:1 home:1 home-braced:1 printed:1 " \
