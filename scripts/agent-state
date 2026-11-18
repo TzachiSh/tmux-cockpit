@@ -7,7 +7,8 @@
 #                                          in-flight set to its .live file (#403, #423)
 #          agent-state session [pane-id]   save the payload's session_id, transcript_path (#302)
 #                                          and cwd as @cockpit_dir (#312)
-#          agent-state end [pane-id]   SessionEnd: clears the dir and cwd the hooks wrote (#323)
+#          agent-state end [pane-id]   SessionEnd: puts back the @cockpit_dir the session
+#                                          started with, clears @cockpit_cwd (#323)
 #          agent-state sweep [seq]   every window's and session's summaries (tmux hooks), and
 #                                          the agent-poll that serves the server (#448)
 #          agent-state poll <running|needs-input|error|done|off> <pane-id> [ask]   (agent-poll)
@@ -317,20 +318,22 @@ session)
     case "$dir" in /*) ;; *) dir="" ;; esac
     case "$dir" in *[$'\001'-$'\037\177']*) dir="" ;; esac
     [ -n "$dir" ] && [ ! -d "$dir" ] && dir=""
-    # One read: the session saved before, the cwd the hooks saw last, whether the dir as found
-    # at the session's start is recorded (0 or 1, see below), and the dir itself, last since a
-    # hand-set one may hold any byte.
+    # One read: the session saved before, the cwd the hooks saw last, the dir, and whether the
+    # dir as found at the session's start is recorded (0 or 1, see below). A #707 cut empties
+    # every expansion after it, so the record test goes last: read whole, it vouches for every
+    # field before it. Anything else (a cut, no pane) writes nothing; the next hook does.
+    # Parsed from the right first, since a hand-set dir may hold any byte.
     us=$'\037' f="#{@cockpit_session}"
-    f+="$us#{@cockpit_cwd}$us#{?#{@cockpit_dir_before},1,0}$us#{@cockpit_dir}"
+    f+="$us#{@cockpit_cwd}$us#{@cockpit_dir}$us#{?#{@cockpit_dir_before},1,0}"
     had=$(tmux display-message -p -t "$pane" "$f" 2>/dev/null)
-    cur=${had%%$'\037'*} rest=${had#*$'\037'}
-    seen=${rest%%$'\037'*} rest=${rest#*$'\037'}
-    rec=${rest%%$'\037'*} was=${rest#*$'\037'}
+    rec=${had##*"$us"} rest=${had%"$us"*}
+    case "$rec" in 0|1) ;; *) exit 0 ;; esac
+    cur=${rest%%"$us"*} rest=${rest#*"$us"}
+    seen=${rest%%"$us"*} was=${rest#*"$us"}
     # @cockpit_dir_before (#323): the dir as this session found it, which SessionEnd's `end`
     # puts back. Written once, by the first hook with none, so later writes never move it;
     # `end` drops it. "=" + the value, so an empty dir is a record too: a format reads an unset
-    # option and an empty one alike. Only a whole 0 records: a read cut by #707 reads "" and
-    # must not replace the record with the dir of now.
+    # option and an empty one alike.
     if [ "$rec" = 0 ]; then
         arg="=$was"; case "$arg" in *\;) arg="${arg%;}\\;" ;; esac
         tmux set-option -p -t "$pane" @cockpit_dir_before "$arg" 2>/dev/null
