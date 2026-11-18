@@ -9,8 +9,11 @@
 # 0: <var> is set. 1: refused, <var> is empty, and own_tmpdir_why names the first check
 # that refused: mktemp answer resolve root cwd symlink owner nonempty. 2: <var> is not a
 # variable name the helper can set. Sourced, never run. Bash 4+.
-# What it cannot tell: a dir mktemp made from an empty dir of the user's that was there
-# before, and a process of the user's own that swaps the dir between this check and the rm.
+# It defends against a wrong answer from mktemp, checked once, as the answer comes back. It
+# does not defend against a race: a process of the user's own can swap the dir between this
+# check and the rm, and could remove what it names itself. Nor can it tell a dir mktemp made
+# from an empty dir of the user's that was there before; that one passes, and removing an
+# empty dir loses nothing.
 own_tmpdir_why=''
 # shellcheck disable=SC2034  # own_tmpdir_why is read by the caller
 own_tmpdir() {                # <var> [mktemp args...]
