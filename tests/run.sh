@@ -2645,6 +2645,14 @@ is "--delta, when a library fails to load, exits 3" "D=3" \
 RG_GATE="$RGCP/scripts/review-gate" rg_run "$RGPAY"
 is "and the Stop hook leaves the pending mark" "pending|GRC=0" \
     "$("$TMUX_REAL" -L "$RG" show-option -pqv -t "$RGAP" @cockpit_review)|$(rg_rc)"
+# The same for a library every mode loads at the top, before the mode is read.
+cp "$DIR/scripts/lib/review-diff.sh" "$RGCP/scripts/lib/"
+printf 'return 1\n' > "$RGCP/scripts/lib/git.sh"
+is "--delta, when a top-level library fails to load, exits 3" "D=3" \
+    "$("$RGCP/scripts/tmux-review" --delta "$RGAP" >/dev/null 2>&1; echo "D=$?")"
+RG_GATE="$RGCP/scripts/review-gate" rg_run "$RGPAY"
+is "and the Stop hook leaves the pending mark there too" "pending|GRC=0" \
+    "$("$TMUX_REAL" -L "$RG" show-option -pqv -t "$RGAP" @cockpit_review)|$(rg_rc)"
 unset RGCP
 # Only exit 1, no difference, clears a pending mark.
 printf 'a\n' > "$RGDIR/f"; rg_run "$RGPAY"
