@@ -231,6 +231,12 @@ pub struct Pane {
     /// #454: the last tool_use (`doing`) came back with `is_error`: a denial or a
     /// failed command. A done row then shows `said` instead.
     pub doing_failed: bool,
+    /// #1330 A2: the model of the newest main-thread model call: `opus` for a
+    /// `claude-opus-…` id, else the raw id cleaned; never a guessed name
+    pub model: String,
+    /// #1330 A2: that call's context, input + cache_read + cache_creation tokens;
+    /// `None` when no row in the window has usage
+    pub ctx: Option<u64>,
 }
 
 /// Skips the three ages, which change every tick and would defeat the redraw
@@ -269,12 +275,14 @@ impl Hash for Pane {
             job,
             topic,
             doing_failed,
+            model,
+            ctx,
         } = self;
         [
-            id, wher, name, cmd, title, msg, sess, path, dir, root, spool, pid, review, doing, said, asked, loc, pm, win, job, topic,
+            id, wher, name, cmd, title, msg, sess, path, dir, root, spool, pid, review, doing, said, asked, loc, pm, win, job, topic, model,
         ]
         .hash(h);
-        (state, pinned, delivered, subs_n, ended, doing_failed).hash(h);
+        (state, pinned, delivered, subs_n, ended, doing_failed, ctx).hash(h);
         // Sub hashes only what changes its drawing: never `started`, tokens by the thousand.
         subs.hash(h);
     }
@@ -355,6 +363,9 @@ struct Facts {
     tool_failed: bool,
     /// #1330 A3: the newest turn row is the interrupt marker, nothing after it
     interrupted: bool,
+    /// #1330 A2: the newest main-thread model call's model and context
+    model: String,
+    ctx: Option<u64>,
 }
 
 /// A read's (len, mtime), the file's (device, inode), and what it said.
@@ -494,6 +505,8 @@ fn read_transcript(p: &mut Pane, opt: &str) -> String {
     }
     p.doing = fa.tool;
     p.doing_failed = fa.tool_failed;
+    p.model = fa.model;
+    p.ctx = fa.ctx;
     p.said = fa.text;
     p.asked = fa.user;
     p.since = fa.at.and_then(age);

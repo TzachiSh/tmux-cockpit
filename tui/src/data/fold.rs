@@ -56,6 +56,8 @@ pub(super) struct Fold {
     /// #454: the id of the newest tool_use whose tool_result came back with
     /// `is_error` (a denial or a failed command alike), at that result's row
     failed: At<String>,
+    /// #1330 A2: the newest model call's (model, context), from its assistant row
+    usage: At<(String, u64)>,
 }
 
 fn since<T>(a: &At<T>, ws: u64) -> Option<&T> {
@@ -125,6 +127,9 @@ impl Fold {
                 // land after it and must not reopen the turn.
                 let ended = v["message"]["stop_reason"].as_str() == Some("end_turn");
                 self.turn_over = Some((off, if ended { Over::Ended } else { Over::No }));
+                if let Some(n) = context(&v["message"]["usage"]) {
+                    self.usage = Some((off, (model(v["message"]["model"].as_str().unwrap_or("")), n)));
+                }
                 let Some(blocks) = v["message"]["content"].as_array() else {
                     return;
                 };
@@ -190,7 +195,32 @@ impl Fold {
             ask: ask.and_then(|(_, q)| q.clone()).unwrap_or_default(),
             tool_failed: failed,
             interrupted: over == Over::Interrupted,
+            model: since(&self.usage, ws).map(|(m, _)| m.clone()).unwrap_or_default(),
+            ctx: since(&self.usage, ws).map(|(_, n)| *n),
         }
+    }
+}
+
+/// #1330 A2: what the model call read, input + cache_read + cache_creation tokens. Output
+/// is what it wrote, not what it read (the subagent parser adds it: it counts spend). A sum
+/// of 0 is no model call (a row the harness writes itself may carry an all-zero usage) and
+/// is `None`, so it never hides the last real one.
+fn context(u: &Value) -> Option<u64> {
+    let keys = ["input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"];
+    // saturating: the numbers are the harness's, and a debug build panics on overflow
+    let n = keys.iter().fold(0u64, |a, k| a.saturating_add(u[k].as_u64().unwrap_or(0)));
+    (n > 0).then_some(n)
+}
+
+/// #1330 A2: `opus` for `claude-opus-…`, the word after `claude-` when it is all a-z.
+/// Any other id is kept raw, its control and bidi characters dropped, and the board cuts
+/// it: never a guessed name. Capped, as one row is written by the agent's harness.
+fn model(id: &str) -> String {
+    let id = crate::pick::clean(id);
+    let word = id.strip_prefix("claude-").and_then(|r| r.split('-').next());
+    match word.filter(|w| !w.is_empty() && w.bytes().all(|b| b.is_ascii_lowercase())) {
+        Some(w) => w.to_string(),
+        None => id.trim().chars().take(64).collect(),
     }
 }
 
