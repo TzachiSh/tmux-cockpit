@@ -1821,6 +1821,27 @@ fn a_prompt_after_the_interrupt_keeps_running() {
     assert_eq!(got, ["running"; 3], "a prompt, an assistant row, a tool_result after it");
 }
 
+/// #1333: a harness row after the interrupt starts a turn too, so the hooks' running stands
+/// for the model's whole latency. Rows: a `<task-notification>`, a message from another
+/// session. Neither is what the human asked.
+#[test]
+fn a_task_notification_after_the_interrupt_keeps_running() {
+    let r = Rig::new("a3harness");
+    let say = |t: &str| {
+        let v = serde_json::json!({"type": "user", "timestamp": "2026-08-27T00:00:08.000Z",
+            "message": {"content": t}});
+        format!("{v}\n")
+    };
+    let note = say("<task-notification>a background task finished</task-notification>");
+    r.transcript("s1", &(stopped_turn() + &note));
+    r.transcript("s2", &(stopped_turn() + &say("Another Claude session sent a message: hi")));
+    let ids = ["%1", "%2"];
+    r.rows(&ids.map(|id| hooked(id, "running", &format!("s{}", &id[1..]))));
+    let ps = list_panes().unwrap();
+    let got = ids.map(|id| (get(&ps, id).state.as_str(), get(&ps, id).asked.as_str()));
+    assert_eq!(got, [("running", "go"); 2], "(state, asked): a turn, not a prompt");
+}
+
 /// #1330 A3: needs-input from the hooks is not overridden, nor are error and done: only
 /// a stale running gives way to the interrupt.
 #[test]
