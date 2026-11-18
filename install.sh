@@ -165,15 +165,24 @@ if [ "$check" -eq 1 ]; then
                # which folder it runs, since bootstrap.sh then appends nothing (#1067).
                if cockpit_conf_mention "$DIR" "${cfs[@]}"; then
                    conf="$cockpit_mention_file line $cockpit_mention_n"
-                   wire_fix="names cockpit but loads none from $DIR"
+                   wire_fix="names cockpit but loads none from $DIR"; self=0
                    if cockpit_conf_run_arg "$cockpit_mention_line" &&
                       cockpit_conf_arg_path "$cockpit_arg"; then
                        case $cockpit_path in
-                           /*) wire_fix="runs the copy in ${cockpit_path%/*}, not $DIR" ;;
+                           /*) if [ "$cockpit_path" -ef "$DIR/cockpit.tmux" ]; then self=1
+                               else wire_fix="runs the copy in ${cockpit_path%/*}, not $DIR"; fi ;;
                        esac
                    fi
-                   wire_fix="$wire_fix: keep one copy; this one's line is"
-                   wire_fix="$wire_fix $(cockpit_conf_line "$DIR")"
+                   # This folder's line in a file the config sources, which --check does not
+                   # follow: it loads, and a line added beside it would load it twice (#1304).
+                   if [ "$self" -eq 1 ]; then
+                       wire_fix="loads this folder from $cockpit_mention_file, a file the"
+                       wire_fix="$wire_fix config sources, which --check does not follow;"
+                       wire_fix="$wire_fix nothing needs adding"
+                   else
+                       wire_fix="$wire_fix: keep one copy; this one's line is"
+                       wire_fix="$wire_fix $(cockpit_conf_line "$DIR")"
+                   fi
                fi ;;
         esac
     fi

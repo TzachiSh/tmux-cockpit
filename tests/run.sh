@@ -5492,9 +5492,11 @@ cl_out=$( cl_env 12 "$CL/p/nolib/install.sh" --check ); cl_n=$?
 is "install.sh --check without it: exit 1, and no row was printed" "1|0" \
    "$cl_n|$(printf '%s\n' "$cl_out" | grep -c '^\[')"
 # Which lines run this folder's cockpit.tmux (#1067), each alone in a config: its line
-# number, or none. A comment, another folder and a bind only name the file.
+# number, or none. A comment, another folder and a bind only name the file. `trailing`
+# wanted none (#1067) and wants 1 since #1304: tmux's parser ends the line at a # it reads
+# between words (cmd-parse.y, yylex()), so that line does load.
 is "cockpit_conf_wired_line: the spellings that load this folder, and those that do not" \
-   "comment:none bind:none other:none tilde:1 trailing:none bare:1 single:1 single-tilde:1 $(:
+   "comment:none bind:none other:none tilde:1 trailing:1 bare:1 single:1 single-tilde:1 $(:
    )double:1 run-b:1 home:1 home-braced:1 printed:1 " \
    "$(. "$DIR/scripts/lib/confline.sh"; HOME="$CL/h1"; cl_p="$HOME/pl ug"
       cl_r='/pl ug/cockpit.tmux'
@@ -5599,6 +5601,26 @@ is "cockpit_conf_tpm_text: one clause per failed check, the folder tpm runs name
       printf '%s\n' "set -g @plugin 'o/tmux-cockpit'" > "$HOME/.tmux.conf"
       cockpit_conf_tpm "$cl_e" "$HOME/.tmux.conf" >/dev/null
       cockpit_conf_tpm_text "$cl_e" 2>/dev/null)"
+# tpm reads @plugin lines, and its run line, from the files its config sources too, one level
+# down and by its own rules: ~ and $HOME made HOME, the words globbed, ${HOME} left as it is,
+# a path not from / skipped (#1304). Run from HOME, so a relative path would be found.
+is "cockpit_conf_tpm: an @plugin line in a file tpm's config sources" \
+   "source-file:0 source-q:0 home:0 glob:0 run-in-src:0 two-levels:1 relative:1 braced:1 " \
+   "$(. "$DIR/scripts/lib/confline.sh"; unset XDG_CONFIG_HOME; HOME="$CL/h21"
+      cl_p="$HOME/.tmux/plugins/tmux-cockpit"; mkdir -p "$cl_p" "$HOME/conf.d"
+      cd "$HOME" || exit 1
+      cl_l="set -g @plugin 'o/tmux-cockpit'"; cl_r="run '~/.tmux/plugins/tpm/tpm'"
+      printf '%s\n' "$cl_l" > p.conf; cp p.conf conf.d/a.conf; printf '%s\n' "$cl_r" > r.conf
+      printf 'source-file ~/p.conf\n' > q.conf
+      for cl_f in "source-file|source-file ~/p.conf|$cl_r" \
+          "source-q|source -q '~/p.conf'|$cl_r" "home|source \"\$HOME/p.conf\"|$cl_r" \
+          "glob|source-file ~/conf.d/*.conf|$cl_r" "run-in-src|$cl_l|source-file ~/r.conf" \
+          "two-levels|source-file ~/q.conf|$cl_r" "relative|source-file p.conf|$cl_r" \
+          "braced|source-file \${HOME}/p.conf|$cl_r"; do
+          IFS='|' read -r cl_k cl_a cl_b <<< "$cl_f"
+          printf '%s\n%s\n' "$cl_a" "$cl_b" > .tmux.conf
+          cockpit_conf_tpm "$cl_p" "$HOME/.tmux.conf" >/dev/null; printf '%s:%s ' "$cl_k" "$?"
+      done)"
 # A box tpm wires: the plugin in ~/.tmux/plugins/tmux-cockpit, an @plugin line, tpm's run line.
 cl_box 13 tpmx; cl_t="$CL/h13/.tmux/plugins/tmux-cockpit"; mv "$CL/p/tpmx" "$cl_t"
 printf '%s\n' "set -g @plugin 'o/tmux-cockpit'" "run '~/.tmux/plugins/tpm/tpm'" \
@@ -5633,10 +5655,80 @@ is "and its fix names the check that failed: tpm reads only the XDG config" "1" 
 is "and install.sh's closing note names it too" "1" \
    "$(cl_env 15 "$cl_t/install.sh" | grep -cxF "tpm seems to manage cockpit in $(:
       )$CL/h15/.tmux.conf, not confirmed: tpm reads @plugin lines only from $cl_x/tmux.conf.")"
+# A trailing comment after the run line's path comes off, as tmux reads it: the line loads
+# (#1304, found in #1313's review). A ' #' inside the quotes ends the path there too, where
+# tmux keeps it, so that line is no load, the loud side. The line cockpit_conf_line prints
+# for a folder whose path holds ' #' escapes the #, and loads.
+is "cockpit_conf_wired_line: a trailing comment comes off, a ' #' in the quotes is no load" \
+   "docs:1 double:1 printed:1 hash-in-quotes:none hash-printed:1 " \
+   "$(. "$DIR/scripts/lib/confline.sh"; HOME="$CL/h24"; cl_p="$HOME/.tmux/plugins/tmux-cockpit"
+      cl_e="$HOME/a #b"; mkdir -p "$cl_p" "$cl_e"
+      : > "$cl_p/cockpit.tmux"; : > "$cl_e/cockpit.tmux"
+      for cl_f in "docs|run-shell '~/.tmux/plugins/tmux-cockpit/cockpit.tmux'   # cockpit|$cl_p" \
+          "double|run-shell \"$cl_p/cockpit.tmux\" # mine|$cl_p" \
+          "printed|$(cockpit_conf_line "$cl_p") # mine|$cl_p" \
+          "hash-in-quotes|run-shell '$cl_e/cockpit.tmux' # mine|$cl_e" \
+          "hash-printed|$(cockpit_conf_line "$cl_e")|$cl_e"; do
+          IFS='|' read -r cl_k cl_a cl_d <<< "$cl_f"
+          printf '%s\n' "$cl_a" > "$CL/wl"
+          printf '%s:%s ' "$cl_k" "$(cockpit_conf_wired_line "$CL/wl" "$cl_d" || printf none)"
+      done)"
+# tpm's config sources its @plugin line from ~/.tmux/plugins.conf, and tpm loads the plugin
+# from it: bootstrap.sh appends nothing, and --check passes the config row (#1304).
+cl_box 22 srcx; cl_t="$CL/h22/.tmux/plugins/tmux-cockpit"; mv "$CL/p/srcx" "$cl_t"
+printf '%s\n' "source-file ~/.tmux/plugins.conf" "run '~/.tmux/plugins/tpm/tpm'" \
+    > "$CL/h22/.tmux.conf"
+printf '%s\n' "set -g @plugin 'o/tmux-cockpit'" > "$CL/h22/.tmux/plugins.conf"
+cp "$CL/h22/.tmux.conf" "$CL/conf22"
+( cd "$CL/wd" && cl_env 22 "$cl_t/bootstrap.sh" --yes ) >/dev/null
+is "an @plugin line only in a file tpm's config sources: bootstrap.sh appends nothing" "same" \
+   "$(cmp -s "$CL/h22/.tmux.conf" "$CL/conf22" && echo same || echo changed)"
+cp "$CL/conf22" "$CL/h22/.tmux.conf"
+is "and install.sh --check passes its config row" "1" \
+   "$(cl_env 22 "$cl_t/install.sh" --check |
+      grep -cF "[  ok  ] config         $CL/h22/.tmux.conf loads cockpit")"
+# The same lines, with this folder under another name and outside tpm's plugin folder, so
+# cockpit_conf_tpm finds no @plugin line for it. The line names tmux-cockpit, so tpm may
+# load another copy, and an appended run line would load a second one (#1304).
+cl_box 23 co23
+printf '%s\n' "source-file ~/.tmux/plugins.conf" "run '~/.tmux/plugins/tpm/tpm'" \
+    > "$CL/h23/.tmux.conf"
+printf '%s\n' "set -g @plugin 'o/tmux-cockpit'" > "$CL/h23/.tmux/plugins.conf"
+cp "$CL/h23/.tmux.conf" "$CL/conf23"
+cl_out=$( cd "$CL/wd" && cl_env 23 "$CL/p/co23/bootstrap.sh" --yes )
+is "a sourced @plugin line naming tmux-cockpit: bootstrap.sh appends nothing, and names it" \
+   "1|same" \
+   "$(printf '%s\n' "$cl_out" |
+      grep -cF "have   $CL/h23/.tmux/plugins.conf line 1 names cockpit;")|$(
+      cmp -s "$CL/h23/.tmux.conf" "$CL/conf23" && echo same || echo changed)"
+# tpm's config sources a file whose run-shell line loads this folder: tmux runs that line,
+# so bootstrap.sh appends no second one beside it, and names the line it found (#1304).
+cl_box 25 co25
+printf '%s\n' "source-file ~/.tmux/cockpit.conf" > "$CL/h25/.tmux.conf"
+printf "run-shell '%s/cockpit.tmux'\n" "$CL/p/co25" > "$CL/h25/.tmux/cockpit.conf"
+cp "$CL/h25/.tmux.conf" "$CL/conf25"
+cl_out=$( cd "$CL/wd" && cl_env 25 "$CL/p/co25/bootstrap.sh" --yes )
+is "a sourced run-shell line loading this folder: bootstrap.sh appends nothing, and names it" \
+   "1|same" \
+   "$(printf '%s\n' "$cl_out" |
+      grep -cF "have   $CL/h25/.tmux/cockpit.conf line 1 names cockpit;")|$(
+      cmp -s "$CL/h25/.tmux.conf" "$CL/conf25" && echo same || echo changed)"
+# --check follows no sourced file for the load line, so that box gets a fail row. Its fix says
+# where the folder loads from and that nothing needs adding: it said "runs the copy in
+# <folder>, not <folder>: keep one copy" with a line to add, which would load the plugin
+# twice (#1304). The whole config row is compared, from a config as bootstrap.sh found it.
+cp "$CL/conf25" "$CL/h25/.tmux.conf"
+is "and install.sh --check says where it loads from, and that nothing needs adding" \
+   "[ fail ] config         $CL/h25/.tmux/cockpit.conf line 1 loads this folder from $(:
+   )$CL/h25/.tmux/cockpit.conf, a file the config sources, which --check does not follow; $(:
+   )nothing needs adding" \
+   "$(cl_env 25 "$CL/p/co25/install.sh" --check | grep '^\[[ a-z]*\] config ')"
 # A plugin folder reached through a symlink, ~/.tmux/plugins/tmux-cockpit linked to a
 # checkout (#1067): the folder is its physical path, and the config names the link.
+# docs-comment is the docs line with a trailing comment: no spelling of the physical path
+# matches it, so it loads only when the comment is off before cockpit_conf_arg_path (#1304).
 is "cockpit_conf_wired_line: a symlinked plugin folder, the lines that load it" \
-   "docs:1 bare:1 double:1 home:1 sq-in-dq:none dq-in-sq:none other:none " \
+   "docs:1 bare:1 double:1 home:1 sq-in-dq:none dq-in-sq:none other:none docs-comment:1 " \
    "$(. "$DIR/scripts/lib/confline.sh"; HOME="$CL/h16"; cl_s="$CL/src16/cockpit-co"
       cl_o="$CL/other16/tmux-cockpit"; cl_r='/.tmux/plugins/tmux-cockpit/cockpit.tmux'
       mkdir -p "$HOME/.tmux/plugins" "$cl_s" "$cl_o"; : > "$cl_s/cockpit.tmux"
@@ -5644,7 +5736,7 @@ is "cockpit_conf_wired_line: a symlinked plugin folder, the lines that load it" 
       for cl_f in "docs|run-shell '~$cl_r'" "bare|run-shell ~$cl_r" \
           "double|run-shell \"~$cl_r\"" "home|run-shell '\"\$HOME$cl_r\"'" \
           "sq-in-dq|run-shell \"'~$cl_r'\"" "dq-in-sq|run-shell '\"~$cl_r\"'" \
-          "other|run-shell '$cl_o/cockpit.tmux'"; do
+          "other|run-shell '$cl_o/cockpit.tmux'" "docs-comment|run-shell '~$cl_r' # note"; do
           printf '%s\n' "${cl_f#*|}" > "$CL/wl"
           printf '%s:%s ' "${cl_f%%|*}" "$(cockpit_conf_wired_line "$CL/wl" "$cl_s" || printf none)"
       done)"
