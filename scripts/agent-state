@@ -317,9 +317,24 @@ session)
     case "$dir" in /*) ;; *) dir="" ;; esac
     case "$dir" in *[$'\001'-$'\037\177']*) dir="" ;; esac
     [ -n "$dir" ] && [ ! -d "$dir" ] && dir=""
-    # One read for both: the session saved before and the cwd the hooks saw last.
-    had=$(tmux display-message -p -t "$pane" '#{@cockpit_session}'$'\037''#{@cockpit_cwd}' 2>/dev/null)
-    cur=${had%%$'\037'*} seen=${had#*$'\037'}
+    # One read: the session saved before, the cwd the hooks saw last, whether the dir as found
+    # at the session's start is recorded (0 or 1, see below), and the dir itself, last since a
+    # hand-set one may hold any byte.
+    us=$'\037' f="#{@cockpit_session}"
+    f+="$us#{@cockpit_cwd}$us#{?#{@cockpit_dir_before},1,0}$us#{@cockpit_dir}"
+    had=$(tmux display-message -p -t "$pane" "$f" 2>/dev/null)
+    cur=${had%%$'\037'*} rest=${had#*$'\037'}
+    seen=${rest%%$'\037'*} rest=${rest#*$'\037'}
+    rec=${rest%%$'\037'*} was=${rest#*$'\037'}
+    # @cockpit_dir_before (#323): the dir as this session found it, which SessionEnd's `end`
+    # puts back. Written once, by the first hook with none, so later writes never move it;
+    # `end` drops it. "=" + the value, so an empty dir is a record too: a format reads an unset
+    # option and an empty one alike. Only a whole 0 records: a read cut by #707 reads "" and
+    # must not replace the record with the dir of now.
+    if [ "$rec" = 0 ]; then
+        arg="=$was"; case "$arg" in *\;) arg="${arg%;}\\;" ;; esac
+        tmux set-option -p -t "$pane" @cockpit_dir_before "$arg" 2>/dev/null
+    fi
     uuid='^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
     new=""
     if [[ $sid =~ $uuid ]]; then
@@ -329,8 +344,8 @@ session)
     fi
     # @cockpit_dir is written when the agent moved or a new session began, not on every prompt:
     # an agent driving a hand-made worktree with `git -C` sets it itself (docs/review.md), and
-    # that holds until it cds. tmux takes an argument's trailing `;` for a separator; `\;` is a
-    # literal one.
+    # that holds until it cds or the session ends (#323). tmux takes an argument's trailing `;`
+    # for a separator; `\;` is a literal one.
     if [ -n "$dir" ] && { [ "$dir" != "$seen" ] || [ -n "$new" ]; }; then
         arg=$dir; case "$arg" in *\;) arg="${arg%;}\\;" ;; esac
         tmux set-option -p -t "$pane" @cockpit_dir "$arg" 2>/dev/null
@@ -354,12 +369,21 @@ session)
     ;;
 end)
     # SessionEnd (#323): the ended session's tree leaves the board. A verb of its own, since
-    # `off` also runs at idle, which must keep the tree. Only what the hooks wrote goes: they
-    # write @cockpit_dir and @cockpit_cwd together, so a dir that differs from the cwd was set
-    # by hand and stays. The test reads 1 only when whole (see put): a cut keeps the dir.
-    tmux if-shell -F -t "$pane" '#{?#{==:#{@cockpit_dir},#{@cockpit_cwd}},1,0}' \
-        "set-option -pu -t $pane @cockpit_dir" ';' \
-        set-option -pu -t "$pane" @cockpit_cwd >/dev/null 2>&1
+    # `off` also runs at idle, which must keep the tree. @cockpit_dir goes back to the value
+    # `session` recorded at the start: what the hooks and the agent set goes, a dir set by hand
+    # before the agent started stays. With no record (a session begun before #323), the
+    # hooks' rule: they write the dir and @cockpit_cwd together, so a dir that differs from
+    # the cwd stays; that test reads 1 only when whole (see put), so a cut keeps the dir.
+    before=$(tmux show-option -pqv -t "$pane" @cockpit_dir_before 2>/dev/null)
+    case "$before" in
+        =)  restore=(set-option -pu -t "$pane" @cockpit_dir ';') ;;
+        =*) arg=${before#=}; case "$arg" in *\;) arg="${arg%;}\\;" ;; esac
+            restore=(set-option -p -t "$pane" @cockpit_dir "$arg" ';') ;;
+        *)  restore=(if-shell -F -t "$pane" '#{?#{==:#{@cockpit_dir},#{@cockpit_cwd}},1,0}'
+                "set-option -pu -t $pane @cockpit_dir" ';') ;;
+    esac
+    tmux "${restore[@]}" set-option -pu -t "$pane" @cockpit_cwd ';' \
+        set-option -pu -t "$pane" @cockpit_dir_before >/dev/null 2>&1
     exit 0
     ;;
 wake)
