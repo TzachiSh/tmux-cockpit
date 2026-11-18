@@ -406,14 +406,24 @@ next_base() {                 # <dir> <current-mode>
 # 0 when DIR or a dir above it holds a .git, file or dir, up to the first ceiling: as
 # git(1) says of GIT_CEILING_DIRECTORIES, the walk never goes up into one. git's own
 # search found no repo, and this second-guesses it: no exit code or output of git's
-# tells "no repo" from "a repo refused", only its words (#1286). Two of git's rules are
-# left out: GIT_DISCOVERY_ACROSS_FILESYSTEM's stop at a filesystem boundary, and the
-# symlink resolution git(1) does for a GIT_CEILING_DIRECTORIES entry. Either gap can find
-# a .git git would never reach: 2, a kept mark, the safe side.
-git_entry_above() {           # <absolute dir>
-    local d=$1 up c
+# tells "no repo" from "a repo refused", only its words (#1286). Both sides are physical
+# paths, as git's are: it walks up from getcwd() after its -C, and resolves each ceiling
+# entry's symlinks (setup.c, canonicalize_ceiling_entry): an entry that is not absolute or
+# does not resolve is dropped, and one after an empty entry is kept as written. A walk up
+# the logical path would miss the repo a symlink points into. A dir that does not resolve
+# is no answer: 0, then 2, a kept mark. Left out is GIT_DISCOVERY_ACROSS_FILESYSTEM's
+# stop at a filesystem boundary: it can find a .git git would not reach, also the safe side.
+git_entry_above() {           # <dir>
+    local d up c raw lit=''
     local -a ceil=()
-    IFS=: read -r -a ceil <<< "${GIT_CEILING_DIRECTORIES-}"
+    d=$(cd -P -- "$1" 2>/dev/null && pwd -P) || return 0
+    while IFS= read -r -d : raw; do
+        case $raw in
+            '') lit=1 ;;
+            /*) if [ -n "$lit" ]; then ceil+=("$raw")
+                elif c=$(cd -P -- "$raw" 2>/dev/null && pwd -P); then ceil+=("$c"); fi ;;
+        esac
+    done <<< "${GIT_CEILING_DIRECTORIES-}:"
     while :; do
         { [ -e "$d/.git" ] || [ -L "$d/.git" ]; } && return 0
         case $d in ''|/) return 1 ;; esac
