@@ -531,13 +531,18 @@ hand-made worktree with `git -C` sets `@cockpit_dir` itself ([review.md](review.
 prompt in the same cwd leaves that value alone; its next `cd` replaces it.
 The first hook of a session records the `@cockpit_dir` it found, empty or not, in
 `@cockpit_dir_before`. `SessionEnd` runs `agent-state end`, which puts that value back and
-clears `@cockpit_cwd` and the record (#323): a dir set by hand before the agent started stays,
-and one set during the session, by the hooks, the agent or by hand, goes. A session killed
-without `SessionEnd` leaves its record, so the next session's `end` restores the value the
-crashed session found at its start, which also undoes the crashed session's own writes; a dir set by hand
-between the crash and the next session is lost, as one set mid-session is. A session begun
-before this change has no record; then the dir goes only if it equals `@cockpit_cwd`. The
-`end` entry comes with `install.sh --hooks`, which merges additively: rerun it after updating.
+clears `@cockpit_cwd` and the record (#323): a dir set by hand before the agent started
+stays, and one set during the session, by the hooks, the agent or by hand, goes. A session
+killed without `SessionEnd` leaves its record, so the next session's `end` restores the
+value the crashed session found at its start, which also undoes the crashed session's own
+writes; a dir set by hand between the crash and the next session is lost, as one set
+mid-session is. A session begun before this change has no record; then the dir goes only if
+it equals `@cockpit_cwd`. A hook whose read of these options was cut short (#707) writes
+none of them, and the next hook does. The `end` entry comes with `install.sh --hooks`, which
+merges additively: rerun it after updating. Until then each pane records at its first
+session and nothing clears that record, so the first `end` after the rerun puts back the dir
+from that first session, which may be many sessions old; a dir set by hand in between is
+lost, as after a crash.
 
 A value is refused, and the old option kept, when it is not a whole JSON string (a payload cut
 by the 4 KB cap, or by a writer that died), not absolute, holds a control character or a

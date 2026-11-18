@@ -18,7 +18,7 @@
     "transcript_path in pane options, so the transcript reader is right from turn 1.",
     "They and CwdChanged also save the payload's cwd as @cockpit_dir, the tree the",
     "board reads, when the agent moved or a new session began (#312).",
-    "SessionEnd -> end clears that dir and cwd, unless the dir was set by hand (#323).",
+    "SessionEnd -> end puts back the @cockpit_dir the session started with (#323).",
     "PreToolUse runs before the permission prompt, so PostToolUse clears needs-input.",
     "",
     "Stop also runs review-gate: it flags an unreviewed diff (◆), hands over a queued",
