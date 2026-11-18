@@ -1784,6 +1784,82 @@ fn a_typed_prompt_closes_an_interrupted_question() {
     assert_eq!((p.state.as_str(), p.msg.as_str()), ("running", ""));
 }
 
+/// #1330 A3: a turn Esc stopped mid-tool. Claude Code writes the interrupt marker and
+/// fires no hook (#1332), so `@panestate` still says running.
+fn stopped_turn() -> String {
+    typed_row("go") + &bash_row("sleep 30") + &interrupt_row()
+}
+
+/// #1330 A3: an interrupt as the newest row overrides a stale running. The pane reads
+/// idle, the unset state, on the board and in `--json` alike (docs/tui.md, #61 note).
+#[test]
+fn an_interrupt_as_the_newest_row_overrides_a_stale_running() {
+    let r = Rig::new("a3stale");
+    r.transcript("s1", &stopped_turn());
+    r.rows(&[hooked("%1", "running", "s1")]);
+    let ps = list_panes().unwrap();
+    assert_eq!(get(&ps, "%1").state, State::Unknown, "the interrupt is the newest turn row");
+    let json = cockpit_tui::fleet::rows_json(&ps);
+    let json: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(json[0]["state"], "", "--json carries the board's state");
+}
+
+/// #1330 A3: a prompt after the interrupt keeps running: the marker is stale then, and
+/// so is it after an assistant row or a tool_result.
+#[test]
+fn a_prompt_after_the_interrupt_keeps_running() {
+    let r = Rig::new("a3prompt");
+    let result = serde_json::json!({"type": "user", "timestamp": "2026-08-27T00:00:07.000Z",
+        "message": {"content": [{"type": "tool_result", "tool_use_id": "b1", "content": "x"}]}});
+    r.transcript("s1", &(stopped_turn() + &typed_row("try again")));
+    r.transcript("s2", &(stopped_turn() + &bash_row("ls")));
+    r.transcript("s3", &(stopped_turn() + &format!("{result}\n")));
+    let ids = ["%1", "%2", "%3"];
+    r.rows(&ids.map(|id| hooked(id, "running", &format!("s{}", &id[1..]))));
+    let ps = list_panes().unwrap();
+    let got: Vec<&str> = ids.iter().map(|id| get(&ps, id).state.as_str()).collect();
+    assert_eq!(got, ["running"; 3], "a prompt, an assistant row, a tool_result after it");
+}
+
+/// #1330 A3: needs-input from the hooks is not overridden, nor are error and done: only
+/// a stale running gives way to the interrupt.
+#[test]
+fn needs_input_from_the_hooks_is_not_overridden() {
+    let r = Rig::new("a3needs");
+    r.transcript("s1", &stopped_turn());
+    let ids = [("%1", "needs-input"), ("%2", "error"), ("%3", "done")];
+    r.rows(&ids.map(|(id, st)| hooked(id, st, "s1")));
+    let ps = list_panes().unwrap();
+    let got: Vec<&str> = ids.iter().map(|(id, _)| get(&ps, id).state.as_str()).collect();
+    assert_eq!(got, ["needs-input", "error", "done"]);
+}
+
+/// #1330 A3 and #448: a pane bound to a background job shows the poller's state, which
+/// the job's transcript never overrides, an interrupt included.
+#[test]
+fn a_job_bound_pane_keeps_the_pollers_running_after_an_interrupt() {
+    let r = Rig::new("a3job");
+    r.transcript("s1", &stopped_turn());
+    // fields 13 to 16: no @cockpit_dir, subs or transcript, then the job's name
+    r.rows(&[hooked("%1", "running", "s1") + "\u{1f}\u{1f}\u{1f}\u{1f}alpha"]);
+    let p = get(&list_panes().unwrap(), "%1").clone();
+    assert_eq!((p.job.as_str(), p.state.as_str()), ("alpha", "running"));
+}
+
+/// #1330 A3's known gap, pinned so a fix shows up as a change here (the mod's turn
+/// start, #1330 T5): Enter after an interrupt sets running before Claude Code writes the
+/// prompt row, so the pane reads idle until that row lands, then running.
+#[test]
+fn a_prompt_not_yet_written_after_an_interrupt_reads_idle_until_its_row_lands() {
+    let r = Rig::new("a3gap");
+    let t = r.transcript("s1", &stopped_turn());
+    r.rows(&[hooked("%1", "running", "s1")]);
+    let before = get(&list_panes().unwrap(), "%1").state;
+    std::fs::write(&t, stopped_turn() + &typed_row("next")).unwrap();
+    let after = get(&list_panes().unwrap(), "%1").state;
+    assert_eq!((before, after), (State::Unknown, State::Running), "(before the row, after it)");
+}
+
 /// #453 review: the newest tool_use is an open ask with no readable question:
 /// no older open question stands in for it.
 #[test]
