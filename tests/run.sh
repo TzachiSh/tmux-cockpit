@@ -5713,6 +5713,16 @@ is "a sourced run-shell line loading this folder: bootstrap.sh appends nothing, 
    "$(printf '%s\n' "$cl_out" |
       grep -cF "have   $CL/h25/.tmux/cockpit.conf line 1 names cockpit;")|$(
       cmp -s "$CL/h25/.tmux.conf" "$CL/conf25" && echo same || echo changed)"
+# --check follows no sourced file for the load line, so that box gets a fail row. Its fix says
+# where the folder loads from and that nothing needs adding: it said "runs the copy in
+# <folder>, not <folder>: keep one copy" with a line to add, which would load the plugin
+# twice (#1304). The whole config row is compared, from a config as bootstrap.sh found it.
+cp "$CL/conf25" "$CL/h25/.tmux.conf"
+is "and install.sh --check says where it loads from, and that nothing needs adding" \
+   "[ fail ] config         $CL/h25/.tmux/cockpit.conf line 1 loads this folder from $(:
+   )$CL/h25/.tmux/cockpit.conf, a file the config sources, which --check does not follow; $(:
+   )nothing needs adding" \
+   "$(cl_env 25 "$CL/p/co25/install.sh" --check | grep '^\[[ a-z]*\] config ')"
 # A plugin folder reached through a symlink, ~/.tmux/plugins/tmux-cockpit linked to a
 # checkout (#1067): the folder is its physical path, and the config names the link.
 # docs-comment is the docs line with a trailing comment: no spelling of the physical path
