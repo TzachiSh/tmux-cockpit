@@ -1759,6 +1759,44 @@ bgst running "$BGU"; bgst error '{"hook_event_name":"PostToolUseFailure","agent_
 bgst done "$(bgstop "$BGT")"
 bgis "a subagent's error through the main Stop" error error 0
 
+# #1330: PermissionRequest's ask names the tool, and for Bash only the program, never an
+# argument or a path. PostToolUseFailure names the failed tool, and an interrupt is no error.
+bgmsg() { "$TMUX_REAL" -L "$BG" set -pu -t "$BGP" @panestate_msg >/dev/null 2>&1; }
+bgpr() {                      # <tool> <command>: the ask a PermissionRequest leaves
+    bgmsg; bgst running "$BGU"
+    bgst needs-input "{\"session_id\":\"s1\",\"hook_event_name\":\"PermissionRequest\",\
+\"tool_name\":\"$1\",\"tool_input\":{\"command\":\"$2\",\"description\":\"d\"}}"
+    bgo @panestate_msg; }
+is "a Bash ask names the program, no argument or path" "Bash: git" \
+    "$(bgpr Bash 'git -C /home/u/secret push origin main')"
+is "a leading NAME=value and the program's path are dropped" "Bash: make" \
+    "$(bgpr Bash 'LANG=C /usr/local/bin/make -j4 /home/u/x')"
+is "a word ends at its first disallowed byte" "Bash: ls" "$(bgpr Bash 'ls;cat /home/u/.ssh/id')"
+is "a first word of disallowed bytes names no program" "Bash" "$(bgpr Bash '$(cat /home/u/k)')"
+is "an empty command names no program" "Bash" "$(bgpr Bash '')"
+is "a program name is cut at 32" "Bash: $(printf 'p%.0s' {1..32})" \
+    "$(bgpr Bash "$(printf 'p%.0s' {1..40}) x")"
+is "another tool's ask is its name" "Edit" "$(bgpr Edit '')"
+bgfail() {                    # <is_interrupt field>: a Bash PostToolUseFailure
+    bgst error "{\"hook_event_name\":\"PostToolUseFailure\",\"tool_name\":\"Bash\",\
+\"tool_input\":{\"command\":\"cat /home/u/k\"},\"error\":\"no /home/u/k\",$1}"; }
+bgst running "$BGU"; bgfail '"is_interrupt":true'
+is "an interrupted tool is no error" running "$(bgo @panestate)"
+bgst running "$BGU"; bgfail '"is_interrupt": true'
+is "nor with a space after the colon" running "$(bgo @panestate)"
+bgst running "$BGU"; bgfail '"is_interrupt":false'
+is "a failed tool's ask is its name only" "Bash failed" "$(bgo @panestate_msg)"
+bgpr Bash 'git push' >/dev/null; bgfail '"is_interrupt":false'
+is "a failure leaves a waiting pane's ask" "Bash: git" "$(bgo @panestate_msg)"
+BGPP='{"hook_event_name":"Notification","message":"Claude needs your permission to use Bash",'
+BGPP=$BGPP'"notification_type":"permission_prompt"}'
+bgst notify "$BGPP"
+is "a later permission_prompt keeps the PermissionRequest text" "Bash: git" "$(bgo @panestate_msg)"
+bgst running "$BGU"; bgfail '"is_interrupt":false'; bgst notify "$BGPP"
+is "but an error's text gives way to a permission_prompt" \
+    "Claude needs your permission to use Bash" "$(bgo @panestate_msg)"
+bgmsg; unset -f bgmsg bgpr bgfail; unset BGPP
+
 # Concurrent hooks: several report-back Stops and subagent tool calls at once.
 bgjobs() {                    # <n> <state> <payload>: n hooks at once, then wait for them
     local i pids=""
