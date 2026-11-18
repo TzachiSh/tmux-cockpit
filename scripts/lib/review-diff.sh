@@ -406,7 +406,10 @@ next_base() {                 # <dir> <current-mode>
 # 0 when DIR or a dir above it holds a .git, file or dir, up to the first ceiling: as
 # git(1) says of GIT_CEILING_DIRECTORIES, the walk never goes up into one. git's own
 # search found no repo, and this second-guesses it: no exit code or output of git's
-# tells "no repo" from "a repo refused", only its words (#1286).
+# tells "no repo" from "a repo refused", only its words (#1286). Two of git's rules are
+# left out: GIT_DISCOVERY_ACROSS_FILESYSTEM's stop at a filesystem boundary, and the
+# symlink resolution git(1) does for a GIT_CEILING_DIRECTORIES entry. Either gap can find
+# a .git git would never reach: 2, a kept mark, the safe side.
 git_entry_above() {           # <absolute dir>
     local d=$1 up c
     local -a ceil=()
