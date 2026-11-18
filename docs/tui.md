@@ -3025,15 +3025,15 @@ switch runs through `gitsafe::git_write`: the `gitsafe` flags but the protocol p
 switch may lazy-fetch a partial clone's blobs, as `scripts/lib/git.sh` lets it), every
 filter driver the repo names blanked, a repo whose driver name holds `=` refused
 (#331), no submodule checked out (`-c submodule.recurse=false`: a submodule's own
-config names drivers no blanking reads, #1272), the inherited `GIT_DIR` and its kin unset, and no prompt on the popup's
-terminal. Git's own refusal (a dirty tree) is the `✕` note, its first line, with the
-whole message in the preview until the next key; the picker stays. goto checks its
-path the same way before it acts: a path that `git worktree list` names, else `not a
-worktree of this repository`, and still a directory, else `is gone`. A `cockpit-tui`
-that still prints `switch`, `track`, `create` or `goto` lines (0.4.0, the release a
-default install fetches) gets the script's own checks, `git switch` and goto, as before
-#228, until `TUI_MIN` passes that release; any other answer is refused with the
-stale-binary message.
+config names drivers no blanking reads, #1272), the inherited `GIT_DIR` and its kin
+unset, and no prompt on the popup's terminal. Git's own refusal (a dirty tree) is the
+`✕` note, its first line, with the whole message in the preview until the next key;
+the picker stays. goto checks its path the same way before it acts: a path that `git
+worktree list` names, else `not a worktree of this repository`, and still a directory,
+else `is gone`. A `cockpit-tui` that still prints `switch`, `track`, `create` or
+`goto` lines (0.4.0, the release a default install fetches) gets the script's own
+checks, `git switch` and goto, as before #228, until `TUI_MIN` passes that release;
+any other answer is refused with the stale-binary message.
 
 A branch name cannot contain a space, so the filter text `my branch` is refused with a
 note on `alt-↵`.

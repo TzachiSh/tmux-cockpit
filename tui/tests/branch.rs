@@ -569,18 +569,23 @@ fn the_switch_runs_no_filter_driver_a_submodules_own_config_names() {
     assert_eq!(out(&r.0.join("sub"), &["log", "-1", "--format=%s"]), "two", "fixture: newer");
     acted(&r, b"switch oldsub");
     assert_eq!(branches::current(r.s()), "oldsub");
-    assert!(!smudged.exists(), "the submodule's smudge ran");
+    // a smudge that fails silently leaves no marker, but a checkout moves the submodule
+    let after = (out(&r.0.join("sub"), &["log", "-1", "--format=%s"]), smudged.exists());
+    assert_eq!(after, ("two".to_string(), false), "(the submodule's commit, its smudge ran)");
 }
 
 #[test]
 fn a_track_runs_no_filter_driver_a_submodules_own_config_names() {
     let (r, _rm, _sub, smudged) = sub_repo();
+    assert_eq!(out(&r.0.join("sub"), &["log", "-1", "--format=%s"]), "two", "fixture: newer");
     let (d, quiet) = ("2020-01-01T00:00:00Z", ["-c", "submodule.recurse=false"]);
     git(&r.0, d, &[&quiet[..], &["push", "-q", "origin", "oldsub:remote-oldsub"]].concat());
     git(&r.0, d, &[&quiet[..], &["fetch", "-q", "origin"]].concat());
     acted(&r, b"track origin/remote-oldsub");
     assert_eq!(branches::current(r.s()), "remote-oldsub");
-    assert!(!smudged.exists(), "the submodule's smudge ran");
+    // a smudge that fails silently leaves no marker, but a checkout moves the submodule
+    let after = (out(&r.0.join("sub"), &["log", "-1", "--format=%s"]), smudged.exists());
+    assert_eq!(after, ("two".to_string(), false), "(the submodule's commit, its smudge ran)");
 }
 
 #[test]
