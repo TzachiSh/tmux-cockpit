@@ -105,8 +105,9 @@ download() {                  # 0 installed · 1 refused · 2 nothing for this p
     command -v sha256sum >/dev/null 2>&1 || command -v shasum >/dev/null 2>&1 || {
         say "skip: neither sha256sum nor shasum is installed to verify with"; return 3; }
     # Taken only when it is a fresh dir of the user's own, as the trap removes it: a refusal
-    # is a temp dir that could not be had, transient (#947).
-    own_tmpdir tmp || return 3
+    # is a temp dir that could not be had, transient (#947). It says which check refused.
+    own_tmpdir tmp || {
+        say "skip: no temp dir for the download (own_tmpdir: $own_tmpdir_why)"; return 3; }
     trap 'rm -rf "$tmp"' RETURN
     # Checksums before the tarball: "could not verify" is not "verified".
     fetch sha256.sum "$tmp/sums" || {

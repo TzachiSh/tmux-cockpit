@@ -8014,6 +8014,50 @@ loaded_on "$GB" "with /tmp unwritable the stock read uses TMPDIR: w back, nothin
        "choose-tree -Zw|" \
        "$(gb_live w | grep -o 'choose-tree -Zw')|$(gb_left)"
 gb_set board unset; gb_load
+# A mktemp answering a dir that exists (#947): one with a canary, the load's own cwd, or - with
+# a dir named - in that cwd. give_back bound the stock server's socket there and rm -rf'd it.
+# Each answer is refused now: w stays cockpit's and pending, and the message names the check.
+gb_msgs() { "$TMUX_REAL" -L "$GB" show-messages 2>/dev/null | grep -v ' command: '; }
+mkdir -p "$GBD/m947"
+{ printf '#!/bin/sh\nfor a; do case "$a" in */cockpit-gb.*) cat %s; exit 0 ;; esac; done\n' \
+      "$(tq "$GBD/m947.ans")"
+  printf 'exec %s "$@"\n' "$(tq "$(command -v mktemp)")"; } > "$GBD/m947/mktemp"
+chmod +x "$GBD/m947/mktemp"
+for gb_c in full:nonempty cwd:cwd -:dash; do
+    gb_w=${gb_c%:*}
+    rm -rf "$GBD/c947" "$GBD/f947"; mkdir -p "$GBD/c947/-" "$GBD/f947"
+    echo keep > "$GBD/c947/-/canary"; echo keep > "$GBD/f947/canary"
+    case $gb_w in full) gb_a=$GBD/f947 gb_k=$GBD/f947/canary ;; cwd) gb_a=$GBD/c947 gb_k=$gb_a ;;
+                  *) gb_a=- gb_k=$GBD/c947/-/canary ;; esac
+    printf '%s\n' "$gb_a" > "$GBD/m947.ans"
+    gb_set board off
+    reload_on "$GB" "cd '$GBD/c947' && PATH='$GBD/m947':\"\$PATH\" '$DIR/cockpit.tmux'"
+    is "a mktemp answering [$gb_w] for the stock read: refused, w kept and pending, and said" \
+       "kept|board:w|1" "$([ -e "$gb_k" ] && echo kept || echo gone)|$(gb_left)|$(gb_msgs |
+       grep -cF "own binding for w (no temp dir, own_tmpdir: ${gb_c#*:})")"
+    gb_load; gb_set board unset; gb_load
+done
+# lib/tmpdir.sh missing from the plugin, or empty, as a cut copy is: the load still completes,
+# and give_back, with no dir it may take, leaves w bound and pending and says why (#947). An
+# empty file sources with status 0 and defines nothing: keyed on that status, no stand-in was
+# defined, give_back's own_tmpdir was "command not found", and its read of the unset
+# own_tmpdir_why under set -u ended the whole plugin load. The message is counted as new since
+# the row's own load.
+gb_p=$GBD/nolib947; mkdir -p "$gb_p"; cp -R "$DIR/cockpit.tmux" "$DIR/scripts" "$gb_p/"
+ln -s "$DIR/examples" "$gb_p/examples"; ln -s "$DIR/bin" "$gb_p/bin"
+gb_why='own binding for w (no temp dir, own_tmpdir: tmpdir.sh did not load)'
+for gb_c in without empty; do
+    if [ "$gb_c" = without ]; then rm -f "$gb_p/scripts/lib/tmpdir.sh"
+    else : > "$gb_p/scripts/lib/tmpdir.sh"; fi
+    gb_n=$(gb_msgs | grep -cF "$gb_why")
+    gb_set board off
+    reload_on "$GB" "'$gb_p/cockpit.tmux'"
+    is "a plugin $gb_c lib/tmpdir.sh loads, leaves w bound and pending, and says why" \
+       "cockpit: board|board:w|1" \
+       "$(gb_note w)|$(gb_left)|$(( $(gb_msgs | grep -cF "$gb_why") - gb_n ))"
+    gb_load; gb_set board unset; gb_load
+done
+unset -f gb_msgs; unset gb_c gb_w gb_a gb_k gb_p gb_n gb_why
 # ; is a command separator to tmux: the tmux-fixer sweep must still give it back.
 "$TMUX_REAL" -L "$GB" bind-key -T prefix '\;' display-popup -E "/old/scripts/tmux-fixer -p %1" \
     >/dev/null 2>&1
@@ -11180,13 +11224,19 @@ echo "== board, panel, tm and tui-fetch rm -rf no dir their mktemp did not make 
 # and a stub tmux comes first on PATH, answering one session name and nothing else (tm runs in
 # a pane of a private server for its tty, the stub still first). tui-fetch's curl and gh are
 # stubs that log and fail, so nothing is fetched; the row counts its curl calls.
+# With OS_SAID set, os_site prints instead what the site said about the refusal, in the channel
+# it reports in: the board and the panel by a display-message the stub tmux keeps, tui-fetch on
+# stdout, tm on stderr. The reason is the check own_tmpdir_why names.
 if need_tmux "own_tmpdir at the four sites"; then :; else
 OSS="cockpit-ot947-$$"; SOCKS="$SOCKS $OSS"
 os_site() {                   # <site> <full|cwd> -> "<kept|gone>|<status or curl=N>"
     local s=$1 w=$2 o r
     o=$(mktmpd); mkdir -p "$o/bin" "$o/cwd" "$o/full" "$o/state"; echo keep > "$o/full/canary"
     printf '#!/bin/sh\nprintf "%%s\\n" %s\n' "$(tq "$o/$w")" > "$o/bin/mktemp"
-    printf '#!/bin/sh\ncase $1 in list-sessions) echo a ;; esac\nexit 0\n' > "$o/bin/tmux"
+    { printf '#!/bin/sh\ncase $1 in list-sessions) echo a ;;\n'
+      printf '    display-message) for a; do l=$a; done; printf "%%s\\n" "$l" >> %s ;;\n' \
+          "$(tq "$o/said")"
+      printf 'esac\nexit 0\n'; } > "$o/bin/tmux"
     printf '#!/bin/sh\necho x >> %s\nexit 22\n' "$(tq "$o/curl.log")" > "$o/bin/curl"
     printf '#!/bin/sh\nexit 1\n' > "$o/bin/gh"; printf '#!/bin/sh\nexit 1\n' > "$o/tui"
     chmod +x "$o/bin/"* "$o/tui"
@@ -11197,7 +11247,7 @@ os_site() {                   # <site> <full|cwd> -> "<kept|gone>|<status or cur
             cat > "$o/run-tm" <<'RUNTM'
 #!/bin/sh
 cd "$1" || exit 1
-PATH="$2:$PATH" env -u TMUX -u TMUX_PANE COCKPIT_TUI_BIN="$3" timeout 30 "$4"
+PATH="$2:$PATH" env -u TMUX -u TMUX_PANE COCKPIT_TUI_BIN="$3" timeout 30 "$4" 2>"$5.err"
 echo "$?" > "$5.t" && mv "$5.t" "$5"
 RUNTM
             # fresh_server: the second tm row starts a server on the socket the first killed.
@@ -11209,13 +11259,17 @@ RUNTM
         tui-fetch)
             (cd "$o/cwd" && PATH="$o/bin:$PATH" env -u TMUX -u TMUX_PANE -u COCKPIT_TUI_OFFLINE \
                 COCKPIT_TUI_BIN="$o/p/bin/cockpit-tui" \
-                COCKPIT_TUI_RELEASES=http://no-such-host.invalid timeout 30 "$DIR/scripts/tui-fetch" </dev/null >/dev/null 2>&1)
+                COCKPIT_TUI_RELEASES=http://no-such-host.invalid timeout 30 \
+                "$DIR/scripts/tui-fetch" </dev/null >"$o/out" 2>/dev/null)
             r=$( (wc -l < "$o/curl.log") 2>/dev/null | tr -d ' '); r=curl=${r:-0} ;;
         *)
             (cd "$o/cwd" && PATH="$o/bin:$PATH" env -u TMUX -u TMUX_PANE COCKPIT_TUI_BIN="$o/tui" \
                 COCKPIT_LOG="$o/log" XDG_STATE_HOME="$o/state" timeout 30 "$DIR/scripts/$s" \
                 ${3:+"$3"} ${4:+"$4"} </dev/null >/dev/null 2>&1); r=$? ;;
     esac
+    if [ -n "${OS_SAID:-}" ]; then
+        cat "$o/said" "$o/out" "$o/rc.err" 2>/dev/null | grep 'no temp dir'; return
+    fi
     if { [ "$w" = full ] && [ -e "$o/full/canary" ]; } || { [ "$w" = cwd ] && [ -d "$o/cwd" ]; }
     then printf 'kept|%s' "$r"; else printf 'gone|%s' "$r"; fi
 }
@@ -11229,8 +11283,108 @@ for os_w in full cwd; do
     is "tui-fetch: a mktemp answering an existing dir ($os_w) fetches nothing, the dir stays" \
        "kept|curl=0" "$(os_site tui-fetch "$os_w")"
 done
-unset -f os_site; unset OSS os_w
+# The refusal says which check refused: nonempty for the dir with a canary, cwd for the cwd.
+for os_c in full:nonempty cwd:cwd; do
+    os_w=${os_c%:*} os_y=${os_c#*:}
+    is "cockpit-board: the refusal ($os_w) says why, in a message" \
+       "cockpit: no temp dir for the board (own_tmpdir: $os_y)" \
+       "$(OS_SAID=1 os_site cockpit-board "$os_w")"
+    is "cockpit-panel: the refusal ($os_w) says why, in a message" \
+       "cockpit: no temp dir for the panel (own_tmpdir: $os_y)" \
+       "$(OS_SAID=1 os_site cockpit-panel "$os_w" -p %0)"
+    is "tm: the refusal ($os_w) says why, on stderr" \
+       "cockpit: no temp dir for the picker (own_tmpdir: $os_y)" "$(OS_SAID=1 os_site tm "$os_w")"
+    is "tui-fetch: the refusal ($os_w) says why, on stdout" \
+       "tui-fetch: skip: no temp dir for the download (own_tmpdir: $os_y)" \
+       "$(OS_SAID=1 os_site tui-fetch "$os_w")"
+done
+unset -f os_site; unset OSS os_w os_c os_y
 fi
+
+echo "== bootstrap.sh's tmux build and revdiff fetch rm -rf no dir mktemp did not make (#947) =="
+# build_tmux and fetch_tool each armed rm -rf, at RETURN, on whatever mktemp -d answered. Here a
+# mktemp earlier on PATH answers -d with a dir that exists: one with a canary, the run's own
+# cwd, or - with a dir named - in the cwd (rm -rf - takes ./-). The step fails as a failed
+# mktemp does, prints which check refused, and the dir stays. A faked box, and nothing leaves
+# it: HOME is a folder of the row's, given as a prefix; PATH is a stub folder, then /usr/bin and
+# /bin. sudo, every package manager bootstrap.sh knows, git, curl, wget, gh, cargo, make, cc
+# and gcc are stubs that log and do nothing; the apt-get stub makes every box an apt box, so the
+# build is reached the same way everywhere. COCKPIT_GITHUB is an empty file:// dir. The tmux
+# stub prints a version: 3.7 is built, 3.8 is kept; a revdiff stub at the pin keeps the build
+# rows off fetch_tool. Every plugin is cloned already and ~/.tmux.conf loads cockpit, so no
+# other step acts. The third field counts make, cc and gcc calls: the build never compiles, as
+# the download before it fails.
+# quote: the build's dir is the real mktemp's, under a TMPDIR whose name holds a ', and the curl
+# stub serves a local tarball whose configure only leaves a mark and fails, so make is never
+# reached. The build ran its command in a "cd '<dir>' ..." string, which such a dir broke.
+# prefix: the same tarball under a plain TMPDIR. Its configure logs its argv, and the row reads
+# the --prefix it got, the row's own folder shown as <o>: the build installs into HOME/.local.
+bt_mk=$(PATH=/usr/bin:/bin command -v mktemp)
+bt_v=$(sed -n 's/.*TMUX_BUILD=\([0-9.]*\).*/\1/p' "$DIR/bootstrap.sh")
+bt_run() {      # <tmux|revdiff> <full|cwd|-|quote|prefix> <check> -> "<dir|mark>|<FAIL>|<cc>"
+    local s=$1 w=$2 o a k c what t=${TMPDIR:-/tmp}
+    o=$(mktmpd); mkdir -p "$o/bin" "$o/cwd/-" "$o/full" "$o/rel" "$o/h/.tmux/plugins"
+    echo keep > "$o/full/canary"; echo keep > "$o/cwd/-/canary"; : > "$o/calls"
+    for c in tpm tmux-sensible tmux-yank tmux-resurrect tmux-continuum; do
+        mkdir -p "$o/h/.tmux/plugins/$c/.git"
+    done
+    printf '# mine\nrun-shell %s/cockpit.tmux\n' "$DIR" > "$o/h/.tmux.conf"
+    case $w in full) a=$o/full k=$o/full/canary ;; cwd) a=$o/cwd k=$o/cwd ;;
+               quote|prefix) a='' k=$o/configured ;; *) a=- k=$o/cwd/-/canary ;; esac
+    for c in sudo apt-get dnf pacman zypper brew git curl wget gh cargo make cc gcc; do
+        printf '#!/bin/sh\necho "%s $*" >> %s\n' "$c" "$(tq "$o/calls")" > "$o/bin/$c"
+        case $c in sudo|apt-get) echo 'exit 0' ;; *) echo 'exit 1' ;; esac >> "$o/bin/$c"
+    done
+    if [ -z "$a" ]; then
+        if [ "$w" = quote ]; then t=$o/q\'d; else t=$o/plain; fi
+        mkdir -p "$t" "$o/pack/tmux-$bt_v"
+        printf '#!/bin/sh\nprintf "%%s\\n" "$@" > %s\nexit 1\n' "$(tq "$k")" \
+            > "$o/pack/tmux-$bt_v/configure"
+        chmod +x "$o/pack/tmux-$bt_v/configure"; (cd "$o/pack" && tar -czf ../t.tgz "tmux-$bt_v")
+        { printf '#!/bin/sh\necho "curl $*" >> %s\n' "$(tq "$o/calls")"
+          printf 'while [ $# -gt 0 ]; do [ "$1" = -o ] && exec cp %s "$2"; shift; done\nexit 1\n' \
+              "$(tq "$o/t.tgz")"; } > "$o/bin/curl"
+    else
+        printf '#!/bin/sh\ncase $1 in -d) printf "%%s\\n" %s ;; *) exec %s "$@" ;; esac\n' \
+            "$(tq "$a")" "$(tq "$bt_mk")" > "$o/bin/mktemp"
+    fi
+    if [ "$s" = tmux ]; then c=3.7 what='the tmux build'
+        printf '#!/bin/sh\necho "version: 1.13.0"\n' > "$o/bin/revdiff"
+    else c=3.8 what=revdiff; fi
+    printf '#!/bin/sh\ncase $1 in -V) echo "tmux %s" ;; esac\nexit 0\n' "$c" > "$o/bin/tmux"
+    chmod +x "$o/bin/"*
+    (cd "$o/cwd" && env -u TMUX -u TMUX_PANE HOME="$o/h" PATH="$o/bin:/usr/bin:/bin" \
+        TMPDIR="$t" COCKPIT_GITHUB="$(file_url "$o/rel")" timeout 60 \
+        "$DIR/bootstrap.sh" </dev/null >"$o/out" 2>&1)
+    case $w in
+        quote) c=$([ -e "$k" ] && echo ran || echo not) ;;
+        prefix) c=$(grep -- '^--prefix=' "$k" 2>/dev/null); c=${c/#"--prefix=$o"/--prefix=<o>} ;;
+        *) c=$([ -e "$k" ] && echo kept || echo gone) ;;
+    esac
+    printf '%s|%s|%s' "$c" \
+        "$(grep -cxF "  FAIL:  no temp dir for $what (own_tmpdir: $3)" "$o/out")" \
+        "$(grep -cE '^(make|cc|gcc) ' "$o/calls")"
+}
+# fetch_tool is reached only where a prebuilt revdiff exists, and on Linux: on macOS the brew
+# stub takes the step.
+case "$(uname -s)/$(uname -m)" in
+    Linux/x86_64|Linux/amd64|Linux/aarch64|Linux/arm64) bt_f=1 ;;
+    *) bt_f='' ;;
+esac
+for bt_c in full:nonempty cwd:cwd -:dash; do
+    bt_w=${bt_c%:*}
+    is "the tmux build: a mktemp answering [$bt_w] is refused, says why, and the dir stays" \
+       "kept|1|0" "$(bt_run tmux "$bt_w" "${bt_c#*:}")"
+    if [ -n "$bt_f" ]; then
+        is "fetch_tool: a mktemp answering [$bt_w] is refused, says why, and the dir stays" \
+           "kept|1|0" "$(bt_run revdiff "$bt_w" "${bt_c#*:}")"
+    else skip_ "fetch_tool and a mktemp answering [$bt_w] (no prebuilt revdiff here)"; fi
+done
+is "the tmux build runs its steps in a temp dir whose path holds a ', and compiles nothing" \
+   "ran|0|0" "$(bt_run tmux quote none)"
+is "the tmux build configures with --prefix in the user's HOME, and compiles nothing" \
+   "--prefix=<o>/h/.local|0|0" "$(bt_run tmux prefix none)"
+unset -f bt_run; unset bt_mk bt_v bt_c bt_w bt_f
 
 # group: deliver
 echo "== tmux-review --deliver: guards refuse before anything is pasted =="

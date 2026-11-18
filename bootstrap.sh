@@ -62,6 +62,8 @@ sha_c() { if have sha256sum; then sha256sum -c -; else shasum -a 256 -c -; fi; }
 . "$DIR/scripts/lib/vnum.sh" || exit 1
 # shellcheck source=scripts/lib/confline.sh
 . "$DIR/scripts/lib/confline.sh" || exit 1
+# shellcheck source=scripts/lib/tmpdir.sh
+. "$DIR/scripts/lib/tmpdir.sh" || exit 1
 ver_ge() {  # ver_ge <have> <maj> <min>
     local v=${1#tmux }; v=${v#v}                      # v1.13.0-abc1234-date: x.y.z leads
     vnum_ge "$v" "$2.$3"                              # next-3.9 is 3.9; no number: modern
@@ -115,13 +117,18 @@ build_tmux() {
     esac
     [ -n "$deps" ] &&{ run "install the tmux build deps" bash -c "$PKG_INSTALL $deps" || return 1; }
     [ "$dry" -eq 1 ] && { printf '  would: build tmux %s into ~/.local\n' "$TMUX_BUILD"; return 0; }
-    tmp=$(mktemp -d) || return 1
+    # Taken only when it is a fresh dir of the user's own, as the trap removes it (#947).
+    own_tmpdir tmp || {
+        printf '  FAIL:  no temp dir for the tmux build (own_tmpdir: %s)\n' "$own_tmpdir_why" >&2
+        return 1; }
     trap 'rm -rf "$tmp"' RETURN
     printf '  note:  tmux publishes no checksums; TLS only\n'
     run "download tmux $TMUX_BUILD" curl -fsSL --retry 2 --max-time 120 -o "$tmp/t.tgz" \
         "${COCKPIT_GITHUB:-https://github.com}/tmux/tmux/releases/download/$TMUX_BUILD/tmux-$TMUX_BUILD.tar.gz" || return 1
-    run "build tmux $TMUX_BUILD into ~/.local" bash -c "cd '$tmp' && tar xzf t.tgz && cd tmux-$TMUX_BUILD \
-        && ./configure --prefix='$HOME/.local' && make -j\$(nproc 2>/dev/null || echo 2) && make install"
+    # The paths are arguments, not text in the command: a ' in TMPDIR or HOME broke the string.
+    run "build tmux $TMUX_BUILD into ~/.local" bash -c 'cd -- "$1" && tar xzf t.tgz &&
+        cd "tmux-$2" && ./configure --prefix="$3/.local" &&
+        make -j"$(nproc 2>/dev/null || echo 2)" && make install' _ "$tmp" "$TMUX_BUILD" "$HOME"
 }
 
 step "tmux version"
@@ -268,7 +275,10 @@ fetch_tool() {                # <name> <ver> <have> <asset-url> <sums-url|-> <pa
     if [ "$have" = "$ver" ]; then
         printf '  ok:    %s %s already current\n' "$name" "$ver"; return 0
     fi
-    tmp=$(mktemp -d) || return 1
+    # Taken only when it is a fresh dir of the user's own, as the trap removes it (#947).
+    own_tmpdir tmp || {
+        printf '  FAIL:  no temp dir for %s (own_tmpdir: %s)\n' "$name" "$own_tmpdir_why" >&2
+        return 1; }
     trap 'rm -rf "$tmp"' RETURN
     a=${asset##*/}
     if [ "$sums" = - ]; then
