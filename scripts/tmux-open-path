@@ -98,7 +98,7 @@ open_one() {
             tmux run-shell -b \
                 "$(fesc "code --goto $(shq "$file:${ln:-1}:${col:-1}") >/dev/null 2>&1")"
         fi
-        note "cockpit: opened ${file/#$H/\~}${ln:+:$ln}"
+        note "cockpit: opened ${file/#"$H"/\~}${ln:+:$ln}"
         return
     fi
     # Remote-SSH and Coder: the CLI is not on tmux's PATH. Re-entered via
@@ -110,7 +110,7 @@ open_one() {
             tmux run-shell -b "$(fesc "$(shq "$0") --vscode --goto \
 $(shq "$file:${ln:-1}:${col:-1}") >/dev/null 2>&1")"
         fi
-        note "cockpit: opened ${file/#$H/\~}${ln:+:$ln}"
+        note "cockpit: opened ${file/#"$H"/\~}${ln:+:$ln}"
         return
     fi
     note "cockpit: no editor · set @cockpit_editor, \$VISUAL or install code"
@@ -266,7 +266,7 @@ browse_act() {
     fi
     if [ "$verb" = copy ]; then
         printf '%s\n' "$path" | tmux load-buffer -w - || { note "cockpit: could not copy"; return 1; }
-        note "cockpit: copied ${path/#$H/\~}"; return 0
+        note "cockpit: copied ${path/#"$H"/\~}"; return 0
     fi
     # view: any regular file goes to the viewer, a touch client included (#406);
     # when the viewer cannot take it the file opens as `open` would
@@ -515,7 +515,7 @@ rows=''
 for i in "${!FILES[@]}"; do
     case "${FILES[$i]}" in
         "$dir"/*) disp=${FILES[$i]#"$dir"/} ;;
-        *)        disp=${FILES[$i]/#$H/\~} ;;
+        *)        disp=${FILES[$i]/#"$H"/\~} ;;
     esac
     disp="$disp${LINES[$i]:+:${LINES[$i]}}"
     # pick strips control characters from a display; a tab would split it.
@@ -544,6 +544,6 @@ if [ "$rc" -eq 10 ]; then
     # alt-c: the path, absolute, to the client's clipboard and the paste buffer.
     printf '%s\n' "${FILES[$key]}" | tmux load-buffer -w - \
         || { note "cockpit: could not copy"; exit 1; }
-    note "cockpit: copied ${FILES[$key]/#$H/\~}"; exit 0
+    note "cockpit: copied ${FILES[$key]/#"$H"/\~}"; exit 0
 fi
 open_one "${FILES[$key]}" "${LINES[$key]}" "${COLS[$key]}"
