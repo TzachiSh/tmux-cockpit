@@ -54,6 +54,13 @@ jobs:
       # tui-test in private, empty TMPDIR and TMUX_TMPDIR: a test that leaves a
       # file, dir or tmux socket behind fails the job, named (#400)
       - run: make tui-test-clean
+      # The contract schemas and their examples (contracts/README.md), on one leg:
+      # the check reads JSON files only, so the image does not change its answer.
+      - name: contracts/check
+        if: matrix.os == 'ubuntu-24.04'
+        run: |
+          cargo run --locked --manifest-path contracts/check/Cargo.toml
+          cargo test --locked --manifest-path contracts/check/Cargo.toml
       # The release build is a separate failure mode from the test build: LTO,
       # panic=abort and the dist profile only compile here.
       - run: make tui
