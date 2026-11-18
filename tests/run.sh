@@ -10433,7 +10433,7 @@ for ot_c in fail:mktemp :answer nope:resolve /:root .:cwd link:symlink full:none
        "1 ${ot_c##*:} []" "$(ot_run "$ot_a")"
 done
 # -O, not a uid test: it holds for root and for a container whose user owns /usr alike, and
-# either way the row would pass with the owner check gone.
+# either way the owner check has nothing there to refuse, so the row could not test it.
 if [ -O /usr ]; then skip_ "own_tmpdir: /usr is this user's own (root or a container), no owner row"
 else is "a mktemp answering /usr, a dir the user does not own, is refused by the owner check" \
         "1 owner []" "$(ot_run /usr)"
