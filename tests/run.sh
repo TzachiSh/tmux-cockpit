@@ -24046,8 +24046,9 @@ ac_wd() {                     # ac_wd <pane> -> cockpit-tui workdir's exit code
 is "the board: cursor, OPENCODE, CLAUDE are agents, snooze is not" "0 0 0 1" \
     "$(ac_wd "$ACU") $(ac_wd "$ACO") $(ac_wd "$ACL") $(ac_wd "$ACS")"
 
-# prefix t's popup: its list-panes command, as the binding holds it, run on this server.
-ac_t=$(ac list-keys -T cockpit t | sed -n 's/.* "\(tmux list-panes .*\)"$/\1/p')
+# prefix t's popup: its list-panes command, as the binding holds it, run on this server. It
+# starts with the popup mark, an assignment sh takes as it is (#1248).
+ac_t=$(ac list-keys -T cockpit t | sed -n 's/.* "\(COCKPIT_POPUP=1 tmux list-panes .*\)"$/\1/p')
 for p in "$ACU" "$ACO" "$ACL" "$ACS"; do ac set -p -t "$p" @panestate needs-input; done
 is "prefix t: the state of cursor, OPENCODE, CLAUDE, and - for snooze" \
     "needs-input needs-input needs-input - " \
