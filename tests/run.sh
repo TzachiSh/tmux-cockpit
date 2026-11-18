@@ -19960,8 +19960,9 @@ done
 rm -rf "$BRE"
 
 # --- #303 branch popup: a branch another worktree holds jumps there -----------
-# cockpit-tui is a stub that answers `goto <path>`, once: the binary's half is in
-# tui/tests/branch.rs. Everything here is the script's half, on private servers.
+# cockpit-tui is a stub that answers `goto <path>`, once, as a 0.4.0 binary does: these
+# blocks, to #470's, pin the script's old-binary goto, which goes with #1271. The binary's
+# own goto since #228 is tui/tests/branch_goto.rs. All on private servers.
 bg_server() {                 # bg_server <socket> <dir>  one session, one pane in <dir>
     "$TMUX_REAL" -L "$1" -f /dev/null new-session -d -s t -x 100 -y 30 -c "$(fesc "$2")" \
         'exec sleep 300' >/dev/null 2>&1
@@ -20761,6 +20762,95 @@ fi
 "$TMUX_REAL" -L "$BWS" kill-server >/dev/null 2>&1
 unset -f bw_goto
 rm -rf "$BWR" "$BWM" "$BWD"
+fi
+
+echo "== tmux-branch (#228): the binary goes to another worktree itself =="
+# Since #228 the binary runs goto and prints nothing; a gone tree is its ✕ note, the
+# picker kept. The script hands it the origin pane and the pinned client in the
+# environment: a 0.4.0 binary ignores a variable where it refuses a flag. The pick
+# itself is tui/tests/branch_goto.rs; the blocks above drive the old-binary goto.
+if need_tmux "branch goto in the binary"; then :; else
+# shellcheck source=../scripts/lib/fmt.sh
+. "$DIR/scripts/lib/fmt.sh"
+BJD=$(mktmpd); BJR=$(mktmpd); BJM=$(mktmpd); br_repo "$BJR" "$BJM"
+BJW="$BJD/wt"; git -C "$BJR" worktree add -q "$BJW" held >/dev/null 2>&1
+BJG="$BJD/gone"; git -C "$BJR" worktree add -q -b gone228 "$BJG" >/dev/null 2>&1; rm -rf "$BJG"
+BJS="cockpit-bj228-$$"; SOCKS="$SOCKS $BJS"
+"$TMUX_REAL" -L "$BJS" -f /dev/null new-session -d -s t -x 100 -y 30 -c "$(fesc "$BJR")" \
+    >/dev/null 2>&1
+BJP=$("$TMUX_REAL" -L "$BJS" list-panes -a -F '#{pane_id}' | head -1)
+sock_path "$BJS" BJK
+# A stub that records the two variables it was given, then leaves like esc.
+printf '#!/bin/sh\nprintf "%%s|%%s" "$COCKPIT_BRANCH_PANE" "$COCKPIT_BRANCH_CLIENT" > %s\nexit 1\n' \
+    "$(tq "$BJD/env")" > "$BJD/rec"
+chmod +x "$BJD/rec"
+"$TMUX_REAL" -L "$BJS" set -p -t "$BJP" @cockpit_branch_client bjclient >/dev/null 2>&1
+rm -f "$BJD/env"
+env TMUX="$BJK,0,0" COCKPIT_TUI_BIN="$BJD/rec" timeout 30 "$DIR/scripts/tmux-branch" \
+    -p "$BJP" "$BJR" </dev/null >/dev/null 2>&1
+is "the binary gets the origin pane and the pinned client in its environment" \
+   "$BJP|bjclient" "$(cat "$BJD/env" 2>/dev/null)"
+rm -f "$BJD/env"
+env -u TMUX COCKPIT_BRANCH_PANE=%7 COCKPIT_BRANCH_CLIENT=forged COCKPIT_TUI_BIN="$BJD/rec" \
+    timeout 30 "$DIR/scripts/tmux-branch" "$BJR" </dev/null >/dev/null 2>&1
+is "and never its caller's: outside tmux both are empty" "|" "$(cat "$BJD/env" 2>/dev/null)"
+# The binary under test, run by the script in the pane; its stdout is kept in $BJD/out.
+printf '#!/bin/sh\n%s "$@" > %s; r=$?\ncat %s; exit $r\n' "$(tq "$COCKPIT_TUI_BIN")" \
+    "$(tq "$BJD/out")" "$(tq "$BJD/out")" > "$BJD/ct"
+chmod +x "$BJD/ct"
+BJN=0
+bj_run() {                    # bj_run <filter>  the script in the pane, its picker filtered
+    BJN=$((BJN+1)); : > "$BJD/out"
+    "$TMUX_REAL" -L "$BJS" send-keys -t "$BJP" "COCKPIT_TUI_BIN=$(tq "$BJD/ct")\
+ $(tq "$DIR/scripts/tmux-branch") -p $BJP $(tq "$BJR"); echo BJDONE$BJN=\$?" Enter
+    until_cap "$BJS" "$BJP" '*branch>*'
+    "$TMUX_REAL" -L "$BJS" send-keys -t "$BJP" -l "$1"
+    until_cap "$BJS" "$BJP" "*branch> $1*"
+}
+bj_done() { until_cap "$BJS" "$BJP" "*BJDONE$BJN=[0-9]*"; }
+bj_cap() { "$TMUX_REAL" -L "$BJS" capture-pane -p -J -t "$BJP"; }
+bj_wins() { "$TMUX_REAL" -L "$BJS" list-windows -t t: 2>/dev/null | grep -c .; }
+bj_active() { "$TMUX_REAL" -L "$BJS" display-message -p -t t: '#{pane_id}'; }
+
+BJA=$("$TMUX_REAL" -L "$BJS" new-window -d -P -F '#{pane_id}' -t t: -c "$(fesc "$BJW")" \
+    'exec sleep 300')
+bj_run held; "$TMUX_REAL" -L "$BJS" send-keys -t "$BJP" Enter; bj_done
+is "↵ on a branch another worktree holds selects the pane working there" "$BJA" "$(bj_active)"
+is "and opens no window" "2" "$(bj_wins)"
+is "and the binary printed nothing for the script to act on" "" "$(cat "$BJD/out")"
+
+"$TMUX_REAL" -L "$BJS" kill-pane -t "$BJA"; "$TMUX_REAL" -L "$BJS" select-window -t "$BJP"
+# A window at index 1, in no tree: beside the origin (window 0) the new one takes index 1
+# and moves it to 2, where a bare new-window would take the first free index, 2.
+"$TMUX_REAL" -L "$BJS" new-window -d -t t:1 -c "$(fesc "$BJD")" 'exec sleep 300'
+bj_run held; "$TMUX_REAL" -L "$BJS" send-keys -t "$BJP" Enter; bj_done
+bj_win1() {
+    "$TMUX_REAL" -L "$BJS" list-panes -a -F '#{window_index} #{pane_current_path}' |
+        sed -n 's/^1 //p'
+}
+until_out "$(printf '%q' "$BJW")" bj_win1
+is "with no pane there it opens a window in the worktree, beside the origin" "$BJW" "$(bj_win1)"
+is "and prints nothing for that either" "" "$(cat "$BJD/out")"
+# every window but the origin's, wherever a goto put its own
+"$TMUX_REAL" -L "$BJS" kill-window -a -t "$BJP"
+
+bj_run gone228; "$TMUX_REAL" -L "$BJS" send-keys -t "$BJP" Enter
+if until_cap "$BJS" "$BJP" '*✕*is gone*'; then ok "a worktree that is gone is the ✕ note"
+else bad "a worktree that is gone is the ✕ note" "✕ … is gone" "$(bj_cap | head -8)"; fi
+case "$(bj_cap)" in
+    *'any key'*) bad "the picker stays, with no [any key] screen" "branch> gone228" \
+                     "$(bj_cap | head -8)" ;;
+    *'branch> gone228'*) ok "the picker stays, with no [any key] screen" ;;
+    *) bad "the picker stays, with no [any key] screen" "branch> gone228" "$(bj_cap | head -8)" ;;
+esac
+is "and no window opened" "1" "$(bj_wins)"
+# An older script's [any key] would take the first esc and draw the picker again.
+"$TMUX_REAL" -L "$BJS" send-keys -t "$BJP" Escape
+bj_done || { "$TMUX_REAL" -L "$BJS" send-keys -t "$BJP" Escape; bj_done; }
+"$TMUX_REAL" -L "$BJS" kill-server >/dev/null 2>&1
+unset -f bj_run bj_done bj_cap bj_wins bj_active bj_win1
+git -C "$BJR" worktree remove --force "$BJW" >/dev/null 2>&1
+rm -rf "$BJD" "$BJR" "$BJM"
 fi
 
 echo "== tm: create NAME in the sessions picker starts in ~/NAME when that is a git repo (#304) =="
