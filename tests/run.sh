@@ -4260,6 +4260,29 @@ else
     skip_ "and . at a repo's root reads what its absolute path reads (no timeout)"
 fi
 rm -rf "$DH"
+
+echo "== tmux-where: an inherited GIT_DIR never prints another repo's detached hash (#522) =="
+# A dotfiles setup can export GIT_DIR into tmux's environment, which the status job
+# inherits. The label reads the pane's own .git, but a detached HEAD's hash comes from
+# git, and GIT_DIR points that at the other repo. Only GIT_DIR moves it: HEAD is per
+# worktree, so GIT_COMMON_DIR and the rest of git-env.sh's list leave it the pane's.
+WGE=$(mktmpd)
+(
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  for r in pane other; do
+      git init -q -b main "$WGE/$r" && echo "$r" > "$WGE/$r/a" || exit 1
+      git -C "$WGE/$r" add a && git -C "$WGE/$r" commit -q -m "$r" || exit 1
+  done
+  git -C "$WGE/pane" checkout -q --detach
+) >/dev/null 2>&1
+wge_was="$(git -C "$WGE/other" rev-parse HEAD) $(cksum < "$WGE/other/.git/index")"
+wge_got=$(GIT_DIR="$WGE/other/.git" "$DIR/scripts/tmux-where" branch 1 "$WGE/pane" claude \
+    2>/dev/null | plain)
+is "GIT_DIR inherited: the detached hash is the pane's, the other repo untouched" \
+   " @$(git -C "$WGE/pane" rev-parse --short HEAD) $wge_was 0" \
+   "$wge_got $(git -C "$WGE/other" rev-parse HEAD) $(cksum < "$WGE/other/.git/index") \
+$(git -C "$WGE/other" --no-optional-locks status --porcelain | grep -c .)"
+rm -rf "$WGE"; unset wge_was wge_got
 echo "== install.sh only ever touches its own links =="
 IB=$(mktmpd); IL="$IB/link"; ln -s "$DIR" "$IL"; IBIN="$IB/bin"; mkdir -p "$IBIN"
 # HOME="$IB" on every call below, and a ~/.claude to find: install.sh also links
@@ -12364,7 +12387,7 @@ elif ! command -v sha256sum >/dev/null 2>&1; then skip_ "tui-fetch (no sha256sum
 TF=$(mktmpd); mkdir -p "$TF/plugin/scripts/lib" "$TF/build" "$TF/curlshim" "$TF/shim"
 cp "$DIR/scripts/tui-fetch" "$TF/plugin/scripts/"
 cp "$DIR/scripts/lib/vnum.sh" "$DIR/scripts/lib/tui.sh" "$DIR/scripts/lib/cargo-build.sh" \
-    "$TF/plugin/scripts/lib/"
+    "$DIR/scripts/lib/git-env.sh" "$TF/plugin/scripts/lib/"
 TFB="$TF/plugin/bin/cockpit-tui"; TFR=$(file_url "$TF/r el"); TFGONE=$(file_url "$TF/no-such-host")
 # Counting curl, not timing it: "a 404 is retried" is a fork count, never a clock.
 printf '#!/bin/sh\necho x >> "%s"\nexec %s "$@"\n' "$TF/curlcount" "$(command -v curl)" \
@@ -12776,6 +12799,51 @@ case "$tfout" in
 esac
 is "and leaves no marker" "" "$(tf_mark)"
 unset -f tf tf_release tf_ver tf_mark
+fi
+
+echo "== tui-fetch: an inherited GIT_DIR or GIT_COMMON_DIR never names the repo gh asks (#522) =="
+# The background fetch inherits tmux's environment, where a dotfiles setup's GIT_DIR
+# makes the plugin's `remote get-url origin` read another repo's origin, and gh then
+# asks that repo for the release. GIT_COMMON_DIR moves the config holding the remote
+# too; the rest of git-env.sh's list leaves it the plugin's. No network: gh records the
+# repo it is asked and fails, as curl and cargo do, so the run ends at "no release".
+if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1; then
+    skip_ "tui-fetch: an inherited GIT_DIR never names the repo gh asks (no sha256sum)"
+else
+TFE=$(mktmpd); mkdir -p "$TFE/p/scripts/lib" "$TFE/stub"
+cp "$DIR/scripts/tui-fetch" "$TFE/p/scripts/"; cp "$DIR"/scripts/lib/*.sh "$TFE/p/scripts/lib/"
+(
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  for r in p other; do
+      git init -q -b main "$TFE/$r" && echo "$r" > "$TFE/$r/a" || exit 1
+      git -C "$TFE/$r" add a && git -C "$TFE/$r" commit -q -m "$r" || exit 1
+      git -C "$TFE/$r" remote add origin "https://github.com/o/$r.git" || exit 1
+  done
+) >/dev/null 2>&1
+cat > "$TFE/stub/gh" <<'TFEGH'
+#!/bin/sh
+# auth passes; a download records the repo it asks, then fails
+[ "$1" = auth ] && exit 0
+while [ $# -gt 1 ]; do
+    [ "$1" = -R ] && echo "$2" >> "$(dirname "$0")/../repo"
+    shift
+done
+exit 1
+TFEGH
+for t in curl cargo; do printf '#!/bin/sh\nexit 1\n' > "$TFE/stub/$t"; done
+chmod +x "$TFE/stub/gh" "$TFE/stub/curl" "$TFE/stub/cargo"
+for v in GIT_DIR GIT_COMMON_DIR; do
+    : > "$TFE/repo"; rm -rf "$TFE/p/bin"
+    tfe_was="$(git -C "$TFE/other" rev-parse HEAD) $(cksum < "$TFE/other/.git/index")"
+    ( export "$v=$TFE/other/.git"
+      PATH="$TFE/stub:$PATH" env -u COCKPIT_TUI_OFFLINE COCKPIT_TUI_BIN="$TFE/p/bin/cockpit-tui" \
+          "$TFE/p/scripts/tui-fetch" --version cockpit-tui-v9.9.1 >/dev/null 2>&1 )
+    is "$v inherited: gh asks the plugin's own repo, the other repo untouched" "o/p $tfe_was 0" \
+       "$(cat "$TFE/repo") $(git -C "$TFE/other" rev-parse HEAD) \
+$(cksum < "$TFE/other/.git/index") \
+$(git -C "$TFE/other" --no-optional-locks status --porcelain | grep -c .)"
+done
+rm -rf "$TFE"; unset tfe_was
 fi
 
 # tests: scripts/tui-fetch

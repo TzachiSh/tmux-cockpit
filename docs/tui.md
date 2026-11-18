@@ -1348,7 +1348,9 @@ folder, then writing`, and tablet mode has an `[ explore ]` button.
   `:(exclude,literal)` pathspec matches. `tmux-review`, its diff engine and
   `tmux-branch` unset both lists through `scripts/lib/git-env.sh`, a copy
   that `tui/tests/gitsafe_env.rs` pins, so a popup reads the repo the row
-  counts (#730). Then
+  counts (#730). `tmux-where` does too before the status line's detached
+  hash, and `tui-fetch` before it reads the origin gh downloads from
+  (#522). Then
   the root is kept only if it holds the pane's folder and its own `.git`, a
   folder or a `gitdir:` file, is the repo's git dir. Otherwise it is the
   pane's folder. A linked worktree, a submodule and a separate git dir pass.

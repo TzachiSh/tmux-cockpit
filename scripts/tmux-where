@@ -40,7 +40,7 @@ esac
 # " main", or " main ⑂feat-x" in a linked worktree. Reads .git without forking,
 # since this runs per pane on every redraw; it ignores safe.directory on purpose.
 git_label() {
-    local d=$path gd head br wt
+    local d=$path gd head br wt lib
 
     while [ -n "$d" ] && [ "$d" != / ]; do
         [ -e "$d/.git" ] && break
@@ -68,7 +68,13 @@ git_label() {
         'ref: '*)            br=${head#ref: } ;;
         *)
             # Detached: git picks the short-hash width. The repo is the agent's,
-            # so its config must not get to run a command.
+            # so its config must not get to run a command. tmux's environment may
+            # hold a dotfiles setup's GIT_DIR, which would print another repo's
+            # hash. The lib is read here, not at the top, on purpose: the redraw
+            # path reads no file it does not need (#522). Unloaded: no hash.
+            lib=${BASH_SOURCE[0]}; [ -L "$lib" ] && lib=$(readlink "$lib")
+            # shellcheck source=lib/git-env.sh
+            . "${lib%/*}/lib/git-env.sh" || return 0
             br=$(git -c core.fsmonitor= -c core.hooksPath=/dev/null -C "$path" rev-parse --short HEAD 2>/dev/null) || return 0
             [ -n "$br" ] || return 0
             br="@$br" ;;

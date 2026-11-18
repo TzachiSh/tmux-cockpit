@@ -11,6 +11,11 @@ set -u
 DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=lib/tui.sh
 . "$DIR/scripts/lib/tui.sh" || exit 1    # COCKPIT_TUI_BIN, TUI_MIN, TUI_TAG, vnum
+# The repo gh downloads from is the plugin checkout's origin. tmux's environment, which
+# the background fetch inherits, may hold a dotfiles setup's GIT_DIR, and that would
+# name another repo's origin (#522).
+# shellcheck source=lib/git-env.sh
+. "$DIR/scripts/lib/git-env.sh" || exit 1
 BIN=${COCKPIT_TUI_BIN%/*}
 RELEASES=${COCKPIT_TUI_RELEASES:-https://github.com/TzachiSh/tmux-cockpit/releases/download}
 
