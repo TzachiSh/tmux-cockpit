@@ -353,6 +353,8 @@ struct Facts {
     ask: String,
     /// #454: the newest tool_use's result came back with `is_error`
     tool_failed: bool,
+    /// #1330 A3: the newest turn row is the interrupt marker, nothing after it
+    interrupted: bool,
 }
 
 /// A read's (len, mtime), the file's (device, inode), and what it said.
@@ -471,10 +473,19 @@ fn read_transcript(p: &mut Pane, opt: &str) -> String {
         return String::new();
     };
     let fa = read_facts(&t.to_string_lossy());
-    // @panestate wins; the transcript speaks only for panes the hooks never touched. A
-    // pane bound to a job is the poller's: no @panestate is its idle, never unknown (#448).
+    // @panestate wins, with one exception below; the transcript speaks for panes the hooks
+    // never touched. A pane bound to a job is the poller's: no @panestate is its idle, never
+    // unknown, and the transcript never overrides its state (#448).
     if p.state == State::Unknown && p.job.is_empty() {
         p.state = fa.state;
+    }
+    // #1330 A3: Esc fires no hook (#1332), so the hooks' running outlives an interrupted
+    // turn. The interrupt as the newest turn row shows the pane idle, as an unset state
+    // does; nothing is written to tmux. A newer prompt, tool_result or assistant row
+    // clears it, and needs-input, error and done stay the hooks'. Known gap: between Enter
+    // and Claude Code writing the prompt row, a fresh running still reads idle.
+    if p.state == State::Running && p.job.is_empty() && fa.interrupted {
+        p.state = State::Unknown;
     }
     // #453: the hook's text is generic; an open question says what is owed
     if p.state == State::NeedsInput && !fa.ask.is_empty() {
