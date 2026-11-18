@@ -105,7 +105,7 @@ review_loop() {
         exit 127
     }
     # shellcheck source=lib/review-store.sh
-    . "$LIBDIR/review-store.sh" || exit 1
+    . "$LIBDIR/review-store.sh" || exit 3      # 3: could not load, never a verdict (#959)
 
     # 125: refused, so --request can tell it from "reviewed, no comments" (0). A pinned batch stays.
     if git_refused "$dir"; then

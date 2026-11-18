@@ -80,6 +80,9 @@ request() {                   # <pane>
              rmdir -- "$sess" 2>/dev/null; exit 1 ;;
         125) printf '%s\n' "$GIT_REFUSAL" >&2; rmdir -- "$sess" 2>/dev/null; exit 1 ;;
         127) printf 'tmux-review: revdiff not found: install it, see #233\n' >&2; exit 1 ;;
+        # The loop could not load (#959). Its own stderr went to the closed popup.
+        3)   printf 'tmux-review: the review could not load\n' >&2
+             rmdir -- "$sess" 2>/dev/null; exit 3 ;;
         20) [ -s "$store" ] || exit 0
             # The agent has the review the moment this returns: "sent", as the
             # paste path sets it.

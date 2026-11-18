@@ -405,13 +405,14 @@ next_base() {                 # <dir> <current-mode>
 
 # Exit 0 when PANE's tree differs from its review base -- the Stop hook's
 # question -- 1 when it does not, and 2 when that cannot be told: a tree_diff that fails
-# prints nothing too, and is no clean tree (#944). Reads the mode the pane's own review
-# chose with b, if any.
+# prints nothing too, and is no clean tree (#944), nor is a pane with no work dir (#959).
+# Reads the mode the pane's own review chose with b, if any.
 delta_mode() {                # <pane>
     local pane=$1 dir root sess mode
     dir=$(pane_workdir "$pane")
-    [ -n "$dir" ] || return 1
+    [ -n "$dir" ] || return 2          # no work dir for the pane: it cannot tell (#959)
     root=$(git_root "$dir")
+    # Outside any git tree there is nothing to review: 1, which clears the mark.
     git -C "$root" --no-optional-locks rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 1
     sess=$(session_dir "$pane" "$root")
     mode=$(cat -- "$sess/comments.md.base" 2>/dev/null)

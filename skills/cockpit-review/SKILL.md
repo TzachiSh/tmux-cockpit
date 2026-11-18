@@ -32,6 +32,8 @@ Read the exit code:
   revdiff is not installed or failed, or no review could be opened (the reason
   is on stderr).
   Report stderr verbatim. Do not retry.
+- **3** — tmux-review could not load: it found bash older than 4, or one of its
+  libraries failed. Report stderr verbatim. Do not retry.
 
 If the command timed out, the popup is still open and nothing is lost: wait
 for the human to tell you the review is done, then run the same command
