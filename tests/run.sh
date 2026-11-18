@@ -10978,24 +10978,25 @@ echo "== bootstrap.sh's tmux build and revdiff fetch rm -rf no dir mktemp did no
 # cwd, or - with a dir named - in the cwd (rm -rf - takes ./-). The step fails as a failed
 # mktemp does, prints which check refused, and the dir stays. A faked box, and nothing leaves
 # it: HOME is a folder of the row's, given as a prefix; PATH is a stub folder, then /usr/bin and
-# /bin. sudo, every package manager bootstrap.sh knows, git, curl, wget, gh and cargo are stubs
-# that log and do nothing; the apt-get stub makes every box an apt box, so the build is reached
-# the same way everywhere. COCKPIT_GITHUB is an empty file:// dir. The tmux stub prints a
-# version: 3.7 is built, 3.8 is kept; a revdiff stub at the pin keeps the build rows off
-# fetch_tool. Every plugin is cloned already and ~/.tmux.conf loads cockpit, so no other step
-# acts.
+# /bin. sudo, every package manager bootstrap.sh knows, git, curl, wget, gh, cargo, make, cc
+# and gcc are stubs that log and do nothing; the apt-get stub makes every box an apt box, so the
+# build is reached the same way everywhere. COCKPIT_GITHUB is an empty file:// dir. The tmux
+# stub prints a version: 3.7 is built, 3.8 is kept; a revdiff stub at the pin keeps the build
+# rows off fetch_tool. Every plugin is cloned already and ~/.tmux.conf loads cockpit, so no
+# other step acts. The third field counts make, cc and gcc calls: the build never compiles, as
+# the download before it fails.
 bt_mk=$(PATH=/usr/bin:/bin command -v mktemp)
-bt_run() {                    # <tmux|revdiff> <full|cwd|-> <check> -> "<kept|gone>|<FAIL lines>"
+bt_run() {                    # <tmux|revdiff> <full|cwd|-> <check> -> "<kept|gone>|<FAIL>|<cc>"
     local s=$1 w=$2 o a k c what
     o=$(mktmpd); mkdir -p "$o/bin" "$o/cwd/-" "$o/full" "$o/rel" "$o/h/.tmux/plugins"
-    echo keep > "$o/full/canary"; echo keep > "$o/cwd/-/canary"
+    echo keep > "$o/full/canary"; echo keep > "$o/cwd/-/canary"; : > "$o/calls"
     for c in tpm tmux-sensible tmux-yank tmux-resurrect tmux-continuum; do
         mkdir -p "$o/h/.tmux/plugins/$c/.git"
     done
     printf '# mine\nrun-shell %s/cockpit.tmux\n' "$DIR" > "$o/h/.tmux.conf"
     case $w in full) a=$o/full k=$o/full/canary ;; cwd) a=$o/cwd k=$o/cwd ;;
                *) a=- k=$o/cwd/-/canary ;; esac
-    for c in sudo apt-get dnf pacman zypper brew git curl wget gh cargo; do
+    for c in sudo apt-get dnf pacman zypper brew git curl wget gh cargo make cc gcc; do
         printf '#!/bin/sh\necho "%s $*" >> %s\n' "$c" "$(tq "$o/calls")" > "$o/bin/$c"
         case $c in sudo|apt-get) echo 'exit 0' ;; *) echo 'exit 1' ;; esac >> "$o/bin/$c"
     done
@@ -11009,8 +11010,9 @@ bt_run() {                    # <tmux|revdiff> <full|cwd|-> <check> -> "<kept|go
     (cd "$o/cwd" && env -u TMUX -u TMUX_PANE HOME="$o/h" PATH="$o/bin:/usr/bin:/bin" \
         COCKPIT_GITHUB="$(file_url "$o/rel")" timeout 60 "$DIR/bootstrap.sh" </dev/null \
         >"$o/out" 2>&1)
-    printf '%s|%s' "$([ -e "$k" ] && echo kept || echo gone)" \
-        "$(grep -cxF "  FAIL:  no temp dir for $what (own_tmpdir: $3)" "$o/out")"
+    printf '%s|%s|%s' "$([ -e "$k" ] && echo kept || echo gone)" \
+        "$(grep -cxF "  FAIL:  no temp dir for $what (own_tmpdir: $3)" "$o/out")" \
+        "$(grep -cE '^(make|cc|gcc) ' "$o/calls")"
 }
 # fetch_tool is reached only where a prebuilt revdiff exists, and on Linux: on macOS the brew
 # stub takes the step.
@@ -11021,10 +11023,10 @@ esac
 for bt_c in full:nonempty cwd:cwd -:dash; do
     bt_w=${bt_c%:*}
     is "the tmux build: a mktemp answering [$bt_w] is refused, says why, and the dir stays" \
-       "kept|1" "$(bt_run tmux "$bt_w" "${bt_c#*:}")"
+       "kept|1|0" "$(bt_run tmux "$bt_w" "${bt_c#*:}")"
     if [ -n "$bt_f" ]; then
         is "fetch_tool: a mktemp answering [$bt_w] is refused, says why, and the dir stays" \
-           "kept|1" "$(bt_run revdiff "$bt_w" "${bt_c#*:}")"
+           "kept|1|0" "$(bt_run revdiff "$bt_w" "${bt_c#*:}")"
     else skip_ "fetch_tool and a mktemp answering [$bt_w] (no prebuilt revdiff here)"; fi
 done
 unset -f bt_run; unset bt_mk bt_c bt_w bt_f
