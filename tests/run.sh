@@ -2653,7 +2653,7 @@ case "\$*" in *display-message*cockpit_session*) ;; *) exec "$SHIM/tmux" "\$@" ;
         { for (i = k + 1; i <= NF; i++) \$i = ""; print }'
 RGIKEOF
 chmod +x "$RGIKD/tmux"
-for rgi_k in 1 2 3; do
+for rgi_k in 1 2 3 4; do
     rgi_set "$RGIU1" T1; rgi_pay "$RGIU2"
     RG_PRE="PATH=$(printf '%q' "$RGIKD"):\$PATH RG_CUT=$rgi_k " rg_run "$RGIF"
     is "a Stop whose read is cut after field $rgi_k saves no session, keeps the transcript" \
@@ -2741,6 +2741,69 @@ RG_GATE="$RGCP/scripts/review-gate" rg_run "$RGPAY"
 is "and the Stop hook leaves the pending mark under bash 3" "pending|GRC=0" \
     "$("$TMUX_REAL" -L "$RG" show-option -pqv -t "$RGAP" @cockpit_review)|$(rg_rc)"
 unset RGCP rgl rg_lib
+# #960: a Stop whose --delta cannot tell says why in @cockpit_review_err, written and said
+# only when the reason changes. A tmux on PATH logs each write of the option (S) and each
+# message dmsg sends (M), then runs the shim. A copy of scripts/ breaks tmux-review.
+RGE=$(mktmpd); RGELOG="$RGE/calls"; : > "$RGELOG"
+cat > "$RGE/tmux" <<RGEEOF
+#!/bin/sh
+case "\$*" in
+    *set-option*@cockpit_review_err*) echo S >> $(printf '%q' "$RGELOG") ;;
+    *'display-message -l'*) echo M >> $(printf '%q' "$RGELOG") ;;
+esac
+exec "$SHIM/tmux" "\$@"
+RGEEOF
+chmod +x "$RGE/tmux"
+RGEC=$(mktmpd); cp -R "$DIR/scripts" "$RGEC/"
+rge_err() { "$TMUX_REAL" -L "$RG" show-option -pqv -t "$RGAP" @cockpit_review_err; }
+rge_n() { grep -c "^$1" "$RGELOG"; }           # <S|M> -> how many so far
+rge_set() { "$TMUX_REAL" -L "$RG" set-option -p -t "$RGAP" @cockpit_review_err "$1"; }
+rge_pre="PATH=$(printf '%q' "$RGE"):\$PATH "
+"$TMUX_REAL" -L "$RG" set-option -pu -t "$RGAP" @cockpit_review_err
+RG_PRE="PATH=$(printf '%q' "$RGE"):$(printf '%q' "$RGMK"):\$PATH " rg_run "$RGPAY"
+is "#960: a diff that cannot be read (2) sets @cockpit_review_err to why" \
+    "the diff cannot be read" "$(rge_err)"
+is "and says it in one message" "1" "$(rge_n M)"
+RG_PRE="PATH=$(printf '%q' "$RGE"):$(printf '%q' "$RGMK"):\$PATH " rg_run "$RGPAY"
+is "the same reason on the next Stop gives no second message" "1" "$(rge_n M)"
+is "and writes the option no second time" "1" "$(rge_n S)"
+# A #707 cut after field 1 empties the reason read back: no whole read, no write (#1312).
+mkdir "$RGE/cut"
+cat > "$RGE/cut/tmux" <<RGEEOF
+#!/bin/sh
+t=$(printf '%q' "$RGE/tmux")
+case "\$*" in *display-message*cockpit_session*) ;; *) exec "\$t" "\$@" ;; esac
+"\$t" "\$@" | awk 'BEGIN { FS = OFS = "\037" } { for (i = 2; i <= NF; i++) \$i = ""; print }'
+RGEEOF
+chmod +x "$RGE/cut/tmux"
+RG_PRE="PATH=$(printf '%q' "$RGE/cut"):$(printf '%q' "$RGMK"):\$PATH " rg_run "$RGPAY"
+is "a read cut short with the same reason gives no second message" "1" "$(rge_n M)"
+is "and writes the option no second time" "1" "$(rge_n S)"
+RG_PRE="PATH=$(printf '%q' "$RGE/cut"):\$PATH " rg_run "$RGPAY"; RG_PRE=$rge_pre rg_run "$RGPAY"
+is "a change to review (0) on a cut read is unset by the next whole read" "" "$(rge_err)"
+printf 'return 1\n' > "$RGEC/scripts/lib/review-diff.sh"
+RG_PRE=$rge_pre RG_GATE="$RGEC/scripts/review-gate" rg_run "$RGPAY"
+is "a tmux-review that cannot load (3) gives its own reason" "tmux-review cannot load" \
+    "$(rge_err)"
+is "and a changed reason a new message" "2" "$(rge_n M)"
+cp "$DIR/scripts/lib/review-diff.sh" "$RGEC/scripts/lib/"
+chmod -x "$RGEC/scripts/tmux-review"
+RG_PRE=$rge_pre RG_GATE="$RGEC/scripts/review-gate" rg_run "$RGPAY"
+is "a tmux-review the hook cannot execute gives its own reason" \
+    "tmux-review cannot run (exit 126)" "$(rge_err)"
+rm -f -- "$RGEC/scripts/tmux-review"
+RG_PRE=$rge_pre RG_GATE="$RGEC/scripts/review-gate" rg_run "$RGPAY"
+is "a missing tmux-review gives its own reason" "tmux-review cannot run (exit 127)" \
+    "$(rge_err)"
+rge_set x; RG_PRE=$rge_pre rg_run "$RGPAY"
+is "a Stop with a change to review (0) unsets @cockpit_review_err" "" "$(rge_err)"
+rge_set x; printf 'a\n' > "$RGDIR/f"; RG_PRE=$rge_pre rg_run "$RGPAY"
+is "a Stop on a clean tree (1) unsets it" "" "$(rge_err)"
+rge_s=$(rge_n S); RG_PRE=$rge_pre rg_run "$RGPAY"
+is "a clean Stop with no reason set writes the option not at all" "$rge_s" "$(rge_n S)"
+printf 'a\nb\n' > "$RGDIR/f"; "$TMUX_REAL" -L "$RG" set-option -p -t "$RGAP" @cockpit_review pending
+rm -rf -- "$RGE" "$RGEC"
+unset -f rge_err rge_n rge_set; unset RGE RGELOG RGEC rge_pre rge_s
 # #1286: git exits 128 alike for no repo and for a repo it refuses or cannot read, so a
 # .git on the walk up is no answer (2), and none below the first ceiling is no repo (1).
 # @cockpit_dir points --delta at each dir. An empty global config and no system one: a

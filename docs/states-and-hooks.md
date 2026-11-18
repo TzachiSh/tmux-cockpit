@@ -126,6 +126,14 @@ its pane behind, so the `SessionEnd` hook clears the two review ones itself:
 a queued review nobody can drain, or a pending mark on a pane with no agent in
 it, would otherwise keep counting toward `◆N` forever.
 
+A Stop whose `tmux-review --delta` cannot tell leaves the `◆` as it was and says why in
+the pane option `@cockpit_review_err`, as the poller does in `@cockpit_poll_err`
+([Agent view and background jobs](#agent-view-and-background-jobs)): `the diff cannot be
+read` (exit 2: the diff, the pane's work dir or its repo), `tmux-review cannot load`
+(exit 3), or `tmux-review cannot run (exit N)` (126, 127 or a signal). A message on the
+status line says it once per new reason, and the next Stop that reads the diff unsets the
+option (#960). Nothing is written while the reason stays the same.
+
 ## Deliberately unwired
 
 `TaskCompleted`, `PreCompact`, and `SubagentStop` as a *state* hook.
