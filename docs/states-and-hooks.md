@@ -56,7 +56,7 @@ timer.
 | `WorktreeCreate` | `worktree-create` — `claude --worktree <name>` and `EnterWorktree` put the tree under `~/.cache/cockpit-wt/<name>` on branch `<name>` (branched from the launch checkout's HEAD; an existing branch is checked out), so the session's cwd is the tree it works in and every cockpit read describes that tree. One namespace for every repo on the machine; subagents with `isolation: worktree` land there too, with their slug branches. Not with `--worktree --tmux` together, which skips the hook |
 | `WorktreeRemove` | `worktree-remove` — when claude means to remove a tree the hook above made (remove on `ExitWorktree`, verified on 2.1.246; a subagent finishing clean, per the docs), a clean tree on a merged branch goes, tree and branch; a dirty tree or unmerged commits stay, which is claude's own rule for the trees it makes itself. `claude -p` never cleans up worktrees, so a subagent run under `-p` leaves its tree and slug branch behind; `git worktree remove` plus `git branch -d` |
 | `SessionEnd` | `off` |
-| `SessionEnd` (2nd) | `end` — clears `@cockpit_dir` and `@cockpit_cwd`, keeping a `@cockpit_dir` set by hand (see [Working tree](#working-tree)) (#323) |
+| `SessionEnd` (2nd) | `end` — puts `@cockpit_dir` back to the value the session found at its start, and clears `@cockpit_cwd` (see [Working tree](#working-tree)) (#323) |
 | `SessionEnd` (3rd) | `sub-end` — drops the session's subagent log, and sweeps logs unwritten for 7 days |
 
 A `Stop` hook does not fire on a user interrupt (Esc), so a review queued for an
@@ -529,8 +529,12 @@ board, `prefix + i` and `tmux-review` already read ahead of the pane's cwd. It r
 payload's cwd differs from it, or when a new `session_id` arrives. An agent that drives a
 hand-made worktree with `git -C` sets `@cockpit_dir` itself ([review.md](review.md)), and a
 prompt in the same cwd leaves that value alone; its next `cd` replaces it.
-`SessionEnd` runs `agent-state end`, which clears both, except a `@cockpit_dir` that differs
-from `@cockpit_cwd`: a hand-set value stays after the session ends (#323).
+The first hook of a session records the `@cockpit_dir` it found, empty or not, in
+`@cockpit_dir_before`. `SessionEnd` runs `agent-state end`, which puts that value back and
+clears `@cockpit_cwd` and the record (#323): a dir set by hand before the agent started stays,
+and one set during the session, by the hooks, the agent or by hand, goes. A session begun
+before this change has no record; then the dir goes only if it equals `@cockpit_cwd`. The
+`end` entry comes with `install.sh --hooks`, which merges additively: rerun it after updating.
 
 A value is refused, and the old option kept, when it is not a whole JSON string (a payload cut
 by the 4 KB cap, or by a writer that died), not absolute, holds a control character or a
