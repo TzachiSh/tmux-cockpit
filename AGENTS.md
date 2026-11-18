@@ -67,11 +67,13 @@ registered in `SOCKS`, not against the live server.
 
 Reading live state is fine as long as it is read-only: `list-keys`,
 `show-options`, `capture-pane`, `display -p`. From a tool shell, name the live
-socket with `-S /tmp/tmux-<uid>/default`. With `TMUX` unset and the private
-`TMUX_TMPDIR` above, a bare `tmux` finds no server, and `-L` names a socket in
-the private folder. Never write to the live server. If
-you already changed it, save `tmux list-keys -T root` first and restore the
-stock bindings immediately afterward.
+socket with `-S /tmp/tmux-<uid>/default` for those read-only commands only.
+With `TMUX` unset and the private `TMUX_TMPDIR` above, a bare `tmux` finds no
+server, and `-L` names a socket in the private folder. `-S` skips that folder,
+so a write sent with it reaches the live server too. Never write to the live
+server. If you already changed it, save
+`tmux -S /tmp/tmux-<uid>/default list-keys -T root` first and restore the stock
+bindings immediately afterward.
 
 Branch work goes in a `~/.cache/cockpit-wt/<branch>` worktree; the main checkout
 stays on `master`.
