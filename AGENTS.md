@@ -29,11 +29,20 @@ probe then runs the live scripts.
 
 Start every tool-shell command line with
 `unset TMUX TMUX_PANE TMUX_COCKPIT_DIR`, before anything in it can call tmux.
-The tool shell keeps no state, so an unset in an earlier call is gone. Never
-`eval`, `source` or `sed`-extract any part of `cockpit.tmux` or `scripts/` in a
-tool shell. Check plugin lines only by loading a whole copy on a private `-L`
-server. #1091 records a lane that ran a `sed` range of `cockpit.tmux` through
-`eval` with `TMUX` set, and it rebound the owner's keys on the live server.
+The tool shell keeps no state, so an unset in an earlier call is gone. The
+unset alone does not stop a bare `tmux`. It then uses `/tmp/tmux-<uid>/default`,
+the live server's socket. So the same line also exports `TMUX_TMPDIR` set to an
+existing empty folder of your own, where a bare `tmux` finds no server (#1091).
+A probe that starts an agent or loads the plugin also puts a scratch `HOME` in
+front of that command, never exported. With `TMUX_COCKPIT_DIR` unset, the hooks
+in `examples/claude-hooks.json` fall back to `$HOME/.tmux/plugins/tmux-cockpit`,
+which under the real `HOME` is the live plugin.
+
+Never `eval`, `source` or `sed`-extract any part of `cockpit.tmux` or `scripts/`
+in a tool shell. Check plugin lines only by loading a whole copy on a private
+`-L` server. #1091 records a lane that ran a `sed` range of `cockpit.tmux`
+through `eval` with `TMUX` set, and it rebound the owner's keys on the live
+server.
 
 `TMUX_TMPDIR` must name a folder that already exists. tmux keeps its sockets in
 `tmux-<uid>` under it. From tmux 3.2 to 3.8 it skips a folder that is not there
