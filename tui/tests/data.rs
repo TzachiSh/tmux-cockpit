@@ -1842,6 +1842,21 @@ fn a_task_notification_after_the_interrupt_keeps_running() {
     assert_eq!(got, [("running", "go"); 2], "(state, asked): a turn, not a prompt");
 }
 
+/// #1333: only a user or assistant row clears the interrupt. Attachment and system rows
+/// are no turn and land after a turn ends, so the override holds over them.
+#[test]
+fn an_attachment_or_system_row_after_the_interrupt_keeps_the_override() {
+    let r = Rig::new("a3other");
+    let attachment = r#"{"type":"attachment","timestamp":"2026-08-27T00:00:08.000Z"}"#;
+    let system = r#"{"type":"system","subtype":"init","timestamp":"2026-08-27T00:00:08.000Z"}"#;
+    r.transcript("s1", &(stopped_turn() + attachment + "\n"));
+    r.transcript("s2", &(stopped_turn() + system + "\n"));
+    let ids = ["%1", "%2"];
+    r.rows(&ids.map(|id| hooked(id, "running", &format!("s{}", &id[1..]))));
+    let ps = list_panes().unwrap();
+    assert_eq!(ids.map(|id| get(&ps, id).state.as_str()), [""; 2], "attachment, system");
+}
+
 /// #1330 A3: needs-input from the hooks is not overridden, nor are error and done: only
 /// a stale running gives way to the interrupt.
 #[test]
