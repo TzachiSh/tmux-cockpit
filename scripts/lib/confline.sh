@@ -219,3 +219,34 @@ cockpit_conf_wired() {        # <plugin folder> <readable config>... -> cockpit_
     # shellcheck disable=SC2034 # read by the scripts that source this file
     cockpit_wired=$(cockpit_conf_tpm "$d" "$@")
 }
+
+# The first line, outside a comment, that names cockpit.tmux, or an @plugin line (tpm's
+# pattern) naming tmux-cockpit or this folder's name. bootstrap.sh appends no run line when
+# one is there, even one the readers above call no load: that line may run a copy of the
+# plugin by a route they do not follow, and two copies loading is worse than none (#1067).
+# Sets cockpit_mention_file, cockpit_mention_n and cockpit_mention_line; 1 when none.
+cockpit_conf_mention() {      # <plugin folder> <config>... -> cockpit_mention_*
+    local d=$1 c l t n spec re='^[[:blank:]]*set(-option)? +-g +@plugin'
+    shift
+    cockpit_mention_file=''; cockpit_mention_n=0; cockpit_mention_line=''
+    for c in "$@"; do
+        n=0
+        while IFS= read -r l || [ -n "$l" ]; do
+            n=$((n + 1))
+            t=${l#"${l%%[![:space:]]*}"}
+            case $t in ''|'#'*) continue ;; esac
+            case $t in
+                *cockpit.tmux*) ;;
+                *)  [[ $l =~ $re ]] || continue
+                    t=${l//\'/}; t=${t//\"/}
+                    read -r _ _ _ spec _ <<< "$t"
+                    spec=${spec%%#*}; spec=${spec%.git}; spec=${spec##*/}
+                    [ "$spec" = tmux-cockpit ] || [ "$spec" = "${d##*/}" ] || continue ;;
+            esac
+            # shellcheck disable=SC2034 # read by the scripts that source this file
+            { cockpit_mention_file=$c; cockpit_mention_n=$n; cockpit_mention_line=$l; }
+            return 0
+        done < "$c"
+    done
+    return 1
+}

@@ -4821,6 +4821,11 @@ is "run -b with the path in double quotes is an ok config row" "1" \
 printf "set -g @plugin 'o/%s'\n" "${DIR##*/}" > "$DH/.tmux.conf"; dcout=$(dc "$DCP")
 is "a tpm @plugin line with no tpm run line is a fail config row, its fix naming tpm" "1|1" \
    "$(dcrow "$dcout" "fail config")|$(printf '%s\n' "$dcout" | grep -c 'a tpm @plugin line')"
+# bootstrap.sh appends nothing beside another copy's line, so the fail row says which copy
+# that line runs (#1067).
+printf "run-shell '%s/elsewhere/%s/cockpit.tmux'\n" "$DC" "${DIR##*/}" > "$DH/.tmux.conf"
+is "another folder's line: the fail config row names the folder that line runs" "1" \
+   "$(dc "$DCP" | grep -cF "runs the copy in $DC/elsewhere/${DIR##*/}, not $DIR")"
 unset -f dcwire
 cp "$DC/conf.bak" "$DH/.tmux.conf"
 dcout=$(env -u TMUX HOME="$DH" "$DIR/install.sh" --check --hooks 2>&1); dcrc=$?
@@ -4949,6 +4954,21 @@ is "a tpm @plugin line tpm does not confirm: nothing appended" "same" \
    "$(cmp -s "$BH/.tmux.conf" "$BS/tpm.conf" && echo same || echo changed)"
 bssaid "and the run says tpm seems to manage cockpit" \
     "tpm seems to manage cockpit in $BH/.tmux.conf; run install.sh --check" "$bsout"
+# A line outside a comment that names cockpit.tmux and loads nothing from this folder, a
+# bind or another copy's run line: one more line could load two copies, so nothing is
+# appended and the run says to run --check (#1067). <unchanged>|<notes saying so>.
+bsnamed() {                   # bsnamed <config line>
+    printf '# mine\n%s\n' "$1" > "$BH/.tmux.conf"; cp "$BH/.tmux.conf" "$BS/named.conf"
+    bsout=$(bs)
+    printf '%s|%s' "$(cmp -s "$BH/.tmux.conf" "$BS/named.conf" && echo same || echo changed)" \
+        "$(printf '%s\n' "$bsout" |
+           grep -cF "$BH/.tmux.conf line 2 names cockpit; run install.sh --check")"
+}
+is "a bind that names cockpit.tmux: nothing appended, and the run says to run --check" \
+   "same|1" "$(bsnamed "bind e new-window \"vi '$DIR/cockpit.tmux'\"")"
+is "another copy's run line: nothing appended, and the run says to run --check" "same|1" \
+   "$(bsnamed "run-shell '$BS/elsewhere/tmux-cockpit/cockpit.tmux'")"
+unset -f bsnamed
 rm -rf "$BS"
 fi
 

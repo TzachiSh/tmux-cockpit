@@ -161,6 +161,20 @@ if [ "$check" -eq 1 ]; then
             2) conf=$cockpit_wired
                wire_fix="a tpm @plugin line names cockpit, but tpm's run line, or $DIR"
                wire_fix="$wire_fix as tpm's plugin folder, is not there" ;;
+            *) # A line that names the plugin and loads no copy from here: say which, and
+               # which folder it runs, since bootstrap.sh then appends nothing (#1067).
+               if cockpit_conf_mention "$DIR" "${cfs[@]}"; then
+                   conf="$cockpit_mention_file line $cockpit_mention_n"
+                   wire_fix="names cockpit but loads none from $DIR"
+                   if cockpit_conf_run_arg "$cockpit_mention_line" &&
+                      cockpit_conf_arg_path "$cockpit_arg"; then
+                       case $cockpit_path in
+                           /*) wire_fix="runs the copy in ${cockpit_path%/*}, not $DIR" ;;
+                       esac
+                   fi
+                   wire_fix="$wire_fix: keep one copy; this one's line is"
+                   wire_fix="$wire_fix $(cockpit_conf_line "$DIR")"
+               fi ;;
         esac
     fi
     # A line with no quote around the path might not load from this folder (#1046, #1060).

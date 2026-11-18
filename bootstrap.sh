@@ -181,6 +181,12 @@ if [ "$wst" -eq 2 ]; then
     # A run-shell line beside tpm's would load the plugin twice: say so, append nothing.
     note "have   tpm seems to manage cockpit in $cockpit_wired; run install.sh --check"
     skipped+=("config: tpm @plugin line, not confirmed")
+elif [ "$wst" -ne 0 ] && [ "${#cfs[@]}" -gt 0 ] && cockpit_conf_mention "$DIR" "${cfs[@]}"; then
+    # Any line outside a comment that names the plugin: it may load another copy, and one
+    # more line would load two. The append waits for --check and the user (#1067).
+    note "have   $cockpit_mention_file line $cockpit_mention_n names cockpit;" \
+         "run install.sh --check"
+    skipped+=("config: a line names cockpit, not this folder's")
 elif [ -n "$wired" ]; then
     note "have   $wired already loads cockpit.tmux"
     # An older line has no quote around the path, and from this folder it might not load
