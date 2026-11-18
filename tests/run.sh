@@ -5178,9 +5178,16 @@ bssaid "and says the backup was kept" "(existing backup kept, not overwritten)" 
 # ~/.tmux.conf with an unrelated XDG tmux.conf is wired (#96). Before the fix
 # bootstrap graded the XDG file alone and appended a second run-shell to it.
 mkdir -p "$BH/.config/tmux"; printf '# xdg\n' > "$BH/.config/tmux/tmux.conf"
+# An XDG tmux.conf moves tpm's plugin folder there, and bootstrap.sh's with it (#1310): the
+# plugins are faked there too, so the run clones nothing.
+for d in tpm tmux-sensible tmux-yank tmux-resurrect tmux-continuum; do
+    mkdir -p "$BH/.config/tmux/plugins/$d/.git"
+done
 bsout=$(bs)
 bssaid "an unrelated XDG tmux.conf beside a wired ~/.tmux.conf is already wired" \
     "already loads cockpit.tmux" "$bsout"
+is "and the run cloned nothing: each plugin is in tpm's XDG folder already (#1310)" "0" \
+   "$(printf '%s\n' "$bsout" | grep -c 'clone ')"
 is "and the XDG file is left alone" "# xdg" "$(cat "$BH/.config/tmux/tmux.conf")"
 # A commented-out line loads nothing, so the line is appended under it (#1067).
 rm -rf "$BH/.config"; printf '# run-shell %s/cockpit.tmux\n' "$DIR" > "$BH/.tmux.conf"
@@ -5639,7 +5646,13 @@ is "and install.sh --check on that config as written passes its config row" "1" 
 cl_box 15 tpmy; cl_x="$CL/h15/.config/tmux"; mkdir -p "$cl_x/plugins"
 cl_t="$cl_x/plugins/tmux-cockpit"; mv "$CL/p/tpmy" "$cl_t"; printf '# xdg\n' > "$cl_x/tmux.conf"
 cp "$CL/conf13" "$CL/h15/.tmux.conf"; cp "$cl_x/tmux.conf" "$CL/xdg15"
+# bootstrap.sh clones into tpm's folder, the XDG one here (#1310): its plugins are faked there.
+for cl_d in tpm tmux-sensible tmux-yank tmux-resurrect tmux-continuum; do
+    mkdir -p "$cl_x/plugins/$cl_d/.git"
+done
 cl_out=$( cd "$CL/wd" && cl_env 15 "$cl_t/bootstrap.sh" --yes )
+is "and that run cloned nothing: each plugin is in tpm's XDG folder already (#1310)" "0" \
+   "$(printf '%s\n' "$cl_out" | grep -c 'clone ')"
 is "an @plugin line tpm does not read: bootstrap.sh says tpm seems to, and appends to neither" \
    "1|same|same" \
    "$(printf '%s\n' "$cl_out" |
@@ -5779,6 +5792,59 @@ is "and install.sh --check passes its config row" "1" \
 fi
 unset -f cl_box cl_env cl_load cl_ran
 unset CL CLREL cl_d cl_a cl_n cl_f cl_p2 cl_out cl_line cl_t cl_x cl_e
+fi
+
+echo "== bootstrap.sh clones into the folder tpm uses, by tpm's own rule (#1310) =="
+# tpm (99469c4a) installs into the XDG tmux folder's plugins when an XDG tmux.conf is there,
+# else ~/.tmux/plugins. bootstrap.sh took ${XDG_CONFIG_HOME:-$HOME}/.tmux/plugins, or
+# ~/.tmux/plugins whenever that existed, and tpm then installed a second copy in its own.
+# One row per case of #1310's table. A git stub logs each clone's target and makes it, so
+# nothing reaches the network. Any other git call runs the real git, by its full path.
+if ! command -v git >/dev/null 2>&1; then skip_ "bootstrap.sh's clone folder (no git)"; else
+TP=$(mktmpd); mkdir -p "$TP/stub"
+printf '#!/bin/sh\necho "version: 1.13.0"\n' > "$TP/stub/revdiff"
+printf '#!/bin/sh\n[ "$1" = -V ] && echo "tmux 3.8"\n' > "$TP/stub/tmux"
+printf '#!/bin/sh\nexit 99\n' > "$TP/stub/sudo"
+{ printf '#!/bin/sh\nL=%s; G=%s\n' "$(tq "$TP/git.log")" "$(tq "$(command -v git)")"
+  cat <<'TPEOF'
+printf '%s\n' "$1" >> "$L.cmd"
+[ "$1" = clone ] || exec "$G" "$@"
+for t; do :; done
+printf '%s\n' "$t" >> "$L"; mkdir -p "$t/.git"
+TPEOF
+} > "$TP/stub/git"
+chmod +x "$TP/stub/"*
+tp_case() {                   # <n> <XDG_CONFIG_HOME set|unset> <tmux.conf: x|config|none> <y|n>
+    local h="$TP/h$1" x="$TP/x$1" e=(env -u TMUX -u TMUX_PANE -u XDG_CONFIG_HOME)
+    mkdir -p "$h" "$x"
+    case $3 in
+        x) mkdir -p "$x/tmux"; : > "$x/tmux/tmux.conf" ;;
+        config) mkdir -p "$h/.config/tmux"; : > "$h/.config/tmux/tmux.conf" ;;
+    esac
+    [ "$4" = n ] || mkdir -p "$h/.tmux/plugins"
+    [ "$2" = unset ] || e+=("XDG_CONFIG_HOME=$x")
+    : > "$TP/git.log"; : > "$TP/git.log.cmd"
+    ( cd "$TP" && "${e[@]}" HOME="$h" XDG_BIN_HOME="$h/bin" TMUX_TMPDIR="$TP" \
+        COCKPIT_GITHUB="$(file_url "$TP/norel")" PATH="$TP/stub:/usr/bin:/bin" \
+        "$DIR/bootstrap.sh" --yes </dev/null >/dev/null 2>&1 )
+}
+# <clones>|<the folders they went into>|<git calls that reach a remote>
+tp_got() { printf '%s|%s|%s' "$(grep -c '' "$TP/git.log")" \
+    "$(sed 's|/[^/]*$||' "$TP/git.log" | sort -u | tr '\n' ' ')" \
+    "$(grep -cE '^(fetch|pull|push|ls-remote|remote|submodule)$' "$TP/git.log.cmd")"; }
+# <case> <XDG_CONFIG_HOME> <tmux.conf in> <~/.tmux/plugins exists> <tpm's folder>. Case 5 is
+# the one where master already agreed with tpm: a guard, green with or without the fix.
+for tp_r in "1 set none n h1/.tmux/plugins" "2 set x n x2/tmux/plugins" \
+            "3 set x y x3/tmux/plugins" "4 unset config n h4/.config/tmux/plugins" \
+            "5 set none y h5/.tmux/plugins"; do
+    read -r tp_n tp_x tp_c tp_p tp_want <<< "$tp_r"
+    tp_g=''; [ "$tp_n" != 5 ] || tp_g=' (a guard: master agreed)'
+    tp_case "$tp_n" "$tp_x" "$tp_c" "$tp_p"
+    is "#1310 case $tp_n (XDG_CONFIG_HOME $tp_x, tmux.conf: $tp_c, ~/.tmux/plugins: $tp_p): $(:
+       )5 clones, all in tpm's folder, none online$tp_g" "5|$TP/$tp_want |0" "$(tp_got)"
+done
+unset -f tp_case tp_got
+rm -rf "$TP"
 fi
 
 echo "== the plugin loads whole and the menu renames, from a folder of any name (#1050, #1071) =="
