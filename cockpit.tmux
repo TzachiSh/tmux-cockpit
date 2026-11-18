@@ -43,9 +43,10 @@ sq() { printf "'%s'" "${1//\'/\'\\\'\'}"; }   # close, escaped quote, reopen
 # not expand the value again. A fixed problem leaves nothing behind: each load starts clean.
 tmux set-option -gu @cockpit_load_hint
 lh_hook='client-session-changed[10]'   # [8] and [9] are cockpit's other hooks
-# The one-shot's body: the hook name written out, so no shell variable sits on a
-# display-message line (#1096's scan reads the whole line).
-lh_show="display-message -d 0 '#{@cockpit_load_hint}' ; set-hook -gu client-session-changed[10]"
+# The one-shot shows the hint, then removes itself by the same $lh_hook it is armed under
+# (#1299). The removal is added where the hook is set, on a line of its own, so no shell
+# variable sits on a display-message line (#1096's scan reads the whole line).
+lh_show="display-message -d 0 '#{@cockpit_load_hint}'"
 tmux set-hook -gu "$lh_hook"
 load_hint=
 lhint() { dmsg "$1"; load_hint=${1//#/##}; }   # <text>
@@ -475,7 +476,7 @@ esac
 if [ -n "$load_hint" ]; then
     tmux set-option -g @cockpit_load_hint "$load_hint"
     if [ -z "$(tmux list-clients 2>/dev/null)" ]; then
-        tmux set-hook -g "$lh_hook" "$lh_show"
+        tmux set-hook -g "$lh_hook" "$lh_show ; set-hook -gu $lh_hook"
     fi
 fi
 
