@@ -10,11 +10,30 @@ work, and logging shims flood their session.
 Run every experiment on a throwaway private server and kill it after:
 
 ```sh
-d=$(mktemp -d)
-tmux -L probe$$ -f /dev/null new-session -d -c "$d" ...
+d=$(mktemp -d); t=$(mktemp -d)
+env -u TMUX -u TMUX_PANE -u TMUX_COCKPIT_DIR TMUX_TMPDIR="$t" \
+    tmux -L probe$$ -f /dev/null new-session -d -c "$d" ...
 # ... then:
-tmux -L probe$$ kill-server; rm -r "$d"
+env -u TMUX -u TMUX_PANE -u TMUX_COCKPIT_DIR TMUX_TMPDIR="$t" \
+    tmux -L probe$$ kill-server; rm -r "$d" "$t"
 ```
+
+Start the server without the live session's variables (#1072). A tool shell
+inherits `TMUX`, `TMUX_PANE` and `TMUX_COCKPIT_DIR` from the owner's pane. With
+`TMUX` set, a bare `tmux` talks to the live server. With `TMUX_COCKPIT_DIR` set,
+a server whose plugin load stops early keeps the live plugin's folder, and a
+probe then runs the live scripts. #1091 records a tool shell that wrote to the
+live server this way.
+
+`TMUX_TMPDIR` must name a folder that already exists. tmux keeps its sockets in
+`tmux-<uid>` under it. Up to tmux 3.8 it skips a folder that is not there and
+uses `/tmp/tmux-<uid>`, the live server's folder. Give the same `TMUX_TMPDIR` to
+every call to that server, the `kill-server` too. Without it, `-L probe$$` looks
+in `/tmp/tmux-<uid>` and misses the server or finds another one.
+
+Put the unsets and the folder in one `env` call. An inner `env -u VAR` undoes an
+outer `env VAR=x`, since the inner call runs last. `tests/run.sh` already does
+all of this for its own servers.
 
 Start the server and every `new-window` or `split-window` with `-c` set to a
 temp directory. Without it, the panes inherit your shell's cwd, which is often
@@ -86,3 +105,27 @@ reports the failure before that redirect applies.
 
 The publisher's half of the bargain is to unpublish on **every** exit path,
 signal handlers included.
+
+## When we are stuck, change direction instead of patching more
+
+Digging deeper into an approach that is not working costs more each round. The
+job is to notice it and step back.
+
+You are stuck when the same bug survives two or three fix attempts, each fix
+needs another patch on top, a test stays flaky, or the behaviour still differs
+from what it should be.
+
+Then:
+
+1. Stop and write down what we are trying to do, what we tried, and why each try
+   failed.
+2. Research before the next attempt. Use web search and prefer primary sources:
+   docs, issue trackers, the source of well-known projects. Cite a source for
+   each claim. Look at how others solve the same problem, which alternatives or
+   better ways exist, and which pitfalls they hit and why.
+3. Compare that with our approach. Come back with the options, a recommendation
+   and the cost of switching. For a big switch, wait for the owner's OK before
+   changing anything.
+
+Say plainly what is uncertain. A guess written as a finding sends the next
+attempt the wrong way.
