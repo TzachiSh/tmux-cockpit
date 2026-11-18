@@ -4261,11 +4261,13 @@ else
 fi
 rm -rf "$DH"
 
-echo "== tmux-where: an inherited GIT_DIR never prints another repo's detached hash (#522) =="
+echo "== tmux-where: an inherited GIT_DIR or its kin never moves the detached hash (#522) =="
 # A dotfiles setup can export GIT_DIR into tmux's environment, which the status job
 # inherits. The label reads the pane's own .git, but a detached HEAD's hash comes from
-# git, and GIT_DIR points that at the other repo. Only GIT_DIR moves it: HEAD is per
-# worktree, so GIT_COMMON_DIR and the rest of git-env.sh's list leave it the pane's.
+# git. Probed with plain git over git-env.sh's 12 names, three move what it prints:
+# GIT_DIR names another HEAD; GIT_COMMON_DIR brings that repo's config (core.abbrev)
+# and object store, which set the width; GIT_OBJECT_DIRECTORY brings the store alone.
+# So the other repo has core.abbrev 12 and 20000 more objects (width 8 at default).
 WGE=$(mktmpd)
 (
   export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
@@ -4274,15 +4276,23 @@ WGE=$(mktmpd)
       git -C "$WGE/$r" add a && git -C "$WGE/$r" commit -q -m "$r" || exit 1
   done
   git -C "$WGE/pane" checkout -q --detach
+  git -C "$WGE/other" config core.abbrev 12
+  awk 'BEGIN { for (i = 0; i < 20000; i++) printf "blob\ndata %d\n%d\n", length(i), i }' |
+      git -C "$WGE/other" fast-import --quiet
 ) >/dev/null 2>&1
-wge_was="$(git -C "$WGE/other" rev-parse HEAD) $(cksum < "$WGE/other/.git/index")"
-wge_got=$(GIT_DIR="$WGE/other/.git" "$DIR/scripts/tmux-where" branch 1 "$WGE/pane" claude \
-    2>/dev/null | plain)
-is "GIT_DIR inherited: the detached hash is the pane's, the other repo untouched" \
-   " @$(git -C "$WGE/pane" rev-parse --short HEAD) $wge_was 0" \
-   "$wge_got $(git -C "$WGE/other" rev-parse HEAD) $(cksum < "$WGE/other/.git/index") \
+for wge_var in GIT_DIR GIT_COMMON_DIR GIT_OBJECT_DIRECTORY; do
+    wge_was="$(git -C "$WGE/other" rev-parse HEAD) $(cksum < "$WGE/other/.git/index")"
+    case $wge_var in GIT_OBJECT_DIRECTORY) wge_val=$WGE/other/.git/objects ;;
+        *) wge_val=$WGE/other/.git ;; esac
+    wge_got=$(env "$wge_var=$wge_val" "$DIR/scripts/tmux-where" branch 1 "$WGE/pane" claude \
+        2>/dev/null | plain)
+    is "$wge_var inherited: the detached hash is the pane's, the other repo untouched" \
+       " @$(git -C "$WGE/pane" rev-parse --short HEAD) $wge_was 0" \
+       "$wge_got $(git -C "$WGE/other" rev-parse HEAD) $(cksum < "$WGE/other/.git/index") \
 $(git -C "$WGE/other" --no-optional-locks status --porcelain | grep -c .)"
-rm -rf "$WGE"; unset wge_was wge_got
+done
+rm -rf "$WGE"; unset wge_var wge_val wge_was wge_got
+
 echo "== install.sh only ever touches its own links =="
 IB=$(mktmpd); IL="$IB/link"; ln -s "$DIR" "$IL"; IBIN="$IB/bin"; mkdir -p "$IBIN"
 # HOME="$IB" on every call below, and a ~/.claude to find: install.sh also links
