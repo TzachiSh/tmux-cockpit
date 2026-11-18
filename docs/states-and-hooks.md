@@ -55,9 +55,8 @@ timer.
 | `Notification` | `notify` (parses the JSON on stdin) |
 | `WorktreeCreate` | `worktree-create` — `claude --worktree <name>` and `EnterWorktree` put the tree under `~/.cache/cockpit-wt/<name>` on branch `<name>` (branched from the launch checkout's HEAD; an existing branch is checked out), so the session's cwd is the tree it works in and every cockpit read describes that tree. One namespace for every repo on the machine; subagents with `isolation: worktree` land there too, with their slug branches. Not with `--worktree --tmux` together, which skips the hook |
 | `WorktreeRemove` | `worktree-remove` — when claude means to remove a tree the hook above made (remove on `ExitWorktree`, verified on 2.1.246; a subagent finishing clean, per the docs), a clean tree on a merged branch goes, tree and branch; a dirty tree or unmerged commits stay, which is claude's own rule for the trees it makes itself. `claude -p` never cleans up worktrees, so a subagent run under `-p` leaves its tree and slug branch behind; `git worktree remove` plus `git branch -d` |
-| `SessionEnd` | `off` |
-| `SessionEnd` (2nd) | `end` — puts `@cockpit_dir` back to the value the session found at its start, and clears `@cockpit_cwd` (see [Working tree](#working-tree)) (#323) |
-| `SessionEnd` (3rd) | `sub-end` — drops the session's subagent log, and sweeps logs unwritten for 7 days |
+| `SessionEnd` | `off` — also puts `@cockpit_dir` back to the value the session found at its start, and clears `@cockpit_cwd`, unless the reason is `clear` or `resume` (see [Working tree](#working-tree)) (#323) |
+| `SessionEnd` (2nd) | `sub-end` — drops the session's subagent log, and sweeps logs unwritten for 7 days |
 
 A `Stop` hook does not fire on a user interrupt (Esc), so a review queued for an
 interrupted agent waits for the end of that agent's next turn — nothing hands it
@@ -530,19 +529,17 @@ payload's cwd differs from it, or when a new `session_id` arrives. An agent that
 hand-made worktree with `git -C` sets `@cockpit_dir` itself ([review.md](review.md)), and a
 prompt in the same cwd leaves that value alone; its next `cd` replaces it.
 The first hook of a session records the `@cockpit_dir` it found, empty or not, in
-`@cockpit_dir_before`. `SessionEnd` runs `agent-state end`, which puts that value back and
-clears `@cockpit_cwd` and the record (#323): a dir set by hand before the agent started
-stays, and one set during the session, by the hooks, the agent or by hand, goes. A session
-killed without `SessionEnd` leaves its record, so the next session's `end` restores the
+`@cockpit_dir_before`. `SessionEnd`'s `agent-state off` reads the event from its payload,
+puts that value back, and clears `@cockpit_cwd` and the record (#323): a dir set by hand
+before the agent started stays, and one set during the session, by the hooks, the agent or
+by hand, goes. When the reason is `clear` or `resume`, a new session follows in the same pane
+at once, so nothing is restored and the record stays; that session's end puts it back. A
+session killed without `SessionEnd` leaves its record, so the next session's end restores the
 value the crashed session found at its start, which also undoes the crashed session's own
 writes; a dir set by hand between the crash and the next session is lost, as one set
 mid-session is. A session begun before this change has no record; then the dir goes only if
-it equals `@cockpit_cwd`. A hook whose read of these options was cut short (#707) writes
-none of them, and the next hook does. The `end` entry comes with `install.sh --hooks`, which
-merges additively: rerun it after updating. Until then each pane records at its first
-session and nothing clears that record, so the first `end` after the rerun puts back the dir
-from that first session, which may be many sessions old; a dir set by hand in between is
-lost, as after a crash.
+it equals `@cockpit_cwd`. A hook whose read of these options was cut short (#707) writes none
+of them, and the next hook does.
 
 A value is refused, and the old option kept, when it is not a whole JSON string (a payload cut
 by the 4 KB cap, or by a writer that died), not absolute, holds a control character or a
