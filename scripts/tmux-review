@@ -29,24 +29,25 @@ SELF="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE
 # lib/ sits beside the REAL script; install.sh links it by absolute path.
 d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")
 LIBDIR=${d%/*}/lib
+# A lib that fails to load exits 3, here and in need() below: 1 and 2 are verdicts (#959).
 # Every git call, revdiff's too, is about the pane's own repo: a popup inherits
 # tmux's environment, where a dotfiles setup's GIT_DIR would point all of them
 # at another, and a pathspec mode would change what this script's pathspecs
 # match (#673). Here, before any mode runs, so a new mode cannot miss it.
 # shellcheck source=lib/git-env.sh
-. "$LIBDIR/git-env.sh" || exit 1
+. "$LIBDIR/git-env.sh" || exit 3
 # shellcheck source=lib/git.sh
-. "$LIBDIR/git.sh" || exit 1
+. "$LIBDIR/git.sh" || exit 3
 
 # tmux runs run-shell and popup strings through sh: every path in one is quoted.
 shq() { printf '%q' "$1"; }
 
 # shellcheck source=lib/pane.sh
-. "$LIBDIR/pane.sh" || exit 1
+. "$LIBDIR/pane.sh" || exit 3
 # shellcheck source=lib/fmt.sh
-. "$LIBDIR/fmt.sh" || exit 1
+. "$LIBDIR/fmt.sh" || exit 3
 # shellcheck source=lib/workdir.sh
-. "$LIBDIR/workdir.sh" || exit 1
+. "$LIBDIR/workdir.sh" || exit 3
 
 # How a pane names itself in the prompt. An unset pane_title reads as
 # #{host_short}, not empty, so the window name stands in.
