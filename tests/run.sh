@@ -10446,7 +10446,7 @@ is "a relative answer naming an empty dir of the user's is taken, as its absolut
    "0  [$(cd "$OT/cwd/sub" && pwd -P)]" "$(ot_run sub)"
 ot_o=$(ot_run real); ot_v=${ot_o#*[}; ot_v=${ot_v%]}
 is "the real mktemp's answer is taken: status 0, no reason, a dir under TMPDIR" \
-   "0 |$(cd "$OT/t" && pwd -P)" "${ot_o%%[*}|${ot_v%/*}"
+   "0  |$(cd "$OT/t" && pwd -P)" "${ot_o%%[*}|${ot_v%/*}"
 is "and only its user can open it" "drwx------" "$(ls -ld "$ot_v" 2>/dev/null | cut -c1-10)"
 for ot_a in '' 1x _ot_a; do
     ot_o=$(bash -c '. "$1"; own_tmpdir ${2:+"$2"} 2>&1 >/dev/null; echo "rc=$?"' _ \
@@ -12896,7 +12896,7 @@ elif ! command -v sha256sum >/dev/null 2>&1; then skip_ "tui-fetch (no sha256sum
 TF=$(mktmpd); mkdir -p "$TF/plugin/scripts/lib" "$TF/build" "$TF/curlshim" "$TF/shim"
 cp "$DIR/scripts/tui-fetch" "$TF/plugin/scripts/"
 cp "$DIR/scripts/lib/vnum.sh" "$DIR/scripts/lib/tui.sh" "$DIR/scripts/lib/cargo-build.sh" \
-    "$DIR/scripts/lib/git-env.sh" "$TF/plugin/scripts/lib/"
+    "$DIR/scripts/lib/git-env.sh" "$DIR/scripts/lib/tmpdir.sh" "$TF/plugin/scripts/lib/"
 TFB="$TF/plugin/bin/cockpit-tui"; TFR=$(file_url "$TF/r el"); TFGONE=$(file_url "$TF/no-such-host")
 # Counting curl, not timing it: "a 404 is retried" is a fork count, never a clock.
 printf '#!/bin/sh\necho x >> "%s"\nexec %s "$@"\n' "$TF/curlcount" "$(command -v curl)" \
