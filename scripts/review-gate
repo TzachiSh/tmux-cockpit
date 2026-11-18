@@ -59,7 +59,8 @@ json() {                            # <text> -> the JSON string body
     printf '%s' "${s//[$'\001'-$'\037']/}"
 }
 
-here=$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# The sibling scripts sit beside the real script: d, resolved above, not a link (#1283).
+here=$(cd -P "$(dirname "$d")" && pwd)
 
 # Stops at the fields it needs: Claude Code keeps stdin open past the payload. Capped at 4 KB
 # (#315): last_assistant_message can be any size, and the Stop example puts the fields used

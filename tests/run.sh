@@ -4385,7 +4385,58 @@ is "a relative link: a lookup inside a function loads its lib (the detached hash
     " @$(git -C "$RLK/g" rev-parse --short HEAD)" \
     "$(cd "$RLK/u/v/w/x" && "$RLK/a/b/bin/tmux-where" branch 1 "$RLK/g" claude 2>/dev/null |
         plain)"
-rm -rf "$RLK"; unset RLK rlk_s; unset -f rlk_op
+# review-gate and tmux-review run sibling scripts, which sit beside the real file. A copy of
+# each beside stub siblings shows the folder they were looked for in. tmux is a stub here.
+mkdir -p "$RLK/tb" "$RLK/x/scripts" "$RLK/y/scripts"
+cat > "$RLK/tb/tmux" <<'STUB'
+#!/bin/sh
+for a; do l=$a; done
+case $1 in
+    display-message) case $l in *session_attached*) echo 1 ;;
+        *pane_current_path*) printf '%%1\0370\037\037sh\037\037%s\n' "$RLK_REPO" ;; esac ;;
+    display-popup) r=${l##*> }; eval "r=$r"; echo 21 > "$r" ;;
+esac
+exit 0
+STUB
+for rlk_s in x/scripts/tmux-review x/scripts/agent-state y/scripts/agent-state; do
+    printf '#!/bin/sh\necho "${0##*/} $*" >> "$RLK_SIB"\nexit 1\n' > "$RLK/$rlk_s"
+done
+chmod +x "$RLK/tb/tmux" "$RLK"/[xy]/scripts/*
+cp "$DIR/scripts/review-gate" "$RLK/x/scripts/"; cp "$DIR/scripts/tmux-review" "$RLK/y/scripts/"
+ln -s "$DIR/scripts/lib" "$RLK/x/scripts/lib"; ln -s "$DIR/scripts/lib" "$RLK/y/scripts/lib"
+ln -s ../../../x/scripts/review-gate "$RLK/a/b/bin/review-gate"
+ln -s ../../../y/scripts/tmux-review "$RLK/a/b/bin/tmux-review"
+rlk_sib() {                   # <command>... -> the sibling calls it made, one per line
+    : > "$RLK/sib.log"
+    (cd "$RLK/u/v/w/x" && PATH="$RLK/tb:$PATH" RLK_SIB="$RLK/sib.log" RLK_REPO="$RLK/g" \
+        XDG_STATE_HOME="$RLK/st" TMUX_PANE=%1 "$@" >/dev/null 2>&1)
+    cat "$RLK/sib.log"
+}
+rlk_stop='{"session_id":"s","transcript_path":"","stop_hook_active":false}'
+is "a relative link: review-gate runs the tmux-review beside the real file" \
+    "tmux-review --delta %1" "$(rlk_sib "$RLK/a/b/bin/review-gate" <<< "$rlk_stop")"
+is "a relative link: tmux-review's approve runs the agent-state beside the real file" \
+    "agent-state recount %1" "$(rlk_sib "$RLK/a/b/bin/tmux-review" --request %1 </dev/null)"
+# The form, counted whole: four lines, the same name in each, any indent (#1283). A copy
+# that drifts from it, or the old one-hop line, is not counted.
+rlk_count() {
+    awk '{ t = $0; sub(/^[ \t]+/, "", t) }
+        FNR == 1 { st = 0 }
+        st == 3 { st = 0; if (t == l4) n++; next }
+        st == 2 { st = (t == l3) ? 3 : 0; next }
+        st == 1 { st = (t == l2) ? 2 : 0; next }
+        { u = t; sub(/^local /, "", u) }
+        u ~ /^[A-Za-z_][A-Za-z_0-9]*=\$\{BASH_SOURCE\[0\]\}$/ {
+            v = u; sub(/=.*/, "", v); s = "$" v; q = "\"" s "\""; st = 1
+            l2 = "[ -L " q " ] && " v "=$(case " s " in (*/*) ;; (*) " v "=./" s " ;; esac; n=0"
+            l3 = "while [ -L " q " ] && [ $((n += 1)) -le 40 ] && t=$(readlink " q "); do"
+            l4 = "case $t in (/*) " v "=$t ;; (*) " v "=${" v "%/*}/$t ;; esac"
+            l4 = l4 "; done; printf %s " q ")" }
+        END { print n + 0 }' "$@"
+}
+rlk_f=(); for rlk_s in "$DIR"/scripts/*; do [ -f "$rlk_s" ] && rlk_f+=("$rlk_s"); done
+is "all 21 self-locating sites carry the whole four-line form" "21" "$(rlk_count "${rlk_f[@]}")"
+rm -rf "$RLK"; unset RLK rlk_s rlk_f rlk_stop; unset -f rlk_op rlk_count rlk_sib
 
 echo "== install.sh only ever touches its own links =="
 IB=$(mktmpd); IL="$IB/link"; ln -s "$DIR" "$IL"; IBIN="$IB/bin"; mkdir -p "$IBIN"
