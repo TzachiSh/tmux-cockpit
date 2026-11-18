@@ -25521,27 +25521,44 @@ mpx_rc() { timeout 20 "$TMUX_REAL" -L "$MPX" display-popup -c "$MPXC" -E "exit $
 is "a popup whose command exits 3 returns 3, and one that exits 0 returns 0" "3 0" \
    "$(mpx_rc 3) $(mpx_rc 0)"
 # Where display-popup makes a pane (tmux next-3.9), a real cockpit popup is what the scans must
-# skip: open on the client, an unfiltered list-panes counts it and the scans' -f filter does
-# not. run-shell -b opens it, so nothing here waits for it to close; -C closes it. On a tmux
-# whose popup is an overlay (3.8 and older) there is no pane to count.
+# skip. Opened on the client by run-shell -b, so nothing here waits for it; -C closes it. It
+# is modal, started with the mark, left out by the -f filter and by agent-state's fleet sum,
+# and an unmarked popup is still listed. A tmux whose popup is an overlay (3.8 and older), or
+# one where no pane appears, skips the row and says why.
 # shellcheck source=../scripts/lib/fmt.sh
 . "$DIR/scripts/lib/fmt.sh"
-MPXV=$("$TMUX_REAL" -V)
-case $MPXV in
-    'tmux '[12].*|'tmux 3.'[0-8]*)
-        skip_ "a display-popup pane is no pane to the scans: $MPXV draws popups as overlays" ;;
-    *)
-        mpx_n() { "$TMUX_REAL" -L "$MPX" list-panes -a "$@" -F '#{pane_id}' | grep -c .; }
-        MPXB=$(mpx_n)
-        "$TMUX_REAL" -L "$MPX" run-shell -b "$(printf %q "$TMUX_REAL") -L $MPX display-popup \
--c $MPXC -E '${COCKPIT_POPUP_MARK-}exec sleep 300'" >/dev/null 2>&1
-        until_out "$((MPXB + 1))" mpx_n
-        is "a cockpit display-popup is a pane to list-panes, and none to the scans' filter" \
-           "$((MPXB + 1)) $MPXB" "$(mpx_n) $(mpx_n -f "${COCKPIT_NOT_POPUP-}")"
-        "$TMUX_REAL" -L "$MPX" display-popup -C -c "$MPXC" >/dev/null 2>&1
-        until_out "$MPXB" mpx_n
-        unset -f mpx_n ;;
+"$TMUX_REAL" -L "$MPX" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
+mpx_n() { "$TMUX_REAL" -L "$MPX" list-panes -a "$@" -F '#{pane_id}' | grep -c .; }
+mpx_open() {                  # mpx_open <command>: a popup on the client, nothing waits on it
+    "$TMUX_REAL" -L "$MPX" run-shell -b \
+        "$(printf %q "$TMUX_REAL") -L $MPX display-popup -c $MPXC -E $(printf %q "$1")" \
+        >/dev/null 2>&1
+}
+mpx_close() { "$TMUX_REAL" -L "$MPX" display-popup -C -c "$MPXC" >/dev/null 2>&1; }
+MPXV=$("$TMUX_REAL" -V); MPXB=$(mpx_n)
+case $MPXV in 'tmux '[12].*|'tmux 3.'[0-8]*) MPXP="" ;; *)
+    mpx_open "${COCKPIT_POPUP_MARK-}exec -a claude sleep 300"
+    until_out "$((MPXB + 1))" mpx_n
+    MPXP=$("$TMUX_REAL" -L "$MPX" list-panes -a -f '#{pane_modal_flag}' -F '#{pane_id}') ;;
 esac
+if [ -z "$MPXP" ]; then
+    skip_ "a cockpit display-popup is no pane to the scans: no popup pane on $MPXV (an overlay)"
+else
+    is "the popup is a modal pane started with the mark" '1|"COCKPIT_POPUP=1 ' \
+       "$("$TMUX_REAL" -L "$MPX" display -p -t "$MPXP" \
+           '#{pane_modal_flag}|#{=17:pane_start_command}')"
+    is "list-panes counts it, the scans' filter does not" "$((MPXB + 1)) $MPXB" \
+       "$(mpx_n) $(mpx_n -f "${COCKPIT_NOT_POPUP-}")"
+    TMUX="$SOCKDIR/$MPX,0,0" "$DIR/scripts/agent-state" needs-input "$MPXP" >/dev/null 2>&1
+    is "a claude in it waiting is no ▲ in the fleet" "" \
+       "$("$TMUX_REAL" -L "$MPX" show-option -gqv @cockpit_fleet)"
+    mpx_close; until_out "$MPXB" mpx_n
+    mpx_open "exec sleep 300"; until_out "$((MPXB + 1))" mpx_n
+    is "a popup without the mark is still listed through the filter" "$((MPXB + 1))" \
+       "$(mpx_n -f "${COCKPIT_NOT_POPUP-}")"
+    mpx_close; until_out "$MPXB" mpx_n
+fi
+unset -f mpx_n mpx_open mpx_close
 "$TMUX_REAL" -L "$MPXO" kill-server >/dev/null 2>&1
 "$TMUX_REAL" -L "$MPX" kill-server >/dev/null 2>&1
 unset -f mpx_rc
