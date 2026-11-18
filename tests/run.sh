@@ -5241,6 +5241,113 @@ unset -f oh_box oh_server oh_attach oh_load
 unset OH oh_st oh_n oh_s oh_c oh_f oh_p oh_arm oh_want oh_min oh_stock oh_src
 fi
 
+echo "== a load hint at a server's first start reaches the first client once (#1216) =="
+# The cockpit-tui hints went through display-message alone. At a server's first start the
+# config loads before any client has a session, so the message went to no one (#1216). A real
+# first start: an outer server's pane runs the inner tmux, whose config holds the conf line.
+if need_tmux "the first-start hint"; then :
+elif ! ( . "$DIR/scripts/lib/vnum.sh"
+         v=$("$TMUX_REAL" -V); vnum_ge "${v#tmux }" 3.8 ); then
+    skip_ "the first-start hint (tmux below 3.8: the plugin loads nothing there)"
+else
+FH=$(mktmpd); mkdir -p "$FH/wd" "$FH/p"
+for fh_n in 1 2 3 4; do
+    SOCKS="$SOCKS cockpit-fh-$$-$fh_n cockpit-fho-$$-$fh_n cockpit-fhp-$$-$fh_n"
+done
+fh_box() {                    # <name> -> a copy of the plugin in $FH/p/<name>, its full path
+    local p="$FH/p/$1" d
+    mkdir -p "$p"; cp "$DIR/cockpit.tmux" "$p/"
+    for d in scripts examples bin; do ln -s "$DIR/$d" "$p/$d"; done
+    (cd -P "$p" && pwd)
+}
+fh_conf() {                   # <n> <plugin folder> -> $FH/conf<n>, mouse on, the plugin's line
+    { printf 'set -g mouse on\nset -g display-time 0\n'
+      ( . "$DIR/scripts/lib/confline.sh"; cockpit_conf_line "$2" ); echo; } > "$FH/conf$1"
+}
+fh_outer() {                  # <outer socket> <command for its pane>: a real client's terminal
+    ( cd "$FH/wd" && exec env -u TMUX_COCKPIT_DIR -u TMUX -u TMUX_PANE \
+        COCKPIT_TUI_BIN="$FH/none/cockpit-tui" "$TMUX_REAL" -L "$1" -f /dev/null \
+        new-session -d -s o -x 300 -y 30 -c "$FH/wd" "TERM=xterm-256color exec $2" ) \
+        >/dev/null 2>&1
+}
+fh_in() {                     # <n> -> the inner tmux's argv start, quoted for a pane's sh
+    printf '%s -L cockpit-fh-%s-%s' "$(tq "$TMUX_REAL")" "$$" "$1"
+}
+fh_cap() { "$TMUX_REAL" -L "$1" capture-pane -p -J -t o 2>/dev/null | grep -cF -- "$2"; }
+fh_log() {                    # <n> <text> -> how many shown messages carry the text
+    "$TMUX_REAL" -L "cockpit-fh-$$-$1" show-messages 2>/dev/null | grep -v ' command: ' |
+        grep -cF -- " $2"
+}
+fh_reloaded() {               # <n> <hint count> -> 1 once the reload's binding has spoken
+    # The load's own dmsg puts the hint in the log as well, so the binding's turn is the
+    # count reaching <hint count>, or a "config reloaded" in the log.
+    [ "$(fh_log "$1" "$fh_want")" -ge "$2" ] || [ "$(fh_log "$1" 'config reloaded')" -ge 1 ] &&
+        echo 1
+}
+fh_hook() {                   # <n> -> 1 while the one-shot is armed, 0 once it is gone
+    "$TMUX_REAL" -L "cockpit-fh-$$-$1" show-hooks -g 2>/dev/null |
+        grep -c '^client-session-changed\[10\]'
+}
+fh_p=$(fh_box plain); fh_want="tmux-cockpit: cockpit-tui is missing; run $fh_p/install.sh"
+fh_conf 1 "$fh_p"
+# 1: the first client of a new-session start.
+fh_outer "cockpit-fho-$$-1" "$(fh_in 1) -f $(tq "$FH/conf1") new-session -s t -c $(tq "$FH/wd")"
+until_out '?*' "$TMUX_REAL" -L "cockpit-fh-$$-1" list-clients -F '#{client_name}'
+until_cap "cockpit-fho-$$-1" o "*$fh_want*"
+is "a first start: the first client is shown the hint, and the log holds it once" "1|1" \
+   "$(fh_cap "cockpit-fho-$$-1" "$fh_want")|$(fh_log 1 "$fh_want")"
+# A second client of the same server: the hook has gone, nothing more is shown.
+fh_outer "cockpit-fhp-$$-1" "$(fh_in 1) attach -t t"
+until_out '*?*?*' sh -c "$(tq "$TMUX_REAL") -L cockpit-fh-$$-1 list-clients -F x | tr -d '\n'"
+until_cap "cockpit-fhp-$$-1" o '*[!\ ]*'
+is "a first client is shown the hint, a second is not, the hook is gone" "1|0|1|0" \
+   "$(fh_cap "cockpit-fho-$$-1" "$fh_want")|$(fh_cap "cockpit-fhp-$$-1" "$fh_want")|$(
+      fh_log 1 "$fh_want")|$(fh_hook 1)"
+# The reload key on the first client: the hint in place of "config reloaded", and the hook
+# stays gone, so a client after the reload is not shown it again. Then, with cockpit-tui
+# there, a reload says "config reloaded": each load starts with no hint.
+"$TMUX_REAL" -L "cockpit-fhp-$$-1" kill-server >/dev/null 2>&1
+"$TMUX_REAL" -L "cockpit-fho-$$-1" send-keys -t o C-b R
+until_out 1 fh_reloaded 1 3
+fh_r1="$(fh_cap "cockpit-fho-$$-1" "$fh_want")|$(fh_cap "cockpit-fho-$$-1" 'config reloaded')"
+fh_r1="$fh_r1|$(fh_hook 1)"
+fh_outer "cockpit-fhp-$$-1" "$(fh_in 1) attach -t t"
+until_cap "cockpit-fhp-$$-1" o '*[!\ ]*'
+fh_r1="$fh_r1|$(fh_cap "cockpit-fhp-$$-1" "$fh_want")"
+"$TMUX_REAL" -L "cockpit-fh-$$-1" set-environment -g COCKPIT_TUI_BIN "$COCKPIT_TUI_BIN"
+"$TMUX_REAL" -L "cockpit-fho-$$-1" send-keys -t o C-b R
+until_cap "cockpit-fho-$$-1" o '*config reloaded*'
+is "a reload shows the hint in place of config reloaded, arms nothing; fixed, it says reloaded" \
+   "1|0|0|0|1|" "$fh_r1|$(fh_cap "cockpit-fho-$$-1" 'config reloaded')|$(
+      "$TMUX_REAL" -L "cockpit-fh-$$-1" show -gqv @cockpit_load_hint)"
+# 2: new-session -d first, with no client, then a client attaches.
+fh_conf 2 "$fh_p"
+( cd "$FH/wd" && exec env -u TMUX_COCKPIT_DIR -u TMUX -u TMUX_PANE \
+    COCKPIT_TUI_BIN="$FH/none/cockpit-tui" "$TMUX_REAL" -L "cockpit-fh-$$-2" -f "$FH/conf2" \
+    new-session -d -s t -x 120 -y 30 -c "$FH/wd" 'exec sleep 300' ) >/dev/null 2>&1
+fh_outer "cockpit-fho-$$-2" "$(fh_in 2) attach -t t"
+until_out '?*' "$TMUX_REAL" -L "cockpit-fh-$$-2" list-clients -F '#{client_name}'
+until_cap "cockpit-fho-$$-2" o "*$fh_want*"
+is "a new-session -d start, then an attach: the client is shown the hint once" "1|1|0" \
+   "$(fh_cap "cockpit-fho-$$-2" "$fh_want")|$(fh_log 2 "$fh_want")|$(fh_hook 2)"
+# 3: a plugin folder holding # shapes. The hint is drawn as written, and nothing in it runs.
+fh_p=$(fh_box 'h#Sh#{pane_id}h#[fg=red]h##h#(touch pwned)h')
+fh_w3="tmux-cockpit: cockpit-tui is missing; run $fh_p/install.sh"
+fh_conf 3 "$fh_p"
+fh_outer "cockpit-fho-$$-3" "$(fh_in 3) -f $(tq "$FH/conf3") new-session -s t -c $(tq "$FH/wd")"
+until_out '?*' "$TMUX_REAL" -L "cockpit-fh-$$-3" list-clients -F '#{client_name}'
+until_cap "cockpit-fho-$$-3" o '*cockpit-tui is missing*'
+is "a folder holding # shapes: the first client is shown the hint as written, nothing ran" \
+   "1|" "$(fh_cap "cockpit-fho-$$-3" "$fh_w3")|$(find "$FH" -name pwned)"
+for fh_n in 1 2 3 4; do
+    for fh_s in cockpit-fhp-$$-$fh_n cockpit-fho-$$-$fh_n cockpit-fh-$$-$fh_n; do
+        "$TMUX_REAL" -L "$fh_s" kill-server >/dev/null 2>&1
+    done
+done
+unset -f fh_box fh_conf fh_outer fh_in fh_cap fh_log fh_reloaded fh_hook
+unset FH fh_n fh_s fh_p fh_want fh_w3 fh_r1
+fi
+
 echo "== a cockpit key on ;, M-; or C-; is bound, recorded, and keeps the menu (#1152) =="
 # tmux cuts a command-line argument that ends in ;: a lone ; ends the command, and M-; or C-;
 # loses its ; (#1152). A key on ; was never bound nor recorded, and a menu row replaying it

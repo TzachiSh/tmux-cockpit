@@ -71,6 +71,14 @@ login or builds it from source, and stops with a message when it can do
 neither. It draws the board (`prefix + w`) and the panel (`prefix + f`). See
 [tui.md](tui.md).
 
+When `cockpit-tui` is missing or older than the plugin needs, the plugin says so
+on the status line, and that hint waits for you: tmux loads its config before
+the first client attaches, so the first client to attach is shown it, and it
+stays until you press a key. A reload shows it in place of "config reloaded".
+These two are the only hints that wait. The plugin's other messages, such as
+the one about `set -g mouse on`, show only to a client attached during the
+load, as on a reload.
+
 ### Or with tpm
 
 It is a normal tpm plugin — an executable `*.tmux` at the repo root — so:

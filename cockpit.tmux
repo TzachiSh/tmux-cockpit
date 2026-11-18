@@ -27,6 +27,20 @@ sq() { printf "'%s'" "${1//\'/\'\\\'\'}"; }   # close, escaped quote, reopen
 # shellcheck source=scripts/lib/fmt.sh
 . "$DIR/scripts/lib/fmt.sh" || exit 1
 
+# A hint the user must act on (#1216). dmsg shows it to a client that is there now, but at a
+# server's first start the config loads before any client has a session, and the message
+# goes nowhere. So lhint also keeps it, and the end of the load puts it in
+# @cockpit_load_hint: a one-shot hook shows it to the first client, and the reload key shows
+# it in place of "config reloaded". One load gives at most one: cockpit-tui is missing or
+# old, never both. Each # is doubled as dmsg sends it, so the draw shows the text as written
+# (fesc keeps #[ and the draw read it as a style); the option is read as #{...}, which does
+# not expand the value again. A fixed problem leaves nothing behind: each load starts clean.
+tmux set-option -gu @cockpit_load_hint
+lh_hook='client-session-changed[10]'   # [8] and [9] are cockpit's other hooks
+tmux set-hook -gu "$lh_hook"
+load_hint=
+lhint() { dmsg "$1"; load_hint=${1//#/##}; }   # <text>
+
 # Never left empty: tmux treats an empty pattern as matching every command.
 if [ -z "$(tmux show-option -gqv @cockpit_agents)" ]; then
     tmux set-option -gq @cockpit_agents '^(claude|codex|aider|cursor|opencode|gemini|crush)$'
@@ -442,9 +456,20 @@ fi
 # Required (#199). Offline: one --version, never a fetch, on every load.
 tv=$(tui_check)
 case $? in
-    1) dmsg "tmux-cockpit: cockpit-tui is missing; run $DIR/install.sh" ;;
-    2) dmsg "tmux-cockpit: cockpit-tui $tv is older than $TUI_MIN; run $DIR/install.sh" ;;
+    1) lhint "tmux-cockpit: cockpit-tui is missing; run $DIR/install.sh" ;;
+    2) lhint "tmux-cockpit: cockpit-tui $tv is older than $TUI_MIN; run $DIR/install.sh" ;;
 esac
+
+# Armed only when no client has a session (list-clients skips the rest): a reload has its
+# client, and the hook armed again there would show the hint once more to the next client.
+# client-session-changed fires for new-session and for an attach after new-session -d alike.
+if [ -n "$load_hint" ]; then
+    tmux set-option -g @cockpit_load_hint "$load_hint"
+    if [ -z "$(tmux list-clients 2>/dev/null)" ]; then
+        tmux set-hook -g "$lh_hook" \
+            "display-message -d 0 '#{@cockpit_load_hint}' ; set-hook -gu $lh_hook"
+    fi
+fi
 
 # Opt-in: this runs on every config reload, which must not wait on curl.
 if [ "$(tmux show-option -gqv @cockpit_tui_fetch)" = on ]; then
@@ -469,7 +494,8 @@ if [ -n "$rlk" ]; then
             # -q: a listed but missing /etc/tmux.conf would abort the whole chain.
             printf '    source-file -q %s\n' "$(sq "$f")"
         done
-        printf '    display-message "config reloaded"\n'
+        printf '    display-message "#{?%s,#{%s},config reloaded}"\n' \
+            @cockpit_load_hint @cockpit_load_hint
         printf '}\n'
     } | skey reload "$rlk" || rlk=""
 fi
