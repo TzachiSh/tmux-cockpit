@@ -524,8 +524,9 @@ fi
 # what the hooks and the agent set goes, a dir set by hand before the agent started stays.
 # @cockpit_cwd and the record go with it, in this same call. Only at SessionEnd, read from the
 # payload: `off` also runs at SessionStart. Not when the reason is clear or resume: a new
-# session follows in this pane at once, and its hooks run beside these, so a restore could
-# land after its first write. The record stays, and that session's end puts it back. The
+# session follows in this pane at once, and its hooks run beside these (one event's hooks run
+# in parallel), so a restore could land after its first write. The reasons are clear, resume,
+# logout, prompt_input_exit and other (https://code.claude.com/docs/en/hooks, SessionEnd). The record stays, and that session's end puts it back. The
 # record is read as a value, not a format, so no #707 cut can write a cut value. With no
 # record (a session begun before #323), the hooks' rule: they write the dir and @cockpit_cwd
 # together, so a dir that differs from the cwd stays; that test reads 1 only when whole.
