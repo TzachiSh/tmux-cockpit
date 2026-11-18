@@ -111,36 +111,47 @@ cockpit_conf_wired_line() {   # <config file> <plugin folder> -> line number
     return 1
 }
 
-# Does tpm load this folder's plugin? tpm reads `set -g @plugin '<spec>'` lines, field 4
-# with the quotes taken out, and runs every *.tmux in <plugin path>/<basename of the spec,
-# less .git and a #branch>. The plugin path is ~/.tmux/plugins, or the XDG tmux folder's
-# plugins when an XDG tmux.conf is there (tpm's own tpm, set_default_tpm_path, and
-# scripts/helpers/plugin_functions.sh). tpm runs nothing unless a run line runs it.
-# Prints the config that names the plugin. 0: it loads. 2: a line names this plugin's
-# folder name but tpm's run line is missing or the folder is not where tpm looks, as with
-# a TMUX_PLUGIN_MANAGER_PATH this cannot read. 1: no @plugin line names it (#1067).
+# Does tpm load this folder's plugin? From tpm's scripts/helpers/plugin_functions.sh:
+# _get_user_tmux_conf picks ONE user config, the XDG tmux.conf when it is a file, else
+# ~/.tmux.conf, and tpm_plugins_list_helper reads @plugin lines from that one alone. Its awk
+# takes a line matching ^[ \t]*set(-option)? +-g +@plugin (blanks only between the words,
+# @plugin a prefix, so @plugins counts too), removes the quotes and takes field 4. tpm runs
+# every *.tmux in <plugin path>/<basename of field 4, less .git and a #branch>. The plugin
+# path is ~/.tmux/plugins, or the XDG tmux folder's plugins when an XDG tmux.conf is there
+# (tpm, set_default_tpm_path). tpm itself starts from a run line in any config tmux loads.
+# Prints the config that names the plugin, tpm's own first. 0: it loads. 2: a line names
+# this folder's name, but tpm does not read that config, tpm's run line is missing, or the
+# folder is not where tpm looks (a TMUX_PLUGIN_MANAGER_PATH this cannot read among them).
+# 1: no @plugin line names it (#1067).
 cockpit_conf_tpm() {          # <plugin folder> <config>... -> the config naming it
-    local d=$1 x="${XDG_CONFIG_HOME:-${HOME:-}/.config}/tmux" pd l a b c s r f='' run=0
+    local d=$1 x="${XDG_CONFIG_HOME:-${HOME:-}/.config}/tmux" pd tc l c spec arg nm
+    local f='' t='' run=0 re='^[[:blank:]]*set(-option)? +-g +@plugin'
     shift
-    pd="${HOME:-}/.tmux/plugins"
-    [ ! -f "$x/tmux.conf" ] || pd="$x/plugins"
+    pd="${HOME:-}/.tmux/plugins"; tc="${HOME:-}/.tmux.conf"
+    [ ! -f "$x/tmux.conf" ] || { pd="$x/plugins"; tc="$x/tmux.conf"; }
     for c in "$@"; do
+        nm=0
         while IFS= read -r l || [ -n "$l" ]; do
             if cockpit_conf_run_arg "$l"; then
-                a=${cockpit_arg//\'/}; a=${a//\"/}
-                case "$a" in */tpm/tpm) run=1 ;; esac
+                arg=${cockpit_arg//\'/}; arg=${arg//\"/}
+                case "$arg" in */tpm/tpm) run=1 ;; esac
                 continue
             fi
+            [[ $l =~ $re ]] || continue
             l=${l//\'/}; l=${l//\"/}
-            read -r a b r s _ <<< "$l"
-            case "$a $b $r" in "set -g @plugin"|"set-option -g @plugin") ;; *) continue ;; esac
-            s=${s%%#*}; s=${s%.git}; s=${s##*/}
-            [ -n "$f" ] || { [ "$s" = "${d##*/}" ] && f=$c; }
+            read -r _ _ _ spec _ <<< "$l"
+            spec=${spec%%#*}; spec=${spec%.git}; spec=${spec##*/}
+            [ "$spec" != "${d##*/}" ] || nm=1
         done < "$c"
+        [ "$nm" -eq 1 ] || continue
+        [ -n "$f" ] || f=$c
+        [ -n "$t" ] || { [ "$c" -ef "$tc" ] && t=$c; }
     done
     [ -n "$f" ] || return 1
-    printf '%s\n' "$f"
-    [ "$run" -eq 1 ] && [ "${d%/*}" -ef "$pd" ] && return 0
+    if [ -n "$t" ] && [ "$run" -eq 1 ] && [ "${d%/*}" -ef "$pd" ]; then
+        printf '%s\n' "$t"; return 0
+    fi
+    printf '%s\n' "${t:-$f}"
     return 2
 }
 

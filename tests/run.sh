@@ -5069,16 +5069,38 @@ is "cockpit_conf_tpm: which configs tpm loads this folder's plugin from" \
           "run-commented|$cl_p|$cl_l|# $cl_r" "plugin-commented|$cl_p|# $cl_l|$cl_r" \
           "other-name|$cl_p|set -g @plugin 'o/tmux-other'|$cl_r"; do
           IFS='|' read -r cl_k cl_d cl_a cl_b <<< "$cl_f"
-          printf '%s\n%s\n' "$cl_a" "$cl_b" > "$CL/tp"
-          cockpit_conf_tpm "$cl_d" "$CL/tp" >/dev/null; printf '%s:%s ' "$cl_k" "$?"
+          printf '%s\n%s\n' "$cl_a" "$cl_b" > "$HOME/.tmux.conf"
+          cockpit_conf_tpm "$cl_d" "$HOME/.tmux.conf" >/dev/null; printf '%s:%s ' "$cl_k" "$?"
+      done)"
+# tpm's own pattern, ^[ \t]*set(-option)? +-g +@plugin: a tab between the words is no
+# @plugin line, a run of blanks is one, and so is @plugins, a name it starts with (#1067).
+is "cockpit_conf_tpm: an @plugin line is one where tpm's own pattern matches" \
+   "tab:1 blanks:0 plugins:0 " \
+   "$(. "$DIR/scripts/lib/confline.sh"; unset XDG_CONFIG_HOME; HOME="$CL/h14"
+      cl_p="$HOME/.tmux/plugins/tmux-cockpit"; cl_r="run '~/.tmux/plugins/tpm/tpm'"
+      for cl_f in "tab|set"$'\t'"-g @plugin 'o/tmux-cockpit'" \
+          "blanks|  set-option   -g  @plugin 'o/tmux-cockpit'" \
+          "plugins|set -g @plugins 'o/tmux-cockpit'"; do
+          printf '%s\n%s\n' "${cl_f#*|}" "$cl_r" > "$HOME/.tmux.conf"
+          cockpit_conf_tpm "$cl_p" "$HOME/.tmux.conf" >/dev/null; printf '%s:%s ' "${cl_f%%|*}" "$?"
       done)"
 # With an XDG tmux.conf, tpm's plugin folder is the XDG one, not ~/.tmux/plugins.
 is "cockpit_conf_tpm: an XDG tmux.conf moves tpm's plugin folder there" "0 2" \
    "$(. "$DIR/scripts/lib/confline.sh"; HOME="$CL/h14"; XDG_CONFIG_HOME="$CL/x14"
-      mkdir -p "$CL/x14/tmux/plugins/tmux-cockpit"; : > "$CL/x14/tmux/tmux.conf"
-      printf '%s\n' "set -g @plugin 'o/tmux-cockpit'" "run '~/.tmux/plugins/tpm/tpm'" > "$CL/tp"
-      cockpit_conf_tpm "$CL/x14/tmux/plugins/tmux-cockpit" "$CL/tp" >/dev/null; printf '%s ' "$?"
-      cockpit_conf_tpm "$HOME/.tmux/plugins/tmux-cockpit" "$CL/tp" >/dev/null; printf '%s' "$?")"
+      mkdir -p "$CL/x14/tmux/plugins/tmux-cockpit"; cl_c="$CL/x14/tmux/tmux.conf"
+      printf '%s\n' "set -g @plugin 'o/tmux-cockpit'" "run '~/.tmux/plugins/tpm/tpm'" > "$cl_c"
+      cockpit_conf_tpm "$CL/x14/tmux/plugins/tmux-cockpit" "$cl_c" >/dev/null; printf '%s ' "$?"
+      cockpit_conf_tpm "$HOME/.tmux/plugins/tmux-cockpit" "$cl_c" >/dev/null; printf '%s' "$?")"
+# tpm reads @plugin lines from one config, the XDG one when it is there: an @plugin line in
+# ~/.tmux.conf beside it is one tpm never sees, even with tpm's run line there (#1067).
+is "cockpit_conf_tpm: an @plugin line in ~/.tmux.conf beside an XDG tmux.conf is not tpm's" \
+   "2" \
+   "$(. "$DIR/scripts/lib/confline.sh"; HOME="$CL/h14"; XDG_CONFIG_HOME="$CL/x14"
+      printf '# xdg\n' > "$CL/x14/tmux/tmux.conf"
+      printf '%s\n' "set -g @plugin 'o/tmux-cockpit'" "run '~/.tmux/plugins/tpm/tpm'" \
+          > "$HOME/.tmux.conf"
+      cockpit_conf_tpm "$CL/x14/tmux/plugins/tmux-cockpit" "$CL/x14/tmux/tmux.conf" \
+          "$HOME/.tmux.conf" >/dev/null; printf '%s' "$?")"
 # A box tpm wires: the plugin in ~/.tmux/plugins/tmux-cockpit, an @plugin line, tpm's run line.
 cl_box 13 tpmx; cl_t="$CL/h13/.tmux/plugins/tmux-cockpit"; mv "$CL/p/tpmx" "$cl_t"
 printf '%s\n' "set -g @plugin 'o/tmux-cockpit'" "run '~/.tmux/plugins/tpm/tpm'" \
@@ -5092,6 +5114,19 @@ cp "$CL/conf13" "$CL/h13/.tmux.conf"
 is "and install.sh --check on that config as written passes its config row" "1" \
    "$(cl_env 13 "$cl_t/install.sh" --check |
       grep -cF "[  ok  ] config         $CL/h13/.tmux.conf loads cockpit")"
+# The same lines in ~/.tmux.conf, beside an XDG tmux.conf and with the plugin in the XDG
+# plugins folder: tpm reads only the XDG config, so it never sees the @plugin line (#1067).
+cl_box 15 tpmy; cl_x="$CL/h15/.config/tmux"; mkdir -p "$cl_x/plugins"
+cl_t="$cl_x/plugins/tmux-cockpit"; mv "$CL/p/tpmy" "$cl_t"; printf '# xdg\n' > "$cl_x/tmux.conf"
+cp "$CL/conf13" "$CL/h15/.tmux.conf"; cp "$cl_x/tmux.conf" "$CL/xdg15"
+cl_out=$( cd "$CL/wd" && cl_env 15 "$cl_t/bootstrap.sh" --yes )
+is "an @plugin line tpm does not read: bootstrap.sh says tpm seems to, and appends to neither" \
+   "1|same|same" \
+   "$(printf '%s\n' "$cl_out" | grep -cF "tpm seems to manage cockpit in $CL/h15/.tmux.conf")|$(
+      cmp -s "$CL/h15/.tmux.conf" "$CL/conf13" && echo same || echo changed)|$(
+      cmp -s "$cl_x/tmux.conf" "$CL/xdg15" && echo same || echo changed)"
+is "and install.sh --check fails its config row" "1" \
+   "$(cl_env 15 "$cl_t/install.sh" --check | grep -c '^\[ fail \] config ')"
 # The plain folder: a bare line works there, so nothing new is said. The run's output is
 # the same, byte for byte, whether the config holds the old line or the new one.
 # Under a TMPDIR whose own path a bare line does not carry, "plain" is not plain.
@@ -5108,7 +5143,7 @@ is "and install.sh --check passes its config row" "1" \
       grep -cF "[  ok  ] config         $CL/h1/.tmux.conf loads cockpit")"
 fi
 unset -f cl_box cl_env cl_load
-unset CL CLREL cl_d cl_a cl_n cl_f cl_p2 cl_out cl_line cl_t
+unset CL CLREL cl_d cl_a cl_n cl_f cl_p2 cl_out cl_line cl_t cl_x
 fi
 
 echo "== the plugin loads whole and the menu renames, from a folder of any name (#1050, #1071) =="
