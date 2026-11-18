@@ -2990,12 +2990,13 @@ Rows are local branches by most recent commit, then remote-only branches. `●` 
 the current branch. `⑂` marks a branch checked out in another worktree: git refuses
 to switch to it, so `↵` selects the pane working in that tree, or opens a window there
 beside the pane the popup came from, and never `cd`s a pane. A pane's tree is the
-deepest worktree holding its work dir: `@cockpit_dir` when it is a directory, else, for
-an agent's pane, its transcript's cwd as `workdir` reads it, else its cwd. An agent's
-pane, by `@panestate`, the agent glob or a version-shaped command, comes before a shell;
-the process tree is not walked for this, so a wrapper with no `@panestate` counts as a
-shell. A path with a newline in it gives a `✕` note and does nothing. That needs git 2.36 or later, for
-`worktree list -z`. Older git (2.7 to 2.35) prints a newline path across two lines.
+deepest worktree holding its work dir: `@cockpit_dir` when it is a directory, else,
+for an agent's pane, its transcript's cwd as `workdir` reads it, else its cwd. An
+agent's pane, by `@panestate`, the agent glob or a version-shaped command, comes
+before a shell; the process tree is not walked for this, so a wrapper with no
+`@panestate` counts as a shell. A path with a newline in it gives a `✕` note and does
+nothing. That needs git 2.36 or later, for `worktree list -z`. Older git (2.7 to 2.35)
+prints a newline path across two lines.
 A tree with one is usually left out, since its second line is no worktree attribute,
 but a crafted name can print lines that read like git's own and pair its branch with
 some other path. That path must be this repository's: its `.git` is the common dir

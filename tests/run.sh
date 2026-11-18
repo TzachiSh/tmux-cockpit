@@ -20730,6 +20730,9 @@ is "and opens no window" "2" "$(bj_wins)"
 is "and the binary printed nothing for the script to act on" "" "$(cat "$BJD/out")"
 
 "$TMUX_REAL" -L "$BJS" kill-pane -t "$BJA"; "$TMUX_REAL" -L "$BJS" select-window -t "$BJP"
+# A window at index 1, in no tree: beside the origin (window 0) the new one takes index 1
+# and moves it to 2, where a bare new-window would take the first free index, 2.
+"$TMUX_REAL" -L "$BJS" new-window -d -t t:1 -c "$(fesc "$BJD")" 'exec sleep 300'
 bj_run held; "$TMUX_REAL" -L "$BJS" send-keys -t "$BJP" Enter; bj_done
 bj_win1() {
     "$TMUX_REAL" -L "$BJS" list-panes -a -F '#{window_index} #{pane_current_path}' |
@@ -20738,7 +20741,8 @@ bj_win1() {
 until_out "$(printf '%q' "$BJW")" bj_win1
 is "with no pane there it opens a window in the worktree, beside the origin" "$BJW" "$(bj_win1)"
 is "and prints nothing for that either" "" "$(cat "$BJD/out")"
-"$TMUX_REAL" -L "$BJS" kill-window -t t:1; "$TMUX_REAL" -L "$BJS" select-window -t "$BJP"
+# every window but the origin's, wherever a goto put its own
+"$TMUX_REAL" -L "$BJS" kill-window -a -t "$BJP"
 
 bj_run gone228; "$TMUX_REAL" -L "$BJS" send-keys -t "$BJP" Enter
 if until_cap "$BJS" "$BJP" '*✕*is gone*'; then ok "a worktree that is gone is the ✕ note"

@@ -16,6 +16,8 @@ fn git(dir: &Path, args: &[&str]) {
     c.arg("-C").arg(dir).args(args);
     let c = c.env("GIT_AUTHOR_NAME", "t").env("GIT_AUTHOR_EMAIL", "t@e");
     let c = c.env("GIT_COMMITTER_NAME", "t").env("GIT_COMMITTER_EMAIL", "t@e");
+    // none of the developer's config: a gpgsign or a global hooksPath would run here
+    let c = c.env("GIT_CONFIG_GLOBAL", "/dev/null").env("GIT_CONFIG_NOSYSTEM", "1");
     assert!(c.status().unwrap().success(), "git {args:?}");
 }
 
@@ -355,6 +357,7 @@ fn without_worktree_list_z_the_tree_is_found_and_a_newline_path_refused() {
     fake::write_exec(&r.t.join("old/git"), &format!("{shim}exec '{}' \"$@\"\n", real.trim()));
     let mut z = Command::new(r.t.join("old/git"));
     z.args(["-C", &r.p("r"), "worktree", "list", "--porcelain", "-z"]);
+    z.env("GIT_CONFIG_GLOBAL", "/dev/null").env("GIT_CONFIG_NOSYSTEM", "1");
     assert_eq!(z.status().unwrap().code(), Some(129), "the shim refuses -z");
     let path = format!("{}:{}", r.p("old"), std::env::var("PATH").unwrap_or_default());
     // SAFETY: under the rig's lock
