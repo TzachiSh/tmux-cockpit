@@ -21,7 +21,10 @@ set -u
 # TaskStop mid-turn, and the set still in flight at the parent's turn end (#403).
 case "${1:-}" in
 sub-start|sub-stop|sub-idle|sub-end|sub-taskstop|sub-reconcile)
-    d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")
+    d=${BASH_SOURCE[0]}
+    [ -L "$d" ] && d=$(case $d in (*/*) ;; (*) d=./$d ;; esac; n=0
+        while [ -L "$d" ] && [ $((n += 1)) -le 40 ] && t=$(readlink "$d"); do
+            case $t in (/*) d=$t ;; (*) d=${d%/*}/$t ;; esac; done; printf %s "$d")
     # shellcheck source=lib/subslog.sh
     . "${d%/*}/lib/subslog.sh" 2>/dev/null || exit 0
     case "$1" in
@@ -47,7 +50,10 @@ fi
 # Window, session and fleet summaries are precomputed here so status redraws walk no
 # panes (tmux#2774/#3352). They refresh only on a transition in that window or session.
 # Cockpit's own popup is no agent (#1248): on tmux next-3.9 it is a pane the #{P:} walks reach.
-d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")
+d=${BASH_SOURCE[0]}
+[ -L "$d" ] && d=$(case $d in (*/*) ;; (*) d=./$d ;; esac; n=0
+    while [ -L "$d" ] && [ $((n += 1)) -le 40 ] && t=$(readlink "$d"); do
+        case $t in (/*) d=$t ;; (*) d=${d%/*}/$t ;; esac; done; printf %s "$d")
 # shellcheck source=lib/fmt.sh
 . "${d%/*}/lib/fmt.sh" 2>/dev/null || exit 0
 agent="#{?$COCKPIT_NOT_POPUP,#{m/i:*|#{b:pane_current_command}|*,#{@cockpit_agents_glob}},0}"
@@ -158,7 +164,10 @@ if [ "$state" = sweep ]; then
     flush
     # The one poller per server (#448): the load and every window or pane change make sure it
     # runs. Only a sweep that walked (a superseded one exited above), so a burst starts one.
-    d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")
+    d=${BASH_SOURCE[0]}
+    [ -L "$d" ] && d=$(case $d in (*/*) ;; (*) d=./$d ;; esac; n=0
+        while [ -L "$d" ] && [ $((n += 1)) -le 40 ] && t=$(readlink "$d"); do
+            case $t in (/*) d=$t ;; (*) d=${d%/*}/$t ;; esac; done; printf %s "$d")
     # shellcheck source=lib/hook.sh
     if . "${d%/*}/lib/hook.sh" 2>/dev/null; then ensure_poller "${d%/*}"; fi
     exit "$rc"
@@ -192,7 +201,10 @@ subs_count() {
     # progress instead cost a temp file and three more processes on every Stop, and failed a
     # single long pause that this one reads. The cost: a writer that never ends holds 10 s.
     # bound: timeout, else gtimeout; unbounded with neither (#746).
-    local d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")
+    local d=${BASH_SOURCE[0]}
+    [ -L "$d" ] && d=$(case $d in (*/*) ;; (*) d=./$d ;; esac; n=0
+        while [ -L "$d" ] && [ $((n += 1)) -le 40 ] && t=$(readlink "$d"); do
+            case $t in (/*) d=$t ;; (*) d=${d%/*}/$t ;; esac; done; printf %s "$d")
     # shellcheck source=lib/bound.sh
     . "${d%/*}/lib/bound.sh" 2>/dev/null || return 0
     payload=$(bound 10 head -n 1 2>/dev/null) || return 0
@@ -238,7 +250,10 @@ subs_build() {
 case "$state" in
 notify)
     # ESC-cancel fires no hook at all; the idle Notification is the only way out of running.
-    d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")
+    d=${BASH_SOURCE[0]}
+    [ -L "$d" ] && d=$(case $d in (*/*) ;; (*) d=./$d ;; esac; n=0
+        while [ -L "$d" ] && [ $((n += 1)) -le 40 ] && t=$(readlink "$d"); do
+            case $t in (/*) d=$t ;; (*) d=${d%/*}/$t ;; esac; done; printf %s "$d")
     # shellcheck source=lib/hook.sh
     . "${d%/*}/lib/hook.sh" 2>/dev/null || exit 0
     read_payload false
@@ -283,7 +298,10 @@ session)
     # CwdChanged carry its cwd, the tree the board shows (#312). No state change. Every value
     # is untrusted: each is checked, then set with `set-option -p` (no format expansion) in a
     # call of its own. last_assistant_message is free text: never stored.
-    d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")
+    d=${BASH_SOURCE[0]}
+    [ -L "$d" ] && d=$(case $d in (*/*) ;; (*) d=./$d ;; esac; n=0
+        while [ -L "$d" ] && [ $((n += 1)) -le 40 ] && t=$(readlink "$d"); do
+            case $t in (/*) d=$t ;; (*) d=${d%/*}/$t ;; esac; done; printf %s "$d")
     # shellcheck source=lib/hook.sh
     . "${d%/*}/lib/hook.sh" 2>/dev/null || exit 0
     # A capped read, not read_payload: the UserPromptSubmit payload carries the whole prompt,
@@ -493,7 +511,10 @@ if [ -n "$fgown" ]; then
     # dir's, and said (#685).
     cfgarg=""
     if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
-        d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")
+        d=${BASH_SOURCE[0]}
+        [ -L "$d" ] && d=$(case $d in (*/*) ;; (*) d=./$d ;; esac; n=0
+            while [ -L "$d" ] && [ $((n += 1)) -le 40 ] && t=$(readlink "$d"); do
+                case $t in (/*) d=$t ;; (*) d=${d%/*}/$t ;; esac; done; printf %s "$d")
         # shellcheck source=lib/hook.sh
         . "${d%/*}/lib/hook.sh" 2>/dev/null && cfgarg=$(cfg_arg "$CLAUDE_CONFIG_DIR") || cfgarg=""
     fi

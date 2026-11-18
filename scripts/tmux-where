@@ -72,7 +72,10 @@ git_label() {
             # hold a dotfiles setup's GIT_DIR, which would print another repo's
             # hash. The lib is read here, not at the top, on purpose: the redraw
             # path reads no file it does not need (#522). Unloaded: no hash.
-            lib=${BASH_SOURCE[0]}; [ -L "$lib" ] && lib=$(readlink "$lib")
+            lib=${BASH_SOURCE[0]}
+            [ -L "$lib" ] && lib=$(case $lib in (*/*) ;; (*) lib=./$lib ;; esac; n=0
+                while [ -L "$lib" ] && [ $((n += 1)) -le 40 ] && t=$(readlink "$lib"); do
+                    case $t in (/*) lib=$t ;; (*) lib=${lib%/*}/$t ;; esac; done; printf %s "$lib")
             # shellcheck source=lib/git-env.sh
             . "${lib%/*}/lib/git-env.sh" || return 0
             br=$(git -c core.fsmonitor= -c core.hooksPath=/dev/null -C "$path" rev-parse --short HEAD 2>/dev/null) || return 0

@@ -20,7 +20,10 @@ if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
            "${BASH_SOURCE[0]##*/}" "${BASH_VERSION:-unknown}" >&2
     exit 1
 fi
-d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")
+d=${BASH_SOURCE[0]}
+[ -L "$d" ] && d=$(case $d in (*/*) ;; (*) d=./$d ;; esac; n=0
+    while [ -L "$d" ] && [ $((n += 1)) -le 40 ] && t=$(readlink "$d"); do
+        case $t in (/*) d=$t ;; (*) d=${d%/*}/$t ;; esac; done; printf %s "$d")
 # shellcheck source=lib/fmt.sh
 . "${d%/*}/lib/fmt.sh" || exit 1   # fesc (#289)
 
@@ -31,7 +34,10 @@ H=${HOME:-/nonexistent}
 # Sourced on demand: most clicks never reach VS Code. lib/ sits beside the real
 # script.
 vscode_lib() {
-    local d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")
+    local d=${BASH_SOURCE[0]}
+    [ -L "$d" ] && d=$(case $d in (*/*) ;; (*) d=./$d ;; esac; n=0
+        while [ -L "$d" ] && [ $((n += 1)) -le 40 ] && t=$(readlink "$d"); do
+            case $t in (/*) d=$t ;; (*) d=${d%/*}/$t ;; esac; done; printf %s "$d")
     # shellcheck source=lib/vscode.sh
     . "${d%/*}/lib/vscode.sh" 2>/dev/null && return 0
     # scripts/ without lib/ must still open files the ordinary ways.
