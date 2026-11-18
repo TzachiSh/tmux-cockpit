@@ -2626,6 +2626,10 @@ is "and the Stop hook leaves the pending mark as it is" "pending|GRC=0" \
 RG_PRE="PATH=$(printf '%q' "$RGMK"):\$PATH " rg_run "$RGPAY"
 is "and from no mark, the Stop hook sets none" "|GRC=0" \
     "$("$TMUX_REAL" -L "$RG" show-option -pqv -t "$RGAP" @cockpit_review)|$(rg_rc)"
+# No work dir to read for the pane (#959; a gone pane here) is no clean tree either: 2.
+is "--delta for a pane with no work dir says it cannot tell (exit 2)" "D=2" \
+    "$("$TMUX_REAL" -L "$RG" run-shell "XDG_STATE_HOME=$(printf '%q' "$RGSTATE") \
+        '$DIR/scripts/tmux-review' --delta %99999; echo D=\$?" 2>/dev/null | tail -1)"
 # A tmux-review the hook cannot run (#959) is no clean tree either: 126 (not executable)
 # and 127 (missing) leave the mark as it is. A copy of scripts/, so the checkout is untouched.
 RGCP=$(mktmpd); cp -R "$DIR/scripts" "$RGCP/" && chmod -x "$RGCP/scripts/tmux-review"
@@ -9727,7 +9731,8 @@ pwrun() { PATH="$PWD_SHIM:$PATH" TMUX_LOG="$PWD_SHIM/log" "$DIR/scripts/tmux-rev
 }
 pwrcs=$(pwrun --deliver "$PWN" "$PWD_SHIM/store" "$PWD_SHIM"; pwrun --request "$PWN"; \
     pwrun --delta "$PWN"; pwrun -p "$PWN")
-is "deliver, request, delta and -p all refuse it" "1 2 1 2 " "$pwrcs"
+# --delta's 2: no work dir for it, so it cannot tell (#959).
+is "deliver, request, delta and -p all refuse it" "1 2 2 2 " "$pwrcs"
 is "and no tmux call ever carries it" "0" "$(grep -c PWNED "$PWD_SHIM/log" 2>/dev/null || true)"
 is "--dir prints nothing for it" "" \
     "$(PATH="$PWD_SHIM:$PATH" TMUX_LOG="$PWD_SHIM/log" "$DIR/scripts/tmux-review" --dir \
