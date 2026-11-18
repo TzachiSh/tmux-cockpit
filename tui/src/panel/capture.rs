@@ -1,6 +1,6 @@
 //! The target pane as the panel sees it, and what a Claude Code session on it
 //! is doing, read off its own UI text.
-use crate::data::gitsafe::{FILTER_CONFIG, REDIRECT, SAFE, filter_flags};
+use crate::data::gitsafe::{FILTER_CONFIG, PATHSPEC, REDIRECT, SAFE, filter_flags};
 use crate::data::tmux;
 use std::io::Read;
 use std::os::unix::process::CommandExt;
@@ -164,10 +164,11 @@ const PLAIN: [&str; 6] = ["-c", "color.ui=false", "-c", "color.status=false", "-
 
 /// gitsafe's flags, no lock taken under the user's own git, no prompt, no
 /// transport; started by [`bounded`]. The repo is the one `dir` is in,
-/// whatever [`REDIRECT`] the panel inherited.
+/// whatever [`REDIRECT`] the panel inherited, and a pathspec means what it
+/// says, whatever [`PATHSPEC`] mode it inherited (#522).
 pub(crate) fn spawn_git(dir: &str, extra: &[String], args: &[&str]) -> Option<Git> {
     let mut c = Command::new("git");
-    for v in REDIRECT {
+    for v in REDIRECT.iter().chain(&PATHSPEC) {
         c.env_remove(v);
     }
     c.arg("-C")

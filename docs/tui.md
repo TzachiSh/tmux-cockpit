@@ -1342,13 +1342,16 @@ folder, then writing`, and tablet mode has an `[ explore ]` button.
   which replacement refs under that base counted a file's `+1 -0` as `+2 -3`,
   and `GIT_NO_REPLACE_OBJECTS`, with which the repo's own `refs/replace/`
   stopped applying. The
-  board's diff count also drops `GIT_LITERAL_PATHSPECS`,
+  board's diff count, and every git the panel starts (#522), also drop
+  `GIT_LITERAL_PATHSPECS`,
   `GIT_GLOB_PATHSPECS`, `GIT_NOGLOB_PATHSPECS` and `GIT_ICASE_PATHSPECS`
   (`gitsafe::PATHSPEC`, #673): each changes what a `:(literal)` or
   `:(exclude,literal)` pathspec matches. `tmux-review`, its diff engine and
   `tmux-branch` unset both lists through `scripts/lib/git-env.sh`, a copy
   that `tui/tests/gitsafe_env.rs` pins, so a popup reads the repo the row
-  counts (#730). Then
+  counts (#730). `tmux-where` does too before the status line's detached
+  hash, and `tui-fetch` before it reads the origin gh downloads from
+  (#522). Then
   the root is kept only if it holds the pane's folder and its own `.git`, a
   folder or a `gitdir:` file, is the repo's git dir. Otherwise it is the
   pane's folder. A linked worktree, a submodule and a separate git dir pass.
