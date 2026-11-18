@@ -43,6 +43,23 @@ cockpit_bare_carries() {      # <path> -> 0 when a bare line carries it
     done
 }
 
+# The argument of a config line that runs a shell command: run-shell, or run, an optional
+# -b, then the rest of the line, blanks trimmed. Set in cockpit_arg, with no subshell per
+# line. Returns 1, cockpit_arg empty, for any other line: one starting with # among them.
+cockpit_conf_run_arg() {      # <config line> -> cockpit_arg
+    local l=$1
+    cockpit_arg=''
+    l=${l#"${l%%[![:space:]]*}"}; l=${l%"${l##*[![:space:]]}"}
+    case "$l" in
+        run-shell[[:space:]]*) l=${l#run-shell} ;;
+        run[[:space:]]*) l=${l#run} ;;
+        *) return 1 ;;
+    esac
+    l=${l#"${l%%[![:space:]]*}"}
+    case "$l" in -b[[:space:]]*) l=${l#-b}; l=${l#"${l%%[![:space:]]*}"} ;; esac
+    cockpit_arg=$l
+}
+
 # The number of the first line in a config that loads this folder's plugin bare:
 # run-shell, or run, an optional -b, then the path with no quote around it, written out
 # or with ~ for HOME. Nothing is printed, and 1 returned, when no line has that shape.
@@ -52,14 +69,8 @@ cockpit_conf_bare_line() {    # <config file> <plugin folder> -> line number
     [ -z "$h" ] || case "$2" in "$h"/*) t="~${p#"$h"}" ;; esac
     while IFS= read -r l || [ -n "$l" ]; do
         n=$((n + 1))
-        l=${l#"${l%%[![:space:]]*}"}; l=${l%"${l##*[![:space:]]}"}
-        case "$l" in
-            run-shell[[:space:]]*) l=${l#run-shell} ;;
-            run[[:space:]]*) l=${l#run} ;;
-            *) continue ;;
-        esac
-        l=${l#"${l%%[![:space:]]*}"}
-        case "$l" in -b[[:space:]]*) l=${l#-b}; l=${l#"${l%%[![:space:]]*}"} ;; esac
+        cockpit_conf_run_arg "$l" || continue
+        l=$cockpit_arg
         if [ "$l" = "$p" ] || { [ -n "$t" ] && [ "$l" = "$t" ]; }; then
             printf '%s\n' "$n"; return 0
         fi
