@@ -316,9 +316,26 @@ session)
     case "$dir" in /*) ;; *) dir="" ;; esac
     case "$dir" in *[$'\001'-$'\037\177']*) dir="" ;; esac
     [ -n "$dir" ] && [ ! -d "$dir" ] && dir=""
-    # One read for both: the session saved before and the cwd the hooks saw last.
-    had=$(tmux display-message -p -t "$pane" '#{@cockpit_session}'$'\037''#{@cockpit_cwd}' 2>/dev/null)
-    cur=${had%%$'\037'*} seen=${had#*$'\037'}
+    # One read: the session saved before, the cwd the hooks saw last, the dir, and whether the
+    # dir as found at the session's start is recorded (0 or 1, see below). A #707 cut empties
+    # every expansion after it, so the record test goes last: read whole, it vouches for every
+    # field before it. Anything else (a cut, no pane) writes nothing; the next hook does.
+    # Parsed from the right first, since a hand-set dir may hold any byte.
+    us=$'\037' f="#{@cockpit_session}"
+    f+="$us#{@cockpit_cwd}$us#{@cockpit_dir}$us#{?#{@cockpit_dir_before},1,0}"
+    had=$(tmux display-message -p -t "$pane" "$f" 2>/dev/null)
+    rec=${had##*"$us"} rest=${had%"$us"*}
+    case "$rec" in 0|1) ;; *) exit 0 ;; esac
+    cur=${rest%%"$us"*} rest=${rest#*"$us"}
+    seen=${rest%%"$us"*} was=${rest#*"$us"}
+    # @cockpit_dir_before (#323): the dir as this session found it, which SessionEnd's `off`
+    # puts back. Written once, by the first hook with none, so later writes never move it;
+    # SessionEnd's `off` drops it. "=" + the value, so an empty dir is a record too: a format
+    # reads an unset option and an empty one alike.
+    if [ "$rec" = 0 ]; then
+        arg="=$was"; case "$arg" in *\;) arg="${arg%;}\\;" ;; esac
+        tmux set-option -p -t "$pane" @cockpit_dir_before "$arg" 2>/dev/null
+    fi
     uuid='^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
     new=""
     if [[ $sid =~ $uuid ]]; then
@@ -328,8 +345,8 @@ session)
     fi
     # @cockpit_dir is written when the agent moved or a new session began, not on every prompt:
     # an agent driving a hand-made worktree with `git -C` sets it itself (docs/review.md), and
-    # that holds until it cds. tmux takes an argument's trailing `;` for a separator; `\;` is a
-    # literal one.
+    # that holds until it cds or the session ends (#323). tmux takes an argument's trailing `;`
+    # for a separator; `\;` is a literal one.
     if [ -n "$dir" ] && { [ "$dir" != "$seen" ] || [ -n "$new" ]; }; then
         arg=$dir; case "$arg" in *\;) arg="${arg%;}\\;" ;; esac
         tmux set-option -p -t "$pane" @cockpit_dir "$arg" 2>/dev/null
@@ -502,6 +519,34 @@ if [ -n "$fgown" ]; then
         [ -z "${CLAUDE_CONFIG_DIR:-}" ] \
             || unmark+=(set-option -g @cockpit_poll_err "${CFG_BAD:-}" ';')
     fi
+fi
+# The session's end puts @cockpit_dir back to the value `session` recorded at its start (#323):
+# what the hooks and the agent set goes, a dir set by hand before the agent started stays.
+# @cockpit_cwd and the record go with it, in this same call. Only at SessionEnd, read from the
+# payload: `off` also runs at SessionStart. Not when the reason is clear or resume: a new
+# session follows in this pane at once, and nothing makes this hook finish before that
+# session's first hook writes, so a restore could land after it. The reasons are clear, resume,
+# logout, prompt_input_exit and other (https://code.claude.com/docs/en/hooks, SessionEnd).
+# The record stays, and that session's end puts it back. The record is read as a value, not
+# a format, so no #707 cut can write a cut value. With no record (a session begun before
+# #323), the hooks' rule: they write the dir and @cockpit_cwd together, so a dir that differs
+# from the cwd stays; that test reads 1 only when whole.
+if [ -n "$ended" ]; then
+    case "$payload" in
+    *'"reason":"clear"'*|*'"reason": "clear"'*|*'"reason":"resume"'*|*'"reason": "resume"'*) ;;
+    *)
+        before=$(tmux show-option -pqv -t "$pane" @cockpit_dir_before 2>/dev/null)
+        case "$before" in
+            =)  unmark+=(set-option -pu -t "$pane" @cockpit_dir ';') ;;
+            =*) arg=${before#=}; case "$arg" in *\;) arg="${arg%;}\\;" ;; esac
+                unmark+=(set-option -p -t "$pane" @cockpit_dir "$arg" ';') ;;
+            *)  unmark+=(if-shell -F -t "$pane" '#{?#{==:#{@cockpit_dir},#{@cockpit_cwd}},1,0}'
+                    "set-option -pu -t $pane @cockpit_dir" ';') ;;
+        esac
+        unmark+=(set-option -pu -t "$pane" @cockpit_cwd ';'
+            set-option -pu -t "$pane" @cockpit_dir_before ';')
+        ;;
+    esac
 fi
 # The guard must not skip the transition on a cut either (see put). So it reads 1 only for a
 # refusal read whole, which runs nothing and parses no body: the hooks that fire most
