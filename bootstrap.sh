@@ -65,7 +65,7 @@ sha_c() { if have sha256sum; then sha256sum -c -; else shasum -a 256 -c -; fi; }
 # The plugins go where tpm installs and runs them, by tpm's own rule: the XDG tmux folder's
 # plugins when an XDG tmux.conf is there, else ~/.tmux/plugins. A folder picked any other way
 # left tpm installing a second copy in its own (#1310).
-cockpit_tpm_dir; PLUGINS=$cockpit_tpm_pd
+cockpit_conf_tpm_where; PLUGINS=$cockpit_tpm_dir
 ver_ge() {  # ver_ge <have> <maj> <min>
     local v=${1#tmux }; v=${v#v}                      # v1.13.0-abc1234-date: x.y.z leads
     vnum_ge "$v" "$2.$3"                              # next-3.9 is 3.9; no number: modern
