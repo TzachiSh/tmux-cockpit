@@ -106,6 +106,11 @@ impl Fold {
                     // Any other string is the harness's: not a turn and not `asked`.
                     let over = if interrupted { Over::Interrupted } else { Over::No };
                     self.turn_over = Some((off, over));
+                } else if let Some((at, Over::Interrupted)) = self.turn_over {
+                    // #1333: a harness row after the interrupt (a <task-notification>) starts a
+                    // turn, so the interrupt is no longer the newest. Still not `asked`, and the
+                    // turn stays over at the interrupt's row, as for the panes no hook marks.
+                    self.turn_over = Some((at, Over::Ended));
                 }
             }
             Some("assistant") => {
