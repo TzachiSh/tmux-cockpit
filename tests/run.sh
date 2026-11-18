@@ -2591,8 +2591,9 @@ rg_run() {
 rg_rc() { "$TMUX_REAL" -L "$RG" capture-pane -p -J -S - -t "$RGCTL" | grep -o 'GRC=[0-9]*' | tail -1
 }
 RGPAY=$(mktmpf)
-printf '{"session_id":"sid-123","transcript_path":"%s/tx.jsonl","cwd":"%s","hook_event_name":"Stop","stop_hook_active":false}\n' \
-    "$RGSTATE" "$RGDIR" > "$RGPAY"
+printf '{"session_id":"%s","transcript_path":"%s/tx.jsonl","cwd":"%s",%s}\n' \
+    11111111-2222-4333-8444-555555555555 "$RGSTATE" "$RGDIR" \
+    '"hook_event_name":"Stop","stop_hook_active":false' > "$RGPAY"
 printf '{"type":"ai-title","aiTitle":"First topic"}\n{"type":"user"}\n{"type":"ai-title","aiTitle":"Fix the parser"}\n{"type":"assistant"}\n' \
     > "$RGSTATE/tx.jsonl"
 # Clean tree: nothing to flag; the payload's fields are stashed.
@@ -2601,8 +2602,65 @@ is "no review is pending on a clean tree" "" \
     "$("$TMUX_REAL" -L "$RG" show-option -pqv -t "$RGAP" @cockpit_review)"
 is "the newest ai-title becomes the pane's title" "Fix the parser" \
     "$("$TMUX_REAL" -L "$RG" show-option -pqv -t "$RGAP" @cockpit_title)"
-is "the session id is stashed for prefix i" "sid-123" \
+is "the session id is stashed for prefix i" "11111111-2222-4333-8444-555555555555" \
     "$("$TMUX_REAL" -L "$RG" show-option -pqv -t "$RGAP" @cockpit_session)"
+# #315: the Stop's session id goes through agent-state session's checks (#308), shared in
+# lib/hook.sh: a UUID only, a new id drops the old transcript, and the read stops at 4 KB.
+RGIU1=11111111-2222-4333-8444-555555555555 RGIU2=aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee
+RGIF=$(mktmpf); RGIPAD=$(printf '%10240s' '' | tr ' ' x)
+RGILOOP="$RGSTATE/tmux-cockpit/review/loop-$(gate_key "$RG" "$RGAP")"
+rgi_pay() {                   # <session_id> [stop_hook_active] [pad first] [message] -> $RGIF
+    printf '{%s"session_id":"%s","transcript_path":"%s/tx.jsonl","cwd":"%s",' \
+        "${3:+\"pad\":\"$3\",}" "$1" "$RGSTATE" "$RGDIR" > "$RGIF"
+    printf '"hook_event_name":"Stop","stop_hook_active":%s,"last_assistant_message":"%s"}\n' \
+        "${2:-false}" "${4:-ok}" >> "$RGIF"
+}
+rgi_set() {                   # <session> <transcript>: the pair the pane saved before
+    "$TMUX_REAL" -L "$RG" set-option -p -t "$RGAP" @cockpit_session "$1"
+    "$TMUX_REAL" -L "$RG" set-option -p -t "$RGAP" @cockpit_transcript "$2"
+}
+rgi_get() {                   # -> <session>|<transcript>
+    printf '%s|%s' "$("$TMUX_REAL" -L "$RG" show-option -pqv -t "$RGAP" @cockpit_session)" \
+        "$("$TMUX_REAL" -L "$RG" show-option -pqv -t "$RGAP" @cockpit_transcript)"
+}
+rgi_set "$RGIU1" T1; rgi_pay sid-123; rg_run "$RGIF"
+is "a Stop session id that is no UUID is not saved" "$RGIU1|T1" "$(rgi_get)"
+rgi_set "$RGIU1" T1; rgi_pay "$RGIU2"; rg_run "$RGIF"
+is "a new Stop session id is saved and drops the old transcript" "$RGIU2|" "$(rgi_get)"
+rgi_set "$RGIU1" T1; rgi_pay "$RGIU1"; rg_run "$RGIF"
+is "the same Stop session id keeps the transcript" "$RGIU1|T1" "$(rgi_get)"
+rgi_set "$RGIU1" T1; rgi_pay "$RGIU2" false "$RGIPAD"; rg_run "$RGIF"
+is "a session id past the payload's first 4 KB is not read" "$RGIU1|T1" "$(rgi_get)"
+# Every field the hook reads comes before last_assistant_message in the Stop payload, so a
+# 10 KB final message leaves them all inside the cap. On a dirty tree, then back to clean;
+# the RGPAY Stops around it reset the rewake count.
+rg_run "$RGPAY"; printf 'a\nb\n' > "$RGDIR/f"
+rgi_set "$RGIU1" ""; rgi_pay "$RGIU2" true "" "$RGIPAD"; rg_run "$RGIF"
+is "a Stop with a 10 KB final message still saves the session id and flags ◆" \
+    "$RGIU2||pending" \
+    "$(rgi_get)|$("$TMUX_REAL" -L "$RG" show-option -pqv -t "$RGAP" @cockpit_review)"
+is "and still counts the rewake" "1" "$(cat "$RGILOOP" 2>/dev/null)"
+printf 'a\n' > "$RGDIR/f"; rg_run "$RGPAY"
+# A #707 cut empties every expansion after it, the \037s kept. This tmux keeps the first
+# RG_CUT fields of the hook's one display-message read: a read not whole saves no session,
+# so it drops no transcript either.
+RGIKD=$(mktmpd)
+cat > "$RGIKD/tmux" <<RGIKEOF
+#!/bin/sh
+case "\$*" in *display-message*cockpit_session*) ;; *) exec "$SHIM/tmux" "\$@" ;; esac
+"$SHIM/tmux" "\$@" |
+    awk -v k="\$RG_CUT" 'BEGIN { FS = OFS = "\037" }
+        { for (i = k + 1; i <= NF; i++) \$i = ""; print }'
+RGIKEOF
+chmod +x "$RGIKD/tmux"
+for rgi_k in 1 2 3; do
+    rgi_set "$RGIU1" T1; rgi_pay "$RGIU2"
+    RG_PRE="PATH=$(printf '%q' "$RGIKD"):\$PATH RG_CUT=$rgi_k " rg_run "$RGIF"
+    is "a Stop whose read is cut after field $rgi_k saves no session, keeps the transcript" \
+        "$RGIU1|T1" "$(rgi_get)"
+done
+"$TMUX_REAL" -L "$RG" set-option -pu -t "$RGAP" @cockpit_transcript
+rm -rf -- "$RGIKD"; unset RGIU1 RGIU2 RGIF RGIPAD RGILOOP RGIKD rgi_k
 # Dirty tree: ◆.
 printf 'a\nb\n' > "$RGDIR/f"
 rg_run "$RGPAY"; is "a finished, unreviewed diff exits 0" "GRC=0" "$(rg_rc)"

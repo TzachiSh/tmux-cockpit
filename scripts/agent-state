@@ -291,17 +291,7 @@ session)
     # that falls past the cap is skipped (the old value stays). Ends early on all three keys.
     has() { case "$payload" in *"\"$1\""*) return 0 ;; esac; return 1; }
     have_ids() { has session_id && has transcript_path && has cwd; }
-    # Bytes, not characters: a UTF-8 locale would count `read -n` in characters.
-    payload="" chunk="" lc_was=${LC_ALL-} lc_set=${LC_ALL+1}
-    LC_ALL=C
-    cap=4096 deadline=$(( SECONDS + 2 ))
-    while left=$(( deadline - SECONDS )); [ "$left" -gt 0 ] && [ ${#payload} -lt $cap ]; do
-        IFS= read -r -n $(( cap - ${#payload} )) -t "$left" chunk || { payload="$payload$chunk"; break; }
-        payload="$payload$chunk
-"; chunk=""
-        have_ids && break
-    done
-    if [ -n "$lc_set" ]; then LC_ALL=$lc_was; else unset LC_ALL; fi
+    read_capped 4096 have_ids
     # A value cut by the cap fails the UUID test or names no file, so it is never saved.
     json_str session_id; sid=$REPLY
     json_str transcript_path; tp=$REPLY
@@ -336,13 +326,9 @@ session)
         arg="=$was"; case "$arg" in *\;) arg="${arg%;}\\;" ;; esac
         tmux set-option -p -t "$pane" @cockpit_dir_before "$arg" 2>/dev/null
     fi
-    uuid='^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+    # Past the record test: $cur is from a whole read.
     new=""
-    if [[ $sid =~ $uuid ]]; then
-        # A new session (/clear, --resume): the old transcript is not its transcript.
-        [ "$cur" != "$sid" ] && new=1 && tmux set-option -pu -t "$pane" @cockpit_transcript 2>/dev/null
-        tmux set-option -p -t "$pane" @cockpit_session "$sid" 2>/dev/null
-    fi
+    save_session "$pane" "$sid" "$cur" && new=1
     # @cockpit_dir is written when the agent moved or a new session began, not on every prompt:
     # an agent driving a hand-made worktree with `git -C` sets it itself (docs/review.md), and
     # that holds until it cds or the session ends (#323). tmux takes an argument's trailing `;`

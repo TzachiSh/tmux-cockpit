@@ -35,13 +35,10 @@ d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")
 # shellcheck source=lib/hook.sh
 . "${d%/*}/lib/hook.sh" 2>/dev/null || exit 0
 
-# shellcheck disable=SC2317,SC2329  # called by read_payload
-have_fields() {
-    case $payload in
-        *'"transcript_path"'*'"session_id"'*|*'"session_id"'*'"transcript_path"'*) return 0 ;;
-    esac
-    return 1
-}
+# shellcheck disable=SC2317,SC2329  # called by read_capped
+has() { case "$payload" in *"\"$1\""*) return 0 ;; esac; return 1; }
+# shellcheck disable=SC2317,SC2329  # called by read_capped
+have_fields() { has session_id && has transcript_path && has stop_hook_active; }
 field() {
     local v
     json_str "$1"
@@ -61,8 +58,12 @@ json() {                            # <text> -> the JSON string body
 
 here=$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
-# Stops at the fields it needs: Claude Code keeps stdin open past the payload.
-read_payload have_fields
+# Stops at the fields it needs: Claude Code keeps stdin open past the payload. Capped at 4 KB
+# (#315): last_assistant_message can be any size, and the Stop example puts the fields used
+# here before it. Common fields it does not place (scratchpad_dir and others) may come
+# earlier: if the stop_hook_active token does not end within the first 4096 bytes, it reads
+# false and that Stop resets the rewake count.
+read_capped 4096 have_fields
 case "$payload" in *'"stop_hook_active":true'*|*'"stop_hook_active": true'*) active=true ;; *) active=false ;; esac
 
 # --- the ◆ flag, title and session id; also run when a turn is cut short ---------
@@ -80,12 +81,16 @@ flag_pane() {
         title=${title:0:120}
     fi
 
-    # One read, and a write only per changed value: every set-option redraws.
+    # One read, and a write only per changed value: every set-option redraws. A #707 cut
+    # empties every expansion after it, so the last field reads 1 only on a whole read, and
+    # only then is the session saved: a cut would read as a new id and drop the transcript.
+    # Parsed from the right, since a hand-set title may hold any byte.
     sep=$'\037'
-    cur=$(tmux display-message -p -t "$pane" \
-        '#{@cockpit_review}'"$sep"'#{@cockpit_title}'"$sep"'#{@cockpit_session}' 2>/dev/null)
-    review=${cur%%"$sep"*};  cur=${cur#*"$sep"}
-    title_cur=${cur%%"$sep"*}; sid_cur=${cur#*"$sep"}
+    f="#{@cockpit_review}$sep#{@cockpit_title}$sep#{@cockpit_session}$sep#{?#{pane_id},1,0}"
+    cur=$(tmux display-message -p -t "$pane" "$f" 2>/dev/null)
+    whole=${cur##*"$sep"}; cur=${cur%"$sep"*}
+    sid_cur=${cur##*"$sep"}; cur=${cur%"$sep"*}
+    review=${cur%%"$sep"*}; title_cur=${cur#*"$sep"}
 
     # 0 is a change to review, 1 a clean tree. Anything else leaves the mark as it is:
     # 2, the diff or the pane's work dir could not be read (#944, #959), 3, tmux-review
@@ -99,7 +104,8 @@ flag_pane() {
     fi
     # Untrusted strings get a call each: a bare `;` argument splits a tmux command list.
     [ -n "$title" ] && [ "$title" != "$title_cur" ] && tmux set-option -p -t "$pane" @cockpit_title "$title" 2>/dev/null
-    [ -n "$sid" ]   && [ "$sid"   != "$sid_cur"   ] && tmux set-option -p -t "$pane" @cockpit_session "$sid" 2>/dev/null
+    # The UUID test and the transcript drop are agent-state session's (#315).
+    [ "$whole" = 1 ] && save_session "$pane" "$sid" "$sid_cur"
 }
 
 # --- the rewake cap ------------------------------------------------------------
