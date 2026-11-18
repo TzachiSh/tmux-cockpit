@@ -191,17 +191,6 @@ cockpit_conf_unquoted_line() {  # <config file> <plugin folder> -> cockpit_unquo
     return 1
 }
 
-# The folder tpm installs plugins into and runs them from, by its own default rule (tpm
-# 99469c4a, tpm's set_default_tpm_path, line 26, and scripts/variables.sh, line 13): the XDG
-# tmux folder's plugins when an XDG tmux.conf is a file there, else ~/.tmux/plugins. A
-# TMUX_PLUGIN_MANAGER_PATH set in the server's environment wins in tpm, and is not read here.
-# Set, not printed: a $( ) would drop a folder name's trailing newlines.
-cockpit_tpm_dir() {           # -> cockpit_tpm_pd, tpm's plugin folder with no trailing /
-    local x="${XDG_CONFIG_HOME:-${HOME:-}/.config}/tmux"
-    cockpit_tpm_pd="${HOME:-}/.tmux/plugins"
-    [ ! -f "$x/tmux.conf" ] || cockpit_tpm_pd="$x/plugins"
-}
-
 # Does tpm load this folder's plugin? Read in tpm at commit 99469c4a, its
 # scripts/helpers/plugin_functions.sh: _get_user_tmux_conf (line 21) picks ONE user config,
 # the XDG tmux.conf when it is a file, else ~/.tmux.conf, and _tmux_conf_contents (line 37)
@@ -232,8 +221,8 @@ cockpit_conf_tpm() {          # <plugin folder> <config>... -> the config naming
     local f='' t='' tn='' run=0 hit=0 re='^[[:blank:]]*set(-option)? +-g +@plugin'
     shift
     cockpit_tpm_file=''; cockpit_tpm_why=''; cockpit_tpm_conf=''; cockpit_tpm_runs=''
-    cockpit_tpm_dir; pd=$cockpit_tpm_pd; tc="${HOME:-}/.tmux.conf"
-    [ ! -f "$x/tmux.conf" ] || tc="$x/tmux.conf"
+    pd="${HOME:-}/.tmux/plugins"; tc="${HOME:-}/.tmux.conf"
+    [ ! -f "$x/tmux.conf" ] || { pd="$x/plugins"; tc="$x/tmux.conf"; }
     for c in "$@"; do
         nm=0; hm=0; sp=''
         while IFS= read -r l || [ -n "$l" ]; do
