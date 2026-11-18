@@ -403,17 +403,60 @@ next_base() {                 # <dir> <current-mode>
     printf '%s\n' "$first"
 }
 
+# 0 when DIR or a dir above it holds a .git, file or dir, up to the first ceiling: as
+# git(1) says of GIT_CEILING_DIRECTORIES, the walk never goes up into one. git's own
+# search found no repo, and this second-guesses it: no exit code or output of git's
+# tells "no repo" from "a repo refused", only its words (#1286). Both sides are physical
+# paths, as git's are: it walks up from getcwd() after its -C, and git(1) says of the
+# ceiling list: "Normally, Git has to read the entries in this list and resolve any
+# symlink that might be present in order to compare them with the current directory."
+# and "you can add an empty entry to the list to tell Git that the subsequent entries
+# are not symlinks and needn't be resolved". setup.c (canonicalize_ceiling_entry) also
+# drops an entry that is not absolute or does not resolve. A walk up the logical path
+# would miss the repo a symlink points into. Every gap errs toward 2, a kept mark: a dir
+# that does not resolve is no answer (0); dropping a relative or unresolvable ceiling
+# entry, as setup.c does, widens the walk, and so does a ceiling that matches nothing;
+# and GIT_DISCOVERY_ACROSS_FILESYSTEM's stop at a filesystem boundary is left out, so
+# the walk can find a .git git would not reach.
+git_entry_above() {           # <dir>
+    local d up c raw lit=''
+    local -a ceil=()
+    d=$(cd -P -- "$1" 2>/dev/null && pwd -P) || return 0
+    while IFS= read -r -d : raw; do
+        case $raw in
+            '') lit=1 ;;
+            /*) if [ -n "$lit" ]; then ceil+=("$raw")
+                elif c=$(cd -P -- "$raw" 2>/dev/null && pwd -P); then ceil+=("$c"); fi ;;
+        esac
+    done <<< "${GIT_CEILING_DIRECTORIES-}:"
+    while :; do
+        { [ -e "$d/.git" ] || [ -L "$d/.git" ]; } && return 0
+        case $d in ''|/) return 1 ;; esac
+        up=${d%/*}; up=${up:-/}
+        for c in "${ceil[@]}"; do
+            [ -n "$c" ] && [ "${c%/}" = "${up%/}" ] && return 1
+        done
+        d=$up
+    done
+}
+
 # Exit 0 when PANE's tree differs from its review base -- the Stop hook's
 # question -- 1 when it does not, and 2 when that cannot be told: a tree_diff that fails
-# prints nothing too, and is no clean tree (#944), nor is a pane with no work dir (#959).
+# prints nothing too, and is no clean tree (#944), nor is a pane with no work dir (#959),
+# nor a repo git refuses or cannot read (#1286).
 # Reads the mode the pane's own review chose with b, if any.
 delta_mode() {                # <pane>
     local pane=$1 dir root sess mode
     dir=$(pane_workdir "$pane")
     [ -n "$dir" ] || return 2          # no work dir for the pane: it cannot tell (#959)
     root=$(git_root "$dir")
-    # Outside any git tree there is nothing to review: 1, which clears the mark.
-    git -C "$root" --no-optional-locks rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 1
+    # Outside any git tree there is nothing to review: 1, which clears the mark. git fails
+    # with the same 128 for a repo it refuses (safe.directory) or cannot read, so a .git
+    # on the walk up means it cannot tell: 2, which keeps the mark (#1286).
+    if ! git -C "$root" --no-optional-locks rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        git_entry_above "$dir" && return 2
+        return 1
+    fi
     sess=$(session_dir "$pane" "$root")
     mode=$(cat -- "$sess/comments.md.base" 2>/dev/null)
     export COCKPIT_REVIEW_BASE=${mode:-auto}
