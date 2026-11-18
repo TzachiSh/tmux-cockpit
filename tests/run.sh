@@ -5251,8 +5251,8 @@ elif ! ( . "$DIR/scripts/lib/vnum.sh"
     skip_ "the first-start hint (tmux below 3.8: the plugin loads nothing there)"
 else
 FH=$(mktmpd); mkdir -p "$FH/wd" "$FH/p"
-for fh_n in 1 2 3 4; do
-    SOCKS="$SOCKS cockpit-fh-$$-$fh_n cockpit-fho-$$-$fh_n cockpit-fhp-$$-$fh_n"
+for fh_n in 1 2 3; do
+    for fh_s in fh fho fhp fhq; do SOCKS="$SOCKS cockpit-$fh_s-$$-$fh_n"; done
 done
 fh_box() {                    # <name> -> a copy of the plugin in $FH/p/<name>, its full path
     local p="$FH/p/$1" d
@@ -5311,9 +5311,9 @@ is "a first client is shown the hint, a second is not, the hook is gone" "1|0|1|
 until_out 1 fh_reloaded 1 3
 fh_r1="$(fh_cap "cockpit-fho-$$-1" "$fh_want")|$(fh_cap "cockpit-fho-$$-1" 'config reloaded')"
 fh_r1="$fh_r1|$(fh_hook 1)"
-fh_outer "cockpit-fhp-$$-1" "$(fh_in 1) attach -t t"
-until_cap "cockpit-fhp-$$-1" o '*[!\ ]*'
-fh_r1="$fh_r1|$(fh_cap "cockpit-fhp-$$-1" "$fh_want")"
+fh_outer "cockpit-fhq-$$-1" "$(fh_in 1) attach -t t"
+until_cap "cockpit-fhq-$$-1" o '*[!\ ]*'
+fh_r1="$fh_r1|$(fh_cap "cockpit-fhq-$$-1" "$fh_want")"
 "$TMUX_REAL" -L "cockpit-fh-$$-1" set-environment -g COCKPIT_TUI_BIN "$COCKPIT_TUI_BIN"
 "$TMUX_REAL" -L "cockpit-fho-$$-1" send-keys -t o C-b R
 until_cap "cockpit-fho-$$-1" o '*config reloaded*'
@@ -5339,9 +5339,9 @@ until_out '?*' "$TMUX_REAL" -L "cockpit-fh-$$-3" list-clients -F '#{client_name}
 until_cap "cockpit-fho-$$-3" o '*cockpit-tui is missing*'
 is "a folder holding # shapes: the first client is shown the hint as written, nothing ran" \
    "1|" "$(fh_cap "cockpit-fho-$$-3" "$fh_w3")|$(find "$FH" -name pwned)"
-for fh_n in 1 2 3 4; do
-    for fh_s in cockpit-fhp-$$-$fh_n cockpit-fho-$$-$fh_n cockpit-fh-$$-$fh_n; do
-        "$TMUX_REAL" -L "$fh_s" kill-server >/dev/null 2>&1
+for fh_n in 1 2 3; do
+    for fh_s in fhq fhp fho fh; do
+        "$TMUX_REAL" -L "cockpit-$fh_s-$$-$fh_n" kill-server >/dev/null 2>&1
     done
 done
 unset -f fh_box fh_conf fh_outer fh_in fh_cap fh_log fh_reloaded fh_hook
