@@ -247,7 +247,76 @@ subs_build() {
     subs_cmd=(if-shell -F -t "$pane" "$cond" "$body")
 }
 
+# safe_word <text> <cap> -> REPLY: the run of [A-Za-z0-9._-] that starts <text>, at most <cap>
+# bytes. Nothing else ever leaves it: the text is untrusted and lands in a tmux option the bar
+# and board print. The letters are spelled out, not a range: a range follows the locale.
+al=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789
+safe_word() {
+    local w=${1%%[!"$al"._-]*}
+    REPLY=${w:0:$2}
+}
+# tool_name <- the payload's "tool_name", only when its string is whole: one cut by a cap or
+# an escape names no tool. The key is matched with its quotes, so text inside a string, where
+# the quotes arrive escaped, cannot match.
+tool_name() {
+    local LC_ALL=C re='"tool_name": ?"([^"\\]*)"'
+    REPLY=""; [[ $payload =~ $re ]] && safe_word "${BASH_REMATCH[1]}" 64
+}
+# prog_name <- the program a Bash tool_input's command runs: its first word, path dropped, 32
+# at most, and only when that whole word is [A-Za-z0-9._/+-]. Anything else names no program,
+# and the ask reads plain "Bash": a word with `=`, a quote, `(`, `;` or `$` may carry a
+# value, an argument or a path, and the board shows it to anyone at the screen (#1330). So
+# `FOO=1 git` names none either (#1334: skipping NAME=value leaked a value three times).
+# JSON's \n, \t and \r are blanks. A word cut by the 4 KB cap is cut short, no more.
+prog_name() {
+    local LC_ALL=C s w re='"command": ?"([^"]*)'
+    REPLY=""
+    s=${payload#*\"tool_input\"}
+    [ "$s" != "$payload" ] && [[ $s =~ $re ]] || return 0
+    s=${BASH_REMATCH[1]}; s=${s//\\[ntr]/ }
+    s=${s#"${s%%[! $'\t']*}"}; w=${s%%[ $'\t']*}
+    case $w in ''|*[!"$al"._/+-]*) return 0 ;; esac
+    w=${w##*/}; REPLY=${w:0:32}
+}
+
+is_event() { case "$payload" in *"\"hook_event_name\":\"$1\""*) return 0 ;;
+    *"\"hook_event_name\": \"$1\""*) return 0 ;; esac; return 1; }
+
+errmsg=""
 case "$state" in
+needs-input|error)
+    # PermissionRequest and PostToolUseFailure name the tool (#1330). The poller has no
+    # payload, and a terminal is a person typing the command.
+    [ -z "$poll" ] && [ ! -t 0 ] || state_only=1
+    # $d is the script's own path, resolved once at the top: nothing on this path reassigns it.
+    # shellcheck source=lib/hook.sh
+    if [ -n "${state_only:-}" ]; then :
+    elif ! . "${d%/*}/lib/hook.sh" 2>/dev/null; then :
+    elif [ "$state" = needs-input ]; then
+        # The tool name and the command's head come before the rest of tool_input, which can
+        # be a whole file: 4 KB is read, no more.
+        read_capped 4096 true
+        if is_event PermissionRequest; then
+            tool_name; msg=$REPLY
+            if [ "$msg" = Bash ]; then prog_name; [ -z "$REPLY" ] || msg="Bash: $REPLY"; fi
+            # Before the sticky guard, as notify writes: a pane already waiting can be asked
+            # again. Argv, not a format. No tool, no write, so notify's ask stays.
+            [ -z "$msg" ] || tmux set-option -p -t "$pane" @panestate_msg "$msg" 2>/dev/null
+        fi
+    else
+        # 4 KB, as above: bash reads a pipe a byte per syscall, and a failed Write's tool_input
+        # can be a whole file, which held the hook 2 s (#1334). is_interrupt comes after
+        # tool_input and the error text: past the cap it is not seen, and the error is
+        # written, as before #1330.
+        read_capped 4096 true
+        if is_event PostToolUseFailure; then
+            # A tool the person stopped (Esc) did not fail.
+            case "$payload" in *'"is_interrupt":true'*|*'"is_interrupt": true'*) exit 0 ;; esac
+            # The tool name only: the error text may quote a path or a file's contents.
+            tool_name; [ -z "$REPLY" ] || errmsg="$REPLY failed"
+        fi
+    fi
+    ;;
 notify)
     # ESC-cancel fires no hook at all; the idle Notification is the only way out of running.
     d=${BASH_SOURCE[0]}; case $d in (*/*) ;; (*) d=./$d ;; esac
@@ -258,7 +327,7 @@ notify)
     . "${d%/*}/lib/hook.sh" 2>/dev/null || exit 0
     read_payload false
     # The English text match covers Claude versions that send no notification_type.
-    json_str notification_type
+    json_str notification_type; ntype=$REPLY
     case "$REPLY" in
         permission_prompt|elicitation_dialog) state=needs-input ;;
         # The front end relays these for an agent view (#174): the pane is then the poller's.
@@ -279,7 +348,15 @@ notify)
     fi
     # Written here, not after the sticky guard below: a pane already on needs-input
     # can be asked something new, and that newer text must still land.
-    if [ "$state" = needs-input ]; then
+    # A permission_prompt follows its PermissionRequest about 6 s later (#1330): a pane already
+    # waiting with an ask keeps that hook's text, which names the tool. Any other state's text
+    # (an error's) gives way. One read; a cut one reads no 1 and writes, as before.
+    keep=""
+    if [ "$ntype" = permission_prompt ]; then
+        keep=$(tmux display-message -p -t "$pane" \
+            '#{?#{&&:#{==:#{@panestate},needs-input},#{@panestate_msg}},1,0}' 2>/dev/null)
+    fi
+    if [ "$state" = needs-input ] && [ "$keep" != 1 ]; then
         json_str message
         # Untrusted text bound for a tmux format: strip control chars and cap it.
         msg=${REPLY//[$'\001'-$'\037']/}
@@ -458,7 +535,13 @@ fi
 case "$state" in
     running|off) body="$body ; set-option -pu -t $pane @panestate_msg" ;;
     # The poller's done/error follow a needs-input whose ask would otherwise stay.
-    done|error) [ -z "$poll" ] || body="$body ; set-option -pu -t $pane @panestate_msg" ;;
+    done) [ -z "$poll" ] || body="$body ; set-option -pu -t $pane @panestate_msg" ;;
+    # A failed tool's name (#1330), inside `when`: a sticky ask is not overwritten. Only
+    # safe_word's bytes and " failed", so the single quotes hold.
+    error) if [ -n "$poll" ]; then body="$body ; set-option -pu -t $pane @panestate_msg"
+           elif [ -n "$errmsg" ]; then
+               body="$body ; set-option -p -t $pane @panestate_msg '$errmsg'"
+           fi ;;
 esac
 
 # A hook of this pane's own session (TMUX_PANE is its pane) that is not an agent view's relayed
