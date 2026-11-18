@@ -14,6 +14,7 @@ Nothing reads these schemas at run time. The Rust side is `tui/src/store.rs`, a
 | `agent-state.schema.json` | one agent's state in today's hook words |
 | `agent-intent.schema.json` | an open decision, approval or claim, its words behind a ref |
 | `agent-message.schema.json` | one message between agents, its payload ids and refs only |
+| `agent-event.schema.json` | one event from an agent adapter to the core, a kind and ids only (docs/events.md) |
 
 ## Rules
 
@@ -25,7 +26,8 @@ Nothing reads these schemas at run time. The Rust side is `tui/src/store.rs`, a
   no subjects, no paths and no prompt content. Words an agent wants to share go
   in a private file, and the record carries a ref to it.
 - **Ids are opaque:** every id field (`agent_id`, `intent_id`, `from_agent`,
-  `msg_id`, `from`, `to`, `correlation_id`, the payload's `intent_id`) is 16
+  `msg_id`, `from`, `to`, `correlation_id`, the payload's `intent_id`,
+  agent-event's `session`) is 16
   to 64 lowercase hex, and so is each `agent-message.subject` token after
   `msg.`. No word or title fits one as written. A hex-encoded one still fits,
   and only the writer keeps it out. Pane ids (`%N`), the github-budget key (16
@@ -148,5 +150,5 @@ unreadable. It exits 1 on any surprise, including a folder with no valid or no
 invalid example, and 2 when it cannot start: a bad argument or a folder it
 cannot read. `cargo test` with the same manifest runs its own tests.
 
-Nothing runs it automatically (#1021). Whoever changes a file under
-`contracts/` runs it and quotes the output in the PR. The reviewer reruns it.
+CI runs the check and its tests in the `tui` workflow, on the ubuntu-24.04
+leg only (#1021, #1330).

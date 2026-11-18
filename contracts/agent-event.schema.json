@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:tmux-cockpit:contracts:agent-event",
+  "title": "agent-event",
+  "description": "One event from an agent adapter to the core, one JSON object per line (docs/events.md). Ids, a kind, an outcome and a timestamp only: no answer, no prompt, no tool input.",
+  "type": "object",
+  "properties": {
+    "schema_version": { "const": 1 },
+    "agent": {
+      "description": "The adapter's name, written by the adapter's code. The core logs it and never branches on it.",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{1,31}$"
+    },
+    "kind": {
+      "enum": ["turn.start", "turn.end", "tool.start", "tool.end", "input.needed", "session.end"]
+    },
+    "pane": { "type": "string", "pattern": "^%[0-9]{1,10}$" },
+    "session": {
+      "description": "The agent's session id, opaque. Separators stripped: a UUID becomes 32 hex.",
+      "$ref": "#/$defs/id"
+    },
+    "at": { "$ref": "#/$defs/utc" },
+    "outcome": {
+      "description": "How a turn ended. Required on turn.end, refused on every other kind.",
+      "enum": ["answer", "aborted", "refusal", "error"]
+    },
+    "failed": {
+      "description": "Whether the tool call failed. tool.end only.",
+      "type": "boolean"
+    }
+  },
+  "required": ["schema_version", "agent", "kind", "pane", "session", "at"],
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": { "properties": { "kind": { "const": "turn.end" } }, "required": ["kind"] },
+      "then": { "required": ["outcome"] },
+      "else": { "properties": { "outcome": false } }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "tool.end" } }, "required": ["kind"] },
+      "else": { "properties": { "failed": false } }
+    }
+  ],
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[0-9a-f]{16,64}$" },
+    "utc": {
+      "description": "ISO-8601 in UTC, Z only, optional fraction.",
+      "type": "string",
+      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.[0-9]{1,9})?Z$"
+    }
+  }
+}
