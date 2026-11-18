@@ -405,7 +405,7 @@ consider() {  # consider <path> <line> <col> — record it if it exists
     esac
     case "$p" in
         /*) abs=$p ;;
-        *)  abs=$dir/$p ;;
+        *)  abs=$base/$p ;;
     esac
     [ -e "$abs" ] || return 1
     abs=${abs//\/.\//\/}                    # "dir/./bin/x" reads badly in the message
@@ -461,6 +461,27 @@ try_token() {
     return 1
 }
 
+# One stripped token: its own shapes, then the inside of a wrapper. 0 when it
+# recorded something.
+try_raw() {
+    local tok=$1 inner
+    try_token "$tok" && return 0
+    # Claude Code's Write(path), Read(path:12): unwrap and try the inside, but
+    # not tsc's file(12,3). Two statements: in one `[[ ]] && [[ ]]` chain bash
+    # clears BASH_REMATCH before the second expands, and set -u dies.
+    if [[ $tok =~ ^[A-Za-z_][A-Za-z0-9_-]*\((.+)\)$ ]]; then
+        inner=${BASH_REMATCH[1]}
+        # [0123456789], not [0-9]: in a UTF-8 locale [0-9] also matches ² and ١ (#842)
+        if ! [[ $inner =~ ^[0123456789]+,[0123456789]+$ ]]; then
+            strip_ends "$inner"
+            [ -n "$TOK" ] && try_token "$TOK" && return 0
+        fi
+    fi
+    return 1
+}
+
+# The folder a relative candidate resolves against.
+base=$dir
 # set -f: word splitting also globs, and "rm *" on a line expanded against the
 # server's cwd into files that existed and got opened.
 set -f
@@ -471,18 +492,7 @@ for raw in $line; do
     [ "$ntok" -gt 500 ] && break
     strip_ends "$raw"; tok=$TOK
     [ -n "$tok" ] || continue
-    try_token "$tok" && continue
-    # Claude Code's Write(path), Read(path:12): unwrap and try the inside, but
-    # not tsc's file(12,3). Two statements: in one `[[ ]] && [[ ]]` chain bash
-    # clears BASH_REMATCH before the second expands, and set -u dies.
-    if [[ $tok =~ ^[A-Za-z_][A-Za-z0-9_-]*\((.+)\)$ ]]; then
-        inner=${BASH_REMATCH[1]}
-        # [0123456789], not [0-9]: in a UTF-8 locale [0-9] also matches ² and ١ (#842)
-        if ! [[ $inner =~ ^[0123456789]+,[0123456789]+$ ]]; then
-            strip_ends "$inner"
-            [ -n "$TOK" ] && try_token "$TOK" && continue
-        fi
-    fi
+    try_raw "$tok"
 done
 set +f
 
