@@ -184,7 +184,8 @@ pub fn now() -> u64 {
 
 /// `None` when tmux did not answer: no server is not "no sessions".
 pub fn fetch() -> Option<Vec<Sess>> {
-    tmux(&["list-panes", "-a", "-F", &format()]).map(|o| parse(&o))
+    // #1248: cockpit's own popup, a pane on tmux next-3.9, is no agent of a session
+    tmux(&["list-panes", "-a", "-f", super::NOT_POPUP, "-F", &format()]).map(|o| parse(&o))
 }
 
 /// Needs-you first (waiting, the longest wait first and the unstamped after

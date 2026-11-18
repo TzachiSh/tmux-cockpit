@@ -93,6 +93,17 @@ cockpit_noted_key() {         # <name> <record option> -> the key
   printf '%s' "$first"
 }
 
+# Cockpit's own popups (#1248). tmux next-3.9 makes display-popup a modal floating pane, so a
+# list-panes or a #{P:} walk sees it. Every cockpit popup's command starts with the mark, a
+# shell assignment its program never reads, and the scans skip a modal pane started so: a
+# user's own modal pane still counts. tmux keeps the command whole as the pane's argv, and
+# #{pane_start_command} prints it through args_escape, which double-quotes any string with a
+# space: so the mark reads back as `"COCKPIT_POPUP=1 ` at the start, whatever follows. The
+# flag is read as true or false, never as empty: tmux 3.8 already prints 0 or 1 for it. The
+# board holds a copy of the filter (tui/src/data.rs NOT_POPUP).
+COCKPIT_POPUP_MARK='COCKPIT_POPUP=1 '
+COCKPIT_NOT_POPUP='#{?pane_modal_flag,#{?#{m:"COCKPIT_POPUP=1 *,#{pane_start_command}},0,1},1}'
+
 # A file name as a title: no control character and no bidi mark, which would
 # reorder what the eye reads (U+061C, U+200E-F, U+202A-E, U+2066-9, as UTF-8). tmux
 # refuses a window name holding a control character (#366), and a popup border

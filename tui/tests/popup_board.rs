@@ -87,6 +87,16 @@ fn a_cockpit_popup_is_no_board_row_and_a_users_modal_pane_is() {
     assert_eq!(ids, [mine], "the popup {popup} is listed, or the user's modal pane is not");
 }
 
+/// The board's filter is lib/fmt.sh's, character for character, so the shell scans and the
+/// board skip the same panes (#1248).
+#[test]
+fn the_boards_popup_filter_is_the_shells() {
+    let fmt = concat!(env!("CARGO_MANIFEST_DIR"), "/../scripts/lib/fmt.sh");
+    let read = ". \"$1\" && printf %s \"$COCKPIT_NOT_POPUP\"";
+    let out = Command::new("bash").args(["-c", read, "_", fmt]).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout), cockpit_tui::data::NOT_POPUP);
+}
+
 /// #1061, #1066: this binary's rig row, started again with TERM and HUP ignored and blocked, as a
 /// suite under nohup or with them blocked hands them down: the rig's server, told to
 /// go by a TERM it sends itself, is gone afterwards with its panes.
