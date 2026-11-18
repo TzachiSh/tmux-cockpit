@@ -191,6 +191,17 @@ cockpit_conf_unquoted_line() {  # <config file> <plugin folder> -> cockpit_unquo
     return 1
 }
 
+# Where tpm looks, read in tpm at commit 99469c4a: its one user config, the XDG tmux.conf
+# when that is a file, else ~/.tmux.conf (scripts/helpers/plugin_functions.sh,
+# _get_user_tmux_conf, line 21), and its plugin folder, the XDG tmux folder's plugins when
+# that tmux.conf is there, else ~/.tmux/plugins (tpm's tpm, set_default_tpm_path, line 26).
+# Sets cockpit_tpm_conf and cockpit_tpm_dir.
+cockpit_conf_tpm_where() {
+    local x="${XDG_CONFIG_HOME:-${HOME:-}/.config}/tmux"
+    cockpit_tpm_dir="${HOME:-}/.tmux/plugins"; cockpit_tpm_conf="${HOME:-}/.tmux.conf"
+    [ ! -f "$x/tmux.conf" ] || { cockpit_tpm_dir="$x/plugins"; cockpit_tpm_conf="$x/tmux.conf"; }
+}
+
 # Does tpm load this folder's plugin? Read in tpm at commit 99469c4a, its
 # scripts/helpers/plugin_functions.sh: _get_user_tmux_conf (line 21) picks ONE user config,
 # the XDG tmux.conf when it is a file, else ~/.tmux.conf, and _tmux_conf_contents (line 37)
@@ -214,12 +225,11 @@ cockpit_conf_unquoted_line() {  # <config file> <plugin folder> -> cockpit_unquo
 # this order: conf (no line in tpm's own config, cockpit_tpm_conf, names it), run (no run
 # line of tpm) and folder (tpm runs cockpit_tpm_runs, not this folder) (#1302).
 cockpit_conf_tpm() {          # <plugin folder> <config>... -> the config naming it
-    local d=$1 x="${XDG_CONFIG_HOME:-${HOME:-}/.config}/tmux" pd tc l c spec arg nm hm sp
+    local d=$1 pd tc l c spec arg nm hm sp
     local f='' t='' tn='' run=0 hit=0 re='^[[:blank:]]*set(-option)? +-g +@plugin'
     shift
-    cockpit_tpm_file=''; cockpit_tpm_why=''; cockpit_tpm_conf=''; cockpit_tpm_runs=''
-    pd="${HOME:-}/.tmux/plugins"; tc="${HOME:-}/.tmux.conf"
-    [ ! -f "$x/tmux.conf" ] || { pd="$x/plugins"; tc="$x/tmux.conf"; }
+    cockpit_tpm_file=''; cockpit_tpm_why=''; cockpit_tpm_runs=''
+    cockpit_conf_tpm_where; pd=$cockpit_tpm_dir; tc=$cockpit_tpm_conf
     for c in "$@"; do
         nm=0; hm=0; sp=''
         while IFS= read -r l || [ -n "$l" ]; do
@@ -256,7 +266,6 @@ cockpit_conf_tpm() {          # <plugin folder> <config>... -> the config naming
         cockpit_tpm_why="${cockpit_tpm_why:+$cockpit_tpm_why }folder"
         cockpit_tpm_runs="$pd/$tn"
     fi
-    cockpit_tpm_conf=$tc
     return 2
 }
 
