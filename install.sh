@@ -158,9 +158,9 @@ if [ "$check" -eq 1 ]; then
         cockpit_conf_wired "$DIR" "${cfs[@]}"
         case $? in
             0) wired=1; conf=$cockpit_wired ;;
-            2) conf=$cockpit_wired
-               wire_fix="a tpm @plugin line names cockpit, but tpm's run line, or $DIR"
-               wire_fix="$wire_fix as tpm's plugin folder, is not there" ;;
+            2) conf=$cockpit_wired      # the fix names each check that failed (#1302)
+               wire_fix="a tpm @plugin line names cockpit, not confirmed:"
+               wire_fix="$wire_fix $(cockpit_conf_tpm_text "$DIR")" ;;
             *) # A line that names the plugin and loads no copy from here: say which, and
                # which folder it runs, since bootstrap.sh then appends nothing (#1067).
                if cockpit_conf_mention "$DIR" "${cfs[@]}"; then
@@ -177,14 +177,17 @@ if [ "$check" -eq 1 ]; then
                fi ;;
         esac
     fi
-    # A line with no quote around the path might not load from this folder (#1046, #1060).
-    if [ "$wired" -eq 1 ] && ! cockpit_bare_carries "$DIR" &&
-       n=$(cockpit_conf_bare_line "$conf" "$DIR"); then
+    # A line whose path sh reads unquoted might not load from this folder: the bare line
+    # (#1046, #1060), and '<path>' or "<path>", which sh reads unquoted too (#1303).
+    if [ "$wired" -eq 1 ] && cockpit_conf_unquoted_line "$conf" "$DIR"; then
+        n=$cockpit_unquoted_n
         case "$DIR" in
             *[[:cntrl:]]*) wire_fix='the folder path holds a control character: move the folder' ;;
             *) wire_fix="replace line $n with $(cockpit_conf_line "$DIR")" ;;
         esac
-        row warn config "$conf line $n" "unquoted, might not load from this folder; $wire_fix"
+        why=unquoted
+        [ "$cockpit_unquoted_form" = bare ] || why='sh reads its path unquoted'
+        row warn config "$conf line $n" "$why, might not load from this folder; $wire_fix"
     elif [ "$wired" -eq 1 ]; then row ok config "$conf loads cockpit"
     elif [ -n "$conf" ];    then row fail config "$conf" "$wire_fix"
     else row fail config 'no tmux config' "$wire_fix"
@@ -566,8 +569,8 @@ else
                "$HOME/.tmux.conf" "$(cockpit_conf_line "$DIR")" >&2
     elif [ "$wst" -eq 2 ]; then
         # --check fails this row; a run-shell line beside tpm's would load the plugin twice.
-        printf '\ntpm seems to manage cockpit in %s, not confirmed: %s\nRun install.sh --check.\n' \
-               "$cockpit_wired" "no tpm run line, or $DIR is not in tpm's plugin folder." >&2
+        printf '\ntpm seems to manage cockpit in %s, not confirmed: %s.\n%s\n' "$cockpit_wired" \
+               "$(cockpit_conf_tpm_text "$DIR")" 'Run install.sh --check.' >&2
     elif [ "$wst" -ne 0 ] && cockpit_conf_mention "$DIR" "${cfs[@]}"; then
         # bootstrap.sh appends nothing here, and a line added by hand could load two copies.
         # One decision, one message: the line bootstrap.sh prints (#1067).
