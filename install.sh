@@ -9,7 +9,13 @@
 set -uo pipefail
 
 # Resolved (-P), so the uninstall guard matches links made through a symlinked checkout.
-DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The plugin root holds the REAL file: `me` follows any chain of links, a relative
+# target read from its own link's folder (#1290).
+me=${BASH_SOURCE[0]}; case $me in (*/*) ;; (*) me=./$me ;; esac
+[ -L "$me" ] && me=$(n=0
+    while [ -L "$me" ] && [ $((n += 1)) -le 40 ] && t=$(readlink "$me"); do
+        case $t in (/*) me=$t ;; (*) me=${me%/*}/$t ;; esac; done; printf %s "$me")
+DIR="$(cd -P "$(dirname "$me")" && pwd)"
 BIN="${XDG_BIN_HOME:-${HOME:-}/.local/bin}"
 if [ -z "${XDG_BIN_HOME:-}" ] && [ -z "${HOME:-}" ]; then
     printf 'HOME is not set and XDG_BIN_HOME is not set; cannot pick an install directory\n' >&2
@@ -329,14 +335,19 @@ if [ "$uninstall" -eq 0 ] && [ "$dry" -eq 0 ]; then
     "$DIR/scripts/tui-fetch" --required || rc=1
 fi
 
-# readlink -f is GNU-only, so the chain is resolved by hand.
+# readlink -f is GNU-only, so the chain is resolved by hand. At most 40 links, as the
+# kernel follows: 1 and no output for a cycle or a longer chain (#1288).
 resolve_link() {
-    local p="$1" d b
+    local p="$1" d b n=0
     while [ -L "$p" ]; do
+        [ "$((n += 1))" -le 40 ] || return 1
         d=$(dirname "$p"); b=$(readlink "$p")
         case "$b" in /*) p="$b" ;; *) p="$d/$b" ;; esac
     done
     printf '%s/%s\n' "$(cd -P "$(dirname "$p")" && pwd)" "$(basename "$p")"
+}
+cycle_msg() {                 # <link>
+    printf 'refusing: %s is a symlink cycle (or a chain of more than 40 links)\n' "$1" >&2
 }
 
 
@@ -349,10 +360,14 @@ if [ "$hooks" -eq 1 ] && [ "$uninstall" -eq 1 ]; then
     [ -n "${HOME:-}" ] || { printf 'HOME is not set; cannot locate ~/.claude/settings.json\n' >&2; exit 1; }
     settings="$HOME/.claude/settings.json"
     if [ ! -e "$settings" ]; then
+        # -e is false on a cycle too: that is no absent file, and it is said (#1288).
+        if [ -L "$settings" ] && ! resolve_link "$settings" >/dev/null; then
+            cycle_msg "$settings"; exit 1
+        fi
         printf 'hooks     no %s, nothing to remove\n' "$settings"
         exit "$rc"
     fi
-    real=$(resolve_link "$settings")
+    real=$(resolve_link "$settings") || { cycle_msg "$settings"; exit 1; }
     orig=$(cat "$real") || { printf 'cannot read %s\n' "$settings" >&2; exit 1; }
     printf '%s' "$orig" | jq -e . >/dev/null 2>&1 \
         || { printf '%s is not valid JSON; refusing to touch it\n' "$settings" >&2; exit 1; }
@@ -414,9 +429,11 @@ if [ "$hooks" -eq 1 ]; then
     if [ -e "$settings" ]; then
         # Write at the resolved target: replacing a dotfiles-managed symlink with
         # a plain file loses the merge on the manager's next apply.
-        real=$(resolve_link "$settings")
+        real=$(resolve_link "$settings") || { cycle_msg "$settings"; exit 1; }
         orig=$(cat "$real") || { printf 'cannot read %s\n' "$settings" >&2; exit 1; }
     elif [ -L "$settings" ]; then
+        # -e is false on a cycle too: only a chain that ends is dangling (#1288).
+        resolve_link "$settings" >/dev/null || { cycle_msg "$settings"; exit 1; }
         # Seeding would follow the link to wherever it points, outside ~/.claude.
         printf 'refusing to follow the dangling symlink %s\n' "$settings" >&2
         exit 1

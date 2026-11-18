@@ -9,8 +9,8 @@ if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
            "${BASH_SOURCE[0]##*/}" "${BASH_VERSION:-unknown}" >&2
     exit 1
 fi
-d=${BASH_SOURCE[0]}
-[ -L "$d" ] && d=$(case $d in (*/*) ;; (*) d=./$d ;; esac; n=0
+d=${BASH_SOURCE[0]}; case $d in (*/*) ;; (*) d=./$d ;; esac
+[ -L "$d" ] && d=$(n=0
     while [ -L "$d" ] && [ $((n += 1)) -le 40 ] && t=$(readlink "$d"); do
         case $t in (/*) d=$t ;; (*) d=${d%/*}/$t ;; esac; done; printf %s "$d")
 # shellcheck source=lib/pane.sh
