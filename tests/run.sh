@@ -4466,6 +4466,31 @@ rlk_count() {
             l4 = l4 "; done; printf %s " q ")" }
         END { print n + 0 }' "$@"
 }
+# install.sh and bootstrap.sh reached through a relative link to the file itself (#1290), in
+# modes that write nothing, with HOME a folder of the block's. bootstrap.sh's link sits in a
+# folder with no install.sh beside it: its --check execs "$DIR/install.sh".
+ln -s ../../../repo/install.sh "$RLK/a/b/bin/install.sh"
+ln -s ../../repo/bootstrap.sh "$RLK/c/bin/bootstrap.sh"
+mkdir -p "$RLK/h"
+rlk_root() {                  # <link> <args>... -> "<exit> <last line of stdout>"
+    local o rc
+    o=$(cd "$RLK/u/v/w/x" &&
+        env -u XDG_CONFIG_HOME HOME="$RLK/h" XDG_BIN_HOME="$RLK/h/bin" "$@" 2>/dev/null)
+    rc=$?
+    printf '%s %s' "$rc" "${o##*$'\n'}"
+}
+if ! command -v jq >/dev/null 2>&1; then
+    skip_ "a relative link: install.sh finds the plugin root past it (no jq)"
+    skip_ "a relative link: bootstrap.sh finds the plugin root past it (no jq)"
+else
+    is "a relative link: install.sh finds the plugin root past it (--hooks --dry-run)" \
+        "0 dry-run: nothing written" "$(rlk_root "$RLK/a/b/bin/install.sh" --hooks --dry-run)"
+    # The doctor's exit is its worst row, 0 to 2; a missing install.sh is 127.
+    is "a relative link: bootstrap.sh finds the plugin root past it (--check runs the doctor)" \
+        "doctor" "$(rlk_root "$RLK/c/bin/bootstrap.sh" --check | {
+            read -r rlk_n _
+            case $rlk_n in 0|1|2) echo doctor ;; *) echo "exit $rlk_n" ;; esac; })"
+fi
 # Every site, listed by file: a new one means a line here, never only a new total. 27 sites
 # in 19 files: #1290 added cockpit-board, cockpit-panel, tui-fetch and the three at the root.
 rlk_sites='bootstrap.sh:1
@@ -4492,7 +4517,8 @@ is "all 27 self-locating sites carry the whole four-line form, file by file" "$r
         [ -f "$rlk_s" ] || continue
         rlk_n=$(rlk_count "$rlk_s"); [ "$rlk_n" -eq 0 ] || printf '%s:%s\n' "$rlk_s" "$rlk_n"
     done | LC_ALL=C sort)"
-rm -rf "$RLK"; unset RLK RLKS rlk_s rlk_stop rlk_sites rlk_n; unset -f rlk_op rlk_count rlk_sib
+rm -rf "$RLK"; unset RLK RLKS rlk_s rlk_stop rlk_sites rlk_n
+unset -f rlk_op rlk_count rlk_sib rlk_root
 
 echo "== install.sh --hooks names a settings.json link cycle, not a dangling link (#1288) =="
 # resolve_link followed a chain with no bound, and -e is false on a cycle, so a cycle read as
