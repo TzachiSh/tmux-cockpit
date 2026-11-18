@@ -8556,6 +8556,12 @@ rqe_cmd() {                   # [VAR=value] -> the --loop root the popup was giv
 }
 rqewant=$(printf '%q' "$(git -C "$RQED/pane" rev-parse --show-toplevel)")
 is "the popup reviews the pane repo's root, nothing inherited" "$rqewant" "$(rqe_cmd)"
+# #1248: the same command starts with lib/fmt.sh's popup mark, which the pane scans skip
+case "$(cat "$RQES/cmd" 2>/dev/null)" in
+    'COCKPIT_POPUP=1 REVIEW_PANE_ID='*) ok "...and the popup's command starts with the mark" ;;
+    *) bad "...and the popup's command starts with the mark" "COCKPIT_POPUP=1 REVIEW_PANE_ID=..." \
+           "$(cat "$RQES/cmd" 2>/dev/null)" ;;
+esac
 for v in GIT_DIR=@/.git GIT_WORK_TREE=@ GIT_COMMON_DIR=@/.git GIT_INDEX_FILE=@/.git/index; do
     rqev=${v#*=}; rqev=${rqev//@/$RQED/other}
     is "${v%%=*} naming another repo: the popup still reviews the pane repo" "$rqewant" \
@@ -25514,6 +25520,28 @@ MPXC=$("$TMUX_REAL" -L "$MPX" list-clients -F '#{client_name}' | head -1)
 mpx_rc() { timeout 20 "$TMUX_REAL" -L "$MPX" display-popup -c "$MPXC" -E "exit $1"; echo $?; }
 is "a popup whose command exits 3 returns 3, and one that exits 0 returns 0" "3 0" \
    "$(mpx_rc 3) $(mpx_rc 0)"
+# Where display-popup makes a pane (tmux next-3.9), a real cockpit popup is what the scans must
+# skip: open on the client, an unfiltered list-panes counts it and the scans' -f filter does
+# not. run-shell -b opens it, so nothing here waits for it to close; -C closes it. On a tmux
+# whose popup is an overlay (3.8 and older) there is no pane to count.
+# shellcheck source=../scripts/lib/fmt.sh
+. "$DIR/scripts/lib/fmt.sh"
+MPXV=$("$TMUX_REAL" -V)
+case $MPXV in
+    'tmux '[12].*|'tmux 3.'[0-8]*)
+        skip_ "a display-popup pane is no pane to the scans: $MPXV draws popups as overlays" ;;
+    *)
+        mpx_n() { "$TMUX_REAL" -L "$MPX" list-panes -a "$@" -F '#{pane_id}' | grep -c .; }
+        MPXB=$(mpx_n)
+        "$TMUX_REAL" -L "$MPX" run-shell -b "$(printf %q "$TMUX_REAL") -L $MPX display-popup \
+-c $MPXC -E '${COCKPIT_POPUP_MARK-}exec sleep 300'" >/dev/null 2>&1
+        until_out "$((MPXB + 1))" mpx_n
+        is "a cockpit display-popup is a pane to list-panes, and none to the scans' filter" \
+           "$((MPXB + 1)) $MPXB" "$(mpx_n) $(mpx_n -f "${COCKPIT_NOT_POPUP-}")"
+        "$TMUX_REAL" -L "$MPX" display-popup -C -c "$MPXC" >/dev/null 2>&1
+        until_out "$MPXB" mpx_n
+        unset -f mpx_n ;;
+esac
 "$TMUX_REAL" -L "$MPXO" kill-server >/dev/null 2>&1
 "$TMUX_REAL" -L "$MPX" kill-server >/dev/null 2>&1
 unset -f mpx_rc
