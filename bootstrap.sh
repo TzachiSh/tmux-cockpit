@@ -197,10 +197,18 @@ elif [ "$wst" -ne 0 ] && [ "${#cfs[@]}" -gt 0 ] && cockpit_conf_mention "$DIR" "
 elif [ -n "$wired" ]; then
     note "have   $wired already loads cockpit.tmux"
     # An older line has no quote around the path, and from this folder it might not load
-    # (#1046). Said, never rewritten: the config is the user's.
-    if ! cockpit_bare_carries "$DIR" && n=$(cockpit_conf_bare_line "$wired" "$DIR"); then
-        note "NOTE   line $n of that file has no quotes around the path, and this folder's"
-        note "       path holds a character such a line might not carry: the plugin might not load."
+    # (#1046). Nor might '<path>' or "<path>": sh reads the path in them unquoted too (#1303).
+    # Said, never rewritten: the config is the user's.
+    if cockpit_conf_unquoted_line "$wired" "$DIR"; then
+        n=$cockpit_unquoted_n
+        if [ "$cockpit_unquoted_form" = bare ]; then
+            note "NOTE   line $n of that file has no quotes around the path, and this folder's"
+            note "       path holds a character such a line might not carry:" \
+                 "the plugin might not load."
+        else
+            note "NOTE   sh reads the path in line $n of that file unquoted, and that path holds"
+            note "       a character such a line might not carry: the plugin might not load."
+        fi
         case "$DIR" in
             *[[:cntrl:]]*)
                 note "       The path holds a control character, so no line is shown here."

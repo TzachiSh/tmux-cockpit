@@ -156,6 +156,41 @@ cockpit_conf_arg_path() {     # <run argument> -> cockpit_path
     cockpit_path=$i
 }
 
+# The first line of a config that runs this folder's cockpit.tmux (cockpit_conf_wired_line)
+# where sh reads the path as an unquoted word that cockpit_bare_carries does not carry: at a
+# blank sh splits it, and nothing loads (docs/install.md). What sh reads, by the argument's
+# shape (tmux(1), PARSING SYNTAX):
+#   bare and "<s>": tmux puts HOME in for ~ and $HOME first, so the whole path.
+#   '<s>': <s> as written. sh puts HOME in for a leading ~/ and does not split what it put
+#   in, so only the rest counts there. A $HOME sh puts in is split: the whole path counts.
+#   '"<s>"' and "'<s>'", the line cockpit_conf_line prints among them: sh's own quotes, none.
+# The line as written is read, never this folder's path, so a link to the folder counts by
+# the link's path. Sets cockpit_unquoted_n and cockpit_unquoted_form, bare or quoted; 1 when
+# no line is one (#1303). cockpit_conf_bare_line finds the bare shape alone (#1046).
+cockpit_conf_unquoted_line() {  # <config file> <plugin folder> -> cockpit_unquoted_*
+    local f=$1 d=$2 l a w form n=0
+    cockpit_unquoted_n=0; cockpit_unquoted_form=''
+    while IFS= read -r l || [ -n "$l" ]; do
+        n=$((n + 1))
+        cockpit_conf_run_arg "$l" || continue
+        a=$cockpit_arg
+        case $a in \'\"*\"\'|\"\'*\'\") continue ;; esac
+        cockpit_conf_arg_path "$a" || continue
+        w=$cockpit_path; form=quoted
+        case $a in
+            "'~/"*\') w=${a#"'~/"}; w=${w%\'} ;;
+            \'*\'|\"*\") ;;
+            *) form=bare ;;
+        esac
+        ! cockpit_bare_carries "$w" || continue
+        cockpit_conf_wired_line <(printf '%s\n' "$l") "$d" >/dev/null || continue
+        # shellcheck disable=SC2034 # read by the scripts that source this file
+        { cockpit_unquoted_n=$n; cockpit_unquoted_form=$form; }
+        return 0
+    done < "$f"
+    return 1
+}
+
 # Does tpm load this folder's plugin? Read in tpm at commit 99469c4a, its
 # scripts/helpers/plugin_functions.sh: _get_user_tmux_conf (line 21) picks ONE user config,
 # the XDG tmux.conf when it is a file, else ~/.tmux.conf, and _tmux_conf_contents (line 37)
@@ -165,44 +200,82 @@ cockpit_conf_arg_path() {     # <run argument> -> cockpit_path
 # every *.tmux in <plugin path>/<basename of field 4, less .git and a #branch>. The plugin
 # path is ~/.tmux/plugins, or the XDG tmux folder's plugins when an XDG tmux.conf is there
 # (tpm's tpm, set_default_tpm_path, line 26). tpm itself starts from a run line in any
-# config tmux loads.
+# config tmux loads: one whose path ends in /tpm/tpm, as a clone of tpm has it, or the path
+# Debian's and Arch's packages install, /usr/share/tmux-plugin-manager/tpm. Any other path
+# that ends in tpm is no run of tpm. A script of the user's named tpm would read as one,
+# and then the plugin silently never loads, where rc 2 prints a fix line (#1302).
+# A trailing comment comes off first, at the first blank followed by a #. tmux starts a
+# comment only at a # it reads between words, and keeps one inside quotes (cmd-parse.y,
+# yylex() and yylex_token()). So a ' #' inside a quoted path ends the path here, where
+# tmux keeps it, and that line gives the loud rc 2, a "cannot tell" (#1302).
 # A line names this plugin when its name is this folder's name or <plugin path>/<name> is
 # this folder, -ef, through a symlink too. Prints the config that names it, tpm's own
-# first. 0: it loads, the line in tpm's config, <plugin path>/<name> this folder and tpm's
-# run line there. 2: a line names it but one of those three fails (a
-# TMUX_PLUGIN_MANAGER_PATH this cannot read among them). 1: no @plugin line names it (#1067).
+# first, and sets cockpit_tpm_file to it. 0: it loads, the line in tpm's config,
+# <plugin path>/<name> this folder and tpm's run line there. 2: a line names it but one of
+# those three fails (a TMUX_PLUGIN_MANAGER_PATH this cannot read among them). 1: no @plugin
+# line names it (#1067). On 2, cockpit_tpm_why holds a word for each check that failed, in
+# this order: conf (no line in tpm's own config, cockpit_tpm_conf, names it), run (no run
+# line of tpm) and folder (tpm runs cockpit_tpm_runs, not this folder) (#1302).
 cockpit_conf_tpm() {          # <plugin folder> <config>... -> the config naming it
-    local d=$1 x="${XDG_CONFIG_HOME:-${HOME:-}/.config}/tmux" pd tc l c spec arg nm hm
-    local f='' t='' run=0 hit=0 re='^[[:blank:]]*set(-option)? +-g +@plugin'
+    local d=$1 x="${XDG_CONFIG_HOME:-${HOME:-}/.config}/tmux" pd tc l c spec arg nm hm sp
+    local f='' t='' tn='' run=0 hit=0 re='^[[:blank:]]*set(-option)? +-g +@plugin'
     shift
+    cockpit_tpm_file=''; cockpit_tpm_why=''; cockpit_tpm_conf=''; cockpit_tpm_runs=''
     pd="${HOME:-}/.tmux/plugins"; tc="${HOME:-}/.tmux.conf"
     [ ! -f "$x/tmux.conf" ] || { pd="$x/plugins"; tc="$x/tmux.conf"; }
     for c in "$@"; do
-        nm=0; hm=0
+        nm=0; hm=0; sp=''
         while IFS= read -r l || [ -n "$l" ]; do
             if cockpit_conf_run_arg "$l"; then
-                arg=${cockpit_arg//\'/}; arg=${arg//\"/}
-                case "$arg" in */tpm/tpm) run=1 ;; esac
+                # A trailing comment off first, as docs/install.md's own tpm line has.
+                arg=${cockpit_arg%%[[:space:]]#*}; arg=${arg%"${arg##*[![:space:]]}"}
+                arg=${arg//\'/}; arg=${arg//\"/}
+                case "$arg" in
+                    */tpm/tpm|/usr/share/tmux-plugin-manager/tpm) run=1 ;;
+                esac
                 continue
             fi
             [[ $l =~ $re ]] || continue
             l=${l//\'/}; l=${l//\"/}
             read -r _ _ _ spec _ <<< "$l"
             spec=${spec%%#*}; spec=${spec%.git}; spec=${spec##*/}
-            [ "$spec" != "${d##*/}" ] || nm=1
+            [ "$spec" != "${d##*/}" ] || { nm=1; [ -n "$sp" ] || sp=$spec; }
             # What tpm runs is <plugin path>/<spec>: that folder, through any symlink.
             [ -z "$spec" ] || [ ! "$pd/$spec" -ef "$d" ] || { nm=1; hm=1; }
         done < "$c"
         [ "$nm" -eq 1 ] || continue
         [ -n "$f" ] || f=$c
-        if [ -z "$t" ] && [ "$c" -ef "$tc" ]; then t=$c; hit=$hm; fi
+        if [ -z "$t" ] && [ "$c" -ef "$tc" ]; then t=$c; hit=$hm; tn=$sp; fi
     done
     [ -n "$f" ] || return 1
-    if [ -n "$t" ] && [ "$hit" -eq 1 ] && [ "$run" -eq 1 ]; then
-        printf '%s\n' "$t"; return 0
+    cockpit_tpm_file=${t:-$f}
+    printf '%s\n' "$cockpit_tpm_file"
+    [ -z "$t" ] || [ "$hit" -eq 0 ] || [ "$run" -eq 0 ] || return 0
+    [ -n "$t" ] || cockpit_tpm_why=conf
+    [ "$run" -eq 1 ] || cockpit_tpm_why="${cockpit_tpm_why:+$cockpit_tpm_why }run"
+    if [ -n "$t" ] && [ "$hit" -eq 0 ]; then
+        cockpit_tpm_why="${cockpit_tpm_why:+$cockpit_tpm_why }folder"
+        cockpit_tpm_runs="$pd/$tn"
     fi
-    printf '%s\n' "${t:-$f}"
+    cockpit_tpm_conf=$tc
     return 2
+}
+
+# What failed, after a cockpit_conf_tpm that returned 2: one clause per word of
+# cockpit_tpm_why, joined by "; ". install.sh --check prints it in its fix column and
+# install.sh's closing note prints it too, so each names the check that failed (#1302).
+cockpit_conf_tpm_text() {     # <plugin folder> -> the clauses
+    local w s='' c
+    for w in $cockpit_tpm_why; do
+        case $w in
+            conf)   c="tpm reads @plugin lines only from $cockpit_tpm_conf" ;;
+            run)    c='no line runs tpm' ;;
+            folder) c="tpm runs $cockpit_tpm_runs, not $1" ;;
+            *)      continue ;;
+        esac
+        s="${s:+$s; }$c"
+    done
+    printf '%s' "$s"
 }
 
 # Which of the configs tmux loads runs this folder's plugin: the first with a wired line,
@@ -210,14 +283,18 @@ cockpit_conf_tpm() {          # <plugin folder> <config>... -> the config naming
 # @plugin line names it, not confirmed, and cockpit_wired is that config. 1: neither. Read
 # by install.sh --check, install.sh's closing note and bootstrap.sh alike (#1067).
 cockpit_conf_wired() {        # <plugin folder> <readable config>... -> cockpit_wired
-    local d=$1 c
+    local d=$1 c r
     shift; cockpit_wired=''
     for c in "$@"; do
         cockpit_conf_wired_line "$c" "$d" >/dev/null && { cockpit_wired=$c; return 0; }
     done
     [ "$#" -gt 0 ] || return 1
+    # Not in a subshell: cockpit_tpm_why and the rest it sets are read by install.sh (#1302).
+    cockpit_conf_tpm "$d" "$@" >/dev/null
+    r=$?
     # shellcheck disable=SC2034 # read by the scripts that source this file
-    cockpit_wired=$(cockpit_conf_tpm "$d" "$@")
+    cockpit_wired=$cockpit_tpm_file
+    return "$r"
 }
 
 # The first line, outside a comment, that names cockpit.tmux, or an @plugin line (tpm's
