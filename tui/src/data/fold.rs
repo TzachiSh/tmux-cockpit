@@ -20,6 +20,18 @@ use super::transcript::INTERRUPT;
 /// A value and the offset of the row that set it.
 type At<T> = Option<(u64, T)>;
 
+/// What the newest turn row said of the turn.
+#[derive(Clone, Copy, Default, PartialEq)]
+enum Over {
+    /// a prompt, a tool_result or an assistant row that keeps it going
+    #[default]
+    No,
+    /// end_turn
+    Ended,
+    /// the interrupt marker
+    Interrupted,
+}
+
 #[derive(Clone, Default)]
 pub(super) struct Fold {
     tool: At<String>,
@@ -30,7 +42,9 @@ pub(super) struct Fold {
     /// the newest row of any type with a timestamp
     newest: At<SystemTime>,
     cwd: At<String>,
-    turn_over: At<bool>,
+    /// #1330 A3: the newest turn row's verdict, kept apart from the interrupt that
+    /// ends a turn as end_turn does, so the hooks' stale running can give way to it
+    turn_over: At<Over>,
     /// the newest user or assistant row
     saw: Option<u64>,
     /// An AskUserQuestion is open until a user row carries its tool_result:
@@ -85,12 +99,21 @@ impl Fold {
                 // the human moved on from an interrupted ask
                 if let Some(p) = transcript::typed_prompt(&v) {
                     self.user = Some((off, (p, ts)));
-                    self.turn_over = Some((off, false));
+                    self.turn_over = Some((off, Over::No));
                     self.asks.clear();
                 } else if interrupted || c.is_array() {
                     // the interrupt ends the turn; a tool_result keeps it going.
                     // Any other string is the harness's: not a turn and not `asked`.
-                    self.turn_over = Some((off, interrupted));
+                    let over = if interrupted { Over::Interrupted } else { Over::No };
+                    self.turn_over = Some((off, over));
+                } else if let Some((at, Over::Interrupted)) = self.turn_over
+                    && c.as_str().is_some_and(transcript::starts_turn)
+                {
+                    // #1333: a harness row that starts a turn (a <task-notification>) makes the
+                    // interrupt no longer the newest; a local command or shell mode does not.
+                    // Still not `asked`, and the turn stays over at the interrupt's row, as for
+                    // the panes no hook marks.
+                    self.turn_over = Some((at, Over::Ended));
                 }
             }
             Some("assistant") => {
@@ -100,7 +123,8 @@ impl Fold {
                 }
                 // end_turn rides the text row; attachment and custom-title rows
                 // land after it and must not reopen the turn.
-                self.turn_over = Some((off, v["message"]["stop_reason"].as_str() == Some("end_turn")));
+                let ended = v["message"]["stop_reason"].as_str() == Some("end_turn");
+                self.turn_over = Some((off, if ended { Over::Ended } else { Over::No }));
                 let Some(blocks) = v["message"]["content"].as_array() else {
                     return;
                 };
@@ -140,7 +164,7 @@ impl Fold {
         let asks: Vec<&str> = self.asks.iter().filter(|(o, _)| *o >= ws).map(|(_, id)| id.as_str()).collect();
         let (user, user_at) = since(&self.user, ws).cloned().unwrap_or_default();
         let saw = self.saw.is_some_and(|o| o >= ws);
-        let turn_over = since(&self.turn_over, ws).copied().unwrap_or(false);
+        let over = since(&self.turn_over, ws).copied().unwrap_or_default();
         let ask = since(&self.last_use, ws).filter(|(id, _)| asks.contains(&id.as_str()));
         // the newest tool_use is the one that failed: its result was an error (#454)
         let failed = since(&self.last_use, ws)
@@ -159,12 +183,13 @@ impl Fold {
                 _ if !asks.is_empty() => State::NeedsInput,
                 // an unknown state is unknown, never idle
                 _ if !saw => State::Unknown,
-                _ if turn_over => State::Done,
+                _ if over != Over::No => State::Done,
                 _ => State::Running,
             },
             cwd: since(&self.cwd, ws).cloned().unwrap_or_default(),
             ask: ask.and_then(|(_, q)| q.clone()).unwrap_or_default(),
             tool_failed: failed,
+            interrupted: over == Over::Interrupted,
         }
     }
 }

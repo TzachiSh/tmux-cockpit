@@ -66,6 +66,11 @@ A `Stop` hook does not fire on a user interrupt (Esc), so a review queued for an
 interrupted agent waits for the end of that agent's next turn — nothing hands it
 over earlier, `prefix r` included.
 
+`@panestate` stays `running` after Esc for the same reason (#1332). The board,
+`--json` and `--rows` show such a pane idle once its transcript's newest turn row is
+the interrupt marker, without writing to tmux; needs-input, error and done stay the
+hooks', and a pane bound to a job keeps the poller's state (#1330 A3, docs/tui.md).
+
 ## Context fill, optional
 
 `scripts/agent-context` is a Claude Code `statusLine` shim: fed the statusline
