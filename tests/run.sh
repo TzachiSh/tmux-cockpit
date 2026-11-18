@@ -2653,7 +2653,32 @@ is "--delta, when a top-level library fails to load, exits 3" "D=3" \
 RG_GATE="$RGCP/scripts/review-gate" rg_run "$RGPAY"
 is "and the Stop hook leaves the pending mark there too" "pending|GRC=0" \
     "$("$TMUX_REAL" -L "$RG" show-option -pqv -t "$RGAP" @cockpit_review)|$(rg_rc)"
-unset RGCP
+# The other four top-level loads, each broken in turn with the rest whole.
+rgl=""
+for rg_lib in git-env pane fmt workdir; do
+    cp "$DIR/scripts/lib/"*.sh "$RGCP/scripts/lib/"
+    printf 'return 1\n' > "$RGCP/scripts/lib/$rg_lib.sh"
+    "$RGCP/scripts/tmux-review" --delta "$RGAP" >/dev/null 2>&1; rgl="$rgl $rg_lib:$?"
+done
+is "--delta exits 3 when git-env, pane, fmt or workdir fails to load" \
+    " git-env:3 pane:3 fmt:3 workdir:3" "$rgl"
+# The loop's own late load, review-store.sh, past the revdiff check: a stand-in revdiff.
+cp "$DIR/scripts/lib/"*.sh "$RGCP/scripts/lib/"
+printf 'return 1\n' > "$RGCP/scripts/lib/review-store.sh"
+printf '#!/bin/sh\nexit 0\n' > "$RGCP/revdiff"; chmod +x "$RGCP/revdiff"
+is "--loop exits 3 when review-store.sh fails to load" "L=3" \
+    "$(PATH="$RGCP:$PATH" "$RGCP/scripts/tmux-review" --loop "$RGDIR" "$RGCP/store" \
+        </dev/null >/dev/null 2>&1; echo "L=$?")"
+# bash older than 4: the copy's version test is forced true, every library whole.
+cp "$DIR/scripts/lib/"*.sh "$RGCP/scripts/lib/"
+sed 's/"${BASH_VERSINFO\[0\]:-0}" -lt 4/3 -lt 4/' "$DIR/scripts/tmux-review" \
+    > "$RGCP/scripts/tmux-review"
+is "--delta under bash older than 4 exits 3" "D=3" \
+    "$("$RGCP/scripts/tmux-review" --delta "$RGAP" >/dev/null 2>&1; echo "D=$?")"
+RG_GATE="$RGCP/scripts/review-gate" rg_run "$RGPAY"
+is "and the Stop hook leaves the pending mark under bash 3" "pending|GRC=0" \
+    "$("$TMUX_REAL" -L "$RG" show-option -pqv -t "$RGAP" @cockpit_review)|$(rg_rc)"
+unset RGCP rgl rg_lib
 # Only exit 1, no difference, clears a pending mark.
 printf 'a\n' > "$RGDIR/f"; rg_run "$RGPAY"
 is "a clean tree clears a pending mark" "|GRC=0" \
@@ -9515,6 +9540,14 @@ rq_err=$(RQ_RC=127 PATH="$RQSHIM:$PATH" XDG_STATE_HOME=$RQSTATE "$DIR/scripts/tm
 is "revdiff missing: exit 1" "1" "$rq_rc"
 is "and stderr says what to do" "tmux-review: revdiff not found: install it, see #233" "$rq_err"
 is "and the batch stays pinned" "1" "$(grep -c LEAVE-MARKER "$RQSESS/comments.md" 2>/dev/null)"
+# A review that could not load (#959): the loop exits 3, and --request passes the 3 on
+# with a line on stderr, never the 0 of "left for later". The batch stays pinned.
+rq_err=$(RQ_RC=3 PATH="$RQSHIM:$PATH" XDG_STATE_HOME=$RQSTATE "$DIR/scripts/tmux-review" \
+    --request "$RQAP" 2>&1 >/dev/null); rq_rc=$?
+is "a review that could not load: exit 3, and stderr says so" \
+    "3 tmux-review: the review could not load" "$rq_rc $rq_err"
+is "and the batch stays pinned after it" "1" \
+    "$(grep -c LEAVE-MARKER "$RQSESS/comments.md" 2>/dev/null)"
 # End to end: the popup runs the real loop with a stand-in revdiff, the human
 # presses d, and --request hands the composed review back on stdout with exit 10.
 RQB=$(mktmpd); RQW=$(mktmpd); fake_revdiff "$RQB"
