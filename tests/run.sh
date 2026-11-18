@@ -2758,7 +2758,7 @@ rgo() {                       # <dir> <env...> -> D=<--delta's exit>
     "$TMUX_REAL" -L "$RG" run-shell "$rgo_env $2 XDG_STATE_HOME=$(printf '%q' "$RGSTATE") \
         $(tq "$DIR/scripts/tmux-review") --delta $RGAP; echo D=\$?" 2>/dev/null | tail -1
 }
-# The switch is a test knob. A git that ignores it trusts the repo, and the three rows on
+# The switch is a test knob. A git that ignores it trusts the repo, and the four rows on
 # it would test nothing: unless a plain rev-parse there works without it and fails with
 # it, in the rows' own env, they SKIP.
 rgo_git() {                   # <env...>: rev-parse in $RGO/own
@@ -2789,6 +2789,15 @@ is "--delta never looks for a .git above a ceiling, as git does not (exit 1)" "D
 # git resolves a ceiling entry's symlinks before it compares (setup.c), so does the walk.
 is "--delta stops at a ceiling named through a symlink, as git does (exit 1)" "D=1" \
     "$(rgo "$RGO/top/ceil/plain" "GIT_CEILING_DIRECTORIES=$(printf '%q' "$RGO/cl")")"
+# After an empty entry git keeps a ceiling as written: the symlink then matches nothing,
+# and git walks on to the repo above and refuses it. The second ceiling assignment wins.
+if [ -n "$rgo_knob" ]; then
+    is "--delta past a ceiling kept as written after an empty entry cannot tell (exit 2)" \
+        "D=2" "$(rgo "$RGO/top/ceil/plain" \
+        "$rgo_own GIT_CEILING_DIRECTORIES=$(printf '%q' ":$RGO/cl")")"
+else
+    skip_ "--delta past a ceiling kept as written after an empty entry: $rgo_skip"
+fi
 if [ -n "$rgo_knob" ]; then
     "$TMUX_REAL" -L "$RG" set-option -p -t "$RGAP" @cockpit_review pending
     "$TMUX_REAL" -L "$RG" set-option -p -t "$RGAP" @cockpit_dir "$RGO/own"
