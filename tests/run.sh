@@ -1759,6 +1759,77 @@ bgst running "$BGU"; bgst error '{"hook_event_name":"PostToolUseFailure","agent_
 bgst done "$(bgstop "$BGT")"
 bgis "a subagent's error through the main Stop" error error 0
 
+# #1330: PermissionRequest's ask names the tool, and for Bash only the program, never an
+# argument or a path. PostToolUseFailure names the failed tool, and an interrupt is no error.
+bgmsg() { "$TMUX_REAL" -L "$BG" set -pu -t "$BGP" @panestate_msg >/dev/null 2>&1; }
+bgpr() {                      # <tool> <command>: the ask a PermissionRequest leaves
+    bgmsg; bgst running "$BGU"
+    bgst needs-input "{\"session_id\":\"s1\",\"hook_event_name\":\"PermissionRequest\",\
+\"tool_name\":\"$1\",\"tool_input\":{\"command\":\"$2\",\"description\":\"d\"}}"
+    bgo @panestate_msg; }
+is "a Bash ask names the program, no argument or path" "Bash: git" \
+    "$(bgpr Bash 'git -C /home/u/secret push origin main')"
+is "a NAME=value first word names no program, even before a path" "Bash" \
+    "$(bgpr Bash 'LANG=C /usr/local/bin/make -j4 /home/u/x')"
+is "a first word holding a ; names no program" "Bash" "$(bgpr Bash 'ls;cat /home/u/.ssh/id')"
+is "a first word of disallowed bytes names no program" "Bash" "$(bgpr Bash '$(cat /home/u/k)')"
+is "an empty command names no program" "Bash" "$(bgpr Bash '')"
+is "a program name is cut at 32" "Bash: $(printf 'p%.0s' {1..32})" \
+    "$(bgpr Bash "$(printf 'p%.0s' {1..40}) x")"
+is "another tool's ask is its name" "Edit" "$(bgpr Edit '')"
+# #1334: a value that quotes, escapes or expands may hold a blank, so no word after it is named.
+is "a quoted NAME=value names no program" "Bash" \
+    "$(bgpr Bash "GIT_AUTHOR_NAME='Jane Roe' git commit")"
+is "a NAME=value that expands names no program" "Bash" \
+    "$(bgpr Bash 'X=$(cat /home/u/secret.key) ls')"
+is "a NAME=value with an escaped blank names no program" "Bash" \
+    "$(bgpr Bash 'TOKEN=a\\ b9f3 curl')"
+is "a quoted program names no program" "Bash" "$(bgpr Bash '\"git\" status')"
+# #1334: only a first word that is all [A-Za-z0-9._/+-] names a program, so no NAME=value is
+# skipped: a skip leaked a value or an argument three times.
+is "FOO=1 git names no program now, a deliberate change" "Bash" "$(bgpr Bash 'FOO=1 git')"
+is "an array assignment names no program" "Bash" "$(bgpr Bash 'KEYS=(a b) ls')"
+is "a NAME=value joined by ; names no program" "Bash" "$(bgpr Bash 'A=x;cat f')"
+is "a loop over an array names no program" "Bash" \
+    "$(bgpr Bash 'files=(a b); for f in a; do :; done')"
+is "a NAME=value before && names no program" "Bash" "$(bgpr Bash 'x=1 && ls')"
+is "a plain command still names its program" "Bash: git" "$(bgpr Bash 'git status')"
+is "a program's path is dropped" "Bash: git" "$(bgpr Bash '/usr/bin/git x')"
+is "a relative script names its file" "Bash: run-me.sh" "$(bgpr Bash './run-me.sh')"
+bgfail() {                    # <is_interrupt field>: a Bash PostToolUseFailure
+    bgst error "{\"hook_event_name\":\"PostToolUseFailure\",\"tool_name\":\"Bash\",\
+\"tool_input\":{\"command\":\"cat /home/u/k\"},\"error\":\"no /home/u/k\",$1}"; }
+bgst running "$BGU"; bgfail '"is_interrupt":true'
+is "an interrupted tool is no error" running "$(bgo @panestate)"
+bgst running "$BGU"; bgfail '"is_interrupt": true'
+is "nor with a space after the colon" running "$(bgo @panestate)"
+bgst running "$BGU"; bgfail '"is_interrupt":false'
+is "a failed tool's text is its name only" "Bash failed" "$(bgo @panestate_msg)"
+bgpr Bash 'git push' >/dev/null; bgfail '"is_interrupt":false'
+is "a failure leaves a waiting pane's ask" "Bash: git" "$(bgo @panestate_msg)"
+BGPP='{"hook_event_name":"Notification","message":"Claude needs your permission to use Bash",'
+BGPP=$BGPP'"notification_type":"permission_prompt"}'
+bgst notify "$BGPP"
+is "a later permission_prompt keeps the PermissionRequest text" "Bash: git" "$(bgo @panestate_msg)"
+bgst running "$BGU"; bgfail '"is_interrupt":false'; bgst notify "$BGPP"
+is "but an error's text gives way to a permission_prompt" \
+    "Claude needs your permission to use Bash" "$(bgo @panestate_msg)"
+# #1334: a failed Write's tool_input can be a whole file, and through a pipe bash reads it a
+# byte per syscall, which held the hook to its 2 s deadline. The hook reads 4 KB: fed as a
+# regular file, whose offset bash leaves where its read stopped, nearly all of 1 MB is left.
+BGPF1="${BGCFG%/claude}/payload1m"
+{ printf '{"hook_event_name":"PostToolUseFailure","tool_name":"Write","tool_input":'
+  printf '{"file_path":"/home/u/f","content":"'; head -c 1048576 /dev/zero | tr '\0' x
+  printf '"},"error":"boom","is_interrupt":false}\n'; } > "$BGPF1"
+bgst running "$BGU"
+bgleft=$({ HOME="$HOME" CLAUDE_CONFIG_DIR="$BGCFG" TMUX="$SOCKDIR/$BG,0,0" \
+    "$DIR/scripts/agent-state" error "$BGP" >/dev/null 2>&1; wc -c; } < "$BGPF1")
+bgleft=${bgleft//[!0-9]/}
+is "a 1 MB failure payload is read 4 KB at most: over 1000000 bytes stay unread" yes \
+    "$([ "${bgleft:-0}" -gt 1000000 ] && echo yes || echo "${bgleft:-none} left")"
+rm -f "$BGPF1"; unset BGPF1 bgleft
+bgmsg; unset -f bgmsg bgpr bgfail; unset BGPP
+
 # Concurrent hooks: several report-back Stops and subagent tool calls at once.
 bgjobs() {                    # <n> <state> <payload>: n hooks at once, then wait for them
     local i pids=""
