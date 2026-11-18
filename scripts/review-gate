@@ -88,24 +88,43 @@ flag_pane() {
     # One read, and a write only per changed value: every set-option redraws. A #707 cut
     # empties every expansion after it, so the last field reads 1 only on a whole read, and
     # only then is the session saved: a cut would read as a new id and drop the transcript.
-    # Parsed from the right, since a hand-set title may hold any byte.
+    # The title is the one field read by elimination, since a hand-set title may hold any byte.
     sep=$'\037'
-    f="#{@cockpit_review}$sep#{@cockpit_title}$sep#{@cockpit_session}$sep#{?#{pane_id},1,0}"
+    f="#{@cockpit_review}$sep#{@cockpit_review_err}$sep#{@cockpit_title}$sep#{@cockpit_session}"
+    f="$f$sep#{?#{pane_id},1,0}"
     cur=$(tmux display-message -p -t "$pane" "$f" 2>/dev/null)
     whole=${cur##*"$sep"}; cur=${cur%"$sep"*}
     sid_cur=${cur##*"$sep"}; cur=${cur%"$sep"*}
-    review=${cur%%"$sep"*}; title_cur=${cur#*"$sep"}
+    review=${cur%%"$sep"*}; cur=${cur#*"$sep"}
+    err_cur=${cur%%"$sep"*}; title_cur=${cur#*"$sep"}
 
     # 0 is a change to review, 1 a clean tree. Anything else leaves the mark as it is:
     # 2, the diff, the pane's work dir or its repo could not be read (#944, #959, #1286),
     # 3, tmux-review could not load, and 126, 127 or a signal, it could not run (#959),
-    # are neither.
+    # are neither. Those say why in @cockpit_review_err (#960).
     "$here/tmux-review" --delta "$pane" >/dev/null 2>&1
-    case $? in 0) want=pending ;; 1) want="" ;; *) want=$review ;; esac
+    rc=$?
+    case $rc in
+        0) want=pending err="" ;;
+        1) want="" err="" ;;
+        2) want=$review err="the diff cannot be read" ;;
+        3) want=$review err="tmux-review cannot load" ;;
+        *) want=$review err="tmux-review cannot run (exit $rc)" ;;
+    esac
     if [ "$review" != "$want" ]; then
         if [ -n "$want" ]; then tmux set-option -p -t "$pane" @cockpit_review pending 2>/dev/null
         else                    tmux set-option -pu -t "$pane" @cockpit_review 2>/dev/null; fi
         "$here/agent-state" recount "$pane"
+    fi
+    # Written and said only on a change: the option is what remembers the last reason, since
+    # each Stop is a new process (agent-poll's poll_err shape).
+    if [ "$err" != "$err_cur" ]; then
+        if [ -n "$err" ]; then
+            tmux set-option -p -t "$pane" @cockpit_review_err "$err" 2>/dev/null
+            # shellcheck source=lib/fmt.sh
+            . "${d%/*}/lib/fmt.sh" 2>/dev/null \
+                && dmsg "tmux-cockpit: the ◆ of $pane cannot be updated: $err" 2>/dev/null
+        else tmux set-option -pu -t "$pane" @cockpit_review_err 2>/dev/null; fi
     fi
     # Untrusted strings get a call each: a bare `;` argument splits a tmux command list.
     [ -n "$title" ] && [ "$title" != "$title_cur" ] && tmux set-option -p -t "$pane" @cockpit_title "$title" 2>/dev/null
