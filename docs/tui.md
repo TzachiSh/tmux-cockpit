@@ -2980,7 +2980,8 @@ and for `switch`/`track` a ref that exists under `refs/heads` or `refs/remotes`.
 switch runs through `gitsafe::git_write`: the `gitsafe` flags but the protocol pins (a
 switch may lazy-fetch a partial clone's blobs, as `scripts/lib/git.sh` lets it), every
 filter driver the repo names blanked, a repo whose driver name holds `=` refused
-(#331), the inherited `GIT_DIR` and its kin unset, and no prompt on the popup's
+(#331), no submodule checked out (`-c submodule.recurse=false`: a submodule's own
+config names drivers no blanking reads, #1272), the inherited `GIT_DIR` and its kin unset, and no prompt on the popup's
 terminal. Git's own refusal (a dirty tree) is the `✕` note, its first line, with the
 whole message in the preview until the next key; the picker stays. The script reads
 `goto <path>` as untrusted too: a path that `git worktree list` names and that is
