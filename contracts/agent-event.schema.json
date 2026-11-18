@@ -7,9 +7,9 @@
   "properties": {
     "schema_version": { "const": 1 },
     "agent": {
-      "description": "The adapter's name, written by the adapter's code. The core logs it and never branches on it.",
+      "description": "The adapter's fixed name, a constant in that adapter's code. The core logs it and never branches on it.",
       "type": "string",
-      "pattern": "^[a-z][a-z0-9-]{1,31}$"
+      "pattern": "^[a-z][a-z0-9-]{1,23}$"
     },
     "kind": {
       "enum": ["turn.start", "turn.end", "tool.start", "tool.end", "input.needed", "session.end"]

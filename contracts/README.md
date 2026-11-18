@@ -24,7 +24,8 @@ Nothing reads these schemas at run time. The Rust side is `tui/src/store.rs`, a
   `additionalProperties` is `false` and an old reader refuses it.
 - **Privacy:** shared status holds only ids, states and timestamps. No titles,
   no subjects, no paths and no prompt content. Words an agent wants to share go
-  in a private file, and the record carries a ref to it.
+  in a private file, and the record carries a ref to it. One exception:
+  agent-event `agent` is the adapter's fixed name, a constant in that adapter's code, never derived from a session, project, path or user input.
 - **Ids are opaque:** every id field (`agent_id`, `intent_id`, `from_agent`,
   `msg_id`, `from`, `to`, `correlation_id`, the payload's `intent_id`,
   agent-event's `session`) is 16
@@ -150,5 +151,6 @@ unreadable. It exits 1 on any surprise, including a folder with no valid or no
 invalid example, and 2 when it cannot start: a bad argument or a folder it
 cannot read. `cargo test` with the same manifest runs its own tests.
 
-CI runs the check and its tests in the `tui` workflow, on the ubuntu-24.04
-leg only (#1021, #1330).
+CI runs it, then its `cargo test`, both `--locked`, in the `contracts/check`
+step of `.github/workflows/tui.yml`, on the ubuntu-24.04 leg only (#1021,
+#1330). A PR that changes a file under `contracts/` reads that step's log.

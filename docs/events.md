@@ -16,7 +16,7 @@ One JSON object per line, with these fields and no other:
 | field | required | shape |
 |-------|----------|-------|
 | `schema_version` | yes | the integer `1` |
-| `agent` | yes | `^[a-z][a-z0-9-]{1,31}$`, the adapter's name |
+| `agent` | yes | `^[a-z][a-z0-9-]{1,23}$`, the adapter's fixed name |
 | `kind` | yes | `turn.start`, `turn.end`, `tool.start`, `tool.end`, `input.needed` or `session.end` |
 | `pane` | yes | the tmux pane id, `^%[0-9]{1,10}$` |
 | `session` | yes | the agent's session id, 16 to 64 lowercase hex |
@@ -29,7 +29,9 @@ One JSON object per line, with these fields and no other:
   counts as `failed: false`.
 - Any other key is refused (`additionalProperties: false`), so a line cannot
   carry an answer, a prompt, a tool's input or a path. `agent` is the one field
-  that holds a word: the adapter's code writes it, never the agent's output.
+  that holds a word, at most 24 characters: the adapter's fixed name, a constant
+  in that adapter's code, never derived from a session, project, path or user
+  input.
 - Ids are opaque lowercase hex. An adapter strips separators: a UUID such as
   Claude's session id becomes its 32 hex digits.
 - Kinds are `noun.verb`, lower case, one dot.
@@ -65,7 +67,9 @@ settings hooks keep the rest, until #1330 T7 decides whether to move them.
 
 1. Add `adapters/<agent>/`, or `mods/<agent>-cockpit/` if the agent has an
    in-process plugin API. It turns the agent's own signals into agent-event v1
-   lines with `agent: "<agent>"`.
+   lines with `agent: "<agent>"`. `agent` is the adapter's fixed name, a
+   constant in that adapter's code, never derived from a session, project, path
+   or user input.
 2. The adapter provides:
    - the pane id and a session id. Ids are opaque lowercase hex; strip
      separators.
