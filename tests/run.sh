@@ -7010,6 +7010,145 @@ fi
 "$TMUX_REAL" -L "$INNER" kill-server >/dev/null 2>&1
 fi
 
+# tests: examples/tmux.conf cockpit.tmux
+echo "== a press a stranded drag flag turns into a drag end still lands (#53) =="
+# #21's stranded flag, on a pane or a border: the next press there arrives as
+# MouseDragEnd1Pane or MouseDragEnd1Border, unbound in stock's root table, so the
+# click selected nothing. Its release arrives as MouseUp1Pane or MouseUp1Border,
+# which the plugin binds to stock's press actions; a real drag ends in a drag end
+# and keeps focus. Panes 0 and 1 run a silent sleep; pane 2 is an app with SGR
+# button-event mouse reporting, whose tty echoes each report tmux writes to it.
+if need_tmux "stranded drag on a pane"; then :; else
+OUTER="cockpit-drg-outer-$$"; INNER="cockpit-drg-inner-$$"
+SOCKS="$SOCKS $OUTER $INNER"
+DRG=$(mktmpd)
+"$TMUX_REAL" -L "$INNER" -f /dev/null new-session -d -s t -x 80 -y 24 -n DRAGWIN -c "$DRG" \
+    'exec -a claude sleep 300' >/dev/null 2>&1
+# Not touch: its ‹ would sit where the popup below is armed.
+"$TMUX_REAL" -L "$INNER" set -g @cockpit_touch off >/dev/null 2>&1
+"$TMUX_REAL" -L "$INNER" source-file "$DIR/examples/tmux.conf" >/dev/null 2>&1
+"$TMUX_REAL" -L "$INNER" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+case "$("$TMUX_REAL" -L "$INNER" list-keys -T cockpit)" in
+    *"$DIR/scripts/tmux-open-path"*) ok "the drag-end server has this tree's cockpit.tmux" ;;
+    *) bad "the drag-end server has this tree's cockpit.tmux" \
+            "$DIR/scripts/tmux-open-path in the cockpit keys" "absent" ;;
+esac
+"$TMUX_REAL" -L "$INNER" set -g status-left '#S ' >/dev/null 2>&1
+# F12 through the client queues behind every mouse key before it, so once it has run
+# so has their binding: drg_sync reads state with no clock deciding when.
+"$TMUX_REAL" -L "$INNER" bind -n F12 set -g @drg_sync 1 >/dev/null 2>&1
+# The arming popup turns SGR mouse mode on, says RDY, and says ATE once a report
+# reaches it: the release it eats is seen eaten, not raced against display-popup -C.
+"$TMUX_REAL" -L "$INNER" bind -n MouseDown1StatusLeft display-popup -T STRAND -E \
+    "printf '\\033[?1000h\\033[?1006h'; stty -icanon -echo; printf RDY;
+     dd bs=1 count=1 >/dev/null 2>&1; printf ATE; exec sleep 300" >/dev/null 2>&1
+"$TMUX_REAL" -L "$INNER" split-window -h -d -t t:DRAGWIN.0 -c "$DRG" \
+    'exec -a claude sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$INNER" split-window -h -d -t t:DRAGWIN.1 -c "$DRG" \
+    "printf '\\033[?1002h\\033[?1006hAPP'; exec cat -v" >/dev/null 2>&1
+"$TMUX_REAL" -L "$INNER" select-layout -t t:DRAGWIN even-horizontal >/dev/null 2>&1
+"$TMUX_REAL" -L "$OUTER" -f /dev/null new-session -d -s o -x 80 -y 24 -c "$DRG" \
+    "$(printf '%q ' "$TMUX_REAL" -L "$INNER" attach -t t)" >/dev/null 2>&1
+OP=$("$TMUX_REAL" -L "$OUTER" list-panes -t o -F '#{pane_id}' | head -1)
+# shellcheck disable=SC2086  # the hex bytes are meant to split
+drg_send() { "$TMUX_REAL" -L "$OUTER" send-keys -t "$OP" -H $1 >/dev/null 2>&1; }
+drg_sgr() { printf '\033[<%s;%s;%s%s' "$@" | od -An -tx1 | tr -s ' \n' ' '; }
+drg_act() { "$TMUX_REAL" -L "$INNER" display-message -p -t t:DRAGWIN '#{pane_id}'; }
+drg_rx() { "$TMUX_REAL" -L "$INNER" capture-pane -p -J -t "$P2" | tr -d '\n'; }
+drg_new() { local a; a=$(drg_rx); printf '%s' "${a#"$DRX"}"; }   # echoed since DRX
+drg_sync() {
+    "$TMUX_REAL" -L "$INNER" set -g @drg_sync 0 >/dev/null 2>&1
+    "$TMUX_REAL" -L "$OUTER" send-keys -t "$OP" F12 >/dev/null 2>&1
+    until_out 1 "$TMUX_REAL" -L "$INNER" show -gv @drg_sync
+}
+# #21's arming: a press on the session name with a one-cell twitch in the same
+# write sets the flag before the popup exists; the popup eats the release.
+drg_arm() {
+    local i
+    drg_send "$(drg_sgr 0 2 "$SROW" M) $(drg_sgr 32 3 "$SROW" M)"
+    until_cap "$OUTER" "$OP" '*RDY*' || return 1
+    drg_send "$(drg_sgr 0 40 "$((SROW / 2))" m)"        # inside the popup, centred
+    until_cap "$OUTER" "$OP" '*ATE*' || return 1
+    "$TMUX_REAL" -L "$INNER" display-popup -C -c "$IC" >/dev/null 2>&1
+    for i in $(seq 1 40); do
+        case "$("$TMUX_REAL" -L "$OUTER" capture-pane -p -t "$OP")" in
+            *ATE*) sleep 0.1 ;; *) return 0 ;;    # its text, drawn with or without a border
+        esac
+    done
+    return 1
+}
+DRG_ROWS=("a real drag inside a mouse app still ends with its release"
+    "a click after a popup ate a release still selects the pane"
+    "a border click after a popup ate a release still selects the pane at its left"
+    "a click on a mouse app after a popup ate a release selects it"
+    "and the app gets that press and its release"
+    "a copy-mode drag released over another pane keeps focus where it began"
+    "a plain click on a mouse app gives it its press and its release once")
+# APP is printed after the mouse modes are on, so a report sent after it is not dropped.
+if until_cap "$OUTER" "$OP" '*DRAGWIN*' && until_cap "$INNER" t:DRAGWIN.2 '*APP*'; then
+    IC=$("$TMUX_REAL" -L "$INNER" list-clients -F '#{client_name}' | head -1)
+    SROW=$("$TMUX_REAL" -L "$OUTER" capture-pane -p -t "$OP" | grep -n DRAGWIN | tail -1 |
+        cut -d: -f1)
+    read -r P0 _ R0 TOP P1 L1 _ _ P2 L2 _ _ <<< "$("$TMUX_REAL" -L "$INNER" list-panes \
+        -t t:DRAGWIN -F '#{pane_id} #{pane_left} #{pane_right} #{pane_top}' | paste -sd' ' -)"
+    Y=$((TOP + 3))                   # a body row, 1-based: the app reads row 3, or 4 below it
+    # A drag that starts and ends in the app: its release is a drag end too, which
+    # the binding must hand on, as stock's unbound key did.
+    "$TMUX_REAL" -L "$INNER" select-pane -t "$P2" >/dev/null 2>&1; DRX=$(drg_rx)
+    drg_send "$(drg_sgr 0 "$((L2 + 3))" "$Y" M) $(drg_sgr 32 "$((L2 + 4))" "$Y" M)"
+    drg_send "$(drg_sgr 0 "$((L2 + 4))" "$Y" m)"
+    until_out '*m' drg_new
+    is "${DRG_ROWS[0]}" '^[[<0;3;3M^[[<32;4;3M^[[<0;4;3m' "$(drg_new)"
+
+    # A drag from pane 0 into copy mode, released over pane 1: the release is the
+    # drag end, resolved to pane 1, and selects nothing there.
+    "$TMUX_REAL" -L "$INNER" select-pane -t "$P0" >/dev/null 2>&1
+    drg_send "$(drg_sgr 0 5 "$Y" M) $(drg_sgr 32 6 "$Y" M)"
+    drg_send "$(drg_sgr 32 "$((L1 + 5))" "$Y" M)"
+    drg_send "$(drg_sgr 0 "$((L1 + 5))" "$Y" m)"; drg_sync
+    is "${DRG_ROWS[5]}" "$P0" "$(drg_act)"
+    "$TMUX_REAL" -L "$INNER" send-keys -t "$P0" -X cancel >/dev/null 2>&1
+
+    # A plain click on the app from pane 1: stock's MouseDown1Pane hands on the
+    # press, the plugin's MouseUp1Pane the release.
+    "$TMUX_REAL" -L "$INNER" select-pane -t "$P1" >/dev/null 2>&1; DRX=$(drg_rx)
+    drg_send "$(drg_sgr 0 "$((L2 + 3))" "$((Y + 2))" M)"
+    drg_send "$(drg_sgr 0 "$((L2 + 3))" "$((Y + 2))" m)"; until_out '*m' drg_new
+    is "${DRG_ROWS[6]}" '^[[<0;3;5M^[[<0;3;5m' "$(drg_new)"
+
+    "$TMUX_REAL" -L "$INNER" select-pane -t "$P0" >/dev/null 2>&1
+    if drg_arm; then
+        drg_send "$(drg_sgr 0 "$((L1 + 3))" "$Y" M)"
+        drg_send "$(drg_sgr 0 "$((L1 + 3))" "$Y" m)"; until_out "$P1" drg_act
+        is "${DRG_ROWS[1]}" "$P1" "$(drg_act)"
+    else bad "${DRG_ROWS[1]}" "a popup that ate a release" "none"; fi
+
+    "$TMUX_REAL" -L "$INNER" select-pane -t "$P2" >/dev/null 2>&1
+    if drg_arm; then             # the border column right of pane 0, 1-based
+        drg_send "$(drg_sgr 0 "$((R0 + 2))" "$Y" M)"
+        drg_send "$(drg_sgr 0 "$((R0 + 2))" "$Y" m)"; until_out "$P0" drg_act
+        is "${DRG_ROWS[2]}" "$P0" "$(drg_act)"
+    else bad "${DRG_ROWS[2]}" "a popup that ate a release" "none"; fi
+
+    "$TMUX_REAL" -L "$INNER" select-pane -t "$P0" >/dev/null 2>&1; DRX=$(drg_rx)
+    if drg_arm; then
+        drg_send "$(drg_sgr 0 "$((L2 + 3))" "$((Y + 1))" M)"
+        drg_send "$(drg_sgr 0 "$((L2 + 3))" "$((Y + 1))" m)"; until_out "$P2" drg_act
+        is "${DRG_ROWS[3]}" "$P2" "$(drg_act)"
+        until_out '*m' drg_new
+        is "${DRG_ROWS[4]}" '^[[<0;3;4M^[[<0;3;4m' "$(drg_new)"
+    else
+        bad "${DRG_ROWS[3]}" "a popup that ate a release" "none"
+        bad "${DRG_ROWS[4]}" "a popup that ate a release" "none"
+    fi
+else
+    for r in "${DRG_ROWS[@]}"; do bad "$r" "an attached client" "no client"; done
+fi
+"$TMUX_REAL" -L "$OUTER" kill-server >/dev/null 2>&1
+"$TMUX_REAL" -L "$INNER" kill-server >/dev/null 2>&1
+rm -rf "$DRG"
+fi
+
 echo "== the fixes review found =="
 # agent-state joined payload lines with NO separator, so the tail of one line
 # and the head of the next could fuse into a marker that appears in neither.
