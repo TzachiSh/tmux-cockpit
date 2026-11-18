@@ -5000,7 +5000,9 @@ cp "$CL/h13/.tmux.conf" "$CL/conf13"
 ( cd "$CL/wd" && cl_env 13 "$cl_t/bootstrap.sh" --yes ) >/dev/null
 is "a config tpm loads the plugin from: bootstrap.sh appends nothing" "same" \
    "$(cmp -s "$CL/h13/.tmux.conf" "$CL/conf13" && echo same || echo changed)"
-is "and install.sh --check passes its config row" "1" \
+# The config as written: a line bootstrap.sh appended would wire the box by itself.
+cp "$CL/conf13" "$CL/h13/.tmux.conf"
+is "and install.sh --check on that config as written passes its config row" "1" \
    "$(cl_env 13 "$cl_t/install.sh" --check |
       grep -cF "[  ok  ] config         $CL/h13/.tmux.conf loads cockpit")"
 # The plain folder: a bare line works there, so nothing new is said. The run's output is
