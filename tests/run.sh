@@ -5067,7 +5067,7 @@ for cl_a in linux_amd64 linux_arm64 darwin_amd64 darwin_arm64; do
     ( cd "$CL/pack" && tar -czf "$cl_d/revdiff_1.13.0_$cl_a.tar.gz" revdiff )
 done
 ( cd "$cl_d" && sha256sum revdiff_1.13.0_*.tar.gz > revdiff_1.13.0_checksums.txt )
-for cl_n in 1 2 3 4 5 6 7 8 9 10 11 12; do SOCKS="$SOCKS cockpit-cl-$$-$cl_n"; done
+for cl_n in 1 2 3 4 5 6 7 8 9 10 11 12 13 14; do SOCKS="$SOCKS cockpit-cl-$$-$cl_n"; done
 cl_box() {                    # <n> <folder name> -- a copy of the plugin and a home for it
     local p="$CL/p/$2" h="$CL/h$1" d
     mkdir -p "$p" "$h/bin" "$h/.tmux/plugins"
@@ -5093,6 +5093,18 @@ cl_load() {                   # <n> [socket n] -> <@cl_from>|<prefix w bindings>
     until_out '?*' "$TMUX_REAL" -L "$s" show-option -gqv @cl_from >/dev/null
     printf '%s|%s' "$("$TMUX_REAL" -L "$s" show-option -gqv @cl_from 2>/dev/null)" \
         "$("$TMUX_REAL" -L "$s" list-keys -T prefix w 2>/dev/null | grep -c cockpit_board)"
+    "$TMUX_REAL" -L "$s" kill-server >/dev/null 2>&1
+}
+# A config whose last line sets @cl_done: run-shell with no -b holds the lines after it until
+# it ends, so @cl_done set means the run line before it is done, loaded or not (#1303).
+cl_ran() {                    # <home n> <socket n> -> <@cl_from>|<@cl_done>, h<n> sourced
+    local h="$CL/h$1" s="cockpit-cl-$$-$2"
+    ( cd "$CL/wd" && HOME="$h" exec "$TMUX_REAL" -L "$s" -f /dev/null new-session -d -s t \
+        -c "$CL/wd" 'exec sleep 300' ) >/dev/null 2>&1
+    ( cd "$CL/wd" && exec "$TMUX_REAL" -L "$s" source-file "$h/.tmux.conf" ) >/dev/null 2>&1
+    until_out 1 "$TMUX_REAL" -L "$s" show-option -gqv @cl_done >/dev/null
+    printf '%s|%s' "$("$TMUX_REAL" -L "$s" show-option -gqv @cl_from 2>/dev/null)" \
+        "$("$TMUX_REAL" -L "$s" show-option -gqv @cl_done 2>/dev/null)"
     "$TMUX_REAL" -L "$s" kill-server >/dev/null 2>&1
 }
 cl_n=0
@@ -5145,6 +5157,40 @@ is "cockpit_conf_bare_line: the spellings of the old line, by line number" "3 1 
           "$(cockpit_conf_bare_line "$CL/sp2" "$HOME/pl ug")"
       HOME="$HOME/"; printf '%s ' "$(cockpit_conf_bare_line "$CL/sp1" "$CL/h1/pl ug")"
       cockpit_conf_bare_line "$CL/sp3" "$CL/h1/pl ug" || printf none)"
+# Which lines reach sh with the path unquoted and might not load (#1303), each the second
+# line of a config: its number and its form, or none. In '~/<rest>' sh puts HOME in for the ~
+# and does not split it, so only <rest> counts. A line that runs another folder is no load.
+is "cockpit_conf_unquoted_line: the lines whose path sh reads unquoted" \
+   "bare:2/bare single:2/quoted double:2/quoted run-b:2/quoted single-tilde:2/quoted $(:
+   )home:none printed:none other:none sp-tilde:none sp-bare:2/bare sp-double:2/quoted $(:
+   )sp-home:2/quoted " \
+   "$(. "$DIR/scripts/lib/confline.sh"
+      cl_t() {                # <key> <line> <folder>
+          printf '# mine\n%s\n' "$2" > "$CL/ul"
+          if cockpit_conf_unquoted_line "$CL/ul" "$3" 2>/dev/null; then
+              printf '%s:%s/%s ' "$1" "$cockpit_unquoted_n" "$cockpit_unquoted_form"
+          else printf '%s:none ' "$1"; fi
+      }
+      HOME="$CL/h1"; cl_p="$HOME/pl ug"; cl_q="'"
+      cl_t bare "run-shell $cl_p/cockpit.tmux" "$cl_p"
+      cl_t single "run-shell $cl_q$cl_p/cockpit.tmux$cl_q" "$cl_p"
+      cl_t double "run-shell \"$cl_p/cockpit.tmux\"" "$cl_p"
+      cl_t run-b "run -b $cl_q$cl_p/cockpit.tmux$cl_q" "$cl_p"
+      cl_t single-tilde "run-shell $cl_q~/pl ug/cockpit.tmux$cl_q" "$cl_p"
+      cl_t home "run-shell $cl_q\"\$HOME/pl ug/cockpit.tmux\"$cl_q" "$cl_p"
+      cl_t printed "$(cockpit_conf_line "$cl_p")" "$cl_p"
+      cl_t other "run-shell $cl_q$CL/elsewhere/pl ug/cockpit.tmux$cl_q" "$cl_p"
+      HOME="$CL/h 19"; cl_p="$HOME/pl"; mkdir -p "$cl_p"; : > "$cl_p/cockpit.tmux"
+      cl_t sp-tilde "run-shell $cl_q~/pl/cockpit.tmux$cl_q" "$cl_p"
+      cl_t sp-bare "run-shell ~/pl/cockpit.tmux" "$cl_p"
+      cl_t sp-double "run-shell \"~/pl/cockpit.tmux\"" "$cl_p"
+      cl_t sp-home "run-shell $cl_q\$HOME/pl/cockpit.tmux$cl_q" "$cl_p")"
+# Evidence for the ~ exemption, not a fail-first row: under a HOME with a blank in it,
+# '~/<rest>' loads the plugin, as sh does not split the HOME it puts in.
+cl_box " 20" t20; mv "$CL/p/t20" "$CL/h 20/pl"
+printf "run-shell '~/pl/cockpit.tmux'\nset -g @cl_done 1\n" > "$CL/h 20/.tmux.conf"
+is "a HOME with a blank and '~/<rest>': a server that sources it loads the plugin" "20|1" \
+   "$(cl_ran " 20" 14)"
 
 # A config that already holds the older line. bootstrap.sh never rewrites a config, so it
 # says what it found: only when the line is the bare one and the folder's path holds a
@@ -5175,6 +5221,27 @@ cl_said "and install.sh --check warns on its config row, with the same line" \
         )folder; replace line 3 with $cl_line
 " "$(cl_env 2 "$cl_p2/install.sh" --check)
 "
+# The path in single or double quotes alone reaches sh unquoted too, so a blank splits it
+# (#1303). The same box, the line now '<folder>/cockpit.tmux'.
+printf "# mine\n\nrun-shell '%s/cockpit.tmux'\n" "$cl_p2" > "$CL/h2/.tmux.conf"
+cl_said "a single-quoted line and a folder with blanks: install.sh --check warns, same line" \
+    "[ warn ] config         $CL/h2/.tmux.conf line 3 sh reads its path unquoted, might not $(:
+        )load from this folder; replace line 3 with $cl_line
+" "$(cl_env 2 "$cl_p2/install.sh" --check)
+"
+cl_out=$( cd "$CL/wd" && cl_env 2 "$cl_p2/bootstrap.sh" --yes )
+case "$cl_out" in
+    *"NOTE   sh reads the path in line 3 of that file unquoted"*"Replace line 3 with:"*$(:
+      )"
+           $cl_line
+"*) ok "and bootstrap.sh's notice names line 3 and gives the line" ;;
+    *) bad "and bootstrap.sh's notice names line 3 and gives the line" \
+           "NOTE   sh reads the path in line 3 … $cl_line" "$cl_out" ;;
+esac
+# Evidence for the warning, not a fail-first row: tmux does not load the plugin from that line.
+printf "run-shell '%s/cockpit.tmux'\nset -g @cl_done 1\n" "$cl_p2" > "$CL/h2/.tmux.conf"
+is "a single-quoted line and a folder with blanks: a server that sources it loads nothing" \
+   "|1" "$(cl_ran 2 13)"
 # The four places install.sh prints the line, each from the folder with blanks, on a home
 # of its own. The line is read whole, to its line end: a bare path is a red row.
 mkdir -p "$CL/h8/bin"
@@ -5441,7 +5508,7 @@ is "and install.sh --check passes its config row" "1" \
    "$(cl_env 1 "$CL/p/plain/install.sh" --check |
       grep -cF "[  ok  ] config         $CL/h1/.tmux.conf loads cockpit")"
 fi
-unset -f cl_box cl_env cl_load
+unset -f cl_box cl_env cl_load cl_ran
 unset CL CLREL cl_d cl_a cl_n cl_f cl_p2 cl_out cl_line cl_t cl_x cl_e
 fi
 

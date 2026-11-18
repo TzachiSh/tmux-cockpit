@@ -156,6 +156,41 @@ cockpit_conf_arg_path() {     # <run argument> -> cockpit_path
     cockpit_path=$i
 }
 
+# The first line of a config that runs this folder's cockpit.tmux (cockpit_conf_wired_line)
+# where sh reads the path as an unquoted word that cockpit_bare_carries does not carry: at a
+# blank sh splits it, and nothing loads (docs/install.md). What sh reads, by the argument's
+# shape (tmux(1), PARSING SYNTAX):
+#   bare and "<s>": tmux puts HOME in for ~ and $HOME first, so the whole path.
+#   '<s>': <s> as written. sh puts HOME in for a leading ~/ and does not split what it put
+#   in, so only the rest counts there. A $HOME sh puts in is split: the whole path counts.
+#   '"<s>"' and "'<s>'", the line cockpit_conf_line prints among them: sh's own quotes, none.
+# The line as written is read, never this folder's path, so a link to the folder counts by
+# the link's path. Sets cockpit_unquoted_n and cockpit_unquoted_form, bare or quoted; 1 when
+# no line is one (#1303). cockpit_conf_bare_line finds the bare shape alone (#1046).
+cockpit_conf_unquoted_line() {  # <config file> <plugin folder> -> cockpit_unquoted_*
+    local f=$1 d=$2 l a w form n=0
+    cockpit_unquoted_n=0; cockpit_unquoted_form=''
+    while IFS= read -r l || [ -n "$l" ]; do
+        n=$((n + 1))
+        cockpit_conf_run_arg "$l" || continue
+        a=$cockpit_arg
+        case $a in \'\"*\"\'|\"\'*\'\") continue ;; esac
+        cockpit_conf_arg_path "$a" || continue
+        w=$cockpit_path; form=quoted
+        case $a in
+            "'~/"*\') w=${a#"'~/"}; w=${w%\'} ;;
+            \'*\'|\"*\") ;;
+            *) form=bare ;;
+        esac
+        ! cockpit_bare_carries "$w" || continue
+        cockpit_conf_wired_line <(printf '%s\n' "$l") "$d" >/dev/null || continue
+        # shellcheck disable=SC2034 # read by the scripts that source this file
+        { cockpit_unquoted_n=$n; cockpit_unquoted_form=$form; }
+        return 0
+    done < "$f"
+    return 1
+}
+
 # Does tpm load this folder's plugin? Read in tpm at commit 99469c4a, its
 # scripts/helpers/plugin_functions.sh: _get_user_tmux_conf (line 21) picks ONE user config,
 # the XDG tmux.conf when it is a file, else ~/.tmux.conf, and _tmux_conf_contents (line 37)
