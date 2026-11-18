@@ -60,8 +60,10 @@ fi
 mkdir -p "$(dirname "$LOG")" 2>/dev/null
 # A private 0700 directory: the note is shown on the board, so no other user
 # may get to write it first. Taken only when it is a fresh dir of the user's own, as the
-# trap removes it: a refusal ends the board as a failed mktemp does (#947).
-d=''; own_tmpdir d || exit 1
+# trap removes it: a refusal ends the board as a failed mktemp does (#947), and says which
+# check refused.
+d=''; own_tmpdir d || {
+    say "cockpit: no temp dir for the board (own_tmpdir: $own_tmpdir_why)" 2>/dev/null; exit 1; }
 f="$d/act" note="$d/note"
 trap 'rm -rf "$d"' EXIT
 

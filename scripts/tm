@@ -291,7 +291,7 @@ pick() {
   local -a a
   # Global, not local: the EXIT trap runs after this function has returned. Taken only when
   # it is a fresh dir of the user's own, as the trap removes it (#947).
-  own_tmpdir PICK_DIR || die "cockpit: no temp dir for the picker"
+  own_tmpdir PICK_DIR || die "cockpit: no temp dir for the picker (own_tmpdir: $own_tmpdir_why)"
   d=$PICK_DIR
   trap 'rm -rf "$PICK_DIR"' EXIT
   trap 'exit 130' INT TERM HUP

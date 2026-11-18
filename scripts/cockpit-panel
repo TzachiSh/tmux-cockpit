@@ -103,8 +103,9 @@ fi
 # A private 0700 directory: a name beside a mktemp file in a shared /tmp is
 # one another user can create first, and its text would be pasted. Taken only when it is a
 # fresh dir of the user's own, as the trap removes it: a refusal ends the panel as a failed
-# mktemp does (#947).
-d=''; own_tmpdir d || exit 1
+# mktemp does (#947), and says which check refused.
+d=''; own_tmpdir d || { tell "cockpit: no temp dir for the panel (own_tmpdir: $own_tmpdir_why)"
+    exit 1; }
 f="$d/act"
 buf="cockpit-panel-$$"
 trap 'rm -rf "$d"' EXIT

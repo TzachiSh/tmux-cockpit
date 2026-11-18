@@ -10895,13 +10895,19 @@ echo "== board, panel, tm and tui-fetch rm -rf no dir their mktemp did not make 
 # and a stub tmux comes first on PATH, answering one session name and nothing else (tm runs in
 # a pane of a private server for its tty, the stub still first). tui-fetch's curl and gh are
 # stubs that log and fail, so nothing is fetched; the row counts its curl calls.
+# With OS_SAID set, os_site prints instead what the site said about the refusal, in the channel
+# it reports in: the board and the panel by a display-message the stub tmux keeps, tui-fetch on
+# stdout, tm on stderr. The reason is the check own_tmpdir_why names.
 if need_tmux "own_tmpdir at the four sites"; then :; else
 OSS="cockpit-ot947-$$"; SOCKS="$SOCKS $OSS"
 os_site() {                   # <site> <full|cwd> -> "<kept|gone>|<status or curl=N>"
     local s=$1 w=$2 o r
     o=$(mktmpd); mkdir -p "$o/bin" "$o/cwd" "$o/full" "$o/state"; echo keep > "$o/full/canary"
     printf '#!/bin/sh\nprintf "%%s\\n" %s\n' "$(tq "$o/$w")" > "$o/bin/mktemp"
-    printf '#!/bin/sh\ncase $1 in list-sessions) echo a ;; esac\nexit 0\n' > "$o/bin/tmux"
+    { printf '#!/bin/sh\ncase $1 in list-sessions) echo a ;;\n'
+      printf '    display-message) for a; do l=$a; done; printf "%%s\\n" "$l" >> %s ;;\n' \
+          "$(tq "$o/said")"
+      printf 'esac\nexit 0\n'; } > "$o/bin/tmux"
     printf '#!/bin/sh\necho x >> %s\nexit 22\n' "$(tq "$o/curl.log")" > "$o/bin/curl"
     printf '#!/bin/sh\nexit 1\n' > "$o/bin/gh"; printf '#!/bin/sh\nexit 1\n' > "$o/tui"
     chmod +x "$o/bin/"* "$o/tui"
@@ -10912,7 +10918,7 @@ os_site() {                   # <site> <full|cwd> -> "<kept|gone>|<status or cur
             cat > "$o/run-tm" <<'RUNTM'
 #!/bin/sh
 cd "$1" || exit 1
-PATH="$2:$PATH" env -u TMUX -u TMUX_PANE COCKPIT_TUI_BIN="$3" timeout 30 "$4"
+PATH="$2:$PATH" env -u TMUX -u TMUX_PANE COCKPIT_TUI_BIN="$3" timeout 30 "$4" 2>"$5.err"
 echo "$?" > "$5.t" && mv "$5.t" "$5"
 RUNTM
             # fresh_server: the second tm row starts a server on the socket the first killed.
@@ -10924,13 +10930,17 @@ RUNTM
         tui-fetch)
             (cd "$o/cwd" && PATH="$o/bin:$PATH" env -u TMUX -u TMUX_PANE -u COCKPIT_TUI_OFFLINE \
                 COCKPIT_TUI_BIN="$o/p/bin/cockpit-tui" \
-                COCKPIT_TUI_RELEASES=http://no-such-host.invalid timeout 30 "$DIR/scripts/tui-fetch" </dev/null >/dev/null 2>&1)
+                COCKPIT_TUI_RELEASES=http://no-such-host.invalid timeout 30 \
+                "$DIR/scripts/tui-fetch" </dev/null >"$o/out" 2>/dev/null)
             r=$( (wc -l < "$o/curl.log") 2>/dev/null | tr -d ' '); r=curl=${r:-0} ;;
         *)
             (cd "$o/cwd" && PATH="$o/bin:$PATH" env -u TMUX -u TMUX_PANE COCKPIT_TUI_BIN="$o/tui" \
                 COCKPIT_LOG="$o/log" XDG_STATE_HOME="$o/state" timeout 30 "$DIR/scripts/$s" \
                 ${3:+"$3"} ${4:+"$4"} </dev/null >/dev/null 2>&1); r=$? ;;
     esac
+    if [ -n "${OS_SAID:-}" ]; then
+        cat "$o/said" "$o/out" "$o/rc.err" 2>/dev/null | grep 'no temp dir'; return
+    fi
     if { [ "$w" = full ] && [ -e "$o/full/canary" ]; } || { [ "$w" = cwd ] && [ -d "$o/cwd" ]; }
     then printf 'kept|%s' "$r"; else printf 'gone|%s' "$r"; fi
 }
@@ -10944,7 +10954,22 @@ for os_w in full cwd; do
     is "tui-fetch: a mktemp answering an existing dir ($os_w) fetches nothing, the dir stays" \
        "kept|curl=0" "$(os_site tui-fetch "$os_w")"
 done
-unset -f os_site; unset OSS os_w
+# The refusal says which check refused: nonempty for the dir with a canary, cwd for the cwd.
+for os_c in full:nonempty cwd:cwd; do
+    os_w=${os_c%:*} os_y=${os_c#*:}
+    is "cockpit-board: the refusal ($os_w) says why, in a message" \
+       "cockpit: no temp dir for the board (own_tmpdir: $os_y)" \
+       "$(OS_SAID=1 os_site cockpit-board "$os_w")"
+    is "cockpit-panel: the refusal ($os_w) says why, in a message" \
+       "cockpit: no temp dir for the panel (own_tmpdir: $os_y)" \
+       "$(OS_SAID=1 os_site cockpit-panel "$os_w" -p %0)"
+    is "tm: the refusal ($os_w) says why, on stderr" \
+       "cockpit: no temp dir for the picker (own_tmpdir: $os_y)" "$(OS_SAID=1 os_site tm "$os_w")"
+    is "tui-fetch: the refusal ($os_w) says why, on stdout" \
+       "tui-fetch: skip: no temp dir for the download (own_tmpdir: $os_y)" \
+       "$(OS_SAID=1 os_site tui-fetch "$os_w")"
+done
+unset -f os_site; unset OSS os_w os_c os_y
 fi
 
 echo "== bootstrap.sh's tmux build and revdiff fetch rm -rf no dir mktemp did not make (#947) =="
