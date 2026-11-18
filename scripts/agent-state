@@ -277,6 +277,9 @@ prog_name() {
     s=${BASH_REMATCH[1]}; s=${s//\\[ntr]/ }
     while :; do
         s=${s#"${s%%[! $'\t']*}"}; w=${s%%[ $'\t']*}
+        # A value that quotes, escapes or expands may hold a blank, so the word after it
+        # could be a piece of the value: no program then. Nor for a quoted program.
+        case $w in [\"\']*) return 0 ;; *=*) case $w in *[\"\'\\\$\`]*) return 0 ;; esac ;; esac
         case $w in *=*) n=${w%%=*}
             case $n in ''|[0-9]*|*[!"$al"_]*) ;; *) s=${s#"$w"}; continue ;; esac ;;
         esac
@@ -310,9 +313,11 @@ needs-input|error)
             [ -z "$msg" ] || tmux set-option -p -t "$pane" @panestate_msg "$msg" 2>/dev/null
         fi
     else
-        # Whole: is_interrupt comes after tool_input and the error text. A read cut by its
-        # 2 s deadline misses it, and the error is written, as before #1330.
-        read_payload true
+        # 4 KB, as above: bash reads a pipe a byte per syscall, and a failed Write's tool_input
+        # can be a whole file, which held the hook 2 s (#1334). is_interrupt comes after
+        # tool_input and the error text: past the cap it is not seen, and the error is
+        # written, as before #1330.
+        read_capped 4096 true
         if is_event PostToolUseFailure; then
             # A tool the person stopped (Esc) did not fail.
             case "$payload" in *'"is_interrupt":true'*|*'"is_interrupt": true'*) exit 0 ;; esac

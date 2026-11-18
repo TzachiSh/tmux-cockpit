@@ -1777,6 +1777,14 @@ is "an empty command names no program" "Bash" "$(bgpr Bash '')"
 is "a program name is cut at 32" "Bash: $(printf 'p%.0s' {1..32})" \
     "$(bgpr Bash "$(printf 'p%.0s' {1..40}) x")"
 is "another tool's ask is its name" "Edit" "$(bgpr Edit '')"
+# #1334: a value that quotes, escapes or expands may hold a blank, so no word after it is named.
+is "a quoted NAME=value names no program" "Bash" \
+    "$(bgpr Bash "GIT_AUTHOR_NAME='Jane Roe' git commit")"
+is "a NAME=value that expands names no program" "Bash" \
+    "$(bgpr Bash 'X=$(cat /home/u/secret.key) ls')"
+is "a NAME=value with an escaped blank names no program" "Bash" \
+    "$(bgpr Bash 'TOKEN=a\\ b9f3 curl')"
+is "a quoted program names no program" "Bash" "$(bgpr Bash '\"git\" status')"
 bgfail() {                    # <is_interrupt field>: a Bash PostToolUseFailure
     bgst error "{\"hook_event_name\":\"PostToolUseFailure\",\"tool_name\":\"Bash\",\
 \"tool_input\":{\"command\":\"cat /home/u/k\"},\"error\":\"no /home/u/k\",$1}"; }
@@ -1785,7 +1793,7 @@ is "an interrupted tool is no error" running "$(bgo @panestate)"
 bgst running "$BGU"; bgfail '"is_interrupt": true'
 is "nor with a space after the colon" running "$(bgo @panestate)"
 bgst running "$BGU"; bgfail '"is_interrupt":false'
-is "a failed tool's ask is its name only" "Bash failed" "$(bgo @panestate_msg)"
+is "a failed tool's text is its name only" "Bash failed" "$(bgo @panestate_msg)"
 bgpr Bash 'git push' >/dev/null; bgfail '"is_interrupt":false'
 is "a failure leaves a waiting pane's ask" "Bash: git" "$(bgo @panestate_msg)"
 BGPP='{"hook_event_name":"Notification","message":"Claude needs your permission to use Bash",'
@@ -1795,6 +1803,23 @@ is "a later permission_prompt keeps the PermissionRequest text" "Bash: git" "$(b
 bgst running "$BGU"; bgfail '"is_interrupt":false'; bgst notify "$BGPP"
 is "but an error's text gives way to a permission_prompt" \
     "Claude needs your permission to use Bash" "$(bgo @panestate_msg)"
+# #1334: a failed Write's tool_input can be a whole file. Through a pipe bash reads a byte per
+# syscall, so the hook reads 4 KB of it, never to its 2 s deadline.
+BGPF1="${BGCFG%/claude}/payload1m"
+{ printf '{"hook_event_name":"PostToolUseFailure","tool_name":"Write","tool_input":'
+  printf '{"file_path":"/home/u/f","content":"'; head -c 1048576 /dev/zero | tr '\0' x
+  printf '"},"error":"boom","is_interrupt":false}\n'; } > "$BGPF1"
+if [ -n "${EPOCHREALTIME:-}" ]; then
+    bgst running "$BGU"; bgt0=${EPOCHREALTIME/,/.}
+    { cat "$BGPF1" 2>/dev/null; } | HOME="$HOME" CLAUDE_CONFIG_DIR="$BGCFG" \
+        TMUX="$SOCKDIR/$BG,0,0" "$DIR/scripts/agent-state" error "$BGP" >/dev/null 2>&1
+    bgt1=${EPOCHREALTIME/,/.}
+    is "a 1 MB failure payload through a pipe is read in under 0.5 s" yes \
+        "$(awk -v a="$bgt0" -v b="$bgt1" 'BEGIN { d = b - a; print (d < 0.5 ? "yes" : d " s") }')"
+else
+    skip_ "a 1 MB failure payload through a pipe is read in under 0.5 s (no EPOCHREALTIME)"
+fi
+rm -f "$BGPF1"; unset BGPF1 bgt0 bgt1
 bgmsg; unset -f bgmsg bgpr bgfail; unset BGPP
 
 # Concurrent hooks: several report-back Stops and subagent tool calls at once.

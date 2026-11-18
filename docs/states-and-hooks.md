@@ -19,7 +19,8 @@ not a guess. It clears whenever the pane resumes work or goes idle, and is
 left alone by `done` since a done pane has no border alert to read it on.
 `PermissionRequest` writes it first, with the tool's name (#1330). The
 `permission_prompt` notification that follows about 6 s later leaves that text
-in place on a pane still waiting, and writes its own only on a pane with none.
+in place on a pane still waiting, and writes its own on any other pane, an
+error's text included.
 
 ### State ranking
 
@@ -44,7 +45,7 @@ timer.
 | `PermissionRequest` | `needs-input` — `@panestate_msg` names the tool; for `Bash` only the command's program, `Bash: git`, never its arguments or paths (#1330) |
 | `PostToolUse` | `running` |
 | `PostToolUse` (matcher `TaskStop`) | `sub-taskstop` — records the stopped agent in the subagent log, since a TaskStop mid-turn fires no `SubagentStop` for a plain agent (see [Subagent event log](#subagent-event-log)); no pane state |
-| `PostToolUseFailure` | `error`, with `@panestate_msg` set to `<tool> failed`, the tool name only. Not when `is_interrupt` is true: a tool stopped with Esc did not fail (#1330) |
+| `PostToolUseFailure` | `error`, with `@panestate_msg` set to `<tool> failed`, the tool name only. Not when `is_interrupt` is true: a tool stopped with Esc did not fail (#1330). Only the payload's first 4 KB is read: an `is_interrupt` past it, behind a large `tool_input`, is not seen, and the error shows (#1334) |
 | `SubagentStart` | `running` |
 | `SubagentStart` (2nd) | `sub-start` — appends the event to the session's subagent log (see [Subagent event log](#subagent-event-log)); no pane state |
 | `SubagentStop` | `sub-stop` — the same log; no pane state, so a failed subagent's `error` is not cleared (see [Deliberately unwired](#deliberately-unwired)) |
