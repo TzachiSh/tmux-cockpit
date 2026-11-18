@@ -75,7 +75,8 @@ tmux-review — review an agent's uncommitted diff, one comment at a time.
   tmux-review --deliver <pane> <store>   paste it typed-but-unsent into <pane>; a busy pane gets it queued for its next Stop
   tmux-review --done <store>            after a by-hand --deliver: archive the batch, drop the scratch
   tmux-review --delta <pane>            exit 0 when <pane>'s tree differs from its review base,
-                                        1 when not, 2 when the diff cannot be read,
+                                        1 when not, 2 when it cannot tell (no work dir,
+                                        or the diff cannot be read),
                                         3 when it cannot load: bash older than 4, or a library
   tmux-review --request <pane>          the agent asks: one popup on <pane>; the batch on stdout, exit 10
   tmux-review --dir <pane>              the tree <pane> works in, as the board shows it
