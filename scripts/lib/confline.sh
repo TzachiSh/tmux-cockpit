@@ -360,27 +360,27 @@ cockpit_conf_wired() {        # <plugin folder> <readable config>... -> cockpit_
 # pattern) naming tmux-cockpit or this folder's name. bootstrap.sh appends no run line when
 # one is there, even one the readers above call no load: that line may run a copy of the
 # plugin by a route they do not follow, and two copies loading is worse than none (#1067).
-# An @plugin line in a file tpm's config sources counts too, as tpm reads it there
-# (cockpit_conf_tpm_sourced). A cockpit.tmux line there is not looked for: nothing here
-# follows source-file the way tmux does (#1304).
+# The files tpm's config sources are read too (cockpit_conf_tpm_sourced), for both kinds of
+# line: tpm reads an @plugin line there, and tmux runs a cockpit.tmux line there, so
+# either may load a copy beside an appended line (#1304).
 # Sets cockpit_mention_file, cockpit_mention_n and cockpit_mention_line; 1 when none.
 cockpit_conf_mention() {      # <plugin folder> <config>... -> cockpit_mention_*
-    local d=$1 c l t n spec top=1 re='^[[:blank:]]*set(-option)? +-g +@plugin'
+    local d=$1 c l t n spec re='^[[:blank:]]*set(-option)? +-g +@plugin'
     local -a fs
     shift
     cockpit_mention_file=''; cockpit_mention_n=0; cockpit_mention_line=''
     cockpit_conf_tpm_where; cockpit_conf_tpm_sourced "$cockpit_tpm_conf"
-    fs=("$@" '')              # the empty entry: the sourced files follow it
+    fs=("$@")
     [ "${#cockpit_tpm_src[@]}" -eq 0 ] || fs+=("${cockpit_tpm_src[@]}")
+    [ "${#fs[@]}" -gt 0 ] || return 1
     for c in "${fs[@]}"; do
-        [ -n "$c" ] || { top=0; continue; }
         n=0
         while IFS= read -r l || [ -n "$l" ]; do
             n=$((n + 1))
             t=${l#"${l%%[![:space:]]*}"}
             case $t in ''|'#'*) continue ;; esac
             case $t in
-                *cockpit.tmux*) [ "$top" -eq 1 ] || continue ;;
+                *cockpit.tmux*) ;;
                 *)  [[ $l =~ $re ]] || continue
                     t=${l//\'/}; t=${t//\"/}
                     read -r _ _ _ spec _ <<< "$t"

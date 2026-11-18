@@ -119,12 +119,14 @@ in `/tpm/tpm`, as a clone of tpm has it. When its config row fails on an
 a config tpm does not read, no line runs tpm, or tpm's plugin folder holds
 another copy (#1302).
 
-tpm also reads `@plugin` lines, and its run line, from a file its config
-sources with `source-file`, one level down. `install.sh --check` and
-`bootstrap.sh` read them there too, by tpm's own rules: a `~` or `$HOME` at the
-start of the path is your home, a glob is expanded, and a path that does not
-start with `/` is not read. A `run-shell` line for `cockpit.tmux` in a sourced
-file is not seen, so `bootstrap.sh` may append one beside it (#1304).
+tpm also reads `@plugin` lines from a file its config sources with
+`source-file`, one level down, and tmux runs tpm's run line from such a file
+too. `install.sh --check` and `bootstrap.sh` read both there, one level down,
+by tpm's own rules: a `~` or `$HOME` at the start of the path is your home, a
+glob is expanded, and a path that does not start with `/` is not read. A
+`run-shell` line for `cockpit.tmux` in such a file stops `bootstrap.sh` from
+appending one beside it. `install.sh --check` does not count it as a load, so
+its config row fails (#1304).
 
 Wire the hooks into `~/.claude/settings.json`:
 

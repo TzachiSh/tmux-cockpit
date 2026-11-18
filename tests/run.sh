@@ -5701,6 +5701,18 @@ is "a sourced @plugin line naming tmux-cockpit: bootstrap.sh appends nothing, an
    "$(printf '%s\n' "$cl_out" |
       grep -cF "have   $CL/h23/.tmux/plugins.conf line 1 names cockpit;")|$(
       cmp -s "$CL/h23/.tmux.conf" "$CL/conf23" && echo same || echo changed)"
+# tpm's config sources a file whose run-shell line loads this folder: tmux runs that line,
+# so bootstrap.sh appends no second one beside it, and names the line it found (#1304).
+cl_box 25 co25
+printf '%s\n' "source-file ~/.tmux/cockpit.conf" > "$CL/h25/.tmux.conf"
+printf "run-shell '%s/cockpit.tmux'\n" "$CL/p/co25" > "$CL/h25/.tmux/cockpit.conf"
+cp "$CL/h25/.tmux.conf" "$CL/conf25"
+cl_out=$( cd "$CL/wd" && cl_env 25 "$CL/p/co25/bootstrap.sh" --yes )
+is "a sourced run-shell line loading this folder: bootstrap.sh appends nothing, and names it" \
+   "1|same" \
+   "$(printf '%s\n' "$cl_out" |
+      grep -cF "have   $CL/h25/.tmux/cockpit.conf line 1 names cockpit;")|$(
+      cmp -s "$CL/h25/.tmux.conf" "$CL/conf25" && echo same || echo changed)"
 # A plugin folder reached through a symlink, ~/.tmux/plugins/tmux-cockpit linked to a
 # checkout (#1067): the folder is its physical path, and the config names the link.
 # docs-comment is the docs line with a trailing comment: no spelling of the physical path
