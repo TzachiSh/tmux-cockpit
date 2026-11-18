@@ -101,7 +101,9 @@ cockpit_noted_key() {         # <name> <record option> -> the key
 # space: so the mark reads back as `"COCKPIT_POPUP=1 ` at the start, whatever follows. The
 # flag is read as true or false, never as empty: tmux 3.8 already prints 0 or 1 for it. The
 # board holds a copy of the filter (tui/src/data.rs NOT_POPUP).
+# shellcheck disable=SC2034  # read by the scripts that source this
 COCKPIT_POPUP_MARK='COCKPIT_POPUP=1 '
+# shellcheck disable=SC2034  # read by the scripts that source this
 COCKPIT_NOT_POPUP='#{?pane_modal_flag,#{?#{m:"COCKPIT_POPUP=1 *,#{pane_start_command}},0,1},1}'
 
 # A file name as a title: no control character and no bidi mark, which would
