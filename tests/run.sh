@@ -7694,6 +7694,41 @@ loaded_on "$GB" "with /tmp unwritable the stock read uses TMPDIR: w back, nothin
        "choose-tree -Zw|" \
        "$(gb_live w | grep -o 'choose-tree -Zw')|$(gb_left)"
 gb_set board unset; gb_load
+# A mktemp answering a dir that exists (#947): one with a canary, the load's own cwd, or - with
+# a dir named - in that cwd. give_back bound the stock server's socket there and rm -rf'd it.
+# Each answer is refused now: w stays cockpit's and pending, and the message names the check.
+gb_msgs() { "$TMUX_REAL" -L "$GB" show-messages 2>/dev/null | grep -v ' command: '; }
+mkdir -p "$GBD/m947"
+{ printf '#!/bin/sh\nfor a; do case "$a" in */cockpit-gb.*) cat %s; exit 0 ;; esac; done\n' \
+      "$(tq "$GBD/m947.ans")"
+  printf 'exec %s "$@"\n' "$(tq "$(command -v mktemp)")"; } > "$GBD/m947/mktemp"
+chmod +x "$GBD/m947/mktemp"
+for gb_c in full:nonempty cwd:cwd -:dash; do
+    gb_w=${gb_c%:*}
+    rm -rf "$GBD/c947" "$GBD/f947"; mkdir -p "$GBD/c947/-" "$GBD/f947"
+    echo keep > "$GBD/c947/-/canary"; echo keep > "$GBD/f947/canary"
+    case $gb_w in full) gb_a=$GBD/f947 gb_k=$GBD/f947/canary ;; cwd) gb_a=$GBD/c947 gb_k=$gb_a ;;
+                  *) gb_a=- gb_k=$GBD/c947/-/canary ;; esac
+    printf '%s\n' "$gb_a" > "$GBD/m947.ans"
+    gb_set board off
+    reload_on "$GB" "cd '$GBD/c947' && PATH='$GBD/m947':\"\$PATH\" '$DIR/cockpit.tmux'"
+    is "a mktemp answering [$gb_w] for the stock read: refused, w kept and pending, and said" \
+       "kept|board:w|1" "$([ -e "$gb_k" ] && echo kept || echo gone)|$(gb_left)|$(gb_msgs |
+       grep -cF "own binding for w (no temp dir, own_tmpdir: ${gb_c#*:})")"
+    gb_load; gb_set board unset; gb_load
+done
+# tmpdir.sh missing from the plugin: the load still completes, and give_back, with no dir it
+# may take, leaves w bound and pending and says why (#947).
+gb_p=$GBD/nolib947; mkdir -p "$gb_p"; cp -R "$DIR/cockpit.tmux" "$DIR/scripts" "$gb_p/"
+rm -f "$gb_p/scripts/lib/tmpdir.sh"
+ln -s "$DIR/examples" "$gb_p/examples"; ln -s "$DIR/bin" "$gb_p/bin"
+gb_set board off
+reload_on "$GB" "'$gb_p/cockpit.tmux'"
+is "a plugin without lib/tmpdir.sh loads, leaves w bound and pending, and says why" \
+   "cockpit: board|board:w|1" "$(gb_note w)|$(gb_left)|$(gb_msgs |
+   grep -cF 'own binding for w (no temp dir, own_tmpdir: tmpdir.sh did not load)')"
+gb_load; gb_set board unset; gb_load
+unset -f gb_msgs; unset gb_c gb_w gb_a gb_k gb_p
 # ; is a command separator to tmux: the tmux-fixer sweep must still give it back.
 "$TMUX_REAL" -L "$GB" bind-key -T prefix '\;' display-popup -E "/old/scripts/tmux-fixer -p %1" \
     >/dev/null 2>&1
