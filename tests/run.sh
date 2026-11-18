@@ -27532,6 +27532,140 @@ mpf_is "a pane started with the mark that is not modal is kept" 1 \
 unset -f mpf_is
 fi
 
+echo "== cockpit-event: agent-event v1 lines become agent-state requests (#1330) =="
+# scripts/cockpit-event reads agent-event lines (contracts/agent-event.schema.json) on stdin and
+# runs one agent-state request per valid line, for the line's pane (docs/events.md). A line that
+# fails the schema writes nothing and the core always exits 0. The pane runs a neutral command,
+# so no row depends on which agent sent the line.
+if need_tmux "cockpit-event"; then :; else
+CE="cockpit-ce-$$"; SOCKS="$SOCKS $CE"; CED=$(mktmpd)
+"$TMUX_REAL" -L "$CE" -f /dev/null new-session -d -s t -x 80 -y 24 -c "$CED" \
+    'exec -a agentx sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$CE" set -g @cockpit_agents_glob '|agentx|' >/dev/null 2>&1
+CEP=$("$TMUX_REAL" -L "$CE" list-panes -t t -F '#{pane_id}')
+ce() {                        # <line>...: one cockpit-event run on these lines; prints its rc
+    printf '%s\n' "$@" | TMUX="$SOCKDIR/$CE,0,0" "$DIR/scripts/cockpit-event" >/dev/null 2>&1
+    printf '%s' "$?"
+}
+cel() {                       # <kind> [,"key":value...]: a valid line for the pane
+    printf '{"schema_version":1,"agent":"agentx","kind":"%s","pane":"%s","session":"3f2a9c0d1e4b5a678c9d0e1f2a3b4c5d","at":"2026-11-19T09:31:05Z"%s}' \
+        "$1" "$CEP" "${2:-}"
+}
+ceo() { "$TMUX_REAL" -L "$CE" show-option -pqv -t "$CEP" "$1"; }
+cev() { ceo @panestate; }
+ceset() {                     # <state>: the pane's state, every mark cleared
+    local o
+    for o in @panestate @panestate_msg @panestate_since @cockpit_review @cockpit_review_spool \
+             @cockpit_subs; do
+        "$TMUX_REAL" -L "$CE" set-option -pu -t "$CEP" "$o" >/dev/null 2>&1
+    done
+    [ -z "$1" ] || "$TMUX_REAL" -L "$CE" set-option -p -t "$CEP" @panestate "$1" >/dev/null 2>&1
+}
+cemark() { "$TMUX_REAL" -L "$CE" set-option -p -t "$CEP" "$1" "$2" >/dev/null 2>&1; }
+ANS=',"outcome":"answer"'
+
+ceset done; ce "$(cel turn.start)" >/dev/null
+is "turn.start lifts done to running (wake)" "running" "$(cev)"
+ceset done; cemark @cockpit_review pending; ce "$(cel turn.start)" >/dev/null
+is "turn.start keeps a delivered review mark" "running|pending" "$(cev)|$(ceo @cockpit_review)"
+ceset ""; ce "$(cel tool.start)" >/dev/null
+is "tool.start is running" "running" "$(cev)"
+ceset done; ce "$(cel tool.end ',"failed":false')" >/dev/null
+is "tool.end with failed false is running" "running" "$(cev)"
+ceset done; ce "$(cel tool.end)" >/dev/null
+is "tool.end with no failed key is running" "running" "$(cev)"
+ceset running; ce "$(cel tool.end ',"failed":true')" >/dev/null
+is "tool.end with failed true is error" "error" "$(cev)"
+ceset running; ce "$(cel input.needed)" >/dev/null
+is "input.needed is needs-input" "needs-input" "$(cev)"
+ceset running; ce "$(cel turn.end "$ANS")" >/dev/null
+is "turn.end answer is done" "done" "$(cev)"
+# done reads a Stop payload on its stdin (#310): the core gives it /dev/null, not the next line.
+ceset running; ce "$(cel turn.end "$ANS")" "$(cel input.needed)" >/dev/null
+is "turn.end answer does not eat the next line" "needs-input" "$(cev)"
+ceset running; ce "$(cel turn.end ',"outcome":"refusal"')" >/dev/null
+is "turn.end refusal is done" "done" "$(cev)"
+ceset running; ce "$(cel turn.end ',"outcome":"error"')" >/dev/null
+is "turn.end error is error" "error" "$(cev)"
+ceset running; ce "$(cel turn.end ',"outcome":"aborted"')" >/dev/null
+is "turn.end aborted is interrupted: no state" "" "$(cev)"
+ceset running; cemark @cockpit_review pending; cemark @cockpit_review_spool 1; cemark @cockpit_subs 2
+ce "$(cel session.end)" >/dev/null
+is "session.end is off: the state, the review marks and the subs go" "|||" \
+    "$(cev)|$(ceo @cockpit_review)|$(ceo @cockpit_review_spool)|$(ceo @cockpit_subs)"
+
+ABT=',"outcome":"aborted"'
+ceset running; cemark @cockpit_review_spool 1; ce "$(cel turn.end "$ABT")" >/dev/null
+is "interrupted keeps the review spool" "|1" "$(cev)|$(ceo @cockpit_review_spool)"
+ceset running; cemark @cockpit_subs 2; ce "$(cel turn.end "$ABT")" >/dev/null
+is "interrupted keeps @cockpit_subs" "|2" "$(cev)|$(ceo @cockpit_subs)"
+ceset running; cemark @cockpit_review pending; ce "$(cel turn.end "$ABT")" >/dev/null
+is "interrupted keeps the review mark" "|pending" "$(cev)|$(ceo @cockpit_review)"
+ceset error; ce "$(cel turn.end "$ABT")" >/dev/null
+is "interrupted overrides error" "" "$(cev)"
+ceset running; ce "$(cel input.needed)" >/dev/null; cemark @panestate_msg "Bash asks"
+ce "$(cel turn.end "$ABT")" >/dev/null
+is "interrupted overrides needs-input and clears its ask and its stamp" "||" \
+    "$(cev)|$(ceo @panestate_msg)|$(ceo @panestate_since)"
+
+# A refused transition runs nothing, the window's summary included: a stale one stays.
+ceset running; ce "$(cel turn.end "$ANS")" >/dev/null
+"$TMUX_REAL" -L "$CE" set-option -w -t "$CEP" @cockpit_win_state stale >/dev/null 2>&1
+ce "$(cel turn.end "$ANS")" >/dev/null
+is "the same turn.end twice writes once" "done|stale" \
+    "$(cev)|$("$TMUX_REAL" -L "$CE" show-option -wqv -t "$CEP" @cockpit_win_state)"
+
+# Each line below breaks one rule of the schema; the state before it must stay, and rc is 0.
+# Each would change that state if it were taken: base|line.
+CES='"session":"3f2a9c0d1e4b5a678c9d0e1f2a3b4c5d"'
+CEA='"at":"2026-11-19T09:31:05Z"'
+CEH="\"schema_version\":1,\"agent\":\"agentx\""
+CEK="\"pane\":\"$CEP\",$CES,$CEA"
+while IFS='|' read -r ce_name ce_base ce_line; do
+    [ -n "$ce_name" ] || continue
+    ceset "$ce_base"
+    is "a line that fails the schema writes nothing and exits 0: $ce_name" "0 $ce_base" \
+        "$(ce "$ce_line") $(cev)"
+done <<CEBAD
+an unknown key|running|{$CEH,"kind":"turn.end",$CEK,"outcome":"answer","answer":"done"}
+a kind with an underscore|running|{$CEH,"kind":"needs_input",$CEK}
+a subagent kind|done|{$CEH,"kind":"subagent.start",$CEK}
+a pane with no %|running|{$CEH,"kind":"input.needed","pane":"3",$CES,$CEA}
+text in the session|running|{$CEH,"kind":"input.needed","pane":"$CEP","session":"fix the login",$CEA}
+a session with dashes|running|{$CEH,"kind":"input.needed","pane":"$CEP","session":"3f2a9c0d-1e4b-5a67-8c9d-0e1f2a3b4c5d",$CEA}
+an agent in capitals|running|{"schema_version":1,"agent":"Agentx","kind":"input.needed",$CEK}
+an agent of 25 characters|running|{"schema_version":1,"agent":"abcdefghijklmnopqrstuvwxy","kind":"input.needed",$CEK}
+a local time|running|{$CEH,"kind":"input.needed","pane":"$CEP",$CES,"at":"2026-11-19T09:31:05"}
+version 2|running|{"schema_version":2,"agent":"agentx","kind":"input.needed",$CEK}
+version as a string|running|{"schema_version":"1","agent":"agentx","kind":"input.needed",$CEK}
+an outcome on tool.start|done|{$CEH,"kind":"tool.start",$CEK,"outcome":"error"}
+a turn.end with no outcome|running|{$CEH,"kind":"turn.end",$CEK}
+an outcome not in the list|running|{$CEH,"kind":"turn.end",$CEK,"outcome":"stopped"}
+failed on tool.start|done|{$CEH,"kind":"tool.start",$CEK,"failed":true}
+failed as a string|running|{$CEH,"kind":"tool.end",$CEK,"failed":"true"}
+an escape in a string|done|{$CEH,"kind":"tool\\u002estart",$CEK}
+a key given twice|done|{$CEH,"kind":"tool.start","kind":"tool.start",$CEK}
+text after the object|done|{$CEH,"kind":"tool.start",$CEK} x
+a trailing comma|done|{$CEH,"kind":"tool.start",$CEK,}
+CEBAD
+
+# A line past 4096 bytes is cut and refused whole, the rest of it too: 4096 blanks, then an
+# event that would be valid alone, on the one line.
+CEPAD=$(printf '%4096s' '')
+ceset done; ce "$CEPAD$(cel input.needed)" >/dev/null
+is "a line past 4096 bytes writes nothing, though a valid event ends it" "done" "$(cev)"
+ceset done; ce "$CEPAD$(cel input.needed)" "$(cel tool.start)" >/dev/null
+is "and the valid line after it still writes" "running" "$(cev)"
+ceset done; ce '{"kind":' "$(cel input.needed)" >/dev/null
+is "a valid line after a bad one applies" "needs-input" "$(cev)"
+is "with no tmux server it still exits 0" "0" \
+    "$(printf '%s\n' "$(cel tool.start)" | TMUX="$CED/no-such-socket,0,0" \
+        "$DIR/scripts/cockpit-event" >/dev/null 2>&1; printf '%s' "$?")"
+is "the core names no agent" "0" "$(grep -ciw claude "$DIR/scripts/cockpit-event")"
+"$TMUX_REAL" -L "$CE" kill-server >/dev/null 2>&1
+unset -f ce cel ceo cev ceset cemark
+fi
+
 flop_left
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1
