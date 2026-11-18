@@ -106,10 +106,13 @@ impl Fold {
                     // Any other string is the harness's: not a turn and not `asked`.
                     let over = if interrupted { Over::Interrupted } else { Over::No };
                     self.turn_over = Some((off, over));
-                } else if let Some((at, Over::Interrupted)) = self.turn_over {
-                    // #1333: a harness row after the interrupt (a <task-notification>) starts a
-                    // turn, so the interrupt is no longer the newest. Still not `asked`, and the
-                    // turn stays over at the interrupt's row, as for the panes no hook marks.
+                } else if let Some((at, Over::Interrupted)) = self.turn_over
+                    && c.as_str().is_some_and(transcript::starts_turn)
+                {
+                    // #1333: a harness row that starts a turn (a <task-notification>) makes the
+                    // interrupt no longer the newest; a local command or shell mode does not.
+                    // Still not `asked`, and the turn stays over at the interrupt's row, as for
+                    // the panes no hook marks.
                     self.turn_over = Some((at, Over::Ended));
                 }
             }

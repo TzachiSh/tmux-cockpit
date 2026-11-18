@@ -1870,7 +1870,8 @@ fn local_commands_and_shell_mode_after_the_interrupt_keep_the_override() {
     };
     let model = say("<command-name>/model</command-name>", false)
         + &say("<local-command-stdout>Set model</local-command-stdout>", false);
-    let shell = say("<bash-input>ls</bash-input>", false) + &say("<bash-stdout>x</bash-stdout>", false);
+    let shell = say("<bash-input>ls</bash-input>", false)
+        + &say("<bash-stdout>x</bash-stdout>", false);
     let caveat = say("<local-command-caveat>Caveat: generated</local-command-caveat>", true);
     r.transcript("s1", &(stopped_turn() + &model));
     r.transcript("s2", &(stopped_turn() + &shell));

@@ -481,8 +481,8 @@ fn read_transcript(p: &mut Pane, opt: &str) -> String {
     }
     // #1330 A3: Esc fires no hook (#1332), so the hooks' running outlives an interrupted
     // turn. The interrupt as the newest turn row shows the pane idle, as an unset state
-    // does; nothing is written to tmux. Any newer user or assistant row clears it (a
-    // prompt, a tool_result, a harness row such as a <task-notification>, #1333), and
+    // does; nothing is written to tmux. A newer prompt, assistant row, tool_result or
+    // harness row that starts a turn (a <task-notification>, #1333) clears it, and
     // needs-input, error and done stay the hooks'. Known gap: between Enter and Claude
     // Code writing the prompt row, a fresh running still reads idle.
     if p.state == State::Running && p.job.is_empty() && fa.interrupted {

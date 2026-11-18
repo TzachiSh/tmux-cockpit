@@ -2169,10 +2169,12 @@ panel with the reason in a warn note.
   (#1332), so nothing took `running` away. `""` is a value `--json` already
   allows. Nothing is written to tmux and `@panestate` is untouched.
 - The fold that reads the transcript tells an interrupt apart from `end_turn`
-  (`fold::Over`), and the facts carry it as `interrupted`. Any newer user or
-  assistant row clears it: a prompt, a tool_result, or a harness row such as a
-  `<task-notification>`, which starts a turn though it is not what the human
-  asked (#1333). Needs-input, error and done from the hooks are never overridden.
+  (`fold::Over`), and the facts carry it as `interrupted`. A newer prompt,
+  assistant row or tool_result clears it, and so does a harness row that starts
+  a turn though it is not what the human asked: a `<task-notification>` or a
+  message from another session (`transcript::starts_turn`, #1333). A local
+  command, shell mode, a caveat, or an attachment or system row leaves it.
+  Needs-input, error and done from the hooks are never overridden.
 - Known gap: Enter after an interrupt sets `running` before Claude Code writes
   the prompt row, so the pane reads idle for that moment, bounded by the
   transcript's write lag plus the board's 1 s tick. The tui test
@@ -2272,11 +2274,11 @@ drawn as done or running.
 
 **An agent Esc stopped (#1330 A3):** `@panestate` says running, since Esc fires
 no hook (#1332), but the transcript's newest turn row is the interrupt marker.
-The board draws it `○ idle` as well, and `--json` and `--rows` say the same. Any
-newer user or assistant row in the transcript (a prompt, a tool_result, a
-`<task-notification>`) makes it running again. Needs-input, error and done
-stay the hooks', and so does the state of a pane bound to a background job
-(#448).
+The board draws it `○ idle` as well, and `--json` and `--rows` say the same. A
+newer prompt, assistant row, tool_result or `<task-notification>` in the
+transcript makes it running again; a local command or shell mode does not.
+Needs-input, error and done stay the hooks', and so does the state of a pane
+bound to a background job (#448).
 
 **No agent panes:** the header says ` board · 0 agents`, and under it this card
 sits centred; on a narrow board it wraps, never cuts.
