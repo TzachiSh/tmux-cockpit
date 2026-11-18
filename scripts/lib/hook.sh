@@ -37,15 +37,13 @@ read_capped() {               # <cap> <stop-cmd...>
 # A session id is saved only as a UUID (#308); a value cut by a cap fails the test. A new id
 # drops the old transcript, which is not its transcript (/clear, --resume). 0 only when the
 # id is new to the pane: <old> is the id read before, from a read known to be whole (#707).
+# The same id writes nothing: every set-option redraws.
 save_session() {              # <pane> <sid> <old>
     local uuid='^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
-    local r=1
-    [[ ${2:-} =~ $uuid ]] || return 1
-    if [ "${3:-}" != "$2" ]; then
-        r=0; tmux set-option -pu -t "$1" @cockpit_transcript 2>/dev/null
-    fi
+    [[ ${2:-} =~ $uuid ]] && [ "${3:-}" != "$2" ] || return 1
+    tmux set-option -pu -t "$1" @cockpit_transcript 2>/dev/null
     tmux set-option -p -t "$1" @cockpit_session "$2" 2>/dev/null
-    return $r
+    return 0
 }
 
 # "key":"value" in $payload -> REPLY, raw. Not a JSON parser: an escaped quote
