@@ -2637,6 +2637,14 @@ rm -f -- "$RGCP/scripts/tmux-review"
 RG_GATE="$RGCP/scripts/review-gate" rg_run "$RGPAY"
 is "a missing tmux-review (127) leaves the pending mark" "pending|GRC=0" \
     "$("$TMUX_REAL" -L "$RG" show-option -pqv -t "$RGAP" @cockpit_review)|$(rg_rc)"
+# A library that fails to load is no clean tree either: --delta exits 3, never 1.
+cp "$DIR/scripts/tmux-review" "$RGCP/scripts/"
+printf 'return 1\n' > "$RGCP/scripts/lib/review-diff.sh"
+is "--delta, when a library fails to load, exits 3" "D=3" \
+    "$("$RGCP/scripts/tmux-review" --delta "$RGAP" >/dev/null 2>&1; echo "D=$?")"
+RG_GATE="$RGCP/scripts/review-gate" rg_run "$RGPAY"
+is "and the Stop hook leaves the pending mark" "pending|GRC=0" \
+    "$("$TMUX_REAL" -L "$RG" show-option -pqv -t "$RGAP" @cockpit_review)|$(rg_rc)"
 unset RGCP
 # Only exit 1, no difference, clears a pending mark.
 printf 'a\n' > "$RGDIR/f"; rg_run "$RGPAY"
