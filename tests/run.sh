@@ -21265,6 +21265,30 @@ is "the idle notify and a plain off clear nothing" "$SCD/a:$SCD/a:=" "$(sc_all)"
 sc_clear; sc "$SCD/a"; sc_end; sc "$SCD/a"
 is "after SessionEnd the next hook in the same cwd writes the dir again" "$SCD/a:$SCD/a:=" \
     "$(sc_all)"
+sc_clear; tmux set-option -p -t "$SCP" @cockpit_dir "$SCD/semi\\;"; sc "$SCD/a"; sc_end
+is "a hand-set dir ending in ; is recorded and put back whole" "$SCD/semi;::" "$(sc_all)"
+# A #707 cut empties every expansion after it, the literal \037s kept. This tmux keeps the
+# first SC_CUT fields of the hook's one display-message read and empties the rest. A read
+# not whole writes nothing; the next whole hook records the hand-set dir.
+SCKD=$(mktmpd)
+cat > "$SCKD/tmux" <<SCKEOF
+#!/bin/sh
+case "\$*" in *display-message*cockpit_dir_before*) ;; *) exec "$SHIM/tmux" "\$@" ;; esac
+"$SHIM/tmux" "\$@" |
+    awk -v k="\$SC_CUT" 'BEGIN { FS = OFS = "\037" }
+        { for (i = k + 1; i <= NF; i++) \$i = ""; print }'
+SCKEOF
+chmod +x "$SCKD/tmux"
+for k in 1 2 3; do
+    sc_clear; sc_hand "$SCD/w"
+    printf '{"session_id":"%s","cwd":"%s"}\n' "$SCU1" "$SCD/a" |
+        ( cd "$SCD" && PATH="$SCKD:$PATH" SC_CUT=$k env -u CLAUDE_CONFIG_DIR \
+            HOME="$SCH" "$DIR/scripts/agent-state" session "$SCP" )
+    sc "$SCD/a"; sc_end
+    is "a read cut after field $k records nothing, and the next hook records the hand-set dir" \
+        "$SCD/w::" "$(sc_all)"
+done
+rm -rf "$SCKD"
 is "end on a gone pane: exit 0, nothing printed" "0:" \
     "$("$DIR/scripts/agent-state" end %999999 < /dev/null 2>&1; echo "$?:")"
 tmux kill-pane -t "$SCP" >/dev/null 2>&1
