@@ -13774,8 +13774,13 @@ is "a lib edit runs every block that runs its sourcer (sourcer<lib missed) (#734
 # does not name pane.sh, so a pane.sh edit skips the blocks that run cockpit.tmux
 # and no file naming pane.sh (#734).
 chg_set() { chg_pick "$1" | tr , '\n' | sort -u; }
+# A file reaches pane.sh by naming it, or by naming a lib that names it: changed.sh follows
+# sources (#748), and tmux-open-path reaches pane.sh only through workdir.sh (#1345).
+chg_pat=(-e pane.sh)
+while read -r chg_e; do chg_pat+=(-e "${chg_e##*/}"); done \
+    < <(cd "$DIR" && grep -lF pane.sh scripts/lib/* 2>/dev/null)
 CHG_CKONLY=$(comm -23 <(chg_set cockpit.tmux) <(while read -r chg_e; do chg_set "$chg_e"
-    done < <(cd "$DIR" && grep -lF pane.sh scripts/* cockpit.tmux 2>/dev/null) | sort -u))
+    done < <(cd "$DIR" && grep -lF "${chg_pat[@]}" scripts/* cockpit.tmux 2>/dev/null) | sort -u))
 is "some blocks run cockpit.tmux and no file naming pane.sh" yes \
     "$([ -n "$CHG_CKONLY" ] && echo yes || echo no)"
 is "a pane.sh edit picks none of them (#734)" "" "$(comm -12 <(printf '%s\n' "$CHG_CKONLY") \
