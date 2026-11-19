@@ -87,7 +87,7 @@ settings hooks keep the rest, until #1330 T7 decides whether to move them.
    the Claude mod is `mods/cockpit-events/`. It turns the agent's own signals into agent-event v1
    lines with `agent: "<agent>"`. `agent` is the adapter's fixed name, a
    constant in that adapter's code, never derived from a session, project, path
-   or user input.
+   or user input. `tests/adapters/fake/adapter.sh` is a worked example.
 2. The adapter provides:
    - the pane id and a session id. Ids are opaque lowercase hex; strip
      separators.
