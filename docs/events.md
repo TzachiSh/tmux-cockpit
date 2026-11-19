@@ -95,7 +95,7 @@ settings hooks keep the rest, until #1330 T7 decides whether to move them.
 | `scripts/cockpit-event` | reads, checks and maps each line to a request | the core |
 | `scripts/agent-state` | the requests, `interrupted` included | the core |
 | `tests/adapters/fake/` | a test-only second adapter | the core |
-| `mods/claude-cockpit/` | the Claude mod adapter and its contract tests | the Claude adapter |
+| `mods/cockpit-events/` | the Claude mod adapter and its contract tests | the Claude adapter |
 | `docs/events.md` | this page | the core |
 
 An adapter codes against the merged schema and never edits it. A change goes to
