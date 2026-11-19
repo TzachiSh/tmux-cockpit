@@ -51,7 +51,8 @@ tracked() {
           case $f in tests/.*) continue ;; esac
           [ -f "$f" ] && printf '%s\n' "$f"
       done
-      find tests/fixtures tests/freeze-rig tui skills -path tui/target -prune -o -type f -print
+      find tests/fixtures tests/freeze-rig tests/adapters tui skills \
+          -path tui/target -prune -o -type f -print
     } | sort
 }
 

@@ -13651,8 +13651,9 @@ unset -f cs_run cs_alive; unset CS cs_p cs_s cs_e cs_g cs_sk
 echo "== tests/green.sh: the stamp hits on unchanged content, misses on one changed byte, and tool versions are in the key =="
 GROOT=$(mktmpd)
 mkdir -p "$GROOT/scripts/lib" "$GROOT/tests" "$GROOT/examples"
-# green.sh's find walks these four, as a checkout has them: absent, it says so on stderr (#1116)
-mkdir -p "$GROOT/tests/fixtures" "$GROOT/tests/freeze-rig" "$GROOT/tui" "$GROOT/skills"
+# green.sh's find walks these five, as a checkout has them: absent, it says so on stderr (#1116)
+mkdir -p "$GROOT/tests/fixtures" "$GROOT/tests/freeze-rig" "$GROOT/tests/adapters" "$GROOT/tui" \
+    "$GROOT/skills"
 cp "$DIR/tests/green.sh" "$GROOT/tests/green.sh"
 for f in cockpit.tmux install.sh bootstrap.sh scripts/foo scripts/lib/bar tests/baz examples/qux; do
     printf 'a\n' > "$GROOT/$f"
