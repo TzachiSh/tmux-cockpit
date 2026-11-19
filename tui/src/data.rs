@@ -1088,7 +1088,8 @@ pub struct PaneDir {
 /// Every pane's work dir off one `list-panes -a`, as `scripts/lib/workdir.sh` gave it to
 /// goto. The agent test leaves out the process tree, a `ps` per shell pane, as the
 /// script did; only an agent whose @cockpit_dir and @cockpit_cwd both fail has its
-/// transcript read, as [`workdir`] reads it. Cockpit's own popups are no panes, by the board's filter (#1248).
+/// transcript read, as [`workdir()`] reads it. Cockpit's own popups are no panes, by the
+/// board's filter (#1248).
 /// `None` when list-panes failed.
 pub fn pane_dirs() -> Option<Vec<PaneDir>> {
     let out = tmux(&["list-panes", "-a", "-f", NOT_POPUP, "-F", FIELDS])?;
