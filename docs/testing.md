@@ -280,12 +280,35 @@ In `tui/` the refusal's own command runs them:
 `claude` (#973). `docs/tui.md`, under Install, says what the guard is and what a
 failure prints. This section has its switch and its limits.
 
+The same guard refuses your own `gh` (#1346), which the panel starts by `PATH`
+to read PRs, issues and CI (#1000): a test that reached it would call GitHub
+with your login. The runner copies its stub in twice, as `claude` and as `gh`,
+into the one folder it puts first on the test binary's `PATH`, and both write
+to the same log. A test binary that started `gh` fails with a line of its own,
+in the same shape as the claude one, and each start's line holds its `argv`:
+
+```
+claude-guard: error: a test started gh, not its rig's own stub (docs/tui.md) binary=<test binary>
+claude-guard: error: refused to start gh for a test ppid=<pid> cwd=<dir> argv=gh [pr] [list]
+```
+
+A binary that started both gets the claude line, then the gh line, then one
+line for each start in the order they came. A rig that puts its own `gh` first
+on the `PATH` it hands down still wins, as for `claude`: `fake::rigs_gh` and
+`fake::assert_gh_is_the_rigs` check that a spawn finds the rig's. The folder,
+its files and the lines keep the name `claude-guard`. The rows for gh are a
+block of `tests/run.sh`, titled "cargo's test runner refuses gh as it refuses
+claude".
+
 The repo's `.cargo/config.toml` sets `COCKPIT_TEST_CLAUDE_GUARD=1` for every
 cargo started inside the checkout. `COCKPIT_TEST_CLAUDE_GUARD=0 cargo test`
-lifts the guard by hand. The runner then starts each test binary as cargo alone
-would, and a test with no stub of its own may start your real `claude`.
-`make tui-test` sets the variable to 1 itself and CI runs that target, so an
-exported 0 never lifts the gate.
+lifts the guard by hand, for `claude` and `gh` together. The runner then starts
+each test binary as cargo alone would, and a test with no stub of its own may
+start your real `claude` or `gh`. `make tui-test` sets the variable to 1 itself
+and CI runs that target, so an exported 0 never lifts the gate. There is one
+switch and not one for each program for that reason: a second one that
+`make tui-test` did not set would let an exported 0 lift the gh half of the
+gate.
 
 cargo takes one runner, and the guard is the repo's. The config names it under
 six targets by their exact names: `x86_64-unknown-linux-gnu`,
