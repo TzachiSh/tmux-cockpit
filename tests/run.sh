@@ -27767,6 +27767,75 @@ is "with no TMUX_PANE the fake adapter writes nothing" "1|0" \
 unset -f fa fao faset facap
 fi
 
+echo "== cargo's test runner refuses gh as it refuses claude, and names which (#1346) =="
+# The panel starts gh by PATH to read PRs, issues and CI (#1000), and a test that reached the
+# developer's gh would call GitHub with their login. tui/tests/claude-guard/runner, which cargo
+# starts each tui test binary through (.cargo/config.toml, #973), puts a refusing gh beside its
+# refusing claude. Each row starts the runner on a stand-in test binary, a script under deps/,
+# with a PATH made here: a folder whose gh and claude only count their starts, then /bin and
+# /usr/bin. So a runner without the guard starts a counter, never the developer's gh.
+RG=$(mktmpd); mkdir -p "$RG/own" "$RG/rig" "$RG/tmp" "$RG/debug/deps"
+for rg_p in own/gh own/claude rig/gh rig/claude; do
+    # shellcheck disable=SC2016  # the counter's own $0 expands when it runs
+    printf '#!/bin/sh\necho x >> "$0.started"\n' > "$RG/$rg_p"; chmod +x "$RG/$rg_p"
+done
+rg_bin() {                    # <name> <body>: a stand-in test binary, its path printed
+    printf '#!/bin/sh\n%s\n' "$2" > "$RG/debug/deps/$1-0123456789abcdef"
+    chmod +x "$RG/debug/deps/$1-0123456789abcdef"; printf '%s' "$RG/debug/deps/$1-0123456789abcdef"
+}
+rg_run() {                    # <switch> <binary> [args...]: the runner's status, its output kept
+    local sw=$1; shift
+    rm -f "$RG"/own/*.started "$RG"/rig/*.started
+    env -i PATH="$RG/own:/bin:/usr/bin" TMPDIR="$RG/tmp" COCKPIT_TEST_CLAUDE_GUARD="$sw" \
+        "$DIR/tui/tests/claude-guard/runner" "$@" > "$RG/out" 2> "$RG/err"
+    printf '%s' "$?"
+}
+rg_rec() { sed -n 's/^claude-guard: error: //p' "$RG/err" | sed -n "$1p"; }   # <n>: record n
+rg_n() { sed -n 's/^claude-guard: error: //p' "$RG/err" | awk 'END { print NR }'; }
+rg_started() {                # <own/gh>: how often that counter was started
+    if [ -f "$RG/$1.started" ]; then awk 'END { print NR }' "$RG/$1.started"; else echo 0; fi; }
+rg_msg() { local r; r=$(rg_rec "$1"); printf '%s' "${r%% binary=*}"; }   # <n>: its message
+rg_field() { local r; r=$(rg_rec "$1"); printf '%s' "${r##* "$2"=}"; }   # <n> <key>, last
+RG_STARTED="not its rig's own stub (docs/tui.md)"
+
+RG_GH=$(rg_bin gh 'gh pr list 2>/dev/null; exit 0')
+rg_s=$(rg_run 1 "$RG_GH")
+is "a test binary that starts gh by PATH fails, and no gh after the guard's runs" "1|0" \
+    "$rg_s|$(rg_started own/gh)"
+is "the runner names gh as what the binary started, and the binary" \
+    "2|a test started gh, $RG_STARTED|$RG_GH" "$(rg_n)|$(rg_msg 1)|$(rg_field 1 binary)"
+is "the start's record holds gh's argv" "gh [pr] [list]" "$(rg_field 2 argv)"
+rg_s=$(rg_run 1 "$(rg_bin bare 'gh 2>/dev/null; exit 0')")
+is "a gh started with no argument fails the binary and is logged by its bare name" "1|gh" \
+    "$rg_s|$(rg_field 2 argv)"
+rg_s=$(rg_run 1 "$(rg_bin says 'command -v gh')")
+rg_w=$(cat "$RG/out"); rg_w=${rg_w%/gh}
+is "the gh a test binary finds first is the guard's, in the runner's folder under TMPDIR" \
+    "0|$RG/tmp|cockpit-claude-guard" "$rg_s|${rg_w%/*}|$(basename "$rg_w" | cut -d. -f1)"
+
+rg_cl=$(rg_bin claude 'claude agents --json 2>/dev/null; exit 0')
+rg_s=$(rg_run 1 "$rg_cl")
+is "a test binary that starts claude still fails, named as before, with its argv" \
+    "1|0|a test started claude, $RG_STARTED|$rg_cl|claude [agents] [--json]" \
+    "$rg_s|$(rg_started own/claude)|$(rg_msg 1)|$(rg_field 1 binary)|$(rg_field 2 argv)"
+rg_s=$(rg_run 1 "$(rg_bin both 'gh api user 2>/dev/null; claude -p hi 2>/dev/null; exit 0')")
+is "a binary that starts both is named for each, claude first, then one record per start" \
+    "1|4|a test started claude, $RG_STARTED|a test started gh, $RG_STARTED" \
+    "$rg_s|$(rg_n)|$(rg_msg 1)|$(rg_msg 2)"
+
+# A rig puts its own folder before the PATH it was given, so its stubs come before the guard's.
+# shellcheck disable=SC2016  # the stand-in's own $1 and $PATH expand when it runs
+rg_s=$(rg_run 1 "$(rg_bin rig 'PATH="$1:$PATH"; gh pr view 1 && claude -p hi')" "$RG/rig")
+is "a rig's own gh and claude, first on the PATH it hands on, still win under the runner" \
+    "0||1|1|0|0" "$rg_s|$(cat "$RG/err")|$(rg_started rig/gh)|$(rg_started rig/claude)|$(
+        rg_started own/gh)|$(rg_started own/claude)"
+# One switch for both programs: make tui-test forces COCKPIT_TEST_CLAUDE_GUARD=1, and a
+# second switch it does not force would let an exported 0 lift the gh half of its gate.
+rg_s=$(rg_run 0 "$RG_GH")
+is "COCKPIT_TEST_CLAUDE_GUARD=0 lifts the gh guard with the claude guard" "0||1" \
+    "$rg_s|$(cat "$RG/err")|$(rg_started own/gh)"
+unset -f rg_bin rg_run rg_rec rg_n rg_started rg_msg rg_field
+
 flop_left
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1
