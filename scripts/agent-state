@@ -1,6 +1,6 @@
 #!/bin/bash
 # Record a tmux pane's agent state in per-pane tmux options.
-#   usage: agent-state <running|needs-input|error|done|off|notify|wake|recount> [pane-id]
+#   usage: agent-state <running|needs-input|error|done|off|interrupted|notify|wake|recount> [pane-id]
 #          agent-state <sub-start|sub-stop|sub-idle|sub-end>   append to the session's
 #                                          subagent log (#361)
 #          agent-state <sub-taskstop|sub-reconcile>   a TaskStop to the same log, a Stop's
@@ -476,6 +476,9 @@ case "$state" in
     # Claude goes idle while blocked on a prompt too, so idle must not clear an alert.
     off)         when=1
                  [ -n "$idle" ] && when="#{?#{m/r:^(done|needs-input|error)\$,$cur},0,1}" ;;
+    # An interrupted turn (#1330): from any state, sticky ones too, with off's idle body below,
+    # so the review marks and the subagent count stay.
+    interrupted) when=1 idle=1 ;;
     recount)     when=1 ;;
     *) exit 0 ;;
 esac
@@ -498,7 +501,7 @@ if [ -n "$poll" ]; then
     fi
 fi
 
-if [ "$state" = off ]; then
+if [ "$state" = off ] || [ "$state" = interrupted ]; then
     # No early exit when already clear: a fresh agent's SessionStart must still light its ○ dot.
     body="if -F -t $pane '#{?$cur,0,1}' {} { set-option -pu -t $pane @panestate }"
     # An ended session takes its review marks with it; an idle one keeps them. And its subagent
@@ -533,7 +536,7 @@ elif [ "$state" != recount ]; then
 fi
 
 case "$state" in
-    running|off) body="$body ; set-option -pu -t $pane @panestate_msg" ;;
+    running|off|interrupted) body="$body ; set-option -pu -t $pane @panestate_msg" ;;
     # The poller's done/error follow a needs-input whose ask would otherwise stay.
     done) [ -z "$poll" ] || body="$body ; set-option -pu -t $pane @panestate_msg" ;;
     # A failed tool's name (#1330), inside `when`: a sticky ask is not overwritten. Only

@@ -16,7 +16,7 @@ One JSON object per line, with these fields and no other:
 | field | required | shape |
 |-------|----------|-------|
 | `schema_version` | yes | the integer `1` |
-| `agent` | yes | `^[a-z][a-z0-9-]{1,23}$`, the adapter's fixed name |
+| `agent` | yes | `^[a-z][a-z0-9-]{1,23}$`, the adapter's fixed name: 2 to 24 characters, a trailing `-` allowed |
 | `kind` | yes | `turn.start`, `turn.end`, `tool.start`, `tool.end`, `input.needed` or `session.end` |
 | `pane` | yes | the tmux pane id, `^%[0-9]{1,10}$` |
 | `session` | yes | the agent's session id, 16 to 64 lowercase hex |
@@ -44,29 +44,47 @@ end arrives, and the subagent log already comes from the settings hooks. A
 
 ## What the core does with each kind
 
-The core runs one `agent-state` request per line. Each request keeps the guard
-it has today; the line numbers are `scripts/agent-state`.
+The core is `scripts/cockpit-event`. It reads the lines on stdin, checks each
+against the schema's rules in bash (the closed key set, `schema_version`, every
+pattern and enum, `outcome` on `turn.end` alone and `failed` on `tool.end`
+alone) and runs one `agent-state` request for a line that passes, for its pane,
+with stdin from `/dev/null`. A line that fails writes nothing. A line holds at
+most 4095 bytes before its newline: one of 4096 bytes or more fills the read and
+is refused whole, and what follows the cut up to the newline is dropped, never
+read as a line of its own. A string with a backslash escape is refused, since no
+value the schema allows needs one. The core always exits 0 and never branches on
+`agent`.
 
-| kind | request | guard today |
-|------|---------|-------------|
-| `turn.start` | `wake` | Lifts `done` or an unset state to `running` (398, 434), and keeps the review mark: only a human prompt clears it, which stays UserPromptSubmit's job (436-439). |
-| `tool.start` | `running` | Refused when already `running` (394). Entering `running` clears the review mark (438). |
+Each request keeps the guard it has; the line numbers are `scripts/agent-state`.
+
+| kind | request | guard |
+|------|---------|-------|
+| `turn.start` | `wake` | Lifts `done` or an unset state to `running` (475, 514), and keeps the review mark: only a human prompt clears it, which stays UserPromptSubmit's job (518-519). |
+| `tool.start` | `running` | Refused when already `running` (471). Entering `running` clears the review mark (518-519). |
 | `tool.end`, `failed: false` | `running` | The same as `tool.start`. |
-| `tool.end`, `failed: true` | `error` | Refused on `error` or `needs-input` (396). |
-| `input.needed` | `needs-input` | Refused when already `needs-input` (395). |
-| `turn.end`, `answer` | `done` | Refused on `done`, `needs-input` or `error` (397). The core runs it with stdin from `/dev/null`, so the Stop-payload read (383) finds no subagents and does not hold the pane. |
+| `tool.end`, `failed: true` | `error` | Refused on `error` or `needs-input` (473). |
+| `input.needed` | `needs-input` | Refused when already `needs-input` (472). |
+| `turn.end`, `answer` | `done` | Refused on `done`, `needs-input` or `error` (474). With stdin from `/dev/null`, the Stop-payload read (461, which reads at 210) finds no subagents and does not hold the pane, and it clears `@cockpit_subs`. |
 | `turn.end`, `refusal` | `done` | The same as `answer`. |
-| `turn.end`, `error` | `error` | The same as `tool.end` with `failed: true` (396). |
-| `turn.end`, `aborted` | `interrupted` | New, added by #1330 T3, not yet in `agent-state`. Allowed from any state, no colour, clears `needs-input`, and keeps the review spool and `@cockpit_subs`, as the idle body does (430). |
-| `session.end` | `off` | The ended-session body: clears the state, the review mark, the review spool and `@cockpit_subs` (400, 430). |
+| `turn.end`, `error` | `error` | The same as `tool.end` with `failed: true` (473). |
+| `turn.end`, `aborted` | `interrupted` | Allowed from any state (481), no colour: it unsets the state as `off` does (504-506), clears `needs-input`'s ask and stamp (533-535, 539), and keeps the review mark, the review spool and `@cockpit_subs`, as the idle body does (510). |
+| `session.end` | `off` | The ended-session body: clears the state, the review mark, the review spool and `@cockpit_subs` (477, 510). |
+
+`session.end` is not all of an agent's SessionEnd hook. `off` does two more
+things only when its stdin holds that hook's payload (567-568): it puts
+`@cockpit_dir` back to the value the session found (627-643), and it drops
+`@cockpit_fg` (590).
+The core gives it `/dev/null`, so after a `session.end` both stay until the
+pane's next session writes them. The core sends no made-up payload.
 
 In v1 the Claude mod emits only `turn.end` with `aborted` and with `error`. The
 settings hooks keep the rest, until #1330 T7 decides whether to move them.
 
 ## Adding a CLI agent
 
-1. Add `adapters/<agent>/`, or `mods/<agent>-cockpit/` if the agent has an
-   in-process plugin API. It turns the agent's own signals into agent-event v1
+1. Add `adapters/<agent>/`, or `mods/<name>/` if the agent has an in-process
+   plugin API. A plugin name must not start with `claude-`, which is reserved:
+   the Claude mod is `mods/cockpit-events/`. It turns the agent's own signals into agent-event v1
    lines with `agent: "<agent>"`. `agent` is the adapter's fixed name, a
    constant in that adapter's code, never derived from a session, project, path
    or user input.
