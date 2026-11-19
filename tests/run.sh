@@ -27755,10 +27755,14 @@ facap %1 begin tool fail end stop-by-user quit
 is "every line the fake adapter writes is valid agent-event v1" \
     "8|$(printf '%%1|%s %%1\n' wake running running running error done interrupted off)" \
     "$(awk 'END { print NR }' "$FAC/lines")|$(cat "$FAC/calls")"
-facap %1 hello BEGIN 'begin now' ' end' 'quit!' ''
-is "an unknown word writes nothing" "" "$(cat "$FAC/lines")"
+# Each run ends on a known word, so a missing adapter reads 0 lines here, not a pass.
+facap %1 hello BEGIN 'begin now' ' end' 'quit!' '' begin
+is "an unknown word writes nothing" "1|1" \
+    "$(awk 'END { print NR }' "$FAC/lines")|$(grep -c '"kind":"turn.start"' "$FAC/lines")"
+facap %1 begin; fa_n=$(awk 'END { print NR }' "$FAC/lines")
 facap '' begin
-is "with no TMUX_PANE the fake adapter writes nothing" "" "$(cat "$FAC/lines")"
+is "with no TMUX_PANE the fake adapter writes nothing" "1|0" \
+    "$fa_n|$(awk 'END { print NR }' "$FAC/lines")"
 "$TMUX_REAL" -L "$FA" kill-server >/dev/null 2>&1
 unset -f fa fao faset facap
 fi
