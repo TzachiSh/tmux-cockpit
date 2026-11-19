@@ -48,8 +48,9 @@ The core is `scripts/cockpit-event`. It reads the lines on stdin, checks each
 against the schema's rules in bash (the closed key set, `schema_version`, every
 pattern and enum, `outcome` on `turn.end` alone and `failed` on `tool.end`
 alone) and runs one `agent-state` request for a line that passes, for its pane,
-with stdin from `/dev/null`. A line that fails writes nothing. So does a line
-past 4096 bytes, whole: what follows the cut up to the newline is dropped, never
+with stdin from `/dev/null`. A line that fails writes nothing. A line holds at
+most 4095 bytes before its newline: one of 4096 bytes or more fills the read and
+is refused whole, and what follows the cut up to the newline is dropped, never
 read as a line of its own. A string with a backslash escape is refused, since no
 value the schema allows needs one. The core always exits 0 and never branches on
 `agent`.
@@ -63,15 +64,16 @@ Each request keeps the guard it has; the line numbers are `scripts/agent-state`.
 | `tool.end`, `failed: false` | `running` | The same as `tool.start`. |
 | `tool.end`, `failed: true` | `error` | Refused on `error` or `needs-input` (473). |
 | `input.needed` | `needs-input` | Refused when already `needs-input` (472). |
-| `turn.end`, `answer` | `done` | Refused on `done`, `needs-input` or `error` (474). With stdin from `/dev/null`, the Stop-payload read (460) finds no subagents and does not hold the pane, and it clears `@cockpit_subs`. |
+| `turn.end`, `answer` | `done` | Refused on `done`, `needs-input` or `error` (474). With stdin from `/dev/null`, the Stop-payload read (461, which reads at 210) finds no subagents and does not hold the pane, and it clears `@cockpit_subs`. |
 | `turn.end`, `refusal` | `done` | The same as `answer`. |
 | `turn.end`, `error` | `error` | The same as `tool.end` with `failed: true` (473). |
 | `turn.end`, `aborted` | `interrupted` | Allowed from any state (481), no colour: it unsets the state as `off` does (504-506), clears `needs-input`'s ask and stamp (533-535, 539), and keeps the review mark, the review spool and `@cockpit_subs`, as the idle body does (510). |
 | `session.end` | `off` | The ended-session body: clears the state, the review mark, the review spool and `@cockpit_subs` (477, 510). |
 
 `session.end` is not all of an agent's SessionEnd hook. `off` does two more
-things only when its stdin holds that hook's payload (567, 618-622): it puts
-`@cockpit_dir` back to the value the session found, and it drops `@cockpit_fg`.
+things only when its stdin holds that hook's payload (567-568): it puts
+`@cockpit_dir` back to the value the session found (627-643), and it drops
+`@cockpit_fg` (590).
 The core gives it `/dev/null`, so after a `session.end` both stay until the
 pane's next session writes them. The core sends no made-up payload.
 
