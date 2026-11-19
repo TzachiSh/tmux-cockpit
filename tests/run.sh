@@ -27692,8 +27692,74 @@ is "with no tmux server it still exits 0" "0" \
     "$(printf '%s\n' "$(cel tool.start)" | TMUX="$CED/no-such-socket,0,0" \
         "$DIR/scripts/cockpit-event" >/dev/null 2>&1; printf '%s' "$?")"
 is "the core names no agent" "0" "$(grep -ciw claude "$DIR/scripts/cockpit-event")"
+is "the core names no fake agent" "0" "$(grep -ciw fake "$DIR/scripts/cockpit-event")"
 "$TMUX_REAL" -L "$CE" kill-server >/dev/null 2>&1
 unset -f ce cel ceo cev ceset cemark
+fi
+
+echo "== fake adapter: a second agent drives the core unchanged (#1330) =="
+# tests/adapters/fake/adapter.sh turns the words of a made-up agent into agent-event v1 lines
+# for scripts/cockpit-event (docs/events.md, "Adding a CLI agent"). Nothing in the core was
+# changed for it: these rows are the proof that a new agent needs only an adapter.
+if need_tmux "fake adapter"; then :; else
+FA="cockpit-fa-$$"; SOCKS="$SOCKS $FA"; FAD=$(mktmpd)
+"$TMUX_REAL" -L "$FA" -f /dev/null new-session -d -s t -x 80 -y 24 -c "$FAD" \
+    'exec -a fake sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$FA" set -g @cockpit_agents_glob '|fake|' >/dev/null 2>&1
+FAP=$("$TMUX_REAL" -L "$FA" list-panes -t t -F '#{pane_id}')
+fa() {                        # <word>...: one adapter run on these words, for the pane
+    { printf '%s\n' "$@"; } 2>/dev/null \
+        | TMUX="$SOCKDIR/$FA,0,0" TMUX_PANE="$FAP" "$DIR/tests/adapters/fake/adapter.sh" \
+            >/dev/null 2>&1
+}
+fao() { "$TMUX_REAL" -L "$FA" show-option -pqv -t "$FAP" "$1"; }
+faset() {                     # <state>: the pane's state, every mark cleared
+    local o
+    for o in @panestate @panestate_msg @panestate_since @cockpit_review @cockpit_review_spool \
+             @cockpit_subs; do
+        "$TMUX_REAL" -L "$FA" set-option -pu -t "$FAP" "$o" >/dev/null 2>&1
+    done
+    [ -z "$1" ] || "$TMUX_REAL" -L "$FA" set-option -p -t "$FAP" @panestate "$1" >/dev/null 2>&1
+}
+
+faset done; fa begin; fa_s=$(fao @panestate); fa end
+is "a fake agent's begin then end shows running then done" "running|done" \
+    "$fa_s|$(fao @panestate)"
+faset running; "$TMUX_REAL" -L "$FA" set-option -p -t "$FAP" @cockpit_subs 2 >/dev/null 2>&1
+fa stop-by-user
+is "a fake agent's stop-by-user shows interrupted" "|2" "$(fao @panestate)|$(fao @cockpit_subs)"
+faset running; fa fail
+is "a fake agent's fail shows error" "error" "$(fao @panestate)"
+faset running; fa quit
+is "a fake agent's quit shows off" "" "$(fao @panestate)"
+
+# The adapter's lines, captured by a core path passed in, then fed to the core's own check:
+# the core copied next to a stub agent-state that logs each call (self-location finds it).
+FAC=$(mktmpd)
+# shellcheck disable=SC2016  # the stubs' own $ expand when they run
+printf '#!/bin/sh\ncat >> "${0%%/*}/lines"\n' > "$FAC/cap"
+cp "$DIR/scripts/cockpit-event" "$FAC/cockpit-event"
+# shellcheck disable=SC2016
+printf '#!/bin/sh\nprintf "%%s|%%s\\n" "$TMUX_PANE" "$*" >> "${0%%/*}/calls"\n' \
+    > "$FAC/agent-state"
+chmod +x "$FAC/cap" "$FAC/agent-state"
+facap() {                     # <pane> <word>...: the adapter's lines into $FAC/lines
+    local p=$1; shift
+    : > "$FAC/lines"
+    { printf '%s\n' "$@"; } 2>/dev/null \
+        | TMUX_PANE="$p" "$DIR/tests/adapters/fake/adapter.sh" "$FAC/cap" >/dev/null 2>&1
+}
+facap %1 begin tool fail end stop-by-user quit
+: > "$FAC/calls"; "$FAC/cockpit-event" < "$FAC/lines" >/dev/null 2>&1
+is "every line the fake adapter writes is valid agent-event v1" \
+    "8|$(printf '%%1|%s %%1\n' wake running running running error done interrupted off)" \
+    "$(awk 'END { print NR }' "$FAC/lines")|$(cat "$FAC/calls")"
+facap %1 hello BEGIN 'begin now' ' end' 'quit!' ''
+is "an unknown word writes nothing" "" "$(cat "$FAC/lines")"
+facap '' begin
+is "with no TMUX_PANE the fake adapter writes nothing" "" "$(cat "$FAC/lines")"
+"$TMUX_REAL" -L "$FA" kill-server >/dev/null 2>&1
+unset -f fa fao faset facap
 fi
 
 flop_left
