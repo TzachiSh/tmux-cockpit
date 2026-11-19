@@ -27649,6 +27649,16 @@ text after the object|done|{$CEH,"kind":"tool.start",$CEK} x
 a trailing comma|done|{$CEH,"kind":"tool.start",$CEK,}
 CEBAD
 
+# The pane is the core's one value that agent-state puts into tmux command strings, and
+# agent-state's own check is a glob (%[0-9]*): the schema's pattern is what keeps a pane with a
+# command after it out. Each shape is a JSON string the parse takes, aimed at the real pane.
+for ce_pane in "$CEP ; set-option -g @cockpit_ce_pwned 1" "$CEP { set-option -g @cockpit_ce_pwned 2 }"; do
+    ceset running; "$TMUX_REAL" -L "$CE" set-option -gu @cockpit_ce_pwned >/dev/null 2>&1
+    ce "{$CEH,\"kind\":\"input.needed\",\"pane\":\"$ce_pane\",$CES,$CEA}" >/dev/null
+    is "a pane with a tmux command after it writes nothing: ${ce_pane#"$CEP"}" "running|" \
+        "$(cev)|$("$TMUX_REAL" -L "$CE" show-option -gqv @cockpit_ce_pwned)"
+done
+
 # A line past 4096 bytes is cut and refused whole, the rest of it too: 4096 blanks, then an
 # event that would be valid alone, on the one line.
 CEPAD=$(printf '%4096s' '')
