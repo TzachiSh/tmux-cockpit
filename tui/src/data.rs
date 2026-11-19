@@ -9,6 +9,9 @@ pub mod sessions;
 // the subagent tree (#313)
 pub mod subagents;
 pub mod transcript;
+// the one rule for a pane's work folder (#1343)
+pub mod workdir;
+use workdir::Candidates;
 
 use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
@@ -193,8 +196,7 @@ pub struct Pane {
     pub msg: String,
     pub sess: String,
     pub path: String,
-    /// the dir the git facts came from: `@cockpit_dir`, else the transcript's
-    /// newest cwd, else `path` (#452); `fleet::work_dirs` picks it
+    /// the dir the git facts came from, as `workdir::choose` picks it (#452, #1343)
     pub dir: String,
     pub root: String,
     pub spool: String,
@@ -734,10 +736,10 @@ fn first_life(path: &str, n: u64) -> Duration {
     GIT_TTL / 5 * (1 + (h.finish() % 5) as u32)
 }
 
-/// `dirs` is each pane's work dir candidates (`fleet::work_dirs`), in `ps` order.
-fn fill_git(ps: &mut [Pane], dirs: &[[String; 3]]) {
-    // the tree each pane works in: @cockpit_dir, the transcript's cwd, the cwd (#253, #452)
-    let dirs = fleet::work_dirs(dirs);
+/// `dirs` is each pane's work dir candidates, in `ps` order.
+fn fill_git(ps: &mut [Pane], dirs: &[Candidates]) {
+    // the tree each pane works in (#253, #452, #1343)
+    let dirs: Vec<String> = dirs.iter().map(|c| workdir::choose(c).dir).collect();
     GIT.with(|c| fill_git_at(&mut c.borrow_mut(), ps, &dirs, Instant::now(), &|m| fleet::scan(m).facts));
 }
 
@@ -882,6 +884,9 @@ const FIELDS: &str = concat!(
     "\u{1f}#{?#{==:#{pane_title},#{host_short}},,#{s/\n/ /:#{s/\t/ /:#{s/\u{1f}/ /:#{s/^✳ //:#{pane_title}}}}}}",
     // #448: 18 the bound job's session, agent-poll's; the session of a pane that has none
     "\u{1f}#{s/\n/ /:#{s/\t/ /:#{s/\u{1f}/ /:#{@cockpit_job_session}}}}",
+    // #1343: 19 the cwd the hooks saw last, which agent-state writes with @cockpit_dir. Last,
+    // so no reader of 14 to 18 moves.
+    "\u{1f}#{s/\n/ /:#{s/\t/ /:#{s/\u{1f}/ /:#{@cockpit_cwd}}}}",
 );
 
 /// #1248: true for every pane but cockpit's own popup, a `list-panes -f` filter. On tmux
@@ -949,7 +954,7 @@ pub fn list_fleet() -> Option<(Vec<Pane>, std::collections::BTreeSet<String>)> {
     let (mut ps, mut dirs) = (vec![], vec![]);
     for l in out.lines() {
         let f: Vec<&str> = l.split(SEP).collect();
-        // FIELDS has 19; the 13 before @cockpit_dir are the floor, so an older format reads
+        // FIELDS has 20; the 13 before @cockpit_dir are the floor, so an older format reads
         if f.len() < 13 {
             continue;
         }
@@ -1044,28 +1049,31 @@ fn row_pane(f: &[&str], procs_t: &mut Option<Procs>, want_ended: bool) -> RowPan
     Some((p, by))
 }
 
-/// Reads `p`'s transcript into it and returns its work dir's candidates (#452), in
-/// the order `fleet::work_dirs` tries them. @cockpit_dir, @cockpit_subs and
-/// @cockpit_transcript come after the 13 a row from an older format has, so such a
-/// row still reads: 13 to 17 are optional.
-fn work_candidates(p: &mut Pane, f: &[&str]) -> [String; 3] {
-    let said_cwd = read_transcript(p, f.get(15).copied().unwrap_or_default());
-    let opt = f.get(13).copied().unwrap_or_default().to_string();
-    [opt, said_cwd, p.path.clone()]
+/// Reads `p`'s transcript into it and returns its work dir's candidates (#452, #1343).
+/// @cockpit_dir, @cockpit_transcript and @cockpit_cwd come after the 13 a row from an
+/// older format has, so such a row still reads: 13 to 19 are optional.
+fn work_candidates(p: &mut Pane, f: &[&str]) -> Candidates {
+    let transcript_cwd = read_transcript(p, f.get(15).copied().unwrap_or_default());
+    let opt = |i: usize| f.get(i).copied().unwrap_or_default();
+    Candidates {
+        transcript_cwd,
+        pane_cwd: p.path.clone(),
+        ..Candidates::from_options(opt(13), opt(19))
+    }
 }
 
-/// #500: the board's `Pane.dir` for one pane, off one `display-message` of the
-/// board's own FIELDS and the same per-row code as the fetch. `None` for a pane
-/// that is not there, is not an agent's, or whose dir is not on disk (#507). Unlike the fetch it never
-/// runs `claude agents` (hundreds of ms): a pane with no @cockpit_session has no
-/// transcript to read, so its dir is @cockpit_dir, else its launch dir.
-pub fn workdir(pane: &str) -> Option<String> {
+/// #500: the board's `Pane.dir` for one pane and its source (#1343), off one
+/// `display-message` of the board's own FIELDS and the same per-row code as the fetch.
+/// `None` for a pane that is not there, is not an agent's, or whose dir is not on disk
+/// (#507). Unlike the fetch it never runs `claude agents` (hundreds of ms): a pane with
+/// no @cockpit_session has no transcript to read.
+pub fn workdir(pane: &str) -> Option<workdir::WorkDir> {
     let (mut p, f) = one_row(pane)?;
     let f: Vec<&str> = f.iter().map(String::as_str).collect();
-    let cands = work_candidates(&mut p, &f);
+    let w = workdir::choose(&work_candidates(&mut p, &f));
     // #507: a dir that is not on disk (removed, or a name tmux's lossy decode
     // changed) is no dir: a script must not cd into it
-    fleet::work_dirs(&[cands]).pop().filter(|d| std::path::Path::new(d).is_dir())
+    std::path::Path::new(&w.dir).is_dir().then_some(w)
 }
 
 /// One pane as the branch popup's goto reads it (#303, #470).
@@ -1079,8 +1087,8 @@ pub struct PaneDir {
 
 /// Every pane's work dir off one `list-panes -a`, as `scripts/lib/workdir.sh` gave it to
 /// goto. The agent test leaves out the process tree, a `ps` per shell pane, as the
-/// script did; only an agent whose @cockpit_dir is no dir has its transcript read, as
-/// [`workdir`] reads it. Cockpit's own popups are no panes, by the board's filter (#1248).
+/// script did; only an agent whose @cockpit_dir and @cockpit_cwd both fail has its
+/// transcript read, as [`workdir`] reads it. Cockpit's own popups are no panes, by the board's filter (#1248).
 /// `None` when list-panes failed.
 pub fn pane_dirs() -> Option<Vec<PaneDir>> {
     let out = tmux(&["list-panes", "-a", "-f", NOT_POPUP, "-F", FIELDS])?;
@@ -1092,14 +1100,19 @@ fn pane_dir(f: &[&str]) -> Option<PaneDir> {
         return None;
     }
     let agent = !unsentinel(f[4]).is_empty() || agentish(f[3]);
-    let opt = f.get(13).copied().unwrap_or_default();
-    let holds = std::path::Path::new(opt).is_absolute() && std::path::Path::new(opt).is_dir();
-    // row_pane forks no ps here: @panestate or an agentish command is an agent's without its tree
-    let said = (agent && !holds)
-        .then(|| row_pane(f, &mut None, false).map(|(mut p, _)| work_candidates(&mut p, f)[1].clone()))
+    let opt = |i: usize| f.get(i).copied().unwrap_or_default();
+    let base = Candidates {
+        pane_cwd: f[8].to_string(),
+        ..Candidates::from_options(opt(13), opt(19))
+    };
+    let holds = |d: &str| std::path::Path::new(d).is_absolute() && std::path::Path::new(d).is_dir();
+    // the transcript only answers when both options fail; row_pane forks no ps here:
+    // @panestate or an agentish command is an agent's without its tree
+    let transcript_cwd = (agent && !holds(&base.declared) && !holds(&base.hook_cwd))
+        .then(|| row_pane(f, &mut None, false).map(|(mut p, _)| work_candidates(&mut p, f).transcript_cwd))
         .flatten()
         .unwrap_or_default();
-    let dir = fleet::work_dirs(&[[opt.to_string(), said, f[8].to_string()]]).pop()?;
+    let dir = workdir::choose(&Candidates { transcript_cwd, ..base }).dir;
     Some(PaneDir {
         id: f[0].to_string(),
         agent,

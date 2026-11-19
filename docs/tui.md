@@ -2424,10 +2424,15 @@ its text block counts as the prompt. The board's worker polls, so it keeps the
 anchor for the whole turn. A one-shot `--json` or `--rows` reads each transcript
 once: a prompt already past the window reads `""` and `null`, as before.
 
-**`dir` (#452):** the tree the git facts came from: `@cockpit_dir`, else the
-session transcript's newest main-thread `cwd`, else `path`. The first that is an
-absolute path naming a directory wins; `path` stays the pane's launch cwd. The
-reader keeps the last cwd it saw per transcript path, for the same file only
+**`dir` (#452, #1343):** the tree the git facts came from, as
+`data::workdir::choose` picks it (the freeze on #1342): `@cockpit_dir` when it
+differs from `@cockpit_cwd` (set by hand, `declared`), else the newest tree the
+agent's commands reached in the last 10 minutes (`active-in`), else `@cockpit_cwd`
+(else `@cockpit_dir`), else the session transcript's newest main-thread `cwd` (both
+`session`), else `path` (`pane-cwd`). The first that is an absolute path naming a
+directory wins; `path` stays the pane's launch cwd. The hooks write `@cockpit_dir`
+and `@cockpit_cwd` together, so only a dir set by hand differs. The reader keeps
+the last cwd it saw per transcript path, for the same file only
 (device and inode, and not shorter than at the last read), so a stretch of rows
 without one does not lose it.
 
@@ -2561,7 +2566,7 @@ pane are different facts and a blank tile tells you which one it is.
 **CLI:** `-h` or `--help` prints the usage:
 
 ```
-cockpit-tui board [--select %N] [--note <file>] | pick | files <dir> [--select <name>] [--hidden] [--ignored] [--filter <text>] | branch [-C <dir>] | info [--text|--json] %N | workdir %N | sessions [--needs] [--current $N] | panel %N [--resume <state> --last ok|failed:<why>|hidden | --ask <file> <a> <b>] | view [--line N] [--] <file> | basket add %N <file> | --rows | --json | --version | -h
+cockpit-tui board [--select %N] [--note <file>] | pick | files <dir> [--select <name>] [--hidden] [--ignored] [--filter <text>] | branch [-C <dir>] | info [--text|--json] %N | workdir [--source] %N | sessions [--needs] [--current $N] | panel %N [--resume <state> --last ok|failed:<why>|hidden | --ask <file> <a> <b>] | view [--line N] [--] <file> | basket add %N <file> | --rows | --json | --version | -h
 ```
 
 `info %N` is the info screen, `info --text %N` its rows as text, and
@@ -3190,13 +3195,17 @@ line; exit 1 and nothing on stdout when the pane is not there; exit 2 for a
 missing or malformed pane id.
 
 **`cockpit-tui workdir %N`** (#500) prints the board's `dir` for that pane, the
-path alone on one line, for tmux-review and goto. It reads the pane with one
-`display-message` of the board's own format and runs the fetch's per-row code
-(`row_pane`, `work_candidates`, `fleet::work_dirs`), so its agent test and its
-order are the board's. Unlike the fetch it never runs `claude agents`: a pane
-with no `@cockpit_session` and no bound job's `@cockpit_job_session` (#448) has no
-transcript to read, so its dir is
-`@cockpit_dir`, else its launch dir. Lossy UTF-8, as above. Exit 0 with the
+path alone on one line, for tmux-review and goto. `workdir --source %N` (#1343)
+prints `dir`, a tab and the source that named it: `declared`, `active-in`,
+`session` or `pane-cwd`. A transcript's cwd may hold a tab, so split at the last
+one. It reads the pane with one `display-message` of the board's own format and
+runs the fetch's per-row code (`row_pane`, `work_candidates`, `workdir::choose`),
+so its agent test and its order are the board's. Unlike the fetch it never runs
+`claude agents`: a pane with no `@cockpit_session` and no bound job's
+`@cockpit_job_session` (#448) has no transcript to read, so its dir is
+`@cockpit_dir`, else `@cockpit_cwd`, else its launch dir. The panel's capture
+carries the same answer as `Capture.work`, and `pane-cwd` with the pane's cwd where
+`workdir` would exit 1. Lossy UTF-8, as above. Exit 0 with the
 line; exit 1 and nothing on stdout when the pane is not there, is not an
 agent's, or its dir is not on disk (#507): a removed launch dir, or a name that is
 not UTF-8, which the lossy decode turns into a path that does not exist. The board

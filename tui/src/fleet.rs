@@ -103,27 +103,31 @@ pub fn rows_json(ps: &[Pane]) -> String {
 }
 
 fn usage() -> i32 {
-    eprintln!("cockpit-tui: workdir needs one pane id like %3");
+    eprintln!("cockpit-tui: workdir [--source] needs one pane id like %3");
     2
 }
 
-/// `cockpit-tui workdir %N` (#500): the board's `dir` for that pane, alone on one
-/// line, for scripts. Exit 1 and nothing on stdout when the pane is not there,
-/// is not an agent's or its dir is not on disk; exit 2 for a missing or malformed id.
+/// `cockpit-tui workdir [--source] %N` (#500): the board's `dir` for that pane, alone on
+/// one line, for scripts; with `--source`, `dir<TAB>source` (#1343). Exit 1 and nothing on
+/// stdout when the pane is not there, is not an agent's or its dir is not on disk; exit 2
+/// for a missing or malformed id.
 pub fn workdir_main(args: &[String]) -> i32 {
     let ok = |p: &String| {
         p.strip_prefix('%')
             .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+    };
+    let (source, args) = match args {
+        [flag, rest @ ..] if flag == "--source" => (true, rest),
+        _ => (false, args),
     };
     let [pane] = args else { return usage() };
     if !ok(pane) {
         return usage();
     }
     match crate::data::workdir(pane) {
-        Some(d) => {
-            println!("{d}");
-            0
-        }
-        None => 1,
+        Some(w) if source => println!("{}\t{}", w.dir, w.source.as_str()),
+        Some(w) => println!("{}", w.dir),
+        None => return 1,
     }
+    0
 }

@@ -2,6 +2,7 @@
 //! is doing, read off its own UI text.
 use crate::data::gitsafe::{FILTER_CONFIG, PATHSPEC, REDIRECT, SAFE, filter_flags};
 use crate::data::tmux;
+use crate::data::workdir::{Candidates, WorkDir, choose};
 use std::io::Read;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
@@ -19,6 +20,9 @@ pub struct Capture {
     pub screen: String,
     /// [`repo_state_within`] of `path`, raw like the screen; "" outside a repo.
     pub repo: Repo,
+    /// The pane's work folder by the shared rule, `crate::data::workdir` (#1343); `path`
+    /// as a pane-cwd answer where that rule has none (not an agent's, no dir on disk).
+    pub work: WorkDir,
 }
 
 /// The command in any case, or its version-shaped title, as the board reads it
@@ -62,12 +66,19 @@ pub fn capture_within(pane: &str, budget: Duration) -> Option<Capture> {
     } else {
         Repo::start(&path, &screen, budget)
     };
+    let work = crate::data::workdir(pane).unwrap_or_else(|| {
+        choose(&Candidates {
+            pane_cwd: path.clone(),
+            ..Default::default()
+        })
+    });
     Some(Capture {
         name,
         cmd,
         path,
         screen,
         repo,
+        work,
     })
 }
 

@@ -12,6 +12,7 @@ fn cap(screen: &str, repo: &str) -> Capture {
         path: "/home/u".into(),
         screen: screen.into(),
         repo: repo.into(),
+        ..Default::default()
     }
 }
 
