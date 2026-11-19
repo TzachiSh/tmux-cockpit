@@ -27767,6 +27767,69 @@ is "with no TMUX_PANE the fake adapter writes nothing" "1|0" \
 unset -f fa fao faset facap
 fi
 
+echo "== tmux-open-path and tmux-branch: the pane's work folder, not its launch folder (#1345) =="
+# The files browser, the click picker and the branch popup take the folder from pane_workdir
+# (lib/workdir.sh), as the board does: an @cockpit_dir the hooks declared apart from
+# @cockpit_cwd wins over pane_current_path. The stub cockpit-tui writes the argv it was
+# handed; the tmux wrapper writes a popup's -T and opens nothing (no client is attached).
+if need_tmux "work folder readers"; then :; else
+WR=$(cd "$(mktmpd)" && pwd -P); WRS="cockpit-wr-$$"; SOCKS="$SOCKS $WRS"
+WRA="$WR/launch a"; WRB="$WR/work b"; mkdir -p "$WR/bin" "$WRA" "$WRB"
+git init -q "$WRA" >/dev/null 2>&1; git init -q "$WRB" >/dev/null 2>&1
+: > "$WRB/x.txt"; : > "$WRB/y.txt"     # in the work folder only: the click line's names
+cat > "$WR/bin/cockpit-tui" <<STUB
+#!/bin/sh
+printf '%s\n' "\$*" > "$WR/tui.args"
+exit 1
+STUB
+cat > "$WR/bin/tmux" <<STUB
+#!/bin/sh
+if [ "\$1" = display-popup ]; then
+    while [ \$# -gt 0 ]; do [ "\$1" != -T ] || printf '%s\n' "\$2" > "$WR/title"; shift; done
+    exit 0
+fi
+exec "$TMUX_REAL" -L "$WRS" "\$@"
+STUB
+chmod +x "$WR/bin/cockpit-tui" "$WR/bin/tmux"
+fresh_server -L "$WRS" -f /dev/null -- -d -s t -x 80 -y 24 -c "$WRA" 'exec sleep 300'
+WRP=$("$TMUX_REAL" -L "$WRS" list-panes -t t -F '#{pane_id}')       # the agent, current
+WRQ=$("$TMUX_REAL" -L "$WRS" new-window -d -P -F '#{pane_id}' -t t: -c "$WRA" 'exec sleep 300')
+for o in "@cockpit_dir $WRB" "@cockpit_cwd $WRA" "@panestate idle"; do
+    "$TMUX_REAL" -L "$WRS" set -p -t "$WRP" "${o%% *}" "${o#* }"
+done
+"$TMUX_REAL" -L "$WRS" set -p -t "$WRP" @cockpit_click_line 'x.txt y.txt'
+sock_path "$WRS" WRSOCK
+wr_run() {                    # <script> <args...>: one run from $WR, tui.args and title reset
+    rm -f "$WR/tui.args" "$WR/title"
+    ( cd "$WR" && env PATH="$WR/bin:$PATH" COCKPIT_TUI_BIN="$WR/bin/cockpit-tui" \
+        TMUX="$WRSOCK,0,0" timeout 20 "$DIR/scripts/$1" "${@:2}" </dev/null >/dev/null 2>&1 )
+}
+wr_rec() { cat "$WR/$1" 2>/dev/null; }
+
+wr_run tmux-open-path --browse "$WRP"
+is "the files browser opens the declared folder, not the launch folder" \
+   "files $WRB" "$(wr_rec tui.args)"
+wr_run tmux-open-path --folder "$WRP"
+is "the files popup's title names the declared folder" " files · work b " "$(wr_rec title)"
+wr_run tmux-open-path "$WRP"
+is "the click picker finds the line's files in the declared folder, and its title names it" \
+   " open path · work b " "$(wr_rec title)"
+wr_run tmux-branch -p "$WRP"
+is "the branch popup on a pane opens the declared folder" "branch -C $WRB" "$(wr_rec tui.args)"
+wr_run tmux-branch
+is "the branch popup with no pane opens the current pane's declared folder" \
+   "branch -C $WRB" "$(wr_rec tui.args)"
+wr_run tmux-open-path --browse "$WRQ"
+is "a plain pane's files browser opens its pane_current_path" "files $WRA" "$(wr_rec tui.args)"
+wr_run tmux-branch -p "$WRQ"
+is "a plain pane's branch popup opens its pane_current_path" "branch -C $WRA" \
+   "$(wr_rec tui.args)"
+wr_run tmux-open-path --browse %999
+is "a gone pane opens no files browser" "" "$(wr_rec tui.args)"
+"$TMUX_REAL" -L "$WRS" kill-server >/dev/null 2>&1
+unset -f wr_run wr_rec
+fi
+
 flop_left
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1
