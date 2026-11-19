@@ -3237,9 +3237,9 @@ the branch when HEAD is detached.
 
 **Where the facts come from.** `data/fleet.rs`, on the fetch thread. One diff
 scan per distinct repo root however many panes share it, at most 8 git processes
-at once, and the gitsafe flags. The tree the agent works in is `@cockpit_dir`,
-else the session transcript's newest cwd, else the pane's cwd (#452); a relative
-path never counts and gets no facts. The list still makes no pane capture.
+at once, and the gitsafe flags. The tree the agent works in is the one
+`data::workdir::choose` picks, in the order the freeze's `dir` paragraph gives
+(#452, #1343); a relative path never counts and gets no facts. The list still makes no pane capture.
 
 **Verbs.** `cockpit-board` gains one line, `kill %N` (#288 removed `request %N`).
 `kill %N` kills the pane, not its window (#301). The board writes the pane id
