@@ -27660,6 +27660,24 @@ for ce_pane in "$CEP ; set-option -g @cockpit_ce_pwned 1" "$CEP { set-option -g 
     is "a pane with a tmux command after it writes nothing: ${ce_pane#"$CEP"}" "running|" \
         "$(cev)|$("$TMUX_REAL" -L "$CE" show-option -gqv @cockpit_ce_pwned)"
 done
+# The same check without tmux, which may refuse such a pane by itself: the core copied next to
+# a stub agent-state that logs each call (self-location finds the stub). A pane the pattern
+# refuses calls nothing, one that agent-state's glob would take (%1x) included.
+CEST=$(mktmpd); cp "$DIR/scripts/cockpit-event" "$CEST/cockpit-event"
+# shellcheck disable=SC2016  # the stub's own $ expand when it runs
+printf '#!/bin/sh\nprintf "%%s|%%s\\n" "$TMUX_PANE" "$*" >> "${0%%/*}/calls"\n' > "$CEST/agent-state"
+chmod +x "$CEST/agent-state"
+for ce_pane in '%1 ; set-option -g @cockpit_ce_pwned 1' '%1x' '%1 {'; do
+    : > "$CEST/calls"
+    printf '{%s,"kind":"tool.start","pane":"%s",%s,%s}\n' "$CEH" "$ce_pane" "$CES" "$CEA" \
+        | "$CEST/cockpit-event" >/dev/null 2>&1
+    is "the core calls agent-state for no pane its pattern refuses: $ce_pane" "" \
+        "$(cat "$CEST/calls")"
+done
+: > "$CEST/calls"
+printf '{%s,"kind":"tool.start","pane":"%%1",%s,%s}\n' "$CEH" "$CES" "$CEA" \
+    | "$CEST/cockpit-event" >/dev/null 2>&1
+is "and calls it once for a valid pane, with that pane" "%1|running %1" "$(cat "$CEST/calls")"
 
 # A line past 4096 bytes is cut and refused whole, the rest of it too: 4096 blanks, then an
 # event that would be valid alone, on the one line.
