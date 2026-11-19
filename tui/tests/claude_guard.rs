@@ -1428,6 +1428,92 @@ fn the_stub_writes_no_log_where_the_runner_made_none() {
     assert!(!out.stderr.is_empty(), "the refusal is still said");
 }
 
+// --- gh, refused beside claude (#1346) ---
+//
+// The panel starts `gh` by PATH to read PRs, issues and CI (#1000). A test that
+// reached the developer's gh would call GitHub with their login.
+
+/// A stand-in that starts `gh pr list` by PATH, takes the refusal as the
+/// product does, and exits 0.
+const STARTS_GH: &str = "#!/bin/sh\ngh pr list 2>/dev/null\nexit 0\n";
+
+/// The runner's line for a binary that started `program`, without its level.
+fn started_line(program: &str, exe: &Path) -> String {
+    format!(
+        "a test started {program}, not its rig's own stub (docs/tui.md) binary={}",
+        exe.display()
+    )
+}
+
+/// A rig whose own folder, after the guard's on PATH, also holds a `gh` that
+/// counts its starts.
+fn gh_rig(tag: &str) -> Rig {
+    let r = Rig::new(tag);
+    fake::write_exec(&r.0.join("own/gh"), "#!/bin/sh\necho x >> \"$0.started\"\n");
+    r
+}
+
+/// How often the counter at `rel` below the rig was started.
+fn starts_of(r: &Rig, rel: &str) -> usize {
+    std::fs::read_to_string(r.0.join(format!("{rel}.started"))).map_or(0, |s| s.lines().count())
+}
+
+#[test]
+fn a_binary_that_started_gh_fails_and_no_gh_after_the_guards_runs() {
+    let r = gh_rig("ghrefused");
+    let ran = r.run(&r.binary(TEST, STARTS_GH), &[]);
+    assert_eq!((ran.code, starts_of(&r, "own/gh")), (Some(1), 0), "{}", ran.err);
+}
+
+#[test]
+fn a_binary_that_started_gh_is_named_for_gh_with_its_argv() {
+    let r = gh_rig("ghnamed");
+    let exe = r.binary(TEST, STARTS_GH);
+    let ran = r.run(&exe, &[]);
+    let recs = ran.records();
+    assert_eq!(recs.len(), 2, "{}", ran.err);
+    assert_eq!(recs[0], started_line("gh", &exe));
+    assert_eq!(field(recs[1], "argv", None), "gh [pr] [list]");
+}
+
+#[test]
+fn a_test_binary_finds_the_guards_gh_first_beside_its_claude() {
+    let r = gh_rig("ghfirst");
+    let ran = r.run(&r.binary(TEST, &format!("{SAYS}echo \"gh=$(command -v gh)\"\n")), &[]);
+    let dir = guard_dir(&r, &ran);
+    assert_eq!(Path::new(ran.said("gh")), dir.join("gh"));
+    assert_eq!((ran.code, ran.err.as_str()), (Some(0), ""));
+}
+
+/// A rig puts its own folder before the PATH it was given, so its stubs come
+/// before the guard's: the stand-in's first argument is that folder.
+#[test]
+fn a_rigs_own_gh_and_claude_still_win_under_the_runner() {
+    let r = gh_rig("ghrig");
+    for p in ["rig/gh", "rig/claude"] {
+        r.binary(p, "#!/bin/sh\necho x >> \"$0.started\"\n");
+    }
+    let body = "#!/bin/sh\nPATH=\"$1:$PATH\"\ngh pr view 1 && claude -p hi\n";
+    let rig_dir = r.0.join("rig").to_string_lossy().into_owned();
+    let ran = r.run(&r.binary(TEST, body), &[rig_dir.as_str()]);
+    let rig = (starts_of(&r, "rig/gh"), starts_of(&r, "rig/claude"));
+    assert_eq!((ran.code, ran.err.as_str(), rig), (Some(0), "", (1, 1)));
+    assert_eq!((starts_of(&r, "own/gh"), r.own_starts()), (0, 0));
+}
+
+#[test]
+fn a_binary_that_started_claude_and_gh_is_named_for_each_claude_first() {
+    let r = gh_rig("ghboth");
+    let body = "#!/bin/sh\ngh api user 2>/dev/null\nclaude -p hi 2>/dev/null\nexit 0\n";
+    let exe = r.binary(TEST, body);
+    let ran = r.run(&exe, &[]);
+    let recs = ran.records();
+    assert_eq!((ran.code, recs.len()), (Some(1), 4), "{}", ran.err);
+    assert_eq!(recs[..2], [started_line("claude", &exe), started_line("gh", &exe)]);
+    let argv: Vec<_> = recs[2..].iter().map(|r| field(r, "argv", None)).collect();
+    assert_eq!(argv, ["gh [api] [user]", "claude [-p] [hi]"]);
+}
+
 // --- the caller's tmux session, cleared for a test binary (#1066) ---
 
 /// A stand-in that says what of tmux it runs with, one `key=value` a line.
