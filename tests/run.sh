@@ -27642,7 +27642,7 @@ an outcome on tool.start|done|{$CEH,"kind":"tool.start",$CEK,"outcome":"error"}
 a turn.end with no outcome|running|{$CEH,"kind":"turn.end",$CEK}
 an outcome not in the list|running|{$CEH,"kind":"turn.end",$CEK,"outcome":"stopped"}
 failed on tool.start|done|{$CEH,"kind":"tool.start",$CEK,"failed":true}
-failed as a string|running|{$CEH,"kind":"tool.end",$CEK,"failed":"true"}
+failed as a string|done|{$CEH,"kind":"tool.end",$CEK,"failed":"true"}
 an escape in a string|done|{$CEH,"kind":"tool\\u002estart",$CEK}
 a key given twice|done|{$CEH,"kind":"tool.start","kind":"tool.start",$CEK}
 text after the object|done|{$CEH,"kind":"tool.start",$CEK} x
