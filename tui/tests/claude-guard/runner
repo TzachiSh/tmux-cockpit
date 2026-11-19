@@ -2,15 +2,19 @@
 # cargo's runner for this repo (.cargo/config.toml, #973). cargo starts every
 # binary of `cargo test`, `cargo run` and `cargo bench` as
 #   tui/tests/claude-guard/runner <binary> [args...]
-# A test binary runs with the refusing `claude` beside this file first on its
-# PATH, and fails, named, when it started that claude. The product sends a
-# failed claude's stderr away and reads the failure as no answer, so the
-# refusal alone would pass: each start leaves a line in a file this script
-# owns, read once the binary has ended. Anything else is exec'd with its
-# arguments, its PATH and its pid as cargo gave them. One thing a shell cannot
-# hand on: dash drops an environment variable whose name is no shell name.
-# COCKPIT_TEST_CLAUDE_GUARD=0 lifts the guard by hand (docs/testing.md).
+# A test binary runs with a refusing `claude` and a refusing `gh` first on its
+# PATH, both copies of the stub beside this file, and fails, named for each
+# program it started. The product starts both by PATH (#973, #1000), sends a
+# failed one's stderr away and reads the failure as no answer, so the refusal
+# alone would pass: each start leaves a line in a file this script owns, read
+# once the binary has ended. Anything else is exec'd with its arguments, its
+# PATH and its pid as cargo gave them. One thing a shell cannot hand on: dash
+# drops an environment variable whose name is no shell name.
+# COCKPIT_TEST_CLAUDE_GUARD=0 lifts the guard, gh's half too, by hand
+# (docs/testing.md). The folder keeps its name from the claude half.
 me=claude-guard
+# The programs refused, each by the name a test would start it by.
+guarded='claude gh'
 [ "$#" -gt 0 ] || { echo "$me: usage: runner <binary> [args...]" >&2; exit 2; }
 [ "${COCKPIT_TEST_CLAUDE_GUARD-}" != 0 ] || exec "$@"
 
@@ -67,7 +71,13 @@ case $d in
         exit 1
         ;;
 esac
-cp "${0%/*}/claude" "$d/claude" && : > "$d/reached" || {
+for p in $guarded; do
+    cp "${0%/*}/claude" "$d/$p" || {
+        echo "$me: error: cannot set the guard up, the binary was not started dir=$d" >&2
+        exit 1
+    }
+done
+: > "$d/reached" || {
     echo "$me: error: cannot set the guard up, the binary was not started dir=$d" >&2
     exit 1
 }
@@ -106,7 +116,23 @@ if [ ! -f "$d/reached" ]; then
     echo "$me: error: the guard's folder was removed under the binary binary=$1 dir=$d" >&2
     [ "$rc" -ne 0 ] || rc=1
 elif [ -s "$d/reached" ]; then
-    echo "$me: error: a test started claude, not its rig's own stub (docs/tui.md) binary=$1" >&2
+    # One line for each program started, in the order of $guarded, read from the
+    # start of each of the stub's lines. Any line at all fails the binary; one
+    # that names no program here still does, under a line that says so.
+    named=
+    stub="not its rig's own stub (docs/tui.md)"
+    for p in $guarded; do
+        while IFS= read -r l; do
+            case $l in
+                "$me: error: refused to start $p for a test "*)
+                    echo "$me: error: a test started $p, $stub binary=$1" >&2
+                    named=1
+                    break
+                    ;;
+            esac
+        done < "$d/reached"
+    done
+    [ -n "$named" ] || echo "$me: error: a test started a guarded program, $stub binary=$1" >&2
     cat "$d/reached" >&2
     [ "$rc" -ne 0 ] || rc=1
 fi
