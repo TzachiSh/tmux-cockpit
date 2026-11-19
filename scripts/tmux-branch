@@ -51,12 +51,14 @@ CLIENT=""
 DIR="${1:-}"
 # A popup's $PWD is the session's start dir, and a bare display-message picks
 # the most recently active client. -p pins the pane the popup came from.
+# The folder is the tree the board's row shows: an agent's declared @cockpit_dir,
+# else pane_current_path (#1345).
 if [ -z "$DIR" ] && [ -n "${TMUX:-}" ]; then
     if [ -n "$PANE_ID" ]; then
-        DIR=$(tmux display-message -p -t "$PANE_ID" '#{pane_current_path}' 2>/dev/null)
+        DIR=$(pane_workdir "$PANE_ID")
         [ -n "$PANE_CMD" ] || PANE_CMD=$(tmux display-message -p -t "$PANE_ID" '#{pane_current_command}' 2>/dev/null)
     else
-        DIR=$(tmux display-message -p '#{pane_current_path}' 2>/dev/null)
+        DIR=$(pane_workdir "$(tmux display-message -p '#{pane_id}' 2>/dev/null)")
         [ -n "$PANE_CMD" ] || PANE_CMD=$(tmux display-message -p '#{pane_current_command}' 2>/dev/null)
     fi
 fi
@@ -83,7 +85,7 @@ redraw() { [ -n "${TMUX:-}" ] && tmux refresh-client -S 2>/dev/null; return 0; }
 # The old-binary path: this switch, track, create and goto (and their checks in act)
 # serve a cockpit-tui that still prints action lines (0.4.0, the release at the time).
 # They go once TUI_MIN is raised to the first release whose branch screen acts itself
-# (#228, #1271), and with them the workdir.sh and fmt.sh loads only goto uses.
+# (#228, #1271), and with them the fmt.sh load only goto uses (workdir.sh also picks DIR).
 current=$(git symbolic-ref --quiet --short HEAD 2>/dev/null || printf '')
 
 # Failures are common (dirty tree, branch held by a worktree); git's own message

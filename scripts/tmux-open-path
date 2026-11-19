@@ -355,7 +355,7 @@ browse_folder() {
         pw=$(tmux show-option -gqv @cockpit_popup_width);  pw=${pw:-70%}
         ph=$(tmux show-option -gqv @cockpit_popup_height); ph=${ph:-70%}
         tmux display-popup -t "$pane" -E -w "$pw" -h "$ph" \
-            -T " files · #{b:pane_current_path} " \
+            -T " files · $dirlast " \
             "$COCKPIT_POPUP_MARK$(shq "$0") --browse $(shq "$pane")"
         return 0
     fi
@@ -410,7 +410,13 @@ else
     }
     # Left set: the popup re-derives the list from it, and each click rewrites it.
     line=$(tmux show-options -p -t "$pane" -qv @cockpit_click_line)
-    dir=$(tmux display-message -p -t "$pane" '#{pane_current_path}')
+    # The tree the board's row shows, not the launch folder: an agent's declared
+    # @cockpit_dir, else pane_current_path (#1345). Nothing for a pane that is gone.
+    # shellcheck source=lib/workdir.sh
+    . "${d%/*}/lib/workdir.sh" || exit 1
+    dir=$(pane_workdir "$pane")
+    # popup titles: the folder used, its last part, escaped (-T is a format)
+    dirlast=${dir##*/}; dirlast=$(fesc "${dirlast:-/}")
     win=$(tmux display-message -p -t "$pane" '#{window_id}')
     if [ "$FOLDER" -eq 1 ] || [ "$BROWSE" -eq 1 ]; then
         [ -n "$dir" ] || { note "cockpit: the pane has no folder"; exit 1; }
@@ -577,7 +583,7 @@ if [ "$PICK" -eq 0 ]; then
     pw=$(tmux show-option -gqv @cockpit_popup_width);  pw=${pw:-70%}
     ph=$(tmux show-option -gqv @cockpit_popup_height); ph=${ph:-70%}
     tmux display-popup -t "$pane" -E -w "$pw" -h "$ph" \
-        -T " open path · #{b:pane_current_path} " \
+        -T " open path · $dirlast " \
         "$COCKPIT_POPUP_MARK$(shq "$0") --pick $(shq "$pane")"
     exit 0
 fi
