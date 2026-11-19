@@ -18,8 +18,7 @@ hooks keep every other state change.
 |---|---|
 | `turn.complete` on the main loop, reason `aborted` (Esc or Ctrl-C) | `turn.end`, outcome `aborted` |
 | `turn.complete` on the main loop, reason `error` (an API error) | `turn.end`, outcome `error` |
-| `turn.complete` on the main loop, reason `answer`, under the refused-ask rule below | `turn.end`, outcome `aborted` |
-| anything else: an answer, a refusal, a subagent's turn, `turn.start`, a tool call | nothing |
+| anything else: an answer, a refusal, a subagent's turn, any other event | nothing |
 
 Settings `Stop` does not fire on an interrupted turn, so before the mod the
 pane stayed `running` until the next prompt. The mod never sends outcome
@@ -31,51 +30,42 @@ Each line is one agent-event v1 object with `agent` `claude`, the pane from
 carries no answer, prompt or tool text. `map.js` reads only `reason` and
 `agentId` from the event, and the schema refuses any other key.
 
-### The refused-ask rule
+## Known v1 gap: Esc on a permission prompt
 
 Esc on a permission prompt ends the turn with reason `answer`, not `aborted`,
-and no `Stop` fires, so the pane stays on `needs-input`. The mod turns that
-answer into outcome `aborted` only when all of these hold:
+and no `Stop` fires, so the pane stays on `needs-input` until the next prompt.
+The mod leaves that as it is. To the mod, a refused ask looks the same as an ask
+the person approved whose command then failed: both end the call with
+`isError`, and the model can answer after either. A rule that read the first as
+an interrupt also marked the second, a normal turn, as aborted (#1337 review).
 
-1. In this main turn, `tool.check` answered `ask` for a call X on the main loop
-   (no `agentId`), with `approver` `person`.
-2. Call X's `tool.call` ended with `isError`.
-3. Every `ask` from any loop has had its `tool.call` end.
-4. No agent turn is open: every `turn.start` with an `agentId` has had its
-   `turn.complete`.
-5. `$.agent.list()` shows no agent `pending`, `running` or `waiting`. The list
-   misses workflow agents and the engine's own forks, which is why rule 4 is
-   there too. A list that cannot be read counts as a running agent.
+Telling them apart needs a fact the mod does not have yet. #1330 T6 measures
+whether Esc on a prompt and an approved, failing call differ in the order of
+`turn.step` events. A rule for this case comes back only on that measured fact.
 
-If any one is false, the mod sends nothing, and the pane is left as the
-settings hooks leave it. The plan numbers these conditions 1, 2, 4, 5' and 6.
-
-What the tests do not cover: an elicitation from a background loop the mod never
-heard start, with an empty agent list. There the rule could read a refused
-background prompt as the main turn's. Claude Code's events give no way to see
-that loop, so this is a named gap, not a tested case. The test kit skips a hook
-that rejects, so the `.catch(() => {})` around the push is kept as a defence no
-test can pin, while the test "the hook does not wait for the push" pins that
-the run is never awaited.
+What the tests do not cover: the `.catch(() => {})` around the push. The test
+kit skips a hook that rejects, so no test can pin that catch. The test "the
+hook does not wait for the push" does pin that the run is never awaited.
 
 ## How it runs
 
-- `register.js` hooks `turn.start`, `tool.check`, `tool.call` and
-  `turn.complete`. The first three only keep the state the refused-ask rule
-  reads. Only `turn.complete` hands a line on.
+- `register.js` has one hook, on `turn.complete`, and keeps no state between
+  events. It hooks no tool event: Claude Code's API types say a hook on
+  `tool.call` or `tool.run` turns off moving that tool to the background and
+  its live output.
 - The pane is read with `$.env.get("TMUX_PANE")` at each `turn.complete`, since
   no `session.start` follows `/clear`. With no pane (Claude Code outside tmux)
   the mod runs nothing.
 - The line goes on stdin to `scripts/cockpit-event`, found at
   `$.plugin.root/../../scripts/cockpit-event`. That ties the mod to a checkout
   of this repo: it must stay at `mods/cockpit-events` inside it.
+- `scripts/cockpit-event` arrives with #1330 T3. Until it lands, every push is
+  rejected, the catch drops it, and loading the mod changes nothing.
 - The run is fire and forget: `void $.process.run(...).catch(() => {})` with a
   1500 ms bound. The hook never waits for it and returns `next(e)`'s result, so
   a missing core or a dead tmux server cannot slow or fail a turn. The hook
-  waits only for local lookups before passing on: the pane, the session id and,
-  under the refused-ask rule, the agent list.
-- Nothing runs from a tool hook. A tool hook's `$.process.run` is rejected as
-  `aborted` when the tool is interrupted.
+  waits only for two local lookups before passing on: the pane and the session
+  id.
 
 ## Loading it
 
@@ -88,8 +78,8 @@ claude --plugin-dir ~/.tmux/plugins/tmux-cockpit/mods/cockpit-events
 To turn it off, start Claude Code without the flag. The settings hooks work
 the same with or without it.
 
-Tested with Claude Code 2.1.327. The floor is 2.1.299, the release in which
-`turn.start` began to fire for subagents.
+Tested with Claude Code 2.1.327. The floor, 2.1.299, is inferred from the
+CHANGELOG and not tested.
 
 ## Testing it
 

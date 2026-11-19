@@ -1,13 +1,11 @@
 // Turns one Claude mod event into one agent-event v1 line (docs/events.md), or null.
 // Pure: no `$`, no clock, no state. register.js reads the pane, the session and
-// the time, tracks what the refused-ask rule needs, and passes it in `ctx`.
+// the time and passes them in `ctx`.
 //
 // v1 emits only from the main loop's turn.complete (docs/mod.md):
 //   reason aborted -> turn.end outcome aborted
 //   reason error   -> turn.end outcome error
-//   reason answer  -> turn.end outcome aborted, only when ctx.refusedAsk is true
-//                     (Esc on a permission prompt ends the turn as an answer)
-// Everything else, subagent turns included, gives null.
+// Everything else gives null: answer, refusal, subagent turns, other events.
 
 const PANE = /^%[0-9]{1,10}$/
 const SESSION = /^[0-9a-f]{16,64}$/
@@ -20,22 +18,21 @@ const UTC = new RegExp(
 // Claude's session id is a UUID; the schema takes lowercase hex with no separator.
 export const sessionHex = id => String(id ?? '').replace(/-/g, '').toLowerCase()
 
-const outcomeOf = (e, ctx) => {
+const outcomeOf = e => {
   if (e.reason === 'aborted') return 'aborted'
   if (e.reason === 'error') return 'error'
-  if (e.reason === 'answer' && ctx.refusedAsk === true) return 'aborted'
   return null
 }
 
-// toEvent(name, e, ctx) -> the line's object, or null.
-// ctx = { pane, session, at, refusedAsk }. Only the fields named here are read
-// from `e`, so no answer, prompt or tool text can reach the line.
+// toEvent(name, e, ctx) -> the line's object, or null. ctx = { pane, session, at }.
+// Only the fields named here are read from `e`, so no answer, prompt or tool text
+// can reach the line.
 export const toEvent = (name, e, ctx) => {
   if (name !== 'turn.complete' || !e || e.agentId !== undefined) return null
   if (!ctx || !PANE.test(String(ctx.pane)) || !UTC.test(String(ctx.at))) return null
   const session = sessionHex(ctx.session)
   if (!SESSION.test(session)) return null
-  const outcome = outcomeOf(e, ctx)
+  const outcome = outcomeOf(e)
   if (outcome === null) return null
   return {
     schema_version: 1,
