@@ -52,6 +52,17 @@ fn each_candidate_wins_in_its_turn() {
             &a,
             Source::Declared,
         ),
+        // decision 1 on #1342: active-in stands for the folder only when nothing was declared
+        (
+            "declared beats a fresh active entry",
+            Candidates {
+                declared: a.clone(),
+                active: vec![recent(&b, 0)],
+                ..base.clone()
+            },
+            &a,
+            Source::Declared,
+        ),
         (
             "a fresh active entry beats the session",
             Candidates {
