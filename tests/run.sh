@@ -4803,8 +4803,9 @@ else
             read -r rlk_n _
             case $rlk_n in 0|1|2) echo doctor ;; *) echo "exit $rlk_n" ;; esac; })"
 fi
-# Every site, listed by file: a new one means a line here, never only a new total. 27 sites
-# in 19 files: #1290 added cockpit-board, cockpit-panel, tui-fetch and the three at the root.
+# Every site, listed by file: a new one means a line here, never only a new total. 28 sites
+# in 20 files: #1290 added cockpit-board, cockpit-panel, tui-fetch and the three at the root.
+# #1330 added cockpit-event.
 rlk_sites='bootstrap.sh:1
 cockpit.tmux:1
 install.sh:1
@@ -4812,6 +4813,7 @@ scripts/agent-context:1
 scripts/agent-poll:1
 scripts/agent-state:7
 scripts/cockpit-board:1
+scripts/cockpit-event:1
 scripts/cockpit-panel:1
 scripts/review-gate:1
 scripts/tm:2
@@ -4824,7 +4826,7 @@ scripts/tmux-where:1
 scripts/tui-fetch:1
 scripts/worktree-create:1
 scripts/worktree-remove:1'
-is "all 27 self-locating sites carry the whole four-line form, file by file" "$rlk_sites" \
+is "all 28 self-locating sites carry the whole four-line form, file by file" "$rlk_sites" \
     "$(cd "$DIR" && for rlk_s in scripts/* install.sh bootstrap.sh cockpit.tmux; do
         [ -f "$rlk_s" ] || continue
         rlk_n=$(rlk_count "$rlk_s"); [ "$rlk_n" -eq 0 ] || printf '%s:%s\n' "$rlk_s" "$rlk_n"
