@@ -80,8 +80,9 @@ settings hooks keep the rest, until #1330 T7 decides whether to move them.
 
 ## Adding a CLI agent
 
-1. Add `adapters/<agent>/`, or `mods/<agent>-cockpit/` if the agent has an
-   in-process plugin API. It turns the agent's own signals into agent-event v1
+1. Add `adapters/<agent>/`, or `mods/<name>/` if the agent has an in-process
+   plugin API. A plugin name must not start with `claude-`, which is reserved:
+   the Claude mod is `mods/cockpit-events/`. It turns the agent's own signals into agent-event v1
    lines with `agent: "<agent>"`. `agent` is the adapter's fixed name, a
    constant in that adapter's code, never derived from a session, project, path
    or user input.
