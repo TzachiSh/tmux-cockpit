@@ -1205,6 +1205,7 @@ SP="cockpit-sp-$$"; SPO="cockpit-spo-$$"; SOCKS="$SOCKS $SP $SPO"; SPD=$(mktmpd)
 # The board passes no pane to the binary, so for it the stub logs its caller's -p.
 cat > "$SPD/cockpit-tui" <<STUB
 #!/bin/sh
+[ "\$1" = workdir ] && exit 1
 [ "\$1" = --version ] && { echo "cockpit-tui 9.9.9"; exit 0; }
 [ "\$1" = board ] && set -- board "\$(ps -o args= -p \$PPID | grep -o -- '-p %[0-9]*')"
 printf '%s\\n' "\$*" >> "$SPD/log"
