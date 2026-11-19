@@ -106,9 +106,6 @@ lines to add, in a run that includes that binary. A filtered run there, such as
 `docs/testing.md` has the targets, the switch that lifts the guard, what a
 cargo runner of your own does to it, and what the script changes for
 `cargo run`.
-The runner refuses `gh` the same way: a test binary that starts the developer's
-own `gh` rather than its rig's stub fails ("The tui tests' claude guard" in
-`docs/testing.md`).
 
 The binary lives in the plugin's own `bin/` and is gitignored. `install.sh`
 runs `scripts/tui-fetch --required` and exits 1 when no working binary is
