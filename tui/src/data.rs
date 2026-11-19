@@ -1054,12 +1054,18 @@ fn row_pane(f: &[&str], procs_t: &mut Option<Procs>, want_ended: bool) -> RowPan
 /// older format has, so such a row still reads: 13 to 19 are optional.
 fn work_candidates(p: &mut Pane, f: &[&str]) -> Candidates {
     let transcript_cwd = read_transcript(p, f.get(15).copied().unwrap_or_default());
-    let opt = |i: usize| f.get(i).copied().unwrap_or_default();
     Candidates {
         transcript_cwd,
         pane_cwd: p.path.clone(),
-        ..Candidates::from_options(opt(13), opt(19))
+        ..row_options(f)
     }
+}
+
+/// `declared` and `hook_cwd` off a FIELDS row's @cockpit_dir (13) and @cockpit_cwd (19).
+/// A row from an older format stops short of either: the missing one reads empty.
+fn row_options(f: &[&str]) -> Candidates {
+    let opt = |i: usize| f.get(i).copied().unwrap_or_default();
+    Candidates::from_options(opt(13), opt(19))
 }
 
 /// #500: the board's `Pane.dir` for one pane and its source (#1343), off one
@@ -1101,10 +1107,9 @@ fn pane_dir(f: &[&str]) -> Option<PaneDir> {
         return None;
     }
     let agent = !unsentinel(f[4]).is_empty() || agentish(f[3]);
-    let opt = |i: usize| f.get(i).copied().unwrap_or_default();
     let base = Candidates {
         pane_cwd: f[8].to_string(),
-        ..Candidates::from_options(opt(13), opt(19))
+        ..row_options(f)
     };
     let holds = |d: &str| std::path::Path::new(d).is_absolute() && std::path::Path::new(d).is_dir();
     // the transcript only answers when both options fail; row_pane forks no ps here:
@@ -1401,6 +1406,30 @@ pub mod branches;
 mod tests {
     use super::*;
     use serde_json::Value;
+
+    /// #1343: @cockpit_cwd is FIELDS' last field, so a row from an older format, which
+    /// stops before it, reads it as empty: hook_cwd is @cockpit_dir, or empty with none.
+    #[test]
+    fn a_row_short_of_cockpit_cwd_reads_it_as_empty() {
+        let head = ["%1", "w:0", "win", "claude", "running", "-", "-", "-", "/w", "1", "-", "-", "@1"];
+        let row = |tail: &[&str]| row_options(&[&head[..], tail].concat());
+        let both = |c: Candidates| (c.declared, c.hook_cwd);
+        // rows: 13 fields, 14 (#253), 16 (#313), 19 (#448), then all 20
+        let s = |a: &str, b: &str| (a.to_string(), b.to_string());
+        assert_eq!(both(row(&[])), s("", ""), "13 fields");
+        assert_eq!(both(row(&["/d"])), s("/d", "/d"), "14 fields");
+        assert_eq!(both(row(&["/d", "3", "/t.jsonl"])), s("/d", "/d"), "16 fields");
+        assert_eq!(
+            both(row(&["/d", "3", "/t.jsonl", "job", "topic", "sid"])),
+            s("/d", "/d"),
+            "19 fields"
+        );
+        assert_eq!(
+            both(row(&["/d", "3", "/t.jsonl", "job", "topic", "sid", "/c"])),
+            s("/d", "/c"),
+            "20 fields"
+        );
+    }
 
     /// The board's doing line for each tool shape must equal the history reader's
     /// label (tlabel), save for the 160-char cap and control handling: the cases
