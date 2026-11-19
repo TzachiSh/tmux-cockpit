@@ -523,6 +523,10 @@ fn tile(f: &mut Frame, cell: Rect, p: &Pane, num: usize, pv: Option<Option<&str>
     if active {
         block = block.title(Line::from(Span::styled(format!(" {} ", pane_mark(g)), Style::new().fg(th.accent))).right_aligned());
     }
+    // #1330 A2: the bottom border holds nothing else, so nothing above moves for it
+    if let Some(foot) = ctx_foot(p, g, (cell.width as usize).saturating_sub(4)) {
+        block = block.title_bottom(Line::from(Span::styled(foot, Style::new().fg(th.meta))).right_aligned());
+    }
     let inner = block.inner(cell);
     f.render_widget(block, cell);
     if inner.height == 0 || inner.width == 0 {
@@ -546,6 +550,19 @@ fn tile(f: &mut Frame, cell: Rect, p: &Pane, num: usize, pv: Option<Option<&str>
         para = para.style(Style::new().add_modifier(Modifier::DIM));
     }
     f.render_widget(para, body);
+}
+
+/// #1330 A2: ` opus · 84k `, the model cut at 12 columns and the context floored to
+/// thousands (raw under 1000), whole or not at all in `w`; nothing with no usage.
+fn ctx_foot(p: &Pane, g: &Glyphs, w: usize) -> Option<String> {
+    let n = p.ctx?;
+    let n = if n < 1000 { n.to_string() } else { format!("{}k", n / 1000) };
+    let s = if p.model.is_empty() {
+        format!(" {n} ")
+    } else {
+        format!(" {} {} {n} ", g.trunc(&p.model, 12), g.dot)
+    };
+    (s.width() <= w).then_some(s)
 }
 
 fn head_lines(p: &Pane, iw: usize, rows: usize, needs: bool, th: &Theme) -> Vec<Line<'static>> {

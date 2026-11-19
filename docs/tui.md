@@ -2181,6 +2181,21 @@ panel with the reason in a warn note.
   `a_prompt_not_yet_written_after_an_interrupt_reads_idle_until_its_row_lands`
   pins it, so the mod's turn start (#1330 T5) shows up there.
 
+### Contract changes for model and context (#1330 A2, for #61)
+
+- `data::Pane` gains `model: String` and `ctx: Option<u64>`, from the newest
+  main-thread assistant row with usage, in the fold pass that already reads the
+  tail. `ctx` is input plus cache_read plus cache_creation tokens, never output.
+  A row whose sum is 0 and a sidechain row are skipped, and a newer prompt
+  leaves both as they were. `model` is the word after `claude-` when it is all
+  a-z (`opus`), else the raw id with control and bidi characters dropped.
+- `--json` and `--rows` are unchanged: both are built key by key and carry
+  neither field. FIELDS is untouched, so `@panestate_ctx` is not read and the
+  card shows no percentage.
+- The tile's bottom border shows ` opus · 84k `, right-aligned: the model cut
+  at 12 columns, the context floored to thousands and raw under 1000. Nothing
+  shows without usage, and a line that does not fit is left out whole.
+
 ### The triage overlay
 
 Phase 2, not shipped. It answers a blocked agent in place rather than attaching
@@ -2389,7 +2404,8 @@ is agreed; changing any of it takes a comment on
 ```
 id, wher, name, cmd, state, title, msg, sess, path, dir, root, spool, pinned,
 delivered, pid, review, doing, said, asked, loc, pm,
-since: Option<u64>, asked_since: Option<u64>, idle_since: Option<u64>, job
+since: Option<u64>, asked_since: Option<u64>, idle_since: Option<u64>, win,
+subs_n, subs, ended, job, topic, doing_failed, model, ctx: Option<u64>
 ```
 
 Derives `Default, Clone, Hash, PartialEq`. The durations are `u64` and not
