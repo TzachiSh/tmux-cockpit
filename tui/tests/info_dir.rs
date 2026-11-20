@@ -145,6 +145,174 @@ fn info_json_dir_is_the_boards_work_dir() {
     }
 }
 
+/// "YYYY-MM-DDTHH:MM:SS.000Z" `ago` seconds before now, civil-from-days (Hinnant).
+fn stamp(ago: i64) -> String {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap();
+    let t = now.as_secs() as i64 - ago;
+    let (days, rem) = (t.div_euclid(86400), t.rem_euclid(86400));
+    let z = days + 719468;
+    let era = z.div_euclid(146097);
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}.000Z", rem / 3600, rem % 3600 / 60, rem % 60)
+}
+
+/// #1355: `name` under the scratch tree, made a git repo, so a tool call into it names a tree.
+fn repo(t: &Tmp, name: &str) -> String {
+    let d = t.sub(name);
+    let git = std::process::Command::new("git")
+        .args(["init", "-q", &d])
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .status();
+    assert!(git.unwrap().success());
+    d
+}
+
+/// #1355: the rig's transcript gains a main-thread Bash call into `tree`, 30 s ago.
+fn call_into(t: &Tmp, cwd: &str, tree: &str) {
+    use std::io::Write;
+    let tr = t.0.join("home/.claude/projects").join(slug(cwd)).join("s1.jsonl");
+    let call = serde_json::json!({"type": "tool_use", "id": "u1", "name": "Bash",
+        "input": {"command": format!("cd {tree} && make")}});
+    let v = serde_json::json!({"type": "assistant", "timestamp": stamp(30), "cwd": cwd,
+        "message": {"content": [call]}});
+    let mut f = std::fs::OpenOptions::new().append(true).open(tr).unwrap();
+    writeln!(f, "{v}").unwrap();
+}
+
+/// #1355: `@cockpit_cwd` is `hook` on the pane: the board's row 19, and info's own row 16
+/// for a pane the board does not count. The fields between are empty.
+fn hook_cwd(t: &Tmp, hook: &str) {
+    for (file, seps) in [("rows", 6), ("display", 4)] {
+        let p = t.0.join(file);
+        let row = std::fs::read_to_string(&p).unwrap();
+        let row = format!("{}{}{hook}\n", row.trim_end_matches('\n'), "\u{1f}".repeat(seps));
+        std::fs::write(&p, row).unwrap();
+    }
+}
+
+/// #1355: the board's row is a shell's, not an agent's: no @panestate, a shell command and
+/// a pid that is no process, so the agent test finds no tree either.
+fn shell(t: &Tmp) {
+    let p = t.0.join("rows");
+    let row = std::fs::read_to_string(&p).unwrap();
+    let mut f: Vec<&str> = row.trim_end_matches('\n').split('\u{1f}').collect();
+    (f[3], f[4], f[9]) = ("bash", "-", "999999999");
+    std::fs::write(&p, f.join("\u{1f}") + "\n").unwrap();
+}
+
+/// #1355: a pane per source `workdir --source` names, on the rig: the rig's env.
+fn case(t: &Tmp, src: &str) -> Vec<(&'static str, String)> {
+    let (cwd, other) = (t.sub("cwd"), t.sub("other"));
+    match src {
+        "active-in" => {
+            let env = rig(t, &cwd, "", &cwd);
+            call_into(t, &cwd, &repo(t, "wt"));
+            env
+        }
+        "session" => {
+            let env = rig(t, &cwd, "", "/no/such/wt");
+            hook_cwd(t, &other);
+            env
+        }
+        "declared" => rig(t, &cwd, &other, &cwd),
+        _ => rig(t, &cwd, "", "/no/such/wt"),
+    }
+}
+
+/// `cockpit-tui workdir --source <pane>` under `env`: the dir and the source, split at the
+/// last tab as docs/tui.md says.
+fn source(g: &EnvHeld, env: &[(&'static str, String)], pane: &str) -> (String, String) {
+    fake::checked_state_held(g);
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_cockpit-tui"))
+        .args(["workdir", "--source", pane])
+        .envs(env.iter().map(|(k, v)| (*k, v.as_str())))
+        .output()
+        .unwrap();
+    let s = String::from_utf8_lossy(&out.stdout).trim_end_matches('\n').to_string();
+    let (d, src) = s.rsplit_once('\t').unwrap_or_default();
+    (d.to_string(), src.to_string())
+}
+
+/// #1355: the agent's fresh `cd` into a tree outranks the transcript's cwd on the info
+/// screen, as on the board.
+#[test]
+fn an_active_in_tree_is_the_info_work_dir() {
+    let g = fake::env_lock();
+    let t = Tmp::new("activein");
+    let (cwd, wt) = (t.sub("cwd"), repo(&t, "wt"));
+    let env = rig(&t, &cwd, "", &cwd);
+    call_into(&t, &cwd, &wt);
+    set(&g, &t, &env);
+    assert_eq!(gather("%1").unwrap().work, wt);
+}
+
+/// #1355: with no `@cockpit_dir`, the hooks' `@cockpit_cwd` is the info work dir, before
+/// the pane's launch dir.
+#[test]
+fn a_cockpit_cwd_alone_is_the_info_work_dir() {
+    let g = fake::env_lock();
+    let t = Tmp::new("hookcwd");
+    let (cwd, hook) = (t.sub("cwd"), t.sub("hook"));
+    let env = rig(&t, &cwd, "", "/no/such/wt");
+    hook_cwd(&t, &hook);
+    set(&g, &t, &env);
+    assert_eq!(gather("%1").unwrap().work, hook);
+}
+
+/// #1355: a shell pane has no transcript, but its `@cockpit_cwd` still names its folder,
+/// as goto reads it.
+#[test]
+fn a_shell_panes_cockpit_cwd_is_its_info_work_dir() {
+    let g = fake::env_lock();
+    let t = Tmp::new("shellcwd");
+    let (cwd, hook) = (t.sub("cwd"), t.sub("hook"));
+    let env = rig(&t, &cwd, "", "");
+    hook_cwd(&t, &hook);
+    shell(&t);
+    set(&g, &t, &env);
+    let x = gather("%1").unwrap();
+    assert_eq!((x.agent, x.work), (false, hook));
+}
+
+/// #1355: the screen's work row is `<dir>  (<source>)`, the pair `workdir --source` prints
+/// for the same pane. Rows: one per source.
+#[test]
+fn the_screens_dir_row_is_what_workdir_source_answers() {
+    let g = fake::env_lock();
+    for src in ["active-in", "session", "declared", "pane-cwd"] {
+        let t = Tmp::new(&format!("row-{src}"));
+        let env = case(&t, src);
+        let (d, s) = source(&g, &env, "%1");
+        set(&g, &t, &env);
+        let glyphs = &cockpit_tui::theme::Theme::fixed().g;
+        let r = cockpit_tui::info::rows(&gather("%1").unwrap(), glyphs, 400);
+        let want = ("dir".to_string(), format!("{d}  ({s})"));
+        assert_eq!((s.as_str(), r.contains(&want)), (src, true), "{src}: {r:?}");
+    }
+}
+
+/// #1355: `info --json`'s `source` is the one `workdir --source` prints, next to the same
+/// `dir`. Rows: one per source.
+#[test]
+fn info_json_source_is_what_workdir_source_answers() {
+    let g = fake::env_lock();
+    for src in ["active-in", "session", "declared", "pane-cwd"] {
+        let t = Tmp::new(&format!("json-{src}"));
+        let env = case(&t, src);
+        let (d, s) = source(&g, &env, "%1");
+        let (code, stdout) = info_json(&g, &env, "%1");
+        let v: serde_json::Value = serde_json::from_slice(&stdout).unwrap_or_default();
+        let got = (code, v["dir"].as_str(), v["source"].as_str());
+        assert_eq!((s.as_str(), got), (src, (Some(0), Some(d.as_str()), Some(src))), "{src}");
+    }
+}
+
 /// A pane that is not there: exit 1, nothing on stdout, as `--text` does.
 #[test]
 fn info_json_for_no_such_pane_is_exit_1_and_silent() {
