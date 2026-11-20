@@ -348,9 +348,11 @@ pub struct App {
     /// from the collector the panel holds for its life. `None` collects nothing:
     /// [`App::new`] installs none, the panel's `main` does.
     pub changes: Option<Looks>,
-    /// A panel on a real pane, set by main after [`App::new`] (#1354): its envelope
-    /// is built off the UI thread. A fixture's (false) is built in place.
+    /// A panel on a real pane, set by main after [`App::new`] (#1354); a fixture's is
+    /// false.
     pub live: bool,
+    /// The envelope on its way from the thread [`App::busy`] started.
+    building: Option<std::sync::mpsc::Receiver<Envelope>>,
 }
 
 /// The secrets a call's envelope hid, by where they were: the screen with its
@@ -419,6 +421,7 @@ impl App {
             guard: TAP_GUARD_MS,
             changes: None,
             live: false,
+            building: None,
         }
     }
 
@@ -590,11 +593,13 @@ impl App {
     }
 
     /// The event loop wakes every 100 ms rather than wait for a key: a call is
-    /// out, or an Explain's list is still being collected, so it is drawn when it
-    /// lands even while the user reads the answer and presses nothing (#1000).
+    /// out or its envelope is being built (#1354), or an Explain's list is still
+    /// being collected, so it is drawn when it lands even while the user reads the
+    /// answer and presses nothing (#1000).
     pub fn ticks(&self) -> bool {
         let explain = self.run.as_ref().is_some_and(|r| r.flow == Flow::Explain);
-        self.req.is_some() || (explain && self.changes.as_ref().is_some_and(Looks::waiting))
+        let out = self.req.is_some() || self.building.is_some();
+        out || (explain && self.changes.as_ref().is_some_and(Looks::waiting))
     }
 
     /// Starts collecting what changed for Explain, in a pane whose folder is
@@ -1101,9 +1106,18 @@ impl App {
         }
     }
 
-    /// The folder an exploring write may read: the pane's repo, or its folder
-    /// outside one, in a local window and one request.rs would start a call on;
-    /// else why not, for the user.
+    /// The pane's work folder by the shared rule (#1354), or its cwd where the
+    /// capture has none, as [`super::capture::capture`] falls back.
+    fn work_dir(&self) -> &str {
+        match self.cap.work.dir.as_str() {
+            "" => &self.cap.path,
+            d => d,
+        }
+    }
+
+    /// The folder an exploring write may read: the repo of the pane's work folder,
+    /// or that folder outside one, in a local window and one request.rs would start
+    /// a call on; else why not, for the user.
     fn explore_dir(&self) -> Result<PathBuf, String> {
         if !self.local {
             return Err(format!(
@@ -1111,11 +1125,12 @@ impl App {
                 self.cap.cmd
             ));
         }
-        if self.cap.path.is_empty() {
+        let work = self.work_dir();
+        if work.is_empty() {
             return Err("tmux gives no folder for this pane".into());
         }
         let root = self.explore_root.get_or_init(|| {
-            let dir = toplevel(&self.cap.path, REPO_BUDGET).unwrap_or_else(|| self.cap.path.clone());
+            let dir = toplevel(work, REPO_BUDGET).unwrap_or_else(|| work.to_string());
             let dir = PathBuf::from(dir);
             read_dir_ok(&dir).map(|()| dir)
         });
@@ -1213,8 +1228,29 @@ impl App {
         self.view = View::Busy;
         self.pending = true;
         self.note = None;
-        let e = self.run.as_ref().map(|r| self.envelope(r));
-        self.hidden = e.as_ref().map_or(0, Envelope::hidden);
+        self.building = None;
+        let Some(r) = self.run.as_ref() else {
+            return self.counted(None);
+        };
+        if self.cap.repo.try_get().is_some() {
+            // the repo block is known: built here, its counts read at once
+            let e = self.envelope(r);
+            return self.counted(Some(&e));
+        }
+        // The repo block may still be in git's hands, up to REPO_BUDGET (#1354, #1342
+        // amendment 10): the envelope is built on a thread and launch() takes it.
+        let left = r.max.saturating_sub(r.rounds);
+        let (flow, turns, refs) = (r.flow.clone(), r.turns.clone(), self.write_refs(&r.flow));
+        let cap = self.cap.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || drop(tx.send(build_refs(&flow, &cap, &turns, left, &refs))));
+        self.building = Some(rx);
+        self.counted(None);
+    }
+
+    /// What Busy says the call hid: an envelope's counts, or none until it is built.
+    fn counted(&mut self, e: Option<&Envelope>) {
+        self.hidden = e.map_or(0, Envelope::hidden);
         self.sent = e.map_or_else(SentHidden::default, |e| SentHidden {
             screen: e.screen_hidden,
             repo: e.repo_hidden,
@@ -1242,7 +1278,7 @@ impl App {
             return vec![];
         }
         let root = self.explores(flow).then(|| self.explore_dir().ok()).flatten();
-        ref_items(&self.basket, Path::new(&self.cap.path), self.claude, root.as_deref())
+        ref_items(&self.basket, Path::new(self.work_dir()), self.claude, root.as_deref())
     }
 
     /// The basket, for `.basket`, when the text acted on is a written result
@@ -1289,6 +1325,13 @@ impl App {
     /// [`App::request_parts`], why a prompt override was not used, and the hash.
     #[allow(clippy::type_complexity)]
     fn request_noted(&self) -> Option<((String, String, String), Option<String>, Option<String>)> {
+        self.request_with(None)
+    }
+
+    /// [`App::request_noted`] on the user prompt `built` when one is given: the
+    /// envelope [`App::busy`] built off the UI thread.
+    #[allow(clippy::type_complexity)]
+    fn request_with(&self, built: Option<String>) -> Option<((String, String, String), Option<String>, Option<String>)> {
         let r = self.run.as_ref()?;
         let noted = |(t, n): (String, Option<String>)| (t, n, None);
         let (system, note, hash) = match &r.flow {
@@ -1309,15 +1352,36 @@ impl App {
             Flow::Explain => noted(prompts::explain_noted()),
             Flow::Ask(_) => noted(prompts::ask_code_noted()),
         };
-        Some(((system, self.envelope(r).text, r.model.clone()), note, hash))
+        let prompt = built.unwrap_or_else(|| self.envelope(r).text);
+        Some(((system, prompt, r.model.clone()), note, hash))
     }
 
-    /// Forks the pending call, if there is one.
+    /// Forks the pending call, if there is one and its envelope is built: one still
+    /// on its thread is asked for again on the loop's next pass, [`App::ticks`]
+    /// waking it.
     pub fn launch(&mut self, call: &Call) {
-        if !std::mem::take(&mut self.pending) {
+        if !self.pending {
             return;
         }
-        if let Some(((system, prompt, model), note, _)) = self.request_noted() {
+        let built = match self.building.as_ref().map(|rx| rx.try_recv()) {
+            None => None,
+            Some(Err(std::sync::mpsc::TryRecvError::Empty)) => return,
+            Some(Ok(e)) => {
+                self.building = None;
+                self.counted(Some(&e));
+                Some(e.text)
+            }
+            Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) => {
+                self.building = None;
+                self.pending = false;
+                eprintln!("cockpit-tui: the request's envelope was not built");
+                let line = "the request could not be built".to_string();
+                self.view = View::Error { line, hint: None };
+                return;
+            }
+        };
+        self.pending = false;
+        if let Some(((system, prompt, model), note, _)) = self.request_with(built) {
             if let Some(n) = note {
                 self.say(Level::Warn, n);
             }
@@ -1334,6 +1398,7 @@ impl App {
         let back = View::Home { sel: 0 };
         self.start(Flow::Ask(a), vec![], vec![], 0, back.clone());
         self.pending = false;
+        self.building = None;
         self.busy_back = None;
         self.view = View::Input {
             kind: InputKind::FollowUp,
@@ -1395,6 +1460,8 @@ impl App {
         if let Some(mut r) = self.req.take() {
             r.cancel();
         }
+        // an envelope still on its thread is dropped with its receiver
+        self.building = None;
         self.pending = false;
         self.drop_pending();
         self.say(Level::Info, "cancelled");
