@@ -2407,3 +2407,29 @@ fn strip_escapes(s: &str) -> String {
 
 /// How far back [`cut_prefill`] looks for a space.
 const PREFILL_BACK: usize = 40;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A build thread that panicked drops its sender unsent (#1354): the call is
+    /// never made, the panel shows an error, and the loop stops ticking.
+    #[test]
+    fn a_build_thread_that_died_ends_in_an_error_not_a_wait() {
+        let mut a = App::new("%3", Capture::default());
+        (a.view, a.draft) = (View::Compose, "list the files".into());
+        a.write();
+        let (tx, rx) = std::sync::mpsc::channel::<Envelope>();
+        drop(tx);
+        a.building = Some(rx);
+        let call = Call {
+            claude: "/nonexistent/claude-stub".into(),
+            timeout: Duration::from_secs(1),
+            dir: PathBuf::from("/nonexistent"),
+            effort: super::super::request::Effort::Medium,
+        };
+        a.launch(&call);
+        assert!(matches!(a.view, View::Error { .. }), "{:?}", a.view);
+        assert!(!a.pending && a.req.is_none() && !a.ticks(), "the panel still waits");
+    }
+}
