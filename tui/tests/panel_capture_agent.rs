@@ -4,7 +4,7 @@
 mod fake;
 
 use cockpit_tui::data::AgentFacts;
-use cockpit_tui::panel::capture::capture;
+use cockpit_tui::panel::capture::{Capture, capture};
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -48,7 +48,9 @@ fn transcript() -> String {
 
 /// Rows: an agent pane whose hooks set its state and whose transcript names its doing,
 /// asked and model, which carries all four as the board reads them; a shell pane the
-/// board does not count, which carries none.
+/// board does not count, which carries none. Each pane again through `Capture::refresh`
+/// (#1352) of a capture holding stale facts: the refreshed capture carries what a fresh
+/// one would.
 #[test]
 fn the_capture_carries_the_boards_agent_facts() {
     let sock = format!("cockpit-capagent-{}", std::process::id());
@@ -94,5 +96,14 @@ fn the_capture_carries_the_boards_agent_facts() {
     for (name, id, want) in rows {
         let c = capture(id).unwrap_or_else(|| panic!("{name}: no capture"));
         assert_eq!(c.agent, want, "{name}");
+        let mut old = Capture {
+            agent: Some(AgentFacts {
+                state: "stale".into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        old.refresh(id);
+        assert_eq!(old.agent, want, "{name}, refreshed");
     }
 }
