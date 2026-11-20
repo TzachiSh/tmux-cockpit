@@ -462,6 +462,12 @@ impl App {
     /// Back where ^Z left it. Nothing is inserted or sent: the draft and the
     /// reply wait for a key, and the first view gets the resume's tap guard.
     pub fn unhide(&mut self, h: Hidden) {
+        self.unhide_in(h, None);
+    }
+
+    /// [`App::unhide`], `was` being the work folder the panel was hidden on, as
+    /// cockpit-panel kept it beside the state (#1344), when it kept one.
+    pub fn unhide_in(&mut self, h: Hidden, _was: Option<&str>) {
         // as in a steps resume: the wrapper's guard checks what it was written for
         let now = std::mem::replace(&mut self.cap.cmd, h.cmd);
         self.session = session_state(&self.cap.screen, &self.cap.name, &self.cap.cmd);
