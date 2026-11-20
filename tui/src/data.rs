@@ -1079,12 +1079,34 @@ fn row_options(f: &[&str]) -> Candidates {
 /// (#507). Unlike the fetch it never runs `claude agents` (hundreds of ms): a pane with
 /// no @cockpit_session has no transcript to read.
 pub fn workdir(pane: &str) -> Option<workdir::WorkDir> {
+    workdir_agent(pane).map(|(w, _)| w)
+}
+
+/// The board's facts on one pane's agent, for the panel's Explain (#1353). Agent text,
+/// so it stays in memory: never written to a tmux option.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AgentFacts {
+    /// [`State::as_str`]: `""` when the board does not know it
+    pub state: String,
+    pub doing: String,
+    pub asked: String,
+    pub model: String,
+}
+
+/// [`workdir()`], and the facts the same read gave on the pane's agent (#1353).
+pub fn workdir_agent(pane: &str) -> Option<(workdir::WorkDir, AgentFacts)> {
     let (mut p, f) = one_row(pane)?;
     let f: Vec<&str> = f.iter().map(String::as_str).collect();
     let w = workdir::choose(&work_candidates(&mut p, &f));
     // #507: a dir that is not on disk (removed, or a name tmux's lossy decode
     // changed) is no dir: a script must not cd into it
-    std::path::Path::new(&w.dir).is_dir().then_some(w)
+    let facts = AgentFacts {
+        state: p.state.as_str().to_string(),
+        doing: p.doing,
+        asked: p.asked,
+        model: p.model,
+    };
+    std::path::Path::new(&w.dir).is_dir().then_some((w, facts))
 }
 
 /// One pane as the branch popup's goto reads it (#303, #470).
