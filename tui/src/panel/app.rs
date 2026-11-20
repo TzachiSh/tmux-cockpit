@@ -348,6 +348,9 @@ pub struct App {
     /// from the collector the panel holds for its life. `None` collects nothing:
     /// [`App::new`] installs none, the panel's `main` does.
     pub changes: Option<Looks>,
+    /// A panel on a real pane, set by main after [`App::new`] (#1354): its envelope
+    /// is built off the UI thread. A fixture's (false) is built in place.
+    pub live: bool,
 }
 
 /// The secrets a call's envelope hid, by where they were: the screen with its
@@ -415,6 +418,7 @@ impl App {
             first_guard: TAP_GUARD_MS,
             guard: TAP_GUARD_MS,
             changes: None,
+            live: false,
         }
     }
 
