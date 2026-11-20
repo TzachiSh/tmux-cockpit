@@ -7,8 +7,8 @@ use std::io::Read;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
-use std::sync::mpsc::{Receiver, channel};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::mpsc::{Receiver, TryRecvError, channel};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, TryLockError};
 use std::time::{Duration, Instant};
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -85,6 +85,19 @@ pub fn capture_within(pane: &str, budget: Duration) -> Option<Capture> {
     })
 }
 
+impl Capture {
+    /// `pane` read again (#1352): its screen, path, work folder and a new repo
+    /// block under [`REPO_BUDGET`], so a later model call sees the pane as it is
+    /// now. Name and cmd stay: the panel set its flags from them. A pane tmux
+    /// cannot answer for leaves the capture as it was. It keeps no global state,
+    /// so it may run off the UI thread.
+    pub fn refresh(&mut self, pane: &str) {
+        if let Some(c) = capture(pane) {
+            (self.path, self.screen, self.repo, self.work) = (c.path, c.screen, c.repo, c.work);
+        }
+    }
+}
+
 /// The whole repo block's time: a slow or huge repo costs the panel this much.
 pub const REPO_BUDGET: Duration = Duration::from_millis(300);
 /// What [`Repo::get`] waits past the budget for the worker's last send.
@@ -95,14 +108,36 @@ const PATHS_CAP: usize = 10;
 
 /// The repo block, filled by a thread [`capture`] starts, so the first frame
 /// and the Explain and Fix calls never wait for git. [`Repo::get`] waits for
-/// it, never past the budget and its slack.
+/// it, never past the budget and its slack; [`Repo::try_get`] never waits.
 #[derive(Clone, Default)]
 pub struct Repo(Arc<RepoCell>);
 
 #[derive(Default)]
 struct RepoCell {
-    pending: Mutex<Option<(Receiver<String>, Instant)>>,
+    /// Held by [`Repo::get`] for its whole wait, so [`Repo::try_get`] finds it busy.
+    pending: Mutex<Option<Pending>>,
     done: OnceLock<String>,
+}
+
+/// The worker's channel, the time past which its sends are not waited for, and
+/// the last block it sent.
+struct Pending {
+    rx: Receiver<String>,
+    end: Instant,
+    last: String,
+}
+
+impl Pending {
+    /// Takes what the worker sent so far: true once it has ended or its time is up.
+    fn drain(&mut self) -> bool {
+        loop {
+            match self.rx.try_recv() {
+                Ok(b) => self.last = b,
+                Err(TryRecvError::Disconnected) => return true,
+                Err(TryRecvError::Empty) => return Instant::now() >= self.end,
+            }
+        }
+    }
 }
 
 impl Repo {
@@ -119,8 +154,13 @@ impl Repo {
         let (tx, rx) = channel();
         let (dir, screen) = (dir.to_string(), screen.to_string());
         std::thread::spawn(move || repo_work(&dir, &screen, end, &|b| drop(tx.send(b))));
+        let p = Pending {
+            rx,
+            end: end + REPO_SLACK,
+            last: String::new(),
+        };
         let c = RepoCell {
-            pending: Mutex::new(Some((rx, end + REPO_SLACK))),
+            pending: Mutex::new(Some(p)),
             done: OnceLock::new(),
         };
         Repo(Arc::new(c))
@@ -128,17 +168,42 @@ impl Repo {
 
     /// The block, or the last part of it the worker sent before the deadline.
     pub fn get(&self) -> &str {
-        self.0.done.get_or_init(|| {
-            let taken = self.0.pending.lock().unwrap_or_else(|e| e.into_inner()).take();
-            let Some((rx, end)) = taken else {
-                return String::new();
-            };
-            let mut last = String::new();
-            while let Ok(b) = rx.recv_timeout(end.saturating_duration_since(Instant::now())) {
-                last = b;
+        if let Some(d) = self.0.done.get() {
+            return d;
+        }
+        let mut held = self.0.pending.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(p) = held.as_mut() {
+            while let Ok(b) = p.rx.recv_timeout(p.end.saturating_duration_since(Instant::now())) {
+                p.last = b;
             }
-            last
-        })
+        }
+        self.settle(held)
+    }
+
+    /// The block once the worker has ended or its time is up, "" when nothing was
+    /// pending (a default), and `None` while it still runs, or while another
+    /// thread waits for it in [`Repo::get`]. Never waits (#1352).
+    pub fn try_get(&self) -> Option<&str> {
+        if let Some(d) = self.0.done.get() {
+            return Some(d);
+        }
+        let mut held = match self.0.pending.try_lock() {
+            Ok(g) => g,
+            Err(TryLockError::Poisoned(e)) => e.into_inner(),
+            Err(TryLockError::WouldBlock) => return None,
+        };
+        if !held.as_mut().is_none_or(Pending::drain) {
+            return None;
+        }
+        Some(self.settle(held))
+    }
+
+    /// Fills the block from what `held` kept, unless another call filled it first.
+    fn settle(&self, mut held: MutexGuard<'_, Option<Pending>>) -> &str {
+        let block = held.take().map(|p| p.last).unwrap_or_default();
+        let _ = self.0.done.set(block);
+        drop(held);
+        self.0.done.get().map_or("", String::as_str)
     }
 }
 
