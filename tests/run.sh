@@ -13774,8 +13774,13 @@ is "a lib edit runs every block that runs its sourcer (sourcer<lib missed) (#734
 # does not name pane.sh, so a pane.sh edit skips the blocks that run cockpit.tmux
 # and no file naming pane.sh (#734).
 chg_set() { chg_pick "$1" | tr , '\n' | sort -u; }
+# A file reaches pane.sh by naming it, or by naming a lib that names it: changed.sh follows
+# sources (#748), and tmux-open-path reaches pane.sh only through workdir.sh (#1345).
+chg_pat=(-e pane.sh)
+while read -r chg_e; do chg_pat+=(-e "${chg_e##*/}"); done \
+    < <(cd "$DIR" && grep -lF pane.sh scripts/lib/* 2>/dev/null)
 CHG_CKONLY=$(comm -23 <(chg_set cockpit.tmux) <(while read -r chg_e; do chg_set "$chg_e"
-    done < <(cd "$DIR" && grep -lF pane.sh scripts/* cockpit.tmux 2>/dev/null) | sort -u))
+    done < <(cd "$DIR" && grep -lF "${chg_pat[@]}" scripts/* cockpit.tmux 2>/dev/null) | sort -u))
 is "some blocks run cockpit.tmux and no file naming pane.sh" yes \
     "$([ -n "$CHG_CKONLY" ] && echo yes || echo no)"
 is "a pane.sh edit picks none of them (#734)" "" "$(comm -12 <(printf '%s\n' "$CHG_CKONLY") \
@@ -27765,6 +27770,118 @@ is "with no TMUX_PANE the fake adapter writes nothing" "1|0" \
     "$fa_n|$(awk 'END { print NR }' "$FAC/lines")"
 "$TMUX_REAL" -L "$FA" kill-server >/dev/null 2>&1
 unset -f fa fao faset facap
+fi
+
+echo "== tmux-open-path and tmux-branch: the pane's work folder, not its launch folder (#1345) =="
+# The files browser, the click picker and the branch popup take the folder from pane_workdir
+# (lib/workdir.sh), as the board does: an @cockpit_dir the hooks declared apart from
+# @cockpit_cwd wins over pane_current_path. The stub cockpit-tui writes the argv it was
+# handed; the tmux wrapper writes a popup's -T and opens nothing (no client is attached).
+if need_tmux "work folder readers"; then :; else
+WR=$(cd "$(mktmpd)" && pwd -P); WRS="cockpit-wr-$$"; SOCKS="$SOCKS $WRS"
+WRA="$WR/launch a"; WRB="$WR/work b"; mkdir -p "$WR/bin" "$WRA" "$WRB"
+git init -q "$WRA" >/dev/null 2>&1; git init -q "$WRB" >/dev/null 2>&1
+: > "$WRB/x.txt"; : > "$WRB/y.txt"     # in the work folder only: the click line's names
+# `workdir <pane>` answers what $WR/wd.<pane> holds, nothing for a pane without one
+cat > "$WR/bin/cockpit-tui" <<STUB
+#!/bin/sh
+[ "\$1" != workdir ] || { cat "$WR/wd.\$2" 2>/dev/null; exit 0; }
+printf '%s\n' "\$*" > "$WR/tui.args"
+exit 1
+STUB
+cat > "$WR/bin/tmux" <<STUB
+#!/bin/sh
+if [ "\$1" = display-popup ]; then
+    while [ \$# -gt 0 ]; do [ "\$1" != -T ] || printf '%s\n' "\$2" > "$WR/title"; shift; done
+    exit 0
+fi
+exec "$TMUX_REAL" -L "$WRS" "\$@"
+STUB
+chmod +x "$WR/bin/cockpit-tui" "$WR/bin/tmux"
+fresh_server -L "$WRS" -f /dev/null -- -d -s t -x 80 -y 24 -c "$WRA" 'exec sleep 300'
+WRP=$("$TMUX_REAL" -L "$WRS" list-panes -t t -F '#{pane_id}')       # the agent, current
+WRQ=$("$TMUX_REAL" -L "$WRS" new-window -d -P -F '#{pane_id}' -t t: -c "$WRA" 'exec sleep 300')
+for o in "@cockpit_dir $WRB" "@cockpit_cwd $WRA" "@panestate idle"; do
+    "$TMUX_REAL" -L "$WRS" set -p -t "$WRP" "${o%% *}" "${o#* }"
+done
+"$TMUX_REAL" -L "$WRS" set -p -t "$WRP" @cockpit_click_line 'x.txt y.txt'
+sock_path "$WRS" WRSOCK
+wr_run() {                    # <script> <args...>: one run from $WR, tui.args and title reset
+    rm -f "$WR/tui.args" "$WR/title"
+    ( cd "$WR" && env PATH="$WR/bin:$PATH" COCKPIT_TUI_BIN="$WR/bin/cockpit-tui" \
+        TMUX="$WRSOCK,0,0" timeout 20 "$DIR/scripts/$1" "${@:2}" </dev/null >/dev/null 2>&1 )
+}
+wr_rec() { cat "$WR/$1" 2>/dev/null; }
+
+wr_run tmux-open-path --browse "$WRP"
+is "the files browser opens the declared folder, not the launch folder" \
+   "files $WRB" "$(wr_rec tui.args)"
+wr_run tmux-open-path --folder "$WRP"
+is "the files popup's title names the declared folder" " files · work b " "$(wr_rec title)"
+wr_run tmux-open-path "$WRP"
+is "the click picker finds the line's files in the declared folder, and its title names it" \
+   " open path · work b " "$(wr_rec title)"
+wr_run tmux-branch -p "$WRP"
+is "the branch popup on a pane opens the declared folder" "branch -C $WRB" "$(wr_rec tui.args)"
+wr_run tmux-branch
+is "the branch popup with no pane opens the current pane's declared folder" \
+   "branch -C $WRB" "$(wr_rec tui.args)"
+wr_run tmux-open-path --browse "$WRQ"
+is "a plain pane's files browser opens its pane_current_path" "files $WRA" "$(wr_rec tui.args)"
+wr_run tmux-branch -p "$WRQ"
+is "a plain pane's branch popup opens its pane_current_path" "branch -C $WRA" \
+   "$(wr_rec tui.args)"
+wr_run tmux-open-path --browse %999
+is "a gone pane opens no files browser" "" "$(wr_rec tui.args)"
+
+# A declared folder whose name holds #( and #{: -T is a format, so the title doubles each #,
+# and tmux shows the name as text. A #() that ran would touch wr-canary in the client's cwd.
+WRH="$WR/w#(touch wr-canary)#{y}"; mkdir -p "$WRH"
+WRR=$("$TMUX_REAL" -L "$WRS" new-window -d -P -F '#{pane_id}' -t t: -c "$WRA" 'exec sleep 300')
+for o in "@cockpit_dir $WRH" "@cockpit_cwd $WRA" "@panestate idle"; do
+    "$TMUX_REAL" -L "$WRS" set -p -t "$WRR" "${o%% *}" "${o#* }"
+done
+wr_shown() {                  # <pane> <format>: tmux's expansion of it there, from $WR
+    ( cd "$WR" && "$TMUX_REAL" -L "$WRS" display-message -p -t "$1" "$2" )
+}
+wr_ran() { [ -e "$WR/wr-canary" ] || [ -e "$WRA/wr-canary" ] && echo ran || echo none; }
+wr_run tmux-open-path --folder "$WRR"
+is "a # in the declared folder's name is doubled in the files popup's -T" \
+   " files · w##(touch wr-canary)##{y} " "$(wr_rec title)"
+is "tmux shows that -T as the folder's name and runs nothing" \
+   " files · w#(touch wr-canary)#{y} |none" "$(wr_shown "$WRR" "$(wr_rec title)")|$(wr_ran)"
+
+# An agent pane with no declared folder: pane_workdir asks cockpit-tui, whose answer wins.
+WRC="$WR/answer c"; mkdir -p "$WRC"
+WRN=$("$TMUX_REAL" -L "$WRS" new-window -d -P -F '#{pane_id}' -t t: -c "$WRA" 'exec sleep 300')
+"$TMUX_REAL" -L "$WRS" set -p -t "$WRN" @panestate idle
+printf '%s\n' "$WRC" > "$WR/wd.$WRN"
+wr_run tmux-open-path --browse "$WRN"
+is "an agent pane with no declared folder opens the folder cockpit-tui workdir names" \
+   "files $WRC" "$(wr_rec tui.args)"
+
+# prefix b's popup title: tmux-branch --title keeps the folder's name on the pane, and the
+# binding's -T reads it back. A format's value is not expanded again, so a # stays text.
+wr_bt() { "$TMUX_REAL" -L "$WRS" show-option -pqv -t "$1" @cockpit_branch_title; }
+wr_run tmux-branch --title "$WRP"
+is "tmux-branch --title keeps the declared folder's name for prefix b's popup" \
+   "work b" "$(wr_bt "$WRP")"
+wr_run tmux-branch --title "$WRQ"
+is "a plain pane's branch title is its pane_current_path's name" "launch a" "$(wr_bt "$WRQ")"
+wr_run tmux-branch --title "$WRR"
+is "tmux shows a # name in the branch title as text and runs nothing" \
+   " switch branch · w#(touch wr-canary)#{y} |none" \
+   "$(wr_shown "$WRR" ' switch branch · #{@cockpit_branch_title} ')|$(wr_ran)"
+"$TMUX_REAL" -L "$WRS" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+case "$("$TMUX_REAL" -L "$WRS" list-keys -T prefix b 2>/dev/null)" in
+    *"run-shell"*"--title"*"display-popup"*"switch branch"*"#{@cockpit_branch_title}"*)
+        ok "prefix b sets the title, then titles its popup with the pane's work folder" ;;
+    *) bad "prefix b sets the title, then titles its popup with the pane's work folder" \
+           "run-shell --title, display-popup -T '... #{@cockpit_branch_title} '" \
+           "$("$TMUX_REAL" -L "$WRS" list-keys -T prefix b 2>/dev/null | cut -c1-300)" ;;
+esac
+"$TMUX_REAL" -L "$WRS" kill-server >/dev/null 2>&1
+unset -f wr_run wr_rec wr_shown wr_ran wr_bt
 fi
 
 echo "== cargo's test runner refuses gh as it refuses claude, and names which (#1346) =="
