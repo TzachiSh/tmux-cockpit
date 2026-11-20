@@ -472,6 +472,24 @@ impl App {
         self.unhide_in(h, None);
     }
 
+    /// The hidden panel `--resume <state> --last hidden` names, back where ^Z left it,
+    /// with the work folder cockpit-panel kept beside the state as `<state>.wd` (#1344);
+    /// or a note on why it was dropped. `now` is unix seconds, for the state's age.
+    pub fn unhide_file(&mut self, state: &Path, now: u64) {
+        let mut wd = state.as_os_str().to_owned();
+        wd.push(".wd");
+        let was = std::fs::read_to_string(&wd).ok();
+        let pane = self.pane.clone();
+        match super::action::read_hidden(state, &pane, now) {
+            Ok(h) => self.unhide_in(h, was.as_deref()),
+            Err(e) => {
+                let f = state.display();
+                eprintln!("cockpit-tui: cannot bring the hidden panel back from {f}: {e}");
+                self.say(Level::Warn, format!("the hidden panel was dropped: {e}"));
+            }
+        }
+    }
+
     /// [`App::unhide`], `was` being the work folder the panel was hidden on, as
     /// cockpit-panel kept it beside the state (#1344), when it kept one.
     pub fn unhide_in(&mut self, h: Hidden, was: Option<&str>) {
