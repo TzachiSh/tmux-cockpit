@@ -215,17 +215,37 @@ fn bash_dir(cmd: &str, cwd: &str, home: &str) -> Option<String> {
     None
 }
 
+/// The longest `.git` file read: one `gitdir:` line.
+const DOTGIT_MAX: u64 = 4096;
+
 /// Whether `dotgit` makes its folder a work tree's top: a `.git` directory holding `HEAD`,
 /// or a `.git` file (a linked worktree, a submodule) whose `gitdir:` names a directory.
 fn is_repo(dotgit: &Path) -> bool {
     if dotgit.is_dir() {
         return dotgit.join("HEAD").is_file();
     }
-    let Ok(s) = std::fs::read_to_string(dotgit) else { return false };
+    let Some(s) = small_file(dotgit) else { return false };
     let Some(g) = s.lines().next().and_then(|l| l.strip_prefix("gitdir:")) else {
         return false;
     };
     dotgit.parent().is_some_and(|d| d.join(g.trim()).is_dir())
+}
+
+/// `p` when it is a regular file of at most [`DOTGIT_MAX`] bytes, symlinks followed, read
+/// no further than that (#1358 review): the agent owns the tree, and a FIFO there blocks a
+/// plain open, a link to /dev/zero is an endless read. The open never waits, and the file
+/// it opened is the one checked, so a swap after a check cannot slip one in.
+fn small_file(p: &Path) -> Option<String> {
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+    let f = std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NONBLOCK).open(p).ok()?;
+    let md = f.metadata().ok()?;
+    if !md.is_file() || md.len() > DOTGIT_MAX {
+        return None;
+    }
+    let mut s = String::new();
+    f.take(DOTGIT_MAX).read_to_string(&mut s).ok()?;
+    Some(s)
 }
 
 /// The git toplevel holding `dir`, symlinks resolved, found by walking up to a `.git`.
