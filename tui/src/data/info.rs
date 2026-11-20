@@ -2,6 +2,7 @@
 //! git root and the review base are ports of tmux-review's `git_root` and
 //! `review_base`, so the screen and `prefix r` name the same tree and base.
 use super::gitsafe::git;
+use super::workdir::{Candidates, Source, choose};
 use std::path::PathBuf;
 
 /// One transcript row: `doing`, `said` or `asked`, its text, and its age in seconds.
@@ -20,18 +21,6 @@ pub struct Base {
     pub mode: String,
 }
 
-/// Where the work dir came from (#452), in `fleet::work_dirs`' order.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum WorkFrom {
-    /// `@cockpit_dir`
-    Opt,
-    /// the session transcript's newest cwd
-    Transcript,
-    /// pane_current_path
-    #[default]
-    Cwd,
-}
-
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Facts {
     pub id: String,
@@ -41,13 +30,13 @@ pub struct Facts {
     /// `@cockpit_dir` when set
     pub dir: Option<String>,
     pub dir_missing: bool,
-    /// the dir the board's git facts use: `@cockpit_dir`, else the transcript's
-    /// newest cwd, else the cwd (#452). `root` follows it (#500). Not
+    /// the dir the board's git facts use, by its rule and candidates (#452, #1355):
+    /// `workdir::choose`. `root` follows it (#500). Not
     /// cleaned, since `info --json` hands it to scripts and the screen cleans it,
     /// but decoded as lossy UTF-8 like every tmux read.
     pub work: String,
-    /// which candidate `work` is
-    pub work_from: WorkFrom,
+    /// which candidate `work` is, as `cockpit-tui workdir --source` names it
+    pub source: Source,
     pub root: String,
     pub state: String,
     pub msg: String,
@@ -253,6 +242,8 @@ pub fn gather(pane: &str) -> Result<Facts, String> {
         format!("#{{s/\n/ /:{}}}", q("#{@cockpit_job_name}")),
         // #1267: 15, optional, the bound job's session: the session of a pane that has none
         q("#{@cockpit_job_session}"),
+        // #1355: 16, optional, for a pane the board does not count: its folder's candidate
+        q("#{@cockpit_cwd}"),
     ]
     .join(&SEP.to_string());
     let out = super::tmux(&["display-message", "-p", "-t", pane, &fmt]).unwrap_or_default();
@@ -260,6 +251,8 @@ pub fn gather(pane: &str) -> Result<Facts, String> {
     if f.len() < 13 || f[0].is_empty() {
         return Err(format!("no such pane {pane}"));
     }
+    // #519: the board's agent test, off the board's own row, which #1355 reads for the dir
+    let row = super::one_row(f[0]);
     let mut x = Facts {
         id: f[0].into(),
         wher: clean(f[1]),
@@ -275,7 +268,7 @@ pub fn gather(pane: &str) -> Result<Facts, String> {
             s => s,
         },
         title: clean(f[10]),
-        agent: super::is_agent(f[0]),
+        agent: row.is_some(),
         tui: tui_row(f[12]),
         // the name is a pane title, so control and bidi characters go
         job: match (
@@ -294,19 +287,20 @@ pub fn gather(pane: &str) -> Result<Facts, String> {
     }
     // `file` can ask `claude agents`: only an agent pane has a transcript to find
     let tr = if x.agent { super::transcript::file(&x.id, f[3]) } else { None };
-    let said = tr.as_deref().and_then(super::transcript::cwd).unwrap_or_default();
-    let (opt, cwd) = (f[4].to_string(), f[3].to_string());
-    x.work = super::fleet::work_dirs(&[[opt.clone(), said.clone(), cwd]])
-        .pop()
-        .unwrap_or_default();
-    // the same string as a higher candidate is that candidate: work_dirs' order
-    x.work_from = if !opt.is_empty() && x.work == opt {
-        WorkFrom::Opt
-    } else if !said.is_empty() && x.work == said {
-        WorkFrom::Transcript
-    } else {
-        WorkFrom::Cwd
+    // #1355: an agent's dir comes off the board's candidates and rule, so the screen,
+    // `info --json` and `workdir --source` name one folder and one source. A pane the
+    // board does not count has no transcript to read: its options and its cwd, as goto.
+    let w = match row {
+        Some((mut p, b)) => {
+            let b: Vec<&str> = b.iter().map(String::as_str).collect();
+            choose(&super::work_candidates(&mut p, &b))
+        }
+        None => choose(&Candidates {
+            pane_cwd: f[3].to_string(),
+            ..Candidates::from_options(f[4], f.get(16).copied().unwrap_or_default())
+        }),
     };
+    (x.work, x.source) = (w.dir, w.source);
     // #500: root, base and the review dir follow the work dir, as `prefix r` does
     // once it reads `cockpit-tui workdir` (#499). No dir at all: git_root("") would
     // describe the caller's repo, not this pane's.

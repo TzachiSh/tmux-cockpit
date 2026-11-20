@@ -4,7 +4,7 @@
 #[allow(dead_code)] // for its Scratch guard only, not write_exec
 mod fake;
 
-use cockpit_tui::data::info::{Base, Doing, Facts, WorkFrom, cksum, clean, git_root, review_base};
+use cockpit_tui::data::info::{Base, Doing, Facts, cksum, clean, git_root, review_base};
 use cockpit_tui::info::{self, Out, Screen};
 use cockpit_tui::theme::Theme;
 use crossterm::event::KeyCode;
@@ -164,6 +164,7 @@ fn rows_follow_the_shell_and_a_non_agent_has_no_btw() {
     );
 }
 
+/// #1355: the `@cockpit_dir` row says the dir is missing; the work row names what answered.
 #[test]
 fn a_missing_cockpit_dir_says_so() {
     let f = Facts {
@@ -171,7 +172,7 @@ fn a_missing_cockpit_dir_says_so() {
         ..facts()
     };
     let r = info::rows(&f, &Theme::fixed().g, 76);
-    assert!(r.iter().any(|(l, v)| l == "dir" && v.contains("missing -- using cwd")));
+    assert!(r.iter().any(|(l, v)| l == "dir" && v.ends_with("(@cockpit_dir, missing)")));
 }
 
 #[test]
@@ -430,24 +431,29 @@ fn review_base_origin_head_outranks_a_local_master() {
     );
 }
 
-/// #452: a work dir taken from the transcript gets its own `dir` row naming
-/// that source; one from `@cockpit_dir` or the cwd is already on its row.
+/// #1355: the work dir is its own `dir` row naming its source as `workdir --source`
+/// does; the `@cockpit_dir` row says only whether that dir is there. Rows: active-in with
+/// the option there, pane-cwd with it missing.
 #[test]
-fn a_transcript_work_dir_is_its_own_row_naming_its_source() {
-    let dirs = |from: WorkFrom, missing: bool| {
+fn the_work_dir_is_its_own_row_naming_its_source() {
+    use cockpit_tui::data::workdir::Source;
+    let dirs = |source: Source, missing: bool| {
         let f = Facts {
             work: "/x/wt".into(),
-            work_from: from,
+            source,
             dir_missing: missing,
             ..facts()
         };
         let r = info::rows(&f, &Theme::fixed().g, 200);
         r.into_iter().filter(|(l, _)| l == "dir").map(|(_, v)| v).collect::<Vec<_>>()
     };
-    assert!(dirs(WorkFrom::Transcript, false).contains(&"/x/wt  (transcript cwd)".to_string()));
-    assert!(dirs(WorkFrom::Opt, false).iter().all(|v| !v.contains("transcript")));
-    let gone = dirs(WorkFrom::Transcript, true);
-    assert!(gone[0].ends_with("(@cockpit_dir, missing -- using transcript cwd)"), "{gone:?}");
+    let opt = "/home/u/src/api-wt";
+    assert_eq!(
+        dirs(Source::ActiveIn, false),
+        [format!("{opt}  (@cockpit_dir)"), "/x/wt  (active-in)".into()]
+    );
+    let gone = [format!("{opt}  (@cockpit_dir, missing)"), "/x/wt  (pane-cwd)".into()];
+    assert_eq!(dirs(Source::PaneCwd, true), gone);
 }
 
 /// #460: a viewer pane bound to a background job has a `job` row naming it

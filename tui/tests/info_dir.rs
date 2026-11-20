@@ -3,8 +3,9 @@
 //! so every test here holds fake's environment lock.
 mod fake;
 
-use cockpit_tui::data::info::{Facts, WorkFrom, gather, git_root};
+use cockpit_tui::data::info::{Facts, gather, git_root};
 use cockpit_tui::data::list_panes;
+use cockpit_tui::data::workdir::Source;
 use fake::EnvHeld;
 use std::path::PathBuf;
 /// A scratch tree under cargo's own scratch dir, removed on drop, so a failing
@@ -115,14 +116,14 @@ fn the_work_dir_follows_the_board_order_and_root_follows_it() {
         .status();
     assert!(git.unwrap().success());
     let x = facts(&g, &t, &cwd, "", &wt);
-    assert_eq!((x.work.as_str(), x.work_from), (wt.as_str(), WorkFrom::Transcript));
+    assert_eq!((x.work.as_str(), x.source), (wt.as_str(), Source::Session));
     // #500: root follows the work dir, as `prefix r` does once it reads `workdir`
     assert_eq!(x.root, git_root(&wt), "root follows the work dir");
     assert_ne!(x.root, git_root(&cwd));
     let x = facts(&g, &t, &cwd, &opt, &wt);
-    assert_eq!((x.work.as_str(), x.work_from), (opt.as_str(), WorkFrom::Opt));
+    assert_eq!((x.work.as_str(), x.source), (opt.as_str(), Source::Declared));
     let x = facts(&g, &t, &cwd, "", "/no/such/wt");
-    assert_eq!((x.work.as_str(), x.work_from), (cwd.as_str(), WorkFrom::Cwd));
+    assert_eq!((x.work.as_str(), x.source), (cwd.as_str(), Source::PaneCwd));
 }
 
 /// The orchestrator's tmux-review will read `info --json %N`'s `dir`: the dir the
@@ -142,6 +143,192 @@ fn info_json_dir_is_the_boards_work_dir() {
             (code, v["dir"].as_str(), board.as_str()),
             (Some(0), Some(want.as_str()), want.as_str())
         );
+    }
+}
+
+/// "YYYY-MM-DDTHH:MM:SS.000Z" `ago` seconds before now, civil-from-days (Hinnant).
+fn stamp(ago: i64) -> String {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap();
+    let t = now.as_secs() as i64 - ago;
+    let (days, rem) = (t.div_euclid(86400), t.rem_euclid(86400));
+    let z = days + 719468;
+    let era = z.div_euclid(146097);
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}.000Z", rem / 3600, rem % 3600 / 60, rem % 60)
+}
+
+/// #1355: `name` under the scratch tree, made a git repo, so a tool call into it names a tree.
+fn repo(t: &Tmp, name: &str) -> String {
+    let d = t.sub(name);
+    let git = std::process::Command::new("git")
+        .args(["init", "-q", &d])
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .status();
+    assert!(git.unwrap().success());
+    d
+}
+
+/// #1355: the rig's transcript gains a main-thread Bash call into `tree`, 30 s ago.
+fn call_into(t: &Tmp, cwd: &str, tree: &str) {
+    use std::io::Write;
+    let tr = t.0.join("home/.claude/projects").join(slug(cwd)).join("s1.jsonl");
+    let call = serde_json::json!({"type": "tool_use", "id": "u1", "name": "Bash",
+        "input": {"command": format!("cd {tree} && make")}});
+    let v = serde_json::json!({"type": "assistant", "timestamp": stamp(30), "cwd": cwd,
+        "message": {"content": [call]}});
+    let mut f = std::fs::OpenOptions::new().append(true).open(tr).unwrap();
+    writeln!(f, "{v}").unwrap();
+}
+
+/// #1355: `@cockpit_cwd` is `hook` on the pane: the board's row 19, and info's own row 16
+/// for a pane the board does not count. The fields between are empty.
+fn hook_cwd(t: &Tmp, hook: &str) {
+    for (file, seps) in [("rows", 6), ("display", 4)] {
+        let p = t.0.join(file);
+        let row = std::fs::read_to_string(&p).unwrap();
+        let row = format!("{}{}{hook}\n", row.trim_end_matches('\n'), "\u{1f}".repeat(seps));
+        std::fs::write(&p, row).unwrap();
+    }
+}
+
+/// #1355: the board's row is a shell's, not an agent's: no @panestate, a shell command and
+/// a pid that is no process, so the agent test finds no tree either.
+fn shell(t: &Tmp) {
+    let p = t.0.join("rows");
+    let row = std::fs::read_to_string(&p).unwrap();
+    let mut f: Vec<&str> = row.trim_end_matches('\n').split('\u{1f}').collect();
+    (f[3], f[4], f[9]) = ("bash", "-", "999999999");
+    std::fs::write(&p, f.join("\u{1f}") + "\n").unwrap();
+}
+
+/// #1355: a pane per source `workdir --source` names, on the rig: the rig's env.
+fn case(t: &Tmp, src: &str) -> Vec<(&'static str, String)> {
+    let (cwd, other) = (t.sub("cwd"), t.sub("other"));
+    match src {
+        "active-in" => {
+            let env = rig(t, &cwd, "", &cwd);
+            call_into(t, &cwd, &repo(t, "wt"));
+            env
+        }
+        "session" => {
+            let env = rig(t, &cwd, "", "/no/such/wt");
+            hook_cwd(t, &other);
+            env
+        }
+        "declared" => rig(t, &cwd, &other, &cwd),
+        _ => rig(t, &cwd, "", "/no/such/wt"),
+    }
+}
+
+/// `cockpit-tui workdir --source <pane>` under `env`: the dir and the source, split at the
+/// last tab as docs/tui.md says.
+fn source(g: &EnvHeld, env: &[(&'static str, String)], pane: &str) -> (String, String) {
+    fake::checked_state_held(g);
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_cockpit-tui"))
+        .args(["workdir", "--source", pane])
+        .envs(env.iter().map(|(k, v)| (*k, v.as_str())))
+        .output()
+        .unwrap();
+    let s = String::from_utf8_lossy(&out.stdout).trim_end_matches('\n').to_string();
+    let (d, src) = s.rsplit_once('\t').unwrap_or_default();
+    (d.to_string(), src.to_string())
+}
+
+/// #1355: the agent's fresh `cd` into a tree outranks the transcript's cwd on the info
+/// screen, as on the board.
+#[test]
+fn an_active_in_tree_is_the_info_work_dir() {
+    let g = fake::env_lock();
+    let t = Tmp::new("activein");
+    let (cwd, wt) = (t.sub("cwd"), repo(&t, "wt"));
+    let env = rig(&t, &cwd, "", &cwd);
+    call_into(&t, &cwd, &wt);
+    set(&g, &t, &env);
+    assert_eq!(gather("%1").unwrap().work, wt);
+}
+
+/// #1355: with no `@cockpit_dir`, the hooks' `@cockpit_cwd` is the info work dir, before
+/// the pane's launch dir.
+#[test]
+fn a_cockpit_cwd_alone_is_the_info_work_dir() {
+    let g = fake::env_lock();
+    let t = Tmp::new("hookcwd");
+    let (cwd, hook) = (t.sub("cwd"), t.sub("hook"));
+    let env = rig(&t, &cwd, "", "/no/such/wt");
+    hook_cwd(&t, &hook);
+    set(&g, &t, &env);
+    assert_eq!(gather("%1").unwrap().work, hook);
+}
+
+/// #1355: a shell pane on the rig whose `@cockpit_dir` and `@cockpit_cwd` are folders named
+/// `opt` and `hook`, "" for unset: its facts, and the folder that should win.
+fn shell_pane(g: &EnvHeld, name: &str, opt: &str, hook: &str) -> (Facts, String) {
+    let t = Tmp::new(&format!("shell-{name}"));
+    let cwd = t.sub("cwd");
+    let at = |n: &str| if n.is_empty() { String::new() } else { t.sub(n) };
+    let (opt, hook) = (at(opt), at(hook));
+    let env = rig(&t, &cwd, &opt, "");
+    if !hook.is_empty() {
+        hook_cwd(&t, &hook);
+    }
+    shell(&t);
+    set(g, &t, &env);
+    let want = [opt, hook, cwd].into_iter().find(|d| !d.is_empty()).unwrap();
+    (gather("%1").unwrap(), want)
+}
+
+/// #1355: a shell pane has no transcript: its folder is `@cockpit_dir`, else `@cockpit_cwd`,
+/// else its cwd, as goto reads it. Rows: the dir alone, the cwd option alone, no option.
+#[test]
+fn a_shell_panes_work_dir_is_its_options_else_its_cwd() {
+    let g = fake::env_lock();
+    let rows = [
+        ("dir", "opt", "", Source::Declared),
+        ("hook", "", "hook", Source::Session),
+        ("none", "", "", Source::PaneCwd),
+    ];
+    for (name, opt, hook, src) in rows {
+        let (x, want) = shell_pane(&g, name, opt, hook);
+        assert_eq!((x.agent, x.work, x.source), (false, want, src), "{name}");
+    }
+}
+
+/// #1355: the screen's work row is `<dir>  (<source>)`, the pair `workdir --source` prints
+/// for the same pane. Rows: one per source.
+#[test]
+fn the_screens_dir_row_is_what_workdir_source_answers() {
+    let g = fake::env_lock();
+    for src in ["active-in", "session", "declared", "pane-cwd"] {
+        let t = Tmp::new(&format!("row-{src}"));
+        let env = case(&t, src);
+        let (d, s) = source(&g, &env, "%1");
+        set(&g, &t, &env);
+        let glyphs = &cockpit_tui::theme::Theme::fixed().g;
+        let r = cockpit_tui::info::rows(&gather("%1").unwrap(), glyphs, 400);
+        let want = ("dir".to_string(), format!("{d}  ({s})"));
+        assert_eq!((s.as_str(), r.contains(&want)), (src, true), "{src}: {r:?}");
+    }
+}
+
+/// #1355: `info --json`'s `source` is the one `workdir --source` prints, next to the same
+/// `dir`. Rows: one per source.
+#[test]
+fn info_json_source_is_what_workdir_source_answers() {
+    let g = fake::env_lock();
+    for src in ["active-in", "session", "declared", "pane-cwd"] {
+        let t = Tmp::new(&format!("json-{src}"));
+        let env = case(&t, src);
+        let (d, s) = source(&g, &env, "%1");
+        let (code, stdout) = info_json(&g, &env, "%1");
+        let v: serde_json::Value = serde_json::from_slice(&stdout).unwrap_or_default();
+        let got = (code, v["dir"].as_str(), v["source"].as_str());
+        assert_eq!((s.as_str(), got), (src, (Some(0), Some(d.as_str()), Some(src))), "{src}");
     }
 }
 
@@ -186,6 +373,15 @@ fn a_bound_viewer_reads_its_jobs_transcript_by_the_job_session() {
     std::fs::create_dir_all(projects.join("-job")).unwrap();
     let from = projects.join(slug(&cwd)).join("s1.jsonl");
     std::fs::rename(from, projects.join("-job/sjob.jsonl")).unwrap();
+    // #448: the board's row as tmux expands it: no @cockpit_session (7), the job's (18)
+    let row = std::fs::read_to_string(t.0.join("rows"))
+        .unwrap()
+        .replacen("\u{1f}s1\u{1f}", "\u{1f}-\u{1f}", 1);
+    std::fs::write(
+        t.0.join("rows"),
+        format!("{}\u{1f}\u{1f}\u{1f}\u{1f}\u{1f}sjob\n", row.trim_end_matches('\n')),
+    )
+    .unwrap();
     let d = t.0.display();
     let sh = format!(
         "#!/bin/sh\ncase \"$1\" in\nlist-panes) cat '{d}/rows' ;;\n\
@@ -197,7 +393,7 @@ fn a_bound_viewer_reads_its_jobs_transcript_by_the_job_session() {
     fake::write_exec(&t.0.join("tmux"), &sh);
     set(&g, &t, &env);
     let x = gather("%1").unwrap();
-    assert_eq!((x.work.as_str(), x.work_from), (wt.as_str(), WorkFrom::Transcript));
+    assert_eq!((x.work.as_str(), x.source), (wt.as_str(), Source::Session));
 }
 
 /// #1267: the rig's fake tmux, answering @cockpit_session with `own` and
