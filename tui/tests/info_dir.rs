@@ -266,19 +266,37 @@ fn a_cockpit_cwd_alone_is_the_info_work_dir() {
     assert_eq!(gather("%1").unwrap().work, hook);
 }
 
-/// #1355: a shell pane has no transcript, but its `@cockpit_cwd` still names its folder,
-/// as goto reads it.
-#[test]
-fn a_shell_panes_cockpit_cwd_is_its_info_work_dir() {
-    let g = fake::env_lock();
-    let t = Tmp::new("shellcwd");
-    let (cwd, hook) = (t.sub("cwd"), t.sub("hook"));
-    let env = rig(&t, &cwd, "", "");
-    hook_cwd(&t, &hook);
+/// #1355: a shell pane on the rig whose `@cockpit_dir` and `@cockpit_cwd` are folders named
+/// `opt` and `hook`, "" for unset: its facts, and the folder that should win.
+fn shell_pane(g: &EnvHeld, name: &str, opt: &str, hook: &str) -> (Facts, String) {
+    let t = Tmp::new(&format!("shell-{name}"));
+    let cwd = t.sub("cwd");
+    let at = |n: &str| if n.is_empty() { String::new() } else { t.sub(n) };
+    let (opt, hook) = (at(opt), at(hook));
+    let env = rig(&t, &cwd, &opt, "");
+    if !hook.is_empty() {
+        hook_cwd(&t, &hook);
+    }
     shell(&t);
-    set(&g, &t, &env);
-    let x = gather("%1").unwrap();
-    assert_eq!((x.agent, x.work), (false, hook));
+    set(g, &t, &env);
+    let want = [opt, hook, cwd].into_iter().find(|d| !d.is_empty()).unwrap();
+    (gather("%1").unwrap(), want)
+}
+
+/// #1355: a shell pane has no transcript: its folder is `@cockpit_dir`, else `@cockpit_cwd`,
+/// else its cwd, as goto reads it. Rows: the dir alone, the cwd option alone, no option.
+#[test]
+fn a_shell_panes_work_dir_is_its_options_else_its_cwd() {
+    let g = fake::env_lock();
+    let rows = [
+        ("dir", "opt", "", Source::Declared),
+        ("hook", "", "hook", Source::Session),
+        ("none", "", "", Source::PaneCwd),
+    ];
+    for (name, opt, hook, src) in rows {
+        let (x, want) = shell_pane(&g, name, opt, hook);
+        assert_eq!((x.agent, x.work, x.source), (false, want, src), "{name}");
+    }
 }
 
 /// #1355: the screen's work row is `<dir>  (<source>)`, the pair `workdir --source` prints
