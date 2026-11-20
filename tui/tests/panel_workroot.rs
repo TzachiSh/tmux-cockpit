@@ -1,6 +1,7 @@
 //! The panel reads the pane's work folder, `Capture.work.dir` (#1354, the freeze's
-//! amendments 9 and 12), not the pane's cwd: Explore's root, the refs' base and Explain's
-//! what-changed list follow it.
+//! amendments 9, 12 and 15), not the pane's cwd: Explore's root and Explain's
+//! what-changed list follow it. A ref sent to the agent is still named from the pane's
+//! cwd, the folder the agent resolves it in.
 #[allow(dead_code)] // for its Scratch guard and fixed_env only
 mod fake;
 
@@ -93,15 +94,29 @@ fn explore_reads_the_repo_the_work_folder_is_in() {
     assert_eq!(explore_root(&mut a), Some(canon(&d.join("work"))));
 }
 
+/// A ref goes to the agent named from the pane's cwd, the agent's own folder, as ^T
+/// names it: from the cwd under it, absolute outside it (#1342 amendment 15).
 #[test]
-fn a_ref_in_the_work_folder_is_named_from_it() {
+fn a_ref_is_named_from_the_pane_cwd_as_the_agent_resolves_it() {
     let d = scratch("refs");
     tree(&d);
-    let mut a = app(&d.join("cwd"), &d.join("work"));
-    a.basket = vec![Ref::new(d.join("work/src/a.rs"), Some((1, 2)), None).unwrap()];
-    let items = a.write_refs(&write());
-    let texts: Vec<&str> = items.iter().map(|i| i.text.as_str()).collect();
-    assert_eq!(texts, ["src/a.rs:1-2"]);
+    std::fs::write(d.join("cwd/b.rs"), "fn b() {}\nfn c() {}\n").unwrap();
+    let abs = Ref::new(d.join("work/src/a.rs"), Some((1, 2)), None).unwrap();
+    let rows = [
+        ("under the work folder only", abs.clone(), format!("{}:1-2", abs.path().display())),
+        (
+            "under the pane cwd",
+            Ref::new(d.join("cwd/b.rs"), Some((1, 2)), None).unwrap(),
+            "b.rs:1-2".into(),
+        ),
+    ];
+    for (row, r, want) in rows {
+        let mut a = app(&d.join("cwd"), &d.join("work"));
+        a.basket = vec![r];
+        let items = a.write_refs(&write());
+        let texts: Vec<&str> = items.iter().map(|i| i.text.as_str()).collect();
+        assert_eq!(texts, [want.as_str()], "{row}");
+    }
 }
 
 /// A fixture with no work folder set keeps reading the pane's cwd, as `capture`
