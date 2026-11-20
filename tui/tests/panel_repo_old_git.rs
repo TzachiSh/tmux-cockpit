@@ -1,4 +1,4 @@
-//! #1352: the `<repo>` block asks git nothing a git before 2.31 refuses. One test, as it
+//! #1352: the `<repo>` block asks git nothing a git before 2.31 lacks. One test, as it
 //! puts a stand-in git first on PATH.
 mod fake;
 
@@ -8,8 +8,10 @@ use std::process::Command;
 use std::time::Duration;
 
 /// The git a git older than 2.31 is, as far as the block can tell: the real one, but
-/// `--path-format` (2.31) is refused with git's usage status. The block of a repo still
-/// names its branch and its checkout.
+/// `--path-format` (2.31) is unknown, and git 2.30's rev-parse prints an unknown `--`
+/// flag as its own output line and goes on to exit 0 (builtin/rev-parse.c, `show_flag`).
+/// The stand-in puts that line after the first, where it falls after `--show-toplevel`.
+/// The block, which passes no such flag, still names its branch and its checkout.
 #[test]
 fn a_git_without_path_format_still_gives_the_block() {
     let d = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("cockpit-oldgit-{}", std::process::id()));
@@ -44,7 +46,19 @@ fn a_git_without_path_format_still_gives_the_block() {
     let which = Command::new("sh").args(["-c", "command -v git"]).output().unwrap();
     let real = String::from_utf8_lossy(&which.stdout).trim().to_string();
     assert!(real.starts_with('/'), "no git on PATH: {real:?}");
-    let body = format!("#!/bin/sh\nfor a; do case $a in --path-format*) exit 129 ;; esac; done\nexec '{real}' \"$@\"\n");
+    let body = r#"#!/bin/sh
+flag=
+for a; do
+    shift
+    case $a in --path-format*) flag=$a ;; *) set -- "$@" "$a" ;; esac
+done
+[ -n "$flag" ] || exec 'REAL' "$@"
+out=$('REAL' "$@") || exit
+printf '%s\n' "$out" | sed -n 1p
+printf '%s\n' "$flag"
+printf '%s\n' "$out" | sed 1d
+"#
+    .replace("REAL", &real);
     fake::write_exec(&bin.join("git"), &body);
     let held = fake::env_lock();
     let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());

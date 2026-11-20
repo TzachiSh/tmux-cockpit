@@ -1,6 +1,6 @@
 //! #1352: the `<repo>` block's path probe answers only for paths under the repo's
 //! root, and the block names its checkout kind. Each test makes its own temp folders.
-use cockpit_tui::panel::capture::repo_state_within;
+use cockpit_tui::panel::capture::{Repo, repo_state_within};
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
@@ -92,6 +92,35 @@ fn a_home_path_outside_the_root_gets_no_answer() {
     assert!(!home.starts_with(&r.0), "the repo must not hold HOME");
     let screen = format!("~/.cockpit-no-such-{}/x.md ./gone.md", std::process::id());
     assert_eq!(probed(&block(&r.at(""), &screen)), ["missing: ./gone.md"]);
+}
+
+/// A link in the tree whose target is outside and missing gets no line either: its
+/// answer would tell whether the outside target exists. Through the link or the link
+/// itself, beside a path in the repo that still answers.
+#[test]
+fn a_dangling_link_out_of_the_root_gets_no_answer() {
+    let (r, out) = (Dir::repo("dead"), Dir::new("dead-out"));
+    std::os::unix::fs::symlink(out.0.join("absent"), r.0.join("dead")).unwrap();
+    let got = probed(&block(&r.at(""), "./dead ./dead/x.md src/a.rs"));
+    assert_eq!(got, ["exists: src/a.rs"]);
+}
+
+/// try_get gives the block the worker sent, once it has ended (amendment 10).
+#[test]
+fn try_get_gives_the_block_the_worker_sent() {
+    let r = Dir::repo("tryget");
+    let repo = Repo::start(&r.at(""), "", Duration::from_secs(10));
+    let mut got = None;
+    // polled, bounded: 20 s of 10 ms checks, past the 10 s budget
+    for _ in 0..2000 {
+        got = repo.try_get().map(str::to_string);
+        if got.is_some() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let got = got.expect("try_get never answered");
+    assert!(got.starts_with("branch: main\n"), "{got}");
 }
 
 /// The root is compared resolved: a pane in a symlink to the repo still gets answers.
