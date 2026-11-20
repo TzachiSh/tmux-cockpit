@@ -1,16 +1,21 @@
 //! The panel reads the pane's work folder, `Capture.work.dir` (#1354, the freeze's
-//! amendment 9), not the pane's cwd: Explore's root and the refs' base follow it.
+//! amendments 9 and 12), not the pane's cwd: Explore's root, the refs' base and Explain's
+//! what-changed list follow it.
 #[allow(dead_code)] // for its Scratch guard and fixed_env only
 mod fake;
 
 use cockpit_tui::data::workdir::{Source, WorkDir};
-use cockpit_tui::panel::app::App;
+use cockpit_tui::panel::app::{App, Tile, View};
 use cockpit_tui::panel::capture::Capture;
+use cockpit_tui::panel::changes::{Collector, Gh};
 use cockpit_tui::panel::envelope::{Flow, OutType};
+use cockpit_tui::panel::look::Looks;
 use cockpit_tui::panel::request::Effort;
 use cockpit_tui::refs::Ref;
+use crossterm::event::{KeyCode, KeyEvent};
 use fake::Scratch;
 use std::path::Path;
+use std::time::Duration;
 
 fn scratch(tag: &str) -> Scratch {
     Scratch::fresh(std::env::temp_dir().join(format!("cockpit-workroot-{tag}-{}", std::process::id())))
@@ -107,4 +112,50 @@ fn no_work_folder_falls_back_to_the_pane_cwd() {
     tree(&d);
     let mut a = app(&d.join("work"), Path::new(""));
     assert_eq!(explore_root(&mut a), Some(canon(&d.join("work"))));
+}
+
+/// A collector whose gh is never reached: the repo has no GitHub remote.
+fn looks(d: &Path) -> Looks {
+    let gh = Gh {
+        program: d.join("no-gh").into_os_string(),
+        path: None,
+        budget: Duration::from_secs(20),
+    };
+    Looks::new(Collector::new(gh, d.join("store"), Box::new(|| 1_000_000)))
+}
+
+fn press(a: &mut App, c: char) {
+    a.key(KeyEvent::from(KeyCode::Char(c)));
+}
+
+#[test]
+fn explain_lists_what_changed_in_the_work_folder() {
+    let d = scratch("look");
+    tree(&d);
+    let ok = std::process::Command::new("git")
+        .arg("-C")
+        .arg(d.join("work"))
+        .args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"])
+        .args(["commit", "-q", "--allow-empty", "-m", "first"])
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .status()
+        .unwrap();
+    assert!(ok.success());
+    let mut a = app(&d.join("cwd"), &d.join("work"));
+    a.changes = Some(looks(&d));
+    let i = a.tiles().iter().position(|t| t.0 == Tile::Explain).unwrap();
+    press(&mut a, char::from(b'1' + i as u8));
+    press(&mut a, '1');
+    assert_eq!(a.view, View::Busy);
+    let l = a.changes.as_mut().unwrap();
+    let settled = (0..6000).any(|_| {
+        l.poll();
+        let done = !l.waiting();
+        if !done {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        done
+    });
+    assert!(settled, "the list never came");
+    assert!(a.changes_shown().is_some(), "no list for the work folder's repo");
 }
