@@ -1971,6 +1971,7 @@ fn panel_call(c: &Case, path: &str, explore: bool) -> (String, String, Profile, 
         path: path.into(),
         screen: c.screen.clone(),
         repo: c.repo.as_str().into(),
+        ..Default::default()
     };
     let mut a = App::new("%0", cap);
     (a.view, a.out, a.explore) = (View::Compose, c.out, explore);
@@ -3648,6 +3649,7 @@ mod tests {
             path: "/r".into(),
             screen: c.screen.clone(),
             repo: c.repo.as_str().into(),
+            ..Default::default()
         };
         let flow = Flow::Write {
             draft: c.request.clone(),
@@ -3722,6 +3724,7 @@ mod tests {
             path: "/r".into(),
             screen: String::new(),
             repo: "".into(),
+            ..Default::default()
         };
         let flow = Flow::Write {
             draft: c.request.clone(),
