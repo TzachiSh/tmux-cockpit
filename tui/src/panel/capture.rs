@@ -7,8 +7,8 @@ use std::io::Read;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
-use std::sync::mpsc::{Receiver, channel};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::mpsc::{Receiver, TryRecvError, channel};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, TryLockError};
 use std::time::{Duration, Instant};
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -18,7 +18,8 @@ pub struct Capture {
     pub path: String,
     /// Raw, not redacted: the envelope redacts it on the way out.
     pub screen: String,
-    /// [`repo_state_within`] of `path`, raw like the screen; "" outside a repo.
+    /// [`repo_state_within`] of `work.dir` (#1352), raw like the screen; "" outside a
+    /// repo, and for a pane [`is_local`] refuses.
     pub repo: Repo,
     /// The pane's work folder by the shared rule, `crate::data::workdir` (#1343); `path`
     /// as a pane-cwd answer where that rule has none (not an agent's, no dir on disk).
@@ -61,10 +62,12 @@ pub fn capture_within(pane: &str, budget: Duration) -> Option<Capture> {
         lines.pop();
     }
     let screen = lines.join("\n");
-    let repo = if path.is_empty() || !is_local(&cmd) {
-        Repo::default()
+    // #429: a pane whose folder is not the one tmux reports gets no block. Started
+    // below, once the work folder is known (#1352).
+    let block_of = if path.is_empty() || !is_local(&cmd) {
+        None
     } else {
-        Repo::start(&path, &screen, budget)
+        Some(screen.clone())
     };
     let work = crate::data::workdir(pane).unwrap_or_else(|| {
         choose(&Candidates {
@@ -77,9 +80,22 @@ pub fn capture_within(pane: &str, budget: Duration) -> Option<Capture> {
         cmd,
         path,
         screen,
-        repo,
+        repo: block_of.map_or_else(Repo::default, |s| Repo::start(&work.dir, &s, budget)),
         work,
     })
+}
+
+impl Capture {
+    /// `pane` read again (#1352): its screen, path, work folder and a new repo
+    /// block under [`REPO_BUDGET`], so a later model call sees the pane as it is
+    /// now. Name and cmd stay: the panel set its flags from them. A pane tmux
+    /// cannot answer for leaves the capture as it was. It keeps no global state,
+    /// so it may run off the UI thread.
+    pub fn refresh(&mut self, pane: &str) {
+        if let Some(c) = capture(pane) {
+            (self.path, self.screen, self.repo, self.work) = (c.path, c.screen, c.repo, c.work);
+        }
+    }
 }
 
 /// The whole repo block's time: a slow or huge repo costs the panel this much.
@@ -92,14 +108,36 @@ const PATHS_CAP: usize = 10;
 
 /// The repo block, filled by a thread [`capture`] starts, so the first frame
 /// and the Explain and Fix calls never wait for git. [`Repo::get`] waits for
-/// it, never past the budget and its slack.
+/// it, never past the budget and its slack; [`Repo::try_get`] never waits.
 #[derive(Clone, Default)]
 pub struct Repo(Arc<RepoCell>);
 
 #[derive(Default)]
 struct RepoCell {
-    pending: Mutex<Option<(Receiver<String>, Instant)>>,
+    /// Held by [`Repo::get`] for its whole wait, so [`Repo::try_get`] finds it busy.
+    pending: Mutex<Option<Pending>>,
     done: OnceLock<String>,
+}
+
+/// The worker's channel, the time past which its sends are not waited for, and
+/// the last block it sent.
+struct Pending {
+    rx: Receiver<String>,
+    end: Instant,
+    last: String,
+}
+
+impl Pending {
+    /// Takes what the worker sent so far: true once it has ended or its time is up.
+    fn drain(&mut self) -> bool {
+        loop {
+            match self.rx.try_recv() {
+                Ok(b) => self.last = b,
+                Err(TryRecvError::Disconnected) => return true,
+                Err(TryRecvError::Empty) => return Instant::now() >= self.end,
+            }
+        }
+    }
 }
 
 impl Repo {
@@ -116,8 +154,13 @@ impl Repo {
         let (tx, rx) = channel();
         let (dir, screen) = (dir.to_string(), screen.to_string());
         std::thread::spawn(move || repo_work(&dir, &screen, end, &|b| drop(tx.send(b))));
+        let p = Pending {
+            rx,
+            end: end + REPO_SLACK,
+            last: String::new(),
+        };
         let c = RepoCell {
-            pending: Mutex::new(Some((rx, end + REPO_SLACK))),
+            pending: Mutex::new(Some(p)),
             done: OnceLock::new(),
         };
         Repo(Arc::new(c))
@@ -125,17 +168,42 @@ impl Repo {
 
     /// The block, or the last part of it the worker sent before the deadline.
     pub fn get(&self) -> &str {
-        self.0.done.get_or_init(|| {
-            let taken = self.0.pending.lock().unwrap_or_else(|e| e.into_inner()).take();
-            let Some((rx, end)) = taken else {
-                return String::new();
-            };
-            let mut last = String::new();
-            while let Ok(b) = rx.recv_timeout(end.saturating_duration_since(Instant::now())) {
-                last = b;
+        if let Some(d) = self.0.done.get() {
+            return d;
+        }
+        let mut held = self.0.pending.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(p) = held.as_mut() {
+            while let Ok(b) = p.rx.recv_timeout(p.end.saturating_duration_since(Instant::now())) {
+                p.last = b;
             }
-            last
-        })
+        }
+        self.settle(held)
+    }
+
+    /// The block once the worker has ended or its time is up, "" when nothing was
+    /// pending (a default), and `None` while it still runs, or while another
+    /// thread waits for it in [`Repo::get`]. Never waits (#1352).
+    pub fn try_get(&self) -> Option<&str> {
+        if let Some(d) = self.0.done.get() {
+            return Some(d);
+        }
+        let mut held = match self.0.pending.try_lock() {
+            Ok(g) => g,
+            Err(TryLockError::Poisoned(e)) => e.into_inner(),
+            Err(TryLockError::WouldBlock) => return None,
+        };
+        if !held.as_mut().is_none_or(Pending::drain) {
+            return None;
+        }
+        Some(self.settle(held))
+    }
+
+    /// Fills the block from what `held` kept, unless another call filled it first.
+    fn settle(&self, mut held: MutexGuard<'_, Option<Pending>>) -> &str {
+        let block = held.take().map(|p| p.last).unwrap_or_default();
+        let _ = self.0.done.set(block);
+        drop(held);
+        self.0.done.get().map_or("", String::as_str)
     }
 }
 
@@ -332,9 +400,10 @@ fn section(b: &mut String, head: &str, lines: &[&str], cap: usize) {
 }
 
 /// The git state of `dir` for the write call's `<repo>` block: branch, the
-/// work tree's root, short status, the last five commits, the diff stat
-/// against HEAD, and the paths on `screen` that exist, plus the `@/`, `~/` and
-/// `./` ones that do not. Plain git under `budget` (the panel's is
+/// work tree's root, whether that is the repo's main checkout or a linked
+/// worktree, short status, the last five commits, the diff stat against HEAD,
+/// and the paths on `screen` under the root that exist, plus the `@/`, `~/` and
+/// `./` ones there that do not (#1352). Plain git under `budget` (the panel's is
 /// [`REPO_BUDGET`]).
 ///
 /// "" when `dir` is not in a work tree, when the root or the filter config is
@@ -355,8 +424,14 @@ fn repo_work(dir: &str, screen: &str, end: Instant, send: &dyn Fn(String)) {
     if dir.is_empty() {
         return;
     }
-    // Shows the root and that `dir` is in a work tree; it runs no filter.
-    let top = spawn_git(dir, &[], &["rev-parse", "--show-toplevel"]);
+    // Shows the root and that `dir` is in a work tree, and its git dirs for the
+    // checkout kind (#1352); it runs no filter. No `--path-format`: a git before
+    // 2.31 refuses it, and the whole block would go.
+    let top = spawn_git(
+        dir,
+        &[],
+        &["rev-parse", "--show-toplevel", "--git-common-dir", "--absolute-git-dir"],
+    );
     // `git config` exits 1 when nothing matches, so only a timeout fails here.
     let cfg = match finish(spawn_git(dir, &[], &FILTER_CONFIG), end, "config") {
         Ran::Ok(s) => s,
@@ -374,8 +449,18 @@ fn repo_work(dir: &str, screen: &str, end: Instant, send: &dyn Fn(String)) {
     let status = spawn_git(dir, &filters, &["status", "--short", "--branch", sub]);
     let log = spawn_git(dir, &filters, &["log", "-5", "--oneline", "--no-decorate"]);
     let diff = spawn_git(dir, &filters, &["diff", "--stat", "--no-ext-diff", "--no-textconv", sub, "HEAD"]);
-    let Some(top) = finish(top, end, "rev-parse").ok() else {
+    let Some(revs) = finish(top, end, "rev-parse").ok() else {
         return;
+    };
+    let mut revs = revs.lines();
+    let top = revs.next().unwrap_or_default().trim();
+    // Same dirs: the repo's own checkout, a submodule's too. Else a linked worktree.
+    // Compared resolved: the common dir may come relative to `dir`, where rev-parse
+    // ran. No line unless git gave both and both resolve.
+    let real = |p: &str| std::fs::canonicalize(Path::new(dir).join(p)).ok();
+    let checkout = match (revs.next().and_then(real), revs.next().and_then(real)) {
+        (Some(c), Some(g)) => format!("checkout: {}\n", if c == g { "main" } else { "linked worktree" }),
+        _ => String::new(),
     };
     let (status, log, diff) = (finish(status, end, "status"), finish(log, end, "log"), finish(diff, end, "diff"));
     let log = log.ok().filter(|l| !l.trim().is_empty());
@@ -393,7 +478,7 @@ fn repo_work(dir: &str, screen: &str, end: Instant, send: &dyn Fn(String)) {
                     None => h.into(),
                 },
             };
-            b.push_str(&format!("branch: {branch}\nroot: {}\n", top.trim()));
+            b.push_str(&format!("branch: {branch}\nroot: {top}\n{checkout}"));
             let changed: Vec<&str> = lines.collect();
             if changed.is_empty() {
                 b.push_str("status: clean\n");
@@ -401,7 +486,7 @@ fn repo_work(dir: &str, screen: &str, end: Instant, send: &dyn Fn(String)) {
                 section(&mut b, "status:", &changed, STATUS_CAP);
             }
         }
-        Ran::TimedOut => b.push_str(&format!("branch: unknown\nroot: {}\nstatus: timed out\n", top.trim())),
+        Ran::TimedOut => b.push_str(&format!("branch: unknown\nroot: {top}\n{checkout}status: timed out\n")),
         Ran::Failed(_) => return,
     }
     if let Some(log) = log {
@@ -417,6 +502,7 @@ fn repo_work(dir: &str, screen: &str, end: Instant, send: &dyn Fn(String)) {
     send(b.trim_end().to_string());
     let paths = screen_paths(screen);
     let home = std::env::var("HOME").unwrap_or_default();
+    let root = std::fs::canonicalize(top).ok();
     let mut seen: Vec<String> = Vec::new();
     for t in &paths {
         if Instant::now() >= end {
@@ -428,6 +514,10 @@ fn repo_work(dir: &str, screen: &str, end: Instant, send: &dyn Fn(String)) {
             None if bare.starts_with('/') => bare.to_string(),
             None => Path::new(dir).join(bare).display().to_string(),
         };
+        // #1352: no answer about a file outside the repo, ~/.ssh say
+        if !root.as_deref().is_some_and(|r| under(r, Path::new(&p))) {
+            continue;
+        }
         if Path::new(&p).exists() {
             seen.push(format!("exists: {t}"));
         } else if ["@/", "~/", "./"].iter().any(|x| t.starts_with(x)) {
@@ -440,6 +530,18 @@ fn repo_work(dir: &str, screen: &str, end: Instant, send: &dyn Fn(String)) {
         section(&mut b, "paths on screen:", &seen, PATHS_CAP);
         send(b.trim_end().to_string());
     }
+}
+
+/// `p` is in `root` (a resolved path): its nearest folder, file or link that is
+/// there, with every link resolved, is `root` or below it. A path through a link
+/// out of the repo is outside, a missing file's answer is its folder's. A link
+/// that resolves to nothing is outside too: its answer would tell whether its
+/// target exists, wherever that is (#1357).
+fn under(root: &Path, p: &Path) -> bool {
+    p.ancestors()
+        .find(|a| std::fs::symlink_metadata(a).is_ok())
+        .and_then(|a| std::fs::canonicalize(a).ok())
+        .is_some_and(|real| real.starts_with(root))
 }
 
 /// `name.ext`, an extension of one to eight letters or digits, not all digits.
