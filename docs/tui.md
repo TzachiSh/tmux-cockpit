@@ -2436,6 +2436,20 @@ the last cwd it saw per transcript path, for the same file only
 (device and inode, and not shorter than at the last read), so a stretch of rows
 without one does not lose it.
 
+**`active-in` (#462):** Claude Code keeps a session's cwd where it launched, so a
+`cd X && ...` in one Bash call moves neither the hooks' cwd nor the transcript's.
+The fold reads each main-thread tool call in the same window as the facts above:
+a Bash call's first `cd`, `pushd` or `git -C` (quotes, `~` and a leading `$HOME`
+read as the shell reads them; any other `$`, a glob or a command substitution
+names nothing, and ends the read), and the folder of an Edit, MultiEdit, Write or
+Read `file_path` (NotebookEdit's `notebook_path`). A relative path is read against
+the row's `cwd`. Each folder is kept at its newest call's timestamp, eight at most.
+The reader turns them into git trees by walking up to a `.git` (a directory with
+`HEAD`, or a file whose `gitdir:` exists), with no git fork, and keeps each
+answer 10 s; a folder in no tree is left out. A subagent's calls are not the
+pane's and never count. A call pushed out of the 256 KB window by a bigger
+stretch with an assistant row in it is not seen until the next one.
+
 **Which transcript (#500):** the board, `workdir %N` and the info screen share one
 lookup, `transcript::locate`: `@cockpit_transcript` when it resolves to a regular
 file under the projects dir (`$CLAUDE_CONFIG_DIR/projects`, else
@@ -3210,7 +3224,11 @@ line; exit 1 and nothing on stdout when the pane is not there, is not an
 agent's, or its dir is not on disk (#507): a removed launch dir, or a name that is
 not UTF-8, which the lossy decode turns into a path that does not exist. The board
 still draws that path; a script gets no dir to cd into. Exit 2 for a missing or
-malformed pane id, with the usage on stderr only.
+malformed pane id, with the usage on stderr only. Every shell reader of a pane's
+folder (`pane_workdir`, `scripts/lib/workdir.sh`) asks it for every agent pane, a
+holding `@cockpit_dir` or not, since a fresh `active-in` tree outranks a
+hook-written one (#462); without an answer it takes `@cockpit_dir`, else the
+pane's cwd.
 
 ## The board as the review queue (#253)
 

@@ -2,6 +2,7 @@
 pub mod agents;
 pub mod fleet;
 // the board's transcript fold (#492)
+mod activein;
 mod fold;
 pub mod gitsafe;
 pub mod info;
@@ -368,6 +369,8 @@ struct Facts {
     /// #1330 A2: the newest main-thread model call's model and context
     model: String,
     ctx: Option<u64>,
+    /// #462: each folder the main thread's tool calls worked in and the newest call's time
+    active: Vec<(String, SystemTime)>,
 }
 
 /// A read's (len, mtime), the file's (device, inode), and what it said.
@@ -480,10 +483,11 @@ fn parse(lines: Vec<String>) -> Facts {
 
 /// doing / said / asked and their ages, from the tail of the session transcript,
 /// which `transcript::locate` finds from `opt` (@cockpit_transcript), the session id
-/// and the cwd. Returns the transcript's cwd, `""` when it has none.
-fn read_transcript(p: &mut Pane, opt: &str) -> String {
+/// and the cwd. Returns the transcript's cwd, `""` when it has none, and the git trees
+/// its tool calls reached with their ages (#462).
+fn read_transcript(p: &mut Pane, opt: &str) -> (String, Vec<workdir::Recent>) {
     let Some(t) = transcript::locate(opt, &p.sess, &p.path) else {
-        return String::new();
+        return Default::default();
     };
     let fa = read_facts(&t.to_string_lossy());
     // @panestate wins, with one exception below; the transcript speaks for panes the hooks
@@ -514,7 +518,7 @@ fn read_transcript(p: &mut Pane, opt: &str) -> String {
     p.since = fa.at.and_then(age);
     p.asked_since = fa.user_at.and_then(age);
     p.idle_since = fa.newest.and_then(age);
-    fa.cwd
+    (fa.cwd, activein::recent(&fa.active, SystemTime::now()))
 }
 
 fn age(t: SystemTime) -> Option<u64> {
@@ -1053,9 +1057,10 @@ fn row_pane(f: &[&str], procs_t: &mut Option<Procs>, want_ended: bool) -> RowPan
 /// @cockpit_dir, @cockpit_transcript and @cockpit_cwd come after the 13 a row from an
 /// older format has, so such a row still reads: 13 to 19 are optional.
 fn work_candidates(p: &mut Pane, f: &[&str]) -> Candidates {
-    let transcript_cwd = read_transcript(p, f.get(15).copied().unwrap_or_default());
+    let (transcript_cwd, active) = read_transcript(p, f.get(15).copied().unwrap_or_default());
     Candidates {
         transcript_cwd,
+        active,
         pane_cwd: p.path.clone(),
         ..row_options(f)
     }
@@ -1093,8 +1098,8 @@ pub struct PaneDir {
 
 /// Every pane's work dir off one `list-panes -a`, as `scripts/lib/workdir.sh` gave it to
 /// goto. The agent test leaves out the process tree, a `ps` per shell pane, as the
-/// script did; only an agent whose @cockpit_dir and @cockpit_cwd both fail has its
-/// transcript read, as [`workdir()`] reads it. Cockpit's own popups are no panes, by the
+/// script did; only an agent with no declared @cockpit_dir has its transcript read (#462),
+/// as [`workdir()`] reads it. Cockpit's own popups are no panes, by the
 /// board's filter (#1248).
 /// `None` when list-panes failed.
 pub fn pane_dirs() -> Option<Vec<PaneDir>> {
@@ -1112,13 +1117,24 @@ fn pane_dir(f: &[&str]) -> Option<PaneDir> {
         ..row_options(f)
     };
     let holds = |d: &str| std::path::Path::new(d).is_absolute() && std::path::Path::new(d).is_dir();
-    // the transcript only answers when both options fail; row_pane forks no ps here:
-    // @panestate or an agentish command is an agent's without its tree
-    let transcript_cwd = (agent && !holds(&base.declared) && !holds(&base.hook_cwd))
-        .then(|| row_pane(f, &mut None, false).map(|(mut p, _)| work_candidates(&mut p, f).transcript_cwd))
+    // the transcript only answers when no folder was declared: its tool calls' tree outranks
+    // the hooks' cwd (#462). row_pane forks no ps here: @panestate or an agentish command is
+    // an agent's without its tree
+    let (transcript_cwd, active) = (agent && !holds(&base.declared))
+        .then(|| {
+            row_pane(f, &mut None, false).map(|(mut p, _)| {
+                let c = work_candidates(&mut p, f);
+                (c.transcript_cwd, c.active)
+            })
+        })
         .flatten()
         .unwrap_or_default();
-    let dir = workdir::choose(&Candidates { transcript_cwd, ..base }).dir;
+    let dir = workdir::choose(&Candidates {
+        transcript_cwd,
+        active,
+        ..base
+    })
+    .dir;
     Some(PaneDir {
         id: f[0].to_string(),
         agent,
