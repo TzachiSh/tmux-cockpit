@@ -102,7 +102,11 @@ fn a_confirmed_folder_a_shell_and_an_unknown_folder_leave_the_line_as_it_was() {
 fn the_window_lines_work_folder_is_redacted_and_counted() {
     let clean = build_parts(&write(), &cap("claude", "/b", Source::ActiveIn), &[], 3);
     let secret = build_parts(&write(), &cap("claude", TOKEN_DIR, Source::ActiveIn), &[], 3);
-    assert!(secret.text.contains(&format!("work folder {TOKEN_SHOWN} (active-in)")), "{}", secret.text);
+    assert!(
+        secret.text.contains(&format!("work folder {TOKEN_SHOWN} (active-in)")),
+        "{}",
+        secret.text
+    );
     assert!(!secret.text.contains("MADEUPFAKE"), "{}", secret.text);
     assert_eq!(secret.screen_hidden, clean.screen_hidden + 1);
 }
@@ -135,7 +139,10 @@ fn only_explain_with_board_facts_has_an_agent_part() {
     let rows = [
         ("explain, no facts", build(&Flow::Explain, &none, &[], 3)),
         ("write", build(&write(), &agent("/b", Source::ActiveIn), &[], 3)),
-        ("fix", build(&Flow::Fix { draft: "x".into() }, &agent("/b", Source::ActiveIn), &[], 3)),
+        (
+            "fix",
+            build(&Flow::Fix { draft: "x".into() }, &agent("/b", Source::ActiveIn), &[], 3),
+        ),
     ];
     for (row, env) in rows {
         assert_eq!(agent_part(&env), None, "{row}");
