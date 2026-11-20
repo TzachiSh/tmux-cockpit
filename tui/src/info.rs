@@ -234,7 +234,8 @@ pub fn text(x: &Facts) -> String {
 
 /// `cockpit-tui info [--text|--json] %N`: the screen alone, until esc or q. Exit 2
 /// for a bad pane id, 1 for no terminal or no such pane. `--json` is for scripts:
-/// `{"dir": ...}`, the work dir the board's stat uses (#452), as lossy UTF-8.
+/// `{"dir": ..., "source": ...}`, the work dir the board's stat uses (#452), as lossy
+/// UTF-8, and its source as `workdir --source` names it (#1355).
 pub fn main(args: &[String]) -> i32 {
     let (flag, args) = match args.split_first() {
         Some((f, rest)) if f == "--text" || f == "--json" => (f.as_str(), rest),
