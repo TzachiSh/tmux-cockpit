@@ -3,6 +3,7 @@
 //! user's. One test, as it sets COCKPIT_TMUX.
 mod fake;
 
+use cockpit_tui::data::AgentFacts;
 use cockpit_tui::panel::capture::capture;
 use std::path::PathBuf;
 use std::process::Command;
@@ -33,8 +34,21 @@ impl Rig {
     }
 }
 
-/// Rows: an agent pane whose hooks set its state, which carries the board's state; a
-/// shell pane the board does not count, which carries none.
+/// The session's transcript: a prompt the user typed, then a model call that runs a tool.
+fn transcript() -> String {
+    let typed = serde_json::json!({"type": "user", "timestamp": "2026-08-27T00:00:05.000Z",
+        "message": {"content": "fix the tests"}});
+    let tool = serde_json::json!({"type": "assistant", "timestamp": "2026-08-27T00:00:06.000Z",
+        "message": {"model": "claude-opus-4-5", "stop_reason": "tool_use",
+        "content": [{"type": "tool_use", "id": "b1", "name": "Bash", "input": {"command": "cargo test"}}],
+        "usage": {"input_tokens": 1, "cache_read_input_tokens": 0,
+            "cache_creation_input_tokens": 0, "output_tokens": 1}}});
+    format!("{typed}\n{tool}\n")
+}
+
+/// Rows: an agent pane whose hooks set its state and whose transcript names its doing,
+/// asked and model, which carries all four as the board reads them; a shell pane the
+/// board does not count, which carries none.
 #[test]
 fn the_capture_carries_the_boards_agent_facts() {
     let sock = format!("cockpit-capagent-{}", std::process::id());
@@ -54,14 +68,31 @@ fn the_capture_carries_the_boards_agent_facts() {
         eprintln!("SKIP: no tmux");
         return;
     }
-    // SAFETY: the one test of this binary, so no other thread reads the env.
-    unsafe { fake::set_var(&fake::env_lock(), "COCKPIT_TMUX", format!("tmux -L {}", r.sock)) };
+    let conf = r.dir.join("conf");
+    let tr = conf.join("projects/-rig/s1.jsonl");
+    std::fs::create_dir_all(tr.parent().unwrap()).unwrap();
+    std::fs::write(&tr, transcript()).unwrap();
+    {
+        let held = fake::env_lock();
+        // SAFETY: the one test of this binary, so no other thread reads the env.
+        unsafe {
+            fake::set_var(&held, "COCKPIT_TMUX", format!("tmux -L {}", r.sock));
+            fake::set_var(&held, "CLAUDE_CONFIG_DIR", conf.display().to_string());
+        }
+    }
     let agent = r.pane();
     r.tmux(&["set-option", "-p", "-t", &agent, "@panestate", "needs-input"]);
+    r.tmux(&["set-option", "-p", "-t", &agent, "@cockpit_transcript", &tr.display().to_string()]);
     let shell = r.pane();
-    let rows = [("an agent pane", &agent, Some("needs-input")), ("a shell pane", &shell, None)];
+    let facts = AgentFacts {
+        state: "needs-input".into(),
+        doing: "Bash: cargo test".into(),
+        asked: "fix the tests".into(),
+        model: "opus".into(),
+    };
+    let rows = [("an agent pane", &agent, Some(facts)), ("a shell pane", &shell, None)];
     for (name, id, want) in rows {
         let c = capture(id).unwrap_or_else(|| panic!("{name}: no capture"));
-        assert_eq!(c.agent.as_ref().map(|a| a.state.as_str()), want, "{name}");
+        assert_eq!(c.agent, want, "{name}");
     }
 }

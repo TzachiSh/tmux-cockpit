@@ -65,23 +65,52 @@ fn agent_part(env: &str) -> Option<String> {
     Some(env[at..end].to_string())
 }
 
+/// Amendment 13 on #1342: a trusted folder (declared, session) that differs from the cwd
+/// is named with its source and nothing more, so the model trusts what <repo> shows.
 #[test]
-fn a_work_folder_other_than_the_cwd_follows_it_with_its_source() {
-    for (row, source, label) in [
-        ("active-in", Source::ActiveIn, "active-in"),
-        ("declared", Source::Declared, "declared"),
-        ("session", Source::Session, "session"),
+fn a_trusted_folder_other_than_the_cwd_is_named_with_its_source() {
+    for (row, dir, source, label) in [
+        ("declared", "/b", Source::Declared, "declared"),
+        ("a session subfolder of the cwd", "/a/tui", Source::Session, "session"),
     ] {
-        let want = format!("<window>claude · claude · /a · work folder /b ({label})</window>");
-        assert_eq!(window_line(&cap("claude", "/b", source)), want, "{row}");
+        let want = format!("<window>claude · claude · /a · work folder {dir} ({label})</window>");
+        assert_eq!(window_line(&cap("claude", dir, source)), want, "{row}");
     }
 }
 
+/// A guessed source (active-in, pane-cwd) on an agent's window is not confirmed, whether
+/// or not the folder is the cwd. The window is an agent's by its name or the board's facts.
 #[test]
-fn an_agents_folder_only_the_pane_cwd_gave_is_not_confirmed() {
-    for (row, cmd) in [("claude", "claude"), ("a version-named claude", "2.1.246")] {
-        let want = format!("<window>{cmd} · {cmd} · /a · work folder not confirmed (pane-cwd)</window>");
-        assert_eq!(window_line(&cap(cmd, "/a", Source::PaneCwd)), want, "{row}");
+fn a_guessed_folder_on_an_agents_window_is_not_confirmed() {
+    let node = Capture {
+        agent: Some(AgentFacts::default()),
+        ..cap("node", "/a", Source::PaneCwd)
+    };
+    for (row, c, tail) in [
+        (
+            "active-in elsewhere",
+            cap("claude", "/b", Source::ActiveIn),
+            "work folder /b (active-in, not confirmed)",
+        ),
+        (
+            "active-in at the cwd",
+            cap("claude", "/a", Source::ActiveIn),
+            "work folder not confirmed (active-in)",
+        ),
+        (
+            "pane-cwd, claude",
+            cap("claude", "/a", Source::PaneCwd),
+            "work folder not confirmed (pane-cwd)",
+        ),
+        (
+            "pane-cwd, a version name",
+            cap("2.1.246", "/a", Source::PaneCwd),
+            "work folder not confirmed (pane-cwd)",
+        ),
+        ("pane-cwd, node with board facts", node, "work folder not confirmed (pane-cwd)"),
+    ] {
+        let want = format!("<window>{} · {} · /a · {tail}</window>", c.name, c.cmd);
+        assert_eq!(window_line(&c), want, "{row}");
     }
 }
 
@@ -91,6 +120,7 @@ fn a_confirmed_folder_a_shell_and_an_unknown_folder_leave_the_line_as_it_was() {
         ("session, the cwd", cap("claude", "/a", Source::Session)),
         ("declared, the cwd", cap("claude", "/a", Source::Declared)),
         ("a plain shell", cap("bash", "/a", Source::PaneCwd)),
+        ("node the board does not count", cap("node", "/a", Source::PaneCwd)),
         ("no work folder", cap("claude", "", Source::PaneCwd)),
     ] {
         let want = format!("<window>{} · {} · /a</window>", c.name, c.cmd);
@@ -100,10 +130,10 @@ fn a_confirmed_folder_a_shell_and_an_unknown_folder_leave_the_line_as_it_was() {
 
 #[test]
 fn the_window_lines_work_folder_is_redacted_and_counted() {
-    let clean = build_parts(&write(), &cap("claude", "/b", Source::ActiveIn), &[], 3);
-    let secret = build_parts(&write(), &cap("claude", TOKEN_DIR, Source::ActiveIn), &[], 3);
+    let clean = build_parts(&write(), &cap("claude", "/b", Source::Session), &[], 3);
+    let secret = build_parts(&write(), &cap("claude", TOKEN_DIR, Source::Session), &[], 3);
     assert!(
-        secret.text.contains(&format!("work folder {TOKEN_SHOWN} (active-in)")),
+        secret.text.contains(&format!("work folder {TOKEN_SHOWN} (session)")),
         "{}",
         secret.text
     );
@@ -188,8 +218,52 @@ fn a_quote_in_the_model_cannot_end_its_attribute() {
     assert!(part.starts_with("<agent state=\"running\" model=\"o&quot; x=&quot;y\">"), "{part}");
 }
 
-/// The prompt rows decision 3 gates: the write prompt lets the model ask when the
-/// folder is a guess, and the explain prompt reads `<agent>` as the agent's, not the
+#[test]
+fn the_model_is_redacted_and_counted() {
+    let clean = build_parts(&Flow::Explain, &agent("/b", Source::Session), &[], 3);
+    let mut c = agent("/b", Source::Session);
+    c.agent = Some(AgentFacts {
+        model: "sk-ant-MADEUPFAKEFAKE00".into(),
+        ..facts()
+    });
+    let e = build_parts(&Flow::Explain, &c, &[], 3);
+    let part = agent_part(&e.text).unwrap_or_default();
+    assert!(part.starts_with("<agent state=\"running\" model=\"[hidden]\">"), "{part}");
+    assert_eq!(e.screen_hidden, clean.screen_hidden + 1);
+}
+
+/// Amendment 13 on #1342: `doing` and `asked` are cut at 300 characters, counted as
+/// characters, so a multi-byte one is cut on a character.
+#[test]
+fn doing_and_asked_are_cut_at_300_characters() {
+    for (row, ch) in [("ascii", "d"), ("two-byte", "é")] {
+        let mut c = agent("/b", Source::Session);
+        c.agent = Some(AgentFacts {
+            doing: ch.repeat(400),
+            asked: ch.repeat(301),
+            ..facts()
+        });
+        let part = agent_part(&build(&Flow::Explain, &c, &[], 3)).unwrap_or_default();
+        let cut = ch.repeat(300);
+        assert!(part.contains(&format!("\ndoing: {cut}\nasked: {cut}\n")), "{row}: {part}");
+    }
+}
+
+#[test]
+fn doing_and_asked_of_300_characters_stay_whole() {
+    let mut c = agent("/b", Source::Session);
+    c.agent = Some(AgentFacts {
+        doing: "d".repeat(300),
+        asked: "a".repeat(299),
+        ..facts()
+    });
+    let part = agent_part(&build(&Flow::Explain, &c, &[], 3)).unwrap_or_default();
+    let want = format!("\ndoing: {}\nasked: {}\n", "d".repeat(300), "a".repeat(299));
+    assert!(part.contains(&want), "{part}");
+}
+
+/// The prompt rows decision 3 gates: the write prompt lets the model ask only when the
+/// folder is not confirmed (amendment 13), not merely when it differs from the cwd, and the explain prompt reads `<agent>` as the agent's, not the
 /// user's.
 #[test]
 fn the_prompts_describe_the_work_folder_and_the_agent_part() {
@@ -198,7 +272,10 @@ fn the_prompts_describe_the_work_folder_and_the_agent_part() {
     let not_user = EXPLAIN.lines().find(|l| l.contains("not from the user")).unwrap_or_default();
     let rows = [
         ("write: <repo> trusted only when confirmed", repo_rule.contains("not confirmed")),
-        ("write: a folder other than the cwd", repo_rule.contains("differs from the cwd")),
+        (
+            "write: a trusted folder elsewhere is no reason to ask",
+            !repo_rule.contains("differs"),
+        ),
         ("write: <window> names the work folder", WRITE.contains("work folder")),
         ("write: <repo> names the checkout", WRITE.contains("linked worktree")),
         ("explain: <agent> is an input", explain_input.contains("<agent")),
