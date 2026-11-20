@@ -123,16 +123,6 @@ impl Repo {
         Repo(Arc::new(c))
     }
 
-    /// LOCAL STAND-IN for lane panel-capture's `try_get` (#1342 amendment 10), never
-    /// pushed: the block once known, `None` while its worker may still run. Never blocks.
-    pub fn try_get(&self) -> Option<&str> {
-        if let Some(s) = self.0.done.get() {
-            return Some(s);
-        }
-        let pending = self.0.pending.lock().unwrap_or_else(|e| e.into_inner());
-        pending.is_none().then_some("")
-    }
-
     /// The block, or the last part of it the worker sent before the deadline.
     pub fn get(&self) -> &str {
         self.0.done.get_or_init(|| {
