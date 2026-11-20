@@ -1,9 +1,10 @@
 //! The user prompt sent on stdin: tagged parts joined by blank lines.
 use super::action::sanitize;
 use super::ask::AskCode;
-use super::capture::{Capture, session_state};
+use super::capture::{Capture, is_claude, session_state};
 use super::redact::{added, redact_clean};
 use super::request::read_denied;
+use crate::data::workdir::Source;
 use crate::refs::Ref;
 use std::path::Path;
 
@@ -70,7 +71,7 @@ pub struct Turn {
 
 /// The tags the envelope wraps text in: every tag [`build_refs`] opens, so
 /// [`esc`] escapes a spaced closer of each (`tests/panel_closers.rs`).
-pub const SECTIONS: [&str; 14] = [
+pub const SECTIONS: [&str; 15] = [
     "screen",
     "window",
     "repo",
@@ -82,6 +83,7 @@ pub const SECTIONS: [&str; 14] = [
     "code",
     "truncated",
     "session",
+    "agent",
     "conversation",
     "turn",
     "questions_left",
@@ -266,6 +268,54 @@ pub fn redact_screen(cap: &Capture) -> (String, String, usize) {
     (screen, name, n + m)
 }
 
+/// The work folder as the `<window>` line names it after the cwd (#1353), and the
+/// secrets it hid: the folder and its source when it is not the cwd; for an agent's
+/// window whose folder only the pane's cwd gave, that it is not confirmed; else
+/// nothing, as for a plain shell, whose cwd is its folder.
+fn window_work(cap: &Capture) -> (String, usize) {
+    let w = &cap.work;
+    if w.dir.is_empty() {
+        return (String::new(), 0);
+    }
+    if w.dir != cap.path {
+        let (dir, n) = redact_clean(&w.dir);
+        return (format!(" · work folder {} ({})", esc(&dir), w.source.as_str()), n);
+    }
+    let agent = cap.agent.is_some() || is_claude(&cap.name, &cap.cmd) || crate::data::agentish(&cap.cmd);
+    if agent && w.source == Source::PaneCwd {
+        (" · work folder not confirmed (pane-cwd)".to_string(), 0)
+    } else {
+        (String::new(), 0)
+    }
+}
+
+/// Explain's `<agent>` part (#1353): the board's state and model as attributes, then its
+/// doing, asked and the work folder with its source, a line each when known. The text is
+/// the agent's, so it is redacted, cleaned and escaped as the screen is; the secrets it
+/// hid come back with it. `None` without the board's facts.
+fn agent_part(cap: &Capture) -> Option<(String, usize)> {
+    let a = cap.agent.as_ref()?;
+    let state = if a.state.is_empty() { "unknown" } else { &a.state };
+    let attr = |s: &str| esc(&sanitize(s)).replace('"', "&quot;");
+    let mut head = format!("<agent state=\"{}\"", attr(state));
+    if !a.model.is_empty() {
+        head.push_str(&format!(" model=\"{}\"", attr(&a.model)));
+    }
+    let mut hidden = 0;
+    let mut body = String::new();
+    let mut line = |label: &str, text: &str, tail: &str| {
+        if !text.is_empty() {
+            let (t, n) = redact_clean(text);
+            hidden += n;
+            body.push_str(&format!("{label}: {}{tail}\n", esc(&t)));
+        }
+    };
+    line("doing", &a.doing, "");
+    line("asked", &a.asked, "");
+    line("work folder", &cap.work.dir, &format!(" ({})", cap.work.source.as_str()));
+    Some((format!("{head}>\n{body}</agent>"), hidden))
+}
+
 /// [`build_parts`], and for a Write with the basket's refs (#365 child 5) a
 /// `<refs>` block before the request. No other flow carries it.
 ///
@@ -275,6 +325,7 @@ pub fn redact_screen(cap: &Capture) -> (String, String, usize) {
 /// boundary before one.
 ///
 /// Redacted: the screen, the window's name and the pane's path (#937), the
+/// work folder and Explain's `<agent>` text (#1353, counted in `screen_hidden`), the
 /// repo block, an Ask's code and the turns. The window's command is a
 /// program's name (`#{pane_current_command}`, never the start command), so it
 /// is only cleaned. A ref and an Ask's path are files the user chose, and are
@@ -295,8 +346,9 @@ pub fn build_refs(flow: &Flow, cap: &Capture, turns: &[Turn], questions_left: us
             let shown = if screen.is_empty() { "(empty)" } else { &screen };
             parts.push(format!("<screen window=\"{window}\">\n{shown}\n</screen>"));
             let (path, path_hidden) = redact_clean(&cap.path);
-            screen_hidden = on_screen + path_hidden;
-            parts.push(format!("<window>{name} · {cmd} · {}</window>", esc(&path)));
+            let (work, work_hidden) = window_work(cap);
+            screen_hidden = on_screen + path_hidden + work_hidden;
+            parts.push(format!("<window>{name} · {cmd} · {}{work}</window>", esc(&path)));
             let repo = cap.repo.get();
             if !repo.is_empty() {
                 // Its commit messages and file names carry secrets as a screen
@@ -350,6 +402,10 @@ pub fn build_refs(flow: &Flow, cap: &Capture, turns: &[Turn], questions_left: us
                     st.as_str(),
                     st.text()
                 ));
+            }
+            if let Some((part, n)) = agent_part(cap) {
+                screen_hidden += n;
+                parts.push(part);
             }
         }
     }
