@@ -26,7 +26,17 @@ LOG=${COCKPIT_LOG:-${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/tui.log}
 . "$DIR/scripts/lib/basket.sh" || exit 1
 # shellcheck source=lib/tmpdir.sh
 . "$DIR/scripts/lib/tmpdir.sh" || exit 1
+# shellcheck source=lib/workdir.sh
+. "$DIR/scripts/lib/workdir.sh" || exit 1
 BIN=$COCKPIT_TUI_BIN
+
+# The folder the pane works in (#1344): the binary's answer (workdir_ask, bounded), else
+# the pane's cwd. A new session or a move to another repo changes it, the command stays.
+pane_wd() {                   # <pane> -> a folder, or nothing
+    local w; w=$(workdir_ask "$1")
+    [ -n "$w" ] || w=$(tmux display -p -t "$1" '#{pane_current_path}' 2>/dev/null)
+    printf '%s' "$w"
+}
 
 # $EPOCHREALTIME needs bash 5, and no portable `date` flag gives microseconds.
 log() {
@@ -89,7 +99,9 @@ HDIR=${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/panel
 spid=$(tmux display -p '#{pid}' 2>/dev/null) saved='' dropped=''
 case "$spid" in ''|*[!0-9]*) ;; *) saved="$HDIR/$spid-${PANE#%}.state" ;; esac
 if [ -n "$saved" ] && [ -d "$HDIR" ]; then
-    find "$HDIR" -maxdepth 1 -name '*.state' -mmin +1440 -exec rm -f {} + 2>/dev/null
+    # each hide's folder (#1344) lives beside it as <same>.wd, and goes with it
+    find "$HDIR" -maxdepth 1 \( -name '*.state' -o -name '*.wd' \) -mmin +1440 \
+        -exec rm -f {} + 2>/dev/null
     # This server's other panes: one that is gone can never be brought back.
     for s in "$HDIR/$spid-"*.state; do
         n=${s##*/"$spid"-}; n=${n%.state}
@@ -97,7 +109,7 @@ if [ -n "$saved" ] && [ -d "$HDIR" ]; then
         [ "%$n" = "$PANE" ] && continue
         # display exits 0 on a gone pane, printing nothing: the id is what tells
         [ "$(tmux display -p -t "%$n" '#{pane_id}' 2>/dev/null)" = "%$n" ] && continue
-        rm -f "$s" && dropped="$dropped %$n"
+        rm -f "$s" "${s%.state}.wd" && dropped="$dropped %$n"
     done
 fi
 # A private 0700 directory: a name beside a mktemp file in a shared /tmp is
@@ -113,7 +125,7 @@ trap 'rm -rf "$d"' EXIT
 # The action, run the way the binary asked; `last` says how it went, for a resume.
 act() {
     # One line, `<verb> <pane-id>`; see cockpit-board for why the read is shaped so.
-    local verb='' target='' rest='' bad='' want='' now='' before='' err n i
+    local verb='' target='' rest='' bad='' want='' now='' nwd='' before='' err n i
     read -r verb target rest 2>/dev/null < "$f"
     [ -n "$verb" ] || return 1
     [ -z "$rest" ] || bad=1
@@ -143,6 +155,15 @@ act() {
             -t "$target"
         log "$target now runs [$now], not [$want]; nothing sent"
         last="failed:the pane now runs ${now:-nothing}, not ${want:-?}"
+        return 0
+    fi
+    # The same command in another folder is another session or repo (#1344).
+    nwd=$(pane_wd "$target")
+    if [ "$nwd" != "$wd" ]; then
+        said fail "cockpit: the pane's folder is now ${nwd:-?}, not ${wd:-?}; nothing sent" \
+            -t "$target"
+        log "$target folder is now [$nwd], not [$wd]; nothing sent"
+        last="failed:the pane's folder is now ${nwd:-?}, not ${wd:-?}"
         return 0
     fi
     if ! err=$(strip | tmux load-buffer -b "$buf" - 2>&1); then
@@ -194,6 +215,15 @@ kept=''; [ -n "$saved" ] && { [ -e "$saved" ] || [ -L "$saved" ]; } && kept=1
 if [ "${#ask[@]}" -eq 0 ] && [ -n "$kept" ] && mv -f "$saved" "$d/resume" 2>/dev/null; then
     resume=(--resume "$d/resume" --last hidden)
 fi
+# The folder the answer is for (#1344): a resumed panel's is the one it was opened on, kept
+# beside its state. A hide from before #1344 has none, and takes the folder of now.
+wd='' wdf=${saved:+${saved%.state}.wd}
+if [ "${#resume[@]}" -gt 0 ] && [ -f "$wdf" ] && mv -f "$wdf" "$d/resume.wd" 2>/dev/null; then
+    IFS= read -r -d '' wd < "$d/resume.wd"
+else
+    [ "${#resume[@]}" -eq 0 ] || log "no folder kept with the hidden panel of $PANE; taking now's"
+    wd=$(pane_wd "$PANE")
+fi
 # the pane keeps one hidden panel: an ask opened beside it is told, so its ^Z refuses
 taken=''; [ "${#ask[@]}" -gt 0 ] && [ -n "$kept" ] && taken=1
 glyphs=$(tmux show-option -gqv @cockpit_glyphs 2>/dev/null)   # #293: the binary reads only the env
@@ -226,6 +256,9 @@ while :; do
             exit 0
         fi
         if [ -n "$saved" ] && mkdir -p "$HDIR" 2>/dev/null && chmod 700 "$HDIR" 2>/dev/null && mv -f "$f.state" "$saved"; then
+            # the folder it was opened on goes with it (#1344)
+            printf '%s' "$wd" > "$wdf" 2>/dev/null ||
+                log "could not keep the folder of the hidden panel of $PANE at [$wdf]"
             # The key bound with the note "cockpit: panel", read from the binding as the
             # jump notice reads its key (#1109): the record alone named a key moved by hand,
             # stock find-window's f (#1112). Two noted: the recorded one (cockpit_noted_key,
