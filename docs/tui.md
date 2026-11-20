@@ -3199,11 +3199,13 @@ close it, `↑↓` `j` `k` `PgUp` `PgDn` scroll, `?` lists the keys.
 `{"dir":"<path>","source":"<source>"}`: the work dir by the board's rule (`dir` in
 `--json` above) and its source as `workdir --source` prints it (#1355), for scripts.
 The screen's root, base and review dir follow that work dir (#500), as `prefix r`
-does since it asks `workdir` for its tree (#470). The screen, `info --json` and
-`workdir` name the same folder and source for every pane: an agent's comes off the
-board's own row and candidates, never a `claude agents` lookup, and a pane the board
-does not count has `@cockpit_dir`, else `@cockpit_cwd`, else its cwd (#1355). The
-`doing`, `said` and `asked` rows may still ask `claude agents` for the transcript.
+does since it asks `workdir` for its tree (#470). For an agent's pane, the screen and
+`info --json` name the folder and source `workdir --source` prints, off the board's own
+row and candidates, never a `claude agents` lookup (#1355). `workdir` exits 1 where
+that folder is not on disk, and the screen still shows it. For a pane the board does
+not count, `workdir` exits 1 and the screen reads the folder as goto does:
+`@cockpit_dir`, else `@cockpit_cwd`, else its cwd. The `doing`, `said` and `asked`
+rows may still ask `claude agents` for the transcript.
 The path is decoded as lossy UTF-8, as
 every tmux read is: a byte that is not UTF-8 becomes U+FFFD. Exit 0 with the
 line; exit 1 and nothing on stdout when the pane is not there; exit 2 for a
