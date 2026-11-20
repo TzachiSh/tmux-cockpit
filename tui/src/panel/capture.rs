@@ -18,7 +18,8 @@ pub struct Capture {
     pub path: String,
     /// Raw, not redacted: the envelope redacts it on the way out.
     pub screen: String,
-    /// [`repo_state_within`] of `path`, raw like the screen; "" outside a repo.
+    /// [`repo_state_within`] of `work.dir` (#1352), raw like the screen; "" outside a
+    /// repo, and for a pane [`is_local`] refuses.
     pub repo: Repo,
     /// The pane's work folder by the shared rule, `crate::data::workdir` (#1343); `path`
     /// as a pane-cwd answer where that rule has none (not an agent's, no dir on disk).
@@ -61,10 +62,12 @@ pub fn capture_within(pane: &str, budget: Duration) -> Option<Capture> {
         lines.pop();
     }
     let screen = lines.join("\n");
-    let repo = if path.is_empty() || !is_local(&cmd) {
-        Repo::default()
+    // #429: a pane whose folder is not the one tmux reports gets no block. Started
+    // below, once the work folder is known (#1352).
+    let block_of = if path.is_empty() || !is_local(&cmd) {
+        None
     } else {
-        Repo::start(&path, &screen, budget)
+        Some(screen.clone())
     };
     let work = crate::data::workdir(pane).unwrap_or_else(|| {
         choose(&Candidates {
@@ -77,7 +80,7 @@ pub fn capture_within(pane: &str, budget: Duration) -> Option<Capture> {
         cmd,
         path,
         screen,
-        repo,
+        repo: block_of.map_or_else(Repo::default, |s| Repo::start(&work.dir, &s, budget)),
         work,
     })
 }
@@ -332,9 +335,10 @@ fn section(b: &mut String, head: &str, lines: &[&str], cap: usize) {
 }
 
 /// The git state of `dir` for the write call's `<repo>` block: branch, the
-/// work tree's root, short status, the last five commits, the diff stat
-/// against HEAD, and the paths on `screen` that exist, plus the `@/`, `~/` and
-/// `./` ones that do not. Plain git under `budget` (the panel's is
+/// work tree's root, whether that is the repo's main checkout or a linked
+/// worktree, short status, the last five commits, the diff stat against HEAD,
+/// and the paths on `screen` under the root that exist, plus the `@/`, `~/` and
+/// `./` ones there that do not (#1352). Plain git under `budget` (the panel's is
 /// [`REPO_BUDGET`]).
 ///
 /// "" when `dir` is not in a work tree, when the root or the filter config is
@@ -355,8 +359,10 @@ fn repo_work(dir: &str, screen: &str, end: Instant, send: &dyn Fn(String)) {
     if dir.is_empty() {
         return;
     }
-    // Shows the root and that `dir` is in a work tree; it runs no filter.
-    let top = spawn_git(dir, &[], &["rev-parse", "--show-toplevel"]);
+    // Shows the root and that `dir` is in a work tree, and its git dirs for the
+    // checkout kind (#1352); it runs no filter.
+    let dirs = ["--path-format=absolute", "--git-common-dir", "--absolute-git-dir"];
+    let top = spawn_git(dir, &[], &[&["rev-parse", "--show-toplevel"][..], &dirs].concat());
     // `git config` exits 1 when nothing matches, so only a timeout fails here.
     let cfg = match finish(spawn_git(dir, &[], &FILTER_CONFIG), end, "config") {
         Ran::Ok(s) => s,
@@ -374,8 +380,19 @@ fn repo_work(dir: &str, screen: &str, end: Instant, send: &dyn Fn(String)) {
     let status = spawn_git(dir, &filters, &["status", "--short", "--branch", sub]);
     let log = spawn_git(dir, &filters, &["log", "-5", "--oneline", "--no-decorate"]);
     let diff = spawn_git(dir, &filters, &["diff", "--stat", "--no-ext-diff", "--no-textconv", sub, "HEAD"]);
-    let Some(top) = finish(top, end, "rev-parse").ok() else {
+    let Some(revs) = finish(top, end, "rev-parse").ok() else {
         return;
+    };
+    let mut revs = revs.lines();
+    let top = revs.next().unwrap_or_default().trim();
+    // Same dirs: the repo's own checkout, a submodule's too. Else a linked worktree.
+    // No line where git gave no two absolute dirs: a git before 2.31 echoes an
+    // unknown `--path-format` back.
+    let checkout = match (revs.next(), revs.next()) {
+        (Some(c), Some(g)) if c.starts_with('/') && g.starts_with('/') => {
+            format!("checkout: {}\n", if c == g { "main" } else { "linked worktree" })
+        }
+        _ => String::new(),
     };
     let (status, log, diff) = (finish(status, end, "status"), finish(log, end, "log"), finish(diff, end, "diff"));
     let log = log.ok().filter(|l| !l.trim().is_empty());
@@ -393,7 +410,7 @@ fn repo_work(dir: &str, screen: &str, end: Instant, send: &dyn Fn(String)) {
                     None => h.into(),
                 },
             };
-            b.push_str(&format!("branch: {branch}\nroot: {}\n", top.trim()));
+            b.push_str(&format!("branch: {branch}\nroot: {top}\n{checkout}"));
             let changed: Vec<&str> = lines.collect();
             if changed.is_empty() {
                 b.push_str("status: clean\n");
@@ -401,7 +418,7 @@ fn repo_work(dir: &str, screen: &str, end: Instant, send: &dyn Fn(String)) {
                 section(&mut b, "status:", &changed, STATUS_CAP);
             }
         }
-        Ran::TimedOut => b.push_str(&format!("branch: unknown\nroot: {}\nstatus: timed out\n", top.trim())),
+        Ran::TimedOut => b.push_str(&format!("branch: unknown\nroot: {top}\n{checkout}status: timed out\n")),
         Ran::Failed(_) => return,
     }
     if let Some(log) = log {
@@ -417,6 +434,7 @@ fn repo_work(dir: &str, screen: &str, end: Instant, send: &dyn Fn(String)) {
     send(b.trim_end().to_string());
     let paths = screen_paths(screen);
     let home = std::env::var("HOME").unwrap_or_default();
+    let root = std::fs::canonicalize(top).ok();
     let mut seen: Vec<String> = Vec::new();
     for t in &paths {
         if Instant::now() >= end {
@@ -428,6 +446,10 @@ fn repo_work(dir: &str, screen: &str, end: Instant, send: &dyn Fn(String)) {
             None if bare.starts_with('/') => bare.to_string(),
             None => Path::new(dir).join(bare).display().to_string(),
         };
+        // #1352: no answer about a file outside the repo, ~/.ssh say
+        if !root.as_deref().is_some_and(|r| under(r, Path::new(&p))) {
+            continue;
+        }
         if Path::new(&p).exists() {
             seen.push(format!("exists: {t}"));
         } else if ["@/", "~/", "./"].iter().any(|x| t.starts_with(x)) {
@@ -440,6 +462,15 @@ fn repo_work(dir: &str, screen: &str, end: Instant, send: &dyn Fn(String)) {
         section(&mut b, "paths on screen:", &seen, PATHS_CAP);
         send(b.trim_end().to_string());
     }
+}
+
+/// `p` is in `root` (a resolved path): its nearest folder or file that exists, with
+/// every link resolved, is `root` or below it. A path through a link out of the
+/// repo is outside, a missing file's answer is its folder's.
+fn under(root: &Path, p: &Path) -> bool {
+    p.ancestors()
+        .find_map(|a| std::fs::canonicalize(a).ok())
+        .is_some_and(|real| real.starts_with(root))
 }
 
 /// `name.ext`, an extension of one to eight letters or digits, not all digits.
