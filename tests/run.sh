@@ -1205,6 +1205,7 @@ SP="cockpit-sp-$$"; SPO="cockpit-spo-$$"; SOCKS="$SOCKS $SP $SPO"; SPD=$(mktmpd)
 # The board passes no pane to the binary, so for it the stub logs its caller's -p.
 cat > "$SPD/cockpit-tui" <<STUB
 #!/bin/sh
+[ "\$1" = workdir ] && exit 1
 [ "\$1" = --version ] && { echo "cockpit-tui 9.9.9"; exit 0; }
 [ "\$1" = board ] && set -- board "\$(ps -o args= -p \$PPID | grep -o -- '-p %[0-9]*')"
 printf '%s\\n' "\$*" >> "$SPD/log"
@@ -11198,8 +11199,9 @@ WDST=$(wd_pane snooze)
 is "a pane carrying @panestate is an agent whatever it runs, so it is asked" "1 $WD/other" \
    "$(wd_ct ok "$WDST")"
 "$TMUX_REAL" -L "$WDS" set -p -t "$WDP" @cockpit_dir "$WD/launch" >/dev/null 2>&1
-is "a pane whose @cockpit_dir holds is not asked: that is the binary's first pick" \
-   "0 $WD/launch" "$(wd_ct ok "$WDP")"
+# #462: a fresh active-in tree outranks a hook-written @cockpit_dir, so the binary decides
+is "a pane whose @cockpit_dir holds is asked too: the binary's rule decides (#462)" \
+   "1 $WD/other" "$(wd_ct ok "$WDP")"
 "$TMUX_REAL" -L "$WDS" set -p -t "$WDP" @cockpit_dir launch >/dev/null 2>&1
 is "a relative @cockpit_dir does not hold, so the binary is asked" "1 $WD/other" \
    "$(wd_ct ok "$WDP")"
@@ -16598,6 +16600,7 @@ PNREC
 # never be what gets pasted.
 cat > "$PND/p/bin/cockpit-tui" <<PNSTUB
 #!/bin/sh
+[ "\$1" = workdir ] && exit 1
 dir=\${COCKPIT_ACTION%/*}
 { stat -c %a "\$dir" 2>/dev/null || stat -f %Lp "\$dir"; } > "$PND/dmode"
 printf evil > "\$COCKPIT_ACTION.clean"
@@ -16918,8 +16921,9 @@ done
 # #1121: the binary is told that key too, as COCKPIT_PANEL_KEY, for its ^Z help. None noted
 # passes none, and a value from the caller's environment does not reach it. A stub binary
 # records what it got.
-printf '#!/bin/sh\nprintf "[%%s]" "${COCKPIT_PANEL_KEY-unset}" > %s\n' "$(tq "$PHD/pkey")" \
-    > "$PHD/keytui"; chmod +x "$PHD/keytui"
+{ printf '#!/bin/sh\n[ "$1" = workdir ] && exit 1\n'
+  printf 'printf "[%%s]" "${COCKPIT_PANEL_KEY-unset}" > %s\n' "$(tq "$PHD/pkey")"
+} > "$PHD/keytui"; chmod +x "$PHD/keytui"
 ph_pkey() {                   # [env words] -> [the COCKPIT_PANEL_KEY the binary got]
     rm -f "$PHD/pkey"
     "$TMUX_REAL" -L "$PH" new-window -d -t t: -c "$PHD" "$PHENV ${1:-} \
@@ -20487,8 +20491,9 @@ echo "== cockpit-panel: @cockpit_glyphs reaches the binary as COCKPIT_GLYPHS (#2
 # (#272); the stub records both, so neither can fall out of the merged line.
 if need_tmux "the panel's glyphs"; then :; else
 GP="cockpit-gp-$$"; SOCKS="$SOCKS $GP"; GPD=$(mktmpd)
-printf '#!/bin/sh\nprintf "[%%s] D=[%%s]" "${COCKPIT_GLYPHS:-}" "${COCKPIT_PANEL_DROPPED:-}" > %s\n' \
-    "$(tq "$GPD/g")" > "$GPD/bin"; chmod +x "$GPD/bin"
+{ printf '#!/bin/sh\n[ "$1" = workdir ] && exit 1\n'
+  printf 'printf "[%%s] D=[%%s]" "${COCKPIT_GLYPHS:-}" "${COCKPIT_PANEL_DROPPED:-}" > %s\n' \
+    "$(tq "$GPD/g")"; } > "$GPD/bin"; chmod +x "$GPD/bin"
 "$TMUX_REAL" -L "$GP" -f /dev/null new-session -d -s t -x 100 -y 30 \
     'exec sleep 3600' >/dev/null 2>&1
 GPP=$("$TMUX_REAL" -L "$GP" list-panes -t t -F '#{pane_id}')
@@ -20519,7 +20524,8 @@ echo "== cockpit-panel: @cockpit_panel_effort reaches the binary as COCKPIT_PANE
 # only the CLI's words, so the wrapper passes the value as it is, as one word.
 if need_tmux "the panel's effort"; then :; else
 GE="cockpit-ge-$$"; SOCKS="$SOCKS $GE"; GED=$(mktmpd)
-printf '#!/bin/sh\nprintf "[%%s]" "${COCKPIT_PANEL_EFFORT-unset}" > %s\n' "$(tq "$GED/e")" > "$GED/bin"
+{ printf '#!/bin/sh\n[ "$1" = workdir ] && exit 1\n'
+  printf 'printf "[%%s]" "${COCKPIT_PANEL_EFFORT-unset}" > %s\n' "$(tq "$GED/e")"; } > "$GED/bin"
 chmod +x "$GED/bin"
 "$TMUX_REAL" -L "$GE" -f /dev/null new-session -d -s t -x 100 -y 30 -c "$GED" 'exec sleep 3600' \
     >/dev/null 2>&1
@@ -27884,6 +27890,79 @@ esac
 unset -f wr_run wr_rec wr_shown wr_ran wr_bt
 fi
 
+echo "== a session's cd into another tree makes that tree its work folder (#462) =="
+# Claude Code keeps the session's cwd where it launched, so a `cd X && ...` in a Bash call
+# moves neither the hooks' cwd nor the transcript's. The binary reads the transcript's tool
+# calls instead: the newest that reached a git tree under 600 s ago names it, as `active-in`.
+# The pane is an agent's whose hooks wrote @cockpit_dir = @cockpit_cwd = the launch folder;
+# its transcript, synthetic, is one prompt and one tool call of a given age. The stub in the
+# binary's place hands `workdir` to the real one and writes any other argv it is handed.
+if need_tmux "active-in work folder"; then :; else
+AI=$(cd "$(mktmpd)" && pwd -P); AIS="cockpit-ai-$$"; SOCKS="$SOCKS $AIS"
+AIL="$AI/launch"; AIA="$AI/tree a"; AIB="$AI/tree-b"; AIC="$AI/tree-c"
+AIT="$AI/cfg/projects/-p/s1.jsonl"
+mkdir -p "$AI/bin" "$AI/home" "$AI/cfg/projects/-p" "$AIL" "$AIA/sub" "$AIB" "$AIC"
+for d in "$AIL" "$AIA" "$AIB" "$AIC"; do git init -q "$d" >/dev/null 2>&1; done
+cat > "$AI/bin/cockpit-tui" <<STUB
+#!/bin/sh
+[ "\$1" != workdir ] || exec $(tq "$COCKPIT_TUI_BIN") "\$@"
+printf '%s\n' "\$*" > "$AI/tui.args"
+exit 1
+STUB
+cat > "$AI/bin/tmux" <<STUB
+#!/bin/sh
+[ "\$1" != display-popup ] || exit 0
+exec "$TMUX_REAL" -L "$AIS" "\$@"
+STUB
+chmod +x "$AI/bin/cockpit-tui" "$AI/bin/tmux"
+fresh_server -L "$AIS" -f /dev/null -- -d -s t -x 80 -y 24 -c "$AIL" 'exec sleep 300'
+AIP=$("$TMUX_REAL" -L "$AIS" list-panes -t t -F '#{pane_id}')
+for o in "@cockpit_dir $AIL" "@cockpit_cwd $AIL" "@panestate idle" "@cockpit_session s1" \
+         "@cockpit_transcript $AIT"; do
+    "$TMUX_REAL" -L "$AIS" set -p -t "$AIP" "${o%% *}" "${o#* }"
+done
+sock_path "$AIS" AISOCK
+ai_ts() {                     # <age s> -> that many seconds ago, as Claude Code stamps a row
+    local n=$(( $(date +%s) - $1 ))
+    local f=+%Y-%m-%dT%H:%M:%S.000Z
+    date -u -d "@$n" "$f" 2>/dev/null || date -u -r "$n" "$f"
+}
+ai_tx() {                     # <age s> <tool> <input json>: the transcript, its call that old
+    local t; t=$(ai_ts "$1")
+    printf '{"type":"user","timestamp":"%s","cwd":"%s","message":{"content":"go"}}\n' \
+        "$t" "$AIL" > "$AIT"
+    printf '{"type":"assistant","timestamp":"%s","cwd":"%s","message":{"content":[%s]}}\n' \
+        "$t" "$AIL" "{\"type\":\"tool_use\",\"id\":\"u1\",\"name\":\"$2\",\"input\":$3}" >> "$AIT"
+}
+ai_env() {                    # <cmd...> on the block's server, from $AI, its config dir scratch
+    ( cd "$AI" && env PATH="$AI/bin:$PATH" HOME="$AI/home" CLAUDE_CONFIG_DIR="$AI/cfg" \
+        TMUX="$AISOCK,0,0" timeout 20 "$@" </dev/null 2>/dev/null )
+}
+ai_src() { ai_env "$COCKPIT_TUI_BIN" workdir --source "$AIP"; }
+AICD=$(printf '{"command":"cd \\"%s/sub\\" && git status"}' "$AIA")
+
+ai_tx 30 Bash "$AICD"
+is "a fresh cd into a subfolder of another tree names that tree, as active-in" \
+   "$AIA"$'\t'active-in "$(ai_src)"
+rm -f "$AI/tui.args"
+COCKPIT_TUI_BIN="$AI/bin/cockpit-tui" ai_env "$DIR/scripts/tmux-open-path" --browse "$AIP" \
+    >/dev/null
+is "the files browser, a shell reader, opens that tree" "files $AIA" \
+   "$(cat "$AI/tui.args" 2>/dev/null)"
+is "the board's row names that tree as the pane's dir" "$AIA" \
+   "$(ai_env "$COCKPIT_TUI_BIN" --json | jq -r --arg p "$AIP" '.[] | select(.id == $p).dir')"
+is "with no binary, a shell reader keeps @cockpit_dir" "$AIL" \
+   "$(COCKPIT_TUI_BIN="$AI/none" ai_env "$DIR/scripts/tmux-review" --dir "$AIP")"
+ai_tx 700 Bash "$AICD"
+is "a cd 700 s old is past 600 s: the session's folder stands" "$AIL"$'\t'session "$(ai_src)"
+ai_tx 30 Bash "$(printf '{"command":"git -C %s log -1"}' "$AIB")"
+is "a fresh git -C names its tree" "$AIB"$'\t'active-in "$(ai_src)"
+ai_tx 30 Edit "$(printf '{"file_path":"%s/src/x.rs","old_string":"a"}' "$AIC")"
+is "a fresh Edit of a file names the tree that holds it" "$AIC"$'\t'active-in "$(ai_src)"
+"$TMUX_REAL" -L "$AIS" kill-server >/dev/null 2>&1
+unset -f ai_ts ai_tx ai_env ai_src
+fi
+
 echo "== cargo's test runner refuses gh as it refuses claude, and names which (#1346) =="
 # The panel starts gh by PATH to read PRs, issues and CI (#1000), and a test that reached the
 # developer's gh would call GitHub with their login. tui/tests/claude-guard/runner, which cargo
@@ -27952,6 +28031,101 @@ rg_s=$(rg_run 0 "$RG_GH")
 is "COCKPIT_TEST_CLAUDE_GUARD=0 lifts the gh guard with the claude guard" "0||1" \
     "$rg_s|$(cat "$RG/err")|$(rg_started own/gh)"
 unset -f rg_bin rg_run rg_rec rg_n rg_started rg_msg rg_field
+
+echo "== cockpit-panel: the paste guard refuses a pane whose folder moved (#1344) =="
+# The wrapper on a private server with a stub binary: `workdir` answers $PGD/wd, and the panel
+# prints a paste. With $PGD/moveto it moves the folder while the panel is open. Every outcome
+# is the note the wrapper leaves, the board's route for the status-line message.
+if need_tmux "the paste guard's folder"; then :; else
+PG="cockpit-pg-$$"; SOCKS="$SOCKS $PG"; PGD="$(mktmpd)/p g"
+mkdir -p "$PGD/a" "$PGD/b" "$PGD/state"
+is "the block's own folder has a blank in its name" "blank" \
+   "$(case "${PGD##*/}" in *' '*) echo blank ;; *) echo "none in ${PGD##*/}" ;; esac)"
+cat > "$PGD/tui" <<PGSTUB
+#!/bin/sh
+case \$1 in
+workdir) cat "$PGD/wd" 2>/dev/null; exit 0 ;;
+panel) ;;
+*) exit 2 ;;
+esac
+cat "$PGD/cmd" > "\$COCKPIT_ACTION.cmd"
+# A hide on a first run: a state, no action line.
+if [ -e "$PGD/hide" ] && [ "\${3:-}" != --resume ]; then
+    printf 'S\n' > "\$COCKPIT_ACTION.state"; : > "\$COCKPIT_ACTION"; exit 0
+fi
+printf 'paste %s\n' "\$2" > "\$COCKPIT_ACTION"; printf 'from the panel' > "\$COCKPIT_ACTION.text"
+[ -e "$PGD/moveto" ] && cp "$PGD/moveto" "$PGD/wd"
+# With \$PGD/cdto the pane's shell moves instead; the move is awaited, at most POLLS polls.
+if [ -e "$PGD/cdto" ]; then
+    tmux send-keys -t "\$2" -l "cd ../b" \; send-keys -t "\$2" Enter
+    i=0; while [ "\$i" -lt $POLLS ]; do
+        [ "\$(tmux display -p -t "\$2" '#{b:pane_current_path}')" = b ] && break
+        sleep 0.1; i=\$((i + 1))
+    done
+fi
+exit 0
+PGSTUB
+chmod +x "$PGD/tui"
+"$TMUX_REAL" -L "$PG" -f /dev/null new-session -d -s t -x 120 -y 40 -c "$PGD" \
+    'exec sleep 300' >/dev/null 2>&1
+PGENV="env -u COCKPIT_CLAUDE $(tq "PATH=$SHIM:/usr/bin:/bin") COCKPIT_TUI_BIN=$(tq "$PGD/tui")"
+PGENV="$PGENV XDG_STATE_HOME=$(tq "$PGD/state") COCKPIT_LOG=$(tq "$PGD/tui.log")"
+PGENV="$PGENV COCKPIT_PANEL_NOTE=$(tq "$PGD/note")"
+pg_run() {                    # <target>  -> the note the wrapper left once it exited
+    local p i
+    : > "$PGD/note"
+    p=$("$TMUX_REAL" -L "$PG" new-window -d -P -F '#{pane_id}' -t t: -c "$PGD" \
+        "$PGENV $(tq "$DIR/scripts/cockpit-panel") -p $1")
+    for i in $(seq 1 "$POLLS"); do
+        "$TMUX_REAL" -L "$PG" list-panes -a -F '#{pane_id}' | grep -qx "$p" || break
+        sleep 0.1
+    done
+    cat "$PGD/note"
+}
+pg_pane() {                   # <cmd> <dir> -> a new pane's id and what it runs, once it does
+    local p
+    p=$("$TMUX_REAL" -L "$PG" new-window -d -P -F '#{pane_id}' -t t: -c "$2" "$1")
+    until_out "?*" "$TMUX_REAL" -L "$PG" display -p -t "$p" '#{pane_current_command}' >/dev/null
+    "$TMUX_REAL" -L "$PG" display -p -t "$p" '#{pane_current_command}' > "$PGD/cmd"
+    printf '%s' "$p"
+}
+pgt=$(pg_pane 'exec cat' "$PGD")
+cp "$PGD/cmd" "$PGD/cmd-cat"
+printf '%s' "$PGD/a" > "$PGD/wd"; printf '%s' "$PGD/b" > "$PGD/moveto"
+is "a folder moved while the panel was open: nothing sent, both folders named" \
+   "✕ cockpit: the pane's folder is now $PGD/b, not $PGD/a; nothing sent" "$(pg_run "$pgt")"
+rm -f "$PGD/moveto"; printf '%s' "$PGD/a" > "$PGD/wd"
+is "the same folder at open and paste: the paste goes through" \
+   "cockpit: inserted 14 chars into $pgt" "$(pg_run "$pgt")"
+# Hidden on ^Z, the folder it was opened on is kept beside the state, and a resume uses it.
+pgs=$("$TMUX_REAL" -L "$PG" display -p '#{pid}')
+pgw="$PGD/state/tmux-cockpit/panel/$pgs-${pgt#%}.wd"
+touch "$PGD/hide"; pg_run "$pgt" >/dev/null
+is "a hide keeps the folder it was opened on beside its state" "$PGD/a" "$(cat "$pgw")"
+printf '%s' "$PGD/b" > "$PGD/wd"
+is "a resumed panel compares against that folder, not the one at resume" \
+   "✕ cockpit: the pane's folder is now $PGD/b, not $PGD/a; nothing sent" "$(pg_run "$pgt")"
+printf '%s' "$PGD/a" > "$PGD/wd"; pg_run "$pgt" >/dev/null
+is "a resumed panel in the folder it was opened on pastes" \
+   "cockpit: inserted 14 chars into $pgt" "$(pg_run "$pgt")"
+rm -f "$PGD/hide"
+# No answer from `workdir`: the pane's cwd is the folder, and a cd in the pane is caught.
+rm -f "$PGD/wd"; touch "$PGD/cdto"
+pgc=$(pg_pane 'exec sh' "$PGD/a")
+pga=$(cd -P "$PGD/a" && pwd) pgb=$(cd -P "$PGD/b" && pwd)
+is "with no answer from workdir, a cd in the pane is caught by its cwd" \
+   "✕ cockpit: the pane's folder is now $pgb, not $pga; nothing sent" "$(pg_run "$pgc")"
+rm -f "$PGD/cdto"
+# A gone pane's hide goes with its folder.
+cp "$PGD/cmd-cat" "$PGD/cmd"
+: > "$PGD/state/tmux-cockpit/panel/$pgs-9999.state"
+: > "$PGD/state/tmux-cockpit/panel/$pgs-9999.wd"
+printf '%s' "$PGD/a" > "$PGD/wd"; pg_run "$pgt" >/dev/null
+is "a gone pane's hidden state and its folder are both swept" "" \
+   "$(ls "$PGD/state/tmux-cockpit/panel" | grep '9999')"
+"$TMUX_REAL" -L "$PG" kill-server >/dev/null 2>&1
+unset -f pg_run pg_pane
+fi
 
 flop_left
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
