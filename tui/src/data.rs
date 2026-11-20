@@ -1,4 +1,6 @@
 //! tmux and transcript reads. The frozen contract (#61) is "The freeze" in docs/tui.md.
+// the one rule for a pane that runs Claude Code (#1359)
+pub mod agentid;
 pub mod agents;
 pub mod fleet;
 // the board's transcript fold (#492)

@@ -5,6 +5,7 @@
 mod fake;
 
 use cockpit_tui::basket;
+use cockpit_tui::data::agentid;
 use std::process::Command;
 
 struct Server {
@@ -81,6 +82,9 @@ fn rows_under(s: &Server, glob: Option<&str>, rows: &[Row]) {
         t.spawn(|| {
             for (r, pane) in rows.iter().zip(&panes) {
                 assert_eq!(basket::is_claude(pane), r.4, "{} under {glob:?} ({pane})", r.0);
+                // the board's agent verdict and the command, through the shared rule
+                let agent = cockpit_tui::data::is_agent(pane);
+                assert_eq!(agentid::is_claude(r.2, agent), r.4, "{}: the rule ({pane})", r.0);
             }
         });
     });
