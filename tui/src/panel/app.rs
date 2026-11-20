@@ -355,8 +355,8 @@ pub struct App {
     /// from the collector the panel holds for its life. `None` collects nothing:
     /// [`App::new`] installs none, the panel's `main` does.
     pub changes: Option<Looks>,
-    /// A panel on a real pane, set by main after [`App::new`] (#1354); a fixture's is
-    /// false.
+    /// A panel on a real pane, set by main after [`App::new`] (#1354): it reads its
+    /// pane again before each call, off the UI thread. A fixture's is false.
     pub live: bool,
     /// The envelope on its way from the thread [`App::busy`] started.
     building: Option<std::sync::mpsc::Receiver<Envelope>>,
@@ -1253,18 +1253,24 @@ impl App {
         let Some(r) = self.run.as_ref() else {
             return self.counted(None);
         };
-        if self.cap.repo.try_get().is_some() {
-            // the repo block is known: built here, its counts read at once
+        if !self.live && self.cap.repo.try_get().is_some() {
+            // a fixture whose repo block is known: built here, its counts read at once
             let e = self.envelope(r);
             return self.counted(Some(&e));
         }
-        // The repo block may still be in git's hands, up to REPO_BUDGET (#1354, #1342
-        // amendment 10): the envelope is built on a thread and launch() takes it.
+        // The repo block may still be in git's hands, up to REPO_BUDGET (#1342 amendment
+        // 10), and a live panel reads its pane again before each call (amendment 9): the
+        // envelope is built on a thread and launch() takes it (#1354).
         let left = r.max.saturating_sub(r.rounds);
         let (flow, turns, refs) = (r.flow.clone(), r.turns.clone(), self.write_refs(&r.flow));
-        let cap = self.cap.clone();
+        let (mut cap, live, pane) = (self.cap.clone(), self.live, self.pane.clone());
         let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || drop(tx.send(build_refs(&flow, &cap, &turns, left, &refs))));
+        std::thread::spawn(move || {
+            if live {
+                cap.refresh(&pane);
+            }
+            drop(tx.send(build_refs(&flow, &cap, &turns, left, &refs)))
+        });
         self.building = Some(rx);
         self.counted(None);
     }
