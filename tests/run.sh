@@ -11198,8 +11198,9 @@ WDST=$(wd_pane snooze)
 is "a pane carrying @panestate is an agent whatever it runs, so it is asked" "1 $WD/other" \
    "$(wd_ct ok "$WDST")"
 "$TMUX_REAL" -L "$WDS" set -p -t "$WDP" @cockpit_dir "$WD/launch" >/dev/null 2>&1
-is "a pane whose @cockpit_dir holds is not asked: that is the binary's first pick" \
-   "0 $WD/launch" "$(wd_ct ok "$WDP")"
+# #462: a fresh active-in tree outranks a hook-written @cockpit_dir, so the binary decides
+is "a pane whose @cockpit_dir holds is asked too: the binary's rule decides" \
+   "1 $WD/other" "$(wd_ct ok "$WDP")"
 "$TMUX_REAL" -L "$WDS" set -p -t "$WDP" @cockpit_dir launch >/dev/null 2>&1
 is "a relative @cockpit_dir does not hold, so the binary is asked" "1 $WD/other" \
    "$(wd_ct ok "$WDP")"
@@ -27882,6 +27883,79 @@ case "$("$TMUX_REAL" -L "$WRS" list-keys -T prefix b 2>/dev/null)" in
 esac
 "$TMUX_REAL" -L "$WRS" kill-server >/dev/null 2>&1
 unset -f wr_run wr_rec wr_shown wr_ran wr_bt
+fi
+
+echo "== a session's cd into another tree makes that tree its work folder (#462) =="
+# Claude Code keeps the session's cwd where it launched, so a `cd X && ...` in a Bash call
+# moves neither the hooks' cwd nor the transcript's. The binary reads the transcript's tool
+# calls instead: the newest that reached a git tree under 600 s ago names it, as `active-in`.
+# The pane is an agent's whose hooks wrote @cockpit_dir = @cockpit_cwd = the launch folder;
+# its transcript, synthetic, is one prompt and one tool call of a given age. The stub in the
+# binary's place hands `workdir` to the real one and writes any other argv it is handed.
+if need_tmux "active-in work folder"; then :; else
+AI=$(cd "$(mktmpd)" && pwd -P); AIS="cockpit-ai-$$"; SOCKS="$SOCKS $AIS"
+AIL="$AI/launch"; AIA="$AI/tree a"; AIB="$AI/tree-b"; AIC="$AI/tree-c"
+AIT="$AI/cfg/projects/-p/s1.jsonl"
+mkdir -p "$AI/bin" "$AI/home" "$AI/cfg/projects/-p" "$AIL" "$AIA/sub" "$AIB" "$AIC"
+for d in "$AIL" "$AIA" "$AIB" "$AIC"; do git init -q "$d" >/dev/null 2>&1; done
+cat > "$AI/bin/cockpit-tui" <<STUB
+#!/bin/sh
+[ "\$1" != workdir ] || exec $(tq "$COCKPIT_TUI_BIN") "\$@"
+printf '%s\n' "\$*" > "$AI/tui.args"
+exit 1
+STUB
+cat > "$AI/bin/tmux" <<STUB
+#!/bin/sh
+[ "\$1" != display-popup ] || exit 0
+exec "$TMUX_REAL" -L "$AIS" "\$@"
+STUB
+chmod +x "$AI/bin/cockpit-tui" "$AI/bin/tmux"
+fresh_server -L "$AIS" -f /dev/null -- -d -s t -x 80 -y 24 -c "$AIL" 'exec sleep 300'
+AIP=$("$TMUX_REAL" -L "$AIS" list-panes -t t -F '#{pane_id}')
+for o in "@cockpit_dir $AIL" "@cockpit_cwd $AIL" "@panestate idle" "@cockpit_session s1" \
+         "@cockpit_transcript $AIT"; do
+    "$TMUX_REAL" -L "$AIS" set -p -t "$AIP" "${o%% *}" "${o#* }"
+done
+sock_path "$AIS" AISOCK
+ai_ts() {                     # <age s> -> that many seconds ago, as Claude Code stamps a row
+    local n=$(( $(date +%s) - $1 ))
+    local f=+%Y-%m-%dT%H:%M:%S.000Z
+    date -u -d "@$n" "$f" 2>/dev/null || date -u -r "$n" "$f"
+}
+ai_tx() {                     # <age s> <tool> <input json>: the transcript, its call that old
+    local t; t=$(ai_ts "$1")
+    printf '{"type":"user","timestamp":"%s","cwd":"%s","message":{"content":"go"}}\n' \
+        "$t" "$AIL" > "$AIT"
+    printf '{"type":"assistant","timestamp":"%s","cwd":"%s","message":{"content":[%s]}}\n' \
+        "$t" "$AIL" "{\"type\":\"tool_use\",\"id\":\"u1\",\"name\":\"$2\",\"input\":$3}" >> "$AIT"
+}
+ai_env() {                    # <cmd...> on the block's server, from $AI, its config dir scratch
+    ( cd "$AI" && env PATH="$AI/bin:$PATH" HOME="$AI/home" CLAUDE_CONFIG_DIR="$AI/cfg" \
+        TMUX="$AISOCK,0,0" timeout 20 "$@" </dev/null 2>/dev/null )
+}
+ai_src() { ai_env "$COCKPIT_TUI_BIN" workdir --source "$AIP"; }
+AICD=$(printf '{"command":"cd \\"%s/sub\\" && git status"}' "$AIA")
+
+ai_tx 30 Bash "$AICD"
+is "a fresh cd into a subfolder of another tree names that tree, as active-in" \
+   "$AIA"$'\t'active-in "$(ai_src)"
+rm -f "$AI/tui.args"
+COCKPIT_TUI_BIN="$AI/bin/cockpit-tui" ai_env "$DIR/scripts/tmux-open-path" --browse "$AIP" \
+    >/dev/null
+is "the files browser, a shell reader, opens that tree" "files $AIA" \
+   "$(cat "$AI/tui.args" 2>/dev/null)"
+is "the board's row names that tree as the pane's dir" "$AIA" \
+   "$(ai_env "$COCKPIT_TUI_BIN" --json | jq -r --arg p "$AIP" '.[] | select(.id == $p).dir')"
+is "with no binary, a shell reader keeps @cockpit_dir" "$AIL" \
+   "$(COCKPIT_TUI_BIN="$AI/none" ai_env "$DIR/scripts/tmux-review" --dir "$AIP")"
+ai_tx 700 Bash "$AICD"
+is "a cd 700 s old is past 600 s: the session's folder stands" "$AIL"$'\t'session "$(ai_src)"
+ai_tx 30 Bash "$(printf '{"command":"git -C %s log -1"}' "$AIB")"
+is "a fresh git -C names its tree" "$AIB"$'\t'active-in "$(ai_src)"
+ai_tx 30 Edit "$(printf '{"file_path":"%s/src/x.rs","old_string":"a"}' "$AIC")"
+is "a fresh Edit of a file names the tree that holds it" "$AIC"$'\t'active-in "$(ai_src)"
+"$TMUX_REAL" -L "$AIS" kill-server >/dev/null 2>&1
+unset -f ai_ts ai_tx ai_env ai_src
 fi
 
 echo "== cargo's test runner refuses gh as it refuses claude, and names which (#1346) =="
