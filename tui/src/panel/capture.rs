@@ -532,12 +532,15 @@ fn repo_work(dir: &str, screen: &str, end: Instant, send: &dyn Fn(String)) {
     }
 }
 
-/// `p` is in `root` (a resolved path): its nearest folder or file that exists, with
-/// every link resolved, is `root` or below it. A path through a link out of the
-/// repo is outside, a missing file's answer is its folder's.
+/// `p` is in `root` (a resolved path): its nearest folder, file or link that is
+/// there, with every link resolved, is `root` or below it. A path through a link
+/// out of the repo is outside, a missing file's answer is its folder's. A link
+/// that resolves to nothing is outside too: its answer would tell whether its
+/// target exists, wherever that is (#1357).
 fn under(root: &Path, p: &Path) -> bool {
     p.ancestors()
-        .find_map(|a| std::fs::canonicalize(a).ok())
+        .find(|a| std::fs::symlink_metadata(a).is_ok())
+        .and_then(|a| std::fs::canonicalize(a).ok())
         .is_some_and(|real| real.starts_with(root))
 }
 
