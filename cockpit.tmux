@@ -407,8 +407,11 @@ tmux bind-key -n MouseUp1Pane select-pane -t= '\;' send-keys -M
 tmux bind-key -n MouseUp1Border select-pane -t=
 # A goto moves the pressing client, not the most recently active one (#360). The
 # popup cannot pass #{client_name}, so the key leaves it on the pane, as the board's.
+# The title names the folder the popup opens, the pane's work folder (#1345): run-shell,
+# without -b so the popup waits for it, keeps that folder's name on the pane.
 tmux bind-key b "${SRC_SET[@]}" set-option -pF @cockpit_branch_client '#{client_name}' '\;' \
-    display-popup -E -w "$PW" -h "$PH" -T ' switch branch · #{b:pane_current_path} ' \
+    run-shell "$(fesc "$Q_BRANCH") --title '#{pane_id}'" '\;' \
+    display-popup -E -w "$PW" -h "$PH" -T ' switch branch · #{@cockpit_branch_title} ' \
     "$PM$Q_BRANCH -p $SRC_PANE"
 
 # Replaces stock choose-tree on s; tmux 3.8 took g for its floating-pane menu.
