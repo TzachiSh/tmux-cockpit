@@ -11199,7 +11199,7 @@ is "a pane carrying @panestate is an agent whatever it runs, so it is asked" "1 
    "$(wd_ct ok "$WDST")"
 "$TMUX_REAL" -L "$WDS" set -p -t "$WDP" @cockpit_dir "$WD/launch" >/dev/null 2>&1
 # #462: a fresh active-in tree outranks a hook-written @cockpit_dir, so the binary decides
-is "a pane whose @cockpit_dir holds is asked too: the binary's rule decides" \
+is "a pane whose @cockpit_dir holds is asked too: the binary's rule decides (#462)" \
    "1 $WD/other" "$(wd_ct ok "$WDP")"
 "$TMUX_REAL" -L "$WDS" set -p -t "$WDP" @cockpit_dir launch >/dev/null 2>&1
 is "a relative @cockpit_dir does not hold, so the binary is asked" "1 $WD/other" \

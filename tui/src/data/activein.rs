@@ -486,4 +486,23 @@ mod tests {
         let (n, old) = TOPS.with(|c| (c.borrow().len(), c.borrow().contains_key("/no/such/old")));
         assert_eq!((n, old), (CACHE_MAX, false));
     }
+
+    /// #1358 review: a `.git` the agent made can be anything. Rows: a FIFO, whose open blocks
+    /// until a writer comes, and a symlink to /dev/zero, an endless read. Each is no repo,
+    /// and the walk ends at once. Each runs on a thread under a bound, so a red never hangs.
+    #[test]
+    fn a_dot_git_that_is_no_file_or_dir_is_no_repo_and_never_blocks() {
+        let (_t, d) = trees("odd");
+        let fifo = std::ffi::CString::new(format!("{d}/n/.git")).unwrap();
+        // SAFETY: a NUL-terminated path the test owns
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0, "mkfifo");
+        std::fs::create_dir_all(format!("{d}/z/sub")).unwrap();
+        std::os::unix::fs::symlink("/dev/zero", format!("{d}/z/.git")).unwrap();
+        for row in ["n", "z"] {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let dir = format!("{d}/{row}/x");
+            std::thread::spawn(move || tx.send(toplevel(&dir)));
+            assert_eq!(rx.recv_timeout(Duration::from_secs(5)), Ok(None), "{row}");
+        }
+    }
 }
