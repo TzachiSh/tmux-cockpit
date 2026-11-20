@@ -28,6 +28,8 @@ struct Rig {
 impl Rig {
     fn new(tag: &str) -> Rig {
         fake::fixed_env();
+        // the runner's own socket folder, checked before this rig replaces it (#1066)
+        fake::checked_tmux();
         let held = fake::env_lock();
         let name = format!("cockpit-refresh-{tag}-{}", std::process::id());
         let d = Scratch::fresh(std::env::temp_dir().join(name));
