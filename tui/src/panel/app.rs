@@ -1323,7 +1323,9 @@ impl App {
             return vec![];
         }
         let root = self.explores(flow).then(|| self.explore_dir().ok()).flatten();
-        ref_items(&self.basket, Path::new(self.work_dir()), self.claude, root.as_deref())
+        // named from the pane's cwd, where the agent resolves a ref, as ^T names it; the
+        // work folder is only the root a write explores (#1342 amendment 15)
+        ref_items(&self.basket, Path::new(&self.cap.path), self.claude, root.as_deref())
     }
 
     /// The basket, for `.basket`, when the text acted on is a written result
