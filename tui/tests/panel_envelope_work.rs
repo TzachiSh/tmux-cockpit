@@ -263,8 +263,8 @@ fn doing_and_asked_of_300_characters_stay_whole() {
 }
 
 /// The prompt rows decision 3 gates: the write prompt lets the model ask only when the
-/// folder is not confirmed (amendment 13), not merely when it differs from the cwd, and the explain prompt reads `<agent>` as the agent's, not the
-/// user's.
+/// folder is not confirmed (amendment 13), not merely when it differs from the cwd, and
+/// the explain prompt reads `<agent>` as the agent's, not the user's.
 #[test]
 fn the_prompts_describe_the_work_folder_and_the_agent_part() {
     let repo_rule = WRITE.lines().find(|l| l.starts_with("Use <repo>")).unwrap_or_default();
