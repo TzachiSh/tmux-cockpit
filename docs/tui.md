@@ -3177,8 +3177,8 @@ screen) and `data::info` (the facts); both are in the module table.
 
 It shows, in this order: `pane`, `cwd`,
 `dir` (`@cockpit_dir`, and `missing` when the directory is gone), a second
-`dir` row `<dir>  (transcript cwd)` when the work dir (#452) is the transcript's
-cwd, `root`,
+`dir` row `<dir>  (<source>)`, the work dir (#452) and its source as
+`workdir --source` names them (#1355), `root`,
 `state` with `@panestate_msg`, `job` with `@cockpit_job` for a viewer pane
 bound to a background job (#460), the `doing` / `said` / `asked` rows with their
 ages and the `/btw` pointer for an agent pane, `review` with the queued spool,
@@ -3195,15 +3195,16 @@ characters before it is drawn. It is not a text-entry screen: `esc` and `q`
 close it, `↑↓` `j` `k` `PgUp` `PgDn` scroll, `?` lists the keys.
 `tmux-review --info` is gone.
 
-**`cockpit-tui info --json %N`** (#452) prints one line, `{"dir":"<path>"}`: the
-work dir by the board's rule (`dir` in `--json` above), for scripts. The screen's
-root, base and review dir follow that work dir (#500), as `prefix r` does since it
-asks `workdir` for its tree (#470), so the two name the same tree again, with one
-exception: a pane with no `@cockpit_session` (and no bound job's session, #448) has
-no transcript `workdir` will read
-(it never runs `claude agents`), so its `prefix r` tree is `@cockpit_dir`, else the
-launch dir, while the screen, which may ask `claude agents`, can follow the
-transcript to a worktree (#508 finding 10). The path is decoded as lossy UTF-8, as
+**`cockpit-tui info --json %N`** (#452) prints one line,
+`{"dir":"<path>","source":"<source>"}`: the work dir by the board's rule (`dir` in
+`--json` above) and its source as `workdir --source` prints it (#1355), for scripts.
+The screen's root, base and review dir follow that work dir (#500), as `prefix r`
+does since it asks `workdir` for its tree (#470). The screen, `info --json` and
+`workdir` name the same folder and source for every pane: an agent's comes off the
+board's own row and candidates, never a `claude agents` lookup, and a pane the board
+does not count has `@cockpit_dir`, else `@cockpit_cwd`, else its cwd (#1355). The
+`doing`, `said` and `asked` rows may still ask `claude agents` for the transcript.
+The path is decoded as lossy UTF-8, as
 every tmux read is: a byte that is not UTF-8 becomes U+FFFD. Exit 0 with the
 line; exit 1 and nothing on stdout when the pane is not there; exit 2 for a
 missing or malformed pane id.

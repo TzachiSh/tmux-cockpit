@@ -3,8 +3,9 @@
 //! so every test here holds fake's environment lock.
 mod fake;
 
-use cockpit_tui::data::info::{Facts, WorkFrom, gather, git_root};
+use cockpit_tui::data::info::{Facts, gather, git_root};
 use cockpit_tui::data::list_panes;
+use cockpit_tui::data::workdir::Source;
 use fake::EnvHeld;
 use std::path::PathBuf;
 /// A scratch tree under cargo's own scratch dir, removed on drop, so a failing
@@ -115,14 +116,14 @@ fn the_work_dir_follows_the_board_order_and_root_follows_it() {
         .status();
     assert!(git.unwrap().success());
     let x = facts(&g, &t, &cwd, "", &wt);
-    assert_eq!((x.work.as_str(), x.work_from), (wt.as_str(), WorkFrom::Transcript));
+    assert_eq!((x.work.as_str(), x.source), (wt.as_str(), Source::Session));
     // #500: root follows the work dir, as `prefix r` does once it reads `workdir`
     assert_eq!(x.root, git_root(&wt), "root follows the work dir");
     assert_ne!(x.root, git_root(&cwd));
     let x = facts(&g, &t, &cwd, &opt, &wt);
-    assert_eq!((x.work.as_str(), x.work_from), (opt.as_str(), WorkFrom::Opt));
+    assert_eq!((x.work.as_str(), x.source), (opt.as_str(), Source::Declared));
     let x = facts(&g, &t, &cwd, "", "/no/such/wt");
-    assert_eq!((x.work.as_str(), x.work_from), (cwd.as_str(), WorkFrom::Cwd));
+    assert_eq!((x.work.as_str(), x.source), (cwd.as_str(), Source::PaneCwd));
 }
 
 /// The orchestrator's tmux-review will read `info --json %N`'s `dir`: the dir the
@@ -365,7 +366,7 @@ fn a_bound_viewer_reads_its_jobs_transcript_by_the_job_session() {
     fake::write_exec(&t.0.join("tmux"), &sh);
     set(&g, &t, &env);
     let x = gather("%1").unwrap();
-    assert_eq!((x.work.as_str(), x.work_from), (wt.as_str(), WorkFrom::Transcript));
+    assert_eq!((x.work.as_str(), x.source), (wt.as_str(), Source::Session));
 }
 
 /// #1267: the rig's fake tmux, answering @cockpit_session with `own` and
