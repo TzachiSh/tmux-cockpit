@@ -355,6 +355,15 @@ fn a_bound_viewer_reads_its_jobs_transcript_by_the_job_session() {
     std::fs::create_dir_all(projects.join("-job")).unwrap();
     let from = projects.join(slug(&cwd)).join("s1.jsonl");
     std::fs::rename(from, projects.join("-job/sjob.jsonl")).unwrap();
+    // #448: the board's row as tmux expands it: no @cockpit_session (7), the job's (18)
+    let row = std::fs::read_to_string(t.0.join("rows"))
+        .unwrap()
+        .replacen("\u{1f}s1\u{1f}", "\u{1f}-\u{1f}", 1);
+    std::fs::write(
+        t.0.join("rows"),
+        format!("{}\u{1f}\u{1f}\u{1f}\u{1f}\u{1f}sjob\n", row.trim_end_matches('\n')),
+    )
+    .unwrap();
     let d = t.0.display();
     let sh = format!(
         "#!/bin/sh\ncase \"$1\" in\nlist-panes) cat '{d}/rows' ;;\n\
