@@ -5,7 +5,7 @@
 mod fake;
 
 use cockpit_tui::panel::app::{App, View};
-use cockpit_tui::panel::capture::Capture;
+use cockpit_tui::panel::capture::{Capture, Repo};
 use cockpit_tui::panel::request::{Call, Effort};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use fake::Scratch;
@@ -159,5 +159,30 @@ fn a_fixture_panel_never_reads_its_pane_again() {
     let mut a = app(&r.d, false);
     assert!(write_answered(&mut a, &r.call()), "no answer in {PASSES} passes");
     assert!(r.sent().contains(OLD), "{}", r.sent());
+    assert_eq!(r.captures(), 0);
+}
+
+/// A fixture whose repo block is still in git's hands is built on the thread too: it
+/// still never reads its pane. The fake git's config read waits for `go` at most this
+/// many 10 ms rounds.
+const ROUNDS: u32 = 3000;
+
+#[test]
+fn a_fixture_built_off_the_thread_never_reads_its_pane_again() {
+    let r = Rig::new("fixture-thread");
+    let q = r.d.display().to_string();
+    let git = format!(
+        "#!/bin/sh\nfor a; do case $a in config|rev-parse|status|log|diff) s=$a; break ;; esac; done\n\
+         case $s in\n\
+         config) n=0; until [ -e '{q}/go' ] || [ $n -ge {ROUNDS} ]; do sleep 0.01; n=$((n+1)); done\n\
+         exit 1 ;;\nrev-parse) echo '{q}' ;;\nstatus) echo '## main' ;;\nesac\n"
+    );
+    fake::write_exec(&r.d.join("git"), &git);
+    let call = r.call();
+    let mut a = app(&r.d, false);
+    a.cap.repo = Repo::start(&q, "", Duration::from_secs(3600));
+    a.key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
+    std::fs::write(r.d.join("go"), "").unwrap();
+    assert!(answered(&mut a, &call), "no answer in {PASSES} passes");
     assert_eq!(r.captures(), 0);
 }
