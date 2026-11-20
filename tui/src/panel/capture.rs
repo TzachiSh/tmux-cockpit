@@ -425,9 +425,13 @@ fn repo_work(dir: &str, screen: &str, end: Instant, send: &dyn Fn(String)) {
         return;
     }
     // Shows the root and that `dir` is in a work tree, and its git dirs for the
-    // checkout kind (#1352); it runs no filter.
-    let dirs = ["--path-format=absolute", "--git-common-dir", "--absolute-git-dir"];
-    let top = spawn_git(dir, &[], &[&["rev-parse", "--show-toplevel"][..], &dirs].concat());
+    // checkout kind (#1352); it runs no filter. No `--path-format`: a git before
+    // 2.31 refuses it, and the whole block would go.
+    let top = spawn_git(
+        dir,
+        &[],
+        &["rev-parse", "--show-toplevel", "--git-common-dir", "--absolute-git-dir"],
+    );
     // `git config` exits 1 when nothing matches, so only a timeout fails here.
     let cfg = match finish(spawn_git(dir, &[], &FILTER_CONFIG), end, "config") {
         Ran::Ok(s) => s,
@@ -451,12 +455,11 @@ fn repo_work(dir: &str, screen: &str, end: Instant, send: &dyn Fn(String)) {
     let mut revs = revs.lines();
     let top = revs.next().unwrap_or_default().trim();
     // Same dirs: the repo's own checkout, a submodule's too. Else a linked worktree.
-    // No line where git gave no two absolute dirs: a git before 2.31 echoes an
-    // unknown `--path-format` back.
-    let checkout = match (revs.next(), revs.next()) {
-        (Some(c), Some(g)) if c.starts_with('/') && g.starts_with('/') => {
-            format!("checkout: {}\n", if c == g { "main" } else { "linked worktree" })
-        }
+    // Compared resolved: the common dir may come relative to `dir`, where rev-parse
+    // ran. No line unless git gave both and both resolve.
+    let real = |p: &str| std::fs::canonicalize(Path::new(dir).join(p)).ok();
+    let checkout = match (revs.next().and_then(real), revs.next().and_then(real)) {
+        (Some(c), Some(g)) => format!("checkout: {}\n", if c == g { "main" } else { "linked worktree" }),
         _ => String::new(),
     };
     let (status, log, diff) = (finish(status, end, "status"), finish(log, end, "log"), finish(diff, end, "diff"));
