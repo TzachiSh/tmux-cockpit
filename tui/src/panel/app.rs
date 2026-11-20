@@ -77,6 +77,13 @@ pub const QUICK: [(&str, &str); 4] = [
     ),
 ];
 
+/// A folder as a note draws it: control characters out (a kept one is a file's text), on
+/// one line, cut at 200 characters, `?` for none, as cockpit-panel writes it.
+fn shown_dir(d: &str) -> String {
+    let d: String = sanitize(d).replace('\n', " ").chars().take(200).collect();
+    if d.is_empty() { "?".into() } else { d }
+}
+
 /// Programs that take a bracketed paste as one block, with [`SSH_LIKE`]: the
 /// remote shell gets it. Anywhere else each line of a paste may run alone.
 const BRACKETED_OK: [&str; 8] = ["bash", "zsh", "fish", "claude", "node", "tmux", "vim", "nvim"];
@@ -467,7 +474,7 @@ impl App {
 
     /// [`App::unhide`], `was` being the work folder the panel was hidden on, as
     /// cockpit-panel kept it beside the state (#1344), when it kept one.
-    pub fn unhide_in(&mut self, h: Hidden, _was: Option<&str>) {
+    pub fn unhide_in(&mut self, h: Hidden, was: Option<&str>) {
         // as in a steps resume: the wrapper's guard checks what it was written for
         let now = std::mem::replace(&mut self.cap.cmd, h.cmd);
         self.session = session_state(&self.cap.screen, &self.cap.name, &self.cap.cmd);
@@ -490,7 +497,14 @@ impl App {
         if dropped {
             back.push_str("; explore is off, as this pane's folder cannot be read");
         }
-        self.say(if moved || dropped { Level::Warn } else { Level::Info }, back);
+        // the old turns were about that folder: the user is told it moved (#1354)
+        let left = was.filter(|w| !w.is_empty() && *w != self.work_dir());
+        if let Some(w) = left {
+            let (now, w) = (shown_dir(self.work_dir()), shown_dir(w));
+            back.push_str(&format!("; the folder is now {now}, not {w}"));
+        }
+        let warn = moved || dropped || left.is_some();
+        self.say(if warn { Level::Warn } else { Level::Info }, back);
     }
 
     /// The ★ tile first: what this window most likely wants. When that is
@@ -608,12 +622,13 @@ impl App {
         out || (explain && self.changes.as_ref().is_some_and(Looks::waiting))
     }
 
-    /// Starts collecting what changed for Explain, in a pane whose folder is
-    /// this machine's: the repo block's rule.
+    /// Starts collecting what changed for Explain in the pane's work folder (#1354),
+    /// in a pane whose folder is this machine's: the repo block's rule.
     fn look_ahead(&mut self) {
-        let here = self.local && !self.cap.path.is_empty();
+        let dir = self.work_dir().to_string();
+        let here = self.local && !dir.is_empty();
         if let Some(l) = self.changes.as_mut().filter(|_| here) {
-            l.ahead(&self.cap.path);
+            l.ahead(&dir);
         }
     }
 

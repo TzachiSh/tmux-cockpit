@@ -68,8 +68,10 @@ fn panel(args: &[String]) {
     }
     if let Some((f, "hidden")) = resume {
         a.reopened = true;
+        // the work folder the panel was hidden on, kept beside the state by cockpit-panel (#1344)
+        let was = std::fs::read_to_string(format!("{f}.wd")).ok();
         match action::read_hidden(std::path::Path::new(f), pane, unix_now()) {
-            Ok(h) => a.unhide(h),
+            Ok(h) => a.unhide_in(h, was.as_deref()),
             Err(e) => {
                 eprintln!("cockpit-tui: cannot bring the hidden panel back from {f}: {e}");
                 a.say(app::Level::Warn, format!("the hidden panel was dropped: {e}"));
