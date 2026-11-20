@@ -268,51 +268,63 @@ pub fn redact_screen(cap: &Capture) -> (String, String, usize) {
     (screen, name, n + m)
 }
 
-/// The work folder as the `<window>` line names it after the cwd (#1353), and the
-/// secrets it hid: the folder and its source when it is not the cwd; for an agent's
-/// window whose folder only the pane's cwd gave, that it is not confirmed; else
-/// nothing, as for a plain shell, whose cwd is its folder.
+/// The work folder as the `<window>` line names it after the cwd (#1353, amendment 13 on
+/// #1342), and the secrets it hid: the folder and its source when it is not the cwd. On an
+/// agent's window (a claude name, or the board's facts) whose source is a guess
+/// (active-in, pane-cwd), the folder is marked not confirmed, at the cwd too. Else
+/// nothing, as for a plain shell, whose cwd is its folder. It runs no process.
 fn window_work(cap: &Capture) -> (String, usize) {
     let w = &cap.work;
     if w.dir.is_empty() {
         return (String::new(), 0);
     }
+    let agent = cap.agent.is_some() || is_claude(&cap.name, &cap.cmd);
+    let guess = agent && matches!(w.source, Source::ActiveIn | Source::PaneCwd);
+    let src = w.source.as_str();
     if w.dir != cap.path {
         let (dir, n) = redact_clean(&w.dir);
-        return (format!(" · work folder {} ({})", esc(&dir), w.source.as_str()), n);
+        let mark = if guess { ", not confirmed" } else { "" };
+        return (format!(" · work folder {} ({src}{mark})", esc(&dir)), n);
     }
-    let agent = cap.agent.is_some() || is_claude(&cap.name, &cap.cmd) || crate::data::agentish(&cap.cmd);
-    if agent && w.source == Source::PaneCwd {
-        (" · work folder not confirmed (pane-cwd)".to_string(), 0)
+    if guess {
+        (format!(" · work folder not confirmed ({src})"), 0)
     } else {
         (String::new(), 0)
     }
 }
 
+/// How many characters of `doing` and of `asked` Explain's `<agent>` part keeps
+/// (amendment 13 on #1342).
+const AGENT_TEXT_MAX: usize = 300;
+
 /// Explain's `<agent>` part (#1353): the board's state and model as attributes, then its
-/// doing, asked and the work folder with its source, a line each when known. The text is
-/// the agent's, so it is redacted, cleaned and escaped as the screen is; the secrets it
-/// hid come back with it. `None` without the board's facts.
+/// doing, asked and the work folder with its source, a line each when known. The text and
+/// the model are the agent's, so they are redacted, cleaned and escaped as the screen is,
+/// and the secrets they hid come back with it. `doing` and `asked` keep their first
+/// [`AGENT_TEXT_MAX`] characters, cut after the redaction so a cut never splits a secret
+/// out of its match. `None` without the board's facts.
 fn agent_part(cap: &Capture) -> Option<(String, usize)> {
     let a = cap.agent.as_ref()?;
     let state = if a.state.is_empty() { "unknown" } else { &a.state };
-    let attr = |s: &str| esc(&sanitize(s)).replace('"', "&quot;");
-    let mut head = format!("<agent state=\"{}\"", attr(state));
-    if !a.model.is_empty() {
-        head.push_str(&format!(" model=\"{}\"", attr(&a.model)));
+    let attr = |s: &str| esc(s).replace('"', "&quot;");
+    let mut head = format!("<agent state=\"{}\"", attr(&sanitize(state)));
+    let (model, mut hidden) = redact_clean(&a.model);
+    if !model.is_empty() {
+        head.push_str(&format!(" model=\"{}\"", attr(&model)));
     }
-    let mut hidden = 0;
     let mut body = String::new();
-    let mut line = |label: &str, text: &str, tail: &str| {
+    let mut line = |label: &str, text: &str, cut: usize, tail: &str| {
         if !text.is_empty() {
             let (t, n) = redact_clean(text);
             hidden += n;
+            let t: String = t.chars().take(cut).collect();
             body.push_str(&format!("{label}: {}{tail}\n", esc(&t)));
         }
     };
-    line("doing", &a.doing, "");
-    line("asked", &a.asked, "");
-    line("work folder", &cap.work.dir, &format!(" ({})", cap.work.source.as_str()));
+    line("doing", &a.doing, AGENT_TEXT_MAX, "");
+    line("asked", &a.asked, AGENT_TEXT_MAX, "");
+    let src = format!(" ({})", cap.work.source.as_str());
+    line("work folder", &cap.work.dir, usize::MAX, &src);
     Some((format!("{head}>\n{body}</agent>"), hidden))
 }
 
