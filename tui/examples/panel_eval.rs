@@ -1976,7 +1976,6 @@ fn panel_call(c: &Case, path: &str, explore: bool) -> (String, String, Profile, 
         },
         screen: c.screen.clone(),
         repo: c.repo.as_str().into(),
-        ..Default::default()
     };
     let mut a = App::new("%0", cap);
     (a.view, a.out, a.explore) = (View::Compose, c.out, explore);
