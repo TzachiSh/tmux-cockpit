@@ -53,10 +53,10 @@ fn rig(t: &Tmp, cwd: &str, opt: &str, said: &str) -> Vec<(&'static str, String)>
     .unwrap();
     let info = ["%1", "w:0 win", "claude", cwd, opt, "running", "", "", "", "s1", "", "1", ""];
     std::fs::write(d.join("display"), info.join("\u{1f}")).unwrap();
-    let board = [
+    let board = fake::board_row(&[
         "%1", "w:0", "win", "claude", "running", "-", "-", "s1", cwd, "100", "-", "-", "@1", opt,
-    ];
-    std::fs::write(d.join("rows"), board.join("\u{1f}") + "\n").unwrap();
+    ]);
+    std::fs::write(d.join("rows"), board + "\n").unwrap();
     let sh = format!(
         "#!/bin/sh\ncase \"$1\" in\nlist-panes) cat '{0}/rows' ;;\n\
          display-message) case \"$5\" in *cockpit_tui_version*) cat '{0}/display' ;; *) cat '{0}/rows' ;; esac ;;\n\
@@ -189,12 +189,22 @@ fn call_into(t: &Tmp, cwd: &str, tree: &str) {
 /// #1355: `@cockpit_cwd` is `hook` on the pane: the board's row 19, and info's own row 16
 /// for a pane the board does not count. The fields between are empty.
 fn hook_cwd(t: &Tmp, hook: &str) {
-    for (file, seps) in [("rows", 6), ("display", 4)] {
-        let p = t.0.join(file);
-        let row = std::fs::read_to_string(&p).unwrap();
-        let row = format!("{}{}{hook}\n", row.trim_end_matches('\n'), "\u{1f}".repeat(seps));
-        std::fs::write(&p, row).unwrap();
+    set_fields(t, &[(19, hook)]);
+    let p = t.0.join("display");
+    let row = std::fs::read_to_string(&p).unwrap();
+    let row = format!("{}{}{hook}\n", row.trim_end_matches('\n'), "\u{1f}".repeat(4));
+    std::fs::write(&p, row).unwrap();
+}
+
+/// The board's row with each `(field, value)` set: the row is a full one (#1374).
+fn set_fields(t: &Tmp, sets: &[(usize, &str)]) {
+    let p = t.0.join("rows");
+    let row = std::fs::read_to_string(&p).unwrap();
+    let mut f: Vec<&str> = row.trim_end_matches('\n').split('\u{1f}').collect();
+    for &(i, v) in sets {
+        f[i] = v;
     }
+    std::fs::write(&p, f.join("\u{1f}") + "\n").unwrap();
 }
 
 /// #1355: the board's row is a shell's, not an agent's: no @panestate, a shell command and
@@ -374,14 +384,7 @@ fn a_bound_viewer_reads_its_jobs_transcript_by_the_job_session() {
     let from = projects.join(slug(&cwd)).join("s1.jsonl");
     std::fs::rename(from, projects.join("-job/sjob.jsonl")).unwrap();
     // #448: the board's row as tmux expands it: no @cockpit_session (7), the job's (18)
-    let row = std::fs::read_to_string(t.0.join("rows"))
-        .unwrap()
-        .replacen("\u{1f}s1\u{1f}", "\u{1f}-\u{1f}", 1);
-    std::fs::write(
-        t.0.join("rows"),
-        format!("{}\u{1f}\u{1f}\u{1f}\u{1f}\u{1f}sjob\n", row.trim_end_matches('\n')),
-    )
-    .unwrap();
+    set_fields(&t, &[(7, "-"), (18, "sjob")]);
     let d = t.0.display();
     let sh = format!(
         "#!/bin/sh\ncase \"$1\" in\nlist-panes) cat '{d}/rows' ;;\n\

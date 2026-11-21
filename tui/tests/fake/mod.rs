@@ -1666,3 +1666,18 @@ pub fn assert_gh_is_the_rigs(path: &std::ffi::OsStr, dir: &Path) {
         panic!("the first gh on PATH is {found:?}, not one under {dir} (#1000)");
     }
 }
+
+/// How many fields the board's FIELDS (tui/src/data.rs) has: a board row pads to it.
+#[allow(dead_code)]
+const BOARD_FIELDS: usize = 20;
+
+/// A row as tmux prints the board's FIELDS for one pane: `head`'s fields, then empty
+/// ones up to FIELDS' count, joined on US (#1374). The binary passes its own format, so
+/// every row tmux prints has every field, and a fake's row does too.
+#[allow(dead_code)]
+pub fn board_row(head: &[&str]) -> String {
+    assert!(head.len() <= BOARD_FIELDS, "a board row of {} fields", head.len());
+    let mut f = head.to_vec();
+    f.resize(BOARD_FIELDS, "");
+    f.join("\u{1f}")
+}

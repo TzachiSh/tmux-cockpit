@@ -38,7 +38,7 @@ fn field_14_is_the_count_and_the_subagents_dir_follows_the_transcript_then_the_s
     std::fs::create_dir_all(dir.join("bin")).unwrap();
     let d = dir.display().to_string();
     let pj = dir.join(".claude/projects");
-    // %1 the transcript option; %2 an older 13-field row, by session; %3 a count that is no
+    // %1 the transcript option; %2 no transcript, by session; %3 a count that is no
     // number; %4 a transcript outside the tree, so by session; %5 a session id that climbs.
     sub(&pj.join("-p/s1/subagents"), "a", "by transcript");
     std::fs::write(pj.join("-p/s1.jsonl"), "").unwrap();
@@ -50,11 +50,9 @@ fn field_14_is_the_count_and_the_subagents_dir_follows_the_transcript_then_the_s
     std::fs::create_dir_all(pj.join("-w-five")).unwrap();
     sub(&pj.join("x/subagents"), "a", "climbed");
     let row = |id: &str, sess: &str, cwd: &str, tail: &[&str]| {
-        let head = [id, "w:0", "win", "claude", "running", "-", "-", sess, cwd, "100", "-", "-"];
-        let mut f = head.to_vec();
-        f.push("@1");
+        let mut f = vec![id, "w:0", "win", "claude", "running", "-", "-", sess, cwd, "100", "-", "-", "@1"];
         f.extend(tail);
-        f.join("\u{1f}")
+        fake::board_row(&f)
     };
     let t1 = pj.join("-p/s1.jsonl").display().to_string();
     let t4 = dir.join("out/s4.jsonl").display().to_string();

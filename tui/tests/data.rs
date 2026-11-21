@@ -4,7 +4,7 @@
 mod fake;
 
 use cockpit_tui::data::gitsafe::{SAFE, no_filters, tree_stat};
-use cockpit_tui::data::{Pane, State, git_facts, list_panes, preview, screen, split_cursor, view};
+use cockpit_tui::data::{Pane, State, git_facts, list_fleet, list_panes, preview, screen, split_cursor, view};
 use fake::write_exec;
 use std::fs::{FileTimes, OpenOptions};
 use std::path::{Path, PathBuf};
@@ -96,7 +96,15 @@ impl Rig {
         self.env.held.token()
     }
 
+    /// The fake's list-panes rows, each padded to FIELDS' count as tmux prints it (#1374).
     fn rows(&self, rows: &[String]) {
+        let padded: Vec<String> = rows.iter().map(String::as_str).map(full).collect();
+        self.rows_as_is(&padded);
+    }
+
+    /// The rows as given, unpadded: only for a row deliberately short of FIELDS (#1374),
+    /// never a second way to write a normal row.
+    fn rows_as_is(&self, rows: &[String]) {
         std::fs::write(self.dir.join("rows"), rows.join("\n") + "\n").unwrap();
     }
 
@@ -147,6 +155,11 @@ fn row_at(id: &str, wher: &str, cmd: &str, state: &str, sess: &str, pid: &str, p
 
 fn row(id: &str, cmd: &str, state: &str, sess: &str, pid: &str) -> String {
     row_at(id, "w:0", cmd, state, sess, pid, "/w")
+}
+
+/// `row` padded to FIELDS' count, as tmux prints it (#1374).
+fn full(row: &str) -> String {
+    fake::board_row(&row.split('\u{1f}').collect::<Vec<_>>())
 }
 
 fn get<'a>(ps: &'a [Pane], id: &str) -> &'a Pane {
@@ -1129,18 +1142,13 @@ fn a_missing_blob_never_lazy_fetches() {
     assert!(!marker.exists(), "diffstat ran the planted remote helper on an old git");
 }
 
-/// The 13th field is `#{window_id}`, which the board's kill checks against;
-/// a row with one field fewer is not this format, and is skipped whole.
+/// The 13th field is `#{window_id}`, which the board's kill checks against.
 #[test]
 fn the_window_id_is_the_thirteenth_field() {
     let r = Rig::new("winid");
-    r.ps("400 1 claude\n401 1 claude\n");
-    let short = row("%2", "claude", "running", "-", "401");
-    let short = short.rsplit_once('\u{1f}').unwrap().0.to_string();
-    assert_eq!(short.split('\u{1f}').count(), 12);
-    r.rows(&[row("%1", "claude", "running", "-", "400"), short]);
+    r.ps("400 1 claude\n");
+    r.rows(&[row("%1", "claude", "running", "-", "400")]);
     let ps = list_panes().unwrap();
-    assert_eq!(ids(&ps), ["%1"]);
     assert_eq!(ps[0].win, "@1");
 }
 
@@ -1960,7 +1968,7 @@ fn a_tool_use_after_the_open_question_keeps_the_hooks_message() {
 }
 
 /// #460: `@cockpit_job_name`, field 16, is the bound job's name, cleaned: it comes
-/// from a pane title. A row without it (an older format) has no job.
+/// from a pane title. A row with it empty has no job.
 #[test]
 fn the_bound_job_name_is_read_cleaned_and_absent_is_none() {
     let r = Rig::new("jobname");
@@ -2437,4 +2445,18 @@ fn a_zero_usage_row_does_not_hide_the_last_model_call() {
 fn a_newer_prompt_keeps_the_last_turns_context() {
     let foot = card_foot("a2prompt", &(usage_row("claude-opus-4-5", [10, 84_000, 0, 0]) + &typed_row("next")));
     assert!(foot.contains(" opus · 84k "), "{foot}");
+}
+
+/// #1374: tmux prints every field of the format the board passes, so a row one short of
+/// FIELDS is not that format: it makes no pane and names no session.
+#[test]
+fn a_row_one_field_short_of_fields_makes_no_pane_and_no_session() {
+    let r = Rig::new("short");
+    r.ps("400 1 claude\n401 1 claude\n");
+    let short = full(&row_at("%2", "lone:0", "claude", "running", "-", "401", "/w"));
+    let short = short.rsplit_once('\u{1f}').unwrap().0.to_string();
+    r.rows_as_is(&[full(&row("%1", "claude", "running", "-", "400")), short]);
+    let (ps, sessions) = list_fleet().unwrap();
+    assert_eq!(ids(&ps), ["%1"]);
+    assert_eq!(sessions.into_iter().collect::<Vec<_>>(), ["w"]);
 }
