@@ -5,6 +5,7 @@
 //! Fixture repos under the temp dir, never the user's; the rig's own `gh` and
 //! `claude`, each started by its full path, so no row reaches a real one.
 mod fake;
+use cockpit_tui::data::workdir::WorkDir;
 use cockpit_tui::panel::app::{App, QUICK, Tile, View};
 use cockpit_tui::panel::capture::Capture;
 use cockpit_tui::panel::changes::{Changes, Collector, Gh, Note, Seen};
@@ -139,6 +140,10 @@ impl Rig {
             name: "w".into(),
             cmd: cmd.into(),
             path: self.repo.display().to_string(),
+            work: WorkDir {
+                dir: self.repo.display().to_string(),
+                ..Default::default()
+            },
             screen: "$ ".into(),
             ..Default::default()
         };
@@ -570,6 +575,10 @@ fn a_pane_with_nothing_to_mark_shows_no_list() {
             name: "w".into(),
             cmd: "bash".into(),
             path: dir.display().to_string(),
+            work: WorkDir {
+                dir: dir.display().to_string(),
+                ..Default::default()
+            },
             screen: "$ ".into(),
             ..Default::default()
         };

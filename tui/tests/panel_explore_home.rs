@@ -3,6 +3,7 @@
 #[allow(dead_code)] // for its Scratch guard only, not write_exec
 mod fake;
 
+use cockpit_tui::data::workdir::WorkDir;
 use cockpit_tui::panel::app::{App, Level, Tile, View};
 use cockpit_tui::panel::capture::Capture;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -27,6 +28,10 @@ fn a_repo_at_home_is_refused_from_a_folder_inside_it() {
         name: "work".into(),
         cmd: "bash".into(),
         path: home.join("proj/src").display().to_string(),
+        work: WorkDir {
+            dir: home.join("proj/src").display().to_string(),
+            ..Default::default()
+        },
         screen: "$ ".into(),
         ..Default::default()
     };

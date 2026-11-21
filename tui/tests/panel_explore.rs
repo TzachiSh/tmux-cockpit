@@ -2,6 +2,7 @@
 //! folder through a read-only profile. Fake claude scripts in temp dirs; no tmux.
 mod fake;
 
+use cockpit_tui::data::workdir::WorkDir;
 use cockpit_tui::panel::app::{App, EXPLORE_BUDGET_USD, EXPLORE_TIMEOUT, Level, Tile, View};
 use cockpit_tui::panel::capture::{Capture, window_kind};
 use cockpit_tui::panel::envelope::{Flow, OutType};
@@ -20,6 +21,10 @@ fn app(cmd: &str, path: &str) -> App {
         name: "work".into(),
         cmd: cmd.into(),
         path: path.into(),
+        work: WorkDir {
+            dir: path.into(),
+            ..Default::default()
+        },
         screen: "$ ".into(),
         ..Default::default()
     };
