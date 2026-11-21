@@ -6757,13 +6757,12 @@ if rf_up; then
     reload_on "$rf_m" &&
         is "@cockpit_reload_key Foo: one message names the option, the value and tmux's error" \
            1 "$(rf_said reload "$rf_t")"
-    # The menu key read from @cockpit_ai_key, the old option: the message names that one.
-    "$TMUX_REAL" -L "$rf_m" -f /dev/null set -gu @cockpit_menu_key >/dev/null 2>&1
-    rf_conf "$rf_m" reload R; rf_conf "$rf_m" ai "'b c'"
-    rf_t="tmux-cockpit: @cockpit_ai_key [b c] binds nothing (unknown key: b c);"
+    # The menu key's message names its own option, @cockpit_menu_key.
+    rf_conf "$rf_m" reload R; rf_conf "$rf_m" menu "'b c'"
+    rf_t="tmux-cockpit: @cockpit_menu_key [b c] binds nothing (unknown key: b c);"
     rf_t="$rf_t menu stays unbound until the option is fixed"
     reload_on "$rf_m" &&
-        is "@cockpit_ai_key 'b c': one message names @cockpit_ai_key, the value and tmux's error" \
+        is "@cockpit_menu_key 'b c': one message names the option, the value and tmux's error" \
            1 "$(rf_said menu "$rf_t")"
 else
     bad "a client attached for the #1210 message rows" "a client on $rf_m" "none"
@@ -7996,17 +7995,22 @@ loaded_on "$PA" "$par" &&
     case "$(ak r)" in *cockpit-board*) ok "$par" ;;
         *) bad "$par" "cockpit-board on r" "$(ak r)" ;; esac
 "$TMUX_REAL" -L "$PA" kill-server >/dev/null 2>&1
-# The old name still works, and says it was renamed.
+# @cockpit_ai_key, the menu key's old name, is retired (#1367): a config that still
+# sets it gets the menu on a, as with no option at all, and no message names it.
 PA="cockpit-pa2-$$"; SOCKS="$SOCKS $PA"
 "$TMUX_REAL" -L "$PA" -f /dev/null new-session -d -s t >/dev/null 2>&1
 "$TMUX_REAL" -L "$PA" set -g @cockpit_ai_key n >/dev/null 2>&1
 "$TMUX_REAL" -L "$PA" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
-case "$(ak n)" in *display-menu*) ok "@cockpit_ai_key still picks the key" ;;
-    *) bad "@cockpit_ai_key still picks the key" "the menu on n" "$(ak n)" ;; esac
+case "$(ak)" in *display-menu*) ok "with only @cockpit_ai_key n set, the menu stays on a" ;;
+    *) bad "with only @cockpit_ai_key n set, the menu stays on a" "the menu on a" "$(ak)" ;; esac
+case "$(ak n)" in *display-menu*) bad "and n is not the menu" "no menu on n" "$(ak n)" ;;
+    *) ok "and n is not the menu" ;; esac
+# The notice's own words, which the old load put in show-messages. The test's own
+# set-option line is logged there too, so the match is on the notice, not the name.
 case "$("$TMUX_REAL" -L "$PA" show-messages 2>/dev/null)" in
-    *"@cockpit_ai_key is now @cockpit_menu_key"*) ok "and says it was renamed" ;;
-    *) bad "and says it was renamed" "a rename notice" \
-            "$("$TMUX_REAL" -L "$PA" show-messages | tail -2)" ;;
+    *"is now @cockpit_menu_key"*) bad "and no rename notice is shown" "no notice" \
+            "$("$TMUX_REAL" -L "$PA" show-messages | grep -F 'is now @cockpit_menu_key')" ;;
+    *) ok "and no rename notice is shown" ;;
 esac
 "$TMUX_REAL" -L "$PA" kill-server >/dev/null 2>&1
 fi
