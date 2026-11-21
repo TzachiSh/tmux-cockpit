@@ -30,6 +30,9 @@ say the name was missing.
 Never run tmux, claude, cargo, make, the test suite or any repo script. A
 check that needs a run goes under "Could not check".
 
+Run every command from the tmux-cockpit checkout. `gh api` fills in
+`{owner}/{repo}` from that checkout's remote, and nowhere else.
+
 ## Before you read the diff
 
 1. Read the head sha `H` with `gh pr view <N> --json headRefOid` and the
@@ -56,13 +59,16 @@ miss by reading the diff alone:
   input fails. A comment that explains a fallback does not allow it. Only
   a line in the issue or AGENTS.md does; quote that line.
 - Check 4: grep for an existing function that already decides what the
-  diff decides, and name it.
-- Check 6: you cannot run tests or mutants, so this check is never pass.
-  For each value or branch the diff adds, grep the tests at `H` for one
-  that reads it. A test that hands the value to an inner function does not
-  cover the line that produces it (a file read, an option read); name that
-  line. List the fail-first run and every mutant claim under "Could not
-  check".
+  diff decides. Name the function and the grep that found it.
+- Check 6, for a PR that changes behaviour: you cannot run tests or
+  mutants, so this check is unverified, never pass. For each value or
+  branch the diff adds, grep the tests at `H` for one that reads it. A test
+  that hands the value to an inner function does not cover the line that
+  produces it (a file read, an option read); name that line. List the
+  fail-first run and every mutant claim under "Could not check".
+- Check 6, for a rename, refactor or docs PR: it can pass. Every suite
+  totals line must equal master's, and the diff must edit no test beyond
+  the rename.
 
 Freeze scope: lanes may edit only the lines their epic's freeze grants.
 Without freeze text from the caller, write "freeze scope: unverified"
@@ -70,10 +76,12 @@ under "Could not check" and never claim the PR is in scope.
 
 CI: find each job with `gh api repos/{owner}/{repo}/commits/H/check-runs`,
 then read its log with `gh api repos/{owner}/{repo}/actions/jobs/<id>/logs
---allow-escape-sequences`. Each log must show `HEAD is now at ... Merge H
-into M` and a totals line. Read the tmux-master job's own conclusion,
-since it runs with continue-on-error. A run on an older master is not a
-pass.
+--allow-escape-sequences`. Read the suite jobs: the shell-suite legs,
+shell-suite-tmux-master and the tui-test legs. Each of their logs must
+show `HEAD is now at ... Merge H into M` and a totals line. Compare each
+total with the same job's total on master's latest run. Skipped jobs have
+no log; ignore them. Read the tmux-master job's own conclusion, since it
+runs with continue-on-error. A run on an older master is not a pass.
 
 Then look for plain bugs in the changed lines: wrong logic, a path
 unquoted in a command string, a missed error path, a race, a test that
@@ -109,7 +117,8 @@ VERDICT: <MERGE|CHANGES> at <H>
 (or "None.")
 
 ## Checklist
-1-7: pass, the finding number, or "unverified: <why>". Item 6 is never pass.
+1-7: pass, the finding number, or "unverified: <why>". Item 6 passes only
+for a PR that changes no behaviour.
 
 ## Could not check
 <runs, mutants, freeze scope, live tmux, and why>
