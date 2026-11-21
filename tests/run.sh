@@ -9136,8 +9136,8 @@ case "$(cat "$HKG/.claude/settings.json")" in
              "$(cat "$HKG/.claude/settings.json")" ;;
 esac
 rm -rf "$HKG"
-# review-gate's PreToolUse entry is no longer shipped: an older install's
-# entry is removed, its emptied group with it, and nothing else in PreToolUse.
+# review-gate's PreToolUse entry went with --pretool (#1369): an older install's entry
+# is no longer cockpit's, so an upgrade leaves it, and --hooks --remove leaves it too.
 HKP=$(mktmpd); mkdir -p "$HKP/.claude"
 cat > "$HKP/.claude/settings.json" <<'EOF'
 { "hooks": { "PreToolUse": [
@@ -9147,16 +9147,20 @@ cat > "$HKP/.claude/settings.json" <<'EOF'
   ] } }
 EOF
 HOME="$HKP" "$DIR/install.sh" --hooks >/dev/null 2>&1
-is "an upgrade removes the old review-gate --pretool entry" "0" \
+is "an upgrade leaves a review-gate --pretool entry in place (#1369)" "1" \
    "$(jq '[.hooks[][].hooks[].command | select(test("review-gate --pretool"))] | length' \
        "$HKP/.claude/settings.json")"
-is "and leaves agent-state running once, the user's Bash hook, and no empty group" "1 1 2" \
+is "and leaves agent-state running once, the user's Bash hook, and that entry's group" "1 1 3" \
    "$(jq -r '[ ([.hooks.PreToolUse[].hooks[].command | select(test("/scripts/agent-state running"))] | length),
              ([.hooks.PreToolUse[] | select(. == {matcher: "Bash", hooks: [{type: "command", command: "my-bash-guard"}]})] | length),
              (.hooks.PreToolUse | length) ] | join(" ")' "$HKP/.claude/settings.json")"
 before=$(cat "$HKP/.claude/settings.json")
 HOME="$HKP" "$DIR/install.sh" --hooks >/dev/null 2>&1
 is "and a second run changes nothing" "$before" "$(cat "$HKP/.claude/settings.json")"
+HOME="$HKP" "$DIR/install.sh" --hooks --remove >/dev/null 2>&1
+is "and --hooks --remove leaves the review-gate --pretool entry too (#1369)" "1" \
+   "$(jq '[.hooks[][].hooks[].command | select(test("review-gate --pretool"))] | length' \
+       "$HKP/.claude/settings.json")"
 rm -rf "$HKP"
 # The pre-#166 SessionStart `agent-state off` had an empty matcher, so it also ran
 # on compact; an upgrade must replace it, not keep it beside the new one.
@@ -13911,18 +13915,21 @@ case "$(cat "$RHSTATE/out")" in
             "the review as additionalContext" "$(cat "$RHSTATE/out")" ;;
     esac
 is "and drains it" "" "$("$TMUX_REAL" -L "$RH" show-option -pqv -t "$RHAP" @cockpit_review_spool)"
-# An older install's PreToolUse hook still calls the retired --pretool: it must
-# not run the Stop path (drain, rewake count, ◆).
+# --pretool is retired with no exit of its own (#1369): an older install's PreToolUse
+# hook that still passes it runs the Stop path, so a queued review is handed over.
 RHPRE=$(mktmpf)
 printf '{"session_id":"s","transcript_path":"/nonexistent","cwd":"%s","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"make test"}}\n' \
     "$RHDIR" > "$RHPRE"
 RHLOOP="$RHSTATE/tmux-cockpit/review/loop-$(gate_key "$RH" "$RHAP")"
 rh_queue; printf 2 > "$RHLOOP"; rh_run "$RHPRE" --pretool
-is "review-gate --pretool prints nothing" "" "$(cat "$RHSTATE/out")"
-is "and leaves the spool option, the spool file and the loop count alone" \
-    "$RHSESS/spool.md present 2" \
-   "$("$TMUX_REAL" -L "$RH" show-option -pqv \
-       -t "$RHAP" @cockpit_review_spool) $([ -e "$RHSESS/spool.md" ] && echo present || echo absent) $(cat "$RHLOOP" 2>/dev/null)"
+case "$(cat "$RHSTATE/out")" in
+    *'"additionalContext":"Code review from the human'*'REVIEW-MARKER"'*) \
+            ok "review-gate --pretool takes the Stop path and hands over the queued review (#1369)" ;;
+    *) bad "review-gate --pretool takes the Stop path and hands over the queued review (#1369)" \
+            "the review as additionalContext" "$(cat "$RHSTATE/out")" ;;
+    esac
+is "and drains the spool option" "" \
+    "$("$TMUX_REAL" -L "$RH" show-option -pqv -t "$RHAP" @cockpit_review_spool)"
 unset -f rh_n rh_start rh_wait rh_run rh_queue
 "$TMUX_REAL" -L "$RH" kill-server >/dev/null 2>&1
 fi
