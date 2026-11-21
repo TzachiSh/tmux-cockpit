@@ -1,6 +1,7 @@
-<!-- Open with your session or lane name. Each box names a rule in AGENTS.md. -->
+<!-- Open with your session or lane name. Each box names a rule in AGENTS.md.
+Use a closing keyword for the issue only when this PR finishes it. -->
 
-Closes #
+Issue: #
 
 ## Checks (AGENTS.md, "Keep one way to do each thing")
 
@@ -12,6 +13,6 @@ Closes #
 - [ ] 6. Proof
 - [ ] 7. Small
 
-## Fail-first
+## Proof (check 6)
 
 ## Tests and gates
