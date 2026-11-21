@@ -3,6 +3,7 @@
 #[allow(dead_code)] // for its Scratch guard and fixed environment, not write_exec
 mod fake;
 
+use cockpit_tui::data::workdir::WorkDir;
 use cockpit_tui::panel::action::{HIDE_AGE, HIDE_MAX, read_hidden, read_state, write_hidden};
 use cockpit_tui::panel::app::{App, InputKind, Level, Tap, View};
 use cockpit_tui::panel::capture::Capture;
@@ -26,6 +27,10 @@ fn app(cmd: &str) -> App {
         name: "work".into(),
         cmd: cmd.into(),
         path: "/home/u/proj".into(),
+        work: WorkDir {
+            dir: "/home/u/proj".into(),
+            ..Default::default()
+        },
         screen: "$ ".into(),
         ..Default::default()
     };

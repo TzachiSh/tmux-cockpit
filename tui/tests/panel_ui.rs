@@ -2,6 +2,7 @@
 //! and the action file. COCKPIT_BLESS=1 cargo test rewrites the goldens.
 mod fake;
 
+use cockpit_tui::data::workdir::WorkDir;
 use cockpit_tui::panel::action::{read_state, sanitize, write_action, write_state};
 use cockpit_tui::panel::app::{Action, App, InputKind, Level, Resume, Tap, Tile, View, bracketed_ok};
 use cockpit_tui::panel::capture::Capture;
@@ -70,6 +71,10 @@ fn app(name: &str, cmd: &str, screen: &str) -> App {
         name: name.into(),
         cmd: cmd.into(),
         path: "/home/u/proj".into(),
+        work: WorkDir {
+            dir: "/home/u/proj".into(),
+            ..Default::default()
+        },
         screen: screen.into(),
         ..Default::default()
     };

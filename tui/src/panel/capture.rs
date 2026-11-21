@@ -94,13 +94,17 @@ impl Capture {
     /// `pane` read again (#1352): its screen, path, work folder, the board's agent
     /// facts (#1353) and a new repo block under [`REPO_BUDGET`], so a later model
     /// call sees the pane as it is now. Name and cmd stay: the panel set its flags
-    /// from them. A pane tmux cannot answer for leaves the capture as it was. It
-    /// keeps no global state, so it may run off the UI thread.
-    pub fn refresh(&mut self, pane: &str) {
-        if let Some(c) = capture(pane) {
-            (self.path, self.screen, self.repo, self.work) = (c.path, c.screen, c.repo, c.work);
-            self.agent = c.agent;
-        }
+    /// from them. False for a pane tmux cannot answer for: the capture is left as it
+    /// was, and the caller must not send it as the pane now (#1376). It keeps no
+    /// global state, so it may run off the UI thread.
+    #[must_use]
+    pub fn refresh(&mut self, pane: &str) -> bool {
+        let Some(c) = capture(pane) else {
+            return false;
+        };
+        (self.path, self.screen, self.repo, self.work) = (c.path, c.screen, c.repo, c.work);
+        self.agent = c.agent;
+        true
     }
 }
 

@@ -3899,7 +3899,6 @@ case "$1" in
       case " $* " in
           *@cockpit_click_line*)  printf '%s\n' "${CLICK_LINE:-}" ;;
           *@cockpit_editor*)      printf '%s\n' "${OPEN_EDITOR:-}" ;;
-          *@open-editor*) printf '%s\n' "${OPEN_EDITOR2:-}" ;;
       esac ;;
   display-message)
       case " $* " in
@@ -3932,7 +3931,7 @@ else
     bad "and the line number becomes +12" "+12" "$cmd"
 fi
 
-# With no @open-editor and no code(1) on PATH, fall back to $VISUAL/$EDITOR
+# With no @cockpit_editor and no code(1) on PATH, fall back to $VISUAL/$EDITOR
 # rather than reporting "opened" for a command that was never found.
 # HOME is the fixture dir, not the real one. The VS Code shim now sits between
 # code(1) and $EDITOR and is looked up under $HOME, so a real home makes what
@@ -4025,7 +4024,6 @@ case "$1" in
       case " $* " in
           *@cockpit_click_line*)  printf '%s\n' "${CLICK_LINE:-}" ;;
           *@cockpit_editor*)      printf '%s\n' "${OPEN_EDITOR:-}" ;;
-          *@open-editor*) printf '%s\n' "${OPEN_EDITOR2:-}" ;;
       esac ;;
   display-message)
       case " $* " in
@@ -5078,21 +5076,15 @@ dcout=$(dc "$DCP")
 is "a live #{agent_*} line is a warn tokens row, a commented one (indented too) is not" "1 1" \
    "$(dcrow "$dcout" "warn tokens") $(printf '%s\n' "$dcout" | grep -c 'tokens *1 lines')"
 cp "$DC/conf.bak" "$DH/.tmux.conf"
-# A retired option still set is a warn row; a config without one prints no row.
-is "a config without a retired option has no options row" "0" "$(dcrow "$dcout" "warn options")"
+# @cockpit_keep_swap_pane went with #223, and the doctor's row for it with #1372: a
+# config that still sets it gets no options row and no line naming it. The formats
+# row shows the doctor read that config.
 printf '%s\n' 'set -g @cockpit_keep_swap_pane on' >> "$DH/.tmux.conf"
 dcout=$(dc "$DCP")
-is "a config still setting @cockpit_keep_swap_pane is a warn options row (#223)" "1" \
+is "a config still setting @cockpit_keep_swap_pane gets no options row (#1372)" "0" \
     "$(dcrow "$dcout" "warn options")"
-cp "$DC/conf.bak" "$DH/.tmux.conf"
-# A bare unset carries no value after the name, and still names the option.
-printf '%s\n' 'set -gu @cockpit_keep_swap_pane' >> "$DH/.tmux.conf"
-dcout=$(dc "$DCP")
-is "so does a bare set -gu @cockpit_keep_swap_pane" "1" "$(dcrow "$dcout" "warn options")"
-cp "$DC/conf.bak" "$DH/.tmux.conf"
-printf '%s\n' 'set -g @cockpit_keep_swap_pane_x on' >> "$DH/.tmux.conf"
-dcout=$(dc "$DCP")
-is "but an option that only starts with the name does not" "0" "$(dcrow "$dcout" "warn options")"
+is "and no doctor line names it" "0" "$(printf '%s\n' "$dcout" | grep -c keep_swap_pane)"
+is "and the doctor still read that config: an ok formats row" "1" "$(dcrow "$dcout" "ok formats")"
 cp "$DC/conf.bak" "$DH/.tmux.conf"
 # The option name has to be a whole word. Without that the glob fires on any
 # option whose name merely ends in one of these, and the row cries over a
@@ -6765,13 +6757,12 @@ if rf_up; then
     reload_on "$rf_m" &&
         is "@cockpit_reload_key Foo: one message names the option, the value and tmux's error" \
            1 "$(rf_said reload "$rf_t")"
-    # The menu key read from @cockpit_ai_key, the old option: the message names that one.
-    "$TMUX_REAL" -L "$rf_m" -f /dev/null set -gu @cockpit_menu_key >/dev/null 2>&1
-    rf_conf "$rf_m" reload R; rf_conf "$rf_m" ai "'b c'"
-    rf_t="tmux-cockpit: @cockpit_ai_key [b c] binds nothing (unknown key: b c);"
+    # The menu key's message names its own option, @cockpit_menu_key.
+    rf_conf "$rf_m" reload R; rf_conf "$rf_m" menu "'b c'"
+    rf_t="tmux-cockpit: @cockpit_menu_key [b c] binds nothing (unknown key: b c);"
     rf_t="$rf_t menu stays unbound until the option is fixed"
     reload_on "$rf_m" &&
-        is "@cockpit_ai_key 'b c': one message names @cockpit_ai_key, the value and tmux's error" \
+        is "@cockpit_menu_key 'b c': one message names the option, the value and tmux's error" \
            1 "$(rf_said menu "$rf_t")"
 else
     bad "a client attached for the #1210 message rows" "a client on $rf_m" "none"
@@ -7766,11 +7757,12 @@ esac
 "$TMUX_REAL" -L "$PI" kill-server >/dev/null 2>&1
 fi
 
-echo "== @open-editor still works under its new name =="
+echo "== @open-editor is retired: only @cockpit_editor picks the editor (#1368) =="
 optui_setup
-# Renamed to @cockpit_editor. The old name is unprefixed and generic enough that
-# another plugin could reasonably claim it, but people have it in their configs,
-# so it keeps working for a release and says so.
+# The old unprefixed name was kept for a release under the rename to
+# @cockpit_editor. It is gone now: a config that still sets it gets what a config
+# with no editor option gets, here $VISUAL, and no notice names the old option.
+# HOME is the fixture folder, so a real Remote-SSH shim cannot answer instead.
 RN=$(mktmpd); RT=$(mktmpd); : > "$RN/f.txt"
 cat > "$RT/tmux" <<'RSTUB'
 #!/usr/bin/env bash
@@ -7793,8 +7785,8 @@ exit 0
 RSTUB
 chmod +x "$RT/tmux"; ln -s "$(command -v bash)" "$RT/bash"
 ed_run() { : > "$RT/log"
-    env COCKPIT_TUI_BIN="$OPTUI" PATH="$RT" TMUX_LOG="$RT/log" CLICK_DIR="$RN" \
-        CLICK_LINE="f.txt" "$@" \
+    env COCKPIT_TUI_BIN="$OPTUI" PATH="$RT" HOME="$RN" TMUX_LOG="$RT/log" CLICK_DIR="$RN" \
+        CLICK_LINE="f.txt" VISUAL=zzstub-visual EDITOR= "$@" \
         "$DIR/scripts/tmux-open-path" --pick %1 </dev/null >/dev/null 2>&1
     cat "$RT/log"; }
 case "$(ed_run NEW_ED=nvim)" in
@@ -7802,11 +7794,12 @@ case "$(ed_run NEW_ED=nvim)" in
     *) bad "@cockpit_editor is used" "a window running nvim" "$(ed_run NEW_ED=nvim)" ;;
 esac
 out=$(ed_run OLD_ED=vi)
-case "$out" in *"NEWWIN vi"*) ok "the old @open-editor still works" ;;
-               *) bad "the old @open-editor still works" "a window running vi" "$out" ;; esac
-case "$out" in *"renamed @cockpit_editor"*) ok "and says it has been renamed" ;;
-               *) bad "and says it has been renamed" "a rename notice" "$out" ;; esac
+case "$out" in *"NEWWIN zzstub-visual"*) ok "a config setting only @open-editor gets \$VISUAL, not its editor" ;;
+    *) bad "a config setting only @open-editor gets \$VISUAL, not its editor" "a window running zzstub-visual" "$out" ;; esac
+case "$out" in *open-editor*) bad "and no notice names @open-editor" "no notice" "$out" ;;
+    *) ok "and no notice names @open-editor" ;; esac
 rm -rf "$RN" "$RT"
+
 
 echo "== prefix s opens the session picker, prefix u jumps (#43) =="
 # Lowercase keys: a Shift chord dies under Caps Lock or a non-Latin layout.
@@ -8002,17 +7995,22 @@ loaded_on "$PA" "$par" &&
     case "$(ak r)" in *cockpit-board*) ok "$par" ;;
         *) bad "$par" "cockpit-board on r" "$(ak r)" ;; esac
 "$TMUX_REAL" -L "$PA" kill-server >/dev/null 2>&1
-# The old name still works, and says it was renamed.
+# @cockpit_ai_key, the menu key's old name, is retired (#1367): a config that still
+# sets it gets the menu on a, as with no option at all, and no message names it.
 PA="cockpit-pa2-$$"; SOCKS="$SOCKS $PA"
 "$TMUX_REAL" -L "$PA" -f /dev/null new-session -d -s t >/dev/null 2>&1
 "$TMUX_REAL" -L "$PA" set -g @cockpit_ai_key n >/dev/null 2>&1
 "$TMUX_REAL" -L "$PA" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
-case "$(ak n)" in *display-menu*) ok "@cockpit_ai_key still picks the key" ;;
-    *) bad "@cockpit_ai_key still picks the key" "the menu on n" "$(ak n)" ;; esac
+case "$(ak)" in *display-menu*) ok "with only @cockpit_ai_key n set, the menu stays on a" ;;
+    *) bad "with only @cockpit_ai_key n set, the menu stays on a" "the menu on a" "$(ak)" ;; esac
+case "$(ak n)" in *display-menu*) bad "and n is not the menu" "no menu on n" "$(ak n)" ;;
+    *) ok "and n is not the menu" ;; esac
+# The notice's own words, which the old load put in show-messages. The test's own
+# set-option line is logged there too, so the match is on the notice, not the name.
 case "$("$TMUX_REAL" -L "$PA" show-messages 2>/dev/null)" in
-    *"@cockpit_ai_key is now @cockpit_menu_key"*) ok "and says it was renamed" ;;
-    *) bad "and says it was renamed" "a rename notice" \
-            "$("$TMUX_REAL" -L "$PA" show-messages | tail -2)" ;;
+    *"is now @cockpit_menu_key"*) bad "and no rename notice is shown" "no notice" \
+            "$("$TMUX_REAL" -L "$PA" show-messages | grep -F 'is now @cockpit_menu_key')" ;;
+    *) ok "and no rename notice is shown" ;;
 esac
 "$TMUX_REAL" -L "$PA" kill-server >/dev/null 2>&1
 fi
@@ -15523,15 +15521,15 @@ is "jump %9 goes to that pane and runs nothing else" \
    "switch-client -t %9;select-window -t %9;select-pane -t %9;" "$(wact 'jump %9')"
 is "review %1 runs tmux-review on it and nothing else" "tmux-review -p %1;" "$(wact 'review %1')"
 is "panel %1 runs cockpit-panel on it and nothing else" "cockpit-panel -p %1;" "$(wact 'panel %1')"
-case "$(wact 'fix %1')" in
-    'display-message -t %3 -l cockpit: the board sent "fix", which this plugin does not know; prefix U updates the plugin and cockpit-tui;') \
-            ok "fix %1, the retired verb, runs nothing and says prefix U updates the binary" ;;
-    *) bad "fix %1, the retired verb, runs nothing and says prefix U updates the binary" \
-            "one display-message" "$(wact 'fix %1')" ;;
+case "$(wact 'zzverb %1')" in
+    'display-message -t %3 -l cockpit: the board sent "zzverb", which this plugin does not know; prefix U updates the plugin and cockpit-tui;') \
+            ok "zzverb %1, an unknown verb, runs nothing and says prefix U updates the binary" ;;
+    *) bad "zzverb %1, an unknown verb, runs nothing and says prefix U updates the binary" \
+            "one display-message" "$(wact 'zzverb %1')" ;;
 esac
 case "$(tail -1 "$BD/tui.log" 2>/dev/null)" in
-    *'cockpit-board: unknown verb [fix %1]') ok "and logs the unknown verb" ;;
-    *) bad "and logs the unknown verb" "cockpit-board: unknown verb [fix %1]" \
+    *'cockpit-board: unknown verb [zzverb %1]') ok "and logs the unknown verb" ;;
+    *) bad "and logs the unknown verb" "cockpit-board: unknown verb [zzverb %1]" \
             "$(tail -1 "$BD/tui.log" 2>/dev/null)" ;;
     esac
 case "$(wact 'deliver %1')" in *'not wired up yet'*) ok "deliver %1 is reserved and says so" ;;

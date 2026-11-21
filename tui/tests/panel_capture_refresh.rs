@@ -73,7 +73,7 @@ fn refresh_reads_the_pane_again_and_keeps_name_and_cmd() {
     (c.name, c.cmd, c.path) = ("kept-name".into(), "kept-cmd".into(), "/stale".into());
     (c.work.dir, c.repo) = ("/stale".into(), Repo::ready("stale"));
 
-    c.refresh(&id);
+    assert!(c.refresh(&id), "a live pane read as gone");
     let got = (c.name.as_str(), c.cmd.as_str(), c.path.as_str(), c.work.dir.as_str());
     assert_eq!(got, ("kept-name", "kept-cmd", cwd.as_str(), cwd.as_str()));
     assert!(c.screen.contains("mark-42"), "screen not read again:\n{}", c.screen);
@@ -82,6 +82,6 @@ fn refresh_reads_the_pane_again_and_keeps_name_and_cmd() {
 
     let before = c.clone();
     r.tmux(&["kill-window", "-t", &id]);
-    c.refresh(&id);
+    assert!(!c.refresh(&id), "a gone pane read as there");
     assert_eq!(c, before, "a gone pane changes nothing");
 }
