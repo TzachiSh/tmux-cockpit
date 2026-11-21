@@ -119,14 +119,14 @@ fn a_ref_is_named_from_the_pane_cwd_as_the_agent_resolves_it() {
     }
 }
 
-/// A fixture with no work folder set keeps reading the pane's cwd, as `capture`
-/// does where the shared rule has no answer.
+/// A capture with no work folder gives explore no root. The panel reads
+/// `work.dir` alone and never falls back to the pane's cwd (#1362, check 3).
 #[test]
-fn no_work_folder_falls_back_to_the_pane_cwd() {
+fn no_work_folder_refuses_explore() {
     let d = scratch("empty");
     tree(&d);
     let mut a = app(&d.join("work"), Path::new(""));
-    assert_eq!(explore_root(&mut a), Some(canon(&d.join("work"))));
+    assert_eq!(explore_root(&mut a), None);
 }
 
 /// A collector whose gh is never reached: the repo has no GitHub remote.
