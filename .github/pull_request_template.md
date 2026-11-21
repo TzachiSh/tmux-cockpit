@@ -1,16 +1,16 @@
-<!-- Open with your session or lane name. See AGENTS.md, "Keep one way to do each thing". -->
+<!-- Open with your session or lane name. Each box names a rule in AGENTS.md. -->
 
 Closes #
 
-## Checks
+## Checks (AGENTS.md, "Keep one way to do each thing")
 
-- [ ] One purpose: every file in the diff is needed for the change in the title.
-- [ ] The old way is gone: `git grep` for the old name, option or format finds nothing.
-- [ ] No new fallback, alias, shim or deprecation notice.
-- [ ] One flow, one place: no second copy of a rule that already has a function.
-- [ ] No dead code left behind.
-- [ ] A committed test fails without the change, run as CI runs it, and its mutant is named.
-- [ ] Small enough to read in one sitting.
+- [ ] 1. One purpose
+- [ ] 2. The old way is gone
+- [ ] 3. No new fallback
+- [ ] 4. One flow, one place
+- [ ] 5. No dead code
+- [ ] 6. Proof
+- [ ] 7. Small
 
 ## Fail-first
 

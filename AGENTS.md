@@ -178,8 +178,11 @@ A reviewer checks each PR against this list and names any miss in the verdict:
    needed for it. A rename or refactor is its own PR.
 2. **The old way is gone.** `git grep` for the old name, option or format
    returns nothing outside the changelog.
-3. **No new fallback.** A missing input is an error or one documented default,
-   never a silent second path.
+3. **No new fallback.** When the first way to get a value fails, the code
+   errors or says so. A second path that quietly takes over (an older value,
+   a cached copy, another source) is a fallback, even when a comment documents
+   it, and even when it sits in an unchanged helper the PR newly calls. It
+   stays only if the issue or this file allows that exact path.
 4. **One flow, one place.** A rule (which folder a pane works in, whether a pane
    runs Claude Code, how a path is quoted) lives in one function, and the PR
    calls it instead of writing a second copy. Grep for one.
