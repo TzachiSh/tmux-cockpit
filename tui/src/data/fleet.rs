@@ -3,7 +3,6 @@
 //! One diff scan per distinct repo root however many panes share it, at most
 //! `PARALLEL` git processes in flight (the old `COCKPIT_FLEET_PARALLEL=8`).
 use super::gitsafe::{git, tree_stat};
-use super::workdir::{Candidates, choose};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Mutex;
@@ -43,26 +42,6 @@ pub fn par_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec
         }
     });
     out.into_inner().unwrap().into_iter().flatten().collect()
-}
-
-/// The tree each pane works in, by [`choose`] (#452, #1343), for a reader that has
-/// `[@cockpit_dir, the transcript's newest cwd, pane_current_path]` and no
-/// `@cockpit_cwd`: `@cockpit_dir` stands as the session's cwd. A worktree made by
-/// hand keeps the process in the main checkout, so the cwd comes last; a dangling
-/// option (the tree was removed) falls through. Forks nothing.
-pub fn work_dirs(panes: &[[String; 3]]) -> Vec<String> {
-    panes
-        .iter()
-        .map(|[opt, said, cwd]| {
-            let c = Candidates {
-                hook_cwd: opt.clone(),
-                transcript_cwd: said.clone(),
-                pane_cwd: cwd.clone(),
-                ..Default::default()
-            };
-            choose(&c).dir
-        })
-        .collect()
 }
 
 /// Facts for every distinct path in `paths`.
