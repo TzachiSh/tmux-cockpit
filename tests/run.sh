@@ -3899,7 +3899,6 @@ case "$1" in
       case " $* " in
           *@cockpit_click_line*)  printf '%s\n' "${CLICK_LINE:-}" ;;
           *@cockpit_editor*)      printf '%s\n' "${OPEN_EDITOR:-}" ;;
-          *@open-editor*) printf '%s\n' "${OPEN_EDITOR2:-}" ;;
       esac ;;
   display-message)
       case " $* " in
@@ -3932,7 +3931,7 @@ else
     bad "and the line number becomes +12" "+12" "$cmd"
 fi
 
-# With no @open-editor and no code(1) on PATH, fall back to $VISUAL/$EDITOR
+# With no @cockpit_editor and no code(1) on PATH, fall back to $VISUAL/$EDITOR
 # rather than reporting "opened" for a command that was never found.
 # HOME is the fixture dir, not the real one. The VS Code shim now sits between
 # code(1) and $EDITOR and is looked up under $HOME, so a real home makes what
@@ -4025,7 +4024,6 @@ case "$1" in
       case " $* " in
           *@cockpit_click_line*)  printf '%s\n' "${CLICK_LINE:-}" ;;
           *@cockpit_editor*)      printf '%s\n' "${OPEN_EDITOR:-}" ;;
-          *@open-editor*) printf '%s\n' "${OPEN_EDITOR2:-}" ;;
       esac ;;
   display-message)
       case " $* " in
