@@ -155,6 +155,32 @@ fn every_call_of_a_live_panel_reads_the_screen_again() {
     assert_eq!(r.captures(), 2);
 }
 
+/// A live panel whose pane tmux can no longer read sends nothing (#1376). The call is
+/// refused with an error that names the pane, never sent with the screen at open.
+#[test]
+fn a_live_panel_whose_pane_is_gone_sends_nothing() {
+    let r = Rig::new("gone");
+    let q = r.d.display().to_string();
+    fake::write_exec(&r.d.join("tmux"), &format!("#!/bin/sh\necho \"$1\" >> '{q}/calls'\nexit 1\n"));
+    let call = r.call();
+    let mut a = app(&r.d, true);
+    a.key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
+    let landed = (0..PASSES).any(|_| {
+        a.launch(&call);
+        if a.pending {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        !a.pending
+    });
+    assert!(landed, "the envelope never landed in {PASSES} passes");
+    match &a.view {
+        View::Error { line, .. } => assert!(line.contains("%3") && line.contains("nothing was sent"), "{line}"),
+        v => panic!("not refused: {v:?}"),
+    }
+    assert!(a.req.is_none(), "a call was forked");
+    assert_eq!(r.sent(), "", "the stale screen was sent");
+}
+
 #[test]
 fn a_fixture_panel_never_reads_its_pane_again() {
     let r = Rig::new("fixture");
