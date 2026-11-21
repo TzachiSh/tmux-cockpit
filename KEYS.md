@@ -94,8 +94,6 @@ Wheel and drag are never touched, and neither is a single `Ctrl`+click: tmux
 that pane and is handed on to it: when a popup ate an earlier release, tmux
 turns the next press into a drag end and the click would select nothing (#21,
 #53). A root `MouseUp1Pane` or `MouseUp1Border` of your own is replaced.
-`@cockpit_keep_swap_pane` is gone with the swap-pane it kept (#223);
-`install.sh --check` warns while a config still sets it.
 
 ## The example config, `examples/full.tmux.conf`
 
