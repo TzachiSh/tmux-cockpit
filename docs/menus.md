@@ -29,6 +29,5 @@ Switch branch appear when the border has no room for the path or the branch
 (or `prefix + e` hid it), and the splits are left out on a touch client.
 
 A row for a plugin key replays that key, so a rebound key moves its row and an
-`off` key drops it. `@cockpit_menu_key` rebinds the menu (the old
-`@cockpit_ai_key` still works, with a notice), `off` disables it; moving it
+`off` key drops it. `@cockpit_menu_key` rebinds the menu, `off` disables it; moving it
 gives the old key its stock binding back. Stock `a` is unbound.

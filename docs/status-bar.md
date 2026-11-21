@@ -154,7 +154,6 @@ Nothing rewrites the old tokens any more. They now print as literal text.
 | `#{agent_where_path}` | `#{E:@cockpit_where_path}` |
 | `#{agent_where_branch}` | `#{E:@cockpit_where_branch}` |
 | `#{agent_fleet}` | `#{E:@cockpit_fleet}` |
-| `@cockpit_ai_key` | `@cockpit_menu_key` (the old name still works, with a notice) |
 
 If you used the plugin's catppuccin setup, delete all of it:
 

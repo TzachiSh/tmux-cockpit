@@ -257,7 +257,6 @@ key() {                       # <option> <default> -> the key, empty when off
 # (#1210).
 refused() {                   # <name> <tmux's error> -> 1
     local opt=@cockpit_${1}_key v e=${2%%$'\n'*} p
-    [ "$1" = menu ] && opt=$menuopt
     v=$(tmux show-option -gqv "$opt")
     dmsg "tmux-cockpit: $opt [$v] binds nothing ($e); $1 stays unbound until the option is fixed"
     # The move loop gave back any key a record named that differs from this value (#1229). A
@@ -292,15 +291,8 @@ skey() {                      # <name> <key>, its bind-key block on stdin -> 1 w
 }
 
 # Every key is settled before any is bound or given back, so giving an old one
-# back can never undo a binding this load makes. @cockpit_ai_key was the agents
-# menu's key; it still works, with a notice.
+# back can never undo a binding this load makes.
 menuk=$(keyopt @cockpit_menu_key)
-aik=$(keyopt @cockpit_ai_key)
-menuopt=@cockpit_menu_key     # the option the menu's key came from, for refused()
-if [ -z "$menuk" ] && [ -n "$aik" ]; then
-    menuk=$aik; menuopt=@cockpit_ai_key
-    tmux display-message "tmux-cockpit: @cockpit_ai_key is now @cockpit_menu_key"
-fi
 case "$menuk" in off) menuk="" ;; "") menuk=a ;; esac
 sk=$(key @cockpit_sessions_key s)
 jk=$(key @cockpit_jump_key u)
