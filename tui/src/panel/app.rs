@@ -358,8 +358,9 @@ pub struct App {
     /// A panel on a real pane, set by main after [`App::new`] (#1354): it reads its
     /// pane again before each call, off the UI thread. A fixture's is false.
     pub live: bool,
-    /// The envelope on its way from the thread [`App::busy`] started.
-    building: Option<std::sync::mpsc::Receiver<Envelope>>,
+    /// The envelope on its way from the thread [`App::busy`] started, or why it was not
+    /// built: a live pane tmux could not read again (#1376).
+    building: Option<std::sync::mpsc::Receiver<Result<Envelope, String>>>,
 }
 
 /// The secrets a call's envelope hid, by where they were: the screen with its
@@ -1281,10 +1282,13 @@ impl App {
         let (mut cap, live, pane) = (self.cap.clone(), self.live, self.pane.clone());
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            if live {
-                cap.refresh(&pane);
-            }
-            drop(tx.send(build_refs(&flow, &cap, &turns, left, &refs)))
+            // a pane tmux cannot read is not sent as it was at open (#1376)
+            let built = if live && !cap.refresh(&pane) {
+                Err(format!("tmux cannot read pane {pane}: it may be gone, so nothing was sent"))
+            } else {
+                Ok(build_refs(&flow, &cap, &turns, left, &refs))
+            };
+            drop(tx.send(built))
         });
         self.building = Some(rx);
         self.counted(None);
@@ -1410,10 +1414,17 @@ impl App {
         let built = match self.building.as_ref().map(|rx| rx.try_recv()) {
             None => None,
             Some(Err(std::sync::mpsc::TryRecvError::Empty)) => return,
-            Some(Ok(e)) => {
+            Some(Ok(Ok(e))) => {
                 self.building = None;
                 self.counted(Some(&e));
                 Some(e.text)
+            }
+            Some(Ok(Err(line))) => {
+                self.building = None;
+                self.pending = false;
+                eprintln!("cockpit-tui: {line}");
+                self.view = View::Error { line, hint: None };
+                return;
             }
             Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) => {
                 self.building = None;
@@ -2442,7 +2453,7 @@ mod tests {
         let mut a = App::new("%3", Capture::default());
         (a.view, a.draft) = (View::Compose, "list the files".into());
         a.write();
-        let (tx, rx) = std::sync::mpsc::channel::<Envelope>();
+        let (tx, rx) = std::sync::mpsc::channel::<Result<Envelope, String>>();
         drop(tx);
         a.building = Some(rx);
         let call = Call {
