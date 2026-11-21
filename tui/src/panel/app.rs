@@ -1145,13 +1145,10 @@ impl App {
         }
     }
 
-    /// The pane's work folder by the shared rule (#1354), or its cwd where the
-    /// capture has none, as [`super::capture::capture`] falls back.
+    /// The pane's work folder by the shared rule (#1354). A live capture always
+    /// fills it, so empty means a capture with no folder.
     fn work_dir(&self) -> &str {
-        match self.cap.work.dir.as_str() {
-            "" => &self.cap.path,
-            d => d,
-        }
+        &self.cap.work.dir
     }
 
     /// The folder an exploring write may read: the repo of the pane's work folder,
