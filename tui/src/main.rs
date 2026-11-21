@@ -50,6 +50,7 @@ fn panel(args: &[String]) {
         std::process::exit(1);
     };
     let mut a = app::App::new(pane, cap);
+    a.live = true;
     // Explain's what-changed list (#1000): one collector for the panel's life
     let collector = cockpit_tui::panel::changes::Collector::from_env();
     a.changes = Some(cockpit_tui::panel::look::Looks::new(collector));
@@ -67,13 +68,7 @@ fn panel(args: &[String]) {
     }
     if let Some((f, "hidden")) = resume {
         a.reopened = true;
-        match action::read_hidden(std::path::Path::new(f), pane, unix_now()) {
-            Ok(h) => a.unhide(h),
-            Err(e) => {
-                eprintln!("cockpit-tui: cannot bring the hidden panel back from {f}: {e}");
-                a.say(app::Level::Warn, format!("the hidden panel was dropped: {e}"));
-            }
-        }
+        a.unhide_file(std::path::Path::new(f), unix_now());
     } else if let Some((f, last)) = resume {
         a.reopened = true;
         match action::read_state(std::path::Path::new(f), pane) {
