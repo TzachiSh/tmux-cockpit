@@ -103,7 +103,7 @@ fn the_capture_carries_the_boards_agent_facts() {
             }),
             ..Default::default()
         };
-        old.refresh(id);
+        assert!(old.refresh(id), "{name}: the live pane read as gone");
         assert_eq!(old.agent, want, "{name}, refreshed");
     }
 }
