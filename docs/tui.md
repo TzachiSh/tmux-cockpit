@@ -1094,8 +1094,8 @@ a scrollbar.
 the board again in the same popup, as
 `cockpit-tui board --select %N --note <file>`: the selection is back on the pane
 just acted on, and the footer row shows the note. `jump`, `q`, `deliver` (still
-reserved), a verb the plugin does not know (`request` from a binary older than
-#288), a board that exits non-zero, and
+reserved), a verb the plugin does not know (from an older or a newer binary), a
+board that exits non-zero, and
 `@cockpit_board_return off` end the loop.
 
 The note is the action's last line. For `panel` it is what `cockpit-panel`

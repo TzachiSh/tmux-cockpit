@@ -218,8 +218,7 @@ while :; do
                 printf '✕ cockpit: not resumed: tmux would not split %s\n' "$target" > "$note"
             fi
             ;;
-        # Version skew: an older binary's verb (the retired `fix` and
-        # `request`, #288) or a newer one's.
+        # Version skew: a verb from an older or a newer binary than this plugin.
         *)
             log "unknown verb [$verb $target]"
             unk="cockpit: the board sent \"$verb\", which this plugin does not know"

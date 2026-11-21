@@ -15527,15 +15527,15 @@ is "jump %9 goes to that pane and runs nothing else" \
    "switch-client -t %9;select-window -t %9;select-pane -t %9;" "$(wact 'jump %9')"
 is "review %1 runs tmux-review on it and nothing else" "tmux-review -p %1;" "$(wact 'review %1')"
 is "panel %1 runs cockpit-panel on it and nothing else" "cockpit-panel -p %1;" "$(wact 'panel %1')"
-case "$(wact 'fix %1')" in
-    'display-message -t %3 -l cockpit: the board sent "fix", which this plugin does not know; prefix U updates the plugin and cockpit-tui;') \
-            ok "fix %1, the retired verb, runs nothing and says prefix U updates the binary" ;;
-    *) bad "fix %1, the retired verb, runs nothing and says prefix U updates the binary" \
-            "one display-message" "$(wact 'fix %1')" ;;
+case "$(wact 'zzverb %1')" in
+    'display-message -t %3 -l cockpit: the board sent "zzverb", which this plugin does not know; prefix U updates the plugin and cockpit-tui;') \
+            ok "zzverb %1, an unknown verb, runs nothing and says prefix U updates the binary" ;;
+    *) bad "zzverb %1, an unknown verb, runs nothing and says prefix U updates the binary" \
+            "one display-message" "$(wact 'zzverb %1')" ;;
 esac
 case "$(tail -1 "$BD/tui.log" 2>/dev/null)" in
-    *'cockpit-board: unknown verb [fix %1]') ok "and logs the unknown verb" ;;
-    *) bad "and logs the unknown verb" "cockpit-board: unknown verb [fix %1]" \
+    *'cockpit-board: unknown verb [zzverb %1]') ok "and logs the unknown verb" ;;
+    *) bad "and logs the unknown verb" "cockpit-board: unknown verb [zzverb %1]" \
             "$(tail -1 "$BD/tui.log" 2>/dev/null)" ;;
     esac
 case "$(wact 'deliver %1')" in *'not wired up yet'*) ok "deliver %1 is reserved and says so" ;;
