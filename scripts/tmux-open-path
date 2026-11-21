@@ -75,12 +75,6 @@ open_one() {
     md_view "$file" "$ln" && return
     vscode_lib
     editor=$(tmux show-options -gqv @cockpit_editor)
-    if [ -z "$editor" ]; then
-        # The old, unprefixed name, kept working for one release.
-        editor=$(tmux show-options -gqv @open-editor)
-        [ -n "$editor" ] && tmux display-message \
-            "cockpit: @open-editor renamed @cockpit_editor · update your tmux.conf"
-    fi
     # VS Code only where it is installed (code on PATH, or the Remote-SSH shim),
     # else the shell's editor.
     if [ -z "$editor" ] && ! command -v code >/dev/null 2>&1 && ! vscode_shim >/dev/null; then
