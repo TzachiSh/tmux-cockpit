@@ -7766,11 +7766,12 @@ esac
 "$TMUX_REAL" -L "$PI" kill-server >/dev/null 2>&1
 fi
 
-echo "== @open-editor still works under its new name =="
+echo "== @open-editor is retired: only @cockpit_editor picks the editor (#1368) =="
 optui_setup
-# Renamed to @cockpit_editor. The old name is unprefixed and generic enough that
-# another plugin could reasonably claim it, but people have it in their configs,
-# so it keeps working for a release and says so.
+# The old unprefixed name was kept for a release under the rename to
+# @cockpit_editor. It is gone now: a config that still sets it gets what a config
+# with no editor option gets, here $VISUAL, and no notice names the old option.
+# HOME is the fixture folder, so a real Remote-SSH shim cannot answer instead.
 RN=$(mktmpd); RT=$(mktmpd); : > "$RN/f.txt"
 cat > "$RT/tmux" <<'RSTUB'
 #!/usr/bin/env bash
@@ -7793,8 +7794,8 @@ exit 0
 RSTUB
 chmod +x "$RT/tmux"; ln -s "$(command -v bash)" "$RT/bash"
 ed_run() { : > "$RT/log"
-    env COCKPIT_TUI_BIN="$OPTUI" PATH="$RT" TMUX_LOG="$RT/log" CLICK_DIR="$RN" \
-        CLICK_LINE="f.txt" "$@" \
+    env COCKPIT_TUI_BIN="$OPTUI" PATH="$RT" HOME="$RN" TMUX_LOG="$RT/log" CLICK_DIR="$RN" \
+        CLICK_LINE="f.txt" VISUAL=zzstub-visual EDITOR= "$@" \
         "$DIR/scripts/tmux-open-path" --pick %1 </dev/null >/dev/null 2>&1
     cat "$RT/log"; }
 case "$(ed_run NEW_ED=nvim)" in
@@ -7802,11 +7803,12 @@ case "$(ed_run NEW_ED=nvim)" in
     *) bad "@cockpit_editor is used" "a window running nvim" "$(ed_run NEW_ED=nvim)" ;;
 esac
 out=$(ed_run OLD_ED=vi)
-case "$out" in *"NEWWIN vi"*) ok "the old @open-editor still works" ;;
-               *) bad "the old @open-editor still works" "a window running vi" "$out" ;; esac
-case "$out" in *"renamed @cockpit_editor"*) ok "and says it has been renamed" ;;
-               *) bad "and says it has been renamed" "a rename notice" "$out" ;; esac
+case "$out" in *"NEWWIN zzstub-visual"*) ok "a config setting only @open-editor gets \$VISUAL, not its editor" ;;
+    *) bad "a config setting only @open-editor gets \$VISUAL, not its editor" "a window running zzstub-visual" "$out" ;; esac
+case "$out" in *open-editor*) bad "and no notice names @open-editor" "no notice" "$out" ;;
+    *) ok "and no notice names @open-editor" ;; esac
 rm -rf "$RN" "$RT"
+
 
 echo "== prefix s opens the session picker, prefix u jumps (#43) =="
 # Lowercase keys: a Shift chord dies under Caps Lock or a non-Latin layout.
