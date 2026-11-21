@@ -8222,13 +8222,15 @@ for gb_c in without empty; do
     gb_load; gb_set board unset; gb_load
 done
 unset -f gb_msgs; unset gb_c gb_w gb_a gb_k gb_p gb_n gb_why
-# ; is a command separator to tmux: the tmux-fixer sweep must still give it back.
+# The sweep for the retired side fix's bindings is gone (#1370): a key bound to its
+# script is a binding like any other the user made, and a load leaves it as it is.
 "$TMUX_REAL" -L "$GB" bind-key -T prefix '\;' display-popup -E "/old/scripts/tmux-fixer -p %1" \
     >/dev/null 2>&1
 gb_load
-loaded_on "$GB" "a dead tmux-fixer binding on ; is given back as stock last-pane" &&
-    is "a dead tmux-fixer binding on ; is given back as stock last-pane" "last-pane" \
-       "$(gb_live ';' | grep -o last-pane)"
+loaded_on "$GB" "a binding on ; that runs tmux-fixer is left as it is (#1370)" &&
+    is "a binding on ; that runs tmux-fixer is left as it is (#1370)" "scripts/tmux-fixer" \
+       "$(gb_live ';' | grep -o scripts/tmux-fixer)"
+"$TMUX_REAL" -L "$GB" bind-key -T prefix '\;' last-pane >/dev/null 2>&1
 unset -f gb_nostock gb_note gb_left
 # Two keys trading places: each is taken this load, so neither is given back.
 gb_set sessions u; gb_set jump s; gb_load
@@ -16533,27 +16535,26 @@ pn_stock_f() {                # <label>  f is tmux's own find-window prompt agai
 "$TMUX_REAL" -L "$PN" set -g @cockpit_panel_key f >/dev/null 2>&1; pn_load
 "$TMUX_REAL" -L "$PN" set -g @cockpit_panel_key off >/dev/null 2>&1; pn_load
 pn_stock_f "turning the panel off on f gives f back to stock find-window"
-# Bindings the retired side fix left on a server that only reloads.
+# The retired side fix is gone with its sweep (#1370): a reload leaves a key bound
+# to its script as the user's, and f, with the panel off, stays stock.
 "$TMUX_REAL" -L "$PN" bind-key -T prefix g display-popup \
     -E "/old/scripts/tmux-fixer -p %1" >/dev/null 2>&1
-"$TMUX_REAL" -L "$PN" bind-key -T prefix f display-popup \
-    -E "/old/scripts/tmux-fixer -p %1" >/dev/null 2>&1
 pn_load
-# give_back restores tmux's own binding: g is stock 3.8's switch-client -T move.
-pnr="a reload drops a dead tmux-fixer binding on another key, for stock"
+pnr="a reload leaves a binding on g that runs tmux-fixer as it is (#1370)"
 loaded_on "$PN" "$pnr" &&
-    case "$(pn_keys g)" in *tmux-fixer*) bad "$pnr" "switch-client -T move" "$(pn_keys g)" ;;
-        *'switch-client -T move'*) ok "$pnr" ;;
-        *) bad "$pnr" "switch-client -T move" "$(pn_keys g)" ;; esac
-pn_stock_f "and gives f back to stock find-window"
-# @cockpit_fixer_key off was how a user kept stock f; the panel honours it.
+    case "$(pn_keys g)" in *scripts/tmux-fixer*) ok "$pnr" ;;
+        *) bad "$pnr" "display-popup of /old/scripts/tmux-fixer" "$(pn_keys g)" ;; esac
+pn_stock_f "and f, with the panel off, stays stock find-window"
+"$TMUX_REAL" -L "$PN" unbind-key -T prefix g >/dev/null 2>&1
+# @cockpit_fixer_key is retired with it (#1370): set to off, it no longer keeps stock
+# f, and with no panel key the panel takes its default f.
 "$TMUX_REAL" -L "$PN" set -gu @cockpit_panel_key >/dev/null 2>&1
 "$TMUX_REAL" -L "$PN" set -g @cockpit_fixer_key off >/dev/null 2>&1; pn_load
-pn_stock_f "@cockpit_fixer_key off with no panel key keeps stock f"
-loaded_on "$PN" "and binds no panel key" && is "and binds no panel key" "" \
-    "$("$TMUX_REAL" -L "$PN" list-keys -T prefix 2>/dev/null | grep cockpit-panel)"
+pnr="@cockpit_fixer_key off with no panel key leaves the panel on f (#1370)"
+loaded_on "$PN" "$pnr" && is "$pnr" "1" "$(pn_keys f | grep -c cockpit-panel)"
+"$TMUX_REAL" -L "$PN" set -gu @cockpit_fixer_key >/dev/null 2>&1
 "$TMUX_REAL" -L "$PN" set -g @cockpit_panel_key f >/dev/null 2>&1; pn_load
-is "an explicit @cockpit_panel_key still wins over it" "1" "$(pn_keys f | grep -c cockpit-panel)"
+is "an explicit @cockpit_panel_key f binds the panel on f" "1" "$(pn_keys f | grep -c cockpit-panel)"
 pn_mode() { pn_keys f | grep -o 'COCKPIT_PANEL_MODE=[a-z]*'; }
 is "@cockpit_panel_mode unset hands the panel auto" "COCKPIT_PANEL_MODE=auto" "$(pn_mode)"
 "$TMUX_REAL" -L "$PN" set -g @cockpit_panel_mode tablet >/dev/null 2>&1; pn_load
