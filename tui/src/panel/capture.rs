@@ -24,6 +24,9 @@ pub struct Capture {
     /// The pane's work folder by the shared rule, `crate::data::workdir` (#1343); `path`
     /// as a pane-cwd answer where that rule has none (not an agent's, no dir on disk).
     pub work: WorkDir,
+    /// The board's facts on the pane's agent, off the read `work` takes (#1353); `None`
+    /// where `work` has no rule. Memory only, never a tmux option.
+    pub agent: Option<crate::data::AgentFacts>,
 }
 
 /// The command in any case, or its version-shaped title, as the board reads it
@@ -69,7 +72,8 @@ pub fn capture_within(pane: &str, budget: Duration) -> Option<Capture> {
     } else {
         Some(screen.clone())
     };
-    let work = crate::data::workdir(pane).unwrap_or_else(|| {
+    let (work, agent) = crate::data::workdir_agent(pane).unzip();
+    let work = work.unwrap_or_else(|| {
         choose(&Candidates {
             pane_cwd: path.clone(),
             ..Default::default()
@@ -82,22 +86,24 @@ pub fn capture_within(pane: &str, budget: Duration) -> Option<Capture> {
         screen,
         repo: block_of.map_or_else(Repo::default, |s| Repo::start(&work.dir, &s, budget)),
         work,
+        agent,
     })
 }
 
 impl Capture {
-    /// `pane` read again (#1352): its screen, path, work folder and a new repo
-    /// block under [`REPO_BUDGET`], so a later model call sees the pane as it is
-    /// now. Name and cmd stay: the panel set its flags from them. False for a pane
-    /// tmux cannot answer for: the capture is left as it was, and the caller must not
-    /// send it as the pane now (#1376). It keeps no global state, so it may run off
-    /// the UI thread.
+    /// `pane` read again (#1352): its screen, path, work folder, the board's agent
+    /// facts (#1353) and a new repo block under [`REPO_BUDGET`], so a later model
+    /// call sees the pane as it is now. Name and cmd stay: the panel set its flags
+    /// from them. False for a pane tmux cannot answer for: the capture is left as it
+    /// was, and the caller must not send it as the pane now (#1376). It keeps no
+    /// global state, so it may run off the UI thread.
     #[must_use]
     pub fn refresh(&mut self, pane: &str) -> bool {
         let Some(c) = capture(pane) else {
             return false;
         };
         (self.path, self.screen, self.repo, self.work) = (c.path, c.screen, c.repo, c.work);
+        self.agent = c.agent;
         true
     }
 }

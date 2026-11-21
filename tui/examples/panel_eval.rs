@@ -47,7 +47,7 @@
 //! as the panel does, in its cache dir with the user's settings. The summary's
 //! `environment` line says which, with the claude version and the HOME and XDG
 //! variables.
-use cockpit_tui::data::workdir::WorkDir;
+use cockpit_tui::data::workdir::{Source, WorkDir};
 use cockpit_tui::panel::app::{App, View};
 use cockpit_tui::panel::capture::Capture;
 use cockpit_tui::panel::envelope::{Flow, OutType, Role, Turn};
@@ -1972,10 +1972,12 @@ fn panel_call(c: &Case, path: &str, explore: bool) -> (String, String, Profile, 
         path: path.into(),
         work: WorkDir {
             dir: path.into(),
+            source: Source::Session,
             ..Default::default()
         },
         screen: c.screen.clone(),
         repo: c.repo.as_str().into(),
+        ..Default::default()
     };
     let mut a = App::new("%0", cap);
     (a.view, a.out, a.explore) = (View::Compose, c.out, explore);
@@ -3657,6 +3659,7 @@ mod tests {
             },
             screen: c.screen.clone(),
             repo: c.repo.as_str().into(),
+            ..Default::default()
         };
         let flow = Flow::Write {
             draft: c.request.clone(),
@@ -3735,6 +3738,7 @@ mod tests {
             },
             screen: String::new(),
             repo: "".into(),
+            ..Default::default()
         };
         let flow = Flow::Write {
             draft: c.request.clone(),
