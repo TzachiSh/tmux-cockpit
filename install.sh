@@ -405,7 +405,7 @@ if [ "$hooks" -eq 1 ] && [ "$uninstall" -eq 1 ]; then
     stripped=$(printf '%s' "$orig" | jq --arg dir "$DIR" --arg pre "$pre" '
         def esc: gsub("(?<c>[.\\[\\]()*+?{}|^$\\\\])"; "\\\(.c)");
         ($pre + "|" + ($dir | esc)) as $root
-        | ("^\"?(" + $root + ")\"?/scripts/(agent-state( [a-z-]+)?|review-gate( --pretool)?|worktree-(create|remove))$") as $script
+        | ("^\"?(" + $root + ")\"?/scripts/(agent-state( [a-z-]+)?|review-gate|worktree-(create|remove))$") as $script
         | ("^jq -Rs .* \"?(" + $root + ")\"?/skills/unslop/SKILL\\.md 2>/dev/null$") as $unslop
         | def mine: (.command // "") | (test($script) or test($unslop));
         if (.hooks | type) == "object" then
@@ -477,8 +477,8 @@ if [ "$hooks" -eq 1 ]; then
 
     # Additive: their hooks stay, ours are appended unless a deep-equal entry
     # exists. norm makes an absent matcher equal "".
-    # Cockpit entries that change shape across versions are replaced (anchored): review-gate,
-    # an old `--pretool` (review-gate exits 0 on it), a SessionStart `agent-state off`.
+    # Cockpit entries that change shape across versions are replaced (anchored): review-gate
+    # and a SessionStart `agent-state off`.
     # review-gate stays the last shipped Stop entry: --hooks strips and re-appends it, so a new Stop hook goes before it.
     merged=$(jq -s '
         def norm: if type == "object" then . + {matcher: (.matcher // "")} else . end;
@@ -491,7 +491,7 @@ if [ "$hooks" -eq 1 ]; then
         | ($theirs.hooks // {} | with_entries(.key as $k | .value |=
             (map(if $k == "SessionStart" and $offm != null and (.matcher // "") != $offm
                  then .hooks |= map(select(ours("/scripts/agent-state off$") | not)) else . end)
-             | map(.hooks |= map(select(ours("/scripts/review-gate( --pretool)?$") | not)))
+             | map(.hooks |= map(select(ours("/scripts/review-gate$") | not)))
              | map(select((.hooks | length) > 0))))) as $h
         | $theirs + { hooks: (
             $h + ($mine | with_entries(
