@@ -297,19 +297,13 @@ case "$menuk" in off) menuk="" ;; "") menuk=a ;; esac
 sk=$(key @cockpit_sessions_key s)
 jk=$(key @cockpit_jump_key u)
 ik=$(key @cockpit_info_key i)
-# @cockpit_fixer_key off kept stock f; the panel taking f must not undo that.
-pdef=f; [ "$(tmux show-option -gqv @cockpit_fixer_key)" = off ] && pdef=""
-pk=$(key @cockpit_panel_key "$pdef")
+pk=$(key @cockpit_panel_key f)
 bk=$(key @cockpit_board_key w)
 rk=$(key @cockpit_review_key r)
 rlk=$(key @cockpit_reload_key R)
 mk=$(key @cockpit_move_key M)
 fsk=$(key @cockpit_fullscreen_key e)
 
-# The retired side fix's bindings outlive it on a server that only reloads.
-tmux list-keys -T prefix -F "#{key_string}"$'\037'"#{key_command}" 2>/dev/null \
-    | awk -F'\037' 'index($2, "scripts/tmux-fixer") { print $1 }' \
-    | while IFS= read -r k; do give_back "$k"; done
 # A reload that turns a key off or moves it gives the old key back, unless it is
 # no longer ours: the user bound it since. A key another cockpit key takes this
 # load is given back too, then bound again below. One that could not be given
