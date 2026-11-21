@@ -154,3 +154,38 @@ Then:
 
 Say plainly what is uncertain. A guess written as a finding sends the next
 attempt the wrong way.
+
+## Keep one way to do each thing
+
+Two rules are fixed for every PR, from every session and lane.
+
+**No backward compatibility.** When a name, option, format or behaviour
+changes, the PR removes the old one completely: its code, tests, docs and
+comments. No alias, no deprecation notice, no shim, no branch that still reads
+an older format, no fallback to the old path. An old way kept "for one release"
+stays for years and doubles every later change.
+
+**No rollbacks.** A merged change is never reverted and no branch is
+force-pushed. Get it right before the merge: a small PR, a test that fails
+without the change, a reviewer's verdict at the exact head, and CI run on a
+merge into the current master. If master goes red anyway, every merge stops
+until the next PR fixes it, with a test that fails without that fix. Reverting
+your own unpushed commit is fine: nothing merged is undone.
+
+A reviewer checks each PR against this list and names any miss in the verdict:
+
+1. **One purpose.** The title names one change, and every file in the diff is
+   needed for it. A rename or refactor is its own PR.
+2. **The old way is gone.** `git grep` for the old name, option or format
+   returns nothing outside the changelog.
+3. **No new fallback.** A missing input is an error or one documented default,
+   never a silent second path.
+4. **One flow, one place.** A rule (which folder a pane works in, whether a pane
+   runs Claude Code, how a path is quoted) lives in one function, and the PR
+   calls it instead of writing a second copy. Grep for one.
+5. **No dead code.** Every function, option, helper and test the PR leaves
+   behind has a caller. No commented-out code.
+6. **Proof.** A committed test fails without the change when run the way CI
+   runs it, and each mechanism has a mutant that turns a named test red.
+7. **Small.** The reviewer can read the whole diff in one sitting. If not, it
+   is split before review.
