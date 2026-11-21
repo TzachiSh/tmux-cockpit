@@ -1950,9 +1950,10 @@ panel with the reason in a warn note.
   file](#the-freeze)); `panel::action::{write_expect, expect_body, EXPECT_MAX}`
   are new. For `kill` it holds the target's window id (`@N`), never the name.
 - The fleet read appends a 13th `list-panes -F` field, `#{window_id}`, kept in
-  `data::Pane::win`; a row with fewer than 13 fields is skipped. `--json` and
-  `--rows` do not carry it. `board::{is_window_id, refused}` are new: a pane
-  with no `@N` id gets a `✕` note on `x` instead of a confirm.
+  `data::Pane::win`; a row with fewer than 13 fields is skipped (since #1374, one
+  short of any FIELDS field). `--json` and `--rows` do not carry it.
+  `board::{is_window_id, refused}` are new: a pane with no `@N` id gets a `✕`
+  note on `x` instead of a confirm.
 - `board::run` returns `Option<board::Exit>` (`line`, `expect`), not
   `Option<String>`; `board::View` gains `confirm: Option<&Confirm>`;
   `Act::Extra(char)` is new.
