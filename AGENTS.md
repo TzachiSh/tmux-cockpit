@@ -154,3 +154,48 @@ Then:
 
 Say plainly what is uncertain. A guess written as a finding sends the next
 attempt the wrong way.
+
+## Keep one way to do each thing
+
+Two rules are fixed for every PR, from every session and lane.
+
+**No backward compatibility.** When a name, option, format or behaviour
+changes, the PR removes the old one completely: its code, tests, docs and
+comments. No alias, no deprecation notice, no shim, no branch that still reads
+an older format, no fallback to the old path. An old way kept "for one release"
+stays for years and doubles every later change.
+
+**No rollbacks.** A merged change is never reverted and no branch is
+force-pushed. Get it right before the merge: a small PR, the proof check 6
+asks for, a reviewer's verdict at the exact head, and CI run on a merge into
+the current master. If master goes red anyway, every merge stops until the
+next PR fixes it, with a test that fails without that fix. A red row that a
+rerun turns green is a flake: file it as an issue, and merges go on. On your
+own open branch, a new commit that undoes an earlier one is fine, and so is
+dropping an unpushed commit: nothing merged is undone.
+
+A reviewer checks each PR against this list and names any miss in the verdict:
+
+1. **One purpose.** The title names one change, and every file in the diff is
+   needed for it. A rename or refactor is its own PR.
+2. **The old way is gone.** `git grep` for the old name, option or format
+   finds only a test that asserts it is gone, or a line that records why it
+   was retired.
+3. **No new fallback.** When the first way to get a value fails, the code
+   errors or says so. A second path that quietly takes over (an older value,
+   a cached copy, another source) is a fallback, even when a comment documents
+   it, and even when it sits in a helper the PR newly calls. It
+   stays only if the issue or this file allows that exact path.
+4. **One flow, one place.** A rule (which folder a pane works in, whether a pane
+   runs Claude Code, how a path is quoted) lives in one function, and the PR
+   calls it instead of writing a second copy. The reviewer names the grep
+   that found it.
+5. **No dead code.** Every function, option and helper the PR leaves behind
+   has a caller, and every test it adds runs in CI. No commented-out code.
+6. **Proof.** A PR that changes behaviour commits a test that fails without
+   the change when run the way CI runs it, and each mechanism has a mutant
+   that turns a named test red. A rename, refactor or docs PR changes no
+   behaviour: its proof is the same CI totals as master, with no test edited
+   beyond the rename.
+7. **Small.** The reviewer can read the whole diff in one sitting. If not, it
+   is split before review.
