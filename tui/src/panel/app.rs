@@ -77,6 +77,13 @@ pub const QUICK: [(&str, &str); 4] = [
     ),
 ];
 
+/// A folder as a note draws it: control characters out (a kept one is a file's text), on
+/// one line, cut at 200 characters, `?` for none, as cockpit-panel writes it.
+fn shown_dir(d: &str) -> String {
+    let d: String = sanitize(d).replace('\n', " ").chars().take(200).collect();
+    if d.is_empty() { "?".into() } else { d }
+}
+
 /// Programs that take a bracketed paste as one block, with [`SSH_LIKE`]: the
 /// remote shell gets it. Anywhere else each line of a paste may run alone.
 const BRACKETED_OK: [&str; 8] = ["bash", "zsh", "fish", "claude", "node", "tmux", "vim", "nvim"];
@@ -348,6 +355,11 @@ pub struct App {
     /// from the collector the panel holds for its life. `None` collects nothing:
     /// [`App::new`] installs none, the panel's `main` does.
     pub changes: Option<Looks>,
+    /// A panel on a real pane, set by main after [`App::new`] (#1354): it reads its
+    /// pane again before each call, off the UI thread. A fixture's is false.
+    pub live: bool,
+    /// The envelope on its way from the thread [`App::busy`] started.
+    building: Option<std::sync::mpsc::Receiver<Envelope>>,
 }
 
 /// The secrets a call's envelope hid, by where they were: the screen with its
@@ -415,6 +427,8 @@ impl App {
             first_guard: TAP_GUARD_MS,
             guard: TAP_GUARD_MS,
             changes: None,
+            live: false,
+            building: None,
         }
     }
 
@@ -455,6 +469,30 @@ impl App {
     /// Back where ^Z left it. Nothing is inserted or sent: the draft and the
     /// reply wait for a key, and the first view gets the resume's tap guard.
     pub fn unhide(&mut self, h: Hidden) {
+        self.unhide_in(h, None);
+    }
+
+    /// The hidden panel `--resume <state> --last hidden` names, back where ^Z left it,
+    /// with the work folder cockpit-panel kept beside the state as `<state>.wd` (#1344);
+    /// or a note on why it was dropped. `now` is unix seconds, for the state's age.
+    pub fn unhide_file(&mut self, state: &Path, now: u64) {
+        let mut wd = state.as_os_str().to_owned();
+        wd.push(".wd");
+        let was = std::fs::read_to_string(&wd).ok();
+        let pane = self.pane.clone();
+        match super::action::read_hidden(state, &pane, now) {
+            Ok(h) => self.unhide_in(h, was.as_deref()),
+            Err(e) => {
+                let f = state.display();
+                eprintln!("cockpit-tui: cannot bring the hidden panel back from {f}: {e}");
+                self.say(Level::Warn, format!("the hidden panel was dropped: {e}"));
+            }
+        }
+    }
+
+    /// [`App::unhide`], `was` being the work folder the panel was hidden on, as
+    /// cockpit-panel kept it beside the state (#1344), when it kept one.
+    pub fn unhide_in(&mut self, h: Hidden, was: Option<&str>) {
         // as in a steps resume: the wrapper's guard checks what it was written for
         let now = std::mem::replace(&mut self.cap.cmd, h.cmd);
         self.session = session_state(&self.cap.screen, &self.cap.name, &self.cap.cmd);
@@ -477,7 +515,14 @@ impl App {
         if dropped {
             back.push_str("; explore is off, as this pane's folder cannot be read");
         }
-        self.say(if moved || dropped { Level::Warn } else { Level::Info }, back);
+        // the old turns were about that folder: the user is told it moved (#1354)
+        let left = was.filter(|w| !w.is_empty() && *w != self.work_dir());
+        if let Some(w) = left {
+            let (now, w) = (shown_dir(self.work_dir()), shown_dir(w));
+            back.push_str(&format!("; the folder is now {now}, not {w}"));
+        }
+        let warn = moved || dropped || left.is_some();
+        self.say(if warn { Level::Warn } else { Level::Info }, back);
     }
 
     /// The ★ tile first: what this window most likely wants. When that is
@@ -586,19 +631,22 @@ impl App {
     }
 
     /// The event loop wakes every 100 ms rather than wait for a key: a call is
-    /// out, or an Explain's list is still being collected, so it is drawn when it
-    /// lands even while the user reads the answer and presses nothing (#1000).
+    /// out or its envelope is being built (#1354), or an Explain's list is still
+    /// being collected, so it is drawn when it lands even while the user reads the
+    /// answer and presses nothing (#1000).
     pub fn ticks(&self) -> bool {
         let explain = self.run.as_ref().is_some_and(|r| r.flow == Flow::Explain);
-        self.req.is_some() || (explain && self.changes.as_ref().is_some_and(Looks::waiting))
+        let out = self.req.is_some() || self.building.is_some();
+        out || (explain && self.changes.as_ref().is_some_and(Looks::waiting))
     }
 
-    /// Starts collecting what changed for Explain, in a pane whose folder is
-    /// this machine's: the repo block's rule.
+    /// Starts collecting what changed for Explain in the pane's work folder (#1354),
+    /// in a pane whose folder is this machine's: the repo block's rule.
     fn look_ahead(&mut self) {
-        let here = self.local && !self.cap.path.is_empty();
+        let dir = self.work_dir().to_string();
+        let here = self.local && !dir.is_empty();
         if let Some(l) = self.changes.as_mut().filter(|_| here) {
-            l.ahead(&self.cap.path);
+            l.ahead(&dir);
         }
     }
 
@@ -1097,9 +1145,15 @@ impl App {
         }
     }
 
-    /// The folder an exploring write may read: the pane's repo, or its folder
-    /// outside one, in a local window and one request.rs would start a call on;
-    /// else why not, for the user.
+    /// The pane's work folder by the shared rule (#1354). A live capture always
+    /// fills it, so empty means a capture with no folder.
+    fn work_dir(&self) -> &str {
+        &self.cap.work.dir
+    }
+
+    /// The folder an exploring write may read: the repo of the pane's work folder,
+    /// or that folder outside one, in a local window and one request.rs would start
+    /// a call on; else why not, for the user.
     fn explore_dir(&self) -> Result<PathBuf, String> {
         if !self.local {
             return Err(format!(
@@ -1107,11 +1161,12 @@ impl App {
                 self.cap.cmd
             ));
         }
-        if self.cap.path.is_empty() {
+        let work = self.work_dir();
+        if work.is_empty() {
             return Err("tmux gives no folder for this pane".into());
         }
         let root = self.explore_root.get_or_init(|| {
-            let dir = toplevel(&self.cap.path, REPO_BUDGET).unwrap_or_else(|| self.cap.path.clone());
+            let dir = toplevel(work, REPO_BUDGET).unwrap_or_else(|| work.to_string());
             let dir = PathBuf::from(dir);
             read_dir_ok(&dir).map(|()| dir)
         });
@@ -1209,8 +1264,35 @@ impl App {
         self.view = View::Busy;
         self.pending = true;
         self.note = None;
-        let e = self.run.as_ref().map(|r| self.envelope(r));
-        self.hidden = e.as_ref().map_or(0, Envelope::hidden);
+        self.building = None;
+        let Some(r) = self.run.as_ref() else {
+            return self.counted(None);
+        };
+        if !self.live && self.cap.repo.try_get().is_some() {
+            // a fixture whose repo block is known: built here, its counts read at once
+            let e = self.envelope(r);
+            return self.counted(Some(&e));
+        }
+        // The repo block may still be in git's hands, up to REPO_BUDGET (#1342 amendment
+        // 10), and a live panel reads its pane again before each call (amendment 9): the
+        // envelope is built on a thread and launch() takes it (#1354).
+        let left = r.max.saturating_sub(r.rounds);
+        let (flow, turns, refs) = (r.flow.clone(), r.turns.clone(), self.write_refs(&r.flow));
+        let (mut cap, live, pane) = (self.cap.clone(), self.live, self.pane.clone());
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            if live {
+                cap.refresh(&pane);
+            }
+            drop(tx.send(build_refs(&flow, &cap, &turns, left, &refs)))
+        });
+        self.building = Some(rx);
+        self.counted(None);
+    }
+
+    /// What Busy says the call hid: an envelope's counts, or none until it is built.
+    fn counted(&mut self, e: Option<&Envelope>) {
+        self.hidden = e.map_or(0, Envelope::hidden);
         self.sent = e.map_or_else(SentHidden::default, |e| SentHidden {
             screen: e.screen_hidden,
             repo: e.repo_hidden,
@@ -1238,6 +1320,8 @@ impl App {
             return vec![];
         }
         let root = self.explores(flow).then(|| self.explore_dir().ok()).flatten();
+        // named from the pane's cwd, where the agent resolves a ref, as ^T names it; the
+        // work folder is only the root a write explores (#1342 amendment 15)
         ref_items(&self.basket, Path::new(&self.cap.path), self.claude, root.as_deref())
     }
 
@@ -1285,6 +1369,13 @@ impl App {
     /// [`App::request_parts`], why a prompt override was not used, and the hash.
     #[allow(clippy::type_complexity)]
     fn request_noted(&self) -> Option<((String, String, String), Option<String>, Option<String>)> {
+        self.request_with(None)
+    }
+
+    /// [`App::request_noted`] on the user prompt `built` when one is given: the
+    /// envelope [`App::busy`] built off the UI thread.
+    #[allow(clippy::type_complexity)]
+    fn request_with(&self, built: Option<String>) -> Option<((String, String, String), Option<String>, Option<String>)> {
         let r = self.run.as_ref()?;
         let noted = |(t, n): (String, Option<String>)| (t, n, None);
         let (system, note, hash) = match &r.flow {
@@ -1305,15 +1396,36 @@ impl App {
             Flow::Explain => noted(prompts::explain_noted()),
             Flow::Ask(_) => noted(prompts::ask_code_noted()),
         };
-        Some(((system, self.envelope(r).text, r.model.clone()), note, hash))
+        let prompt = built.unwrap_or_else(|| self.envelope(r).text);
+        Some(((system, prompt, r.model.clone()), note, hash))
     }
 
-    /// Forks the pending call, if there is one.
+    /// Forks the pending call, if there is one and its envelope is built: one still
+    /// on its thread is asked for again on the loop's next pass, [`App::ticks`]
+    /// waking it.
     pub fn launch(&mut self, call: &Call) {
-        if !std::mem::take(&mut self.pending) {
+        if !self.pending {
             return;
         }
-        if let Some(((system, prompt, model), note, _)) = self.request_noted() {
+        let built = match self.building.as_ref().map(|rx| rx.try_recv()) {
+            None => None,
+            Some(Err(std::sync::mpsc::TryRecvError::Empty)) => return,
+            Some(Ok(e)) => {
+                self.building = None;
+                self.counted(Some(&e));
+                Some(e.text)
+            }
+            Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) => {
+                self.building = None;
+                self.pending = false;
+                eprintln!("cockpit-tui: the request's envelope was not built");
+                let line = "the request could not be built".to_string();
+                self.view = View::Error { line, hint: None };
+                return;
+            }
+        };
+        self.pending = false;
+        if let Some(((system, prompt, model), note, _)) = self.request_with(built) {
             if let Some(n) = note {
                 self.say(Level::Warn, n);
             }
@@ -1330,6 +1442,7 @@ impl App {
         let back = View::Home { sel: 0 };
         self.start(Flow::Ask(a), vec![], vec![], 0, back.clone());
         self.pending = false;
+        self.building = None;
         self.busy_back = None;
         self.view = View::Input {
             kind: InputKind::FollowUp,
@@ -1391,6 +1504,8 @@ impl App {
         if let Some(mut r) = self.req.take() {
             r.cancel();
         }
+        // an envelope still on its thread is dropped with its receiver
+        self.building = None;
         self.pending = false;
         self.drop_pending();
         self.say(Level::Info, "cancelled");
@@ -2315,3 +2430,29 @@ fn strip_escapes(s: &str) -> String {
 
 /// How far back [`cut_prefill`] looks for a space.
 const PREFILL_BACK: usize = 40;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A build thread that panicked drops its sender unsent (#1354): the call is
+    /// never made, the panel shows an error, and the loop stops ticking.
+    #[test]
+    fn a_build_thread_that_died_ends_in_an_error_not_a_wait() {
+        let mut a = App::new("%3", Capture::default());
+        (a.view, a.draft) = (View::Compose, "list the files".into());
+        a.write();
+        let (tx, rx) = std::sync::mpsc::channel::<Envelope>();
+        drop(tx);
+        a.building = Some(rx);
+        let call = Call {
+            claude: "/nonexistent/claude-stub".into(),
+            timeout: Duration::from_secs(1),
+            dir: PathBuf::from("/nonexistent"),
+            effort: super::super::request::Effort::Medium,
+        };
+        a.launch(&call);
+        assert!(matches!(a.view, View::Error { .. }), "{:?}", a.view);
+        assert!(!a.pending && a.req.is_none() && !a.ticks(), "the panel still waits");
+    }
+}

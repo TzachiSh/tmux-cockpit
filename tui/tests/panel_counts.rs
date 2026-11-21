@@ -5,6 +5,7 @@
 //! here is made up.
 mod fake;
 
+use cockpit_tui::data::workdir::WorkDir;
 use cockpit_tui::panel::app::{App, SentHidden, Tile, View};
 use cockpit_tui::panel::ask;
 use cockpit_tui::panel::capture::Capture;
@@ -27,6 +28,10 @@ fn cap(screen: &str, name: &str, path: &str) -> Capture {
         name: name.into(),
         cmd: "zsh".into(),
         path: path.into(),
+        work: WorkDir {
+            dir: path.into(),
+            ..Default::default()
+        },
         screen: screen.into(),
         ..Default::default()
     }
