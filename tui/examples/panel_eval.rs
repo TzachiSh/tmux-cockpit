@@ -3657,7 +3657,6 @@ mod tests {
             },
             screen: c.screen.clone(),
             repo: c.repo.as_str().into(),
-            ..Default::default()
         };
         let flow = Flow::Write {
             draft: c.request.clone(),
@@ -3736,7 +3735,6 @@ mod tests {
             },
             screen: String::new(),
             repo: "".into(),
-            ..Default::default()
         };
         let flow = Flow::Write {
             draft: c.request.clone(),
