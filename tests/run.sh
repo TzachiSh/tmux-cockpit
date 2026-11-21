@@ -8011,11 +8011,12 @@ case "$(ak)" in *display-menu*) ok "with only @cockpit_ai_key n set, the menu st
     *) bad "with only @cockpit_ai_key n set, the menu stays on a" "the menu on a" "$(ak)" ;; esac
 case "$(ak n)" in *display-menu*) bad "and n is not the menu" "no menu on n" "$(ak n)" ;;
     *) ok "and n is not the menu" ;; esac
-# tmux logs each command a client sends too: those lines are the test's own set.
-case "$("$TMUX_REAL" -L "$PA" show-messages 2>/dev/null | grep -v ' command: ')" in
-    *cockpit_ai_key*) bad "and no message names @cockpit_ai_key" "no message" \
-            "$("$TMUX_REAL" -L "$PA" show-messages | grep -v ' command: ' | tail -2)" ;;
-    *) ok "and no message names @cockpit_ai_key" ;;
+# The notice's own words, which the old load put in show-messages. The test's own
+# set-option line is logged there too, so the match is on the notice, not the name.
+case "$("$TMUX_REAL" -L "$PA" show-messages 2>/dev/null)" in
+    *"is now @cockpit_menu_key"*) bad "and no rename notice is shown" "no notice" \
+            "$("$TMUX_REAL" -L "$PA" show-messages | grep -F 'is now @cockpit_menu_key')" ;;
+    *) ok "and no rename notice is shown" ;;
 esac
 "$TMUX_REAL" -L "$PA" kill-server >/dev/null 2>&1
 fi
