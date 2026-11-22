@@ -60,17 +60,6 @@ fn other_like_labels_are_dropped_but_a_word_starting_with_other_is_not() {
 }
 
 #[test]
-fn a_legacy_question_line_after_a_preamble_is_a_question() {
-    let out = "Sure.\nQUESTION: Which one?\n- first\n2) second\n- Other option\nnot a bullet";
-    let want = Reply::Question {
-        text: "Which one?".into(),
-        options: vec![opt("first", false), opt("second", false)],
-    };
-    assert_eq!(reply(out), want);
-    assert_eq!(fix(out), want);
-}
-
-#[test]
 fn each_result_tag_has_its_kind() {
     assert_eq!(reply("<prompt>\n  Fix it  \n</prompt>"), Reply::Prompt("Fix it".into()));
     assert_eq!(reply("<text> Hi team </text>"), Reply::Text("Hi team".into()));
@@ -498,4 +487,25 @@ fn fix_and_explain_never_read_a_batch() {
     for (flow, got) in [("fix", fix(&out)), ("explain", explain(&out))] {
         assert!(matches!(&got, Reply::Question { text, .. } if text == "Q1?"), "{flow}: {got:?}");
     }
+}
+
+/// #1373: the older reply shape, a `QUESTION:` line after a line of preamble, is
+/// no longer a question.
+const OLD_QUESTION: &str = "Sure.\nQUESTION: Which one?\n- first\n2) second\n- Other option\nnot a bullet";
+
+#[test]
+fn an_old_question_line_reply_is_untagged() {
+    assert_eq!(reply(OLD_QUESTION), Reply::Untagged(OLD_QUESTION.into()));
+}
+
+#[test]
+fn fix_and_explain_take_an_old_question_line_reply_as_the_final_text() {
+    assert_eq!(fix(OLD_QUESTION), Reply::Text(OLD_QUESTION.into()));
+    assert_eq!(
+        explain(OLD_QUESTION),
+        Reply::Answer {
+            text: OLD_QUESTION.into(),
+            ready: None
+        }
+    );
 }
