@@ -282,11 +282,11 @@ prog_name() {
 is_event() { case "$payload" in *"\"hook_event_name\":\"$1\""*) return 0 ;;
     *"\"hook_event_name\": \"$1\""*) return 0 ;; esac; return 1; }
 
-errmsg=""
 case "$state" in
 needs-input|error)
-    # PermissionRequest and PostToolUseFailure name the tool (#1330). The poller has no
-    # payload, and a terminal is a person typing the command.
+    # PermissionRequest names the tool (#1330), and PostToolUseFailure, which runs error as
+    # StopFailure does, is its tool's end (#1331). The poller has no payload, and a terminal
+    # is a person typing the command.
     [ -z "$poll" ] && [ ! -t 0 ] || state_only=1
     # $d is the script's own path, resolved once at the top: nothing on this path reassigns it.
     # shellcheck source=lib/hook.sh
@@ -306,14 +306,14 @@ needs-input|error)
     else
         # 4 KB, as above: bash reads a pipe a byte per syscall, and a failed Write's tool_input
         # can be a whole file, which held the hook 2 s (#1334). is_interrupt comes after
-        # tool_input and the error text: past the cap it is not seen, and the error is
-        # written, as before #1330.
+        # tool_input and the error text: past the cap it is not seen.
         read_capped 4096 true
         if is_event PostToolUseFailure; then
             # A tool the person stopped (Esc) did not fail.
             case "$payload" in *'"is_interrupt":true'*|*'"is_interrupt": true'*) exit 0 ;; esac
-            # The tool name only: the error text may quote a path or a file's contents.
-            tool_name; [ -z "$REPLY" ] || errmsg="$REPLY failed"
+            # A tool's failure is not the turn's (#1331): it ends the tool as PostToolUse
+            # does, and answers an approved ask (#1341). Only StopFailure stays error.
+            state=running
         fi
     fi
     ;;
@@ -350,7 +350,7 @@ notify)
     # can be asked something new, and that newer text must still land.
     # A permission_prompt follows its PermissionRequest about 6 s later (#1330): a pane already
     # waiting with an ask keeps that hook's text, which names the tool. Any other state's text
-    # (an error's) gives way. One read; a cut one reads no 1 and writes, as before.
+    # gives way. One read; a cut one reads no 1 and writes, as before.
     keep=""
     if [ "$ntype" = permission_prompt ]; then
         keep=$(tmux display-message -p -t "$pane" \
@@ -464,8 +464,8 @@ done)
     ;;
 esac
 
-# `when` guards the transition on the current @panestate. needs-input and error are
-# sticky against Stop/idle; an unchanged state is refused because every set redraws.
+# `when` guards the transition on the current @panestate. needs-input and error, a failed
+# turn's (#1331), are sticky against Stop/idle; an unchanged state is refused: a set redraws.
 cur='#{@panestate}'
 case "$state" in
     running)     when="#{!=:$cur,running}" ;;
@@ -538,13 +538,7 @@ fi
 case "$state" in
     running|off|interrupted) body="$body ; set-option -pu -t $pane @panestate_msg" ;;
     # The poller's done/error follow a needs-input whose ask would otherwise stay.
-    done) [ -z "$poll" ] || body="$body ; set-option -pu -t $pane @panestate_msg" ;;
-    # A failed tool's name (#1330), inside `when`: a sticky ask is not overwritten. Only
-    # safe_word's bytes and " failed", so the single quotes hold.
-    error) if [ -n "$poll" ]; then body="$body ; set-option -pu -t $pane @panestate_msg"
-           elif [ -n "$errmsg" ]; then
-               body="$body ; set-option -p -t $pane @panestate_msg '$errmsg'"
-           fi ;;
+    done|error) [ -z "$poll" ] || body="$body ; set-option -pu -t $pane @panestate_msg" ;;
 esac
 
 # A hook of this pane's own session (TMUX_PANE is its pane) that is not an agent view's relayed
