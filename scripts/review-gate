@@ -176,8 +176,9 @@ if [ -n "$spool" ] && [ -f "$spool" ] && [ ! -L "$spool" ]; then
 fi
 if [ -n "$review" ]; then
     # The sibling hook just wrote `done`, but additionalContext starts another turn.
-    # Muted: stdout is the JSON channel from here on.
-    "$here/agent-state" running "$pane" >/dev/null 2>&1
+    # Muted: stdout is the JSON channel from here on. stdin from /dev/null: agent-state reads a
+    # payload there, and this one's stdin, past the payload read above, may stay open (#1403).
+    "$here/agent-state" running "$pane" < /dev/null >/dev/null 2>&1
     printf '{"hookSpecificOutput":{"hookEventName":"Stop","additionalContext":"%s"}}\n' \
         "$(json "$review")"
     exit 0

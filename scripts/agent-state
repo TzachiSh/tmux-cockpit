@@ -346,7 +346,8 @@ running)
     # A tool event names its agent and tool: while an ask with a key waits, only a call of the
     # agent that asked ends it (#1403, call_key). Other agents and parallel calls fire tool
     # hooks all the while. 4 KB, as above: the keys come before tool_input. The poller has no
-    # payload, and a terminal is a person typing the command.
+    # payload, and a terminal is a person typing the command. A caller with no payload of its
+    # own hands it /dev/null (cockpit-event, review-gate): an open stdin holds the read 2 s.
     # shellcheck source=lib/hook.sh
     if [ -z "$poll" ] && [ ! -t 0 ] && . "${d%/*}/lib/hook.sh" 2>/dev/null; then
         read_capped 4096 true
