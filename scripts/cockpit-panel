@@ -122,7 +122,16 @@ d=''; own_tmpdir d || { tell "cockpit: no temp dir for the panel (own_tmpdir: $o
     exit 1; }
 f="$d/act"
 buf="cockpit-panel-$$"
-trap 'rm -rf "$d"' EXIT
+# Both traps ignore HUP, INT and TERM first, so a signal cannot stop the rm (#1411). After it,
+# the EXIT trap raises again the signal that stopped the panel, so it dies by it:
+# tmux-open-path's viewer waits on the panel in the foreground, and bash goes on after a
+# Ctrl-C unless its child died by SIGINT.
+sig=''
+trap 'trap "" HUP INT TERM; rm -rf "$d"
+    [ -z "$sig" ] || { trap - "$sig"; kill -s "$sig" $$; }' EXIT
+trap 'trap "" HUP INT TERM; sig=HUP; exit 129' HUP
+trap 'trap "" HUP INT TERM; sig=INT; exit 130' INT
+trap 'trap "" HUP INT TERM; sig=TERM; exit 143' TERM
 
 # The action, run the way the binary asked; `last` says how it went, for a resume.
 act() {

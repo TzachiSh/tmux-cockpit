@@ -11395,6 +11395,124 @@ else
 fi
 rm -rf "$RX"; unset -f rx_run; unset RX
 
+echo "== EXIT traps: once one runs, no HUP, INT or TERM stops its cleanup (#1411) =="
+# Six scripts clean up in an EXIT trap: tmux-open-path and tmux-branch remove the picker's
+# stderr file, cockpit-panel and cockpit-board their private dir, agent-poll's release unsets
+# its slot, and tui-fetch removes its download dir and build log. Each ran that cleanup with
+# HUP, INT and TERM caught by a trap or by bash's own handler, so the commands it started took
+# them at their default: a closed popup (tmux sends TERM, then the pty hangs up), a Ctrl-C in a
+# cooked moment or a signal to the group killed them, and what they remove stayed. tui-fetch
+# cleaned up in RETURN traps, which no signal runs. So each EXIT trap ignores the three first,
+# and each signal trap too, the shape of tm's (#1397) and scratch_index's (#1400).
+# One stand-in is first on PATH as rm, tmux, curl, gh, cargo and rustc, and is the scripts'
+# cockpit-tui. While its name and arguments match the row's hold glob it holds until the go
+# file is there, at most 100 x 0.1 s. Then it runs the real rm, answers as a tmux with no
+# server, or fails as curl, gh and cargo: nothing reaches a server, the network or a build.
+# The signal goes to the script's group while it holds. Each run has a TMPDIR of its own, so
+# what is left there is the cleanup's. Four rows send one HUP while the body runs, and the EXIT
+# trap removes what the script made: the board ends through its own signal trap (130), the
+# panel and tui-fetch by that signal (129), which their EXIT trap raises again after the rm. A
+# bash waits on those two in the foreground (install.sh, bootstrap.sh, tmux-open-path's viewer),
+# and it goes on after a Ctrl-C to the group unless its child died by SIGINT. In the last two
+# rows a stand-in caller of that kind runs each: it must stop, after the cleanup.
+XT=$(mktmpd); mkdir -p "$XT/bin" "$XT/w/repo"; : > "$XT/w/a.txt"; : > "$XT/w/b.txt"
+( cd "$XT/w/repo" && git init -q . ) >/dev/null 2>&1
+XT_RM=$(command -v rm)
+cat > "$XT/bin/stand" <<'STAND'
+#!/bin/sh
+n=${0##*/}
+case "$n $*" in $XT_HOLD)
+    echo held > "$XT_MARK"
+    i=0; while [ ! -e "$XT_GO" ] && [ $i -lt 100 ]; do sleep 0.1; i=$((i + 1)); done ;;
+esac
+case $n in
+    rm) exec "$XT_RM" "$@" ;;
+    tmux)
+        case "$*" in
+            *@cockpit_click_line*) echo 'a.txt b.txt' ;;
+            *pane_current_path*) printf '%%1\0370\037\037sh\037\037%s\n' "$XT_W" ;;
+            *'set-option -gu'*) echo unset > "$XT_DONE" ;;
+        esac ;;
+    rustc) echo 'rustc 99.0.0' ;;
+    curl) exit 22 ;;
+    gh) exit 1 ;;
+    cargo) exit 101 ;;
+    tui) case $1 in pick|branch) exit 1 ;; esac ;;
+esac
+exit 0
+STAND
+chmod +x "$XT/bin/stand"; ln -s bin/stand "$XT/tui"
+for xt_c in rm tmux curl gh cargo rustc; do ln -s stand "$XT/bin/$xt_c"; done
+# The caller: a bash that runs the script in the foreground, then goes on, as install.sh:364
+printf '#!/usr/bin/env bash\nbash "$@"\necho went-on > "$XT_DONE"\n' > "$XT/caller"
+xt_run() {                    # <signal> <hold glob> <script|path> [args...] -> mark|status|left
+    local sig=$1 hold=$2 f=$DIR/scripts/$3 c="" a="" g rc p d=()
+    case $3 in /*) f=$3 ;; esac; shift 3
+    rm -rf "${XT:?}/t" "$XT/p"; rm -f "$XT/mark" "$XT/go" "$XT/done"; mkdir -p "$XT/t"
+    for g in HUP INT TERM; do ! sig_dfl "$g" || d+=(--default-signal="$g"); done
+    # COCKPIT_TUI_BIN: XT_BIN when the row sets one (tui-fetch's binary, which is not there)
+    ( cd "$XT/w" && exec env "${d[@]}" -u TMUX -u TMUX_PANE -u COCKPIT_TUI_OFFLINE \
+        -u COCKPIT_POLL_KEY -u CLAUDE_CONFIG_DIR PATH="$XT/bin:$PATH" TMPDIR="$XT/t" \
+        COCKPIT_TUI_BIN="${XT_BIN:-$XT/tui}" COCKPIT_TUI_RELEASES=http://no-such-host.invalid \
+        COCKPIT_LOG="$XT/log" XDG_STATE_HOME="$XT/state" XT_HOLD="$hold" XT_MARK="$XT/mark" \
+        XT_GO="$XT/go" XT_DONE="$XT/done" XT_W="$XT/w" XT_RM="$XT_RM" \
+        setsid bash "$f" "$@" ) </dev/null >/dev/null 2>&1 & p=$!
+    # signalled only once /proc names it, its comm bash and its argv[1] the script (#1208)
+    if ! until_file "$XT/mark" held; then c="no hold"
+    else
+        read -r c 2>/dev/null < "/proc/$p/comm"
+        a=$(tr '\0' '\n' 2>/dev/null < "/proc/$p/cmdline" | sed -n 2p)
+        if [ "$c" != bash ] || [ "$a" != "$f" ]; then
+            c="no signal: comm [$c] argv [$a]"
+        else c=""; kill -"$sig" -- "-$p" 2>/dev/null || c="no signal: kill $sig"
+        fi
+    fi
+    : > "$XT/go"
+    wait "$p" 2>/dev/null; rc=$?
+    printf '%s|%s|%s%s' "$(cat "$XT/mark" 2>/dev/null)" "${c:-$rc}" \
+        "$(ls -A "$XT/t" | tr '\n' ,)" "$(cat "$XT/done" 2>/dev/null)"
+}
+xt_is() {                     # <signal> <row> <want> <hold glob> <script> [args...]
+    local sig=$1 row=$2 want=$3; shift 3
+    if [ "$sig" = INT ] && ! sig_dfl INT; then skip_ "$row (env cannot reset SIGINT)"
+    else is "$row" "$want" "$(xt_run "$sig" "$@")"; fi
+}
+if ! command -v setsid >/dev/null; then skip_ "a signal in an EXIT trap's cleanup (no setsid)"
+elif [ ! -r "/proc/$$/comm" ]; then skip_ "a signal in an EXIT trap's cleanup (no /proc)"
+elif ! sig_dfl HUP && [ "$(trap -p HUP)" = "trap -- '' SIGHUP" ]; then
+    skip_ "a signal in an EXIT trap's cleanup (SIGHUP is ignored and env cannot reset it)"
+else
+    for xt_s in HUP TERM INT; do
+        xt_is "$xt_s" "tmux-open-path: a $xt_s to the group cannot stop its EXIT trap's rm" \
+            "held|0|" 'rm -f -- *' tmux-open-path --pick %1
+        xt_is "$xt_s" "tmux-branch: a $xt_s to the group cannot stop its EXIT trap's rm" \
+            "held|0|" 'rm -f -- *' tmux-branch "$XT/w/repo"
+        xt_is "$xt_s" "cockpit-panel: a $xt_s to the group cannot stop its EXIT trap's rm" \
+            "held|0|" 'rm -rf *' cockpit-panel -p %1
+        xt_is "$xt_s" "cockpit-board: a $xt_s to the group cannot stop its EXIT trap's rm" \
+            "held|0|" 'rm -rf *' cockpit-board -p %1 -c c0
+        xt_is "$xt_s" "agent-poll: a $xt_s to the group cannot cut its EXIT trap's release short" \
+            "held|0|unset" 'tmux if-shell *set-option -gu*' agent-poll
+        XT_BIN=$XT/p/bin/cockpit-tui \
+            xt_is "$xt_s" "tui-fetch: a $xt_s to the group cannot stop its EXIT trap's rm" \
+            "held|0|" 'rm -rf *' tui-fetch
+    done
+    is "cockpit-panel: a HUP to the group while its binary runs ends it by that signal, dir gone" \
+        "held|129|" "$(xt_run HUP 'tui panel*' cockpit-panel -p %1)"
+    is "cockpit-board: a HUP to the group while its binary runs ends it by its trap, dir gone" \
+        "held|130|" "$(xt_run HUP 'tui board*' cockpit-board -p %1 -c c0)"
+    is "tui-fetch: a HUP to the group while it downloads leaves no download dir" \
+        "held|129|" "$(XT_BIN=$XT/p/bin/cockpit-tui xt_run HUP 'curl *' tui-fetch)"
+    is "tui-fetch: a HUP to the group while it builds leaves no build log" \
+        "held|129|" "$(XT_BIN=$XT/p/bin/cockpit-tui xt_run HUP 'cargo *' tui-fetch --required)"
+    XT_BIN=$XT/p/bin/cockpit-tui \
+        xt_is INT "tui-fetch: a group Ctrl-C stops the bash that runs it, after its cleanup" \
+        "held|130|" 'curl *' "$XT/caller" "$DIR/scripts/tui-fetch"
+    xt_is INT "cockpit-panel: a group Ctrl-C stops the bash that runs it, after its cleanup" \
+        "held|130|" 'tui panel*' "$XT/caller" "$DIR/scripts/cockpit-panel" -p %1
+fi
+rm -rf "$XT"; unset -f xt_run xt_is; unset XT XT_RM xt_c xt_s
+
 echo "== tmux-review: tree_diff never writes its temp index through a symlink =="
 # The shared temp dir is the agent's to write too, and it can see tree_diff's
 # names. The mktemp shim plays an agent that won the race: the name it hands

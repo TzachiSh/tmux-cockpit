@@ -333,7 +333,10 @@ act() {
 # One stderr capture for the whole loop, removed on any exit. Without mktemp the
 # picker runs as before, and a stale binary is just "exited".
 err=$(mktemp 2>/dev/null) || err=
-if [ -n "$err" ]; then trap 'rm -f -- "$err"' EXIT; trap 'exit 130' INT TERM HUP; fi
+if [ -n "$err" ]; then
+    trap 'trap "" HUP INT TERM; rm -f -- "$err"' EXIT  # a signal must not stop the rm (#1411)
+    trap 'trap "" HUP INT TERM; exit 130' INT TERM HUP
+fi
 
 # The binary reads $COCKPIT_GLYPHS, never the option (#293), as tm passes it.
 glyphs=$(tmux show-option -gqv @cockpit_glyphs 2>/dev/null)

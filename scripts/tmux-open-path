@@ -597,8 +597,9 @@ for i in "${!FILES[@]}"; do
 done
 # Stderr to a file: a cockpit-tui without --copy is told apart from a crash.
 err=$(mktemp 2>/dev/null) || err=/dev/null
-trap '[ "$err" = /dev/null ] || rm -f -- "$err"' EXIT
-trap 'exit 130' INT TERM HUP
+# Both traps ignore HUP, INT and TERM first: a signal must not stop the rm (#1411).
+trap 'trap "" HUP INT TERM; [ "$err" = /dev/null ] || rm -f -- "$err"' EXIT
+trap 'trap "" HUP INT TERM; exit 130' INT TERM HUP
 key=$(printf '%s' "$rows" | "$COCKPIT_TUI_BIN" pick --copy --prompt 'open' \
       --header 'open which path' 2>"$err"); rc=$?
 [ ! -s "$err" ] || cat "$err" >&2
