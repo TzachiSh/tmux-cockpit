@@ -1957,6 +1957,65 @@ bgst notify "$BGIP"; bgst done "$(bgstop "")"
 is "stays error through the idle notification and a later Stop" error "$(bgo @panestate)"
 bgmsg; unset -f bgmsg bgpr bgfail; unset BGPP BGPT BGPR BGTF BGSF BGIP
 
+# #1403: an ask ends only on a call of the agent that asked it. Other agents and parallel calls
+# fire tool hooks while it waits: this box's transcripts hold subagents' PreToolUse and
+# PostToolUse, and a sibling Agent call's SubagentStart, inside an ask. PermissionRequest
+# carries no tool_use_id, so the ask's key is its agent and its tool.
+bqask() {                     # <agent or empty>: a fresh Bash ask on a running pane
+    local ag=''
+    [ -n "$1" ] && ag="\"agent_id\":\"$1\","
+    "$TMUX_REAL" -L "$BG" set -pu -t "$BGP" @panestate_msg >/dev/null 2>&1
+    bgst running "$BGU"
+    bgst needs-input "{\"session_id\":\"s1\",$ag\"hook_event_name\":\"PermissionRequest\",\
+\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git push\"}}"; }
+bqev() {                      # <event> <agent or empty> <tool>: a tool hook from that agent
+    local ag='' st=running tail=''
+    [ -n "$2" ] && ag="\"agent_id\":\"$2\","
+    [ "$1" = PostToolUseFailure ] && st=error tail=',"error":"Exit code 1","is_interrupt":false'
+    bgst "$st" "{\"session_id\":\"s1\",$ag\"hook_event_name\":\"$1\",\"tool_name\":\"$3\",\
+\"tool_input\":{\"command\":\"ls\"}$tail}"; }
+bqis() { is "$1" "$2" "$(bgo @panestate)"; }
+BQSA='{"session_id":"s1","hook_event_name":"SubagentStart","agent_id":"a2",'
+BQSA=$BQSA'"agent_type":"general-purpose"}'
+BQIN='{"session_id":"s1","hook_event_name":"PostToolUse","tool_name":"Bash",'
+BQIN=$BQIN'"tool_input":{"agent_id":"a1"}}'
+BQNK='{"session_id":"s1","agent_id":"a1","hook_event_name":"PermissionRequest"}'
+BQPP='{"hook_event_name":"Notification","message":"Claude needs your permission to use Bash",'
+BQPP=$BQPP'"notification_type":"permission_prompt"}'
+bqask ""; bqev PreToolUse a1 Read
+bqis "#1403: a subagent's PreToolUse leaves the main ask waiting" needs-input
+bqask ""; bqev PostToolUse a1 Bash
+bqis "#1403: a subagent's PostToolUse of the same tool leaves it waiting" needs-input
+bqask ""; bqev PostToolUseFailure a1 Read
+bqis "#1403: a subagent's failed tool leaves it waiting" needs-input
+bqask ""; bgst running "$BQSA"
+bqis "#1403: a SubagentStart leaves it waiting" needs-input
+bqask ""; bqev PostToolUse "" Agent
+bqis "#1403: another tool's PostToolUse in the asking agent leaves it waiting" needs-input
+bqask a1; bqev PostToolUse "" Bash
+bqis "#1403: the main thread's PostToolUse leaves a subagent's ask waiting" needs-input
+# Only the payload's own agent_id counts: a main-thread call's input may hold one.
+bqask a1; bgst running "$BQIN"
+bqis "#1403: a main-thread tool_input holding agent_id is no subagent" needs-input
+bqask ""; bqev PreToolUse a1 Read; bqev PostToolUseFailure a1 Read
+bgst running "$BQSA"; bqev PostToolUse "" Agent
+is "#1403: the ask's text stays through them" "Bash: git" "$(bgo @panestate_msg)"
+# What still ends an ask: its own tool's end, the asking agent's next call (an ask the person
+# refused fires no hook of its own), a typed prompt, and any call when the ask has no key.
+bqask ""; bqev PostToolUse "" Bash
+bqis "#1403: the asking tool's own PostToolUse answers it" running
+bqask a1; bqev PostToolUse a1 Bash
+bqis "#1403: a subagent's own PostToolUse answers its ask" running
+bqask a1; bqev PreToolUse a1 Read
+bqis "#1403: the asking agent's next PreToolUse ends a denied ask" running
+bqask ""; bgst running "$BGU"
+bqis "#1403: a typed prompt ends any ask" running
+bqask ""; bgst needs-input "$BQNK"; bqev PostToolUse a1 Read
+bqis "#1403: an ask with no tool named keeps the old rule" running
+bqask ""; bqev PostToolUse "" Bash; bgst notify "$BQPP"; bqev PostToolUse a1 Bash
+bqis "#1403: an answered ask's key does not outlive it" running
+unset -f bqask bqev bqis; unset BQSA BQIN BQNK BQPP
+
 # Concurrent hooks: several report-back Stops and subagent tool calls at once.
 bgjobs() {                    # <n> <state> <payload>: n hooks at once, then wait for them
     local i pids=""
@@ -14034,6 +14093,22 @@ case "$(cat "$RHSTATE/out")" in
     esac
 is "and drains the spool option" "" \
     "$("$TMUX_REAL" -L "$RH" show-option -pqv -t "$RHAP" @cockpit_review_spool)"
+# #1403: the drain's running call hands agent-state /dev/null, as cockpit-event does. Its own
+# stdin is the Stop hook's, past the payload review-gate read: a pipe Claude Code may keep
+# open, where agent-state's payload read would wait out its 2 s bound. A stub logs what it got.
+RHC=$(mktmpd); cp -r "$DIR"/scripts/. "$RHC/"
+cat > "$RHC/agent-state" <<RHSTUB
+#!/usr/bin/env bash
+if [ /dev/stdin -ef /dev/null ]; then i=nullin; else i=stdin; fi
+printf '%s %s\n' "\$1" "\$i" >> $(printf '%q' "$RHC/calls")
+RHSTUB
+chmod +x "$RHC/agent-state"
+rh_queue
+TMUX="$SOCKDIR/$RH,0,0" TMUX_PANE=$RHAP XDG_STATE_HOME=$RHSTATE "$RHC/review-gate" \
+    < "$RHPAY" > "$RHSTATE/out" 2>/dev/null
+is "review-gate's running call reads /dev/null, not the Stop hook's stdin (#1403)" \
+    "running nullin" "$(grep '^running ' "$RHC/calls" 2>/dev/null)"
+unset RHC
 unset -f rh_n rh_start rh_wait rh_run rh_queue
 "$TMUX_REAL" -L "$RH" kill-server >/dev/null 2>&1
 fi

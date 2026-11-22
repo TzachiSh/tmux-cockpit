@@ -255,12 +255,27 @@ safe_word() {
     local w=${1%%[!"$al"._-]*}
     REPLY=${w:0:$2}
 }
-# tool_name <- the payload's "tool_name", only when its string is whole: one cut by a cap or
-# an escape names no tool. The key is matched with its quotes, so text inside a string, where
-# the quotes arrive escaped, cannot match.
-tool_name() {
-    local LC_ALL=C re='"tool_name": ?"([^"\\]*)"'
-    REPLY=""; [[ $payload =~ $re ]] && safe_word "${BASH_REMATCH[1]}" 64
+# whole_word <key> -> REPLY: the payload's own "<key>" string, only when it is whole and comes
+# before "tool_input": one cut by a cap or an escape names nothing, and so does one inside the
+# tool's input (a main-thread call has no agent_id of its own, and its input may hold one,
+# #1403). The key is matched with its quotes, so text inside a string, where the quotes arrive
+# escaped, cannot match. Then safe_word, 64 bytes at most.
+whole_word() {
+    local LC_ALL=C re="\"$1\": ?\"([^\"\\\\]*)\"" s=${payload%%\"tool_input\"*}
+    REPLY=""; [[ $s =~ $re ]] && safe_word "${BASH_REMATCH[1]}" 64
+}
+# call_key -> ask_when, the test a tool event passes to end a waiting ask that has a key
+# (#1403). PostToolUse and PostToolUseFailure need the ask's agent and tool. PreToolUse needs
+# its agent only: the next call after an ask the person refused, which fires no hook of its
+# own. SubagentStart never passes. Empty for any other event, which follows the old rule.
+call_key() {
+    ask_when=""
+    whole_word agent_id; local a=$REPLY
+    if is_event PreToolUse; then ask_when="#{m:$a/*,#{@panestate_ask}}"
+    elif is_event SubagentStart; then ask_when=0
+    elif is_event PostToolUse || is_event PostToolUseFailure; then
+        whole_word tool_name; ask_when="#{==:#{@panestate_ask},$a/$REPLY}"
+    fi
 }
 # prog_name <- the program a Bash tool_input's command runs: its first word, path dropped, 32
 # at most, and only when that whole word is [A-Za-z0-9._/+-]. Anything else names no program,
@@ -297,11 +312,20 @@ needs-input|error)
         # be a whole file: 4 KB is read, no more.
         read_capped 4096 true
         if is_event PermissionRequest; then
-            tool_name; msg=$REPLY
+            whole_word tool_name; tool=$REPLY msg=$REPLY
             if [ "$msg" = Bash ]; then prog_name; [ -z "$REPLY" ] || msg="Bash: $REPLY"; fi
             # Before the sticky guard, as notify writes: a pane already waiting can be asked
-            # again. Argv, not a format. No tool, no write, so notify's ask stays.
-            [ -z "$msg" ] || tmux set-option -p -t "$pane" @panestate_msg "$msg" 2>/dev/null
+            # again. Argv, not a format. No tool, no text, so notify's ask stays. The same call
+            # keeps the ask's key, <agent_id>/<tool_name> with no agent on the main thread: only
+            # a call of that agent ends it (#1403, call_key). An ask that names no tool has no
+            # key, and any running ends it.
+            whole_word agent_id
+            if [ -n "$tool" ]; then
+                tmux set-option -p -t "$pane" @panestate_msg "$msg" ';' \
+                    set-option -p -t "$pane" @panestate_ask "$REPLY/$tool" 2>/dev/null
+            else
+                tmux set-option -pu -t "$pane" @panestate_ask 2>/dev/null
+            fi
         fi
     else
         # 4 KB, as above: bash reads a pipe a byte per syscall, and a failed Write's tool_input
@@ -314,7 +338,20 @@ needs-input|error)
             # A tool's failure is not the turn's (#1331): it ends the tool as PostToolUse
             # does, and answers an approved ask (#1341). Only StopFailure stays error.
             state=running
+            call_key
         fi
+    fi
+    ;;
+running)
+    # A tool event names its agent and tool: while an ask with a key waits, only a call of the
+    # agent that asked ends it (#1403, call_key). Other agents and parallel calls fire tool
+    # hooks all the while. 4 KB, as above: the keys come before tool_input. The poller has no
+    # payload, and a terminal is a person typing the command. A caller with no payload of its
+    # own hands it /dev/null (cockpit-event, review-gate): an open stdin holds the read 2 s.
+    # shellcheck source=lib/hook.sh
+    if [ -z "$poll" ] && [ ! -t 0 ] && . "${d%/*}/lib/hook.sh" 2>/dev/null; then
+        read_capped 4096 true
+        call_key
     fi
     ;;
 notify)
@@ -468,7 +505,10 @@ esac
 # turn's (#1331), are sticky against Stop/idle; an unchanged state is refused: a set redraws.
 cur='#{@panestate}'
 case "$state" in
-    running)     when="#{!=:$cur,running}" ;;
+    # A waiting ask with a key ends only on a call of the agent that asked it (#1403, call_key).
+    running)     when="#{!=:$cur,running}"
+                 [ -z "${ask_when:-}" ] ||
+                     when="#{?#{&&:#{==:$cur,needs-input},#{@panestate_ask}},$ask_when,$when}" ;;
     needs-input) when="#{!=:$cur,needs-input}" ;;
     error)       when="#{?#{m/r:^(error|needs-input)\$,$cur},0,1}" ;;
     done)        when="#{?#{m/r:^(done|needs-input|error)\$,$cur},0,1}" ;;
@@ -536,9 +576,12 @@ elif [ "$state" != recount ]; then
 fi
 
 case "$state" in
-    running|off|interrupted) body="$body ; set-option -pu -t $pane @panestate_msg" ;;
+    # The ask's text goes, and its key (#1403) with it.
+    running|off|interrupted) body="$body ; set-option -pu -t $pane @panestate_msg"
+                             body="$body ; set-option -pu -t $pane @panestate_ask" ;;
     # The poller's done/error follow a needs-input whose ask would otherwise stay.
-    done|error) [ -z "$poll" ] || body="$body ; set-option -pu -t $pane @panestate_msg" ;;
+    done|error) [ -z "$poll" ] || { body="$body ; set-option -pu -t $pane @panestate_msg"
+                                    body="$body ; set-option -pu -t $pane @panestate_ask"; } ;;
 esac
 
 # A hook of this pane's own session (TMUX_PANE is its pane) that is not an agent view's relayed
@@ -641,9 +684,10 @@ fi
 # and runs the body unless that reads a whole refusal. The body rides there as a quoted
 # string, parsed once when it runs (in braces tmux parsed it twice).
 # The cost: when both reads are cut, a refused transition runs. A Stop or idle then drops a
-# sticky needs-input or error, and a refused running clears @cockpit_review. Running only
-# on a whole 1 the second time would fail closed there, but then one cut there skips a
-# transition that is due, and one cut is far likelier than two; master skipped on one cut.
+# sticky needs-input or error, another agent's tool call drops an ask (#1403), and a refused
+# running clears @cockpit_review. Running only on a whole 1 the second time would fail closed
+# there, but then one cut there skips a transition that is due, and one cut is far likelier
+# than two; master skipped on one cut.
 skip="#{?#{==:$when,1},0,1}"
 # Escaped for tmux's double quotes; no body has any of the three today, so no pass is made.
 q=${body# ; } bs=\\ dq='"' dl='$'
