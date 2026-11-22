@@ -1282,9 +1282,10 @@ impl App {
         let (mut cap, live, pane) = (self.cap.clone(), self.live, self.pane.clone());
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            // a pane tmux cannot read is not sent as it was at open (#1376)
+            // a pane tmux cannot read is not sent as it was at open (#1376), named with no
+            // id (#1407)
             let built = if live && !cap.refresh(&pane) {
-                Err(format!("tmux cannot read pane {pane}: it may be gone, so nothing was sent"))
+                Err("tmux cannot read the pane: it may be gone, so nothing was sent".to_string())
             } else {
                 Ok(build_refs(&flow, &cap, &turns, left, &refs))
             };

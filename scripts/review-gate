@@ -120,8 +120,12 @@ flag_pane() {
         if [ -n "$err" ]; then
             tmux set-option -p -t "$pane" @cockpit_review_err "$err" 2>/dev/null
             # shellcheck source=lib/fmt.sh
-            . "${d%/*}/lib/fmt.sh" 2>/dev/null \
-                && dmsg "tmux-cockpit: the ◆ of $pane cannot be updated: $err" 2>/dev/null
+            if . "${d%/*}/lib/fmt.sh" 2>/dev/null; then
+                # the pane by its label (#1407), read in a subshell: only here, on a change
+                # shellcheck source=lib/label.sh
+                who=$(. "${d%/*}/lib/label.sh" 2>/dev/null && label_ask "$pane") || who=
+                dmsg "tmux-cockpit: the ◆ of ${who:-the pane} cannot be updated: $err" 2>/dev/null
+            fi
         else tmux set-option -pu -t "$pane" @cockpit_review_err 2>/dev/null; fi
     fi
     # Untrusted strings get a call each: a bare `;` argument splits a tmux command list.

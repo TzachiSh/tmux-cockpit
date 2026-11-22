@@ -166,3 +166,27 @@ pub fn pane_main(args: &[String]) -> i32 {
         }
     }
 }
+
+fn label_usage() -> i32 {
+    eprintln!("cockpit-tui: label needs one pane id like %3");
+    2
+}
+
+/// `cockpit-tui label %N` (#1407): how a message names that pane, `session:window · title`,
+/// cleaned for the terminal, alone on one line, for the shell's `label_ask`
+/// (`scripts/lib/label.sh`). Any pane, an agent's or not. Always `·`, as the shell's own notes
+/// spell it. Exit 1 and nothing on stdout when the pane is gone or tmux is not reachable;
+/// exit 2 for a missing or malformed id, or a second argument.
+pub fn label_main(args: &[String]) -> i32 {
+    let [pane] = args else { return label_usage() };
+    if !crate::panel::is_pane(pane) {
+        return label_usage();
+    }
+    match crate::data::label_of(pane) {
+        Some(l) => {
+            println!("{}", l.spelled("·"));
+            0
+        }
+        None => 1,
+    }
+}

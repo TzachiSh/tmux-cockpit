@@ -275,7 +275,8 @@ fn the_state_is_per_pane_private_and_never_overwritten() {
     ctrl(&mut a, 'z');
     let (_d, p) = saved(&a, "pane");
     assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600);
-    assert!(read_hidden(&p, "%4", NOW).err().unwrap().contains("another pane"));
+    // no pane id: it tells a person nothing (#1407)
+    assert_eq!(read_hidden(&p, "%4", NOW).err().unwrap(), "it is for another pane");
     let body = cockpit_tui::panel::action::hide_body(&a, NOW).unwrap();
     assert!(
         write_hidden(&p.with_file_name("act"), &body).is_err(),

@@ -49,12 +49,12 @@ request() {                   # <pane>
     local pane=$1 dir root sess store pw ph rc t cmd
     is_pane "$pane" || { usage; exit 2; }
     if [ "$(tmux display-message -p -t "$pane" '#{session_attached}' 2>/dev/null)" = 0 ]; then
-        printf 'tmux-review: no client is attached to %s'"'"'s session' "$pane" >&2
+        printf 'tmux-review: no client is attached to %s'"'"'s session' "$(label_ask "$pane")" >&2
         printf ' — nowhere to open the review\n' >&2
         exit 1
     fi
     dir=$(pane_workdir "$pane")
-    [ -n "$dir" ] || { printf 'tmux-review: pane %s is gone\n' "$pane" >&2; exit 1; }
+    [ -n "$dir" ] || { printf 'tmux-review: the pane is gone\n' >&2; exit 1; }
     root=$(git_root "$dir"); sess=$(session_dir "$pane" "$root"); store="$sess/comments.md"
     (umask 077; mkdir -p -- "$sess" && [ ! -L "$store" ] && : >> "$store") || {
         printf 'tmux-review: could not create %s\n' "$sess" >&2; exit 1; }
@@ -110,7 +110,7 @@ main_entry() {
     fi
     dir=$(pane_workdir "$pane")
     if [ -z "$dir" ]; then
-        dmsg "cockpit: pane $pane is gone" 2>/dev/null
+        dmsg "cockpit: the pane is gone" 2>/dev/null
         return 0
     fi
     review_pane "$pane" "$(git_root "$dir")"

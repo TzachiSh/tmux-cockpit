@@ -177,7 +177,8 @@ pub fn read_state(path: &Path, pane: &str) -> Result<(String, Resume), String> {
         state_unesc(v)
     };
     if field("pane")? != pane {
-        return Err(format!("it is for another pane, not {pane}"));
+        // a pane by its id tells a person nothing (#1407)
+        return Err("it is for another pane".into());
     }
     let cmd = field("cmd")?;
     let label = field("label")?;
@@ -670,7 +671,8 @@ pub fn read_hidden(path: &Path, pane: &str, now: u64) -> Result<Hidden, String> 
     }
     let mut o = Obj::of(serde_json::from_str(j).map_err(|e| format!("not JSON: {e}"))?)?;
     if o.text("pane")? != pane {
-        return Err(format!("it is for another pane, not {pane}"));
+        // a pane by its id tells a person nothing (#1407)
+        return Err("it is for another pane".into());
     }
     let saved = o.num("saved")? as u64;
     // a minute of slack for a clock set back

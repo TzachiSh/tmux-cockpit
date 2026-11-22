@@ -1113,14 +1113,15 @@ board that exits non-zero, and
 `@cockpit_board_return off` end the loop.
 
 The note is the action's last line. For `panel` it is what `cockpit-panel`
-would have put in the status line (`cockpit: sent to %3`); `review` writes
+would have put in the status line (`cockpit: sent to api:0 · server`, the pane by its
+label, #1407); `review` writes
 none. `i` never leaves the board: it draws the info card in-process. A line that starts with
 `✕` reports a failure or a refusal and stays until the next key, which also
 does its job, except `esc`, which only dismisses it; the note ends with
 `· esc dismiss`. Any other note fades after 5 s.
 
 ```
- ✕ cockpit: the pane now runs bash, not claude; nothing sent to %21 · esc dismiss
+ ✕ cockpit: the pane now runs bash, not claude; nothing sent · esc dismiss
 ```
 
 The note file is read like the panel's state file: no symlink, a regular file
@@ -1817,11 +1818,12 @@ Backspace.
   When the pane runs something else by now the note says so, warn level:
   `...; the pane now runs vim, not bash, so a paste is refused`.
 - **One state per pane.** `prefix f` on another pane opens a fresh panel and
-  the hidden one stays. The wrapper says `cockpit: hidden · prefix f on %N
-  brings it back` (the prefix key bound with the note `cockpit: panel`, read from
+  the hidden one stays. The wrapper says `cockpit: hidden · prefix f on <label>
+  brings it back`: the pane by its label (#1407), and the prefix key bound with the
+  note `cockpit: panel`, read from
   the binding, as the review notice reads the jump key; `@cockpit_panel_bound`
   only picks between two noted keys, and with none the message says `the panel
-  key`, #1112); opened from
+  key` (#1112); opened from
   the board, that is the board's note and the board comes back, as after `esc`.
 - **The help names the same key.** The `?` list's `^Z` row says `hide; prefix
   <key> on this pane brings it back`, the key the wrapper passes as
@@ -2045,7 +2047,9 @@ panel with the reason in a warn note.
 - `x` kills the pane, not the window: the confirm reads `kill pane
   <sess:idx> · <title>?` (its label, #1407), `.expect` is `%N @W`, and the wrapper runs
   `kill-pane` inside the `if-shell -F` that checks the window id. Its `✓` note
-  is `killed pane %N (<sess:idx> <name>)`. An older binary's bare `@W` is
+  is `killed <sess:idx> · <title>`, the label read before the kill, and its `✕` notes
+  name the pane the same way, the window ids left to the log (#1407). An older binary's
+  bare `@W` is
   refused, and an older wrapper refuses this binary's `%N @W`, so neither skew
   kills more or less than its confirm said.
 - New key `o` → verb `resume`, no confirm, `.expect` the session id; offered
@@ -2062,7 +2066,7 @@ panel with the reason in a warn note.
   expands formats; then the new pane is selected and the board ends. It
   refuses with a `✕` note a pane that is gone, an id that is not
   a lowercase UUID, an id the pane no longer holds, or no directory; and a
-  second copy, `✕ cockpit: <first 8 of the id> is already running in %N`, when
+  second copy, `✕ cockpit: <first 8 of the id> is already running in <label>`, when
   any pane, the target included, holds the id and runs an agent (its command
   in `@cockpit_agents_glob`, or version-shaped), with or without `@panestate`
   (SessionStart and idle clear it), read with one `list-panes -a` at the key
@@ -2608,9 +2612,9 @@ compares against what the steps were written for. The binary still executes
 nothing: every paste and Enter is the wrapper's.
 
 The wrapper ends every action in one `display-message` on the pane:
-`cockpit: inserted N chars into %N` for `paste`, `cockpit: sent to %N` for
-`send`, `cockpit: could not load the paste buffer; nothing sent to %N` or
-`cockpit: could not paste into %N; nothing sent` when tmux refuses (tmux's
+`cockpit: inserted N chars into <label>` for `paste`, `cockpit: sent to <label>` for
+`send`, `cockpit: could not load the paste buffer; nothing sent to <label>` or
+`cockpit: could not paste into <label>; nothing sent` when tmux refuses (tmux's
 error goes to the log). Under `COCKPIT_READONLY` it runs no tmux command at
 all and only logs what it would have sent.
 
@@ -2628,12 +2632,13 @@ pane are different facts and a blank tile tells you which one it is.
 **CLI:** `-h` or `--help` prints the usage:
 
 ```
-cockpit-tui board [--select %N] [--note <file>] | pick | files <dir> [--select <name>] [--hidden] [--ignored] [--filter <text>] | branch [-C <dir>] | info [--text|--json] %N | workdir [--source] %N | pane <name> | sessions [--needs] [--current $N] | panel %N [--resume <state> --last ok|failed:<why>|hidden | --ask <file> <a> <b>] | view [--line N] [--] <file> | basket add %N <file> | --rows | --json | --version | -h
+cockpit-tui board [--select %N] [--note <file>] | pick | files <dir> [--select <name>] [--hidden] [--ignored] [--filter <text>] | branch [-C <dir>] | info [--text|--json] %N | workdir [--source] %N | pane <name> | label %N | sessions [--needs] [--current $N] | panel %N [--resume <state> --last ok|failed:<why>|hidden | --ask <file> <a> <b>] | view [--line N] [--] <file> | basket add %N <file> | --rows | --json | --version | -h
 ```
 
 `info %N` is the info screen, `info --text %N` its rows as text, and
 `info --json %N` the work dir as JSON (see "The info screen (#252)" below);
-`workdir %N` prints the board's dir for one pane. There is no `fleet` or `ask`
+`workdir %N` prints the board's dir for one pane, and `label %N` how a message names it.
+There is no `fleet` or `ask`
 subcommand (an unknown word exits 2 with the usage): the board reaches those
 through the action file and the shell scripts.
 
@@ -3281,6 +3286,17 @@ folder (`pane_workdir`, `scripts/lib/workdir.sh`) asks it for every agent pane, 
 holding `@cockpit_dir` or not, since a fresh `active-in` tree outranks a
 hook-written one (#462); without an answer it takes `@cockpit_dir`, else the
 pane's cwd.
+
+**`cockpit-tui label %N`** (#1407) prints how a message names that pane, `session:window ·
+title` (`data::Label::spelled`), cleaned of control and bidi characters, alone on one
+line: the title is `@cockpit_title`, else the pane's own title, else the window name, as
+the board's kill confirm and the panel's header read it. Any pane, an agent's or not, and
+always `·`, as the shell's own notes spell it. Exit 0 with the line; exit 1 and nothing on
+stdout when the pane is gone or tmux is not reachable; exit 2 for a missing or malformed
+pane id, or a second argument, with the usage on stderr only. The shell's one way to a
+label is `label_ask` (`scripts/lib/label.sh`), which says `the pane` whenever the binary
+cannot answer: a gone pane, a missing binary, an older one with no `label`, or a hang past
+its bound. The shell builds no label of its own.
 
 ## The board as the review queue (#253)
 

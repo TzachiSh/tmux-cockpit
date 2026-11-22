@@ -14,7 +14,7 @@ fn panes() -> Vec<data::Pane> {
     }
 }
 
-const USAGE: &str = "cockpit-tui board [--select %N] [--note <file>] | pick | files <dir> [--select <name>] [--hidden] [--ignored] [--filter <text>] | branch [-C <dir>] | info [--text|--json] %N | workdir [--source] %N | pane <name> | sessions [--needs] [--current $N] | panel %N [--resume <state> --last ok|failed:<why>|hidden | --ask <file> <a> <b>] | view [--line N] [--] <file> | basket add %N <file> | --rows | --json | --version | -h";
+const USAGE: &str = "cockpit-tui board [--select %N] [--note <file>] | pick | files <dir> [--select <name>] [--hidden] [--ignored] [--filter <text>] | branch [-C <dir>] | info [--text|--json] %N | workdir [--source] %N | pane <name> | label %N | sessions [--needs] [--current $N] | panel %N [--resume <state> --last ok|failed:<why>|hidden | --ask <file> <a> <b>] | view [--line N] [--] <file> | basket add %N <file> | --rows | --json | --version | -h";
 
 fn unix_now() -> u64 {
     std::time::SystemTime::now()
@@ -159,6 +159,8 @@ fn main() {
         Some("workdir") => std::process::exit(fleet::workdir_main(&args[1..])),
         // #1408: the one pane whose own @cockpit_role is the name
         Some("pane") => std::process::exit(fleet::pane_main(&args[1..])),
+        // #1407: how a message names one pane, for the shell's label_ask
+        Some("label") => std::process::exit(fleet::label_main(&args[1..])),
         // file browser (#363)
         Some("files") => std::process::exit(cockpit_tui::files::main(&args[1..])),
         Some("pick") => std::process::exit(cockpit_tui::pick::main(&args[1..])),

@@ -17,6 +17,8 @@ d=${BASH_SOURCE[0]}; case $d in (*/*) ;; (*) d=./$d ;; esac
 case $d in */*) d=${d%/*} ;; *) d=. ;; esac
 # shellcheck source=lib/fmt.sh
 . "$d/lib/fmt.sh" || exit 1
+# shellcheck source=lib/label.sh
+. "$d/lib/label.sh" || exit 1
 
 # Take the staged name first, so a rejected id leaves nothing behind.
 name=$(tmux show-option -gqv @cockpit_rename_to 2>/dev/null)
@@ -41,7 +43,7 @@ esac
 if [ "$kind" = pane ]; then
     if [ -z "$name" ]; then
         tmux set-option -pu -t "$id" @cockpit_role 2>/dev/null ||
-            dmsg "cockpit: could not clear the name of pane $id" 2>/dev/null
+            dmsg "cockpit: could not clear the name of $(label_ask "$id")" 2>/dev/null
         exit 0
     fi
     an=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789
@@ -55,7 +57,7 @@ if [ "$kind" = pane ]; then
     [ -n "$why" ] || [ "${#name}" -le 32 ] || why=$rule
     [ -z "$why" ] || { dmsg "cockpit: a pane name $why: $name" 2>/dev/null; exit 0; }
     tmux set-option -p -t "$id" @cockpit_role "$name" 2>/dev/null ||
-        dmsg "cockpit: could not name pane $id $name" 2>/dev/null
+        dmsg "cockpit: could not name $(label_ask "$id") $name" 2>/dev/null
     exit 0
 fi
 
