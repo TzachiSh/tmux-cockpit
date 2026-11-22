@@ -5935,18 +5935,15 @@ unset -f ps_opts ps_rename
 unset PS ps_n ps_s ps_o ps_f ps_p ps_d ps_sid
 fi
 
-echo "== a reload knows the pre-notes panel key, and the install hint shows a # (#1086, #1087) =="
-# owned() matched the raw folder against #{key_command}, which prints the pre-notes panel
-# key's argument sq()-quoted in a "..." with \ " $ escaped: a ' or a " in the folder hid
-# the key, and a reload took it for the user's (#1086). The cockpit-tui hints gave
-# display-message the raw folder, which reads a # as a format and runs a #( ) (#1087).
-if need_tmux "the legacy panel key and the install hint"; then :
+echo "== a reload leaves a note-less panel key as the user's, and the install hint shows a # (#1379, #1087) =="
+# A key's note is its only owner (#1379). The cockpit-tui hints gave display-message the
+# raw folder, which reads a # as a format and runs a #( ) (#1087).
+if need_tmux "the note-less panel key and the install hint"; then :
 elif ! ( . "$DIR/scripts/lib/vnum.sh"
          v=$("$TMUX_REAL" -V); vnum_ge "${v#tmux }" 3.8 ); then
-    skip_ "the legacy panel key and the install hint (tmux below 3.8: nothing binds there)"
+    skip_ "the note-less panel key and the install hint (tmux below 3.8: nothing binds there)"
 else
 OH=$(mktmpd); mkdir -p "$OH/p" "$OH/wd" "$OH/old"
-oh_st="cockpit-oh-$$-st"; SOCKS="$SOCKS $oh_st"
 for oh_n in 1 2 3 4 5 6 7 8 9 10 11 12 13 14; do
     SOCKS="$SOCKS cockpit-oh-$$-$oh_n cockpit-ohc-$$-$oh_n"
 done
@@ -5979,132 +5976,21 @@ oh_load() {                   # <socket> <n>
     ( cd "$OH/wd" && exec "$TMUX_REAL" -L "$1" source-file "$OH/conf$2" ) >/dev/null 2>&1
     until_out '*@cockpit_click_line*' "$TMUX_REAL" -L "$1" list-keys -T root C-MouseDown3Pane
 }
-oh_server "$oh_st" "$COCKPIT_TUI_BIN"
-oh_stock=$("$TMUX_REAL" -L "$oh_st" list-keys -T prefix -F '#{key_command}' f 2>/dev/null)
-"$TMUX_REAL" -L "$oh_st" kill-server >/dev/null 2>&1
-# The panel key as cockpit.tmux bound it before the notes: from argv, no note.
+# The key notes are the only record (#1379): a key with no note is the user's, whatever it
+# runs. A load that moves the panel key leaves a note-less f bound to cockpit's own panel
+# command, and no load sets @cockpit_notes any more.
 oh_src='"$(tmux display-message -p -t "\$${TMUX##*,}" "#{pane_id}")"'
-oh_n=0
-for oh_f in plain "a'q" 'a"q' 'a$HOMEq'; do
-    oh_n=$((oh_n + 1)); oh_s="cockpit-oh-$$-$oh_n"; oh_box "$oh_n" "$oh_f"
-    oh_server "$oh_s" "$COCKPIT_TUI_BIN"; oh_p=$(cd -P "$OH/p/$oh_f" && pwd)
-    "$TMUX_REAL" -L "$oh_s" bind-key f display-popup -E -e COCKPIT_PANEL_MODE=auto -w 94% \
-        -h 90% -T ' panel · #{pane_id} ' "$(tq "$oh_p/scripts/cockpit-panel") -p $oh_src"
-    "$TMUX_REAL" -L "$oh_s" set -g @cockpit_panel_bound f \; set -g @cockpit_panel_key g
-    oh_load "$oh_s" "$oh_n"
-    is "a folder named [$oh_f]: a reload gives the pre-notes panel key f back to tmux" \
-       "$oh_stock" "$("$TMUX_REAL" -L "$oh_s" list-keys -T prefix -F '#{key_command}' f)"
-    "$TMUX_REAL" -L "$oh_s" kill-server >/dev/null 2>&1
-done
-# A control byte or a byte outside UTF-8 in the folder: #{key_command} prints it as \t, \n,
-# \r, \033, \177 or \303, which the \ " $ escapes alone missed (#1097).
-for oh_b in 09:tab 0a:newline 0d:CR 1b:ESC 7f:DEL c3:lone-0xc3; do
-    oh_s="cockpit-ohb-$$-${oh_b%%:*}"; SOCKS="$SOCKS $oh_s"; printf -v oh_f 'a%bq' "\\x${oh_b%%:*}"
-    oh_box "b${oh_b%%:*}" "$oh_f"; oh_server "$oh_s" "$COCKPIT_TUI_BIN"
-    oh_p=$(cd -P "$OH/p/$oh_f" && pwd)
-    "$TMUX_REAL" -L "$oh_s" bind-key f display-popup -E -e COCKPIT_PANEL_MODE=auto -w 94% \
-        -h 90% -T ' panel · #{pane_id} ' "$(tq "$oh_p/scripts/cockpit-panel") -p $oh_src"
-    "$TMUX_REAL" -L "$oh_s" set -g @cockpit_panel_bound f \; set -g @cockpit_panel_key g
-    oh_load "$oh_s" "b${oh_b%%:*}"
-    is "a folder holding [${oh_b#*:}]: a reload gives the pre-notes panel key f back to tmux" \
-       "$oh_stock" "$("$TMUX_REAL" -L "$oh_s" list-keys -T prefix -F '#{key_command}' f)"
-    is "a folder holding [${oh_b#*:}]: the load leaves no key table of its own" "0" \
-       "$("$TMUX_REAL" -L "$oh_s" list-keys -F '#{key_table}' | grep -c '^cockpit-legacy')"
-    "$TMUX_REAL" -L "$oh_s" kill-server >/dev/null 2>&1
-done
-# The scratch read fails after its bind: tmux stops a ; sequence there, so the table must
-# go in a call of its own, and the guess is off, never a match on every command (#1097).
-mkdir -p "$OH/lkfail"
-printf '%s\n' '#!/usr/bin/env bash' 'case " $* " in *" list-keys -T cockpit-legacy-"*)' \
-    '    a=("$@"); for i in "${!a[@]}"; do [ "${a[i]}" = ";" ] && break; done' \
-    "    $(tq "$TMUX_REAL") \"\${a[@]:0:i}\"; echo 'list-keys: no answer' >&2; exit 1 ;;" \
-    esac "exec $(tq "$TMUX_REAL") \"\$@\"" > "$OH/lkfail/tmux"
-chmod +x "$OH/lkfail/tmux"
-oh_s="cockpit-ohb-$$-lk"; SOCKS="$SOCKS $oh_s"; oh_box blk lkfail
-oh_server "$oh_s" "$COCKPIT_TUI_BIN"; oh_p=$(cd -P "$OH/p/lkfail" && pwd)
+oh_n=1; oh_s="cockpit-oh-$$-1"; oh_box 1 plain
+oh_server "$oh_s" "$COCKPIT_TUI_BIN"; oh_p=$(cd -P "$OH/p/plain" && pwd)
 "$TMUX_REAL" -L "$oh_s" bind-key f display-popup -E -e COCKPIT_PANEL_MODE=auto -w 94% \
     -h 90% -T ' panel · #{pane_id} ' "$(tq "$oh_p/scripts/cockpit-panel") -p $oh_src"
 "$TMUX_REAL" -L "$oh_s" set -g @cockpit_panel_bound f \; set -g @cockpit_panel_key g
-( cd "$OH/wd" && exec "$TMUX_REAL" -L "$oh_s" run-shell \
-    "PATH=$(tq "$OH/lkfail"):\"\$PATH\" $(tq "$oh_p/cockpit.tmux")" ) >/dev/null 2>&1
-is "a load whose scratch read fails leaves no key table of its own" "0" \
-   "$("$TMUX_REAL" -L "$oh_s" list-keys -F '#{key_table}' | grep -c '^cockpit-legacy')"
-is "and the load ends keeping the pre-notes key f: the guess is off" "1:1" \
-   "$("$TMUX_REAL" -L "$oh_s" list-keys -T root C-MouseDown3Pane | grep -c cockpit_click_line
-     ):$("$TMUX_REAL" -L "$oh_s" list-keys -T prefix f | grep -c cockpit-panel)"
+oh_load "$oh_s" 1
+is "a note-less f running cockpit's panel command stays the user's when the panel key moves (#1379)" \
+   "1" "$("$TMUX_REAL" -L "$oh_s" list-keys -T prefix f | grep -c cockpit-panel)"
+is "and the load sets no @cockpit_notes (#1379)" "" "$("$TMUX_REAL" -L "$oh_s" show -gqv @cockpit_notes)"
 "$TMUX_REAL" -L "$oh_s" kill-server >/dev/null 2>&1
-# The same failed read with a client attached, since a message reaches the log only then:
-# the load says so in tmux's words, the old key f waits in @cockpit_giveback with
-# @cockpit_notes unset, and the next load reads again and gives f back (#1131).
-oh_s="cockpit-ohb-$$-lm"; oh_c="cockpit-ohc-$$-lm"; SOCKS="$SOCKS $oh_s $oh_c"
-oh_box blm lkfail; oh_p=$(cd -P "$OH/p/lkfail" && pwd)
-oh_server "$oh_s" "$COCKPIT_TUI_BIN"; oh_attach "$oh_s" "$oh_c"
-"$TMUX_REAL" -L "$oh_s" bind-key f display-popup -E -e COCKPIT_PANEL_MODE=auto -w 94% \
-    -h 90% -T ' panel · #{pane_id} ' "$(tq "$oh_p/scripts/cockpit-panel") -p $oh_src"
-"$TMUX_REAL" -L "$oh_s" set -g @cockpit_panel_bound f \; set -g @cockpit_panel_key g
-( cd "$OH/wd" && exec "$TMUX_REAL" -L "$oh_s" run-shell \
-    "PATH=$(tq "$OH/lkfail"):\"\$PATH\" $(tq "$oh_p/cockpit.tmux")" ) >/dev/null 2>&1
-is "a load whose scratch read fails says so: one message names the old panel key" "1" \
-   "$("$TMUX_REAL" -L "$oh_s" show-messages 2>/dev/null | grep -v ' command: ' |
-      grep -cF 'tmux-cockpit: could not read how tmux prints the old panel key (')"
-is "and the message carries tmux's error, list-keys: no answer" "1" \
-   "$("$TMUX_REAL" -L "$oh_s" show-messages 2>/dev/null | grep -v ' command: ' |
-      grep -cF 'the old panel key (list-keys: no answer);')"
-is "and f waits in @cockpit_giveback, @cockpit_notes unset" "panel:f|" \
-   "$("$TMUX_REAL" -L "$oh_s" show -gqv @cockpit_giveback)|$(
-      "$TMUX_REAL" -L "$oh_s" show -gqv @cockpit_notes)"
-( cd "$OH/wd" && exec "$TMUX_REAL" -L "$oh_s" run-shell "$(tq "$oh_p/cockpit.tmux")" ) \
-    >/dev/null 2>&1
-is "the next load reads it, gives f back to tmux, sets @cockpit_notes, nothing pending" \
-   "$oh_stock|1|" "$("$TMUX_REAL" -L "$oh_s" list-keys -T prefix -F '#{key_command}' f)|$(
-      "$TMUX_REAL" -L "$oh_s" show -gqv @cockpit_notes)|$(
-      "$TMUX_REAL" -L "$oh_s" show -gqv @cockpit_giveback)"
-"$TMUX_REAL" -L "$oh_c" kill-server >/dev/null 2>&1
-"$TMUX_REAL" -L "$oh_s" kill-server >/dev/null 2>&1
-# With no old key to judge, a failed read still leaves @cockpit_notes unset (#1131).
-oh_s="cockpit-ohb-$$-lz"; SOCKS="$SOCKS $oh_s"; oh_box blz lkfail
-oh_server "$oh_s" "$COCKPIT_TUI_BIN"
-( cd "$OH/wd" && exec "$TMUX_REAL" -L "$oh_s" run-shell \
-    "PATH=$(tq "$OH/lkfail"):\"\$PATH\" $(tq "$oh_p/cockpit.tmux")" ) >/dev/null 2>&1
-is "a failed read with no old key to judge leaves @cockpit_notes unset, nothing pending" "|" \
-   "$("$TMUX_REAL" -L "$oh_s" show -gqv @cockpit_notes)|$(
-      "$TMUX_REAL" -L "$oh_s" show -gqv @cockpit_giveback)"
-"$TMUX_REAL" -L "$oh_s" kill-server >/dev/null 2>&1
-# The read fails with two lines and the panel's own bind is refused in the same load:
-# refused() keeps the record of a key owned() cannot judge, the message quotes tmux's
-# first line, and once the panel key moves the next load gives f back (#1131).
-mkdir -p "$OH/lkbind"
-printf '%s\n' '#!/usr/bin/env bash' 'case " $* " in *" list-keys -T cockpit-legacy-"*)' \
-    '    a=("$@"); for i in "${!a[@]}"; do [ "${a[i]}" = ";" ] && break; done' \
-    "    $(tq "$TMUX_REAL") \"\${a[@]:0:i}\"" \
-    "    printf 'list-keys: first line\\nsecond line\\n' >&2; exit 1 ;;" \
-    '*" -N cockpit: panel "*) echo "bind-key: refused" >&2; exit 1 ;;' \
-    esac "exec $(tq "$TMUX_REAL") \"\$@\"" > "$OH/lkbind/tmux"
-chmod +x "$OH/lkbind/tmux"
-oh_s="cockpit-ohb-$$-lr"; oh_c="cockpit-ohc-$$-lr"; SOCKS="$SOCKS $oh_s $oh_c"
-oh_box blr lkfail; oh_server "$oh_s" "$COCKPIT_TUI_BIN"; oh_attach "$oh_s" "$oh_c"
-"$TMUX_REAL" -L "$oh_s" bind-key f display-popup -E -e COCKPIT_PANEL_MODE=auto -w 94% \
-    -h 90% -T ' panel · #{pane_id} ' "$(tq "$oh_p/scripts/cockpit-panel") -p $oh_src"
-"$TMUX_REAL" -L "$oh_s" set -g @cockpit_panel_bound f
-( cd "$OH/wd" && exec "$TMUX_REAL" -L "$oh_s" run-shell \
-    "PATH=$(tq "$OH/lkbind"):\"\$PATH\" $(tq "$oh_p/cockpit.tmux")" ) >/dev/null 2>&1
-is "a two-line error: the message quotes tmux's first line only" "1" \
-   "$("$TMUX_REAL" -L "$oh_s" show-messages 2>/dev/null | grep -v ' command: ' |
-      grep -cF 'the old panel key (list-keys: first line);')"
-is "a refused panel bind after a failed read keeps @cockpit_panel_bound f, notes unset" "f|" \
-   "$("$TMUX_REAL" -L "$oh_s" show -gqv @cockpit_panel_bound)|$(
-      "$TMUX_REAL" -L "$oh_s" show -gqv @cockpit_notes)"
-"$TMUX_REAL" -L "$oh_s" set -g @cockpit_panel_key g
-( cd "$OH/wd" && exec "$TMUX_REAL" -L "$oh_s" run-shell "$(tq "$oh_p/cockpit.tmux")" ) \
-    >/dev/null 2>&1
-is "and with the panel key moved to g, the next load gives f back to tmux" "$oh_stock|g|1|" \
-   "$("$TMUX_REAL" -L "$oh_s" list-keys -T prefix -F '#{key_command}' f)|$(
-      "$TMUX_REAL" -L "$oh_s" show -gqv @cockpit_panel_bound)|$(
-      "$TMUX_REAL" -L "$oh_s" show -gqv @cockpit_notes)|$(
-      "$TMUX_REAL" -L "$oh_s" show -gqv @cockpit_giveback)"
-"$TMUX_REAL" -L "$oh_c" kill-server >/dev/null 2>&1
-"$TMUX_REAL" -L "$oh_s" kill-server >/dev/null 2>&1
-# The guess is for a key with no note. A note that starts with \037 is a note, though cut
+# A note that is not cockpit's is the user's. One that starts with \037 is a note, though cut
 # at its first \037 it read as empty, and the user's key went back to stock (#1135).
 oh_s="cockpit-ohb-$$-ln"; SOCKS="$SOCKS $oh_s"; oh_box bln plain
 oh_server "$oh_s" "$COCKPIT_TUI_BIN"; oh_p=$(cd -P "$OH/p/plain" && pwd)
@@ -6112,7 +5998,7 @@ oh_server "$oh_s" "$COCKPIT_TUI_BIN"; oh_p=$(cd -P "$OH/p/plain" && pwd)
     -w 94% -h 90% -T ' panel · #{pane_id} ' "$(tq "$oh_p/scripts/cockpit-panel") -p $oh_src"
 "$TMUX_REAL" -L "$oh_s" set -g @cockpit_panel_bound f \; set -g @cockpit_panel_key g
 oh_load "$oh_s" bln
-is "a key noted [\\037mine] on the pre-notes panel command stays the user's" "1" \
+is "a key noted [\\037mine] on cockpit's panel command stays the user's" "1" \
    "$("$TMUX_REAL" -L "$oh_s" list-keys -T prefix f | grep -c cockpit-panel)"
 "$TMUX_REAL" -L "$oh_s" kill-server >/dev/null 2>&1
 # A note of 0 is a note too. tmux's #{?key_note} reads the value 0 as false, so owned()
@@ -6123,7 +6009,7 @@ oh_server "$oh_s" "$COCKPIT_TUI_BIN"; oh_p=$(cd -P "$OH/p/plain" && pwd)
     -w 94% -h 90% -T ' panel · #{pane_id} ' "$(tq "$oh_p/scripts/cockpit-panel") -p $oh_src"
 "$TMUX_REAL" -L "$oh_s" set -g @cockpit_panel_bound f \; set -g @cockpit_panel_key g
 oh_load "$oh_s" bl0
-is "a key noted [0] on the pre-notes panel command stays the user's" "1" \
+is "a key noted [0] on cockpit's panel command stays the user's" "1" \
    "$("$TMUX_REAL" -L "$oh_s" list-keys -T prefix f | grep -c cockpit-panel)"
 "$TMUX_REAL" -L "$oh_s" kill-server >/dev/null 2>&1
 unset oh_b
@@ -6158,7 +6044,7 @@ for oh_f in 'a#Sb' 'a#{pane_id}b' 'a#[fg=red]b' 'a##x' 'a#(touch pwned)b'; do
 done
 is "and no hint ran a #( ) from the folder's name" "" "$(find "$OH" -name pwned)"
 unset -f oh_box oh_server oh_attach oh_load
-unset OH oh_st oh_n oh_s oh_c oh_f oh_p oh_arm oh_want oh_min oh_stock oh_src
+unset OH oh_n oh_s oh_c oh_f oh_p oh_arm oh_want oh_min oh_src
 fi
 
 echo "== a load hint at a server's first start reaches the first client once (#1216) =="
@@ -6967,7 +6853,7 @@ dm_note 2 "the global changed to j with no reload, bound u" " · prefix u jumps"
 "$TMUX_REAL" -L "$dm_s" set -gu @cockpit_jump_key \; set -gu @cockpit_jump_bound
 dm_note 3 "@cockpit_jump_bound never set, as an older load leaves it" " · prefix u jumps"
 "$TMUX_REAL" -L "$dm_s" bind-key -T prefix u run-shell true
-dm_note 4 "a jump bound with no note, as before the key notes: no clause" ""
+dm_note 4 "a jump bound with no note, as a user binds it: no clause" ""
 "$TMUX_REAL" -L "$dm_s" set -g @cockpit_jump_key off
 ( cd "$DM/wd" && exec "$TMUX_REAL" -L "$dm_s" run-shell "$(tq "$DIR/cockpit.tmux")" \
     ) >/dev/null 2>&1
@@ -8289,9 +8175,10 @@ gbl_run 90
 unset -f gbl_run
 fi
 
-echo "== upgrading from a load before the key notes still gives the old keys back (#290) =="
+echo "== upgrading from a load before the key notes leaves its note-less keys as the user's (#1379) =="
 # The last load before the notes tracked the menu and panel keys and bound them
-# with no note. Its cockpit.tmux and scripts, from history; a shallow clone lacks it.
+# with no note. The notes are the only record now (#1379), so those keys stay bound.
+# Its cockpit.tmux and scripts, from history; a shallow clone lacks it.
 # The ownership test matches the plugin's own path, so both loads share one.
 GU_REV=543624d
 if need_tmux "key notes upgrade"; then :
@@ -8320,23 +8207,19 @@ is "the old load bound a and f, with no note" "1:1:" \
 "$TMUX_REAL" -L "$GU" set -g @cockpit_menu_key n >/dev/null 2>&1
 "$TMUX_REAL" -L "$GU" set -g @cockpit_panel_key F11 >/dev/null 2>&1
 gu_up "$GUD"; gu_load "$GU" "$GUD"
-loaded_on "$GU" "the old menu key a is free again and the old panel key f is find-window" &&
-    is "the old menu key a is free again and the old panel key f is find-window" \
-       "|find-window" "$(gu_key "$GU" a)|$(gu_key "$GU" f | grep -o find-window)"
-is "and each says so once, and the load marks every key noted" "2:1" \
+loaded_on "$GU" "the old note-less a and f stay bound after an upgrade that moves the keys (#1379)" &&
+    is "the old note-less a and f stay bound after an upgrade that moves the keys (#1379)" \
+       "1:1" "$(gu_key "$GU" a | grep -c display-menu):$(gu_key "$GU" f | grep -c cockpit-panel)"
+is "and no message names a key before the key notes, and no load sets @cockpit_notes" "0:" \
    "$(gu_said):$("$TMUX_REAL" -L "$GU" show-option -gqv @cockpit_notes)"
-gu_load "$GU" "$GUD"
-loaded_on "$GU" "a later load says nothing more" &&
-    is "a later load says nothing more" "2" "$(gu_said)"
-# Past the marker no command is a guess: a user's own centred menu on n stays.
+# No command is a guess: a user's own centred menu on n stays.
 "$TMUX_REAL" -L "$GU" bind-key n display-menu -T '#[align=centre]mine' x x '' >/dev/null 2>&1
 "$TMUX_REAL" -L "$GU" set -g @cockpit_menu_key off >/dev/null 2>&1
 gu_load "$GU" "$GUD"
-loaded_on "$GU" "after the marker a user's centred menu on the old menu key stays" &&
-    is "after the marker a user's centred menu on the old menu key stays" "1" \
+loaded_on "$GU" "a user's centred menu on the old menu key stays" &&
+    is "a user's centred menu on the old menu key stays" "1" \
        "$(gu_key "$GU" n | grep -c 'align=centre]mine')"
-# The guess is the panel's own command: a user's key on f running another of
-# cockpit's scripts stays the user's, even on that first load.
+# A user's key on f running another of cockpit's scripts stays the user's too.
 "$TMUX_REAL" -L "$GU2" -f /dev/null new-session -d -s t -c "$GUD2" >/dev/null 2>&1
 gu_load "$GU2" "$GUD2"
 "$TMUX_REAL" -L "$GU2" bind-key f run-shell "$GUD2/scripts/tm --popup x" >/dev/null 2>&1
@@ -8344,30 +8227,6 @@ gu_load "$GU2" "$GUD2"
 gu_up "$GUD2"; gu_load "$GU2" "$GUD2"
 is "the upgrade leaves a user's f running cockpit's tm alone" "1" \
    "$(gu_key "$GU2" f | grep -c 'scripts/tm --popup x')"
-# An upgrade load whose stock read fails keeps the guess for the retry.
-GU3="cockpit-gu3-$$"; SOCKS="$SOCKS $GU3"; GUD3=$(mktmpd)
-git -C "$DIR" archive "$GU_REV" cockpit.tmux scripts | tar -x -C "$GUD3"
-# A stock server that will not start, as a socket path past the limit did.
-mkdir -p "$GUD3/bin"
-printf '#!/bin/sh\nfor a; do [ "$a" = start-server ] && { echo "error connecting" >&2; exit 1; }; done\nexec "%s" "$@"\n' \
-    "$TMUX_REAL" > "$GUD3/bin/tmux"
-chmod +x "$GUD3/bin/tmux"
-"$TMUX_REAL" -L "$GU3" -f /dev/null new-session -d -s t -c "$GUD3" >/dev/null 2>&1
-gu_load "$GU3" "$GUD3"
-"$TMUX_REAL" -L "$GU3" set -g @cockpit_panel_key F11 >/dev/null 2>&1
-gu_up "$GUD3"
-"$TMUX_REAL" -L "$GU3" run-shell "PATH='$GUD3/bin':\"\$PATH\" '$GUD3/cockpit.tmux'" >/dev/null 2>&1
-is "the failed upgrade load leaves panel:f pending and the marker unset" "panel:f|" \
-   "$("$TMUX_REAL" -L "$GU3" show-option -gqv @cockpit_giveback)|$(
-      "$TMUX_REAL" -L "$GU3" show-option -gqv @cockpit_notes)"
-gu_load "$GU3" "$GUD3"
-loaded_on "$GU3" \
-    "a failed upgrade give-back is retried: f is find-window and nothing is pending" &&
-is "a failed upgrade give-back is retried: f is find-window and nothing is pending" \
-   "find-window|" "$(gu_key "$GU3" f | grep -o find-window)|$(
-      "$TMUX_REAL" -L "$GU3" show-option -gqv @cockpit_giveback)"
-"$TMUX_REAL" -L "$GU3" kill-server >/dev/null 2>&1
-rm -rf "$GUD3"
 unset -f gu_load gu_key gu_up gu_said
 for s in "$GUO" "$GU" "$GU2"; do "$TMUX_REAL" -L "$s" kill-server >/dev/null 2>&1; done
 rm -rf "$GUD" "$GUD2"
