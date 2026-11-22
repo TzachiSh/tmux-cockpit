@@ -52,7 +52,7 @@ fn rig(t: &Tmp, cwd: &str, opt: &str, said: &str) -> Vec<(&'static str, String)>
     )
     .unwrap();
     let info = ["%1", "w:0 win", "claude", cwd, opt, "running", "", "", "", "s1", "", "1", ""];
-    std::fs::write(d.join("display"), info.join("\u{1f}")).unwrap();
+    std::fs::write(d.join("display"), fake::info_row(&info)).unwrap();
     let board = fake::board_row(&[
         "%1", "w:0", "win", "claude", "running", "-", "-", "s1", cwd, "100", "-", "-", "@1", opt,
     ]);
@@ -187,18 +187,16 @@ fn call_into(t: &Tmp, cwd: &str, tree: &str) {
 }
 
 /// #1355: `@cockpit_cwd` is `hook` on the pane: the board's row 19, and info's own row 16
-/// for a pane the board does not count. The fields between are empty.
+/// for a pane the board does not count.
 fn hook_cwd(t: &Tmp, hook: &str) {
-    set_fields(t, &[(19, hook)]);
-    let p = t.0.join("display");
-    let row = std::fs::read_to_string(&p).unwrap();
-    let row = format!("{}{}{hook}\n", row.trim_end_matches('\n'), "\u{1f}".repeat(4));
-    std::fs::write(&p, row).unwrap();
+    set_fields(t, "rows", &[(19, hook)]);
+    set_fields(t, "display", &[(16, hook)]);
 }
 
-/// The board's row with each `(field, value)` set: the row is a full one (#1374).
-fn set_fields(t: &Tmp, sets: &[(usize, &str)]) {
-    let p = t.0.join("rows");
+/// The rig's `file` row, the board's `rows` or info's `display`, with each `(field, value)`
+/// set: the row is a full one (#1374, #1396).
+fn set_fields(t: &Tmp, file: &str, sets: &[(usize, &str)]) {
+    let p = t.0.join(file);
     let row = std::fs::read_to_string(&p).unwrap();
     let mut f: Vec<&str> = row.trim_end_matches('\n').split('\u{1f}').collect();
     for &(i, v) in sets {
@@ -360,13 +358,12 @@ fn gather_reads_the_bound_job_cleaned() {
     let t = Tmp::new("job");
     let cwd = t.sub("cwd");
     set(&g, &t, &rig(&t, &cwd, "", ""));
-    let plain = std::fs::read_to_string(t.0.join("display")).unwrap();
-    std::fs::write(t.0.join("display"), format!("{plain}\u{1f}bg_7\u{1f}swe\u{202e}ep\u{7}")).unwrap();
+    set_fields(&t, "display", &[(13, "bg_7"), (14, "swe\u{202e}ep\u{7}")]);
     assert_eq!(gather("%1").unwrap().job, Some(("sweep".to_string(), "bg_7".to_string())));
-    std::fs::write(t.0.join("display"), format!("{plain}\u{1f}\u{1f}")).unwrap();
+    set_fields(&t, "display", &[(13, ""), (14, "")]);
     assert_eq!(gather("%1").unwrap().job, None);
     // a name with no id is no bind (agent-poll sets both at once): never `(@cockpit_job )`
-    std::fs::write(t.0.join("display"), format!("{plain}\u{1f}\u{1f}lone")).unwrap();
+    set_fields(&t, "display", &[(13, ""), (14, "lone")]);
     assert_eq!(gather("%1").unwrap().job, None);
 }
 
@@ -384,7 +381,7 @@ fn a_bound_viewer_reads_its_jobs_transcript_by_the_job_session() {
     let from = projects.join(slug(&cwd)).join("s1.jsonl");
     std::fs::rename(from, projects.join("-job/sjob.jsonl")).unwrap();
     // #448: the board's row as tmux expands it: no @cockpit_session (7), the job's (18)
-    set_fields(&t, &[(7, "-"), (18, "sjob")]);
+    set_fields(&t, "rows", &[(7, "-"), (18, "sjob")]);
     let d = t.0.display();
     let sh = format!(
         "#!/bin/sh\ncase \"$1\" in\nlist-panes) cat '{d}/rows' ;;\n\
@@ -441,7 +438,7 @@ fn the_info_session_is_the_panes_own_else_its_jobs() {
     set(&g, &t, &rig(&t, &cwd, "", ""));
     let plain = std::fs::read_to_string(t.0.join("display")).unwrap();
     let mut f: Vec<&str> = plain.split('\u{1f}').collect();
-    f.extend(["bg_7", "alpha", "sjob"]);
+    f[13..16].copy_from_slice(&["bg_7", "alpha", "sjob"]);
     std::fs::write(t.0.join("display"), f.join("\u{1f}")).unwrap();
     let own = gather("%1").unwrap().sid;
     f[9] = "";
@@ -477,4 +474,17 @@ fn a_kept_cache_is_refused_before_the_built_binary_starts() {
     let (code, said) = fake::run_by_hand("info_json_for_no_such_pane_is_exit_1_and_silent", &kept);
     let refused = said.contains("the caller's state refused (#1066): XDG_CACHE_HOME set. ");
     assert_eq!((code, refused), (Some(101), true), "{said}");
+}
+
+/// #1396: tmux prints every field of info's own format for a pane that is there, so a row
+/// one field short of it is no such pane.
+#[test]
+fn an_info_row_one_field_short_is_no_such_pane() {
+    let g = fake::env_lock();
+    let t = Tmp::new("short");
+    set(&g, &t, &rig(&t, &t.sub("cwd"), "", ""));
+    let whole = std::fs::read_to_string(t.0.join("display")).unwrap();
+    let short = whole.rsplit_once('\u{1f}').unwrap().0;
+    std::fs::write(t.0.join("display"), short).unwrap();
+    assert_eq!(gather("%1"), Err("no such pane %1".to_string()));
 }

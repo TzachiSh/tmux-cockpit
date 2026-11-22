@@ -99,7 +99,7 @@ impl Rig {
         let glob = if cmd == "claude" { "1" } else { "0" };
         let st = if state == "-" { "" } else { state };
         let info = [id, "w:0 win", cmd, cwd, "", st, "", "", "", sid, "", glob, ""];
-        std::fs::write(self.d.join(format!("info{id}")), info.join("\u{1f}")).unwrap();
+        std::fs::write(self.d.join(format!("info{id}")), fake::info_row(&info)).unwrap();
         std::fs::write(self.d.join(format!("opts/{id}.@cockpit_transcript")), opt).unwrap();
         std::fs::write(self.d.join(format!("opts/{id}.@cockpit_session")), sid).unwrap();
     }
