@@ -1,5 +1,5 @@
-"╭ panel · %3 · w ─────────────────────── 6-16 of 40 ▲5 ▼24 ╮"
-"│ send this to %3 (bash) and press Enter?                  │"
+"╭ panel ──────────────────────────────── 6-16 of 40 ▲5 ▼24 ╮"
+"│ send this to the pane (bash) and press Enter?            │"
 "│                                                          │"
 "│   echo step 6                                            │"
 "│   echo step 7                                            │"

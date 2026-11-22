@@ -1,4 +1,4 @@
-"╭ panel · %3 · claude ─────────────────╮"
+"╭ panel ───────────────────────────────╮"
 "│ ▎1 ★ Write a prompt                  │"
 "│  2   Compose                         │"
 "│  3   Explain                         │"

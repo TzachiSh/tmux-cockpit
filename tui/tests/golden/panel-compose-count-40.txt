@@ -1,4 +1,4 @@
-"╭ panel · %3 · w ──────────────────────╮"
+"╭ panel ───────────────────────────────╮"
 "│ type: auto   model: auto   6500/8000 │"
 "│ word word word word word word word   │"
 "│ word word word word word word word   │"

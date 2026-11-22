@@ -1,4 +1,4 @@
-"╭ panel · %3 · work ───────────────────╮"
+"╭ panel ───────────────────────────────╮"
 "│ ⠧ reading the folder, then writing · │"
 "│ sonnet · 3s                          │"
 "│                                      │"
