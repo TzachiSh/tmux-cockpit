@@ -196,10 +196,15 @@ fi
 # does not run when a signal kills the shell (#1411). Each stays empty until its function
 # makes it. Both traps ignore HUP, INT and TERM first, so a signal cannot stop the rm. A
 # signal sent to this pid alone waits for the curl, gh or cargo in the foreground: bash runs
-# a trap only once that command ends.
-tmp='' log=''
-trap 'trap "" HUP INT TERM; rm -rf -- ${tmp:+"$tmp"}; rm -f -- ${log:+"$log"}' EXIT
-trap 'trap "" HUP INT TERM; exit 130' INT TERM HUP
+# a trap only once that command ends. After the rm, the EXIT trap raises again the signal
+# that stopped the script, so it dies by it: install.sh and bootstrap.sh wait on it in the
+# foreground, and bash goes on after a Ctrl-C unless its child died by SIGINT.
+tmp='' log='' sig=''
+trap 'trap "" HUP INT TERM; rm -rf -- ${tmp:+"$tmp"}; rm -f -- ${log:+"$log"}
+    [ -z "$sig" ] || { trap - "$sig"; kill -s "$sig" $$; }' EXIT
+trap 'trap "" HUP INT TERM; sig=HUP; exit 129' HUP
+trap 'trap "" HUP INT TERM; sig=INT; exit 130' INT
+trap 'trap "" HUP INT TERM; sig=TERM; exit 143' TERM
 # .tried marks a tag with no build for this platform. Network failures and
 # checksum refusals leave none: one is transient, the other must repeat.
 if [ "$(cat "$BIN/.tried" 2>/dev/null)" = "$TAG" ]; then
