@@ -20677,8 +20677,8 @@ if need_tmux "tm re-check"; then :; else
 sv_server c; SVD=$(mktmpd); sv_stub "$SVD"
 # svrun <env words...> -- run tm against the stub; rc in SVRC, stderr in SVERR
 svrun() {
-    sv_tm "$SVD" COCKPIT_TUI_BIN="$SVD/picker" SV_ONCE="$SVD/once" SV_TMUX="$TMUX_REAL" \
-        SV_SOCK="$SVS" "$@" --
+    mkdir -p "$SVD/tmp"; sv_tm "$SVD" TMPDIR="$SVD/tmp" COCKPIT_TUI_BIN="$SVD/picker" \
+        SV_ONCE="$SVD/once" SV_TMUX="$TMUX_REAL" SV_SOCK="$SVS" "$@" --
     until_file "$SVD/rc" '?*'; SVRC=$(cat "$SVD/rc" 2>/dev/null); SVERR=$(cat "$SVD/err")
     rm -f "$SVD/once"
 }
@@ -20746,8 +20746,8 @@ sv_server d; SVD=$(mktmpd); sv_stub "$SVD"
 HOSTL="/tmp/svp$$"; ln -s "$SVD" "$HOSTL"; HOSTF="$HOSTL/pwned"; : > "$SVD/args"
 # svrun <env words...> -- run tm against the stub; rc in SVRC, stderr in SVERR
 svrun() {
-    sv_tm "$SVD" COCKPIT_TUI_BIN="$SVD/picker" SV_ONCE="$SVD/once" SV_TMUX="$TMUX_REAL" \
-        SV_SOCK="$SVS" SV_ARGS="$SVD/args" "$@" --
+    mkdir -p "$SVD/tmp"; sv_tm "$SVD" TMPDIR="$SVD/tmp" COCKPIT_TUI_BIN="$SVD/picker" \
+        SV_ONCE="$SVD/once" SV_TMUX="$TMUX_REAL" SV_SOCK="$SVS" SV_ARGS="$SVD/args" "$@" --
     until_file "$SVD/rc" '?*'; SVRC=$(cat "$SVD/rc" 2>/dev/null); SVERR=$(cat "$SVD/err")
     rm -f "$SVD/once"
 }
@@ -20813,6 +20813,52 @@ if [ -x "$DIR/bin/cockpit-tui" ]; then
     sv_key Escape; until_file "$SVD/rc" '?*'
 fi
 rm -f "$HOSTL"
+"$TMUX_REAL" -L "$SVS" kill-server >/dev/null 2>&1
+"$TMUX_REAL" -L "$SVO" kill-server >/dev/null 2>&1
+fi
+
+echo "== tm picker: its temp dir goes before tm waits, and a hangup cannot stop the rm (#1397) =="
+# tm run from a login shell waits in attach-session for as long as the person stays attached.
+# A terminal closed then hangs its pty up, and SIGHUP reaches tm's process group: from the
+# pane's leader as it dies, and before that from an interactive shell, which resends it to its
+# jobs. So the picker's temp dir is gone before that wait, and once tm's EXIT trap runs, a
+# SIGHUP neither ends the trap nor kills its rm (#1397). Here the hangup is SVO's kill-server,
+# which closes the pane's pty. Each row gives tm a TMPDIR of its own and counts what is left
+# there. Blocks c and d give tm one as well, so nothing of theirs is left in the suite's TMPDIR.
+if need_tmux "tm picker temp dir"; then :; else
+sv_server e; TLD=$(mktmpd); sv_stub "$TLD"; mkdir -p "$TLD/t1" "$TLD/t2"
+sv_tm "$TLD" TMPDIR="$TLD/t1" COCKPIT_TUI_BIN="$TLD/picker" SV_LINE="switch $SVB" --
+until_out beta "$TMUX_REAL" -L "$SVS" list-clients -F '#{session_name}'
+is "after a switch tm waits in attach-session with no picker temp dir left" "beta|" \
+    "$("$TMUX_REAL" -L "$SVS" list-clients -F '#{session_name}' 2>/dev/null)|$(ls -A "$TLD/t1")"
+sv_tm "$TLD" TMPDIR="$TLD/t2" COCKPIT_TUI_BIN="$TLD/picker" SV_LINE="new-session -" \
+    SV_TEXT=tlnew --
+until_out tlnew "$TMUX_REAL" -L "$SVS" list-clients -F '#{session_name}'
+is "after a new session tm waits in attach-session with no picker temp dir left" "tlnew|" \
+    "$("$TMUX_REAL" -L "$SVS" list-clients -F '#{session_name}' 2>/dev/null)|$(ls -A "$TLD/t2")"
+# The picker exits 1 at once, its once file being there, so tm ends through its EXIT trap with
+# no signal of its own. That trap's rm is a stand-in first on tm's PATH: it holds until the
+# pane's leader has died, which sends the group its SIGHUP, and then runs the real rm.
+TLE=$(mktmpd); sv_stub "$TLE"; mkdir -p "$TLE/bin" "$TLE/t3"; : > "$TLE/once"
+TLRM=$(command -v rm)
+{ printf '#!/bin/sh\ncase $1 in -rf)\n    echo held > %s\n' "$(tq "$TLE/mark")"
+  printf '    i=0; while [ ! -e %s ] && [ $i -lt 100 ]; do sleep 0.1; i=$((i + 1)); done ;;\n' \
+      "$(tq "$TLE/go")"
+  printf 'esac\nexec %s "$@"\n' "$(tq "$TLRM")"; } > "$TLE/bin/rm"
+chmod +x "$TLE/bin/rm"
+tl_up() {                     # <pid> -> its ps state while it runs; nothing once gone or a zombie
+    [ -n "$1" ] || { echo nopid; return; }
+    ps -o stat= -p "$1" 2>/dev/null | grep -v Z
+}
+sv_tm "$TLE" TMPDIR="$TLE/t3" COCKPIT_TUI_BIN="$TLE/picker" SV_ONCE="$TLE/once" --
+until_file "$TLE/mark" held
+tlpid=$("$TMUX_REAL" -L "$SVO" display-message -p -t t '#{pane_pid}' 2>/dev/null)
+"$TMUX_REAL" -L "$SVO" kill-server >/dev/null 2>&1
+until_out '' tl_up "$tlpid"
+: > "$TLE/go"
+until_out '' ls -A "$TLE/t3"
+is "a hangup while tm's EXIT trap removes the picker temp dir does not stop the rm" "held||" \
+    "$(cat "$TLE/mark" 2>/dev/null)|$(tl_up "$tlpid")|$(ls -A "$TLE/t3")"
 "$TMUX_REAL" -L "$SVS" kill-server >/dev/null 2>&1
 "$TMUX_REAL" -L "$SVO" kill-server >/dev/null 2>&1
 fi
