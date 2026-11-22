@@ -334,6 +334,13 @@ still passes the group. Whether the reply does the part is what the judge pass
 is for (`--judge`, below): it grades the reply against its rubric and is not
 given the terms. `--model`, `--runs`, `--jobs`, `--only <id or
 kind>`, `--out <file.jsonl>`, `--no-hermetic` and `--show-holdout` are the knobs.
+`--pane-cwd-source` sends the work folder's source as pane-cwd, the source a
+user without the hooks gets, in place of session (#1387): on an agent's window
+the `<window>` line then ends `work folder not confirmed (pane-cwd)`, and
+another window's call does not change. Every call is a Write, so Explain's
+`<agent>` part is not measured. A run with the flag prints a `work source` line
+in its summary, and the modes that send no panel prompt refuse it as they refuse
+`--router-prompt`, below.
 `--router-prompt <file>` sends the file's text as every call's system prompt in
 place of the write prompt (#789); the file is read once at start-up, and a
 missing, unreadable, non-UTF-8 or empty file stops the run before any call.
