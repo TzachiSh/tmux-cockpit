@@ -1523,11 +1523,11 @@ if need_tmux "hook sequences"; then :; else
 seq_() { tmux set -pu -t "$PANE" @panestate >/dev/null 2>&1; for x in "$@"; do st "$x" "$PANE"; done
     sv
 }
-# A failed subagent used to finish GREEN: SubagentStop->running cleared the error,
-# then Stop wrote done. That hook is gone; error now survives to the end.
-is "a failed run ends red, not green" "error" "$(seq_ running running error done)"
-# Approving a permission fires no hook; PreToolUse now clears the red the moment
-# the tool starts, instead of after it finishes.
+# error is a failed turn's (StopFailure, #1331), and a later done does not clear it. A
+# failed tool is running: the #310 block below pins that with the hooks' payloads.
+is "a failed turn ends red, not green" "error" "$(seq_ running running error done)"
+# Approving a permission fires no hook, and PreToolUse fires before the ask (#1341): the
+# running that clears the red is the tool's end, PostToolUse or PostToolUseFailure.
 is "approval clears red when the tool starts" "running" "$(seq_ needs-input running)"
 is "a clean run still ends green" "done" "$(seq_ running running done)"
 # TeammateIdle -> wake: a teammate's idle notification wakes the lead with no hook.
@@ -1756,12 +1756,15 @@ bgst done "$(bgstop "$BGT")"
 bgis "a subagent's needs-input through the main Stop" needs-input needs-input 1
 bgst done "$(bgstop "")"
 bgis "and through the last Stop" needs-input needs-input 1
+# A subagent's failed tool is not the turn's failure (#1331): running, as its PostToolUse.
 bgst running "$BGU"; bgst error '{"hook_event_name":"PostToolUseFailure","agent_id":"a1"}'
 bgst done "$(bgstop "$BGT")"
-bgis "a subagent's error through the main Stop" error error 0
+bgis "a subagent's failed tool through the main Stop" running running 0
+bgst done "$(bgstop "")"
+bgis "and the last Stop after it" done done 0
 
 # #1330: PermissionRequest's ask names the tool, and for Bash only the program, never an
-# argument or a path. PostToolUseFailure names the failed tool, and an interrupt is no error.
+# argument or a path. A PostToolUseFailure writes no text (#1331), and an interrupt nothing.
 bgmsg() { "$TMUX_REAL" -L "$BG" set -pu -t "$BGP" @panestate_msg >/dev/null 2>&1; }
 bgpr() {                      # <tool> <command>: the ask a PermissionRequest leaves
     bgmsg; bgst running "$BGU"
@@ -1805,15 +1808,24 @@ is "an interrupted tool is no error" running "$(bgo @panestate)"
 bgst running "$BGU"; bgfail '"is_interrupt": true'
 is "nor with a space after the colon" running "$(bgo @panestate)"
 bgst running "$BGU"; bgfail '"is_interrupt":false'
-is "a failed tool's text is its name only" "Bash failed" "$(bgo @panestate_msg)"
-bgpr Bash 'git push' >/dev/null; bgfail '"is_interrupt":false'
-is "a failure leaves a waiting pane's ask" "Bash: git" "$(bgo @panestate_msg)"
+is "a failed tool writes no text" "" "$(bgo @panestate_msg)"
+# #1341: the hooks of the T6 turn. An approved command that fails answers its ask, as one that
+# succeeds does, and the turn's Stop is done.
+BGPT='{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"grep x f"}}'
+BGPR='{"hook_event_name":"PermissionRequest","tool_name":"Bash",'
+BGPR=$BGPR'"tool_input":{"command":"git push"}}'
+bgmsg; bgst running "$BGU"; bgst running "$BGPT"; bgst needs-input "$BGPR"
+bgfail '"is_interrupt":false'
+bgis "an approved command that failed" running running 0
+is "and the ask it answered is gone" "" "$(bgo @panestate_msg)"
+bgst done "$(bgstop "")"
+bgis "and that turn's Stop" done done 0
 BGPP='{"hook_event_name":"Notification","message":"Claude needs your permission to use Bash",'
 BGPP=$BGPP'"notification_type":"permission_prompt"}'
-bgst notify "$BGPP"
+bgpr Bash 'git push' >/dev/null; bgst notify "$BGPP"
 is "a later permission_prompt keeps the PermissionRequest text" "Bash: git" "$(bgo @panestate_msg)"
 bgst running "$BGU"; bgfail '"is_interrupt":false'; bgst notify "$BGPP"
-is "but an error's text gives way to a permission_prompt" \
+is "and a failed tool's pane takes the permission_prompt's text" \
     "Claude needs your permission to use Bash" "$(bgo @panestate_msg)"
 # #1334: a failed Write's tool_input can be a whole file, and through a pipe bash reads it a
 # byte per syscall, which held the hook to its 2 s deadline. The hook reads 4 KB: fed as a
@@ -1829,7 +1841,26 @@ bgleft=${bgleft//[!0-9]/}
 is "a 1 MB failure payload is read 4 KB at most: over 1000000 bytes stay unread" yes \
     "$([ "${bgleft:-0}" -gt 1000000 ] && echo yes || echo "${bgleft:-none} left")"
 rm -f "$BGPF1"; unset BGPF1 bgleft
-bgmsg; unset -f bgmsg bgpr bgfail; unset BGPP
+# #1331, #1341: a tool's failure is not the turn's. A PostToolUseFailure ends the tool as a
+# PostToolUse does, and only StopFailure, a failed turn, leaves a sticky error.
+# #1331: a routine failed command as the turn's last tool call, then its Stop.
+BGTF='{"hook_event_name":"PostToolUseFailure","tool_name":"Bash","tool_input":'
+BGTF=$BGTF'{"command":"grep x f"},"error":"Exit code 1","is_interrupt":false}'
+bgst running "$BGU"; bgst running "$BGPT"; bgst error "$BGTF"
+bgst done "$(bgstop "")"
+bgis "a failed command as the turn's last tool call, then Stop" done done 0
+is "and no ✕ is counted" 0 "$(bgo @cockpit_fleet_ne)"
+# Only a failed turn is error: StopFailure, which fires instead of Stop. It stays through the
+# idle notification and a later Stop.
+BGSF='{"session_id":"s1","hook_event_name":"StopFailure","error":"rate_limit",'
+BGSF=$BGSF'"error_details":"429 Too Many Requests","last_assistant_message":"API Error"}'
+bgst running "$BGU"; bgst error "$BGSF"
+bgis "a failed turn (StopFailure)" error error 0
+BGIP='{"hook_event_name":"Notification","message":"Claude is waiting for your input",'
+BGIP=$BGIP'"notification_type":"idle_prompt"}'
+bgst notify "$BGIP"; bgst done "$(bgstop "")"
+is "stays error through the idle notification and a later Stop" error "$(bgo @panestate)"
+bgmsg; unset -f bgmsg bgpr bgfail; unset BGPP BGPT BGPR BGTF BGSF BGIP
 
 # Concurrent hooks: several report-back Stops and subagent tool calls at once.
 bgjobs() {                    # <n> <state> <payload>: n hooks at once, then wait for them
@@ -27499,8 +27530,9 @@ ceset done; ce "$(cel tool.end ',"failed":false')" >/dev/null
 is "tool.end with failed false is running" "running" "$(cev)"
 ceset done; ce "$(cel tool.end)" >/dev/null
 is "tool.end with no failed key is running" "running" "$(cev)"
-ceset running; ce "$(cel tool.end ',"failed":true')" >/dev/null
-is "tool.end with failed true is error" "error" "$(cev)"
+# A tool's failure is not the turn's (#1331): failed true ends the tool as false does.
+ceset done; ce "$(cel tool.end ',"failed":true')" >/dev/null
+is "tool.end with failed true is running too" "running" "$(cev)"
 ceset running; ce "$(cel input.needed)" >/dev/null
 is "input.needed is needs-input" "needs-input" "$(cev)"
 ceset running; ce "$(cel turn.end "$ANS")" >/dev/null
@@ -27652,7 +27684,7 @@ faset running; "$TMUX_REAL" -L "$FA" set-option -p -t "$FAP" @cockpit_subs 2 >/d
 fa stop-by-user
 is "a fake agent's stop-by-user shows interrupted" "|2" "$(fao @panestate)|$(fao @cockpit_subs)"
 faset running; fa fail
-is "a fake agent's fail shows error" "error" "$(fao @panestate)"
+is "a fake agent's failed tool shows running" "running" "$(fao @panestate)"
 faset running; fa quit
 is "a fake agent's quit shows off" "" "$(fao @panestate)"
 
@@ -27675,7 +27707,7 @@ facap() {                     # <pane> <word>...: the adapter's lines into $FAC/
 facap %1 begin tool fail end stop-by-user quit
 : > "$FAC/calls"; "$FAC/cockpit-event" < "$FAC/lines" >/dev/null 2>&1
 is "every line the fake adapter writes is valid agent-event v1" \
-    "8|$(printf '%%1|%s %%1\n' wake running running running error done interrupted off)" \
+    "8|$(printf '%%1|%s %%1\n' wake running running running running done interrupted off)" \
     "$(awk 'END { print NR }' "$FAC/lines")|$(cat "$FAC/calls")"
 # Each run ends on a known word, so a missing adapter reads 0 lines here, not a pass.
 facap %1 hello BEGIN 'begin now' ' end' 'quit!' '' begin

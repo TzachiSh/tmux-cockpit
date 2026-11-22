@@ -737,7 +737,7 @@ whole parts drop, never a cut word: the session count first, then the agent
 count, then the error and needs counts.
 
 A row is the selection mark, its digit, the state glyph and review mark, the
-window index, the title, what the agent asks (`▲`, `✕`) or is doing, and its
+window index, the title, what the agent asks (`▲`) or is doing, and its
 age; an idle agent says `idle`. `◂` marks tmux's active pane. The selection is
 `▎` plus a band in the `sel` role (`@thm_sel`, `@thm_sel_light` on a light
 theme), its text in the value colour: dim on `sel` is only 3.4:1. Under

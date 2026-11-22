@@ -22,7 +22,7 @@ or a tap on a phone.
 | state | marker | colour | means |
 |-------|--------|--------|-------|
 | blocked | `▲` | red | waiting on **you**: a permission prompt |
-| error | `✕` | orange | a tool failed |
+| error | `✕` | orange | a turn failed (an API error) |
 | running | `●` | yellow | working |
 | done | `✓` | green | finished, you have not picked it back up |
 | idle | `○` | grey | an agent with nothing happening |

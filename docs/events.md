@@ -61,19 +61,18 @@ Each request keeps the guard it has; the line numbers are `scripts/agent-state`.
 |------|---------|-------|
 | `turn.start` | `wake` | Lifts `done` or an unset state to `running` (475, 514), and keeps the review mark: only a human prompt clears it, which stays UserPromptSubmit's job (518-519). |
 | `tool.start` | `running` | Refused when already `running` (471). Entering `running` clears the review mark (518-519). |
-| `tool.end`, `failed: false` | `running` | The same as `tool.start`. |
-| `tool.end`, `failed: true` | `error` | Refused on `error` or `needs-input` (473). |
+| `tool.end` | `running` | The same as `tool.start`, with `failed` true or false: a tool's failure is not the turn's (#1331). |
 | `input.needed` | `needs-input` | Refused when already `needs-input` (472). |
 | `turn.end`, `answer` | `done` | Refused on `done`, `needs-input` or `error` (474). With stdin from `/dev/null`, the Stop-payload read (461, which reads at 210) finds no subagents and does not hold the pane, and it clears `@cockpit_subs`. |
 | `turn.end`, `refusal` | `done` | The same as `answer`. |
-| `turn.end`, `error` | `error` | The same as `tool.end` with `failed: true` (473). |
+| `turn.end`, `error` | `error` | Refused on `error` or `needs-input` (473). The one kind that writes `error`: a failed tool is `running` (#1331). |
 | `turn.end`, `aborted` | `interrupted` | Allowed from any state (481), no colour: it unsets the state as `off` does (504-506), clears `needs-input`'s ask and stamp (533-535, 539), and keeps the review mark, the review spool and `@cockpit_subs`, as the idle body does (510). |
 | `session.end` | `off` | The ended-session body: clears the state, the review mark, the review spool and `@cockpit_subs` (477, 510). |
 
 `session.end` is not all of an agent's SessionEnd hook. `off` does two more
-things only when its stdin holds that hook's payload (567-568): it puts
-`@cockpit_dir` back to the value the session found (627-643), and it drops
-`@cockpit_fg` (590).
+things only when its stdin holds that hook's payload (561-562): it puts
+`@cockpit_dir` back to the value the session found (621-637), and it drops
+`@cockpit_fg` (584).
 The core gives it `/dev/null`, so after a `session.end` both stay until the
 pane's next session writes them. The core sends no made-up payload.
 
