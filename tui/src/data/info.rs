@@ -214,6 +214,11 @@ fn count(path: &std::path::Path) -> usize {
 
 const SEP: char = '\u{1f}';
 
+/// How many fields `gather`'s own `display-message` format has: tmux prints every one for a
+/// pane that is there, so a row with fewer is no row of it (#1396). The format's parts are
+/// an array of this length, so a part added or dropped does not compile until this changes.
+pub const FORMAT_N: usize = 17;
+
 /// Every fact for `pane`, in one tmux read. `Err` names a pane that is not
 /// there: display-message exits 0 and expands to nothing for a missing id, so
 /// the resolved id is the test, not the status.
@@ -221,7 +226,7 @@ pub fn gather(pane: &str) -> Result<Facts, String> {
     // A US byte inside a title, a message or a window name would shift every
     // later field: free-form values are blanked in the format, as data.rs FIELDS does.
     let q = |f: &str| format!("#{{s/{SEP}/ /:{f}}}");
-    let fmt = [
+    let parts: [String; FORMAT_N] = [
         "#{pane_id}".to_string(),
         format!("{}:#{{window_index}} {}", q("#{session_name}"), q("#{window_name}")),
         q("#{pane_current_command}"),
@@ -236,19 +241,19 @@ pub fn gather(pane: &str) -> Result<Facts, String> {
         // 11 was a glob test of the command; the board's own test decides now (#519)
         String::new(),
         q("#{@cockpit_tui_version}"),
-        // #460: 13 and 14, optional, so a shorter row still reads
+        // #460: 13 and 14
         q("#{@cockpit_job}"),
         // a newline is a space, as in the board's FIELDS
         format!("#{{s/\n/ /:{}}}", q("#{@cockpit_job_name}")),
-        // #1267: 15, optional, the bound job's session: the session of a pane that has none
+        // #1267: 15, the bound job's session: the session of a pane that has none
         q("#{@cockpit_job_session}"),
-        // #1355: 16, optional, for a pane the board does not count: its folder's candidate
+        // #1355: 16, for a pane the board does not count: its folder's candidate
         q("#{@cockpit_cwd}"),
-    ]
-    .join(&SEP.to_string());
+    ];
+    let fmt = parts.join(&SEP.to_string());
     let out = super::tmux(&["display-message", "-p", "-t", pane, &fmt]).unwrap_or_default();
     let f: Vec<&str> = out.trim_end_matches('\n').split(SEP).collect();
-    if f.len() < 13 || f[0].is_empty() {
+    if f.len() < FORMAT_N || f[0].is_empty() {
         return Err(format!("no such pane {pane}"));
     }
     // #519: the board's agent test, off the board's own row, which #1355 reads for the dir
@@ -264,19 +269,16 @@ pub fn gather(pane: &str) -> Result<Facts, String> {
         spool: clean(f[8]),
         // #1267: the session the transcript came from, as --json's: own, else the job's
         sid: match clean(f[9]) {
-            s if s.is_empty() => f.get(15).map(|s| clean(s)).unwrap_or_default(),
+            s if s.is_empty() => clean(f[15]),
             s => s,
         },
         title: clean(f[10]),
         agent: row.is_some(),
         tui: tui_row(f[12]),
         // the name is a pane title, so control and bidi characters go
-        job: match (
-            f.get(13).map(|i| clean(i)),
-            f.get(14).map(|n| crate::pick::clean(n).trim().to_string()),
-        ) {
+        job: match (clean(f[13]), crate::pick::clean(f[14]).trim().to_string()) {
             // agent-poll sets both in one call: a name with no id is no bind
-            (Some(id), Some(name)) if !name.is_empty() && !id.is_empty() => Some((name, id)),
+            (id, name) if !name.is_empty() && !id.is_empty() => Some((name, id)),
             _ => None,
         },
         ..Default::default()
@@ -297,7 +299,7 @@ pub fn gather(pane: &str) -> Result<Facts, String> {
         }
         None => choose(&Candidates {
             pane_cwd: f[3].to_string(),
-            ..Candidates::from_options(f[4], f.get(16).copied().unwrap_or_default())
+            ..Candidates::from_options(f[4], f[16])
         }),
     };
     (x.work, x.source) = (w.dir, w.source);
