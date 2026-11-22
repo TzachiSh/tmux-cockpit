@@ -20,7 +20,8 @@ use std::path::PathBuf;
 const NOW: u64 = 1_800_000_000;
 
 /// Every `App` here is built under the binary's one environment (#957): the
-/// developer's HOME, prompt overrides and COCKPIT_PANEL_MODEL answer no test.
+/// developer's HOME, prompt overrides and COCKPIT_PANEL_MODEL answer no test. A `claude`
+/// command carries the board's facts, as a real Claude Code pane does (#1359).
 fn app(cmd: &str) -> App {
     fake::fixed_env();
     let cap = Capture {
@@ -32,6 +33,7 @@ fn app(cmd: &str) -> App {
             ..Default::default()
         },
         screen: "$ ".into(),
+        agent: (cmd == "claude").then(Default::default),
         ..Default::default()
     };
     App::new("%3", cap)
