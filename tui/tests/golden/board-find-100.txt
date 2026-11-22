@@ -1,6 +1,6 @@
 " board · 13 agents · 4 sessions · 2 needs you · 1 error                                             "
 "┌ sessions ──────────────────── 4 of 13 ┐┏ ●  api:1 · tests ━━━━━━━━━━━━━━━━━━━━━━ running · 1m03s ┓"
-"│ / test▏                               │┃ ⑂feat/rate-limit · %4                                   ┃"
+"│ / test▏                               │┃ ⑂feat/rate-limit                                        ┃"
 "├───────────────────────────────────────┤┃ asked  —                                                ┃"
 "│  ▾ api ──────────────────── ▲1 ●2 ✓1  │┃ said   —                                                ┃"
 "│  1 ▲◆ 0 server Do you want to … 4m12s │┃ doing  Bash: cargo test --workspace                     ┃"

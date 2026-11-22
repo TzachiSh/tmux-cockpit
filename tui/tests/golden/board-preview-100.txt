@@ -1,6 +1,6 @@
 " board · 6 agents · 3 sessions · 2 needs you · 1 error                                              "
 "┌ sessions ─────────────────────────────┐┏ ▲◆ api:0 · server ━━━━━━━━━━━━━━━━━━━ needs you · 4m12s ┓"
-"│  ▾ api ─────────────────────── ▲1 ●2  │┃ /src/api · ⑂feat/rate-limit · %3   ◆ review pending     ┃"
+"│  ▾ api ─────────────────────── ▲1 ●2  │┃ /src/api · ⑂feat/rate-limit   ◆ review pending          ┃"
 "│▎ 1 ▲◆ 0 server Do you want to … 4m12s │┃ asked  add a token-bucket rate limiter to the router    ┃"
 "│  2 ●  1 tests  Bash: ca…rkspace 1m03s◂│┃ said   I added the token-bucket limiter and wired it i… ┃"
 "│  3 ●  3 migra… Edit src…rate.rs   22s │┃ needs  Do you want to run npm test?                     ┃"

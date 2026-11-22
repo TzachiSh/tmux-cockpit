@@ -2460,3 +2460,177 @@ fn a_row_one_field_short_of_fields_makes_no_pane_and_no_session() {
     assert_eq!(ids(&ps), ["%1"]);
     assert_eq!(sessions.into_iter().collect::<Vec<_>>(), ["w"]);
 }
+
+// ------------------------------------------------ a pane's own name before its title (#1409)
+
+/// A running claude's FIELDS row to field 12, its `@cockpit_title` `title`.
+fn titled_row(id: &str, wher: &str, pid: &str, title: &str) -> String {
+    [id, wher, "win", "claude", "running", title, "-", "-", "/w", pid, "-", "-", "@1"].join("\u{1f}")
+}
+
+/// [`titled_row`] and its `@cockpit_role`, field 20, `role`.
+fn named_row(id: &str, wher: &str, pid: &str, title: &str, role: &str) -> String {
+    let row = titled_row(id, wher, pid, title);
+    let mut f: Vec<&str> = row.split('\u{1f}').collect();
+    f.resize(20, "");
+    f.push(role);
+    f.join("\u{1f}")
+}
+
+/// `ps` drawn `w` by `h`: the tiles, or the list with `sel` selected and its pane. Each row
+/// as text, unquoted.
+fn drawn_board(ps: &[Pane], sel: Option<&str>, w: u16, h: u16) -> Vec<String> {
+    use cockpit_tui::board::{self, Nav, Sel, View};
+    use cockpit_tui::theme::Theme;
+    let nav = sel.map(|id| {
+        let mut n = Nav::new(Sel::Pane(id.into()), Default::default());
+        n.settle(ps, h.into());
+        n
+    });
+    let th = Theme::fixed();
+    let pvs: Vec<Option<String>> = ps.iter().map(|_| Some(String::new())).collect();
+    let v = View {
+        panes: ps,
+        pvs: &pvs,
+        th: &th,
+        sel: 0,
+        top: 0,
+        active: "",
+        note: None,
+        help: None,
+        stale: None,
+        lost: false,
+        never: false,
+        list: nav.as_ref(),
+        confirm: None,
+    };
+    let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
+    t.draw(|f| board::render(f, f.area(), &v)).unwrap();
+    t.backend().to_string().lines().map(|l| l.trim_matches('"').to_string()).collect()
+}
+
+/// The first row that opens a frame: a tile's title, or the list's and its pane's.
+fn frame_top(rows: &[String]) -> &str {
+    rows.iter()
+        .find(|l| l.starts_with(['┌', '┏']))
+        .unwrap_or_else(|| panic!("no frame:\n{}", rows.join("\n")))
+}
+
+/// #1409: a pane's own name, FIELDS' field 20, goes before its title in its label, cleaned as
+/// a title is: `session:window · name · title`. A pane with no name reads as before.
+#[test]
+fn a_panes_own_name_goes_before_its_title_in_its_label() {
+    let r = Rig::new("rolelabel");
+    r.ps("400 1 claude\n401 1 claude\n402 1 claude\n");
+    r.rows(&[
+        named_row("%1", "w:0", "400", "fix the tests", "lead"),
+        named_row("%2", "w:1", "401", "fix the tests", ""),
+        named_row("%3", "w:2", "402", "fix the tests", "le\u{7}a\u{202e}d"),
+    ]);
+    let ps = list_panes().unwrap();
+    let spelled = |id: &str| get(&ps, id).full_label().spelled("·");
+    assert_eq!(spelled("%1"), "w:0 · lead · fix the tests");
+    assert_eq!(spelled("%2"), "w:1 · fix the tests");
+    assert_eq!(spelled("%3"), "w:2 · lead · fix the tests");
+}
+
+/// #1409: a named pane reads `name · title` after its `session:window` on its tile and on the
+/// title of the list's pane.
+#[test]
+fn a_named_pane_reads_name_dot_title_on_its_tile_and_its_pane() {
+    let r = Rig::new("roletile");
+    r.ps("400 1 claude\n");
+    r.rows(&[named_row("%1", "w:0", "400", "fix the tests", "lead")]);
+    let ps = list_panes().unwrap();
+    let tiles = drawn_board(&ps, None, 60, 8);
+    assert!(frame_top(&tiles).contains("w:0 · lead · fix the tests"), "{tiles:#?}");
+    let list = drawn_board(&ps, Some("%1"), 120, 12);
+    assert!(frame_top(&list).contains("w:0 · lead · fix the tests"), "{list:#?}");
+}
+
+/// #1409: a named row's name and its dot are width the name column adds, as a bound row's
+/// mark is (#460), so the title keeps its share: `lead · tests` is whole in the list.
+#[test]
+fn a_named_row_keeps_the_titles_share_of_the_name_column() {
+    let r = Rig::new("rolerow");
+    r.ps("400 1 claude\n");
+    r.rows(&[named_row("%1", "w:0", "400", "tests", "lead")]);
+    let ps = list_panes().unwrap();
+    let rows = drawn_board(&ps, Some("%1"), 180, 12);
+    // the list's 64 columns, never the pane beside it, whose title holds the label too
+    let list: Vec<String> = rows.iter().map(|l| l.chars().take(64).collect()).collect();
+    assert!(list.iter().any(|l| l.contains("lead · tests ")), "{list:#?}");
+}
+
+/// #1409: the kill's confirm names the pane with its name, in its title and its question.
+#[test]
+fn the_confirm_names_the_pane_with_its_name() {
+    use cockpit_tui::board;
+    let r = Rig::new("roleconfirm");
+    r.ps("400 1 claude\n");
+    r.rows(&[named_row("%1", "w:0", "400", "fix the tests", "lead")]);
+    let ps = list_panes().unwrap();
+    let c = board::Confirm::open(board::extra('x').unwrap(), get(&ps, "%1")).unwrap();
+    assert_eq!(c.title, "kill · w:0 · lead · fix the tests");
+    assert_eq!(c.ask, "kill pane w:0 · lead · fix the tests?");
+}
+
+/// #1409: a pane named, or renamed, redraws the board: its name is in the redraw gate's hash.
+#[test]
+fn a_new_name_redraws_the_board() {
+    use cockpit_tui::data::hash_rows;
+    let r = Rig::new("rolehash");
+    r.ps("400 1 claude\n");
+    let hash_with = |role: &str| {
+        r.rows(&[named_row("%1", "w:0", "400", "fix the tests", role)]);
+        hash_rows(&list_panes().unwrap(), "")
+    };
+    let none = hash_with("");
+    assert_eq!(none, hash_with(""), "the same fetch twice");
+    assert_ne!(none, hash_with("lead"));
+}
+
+/// #1409: find (`/`) reads a pane's name, as the row draws it.
+#[test]
+fn find_finds_a_pane_by_its_name() {
+    use cockpit_tui::board::find_match;
+    let r = Rig::new("rolefind");
+    r.ps("400 1 claude\n401 1 claude\n");
+    r.rows(&[
+        named_row("%1", "w:0", "400", "fix the tests", "lead"),
+        named_row("%2", "w:1", "401", "fix the tests", ""),
+    ]);
+    let ps = list_panes().unwrap();
+    assert!(find_match(get(&ps, "%1"), "lead"));
+    assert!(!find_match(get(&ps, "%2"), "lead"));
+}
+
+/// A place and a title holding a tab, a control and a bidi character, as a session name and a
+/// fake's title can. ratatui draws none of the three, so a tab left in reads as no space.
+const DIRTY_PLACE: &str = "a\tb:0\u{202e}";
+const DIRTY_TITLE: &str = "fix\t\u{7}the\u{202e} tests";
+
+/// #1409: the pane's header goes through the label, so its place and its title are cleaned: a
+/// tab is a space and a control or bidi character is gone, as in every other label.
+#[test]
+fn the_pane_header_cleans_its_place_and_its_title() {
+    let r = Rig::new("roleheadclean");
+    r.ps("400 1 claude\n");
+    r.rows(&[titled_row("%1", DIRTY_PLACE, "400", DIRTY_TITLE)]);
+    let ps = list_panes().unwrap();
+    let list = drawn_board(&ps, Some("%1"), 120, 12);
+    assert!(frame_top(&list).contains("a b:0 · fix the tests "), "{list:#?}");
+}
+
+/// #1409: the confirm's title goes through the label too, cleaned as its question is.
+#[test]
+fn the_confirm_title_cleans_its_place_and_its_title() {
+    use cockpit_tui::board;
+    let r = Rig::new("roleconfirmclean");
+    r.ps("400 1 claude\n");
+    r.rows(&[titled_row("%1", DIRTY_PLACE, "400", DIRTY_TITLE)]);
+    let ps = list_panes().unwrap();
+    let c = board::Confirm::open(board::extra('x').unwrap(), get(&ps, "%1")).unwrap();
+    assert_eq!(c.title, "kill · a b:0 · fix the tests");
+    assert_eq!(c.ask, "kill pane a b:0 · fix the tests?");
+}

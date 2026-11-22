@@ -287,7 +287,7 @@ fn the_header_path_is_the_work_dir_the_branch_came_from() {
     (ps[0].path, ps[0].dir) = ("/src/main".into(), "/src/wt-feat".into());
     let n = nav(&ps, Sel::Pane("%3".into()));
     let rows = pane_rows_text(&buf(180, 40, &list(&ps, &[], &th, &n)), 64);
-    assert!(rows[2].contains("/src/wt-feat · ⑂feat/rate-limit · %3"), "{rows:#?}");
+    assert!(rows[2].contains("/src/wt-feat · ⑂feat/rate-limit"), "{rows:#?}");
     assert!(!rows[2].contains("/src/main"), "{rows:#?}");
 }
 
@@ -298,7 +298,7 @@ fn a_blocked_agent_shows_its_question_and_where_it_is() {
     let b = buf(180, 40, &list(&ps, &[], &th, &n));
     let rows = pane_rows_text(&b, 64);
     assert!(rows[1].contains("needs you · 4m12s"), "{rows:#?}");
-    assert!(rows[2].contains("/src/api · ⑂feat/rate-limit · %3"), "{rows:#?}");
+    assert!(rows[2].contains("/src/api · ⑂feat/rate-limit"), "{rows:#?}");
     assert!(rows[2].contains("◆ review pending"), "{rows:#?}");
     assert!(
         rows[3].contains("asked  add a token-bucket rate limiter to the router"),
@@ -309,6 +309,27 @@ fn a_blocked_agent_shows_its_question_and_where_it_is() {
     let y = rows.iter().position(|r| r.contains("needs  Do")).unwrap() as u16;
     let x = (64..180).find(|&x| b[(x, y)].symbol() == "D").unwrap();
     assert_eq!(b[(x, y)].fg, th.needs, "the question is in the needs role");
+}
+
+/// #1409: the detail line names the work dir and the branch, never the pane id, which the info
+/// screen's first row and the log keep. With no branch it is the dir alone, with neither empty.
+#[test]
+fn the_detail_line_ends_at_the_branch_and_holds_no_pane_id() {
+    let th = th();
+    let detail = |ps: &[Pane]| {
+        let n = nav(ps, Sel::Pane("%3".into()));
+        pane_rows_text(&buf(180, 40, &list(ps, &[], &th, &n)), 64)[2].clone()
+    };
+    let mut ps = trio();
+    let both = detail(&ps);
+    assert!(both.contains("/src/api · ⑂feat/rate-limit   ◆ review pending"), "{both}");
+    assert!(!both.contains("%3"), "{both}");
+    (ps[0].loc, ps[0].review) = (String::new(), String::new());
+    let dir = detail(&ps);
+    assert_eq!(dir.trim_matches(['┃', ' ']), "/src/api", "{dir}");
+    ps[0].path.clear();
+    let none = detail(&ps);
+    assert_eq!(none.trim_matches(['┃', ' ']), "", "{none}");
 }
 
 #[test]
