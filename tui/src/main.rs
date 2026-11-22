@@ -58,12 +58,11 @@ fn panel(args: &[String]) {
     a.termux = cockpit_tui::panel::is_termux();
     // other panes' hidden panels the wrapper dropped: their panes are gone
     if let Ok(gone) = std::env::var("COCKPIT_PANEL_DROPPED") {
-        let gone: Vec<&str> = gone.split(' ').filter(|p| cockpit_tui::panel::is_pane(p)).take(8).collect();
-        if !gone.is_empty() {
-            a.say(
-                app::Level::Info,
-                format!("dropped the panel hidden on {}: the pane is gone", gone.join(" ")),
-            );
+        // counted, not named: a gone pane has no label, and its id tells a person nothing (#1407)
+        match gone.split(' ').filter(|p| cockpit_tui::panel::is_pane(p)).count() {
+            0 => {}
+            1 => a.say(app::Level::Info, "dropped a hidden panel whose pane is gone"),
+            n => a.say(app::Level::Info, format!("dropped {n} hidden panels whose panes are gone")),
         }
     }
     if let Some((f, "hidden")) = resume {

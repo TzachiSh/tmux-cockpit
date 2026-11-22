@@ -125,7 +125,8 @@ pub fn read_text(pane: &str) -> Result<String, String> {
     check(pane)?;
     let id = ask(&["display-message", "-p", "-t", pane, "#{pane_id}"])?;
     if id.as_deref().map(str::trim) != Some(pane) {
-        return Err(format!("the pane {pane} is gone"));
+        // a gone pane has no label to name it by, and its id tells a person nothing (#1407)
+        return Err("the pane is gone".into());
     }
     let show = ["show-options", "-pqv", "-t", pane, OPTION];
     let text = ask(&show)?.ok_or("tmux did not answer")?;

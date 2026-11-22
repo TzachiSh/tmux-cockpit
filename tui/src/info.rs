@@ -157,7 +157,11 @@ pub fn render(f: &mut Frame, area: Rect, th: &Theme, s: &Screen) {
         .border_set(th.g.round)
         .border_style(Style::new().fg(th.label))
         .title(Line::from(Span::styled(
-            format!(" info {} {} ", th.g.dot, x.id),
+            // the pane by its label, never its id, which the first row keeps (#1407)
+            match &x.label {
+                Some(l) => format!(" info {} {} ", th.g.dot, l.spelled(th.g.dot)),
+                None => " info ".to_string(),
+            },
             Style::new().fg(th.accent),
         )));
     let last = (top + room).min(all.len());

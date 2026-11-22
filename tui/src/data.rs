@@ -301,6 +301,29 @@ impl Pane {
             .find(|s| !s.is_empty())
             .map_or("(no title)", |s| s.as_str())
     }
+
+    /// How a message or a title names the pane (#1407): its `session:window` and its
+    /// [`Pane::label`], cleaned for the terminal. The %id stays for the log.
+    pub fn full_label(&self) -> Label {
+        Label {
+            wher: crate::pick::clean(&self.wher),
+            title: crate::pick::clean(self.label()),
+        }
+    }
+}
+
+/// A pane as a person reads it (#1407): its `session:window` and its title.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Label {
+    pub wher: String,
+    pub title: String,
+}
+
+impl Label {
+    /// `session:window · title`, `dot` the theme's: the one place the two are joined.
+    pub fn spelled(&self, dot: &str) -> String {
+        format!("{} {dot} {}", self.wher, self.title)
+    }
 }
 
 pub fn hash_rows(ps: &[Pane], extra: &str) -> u64 {
@@ -991,8 +1014,7 @@ pub fn list_fleet() -> Option<(Vec<Pane>, std::collections::BTreeSet<String>)> {
         dirs.push(work_candidates(&mut p, &f));
         (p.pinned, p.delivered) = spool_counts(&p.spool);
         p.subs_n = f[14].parse().unwrap_or(0);
-        // a pane title, so untrusted too
-        p.topic = crate::pick::clean(f[17]).trim().to_string();
+        p.topic = topic_of(f[17]);
         if let Some(d) = subagents::dir_of(f[15], &p.sess, &p.path) {
             p.subs = subagents::read(&d, sessions::now());
         }
@@ -1199,6 +1221,30 @@ fn one_row(pane: &str) -> Option<(Pane, Vec<String>)> {
     // workdir and is_agent never read `ended`
     let (p, _) = row_pane(&f, &mut None, false)?;
     Some((p, f.iter().map(|s| s.to_string()).collect()))
+}
+
+/// FIELDS' field 17, the pane's own title: a pane title, so untrusted too.
+fn topic_of(raw: &str) -> String {
+    crate::pick::clean(raw).trim().to_string()
+}
+
+/// [`Pane::full_label`] of any pane by its id, an agent's or not, off one FIELDS
+/// read (#1407). `None` when tmux has no such pane.
+pub fn label_of(pane: &str) -> Option<Label> {
+    let out = tmux(&["display-message", "-p", "-t", pane, FIELDS])?;
+    let f: Vec<&str> = out.trim_end_matches('\n').split(SEP).collect();
+    // a missing pane exits 0 with every field empty, as for one_row
+    if f.len() < FIELDS_N || f[0] != pane {
+        return None;
+    }
+    let p = Pane {
+        wher: f[1].into(),
+        name: f[2].into(),
+        title: unsentinel(f[5]),
+        topic: topic_of(f[17]),
+        ..Default::default()
+    };
+    Some(p.full_label())
 }
 
 /// A pane can hold one multi-megabyte line, and the ANSI parser re-runs over the

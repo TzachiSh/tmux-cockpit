@@ -215,7 +215,7 @@ is #301's (#288 removed `R` → `request`). An entry with no `confirm` exits at 
 
 **The confirm.** An entry with a `confirm` opens one frame, the focus frame,
 over the foot of the list or the tiles: the action and the target in its title,
-`confirm` at its right, the question (`kill pane %12 (api:2 server)?`) and what
+`confirm` at its right, the question (`kill pane api:2 · server?`, the pane by its label) and what
 the keys do, all in fg. It owns the keyboard (D18): `y` exits with the action,
 `n` and `esc` go back with nothing written, `?` shows its keys, `q` and `^C`
 close the board; every other key does nothing, `↵` included, so a held Enter
@@ -1618,7 +1618,7 @@ paste are dropped: nobody can see what they would do. An open `?` closes.
 At 40x12 (a phone in portrait), Steps:
 
 ```
-╭ panel · %3 · work ───────────────────╮
+╭ panel · t:1 · work ──────────────────╮
 │ Steps (bash)                         │
 │                                      │
 │  1 Remove the old build              │
@@ -1721,7 +1721,7 @@ In tablet mode:
 At 40x20, a phone in portrait, a send:
 
 ```
-╭ panel · %3 · work ───────────────────╮
+╭ panel · t:1 · work ──────────────────╮
 │ ╭───────────────╮ ╭────────────────╮ │
 │ │   yes, send   │ │       no       │ │
 │ ╰───────────────╯ ╰────────────────╯ │
