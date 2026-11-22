@@ -284,7 +284,7 @@ Read-only, and owned by bash: `@cockpit_session`, `@cockpit_dir`, `@panestate`,
 | `COCKPIT_PANEL_MODE` | `auto`, `pc` or `tablet`, from `@cockpit_panel_mode`. Unset or empty is `auto`. Any other value: the panel exits 2 before it draws. The board's popup passes it too, so a panel opened from the board gets the same mode |
 | `COCKPIT_PANEL_EFFORT` | the `--effort` of every panel call, from `@cockpit_panel_effort`. One of `low`, `medium`, `high`, `xhigh`, `max`; unset, empty or any other value is `medium`, so the text itself never reaches claude's argv. The call goes without `CLAUDE_CODE_EFFORT_LEVEL`, which claude ranks over `--effort` |
 | `COCKPIT_PANEL_NOTE` | set by `scripts/cockpit-board` for `scripts/cockpit-panel`: the file the panel wrapper writes its last line to instead of a `display-message`, a failure starting with `✕`. Unset (`prefix f`), the message goes to the status line as before |
-| `COCKPIT_PANEL_DROPPED` | set by `scripts/cockpit-panel` for the binary: the pane ids, space-separated, whose hidden panels it just dropped because the pane is gone. The binary shows them in an info note; anything but `%N` words is ignored |
+| `COCKPIT_PANEL_DROPPED` | set by `scripts/cockpit-panel` for the binary: the pane ids, space-separated, whose hidden panels it just dropped because the pane is gone. The binary counts them in an info note, since a gone pane has no label (#1407); anything but `%N` words is ignored |
 | `COCKPIT_PANEL_KEY` | set by `scripts/cockpit-panel` for the binary: the prefix key bound with the note `cockpit: panel`, read as the hidden-panel message reads it (#1121). The `?` list's `^Z` row names it: `hide; prefix <key> on this pane brings it back`. Unset, or a value that is not 1 to 16 bytes of printable ASCII without a space, gives `hide; the panel key on this pane brings it back`. The wrapper drops one from its own environment |
 | `COCKPIT_PANEL_CALL` | set to `1` in the panel's `claude -p` child, never read by the binary: a hook can skip the call by it |
 
@@ -1725,8 +1725,8 @@ At 40x20, a phone in portrait, a send:
 │ ╭───────────────╮ ╭────────────────╮ │
 │ │   yes, send   │ │       no       │ │
 │ ╰───────────────╯ ╰────────────────╯ │
-│ send this to %3 (bash) and press     │
-│ Enter?                               │
+│ send this to t:1 · work (bash) and   │
+│ press Enter?                         │
 │                                      │
 │   rm -rf target                      │
 │                                      │
@@ -1825,8 +1825,8 @@ Backspace.
   (`action::HIDE_AGE`) is refused (`the hidden panel was dropped: it is older
   than 24 h`), and the wrapper also deletes any older than a day. A hidden
   panel whose pane is gone is deleted the next time the panel opens on any
-  pane of that server, which says `dropped the panel hidden on %N: the pane is
-  gone`. A corrupt file is refused whole, with the reason in the same note.
+  pane of that server, which says `dropped a hidden panel whose pane is gone`
+  or counts them. A corrupt file is refused whole, with the reason in the same note.
 - **Too much to keep** (over 1 MiB): `^Z` says so and the panel stays open.
 
 **The state file.** The binary writes `$COCKPIT_ACTION.state` and no action
@@ -2034,8 +2034,8 @@ panel with the reason in a warn note.
 - When a pane's `ended` turns, `tui.log` gets one line,
   `fleet ended-flip pane=%N ended=true|false live_by=command|tree|none cmd=… pid=…`,
   naming what found the agent, so a false "ended" can be traced.
-- `x` kills the pane, not the window: the confirm reads `kill pane %N
-  (<sess:idx> <window name>)?`, `.expect` is `%N @W`, and the wrapper runs
+- `x` kills the pane, not the window: the confirm reads `kill pane
+  <sess:idx> · <title>?` (its label, #1407), `.expect` is `%N @W`, and the wrapper runs
   `kill-pane` inside the `if-shell -F` that checks the window id. Its `✓` note
   is `killed pane %N (<sess:idx> <name>)`. An older binary's bare `@W` is
   refused, and an older wrapper refuses this binary's `%N @W`, so neither skew
