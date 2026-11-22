@@ -21,6 +21,21 @@ left alone by `done` since a done pane has no border alert to read it on.
 `permission_prompt` notification that follows about 6 s later leaves that text
 in place on a pane still waiting, and writes its own on any other pane.
 
+`PermissionRequest` also keeps the ask's key in `@panestate_ask`:
+`<agent_id>/<tool_name>`, with no agent on the main thread (#1403). Other
+agents and parallel calls fire tool hooks while an ask waits, and the payload
+carries no `tool_use_id` to tie them to it. So while a key is set, a
+`PostToolUse` or `PostToolUseFailure` ends the ask only with the same key, a
+`PreToolUse` only from the same agent (the next call after an ask the person
+refused, which fires no hook of its own), and a `SubagentStart` never. A typed
+prompt, `off` and an interrupt end it as before, and the key goes with the
+text. An ask with no key, from a `Notification` alone or a `PermissionRequest`
+that names no tool, ends on any `running`, as before. Known limits: two
+concurrent calls of the same tool in one agent share a key. A sibling's
+`PreToolUse` that lands after the `PermissionRequest` ends the ask. With two
+asks waiting the key is the newer one's, so answering that one first ends the
+wait while the older one still waits.
+
 ### State ranking
 
 `needs-input` > `error` > `running` > `done`
@@ -41,16 +56,16 @@ timer.
 | `UserPromptSubmit` | `running` |
 | `UserPromptSubmit` (2nd) | `session` — the same save, so `/clear` and `--resume` (a new `session_id`) are followed from the first prompt |
 | `CwdChanged` | `session` — saves the payload's `new_cwd` as `@cockpit_dir`, so the board shows the repo the agent `cd`'d into (see [Working tree](#working-tree)) |
-| `PermissionRequest` | `needs-input` — `@panestate_msg` names the tool; for `Bash` only the command's program, `Bash: git`, never its arguments or paths (#1330). The program is the first word with its path dropped, and only when that whole word is letters, digits and `._/+-`: anything else, `FOO=1 git` included, reads plain `Bash` (#1334) |
-| `PostToolUse` | `running` |
+| `PermissionRequest` | `needs-input` — `@panestate_msg` names the tool; for `Bash` only the command's program, `Bash: git`, never its arguments or paths (#1330). The program is the first word with its path dropped, and only when that whole word is letters, digits and `._/+-`: anything else, `FOO=1 git` included, reads plain `Bash` (#1334). `@panestate_ask` keeps the ask's key (#1403, see above) |
+| `PostToolUse` | `running`; over an ask with a key, only the asking agent's call of the asked tool (#1403) |
 | `PostToolUse` (matcher `TaskStop`) | `sub-taskstop` — records the stopped agent in the subagent log, since a TaskStop mid-turn fires no `SubagentStop` for a plain agent (see [Subagent event log](#subagent-event-log)); no pane state |
-| `PostToolUseFailure` | `running`, as `PostToolUse`: a tool's failure is not the turn's (#1331). So a routine non-zero Bash exit as a turn's last tool call ends the turn `done`, and an approved command that fails answers its ask (#1341). It runs `agent-state error`, as `StopFailure` does, and the payload's `hook_event_name` tells the two apart. Not when `is_interrupt` is true: a tool stopped with Esc writes nothing (#1330). Only the payload's first 4 KB is read: an `is_interrupt` past it, behind a large `tool_input`, is not seen, and the pane goes `running` (#1334) |
-| `SubagentStart` | `running` |
+| `PostToolUseFailure` | `running`, as `PostToolUse`: a tool's failure is not the turn's (#1331). So a routine non-zero Bash exit as a turn's last tool call ends the turn `done`, and an approved command that fails answers its ask (#1341). It runs `agent-state error`, as `StopFailure` does, and the payload's `hook_event_name` tells the two apart. Not when `is_interrupt` is true: a tool stopped with Esc writes nothing (#1330). Only the payload's first 4 KB is read: an `is_interrupt` past it, behind a large `tool_input`, is not seen, and the pane goes `running` (#1334). Over an ask with a key it ends the ask only as `PostToolUse` does (#1403) |
+| `SubagentStart` | `running`, but never over an ask with a key: an Agent call beside the ask fires it while the ask waits (#1403) |
 | `SubagentStart` (2nd) | `sub-start` — appends the event to the session's subagent log (see [Subagent event log](#subagent-event-log)); no pane state |
 | `SubagentStop` | `sub-stop` — the same log; no pane state (see [Deliberately unwired](#deliberately-unwired)) |
 | `TeammateIdle` | `wake` — a teammate idling wakes its lead with no hook of its own; `done` → `running`, sticky states and a pending `◆` kept |
 | `TeammateIdle` (2nd) | `sub-idle` — the subagent log |
-| `PreToolUse` | `running` — marks the pane busy as a tool begins |
+| `PreToolUse` | `running` — marks the pane busy as a tool begins; over an ask with a key, only from the agent that asked (#1403) |
 | `Stop` | `done`, unless the payload's `background_tasks` lists a subagent: then no state changes (see [Background subagents](#background-subagents)). Either way `@cockpit_subs` takes the count (see [Subagent count](#subagent-count)) |
 | `Stop` (2nd) | `sub-reconcile` — writes the payload's `background_tasks`, the set still in flight, to the session's `.live` file beside the subagent log; an agent the log had running that is not in it has ended; no pane state. Before `review-gate`: `--hooks` re-appends review-gate's entry on every run, so an entry after it would swap places each time |
 | `Stop` (3rd) | `review-gate` — flags `◆` when the finished diff is unreviewed; hands a queued review to the agent at this turn boundary (`additionalContext` on stdout, once); caps a `/goal` rewake chain at `@cockpit_rewake_cap` and honours `review-gate --concede` (see [A goal that will not be met](#a-goal-that-will-not-be-met)) |
