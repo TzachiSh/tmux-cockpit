@@ -28,6 +28,7 @@ Name this pane gives a pane a name of its own, its `@cockpit_role` (#1408): 1 to
 ASCII letters, digits, `-`, `_` or `/`, starting with a letter or digit. `:` and `.` are
 refused, since tmux reads them in a target. An empty name clears it. The name goes to
 the pane that is current when you press Enter. `cockpit-tui pane <name>` finds it again.
+The board, the pane's border and its window's tab then show the name before the title.
 
 A row is there only when nothing on screen does its job: Browse folder and
 Switch branch appear when the border has no room for the path or the branch

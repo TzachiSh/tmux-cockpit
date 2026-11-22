@@ -790,7 +790,7 @@ not fit, its frame's title says `N-M of T`, counted in rows.
 
 **Find.** `/` opens a field at the top of the list, above a rule, and the list
 narrows as you type. Find reads each agent's session, window index, window
-name, title, state word (`needs`, `error`, `running`, `done`, `idle`) and its
+name, title, the pane's name, state word (`needs`, `error`, `running`, `done`, `idle`) and its
 message or doing line. Space-separated terms must all match, each anywhere in
 those fields, ignoring case; it is a substring narrowing, with no fuzzy
 ranking. Find also reads each agent's subagents' types and descriptions, so
@@ -949,7 +949,7 @@ which leaves the pane 116. The selected agent fills the right, at 100 columns:
 ```
  board · 6 agents · 3 sessions · 2 needs you · 1 error                                              
 ┌ sessions ─────────────────────────────┐┏ ▲◆ api:0 · server ━━━━━━━━━━━━━━━━━━━ needs you · 4m12s ┓
-│  ▾ api ─────────────────────── ▲1 ●2  │┃ /src/api · ⑂feat/rate-limit · %3   ◆ review pending     ┃
+│  ▾ api ─────────────────────── ▲1 ●2  │┃ /src/api · ⑂feat/rate-limit   ◆ review pending          ┃
 │▎ 1 ▲◆ 0 server Do you want to … 4m12s │┃ asked  add a token-bucket rate limiter to the router    ┃
 │  2 ●  1 tests  Bash: ca…rkspace 1m03s◂│┃ said   I added the token-bucket limiter and wired it i… ┃
 │  3 ●  3 migra… Edit src…rate.rs   22s │┃ needs  Do you want to run npm test?                     ┃
@@ -984,8 +984,9 @@ accent otherwise. Its title is the row's glyph and review mark, `session:window`
 and the title; its right end the state, `needs you` on a `▲`, `ended` on an
 ended agent, and the age, which an idle agent does not have. Then five rows:
 
-- where it runs: the path, `⑂branch` and the pane id, then `◆ review pending`
-  or `↵ review sent`. The path is cut in its middle and goes first.
+- where it runs: the path and `⑂branch`, then `◆ review pending` or `↵ review
+  sent`. The path is cut in its middle and goes first. No pane id: the info
+  screen's first row and the log keep it (#1409).
 - `asked`, the newest human prompt; `said`, the agent's last text; `doing`, its
   tool. On a `▲` the third row is `needs` and the question, in the needs role;
   on a `✕`, `error` and the error; on an ended agent, `doing ended`. Nothing to
@@ -2225,7 +2226,8 @@ panel with the reason in a warn note.
   tmux is not reachable, each said on stderr. Exit 3 when more than one pane holds it:
   stderr names them all and stdout stays empty, so a script never takes the first.
   Exit 2 for no name, an empty one, two, or one holding a newline or a `\x1f`.
-- `data::Pane`, FIELDS, `--json` and `--rows` are unchanged.
+- `--json` and `--rows` are unchanged. The board reads the name as FIELDS' field 20 and
+  draws it (#1409, the `role` field below).
 
 ### The triage overlay
 
@@ -2503,6 +2505,21 @@ title the bind matched. That title stays in the info screen, in `--json`'s `titl
 and in `--rows`. A bound row's name column grows by the mark's width, so even at
 its 6-column floor the job keeps a few characters. The kill confirm names the job
 too.
+
+**`role` (#1409):** the pane's own name, `@cockpit_role` (FIELDS' field 20), which
+`scripts/tmux-rename pane` sets with `set -p`, with control and bidi characters
+dropped; `""` for a pane with none. The board draws it before the title, `name ·
+title`, never in its place: on the row, the tile, the pane header and the confirm's
+title, before a bound row's `→ <job>` too. The pane header, the confirm's title, the
+info screen, the panel and the kill question name a pane by its label, `session:window
+· name · title`, place and title cleaned of control and bidi characters. A named
+row's name column grows by the name and its dot, as a bound row's does by its mark,
+so the title keeps its share. Find (`/`) reads it. FIELDS is a format, which reads a
+window's or the server's `@cockpit_role` for a pane with none of its own, and the
+server's ahead of the pane's (tmux's `format_find`). cockpit sets neither, and a name
+here only shows, as on the tabs and borders. `cockpit-tui pane <name>`, which acts on
+a name, reads each pane's own value with `show-options -p`. `--json` and `--rows` do
+not carry it.
 
 **`--json`**: an array of objects with exactly these 16 keys, in this order:
 

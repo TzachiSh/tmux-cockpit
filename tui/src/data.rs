@@ -242,6 +242,9 @@ pub struct Pane {
     /// #1330 A2: that call's context, input + cache_read + cache_creation tokens;
     /// `None` when no row in the window has usage
     pub ctx: Option<u64>,
+    /// #1409: the pane's own name, `@cockpit_role` (field 20), cleaned; `""` when it has
+    /// none. Shown before the title, never in its place: [`role_title`]
+    pub role: String,
 }
 
 /// Skips the three ages, which change every tick and would defeat the redraw
@@ -282,9 +285,11 @@ impl Hash for Pane {
             doing_failed,
             model,
             ctx,
+            role,
         } = self;
         [
-            id, wher, name, cmd, title, msg, sess, path, dir, root, spool, pid, review, doing, said, asked, loc, pm, win, job, topic, model,
+            id, wher, name, cmd, title, msg, sess, path, dir, root, spool, pid, review, doing, said, asked, loc, pm, win, job, topic,
+            model, role,
         ]
         .hash(h);
         (state, pinned, delivered, subs_n, ended, doing_failed, ctx).hash(h);
@@ -302,27 +307,41 @@ impl Pane {
             .map_or("(no title)", |s| s.as_str())
     }
 
-    /// How a message or a title names the pane (#1407): its `session:window` and its
-    /// [`Pane::label`], cleaned for the terminal. The %id stays for the log.
+    /// How a message or a title names the pane (#1407): its `session:window`, its name
+    /// (#1409) and its [`Pane::label`], cleaned for the terminal. The %id stays for the log.
     pub fn full_label(&self) -> Label {
         Label {
             wher: crate::pick::clean(&self.wher),
+            role: self.role.clone(),
             title: crate::pick::clean(self.label()),
         }
     }
 }
 
-/// A pane as a person reads it (#1407): its `session:window` and its title.
+/// A pane as a person reads it (#1407): its `session:window`, its name, `""` when it has
+/// none (#1409), and its title.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Label {
     pub wher: String,
+    pub role: String,
     pub title: String,
 }
 
 impl Label {
-    /// `session:window · title`, `dot` the theme's: the one place the two are joined.
+    /// `session:window · role · title`, `dot` the theme's: the one place the `session:window`
+    /// and the rest are joined. A pane with no name reads `session:window · title`.
     pub fn spelled(&self, dot: &str) -> String {
-        format!("{} {dot} {}", self.wher, self.title)
+        format!("{} {dot} {}", self.wher, role_title(&self.role, &self.title, dot))
+    }
+}
+
+/// `role · title`, or `title` alone for a pane with no name (#1409): the one place a pane's
+/// name and its title are joined. The name goes first and never stands in for the title.
+pub fn role_title(role: &str, title: &str, dot: &str) -> String {
+    if role.is_empty() {
+        title.to_string()
+    } else {
+        format!("{role} {dot} {title}")
     }
 }
 
@@ -946,6 +965,11 @@ const FIELDS: &str = concat!(
     // #1343: 19 the cwd the hooks saw last, which agent-state writes with @cockpit_dir. Last,
     // so no reader of 14 to 18 moves.
     "\u{1f}#{s/\n/ /:#{s/\t/ /:#{s/\u{1f}/ /:#{@cockpit_cwd}}}}",
+    // #1409: 20 the pane's name, which tmux-rename pane sets with -p. A format reads a
+    // window's or the server's @cockpit_role too (format_find); cockpit sets neither, and a
+    // name only shows, as on the tabs and borders. `cockpit-tui pane` reads -p. Last, so
+    // no reader of 14 to 19 moves.
+    "\u{1f}#{s/\n/ /:#{s/\t/ /:#{s/\u{1f}/ /:#{@cockpit_role}}}}",
 );
 
 /// How many fields FIELDS has: tmux prints every one, so a row with fewer is no row of this
@@ -1110,6 +1134,7 @@ fn row_pane(f: &[&str], procs_t: &mut Option<Procs>, want_ended: bool) -> RowPan
         ended: want_ended && ended(&raw, live, AGENT_GLOB.with(|g| !g.is_empty())),
         // a pane title, so untrusted: control and bidi characters go
         job: crate::pick::clean(f[16]).trim().to_string(),
+        role: role_of(f),
         ..Default::default()
     };
     let by = if by_cmd {
@@ -1137,6 +1162,12 @@ fn work_candidates(p: &mut Pane, f: &[&str]) -> Candidates {
 /// `declared` and `hook_cwd` off a FIELDS row's @cockpit_dir (13) and @cockpit_cwd (19).
 fn row_options(f: &[&str]) -> Candidates {
     Candidates::from_options(f[13], f[19])
+}
+
+/// The pane's name off a FIELDS row's @cockpit_role (20), #1409. The setter allows only
+/// letters, digits, `-`, `_` and `/`, but a user's own set-option can put anything there.
+fn role_of(f: &[&str]) -> String {
+    crate::pick::clean(f[20]).trim().to_string()
 }
 
 /// #500: the board's `Pane.dir` for one pane and its source (#1343), off one
@@ -1272,6 +1303,7 @@ pub fn label_of(pane: &str) -> Option<Label> {
         name: f[2].into(),
         title: unsentinel(f[5]),
         topic: topic_of(f[17]),
+        role: role_of(&f),
         ..Default::default()
     };
     Some(p.full_label())
