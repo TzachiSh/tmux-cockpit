@@ -239,7 +239,9 @@ fn an_agents_fresh_cd_into_the_tree_names_it() {
         "input": {"command": format!("cd {}/sub && make", r.p("w"))}});
     let v = serde_json::json!({"type": "assistant", "timestamp": stamp(30), "cwd": main, "message": {"content": [call]}});
     std::fs::write(pj.join("s1.jsonl"), format!("{v}\n")).unwrap();
-    let agent = format!("{}{US}{main}", row("%9", "2.1.246", "running", "s1", &main, "109", &main));
+    // @cockpit_cwd, the row's last field (19), is main too
+    let agent = row("%9", "2.1.246", "running", "s1", &main, "109", &main);
+    let agent = format!("{}{US}{main}", agent.rsplit_once(US).unwrap().0);
     r.rows(&[row("%1", "bash", "-", "-", &r.p("w"), "101", ""), agent]);
     assert_eq!(r.goto(&r.p("w"), &Origin::default()), Ok(String::new()));
     assert_eq!(r.writes(), sel("%9"));
