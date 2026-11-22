@@ -456,23 +456,29 @@ A prompt change aims at 100% on the tune cases (#701). A significant drop on a
 held-out case blocks it, no edit may aim at a particular held-out case, and a
 held-out case that fails gets a new blind case written for its class. Stop
 after at most 3 fix iterations, or sooner when an iteration gains nothing or a
-fix breaks a case that passed before. Then `git revert` back to the best
-commit, report its pass rate on old and held-out cases apart, and name each
-blocking case with its cause (prompt, label or noise) and its failing reply,
-a tune case's from `--out`. A held-out failing reply is not in `--out`: the
-owner or a listed reader reruns that single case with `--show-holdout --only
-<id>`, which prints a warning first, and that second, paid run may not fail
-the same way.
+fix breaks a case that passed before. Then restore the best wording with a
+new commit, report its pass rate on old and held-out cases apart, and name
+each blocking case with its cause (prompt, label or noise) and its failing
+reply, a tune case's from `--out`. A held-out failing reply is not in
+`--out`: the owner or a listed reader reruns that single case with
+`--show-holdout --only <id>`, which prints a warning first, and that second,
+paid run may not fail the same way.
+
+Tuning happens on the tuner's own open branch, before any merge, so going
+back to an earlier wording is always a new commit on that branch. A merged
+prompt that later tests worse is fixed forward by a new PR, like any merged
+change.
 
 The decision rule for each prompt change: before running, the commit message
 names the target cases and the direction expected; a move nobody predicted is
 noise. A target below 100% gets 30 runs per side, and the change stays only if
 a one-sided Fisher test gives p < 0.05 (computed by hand: the rig prints pass
 counts, not p-values). Guards get 3 full runs; a case at 1/3 or worse gets 30
-fresh runs per side, and a drop that holds at p < 0.05 on those alone reverts
-the change. The flagging runs never count: they were picked because they
-failed, so pooling them biases the test toward a drop. A change gets at most 3
-wordings, then the stop rule applies. Each `--out` row carries `prompt`, the
+fresh runs per side, and a drop that holds at p < 0.05 on those alone sends
+the change back: a new commit restores the earlier wording. The flagging
+runs never count: they were picked because they failed, so pooling them
+biases the test toward a drop. A change gets at most 3 wordings, then the
+stop rule applies. Each `--out` row carries `prompt`, the
 hash of `write.txt` and its examples, plus `write.explore.txt` for an exploring
 write, from the read the job's own call made (#711), or the hash of the
 `--router-prompt` file's text in a run given one, whose `system` hashes that
