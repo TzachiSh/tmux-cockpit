@@ -494,8 +494,9 @@ fn the_repo_block_escapes_a_closer_of_another_tag() {
 
 #[test]
 fn the_session_is_read_off_its_own_screen() {
-    let st = |s: &str| session_state(s, "claude", "node");
-    assert_eq!(session_state("● hi?", "w", "bash"), None, "not a Claude window");
+    let st = |s: &str| session_state(s, "claude", true);
+    assert_eq!(session_state("● hi?", "bash", true), None, "not a Claude window");
+    assert_eq!(session_state("● hi?", "claude", false), None, "no board facts (#1359)");
     assert_eq!(st("Do you want to proceed?\n❯ 1. Yes\n  2. No"), Some(Session::WaitingChoice));
     assert_eq!(st("Edit file?\n 1. Yes\n 2. No, tell Claude"), Some(Session::WaitingChoice));
     assert_eq!(st("✻ Thinking… (12s · ↑ 3k tokens)"), Some(Session::Working));
@@ -503,10 +504,12 @@ fn the_session_is_read_off_its_own_screen() {
     assert_eq!(st("● Ran it\n  ⎿  Error: boom"), Some(Session::Error));
     assert_eq!(st("● Should I rewrite it?\n\n❯ "), Some(Session::Asking));
     assert_eq!(st("● Done.\n❯ "), Some(Session::Ready));
-    assert_eq!(window_kind("x", "zsh"), "shell");
-    assert_eq!(window_kind("Claude", "node"), "claude");
-    assert_eq!(window_kind("x", "mosh-client"), "ssh");
-    assert_eq!(window_kind("x", "vim"), "other");
+    assert_eq!(window_kind("zsh", false), "shell");
+    assert_eq!(window_kind("claude", true), "claude");
+    assert_eq!(window_kind("node", true), "other", "an agent, not Claude Code (#1359)");
+    assert_eq!(window_kind("claude", false), "other", "no board facts (#1359)");
+    assert_eq!(window_kind("mosh-client", false), "ssh");
+    assert_eq!(window_kind("vim", false), "other");
 }
 
 /// The product's `route`, under the binary's one environment (#957): an

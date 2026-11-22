@@ -161,7 +161,7 @@ fn forced(dir: &str) -> (Profile, bool) {
     ctrl(&mut a, 's');
     let ctx = Ctx {
         out: OutType::Auto,
-        window: window_kind("work", "bash"),
+        window: window_kind("bash", false),
         ..Ctx::default()
     };
     (a.profile_for(&write_flow()), a.request_parts().unwrap().0 == prompts::write(&ctx))

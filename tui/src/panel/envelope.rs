@@ -1,7 +1,7 @@
 //! The user prompt sent on stdin: tagged parts joined by blank lines.
 use super::action::sanitize;
 use super::ask::AskCode;
-use super::capture::{Capture, is_claude, session_state};
+use super::capture::{Capture, session_state};
 use super::redact::{added, redact_clean};
 use super::request::read_denied;
 use crate::data::workdir::Source;
@@ -270,7 +270,7 @@ pub fn redact_screen(cap: &Capture) -> (String, String, usize) {
 
 /// The work folder as the `<window>` line names it after the cwd (#1353, amendment 13 on
 /// #1342), and the secrets it hid: the folder and its source when it is not the cwd. On an
-/// agent's window (a claude name, or the board's facts) whose source is a guess
+/// agent's window (the board's facts, never its name: #1359) whose source is a guess
 /// (active-in, pane-cwd), the folder is marked not confirmed, at the cwd too. Else
 /// nothing, as for a plain shell, whose cwd is its folder. It runs no process.
 fn window_work(cap: &Capture) -> (String, usize) {
@@ -278,7 +278,7 @@ fn window_work(cap: &Capture) -> (String, usize) {
     if w.dir.is_empty() {
         return (String::new(), 0);
     }
-    let agent = cap.agent.is_some() || is_claude(&cap.name, &cap.cmd);
+    let agent = cap.agent.is_some();
     let guess = agent && matches!(w.source, Source::ActiveIn | Source::PaneCwd);
     let src = w.source.as_str();
     if w.dir != cap.path {
@@ -408,7 +408,7 @@ pub fn build_refs(flow: &Flow, cap: &Capture, turns: &[Turn], questions_left: us
         Flow::Explain => {
             screen_hidden = on_screen;
             parts.push(format!("<screen window=\"{window}\">\n{screen}\n</screen>"));
-            if let Some(st) = session_state(&cap.screen, &cap.name, &cap.cmd) {
+            if let Some(st) = session_state(&cap.screen, &cap.cmd, cap.agent.is_some()) {
                 parts.push(format!(
                     "<session app=\"claude-code\" state=\"{}\">The window runs Claude Code; it {}.</session>",
                     st.as_str(),
