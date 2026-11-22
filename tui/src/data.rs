@@ -895,6 +895,21 @@ const FIELDS: &str = concat!(
     "\u{1f}#{s/\n/ /:#{s/\t/ /:#{s/\u{1f}/ /:#{@cockpit_cwd}}}}",
 );
 
+/// How many fields FIELDS has: tmux prints every one, so a row with fewer is no row of this
+/// format (#1374). Each field opens `#{`, and a `\037` inside one is the `s/\037/ /` that
+/// strips it from the value, so the separators are the `\037`s before a `#`.
+pub const FIELDS_N: usize = {
+    let b = FIELDS.as_bytes();
+    let (mut i, mut n) = (0, 1);
+    while i + 1 < b.len() {
+        if b[i] == 0x1f && b[i + 1] == b'#' {
+            n += 1;
+        }
+        i += 1;
+    }
+    n
+};
+
 /// #1248: true for every pane but cockpit's own popup, a `list-panes -f` filter. On tmux
 /// next-3.9 display-popup makes a modal floating pane, which a scan would list. Each cockpit
 /// popup's command starts with `COCKPIT_POPUP=1 `, which #{pane_start_command} prints
@@ -960,8 +975,8 @@ pub fn list_fleet() -> Option<(Vec<Pane>, std::collections::BTreeSet<String>)> {
     let (mut ps, mut dirs) = (vec![], vec![]);
     for l in out.lines() {
         let f: Vec<&str> = l.split(SEP).collect();
-        // FIELDS has 20; the 13 before @cockpit_dir are the floor, so an older format reads
-        if f.len() < 13 {
+        // tmux prints every field of FIELDS, so a row short of one is not this format (#1374)
+        if f.len() < FIELDS_N {
             continue;
         }
         // `session:window`; a session name never holds a `:` (tmux swaps it)
@@ -975,10 +990,10 @@ pub fn list_fleet() -> Option<(Vec<Pane>, std::collections::BTreeSet<String>)> {
         }
         dirs.push(work_candidates(&mut p, &f));
         (p.pinned, p.delivered) = spool_counts(&p.spool);
-        p.subs_n = f.get(14).and_then(|n| n.parse().ok()).unwrap_or(0);
+        p.subs_n = f[14].parse().unwrap_or(0);
         // a pane title, so untrusted too
-        p.topic = crate::pick::clean(f.get(17).copied().unwrap_or_default()).trim().to_string();
-        if let Some(d) = subagents::dir_of(f.get(15).copied().unwrap_or_default(), &p.sess, &p.path) {
+        p.topic = crate::pick::clean(f[17]).trim().to_string();
+        if let Some(d) = subagents::dir_of(f[15], &p.sess, &p.path) {
             p.subs = subagents::read(&d, sessions::now());
         }
         ps.push(p);
@@ -1001,7 +1016,7 @@ type RowPane = Option<(Pane, &'static str)>;
 /// caller that never reads `ended` forks no `ps` for it, and gets `ended` false.
 fn row_pane(f: &[&str], procs_t: &mut Option<Procs>, want_ended: bool) -> RowPane {
     // the floor list_fleet names
-    if f.len() < 13 {
+    if f.len() < FIELDS_N {
         return None;
     }
     // A pane carrying @panestate counts whatever it runs: the hooks are the
@@ -1032,7 +1047,7 @@ fn row_pane(f: &[&str], procs_t: &mut Option<Procs>, want_ended: bool) -> RowPan
         // #448: a viewer bound to a background job runs no hook, so it has no session
         // of its own; the job's, which agent-poll records, finds the job's transcript
         sess: match unsentinel(f[7]) {
-            s if s.is_empty() => f.get(18).copied().unwrap_or_default().to_string(),
+            s if s.is_empty() => f[18].to_string(),
             s => s,
         },
         path: f[8].into(),
@@ -1042,7 +1057,7 @@ fn row_pane(f: &[&str], procs_t: &mut Option<Procs>, want_ended: bool) -> RowPan
         win: f[12].into(),
         ended: want_ended && ended(&raw, live, AGENT_GLOB.with(|g| !g.is_empty())),
         // a pane title, so untrusted: control and bidi characters go
-        job: crate::pick::clean(f.get(16).copied().unwrap_or_default()).trim().to_string(),
+        job: crate::pick::clean(f[16]).trim().to_string(),
         ..Default::default()
     };
     let by = if by_cmd {
@@ -1056,10 +1071,9 @@ fn row_pane(f: &[&str], procs_t: &mut Option<Procs>, want_ended: bool) -> RowPan
 }
 
 /// Reads `p`'s transcript into it and returns its work dir's candidates (#452, #1343).
-/// @cockpit_dir, @cockpit_transcript and @cockpit_cwd come after the 13 a row from an
-/// older format has, so such a row still reads: 13 to 19 are optional.
+/// `f` is a whole FIELDS row: the floor before this lets no shorter one through (#1374).
 fn work_candidates(p: &mut Pane, f: &[&str]) -> Candidates {
-    let (transcript_cwd, active) = read_transcript(p, f.get(15).copied().unwrap_or_default());
+    let (transcript_cwd, active) = read_transcript(p, f[15]);
     Candidates {
         transcript_cwd,
         active,
@@ -1069,10 +1083,8 @@ fn work_candidates(p: &mut Pane, f: &[&str]) -> Candidates {
 }
 
 /// `declared` and `hook_cwd` off a FIELDS row's @cockpit_dir (13) and @cockpit_cwd (19).
-/// A row from an older format stops short of either: the missing one reads empty.
 fn row_options(f: &[&str]) -> Candidates {
-    let opt = |i: usize| f.get(i).copied().unwrap_or_default();
-    Candidates::from_options(opt(13), opt(19))
+    Candidates::from_options(f[13], f[19])
 }
 
 /// #500: the board's `Pane.dir` for one pane and its source (#1343), off one
@@ -1132,7 +1144,7 @@ pub fn pane_dirs() -> Option<Vec<PaneDir>> {
 }
 
 fn pane_dir(f: &[&str]) -> Option<PaneDir> {
-    if f.len() < 13 || !crate::panel::is_pane(f[0]) {
+    if f.len() < FIELDS_N || !crate::panel::is_pane(f[0]) {
         return None;
     }
     let agent = !unsentinel(f[4]).is_empty() || agentish(f[3]);
@@ -1446,30 +1458,6 @@ pub mod branches;
 mod tests {
     use super::*;
     use serde_json::Value;
-
-    /// #1343: @cockpit_cwd is FIELDS' last field, so a row from an older format, which
-    /// stops before it, reads it as empty: hook_cwd is @cockpit_dir, or empty with none.
-    #[test]
-    fn a_row_short_of_cockpit_cwd_reads_it_as_empty() {
-        let head = ["%1", "w:0", "win", "claude", "running", "-", "-", "-", "/w", "1", "-", "-", "@1"];
-        let row = |tail: &[&str]| row_options(&[&head[..], tail].concat());
-        let both = |c: Candidates| (c.declared, c.hook_cwd);
-        // rows: 13 fields, 14 (#253), 16 (#313), 19 (#448), then all 20
-        let s = |a: &str, b: &str| (a.to_string(), b.to_string());
-        assert_eq!(both(row(&[])), s("", ""), "13 fields");
-        assert_eq!(both(row(&["/d"])), s("/d", "/d"), "14 fields");
-        assert_eq!(both(row(&["/d", "3", "/t.jsonl"])), s("/d", "/d"), "16 fields");
-        assert_eq!(
-            both(row(&["/d", "3", "/t.jsonl", "job", "topic", "sid"])),
-            s("/d", "/d"),
-            "19 fields"
-        );
-        assert_eq!(
-            both(row(&["/d", "3", "/t.jsonl", "job", "topic", "sid", "/c"])),
-            s("/d", "/c"),
-            "20 fields"
-        );
-    }
 
     /// The board's doing line for each tool shape must equal the history reader's
     /// label (tlabel), save for the 160-char cap and control handling: the cases
