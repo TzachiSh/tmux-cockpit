@@ -28,6 +28,8 @@ LOG=${COCKPIT_LOG:-${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/tui.log}
 . "$DIR/scripts/lib/tmpdir.sh" || exit 1
 # shellcheck source=lib/workdir.sh
 . "$DIR/scripts/lib/workdir.sh" || exit 1
+# shellcheck source=lib/label.sh
+. "$DIR/scripts/lib/label.sh" || exit 1
 BIN=$COCKPIT_TUI_BIN
 
 # The folder the pane works in (#1344): the binary's answer (workdir_ask, bounded), else
@@ -168,7 +170,7 @@ act() {
     fi
     if ! err=$(strip | tmux load-buffer -b "$buf" - 2>&1); then
         log "load-buffer failed for $target: ${err:-no error text}"
-        said fail "cockpit: could not load the paste buffer; nothing sent to $target"
+        said fail "cockpit: could not load the paste buffer; nothing sent to $(label_ask "$target")"
         last="failed:could not load the paste buffer"
         return 0
     fi
@@ -177,8 +179,9 @@ act() {
     if ! err=$(tmux paste-buffer -p -d -b "$buf" -t "$target" 2>&1); then
         tmux delete-buffer -b "$buf" 2>/dev/null
         log "paste-buffer failed for $target: ${err:-no error text}"
-        said fail "cockpit: could not paste into $target; nothing sent"
-        last="failed:could not paste into $target"
+        lbl=$(label_ask "$target")
+        said fail "cockpit: could not paste into $lbl; nothing sent"
+        last="failed:could not paste into $lbl"
         return 0
     fi
     last=ok
@@ -189,7 +192,7 @@ act() {
     fi
     if [ "$verb" != send ]; then
         n=$(strip | wc -m)
-        said ok "cockpit: inserted $((n)) chars into $target"
+        said ok "cockpit: inserted $((n)) chars into $(label_ask "$target")"
         return 0
     fi
     # Ink apps (Claude Code) can drop an Enter that lands in the same read as the
@@ -199,7 +202,8 @@ act() {
         sleep 0.05; i=$((i + 1))
     done
     tmux send-keys -t "$target" Enter 2>/dev/null
-    said ok "cockpit: sent to $target"
+    # the pane by its label, never its id (#1407)
+    said ok "cockpit: sent to $(label_ask "$target")"
     return 0
 }
 # Stripped again on the way: the binary already did, but this is what reaches the pane.
@@ -252,7 +256,7 @@ while :; do
         # never over a panel already hidden here (a binary that missed the env)
         if [ -n "$saved" ] && { [ -e "$saved" ] || [ -L "$saved" ]; }; then
             log "not hiding over the panel already hidden on $PANE"
-            tell "cockpit: a panel is already hidden on $PANE; this one is closed"
+            tell "cockpit: a panel is already hidden on $(label_ask "$PANE"); this one is closed"
             exit 0
         fi
         if [ -n "$saved" ] && mkdir -p "$HDIR" 2>/dev/null && chmod 700 "$HDIR" 2>/dev/null && mv -f "$f.state" "$saved"; then
@@ -266,7 +270,7 @@ while :; do
             # Read again, not $pkey: the key may be rebound while the panel is open.
             hk=$(cockpit_noted_key panel @cockpit_panel_bound)
             if [ -n "$hk" ]; then hk="prefix $hk"; else hk="the panel key"; fi
-            msg="cockpit: hidden · $hk on $PANE brings it back"
+            msg="cockpit: hidden · $hk on $(label_ask "$PANE") brings it back"
             if [ -n "${COCKPIT_READONLY:-}" ] && [ -z "${COCKPIT_PANEL_NOTE:-}" ]; then
                 log "readonly, not said: $msg"
             else said ok "$msg"; fi

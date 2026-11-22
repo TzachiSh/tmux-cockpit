@@ -52,11 +52,9 @@ shq() { printf '%q' "$1"; }
 . "$LIBDIR/fmt.sh" || exit 3
 # shellcheck source=lib/workdir.sh
 . "$LIBDIR/workdir.sh" || exit 3
-
-# How a pane names itself in the prompt. An unset pane_title reads as
-# #{host_short}, not empty, so the window name stands in.
-# shellcheck disable=SC2034  # read by the libs
-AGENT_TITLE_FMT='#{?#{==:#{pane_title},#{host_short}},#{window_name},#{s/^✳ //:#{pane_title}}}'
+# How a message or the prompt names a pane (#1407): label_ask, cockpit-tui's label.
+# shellcheck source=lib/label.sh
+. "$LIBDIR/label.sh" || exit 3
 
 # git diff paths are relative to the repo root, not to a pane's subdirectory
 # cwd: every entry point resolves the root once. Not a repo: the dir itself.

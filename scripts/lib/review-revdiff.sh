@@ -20,14 +20,6 @@ read_line() {                 # <dir> <path> <line> <sign> [base-rev]
     printf '%s\n' "${line:0:1000}"
 }
 
-# A pane id means nothing to the person reading the prompt; the agent's own
-# title (claude sets it) or the window name does, with the id kept.
-pane_label() {                # <pane-id>
-    local t
-    t=$(tmux display-message -p -t "$1" "$AGENT_TITLE_FMT" 2>/dev/null)
-    printf '%s\n' "${t:+$t }($1)"
-}
-
 # The scratch beside a store, by name: the dir may also hold a queued delivery.
 drop_scratch() {
     [ -n "${1:-}" ] || return 0
@@ -201,7 +193,8 @@ review_loop() {
 
         while :; do
             n=0; [ -s "$store" ] && n=$(grep -c '^## ' -- "$store")
-            to="the agent"; [ -n "${REVIEW_PANE_ID:-}" ] && to=$(pane_label "$REVIEW_PANE_ID")
+            # the agent's pane by its label (#1407), never its id
+            to="the agent"; [ -n "${REVIEW_PANE_ID:-}" ] && to=$(label_ask "$REVIEW_PANE_ID")
             printf '\n review · base %s\n' "$label"
             if [ "$n" -gt 0 ]; then
                 printf ' %d comment(s) pinned\n d deliver to %s · r review again' "$n" "$to"

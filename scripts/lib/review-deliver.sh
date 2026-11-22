@@ -77,7 +77,8 @@ deliver() {
         '#{?#{m/i:*|#{b:pane_current_command}|*,#{@cockpit_agents_glob}},1,0}' \
         2>/dev/null)
     [ "$is_agent" = 1 ] || {
-        dmsg "cockpit: $pane is not an agent pane, refusing to deliver$(
+        # the pane by its label (#1407); the command to deliver later keeps its id
+        dmsg "cockpit: $(label_ask "$pane") is not an agent pane, refusing to deliver$(
             keep_hint "$pane" "$store")" 2>/dev/null
         return 1
     }
@@ -141,14 +142,12 @@ deliver() {
     # command-queue item as the paste (if-shell -F). Both arms consume $bufname;
     # it survives only if tmux ran neither (the pane vanished), checked below.
 
-    # Where it landed, read now against the target: the notice carries no -t, so
-    # a #{window_name} left in it would name the reader's window. The read is safe: a
-    # #{window_name} value is not re-expanded. The notice goes through dmsg, so the name
-    # is shown as written, quotes and # included (#1096).
+    # Where it landed: the pane's label, read now against the target (#1407). The notice
+    # carries no -t, so a format left in it would name the reader's window. The notice goes
+    # through dmsg, so the label is shown as written, quotes and # included (#1096). A read
+    # that fails gives "the pane", which still reads as a sentence.
     local where
-    where=$(tmux display-message -p -t "$pane" \
-        '#{session_name}:#{window_index} #{window_name}' 2>/dev/null)
-    [ -n "$where" ] || where="the agent pane"   # display-message failed; still read as a sentence
+    where=$(label_ask "$pane")
 
     # Armed first, disarmed by the idle arm: never armed on a pane that took the
     # paste, never missing on one that did not.
@@ -159,7 +158,8 @@ deliver() {
     # so a session's value or a change without a reload named a key that was not the
     # jump, and could be stock kill-pane (#1102). No such binding (off, or a key the user
     # bound with no note) drops the clause. Both notices fit the 72 columns an
-    # 80-column client draws.
+    # 80-column client draws for a short label (work:2 · api); a long title pushes the tail
+    # past the client's edge, where tmux cuts it (#1407).
     # Two bindings may carry the note (an old key left bound beside a new one): the one
     # the last load recorded in @cockpit_jump_bound wins (cockpit_noted_key, #1124).
     local jk jump=''
