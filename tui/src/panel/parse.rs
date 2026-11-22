@@ -227,56 +227,16 @@ fn question(o: &str) -> Option<Reply> {
     question_at(o).map(|(_, q)| q)
 }
 
-/// `- x`, `* x`, `• x`, `1. x`, `2) x` -> `x`.
-fn unbullet(l: &str) -> Option<&str> {
-    let t = l.trim_start();
-    let d = t.bytes().take_while(u8::is_ascii_digit).count();
-    let r = if d > 0 {
-        t[d..].strip_prefix(['.', ')'])
-    } else {
-        t.strip_prefix(['-', '*', '•'])
-    }?;
-    r.starts_with(char::is_whitespace).then(|| r.trim())
-}
-
-/// An older reply shape: a `QUESTION:` line, maybe after one line of preamble.
-fn legacy_question(o: &str) -> Option<Reply> {
-    let lines: Vec<&str> = o.lines().filter(|l| !l.trim().is_empty()).collect();
-    let i = lines
-        .iter()
-        .take(2)
-        .position(|l| l.trim().get(..9).is_some_and(|p| p.eq_ignore_ascii_case("question:")))?;
-    let options = lines[i + 1..]
-        .iter()
-        .filter_map(|l| unbullet(l))
-        .filter(|l| !is_other(l))
-        .take(4)
-        .map(|l| Opt {
-            label: unesc(l),
-            recommended: false,
-        })
-        .collect();
-    Some(Reply::Question {
-        text: unesc(lines[i].trim()[9..].trim()),
-        options,
-    })
-}
-
-/// The `QUESTION`-or-final reading Fix and Explain share. `None` is the final text.
-fn reply_question(o: &str) -> Option<Reply> {
-    question(o).or_else(|| legacy_question(o))
-}
-
 /// Fix: a question, or the corrected text to type.
 pub fn fix(out: &str) -> Reply {
     let o = unfence(out.trim());
-    reply_question(o).unwrap_or_else(|| Reply::Text(unesc(o)))
+    question(o).unwrap_or_else(|| Reply::Text(unesc(o)))
 }
 
 /// Explain: a question, or the answer with any `<prompt>` for the agent split out.
 pub fn explain(out: &str) -> Reply {
     let o = unfence(out.trim());
-    if let Some(q) = reply_question(o) {
+    if let Some(q) = question(o) {
         return q;
     }
     let Some(t) = find_open(o, 0, "prompt", "", false, false) else {
@@ -343,13 +303,8 @@ fn write_reply(o: &str, raw: &str, want: OutType) -> Reply {
         (Some((t, _)), Some((at, q))) if at < t.start => return q,
         (None, Some((_, q))) => return q,
         (Some(f), _) => f,
-        (None, None) => {
-            return match legacy_question(o) {
-                Some(q) => q,
-                None if want == OutType::Hint && !o.is_empty() => Reply::Hint(unesc(o)),
-                None => Reply::Untagged(unesc(o)),
-            };
-        }
+        (None, None) if want == OutType::Hint && !o.is_empty() => return Reply::Hint(unesc(o)),
+        (None, None) => return Reply::Untagged(unesc(o)),
     };
     let (b, _) = body(o, &t, kind, true).unwrap_or_default();
     let lang = || t.attr.as_deref().unwrap_or("").to_lowercase();
