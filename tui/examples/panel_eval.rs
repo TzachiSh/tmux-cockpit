@@ -8,7 +8,7 @@
 //!     cargo run --example panel_eval -- [--model M] [--runs N] [--jobs J]
 //!         [--only TEXT] [--cases FILE] [--out FILE.jsonl] [--check] [--no-explore]
 //!         [--no-hermetic] [--judge] [--judge-model M] [--ledger FILE] [--show-holdout]
-//!         [--router-prompt FILE]
+//!         [--router-prompt FILE] [--pane-cwd-source]
 //!     cargo run --example panel_eval -- --compare A.jsonl B.jsonl [--allow-mixed]
 //!     cargo run --example panel_eval -- --calibrate LABELS.jsonl
 //!         [--judge-model M] [--split all|tune|holdout] [--jobs J] [--out FILE.jsonl]
@@ -26,6 +26,12 @@
 //! `--calibrate`, `--purpose-calibrate` and `--overlap` send no panel prompt
 //! and refuse the flag. `--check` reads and validates FILE too: it is the
 //! flag's pre-flight.
+//!
+//! `--pane-cwd-source` sends the work folder's source as pane-cwd, the source a
+//! user without the hooks gets, in place of session (#1387). On an agent's
+//! window the `<window>` line then says the folder is not confirmed; another
+//! window's call does not change. The summary prints a `work source` line, and
+//! the modes that send no panel prompt refuse the flag.
 //!
 //! The cases are evals/panel/cases.txt and, beside it, the held-out file
 //! evals/panel/holdout-blind.txt (#783), where every held-out case lives since
@@ -896,6 +902,9 @@ struct Opts {
     /// `--router-prompt`: the file and its text, sent as every call's system
     /// prompt in place of the write prompt (#789).
     router: Option<(PathBuf, String)>,
+    /// The work folder's source every call sends: session, or pane-cwd with
+    /// `--pane-cwd-source` (#1387).
+    work_source: Source,
     judge_model: String,
     /// A labelled file: run the judge on it and print its agreement with the owner.
     calibrate: Option<PathBuf>,
@@ -945,6 +954,7 @@ fn opts(args: impl IntoIterator<Item = String>) -> Result<Opts, String> {
         judge: false,
         show_holdout: false,
         router: None,
+        work_source: Source::Session,
         judge_model: judge::DEFAULT_MODEL.into(),
         calibrate: None,
         split: judge::Split::All,
@@ -975,6 +985,7 @@ fn opts(args: impl IntoIterator<Item = String>) -> Result<Opts, String> {
             "--judge" => o.judge = true,
             "--show-holdout" => o.show_holdout = true,
             "--router-prompt" => o.router = Some(router_prompt(val()?.into())?),
+            "--pane-cwd-source" => o.work_source = Source::PaneCwd,
             "--judge-model" => o.judge_model = val()?,
             "--calibrate" => o.calibrate = Some(val()?.into()),
             "--purpose-calibrate" => o.purpose_calibrate = Some(val()?.into()),
@@ -1023,17 +1034,21 @@ fn opts(args: impl IntoIterator<Item = String>) -> Result<Opts, String> {
         }
         o.base = b;
     }
-    // a mode that sends no panel prompt would run with the flag silently ignored
+    // a mode that sends no panel prompt would run with a flag that changes the prompt silently ignored
     let offline = [
         ("--compare", o.compare.is_some()),
         ("--calibrate", o.calibrate.is_some()),
         ("--purpose-calibrate", o.purpose_calibrate.is_some()),
         ("--overlap", o.overlap),
     ];
-    if o.router.is_some()
+    let changes = [
+        ("--router-prompt replaces the panel's prompt", o.router.is_some()),
+        ("--pane-cwd-source changes the panel's prompt", o.work_source != Source::Session),
+    ];
+    if let Some((flag, _)) = changes.iter().find(|(_, on)| *on)
         && let Some((mode, _)) = offline.iter().find(|(_, on)| *on)
     {
-        return Err(format!("--router-prompt replaces the panel's prompt: {mode} sends none"));
+        return Err(format!("{flag}: {mode} sends none"));
     }
     Ok(o)
 }
@@ -1530,7 +1545,7 @@ fn run(o: &Opts, me: std::io::Result<PathBuf>) {
             let path = pane_path(c, staged.0.as_deref());
             let explore = c.explore.is_some() && !o.no_explore;
             // per job, from the call's own read: an override edited mid-run shows in the rows
-            let (system, prompt, profile, prompt_files) = panel_call(c, &path, explore);
+            let (system, prompt, profile, prompt_files) = panel_call(c, &path, explore, o.work_source);
             let (system, prompt_files) = routed(o.router.as_ref(), system, prompt_files);
             if !prompt_sets.contains(&prompt_files) {
                 prompt_sets.push(prompt_files.clone());
@@ -1964,15 +1979,17 @@ impl std::fmt::Display for Fingerprint {
 }
 
 /// The system prompt, the user prompt and the profile the panel itself sends for
-/// case `c` on `path`: an App in Compose, its ^S, then its own picks.
-fn panel_call(c: &Case, path: &str, explore: bool) -> (String, String, Profile, String) {
+/// case `c` on `path`: an App in Compose, its ^S, then its own picks. The work
+/// folder is `path`, from `source` (#1387): the envelope marks it not confirmed
+/// on an agent's window when `source` is a guess.
+fn panel_call(c: &Case, path: &str, explore: bool, source: Source) -> (String, String, Profile, String) {
     let cap = Capture {
         name: c.name.clone(),
         cmd: c.cmd.clone(),
         path: path.into(),
         work: WorkDir {
             dir: path.into(),
-            source: Source::Session,
+            source,
             ..Default::default()
         },
         screen: c.screen.clone(),
@@ -2750,6 +2767,10 @@ fn summary(cases: &[Case], done: &[(usize, u128, Option<Grade>)], hashes: &[u64]
     let hs: Vec<String> = hashes.iter().map(|h| format!("{h:016x}")).collect();
     println!();
     println!("system prompt   {} ({})", hs.join(" "), prompt_from(o));
+    // a plain run's summary is as before; a run that sends a guess source says so (#1387)
+    if o.work_source != Source::Session {
+        println!("work source     {} (--pane-cwd-source)", o.work_source.as_str());
+    }
     println!("passed          {}", pct(t.passed));
     // The share of cases that passed all their runs: a flaky case counts as a failure.
     println!("{:<16}{}", format!("pass^{}", o.runs), pct_ci(pass_all(&t.per_case)));
@@ -3341,6 +3362,31 @@ mod tests {
         assert_eq!(prompt_from(&opts(args("")).unwrap()), prompt_source(&config_home()));
     }
 
+    // --- #1387: --pane-cwd-source, its options ---
+
+    #[test]
+    fn pane_cwd_source_is_session_unless_the_flag_is_given() {
+        assert_eq!(opts(args("")).unwrap().work_source, Source::Session);
+        assert_eq!(opts(args("--pane-cwd-source")).unwrap().work_source, Source::PaneCwd);
+        assert_eq!(opts(args("--check --pane-cwd-source")).unwrap().work_source, Source::PaneCwd);
+    }
+
+    /// Each mode that sends no panel prompt, by row name, refuses the flag
+    /// rather than run with it ignored, as it refuses `--router-prompt`.
+    #[test]
+    fn pane_cwd_source_is_refused_in_each_mode_that_sends_no_panel_prompt() {
+        let rows = [
+            ("--compare", "--compare a b"),
+            ("--calibrate", "--calibrate l.jsonl"),
+            ("--purpose-calibrate", "--purpose-calibrate f"),
+            ("--overlap", "--overlap"),
+        ];
+        for (mode, flags) in rows {
+            let want = format!("--pane-cwd-source changes the panel's prompt: {mode} sends none");
+            assert_eq!(opts(args(&format!("{flags} --pane-cwd-source"))).expect_err(mode), want, "{mode}");
+        }
+    }
+
     #[test]
     fn compare_names_a_case_whose_rows_carry_two_prompt_hashes() {
         let rows = read_rows(
@@ -3665,10 +3711,10 @@ mod tests {
             draft: c.request.clone(),
             out: c.out,
         };
-        let (system, prompt, profile, _) = panel_call(c, "/r", false);
+        let (system, prompt, profile, _) = panel_call(c, "/r", false, Source::Session);
         assert_eq!((system, profile), (prompts::write(&ctx), Profile::TEXT));
         assert_eq!(prompt, build(&flow, &cap, &[], 3));
-        let (system, _, profile, _) = panel_call(c, "/r", true);
+        let (system, _, profile, _) = panel_call(c, "/r", true, Source::Session);
         assert_eq!(system, prompts::write_explore(&ctx));
         assert_eq!(profile, Profile::read_only("/r".into(), false, EXPLORE_BUDGET_USD, EXPLORE_TIMEOUT));
     }
@@ -3686,8 +3732,29 @@ mod tests {
             window: window_kind(&c.cmd, cockpit_tui::data::agentid::claude_cmd(&c.cmd)),
             ..Ctx::default()
         };
-        assert_eq!(panel_call(c, "/r", false).3, prompts::write_noted(&ctx).2);
-        assert_eq!(panel_call(c, "/r", true).3, prompts::write_explore_noted(&ctx).2);
+        assert_eq!(panel_call(c, "/r", false, Source::Session).3, prompts::write_noted(&ctx).2);
+        assert_eq!(panel_call(c, "/r", true, Source::Session).3, prompts::write_explore_noted(&ctx).2);
+    }
+
+    /// #1387: under a pane-cwd source an agent's `<window>` line says its work folder
+    /// is not confirmed, and nothing else of its call changes; a shell's call does
+    /// not change at all.
+    #[test]
+    fn a_pane_cwd_source_marks_only_an_agent_windows_work_folder() {
+        pinned_config();
+        let agent = &parse_cases(&ONE.replace("bash · bash", "claude · claude")).unwrap()[0];
+        let (system, plain, profile, hash) = panel_call(agent, "/r", false, Source::Session);
+        let (s, marked, p, h) = panel_call(agent, "/r", false, Source::PaneCwd);
+        assert!(plain.contains("<window>claude · claude · /r</window>"), "{plain}");
+        let mark = " · work folder not confirmed (pane-cwd)";
+        assert!(marked.contains(&format!("<window>claude · claude · /r{mark}</window>")), "{marked}");
+        assert_eq!(marked.replacen(mark, "", 1), plain);
+        assert_eq!((s, p, h), (system, profile, hash));
+        let shell = &parse_cases(ONE).unwrap()[0];
+        assert_eq!(
+            panel_call(shell, "/r", false, Source::PaneCwd),
+            panel_call(shell, "/r", false, Source::Session)
+        );
     }
 
     /// #1088: this binary's tests, started again with a canary XDG_CONFIG_HOME holding a
@@ -3744,7 +3811,7 @@ mod tests {
             draft: c.request.clone(),
             out: c.out,
         };
-        let (_, prompt, ..) = panel_call(c, "/r", false);
+        let (_, prompt, ..) = panel_call(c, "/r", false, Source::Session);
         assert_eq!(prompt, build(&flow, &cap, &c.turns, 2));
     }
 
@@ -3794,7 +3861,7 @@ mod tests {
         let d = Gone(stage(&cases).unwrap().expect("a stage"));
         let path = pane_path(&cases[0], Some(&d.0));
         assert!(Path::new(&path).join("src/cart.go").is_file() && path.ends_with("/shop"), "{path}");
-        let (_, prompt, ..) = panel_call(&cases[0], &path, false);
+        let (_, prompt, ..) = panel_call(&cases[0], &path, false, Source::Session);
         let block = "<refs>\n<ref form=\"mention\">@src/cart.go#L40-72</ref>\n\
                      <ref form=\"mention\" note=\"whole file\">@README.md</ref>\n<ref form=\"mention\">@/";
         assert!(
@@ -3804,7 +3871,7 @@ mod tests {
         let mut bash = cases[0].clone();
         (bash.name, bash.cmd) = ("bash".into(), "bash".into());
         assert!(
-            panel_call(&bash, &path, false)
+            panel_call(&bash, &path, false, Source::Session)
                 .1
                 .contains("<ref form=\"bare\">src/cart.go:40-72</ref>")
         );
@@ -3819,7 +3886,7 @@ mod tests {
         let cases = parse_cases(OUT).unwrap();
         let d = Gone(stage(&cases).unwrap().expect("a stage"));
         let path = pane_path(&cases[0], Some(&d.0));
-        let (_, prompt, ..) = panel_call(&cases[0], &path, true);
+        let (_, prompt, ..) = panel_call(&cases[0], &path, true, Source::Session);
         assert!(prompt.contains("<ref form=\"bare\">invoicer/money.py:1-5</ref>"), "{prompt}");
         assert!(
             prompt.contains("outside the repo, not read\">/") && prompt.contains("shared/rates.py</ref>"),
@@ -3876,7 +3943,7 @@ mod tests {
         let text = REFS.replace(refs, "MADE-UP.go\n");
         let said = |held: bool| {
             let c = held_if(held, &text);
-            let Err(p) = std::panic::catch_unwind(|| panel_call(&c, &pane, false)) else {
+            let Err(p) = std::panic::catch_unwind(|| panel_call(&c, &pane, false, Source::Session)) else {
                 panic!("an unstaged ref panics")
             };
             *p.downcast::<String>().unwrap()
@@ -6830,7 +6897,7 @@ esac
             let dir = scratch("quiet-err");
             let cases = parse_cases(QUIET).unwrap();
             let c = cases.iter().find(|c| c.id == "held-q").unwrap();
-            let (system, prompt, profile, _) = panel_call(c, &c.path, false);
+            let (system, prompt, profile, _) = panel_call(c, &c.path, false, Source::Session);
             let call = Call {
                 claude: fake(&dir.0, ECHOER),
                 ..base_call(&dir.0)
@@ -7422,6 +7489,32 @@ esac
             }
             assert!(!e.contains("write.jsonl"), "{e}");
             assert_eq!(mixed_error(&[(&w, &rows(&plain)), (&m, &rows(&routed))]), None);
+        }
+
+        // --- #1387: --pane-cwd-source, on a stand-in claude ---
+
+        /// A made-up tune case on an agent's window: its command is Claude Code's.
+        const AGENT_WINDOW: &str = "=== wf-tune\nkind: bug\nwindow: claude · claude · /home/u\n\
+            expect: write\nmust: ok\n--- request\nfix this\n";
+
+        /// A run with the flag sends the mark in its call's prompt, which the stand-in
+        /// echoes into the row, and prints the summary's `work source` line; a run
+        /// without it does neither.
+        #[test]
+        fn a_pane_cwd_source_run_sends_the_mark_and_says_so() {
+            let line = "\nwork source     pane-cwd (--pane-cwd-source)\n";
+            let marked = "<window>claude · claude · /home/u · work folder not confirmed (pane-cwd)</window>";
+            let rows = [
+                ("wf-on", &["--pane-cwd-source"][..], marked),
+                ("wf-off", &[], "<window>claude · claude · /home/u</window>"),
+            ];
+            for (name, extra, window) in rows {
+                let (code, out, err, rows) = rig_run_with(name, AGENT_WINDOW, ECHO_ALL, extra);
+                assert_eq!(code, Some(0), "{name}: {out}{err}");
+                let reply = fields(&rows, "reply");
+                assert!(reply[0].as_str().is_some_and(|r| r.contains(window)), "{name}: {rows}");
+                assert_eq!(out.contains(line), !extra.is_empty(), "{name}: {out}");
+            }
         }
 
         // --- #789: a held-out router row keeps a closed-set label ---
