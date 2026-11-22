@@ -975,6 +975,7 @@ fn a_long_confirm_scrolls_and_says_what_is_cut() {
     a.cap.label = Some(Label {
         wher: "w:1".into(),
         title: "x".repeat(70),
+        ..Default::default()
     });
     ch(&mut a, 's');
     let f = shown(&mut a, 60, 12);
@@ -1878,6 +1879,7 @@ fn the_title_gives_way_before_the_count() {
     a.cap.label = Some(Label {
         wher: "work:1".into(),
         title: "a-long-window-name-for-a-narrow-popup".into(),
+        ..Default::default()
     });
     let top = |a: &mut App, w: u16| shown(a, w, 12).lines().next().unwrap().to_string();
     let t = top(&mut a, 80);

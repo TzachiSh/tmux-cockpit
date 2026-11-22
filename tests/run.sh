@@ -7660,6 +7660,51 @@ esac
 "$TMUX_REAL" -L "$BB" kill-server >/dev/null 2>&1
 fi
 
+echo "== a pane's name goes before its title on its tab and border, never in its place (#1409) =="
+# A pane named on purpose, its own @cockpit_role (#1408), reads `name · title` where its title
+# shows: on its window's tab, which reads the window's active pane, and on its border, which
+# shows the title of a pane that is not active. A pane with no name reads as before. The name
+# sits outside the agent test, so a shell's name shows before its window name or its command.
+# tmux reads a bare 0 as false, so the pane named 0 tells != from #{?} apart.
+if need_tmux "pane names on tabs and borders"; then :; else
+PNL="cockpit-pnl-$$"; SOCKS="$SOCKS $PNL"; PNLD=$(mktmpd)
+pnl() { "$TMUX_REAL" -L "$PNL" "$@"; }
+pnl -f /dev/null new-session -d -s t -n named -x 160 -y 40 -c "$PNLD" \
+    'exec -a claude sleep 300' >/dev/null 2>&1
+for pnl_w in plain zero; do
+    pnl new-window -d -t t: -n "$pnl_w" -c "$PNLD" 'exec -a claude sleep 300' >/dev/null 2>&1
+done
+for pnl_w in shellwin borders; do
+    pnl new-window -d -t t: -n "$pnl_w" -c "$PNLD" 'exec sleep 300' >/dev/null 2>&1
+done
+# below the borders window's shell, which stays active: two agents and a shell
+pnlb1=$(pnl split-window -d -P -F '#{pane_id}' -t t:borders -c "$PNLD" 'exec -a claude sleep 300')
+pnlb2=$(pnl split-window -d -P -F '#{pane_id}' -t t:borders -c "$PNLD" 'exec -a claude sleep 300')
+pnlb3=$(pnl split-window -d -P -F '#{pane_id}' -t t:borders -c "$PNLD" 'exec sleep 300')
+pnl run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+for pnl_p in t:named t:plain t:zero "$pnlb1" "$pnlb2"; do
+    until_out claude pnl display-message -p -t "$pnl_p" '#{pane_current_command}'
+    pnl set -p -t "$pnl_p" @cockpit_title 'fix the parser' >/dev/null 2>&1
+done
+for pnl_p in t:shellwin "$pnlb3"; do
+    until_out sleep pnl display-message -p -t "$pnl_p" '#{pane_current_command}'
+done
+for pnl_p in t:named:lead t:zero:0 t:shellwin:notes "$pnlb1:lead" "$pnlb3:notes"; do
+    pnl set -p -t "${pnl_p%:*}" @cockpit_role "${pnl_p##*:}" >/dev/null 2>&1
+done
+pnl_tab() { pnl display-message -p -t "t:$1" '#{E:@cockpit_label}'; }
+pnl_border() { pnl display-message -p -t "$1" '#{E:pane-border-format}' | plain; }
+is "a named agent's tab reads name · title, an unnamed one's the title alone" \
+    "lead · fix the parser|fix the parser" "$(pnl_tab named)|$(pnl_tab plain)"
+is "a named agent's border reads name · title, an unnamed one's the title alone" \
+    " ○ lead · fix the parser | ○ fix the parser " "$(pnl_border "$pnlb1")|$(pnl_border "$pnlb2")"
+is "a pane named 0 shows its name: tmux reads a bare 0 as false" "0 · fix the parser" \
+    "$(pnl_tab zero)"
+is "a shell's name shows too: its tab reads name · window, its border name · command" \
+    "notes · shellwin| notes · sleep " "$(pnl_tab shellwin)|$(pnl_border "$pnlb3")"
+pnl kill-server >/dev/null 2>&1
+fi
+
 echo "== the bar's taps act on release: ≡ opens the menu, the name the picker, ‹ steps back (#222) =="
 # A menu opened on the press is closed by that press's own release, so every
 # cockpit tap is a MouseUp binding. Real clicks into an attached 56-column

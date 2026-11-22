@@ -36,7 +36,8 @@ happening.
   - on a split window, `[z]` (`[u]` while zoomed).
 - **A pane that waits shows `▲ <question>`.** The question comes first: the
   branch, and then the path, get only the room it leaves.
-- **Other panes show their state glyph and title, dimmed.**
+- **Other panes show their state glyph and title, dimmed,** after the pane's
+  name when it has one.
 - **Kill pane and Close window are menu rows,** each with a confirm. They are
   no longer border buttons.
 
@@ -180,6 +181,13 @@ what each is working on instead of three tabs all reading `claude`:
 
 Non-agent panes fall back to the window name, and so does an agent that never
 set a title (its `pane_title` is still the host name).
+
+A pane given a name with the menu's Name this pane (`@cockpit_role`, #1409)
+shows it before the title, `name · title`, on its window's tab while it is the
+window's active pane and on its border, a shell's pane too. The name never takes
+the title's place, and the two are cut together. The tab and the border read it
+as a tmux format, which also reads a window's or the server's `@cockpit_role`;
+cockpit sets neither.
 
 The tab reads `pane_title` **inside tmux**, so it works regardless of the outer
 terminal. `examples/full.tmux.conf` ships with `set-titles off`: an agent
