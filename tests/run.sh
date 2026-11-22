@@ -14093,6 +14093,22 @@ case "$(cat "$RHSTATE/out")" in
     esac
 is "and drains the spool option" "" \
     "$("$TMUX_REAL" -L "$RH" show-option -pqv -t "$RHAP" @cockpit_review_spool)"
+# #1403: the drain's running call hands agent-state /dev/null, as cockpit-event does. Its own
+# stdin is the Stop hook's, past the payload review-gate read: a pipe Claude Code may keep
+# open, where agent-state's payload read would wait out its 2 s bound. A stub logs what it got.
+RHC=$(mktmpd); cp -r "$DIR"/scripts/. "$RHC/"
+cat > "$RHC/agent-state" <<RHSTUB
+#!/usr/bin/env bash
+if [ /dev/stdin -ef /dev/null ]; then i=nullin; else i=stdin; fi
+printf '%s %s\n' "\$1" "\$i" >> $(printf '%q' "$RHC/calls")
+RHSTUB
+chmod +x "$RHC/agent-state"
+rh_queue
+TMUX="$SOCKDIR/$RH,0,0" TMUX_PANE=$RHAP XDG_STATE_HOME=$RHSTATE "$RHC/review-gate" \
+    < "$RHPAY" > "$RHSTATE/out" 2>/dev/null
+is "review-gate's running call reads /dev/null, not the Stop hook's stdin (#1403)" \
+    "running nullin" "$(grep '^running ' "$RHC/calls" 2>/dev/null)"
+unset RHC
 unset -f rh_n rh_start rh_wait rh_run rh_queue
 "$TMUX_REAL" -L "$RH" kill-server >/dev/null 2>&1
 fi
