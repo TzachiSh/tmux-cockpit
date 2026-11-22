@@ -98,7 +98,7 @@ impl Rig {
 
     /// The fake's list-panes rows, each padded to FIELDS' count as tmux prints it (#1374).
     fn rows(&self, rows: &[String]) {
-        let padded: Vec<String> = rows.iter().map(String::as_str).map(full).collect();
+        let padded: Vec<String> = rows.iter().map(String::as_str).map(whole_row).collect();
         self.rows_as_is(&padded);
     }
 
@@ -158,7 +158,7 @@ fn row(id: &str, cmd: &str, state: &str, sess: &str, pid: &str) -> String {
 }
 
 /// `row` padded to FIELDS' count, as tmux prints it (#1374).
-fn full(row: &str) -> String {
+fn whole_row(row: &str) -> String {
     fake::board_row(&row.split('\u{1f}').collect::<Vec<_>>())
 }
 
@@ -2453,9 +2453,9 @@ fn a_newer_prompt_keeps_the_last_turns_context() {
 fn a_row_one_field_short_of_fields_makes_no_pane_and_no_session() {
     let r = Rig::new("short");
     r.ps("400 1 claude\n401 1 claude\n");
-    let short = full(&row_at("%2", "lone:0", "claude", "running", "-", "401", "/w"));
+    let short = whole_row(&row_at("%2", "lone:0", "claude", "running", "-", "401", "/w"));
     let short = short.rsplit_once('\u{1f}').unwrap().0.to_string();
-    r.rows_as_is(&[full(&row("%1", "claude", "running", "-", "400")), short]);
+    r.rows_as_is(&[whole_row(&row("%1", "claude", "running", "-", "400")), short]);
     let (ps, sessions) = list_fleet().unwrap();
     assert_eq!(ids(&ps), ["%1"]);
     assert_eq!(sessions.into_iter().collect::<Vec<_>>(), ["w"]);
