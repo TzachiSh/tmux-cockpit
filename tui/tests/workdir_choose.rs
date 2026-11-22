@@ -215,3 +215,25 @@ fn a_dir_differs_from_the_hooks_cwd_only_when_set_by_hand() {
         assert_eq!((c.declared.as_str(), c.hook_cwd.as_str()), (declared, hook), "{name}");
     }
 }
+
+/// #1377, moved from the `work_dirs` rows of tests/fleet.rs: of the two session cwds the
+/// hook's ranks first, and a relative one never counts (#452), so both fall to the pane.
+#[test]
+fn the_session_cwds_rank_hook_first_and_a_relative_one_falls_through() {
+    let d = Dirs::new("session");
+    let (a, t, pane) = (d.at("a"), d.at("t"), d.at("c"));
+    // rows: hook_cwd, transcript_cwd, then the folder and source that answer
+    let rows = [
+        ("hook beats transcript", a.as_str(), t.as_str(), a.as_str(), Source::Session),
+        ("relative ones fall through", ".", "src", pane.as_str(), Source::PaneCwd),
+    ];
+    for (name, hook, said, dir, source) in rows {
+        let w = choose(&Candidates {
+            hook_cwd: hook.into(),
+            transcript_cwd: said.into(),
+            pane_cwd: pane.clone(),
+            ..Default::default()
+        });
+        assert_eq!((w.dir.as_str(), w.source), (dir, source), "{name}");
+    }
+}
