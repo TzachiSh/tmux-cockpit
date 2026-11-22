@@ -11124,6 +11124,65 @@ is "the run was killed mid-diff (exit 143)" "143" "$tdrc"
 is "and its temp index is gone" "" "$(ls -A "$TDK/tmp")"
 rm -rf "$TDK"
 
+echo "== scratch_index: once its EXIT trap runs, no HUP, INT or TERM stops the rm (#1400) =="
+# scripts/lib/review-diff.sh: scratch_index arms an EXIT trap that removes its temp dir, and
+# scratch_done clears it. A shell that leaves in between by any way but the signal trap, an
+# exit, a set -u stop or a signal bash has no trap for, ran that rm with HUP, INT and TERM
+# caught, so the rm took each at its default: a hangup or a timeout's signal to the group
+# killed it, and the dir stayed (#1400, as tm's in #1397). So the EXIT trap ignores the three
+# first, as tm's and run.sh's do (#1107). Here a shell runs scratch_index and exits. Its EXIT
+# trap's rm is a stand-in first on its PATH that holds until the row's go file is there, at
+# most 100 x 0.1 s, then runs the real rm. The signal goes to the shell's group while it
+# holds. The shell's TMPDIR is its own, so what is left there is the dir.
+RX=$(mktmpd); mkdir -p "$RX/bin" "$RX/repo"
+( cd "$RX/repo" && git init -q . && printf 'a\n' > f && git add f ) >/dev/null 2>&1
+cat > "$RX/drive.sh" <<'DRIVE'
+. "$1/review-diff.sh"
+scratch_index "$2" "$2/.git" || exit 9
+exit 0
+DRIVE
+{ printf '#!/bin/sh\ncase $1 in -rf)\n    echo held > %s\n' "$(tq "$RX/mark")"
+  printf '    i=0; while [ ! -e %s ] && [ $i -lt 100 ]; do sleep 0.1; i=$((i + 1)); done ;;\n' \
+      "$(tq "$RX/go")"
+  printf 'esac\nexec %s "$@"\n' "$(tq "$(command -v rm)")"; } > "$RX/bin/rm"
+chmod +x "$RX/bin/rm"
+rx_run() {                    # <signal> -> mark|status|left in the shell's TMPDIR
+    local c="" a="" g rc p d=()
+    rm -rf "${RX:?}/t"; rm -f "$RX/mark" "$RX/go"; mkdir -p "$RX/t"
+    for g in HUP INT TERM; do ! sig_dfl "$g" || d+=(--default-signal="$g"); done
+    ( cd "$RX" && exec env "${d[@]}" PATH="$RX/bin:$PATH" TMPDIR="$RX/t" setsid bash \
+        "$RX/drive.sh" "$DIR/scripts/lib" "$RX/repo" ) </dev/null >/dev/null 2>&1 & p=$!
+    # signalled only once /proc names it, its comm bash and its argv[1] the script (#1208)
+    if ! until_file "$RX/mark" held; then c="no hold"
+    else
+        read -r c 2>/dev/null < "/proc/$p/comm"
+        a=$(tr '\0' '\n' 2>/dev/null < "/proc/$p/cmdline" | sed -n 2p)
+        if [ "$c" != bash ] || [ "$a" != "$RX/drive.sh" ]; then
+            c="no signal: comm [$c] argv [$a]"
+        else c=""; kill -"$1" -- "-$p" 2>/dev/null || c="no signal: kill $1"
+        fi
+    fi
+    # The go file right after the kill: on Linux the signal's fate is settled as kill() sends
+    # it, a default that kills starting the exit and an ignored one dropped. Read from the
+    # kernel source (signal.c), not probed; the red tree shows it.
+    : > "$RX/go"
+    wait "$p" 2>/dev/null; rc=$?
+    printf '%s|%s|%s' "$(cat "$RX/mark" 2>/dev/null)" "${c:-$rc}" "$(ls -A "$RX/t" | tr '\n' ,)"
+}
+if ! command -v setsid >/dev/null; then skip_ "a signal in scratch_index's EXIT trap (no setsid)"
+elif [ ! -r "/proc/$$/comm" ]; then skip_ "a signal in scratch_index's EXIT trap (no /proc)"
+elif ! sig_dfl HUP && [ "$(trap -p HUP)" = "trap -- '' SIGHUP" ]; then
+    skip_ "a signal in scratch_index's EXIT trap (SIGHUP is ignored and env cannot reset it)"
+else
+    is "scratch_index: a HUP to the group while its EXIT trap's rm runs does not stop the rm" \
+       "held|0|" "$(rx_run HUP)"
+    is "scratch_index: nor does a TERM to the group" "held|0|" "$(rx_run TERM)"
+    if ! sig_dfl INT; then skip_ "an INT in scratch_index's EXIT trap (env cannot reset SIGINT)"
+    else is "scratch_index: nor an INT to the group" "held|0|" "$(rx_run INT)"
+    fi
+fi
+rm -rf "$RX"; unset -f rx_run; unset RX
+
 echo "== tmux-review: tree_diff never writes its temp index through a symlink =="
 # The shared temp dir is the agent's to write too, and it can see tree_diff's
 # names. The mktemp shim plays an agent that won the race: the name it hands
