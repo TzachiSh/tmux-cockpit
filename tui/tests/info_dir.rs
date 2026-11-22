@@ -488,3 +488,29 @@ fn an_info_row_one_field_short_is_no_such_pane() {
     std::fs::write(t.0.join("display"), short).unwrap();
     assert_eq!(gather("%1"), Err("no such pane %1".to_string()));
 }
+
+/// #1407: the info title names the pane by its label, `session:window · title`, never its
+/// id, which the first row keeps. A shell the board does not count is named too, by its
+/// own title (FIELDS' field 17), the pid one no process holds.
+#[test]
+fn the_info_title_names_the_pane_by_its_label() {
+    use cockpit_tui::{info, theme::Theme};
+    use ratatui::{Terminal, backend::TestBackend};
+    let g = fake::env_lock();
+    let t = Tmp::new("label");
+    let cwd = t.sub("cwd");
+    set(&g, &t, &rig(&t, &cwd, "", ""));
+    let c = cwd.as_str();
+    let shell = ["%1", "w:0 win", "bash", c, "", "", "", "", "", "", "", "1", ""];
+    std::fs::write(t.0.join("display"), fake::info_row(&shell)).unwrap();
+    let mut row = vec!["%1", "w:0", "win", "bash", "-", "-", "-", "-", c, "4194305", "-", "-", "@1"];
+    row.resize(17, "");
+    row.push("fix the tests");
+    std::fs::write(t.0.join("rows"), fake::board_row(&row) + "\n").unwrap();
+    let s = info::Screen::of(gather("%1"));
+    let mut term = Terminal::new(TestBackend::new(60, 12)).unwrap();
+    term.draw(|f| info::render(f, f.area(), &Theme::fixed(), &s)).unwrap();
+    let top = term.backend().to_string().lines().next().unwrap_or_default().to_string();
+    assert!(top.contains(" info · w:0 · fix the tests "), "{top}");
+    assert!(!top.contains("%1"), "{top}");
+}

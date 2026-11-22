@@ -3380,8 +3380,8 @@ pub static EXTRAS: &[Extra] = &[
         label: "kill",
         help: "kill its pane, after a confirm; on an ended agent, close the pane",
         verb: "kill",
-        // #301: the pane dies, never the window, so the question names the pane
-        confirm: Some(|p| format!("kill pane {} ({} {})?", p.id, p.wher, p.name)),
+        // #301: the pane dies, never the window, so the question names the pane, by its label (#1407)
+        confirm: Some(|p| format!("kill pane {}?", p.full_label().spelled("·"))),
         // `%N @W`: ids, never the name, as agent windows tend to share one
         // (`claude`). The pane must still be in the window the person saw; and
         // a wrapper from before #301, which kills the window, reads no `@W` here

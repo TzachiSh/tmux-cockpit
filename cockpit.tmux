@@ -364,7 +364,7 @@ Q_TM=$(sq "$DIR/scripts/tm")
 # The info screen is cockpit-tui's own (#252); esc or q closes it, so no `read`.
 # The binary reads $COCKPIT_GLYPHS, not @cockpit_glyphs (#293): read at open, so
 # setting the option needs no reload.
-[ -z "$ik" ] || ckey info "$ik" "${SRC_SET[@]}" display-popup -E -w "$PW" -h "$PH" -T ' info · #{pane_id} ' \
+[ -z "$ik" ] || ckey info "$ik" "${SRC_SET[@]}" display-popup -E -w "$PW" -h "$PH" -T ' info ' \
     "${PM}g=\$(tmux show-option -gqv @cockpit_glyphs); exec env \${g:+COCKPIT_GLYPHS=\"\$g\"} $(sq "$COCKPIT_TUI_BIN") info $SRC_PANE" \
         || ik=""
 
@@ -379,7 +379,7 @@ case "$pmode" in
 esac
 if [ -n "$pk" ]; then
     ckey panel "$pk" "${SRC_SET[@]}" display-popup -E -e "COCKPIT_PANEL_MODE=${pmode:-auto}" -w 94% -h 90% \
-        -T ' panel · #{pane_id} ' "$PM$Q_PANEL -p $SRC_PANE" || pk=""
+        -T ' panel ' "$PM$Q_PANEL -p $SRC_PANE" || pk=""
 fi
 
 # The board is wider than $PW: a 70% popup on 120 columns fits one tile column.

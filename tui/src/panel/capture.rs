@@ -28,6 +28,9 @@ pub struct Capture {
     /// The board's facts on the pane's agent, off the read `work` takes (#1353); `None`
     /// where `work` has no rule. Memory only, never a tmux option.
     pub agent: Option<crate::data::AgentFacts>,
+    /// How the header and the confirm name the pane (#1407): read at open and kept by a
+    /// refresh, as name and cmd are. `None` when tmux did not say.
+    pub label: Option<crate::data::Label>,
 }
 
 /// `None` when tmux cannot answer for the pane.
@@ -83,6 +86,7 @@ pub fn capture_within(pane: &str, budget: Duration) -> Option<Capture> {
         repo: block_of.map_or_else(Repo::default, |s| Repo::start(&work.dir, &s, budget)),
         work,
         agent,
+        label: crate::data::label_of(pane),
     })
 }
 

@@ -55,6 +55,8 @@ pub struct Facts {
     pub job: Option<(String, String)>,
     /// the review dir, its pinned count and its delivered count; `None` when absent
     pub rev_dir: Option<(String, usize, usize)>,
+    /// how the title names the pane (#1407); `None` when tmux did not say
+    pub label: Option<crate::data::Label>,
 }
 
 /// Control characters out: a transcript, a title and a path are not trusted
@@ -281,6 +283,7 @@ pub fn gather(pane: &str) -> Result<Facts, String> {
             (id, name) if !name.is_empty() && !id.is_empty() => Some((name, id)),
             _ => None,
         },
+        label: super::label_of(f[0]),
         ..Default::default()
     };
     if !f[4].is_empty() {

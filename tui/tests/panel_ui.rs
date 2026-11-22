@@ -2,6 +2,7 @@
 //! and the action file. COCKPIT_BLESS=1 cargo test rewrites the goldens.
 mod fake;
 
+use cockpit_tui::data::Label;
 use cockpit_tui::data::workdir::WorkDir;
 use cockpit_tui::panel::action::{read_state, sanitize, write_action, write_state};
 use cockpit_tui::panel::app::{Action, App, InputKind, Level, Resume, Tap, Tile, View, bracketed_ok};
@@ -971,7 +972,10 @@ fn a_long_confirm_scrolls_and_says_what_is_cut() {
     let mut a = app("w", "bash", "$ ");
     writing(&mut a, "x");
     a.reply(Ok("<text>ls</text>".into()));
-    a.pane = format!("%3 {}", "x".repeat(70));
+    a.cap.label = Some(Label {
+        wher: "w:1".into(),
+        title: "x".repeat(70),
+    });
     ch(&mut a, 's');
     let f = shown(&mut a, 60, 12);
     assert!(f.contains("(bash) and press Enter?"), "the question wraps:\n{f}");
@@ -1871,7 +1875,10 @@ fn digits_select_steps() {
 #[test]
 fn the_title_gives_way_before_the_count() {
     let mut a = long_answer(60);
-    a.cap.name = "a-long-window-name-for-a-narrow-popup".into();
+    a.cap.label = Some(Label {
+        wher: "work:1".into(),
+        title: "a-long-window-name-for-a-narrow-popup".into(),
+    });
     let top = |a: &mut App, w: u16| shown(a, w, 12).lines().next().unwrap().to_string();
     let t = top(&mut a, 80);
     assert!(t.contains("a-long-window-name") && t.contains(" of 63 "), "{t}");

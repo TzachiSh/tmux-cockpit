@@ -1227,7 +1227,7 @@ spkey() {
     "$TMUX_REAL" -L "$SPO" send-keys -t o C-b "$2"
     until_file "$SPD/log" "*$3"
     until_out 'closed' sh \
-        -c "\"$TMUX_REAL\" -L $SPO capture-pane -p -t o | grep -q -e 'info · %' -e 'panel · %' || echo closed"
+        -c "\"$TMUX_REAL\" -L $SPO capture-pane -p -t o | grep -q -e ' info ' -e ' panel ' || echo closed"
 }
 spkey 0 i "info $sp0"
 spkey 1 f "panel $sp1"
@@ -15889,8 +15889,8 @@ kb_gone() {                   # <pane>
 KA=$(mktmpd)
 kb_open "${KBP[0]}" "$KA" || bad "the board opens on the first" "board · 2 agents" "$(kb_cap)"
 "$TMUX_REAL" -L "$KB" send-keys -t "$KBW" x
-until_cap "$KB" "$KBW" "*kill pane ${KBP[0]} (t:1 claude)?*" ||
-    bad "x asks, naming the pane" "kill pane ${KBP[0]} (t:1 claude)?" "$(kb_cap)"
+until_cap "$KB" "$KBW" "*kill pane t:1 · claude?*" ||
+    bad "x asks, naming the pane" "kill pane t:1 · claude?" "$(kb_cap)"
 case "$(kb_cap)" in
     *'y kill   n back   esc back   ? keys   q close'*) \
             ok "x asks, naming the pane, and the bar lists only its keys" ;;
@@ -15905,7 +15905,7 @@ is "↵ sends nothing and n backs out: no action, no .expect" "open  " \
    "$("$TMUX_REAL" -L "$KB" list-panes -a -F '#{pane_id}' | grep -qx "$KBW" &&
        printf open) $(cat "$KA/act" 2>/dev/null) $(cat "$KA/act.expect" 2>/dev/null)"
 "$TMUX_REAL" -L "$KB" send-keys -t "$KBW" x
-until_cap "$KB" "$KBW" "*kill pane ${KBP[0]} (t:1 claude)?*"
+until_cap "$KB" "$KBW" "*kill pane t:1 · claude?*"
 "$TMUX_REAL" -L "$KB" send-keys -t "$KBW" y
 kb_gone "$KBW" || bad "y closes the board" "the window closes" "$(kb_cap)"
 is "y writes kill %N" "kill ${KBP[0]}" "$(cat "$KA/act" 2>/dev/null)"
@@ -15930,8 +15930,8 @@ is "R writes no action and no .expect" " no" \
 KG=$(mktmpd)
 kb_open "${KBP[1]}" "$KG"
 "$TMUX_REAL" -L "$KB" send-keys -t "$KBW" x
-until_cap "$KB" "$KBW" "*kill pane ${KBP[1]} (t:2 claude)?*" ||
-    bad "x asks about the second" "kill pane ${KBP[1]} (t:2 claude)?" "$(kb_cap)"
+until_cap "$KB" "$KBW" "*kill pane t:2 · claude?*" ||
+    bad "x asks about the second" "kill pane t:2 · claude?" "$(kb_cap)"
 "$TMUX_REAL" -L "$KB" kill-pane -t "${KBP[1]}" >/dev/null 2>&1
 until_cap "$KB" "$KBW" '*nothing done: t:2 is gone, kill not sent*' ||
     bad "a gone target closes the confirm with a note" "the ✕ note" "$(kb_cap)"
@@ -16921,11 +16921,11 @@ ph_gone "$PHB"
 until_out '?*' ls -- "$PHF" >/dev/null
 "$TMUX_REAL" -L "$PH" kill-pane -t "$PHA"
 ph_open "$PHC"
-if until_cap "$PH" "$PHB" "*dropped the panel hidden on $PHA*"; then
+if until_cap "$PH" "$PHB" "*dropped a hidden panel whose pane is gone*"; then
     ok "a hidden panel whose pane is gone is dropped with a note"
 else
     bad "a hidden panel whose pane is gone is dropped with a note" \
-        "dropped the panel hidden on $PHA" "$(ph_cap)"
+        "dropped a hidden panel whose pane is gone" "$(ph_cap)"
 fi
 is "and its file is removed" "" "$([ -e "$PHF" ] && echo there)"
 "$TMUX_REAL" -L "$PH" send-keys -t "$PHB" q
@@ -19960,17 +19960,17 @@ po_has() {                    # <fixed string> -- polled, 5 s at most
 po_has "1 agent" && ok "the board is up" ||
     bad "the board is up" "1 agent" "$("$TMUX_REAL" -L "$PO" capture-pane -p -t t:b)"
 "$TMUX_REAL" -L "$PO" send-keys -t t:b i
-po_has "info · %" && ok "i draws the info card over the board" ||
-    bad "i draws the info card over the board" "info · %N" \
+po_has "info · t:0 · " && ok "i draws the info card over the board" ||
+    bad "i draws the info card over the board" "info · t:0 · <title>" \
     "$("$TMUX_REAL" -L "$PO" capture-pane -p -t t:b)"
 "$TMUX_REAL" -L "$PO" send-keys -t t:b Escape
-n=0; while [ "$n" -lt 50 ] && "$TMUX_REAL" -L "$PO" capture-pane -p -t t:b | grep -qF "info · %"; do
+n=0; while [ "$n" -lt 50 ] && "$TMUX_REAL" -L "$PO" capture-pane -p -t t:b | grep -qF "info · t:0 · "; do
     sleep 0.1; n=$((n+1))
 done
 po_has "1 agent" && ok "esc returns to the board" ||
     bad "esc returns to the board" "1 agent" "$("$TMUX_REAL" -L "$PO" capture-pane -p -t t:b)"
 case "$("$TMUX_REAL" -L "$PO" capture-pane -p -t t:b)" in
-    *"info · %"*) bad "the card is gone after esc" "no card" "still drawn" ;;
+    *"info · t:0 · "*) bad "the card is gone after esc" "no card" "still drawn" ;;
     *) ok "the card is gone after esc" ;;
 esac
 "$TMUX_REAL" -L "$PO" kill-server >/dev/null 2>&1

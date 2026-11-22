@@ -910,16 +910,18 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
             for x in ws {
                 b.head.extend(many(&tiered(g, x), w, "", Style::new().fg(th.error)));
             }
+            // the pane by its label, never its id (#1407)
+            let who = app.cap.label.as_ref().map_or_else(|| "the pane".to_string(), |l| l.spelled(g.dot));
             let ask = if app.basket_confirm() {
                 // the basket's send (#365, D2): both ways are offered, Enter's named
                 format!(
-                    "this goes to {} ({}): {} or i inserts it, no Enter; s sends it with Enter",
-                    app.pane, app.cap.cmd, g.key_enter
+                    "this goes to {who} ({}): {} or i inserts it, no Enter; s sends it with Enter",
+                    app.cap.cmd, g.key_enter
                 )
             } else if *send {
-                format!("send this to {} ({}) and press Enter?", app.pane, app.cap.cmd)
+                format!("send this to {who} ({}) and press Enter?", app.cap.cmd)
             } else {
-                format!("insert this into {} ({}), no Enter?", app.pane, app.cap.cmd)
+                format!("insert this into {who} ({}), no Enter?", app.cap.cmd)
             };
             b.head.extend(many(&ask, w, "", bold));
             b.head.push(plain(""));
@@ -985,7 +987,7 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
 /// The left title and the "N-M of T" indicator in `w` columns: the title gives
 /// way first, then the arrows; the count is never cut, only dropped whole.
 fn titles(th: &Theme, title: &str, ind: Option<(String, String)>, w: usize) -> (String, Option<String>) {
-    // " panel · %3 ": cut shorter, the title no longer says which pane it acts on
+    // " panel · s:1 ": cut shorter, the title no longer says which pane it acts on
     const TITLE_MIN: usize = 12;
     let fit = |room: usize| {
         if room < 3 {
@@ -1276,7 +1278,12 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, th: &Theme, tick: u64) -> (u
         }
         (full, bare)
     });
-    let name = format!("panel {d} {} {d} {}", app.pane, th.g.trunc(&app.cap.name, 30));
+    // the pane by its label, never its id (#1407)
+    let name = app
+        .cap
+        .label
+        .as_ref()
+        .map_or_else(|| "panel".to_string(), |l| format!("panel {d} {}", l.spelled(d)));
     let (title, ind) = titles(th, &name, ind, (area.width as usize).saturating_sub(2));
     let mut block = Block::new()
         .borders(Borders::ALL)
