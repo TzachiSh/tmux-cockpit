@@ -64,7 +64,8 @@ fn goldens(name: &str, app: &App, tick: u64) {
 
 /// Every `App` here is built under the binary's one environment (#948, #953),
 /// which [`fake::fixed_env`] sets. A test that reaches the product without this
-/// calls that itself first.
+/// calls that itself first. A `claude` command carries the board's facts, as a real
+/// Claude Code pane does: its hooks make it an agent's (#1359).
 fn app(name: &str, cmd: &str, screen: &str) -> App {
     fake::fixed_env();
     let cap = Capture {
@@ -76,6 +77,7 @@ fn app(name: &str, cmd: &str, screen: &str) -> App {
             ..Default::default()
         },
         screen: screen.into(),
+        agent: (cmd == "claude").then(Default::default),
         ..Default::default()
     };
     App::new("%3", cap)

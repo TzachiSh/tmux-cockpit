@@ -79,34 +79,35 @@ fn a_trusted_folder_other_than_the_cwd_is_named_with_its_source() {
 }
 
 /// A guessed source (active-in, pane-cwd) on an agent's window is not confirmed, whether
-/// or not the folder is the cwd. The window is an agent's by its name or the board's facts.
+/// or not the folder is the cwd. The window is an agent's by the board's facts, never by its
+/// name (#1359).
 #[test]
 fn a_guessed_folder_on_an_agents_window_is_not_confirmed() {
     let node = Capture {
         agent: Some(AgentFacts::default()),
         ..cap("node", "/a", Source::PaneCwd)
     };
+    let version = Capture {
+        agent: Some(AgentFacts::default()),
+        ..cap("2.1.246", "/a", Source::PaneCwd)
+    };
     for (row, c, tail) in [
         (
             "active-in elsewhere",
-            cap("claude", "/b", Source::ActiveIn),
+            agent("/b", Source::ActiveIn),
             "work folder /b (active-in, not confirmed)",
         ),
         (
             "active-in at the cwd",
-            cap("claude", "/a", Source::ActiveIn),
+            agent("/a", Source::ActiveIn),
             "work folder not confirmed (active-in)",
         ),
         (
             "pane-cwd, claude",
-            cap("claude", "/a", Source::PaneCwd),
+            agent("/a", Source::PaneCwd),
             "work folder not confirmed (pane-cwd)",
         ),
-        (
-            "pane-cwd, a version name",
-            cap("2.1.246", "/a", Source::PaneCwd),
-            "work folder not confirmed (pane-cwd)",
-        ),
+        ("pane-cwd, a version name", version, "work folder not confirmed (pane-cwd)"),
         ("pane-cwd, node with board facts", node, "work folder not confirmed (pane-cwd)"),
     ] {
         let want = format!("<window>{} · {} · /a · {tail}</window>", c.name, c.cmd);
