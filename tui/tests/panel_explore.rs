@@ -190,7 +190,7 @@ fn explore_off_sends_the_write_prompt_unchanged() {
     let (system, ..) = a.request_parts().unwrap();
     let ctx = Ctx {
         out: OutType::Auto,
-        window: window_kind("work", "bash"),
+        window: window_kind("bash", false),
         ..Ctx::default()
     };
     assert_eq!(system, prompts::write(&ctx));
@@ -206,7 +206,7 @@ fn an_exploring_write_appends_the_explore_section() {
     let (system, ..) = a.request_parts().unwrap();
     let ctx = Ctx {
         out: OutType::Auto,
-        window: window_kind("work", "bash"),
+        window: window_kind("bash", false),
         ..Ctx::default()
     };
     assert_eq!(system, prompts::write_explore(&ctx));

@@ -1977,7 +1977,7 @@ fn panel_call(c: &Case, path: &str, explore: bool) -> (String, String, Profile, 
         },
         screen: c.screen.clone(),
         repo: c.repo.as_str().into(),
-        ..Default::default()
+        agent: cockpit_tui::data::agentid::claude_cmd(&c.cmd).then(Default::default),
     };
     let mut a = App::new("%0", cap);
     (a.view, a.out, a.explore) = (View::Compose, c.out, explore);
@@ -3646,7 +3646,7 @@ mod tests {
         let c = &parse_cases(ONE).unwrap()[0];
         let ctx = Ctx {
             out: c.out,
-            window: window_kind(&c.name, &c.cmd),
+            window: window_kind(&c.cmd, cockpit_tui::data::agentid::claude_cmd(&c.cmd)),
             ..Ctx::default()
         };
         let cap = Capture {
@@ -3683,7 +3683,7 @@ mod tests {
         let c = &parse_cases(ONE).unwrap()[0];
         let ctx = Ctx {
             out: c.out,
-            window: window_kind(&c.name, &c.cmd),
+            window: window_kind(&c.cmd, cockpit_tui::data::agentid::claude_cmd(&c.cmd)),
             ..Ctx::default()
         };
         assert_eq!(panel_call(c, "/r", false).3, prompts::write_noted(&ctx).2);

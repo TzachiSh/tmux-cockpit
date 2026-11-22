@@ -33,6 +33,8 @@ fn compose(tag: &str, claude: bool) -> (Dir, App) {
         name: "claude".into(),
         cmd: "claude".into(),
         path: d.0.display().to_string(),
+        // a real Claude Code pane: the board has its facts (#1359)
+        agent: Some(Default::default()),
         ..Default::default()
     };
     let mut a = App::new("%3", cap);

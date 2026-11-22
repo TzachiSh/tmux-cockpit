@@ -380,7 +380,7 @@ impl App {
         let local = is_local(&cap.cmd);
         App {
             pane: pane.into(),
-            session: session_state(&cap.screen, &cap.name, &cap.cmd),
+            session: session_state(&cap.screen, &cap.cmd, cap.agent.is_some()),
             cap,
             view: View::Home { sel: 0 },
             draft: String::new(),
@@ -438,7 +438,7 @@ impl App {
     pub fn resumed(&mut self, cmd: String, r: Resume, last: &str) {
         // the steps were written for this command: the wrapper's guard checks it
         self.cap.cmd = cmd;
-        self.session = session_state(&self.cap.screen, &self.cap.name, &self.cap.cmd);
+        self.session = session_state(&self.cap.screen, &self.cap.cmd, self.cap.agent.is_some());
         let Resume {
             label,
             items,
@@ -496,7 +496,7 @@ impl App {
     pub fn unhide_in(&mut self, h: Hidden, was: Option<&str>) {
         // as in a steps resume: the wrapper's guard checks what it was written for
         let now = std::mem::replace(&mut self.cap.cmd, h.cmd);
-        self.session = session_state(&self.cap.screen, &self.cap.name, &self.cap.cmd);
+        self.session = session_state(&self.cap.screen, &self.cap.cmd, self.cap.agent.is_some());
         (self.view, self.busy_back, self.run) = (h.view, h.busy_back, h.run);
         (self.draft, self.cur, self.out, self.model) = (h.draft, h.cur, h.out, h.model);
         // the pane may run ssh by now: its folder is then the client's, never read
@@ -530,7 +530,7 @@ impl App {
     /// Compose itself, it is not listed twice.
     pub fn tiles(&self) -> Vec<(Tile, &'static str, &'static str)> {
         const COMPOSE: (Tile, &str, &str) = (Tile::Compose, "Compose", "type once: fix spelling, write, or insert");
-        let star = match window_kind(&self.cap.name, &self.cap.cmd) {
+        let star = match window_kind(&self.cap.cmd, self.cap.agent.is_some()) {
             "claude" => Some((Tile::WritePrompt, "Write a prompt", "a task for Claude Code from your rough words")),
             "shell" => Some((Tile::WriteCommand, "Write a command", "describe it, Claude writes the command")),
             _ => None,
@@ -1386,7 +1386,7 @@ impl App {
             Flow::Write { out, .. } => {
                 let ctx = Ctx {
                     out: *out,
-                    window: window_kind(&self.cap.name, &self.cap.cmd),
+                    window: window_kind(&self.cap.cmd, self.cap.agent.is_some()),
                     bare_refs: self.write_refs(&r.flow).iter().any(|i| !i.mention),
                 };
                 let (t, n, h) = if self.explores(&r.flow) {

@@ -1,5 +1,6 @@
 //! The target pane as the panel sees it, and what a Claude Code session on it
 //! is doing, read off its own UI text.
+use crate::data::agentid::is_claude;
 use crate::data::gitsafe::{FILTER_CONFIG, PATHSPEC, REDIRECT, SAFE, filter_flags};
 use crate::data::tmux;
 use crate::data::workdir::{Candidates, WorkDir, choose};
@@ -29,12 +30,6 @@ pub struct Capture {
     pub agent: Option<crate::data::AgentFacts>,
 }
 
-/// The command in any case, or its version-shaped title, as the board reads it
-/// ([`crate::basket::claude_cmd`], #760); or a window named claude.
-pub fn is_claude(name: &str, cmd: &str) -> bool {
-    crate::basket::claude_cmd(cmd) || name.eq_ignore_ascii_case("claude")
-}
-
 /// `None` when tmux cannot answer for the pane.
 pub fn capture(pane: &str) -> Option<Capture> {
     capture_within(pane, REPO_BUDGET)
@@ -57,8 +52,16 @@ pub fn capture_within(pane: &str, budget: Duration) -> Option<Capture> {
         f.next().unwrap_or_default(),
         f.next().unwrap_or_default(),
     );
+    // The board's facts come first: the depth asks the shared rule, which needs them (#1359).
+    let (work, agent) = crate::data::workdir_agent(pane).unzip();
+    let work = work.unwrap_or_else(|| {
+        choose(&Candidates {
+            pane_cwd: path.clone(),
+            ..Default::default()
+        })
+    });
     // A session's last answer and plan sit further back than a shell's last command.
-    let depth = if is_claude(&name, &cmd) { "-200" } else { "-80" };
+    let depth = if is_claude(&cmd, agent.is_some()) { "-200" } else { "-80" };
     let out = tmux(&["capture-pane", "-p", "-J", "-t", pane, "-S", depth])?;
     let mut lines: Vec<&str> = out.trim_end_matches('\n').split('\n').collect();
     while lines.last().is_some_and(|l| l.trim().is_empty()) {
@@ -72,13 +75,6 @@ pub fn capture_within(pane: &str, budget: Duration) -> Option<Capture> {
     } else {
         Some(screen.clone())
     };
-    let (work, agent) = crate::data::workdir_agent(pane).unzip();
-    let work = work.unwrap_or_else(|| {
-        choose(&Candidates {
-            pane_cwd: path.clone(),
-            ..Default::default()
-        })
-    });
     Some(Capture {
         name,
         cmd,
@@ -628,9 +624,10 @@ impl Session {
 }
 
 /// From the screen, not `@panestate`: the hooks cannot tell a menu from a
-/// question, and the prompt's five states need that split.
-pub fn session_state(screen: &str, name: &str, cmd: &str) -> Option<Session> {
-    if !is_claude(name, cmd) {
+/// question, and the prompt's five states need that split. `None` unless the pane runs
+/// Claude Code by the shared rule: `agent` is whether the board has facts on it (#1359).
+pub fn session_state(screen: &str, cmd: &str, agent: bool) -> Option<Session> {
+    if !is_claude(cmd, agent) {
         return None;
     }
     let all: Vec<&str> = screen.split('\n').filter(|l| !l.trim().is_empty()).collect();
@@ -738,9 +735,10 @@ pub fn is_local(cmd: &str) -> bool {
     LOCAL_CMDS.contains(&cmd) || crate::data::agentish(cmd)
 }
 
-/// The window kind the write examples are picked by.
-pub fn window_kind(name: &str, cmd: &str) -> &'static str {
-    if is_claude(name, cmd) {
+/// The window kind the write examples are picked by. `claude` by the shared rule, so
+/// `agent` is whether the board has facts on the pane (#1359).
+pub fn window_kind(cmd: &str, agent: bool) -> &'static str {
+    if is_claude(cmd, agent) {
         "claude"
     } else if ["bash", "zsh", "fish", "sh"].contains(&cmd) {
         "shell"

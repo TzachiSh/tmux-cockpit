@@ -83,6 +83,8 @@ fn cap(path: &Path) -> Capture {
             ..Default::default()
         },
         screen: "$ ".into(),
+        // a real Claude Code pane: the board has its facts (#1359)
+        agent: Some(Default::default()),
         ..Default::default()
     }
 }
