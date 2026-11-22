@@ -157,8 +157,8 @@ deliver() {
     # The jump key is read, never spelled (#105): the prefix key bound with the note
     # "cockpit: jump", the binding itself. @cockpit_jump_key is read at load, globally,
     # so a session's value or a change without a reload named a key that was not the
-    # jump, and could be stock kill-pane (#1102). No such binding (off, or a load from
-    # before the key notes) drops the clause. Both notices fit the 72 columns an
+    # jump, and could be stock kill-pane (#1102). No such binding (off, or a key the user
+    # bound with no note) drops the clause. Both notices fit the 72 columns an
     # 80-column client draws.
     # Two bindings may carry the note (an old key left bound beside a new one): the one
     # the last load recorded in @cockpit_jump_bound wins (cockpit_noted_key, #1124).

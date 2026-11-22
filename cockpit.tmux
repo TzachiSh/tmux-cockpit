@@ -182,64 +182,16 @@ give_back() {                 # <key> -> 1 when tmux's own binding could not be 
     dmsg "$err; left it bound, the next load tries again"
     return 1
 }
-# Still cockpit's <name> binding: its note, or, from a load before the notes, no
-# note and a command only cockpit binds. The second form can go after a release.
-# Only the menu and panel keys had a record then, each matched by its own
-# command, and only until a load has noted every key (@cockpit_notes): after
-# that a note-less key is the user's, whatever it runs.
-notes=$(tmux show-option -gqv @cockpit_notes)
-# The pre-notes panel key ran "$(sq <panel>) -p ...", and #{key_command} prints that
-# argument in a "...", escaped: \ " $ (#1086), a control byte as \t or \033, a byte
-# outside UTF-8 as \303 (#1097). So a notes-less load binds one key with that argument on
-# a scratch table named with its $$, reads how tmux prints it, and removes the table in
-# its own call, which runs even when the read fails: tmux stops a ; sequence at the
-# first failing command. A failed read leaves a raw \037, which tmux never prints raw:
-# the panel guess is off, never a match on everything. tmux's exit status says the read
-# failed; the load then says so in tmux's words, a panel key it could not judge waits in
-# @cockpit_giveback, and @cockpit_notes stays unset, so the next load reads again (#1131).
-# The scratch bind is acceptable: it is the plugin's own load, which binds keys anyway (#1128).
-legacy_panel=$'\037'; legacy_failed=""
-if [ -z "$notes" ]; then
-    lt="cockpit-legacy-$$"
-    lp=$(tmux bind-key -T "$lt" x display-popup "$(sq "$DIR/scripts/cockpit-panel") -p x" \; \
-        list-keys -T "$lt" -F '#{key_command}' x 2>&1) || legacy_failed=1
-    tmux unbind-key -a -T "$lt" 2>/dev/null
-    if [ -n "$legacy_failed" ]; then
-        lp=${lp%%$'\n'*}
-        lp="tmux-cockpit: could not read how tmux prints the old panel key (${lp:-no answer});"
-        dmsg "$lp a panel key from before the key notes stays as it is; the next load tries again"
-        lp=""
-    fi
-    case "$lp" in 'display-popup "'*' -p x"')
-        lp=${lp#display-popup \"}; legacy_panel=${lp%' -p x"'} ;;
-    esac
-    unset lt lp
-fi
-# tmux compares the note itself. It prints a note's tab, \037 and newline raw, so no
-# separator cuts a note from what follows it: a user's note that began with cockpit's
-# and a \037 was read as cockpit's, and the key given back (#1135). Only a key whose
-# note is empty has its command read, and only before the notes. The key goes in escaped:
-# a bare ; ended list-keys, which then listed the whole table, and one key with no note
-# made the old cockpit key read as the user's, so it was never given back (#1151).
-owned() {                     # <name> <key> -> 0 ours, 1 the user's, 2 not known (#1131)
-    local m f cmd ka
-    ka=$(cockpit_key_arg "$2")
-    f="#{?#{==:#{key_note},$(cockpit_key_note "$1")},noted,"
-    m=$(tmux list-keys -T prefix -F "$f#{?#{==:#{key_note},},bare,}}" "$ka" 2>/dev/null)
-    case $m in
-        noted) return 0 ;;
-        bare) [ -z "$notes" ] || return 1 ;;
-        *) return 1 ;;
-    esac
-    # Escaped like the first: no load before the notes recorded a ; key, so no row reaches this.
-    cmd=$(tmux list-keys -T prefix -F '#{key_command}' "$ka" 2>/dev/null)
-    case "$1:$cmd" in
-        menu:*'display-menu -T "#[align=centre]'*|panel:*"$legacy_panel"*)
-            dmsg "tmux-cockpit: $2 was the $1 key before the key notes; giving it back"
-            return 0 ;;
-        panel:*) [ -z "$legacy_failed" ] || return 2 ;;
-    esac
-    return 1
+# Still cockpit's <name> binding: its note, and only its note (#1379). A key with no
+# note, or another note, is the user's, whatever it runs. tmux compares the note itself.
+# It prints a note's tab, \037 and newline raw, so no separator cuts a note from what
+# follows it: a user's note that began with cockpit's and a \037 was read as cockpit's,
+# and the key given back (#1135). The key goes in escaped: a bare ; ended list-keys, which
+# then listed the whole table (#1151).
+owned() {                     # <name> <key> -> 0 ours, 1 the user's
+    local f
+    f="#{?#{==:#{key_note},$(cockpit_key_note "$1")},noted,}"
+    [ "$(tmux list-keys -T prefix -F "$f" "$(cockpit_key_arg "$2")" 2>/dev/null)" = noted ]
 }
 
 # Lowercase keys: a Shift-letter chord dies under Caps Lock or a non-Latin layout.
@@ -262,12 +214,10 @@ refused() {                   # <name> <tmux's error> -> 1
     # The move loop gave back any key a record named that differs from this value (#1229). A
     # record left here is this very key: the last load bound it, and this load's bind failed
     # for a reason outside the key. It goes back, as off's would, so the message holds. One
-    # that cannot be given back keeps its record, and the next load tries again (#1226). So does
-    # a key owned() cannot judge: a panel bind refused in a load whose read failed (#1131).
+    # that cannot be given back keeps its record, and the next load tries again (#1226).
     p=$(tmux show-option -gqv "@cockpit_${1}_bound")
-    if [ -n "$p" ]; then
-        owned "$1" "$p"
-        case $? in 0) give_back "$p" || return 1 ;; 2) return 1 ;; esac
+    if [ -n "$p" ] && owned "$1" "$p"; then
+        give_back "$p" || return 1
     fi
     tmux set-option -gu "@cockpit_${1}_bound"
     return 1
@@ -338,8 +288,7 @@ done
 left=""
 for nk in ${todo[@]+"${todo[@]}"}; do
     takes "${nk%%:*}" "${nk#*:}" && continue      # its own key again: bound below
-    # The user's now: nothing to give back. Not known (#1131): it waits for the next load.
-    owned "${nk%%:*}" "${nk#*:}" || { [ $? = 2 ] && left="$left"$'\n'"$nk"; continue; }
+    owned "${nk%%:*}" "${nk#*:}" || continue     # the user's now: nothing to give back
     give_back "${nk#*:}" || left="$left"$'\n'"$nk"
 done
 # Space-joined unless a key holds a space or a tab. The list's last pair may end in ;,
@@ -600,9 +549,6 @@ tmux bind-key -T cockpit m display-menu -T '#[align=centre]#{session_name}' -x M
 if [ -n "$menuk" ]; then
     ckey menu "$menuk" display-menu -T '#[align=centre]#{session_name}' -x C -y C "${rows[@]}"
 fi
-# Every key this load binds carries its note now: owned() stops guessing, unless
-# a key it guessed is still waiting to be given back, or the scratch read failed (#1131).
-[ -n "$notes" ] || [ -n "$left" ] || [ -n "$legacy_failed" ] || tmux set-option -g @cockpit_notes 1
 
 # Taps act on release: a menu opened on the press is closed by its own release.
 # The border's corner, path and branch are control ranges 0-3 (4-6 stay yours);
