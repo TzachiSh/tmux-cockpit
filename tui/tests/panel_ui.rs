@@ -978,9 +978,11 @@ fn a_long_confirm_scrolls_and_says_what_is_cut() {
     });
     ch(&mut a, 's');
     let f = shown(&mut a, 60, 12);
+    // The header draws "w:1 ·" too, so the label is matched on the question's own first row,
+    // which ends at it: the title is too long for that row and starts the next (#1407).
     assert!(
-        f.contains("w:1 ·") && f.contains("(bash) and press Enter?"),
-        "the question wraps:\n{f}"
+        f.contains("send this to w:1 ·") && f.contains("(bash) and press Enter?"),
+        "the question names the pane by its label and wraps:\n{f}"
     );
 }
 
