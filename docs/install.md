@@ -140,7 +140,7 @@ per event only where missing, and re-running after an upgrade only adds what's
 new (a reformatted settings.json, e.g. from `jq -S` or Claude Code rewriting
 its own file, is still recognized and never re-appended). Re-run
 `install.sh --hooks` after every plugin update: it also removes hooks a newer
-version no longer ships, such as the old PreToolUse `review-gate --pretool`. A `settings.json.bak`
+version no longer ships. A `settings.json.bak`
 is written before the first change (an existing `.bak` is never overwritten).
 `--hooks --dry-run` previews the merge without writing or creating anything,
 even on a fresh install with no `~/.claude` yet. Requires `jq`; without it, or
