@@ -20,9 +20,14 @@ tapping `≡` at the top left of the border (or right-clicking `‹` or `›`)
 opens it where you tapped. Every row has its letter on screen: the board `w`,
 the panel `f`, what each agent is doing `t`, browse folder `o` (the pane's folder
 in the editor), switch branch `b`, new window `c`, split right `\` and down `-`, move window
-`M`, rename window `,`, kill pane (close window on a single pane) `x`, full
-screen `e`, pane info `i`, rename session `$`, detach `d`, reload `R`, kill
+`M`, rename window `,`, name this pane `n`, kill pane (close window on a single pane)
+`x`, full screen `e`, pane info `i`, rename session `$`, detach `d`, reload `R`, kill
 session `Q`. Kill pane, close window and kill session ask first.
+
+Name this pane gives a pane a name of its own, its `@cockpit_role` (#1408): 1 to 32
+ASCII letters, digits, `-`, `_` or `/`, starting with a letter or digit. `:` and `.` are
+refused, since tmux reads them in a target. An empty name clears it. The name goes to
+the pane that is current when you press Enter. `cockpit-tui pane <name>` finds it again.
 
 A row is there only when nothing on screen does its job: Browse folder and
 Switch branch appear when the border has no room for the path or the branch

@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
-# tmux-rename — the menu's Rename session / Rename window rows (#289).
+# tmux-rename — the menu's Rename session, Rename window and Name this pane rows (#289, #1408).
 #   tmux-rename session <$id>   rename to @cockpit_rename_to, taken literally
 #   tmux-rename window <@id>
+#   tmux-rename pane <%id>      set the pane's own @cockpit_role to it; empty clears it
 # The prompt stages the typed text with %%% (quotes kept, nothing run) into
 # @cockpit_rename_to; rename-session and rename-window expand formats in the
 # new name, so it goes through fesc here: a " ; # or #(...) is just a name.
+# The pane row's %id is the client's current pane when Enter is pressed: tmux puts the typed
+# text in place of a %1 in a command-prompt template, so the id cannot be written into it.
 set -u
 
 d=${BASH_SOURCE[0]}; case $d in (*/*) ;; (*) d=./$d ;; esac
@@ -22,11 +25,39 @@ kind=${1:-} id=${2:-}
 case "$kind:$id" in
     session:\$*) n=${id#\$} ;;
     window:@*)   n=${id#@} ;;
+    pane:%*)     n=${id#%} ;;
     *) n=x ;;
 esac
 case "$n" in ''|*[!0-9]*)
-    printf 'usage: tmux-rename session <$id> | window <@id>\n' >&2; exit 2 ;;
+    printf 'usage: tmux-rename session <$id> | window <@id> | pane <%%id>\n' >&2; exit 2 ;;
 esac
+
+# A pane's name (#1408), set on purpose and found again by cockpit-tui pane <name>. It goes on
+# the pane alone (-p): a window's value would show on every pane of it in a format. tmux reads
+# : and . in a target as session:window.pane, so they get their own message. The rest is 1 to
+# 32 ASCII letters, digits, - _ or /, from a letter or digit: nothing a format, a style or a
+# shell reads. The letters are spelled out, since a range can match more than ASCII (#842). A
+# refusal exits 0: run-shell would show a non-zero exit over the message.
+if [ "$kind" = pane ]; then
+    if [ -z "$name" ]; then
+        tmux set-option -pu -t "$id" @cockpit_role 2>/dev/null ||
+            dmsg "cockpit: could not clear the name of pane $id" 2>/dev/null
+        exit 0
+    fi
+    an=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789
+    rule='is up to 32 letters, digits, - _ or /, from a letter or digit'
+    case $name in
+        *:*|*.*) why='has no : or . in it' ;;
+        [!$an]*) why=$rule ;;
+        *[!$an/_-]*) why=$rule ;;
+        *) why='' ;;
+    esac
+    [ -n "$why" ] || [ "${#name}" -le 32 ] || why=$rule
+    [ -z "$why" ] || { dmsg "cockpit: a pane name $why: $name" 2>/dev/null; exit 0; }
+    tmux set-option -p -t "$id" @cockpit_role "$name" 2>/dev/null ||
+        dmsg "cockpit: could not name pane $id $name" 2>/dev/null
+    exit 0
+fi
 
 [ -n "$name" ] || exit 0          # an empty prompt renames nothing
 tmux "rename-$kind" -t "$id" -- "$(fesc "$name")" 2>/dev/null ||

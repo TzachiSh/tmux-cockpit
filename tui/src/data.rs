@@ -859,6 +859,36 @@ pub fn one_pane(id: &str) -> Option<Pane> {
     }))
 }
 
+/// A pane's name, set on purpose by `scripts/tmux-rename pane` and only with `-p` (#1408).
+const ROLE: &str = "@cockpit_role";
+
+/// #1408: the panes whose own `@cockpit_role` is `name`, in tmux's order. Each pane's value is
+/// read with `show-options -p`, all in one tmux call: a format reads the window's value for a
+/// pane with none, and a server's ahead of the pane's own. Each answer is one line,
+/// `<id>\x1f<value>`, with a newline in the value made a `\x1f`, so no value splits into a
+/// record of its own. A pane gone since the list prints nothing. `None` when tmux is not
+/// reachable.
+pub fn panes_named(name: &str) -> Option<Vec<String>> {
+    let ids = tmux(&["list-panes", "-a", "-F", "#{pane_id}"])?;
+    let mut argv: Vec<String> = vec![];
+    for id in ids.split('\n').filter(|id| !id.is_empty()) {
+        if !argv.is_empty() {
+            argv.push(";".into());
+        }
+        let rec = format!("{id}\u{1f}#{{s/\n/\u{1f}/:option_value}}");
+        argv.extend(["show-options", "-pq", "-t", id, "-F", rec.as_str(), ROLE].map(String::from));
+    }
+    // no pane, no call: tmux with no command at all is new-session
+    if argv.is_empty() {
+        return Some(vec![]);
+    }
+    let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let out = tmux(&argv)?;
+    // split, not lines: lines would take a value's trailing \r off with the newline
+    let named = out.split('\n').filter_map(|l| l.split_once('\u{1f}')).filter(|(_, v)| *v == name);
+    Some(named.map(|(id, _)| id.to_string()).collect())
+}
+
 thread_local! {
     /// `|claude|codex|…|` from cockpit.tmux, so the user's list is the only copy.
     /// Empty (plugin not loaded) leaves @panestate as the only test.

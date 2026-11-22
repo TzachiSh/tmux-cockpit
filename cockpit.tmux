@@ -532,10 +532,15 @@ row 'Move window to a session...' M "$mk"
 # %% let a " end the string (#289). The id is the one the menu was opened on
 # (expanded once here). The path waits in an option, as @cockpit_where_cmd does:
 # the item is a tmux "..." string, whose parser ate a \, a $ or a quote in it
-# (#1071). ##{ is the menu's expansion, the second # run-shell's.
+# (#1071). ##{ is the menu's expansion, the second # run-shell's. Name this pane sets the
+# pane's own @cockpit_role (#1408). Its id is never expanded here: tmux puts the typed text in
+# place of a %1 in a command-prompt template, so run-shell expands ##{pane_id} when Enter is
+# pressed, and the client's current pane then is the one named.
 tmux set-option -g @cockpit_rename_cmd "$(sq "$DIR/scripts/tmux-rename")"
 Q_REN='##{@cockpit_rename_cmd}'
 rows+=('Rename window' ',' "command-prompt -p '(rename-window)' -I '##W' \"set -g @cockpit_rename_to \\\"%%%\\\" ; run-shell \\\"$Q_REN window '#{window_id}'\\\"\"")
+Q_NAME="set -g @cockpit_rename_to \\\"%%%\\\" ; run-shell \\\"$Q_REN pane '##{pane_id}'\\\""
+rows+=('Name this pane' n "command-prompt -p '(pane name)' -I '##{@cockpit_role}' \"$Q_NAME\"")
 rows+=('#{?#{e|>:#{window_panes},1},Kill pane…,Close window…}' x \
        "confirm-before -p '#{?#{e|>:#{window_panes},1},Kill pane ##P?,Close window ##I?} (y/n)' kill-pane")
 rows+=('')
