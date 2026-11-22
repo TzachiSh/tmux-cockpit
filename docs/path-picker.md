@@ -99,10 +99,9 @@ tmux receives plain clicks, `Ctrl`+click, double-clicks and `Ctrl`+double-clicks
 never `Shift`+click, which it keeps for its own selection. An `Alt`-only binding
 cannot fire there at all.
 
-Of the gestures that do arrive, `Ctrl`+double-click is the only one tmux does
-not already own: plain `Ctrl`+click is `swap-pane`, and plain double-click is
-select-word-and-copy. Taking either would cost a feature people use daily. It
-also pairs with the branch popup, which is `Ctrl`+click on the status bar.
+Of the gestures that do arrive, plain double-click is tmux's
+select-word-and-copy, which people use daily. `Ctrl`+double-click leaves it
+alone.
 
 `M-MouseDown1Pane` stays bound as well, for terminals that *do* forward
 `Alt`+click (xterm, kitty, WezTerm, foot), where it is the lighter gesture.
