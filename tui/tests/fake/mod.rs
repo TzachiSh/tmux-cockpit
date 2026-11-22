@@ -1666,3 +1666,15 @@ pub fn assert_gh_is_the_rigs(path: &std::ffi::OsStr, dir: &Path) {
         panic!("the first gh on PATH is {found:?}, not one under {dir} (#1000)");
     }
 }
+
+/// A row as tmux prints the board's FIELDS for one pane: `head`'s fields, then empty
+/// ones up to FIELDS' count, joined on US (#1374). The binary passes its own format, so
+/// every row tmux prints has every field, and a fake's row does too.
+#[allow(dead_code)]
+pub fn board_row(head: &[&str]) -> String {
+    let n = cockpit_tui::data::FIELDS_N;
+    assert!(head.len() <= n, "a board row of {} fields", head.len());
+    let mut f = head.to_vec();
+    f.resize(n, "");
+    f.join("\u{1f}")
+}

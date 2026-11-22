@@ -20,7 +20,7 @@ fn exec(p: &Path, body: &str) {
 
 /// The board's FIELDS row: id, cmd, @panestate, @cockpit_session, cwd, pid, @cockpit_dir.
 fn row(id: &str, cmd: &str, state: &str, sess: &str, cwd: &str, pid: &str, opt: &str) -> String {
-    [id, "w:0", "win", cmd, state, "-", "-", sess, cwd, pid, "-", "-", "@1", opt, "", ""].join("\u{1f}")
+    fake::board_row(&[id, "w:0", "win", cmd, state, "-", "-", sess, cwd, pid, "-", "-", "@1", opt])
 }
 
 struct Rig {
@@ -230,4 +230,15 @@ fn a_kept_cockpit_log_gets_no_line() {
 #[cfg(target_os = "linux")]
 fn the_tests_leave_the_callers_cache_alone() {
     assert_eq!(fake::tests_leave_alone(&["XDG_CACHE_HOME"]), Vec::<String>::new());
+}
+
+/// #1374: a row one field short of FIELDS is not the board's format: workdir finds no pane.
+#[test]
+fn workdir_finds_no_pane_in_a_row_one_field_short() {
+    let r = Rig::new("short");
+    let launch = r.dir("main");
+    let whole = row("%5", "claude", "running", "-", &launch, "105", "");
+    let short = whole.rsplit_once('\u{1f}').unwrap().0;
+    std::fs::write(r.t.0.join("rows"), format!("{short}\n")).unwrap();
+    assert_eq!(r.run(&["workdir", "%5"]), (Some(1), String::new()));
 }

@@ -23,10 +23,7 @@ fn git(dir: &Path, args: &[&str]) {
 
 /// The board's FIELDS row: id, cmd, @panestate, @cockpit_session, cwd, pid, @cockpit_dir.
 fn row(id: &str, cmd: &str, state: &str, sess: &str, cwd: &str, pid: &str, opt: &str) -> String {
-    let f = [
-        id, "t:0", "win", cmd, state, "-", "-", sess, cwd, pid, "-", "-", "@1", opt, "", "", "", "", "",
-    ];
-    f.join("\u{1f}")
+    fake::board_row(&[id, "t:0", "win", cmd, state, "-", "-", sess, cwd, pid, "-", "-", "@1", opt])
 }
 
 /// A repo `r` on main, its linked tree `w` holding `held`, and a fake tmux and ps.
@@ -242,7 +239,9 @@ fn an_agents_fresh_cd_into_the_tree_names_it() {
         "input": {"command": format!("cd {}/sub && make", r.p("w"))}});
     let v = serde_json::json!({"type": "assistant", "timestamp": stamp(30), "cwd": main, "message": {"content": [call]}});
     std::fs::write(pj.join("s1.jsonl"), format!("{v}\n")).unwrap();
-    let agent = format!("{}{US}{main}", row("%9", "2.1.246", "running", "s1", &main, "109", &main));
+    // @cockpit_cwd, the row's last field (19), is main too
+    let agent = row("%9", "2.1.246", "running", "s1", &main, "109", &main);
+    let agent = format!("{}{US}{main}", agent.rsplit_once(US).unwrap().0);
     r.rows(&[row("%1", "bash", "-", "-", &r.p("w"), "101", ""), agent]);
     assert_eq!(r.goto(&r.p("w"), &Origin::default()), Ok(String::new()));
     assert_eq!(r.writes(), sel("%9"));
@@ -426,4 +425,16 @@ fn without_worktree_list_z_the_tree_is_found_and_a_newline_path_refused() {
         r.goto(&cut, &Origin::default()),
         Err(format!("cockpit: not a worktree of this repository: {cut}"))
     );
+}
+
+/// #1374: a row one field short of FIELDS is not the board's format: goto skips its pane,
+/// an agent's too, and selects the shell in the tree.
+#[test]
+fn a_row_one_field_short_is_no_pane_to_goto() {
+    let r = Rig::new("short");
+    let agent = row("%3", "claude", "-", "-", &r.p("w"), "103", "");
+    let short = agent.rsplit_once('\u{1f}').unwrap().0.to_string();
+    r.rows(&[row("%2", "bash", "-", "-", &r.p("w"), "102", ""), short]);
+    assert_eq!(r.goto(&r.p("w"), &Origin::default()), Ok(String::new()));
+    assert_eq!(r.writes(), sel("%2"));
 }
