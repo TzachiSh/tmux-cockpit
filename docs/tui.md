@@ -263,7 +263,7 @@ already makes, and each board pulls its next tick forward. See "Push wakeups".
 
 Read-only, and owned by bash: `@cockpit_session`, `@cockpit_dir`, `@panestate`,
 `@panestate_msg`, `@cockpit_review`, `@cockpit_review_spool`, `@cockpit_title`,
-`@thm_*`.
+`@cockpit_role` (a pane's own name, which `scripts/tmux-rename pane` writes), `@thm_*`.
 
 ## Environment
 
@@ -2211,6 +2211,22 @@ panel with the reason in a warn note.
   at 12 columns, the context floored to thousands and raw under 1000. Nothing
   shows without usage, and a line that does not fit is left out whole.
 
+### Contract changes for pane names (#1408, for #61)
+
+- `cockpit-tui pane <name>` prints the id of the one pane whose own `@cockpit_role`
+  is `<name>`, alone on one line. The name is set on purpose, from the menu's Name this
+  pane row through `scripts/tmux-rename pane`, on the pane that is current when Enter is
+  pressed, and only with `set -p`. No name is given by default and none is numbered.
+- Each pane's value is read with `show-options -p`, all panes in one tmux call after one
+  `list-panes`. A format would read a window's value for a pane with none, and a
+  server's ahead of the pane's own. A value is matched whole: a newline in it never
+  makes a line of its own match.
+- Exit 0 with the id. Exit 1 and nothing on stdout when no pane holds the name, or when
+  tmux is not reachable, each said on stderr. Exit 3 when more than one pane holds it:
+  stderr names them all and stdout stays empty, so a script never takes the first.
+  Exit 2 for no name, an empty one, two, or one holding a newline or a `\x1f`.
+- `data::Pane`, FIELDS, `--json` and `--rows` are unchanged.
+
 ### The triage overlay
 
 Phase 2, not shipped. It answers a blocked agent in place rather than attaching
@@ -2595,7 +2611,7 @@ pane are different facts and a blank tile tells you which one it is.
 **CLI:** `-h` or `--help` prints the usage:
 
 ```
-cockpit-tui board [--select %N] [--note <file>] | pick | files <dir> [--select <name>] [--hidden] [--ignored] [--filter <text>] | branch [-C <dir>] | info [--text|--json] %N | workdir [--source] %N | sessions [--needs] [--current $N] | panel %N [--resume <state> --last ok|failed:<why>|hidden | --ask <file> <a> <b>] | view [--line N] [--] <file> | basket add %N <file> | --rows | --json | --version | -h
+cockpit-tui board [--select %N] [--note <file>] | pick | files <dir> [--select <name>] [--hidden] [--ignored] [--filter <text>] | branch [-C <dir>] | info [--text|--json] %N | workdir [--source] %N | pane <name> | sessions [--needs] [--current $N] | panel %N [--resume <state> --last ok|failed:<why>|hidden | --ask <file> <a> <b>] | view [--line N] [--] <file> | basket add %N <file> | --rows | --json | --version | -h
 ```
 
 `info %N` is the info screen, `info --text %N` its rows as text, and
@@ -2633,6 +2649,7 @@ when `COCKPIT_LOG` is set. No rotation.
 **Exit codes:** `0` normal (an action was written, or none), `1` runtime failure
 (tmux unreachable, terminal not a tty), `2` usage error (unknown subcommand, bad
 pane id, a bad `COCKPIT_PANEL_MODE`). The binding treats a missing binary and a non-zero exit the same way.
+`3` is new and for `pane <name>` only: more than one pane holds the name (#1408).
 
 `--rows` and `--json` exit 1 when the `list-panes` call fails, so a wrapper can
 tell the two quiet answers apart: `[]` with exit 0 is "no agents", exit 1 is

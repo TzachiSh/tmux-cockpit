@@ -1344,6 +1344,101 @@ done
 "$TMUX_REAL" -L "$MO" kill-server >/dev/null 2>&1; "$TMUX_REAL" -L "$MI" kill-server >/dev/null 2>&1
 fi
 
+echo "== a pane's name: tmux-rename pane writes @cockpit_role on that pane alone (#1408) =="
+# The owner names a pane on purpose, from the menu's Name this pane row. The name is the pane's
+# own @cockpit_role, set with -p: a window's value shows on every pane of it in a format. The
+# setter is tmux-rename's pane kind, run here with TMUX on this block's server, as the row's
+# run-shell runs it. A refusal is read where the owner reads it, the status line of a client
+# attached through an outer server. Each refused name is new, so the message of an earlier row
+# cannot answer for a later one.
+if need_tmux "pane names"; then :; else
+NM="cockpit-nm-$$"; NMO="cockpit-nmo-$$"; SOCKS="$SOCKS $NM $NMO"; NMD=$(mktmpd)
+"$TMUX_REAL" -L "$NM" -f /dev/null new-session -d -s t -x 160 -y 30 -c "$NMD" \
+    'exec sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$NM" split-window -t t:0 -c "$NMD" 'exec sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$NM" set -g display-time 0 >/dev/null 2>&1
+"$TMUX_REAL" -L "$NM" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+nm0=$("$TMUX_REAL" -L "$NM" display-message -p -t t:0.0 '#{pane_id}')
+nm1=$("$TMUX_REAL" -L "$NM" display-message -p -t t:0.1 '#{pane_id}')
+NMSP=""; sock_path "$NM" NMSP; NMTMUX="$NMSP,0,0"
+"$TMUX_REAL" -L "$NMO" -f /dev/null new-session -d -s o -x 160 -y 32 -c "$NMD" \
+    "TERM=xterm-256color exec $(tq "$TMUX_REAL") -L $NM attach -t t" >/dev/null 2>&1
+until_out '?*' "$TMUX_REAL" -L "$NM" list-clients -F '#{client_name}'
+nm_set() {                    # <pane> <name>: the menu's staging, then the setter on <pane>
+    "$TMUX_REAL" -L "$NM" set -g @cockpit_rename_to "$2" >/dev/null 2>&1
+    ( cd "$NMD" && TMUX="$NMTMUX" exec "$DIR/scripts/tmux-rename" pane "$1" ) >/dev/null 2>&1
+}
+nm_role() { "$TMUX_REAL" -L "$NM" show-option -pqv -t "$1" @cockpit_role; }
+nm_said() {                   # <text> -> 1 once the client's status line shows <text>, else 0
+    local i
+    for ((i = 1; i <= POLLS; i++)); do
+        "$TMUX_REAL" -L "$NMO" capture-pane -p -t o | grep -qF -- "$1" && { echo 1; return; }
+        sleep 0.1
+    done
+    echo 0
+}
+nm_no() {                     # <name> <text the message shows>: one row, the name refused
+    local before
+    before=$(nm_role "$nm0")
+    nm_set "$nm0" "$1"
+    is "tmux-rename pane refuses [$1]: the pane keeps its name and the message says why" \
+        "$before|1" "$(nm_role "$nm0")|$(nm_said "$2")"
+}
+nm_menu() {                   # <typed name>: prefix a, the n row, the name and Enter
+    "$TMUX_REAL" -L "$NMO" send-keys -t o C-b a
+    until_cap "$NMO" o '*Name this pane*' &&
+        "$TMUX_REAL" -L "$NMO" send-keys -t o n &&
+        until_cap "$NMO" o '*(pane name)*' ||
+        { "$TMUX_REAL" -L "$NMO" send-keys -t o Escape; return 1; }
+    "$TMUX_REAL" -L "$NMO" send-keys -t o C-u
+    "$TMUX_REAL" -L "$NMO" send-keys -t o -l -- "$1"
+    "$TMUX_REAL" -L "$NMO" send-keys -t o Enter
+}
+nm_set "$nm0" orchestra/worker-67
+is "tmux-rename pane writes the staged name on that pane and clears the staging option" \
+    "orchestra/worker-67|" \
+    "$(nm_role "$nm0")|$("$TMUX_REAL" -L "$NM" show-option -gqv @cockpit_rename_to)"
+is "and on that pane alone: not on its window, not on the pane beside it" \
+    "orchestra/worker-67||" "$(nm_role "$nm0")|$("$TMUX_REAL" -L "$NM" show-option -wqv \
+        -t "$nm0" @cockpit_role)|$(nm_role "$nm1")"
+nm_set "$nm1" s1/claude-2_b
+is "a / is allowed in a pane's name: s1/claude-2_b names the pane" s1/claude-2_b \
+    "$(nm_role "$nm1")"
+nm_set "$nm1" abcdefghijklmnopqrstuvwxyz012345
+is "a pane's name holds up to 32 characters: one of 32 names the pane" \
+    abcdefghijklmnopqrstuvwxyz012345 "$(nm_role "$nm1")"
+NM_DOT='cockpit: a pane name has no : or . in it: '
+NM_SET='cockpit: a pane name is up to 32 letters, digits, - _ or /, from a letter or digit: '
+for nm_n in 'a:b' 'a.b' 's1:0.1'; do nm_no "$nm_n" "$NM_DOT$nm_n"; done
+for nm_n in 'a b' 'a#b' 'x;y' '-x' '/x' abcdefghijklmnopqrstuvwxyz0123456; do
+    nm_no "$nm_n" "$NM_SET$nm_n"
+done
+# Past ASCII: a client may draw the é as _, so its message is found by the part before it.
+nm_no 'zz-é-1' "${NM_SET}zz-"
+"$TMUX_REAL" -L "$NM" set -p -t "$nm0" @cockpit_role keep >/dev/null 2>&1
+nm_set "$nm0" ''
+is "an empty name clears the pane's name" "" \
+    "$("$TMUX_REAL" -L "$NM" show-options -p -t "$nm0" | grep '^@cockpit_role ')"
+nm_err=$( ( cd "$NMD" && TMUX="$NMTMUX" exec "$DIR/scripts/tmux-rename" pane 'x;y' ) \
+    2>&1 >/dev/null )
+nm_rc=$?
+is "tmux-rename pane with a bad id says the usage, pane <%id> in it, and exits 2" "2|1" \
+    "$nm_rc|$(case $nm_err in *'pane <%id>'*) echo 1 ;; *) echo 0 ;; esac)"
+# The row's pane is %1: tmux puts the typed text in place of a %1 in a command-prompt template,
+# so the id must reach the setter some other way than written into it.
+"$TMUX_REAL" -L "$NM" select-pane -t "$nm1" >/dev/null 2>&1
+nm_menu orchestra/worker-1 && until_out orchestra/worker-1 nm_role "$nm1"
+is "the menu's Name this pane row names the pane it is opened on, its id %1 kept out" \
+    "$nm1|orchestra/worker-1" "%1|$(nm_role "$nm1")"
+nm_before=$(nm_role "$nm1")
+nm_ok=0; nm_menu 'a";set -g @pwned Q;"' && nm_ok=$(nm_said "$NM_SET"'a";set -g @pwned Q;"')
+is "a name typed with quotes in it runs nothing and names nothing" "$nm_before|1|" \
+    "$(nm_role "$nm1")|$nm_ok|$("$TMUX_REAL" -L "$NM" show-option -gqv @pwned)"
+"$TMUX_REAL" -L "$NMO" kill-server >/dev/null 2>&1
+"$TMUX_REAL" -L "$NM" kill-server >/dev/null 2>&1
+unset -f nm_set nm_role nm_said nm_no nm_menu
+fi
+
 echo "== the shipped config against a real agent pane =="
 tp="$PANE"; [ "$HAVE_TMUX" = 1 ] || tp=""
 if [ -n "$tp" ]; then
