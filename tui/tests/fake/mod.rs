@@ -1675,16 +1675,11 @@ pub fn board_row(head: &[&str]) -> String {
     pad_row(head, cockpit_tui::data::FIELDS_N, "board")
 }
 
-/// How many fields info's own `display-message` format (tui/src/data/info.rs) has: an
-/// info row pads to it.
-#[allow(dead_code)]
-const INFO_FIELDS: usize = 17;
-
 /// A row as tmux prints info's own `display-message` format for one pane, padded as
 /// [`board_row`] pads (#1396).
 #[allow(dead_code)]
 pub fn info_row(head: &[&str]) -> String {
-    pad_row(head, INFO_FIELDS, "info")
+    pad_row(head, cockpit_tui::data::info::FORMAT_N, "info")
 }
 
 /// `head`'s fields, then empty ones up to `n`, joined on US: a `what` row as tmux prints it.
