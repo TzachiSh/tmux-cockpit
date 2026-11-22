@@ -65,7 +65,8 @@ mkdir -p "$(dirname "$LOG")" 2>/dev/null
 d=''; own_tmpdir d || {
     say "cockpit: no temp dir for the board (own_tmpdir: $own_tmpdir_why)" 2>/dev/null; exit 1; }
 f="$d/act" note="$d/note"
-trap 'rm -rf "$d"' EXIT
+trap 'trap "" HUP INT TERM; rm -rf "$d"' EXIT  # a signal must not stop the rm (#1411)
+trap 'trap "" HUP INT TERM; exit 130' INT TERM HUP
 
 # @cockpit_board_return off: every action is one-way, as before the loop.
 back() { [ "$(tmux show-option -gqv @cockpit_board_return 2>/dev/null)" != off ]; }

@@ -120,7 +120,8 @@ d=''; own_tmpdir d || { tell "cockpit: no temp dir for the panel (own_tmpdir: $o
     exit 1; }
 f="$d/act"
 buf="cockpit-panel-$$"
-trap 'rm -rf "$d"' EXIT
+trap 'trap "" HUP INT TERM; rm -rf "$d"' EXIT  # a signal must not stop the rm (#1411)
+trap 'trap "" HUP INT TERM; exit 130' INT TERM HUP
 
 # The action, run the way the binary asked; `last` says how it went, for a resume.
 act() {
