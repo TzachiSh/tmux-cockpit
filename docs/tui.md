@@ -1124,8 +1124,9 @@ the head `cockpit-board-state 1`, then known `key value` lines: `sel %N` at
 most once, then one `fold <session>` line per folded session, each name once,
 with no control character, then at most one `filter <text>` line, the kept
 find filter: at most 200 bytes, more than spaces, no control character. The
-`filter` line is a line kind appended to version 1, so a file without one
-still reads. Anything else is a fresh board and a 5 s note
+head is required, and each of the `sel`, `fold` and `filter` lines is
+optional. A later layout change bumps the head. Anything else is a fresh board
+and a 5 s note
 `board.state ignored (<why>); starting fresh`. A header selection is saved as
 its group's first agent, and a fold whose tmux session is gone is dropped on the
 next write; a session that is still there keeps its fold even while it has no
@@ -1903,7 +1904,7 @@ panel with the reason in a warn note.
   `1`-`9` are the agent rows on screen instead of absolute tiles, and `[` `]`
   scroll without moving the selection a page. New keys: `space`, `-`, `=`,
   `n`, `p`, `v`; `↵` on a header toggles its fold.
-- `board.state` version 1 gains `fold <session>` lines after `sel`.
+- `board.state` version 1 holds optional `fold <session>` lines after `sel`.
 - The list's header line adds the session count and the error count; the
   tiles' header is unchanged.
 - The list captures no pane: the worker skips `capture-pane` until `v`.
@@ -1926,7 +1927,7 @@ panel with the reason in a warn note.
 - In the field every printable key is text, `q`, `?` and the `EXTRAS` keys
   included; `esc` and `^C` replace `q`, `F1` replaces `?` (D14).
   `board::{find_key, FindKey}` map the keys.
-- `board.state` version 1 gains an optional last line, `filter <text>`, read
+- `board.state` version 1 holds an optional last line, `filter <text>`, read
   strictly; `board::Saved` gains `filter: Option<String>`.
 - `board::Nav` gains `filter`, `field` and the methods `rows`, `fit`,
   `filtering`, `open_find`, `clear_find`, `find_act`; `board::{find_match,
