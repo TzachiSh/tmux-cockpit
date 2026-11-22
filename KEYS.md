@@ -44,6 +44,7 @@ the path or the branch, and the two splits are left out on a touch client.
 | Split down | `-` |
 | Move window to a session... | `M` |
 | Rename window | `,` |
+| Name this pane (its `@cockpit_role`, found by `cockpit-tui pane <name>`) | `n` |
 | Kill pane… (Close window… on a single pane), with a confirm | `x` |
 | Full screen (hide the bar) | `e` |
 | Pane info | `i` |

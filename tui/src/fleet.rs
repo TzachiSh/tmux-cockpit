@@ -131,3 +131,38 @@ pub fn workdir_main(args: &[String]) -> i32 {
     }
     0
 }
+
+fn pane_usage() -> i32 {
+    eprintln!("cockpit-tui: pane needs one name, with no newline or \\x1f in it");
+    2
+}
+
+/// `cockpit-tui pane <name>` (#1408): the one pane whose own `@cockpit_role` is `<name>`, its
+/// id alone on one line. Exit 1 and nothing on stdout when no pane holds the name or tmux is
+/// not reachable; exit 3 when more than one does, each named on stderr and none printed, so a
+/// script never takes the first; exit 2 for no name, an empty one, two, or one holding a
+/// newline or a `\x1f`, which a pane's answer cannot carry whole.
+pub fn pane_main(args: &[String]) -> i32 {
+    let [name] = args else { return pane_usage() };
+    if name.is_empty() || name.contains(['\n', '\u{1f}']) {
+        return pane_usage();
+    }
+    let Some(ids) = crate::data::panes_named(name) else {
+        eprintln!("cockpit-tui: tmux is not reachable");
+        return 1;
+    };
+    match ids.as_slice() {
+        [id] => {
+            println!("{id}");
+            0
+        }
+        [] => {
+            eprintln!("cockpit-tui: no pane is named {name}");
+            1
+        }
+        _ => {
+            eprintln!("cockpit-tui: {} panes are named {name}: {}", ids.len(), ids.join(" "));
+            3
+        }
+    }
+}
