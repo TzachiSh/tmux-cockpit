@@ -3188,9 +3188,9 @@ pub const STATE_MAX: u64 = 64 * 1024;
 /// One line of the wrapper's; far over any message it writes.
 pub const NOTE_MAX: u64 = 4 * 1024;
 
-/// What `board.state` keeps: the selection, then one `fold <session>` line per
-/// folded session, then the kept find filter (D7), a line kind appended to
-/// version 1, so an older file still reads.
+/// What `board.state` version 1 keeps, each line optional: the selection, then
+/// one `fold <session>` line per folded session, then the kept find filter (D7).
+/// A change to this layout bumps `STATE_HEAD`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Saved {
     pub sel: Option<String>,
