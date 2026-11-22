@@ -11337,8 +11337,12 @@ echo "== EXIT traps: once one runs, no HUP, INT or TERM stops its cleanup (#1411
 # file is there, at most 100 x 0.1 s. Then it runs the real rm, answers as a tmux with no
 # server, or fails as curl, gh and cargo: nothing reaches a server, the network or a build.
 # The signal goes to the script's group while it holds. Each run has a TMPDIR of its own, so
-# what is left there is the cleanup's. The last four rows send one HUP while the body runs: the
-# script ends through its own signal trap (130), and its EXIT trap removes what it made.
+# what is left there is the cleanup's. Four rows send one HUP while the body runs, and the EXIT
+# trap removes what the script made: the board ends through its own signal trap (130), the
+# panel and tui-fetch by that signal (129), which their EXIT trap raises again after the rm. A
+# bash waits on those two in the foreground (install.sh, bootstrap.sh, tmux-open-path's viewer),
+# and it goes on after a Ctrl-C to the group unless its child died by SIGINT. In the last two
+# rows a stand-in caller of that kind runs each: it must stop, after the cleanup.
 XT=$(mktmpd); mkdir -p "$XT/bin" "$XT/w/repo"; : > "$XT/w/a.txt"; : > "$XT/w/b.txt"
 ( cd "$XT/w/repo" && git init -q . ) >/dev/null 2>&1
 XT_RM=$(command -v rm)
@@ -11367,8 +11371,11 @@ exit 0
 STAND
 chmod +x "$XT/bin/stand"; ln -s bin/stand "$XT/tui"
 for xt_c in rm tmux curl gh cargo rustc; do ln -s stand "$XT/bin/$xt_c"; done
-xt_run() {                    # <signal> <hold glob> <script> [args...] -> mark|status|left
-    local sig=$1 hold=$2 s=$3 c="" a="" g rc p d=(); shift 3
+# The caller: a bash that runs the script in the foreground, then goes on, as install.sh:364
+printf '#!/usr/bin/env bash\nbash "$@"\necho went-on > "$XT_DONE"\n' > "$XT/caller"
+xt_run() {                    # <signal> <hold glob> <script|path> [args...] -> mark|status|left
+    local sig=$1 hold=$2 f=$DIR/scripts/$3 c="" a="" g rc p d=()
+    case $3 in /*) f=$3 ;; esac; shift 3
     rm -rf "${XT:?}/t" "$XT/p"; rm -f "$XT/mark" "$XT/go" "$XT/done"; mkdir -p "$XT/t"
     for g in HUP INT TERM; do ! sig_dfl "$g" || d+=(--default-signal="$g"); done
     # COCKPIT_TUI_BIN: XT_BIN when the row sets one (tui-fetch's binary, which is not there)
@@ -11377,13 +11384,13 @@ xt_run() {                    # <signal> <hold glob> <script> [args...] -> mark|
         COCKPIT_TUI_BIN="${XT_BIN:-$XT/tui}" COCKPIT_TUI_RELEASES=http://no-such-host.invalid \
         COCKPIT_LOG="$XT/log" XDG_STATE_HOME="$XT/state" XT_HOLD="$hold" XT_MARK="$XT/mark" \
         XT_GO="$XT/go" XT_DONE="$XT/done" XT_W="$XT/w" XT_RM="$XT_RM" \
-        setsid bash "$DIR/scripts/$s" "$@" ) </dev/null >/dev/null 2>&1 & p=$!
+        setsid bash "$f" "$@" ) </dev/null >/dev/null 2>&1 & p=$!
     # signalled only once /proc names it, its comm bash and its argv[1] the script (#1208)
     if ! until_file "$XT/mark" held; then c="no hold"
     else
         read -r c 2>/dev/null < "/proc/$p/comm"
         a=$(tr '\0' '\n' 2>/dev/null < "/proc/$p/cmdline" | sed -n 2p)
-        if [ "$c" != bash ] || [ "$a" != "$DIR/scripts/$s" ]; then
+        if [ "$c" != bash ] || [ "$a" != "$f" ]; then
             c="no signal: comm [$c] argv [$a]"
         else c=""; kill -"$sig" -- "-$p" 2>/dev/null || c="no signal: kill $sig"
         fi
@@ -11418,14 +11425,19 @@ else
             xt_is "$xt_s" "tui-fetch: a $xt_s to the group cannot stop its EXIT trap's rm" \
             "held|0|" 'rm -rf *' tui-fetch
     done
-    is "cockpit-panel: a HUP to the group while its binary runs ends it by its trap, dir gone" \
-        "held|130|" "$(xt_run HUP 'tui panel*' cockpit-panel -p %1)"
+    is "cockpit-panel: a HUP to the group while its binary runs ends it by that signal, dir gone" \
+        "held|129|" "$(xt_run HUP 'tui panel*' cockpit-panel -p %1)"
     is "cockpit-board: a HUP to the group while its binary runs ends it by its trap, dir gone" \
         "held|130|" "$(xt_run HUP 'tui board*' cockpit-board -p %1 -c c0)"
     is "tui-fetch: a HUP to the group while it downloads leaves no download dir" \
-        "held|130|" "$(XT_BIN=$XT/p/bin/cockpit-tui xt_run HUP 'curl *' tui-fetch)"
+        "held|129|" "$(XT_BIN=$XT/p/bin/cockpit-tui xt_run HUP 'curl *' tui-fetch)"
     is "tui-fetch: a HUP to the group while it builds leaves no build log" \
-        "held|130|" "$(XT_BIN=$XT/p/bin/cockpit-tui xt_run HUP 'cargo *' tui-fetch --required)"
+        "held|129|" "$(XT_BIN=$XT/p/bin/cockpit-tui xt_run HUP 'cargo *' tui-fetch --required)"
+    XT_BIN=$XT/p/bin/cockpit-tui \
+        xt_is INT "tui-fetch: a group Ctrl-C stops the bash that runs it, after its cleanup" \
+        "held|130|" 'curl *' "$XT/caller" "$DIR/scripts/tui-fetch"
+    xt_is INT "cockpit-panel: a group Ctrl-C stops the bash that runs it, after its cleanup" \
+        "held|130|" 'tui panel*' "$XT/caller" "$DIR/scripts/cockpit-panel" -p %1
 fi
 rm -rf "$XT"; unset -f xt_run xt_is; unset XT XT_RM xt_c xt_s
 
