@@ -174,7 +174,11 @@ fn a_live_panel_whose_pane_is_gone_sends_nothing() {
     });
     assert!(landed, "the envelope never landed in {PASSES} passes");
     match &a.view {
-        View::Error { line, .. } => assert!(line.contains("%3") && line.contains("nothing was sent"), "{line}"),
+        // the pane named with no id (#1407)
+        View::Error { line, .. } => assert!(
+            line.contains("tmux cannot read the pane: it may be gone, so nothing was sent") && !line.contains("%3"),
+            "{line}"
+        ),
         v => panic!("not refused: {v:?}"),
     }
     assert!(a.req.is_none(), "a call was forked");

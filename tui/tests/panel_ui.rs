@@ -978,7 +978,10 @@ fn a_long_confirm_scrolls_and_says_what_is_cut() {
     });
     ch(&mut a, 's');
     let f = shown(&mut a, 60, 12);
-    assert!(f.contains("(bash) and press Enter?"), "the question wraps:\n{f}");
+    assert!(
+        f.contains("w:1 ·") && f.contains("(bash) and press Enter?"),
+        "the question wraps:\n{f}"
+    );
 }
 
 #[test]
@@ -1501,7 +1504,8 @@ fn a_state_file_is_refused_unless_it_is_exactly_ours() {
     ] {
         assert!(try_(&body, "%3").is_err(), "{why}");
     }
-    assert!(try_(good, "%4").unwrap_err().contains("another pane"));
+    // no pane id: it tells a person nothing (#1407)
+    assert_eq!(try_(good, "%4").unwrap_err(), "it is for another pane");
     let link = dir.join("link");
     std::os::unix::fs::symlink(&p, &link).unwrap();
     assert!(read_state(&link, "%3").is_err(), "never followed");

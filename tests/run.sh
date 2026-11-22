@@ -2947,7 +2947,7 @@ cat > "$RGE/tmux" <<RGEEOF
 #!/bin/sh
 case "\$*" in
     *set-option*@cockpit_review_err*) echo S >> $(printf '%q' "$RGELOG") ;;
-    *'display-message -l'*) echo M >> $(printf '%q' "$RGELOG") ;;
+    *'display-message -l'*) printf 'M %s\n' "\$*" >> $(printf '%q' "$RGELOG") ;;
 esac
 exec "$SHIM/tmux" "\$@"
 RGEEOF
@@ -2962,6 +2962,12 @@ RG_PRE="PATH=$(printf '%q' "$RGE"):$(printf '%q' "$RGMK"):\$PATH " rg_run "$RGPA
 is "#960: a diff that cannot be read (2) sets @cockpit_review_err to why" \
     "the diff cannot be read" "$(rge_err)"
 is "and says it in one message" "1" "$(rge_n M)"
+# #1407: the pane by its label, read here from tmux (the title is the one the hook set),
+# never its id
+rge_l="$("$TMUX_REAL" -L "$RG" display -p -t "$RGAP" '#{session_name}:#{window_index}') · $(
+    "$TMUX_REAL" -L "$RG" show-option -pqv -t "$RGAP" @cockpit_title)"
+is "#1407: the message names the pane by its label, not its id" "1|0" \
+   "$(grep -cF "the ◆ of $rge_l cannot be updated" "$RGELOG")|$(grep -cF "of $RGAP " "$RGELOG")"
 RG_PRE="PATH=$(printf '%q' "$RGE"):$(printf '%q' "$RGMK"):\$PATH " rg_run "$RGPAY"
 is "the same reason on the next Stop gives no second message" "1" "$(rge_n M)"
 is "and writes the option no second time" "1" "$(rge_n S)"
@@ -6886,7 +6892,7 @@ for dm_f in "${dm_names[@]}"; do
     printf '## src.go:%s (+)\n> foo\nDM fix\n\n' "$dm_k" > "$DM/store$dm_k"
     dm_tmux 3 "$DIR/scripts/tmux-review" --deliver "$dm_p" "$DM/store$dm_k"
     is "the delivery notice draws the window [$dm_f] as written" "1" \
-       "$(dm_drawn 3 "cockpit: review pasted into t:0 $dm_f ")"
+       "$(dm_drawn 3 "cockpit: review pasted into t:0 · $dm_f ")"
 done
 dm_down 3
 # 4. cockpit.tmux's dmsg of "@cockpit_panel_mode is [$pmode]" (#1096): the value went in
@@ -6965,7 +6971,7 @@ dm_note() {                   # <n> <case> <want>: name the window w<n>, deliver
     "$TMUX_REAL" -L "$dm_s" rename-window -t t:0 -- "w$1" >/dev/null 2>&1
     printf '## src.go:%s (+)\n> foo\nDM fix\n\n' "$1" > "$DM/jstore$1"
     dm_tmux 6 "$DIR/scripts/tmux-review" --deliver "$dm_p" "$DM/jstore$1"
-    local want="cockpit: review pasted into t:0 w$1 · ↵ sends it$3" got
+    local want="cockpit: review pasted into t:0 · w$1 · ↵ sends it$3" got
     dm_line 6 "$want" >/dev/null
     got=$("$TMUX_REAL" -L "cockpit-dmo-$$-6" capture-pane -p -t o | tail -1)
     is "the notice names the bound jump key: $2" "$want" "${got%"${got##*[! ]}"}"
@@ -7023,11 +7029,11 @@ done
     rename-window -t work:2 api >/dev/null 2>&1
 printf '## src.go:20 (+)\n> foo\nDM fix\n\n' > "$DM/jstore-fit"
 dm_tmux 6 "$DIR/scripts/tmux-review" --deliver "$dm_p" "$DM/jstore-fit"
-dm_f="cockpit: review pasted into work:2 api · ↵ sends it · prefix x jumps"
+dm_f="cockpit: review pasted into work:2 · api · ↵ sends it · prefix x jumps"
 dm_line 6 "$dm_f" >/dev/null
 dm_d=$("$TMUX_REAL" -L "cockpit-dmo-$$-6" capture-pane -p -t o | tail -1)
 dm_k=$("$TMUX_REAL" -L "$dm_s" list-clients -F '#{client_width}' | head -1)
-is "the notice for work:2 api is drawn whole on a $dm_k-column client" "$dm_f" \
+is "the notice for work:2 · api is drawn whole on a $dm_k-column client" "$dm_f" \
    "${dm_d%"${dm_d##*[! ]}"}"
 is "and it fits the 72 columns an 80-column client shows" "yes" \
    "$( [ "$(ncols "$dm_f")" -le 72 ] && [ "$dm_k" -gt 72 ] && echo yes \
@@ -10630,6 +10636,8 @@ RAENV="PATH=$(printf '%q' "$RAB"):\$PATH FAKE_RD_DIR=$(printf '%q' "$RAW")"
     '|claude|codex|aider|cursor|opencode|gemini|crush|' >/dev/null 2>&1
 RAAP=$("$TMUX_REAL" -L "$RA" list-panes -t t: -F '#{pane_id}')
 "$TMUX_REAL" -L "$RA" set-option -p -t "$RAAP" @cockpit_review pending >/dev/null 2>&1
+# a title of its own, so the prompt's label does not wait on the window's automatic-rename
+"$TMUX_REAL" -L "$RA" set-option -p -t "$RAAP" @cockpit_title 'ra agent' >/dev/null 2>&1
 # new-window, not split-window: each control shell gets its own full-height
 # window; -p still targets RAAP explicitly, so which window the loop runs from
 # is moot.
@@ -10648,6 +10656,11 @@ until_cap "$RA" "$RACTL" '*1 comment(s) pinned*' &&
     ok "the comment revdiff wrote is pinned in the session store" ||
     bad "the comment revdiff wrote is pinned in the session store" \
     "1 comment(s) pinned" "$("$TMUX_REAL" -L "$RA" capture-pane -p -t "$RACTL")"
+# #1407: the prompt names the agent's pane by its label, never its id
+until_cap "$RA" "$RACTL" '*d deliver to t:0 · ra agent*' &&
+    ok "#1407: the prompt names the agent's pane by its label" ||
+    bad "#1407: the prompt names the agent's pane by its label" \
+    "d deliver to t:0 · ra agent" "$("$TMUX_REAL" -L "$RA" capture-pane -p -t "$RACTL")"
 "$TMUX_REAL" -L "$RA" send-keys -t "$RACTL" a
 # Deliver it (the pane is idle: a paste), then re-open and approve.
 "$TMUX_REAL" -L "$RA" send-keys -t "$RACTL" d
@@ -16650,6 +16663,8 @@ PNREC
 # never be what gets pasted.
 cat > "$PND/p/bin/cockpit-tui" <<PNSTUB
 #!/bin/sh
+# label (#1407): a fixed lbl<N>, the pane the wrapper asked about
+[ "\$1" = label ] && { printf 'lbl%s\n' "\${2#%}"; exit 0; }
 [ "\$1" = workdir ] && exit 1
 dir=\${COCKPIT_ACTION%/*}
 { stat -c %a "\$dir" 2>/dev/null || stat -f %Lp "\$dir"; } > "$PND/dmode"
@@ -16734,27 +16749,27 @@ PATH="$PND/rec:$PATH" XDG_STATE_HOME="$PND/xdg" COCKPIT_LOG="$PND/tui.log" \
 is "a hide on an ask leaves the panel hidden before it" "H" \
     "$(cat "$PND/xdg/tmux-cockpit/panel/4242-5.state")"
 is "and says this one is closed" "1" \
-    "$(grep -c 'already hidden on %5; this one is closed' "$PND/pargv")"
+    "$(grep -c 'already hidden on lbl5; this one is closed' "$PND/pargv")"
 rm -f "$PND/state"; rm -rf "$PND/xdg"
 : > "$PND/bargv"; pask >/dev/null
 is "a plain run is not told the slot is taken" "" "$(cat "$PND/taken")"
 unset -f pask
 is "send %5 loads the text, pastes it bracketed, deletes the buffer, presses Enter, says so" \
-   "load-buffer -b B -;hi;paste-buffer -p -d -b B -t %5;send-keys -t %5 Enter;display-message -t %5 -l cockpit: sent to %5;" \
+   "load-buffer -b B -;hi;paste-buffer -p -d -b B -t %5;send-keys -t %5 Enter;display-message -t %5 -l cockpit: sent to lbl5;" \
    "$(pact 'send %5' hi)"
 is "paste %5 is the same without Enter, and says how much went in" \
-   "load-buffer -b B -;hi;paste-buffer -p -d -b B -t %5;display-message -t %5 -l cockpit: inserted 2 chars into %5;" \
+   "load-buffer -b B -;hi;paste-buffer -p -d -b B -t %5;display-message -t %5 -l cockpit: inserted 2 chars into lbl5;" \
    "$(pact 'paste %5' hi)"
 : > "$PND/tui.log"; touch "$PND/fail-load-buffer"
 is "a failed load-buffer pastes nothing and says so" \
-   "load-buffer -b B -;display-message -t %5 -l cockpit: could not load the paste buffer; nothing sent to %5;" \
+   "load-buffer -b B -;display-message -t %5 -l cockpit: could not load the paste buffer; nothing sent to lbl5;" \
    "$(pact 'paste %5' hi)"
 rm -f "$PND/fail-load-buffer"
 is "and logs tmux's error" "1" \
     "$(grep -c 'load-buffer failed for %5: boom load-buffer' "$PND/tui.log")"
 : > "$PND/tui.log"; touch "$PND/fail-paste-buffer"
 is "a failed paste-buffer drops the buffer, sends no Enter and says so" \
-   "load-buffer -b B -;hi;paste-buffer -p -d -b B -t %5;delete-buffer -b B;display-message -t %5 -l cockpit: could not paste into %5; nothing sent;" \
+   "load-buffer -b B -;hi;paste-buffer -p -d -b B -t %5;delete-buffer -b B;display-message -t %5 -l cockpit: could not paste into lbl5; nothing sent;" \
    "$(pact 'send %5' hi)"
 rm -f "$PND/fail-paste-buffer"
 is "and logs tmux's error" "1" \
@@ -16810,13 +16825,13 @@ is "COCKPIT_READONLY runs the panel and sends tmux nothing, not even a message" 
     "$(COCKPIT_READONLY=1 pact 'send %5' hi)"
 is "and logs what it would have done" "1" "$(grep -c 'readonly, not sent: send %5' "$PND/tui.log")"
 is "a text that starts with - is pasted as text, not read as a flag" \
-   "load-buffer -b B -;-n hi;paste-buffer -p -d -b B -t %5;display-message -t %5 -l cockpit: inserted 5 chars into %5;" \
+   "load-buffer -b B -;-n hi;paste-buffer -p -d -b B -t %5;display-message -t %5 -l cockpit: inserted 5 chars into lbl5;" \
    "$(pact 'paste %5' '-n hi')"
 rm -f "$PND/bargv"; pact 'paste %5' hi >/dev/null
 is "with no state file the binary runs once" "panel %5" "$(cat "$PND/bargv")"
 touch "$PND/state"; rm -f "$PND/bargv"
 is "a state file beside the action reruns the binary on it, after the paste" \
-   "load-buffer -b B -;hi;paste-buffer -p -d -b B -t %5;display-message -t %5 -l cockpit: inserted 2 chars into %5;load-buffer -b B -;hi;paste-buffer -p -d -b B -t %5;display-message -t %5 -l cockpit: inserted 2 chars into %5;" \
+   "load-buffer -b B -;hi;paste-buffer -p -d -b B -t %5;display-message -t %5 -l cockpit: inserted 2 chars into lbl5;load-buffer -b B -;hi;paste-buffer -p -d -b B -t %5;display-message -t %5 -l cockpit: inserted 2 chars into lbl5;" \
    "$(pact 'paste %5' hi)"
 # The path is cut out of each run's line before the lines are joined: cut after, the greedy
 # pattern would take every run between the first --resume and the last /resume (#1076).
@@ -16877,6 +16892,9 @@ ph_gone() {                   # <pane>
 ph_cap() { "$TMUX_REAL" -L "$PH" capture-pane -p -t "$PHB" 2>/dev/null; }
 PHA=$("$TMUX_REAL" -L "$PH" new-window -d -P -F '#{pane_id}' -t t: 'exec cat')
 PHC=$("$TMUX_REAL" -L "$PH" new-window -d -P -F '#{pane_id}' -t t: 'exec cat')
+# PHC's label (#1407), read from tmux: a window named by hand keeps its name
+"$TMUX_REAL" -L "$PH" rename-window -t "$PHC" phc
+PHCL="$("$TMUX_REAL" -L "$PH" display -p -t "$PHC" '#{session_name}:#{window_index}') · phc"
 PHF="$PHD/state/tmux-cockpit/panel/$("$TMUX_REAL" -L "$PH" display -p '#{pid}')-${PHA#%}.state"
 ph_open "$PHA"
 until_cap "$PH" "$PHB" '*will send*' || bad "the panel opens on Home" "will send" "$(ph_cap)"
@@ -16930,6 +16948,20 @@ fi
 is "and its file is removed" "" "$([ -e "$PHF" ] && echo there)"
 "$TMUX_REAL" -L "$PH" send-keys -t "$PHB" q
 ph_gone "$PHB"
+# Two at once are counted, not named (#1407): a gone pane has no label. Fresh files for two
+# ids this server never gave out stand for them.
+: > "${PHF%-*}-99998.state"; : > "${PHF%-*}-99999.state"
+ph_open "$PHC"
+if until_cap "$PH" "$PHB" "*dropped 2 hidden panels whose panes are gone*"; then
+    ok "two hidden panels whose panes are gone are dropped with one counted note"
+else
+    bad "two hidden panels whose panes are gone are dropped with one counted note" \
+        "dropped 2 hidden panels whose panes are gone" "$(ph_cap)"
+fi
+is "and both files are removed" "" \
+   "$(ls -- "${PHF%-*}-99998.state" "${PHF%-*}-99999.state" 2>/dev/null)"
+"$TMUX_REAL" -L "$PH" send-keys -t "$PHB" q
+ph_gone "$PHB"
 # #1112: the hidden message names the prefix key bound with the panel's note, read from
 # the binding as the jump notice reads its key (#1109), never @cockpit_panel_bound alone:
 # a key moved by hand leaves the record naming a key that is not the panel (stock f here).
@@ -16946,17 +16978,17 @@ ph_hidden() {                 # -> the note the wrapper writes on ^Z, as the boa
 "$TMUX_REAL" -L "$PH" bind-key -N 'cockpit: panel' g display-message panel \; \
     set-option -g @cockpit_panel_bound f
 is "a key moved by hand: the message names the noted key, not the record" \
-    "cockpit: hidden · prefix g on $PHC brings it back" "$(ph_hidden)"
+    "cockpit: hidden · prefix g on $PHCL brings it back" "$(ph_hidden)"
 "$TMUX_REAL" -L "$PH" set-option -gu @cockpit_panel_bound
 is "no record: the noted key is named" \
-    "cockpit: hidden · prefix g on $PHC brings it back" "$(ph_hidden)"
+    "cockpit: hidden · prefix g on $PHCL brings it back" "$(ph_hidden)"
 "$TMUX_REAL" -L "$PH" bind-key -N 'cockpit: panel' h display-message panel \; \
     set-option -g @cockpit_panel_bound h
 is "two noted keys: the one the record names" \
-    "cockpit: hidden · prefix h on $PHC brings it back" "$(ph_hidden)"
+    "cockpit: hidden · prefix h on $PHCL brings it back" "$(ph_hidden)"
 "$TMUX_REAL" -L "$PH" unbind-key g \; unbind-key h \; set-option -g @cockpit_panel_bound f
 is "no noted key: none is named, whatever the record says" \
-    "cockpit: hidden · the panel key on $PHC brings it back" "$(ph_hidden)"
+    "cockpit: hidden · the panel key on $PHCL brings it back" "$(ph_hidden)"
 # #1124: a user's note on c, listed before g, holding the panel's note and a tab, a \037 or
 # a newline, all printed raw by tmux: never a key name, an empty key or the panel's note.
 "$TMUX_REAL" -L "$PH" bind-key -N 'cockpit: panel' g display-message panel \; \
@@ -16965,7 +16997,7 @@ for ph_n in $'cockpit: panel\tTAB' $'cockpit: panel\037US' $'cockpit: panel\nx' 
     $'X\ncockpit: panel'; do
     "$TMUX_REAL" -L "$PH" bind-key -N "$ph_n" c display-message user
     is "c noted [$(printf %q "$ph_n")], no record: the noted g" \
-        "cockpit: hidden · prefix g on $PHC brings it back" "$(ph_hidden)"
+        "cockpit: hidden · prefix g on $PHCL brings it back" "$(ph_hidden)"
 done
 "$TMUX_REAL" -L "$PH" unbind-key c \; unbind-key g
 # #1121: the binary is told that key too, as COCKPIT_PANEL_KEY, for its ^Z help. None noted
@@ -19976,6 +20008,67 @@ esac
 "$TMUX_REAL" -L "$PO" kill-server >/dev/null 2>&1
 fi
 
+echo "== #1407: a shell message names a pane by its label, not its %N =="
+# label_ask (scripts/lib/label.sh) asks the real binary, and the messages built on it name a
+# pane by `session:window · title`. A private server, never the user's (AGENTS.md); its
+# pane has a title of its own, so no automatic-rename moves the label under a row. A tmux on
+# PATH sends every call there and logs each message.
+if need_tmux "#1407 labels"; then :; else
+LB="cockpit-lb-$$"; SOCKS="$SOCKS $LB"; LBD=$(mktmpd)
+mkdir -p "$LBD/bin"
+"$TMUX_REAL" -L "$LB" -f /dev/null new-session -d -s t -n home -x 120 -y 30 -c "$LBD" \
+    'exec sleep 300' >/dev/null 2>&1
+LBP=$("$TMUX_REAL" -L "$LB" new-window -d -P -F '#{pane_id}' -n rv -t t: -c "$LBD" \
+    'exec sleep 300')
+"$TMUX_REAL" -L "$LB" set-option -p -t "$LBP" @cockpit_title 'fix the tests'
+LBL='t:1 · fix the tests'
+cat > "$LBD/bin/tmux" <<LBTMUX
+#!/bin/sh
+case "\$*" in *'display-message -l'*) printf '%s\n' "\$*" >> $(tq "$LBD/said") ;; esac
+exec $(tq "$TMUX_REAL") -L $LB "\$@"
+LBTMUX
+chmod +x "$LBD/bin/tmux"
+lb() { PATH="$LBD/bin:$PATH" env -u TMUX -u TMUX_PANE "$@"; }
+lb_ask() {                    # <pane> -> what label_ask prints for it
+    lb bash -c '. "$1/scripts/lib/label.sh" && label_ask "$2"' _ "$DIR" "$1" 2>/dev/null
+}
+is "label_ask prints the binary's label, session:window · title" "$LBL" "$(lb_ask "$LBP")"
+is "label_ask on a pane that is gone says the pane" "the pane" "$(lb_ask %99999)"
+is "label_ask with no binary there says the pane" "the pane" \
+   "$(COCKPIT_TUI_BIN="$LBD/none" lb_ask "$LBP")"
+printf '#!/bin/sh\nexit 2\n' > "$LBD/old"; chmod +x "$LBD/old"
+is "label_ask with a binary that has no label (exit 2) says the pane" "the pane" \
+   "$(COCKPIT_TUI_BIN="$LBD/old" lb_ask "$LBP")"
+is "label_ask on a word that is no pane id says the pane" "the pane" "$(lb_ask x)"
+# A refused delivery names the pane by its label; the command it offers keeps the id.
+printf '## a.go:1 (+)\n> x\nfix this\n\n' > "$LBD/store"; : > "$LBD/said"
+lb "$DIR/scripts/tmux-review" --deliver "$LBP" "$LBD/store" >/dev/null 2>&1
+is "a refused delivery names the pane by its label, its command keeps the id" "1|1|0" \
+   "$(grep -cF "cockpit: $LBL is not an agent pane, refusing to deliver" "$LBD/said")|$(
+      grep -cF -- "--deliver $LBP " "$LBD/said")|$(grep -cF "cockpit: $LBP " "$LBD/said")"
+is "--request with no client attached names the pane by its label" \
+   "tmux-review: no client is attached to $LBL's session — nowhere to open the review" \
+   "$(lb "$DIR/scripts/tmux-review" --request "$LBP" 2>&1 >/dev/null)"
+is "--request on a pane that is gone says the pane is gone" "tmux-review: the pane is gone" \
+   "$(lb "$DIR/scripts/tmux-review" --request %99999 2>&1 >/dev/null)"
+: > "$LBD/said"
+lb "$DIR/scripts/tmux-review" -p %99999 >/dev/null 2>&1
+is "the review key on a pane that is gone says the pane is gone, no id" "1|0" \
+   "$(grep -cF 'cockpit: the pane is gone' "$LBD/said")|$(grep -cF '%99999' "$LBD/said")"
+# tmux-rename's pane row on a pane that is gone, as when set-option fails (#1408)
+: > "$LBD/said"; "$TMUX_REAL" -L "$LB" set-option -g @cockpit_rename_to x1
+lb "$DIR/scripts/tmux-rename" pane %99999 >/dev/null 2>&1
+is "a name that cannot be set names the pane by its label, never its id" "1|0" \
+   "$(grep -cF 'cockpit: could not name the pane x1' "$LBD/said")|$(grep -cF '%99999' "$LBD/said")"
+: > "$LBD/said"; "$TMUX_REAL" -L "$LB" set-option -gu @cockpit_rename_to
+lb "$DIR/scripts/tmux-rename" pane %99999 >/dev/null 2>&1
+is "a name that cannot be cleared names the pane by its label, never its id" "1|0" \
+   "$(grep -cF 'cockpit: could not clear the name of the pane' "$LBD/said")|$(
+      grep -cF '%99999' "$LBD/said")"
+unset -f lb lb_ask
+"$TMUX_REAL" -L "$LB" kill-server >/dev/null 2>&1
+fi
+
 echo "== cockpit-board: kill %N re-checks the pane's window id, kills the pane only (#301); request %N is unknown (#288) =="
 # The wrapper half of the two verbs, driven by writing the action file directly
 # (a stub binary does the writing). A real private server, real windows; the
@@ -19993,6 +20086,12 @@ chmod +x "$KD/p/scripts/tmux-review"
 # $COCKPIT_ACTION.expect before the line, as the board does, when asked to.
 cat > "$KD/bin" <<KDBIN
 #!/bin/sh
+# label (#1407): a fixed lbl<N> while tmux lists the pane, exit 1 once it is gone, as the
+# binary does
+if [ "\$1" = label ]; then
+    [ "\$(tmux display -p -t "\$2" '#{pane_id}' 2>/dev/null)" = "\$2" ] || exit 1
+    printf 'lbl%s\n' "\${2#%}"; exit 0
+fi
 printf '%s\n' "\$*" >> "$KD/bargv"
 [ "\${5:-}" = "" ] || cat "\$5" >> "$KD/bargv"
 if [ -e "$KD/once" ]; then
@@ -20033,9 +20132,8 @@ $(tq "$KD/p/scripts/cockpit-board") -p $KVHOME; echo x > $(tq "$KD/done")"
 }
 
 V=$(kv_win vic-one); VW=$(kv_id "$V")
-VI=$("$TMUX_REAL" -L "$KV" display-message -p -t "$V" '#{session_name}:#{window_index}')
-KVNOTE="✓ cockpit: killed pane $V ($VI vic-one)"
-is "kill %N with the shown pane and window ids kills the pane, and the whole ✓ note names pane, place and name" \
+KVNOTE="✓ cockpit: killed lbl${V#%}"
+is "kill %N with the shown pane and window ids kills the pane; the ✓ note names its label" \
     "$KVNOTE" "$(kv_run "kill $V" "$V $VW")"
 is "and the pane is gone" "gone" "$(kv_alive "$V")"
 
@@ -20047,10 +20145,11 @@ A2=$("$TMUX_REAL" -L "$KV" split-window -d -P -F '#{pane_id}' -t "$A" 'exec slee
 B=$(kv_win claude); BW=$(kv_id "$B")
 "$TMUX_REAL" -L "$KV" join-pane -d -s "$A" -t "$B"
 case "$(kv_run "kill $A" "$A $AW")" in
-    "✕ cockpit: not killed: $A is now in window $BW, you confirmed $AW") \
-            ok "a pane moved into a window of the same name is refused, naming both ids" ;;
-    *) bad "a pane moved into a window of the same name is refused, naming both ids" \
-            "✕ ... $A is now in window $BW, you confirmed $AW" "$(sed -n '3,$p' "$KD/bargv")" ;;
+    "✕ cockpit: not killed: lbl${A#%} is not in the window you confirmed") \
+            ok "a pane moved into a window of the same name is refused, naming it by its label" ;;
+    *) bad "a pane moved into a window of the same name is refused, naming it by its label" \
+            "✕ cockpit: not killed: lbl${A#%} is not in the window you confirmed" \
+            "$(sed -n '3,$p' "$KD/bargv")" ;;
     esac
 is "and nothing died: the first window's other pane, the moved pane, the other window" \
     "alive alive alive" \
@@ -20072,12 +20171,14 @@ kv_run "kill $C" "$C $CW" >/dev/null
 KV_SHIM=
 is "a pane that moves between the check and the kill takes nothing with it" "alive alive alive" \
     "$(kv_alive "$C") $(kv_alive "$C2") $(kv_alive "$D")"
-# The whole first field, not cut -c1-1: GNU cut counts bytes, and ✕ is three (#482).
-is "and the board is told it was not killed" "✕" "$(awk 'NR >= 3 { print $1 }' "$KD/bargv")"
+# The whole note, not cut -c1-1: GNU cut counts bytes, and ✕ is three (#482).
+is "and the board is told it was not killed, the pane by its label" \
+    "✕ cockpit: not killed: lbl${C#%} left the window you confirmed or would not close" \
+    "$(sed -n '3,$p' "$KD/bargv")"
 
 V=$(kv_win vic-two)
 case "$(kv_run "kill $V" "$V $BW")" in
-    "✕ cockpit: not killed: $V is now in window "*", you confirmed $BW") \
+    "✕ cockpit: not killed: lbl${V#%} is not in the window you confirmed") \
             ok ".expect naming another window's id refuses" ;;
     *) bad ".expect naming another window's id refuses" "✕ ... you confirmed $BW" \
             "$(sed -n '3,$p' "$KD/bargv")" ;;
@@ -20131,10 +20232,10 @@ case "$(tail -n 1 "$KD/bargv")" in
 is "and the window it named survives" "alive" "$(kv_alive "$V2")"
 
 case "$(kv_run "kill %99999" "%99999 @1")" in
-    '✕ cockpit: %99999 is gone, nothing killed') \
+    '✕ cockpit: the pane is gone, nothing killed') \
             ok "kill of a pane that is gone says so and kills nothing" ;;
     *) bad "kill of a pane that is gone says so and kills nothing" \
-            "✕ cockpit: %99999 is gone, nothing killed" "$(sed -n '3,$p' "$KD/bargv")" ;;
+            "✕ cockpit: the pane is gone, nothing killed" "$(sed -n '3,$p' "$KD/bargv")" ;;
     esac
 
 # #301: a window holding a second pane: only the agent's pane goes, as the
@@ -20196,6 +20297,12 @@ printf '#!/bin/sh\nprintf "[%%s]" "$PWD" "$@" > %s\nexec sleep 3600\n' "$(tq "$R
 chmod +x "$RSD/stub/claude"
 cat > "$RSD/bin" <<RSBIN
 #!/bin/sh
+# label (#1407): a fixed lbl<N> while tmux lists the pane, exit 1 once it is gone, as the
+# binary does
+if [ "\$1" = label ]; then
+    [ "\$(tmux display -p -t "\$2" '#{pane_id}' 2>/dev/null)" = "\$2" ] || exit 1
+    printf 'lbl%s\n' "\${2#%}"; exit 0
+fi
 printf '%s\n' "\$*" >> "$RSD/bargv"
 [ "\${5:-}" = "" ] || cat "\$5" >> "$RSD/bargv"
 [ ! -e "$RSD/once" ] || exit 0
@@ -20277,17 +20384,31 @@ done
 
 R=$(rs_agent "$SID")
 case "$(rs_run "resume $R" "${SID%c}d")" in
-    "✕ cockpit: not resumed: $R no longer holds session ${SID%c}d") \
+    "✕ cockpit: not resumed: lbl${R#%} no longer holds session ${SID%c}d") \
             ok "a session the pane no longer holds is refused" ;;
     *) bad "a session the pane no longer holds is refused" "✕ ... no longer holds" \
             "$(cat "$RSD/bargv")" ;;
     esac
 is "and nothing ran" "1 " "$(rs_panes "$R") $(cat "$RSD/ran" 2>/dev/null)"
 case "$(rs_run "resume %99999" "$SID")" in
-    '✕ cockpit: %99999 is gone, nothing resumed') ok "resume of a pane that is gone says so" ;;
-    *) bad "resume of a pane that is gone says so" "✕ cockpit: %99999 is gone, nothing resumed" \
+    '✕ cockpit: the pane is gone, nothing resumed') ok "resume of a pane that is gone says so" ;;
+    *) bad "resume of a pane that is gone says so" "✕ cockpit: the pane is gone, nothing resumed" \
             "$(cat "$RSD/bargv")" ;;
     esac
+# A pane whose cwd was removed has no directory to start in (#1407 names it by its label).
+RX=$(mktmpd)
+R=$("$TMUX_REAL" -L "$RS" new-window -d -P -F '#{pane_id}' -c "$RX" -t t: 'exec sleep 3600')
+"$TMUX_REAL" -L "$RS" set -p -t "$R" @panestate needs-input
+"$TMUX_REAL" -L "$RS" set -p -t "$R" @cockpit_session "$SID"
+rmdir -- "$RX"
+case "$(rs_run "resume $R" "$SID")" in
+    "✕ cockpit: not resumed: lbl${R#%} has no directory to start in") \
+            ok "a pane whose folder is gone is not resumed, named by its label" ;;
+    *) bad "a pane whose folder is gone is not resumed, named by its label" \
+            "✕ cockpit: not resumed: lbl${R#%} has no directory to start in" \
+            "$(cat "$RSD/bargv")" ;;
+    esac
+unset RX
 # A second copy of a live session is refused: a pane whose command is an
 # agent (by @cockpit_agents_glob, or a claude renamed to its version) holding
 # the id. The ended panes above held it too and never blocked a resume.
@@ -20301,10 +20422,10 @@ for argv0 in claude 2.1.246 2..1 2.1.318. 2_1_318_ ./2.1.318 /x/-2.1.318; do
     "$TMUX_REAL" -L "$RS" set -p -t "$RL" @cockpit_session "$SID"
     R=$(rs_agent "$SID")
     case "$(rs_run "resume $R" "$SID")" in
-        "✕ cockpit: ${SID:0:8} is already running in $RL") ok \
+        "✕ cockpit: ${SID:0:8} is already running in lbl${RL#%}") ok \
                 "a session live in another pane ($argv0) is not resumed twice" ;;
         *) bad "a session live in another pane ($argv0) is not resumed twice" \
-                "✕ cockpit: ${SID:0:8} is already running in $RL" "$(cat "$RSD/bargv")" ;;
+                "✕ cockpit: ${SID:0:8} is already running in lbl${RL#%}" "$(cat "$RSD/bargv")" ;;
         esac
     is "and nothing ran for it" "1 " "$(rs_panes "$R") $(cat "$RSD/ran" 2>/dev/null)"
     "$TMUX_REAL" -L "$RS" kill-pane -t "$RL"
@@ -20335,10 +20456,10 @@ R=$("$TMUX_REAL" -L "$RS" new-window -d -P -F '#{pane_id}' -c "$RSD/work" -t t: 
 "$TMUX_REAL" -L "$RS" set -p -t "$R" @panestate running
 "$TMUX_REAL" -L "$RS" set -p -t "$R" @cockpit_session "$SID"
 case "$(rs_run "resume $R" "$SID")" in
-    "✕ cockpit: ${SID:0:8} is already running in $R") ok \
+    "✕ cockpit: ${SID:0:8} is already running in lbl${R#%}") ok \
             "a target running its agent again is not resumed" ;;
     *) bad "a target running its agent again is not resumed" \
-            "✕ cockpit: ${SID:0:8} is already running in $R" "$(cat "$RSD/bargv")" ;;
+            "✕ cockpit: ${SID:0:8} is already running in lbl${R#%}" "$(cat "$RSD/bargv")" ;;
     esac
 "$TMUX_REAL" -L "$RS" kill-pane -t "$R"
 # an agent holding the id with no @panestate still blocks: SessionStart and idle
@@ -20347,10 +20468,10 @@ RL=$("$TMUX_REAL" -L "$RS" new-window -d -P -F '#{pane_id}' -t t: 'exec -a claud
 "$TMUX_REAL" -L "$RS" set -p -t "$RL" @cockpit_session "$SID"
 R=$(rs_agent "$SID")
 case "$(rs_run "resume $R" "$SID")" in
-    "✕ cockpit: ${SID:0:8} is already running in $RL") ok \
+    "✕ cockpit: ${SID:0:8} is already running in lbl${RL#%}") ok \
             "a live agent holding the id with no @panestate is not resumed twice" ;;
     *) bad "a live agent holding the id with no @panestate is not resumed twice" \
-            "✕ cockpit: ${SID:0:8} is already running in $RL" "$(cat "$RSD/bargv")" ;;
+            "✕ cockpit: ${SID:0:8} is already running in lbl${RL#%}" "$(cat "$RSD/bargv")" ;;
     esac
 "$TMUX_REAL" -L "$RS" kill-pane -t "$RL"
 "$TMUX_REAL" -L "$RS" kill-pane -t "$R" 2>/dev/null
@@ -20402,10 +20523,10 @@ is "so the agent glob calls it an agent" "1" "$("$TMUX_REAL" -L "$RS" display -p
 "$TMUX_REAL" -L "$RS" set -p -t "$RN" @cockpit_session "$SID"
 R2=$(rs_agent "$SID")
 case "$(RS_STUB="$RSD/stub2" RS_PATH="$rs_nc" rs_run "resume $R2" "$SID")" in
-    "✕ cockpit: ${SID:0:8} is already running in $RN") ok \
+    "✕ cockpit: ${SID:0:8} is already running in lbl${RN#%}") ok \
             "and a second o on the same id is refused: the live-copy check sees it" ;;
     *) bad "and a second o on the same id is refused: the live-copy check sees it" \
-            "✕ cockpit: ${SID:0:8} is already running in $RN" "$(cat "$RSD/bargv")" ;;
+            "✕ cockpit: ${SID:0:8} is already running in lbl${RN#%}" "$(cat "$RSD/bargv")" ;;
     esac
 is "and nothing ran for it" "1 " "$(rs_panes "$R2") $(cat "$RSD/ran" 2>/dev/null)"
 fi
@@ -26111,6 +26232,12 @@ ac set -p -t "$ACO" @cockpit_session "$SID"
 ac set -p -t "$ACS" @cockpit_session "$SID"; ac set -p -t "$ACS" @panestate needs-input
 cat > "$ACD/bin" <<ACBIN
 #!/bin/sh
+# label (#1407): a fixed lbl<N> while tmux lists the pane, exit 1 once it is gone, as the
+# binary does
+if [ "\$1" = label ]; then
+    [ "\$(tmux display -p -t "\$2" '#{pane_id}' 2>/dev/null)" = "\$2" ] || exit 1
+    printf 'lbl%s\n' "\${2#%}"; exit 0
+fi
 [ "\${5:-}" = "" ] || cat "\$5" >> "$ACD/note"
 [ ! -e "$ACD/once" ] || exit 0
 : > "$ACD/once"
@@ -26132,7 +26259,7 @@ $(tq "$DIR/scripts/cockpit-board") -p $ACH; \
 echo x > $(tq "$ACD/done")"
 until_file "$ACD/done" 'x'
 is "resume: a session live in OPENCODE is not opened twice" \
-    "✕ cockpit: ${SID:0:8} is already running in $ACO" "$(cat "$ACD/note" 2>/dev/null)"
+    "✕ cockpit: ${SID:0:8} is already running in lbl${ACO#%}" "$(cat "$ACD/note" 2>/dev/null)"
 is "the window's claude is the row's own" "$ACD/stub/claude" "$(cat "$ACD/which" 2>/dev/null)"
 # The stub writes its line a moment before or after `done` appears, and a read right at `done`
 # can come first (#1001). A claude started for the resume runs in a pane, by a split or in a
@@ -28192,8 +28319,9 @@ printf '%s' "$PGD/a" > "$PGD/wd"; printf '%s' "$PGD/b" > "$PGD/moveto"
 is "a folder moved while the panel was open: nothing sent, both folders named" \
    "✕ cockpit: the pane's folder is now $PGD/b, not $PGD/a; nothing sent" "$(pg_run "$pgt")"
 rm -f "$PGD/moveto"; printf '%s' "$PGD/a" > "$PGD/wd"
+# The stub answers no `label` (exit 2), as an older binary: the pane, never its id (#1407).
 is "the same folder at open and paste: the paste goes through" \
-   "cockpit: inserted 14 chars into $pgt" "$(pg_run "$pgt")"
+   "cockpit: inserted 14 chars into the pane" "$(pg_run "$pgt")"
 # Hidden on ^Z, the folder it was opened on is kept beside the state, and a resume uses it.
 pgs=$("$TMUX_REAL" -L "$PG" display -p '#{pid}')
 pgw="$PGD/state/tmux-cockpit/panel/$pgs-${pgt#%}.wd"
@@ -28204,7 +28332,7 @@ is "a resumed panel compares against that folder, not the one at resume" \
    "✕ cockpit: the pane's folder is now $PGD/b, not $PGD/a; nothing sent" "$(pg_run "$pgt")"
 printf '%s' "$PGD/a" > "$PGD/wd"; pg_run "$pgt" >/dev/null
 is "a resumed panel in the folder it was opened on pastes" \
-   "cockpit: inserted 14 chars into $pgt" "$(pg_run "$pgt")"
+   "cockpit: inserted 14 chars into the pane" "$(pg_run "$pgt")"
 rm -f "$PGD/hide"
 # No answer from `workdir`: the pane's cwd is the folder, and a cd in the pane is caught.
 rm -f "$PGD/wd"; touch "$PGD/cdto"
