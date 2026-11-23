@@ -9354,12 +9354,21 @@ is "the popup's switch goes to its own client" "switch-client -c /dev/pts/9 -t \
     "$(grep '^switch' "$TF/log")"
 
 echo "== install.sh --hooks merges additively =="
+# --hooks also installs the mod through claude's plugin CLI (#1420), and the suite's own claude
+# fails every call. A row that reads the exit of a run about the hooks puts this claude first on
+# PATH: it knows no marketplace and takes every call. Prints its folder.
+hk_claude() {
+    local d
+    d=$(mktmpd) || return 1
+    printf '#!/bin/sh\n[ "$*" = "plugin marketplace list --json" ] && echo "[]"\nexit 0\n' \
+        > "$d/claude" && chmod +x "$d/claude" && printf '%s' "$d"
+}
 HK=$(mktmpd); mkdir -p "$HK/.claude"
 cat > "$HK/.claude/settings.json" <<'EOF'
 { "model": "opus", "hooks": { "Stop": [ { "hooks": [ { "type": "command", "command": "my-own-tool" } ] } ] } }
 EOF
 if command -v jq >/dev/null 2>&1; then
-HOME="$HK" "$DIR/install.sh" --hooks >/dev/null 2>&1
+HOME="$HK" PATH="$(hk_claude):$PATH" "$DIR/install.sh" --hooks >/dev/null 2>&1
 is "the installer exits clean" "0" "$?"
 case "$(cat "$HK/.claude/settings.json")" in
     *my-own-tool*) ok "a foreign hook survives the merge" ;;
@@ -9735,7 +9744,8 @@ cat > "$UH/.claude/settings.json" <<'EOF'
   "zkey": { "keep": true } }
 EOF
 cp "$UH/.claude/settings.json" "$UH/orig.json"
-uhrun() { HOME="$UH" XDG_BIN_HOME="$UH/bin" "$DIR/install.sh" "$@"; }
+UHC=$(hk_claude)
+uhrun() { HOME="$UH" XDG_BIN_HOME="$UH/bin" PATH="$UHC:$PATH" "$DIR/install.sh" "$@"; }
 uhrun --hooks >/dev/null 2>&1
 cp "$UH/.claude/settings.json" "$UH/merged.json"
 out=$(uhrun --uninstall --hooks --dry-run 2>&1)
@@ -9794,7 +9804,7 @@ case "$(ls "$UB/.claude")" in *bak*) bad "and no backup is made" "none" "$(ls "$
 esac
 
 UM=$(mktmpd)
-out=$(HOME="$UM" XDG_BIN_HOME="$UM/bin" "$DIR/install.sh" --uninstall --hooks 2>&1)
+out=$(HOME="$UM" XDG_BIN_HOME="$UM/bin" PATH="$UHC:$PATH" "$DIR/install.sh" --uninstall --hooks 2>&1)
 is "a missing settings.json exits 0" "0" "$?"
 case "$out" in *"nothing to remove"*) ok "and says so" ;;
     *) bad "and says so" "nothing to remove" "$out" ;;
@@ -9828,6 +9838,97 @@ out=$("$DIR/install.sh" --help 2>&1)
 is "--help exits 0" "0" "$?"
 case "$out" in *usage:*) ok "and it prints usage" ;;
     *) bad "and it prints usage" "a usage: line" "$out" ;; esac
+
+echo "== install.sh --hooks installs the cockpit-events mod from this checkout's marketplace (#1420) =="
+# install.sh asks claude's own plugin CLI (docs/mod.md). The stub logs each call's argv as one
+# line and the TMUX_PANE it sees, answers `plugin marketplace list --json` from its list file,
+# and refuses the one call its fail file names. No row reaches a real claude: the stub is first
+# on PATH, and the no-claude row drops every PATH folder that holds one (#895's rule).
+if ! command -v jq >/dev/null 2>&1; then skip_ "the cockpit-events mod rows (no jq)"; else
+MD=$(mktmpd); MDS="$MD/stub"; mkdir -p "$MDS"
+cat > "$MDS/claude" <<'EOF'
+#!/bin/sh
+d=${0%/*}
+printf '%s\n' "$*" >> "$d/argv"
+printf '%s\n' "${TMUX_PANE-unset}" >> "$d/env"
+[ "$*" = "plugin marketplace list --json" ] && cat "$d/list"
+if [ -s "$d/fail" ] && [ "$*" = "$(cat "$d/fail")" ]; then echo 'stub: refused' >&2; exit 1; fi
+exit 0
+EOF
+chmod +x "$MDS/claude"
+MDD=$(cd -P "$DIR" && pwd)       # install.sh's own root, the folder claude is given
+ML0='plugin marketplace list --json'
+MADD="plugin marketplace add $MDD --scope user"
+MINS='plugin install cockpit-events@tmux-cockpit --scope user'
+MREM='plugin marketplace remove tmux-cockpit --scope user'
+MNONE='[{"name":"omc","source":"github","repo":"x/omc"}]'
+MOURS=$(jq -cn --arg d "$MDD" '[{name: "tmux-cockpit", source: "directory", path: $d}]')
+MOTHER='[{"name":"tmux-cockpit","source":"directory","path":"/elsewhere/tmux-cockpit"}]'
+# Run as from a pane, %9: a claude call that fires the SessionEnd hooks must not hand them it.
+mod_run() {                   # <list> <install.sh args>... -> MDRC MDOUT MDARGV, home MDH
+    MDH=$(mktmpd); mkdir -p "$MDH/.claude"; printf '{}\n' > "$MDH/.claude/settings.json"
+    printf '%s\n' "$1" > "$MDS/list"; : > "$MDS/argv"; : > "$MDS/env"; shift
+    MDOUT=$(HOME="$MDH" XDG_BIN_HOME="$MDH/bin" TMUX_PANE=%9 PATH="${MDP:-$MDS:$PATH}" \
+        "$DIR/install.sh" "$@" 2>&1)
+    MDRC=$?
+    MDARGV=$(paste -sd'|' "$MDS/argv")
+}
+mod_said() { printf '%s\n' "$MDOUT" | grep -cF -- "$1"; }
+mod_nocl() {                  # PATH with every folder that holds a claude dropped
+    local - IFS=: out='' e
+    set -f
+    for e in $PATH; do
+        [ -n "$e" ] && [ ! -x "$e/claude" ] && out=${out:+$out:}$e
+    done
+    printf '%s' "$out"
+}
+is "the repo's marketplace: tmux-cockpit, owned by tmux-cockpit, one entry, cockpit-events from ./mods/cockpit-events, as its plugin.json names it" \
+    "tmux-cockpit|tmux-cockpit|1|cockpit-events|./mods/cockpit-events|cockpit-events" \
+    "$(jq -r '[.name, .owner.name, (.plugins | length), .plugins[0].name, .plugins[0].source]
+              | map(tostring) | join("|")' "$DIR/.claude-plugin/marketplace.json" 2>/dev/null)|$(
+       jq -r .name "$DIR/mods/cockpit-events/.claude-plugin/plugin.json")"
+mod_run "$MNONE" --hooks
+is "--hooks with no tmux-cockpit marketplace: adds this checkout, then installs cockpit-events, both at user scope" \
+    "0|$ML0|$MADD|$MINS" "$MDRC|$MDARGV"
+# A `claude plugin` call can fire the SessionEnd hooks, whose agent-state off would clear the
+# pane install.sh runs in: each call goes without TMUX_PANE, and agent-state finds no pane.
+is "and every claude call runs with no TMUX_PANE, so a hook one fires names no pane" "unset" \
+    "$(sort -u "$MDS/env" | paste -sd'|')"
+mod_run "$MOURS" --hooks
+is "--hooks when tmux-cockpit is already this checkout: installs, and adds nothing" \
+    "0|$ML0|$MINS" "$MDRC|$MDARGV"
+mod_run "$MOTHER" --hooks
+is "--hooks when tmux-cockpit is another checkout: names it, adds and installs nothing" "0|$ML0|1" \
+    "$MDRC|$MDARGV|$(mod_said 'marketplace is directory /elsewhere/tmux-cockpit, not this checkout')"
+mod_run "$MOURS" --hooks --dry-run
+is "--hooks --dry-run runs no claude and names the two calls it would make" "0||2" \
+    "$MDRC|$MDARGV|$(mod_said 'dry-run: would run claude plugin ')"
+mod_run "$MOURS" --uninstall --hooks
+is "--uninstall --hooks when tmux-cockpit is this checkout: removes that marketplace at user scope" \
+    "0|$ML0|$MREM" "$MDRC|$MDARGV"
+mod_run "$MNONE" --uninstall --hooks
+is "and with no tmux-cockpit marketplace: removes nothing and says so" "0|$ML0|1" \
+    "$MDRC|$MDARGV|$(mod_said 'no tmux-cockpit marketplace, nothing to remove')"
+mod_run "$MOTHER" --hooks --remove
+is "--hooks --remove when tmux-cockpit is another checkout: names it and leaves it" "0|$ML0|1" \
+    "$MDRC|$MDARGV|$(mod_said 'is directory /elsewhere/tmux-cockpit, not this checkout; left alone')"
+mod_run "$MOURS" --uninstall --hooks --dry-run
+is "--uninstall --hooks --dry-run runs no claude and names the remove" "0||1" \
+    "$MDRC|$MDARGV|$(mod_said "dry-run: would run claude $MREM")"
+MDP=$(mod_nocl) mod_run "$MNONE" --hooks
+is "no claude on PATH: --hooks merges the hooks, says it skipped the mod, and exits 0" "0||1|true" \
+    "$MDRC|$MDARGV|$(mod_said 'no claude on PATH; cockpit-events@tmux-cockpit skipped')|$(
+     jq '[.hooks[][].hooks[].command | select(test("/scripts/agent-state "))] | length > 0' \
+        "$MDH/.claude/settings.json")"
+printf '%s\n' "$MINS" > "$MDS/fail"
+mod_run "$MNONE" --hooks
+rm -f "$MDS/fail"
+is "a claude that fails the install: a FAILED line naming the command, and exit 1" \
+    "1|$ML0|$MADD|$MINS|1" "$MDRC|$MDARGV|$(mod_said "FAILED   claude $MINS (exit 1)")"
+rm -rf "$MD"
+unset MD MDS MDD MDH MDOUT MDRC MDARGV ML0 MADD MINS MREM MNONE MOURS MOTHER
+fi
+unset -f mod_run mod_said mod_nocl
 
 echo "== prefix u jumps to the pane that needs you =="
 if need_tmux "tmux-jump"; then :; else
