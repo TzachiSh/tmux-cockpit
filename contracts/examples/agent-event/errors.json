@@ -7,6 +7,10 @@
     "keyword": "falseSchema",
     "at": "$.outcome"
   },
+  "invalid-outcome-on-input-ended.json": {
+    "keyword": "falseSchema",
+    "at": "$.outcome"
+  },
   "invalid-turn-end-no-outcome.json": {
     "keyword": "required",
     "at": "$"

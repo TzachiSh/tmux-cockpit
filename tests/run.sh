@@ -28371,6 +28371,102 @@ is "the core names no fake agent" "0" "$(grep -ciw fake "$DIR/scripts/cockpit-ev
 unset -f ce cel ceo cev ceset cemark
 fi
 
+echo "== cockpit-event: input.ended ends a main-thread ask left with no answer (#1332) =="
+# Esc on a permission prompt ends Claude's main turn as an answer, and no Stop fires, so the
+# pane stayed on needs-input. The Claude mod sends input.ended at a main turn's answer
+# (docs/mod.md). The core ends only an ask whose key is the main thread's, /<tool> (#1403):
+# a subagent's ask, an ask with no key and every other state stay. The asks come from the
+# hooks' own payloads. Each row ends on a main ask the line ends, so a core that refuses the
+# kind is red as well.
+if need_tmux "cockpit-event input.ended"; then :; else
+IE="cockpit-ie-$$"; SOCKS="$SOCKS $IE"; IED=$(mktmpd)
+"$TMUX_REAL" -L "$IE" -f /dev/null new-session -d -s t -x 80 -y 24 -c "$IED" \
+    'exec -a agentx sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$IE" set -g @cockpit_agents_glob '|agentx|' >/dev/null 2>&1
+IEP=$("$TMUX_REAL" -L "$IE" list-panes -t t -F '#{pane_id}')
+IESA='"session":"3f2a9c0d1e4b5a678c9d0e1f2a3b4c5d","at":"2026-11-23T09:31:05Z"'
+ieo() { "$TMUX_REAL" -L "$IE" show-option -pqv -t "$IEP" "$1"; }
+ieset() { "$TMUX_REAL" -L "$IE" set-option -p -t "$IEP" "$1" "$2" >/dev/null 2>&1; }
+ieend() {                     # the mod's line at a main turn's answer
+    printf '{"schema_version":2,"agent":"agentx","kind":"input.ended","pane":"%s",%s}\n' \
+        "$IEP" "$IESA" | TMUX="$SOCKDIR/$IE,0,0" "$DIR/scripts/cockpit-event" >/dev/null 2>&1
+}
+iehook() {                    # <request> <payload>: one settings hook, its payload on stdin
+    printf '%s\n' "$2" | TMUX="$SOCKDIR/$IE,0,0" "$DIR/scripts/agent-state" "$1" "$IEP" \
+        >/dev/null 2>&1
+}
+ieclear() {                   # a running pane with no ask and no mark
+    local o
+    for o in @panestate @panestate_msg @panestate_ask @panestate_since @cockpit_review \
+             @cockpit_review_spool @cockpit_subs; do
+        "$TMUX_REAL" -L "$IE" set-option -pu -t "$IEP" "$o" >/dev/null 2>&1
+    done
+    iehook running '{"session_id":"s1","hook_event_name":"UserPromptSubmit","prompt":"go"}'
+}
+ieask() {                     # <agent or empty>: a Bash ask from that agent, as Claude sends it
+    local ag=''
+    [ -n "$1" ] && ag="\"agent_id\":\"$1\","
+    ieclear
+    iehook needs-input "{\"session_id\":\"s1\",$ag\"hook_event_name\":\"PermissionRequest\",\
+\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git push\"}}"
+}
+iemain() { ieask ""; ieend; ieo @panestate; }    # the control: a main ask the line ends
+
+ieask ""; ie_b="$(ieo @panestate)|$(ieo @panestate_ask)"; ieend
+is "#1332: input.ended ends a main-thread ask: no state, ask text, key or stamp" \
+    "needs-input|/Bash -> |||" \
+    "$ie_b -> $(ieo @panestate)|$(ieo @panestate_msg)|$(ieo @panestate_ask)|$(ieo @panestate_since)"
+ieask ""; ieset @cockpit_review pending; ieset @cockpit_review_spool 1; ieset @cockpit_subs 2
+ieend
+is "#1332: and keeps the review mark, the review spool and @cockpit_subs" "|pending|1|2" \
+    "$(ieo @panestate)|$(ieo @cockpit_review)|$(ieo @cockpit_review_spool)|$(ieo @cockpit_subs)"
+ieask a1; ieend; ie_a="$(ieo @panestate)|$(ieo @panestate_ask)"
+is "#1332: a subagent's ask stays, and a main one after it ends" "needs-input|a1/Bash|" \
+    "$ie_a|$(iemain)"
+IEPP='{"hook_event_name":"Notification","message":"Claude needs your permission to use Bash",'
+IEPP=$IEPP'"notification_type":"permission_prompt"}'
+ieclear; iehook notify "$IEPP"; ieend; ie_n="$(ieo @panestate)|$(ieo @panestate_ask)"
+is "#1332: an ask with no key, from a Notification alone, stays, and a main one after it ends" \
+    "needs-input||" "$ie_n|$(iemain)"
+ieclear
+TMUX="$SOCKDIR/$IE,0,0" "$DIR/scripts/agent-state" poll needs-input "$IEP" "job needs you" \
+    </dev/null >/dev/null 2>&1
+ieend; ie_p="$(ieo @panestate)|$(ieo @panestate_ask)"
+is "#1332: the poller's needs-input stays, and a main ask after it ends" "needs-input||" \
+    "$ie_p|$(iemain)"
+# A stale main key on each state, so only the state test can refuse the line.
+ie_s=""
+for ie_st in running done error; do
+    ieclear; ieset @panestate "$ie_st"; ieset @panestate_ask /Bash; ieend
+    ie_s="$ie_s$(ieo @panestate)|"
+done
+is "#1332: running, done and error stay, and a main ask ends" "running|done|error|" \
+    "$ie_s$(iemain)"
+# The #1337 objection: an approved command that fails looks to the mod like a refused one.
+# Its PostToolUseFailure has already answered the ask (#1341), so the line finds none, and the
+# turn's Stop is done.
+IEPF='{"session_id":"s1","hook_event_name":"PostToolUseFailure","tool_name":"Bash",'
+IEPF=$IEPF'"tool_input":{"command":"git push"},"error":"Exit code 1","is_interrupt":false}'
+IEST='{"session_id":"s1","hook_event_name":"Stop","stop_hook_active":false,'
+IEST=$IEST'"last_assistant_message":"ok","background_tasks":[],"session_crons":[]}'
+ieask ""; iehook error "$IEPF"; ieend; ie_r=$(ieo @panestate); iehook done "$IEST"
+is "#1332: an approved command that failed, then input.ended and Stop, ends done" \
+    "running|done|" "$ie_r|$(ieo @panestate)|$(iemain)"
+# The request the core hands on: the core copied next to a stub agent-state that logs each call.
+IEC=$(mktmpd); cp "$DIR/scripts/cockpit-event" "$IEC/cockpit-event"
+# shellcheck disable=SC2016  # the stub's own $ expand when it runs
+printf '#!/bin/sh\nprintf "%%s|%%s\\n" "$TMUX_PANE" "$*" >> "${0%%/*}/calls"\n' \
+    > "$IEC/agent-state"
+chmod +x "$IEC/agent-state"
+printf '{"schema_version":2,"agent":"agentx","kind":"input.ended","pane":"%%1",%s}\n' "$IESA" \
+    | "$IEC/cockpit-event" >/dev/null 2>&1
+is "#1332: the core hands input.ended to agent-state as input-ended, for its pane" \
+    "%1|input-ended %1" "$(cat "$IEC/calls" 2>/dev/null)"
+"$TMUX_REAL" -L "$IE" kill-server >/dev/null 2>&1
+unset -f ieo ieset ieend iehook ieclear ieask iemain
+unset IESA IEPP IEPF IEST ie_b ie_a ie_n ie_p ie_s ie_st ie_r
+fi
+
 echo "== fake adapter: a second agent drives the core unchanged (#1330) =="
 # tests/adapters/fake/adapter.sh turns the words of a made-up agent into agent-event v1 lines
 # for scripts/cockpit-event (docs/events.md, "Adding a CLI agent"). Nothing in the core was
