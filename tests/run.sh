@@ -5141,6 +5141,11 @@ dshim revdiff "version: 1.13.0" "$DSH"
 # PATH" is the absence itself rather than a shim standing in for it.
 for u in bash dirname jq; do ln -s "$(command -v "$u")" "$DNO/$u" 2>/dev/null; done
 HOME="$DH" "$DIR/install.sh" --hooks >/dev/null 2>&1
+# The suite's claude fails every call, so that --hooks installed no mod (#1420). The box gets
+# the two entries claude's own install writes, so its doctor reads the mod as ok (#1424).
+jq --arg d "$(cd -P "$DIR" && pwd)" '. + {enabledPlugins: {"cockpit-events@tmux-cockpit": true},
+    extraKnownMarketplaces: {"tmux-cockpit": {source: {source: "directory", path: $d}}}}' \
+    "$DH/.claude/settings.json" > "$DC/mod.json" && mv "$DC/mod.json" "$DH/.claude/settings.json"
 dc() {                        # dc <PATH> -- the doctor's output on the fake box
     env -u TMUX -u TMUX_PANE HOME="$DH" XDG_BIN_HOME="$DBIN" XDG_CONFIG_HOME="$DH/.config" \
         TMUX_TMPDIR="$DC/tmuxtmp" PATH="$1" "$DIR/install.sh" --check 2>&1
@@ -26879,6 +26884,75 @@ j3msg='jq-9.9 rejected the filter report it: tmux-cockpit issue'
 is "a jq compile error is a fail row, named, for both counts" \
    "fail hooks $j3msg;fail subhooks $j3msg;" "$j3rows"
 rm -rf "$J3"
+
+echo "== install.sh --check: the mod row, read from settings.json with no claude started (#1424) =="
+# The doctor reports the cockpit-events mod (docs/mod.md) from ~/.claude/settings.json with jq
+# and starts no claude. This checkout's marketplace with the mod enabled is ok. A missing,
+# disabled or other checkout's mod is a warn with its fix. Like subhooks, it skips until the
+# cockpit hooks are merged, so the hooks row speaks first. Each row writes the settings.json of
+# a faked HOME and reads the mod row alone, its columns squeezed to one space.
+if ! command -v jq >/dev/null 2>&1; then skip_ "the --check mod rows (no jq)"; else
+MC=$(mktmpd); mkdir -p "$MC/h/.claude" "$MC/bare" "$MC/tt" "$MC/j1" "$MC/j3" "$MC/p"
+MCD=$(cd -P "$DIR" && pwd)    # install.sh's own root, the path claude's marketplace add writes
+jq '{hooks: .hooks}' "$DIR/examples/claude-hooks.json" > "$MC/hooks.json"
+printf '{}\n' > "$MC/empty.json"
+# What claude's add and install write: the marketplace, this checkout or another, and the mod.
+MCOURS='{extraKnownMarketplaces: {"tmux-cockpit": {source: {source: "directory", path: $d}}}}'
+MCOTHER='{extraKnownMarketplaces:
+    {"tmux-cockpit": {source: {source: "directory", path: "/elsewhere/tmux-cockpit"}}}}'
+MCON='{enabledPlugins: {"cockpit-events@tmux-cockpit": true}}'
+MCOFF='{enabledPlugins: {"cockpit-events@tmux-cockpit": false}}'
+mcset() {                     # <base file> <jq object> -> the faked HOME's settings.json
+    jq --arg d "$MCD" ". + $2" "$1" > "$MC/h/.claude/settings.json"
+}
+mcrow() {                     # [PATH] [HOME] [install.sh] -> "<mark> <found> <fix>" of the mod row
+    env -u TMUX -u TMUX_PANE PATH="${1:-$PATH}" HOME="${2:-$MC/h}" XDG_BIN_HOME="$MC/bin" \
+        XDG_CONFIG_HOME="$MC/cfg" TMUX_TMPDIR="$MC/tt" "${3:-$DIR/install.sh}" --check 2>&1 |
+        sed -n 's/^\[ *\([a-z]*\) *\] mod  *\(.*\)/\1 \2/p' | sed 's/  */ /g; s/ $//'
+}
+mcset "$MC/hooks.json" "$MCOURS + $MCON"
+is "--check, this checkout's marketplace and the mod enabled: an ok mod row" \
+   "ok cockpit-events from this checkout" "$(mcrow)"
+mcset "$MC/hooks.json" '{}'
+is "--check, the hooks merged and no mod: a warn mod row whose fix is install.sh --hooks" \
+   "warn cockpit-events not installed install.sh --hooks" "$(mcrow)"
+mcset "$MC/hooks.json" "$MCOURS"
+is "--check, this checkout's marketplace with no mod installed from it: the same warn row" \
+   "warn cockpit-events not installed install.sh --hooks" "$(mcrow)"
+mcset "$MC/hooks.json" "$MCOTHER + $MCON"
+is "--check, the marketplace is another checkout: a warn mod row that names it" \
+   "warn tmux-cockpit is directory /elsewhere/tmux-cockpit not this checkout; $(:
+   )claude plugin marketplace remove tmux-cockpit, then install.sh --hooks" "$(mcrow)"
+mcset "$MC/hooks.json" "$MCOURS + $MCOFF"
+is "--check, the mod disabled: a warn mod row whose fix enables it" \
+   "warn cockpit-events disabled claude plugin enable cockpit-events@tmux-cockpit" "$(mcrow)"
+mcset "$MC/empty.json" "$MCOURS + $MCON"
+is "--check, no cockpit hooks merged: a skip mod row, the hooks row speaks" \
+   "skip no cockpit hooks yet" "$(mcrow)"
+is "--check, no ~/.claude: a skip mod row" "skip no Claude Code" "$(mcrow '' "$MC/bare")"
+# A jq that cannot compile a filter exits 3 (#481): the mod's own filter is a fail row, and
+# a hooks count it cannot read leaves the mod row a skip, as the subhooks row.
+mcset "$MC/hooks.json" "$MCOURS + $MCON"
+mcjq() {                      # <folder> <shell lines>: a jq there that says jq-9.9, then runs them
+    printf '#!/bin/sh\n[ "$1" = --version ] && { echo jq-9.9; exit 0; }\n%s\n' "$2" > "$1/jq"
+    chmod +x "$1/jq"
+}
+mcjq "$MC/j1" "case \"\$*\" in *extraKnownMarketplaces*) exit 3 ;; esac
+exec $(tq "$(command -v jq)") \"\$@\""
+mcjq "$MC/j3" 'exit 3'
+is "--check, a jq that cannot compile the mod's filter: a fail mod row" \
+   "fail jq-9.9 rejected the filter report it: tmux-cockpit issue" "$(mcrow "$MC/j1:$PATH")"
+is "--check, a jq that cannot compile the hooks count: a skip mod row" \
+   "skip hooks count unreadable" "$(mcrow "$MC/j3:$PATH")"
+# The names come from the checkout's marketplace file: a copy without it is a fail row.
+cp "$DIR/install.sh" "$MC/p/"; ln -s "$DIR/scripts" "$MC/p/scripts"
+is "--check from a copy with no .claude-plugin/marketplace.json: a fail mod row naming it" \
+   "fail cannot read $(cd -P "$MC/p" && pwd)/.claude-plugin/marketplace.json $(:
+   )restore the checkout from git" "$(mcrow '' '' "$MC/p/install.sh")"
+rm -rf "$MC"
+unset MC MCD MCOURS MCOTHER MCON MCOFF
+fi
+unset -f mcset mcrow mcjq
 
 # --- #194 poll_alive's macOS branch, run on Linux ----------------------------
 
