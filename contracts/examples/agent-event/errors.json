@@ -19,7 +19,7 @@
     "keyword": "pattern",
     "at": "$.agent"
   },
-  "invalid-version-2.json": {
+  "invalid-version-1.json": {
     "keyword": "const",
     "at": "$.schema_version"
   },

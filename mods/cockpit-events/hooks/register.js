@@ -1,6 +1,7 @@
 // The Claude mod adapter of tmux-cockpit (docs/mod.md). It reports what the settings
-// hooks cannot: a main turn that ended interrupted or on an API error. It hands one
-// agent-event v1 line to scripts/cockpit-event and never waits for it.
+// hooks cannot: a main turn that ended interrupted or on an API error, and a main turn's
+// answer, which ends an ask the person left with Esc. It hands one agent-event line to
+// scripts/cockpit-event and never waits for it.
 import { toEvent } from './map.js'
 
 // The core, from the mod's folder: mods/cockpit-events -> the repo checkout.

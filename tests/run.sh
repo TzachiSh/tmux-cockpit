@@ -28207,7 +28207,7 @@ mpf_is "a pane started with the mark that is not modal is kept" 1 \
 unset -f mpf_is
 fi
 
-echo "== cockpit-event: agent-event v1 lines become agent-state requests (#1330) =="
+echo "== cockpit-event: agent-event lines become agent-state requests (#1330) =="
 # scripts/cockpit-event reads agent-event lines (contracts/agent-event.schema.json) on stdin and
 # runs one agent-state request per valid line, for the line's pane (docs/events.md). A line that
 # fails the schema writes nothing and the core always exits 0. The pane runs a neutral command,
@@ -28223,7 +28223,7 @@ ce() {                        # <line>...: one cockpit-event run on these lines;
     printf '%s' "$?"
 }
 cel() {                       # <kind> [,"key":value...]: a valid line for the pane
-    printf '{"schema_version":1,"agent":"agentx","kind":"%s","pane":"%s","session":"3f2a9c0d1e4b5a678c9d0e1f2a3b4c5d","at":"2026-11-19T09:31:05Z"%s}' \
+    printf '{"schema_version":2,"agent":"agentx","kind":"%s","pane":"%s","session":"3f2a9c0d1e4b5a678c9d0e1f2a3b4c5d","at":"2026-11-19T09:31:05Z"%s}' \
         "$1" "$CEP" "${2:-}"
 }
 ceo() { "$TMUX_REAL" -L "$CE" show-option -pqv -t "$CEP" "$1"; }
@@ -28295,7 +28295,7 @@ is "the same turn.end twice writes once" "done|stale" \
 # Each would change that state if it were taken: base|line.
 CES='"session":"3f2a9c0d1e4b5a678c9d0e1f2a3b4c5d"'
 CEA='"at":"2026-11-19T09:31:05Z"'
-CEH="\"schema_version\":1,\"agent\":\"agentx\""
+CEH="\"schema_version\":2,\"agent\":\"agentx\""
 CEK="\"pane\":\"$CEP\",$CES,$CEA"
 while IFS='|' read -r ce_name ce_base ce_line; do
     [ -n "$ce_name" ] || continue
@@ -28309,11 +28309,11 @@ a subagent kind|done|{$CEH,"kind":"subagent.start",$CEK}
 a pane with no %|running|{$CEH,"kind":"input.needed","pane":"3",$CES,$CEA}
 text in the session|running|{$CEH,"kind":"input.needed","pane":"$CEP","session":"fix the login",$CEA}
 a session with dashes|running|{$CEH,"kind":"input.needed","pane":"$CEP","session":"3f2a9c0d-1e4b-5a67-8c9d-0e1f2a3b4c5d",$CEA}
-an agent in capitals|running|{"schema_version":1,"agent":"Agentx","kind":"input.needed",$CEK}
-an agent of 25 characters|running|{"schema_version":1,"agent":"abcdefghijklmnopqrstuvwxy","kind":"input.needed",$CEK}
+an agent in capitals|running|{"schema_version":2,"agent":"Agentx","kind":"input.needed",$CEK}
+an agent of 25 characters|running|{"schema_version":2,"agent":"abcdefghijklmnopqrstuvwxy","kind":"input.needed",$CEK}
 a local time|running|{$CEH,"kind":"input.needed","pane":"$CEP",$CES,"at":"2026-11-19T09:31:05"}
-version 2|running|{"schema_version":2,"agent":"agentx","kind":"input.needed",$CEK}
-version as a string|running|{"schema_version":"1","agent":"agentx","kind":"input.needed",$CEK}
+version 1|running|{"schema_version":1,"agent":"agentx","kind":"input.needed",$CEK}
+version as a string|running|{"schema_version":"2","agent":"agentx","kind":"input.needed",$CEK}
 an outcome on tool.start|done|{$CEH,"kind":"tool.start",$CEK,"outcome":"error"}
 a turn.end with no outcome|running|{$CEH,"kind":"turn.end",$CEK}
 an outcome not in the list|running|{$CEH,"kind":"turn.end",$CEK,"outcome":"stopped"}
@@ -28468,7 +28468,7 @@ unset IESA IEPP IEPF IEST ie_b ie_a ie_n ie_p ie_s ie_st ie_r
 fi
 
 echo "== fake adapter: a second agent drives the core unchanged (#1330) =="
-# tests/adapters/fake/adapter.sh turns the words of a made-up agent into agent-event v1 lines
+# tests/adapters/fake/adapter.sh turns the words of a made-up agent into agent-event lines
 # for scripts/cockpit-event (docs/events.md, "Adding a CLI agent"). Nothing in the core was
 # changed for it: these rows are the proof that a new agent needs only an adapter.
 if need_tmux "fake adapter"; then :; else
@@ -28521,7 +28521,7 @@ facap() {                     # <pane> <word>...: the adapter's lines into $FAC/
 }
 facap %1 begin tool fail end stop-by-user quit
 : > "$FAC/calls"; "$FAC/cockpit-event" < "$FAC/lines" >/dev/null 2>&1
-is "every line the fake adapter writes is valid agent-event v1" \
+is "every line the fake adapter writes is a valid agent-event" \
     "8|$(printf '%%1|%s %%1\n' wake running running running running done interrupted off)" \
     "$(awk 'END { print NR }' "$FAC/lines")|$(cat "$FAC/calls")"
 # Each run ends on a known word, so a missing adapter reads 0 lines here, not a pass.

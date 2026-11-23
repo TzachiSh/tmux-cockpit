@@ -1,6 +1,6 @@
 #!/bin/bash
 # A test-only second adapter (#1330): a made-up agent whose protocol is one word per line on
-# stdin. Each word becomes agent-event v1 lines (docs/events.md) for scripts/cockpit-event, the
+# stdin. Each word becomes agent-event lines (docs/events.md) for scripts/cockpit-event, the
 # worked example of "Adding a CLI agent". An unknown word writes nothing, and no word ever goes
 # into a line.
 #   usage: <words> | adapter.sh [path to cockpit-event]
@@ -16,7 +16,7 @@ core=${1:-"${d%/*}/../../../scripts/cockpit-event"}
 # One id for the whole run, from random bytes: 32 lowercase hex, no agent text in it.
 sid=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
 ev() {                        # <kind> [,"key":value]: one line
-    printf '{"schema_version":1,"agent":"fake","kind":"%s","pane":"%s",' "$1" "$TMUX_PANE"
+    printf '{"schema_version":2,"agent":"fake","kind":"%s","pane":"%s",' "$1" "$TMUX_PANE"
     printf '"session":"%s","at":"%s"%s}\n' "$sid" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${2:-}"
 }
 while IFS= read -r w || [ -n "$w" ]; do
