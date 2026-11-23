@@ -92,7 +92,8 @@ missing or misconfigured and writes nothing. More detail, including
 ## Quick start
 
 1. Install as above and reload tmux (`tmux source ~/.tmux.conf`).
-2. Wire the Claude Code hooks into `~/.claude/settings.json`:
+2. Wire the Claude Code hooks into its `settings.json`, in
+   `$CLAUDE_CONFIG_DIR` when that is set, else in `~/.claude`:
 
    ```sh
    ~/.tmux/plugins/tmux-cockpit/install.sh --hooks --dry-run   # preview

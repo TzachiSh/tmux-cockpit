@@ -137,7 +137,9 @@ glob is expanded, and a path that does not start with `/` is not read. A
 appending one beside it. `install.sh --check` does not count it as a load, so
 its config row fails (#1304).
 
-Wire the hooks into `~/.claude/settings.json`:
+Wire the hooks into Claude Code's `settings.json`. Like Claude Code itself,
+`install.sh` takes its config dir from `$CLAUDE_CONFIG_DIR` when that is set,
+else `~/.claude`; the skill links and `install.sh --check` use the same dir.
 
 ```sh
 ~/.tmux/plugins/tmux-cockpit/install.sh --hooks             # merge them in
@@ -152,7 +154,7 @@ its own file, is still recognized and never re-appended). Re-run
 version no longer ships. A `settings.json.bak`
 is written before the first change (an existing `.bak` is never overwritten).
 `--hooks --dry-run` previews the merge without writing or creating anything,
-even on a fresh install with no `~/.claude` yet. Requires `jq`; without it, or
+even on a fresh install with no config dir yet. Requires `jq`; without it, or
 without Claude Code's settings.json at that path, merge the `hooks` object
 from `examples/claude-hooks.json` by hand.
 
@@ -162,7 +164,7 @@ reports a turn ended by Esc or an API error: it adds this checkout as the
 mod from it at user scope. With no `claude` on PATH it skips the mod and says
 so. A session already open loads it after `/reload-plugins`. The calls it
 makes and why: [mod.md](mod.md#installing-it). `install.sh --check` reports it
-on its `mod` row, read from `~/.claude/settings.json` without starting `claude`.
+on its `mod` row, read from that `settings.json` without starting `claude`.
 
 `install.sh --uninstall --hooks` takes the hooks out again, besides removing
 the links; `install.sh --hooks --remove` removes only the hooks and keeps the
