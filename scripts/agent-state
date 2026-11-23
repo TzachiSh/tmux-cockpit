@@ -419,6 +419,8 @@ session)
             case $t in (/*) d=$t ;; (*) d=${d%/*}/$t ;; esac; done; printf %s "$d")
     # shellcheck source=lib/hook.sh
     . "${d%/*}/lib/hook.sh" 2>/dev/null || exit 0
+    # shellcheck source=lib/claudedir.sh
+    . "${d%/*}/lib/claudedir.sh" 2>/dev/null || exit 0
     # A capped read, not read_payload: the UserPromptSubmit payload carries the whole prompt,
     # and bash reads a pipe a byte at a time. The ids come first in what claude sends; one
     # that falls past the cap is skipped (the old value stays). Ends early on all three keys.
@@ -474,7 +476,8 @@ session)
     # Only a regular file inside the projects tree, symlinks and `..` resolved. '#' never
     # appears in a real one (claude turns it into '-'), so it is refused outright, in the
     # path given and in the path it resolves to.
-    root=${CLAUDE_CONFIG_DIR:-${HOME:-}/.claude}/projects
+    claude_cfg_dir
+    root=$claude_cfg/projects
     odd() { case "/$1/" in */../*|*'#'*|*[$'\001'-$'\037\177']*|*\\*) return 0 ;; esac; return 1; }
     if [ -n "$tp" ] && [ -n "${HOME:-}" ] && command -v realpath >/dev/null 2>&1; then
         case "$tp" in /*) odd "$tp" && tp="" ;; *) tp="" ;; esac

@@ -64,6 +64,8 @@ sha_c() { if have sha256sum; then sha256sum -c -; else shasum -a 256 -c -; fi; }
 . "$DIR/scripts/lib/tmpdir.sh" || exit 1
 # shellcheck source=scripts/lib/eol.sh
 . "$DIR/scripts/lib/eol.sh" || exit 1
+# shellcheck source=scripts/lib/claudedir.sh
+. "$DIR/scripts/lib/claudedir.sh" || exit 1
 # The plugins go where tpm installs and runs them, by tpm's own rule: the XDG tmux folder's
 # plugins when an XDG tmux.conf is there, else ~/.tmux/plugins. A folder picked any other way
 # left tpm installing a second copy in its own (#1310).
@@ -365,13 +367,14 @@ fi
 
 # ------------------------------------------------------------------ hooks ----
 step "Claude Code hooks"
-if [ ! -d "$HOME/.claude" ] && ! have claude; then
-    note "no ~/.claude and no claude on PATH -- nothing to wire"
+claude_cfg_dir
+if [ ! -d "$claude_cfg" ] && ! have claude; then
+    note "no $claude_cfg and no claude on PATH -- nothing to wire"
     skipped+=("hooks: no Claude Code")
 elif ! have jq; then
     note "jq is required for the merge; the manual block is in the README"
     skipped+=("hooks: no jq")
-elif ask "merge the hooks into ~/.claude/settings.json and install the cockpit-events mod?" y; then
+elif ask "merge the hooks into $claude_cfg/settings.json, install the cockpit-events mod?" y; then
     if [ "$dry" -eq 1 ]; then printf '  would: merge hooks, install the cockpit-events mod\n'
     else "$DIR/install.sh" --hooks && did+=("merged hooks") || failed+=("hook merge"); fi
 else

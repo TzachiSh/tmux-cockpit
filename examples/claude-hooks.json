@@ -1,6 +1,7 @@
 {
   "_comment": [
-    "Merge the 'hooks' key below into ~/.claude/settings.json (install.sh --hooks).",
+    "Merge the 'hooks' key below into Claude Code's settings.json (install.sh --hooks):",
+    "the one in $CLAUDE_CONFIG_DIR when that is set, else ~/.claude/settings.json.",
     "These are the only writers of pane state; without them every pane stays idle.",
     "",
     "Not wired: TaskCompleted (fires mid-turn), PreCompact (no state to report).",

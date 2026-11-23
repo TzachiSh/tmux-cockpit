@@ -26954,6 +26954,100 @@ unset MC MCD MCOURS MCOTHER MCON MCOFF
 fi
 unset -f mcset mcrow mcjq
 
+echo "== install.sh and bootstrap.sh take Claude's config dir from CLAUDE_CONFIG_DIR (#1425) =="
+# Claude Code keeps settings.json, skills/ and plugins/ in $CLAUDE_CONFIG_DIR when it is set and
+# not empty, else in ~/.claude (code.claude.com/docs/en/env-vars). Each box is a faked HOME whose
+# ~/.claude holds a settings.json, and a config dir beside it that CLAUDE_CONFIG_DIR names. The
+# suite's claude fails every call, so --hooks installs no mod: the rows read the files.
+if ! command -v jq >/dev/null 2>&1; then skip_ "the CLAUDE_CONFIG_DIR rows (no jq)"; else
+CC=$(mktmpd); mkdir -p "$CC/tt"
+CCD=$(cd -P "$DIR" && pwd)       # install.sh's own root, where its skill links point
+printf '{}\n' > "$CC/empty.json"
+jq '{hooks: .hooks}' "$DIR/examples/claude-hooks.json" > "$CC/hooks.json"
+# The hooks --hooks merges, with a user's own Stop hook beside them.
+jq '.hooks.Stop += [{hooks: [{type: "command", command: "my-own-tool"}]}]' "$CC/hooks.json" \
+    > "$CC/mine.json"
+cc_box() {                    # <box> <file>: the settings.json of HOME's ~/.claude and the dir
+    mkdir -p "$CC/$1/h/.claude" "$CC/$1/cfg"
+    cp "$2" "$CC/$1/h/.claude/settings.json"; cp "$2" "$CC/$1/cfg/settings.json"
+}
+cc_run() {                    # <box> <command...>: on that box, CLAUDE_CONFIG_DIR its config dir
+    local b="$CC/$1"; shift
+    env -u TMUX -u TMUX_PANE HOME="$b/h" XDG_BIN_HOME="$b/bin" XDG_CONFIG_HOME="$b/xdg" \
+        TMUX_TMPDIR="$CC/tt" CLAUDE_CONFIG_DIR="$b/cfg" "$@" </dev/null 2>&1
+}
+cc_has() {                    # <settings.json>: yes when it holds cockpit hooks, as --check counts
+    local n
+    n=$(jq '[.hooks[]?[]?.hooks[]?.command? // "" | select(test("tmux-cockpit|agent-state"))]
+            | length' "$1" 2>/dev/null)
+    [ "${n:-0}" -gt 0 ] && echo yes || echo no
+}
+cc_box m "$CC/empty.json"
+cc_run m "$DIR/install.sh" --hooks >/dev/null
+is "--hooks with CLAUDE_CONFIG_DIR set merges the cockpit hooks into that dir's settings.json" \
+   yes "$(cc_has "$CC/m/cfg/settings.json")"
+is "and leaves ~/.claude/settings.json as it was" "{}" "$(cat "$CC/m/h/.claude/settings.json")"
+cc_box u "$CC/empty.json"
+cc_run u env -u HOME "$DIR/install.sh" --hooks >/dev/null
+is "--hooks with CLAUDE_CONFIG_DIR set and HOME unset merges into that dir's settings.json" \
+   yes "$(cc_has "$CC/u/cfg/settings.json")"
+cc_box e "$CC/empty.json"
+cc_run e env CLAUDE_CONFIG_DIR= "$DIR/install.sh" --hooks >/dev/null
+is "--hooks with CLAUDE_CONFIG_DIR set but empty merges into ~/.claude/settings.json" \
+   yes "$(cc_has "$CC/e/h/.claude/settings.json")"
+cc_box r "$CC/mine.json"
+cc_run r "$DIR/install.sh" --uninstall --hooks >/dev/null
+is "--uninstall --hooks with CLAUDE_CONFIG_DIR set takes cockpit's hooks out of that dir's $(:
+   )settings.json, the user's own stay" "no|my-own-tool" "$(cc_has "$CC/r/cfg/settings.json")|$(
+   jq -r '[.hooks[][].hooks[].command] | join(",")' "$CC/r/cfg/settings.json" 2>/dev/null)"
+is "and leaves the cockpit hooks in ~/.claude/settings.json" same \
+   "$(cmp -s "$CC/mine.json" "$CC/r/h/.claude/settings.json" && echo same || echo changed)"
+# The doctor's box: the hooks and the mod in the config dir, none in ~/.claude.
+cc_box d "$CC/empty.json"
+jq --arg d "$CCD" '. + {enabledPlugins: {"cockpit-events@tmux-cockpit": true},
+    extraKnownMarketplaces: {"tmux-cockpit": {source: {source: "directory", path: $d}}}}' \
+    "$CC/hooks.json" > "$CC/d/cfg/settings.json"
+cc_out=$(cc_run d "$DIR/install.sh" --check)
+cc_row() {                    # <row>: its mark and found column in cc_out, one space apart
+    printf '%s\n' "$cc_out" | sed -n "s/^\[ *\([a-z]*\) *\] $1  *\(.*\)/\1 \2/p" |
+        sed 's/  */ /g; s/ $//'
+}
+is "--check with CLAUDE_CONFIG_DIR set reads the hooks row from that dir's settings.json" ok \
+   "$(cc_row hooks | cut -d' ' -f1)"
+is "and the subhooks row from it" ok "$(cc_row subhooks | cut -d' ' -f1)"
+is "and the mod row from it" "ok cockpit-events from this checkout" "$(cc_row mod)"
+cc_box s "$CC/empty.json"
+cc_run s "$DIR/install.sh" >/dev/null
+is "install.sh with CLAUDE_CONFIG_DIR set links each skill into that dir's skills/" \
+   "$CCD/skills/cockpit-review" "$(readlink "$CC/s/cfg/skills/cockpit-review")"
+is "and makes no ~/.claude/skills" absent \
+   "$([ -e "$CC/s/h/.claude/skills" ] && echo present || echo absent)"
+cc_box k "$CC/empty.json"; mkdir -p "$CC/k/cfg/skills"
+ln -s "$CCD/skills/cockpit-review" "$CC/k/cfg/skills/cockpit-review"
+cc_run k "$DIR/install.sh" --uninstall >/dev/null
+is "install.sh --uninstall with CLAUDE_CONFIG_DIR set removes its skill links from that dir" \
+   absent "$([ -L "$CC/k/cfg/skills/cockpit-review" ] && echo present || echo absent)"
+# bootstrap.sh on the PATH the bootstrap block gives it, with no ~/.claude: only the config dir
+# tells it Claude Code is here. A claude on that PATH would tell it too, so the row skips.
+ccl=no ccj=no
+for e in "$SHIM" /usr/bin /bin; do
+    [ -x "$e/claude" ] && ccl=yes
+    [ -x "$e/jq" ] && ccj=yes
+done
+if [ "$ccl" = yes ] || [ "$ccj" = no ]; then
+    skip_ "bootstrap.sh with CLAUDE_CONFIG_DIR set (claude on its PATH: $ccl, jq: $ccj)"
+else
+    mkdir -p "$CC/b/h" "$CC/b/cfg"
+    is "bootstrap.sh with CLAUDE_CONFIG_DIR set, no ~/.claude and no claude on PATH offers $(:
+       )the hooks merge" 1 "$(cc_run b env PATH="$SHIM:/usr/bin:/bin" "$DIR/bootstrap.sh" \
+       --dry-run | awk '/^== /{ f = ($0 == "== Claude Code hooks ==") } f' |
+       grep -c 'would: merge hooks')"
+fi
+rm -rf "$CC"
+unset CC CCD cc_out ccl ccj e
+fi
+unset -f cc_box cc_run cc_has cc_row
+
 # --- #194 poll_alive's macOS branch, run on Linux ----------------------------
 
 # tests: scripts/lib/hook.sh

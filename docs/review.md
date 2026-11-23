@@ -303,8 +303,9 @@ What this deliberately does **not** do, and why:
   `load-buffer`/`paste-buffer` only — `send-keys` is reserved for the Enter a
   **human**, never this script, presses.
 
-**The agent can ask.** `install.sh` links every `skills/*` dir into
-`~/.claude/skills`, so `/cockpit-review` (or "get this reviewed") runs
+**The agent can ask.** `install.sh` links every `skills/*` dir into Claude
+Code's `skills/` (`$CLAUDE_CONFIG_DIR/skills` when that is set, else
+`~/.claude/skills`), so `/cockpit-review` (or "get this reviewed") runs
 `tmux-review --request` from the agent's own pane: one popup, the same
 loop, and the batch comes back as the tool's result (exit 10) instead of a
 paste. `a` there approves as anywhere else.
