@@ -3,7 +3,8 @@
 #   ./install.sh            symlink the commands into ~/.local/bin, fetch cockpit-tui
 #   ./install.sh --uninstall  remove only the symlinks that point back here
 #   ./install.sh --check      the doctor: one row per thing that can be wrong
-#   ./install.sh --hooks [--dry-run]  merge examples/claude-hooks.json into ~/.claude/settings.json
+#   ./install.sh --hooks [--dry-run]  merge examples/claude-hooks.json into Claude Code's
+#                                     settings.json ($CLAUDE_CONFIG_DIR, else ~/.claude)
 #                                     and install the cockpit-events mod (docs/mod.md)
 #   ./install.sh --uninstall --hooks [--dry-run]  also remove exactly what --hooks added
 #   ./install.sh --hooks --remove [--dry-run]     remove only the hooks and the mod, keep the links
@@ -57,6 +58,8 @@ esac; done
 . "$DIR/scripts/lib/tui.sh" || exit 1
 # shellcheck source=scripts/lib/eol.sh
 . "$DIR/scripts/lib/eol.sh" || exit 1
+# shellcheck source=scripts/lib/claudedir.sh
+. "$DIR/scripts/lib/claudedir.sh" || exit 1
 
 # A builtin, not awk: the fail rows must still be right on an empty PATH.
 fld() {                       # fld <field> <version line>
@@ -281,17 +284,18 @@ set*\ @catppuccin_window_current_text\ *)
         fi
     fi
 
-    if [ ! -d "${HOME:-}/.claude" ]; then
+    if ! claude_cfg_dir || [ ! -d "$claude_cfg" ]; then
         row skip hooks 'no Claude Code'
         row skip mod 'no Claude Code'
     elif ! command -v jq >/dev/null 2>&1; then row skip hooks 'jq missing'
     else
+        cset="$claude_cfg/settings.json"
         # jq exits 3 when it cannot compile a filter. Counted as 0, that read as "not
         # merged" (#481); it is cockpit's bug, so it gets a fail row of its own.
         jqv=$(jq --version 2>/dev/null)
         n=$(jq '[.hooks[]?[]?.hooks[]?.command? // ""
                  | select(test("tmux-cockpit|agent-state"))] | length' \
-               "$HOME/.claude/settings.json" 2>/dev/null); nrc=$?
+               "$cset" 2>/dev/null); nrc=$?
         case "$nrc:${n:-0}" in
             3:*) row fail hooks "$jqv rejected the filter" 'report it: tmux-cockpit issue' ;;
             *:0) row warn hooks '0 cockpit hooks merged' 'install.sh --hooks' ;;
@@ -305,7 +309,7 @@ set*\ @catppuccin_window_current_text\ *)
                     | capture("agent-state (?<c>sub-(start|stop|idle|end|taskstop|reconcile))$")? |
                     .c]
                    | unique | length' \
-                 "$HOME/.claude/settings.json" 2>/dev/null); src=$?
+                 "$cset" 2>/dev/null); src=$?
         if [ "$src" = 3 ]; then
             row fail subhooks "$jqv rejected the filter" 'report it: tmux-cockpit issue'
         elif [ "$nrc" = 3 ]; then row skip subhooks 'hooks count unreadable'
@@ -328,7 +332,7 @@ set*\ @catppuccin_window_current_text\ *)
                     ([(.extraKnownMarketplaces | objects) // {} | to_entries[]
                       | {name: .key} + ((.value.source | objects) // {})] | mod_where($n; $d))
                     + ":" + ((.enabledPlugins | objects) // {} | .[$p] | tostring)' \
-                  "$HOME/.claude/settings.json" 2>/dev/null); mrc=$?
+                  "$cset" 2>/dev/null); mrc=$?
             # A read that fails after the hooks count reads as nothing there, as the hooks row
             # reads a file it cannot read.
             case $mrc:$mst in
@@ -414,11 +418,11 @@ if [ "$links" -eq 0 ]; then
 elif [ "$dry" -eq 0 ]; then
 for c in "${COMMANDS[@]}"; do link_one "$BIN/$c" "$DIR/scripts/$c"; done
 # Skills only where Claude Code is installed, so a plain shell box gets no stray dir.
-if [ -d "${HOME:-}/.claude" ]; then
-    [ "$uninstall" -eq 0 ] && mkdir -p "${HOME}/.claude/skills" 2>/dev/null
+if claude_cfg_dir && [ -d "$claude_cfg" ]; then
+    [ "$uninstall" -eq 0 ] && mkdir -p "$claude_cfg/skills" 2>/dev/null
     for s in "$DIR"/skills/*/; do    # [ -d ]: an empty skills/ leaves the glob unexpanded
         [ -d "$s" ] || continue
-        s=${s%/}; link_one "${HOME}/.claude/skills/${s##*/}" "$s"
+        s=${s%/}; link_one "$claude_cfg/skills/${s##*/}" "$s"
     done
 fi
 else
@@ -511,8 +515,8 @@ pre='\$\{TMUX_COCKPIT_DIR:-\$HOME/\.tmux/plugins/tmux-cockpit\}'
 
 if [ "$hooks" -eq 1 ] && [ "$uninstall" -eq 1 ]; then
     command -v jq >/dev/null 2>&1 || { printf 'jq is required for --hooks (the manual removal in docs/install.md still works)\n' >&2; exit 1; }
-    [ -n "${HOME:-}" ] || { printf 'HOME is not set; cannot locate ~/.claude/settings.json\n' >&2; exit 1; }
-    settings="$HOME/.claude/settings.json"
+    claude_cfg_dir || { printf 'neither CLAUDE_CONFIG_DIR nor HOME is set; cannot locate settings.json\n' >&2; exit 1; }
+    settings="$claude_cfg/settings.json"
     if [ ! -e "$settings" ]; then
         # -e is false on a cycle too: that is no absent file, and it is said (#1288).
         if [ -L "$settings" ] && ! resolve_link "$settings" >/dev/null; then
@@ -578,9 +582,8 @@ if [ "$hooks" -eq 1 ]; then
     command -v jq >/dev/null 2>&1 || { printf 'jq is required for --hooks (the manual merge in README still works)\n' >&2; exit 1; }
     have_diff=1
     command -v diff >/dev/null 2>&1 || have_diff=0
-    # settings.json has no XDG override, so $HOME is required here.
-    [ -n "${HOME:-}" ] || { printf 'HOME is not set; cannot locate ~/.claude/settings.json\n' >&2; exit 1; }
-    settings="$HOME/.claude/settings.json"
+    claude_cfg_dir || { printf 'neither CLAUDE_CONFIG_DIR nor HOME is set; cannot locate settings.json\n' >&2; exit 1; }
+    settings="$claude_cfg/settings.json"
 
     if [ -e "$settings" ]; then
         # Write at the resolved target: replacing a dotfiles-managed symlink with
@@ -590,7 +593,7 @@ if [ "$hooks" -eq 1 ]; then
     elif [ -L "$settings" ]; then
         # -e is false on a cycle too: only a chain that ends is dangling (#1288).
         resolve_link "$settings" >/dev/null || { cycle_msg "$settings"; exit 1; }
-        # Seeding would follow the link to wherever it points, outside ~/.claude.
+        # Seeding would follow the link to wherever it points, outside the config dir.
         printf 'refusing to follow the dangling symlink %s\n' "$settings" >&2
         exit 1
     else
