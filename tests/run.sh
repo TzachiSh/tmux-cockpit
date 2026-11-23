@@ -9930,6 +9930,22 @@ unset MD MDS MDD MDH MDOUT MDRC MDARGV ML0 MADD MINS MREM MNONE MOURS MOTHER
 fi
 unset -f mod_run mod_said mod_nocl
 
+echo "== a Claude session that loads the mod leaves the checkout clean (#1423) =="
+# Claude Code 2.1.330 writes into mods/cockpit-events each time it loads the mod from this
+# checkout (docs/mod.md): .claude-plugin/types/, which the .gitignore it writes there ignores,
+# and, in a mod with no tsconfig.json of its own, one that extends that folder's. Tracked with
+# the bytes Claude Code writes, the load leaves `git status` empty.
+if [ -z "$(git -C "$DIR" ls-files 2>/dev/null)" ]; then
+    skip_ "the mod's tsconfig.json row (not a git checkout)"
+else
+    is "the mod's tsconfig.json is tracked, with the bytes Claude Code 2.1.330 writes (#1423)" \
+        "tracked|same" \
+        "$(git -C "$DIR" ls-files --error-unmatch -- mods/cockpit-events/tsconfig.json \
+               >/dev/null 2>&1 && echo tracked || echo untracked)|$(
+           printf '{\n  "extends": "./.claude-plugin/types/tsconfig.json"\n}\n' |
+               cmp -s - "$DIR/mods/cockpit-events/tsconfig.json" && echo same || echo differs)"
+fi
+
 echo "== prefix u jumps to the pane that needs you =="
 if need_tmux "tmux-jump"; then :; else
 # The bind runs the script under run-shell, which sets no $TMUX_PANE: read
