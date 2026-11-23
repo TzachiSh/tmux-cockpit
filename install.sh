@@ -4,8 +4,9 @@
 #   ./install.sh --uninstall  remove only the symlinks that point back here
 #   ./install.sh --check      the doctor: one row per thing that can be wrong
 #   ./install.sh --hooks [--dry-run]  merge examples/claude-hooks.json into ~/.claude/settings.json
-#   ./install.sh --uninstall --hooks [--dry-run]  also remove exactly the hooks --hooks added
-#   ./install.sh --hooks --remove [--dry-run]     remove only those hooks, keep the links
+#                                     and install the cockpit-events mod (docs/mod.md)
+#   ./install.sh --uninstall --hooks [--dry-run]  also remove exactly what --hooks added
+#   ./install.sh --hooks --remove [--dry-run]     remove only the hooks and the mod, keep the links
 set -uo pipefail
 
 # Resolved (-P), so the uninstall guard matches links made through a symlinked checkout.
@@ -24,8 +25,8 @@ fi
 COMMANDS=(tm tmux-branch tmux-open-path)
 
 USAGE='usage: install.sh [--check] [--uninstall] [--hooks [--dry-run]]
-       install.sh --uninstall --hooks [--dry-run]   also drop cockpit'"'"'s hook entries from settings.json
-       install.sh --hooks --remove [--dry-run]      drop only the hook entries, keep the links'
+       install.sh --uninstall --hooks [--dry-run]   also drop cockpit'"'"'s hooks and its mod
+       install.sh --hooks --remove [--dry-run]      drop only the hooks and the mod, keep the links'
 uninstall=0; hooks=0; dry=0; check=0; remove=0; links=1
 for a in "$@"; do case "$a" in
     "") ;;
@@ -404,6 +405,69 @@ cycle_msg() {                 # <link>
     printf 'refusing: %s is a symlink cycle (or a chain of more than 40 links)\n' "$1" >&2
 }
 
+# The cockpit-events mod (docs/mod.md), through claude's own plugin CLI. The marketplace is this
+# checkout, a local folder, so Claude Code loads the mod in place, beside the core it runs. A
+# marketplace of that name is ours only when it is this folder: another one is named and left.
+# No TMUX_PANE: a `claude plugin` call can fire the SessionEnd hooks, and agent-state off would
+# clear the pane this runs in. With none, agent-state finds no pane and writes nothing.
+mod_call() {                  # <claude args>...: its stdout in mod_out, else FAILED and rc=1
+    local r
+    mod_out=$(env -u TMUX_PANE claude "$@") && return 0
+    r=$?
+    printf 'FAILED   claude %s (exit %s)\n' "$*" "$r" >&2
+    [ -z "$mod_out" ] || printf '%s\n' "$mod_out" >&2
+    rc=1
+    return 1
+}
+mod_step() {                  # install | remove
+    local mf="$DIR/.claude-plugin/marketplace.json" mk pl at
+    mk=$(jq -er .name "$mf" 2>/dev/null) && pl=$(jq -er '.plugins[0].name' "$mf" 2>/dev/null) ||
+        { printf 'FAILED   cannot read the mod marketplace %s\n' "$mf" >&2; rc=1; return; }
+    if ! command -v claude >/dev/null 2>&1; then
+        printf 'mod       no claude on PATH; %s@%s skipped (docs/mod.md)\n' "$pl" "$mk"
+        return
+    fi
+    if [ "$dry" -eq 1 ] && [ "$1" = install ]; then
+        printf 'dry-run: would run claude plugin marketplace add %s --scope user,' "$DIR"
+        printf ' unless a %s marketplace is there\n' "$mk"
+        printf 'dry-run: would run claude plugin install %s@%s --scope user\n' "$pl" "$mk"
+        return
+    elif [ "$dry" -eq 1 ]; then
+        printf 'dry-run: would run claude plugin marketplace remove %s --scope user,' "$mk"
+        printf ' if it is this checkout\n'
+        return
+    fi
+    mod_call plugin marketplace list --json || return
+    # none, ours, or the other marketplace's source and where it is
+    at=$(printf '%s' "$mod_out" | jq -er --arg n "$mk" --arg d "$DIR" '
+            [.[] | select(.name == $n)]
+            | if length == 0 then "none"
+              elif .[0].source == "directory" and .[0].path == $d then "ours"
+              else "\(.[0].source) \(.[0].path // .[0].repo // .[0].url // "")" end' 2>/dev/null) ||
+        { printf 'FAILED   claude plugin marketplace list --json printed no list\n' >&2
+          rc=1; return; }
+    case $1:$at in
+        install:none) mod_call plugin marketplace add "$DIR" --scope user || return ;;
+        install:ours) ;;
+        install:*)
+            printf 'SKIP     the %s marketplace is %s, not this checkout; %s@%s not installed\n' \
+                "$mk" "$at" "$pl" "$mk" >&2
+            return ;;
+        remove:none) printf 'mod       no %s marketplace, nothing to remove\n' "$mk"; return ;;
+        remove:ours)
+            mod_call plugin marketplace remove "$mk" --scope user &&
+                printf 'removed   the %s marketplace and %s@%s\n' "$mk" "$pl" "$mk"
+            return ;;
+        *)
+            printf 'SKIP     the %s marketplace is %s, not this checkout; left alone\n' \
+                "$mk" "$at" >&2
+            return ;;
+    esac
+    mod_call plugin install "$pl@$mk" --scope user &&
+        printf 'mod       %s@%s from %s (run /reload-plugins in a session already open)\n' \
+            "$pl" "$mk" "$DIR"
+}
+
 
 # cockpit's own root in a command: the shipped ${TMUX_COCKPIT_DIR:-...} form (as a regex)
 # or this checkout's path, so a foreign .../scripts/review-gate is never ours.
@@ -419,6 +483,7 @@ if [ "$hooks" -eq 1 ] && [ "$uninstall" -eq 1 ]; then
             cycle_msg "$settings"; exit 1
         fi
         printf 'hooks     no %s, nothing to remove\n' "$settings"
+        mod_step remove
         exit "$rc"
     fi
     real=$(resolve_link "$settings") || { cycle_msg "$settings"; exit 1; }
@@ -469,6 +534,7 @@ if [ "$hooks" -eq 1 ] && [ "$uninstall" -eq 1 ]; then
         trap - EXIT
         printf 'removed   cockpit hooks from %s (backup: %s)\n' "$settings" "$bak"
     fi
+    mod_step remove
     exit "$rc"
 fi
 
@@ -545,7 +611,6 @@ if [ "$hooks" -eq 1 ]; then
         else
             printf 'diff not found; merged result would be:\n%s\n' "$merged"
         fi
-        printf 'dry-run: nothing written\n'
     elif [ "$already_merged" -eq 1 ]; then
         printf 'hooks     already merged, nothing to do\n'
     else
@@ -572,6 +637,9 @@ if [ "$hooks" -eq 1 ]; then
         trap - EXIT
         printf 'merged    cockpit hooks into %s%s\n' "$settings" "$bak_note"
     fi
+    mod_step install
+    # After the mod's would-run lines, so a preview still ends on this line.
+    [ "$dry" -eq 0 ] || printf 'dry-run: nothing written\n'
 fi
 
 [ "$uninstall" -eq 1 ] && exit "$rc"

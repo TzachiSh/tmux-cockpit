@@ -3,8 +3,8 @@
 `mods/cockpit-events` is a Claude Code mod: a plugin of hooks that runs inside
 Claude Code. It tells the cockpit what the settings hooks never hear: a turn
 that was interrupted, and an ask the person left with Esc. It is the Claude
-adapter of the agent-event schema (docs/events.md), and it is a prototype of
-#1330: it is loaded by hand, and `install.sh` does not install it.
+adapter of the agent-event schema (docs/events.md). `install.sh --hooks`
+installs it beside the settings hooks (see Installing it).
 
 Its plugin name and its folder are both `cockpit-events`. Claude Code reserves
 plugin names that start with `claude-` for Anthropic's own plugins.
@@ -73,23 +73,54 @@ hook does not wait for the push" does pin that the run is never awaited.
   the mod runs nothing.
 - The line goes on stdin to `scripts/cockpit-event`, found at
   `$.plugin.root/../../scripts/cockpit-event`. That ties the mod to a checkout
-  of this repo: it must stay at `mods/cockpit-events` inside it.
+  of this repo: it must stay at `mods/cockpit-events` inside it. It holds
+  because the marketplace `install.sh` adds is that checkout, a local folder:
+  Claude Code loads a plugin from such a marketplace "in place from its path
+  inside the marketplace folder" (Claude Code's plugins/loading.md, "In-place
+  and copied plugins"). So the mod and the core always come from one commit.
 - The run is fire and forget: `void $.process.run(...).catch(() => {})` with a
   1500 ms bound. The hook never waits for it and returns `next(e)`'s result, so
   a missing core or a dead tmux server cannot slow or fail a turn. The hook
   waits only for two local lookups before passing on: the pane and the session
   id.
 
-## Loading it
+## Installing it
 
-Start Claude Code with the folder as a plugin directory:
+`install.sh --hooks` installs the mod. The repo root holds a marketplace,
+`.claude-plugin/marketplace.json`, named `tmux-cockpit`, with one plugin,
+`cockpit-events` from `./mods/cockpit-events`. `install.sh` asks claude's own
+plugin CLI, at user scope:
 
-```sh
-claude --plugin-dir ~/.tmux/plugins/tmux-cockpit/mods/cockpit-events
-```
+1. `claude plugin marketplace list --json`, for a marketplace named
+   `tmux-cockpit`.
+2. With none, `claude plugin marketplace add <this checkout> --scope user`.
+3. `claude plugin install cockpit-events@tmux-cockpit --scope user`.
 
-To turn it off, start Claude Code without the flag. The settings hooks work
-the same with or without it.
+A `tmux-cockpit` marketplace that is another folder or a repository is not
+this checkout's: `install.sh` names it and installs nothing. To move the mod
+to this checkout, run `install.sh --uninstall --hooks` from the other one, or
+`claude plugin marketplace remove tmux-cockpit`, first. With no `claude` on
+PATH, `install.sh` says so and skips the mod. A failed call prints a FAILED
+line naming the command, and `install.sh` exits 1. `--dry-run` runs no
+`claude` and prints the calls it would make. Each call runs without
+`TMUX_PANE`: a `claude plugin` call can fire the SessionEnd hooks, and their
+`agent-state off` would otherwise clear the pane `install.sh` runs in.
+
+A new session loads the mod at start, and a session already open loads it
+after `/reload-plugins`. Edits to the checkout, a `git pull` among them,
+reach the next session or `/reload-plugins` with no reinstall.
+
+`install.sh --uninstall --hooks` and `install.sh --hooks --remove` remove it
+with `claude plugin marketplace remove tmux-cockpit --scope user`, which also
+uninstalls the plugin. They run it only when the marketplace is this checkout,
+and name any other one and leave it.
+
+`install.sh` is the one supported install. A marketplace added from the
+GitHub repository is copied into Claude Code's plugin cache, which keeps the
+mod's folder alone, so the mod cannot reach `scripts/cockpit-event` and
+reports nothing.
+
+The settings hooks work the same with or without the mod.
 
 Tested with Claude Code 2.1.330. The floor, 2.1.299, is inferred from the
 CHANGELOG and not tested.

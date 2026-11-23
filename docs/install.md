@@ -155,6 +155,13 @@ even on a fresh install with no `~/.claude` yet. Requires `jq`; without it, or
 without Claude Code's settings.json at that path, merge the `hooks` object
 from `examples/claude-hooks.json` by hand.
 
+`install.sh --hooks` also installs the Claude mod, `cockpit-events`, which
+reports a turn ended by Esc or an API error: it adds this checkout as the
+`tmux-cockpit` marketplace through `claude`'s own plugin CLI and installs the
+mod from it at user scope. With no `claude` on PATH it skips the mod and says
+so. A session already open loads it after `/reload-plugins`. The calls it
+makes and why: [mod.md](mod.md#installing-it).
+
 `install.sh --uninstall --hooks` takes the hooks out again, besides removing
 the links; `install.sh --hooks --remove` removes only the hooks and keeps the
 links (`--remove` needs `--hooks`). It deletes only hook entries whose command
@@ -167,7 +174,8 @@ the same directory and renames it over `settings.json`, after a
 `settings.json.bak-<date>` backup. A missing file, or one with no cockpit
 hooks, is a no-op that says so; invalid JSON is refused and left unchanged.
 `--dry-run` with either prints the diff. `install.sh --hooks` adds
-them back identically.
+them back identically. Both also remove the mod, when its marketplace is this
+checkout.
 
 The hooks and the state each one writes: [states-and-hooks.md](states-and-hooks.md#hooks).
 

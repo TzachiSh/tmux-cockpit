@@ -100,7 +100,8 @@ missing or misconfigured and writes nothing. More detail, including
    ```
 
    The merge only adds cockpit's hooks; your own are left alone. Re-run it
-   after every plugin update.
+   after every plugin update. It also installs the Claude mod, which reports
+   a turn ended by Esc ([docs/mod.md](docs/mod.md)).
 3. Start `claude` in a few panes. Tabs and borders take the state colours as
    the agents work.
 4. Press `prefix + u` to jump to the pane that needs you.
