@@ -45,10 +45,11 @@ tracked() {
     # other file a block reads by path: docs/tui.md, the Makefile, all of
     # tests/fixtures, skills/ (install.sh links it), and tests/freeze-rig: the
     # #1173 block reads gate.sh and its helpers. The #1420 block reads the
-    # marketplace and the mod's plugin.json. The #672 block in run.sh fails on
-    # one missing here.
+    # marketplace and the mod's plugin.json, the #1423 block its tsconfig.json.
+    # The #672 block in run.sh fails on one missing here.
     { for f in cockpit.tmux install.sh bootstrap.sh Makefile docs/tui.md \
                .claude-plugin/marketplace.json mods/cockpit-events/.claude-plugin/plugin.json \
+               mods/cockpit-events/tsconfig.json \
                scripts/* scripts/lib/* tests/* examples/*; do
           case $f in tests/.*) continue ;; esac
           [ -f "$f" ] && printf '%s\n' "$f"
