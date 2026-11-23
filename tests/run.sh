@@ -5478,6 +5478,140 @@ is "and install.sh's closing note on that box says to run --check, with no line 
 rm -rf "$BS"
 fi
 
+echo "== CRLF in a checkout: --check names the restore, bootstrap.sh points at it (#188) =="
+# A checkout copied over from Windows holds CRLF where git stores LF, and tmux reads each CR
+# as text: a theme died on `%else\r`. The doctor names the folder and the command that
+# restores it; neither script runs it, as it overwrites edits to tracked files. Throwaway
+# checkouts under a faked HOME; stubs answer tmux -V and revdiff, so nothing is built or
+# fetched and no tmux server is reached.
+if ! command -v git >/dev/null 2>&1; then skip_ "CRLF checkouts (no git)"; else
+EO=$(mktmpd); EH="$EO/home"; EOC="$EH/.tmux/plugins/tmux-cockpit"
+EP1="$EH/.tmux/plugins/p1"; EP2="$EH/.config/tmux/plugins/p2"; EOPATH="$EO/stub:/usr/bin:/bin"
+mkdir -p "$EO/stub" "$EO/bin" "$EO/tt" "$EO/nogit"
+printf '\211PNG\r\n\032\n\000\r\n' > "$EO/png"
+printf '#!/bin/sh\n[ "$1" = -V ] && echo "tmux 3.8"\n' > "$EO/stub/tmux"
+printf '#!/bin/sh\necho "version: 1.13.0"\n' > "$EO/stub/revdiff"
+printf '#!/bin/sh\nexit 99\n' > "$EO/stub/sudo"; chmod +x "$EO/stub/"*
+eo_git() { git -c user.name=t -c user.email=t@e -c commit.gpgsign=false "$@"; }
+eo_lf() { printf '%%if 1\nset -g @eo 1\n%%endif\n' > "$1/a.conf"; }
+eo_cr() { printf '%%if 1\r\nset -g @eo 1\r\n%%endif\r\n' > "$1/a.conf"; }
+eo_repo() {                   # <dir> [noattr] -- a.conf in LF, a PNG holding \r\n, a link
+    mkdir -p "$1" && git init -q "$1" >/dev/null 2>&1 && eo_lf "$1" &&
+    cp "$EO/png" "$1/i.png" && ln -s a.conf "$1/l" && git -C "$1" add a.conf i.png l || return 1
+    [ "${2:-}" = noattr ] ||
+        { printf '* text=auto\n' > "$1/.gitattributes" && git -C "$1" add .gitattributes; } ||
+        return 1
+    eo_git -C "$1" commit -q -m i
+}
+for eo_d in "$EOC" "$EP1" "$EP2"; do eo_repo "$eo_d"; done
+cp "$DIR/install.sh" "$DIR/bootstrap.sh" "$EOC/"
+for eo_d in scripts bin examples; do ln -s "$DIR/$eo_d" "$EOC/$eo_d"; done
+# tpm's plugins as the bootstrap block fakes them, so no step clones.
+for eo_d in tpm tmux-sensible tmux-yank tmux-resurrect tmux-continuum; do
+    mkdir -p "$EH/.tmux/plugins/$eo_d/.git"
+done
+( . "$DIR/scripts/lib/confline.sh" && cockpit_conf_line "$EOC" ) > "$EH/.tmux.conf"
+eo_chk() {                    # eo_chk [PATH] -- the doctor on the faked box
+    env -u TMUX -u TMUX_PANE HOME="$EH" XDG_BIN_HOME="$EO/bin" XDG_CONFIG_HOME="$EH/.config" \
+        TMUX_TMPDIR="$EO/tt" PATH="${1:-$EOPATH}" "$EOC/install.sh" --check 2>&1
+}
+# Mark and row name only, as the --check block reads them: ok|warn|fail counts of crlf.
+eorow() { printf '%s\n' "$1" | sed -n 's/^\[ *\([a-z]*\) *\] *\([^ ]*\).*/\1 \2/p' |
+    grep -c -x "$2"; }
+eocrlf() { printf '%s|%s|%s' "$(eorow "$1" 'ok crlf')" "$(eorow "$1" 'warn crlf')" \
+    "$(eorow "$1" 'fail crlf')"; }
+eofix() { ( . "$DIR/scripts/lib/eol.sh" && eol_fix_cmd "$1" ); }
+
+is "clean checkouts, cockpit's and one in each tpm folder: one ok crlf row" "1|0|0" \
+   "$(eocrlf "$(eo_chk)")"
+eo_cr "$EOC"; eo=$(eo_chk)
+is "CRLF in cockpit's own checkout: a fail row, and no warn row for it in tpm's folder" \
+   "0|0|1" "$(eocrlf "$eo")"
+is "and its fix is that folder's restore, with what it overwrites" "1" \
+   "$(printf '%s\n' "$eo" | grep -cF "$(eofix "$EOC") (overwrites edits to tracked files)")"
+eo_lf "$EOC"
+for eo_r in "home:$EP1" "xdg:$EP2"; do
+    eo_cr "${eo_r#*:}"; eo=$(eo_chk)
+    is "CRLF in a plugin in the ${eo_r%%:*} tpm folder: a warn row naming its restore" \
+       "0|1|0|1" "$(eocrlf "$eo")|$(printf '%s\n' "$eo" | grep -cF "$(eofix "${eo_r#*:}")")"
+    eo_lf "${eo_r#*:}"
+done
+# Its attributes ask for CRLF, and the restore writes it back so: never a warn.
+printf '* text=auto\n*.bat text eol=crlf\n' > "$EP1/.gitattributes"
+printf 'echo\r\n' > "$EP1/w.bat"
+git -C "$EP1" add .gitattributes w.bat && eo_git -C "$EP1" commit -q -m bat
+is "a file whose attributes ask for CRLF is no warn row" "1|0|0" "$(eocrlf "$(eo_chk)")"
+printf '%%if 1\nset -g @eo 1\r\n%%endif\n' > "$EP1/a.conf"
+is "one CRLF line in a file (w/mixed) is a warn row too" "0|1|0" "$(eocrlf "$(eo_chk)")"
+eo_lf "$EP1"
+for eo_d in bash dirname; do ln -s "$(command -v "$eo_d")" "$EO/nogit/$eo_d"; done
+is "no git on PATH: a skip crlf row that says so" "1" \
+   "$(eo_chk "$EO/nogit" | grep -cE '^\[ skip \] crlf +git not found')"
+
+# A plugin with no .gitattributes, as most have: the fixtures above all carry text=auto,
+# and git reads a file's line endings the same way without it.
+EP5="$EH/.tmux/plugins/p5"; eo_repo "$EP5" noattr
+printf 'x\n' > "$EP5/b.conf"; git -C "$EP5" add b.conf && eo_git -C "$EP5" commit -q -m b
+eo_cr "$EP5"; printf 'x\r\n' > "$EP5/b.conf"
+is "no .gitattributes: its 2 CRLF files are one warn row" "1" \
+   "$(eo_chk | grep -cE '^\[ warn \] crlf +2 files in p5 ')"
+rm -rf "$EP5"
+# A plugin folder that a dotfiles repository around it tracks, with CRLF files of that
+# repository outside it: the count covers the plugin folder alone.
+EDF="$EH/.config/tmux"; git init -q "$EDF" >/dev/null 2>&1; mkdir -p "$EDF/plugins/p4"
+printf 'a\n' > "$EDF/plugins/p4/a.conf"; printf 'k\n' | tee "$EDF/k1.conf" > "$EDF/k2.conf"
+git -C "$EDF" add plugins/p4/a.conf k1.conf k2.conf && eo_git -C "$EDF" commit -q -m d
+printf 'a\r\n' > "$EDF/plugins/p4/a.conf"; printf 'k\r\n' | tee "$EDF/k1.conf" > "$EDF/k2.conf"
+is "a plugin folder in a dotfiles repository: 1 CRLF file in it, not its parent's 2 more" "1" \
+   "$(eo_chk | grep -cE '^\[ warn \] crlf +1 file in p4 ')"
+rm -rf "$EDF/.git" "$EDF/plugins/p4" "$EDF/k1.conf" "$EDF/k2.conf"
+# tpm's XDG folder holding a link to cockpit's folder: the same folder, so one fail row.
+ln -s "$EOC" "$EDF/plugins/tmux-cockpit"; eo_cr "$EOC"
+is "a tpm folder's link to cockpit's own folder: one fail row, no warn row for the link" \
+   "0|0|1" "$(eocrlf "$(eo_chk)")"
+eo_lf "$EOC"; rm -f "$EDF/plugins/tmux-cockpit"
+
+# The named command, run as printed, on a checkout of its own.
+EOR="$EO/r"; eo_repo "$EOR"; eo_cr "$EOR"
+eocnt() { git -C "$1" ls-files --eol | grep -c 'w/crlf'; }
+eo_was=$(eocnt "$EOR"); bash -c "$(eofix "$EOR")"
+is "the doctor's restore, run as printed: a CRLF file before it, none after" "1|0" \
+   "$eo_was|$(eocnt "$EOR")"
+is "and the PNG's bytes and the link's target are the committed ones (a sed strip broke both)" \
+   "same|a.conf" \
+   "$(cmp -s "$EO/png" "$EOR/i.png" && echo same || echo changed)|$(readlink "$EOR/l")"
+# A user's git config that writes CRLF on checkout: the command overrides both settings.
+for eo_r in 'autocrlf = true' 'eol = crlf'; do
+    eo_g="$EO/gc${eo_r%% *}"; mkdir -p "$eo_g"
+    printf '[core]\n\t%s\n' "$eo_r" > "$eo_g/.gitconfig"
+    eo_cr "$EOR"; HOME="$eo_g" XDG_CONFIG_HOME="$eo_g" bash -c "$(eofix "$EOR")"
+    is "a user's core.$eo_r: the restore still writes LF" "0" "$(grep -c $'\r' "$EOR/a.conf")"
+done
+
+# bootstrap.sh only points at --check: a note per CRLF checkout, no byte changed.
+eo_bs() {                     # eo_bs <args...> -- bootstrap.sh on the faked box
+    env -u TMUX -u TMUX_PANE HOME="$EH" XDG_BIN_HOME="$EO/bin" XDG_CONFIG_HOME="$EH/.config" \
+        TMUX_TMPDIR="$EO/tt" COCKPIT_GITHUB="$(file_url "$EO/norel")" PATH="$EOPATH" \
+        "$EOC/bootstrap.sh" "$@" </dev/null 2>&1
+}
+eo_sum() { ( cd "$1" && find . -path ./.git -prune -o -type f -print | LC_ALL=C sort |
+    xargs sha256sum ); }
+eosect() { printf '%s\n' "$1" | awk '/^== /{ f = ($0 == "== line endings =="); next } f && NF'; }
+eonote() { eosect "$1" |
+    grep -cxF "  CRLF   $2: 1 file git stores with LF; run $EOC/install.sh --check"; }
+eo_cr "$EOC"; eo_cr "$EP1"; eo_was=$(eo_sum "$EOC"; eo_sum "$EP1")
+eo=$(eo_bs --yes)
+is "bootstrap.sh: each CRLF checkout gets one note pointing at install.sh --check" "1|1" \
+   "$(eonote "$eo" "$EOC")|$(eonote "$eo" "$EP1")"
+is "and it changes no byte in either checkout" "$eo_was" "$(eo_sum "$EOC"; eo_sum "$EP1")"
+eo_dry=$(eo_bs --dry-run)
+is "--dry-run prints the same two notes and nothing else in that step" "same|2" \
+   "$([ "$(eosect "$eo_dry")" = "$(eosect "$eo")" ] && echo same || echo differs)|$(
+      eosect "$eo_dry" | grep -c .)"
+unset -f eo_git eo_lf eo_cr eo_repo eo_chk eorow eocrlf eofix eocnt eo_bs eo_sum eosect eonote
+rm -rf "$EO"
+fi
+
 echo "== bootstrap.sh and install.sh give a line that loads the plugin from any folder (#1046) =="
 # bootstrap.sh appended `run-shell <folder>/cockpit.tmux` and install.sh printed it. tmux hands
 # that to sh bare: a blank in the folder's path split it and nothing loaded, and a $( ) in it
