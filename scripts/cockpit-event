@@ -1,5 +1,5 @@
 #!/bin/bash
-# The agent-neutral core (#1330): agent-event v1 lines on stdin, one JSON object per line
+# The agent-neutral core (#1330): agent-event lines on stdin, one JSON object per line
 # (contracts/agent-event.schema.json, docs/events.md), each become one agent-state request
 # for the line's pane.
 #   usage: <adapter> | cockpit-event
@@ -54,7 +54,7 @@ event() {
             *) return 1 ;;
         esac
     done
-    [ "$f_v" = 1 ] || return 1
+    [ "$f_v" = 2 ] || return 1
     [[ $f_agent =~ ^\"[a-z][a-z0-9-]{1,23}\"$ ]] || return 1
     [[ $f_pane =~ ^\"%[0-9]{1,10}\"$ ]] || return 1
     [[ $f_session =~ ^\"[0-9a-f]{16,64}\"$ ]] || return 1
@@ -68,6 +68,7 @@ event() {
         '"tool.start"') REQ=running ;;
         '"tool.end"') REQ=running ;;    # failed or not: a tool's failure is not the turn's (#1331)
         '"input.needed"') REQ=needs-input ;;
+        '"input.ended"') REQ=input-ended ;;    # an ask that ended with no answer (#1332)
         '"turn.end"')
             case $f_outcome in
                 '"answer"'|'"refusal"') REQ=done ;;

@@ -1,5 +1,5 @@
 {
-  "schema_version": 2,
+  "schema_version": 1,
   "agent": "claude",
   "kind": "turn.start",
   "pane": "%3",

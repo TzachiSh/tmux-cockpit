@@ -1,0 +1,9 @@
+{
+  "schema_version": 2,
+  "agent": "claude",
+  "kind": "input.ended",
+  "pane": "%3",
+  "session": "3f2a9c0d1e4b5a678c9d0e1f2a3b4c5d",
+  "at": "2026-11-18T09:31:05Z",
+  "outcome": "answer"
+}

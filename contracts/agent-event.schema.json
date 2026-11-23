@@ -5,14 +5,15 @@
   "description": "One event from an agent adapter to the core, one JSON object per line (docs/events.md). Ids, a kind, an outcome and a timestamp only: no answer, no prompt, no tool input.",
   "type": "object",
   "properties": {
-    "schema_version": { "const": 1 },
+    "schema_version": { "const": 2 },
     "agent": {
       "description": "The adapter's fixed name, a constant in that adapter's code. The core logs it and never branches on it.",
       "type": "string",
       "pattern": "^[a-z][a-z0-9-]{1,23}$"
     },
     "kind": {
-      "enum": ["turn.start", "turn.end", "tool.start", "tool.end", "input.needed", "session.end"]
+      "enum": ["turn.start", "turn.end", "tool.start", "tool.end", "input.needed", "input.ended",
+        "session.end"]
     },
     "pane": { "type": "string", "pattern": "^%[0-9]{1,10}$" },
     "session": {

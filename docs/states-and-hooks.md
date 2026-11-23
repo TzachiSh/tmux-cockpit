@@ -29,8 +29,10 @@ carries no `tool_use_id` to tie them to it. So while a key is set, a
 `PreToolUse` only from the same agent (the next call after an ask the person
 refused, which fires no hook of its own), and a `SubagentStart` never. A typed
 prompt, `off` and an interrupt end it as before, and the key goes with the
-text. An ask with no key, from a `Notification` alone or a `PermissionRequest`
-that names no tool, ends on any `running`, as before. Known limits: two
+text. With the Claude mod, the end of a main turn ends an ask whose key is the
+main thread's (#1332, [docs/mod.md](mod.md)). An ask with no key, from a
+`Notification` alone or a `PermissionRequest` that names no tool, ends on any
+`running`, as before. Known limits: two
 concurrent calls of the same tool in one agent share a key. A sibling's
 `PreToolUse` that lands after the `PermissionRequest` ends the ask. With two
 asks waiting the key is the newer one's, so answering that one first ends the
@@ -84,6 +86,12 @@ over earlier, `prefix r` included.
 `--json` and `--rows` show such a pane idle once its transcript's newest turn row is
 the interrupt marker, without writing to tmux; needs-input, error and done stay the
 hooks', and a pane bound to a job keeps the poller's state (#1330 A3, docs/tui.md).
+
+Esc on a permission prompt fires no `Stop` either, and the idle `off` is
+refused on `needs-input`, so the ▲ stayed until the next prompt. With the
+Claude mod, that turn's end clears an ask whose key is the main thread's. An
+ask with another agent's key or none stays (#1332, [docs/mod.md](mod.md)).
+Without the mod the ▲ still stays until the next prompt.
 
 ## Context fill, optional
 

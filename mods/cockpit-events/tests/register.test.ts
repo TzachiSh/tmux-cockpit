@@ -9,7 +9,8 @@ import { expect, test } from 'claude-code/testing'
 const SID = '0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0'
 const HEX = '0f1e2d3c4b5a69788796a5b4c3d2e1f0'
 const SECRET = 'SECRET-ANSWER-7f3'
-const KEYS = ['agent', 'at', 'kind', 'outcome', 'pane', 'schema_version', 'session']
+const KEYS_END = ['agent', 'at', 'kind', 'outcome', 'pane', 'schema_version', 'session']
+const KEYS_ENDED = ['agent', 'at', 'kind', 'pane', 'schema_version', 'session']
 const UTC = /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]{1,9})?Z$/
 const OK = {
   exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false,
@@ -64,7 +65,8 @@ function world($: Engine, on: On, w: World = {}) {
     new Promise<void>(done => (runs.length >= n ? done() : waits.push([n, done])))
   const lines = () => runs.map(r => JSON.parse(r.stdin))
   const outcomes = () => lines().map(l => l.outcome)
-  return { runs, answers, approvals, pane, held, until, lines, outcomes }
+  const kinds = () => lines().map(l => l.kind)
+  return { runs, answers, approvals, pane, held, until, lines, outcomes, kinds }
 }
 
 let turns = 0
@@ -93,7 +95,7 @@ test('turn.complete aborted emits exactly one turn.end outcome aborted', async (
   await $.turn.complete(end('error')) // the control, so a second aborted line would show
   await w.until(2)
   expect(w.outcomes()).toEqual(['aborted', 'error'])
-  expect(w.lines()[0]).toEqual({ schema_version: 1, agent: 'claude', kind: 'turn.end',
+  expect(w.lines()[0]).toEqual({ schema_version: 2, agent: 'claude', kind: 'turn.end',
     pane: '%7', session: HEX, at: expect.stringMatching(UTC), outcome: 'aborted' })
   expect(w.runs[0]?.argv).toHaveLength(1)
   expect(w.runs[0]?.argv[0]).toEndWith('/../../scripts/cockpit-event')
@@ -106,33 +108,32 @@ test('turn.complete error emits exactly one turn.end outcome error', async ($, o
   await $.turn.complete(end('aborted')) // the control, so a second error line would show
   await w.until(2)
   expect(w.outcomes()).toEqual(['error', 'aborted'])
-  expect(w.lines()[0]).toEqual({ schema_version: 1, agent: 'claude', kind: 'turn.end',
+  expect(w.lines()[0]).toEqual({ schema_version: 2, agent: 'claude', kind: 'turn.end',
     pane: '%7', session: HEX, at: expect.stringMatching(UTC), outcome: 'error' })
 })
 
-test('outcome answer emits nothing', async ($, on) => {
+test('turn.complete answer emits exactly one input.ended, with no outcome', async ($, on) => {
   const w = world($, on)
   await $.turn.complete(end('answer'))
-  await $.turn.complete(end('error'))
-  await w.until(1)
-  expect(w.outcomes()).toEqual(['error'])
+  await $.turn.complete(end('error')) // the control, so a second input.ended would show
+  await w.until(2)
+  expect(w.kinds()).toEqual(['input.ended', 'turn.end'])
+  expect(w.lines()[0]).toEqual({ schema_version: 2, agent: 'claude', kind: 'input.ended',
+    pane: '%7', session: HEX, at: expect.stringMatching(UTC) })
 })
 
-test('an answer after an approved ask whose call failed emits nothing', async ($, on) => {
-  const w = world($, on)
-  await askedTurn($, w, true)
-  await $.turn.complete(end('error'))
-  await w.until(1)
-  expect(w.outcomes()).toEqual(['error'])
-})
-
-test('an answer after a refused ask emits nothing', async ($, on) => {
-  const w = world($, on)
-  await askedTurn($, w, false)
-  await $.turn.complete(end('error'))
-  await w.until(1)
-  expect(w.outcomes()).toEqual(['error'])
-})
+// The mod cannot tell a refused ask from an approved one whose call failed, and does not try:
+// the core ends only an ask still waiting, and the approved call's own hook has answered it.
+test('an answer after an approved ask that failed and one after a refused ask emit one line',
+  async ($, on) => {
+    const w = world($, on)
+    await askedTurn($, w, true)
+    await askedTurn($, w, false)
+    await $.turn.complete(end('error')) // the control, so a third line would show
+    await w.until(3)
+    expect(w.kinds()).toEqual(['input.ended', 'input.ended', 'turn.end'])
+    expect({ ...w.lines()[0], at: '' }).toEqual({ ...w.lines()[1], at: '' })
+  })
 
 test('subagent turns emit nothing', async ($, on) => {
   const w = world($, on)
@@ -140,6 +141,8 @@ test('subagent turns emit nothing', async ($, on) => {
   await $.turn.complete(end('aborted', { turnId: 't-a1', agentId: 'a1' }))
   await $.turn.start({ text: '', turnId: 't-a2', agentId: 'a2' })
   await $.turn.complete(end('error', { turnId: 't-a2', agentId: 'a2' }))
+  await $.turn.start({ text: '', turnId: 't-a3', agentId: 'a3' })
+  await $.turn.complete(end('answer', { turnId: 't-a3', agentId: 'a3' }))
   await $.turn.complete(end('error'))
   await w.until(1)
   expect(w.outcomes()).toEqual(['error'])
@@ -149,19 +152,23 @@ test('no emitted line contains the answer text', async ($, on) => {
   const w = world($, on)
   await $.turn.complete(end('aborted'))
   await $.turn.complete(end('error'))
-  await w.until(2)
-  expect(w.answers.filter(a => a === SECRET)).toHaveLength(2)
+  await $.turn.complete(end('answer'))
+  await w.until(3)
+  expect(w.answers.filter(a => a === SECRET)).toHaveLength(3)
   for (const r of w.runs) expect([...r.argv, r.stdin].join(' ')).not.toContain(SECRET)
 })
 
-test('every emitted line has exactly the agent-event v1 keys', async ($, on) => {
+test('every emitted line has exactly the agent-event keys of its kind', async ($, on) => {
   const w = world($, on)
   await $.turn.complete(end('aborted'))
   await $.turn.complete(end('error'))
-  await w.until(2)
+  await $.turn.complete(end('answer'))
+  await w.until(3)
+  expect(w.kinds()).toEqual(['turn.end', 'turn.end', 'input.ended'])
   for (const r of w.runs) {
+    const l = JSON.parse(r.stdin)
     expect(r.stdin.split('\n')).toEqual([expect.any(String), ''])
-    expect(Object.keys(JSON.parse(r.stdin)).sort()).toEqual(KEYS)
+    expect(Object.keys(l).sort()).toEqual(l.kind === 'input.ended' ? KEYS_ENDED : KEYS_END)
   }
 })
 

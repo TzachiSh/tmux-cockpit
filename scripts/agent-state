@@ -1,6 +1,7 @@
 #!/bin/bash
 # Record a tmux pane's agent state in per-pane tmux options.
-#   usage: agent-state <running|needs-input|error|done|off|interrupted|notify|wake|recount> [pane-id]
+#   usage: agent-state <running|needs-input|error|done|off|interrupted|input-ended|notify|
+#          wake|recount> [pane-id]
 #          agent-state <sub-start|sub-stop|sub-idle|sub-end>   append to the session's
 #                                          subagent log (#361)
 #          agent-state <sub-taskstop|sub-reconcile>   a TaskStop to the same log, a Stop's
@@ -519,6 +520,11 @@ case "$state" in
     # An interrupted turn (#1330): from any state, sticky ones too, with off's idle body below,
     # so the review marks and the subagent count stay.
     interrupted) when=1 idle=1 ;;
+    # An ask that ended with no answer (#1332): Esc on a permission prompt ends the main turn
+    # and fires no Stop. Only over needs-input whose key is the main thread's, /<tool> (#1403),
+    # then with interrupted's idle body. An ask with no key has no known owner, and stays.
+    input-ended) when="#{&&:#{==:$cur,needs-input},#{m:/*,#{@panestate_ask}}}"
+                 state=interrupted idle=1 ;;
     recount)     when=1 ;;
     *) exit 0 ;;
 esac

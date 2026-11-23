@@ -9,15 +9,15 @@ asks which agent sent a line: a new agent needs a new adapter and nothing else
 The schema is `contracts/agent-event.schema.json`. Its examples, and the check
 CI runs on them, are described in `contracts/README.md`.
 
-## The line, agent-event v1
+## The line, agent-event v2
 
 One JSON object per line, with these fields and no other:
 
 | field | required | shape |
 |-------|----------|-------|
-| `schema_version` | yes | the integer `1` |
+| `schema_version` | yes | the integer `2` |
 | `agent` | yes | `^[a-z][a-z0-9-]{1,23}$`, the adapter's fixed name: 2 to 24 characters, a trailing `-` allowed |
-| `kind` | yes | `turn.start`, `turn.end`, `tool.start`, `tool.end`, `input.needed` or `session.end` |
+| `kind` | yes | `turn.start`, `turn.end`, `tool.start`, `tool.end`, `input.needed`, `input.ended` or `session.end` |
 | `pane` | yes | the tmux pane id, `^%[0-9]{1,10}$` |
 | `session` | yes | the agent's session id, 16 to 64 lowercase hex |
 | `at` | yes | UTC, `2026-11-18T09:31:05Z`, an optional fraction |
@@ -38,7 +38,7 @@ One JSON object per line, with these fields and no other:
 - A change to any field bumps `schema_version`, by the rule in
   `contracts/README.md`.
 
-Subagent kinds are left out of v1: a subagent's start can be missing while its
+Subagent kinds are left out: a subagent's start can be missing while its
 end arrives, and the subagent log already comes from the settings hooks. A
 `session.start` is left out too: it fires once per load, never after `/clear`.
 
@@ -63,6 +63,7 @@ Each request keeps the guard it has; the line numbers are `scripts/agent-state`.
 | `tool.start` | `running` | Refused when already `running` (471). Entering `running` clears the review mark (518-519). |
 | `tool.end` | `running` | The same as `tool.start`, with `failed` true or false: a tool's failure is not the turn's (#1331). |
 | `input.needed` | `needs-input` | Refused when already `needs-input` (472). |
+| `input.ended` | `input-ended` | An ask that ended with no answer (#1332). Only over `needs-input` whose `@panestate_ask` is the main thread's, `/<tool>` (#1403, 526): it then leaves the pane unset as `interrupted` does (550), its ask, key and stamp with it (581, 586), and keeps the review mark, the review spool and `@cockpit_subs` (556). It never writes `done`, so the #310 hold stays `Stop`'s. Any other state stays, and so does an ask with another agent's key or none. So `input.ended` cannot end an `input.needed` of the fake adapter or any other adapter: that ask has no key. |
 | `turn.end`, `answer` | `done` | Refused on `done`, `needs-input` or `error` (474). With stdin from `/dev/null`, the Stop-payload read (461, which reads at 210) finds no subagents and does not hold the pane, and it clears `@cockpit_subs`. |
 | `turn.end`, `refusal` | `done` | The same as `answer`. |
 | `turn.end`, `error` | `error` | Refused on `error` or `needs-input` (473). The one kind that writes `error`: a failed tool is `running` (#1331). |
@@ -76,14 +77,15 @@ things only when its stdin holds that hook's payload (561-562): it puts
 The core gives it `/dev/null`, so after a `session.end` both stay until the
 pane's next session writes them. The core sends no made-up payload.
 
-In v1 the Claude mod emits only `turn.end` with `aborted` and with `error`. The
-settings hooks keep the rest, until #1330 T7 decides whether to move them.
+The Claude mod emits `turn.end` with `aborted` and with `error`, and `input.ended`
+at a main turn's answer (docs/mod.md). The settings hooks keep the rest, until
+#1330 T7 decides whether to move them.
 
 ## Adding a CLI agent
 
 1. Add `adapters/<agent>/`, or `mods/<name>/` if the agent has an in-process
    plugin API. A plugin name must not start with `claude-`, which is reserved:
-   the Claude mod is `mods/cockpit-events/`. It turns the agent's own signals into agent-event v1
+   the Claude mod is `mods/cockpit-events/`. It turns the agent's own signals into agent-event
    lines with `agent: "<agent>"`. `agent` is the adapter's fixed name, a
    constant in that adapter's code, never derived from a session, project, path
    or user input. `tests/adapters/fake/adapter.sh` is a worked example.
@@ -102,7 +104,7 @@ settings hooks keep the rest, until #1330 T7 decides whether to move them.
    and each line valid against the schema. Add one end-to-end row on a private
    socket.
 6. Change nothing in `scripts/cockpit-event`, `scripts/agent-state` or the
-   schema. A new kind or field is a schema v2 request to the core's owner.
+   schema. A new kind or field bumps `schema_version`: a request to the core's owner.
 
 ## Who owns what
 

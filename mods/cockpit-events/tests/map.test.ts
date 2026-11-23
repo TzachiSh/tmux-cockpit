@@ -9,21 +9,26 @@ const HEX = 'ab12cd34ef567890ab12cd34ef567890'
 const done = (reason: string, more: object = {}) => ({
   reason, answer: 'text', durationMs: 1, isAborted: reason === 'aborted', turnId: 't', ...more,
 })
-const line = (outcome: string) => ({ schema_version: 1, agent: 'claude', kind: 'turn.end',
-  pane: '%12', session: HEX, at: CTX.at, outcome })
+const BASE = { schema_version: 2, agent: 'claude', pane: '%12', session: HEX, at: CTX.at }
+const line = (outcome: string) => ({ ...BASE, kind: 'turn.end', outcome })
 
 test('map: aborted and error on the main loop give a turn.end line', () => {
   expect(toEvent('turn.complete', done('aborted'), CTX)).toStrictEqual(line('aborted'))
   expect(toEvent('turn.complete', done('error'), CTX)).toStrictEqual(line('error'))
 })
 
-test('map: an answer and a refusal give null', () => {
-  expect(toEvent('turn.complete', done('answer'), CTX)).toBeNull()
+test('map: an answer on the main loop gives input.ended, with no outcome', () => {
+  expect(toEvent('turn.complete', done('answer'), CTX))
+    .toStrictEqual({ ...BASE, kind: 'input.ended' })
+})
+
+test('map: a refusal gives null', () => {
   expect(toEvent('turn.complete', done('refusal'), CTX)).toBeNull()
 })
 
 test('map: a subagent turn and other events give null', () => {
   expect(toEvent('turn.complete', done('aborted', { agentId: 'a1' }), CTX)).toBeNull()
+  expect(toEvent('turn.complete', done('answer', { agentId: 'a1' }), CTX)).toBeNull()
   expect(toEvent('turn.start', { text: '', turnId: 't' }, CTX)).toBeNull()
   expect(toEvent('tool.call', { tool: 'Bash', reason: 'aborted' }, CTX)).toBeNull()
 })
@@ -32,6 +37,7 @@ test('map: no pane, a session that is not hex, or a bad time gives null', () => 
   for (const bad of [{ pane: undefined }, { pane: '7' }, { session: 'not-a-uuid' },
     { session: '' }, { at: '2026-11-18 09:31:05' }]) {
     expect(toEvent('turn.complete', done('aborted'), { ...CTX, ...bad })).toBeNull()
+    expect(toEvent('turn.complete', done('answer'), { ...CTX, ...bad })).toBeNull()
   }
 })
 
