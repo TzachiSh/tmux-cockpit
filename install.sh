@@ -83,6 +83,21 @@ row() {                       # row <ok|skip|warn|fail> <what> <found> [fix]
     printf '[%s] %-14s %-24s %s\n' "$m" "$2" "$3" "${4:-}"
 }
 
+# The cockpit-events mod (docs/mod.md), for --hooks and --check alike. mod_names sets mf, the
+# checkout's marketplace file, and from it mk, the marketplace, and pl, the plugin; 1 when it
+# cannot read them.
+mod_names() {
+    mf="$DIR/.claude-plugin/marketplace.json"
+    mk=$(jq -er .name "$mf" 2>/dev/null) && pl=$(jq -er '.plugins[0].name' "$mf" 2>/dev/null)
+}
+# A jq def over a list of marketplaces in the shape `claude plugin marketplace list --json`
+# prints: the one named $n is none, ours (a directory at $d, this checkout), or its source and
+# where it is.
+mod_where_jq='def mod_where($n; $d): [.[] | select(.name == $n)]
+    | if length == 0 then "none"
+      elif .[0].source == "directory" and .[0].path == $d then "ours"
+      else "\(.[0].source) \(.[0].path // .[0].repo // .[0].url // "")" end;'
+
 if [ "$check" -eq 1 ]; then
     printf 'tmux-cockpit doctor\n\n'
 
@@ -266,7 +281,9 @@ set*\ @catppuccin_window_current_text\ *)
         fi
     fi
 
-    if [ ! -d "${HOME:-}/.claude" ]; then row skip hooks 'no Claude Code'
+    if [ ! -d "${HOME:-}/.claude" ]; then
+        row skip hooks 'no Claude Code'
+        row skip mod 'no Claude Code'
     elif ! command -v jq >/dev/null 2>&1; then row skip hooks 'jq missing'
     else
         # jq exits 3 when it cannot compile a filter. Counted as 0, that read as "not
@@ -298,6 +315,29 @@ set*\ @catppuccin_window_current_text\ *)
                 *:6) row ok subhooks 'all 6 subagent hooks merged' ;;
                 *) row warn subhooks "${subs:-0} of 6 subagent hooks merged" \
                        're-run install.sh --hooks' ;;
+            esac
+        fi
+        # The mod, from what claude's plugin CLI wrote to the same file: no claude starts. Like
+        # subhooks, it waits for cockpit hooks, so the hooks row speaks first.
+        if [ "$nrc" = 3 ]; then row skip mod 'hooks count unreadable'
+        elif [ "${n:-0}" = 0 ]; then row skip mod 'no cockpit hooks yet'
+        elif ! mod_names; then row fail mod "cannot read $mf" 'restore the checkout from git'
+        else
+            # <where>:<enabled>, the marketplaces put in the shape claude's list prints.
+            mst=$(jq -r --arg n "$mk" --arg d "$DIR" --arg p "$pl@$mk" "$mod_where_jq"'
+                    ([(.extraKnownMarketplaces | objects) // {} | to_entries[]
+                      | {name: .key} + ((.value.source | objects) // {})] | mod_where($n; $d))
+                    + ":" + ((.enabledPlugins | objects) // {} | .[$p] | tostring)' \
+                  "$HOME/.claude/settings.json" 2>/dev/null); mrc=$?
+            # A read that fails after the hooks count reads as nothing there, as the hooks row
+            # reads a file it cannot read.
+            case $mrc:$mst in
+                3:*) row fail mod "$jqv rejected the filter" 'report it: tmux-cockpit issue' ;;
+                0:ours:true) row ok mod "$pl from this checkout" ;;
+                0:ours:false) row warn mod "$pl disabled" "claude plugin enable $pl@$mk" ;;
+                0:ours:*|0:none:*|[!0]*) row warn mod "$pl not installed" 'install.sh --hooks' ;;
+                *) mfix="not this checkout; claude plugin marketplace remove $mk,"
+                   row warn mod "$mk is ${mst%:*}" "$mfix then install.sh --hooks" ;;
             esac
         fi
     fi
@@ -420,9 +460,8 @@ mod_call() {                  # <claude args>...: its stdout in mod_out, else FA
     return 1
 }
 mod_step() {                  # install | remove
-    local mf="$DIR/.claude-plugin/marketplace.json" mk pl at
-    mk=$(jq -er .name "$mf" 2>/dev/null) && pl=$(jq -er '.plugins[0].name' "$mf" 2>/dev/null) ||
-        { printf 'FAILED   cannot read the mod marketplace %s\n' "$mf" >&2; rc=1; return; }
+    local mf mk pl at
+    mod_names || { printf 'FAILED   cannot read the mod marketplace %s\n' "$mf" >&2; rc=1; return; }
     if ! command -v claude >/dev/null 2>&1; then
         printf 'mod       no claude on PATH; %s@%s skipped (docs/mod.md)\n' "$pl" "$mk"
         return
@@ -439,11 +478,8 @@ mod_step() {                  # install | remove
     fi
     mod_call plugin marketplace list --json || return
     # none, ours, or the other marketplace's source and where it is
-    at=$(printf '%s' "$mod_out" | jq -er --arg n "$mk" --arg d "$DIR" '
-            [.[] | select(.name == $n)]
-            | if length == 0 then "none"
-              elif .[0].source == "directory" and .[0].path == $d then "ours"
-              else "\(.[0].source) \(.[0].path // .[0].repo // .[0].url // "")" end' 2>/dev/null) ||
+    at=$(printf '%s' "$mod_out" |
+            jq -er --arg n "$mk" --arg d "$DIR" "$mod_where_jq"' mod_where($n; $d)' 2>/dev/null) ||
         { printf 'FAILED   claude plugin marketplace list --json printed no list\n' >&2
           rc=1; return; }
     case $1:$at in

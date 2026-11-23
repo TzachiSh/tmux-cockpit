@@ -71,7 +71,8 @@ too (#1287).
 
 `install.sh --check` is the doctor. It writes nothing and fixes nothing: one
 row per thing that can be wrong (tmux, cockpit-tui, jq, revdiff, `$PATH` order, the
-config, CRLF line endings in a plugin checkout, the hooks, truecolor, the popup border),
+config, CRLF line endings in a plugin checkout, the hooks, the cockpit-events mod,
+truecolor, the popup border),
 the fix beside it, and the exit is the worst row, 0 ok or skipped, 1 warnings, 2 something
 is broken. Rows it cannot answer from where you ran it, such as truecolor outside tmux,
 come out `skip` and count as 0. `bootstrap.sh --check` runs the same thing.
@@ -160,7 +161,8 @@ reports a turn ended by Esc or an API error: it adds this checkout as the
 `tmux-cockpit` marketplace through `claude`'s own plugin CLI and installs the
 mod from it at user scope. With no `claude` on PATH it skips the mod and says
 so. A session already open loads it after `/reload-plugins`. The calls it
-makes and why: [mod.md](mod.md#installing-it).
+makes and why: [mod.md](mod.md#installing-it). `install.sh --check` reports it
+on its `mod` row, read from `~/.claude/settings.json` without starting `claude`.
 
 `install.sh --uninstall --hooks` takes the hooks out again, besides removing
 the links; `install.sh --hooks --remove` removes only the hooks and keeps the

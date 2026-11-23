@@ -115,6 +115,17 @@ with `claude plugin marketplace remove tmux-cockpit --scope user`, which also
 uninstalls the plugin. They run it only when the marketplace is this checkout,
 and name any other one and leave it.
 
+`install.sh --check` reports the mod on its `mod` row. It reads what the
+plugin CLI wrote to `~/.claude/settings.json`, with `jq`, and starts no
+`claude`. The row is ok when the `tmux-cockpit` marketplace there is this
+checkout's folder and `cockpit-events@tmux-cockpit` is enabled. It warns, with
+the fix, when the mod is not installed (`install.sh --hooks`), is disabled
+(`claude plugin enable cockpit-events@tmux-cockpit`), or comes from another
+marketplace, which it names. Until the cockpit hooks are merged it skips, and
+the hooks row says what to run. A `tmux-cockpit` marketplace known only to
+`~/.claude/plugins/known_marketplaces.json`, and not to settings.json, reads as
+not installed, and `install.sh --hooks` does not change that.
+
 `install.sh` is the one supported install. A marketplace added from the
 GitHub repository is copied into Claude Code's plugin cache, which keeps the
 mod's folder alone, so the mod cannot reach `scripts/cockpit-event` and
