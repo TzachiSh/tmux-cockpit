@@ -1,4 +1,4 @@
-"╭ panel · %3 · work ───────────────────────────────────────╮"
+"╭ panel ───────────────────────────────────────────────────╮"
 "│ type: command   model: auto   explore: on                │"
 "│ fix the flaky api test then rerun it▏                    │"
 "│                                                          │"

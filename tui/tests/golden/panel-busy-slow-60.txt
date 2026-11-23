@@ -1,4 +1,4 @@
-"╭ panel · %3 · claude ─────────────────────────────────────╮"
+"╭ panel ───────────────────────────────────────────────────╮"
 "│ ⠹ reading the screen · haiku · 31s                       │"
 "│                                                          │"
 "│ sent: screen 4 lines, 0 hidden · explain                 │"

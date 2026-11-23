@@ -1,6 +1,6 @@
 " board · 13 agents · 4 sessions · 2 needs you · 1 error                                                                                                                             "
 "┌ sessions ────────────────────────────────────────────────────┐┏ ▲◆ api:0 · server ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ needs you · 4m12s ┓"
-"│  ▾ api ─────────────────────────────────────────── ▲1 ●2 ✓1  │┃ ⑂feat/rate-limit · %3   ◆ review pending                                                                         ┃"
+"│  ▾ api ─────────────────────────────────────────── ▲1 ●2 ✓1  │┃ ⑂feat/rate-limit   ◆ review pending                                                                              ┃"
 "│▎ 1 ▲◆ 0 server    Do you want to run npm test?  +42 -7 4m12s │┃ asked  —                                                                                                         ┃"
 "│  2 ●  1 tests     Bash: cargo test --workspace  +42 -7 1m03s │┃ said   —                                                                                                         ┃"
 "│  3 ●  3 migrate   Edit src/db/migrate.rs        +42 -7   22s │┃ needs  Do you want to run npm test?                                                                              ┃"

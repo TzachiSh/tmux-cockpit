@@ -44,26 +44,6 @@ pub fn par_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec
     out.into_inner().unwrap().into_iter().flatten().collect()
 }
 
-/// The tree a pane works in, from its candidates in order: `@cockpit_dir`, the
-/// session transcript's newest cwd, pane_current_path (#452). The first that is
-/// an absolute path naming a directory wins, else the last. A relative one would
-/// be read against the board's own cwd, so it never counts. A worktree made by
-/// hand keeps the process in the main checkout, so the cwd comes last; a dangling
-/// option (the tree was removed) falls through. `cockpit-tui workdir %N` prints
-/// this for one pane, for scripts (#500). Every candidate is off a read the fetch
-/// already made, so this forks nothing.
-pub fn work_dirs(panes: &[[String; 3]]) -> Vec<String> {
-    panes
-        .iter()
-        .map(|[opt, said, cwd]| {
-            let dir = [opt, said]
-                .into_iter()
-                .find(|d| Path::new(d).is_absolute() && Path::new(d).is_dir());
-            dir.unwrap_or(cwd).clone()
-        })
-        .collect()
-}
-
 /// Facts for every distinct path in `paths`.
 pub fn scan(paths: &[String]) -> Scan {
     let mut uniq: Vec<&String> = paths.iter().collect();

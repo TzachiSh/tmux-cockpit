@@ -1,4 +1,4 @@
-"╭ panel · %3 · work ───────────────────────────────────────────────────────────────────────────────────────────────────╮"
+"╭ panel ───────────────────────────────────────────────────────────────────────────────────────────────────────────────╮"
 "│ claude failed: API Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would       │"
 "│ exceed the rate limit for your organization. This request would ...                                                  │"
 "│                                                                                                                      │"

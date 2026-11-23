@@ -26,9 +26,6 @@ if [ "${1:-}" = --concede ]; then
     echo "concession recorded; your next turn ends here, with that line as the reason"
     exit 0
 fi
-# Retired, but settings.json from an older install still runs it on every Bash
-# call: without this it would run the Stop path below. install.sh drops it.
-[ "${1:-}" = --pretool ] && exit 0
 case "$pane" in %[0-9]*) ;; *) exit 0 ;; esac
 
 d=${BASH_SOURCE[0]}; case $d in (*/*) ;; (*) d=./$d ;; esac
@@ -123,8 +120,12 @@ flag_pane() {
         if [ -n "$err" ]; then
             tmux set-option -p -t "$pane" @cockpit_review_err "$err" 2>/dev/null
             # shellcheck source=lib/fmt.sh
-            . "${d%/*}/lib/fmt.sh" 2>/dev/null \
-                && dmsg "tmux-cockpit: the ◆ of $pane cannot be updated: $err" 2>/dev/null
+            if . "${d%/*}/lib/fmt.sh" 2>/dev/null; then
+                # the pane by its label (#1407), read in a subshell: only here, on a change
+                # shellcheck source=lib/label.sh
+                who=$(. "${d%/*}/lib/label.sh" 2>/dev/null && label_ask "$pane") || who=
+                dmsg "tmux-cockpit: the ◆ of ${who:-the pane} cannot be updated: $err" 2>/dev/null
+            fi
         else tmux set-option -pu -t "$pane" @cockpit_review_err 2>/dev/null; fi
     fi
     # Untrusted strings get a call each: a bare `;` argument splits a tmux command list.
@@ -175,8 +176,9 @@ if [ -n "$spool" ] && [ -f "$spool" ] && [ ! -L "$spool" ]; then
 fi
 if [ -n "$review" ]; then
     # The sibling hook just wrote `done`, but additionalContext starts another turn.
-    # Muted: stdout is the JSON channel from here on.
-    "$here/agent-state" running "$pane" >/dev/null 2>&1
+    # Muted: stdout is the JSON channel from here on. stdin from /dev/null: agent-state reads a
+    # payload there, and this one's stdin, past the payload read above, may stay open (#1403).
+    "$here/agent-state" running "$pane" < /dev/null >/dev/null 2>&1
     printf '{"hookSpecificOutput":{"hookEventName":"Stop","additionalContext":"%s"}}\n' \
         "$(json "$review")"
     exit 0

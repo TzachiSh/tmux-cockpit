@@ -1,6 +1,6 @@
 //! data/fleet.rs against scratch repos: the facts a list row draws, and the
 //! rule that two panes on one root cost one diff scan.
-use cockpit_tui::data::fleet::{scan, stat_text, work_dirs};
+use cockpit_tui::data::fleet::{scan, stat_text};
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -178,44 +178,11 @@ fn two_roots_are_two_scans_and_nothing_is_one_scan_less() {
     assert_eq!((none.stats, none.facts.len()), (0, 0));
 }
 
-/// `[@cockpit_dir, transcript cwd, pane_current_path]`, as `work_dirs` takes them.
-fn cands(opt: &str, said: &str, cwd: &str) -> [String; 3] {
-    [opt.into(), said.into(), cwd.into()]
-}
-
+/// #452 review: a relative path would be read against the board's own cwd, so
+/// it gets no git facts at all. That a relative candidate never counts is
+/// tests/workdir_choose.rs's row (#1377).
 #[test]
-fn cockpit_dir_wins_over_the_cwd_when_it_names_a_directory() {
-    let wt = Repo::new("wt");
-    let panes = [cands(&wt.path(), "", "/main/checkout"), cands("", "", "/other")];
-    assert_eq!(work_dirs(&panes), vec![wt.path(), "/other".to_string()]);
-}
-
-#[test]
-fn a_dangling_cockpit_dir_falls_back_to_the_cwd() {
-    let panes = [cands("/no/such/tree", "", "/main/checkout")];
-    assert_eq!(work_dirs(&panes), vec!["/main/checkout".to_string()]);
-    assert_eq!(work_dirs(&[]), Vec::<String>::new());
-}
-
-/// #452: rows: the option outranks the transcript's cwd; the transcript's cwd
-/// outranks the pane's; a dangling transcript cwd falls through to the pane's.
-#[test]
-fn the_transcript_cwd_sits_between_the_option_and_the_pane_path() {
-    let (opt, said) = (Repo::new("order-opt"), Repo::new("order-said"));
-    let panes = [
-        cands(&opt.path(), &said.path(), "/main"),
-        cands("", &said.path(), "/main"),
-        cands("/no/such/opt", "/no/such/said", "/main"),
-    ];
-    assert_eq!(work_dirs(&panes), vec![opt.path(), said.path(), "/main".to_string()]);
-}
-
-/// #452 review: a relative candidate would be read against the board's own cwd,
-/// so it never counts; a relative path left over gets no git facts at all.
-#[test]
-fn a_relative_candidate_never_counts_and_gets_no_facts() {
-    let panes = [cands(".", "src", "/main")];
-    assert_eq!(work_dirs(&panes), vec!["/main".to_string()]);
+fn a_relative_path_gets_no_facts() {
     // the test runs inside a checkout, so "." would describe it
     let s = scan(&[".".to_string()]);
     assert_eq!((s.facts["."].clone(), s.stats), (Default::default(), 0));

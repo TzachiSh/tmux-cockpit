@@ -1,4 +1,4 @@
-"╭ info · %7 ─────────────────────────────────────────────────────── 5-11 of 16 ╮"
+"╭ info ──────────────────────────────────────────────────────────── 5-11 of 16 ╮"
 "│ state      needs-input  · run make?                                          │"
 "│ doing      Bash: make test (since 4m12s)                                     │"
 "│ said       Running the suite now.                                            │"

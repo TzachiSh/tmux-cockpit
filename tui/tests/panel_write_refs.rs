@@ -7,6 +7,7 @@
 #[allow(dead_code)] // for its fixed environment only, not write_exec
 mod fake;
 
+use cockpit_tui::data::workdir::{Source, WorkDir};
 use cockpit_tui::panel::action::sanitize;
 use cockpit_tui::panel::app::{App, View};
 use cockpit_tui::panel::capture::Capture;
@@ -76,7 +77,14 @@ fn cap(path: &Path) -> Capture {
         name: "claude".into(),
         cmd: "claude".into(),
         path: path.display().to_string(),
+        work: WorkDir {
+            dir: path.display().to_string(),
+            source: Source::Session,
+            ..Default::default()
+        },
         screen: "$ ".into(),
+        // a real Claude Code pane: the board has its facts (#1359)
+        agent: Some(Default::default()),
         ..Default::default()
     }
 }

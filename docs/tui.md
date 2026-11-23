@@ -30,6 +30,9 @@ The binary ships as a release asset. `install.sh` fetches it. With
 background: tmux starting, `prefix R`, and tpm's update key `prefix U`, which
 reloads the config after updating. Otherwise run `scripts/tui-fetch` yourself,
 or build it with `make tui`.
+Releases after `cockpit-tui-v0.4.0` carry a Linux x86_64 asset only. On macOS
+and Linux aarch64, tui-fetch finds no asset for the platform and builds from
+source, which needs Rust (below).
 Either way: uname picks the asset, the `.sha256` is fetched first and verified,
 and only a verified file is installed. A checksum mismatch, an unfetchable manifest or a
 platform with no asset all leave whatever binary is already there and say so
@@ -212,7 +215,7 @@ is #301's (#288 removed `R` → `request`). An entry with no `confirm` exits at 
 
 **The confirm.** An entry with a `confirm` opens one frame, the focus frame,
 over the foot of the list or the tiles: the action and the target in its title,
-`confirm` at its right, the question (`kill pane %12 (api:2 server)?`) and what
+`confirm` at its right, the question (`kill pane api:2 · server?`, the pane by its label) and what
 the keys do, all in fg. It owns the keyboard (D18): `y` exits with the action,
 `n` and `esc` go back with nothing written, `?` shows its keys, `q` and `^C`
 close the board; every other key does nothing, `↵` included, so a held Enter
@@ -240,14 +243,14 @@ Set these before the plugin's `run-shell` line, like every other cockpit option.
 | `@cockpit_tui_fetch` | `off` | `on` runs `scripts/tui-fetch` in the background on every config load (start, `prefix R`, tpm's `prefix U`). Off, nothing is ever fetched from the config load path, and `scripts/tui-fetch` by hand is the way in |
 | `@cockpit_tui_version` | unset | pins the release tag `scripts/tui-fetch` fetches: `cockpit-tui-v<ver>`, e.g. `cockpit-tui-v0.1.0`. The pre-#79 `tui-v` form is accepted for comparison only — the fetch URL uses the tag as written, so a stale `tui-v` pin compares as current against a release that does not exist. |
 | `@cockpit_board_wake` | (state) | read-only: one `wait-for -S cockpit-board-<pid> ; ` per running board, the command that wakes it. Appended at start, removed on `q`; an entry a signal or a crash leaves is dropped by the next board's start |
-| `@cockpit_panel_key` | `f` | binds the panel (`cockpit-tui panel %N` through `scripts/cockpit-panel`) to a prefix key. `off`, or an unset key with the old `@cockpit_fixer_key off`, leaves stock `find-window` on `f` |
+| `@cockpit_panel_key` | `f` | binds the panel (`cockpit-tui panel %N` through `scripts/cockpit-panel`) to a prefix key. `off` leaves stock `find-window` on `f` |
 | `@cockpit_panel_mode` | `auto` | `pc`, `tablet` or `auto`: how the panel is shown. `auto` is tablet under Termux (`TERMUX_VERSION` set, or `PREFIX` under `com.termux`), pc elsewhere. Read at load and handed to the popup as `COCKPIT_PANEL_MODE`; any other word shows a message and binds `auto` |
 | `@cockpit_panel_effort` | `medium` | the panel's `claude -p --effort`: `low`, `medium`, `high`, `xhigh` or `max` (#623). Read by `scripts/cockpit-panel` at each open, so setting it needs no reload, and handed to the binary as `COCKPIT_PANEL_EFFORT`. Which levels a model takes depends on the model |
 | `@cockpit_md_view` | `on` | `cockpit-tui view` shows markdown rendered, and code and other text files numbered, and highlighted when the language is known (#365). With `off`, a clicked file and the file browser's `↵` go to the editor instead, for every file (the browser's with #408). Read by `scripts/tmux-open-path` at the click |
 | `@cockpit_panel_bound` | (state) | the key the last load bound the panel to. Every cockpit key keeps one (`@cockpit_<name>_bound`, `<name>` as in its `@cockpit_<name>_key`), so a reload that turns a key off or moves it gives the old one back to stock |
 | `@cockpit_board_client` | (state) | a pane option: the client that pressed the board or review key there in its popup form, so the board's jump moves that client and not the most recently active one. Read and cleared when the board starts; the window forms pass `-c` instead |
 | `@cockpit_branch_client` | (state) | a pane option: the client that pressed `prefix b` there, so the branch popup's jump to another worktree moves that client and not the most recently active one. Read and cleared when `tmux-branch` starts |
-| `@cockpit_giveback` | (state) | `<name>:<key>` words joined by spaces, or one per line each after a newline when a key holds a space or a tab (#1229): old keys a reload could not give back to stock (tmux's own binding could not be read), or an old panel key it could not tell from the user's (its scratch read failed, #1131), retried on the next load |
+| `@cockpit_giveback` | (state) | `<name>:<key>` words joined by spaces, or one per line each after a newline when a key holds a space or a tab (#1229): old keys, still bound with cockpit's note, that a reload could not give back to stock (tmux's own binding could not be read), retried on the next load |
 
 The popup is `-w 90%`, wider than the 70% the pickers use, because a 70% popup
 on a 120-column terminal is an 84-column board, which is one tile column. The
@@ -260,7 +263,7 @@ already makes, and each board pulls its next tick forward. See "Push wakeups".
 
 Read-only, and owned by bash: `@cockpit_session`, `@cockpit_dir`, `@panestate`,
 `@panestate_msg`, `@cockpit_review`, `@cockpit_review_spool`, `@cockpit_title`,
-`@thm_*`.
+`@cockpit_role` (a pane's own name, which `scripts/tmux-rename pane` writes), `@thm_*`.
 
 ## Environment
 
@@ -281,7 +284,7 @@ Read-only, and owned by bash: `@cockpit_session`, `@cockpit_dir`, `@panestate`,
 | `COCKPIT_PANEL_MODE` | `auto`, `pc` or `tablet`, from `@cockpit_panel_mode`. Unset or empty is `auto`. Any other value: the panel exits 2 before it draws. The board's popup passes it too, so a panel opened from the board gets the same mode |
 | `COCKPIT_PANEL_EFFORT` | the `--effort` of every panel call, from `@cockpit_panel_effort`. One of `low`, `medium`, `high`, `xhigh`, `max`; unset, empty or any other value is `medium`, so the text itself never reaches claude's argv. The call goes without `CLAUDE_CODE_EFFORT_LEVEL`, which claude ranks over `--effort` |
 | `COCKPIT_PANEL_NOTE` | set by `scripts/cockpit-board` for `scripts/cockpit-panel`: the file the panel wrapper writes its last line to instead of a `display-message`, a failure starting with `✕`. Unset (`prefix f`), the message goes to the status line as before |
-| `COCKPIT_PANEL_DROPPED` | set by `scripts/cockpit-panel` for the binary: the pane ids, space-separated, whose hidden panels it just dropped because the pane is gone. The binary shows them in an info note; anything but `%N` words is ignored |
+| `COCKPIT_PANEL_DROPPED` | set by `scripts/cockpit-panel` for the binary: the pane ids, space-separated, whose hidden panels it just dropped because the pane is gone. The binary counts them in an info note, since a gone pane has no label (#1407); anything but `%N` words is ignored |
 | `COCKPIT_PANEL_KEY` | set by `scripts/cockpit-panel` for the binary: the prefix key bound with the note `cockpit: panel`, read as the hidden-panel message reads it (#1121). The `?` list's `^Z` row names it: `hide; prefix <key> on this pane brings it back`. Unset, or a value that is not 1 to 16 bytes of printable ASCII without a space, gives `hide; the panel key on this pane brings it back`. The wrapper drops one from its own environment |
 | `COCKPIT_PANEL_CALL` | set to `1` in the panel's `claude -p` child, never read by the binary: a hook can skip the call by it |
 
@@ -331,6 +334,13 @@ still passes the group. Whether the reply does the part is what the judge pass
 is for (`--judge`, below): it grades the reply against its rubric and is not
 given the terms. `--model`, `--runs`, `--jobs`, `--only <id or
 kind>`, `--out <file.jsonl>`, `--no-hermetic` and `--show-holdout` are the knobs.
+`--pane-cwd-source` sends the work folder's source as pane-cwd, the source a
+user without the hooks gets, in place of session (#1387): on an agent's window
+the `<window>` line then ends `work folder not confirmed (pane-cwd)`, and
+another window's call does not change. Every call is a Write, so Explain's
+`<agent>` part is not measured. A run with the flag prints a `work source` line
+in its summary, and the modes that send no panel prompt refuse it as they refuse
+`--router-prompt`, below.
 `--router-prompt <file>` sends the file's text as every call's system prompt in
 place of the write prompt (#789); the file is read once at start-up, and a
 missing, unreadable, non-UTF-8 or empty file stops the run before any call.
@@ -453,23 +463,29 @@ A prompt change aims at 100% on the tune cases (#701). A significant drop on a
 held-out case blocks it, no edit may aim at a particular held-out case, and a
 held-out case that fails gets a new blind case written for its class. Stop
 after at most 3 fix iterations, or sooner when an iteration gains nothing or a
-fix breaks a case that passed before. Then `git revert` back to the best
-commit, report its pass rate on old and held-out cases apart, and name each
-blocking case with its cause (prompt, label or noise) and its failing reply,
-a tune case's from `--out`. A held-out failing reply is not in `--out`: the
-owner or a listed reader reruns that single case with `--show-holdout --only
-<id>`, which prints a warning first, and that second, paid run may not fail
-the same way.
+fix breaks a case that passed before. Then restore the best wording with a
+new commit, report its pass rate on old and held-out cases apart, and name
+each blocking case with its cause (prompt, label or noise) and its failing
+reply, a tune case's from `--out`. A held-out failing reply is not in
+`--out`: the owner or a listed reader reruns that single case with
+`--show-holdout --only <id>`, which prints a warning first, and that second,
+paid run may not fail the same way.
+
+Tuning happens on the tuner's own open branch, before any merge, so going
+back to an earlier wording is always a new commit on that branch. A merged
+prompt that later tests worse is fixed forward by a new PR, like any merged
+change.
 
 The decision rule for each prompt change: before running, the commit message
 names the target cases and the direction expected; a move nobody predicted is
 noise. A target below 100% gets 30 runs per side, and the change stays only if
 a one-sided Fisher test gives p < 0.05 (computed by hand: the rig prints pass
 counts, not p-values). Guards get 3 full runs; a case at 1/3 or worse gets 30
-fresh runs per side, and a drop that holds at p < 0.05 on those alone reverts
-the change. The flagging runs never count: they were picked because they
-failed, so pooling them biases the test toward a drop. A change gets at most 3
-wordings, then the stop rule applies. Each `--out` row carries `prompt`, the
+fresh runs per side, and a drop that holds at p < 0.05 on those alone sends
+the change back: a new commit restores the earlier wording. The flagging
+runs never count: they were picked because they failed, so pooling them
+biases the test toward a drop. A change gets at most 3 wordings, then the
+stop rule applies. Each `--out` row carries `prompt`, the
 hash of `write.txt` and its examples, plus `write.explore.txt` for an exploring
 write, from the read the job's own call made (#711), or the hash of the
 `--router-prompt` file's text in a run given one, whose `system` hashes that
@@ -728,7 +744,7 @@ whole parts drop, never a cut word: the session count first, then the agent
 count, then the error and needs counts.
 
 A row is the selection mark, its digit, the state glyph and review mark, the
-window index, the title, what the agent asks (`▲`, `✕`) or is doing, and its
+window index, the title, what the agent asks (`▲`) or is doing, and its
 age; an idle agent says `idle`. `◂` marks tmux's active pane. The selection is
 `▎` plus a band in the `sel` role (`@thm_sel`, `@thm_sel_light` on a light
 theme), its text in the value colour: dim on `sel` is only 3.4:1. Under
@@ -774,7 +790,7 @@ not fit, its frame's title says `N-M of T`, counted in rows.
 
 **Find.** `/` opens a field at the top of the list, above a rule, and the list
 narrows as you type. Find reads each agent's session, window index, window
-name, title, state word (`needs`, `error`, `running`, `done`, `idle`) and its
+name, title, the pane's name, state word (`needs`, `error`, `running`, `done`, `idle`) and its
 message or doing line. Space-separated terms must all match, each anywhere in
 those fields, ignoring case; it is a substring narrowing, with no fuzzy
 ranking. Find also reads each agent's subagents' types and descriptions, so
@@ -933,7 +949,7 @@ which leaves the pane 116. The selected agent fills the right, at 100 columns:
 ```
  board · 6 agents · 3 sessions · 2 needs you · 1 error                                              
 ┌ sessions ─────────────────────────────┐┏ ▲◆ api:0 · server ━━━━━━━━━━━━━━━━━━━ needs you · 4m12s ┓
-│  ▾ api ─────────────────────── ▲1 ●2  │┃ /src/api · ⑂feat/rate-limit · %3   ◆ review pending     ┃
+│  ▾ api ─────────────────────── ▲1 ●2  │┃ /src/api · ⑂feat/rate-limit   ◆ review pending          ┃
 │▎ 1 ▲◆ 0 server Do you want to … 4m12s │┃ asked  add a token-bucket rate limiter to the router    ┃
 │  2 ●  1 tests  Bash: ca…rkspace 1m03s◂│┃ said   I added the token-bucket limiter and wired it i… ┃
 │  3 ●  3 migra… Edit src…rate.rs   22s │┃ needs  Do you want to run npm test?                     ┃
@@ -968,8 +984,9 @@ accent otherwise. Its title is the row's glyph and review mark, `session:window`
 and the title; its right end the state, `needs you` on a `▲`, `ended` on an
 ended agent, and the age, which an idle agent does not have. Then five rows:
 
-- where it runs: the path, `⑂branch` and the pane id, then `◆ review pending`
-  or `↵ review sent`. The path is cut in its middle and goes first.
+- where it runs: the path and `⑂branch`, then `◆ review pending` or `↵ review
+  sent`. The path is cut in its middle and goes first. No pane id: the info
+  screen's first row and the log keep it (#1409).
 - `asked`, the newest human prompt; `said`, the agent's last text; `doing`, its
   tool. On a `▲` the third row is `needs` and the question, in the needs role;
   on a `✕`, `error` and the error; on an ended agent, `doing ended`. Nothing to
@@ -1091,19 +1108,20 @@ a scrollbar.
 the board again in the same popup, as
 `cockpit-tui board --select %N --note <file>`: the selection is back on the pane
 just acted on, and the footer row shows the note. `jump`, `q`, `deliver` (still
-reserved), a verb the plugin does not know (`request` from a binary older than
-#288), a board that exits non-zero, and
+reserved), a verb the plugin does not know (from an older or a newer binary), a
+board that exits non-zero, and
 `@cockpit_board_return off` end the loop.
 
 The note is the action's last line. For `panel` it is what `cockpit-panel`
-would have put in the status line (`cockpit: sent to %3`); `review` writes
+would have put in the status line (`cockpit: sent to api:0 · server`, the pane by its
+label, #1407); `review` writes
 none. `i` never leaves the board: it draws the info card in-process. A line that starts with
 `✕` reports a failure or a refusal and stays until the next key, which also
 does its job, except `esc`, which only dismisses it; the note ends with
 `· esc dismiss`. Any other note fades after 5 s.
 
 ```
- ✕ cockpit: the pane now runs bash, not claude; nothing sent to %21 · esc dismiss
+ ✕ cockpit: the pane now runs bash, not claude; nothing sent · esc dismiss
 ```
 
 The note file is read like the panel's state file: no symlink, a regular file
@@ -1121,8 +1139,9 @@ the head `cockpit-board-state 1`, then known `key value` lines: `sel %N` at
 most once, then one `fold <session>` line per folded session, each name once,
 with no control character, then at most one `filter <text>` line, the kept
 find filter: at most 200 bytes, more than spaces, no control character. The
-`filter` line is a line kind appended to version 1, so a file without one
-still reads. Anything else is a fresh board and a 5 s note
+head is required, and each of the `sel`, `fold` and `filter` lines is
+optional. A later layout change bumps the head. Anything else is a fresh board
+and a 5 s note
 `board.state ignored (<why>); starting fresh`. A header selection is saved as
 its group's first agent, and a fold whose tmux session is gone is dropped on the
 next write; a session that is still there keeps its fold even while it has no
@@ -1608,7 +1627,7 @@ paste are dropped: nobody can see what they would do. An open `?` closes.
 At 40x12 (a phone in portrait), Steps:
 
 ```
-╭ panel · %3 · work ───────────────────╮
+╭ panel · t:1 · work ──────────────────╮
 │ Steps (bash)                         │
 │                                      │
 │  1 Remove the old build              │
@@ -1711,12 +1730,12 @@ In tablet mode:
 At 40x20, a phone in portrait, a send:
 
 ```
-╭ panel · %3 · work ───────────────────╮
+╭ panel · t:1 · work ──────────────────╮
 │ ╭───────────────╮ ╭────────────────╮ │
 │ │   yes, send   │ │       no       │ │
 │ ╰───────────────╯ ╰────────────────╯ │
-│ send this to %3 (bash) and press     │
-│ Enter?                               │
+│ send this to t:1 · work (bash) and   │
+│ press Enter?                         │
 │                                      │
 │   rm -rf target                      │
 │                                      │
@@ -1799,11 +1818,12 @@ Backspace.
   When the pane runs something else by now the note says so, warn level:
   `...; the pane now runs vim, not bash, so a paste is refused`.
 - **One state per pane.** `prefix f` on another pane opens a fresh panel and
-  the hidden one stays. The wrapper says `cockpit: hidden · prefix f on %N
-  brings it back` (the prefix key bound with the note `cockpit: panel`, read from
+  the hidden one stays. The wrapper says `cockpit: hidden · prefix f on <label>
+  brings it back`: the pane by its label (#1407), and the prefix key bound with the
+  note `cockpit: panel`, read from
   the binding, as the review notice reads the jump key; `@cockpit_panel_bound`
   only picks between two noted keys, and with none the message says `the panel
-  key`, #1112); opened from
+  key` (#1112); opened from
   the board, that is the board's note and the board comes back, as after `esc`.
 - **The help names the same key.** The `?` list's `^Z` row says `hide; prefix
   <key> on this pane brings it back`, the key the wrapper passes as
@@ -1815,8 +1835,8 @@ Backspace.
   (`action::HIDE_AGE`) is refused (`the hidden panel was dropped: it is older
   than 24 h`), and the wrapper also deletes any older than a day. A hidden
   panel whose pane is gone is deleted the next time the panel opens on any
-  pane of that server, which says `dropped the panel hidden on %N: the pane is
-  gone`. A corrupt file is refused whole, with the reason in the same note.
+  pane of that server, which says `dropped a hidden panel whose pane is gone`
+  or counts them. A corrupt file is refused whole, with the reason in the same note.
 - **Too much to keep** (over 1 MiB): `^Z` says so and the panel stays open.
 
 **The state file.** The binary writes `$COCKPIT_ACTION.state` and no action
@@ -1900,7 +1920,7 @@ panel with the reason in a warn note.
   `1`-`9` are the agent rows on screen instead of absolute tiles, and `[` `]`
   scroll without moving the selection a page. New keys: `space`, `-`, `=`,
   `n`, `p`, `v`; `↵` on a header toggles its fold.
-- `board.state` version 1 gains `fold <session>` lines after `sel`.
+- `board.state` version 1 holds optional `fold <session>` lines after `sel`.
 - The list's header line adds the session count and the error count; the
   tiles' header is unchanged.
 - The list captures no pane: the worker skips `capture-pane` until `v`.
@@ -1923,7 +1943,7 @@ panel with the reason in a warn note.
 - In the field every printable key is text, `q`, `?` and the `EXTRAS` keys
   included; `esc` and `^C` replace `q`, `F1` replaces `?` (D14).
   `board::{find_key, FindKey}` map the keys.
-- `board.state` version 1 gains an optional last line, `filter <text>`, read
+- `board.state` version 1 holds an optional last line, `filter <text>`, read
   strictly; `board::Saved` gains `filter: Option<String>`.
 - `board::Nav` gains `filter`, `field` and the methods `rows`, `fit`,
   `filtering`, `open_find`, `clear_find`, `find_act`; `board::{find_match,
@@ -1947,9 +1967,10 @@ panel with the reason in a warn note.
   file](#the-freeze)); `panel::action::{write_expect, expect_body, EXPECT_MAX}`
   are new. For `kill` it holds the target's window id (`@N`), never the name.
 - The fleet read appends a 13th `list-panes -F` field, `#{window_id}`, kept in
-  `data::Pane::win`; a row with fewer than 13 fields is skipped. `--json` and
-  `--rows` do not carry it. `board::{is_window_id, refused}` are new: a pane
-  with no `@N` id gets a `✕` note on `x` instead of a confirm.
+  `data::Pane::win`; a row with fewer than 13 fields is skipped (since #1374, one
+  short of any FIELDS field). `--json` and `--rows` do not carry it.
+  `board::{is_window_id, refused}` are new: a pane with no `@N` id gets a `✕`
+  note on `x` instead of a confirm.
 - `board::run` returns `Option<board::Exit>` (`line`, `expect`), not
   `Option<String>`; `board::View` gains `confirm: Option<&Confirm>`;
   `Act::Extra(char)` is new.
@@ -2023,10 +2044,12 @@ panel with the reason in a warn note.
 - When a pane's `ended` turns, `tui.log` gets one line,
   `fleet ended-flip pane=%N ended=true|false live_by=command|tree|none cmd=… pid=…`,
   naming what found the agent, so a false "ended" can be traced.
-- `x` kills the pane, not the window: the confirm reads `kill pane %N
-  (<sess:idx> <window name>)?`, `.expect` is `%N @W`, and the wrapper runs
+- `x` kills the pane, not the window: the confirm reads `kill pane
+  <sess:idx> · <title>?` (its label, #1407), `.expect` is `%N @W`, and the wrapper runs
   `kill-pane` inside the `if-shell -F` that checks the window id. Its `✓` note
-  is `killed pane %N (<sess:idx> <name>)`. An older binary's bare `@W` is
+  is `killed <sess:idx> · <title>`, the label read before the kill, and its `✕` notes
+  name the pane the same way, the window ids left to the log (#1407). An older binary's
+  bare `@W` is
   refused, and an older wrapper refuses this binary's `%N @W`, so neither skew
   kills more or less than its confirm said.
 - New key `o` → verb `resume`, no confirm, `.expect` the session id; offered
@@ -2043,7 +2066,7 @@ panel with the reason in a warn note.
   expands formats; then the new pane is selected and the board ends. It
   refuses with a `✕` note a pane that is gone, an id that is not
   a lowercase UUID, an id the pane no longer holds, or no directory; and a
-  second copy, `✕ cockpit: <first 8 of the id> is already running in %N`, when
+  second copy, `✕ cockpit: <first 8 of the id> is already running in <label>`, when
   any pane, the target included, holds the id and runs an agent (its command
   in `@cockpit_agents_glob`, or version-shaped), with or without `@panestate`
   (SessionStart and idle clear it), read with one `list-panes -a` at the key
@@ -2156,6 +2179,60 @@ panel with the reason in a warn note.
   else reads as no value.
 - No new dependency, no `Cargo.toml` change.
 
+### Contract changes for an interrupted turn (#1330 A3, for #61)
+
+- `data::Pane` keeps its fields. Only the value of `state` changes, to the
+  unknown state (`""` in `--json`, the idle glyph in `--rows`, `○ idle` on the
+  board), for a pane whose `@panestate` is `running`, that is bound to no job,
+  and whose transcript's newest turn row is the interrupt marker
+  (`[Request interrupted by user`). That pane is not running: Esc fires no hook
+  (#1332), so nothing took `running` away. `""` is a value `--json` already
+  allows. Nothing is written to tmux and `@panestate` is untouched.
+- The fold that reads the transcript tells an interrupt apart from `end_turn`
+  (`fold::Over`), and the facts carry it as `interrupted`. A newer prompt,
+  assistant row or tool_result clears it, and so does a harness row that starts
+  a turn though it is not what the human asked: a `<task-notification>` or a
+  message from another session (`transcript::starts_turn`, #1333). A local
+  command, shell mode, a caveat, or an attachment or system row leaves it.
+  Needs-input, error and done from the hooks are never overridden.
+- Known gap: Enter after an interrupt sets `running` before Claude Code writes
+  the prompt row, so the pane reads idle for that moment, bounded by the
+  transcript's write lag plus the board's 1 s tick. The tui test
+  `a_prompt_not_yet_written_after_an_interrupt_reads_idle_until_its_row_lands`
+  pins it, so the mod's turn start (#1330 T5) shows up there.
+
+### Contract changes for model and context (#1330 A2, for #61)
+
+- `data::Pane` gains `model: String` and `ctx: Option<u64>`, from the newest
+  main-thread assistant row with usage, in the fold pass that already reads the
+  tail. `ctx` is input plus cache_read plus cache_creation tokens, never output.
+  A row whose sum is 0 and a sidechain row are skipped, and a newer prompt
+  leaves both as they were. `model` is the word after `claude-` when it is all
+  a-z (`opus`), else the raw id with control and bidi characters dropped.
+- `--json` and `--rows` are unchanged: both are built key by key and carry
+  neither field. FIELDS is untouched, so `@panestate_ctx` is not read and the
+  card shows no percentage.
+- The tile's bottom border shows ` opus · 84k `, right-aligned: the model cut
+  at 12 columns, the context floored to thousands and raw under 1000. Nothing
+  shows without usage, and a line that does not fit is left out whole.
+
+### Contract changes for pane names (#1408, for #61)
+
+- `cockpit-tui pane <name>` prints the id of the one pane whose own `@cockpit_role`
+  is `<name>`, alone on one line. The name is set on purpose, from the menu's Name this
+  pane row through `scripts/tmux-rename pane`, on the pane that is current when Enter is
+  pressed, and only with `set -p`. No name is given by default and none is numbered.
+- Each pane's value is read with `show-options -p`, all panes in one tmux call after one
+  `list-panes`. A format would read a window's value for a pane with none, and a
+  server's ahead of the pane's own. A value is matched whole: a newline in it never
+  makes a line of its own match.
+- Exit 0 with the id. Exit 1 and nothing on stdout when no pane holds the name, or when
+  tmux is not reachable, each said on stderr. Exit 3 when more than one pane holds it:
+  stderr names them all and stdout stays empty, so a script never takes the first.
+  Exit 2 for no name, an empty one, two, or one holding a newline or a `\x1f`.
+- `--json` and `--rows` are unchanged. The board reads the name as FIELDS' field 20 and
+  draws it (#1409, the `role` field below).
+
 ### The triage overlay
 
 Phase 2, not shipped. It answers a blocked agent in place rather than attaching
@@ -2246,6 +2323,14 @@ already says who is talking.
 command, a version-shaped name, its process tree) that no hook has marked and
 whose transcript says nothing draws `○ idle`, with no age: unknown is never
 drawn as done or running.
+
+**An agent Esc stopped (#1330 A3):** `@panestate` says running, since Esc fires
+no hook (#1332), but the transcript's newest turn row is the interrupt marker.
+The board draws it `○ idle` as well, and `--json` and `--rows` say the same. A
+newer prompt, assistant row, tool_result or `<task-notification>` in the
+transcript makes it running again; a local command or shell mode does not.
+Needs-input, error and done stay the hooks', and so does the state of a pane
+bound to a background job (#448).
 
 **No agent panes:** the header says ` board · 0 agents`, and under it this card
 sits centred; on a narrow board it wraps, never cuts.
@@ -2356,7 +2441,8 @@ is agreed; changing any of it takes a comment on
 ```
 id, wher, name, cmd, state, title, msg, sess, path, dir, root, spool, pinned,
 delivered, pid, review, doing, said, asked, loc, pm,
-since: Option<u64>, asked_since: Option<u64>, idle_since: Option<u64>, job
+since: Option<u64>, asked_since: Option<u64>, idle_since: Option<u64>, win,
+subs_n, subs, ended, job, topic, doing_failed, model, ctx: Option<u64>
 ```
 
 Derives `Default, Clone, Hash, PartialEq`. The durations are `u64` and not
@@ -2375,12 +2461,31 @@ its text block counts as the prompt. The board's worker polls, so it keeps the
 anchor for the whole turn. A one-shot `--json` or `--rows` reads each transcript
 once: a prompt already past the window reads `""` and `null`, as before.
 
-**`dir` (#452):** the tree the git facts came from: `@cockpit_dir`, else the
-session transcript's newest main-thread `cwd`, else `path`. The first that is an
-absolute path naming a directory wins; `path` stays the pane's launch cwd. The
-reader keeps the last cwd it saw per transcript path, for the same file only
+**`dir` (#452, #1343):** the tree the git facts came from, as
+`data::workdir::choose` picks it (the freeze on #1342): `@cockpit_dir` when it
+differs from `@cockpit_cwd` (set by hand, `declared`), else the newest tree the
+agent's commands reached in the last 10 minutes (`active-in`), else `@cockpit_cwd`
+(else `@cockpit_dir`), else the session transcript's newest main-thread `cwd` (both
+`session`), else `path` (`pane-cwd`). The first that is an absolute path naming a
+directory wins; `path` stays the pane's launch cwd. The hooks write `@cockpit_dir`
+and `@cockpit_cwd` together, so only a dir set by hand differs. The reader keeps
+the last cwd it saw per transcript path, for the same file only
 (device and inode, and not shorter than at the last read), so a stretch of rows
 without one does not lose it.
+
+**`active-in` (#462):** Claude Code keeps a session's cwd where it launched, so a
+`cd X && ...` in one Bash call moves neither the hooks' cwd nor the transcript's.
+The fold reads each main-thread tool call in the same window as the facts above:
+a Bash call's first `cd`, `pushd` or `git -C` (quotes, `~` and a leading `$HOME`
+read as the shell reads them; any other `$`, a glob or a command substitution
+names nothing, and ends the read), and the folder of an Edit, MultiEdit, Write or
+Read `file_path` (NotebookEdit's `notebook_path`). A relative path is read against
+the row's `cwd`. Each folder is kept at its newest call's timestamp, eight at most.
+The reader turns them into git trees by walking up to a `.git` (a directory with
+`HEAD`, or a file whose `gitdir:` exists), with no git fork, and keeps each
+answer 10 s; a folder in no tree is left out. A subagent's calls are not the
+pane's and never count. A call pushed out of the 256 KB window by a bigger
+stretch with an assistant row in it is not seen until the next one.
 
 **Which transcript (#500):** the board, `workdir %N` and the info screen share one
 lookup, `transcript::locate`: `@cockpit_transcript` when it resolves to a regular
@@ -2404,6 +2509,21 @@ title the bind matched. That title stays in the info screen, in `--json`'s `titl
 and in `--rows`. A bound row's name column grows by the mark's width, so even at
 its 6-column floor the job keeps a few characters. The kill confirm names the job
 too.
+
+**`role` (#1409):** the pane's own name, `@cockpit_role` (FIELDS' field 20), which
+`scripts/tmux-rename pane` sets with `set -p`, with control and bidi characters
+dropped; `""` for a pane with none. The board draws it before the title, `name ·
+title`, never in its place: on the row, the tile, the pane header and the confirm's
+title, before a bound row's `→ <job>` too. The pane header, the confirm's title, the
+info screen, the panel and the kill question name a pane by its label, `session:window
+· name · title`, place and title cleaned of control and bidi characters. A named
+row's name column grows by the name and its dot, as a bound row's does by its mark,
+so the title keeps its share. Find (`/`) reads it. FIELDS is a format, which reads a
+window's or the server's `@cockpit_role` for a pane with none of its own, and the
+server's ahead of the pane's (tmux's `format_find`). cockpit sets neither, and a name
+here only shows, as on the tabs and borders. `cockpit-tui pane <name>`, which acts on
+a name, reads each pane's own value with `show-options -p`. `--json` and `--rows` do
+not carry it.
 
 **`--json`**: an array of objects with exactly these 16 keys, in this order:
 
@@ -2492,9 +2612,9 @@ compares against what the steps were written for. The binary still executes
 nothing: every paste and Enter is the wrapper's.
 
 The wrapper ends every action in one `display-message` on the pane:
-`cockpit: inserted N chars into %N` for `paste`, `cockpit: sent to %N` for
-`send`, `cockpit: could not load the paste buffer; nothing sent to %N` or
-`cockpit: could not paste into %N; nothing sent` when tmux refuses (tmux's
+`cockpit: inserted N chars into <label>` for `paste`, `cockpit: sent to <label>` for
+`send`, `cockpit: could not load the paste buffer; nothing sent to <label>` or
+`cockpit: could not paste into <label>; nothing sent` when tmux refuses (tmux's
 error goes to the log). Under `COCKPIT_READONLY` it runs no tmux command at
 all and only logs what it would have sent.
 
@@ -2512,12 +2632,13 @@ pane are different facts and a blank tile tells you which one it is.
 **CLI:** `-h` or `--help` prints the usage:
 
 ```
-cockpit-tui board [--select %N] [--note <file>] | pick | files <dir> [--select <name>] [--hidden] [--ignored] [--filter <text>] | branch [-C <dir>] | info [--text|--json] %N | workdir %N | sessions [--needs] [--current $N] | panel %N [--resume <state> --last ok|failed:<why>|hidden | --ask <file> <a> <b>] | view [--line N] [--] <file> | basket add %N <file> | --rows | --json | --version | -h
+cockpit-tui board [--select %N] [--note <file>] | pick | files <dir> [--select <name>] [--hidden] [--ignored] [--filter <text>] | branch [-C <dir>] | info [--text|--json] %N | workdir [--source] %N | pane <name> | label %N | sessions [--needs] [--current $N] | panel %N [--resume <state> --last ok|failed:<why>|hidden | --ask <file> <a> <b>] | view [--line N] [--] <file> | basket add %N <file> | --rows | --json | --version | -h
 ```
 
 `info %N` is the info screen, `info --text %N` its rows as text, and
 `info --json %N` the work dir as JSON (see "The info screen (#252)" below);
-`workdir %N` prints the board's dir for one pane. There is no `fleet` or `ask`
+`workdir %N` prints the board's dir for one pane, and `label %N` how a message names it.
+There is no `fleet` or `ask`
 subcommand (an unknown word exits 2 with the usage): the board reaches those
 through the action file and the shell scripts.
 
@@ -2550,6 +2671,7 @@ when `COCKPIT_LOG` is set. No rotation.
 **Exit codes:** `0` normal (an action was written, or none), `1` runtime failure
 (tmux unreachable, terminal not a tty), `2` usage error (unknown subcommand, bad
 pane id, a bad `COCKPIT_PANEL_MODE`). The binding treats a missing binary and a non-zero exit the same way.
+`3` is new and for `pane <name>` only: more than one pane holds the name (#1408).
 
 `--rows` and `--json` exit 1 when the `list-panes` call fails, so a wrapper can
 tell the two quiet answers apart: `[]` with exit 0 is "no agents", exit 1 is
@@ -3109,8 +3231,8 @@ screen) and `data::info` (the facts); both are in the module table.
 
 It shows, in this order: `pane`, `cwd`,
 `dir` (`@cockpit_dir`, and `missing` when the directory is gone), a second
-`dir` row `<dir>  (transcript cwd)` when the work dir (#452) is the transcript's
-cwd, `root`,
+`dir` row `<dir>  (<source>)`, the work dir (#452) and its source as
+`workdir --source` names them (#1355), `root`,
 `state` with `@panestate_msg`, `job` with `@cockpit_job` for a viewer pane
 bound to a background job (#460), the `doing` / `said` / `asked` rows with their
 ages and the `/btw` pointer for an agent pane, `review` with the queued spool,
@@ -3127,32 +3249,54 @@ characters before it is drawn. It is not a text-entry screen: `esc` and `q`
 close it, `↑↓` `j` `k` `PgUp` `PgDn` scroll, `?` lists the keys.
 `tmux-review --info` is gone.
 
-**`cockpit-tui info --json %N`** (#452) prints one line, `{"dir":"<path>"}`: the
-work dir by the board's rule (`dir` in `--json` above), for scripts. The screen's
-root, base and review dir follow that work dir (#500), as `prefix r` does since it
-asks `workdir` for its tree (#470), so the two name the same tree again, with one
-exception: a pane with no `@cockpit_session` (and no bound job's session, #448) has
-no transcript `workdir` will read
-(it never runs `claude agents`), so its `prefix r` tree is `@cockpit_dir`, else the
-launch dir, while the screen, which may ask `claude agents`, can follow the
-transcript to a worktree (#508 finding 10). The path is decoded as lossy UTF-8, as
+**`cockpit-tui info --json %N`** (#452) prints one line,
+`{"dir":"<path>","source":"<source>"}`: the work dir by the board's rule (`dir` in
+`--json` above) and its source as `workdir --source` prints it (#1355), for scripts.
+The screen's root, base and review dir follow that work dir (#500), as `prefix r`
+does since it asks `workdir` for its tree (#470). For an agent's pane, the screen and
+`info --json` name the folder and source `workdir --source` prints, off the board's own
+row and candidates, never a `claude agents` lookup (#1355). `workdir` exits 1 where
+that folder is not on disk, and the screen still shows it. For a pane the board does
+not count, `workdir` exits 1 and the screen reads the folder as goto does:
+`@cockpit_dir`, else `@cockpit_cwd`, else its cwd. The `doing`, `said` and `asked`
+rows may still ask `claude agents` for the transcript.
+The path is decoded as lossy UTF-8, as
 every tmux read is: a byte that is not UTF-8 becomes U+FFFD. Exit 0 with the
 line; exit 1 and nothing on stdout when the pane is not there; exit 2 for a
 missing or malformed pane id.
 
 **`cockpit-tui workdir %N`** (#500) prints the board's `dir` for that pane, the
-path alone on one line, for tmux-review and goto. It reads the pane with one
-`display-message` of the board's own format and runs the fetch's per-row code
-(`row_pane`, `work_candidates`, `fleet::work_dirs`), so its agent test and its
-order are the board's. Unlike the fetch it never runs `claude agents`: a pane
-with no `@cockpit_session` and no bound job's `@cockpit_job_session` (#448) has no
-transcript to read, so its dir is
-`@cockpit_dir`, else its launch dir. Lossy UTF-8, as above. Exit 0 with the
+path alone on one line, for tmux-review and goto. `workdir --source %N` (#1343)
+prints `dir`, a tab and the source that named it: `declared`, `active-in`,
+`session` or `pane-cwd`. A transcript's cwd may hold a tab, so split at the last
+one. It reads the pane with one `display-message` of the board's own format and
+runs the fetch's per-row code (`row_pane`, `work_candidates`, `workdir::choose`),
+so its agent test and its order are the board's. Unlike the fetch it never runs
+`claude agents`: a pane with no `@cockpit_session` and no bound job's
+`@cockpit_job_session` (#448) has no transcript to read, so its dir is
+`@cockpit_dir`, else `@cockpit_cwd`, else its launch dir. The panel's capture
+carries the same answer as `Capture.work`, and `pane-cwd` with the pane's cwd where
+`workdir` would exit 1. Lossy UTF-8, as above. Exit 0 with the
 line; exit 1 and nothing on stdout when the pane is not there, is not an
 agent's, or its dir is not on disk (#507): a removed launch dir, or a name that is
 not UTF-8, which the lossy decode turns into a path that does not exist. The board
 still draws that path; a script gets no dir to cd into. Exit 2 for a missing or
-malformed pane id, with the usage on stderr only.
+malformed pane id, with the usage on stderr only. Every shell reader of a pane's
+folder (`pane_workdir`, `scripts/lib/workdir.sh`) asks it for every agent pane, a
+holding `@cockpit_dir` or not, since a fresh `active-in` tree outranks a
+hook-written one (#462); without an answer it takes `@cockpit_dir`, else the
+pane's cwd.
+
+**`cockpit-tui label %N`** (#1407) prints how a message names that pane, `session:window ·
+title` (`data::Label::spelled`), cleaned of control and bidi characters, alone on one
+line: the title is `@cockpit_title`, else the pane's own title, else the window name, as
+the board's kill confirm and the panel's header read it. Any pane, an agent's or not, and
+always `·`, as the shell's own notes spell it. Exit 0 with the line; exit 1 and nothing on
+stdout when the pane is gone or tmux is not reachable; exit 2 for a missing or malformed
+pane id, or a second argument, with the usage on stderr only. The shell's one way to a
+label is `label_ask` (`scripts/lib/label.sh`), which says `the pane` whenever the binary
+cannot answer: a gone pane, a missing binary, an older one with no `label`, or a hang past
+its bound. The shell builds no label of its own.
 
 ## The board as the review queue (#253)
 
@@ -3179,9 +3323,9 @@ the branch when HEAD is detached.
 
 **Where the facts come from.** `data/fleet.rs`, on the fetch thread. One diff
 scan per distinct repo root however many panes share it, at most 8 git processes
-at once, and the gitsafe flags. The tree the agent works in is `@cockpit_dir`,
-else the session transcript's newest cwd, else the pane's cwd (#452); a relative
-path never counts and gets no facts. The list still makes no pane capture.
+at once, and the gitsafe flags. The tree the agent works in is the one
+`data::workdir::choose` picks, in the order the freeze's `dir` paragraph gives
+(#452, #1343); a relative path never counts and gets no facts. The list still makes no pane capture.
 
 **Verbs.** `cockpit-board` gains one line, `kill %N` (#288 removed `request %N`).
 `kill %N` kills the pane, not its window (#301). The board writes the pane id

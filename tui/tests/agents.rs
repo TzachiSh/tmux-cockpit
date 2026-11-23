@@ -79,7 +79,7 @@ impl Rig<'_> {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("bin")).unwrap();
         let d = dir.display().to_string();
-        let row = ["%1", "w:0", "win", "claude", "running", "-", "-", "-", "/w", "100", "-", "-", "@1"].join("\u{1f}");
+        let row = fake::board_row(&["%1", "w:0", "win", "claude", "running", "-", "-", "-", "/w", "100", "-", "-", "@1"]);
         std::fs::write(dir.join("rows"), row + "\n").unwrap();
         write_exec(
             &dir.join("bin/tmux"),
@@ -975,7 +975,7 @@ fn own_pane_stays_no_agent(tag: &str, grandchild: bool, by_ps: bool, hold: Hold)
         ""
     };
     let r = Rig::new(tag, &format!("{wait}echo $$ > $HOME/stubpid\n{GO}{ONE}"));
-    let row = ["%2", "w:1", "board", "bash", "-", "-", "-", "-", "/w", "200", "-", "-", "@2"].join("\u{1f}");
+    let row = fake::board_row(&["%2", "w:1", "board", "bash", "-", "-", "-", "-", "/w", "200", "-", "-", "@2"]);
     let mut rows = std::fs::read_to_string(r.dir.join("rows")).unwrap();
     rows.push_str(&(row + "\n"));
     std::fs::write(r.dir.join("rows"), rows).unwrap();
@@ -1273,7 +1273,7 @@ fn a_real_claude_beside_the_lookup_child_keeps_the_pane_an_agent() {
         "beside",
         &format!("echo $$ > $HOME/stubpid\nwhile [ ! -f $HOME/go ]; do sleep 0.02; done\n{ONE}"),
     );
-    let row = ["%2", "w:1", "board", "bash", "-", "-", "-", "-", "/w", "200", "-", "-", "@2"].join("\u{1f}");
+    let row = fake::board_row(&["%2", "w:1", "board", "bash", "-", "-", "-", "-", "/w", "200", "-", "-", "@2"]);
     let rows = std::fs::read_to_string(r.dir.join("rows")).unwrap() + &row + "\n";
     std::fs::write(r.dir.join("rows"), rows).unwrap();
     r.proc_dir("200", "bash", "");
@@ -1294,7 +1294,7 @@ fn a_real_claude_beside_the_lookup_child_keeps_the_pane_an_agent() {
 #[test]
 fn the_ps_walk_still_skips_a_lookup_child_that_has_just_ended() {
     let r = Rig::new("ghost", &format!("echo $$ > $HOME/stubpid\n{ONE}"));
-    let row = ["%2", "w:1", "board", "bash", "-", "-", "-", "-", "/w", "200", "-", "-", "@2"].join("\u{1f}");
+    let row = fake::board_row(&["%2", "w:1", "board", "bash", "-", "-", "-", "-", "/w", "200", "-", "-", "@2"]);
     let rows = std::fs::read_to_string(r.dir.join("rows")).unwrap() + &row + "\n";
     std::fs::write(r.dir.join("rows"), rows).unwrap();
     r.sess();

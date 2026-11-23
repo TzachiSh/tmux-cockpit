@@ -318,7 +318,8 @@ scratch_index() {             # <dir> <gitdir>
     # the path it gives is absolute, as git reads GIT_INDEX_FILE from -C's dir. No trap is
     # set unless all hold.
     own_tmpdir tmp || return 1
-    trap 'rm -rf -- "$tmp"' EXIT; trap 'trap "" HUP INT TERM; exit 143' HUP INT TERM
+    trap 'trap "" HUP INT TERM; rm -rf -- "$tmp"' EXIT  # a hangup must not kill the rm (#1400)
+    trap 'trap "" HUP INT TERM; exit 143' HUP INT TERM
     idx=$tmp/index
     { (set -C; cat -- "$gd/index" > "$idx") && touch -r "$gd/index" -- "$idx"; } 2>/dev/null \
         || rm -f -- "$idx"

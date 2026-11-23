@@ -75,12 +75,6 @@ open_one() {
     md_view "$file" "$ln" && return
     vscode_lib
     editor=$(tmux show-options -gqv @cockpit_editor)
-    if [ -z "$editor" ]; then
-        # The old, unprefixed name, kept working for one release.
-        editor=$(tmux show-options -gqv @open-editor)
-        [ -n "$editor" ] && tmux display-message \
-            "cockpit: @open-editor renamed @cockpit_editor · update your tmux.conf"
-    fi
     # VS Code only where it is installed (code on PATH, or the Remote-SSH shim),
     # else the shell's editor.
     if [ -z "$editor" ] && ! command -v code >/dev/null 2>&1 && ! vscode_shim >/dev/null; then
@@ -355,7 +349,7 @@ browse_folder() {
         pw=$(tmux show-option -gqv @cockpit_popup_width);  pw=${pw:-70%}
         ph=$(tmux show-option -gqv @cockpit_popup_height); ph=${ph:-70%}
         tmux display-popup -t "$pane" -E -w "$pw" -h "$ph" \
-            -T " files · #{b:pane_current_path} " \
+            -T " files · $dirlast " \
             "$COCKPIT_POPUP_MARK$(shq "$0") --browse $(shq "$pane")"
         return 0
     fi
@@ -410,7 +404,13 @@ else
     }
     # Left set: the popup re-derives the list from it, and each click rewrites it.
     line=$(tmux show-options -p -t "$pane" -qv @cockpit_click_line)
-    dir=$(tmux display-message -p -t "$pane" '#{pane_current_path}')
+    # The tree the board's row shows, not the launch folder: an agent's declared
+    # @cockpit_dir, else pane_current_path (#1345). Nothing for a pane that is gone.
+    # shellcheck source=lib/workdir.sh
+    . "${d%/*}/lib/workdir.sh" || exit 1
+    dir=$(pane_workdir "$pane")
+    # popup titles: the folder used, its last part, escaped (-T is a format)
+    dirlast=${dir##*/}; dirlast=$(fesc "${dirlast:-/}")
     win=$(tmux display-message -p -t "$pane" '#{window_id}')
     if [ "$FOLDER" -eq 1 ] || [ "$BROWSE" -eq 1 ]; then
         [ -n "$dir" ] || { note "cockpit: the pane has no folder"; exit 1; }
@@ -577,7 +577,7 @@ if [ "$PICK" -eq 0 ]; then
     pw=$(tmux show-option -gqv @cockpit_popup_width);  pw=${pw:-70%}
     ph=$(tmux show-option -gqv @cockpit_popup_height); ph=${ph:-70%}
     tmux display-popup -t "$pane" -E -w "$pw" -h "$ph" \
-        -T " open path · #{b:pane_current_path} " \
+        -T " open path · $dirlast " \
         "$COCKPIT_POPUP_MARK$(shq "$0") --pick $(shq "$pane")"
     exit 0
 fi
@@ -597,8 +597,9 @@ for i in "${!FILES[@]}"; do
 done
 # Stderr to a file: a cockpit-tui without --copy is told apart from a crash.
 err=$(mktemp 2>/dev/null) || err=/dev/null
-trap '[ "$err" = /dev/null ] || rm -f -- "$err"' EXIT
-trap 'exit 130' INT TERM HUP
+# Both traps ignore HUP, INT and TERM first: a signal must not stop the rm (#1411).
+trap 'trap "" HUP INT TERM; [ "$err" = /dev/null ] || rm -f -- "$err"' EXIT
+trap 'trap "" HUP INT TERM; exit 130' INT TERM HUP
 key=$(printf '%s' "$rows" | "$COCKPIT_TUI_BIN" pick --copy --prompt 'open' \
       --header 'open which path' 2>"$err"); rc=$?
 [ ! -s "$err" ] || cat "$err" >&2

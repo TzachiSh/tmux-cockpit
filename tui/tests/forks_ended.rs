@@ -15,7 +15,7 @@ fn two_ticks_on_an_ended_row_fork_ps_once() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("bin")).unwrap();
     let d = dir.display().to_string();
-    let row = [
+    let row = fake::board_row(&[
         "%1",
         "w:0",
         "win",
@@ -29,8 +29,7 @@ fn two_ticks_on_an_ended_row_fork_ps_once() {
         "-",
         "-",
         "@1",
-    ]
-    .join("\u{1f}");
+    ]);
     std::fs::write(dir.join("rows"), row + "\n").unwrap();
     write_exec(
         &dir.join("bin/tmux"),

@@ -1,4 +1,4 @@
-"╭ panel · %3 · claude ─────────────────────────────────────────────────────────╮"
+"╭ panel ───────────────────────────────────────────────────────────────────────╮"
 "│ what do you want to know?                                                    │"
 "│ Claude Code here is idle, waiting for the next prompt                        │"
 "│                                                                              │"

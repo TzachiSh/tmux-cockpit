@@ -391,7 +391,18 @@ pub(crate) fn typed_text(v: &Value) -> Option<String> {
 
 /// User rows Claude Code writes in plain text, not the human (#454): a message from
 /// another session, and the notice that the usage limit reset.
-const HARNESS_SAYS: [&str; 2] = ["Another Claude session sent a message", "Your claude.ai usage limit has reset"];
+const HARNESS_SAYS: [&str; 2] = [CROSS, "Your claude.ai usage limit has reset"];
+
+/// The row a message from another session opens with.
+const CROSS: &str = "Another Claude session sent a message";
+
+/// #1333: a harness string row that starts a model turn, which clears an interrupt: a
+/// background task's notification or a message from another session. A local command,
+/// shell mode or a caveat starts none, so it leaves the interrupt standing.
+pub(crate) fn starts_turn(t: &str) -> bool {
+    let t = t.trim_start();
+    t.starts_with("<task-notification>") || t.starts_with(CROSS)
+}
 
 /// Whether `t` starts with a paste block: the only `<`-led row the human typed.
 fn paste_led(t: &str) -> bool {

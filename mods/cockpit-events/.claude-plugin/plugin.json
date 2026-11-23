@@ -1,0 +1,5 @@
+{
+  "name": "cockpit-events",
+  "version": "0.1.0",
+  "description": "Reports an interrupted or failed turn to tmux-cockpit as an agent-event line"
+}

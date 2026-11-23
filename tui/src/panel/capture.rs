@@ -1,13 +1,15 @@
 //! The target pane as the panel sees it, and what a Claude Code session on it
 //! is doing, read off its own UI text.
+use crate::data::agentid::is_claude;
 use crate::data::gitsafe::{FILTER_CONFIG, PATHSPEC, REDIRECT, SAFE, filter_flags};
 use crate::data::tmux;
+use crate::data::workdir::{Candidates, WorkDir, choose};
 use std::io::Read;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
-use std::sync::mpsc::{Receiver, channel};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::mpsc::{Receiver, TryRecvError, channel};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, TryLockError};
 use std::time::{Duration, Instant};
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -17,14 +19,18 @@ pub struct Capture {
     pub path: String,
     /// Raw, not redacted: the envelope redacts it on the way out.
     pub screen: String,
-    /// [`repo_state_within`] of `path`, raw like the screen; "" outside a repo.
+    /// [`repo_state_within`] of `work.dir` (#1352), raw like the screen; "" outside a
+    /// repo, and for a pane [`is_local`] refuses.
     pub repo: Repo,
-}
-
-/// The command in any case, or its version-shaped title, as the board reads it
-/// ([`crate::basket::claude_cmd`], #760); or a window named claude.
-pub fn is_claude(name: &str, cmd: &str) -> bool {
-    crate::basket::claude_cmd(cmd) || name.eq_ignore_ascii_case("claude")
+    /// The pane's work folder by the shared rule, `crate::data::workdir` (#1343); `path`
+    /// as a pane-cwd answer where that rule has none (not an agent's, no dir on disk).
+    pub work: WorkDir,
+    /// The board's facts on the pane's agent, off the read `work` takes (#1353); `None`
+    /// where `work` has no rule. Memory only, never a tmux option.
+    pub agent: Option<crate::data::AgentFacts>,
+    /// How the header and the confirm name the pane (#1407): read at open and kept by a
+    /// refresh, as name and cmd are. `None` when tmux did not say.
+    pub label: Option<crate::data::Label>,
 }
 
 /// `None` when tmux cannot answer for the pane.
@@ -49,26 +55,57 @@ pub fn capture_within(pane: &str, budget: Duration) -> Option<Capture> {
         f.next().unwrap_or_default(),
         f.next().unwrap_or_default(),
     );
+    // The board's facts come first: the depth asks the shared rule, which needs them (#1359).
+    let (work, agent) = crate::data::workdir_agent(pane).unzip();
+    let work = work.unwrap_or_else(|| {
+        choose(&Candidates {
+            pane_cwd: path.clone(),
+            ..Default::default()
+        })
+    });
     // A session's last answer and plan sit further back than a shell's last command.
-    let depth = if is_claude(&name, &cmd) { "-200" } else { "-80" };
+    let depth = if is_claude(&cmd, agent.is_some()) { "-200" } else { "-80" };
     let out = tmux(&["capture-pane", "-p", "-J", "-t", pane, "-S", depth])?;
     let mut lines: Vec<&str> = out.trim_end_matches('\n').split('\n').collect();
     while lines.last().is_some_and(|l| l.trim().is_empty()) {
         lines.pop();
     }
     let screen = lines.join("\n");
-    let repo = if path.is_empty() || !is_local(&cmd) {
-        Repo::default()
+    // #429: a pane whose folder is not the one tmux reports gets no block. Started
+    // below, once the work folder is known (#1352).
+    let block_of = if path.is_empty() || !is_local(&cmd) {
+        None
     } else {
-        Repo::start(&path, &screen, budget)
+        Some(screen.clone())
     };
     Some(Capture {
         name,
         cmd,
         path,
         screen,
-        repo,
+        repo: block_of.map_or_else(Repo::default, |s| Repo::start(&work.dir, &s, budget)),
+        work,
+        agent,
+        label: crate::data::label_of(pane),
     })
+}
+
+impl Capture {
+    /// `pane` read again (#1352): its screen, path, work folder, the board's agent
+    /// facts (#1353) and a new repo block under [`REPO_BUDGET`], so a later model
+    /// call sees the pane as it is now. Name and cmd stay: the panel set its flags
+    /// from them. False for a pane tmux cannot answer for: the capture is left as it
+    /// was, and the caller must not send it as the pane now (#1376). It keeps no
+    /// global state, so it may run off the UI thread.
+    #[must_use]
+    pub fn refresh(&mut self, pane: &str) -> bool {
+        let Some(c) = capture(pane) else {
+            return false;
+        };
+        (self.path, self.screen, self.repo, self.work) = (c.path, c.screen, c.repo, c.work);
+        self.agent = c.agent;
+        true
+    }
 }
 
 /// The whole repo block's time: a slow or huge repo costs the panel this much.
@@ -81,14 +118,36 @@ const PATHS_CAP: usize = 10;
 
 /// The repo block, filled by a thread [`capture`] starts, so the first frame
 /// and the Explain and Fix calls never wait for git. [`Repo::get`] waits for
-/// it, never past the budget and its slack.
+/// it, never past the budget and its slack; [`Repo::try_get`] never waits.
 #[derive(Clone, Default)]
 pub struct Repo(Arc<RepoCell>);
 
 #[derive(Default)]
 struct RepoCell {
-    pending: Mutex<Option<(Receiver<String>, Instant)>>,
+    /// Held by [`Repo::get`] for its whole wait, so [`Repo::try_get`] finds it busy.
+    pending: Mutex<Option<Pending>>,
     done: OnceLock<String>,
+}
+
+/// The worker's channel, the time past which its sends are not waited for, and
+/// the last block it sent.
+struct Pending {
+    rx: Receiver<String>,
+    end: Instant,
+    last: String,
+}
+
+impl Pending {
+    /// Takes what the worker sent so far: true once it has ended or its time is up.
+    fn drain(&mut self) -> bool {
+        loop {
+            match self.rx.try_recv() {
+                Ok(b) => self.last = b,
+                Err(TryRecvError::Disconnected) => return true,
+                Err(TryRecvError::Empty) => return Instant::now() >= self.end,
+            }
+        }
+    }
 }
 
 impl Repo {
@@ -105,8 +164,13 @@ impl Repo {
         let (tx, rx) = channel();
         let (dir, screen) = (dir.to_string(), screen.to_string());
         std::thread::spawn(move || repo_work(&dir, &screen, end, &|b| drop(tx.send(b))));
+        let p = Pending {
+            rx,
+            end: end + REPO_SLACK,
+            last: String::new(),
+        };
         let c = RepoCell {
-            pending: Mutex::new(Some((rx, end + REPO_SLACK))),
+            pending: Mutex::new(Some(p)),
             done: OnceLock::new(),
         };
         Repo(Arc::new(c))
@@ -114,17 +178,42 @@ impl Repo {
 
     /// The block, or the last part of it the worker sent before the deadline.
     pub fn get(&self) -> &str {
-        self.0.done.get_or_init(|| {
-            let taken = self.0.pending.lock().unwrap_or_else(|e| e.into_inner()).take();
-            let Some((rx, end)) = taken else {
-                return String::new();
-            };
-            let mut last = String::new();
-            while let Ok(b) = rx.recv_timeout(end.saturating_duration_since(Instant::now())) {
-                last = b;
+        if let Some(d) = self.0.done.get() {
+            return d;
+        }
+        let mut held = self.0.pending.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(p) = held.as_mut() {
+            while let Ok(b) = p.rx.recv_timeout(p.end.saturating_duration_since(Instant::now())) {
+                p.last = b;
             }
-            last
-        })
+        }
+        self.settle(held)
+    }
+
+    /// The block once the worker has ended or its time is up, "" when nothing was
+    /// pending (a default), and `None` while it still runs, or while another
+    /// thread waits for it in [`Repo::get`]. Never waits (#1352).
+    pub fn try_get(&self) -> Option<&str> {
+        if let Some(d) = self.0.done.get() {
+            return Some(d);
+        }
+        let mut held = match self.0.pending.try_lock() {
+            Ok(g) => g,
+            Err(TryLockError::Poisoned(e)) => e.into_inner(),
+            Err(TryLockError::WouldBlock) => return None,
+        };
+        if !held.as_mut().is_none_or(Pending::drain) {
+            return None;
+        }
+        Some(self.settle(held))
+    }
+
+    /// Fills the block from what `held` kept, unless another call filled it first.
+    fn settle(&self, mut held: MutexGuard<'_, Option<Pending>>) -> &str {
+        let block = held.take().map(|p| p.last).unwrap_or_default();
+        let _ = self.0.done.set(block);
+        drop(held);
+        self.0.done.get().map_or("", String::as_str)
     }
 }
 
@@ -321,9 +410,10 @@ fn section(b: &mut String, head: &str, lines: &[&str], cap: usize) {
 }
 
 /// The git state of `dir` for the write call's `<repo>` block: branch, the
-/// work tree's root, short status, the last five commits, the diff stat
-/// against HEAD, and the paths on `screen` that exist, plus the `@/`, `~/` and
-/// `./` ones that do not. Plain git under `budget` (the panel's is
+/// work tree's root, whether that is the repo's main checkout or a linked
+/// worktree, short status, the last five commits, the diff stat against HEAD,
+/// and the paths on `screen` under the root that exist, plus the `@/`, `~/` and
+/// `./` ones there that do not (#1352). Plain git under `budget` (the panel's is
 /// [`REPO_BUDGET`]).
 ///
 /// "" when `dir` is not in a work tree, when the root or the filter config is
@@ -344,8 +434,14 @@ fn repo_work(dir: &str, screen: &str, end: Instant, send: &dyn Fn(String)) {
     if dir.is_empty() {
         return;
     }
-    // Shows the root and that `dir` is in a work tree; it runs no filter.
-    let top = spawn_git(dir, &[], &["rev-parse", "--show-toplevel"]);
+    // Shows the root and that `dir` is in a work tree, and its git dirs for the
+    // checkout kind (#1352); it runs no filter. No `--path-format`: a git before
+    // 2.31 refuses it, and the whole block would go.
+    let top = spawn_git(
+        dir,
+        &[],
+        &["rev-parse", "--show-toplevel", "--git-common-dir", "--absolute-git-dir"],
+    );
     // `git config` exits 1 when nothing matches, so only a timeout fails here.
     let cfg = match finish(spawn_git(dir, &[], &FILTER_CONFIG), end, "config") {
         Ran::Ok(s) => s,
@@ -363,8 +459,18 @@ fn repo_work(dir: &str, screen: &str, end: Instant, send: &dyn Fn(String)) {
     let status = spawn_git(dir, &filters, &["status", "--short", "--branch", sub]);
     let log = spawn_git(dir, &filters, &["log", "-5", "--oneline", "--no-decorate"]);
     let diff = spawn_git(dir, &filters, &["diff", "--stat", "--no-ext-diff", "--no-textconv", sub, "HEAD"]);
-    let Some(top) = finish(top, end, "rev-parse").ok() else {
+    let Some(revs) = finish(top, end, "rev-parse").ok() else {
         return;
+    };
+    let mut revs = revs.lines();
+    let top = revs.next().unwrap_or_default().trim();
+    // Same dirs: the repo's own checkout, a submodule's too. Else a linked worktree.
+    // Compared resolved: the common dir may come relative to `dir`, where rev-parse
+    // ran. No line unless git gave both and both resolve.
+    let real = |p: &str| std::fs::canonicalize(Path::new(dir).join(p)).ok();
+    let checkout = match (revs.next().and_then(real), revs.next().and_then(real)) {
+        (Some(c), Some(g)) => format!("checkout: {}\n", if c == g { "main" } else { "linked worktree" }),
+        _ => String::new(),
     };
     let (status, log, diff) = (finish(status, end, "status"), finish(log, end, "log"), finish(diff, end, "diff"));
     let log = log.ok().filter(|l| !l.trim().is_empty());
@@ -382,7 +488,7 @@ fn repo_work(dir: &str, screen: &str, end: Instant, send: &dyn Fn(String)) {
                     None => h.into(),
                 },
             };
-            b.push_str(&format!("branch: {branch}\nroot: {}\n", top.trim()));
+            b.push_str(&format!("branch: {branch}\nroot: {top}\n{checkout}"));
             let changed: Vec<&str> = lines.collect();
             if changed.is_empty() {
                 b.push_str("status: clean\n");
@@ -390,7 +496,7 @@ fn repo_work(dir: &str, screen: &str, end: Instant, send: &dyn Fn(String)) {
                 section(&mut b, "status:", &changed, STATUS_CAP);
             }
         }
-        Ran::TimedOut => b.push_str(&format!("branch: unknown\nroot: {}\nstatus: timed out\n", top.trim())),
+        Ran::TimedOut => b.push_str(&format!("branch: unknown\nroot: {top}\n{checkout}status: timed out\n")),
         Ran::Failed(_) => return,
     }
     if let Some(log) = log {
@@ -406,6 +512,7 @@ fn repo_work(dir: &str, screen: &str, end: Instant, send: &dyn Fn(String)) {
     send(b.trim_end().to_string());
     let paths = screen_paths(screen);
     let home = std::env::var("HOME").unwrap_or_default();
+    let root = std::fs::canonicalize(top).ok();
     let mut seen: Vec<String> = Vec::new();
     for t in &paths {
         if Instant::now() >= end {
@@ -417,6 +524,10 @@ fn repo_work(dir: &str, screen: &str, end: Instant, send: &dyn Fn(String)) {
             None if bare.starts_with('/') => bare.to_string(),
             None => Path::new(dir).join(bare).display().to_string(),
         };
+        // #1352: no answer about a file outside the repo, ~/.ssh say
+        if !root.as_deref().is_some_and(|r| under(r, Path::new(&p))) {
+            continue;
+        }
         if Path::new(&p).exists() {
             seen.push(format!("exists: {t}"));
         } else if ["@/", "~/", "./"].iter().any(|x| t.starts_with(x)) {
@@ -429,6 +540,18 @@ fn repo_work(dir: &str, screen: &str, end: Instant, send: &dyn Fn(String)) {
         section(&mut b, "paths on screen:", &seen, PATHS_CAP);
         send(b.trim_end().to_string());
     }
+}
+
+/// `p` is in `root` (a resolved path): its nearest folder, file or link that is
+/// there, with every link resolved, is `root` or below it. A path through a link
+/// out of the repo is outside, a missing file's answer is its folder's. A link
+/// that resolves to nothing is outside too: its answer would tell whether its
+/// target exists, wherever that is (#1357).
+fn under(root: &Path, p: &Path) -> bool {
+    p.ancestors()
+        .find(|a| std::fs::symlink_metadata(a).is_ok())
+        .and_then(|a| std::fs::canonicalize(a).ok())
+        .is_some_and(|real| real.starts_with(root))
 }
 
 /// `name.ext`, an extension of one to eight letters or digits, not all digits.
@@ -505,9 +628,10 @@ impl Session {
 }
 
 /// From the screen, not `@panestate`: the hooks cannot tell a menu from a
-/// question, and the prompt's five states need that split.
-pub fn session_state(screen: &str, name: &str, cmd: &str) -> Option<Session> {
-    if !is_claude(name, cmd) {
+/// question, and the prompt's five states need that split. `None` unless the pane runs
+/// Claude Code by the shared rule: `agent` is whether the board has facts on it (#1359).
+pub fn session_state(screen: &str, cmd: &str, agent: bool) -> Option<Session> {
+    if !is_claude(cmd, agent) {
         return None;
     }
     let all: Vec<&str> = screen.split('\n').filter(|l| !l.trim().is_empty()).collect();
@@ -615,9 +739,10 @@ pub fn is_local(cmd: &str) -> bool {
     LOCAL_CMDS.contains(&cmd) || crate::data::agentish(cmd)
 }
 
-/// The window kind the write examples are picked by.
-pub fn window_kind(name: &str, cmd: &str) -> &'static str {
-    if is_claude(name, cmd) {
+/// The window kind the write examples are picked by. `claude` by the shared rule, so
+/// `agent` is whether the board has facts on the pane (#1359).
+pub fn window_kind(cmd: &str, agent: bool) -> &'static str {
+    if is_claude(cmd, agent) {
         "claude"
     } else if ["bash", "zsh", "fish", "sh"].contains(&cmd) {
         "shell"

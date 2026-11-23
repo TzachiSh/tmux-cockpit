@@ -6,6 +6,7 @@
 //! redacted. Every key here is made up.
 mod fake;
 
+use cockpit_tui::data::workdir::WorkDir;
 use cockpit_tui::panel::app::{App, Level, Tile, View};
 use cockpit_tui::panel::ask;
 use cockpit_tui::panel::capture::{Capture, window_kind};
@@ -50,6 +51,10 @@ fn app(path: &str) -> App {
         name: "work".into(),
         cmd: "bash".into(),
         path: path.into(),
+        work: WorkDir {
+            dir: path.into(),
+            ..Default::default()
+        },
         screen: "$ ".into(),
         ..Default::default()
     };
@@ -156,7 +161,7 @@ fn forced(dir: &str) -> (Profile, bool) {
     ctrl(&mut a, 's');
     let ctx = Ctx {
         out: OutType::Auto,
-        window: window_kind("work", "bash"),
+        window: window_kind("bash", false),
         ..Ctx::default()
     };
     (a.profile_for(&write_flow()), a.request_parts().unwrap().0 == prompts::write(&ctx))

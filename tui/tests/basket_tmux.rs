@@ -124,6 +124,26 @@ fn the_basket_round_trips_through_a_pane_option() {
     );
 }
 
+/// #1407: a gone pane's basket error names no id: a gone pane has no label, and `%999` tells a
+/// person nothing. The binary as the browser's alt-a runs it, on a stub tmux that finds no pane,
+/// so no server and no write to this process's environment.
+#[test]
+fn a_gone_panes_basket_error_names_no_id() {
+    let d = fake::Scratch::fresh(std::env::temp_dir().join(format!("cockpit-basket-gone-{}", std::process::id())));
+    let stub = d.join("stub-tmux");
+    fake::write_exec(&stub, "#!/bin/sh\nexit 1\n");
+    let f = d.join("a.rs");
+    std::fs::write(&f, "x\n").unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_cockpit-tui"))
+        .args(["basket", "add", "%999"])
+        .arg(&f)
+        .env("COCKPIT_TMUX", &stub)
+        .output()
+        .unwrap();
+    let said = String::from_utf8_lossy(&out.stdout);
+    assert_eq!((out.status.code(), said.trim_end()), (Some(1), "the pane is gone"), "{said}");
+}
+
 /// #1061, #1066: this binary's rig row, started again with TERM and HUP ignored and blocked, as a
 /// suite under nohup or with them blocked hands them down: the rig's server, told to
 /// go by a TERM it sends itself, is gone afterwards with its panes.

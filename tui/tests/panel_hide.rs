@@ -3,6 +3,7 @@
 #[allow(dead_code)] // for its Scratch guard and fixed environment, not write_exec
 mod fake;
 
+use cockpit_tui::data::workdir::WorkDir;
 use cockpit_tui::panel::action::{HIDE_AGE, HIDE_MAX, read_hidden, read_state, write_hidden};
 use cockpit_tui::panel::app::{App, InputKind, Level, Tap, View};
 use cockpit_tui::panel::capture::Capture;
@@ -19,14 +20,20 @@ use std::path::PathBuf;
 const NOW: u64 = 1_800_000_000;
 
 /// Every `App` here is built under the binary's one environment (#957): the
-/// developer's HOME, prompt overrides and COCKPIT_PANEL_MODEL answer no test.
+/// developer's HOME, prompt overrides and COCKPIT_PANEL_MODEL answer no test. A `claude`
+/// command carries the board's facts, as a real Claude Code pane does (#1359).
 fn app(cmd: &str) -> App {
     fake::fixed_env();
     let cap = Capture {
         name: "work".into(),
         cmd: cmd.into(),
         path: "/home/u/proj".into(),
+        work: WorkDir {
+            dir: "/home/u/proj".into(),
+            ..Default::default()
+        },
         screen: "$ ".into(),
+        agent: (cmd == "claude").then(Default::default),
         ..Default::default()
     };
     App::new("%3", cap)
@@ -268,7 +275,8 @@ fn the_state_is_per_pane_private_and_never_overwritten() {
     ctrl(&mut a, 'z');
     let (_d, p) = saved(&a, "pane");
     assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600);
-    assert!(read_hidden(&p, "%4", NOW).err().unwrap().contains("another pane"));
+    // no pane id: it tells a person nothing (#1407)
+    assert_eq!(read_hidden(&p, "%4", NOW).err().unwrap(), "it is for another pane");
     let body = cockpit_tui::panel::action::hide_body(&a, NOW).unwrap();
     assert!(
         write_hidden(&p.with_file_name("act"), &body).is_err(),

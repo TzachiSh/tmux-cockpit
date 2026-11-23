@@ -1,6 +1,6 @@
 " board · 4 agents · 2 sessions · 1 needs you                                                        "
 "┌ sessions ─────────────────────────────┐┏ ▲  api:0 · server ━━━━━━━━━━━━━━━━━━━ needs you · 4m12s ┓"
-"│  ▾ api ─────────────────────── ▲1 ●2  │┃ %3                                                      ┃"
+"│  ▾ api ─────────────────────── ▲1 ●2  │┃                                                         ┃"
 "│▎ 1 ▲  0 server Do you want to … 4m12s │┃ asked  —                                                ┃"
 "│  2 ●  1 tests  Bash: …kspace ✦3 1m03s │┃ said   —                                                ┃"
 "│     ├ ✓ 2 done                        │┃ needs  Do you want to run npm test?                     ┃"

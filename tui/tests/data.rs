@@ -4,7 +4,7 @@
 mod fake;
 
 use cockpit_tui::data::gitsafe::{SAFE, no_filters, tree_stat};
-use cockpit_tui::data::{Pane, State, git_facts, list_panes, preview, screen, split_cursor, view};
+use cockpit_tui::data::{Pane, State, git_facts, list_fleet, list_panes, preview, screen, split_cursor, view};
 use fake::write_exec;
 use std::fs::{FileTimes, OpenOptions};
 use std::path::{Path, PathBuf};
@@ -96,7 +96,15 @@ impl Rig {
         self.env.held.token()
     }
 
+    /// The fake's list-panes rows, each padded to FIELDS' count as tmux prints it (#1374).
     fn rows(&self, rows: &[String]) {
+        let padded: Vec<String> = rows.iter().map(String::as_str).map(whole_row).collect();
+        self.rows_as_is(&padded);
+    }
+
+    /// The rows as given, unpadded: only for a row deliberately short of FIELDS (#1374),
+    /// never a second way to write a normal row.
+    fn rows_as_is(&self, rows: &[String]) {
         std::fs::write(self.dir.join("rows"), rows.join("\n") + "\n").unwrap();
     }
 
@@ -147,6 +155,11 @@ fn row_at(id: &str, wher: &str, cmd: &str, state: &str, sess: &str, pid: &str, p
 
 fn row(id: &str, cmd: &str, state: &str, sess: &str, pid: &str) -> String {
     row_at(id, "w:0", cmd, state, sess, pid, "/w")
+}
+
+/// `row` padded to FIELDS' count, as tmux prints it (#1374).
+fn whole_row(row: &str) -> String {
+    fake::board_row(&row.split('\u{1f}').collect::<Vec<_>>())
 }
 
 fn get<'a>(ps: &'a [Pane], id: &str) -> &'a Pane {
@@ -1129,18 +1142,13 @@ fn a_missing_blob_never_lazy_fetches() {
     assert!(!marker.exists(), "diffstat ran the planted remote helper on an old git");
 }
 
-/// The 13th field is `#{window_id}`, which the board's kill checks against;
-/// a row with one field fewer is not this format, and is skipped whole.
+/// The 13th field is `#{window_id}`, which the board's kill checks against.
 #[test]
 fn the_window_id_is_the_thirteenth_field() {
     let r = Rig::new("winid");
-    r.ps("400 1 claude\n401 1 claude\n");
-    let short = row("%2", "claude", "running", "-", "401");
-    let short = short.rsplit_once('\u{1f}').unwrap().0.to_string();
-    assert_eq!(short.split('\u{1f}').count(), 12);
-    r.rows(&[row("%1", "claude", "running", "-", "400"), short]);
+    r.ps("400 1 claude\n");
+    r.rows(&[row("%1", "claude", "running", "-", "400")]);
     let ps = list_panes().unwrap();
-    assert_eq!(ids(&ps), ["%1"]);
     assert_eq!(ps[0].win, "@1");
 }
 
@@ -1784,6 +1792,142 @@ fn a_typed_prompt_closes_an_interrupted_question() {
     assert_eq!((p.state.as_str(), p.msg.as_str()), ("running", ""));
 }
 
+/// #1330 A3: a turn Esc stopped mid-tool. Claude Code writes the interrupt marker and
+/// fires no hook (#1332), so `@panestate` still says running.
+fn stopped_turn() -> String {
+    typed_row("go") + &bash_row("sleep 30") + &interrupt_row()
+}
+
+/// #1330 A3: an interrupt as the newest row overrides a stale running. The pane reads
+/// idle, the unset state, on the board and in `--json` alike (docs/tui.md, #61 note).
+#[test]
+fn an_interrupt_as_the_newest_row_overrides_a_stale_running() {
+    let r = Rig::new("a3stale");
+    r.transcript("s1", &stopped_turn());
+    r.rows(&[hooked("%1", "running", "s1")]);
+    let ps = list_panes().unwrap();
+    assert_eq!(get(&ps, "%1").state, State::Unknown, "the interrupt is the newest turn row");
+    let json = cockpit_tui::fleet::rows_json(&ps);
+    let json: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(json[0]["state"], "", "--json carries the board's state");
+}
+
+/// #1330 A3: a prompt after the interrupt keeps running: the marker is stale then, and
+/// so is it after an assistant row or a tool_result.
+#[test]
+fn a_prompt_after_the_interrupt_keeps_running() {
+    let r = Rig::new("a3prompt");
+    let result = serde_json::json!({"type": "user", "timestamp": "2026-08-27T00:00:07.000Z",
+        "message": {"content": [{"type": "tool_result", "tool_use_id": "b1", "content": "x"}]}});
+    r.transcript("s1", &(stopped_turn() + &typed_row("try again")));
+    r.transcript("s2", &(stopped_turn() + &bash_row("ls")));
+    r.transcript("s3", &(stopped_turn() + &format!("{result}\n")));
+    let ids = ["%1", "%2", "%3"];
+    r.rows(&ids.map(|id| hooked(id, "running", &format!("s{}", &id[1..]))));
+    let ps = list_panes().unwrap();
+    let got: Vec<&str> = ids.iter().map(|id| get(&ps, id).state.as_str()).collect();
+    assert_eq!(got, ["running"; 3], "a prompt, an assistant row, a tool_result after it");
+}
+
+/// #1333: a harness row after the interrupt starts a turn too, so the hooks' running stands
+/// for the model's whole latency. Rows: a `<task-notification>`, a message from another
+/// session. Neither is what the human asked.
+#[test]
+fn a_task_notification_after_the_interrupt_keeps_running() {
+    let r = Rig::new("a3harness");
+    let say = |t: &str| {
+        let v = serde_json::json!({"type": "user", "timestamp": "2026-08-27T00:00:08.000Z",
+            "message": {"content": t}});
+        format!("{v}\n")
+    };
+    let note = say("<task-notification>a background task finished</task-notification>");
+    r.transcript("s1", &(stopped_turn() + &note));
+    r.transcript("s2", &(stopped_turn() + &say("Another Claude session sent a message: hi")));
+    let ids = ["%1", "%2"];
+    r.rows(&ids.map(|id| hooked(id, "running", &format!("s{}", &id[1..]))));
+    let ps = list_panes().unwrap();
+    let got = ids.map(|id| (get(&ps, id).state.as_str(), get(&ps, id).asked.as_str()));
+    assert_eq!(got, [("running", "go"); 2], "(state, asked): a turn, not a prompt");
+}
+
+/// #1333: only a user or assistant row clears the interrupt. Attachment and system rows
+/// are no turn and land after a turn ends, so the override holds over them.
+#[test]
+fn an_attachment_or_system_row_after_the_interrupt_keeps_the_override() {
+    let r = Rig::new("a3other");
+    let attachment = r#"{"type":"attachment","timestamp":"2026-08-27T00:00:08.000Z"}"#;
+    let system = r#"{"type":"system","subtype":"init","timestamp":"2026-08-27T00:00:08.000Z"}"#;
+    r.transcript("s1", &(stopped_turn() + attachment + "\n"));
+    r.transcript("s2", &(stopped_turn() + system + "\n"));
+    let ids = ["%1", "%2"];
+    r.rows(&ids.map(|id| hooked(id, "running", &format!("s{}", &id[1..]))));
+    let ps = list_panes().unwrap();
+    assert_eq!(ids.map(|id| get(&ps, id).state.as_str()), [""; 2], "attachment, system");
+}
+
+/// #1333: a local slash command and shell mode start no model turn, so their harness rows
+/// keep the override. Rows: a command and its stdout, a shell command and its stdout, the
+/// isMeta caveat a local command writes.
+#[test]
+fn local_commands_and_shell_mode_after_the_interrupt_keep_the_override() {
+    let r = Rig::new("a3local");
+    let say = |t: &str, meta: bool| {
+        let v = serde_json::json!({"type": "user", "isMeta": meta,
+            "timestamp": "2026-08-27T00:00:08.000Z", "message": {"content": t}});
+        format!("{v}\n")
+    };
+    let model = say("<command-name>/model</command-name>", false) + &say("<local-command-stdout>Set model</local-command-stdout>", false);
+    let shell = say("<bash-input>ls</bash-input>", false) + &say("<bash-stdout>x</bash-stdout>", false);
+    let caveat = say("<local-command-caveat>Caveat: generated</local-command-caveat>", true);
+    r.transcript("s1", &(stopped_turn() + &model));
+    r.transcript("s2", &(stopped_turn() + &shell));
+    r.transcript("s3", &(stopped_turn() + &caveat));
+    let ids = ["%1", "%2", "%3"];
+    r.rows(&ids.map(|id| hooked(id, "running", &format!("s{}", &id[1..]))));
+    let ps = list_panes().unwrap();
+    let got = ids.map(|id| get(&ps, id).state.as_str());
+    assert_eq!(got, [""; 3], "local command, shell mode, isMeta caveat");
+}
+
+/// #1330 A3: needs-input from the hooks is not overridden, nor are error and done: only
+/// a stale running gives way to the interrupt.
+#[test]
+fn needs_input_from_the_hooks_is_not_overridden() {
+    let r = Rig::new("a3needs");
+    r.transcript("s1", &stopped_turn());
+    let ids = [("%1", "needs-input"), ("%2", "error"), ("%3", "done")];
+    r.rows(&ids.map(|(id, st)| hooked(id, st, "s1")));
+    let ps = list_panes().unwrap();
+    let got: Vec<&str> = ids.iter().map(|(id, _)| get(&ps, id).state.as_str()).collect();
+    assert_eq!(got, ["needs-input", "error", "done"]);
+}
+
+/// #1330 A3 and #448: a pane bound to a background job shows the poller's state, which
+/// the job's transcript never overrides, an interrupt included.
+#[test]
+fn a_job_bound_pane_keeps_the_pollers_running_after_an_interrupt() {
+    let r = Rig::new("a3job");
+    r.transcript("s1", &stopped_turn());
+    // fields 13 to 16: no @cockpit_dir, subs or transcript, then the job's name
+    r.rows(&[hooked("%1", "running", "s1") + "\u{1f}\u{1f}\u{1f}\u{1f}alpha"]);
+    let p = get(&list_panes().unwrap(), "%1").clone();
+    assert_eq!((p.job.as_str(), p.state.as_str()), ("alpha", "running"));
+}
+
+/// #1330 A3's known gap, pinned so a fix shows up as a change here (the mod's turn
+/// start, #1330 T5): Enter after an interrupt sets running before Claude Code writes the
+/// prompt row, so the pane reads idle until that row lands, then running.
+#[test]
+fn a_prompt_not_yet_written_after_an_interrupt_reads_idle_until_its_row_lands() {
+    let r = Rig::new("a3gap");
+    let t = r.transcript("s1", &stopped_turn());
+    r.rows(&[hooked("%1", "running", "s1")]);
+    let before = get(&list_panes().unwrap(), "%1").state;
+    std::fs::write(&t, stopped_turn() + &typed_row("next")).unwrap();
+    let after = get(&list_panes().unwrap(), "%1").state;
+    assert_eq!((before, after), (State::Unknown, State::Running), "(before the row, after it)");
+}
+
 /// #453 review: the newest tool_use is an open ask with no readable question:
 /// no older open question stands in for it.
 #[test]
@@ -1824,7 +1968,7 @@ fn a_tool_use_after_the_open_question_keeps_the_hooks_message() {
 }
 
 /// #460: `@cockpit_job_name`, field 16, is the bound job's name, cleaned: it comes
-/// from a pane title. A row without it (an older format) has no job.
+/// from a pane title. A row with it empty has no job.
 #[test]
 fn the_bound_job_name_is_read_cleaned_and_absent_is_none() {
     let r = Rig::new("jobname");
@@ -2181,4 +2325,312 @@ fn a_rig_checks_only_once_it_holds_the_lock() {
     // without the fix the payload is the refusal, naming COCKPIT_LOG
     let why = t.join().err().map(|e| e.downcast_ref::<String>().cloned().unwrap_or_default());
     assert_eq!(why, None, "the waiting rig panicked");
+}
+
+// ------------------------------------------- model and context on the card (#1330 A2)
+
+/// A main-thread model call: `model`, its usage (input, cache_read, cache_creation,
+/// output) and an end_turn text row.
+fn usage_row(model: &str, u: [u64; 4]) -> String {
+    let v = serde_json::json!({"type": "assistant", "timestamp": "2026-08-27T00:00:07.000Z",
+        "message": {"model": model, "stop_reason": "end_turn", "content": [{"type": "text", "text": "ok"}],
+        "usage": {"input_tokens": u[0], "cache_read_input_tokens": u[1],
+            "cache_creation_input_tokens": u[2], "output_tokens": u[3]}}});
+    format!("{v}\n")
+}
+
+/// The tile of `%1` read off `body` through the fetch, drawn alone on a 60x8 board:
+/// its bottom border row.
+fn card_foot(tag: &str, body: &str) -> String {
+    use cockpit_tui::board::{self, View};
+    use cockpit_tui::theme::Theme;
+    let r = Rig::new(tag);
+    r.transcript("s1", body);
+    r.rows(&[hooked("%1", "done", "s1")]);
+    let ps = list_panes().unwrap();
+    let one = [get(&ps, "%1").clone()];
+    let th = Theme::fixed();
+    let pvs = [Some(String::new())];
+    let v = View {
+        panes: &one,
+        pvs: &pvs,
+        th: &th,
+        sel: 0,
+        top: 0,
+        active: "",
+        note: None,
+        help: None,
+        stale: None,
+        lost: false,
+        never: false,
+        list: None,
+        confirm: None,
+    };
+    let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, 8)).unwrap();
+    t.draw(|f| board::render(f, f.area(), &v)).unwrap();
+    let screen = t.backend().to_string();
+    let rows: Vec<&str> = screen.lines().map(|l| l.trim_matches('"')).collect();
+    rows.iter()
+        .rev()
+        .find(|l| l.starts_with(['└', '┗']))
+        .unwrap_or_else(|| panic!("no bottom border:\n{screen}"))
+        .to_string()
+}
+
+/// #1330 A2: the newest assistant row's model and context (input + cache_read +
+/// cache_creation, never output) show on the card's bottom border.
+#[test]
+fn the_newest_model_call_shows_its_model_and_context_on_the_card() {
+    let foot = card_foot(
+        "a2main",
+        &(typed_row("go") + &usage_row("claude-opus-4-5-20251101", [10, 80_000, 4_000, 9_000])),
+    );
+    assert!(foot.contains("opus · 84k "), "{foot}");
+}
+
+/// #1330 A2: the newest row with usage wins, not the biggest.
+#[test]
+fn an_older_row_with_bigger_usage_does_not_win() {
+    let body = usage_row("claude-opus-4-5", [5, 150_000, 0, 0]) + &usage_row("claude-opus-4-5", [5, 84_000, 0, 0]);
+    let foot = card_foot("a2older", &body);
+    assert!(foot.contains("opus · 84k "), "{foot}");
+}
+
+/// #1330 A2: a transcript with no usage puts nothing on the border.
+#[test]
+fn no_usage_puts_nothing_on_the_card_border() {
+    let foot = card_foot("a2none", &(typed_row("go") + &bash_row("ls")));
+    assert!(foot.chars().all(|c| "└┗─━┘┛ ".contains(c)), "{foot}");
+}
+
+/// #1330 A2: an id not of the `claude-<word>-` shape is shown raw, cut at 12 columns, its
+/// control and bidi characters dropped; it is never turned into a family name.
+#[test]
+fn an_unknown_model_id_shows_raw_and_cut() {
+    let foot = card_foot("a2raw", &usage_row("claude-3-5-son\u{202e}net\u{1b}-x", [1, 2_000, 0, 0]));
+    assert!(foot.contains(" claude-3-5-… · 2k "), "{foot}");
+    let foot = card_foot("a2raw2", &usage_row("g\u{202e}p\u{1b}t", [1, 2_000, 0, 0]));
+    assert!(foot.contains(" gpt · 2k "), "{foot}");
+}
+
+/// #1330 A2: thousands are floored, never rounded up; under 1000 is the raw count.
+#[test]
+fn context_is_floored_to_thousands_and_raw_under_1000() {
+    let foot = card_foot("a2floor", &usage_row("claude-sonnet-4-5", [999, 84_000, 0, 0]));
+    assert!(foot.contains(" sonnet · 84k "), "{foot}");
+    let foot = card_foot("a2small", &usage_row("claude-haiku-4-5", [950, 0, 0, 0]));
+    assert!(foot.contains(" haiku · 950 "), "{foot}");
+}
+
+/// #1330 A2: a sidechain row, a subagent's, never speaks for the lead.
+#[test]
+fn a_sidechain_row_does_not_change_the_leads_model_or_context() {
+    let side = serde_json::json!({"type": "assistant", "isSidechain": true, "timestamp": "2026-08-27T00:00:08.000Z",
+        "message": {"model": "claude-haiku-4-5", "stop_reason": "end_turn", "content": [{"type": "text", "text": "x"}],
+        "usage": {"input_tokens": 5, "cache_read_input_tokens": 3_000, "cache_creation_input_tokens": 0, "output_tokens": 1}}});
+    let foot = card_foot("a2side", &(usage_row("claude-opus-4-5", [10, 84_000, 0, 0]) + &format!("{side}\n")));
+    assert!(foot.contains(" opus · 84k "), "{foot}");
+}
+
+/// #1330 A2: a row whose usage sums to 0 made no model call; it does not hide the last one.
+#[test]
+fn a_zero_usage_row_does_not_hide_the_last_model_call() {
+    let body = usage_row("claude-opus-4-5", [10, 84_000, 0, 0]) + &usage_row("<synthetic>", [0, 0, 0, 0]);
+    let foot = card_foot("a2zero", &body);
+    assert!(foot.contains(" opus · 84k "), "{foot}");
+}
+
+/// #1330 A2: a newer typed prompt does not clear the context: it stays the last turn's size.
+#[test]
+fn a_newer_prompt_keeps_the_last_turns_context() {
+    let foot = card_foot("a2prompt", &(usage_row("claude-opus-4-5", [10, 84_000, 0, 0]) + &typed_row("next")));
+    assert!(foot.contains(" opus · 84k "), "{foot}");
+}
+
+/// #1374: tmux prints every field of the format the board passes, so a row one short of
+/// FIELDS is not that format: it makes no pane and names no session.
+#[test]
+fn a_row_one_field_short_of_fields_makes_no_pane_and_no_session() {
+    let r = Rig::new("short");
+    r.ps("400 1 claude\n401 1 claude\n");
+    let short = whole_row(&row_at("%2", "lone:0", "claude", "running", "-", "401", "/w"));
+    let short = short.rsplit_once('\u{1f}').unwrap().0.to_string();
+    r.rows_as_is(&[whole_row(&row("%1", "claude", "running", "-", "400")), short]);
+    let (ps, sessions) = list_fleet().unwrap();
+    assert_eq!(ids(&ps), ["%1"]);
+    assert_eq!(sessions.into_iter().collect::<Vec<_>>(), ["w"]);
+}
+
+// ------------------------------------------------ a pane's own name before its title (#1409)
+
+/// A running claude's FIELDS row to field 12, its `@cockpit_title` `title`.
+fn titled_row(id: &str, wher: &str, pid: &str, title: &str) -> String {
+    [id, wher, "win", "claude", "running", title, "-", "-", "/w", pid, "-", "-", "@1"].join("\u{1f}")
+}
+
+/// [`titled_row`] and its `@cockpit_role`, field 20, `role`.
+fn named_row(id: &str, wher: &str, pid: &str, title: &str, role: &str) -> String {
+    let row = titled_row(id, wher, pid, title);
+    let mut f: Vec<&str> = row.split('\u{1f}').collect();
+    f.resize(20, "");
+    f.push(role);
+    f.join("\u{1f}")
+}
+
+/// `ps` drawn `w` by `h`: the tiles, or the list with `sel` selected and its pane. Each row
+/// as text, unquoted.
+fn drawn_board(ps: &[Pane], sel: Option<&str>, w: u16, h: u16) -> Vec<String> {
+    use cockpit_tui::board::{self, Nav, Sel, View};
+    use cockpit_tui::theme::Theme;
+    let nav = sel.map(|id| {
+        let mut n = Nav::new(Sel::Pane(id.into()), Default::default());
+        n.settle(ps, h.into());
+        n
+    });
+    let th = Theme::fixed();
+    let pvs: Vec<Option<String>> = ps.iter().map(|_| Some(String::new())).collect();
+    let v = View {
+        panes: ps,
+        pvs: &pvs,
+        th: &th,
+        sel: 0,
+        top: 0,
+        active: "",
+        note: None,
+        help: None,
+        stale: None,
+        lost: false,
+        never: false,
+        list: nav.as_ref(),
+        confirm: None,
+    };
+    let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
+    t.draw(|f| board::render(f, f.area(), &v)).unwrap();
+    t.backend().to_string().lines().map(|l| l.trim_matches('"').to_string()).collect()
+}
+
+/// The first row that opens a frame: a tile's title, or the list's and its pane's.
+fn frame_top(rows: &[String]) -> &str {
+    rows.iter()
+        .find(|l| l.starts_with(['┌', '┏']))
+        .unwrap_or_else(|| panic!("no frame:\n{}", rows.join("\n")))
+}
+
+/// #1409: a pane's own name, FIELDS' field 20, goes before its title in its label, cleaned as
+/// a title is: `session:window · name · title`. A pane with no name reads as before.
+#[test]
+fn a_panes_own_name_goes_before_its_title_in_its_label() {
+    let r = Rig::new("rolelabel");
+    r.ps("400 1 claude\n401 1 claude\n402 1 claude\n");
+    r.rows(&[
+        named_row("%1", "w:0", "400", "fix the tests", "lead"),
+        named_row("%2", "w:1", "401", "fix the tests", ""),
+        named_row("%3", "w:2", "402", "fix the tests", "le\u{7}a\u{202e}d"),
+    ]);
+    let ps = list_panes().unwrap();
+    let spelled = |id: &str| get(&ps, id).full_label().spelled("·");
+    assert_eq!(spelled("%1"), "w:0 · lead · fix the tests");
+    assert_eq!(spelled("%2"), "w:1 · fix the tests");
+    assert_eq!(spelled("%3"), "w:2 · lead · fix the tests");
+}
+
+/// #1409: a named pane reads `name · title` after its `session:window` on its tile and on the
+/// title of the list's pane.
+#[test]
+fn a_named_pane_reads_name_dot_title_on_its_tile_and_its_pane() {
+    let r = Rig::new("roletile");
+    r.ps("400 1 claude\n");
+    r.rows(&[named_row("%1", "w:0", "400", "fix the tests", "lead")]);
+    let ps = list_panes().unwrap();
+    let tiles = drawn_board(&ps, None, 60, 8);
+    assert!(frame_top(&tiles).contains("w:0 · lead · fix the tests"), "{tiles:#?}");
+    let list = drawn_board(&ps, Some("%1"), 120, 12);
+    assert!(frame_top(&list).contains("w:0 · lead · fix the tests"), "{list:#?}");
+}
+
+/// #1409: a named row's name and its dot are width the name column adds, as a bound row's
+/// mark is (#460), so the title keeps its share: `lead · tests` is whole in the list.
+#[test]
+fn a_named_row_keeps_the_titles_share_of_the_name_column() {
+    let r = Rig::new("rolerow");
+    r.ps("400 1 claude\n");
+    r.rows(&[named_row("%1", "w:0", "400", "tests", "lead")]);
+    let ps = list_panes().unwrap();
+    let rows = drawn_board(&ps, Some("%1"), 180, 12);
+    // the list's 64 columns, never the pane beside it, whose title holds the label too
+    let list: Vec<String> = rows.iter().map(|l| l.chars().take(64).collect()).collect();
+    assert!(list.iter().any(|l| l.contains("lead · tests ")), "{list:#?}");
+}
+
+/// #1409: the kill's confirm names the pane with its name, in its title and its question.
+#[test]
+fn the_confirm_names_the_pane_with_its_name() {
+    use cockpit_tui::board;
+    let r = Rig::new("roleconfirm");
+    r.ps("400 1 claude\n");
+    r.rows(&[named_row("%1", "w:0", "400", "fix the tests", "lead")]);
+    let ps = list_panes().unwrap();
+    let c = board::Confirm::open(board::extra('x').unwrap(), get(&ps, "%1")).unwrap();
+    assert_eq!(c.title, "kill · w:0 · lead · fix the tests");
+    assert_eq!(c.ask, "kill pane w:0 · lead · fix the tests?");
+}
+
+/// #1409: a pane named, or renamed, redraws the board: its name is in the redraw gate's hash.
+#[test]
+fn a_new_name_redraws_the_board() {
+    use cockpit_tui::data::hash_rows;
+    let r = Rig::new("rolehash");
+    r.ps("400 1 claude\n");
+    let hash_with = |role: &str| {
+        r.rows(&[named_row("%1", "w:0", "400", "fix the tests", role)]);
+        hash_rows(&list_panes().unwrap(), "")
+    };
+    let none = hash_with("");
+    assert_eq!(none, hash_with(""), "the same fetch twice");
+    assert_ne!(none, hash_with("lead"));
+}
+
+/// #1409: find (`/`) reads a pane's name, as the row draws it.
+#[test]
+fn find_finds_a_pane_by_its_name() {
+    use cockpit_tui::board::find_match;
+    let r = Rig::new("rolefind");
+    r.ps("400 1 claude\n401 1 claude\n");
+    r.rows(&[
+        named_row("%1", "w:0", "400", "fix the tests", "lead"),
+        named_row("%2", "w:1", "401", "fix the tests", ""),
+    ]);
+    let ps = list_panes().unwrap();
+    assert!(find_match(get(&ps, "%1"), "lead"));
+    assert!(!find_match(get(&ps, "%2"), "lead"));
+}
+
+/// A place and a title holding a tab, a control and a bidi character, as a session name and a
+/// fake's title can. ratatui draws none of the three, so a tab left in reads as no space.
+const DIRTY_PLACE: &str = "a\tb:0\u{202e}";
+const DIRTY_TITLE: &str = "fix\t\u{7}the\u{202e} tests";
+
+/// #1409: the pane's header goes through the label, so its place and its title are cleaned: a
+/// tab is a space and a control or bidi character is gone, as in every other label.
+#[test]
+fn the_pane_header_cleans_its_place_and_its_title() {
+    let r = Rig::new("roleheadclean");
+    r.ps("400 1 claude\n");
+    r.rows(&[titled_row("%1", DIRTY_PLACE, "400", DIRTY_TITLE)]);
+    let ps = list_panes().unwrap();
+    let list = drawn_board(&ps, Some("%1"), 120, 12);
+    assert!(frame_top(&list).contains("a b:0 · fix the tests "), "{list:#?}");
+}
+
+/// #1409: the confirm's title goes through the label too, cleaned as its question is.
+#[test]
+fn the_confirm_title_cleans_its_place_and_its_title() {
+    use cockpit_tui::board;
+    let r = Rig::new("roleconfirmclean");
+    r.ps("400 1 claude\n");
+    r.rows(&[titled_row("%1", DIRTY_PLACE, "400", DIRTY_TITLE)]);
+    let ps = list_panes().unwrap();
+    let c = board::Confirm::open(board::extra('x').unwrap(), get(&ps, "%1")).unwrap();
+    assert_eq!(c.title, "kill · a b:0 · fix the tests");
+    assert_eq!(c.ask, "kill pane a b:0 · fix the tests?");
 }

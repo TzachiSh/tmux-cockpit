@@ -14,7 +14,7 @@ fn panes() -> Vec<data::Pane> {
     }
 }
 
-const USAGE: &str = "cockpit-tui board [--select %N] [--note <file>] | pick | files <dir> [--select <name>] [--hidden] [--ignored] [--filter <text>] | branch [-C <dir>] | info [--text|--json] %N | workdir %N | sessions [--needs] [--current $N] | panel %N [--resume <state> --last ok|failed:<why>|hidden | --ask <file> <a> <b>] | view [--line N] [--] <file> | basket add %N <file> | --rows | --json | --version | -h";
+const USAGE: &str = "cockpit-tui board [--select %N] [--note <file>] | pick | files <dir> [--select <name>] [--hidden] [--ignored] [--filter <text>] | branch [-C <dir>] | info [--text|--json] %N | workdir [--source] %N | pane <name> | label %N | sessions [--needs] [--current $N] | panel %N [--resume <state> --last ok|failed:<why>|hidden | --ask <file> <a> <b>] | view [--line N] [--] <file> | basket add %N <file> | --rows | --json | --version | -h";
 
 fn unix_now() -> u64 {
     std::time::SystemTime::now()
@@ -50,6 +50,7 @@ fn panel(args: &[String]) {
         std::process::exit(1);
     };
     let mut a = app::App::new(pane, cap);
+    a.live = true;
     // Explain's what-changed list (#1000): one collector for the panel's life
     let collector = cockpit_tui::panel::changes::Collector::from_env();
     a.changes = Some(cockpit_tui::panel::look::Looks::new(collector));
@@ -57,23 +58,16 @@ fn panel(args: &[String]) {
     a.termux = cockpit_tui::panel::is_termux();
     // other panes' hidden panels the wrapper dropped: their panes are gone
     if let Ok(gone) = std::env::var("COCKPIT_PANEL_DROPPED") {
-        let gone: Vec<&str> = gone.split(' ').filter(|p| cockpit_tui::panel::is_pane(p)).take(8).collect();
-        if !gone.is_empty() {
-            a.say(
-                app::Level::Info,
-                format!("dropped the panel hidden on {}: the pane is gone", gone.join(" ")),
-            );
+        // counted, not named: a gone pane has no label, and its id tells a person nothing (#1407)
+        match gone.split(' ').filter(|p| cockpit_tui::panel::is_pane(p)).count() {
+            0 => {}
+            1 => a.say(app::Level::Info, "dropped a hidden panel whose pane is gone"),
+            n => a.say(app::Level::Info, format!("dropped {n} hidden panels whose panes are gone")),
         }
     }
     if let Some((f, "hidden")) = resume {
         a.reopened = true;
-        match action::read_hidden(std::path::Path::new(f), pane, unix_now()) {
-            Ok(h) => a.unhide(h),
-            Err(e) => {
-                eprintln!("cockpit-tui: cannot bring the hidden panel back from {f}: {e}");
-                a.say(app::Level::Warn, format!("the hidden panel was dropped: {e}"));
-            }
-        }
+        a.unhide_file(std::path::Path::new(f), unix_now());
     } else if let Some((f, last)) = resume {
         a.reopened = true;
         match action::read_state(std::path::Path::new(f), pane) {
@@ -163,6 +157,10 @@ fn main() {
         Some("info") => std::process::exit(cockpit_tui::info::main(&args[1..])),
         // #500: the board's work dir for one pane, for tmux-review and goto
         Some("workdir") => std::process::exit(fleet::workdir_main(&args[1..])),
+        // #1408: the one pane whose own @cockpit_role is the name
+        Some("pane") => std::process::exit(fleet::pane_main(&args[1..])),
+        // #1407: how a message names one pane, for the shell's label_ask
+        Some("label") => std::process::exit(fleet::label_main(&args[1..])),
         // file browser (#363)
         Some("files") => std::process::exit(cockpit_tui::files::main(&args[1..])),
         Some("pick") => std::process::exit(cockpit_tui::pick::main(&args[1..])),

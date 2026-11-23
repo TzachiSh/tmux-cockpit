@@ -17,6 +17,24 @@ When a pane goes `needs-input`, a second option, `@panestate_msg`, carries the
 first 120 characters of the ask itself — Claude's `Notification` hook payload,
 not a guess. It clears whenever the pane resumes work or goes idle, and is
 left alone by `done` since a done pane has no border alert to read it on.
+`PermissionRequest` writes it first, with the tool's name (#1330). The
+`permission_prompt` notification that follows about 6 s later leaves that text
+in place on a pane still waiting, and writes its own on any other pane.
+
+`PermissionRequest` also keeps the ask's key in `@panestate_ask`:
+`<agent_id>/<tool_name>`, with no agent on the main thread (#1403). Other
+agents and parallel calls fire tool hooks while an ask waits, and the payload
+carries no `tool_use_id` to tie them to it. So while a key is set, a
+`PostToolUse` or `PostToolUseFailure` ends the ask only with the same key, a
+`PreToolUse` only from the same agent (the next call after an ask the person
+refused, which fires no hook of its own), and a `SubagentStart` never. A typed
+prompt, `off` and an interrupt end it as before, and the key goes with the
+text. An ask with no key, from a `Notification` alone or a `PermissionRequest`
+that names no tool, ends on any `running`, as before. Known limits: two
+concurrent calls of the same tool in one agent share a key. A sibling's
+`PreToolUse` that lands after the `PermissionRequest` ends the ask. With two
+asks waiting the key is the newer one's, so answering that one first ends the
+wait while the older one still waits.
 
 ### State ranking
 
@@ -38,20 +56,20 @@ timer.
 | `UserPromptSubmit` | `running` |
 | `UserPromptSubmit` (2nd) | `session` — the same save, so `/clear` and `--resume` (a new `session_id`) are followed from the first prompt |
 | `CwdChanged` | `session` — saves the payload's `new_cwd` as `@cockpit_dir`, so the board shows the repo the agent `cd`'d into (see [Working tree](#working-tree)) |
-| `PermissionRequest` | `needs-input` |
-| `PostToolUse` | `running` |
+| `PermissionRequest` | `needs-input` — `@panestate_msg` names the tool; for `Bash` only the command's program, `Bash: git`, never its arguments or paths (#1330). The program is the first word with its path dropped, and only when that whole word is letters, digits and `._/+-`: anything else, `FOO=1 git` included, reads plain `Bash` (#1334). `@panestate_ask` keeps the ask's key (#1403, see above) |
+| `PostToolUse` | `running`; over an ask with a key, only the asking agent's call of the asked tool (#1403) |
 | `PostToolUse` (matcher `TaskStop`) | `sub-taskstop` — records the stopped agent in the subagent log, since a TaskStop mid-turn fires no `SubagentStop` for a plain agent (see [Subagent event log](#subagent-event-log)); no pane state |
-| `PostToolUseFailure` | `error` |
-| `SubagentStart` | `running` |
+| `PostToolUseFailure` | `running`, as `PostToolUse`: a tool's failure is not the turn's (#1331). So a routine non-zero Bash exit as a turn's last tool call ends the turn `done`, and an approved command that fails answers its ask (#1341). It runs `agent-state error`, as `StopFailure` does, and the payload's `hook_event_name` tells the two apart. Not when `is_interrupt` is true: a tool stopped with Esc writes nothing (#1330). Only the payload's first 4 KB is read: an `is_interrupt` past it, behind a large `tool_input`, is not seen, and the pane goes `running` (#1334). Over an ask with a key it ends the ask only as `PostToolUse` does (#1403) |
+| `SubagentStart` | `running`, but never over an ask with a key: an Agent call beside the ask fires it while the ask waits (#1403) |
 | `SubagentStart` (2nd) | `sub-start` — appends the event to the session's subagent log (see [Subagent event log](#subagent-event-log)); no pane state |
-| `SubagentStop` | `sub-stop` — the same log; no pane state, so a failed subagent's `error` is not cleared (see [Deliberately unwired](#deliberately-unwired)) |
+| `SubagentStop` | `sub-stop` — the same log; no pane state (see [Deliberately unwired](#deliberately-unwired)) |
 | `TeammateIdle` | `wake` — a teammate idling wakes its lead with no hook of its own; `done` → `running`, sticky states and a pending `◆` kept |
 | `TeammateIdle` (2nd) | `sub-idle` — the subagent log |
-| `PreToolUse` | `running` — marks the pane busy as a tool begins |
+| `PreToolUse` | `running` — marks the pane busy as a tool begins; over an ask with a key, only from the agent that asked (#1403) |
 | `Stop` | `done`, unless the payload's `background_tasks` lists a subagent: then no state changes (see [Background subagents](#background-subagents)). Either way `@cockpit_subs` takes the count (see [Subagent count](#subagent-count)) |
 | `Stop` (2nd) | `sub-reconcile` — writes the payload's `background_tasks`, the set still in flight, to the session's `.live` file beside the subagent log; an agent the log had running that is not in it has ended; no pane state. Before `review-gate`: `--hooks` re-appends review-gate's entry on every run, so an entry after it would swap places each time |
 | `Stop` (3rd) | `review-gate` — flags `◆` when the finished diff is unreviewed; hands a queued review to the agent at this turn boundary (`additionalContext` on stdout, once); caps a `/goal` rewake chain at `@cockpit_rewake_cap` and honours `review-gate --concede` (see [A goal that will not be met](#a-goal-that-will-not-be-met)) |
-| `StopFailure` | `error` — a turn killed by an API error fires this, **not** `Stop`; unwired, it left a bright "working" marker forever |
+| `StopFailure` | `error` — a turn killed by an API error fires this, **not** `Stop`; unwired, it left a bright "working" marker forever. The only hook that leaves `error`: a failed tool is `running` (#1331) |
 | `Notification` | `notify` (parses the JSON on stdin) |
 | `WorktreeCreate` | `worktree-create` — `claude --worktree <name>` and `EnterWorktree` put the tree under `~/.cache/cockpit-wt/<name>` on branch `<name>` (branched from the launch checkout's HEAD; an existing branch is checked out), so the session's cwd is the tree it works in and every cockpit read describes that tree. One namespace for every repo on the machine; subagents with `isolation: worktree` land there too, with their slug branches. Not with `--worktree --tmux` together, which skips the hook |
 | `WorktreeRemove` | `worktree-remove` — when claude means to remove a tree the hook above made (remove on `ExitWorktree`, verified on 2.1.246; a subagent finishing clean, per the docs), a clean tree on a merged branch goes, tree and branch; a dirty tree or unmerged commits stay, which is claude's own rule for the trees it makes itself. `claude -p` never cleans up worktrees, so a subagent run under `-p` leaves its tree and slug branch behind; `git worktree remove` plus `git branch -d` |
@@ -61,6 +79,11 @@ timer.
 A `Stop` hook does not fire on a user interrupt (Esc), so a review queued for an
 interrupted agent waits for the end of that agent's next turn — nothing hands it
 over earlier, `prefix r` included.
+
+`@panestate` stays `running` after Esc for the same reason (#1332). The board,
+`--json` and `--rows` show such a pane idle once its transcript's newest turn row is
+the interrupt marker, without writing to tmux; needs-input, error and done stay the
+hooks', and a pane bound to a job keeps the poller's state (#1330 A3, docs/tui.md).
 
 ## Context fill, optional
 
@@ -139,8 +162,10 @@ option (#960). Nothing is written while the reason stays the same.
 `TaskCompleted`, `PreCompact`, and `SubagentStop` as a *state* hook.
 
 `SubagentStop -> running` looked harmless but cleared a failed subagent's `error`,
-so a run that failed finished **green**. The next `PostToolUse` restores `running`
-anyway, so the hook only ever destroyed information. `TaskCompleted` fires
+so a run that failed finished **green**. That was while a failed tool set `error`.
+Since #1331 a failed tool is `running`, and only a failed turn (`StopFailure`) is
+`error`, but the hook would still clear a sticky state for nothing: the next
+`PostToolUse` restores `running` anyway. `TaskCompleted` fires
 mid-turn per task-list item and flashed green while the agent kept working;
 `Stop` already covers every turn end.
 

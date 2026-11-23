@@ -4,7 +4,7 @@
 //! window from a fold over a longer stretch: a fact whose row lies before `ws` is
 //! one the window never saw.
 
-use super::{Facts, State, first_line, rfc3339, transcript};
+use super::{Facts, State, activein, first_line, rfc3339, transcript};
 use serde_json::Value;
 #[cfg(test)]
 use std::cell::Cell;
@@ -20,6 +20,18 @@ use super::transcript::INTERRUPT;
 /// A value and the offset of the row that set it.
 type At<T> = Option<(u64, T)>;
 
+/// What the newest turn row said of the turn.
+#[derive(Clone, Copy, Default, PartialEq)]
+enum Over {
+    /// a prompt, a tool_result or an assistant row that keeps it going
+    #[default]
+    No,
+    /// end_turn
+    Ended,
+    /// the interrupt marker
+    Interrupted,
+}
+
 #[derive(Clone, Default)]
 pub(super) struct Fold {
     tool: At<String>,
@@ -30,7 +42,9 @@ pub(super) struct Fold {
     /// the newest row of any type with a timestamp
     newest: At<SystemTime>,
     cwd: At<String>,
-    turn_over: At<bool>,
+    /// #1330 A3: the newest turn row's verdict, kept apart from the interrupt that
+    /// ends a turn as end_turn does, so the hooks' stale running can give way to it
+    turn_over: At<Over>,
     /// the newest user or assistant row
     saw: Option<u64>,
     /// An AskUserQuestion is open until a user row carries its tool_result:
@@ -42,6 +56,11 @@ pub(super) struct Fold {
     /// #454: the id of the newest tool_use whose tool_result came back with
     /// `is_error` (a denial or a failed command alike), at that result's row
     failed: At<String>,
+    /// #1330 A2: the newest model call's (model, context), from its assistant row
+    usage: At<(String, u64)>,
+    /// #462: each folder a tool call worked in, the newest call's offset and time, oldest
+    /// first, at most `activein::KEEP`
+    active: Vec<(u64, String, SystemTime)>,
 }
 
 fn since<T>(a: &At<T>, ws: u64) -> Option<&T> {
@@ -85,12 +104,21 @@ impl Fold {
                 // the human moved on from an interrupted ask
                 if let Some(p) = transcript::typed_prompt(&v) {
                     self.user = Some((off, (p, ts)));
-                    self.turn_over = Some((off, false));
+                    self.turn_over = Some((off, Over::No));
                     self.asks.clear();
                 } else if interrupted || c.is_array() {
                     // the interrupt ends the turn; a tool_result keeps it going.
                     // Any other string is the harness's: not a turn and not `asked`.
-                    self.turn_over = Some((off, interrupted));
+                    let over = if interrupted { Over::Interrupted } else { Over::No };
+                    self.turn_over = Some((off, over));
+                } else if let Some((at, Over::Interrupted)) = self.turn_over
+                    && c.as_str().is_some_and(transcript::starts_turn)
+                {
+                    // #1333: a harness row that starts a turn (a <task-notification>) makes the
+                    // interrupt no longer the newest; a local command or shell mode does not.
+                    // Still not `asked`, and the turn stays over at the interrupt's row, as for
+                    // the panes no hook marks.
+                    self.turn_over = Some((at, Over::Ended));
                 }
             }
             Some("assistant") => {
@@ -100,7 +128,11 @@ impl Fold {
                 }
                 // end_turn rides the text row; attachment and custom-title rows
                 // land after it and must not reopen the turn.
-                self.turn_over = Some((off, v["message"]["stop_reason"].as_str() == Some("end_turn")));
+                let ended = v["message"]["stop_reason"].as_str() == Some("end_turn");
+                self.turn_over = Some((off, if ended { Over::Ended } else { Over::No }));
+                if let Some(n) = context(&v["message"]["usage"]) {
+                    self.usage = Some((off, (model(v["message"]["model"].as_str().unwrap_or("")), n)));
+                }
                 let Some(blocks) = v["message"]["content"].as_array() else {
                     return;
                 };
@@ -120,6 +152,9 @@ impl Fold {
                                 self.asks.push((off, id.clone()));
                             }
                             self.last_use = Some((off, (id, ask.then(|| transcript::question(&b["input"])).flatten())));
+                            if let Some(t) = ts {
+                                self.saw_dir(off, name, &b["input"], v["cwd"].as_str().unwrap_or(""), t);
+                            }
                         }
                         Some("text") => {
                             let t = first_line(b["text"].as_str().unwrap_or(""));
@@ -135,12 +170,26 @@ impl Fold {
         }
     }
 
+    /// #462: the folder a tool call at `off`, stamped `t`, worked in, kept as that folder's
+    /// newest; past `activein::KEEP` folders the oldest goes.
+    fn saw_dir(&mut self, off: u64, name: &str, input: &Value, cwd: &str, t: SystemTime) {
+        let home = std::env::var("HOME").unwrap_or_default();
+        let Some(d) = activein::dir_of(name, input, cwd, &home) else {
+            return;
+        };
+        self.active.retain(|(_, a, _)| *a != d);
+        self.active.push((off, d, t));
+        if self.active.len() > activein::KEEP {
+            self.active.remove(0);
+        }
+    }
+
     /// The facts of the rows that start at or after `ws`.
     pub(super) fn view(&self, ws: u64) -> Facts {
         let asks: Vec<&str> = self.asks.iter().filter(|(o, _)| *o >= ws).map(|(_, id)| id.as_str()).collect();
         let (user, user_at) = since(&self.user, ws).cloned().unwrap_or_default();
         let saw = self.saw.is_some_and(|o| o >= ws);
-        let turn_over = since(&self.turn_over, ws).copied().unwrap_or(false);
+        let over = since(&self.turn_over, ws).copied().unwrap_or_default();
         let ask = since(&self.last_use, ws).filter(|(id, _)| asks.contains(&id.as_str()));
         // the newest tool_use is the one that failed: its result was an error (#454)
         let failed = since(&self.last_use, ws)
@@ -159,13 +208,46 @@ impl Fold {
                 _ if !asks.is_empty() => State::NeedsInput,
                 // an unknown state is unknown, never idle
                 _ if !saw => State::Unknown,
-                _ if turn_over => State::Done,
+                _ if over != Over::No => State::Done,
                 _ => State::Running,
             },
             cwd: since(&self.cwd, ws).cloned().unwrap_or_default(),
             ask: ask.and_then(|(_, q)| q.clone()).unwrap_or_default(),
             tool_failed: failed,
+            interrupted: over == Over::Interrupted,
+            model: since(&self.usage, ws).map(|(m, _)| m.clone()).unwrap_or_default(),
+            ctx: since(&self.usage, ws).map(|(_, n)| *n),
+            active: self
+                .active
+                .iter()
+                .rev()
+                .filter(|(o, _, _)| *o >= ws)
+                .map(|(_, d, t)| (d.clone(), *t))
+                .collect(),
         }
+    }
+}
+
+/// #1330 A2: what the model call read, input + cache_read + cache_creation tokens. Output
+/// is what it wrote, not what it read (the subagent parser adds it: it counts spend). A sum
+/// of 0 is no model call (a row the harness writes itself may carry an all-zero usage) and
+/// is `None`, so it never hides the last real one.
+fn context(u: &Value) -> Option<u64> {
+    let keys = ["input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"];
+    // saturating: the numbers are the harness's, and a debug build panics on overflow
+    let n = keys.iter().fold(0u64, |a, k| a.saturating_add(u[k].as_u64().unwrap_or(0)));
+    (n > 0).then_some(n)
+}
+
+/// #1330 A2: `opus` for `claude-opus-…`, the word after `claude-` when it is all a-z.
+/// Any other id is kept raw, its control and bidi characters dropped, and the board cuts
+/// it: never a guessed name. Capped, as one row is written by the agent's harness.
+fn model(id: &str) -> String {
+    let id = crate::pick::clean(id);
+    let word = id.strip_prefix("claude-").and_then(|r| r.split('-').next());
+    match word.filter(|w| !w.is_empty() && w.bytes().all(|b| b.is_ascii_lowercase())) {
+        Some(w) => w.to_string(),
+        None => id.trim().chars().take(64).collect(),
     }
 }
 
@@ -640,5 +722,81 @@ mod tests {
         let before = read_bytes();
         delta(&p, TAIL_FIRST);
         assert_eq!(read_bytes() - before, TAIL_FIRST + 1, "the window and the byte before it");
+    }
+
+    /// #462: a Bash call stamped `n` that cds into `dir`, from a row whose cwd is `/w`.
+    fn cd(n: usize, dir: &str) -> String {
+        let input = json!({"command": format!("cd {dir} && make")});
+        let call = json!({"type": "tool_use", "id": format!("c{n}"), "name": "Bash", "input": input});
+        json!({"type": "assistant", "timestamp": ts(n), "cwd": "/w", "message": {"content": [call]}}).to_string() + "\n"
+    }
+    fn at(n: usize) -> SystemTime {
+        rfc3339(&ts(n)).unwrap()
+    }
+    fn lines(rows: &[String]) -> Vec<String> {
+        rows.iter().map(|r| r.trim_end().to_string()).collect()
+    }
+    fn dirs(fa: Facts) -> Vec<String> {
+        fa.active.into_iter().map(|(d, _)| d).collect()
+    }
+
+    /// #462: each folder once, at its newest call's time, newest first; a relative one
+    /// under the row's cwd.
+    #[test]
+    fn each_folder_a_call_reached_is_kept_at_its_newest_call() {
+        let fa = parse(lines(&[prompt(0, "/w"), cd(1, "/a"), cd(2, "rel"), cd(3, "/a")]));
+        assert_eq!(fa.active, vec![("/a".to_string(), at(3)), ("/w/rel".to_string(), at(2))]);
+    }
+
+    /// #462: a subagent's call (a sidechain row, or one with an agentId) and a row with no
+    /// timestamp name no folder: the first is not the pane's, the second has no age.
+    #[test]
+    fn a_subagents_call_or_an_unstamped_one_is_not_kept() {
+        let with = |r: String, k: &str, v: Value| {
+            let mut row: Value = serde_json::from_str(&r).unwrap();
+            row[k] = v;
+            row.to_string()
+        };
+        let mut bare: Value = serde_json::from_str(&cd(3, "/c")).unwrap();
+        bare.as_object_mut().unwrap().remove("timestamp");
+        let rows = vec![
+            with(cd(1, "/a"), "isSidechain", true.into()),
+            with(cd(2, "/b"), "agentId", "x".into()),
+            bare.to_string(),
+        ];
+        assert!(parse(rows).active.is_empty());
+    }
+
+    /// #462: past KEEP folders the oldest goes.
+    #[test]
+    fn the_fold_keeps_the_newest_folders_only() {
+        let rows: Vec<String> = (0..=activein::KEEP).map(|n| cd(n, &format!("/d{n}"))).collect();
+        let want: Vec<String> = (1..=activein::KEEP).rev().map(|n| format!("/d{n}")).collect();
+        assert_eq!(dirs(parse(lines(&rows))), want);
+    }
+
+    /// #462: a window leaves out the folders of calls before it.
+    #[test]
+    fn a_window_leaves_out_folders_seen_before_it() {
+        let mut f = Fold::default();
+        f.step(0, cd(1, "/a").trim_end());
+        f.step(100, cd(2, "/b").trim_end());
+        let got = [0, 100, 101].map(|ws| dirs(f.view(ws)));
+        assert_eq!(got, [vec!["/b".to_string(), "/a".into()], vec!["/b".into()], vec![]]);
+    }
+
+    /// #462: the delta read equals a full read as cd calls are appended; a call pushed past
+    /// the 256 KB window by a big result, with an assistant row after it, is not seen.
+    #[test]
+    fn delta_equals_a_full_read_as_cd_rows_are_appended() {
+        let (_d, p) = tmp("cd");
+        let mut rows = vec![prompt(0, "/w"), cd(1, "/a"), result(2, "c1", 1)];
+        rows.extend((3..6).map(|n| result(n, "other", 64)));
+        rows.extend([cd(6, "/b"), result(7, "c6", 300), done(8), cd(9, "/a")]);
+        for (n, r) in rows.iter().enumerate() {
+            add(&p, r);
+            same(&p, &format!("row {n}"));
+        }
+        assert_eq!(full(&p, TAIL_FIRST).active, vec![("/a".to_string(), at(9))]);
     }
 }

@@ -103,25 +103,88 @@ pub fn rows_json(ps: &[Pane]) -> String {
 }
 
 fn usage() -> i32 {
-    eprintln!("cockpit-tui: workdir needs one pane id like %3");
+    eprintln!("cockpit-tui: workdir [--source] needs one pane id like %3");
     2
 }
 
-/// `cockpit-tui workdir %N` (#500): the board's `dir` for that pane, alone on one
-/// line, for scripts. Exit 1 and nothing on stdout when the pane is not there,
-/// is not an agent's or its dir is not on disk; exit 2 for a missing or malformed id.
+/// `cockpit-tui workdir [--source] %N` (#500): the board's `dir` for that pane, alone on
+/// one line, for scripts; with `--source`, `dir<TAB>source` (#1343). Exit 1 and nothing on
+/// stdout when the pane is not there, is not an agent's or its dir is not on disk; exit 2
+/// for a missing or malformed id.
 pub fn workdir_main(args: &[String]) -> i32 {
     let ok = |p: &String| {
         p.strip_prefix('%')
             .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+    };
+    let (source, args) = match args {
+        [flag, rest @ ..] if flag == "--source" => (true, rest),
+        _ => (false, args),
     };
     let [pane] = args else { return usage() };
     if !ok(pane) {
         return usage();
     }
     match crate::data::workdir(pane) {
-        Some(d) => {
-            println!("{d}");
+        Some(w) if source => println!("{}\t{}", w.dir, w.source.as_str()),
+        Some(w) => println!("{}", w.dir),
+        None => return 1,
+    }
+    0
+}
+
+fn pane_usage() -> i32 {
+    eprintln!("cockpit-tui: pane needs one name, with no newline or \\x1f in it");
+    2
+}
+
+/// `cockpit-tui pane <name>` (#1408): the one pane whose own `@cockpit_role` is `<name>`, its
+/// id alone on one line. Exit 1 and nothing on stdout when no pane holds the name or tmux is
+/// not reachable; exit 3 when more than one does, each named on stderr and none printed, so a
+/// script never takes the first; exit 2 for no name, an empty one, two, or one holding a
+/// newline or a `\x1f`, which a pane's answer cannot carry whole.
+pub fn pane_main(args: &[String]) -> i32 {
+    let [name] = args else { return pane_usage() };
+    if name.is_empty() || name.contains(['\n', '\u{1f}']) {
+        return pane_usage();
+    }
+    let Some(ids) = crate::data::panes_named(name) else {
+        eprintln!("cockpit-tui: tmux is not reachable");
+        return 1;
+    };
+    match ids.as_slice() {
+        [id] => {
+            println!("{id}");
+            0
+        }
+        [] => {
+            eprintln!("cockpit-tui: no pane is named {name}");
+            1
+        }
+        _ => {
+            eprintln!("cockpit-tui: {} panes are named {name}: {}", ids.len(), ids.join(" "));
+            3
+        }
+    }
+}
+
+fn label_usage() -> i32 {
+    eprintln!("cockpit-tui: label needs one pane id like %3");
+    2
+}
+
+/// `cockpit-tui label %N` (#1407): how a message names that pane, `session:window · title`,
+/// cleaned for the terminal, alone on one line, for the shell's `label_ask`
+/// (`scripts/lib/label.sh`). Any pane, an agent's or not. Always `·`, as the shell's own notes
+/// spell it. Exit 1 and nothing on stdout when the pane is gone or tmux is not reachable;
+/// exit 2 for a missing or malformed id, or a second argument.
+pub fn label_main(args: &[String]) -> i32 {
+    let [pane] = args else { return label_usage() };
+    if !crate::panel::is_pane(pane) {
+        return label_usage();
+    }
+    match crate::data::label_of(pane) {
+        Some(l) => {
+            println!("{}", l.spelled("·"));
             0
         }
         None => 1,

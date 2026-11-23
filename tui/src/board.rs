@@ -523,6 +523,10 @@ fn tile(f: &mut Frame, cell: Rect, p: &Pane, num: usize, pv: Option<Option<&str>
     if active {
         block = block.title(Line::from(Span::styled(format!(" {} ", pane_mark(g)), Style::new().fg(th.accent))).right_aligned());
     }
+    // #1330 A2: the bottom border holds nothing else, so nothing above moves for it
+    if let Some(foot) = ctx_foot(p, g, (cell.width as usize).saturating_sub(4)) {
+        block = block.title_bottom(Line::from(Span::styled(foot, Style::new().fg(th.meta))).right_aligned());
+    }
     let inner = block.inner(cell);
     f.render_widget(block, cell);
     if inner.height == 0 || inner.width == 0 {
@@ -546,6 +550,19 @@ fn tile(f: &mut Frame, cell: Rect, p: &Pane, num: usize, pv: Option<Option<&str>
         para = para.style(Style::new().add_modifier(Modifier::DIM));
     }
     f.render_widget(para, body);
+}
+
+/// #1330 A2: ` opus · 84k `, the model cut at 12 columns and the context floored to
+/// thousands (raw under 1000), whole or not at all in `w`; nothing with no usage.
+fn ctx_foot(p: &Pane, g: &Glyphs, w: usize) -> Option<String> {
+    let n = p.ctx?;
+    let n = if n < 1000 { n.to_string() } else { format!("{}k", n / 1000) };
+    let s = if p.model.is_empty() {
+        format!(" {n} ")
+    } else {
+        format!(" {} {} {n} ", g.trunc(&p.model, 12), g.dot)
+    };
+    (s.width() <= w).then_some(s)
 }
 
 fn head_lines(p: &Pane, iw: usize, rows: usize, needs: bool, th: &Theme) -> Vec<Line<'static>> {
@@ -1551,15 +1568,26 @@ pub fn state_word(s: State) -> &'static str {
 
 /// D7: every space-separated term is a substring, ignoring case, of one of
 /// the session, the window index, the window name, the title, the bound job a
-/// viewer row draws in its place (#460), the state word, the message or doing
-/// line, or a subagent's type or description (#313). An empty filter matches
-/// everything.
+/// viewer row draws in its place (#460), the pane's name (#1409), the state word,
+/// the message or doing line, or a subagent's type or description (#313). An empty
+/// filter matches everything.
 pub fn find_match(p: &Pane, filter: &str) -> bool {
     let word = if p.ended { ENDED } else { state_word(p.state) };
     // #313: and its subagents' types and descriptions
     let subs: Vec<&str> = p.subs.iter().flat_map(|s| [s.ty.as_str(), s.desc.as_str()]).collect();
     let subs = subs.join("\n");
-    let fields = [session(p), window(p), &p.name, &p.title, &p.job, word, &p.msg, &p.doing, &subs];
+    let fields = [
+        session(p),
+        window(p),
+        &p.name,
+        &p.title,
+        &p.job,
+        &p.role,
+        word,
+        &p.msg,
+        &p.doing,
+        &subs,
+    ];
     // one line per field: a term holds no newline, so it never spans two
     let hay = fields.join("\n").to_lowercase();
     filter.to_lowercase().split_whitespace().all(|t| hay.contains(t))
@@ -2215,13 +2243,19 @@ pub fn row_extra(p: &Pane, th: &Theme, room: u16, seen: &Seen) -> Vec<Span<'stat
 /// its title, so a bind to the wrong job is plain to see. In place of, not
 /// beside: the name column has no room for both, and what it hides is the window
 /// name or an old @cockpit_title, not the title the bind matched. The title stays
-/// in info, `--json` and `--rows`.
-fn shown_label(p: &Pane, g: &Glyphs) -> String {
+/// in info, `--json` and `--rows`. Else the title of [`Pane::full_label`], cleaned (#1409).
+fn shown_title(p: &Pane, g: &Glyphs) -> String {
     if p.job.is_empty() {
-        p.label().to_string()
+        p.full_label().title
     } else {
         format!("{} {}", g.arrow, p.job)
     }
+}
+
+/// The row's and the tile's name: the pane's name before [`shown_title`] (#1409). The pane's
+/// header puts its place before both, through [`crate::data::Label::spelled`].
+fn shown_label(p: &Pane, g: &Glyphs) -> String {
+    crate::data::role_title(&p.role, &shown_title(p, g), g.dot)
 }
 
 /// The mark before a branch name: ascii's is `@`, which a detached HEAD's
@@ -2268,9 +2302,11 @@ fn agent_row(p: &Pane, num: Option<usize>, sel: bool, active: bool, ww: usize, w
     // `▎ 1 ▲◆ ` + window + ` ` + name + ` ` + msg + extra + ` ` + rail + mark
     let fixed = 7 + ww + 1 + 1 + 1 + RAIL_W + 1;
     let flex = w.saturating_sub(fixed + extra_w);
-    // #460: a bound row's mark is extra, so the job keeps the name column's share
+    // #460: a bound row's mark is extra, so the job keeps the name column's share; and a
+    // named row's name and its dot (#1409), so the title keeps it
     let mark_w = if p.job.is_empty() { 0 } else { g.arrow.width() + 1 };
-    let name_w = ((flex / 4).clamp(6, 20) + mark_w).min(flex);
+    let role_w = if p.role.is_empty() { 0 } else { p.role.width() + g.dot.width() + 2 };
+    let name_w = ((flex / 4).clamp(6, 20) + mark_w + role_w).min(flex);
     let msg_w = flex.saturating_sub(name_w);
     let msg = match p.state {
         _ if p.ended => ENDED.to_string(),
@@ -2763,7 +2799,10 @@ fn side_pane(f: &mut Frame, area: Rect, v: &View, i: Option<usize>) {
     let (gl, gl_c) = glyph(th, p);
     let (rv, rv_c) = th.review_mark(&p.review);
     let room = (area.width as usize).saturating_sub(2 + right.width() + 1 + 1 + gl.width() + rv.width() + 1);
-    let name = g.trunc(&format!("{} {} {}", p.wher, g.dot, shown_label(p, g)), room);
+    // the place and the title through the label, both cleaned (#1409)
+    let mut label = p.full_label();
+    label.title = shown_title(p, g);
+    let name = g.trunc(&label.spelled(g.dot), room);
     let block = Block::bordered()
         .border_set(g.thick)
         .border_style(Style::new().fg(urgent_c.unwrap_or(th.accent)))
@@ -2796,8 +2835,9 @@ fn side_pane(f: &mut Frame, area: Rect, v: &View, i: Option<usize>) {
     f.render_widget(para, body);
 }
 
-/// `/src/api · ⑂feat/rate-limit · %3   ◆ review pending`: the work dir gives way
-/// first, cut in its middle, then goes, so the branch and the id stay.
+/// `/src/api · ⑂feat/rate-limit   ◆ review pending`: the work dir gives way first, cut
+/// in its middle, then goes, so the branch stays. No pane id: the info screen's first
+/// row and the log keep it (#1409).
 fn where_line(p: &Pane, w: usize, th: &Theme) -> Line<'static> {
     let g = &th.g;
     let (rv, rv_c) = th.review_mark(&p.review);
@@ -2808,19 +2848,21 @@ fn where_line(p: &Pane, w: usize, th: &Theme) -> Line<'static> {
     };
     let sep = format!(" {} ", g.dot);
     let br = facts::branch(&p.loc);
-    let mut tail = vec![];
-    if !br.is_empty() {
-        tail.push(format!("{}{}", branch_mark(g, br), g.trunc(br, 32)));
-    }
-    tail.push(p.id.clone());
-    let tail = tail.join(&sep);
+    let tail = if br.is_empty() {
+        String::new()
+    } else {
+        format!("{}{}", branch_mark(g, br), g.trunc(br, 32))
+    };
     let gap = if review.is_empty() { 0 } else { 3 + review.width() };
     let room = w.saturating_sub(gap);
-    let path_w = room.saturating_sub(tail.width() + sep.width());
+    // the branch and the separator before it, when there is a branch
+    let path_w = room.saturating_sub(if tail.is_empty() { 0 } else { tail.width() + sep.width() });
     // #452: the dir the branch came from; `path` only where no fetch set one
     let dir = if p.dir.is_empty() { &p.path } else { &p.dir };
     let text = if dir.is_empty() || path_w < 8 {
         g.trunc(&tail, room)
+    } else if tail.is_empty() {
+        g.trunc_middle(dir, path_w)
     } else {
         format!("{}{sep}{tail}", g.trunc_middle(dir, path_w))
     };
@@ -3171,9 +3213,9 @@ pub const STATE_MAX: u64 = 64 * 1024;
 /// One line of the wrapper's; far over any message it writes.
 pub const NOTE_MAX: u64 = 4 * 1024;
 
-/// What `board.state` keeps: the selection, then one `fold <session>` line per
-/// folded session, then the kept find filter (D7), a line kind appended to
-/// version 1, so an older file still reads.
+/// What `board.state` version 1 keeps, each line optional: the selection, then
+/// one `fold <session>` line per folded session, then the kept find filter (D7).
+/// A change to this layout bumps `STATE_HEAD`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Saved {
     pub sel: Option<String>,
@@ -3363,8 +3405,8 @@ pub static EXTRAS: &[Extra] = &[
         label: "kill",
         help: "kill its pane, after a confirm; on an ended agent, close the pane",
         verb: "kill",
-        // #301: the pane dies, never the window, so the question names the pane
-        confirm: Some(|p| format!("kill pane {} ({} {})?", p.id, p.wher, p.name)),
+        // #301: the pane dies, never the window, so the question names the pane, by its label (#1407)
+        confirm: Some(|p| format!("kill pane {}?", p.full_label().spelled("·"))),
         // `%N @W`: ids, never the name, as agent windows tend to share one
         // (`claude`). The pane must still be in the window the person saw; and
         // a wrapper from before #301, which kills the window, reads no `@W` here
@@ -3457,8 +3499,15 @@ impl Confirm {
             id: p.id.clone(),
             verb: e.verb,
             yes: e.label,
-            // #460: a bound pane by its job, as its row names it (no mark: no glyphs here)
-            title: format!("{} · {} · {}", e.label, p.wher, if p.job.is_empty() { p.label() } else { &p.job }),
+            // #460: a bound pane by its job, as its row names it (no mark: no glyphs here);
+            // the place and the rest through the label, so both are cleaned (#1409)
+            title: {
+                let mut name = p.full_label();
+                if !p.job.is_empty() {
+                    name.title = p.job.clone();
+                }
+                format!("{} · {}", e.label, name.spelled("·"))
+            },
             ask: (e.confirm?)(p),
             expect: e.expect.map(|f| f(p)),
         })

@@ -293,8 +293,8 @@ pick() {
   # it is a fresh dir of the user's own, as the trap removes it (#947).
   own_tmpdir PICK_DIR || die "cockpit: no temp dir for the picker (own_tmpdir: $own_tmpdir_why)"
   d=$PICK_DIR
-  trap 'rm -rf "$PICK_DIR"' EXIT
-  trap 'exit 130' INT TERM HUP
+  trap 'trap "" HUP INT TERM; rm -rf "$PICK_DIR"' EXIT  # a hangup must not kill the rm (#1397)
+  trap 'trap "" HUP INT TERM; exit 130' INT TERM HUP
   # ascii is the picker's only other glyph tier: any other value draws the default.
   glyphs=$(tmux show-option -gqv @cockpit_glyphs 2>/dev/null)
   while :; do
@@ -315,10 +315,11 @@ pick() {
     case $verb in
       switch)
         [[ $arg =~ ^\$[0-9]+$ ]] || die "cockpit: the picker named '$arg', which is not a session id"
-        enter "$arg"; return ;;
+        rm -rf "$PICK_DIR"; enter "$arg"; return ;;  # gone before an attach waits (#1397)
       new-session)
         [ "$arg" = - ] || die "cockpit: new-session takes '-', not '$arg'"
-        typed=$(side "$d/act.text"); new=$(clean "$typed"); go "$new" "$(home_repo "$typed")"; return ;;
+        typed=$(side "$d/act.text"); rm -rf "$PICK_DIR"  # gone before go's attach waits
+        new=$(clean "$typed"); go "$new" "$(home_repo "$typed")"; return ;;
       kill-session)
         live=$(confirm "$arg" "$(side "$d/act.expect")") || return 1
         own

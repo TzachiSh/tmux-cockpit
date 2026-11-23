@@ -12,6 +12,7 @@ fn cap(screen: &str, repo: &str) -> Capture {
         path: "/home/u".into(),
         screen: screen.into(),
         repo: repo.into(),
+        ..Default::default()
     }
 }
 
@@ -157,6 +158,8 @@ fn sections_names_every_tag_the_envelope_opens() {
     let claude = Capture {
         name: "claude".into(),
         cmd: "claude".into(),
+        // #1353: the board's facts open `<agent>`
+        agent: Some(Default::default()),
         ..cap("● Shall I?", "")
     };
     let mut tags = opened(&build_refs(&write, &cap("$ ls", "commit 1"), &turns, 3, &[r]).text);

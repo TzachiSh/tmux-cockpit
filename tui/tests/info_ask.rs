@@ -13,7 +13,6 @@ fn facts(tag: &str, state: &str, body: &str) -> (String, String) {
     std::fs::create_dir_all(d.join("projects/-w")).unwrap();
     let t = d.join("projects/-w/s1.jsonl");
     std::fs::write(&t, body).unwrap();
-    let us = '\u{1f}';
     let f = [
         "%1",
         "w:0 win",
@@ -29,10 +28,10 @@ fn facts(tag: &str, state: &str, body: &str) -> (String, String) {
         "1",
         "",
     ];
-    std::fs::write(d.join("display"), f.join(&us.to_string())).unwrap();
+    std::fs::write(d.join("display"), fake::info_row(&f)).unwrap();
     // the board's FIELDS row, which the agent test (#519) reads: @panestate makes it one
-    let board = ["%1", "w:0", "win", "claude", state, "-", "-", "s1", "/", "100", "-", "-", "@1"];
-    std::fs::write(d.join("rows"), board.join(&us.to_string())).unwrap();
+    let board = fake::board_row(&["%1", "w:0", "win", "claude", state, "-", "-", "s1", "/", "100", "-", "-", "@1"]);
+    std::fs::write(d.join("rows"), board).unwrap();
     let shim = d.join("tmux");
     let sh = format!(
         "#!/bin/sh\ncase \"$1\" in\ndisplay-message) case \"$5\" in *cockpit_tui_version*) cat {0}/display ;; \

@@ -1,4 +1,4 @@
-"╭ panel · %3 · w ──────────────────────╮"
+"╭ panel ───────────────────────────────╮"
 "│ type: auto   model: auto             │"
 "│ fix the flaky api test ▏then rerun   │"
 "│ it                                   │"

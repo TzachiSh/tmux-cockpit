@@ -92,14 +92,14 @@ impl Rig {
     /// carries what tmux's own glob test, `#{m:*|cmd|*,@cockpit_agents_glob}`,
     /// would say: 1 only for the exact `claude`, so a test reading it is caught.
     fn pane_as(&self, id: &str, cmd: &str, state: &str, sid: &str, cwd: &str, opt: &str) {
-        let row = [id, "w:0", "win", cmd, state, "-", "-", sid, cwd, "100", "-", "-", "@1", "", "", opt];
+        let row = fake::board_row(&[id, "w:0", "win", cmd, state, "-", "-", sid, cwd, "100", "-", "-", "@1", "", "", opt]);
         let mut rows = std::fs::read_to_string(self.d.join("rows")).unwrap();
-        rows += &(row.join("\u{1f}") + "\n");
+        rows += &(row + "\n");
         std::fs::write(self.d.join("rows"), rows).unwrap();
         let glob = if cmd == "claude" { "1" } else { "0" };
         let st = if state == "-" { "" } else { state };
         let info = [id, "w:0 win", cmd, cwd, "", st, "", "", "", sid, "", glob, ""];
-        std::fs::write(self.d.join(format!("info{id}")), info.join("\u{1f}")).unwrap();
+        std::fs::write(self.d.join(format!("info{id}")), fake::info_row(&info)).unwrap();
         std::fs::write(self.d.join(format!("opts/{id}.@cockpit_transcript")), opt).unwrap();
         std::fs::write(self.d.join(format!("opts/{id}.@cockpit_session")), sid).unwrap();
     }
