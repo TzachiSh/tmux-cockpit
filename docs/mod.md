@@ -136,3 +136,5 @@ claude plugin validate mods/cockpit-events   # what the module hooks, calls and 
 lines it hands to a stub `process.run`. `tests/map.test.ts` checks `map.js`
 alone. CI does not run these, since it has no Claude Code. They run by hand,
 and after a Claude Code upgrade.
+
+`tsconfig.json` is tracked as Claude Code writes it, so a session leaves git clean (#1423).
