@@ -312,8 +312,11 @@ fn ran(e: &Env) -> bool {
     std::fs::remove_file(e.dir.join("ran")).is_ok()
 }
 
+/// The fake answers no read of the board's, so the pane has no agent facts: a claude
+/// there is not Claude Code to the panel and gets the 80 lines any pane gets (#1359).
+/// panel_claude_depth.rs captures an agent's claude deeper, on a real tmux.
 #[test]
-fn a_claude_pane_is_captured_deeper_and_trimmed() {
+fn a_claude_pane_without_the_boards_facts_is_captured_and_trimmed() {
     let e = Env::new("capture", &tmux_on_path());
     fake_tmux(&e, "claude\\tclaude\\t/w\\n");
     let c = capture("%5").unwrap();
@@ -321,7 +324,7 @@ fn a_claude_pane_is_captured_deeper_and_trimmed() {
     assert_eq!(c.screen, "line1\n\nline2");
     assert_eq!(
         std::fs::read_to_string(e.dir.join("args")).unwrap().trim(),
-        "capture-pane -p -J -t %5 -S -200"
+        "capture-pane -p -J -t %5 -S -80"
     );
 }
 
@@ -827,26 +830,28 @@ fn each_override_file_moves_an_exploring_writes_hash() {
     }
 }
 
-/// #760: a Claude pane is Claude whatever case its command reads, as the agents glob
-/// is since #508, in a window not named claude too, and so is a version-shaped process
-/// title. A longer name is not Claude.
+/// #1359: with no board facts (the fake answers none of the board's reads) no command
+/// and no window name makes the pane Claude Code: a claude in any case, the version
+/// title and a shell in a window named claude all get the 80 lines any pane gets.
 #[test]
-fn a_claude_command_in_any_case_is_captured_deeper() {
+fn without_the_boards_facts_no_command_or_name_is_captured_deeper() {
     let mut bad = Vec::new();
     let rows = [
-        ("CLAUDE", "-S -200"),
-        ("Claude", "-S -200"),
-        // the native install's process title, as basket::claude_cmd reads it
-        ("2.1.318", "-S -200"),
-        ("claudex", "-S -80"),
+        ("work", "CLAUDE", "-S -80"),
+        ("work", "Claude", "-S -80"),
+        // the native install's process title, as agentid::claude_cmd reads it
+        ("work", "2.1.318", "-S -80"),
+        ("work", "claudex", "-S -80"),
+        ("claude", "zsh", "-S -80"),
+        ("Claude", "claude", "-S -80"),
     ];
-    for (cmd, want) in rows {
+    for (name, cmd, want) in rows {
         let e = Env::new("capture-case", &tmux_on_path());
-        fake_tmux(&e, &format!("work\\t{cmd}\\t/w\\n"));
+        fake_tmux(&e, &format!("{name}\\t{cmd}\\t/w\\n"));
         capture("%8").unwrap();
         let args = std::fs::read_to_string(e.dir.join("args")).unwrap();
         if !args.trim().ends_with(want) {
-            bad.push(format!("{cmd}: want {want}, got {}", args.trim()));
+            bad.push(format!("{name} · {cmd}: want {want}, got {}", args.trim()));
         }
     }
     assert!(bad.is_empty(), "{} of {} rows wrong:\n{}", bad.len(), rows.len(), bad.join("\n"));

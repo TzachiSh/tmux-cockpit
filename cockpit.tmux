@@ -182,64 +182,16 @@ give_back() {                 # <key> -> 1 when tmux's own binding could not be 
     dmsg "$err; left it bound, the next load tries again"
     return 1
 }
-# Still cockpit's <name> binding: its note, or, from a load before the notes, no
-# note and a command only cockpit binds. The second form can go after a release.
-# Only the menu and panel keys had a record then, each matched by its own
-# command, and only until a load has noted every key (@cockpit_notes): after
-# that a note-less key is the user's, whatever it runs.
-notes=$(tmux show-option -gqv @cockpit_notes)
-# The pre-notes panel key ran "$(sq <panel>) -p ...", and #{key_command} prints that
-# argument in a "...", escaped: \ " $ (#1086), a control byte as \t or \033, a byte
-# outside UTF-8 as \303 (#1097). So a notes-less load binds one key with that argument on
-# a scratch table named with its $$, reads how tmux prints it, and removes the table in
-# its own call, which runs even when the read fails: tmux stops a ; sequence at the
-# first failing command. A failed read leaves a raw \037, which tmux never prints raw:
-# the panel guess is off, never a match on everything. tmux's exit status says the read
-# failed; the load then says so in tmux's words, a panel key it could not judge waits in
-# @cockpit_giveback, and @cockpit_notes stays unset, so the next load reads again (#1131).
-# The scratch bind is acceptable: it is the plugin's own load, which binds keys anyway (#1128).
-legacy_panel=$'\037'; legacy_failed=""
-if [ -z "$notes" ]; then
-    lt="cockpit-legacy-$$"
-    lp=$(tmux bind-key -T "$lt" x display-popup "$(sq "$DIR/scripts/cockpit-panel") -p x" \; \
-        list-keys -T "$lt" -F '#{key_command}' x 2>&1) || legacy_failed=1
-    tmux unbind-key -a -T "$lt" 2>/dev/null
-    if [ -n "$legacy_failed" ]; then
-        lp=${lp%%$'\n'*}
-        lp="tmux-cockpit: could not read how tmux prints the old panel key (${lp:-no answer});"
-        dmsg "$lp a panel key from before the key notes stays as it is; the next load tries again"
-        lp=""
-    fi
-    case "$lp" in 'display-popup "'*' -p x"')
-        lp=${lp#display-popup \"}; legacy_panel=${lp%' -p x"'} ;;
-    esac
-    unset lt lp
-fi
-# tmux compares the note itself. It prints a note's tab, \037 and newline raw, so no
-# separator cuts a note from what follows it: a user's note that began with cockpit's
-# and a \037 was read as cockpit's, and the key given back (#1135). Only a key whose
-# note is empty has its command read, and only before the notes. The key goes in escaped:
-# a bare ; ended list-keys, which then listed the whole table, and one key with no note
-# made the old cockpit key read as the user's, so it was never given back (#1151).
-owned() {                     # <name> <key> -> 0 ours, 1 the user's, 2 not known (#1131)
-    local m f cmd ka
-    ka=$(cockpit_key_arg "$2")
-    f="#{?#{==:#{key_note},$(cockpit_key_note "$1")},noted,"
-    m=$(tmux list-keys -T prefix -F "$f#{?#{==:#{key_note},},bare,}}" "$ka" 2>/dev/null)
-    case $m in
-        noted) return 0 ;;
-        bare) [ -z "$notes" ] || return 1 ;;
-        *) return 1 ;;
-    esac
-    # Escaped like the first: no load before the notes recorded a ; key, so no row reaches this.
-    cmd=$(tmux list-keys -T prefix -F '#{key_command}' "$ka" 2>/dev/null)
-    case "$1:$cmd" in
-        menu:*'display-menu -T "#[align=centre]'*|panel:*"$legacy_panel"*)
-            dmsg "tmux-cockpit: $2 was the $1 key before the key notes; giving it back"
-            return 0 ;;
-        panel:*) [ -z "$legacy_failed" ] || return 2 ;;
-    esac
-    return 1
+# Still cockpit's <name> binding: its note, and only its note (#1379). A key with no
+# note, or another note, is the user's, whatever it runs. tmux compares the note itself.
+# It prints a note's tab, \037 and newline raw, so no separator cuts a note from what
+# follows it: a user's note that began with cockpit's and a \037 was read as cockpit's,
+# and the key given back (#1135). The key goes in escaped: a bare ; ended list-keys, which
+# then listed the whole table (#1151).
+owned() {                     # <name> <key> -> 0 ours, 1 the user's
+    local f
+    f="#{?#{==:#{key_note},$(cockpit_key_note "$1")},noted,}"
+    [ "$(tmux list-keys -T prefix -F "$f" "$(cockpit_key_arg "$2")" 2>/dev/null)" = noted ]
 }
 
 # Lowercase keys: a Shift-letter chord dies under Caps Lock or a non-Latin layout.
@@ -257,18 +209,15 @@ key() {                       # <option> <default> -> the key, empty when off
 # (#1210).
 refused() {                   # <name> <tmux's error> -> 1
     local opt=@cockpit_${1}_key v e=${2%%$'\n'*} p
-    [ "$1" = menu ] && opt=$menuopt
     v=$(tmux show-option -gqv "$opt")
     dmsg "tmux-cockpit: $opt [$v] binds nothing ($e); $1 stays unbound until the option is fixed"
     # The move loop gave back any key a record named that differs from this value (#1229). A
     # record left here is this very key: the last load bound it, and this load's bind failed
     # for a reason outside the key. It goes back, as off's would, so the message holds. One
-    # that cannot be given back keeps its record, and the next load tries again (#1226). So does
-    # a key owned() cannot judge: a panel bind refused in a load whose read failed (#1131).
+    # that cannot be given back keeps its record, and the next load tries again (#1226).
     p=$(tmux show-option -gqv "@cockpit_${1}_bound")
-    if [ -n "$p" ]; then
-        owned "$1" "$p"
-        case $? in 0) give_back "$p" || return 1 ;; 2) return 1 ;; esac
+    if [ -n "$p" ] && owned "$1" "$p"; then
+        give_back "$p" || return 1
     fi
     tmux set-option -gu "@cockpit_${1}_bound"
     return 1
@@ -292,32 +241,19 @@ skey() {                      # <name> <key>, its bind-key block on stdin -> 1 w
 }
 
 # Every key is settled before any is bound or given back, so giving an old one
-# back can never undo a binding this load makes. @cockpit_ai_key was the agents
-# menu's key; it still works, with a notice.
+# back can never undo a binding this load makes.
 menuk=$(keyopt @cockpit_menu_key)
-aik=$(keyopt @cockpit_ai_key)
-menuopt=@cockpit_menu_key     # the option the menu's key came from, for refused()
-if [ -z "$menuk" ] && [ -n "$aik" ]; then
-    menuk=$aik; menuopt=@cockpit_ai_key
-    tmux display-message "tmux-cockpit: @cockpit_ai_key is now @cockpit_menu_key"
-fi
 case "$menuk" in off) menuk="" ;; "") menuk=a ;; esac
 sk=$(key @cockpit_sessions_key s)
 jk=$(key @cockpit_jump_key u)
 ik=$(key @cockpit_info_key i)
-# @cockpit_fixer_key off kept stock f; the panel taking f must not undo that.
-pdef=f; [ "$(tmux show-option -gqv @cockpit_fixer_key)" = off ] && pdef=""
-pk=$(key @cockpit_panel_key "$pdef")
+pk=$(key @cockpit_panel_key f)
 bk=$(key @cockpit_board_key w)
 rk=$(key @cockpit_review_key r)
 rlk=$(key @cockpit_reload_key R)
 mk=$(key @cockpit_move_key M)
 fsk=$(key @cockpit_fullscreen_key e)
 
-# The retired side fix's bindings outlive it on a server that only reloads.
-tmux list-keys -T prefix -F "#{key_string}"$'\037'"#{key_command}" 2>/dev/null \
-    | awk -F'\037' 'index($2, "scripts/tmux-fixer") { print $1 }' \
-    | while IFS= read -r k; do give_back "$k"; done
 # A reload that turns a key off or moves it gives the old key back, unless it is
 # no longer ours: the user bound it since. A key another cockpit key takes this
 # load is given back too, then bound again below. One that could not be given
@@ -352,8 +288,7 @@ done
 left=""
 for nk in ${todo[@]+"${todo[@]}"}; do
     takes "${nk%%:*}" "${nk#*:}" && continue      # its own key again: bound below
-    # The user's now: nothing to give back. Not known (#1131): it waits for the next load.
-    owned "${nk%%:*}" "${nk#*:}" || { [ $? = 2 ] && left="$left"$'\n'"$nk"; continue; }
+    owned "${nk%%:*}" "${nk#*:}" || continue     # the user's now: nothing to give back
     give_back "${nk#*:}" || left="$left"$'\n'"$nk"
 done
 # Space-joined unless a key holds a space or a tab. The list's last pair may end in ;,
@@ -407,8 +342,11 @@ tmux bind-key -n MouseUp1Pane select-pane -t= '\;' send-keys -M
 tmux bind-key -n MouseUp1Border select-pane -t=
 # A goto moves the pressing client, not the most recently active one (#360). The
 # popup cannot pass #{client_name}, so the key leaves it on the pane, as the board's.
+# The title names the folder the popup opens, the pane's work folder (#1345): run-shell,
+# without -b so the popup waits for it, keeps that folder's name on the pane.
 tmux bind-key b "${SRC_SET[@]}" set-option -pF @cockpit_branch_client '#{client_name}' '\;' \
-    display-popup -E -w "$PW" -h "$PH" -T ' switch branch · #{b:pane_current_path} ' \
+    run-shell "$(fesc "$Q_BRANCH") --title '#{pane_id}'" '\;' \
+    display-popup -E -w "$PW" -h "$PH" -T ' switch branch · #{@cockpit_branch_title} ' \
     "$PM$Q_BRANCH -p $SRC_PANE"
 
 # Replaces stock choose-tree on s; tmux 3.8 took g for its floating-pane menu.
@@ -426,7 +364,7 @@ Q_TM=$(sq "$DIR/scripts/tm")
 # The info screen is cockpit-tui's own (#252); esc or q closes it, so no `read`.
 # The binary reads $COCKPIT_GLYPHS, not @cockpit_glyphs (#293): read at open, so
 # setting the option needs no reload.
-[ -z "$ik" ] || ckey info "$ik" "${SRC_SET[@]}" display-popup -E -w "$PW" -h "$PH" -T ' info · #{pane_id} ' \
+[ -z "$ik" ] || ckey info "$ik" "${SRC_SET[@]}" display-popup -E -w "$PW" -h "$PH" -T ' info ' \
     "${PM}g=\$(tmux show-option -gqv @cockpit_glyphs); exec env \${g:+COCKPIT_GLYPHS=\"\$g\"} $(sq "$COCKPIT_TUI_BIN") info $SRC_PANE" \
         || ik=""
 
@@ -441,7 +379,7 @@ case "$pmode" in
 esac
 if [ -n "$pk" ]; then
     ckey panel "$pk" "${SRC_SET[@]}" display-popup -E -e "COCKPIT_PANEL_MODE=${pmode:-auto}" -w 94% -h 90% \
-        -T ' panel · #{pane_id} ' "$PM$Q_PANEL -p $SRC_PANE" || pk=""
+        -T ' panel ' "$PM$Q_PANEL -p $SRC_PANE" || pk=""
 fi
 
 # The board is wider than $PW: a 70% popup on 120 columns fits one tile column.
@@ -594,10 +532,15 @@ row 'Move window to a session...' M "$mk"
 # %% let a " end the string (#289). The id is the one the menu was opened on
 # (expanded once here). The path waits in an option, as @cockpit_where_cmd does:
 # the item is a tmux "..." string, whose parser ate a \, a $ or a quote in it
-# (#1071). ##{ is the menu's expansion, the second # run-shell's.
+# (#1071). ##{ is the menu's expansion, the second # run-shell's. Name this pane sets the
+# pane's own @cockpit_role (#1408). Its id is never expanded here: tmux puts the typed text in
+# place of a %1 in a command-prompt template, so run-shell expands ##{pane_id} when Enter is
+# pressed, and the client's current pane then is the one named.
 tmux set-option -g @cockpit_rename_cmd "$(sq "$DIR/scripts/tmux-rename")"
 Q_REN='##{@cockpit_rename_cmd}'
 rows+=('Rename window' ',' "command-prompt -p '(rename-window)' -I '##W' \"set -g @cockpit_rename_to \\\"%%%\\\" ; run-shell \\\"$Q_REN window '#{window_id}'\\\"\"")
+Q_NAME="set -g @cockpit_rename_to \\\"%%%\\\" ; run-shell \\\"$Q_REN pane '##{pane_id}'\\\""
+rows+=('Name this pane' n "command-prompt -p '(pane name)' -I '##{@cockpit_role}' \"$Q_NAME\"")
 rows+=('#{?#{e|>:#{window_panes},1},Kill pane…,Close window…}' x \
        "confirm-before -p '#{?#{e|>:#{window_panes},1},Kill pane ##P?,Close window ##I?} (y/n)' kill-pane")
 rows+=('')
@@ -611,9 +554,6 @@ tmux bind-key -T cockpit m display-menu -T '#[align=centre]#{session_name}' -x M
 if [ -n "$menuk" ]; then
     ckey menu "$menuk" display-menu -T '#[align=centre]#{session_name}' -x C -y C "${rows[@]}"
 fi
-# Every key this load binds carries its note now: owned() stops guessing, unless
-# a key it guessed is still waiting to be given back, or the scratch read failed (#1131).
-[ -n "$notes" ] || [ -n "$left" ] || [ -n "$legacy_failed" ] || tmux set-option -g @cockpit_notes 1
 
 # Taps act on release: a menu opened on the press is closed by its own release.
 # The border's corner, path and branch are control ranges 0-3 (4-6 stay yours);

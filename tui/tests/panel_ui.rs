@@ -2,6 +2,8 @@
 //! and the action file. COCKPIT_BLESS=1 cargo test rewrites the goldens.
 mod fake;
 
+use cockpit_tui::data::Label;
+use cockpit_tui::data::workdir::WorkDir;
 use cockpit_tui::panel::action::{read_state, sanitize, write_action, write_state};
 use cockpit_tui::panel::app::{Action, App, InputKind, Level, Resume, Tap, Tile, View, bracketed_ok};
 use cockpit_tui::panel::capture::Capture;
@@ -63,14 +65,20 @@ fn goldens(name: &str, app: &App, tick: u64) {
 
 /// Every `App` here is built under the binary's one environment (#948, #953),
 /// which [`fake::fixed_env`] sets. A test that reaches the product without this
-/// calls that itself first.
+/// calls that itself first. A `claude` command carries the board's facts, as a real
+/// Claude Code pane does: its hooks make it an agent's (#1359).
 fn app(name: &str, cmd: &str, screen: &str) -> App {
     fake::fixed_env();
     let cap = Capture {
         name: name.into(),
         cmd: cmd.into(),
         path: "/home/u/proj".into(),
+        work: WorkDir {
+            dir: "/home/u/proj".into(),
+            ..Default::default()
+        },
         screen: screen.into(),
+        agent: (cmd == "claude").then(Default::default),
         ..Default::default()
     };
     App::new("%3", cap)
@@ -964,10 +972,19 @@ fn a_long_confirm_scrolls_and_says_what_is_cut() {
     let mut a = app("w", "bash", "$ ");
     writing(&mut a, "x");
     a.reply(Ok("<text>ls</text>".into()));
-    a.pane = format!("%3 {}", "x".repeat(70));
+    a.cap.label = Some(Label {
+        wher: "w:1".into(),
+        title: "x".repeat(70),
+        ..Default::default()
+    });
     ch(&mut a, 's');
     let f = shown(&mut a, 60, 12);
-    assert!(f.contains("(bash) and press Enter?"), "the question wraps:\n{f}");
+    // The header draws "w:1 ·" too, so the label is matched on the question's own first row,
+    // which ends at it: the title is too long for that row and starts the next (#1407).
+    assert!(
+        f.contains("send this to w:1 ·") && f.contains("(bash) and press Enter?"),
+        "the question names the pane by its label and wraps:\n{f}"
+    );
 }
 
 #[test]
@@ -1490,7 +1507,8 @@ fn a_state_file_is_refused_unless_it_is_exactly_ours() {
     ] {
         assert!(try_(&body, "%3").is_err(), "{why}");
     }
-    assert!(try_(good, "%4").unwrap_err().contains("another pane"));
+    // no pane id: it tells a person nothing (#1407)
+    assert_eq!(try_(good, "%4").unwrap_err(), "it is for another pane");
     let link = dir.join("link");
     std::os::unix::fs::symlink(&p, &link).unwrap();
     assert!(read_state(&link, "%3").is_err(), "never followed");
@@ -1864,7 +1882,11 @@ fn digits_select_steps() {
 #[test]
 fn the_title_gives_way_before_the_count() {
     let mut a = long_answer(60);
-    a.cap.name = "a-long-window-name-for-a-narrow-popup".into();
+    a.cap.label = Some(Label {
+        wher: "work:1".into(),
+        title: "a-long-window-name-for-a-narrow-popup".into(),
+        ..Default::default()
+    });
     let top = |a: &mut App, w: u16| shown(a, w, 12).lines().next().unwrap().to_string();
     let t = top(&mut a, 80);
     assert!(t.contains("a-long-window-name") && t.contains(" of 63 "), "{t}");

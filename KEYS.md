@@ -44,6 +44,7 @@ the path or the branch, and the two splits are left out on a touch client.
 | Split down | `-` |
 | Move window to a session... | `M` |
 | Rename window | `,` |
+| Name this pane (its `@cockpit_role`, found by `cockpit-tui pane <name>`) | `n` |
 | Kill pane… (Close window… on a single pane), with a confirm | `x` |
 | Full screen (hide the bar) | `e` |
 | Pane info | `i` |
@@ -94,8 +95,6 @@ Wheel and drag are never touched, and neither is a single `Ctrl`+click: tmux
 that pane and is handed on to it: when a popup ate an earlier release, tmux
 turns the next press into a drag end and the click would select nothing (#21,
 #53). A root `MouseUp1Pane` or `MouseUp1Border` of your own is replaced.
-`@cockpit_keep_swap_pane` is gone with the swap-pane it kept (#223);
-`install.sh --check` warns while a config still sets it.
 
 ## The example config, `examples/full.tmux.conf`
 

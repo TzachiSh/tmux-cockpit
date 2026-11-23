@@ -47,6 +47,8 @@ done
 . "$DIR/scripts/lib/cmdname.sh" || exit 1
 # shellcheck source=lib/tmpdir.sh
 . "$DIR/scripts/lib/tmpdir.sh" || exit 1
+# shellcheck source=lib/label.sh
+. "$DIR/scripts/lib/label.sh" || exit 1
 BIN=$COCKPIT_TUI_BIN
 # In a popup a bare display-message picks the most recently active client.
 say() { if is_pane "$PANE"; then dmsg -t "$PANE" "$1"; else dmsg "$1"; fi; }
@@ -65,7 +67,8 @@ mkdir -p "$(dirname "$LOG")" 2>/dev/null
 d=''; own_tmpdir d || {
     say "cockpit: no temp dir for the board (own_tmpdir: $own_tmpdir_why)" 2>/dev/null; exit 1; }
 f="$d/act" note="$d/note"
-trap 'rm -rf "$d"' EXIT
+trap 'trap "" HUP INT TERM; rm -rf "$d"' EXIT  # a signal must not stop the rm (#1411)
+trap 'trap "" HUP INT TERM; exit 130' INT TERM HUP
 
 # @cockpit_board_return off: every action is one-way, as before the loop.
 back() { [ "$(tmux show-option -gqv @cockpit_board_return 2>/dev/null)" != off ]; }
@@ -136,28 +139,32 @@ while :; do
         kill)
             want=
             [ -f "$f.expect" ] && [ ! -L "$f.expect" ] && want=$(head -c 64 -- "$f.expect" 2>/dev/null | head -n 1)
-            # window_name last: it is the one field a person can fill with anything.
-            info=$(tmux display-message -p -t "$target" "#{?pane_id,#{window_id}$sep#{session_name}:#{window_index}$sep#{window_name},}" 2>/dev/null | head -n 1)
-            have=${info%%"$sep"*}; label=${info#*"$sep"}
-            where=${label%%"$sep"*}; label="$where $(printf %s "${label#*"$sep"}" | tr -d '\000-\037\177')"
+            have=$(tmux display-message -p -t "$target" "#{?pane_id,#{window_id},}" 2>/dev/null |
+                head -n 1)
             [ "${want%% *}" = "$target" ] && want=${want#"$target" } || want=
             case "$want" in @[0-9]*) case "${want#@}" in *[!0-9]*) want= ;; esac ;; *) want= ;; esac
+            # The notes name the pane by its label (#1407), read before the kill: a pane that
+            # is gone has none. Only the log keeps the %N and the @W.
+            lbl=
+            [ -z "$have" ] || lbl=$(label_ask "$target")
             if [ -z "$have" ]; then
-                printf '✕ cockpit: %s is gone, nothing killed\n' "$target" > "$note"
+                printf '✕ cockpit: the pane is gone, nothing killed\n' > "$note"
             elif [ -z "$want" ]; then
                 printf '✕ cockpit: not killed: the board named no window to confirm\n' > "$note"
             elif [ "$have" != "$want" ]; then
-                printf '✕ cockpit: not killed: %s is now in window %s, you confirmed %s\n' "$target" "$have" "$want" > "$note"
+                printf '✕ cockpit: not killed: %s is not in the window you confirmed\n' "$lbl" \
+                    > "$note"
             else
                 # The check and the kill are one tmux call: a pane that moves in the
                 # gap makes the format false and nothing dies. $want is @digits and
                 # $target %digits, as is_pane checked.
                 tmux if-shell -F -t "$target" "#{==:#{window_id},$want}" "kill-pane -t $target" 2>/dev/null
                 if tmux list-panes -a -F '#{pane_id}' 2>/dev/null | grep -qx -- "$target"; then
-                    printf '✕ cockpit: not killed: %s left window %s or it would not close\n' "$target" "$want" > "$note"
+                    printf '✕ cockpit: not killed: %s left the window you confirmed or would not close\n' \
+                        "$lbl" > "$note"
                 else
-                    printf '✓ cockpit: killed pane %s (%s)\n' "$target" "$label" > "$note"
-                    log "killed pane $target in window $want $label"
+                    printf '✓ cockpit: killed %s\n' "$lbl" > "$note"
+                    log "killed pane $target in window $want ($lbl)"
                 fi
             fi
             ;;
@@ -190,16 +197,20 @@ while :; do
                 [ "$s" = "$want" ] || continue
                 if [ "$g" = 1 ] || version_cmd "$cmd"; then live=$p; break; fi
             done < <(tmux list-panes -a -F "$fmt" 2>/dev/null)
+            # Each note names a pane by its label, read as the note is written (#1407).
             if [ -z "$have" ]; then
-                printf '✕ cockpit: %s is gone, nothing resumed\n' "$target" > "$note"
+                printf '✕ cockpit: the pane is gone, nothing resumed\n' > "$note"
             elif [ -z "$want" ]; then
                 printf '✕ cockpit: not resumed: the board named no session id\n' > "$note"
             elif [ "${have#=}" != "$want" ]; then
-                printf '✕ cockpit: not resumed: %s no longer holds session %s\n' "$target" "$want" > "$note"
+                printf '✕ cockpit: not resumed: %s no longer holds session %s\n' \
+                    "$(label_ask "$target")" "$want" > "$note"
             elif [ -n "$live" ]; then
-                printf '✕ cockpit: %s is already running in %s\n' "${want:0:8}" "$live" > "$note"
+                printf '✕ cockpit: %s is already running in %s\n' "${want:0:8}" \
+                    "$(label_ask "$live")" > "$note"
             elif [ ! -d "$dir" ]; then
-                printf '✕ cockpit: not resumed: %s has no directory to start in\n' "$target" > "$note"
+                printf '✕ cockpit: not resumed: %s has no directory to start in\n' \
+                    "$(label_ask "$target")" > "$note"
             else
                 # -c expands formats, so the directory goes through fesc; the
                 # command does not, and $want is hex and dashes, quoted anyway.
@@ -215,11 +226,11 @@ while :; do
                     tmux select-pane -t "$new" 2>/dev/null
                     exit 0
                 fi
-                printf '✕ cockpit: not resumed: tmux would not split %s\n' "$target" > "$note"
+                printf '✕ cockpit: not resumed: tmux would not split %s\n' \
+                    "$(label_ask "$target")" > "$note"
             fi
             ;;
-        # Version skew: an older binary's verb (the retired `fix` and
-        # `request`, #288) or a newer one's.
+        # Version skew: a verb from an older or a newer binary than this plugin.
         *)
             log "unknown verb [$verb $target]"
             unk="cockpit: the board sent \"$verb\", which this plugin does not know"

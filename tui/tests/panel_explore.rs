@@ -2,6 +2,7 @@
 //! folder through a read-only profile. Fake claude scripts in temp dirs; no tmux.
 mod fake;
 
+use cockpit_tui::data::workdir::WorkDir;
 use cockpit_tui::panel::app::{App, EXPLORE_BUDGET_USD, EXPLORE_TIMEOUT, Level, Tile, View};
 use cockpit_tui::panel::capture::{Capture, window_kind};
 use cockpit_tui::panel::envelope::{Flow, OutType};
@@ -20,6 +21,10 @@ fn app(cmd: &str, path: &str) -> App {
         name: "work".into(),
         cmd: cmd.into(),
         path: path.into(),
+        work: WorkDir {
+            dir: path.into(),
+            ..Default::default()
+        },
         screen: "$ ".into(),
         ..Default::default()
     };
@@ -185,7 +190,7 @@ fn explore_off_sends_the_write_prompt_unchanged() {
     let (system, ..) = a.request_parts().unwrap();
     let ctx = Ctx {
         out: OutType::Auto,
-        window: window_kind("work", "bash"),
+        window: window_kind("bash", false),
         ..Ctx::default()
     };
     assert_eq!(system, prompts::write(&ctx));
@@ -201,7 +206,7 @@ fn an_exploring_write_appends_the_explore_section() {
     let (system, ..) = a.request_parts().unwrap();
     let ctx = Ctx {
         out: OutType::Auto,
-        window: window_kind("work", "bash"),
+        window: window_kind("bash", false),
         ..Ctx::default()
     };
     assert_eq!(system, prompts::write_explore(&ctx));

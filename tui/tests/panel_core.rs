@@ -4,6 +4,7 @@
 #[allow(dead_code)] // for its fixed environment only, not write_exec
 mod fake;
 
+use cockpit_tui::data::AgentFacts;
 use cockpit_tui::panel::ask::AskCode;
 use cockpit_tui::panel::capture::{Capture, Session, session_state, window_kind};
 use cockpit_tui::panel::envelope::{Flow, OutType, Role, Turn, build, build_counted, build_parts, esc, unesc};
@@ -131,11 +132,17 @@ fn explain_on_a_claude_window_names_the_session_state() {
         role: Role::User,
         text: "what next?".into(),
     }];
-    let got = build(&Flow::Explain, &cap("claude", "claude", "● Shall I rewrite it?"), &turns, 6);
+    // a real Claude Code pane: its hooks make it an agent's, so the board has facts (#1359)
+    let claude = Capture {
+        agent: Some(AgentFacts::default()),
+        ..cap("claude", "claude", "● Shall I rewrite it?")
+    };
+    let got = build(&Flow::Explain, &claude, &turns, 6);
     assert_eq!(
         got,
         "<screen window=\"claude · claude\">\n● Shall I rewrite it?\n</screen>\n\n\
          <session app=\"claude-code\" state=\"asking\">The window runs Claude Code; it finished its turn with a question to the user.</session>\n\n\
+         <agent state=\"unknown\">\n</agent>\n\n\
          <conversation>\n<turn role=\"user\">what next?</turn>\n</conversation>\n\n<questions_left>6</questions_left>"
     );
     let shell = build(&Flow::Explain, &cap("w", "bash", "$ ls"), &[], 1);
@@ -487,8 +494,9 @@ fn the_repo_block_escapes_a_closer_of_another_tag() {
 
 #[test]
 fn the_session_is_read_off_its_own_screen() {
-    let st = |s: &str| session_state(s, "claude", "node");
-    assert_eq!(session_state("● hi?", "w", "bash"), None, "not a Claude window");
+    let st = |s: &str| session_state(s, "claude", true);
+    assert_eq!(session_state("● hi?", "bash", true), None, "not a Claude window");
+    assert_eq!(session_state("● hi?", "claude", false), None, "no board facts (#1359)");
     assert_eq!(st("Do you want to proceed?\n❯ 1. Yes\n  2. No"), Some(Session::WaitingChoice));
     assert_eq!(st("Edit file?\n 1. Yes\n 2. No, tell Claude"), Some(Session::WaitingChoice));
     assert_eq!(st("✻ Thinking… (12s · ↑ 3k tokens)"), Some(Session::Working));
@@ -496,10 +504,12 @@ fn the_session_is_read_off_its_own_screen() {
     assert_eq!(st("● Ran it\n  ⎿  Error: boom"), Some(Session::Error));
     assert_eq!(st("● Should I rewrite it?\n\n❯ "), Some(Session::Asking));
     assert_eq!(st("● Done.\n❯ "), Some(Session::Ready));
-    assert_eq!(window_kind("x", "zsh"), "shell");
-    assert_eq!(window_kind("Claude", "node"), "claude");
-    assert_eq!(window_kind("x", "mosh-client"), "ssh");
-    assert_eq!(window_kind("x", "vim"), "other");
+    assert_eq!(window_kind("zsh", false), "shell");
+    assert_eq!(window_kind("claude", true), "claude");
+    assert_eq!(window_kind("node", true), "other", "an agent, not Claude Code (#1359)");
+    assert_eq!(window_kind("claude", false), "other", "no board facts (#1359)");
+    assert_eq!(window_kind("mosh-client", false), "ssh");
+    assert_eq!(window_kind("vim", false), "other");
 }
 
 /// The product's `route`, under the binary's one environment (#957): an
@@ -721,4 +731,63 @@ fn render_fills_known_names_twice_and_leaves_the_rest() {
     let got = render("at {{home}} {{x}} {{ examples }} {{examples}}", Some("E {{home}}"));
     assert_eq!(got, format!("at {home} {{{{x}}}} {{{{ examples }}}} E {home}"));
     assert_eq!(render("{{examples}}", None), "{{examples}}", "no examples given, nothing filled");
+}
+
+/// #1359: every panel caller answers "is this Claude Code" as `agentid`'s rule does for
+/// the same pane: the board's facts and a Claude-shaped command, never the window name.
+/// The App's session and its ★ tile, Explain's `<session>` part, and the `<window>`
+/// line's mark, which follows the board's facts alone. Rows 4, 5, 6, 8 and 9 are the
+/// panes the panel and the rule used to disagree on.
+#[test]
+fn every_panel_caller_answers_as_the_shared_rule() {
+    use cockpit_tui::data::agentid;
+    use cockpit_tui::data::workdir::{Source, WorkDir};
+    use cockpit_tui::panel::app::App;
+    fake::fixed_env();
+    let rows = [
+        ("1 claude, an agent", "claude", "claude", true),
+        ("2 the version title, an agent", "w", "2.1.318", true),
+        ("3 a path to claude, an agent", "w", "/usr/local/bin/claude", true),
+        ("4 a shell in a window named claude", "claude", "zsh", false),
+        ("5 a stale @panestate on a shell", "claude", "fish", true),
+        ("6 node in a window named claude, an agent", "claude", "node", true),
+        ("8 claude, off the agent list", "claude", "claude", false),
+        ("9 the version title, no agent list", "Claude", "2.1.318", false),
+        ("a plain shell", "w", "bash", false),
+    ];
+    let write = Flow::Write {
+        draft: "x".into(),
+        out: OutType::Auto,
+    };
+    let mut bad = Vec::new();
+    for (row, name, cmd, agent) in rows {
+        let want = agentid::is_claude(cmd, agent);
+        let c = Capture {
+            name: name.into(),
+            cmd: cmd.into(),
+            path: "/a".into(),
+            screen: "● Shall I rewrite it?".into(),
+            work: WorkDir {
+                dir: "/b".into(),
+                source: Source::ActiveIn,
+                cwd: "/a".into(),
+                recent: vec![],
+            },
+            agent: agent.then(AgentFacts::default),
+            ..Default::default()
+        };
+        let a = App::new("%3", c.clone());
+        let got = [
+            ("the App's session", a.session.is_some(), want),
+            ("the Write a prompt tile", a.tiles()[0].1 == "Write a prompt", want),
+            ("Explain's <session>", build(&Flow::Explain, &c, &[], 6).contains("<session "), want),
+            ("the <window> mark", build(&write, &c, &[], 3).contains(", not confirmed)"), agent),
+        ];
+        for (caller, got, want) in got {
+            if got != want {
+                bad.push(format!("{row}: {caller} is {got}, the rule says {want}"));
+            }
+        }
+    }
+    assert!(bad.is_empty(), "{} answers differ:\n{}", bad.len(), bad.join("\n"));
 }

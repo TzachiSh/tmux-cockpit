@@ -1,4 +1,4 @@
-"╭ panel · %3 · claude ─────────────────╮"
+"╭ panel ───────────────────────────────╮"
 "│ your correction to: Assumed: no      │"
 "│ other file changes (the request      │"
 "│ names one)                           │"

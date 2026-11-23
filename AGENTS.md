@@ -7,14 +7,53 @@ running tmux server (the attached working session). Rebinding something like
 `MouseDown1Status` on the live server hijacks the user's real clicks while they
 work, and logging shims flood their session.
 
-Run every experiment on a throwaway private server and kill it after:
+Run every experiment on a throwaway private server and kill it after. Run the
+sketch in one tool-shell call. Each call is a new shell, so `$$` differs and
+`$t` is gone. A later call must carry the socket name and the folder over by
+value.
 
 ```sh
-d=$(mktemp -d)
-tmux -L probe$$ -f /dev/null new-session -d -c "$d" ...
+d=$(mktemp -d); t=$(mktemp -d)
+env -u TMUX -u TMUX_PANE -u TMUX_COCKPIT_DIR TMUX_TMPDIR="$t" \
+    tmux -L probe$$ -f /dev/null new-session -d -c "$d" ...
 # ... then:
-tmux -L probe$$ kill-server; rm -r "$d"
+env -u TMUX -u TMUX_PANE -u TMUX_COCKPIT_DIR TMUX_TMPDIR="$t" \
+    tmux -L probe$$ kill-server; rm -r "$d" "$t"
 ```
+
+Start the server without the live session's variables (#1072). A tool shell
+inherits `TMUX`, `TMUX_PANE` and `TMUX_COCKPIT_DIR` from the owner's pane. With
+`TMUX` set, a bare `tmux` talks to the live server. With `TMUX_COCKPIT_DIR` set,
+a server whose plugin load stops early keeps the live plugin's folder, and a
+probe then runs the live scripts.
+
+Start every tool-shell command line with
+`unset TMUX TMUX_PANE TMUX_COCKPIT_DIR`, before anything in it can call tmux.
+The tool shell keeps no state, so an unset in an earlier call is gone. The
+unset alone does not stop a bare `tmux`. It then uses `/tmp/tmux-<uid>/default`,
+the live server's socket. So the same line also exports `TMUX_TMPDIR` set to an
+existing empty folder of your own, where a bare `tmux` finds no server (#1091).
+A probe that starts an agent or loads the plugin also puts a scratch `HOME` in
+front of that command, never exported. With `TMUX_COCKPIT_DIR` unset, the hooks
+in `examples/claude-hooks.json` fall back to `$HOME/.tmux/plugins/tmux-cockpit`,
+which under the real `HOME` is the live plugin.
+
+Never `eval`, `source` or `sed`-extract any part of `cockpit.tmux` or `scripts/`
+in a tool shell. Check plugin lines only by loading a whole copy on a private
+`-L` server. #1091 records a lane that ran a `sed` range of `cockpit.tmux`
+through `eval` with `TMUX` set, and it rebound the owner's keys on the live
+server.
+
+`TMUX_TMPDIR` must name a folder that already exists. tmux keeps its sockets in
+`tmux-<uid>` under it. From tmux 3.2 to 3.8 it skips a folder that is not there
+and uses `/tmp/tmux-<uid>`, the live server's folder. Give the same
+`TMUX_TMPDIR` to every call to that server, the `kill-server` too. Without it,
+`-L probe$$` looks in `/tmp/tmux-<uid>` and misses the server or finds another
+one.
+
+Put the unsets and the folder in one `env` call. An inner `env -u VAR` undoes an
+outer `env VAR=x`, since the inner call runs last. `tests/run.sh` already does
+all of this for its own servers.
 
 Start the server and every `new-window` or `split-window` with `-c` set to a
 temp directory. Without it, the panes inherit your shell's cwd, which is often
@@ -27,9 +66,14 @@ The test suite already follows this: `tests/run.sh` shims `tmux` onto a private
 registered in `SOCKS`, not against the live server.
 
 Reading live state is fine as long as it is read-only: `list-keys`,
-`show-options`, `capture-pane`, `display -p`. Never write to the live server. If
-you already changed it, save `tmux list-keys -T root` first and restore the
-stock bindings immediately afterward.
+`show-options`, `capture-pane`, `display -p`. From a tool shell, name the live
+socket with `-S /tmp/tmux-<uid>/default` for those read-only commands only.
+With `TMUX` unset and the private `TMUX_TMPDIR` above, a bare `tmux` finds no
+server, and `-L` names a socket in the private folder. `-S` skips that folder,
+so a write sent with it reaches the live server too. Never write to the live
+server. If you already changed it, save
+`tmux -S /tmp/tmux-<uid>/default list-keys -T root` first and restore the stock
+bindings immediately afterward.
 
 Branch work goes in a `~/.cache/cockpit-wt/<branch>` worktree; the main checkout
 stays on `master`.
@@ -86,3 +130,72 @@ reports the failure before that redirect applies.
 
 The publisher's half of the bargain is to unpublish on **every** exit path,
 signal handlers included.
+
+## When we are stuck, change direction instead of patching more
+
+Digging deeper into an approach that is not working costs more each round. The
+job is to notice it and step back.
+
+You are stuck when the same bug survives two or three fix attempts, each fix
+needs another patch on top, a test stays flaky, or the behaviour still differs
+from what it should be.
+
+Then:
+
+1. Stop and write down what we are trying to do, what we tried, and why each try
+   failed.
+2. Research before the next attempt. Use web search and prefer primary sources:
+   docs, issue trackers, the source of well-known projects. Cite a source for
+   each claim. Look at how others solve the same problem, which alternatives or
+   better ways exist, and which pitfalls they hit and why.
+3. Compare that with our approach. Come back with the options, a recommendation
+   and the cost of switching. For a big switch, wait for the owner's OK before
+   changing anything.
+
+Say plainly what is uncertain. A guess written as a finding sends the next
+attempt the wrong way.
+
+## Keep one way to do each thing
+
+Two rules are fixed for every PR, from every session and lane.
+
+**No backward compatibility.** When a name, option, format or behaviour
+changes, the PR removes the old one completely: its code, tests, docs and
+comments. No alias, no deprecation notice, no shim, no branch that still reads
+an older format, no fallback to the old path. An old way kept "for one release"
+stays for years and doubles every later change.
+
+**No rollbacks.** A merged change is never reverted and no branch is
+force-pushed. Get it right before the merge: a small PR, the proof check 6
+asks for, a reviewer's verdict at the exact head, and CI run on a merge into
+the current master. If master goes red anyway, every merge stops until the
+next PR fixes it, with a test that fails without that fix. A red row that a
+rerun turns green is a flake: file it as an issue, and merges go on. On your
+own open branch, a new commit that undoes an earlier one is fine, and so is
+dropping an unpushed commit: nothing merged is undone.
+
+A reviewer checks each PR against this list and names any miss in the verdict:
+
+1. **One purpose.** The title names one change, and every file in the diff is
+   needed for it. A rename or refactor is its own PR.
+2. **The old way is gone.** `git grep` for the old name, option or format
+   finds only a test that asserts it is gone, or a line that records why it
+   was retired.
+3. **No new fallback.** When the first way to get a value fails, the code
+   errors or says so. A second path that quietly takes over (an older value,
+   a cached copy, another source) is a fallback, even when a comment documents
+   it, and even when it sits in a helper the PR newly calls. It
+   stays only if the issue or this file allows that exact path.
+4. **One flow, one place.** A rule (which folder a pane works in, whether a pane
+   runs Claude Code, how a path is quoted) lives in one function, and the PR
+   calls it instead of writing a second copy. The reviewer names the grep
+   that found it.
+5. **No dead code.** Every function, option and helper the PR leaves behind
+   has a caller, and every test it adds runs in CI. No commented-out code.
+6. **Proof.** A PR that changes behaviour commits a test that fails without
+   the change when run the way CI runs it, and each mechanism has a mutant
+   that turns a named test red. A rename, refactor or docs PR changes no
+   behaviour: its proof is the same CI totals as master, with no test edited
+   beyond the rename.
+7. **Small.** The reviewer can read the whole diff in one sitting. If not, it
+   is split before review.

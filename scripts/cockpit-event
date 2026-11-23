@@ -1,0 +1,101 @@
+#!/bin/bash
+# The agent-neutral core (#1330): agent-event v1 lines on stdin, one JSON object per line
+# (contracts/agent-event.schema.json, docs/events.md), each become one agent-state request
+# for the line's pane.
+#   usage: <adapter> | cockpit-event
+# A line that fails the schema writes nothing. The core always exits 0, as the hooks do: an
+# adapter must never be held or failed by it. It reads only the line's own fields and never
+# branches on `agent`.
+set -u
+
+# The caller's locale goes back to agent-state; the parse below runs in C, so a byte count
+# is a character count and every class is ASCII.
+cev_lc=${LC_ALL-}
+LC_ALL=C
+
+d=${BASH_SOURCE[0]}; case $d in (*/*) ;; (*) d=./$d ;; esac
+[ -L "$d" ] && d=$(n=0
+    while [ -L "$d" ] && [ $((n += 1)) -le 40 ] && t=$(readlink "$d"); do
+        case $t in (/*) d=$t ;; (*) d=${d%/*}/$t ;; esac; done; printf %s "$d")
+as="${d%/*}/agent-state"
+
+ws=$' \t\r'
+# One "key": value pair at the head of the rest of the object. A string holds no quote and no
+# backslash: no value the schema allows needs an escape, so a line with one is refused whole
+# rather than decoded.
+pair_re="^[$ws]*\"([a-z_]+)\"[$ws]*:[$ws]*(\"[^\"\\\\]*\"|true|false|-?[0-9]+)[$ws]*(,|\$)(.*)\$"
+obj_re="^[$ws]*\\{(.*)\\}[$ws]*\$"
+utc_re='^"[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\.[0-9]{1,9})?Z"$'
+
+# event <line> -> REQ (the agent-state request) and PANE; returns 1 when the line fails the
+# schema. The checks are the schema's, in its order: the closed key set, schema_version,
+# the patterns and enums, then outcome on turn.end alone and failed on tool.end alone.
+event() {
+    local s=$1 k v sep seen=" "
+    local f_v="" f_agent="" f_kind="" f_pane="" f_session="" f_at="" f_outcome="" f_failed=""
+    REQ="" PANE=""
+    [[ $s =~ $obj_re ]] || return 1
+    s=${BASH_REMATCH[1]}
+    while [ -n "$s" ]; do
+        [[ $s =~ $pair_re ]] || return 1
+        k=${BASH_REMATCH[1]} v=${BASH_REMATCH[2]} sep=${BASH_REMATCH[3]} s=${BASH_REMATCH[4]}
+        [ "$sep" = , ] && [ -z "$s" ] && return 1
+        case $seen in *" $k "*) return 1 ;; esac
+        seen="$seen$k "
+        case $k in
+            schema_version) f_v=$v ;;
+            agent) f_agent=$v ;;
+            kind) f_kind=$v ;;
+            pane) f_pane=$v ;;
+            session) f_session=$v ;;
+            at) f_at=$v ;;
+            outcome) f_outcome=$v ;;
+            failed) f_failed=$v ;;
+            *) return 1 ;;
+        esac
+    done
+    [ "$f_v" = 1 ] || return 1
+    [[ $f_agent =~ ^\"[a-z][a-z0-9-]{1,23}\"$ ]] || return 1
+    [[ $f_pane =~ ^\"%[0-9]{1,10}\"$ ]] || return 1
+    [[ $f_session =~ ^\"[0-9a-f]{16,64}\"$ ]] || return 1
+    [[ $f_at =~ $utc_re ]] || return 1
+    case $f_outcome in ''|'"answer"'|'"aborted"'|'"refusal"'|'"error"') ;; *) return 1 ;; esac
+    case $f_failed in ''|true|false) ;; *) return 1 ;; esac
+    [ "$f_kind" = '"turn.end"' ] || [ -z "$f_outcome" ] || return 1
+    [ "$f_kind" = '"tool.end"' ] || [ -z "$f_failed" ] || return 1
+    case $f_kind in
+        '"turn.start"') REQ=wake ;;
+        '"tool.start"') REQ=running ;;
+        '"tool.end"') REQ=running ;;    # failed or not: a tool's failure is not the turn's (#1331)
+        '"input.needed"') REQ=needs-input ;;
+        '"turn.end"')
+            case $f_outcome in
+                '"answer"'|'"refusal"') REQ=done ;;
+                '"error"') REQ=error ;;
+                '"aborted"') REQ=interrupted ;;
+                *) return 1 ;;
+            esac ;;
+        '"session.end"') REQ=off ;;
+        *) return 1 ;;
+    esac
+    PANE=${f_pane//\"/}
+}
+
+# Lines of up to 4096 bytes. A longer one is cut by the read, so it is refused whole: what is
+# left of it up to its newline is read and dropped, never taken as a line of its own (it could
+# be a valid event by itself). The last line may lack its newline.
+while :; do
+    line=""
+    IFS= read -r -n 4096 line; rc=$?
+    [ "$rc" -eq 0 ] || [ -n "$line" ] || break
+    if [ "${#line}" -ge 4096 ]; then
+        rest=""
+        while IFS= read -r -n 4096 rest && [ "${#rest}" -ge 4096 ]; do :; done
+        continue
+    fi
+    event "$line" || continue
+    # stdin from /dev/null: done and error read a hook payload there, which an event has none
+    # of, and the next line must not be taken for one.
+    LC_ALL=$cev_lc TMUX_PANE=$PANE "$as" "$REQ" "$PANE" < /dev/null > /dev/null 2>&1
+done
+exit 0

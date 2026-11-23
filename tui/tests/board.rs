@@ -2137,7 +2137,7 @@ fn the_confirm_owns_the_keys() {
 fn y_writes_the_verb_and_the_expected_name() {
     let ps = named();
     let c = board::Confirm::open(kill(), &id(&ps, "%3")).unwrap();
-    assert_eq!(c.ask, "kill pane %3 (api:0 server)?");
+    assert_eq!(c.ask, "kill pane api:0 · server?");
     assert_eq!(
         c.exit(),
         board::Exit {
@@ -2259,7 +2259,7 @@ fn confirm_goldens() {
         golden(&format!("board-confirm-{w}"), &out);
         let r = rows(&out);
         assert!(
-            out.contains("kill pane %3 (api:0 server)?") && out.contains("sessions · held"),
+            out.contains("kill pane api:0 · server?") && out.contains("sessions · held"),
             "{out}"
         );
         assert!(r[h as usize - 1].starts_with(" y kill"), "{out}");
@@ -2272,7 +2272,7 @@ fn confirm_goldens() {
     };
     let out = draw(100, 30, |f| board::render(f, f.area(), &v));
     assert!(
-        out.contains("kill pane %3 (api:0 server)?") && rows(&out)[29].starts_with(" y kill"),
+        out.contains("kill pane api:0 · server?") && rows(&out)[29].starts_with(" y kill"),
         "{out}"
     );
     // its `?` is its own keys
@@ -2293,9 +2293,20 @@ fn two_windows_with_one_name_expect_different_ids() {
     let (ca, cb) = (board::Confirm::open(kill(), &a).unwrap(), board::Confirm::open(kill(), &b).unwrap());
     assert_eq!(
         (ca.ask.as_str(), cb.ask.as_str()),
-        ("kill pane %8 (api:1 claude)?", "kill pane %9 (api:2 claude)?")
+        ("kill pane api:1 · one?", "kill pane api:2 · two?")
     );
     assert_eq!((ca.expect.as_deref(), cb.expect.as_deref()), (Some("%8 @8"), Some("%9 @9")));
+}
+
+/// #1407: the kill's question names the pane by its label, `session:window · title`, never
+/// its id, and the title is cleaned: a control or bidi character in it never reaches the card.
+#[test]
+fn the_kill_confirm_names_the_pane_by_its_cleaned_label() {
+    let mut p = pane("%3", "api:0", "a\u{202e}b\u{7}c", "running");
+    p.win = "@3".into();
+    let c = board::Confirm::open(kill(), &p).unwrap();
+    assert_eq!(c.ask, "kill pane api:0 · abc?");
+    assert!(!c.ask.contains("%3"), "{}", c.ask);
 }
 
 /// A pane with no window id, or a malformed one, is never offered a kill:

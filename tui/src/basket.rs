@@ -125,7 +125,8 @@ pub fn read_text(pane: &str) -> Result<String, String> {
     check(pane)?;
     let id = ask(&["display-message", "-p", "-t", pane, "#{pane_id}"])?;
     if id.as_deref().map(str::trim) != Some(pane) {
-        return Err(format!("the pane {pane} is gone"));
+        // a gone pane has no label to name it by, and its id tells a person nothing (#1407)
+        return Err("the pane is gone".into());
     }
     let show = ["show-options", "-pqv", "-t", pane, OPTION];
     let text = ask(&show)?.ok_or("tmux did not answer")?;
@@ -211,24 +212,22 @@ pub fn main(args: &[String]) -> i32 {
     code
 }
 
-/// A command that is Claude Code's: `claude`, or its version-shaped process
-/// title (`2.1.318`), as data's agentish reads them; the one agent that inlines
-/// `@path#La-b`.
-pub fn claude_cmd(comm: &str) -> bool {
-    let b = crate::data::cmd_base(comm);
-    b == "claude" || crate::data::version_shaped(&b)
-}
+/// Claude Code's command, the one agent that inlines `@path#La-b`: the shared
+/// rule's half (#1359).
+pub use crate::data::agentid::claude_cmd;
 
-/// An agent's pane (#519's `data::is_agent`) that runs Claude Code
-/// ([`claude_cmd`]). @panestate alone is not enough: it outlives the claude
-/// that set it, and @ refs sent to a shell would be noise. A miss sends bare refs.
+/// A pane that runs Claude Code by the shared rule (#1359's
+/// [`crate::data::agentid::is_claude`]): #519's `data::is_agent` and its command.
+/// @ refs sent to a shell would be noise. A miss sends bare refs.
 pub fn is_claude(pane: &str) -> bool {
     // the guard first: is_agent's own read is data's, outside the basket's
-    if check(pane).is_err() || guard().is_err() || !crate::data::is_agent(pane) {
+    if check(pane).is_err() || guard().is_err() {
         return false;
     }
+    let agent = crate::data::is_agent(pane);
     let cmd = ask(&["display-message", "-p", "-t", pane, "#{pane_current_command}"]);
-    cmd.ok().flatten().is_some_and(|c| claude_cmd(c.trim_end_matches('\n')))
+    let cmd = cmd.ok().flatten().unwrap_or_default();
+    crate::data::agentid::is_claude(cmd.trim_end_matches('\n'), agent)
 }
 
 /// The send's cap (#365 child 5): the whole text, the draft and its refs. Over it

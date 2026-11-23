@@ -6,6 +6,7 @@
 mod fake;
 
 use cockpit_tui::data::gitsafe::REDIRECT;
+use cockpit_tui::data::workdir::WorkDir;
 use cockpit_tui::panel::app::App;
 use cockpit_tui::panel::capture::Capture;
 use cockpit_tui::panel::envelope::{Flow, OutType};
@@ -46,6 +47,10 @@ fn root_of(pane: &Path) -> Option<String> {
         name: "work".into(),
         cmd: "bash".into(),
         path: pane.display().to_string(),
+        work: WorkDir {
+            dir: pane.display().to_string(),
+            ..Default::default()
+        },
         screen: "$ ".into(),
         ..Default::default()
     };

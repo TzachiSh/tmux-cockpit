@@ -1,4 +1,4 @@
-C KKKKK K KK K KKKK CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC
+C KKKKK CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC
 C CCCC CCCC CCCCCC CCCCCC CCCCC                                                C
 C                                                                              C
 C .. ... .... .. ...... ... .... .... .....                                    C

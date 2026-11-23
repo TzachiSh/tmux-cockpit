@@ -1,7 +1,10 @@
 //! tmux and transcript reads. The frozen contract (#61) is "The freeze" in docs/tui.md.
+// the one rule for a pane that runs Claude Code (#1359)
+pub mod agentid;
 pub mod agents;
 pub mod fleet;
 // the board's transcript fold (#492)
+mod activein;
 mod fold;
 pub mod gitsafe;
 pub mod info;
@@ -9,6 +12,9 @@ pub mod sessions;
 // the subagent tree (#313)
 pub mod subagents;
 pub mod transcript;
+// the one rule for a pane's work folder (#1343)
+pub mod workdir;
+use workdir::Candidates;
 
 use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
@@ -193,8 +199,7 @@ pub struct Pane {
     pub msg: String,
     pub sess: String,
     pub path: String,
-    /// the dir the git facts came from: `@cockpit_dir`, else the transcript's
-    /// newest cwd, else `path` (#452); `fleet::work_dirs` picks it
+    /// the dir the git facts came from, as `workdir::choose` picks it (#452, #1343)
     pub dir: String,
     pub root: String,
     pub spool: String,
@@ -231,6 +236,15 @@ pub struct Pane {
     /// #454: the last tool_use (`doing`) came back with `is_error`: a denial or a
     /// failed command. A done row then shows `said` instead.
     pub doing_failed: bool,
+    /// #1330 A2: the model of the newest main-thread model call: `opus` for a
+    /// `claude-opus-…` id, else the raw id cleaned; never a guessed name
+    pub model: String,
+    /// #1330 A2: that call's context, input + cache_read + cache_creation tokens;
+    /// `None` when no row in the window has usage
+    pub ctx: Option<u64>,
+    /// #1409: the pane's own name, `@cockpit_role` (field 20), cleaned; `""` when it has
+    /// none. Shown before the title, never in its place: [`role_title`]
+    pub role: String,
 }
 
 /// Skips the three ages, which change every tick and would defeat the redraw
@@ -269,12 +283,16 @@ impl Hash for Pane {
             job,
             topic,
             doing_failed,
+            model,
+            ctx,
+            role,
         } = self;
         [
             id, wher, name, cmd, title, msg, sess, path, dir, root, spool, pid, review, doing, said, asked, loc, pm, win, job, topic,
+            model, role,
         ]
         .hash(h);
-        (state, pinned, delivered, subs_n, ended, doing_failed).hash(h);
+        (state, pinned, delivered, subs_n, ended, doing_failed, ctx).hash(h);
         // Sub hashes only what changes its drawing: never `started`, tokens by the thousand.
         subs.hash(h);
     }
@@ -287,6 +305,43 @@ impl Pane {
             .into_iter()
             .find(|s| !s.is_empty())
             .map_or("(no title)", |s| s.as_str())
+    }
+
+    /// How a message or a title names the pane (#1407): its `session:window`, its name
+    /// (#1409) and its [`Pane::label`], cleaned for the terminal. The %id stays for the log.
+    pub fn full_label(&self) -> Label {
+        Label {
+            wher: crate::pick::clean(&self.wher),
+            role: self.role.clone(),
+            title: crate::pick::clean(self.label()),
+        }
+    }
+}
+
+/// A pane as a person reads it (#1407): its `session:window`, its name, `""` when it has
+/// none (#1409), and its title.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Label {
+    pub wher: String,
+    pub role: String,
+    pub title: String,
+}
+
+impl Label {
+    /// `session:window · role · title`, `dot` the theme's: the one place the `session:window`
+    /// and the rest are joined. A pane with no name reads `session:window · title`.
+    pub fn spelled(&self, dot: &str) -> String {
+        format!("{} {dot} {}", self.wher, role_title(&self.role, &self.title, dot))
+    }
+}
+
+/// `role · title`, or `title` alone for a pane with no name (#1409): the one place a pane's
+/// name and its title are joined. The name goes first and never stands in for the title.
+pub fn role_title(role: &str, title: &str, dot: &str) -> String {
+    if role.is_empty() {
+        title.to_string()
+    } else {
+        format!("{role} {dot} {title}")
     }
 }
 
@@ -353,6 +408,13 @@ struct Facts {
     ask: String,
     /// #454: the newest tool_use's result came back with `is_error`
     tool_failed: bool,
+    /// #1330 A3: the newest turn row is the interrupt marker, nothing after it
+    interrupted: bool,
+    /// #1330 A2: the newest main-thread model call's model and context
+    model: String,
+    ctx: Option<u64>,
+    /// #462: each folder the main thread's tool calls worked in and the newest call's time
+    active: Vec<(String, SystemTime)>,
 }
 
 /// A read's (len, mtime), the file's (device, inode), and what it said.
@@ -465,16 +527,27 @@ fn parse(lines: Vec<String>) -> Facts {
 
 /// doing / said / asked and their ages, from the tail of the session transcript,
 /// which `transcript::locate` finds from `opt` (@cockpit_transcript), the session id
-/// and the cwd. Returns the transcript's cwd, `""` when it has none.
-fn read_transcript(p: &mut Pane, opt: &str) -> String {
+/// and the cwd. Returns the transcript's cwd, `""` when it has none, and the git trees
+/// its tool calls reached with their ages (#462).
+fn read_transcript(p: &mut Pane, opt: &str) -> (String, Vec<workdir::Recent>) {
     let Some(t) = transcript::locate(opt, &p.sess, &p.path) else {
-        return String::new();
+        return Default::default();
     };
     let fa = read_facts(&t.to_string_lossy());
-    // @panestate wins; the transcript speaks only for panes the hooks never touched. A
-    // pane bound to a job is the poller's: no @panestate is its idle, never unknown (#448).
+    // @panestate wins, with one exception below; the transcript speaks for panes the hooks
+    // never touched. A pane bound to a job is the poller's: no @panestate is its idle, never
+    // unknown, and the transcript never overrides its state (#448).
     if p.state == State::Unknown && p.job.is_empty() {
         p.state = fa.state;
+    }
+    // #1330 A3: Esc fires no hook (#1332), so the hooks' running outlives an interrupted
+    // turn. The interrupt as the newest turn row shows the pane idle, as an unset state
+    // does; nothing is written to tmux. A newer prompt, assistant row, tool_result or
+    // harness row that starts a turn (a <task-notification>, #1333) clears it, and
+    // needs-input, error and done stay the hooks'. Known gap: between Enter and Claude
+    // Code writing the prompt row, a fresh running still reads idle.
+    if p.state == State::Running && p.job.is_empty() && fa.interrupted {
+        p.state = State::Unknown;
     }
     // #453: the hook's text is generic; an open question says what is owed
     if p.state == State::NeedsInput && !fa.ask.is_empty() {
@@ -482,12 +555,14 @@ fn read_transcript(p: &mut Pane, opt: &str) -> String {
     }
     p.doing = fa.tool;
     p.doing_failed = fa.tool_failed;
+    p.model = fa.model;
+    p.ctx = fa.ctx;
     p.said = fa.text;
     p.asked = fa.user;
     p.since = fa.at.and_then(age);
     p.asked_since = fa.user_at.and_then(age);
     p.idle_since = fa.newest.and_then(age);
-    fa.cwd
+    (fa.cwd, activein::recent(&fa.active, SystemTime::now()))
 }
 
 fn age(t: SystemTime) -> Option<u64> {
@@ -709,10 +784,10 @@ fn first_life(path: &str, n: u64) -> Duration {
     GIT_TTL / 5 * (1 + (h.finish() % 5) as u32)
 }
 
-/// `dirs` is each pane's work dir candidates (`fleet::work_dirs`), in `ps` order.
-fn fill_git(ps: &mut [Pane], dirs: &[[String; 3]]) {
-    // the tree each pane works in: @cockpit_dir, the transcript's cwd, the cwd (#253, #452)
-    let dirs = fleet::work_dirs(dirs);
+/// `dirs` is each pane's work dir candidates, in `ps` order.
+fn fill_git(ps: &mut [Pane], dirs: &[Candidates]) {
+    // the tree each pane works in (#253, #452, #1343)
+    let dirs: Vec<String> = dirs.iter().map(|c| workdir::choose(c).dir).collect();
     GIT.with(|c| fill_git_at(&mut c.borrow_mut(), ps, &dirs, Instant::now(), &|m| fleet::scan(m).facts));
 }
 
@@ -803,6 +878,36 @@ pub fn one_pane(id: &str) -> Option<Pane> {
     }))
 }
 
+/// A pane's name, set on purpose by `scripts/tmux-rename pane` and only with `-p` (#1408).
+const ROLE: &str = "@cockpit_role";
+
+/// #1408: the panes whose own `@cockpit_role` is `name`, in tmux's order. Each pane's value is
+/// read with `show-options -p`, all in one tmux call: a format reads the window's value for a
+/// pane with none, and a server's ahead of the pane's own. Each answer is one line,
+/// `<id>\x1f<value>`, with a newline in the value made a `\x1f`, so no value splits into a
+/// record of its own. A pane gone since the list prints nothing. `None` when tmux is not
+/// reachable.
+pub fn panes_named(name: &str) -> Option<Vec<String>> {
+    let ids = tmux(&["list-panes", "-a", "-F", "#{pane_id}"])?;
+    let mut argv: Vec<String> = vec![];
+    for id in ids.split('\n').filter(|id| !id.is_empty()) {
+        if !argv.is_empty() {
+            argv.push(";".into());
+        }
+        let rec = format!("{id}\u{1f}#{{s/\n/\u{1f}/:option_value}}");
+        argv.extend(["show-options", "-pq", "-t", id, "-F", rec.as_str(), ROLE].map(String::from));
+    }
+    // no pane, no call: tmux with no command at all is new-session
+    if argv.is_empty() {
+        return Some(vec![]);
+    }
+    let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let out = tmux(&argv)?;
+    // split, not lines: lines would take a value's trailing \r off with the newline
+    let named = out.split('\n').filter_map(|l| l.split_once('\u{1f}')).filter(|(_, v)| *v == name);
+    Some(named.map(|(id, _)| id.to_string()).collect())
+}
+
 thread_local! {
     /// `|claude|codex|…|` from cockpit.tmux, so the user's list is the only copy.
     /// Empty (plugin not loaded) leaves @panestate as the only test.
@@ -857,7 +962,30 @@ const FIELDS: &str = concat!(
     "\u{1f}#{?#{==:#{pane_title},#{host_short}},,#{s/\n/ /:#{s/\t/ /:#{s/\u{1f}/ /:#{s/^✳ //:#{pane_title}}}}}}",
     // #448: 18 the bound job's session, agent-poll's; the session of a pane that has none
     "\u{1f}#{s/\n/ /:#{s/\t/ /:#{s/\u{1f}/ /:#{@cockpit_job_session}}}}",
+    // #1343: 19 the cwd the hooks saw last, which agent-state writes with @cockpit_dir. Last,
+    // so no reader of 14 to 18 moves.
+    "\u{1f}#{s/\n/ /:#{s/\t/ /:#{s/\u{1f}/ /:#{@cockpit_cwd}}}}",
+    // #1409: 20 the pane's name, which tmux-rename pane sets with -p. A format reads a
+    // window's or the server's @cockpit_role too (format_find); cockpit sets neither, and a
+    // name only shows, as on the tabs and borders. `cockpit-tui pane` reads -p. Last, so
+    // no reader of 14 to 19 moves.
+    "\u{1f}#{s/\n/ /:#{s/\t/ /:#{s/\u{1f}/ /:#{@cockpit_role}}}}",
 );
+
+/// How many fields FIELDS has: tmux prints every one, so a row with fewer is no row of this
+/// format (#1374). Each field opens `#{`, and a `\037` inside one is the `s/\037/ /` that
+/// strips it from the value, so the separators are the `\037`s before a `#`.
+pub const FIELDS_N: usize = {
+    let b = FIELDS.as_bytes();
+    let (mut i, mut n) = (0, 1);
+    while i + 1 < b.len() {
+        if b[i] == 0x1f && b[i + 1] == b'#' {
+            n += 1;
+        }
+        i += 1;
+    }
+    n
+};
 
 /// #1248: true for every pane but cockpit's own popup, a `list-panes -f` filter. On tmux
 /// next-3.9 display-popup makes a modal floating pane, which a scan would list. Each cockpit
@@ -924,8 +1052,8 @@ pub fn list_fleet() -> Option<(Vec<Pane>, std::collections::BTreeSet<String>)> {
     let (mut ps, mut dirs) = (vec![], vec![]);
     for l in out.lines() {
         let f: Vec<&str> = l.split(SEP).collect();
-        // FIELDS has 19; the 13 before @cockpit_dir are the floor, so an older format reads
-        if f.len() < 13 {
+        // tmux prints every field of FIELDS, so a row short of one is not this format (#1374)
+        if f.len() < FIELDS_N {
             continue;
         }
         // `session:window`; a session name never holds a `:` (tmux swaps it)
@@ -939,10 +1067,9 @@ pub fn list_fleet() -> Option<(Vec<Pane>, std::collections::BTreeSet<String>)> {
         }
         dirs.push(work_candidates(&mut p, &f));
         (p.pinned, p.delivered) = spool_counts(&p.spool);
-        p.subs_n = f.get(14).and_then(|n| n.parse().ok()).unwrap_or(0);
-        // a pane title, so untrusted too
-        p.topic = crate::pick::clean(f.get(17).copied().unwrap_or_default()).trim().to_string();
-        if let Some(d) = subagents::dir_of(f.get(15).copied().unwrap_or_default(), &p.sess, &p.path) {
+        p.subs_n = f[14].parse().unwrap_or(0);
+        p.topic = topic_of(f[17]);
+        if let Some(d) = subagents::dir_of(f[15], &p.sess, &p.path) {
             p.subs = subagents::read(&d, sessions::now());
         }
         ps.push(p);
@@ -965,7 +1092,7 @@ type RowPane = Option<(Pane, &'static str)>;
 /// caller that never reads `ended` forks no `ps` for it, and gets `ended` false.
 fn row_pane(f: &[&str], procs_t: &mut Option<Procs>, want_ended: bool) -> RowPane {
     // the floor list_fleet names
-    if f.len() < 13 {
+    if f.len() < FIELDS_N {
         return None;
     }
     // A pane carrying @panestate counts whatever it runs: the hooks are the
@@ -996,7 +1123,7 @@ fn row_pane(f: &[&str], procs_t: &mut Option<Procs>, want_ended: bool) -> RowPan
         // #448: a viewer bound to a background job runs no hook, so it has no session
         // of its own; the job's, which agent-poll records, finds the job's transcript
         sess: match unsentinel(f[7]) {
-            s if s.is_empty() => f.get(18).copied().unwrap_or_default().to_string(),
+            s if s.is_empty() => f[18].to_string(),
             s => s,
         },
         path: f[8].into(),
@@ -1006,7 +1133,8 @@ fn row_pane(f: &[&str], procs_t: &mut Option<Procs>, want_ended: bool) -> RowPan
         win: f[12].into(),
         ended: want_ended && ended(&raw, live, AGENT_GLOB.with(|g| !g.is_empty())),
         // a pane title, so untrusted: control and bidi characters go
-        job: crate::pick::clean(f.get(16).copied().unwrap_or_default()).trim().to_string(),
+        job: crate::pick::clean(f[16]).trim().to_string(),
+        role: role_of(f),
         ..Default::default()
     };
     let by = if by_cmd {
@@ -1019,28 +1147,63 @@ fn row_pane(f: &[&str], procs_t: &mut Option<Procs>, want_ended: bool) -> RowPan
     Some((p, by))
 }
 
-/// Reads `p`'s transcript into it and returns its work dir's candidates (#452), in
-/// the order `fleet::work_dirs` tries them. @cockpit_dir, @cockpit_subs and
-/// @cockpit_transcript come after the 13 a row from an older format has, so such a
-/// row still reads: 13 to 17 are optional.
-fn work_candidates(p: &mut Pane, f: &[&str]) -> [String; 3] {
-    let said_cwd = read_transcript(p, f.get(15).copied().unwrap_or_default());
-    let opt = f.get(13).copied().unwrap_or_default().to_string();
-    [opt, said_cwd, p.path.clone()]
+/// Reads `p`'s transcript into it and returns its work dir's candidates (#452, #1343).
+/// `f` is a whole FIELDS row: the floor before this lets no shorter one through (#1374).
+fn work_candidates(p: &mut Pane, f: &[&str]) -> Candidates {
+    let (transcript_cwd, active) = read_transcript(p, f[15]);
+    Candidates {
+        transcript_cwd,
+        active,
+        pane_cwd: p.path.clone(),
+        ..row_options(f)
+    }
 }
 
-/// #500: the board's `Pane.dir` for one pane, off one `display-message` of the
-/// board's own FIELDS and the same per-row code as the fetch. `None` for a pane
-/// that is not there, is not an agent's, or whose dir is not on disk (#507). Unlike the fetch it never
-/// runs `claude agents` (hundreds of ms): a pane with no @cockpit_session has no
-/// transcript to read, so its dir is @cockpit_dir, else its launch dir.
-pub fn workdir(pane: &str) -> Option<String> {
+/// `declared` and `hook_cwd` off a FIELDS row's @cockpit_dir (13) and @cockpit_cwd (19).
+fn row_options(f: &[&str]) -> Candidates {
+    Candidates::from_options(f[13], f[19])
+}
+
+/// The pane's name off a FIELDS row's @cockpit_role (20), #1409. The setter allows only
+/// letters, digits, `-`, `_` and `/`, but a user's own set-option can put anything there.
+fn role_of(f: &[&str]) -> String {
+    crate::pick::clean(f[20]).trim().to_string()
+}
+
+/// #500: the board's `Pane.dir` for one pane and its source (#1343), off one
+/// `display-message` of the board's own FIELDS and the same per-row code as the fetch.
+/// `None` for a pane that is not there, is not an agent's, or whose dir is not on disk
+/// (#507). Unlike the fetch it never runs `claude agents` (hundreds of ms): a pane with
+/// no @cockpit_session has no transcript to read.
+pub fn workdir(pane: &str) -> Option<workdir::WorkDir> {
+    workdir_agent(pane).map(|(w, _)| w)
+}
+
+/// The board's facts on one pane's agent, for the panel's Explain (#1353). Agent text,
+/// so it stays in memory: never written to a tmux option.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AgentFacts {
+    /// [`State::as_str`]: `""` when the board does not know it
+    pub state: String,
+    pub doing: String,
+    pub asked: String,
+    pub model: String,
+}
+
+/// [`workdir()`], and the facts the same read gave on the pane's agent (#1353).
+pub fn workdir_agent(pane: &str) -> Option<(workdir::WorkDir, AgentFacts)> {
     let (mut p, f) = one_row(pane)?;
     let f: Vec<&str> = f.iter().map(String::as_str).collect();
-    let cands = work_candidates(&mut p, &f);
+    let w = workdir::choose(&work_candidates(&mut p, &f));
     // #507: a dir that is not on disk (removed, or a name tmux's lossy decode
     // changed) is no dir: a script must not cd into it
-    fleet::work_dirs(&[cands]).pop().filter(|d| std::path::Path::new(d).is_dir())
+    let facts = AgentFacts {
+        state: p.state.as_str().to_string(),
+        doing: p.doing,
+        asked: p.asked,
+        model: p.model,
+    };
+    std::path::Path::new(&w.dir).is_dir().then_some((w, facts))
 }
 
 /// One pane as the branch popup's goto reads it (#303, #470).
@@ -1054,8 +1217,9 @@ pub struct PaneDir {
 
 /// Every pane's work dir off one `list-panes -a`, as `scripts/lib/workdir.sh` gave it to
 /// goto. The agent test leaves out the process tree, a `ps` per shell pane, as the
-/// script did; only an agent whose @cockpit_dir is no dir has its transcript read, as
-/// [`workdir`] reads it. Cockpit's own popups are no panes, by the board's filter (#1248).
+/// script did; only an agent with no declared @cockpit_dir has its transcript read (#462),
+/// as [`workdir()`] reads it. Cockpit's own popups are no panes, by the
+/// board's filter (#1248).
 /// `None` when list-panes failed.
 pub fn pane_dirs() -> Option<Vec<PaneDir>> {
     let out = tmux(&["list-panes", "-a", "-f", NOT_POPUP, "-F", FIELDS])?;
@@ -1063,18 +1227,33 @@ pub fn pane_dirs() -> Option<Vec<PaneDir>> {
 }
 
 fn pane_dir(f: &[&str]) -> Option<PaneDir> {
-    if f.len() < 13 || !crate::panel::is_pane(f[0]) {
+    if f.len() < FIELDS_N || !crate::panel::is_pane(f[0]) {
         return None;
     }
     let agent = !unsentinel(f[4]).is_empty() || agentish(f[3]);
-    let opt = f.get(13).copied().unwrap_or_default();
-    let holds = std::path::Path::new(opt).is_absolute() && std::path::Path::new(opt).is_dir();
-    // row_pane forks no ps here: @panestate or an agentish command is an agent's without its tree
-    let said = (agent && !holds)
-        .then(|| row_pane(f, &mut None, false).map(|(mut p, _)| work_candidates(&mut p, f)[1].clone()))
+    let base = Candidates {
+        pane_cwd: f[8].to_string(),
+        ..row_options(f)
+    };
+    let holds = |d: &str| std::path::Path::new(d).is_absolute() && std::path::Path::new(d).is_dir();
+    // the transcript only answers when no folder was declared: its tool calls' tree outranks
+    // the hooks' cwd (#462). row_pane forks no ps here: @panestate or an agentish command is
+    // an agent's without its tree
+    let (transcript_cwd, active) = (agent && !holds(&base.declared))
+        .then(|| {
+            row_pane(f, &mut None, false).map(|(mut p, _)| {
+                let c = work_candidates(&mut p, f);
+                (c.transcript_cwd, c.active)
+            })
+        })
         .flatten()
         .unwrap_or_default();
-    let dir = fleet::work_dirs(&[[opt.to_string(), said, f[8].to_string()]]).pop()?;
+    let dir = workdir::choose(&Candidates {
+        transcript_cwd,
+        active,
+        ..base
+    })
+    .dir;
     Some(PaneDir {
         id: f[0].to_string(),
         agent,
@@ -1103,6 +1282,31 @@ fn one_row(pane: &str) -> Option<(Pane, Vec<String>)> {
     // workdir and is_agent never read `ended`
     let (p, _) = row_pane(&f, &mut None, false)?;
     Some((p, f.iter().map(|s| s.to_string()).collect()))
+}
+
+/// FIELDS' field 17, the pane's own title: a pane title, so untrusted too.
+fn topic_of(raw: &str) -> String {
+    crate::pick::clean(raw).trim().to_string()
+}
+
+/// [`Pane::full_label`] of any pane by its id, an agent's or not, off one FIELDS
+/// read (#1407). `None` when tmux has no such pane.
+pub fn label_of(pane: &str) -> Option<Label> {
+    let out = tmux(&["display-message", "-p", "-t", pane, FIELDS])?;
+    let f: Vec<&str> = out.trim_end_matches('\n').split(SEP).collect();
+    // a missing pane exits 0 with every field empty, as for one_row
+    if f.len() < FIELDS_N || f[0] != pane {
+        return None;
+    }
+    let p = Pane {
+        wher: f[1].into(),
+        name: f[2].into(),
+        title: unsentinel(f[5]),
+        topic: topic_of(f[17]),
+        role: role_of(&f),
+        ..Default::default()
+    };
+    Some(p.full_label())
 }
 
 /// A pane can hold one multi-megabyte line, and the ANSI parser re-runs over the

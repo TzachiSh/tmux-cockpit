@@ -23,10 +23,7 @@ fn git(dir: &Path, args: &[&str]) {
 
 /// The board's FIELDS row: id, cmd, @panestate, @cockpit_session, cwd, pid, @cockpit_dir.
 fn row(id: &str, cmd: &str, state: &str, sess: &str, cwd: &str, pid: &str, opt: &str) -> String {
-    let f = [
-        id, "t:0", "win", cmd, state, "-", "-", sess, cwd, pid, "-", "-", "@1", opt, "", "", "", "", "",
-    ];
-    f.join("\u{1f}")
+    fake::board_row(&[id, "t:0", "win", cmd, state, "-", "-", sess, cwd, pid, "-", "-", "@1", opt])
 }
 
 /// A repo `r` on main, its linked tree `w` holding `held`, and a fake tmux and ps.
@@ -204,6 +201,50 @@ fn said(r: &Rig, pad: usize, cwd_last: bool) {
 fn an_agents_transcript_cwd_names_its_tree() {
     let r = Rig::new("said");
     said(&r, 0, true);
+    assert_eq!(r.goto(&r.p("w"), &Origin::default()), Ok(String::new()));
+    assert_eq!(r.writes(), sel("%9"));
+}
+
+/// "YYYY-MM-DDTHH:MM:SS.000Z" `ago` seconds before now, civil-from-days (Hinnant).
+fn stamp(ago: i64) -> String {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap();
+    let t = now.as_secs() as i64 - ago;
+    let (days, rem) = (t.div_euclid(86400), t.rem_euclid(86400));
+    let z = days + 719468;
+    let era = z.div_euclid(146097);
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}.000Z", rem / 3600, rem % 3600 / 60, rem % 60)
+}
+
+/// #462: an agent launched in main, whose hooks wrote @cockpit_dir = @cockpit_cwd = main,
+/// ran `cd <tree>/sub && make` 30 s ago: its tool call names the tree, so goto picks it
+/// over a shell in the tree listed first.
+#[test]
+fn an_agents_fresh_cd_into_the_tree_names_it() {
+    let r = Rig::new("cd");
+    let main = r.p("r");
+    let slug: String = main
+        .bytes()
+        .map(|b| if b.is_ascii_alphanumeric() || b == b'-' { b as char } else { '-' })
+        .collect();
+    let pj = r.t.join(".claude/projects").join(slug);
+    std::fs::create_dir_all(&pj).unwrap();
+    let call = serde_json::json!({"type": "tool_use", "id": "u1", "name": "Bash",
+        "input": {"command": format!("cd {}/sub && make", r.p("w"))}});
+    let v = serde_json::json!({"type": "assistant", "timestamp": stamp(30), "cwd": main, "message": {"content": [call]}});
+    std::fs::write(pj.join("s1.jsonl"), format!("{v}\n")).unwrap();
+    // @cockpit_cwd, the row's field 19, is main too
+    let agent = row("%9", "2.1.246", "running", "s1", &main, "109", &main);
+    let mut f: Vec<&str> = agent.split(US).collect();
+    f[19] = main.as_str();
+    let agent = f.join(&US.to_string());
+    r.rows(&[row("%1", "bash", "-", "-", &r.p("w"), "101", ""), agent]);
     assert_eq!(r.goto(&r.p("w"), &Origin::default()), Ok(String::new()));
     assert_eq!(r.writes(), sel("%9"));
 }
@@ -386,4 +427,16 @@ fn without_worktree_list_z_the_tree_is_found_and_a_newline_path_refused() {
         r.goto(&cut, &Origin::default()),
         Err(format!("cockpit: not a worktree of this repository: {cut}"))
     );
+}
+
+/// #1374: a row one field short of FIELDS is not the board's format: goto skips its pane,
+/// an agent's too, and selects the shell in the tree.
+#[test]
+fn a_row_one_field_short_is_no_pane_to_goto() {
+    let r = Rig::new("short");
+    let agent = row("%3", "claude", "-", "-", &r.p("w"), "103", "");
+    let short = agent.rsplit_once('\u{1f}').unwrap().0.to_string();
+    r.rows(&[row("%2", "bash", "-", "-", &r.p("w"), "102", ""), short]);
+    assert_eq!(r.goto(&r.p("w"), &Origin::default()), Ok(String::new()));
+    assert_eq!(r.writes(), sel("%2"));
 }

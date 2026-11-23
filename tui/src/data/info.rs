@@ -2,6 +2,7 @@
 //! git root and the review base are ports of tmux-review's `git_root` and
 //! `review_base`, so the screen and `prefix r` name the same tree and base.
 use super::gitsafe::git;
+use super::workdir::{Candidates, Source, choose};
 use std::path::PathBuf;
 
 /// One transcript row: `doing`, `said` or `asked`, its text, and its age in seconds.
@@ -20,18 +21,6 @@ pub struct Base {
     pub mode: String,
 }
 
-/// Where the work dir came from (#452), in `fleet::work_dirs`' order.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum WorkFrom {
-    /// `@cockpit_dir`
-    Opt,
-    /// the session transcript's newest cwd
-    Transcript,
-    /// pane_current_path
-    #[default]
-    Cwd,
-}
-
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Facts {
     pub id: String,
@@ -41,13 +30,13 @@ pub struct Facts {
     /// `@cockpit_dir` when set
     pub dir: Option<String>,
     pub dir_missing: bool,
-    /// the dir the board's git facts use: `@cockpit_dir`, else the transcript's
-    /// newest cwd, else the cwd (#452). `root` follows it (#500). Not
+    /// the dir the board's git facts use, by its rule and candidates (#452, #1355):
+    /// `workdir::choose`. `root` follows it (#500). Not
     /// cleaned, since `info --json` hands it to scripts and the screen cleans it,
     /// but decoded as lossy UTF-8 like every tmux read.
     pub work: String,
-    /// which candidate `work` is
-    pub work_from: WorkFrom,
+    /// which candidate `work` is, as `cockpit-tui workdir --source` names it
+    pub source: Source,
     pub root: String,
     pub state: String,
     pub msg: String,
@@ -66,6 +55,8 @@ pub struct Facts {
     pub job: Option<(String, String)>,
     /// the review dir, its pinned count and its delivered count; `None` when absent
     pub rev_dir: Option<(String, usize, usize)>,
+    /// how the title names the pane (#1407); `None` when tmux did not say
+    pub label: Option<crate::data::Label>,
 }
 
 /// Control characters out: a transcript, a title and a path are not trusted
@@ -225,6 +216,11 @@ fn count(path: &std::path::Path) -> usize {
 
 const SEP: char = '\u{1f}';
 
+/// How many fields `gather`'s own `display-message` format has: tmux prints every one for a
+/// pane that is there, so a row with fewer is no row of it (#1396). The format's parts are
+/// an array of this length, so a part added or dropped does not compile until this changes.
+pub const FORMAT_N: usize = 17;
+
 /// Every fact for `pane`, in one tmux read. `Err` names a pane that is not
 /// there: display-message exits 0 and expands to nothing for a missing id, so
 /// the resolved id is the test, not the status.
@@ -232,7 +228,7 @@ pub fn gather(pane: &str) -> Result<Facts, String> {
     // A US byte inside a title, a message or a window name would shift every
     // later field: free-form values are blanked in the format, as data.rs FIELDS does.
     let q = |f: &str| format!("#{{s/{SEP}/ /:{f}}}");
-    let fmt = [
+    let parts: [String; FORMAT_N] = [
         "#{pane_id}".to_string(),
         format!("{}:#{{window_index}} {}", q("#{session_name}"), q("#{window_name}")),
         q("#{pane_current_command}"),
@@ -247,19 +243,23 @@ pub fn gather(pane: &str) -> Result<Facts, String> {
         // 11 was a glob test of the command; the board's own test decides now (#519)
         String::new(),
         q("#{@cockpit_tui_version}"),
-        // #460: 13 and 14, optional, so a shorter row still reads
+        // #460: 13 and 14
         q("#{@cockpit_job}"),
         // a newline is a space, as in the board's FIELDS
         format!("#{{s/\n/ /:{}}}", q("#{@cockpit_job_name}")),
-        // #1267: 15, optional, the bound job's session: the session of a pane that has none
+        // #1267: 15, the bound job's session: the session of a pane that has none
         q("#{@cockpit_job_session}"),
-    ]
-    .join(&SEP.to_string());
+        // #1355: 16, for a pane the board does not count: its folder's candidate
+        q("#{@cockpit_cwd}"),
+    ];
+    let fmt = parts.join(&SEP.to_string());
     let out = super::tmux(&["display-message", "-p", "-t", pane, &fmt]).unwrap_or_default();
     let f: Vec<&str> = out.trim_end_matches('\n').split(SEP).collect();
-    if f.len() < 13 || f[0].is_empty() {
+    if f.len() < FORMAT_N || f[0].is_empty() {
         return Err(format!("no such pane {pane}"));
     }
+    // #519: the board's agent test, off the board's own row, which #1355 reads for the dir
+    let row = super::one_row(f[0]);
     let mut x = Facts {
         id: f[0].into(),
         wher: clean(f[1]),
@@ -271,21 +271,19 @@ pub fn gather(pane: &str) -> Result<Facts, String> {
         spool: clean(f[8]),
         // #1267: the session the transcript came from, as --json's: own, else the job's
         sid: match clean(f[9]) {
-            s if s.is_empty() => f.get(15).map(|s| clean(s)).unwrap_or_default(),
+            s if s.is_empty() => clean(f[15]),
             s => s,
         },
         title: clean(f[10]),
-        agent: super::is_agent(f[0]),
+        agent: row.is_some(),
         tui: tui_row(f[12]),
         // the name is a pane title, so control and bidi characters go
-        job: match (
-            f.get(13).map(|i| clean(i)),
-            f.get(14).map(|n| crate::pick::clean(n).trim().to_string()),
-        ) {
+        job: match (clean(f[13]), crate::pick::clean(f[14]).trim().to_string()) {
             // agent-poll sets both in one call: a name with no id is no bind
-            (Some(id), Some(name)) if !name.is_empty() && !id.is_empty() => Some((name, id)),
+            (id, name) if !name.is_empty() && !id.is_empty() => Some((name, id)),
             _ => None,
         },
+        label: super::label_of(f[0]),
         ..Default::default()
     };
     if !f[4].is_empty() {
@@ -294,19 +292,20 @@ pub fn gather(pane: &str) -> Result<Facts, String> {
     }
     // `file` can ask `claude agents`: only an agent pane has a transcript to find
     let tr = if x.agent { super::transcript::file(&x.id, f[3]) } else { None };
-    let said = tr.as_deref().and_then(super::transcript::cwd).unwrap_or_default();
-    let (opt, cwd) = (f[4].to_string(), f[3].to_string());
-    x.work = super::fleet::work_dirs(&[[opt.clone(), said.clone(), cwd]])
-        .pop()
-        .unwrap_or_default();
-    // the same string as a higher candidate is that candidate: work_dirs' order
-    x.work_from = if !opt.is_empty() && x.work == opt {
-        WorkFrom::Opt
-    } else if !said.is_empty() && x.work == said {
-        WorkFrom::Transcript
-    } else {
-        WorkFrom::Cwd
+    // #1355: an agent's dir comes off the board's candidates and rule, so the screen,
+    // `info --json` and `workdir --source` name one folder and one source. A pane the
+    // board does not count has no transcript to read: its options and its cwd, as goto.
+    let w = match row {
+        Some((mut p, b)) => {
+            let b: Vec<&str> = b.iter().map(String::as_str).collect();
+            choose(&super::work_candidates(&mut p, &b))
+        }
+        None => choose(&Candidates {
+            pane_cwd: f[3].to_string(),
+            ..Candidates::from_options(f[4], f[16])
+        }),
     };
+    (x.work, x.source) = (w.dir, w.source);
     // #500: root, base and the review dir follow the work dir, as `prefix r` does
     // once it reads `cockpit-tui workdir` (#499). No dir at all: git_root("") would
     // describe the caller's repo, not this pane's.

@@ -1,4 +1,4 @@
-"╭ panel · %3 · claude ─────────────────────────────────────────────────────────╮"
+"╭ panel ───────────────────────────────────────────────────────────────────────╮"
 "│ ▎1 ★ Write a prompt    a task for Claude Code from your rough words          │"
 "│  2   Compose           type once: fix spelling, write, or insert             │"
 "│  3   Explain           what is on this screen, and what next                 │"

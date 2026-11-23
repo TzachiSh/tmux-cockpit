@@ -16,19 +16,14 @@ fn one_fetch_is_one_tmux_call_and_cockpit_dir_comes_off_it() {
     std::fs::create_dir_all(dir.join("bin")).unwrap();
     std::fs::create_dir_all(dir.join("wt")).unwrap();
     let d = dir.display().to_string();
-    // %1 names a tree that exists, %2 one that does not, %3 an older 13-field row
-    let row = |id: &str, cwd: &str, opt: Option<&str>| {
-        let mut f = vec![id, "w:0", "win", "claude", "running", "-", "-", "s1", cwd, "100", "-", "-", "@1"];
-        f.extend(opt);
-        f.join("\u{1f}")
+    // %1 names a tree that exists, %2 one that does not
+    let row = |id: &str, cwd: &str, opt: &str| {
+        fake::board_row(&[
+            id, "w:0", "win", "claude", "running", "-", "-", "s1", cwd, "100", "-", "-", "@1", opt,
+        ])
     };
     let wt = format!("{d}/wt");
-    let rows = [
-        row("%1", "/main/one", Some(&wt)),
-        row("%2", "/main/two", Some("/no/such/tree")),
-        row("%3", "/main/three", None),
-    ]
-    .join("\n");
+    let rows = [row("%1", "/main/one", &wt), row("%2", "/main/two", "/no/such/tree")].join("\n");
     std::fs::write(dir.join("rows"), rows + "\n").unwrap();
     write_exec(
         &dir.join("bin/tmux"),
@@ -52,8 +47,8 @@ fn one_fetch_is_one_tmux_call_and_cockpit_dir_comes_off_it() {
     drop(held);
     fake::assert_claude_is_the_rigs(&dir);
 
-    assert_eq!(list_panes().unwrap().len(), 3);
-    assert_eq!(list_panes().unwrap().len(), 3);
+    assert_eq!(list_panes().unwrap().len(), 2);
+    assert_eq!(list_panes().unwrap().len(), 2);
 
     // #301 reads the agent list for every row, so the first fetch also makes
     // the thread's one `show-option` for it; every fetch after is one call
@@ -65,7 +60,7 @@ fn one_fetch_is_one_tmux_call_and_cockpit_dir_comes_off_it() {
         .map(str::to_string)
         .collect();
     trees.sort();
-    let mut want = vec![wt, "/main/three".to_string(), "/main/two".to_string()];
+    let mut want = vec![wt, "/main/two".to_string()];
     want.sort();
     assert_eq!(trees, want, "@cockpit_dir when it is a directory, else the cwd");
     let _ = std::fs::remove_dir_all(&dir);

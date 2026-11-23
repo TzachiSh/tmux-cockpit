@@ -2,9 +2,10 @@
 # Sourced, never run. Bash 4+. The tree a pane works in (#470): the dir the
 # board's row shows, so prefix r, the board's r and tmux-branch's goto name the
 # same one. cockpit-tui owns the rule (`cockpit-tui workdir %N`, the board's
-# Pane.dir: @cockpit_dir, else the session transcript's newest cwd, else
-# pane_current_path); this asks it, and falls back to the rule without the
-# transcript whenever the binary cannot answer.
+# Pane.dir, data::workdir::choose: a declared @cockpit_dir, else the git tree the
+# agent's tool calls reached in the last 600 s (#462), else the hooks' cwd or the
+# transcript's, else pane_current_path). pane_workdir asks it for every agent pane,
+# and falls back to the rule without the transcript whenever the binary cannot answer.
 
 # shellcheck source=pane.sh
 . "${BASH_SOURCE[0]%/*}/pane.sh" || return 1
@@ -59,10 +60,10 @@ workdir_agent() {             # <glob 1|0> <@panestate> <pane_current_command>
     version_cmd "$3"
 }
 
-# Whether the binary's answer can differ from the rule without it: only for an
-# agent pane (it alone has a transcript) whose @cockpit_dir does not hold (one
-# that holds is the binary's first pick too). Every other pane forks nothing:
-# goto walks every shell pane, and a call each costs more than the walk.
+# tmux-branch's goto walk, which serves only a binary older than its own branch
+# screen (no active-in): ask for an agent pane whose @cockpit_dir does not hold, as
+# such a binary picks a holding one first. Every other pane forks nothing: goto walks
+# every shell pane, and a call each costs more than the walk.
 workdir_need() {              # <agent 1|0> <@cockpit_dir>
     [ "$1" = 1 ] && ! workdir_ok "$2"
 }
@@ -85,8 +86,9 @@ pane_workdir() {              # <pane> -> a directory; nothing when the pane is 
     out=$(tmux display-message -p -t "$1" "$WORKDIR_FMT" 2>/dev/null)
     workdir_row "$out"
     [ -n "$WD_ID" ] || return 0
-    if workdir_need "$WD_AGENT" "$WD_OPT"; then
-        dir=$(workdir_ask "$1")
-    fi
+    # Every agent pane asks, @cockpit_dir holding or not: a tree its tool calls reached
+    # outranks a hook-written one (#462). A shell pane has no transcript: the binary
+    # answers none for it (exit 1), so it is not asked.
+    [ "$WD_AGENT" = 1 ] && dir=$(workdir_ask "$1")
     workdir_pick "$dir" "$WD_OPT" "$WD_CWD"; printf '%s\n' "$WORKDIR"
 }

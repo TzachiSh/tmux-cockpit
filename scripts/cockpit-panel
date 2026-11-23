@@ -26,7 +26,19 @@ LOG=${COCKPIT_LOG:-${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/tui.log}
 . "$DIR/scripts/lib/basket.sh" || exit 1
 # shellcheck source=lib/tmpdir.sh
 . "$DIR/scripts/lib/tmpdir.sh" || exit 1
+# shellcheck source=lib/workdir.sh
+. "$DIR/scripts/lib/workdir.sh" || exit 1
+# shellcheck source=lib/label.sh
+. "$DIR/scripts/lib/label.sh" || exit 1
 BIN=$COCKPIT_TUI_BIN
+
+# The folder the pane works in (#1344): the binary's answer (workdir_ask, bounded), else
+# the pane's cwd. A new session or a move to another repo changes it, the command stays.
+pane_wd() {                   # <pane> -> a folder, or nothing
+    local w; w=$(workdir_ask "$1")
+    [ -n "$w" ] || w=$(tmux display -p -t "$1" '#{pane_current_path}' 2>/dev/null)
+    printf '%s' "$w"
+}
 
 # $EPOCHREALTIME needs bash 5, and no portable `date` flag gives microseconds.
 log() {
@@ -89,7 +101,9 @@ HDIR=${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/panel
 spid=$(tmux display -p '#{pid}' 2>/dev/null) saved='' dropped=''
 case "$spid" in ''|*[!0-9]*) ;; *) saved="$HDIR/$spid-${PANE#%}.state" ;; esac
 if [ -n "$saved" ] && [ -d "$HDIR" ]; then
-    find "$HDIR" -maxdepth 1 -name '*.state' -mmin +1440 -exec rm -f {} + 2>/dev/null
+    # each hide's folder (#1344) lives beside it as <same>.wd, and goes with it
+    find "$HDIR" -maxdepth 1 \( -name '*.state' -o -name '*.wd' \) -mmin +1440 \
+        -exec rm -f {} + 2>/dev/null
     # This server's other panes: one that is gone can never be brought back.
     for s in "$HDIR/$spid-"*.state; do
         n=${s##*/"$spid"-}; n=${n%.state}
@@ -97,7 +111,7 @@ if [ -n "$saved" ] && [ -d "$HDIR" ]; then
         [ "%$n" = "$PANE" ] && continue
         # display exits 0 on a gone pane, printing nothing: the id is what tells
         [ "$(tmux display -p -t "%$n" '#{pane_id}' 2>/dev/null)" = "%$n" ] && continue
-        rm -f "$s" && dropped="$dropped %$n"
+        rm -f "$s" "${s%.state}.wd" && dropped="$dropped %$n"
     done
 fi
 # A private 0700 directory: a name beside a mktemp file in a shared /tmp is
@@ -108,12 +122,21 @@ d=''; own_tmpdir d || { tell "cockpit: no temp dir for the panel (own_tmpdir: $o
     exit 1; }
 f="$d/act"
 buf="cockpit-panel-$$"
-trap 'rm -rf "$d"' EXIT
+# Both traps ignore HUP, INT and TERM first, so a signal cannot stop the rm (#1411). After it,
+# the EXIT trap raises again the signal that stopped the panel, so it dies by it:
+# tmux-open-path's viewer waits on the panel in the foreground, and bash goes on after a
+# Ctrl-C unless its child died by SIGINT.
+sig=''
+trap 'trap "" HUP INT TERM; rm -rf "$d"
+    [ -z "$sig" ] || { trap - "$sig"; kill -s "$sig" $$; }' EXIT
+trap 'trap "" HUP INT TERM; sig=HUP; exit 129' HUP
+trap 'trap "" HUP INT TERM; sig=INT; exit 130' INT
+trap 'trap "" HUP INT TERM; sig=TERM; exit 143' TERM
 
 # The action, run the way the binary asked; `last` says how it went, for a resume.
 act() {
     # One line, `<verb> <pane-id>`; see cockpit-board for why the read is shaped so.
-    local verb='' target='' rest='' bad='' want='' now='' before='' err n i
+    local verb='' target='' rest='' bad='' want='' now='' nwd='' before='' err n i
     read -r verb target rest 2>/dev/null < "$f"
     [ -n "$verb" ] || return 1
     [ -z "$rest" ] || bad=1
@@ -145,9 +168,18 @@ act() {
         last="failed:the pane now runs ${now:-nothing}, not ${want:-?}"
         return 0
     fi
+    # The same command in another folder is another session or repo (#1344).
+    nwd=$(pane_wd "$target")
+    if [ "$nwd" != "$wd" ]; then
+        said fail "cockpit: the pane's folder is now ${nwd:-?}, not ${wd:-?}; nothing sent" \
+            -t "$target"
+        log "$target folder is now [$nwd], not [$wd]; nothing sent"
+        last="failed:the pane's folder is now ${nwd:-?}, not ${wd:-?}"
+        return 0
+    fi
     if ! err=$(strip | tmux load-buffer -b "$buf" - 2>&1); then
         log "load-buffer failed for $target: ${err:-no error text}"
-        said fail "cockpit: could not load the paste buffer; nothing sent to $target"
+        said fail "cockpit: could not load the paste buffer; nothing sent to $(label_ask "$target")"
         last="failed:could not load the paste buffer"
         return 0
     fi
@@ -156,8 +188,9 @@ act() {
     if ! err=$(tmux paste-buffer -p -d -b "$buf" -t "$target" 2>&1); then
         tmux delete-buffer -b "$buf" 2>/dev/null
         log "paste-buffer failed for $target: ${err:-no error text}"
-        said fail "cockpit: could not paste into $target; nothing sent"
-        last="failed:could not paste into $target"
+        lbl=$(label_ask "$target")
+        said fail "cockpit: could not paste into $lbl; nothing sent"
+        last="failed:could not paste into $lbl"
         return 0
     fi
     last=ok
@@ -168,7 +201,7 @@ act() {
     fi
     if [ "$verb" != send ]; then
         n=$(strip | wc -m)
-        said ok "cockpit: inserted $((n)) chars into $target"
+        said ok "cockpit: inserted $((n)) chars into $(label_ask "$target")"
         return 0
     fi
     # Ink apps (Claude Code) can drop an Enter that lands in the same read as the
@@ -178,7 +211,8 @@ act() {
         sleep 0.05; i=$((i + 1))
     done
     tmux send-keys -t "$target" Enter 2>/dev/null
-    said ok "cockpit: sent to $target"
+    # the pane by its label, never its id (#1407)
+    said ok "cockpit: sent to $(label_ask "$target")"
     return 0
 }
 # Stripped again on the way: the binary already did, but this is what reaches the pane.
@@ -193,6 +227,15 @@ resume=() last=
 kept=''; [ -n "$saved" ] && { [ -e "$saved" ] || [ -L "$saved" ]; } && kept=1
 if [ "${#ask[@]}" -eq 0 ] && [ -n "$kept" ] && mv -f "$saved" "$d/resume" 2>/dev/null; then
     resume=(--resume "$d/resume" --last hidden)
+fi
+# The folder the answer is for (#1344): a resumed panel's is the one it was opened on, kept
+# beside its state. A hide from before #1344 has none, and takes the folder of now.
+wd='' wdf=${saved:+${saved%.state}.wd}
+if [ "${#resume[@]}" -gt 0 ] && [ -f "$wdf" ] && mv -f "$wdf" "$d/resume.wd" 2>/dev/null; then
+    IFS= read -r -d '' wd < "$d/resume.wd"
+else
+    [ "${#resume[@]}" -eq 0 ] || log "no folder kept with the hidden panel of $PANE; taking now's"
+    wd=$(pane_wd "$PANE")
 fi
 # the pane keeps one hidden panel: an ask opened beside it is told, so its ^Z refuses
 taken=''; [ "${#ask[@]}" -gt 0 ] && [ -n "$kept" ] && taken=1
@@ -222,10 +265,13 @@ while :; do
         # never over a panel already hidden here (a binary that missed the env)
         if [ -n "$saved" ] && { [ -e "$saved" ] || [ -L "$saved" ]; }; then
             log "not hiding over the panel already hidden on $PANE"
-            tell "cockpit: a panel is already hidden on $PANE; this one is closed"
+            tell "cockpit: a panel is already hidden on $(label_ask "$PANE"); this one is closed"
             exit 0
         fi
         if [ -n "$saved" ] && mkdir -p "$HDIR" 2>/dev/null && chmod 700 "$HDIR" 2>/dev/null && mv -f "$f.state" "$saved"; then
+            # the folder it was opened on goes with it (#1344)
+            printf '%s' "$wd" > "$wdf" 2>/dev/null ||
+                log "could not keep the folder of the hidden panel of $PANE at [$wdf]"
             # The key bound with the note "cockpit: panel", read from the binding as the
             # jump notice reads its key (#1109): the record alone named a key moved by hand,
             # stock find-window's f (#1112). Two noted: the recorded one (cockpit_noted_key,
@@ -233,7 +279,7 @@ while :; do
             # Read again, not $pkey: the key may be rebound while the panel is open.
             hk=$(cockpit_noted_key panel @cockpit_panel_bound)
             if [ -n "$hk" ]; then hk="prefix $hk"; else hk="the panel key"; fi
-            msg="cockpit: hidden · $hk on $PANE brings it back"
+            msg="cockpit: hidden · $hk on $(label_ask "$PANE") brings it back"
             if [ -n "${COCKPIT_READONLY:-}" ] && [ -z "${COCKPIT_PANEL_NOTE:-}" ]; then
                 log "readonly, not said: $msg"
             else said ok "$msg"; fi

@@ -1,4 +1,4 @@
-"╭ panel · %3 · claude ─────────────────╮"
+"╭ panel ───────────────────────────────╮"
 "│ Prompt for Claude Code               │"
 "│                                      │"
 "│ Fix the flaky test in @tests/run.sh. │"

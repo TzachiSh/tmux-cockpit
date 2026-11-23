@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # tmux-branch — switch the git branch of a directory.
 #   tmux-branch [-c pane_command] [-p pane_id] [dir]   dir defaults to $PWD
+#   tmux-branch --title pane_id   keeps the popup's folder name on the pane, for prefix b
 set -uo pipefail
 
 # bash 4, as every cockpit script: lib/git.sh and the rest are not written for 3.2.
@@ -22,11 +23,26 @@ while [ $# -gt 0 ]; do
     case "$1" in
         -c) PANE_CMD="${2:-}"; shift 2 || break ;;
         -p) PANE_ID="${2:-}"; shift 2 || break ;;
-        -h|--help) sed -n '2,3p' "$0" >&2; exit 0 ;;
+        --title) TITLE_PANE="${2:-}"; shift 2 || break ;;
+        -h|--help) sed -n '2,4p' "$0" >&2; exit 0 ;;
         --) shift; break ;;
         *)  break ;;
     esac
 done
+
+# prefix b's run-shell, before its popup opens (#1345): a binding cannot run
+# pane_workdir, so this keeps the name of the folder the popup will use on the pane,
+# and the popup's -T reads #{@cockpit_branch_title}. A format's value is not expanded
+# again, so a # in the name stays text. Quiet and exit 0 on every path: run-shell
+# shows any output or failure, and the popup opens after it either way.
+if [ -n "${TITLE_PANE+x}" ]; then
+    is_pane "$TITLE_PANE" || exit 0
+    # shellcheck source=lib/workdir.sh
+    . "${d%/*}/lib/workdir.sh" 2>/dev/null || exit 0
+    t=$(pane_workdir "$TITLE_PANE"); t=${t%/}; t=${t##*/}
+    tmux set-option -p -t "$TITLE_PANE" @cockpit_branch_title "${t:-/}" >/dev/null 2>&1
+    exit 0
+fi
 
 # The client that pressed prefix b, left on the pane by the key (#360). Taken and
 # cleared at start, before the other libs load (#480). That narrows the window to
@@ -51,12 +67,14 @@ CLIENT=""
 DIR="${1:-}"
 # A popup's $PWD is the session's start dir, and a bare display-message picks
 # the most recently active client. -p pins the pane the popup came from.
+# The folder is the tree the board's row shows: an agent's declared @cockpit_dir,
+# else pane_current_path (#1345).
 if [ -z "$DIR" ] && [ -n "${TMUX:-}" ]; then
     if [ -n "$PANE_ID" ]; then
-        DIR=$(tmux display-message -p -t "$PANE_ID" '#{pane_current_path}' 2>/dev/null)
+        DIR=$(pane_workdir "$PANE_ID")
         [ -n "$PANE_CMD" ] || PANE_CMD=$(tmux display-message -p -t "$PANE_ID" '#{pane_current_command}' 2>/dev/null)
     else
-        DIR=$(tmux display-message -p '#{pane_current_path}' 2>/dev/null)
+        DIR=$(pane_workdir "$(tmux display-message -p '#{pane_id}' 2>/dev/null)")
         [ -n "$PANE_CMD" ] || PANE_CMD=$(tmux display-message -p '#{pane_current_command}' 2>/dev/null)
     fi
 fi
@@ -83,7 +101,7 @@ redraw() { [ -n "${TMUX:-}" ] && tmux refresh-client -S 2>/dev/null; return 0; }
 # The old-binary path: this switch, track, create and goto (and their checks in act)
 # serve a cockpit-tui that still prints action lines (0.4.0, the release at the time).
 # They go once TUI_MIN is raised to the first release whose branch screen acts itself
-# (#228, #1271), and with them the workdir.sh and fmt.sh loads only goto uses.
+# (#228, #1271), and with them the fmt.sh load only goto uses (workdir.sh also picks DIR).
 current=$(git symbolic-ref --quiet --short HEAD 2>/dev/null || printf '')
 
 # Failures are common (dirty tree, branch held by a worktree); git's own message
@@ -315,7 +333,10 @@ act() {
 # One stderr capture for the whole loop, removed on any exit. Without mktemp the
 # picker runs as before, and a stale binary is just "exited".
 err=$(mktemp 2>/dev/null) || err=
-if [ -n "$err" ]; then trap 'rm -f -- "$err"' EXIT; trap 'exit 130' INT TERM HUP; fi
+if [ -n "$err" ]; then
+    trap 'trap "" HUP INT TERM; rm -f -- "$err"' EXIT  # a signal must not stop the rm (#1411)
+    trap 'trap "" HUP INT TERM; exit 130' INT TERM HUP
+fi
 
 # The binary reads $COCKPIT_GLYPHS, never the option (#293), as tm passes it.
 glyphs=$(tmux show-option -gqv @cockpit_glyphs 2>/dev/null)

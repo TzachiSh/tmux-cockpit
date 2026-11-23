@@ -19,6 +19,7 @@ fn cap(name: &str, cmd: &str, path: &str, screen: &str, repo: &str) -> Capture {
         path: path.into(),
         screen: screen.into(),
         repo: repo.into(),
+        ..Default::default()
     }
 }
 
