@@ -62,6 +62,8 @@ sha_c() { if have sha256sum; then sha256sum -c -; else shasum -a 256 -c -; fi; }
 . "$DIR/scripts/lib/confline.sh" || exit 1
 # shellcheck source=scripts/lib/tmpdir.sh
 . "$DIR/scripts/lib/tmpdir.sh" || exit 1
+# shellcheck source=scripts/lib/eol.sh
+. "$DIR/scripts/lib/eol.sh" || exit 1
 # The plugins go where tpm installs and runs them, by tpm's own rule: the XDG tmux folder's
 # plugins when an XDG tmux.conf is there, else ~/.tmux/plugins. A folder picked any other way
 # left tpm installing a second copy in its own (#1310).
@@ -170,6 +172,22 @@ elif ask "clone the ${#TPM_PLUGINS[@]} plugins into $PLUGINS?" y; then
     done
 else
     skipped+=("plugins")
+fi
+
+step "line endings"
+# Named, never restored here: the restore overwrites edits to tracked files, and another
+# plugin's checkout is the user's to rewrite. install.sh --check gives the command (#188).
+if ! have git; then
+    note "git is missing; cannot read the checkouts"
+else
+    eol_dirs "$DIR"; eol_bad=0
+    for eol_d in "${eol_list[@]}"; do
+        eol_crlf "$eol_d" && [ "$eol_n" -gt 0 ] || continue
+        eol_bad=1
+        note "CRLF   $eol_d: $(eol_files "$eol_n") git stores with LF;" \
+             "run $DIR/install.sh --check"
+    done
+    [ "$eol_bad" -eq 1 ] || note "have   no CRLF in a checkout"
 fi
 
 # ----------------------------------------------------------------- config ----
