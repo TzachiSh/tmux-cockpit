@@ -371,8 +371,8 @@ if [ ! -d "$HOME/.claude" ] && ! have claude; then
 elif ! have jq; then
     note "jq is required for the merge; the manual block is in the README"
     skipped+=("hooks: no jq")
-elif ask "merge the agent-state hooks into ~/.claude/settings.json?" y; then
-    if [ "$dry" -eq 1 ]; then printf '  would: merge hooks into ~/.claude/settings.json\n'
+elif ask "merge the hooks into ~/.claude/settings.json and install the cockpit-events mod?" y; then
+    if [ "$dry" -eq 1 ]; then printf '  would: merge hooks, install the cockpit-events mod\n'
     else "$DIR/install.sh" --hooks && did+=("merged hooks") || failed+=("hook merge"); fi
 else
     skipped+=("hooks")

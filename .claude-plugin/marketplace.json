@@ -1,0 +1,8 @@
+{
+  "name": "tmux-cockpit",
+  "owner": { "name": "tmux-cockpit" },
+  "description": "The Claude Code mod of tmux-cockpit. install.sh --hooks adds this checkout as the marketplace and installs the mod from it.",
+  "plugins": [
+    { "name": "cockpit-events", "source": "./mods/cockpit-events" }
+  ]
+}
