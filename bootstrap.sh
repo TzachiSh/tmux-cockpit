@@ -16,8 +16,6 @@ me=${BASH_SOURCE[0]}; case $me in (*/*) ;; (*) me=./$me ;; esac
     while [ -L "$me" ] && [ $((n += 1)) -le 40 ] && t=$(readlink "$me"); do
         case $t in (/*) me=$t ;; (*) me=${me%/*}/$t ;; esac; done; printf %s "$me")
 DIR="$(cd -P "$(dirname "$me")" && pwd)"
-PLUGINS="${XDG_CONFIG_HOME:-$HOME}/.tmux/plugins"
-[ -d "$HOME/.tmux/plugins" ] && PLUGINS="$HOME/.tmux/plugins"
 
 TMUX_FLOOR_MAJ=3 TMUX_FLOOR_MIN=8 TMUX_BUILD=3.8
 
@@ -66,6 +64,10 @@ sha_c() { if have sha256sum; then sha256sum -c -; else shasum -a 256 -c -; fi; }
 . "$DIR/scripts/lib/tmpdir.sh" || exit 1
 # shellcheck source=scripts/lib/eol.sh
 . "$DIR/scripts/lib/eol.sh" || exit 1
+# The plugins go where tpm installs and runs them, by tpm's own rule: the XDG tmux folder's
+# plugins when an XDG tmux.conf is there, else ~/.tmux/plugins. A folder picked any other way
+# left tpm installing a second copy in its own (#1310).
+cockpit_conf_tpm_where; PLUGINS=$cockpit_tpm_dir
 ver_ge() {  # ver_ge <have> <maj> <min>
     local v=${1#tmux }; v=${v#v}                      # v1.13.0-abc1234-date: x.y.z leads
     vnum_ge "$v" "$2.$3"                              # next-3.9 is 3.9; no number: modern
