@@ -63,6 +63,8 @@ CLIENT=""
 . "${d%/*}/lib/workdir.sh" || exit 1
 # shellcheck source=lib/fmt.sh
 . "${d%/*}/lib/fmt.sh" || exit 1
+# shellcheck source=lib/tmpdir.sh
+. "${d%/*}/lib/tmpdir.sh" || exit 1
 
 DIR="${1:-}"
 # A popup's $PWD is the session's start dir, and a bare display-message picks
@@ -330,9 +332,13 @@ act() {
 
 [ -x "$COCKPIT_TUI_BIN" ] || fail "cockpit: cockpit-tui is missing ($COCKPIT_TUI_BIN) · run scripts/tui-fetch"
 
-# One stderr capture for the whole loop, removed on any exit. Without mktemp the
-# picker runs as before, and a stale binary is just "exited".
-err=$(mktemp 2>/dev/null) || err=
+# One stderr capture for the whole loop, removed on any exit, taken only when mktemp's answer
+# is a new, empty file of the user's (#1322). Without one the picker runs as before, a stale
+# binary is just "exited", and a message says why: the picker's alternate screen would cover
+# a line on stderr, and the popup closes with the picker.
+own_tmpfile err 2>/dev/null \
+    || dmsg ${CLIENT:+-c "$CLIENT"} \
+        "cockpit: no temp file for cockpit-tui's errors (own_tmpfile: $own_tmpfile_why)"
 if [ -n "$err" ]; then
     trap 'trap "" HUP INT TERM; rm -f -- "$err"' EXIT  # a signal must not stop the rm (#1411)
     trap 'trap "" HUP INT TERM; exit 130' INT TERM HUP
