@@ -108,6 +108,33 @@ cfg_arg() {                   # <dir>
 }
 CFG_BAD="a config dir with a control character is not used: its pane is polled on the default dir"
 
+# Claude Code's subprocess env scrub takes CLAUDE_CONFIG_DIR out of its hooks' env (#1429), so
+# the hook then reads its pane as the default dir's. On is what Claude Code 2.1.331 reads as on:
+# 1, true, yes or on, in any case, spaces trimmed. Its own rule also turns the scrub on under
+# GitHub Actions; that clause is left out, as our CI sets GITHUB_ACTIONS for every hook it runs.
+scrub_on() {
+    local v=${CLAUDE_CODE_SUBPROCESS_ENV_SCRUB:-}
+    v=${v#"${v%%[![:space:]]*}"}; v=${v%"${v##*[![:space:]]}"}
+    case $v in 1|[Tt][Rr][Uu][Ee]|[Yy][Ee][Ss]|[Oo][Nn]) return 0 ;; esac
+    return 1
+}
+SCRUB_MSG="with CLAUDE_CODE_SUBPROCESS_ENV_SCRUB on the hooks see no CLAUDE_CONFIG_DIR"
+SCRUB_MSG="$SCRUB_MSG and their panes are polled on the default dir"
+
+# What this hook does to @cockpit_poll_err for the scrub: SCRUB_IF, a format that reads 1 when
+# the write is due, and SCRUB_DO, the write, for if-shell -F. The scrub on and no dir seen: the
+# message, only into an empty slot, so it replaces no other. Else that message is taken back, and
+# only that one. The slot is global, so a hook in any pane may take it back.
+scrub_note() {
+    if [ -z "${CLAUDE_CONFIG_DIR:-}" ] && scrub_on; then
+        SCRUB_IF='#{?#{@cockpit_poll_err},0,1}'
+        SCRUB_DO="set-option -g @cockpit_poll_err '$SCRUB_MSG'"
+    else
+        SCRUB_IF="#{==:#{@cockpit_poll_err},$SCRUB_MSG}"
+        SCRUB_DO='set-option -gu @cockpit_poll_err'
+    fi
+}
+
 # A single-quoted word for /bin/sh, which run-shell runs: %q can print $'...', which sh does not
 # read.
 shq() { printf "'%s'" "${1//\'/\'\\\'\'}"; }
@@ -190,14 +217,17 @@ EOT
 # pane and makes sure one poller runs on this server. Costs one tmux read and, with the
 # poller alive, one /proc read; the start is detached (run-shell -b) so the hook never waits.
 mark_agentview() {            # <pane> <scripts dir>
-    local info view fg pid every cfg key arg="" bad="" dir=${CLAUDE_CONFIG_DIR:-}
+    local info view fg pid every scrub cfg key arg="" bad="" dir=${CLAUDE_CONFIG_DIR:-}
     # A dir cfg_arg refuses is not used: the pane is the default dir's, and that poller starts.
     [ -z "$dir" ] || arg=$(cfg_arg "$dir") || { bad=1; dir=""; }
     key=$(poll_key "$dir") || return 0
+    scrub_note
     info="#{@cockpit_agentview}|#{@cockpit_fg}|#{$(poll_slot "$key")}|#{@cockpit_bg_poll}"
-    info=$(tmux display-message -p -t "$1" "$info|#{@cockpit_cfg}" 2>/dev/null) || return 0
+    info=$(tmux display-message -p -t "$1" "$info|$SCRUB_IF|#{@cockpit_cfg}" 2>/dev/null) \
+        || return 0
     view=${info%%|*}; info=${info#*|}; fg=${info%%|*}; info=${info#*|}
-    pid=${info%%|*}; info=${info#*|}; every=${info%%|*}; cfg=${info#*|}
+    pid=${info%%|*}; info=${info#*|}; every=${info%%|*}; info=${info#*|}
+    scrub=${info%%|*}; cfg=${info#*|}
     [ "$every" = off ] && return 0
     [ "$view" = 1 ] || tmux set-option -p -t "$1" @cockpit_agentview 1 2>/dev/null
     # The agent view relays for this pane: it shows jobs now, whatever session ran in it before.
@@ -214,6 +244,9 @@ mark_agentview() {            # <pane> <scripts dir>
                 2>/dev/null
         fi
     fi
+    # The scrub's message (#1429): a call only when the read said the write is due, and the
+    # server tests it again.
+    [ "$scrub" != 1 ] || tmux if-shell -F -t "$1" "$SCRUB_IF" "$SCRUB_DO" 2>/dev/null
     poll_alive "$pid" && return 0
     start_poller "$2" "$dir"
 }
