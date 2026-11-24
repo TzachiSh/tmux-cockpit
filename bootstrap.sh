@@ -184,17 +184,50 @@ TPM_PLUGINS=(
     "tmux-continuum:https://github.com/tmux-plugins/tmux-continuum"
 )
 
+# tmux loads both, so the run-shell line in either wires the box. A line that only names
+# cockpit.tmux, a comment or another folder's path, does not (#1067). Read before the
+# plugins step, as a run line of tpm in them says where tpm goes (#1323).
+CONF=''; cfs=()
+for c in "${XDG_CONFIG_HOME:-$HOME/.config}/tmux/tmux.conf" "$HOME/.tmux.conf"; do
+    [ -r "$c" ] || continue
+    [ -n "$CONF" ] || CONF=$c
+    cfs+=("$c")
+done
+
 step "tmux plugins"
+# tpm goes where a run line of tpm runs it, <folder>/tpm for <folder>/tpm/tpm, which can be
+# outside tpm's plugin folder: tpm's README clones it into ~/.tmux/plugins/tpm and runs it
+# from there, with an XDG tmux.conf too. Any other file that line runs, a distro's tpm among
+# them, is not cloned. With no such line, tpm goes into the plugin folder with the rest (#1323).
+TPM_DIR=$PLUGINS/tpm tpm_run=''
+if [ "${#cfs[@]}" -gt 0 ]; then
+    cockpit_conf_tpm "$DIR" "${cfs[@]}" >/dev/null
+    tpm_run=$cockpit_tpm_script
+fi
+case $tpm_run in
+    '') ;;
+    /*/tpm/tpm) TPM_DIR=${tpm_run%/tpm} ;;
+    *) TPM_DIR='' ;;
+esac
+case $TPM_DIR in
+    "$PLUGINS/tpm") tpm_q='' ;;
+    '') tpm_q=", all but tpm, which its run line runs from $tpm_run" ;;
+    *) tpm_q=", tpm into $TPM_DIR" ;;
+esac
 if ! have git; then
     note "git is missing; cannot clone anything"
     skipped+=("plugins: no git")
-elif ask "clone the ${#TPM_PLUGINS[@]} plugins into $PLUGINS?" y; then
+elif ask "clone the ${#TPM_PLUGINS[@]} plugins into $PLUGINS$tpm_q?" y; then
     [ "$dry" -eq 1 ] || mkdir -p "$PLUGINS"
     for p in "${TPM_PLUGINS[@]}"; do
-        d=${p%%:*}; url=${p#*:}
+        d=${p%%:*}; url=${p#*:}; to=$PLUGINS/$d
+        if [ "$d" = tpm ]; then
+            [ -n "$TPM_DIR" ] || { note "not cloning tpm: its run line runs $tpm_run"; continue; }
+            to=$TPM_DIR
+        fi
         # Never pulled: that would discard a revision the user pinned.
-        if [ -d "$PLUGINS/$d/.git" ]; then note "have   $d"; continue; fi
-        run "clone $d" git clone -q --depth 1 "$url" "$PLUGINS/$d"
+        if [ -d "$to/.git" ]; then note "have   $d"; continue; fi
+        run "clone $d" git clone -q --depth 1 "$url" "$to"
     done
 else
     skipped+=("plugins")
@@ -218,14 +251,7 @@ fi
 
 # ----------------------------------------------------------------- config ----
 step "tmux config"
-# tmux loads both, so the run-shell line in either wires the box. A line that only names
-# cockpit.tmux, a comment or another folder's path, does not (#1067).
-CONF=''; wired=''; wst=1; cfs=()
-for c in "${XDG_CONFIG_HOME:-$HOME/.config}/tmux/tmux.conf" "$HOME/.tmux.conf"; do
-    [ -r "$c" ] || continue
-    [ -n "$CONF" ] || CONF=$c
-    cfs+=("$c")
-done
+wired=''; wst=1
 [ "${#cfs[@]}" -eq 0 ] || { cockpit_conf_wired "$DIR" "${cfs[@]}"; wst=$?; }
 [ "$wst" -ne 0 ] || wired=$cockpit_wired
 [ -n "$CONF" ] || CONF="$HOME/.tmux.conf"
