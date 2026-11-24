@@ -126,7 +126,9 @@ line for that path as tpm's too. A tpm anywhere else counts when its path ends
 in `/tpm/tpm`, as a clone of tpm has it. When its config row fails on an
 `@plugin` line, the fix column names each check that failed: the line sits in
 a config tpm does not read, no line runs tpm, or tpm's plugin folder holds
-another copy (#1302).
+another copy (#1302). That folder is tpm's default one, and a
+`TMUX_PLUGIN_MANAGER_PATH` set in tmux's global environment moves it: the fix
+column says so, as `install.sh --check` does not read it (#1323).
 
 `bootstrap.sh` clones the plugins into tpm's plugin folder: the XDG tmux
 folder's `plugins` when an XDG `tmux.conf` is there, else `~/.tmux/plugins`
