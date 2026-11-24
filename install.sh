@@ -60,6 +60,8 @@ esac; done
 . "$DIR/scripts/lib/eol.sh" || exit 1
 # shellcheck source=scripts/lib/claudedir.sh
 . "$DIR/scripts/lib/claudedir.sh" || exit 1
+# shellcheck source=scripts/lib/tmpdir.sh
+. "$DIR/scripts/lib/tmpdir.sh" || exit 1
 
 # A builtin, not awk: the fail rows must still be right on an empty PATH.
 fld() {                       # fld <field> <version line>
@@ -377,8 +379,9 @@ fi
 # signal sent to this pid alone waits for the command in the foreground: bash runs a trap only
 # once that command ends. After the rm, the EXIT trap raises again the signal that stopped the
 # script, so it dies by it: bootstrap.sh waits on it in the foreground, and bash goes on after a
-# Ctrl-C unless its child died by SIGINT. tmp names the file only once mktemp has made it, so a
-# mktemp that fails never hands the rm what it printed.
+# Ctrl-C unless its child died by SIGINT. own_tmpfile sets tmp only once it has taken mktemp's
+# answer as a new, empty file of the user's own (#1322), so a mktemp that fails, or answers a file
+# that exists, never hands the rm what it printed.
 tmp='' sig=''
 trap 'trap "" HUP INT TERM; rm -f -- ${tmp:+"$tmp"}
     [ -z "$sig" ] || { trap - "$sig"; kill -s "$sig" $$; }' EXIT
@@ -581,9 +584,10 @@ if [ "$hooks" -eq 1 ] && [ "$uninstall" -eq 1 ]; then
         fi
         bak="$settings.bak-$(date +%Y%m%d-%H%M%S)"
         cp -p -- "$real" "$bak" || { printf 'cannot write the backup %s; %s untouched\n' "$bak" "$settings" >&2; exit 1; }
-        made=$(mktemp "$real.XXXXXX") \
-            || { printf 'write failed; %s untouched\n' "$settings" >&2; exit 1; }
-        tmp=$made
+        own_tmpfile tmp "$real.XXXXXX" || {
+            printf 'write failed; %s untouched (own_tmpfile: %s)\n' "$settings" \
+                "$own_tmpfile_why" >&2
+            exit 1; }
         cp -p -- "$real" "$tmp" && printf '%s\n' "$stripped" > "$tmp" && mv -- "$tmp" "$real" \
             || { printf 'write failed; %s untouched\n' "$settings" >&2; exit 1; }
         tmp=''
@@ -684,9 +688,10 @@ if [ "$hooks" -eq 1 ]; then
         fi
         # A sibling temp file renamed over $real, so an interrupted write never
         # truncates it; cp -p keeps the mode mktemp would tighten to 0600.
-        made=$(mktemp "$real.XXXXXX") \
-            || { printf 'write failed; %s untouched\n' "$settings" >&2; exit 1; }
-        tmp=$made
+        own_tmpfile tmp "$real.XXXXXX" || {
+            printf 'write failed; %s untouched (own_tmpfile: %s)\n' "$settings" \
+                "$own_tmpfile_why" >&2
+            exit 1; }
         cp -p -- "$real" "$tmp" && printf '%s\n' "$merged" > "$tmp" && mv -- "$tmp" "$real" \
             || { printf 'write failed; %s untouched\n' "$settings" >&2; exit 1; }
         tmp=''

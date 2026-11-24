@@ -155,8 +155,10 @@ build() {                     # 0 built · 2 skipped
     fi
     # Captured: only the tail of rustc's output fits the popup. The log takes
     # stderr, the rendered diagnostics; cargo's JSON on stdout stays with the
-    # helper, which names the file cargo built, never one under a guessed dir (#591).
-    log=$(mktemp) || { log=''; return 2; }
+    # helper, which names the file cargo built, never one under a guessed dir (#591). Taken
+    # only when it is a new, empty file of the user's own, as the trap removes it (#1322).
+    own_tmpfile log || {
+        say "skip: no temp file for the build log (own_tmpfile: $own_tmpfile_why)"; return 2; }
     # shellcheck source=lib/cargo-build.sh
     exe=$(. "$DIR/scripts/lib/cargo-build.sh" &&
         cargo_build_exe "$DIR/tui/Cargo.toml" 2> "$log") || {
