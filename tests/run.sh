@@ -852,6 +852,34 @@ polls_on() {                  # <socket name> <proc dir>... -> the count
     echo "$n"
 }
 
+# bs_box <dir>: a faked box for bootstrap.sh (#947). HOME is <dir>/h: every plugin is cloned
+# already and ~/.tmux.conf loads cockpit, so the plugins and config steps act on nothing.
+# <dir>/bin holds stubs for sudo, every package manager bootstrap.sh knows, git, curl, wget, gh,
+# cargo, make, cc and gcc. Each logs its argv to <dir>/calls. sudo and apt-get exit 0, the rest
+# 1, and the apt-get stub makes every box an apt box, so the build is reached the same way
+# everywhere. A row runs bootstrap.sh with HOME=<dir>/h and PATH=<dir>/bin:/usr/bin:/bin.
+bs_box() {                    # <dir>
+    local c
+    mkdir -p "$1/bin" "$1/h/.tmux/plugins" && : > "$1/calls" || return 1
+    for c in tpm tmux-sensible tmux-yank tmux-resurrect tmux-continuum; do
+        mkdir -p "$1/h/.tmux/plugins/$c/.git"
+    done
+    printf '# mine\nrun-shell %s/cockpit.tmux\n' "$DIR" > "$1/h/.tmux.conf"
+    for c in sudo apt-get dnf pacman zypper brew git curl wget gh cargo make cc gcc; do
+        printf '#!/bin/sh\necho "%s $*" >> %s\n' "$c" "$(tq "$1/calls")" > "$1/bin/$c"
+        case $c in sudo|apt-get) echo 'exit 0' ;; *) echo 'exit 1' ;; esac >> "$1/bin/$c"
+    done
+    chmod +x "$1/bin/"*
+}
+# bs_fetches_revdiff: bootstrap.sh fetches a prebuilt revdiff here, so its fetch_tool runs. That
+# is Linux on x86_64 or arm64: on macOS the brew stub takes the step.
+bs_fetches_revdiff() {
+    case "$(uname -s)/$(uname -m)" in
+        Linux/x86_64|Linux/amd64|Linux/aarch64|Linux/arm64) return 0 ;;
+    esac
+    return 1
+}
+
 echo "== syntax =="
 for f in "$DIR"/cockpit.tmux "$DIR"/install.sh "$DIR"/scripts/* "$DIR"/scripts/lib/*; do
     [ -f "$f" ] || continue   # scripts/lib is a directory
@@ -11737,6 +11765,17 @@ echo "== EXIT traps: once one runs, no HUP, INT or TERM stops its cleanup (#1411
 # bash waits on those two in the foreground (install.sh, bootstrap.sh, tmux-open-path's viewer),
 # and it goes on after a Ctrl-C to the group unless its child died by SIGINT. In the last two
 # rows a stand-in caller of that kind runs each: it must stop, after the cleanup.
+# install.sh writes settings.json through a temp file beside it, and bootstrap.sh builds tmux
+# and fetches revdiff in a temp dir. Each is removed by an EXIT trap of the same shape (#1417).
+# Their rows run install.sh in a HOME whose settings.json is mode 0400: cp -p gives the temp
+# file that mode, the write into it fails, and the script exits 1 with the file there for its
+# EXIT trap to remove. Those rows also read how many temp files are left beside settings.json.
+# bootstrap.sh runs on bs_box's faked box: a HUP while it downloads tmux or revdiff must leave
+# no dir. Both run under the stand-in caller too: install.sh while its tui-fetch downloads,
+# bootstrap.sh while it downloads tmux. With that trap set for the whole script, tmp must name
+# the temp file only once mktemp has made it: two rows put first on PATH a mktemp that fails
+# for settings.json's temp file after printing settings.json's own path, and settings.json
+# must stay. They need no signal, so they run on every box.
 XT=$(mktmpd); mkdir -p "$XT/bin" "$XT/w/repo"; : > "$XT/w/a.txt"; : > "$XT/w/b.txt"
 ( cd "$XT/w/repo" && git init -q . ) >/dev/null 2>&1
 XT_RM=$(command -v rm)
@@ -11767,6 +11806,9 @@ chmod +x "$XT/bin/stand"; ln -s bin/stand "$XT/tui"
 for xt_c in rm tmux curl gh cargo rustc; do ln -s stand "$XT/bin/$xt_c"; done
 # The caller: a bash that runs the script in the foreground, then goes on, as install.sh:364
 printf '#!/usr/bin/env bash\nbash "$@"\necho went-on > "$XT_DONE"\n' > "$XT/caller"
+bs_box "$XT/bx"; printf '{}\n' > "$XT/empty.json"; mkdir -p "$XT/mk"
+printf '#!/bin/sh\ncase $1 in */settings.json.XXXXXX) echo "${1%%.XXXXXX}"; exit 1 ;; esac\n%s\n' \
+    "exec $(tq "$(command -v mktemp)") \"\$@\"" > "$XT/mk/mktemp"; chmod +x "$XT/mk/mktemp"
 xt_run() {                    # <signal> <hold glob> <script|path> [args...] -> mark|status|left
     local sig=$1 hold=$2 f=$DIR/scripts/$3 c="" a="" g rc p d=()
     case $3 in /*) f=$3 ;; esac; shift 3
@@ -11795,10 +11837,37 @@ xt_run() {                    # <signal> <hold glob> <script|path> [args...] -> 
         "$(ls -A "$XT/t" | tr '\n' ,)" "$(cat "$XT/done" 2>/dev/null)"
 }
 xt_is() {                     # <signal> <row> <want> <hold glob> <script> [args...]
+    # XT_ALSO: a function whose output the row reads too, after a |
     local sig=$1 row=$2 want=$3; shift 3
     if [ "$sig" = INT ] && ! sig_dfl INT; then skip_ "$row (env cannot reset SIGINT)"
-    else is "$row" "$want" "$(xt_run "$sig" "$@")"; fi
+    else is "$row" "$want" "$(xt_run "$sig" "$@")${XT_ALSO:+|$("$XT_ALSO")}"; fi
 }
+xt_temps() { ls -A "$XT/h/.claude" | grep -c '^settings\.json\.[A-Za-z0-9]\{6\}$'; }
+xt_ins() {                    # <signal> <row> <settings.json source> <install.sh args...>
+    local sig=$1 row=$2 f=$XT/h/.claude/settings.json; shift 2
+    rm -rf "${XT:?}/h"; mkdir -p "$XT/h/.claude"; cp "$1" "$f"; chmod 400 "$f"; shift
+    if [ -w "$f" ]; then skip_ "$row (a file of mode 0400 is writable here: root)"
+    else XT_ALSO=xt_temps XT_BIN=$XT/p/bin/cockpit-tui HOME=$XT/h XDG_BIN_HOME=$XT/h/bin \
+        xt_is "$sig" "$row" "held|1||0" 'rm -f -- */settings.json.*' "$DIR/install.sh" "$@"
+    fi
+}
+xt_box() {                    # xt_is's arguments, for bootstrap.sh on bs_box's box in $XT/bx
+    XT_BIN=$XT/p/bin/cockpit-tui HOME=$XT/bx/h PATH=$XT/bx/bin:/usr/bin:/bin \
+        COCKPIT_GITHUB=http://no-such-host.invalid xt_is "$@"
+}
+xt_mk() {                     # <settings.json source> <install.sh args...> -> status|kept or gone
+    local src=$1 f=$XT/h/.claude/settings.json rc
+    rm -rf "${XT:?}/h"; mkdir -p "$XT/h/.claude"; cp "$src" "$f"; shift
+    env -u CLAUDE_CONFIG_DIR -u TMUX -u TMUX_PANE HOME="$XT/h" XDG_BIN_HOME="$XT/h/bin" \
+        PATH="$XT/mk:$PATH" "$DIR/install.sh" "$@" </dev/null >/dev/null 2>&1; rc=$?
+    printf '%s|%s' "$rc" "$(cmp -s "$src" "$f" && echo kept || echo gone)"
+}
+# Green on master too: its trap was set only once mktemp had made the file.
+is "install.sh --hooks --remove: a mktemp that fails naming settings.json leaves it there" \
+    "1|kept" "$(xt_mk "$DIR/examples/claude-hooks.json" --hooks --remove)"
+# Green on master too: its trap was set only once mktemp had made the file.
+is "install.sh --hooks: a mktemp that fails naming settings.json leaves it there" \
+    "1|kept" "$(xt_mk "$XT/empty.json" --hooks)"
 if ! command -v setsid >/dev/null; then skip_ "a signal in an EXIT trap's cleanup (no setsid)"
 elif [ ! -r "/proc/$$/comm" ]; then skip_ "a signal in an EXIT trap's cleanup (no /proc)"
 elif ! sig_dfl HUP && [ "$(trap -p HUP)" = "trap -- '' SIGHUP" ]; then
@@ -11818,6 +11887,11 @@ else
         XT_BIN=$XT/p/bin/cockpit-tui \
             xt_is "$xt_s" "tui-fetch: a $xt_s to the group cannot stop its EXIT trap's rm" \
             "held|0|" 'rm -rf *' tui-fetch
+        xt_ins "$xt_s" \
+            "install.sh --hooks --remove: a $xt_s to the group cannot stop its EXIT trap's rm" \
+            "$DIR/examples/claude-hooks.json" --hooks --remove
+        xt_ins "$xt_s" "install.sh --hooks: a $xt_s to the group cannot stop its EXIT trap's rm" \
+            "$XT/empty.json" --hooks
     done
     is "cockpit-panel: a HUP to the group while its binary runs ends it by that signal, dir gone" \
         "held|129|" "$(xt_run HUP 'tui panel*' cockpit-panel -p %1)"
@@ -11832,8 +11906,19 @@ else
         "held|130|" 'curl *' "$XT/caller" "$DIR/scripts/tui-fetch"
     xt_is INT "cockpit-panel: a group Ctrl-C stops the bash that runs it, after its cleanup" \
         "held|130|" 'tui panel*' "$XT/caller" "$DIR/scripts/cockpit-panel" -p %1
+    xt_box HUP "bootstrap.sh: a HUP to the group while it downloads tmux leaves no build dir" \
+        "held|129|" 'curl -fsSL --retry 2 *' "$DIR/bootstrap.sh"
+    if bs_fetches_revdiff; then
+        xt_box HUP "bootstrap.sh: a HUP to the group while it fetches revdiff leaves no dir" \
+            "held|129|" 'curl -fsSL --max-time 30 *' "$DIR/bootstrap.sh"
+    else skip_ "bootstrap.sh: a HUP while it fetches revdiff (no prebuilt revdiff here)"; fi
+    XT_BIN=$XT/p/bin/cockpit-tui HOME=$XT/h XDG_BIN_HOME=$XT/h/bin \
+        xt_is INT "install.sh: a group Ctrl-C stops the bash that runs it, after its cleanup" \
+        "held|130|" 'curl *' "$XT/caller" "$DIR/install.sh"
+    xt_box INT "bootstrap.sh: a group Ctrl-C stops the bash that runs it, after its cleanup" \
+        "held|130|" 'curl -fsSL --retry 2 *' "$XT/caller" "$DIR/bootstrap.sh"
 fi
-rm -rf "$XT"; unset -f xt_run xt_is; unset XT XT_RM xt_c xt_s
+rm -rf "$XT"; unset -f xt_run xt_is xt_temps xt_ins xt_box xt_mk; unset XT XT_RM xt_c xt_s
 
 echo "== tmux-review: tree_diff never writes its temp index through a symlink =="
 # The shared temp dir is the agent's to write too, and it can see tree_diff's
@@ -12077,15 +12162,11 @@ echo "== bootstrap.sh's tmux build and revdiff fetch rm -rf no dir mktemp did no
 # build_tmux and fetch_tool each armed rm -rf, at RETURN, on whatever mktemp -d answered. Here a
 # mktemp earlier on PATH answers -d with a dir that exists: one with a canary, the run's own
 # cwd, or - with a dir named - in the cwd (rm -rf - takes ./-). The step fails as a failed
-# mktemp does, prints which check refused, and the dir stays. A faked box, and nothing leaves
-# it: HOME is a folder of the row's, given as a prefix; PATH is a stub folder, then /usr/bin and
-# /bin. sudo, every package manager bootstrap.sh knows, git, curl, wget, gh, cargo, make, cc
-# and gcc are stubs that log and do nothing; the apt-get stub makes every box an apt box, so the
-# build is reached the same way everywhere. COCKPIT_GITHUB is an empty file:// dir. The tmux
-# stub prints a version: 3.7 is built, 3.8 is kept; a revdiff stub at the pin keeps the build
-# rows off fetch_tool. Every plugin is cloned already and ~/.tmux.conf loads cockpit, so no
-# other step acts. The third field counts make, cc and gcc calls: the build never compiles, as
-# the download before it fails.
+# mktemp does, prints which check refused, and the dir stays. Each row runs on bs_box's faked
+# box, and nothing leaves it. COCKPIT_GITHUB is an empty file:// dir. The tmux stub prints a
+# version: 3.7 is built, 3.8 is kept; a revdiff stub at the pin keeps the build rows off
+# fetch_tool. The third field counts make, cc and gcc calls: the build never compiles, as the
+# download before it fails.
 # quote: the build's dir is the real mktemp's, under a TMPDIR whose name holds a ', and the curl
 # stub serves a local tarball whose configure only leaves a mark and fails, so make is never
 # reached. The build ran its command in a "cd '<dir>' ..." string, which such a dir broke.
@@ -12095,18 +12176,10 @@ bt_mk=$(PATH=/usr/bin:/bin command -v mktemp)
 bt_v=$(sed -n 's/.*TMUX_BUILD=\([0-9.]*\).*/\1/p' "$DIR/bootstrap.sh")
 bt_run() {      # <tmux|revdiff> <full|cwd|-|quote|prefix> <check> -> "<dir|mark>|<FAIL>|<cc>"
     local s=$1 w=$2 o a k c what t=${TMPDIR:-/tmp}
-    o=$(mktmpd); mkdir -p "$o/bin" "$o/cwd/-" "$o/full" "$o/rel" "$o/h/.tmux/plugins"
-    echo keep > "$o/full/canary"; echo keep > "$o/cwd/-/canary"; : > "$o/calls"
-    for c in tpm tmux-sensible tmux-yank tmux-resurrect tmux-continuum; do
-        mkdir -p "$o/h/.tmux/plugins/$c/.git"
-    done
-    printf '# mine\nrun-shell %s/cockpit.tmux\n' "$DIR" > "$o/h/.tmux.conf"
+    o=$(mktmpd); bs_box "$o"; mkdir -p "$o/cwd/-" "$o/full" "$o/rel"
+    echo keep > "$o/full/canary"; echo keep > "$o/cwd/-/canary"
     case $w in full) a=$o/full k=$o/full/canary ;; cwd) a=$o/cwd k=$o/cwd ;;
                quote|prefix) a='' k=$o/configured ;; *) a=- k=$o/cwd/-/canary ;; esac
-    for c in sudo apt-get dnf pacman zypper brew git curl wget gh cargo make cc gcc; do
-        printf '#!/bin/sh\necho "%s $*" >> %s\n' "$c" "$(tq "$o/calls")" > "$o/bin/$c"
-        case $c in sudo|apt-get) echo 'exit 0' ;; *) echo 'exit 1' ;; esac >> "$o/bin/$c"
-    done
     if [ -z "$a" ]; then
         if [ "$w" = quote ]; then t=$o/q\'d; else t=$o/plain; fi
         mkdir -p "$t" "$o/pack/tmux-$bt_v"
@@ -12137,17 +12210,11 @@ bt_run() {      # <tmux|revdiff> <full|cwd|-|quote|prefix> <check> -> "<dir|mark
         "$(grep -cxF "  FAIL:  no temp dir for $what (own_tmpdir: $3)" "$o/out")" \
         "$(grep -cE '^(make|cc|gcc) ' "$o/calls")"
 }
-# fetch_tool is reached only where a prebuilt revdiff exists, and on Linux: on macOS the brew
-# stub takes the step.
-case "$(uname -s)/$(uname -m)" in
-    Linux/x86_64|Linux/amd64|Linux/aarch64|Linux/arm64) bt_f=1 ;;
-    *) bt_f='' ;;
-esac
 for bt_c in full:nonempty cwd:cwd -:dash; do
     bt_w=${bt_c%:*}
     is "the tmux build: a mktemp answering [$bt_w] is refused, says why, and the dir stays" \
        "kept|1|0" "$(bt_run tmux "$bt_w" "${bt_c#*:}")"
-    if [ -n "$bt_f" ]; then
+    if bs_fetches_revdiff; then
         is "fetch_tool: a mktemp answering [$bt_w] is refused, says why, and the dir stays" \
            "kept|1|0" "$(bt_run revdiff "$bt_w" "${bt_c#*:}")"
     else skip_ "fetch_tool and a mktemp answering [$bt_w] (no prebuilt revdiff here)"; fi
@@ -12156,7 +12223,7 @@ is "the tmux build runs its steps in a temp dir whose path holds a ', and compil
    "ran|0|0" "$(bt_run tmux quote none)"
 is "the tmux build configures with --prefix in the user's HOME, and compiles nothing" \
    "--prefix=<o>/h/.local|0|0" "$(bt_run tmux prefix none)"
-unset -f bt_run; unset bt_mk bt_v bt_c bt_w bt_f
+unset -f bt_run; unset bt_mk bt_v bt_c bt_w
 
 # group: deliver
 echo "== tmux-review --deliver: guards refuse before anything is pasted =="

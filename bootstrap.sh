@@ -110,10 +110,38 @@ else
     skipped+=("packages")
 fi
 
+# -------------------------------------------------------------- temp dirs ----
+# The tmux build and the revdiff fetch each work in a temp dir, removed however the script ends:
+# a RETURN trap does not run when a signal kills the shell (#1417). The dir is the script's tmp,
+# which in_own_tmpdir empties when the step returns and the EXIT trap removes if it is still
+# set. Both traps ignore HUP, INT and TERM first, so a signal cannot stop the rm. A signal sent
+# to this pid alone waits for the command in the foreground: bash runs a trap only once that
+# command ends. After the rm, the EXIT trap raises again the signal that stopped the script, so
+# it dies by it: a bash that waits on it in the foreground goes on after a Ctrl-C unless its
+# child died by SIGINT.
+tmp='' sig=''
+trap 'trap "" HUP INT TERM; rm -rf -- ${tmp:+"$tmp"}
+    [ -z "$sig" ] || { trap - "$sig"; kill -s "$sig" $$; }' EXIT
+trap 'trap "" HUP INT TERM; sig=HUP; exit 129' HUP
+trap 'trap "" HUP INT TERM; sig=INT; exit 130' INT
+trap 'trap "" HUP INT TERM; sig=TERM; exit 143' TERM
+# Runs the step with tmp a fresh dir of the user's own, taken only when it is one, as the rm
+# removes it (#947), and removes the dir when the step returns. A dry run makes no dir: the step
+# only prints what it would do.
+in_own_tmpdir() {             # <what> <step> [args...]
+    [ "$dry" -eq 0 ] || { shift; "$@"; return; }
+    own_tmpdir tmp || {
+        printf '  FAIL:  no temp dir for %s (own_tmpdir: %s)\n' "$1" "$own_tmpdir_why" >&2
+        return 1; }
+    shift; "$@"; set -- "$?"
+    rm -rf -- "$tmp"; tmp=''
+    return "$1"
+}
+
 # ------------------------------------------------------------------- tmux ----
 # tmux ships only a source tarball, so a distro below the floor builds it.
 build_tmux() {
-    local deps tmp
+    local deps
     case "$PKG" in
         apt)    deps="build-essential pkg-config bison libevent-dev libncurses-dev curl" ;;
         dnf)    deps="gcc make pkgconf-pkg-config bison libevent-devel ncurses-devel curl" ;;
@@ -123,11 +151,6 @@ build_tmux() {
     esac
     [ -n "$deps" ] &&{ run "install the tmux build deps" bash -c "$PKG_INSTALL $deps" || return 1; }
     [ "$dry" -eq 1 ] && { printf '  would: build tmux %s into ~/.local\n' "$TMUX_BUILD"; return 0; }
-    # Taken only when it is a fresh dir of the user's own, as the trap removes it (#947).
-    own_tmpdir tmp || {
-        printf '  FAIL:  no temp dir for the tmux build (own_tmpdir: %s)\n' "$own_tmpdir_why" >&2
-        return 1; }
-    trap 'rm -rf "$tmp"' RETURN
     printf '  note:  tmux publishes no checksums; TLS only\n'
     run "download tmux $TMUX_BUILD" curl -fsSL --retry 2 --max-time 120 -o "$tmp/t.tgz" \
         "${COCKPIT_GITHUB:-https://github.com}/tmux/tmux/releases/download/$TMUX_BUILD/tmux-$TMUX_BUILD.tar.gz" || return 1
@@ -143,7 +166,8 @@ note "found  ${v:-no tmux}"
 if [ -n "$v" ] && ver_ge "$v" "$TMUX_FLOOR_MAJ" "$TMUX_FLOOR_MIN"; then :
 elif [ "$PKG" = brew ]; then
     run "upgrade tmux" brew upgrade tmux
-elif ask "tmux-cockpit needs tmux $TMUX_BUILD; build it into ~/.local/bin?" y && build_tmux; then
+elif ask "tmux-cockpit needs tmux $TMUX_BUILD; build it into ~/.local/bin?" y &&
+     in_own_tmpdir 'the tmux build' build_tmux; then
     case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) note "add ~/.local/bin to PATH, before /usr/bin" ;; esac
     hash -r
 else
@@ -292,16 +316,11 @@ fi
 # ------------------------------------------------------------- fetch_tool ----
 # An unreachable sums file fails closed; an unreachable asset is only a skip.
 fetch_tool() {                # <name> <ver> <have> <asset-url> <sums-url|-> <path-in-tar>
-    local name=$1 ver=$2 have=$3 asset=$4 sums=$5 path=$6 tmp a depth
+    local name=$1 ver=$2 have=$3 asset=$4 sums=$5 path=$6 a depth
     if [ "$dry" -eq 1 ]; then printf '  would: fetch %s %s\n' "$name" "$ver"; return 0; fi
     if [ "$have" = "$ver" ]; then
         printf '  ok:    %s %s already current\n' "$name" "$ver"; return 0
     fi
-    # Taken only when it is a fresh dir of the user's own, as the trap removes it (#947).
-    own_tmpdir tmp || {
-        printf '  FAIL:  no temp dir for %s (own_tmpdir: %s)\n' "$name" "$own_tmpdir_why" >&2
-        return 1; }
-    trap 'rm -rf "$tmp"' RETURN
     a=${asset##*/}
     if [ "$sums" = - ]; then
         printf '  note:  %s publishes no checksums; TLS only\n' "$name"
@@ -358,8 +377,9 @@ else
         skipped+=("revdiff: no curl")
     elif ask "fetch revdiff $REVDIFF into $BIN?" y; then
         rv_rel="${COCKPIT_GITHUB:-https://github.com}/umputun/revdiff/releases/download/v$REVDIFF"
-        fetch_tool revdiff "$REVDIFF" "" "$rv_rel/revdiff_${REVDIFF}_$rv_os.tar.gz" \
-            "$rv_rel/revdiff_${REVDIFF}_checksums.txt" revdiff || failed+=("fetch revdiff")
+        in_own_tmpdir revdiff fetch_tool revdiff "$REVDIFF" "" \
+            "$rv_rel/revdiff_${REVDIFF}_$rv_os.tar.gz" "$rv_rel/revdiff_${REVDIFF}_checksums.txt" \
+            revdiff || failed+=("fetch revdiff")
     else
         skipped+=("revdiff")
     fi
