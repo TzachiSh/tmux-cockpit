@@ -200,17 +200,20 @@ touch_client() {
 # The name of the program the editor command runs, as sh reads it, its folder dropped
 # (#1177): the first word past leading NAME=value words and one `env` (#1188). '...',
 # "..." (with \$ \` \" \\ inside) and a backslash are unquoted, leading blanks skipped,
-# and nothing expands or runs. A NAME=value word that holds one of ; & | < > ( ) ` $ or a
-# newline ends the walk with no name: sh may run another program there (X=1;hx nvim).
-# Its limits (#1191), none of which gives +N to a program that runs: a word that is wholly
-# "$VAR" or $'...' is read literally; an option after `env` (env -i nvim) ends the walk;
-# and a newline or a backslash-newline in a word, an operator joined to one (nvim; or
-# nvim>log), an empty quoted word ('' nvim) or a quoted NAME=value read differently from
-# sh. Two that can: a leading redirection reads as the name of its target (>/x/vim hx), and
-# nothing past the name is read (nvim && hx). Either hands the second program the +N.
+# and nothing expands or runs. No name when the command holds one of ; & | < > ( ) or a
+# newline outside quotes, anywhere (#1321): sh may run another program there (X=1;hx nvim,
+# nvim && hx) or read a redirection's target as the name (>/x/vim hx), and nvim 2>/dev/null
+# loses its +N with them. A quoted one counts for nothing (X='a;b' nvim, nvim -c 'a;b'), and
+# a $ or a ` runs no other program (X=$HOME nvim). No name either when a word past it is --:
+# vim, nvim and emacs read +12 after it as a file, so nano, micro, emacsclient and kak lose
+# a line they would have read there. Its limits (#1191), none of which gives +N to a program
+# that runs: a word that is wholly "$VAR" or $'...' is read literally; an option after `env`
+# (env -i nvim) ends the walk; a backslash-newline, an empty quoted word ('' nvim) and a
+# quoted NAME=value read differently from sh. \$ and \` inside "..." change only the folder,
+# which ${w##*/} drops, so no row tells them from a kept backslash; \" and \\ move the quotes.
 editor_bin() {
-    local s=$1 w c q i=0 env=0 ops=$';&|<>()`$\n'
-    while :; do
+    local s=$1 w c q i=0 env=0 past=0 name='' ops=$';&|<>()\n'
+    while [ "$i" -lt "${#s}" ]; do
         w='' q=''
         while [ "$i" -lt "${#s}" ]; do
             c=${s:i:1}; i=$((i + 1))
@@ -226,33 +229,35 @@ editor_bin() {
                     ' '|$'\t') [ -z "$w" ] || break ;;
                     \'|\") q=$c ;;
                     \\) w+=${s:i:1}; i=$((i + 1)) ;;
-                    *) w+=$c ;;
+                    *) [[ $c == ["$ops"] ]] && return 0
+                       w+=$c ;;
                 esac
             fi
         done
+        if [ "$past" -eq 1 ]; then [ "$w" != -- ] || return 0; continue; fi
         # NAME=value: the name spelled out, as in a UTF-8 locale [a-z] matches more (#842)
         case $w in
             *=*) case ${w%%=*} in
                      ''|[0123456789]*) ;;
                      *[!abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_]*) ;;
-                     *) [[ $w == *["$ops"]* ]] && { w=''; break; }
-                        continue ;;
+                     *) continue ;;
                  esac ;;
         esac
         if [ "$env" -eq 0 ] && [ "${w##*/}" = env ]; then env=1; continue; fi
-        break
+        name=${w##*/} past=1
     done
-    printf %s "${w##*/}"
+    printf %s "$name"
 }
 
 # The +N that takes the editor to line <ln>, or nothing (#1188): vi, vim and vim's names
-# gvim, view and rvim, nvim, nano, emacs, emacsclient and micro read +N as a line, and
-# another editor may open "+12" as a file. The one rule for every window an editor opens in.
+# gvim, view and rvim, nvim, nano, emacs, emacsclient, micro and kak (#1321) read +N as a
+# line, and another editor may open "+12" as a file. The one rule for every window an editor
+# opens in.
 at_line() {                   # at_line <editor command> <ln>
     # [0123456789], not [0-9]: in a UTF-8 locale [0-9] also matches ² and ١ (#842)
     [[ $2 =~ ^[0123456789]+$ ]] || return 0
     case $(editor_bin "$1") in
-        vi|vim|gvim|view|rvim|nvim|nano|emacs|emacsclient|micro) printf +%s "$2" ;;
+        vi|vim|gvim|view|rvim|nvim|nano|emacs|emacsclient|micro|kak) printf +%s "$2" ;;
     esac
 }
 

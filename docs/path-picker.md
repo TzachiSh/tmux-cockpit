@@ -177,9 +177,13 @@ set -g @cockpit_editor nvim   # new window next to the one you clicked, at +LINE
 ```
 
 The line goes to the editor as `+LINE` only when the editor reads it as one:
-vi, vim, gvim, view, rvim, nvim, nano, emacs, emacsclient and micro, named past
-any leading `NAME=value` words and one `env`. Every other editor gets the file
-only, in every window the picker opens, so it never opens a file named `+12`.
+vi, vim, gvim, view, rvim, nvim, nano, emacs, emacsclient, micro and kak, named
+past any leading `NAME=value` words and one `env`. Every other editor gets the
+file only, in every window the picker opens, so it never opens a file named
+`+12`. The file only, too, when the command holds `;`, `&`, `|`, `<`, `>`, `(`,
+`)` or a newline outside quotes, where sh may run another program: so
+`nvim 2>/dev/null` opens at the top of the file. And when a `--` follows the
+editor's name: vim, nvim and emacs read every argument after it as a file.
 
 Keep it a **terminal** editor: it runs inside that new tmux window. On a touch
 client (`@cockpit_is_touch`), two paths skip VS Code: `e` in the viewer and
