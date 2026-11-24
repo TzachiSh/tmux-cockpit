@@ -43,9 +43,6 @@ LIBDIR=${d%/*}/lib
 # shellcheck source=lib/git.sh
 . "$LIBDIR/git.sh" || exit 3
 
-# tmux runs run-shell and popup strings through sh: every path in one is quoted.
-shq() { printf '%q' "$1"; }
-
 # shellcheck source=lib/pane.sh
 . "$LIBDIR/pane.sh" || exit 3
 # shellcheck source=lib/fmt.sh

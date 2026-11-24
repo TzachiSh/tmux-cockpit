@@ -17,6 +17,21 @@ fesc() {
   printf '%s' "$out${run//#/##}"
 }
 
+# A word for a shell (#1189): the value in single quotes, each ' and \ outside them as \'
+# and \\. tmux runs a window's and a popup's command with the session's default-shell -c,
+# and run-shell's with /bin/sh, so every path in one goes through here. dash, bash and zsh
+# read every byte inside '...' as it is; fish reads only \' and \\ there, and neither is
+# left inside. A tab, a control byte or a non-ASCII byte stays raw, where printf %q wrote
+# $'...', which dash and fish do not read.
+shq() {
+  local s=$1 out="'" pre
+  while [[ $s == *[\'\\]* ]]; do
+    pre=${s%%[\'\\]*}; s=${s#"$pre"}
+    out+="$pre'\\${s:0:1}'"; s=${s:1}
+  done
+  printf '%s' "$out$s'"
+}
+
 # source-file reads its path as a glob(7) pattern, where \ * ? [ are special: a
 # folder named a\x was looked up as ax, and a* also loaded its siblings (#1050).
 # Each of them goes in behind a \, which glob reads as "this character itself".
