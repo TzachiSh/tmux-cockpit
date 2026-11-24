@@ -25869,6 +25869,82 @@ is "a pane that is no %N runs no tmux" "rc=2" \
     -c ". '$DIR/scripts/lib/pane.sh'; . '$DIR/scripts/lib/basket.sh'; basket_clear 'x' '$BKD/sent'; echo rc=\$?")"
 fi
 
+echo "== basket_clear (#736): a compare that tmux cuts never clears a changed basket =="
+# tmux 3.7+ cuts a format that runs past 100 ms of wall time to "" from that point on, and a
+# bare == read two cut sides as equal. tests/cutclock.c, preloaded into this block's private
+# server, makes tmux's own CLOCK_MONOTONIC one second later at call J of a command, so the cut
+# lands on call J every run. The calls a command makes differ between tmux versions, so the
+# rows walk J over every call basket_clear makes, as counted here, never one fixed J.
+if need_tmux "basket clear cut"; then :
+elif ! command -v cc >/dev/null 2>&1; then skip_ "basket clear cut (no cc for tests/cutclock.c)"
+else
+CK="cockpit-cut-$$"; SOCKS="$SOCKS $CK"; CKD=$(mktmpd); mkdir -p "$CKD/bin" "$CKD/w"
+ckt() { "$TMUX_REAL" -L "$CK" "$@" 2>/dev/null; }
+if ! cc -shared -fPIC -o "$CKD/cutclock.so" "$DIR/tests/cutclock.c" -ldl > "$CKD/cc.log" 2>&1
+then
+    bad "tests/cutclock.c builds" "a built cutclock.so" "$(tr '\n' ' ' < "$CKD/cc.log")"
+else
+LD_PRELOAD="$CKD/cutclock.so" CUTCLOCK_ARM="$CKD/arm" CUTCLOCK_LOG="$CKD/log" \
+    "$TMUX_REAL" -L "$CK" -f /dev/null new-session -d -x 80 -y 24 -c "$CKD/w" \
+    'exec sleep 300' >/dev/null 2>&1
+CKS=$(ckt display -p '#{pid}') CKP=$(ckt display -p '#{pane_id}')
+if ! grep -q cutclock "/proc/$CKS/maps" 2>/dev/null; then
+    skip_ "basket clear cut (the server did not load cutclock.so)"
+else
+cat > "$CKD/bin/tmux" <<CKSHIM
+#!/bin/sh
+exec "$TMUX_REAL" -L "$CK" "\$@"
+CKSHIM
+chmod +x "$CKD/bin/tmux"
+ckarm() { printf '%s\n' "$1" > "$CKD/arm.new" && mv -f "$CKD/arm.new" "$CKD/arm"; }
+# <J> <cmd...>: the command with the clock armed at J, then disarmed. The server reads the
+# disarm at its next clock call, before that call counts, so no later read is cut.
+ckat() { local j=$1; shift; ckarm "$j"; "$@"; ckarm 0; }
+ckcount() {                   # <cmd...>: the clock calls the command makes
+    : > "$CKD/log"; ckat 1000000 "$@" >/dev/null
+    ckt show-options -gqv @ck_none >/dev/null       # its first call reads the disarm
+    wc -l < "$CKD/log" | tr -d ' '
+}
+ckset() {                     # <stored> <sent>
+    ckt set-option -p -t "$CKP" @cockpit_basket "$1"; printf '%s' "$2" > "$CKD/sent"
+}
+ckbc() {                      # basket_clear on the cut server -> rc=N
+    ( PATH="$CKD/bin:$PATH"; . "$DIR/scripts/lib/pane.sh"; . "$DIR/scripts/lib/basket.sh"
+      basket_clear "$CKP" "$CKD/sent"; echo "rc=$?" )
+}
+ckget() { ckt show-options -pqv -t "$CKP" @cockpit_basket; }
+# H: a probe format cut at each of its calls is a prefix of the whole, and some J cuts it.
+# The guard on B: a clock that never jumps would pass B with nothing cut.
+ckt set -g @ck_a 1
+CKN=$(ckcount ckt display -p 'A#{@ck_a}B')
+ckh="" ckhx="" ckw=A1B
+for j in $(seq 1 "$CKN"); do
+    g=$(ckat "$j" ckt display -p 'A#{@ck_a}B')
+    case $ckw in "$g") ;; "$g"*) ckh="cut" ;; *) ckhx="$ckhx J=$j [$g]" ;; esac
+done
+is "the stepped clock cuts tmux's formats, each cut a prefix of the whole" \
+    "cut" "${ckh:-none of $CKN calls}$ckhx"
+# The calls basket_clear makes: the more of a kept run and a cleared one.
+ckset $'/r/b.rs\n' /r/a.rs; CKB=$(ckcount ckbc)
+ckset $'/r/a.rs\n' /r/a.rs; CKA=$(ckcount ckbc)
+[ "$CKA" -gt "$CKB" ] && CKB=$CKA
+# B: a changed basket is kept, wherever the cut lands.
+ckm=0 ck1=""
+for j in $(seq 1 $((CKB + 1))); do
+    ckset $'/r/b.rs\n' /r/a.rs; ckat "$j" ckbc >/dev/null; g=$(ckget)
+    [ "$g" = /r/b.rs ] || { ckm=$((ckm + 1)); [ -n "$ck1" ] || ck1="J=$j left [$g]"; }
+done
+is "a basket that changed since the send is kept, wherever the cut lands" \
+    "0" "$ckm${ck1:+, first $ck1 of $CKB calls}"
+# A: with J past every call nothing is cut, and the basket as sent is cleared.
+ckset $'/r/a.rs\n' /r/a.rs
+is "and a basket as sent is cleared when no cut lands" "rc=0|" \
+    "$(ckat $((CKB + 1)) ckbc)|$(ckget)"
+fi
+fi
+ckt kill-server
+fi
+
 echo "== tmux-open-path (#366): plain_name drops each control and bidi character, keeps the rest =="
 # One table, one row per character: removing any one from the helper fails its row.
 PNO=$(mktmpf)
