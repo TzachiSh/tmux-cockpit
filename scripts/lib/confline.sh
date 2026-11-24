@@ -129,7 +129,9 @@ cockpit_conf_wired_line() {   # <config file> <plugin folder> -> line number
 # and $ outside quotes and inside double quotes (tmux(1), PARSING SYNTAX), and sh expands
 # both in an unquoted word. So bare, "<s>" and '<s>' (sh then sees <s> unquoted) take all
 # three. '"<s>"' takes $HOME and ${HOME}, as sh's double quotes leave a ~ alone. "'<s>'"
-# expands nothing, as sh's single quotes keep <s> as written. Any other shape, a quote
+# takes them too: tmux puts HOME in for them inside its double quotes before sh sees the
+# single ones, and expands a ~ only where a token or a quote starts, so sh keeps that one as
+# written (cmd-parse.y, yylex_token(); probed on tmux 3.8, #1324). Any other shape, a quote
 # inside one of these or a \, is no path. Set in cockpit_path (#1067).
 cockpit_conf_arg_path() {     # <run argument> -> cockpit_path
     local a=$1 h=${HOME:-} t=all i
@@ -146,13 +148,13 @@ cockpit_conf_arg_path() {     # <run argument> -> cockpit_path
             i=${a#\"}; i=${i%\"}
             case $i in
                 *[\"\\]*) return 1 ;;
-                \'*\') i=${i#\'}; i=${i%\'}; t=none
+                \'*\') i=${i#\'}; i=${i%\'}; t=var
                        case $i in *\'*) return 1 ;; esac ;;
             esac ;;
         *[\'\"\\]*) return 1 ;;
         *) i=$a ;;
     esac
-    if [ -n "$h" ] && [ "$t" != none ]; then
+    if [ -n "$h" ]; then
         case $i in
             '~/'*) [ "$t" = var ] || i="$h/${i#\~/}" ;;
             '$HOME/'*) i="$h/${i#\$HOME/}" ;;
