@@ -230,6 +230,83 @@ fn path_tokens_are_deduplicated_and_capped_at_10() {
 }
 
 #[test]
+fn a_mention_with_a_space_is_one_token() {
+    // rows: (screen text, the tokens taken), #912
+    let rows: [(&str, &[&str]); 2] = [
+        ("open @\"/p q/a.rs\" now", &["@/p q/a.rs"]),
+        ("(@\"/p q/c.rs:3:5\")", &["@/p q/c.rs"]),
+    ];
+    for (screen, want) in rows {
+        assert_eq!(screen_paths(screen), want, "{screen}");
+    }
+}
+
+#[test]
+fn a_quoted_mention_drops_its_line_range() {
+    let screen = "@\"/p q/a.rs#L3-5\" and @\"/p q/b.rs#L7\"";
+    assert_eq!(screen_paths(screen), ["@/p q/a.rs", "@/p q/b.rs"]);
+}
+
+#[test]
+fn a_relative_mention_with_a_space_is_one_token() {
+    assert_eq!(screen_paths("read @\"my docs/a.md\""), ["@my docs/a.md"]);
+}
+
+#[test]
+fn a_quoted_run_that_is_not_one_path_keeps_its_words() {
+    assert_eq!(screen_paths("\"see docs/a.md\" or @\"/p q/a.rs\""), ["docs/a.md", "@/p q/a.rs"]);
+}
+
+#[test]
+fn a_spaced_mention_on_screen_is_reported_whole() {
+    let r = Repo::new("spaced");
+    r.commit("my docs/a.md", "a\n", "first");
+    let abs = format!("{}/my docs/a.md", r.dir());
+    let gone = format!("{}/my docs/gone.md", r.dir());
+    let screen = format!("read @\"{abs}#L1\" and @\"{gone}\"");
+    let s = section(&block(&r.dir(), &screen), "paths on screen:");
+    assert_eq!(s, [format!("exists: @{abs}"), format!("missing: @{gone}")]);
+}
+
+// The three rows below give master's paths, so they pass on master too. Plain
+// quotes, double, single or back, are read word by word, as on master: a quoted
+// command or sentence that starts with a path is not one path (#1434 review).
+
+#[test]
+fn a_plain_quoted_command_is_read_word_by_word() {
+    // rows: (screen text, the tokens taken); red if a plain quote is read whole
+    let rows: [(&str, &[&str]); 4] = [
+        ("run `./install.sh --hooks` now", &["./install.sh"]),
+        ("run `~/bin/x --flag` now", &["~/bin/x"]),
+        ("`/usr/bin/env bash scripts/a.sh`", &["scripts/a.sh"]),
+        ("\"/tmp/a b/x.rs and ./y.rs\"", &["b/x.rs", "./y.rs"]),
+    ];
+    for (screen, want) in rows {
+        assert_eq!(screen_paths(screen), want, "{screen}");
+    }
+}
+
+#[test]
+fn a_plain_quoted_list_keeps_every_path() {
+    // rows: (screen text, the tokens taken); red if a plain quote is read whole and
+    // a run that is not one path is then dropped instead of split into its words
+    let rows: [(&str, &[&str]); 3] = [
+        ("'./a.rs, ./b.rs'", &["./a.rs", "./b.rs"]),
+        ("\"./foo.rs: error at ./bar.rs\"", &["./foo.rs", "./bar.rs"]),
+        ("'/etc/x.conf and it's here'", &["/etc/x.conf"]),
+    ];
+    for (screen, want) in rows {
+        assert_eq!(screen_paths(screen), want, "{screen}");
+    }
+}
+
+#[test]
+fn a_mention_that_is_not_one_path_keeps_its_words() {
+    // red if a mention that is not one path is dropped instead of split into its words
+    assert_eq!(screen_paths("@\"./foo.rs: error at ./bar.rs\" and ./c.rs"), ["./bar.rs", "./c.rs"]);
+}
+
+#[test]
 fn a_stat_dirty_file_never_makes_git_rewrite_the_index() {
     let r = Repo::new("index");
     r.commit("a.txt", "a\n", "first");

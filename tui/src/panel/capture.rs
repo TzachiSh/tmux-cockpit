@@ -567,32 +567,80 @@ fn has_ext(file: &str) -> bool {
 /// `dir/name.ext`; quotes, brackets and a `:line:col` tail stripped. A range
 /// (`a..b`), a host (`github.com/x`), a URL and a fraction are not taken. The
 /// first [`PATHS_CAP`] distinct ones, in screen order.
+///
+/// A Claude Code mention, `@"…"`, is one token, spaces and all ([`mention`],
+/// #912). Any other path with a space is cut at the space, a plain quoted one
+/// too: no rule tells a quoted path from a quoted command or sentence that
+/// starts with one. Claude Code reads a bare `@path` only up to the space as
+/// well, so the scan lists what the agent read.
 pub fn screen_paths(screen: &str) -> Vec<String> {
     let mut got: Vec<String> = Vec::new();
-    for w in screen.split_whitespace() {
-        let mut t = w
-            .trim_start_matches(|c| "\"'`([{<".contains(c))
-            .trim_end_matches(|c| "\"'`)]}>,;.:".contains(c));
-        while let Some((l, r)) = t.rsplit_once(':')
-            && !r.is_empty()
-            && r.bytes().all(|c| c.is_ascii_digit())
-        {
-            t = l;
-        }
-        // `:` is not pathy, so a URL never gets past this
-        let pathy = t.chars().all(|c| c.is_alphanumeric() || "._/-+@~".contains(c)) && !t.contains("..");
-        let prefixed = ["@/", "~/", "./"].iter().any(|p| t.len() > p.len() && t.starts_with(p));
-        // a first segment with a dot is a host: github.com/foo/bar.git
-        let host = t.split_once('/').is_some_and(|(h, _)| h.contains('.') && h != ".");
-        let named = !host && t.rsplit_once('/').is_some_and(|(_, f)| has_ext(f));
-        if pathy && (prefixed || named) && !got.iter().any(|g| g == t) {
-            got.push(t.to_string());
+    for t in screen.lines().flat_map(paths_in) {
+        if !got.contains(&t) {
+            got.push(t);
             if got.len() == PATHS_CAP {
                 break;
             }
         }
     }
     got
+}
+
+/// How Claude Code writes a mention of a path with a space, and so does the
+/// cockpit (`basket::ref_line`): `@"path"`, closed by the next `"` (#912).
+const MENTION: &str = "@\"";
+
+/// The paths on `line`, in order: a mention ([`mention`]) whole when it is one
+/// path, every other word by [`path_of`], the words of a mention that is not
+/// one path included.
+fn paths_in(line: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = line.trim_start();
+    while !rest.is_empty() {
+        if let Some((m, after)) = mention(rest.trim_start_matches(|c| "([{<".contains(c)))
+            && let Some(p) = path_of(&m)
+        {
+            out.push(p.to_string());
+            rest = after.trim_start();
+            continue;
+        }
+        let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+        out.extend(path_of(&rest[..end]).map(str::to_string));
+        rest = rest[end..].trim_start();
+    }
+    out
+}
+
+/// The mention ([`MENTION`]) at the start of `s` as `@path`, its quotes and a
+/// `#La` or `#La-b` range at its end off, and the text after it. `None` with no
+/// closing quote on the line.
+fn mention(s: &str) -> Option<(String, &str)> {
+    let (body, after) = s.strip_prefix(MENTION)?.split_once('"')?;
+    let body = match body.rsplit_once("#L") {
+        Some((p, r)) if !r.is_empty() && r.bytes().all(|c| c.is_ascii_digit() || c == b'-') => p,
+        _ => body,
+    };
+    Some((format!("@{body}"), after))
+}
+
+/// The path a token names, if it has one of [`screen_paths`]' shapes.
+fn path_of(w: &str) -> Option<&str> {
+    let mut t = w
+        .trim_start_matches(|c| "\"'`([{<".contains(c))
+        .trim_end_matches(|c| "\"'`)]}>,;.:".contains(c));
+    while let Some((l, r)) = t.rsplit_once(':')
+        && !r.is_empty()
+        && r.bytes().all(|c| c.is_ascii_digit())
+    {
+        t = l;
+    }
+    // `:` is not pathy, so a URL never gets past this; a space comes only from a mention
+    let pathy = t.chars().all(|c| c.is_alphanumeric() || " ._/-+@~".contains(c)) && !t.contains("..");
+    let prefixed = ["@/", "~/", "./"].iter().any(|p| t.len() > p.len() && t.starts_with(p));
+    // a first segment with a dot is a host: github.com/foo/bar.git
+    let host = t.split_once('/').is_some_and(|(h, _)| h.contains('.') && h != ".");
+    let named = !host && t.rsplit_once('/').is_some_and(|(_, f)| has_ext(f));
+    (pathy && (prefixed || named)).then_some(t)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
