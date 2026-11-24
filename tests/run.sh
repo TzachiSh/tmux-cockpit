@@ -535,6 +535,47 @@ tq() {
     done
     printf '%s' "$out'"
 }
+# cut_server <dir> <-L name> <new-session args...>: a private server on that socket, started
+# with tests/cutclock.c (#736) built into <dir> and preloaded, so that tmux's 100 ms format
+# time limit can be made to cut at a chosen call. The clock is inert until armed: `<dir>/cutarm
+# J`, a script any shell runs, arms it at the J-th clock call from then on, and 0 disarms.
+# Each counted call adds a line to <dir>/log. CUT_WHY says why when it returns non-zero.
+# 0: the server runs the clock.
+# 2: no /proc or no cc, or a live server whose maps lack the .so (a static or setuid tmux).
+#    The server runs without the clock, and the caller skips its cut rows.
+# 1: cc failed (the server runs without the clock), or the preloaded server did not start or
+#    died. Never a skip: the caller reports it as a failure.
+cut_server() {
+    local d=$1 s=$2 pid
+    shift 2
+    CUT_WHY=""
+    if [ ! -d /proc/self ] || ! command -v cc >/dev/null 2>&1; then
+        CUT_WHY="no /proc or no cc for tests/cutclock.c"
+        "$TMUX_REAL" -L "$s" -f /dev/null new-session "$@" >/dev/null 2>&1
+        return 2
+    fi
+    if ! cc -shared -fPIC -o "$d/cutclock.so" "$DIR/tests/cutclock.c" -ldl > "$d/cc.log" 2>&1
+    then
+        CUT_WHY="cc failed on tests/cutclock.c: $(tr '\n' ' ' < "$d/cc.log")"
+        "$TMUX_REAL" -L "$s" -f /dev/null new-session "$@" >/dev/null 2>&1
+        return 1
+    fi
+    printf '#!/bin/sh\nprintf "%%s\\n" "$1" > %s && mv -f %s %s\n' \
+        "$(tq "$d/arm.new")" "$(tq "$d/arm.new")" "$(tq "$d/arm")" > "$d/cutarm"
+    chmod +x "$d/cutarm"
+    LD_PRELOAD="$d/cutclock.so" CUTCLOCK_ARM="$d/arm" CUTCLOCK_LOG="$d/log" \
+        "$TMUX_REAL" -L "$s" -f /dev/null new-session "$@" >/dev/null 2>&1
+    pid=$("$TMUX_REAL" -L "$s" display -p '#{pid}' 2>/dev/null)
+    case $pid in
+        ''|*[!0-9]*) CUT_WHY="the preloaded server did not start or died (pid [$pid])"; return 1 ;;
+    esac
+    if [ ! -r "/proc/$pid/maps" ]; then
+        CUT_WHY="the preloaded server $pid died"; return 1
+    fi
+    grep -q cutclock "/proc/$pid/maps" && return 0
+    CUT_WHY="the server $pid runs without cutclock.so in its maps"
+    return 2
+}
 # The bootstrap (#228), tui-fetch and revdiff release dirs have a space in their own name
 # ("r el"), so a call site there reverted to a raw file:// fails at any TMPDIR. The #217
 # block's clones fail raw only under a TMPDIR holding a %XX escape, which git decodes, and its
@@ -21037,8 +21078,8 @@ elif [ -e "$KD/expect" ]; then cp "$KD/expect" "\$COCKPIT_ACTION.expect"; fi
 cat "$KD/line" > "\$COCKPIT_ACTION"
 KDBIN
 chmod +x "$KD/bin"
-"$TMUX_REAL" -L "$KV" -f /dev/null new-session -d -s t -x 120 -y 40 \
-    'exec sleep 3600' >/dev/null 2>&1
+# The clock (#736) is inert until the rows at the end arm it.
+cut_server "$KD" "$KV" -d -s t -x 120 -y 40 'exec sleep 3600'; KVCUT=$? KVWHY=$CUT_WHY
 KVHOME=$("$TMUX_REAL" -L "$KV" list-panes -t t -F '#{pane_id}')
 kv_win() {                    # <window-name> -> the pane id of a fresh one-pane window
     "$TMUX_REAL" -L "$KV" new-window -d -P -F '#{pane_id}' -n "$1" -t t: 'exec sleep 3600'
@@ -21213,6 +21254,55 @@ is "and the board does not come back after it" "board;" "$(cut -d' ' -f1 "$KD/ba
 grep -q 'unknown verb \[request ' "$KD/tui.log" && ok "and the log names the verb it did not know" \
     || bad "and the log names the verb it did not know" "unknown verb [request ...]" \
         "$(tail -n 3 "$KD/tui.log")"
+
+# A cut by tmux's format time limit (#736) at each call J of the kill's if-shell. The shim
+# moves pane KVE into window KVF just before the if-shell, arms the clock at J, runs it, then
+# disarms, so J counts the if-shell's calls only. A bare == read two cut sides as equal and
+# killed the moved pane. A pane that did not move, cut the same way, shows the clock cuts.
+if [ "$KVCUT" = 2 ]; then skip_ "the kill under a format cut ($KVWHY)"
+elif [ "$KVCUT" != 0 ]; then
+    bad "the kill block's cut server runs the clock" "cutclock.so in a live server" "$KVWHY"
+else
+KVE=$(kv_win claude); KVEW=$(kv_id "$KVE")
+KVE2=$("$TMUX_REAL" -L "$KV" split-window -d -P -F '#{pane_id}' -t "$KVE" 'exec sleep 3600')
+KVF=$(kv_win claude)
+mkdir -p "$KD/cshim"
+{ printf '#!/bin/sh\n[ "$1" = if-shell ] && [ -e %s ] || exec %s "$@"\n' \
+      "$(tq "$KD/cutj")" "$(tq "$TMUX_REAL")"
+  printf 'j=$(cat %s); rm -f %s\n' "$(tq "$KD/cutj")" "$(tq "$KD/cutj")"
+  printf '[ ! -e %s ] || %s join-pane -d -s %s -t %s\n' \
+      "$(tq "$KD/cutmove")" "$(tq "$TMUX_REAL")" "$KVE" "$KVF"
+  printf ': > %s; %s "$j"\n' "$(tq "$KD/log")" "$(tq "$KD/cutarm")"
+  printf '%s "$@"; rc=$?\n%s 0\nexit $rc\n' "$(tq "$TMUX_REAL")" "$(tq "$KD/cutarm")"
+} > "$KD/cshim/tmux"
+chmod +x "$KD/cshim/tmux"
+kv_cut() {                    # <J> <pane> <ids>: one kill trip, its if-shell armed at J
+    printf '%s\n' "$1" > "$KD/cutj"
+    KV_SHIM=$KD/cshim kv_run "kill $2" "$2 $3" >/dev/null
+    "$TMUX_REAL" -L "$KV" list-panes -a -F '#{pane_id}' >/dev/null    # reads the disarm
+}
+: > "$KD/cutmove"; kv_cut 1000000 "$KVE" "$KVEW"; KVN=$(wc -l < "$KD/log" | tr -d ' ')
+"$TMUX_REAL" -L "$KV" join-pane -d -s "$KVE" -t "$KVE2"     # back beside KVE2, in window KVEW
+kvm=0 kv1=""
+for j in $(seq 1 $((KVN + 1))); do
+    : > "$KD/cutmove"; kv_cut "$j" "$KVE" "$KVEW"
+    [ "$(kv_alive "$KVE")" = alive ] || { kvm=$((kvm + 1)); kv1="J=$j"; break; }
+    "$TMUX_REAL" -L "$KV" join-pane -d -s "$KVE" -t "$KVE2"
+done
+is "a pane moved before the kill is never killed, a cut at any call of its test included" \
+    "0" "$kvm${kv1:+, at $kv1 of $KVN calls}"
+rm -f "$KD/cutmove"; kvk="" kvx=""
+for j in $(seq 1 "$KVN"); do
+    KVG=$(kv_win claude); kv_cut "$j" "$KVG" "$(kv_id "$KVG")"
+    if [ "$(kv_alive "$KVG")" = gone ]; then kvx="$kvx J=$j"; else kvk="$kvk J=$j"; fi
+done
+# Kept at one J or more; which ones differs by tmux version and by the test's shape.
+case $kvk in
+    " J="*) ok "the clock cuts the kill's test: some cut keeps a pane that did not move" ;;
+    *) bad "the clock cuts the kill's test: some cut keeps a pane that did not move" \
+           "kept at one J or more" "kept at none of $KVN calls, killed at$kvx" ;;
+esac
+fi
 "$TMUX_REAL" -L "$KV" kill-server >/dev/null 2>&1
 fi
 
@@ -25875,31 +25965,23 @@ echo "== basket_clear (#736): a compare that tmux cuts never clears a changed ba
 # server, makes tmux's own CLOCK_MONOTONIC one second later at call J of a command, so the cut
 # lands on call J every run. The calls a command makes differ between tmux versions, so the
 # rows walk J over every call basket_clear makes, as counted here, never one fixed J.
-if need_tmux "basket clear cut"; then :
-elif ! command -v cc >/dev/null 2>&1; then skip_ "basket clear cut (no cc for tests/cutclock.c)"
-else
+if need_tmux "basket clear cut"; then :; else
 CK="cockpit-cut-$$"; SOCKS="$SOCKS $CK"; CKD=$(mktmpd); mkdir -p "$CKD/bin" "$CKD/w"
 ckt() { "$TMUX_REAL" -L "$CK" "$@" 2>/dev/null; }
-if ! cc -shared -fPIC -o "$CKD/cutclock.so" "$DIR/tests/cutclock.c" -ldl > "$CKD/cc.log" 2>&1
-then
-    bad "tests/cutclock.c builds" "a built cutclock.so" "$(tr '\n' ' ' < "$CKD/cc.log")"
+cut_server "$CKD" "$CK" -d -x 80 -y 24 -c "$CKD/w" 'exec sleep 300'; ckr=$?
+if [ "$ckr" = 2 ]; then skip_ "basket clear cut ($CUT_WHY)"
+elif [ "$ckr" != 0 ]; then
+    bad "the basket block's cut server runs the clock" "cutclock.so in a live server" "$CUT_WHY"
 else
-LD_PRELOAD="$CKD/cutclock.so" CUTCLOCK_ARM="$CKD/arm" CUTCLOCK_LOG="$CKD/log" \
-    "$TMUX_REAL" -L "$CK" -f /dev/null new-session -d -x 80 -y 24 -c "$CKD/w" \
-    'exec sleep 300' >/dev/null 2>&1
-CKS=$(ckt display -p '#{pid}') CKP=$(ckt display -p '#{pane_id}')
-if ! grep -q cutclock "/proc/$CKS/maps" 2>/dev/null; then
-    skip_ "basket clear cut (the server did not load cutclock.so)"
-else
+CKP=$(ckt display -p '#{pane_id}')
 cat > "$CKD/bin/tmux" <<CKSHIM
 #!/bin/sh
 exec "$TMUX_REAL" -L "$CK" "\$@"
 CKSHIM
 chmod +x "$CKD/bin/tmux"
-ckarm() { printf '%s\n' "$1" > "$CKD/arm.new" && mv -f "$CKD/arm.new" "$CKD/arm"; }
 # <J> <cmd...>: the command with the clock armed at J, then disarmed. The server reads the
 # disarm at its next clock call, before that call counts, so no later read is cut.
-ckat() { local j=$1; shift; ckarm "$j"; "$@"; ckarm 0; }
+ckat() { local j=$1; shift; "$CKD/cutarm" "$j"; "$@"; "$CKD/cutarm" 0; }
 ckcount() {                   # <cmd...>: the clock calls the command makes
     : > "$CKD/log"; ckat 1000000 "$@" >/dev/null
     ckt show-options -gqv @ck_none >/dev/null       # its first call reads the disarm
@@ -25940,7 +26022,13 @@ is "a basket that changed since the send is kept, wherever the cut lands" \
 ckset $'/r/a.rs\n' /r/a.rs
 is "and a basket as sent is cleared when no cut lands" "rc=0|" \
     "$(ckat $((CKB + 1)) ckbc)|$(ckget)"
-fi
+# cut_server's own failure: a preloaded server that never starts (-c with no folder, which the
+# client refuses before it starts one) is a failure, never the skip a live server without the
+# .so gets.
+CKX="cockpit-cutx-$$"; SOCKS="$SOCKS $CKX"; mkdir -p "$CKD/x"
+cut_server "$CKD/x" "$CKX" -d -c; ckr=$?
+is "a cut server that does not start is a failure, not a skip" \
+    "1|the preloaded server did not start or died (pid [])" "$ckr|$CUT_WHY"
 fi
 ckt kill-server
 fi
