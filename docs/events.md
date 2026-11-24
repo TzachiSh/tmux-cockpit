@@ -25,8 +25,9 @@ One JSON object per line, with these fields and no other:
 | `failed` | optional, on `tool.end` only | `true` or `false` |
 
 - `outcome` is required on `turn.end` and refused on every other kind.
-- `failed` is refused on every kind but `tool.end`. A `tool.end` without it
-  counts as `failed: false`.
+- `failed` is refused on every kind but `tool.end`. It is information only: no
+  state reads it since #1331, and a `tool.end` is `running` whether `failed` is
+  true, false or absent. It is kept for a reader that logs or shows events.
 - Any other key is refused (`additionalProperties: false`), so a line cannot
   carry an answer, a prompt, a tool's input or a path. `agent` is the one field
   that holds a word, at most 24 characters: the adapter's fixed name, a constant
@@ -61,7 +62,7 @@ Each request keeps the guard it has; the line numbers are `scripts/agent-state`.
 |------|---------|-------|
 | `turn.start` | `wake` | Lifts `done` or an unset state to `running` (475, 514), and keeps the review mark: only a human prompt clears it, which stays UserPromptSubmit's job (518-519). |
 | `tool.start` | `running` | Refused when already `running` (471). Entering `running` clears the review mark (518-519). |
-| `tool.end` | `running` | The same as `tool.start`, with `failed` true or false: a tool's failure is not the turn's (#1331). |
+| `tool.end` | `running` | The same as `tool.start`, whether `failed` is true, false or absent: a tool's failure is not the turn's (#1331). |
 | `input.needed` | `needs-input` | Refused when already `needs-input` (472). |
 | `input.ended` | `input-ended` | An ask that ended with no answer (#1332). Only over `needs-input` whose `@panestate_ask` is the main thread's, `/<tool>` (#1403, 526): it then leaves the pane unset as `interrupted` does (550), its ask, key and stamp with it (581, 586), and keeps the review mark, the review spool and `@cockpit_subs` (556). It never writes `done`, so the #310 hold stays `Stop`'s. Any other state stays, and so does an ask with another agent's key or none. So `input.ended` cannot end an `input.needed` of the fake adapter or any other adapter: that ask has no key. |
 | `turn.end`, `answer` | `done` | Refused on `done`, `needs-input` or `error` (474). With stdin from `/dev/null`, the Stop-payload read (461, which reads at 210) finds no subagents and does not hold the pane, and it clears `@cockpit_subs`. |
