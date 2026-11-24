@@ -3082,8 +3082,12 @@ client's command between them, so a ref added from another client is never lost
 between the check and the clear (#582): the sent text goes into a second option,
 set without `-F` so it stays literal, `if-shell -F` compares the two options,
 and the second option goes again either way. Nothing is escaped, so a name
-holding `#[` or `#{` compares as text. A failed paste or `COCKPIT_READONLY`
-leaves it.
+holding `#[` or `#{` compares as text. The test reads 1 only for a compare tmux
+read whole (#736): tmux 3.7+ cuts a format that runs past 100 ms of wall time
+to an empty string, and a bare `==` read two cut sides as equal, which cleared
+a basket a viewer had added to. A cut keeps the basket instead, so its refs go
+out again with the next send. A cut option name ends the command list early
+with the same result (#1450). A failed paste or `COCKPIT_READONLY` leaves it.
 
 `^S` (Write) with refs in the basket sends them to the write in a `<refs>` block
 before `<request>`, one `<ref>` a line in the form the pane's agent reads (D4),
