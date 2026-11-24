@@ -12096,6 +12096,79 @@ for ot_a in '' 1x _ot_a; do
 done
 rm -rf "$OT"; unset -f ot_run; unset OT ot_c ot_a ot_o ot_v
 
+echo "== own_tmpfile takes mktemp's answer only as a new, empty file of the user's (#1322) =="
+# lib/tmpdir.sh's check for a temp file its caller writes, then removes or renames. As in the
+# own_tmpdir rows above, own_tmpfile_why names the first check that refused, in a fixed order,
+# so each row is one only its own check refuses first: a check taken out moves its row on to the
+# next check, or to accepted. <var> holds a stale value before each call, and a refusal must
+# leave it empty: install.sh's EXIT trap removes what it names. The helper removes nothing; each
+# answer is judged from a cwd under scratch.
+#   fail    mktemp exits 1                 ''     an empty answer, exit 0
+#   nope/f  a folder that does not exist   link   a symlink to an empty 0600 file of the user's
+#   fifo    a fifo of mode 0600            full   a 0600 file with a line in it
+#   open    an empty file of mode 0644     two    an empty 0600 file with a second link
+OF=$(mktmpd); mkdir -p "$OF/bin" "$OF/cwd" "$OF/t"
+of_new() { : > "$1" && chmod 600 "$1"; }   # an empty file of the user's, mode 0600
+of_new "$OF/e"; of_new "$OF/cwd/rel"; of_new "$OF/full"; echo keep > "$OF/full"
+of_new "$OF/two"; ln "$OF/two" "$OF/two.2"; : > "$OF/open"; chmod 644 "$OF/open"
+mkfifo -m 600 "$OF/fifo"; ln -s "$OF/e" "$OF/link"; ln -s "$OF/t" "$OF/tl"
+# OF_TMPDIR replaces TMPDIR for the one call.
+of_run() {                    # <answer|fail|real> -> "<status> <why> [<var>]", from $OF/cwd
+    case $1 in
+        fail) printf '#!/bin/sh\nexit 1\n' > "$OF/bin/mktemp" ;;
+        real) rm -f "$OF/bin/mktemp" ;;
+        *)    printf '#!/bin/sh\nprintf "%%s\\n" %s\n' "$(tq "$1")" > "$OF/bin/mktemp" ;;
+    esac
+    [ ! -e "$OF/bin/mktemp" ] || chmod +x "$OF/bin/mktemp"
+    (cd "$OF/cwd" && env PATH="$OF/bin:$PATH" TMPDIR="${OF_TMPDIR:-$OF/t}" bash -c \
+        '. "$1"; v=stale; own_tmpfile v; printf "%s %s [%s]" "$?" "$own_tmpfile_why" "$v"' _ \
+        "$DIR/scripts/lib/tmpdir.sh" 2>/dev/null)
+}
+for of_c in fail:mktemp :answer nope/f:resolve link:symlink fifo:regular full:nonempty \
+    open:mode two:links; do
+    of_a=${of_c%:*}
+    case $of_a in link|fifo|full|open|two) of_a=$OF/$of_a ;; esac
+    is "own_tmpfile: a mktemp answering [${of_c%:*}] is refused by the ${of_c##*:} check" \
+       "1 ${of_c##*:} []" "$(of_run "$of_a")"
+done
+# -O, not a uid test, as in the own_tmpdir /usr row. /etc/passwd is a regular file with lines
+# in it, so the owner check is the first to refuse it.
+if [ -O /etc/passwd ]; then
+    skip_ "own_tmpfile: /etc/passwd is this user's own (root or a container), no owner row"
+else
+    is "own_tmpfile: a mktemp answering /etc/passwd, root's file, is refused by the owner check" \
+       "1 owner []" "$(of_run /etc/passwd)"
+fi
+# The ls prints the line of a new 0600 file, then fails: its status decides, not its line.
+cat > "$OF/bin/ls" <<'OFLS'
+#!/bin/sh
+printf '%s\n' '-rw------- 1 u g 0 Jan  1 00:00 x'
+exit 2
+OFLS
+chmod +x "$OF/bin/ls"
+is "own_tmpfile: an empty 0600 file whose ls fails is refused by the mode check: it fails closed" \
+   "1 mode []" "$(of_run "$OF/e")"
+rm -f "$OF/bin/ls"
+is "own_tmpfile: a relative answer naming an empty 0600 file of the user's is taken, absolute" \
+   "0  [$(cd "$OF/cwd" && pwd -P)/rel]" "$(of_run rel)"
+is "own_tmpfile: an empty 0600 file of the user's, named absolute, is taken" \
+   "0  [$(cd "$OF" && pwd -P)/e]" "$(of_run "$OF/e")"
+of_o=$(OF_TMPDIR="$OF/tl" of_run real); of_v=${of_o#*[}; of_v=${of_v%]}
+is "own_tmpfile: the real mktemp under a TMPDIR that is a symlink is taken, as the physical path" \
+   "0  |$(cd "$OF/t" && pwd -P)" "${of_o%%[*}|${of_v%/*}"
+of_o=$(of_run real); of_v=${of_o#*[}; of_v=${of_v%]}
+is "own_tmpfile: the real mktemp's answer is taken: status 0, no reason, a file under TMPDIR" \
+   "0  |$(cd "$OF/t" && pwd -P)" "${of_o%%[*}|${of_v%/*}"
+is "own_tmpfile: and it is an empty file only its user can open" "-rw-------|0" \
+   "$(ls -ld "$of_v" 2>/dev/null | cut -c1-10)|$( (wc -c < "$of_v") 2>/dev/null | tr -d ' ')"
+for of_a in '' 1x _ot_a; do
+    of_o=$(bash -c '. "$1"; own_tmpfile ${2:+"$2"} 2>&1 >/dev/null; echo "rc=$?"' _ \
+        "$DIR/scripts/lib/tmpdir.sh" "$of_a")
+    is "own_tmpfile with <var> [$of_a] fails with status 2, naming itself and <var>" "rc=2|1" \
+       "${of_o##*$'\n'}|$(printf '%s\n' "$of_o" | grep -c '^own_tmpfile: <var>')"
+done
+rm -rf "$OF"; unset -f of_run of_new; unset OF of_c of_a of_o of_v
+
 echo "== board, panel, tm and tui-fetch rm -rf no dir their mktemp did not make (#947) =="
 # Each armed rm -rf on whatever mktemp -d answered. Here a mktemp earlier on PATH answers a
 # dir that exists: one with a canary in it, or the site's own empty cwd. The site takes the
@@ -12246,6 +12319,54 @@ is "the tmux build runs its steps in a temp dir whose path holds a ', and compil
 is "the tmux build configures with --prefix in the user's HOME, and compiles nothing" \
    "--prefix=<o>/h/.local|0|0" "$(bt_run tmux prefix none)"
 unset -f bt_run; unset bt_mk bt_v bt_c bt_w
+
+echo "== install.sh and tui-fetch write, move or remove no file mktemp did not make (#1322) =="
+# install.sh writes settings.json through a temp file beside it, renamed over it, which its EXIT
+# trap removes when the write fails. tui-fetch's source build logs to a temp file its EXIT trap
+# removes. Here a mktemp earlier on PATH answers, for a file, the name of one that exists: a
+# canary of the user's, mode 0600, holding a line, or settings.json itself, which a failed write
+# then removed. mktemp -d is the real one. The site takes the path it takes on a failed mktemp,
+# says which check refused, and the file stays as it was. tui-fetch's curl and gh fail, tmux
+# answers nothing, and rustc and cargo are stubs: nothing is fetched or built, and the row counts
+# cargo's calls.
+FM=$(mktmpd); mkdir -p "$FM/bin" "$FM/cwd"; printf '{}\n' > "$FM/empty.json"
+fm_mk=$(PATH=/usr/bin:/bin command -v mktemp)
+printf '#!/bin/sh\ncase $1 in -d) exec %s "$@" ;; esac\nprintf "%%s\\n" "$FM_ANSWER"\n' \
+    "$(tq "$fm_mk")" > "$FM/bin/mktemp"
+printf '#!/bin/sh\necho "cargo $*" >> %s\nexit 101\n' "$(tq "$FM/calls")" > "$FM/bin/cargo"
+printf '#!/bin/sh\necho "rustc 99.0.0"\n' > "$FM/bin/rustc"
+printf '#!/bin/sh\nexit 22\n' > "$FM/bin/curl"; printf '#!/bin/sh\nexit 1\n' > "$FM/bin/gh"
+printf '#!/bin/sh\nexit 0\n' > "$FM/bin/tmux"; chmod +x "$FM/bin/"*
+fm_canary() { printf 'keep\n' > "$FM/canary" && chmod 600 "$FM/canary"; }
+fm_kept() { grep -qx keep "$1" 2>/dev/null && echo kept || echo gone; }
+fm_ins() {                    # <settings.json source> <canary|settings> <install.sh args...>
+    # -> status|settings.json kept, changed or gone|canary kept or gone|refusals said
+    local src=$1 f=$FM/h/.claude/settings.json a rc s; shift
+    rm -rf "${FM:?}/h"; mkdir -p "$FM/h/.claude"; cp "$src" "$f"; fm_canary
+    if [ "$1" = canary ]; then a=$FM/canary; else a=$f; fi; shift
+    (cd "$FM/cwd" && env -u CLAUDE_CONFIG_DIR -u TMUX -u TMUX_PANE HOME="$FM/h" \
+        XDG_BIN_HOME="$FM/h/bin" FM_ANSWER="$a" PATH="$FM/bin:$PATH" timeout 60 \
+        "$DIR/install.sh" "$@" </dev/null >/dev/null 2>"$FM/err"); rc=$?
+    if [ ! -e "$f" ]; then s=gone; elif cmp -s "$src" "$f"; then s=kept; else s=changed; fi
+    printf '%s|%s|%s|%s' "$rc" "$s" "$(fm_kept "$FM/canary")" \
+        "$(grep -c '^write failed; .* untouched (own_tmpfile: nonempty)$' "$FM/err")"
+}
+is "install.sh --hooks: a mktemp answering a file of the user's leaves it, and says why" \
+   "1|kept|kept|1" "$(fm_ins "$FM/empty.json" canary --hooks)"
+is "install.sh --hooks --remove: a mktemp answering a file of the user's leaves it, and says why" \
+   "1|kept|kept|1" "$(fm_ins "$DIR/examples/claude-hooks.json" canary --hooks --remove)"
+is "install.sh --hooks: a mktemp answering settings.json itself leaves it there, and says why" \
+   "1|kept|kept|1" "$(fm_ins "$FM/empty.json" settings --hooks)"
+fm_canary; rm -f "$FM/calls"
+(cd "$FM/cwd" && env -u TMUX -u TMUX_PANE -u COCKPIT_TUI_OFFLINE FM_ANSWER="$FM/canary" \
+    PATH="$FM/bin:$PATH" COCKPIT_TUI_BIN="$FM/p/bin/cockpit-tui" \
+    COCKPIT_TUI_RELEASES=http://no-such-host.invalid timeout 60 \
+    "$DIR/scripts/tui-fetch" --required </dev/null >"$FM/out" 2>/dev/null)
+fm_n=$( (wc -l < "$FM/calls") 2>/dev/null | tr -d ' ')
+fm_w='tui-fetch: skip: no temp file for the build log (own_tmpfile: nonempty)'
+is "tui-fetch --required: a mktemp answering a file of the user's for the build log leaves it" \
+   "kept|1|cargo=0" "$(fm_kept "$FM/canary")|$(grep -cxF "$fm_w" "$FM/out")|cargo=${fm_n:-0}"
+rm -rf "$FM"; unset -f fm_canary fm_kept fm_ins; unset FM fm_mk fm_n fm_w
 
 # group: deliver
 echo "== tmux-review --deliver: guards refuse before anything is pasted =="
