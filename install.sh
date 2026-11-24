@@ -372,6 +372,20 @@ set*\ @catppuccin_window_current_text\ *)
     exit "$worst"
 fi
 
+# The temp file a write below puts beside settings.json, removed however the script ends: both
+# traps ignore HUP, INT and TERM first, so a signal cannot stop the rm (#1417, as #1411's). A
+# signal sent to this pid alone waits for the command in the foreground: bash runs a trap only
+# once that command ends. After the rm, the EXIT trap raises again the signal that stopped the
+# script, so it dies by it: bootstrap.sh waits on it in the foreground, and bash goes on after a
+# Ctrl-C unless its child died by SIGINT. tmp names the file only once mktemp has made it, so a
+# mktemp that fails never hands the rm what it printed.
+tmp='' sig=''
+trap 'trap "" HUP INT TERM; rm -f -- ${tmp:+"$tmp"}
+    [ -z "$sig" ] || { trap - "$sig"; kill -s "$sig" $$; }' EXIT
+trap 'trap "" HUP INT TERM; sig=HUP; exit 129' HUP
+trap 'trap "" HUP INT TERM; sig=INT; exit 130' INT
+trap 'trap "" HUP INT TERM; sig=TERM; exit 143' TERM
+
 rc=0
 if [ "$uninstall" -eq 0 ] && [ "$dry" -eq 0 ]; then
     mkdir -p "$BIN" || { printf 'cannot create %s\n' "$BIN" >&2; exit 1; }
@@ -567,11 +581,12 @@ if [ "$hooks" -eq 1 ] && [ "$uninstall" -eq 1 ]; then
         fi
         bak="$settings.bak-$(date +%Y%m%d-%H%M%S)"
         cp -p -- "$real" "$bak" || { printf 'cannot write the backup %s; %s untouched\n' "$bak" "$settings" >&2; exit 1; }
-        tmp=$(mktemp "$real.XXXXXX") || { printf 'write failed; %s untouched\n' "$settings" >&2; exit 1; }
-        trap 'rm -f -- "$tmp"' EXIT
+        made=$(mktemp "$real.XXXXXX") \
+            || { printf 'write failed; %s untouched\n' "$settings" >&2; exit 1; }
+        tmp=$made
         cp -p -- "$real" "$tmp" && printf '%s\n' "$stripped" > "$tmp" && mv -- "$tmp" "$real" \
             || { printf 'write failed; %s untouched\n' "$settings" >&2; exit 1; }
-        trap - EXIT
+        tmp=''
         printf 'removed   cockpit hooks from %s (backup: %s)\n' "$settings" "$bak"
     fi
     mod_step remove
@@ -669,11 +684,12 @@ if [ "$hooks" -eq 1 ]; then
         fi
         # A sibling temp file renamed over $real, so an interrupted write never
         # truncates it; cp -p keeps the mode mktemp would tighten to 0600.
-        tmp=$(mktemp "$real.XXXXXX") || { printf 'write failed; %s untouched\n' "$settings" >&2; exit 1; }
-        trap 'rm -f -- "$tmp"' EXIT
+        made=$(mktemp "$real.XXXXXX") \
+            || { printf 'write failed; %s untouched\n' "$settings" >&2; exit 1; }
+        tmp=$made
         cp -p -- "$real" "$tmp" && printf '%s\n' "$merged" > "$tmp" && mv -- "$tmp" "$real" \
             || { printf 'write failed; %s untouched\n' "$settings" >&2; exit 1; }
-        trap - EXIT
+        tmp=''
         printf 'merged    cockpit hooks into %s%s\n' "$settings" "$bak_note"
     fi
     mod_step install
