@@ -26,7 +26,7 @@
       "enum": ["answer", "aborted", "refusal", "error"]
     },
     "failed": {
-      "description": "Whether the tool call failed. tool.end only.",
+      "description": "Whether the tool call failed. tool.end only. Information only: no state reads it since #1331, as tool.end is running either way (scripts/cockpit-event). Kept for a reader that logs or shows events.",
       "type": "boolean"
     }
   },
