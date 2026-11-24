@@ -21819,11 +21819,13 @@ is "a hangup while tm's EXIT trap removes the picker temp dir does not stop the 
 fi
 
 echo "== tm --popup: sized to the sessions, the options are ceilings (#245) =="
-# A fake tmux answers the one display-message --popup asks and logs the popup.
+# A fake tmux answers the one display-message --popup asks and logs the popup,
+# and keeps the popup's or the window's command, its last argument, in log.cmd.
 # Fields: sessions, the needs-you band, @cockpit_touch, width, height.
 TP=$(mktmpd)
 cat > "$TP/tmux" <<'STUB'
 #!/bin/sh
+case "$1" in display-popup|new-window) eval "printf %s \"\${$#}\"" > "$TP_LOG.cmd" ;; esac
 case "$1" in
   display-message) printf '%s\n' "$TP_ANSWER" ;;
   display-popup)   shift; printf '%s\n' "$*" >> "$TP_LOG" ;;
@@ -21856,10 +21858,10 @@ is "the size options are ceilings, percent or cells" "-w 120 -h 10" \
 is "and never floors" "-w 140 -h 14" "$(tpsize '7|3||90%|40|' 200 50)"
 tpsize '7|3||||' 200 12 >/dev/null
 case "$(cat "$TP/log")" in
-    "WINDOW -t \$3: -n sessions TM_POPUP=1 TM_SID=\\\$3 TM_CLIENT=/dev/pts/9 TM_PANE=%7 "*/tm) \
+    "WINDOW -t \$3: -n sessions TM_POPUP=1 TM_SID='\$3' TM_CLIENT='/dev/pts/9' TM_PANE='%7' '"*"/tm'") \
             ok "but a window of its session, running tm" ;;
     *) bad "but a window of its session, running tm" \
-            "WINDOW -t \$3: -n sessions TM_POPUP=1 ... TM_PANE=%7 /tm" "$(cat "$TP/log")" ;;
+            "WINDOW -t \$3: -n sessions TM_POPUP=1 ... TM_PANE='%7' '.../tm'" "$(cat "$TP/log")" ;;
 esac
 is "a client of 14 lines gets its popup, at the floor and not 70% of 14" "-w 140 -h 14" \
     "$(tpsize '7|3||||' 200 14)"
@@ -21870,17 +21872,40 @@ esac
 is "--needs sizes for the needs-you band" "-w 56 -h 14" "$(tpsize '7|4||||' 56 30 --needs)"
 tpsize '7|3||||' 200 50 >/dev/null
 case "$(cat "$TP/log")" in
-    "-c /dev/pts/9 -t \$3 -w 140 -h 14 -T  sessions  -E COCKPIT_POPUP=1 TM_POPUP=1 TM_SID=\\\$3 TM_CLIENT=/dev/pts/9 TM_PANE=%7 "*/tm) \
+    "-c /dev/pts/9 -t \$3 -w 140 -h 14 -T  sessions  -E COCKPIT_POPUP=1 TM_POPUP=1 TM_SID='\$3' TM_CLIENT='/dev/pts/9' TM_PANE='%7' '"*"/tm'") \
             ok "the popup goes to that client, in its session" ;;
     *) bad "the popup goes to that client, in its session" \
-            "-c /dev/pts/9 -t \$3 ... TM_SID=\\\$3 TM_CLIENT=/dev/pts/9 TM_PANE=%7 .../tm" \
+            "-c /dev/pts/9 -t \$3 ... TM_SID='\$3' TM_CLIENT='/dev/pts/9' TM_PANE='%7' '.../tm'" \
             "$(cat "$TP/log")" ;;
 esac
 tpsize '7|3||||' 56 30 --needs >/dev/null
 case "$(cat "$TP/log")" in
-    *"/tm --needs") ok "--needs rides into the popup" ;;
-    *) bad "--needs rides into the popup" "... tm --needs" "$(cat "$TP/log")" ;;
+    *"/tm' --needs") ok "--needs rides into the popup" ;;
+    *) bad "--needs rides into the popup" "... tm' --needs" "$(cat "$TP/log")" ;;
 esac
+# #1189: default-shell runs both commands, and dash, /bin/sh on Debian, has no $'...', which
+# printf %q wrote for a tab, and for a non-ASCII byte under C. tm here sits at a path holding
+# a ', a tab and e-acute, and dash reads each command back.
+TPO="$TP/a'b"$'\t'$'c\xc3\xa9'
+mkdir "$TPO" && ln -s "$DIR/scripts/tm" "$TPO/tm"
+tpself=$(cd -P "$TPO" && pwd)/tm
+if TPDASH=$(command -v dash); then
+    tpdash() {                # tpdash <client rows>: dash's words for the command tm hands tmux
+        rm -f "$TP/log.cmd"
+        env -u TMUX LC_ALL=C PATH="$TP:$PATH" TP_LOG="$TP/log" \
+            TP_ANSWER="$(printf '7\0373\037\037\037')" \
+            "$TPO/tm" --popup /dev/pts/9 '$3' 200 "$1" %7 >/dev/null 2>&1
+        "$TPDASH" -c "printf '[%s]' $(cat "$TP/log.cmd" 2>/dev/null)" 2>&1
+    }
+    is "dash reads tm's window command back whole, a ', a tab and e-acute under C in its path (#1189)" \
+       "[TM_POPUP=1][TM_SID=\$3][TM_CLIENT=/dev/pts/9][TM_PANE=%7][$tpself]" "$(tpdash 12)"
+    is "dash reads tm's popup command back whole, a ', a tab and e-acute under C in its path (#1189)" \
+       "[COCKPIT_POPUP=1][TM_POPUP=1][TM_SID=\$3][TM_CLIENT=/dev/pts/9][TM_PANE=%7][$tpself]" \
+       "$(tpdash 50)"
+    unset -f tpdash
+else
+    bad "dash is installed, to read tm's command as a shell with no \$'...' does (#1189)" "dash" "none"
+fi
 : > "$TP/log"
 env -u TMUX PATH="$TP:$PATH" TP_LOG="$TP/log" TP_ANSWER="$(printf '7\0373\037\037\037')" \
     "$DIR/scripts/tm" --popup /dev/pts/9 '$3' 200 50 'x;y' >/dev/null 2>&1
