@@ -945,12 +945,17 @@ fn an_asks_walk_up_stops_at_home() {
 
 // ---------------------------------------------------------------- CLAUDE_CONFIG_DIR (#1428)
 
+/// The read-only profile's `--disallowedTools` word at `research`.
+fn deny_word(research: bool) -> String {
+    let a = Profile::read_only(PathBuf::from("/r"), research, 0.5, Duration::from_secs(300)).argv(Effort::Medium);
+    let at = a.iter().position(|x| x == "--disallowedTools").expect("a deny list");
+    a[at + 1].clone()
+}
+
 /// The `.credentials.json` rules of the read-only profile's `--disallowedTools` at
 /// `research`, in their order there.
 fn credential_denies(research: bool) -> Vec<String> {
-    let a = Profile::read_only(PathBuf::from("/r"), research, 0.5, Duration::from_secs(300)).argv(Effort::Medium);
-    let at = a.iter().position(|x| x == "--disallowedTools").expect("a deny list");
-    a[at + 1]
+    deny_word(research)
         .split(',')
         .filter(|r| r.contains(".credentials.json"))
         .map(String::from)
@@ -1006,6 +1011,41 @@ fn an_empty_or_unset_config_dir_is_homes() {
     }
 }
 
+/// The line a read-only call answers with, CLAUDE_CONFIG_DIR set to the bytes
+/// `dir`. The claude it would start does not exist, so a call that is not refused
+/// answers with some other line.
+fn config_dir_refusal(tag: &str, dir: &[u8]) -> String {
+    let e = Env::new(tag, &[("CLAUDE_CONFIG_DIR", None)]);
+    // SAFETY: the Env holds the lock for the row, and every test here takes it.
+    unsafe { fake::set_var(&e.held, "CLAUDE_CONFIG_DIR", OsStr::from_bytes(dir)) };
+    let call = Call {
+        claude: e.dir.join("no-claude").display().to_string(),
+        timeout: Duration::from_secs(30),
+        dir: e.dir.join("cache"),
+        effort: Effort::Medium,
+    };
+    let p = Profile::read_only(PathBuf::from("/r"), false, 0.5, Duration::from_secs(300));
+    let mut req = Request::spawn_with(&call, &p, "S", "p", "default");
+    let mut got = None;
+    assert!(
+        until(|| {
+            got = req.poll();
+            got.is_some()
+        }),
+        "{tag}: no answer"
+    );
+    match got.unwrap() {
+        Err(Fail::Failed(l)) => l,
+        other => panic!("{tag}: {other:?}"),
+    }
+}
+
+/// The end of the line that refuses a read-only call for a CLAUDE_CONFIG_DIR, after
+/// the quoted dir: `why`, then what it costs.
+fn refused_for(why: &str) -> String {
+    format!(" {why}, so no rule keeps its credentials from a read; refused")
+}
+
 /// A set CLAUDE_CONFIG_DIR that no rule can name exactly refuses a read-only call
 /// before claude starts, in a line naming the variable: a relative dir (a rule reads
 /// it against the call's cwd), one not UTF-8 (the rules reach claude as text), or one
@@ -1019,30 +1059,55 @@ fn a_config_dir_no_rule_can_name_refuses_a_read_only_call() {
         ("cfg-bytes", b"/c/\xffcfg", "is not UTF-8"),
     ];
     for (tag, dir, why) in cases {
-        let e = Env::new(tag, &[("CLAUDE_CONFIG_DIR", None)]);
-        // SAFETY: the Env holds the lock for the row, and every test here takes it.
-        unsafe { fake::set_var(&e.held, "CLAUDE_CONFIG_DIR", OsStr::from_bytes(dir)) };
-        let call = Call {
-            claude: e.dir.join("no-claude").display().to_string(),
-            timeout: Duration::from_secs(30),
-            dir: e.dir.join("cache"),
-            effort: Effort::Medium,
-        };
-        let p = Profile::read_only(PathBuf::from("/r"), false, 0.5, Duration::from_secs(300));
-        let mut req = Request::spawn_with(&call, &p, "S", "p", "default");
-        let mut got = None;
-        assert!(
-            until(|| {
-                got = req.poll();
-                got.is_some()
-            }),
-            "{tag}: no answer"
-        );
-        let line = match got.unwrap() {
-            Err(Fail::Failed(l)) => l,
-            other => panic!("{tag}: {other:?}"),
-        };
+        let line = config_dir_refusal(tag, dir);
         assert!(line.starts_with("CLAUDE_CONFIG_DIR ") && line.contains(why), "{tag}: {line}");
+    }
+}
+
+/// A CLAUDE_CONFIG_DIR with a control character refuses a read-only call, as a read
+/// dir with one is refused: one rule holds both (`request::path_text`, #1433). The
+/// line shows the character escaped, never raw.
+#[test]
+fn a_config_dir_with_a_control_character_refuses_a_read_only_call() {
+    let cases: [(&str, &[u8]); 2] = [("cfg-newline", b"/c/a\nb"), ("cfg-tab", b"/c/a\tb")];
+    for (tag, dir) in cases {
+        let line = config_dir_refusal(tag, dir);
+        let end = refused_for("holds a control or bidi character");
+        assert!(line.starts_with("CLAUDE_CONFIG_DIR ") && line.ends_with(&end), "{tag}: {line}");
+        assert!(!line.contains(['\n', '\t']), "{tag}: {line:?}");
+    }
+}
+
+/// A CLAUDE_CONFIG_DIR with a bidi character refuses a read-only call, by the read
+/// dir's rule too (#1433).
+#[test]
+fn a_config_dir_with_a_bidi_character_refuses_a_read_only_call() {
+    let line = config_dir_refusal("cfg-bidi", "/c/a\u{202e}b".as_bytes());
+    let end = refused_for("holds a control or bidi character");
+    assert!(line.starts_with("CLAUDE_CONFIG_DIR ") && line.ends_with(&end), "{line}");
+}
+
+/// Claude Code 2.1.331 split its deny list at a comma or a space after a `)` inside
+/// a rule, so a rule for a dir holding `),` or `) ` denied nothing (measured, #1433).
+/// A CLAUDE_CONFIG_DIR holding a `)` refuses a read-only call.
+#[test]
+fn a_config_dir_with_a_closing_parenthesis_refuses_a_read_only_call() {
+    let line = config_dir_refusal("cfg-rparen", b"/c/a)b");
+    let end = refused_for("holds a closing parenthesis");
+    assert!(line.starts_with("CLAUDE_CONFIG_DIR ") && line.ends_with(&end), "{line}");
+}
+
+/// A comma, a `(` and a space in a CLAUDE_CONFIG_DIR each left the rule whole: with
+/// it Claude Code 2.1.331 refused the credentials and read a file beside them
+/// (measured one at a time, #1433). So a dir holding them, "Application Support"
+/// among them, keeps its rule, whole, last in the deny word.
+#[test]
+fn a_config_dir_with_a_comma_paren_or_space_keeps_its_rule() {
+    let _e = Env::new("cfg-held", &[("CLAUDE_CONFIG_DIR", Some("/c/a,b(c d".into()))]);
+    let rule = ",Read(//c/a,b(c d/.credentials.json)";
+    for research in [false, true] {
+        let word = deny_word(research);
+        assert!(word.ends_with(rule), "research {research}: {word}");
     }
 }
 
