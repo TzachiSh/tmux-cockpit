@@ -539,6 +539,38 @@ Lag is up to one tick, 10 s by default: a job that blocks shows on its pane at t
 - A long "thinking" phase fires no hook, so a working pane can read as idle.
   CPU is not a usable substitute: an agent waiting on the API is
   indistinguishable from an idle one.
+- tmux 3.7 and later cut a format that runs past 100 ms of wall time, and every expansion
+  after that point reads as empty (#736). A busy or paused server can cut an `if -F` test,
+  and a bare `==` then reads its two cut sides as equal. The two tests whose cut lasted read
+  1 only for a compare read whole: basket_clear's (#1453) and the board's kill (#1454). A
+  cut option name ends a command list early, a class of its own (#1450). These tests stay
+  as they are, since the next event puts each one right:
+  - `scripts/agent-state:242` and `:244`, in `subs_build`: a cut skips the subagent count
+    and the fleet sums with it. The pane's next Stop writes them, or its session's end
+    clears them (`:559`).
+  - `scripts/agent-state:637-639`, the unmark guards: a cut leaves the agent view mark, or
+    `@cockpit_fg` unwritten, until the pane's next hook. At SessionEnd (`:636`) it keeps
+    `@cockpit_fg`, which only the poller's job binding reads (`scripts/agent-poll:228`).
+    The poller drops it once the pane runs no agent (`scripts/agent-poll:216-218`), and the
+    next session's start writes a new one (`scripts/agent-state:619`).
+  - `scripts/agent-poll:68` and `:75`, the poller slot's claim and release: a cut skips the
+    claim, leaves a dead pid that the next claim clears, or takes or drops a live poller's
+    slot. That poller exits at its next tick (`:352`), and the next hook starts one if none
+    runs.
+  - `scripts/lib/hook.sh:205`, the stale poller sweep, and `:130` and `:133`, `SCRUB_IF`: a
+    cut skips an unset that the next sweep makes, or a scrub message that the next hook
+    writes, or takes back another message in `@cockpit_poll_err` that its writer sets again.
+  - `scripts/lib/review-deliver.sh:181`, paste or queue: a cut reads false, so the review is
+    queued, as its notice says, and lands when the agent stops.
+  - `cockpit.tmux:490`, the fullscreen key, and `:574-577`, the status bar clicks: a cut
+    takes the wrong branch of one press.
+  - `cockpit.tmux:119`, the sweep sequence: a cut writes an empty value or 0, or leaves the
+    number as it was. That event's sweep still walks (`scripts/agent-state:143-145`), older
+    sweeps skip, and the next event counts on from there. Only an equality test reads the
+    number. A probe on tmux 3.8 cut the bump from 5 at each call in turn and read 6, 5, 6,
+    five empty values, then 0 and 0. The per window test of a sweep
+    (`scripts/agent-state:145`) can drop one window from the newest walk, until the next
+    event.
 
 ## Session identity
 
