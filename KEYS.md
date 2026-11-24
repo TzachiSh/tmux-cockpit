@@ -96,6 +96,36 @@ that pane and is handed on to it: when a popup ate an earlier release, tmux
 turns the next press into a drag end and the click would select nothing (#21,
 #53). A root `MouseUp1Pane` or `MouseUp1Border` of your own is replaced.
 
+Only a plain left click is caught that way. The drag end and the release take
+the next press's own button and modifiers (tmux 3.8 server-client.c, lines 926
+to 928 and 1234 to 1265), so these presses after an eaten release are still
+lost once. Each was measured on a private tmux 3.8 server (#1320):
+
+- A middle click selects nothing and pastes nothing.
+- A right click on a pane opens no menu. On an app with mouse mode on it
+  reaches the app, but the pane is not selected.
+- An Alt click or a `Ctrl`+right click picks no path and selects nothing.
+- A press you then drag still drags and copies, but the pane is not selected.
+- A click on a pane in copy mode selects the pane but ends copy mode.
+
+No release binding fixes the first three. The release key comes after every
+plain click too, and no tmux 3.8 format says whether the press was lost
+(format.c, lines 3768 to 3807). Bound to its press's command, `MouseUp2Pane`
+pasted twice on each middle click, and `M-MouseUp1Pane` and `C-MouseUp3Pane`
+picked twice. `MouseUp3Pane` did work, since a plain right click's menu takes
+its own release (server-client.c, line 1824). It stays unbound anyway. It needs
+a copy of tmux's pane menu kept in step with tmux, and it would open that menu
+for you if you unbound `MouseDown3Pane`.
+
+A press you then drag gets no release key. Its release is a drag end, as any
+drag's is (server-client.c, lines 1158 to 1180), and the plugin never touches
+a drag. In copy mode the press runs copy mode's own `MouseDragEnd1Pane`,
+`copy-pipe-and-cancel`, which always leaves copy mode (window-copy.c, lines
+2697 to 2704). Only rebinding that key in the copy-mode tables kept copy mode,
+and the same key ends a real drag-to-select, so those tables stay stock. A
+`Ctrl` double click still picks, because its first press still counts toward
+the double click.
+
 ## The example config, `examples/full.tmux.conf`
 
 | key | does |
