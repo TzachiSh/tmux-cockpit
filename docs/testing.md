@@ -284,8 +284,12 @@ The same guard refuses your own `gh` (#1346), which the panel starts by `PATH`
 to read PRs, issues and CI (#1000): a test that reached it would call GitHub
 with your login. The runner copies its stub in twice, as `claude` and as `gh`,
 into the one folder it puts first on the test binary's `PATH`, and both write
-to the same log. A test binary that started `gh` fails with a line of its own,
-in the same shape as the claude one, and each start's line holds its `argv`:
+to the same log. It sets each copy's mode to 755 itself, so a stub without its
+exec bit still guards (#1351). Where a copy still cannot run, the binary is
+not started. Under a umask that takes the owner's `x`, 0177 for one, it is not
+started either: the guard's folder then cannot be searched, and the copy
+fails. A test binary that started `gh` fails with a line of its own, in the
+same shape as the claude one, and each start's line holds its `argv`:
 
 ```
 claude-guard: error: a test started gh, not its rig's own stub (docs/tui.md) binary=<test binary>

@@ -384,6 +384,50 @@ fn without_the_stub_beside_the_runner_the_binary_is_not_started() {
     assert!(!r.0.join(format!("{TEST}.ran")).exists(), "started without the guard");
 }
 
+/// A copy of the runner beside a copy of the stub at mode 0644. `cp` gives
+/// each guard copy that mode less the umask, and a PATH search skips a file it
+/// cannot run and starts the next `claude` or `gh` (#1351).
+fn runner_beside_a_stub_without_x(r: &Rig) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let runner = r.binary("plain/runner", &std::fs::read_to_string(RUNNER).unwrap());
+    let stub = r.0.join("plain/claude");
+    std::fs::write(&stub, std::fs::read_to_string(STUB).unwrap()).unwrap();
+    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o644)).unwrap();
+    runner
+}
+
+#[test]
+fn a_stub_without_its_exec_bit_still_guards_claude_and_gh() {
+    let r = gh_rig("plainstub");
+    let runner = runner_beside_a_stub_without_x(&r);
+    let body = "#!/bin/sh\ngh api user 2>/dev/null\nclaude -p hi 2>/dev/null\nexit 0\n";
+    let exe = r.binary(TEST, body);
+    let mut c = r.command_of(&runner);
+    let ran = r.ran(c.arg(&exe));
+    let recs = ran.records();
+    assert_eq!((ran.code, recs.len()), (Some(1), 4), "{}", ran.err);
+    assert_eq!(recs[..2], [started_line("claude", &exe), started_line("gh", &exe)]);
+    assert_eq!((starts_of(&r, "own/gh"), r.own_starts(), ran.left.len()), (0, 0, 0));
+}
+
+/// A copy that still cannot run after the runner's chmod stops the binary.
+#[test]
+fn a_guard_copy_that_cannot_run_is_refused() {
+    let r = Rig::new("cannotrun");
+    let runner = runner_beside_a_stub_without_x(&r);
+    // The rig's own chmod comes first on the runner's PATH, exits 0 and changes
+    // nothing: without root or a noexec mount, the one way a row leaves a copy
+    // in the guard's folder that cannot run.
+    fake::write_exec(&r.0.join("own/chmod"), "#!/bin/sh\nexit 0\n");
+    let exe = r.binary(TEST, MARKS);
+    let mut c = r.command_of(&runner);
+    let ran = r.ran(c.arg(&exe));
+    assert_eq!((ran.code, ran.records().len(), ran.left.len()), (Some(1), 1, 0), "{}", ran.err);
+    let refused = "cannot set the guard up, the binary was not started dir=";
+    assert!(ran.records()[0].starts_with(refused), "{}", ran.err);
+    assert!(!r.0.join(format!("{TEST}.ran")).exists(), "started without the guard");
+}
+
 /// PATH takes the guard's folder by its whole path, so a test that changes
 /// its folder still finds the guard where TMPDIR was given as a relative one.
 #[test]

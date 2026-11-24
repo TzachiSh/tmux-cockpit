@@ -72,7 +72,10 @@ case $d in
         ;;
 esac
 for p in $guarded; do
-    cp "${0%/*}/claude" "$d/$p" || {
+    # The mode is set here and not taken from the stub: a copy without its exec
+    # bit was skipped by a PATH search, which started the next claude (#1351). A
+    # copy that still cannot run stops the binary.
+    { cp "${0%/*}/claude" "$d/$p" && chmod 755 "$d/$p" && [ -x "$d/$p" ]; } || {
         echo "$me: error: cannot set the guard up, the binary was not started dir=$d" >&2
         exit 1
     }
