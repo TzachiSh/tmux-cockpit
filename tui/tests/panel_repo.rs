@@ -230,6 +230,46 @@ fn path_tokens_are_deduplicated_and_capped_at_10() {
 }
 
 #[test]
+fn a_quoted_path_with_a_space_is_one_token() {
+    // rows: (screen text, the tokens taken), #912
+    let rows: [(&str, &[&str]); 4] = [
+        ("open @\"/p q/a.rs\" now", &["@/p q/a.rs"]),
+        ("cat \"./my docs/a.md\"", &["./my docs/a.md"]),
+        ("see '~/p q/b.txt'.", &["~/p q/b.txt"]),
+        ("(`/p q/c.rs:3:5`)", &["/p q/c.rs"]),
+    ];
+    for (screen, want) in rows {
+        assert_eq!(screen_paths(screen), want, "{screen}");
+    }
+}
+
+#[test]
+fn a_quoted_mention_drops_its_line_range() {
+    let screen = "@\"/p q/a.rs#L3-5\" and @\"/p q/b.rs#L7\"";
+    assert_eq!(screen_paths(screen), ["@/p q/a.rs", "@/p q/b.rs"]);
+}
+
+#[test]
+fn a_relative_mention_with_a_space_is_one_token() {
+    assert_eq!(screen_paths("read @\"my docs/a.md\""), ["@my docs/a.md"]);
+}
+
+#[test]
+fn a_quoted_run_that_is_not_one_path_keeps_its_words() {
+    assert_eq!(screen_paths("\"see docs/a.md\" or @\"/p q/a.rs\""), ["docs/a.md", "@/p q/a.rs"]);
+}
+
+#[test]
+fn a_quoted_spaced_path_on_screen_is_reported_whole() {
+    let r = Repo::new("spaced");
+    r.commit("my docs/a.md", "a\n", "first");
+    let abs = format!("{}/my docs/a.md", r.dir());
+    let screen = format!("read @\"{abs}#L1\" and \"./my docs/gone.md\"");
+    let s = section(&block(&r.dir(), &screen), "paths on screen:");
+    assert_eq!(s, [format!("exists: @{abs}"), "missing: ./my docs/gone.md".to_string()]);
+}
+
+#[test]
 fn a_stat_dirty_file_never_makes_git_rewrite_the_index() {
     let r = Repo::new("index");
     r.commit("a.txt", "a\n", "first");
