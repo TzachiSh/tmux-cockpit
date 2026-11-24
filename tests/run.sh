@@ -12453,6 +12453,83 @@ is "tmux-branch: a mktemp answering a file of the user's leaves it, a message sa
    "kept|1|0" "$(op_run tmux-branch "$OP/w")"
 rm -rf "$OP"; unset -f op_run; unset OP op_mk op_w
 
+echo "== review-store and --deliver write, move or remove no file mktemp did not make (#1322) =="
+# parse_store moves a store that does not parse onto a temp file beside it, format_store renames
+# its temp file over the store, and --deliver writes a review of over 2048 bytes into a temp
+# file. Here a mktemp earlier on PATH answers, for a file, a canary of the user's: mode 0600,
+# with a line in it. mktemp -d is the real one. The site takes the path it takes on a failed
+# mktemp and says why, and the canary and the store stay as they were. The store rows load the
+# lib in a bash of their own, so own_tmpfile is there only if the lib loads tmpdir.sh. --deliver
+# reaches no server: TMUX is unset, and a stub tmux first on PATH says the pane is an agent's,
+# takes the paste, and keeps each message it is asked to show.
+RW=$(mktmpd); mkdir -p "$RW/mb" "$RW/tb" "$RW/real"
+rw_mk=$(PATH=/usr/bin:/bin command -v mktemp)
+printf '#!/bin/sh\ncase $1 in -d) exec %s "$@" ;; esac\nprintf "%%s\\n" %s\n' \
+    "$(tq "$rw_mk")" "$(tq "$RW/canary")" > "$RW/mb/mktemp"
+cat > "$RW/tb/tmux" <<'RWTMUX'
+#!/bin/sh
+# A message (dmsg: display-message, -l right before its text): the text is kept.
+[ "$1" = display-message ] && case " $* " in *" -l "*)
+    for a; do l=$a; done; printf '%s\n' "$l" >> "$RW_SAID" ;; esac
+case "$*" in
+    load-buffer*) cat > /dev/null ;;
+    *@cockpit_agents_glob*) echo 1 ;;
+esac
+exit 0
+RWTMUX
+chmod +x "$RW/mb/mktemp" "$RW/tb/tmux"
+: > "$RW/big"
+for rw_i in $(seq 1 40); do
+    printf '## src.go:%d (+)\n> line %d\nthis comment pads the payload past 2048 bytes\n\n' \
+        "$rw_i" "$rw_i" >> "$RW/big"
+done
+rw_was() { [ "$(cat "$1" 2>/dev/null)" = "$2" ] && echo kept || echo gone; }  # <file> <text>
+rw_lib() {                    # <store text> <code> <line> -> canary|store|line said|code printed
+    printf 'keep\n' > "$RW/canary"; chmod 600 "$RW/canary"; printf '%s\n' "$1" > "$RW/c.md"
+    local out
+    out=$(PATH="$RW/mb:$PATH" bash -c '. "$1" || exit 3; declare -A STORE=(); STORE_N=0
+        '"$2" _ "$DIR/scripts/lib/review-store.sh" "$RW/c.md" 2>"$RW/err")
+    printf '%s|%s|%s|%s' "$(rw_was "$RW/canary" keep)" "$(rw_was "$RW/c.md" "$1")" \
+        "$(grep -cxF "$3" "$RW/err")" "$out"
+}
+rw_deliver() {                # <PATH dirs> <XDG_RUNTIME_DIR> -> --deliver's status
+    : > "$RW/said"
+    (cd "$RW" && env -u TMUX -u TMUX_PANE PATH="$1:$PATH" RW_SAID="$RW/said" \
+        COCKPIT_TUI_BIN="$RW/none" XDG_RUNTIME_DIR="$2" timeout 30 \
+        "$DIR/scripts/tmux-review" --deliver %1 "$RW/big" </dev/null >/dev/null 2>&1)
+    printf '%s' "$?"
+}
+is "parse_store: a mktemp answering a file of the user's leaves it and the store, and says why" \
+   "kept|kept|1|" "$(rw_lib garbage 'parse_store "$2"; printf %s "$STORE_BAK"' \
+       "review-store: $RW/c.md does not parse; left in place (own_tmpfile: nonempty)")"
+is "format_store: a mktemp answering a file of the user's leaves it and the store, says why, 1" \
+   "kept|kept|1|1" "$(rw_lib old 'STORE=([0.path]=a.go [0.line]=1 [0.side]=+); STORE_N=1
+       format_store "$2"; printf %s "$?"' \
+       "review-store: $RW/c.md left as it was (own_tmpfile: nonempty)")"
+printf 'keep\n' > "$RW/canary"; chmod 600 "$RW/canary"
+rw_rc=$(rw_deliver "$RW/mb:$RW/tb" "$RW/real")
+rw_w='cockpit: could not create the review file (own_tmpfile: nonempty), refusing to deliver'
+is "--deliver: a mktemp answering a file of the user's leaves it, refuses, a message says why" \
+   "kept|1|1" "$(rw_was "$RW/canary" keep)|$rw_rc|$(grep -cF "$rw_w" "$RW/said")"
+# A guard for own_tmpfile's physical path: the new spill is told from the older ones by its
+# name, and through a linked runtime folder (macOS /tmp) the two spellings differ.
+ln -s real "$RW/link"
+for rw_t in 1 2 3; do
+    : > "$RW/real/tmux-cockpit-review-1-old00$rw_t"
+    touch -t "20200101000$rw_t" "$RW/real/tmux-cockpit-review-1-old00$rw_t"
+done
+rw_rc=$(rw_deliver "$RW/tb" "$RW/link")
+rw_n=0
+for rw_f in "$RW/real"/tmux-cockpit-review-1-??????; do
+    case $rw_f in *-old00?) ;; *) [ -f "$rw_f" ] && rw_n=$((rw_n + 1)) ;; esac
+done
+is "--deliver through a linked runtime folder keeps the two newest older spills and the new one" \
+   "gone kept kept|1|0" "$(for rw_t in 1 2 3; do
+       [ -e "$RW/real/tmux-cockpit-review-1-old00$rw_t" ] && printf 'kept ' || printf 'gone '
+   done | sed 's/ $//')|$rw_n|$rw_rc"
+rm -rf "$RW"; unset -f rw_was rw_lib rw_deliver
+unset RW rw_mk rw_i rw_rc rw_w rw_t rw_f rw_n
+
 # group: deliver
 echo "== tmux-review --deliver: guards refuse before anything is pasted =="
 if need_tmux "tmux-review --deliver"; then :; else

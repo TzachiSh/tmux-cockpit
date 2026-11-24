@@ -2,6 +2,10 @@
 # tmux-review's hand-back: compose the batch, deliver it into the pane, archive it.
 # Sourced by tmux-review, never run. Bash 4+.
 
+# The review file, taken only when mktemp's answer is a new, empty file of the user's (#1322).
+# shellcheck source=tmpdir.sh
+. "${BASH_SOURCE[0]%/*}/tmpdir.sh" || return 1
+
 # After a delivery: the batch joins delivered.md, and the store and revdiff's
 # scratch beside it go. Public as --done for keep_hint's command.
 done_store() {                # <store>
@@ -103,23 +107,27 @@ deliver() {
 
     bytes=$(printf '%s' "$payload" | wc -c)
 
-    # Over 2048 bytes the review becomes a file the agent reads. mktemp under
-    # umask 077: a fixed name in a shared tmpdir (macOS has no XDG_RUNTIME_DIR)
-    # is a symlink-disclosure vector. The X run ends the template: BSD mktemp
-    # refuses anything after it.
+    # Over 2048 bytes the review becomes a file the agent reads. A mktemp name: a
+    # fixed name in a shared tmpdir (macOS has no XDG_RUNTIME_DIR) is a
+    # symlink-disclosure vector. own_tmpfile takes it only as a new, empty 0600
+    # file of the user's, as printf overwrites it. The X run ends the template:
+    # BSD mktemp refuses anything after it.
     if [ "$bytes" -gt 2048 ]; then
-        local runtime file
+        local runtime file why
         runtime=${XDG_RUNTIME_DIR:-/tmp}
-        file=$(umask 077 && mktemp "$runtime/tmux-cockpit-review-${pane#%}-XXXXXX") || {
-            dmsg "cockpit: could not create the review file, refusing to deliver$(
+        own_tmpfile file "$runtime/tmux-cockpit-review-${pane#%}-XXXXXX" || {
+            why="own_tmpfile: $own_tmpfile_why"
+            dmsg "cockpit: could not create the review file ($why), refusing to deliver$(
                 keep_hint "$pane" "$store")" 2>/dev/null
             return 1
         }
         printf '%s' "$payload" > "$file"
         # Nothing else deletes these. Keep this pane's two newest older ones: an
-        # earlier pointer may still sit unsent in the prompt.
+        # earlier pointer may still sit unsent in the prompt. Listed in $file's folder,
+        # as own_tmpfile resolved it: through a link ($runtime /tmp on macOS) the new
+        # file's name would differ from $file, and it would count as an older one.
         local f i; local -a by=()
-        for f in "$runtime/tmux-cockpit-review-${pane#%}-"??????; do
+        for f in "${file%/*}/tmux-cockpit-review-${pane#%}-"??????; do
             [ "$f" != "$file" ] && [ -f "$f" ] && [ ! -L "$f" ] && [ -O "$f" ] || continue
             for ((i = ${#by[@]}; i > 0; i--)); do [ "$f" -nt "${by[i-1]}" ] || break; by[i]=${by[i-1]}; done
             by[i]=$f

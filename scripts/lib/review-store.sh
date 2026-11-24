@@ -4,9 +4,16 @@
 #   "## <path> (file-level)", an optional "> <fragment>", body lines
 #   (a body "## " is stored " ## "), a blank line.
 # parse_store FILE fills STORE ("<i>.path|line|end|side|frag|body") and STORE_N;
-# it never fails: a bad file is set aside as STORE_BAK. format_store writes back.
+# it never fails: a bad file is set aside as STORE_BAK, or left in place with STORE_BAK
+# empty when no temp file is taken. format_store writes back.
 # parse_store_revdiff FILE reads revdiff's own output: it has no fragment line,
 # so a leading "> " body line stays body. parse_store keeps the fragment rule.
+
+# Each temp file here is taken only when mktemp's answer is a new, empty file of the user's
+# (#1322): the backup gets the bad store moved over it, and format_store's is renamed over
+# the store.
+# shellcheck source=tmpdir.sh
+. "${BASH_SOURCE[0]%/*}/tmpdir.sh" || return 1
 
 parse_store() { _parse_store "$1" 0; }
 parse_store_revdiff() { _parse_store "$1" 1; }
@@ -57,8 +64,13 @@ _parse_store() {
     if [ $bad = 1 ]; then
         STORE=(); STORE_N=0
         # A fresh name: a second bad store must not overwrite the first one's backup.
-        STORE_BAK=$(mktemp "$file.bak.XXXXXX") && mv -f -- "$file" "$STORE_BAK" 2>/dev/null
-        printf 'review-store: %s does not parse; set aside as %s\n' "$file" "$STORE_BAK" >&2
+        if own_tmpfile STORE_BAK "$file.bak.XXXXXX"; then
+            mv -f -- "$file" "$STORE_BAK" 2>/dev/null
+            printf 'review-store: %s does not parse; set aside as %s\n' "$file" "$STORE_BAK" >&2
+        else
+            printf 'review-store: %s does not parse; left in place (own_tmpfile: %s)\n' \
+                "$file" "$own_tmpfile_why" >&2
+        fi
         return 0
     fi
     STORE_N=$((i+1))
@@ -71,7 +83,9 @@ _parse_store() {
 
 format_store() {
     local file=$1 tmp i bline
-    tmp=$(umask 077; mktemp "$file.XXXXXX") || return 1
+    own_tmpfile tmp "$file.XXXXXX" || {
+        printf 'review-store: %s left as it was (own_tmpfile: %s)\n' "$file" "$own_tmpfile_why" >&2
+        return 1; }
     {
         for ((i=0; i<STORE_N; i++)); do
             if [ "${STORE[$i.side]:-}" = file-level ]; then
