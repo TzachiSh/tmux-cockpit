@@ -7,11 +7,12 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::SystemTime;
 
-/// Claude Code's projects directory: `$CLAUDE_CONFIG_DIR/projects`, else `~/.claude/projects`.
+/// Claude Code's projects directory: `projects` in [`super::claude_config_dir`], else
+/// `~/.claude/projects`.
 pub(crate) fn projects_dir() -> PathBuf {
-    match std::env::var("CLAUDE_CONFIG_DIR") {
-        Ok(d) if !d.is_empty() => PathBuf::from(d).join("projects"),
-        _ => PathBuf::from(format!("{}/.claude/projects", std::env::var("HOME").unwrap_or_default())),
+    match super::claude_config_dir() {
+        Some(d) => d.join("projects"),
+        None => PathBuf::from(format!("{}/.claude/projects", std::env::var("HOME").unwrap_or_default())),
     }
 }
 

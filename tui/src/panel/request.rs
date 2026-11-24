@@ -109,7 +109,7 @@ impl Call {
 pub struct Profile {
     pub tools: &'static [&'static str],
     pub allow: Vec<String>,
-    pub deny: &'static [&'static str],
+    pub deny: Vec<String>,
     /// `--permission-mode`. Unset, the user's `defaultMode` decides what no rule
     /// covers, and `auto` approves a read outside the read dirs (probed).
     pub permission_mode: Option<&'static str>,
@@ -143,12 +143,13 @@ pub enum Output {
 
 const READ: &[&str] = &["Read", "Grep", "Glob"];
 const RESEARCH: &[&str] = &["Read", "Grep", "Glob", "WebSearch", "WebFetch", "Skill"];
-/// A read-only call's `--disallowedTools`. First the writers, never offered:
+/// A read-only call's `--disallowedTools`, but for [`cfg_rule`]'s, which
+/// [`deny_list`] adds. First the writers, never offered:
 /// Agent too, as the CLI cannot keep it to the read-only Explore type (a rule
 /// can deny an agent type, not allow only one). Then the secret paths, the
 /// owner's call on review-432's finding 6: ssh, aws and gpg keys, Claude's own
-/// credentials, and the token files of gh, git, netrc, docker, kube, npm, pypi
-/// and gcloud: a Read rule covers Grep and Glob as
+/// credentials (here those under `~/.claude`), and the token files of gh, git,
+/// netrc, docker, kube, npm, pypi and gcloud: a Read rule covers Grep and Glob as
 /// well and follows symlinks (probed). `~` is the home dir; `//` anchors at `/`,
 /// as a bare `**/.env` is relative to the cwd (the cache dir) and would leave a
 /// repo's `.env` readable. Every `.env` is denied, the repo's and `.env.example`
@@ -175,7 +176,40 @@ const DENY: &[&str] = &[
     "Read(//**/.env.*)",
 ];
 
-/// `path` matches one of the read-only profile's Read denies ([`DENY`]), so a
+/// The characters a Read rule reads as a glob: a path holding one is never put
+/// in a rule ([`cfg_rule`]) or read by a call ([`read_dir_ok`]).
+const GLOB: [char; 7] = ['*', '?', '[', ']', '{', '}', '\\'];
+
+/// The Read deny for Claude's credentials under CLAUDE_CONFIG_DIR
+/// ([`crate::data::claude_config_dir`]), where Claude Code keeps them when the
+/// variable is set. [`DENY`]'s `~/.claude` one stays beside it: one box can hold
+/// both dirs, and denying more fails closed (#1428). `Ok(None)` when the variable
+/// names no dir. An error, a line for the user, when no rule can name the file
+/// exactly: a relative dir (a rule reads it against the cwd, the cache dir), one
+/// not UTF-8 (the rules reach claude as text), or one holding a glob character.
+fn cfg_rule() -> Result<Option<String>, String> {
+    let Some(dir) = crate::data::claude_config_dir() else {
+        return Ok(None);
+    };
+    let why = match dir.to_str() {
+        None => "is not UTF-8",
+        Some(_) if !dir.is_absolute() => "is not an absolute path",
+        Some(s) if s.contains(GLOB) => "holds a glob character",
+        Some(_) => return Ok(Some(format!("Read(/{})", dir.join(".credentials.json").display()))),
+    };
+    let shown = format!("{:?}", dir.display().to_string());
+    Err(format!(
+        "CLAUDE_CONFIG_DIR {shown} {why}, so no rule keeps its credentials from a read; refused"
+    ))
+}
+
+/// A read-only call's deny list: [`DENY`], then [`cfg_rule`]'s. A dir no rule can
+/// name adds none here, as [`start`] refuses the call before claude starts.
+fn deny_list() -> Vec<String> {
+    DENY.iter().copied().map(String::from).chain(cfg_rule().ok().flatten()).collect()
+}
+
+/// `path` matches one of the read-only profile's Read denies ([`deny_list`]), so a
 /// read-only call refuses to read it. `~` is `home`, `//` anchors at `/`, `**`
 /// is any run of folders and `*` any run of characters in one name. A rule
 /// relative to the cwd (none today) never matches: the cwd is the cache dir.
@@ -193,7 +227,8 @@ pub fn read_denied(path: &Path, home: Option<&Path>) -> bool {
         p.components().filter_map(normal).collect()
     };
     let path = names(path);
-    let mut rules = DENY.iter().filter_map(|d| d.strip_prefix("Read(")?.strip_suffix(')'));
+    let deny = deny_list();
+    let mut rules = deny.iter().filter_map(|d| d.strip_prefix("Read(")?.strip_suffix(')'));
     rules.any(|rule| {
         let full = match (rule.strip_prefix("//"), rule.strip_prefix("~/"), home) {
             (Some(r), ..) => Path::new("/").join(r),
@@ -234,7 +269,7 @@ impl Profile {
     pub const TEXT: Profile = Profile {
         tools: &[],
         allow: Vec::new(),
-        deny: &[],
+        deny: Vec::new(),
         permission_mode: None,
         output: Output::Text,
         skills: false,
@@ -263,7 +298,7 @@ impl Profile {
         Profile {
             tools,
             allow,
-            deny: DENY,
+            deny: deny_list(),
             permission_mode: Some("dontAsk"),
             output: Output::Json,
             skills: research,
@@ -477,7 +512,7 @@ pub fn read_dir_ok(dir: &Path) -> Result<(), String> {
     if crate::pick::clean(s) != s {
         return Err(format!("{shown} holds a control or bidi character; refused"));
     }
-    if s.contains(['*', '?', '[', ']', '{', '}', '\\']) {
+    if s.contains(GLOB) {
         return Err(format!("{shown} holds a glob character; refused"));
     }
     let both = |p: &Path| [Some(lexical(p)), std::fs::canonicalize(p).ok()].into_iter().flatten();
@@ -523,6 +558,11 @@ pub const CALL_ENV: &[(&str, &str)] = &[
 fn start(call: &Call, p: &Profile, system: &str, model: &str) -> Result<std::process::Child, String> {
     for d in &p.read_dirs {
         read_dir_ok(d)?;
+    }
+    // a call with a deny list denies the credentials under CLAUDE_CONFIG_DIR too, so
+    // one whose dir no rule can name does not start (#1428)
+    if !p.deny.is_empty() {
+        cfg_rule()?;
     }
     let system = match p.where_note() {
         Some(n) => format!("{system}\n\n{n}"),
