@@ -2735,8 +2735,12 @@ tell the two quiet answers apart: `[]` with exit 0 is "no agents", exit 1 is
   secret denies stay as a second wall. They name Claude's credentials under
   `~/.claude` and, when `CLAUDE_CONFIG_DIR` is set, under that dir as well
   (#1428). A set value that no rule can name exactly (relative, not UTF-8, or
-  holding a glob character) refuses a read-only call before claude starts, in a
-  line that names the variable.
+  holding a control, bidi or glob character or a `)`) refuses a read-only call
+  before claude starts, in a line that names the variable. Claude Code 2.1.331
+  kept the rule whole for a dir holding one comma, `(`, `)`, space, tab, newline
+  or U+3000, and split it, so it denied nothing, where a comma or a space came
+  after a `)`
+  ([#1433](https://github.com/TzachiSh/tmux-cockpit/issues/1433#issuecomment-7126564592)).
   Every panel call loads no setting source (`--setting-sources ""`, #623), so a
   user's or a repo's `settings.json` adds no allow rule, `additionalDirectories`
   entry, hook or `env`; only managed settings, which sit above every source,

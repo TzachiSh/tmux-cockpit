@@ -176,26 +176,45 @@ const DENY: &[&str] = &[
     "Read(//**/.env.*)",
 ];
 
-/// The characters a Read rule reads as a glob: a path holding one is never put
-/// in a rule ([`cfg_rule`]) or read by a call ([`read_dir_ok`]).
+/// The characters a Read rule reads as a glob: [`path_text`] refuses a path
+/// holding one.
 const GLOB: [char; 7] = ['*', '?', '[', ']', '{', '}', '\\'];
+
+/// `dir` as the text a call carries, the one rule for a read dir ([`read_dir_ok`])
+/// and for the config dir in a deny rule ([`cfg_rule`]). The error is why not, in
+/// words that follow the quoted path in a refusal: not UTF-8 (a call reaches claude
+/// as text), a control or bidi character (refused, never cleaned, as a cleaned path
+/// names another), or a glob character (a Read rule reads it as a pattern).
+fn path_text(dir: &Path) -> Result<&str, &'static str> {
+    let s = dir.to_str().ok_or("is not UTF-8")?;
+    if crate::pick::clean(s) != s {
+        return Err("holds a control or bidi character");
+    }
+    if s.contains(GLOB) {
+        return Err("holds a glob character");
+    }
+    Ok(s)
+}
 
 /// The Read deny for Claude's credentials under CLAUDE_CONFIG_DIR
 /// ([`crate::data::claude_config_dir`]), where Claude Code keeps them when the
 /// variable is set. [`DENY`]'s `~/.claude` one stays beside it: one box can hold
 /// both dirs, and denying more fails closed (#1428). `Ok(None)` when the variable
 /// names no dir. An error, a line for the user, when no rule can name the file
-/// exactly: a relative dir (a rule reads it against the cwd, the cache dir), one
-/// not UTF-8 (the rules reach claude as text), or one holding a glob character.
+/// exactly: a dir [`path_text`] refuses, a relative one (a rule reads it against
+/// the cwd, the cache dir), or one holding a `)`. The deny list reaches claude as
+/// one argv word, and Claude Code 2.1.331 split it at a comma or a space after a
+/// `)` inside a rule, which then denied nothing; a comma, a `(`, a space, a tab, a
+/// newline or U+3000 alone left the rule whole (measured, #1433).
 fn cfg_rule() -> Result<Option<String>, String> {
     let Some(dir) = crate::data::claude_config_dir() else {
         return Ok(None);
     };
-    let why = match dir.to_str() {
-        None => "is not UTF-8",
-        Some(_) if !dir.is_absolute() => "is not an absolute path",
-        Some(s) if s.contains(GLOB) => "holds a glob character",
-        Some(_) => return Ok(Some(format!("Read(/{})", dir.join(".credentials.json").display()))),
+    let why = match path_text(&dir) {
+        Err(why) => why,
+        Ok(_) if !dir.is_absolute() => "is not an absolute path",
+        Ok(s) if s.contains(')') => "holds a closing parenthesis",
+        Ok(_) => return Ok(Some(format!("Read(/{})", dir.join(".credentials.json").display()))),
     };
     let shown = format!("{:?}", dir.display().to_string());
     Err(format!(
@@ -490,11 +509,11 @@ pub fn secret_dir(dir: &Path) -> Option<String> {
 /// system prompt and `--add-dir` carry a read dir whole, and a redacted one would
 /// name no folder (#966). So no other refusal shows such a name in full.
 ///
-/// A name goes into the system prompt, so a control or bidi character is refused,
-/// never cleaned, as the call would read some other folder; so is an empty name
-/// and one not UTF-8. `--add-dir` of `/`, home or a folder above home opens all of
-/// home, a link to one included. A glob character is refused though no rule holds
-/// the path today, in case one does again.
+/// A name goes into the system prompt, so one [`path_text`] refuses is refused:
+/// not UTF-8, or with a control or bidi character, as the call would read some
+/// other folder. So is an empty name. `--add-dir` of `/`, home or a folder above
+/// home opens all of home, a link to one included. A glob character is refused
+/// though no rule holds a read dir's path today, in case one does again.
 pub fn read_dir_ok(dir: &Path) -> Result<(), String> {
     if let Some(shown) = secret_dir(dir) {
         return Err(format!(
@@ -503,17 +522,9 @@ pub fn read_dir_ok(dir: &Path) -> Result<(), String> {
         ));
     }
     let shown = format!("{:?}", dir.display().to_string());
-    let Some(s) = dir.to_str() else {
-        return Err(format!("{shown} is not UTF-8; refused"));
-    };
+    let s = path_text(dir).map_err(|why| format!("{shown} {why}; refused"))?;
     if s.is_empty() {
         return Err("the folder name is empty; refused".into());
-    }
-    if crate::pick::clean(s) != s {
-        return Err(format!("{shown} holds a control or bidi character; refused"));
-    }
-    if s.contains(GLOB) {
-        return Err(format!("{shown} holds a glob character; refused"));
     }
     let both = |p: &Path| [Some(lexical(p)), std::fs::canonicalize(p).ok()].into_iter().flatten();
     if both(dir).any(|d| d == Path::new("/")) {
