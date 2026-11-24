@@ -25313,8 +25313,10 @@ NEWWIN_SH=$(command -v sh) MV_ED=$(tq "$MV/e/nvim") mvrun x --view %1 "$MV/w/$MV
 is "end to end: the editor is handed +7 and the file's path whole" "+7"$'\n'"$MV/w/$MVQ" \
    "$(cat "$MV/argv" 2>/dev/null)"
 # #1177: a touch client's editor gets +N by its first word, read as sh reads it. An nvim stub
-# at a path holding the folder's blanks, spelled five ways; the viewer's e opens it at line 7
-for mvsp in single double backslash mixed args; do
+# at a path holding the folder's blanks, spelled five ways; the viewer's e opens it at line 7.
+# #1191: a sixth, at a folder named a"b$c`d\ e, spells it in "..." with \" \$ \` and \\
+mkdir -p "$MV/q/a\"b\$c\`d\\ e"; cp "$MV/ed-argv" "$MV/q/a\"b\$c\`d\\ e/nvim"
+for mvsp in single double backslash mixed args escapes; do
     case $mvsp in
         single) mved=$(tq "$MV/e/nvim"); mvw= ;;
         # inside "...", sh still reads \ " $ and ` : each is escaped first
@@ -25322,6 +25324,10 @@ for mvsp in single double backslash mixed args; do
         backslash) mved=$(printf '%s' "$MV/e/nvim" | sed 's/./\\&/g'); mvw= ;;   # each character
         mixed) mved="$(tq "$MV/e")/nvim"; mvw= ;;
         args) mved="$(tq "$MV/e/nvim") -u NONE"; mvw=$'-u\nNONE\n' ;;
+        # "<$MV/q>/a\"b\$c\`d\\"' e/nvim': a missed \" or \\ puts the quotes out of step, and
+        # the name read is then nvim' and gets no +N
+        escapes) mved=$(printf '"%s/a\\"b\\$c\\`d\\\\"%s' \
+                     "$(printf '%s' "$MV/q" | sed 's/[\\"$`]/\\&/g')" "' e/nvim'"); mvw= ;;
     esac
     rm -f "$MV/argv"
     NEWWIN_SH=$(command -v sh) TOUCH=1 VIEW_OUT='edit 7' MV_ED=$mved \
@@ -25333,7 +25339,10 @@ done
 # by the program the command runs: past NAME=value words and one env. mvat prints what the
 # window's command holds between the editor and the file: +N, or nothing. emacsclient reads
 # +N as a line; X=1;hx runs hx, so a NAME=value word holding an operator ends the walk, and
-# a quoted value with none (X='a b') does not.
+# a quoted value with none (X='a b') does not. #1321: kak reads +N too. An operator or a
+# redirection outside quotes, anywhere, gives no +N (>/x/vim hx, nvim && hx), and a quoted one
+# counts for nothing (X='a;b', -c 'a;b'). A -- past the name gives none: vim reads +12 after
+# it as a file. $ and ` in a value run no other program, so X=$HOME keeps its +N.
 mvat() {                      # mvat <editor> <file> <line>; TOUCH and VIEW_OUT from the caller
     local l
     l=$(MV_ED=$1 mvrun '' --view %1 "$2" "$3" | sed -n 's/^NEWWIN //p')
@@ -25343,7 +25352,9 @@ mvat() {                      # mvat <editor> <file> <line>; TOUCH and VIEW_OUT 
 for mvt in 0 1; do
     for row in 'hx|' 'code --wait|' 'env -i nvim|' 'X=1 nvim|+12' 'env X=1 nvim|+12' \
                '/usr/bin/env A=1 B=2 vim|+12' 'X=1 env Y=2 nano|+12' 'emacsclient -nw|+12' \
-               'X=1;hx nvim|' "X='a b' nvim|+12"; do
+               'X=1;hx nvim|' "X='a b' nvim|+12" 'kak|+12' 'nvim --|' '>/x/vim hx|' \
+               'nvim && hx|' "nvim -c 'a;b'|+12" "X='a;b' nvim|+12" 'X=$HOME nvim|+12' \
+               'X=`true` nvim|+12'; do
         is "touch=$mvt, the viewer's e with editor [${row%|*}]: [${row#*|}] before the file" \
            "${row#*|}" "$(TOUCH=${mvt#0} VIEW_OUT='edit 12' mvat "${row%|*}" "$MV/w/a.md" 7)"
     done
