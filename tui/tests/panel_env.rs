@@ -3,11 +3,14 @@
 mod fake;
 
 use cockpit_tui::data::gitsafe::PATHSPEC;
+use cockpit_tui::data::subagents;
 use cockpit_tui::panel::capture::{capture, capture_within, repo_state_within};
 use cockpit_tui::panel::envelope::{Flow, OutType};
 use cockpit_tui::panel::prompts::{self, Ctx};
-use cockpit_tui::panel::request::{Call, Effort, Request};
+use cockpit_tui::panel::request::{Call, Effort, Fail, Profile, Request, read_denied};
 use cockpit_tui::panel::route::route;
+use std::ffi::OsStr;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -938,6 +941,121 @@ fn an_asks_walk_up_stops_at_home() {
     std::fs::write(&f, "a\nb\n").unwrap();
     let got = cockpit_tui::panel::ask::load(&f, 1, 2).map(|a| a.repo);
     assert_eq!(got, Ok(d.join("home/notes")), "a plain folder under HOME, a .git in and above it");
+}
+
+// ---------------------------------------------------------------- CLAUDE_CONFIG_DIR (#1428)
+
+/// The `.credentials.json` rules of the read-only profile's `--disallowedTools` at
+/// `research`, in their order there.
+fn credential_denies(research: bool) -> Vec<String> {
+    let a = Profile::read_only(PathBuf::from("/r"), research, 0.5, Duration::from_secs(300)).argv(Effort::Medium);
+    let at = a.iter().position(|x| x == "--disallowedTools").expect("a deny list");
+    a[at + 1]
+        .split(',')
+        .filter(|r| r.contains(".credentials.json"))
+        .map(String::from)
+        .collect()
+}
+
+/// Claude Code keeps its credentials under CLAUDE_CONFIG_DIR when that is set. A
+/// read-only call denies that file, and still the one under `~/.claude`: one box can
+/// hold both dirs, and denying more fails closed.
+#[test]
+fn a_set_config_dir_denies_its_credentials_beside_homes() {
+    let _e = Env::new("cfg-set", &[("CLAUDE_CONFIG_DIR", Some("/c/cfg".into()))]);
+    for research in [false, true] {
+        let want = ["Read(~/.claude/.credentials.json)", "Read(//c/cfg/.credentials.json)"];
+        assert_eq!(credential_denies(research), want, "research {research}");
+    }
+}
+
+/// The write's note reads the same denies (`request::read_denied`): a ref to the
+/// credentials under a set config dir is a secret it may not read, as one under
+/// `~/.claude` still is.
+#[test]
+fn a_ref_to_the_set_config_dirs_credentials_is_denied() {
+    let _e = Env::new("cfg-ref", &[("CLAUDE_CONFIG_DIR", Some("/c/cfg".into()))]);
+    let home = Some(Path::new("/h/u"));
+    let rows = [
+        ("/c/cfg/.credentials.json", true),
+        ("/h/u/.claude/.credentials.json", true),
+        ("/c/cfg/settings.json", false),
+        ("/c/cfgx/.credentials.json", false),
+    ];
+    let wrong: Vec<&str> = rows
+        .iter()
+        .filter(|(p, want)| read_denied(Path::new(p), home) != *want)
+        .map(|r| r.0)
+        .collect();
+    assert_eq!(wrong, [] as [&str; 0]);
+}
+
+/// An empty CLAUDE_CONFIG_DIR reads as unset, as scripts/lib/claudedir.sh reads it:
+/// the deny list names the credentials under `~/.claude` alone, as before #1428, and
+/// the transcript dir is under `$HOME/.claude`.
+#[test]
+fn an_empty_or_unset_config_dir_is_homes() {
+    for (tag, v) in [("cfg-empty", Some(String::new())), ("cfg-unset", None)] {
+        let e = Env::new(tag, &[("CLAUDE_CONFIG_DIR", v), ("HOME", Some("$D".into()))]);
+        for research in [false, true] {
+            let want = ["Read(~/.claude/.credentials.json)"];
+            assert_eq!(credential_denies(research), want, "{tag}, research {research}");
+        }
+        let want = e.dir.join(".claude/projects/-w/s1/subagents");
+        assert_eq!(subagents::dir_of("", "s1", "/w"), Some(want), "{tag}");
+    }
+}
+
+/// A set CLAUDE_CONFIG_DIR that no rule can name exactly refuses a read-only call
+/// before claude starts, in a line naming the variable: a relative dir (a rule reads
+/// it against the call's cwd), one not UTF-8 (the rules reach claude as text), or one
+/// holding a glob character. A call without the rule would leave the credentials
+/// readable with nothing said.
+#[test]
+fn a_config_dir_no_rule_can_name_refuses_a_read_only_call() {
+    let cases: [(&str, &[u8], &str); 3] = [
+        ("cfg-rel", b"rel/cfg", "is not an absolute path"),
+        ("cfg-glob", b"/c/cfg[1]", "holds a glob character"),
+        ("cfg-bytes", b"/c/\xffcfg", "is not UTF-8"),
+    ];
+    for (tag, dir, why) in cases {
+        let e = Env::new(tag, &[("CLAUDE_CONFIG_DIR", None)]);
+        // SAFETY: the Env holds the lock for the row, and every test here takes it.
+        unsafe { fake::set_var(&e.held, "CLAUDE_CONFIG_DIR", OsStr::from_bytes(dir)) };
+        let call = Call {
+            claude: e.dir.join("no-claude").display().to_string(),
+            timeout: Duration::from_secs(30),
+            dir: e.dir.join("cache"),
+            effort: Effort::Medium,
+        };
+        let p = Profile::read_only(PathBuf::from("/r"), false, 0.5, Duration::from_secs(300));
+        let mut req = Request::spawn_with(&call, &p, "S", "p", "default");
+        let mut got = None;
+        assert!(
+            until(|| {
+                got = req.poll();
+                got.is_some()
+            }),
+            "{tag}: no answer"
+        );
+        let line = match got.unwrap() {
+            Err(Fail::Failed(l)) => l,
+            other => panic!("{tag}: {other:?}"),
+        };
+        assert!(line.starts_with("CLAUDE_CONFIG_DIR ") && line.contains(why), "{tag}: {line}");
+    }
+}
+
+/// A CLAUDE_CONFIG_DIR that is not UTF-8 still names Claude Code's dir, so the
+/// transcript reader looks under it, never under `~/.claude` in its place.
+#[test]
+fn a_config_dir_not_utf8_names_the_transcript_dir() {
+    let e = Env::new("cfg-transcript", &[("CLAUDE_CONFIG_DIR", None), ("HOME", Some("$D".into()))]);
+    let dir = OsStr::from_bytes(b"/c/\xffcfg");
+    // SAFETY: as above.
+    unsafe { fake::set_var(&e.held, "CLAUDE_CONFIG_DIR", dir) };
+    let want = Path::new(dir).join("projects/-w/s1/subagents");
+    assert_eq!(subagents::dir_of("", "s1", "/w"), Some(want));
 }
 
 /// #1066: this binary reads tmux through the product's plain `tmux`
