@@ -24972,7 +24972,8 @@ esac
 exit 0
 STUB
 chmod +x "$OKT/tmux"; ln -s "$(command -v bash)" "$OKT/bash"
-for t in mktemp rm cat; do ln -s "$(command -v $t)" "$OKT/$t"; done   # the stderr capture
+# the stderr capture, and own_tmpfile's checks (#1322)
+for t in mktemp rm cat dirname basename ls; do ln -s "$(command -v $t)" "$OKT/$t"; done
 okrun() {                     # okrun <key> [bin] -- the log after a pick answering <key>
     # OKLC: a LOCPATH dir to run in its en_US.UTF-8 (#842); OKHOME: the HOME, else $OKT;
     # OKLINE: the clicked line, else "a.txt b.txt"
@@ -25451,7 +25452,8 @@ fi
 while read -r _; do :; done; printf '%s\n' "${PICK_KEY-0}"
 STUB
 chmod +x "$MV/bin/tmux" "$MV/bin/cockpit-tui"; ln -s "$(command -v bash)" "$MV/bin/bash"
-for t in mktemp rm cat; do ln -s "$(command -v $t)" "$MV/bin/$t"; done   # the stderr capture
+# the stderr capture, and own_tmpfile's checks (#1322)
+for t in mktemp rm cat dirname basename ls; do ln -s "$(command -v $t)" "$MV/bin/$t"; done
 mvrun() {                     # mvrun <click line> <args...> -- the log after one run
     # MVLC: a LOCPATH dir to run in its en_US.UTF-8 (#842)
     : > "$MVL"; rm -f "$MVL".once*
