@@ -6037,8 +6037,11 @@ is "cockpit_conf_tpm: a 2 names each check that failed" \
       cockpit_conf_tpm "$CL/x14/tmux/plugins/tmux-cockpit" "$CL/x14/tmux/tmux.conf" \
           "$HOME/.tmux.conf" >/dev/null; printf 'split:[%s] ' "${cockpit_tpm_why-unset}")"
 cl_e="$CL/elsewhere/tmux-cockpit"
+# The folder clause names tpm's default folder. A TMUX_PLUGIN_MANAGER_PATH in tmux's global
+# environment moves it, and this cannot read that, so the clause says so (#1323).
 is "cockpit_conf_tpm_text: one clause per failed check, the folder tpm runs named" \
-   "no line runs tpm; tpm runs $CL/h14/.tmux/plugins/tmux-cockpit, not $cl_e" \
+   "no line runs tpm; tpm runs $CL/h14/.tmux/plugins/tmux-cockpit, not $cl_e, unless a $(:
+   )TMUX_PLUGIN_MANAGER_PATH in tmux's global environment names another plugin folder" \
    "$(. "$DIR/scripts/lib/confline.sh"; unset XDG_CONFIG_HOME; HOME="$CL/h14"
       printf '%s\n' "set -g @plugin 'o/tmux-cockpit'" > "$HOME/.tmux.conf"
       cockpit_conf_tpm "$cl_e" "$HOME/.tmux.conf" >/dev/null

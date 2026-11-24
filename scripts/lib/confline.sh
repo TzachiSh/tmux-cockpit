@@ -274,7 +274,8 @@ cockpit_conf_lines() {        # <file>... -> their lines
 # those three fails (a TMUX_PLUGIN_MANAGER_PATH this cannot read among them). 1: no @plugin
 # line names it (#1067). On 2, cockpit_tpm_why holds a word for each check that failed, in
 # this order: conf (no line in tpm's own config, cockpit_tpm_conf, names it), run (no run
-# line of tpm) and folder (tpm runs cockpit_tpm_runs, not this folder) (#1302).
+# line of tpm) and folder (tpm's default plugin folder runs cockpit_tpm_runs, not this
+# folder, and a TMUX_PLUGIN_MANAGER_PATH this cannot read may name another) (#1302, #1323).
 # Whatever it returns, cockpit_tpm_script is the file the first run line of tpm runs, read
 # by cockpit_conf_arg_path, or that line's argument as written when it names no path from /.
 # Empty: no line runs tpm. bootstrap.sh clones tpm there (#1323).
@@ -341,7 +342,8 @@ cockpit_conf_tpm_text() {     # <plugin folder> -> the clauses
         case $w in
             conf)   c="tpm reads @plugin lines only from $cockpit_tpm_conf" ;;
             run)    c='no line runs tpm' ;;
-            folder) c="tpm runs $cockpit_tpm_runs, not $1" ;;
+            folder) c="tpm runs $cockpit_tpm_runs, not $1, unless a TMUX_PLUGIN_MANAGER_PATH"
+                    c="$c in tmux's global environment names another plugin folder" ;;
             *)      continue ;;
         esac
         s="${s:+$s; }$c"
