@@ -281,7 +281,7 @@ fn the_call_is_read_only_with_the_owners_caps() {
     let p = a.profile_for(&a.run.as_ref().unwrap().flow);
     assert_eq!(p.read_dirs, std::slice::from_ref(&d.0));
     assert_eq!((p.budget_usd, p.timeout), (Some(0.5), Some(ask::TIMEOUT)));
-    assert!(p.tools.contains(&"WebSearch") && p.deny.contains(&"Bash"));
+    assert!(p.tools.contains(&"WebSearch") && p.deny.iter().any(|d| d == "Bash"));
 }
 
 #[test]

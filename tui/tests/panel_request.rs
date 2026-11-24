@@ -447,7 +447,7 @@ fn every_read_only_profile_denies_the_writers() {
         let p = Profile::read_only(PathBuf::from("/"), research, 0.5, CAP);
         for t in ["Bash", "Edit", "Write", "NotebookEdit", "Agent"] {
             assert!(
-                p.deny.contains(&t) && !p.tools.contains(&t) && !p.allow.iter().any(|a| a == t),
+                p.deny.iter().any(|d| d == t) && !p.tools.contains(&t) && !p.allow.iter().any(|a| a == t),
                 "{t}, research {research}"
             );
         }
@@ -556,7 +556,7 @@ fn every_read_only_profile_denies_the_secret_paths() {
     for research in [false, true] {
         let p = Profile::read_only(PathBuf::from("/r"), research, 0.5, CAP);
         for r in rules {
-            assert!(p.deny.contains(&r), "{r}, research {research}");
+            assert!(p.deny.iter().any(|d| d == r), "{r}, research {research}");
         }
     }
     assert!(Profile::TEXT.deny.is_empty(), "the panel's own calls are as they were");

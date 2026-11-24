@@ -2732,7 +2732,11 @@ tell the two quiet answers apart: `[]` with exit 0 is "no agents", exit 1 is
   redacted. It reads the whole path as one string, so a parent folder's name
   counts as the folder's own does (#911), and the glob characters are `*`, `?`, `[`,
   `]`, `{`, `}` and a backslash. A caller runs it to refuse up front. The
-  secret denies stay as a second wall.
+  secret denies stay as a second wall. They name Claude's credentials under
+  `~/.claude` and, when `CLAUDE_CONFIG_DIR` is set, under that dir as well
+  (#1428). A set value that no rule can name exactly (relative, not UTF-8, or
+  holding a glob character) refuses a read-only call before claude starts, in a
+  line that names the variable.
   Every panel call loads no setting source (`--setting-sources ""`, #623), so a
   user's or a repo's `settings.json` adds no allow rule, `additionalDirectories`
   entry, hook or `env`; only managed settings, which sit above every source,
@@ -3092,8 +3096,9 @@ the pane's agent can still read it. A ref is its file's canonical path, so a
 symlink in the folder that leads out is outside, as the read would be refused,
 and a link outside that leads in is inside; the folder is compared canonical
 too. A ref inside the folder that the read-only profile denies by rule (a
-`.env` or `.env.*`, a key under `~/.ssh`, the rest of `request.rs`'s list, read
-by `request::read_denied` from that same list) is noted `a secret the write may
+`.env` or `.env.*`, a key under `~/.ssh`, Claude's credentials under `~/.claude`
+or `$CLAUDE_CONFIG_DIR`, the rest of `request.rs`'s list, read by
+`request::read_denied` from that same list) is noted `a secret the write may
 not read, not read`. The written result, sent or inserted from its view, carries the basket as
 `^T` does, and cockpit-panel clears it once the paste lands, but only when the
 result names every ref as given: a result that leaves one out, a command or

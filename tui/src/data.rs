@@ -24,6 +24,16 @@ use std::os::unix::fs::MetadataExt;
 use std::process::Command;
 use std::time::{Duration, Instant, SystemTime};
 
+/// Claude Code's config dir when CLAUDE_CONFIG_DIR names one: set and not empty, its
+/// bytes as they are, UTF-8 or not. `None` is Claude Code's default, `~/.claude`. The
+/// one rule for the transcript reader and the panel's deny list (#1428), as
+/// scripts/lib/claudedir.sh is for the shell (#1425).
+pub(crate) fn claude_config_dir() -> Option<std::path::PathBuf> {
+    std::env::var_os("CLAUDE_CONFIG_DIR")
+        .filter(|d| !d.is_empty())
+        .map(std::path::PathBuf::from)
+}
+
 pub fn tmux_argv() -> Vec<String> {
     split_tmux_argv(std::env::var("COCKPIT_TMUX").ok().as_deref())
 }
