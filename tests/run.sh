@@ -6233,8 +6233,9 @@ echo "== bootstrap.sh clones into the folder tpm uses, by tpm's own rule (#1310)
 # tpm (99469c4a) installs into the XDG tmux folder's plugins when an XDG tmux.conf is there,
 # else ~/.tmux/plugins. bootstrap.sh took ${XDG_CONFIG_HOME:-$HOME}/.tmux/plugins, or
 # ~/.tmux/plugins whenever that existed, and tpm then installed a second copy in its own.
-# One row per case of #1310's table. A git stub logs each clone's target and makes it, so
-# nothing reaches the network. Any other git call runs the real git, by its full path.
+# One row per case of #1310's table, and three for a run line of tpm (#1323). A git stub logs
+# each clone's target and makes it, so nothing reaches the network. Any other git call runs
+# the real git, by its full path.
 if ! command -v git >/dev/null 2>&1; then skip_ "bootstrap.sh's clone folder (no git)"; else
 TP=$(mktmpd); mkdir -p "$TP/stub"
 printf '#!/bin/sh\necho "version: 1.13.0"\n' > "$TP/stub/revdiff"
@@ -6249,13 +6250,15 @@ printf '%s\n' "$t" >> "$L"; mkdir -p "$t/.git"
 TPEOF
 } > "$TP/stub/git"
 chmod +x "$TP/stub/"*
-tp_case() {                   # <n> <XDG_CONFIG_HOME set|unset> <tmux.conf: x|config|none> <y|n>
-    local h="$TP/h$1" x="$TP/x$1" e=(env -u TMUX -u TMUX_PANE -u XDG_CONFIG_HOME)
+# <n> <XDG_CONFIG_HOME set|unset> <tmux.conf: x|config|none> <y|n> [the tmux.conf's one line]
+tp_case() {
+    local h="$TP/h$1" x="$TP/x$1" f='' e=(env -u TMUX -u TMUX_PANE -u XDG_CONFIG_HOME)
     mkdir -p "$h" "$x"
     case $3 in
-        x) mkdir -p "$x/tmux"; : > "$x/tmux/tmux.conf" ;;
-        config) mkdir -p "$h/.config/tmux"; : > "$h/.config/tmux/tmux.conf" ;;
+        x) mkdir -p "$x/tmux"; f=$x/tmux/tmux.conf ;;
+        config) mkdir -p "$h/.config/tmux"; f=$h/.config/tmux/tmux.conf ;;
     esac
+    [ -z "$f" ] || { [ -z "${5:-}" ] || printf '%s\n' "$5"; } > "$f"
     [ "$4" = n ] || mkdir -p "$h/.tmux/plugins"
     [ "$2" = unset ] || e+=("XDG_CONFIG_HOME=$x")
     : > "$TP/git.log"; : > "$TP/git.log.cmd"
@@ -6277,6 +6280,21 @@ for tp_r in "1 set none n h1/.tmux/plugins" "2 set x n x2/tmux/plugins" \
     tp_case "$tp_n" "$tp_x" "$tp_c" "$tp_p"
     is "#1310 case $tp_n (XDG_CONFIG_HOME $tp_x, tmux.conf: $tp_c, ~/.tmux/plugins: $tp_p): $(:
        )5 clones, all in tpm's folder, none online$tp_g" "5|$TP/$tp_want |0" "$(tp_got)"
+done
+# tpm itself goes where a run line of tpm runs it (#1323): tpm's README runs
+# ~/.tmux/plugins/tpm/tpm from an XDG config too. Each case has that line alone in
+# ~/.config/tmux/tmux.conf, so tpm's plugin folder is ~/.config/tmux/plugins. A distro's tpm
+# is not cloned. Case 8 runs tpm from that folder, where master cloned it too: a guard.
+# <case>|<clones>|<the folders they go into>|<the run line>
+for tp_r in "6|5|h6/.config/tmux/plugins h6/.tmux/plugins|run '~/.tmux/plugins/tpm/tpm'" \
+            "7|4|h7/.config/tmux/plugins|run '/usr/share/tmux-plugin-manager/tpm'" \
+            "8|5|h8/.config/tmux/plugins|run '~/.config/tmux/plugins/tpm/tpm'"; do
+    IFS='|' read -r tp_n tp_k tp_w tp_l <<< "$tp_r"
+    tp_g=''; [ "$tp_n" != 8 ] || tp_g=' (a guard: master agreed)'
+    tp_case "$tp_n" unset config n "$tp_l"
+    tp_want=''; for tp_f in $tp_w; do tp_want="$tp_want$TP/$tp_f "; done
+    is "#1323 case $tp_n ($tp_l): tpm goes where that line runs it, the rest into $(:
+       )tpm's folder, none online$tp_g" "$tp_k|$tp_want|0" "$(tp_got)"
 done
 unset -f tp_case tp_got
 rm -rf "$TP"

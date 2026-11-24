@@ -128,6 +128,13 @@ in `/tpm/tpm`, as a clone of tpm has it. When its config row fails on an
 a config tpm does not read, no line runs tpm, or tpm's plugin folder holds
 another copy (#1302).
 
+`bootstrap.sh` clones the plugins into tpm's plugin folder: the XDG tmux
+folder's `plugins` when an XDG `tmux.conf` is there, else `~/.tmux/plugins`
+(#1310). tpm itself goes where your config's tpm run line runs it, as tpm's
+README runs `~/.tmux/plugins/tpm/tpm` from an XDG config too. A line that runs
+`<folder>/tpm/tpm` gets tpm cloned into `<folder>/tpm`. A line that runs any
+other file, such as the Debian package's, gets no clone of tpm (#1323).
+
 tpm also reads `@plugin` lines from a file its config sources with
 `source-file`, one level down, and tmux runs tpm's run line from such a file
 too. `install.sh --check` and `bootstrap.sh` read both there, one level down,

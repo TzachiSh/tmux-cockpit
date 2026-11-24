@@ -273,12 +273,15 @@ cockpit_conf_lines() {        # <file>... -> their lines
 # line names it (#1067). On 2, cockpit_tpm_why holds a word for each check that failed, in
 # this order: conf (no line in tpm's own config, cockpit_tpm_conf, names it), run (no run
 # line of tpm) and folder (tpm runs cockpit_tpm_runs, not this folder) (#1302).
+# Whatever it returns, cockpit_tpm_script is the file the first run line of tpm runs, read
+# by cockpit_conf_arg_path, or that line's argument as written when it names no path from /.
+# Empty: no line runs tpm. bootstrap.sh clones tpm there (#1323).
 cockpit_conf_tpm() {          # <plugin folder> <config>... -> the config naming it
     local d=$1 pd tc l c spec arg nm hm sp
     local -a fl
     local f='' t='' tn='' run=0 hit=0 re='^[[:blank:]]*set(-option)? +-g +@plugin'
     shift
-    cockpit_tpm_file=''; cockpit_tpm_why=''; cockpit_tpm_runs=''
+    cockpit_tpm_file=''; cockpit_tpm_why=''; cockpit_tpm_runs=''; cockpit_tpm_script=''
     cockpit_conf_tpm_where; pd=$cockpit_tpm_dir; tc=$cockpit_tpm_conf
     for c in "$@"; do
         nm=0; hm=0; sp=''; fl=("$c")
@@ -291,7 +294,14 @@ cockpit_conf_tpm() {          # <plugin folder> <config>... -> the config naming
             if cockpit_conf_run_arg "$l"; then
                 arg=${cockpit_arg//\'/}; arg=${arg//\"/}
                 case "$arg" in
-                    */tpm/tpm|/usr/share/tmux-plugin-manager/tpm) run=1 ;;
+                    */tpm/tpm|/usr/share/tmux-plugin-manager/tpm)
+                        # shellcheck disable=SC2034 # read by bootstrap.sh
+                        if [ "$run" -eq 0 ]; then
+                            cockpit_tpm_script=$cockpit_arg
+                            ! cockpit_conf_arg_path "$cockpit_arg" ||
+                                case $cockpit_path in /*) cockpit_tpm_script=$cockpit_path ;; esac
+                        fi
+                        run=1 ;;
                 esac
                 continue
             fi
