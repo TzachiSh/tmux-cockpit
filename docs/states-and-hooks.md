@@ -503,6 +503,18 @@ number of tmux calls. One thing does: a pane whose hook saw no `CLAUDE_CONFIG_DI
 against the default dir, never the tmux server's own value, which is what that pane's
 `claude` reads (#194).
 
+**Claude Code's env scrub hides the dir.** With `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` on (`1`,
+`true`, `yes` or `on`, in any case), Claude Code removes `CLAUDE_CONFIG_DIR` from the
+environment its hooks get ([env-vars](https://code.claude.com/docs/en/env-vars), "What the
+subprocess environment scrub removes"). The hooks then see no dir. A pane on a custom dir is
+read as using the default dir: the default poller polls it, and its transcript path is refused
+(see [Session identity](#session-identity)). A hook that sees the scrub on and no dir says so in
+`@cockpit_poll_err`, but only when that holds nothing else, so it replaces no other message.
+Since that option is global, a later hook in any pane that sees the scrub off, or sees a dir,
+takes the message back. It takes back only that message (#1429). Claude Code also turns the
+scrub on under GitHub Actions unless it is `0`, `false`, `no` or `off`, and the hook says
+nothing there. To keep a custom dir, set `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=0` or leave it unset.
+
 Each tick is two tmux reads (the interval option and `list-panes -a`) and a sleep, a few
 milliseconds. `claude agents`, about 0.3 s,
 runs only when it can matter:
@@ -553,7 +565,10 @@ The read is capped at 4 KB, `review-gate`'s too: `UserPromptSubmit` carries the 
 `Stop` the whole final message, and bash reads a pipe a byte at a time. Claude sends the ids
 first; one past the cap, or cut by it, is skipped and the old value stays. The hook checks
 the path against the projects tree of the `CLAUDE_CONFIG_DIR` claude runs with; the reader
-uses its own environment's (usually the tmux server's). Export `CLAUDE_CONFIG_DIR` where tmux
+uses its own environment's (usually the tmux server's). With `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB`
+on, the hook sees no `CLAUDE_CONFIG_DIR` and checks against `~/.claude/projects`, so it refuses
+a transcript under a custom dir ([Agent view and background jobs](#agent-view-and-background-jobs),
+#1429). Export `CLAUDE_CONFIG_DIR` where tmux
 starts, not only in a shell, or the reader refuses the stored path and falls back to
 `@cockpit_session`.
 

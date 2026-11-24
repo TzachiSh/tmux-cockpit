@@ -640,15 +640,14 @@ if [ -n "$fgown" ]; then
     # The config dir this session's claude uses, from the hook's own env, in this same call: a
     # pane the poller may bind is polled against that dir's agents (#194). Argv, escaped by
     # cfg_arg for tmux's own parse; one it refuses is not recorded, so the pane is the default
-    # dir's, and said (#685).
-    cfgarg=""
-    if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
-        d=${BASH_SOURCE[0]}; case $d in (*/*) ;; (*) d=./$d ;; esac
-        [ -L "$d" ] && d=$(n=0
-            while [ -L "$d" ] && [ $((n += 1)) -le 40 ] && t=$(readlink "$d"); do
-                case $t in (/*) d=$t ;; (*) d=${d%/*}/$t ;; esac; done; printf %s "$d")
-        # shellcheck source=lib/hook.sh
-        . "${d%/*}/lib/hook.sh" 2>/dev/null && cfgarg=$(cfg_arg "$CLAUDE_CONFIG_DIR") || cfgarg=""
+    # dir's, and said (#685). With Claude Code's env scrub on it sees none, and says so; a hook
+    # that sees the scrub off or a dir takes that message back (#1429, scrub_note).
+    cfgarg="" scrub=""
+    # $d is the script's own path, resolved once at the top.
+    # shellcheck source=lib/hook.sh
+    if . "${d%/*}/lib/hook.sh" 2>/dev/null; then
+        scrub_note; scrub=1
+        [ -z "${CLAUDE_CONFIG_DIR:-}" ] || cfgarg=$(cfg_arg "$CLAUDE_CONFIG_DIR") || cfgarg=""
     fi
     if [ -n "$cfgarg" ]; then
         unmark+=(set-option -p -t "$pane" @cockpit_cfg "$cfgarg" ';'
@@ -658,6 +657,7 @@ if [ -n "$fgown" ]; then
         [ -z "${CLAUDE_CONFIG_DIR:-}" ] \
             || unmark+=(set-option -g @cockpit_poll_err "${CFG_BAD:-}" ';')
     fi
+    [ -z "$scrub" ] || unmark+=(if-shell -F -t "$pane" "$SCRUB_IF" "$SCRUB_DO" ';')
 fi
 # The session's end puts @cockpit_dir back to the value `session` recorded at its start (#323):
 # what the hooks and the agent set goes, a dir set by hand before the agent started stays.

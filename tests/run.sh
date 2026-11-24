@@ -300,6 +300,8 @@ beside_left() {
 unset TMUX TMUX_PANE
 # The hooks and the transcript reader take the projects tree from it: the tests use $HOME's.
 unset CLAUDE_CONFIG_DIR
+# The hooks say when Claude Code's scrub hides that dir from them (#1429).
+unset CLAUDE_CODE_SUBPROCESS_ENV_SCRUB
 # The owner's live VS Code socket must not reach a block (#350).
 unset VSCODE_IPC_HOOK_CLI
 # A pane of a session that loaded the plugin has the live plugin's folder in this variable
@@ -5021,7 +5023,7 @@ else
             read -r rlk_n _
             case $rlk_n in 0|1|2) echo doctor ;; *) echo "exit $rlk_n" ;; esac; })"
 fi
-# Every site, listed by file: a new one means a line here, never only a new total. 28 sites
+# Every site, listed by file: a new one means a line here, never only a new total. 27 sites
 # in 20 files: #1290 added cockpit-board, cockpit-panel, tui-fetch and the three at the root.
 # #1330 added cockpit-event.
 rlk_sites='bootstrap.sh:1
@@ -5029,7 +5031,7 @@ cockpit.tmux:1
 install.sh:1
 scripts/agent-context:1
 scripts/agent-poll:1
-scripts/agent-state:7
+scripts/agent-state:6
 scripts/cockpit-board:1
 scripts/cockpit-event:1
 scripts/cockpit-panel:1
@@ -5044,7 +5046,7 @@ scripts/tmux-where:1
 scripts/tui-fetch:1
 scripts/worktree-create:1
 scripts/worktree-remove:1'
-is "all 28 self-locating sites carry the whole four-line form, file by file" "$rlk_sites" \
+is "all 27 self-locating sites carry the whole four-line form, file by file" "$rlk_sites" \
     "$(cd "$DIR" && for rlk_s in scripts/* install.sh bootstrap.sh cockpit.tmux; do
         [ -f "$rlk_s" ] || continue
         rlk_n=$(rlk_count "$rlk_s"); [ "$rlk_n" -eq 0 ] || printf '%s:%s\n' "$rlk_s" "$rlk_n"
@@ -27280,6 +27282,14 @@ pe_err() { "$TMUX_REAL" -L "$PES" show-option -gqv @cockpit_poll_err; }
 PENL=$'\n' PETAB=$'\t'
 # Not recorded, the pane is the default dir's, and the default poller serves it (#685).
 PEMSG="a config dir with a control character is not used: its pane is polled on the default dir"
+PESCRUB="with CLAUDE_CODE_SUBPROCESS_ENV_SCRUB on the hooks see no CLAUDE_CONFIG_DIR"
+PESCRUB="$PESCRUB and their panes are polled on the default dir"
+pe_slot() {                   # pe_slot <cfg> <poll_err>: each empty is unset
+    if [ -n "$1" ]; then "$TMUX_REAL" -L "$PES" set-option -p -t "$PEP" @cockpit_cfg "$1"
+    else "$TMUX_REAL" -L "$PES" set-option -pu -t "$PEP" @cockpit_cfg; fi
+    if [ -n "$2" ]; then "$TMUX_REAL" -L "$PES" set-option -g @cockpit_poll_err "$2"
+    else "$TMUX_REAL" -L "$PES" set-option -gu @cockpit_poll_err; fi
+}
 for pesite in pe_hook pe_mark; do
     "$TMUX_REAL" -L "$PES" set-option -pu -t "$PEP" @cockpit_cfg
     $pesite CLAUDE_CONFIG_DIR="$PE/c;"
@@ -27291,6 +27301,37 @@ for pesite in pe_hook pe_mark; do
         is "$pesite: a dir with a ${pebad%%:*} in it is not recorded, and said" \
            "|$PEMSG" "$(pe_cfg)|$(pe_err)"
     done
+    # CLAUDE_CODE_SUBPROCESS_ENV_SCRUB takes CLAUDE_CONFIG_DIR out of the hooks' env (#1429). A
+    # hook that sees it on and no dir says so, only into an empty slot. A hook that sees it off,
+    # or a dir, takes back that message and no other. On is Claude Code's 1, true, yes or on, in
+    # any case, spaces trimmed.
+    pe_slot "$PE/old" ""
+    $pesite CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1
+    is "$pesite: with the scrub on and no dir, the pane is on none and the scrub is said (#1429)" \
+       "|$PESCRUB" "$(pe_cfg)|$(pe_err)"
+    for pesv in 0 false -; do
+        pelab="scrub $pesv"; [ "$pesv" = - ] && pelab="no scrub"
+        pe_slot "" "$PESCRUB"
+        if [ "$pesv" = - ]; then $pesite; else $pesite CLAUDE_CODE_SUBPROCESS_ENV_SCRUB="$pesv"; fi
+        is "$pesite: $pelab: not said, and the scrub message there is taken back" "" "$(pe_err)"
+    done
+    pe_slot "" ""
+    $pesite CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=' Yes '
+    is "$pesite: scrub ' Yes ' is on, as Claude Code reads it" "$PESCRUB" "$(pe_err)"
+    pe_slot "" "$PESCRUB"
+    $pesite CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=2
+    is "$pesite: scrub 2 is off, as Claude Code reads it" "" "$(pe_err)"
+    pe_slot "" "$PEMSG"
+    $pesite CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1; peon=$(pe_err)
+    $pesite; peoff=$(pe_err)
+    pe_slot "" ""
+    $pesite CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1
+    is "$pesite: another message stays, scrub on or off, and the scrub fills an empty slot" \
+       "$PEMSG|$PEMSG|$PESCRUB" "$peon|$peoff|$(pe_err)"
+    pe_slot "" "$PESCRUB"
+    $pesite CLAUDE_CONFIG_DIR="$PE/d" CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1
+    is "$pesite: a dir seen with the scrub on is recorded, and the scrub message taken back" \
+       "$PE/d|" "$(pe_cfg)|$(pe_err)"
 done
 "$TMUX_REAL" -L "$PES" kill-server
 rm -rf "$PE"
