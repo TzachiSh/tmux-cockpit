@@ -6175,8 +6175,13 @@ is "and install.sh --check says where it loads from, and that nothing needs addi
 # checkout (#1067): the folder is its physical path, and the config names the link.
 # docs-comment is the docs line with a trailing comment: no spelling of the physical path
 # matches it, so it loads only when the comment is off before cockpit_conf_arg_path (#1304).
+# In tmux's double quotes around sh's single ones, tmux puts HOME in for $HOME and ${HOME}
+# before sh reads the single quotes, and leaves a ~ there as it is (cmd-parse.y,
+# yylex_token(); probed on tmux 3.8): sq-in-dq-home and sq-in-dq-braced load, sq-in-dq does
+# not (#1324).
 is "cockpit_conf_wired_line: a symlinked plugin folder, the lines that load it" \
-   "docs:1 bare:1 double:1 home:1 sq-in-dq:none dq-in-sq:none other:none docs-comment:1 " \
+   "docs:1 bare:1 double:1 home:1 sq-in-dq:none dq-in-sq:none other:none docs-comment:1 $(:
+   )sq-in-dq-home:1 sq-in-dq-braced:1 " \
    "$(. "$DIR/scripts/lib/confline.sh"; HOME="$CL/h16"; cl_s="$CL/src16/cockpit-co"
       cl_o="$CL/other16/tmux-cockpit"; cl_r='/.tmux/plugins/tmux-cockpit/cockpit.tmux'
       mkdir -p "$HOME/.tmux/plugins" "$cl_s" "$cl_o"; : > "$cl_s/cockpit.tmux"
@@ -6184,7 +6189,9 @@ is "cockpit_conf_wired_line: a symlinked plugin folder, the lines that load it" 
       for cl_f in "docs|run-shell '~$cl_r'" "bare|run-shell ~$cl_r" \
           "double|run-shell \"~$cl_r\"" "home|run-shell '\"\$HOME$cl_r\"'" \
           "sq-in-dq|run-shell \"'~$cl_r'\"" "dq-in-sq|run-shell '\"~$cl_r\"'" \
-          "other|run-shell '$cl_o/cockpit.tmux'" "docs-comment|run-shell '~$cl_r' # note"; do
+          "other|run-shell '$cl_o/cockpit.tmux'" "docs-comment|run-shell '~$cl_r' # note" \
+          "sq-in-dq-home|run-shell \"'\$HOME$cl_r'\"" \
+          "sq-in-dq-braced|run-shell \"'\${HOME}$cl_r'\""; do
           printf '%s\n' "${cl_f#*|}" > "$CL/wl"
           printf '%s:%s ' "${cl_f%%|*}" "$(cockpit_conf_wired_line "$CL/wl" "$cl_s" || printf none)"
       done)"
@@ -6210,6 +6217,14 @@ printf '%s\n' "set -g @plugin 'o/tmux-cockpit'" "run '~/.tmux/plugins/tpm/tpm'" 
 is "a symlinked plugin folder tpm loads: install.sh --check passes its config row" "1" \
    "$(cl_env 18 "$cl_t/install.sh" --check |
       grep -cF "[  ok  ] config         $CL/h18/.tmux.conf loads cockpit")"
+# The same folder linked in, and a line with $HOME in tmux's double quotes around sh's single
+# ones, which loads it (#1324).
+cl_box 26 co26; cl_t="$CL/h26/.tmux/plugins/tmux-cockpit"; ln -s "$CL/p/co26" "$cl_t"
+printf '%s\n' "run-shell \"'\$HOME/.tmux/plugins/tmux-cockpit/cockpit.tmux'\"" \
+    > "$CL/h26/.tmux.conf"
+is "a run-shell \"'\$HOME/<path>'\" line: install.sh --check passes its config row" "1" \
+   "$(cl_env 26 "$cl_t/install.sh" --check |
+      grep -cF "[  ok  ] config         $CL/h26/.tmux.conf loads cockpit")"
 # The plain folder: a bare line works there, so nothing new is said. The run's output is
 # the same, byte for byte, whether the config holds the old line or the new one.
 # Under a TMPDIR whose own path a bare line does not carry, "plain" is not plain.
