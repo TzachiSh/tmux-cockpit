@@ -157,8 +157,12 @@ while :; do
             else
                 # The check and the kill are one tmux call: a pane that moves in the
                 # gap makes the format false and nothing dies. $want is @digits and
-                # $target %digits, as is_pane checked.
-                tmux if-shell -F -t "$target" "#{==:#{window_id},$want}" "kill-pane -t $target" 2>/dev/null
+                # $target %digits, as is_pane checked. The test reads 1 only for a
+                # compare tmux read whole (#736): tmux 3.7+ cuts a format past 100 ms
+                # to "", and a bare == read the two cut sides as equal and killed a
+                # pane that had moved. A cut now kills nothing, and the note says so.
+                tmux if-shell -F -t "$target" "#{?#{==:#{window_id},$want},1,0}" \
+                    "kill-pane -t $target" 2>/dev/null
                 if tmux list-panes -a -F '#{pane_id}' 2>/dev/null | grep -qx -- "$target"; then
                     printf '✕ cockpit: not killed: %s left the window you confirmed or would not close\n' \
                         "$lbl" > "$note"
