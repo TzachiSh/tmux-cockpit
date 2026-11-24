@@ -12404,6 +12404,55 @@ is "tui-fetch --required: a mktemp answering a file of the user's for the build 
    "kept|1|cargo=0" "$(fm_kept "$FM/canary")|$(grep -cxF "$fm_w" "$FM/out")|cargo=${fm_n:-0}"
 rm -rf "$FM"; unset -f fm_canary fm_kept fm_ins; unset FM fm_mk fm_n fm_w
 
+echo "== tmux-open-path and tmux-branch write or remove no file mktemp did not make (#1322) =="
+# Each runs cockpit-tui with its stderr in a temp file, then removes the file: tmux-open-path in
+# its picker, its folder browser and its viewer, tmux-branch around its picker. Here a mktemp
+# earlier on PATH answers, for a file, a canary of the user's: mode 0600, with a line in it.
+# mktemp -d is the real one. The site takes the path it takes on a failed mktemp, with the
+# stale check off, and says why in a message, not on stderr, which the picker's alternate
+# screen covers. The canary stays as it was. Nothing reaches a server: TMUX is unset and a
+# stub tmux comes first on PATH. It answers the pane's folder and the clicked line, and keeps
+# each message it is asked to show. The cockpit-tui stand-in exits 1 for pick, files and
+# branch, as esc does, and 0 for view, closed with nothing done.
+OP=$(mktmpd); mkdir -p "$OP/bin" "$OP/w"; : > "$OP/w/a.txt"; : > "$OP/w/b.txt"
+printf '# r\n' > "$OP/w/r.md"; ( cd "$OP/w" && git init -q . ) >/dev/null 2>&1
+op_mk=$(PATH=/usr/bin:/bin command -v mktemp)
+printf '#!/bin/sh\ncase $1 in -d) exec %s "$@" ;; esac\nprintf "%%s\\n" %s\n' \
+    "$(tq "$op_mk")" "$(tq "$OP/canary")" > "$OP/bin/mktemp"
+cat > "$OP/bin/tmux" <<'OPTMUX'
+#!/bin/sh
+# A message (dmsg: display-message, -l right before its text): the text is kept.
+[ "$1" = display-message ] && case " $* " in *" -l "*)
+    for a; do l=$a; done; printf '%s\n' "$l" >> "$OP_SAID" ;; esac
+case "$*" in
+    *@cockpit_click_line*) echo 'a.txt b.txt' ;;
+    *pane_current_path*) printf '%%1\0370\037\037sh\037\037%s\n' "$OP_W" ;;
+esac
+exit 0
+OPTMUX
+printf '#!/bin/sh\ncase $1 in pick|files|branch) exit 1 ;; esac\nexit 0\n' > "$OP/tui"
+chmod +x "$OP/bin/"* "$OP/tui"
+op_w="cockpit: no temp file for cockpit-tui's errors (own_tmpfile: nonempty)"
+op_run() {                    # <script> [args...] -> canary kept or gone|in a message|on stderr
+    local s=$1; shift
+    printf 'keep\n' > "$OP/canary"; chmod 600 "$OP/canary"; : > "$OP/said"
+    (cd "$OP/w" && env -u TMUX -u TMUX_PANE PATH="$OP/bin:$PATH" OP_W="$OP/w" \
+        OP_SAID="$OP/said" COCKPIT_TUI_BIN="$OP/tui" COCKPIT_LOG="$OP/log" \
+        XDG_STATE_HOME="$OP/state" timeout 30 "$DIR/scripts/$s" "$@" \
+        </dev/null >/dev/null 2>"$OP/err")
+    printf '%s|%s|%s' "$(grep -qx keep "$OP/canary" 2>/dev/null && echo kept || echo gone)" \
+        "$(grep -cxF "$op_w" "$OP/said")" "$(grep -cxF "$op_w" "$OP/err")"
+}
+is "tmux-open-path --pick: a mktemp answering a file of the user's leaves it, a message says why" \
+   "kept|1|0" "$(op_run tmux-open-path --pick %1)"
+is "tmux-open-path --browse: a mktemp answering a file of the user's leaves it, a message says so" \
+   "kept|1|0" "$(op_run tmux-open-path --browse %1)"
+is "tmux-open-path --view: a mktemp answering a file of the user's leaves it, a message says why" \
+   "kept|1|0" "$(op_run tmux-open-path --view %1 "$OP/w/r.md" 1)"
+is "tmux-branch: a mktemp answering a file of the user's leaves it, a message says why" \
+   "kept|1|0" "$(op_run tmux-branch "$OP/w")"
+rm -rf "$OP"; unset -f op_run; unset OP op_mk op_w
+
 # group: deliver
 echo "== tmux-review --deliver: guards refuse before anything is pasted =="
 if need_tmux "tmux-review --deliver"; then :; else
