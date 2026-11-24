@@ -18,7 +18,6 @@ fi
 # Not readlink -f: BSD readlink lacks -f before macOS 12.3, which would leave
 # SELF empty and the popup it opens running nothing.
 SELF="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
-printf -v QSELF '%q' "$SELF"
 
 die() { printf '%s\n' "$*" >&2; exit 1; }
 command -v tmux >/dev/null || die "cockpit: tmux is not installed · install tmux, then rerun"
@@ -33,6 +32,7 @@ tm_d=${BASH_SOURCE[0]}; case $tm_d in (*/*) ;; (*) tm_d=./$tm_d ;; esac
 case $tm_d in */*) tm_d=${tm_d%/*} ;; *) tm_d=. ;; esac
 # shellcheck source=lib/fmt.sh
 . "$tm_d/lib/fmt.sh" || die "cockpit: tm could not load lib/fmt.sh"
+QSELF=$(shq "$SELF")
 # shellcheck source=lib/tmpdir.sh
 . "$tm_d/lib/tmpdir.sh" || die "cockpit: tm could not load lib/tmpdir.sh"
 
@@ -233,7 +233,8 @@ popup() {  # popup CLIENT SESSION_ID CLIENT_WIDTH CLIENT_HEIGHT PANE [--needs]
     h=$((rows + 5)); clamp h 14 "$hmax"
   fi
   local cmd
-  printf -v cmd 'TM_POPUP=1 TM_SID=%q TM_CLIENT=%q TM_PANE=%q %s%s' "$sid" "$client" "$pane" "$QSELF" "${needs:+ --needs}"
+  printf -v cmd 'TM_POPUP=1 TM_SID=%s TM_CLIENT=%s TM_PANE=%s %s%s' \
+    "$(shq "$sid")" "$(shq "$client")" "$(shq "$pane")" "$QSELF" "${needs:+ --needs}"
   # A client under 14 lines has no room for a popup and its border: a window of
   # the client's session has it all.
   if [ "$ch" -lt 14 ]; then

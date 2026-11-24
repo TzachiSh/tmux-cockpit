@@ -135,10 +135,6 @@ scrub_note() {
     fi
 }
 
-# A single-quoted word for /bin/sh, which run-shell runs: %q can print $'...', which sh does not
-# read.
-shq() { printf "'%s'" "${1//\'/\'\\\'\'}"; }
-
 # Start a poller, detached (run-shell -b), so the caller never waits for it. Two starts at once
 # are fine: the slot is a compare-and-set in the server and the loser exits. With a dir, the
 # poller runs with CLAUDE_CONFIG_DIR set to it; without, with none, so the server's own value

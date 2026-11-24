@@ -64,11 +64,7 @@ PICK=0 DRY=0 FOLDER=0 BROWSE=0 VIEW=0
 note() { [ "$DRY" -eq 1 ] || dmsg "$*"; }
 
 # --- open ---------------------------------------------------------------------
-# tmux runs a window's or a popup's command string with the session's default-shell -c,
-# run-shell's with /bin/sh: every path in one is %q-quoted, since a hand-written '...'
-# breaks on a name holding a quote. A default-shell that is not POSIX may read %q's
-# $'...' otherwise (#1189).
-shq() { printf '%q' "$1"; }
+# Every path in a window's, a popup's or a run-shell's command goes through lib/fmt.sh's shq.
 
 open_one() {
     local file=$1 ln=$2 col=$3 editor wn at
