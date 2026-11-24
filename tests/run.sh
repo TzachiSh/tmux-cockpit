@@ -26333,7 +26333,10 @@ done
 
 # a touch client with no editor anywhere: one note, no window
 mkdir -p "$FB/nobin"
-for x in bash cat rm mktemp readlink dirname; do ln -sf "$(command -v $x)" "$FB/nobin/$x"; done
+# own_tmpfile's checks run basename and ls too (#1322)
+for x in bash cat rm mktemp readlink dirname basename ls; do
+    ln -sf "$(command -v $x)" "$FB/nobin/$x"
+done
 ln -sf "$FB/bin/tmux" "$FB/nobin/tmux"
 fb on "open $FBF\n" 0 "PATH=$FB/nobin" "VISUAL=" "EDITOR="
 is "touch, no editor found: no window and one note naming the fix" "0|1" \
