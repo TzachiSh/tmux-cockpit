@@ -108,18 +108,20 @@ cfg_arg() {                   # <dir>
 }
 CFG_BAD="a config dir with a control character is not used: its pane is polled on the default dir"
 
-# Claude Code's subprocess env scrub takes CLAUDE_CONFIG_DIR out of its hooks' env (#1429), so
-# the hook then reads its pane as the default dir's. On is what Claude Code 2.1.331 reads as on:
-# 1, true, yes or on, in any case, spaces trimmed. Its own rule also turns the scrub on under
-# GitHub Actions; that clause is left out, as our CI sets GITHUB_ACTIONS for every hook it runs.
+# Claude Code's subprocess env scrub takes CLAUDE_CONFIG_DIR and XDG_STATE_HOME out of its hooks'
+# env (#1429, #1438), so the hook then reads its pane as the default dir's and keeps its state
+# under ~/.local/state. On is what Claude Code 2.1.331 reads as on: 1, true, yes or on, in any
+# case, spaces trimmed. Its own rule also turns the scrub on under GitHub Actions; that clause is
+# left out, as our CI sets GITHUB_ACTIONS for every hook it runs.
 scrub_on() {
     local v=${CLAUDE_CODE_SUBPROCESS_ENV_SCRUB:-}
     v=${v#"${v%%[![:space:]]*}"}; v=${v%"${v##*[![:space:]]}"}
     case $v in 1|[Tt][Rr][Uu][Ee]|[Yy][Ee][Ss]|[Oo][Nn]) return 0 ;; esac
     return 1
 }
-SCRUB_MSG="with CLAUDE_CODE_SUBPROCESS_ENV_SCRUB on the hooks see no CLAUDE_CONFIG_DIR"
-SCRUB_MSG="$SCRUB_MSG and their panes are polled on the default dir"
+SCRUB_MSG="with CLAUDE_CODE_SUBPROCESS_ENV_SCRUB on the hooks see no CLAUDE_CONFIG_DIR and no"
+SCRUB_MSG="$SCRUB_MSG XDG_STATE_HOME so their panes are polled on the default dir and their review"
+SCRUB_MSG="$SCRUB_MSG and subagent state goes to the default state dir"
 
 # What this hook does to @cockpit_poll_err for the scrub: SCRUB_IF, a format that reads 1 when
 # the write is due, and SCRUB_DO, the write, for if-shell -F. The scrub on and no dir seen: the

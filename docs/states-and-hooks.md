@@ -280,7 +280,11 @@ Badge semantics (owner decision, #336; the board draws them, #313):
 tmux: each appends one line to
 `${XDG_STATE_HOME:-~/.local/state}/tmux-cockpit/subs/<session_id>.log`, `<epoch>\t<event>\t<agent_id>`
 with the event `start`, `stop` or `idle`. `sub-end` deletes the session's log and any log
-unwritten for 7 days, and the same for the `.live` file below.
+unwritten for 7 days, and the same for the `.live` file below. With
+`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` on, the hooks see no `XDG_STATE_HOME` and write the log under
+`~/.local/state`. A board whose environment names another `XDG_STATE_HOME` then misses those
+events: a TaskStop kill or an idle teammate shows as running until it goes quiet (see
+[Agent view and background jobs](#agent-view-and-background-jobs), #1438).
 
 Two more rows say how an agent ended (#403), from `PostToolUse` with the matcher `TaskStop`
 (`sub-taskstop`), and a file beside the log from `Stop` (`sub-reconcile`):
@@ -503,17 +507,24 @@ number of tmux calls. One thing does: a pane whose hook saw no `CLAUDE_CONFIG_DI
 against the default dir, never the tmux server's own value, which is what that pane's
 `claude` reads (#194).
 
-**Claude Code's env scrub hides the dir.** With `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` on (`1`,
-`true`, `yes` or `on`, in any case), Claude Code removes `CLAUDE_CONFIG_DIR` from the
-environment its hooks get ([env-vars](https://code.claude.com/docs/en/env-vars), "What the
-subprocess environment scrub removes"). The hooks then see no dir. A pane on a custom dir is
+**Claude Code's env scrub hides the dirs.** With `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` on (`1`,
+`true`, `yes` or `on`, in any case), Claude Code removes `CLAUDE_CONFIG_DIR` and the XDG
+folders, `XDG_STATE_HOME` among them, from the environment its hooks get
+([env-vars](https://code.claude.com/docs/en/env-vars), "What the subprocess environment scrub
+removes", and the measurement in #1438). The hooks then see no dir. A pane on a custom dir is
 read as using the default dir: the default poller polls it, and its transcript path is refused
-(see [Session identity](#session-identity)). A hook that sees the scrub on and no dir says so in
-`@cockpit_poll_err`, but only when that holds nothing else, so it replaces no other message.
+(see [Session identity](#session-identity)). The hooks also keep their state under
+`~/.local/state`, while a board and a review popup that run with another `XDG_STATE_HOME` keep
+theirs in that folder. Neither side then sees the other's files: the board's subagent tree
+misses the hooks' events (see [Subagent event log](#subagent-event-log)), and the ◆ check at
+`Stop` misses the review base picked with `b` and uses `auto`. A hook that sees the scrub on and
+no dir says so in `@cockpit_poll_err`, but only when that holds nothing else, so it replaces no
+other message.
 Since that option is global, a later hook in any pane that sees the scrub off, or sees a dir,
 takes the message back. It takes back only that message (#1429). Claude Code also turns the
 scrub on under GitHub Actions unless it is `0`, `false`, `no` or `off`, and the hook says
-nothing there. To keep a custom dir, set `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=0` or leave it unset.
+nothing there. To keep a custom dir or state folder, set `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=0` or
+leave it unset.
 
 Each tick is two tmux reads (the interval option and `list-panes -a`) and a sleep, a few
 milliseconds. `claude agents`, about 0.3 s,
