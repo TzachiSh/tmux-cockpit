@@ -5197,6 +5197,57 @@ is "a tpm @plugin line tpm does not confirm: the note names its config, and no l
 unset -f iw_note; unset iw_out
 rm -rf "$IW"
 
+echo "== install.sh reads ~/.config/tmux/tmux.conf, whatever XDG_CONFIG_HOME names (#1444) =="
+# tmux 3.8 loads each of ~/.tmux.conf, $XDG_CONFIG_HOME/tmux/tmux.conf and
+# ~/.config/tmux/tmux.conf that is there (Makefile.am:14, tmux.c:423, cfg.c:89-90). The config
+# lists read ${XDG_CONFIG_HOME:-~/.config}/tmux/tmux.conf and ~/.tmux.conf alone, so with
+# XDG_CONFIG_HOME on another folder a load line in ~/.config/tmux/tmux.conf counted for nothing:
+# --check failed its config row, and the line its fix gave loaded the plugin twice.
+XG=$(mktmpd); mkdir -p "$XG/h/.config/tmux" "$XG/x" "$XG/bin" "$XG/tt"
+xg_list() {                   # <XDG_CONFIG_HOME, or unset> -> the list for HOME=/h, on one line
+    ( . "$DIR/scripts/lib/confline.sh" || exit 1
+      HOME=/h; if [ "$1" = unset ]; then unset XDG_CONFIG_HOME; else XDG_CONFIG_HOME=$1; fi
+      cockpit_conf_files; IFS=' '; printf '%s' "${cockpit_confs[*]}" ) 2>&1
+}
+# Unset, tmux skips the XDG name, and empty, it reads /tmux/tmux.conf. A name the same as one
+# before it, as text, is dropped: a trailing / is not the same (tmux.c:140-153, 189-197).
+xg_want='' xg_got=''
+for xg_v in 'unset|/h/.config/tmux/tmux.conf /h/.tmux.conf' \
+        '/h/.config|/h/.config/tmux/tmux.conf /h/.tmux.conf' \
+        '/x|/h/.config/tmux/tmux.conf /x/tmux/tmux.conf /h/.tmux.conf' \
+        '|/h/.config/tmux/tmux.conf /tmux/tmux.conf /h/.tmux.conf' \
+        '/h/.config/|/h/.config/tmux/tmux.conf /h/.config//tmux/tmux.conf /h/.tmux.conf'; do
+    xg_want="$xg_want${xg_v%%|*}: ${xg_v#*|}
+"
+    xg_got="$xg_got${xg_v%%|*}: $(xg_list "${xg_v%%|*}")
+"
+done
+is "cockpit_conf_files: the configs tmux loads, the one it loads last first, by XDG_CONFIG_HOME" \
+   "$xg_want" "$xg_got"
+# The box: the load line in ~/.config/tmux/tmux.conf, a ~/.tmux.conf of the user's, and
+# XDG_CONFIG_HOME on a folder with no tmux.conf.
+printf '# mine\n' > "$XG/h/.tmux.conf"
+printf '%s\n' "$( . "$DIR/scripts/lib/confline.sh" && cockpit_conf_line "$DIR" )" \
+    > "$XG/h/.config/tmux/tmux.conf"
+xg_run() {                    # <install.sh args...> -> its output on the box
+    env -u TMUX -u TMUX_PANE HOME="$XG/h" XDG_BIN_HOME="$XG/bin" XDG_CONFIG_HOME="$XG/x" \
+        TMUX_TMPDIR="$XG/tt" "$DIR/install.sh" "$@" </dev/null 2>&1
+}
+xg_row() { printf '%s\n' "$1" | sed -n "s/^\[ *\([a-z]*\) *\] $2 .*/\1 $2/p"; }
+xg_out=$(xg_run --check)
+is "--check on that box: an ok config row that names ~/.config/tmux/tmux.conf" "ok config|1" \
+   "$(xg_row "$xg_out" config)|$(printf '%s\n' "$xg_out" |
+      grep -cF "$XG/h/.config/tmux/tmux.conf loads cockpit")"
+is "install.sh on that box: its closing note asks for no line" "0" \
+   "$(xg_run | grep -cE '^(Add this to|No tmux config found)')"
+# tmux applies that file too, so a pane walk in it freezes tmux as one in ~/.tmux.conf does.
+printf '%s\n' 'set -g pane-border-format "#{P:#{@panestate} }"' >> "$XG/h/.config/tmux/tmux.conf"
+is "--check on that box, a pane walk in ~/.config/tmux/tmux.conf: a warn formats row" \
+   "warn formats" "$(xg_row "$(xg_run --check)" formats)"
+rm -rf "$XG"
+unset -f xg_list xg_run xg_row
+unset XG xg_v xg_want xg_got xg_out
+
 echo "== install.sh --check: one row per thing that can be wrong, exit on the worst =="
 # The box is faked whole -- HOME, $BIN, PATH shims, an empty TMUX_TMPDIR so no
 # tmux server is reachable -- so every row is the code's answer, never this
@@ -6292,7 +6343,8 @@ echo "== bootstrap.sh clones into the folder tpm uses, by tpm's own rule (#1310)
 # tpm (99469c4a) installs into the XDG tmux folder's plugins when an XDG tmux.conf is there,
 # else ~/.tmux/plugins. bootstrap.sh took ${XDG_CONFIG_HOME:-$HOME}/.tmux/plugins, or
 # ~/.tmux/plugins whenever that existed, and tpm then installed a second copy in its own.
-# One row per case of #1310's table, and three for a run line of tpm (#1323). A git stub logs
+# One row per case of #1310's table, three for a run line of tpm (#1323), and one for the
+# config step with XDG_CONFIG_HOME on another folder (#1444). A git stub logs
 # each clone's target and makes it, so nothing reaches the network. Any other git call runs
 # the real git, by its full path.
 if ! command -v git >/dev/null 2>&1; then skip_ "bootstrap.sh's clone folder (no git)"; else
@@ -6355,6 +6407,13 @@ for tp_r in "6|5|h6/.config/tmux/plugins h6/.tmux/plugins|run '~/.tmux/plugins/t
     is "#1323 case $tp_n ($tp_l): tpm goes where that line runs it, the rest into $(:
        )tpm's folder, none online$tp_g" "$tp_k|$tp_want|0" "$(tp_got)"
 done
+# tmux loads ~/.config/tmux/tmux.conf whatever XDG_CONFIG_HOME names (#1444). With the load
+# line there, XDG_CONFIG_HOME on a folder with no tmux.conf and a ~/.tmux.conf of the user's,
+# bootstrap.sh appended a second line to ~/.tmux.conf, and the plugin loaded twice.
+mkdir -p "$TP/h9"; printf '# mine\n' > "$TP/h9/.tmux.conf"
+tp_case 9 set config n "$( . "$DIR/scripts/lib/confline.sh" && cockpit_conf_line "$DIR" )"
+is "#1444: bootstrap.sh adds no line to ~/.tmux.conf when ~/.config/tmux/tmux.conf loads $(:
+   )the plugin and XDG_CONFIG_HOME names another folder" "# mine" "$(cat "$TP/h9/.tmux.conf")"
 unset -f tp_case tp_got
 rm -rf "$TP"
 fi
