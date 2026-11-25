@@ -155,11 +155,12 @@ job_state() {                 # <claude state> -> the agent-state poll value
 # The pane no longer shows the job it was bound to: forget it. Take back the state written for
 # it only when the poller wrote it (@cockpit_job_state is what it last wrote and @panestate
 # still holds that), and the pane is neither a marked agent view (the worst of all takes over)
-# nor a foreground session's (its hooks own the state).
+# nor a foreground session's (its hooks own the state). @cockpit_job goes last: a cut option name
+# ends the list there (#1450), and the next tick unbinds only a pane that still has it.
 unbind() {                    # <pane> <marked: 1|""> <fg mark|""> <@panestate> <@cockpit_job_state>
-    tmux set-option -pu -t "$1" @cockpit_job \; set-option -pu -t "$1" @cockpit_job_name \; \
-        set-option -pu -t "$1" @cockpit_job_state \; \
-        set-option -pu -t "$1" @cockpit_job_session 2>/dev/null
+    tmux set-option -pu -t "$1" @cockpit_job_name \; set-option -pu -t "$1" @cockpit_job_state \; \
+        set-option -pu -t "$1" @cockpit_job_session \; \
+        set-option -pu -t "$1" @cockpit_job 2>/dev/null
     [ "$2" = 1 ] && return 0
     [ -n "$3" ] && return 0
     [ -n "$5" ] && [ "${4:-off}" = "$5" ] || return 0

@@ -19537,6 +19537,60 @@ AVJU=$(av_np "alpha"); av_bind; av_tm set-option -pu -t "$AVJU" @cockpit_job_ses
 is "a bound pane missing only its job session gets it on the next poll" "aa|alpha|s-aa" \
    "$(avjs "$AVJU")"
 av_tm kill-server >/dev/null 2>&1
+# A cut option name in the unbind's list (#1450): tmux ends the list at it, and the next poll
+# unbinds again only a pane that still has @cockpit_job, so @cockpit_job goes last. The clock
+# (#736) is armed at each call J of the unbind's one tmux call, from a shim that knows its argv.
+# The pane runs no claude, so every poll unbinds it.
+JCS="cockpit-avcut-$$"; SOCKS="$SOCKS $JCS"; JCD=$(mktmpd); mkdir -p "$JCD/bin"
+jc_tm() { "$TMUX_REAL" -L "$JCS" "$@"; }
+cut_server "$JCD" "$JCS" -d -s t -x 80 -y 24 -c "$AVWD" 'exec sleep 300'; jcr=$?
+if [ "$jcr" = 2 ]; then skip_ "the unbind under a format cut ($CUT_WHY)"
+elif [ "$jcr" != 0 ]; then
+    bad "the unbind's cut server runs the clock" "cutclock.so in a live server" "$CUT_WHY"
+else
+JCP=$(jc_tm display -p -t t: '#{pane_id}')
+{ printf '#!/bin/sh\ncase "$*" in *%s*) ;; *) exec %s "$@" ;; esac\n' \
+      "$(tq "-pu -t $JCP @cockpit_job_state")" "$(tq "$TMUX_REAL")"
+  printf '[ -e %s ] || exec %s "$@"\n' "$(tq "$JCD/cutj")" "$(tq "$TMUX_REAL")"
+  printf 'j=$(cat %s); rm -f %s\n' "$(tq "$JCD/cutj")" "$(tq "$JCD/cutj")"
+  printf ': > %s; %s "$j"\n' "$(tq "$JCD/log")" "$(tq "$JCD/cutarm")"
+  printf '%s "$@"; rc=$?\n%s 0\nexit $rc\n' "$(tq "$TMUX_REAL")" "$(tq "$JCD/cutarm")"
+} > "$JCD/bin/tmux"
+chmod +x "$JCD/bin/tmux"
+jc_bound() {                  # the pane as a bind left it
+    jc_tm set -p -t "$JCP" @cockpit_job aa \; set -p -t "$JCP" @cockpit_job_name alpha \
+        \; set -p -t "$JCP" @cockpit_job_state running \
+        \; set -p -t "$JCP" @cockpit_job_session s-aa
+}
+jc_jobs() {                   # "<job>|<name>|<state>|<session>"
+    jc_tm display -p -t "$JCP" \
+        '#{@cockpit_job}|#{@cockpit_job_name}|#{@cockpit_job_state}|#{@cockpit_job_session}'
+}
+jc_poll() {                   # [J]: one poll, the unbind's call armed at J
+    [ -z "${1:-}" ] || printf '%s\n' "$1" > "$JCD/cutj"
+    env -u TMUX_PANE -u CLAUDE_CODE_SESSION_KIND -u CLAUDE_CONFIG_DIR \
+        TMUX="$SOCKDIR/$JCS,0,0" PATH="$JCD/bin:$AVBIN:$PATH" AV_JSON="$AVF/bind.json" \
+        "$DIR/scripts/agent-poll" --once </dev/null >/dev/null 2>&1
+    rm -f "$JCD/cutj"
+    jc_tm list-panes -a -F '#{pane_id}' >/dev/null        # reads the disarm
+}
+jc_bound; jc_poll 1000000; JCN=$(wc -l < "$JCD/log" | tr -d ' ')
+jcm=0 jc1="" jck=""
+for j in $(seq 1 $((JCN + 1))); do
+    jc_bound; jc_poll "$j"
+    [ "$(jc_jobs)" = "|||" ] || jck="$jck J=$j"
+    jc_poll
+    g=$(jc_jobs); [ "$g" = "|||" ] || { jcm=$((jcm + 1)); [ -n "$jc1" ] || jc1="J=$j [$g]"; }
+done
+is "an unbind cut at any call of its list leaves no job option after the next poll (#1450)" \
+    "0" "$jcm${jc1:+, first $jc1 of $JCN calls}"
+case $jck in
+    " J="*) ok "the clock cuts the unbind's list: some J leaves a job option till the next poll" ;;
+    *) bad "the clock cuts the unbind's list: some J leaves a job option till the next poll" \
+           "kept at one J or more" "kept at none of $JCN calls" ;;
+esac
+fi
+jc_tm kill-server >/dev/null 2>&1
 fi
 
 echo "== agent-view: agent-state poll is compare-then-set and recomputes the counters (#174) =="
@@ -28029,6 +28083,55 @@ pd_polls() { polls_on "$PDS" /proc/[0-9]*; }   # live agent-poll processes on th
 av_wait '[ "$(pd_polls)" = 0 ]'
 is "the pollers leave with their server" "0" "$(pd_polls)"
 rm -rf "$PD"
+# A cut option name in mark_agentview's list (#1450): tmux ends the list at it, and the next
+# hook runs the list again only while the pane's @cockpit_cfg differs from its dir, so
+# @cockpit_cfg goes last. The clock (#736) is armed at each call J of that one tmux call, from a
+# shim that knows its argv. No poller starts (COCKPIT_NO_AUTOSTART).
+KCS="cockpit-pdcut-$$"; SOCKS="$SOCKS $KCS"; KCD=$(mktmpd); mkdir -p "$KCD/bin" "$KCD/w"
+kc_tm() { "$TMUX_REAL" -L "$KCS" "$@"; }
+cut_server "$KCD" "$KCS" -d -s t -x 80 -y 24 -c "$KCD/w" 'exec -a claude sleep 300'; kcr=$?
+if [ "$kcr" = 2 ]; then skip_ "mark_agentview under a format cut ($CUT_WHY)"
+elif [ "$kcr" != 0 ]; then
+    bad "mark_agentview's cut server runs the clock" "cutclock.so in a live server" "$CUT_WHY"
+else
+KCP=$(kc_tm display -p -t t: '#{pane_id}')
+kc_tm set -g @cockpit_agents_glob '|claude|'
+{ printf '#!/bin/sh\ncase "$*" in *%s*) ;; *) exec %s "$@" ;; esac\n' \
+      "$(tq '@cockpit_cfg_any 1')" "$(tq "$TMUX_REAL")"
+  printf '[ -e %s ] || exec %s "$@"\n' "$(tq "$KCD/cutj")" "$(tq "$TMUX_REAL")"
+  printf 'j=$(cat %s); rm -f %s\n' "$(tq "$KCD/cutj")" "$(tq "$KCD/cutj")"
+  printf ': > %s; %s "$j"\n' "$(tq "$KCD/log")" "$(tq "$KCD/cutarm")"
+  printf '%s "$@"; rc=$?\n%s 0\nexit $rc\n' "$(tq "$TMUX_REAL")" "$(tq "$KCD/cutarm")"
+} > "$KCD/bin/tmux"
+chmod +x "$KCD/bin/tmux"
+kc_hook() {                   # [J]: a relayed agent_needs_input, mark_agentview's list armed at J
+    [ -z "${1:-}" ] || printf '%s\n' "$1" > "$KCD/cutj"
+    printf '{"notification_type":"agent_needs_input","message":"m"}' \
+        | env -u CLAUDE_CODE_SUBPROCESS_ENV_SCRUB COCKPIT_NO_AUTOSTART=1 \
+            CLAUDE_CONFIG_DIR="$KCD/cfg" TMUX="$SOCKDIR/$KCS,0,0" TMUX_PANE="$KCP" \
+            PATH="$KCD/bin:$PATH" "$DIR/scripts/agent-state" notify >/dev/null 2>&1
+    rm -f "$KCD/cutj"
+    kc_tm list-panes -a -F '#{pane_id}' >/dev/null        # reads the disarm
+}
+kc_reset() { kc_tm set -pu -t "$KCP" @cockpit_cfg \; set -gu @cockpit_cfg_any; }
+kc_cfg() { kc_tm display -p -t "$KCP" '#{@cockpit_cfg}|#{@cockpit_cfg_any}'; }
+kc_reset; kc_hook 1000000; KCN=$(wc -l < "$KCD/log" | tr -d ' ')
+kcm=0 kc1="" kck=""
+for j in $(seq 1 $((KCN + 1))); do
+    kc_reset; kc_hook "$j"
+    [ "$(kc_cfg)" = "$KCD/cfg|1" ] || kck="$kck J=$j"
+    kc_hook
+    g=$(kc_cfg); [ "$g" = "$KCD/cfg|1" ] || { kcm=$((kcm + 1)); [ -n "$kc1" ] || kc1="J=$j [$g]"; }
+done
+is "a mark_agentview cut at any call of its list leaves the dir and the flag after the next hook" \
+    "0" "$kcm${kc1:+, first $kc1 of $KCN calls}"
+case $kck in
+    " J="*) ok "the clock cuts mark_agentview's list: some J leaves one unset till the next hook" ;;
+    *) bad "the clock cuts mark_agentview's list: some J leaves one unset till the next hook" \
+           "kept at one J or more" "kept at none of $KCN calls" ;;
+esac
+fi
+kc_tm kill-server >/dev/null 2>&1
 fi
 
 echo "== agent-state: a session's own hook records its config dir on the pane (#194) =="
