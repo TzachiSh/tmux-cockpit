@@ -19,8 +19,11 @@ me=${BASH_SOURCE[0]}; case $me in (*/*) ;; (*) me=./$me ;; esac
 DIR="$(cd -P "$(dirname "$me")" && pwd)"
 
 TMUX_FLOOR_MAJ=3 TMUX_FLOOR_MIN=8 TMUX_BUILD=3.8
-# --no-sudo builds these two into tmux (#189). Neither publishes a sha256: each pin is the
-# sha256 of the release tarball whose signature verified.
+# None of the three tarballs the build fetches comes with a published sha256, so each pin is
+# the sha256 of its release tarball. tmux's matches Homebrew's formula, and Fedora's sources
+# file as sha512 (#1465). --no-sudo builds the other two into tmux, and theirs are of the
+# tarballs whose signatures verified (#189).
+TMUX_SHA256=e79c699c7e949dccd0a4a125e17b8d1261e311b16979dbc8eb34542f3966d82e
 LIBEVENT_V=2.1.12-stable
 LIBEVENT_SHA256=92e6de1be9ec176428fd2367677e61ceffc2ee1cb119035037a27d346b0403bb
 NCURSES_V=6.5
@@ -218,9 +221,7 @@ build_tmux() {
             return 1; }
     fi
     [ "$dry" -eq 1 ] && { printf '  would: build tmux %s into ~/.local\n' "$TMUX_BUILD"; return 0; }
-    printf '  note:  tmux publishes no checksums; TLS only\n'
-    run "download tmux $TMUX_BUILD" curl -fsSL --retry 2 --max-time 120 \
-        -o "$tmp/tmux-$TMUX_BUILD.tar.gz" \
+    fetch_src "tmux-$TMUX_BUILD" "$TMUX_SHA256" \
         "${COCKPIT_GITHUB:-https://github.com}/tmux/tmux/releases/download/$TMUX_BUILD/tmux-$TMUX_BUILD.tar.gz" || return 1
     build_src "build tmux $TMUX_BUILD into ~/.local" "tmux-$TMUX_BUILD" "$HOME/.local" \
         ${conf[@]+"${conf[@]}"}
