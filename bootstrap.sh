@@ -184,11 +184,12 @@ TPM_PLUGINS=(
     "tmux-continuum:https://github.com/tmux-plugins/tmux-continuum"
 )
 
-# tmux loads both, so the run-shell line in either wires the box. A line that only names
+# tmux loads each, so the run-shell line in any wires the box. A line that only names
 # cockpit.tmux, a comment or another folder's path, does not (#1067). Read before the
 # plugins step, as a run line of tpm in them says where tpm goes (#1323).
 CONF=''; cfs=()
-for c in "${XDG_CONFIG_HOME:-$HOME/.config}/tmux/tmux.conf" "$HOME/.tmux.conf"; do
+cockpit_conf_files
+for c in "${cockpit_confs[@]}"; do
     [ -r "$c" ] || continue
     [ -n "$CONF" ] || CONF=$c
     cfs+=("$c")

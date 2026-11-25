@@ -199,6 +199,22 @@ cockpit_conf_unquoted_line() {  # <config file> <plugin folder> -> cockpit_unquo
     return 1
 }
 
+# Last-loaded first, so the first readable one is where a line runs after every option.
+# The configs tmux 3.8 loads, read in its source, not probed: with no -f it loads each of
+# ~/.tmux.conf, $XDG_CONFIG_HOME/tmux/tmux.conf and ~/.config/tmux/tmux.conf that is there, in
+# that order (Makefile.am:14, tmux.c:423, cfg.c:89-90). The XDG name is skipped only with
+# XDG_CONFIG_HOME unset, and with it empty it is /tmux/tmux.conf (tmux.c:140-153). A name the
+# same as one before it, as text, is dropped (tmux.c:189-197). /etc/tmux.conf is left out
+# (#1324). Sets cockpit_confs to the names, the files there or not (#1444).
+cockpit_conf_files() {        # -> cockpit_confs
+    local c="${HOME:-}/.config/tmux/tmux.conf"
+    # shellcheck disable=SC2034 # read by the scripts that source this file
+    cockpit_confs=("$c")
+    [ -z "${XDG_CONFIG_HOME+x}" ] || [ "$XDG_CONFIG_HOME/tmux/tmux.conf" = "$c" ] ||
+        cockpit_confs+=("$XDG_CONFIG_HOME/tmux/tmux.conf")
+    cockpit_confs+=("${HOME:-}/.tmux.conf")
+}
+
 # Where tpm looks, read in tpm at commit 99469c4a: its one user config, the XDG tmux.conf
 # when that is a file, else ~/.tmux.conf (scripts/helpers/plugin_functions.sh,
 # _get_user_tmux_conf, line 21), and its plugin folder, the XDG tmux folder's plugins when

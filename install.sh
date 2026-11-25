@@ -168,10 +168,10 @@ if [ "$check" -eq 1 ]; then
     esac
 
     conf=''; wired=0; cfs=()
-    # tmux loads both, so the run-shell line in either wires the box. A line that only
+    # tmux loads each, so the run-shell line in any wires the box. A line that only
     # names cockpit.tmux, a comment or another folder's path, does not (#1067).
-    cxdg="${XDG_CONFIG_HOME:-${HOME:-}/.config}/tmux/tmux.conf"; chome="${HOME:-}/.tmux.conf"
-    for c in "$cxdg" "$chome"; do
+    cockpit_conf_files
+    for c in "${cockpit_confs[@]}"; do
         [ -r "$c" ] || continue
         [ -n "$conf" ] || conf="$c"        # the first readable one names a fail row
         cfs+=("$c")
@@ -254,10 +254,12 @@ if [ "$check" -eq 1 ]; then
         row skip tokens 'no cockpit config to read'
     else
         walk=0 tok=0
-        # A symlink of one onto the other must not count twice.
-        [ "$cxdg" -ef "$chome" ] && chome=''
-        for c in "$cxdg" "$chome"; do
-            [ -r "$c" ] || continue
+        for c in "${cfs[@]}"; do
+            # A symlink of one onto one before it must not count twice.
+            for pc in "${cfs[@]}"; do
+                [ "$pc" != "$c" ] || break
+                [ ! "$c" -ef "$pc" ] || continue 2
+            done
             acc=''
             while read -r l || [ -n "$l" ]; do
                 # tmux joins a trailing backslash before expanding.
@@ -714,9 +716,10 @@ if [ -z "${HOME:-}" ]; then
     printf '\nHOME is not set; add this to your tmux config by hand:\n  %s\n' \
         "$(cockpit_conf_line "$DIR")" >&2
 else
-    # tmux loads both, so the run-shell line in either wires it, as --check reads it.
+    # tmux loads each, so the run-shell line in any wires it, as --check reads it.
     conf=""; wst=1; cfs=()
-    for c in "${XDG_CONFIG_HOME:-$HOME/.config}/tmux/tmux.conf" "$HOME/.tmux.conf"; do
+    cockpit_conf_files
+    for c in "${cockpit_confs[@]}"; do
         [ -r "$c" ] || continue
         [ -n "$conf" ] || conf="$c"
         cfs+=("$c")
