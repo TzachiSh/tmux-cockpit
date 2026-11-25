@@ -2942,7 +2942,8 @@ is "the newest ai-title becomes the pane's title" "Fix the parser" \
 is "the session id is stashed for prefix i" "11111111-2222-4333-8444-555555555555" \
     "$("$TMUX_REAL" -L "$RG" show-option -pqv -t "$RGAP" @cockpit_session)"
 # #315: the Stop's session id goes through agent-state session's checks (#308), shared in
-# lib/hook.sh: a UUID only, a new id drops the old transcript, and the read stops at 4 KB.
+# lib/hook.sh: a UUID only, a new id drops the old transcript, and the ids come from the
+# payload's first 4 KB.
 RGIU1=11111111-2222-4333-8444-555555555555 RGIU2=aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee
 RGIF=$(mktmpf); RGIPAD=$(printf '%10240s' '' | tr ' ' x)
 RGILOOP="$RGSTATE/tmux-cockpit/review/loop-$(gate_key "$RG" "$RGAP")"
@@ -5107,15 +5108,16 @@ else
             read -r rlk_n _
             case $rlk_n in 0|1|2) echo doctor ;; *) echo "exit $rlk_n" ;; esac; })"
 fi
-# Every site, listed by file: a new one means a line here, never only a new total. 27 sites
+# Every site, listed by file: a new one means a line here, never only a new total. 26 sites
 # in 20 files: #1290 added cockpit-board, cockpit-panel, tui-fetch and the three at the root.
-# #1330 added cockpit-event.
+# #1330 added cockpit-event. #315 moved agent-state's Stop read, and its site, into
+# lib/hook.sh, which finds bound.sh from its own path.
 rlk_sites='bootstrap.sh:1
 cockpit.tmux:1
 install.sh:1
 scripts/agent-context:1
 scripts/agent-poll:1
-scripts/agent-state:6
+scripts/agent-state:5
 scripts/cockpit-board:1
 scripts/cockpit-event:1
 scripts/cockpit-panel:1
@@ -5130,7 +5132,7 @@ scripts/tmux-where:1
 scripts/tui-fetch:1
 scripts/worktree-create:1
 scripts/worktree-remove:1'
-is "all 27 self-locating sites carry the whole four-line form, file by file" "$rlk_sites" \
+is "all 26 self-locating sites carry the whole four-line form, file by file" "$rlk_sites" \
     "$(cd "$DIR" && for rlk_s in scripts/* install.sh bootstrap.sh cockpit.tmux; do
         [ -f "$rlk_s" ] || continue
         rlk_n=$(rlk_count "$rlk_s"); [ "$rlk_n" -eq 0 ] || printf '%s:%s\n' "$rlk_s" "$rlk_n"
