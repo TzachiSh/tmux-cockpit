@@ -554,34 +554,80 @@ Lag is up to one tick, 10 s by default: a job that blocks shows on its pane at t
   after that point reads as empty (#736). A busy or paused server can cut an `if -F` test,
   and a bare `==` then reads its two cut sides as equal. The two tests whose cut lasted read
   1 only for a compare read whole: basket_clear's (#1453) and the board's kill (#1454). A
-  cut option name ends a command list early, a class of its own (#1450). These tests stay
-  as they are, since the next event puts each one right:
+  cut option name is a class of its own (#1450, the next item). These tests stay as they
+  are, since the next event puts each one right:
   - `scripts/agent-state:242` and `:244`, in `subs_build`: a cut skips the subagent count
     and the fleet sums with it. The pane's next Stop writes them, or its session's end
-    clears them (`:559`).
-  - `scripts/agent-state:637-639`, the unmark guards: a cut leaves the agent view mark, or
-    `@cockpit_fg` unwritten, until the pane's next hook. At SessionEnd (`:636`) it keeps
-    `@cockpit_fg`, which only the poller's job binding reads (`scripts/agent-poll:228`).
-    The poller drops it once the pane runs no agent (`scripts/agent-poll:216-218`), and the
-    next session's start writes a new one (`scripts/agent-state:619`).
+    clears them (`:565`).
+  - `scripts/agent-state:643-645`, the unmark guards: a cut leaves the agent view mark, or
+    `@cockpit_fg` unwritten, until the pane's next hook. At SessionEnd (`:642`) it keeps
+    `@cockpit_fg`, which only the poller's job binding reads (`scripts/agent-poll:229`).
+    The poller drops it once the pane runs no agent (`scripts/agent-poll:217-219`), and the
+    next session's start writes a new one (`scripts/agent-state:625`).
   - `scripts/agent-poll:68` and `:75`, the poller slot's claim and release: a cut skips the
     claim, leaves a dead pid that the next claim clears, or takes or drops a live poller's
-    slot. That poller exits at its next tick (`:352`), and the next hook starts one if none
+    slot. That poller exits at its next tick (`:353`), and the next hook starts one if none
     runs.
-  - `scripts/lib/hook.sh:205`, the stale poller sweep, and `:130` and `:133`, `SCRUB_IF`: a
+  - `scripts/lib/hook.sh:207`, the stale poller sweep, and `:132` and `:135`, `SCRUB_IF`: a
     cut skips an unset that the next sweep makes, or a scrub message that the next hook
     writes, or takes back another message in `@cockpit_poll_err` that its writer sets again.
   - `scripts/lib/review-deliver.sh:181`, paste or queue: a cut reads false, so the review is
     queued, as its notice says, and lands when the agent stops.
   - `cockpit.tmux:490`, the fullscreen key, and `:574-577`, the status bar clicks: a cut
     takes the wrong branch of one press.
-  - `cockpit.tmux:119`, the sweep sequence: a cut writes an empty value or 0, or leaves the
-    number as it was. That event's sweep still walks (`scripts/agent-state:143-145`), older
-    sweeps skip, and the next event counts on from there. Only an equality test reads the
-    number. A probe on tmux 3.8 cut the bump from 5 at each call in turn and read 6, 5, 6,
-    five empty values, then 0 and 0. The per window test of a sweep
+  - `cockpit.tmux:119`, the sweep sequence: a cut in the bump's value writes an empty value
+    or 0, or leaves the number as it was. That event's sweep still walks
+    (`scripts/agent-state:143-145`), older sweeps skip, and the next event counts on from
+    there. Only an equality test reads the number. A probe on tmux 3.8 cut the bump from 5 at
+    each call in turn and read 6, 5, 6, five empty values, then 0 and 0. A cut on the bump's
+    option name, or in the `run-shell` command's own expansion, can lose that event's sweep
+    instead, and the counts wait for the next event. The per window test of a sweep
     (`scripts/agent-state:145`) can drop one window from the newest walk, until the next
     event.
+- The same cut can land on an option's name. tmux expands every `set-option` and
+  `show-options` name as a format (3.8 `cmd-set-option.c:252`, `cmd-show-options.c:123`), so
+  a cut reads it as "" and the command fails (#1450). The error says "ambiguous option" or
+  "invalid option" at random, since tmux reads an int it never set (`cmd-set-option.c:237`).
+  A failed command drops the rest of its command list (`cmd-queue.c:756`): one `tmux a \; b`
+  call, one hook, one binding or one `if-shell` body. A `source-file` block is one list per
+  line. With `-q` a cut name ends only its own set (`cmd-set-option.c:264`). So agent-state's
+  last call carries `-q` on each set at the top of its lists, agent-poll's unbind unsets
+  `@cockpit_job` last, and mark_agentview (`scripts/lib/hook.sh`) sets the pane's `@cockpit_cfg`
+  last. These stay as they are:
+  - `scripts/agent-state:570` and `:561`, the state itself: a cut on `@panestate`'s own name
+    keeps the old state until the pane's next event. The rest of the list still runs.
+  - `scripts/agent-state:117`, put's set, and its copies at `cockpit.tmux:126` and
+    `scripts/agent-context:48`: a cut name drops that put's retest, so a session's or the
+    fleet's sum waits for the next event. A window's set sits in an `if` body of its own, so
+    its retest still runs.
+  - `scripts/agent-state:99-103`, the stored formats: the stamp is set last, so after a cut
+    the next call sets them all again. With `-q` a cut would leave one of them missing.
+  - `scripts/agent-state:242` and `:244`, in `subs_build`: a cut drops the fleet sums until
+    the pane's next Stop.
+  - `scripts/agent-state:637-639`, the fg mark's list: a cut after the mark keeps the pane's
+    job bind. The poller binds such a pane only to a job that started after the mark
+    (`scripts/agent-poll:143`), so its next tick takes the bind off.
+  - `scripts/agent-poll:75` and `:324`, the slot's release and a job's bind: the next claim
+    clears a dead pid, and the next tick compares the bind and sets it again.
+  - `scripts/lib/hook.sh:207` and `:238`: the next sweep or hook runs them again.
+  - `scripts/lib/basket.sh:23`: a cut keeps the basket, as a cut compare does.
+  - `scripts/lib/review-deliver.sh:178-180`, the paste: a cut on the spool's name queues the
+    review for the agent's next stop, and one on the `sent` mark's name delivers nothing.
+    Either way `--deliver` returns 1 with no notice, and the store keeps the comments
+    (`scripts/lib/review-fleet.sh:25` runs `--done` only on 0).
+  - `cockpit.tmux:477-479`, the move key: its block runs each line alone, so a cut set keeps
+    the last move's `@cockpit_move_src`, the menu still opens, and a pick moves that older
+    window. A fix would need a client in its test, and the cut is rare.
+  - `cockpit.tmux:102`, `NO_COLOR` at load: a cut leaves the later slots in colour until the
+    next load.
+  - `cockpit.tmux:347`, `:391`, `:434`, `:479`, `:490`, `:541-549` and `:585`, the keys, the
+    prompts and the load hint: a cut loses one press or prompt, or shows the hint once more.
+  - `tui/src/push.rs:124-129` and `:266-271`, a board's wake listing: a cut leaves that board
+    on its 1 s tick, or a gone board listed until the next board starts.
+  - `tui/src/theme.rs:84`: a cut fails the board's one theme read, and it reads the roles
+    again without the client's theme, so that board draws dark.
+  - `scripts/lib/pane.sh:18` and `tui/src/data.rs:905` read with `-q`, so a cut name reads
+    as empty for that one call.
 
 ## Session identity
 
