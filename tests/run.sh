@@ -27492,29 +27492,44 @@ ts sub-reconcile "$(tsfin '{"id":"../x","type":"subagent"}')" >/dev/null
 ts sub-reconcile "$(tsfin '{"id":"a1","type":"subagent"}' | head -c 80)" >/dev/null
 TSMANY=$(for i in $(seq 1 300); do printf '{"id":"a%016d","type":"subagent"},' "$i"; done)
 ts sub-reconcile "$(tsfin "${TSMANY%,}")" >/dev/null
-is "no array, a bad id, a cut payload, a set past the bound: no file" "0" \
-    "$(find "$TSD/state" -type f 2>/dev/null | grep -c .)"
+tsbail() {                    # "set" or "none" for the .live, then the log's rows (#407)
+    printf '%s %s' "$([ -e "$TSLIVE" ] && echo set || echo none)" "$(tsrows)"
+}
+is "no array, a bad id, a cut payload, a set past the bound: no set, a bail row each (#407)" \
+    "none bail array|bail id|bail array|bail bound" "$(tsbail)"
 rm -rf "$TSD/state"
 ts sub-reconcile \
     "$(tsfin '{"id":"a1","type":"subagent","tags":[]},{"id":"a2","type":"subagent"}')" >/dev/null
 ts sub-reconcile \
     "$(tsfin '{"id":"a1","type":"subagent","m":{"k":1}},{"id":"a2","type":"subagent"}')" >/dev/null
-is "a nested array or object in an entry writes no set, never a short one" "0" \
-    "$(find "$TSD/state" -type f 2>/dev/null | grep -c .)"
+is "a nested array or object in an entry writes no set, never a short one: a bail row each" \
+    "none bail array|bail nested" "$(tsbail)"
+rm -rf "$TSD/state"
 ts sub-reconcile \
     "$(tsfin '{"id":"a1","type":"subagent"},{"id":"a2","type":"local_agent"}')" >/dev/null
 ts sub-reconcile "$(tsfin '{"id":"a1","type":"subagent"},{"id":"a2"}')" >/dev/null
 is "a type it does not know, or none, writes no set: closed, so a renamed type ends no agent (#423)" \
-    "0" "$(find "$TSD/state" -type f 2>/dev/null | grep -c .)"
+    "none bail type|bail type" "$(tsbail)"
 ts sub-reconcile \
     "$(tsfin '{"id":"m1","type":"monitor","status":"running","description":"watch","server":"s","tool":"t"},{"id":"w1","type":"workflow","name":"w"},{"id":"c1","type":"cloud session"},{"id":"p1","type":"MCP task","server":"s","tool":"t"},{"id":"a1","type":"subagent"}')" >/dev/null
 is "a monitor, workflow, cloud session and MCP task beside a subagent: skipped, the set written" \
     "set=[a1]" "$(tslive)"
 rm -rf "$TSD/state"
+ts sub-reconcile "$(tsfin '{"id":"t1","type":"teammate","status":"running"}')" >/dev/null
+ts sub-reconcile \
+    "$(tsfin "{\"id\":\"t1\",\"type\":\"teammate\",\"description\":\"$(printf '%0513d' 0)\"}")" \
+    >/dev/null
+is "a teammate with no description, or one past 512 bytes: no set, a bail row each (#407)" \
+    "none bail desc|bail desc" "$(tsbail)"
+rm -rf "$TSD/state"
+ts sub-reconcile \
+    "$(tsfin '{"id":"a1","type":"subagent"} x {"id":"a2","type":"subagent"}')" >/dev/null
+is "junk between two entries: no set, a bail row (#407)" "none bail nested" "$(tsbail)"
+rm -rf "$TSD/state"
 TSTINY=$(for i in $(seq 1 257); do printf '{"type":"shell"},'; done)
 ts sub-reconcile "$(tsfin "${TSTINY%,}")" >/dev/null
-is "past 256 entries, however small, no set (#423)" "0" \
-    "$(find "$TSD/state" -type f 2>/dev/null | grep -c .)"
+is "past 256 entries, however small, no set (#423): a bail row" "none bail bound" "$(tsbail)"
+rm -rf "$TSD/state"
 TSHUGE=$(for i in $(seq 1 2000); do \
         printf '{"id":"b%d","type":"shell","status":"running","description":"sleep %d"},' \
         "$i" "$i"; done)
@@ -27525,7 +27540,7 @@ TSMANY=$(for i in $(seq 1 600); do \
         printf '{"id":"a%016d","type":"subagent","status":"running"},' "$i"; done)
 for a in "$TSHUGE" "$TSSHELLS" "$TSMANY"; do ts sub-reconcile "$(tsfin "${a%,}")" >/dev/null; done
 is "2000 tasks, 200 shells, 600 subagents: only the shells write a set, an empty one" \
-    "set=[]" "$(tslive)"
+    "set=[] bail bound|bail bound" "$(tslive) $(tsrows)"
 rm -rf "$TSD/state"
 ts sub-taskstop "$(tsstop b1 b1 local_bash 'i1 named')" >/dev/null
 ts sub-taskstop "$(tsstop m1 m1 monitor 'i1 named')" >/dev/null
@@ -27540,6 +27555,35 @@ printf '%s\n' "$(tsfin '')" |
     env PATH="$TSBIN:$PATH" TMUX_PANE=%1 XDG_STATE_HOME="$TSD/state" "$DIR/scripts/agent-state" \
     sub-reconcile >/dev/null 2>&1
 is "neither calls tmux" "" "$(ls "$TSD/tmux-ran" 2>/dev/null)"
+# The doctor's reconcile row (#407), on what the hook wrote. A set's epoch is written by hand
+# where the order counts: a bail and a set in the same second tie, and a tie reads ok.
+TSS2=0b6c2f4e-6f1d-4c5e-9d55-2a8e7f1c9b30
+mkdir -p "$TSD/h" "$TSD/tt"
+tsdoc() {                     # [VAR=value...]: the doctor, on the block's state dir
+    env -u TMUX -u TMUX_PANE HOME="$TSD/h" XDG_STATE_HOME="$TSD/state" \
+        XDG_BIN_HOME="$TSD/h/bin" XDG_CONFIG_HOME="$TSD/h/cfg" TMUX_TMPDIR="$TSD/tt" "$@" \
+        "$DIR/install.sh" --check 2>&1
+}
+tsmark() { sed -n 's/^\[ *\([a-z]*\) *\] *reconcile .*/\1/p'; }
+rm -rf "$TSD/state"
+is "--check: no session logs is a skip reconcile row (#407)" "skip" "$(tsdoc | tsmark)"
+mkdir -p "${TSLIVE%/*}"; printf '1\ta1\n' > "$TSLIVE"
+ts sub-reconcile "$(tsfin '{"id":"a1","type":"subagent","m":{"k":1}}')" >/dev/null
+ts sub-reconcile "$(TSS=$TSS2 tsfin '')" >/dev/null
+is "--check: a session whose newest Stop bailed, after an older set, is a warn reconcile row" \
+    "warn" "$(tsdoc | tsmark)"
+is "and the row counts it among the two sessions, with its bail's word" "1" \
+    "$(tsdoc | grep -cE '\] reconcile +1 of 2 sessions: nested')"
+rm -rf "$TSD/state"; mkdir -p "${TSLOG%/*}"; printf '1\tbail\tnested\n' > "$TSLOG"
+ts sub-reconcile "$(tsfin '{"id":"a1","type":"subagent"}')" >/dev/null
+is "--check: a bail with a newer set after it is an ok reconcile row" "ok" "$(tsdoc | tsmark)"
+# Claude Code's env scrub takes XDG_STATE_HOME from its hooks, which then write under HOME.
+rm -rf "$TSD/state"; TSHS="$TSD/h/.local/state/tmux-cockpit/subs"
+mkdir -p "$TSHS"; printf '1\ta1\n' > "$TSHS/$TSS.live"
+printf '%s\n' "$(tsfin '{"id":"a1","type":"local_agent"}')" |
+    env HOME="$TSD/h" "$DIR/scripts/agent-state" sub-reconcile >/dev/null 2>&1
+is "--check with the scrub on reads the hooks' dir under HOME, with it off XDG_STATE_HOME" \
+    "warn skip" "$(tsdoc CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1 | tsmark) $(tsdoc | tsmark)"
 
 echo "== install.sh --hooks: the TaskStop matcher and the Stop reconcile merge in once, beside a user's own Stop hook (#403) =="
 if command -v jq >/dev/null 2>&1; then
