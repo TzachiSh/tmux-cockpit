@@ -34,6 +34,50 @@ read_capped() {               # <cap> <stop-cmd...>
     done
 }
 
+# The Stop payload's first line, whole, into payload (#310). head, not read_payload: bash reads
+# a pipe a byte per syscall, about 2.4 s a MB, and a 2 s deadline then cut the array off a long
+# final message. The payload is compact JSON, one line: claude writes it with a newline and
+# closes stdin (2.1.317), so head returns. Bounded all the same, by <secs> (#320): a writer that
+# sends neither must not hold the Stop. bound: timeout, else gtimeout; unbounded with neither
+# (#746). 1 when the bound fires or the read cannot run, and payload is then empty: no part of
+# a cut line is read.
+read_stop() {                 # <secs>
+    payload=""
+    # shellcheck source=bound.sh
+    . "${BASH_SOURCE[0]%/*}/bound.sh" 2>/dev/null || return 1
+    payload=$(bound "$1" head -n 1 2>/dev/null) && return 0
+    payload=""
+    return 1
+}
+
+# How many background subagents the Stop payload lists in flight (#310, #313), in SUBS. Only
+# subagents: an idle teammate stays "running" in claude's registry for the life of its team,
+# and a shell or monitor task may never end. Matched structurally: inside a JSON string the
+# quotes arrive escaped, so no message text can match. No array: 0.
+subs_count() {
+    local re arr m n
+    SUBS=0
+    # Regexes, linear in the payload: a `${payload#*key}` cut rescans it once per byte, and
+    # the final message, any size, comes before the key. After `[`, whole strings or single
+    # bytes other than `]`, so the match ends with the array (its entries are flat objects,
+    # no nested array) and a `]` inside a string does not end it. Bytes, not characters: in a
+    # UTF-8 locale glibc's multibyte matcher is quadratic on a long array, and a byte that is
+    # not UTF-8 ends the match. Restored on return; nothing below forks. Still quadratic, even
+    # under C: a payload repeating an unclosed `"background_tasks":[`, which valid JSON with
+    # the key once cannot be.
+    local LC_ALL=C
+    re='"background_tasks": ?\[(("([^"\\]|\\.)*"|[^]"])*)'
+    [[ $payload =~ $re ]] || return 0
+    arr=${BASH_REMATCH[1]}
+    # Counted by length, in one pass per spelling: deleting every marker shortens the array by
+    # the marker's length per hit (a regex per hit was quadratic, 24 s at 3000). A marker
+    # inside a string cannot match: its quotes arrive as \", so a backslash follows `type`.
+    for m in '"type":"subagent"' '"type": "subagent"'; do
+        n=${#arr} arr=${arr//"$m"/}
+        SUBS=$((SUBS + (n - ${#arr}) / ${#m}))
+    done
+}
+
 # A session id is saved only as a UUID (#308); a value cut by a cap fails the test. A new id
 # drops the old transcript, which is not its transcript (/clear, --resume). 0 only when the
 # id is new to the pane: <old> is the id read before, from a read known to be whole (#707).
