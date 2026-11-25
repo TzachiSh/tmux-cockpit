@@ -3464,27 +3464,20 @@ RGF="$RGSTATE/gate.fifo"; mkfifo "$RGF"
 # so start-up under heavy load fits and a hook that waits out its writer does not.
 rg_ms() { local t=${EPOCHREALTIME:-${SECONDS}.000000}; t=${t/[.,]/}; echo $(( 10#$t / 1000 )); }
 # 1. The payload arrives and the writer then keeps the pipe open, which is what
-#    Claude Code actually does. Waiting for EOF here would burn the full
-#    deadline on every Stop; the read stops at the fields it wants instead.
-#    The line after the payload is left in the pipe: a read that went on past
-#    the fields would take it, with no clock involved. Payload and tail go in
-#    one write, under PIPE_BUF so atomic: the fields never arrive without it.
-printf 'RG-TAIL\n' | cat "$RGPAY" - > "$RGSTATE/pay-tail"
-( exec 9>"$RGF"; cat "$RGSTATE/pay-tail" >&9; sleep 8 ) & rg_holder=$!   # a holder
+#    Claude Code actually does. Waiting for EOF here would burn the whole bound
+#    on every Stop; the read returns at the payload's newline instead (#315).
+( exec 9>"$RGF"; cat "$RGPAY" >&9; sleep 8 ) & rg_holder=$!   # a holder
 rg_hs=$(pid_start "$rg_holder")
 rg_t0=$(rg_ms)
 TMUX_PANE=%999999 TMUX_TMPDIR="$RGSTATE" XDG_STATE_HOME="$RGSTATE" \
     timeout 6 "$DIR/scripts/review-gate" >/dev/null 2>&1 < "$RGF"
 rg_grc=$?
 rg_dt=$(( $(rg_ms) - rg_t0 ))
-# <> opens read-write, so open() never waits for a writer the holder may no longer be.
-rg_rest=""; IFS= read -r -t 3 rg_rest <> "$RGF"
 pid_sig TERM "$rg_holder" "$rg_hs" >/dev/null; wait "$rg_holder" 2>/dev/null
 is "a payload whose writer keeps stdin open is not waited out" "0" "$rg_grc"
 [ "$rg_dt" -lt 4000 ] &&
-    ok "and the read returns as soon as it has both fields (${rg_dt}ms)" ||
-    bad "and the read returns as soon as it has both fields" "under 4000ms" "${rg_dt}ms"
-is "and it stops reading at those fields" "RG-TAIL" "$rg_rest"
+    ok "and the hook returns while the writer still holds stdin (${rg_dt}ms)" ||
+    bad "and the hook returns while the writer still holds stdin" "under 4000ms" "${rg_dt}ms"
 # 2. Nothing ever arrives: the deadline is the backstop, and it must fire.
 ( exec 9>"$RGF"; sleep 8 ) & rg_holder=$!                     # a holder, not a wait
 rg_hs=$(pid_start "$rg_holder")

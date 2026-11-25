@@ -1,5 +1,5 @@
 #!/bin/bash
-# review-gate: the second Stop hook beside `agent-state done`. Hands over a review
+# review-gate: the third Stop hook, after agent-state's done and sub-reconcile. Hands over a review
 # queued while the agent was busy, and flags the pane ◆ when its diff is unreviewed.
 #   --concede <line>: end the agent's next turn, giving up the active /goal (#52).
 # Fail-open everywhere: a hook must never block the agent that fired it.
@@ -35,10 +35,6 @@ d=${BASH_SOURCE[0]}; case $d in (*/*) ;; (*) d=./$d ;; esac
 # shellcheck source=lib/hook.sh
 . "${d%/*}/lib/hook.sh" 2>/dev/null || exit 0
 
-# shellcheck disable=SC2317,SC2329  # called by read_capped
-has() { case "$payload" in *"\"$1\""*) return 0 ;; esac; return 1; }
-# shellcheck disable=SC2317,SC2329  # called by read_capped
-have_fields() { has session_id && has transcript_path && has stop_hook_active; }
 field() {
     local v
     json_str "$1"
@@ -59,12 +55,19 @@ json() {                            # <text> -> the JSON string body
 # The sibling scripts sit beside the real script: d, resolved above, not a link (#1283).
 here=$(cd -P "$(dirname "$d")" && pwd)
 
-# Stops at the fields it needs: Claude Code keeps stdin open past the payload. Capped at 4 KB
-# (#315): last_assistant_message can be any size, and the Stop example puts the fields used
-# here before it. Common fields it does not place (scratchpad_dir and others) may come
-# earlier: if the stop_hook_active token does not end within the first 4096 bytes, it reads
-# false and that Stop resets the rewake count.
-read_capped 4096 have_fields
+# The payload's whole line, as agent-state done reads it (#315): background_tasks, the work
+# still in flight, comes after last_assistant_message, which can be any size. 2 s, as
+# read_capped's deadline, inside the hook's own 5 s timeout. SUBS is empty when the read fails,
+# and whether the Stop is paused is then not known.
+if read_stop 2; then subs_count; else SUBS=""; fi
+# The fields come from its first 4 KB, as agent-state session reads its ids (#308, #315): an id
+# past the cap is not seen, and the glob and the cuts below never walk a long final message.
+# The Stop example puts the fields used here before last_assistant_message. Common fields it
+# does not place (scratchpad_dir and others) may come earlier: if the stop_hook_active token
+# does not end within the first 4096 bytes, it reads false and that Stop resets the rewake
+# count. Bytes, not characters.
+first_bytes() { local LC_ALL=C; payload=${payload:0:$1}; }
+first_bytes 4096
 case "$payload" in *'"stop_hook_active":true'*|*'"stop_hook_active": true'*) active=true ;; *) active=false ;; esac
 
 # --- the ◆ flag, title and session id; also run when a turn is cut short ---------
@@ -95,19 +98,27 @@ flag_pane() {
     review=${cur%%"$sep"*}; cur=${cur#*"$sep"}
     err_cur=${cur%%"$sep"*}; title_cur=${cur#*"$sep"}
 
-    # 0 is a change to review, 1 a clean tree. Anything else leaves the mark as it is:
-    # 2, the diff, the pane's work dir or its repo could not be read (#944, #959, #1286),
-    # 3, tmux-review could not load, and 126, 127 or a signal, it could not run (#959),
-    # are neither. Those say why in @cockpit_review_err (#960).
-    "$here/tmux-review" --delta "$pane" >/dev/null 2>&1
-    rc=$?
-    case $rc in
-        0) want=pending err="" ;;
-        1) want="" err="" ;;
-        2) want=$review err="the diff cannot be read" ;;
-        3) want=$review err="tmux-review cannot load" ;;
-        *) want=$review err="tmux-review cannot run (exit $rc)" ;;
-    esac
+    # A Stop paused on background subagents is no turn's end (#315): Claude Code wakes the
+    # session as each one reports back, and the Stop that ends the last of them decides. The
+    # mark and its reason stay as they are. A payload that could not be read cannot tell
+    # which Stop this is: the mark stays, and the reason says so.
+    if [ -z "$SUBS" ]; then want=$review err="the Stop payload cannot be read"
+    elif [ "$SUBS" -gt 0 ]; then want=$review err=$err_cur
+    else
+        # 0 is a change to review, 1 a clean tree. Anything else leaves the mark as it is:
+        # 2, the diff, the pane's work dir or its repo could not be read (#944, #959, #1286),
+        # 3, tmux-review could not load, and 126, 127 or a signal, it could not run (#959),
+        # are neither. Those say why in @cockpit_review_err (#960).
+        "$here/tmux-review" --delta "$pane" >/dev/null 2>&1
+        rc=$?
+        case $rc in
+            0) want=pending err="" ;;
+            1) want="" err="" ;;
+            2) want=$review err="the diff cannot be read" ;;
+            3) want=$review err="tmux-review cannot load" ;;
+            *) want=$review err="tmux-review cannot run (exit $rc)" ;;
+        esac
+    fi
     if [ "$review" != "$want" ]; then
         if [ -n "$want" ]; then tmux set-option -p -t "$pane" @cockpit_review pending 2>/dev/null
         else                    tmux set-option -pu -t "$pane" @cockpit_review 2>/dev/null; fi

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The hooks' stdin payload. Sourced, never run; no forks, and bash 3.2 safe:
+# The hooks' stdin payload. Sourced, never run; only read_stop forks to read, and bash 3.2 safe:
 # agent-state has no bash-4 floor.
 
 # Bounded read, not `cat`: a hook must never wait on its writer. Claude Code 2.1.317 ends
