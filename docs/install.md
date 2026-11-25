@@ -195,7 +195,17 @@ The hooks and the state each one writes: [states-and-hooks.md](states-and-hooks.
 ## Requirements
 
 - **tmux >= 3.8**. Below it the plugin says so and binds nothing; `bootstrap.sh`
-  builds 3.8 into `~/.local/bin` when the distro's tmux is older.
+  builds 3.8 into `~/.local/bin` when the distro's tmux is older. It first
+  installs the build's packages with sudo, and when that fails it points to
+  `--no-sudo`. Where sudo cannot run, with no terminal for its password or no
+  rights, `bootstrap.sh --no-sudo` calls no sudo at all. It names the missing
+  tools for you to install, and builds libevent 2.1.12 and ncurses 6.5 in a
+  temp folder from tarballs checked against a sha256 kept in the script. tmux
+  links both statically, so the folder goes when the build ends and the binary
+  needs neither library later. That build needs a C compiler and `make`, but no
+  yacc and no `-dev` package (#189). The temp folder's path must hold no blank:
+  `configure` splits its flags there, so `--no-sudo` refuses one and names
+  `TMPDIR`.
 - **`cockpit-tui`**, the plugin's own binary. `install.sh` fetches the
   release through your `gh` login when it can reach it, and otherwise builds
   it, which needs **Rust >= 1.88**; the fetched binary needs neither Rust nor
