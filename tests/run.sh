@@ -2998,6 +2998,46 @@ for rgi_k in 1 2 3 4; do
 done
 "$TMUX_REAL" -L "$RG" set-option -pu -t "$RGAP" @cockpit_transcript
 rm -rf -- "$RGIKD"; unset RGIU1 RGIU2 RGIF RGIPAD RGILOOP RGIKD rgi_k
+# #315: a Stop paused on background subagents is no turn's end. Claude Code wakes the session
+# as each one reports back, and the Stop that ends the last of them sets or clears the ◆.
+# background_tasks comes after last_assistant_message, so the hook reads the whole line.
+RGB=$(mktmpf); RGBH=$(mktmpd)
+RGBT='{"id":"a1","type":"subagent","status":"running","description":"lane"}'
+rgb_pay() {                   # <background_tasks body> [message] [session_id] -> $RGB
+    printf '{"session_id":"%s","transcript_path":"%s/tx.jsonl","cwd":"%s",' \
+        "${3:-11111111-2222-4333-8444-555555555555}" "$RGSTATE" "$RGDIR" > "$RGB"
+    printf '"hook_event_name":"Stop","stop_hook_active":false,"last_assistant_message":"%s",' \
+        "${2:-ok}" >> "$RGB"
+    printf '"background_tasks":[%s],"session_crons":[]}\n' "$1" >> "$RGB"
+}
+rgb_get() {                   # -> <mark>|<the reason it was left>
+    printf '%s|%s' "$("$TMUX_REAL" -L "$RG" show-option -pqv -t "$RGAP" @cockpit_review)" \
+        "$("$TMUX_REAL" -L "$RG" show-option -pqv -t "$RGAP" @cockpit_review_err)"
+}
+printf 'a\nb\n' > "$RGDIR/f"
+rgb_pay "$RGBT"; rg_run "$RGB"
+is "#315: a Stop paused on a background subagent sets no ◆ on a dirty tree" "|" "$(rgb_get)"
+rgb_pay "$RGBT" "$(printf '%10240s' '' | tr ' ' x)"; rg_run "$RGB"
+is "#315: nor when the subagent comes after a 10 KB final message" "|" "$(rgb_get)"
+rgb_pay '{"id":"b1","type":"shell","status":"running"}'; rg_run "$RGB"
+is "#315: a Stop whose one background task is a shell flags ◆" "pending|" "$(rgb_get)"
+# Spelled with a space after each colon, which the match takes too.
+printf 'a\n' > "$RGDIR/f"
+rgb_pay '{"id":"a1", "type": "subagent", "status": "running"}'; rg_run "$RGB"
+is "#315: a paused Stop on a clean tree keeps the ◆ it had" "pending|" "$(rgb_get)"
+rgb_pay ""; rg_run "$RGB"
+is "#315: the Stop after the last subagent reports back clears it" "|" "$(rgb_get)"
+# A read that fails cannot tell a paused Stop from a finished one. Here head passes the payload
+# on and then exits 1: the ◆ stays as it was, the reason is said, and nothing read is used.
+printf '#!/bin/sh\ncat\nexit 1\n' > "$RGBH/head"; chmod +x "$RGBH/head"
+printf 'a\nb\n' > "$RGDIR/f"; rgb_pay "" ok 22222222-3333-4444-8555-666666666666
+RG_PRE="PATH=$(printf '%q' "$RGBH"):\$PATH " rg_run "$RGB"
+is "#315: a Stop whose payload cannot be read sets no ◆ and says why" \
+    "|the Stop payload cannot be read" "$(rgb_get)"
+is "#315: and saves no session id from it" "11111111-2222-4333-8444-555555555555" \
+    "$("$TMUX_REAL" -L "$RG" show-option -pqv -t "$RGAP" @cockpit_session)"
+printf 'a\n' > "$RGDIR/f"; rg_run "$RGPAY"
+rm -rf -- "$RGBH"; unset RGB RGBH RGBT; unset -f rgb_pay rgb_get
 # Dirty tree: ◆.
 printf 'a\nb\n' > "$RGDIR/f"
 rg_run "$RGPAY"; is "a finished, unreviewed diff exits 0" "GRC=0" "$(rg_rc)"
