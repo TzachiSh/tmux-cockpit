@@ -231,14 +231,16 @@ mark_agentview() {            # <pane> <scripts dir>
     # The agent view relays for this pane: it shows jobs now, whatever session ran in it before.
     [ -z "$fg" ] || tmux set-option -pu -t "$1" @cockpit_fg 2>/dev/null
     # The config dir this pane's claude uses, written only when it changed (#194). One that
-    # cannot be recorded leaves the pane on none, and says so.
+    # cannot be recorded leaves the pane on none, and says so. The pane's dir goes last: a cut
+    # option name ends the list there (#1450), and the next hook runs it again only while the
+    # pane's dir differs.
     if [ -n "$bad" ]; then
         tmux set-option -pu -t "$1" @cockpit_cfg \; \
             set-option -g @cockpit_poll_err "$CFG_BAD" 2>/dev/null
     elif [ "$cfg" != "$dir" ]; then
         if [ -z "$dir" ]; then tmux set-option -pu -t "$1" @cockpit_cfg 2>/dev/null
         else
-            tmux set-option -p -t "$1" @cockpit_cfg "$arg" \; set-option -g @cockpit_cfg_any 1 \
+            tmux set-option -g @cockpit_cfg_any 1 \; set-option -p -t "$1" @cockpit_cfg "$arg" \
                 2>/dev/null
         fi
     fi
