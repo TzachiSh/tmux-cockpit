@@ -319,11 +319,12 @@ needs-input|error)
             # again. Argv, not a format. No tool, no text, so notify's ask stays. The same call
             # keeps the ask's key, <agent_id>/<tool_name> with no agent on the main thread: only
             # a call of that agent ends it (#1403, call_key). An ask that names no tool has no
-            # key, and any running ends it.
+            # key, and any running ends it. The key goes first: a cut option name ends the list
+            # there (#1450), and a cut on the text's name must not take the key with it.
             whole_word agent_id
             if [ -n "$tool" ]; then
-                tmux set-option -p -t "$pane" @panestate_msg "$msg" ';' \
-                    set-option -p -t "$pane" @panestate_ask "$REPLY/$tool" 2>/dev/null
+                tmux set-option -p -t "$pane" @panestate_ask "$REPLY/$tool" ';' \
+                    set-option -p -t "$pane" @panestate_msg "$msg" 2>/dev/null
             else
                 tmux set-option -pu -t "$pane" @panestate_ask 2>/dev/null
             fi
@@ -550,22 +551,27 @@ if [ -n "$poll" ]; then
     fi
 fi
 
+# Each set at the top of the body's list, and of unmark's below, carries -q (#1450). tmux expands
+# an option's name as a format, and a #707 cut reads it as "": the set fails, and without -q that
+# failure drops the rest of the list, the sums and the boards' wake with it, or the transition.
+# With -q only that set is lost. A cut on @panestate's own name keeps the old state, until the
+# pane's next event.
 if [ "$state" = off ] || [ "$state" = interrupted ]; then
     # No early exit when already clear: a fresh agent's SessionStart must still light its ○ dot.
     body="if -F -t $pane '#{?$cur,0,1}' {} { set-option -pu -t $pane @panestate }"
     # An ended session takes its review marks with it; an idle one keeps them. And its subagent
     # count (#313): SessionStart's off is a new process, which runs none. Not at idle: the lead
     # idles while its subagents work, and a report-back's UserPromptSubmit leaves the others.
-    [ -n "$idle" ] || body="$body ; set-option -pu -t $pane @cockpit_review ; set-option -pu -t $pane @cockpit_review_spool ; set-option -pu -t $pane @cockpit_subs"
+    [ -n "$idle" ] || body="$body ; set-option -pqu -t $pane @cockpit_review ; set-option -pqu -t $pane @cockpit_review_spool ; set-option -pqu -t $pane @cockpit_subs"
 elif [ "$state" = recount ]; then
     body=""
 else
     [ "$state" = wake ] && state=running
-    body="set-option -p -t $pane @panestate $state"
+    body="set-option -pq -t $pane @panestate $state"
     # Entering running means the human pressed Enter, so a delivered-but-unsent review is gone.
     # Not on wake: nobody pressed Enter.
     [ "$state" = running ] && [ "$1" != wake ] && [ -z "$poll" ] \
-        && body="$body ; set-option -pu -t $pane @cockpit_review"
+        && body="$body ; set-option -pqu -t $pane @cockpit_review"
 fi
 
 # @panestate_since (#225): the epoch second the pane entered needs-input, for tm's "waiting
@@ -578,7 +584,7 @@ if [ "$state" = needs-input ]; then
     now=${EPOCHSECONDS:-}
     [ -n "$now" ] || printf -v now '%(%s)T' -1 2>/dev/null
     case "$now" in ''|*[!0-9]*) now=$(date +%s 2>/dev/null) ;; esac
-    case "$now" in ''|*[!0-9]*) ;; *) body="$body ; set-option -p -t $pane @panestate_since $now" ;; esac
+    case "$now" in ''|*[!0-9]*) ;; *) body="$body ; set-option -pq -t $pane @panestate_since $now" ;; esac
 elif [ "$state" != recount ]; then
     body="$body ; if -F -t $pane '#{?#{@panestate_since},0,1}' {}"
     body="$body { set-option -pu -t $pane @panestate_since }"
@@ -586,11 +592,11 @@ fi
 
 case "$state" in
     # The ask's text goes, and its key (#1403) with it.
-    running|off|interrupted) body="$body ; set-option -pu -t $pane @panestate_msg"
-                             body="$body ; set-option -pu -t $pane @panestate_ask" ;;
+    running|off|interrupted) body="$body ; set-option -pqu -t $pane @panestate_msg"
+                             body="$body ; set-option -pqu -t $pane @panestate_ask" ;;
     # The poller's done/error follow a needs-input whose ask would otherwise stay.
-    done|error) [ -z "$poll" ] || { body="$body ; set-option -pu -t $pane @panestate_msg"
-                                    body="$body ; set-option -pu -t $pane @panestate_ask"; } ;;
+    done|error) [ -z "$poll" ] || { body="$body ; set-option -pqu -t $pane @panestate_msg"
+                                    body="$body ; set-option -pqu -t $pane @panestate_ask"; } ;;
 esac
 
 # A hook of this pane's own session (TMUX_PANE is its pane) that is not an agent view's relayed
@@ -616,7 +622,7 @@ if [ -z "$poll" ] && [ -z "$view" ] && [ "$pane" = "${TMUX_PANE:-}" ]; then
     fgnow=${EPOCHSECONDS:-}
     [ -n "$fgnow" ] || printf -v fgnow '%(%s)T' -1 2>/dev/null
     case "$fgnow" in ''|*[!0-9]*) fgnow=9999999999 ;; esac
-    [ -n "$ended" ] || body="$body ; set-option -p -t $pane @cockpit_fg $fgnow"
+    [ -n "$ended" ] || body="$body ; set-option -pq -t $pane @cockpit_fg $fgnow"
 fi
 
 T=$pane
@@ -650,12 +656,12 @@ if [ -n "$fgown" ]; then
         [ -z "${CLAUDE_CONFIG_DIR:-}" ] || cfgarg=$(cfg_arg "$CLAUDE_CONFIG_DIR") || cfgarg=""
     fi
     if [ -n "$cfgarg" ]; then
-        unmark+=(set-option -p -t "$pane" @cockpit_cfg "$cfgarg" ';'
-            set-option -g @cockpit_cfg_any 1 ';')
+        unmark+=(set-option -pq -t "$pane" @cockpit_cfg "$cfgarg" ';'
+            set-option -gq @cockpit_cfg_any 1 ';')
     else
-        unmark+=(set-option -pu -t "$pane" @cockpit_cfg ';')
+        unmark+=(set-option -pqu -t "$pane" @cockpit_cfg ';')
         [ -z "${CLAUDE_CONFIG_DIR:-}" ] \
-            || unmark+=(set-option -g @cockpit_poll_err "${CFG_BAD:-}" ';')
+            || unmark+=(set-option -gq @cockpit_poll_err "${CFG_BAD:-}" ';')
     fi
     [ -z "$scrub" ] || unmark+=(if-shell -F -t "$pane" "$SCRUB_IF" "$SCRUB_DO" ';')
 fi
@@ -676,14 +682,14 @@ if [ -n "$ended" ]; then
     *)
         before=$(tmux show-option -pqv -t "$pane" @cockpit_dir_before 2>/dev/null)
         case "$before" in
-            =)  unmark+=(set-option -pu -t "$pane" @cockpit_dir ';') ;;
+            =)  unmark+=(set-option -pqu -t "$pane" @cockpit_dir ';') ;;
             =*) arg=${before#=}; case "$arg" in *\;) arg="${arg%;}\\;" ;; esac
-                unmark+=(set-option -p -t "$pane" @cockpit_dir "$arg" ';') ;;
+                unmark+=(set-option -pq -t "$pane" @cockpit_dir "$arg" ';') ;;
             *)  unmark+=(if-shell -F -t "$pane" '#{?#{==:#{@cockpit_dir},#{@cockpit_cwd}},1,0}'
                     "set-option -pu -t $pane @cockpit_dir" ';') ;;
         esac
-        unmark+=(set-option -pu -t "$pane" @cockpit_cwd ';'
-            set-option -pu -t "$pane" @cockpit_dir_before ';')
+        unmark+=(set-option -pqu -t "$pane" @cockpit_cwd ';'
+            set-option -pqu -t "$pane" @cockpit_dir_before ';')
         ;;
     esac
 fi
