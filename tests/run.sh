@@ -10477,16 +10477,19 @@ rqe_cmd() {                   # [VAR=value] -> the --loop root the popup was giv
     ( [ $# -eq 0 ] || export "${1%%=*}=${1#*=}"
       PATH="$RQESHIM:$PATH" XDG_STATE_HOME=$RQES "$DIR/scripts/tmux-review" --request "$RQEP" \
           >/dev/null 2>&1 )
-    # The root is shq-quoted in the popup's command: '...' with each ' and \ outside them as \'
-    # and \\, so a blank inside the quotes is not the root's end.
-    sed -nE "s/.* --loop ((\\\\.|'[^']*')+) .*/\\1/p" "$RQES/cmd" 2>/dev/null
+    # The popup's command is the mark, /bin/sh -c with its fixed script, sh, then the pane,
+    # tmux-review's path, the root, the store and rc (#1441). Each of those five is shq-quoted:
+    # '...' with each ' and \ outside them as \' and \\, so a blank inside the quotes is not a
+    # word's end.
+    local w="(\\\\.|'[^']*')+" pre="^COCKPIT_POPUP=1 \\/bin\\/sh -c '[^']*' sh"
+    sed -nE "s/$pre $w $w ($w) $w $w\$/\\3/p" "$RQES/cmd" 2>/dev/null
 }
 rqewant=$(tq "$(git -C "$RQED/pane" rev-parse --show-toplevel)")
 is "the popup reviews the pane repo's root, nothing inherited" "$rqewant" "$(rqe_cmd)"
 # #1248: the same command starts with lib/fmt.sh's popup mark, which the pane scans skip
 case "$(cat "$RQES/cmd" 2>/dev/null)" in
-    'COCKPIT_POPUP=1 REVIEW_PANE_ID='*) ok "...and the popup's command starts with the mark" ;;
-    *) bad "...and the popup's command starts with the mark" "COCKPIT_POPUP=1 REVIEW_PANE_ID=..." \
+    "COCKPIT_POPUP=1 /bin/sh -c '"*) ok "...and the popup's command starts with the mark" ;;
+    *) bad "...and the popup's command starts with the mark" "COCKPIT_POPUP=1 /bin/sh -c '..." \
            "$(cat "$RQES/cmd" 2>/dev/null)" ;;
 esac
 for v in GIT_DIR=@/.git GIT_WORK_TREE=@ GIT_COMMON_DIR=@/.git GIT_INDEX_FILE=@/.git/index; do
