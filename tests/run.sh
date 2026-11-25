@@ -27830,8 +27830,9 @@ pe_err() { "$TMUX_REAL" -L "$PES" show-option -gqv @cockpit_poll_err; }
 PENL=$'\n' PETAB=$'\t'
 # Not recorded, the pane is the default dir's, and the default poller serves it (#685).
 PEMSG="a config dir with a control character is not used: its pane is polled on the default dir"
-PESCRUB="with CLAUDE_CODE_SUBPROCESS_ENV_SCRUB on the hooks see no CLAUDE_CONFIG_DIR"
-PESCRUB="$PESCRUB and their panes are polled on the default dir"
+PESCRUB="with CLAUDE_CODE_SUBPROCESS_ENV_SCRUB on the hooks see no CLAUDE_CONFIG_DIR and no"
+PESCRUB="$PESCRUB XDG_STATE_HOME so their panes are polled on the default dir and their review"
+PESCRUB="$PESCRUB and subagent state goes to the default state dir"
 pe_slot() {                   # pe_slot <cfg> <poll_err>: each empty is unset
     if [ -n "$1" ]; then "$TMUX_REAL" -L "$PES" set-option -p -t "$PEP" @cockpit_cfg "$1"
     else "$TMUX_REAL" -L "$PES" set-option -pu -t "$PEP" @cockpit_cfg; fi
@@ -27849,10 +27850,10 @@ for pesite in pe_hook pe_mark; do
         is "$pesite: a dir with a ${pebad%%:*} in it is not recorded, and said" \
            "|$PEMSG" "$(pe_cfg)|$(pe_err)"
     done
-    # CLAUDE_CODE_SUBPROCESS_ENV_SCRUB takes CLAUDE_CONFIG_DIR out of the hooks' env (#1429). A
-    # hook that sees it on and no dir says so, only into an empty slot. A hook that sees it off,
-    # or a dir, takes back that message and no other. On is Claude Code's 1, true, yes or on, in
-    # any case, spaces trimmed.
+    # CLAUDE_CODE_SUBPROCESS_ENV_SCRUB takes CLAUDE_CONFIG_DIR and XDG_STATE_HOME out of the hooks'
+    # env (#1429, #1438). A hook that sees it on and no dir says so, only into an empty slot. A
+    # hook that sees it off, or a dir, takes back that message and no other. On is Claude Code's
+    # 1, true, yes or on, in any case, spaces trimmed.
     pe_slot "$PE/old" ""
     $pesite CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1
     is "$pesite: with the scrub on and no dir, the pane is on none and the scrub is said (#1429)" \
