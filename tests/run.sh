@@ -4968,7 +4968,8 @@ is "a relative link: a lookup inside a function loads its lib (the detached hash
     "$(cd "$RLK/u/v/w/x" && "$RLK/a/b/bin/tmux-where" branch 1 "$RLK/g" claude 2>/dev/null |
         plain)"
 # review-gate and tmux-review run sibling scripts, which sit beside the real file. A copy of
-# each beside stub siblings shows the folder they were looked for in. tmux is a stub here.
+# each beside stub siblings shows the folder they were looked for in. tmux is a stub here. Its
+# popup leaves 21, approved, in the review's rc, whatever the popup's command says (#1441).
 mkdir -p "$RLK/tb" "$RLK/x/scripts" "$RLK/y/scripts"
 cat > "$RLK/tb/tmux" <<'STUB'
 #!/bin/sh
@@ -4976,7 +4977,7 @@ for a; do l=$a; done
 case $1 in
     display-message) case $l in *session_attached*) echo 1 ;;
         *pane_current_path*) printf '%%1\0370\037\037sh\037\037%s\n' "$RLK_REPO" ;; esac ;;
-    display-popup) r=${l##*> }; eval "r=$r"; echo 21 > "$r" ;;
+    display-popup) for r in "$XDG_STATE_HOME"/tmux-cockpit/review/*/; do echo 21 > "${r}rc"; done ;;
 esac
 exit 0
 STUB
@@ -10535,16 +10536,19 @@ rqe_cmd() {                   # [VAR=value] -> the --loop root the popup was giv
     ( [ $# -eq 0 ] || export "${1%%=*}=${1#*=}"
       PATH="$RQESHIM:$PATH" XDG_STATE_HOME=$RQES "$DIR/scripts/tmux-review" --request "$RQEP" \
           >/dev/null 2>&1 )
-    # The root is shq-quoted in the popup's command: '...' with each ' and \ outside them as \'
-    # and \\, so a blank inside the quotes is not the root's end.
-    sed -nE "s/.* --loop ((\\\\.|'[^']*')+) .*/\\1/p" "$RQES/cmd" 2>/dev/null
+    # The popup's command is the mark, /bin/sh -c with its fixed script, sh, then the pane,
+    # tmux-review's path, the root, the store and rc (#1441). Each of those five is shq-quoted:
+    # '...' with each ' and \ outside them as \' and \\, so a blank inside the quotes is not a
+    # word's end.
+    local w="(\\\\.|'[^']*')+" pre="^COCKPIT_POPUP=1 \\/bin\\/sh -c '[^']*' sh"
+    sed -nE "s/$pre $w $w ($w) $w $w\$/\\3/p" "$RQES/cmd" 2>/dev/null
 }
 rqewant=$(tq "$(git -C "$RQED/pane" rev-parse --show-toplevel)")
 is "the popup reviews the pane repo's root, nothing inherited" "$rqewant" "$(rqe_cmd)"
 # #1248: the same command starts with lib/fmt.sh's popup mark, which the pane scans skip
 case "$(cat "$RQES/cmd" 2>/dev/null)" in
-    'COCKPIT_POPUP=1 REVIEW_PANE_ID='*) ok "...and the popup's command starts with the mark" ;;
-    *) bad "...and the popup's command starts with the mark" "COCKPIT_POPUP=1 REVIEW_PANE_ID=..." \
+    "COCKPIT_POPUP=1 /bin/sh -c '"*) ok "...and the popup's command starts with the mark" ;;
+    *) bad "...and the popup's command starts with the mark" "COCKPIT_POPUP=1 /bin/sh -c '..." \
            "$(cat "$RQES/cmd" 2>/dev/null)" ;;
 esac
 for v in GIT_DIR=@/.git GIT_WORK_TREE=@ GIT_COMMON_DIR=@/.git GIT_INDEX_FILE=@/.git/index; do
@@ -11522,6 +11526,41 @@ is "a revdiff that fails: --request exits 1, not 0" "1" "$rq_rc"
 is "and prints revdiff's own stderr after the popup" \
     "tmux-review: revdiff failed"$'\n'"boom: bad flag" "$rq_err"
 is "and leaves no revdiff.err behind" "no" "$([ -e "$RQSESS/revdiff.err" ] && echo yes || echo no)"
+# #1441: tmux runs the popup's command with the session's default-shell, and fish refuses a
+# whole -c string that holds $? outside quotes: it runs none of it and exits 127 (fish 3.7.1
+# src/fish.cpp:264-284, 4.9.3 src/bin/fish.rs:192-208). The stand-in does the same, and sh
+# runs any other string. fish is not on the CI images, so it is modelled here, not run.
+RQNS=$(mktmpd)
+cat > "$RQNS/zzstub-nostatus" <<'NSEOF'
+#!/bin/sh
+rest=$(printf '%s' "$2" | sed -E "s/'[^']*'|\\\\.//g")
+case $rest in
+    *'$?'*) echo 'fish: $? is not the exit status. In fish, please use $status.' >&2; exit 127 ;;
+esac
+exec sh -c "$2"
+NSEOF
+cat > "$RQNS/tmux" <<SHIMEOF
+#!/bin/sh
+case "\$1" in
+    display-popup) for a; do :; done; printf d | "$RQNS/zzstub-nostatus" -c "\$a" >/dev/null 2>&1
+                   exit 0 ;;
+    display-message) for a; do :; done; case "\$a" in *session_attached*) echo 1; exit 0 ;; esac ;;
+esac
+exec "$TMUX_REAL" -L "$RQ" "\$@"
+SHIMEOF
+chmod +x "$RQNS/zzstub-nostatus" "$RQNS/tmux"
+rm -rf "$RQW"; mkdir -p "$RQW"; rm -f "$RQSESS/comments.md"
+printf '## f:2 (+)\nREQ-NS-MARKER\n' > "$RQW/out.1"; echo 10 > "$RQW/rc.1"
+rq_out=$(PATH="$RQNS:$RQB:$PATH" FAKE_RD_DIR="$RQW" XDG_STATE_HOME=$RQSTATE \
+    "$DIR/scripts/tmux-review" --request "$RQAP"); rq_rc=$?
+is "a default-shell like fish's runs the review loop: --request exits 10 with the review (#1441)" \
+    "10 yes" "$rq_rc $(case $rq_out in *REQ-NS-MARKER*) echo yes ;; *) echo no ;; esac)"
+rm -rf "$RQW"; mkdir -p "$RQW"; echo 3 > "$RQW/rc.1"; echo "boom: bad flag" > "$RQW/err.1"
+rq_err=$(PATH="$RQNS:$RQB:$PATH" FAKE_RD_DIR="$RQW" XDG_STATE_HOME=$RQSTATE \
+    "$DIR/scripts/tmux-review" --request "$RQAP" 2>&1 >/dev/null); rq_rc=$?
+is "and under it a revdiff that fails: exit 1 with revdiff's stderr (#1441)" \
+    "1 tmux-review: revdiff failed"$'\n'"boom: bad flag" "$rq_rc $rq_err"
+rm -rf "$RQNS"
 # A tracked big file revdiff cannot exclude: no review, which --request must not
 # report as one (0). FAIL-first: the loop exited 0 and --request with it (#693).
 ( cd "$RQDIR" && printf 'tb\n' > ' tb.log' && git add -- ' tb.log' \

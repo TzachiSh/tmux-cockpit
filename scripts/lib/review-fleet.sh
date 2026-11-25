@@ -41,7 +41,7 @@ $(shq "$dir"); then $(shq "$SELF") --done $(shq "$store"); fi")"
 # --- --request: the agent asks ----------------------------------------------
 # Run from the agent's own Bash tool (the cockpit-review skill): one popup on the
 # pane, and the batch back on stdout with exit 10. The loop's exit code decides,
-# not the store: the popup writes it to <sess>/rc, read below. display-popup hands
+# not the store: the popup's /bin/sh writes it to <sess>/rc, read below. display-popup hands
 # back the command's own status as well (a #1248 row shows it), which nothing here
 # reads. A timed-out launcher leaves the popup running; running it again resumes
 # the pinned comments.
@@ -64,10 +64,13 @@ request() {                   # <pane>
     # the rc read below is this popup's.
     rm -f -- "$sess/rc"
     # -T is a tmux format, so a # in the path would expand: fesc. The command is
-    # not a format (measured on 3.8), so it is only shell-quoted.
+    # not a format (measured on 3.8), so it is only shell-quoted. tmux runs it with the
+    # session's default-shell, and fish refuses a whole line that holds $? (#1441). So that
+    # shell gets plain and single-quoted words only, and /bin/sh runs the fixed script, as
+    # run-shell does.
     t=${root/#"$HOME/"/\~/}
-    cmd="REVIEW_PANE_ID=$(shq "$pane") $(shq "$SELF") --loop $(shq "$root") $(shq "$store");"
-    cmd="$cmd echo \$? > $(shq "$sess/rc")"
+    cmd="/bin/sh -c $(shq 'REVIEW_PANE_ID=$1 "$2" --loop "$3" "$4"; echo $? > "$5"') sh"
+    cmd="$cmd $(shq "$pane") $(shq "$SELF") $(shq "$root") $(shq "$store") $(shq "$sess/rc")"
     tmux display-popup -E -t "$pane" -w "$pw" -h "$ph" \
         -T "$(fesc " review · requested · $t ")" "$COCKPIT_POPUP_MARK$cmd" 2>/dev/null
     rc=$(cat -- "$sess/rc" 2>/dev/null); rm -f -- "$sess/rc"
