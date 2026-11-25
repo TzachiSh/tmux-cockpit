@@ -5,6 +5,7 @@
 #   one line per event: <epoch>\t<start|stop|idle>\t<agent_id>
 #   a TaskStop (#403):  <epoch>\tkill\t<agent_id>                  a plain agent
 #                       <epoch>\tkill-tm\t<name>\t<description>    a teammate, mapped by the reader
+#   a Stop whose set it cannot take (#407): <epoch>\tbail\t<why>, one word of subs_set's
 # A description is the payload's JSON string body, escapes and all: no tab, newline or quote.
 #
 #   <session_id>.live, beside it (#423): one line, <epoch>\t<id>,<id>...\t<description>...,
@@ -91,30 +92,46 @@ subs_taskstop() {
 }
 
 # subs_reconcile: Stop. The parent's turn has ended; its background_tasks lists what is still in
-# flight: a subagent by its agent id, a teammate by a task id, so by its description. Only
-# Stop's: SubagentStop's lists the agent that is stopping as running. A list it cannot read
-# whole, an entry of a type it does not know, or a set past the bound writes nothing: a short
-# set would end live agents, and no set ends none.
+# flight. The set goes to the session's .live file. A Stop whose set it cannot take appends a
+# bail row to the log instead, naming why, and the last set stands (#407).
 subs_reconcile() {
-    local LC_ALL=C sid arr re rt ob ty ids="" descs="" n=0
+    local sid
     subs_payload
     subs_id session_id; sid=$REPLY; [ -n "$sid" ] || return 0
-    # The array as agent-state's subs_count matches it, whole strings or bytes other than `]`,
+    if subs_set; then subs_live "$sid" "$REPLY"
+    else subs_write "$sid" "bail"$'\t'"$REPLY"
+    fi
+}
+
+# subs_set -> REPLY: the payload's in-flight set, its ids joined by commas, then a tab before
+# each description: a subagent by its agent id, a teammate by a task id, so by its description.
+# Only Stop's: SubagentStop's lists the agent that is stopping as running. A list it cannot
+# read whole, an entry of a type it does not know, or a set past the bound is no set: a short
+# set would end live agents, and no set ends none. Then status 1, and REPLY says why:
+#   array   no whole array: no key, a payload cut short, or an array inside an entry
+#   nested  bytes between or after the flat entries: an object inside an entry, or junk
+#   bound   past 64 KB, 256 entries or a 3890-byte set
+#   type    an entry with no type, or a type it does not know
+#   id      a subagent whose id is not plain
+#   desc    a teammate whose description it cannot take
+subs_set() {
+    local LC_ALL=C arr re rt ob ty ids="" descs="" n=0
+    # The array as subs_count matches it, whole strings or bytes other than `]`,
     # and no `[` either: a nested array would end the match early and drop the entries after it.
     re='"background_tasks": ?\[(("([^"\\]|\\.)*"|[^]["])*)\]'
-    [[ $payload =~ $re ]] || return 0
+    [[ $payload =~ $re ]] || { REPLY='array'; return 1; }
     arr=${BASH_REMATCH[1]}
     # Bounded: each step below copies the rest of the array, so the loop is quadratic in its
     # bytes, and each entry costs a few matches, so it is bounded in entries too (#423).
-    [ "${#arr}" -le 65536 ] || return 0
+    [ "${#arr}" -le 65536 ] || { REPLY='bound'; return 1; }
     # One flat object at a time, commas and spaces between: whole strings or bytes other than
     # braces and brackets, so a nested object or array is no match, and what is left at the
-    # end is not all separators, which writes nothing.
+    # end is not all separators, which is no set.
     re='^[[:space:],]*\{(("([^"\\]|\\.)*"|[^][{}"])*)\}' rt='"type": ?"([A-Za-z_ ]{1,32})"'
     while [[ $arr =~ $re ]]; do
         ob=${BASH_REMATCH[1]} arr=${arr:${#BASH_REMATCH[0]}}
-        [ $((n += 1)) -le 256 ] || return 0
-        [[ $ob =~ $rt ]] || return 0
+        [ $((n += 1)) -le 256 ] || { REPLY='bound'; return 1; }
+        [[ $ob =~ $rt ]] || { REPLY='type'; return 1; }
         ty=${BASH_REMATCH[1]}
         # Closed (#423): a type renamed by a Claude Code update would otherwise drop its agents
         # from the set, and the set would end them all. The skipped labels are the non-agent
@@ -122,18 +139,18 @@ subs_reconcile() {
         # fallback for a type it does not know, is not one of them.
         case "$ty" in
         subagent)
-            payload=$ob subs_id id; [ -n "$REPLY" ] || return 0
+            payload=$ob subs_id id; [ -n "$REPLY" ] || { REPLY='id'; return 1; }
             ids=${ids:+$ids,}$REPLY ;;
         teammate)
-            subs_desc description "$ob" || return 0
+            subs_desc description "$ob" || { REPLY='desc'; return 1; }
             descs=$descs$'\t'$REPLY ;;
         shell | monitor | workflow | 'cloud session' | 'MCP task') ;;
-        *) return 0 ;;
+        *) REPLY='type'; return 1 ;;
         esac
-        [ $((${#ids} + ${#descs})) -le 3890 ] || return 0
+        [ $((${#ids} + ${#descs})) -le 3890 ] || { REPLY='bound'; return 1; }
     done
-    [[ $arr =~ ^[[:space:],]*$ ]] || return 0
-    subs_live "$sid" "$ids$descs"
+    [[ $arr =~ ^[[:space:],]*$ ]] || { REPLY='nested'; return 1; }
+    REPLY=$ids$descs
 }
 
 # subs_live <session_id> <set>: "<epoch>\t<set>" as the session's .live file, written beside it

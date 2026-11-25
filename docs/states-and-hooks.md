@@ -315,7 +315,12 @@ tab, newline or raw quote; one over 512 bytes, or with a control byte, is droppe
   non-agent labels the hooks reference lists, `shell`, `monitor`, `workflow`, `cloud session`
   and `MCP task`, which are skipped (#423): a type a Claude Code update renames, or the raw
   discriminant it falls back to, would otherwise drop its agents from the set and end them
-  all. With no new set the last one stands, and `end-unknown` covers the gap.
+  all. With no new set the last one stands, and `end-unknown` covers the gap. Such a `Stop`
+  appends `<epoch>\tbail\t<why>` to the log instead (#407), which the board skips. `<why>` is
+  one word: `array` (no whole array: no key, a payload cut short, or an array inside an entry),
+  `nested` (an object inside an entry, or bytes between entries), `bound`, `type`, `id` or
+  `desc`. Claude Code 2.1.331 sends the key on every `Stop`, `[]` when nothing is in flight, so a
+  `Stop` without it bails too.
 - **A file, not rows (#423).** Only the newest set is ever read, and as log rows a busy lead's
   sets, up to 3.9 KB each, pushed the older events out of the reader's tail: an idle
   teammate's `stop` fell out, and it read `end-unknown`. The hook writes the set to a temp file
@@ -347,7 +352,11 @@ tab, newline or raw quote; one over 512 bytes, or with a control byte, is droppe
   (`subhooks`, "re-run install.sh --hooks") when any is missing. `--hooks` adds the
   `sub-reconcile` entry beside your own `Stop` hooks, never in place of them. Each of the six is an
   entry of its own, as every other event's handler is, so an upgrade over master's
-  `--hooks` adds them beside the old entries and duplicates nothing.
+  `--hooks` adds them beside the old entries and duplicates nothing. The doctor's `reconcile`
+  row warns when a session's newest `Stop` bailed: a `bail` row newer than the session's
+  `.live` set, or one with no set at all (#407). It reads the dir the hooks write: with
+  `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` on, `~/.local/state`, whatever `XDG_STATE_HOME` says. The
+  check sees the scrub only when the shell that runs `install.sh` sets it.
 
 The reader (`data::subagents`) reads the log once per session, from its last 64 KB, and the
 `.live` file, each cached on (mtime, len) like every other file; a missing or malformed `.live`
