@@ -304,7 +304,9 @@ Two more rows say how an agent ended (#403), from `PostToolUse` with the matcher
 | `<session_id>.live`: one line, `<epoch>\t<id>,<id>...\t<description>...` | every `Stop`, replacing the last: the payload's `background_tasks`, subagents by agent id, teammates by description (their id is a task id too); shells are left out |
 
 A description is the JSON string's body as the payload has it, escapes kept, so it holds no
-tab, newline or raw quote; one over 512 bytes, or with a control byte, is dropped.
+tab, newline or raw quote. One with a control byte is dropped, and so is one longer than Claude
+Code sends whole: 1000 UTF-16 units, as JavaScript counts them, each escape one (#1466). A
+longer one arrives cut, with `… [+N chars]` after it, and matches no teammate's meta file.
 
 - **Why both.** Claude Code 2.1.318 fires no `SubagentStop` when TaskStop ends a plain
   background agent mid-turn (anthropics/claude-code#92716); for a teammate it does, but that
