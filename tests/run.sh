@@ -26033,6 +26033,136 @@ fi
 ckt kill-server
 fi
 
+echo "== agent-state (#1450): a cut option name ends only its own set, not the transition =="
+# tmux expands every set-option's option name as a format (3.8 cmd-set-option.c:252), and the
+# cut above reads it as "". That set fails, and a failed command drops the rest of its command
+# list (cmd-queue.c:756): one cut name lost a whole transition, or its sums and the boards' wake.
+# With -q the set ends normally (cmd-set-option.c:264), and only that set is lost. Each run walks
+# J over every clock call agent-state makes from the same start. Every J lands the state and its
+# window's sum but one, the cut on @panestate's own name: the old state stays, and the rest of
+# the list still runs (#1450 leaves that one as it is).
+# The rows test that the list survives a cut, not the text of the formats. The stock formats walk
+# the panes, and each expansion in them is one more clock call, so a walk over them would take
+# many more runs. So the first whole run below writes the stamp with the stock formats, and then
+# each reset puts cheap ones in their place, which that stamp keeps. The window's one reads a
+# lone agent pane as the stock one does.
+if need_tmux "agent-state cut name"; then :; else
+CQ="cockpit-cutq-$$"; SOCKS="$SOCKS $CQ"; CQD=$(mktmpd); mkdir -p "$CQD/bin" "$CQD/w"
+cqt() { "$TMUX_REAL" -L "$CQ" "$@" 2>/dev/null; }
+cut_server "$CQD" "$CQ" -d -s t -x 80 -y 24 -c "$CQD/w" 'exec -a claude sleep 300'; cqr=$?
+if [ "$cqr" = 2 ]; then skip_ "agent-state cut name ($CUT_WHY)"
+elif [ "$cqr" != 0 ]; then
+    bad "the agent-state block's cut server runs the clock" "cutclock.so in a live server" \
+        "$CUT_WHY"
+else
+CQP=$(cqt display -p -t t: '#{pane_id}')
+cat > "$CQD/bin/tmux" <<CQSHIM
+#!/bin/sh
+exec "$TMUX_REAL" -L "$CQ" "\$@"
+CQSHIM
+chmod +x "$CQD/bin/tmux"
+cqt set -g @cockpit_agents_glob '|claude|'
+until_out claude cqt display -p -t "$CQP" '#{pane_current_command}' >/dev/null
+printf '%s\n' '{"hook_event_name":"SessionEnd","reason":"other"}' > "$CQD/end.json"
+cqask='{"hook_event_name":"PermissionRequest","agent_id":"a1","tool_name":"Bash",'
+printf '%s"tool_input":{"command":"ls -l"}}\n' "$cqask" > "$CQD/ask.json"
+# <state> <pane> <stdin> [config dir]: agent-state as that pane's own hook, on the cut server.
+cqhook() {
+    local e=(env -u CLAUDE_CODE_SUBPROCESS_ENV_SCRUB -u CLAUDE_CONFIG_DIR -u TMUX)
+    [ -z "${4:-}" ] || e+=("CLAUDE_CONFIG_DIR=$4")
+    "${e[@]}" TMUX_PANE="$2" PATH="$CQD/bin:$PATH" "$DIR/scripts/agent-state" "$1" "$2" \
+        < "$3" >/dev/null 2>&1
+}
+cqA() { cqhook running "$CQP" /dev/null "$CQD/cfg"; }
+cqB() { cqhook off "$CQP" "$CQD/end.json" "$CQD/cfg"$'\001'; }
+cqC() { cqhook off "$CQP" "$CQD/end.json"; }
+cqD() { cqhook needs-input "$CQP" "$CQD/ask.json"; }
+cqE() {
+    env -u TMUX -u TMUX_PANE PATH="$CQD/bin:$PATH" "$DIR/scripts/agent-state" poll done "$CQP" \
+        </dev/null >/dev/null 2>&1
+}
+# <state> <dir record> <message> <ask key>: the pane as each run finds it, and the swapped
+# formats.
+cqreset() {
+    local k a=(set -p -t "$CQP" @panestate "$1" \; set -w -t "$CQP" @cockpit_win_state "$1"
+        \; set -p -t "$CQP" @cockpit_dir_before "$2" \; set -p -t "$CQP" @cockpit_dir /a
+        \; set -p -t "$CQP" @cockpit_cwd /a \; set -p -t "$CQP" @cockpit_review pending
+        \; set -p -t "$CQP" @cockpit_review_spool /s \; set -p -t "$CQP" @cockpit_subs 2
+        \; set -pu -t "$CQP" @panestate_msg \; set -pu -t "$CQP" @panestate_ask
+        \; set -pu -t "$CQP" @panestate_since \; set -pu -t "$CQP" @cockpit_fg
+        \; set -pu -t "$CQP" @cockpit_cfg \; set -gu @cockpit_cfg_any
+        \; set -gu @cockpit_poll_err)
+    [ -z "$3" ] || a+=(\; set -p -t "$CQP" @panestate_msg "$3")
+    [ -z "$4" ] || a+=(\; set -p -t "$CQP" @panestate_ask "$4")
+    for k in review snb sne nb ne fleet cells; do a+=(\; set -g "@cockpit_fmt_$k" ''); done
+    a+=(\; set -g @cockpit_fmt_state '#{?#{@panestate},#{@panestate},idle}')
+    cqt "${a[@]}"
+}
+# <J> <run>: the run with the clock armed at J, then disarmed (see the block above).
+cqat() { local j=$1; shift; "$CQD/cutarm" "$j"; "$@"; "$CQD/cutarm" 0; }
+cqcount() {                   # <run>: the clock calls it makes
+    : > "$CQD/log"; cqat 1000000 "$@"
+    cqt show-options -gqv @cq_none >/dev/null       # its first call reads the disarm
+    wc -l < "$CQD/log" | tr -d ' '
+}
+CQF='#{@panestate}|#{@cockpit_win_state}|#{@panestate_msg}|#{@panestate_since}|#{@panestate_ask}'
+# <run> <state> <dir record> <message> <ask key> <new state> <new window> <tail: msg|since>: the
+# run once at each J, from 1 to one past its last call, where nothing is cut. A J lands the
+# transition when the state and the window's sum are the new ones. It is the cut on
+# @panestate's own name when both are the old state and the tail, a later set of the same list,
+# still ran: the message went (msg), or the stamp came (since). Sets CQN (the calls), CQBAD,
+# CQOWN, CQ1 (the first other J), CQKEPT (Js that left the message as it was) and CQLOST (Js
+# after which the ask key is not a1/Bash).
+cqwalk() {
+    local run=$1 s0=$2 rec=$3 m0=$4 k0=$5 s1=$6 w1=$7 tail=$8 j g st win msg since ask tl
+    CQBAD=0 CQOWN=0 CQ1="" CQKEPT=0 CQLOST=0
+    cqreset "$s0" "$rec" "$m0" "$k0"; CQN=$(cqcount "$run")
+    for j in $(seq 1 $((CQN + 1))); do
+        cqreset "$s0" "$rec" "$m0" "$k0"; cqat "$j" "$run"
+        g=$(cqt display -p -t "$CQP" "$CQF")
+        IFS='|' read -r st win msg since ask <<<"$g"
+        tl=1
+        case $tail in msg) [ -z "$msg" ] || tl="" ;; *) [ -n "$since" ] || tl="" ;; esac
+        if [ "$st" = "$s1" ] && [ "$win" = "$w1" ]; then :
+        elif [ "$st" = "$s0" ] && [ "$win" = "$s0" ] && [ -n "$tl" ]; then
+            CQOWN=$((CQOWN + 1))
+        else
+            CQBAD=$((CQBAD + 1)); [ -n "$CQ1" ] || CQ1="J=$j [$g]"
+        fi
+        [ -z "$m0" ] || [ "$msg" != "$m0" ] || CQKEPT=$((CQKEPT + 1))
+        [ "$ask" = a1/Bash ] || CQLOST=$((CQLOST + 1))
+    done
+}
+cqsum() { printf 'bad=%s own=%s%s%s' "$CQBAD" "$CQOWN" "$1" "${CQ1:+, first $CQ1 of $CQN calls}"; }
+# The stamp, written with the stock formats by one whole run.
+cqreset needs-input =/b ask ""; cqA
+cqwalk cqA needs-input =/b ask "" running running msg; cqa=$(cqsum "")
+is "the cut walks cut option names: some J leaves @panestate_msg as it was" "yes" \
+    "$([ "$CQKEPT" -gt 0 ] && echo yes || echo "none of $CQN calls")"
+is "a running hook with a config dir: a cut name loses no more than its own set" \
+    "bad=0 own=1" "$cqa"
+cqwalk cqB needs-input = ask "" "" idle msg
+is "SessionEnd's off, with a refused config dir and an empty dir record: the same" \
+    "bad=0 own=1" "$(cqsum "")"
+cqwalk cqC needs-input =/b ask "" "" idle msg
+is "SessionEnd's off, with no config dir and a dir record: the same" "bad=0 own=1" "$(cqsum "")"
+cqwalk cqD running =/b "" "" needs-input needs-input since
+is "a PermissionRequest: the same, and only a cut on the ask key's own name loses the key" \
+    "bad=0 own=1 key=1" "$(cqsum " key=$CQLOST")"
+cqwalk cqE needs-input =/b ask /Bash done done msg
+is "the poller's done: the same" "bad=0 own=1" "$(cqsum "")"
+# A hook of a pane that is gone: its pane sets end normally now, so the rest of its list runs,
+# where it stopped at the first one before. The stock formats come back first (no stamp).
+cqt set -gu @cockpit_fmt_v \; set -p -t "$CQP" @panestate needs-input \
+    \; set -g @cockpit_fleet_nb 7 \; set -gu @cockpit_cfg_any
+cqhook running %999999 /dev/null "$CQD/cfg"
+is "a hook of a pane that is gone sets nothing on another pane, and counts the fleet again" \
+    "1|needs-input|1" \
+    "$(cqt display -p -t "$CQP" '#{@cockpit_fleet_nb}|#{@panestate}|#{@cockpit_cfg_any}')"
+fi
+cqt kill-server
+fi
+
 echo "== tmux-open-path (#366): plain_name drops each control and bidi character, keeps the rest =="
 # One table, one row per character: removing any one from the helper fails its row.
 PNO=$(mktmpf)
