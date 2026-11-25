@@ -540,18 +540,34 @@ tq() {
 # line that holds sh syntax it lacks: it runs none of it and exits 127 (fish 4.9.3
 # src/bin/fish.rs:192-208). $?, ${...} and a bare a=b are such syntax (src/parse_util.rs:1373-1390,
 # src/ast.rs:2429-2447), and its read takes no -r (src/builtins/read.rs:67). fish is not on the CI
-# images, so it is modelled here. Outside '...' and the \' and \\ that shq writes, the line may
-# hold letters, digits, blanks and _=/.,:%@+- only; any other line is refused as fish refuses
-# one, and sh runs the rest. Without -c it hands its arguments to sh.
+# images, so it is modelled here. The line is walked as sh reads it. Outside '...' it may hold
+# letters, digits, blanks and _=/.,:%@+- and the \' and \\ that shq writes. Inside '...' it may
+# hold anything but a \ before a \ or a ': fish reads those two as escapes there, \\ as one \ and
+# \' as a ' that does not end the quote (doc_src/language.rst:77), where sh reads each byte as it
+# is (#1468). Any other line, or a quote left open, is refused as fish refuses one, and sh runs
+# the rest. Without -c it hands its arguments to sh. POSIX awk only: mawk and gawk both run it.
 words_shell() {               # <dir> -> <dir>/zzstub-words
     cat > "$1/zzstub-words" <<'WSEOF'
 #!/bin/sh
 [ "${1-}" = -c ] || exec sh "$@"
-rest=$(printf '%s' "$2" | tr '\n' ' ' | sed -E "s/'[^']*'|\\\\(\\\\|')//g")
-case $rest in
-    *[!abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_=/.,:%@+\ -]*)
-        printf 'zzstub-words: refused, not plain words: %s\n' "$2" >&2; exit 127 ;;
-esac
+if ! printf '%s' "$2" | LC_ALL=C awk '
+    { s = s (NR > 1 ? " " : "") $0 }
+    END {
+        ok = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_=/.,:%@+ -"
+        n = length(s); q = 0
+        for (i = 1; i <= n; i++) {
+            c = substr(s, i, 1); d = substr(s, i + 1, 1)
+            if (q) {
+                if (c == "\047") q = 0
+                else if (c == "\\" && (d == "\\" || d == "\047")) exit 1
+            } else if (c == "\047") q = 1
+            else if (c == "\\" && (d == "\\" || d == "\047")) i++
+            else if (index(ok, c) == 0) exit 1
+        }
+        exit q
+    }'; then
+    printf 'zzstub-words: refused, not plain words: %s\n' "$2" >&2; exit 127
+fi
 exec sh -c "$2"
 WSEOF
     chmod +x "$1/zzstub-words"
@@ -1417,6 +1433,54 @@ is "under it, the agents popup lists the panes and waits for a key (#1456)" \
 unset -f fw_closed fwkey fw_list
 "$TMUX_REAL" -L "$FWO" kill-server >/dev/null 2>&1
 "$TMUX_REAL" -L "$FW" kill-server >/dev/null 2>&1
+fi
+
+echo "== the board and review windows start from a plugin path with a doubled backslash (#1468) =="
+# @cockpit_board_window and @cockpit_review_window hand new-window one string, which tmux runs
+# with the session's default-shell -c (tmux 3.8 spawn.c:561-567). The script's path went in
+# through sq(), which leaves a \ inside '...', and fish reads \\ there as one \ (fish 4.9.3
+# doc_src/language.rst:77): under fish the window looked for a script that is not there.
+# words_shell's stand-in refuses such a line, and sh runs a line both read alike.
+WWD=$(mktmpd); words_shell "$WWD"
+ww_u() { "$WWD/zzstub-words" -c "$1" 2>/dev/null; printf '%s|' "$?"; }
+is "the stand-in refuses \\\\ and \\' inside '...', and runs a \\ before another byte (#1468)" \
+   "127|127|a\\b0|" \
+   "$(ww_u "printf %s 'a\\\\b'")$(ww_u "printf %s 'a\\'")$(ww_u "printf %s 'a\\b'")"
+unset -f ww_u
+# A copy of the plugin under a folder holding \\, its cockpit-board a stub that records its
+# arguments, as the review window's rows in block "prefix r opens the board" do. A server whose
+# default-shell is the stand-in, both window forms on, and a client that presses w and r.
+if need_tmux "the board windows from a doubled-backslash path"; then :; else
+WW="cockpit-ww-$$"; WWO="cockpit-wwo-$$"; SOCKS="$SOCKS $WW $WWO"
+WWP="$WWD/p\\\\q"
+mkdir -p "$WWP/scripts" "$WWD/w"; cp "$DIR/cockpit.tmux" "$WWP/"
+cp -r "$DIR"/scripts/. "$WWP/scripts/"
+printf '#!/bin/sh\nprintf %%s "$*" > %s\n' "$(tq "$WWD/args")" > "$WWP/scripts/cockpit-board"
+chmod +x "$WWP/scripts/cockpit-board"
+"$TMUX_REAL" -L "$WW" -f /dev/null new-session -d -s t -x 100 -y 30 -c "$WWD/w" \
+    'exec sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$WW" set -g default-shell "$WWD/zzstub-words" >/dev/null 2>&1
+"$TMUX_REAL" -L "$WW" set -g @cockpit_board_window on >/dev/null 2>&1
+"$TMUX_REAL" -L "$WW" set -g @cockpit_review_window on >/dev/null 2>&1
+"$TMUX_REAL" -L "$WW" run-shell "$(tq "$WWP/cockpit.tmux")" >/dev/null 2>&1
+wwp=$("$TMUX_REAL" -L "$WW" display-message -p -t t:0 '#{pane_id}' 2>/dev/null)
+"$TMUX_REAL" -L "$WWO" -f /dev/null new-session -d -s o -x 100 -y 32 -c "$WWD" \
+    "TERM=xterm-256color exec $TMUX_REAL -L $WW attach -t t" >/dev/null 2>&1
+until_out '?*' "$TMUX_REAL" -L "$WW" list-clients -F '#{client_name}'
+wwc=$("$TMUX_REAL" -L "$WW" list-clients -F '#{client_name}' 2>/dev/null | head -n 1)
+ww_wins() { "$TMUX_REAL" -L "$WW" list-windows -t t -F '#{window_id}' 2>/dev/null | wc -l; }
+wwkey() {                     # <key> <row>: prefix <key>'s window starts the copy's cockpit-board
+    rm -f "$WWD/args"
+    "$TMUX_REAL" -L "$WWO" send-keys -t o C-b "$1" >/dev/null 2>&1
+    until_file "$WWD/args" '*-p *'
+    is "$2" "-p $wwp -c $wwc" "$(cat "$WWD/args" 2>/dev/null)"
+    until_out 1 ww_wins
+}
+wwkey w "under it, prefix w's board window starts from a path holding a doubled backslash (#1468)"
+wwkey r "under it, prefix r's review window starts from a path holding a doubled backslash (#1468)"
+unset -f ww_wins wwkey
+"$TMUX_REAL" -L "$WWO" kill-server >/dev/null 2>&1
+"$TMUX_REAL" -L "$WW" kill-server >/dev/null 2>&1
 fi
 
 echo "== the menu is not a way for a directory name to run tmux commands =="
