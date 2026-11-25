@@ -5,8 +5,9 @@
 #   ./bootstrap.sh --yes       take every default, ask nothing
 #   ./bootstrap.sh --check     run install.sh --check (the doctor) and exit
 #   ./bootstrap.sh --dry-run   print what would happen, change nothing
+#   ./bootstrap.sh --no-sudo   call no sudo: the tmux build compiles libevent and ncurses too
 #   ./bootstrap.sh --help
-# Lines 2-9 are the --help text. Every step is skippable and idempotent: a rerun upgrades.
+# Lines 2-10 are the --help text. Every step is skippable and idempotent: a rerun upgrades.
 set -uo pipefail
 
 # The plugin root holds the REAL file: `me` follows any chain of links, a relative
@@ -18,9 +19,15 @@ me=${BASH_SOURCE[0]}; case $me in (*/*) ;; (*) me=./$me ;; esac
 DIR="$(cd -P "$(dirname "$me")" && pwd)"
 
 TMUX_FLOOR_MAJ=3 TMUX_FLOOR_MIN=8 TMUX_BUILD=3.8
+# --no-sudo builds these two into tmux (#189). Neither publishes a sha256: each pin is the
+# sha256 of the release tarball whose signature verified.
+LIBEVENT_V=2.1.12-stable
+LIBEVENT_SHA256=92e6de1be9ec176428fd2367677e61ceffc2ee1cb119035037a27d346b0403bb
+NCURSES_V=6.5
+NCURSES_SHA256=136d91bc269a9a5785e5f9e980bc76ab57428f604ce3e5a5a90cebc767971cc6
 
-USAGE='usage: bootstrap.sh [--yes] [--dry-run] [--check]'
-assume_yes=0 dry=0 check=0
+USAGE='usage: bootstrap.sh [--yes] [--dry-run] [--no-sudo] [--check]'
+assume_yes=0 dry=0 check=0 nosudo=0
 for a in "$@"; do case "$a" in
     "") ;;
     --yes|-y)  assume_yes=1 ;;
@@ -28,10 +35,11 @@ for a in "$@"; do case "$a" in
     --full|--latest)
         printf 'bootstrap.sh: %s does nothing now: fzf and bat are not used\n' "$a" ;;
     --dry-run) dry=1 ;;
-    --help|-h) sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --no-sudo) nosudo=1 ;;
+    --help|-h) sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) printf 'unknown option: %s\n\n%s\n' "$a" "$USAGE" >&2; exit 2 ;;
 esac; done
-[ "$check" -eq 1 ] && [ $((dry + assume_yes)) -gt 0 ] && {
+[ "$check" -eq 1 ] && [ $((dry + assume_yes + nosudo)) -gt 0 ] && {
     printf -- '--check runs alone\n\n%s\n' "$USAGE" >&2; exit 2; }
 [ "$check" -eq 1 ] && exec "$DIR/install.sh" --check
 
@@ -103,6 +111,9 @@ if [ ${#missing[@]} -eq 0 ]; then
 elif [ -z "$PKG" ]; then
     note "no known package manager; install by hand: ${missing[*]}"
     skipped+=("packages: no package manager")
+elif [ "$nosudo" -eq 1 ] && [ "${PKG_INSTALL%% *}" = sudo ]; then
+    note "--no-sudo: install by hand: ${missing[*]}"
+    skipped+=("packages: --no-sudo")
 elif ask "install ${missing[*]} with $PKG?" y; then
     # One call, so the set resolves together behind one password prompt.
     run "install ${missing[*]}" bash -c "$PKG_INSTALL ${missing[*]}"
@@ -140,8 +151,50 @@ in_own_tmpdir() {             # <what> <step> [args...]
 
 # ------------------------------------------------------------------- tmux ----
 # tmux ships only a source tarball, so a distro below the floor builds it.
+# Downloads <dir>.tar.gz into the temp dir and checks it against its pin.
+fetch_src() {                 # <dir> <sha256> <url>
+    run "download $1" curl -fsSL --retry 2 --max-time 120 -o "$tmp/$1.tar.gz" "$3" || return 1
+    printf '%s  %s\n' "$2" "$tmp/$1.tar.gz" | sha_c >/dev/null 2>&1 && return 0
+    printf '  FAIL:  %s checksum mismatch -- NOT built\n' "$1" >&2; return 1
+}
+# Builds <dir> from <dir>.tar.gz in the temp dir and installs it into <prefix>. The paths are
+# arguments, not text in the command: a ' in TMPDIR or HOME broke the string.
+build_src() {                 # <what> <dir> <prefix> [configure args...]
+    local what=$1; shift
+    run "$what" bash -c 'cd -- "$1" && tar xzf "$2.tar.gz" && cd "$2" &&
+        ./configure --prefix="$3" "${@:4}" &&
+        make -j"$(nproc 2>/dev/null || echo 2)" && make install' _ "$tmp" "$@"
+}
+# --no-sudo (#189): libevent and ncurses, static, in the temp dir, for tmux to link in, so no
+# -dev package is needed. ncurses reads the system's terminfo. configure splits its flags at
+# a blank, so a temp dir holding one would lose them: refused before anything is fetched.
+build_tmux_libs() {
+    local gh=${COCKPIT_GITHUB:-https://github.com}/libevent/libevent/releases/download
+    if [ "$dry" -eq 1 ]; then
+        printf '  would: build libevent %s and ncurses %s for it, in a temp dir\n' \
+            "$LIBEVENT_V" "$NCURSES_V"
+        return 0
+    fi
+    case $tmp in *[[:space:]]*)
+        printf '  FAIL:  --no-sudo cannot build in %s: configure splits' "$tmp" >&2
+        printf ' a path at a blank. Set TMPDIR to a folder without one.\n' >&2
+        return 1 ;;
+    esac
+    fetch_src "libevent-$LIBEVENT_V" "$LIBEVENT_SHA256" \
+        "$gh/release-$LIBEVENT_V/libevent-$LIBEVENT_V.tar.gz" &&
+    fetch_src "ncurses-$NCURSES_V" "$NCURSES_SHA256" \
+        "https://ftp.gnu.org/gnu/ncurses/ncurses-$NCURSES_V.tar.gz" &&
+    build_src "build libevent $LIBEVENT_V" "libevent-$LIBEVENT_V" "$tmp/deps" \
+        --disable-shared --enable-static --disable-openssl --disable-samples \
+        --disable-libevent-regress &&
+    build_src "build ncurses $NCURSES_V" "ncurses-$NCURSES_V" "$tmp/deps" \
+        --without-shared --without-cxx --without-cxx-binding --without-ada --without-progs \
+        --without-tests --without-manpages --enable-widec --disable-pc-files \
+        --with-default-terminfo-dir=/usr/share/terminfo \
+        --with-terminfo-dirs=/etc/terminfo:/lib/terminfo:/usr/share/terminfo
+}
 build_tmux() {
-    local deps
+    local deps conf=()
     case "$PKG" in
         apt)    deps="build-essential pkg-config bison libevent-dev libncurses-dev curl" ;;
         dnf)    deps="gcc make pkgconf-pkg-config bison libevent-devel ncurses-devel curl" ;;
@@ -149,15 +202,28 @@ build_tmux() {
         zypper) deps="gcc make pkg-config bison libevent-devel ncurses-devel curl" ;;
         *)      deps="" ;;
     esac
-    [ -n "$deps" ] &&{ run "install the tmux build deps" bash -c "$PKG_INSTALL $deps" || return 1; }
+    if [ "$nosudo" -eq 1 ]; then
+        build_tmux_libs || return 1
+        # tmux's configure stops with no yacc, but the 3.8 tarball ships cmd-parse.c newer
+        # than cmd-parse.y, so make runs none: YACC=true passes the check (probed with no
+        # yacc on the box, #189). These names are the first configure tries, so a system
+        # libevent or ncurses never wins over the two just built.
+        conf=(YACC=true "LIBEVENT_CORE_CFLAGS=-I$tmp/deps/include"
+              "LIBEVENT_CORE_LIBS=$tmp/deps/lib/libevent_core.a"
+              "LIBTINFOW_CFLAGS=-I$tmp/deps/include/ncursesw -I$tmp/deps/include"
+              "LIBTINFOW_LIBS=$tmp/deps/lib/libncursesw.a")
+    elif [ -n "$deps" ]; then
+        run "install the tmux build deps" bash -c "$PKG_INSTALL $deps" || {
+            printf "  note:  without sudo, rerun with --no-sudo: it builds tmux's libraries\n"
+            return 1; }
+    fi
     [ "$dry" -eq 1 ] && { printf '  would: build tmux %s into ~/.local\n' "$TMUX_BUILD"; return 0; }
     printf '  note:  tmux publishes no checksums; TLS only\n'
-    run "download tmux $TMUX_BUILD" curl -fsSL --retry 2 --max-time 120 -o "$tmp/t.tgz" \
+    run "download tmux $TMUX_BUILD" curl -fsSL --retry 2 --max-time 120 \
+        -o "$tmp/tmux-$TMUX_BUILD.tar.gz" \
         "${COCKPIT_GITHUB:-https://github.com}/tmux/tmux/releases/download/$TMUX_BUILD/tmux-$TMUX_BUILD.tar.gz" || return 1
-    # The paths are arguments, not text in the command: a ' in TMPDIR or HOME broke the string.
-    run "build tmux $TMUX_BUILD into ~/.local" bash -c 'cd -- "$1" && tar xzf t.tgz &&
-        cd "tmux-$2" && ./configure --prefix="$3/.local" &&
-        make -j"$(nproc 2>/dev/null || echo 2)" && make install' _ "$tmp" "$TMUX_BUILD" "$HOME"
+    build_src "build tmux $TMUX_BUILD into ~/.local" "tmux-$TMUX_BUILD" "$HOME/.local" \
+        ${conf[@]+"${conf[@]}"}
 }
 
 step "tmux version"
