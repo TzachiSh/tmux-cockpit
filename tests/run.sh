@@ -3036,7 +3036,8 @@ is "the newest ai-title becomes the pane's title" "Fix the parser" \
 is "the session id is stashed for prefix i" "11111111-2222-4333-8444-555555555555" \
     "$("$TMUX_REAL" -L "$RG" show-option -pqv -t "$RGAP" @cockpit_session)"
 # #315: the Stop's session id goes through agent-state session's checks (#308), shared in
-# lib/hook.sh: a UUID only, a new id drops the old transcript, and the read stops at 4 KB.
+# lib/hook.sh: a UUID only, a new id drops the old transcript, and the ids come from the
+# payload's first 4 KB.
 RGIU1=11111111-2222-4333-8444-555555555555 RGIU2=aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee
 RGIF=$(mktmpf); RGIPAD=$(printf '%10240s' '' | tr ' ' x)
 RGILOOP="$RGSTATE/tmux-cockpit/review/loop-$(gate_key "$RG" "$RGAP")"
@@ -3092,6 +3093,46 @@ for rgi_k in 1 2 3 4; do
 done
 "$TMUX_REAL" -L "$RG" set-option -pu -t "$RGAP" @cockpit_transcript
 rm -rf -- "$RGIKD"; unset RGIU1 RGIU2 RGIF RGIPAD RGILOOP RGIKD rgi_k
+# #315: a Stop paused on background subagents is no turn's end. Claude Code wakes the session
+# as each one reports back, and the Stop that ends the last of them sets or clears the ◆.
+# background_tasks comes after last_assistant_message, so the hook reads the whole line.
+RGB=$(mktmpf); RGBH=$(mktmpd)
+RGBT='{"id":"a1","type":"subagent","status":"running","description":"lane"}'
+rgb_pay() {                   # <background_tasks body> [message] [session_id] -> $RGB
+    printf '{"session_id":"%s","transcript_path":"%s/tx.jsonl","cwd":"%s",' \
+        "${3:-11111111-2222-4333-8444-555555555555}" "$RGSTATE" "$RGDIR" > "$RGB"
+    printf '"hook_event_name":"Stop","stop_hook_active":false,"last_assistant_message":"%s",' \
+        "${2:-ok}" >> "$RGB"
+    printf '"background_tasks":[%s],"session_crons":[]}\n' "$1" >> "$RGB"
+}
+rgb_get() {                   # -> <mark>|<the reason it was left>
+    printf '%s|%s' "$("$TMUX_REAL" -L "$RG" show-option -pqv -t "$RGAP" @cockpit_review)" \
+        "$("$TMUX_REAL" -L "$RG" show-option -pqv -t "$RGAP" @cockpit_review_err)"
+}
+printf 'a\nb\n' > "$RGDIR/f"
+rgb_pay "$RGBT"; rg_run "$RGB"
+is "#315: a Stop paused on a background subagent sets no ◆ on a dirty tree" "|" "$(rgb_get)"
+rgb_pay "$RGBT" "$(printf '%10240s' '' | tr ' ' x)"; rg_run "$RGB"
+is "#315: nor when the subagent comes after a 10 KB final message" "|" "$(rgb_get)"
+rgb_pay '{"id":"b1","type":"shell","status":"running"}'; rg_run "$RGB"
+is "#315: a Stop whose one background task is a shell flags ◆" "pending|" "$(rgb_get)"
+# Spelled with a space after each colon, which the match takes too.
+printf 'a\n' > "$RGDIR/f"
+rgb_pay '{"id":"a1", "type": "subagent", "status": "running"}'; rg_run "$RGB"
+is "#315: a paused Stop on a clean tree keeps the ◆ it had" "pending|" "$(rgb_get)"
+rgb_pay ""; rg_run "$RGB"
+is "#315: the Stop after the last subagent reports back clears it" "|" "$(rgb_get)"
+# A read that fails cannot tell a paused Stop from a finished one. Here head passes the payload
+# on and then exits 1: the ◆ stays as it was, the reason is said, and nothing read is used.
+printf '#!/bin/sh\ncat\nexit 1\n' > "$RGBH/head"; chmod +x "$RGBH/head"
+printf 'a\nb\n' > "$RGDIR/f"; rgb_pay "" ok 22222222-3333-4444-8555-666666666666
+RG_PRE="PATH=$(printf '%q' "$RGBH"):\$PATH " rg_run "$RGB"
+is "#315: a Stop whose payload cannot be read sets no ◆ and says why" \
+    "|the Stop payload cannot be read" "$(rgb_get)"
+is "#315: and saves no session id from it" "11111111-2222-4333-8444-555555555555" \
+    "$("$TMUX_REAL" -L "$RG" show-option -pqv -t "$RGAP" @cockpit_session)"
+printf 'a\n' > "$RGDIR/f"; rg_run "$RGPAY"
+rm -rf -- "$RGBH"; unset RGB RGBH RGBT; unset -f rgb_pay rgb_get
 # Dirty tree: ◆.
 printf 'a\nb\n' > "$RGDIR/f"
 rg_run "$RGPAY"; is "a finished, unreviewed diff exits 0" "GRC=0" "$(rg_rc)"
@@ -3518,27 +3559,20 @@ RGF="$RGSTATE/gate.fifo"; mkfifo "$RGF"
 # so start-up under heavy load fits and a hook that waits out its writer does not.
 rg_ms() { local t=${EPOCHREALTIME:-${SECONDS}.000000}; t=${t/[.,]/}; echo $(( 10#$t / 1000 )); }
 # 1. The payload arrives and the writer then keeps the pipe open, which is what
-#    Claude Code actually does. Waiting for EOF here would burn the full
-#    deadline on every Stop; the read stops at the fields it wants instead.
-#    The line after the payload is left in the pipe: a read that went on past
-#    the fields would take it, with no clock involved. Payload and tail go in
-#    one write, under PIPE_BUF so atomic: the fields never arrive without it.
-printf 'RG-TAIL\n' | cat "$RGPAY" - > "$RGSTATE/pay-tail"
-( exec 9>"$RGF"; cat "$RGSTATE/pay-tail" >&9; sleep 8 ) & rg_holder=$!   # a holder
+#    Claude Code actually does. Waiting for EOF here would burn the whole bound
+#    on every Stop; the read returns at the payload's newline instead (#315).
+( exec 9>"$RGF"; cat "$RGPAY" >&9; sleep 8 ) & rg_holder=$!   # a holder
 rg_hs=$(pid_start "$rg_holder")
 rg_t0=$(rg_ms)
 TMUX_PANE=%999999 TMUX_TMPDIR="$RGSTATE" XDG_STATE_HOME="$RGSTATE" \
     timeout 6 "$DIR/scripts/review-gate" >/dev/null 2>&1 < "$RGF"
 rg_grc=$?
 rg_dt=$(( $(rg_ms) - rg_t0 ))
-# <> opens read-write, so open() never waits for a writer the holder may no longer be.
-rg_rest=""; IFS= read -r -t 3 rg_rest <> "$RGF"
 pid_sig TERM "$rg_holder" "$rg_hs" >/dev/null; wait "$rg_holder" 2>/dev/null
 is "a payload whose writer keeps stdin open is not waited out" "0" "$rg_grc"
 [ "$rg_dt" -lt 4000 ] &&
-    ok "and the read returns as soon as it has both fields (${rg_dt}ms)" ||
-    bad "and the read returns as soon as it has both fields" "under 4000ms" "${rg_dt}ms"
-is "and it stops reading at those fields" "RG-TAIL" "$rg_rest"
+    ok "and the hook returns while the writer still holds stdin (${rg_dt}ms)" ||
+    bad "and the hook returns while the writer still holds stdin" "under 4000ms" "${rg_dt}ms"
 # 2. Nothing ever arrives: the deadline is the backstop, and it must fire.
 ( exec 9>"$RGF"; sleep 8 ) & rg_holder=$!                     # a holder, not a wait
 rg_hs=$(pid_start "$rg_holder")
@@ -5168,15 +5202,16 @@ else
             read -r rlk_n _
             case $rlk_n in 0|1|2) echo doctor ;; *) echo "exit $rlk_n" ;; esac; })"
 fi
-# Every site, listed by file: a new one means a line here, never only a new total. 27 sites
+# Every site, listed by file: a new one means a line here, never only a new total. 26 sites
 # in 20 files: #1290 added cockpit-board, cockpit-panel, tui-fetch and the three at the root.
-# #1330 added cockpit-event.
+# #1330 added cockpit-event. #315 moved agent-state's Stop read, and its site, into
+# lib/hook.sh, which finds bound.sh from its own path.
 rlk_sites='bootstrap.sh:1
 cockpit.tmux:1
 install.sh:1
 scripts/agent-context:1
 scripts/agent-poll:1
-scripts/agent-state:6
+scripts/agent-state:5
 scripts/cockpit-board:1
 scripts/cockpit-event:1
 scripts/cockpit-panel:1
@@ -5191,7 +5226,7 @@ scripts/tmux-where:1
 scripts/tui-fetch:1
 scripts/worktree-create:1
 scripts/worktree-remove:1'
-is "all 27 self-locating sites carry the whole four-line form, file by file" "$rlk_sites" \
+is "all 26 self-locating sites carry the whole four-line form, file by file" "$rlk_sites" \
     "$(cd "$DIR" && for rlk_s in scripts/* install.sh bootstrap.sh cockpit.tmux; do
         [ -f "$rlk_s" ] || continue
         rlk_n=$(rlk_count "$rlk_s"); [ "$rlk_n" -eq 0 ] || printf '%s:%s\n' "$rlk_s" "$rlk_n"

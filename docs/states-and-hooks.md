@@ -70,7 +70,7 @@ timer.
 | `PreToolUse` | `running` — marks the pane busy as a tool begins; over an ask with a key, only from the agent that asked (#1403) |
 | `Stop` | `done`, unless the payload's `background_tasks` lists a subagent: then no state changes (see [Background subagents](#background-subagents)). Either way `@cockpit_subs` takes the count (see [Subagent count](#subagent-count)) |
 | `Stop` (2nd) | `sub-reconcile` — writes the payload's `background_tasks`, the set still in flight, to the session's `.live` file beside the subagent log; an agent the log had running that is not in it has ended; no pane state. Before `review-gate`: `--hooks` re-appends review-gate's entry on every run, so an entry after it would swap places each time |
-| `Stop` (3rd) | `review-gate` — flags `◆` when the finished diff is unreviewed; hands a queued review to the agent at this turn boundary (`additionalContext` on stdout, once); caps a `/goal` rewake chain at `@cockpit_rewake_cap` and honours `review-gate --concede` (see [A goal that will not be met](#a-goal-that-will-not-be-met)) |
+| `Stop` (3rd) | `review-gate` — flags `◆` when the finished diff is unreviewed, and leaves it as it is on a `Stop` paused on background subagents (see [Background subagents](#background-subagents)); hands a queued review to the agent at this turn boundary (`additionalContext` on stdout, once); caps a `/goal` rewake chain at `@cockpit_rewake_cap` and honours `review-gate --concede` (see [A goal that will not be met](#a-goal-that-will-not-be-met)) |
 | `StopFailure` | `error` — a turn killed by an API error fires this, **not** `Stop`; unwired, it left a bright "working" marker forever. The only hook that leaves `error`: a failed tool is `running` (#1331) |
 | `Notification` | `notify` (parses the JSON on stdin) |
 | `WorktreeCreate` | `worktree-create` — `claude --worktree <name>` and `EnterWorktree` put the tree under `~/.cache/cockpit-wt/<name>` on branch `<name>` (branched from the launch checkout's HEAD; an existing branch is checked out), so the session's cwd is the tree it works in and every cockpit read describes that tree. One namespace for every repo on the machine; subagents with `isolation: worktree` land there too, with their slug branches. Not with `--worktree --tmux` together, which skips the hook |
@@ -161,9 +161,11 @@ A Stop whose `tmux-review --delta` cannot tell leaves the `◆` as it was and sa
 the pane option `@cockpit_review_err`, as the poller does in `@cockpit_poll_err`
 ([Agent view and background jobs](#agent-view-and-background-jobs)): `the diff cannot be
 read` (exit 2: the diff, the pane's work dir or its repo), `tmux-review cannot load`
-(exit 3), or `tmux-review cannot run (exit N)` (126, 127 or a signal). A message on the
-status line says it once per new reason, and the next Stop that reads the diff unsets the
-option (#960). Nothing is written while the reason stays the same.
+(exit 3), or `tmux-review cannot run (exit N)` (126, 127 or a signal). A Stop whose payload
+`review-gate` cannot read, past its 2 s bound or with `head` failing, cannot tell a paused
+Stop from a finished one: it leaves the `◆` too, with `the Stop payload cannot be read`
+(#315). A message on the status line says it once per new reason, and the next Stop that
+reads the diff unsets the option (#960). Nothing is written while the reason stays the same.
 
 ## Deliberately unwired
 
@@ -195,6 +197,9 @@ the `Stop` that ends the last report-back turn writes `done`. Claude Code
 puts the in-flight work in the `Stop` payload's `background_tasks`, so
 `agent-state done` reads it and leaves the pane as it is while any entry has
 type `subagent`. `needs-input` and `error` stay sticky, since nothing is written.
+`review-gate` reads the same list with the same match (`subs_count` in
+`scripts/lib/hook.sh`) and leaves the `◆` as it is on that `Stop`: the `Stop`
+that ends the last report-back turn sets or clears it (#315).
 
 Only subagents hold the pane. An idle teammate stays `running` in Claude Code's
 task registry for the life of the team, and a background shell or monitor can
@@ -659,8 +664,10 @@ is never stored: free text in an option is the #289 hazard. `Stop` still refresh
 `@cockpit_session` through `review-gate`, with the same UUID test and transcript drop
 (#315), and only when its read of the pane's options is whole (#707).
 
-The read is capped at 4 KB, `review-gate`'s too: `UserPromptSubmit` carries the whole prompt,
-`Stop` the whole final message, and bash reads a pipe a byte at a time. Claude sends the ids
+The read is capped at 4 KB: `UserPromptSubmit` carries the whole prompt, and bash reads a pipe
+a byte at a time. `review-gate` reads the `Stop` payload's whole line with `head`, for the
+`background_tasks` after the final message, and takes its ids from the first 4 KB of it
+(#315). Claude sends the ids
 first; one past the cap, or cut by it, is skipped and the old value stays. The hook checks
 the path against the projects tree of the `CLAUDE_CONFIG_DIR` claude runs with; the reader
 uses its own environment's (usually the tmux server's). With `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB`

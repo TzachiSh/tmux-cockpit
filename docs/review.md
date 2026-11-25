@@ -70,9 +70,11 @@ yet (the `Stop` gate flagged it), `↵` a review already pasted into that pane
 and not yet sent. Without them the board keeps sending you back to a pane you
 have already been through.
 
-`◆` is written by `review-gate`, the second `Stop` hook, at the turn boundary
+`◆` is written by `review-gate`, the third `Stop` hook, at the turn boundary
 where the agent finishes: it sets `@cockpit_review = pending` when the pane's
-tree still differs from its review base. The mark clears when the agent starts
+tree still differs from its review base. A `Stop` paused on background subagents
+is no such boundary: the mark stays as it is until the `Stop` that ends the last
+report-back turn (#315). The mark clears when the agent starts
 working again, when that diff goes empty at a later `Stop`, or when you approve
 with `a`. The same step marks the window's tab with `◆` and recounts `◆N` in
 `#{E:@cockpit_fleet}`, which tells you how many finished agents nobody has read
