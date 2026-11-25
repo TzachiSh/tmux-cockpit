@@ -12495,6 +12495,141 @@ is "the tmux build configures with --prefix in the user's HOME, and compiles not
    "--prefix=<o>/h/.local|0|0" "$(bt_run tmux prefix none)"
 unset -f bt_run; unset bt_mk bt_v bt_c bt_w
 
+echo "== bootstrap.sh --no-sudo builds tmux's libraries from source and calls no sudo (#189) =="
+# --no-sudo is for a box where sudo cannot run: no tty for its password, or no rights. No step
+# calls sudo, and the tmux build makes libevent and ncurses, static, in its temp dir for tmux
+# to link in, so no -dev package is needed. Each row runs on bs_box's faked box with tmux 3.7,
+# so the build runs. Its curl serves, by the url's last name, a local tarball whose configure
+# logs its argv to <o>/conf-<name> and exits 0, and its make exits 0: every step runs and
+# nothing compiles. A stub tarball never matches a pin, so a row that needs the build to go on
+# runs a copy of bootstrap.sh whose pins are the stub tarballs' own sha256.
+if ! command -v sha256sum >/dev/null 2>&1; then skip_ "bootstrap.sh --no-sudo (no sha256sum)"
+else
+ns_le=$(sed -n 's/^LIBEVENT_V=//p' "$DIR/bootstrap.sh")
+ns_nc=$(sed -n 's/^NCURSES_V=//p' "$DIR/bootstrap.sh")
+ns_tv=$(sed -n 's/.*TMUX_BUILD=\([0-9.]*\).*/\1/p' "$DIR/bootstrap.sh")
+ns_box() {                    # <dir> <real|libevent|both>: the box, and which pins match
+    local o=$1 d le nc se=()
+    bs_box "$o" || return 1
+    mkdir -p "$o/cwd" "$o/plain" "$o/rel" "$o/pack" "$o/srv" "$o/p"
+    printf '#!/bin/sh\necho "make $*" >> %s\n' "$(tq "$o/calls")" > "$o/bin/make"
+    printf '#!/bin/sh\ncase $1 in -V) echo "tmux 3.7" ;; esac\nexit 0\n' > "$o/bin/tmux"
+    printf '#!/bin/sh\necho "version: 1.13.0"\n' > "$o/bin/revdiff"
+    for d in "libevent-$ns_le" "ncurses-$ns_nc" "tmux-$ns_tv"; do
+        mkdir -p "$o/pack/$d"
+        printf '#!/bin/sh\nprintf "%%s\\n" "$@" > %s\n' "$(tq "$o/conf-${d%%-*}")" \
+            > "$o/pack/$d/configure"
+        chmod +x "$o/pack/$d/configure"
+        ( cd "$o/pack" && tar -czf "$o/srv/$d.tar.gz" "$d" )
+    done
+    { printf '#!/bin/sh\necho "curl $*" >> %s\nf=\n' "$(tq "$o/calls")"
+      printf 'while [ $# -gt 1 ]; do [ "$1" = -o ] && f=$2; shift; done\n'
+      printf 's=%s/${1##*/}\n' "$(tq "$o/srv")"
+      printf '[ -n "$f" ] && [ -f "$s" ] && exec cp "$s" "$f"\nexit 22\n'; } > "$o/bin/curl"
+    chmod +x "$o/bin/"*
+    [ "$2" != real ] || return 0
+    le=$(sha256sum < "$o/srv/libevent-$ns_le.tar.gz")
+    se=(-e "s/^LIBEVENT_SHA256=.*/LIBEVENT_SHA256=${le%% *}/")
+    if [ "$2" = both ]; then
+        nc=$(sha256sum < "$o/srv/ncurses-$ns_nc.tar.gz")
+        se+=(-e "s/^NCURSES_SHA256=.*/NCURSES_SHA256=${nc%% *}/")
+    fi
+    sed "${se[@]}" "$DIR/bootstrap.sh" > "$o/p/bootstrap.sh" && chmod +x "$o/p/bootstrap.sh"
+    cp "$DIR/install.sh" "$o/p/" && ln -s "$DIR/scripts" "$o/p/scripts"
+}
+ns_run() {                    # <dir> <script> <TMPDIR> [args...]: the output in <dir>/out
+    local o=$1 s=$2 t=$3
+    shift 3
+    ( cd "$o/cwd" && env -u TMUX -u TMUX_PANE HOME="$o/h" TMPDIR="$t" \
+        PATH="$o/bin:${ns_sys:-/usr/bin:/bin}" COCKPIT_GITHUB="$(file_url "$o/rel")" \
+        timeout 60 "$s" "$@" </dev/null >"$o/out" 2>&1 )
+}
+ns_want() { local IFS='|'; printf '%s' "$*"; }  # its arguments joined by |
+ns_conf() {                   # <dir> <name>: that configure's argv joined by |, its dirs short
+    local o=$1 l r p out=''   # the temp dir as <t> (bootstrap.sh takes its physical path)
+    [ -f "$o/conf-$2" ] || { printf 'not run'; return; }
+    p=$(cd -P -- "$o/plain" && pwd -P)
+    while IFS= read -r l; do
+        l=${l//"$p/"/$'\1'}
+        while [[ $l == *$'\1'* ]]; do r=${l#*$'\1'}; l=${l%%$'\1'*}"<t>/"${r#*/}; done
+        out+=${out:+|}${l//"$o"/<o>}
+    done < "$o/conf-$2"
+    printf '%s' "$out"
+}
+ns_confs() { find "$1" -maxdepth 1 -name 'conf-*' | grep -c .; }   # <dir>: configures that ran
+
+NSA=$(mktmpd); ns_box "$NSA" both; ns_run "$NSA" "$NSA/p/bootstrap.sh" "$NSA/plain" --no-sudo
+is "--no-sudo: libevent, ncurses and tmux are each built and installed, and no sudo ran" "0|3" \
+   "$(grep -cE '^(sudo|apt-get) ' "$NSA/calls")|$(grep -c '^make install' "$NSA/calls")"
+is "--no-sudo: libevent is configured static, with no OpenSSL, into the temp dir" \
+   "$(ns_want '--prefix=<t>/deps' --disable-shared --enable-static --disable-openssl \
+       --disable-samples --disable-libevent-regress)" "$(ns_conf "$NSA" libevent)"
+is "--no-sudo: ncurses is configured static, wide, reading the system's terminfo dirs" \
+   "$(ns_want '--prefix=<t>/deps' --without-shared --without-cxx --without-cxx-binding \
+       --without-ada --without-progs --without-tests --without-manpages --enable-widec \
+       --disable-pc-files --with-default-terminfo-dir=/usr/share/terminfo \
+       --with-terminfo-dirs=/etc/terminfo:/lib/terminfo:/usr/share/terminfo)" \
+   "$(ns_conf "$NSA" ncurses)"
+# YACC=true: the 3.8 tarball ships cmd-parse.c newer than cmd-parse.y, so make runs no yacc,
+# but configure stops without one. The two library names are the first configure tries, so
+# a system libevent or ncurses never wins over the ones just built.
+is "--no-sudo: tmux links the two from the temp dir, by the names its configure tries first" \
+   "$(ns_want '--prefix=<o>/h/.local' YACC=true 'LIBEVENT_CORE_CFLAGS=-I<t>/deps/include' \
+       'LIBEVENT_CORE_LIBS=<t>/deps/lib/libevent_core.a' \
+       'LIBTINFOW_CFLAGS=-I<t>/deps/include/ncursesw -I<t>/deps/include' \
+       'LIBTINFOW_LIBS=<t>/deps/lib/libncursesw.a')" "$(ns_conf "$NSA" tmux)"
+
+# The real pins: the stub libevent is refused before anything is built or ncurses fetched.
+NSB=$(mktmpd); ns_box "$NSB" real; ns_run "$NSB" "$DIR/bootstrap.sh" "$NSB/plain" --no-sudo
+is "--no-sudo: a libevent tarball off its pin is refused, says so, and nothing is configured" \
+   "1|0|0" "$(grep -cxF "  FAIL:  libevent-$ns_le checksum mismatch -- NOT built" "$NSB/out")|$(
+   ns_confs "$NSB")|$(grep -c "ncurses-$ns_nc\.tar\.gz" "$NSB/calls")"
+NSC=$(mktmpd); ns_box "$NSC" libevent; ns_run "$NSC" "$NSC/p/bootstrap.sh" "$NSC/plain" --no-sudo
+is "--no-sudo: an ncurses tarball off its pin is refused, says so, and nothing is configured" \
+   "1|0" "$(grep -cxF "  FAIL:  ncurses-$ns_nc checksum mismatch -- NOT built" "$NSC/out")|$(
+   ns_confs "$NSC")"
+
+ns_run "$NSB" "$DIR/bootstrap.sh" "$NSB/plain" --no-sudo --dry-run
+is "--no-sudo --dry-run: the build names the two libraries, and no package install" "1|0" \
+   "$(grep -c "would: build libevent $ns_le and ncurses $ns_nc" "$NSB/out")|$(
+   grep -c 'would: install the tmux build deps' "$NSB/out")"
+
+# The packages step on a PATH with every tool of /usr/bin and /bin but jq (and claude, which no
+# row here may reach): jq is missing, and the step names it for the user instead of sudo.
+ns_sys=$(mktmpd)
+cp -s /usr/bin/* "$ns_sys/" 2>/dev/null
+[ /bin -ef /usr/bin ] || cp -sn /bin/* "$ns_sys/" 2>/dev/null
+rm -f "$ns_sys/jq" "$ns_sys/claude"
+NSD=$(mktmpd); ns_box "$NSD" real; ns_run "$NSD" "$DIR/bootstrap.sh" "$NSD/plain" --no-sudo
+unset ns_sys
+is "--no-sudo: the packages step names a missing jq for the user, and runs no sudo" "1|0" \
+   "$(grep -cxF '  --no-sudo: install by hand: jq' "$NSD/out")|$(grep -c '^sudo ' "$NSD/calls")"
+
+ns_run "$NSB" "$DIR/bootstrap.sh" "$NSB/plain" --help
+is "--help names --no-sudo" "1" "$(grep -c -- '--no-sudo' "$NSB/out")"
+ns_run "$NSB" "$DIR/bootstrap.sh" "$NSB/plain" --check --no-sudo; ns_rc=$?
+is "--check --no-sudo: --check runs alone (exit 2)" "2|1" \
+   "$ns_rc|$(grep -cxF -- '--check runs alone' "$NSB/out")"
+
+# Without the flag, a sudo that fails the build's packages gets one note naming --no-sudo.
+NSE=$(mktmpd); ns_box "$NSE" real
+printf '#!/bin/sh\necho "sudo $*" >> %s\nexit 1\n' "$(tq "$NSE/calls")" > "$NSE/bin/sudo"
+ns_run "$NSE" "$DIR/bootstrap.sh" "$NSE/plain"
+is "a failed sudo for the build's packages: FAIL, and one note naming --no-sudo" "1|1" \
+   "$(grep -cxF '  FAIL:  install the tmux build deps' "$NSE/out")|$(
+   grep -c -- '--no-sudo' "$NSE/out")"
+
+# configure splits its flags at a blank, so a temp dir holding one would lose the libraries:
+# refused before anything is fetched, naming TMPDIR. The pins match, so only that refuses.
+NSF=$(mktmpd); ns_box "$NSF" both; mkdir -p "$NSF/t s"
+ns_run "$NSF" "$NSF/p/bootstrap.sh" "$NSF/t s" --no-sudo
+is "--no-sudo: a TMPDIR holding a blank is refused, named, and nothing is fetched" "1|0|0" \
+   "$(grep -c '^  FAIL:  --no-sudo .*TMPDIR' "$NSF/out")|$(ns_confs "$NSF")|$(
+   grep -c "libevent-$ns_le\.tar\.gz" "$NSF/calls")"
+unset -f ns_box ns_run ns_want ns_conf ns_confs
+unset ns_le ns_nc ns_tv ns_rc NSA NSB NSC NSD NSE NSF
+fi
+
 echo "== install.sh and tui-fetch write, move or remove no file mktemp did not make (#1322) =="
 # install.sh writes settings.json through a temp file beside it, renamed over it, which its EXIT
 # trap removes when the write fails. tui-fetch's source build logs to a temp file its EXIT trap
