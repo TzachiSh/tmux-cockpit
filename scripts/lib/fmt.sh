@@ -121,6 +121,17 @@ COCKPIT_POPUP_MARK='COCKPIT_POPUP=1 '
 # shellcheck disable=SC2034  # read by the scripts that source this
 COCKPIT_NOT_POPUP='#{?pane_modal_flag,#{?#{m:"COCKPIT_POPUP=1 *,#{pane_start_command}},0,1},1}'
 
+# A popup's command that runs a shell script (#1441, #1456). tmux runs a one-string popup
+# command with the session's default-shell -c, and fish refuses a whole line that holds sh syntax
+# it lacks ($?, ${...}, a bare a=b), and has no read -r. So that shell gets the mark first, then
+# shq'd words only, which fish reads as sh does, and /bin/sh runs <script> with the args as $1 on.
+popup_sh() {                  # <sh script> <arg>... -> the command
+  local c a
+  c="${COCKPIT_POPUP_MARK}/bin/sh -c $(shq "$1") sh"; shift
+  for a in "$@"; do c+=" $(shq "$a")"; done
+  printf '%s' "$c"
+}
+
 # A file name as a title: no control character and no bidi mark, which would
 # reorder what the eye reads (U+061C, U+200E-F, U+202A-E, U+2066-9, as UTF-8). tmux
 # refuses a window name holding a control character (#366), and a popup border

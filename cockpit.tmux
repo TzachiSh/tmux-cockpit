@@ -301,8 +301,6 @@ unset -f takes
 
 Q_BRANCH=$(sq "$DIR/scripts/tmux-branch")
 Q_OPEN=$(sq "$DIR/scripts/tmux-open-path")
-# Every popup's command starts with the mark the pane scans skip (lib/fmt.sh, #1248).
-PM=$COCKPIT_POPUP_MARK
 # The pane a popup came from. display-popup expands formats only in -T and -d
 # (#38), so the key stores #{pane_id} on the session first and the popup reads it
 # back by the session id $TMUX ends in. Asking for the session's active pane
@@ -311,6 +309,8 @@ PM=$COCKPIT_POPUP_MARK
 # gets an empty id rather than the pane an earlier key stored.
 SRC_SET=(set-option -F @cockpit_src_pane '#{pane_id}' '\;')
 SRC_PANE='"$(tmux show-option -qv -t "\$${TMUX##*,}" @cockpit_src_pane \; set-option -qu -t "\$${TMUX##*,}" @cockpit_src_pane)"'
+# Each popup's command is lib/fmt.sh's popup_sh (#1248, #1456). This script runs $1 on that pane.
+SRC_RUN='exec "$1" -p '"$SRC_PANE"
 
 if [ "$(tmux show-option -gqv mouse)" != on ]; then
     tmux display-message "tmux-cockpit: the click gestures need 'set -g mouse on'; prefix+b still works"
@@ -328,7 +328,7 @@ tmux bind-key -T cockpit o run-shell -b "$(fesc "$Q_OPEN") --folder #{pane_id}"
 # display-popup expands no format in its command, so list-panes gets the #{...}.
 # The columns are tmux's own padding (p16), so a title with spaces stays whole.
 tmux bind-key -T cockpit t display-popup -E -w 78% -h 40% -T ' agents ' \
-    "${PM}tmux list-panes -a -F '#{p16:#{session_name}:#{window_index}} #{p12:#{?#{m/i:*|#{b:pane_current_command}|*,#{@cockpit_agents_glob}},#{@panestate},-}} #{pane_title}'; read -r _"
+    "$(popup_sh 'tmux list-panes -a -F "$1"; read -r _' '#{p16:#{session_name}:#{window_index}} #{p12:#{?#{m/i:*|#{b:pane_current_command}|*,#{@cockpit_agents_glob}},#{@panestate},-}} #{pane_title}')"
 # tmux keeps its drag flag when a popup eats the release and turns the next press
 # into MouseDragEnd1<where>, losing a tab click (#21). Stock leaves this unbound.
 tmux bind-key -n MouseDragEnd1Status switch-client -t =
@@ -347,7 +347,7 @@ tmux bind-key -n MouseUp1Border select-pane -t=
 tmux bind-key b "${SRC_SET[@]}" set-option -pF @cockpit_branch_client '#{client_name}' '\;' \
     run-shell "$(fesc "$Q_BRANCH") --title '#{pane_id}'" '\;' \
     display-popup -E -w "$PW" -h "$PH" -T ' switch branch · #{@cockpit_branch_title} ' \
-    "$PM$Q_BRANCH -p $SRC_PANE"
+    "$(popup_sh "$SRC_RUN" "$DIR/scripts/tmux-branch")"
 
 # Replaces stock choose-tree on s; tmux 3.8 took g for its floating-pane menu.
 # tm --popup opens the popup itself: its height follows the session count,
@@ -364,11 +364,11 @@ Q_TM=$(sq "$DIR/scripts/tm")
 # The info screen is cockpit-tui's own (#252); esc or q closes it, so no `read`.
 # The binary reads $COCKPIT_GLYPHS, not @cockpit_glyphs (#293): read at open, so
 # setting the option needs no reload.
+info_sh='g=$(tmux show-option -gqv @cockpit_glyphs); exec env ${g:+COCKPIT_GLYPHS="$g"} "$1" info '
 [ -z "$ik" ] || ckey info "$ik" "${SRC_SET[@]}" display-popup -E -w "$PW" -h "$PH" -T ' info ' \
-    "${PM}g=\$(tmux show-option -gqv @cockpit_glyphs); exec env \${g:+COCKPIT_GLYPHS=\"\$g\"} $(sq "$COCKPIT_TUI_BIN") info $SRC_PANE" \
+    "$(popup_sh "$info_sh$SRC_PANE" "$COCKPIT_TUI_BIN")" \
         || ik=""
 
-Q_PANEL=$(sq "$DIR/scripts/cockpit-panel")
 # Read at load like the key: a strict word, since the binary refuses any other.
 pmode=$(tmux show-option -gqv @cockpit_panel_mode)
 case "$pmode" in
@@ -379,7 +379,7 @@ case "$pmode" in
 esac
 if [ -n "$pk" ]; then
     ckey panel "$pk" "${SRC_SET[@]}" display-popup -E -e "COCKPIT_PANEL_MODE=${pmode:-auto}" -w 94% -h 90% \
-        -T ' panel ' "$PM$Q_PANEL -p $SRC_PANE" || pk=""
+        -T ' panel ' "$(popup_sh "$SRC_RUN" "$DIR/scripts/cockpit-panel")" || pk=""
 fi
 
 # The board is wider than $PW: a 70% popup on 120 columns fits one tile column.
@@ -398,7 +398,7 @@ $(sq "$(fesc "$Q_BOARD") -p '#{pane_id}' -c '#{client_name}'")" || bk=""
     else
         # No #{session_name}: it named the client's session, not the agent's.
         ckey board "$bk" "${pin[@]}" display-popup -E -e "COCKPIT_PANEL_MODE=${pmode:-auto}" \
-            -w 90% -h "$PH" -T ' board ' "$PM$Q_BOARD -p $SRC_PANE" \
+            -w 90% -h "$PH" -T ' board ' "$(popup_sh "$SRC_RUN" "$DIR/scripts/cockpit-board")" \
             || bk=""
     fi
 fi
@@ -413,7 +413,7 @@ if [ -n "$rk" ]; then
 $(sq "$(fesc "$Q_BOARD") -p '#{pane_id}' -c '#{client_name}'")" || rk=""
     else
         ckey review "$rk" "${pin[@]}" display-popup -E -e "COCKPIT_PANEL_MODE=${pmode:-auto}" \
-            -w 90% -h "$PH" -T ' board ' "$PM$Q_BOARD -p $SRC_PANE" \
+            -w 90% -h "$PH" -T ' board ' "$(popup_sh "$SRC_RUN" "$DIR/scripts/cockpit-board")" \
             || rk=""
     fi
 fi

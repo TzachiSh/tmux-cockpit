@@ -64,15 +64,13 @@ request() {                   # <pane>
     # the rc read below is this popup's.
     rm -f -- "$sess/rc"
     # -T is a tmux format, so a # in the path would expand: fesc. The command is
-    # not a format (measured on 3.8), so it is only shell-quoted. tmux runs it with the
-    # session's default-shell, and fish refuses a whole line that holds $? (#1441). So that
-    # shell gets plain and single-quoted words only, and /bin/sh runs the fixed script, as
-    # run-shell does.
+    # not a format (measured on 3.8). popup_sh builds it, so a fish default-shell runs
+    # the loop and gets its status too (#1441).
     t=${root/#"$HOME/"/\~/}
-    cmd="/bin/sh -c $(shq 'REVIEW_PANE_ID=$1 "$2" --loop "$3" "$4"; echo $? > "$5"') sh"
-    cmd="$cmd $(shq "$pane") $(shq "$SELF") $(shq "$root") $(shq "$store") $(shq "$sess/rc")"
+    cmd=$(popup_sh 'REVIEW_PANE_ID=$1 "$2" --loop "$3" "$4"; echo $? > "$5"' \
+        "$pane" "$SELF" "$root" "$store" "$sess/rc")
     tmux display-popup -E -t "$pane" -w "$pw" -h "$ph" \
-        -T "$(fesc " review · requested · $t ")" "$COCKPIT_POPUP_MARK$cmd" 2>/dev/null
+        -T "$(fesc " review · requested · $t ")" "$cmd" 2>/dev/null
     rc=$(cat -- "$sess/rc" 2>/dev/null); rm -f -- "$sess/rc"
     case "$rc" in
         126) printf 'tmux-review: revdiff failed\n' >&2

@@ -17723,17 +17723,17 @@ pn_gone "$PNB"
 # The binding: f by default, and the wrapper with the pressed pane.
 reload_on "$PN"
 case "$("$TMUX_REAL" -L "$PN" list-keys -T prefix f 2>/dev/null)" in
-    *display-popup*cockpit-panel*' -p '*) ok "@cockpit_panel_key unset binds the panel to f" ;;
-    *) bad "@cockpit_panel_key unset binds the panel to f" "display-popup ... cockpit-panel -p" \
+    *display-popup*' -p '*cockpit-panel*) ok "@cockpit_panel_key unset binds the panel to f" ;;
+    *) bad "@cockpit_panel_key unset binds the panel to f" "display-popup ... -p ... cockpit-panel" \
          "$("$TMUX_REAL" -L "$PN" list-keys -T prefix f 2>/dev/null)" ;;
 esac
 "$TMUX_REAL" -L "$PN" set -g @cockpit_panel_key F9 >/dev/null 2>&1
 reload_on "$PN"
 case "$("$TMUX_REAL" -L "$PN" list-keys -T prefix F9 2>/dev/null)" in
-    *display-popup*'-h "90%" -w "94%"'*cockpit-panel*' -p '*) \
+    *display-popup*'-h "90%" -w "94%"'*' -p '*cockpit-panel*) \
             ok "@cockpit_panel_key F9 opens the panel in a popup on the pressed pane" ;;
     *) bad "@cockpit_panel_key F9 opens the panel in a popup on the pressed pane" \
-            "display-popup ... cockpit-panel -p" \
+            "display-popup ... -p ... cockpit-panel" \
          "$("$TMUX_REAL" -L "$PN" list-keys -T prefix F9 2>/dev/null)" ;;
 esac
 loaded_on "$PN" "moving the key takes f back" && is "moving the key takes f back" "0" \
@@ -18935,7 +18935,8 @@ fi
 
 echo "== the menu's What is each agent doing? lists every pane with its state (#125, #222) =="
 # The row replays the cockpit table's t, a popup over one tmux list-panes. Its
-# -F format is resolved here on a server, the same pass the popup's shell runs.
+# -F format, the popup command's last word (#1456), is resolved here on a server,
+# the same pass the popup's shell runs.
 if need_tmux "the agents popup"; then :; else
 AGS="cockpit-agents2-$$"; SOCKS="$SOCKS $AGS"
 "$TMUX_REAL" -L "$AGS" -f /dev/null new-session -d -s ag -x 200 -y 50 \
@@ -18949,7 +18950,7 @@ case "$("$TMUX_REAL" -L "$AGS" list-keys -T prefix | awk '$4=="a"')" in
             "What is each agent doing? ... send-keys -K t" "absent" ;;
 esac
 AGF=$("$TMUX_REAL" -L "$AGS" list-keys -T cockpit | awk '$4=="t"' |
-    sed -n "s/.*list-panes -a -F '\([^']*\)'.*/\1/p")
+    sed -n "s/.* sh '\([^']*\)'\"\$/\1/p")
 "$TMUX_REAL" -L "$AGS" new-window -d -t ag: 'exec -a claude sleep 300' >/dev/null 2>&1
 AGP=$("$TMUX_REAL" -L "$AGS" new-window -d -t ag: -P -F '#{pane_id}' 'sleep 300' 2>/dev/null)
 "$TMUX_REAL" -L "$AGS" select-pane -t ag:0 -T 'alpha  two  spaces' >/dev/null 2>&1
@@ -21133,10 +21134,10 @@ PK="cockpit-pk2-$$"; SOCKS="$SOCKS $PK"
 "$TMUX_REAL" -L "$PK" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
 pk_i() { "$TMUX_REAL" -L "$PK" list-keys -T prefix 2>/dev/null | awk '$4=="i"'; }
 case "$(pk_i)" in
-    *display-popup*"cockpit-tui'"*" info "*) \
+    *display-popup*'\"$1\" info '*"cockpit-tui'"*) \
             ok "prefix i is bound to a popup running cockpit-tui info" ;;
     *) bad "prefix i is bound to a popup running cockpit-tui info" \
-            "display-popup ... cockpit-tui info" "$(pk_i)" ;;
+            "display-popup ... \"\$1\" info ... cockpit-tui" "$(pk_i)" ;;
 esac
 loaded_on "$PK" "prefix i no longer runs tmux-review --info" &&
     case "$(pk_i)" in
@@ -27718,9 +27719,11 @@ ac_wd() {                     # ac_wd <pane> -> cockpit-tui workdir's exit code
 is "the board: cursor, OPENCODE, CLAUDE are agents, snooze is not" "0 0 0 1" \
     "$(ac_wd "$ACU") $(ac_wd "$ACO") $(ac_wd "$ACL") $(ac_wd "$ACS")"
 
-# prefix t's popup: its list-panes command, as the binding holds it, run on this server. It
-# starts with the popup mark, an assignment sh takes as it is (#1248).
-ac_t=$(ac list-keys -T cockpit t | sed -n 's/.* "\(COCKPIT_POPUP=1 tmux list-panes .*\)"$/\1/p')
+# prefix t's popup: its command, as the binding holds it, run on this server. It starts with
+# the popup mark, an assignment sh takes as it is (#1248), and /bin/sh runs list-panes (#1456).
+# list-keys prints each " in it as \", which goes back to " here.
+ac_t=$(ac list-keys -T cockpit t | sed -n 's/.* "\(COCKPIT_POPUP=1 \/bin\/sh -c .*\)"$/\1/p' |
+    sed 's/\\"/"/g')
 for p in "$ACU" "$ACO" "$ACL" "$ACS"; do ac set -p -t "$p" @panestate needs-input; done
 is "prefix t: the state of cursor, OPENCODE, CLAUDE, and - for snooze" \
     "needs-input needs-input needs-input - " \
