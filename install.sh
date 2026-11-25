@@ -62,6 +62,10 @@ esac; done
 . "$DIR/scripts/lib/claudedir.sh" || exit 1
 # shellcheck source=scripts/lib/tmpdir.sh
 . "$DIR/scripts/lib/tmpdir.sh" || exit 1
+# shellcheck source=scripts/lib/hook.sh
+. "$DIR/scripts/lib/hook.sh" || exit 1
+# shellcheck source=scripts/lib/subslog.sh
+. "$DIR/scripts/lib/subslog.sh" || exit 1
 
 # A builtin, not awk: the fail rows must still be right on an empty PATH.
 fld() {                       # fld <field> <version line>
@@ -348,6 +352,41 @@ set*\ @catppuccin_window_current_text\ *)
                    row warn mod "$mk is ${mst%:*}" "$mfix then install.sh --hooks" ;;
             esac
         fi
+    fi
+
+    # The Stop reconcile (#407). A Stop whose background_tasks sub-reconcile cannot take leaves
+    # a bail row in the session's log, and the last set stands: a session whose newest bail is
+    # newer than its .live set, or has none, has stopped agents that can read end-unknown. Read
+    # in the hooks' dir: Claude Code's env scrub takes XDG_STATE_HOME from them, and the check
+    # sees only the scrub this shell sets.
+    rsd='' rn=0 rk=0 rnew=0 rwhy=''
+    if scrub_on; then XDG_STATE_HOME='' subs_dir; else subs_dir; fi && rsd=$REPLY
+    if [ -n "$rsd" ]; then
+        for rf in "$rsd"/*.log "$rsd"/*.live; do
+            [ -f "$rf" ] || continue
+            # A session is its log, or its .live when it has no log, and with no log no bail.
+            case $rf in *.live) [ -e "${rf%.live}.log" ] || rn=$((rn + 1)); continue ;; esac
+            rn=$((rn + 1)) rb=0 rbw=''
+            # The log is append-only: the last bail row is the newest.
+            while IFS=$'\t' read -r rtm rev rwd; do
+                case $rev:$rtm in bail:|bail:*[!0-9]*) ;; bail:*) rb=$rtm rbw=$rwd ;; esac
+            done < "$rf"
+            # A .live that is no "<epoch>\t..." line is no set, as the board reads it.
+            rlv=0; [ -f "${rf%.log}.live" ] && IFS=$'\t' read -r rlv _ < "${rf%.log}.live"
+            case $rlv in ''|*[!0-9]*) rlv=0 ;; esac
+            [ "$rb" -gt "$rlv" ] || continue
+            rk=$((rk + 1))
+            [ "$rb" -lt "$rnew" ] || rnew=$rb rwhy=$rbw
+        done
+    fi
+    if [ "$rn" -eq 1 ]; then rs=session; else rs=sessions; fi
+    rfix="read ${rsd:-nothing, HOME is unset}; the check sees CLAUDE_CODE_SUBPROCESS_ENV_SCRUB,"
+    rfix="$rfix which moves the hooks' dir to ~/.local/state, only when this shell sets it"
+    rwarn="their newest Stop's background_tasks did not parse, so stopped agents can read"
+    rwarn="$rwarn end-unknown; report it with claude --version: tmux-cockpit issue"
+    if [ "$rn" -eq 0 ]; then row skip reconcile 'no session logs' "$rfix"
+    elif [ "$rk" -eq 0 ]; then row ok reconcile "$rn $rs read"
+    else row warn reconcile "$rk of $rn $rs: $rwhy" "$rwarn"
     fi
 
     if [ -z "${TMUX:-}" ]; then row skip truecolor 'run inside tmux to check'
