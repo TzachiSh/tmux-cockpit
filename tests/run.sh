@@ -535,6 +535,27 @@ tq() {
     done
     printf '%s' "$out'"
 }
+# A default-shell that reads a -c line only where fish and sh read it alike (#1441, #1456). tmux
+# runs a popup's one-string command with the session's default-shell, and fish refuses a whole
+# line that holds sh syntax it lacks: it runs none of it and exits 127 (fish 4.9.3
+# src/bin/fish.rs:192-208). $?, ${...} and a bare a=b are such syntax (src/parse_util.rs:1373-1390,
+# src/ast.rs:2429-2447), and its read takes no -r (src/builtins/read.rs:67). fish is not on the CI
+# images, so it is modelled here. Outside '...' and the \' and \\ that shq writes, the line may
+# hold letters, digits, blanks and _=/.,:%@+- only; any other line is refused as fish refuses
+# one, and sh runs the rest. Without -c it hands its arguments to sh.
+words_shell() {               # <dir> -> <dir>/zzstub-words
+    cat > "$1/zzstub-words" <<'WSEOF'
+#!/bin/sh
+[ "${1-}" = -c ] || exec sh "$@"
+rest=$(printf '%s' "$2" | tr '\n' ' ' | sed -E "s/'[^']*'|\\\\(\\\\|')//g")
+case $rest in
+    *[!abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_=/.,:%@+\ -]*)
+        printf 'zzstub-words: refused, not plain words: %s\n' "$2" >&2; exit 127 ;;
+esac
+exec sh -c "$2"
+WSEOF
+    chmod +x "$1/zzstub-words"
+}
 # cut_server <dir> <-L name> <new-session args...>: a private server on that socket, started
 # with tests/cutclock.c (#736) built into <dir> and preloaded, so that tmux's 100 ms format
 # time limit can be made to cut at a chosen call. The clock is inert until armed: `<dir>/cutarm
@@ -1323,6 +1344,79 @@ loaded_on "$SP" "$sprow" &&
     is "$sprow" "" "$("$TMUX_REAL" -L "$SP" show-option -qv -t t: @cockpit_src_pane)"
 "$TMUX_REAL" -L "$SPO" kill-server >/dev/null 2>&1
 "$TMUX_REAL" -L "$SP" kill-server >/dev/null 2>&1
+fi
+
+echo "== cockpit.tmux's popups open under a default-shell that reads plain words only (#1456) =="
+# tmux runs a popup's one-string command with the session's default-shell -c (tmux 3.8
+# popup.c:649-651, job.c:96-106 and :182-185), and fish refuses a whole line that holds sh syntax
+# it lacks. Each popup held some: the stored pane's ${TMUX##*,} (b, i, f, w and r), the info
+# popup's g=$(...) and ${g:+...}, and the agents popup's read -r. lib/fmt.sh's popup_sh gives that
+# shell the mark and shq'd words only, and /bin/sh runs the script: each word arrives whole.
+FWD=$(mktmpd); words_shell "$FWD"
+is "popup_sh: a ', a \\, a blank and a #{} reach the script whole under the stand-in (#1456)" \
+   "[a'b][c\\d][e f][#{x}]" \
+   "$("$FWD/zzstub-words" -c "$(. "$DIR/scripts/lib/fmt.sh" &&
+       popup_sh 'printf "[%s]" "$@"' "a'b" 'c\d' 'e f' '#{x}' 2>/dev/null)" 2>&1)"
+# A server whose default-shell is the stand-in, a client on it, and a stub cockpit-tui that logs
+# each call (the board's -p is its caller's, as in #494's block). A key's popup must reach it.
+if need_tmux "popups under a plain-words default-shell"; then :; else
+FW="cockpit-fw-$$"; FWO="cockpit-fwo-$$"; SOCKS="$SOCKS $FW $FWO"
+cat > "$FWD/cockpit-tui" <<STUB
+#!/bin/sh
+[ "\$1" = workdir ] && exit 1
+[ "\$1" = --version ] && { echo "cockpit-tui 9.9.9"; exit 0; }
+[ "\$1" = board ] && set -- board "\$(ps -o args= -p \$PPID | grep -o -- '-p %[0-9]*')"
+printf '%s\\n' "\$*" >> "$FWD/log"
+[ "\$1" != branch ]
+STUB
+chmod +x "$FWD/cockpit-tui"
+mkdir "$FWD/w" && git -C "$FWD/w" init -q >/dev/null 2>&1
+COCKPIT_TUI_BIN="$FWD/cockpit-tui" XDG_STATE_HOME="$FWD/state" \
+    "$TMUX_REAL" -L "$FW" -f /dev/null new-session -d -s t -x 120 -y 30 -c "$FWD/w" \
+        'exec sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$FW" set -g default-shell "$FWD/zzstub-words" >/dev/null 2>&1
+"$TMUX_REAL" -L "$FW" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+fwp=$("$TMUX_REAL" -L "$FW" display-message -p -t t:0 '#{pane_id}' 2>/dev/null)
+"$TMUX_REAL" -L "$FW" select-pane -t "$fwp" -T zzfw1456 >/dev/null 2>&1
+"$TMUX_REAL" -L "$FWO" -f /dev/null new-session -d -s o -x 120 -y 32 -c "$FWD" \
+    "TERM=xterm-256color exec $TMUX_REAL -L $FW attach -t t" >/dev/null 2>&1
+until_out '?*' "$TMUX_REAL" -L "$FW" list-clients -F '#{client_name}'
+fw_closed() {                 # prints closed once no popup of this block is on the client
+    "$TMUX_REAL" -L "$FWO" capture-pane -p -t o 2>/dev/null |
+        grep -q -e ' info ' -e ' panel ' -e ' board ' -e ' switch branch' -e ' agents ' ||
+        echo closed
+}
+fwkey() {                     # <key> <stub log line> <row>: prefix <key>'s popup reaches the stub
+    : > "$FWD/log"
+    "$TMUX_REAL" -L "$FWO" send-keys -t o C-b "$1" >/dev/null 2>&1
+    if until_file "$FWD/log" "*$2*"; then ok "$3"
+    else bad "$3" "$2" "$(cat "$FWD/log" 2>/dev/null)"; fi
+    until_out closed fw_closed
+}
+fwkey i "info $fwp" "under it, prefix i's info popup opens on the pane (#1456)"
+fwkey f "panel $fwp" "under it, prefix f's panel popup opens on the pane (#1456)"
+fwkey w "board -p $fwp" "under it, prefix w's board popup opens on the pane (#1456)"
+fwkey r "board -p $fwp" "under it, prefix r's board popup opens on the pane (#1456)"
+fwkey b "branch -C " "under it, prefix b's branch popup reaches the picker (#1456)"
+# The agents popup is the menu's row (prefix a, then t). It lists each pane and waits for a key:
+# the list is still there a second after it drew, and Enter closes it.
+fw_list() {                   # prints shown while the agents popup lists this block's pane
+    "$TMUX_REAL" -L "$FWO" capture-pane -p -t o 2>/dev/null |
+        grep -qE 't:0 +- +zzfw1456' && echo shown
+}
+fwa=no fwb=no fwc=no
+"$TMUX_REAL" -L "$FWO" send-keys -t o C-b a >/dev/null 2>&1
+until_cap "$FWO" o '*What is each agent doing*' &&
+    "$TMUX_REAL" -L "$FWO" send-keys -t o t >/dev/null 2>&1
+until_out shown fw_list && fwa=shown
+sleep 1; [ "$(fw_list)" = shown ] && fwb=stays
+"$TMUX_REAL" -L "$FWO" send-keys -t o Enter >/dev/null 2>&1
+until_out closed fw_closed && fwc=closed
+is "under it, the agents popup lists the panes and waits for a key (#1456)" \
+   "shown stays closed" "$fwa $fwb $fwc"
+unset -f fw_closed fwkey fw_list
+"$TMUX_REAL" -L "$FWO" kill-server >/dev/null 2>&1
+"$TMUX_REAL" -L "$FW" kill-server >/dev/null 2>&1
 fi
 
 echo "== the menu is not a way for a directory name to run tmux commands =="
@@ -11527,28 +11621,20 @@ is "and prints revdiff's own stderr after the popup" \
     "tmux-review: revdiff failed"$'\n'"boom: bad flag" "$rq_err"
 is "and leaves no revdiff.err behind" "no" "$([ -e "$RQSESS/revdiff.err" ] && echo yes || echo no)"
 # #1441: tmux runs the popup's command with the session's default-shell, and fish refuses a
-# whole -c string that holds $? outside quotes: it runs none of it and exits 127 (fish 3.7.1
-# src/fish.cpp:264-284, 4.9.3 src/bin/fish.rs:192-208). The stand-in does the same, and sh
-# runs any other string. fish is not on the CI images, so it is modelled here, not run.
+# whole -c string that holds $? outside quotes (fish 3.7.1 src/fish.cpp:264-284). The popup
+# runs here under words_shell's stand-in, which refuses that and any other sh syntax.
 RQNS=$(mktmpd)
-cat > "$RQNS/zzstub-nostatus" <<'NSEOF'
-#!/bin/sh
-rest=$(printf '%s' "$2" | sed -E "s/'[^']*'|\\\\.//g")
-case $rest in
-    *'$?'*) echo 'fish: $? is not the exit status. In fish, please use $status.' >&2; exit 127 ;;
-esac
-exec sh -c "$2"
-NSEOF
+words_shell "$RQNS"
 cat > "$RQNS/tmux" <<SHIMEOF
 #!/bin/sh
 case "\$1" in
-    display-popup) for a; do :; done; printf d | "$RQNS/zzstub-nostatus" -c "\$a" >/dev/null 2>&1
+    display-popup) for a; do :; done; printf d | "$RQNS/zzstub-words" -c "\$a" >/dev/null 2>&1
                    exit 0 ;;
     display-message) for a; do :; done; case "\$a" in *session_attached*) echo 1; exit 0 ;; esac ;;
 esac
 exec "$TMUX_REAL" -L "$RQ" "\$@"
 SHIMEOF
-chmod +x "$RQNS/zzstub-nostatus" "$RQNS/tmux"
+chmod +x "$RQNS/tmux"
 rm -rf "$RQW"; mkdir -p "$RQW"; rm -f "$RQSESS/comments.md"
 printf '## f:2 (+)\nREQ-NS-MARKER\n' > "$RQW/out.1"; echo 10 > "$RQW/rc.1"
 rq_out=$(PATH="$RQNS:$RQB:$PATH" FAKE_RD_DIR="$RQW" XDG_STATE_HOME=$RQSTATE \
