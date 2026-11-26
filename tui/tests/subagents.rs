@@ -1152,6 +1152,44 @@ fn a_set_only_the_log_holds_ends_nothing() {
 }
 
 #[test]
+fn a_set_as_large_as_the_hook_writes_is_read() {
+    // #1472: the hook's 64 KiB array bound bounds the set, a part of the array. 21 teammates
+    // of 1000 CJK characters each make a set of 63 KB, which the hook writes whole.
+    let s = session("live-large");
+    let cjk = "中".repeat(1000);
+    meta(&s.dir, "a", PLAIN);
+    meta(
+        &s.dir,
+        "b",
+        &format!(r#"{{"agentType":"x","description":"{cjk}","name":"b","teamName":"crew"}}"#),
+    );
+    for id in ["a", "b"] {
+        rows(&s.dir, id, &[FIRST, &tick(5)]);
+    }
+    s.log(&[ev(0, "start", "a"), ev(0, "start", "b")]);
+    s.live(&live(30, &[], &vec![cjk.as_str(); 21]));
+    let v = s.read(T0 + 60);
+    let st: Vec<(&str, SubState)> = v.iter().map(|x| (x.id.as_str(), x.state)).collect();
+    assert_eq!(
+        st,
+        [("a", SubState::Stopped), ("b", SubState::Running)],
+        "the 63 KB set is read: a, not in it, ended; b, listed by its description, runs"
+    );
+}
+
+#[test]
+fn a_live_file_past_the_hooks_bound_is_no_set() {
+    // the hook writes no `.live` past 64 KiB, so one is no set and ends nothing (#1472)
+    let s = session("live-past");
+    meta(&s.dir, "a", PLAIN);
+    rows(&s.dir, "a", &[FIRST, &tick(5)]);
+    s.log(&[ev(0, "start", "a")]);
+    let pad = "x".repeat(70 * 1024);
+    s.live(&live(30, &[], &[pad.as_str()]));
+    assert_eq!(s.one(T0 + 60).state, SubState::Running);
+}
+
+#[test]
 fn two_teammates_with_one_description_are_not_mapped_by_it() {
     let s = session("kill-tm-twins");
     meta(&s.dir, "a", NAMED);

@@ -27773,7 +27773,7 @@ ts sub-reconcile "$(tsfin "${TSMANY%,}")" >/dev/null
 tsbail() {                    # "set" or "none" for the .live, then the log's rows (#407)
     printf '%s %s' "$([ -e "$TSLIVE" ] && echo set || echo none)" "$(tsrows)"
 }
-is "no array, a bad id, a cut payload, a set past the bound: no set, a bail row each (#407)" \
+is "no array, a bad id, a cut payload, past 256 subagents: no set, a bail row each (#407)" \
     "none bail array|bail id|bail array|bail bound" "$(tsbail)"
 rm -rf "$TSD/state"
 ts sub-reconcile \
@@ -27828,6 +27828,22 @@ ts sub-taskstop "$(tsstop tm1 t0sm6hcnt in_process_teammate "$(tsrep x 1000)")" 
 is "a teammate's TaskStop keeps a description of 1000 units in its kill-tm row (#1466)" \
     "kill-tm tm1 whole" "$(cut -f2,3 "$TSLOG" | tr '\t' ' ') $(
         [ "$(cut -f4 "$TSLOG")" = "$(tsrep x 1000)" ] && echo whole || echo changed)"
+# #1472: the set is a part of the array, so the array's 64 KB bound bounds it too, and no
+# bound of its own refuses a set the board reads.
+TSCJK=$(tsrep $'\xe4\xb8\xad' 1000)
+tsmates() {                   # <n>: one Stop, n teammates of TSCJK: the set whole or not, the log
+    local i a='' e='' d=none
+    for ((i = 1; i <= $1; i++)); do
+        a+=",{\"id\":\"t$i\",\"type\":\"teammate\",\"description\":\"$TSCJK\"}" e+=$'\t'$TSCJK
+    done
+    rm -rf "$TSD/state"; ts sub-reconcile "$(tsfin "${a#,}")" >/dev/null
+    [ -f "$TSLIVE" ] && d=changed && [ "$(cut -f2- "$TSLIVE")" = "$e" ] && d=whole
+    printf '%s [%s]' "$d" "$(tsrows)"
+}
+is "two teammates of 1000 CJK characters each, a 6002-byte set: written whole, no bail (#1472)" \
+    "whole []" "$(tsmates 2)"
+is "21 of them, a 63 KB set in a 64 KB array, the most the hook takes: written whole (#1472)" \
+    "whole []" "$(tsmates 21)"
 rm -rf "$TSD/state"
 ts sub-reconcile \
     "$(tsfin '{"id":"a1","type":"subagent"} x {"id":"a2","type":"subagent"}')" >/dev/null
