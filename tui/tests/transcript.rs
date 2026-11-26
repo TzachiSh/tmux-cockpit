@@ -292,6 +292,28 @@ fn the_ask_row_is_the_newest_tool_uses_and_labels_drop_bidi() {
     assert!(doing(&open.0).unwrap().starts_with("doing\tAskUserQuestion: Merge\t"));
 }
 
+/// #1504: the open ask is read whole, as `parse` reads its input. A tool_result for
+/// it, a prompt typed after it or a newer tool_use leaves none.
+#[test]
+fn a_closed_ask_gives_none_and_the_open_one_is_read() {
+    use cockpit_tui::{ask::model::parse, data::transcript::open_ask};
+    let row: serde_json::Value = serde_json::from_str(ask("q1", "Merge?", "Merge").trim_end()).unwrap();
+    let want = parse("q1", &row["message"]["content"][0]["input"]);
+    assert!(want.is_some(), "the helper's ask parses");
+    let open = Tmp::new("oaopen", &ask("q1", "Merge?", "Merge"));
+    assert_eq!(open_ask(&open.0), want, "open");
+    let typed = serde_json::json!({"type": "user", "version": "2.1.316", "message": {"content": "go on"}});
+    let bash = r#"{"type":"assistant","version":"2.1.316","message":{"content":[{"type":"tool_use","id":"b1","name":"Bash","input":{"command":"ls"}}]}}"#;
+    for (tag, after) in [
+        ("answered", answer("q1")),
+        ("typed", format!("{typed}\n")),
+        ("bash", format!("{bash}\n")),
+    ] {
+        let t = Tmp::new(&format!("oa{tag}"), &(ask("q1", "Merge?", "Merge") + &after));
+        assert_eq!(open_ask(&t.0), None, "{tag}");
+    }
+}
+
 /// #477 review: the tail's USER lines are the same typed prompts: an image prompt
 /// is one, the interrupt string and a harness row are not, a paste shows its words.
 #[test]
