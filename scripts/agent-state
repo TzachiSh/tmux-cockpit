@@ -211,25 +211,37 @@ safe_word() {
 }
 # whole_word <key> -> REPLY: the payload's own "<key>" string, only when it is whole and comes
 # before "tool_input": one cut by a cap or an escape names nothing, and so does one inside the
-# tool's input (a main-thread call has no agent_id of its own, and its input may hold one,
-# #1403). The key is matched with its quotes, so text inside a string, where the quotes arrive
-# escaped, cannot match. Then safe_word, 64 bytes at most.
+# tool's input, which may hold the same key (#1403). The key is matched with its quotes, so text
+# inside a string, where the quotes arrive escaped, cannot match. Then safe_word, 64 bytes at
+# most.
 whole_word() {
     local LC_ALL=C re="\"$1\": ?\"([^\"\\\\]*)\"" s=${payload%%\"tool_input\"*}
     REPLY=""; [[ $s =~ $re ]] && safe_word "${BASH_REMATCH[1]}" 64
 }
+# agent_key -> REPLY: the payload's own agent_id, read before "tool_input" (a main-thread call
+# has none of its own, and its input may hold one, #1403) by subs_id's rule in lib/subslog.sh:
+# the whole id or none, never a cut one, which two agents of one long label share (#1487).
+# Empty on the main thread. Status 1 when the payload names an agent whose id subs_id refuses:
+# that id names no ask.
+agent_key() {
+    local payload=${payload%%\"tool_input\"*}
+    subs_id agent_id
+    [ -n "$REPLY" ] || [[ $payload != *'"agent_id":'* ]]
+}
 # call_key -> ask_when, the test a tool event passes to end a waiting ask that has a key
 # (#1403). PostToolUse and PostToolUseFailure need the ask's agent and tool. PreToolUse needs
 # its agent only: the next call after an ask the person refused, which fires no hook of its
-# own. SubagentStart never passes. Empty for any other event, which follows the old rule.
+# own. SubagentStart never passes, and neither does a tool event of a refused agent id
+# (#1487). Empty for any other event, which follows the old rule.
 call_key() {
     ask_when=""
-    whole_word agent_id; local a=$REPLY
+    agent_key; local known=$? a=$REPLY
     if is_event PreToolUse; then ask_when="#{m:$a/*,#{@panestate_ask}}"
     elif is_event SubagentStart; then ask_when=0
     elif is_event PostToolUse || is_event PostToolUseFailure; then
         whole_word tool_name; ask_when="#{==:#{@panestate_ask},$a/$REPLY}"
     fi
+    [ "$known" = 0 ] || [ -z "$ask_when" ] || ask_when=0
 }
 # prog_name <- the program a Bash tool_input's command runs: its first word, path dropped, 32
 # at most, and only when that whole word is [A-Za-z0-9._/+-]. Anything else names no program,
@@ -258,6 +270,10 @@ needs-input|error)
     # is a person typing the command.
     [ -z "$poll" ] && [ ! -t 0 ] || state_only=1
     # $d is the script's own path, resolved once at the top: nothing on this path reassigns it.
+    # agent_key's subs_id is lib/subslog.sh's (#1487). A load that fails reads no payload, as
+    # one of hook.sh does.
+    # shellcheck source=lib/subslog.sh
+    [ -n "${state_only:-}" ] || . "${d%/*}/lib/subslog.sh" 2>/dev/null || state_only=1
     # shellcheck source=lib/hook.sh
     if [ -n "${state_only:-}" ]; then :
     elif ! . "${d%/*}/lib/hook.sh" 2>/dev/null; then :
@@ -272,14 +288,18 @@ needs-input|error)
             # again. Argv, not a format. No tool, no text, so notify's ask stays. The same call
             # keeps the ask's key, <agent_id>/<tool_name> with no agent on the main thread: only
             # a call of that agent ends it (#1403, call_key). An ask that names no tool has no
-            # key, and any running ends it. The key goes first: a cut option name ends the list
-            # there (#1450), and a cut on the text's name must not take the key with it.
-            whole_word agent_id
-            if [ -n "$tool" ]; then
+            # key, and any running ends it. So does the ask of an agent whose id subs_id refuses
+            # (#1487, agent_key), which still names its tool. The key goes first: a cut option
+            # name ends the list there (#1450), and a cut on the text's name must not take the
+            # key with it.
+            if [ -z "$tool" ]; then
+                tmux set-option -pu -t "$pane" @panestate_ask 2>/dev/null
+            elif agent_key; then
                 tmux set-option -p -t "$pane" @panestate_ask "$REPLY/$tool" ';' \
                     set-option -p -t "$pane" @panestate_msg "$msg" 2>/dev/null
             else
-                tmux set-option -pu -t "$pane" @panestate_ask 2>/dev/null
+                tmux set-option -pu -t "$pane" @panestate_ask ';' \
+                    set-option -p -t "$pane" @panestate_msg "$msg" 2>/dev/null
             fi
         fi
     else
@@ -306,7 +326,10 @@ running)
     # shellcheck source=lib/hook.sh
     if [ -z "$poll" ] && [ ! -t 0 ] && . "${d%/*}/lib/hook.sh" 2>/dev/null; then
         read_capped 4096 true
-        call_key
+        # agent_key's subs_id is lib/subslog.sh's (#1487). A load that fails keys no call, as
+        # one of hook.sh does.
+        # shellcheck source=lib/subslog.sh
+        . "${d%/*}/lib/subslog.sh" 2>/dev/null && call_key
     fi
     ;;
 notify)

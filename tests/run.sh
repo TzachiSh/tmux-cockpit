@@ -2267,7 +2267,23 @@ bqask ""; bgst needs-input "$BQNK"; bqev PostToolUse a1 Read
 bqis "#1403: an ask with no tool named keeps the old rule" running
 bqask ""; bqev PostToolUse "" Bash; bgst notify "$BQPP"; bqev PostToolUse a1 Bash
 bqis "#1403: an answered ask's key does not outlive it" running
-unset -f bqask bqev bqis; unset BQSA BQIN BQNK BQPP
+# #1487: Claude Code 2.1.331 builds an agent id of up to 81 bytes: `a`, a label cut to 63 of
+# [\w-], `-` and 16 hex digits. Two agents of one label differ only in those digits, so the
+# key takes the whole id, and an id past 81 bytes gives no key and ends no ask that has one.
+printf -v BQLB '%063d' 0; BQLB=${BQLB//0/l}
+BQA1=a$BQLB-0123456789abcdef BQA2=a$BQLB-fedcba9876543210 BQAX=a${BQLB}l-0123456789abcdef
+bqask "$BQA1"
+is "#1487: the ask's key holds the whole 81-byte agent id" "$BQA1/Bash" "$(bgo @panestate_ask)"
+bqask "$BQA1"; bqev PreToolUse "$BQA2" Read
+bqis "#1487: another agent of the same label leaves an 81-byte agent's ask waiting" needs-input
+bqask "$BQA1"; bqev PostToolUse "$BQA2" Bash
+bqis "#1487: and so does its PostToolUse of the same tool" needs-input
+bqask "$BQAX"
+is "#1487: an agent id past 81 bytes gives the ask no key, and it still names its tool" \
+    "needs-input||Bash: git" "$(bgo @panestate)|$(bgo @panestate_ask)|$(bgo @panestate_msg)"
+bqask ""; bqev PreToolUse "$BQAX" Read
+bqis "#1487: a call of an agent id past 81 bytes leaves the main thread's ask waiting" needs-input
+unset -f bqask bqev bqis; unset BQSA BQIN BQNK BQPP BQLB BQA1 BQA2 BQAX
 
 # Concurrent hooks: several report-back Stops and subagent tool calls at once.
 bgjobs() {                    # <n> <state> <payload>: n hooks at once, then wait for them

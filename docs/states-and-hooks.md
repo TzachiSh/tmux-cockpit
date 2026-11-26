@@ -22,7 +22,10 @@ left alone by `done` since a done pane has no border alert to read it on.
 in place on a pane still waiting, and writes its own on any other pane.
 
 `PermissionRequest` also keeps the ask's key in `@panestate_ask`:
-`<agent_id>/<tool_name>`, with no agent on the main thread (#1403). Other
+`<agent_id>/<tool_name>`, with no agent on the main thread (#1403). The agent
+id is the whole id or none, by the subagent log's rule for a plain id (below):
+two agents of one long label differ only in the id's last 16 hex digits, so a
+cut id could be both agents' key (#1487). Other
 agents and parallel calls fire tool hooks while an ask waits, and the payload
 carries no `tool_use_id` to tie them to it. So while a key is set, a
 `PostToolUse` or `PostToolUseFailure` ends the ask only with the same key, a
@@ -31,8 +34,9 @@ refused, which fires no hook of its own), and a `SubagentStart` never. A typed
 prompt, `off` and an interrupt end it as before, and the key goes with the
 text. With the Claude mod, the end of a main turn ends an ask whose key is the
 main thread's (#1332, [docs/mod.md](mod.md)). An ask with no key, from a
-`Notification` alone or a `PermissionRequest` that names no tool, ends on any
-`running`, as before. Known limits: two
+`Notification` alone or a `PermissionRequest` that names no tool or an agent
+whose id that rule refuses, ends on any `running`, as before. A tool hook of
+such an agent ends no ask that has a key. Known limits: two
 concurrent calls of the same tool in one agent share a key. A sibling's
 `PreToolUse` that lands after the `PermissionRequest` ends the ask. With two
 asks waiting the key is the newer one's, so answering that one first ends the
