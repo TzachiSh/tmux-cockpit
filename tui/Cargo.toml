@@ -43,6 +43,10 @@ test-env = { path = "test-env" }
 [lints.clippy]
 disallowed_methods = "forbid"
 
+# No debug info in test builds (#1498). A panic still names its file and line.
+[profile.test]
+debug = 0
+
 [profile.release]
 lto = true
 strip = true
