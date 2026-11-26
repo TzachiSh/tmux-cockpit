@@ -32,9 +32,10 @@ their ▲ still jumps.
 ## Modules
 
 `tui/src/ask.rs` and `tui/src/ask/*.rs`, one module `ask`. The module list is frozen
-(tui/src/lib.rs:1-2, docs/tui.md "Modules"), so the freeze posts the #61 comment. #1504 adds
-`pub mod ask;` and the Modules row with its first code. The freeze lands no Rust, since
-AGENTS.md rule 5 forbids code with no caller.
+(tui/src/lib.rs:1-2, docs/tui.md "Modules"), so the freeze posts the #61 comment. #1504
+creates the module with its first code: `pub mod ask;` in `tui/src/lib.rs`, `tui/src/ask.rs`
+and the Modules row ("Files and order" says how later children join it). The freeze lands no
+Rust, since AGENTS.md rule 5 forbids code with no caller.
 
 | module | child | interface |
 |--------|-------|-----------|
@@ -346,10 +347,15 @@ As the owner approved them in #1500 on 2026-11-26, with the rulings recorded sin
 | #1512 | `tui/src/ask/shadow.rs` (live answers) |
 | #1513 | `tui/src/ask/merge.rs`, the merge script |
 
-- #1504 and #1508 run in parallel after this page.
-- #1505 waits for #1508, which owns `ActionKind`. #1509 waits for #1508, which owns `Pred` and
-  `Facts`.
-- #1516 waits for #1504, since both edit the Modules table in docs/tui.md.
+Each child after #1504 that adds a file under `tui/src/ask/` also adds its `mod` line to
+`tui/src/ask.rs`.
+
+- #1504 comes first after this page, since it creates the `ask` module.
+- #1508 waits for #1504, which creates the module that `rules.rs` joins.
+- #1516 waits for #1504, since the two edit the Modules table in docs/tui.md.
+- #1505 waits for #1508, which owns `ActionKind`.
+- #1509 waits for #1504, #1505 and #1508: `facts::read` and `never::refuses` take `Ask`,
+  `tags::Action` and `rules::Facts`.
 - #1506 waits for #1504, #1505 and #1516.
 - #1507 waits for #1506. That chain puts it after #1504 in `data/transcript.rs` and after
   #1508 in `tui/src/main.rs`.
