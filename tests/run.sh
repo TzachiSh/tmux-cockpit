@@ -27398,13 +27398,23 @@ is "a permissive umask still gives 0700 and 0600" "700 600" \
 is "another session has a log of its own" "1 1" \
    "$(sl sub-start "$(slp $SLT SubagentStart b1)" >/dev/null; \
        grep -c . "$SLDIR/$SLS.log") $(grep -c . "$SLDIR/$SLT.log")"
-# Anything that is not a plain id is dropped: no file, no output, exit 0.
+# The longest agent id Claude Code 2.1.331 builds (its Ab()): a, a label cut to 63 of
+# [A-Za-z0-9_-], a dash and 16 hex digits, 81 bytes (#1473).
 rm -rf "$SLD/state"
-SLLONG=$(printf 'x%.0s' $(seq 1 65))
+SL81=a$(printf 'x%.0s' $(seq 1 63))-0123456789abcdef
+sl sub-start "$(slp $SLS SubagentStart "$SL81")" >/dev/null
+sl sub-stop "$(slp $SLS SubagentStop "$SL81")" >/dev/null
+is "an 81-byte agent id, the longest 2.1.331 builds: its start and stop rows are written" \
+   "start $SL81|stop $SL81" \
+   "$(awk -F'\t' '{ printf "%s%s %s", (NR > 1 ? "|" : ""), $2, $3 }' "$SLDIR/$SLS.log" 2>/dev/null)"
+# Anything that is not a plain id is dropped: no file, no output, exit 0. One byte past the
+# longest is no id.
+rm -rf "$SLD/state"
+SLLONG=a$(printf 'x%.0s' $(seq 1 64))-0123456789abcdef
 for row in "path in the agent id|$(slp $SLS SubagentStart '../../evil')" \
            "path in the session id|$(slp '../evil' SubagentStart a1)" \
            "a space in the agent id|$(slp $SLS SubagentStart 'a b')" \
-           "an id over 64 bytes|$(slp $SLS SubagentStart "$SLLONG")" \
+           "an id over 81 bytes|$(slp $SLS SubagentStart "$SLLONG")" \
            "an empty agent id|$(slp $SLS SubagentStart '')" \
            "no agent id|{\"session_id\":\"$SLS\"}" \
            "no session id|{\"agent_id\":\"a1\"}" \
@@ -27785,6 +27795,11 @@ is "sub-taskstop exits 0 and prints nothing" "rc=0" \
 is "a plain agent's stop is keyed by tool_response's task_id, its agent id" \
     "kill a317be06712f142ac" "$(tsrows)"
 rm -rf "$TSD/state"
+# The longest agent id Claude Code 2.1.331 builds: a, a label cut to 63, a dash, 16 hex (#1473)
+TS81=a$(printf 'x%.0s' $(seq 1 63))-0123456789abcdef
+ts sub-taskstop "$(tsstop long1 "$TS81" local_agent 'a long label')" >/dev/null
+is "a TaskStop of an 81-byte agent writes its kill row" "kill $TS81" "$(tsrows)"
+rm -rf "$TSD/state"
 ts sub-taskstop "$(tsstop tm1 t0sm6hcnt in_process_teammate 'i1 named')" >/dev/null
 ts sub-taskstop "$(tsstop t0sm6hcnt t0sm6hcnt in_process_teammate 'say \"hi\" }]')" >/dev/null
 is "a teammate's stop carries the name the model gave and the description, escapes kept" \
@@ -27811,6 +27826,9 @@ is "the next Stop's set replaces it, an empty set too, and the log gets no row" 
    "$(tslive) lines=$(grep -c . "$TSLIVE") $(find "$TSD/state" -name '*.log' | grep -c .)"
 is "the file is whole, renamed into place: no temp is left" "0" \
     "$(find "$TSD/state" -name '.*' | grep -c .)"
+rm -rf "$TSD/state"
+ts sub-reconcile "$(tsfin "{\"id\":\"$TS81\",\"type\":\"subagent\"}")" >/dev/null
+is "a Stop's set takes an 81-byte subagent id" "set=[$TS81]" "$(tslive)"
 rm -rf "$TSD/state"
 # #423: as log rows, a busy lead's sets pushed an idle teammate's stop out of the reader's tail
 TSMATES=$(for i in $(seq 1 25); do \
