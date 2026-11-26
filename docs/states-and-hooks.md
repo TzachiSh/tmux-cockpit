@@ -594,9 +594,9 @@ Lag is up to one tick, 10 s by default: a job that blocks shows on its pane at t
     writes, or takes back another message in `@cockpit_poll_err` that its writer sets again.
   - `scripts/lib/review-deliver.sh:181`, paste or queue: a cut reads false, so the review is
     queued, as its notice says, and lands when the agent stops.
-  - `cockpit.tmux:479`, the fullscreen key, and `:563-566`, the status bar clicks: a cut
+  - `cockpit.tmux:476`, the fullscreen key, and `:560-563`, the status bar clicks: a cut
     takes the wrong branch of one press.
-  - `cockpit.tmux:119`, the sweep sequence: a cut in the bump's value writes an empty value
+  - `cockpit.tmux:116`, the sweep sequence: a cut in the bump's value writes an empty value
     or 0, or leaves the number as it was. That event's sweep still walks
     (`scripts/agent-state:143-145`), older sweeps skip, and the next event counts on from
     there. Only an equality test reads the number. A probe on tmux 3.8 cut the bump from 5 at
@@ -617,7 +617,7 @@ Lag is up to one tick, 10 s by default: a job that blocks shows on its pane at t
   last. These stay as they are:
   - `scripts/agent-state:570` and `:561`, the state itself: a cut on `@panestate`'s own name
     keeps the old state until the pane's next event. The rest of the list still runs.
-  - `scripts/agent-state:117`, put's set, and its copies at `cockpit.tmux:126` and
+  - `scripts/agent-state:117`, put's set, and its copies at `cockpit.tmux:123` and
     `scripts/agent-context:48`: a cut name drops that put's retest, so a session's or the
     fleet's sum waits for the next event. A window's set sits in an `if` body of its own, so
     its retest still runs.
@@ -636,12 +636,12 @@ Lag is up to one tick, 10 s by default: a job that blocks shows on its pane at t
     review for the agent's next stop, and one on the `sent` mark's name delivers nothing.
     Either way `--deliver` returns 1 with no notice, and the store keeps the comments
     (`scripts/lib/review-fleet.sh:25` runs `--done` only on 0).
-  - `cockpit.tmux:466-468`, the move key: its block runs each line alone, so a cut set keeps
+  - `cockpit.tmux:463-465`, the move key: its block runs each line alone, so a cut set keeps
     the last move's `@cockpit_move_src`, the menu still opens, and a pick moves that older
     window. A fix would need a client in its test, and the cut is rare.
-  - `cockpit.tmux:102`, `NO_COLOR` at load: a cut leaves the later slots in colour until the
+  - `cockpit.tmux:99`, `NO_COLOR` at load: a cut leaves the later slots in colour until the
     next load.
-  - `cockpit.tmux:347`, `:391`, `:423`, `:468`, `:479`, `:530-538` and `:574`, the keys, the
+  - `cockpit.tmux:344`, `:388`, `:420`, `:465`, `:476`, `:527-535` and `:571`, the keys, the
     prompts and the load hint: a cut loses one press or prompt, or shows the hint once more.
   - `tui/src/push.rs:124-129` and `:266-271`, a board's wake listing: a cut leaves that board
     on its 1 s tick, or a gone board listed until the next board starts.

@@ -2058,7 +2058,7 @@ panel with the reason in a warn note.
   `Extra` gains `offered` and `not_here`; `board::hints_on` lists the extras
   one agent is offered, and `board::hints` is it on a live agent.
 - `scripts/cockpit-board` gains `resume)`: it splits the target's window with
-  `exec claude --resume '<id>'` (quoted with `sq`; `exec` so a default shell
+  `exec claude --resume '<id>'` (quoted with `shq`; `exec` so a default shell
   that forks, such as dash, does not stay the pane's process, #895) at the target's
   `#{pane_current_path}`, never `@cockpit_dir`: Claude Code never moves its
   process's cwd (#312), so the pane's cwd is the project the session started
