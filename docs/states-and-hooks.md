@@ -351,10 +351,10 @@ longer one arrives cut, with `… [+N chars]` after it, and matches no teammate'
 - **A missing log is missing data.** `SessionEnd` also fires on `/clear` and on an interactive
   `/resume`, which deletes the log of the session left behind, so the reader treats a missing
   log as "no hook data", never as "no subagents".
-- **Safe to run anywhere.** Only a plain id (`[A-Za-z0-9_-]`, 1 to 64 bytes) is written; a
-  malformed or missing id drops the event. The dir is 0700 and the log 0600 whatever the
-  umask, a symlink in the way is never followed, the payload is read for 2 s and 256 KB at
-  most, and the hook always exits 0.
+- **Safe to run anywhere.** Only a plain id (`[A-Za-z0-9_-]`, 1 to 81 bytes, the longest agent
+  id Claude Code 2.1.331 builds) is written; a malformed or missing id drops the event. The
+  dir is 0700 and the log 0600 whatever the umask, a symlink in the way is never followed,
+  the payload is read for 2 s and 256 KB at most, and the hook always exits 0.
 - **Install.** The six entries come with `install.sh --hooks`; an update needs it rerun
   (`sub-taskstop` and `sub-reconcile` came with #403), and `install.sh --check` warns
   (`subhooks`, "re-run install.sh --hooks") when any is missing. `--hooks` adds the

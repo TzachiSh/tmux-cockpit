@@ -26,11 +26,15 @@ subs_dir() {
     REPLY=$base/tmux-cockpit/subs
 }
 
-# One id of the payload: "key": "value", the value only [A-Za-z0-9_-], 1 to 64 bytes. A
+# One id of the payload: "key": "value", the value only [A-Za-z0-9_-], 1 to 81 bytes. A
 # quote inside a JSON string arrives as \", so no message text can match the key. REPLY empty
 # on any miss. The first match wins, and the ids come before the final message.
+# 81 is the longest agent id Claude Code 2.1.331 builds: its Ab() makes `a`, the label cut to
+# 63 of [\w-], `-` and 16 hex digits, and it checks ^a(?:[\w-]{1,63}-)?[0-9a-f]{16}$ (#1473).
+# With no flag \w is [A-Za-z0-9_], so this class takes every such id. Not that grammar itself:
+# this one reader also takes session ids, a teammate's name and the hook-agent-<uuid> form.
 subs_id() {                   # <key> -> REPLY
-    local LC_ALL=C re="\"$1\": ?\"([A-Za-z0-9_-]{1,64})\""
+    local LC_ALL=C re="\"$1\": ?\"([A-Za-z0-9_-]{1,81})\""
     REPLY=""; [[ $payload =~ $re ]] && REPLY=${BASH_REMATCH[1]}
     return 0
 }
