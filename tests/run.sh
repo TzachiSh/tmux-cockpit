@@ -17127,7 +17127,7 @@ is "a missing binary says so once, on the pane the key was pressed in, and exits
    "$brc $(cat "$BD/wargv" 2>/dev/null)"
 
 # --- a plugin directory that is shell syntax -----------------------------------
-# sq() quotes $DIR into the bind, so pressing the key runs the wrapper and not
+# shq() quotes $DIR into the bind, so pressing the key runs the wrapper and not
 # the directory's name. Pressed for real: display-popup needs a client, so an
 # outer server provides the pty (the same shape as the RCE-via-directory-name
 # block above).

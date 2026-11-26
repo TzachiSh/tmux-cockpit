@@ -25,9 +25,6 @@ if ! vnum_ge "$tmux_version" 3.8; then
     exit 0
 fi
 
-# Single quotes, not printf %q: inside a tmux double-quoted string tmux eats
-# %q's backslashes before sh sees them.
-sq() { printf "'%s'" "${1//\'/\'\\\'\'}"; }   # close, escaped quote, reopen
 # fesc: run-shell expands its command as a format, so a # in the install path
 # must reach sh as a #.
 # shellcheck source=scripts/lib/fmt.sh
@@ -92,8 +89,8 @@ tmux set-option -gq @cockpit_home_re "$(printf '%s' "$home" | sed 's/[][\\.*^$+?
 
 # --- status line and borders -----------------------------------------------------
 # The script's path, shell-quoted, for the formats and hooks to expand: a format's
-# value reaches sh as it is, where a tmux "..." string would eat sq()'s backslashes.
-tmux set-option -g @cockpit_where_cmd "$(sq "$DIR/scripts/tmux-where")"
+# value reaches sh as it is, where a tmux "..." string would eat shq()'s backslashes.
+tmux set-option -g @cockpit_where_cmd "$(shq "$DIR/scripts/tmux-where")"
 tmux source-file "$(gesc "$DIR/scripts/lib/statusbar.conf")"
 # NO_COLOR: every slot is the terminal's default colour (the slots are the bar's).
 if [ -n "${NO_COLOR:-}" ] && [ "$(tmux show-option -gqv @cockpit_statusbar)" != off ]; then
@@ -114,7 +111,7 @@ done
 # these hooks recount every window and session (agent-state sweep). Debounced (#258):
 # each event bumps @cockpit_sweep_seq in the server, no fork, and hands its sweep the
 # new value; a sweep that finds a newer one after its pause leaves the work to it.
-tmux set-option -g @cockpit_state_cmd "$(sq "$DIR/scripts/agent-state")"
+tmux set-option -g @cockpit_state_cmd "$(shq "$DIR/scripts/agent-state")"
 for h in window-linked window-unlinked pane-exited after-kill-pane session-closed; do
     tmux set-hook -g "${h}[9]" 'set-option -gF @cockpit_sweep_seq "#{e|+:#{@cockpit_sweep_seq},1}" ; run-shell -b "exec #{@cockpit_state_cmd} sweep #{@cockpit_sweep_seq}"'
 done
@@ -299,8 +296,8 @@ if [ -n "$left" ]; then
 else tmux set-option -gu @cockpit_giveback; fi
 unset -f takes
 
-Q_BRANCH=$(sq "$DIR/scripts/tmux-branch")
-Q_OPEN=$(sq "$DIR/scripts/tmux-open-path")
+Q_BRANCH=$(shq "$DIR/scripts/tmux-branch")
+Q_OPEN=$(shq "$DIR/scripts/tmux-open-path")
 # The pane a popup came from. display-popup expands formats only in -T and -d
 # (#38), so the key stores #{pane_id} on the session first and the popup reads it
 # back by the session id $TMUX ends in. Asking for the session's active pane
@@ -353,12 +350,12 @@ tmux bind-key b "${SRC_SET[@]}" set-option -pF @cockpit_branch_client '#{client_
 # tm --popup opens the popup itself: its height follows the session count,
 # which a display-popup size cannot express. The pane goes in for a new session's
 # folder: inside the popup the session's active pane may be the popup (#494).
-Q_TM=$(sq "$DIR/scripts/tm")
+Q_TM=$(shq "$DIR/scripts/tm")
 [ -z "$sk" ] || ckey sessions "$sk" run-shell -b "$(fesc "$Q_TM") --popup '#{client_name}' '#{session_id}' '#{client_width}' '#{client_height}' '#{pane_id}'" \
     || sk=""
 
 # run-shell sets no $TMUX_PANE, so the pane goes in as an argument (#45).
-[ -z "$jk" ] || ckey jump "$jk" run-shell "$(fesc "$(sq "$DIR/scripts/tmux-jump")") '#{pane_id}' '#{client_name}'" \
+[ -z "$jk" ] || ckey jump "$jk" run-shell "$(fesc "$(shq "$DIR/scripts/tmux-jump")") '#{pane_id}' '#{client_name}'" \
     || jk=""
 
 # The info screen is cockpit-tui's own (#252); esc or q closes it, so no `read`.
@@ -397,7 +394,7 @@ pin=("${SRC_SET[@]}" set-option -pF @cockpit_board_client '#{client_name}' '\;')
 bind_board() {                # <name> <key> <window option> -> 1 when tmux refused the key
     if [ "$(tmux show-option -gqv "$3")" = on ]; then
         ckey "$1" "$2" run-shell "tmux new-window -n board -e COCKPIT_PANEL_MODE=${pmode:-auto} \
-$(sq "$(fesc "$Q_BOARD") -p '#{pane_id}' -c '#{client_name}'")"
+$(shq "$(fesc "$Q_BOARD") -p '#{pane_id}' -c '#{client_name}'")"
     else
         ckey "$1" "$2" "${pin[@]}" display-popup -E -e "COCKPIT_PANEL_MODE=${pmode:-auto}" \
             -w 90% -h "$PH" -T ' board ' "$(popup_sh "$SRC_RUN" "$DIR/scripts/cockpit-board")"
@@ -426,7 +423,7 @@ fi
 
 # Opt-in: this runs on every config reload, which must not wait on curl.
 if [ "$(tmux show-option -gqv @cockpit_tui_fetch)" = on ]; then
-    tmux run-shell -b "$(fesc "$(sq "$DIR/scripts/tui-fetch")")"
+    tmux run-shell -b "$(fesc "$(shq "$DIR/scripts/tui-fetch")")"
 fi
 
 # Reload sources every file in #{config_files}, resolved once at bind time.
@@ -442,10 +439,10 @@ if [ -n "$rlk" ]; then
         set +f
         IFS=$old_ifs
         [ "$#" -gt 0 ] || set -- "${HOME:-}/.tmux.conf"
-        printf 'bind-key -N %s %s {\n' "$(sq 'cockpit: reload')" "$(sq "$rlk")"
+        printf 'bind-key -N %s %s {\n' "$(shq 'cockpit: reload')" "$(shq "$rlk")"
         for f in "$@"; do
             # -q: a listed but missing /etc/tmux.conf would abort the whole chain.
-            printf '    source-file -q %s\n' "$(sq "$f")"
+            printf '    source-file -q %s\n' "$(shq "$f")"
         done
         printf '    display-message "#{?%s,#{%s},config reloaded}"\n' \
             @cockpit_load_hint @cockpit_load_hint
@@ -461,7 +458,7 @@ fi
 # matches nothing, and a ## replacement inserts nothing.
 if [ -n "$mk" ]; then
     {
-        printf 'bind-key -N %s %s {\n' "$(sq 'cockpit: move')" "$(sq "$mk")"
+        printf 'bind-key -N %s %s {\n' "$(shq 'cockpit: move')" "$(shq "$mk")"
         cat <<'EOF'
     set -gF @cockpit_move_src "#{window_id}"
     set -gF @cockpit_move_cwd "#{pane_current_path}"
@@ -474,7 +471,7 @@ fi
 # The flag is the state, and unsetting inherits the config's value, so nothing is stashed.
 if [ -n "$fsk" ]; then
     {
-        printf 'bind-key -N %s %s {\n' "$(sq 'cockpit: fullscreen')" "$(sq "$fsk")"
+        printf 'bind-key -N %s %s {\n' "$(shq 'cockpit: fullscreen')" "$(shq "$fsk")"
         cat <<'EOF'
     if -F "#{@cockpit_fs}" {
         set -u @cockpit_fs
@@ -525,7 +522,7 @@ row 'Move window to a session...' M "$mk"
 # pane's own @cockpit_role (#1408). Its id is never expanded here: tmux puts the typed text in
 # place of a %1 in a command-prompt template, so run-shell expands ##{pane_id} when Enter is
 # pressed, and the client's current pane then is the one named.
-tmux set-option -g @cockpit_rename_cmd "$(sq "$DIR/scripts/tmux-rename")"
+tmux set-option -g @cockpit_rename_cmd "$(shq "$DIR/scripts/tmux-rename")"
 Q_REN='##{@cockpit_rename_cmd}'
 rows+=('Rename window' ',' "command-prompt -p '(rename-window)' -I '##W' \"set -g @cockpit_rename_to \\\"%%%\\\" ; run-shell \\\"$Q_REN window '#{window_id}'\\\"\"")
 Q_NAME="set -g @cockpit_rename_to \\\"%%%\\\" ; run-shell \\\"$Q_REN pane '##{pane_id}'\\\""
@@ -569,7 +566,7 @@ tmux bind-key -n MouseUp3Status if-shell -F '#{m:cp-*,#{mouse_status_range}}' \
 # (-F), since pane output is full of quotes that would tear a shell string apart.
 # No mouse-mode guard: agent TUIs keep mouse reporting on, so a guard would hand
 # these chorded clicks to the agent. Plain gestures are never bound.
-# Bound from argv, not a sourced file: in a tmux "..." string sq()'s '\'' loses its \.
+# Bound from argv, not a sourced file: in a tmux "..." string shq()'s '\'' loses its \.
 pick_on() {
     tmux bind-key -n "$1" select-pane -t= '\;' set -pF -t= @cockpit_click_line '#{mouse_line}' \
         '\;' run-shell -b "$(fesc "$Q_OPEN") #{pane_id}"
