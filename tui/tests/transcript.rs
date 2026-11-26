@@ -251,8 +251,10 @@ fn cwd_is_the_newest_main_thread_cwd() {
 
 /// #453: an AskUserQuestion, `id`, asking `question` under `header`.
 fn ask(id: &str, question: &str, header: &str) -> String {
+    let opt = serde_json::json!({"label": "Yes", "description": "go on"});
+    let q = serde_json::json!({"question": question, "header": header, "options": [opt, opt], "multiSelect": false});
     let v = serde_json::json!({"type": "assistant", "version": "2.1.316", "message": {"content": [{"type": "tool_use",
-        "id": id, "name": "AskUserQuestion", "input": {"questions": [{"question": question, "header": header}]}}]}});
+        "id": id, "name": "AskUserQuestion", "input": {"questions": [q]}}]}});
     format!("{v}\n")
 }
 
