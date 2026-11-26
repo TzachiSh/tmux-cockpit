@@ -148,8 +148,10 @@ const RESEARCH: &[&str] = &["Read", "Grep", "Glob", "WebSearch", "WebFetch", "Sk
 /// Agent too, as the CLI cannot keep it to the read-only Explore type (a rule
 /// can deny an agent type, not allow only one). Then the secret paths, the
 /// owner's call on review-432's finding 6: ssh, aws and gpg keys, Claude's own
-/// files of [`CFG_SECRETS`] at their default places (`~/.claude*.json`, the rest
-/// under `~/.claude`), and the token files of gh, git, netrc, docker, kube, npm,
+/// files of [`CFG_SECRETS`] at their default places (`~/.claude*.json*`, the rest
+/// under `~/.claude`) and the global config of a claude run with CLAUDE_CONFIG_DIR
+/// set to `~/.claude` (`~/.claude/.claude*.json*`), which the panel's own
+/// environment need not share, and the token files of gh, git, netrc, docker, kube, npm,
 /// pypi and gcloud: a Read rule covers Grep and Glob as well and follows symlinks
 /// (probed). `~` is the home dir; `//` anchors at `/`,
 /// as a bare `**/.env` is relative to the cwd (the cache dir) and would leave a
@@ -165,8 +167,9 @@ const DENY: &[&str] = &[
     "Read(~/.aws/**)",
     "Read(~/.gnupg/**)",
     "Read(~/.claude/.credentials.json)",
-    "Read(~/.claude*.json)",
-    "Read(~/.claude/.config.json)",
+    "Read(~/.claude*.json*)",
+    "Read(~/.claude/.claude*.json*)",
+    "Read(~/.claude/.config.json*)",
     "Read(~/.claude/backups/**)",
     "Read(~/.config/gh/**)",
     "Read(~/.git-credentials)",
@@ -203,11 +206,14 @@ fn path_text(dir: &Path) -> Result<&str, &'static str> {
 /// Claude Code's own files in its config dir that a read-only call never reads: the
 /// credentials (#1428), and the global config, which holds account ids, MCP servers
 /// that can carry tokens and each project's last prompt (#1431). The global config
-/// is `.claude.json`, or `.claude-custom-oauth.json` under a custom OAuth URL; its
-/// copies go in `backups/`; and the older `.config.json`, when there, is read in its
-/// place (Claude Code 2.1.332). Under CLAUDE_CONFIG_DIR all of them sit in that dir.
-/// Unset, `.claude*.json` sits in home and the rest in `~/.claude`, as [`DENY`] names them.
-const CFG_SECRETS: &[&str] = &[".credentials.json", ".claude*.json", ".config.json", "backups/**"];
+/// is `.claude.json`, or `.claude-custom-oauth.json` under a custom OAuth URL, and an
+/// older Claude Code kept a `.claude.json.backup` beside it (2.1.332 still names
+/// `^\.claude(-[a-z-]+)?\.json(\.backup)?$`); its copies go in `backups/`; and the
+/// older `.config.json`, when there, is read in its place, with copies named as
+/// 2.1.332's `/^\.config\.json(\.|$)/` names them, hence `.config.json*`. Under
+/// CLAUDE_CONFIG_DIR all of them sit in that dir. Unset, `.claude*.json*` sits in home
+/// and the rest in `~/.claude`, as [`DENY`] names them.
+const CFG_SECRETS: &[&str] = &[".credentials.json", ".claude*.json*", ".config.json*", "backups/**"];
 
 /// The Read denies for [`CFG_SECRETS`] under CLAUDE_CONFIG_DIR
 /// ([`crate::data::claude_config_dir`]), where Claude Code keeps them when the
