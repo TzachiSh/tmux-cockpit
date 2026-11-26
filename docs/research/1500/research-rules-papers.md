@@ -1,7 +1,8 @@
 # What recent papers say about the auto-answer rules
 
-tmux-cockpit-dd [8f35e6], 2026-11-27. For #1500 (R2, R3, R6, R7, R8, R10, D5, D6), part of #1521. Read-only
-research that adds papers to `research-user-rules.md`, which covered how other tools do it.
+tmux-cockpit-dd [8f35e6], 2026-11-27. For #1500 (R2, R3, R6, R7, R8, R10, D5, D6), part of
+#1521. Read-only research that adds papers to `research-user-rules.md`, which covered how other
+tools do it.
 
 ## Question
 
@@ -10,8 +11,9 @@ argue for a change before #1508 to #1510 are built?
 
 ## Sources
 
-Each quote was read in the paper's HTML on arxiv.org. I read the abstract, the limits section
-and the passages quoted here, not every experiment.
+Each quote was read in the paper's full text from arxiv.org. Source 1 has no HTML version
+there. I read the abstract, the limits section and the passages quoted here, not every
+experiment.
 
 1. Salerno, Gao, Gay, Serebrenik, Leitner, "Let the Agent Do It? How Software Practitioners
    Understand and Make Permission Decisions in Agentic AI Assistants", arXiv 2610.06047v1.
@@ -21,8 +23,8 @@ and the passages quoted here, not every experiment.
    - They should "make reversibility clearer" and "distinguish rejecting a single action from
      rejecting an entire approach".
 2. Yan, "Do User-Authored Permission Policies Improve Protection Against AI Agent Overreach?",
-   arXiv 2608.27443v2. 113 people without a software background, a simulated day of 18 actions
-   with 7 overreach actions, three conditions.
+   arXiv 2608.27443v2. 113 people without a professional software background, a simulated day
+   of 18 actions with 7 overreach actions, three conditions.
    - "POLICY blocked less overreach than HITL (-20.1 percentage points, 95% CI [-32.1, -8.1])".
    - "participants chose 'ask' for 114 of 140 POLICY rules, returning most overreach actions to
      runtime".
@@ -88,6 +90,6 @@ For the owner, through the orchestrator. Nothing here blocks #1508 to #1510.
 
 ## Not known
 
-- Whether any of this holds for one expert owner. Source 2 studied people without a software
-  background, and source 1 is self-report.
+- Whether any of this holds for one expert owner. Source 2 studied people without a professional
+  software background, and source 1 is self-report.
 - Whether fatigue shows up at our volume. No one has counted the owner's asks per hour.
