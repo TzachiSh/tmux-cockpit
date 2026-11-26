@@ -88,7 +88,8 @@ call.
 1. **#1405 picks its Explain case count by a power calculation**, before any case is written.
    Cost: arithmetic in the plan. It tells us whether a run can show the change we want to see.
 2. **`--compare` prints an interval on the paired difference in `pass^k`.** Cost: one function and
-   its tests in `panel_eval.rs`, built on `paired_pass_all`. The Bonett and Price formula has to be taken from their 2012 paper,
+   its tests in `panel_eval.rs`, reusing the pairing of `paired_pass_all`, which returns only
+   per-side totals today. The Bonett and Price formula has to be taken from their 2012 paper,
    which I have not read.
 3. **A `--judge` run prints the corrected pass rate and its interval beside the raw one**, from the
    TPR and TNR of the last calibration. Cost: one function, plus a way to hand the calibration
