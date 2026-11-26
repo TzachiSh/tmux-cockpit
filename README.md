@@ -203,7 +203,7 @@ Details: [docs/states-and-hooks.md](docs/states-and-hooks.md).
   [migration table](docs/status-bar.md#moving-from-the-agent_-tokens);
   `install.sh --check` lists the lines that still carry one.
 - **A pane stays grey while its agent works.** The session started before the
-  hooks were installed; restart it. A long thinking phase also fires no hook.
+  hooks were installed; restart it.
 - **Ctrl+double-click opens a GUI editor instead of the picker.** The terminal
   is following an OSC 8 link. Use `Ctrl`+right-click on agent output; see
   [docs/path-picker.md](docs/path-picker.md#when-the-terminal-opens-the-file-itself).
