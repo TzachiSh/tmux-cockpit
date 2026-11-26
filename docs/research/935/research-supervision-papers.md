@@ -49,10 +49,10 @@ passages quoted here, not every section.
 
 | # | Our design | What the sources say | Verdict |
 |---|---|---|---|
-| 1 | D2: the what-changed list comes from a plain-code collector, and an item without a sha or #PR is dropped | Sources 2 and 3: people want summaries tied to evidence they can reach | Keep |
-| 2 | The flow's step status is a line the model writes (`%% status: ✓`, decision 2 of 2026-11-12) | Source 1: over half of agent-marked completions had no check behind them. Source 2: claimed actions without evidence are hard to trust | Adapt, see below |
-| 3 | R6: one key turns the answer into a prompt or review request | Source 3: a good overview alone did not make people feel able to redirect the agent | Keep. R6 is the part that study's tool lacked |
-| 4 | R4: what changed is a list of commits, PRs, issues and CI | Source 4: people ask first whether a change stayed within scope | Adapt, small |
+| 1 | Design 1: the what-changed list comes from a plain-code collector, and an item without a sha or #PR is dropped | Sources 2 and 3: people want summaries tied to evidence they can reach | Keep |
+| 2 | The flow's step status is a line the model writes (`%% status: ✓`, decision 2 of 2026-11-12) | Source 1: 57.8% of to-dos marked completed after an edit had no check between the edit and the mark. Source 2: claimed actions without evidence are hard to trust | Adapt, see below |
+| 3 | R6: one key turns the answer into a prompt or review request | Source 3: a good overview alone did not make people feel able to redirect the agent | Keep. R6 aims at the gap that study measured, as I read it |
+| 4 | Design 1: what changed is a list of commits, PRs, issues and CI | Source 4: people ask first whether a change stayed within scope | Adapt, small |
 | 5 | #1405 has no pass rule for Explain yet | Sources 1 and 2 point at one that needs no judge: is each claim grounded | Adapt |
 
 ### Finding 2
@@ -63,13 +63,14 @@ Source 1 measured how often such claims lack proof in its own corpus.
 
 ## Recommendation
 
-For the owner, through the orchestrator. Nothing here changes the renderer children that are
-running now.
+For the owner, through the orchestrator. The note itself changes nothing. Adopting
+recommendation 1 would edit the renderer, as its cost says.
 
 1. **A done mark needs a citation, like a what-changed item.** A step shows ✓ only when its
    status line names a sha, a #PR or a CI run that the collector also saw. Otherwise it shows as
-   claimed, with a separate mark from the glyph table. Cost: one more field in the status line
-   and one glyph, decided before the wiring PR.
+   claimed, with a separate mark from the glyph table. Cost: one more field in the `%% status:`
+   line, which `tui/src/panel/flow.rs` parses, and one glyph in the glyph table, which is a
+   renderer child of #935. Both land in `flow.rs`, so this waits its turn among those children.
 2. **#1405's pass rule includes a grounding check in plain code.** Every ✓ and every what-changed
    item in an Explain reply must cite something that exists in the case's fixture. It runs with
    no judge call, so it costs nothing per run.
