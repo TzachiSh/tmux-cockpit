@@ -8,7 +8,7 @@ Issue #1502 asked whether the cockpit can answer a Claude Code AskUserQuestion f
 
 Use PermissionRequest as the one answer channel, for the popup and for promoted rules alike.
 
-- **The pane stays usable.** While a PermissionRequest hook waits, the dialog is on screen in the pane (case C2), so the user can still answer there. A PreToolUse hook that waits hides the dialog for the whole wait (case B1), so the pane shows nothing to answer.
+- **The pane keeps the question on screen.** While a PermissionRequest hook waits, the dialog is on screen in the pane (case C2), so the user sees what is asked. Whether a pane answer then wins over the waiting hook is open point 1. A PreToolUse hook that waits hides the dialog for the whole wait (case B1), so the pane shows nothing to answer.
 - **▲ comes for free.** The cockpit's own PermissionRequest hook already runs `agent-state needs-input` and keys the ask `/AskUserQuestion` (`scripts/agent-state:283-303`). It fires at the same moment as the answer hook, since hooks on one event run in parallel. So the ▲ row that D1's `a` key needs exists while the popup waits. With PreToolUse the pane reads `running` for the whole wait and no ▲ appears.
 - **▲ clears the usual way.** A PermissionRequest answer closes the dialog and fires PostToolUse for AskUserQuestion (cases C1, C2). That event already clears a keyed ask (`scripts/agent-state:498-501` and `578-581`), exactly as after a pane answer.
 - **An instant answer looks the same.** For a promoted rule (R7), a PermissionRequest answer given at once showed no dialog in any screen sample (case C1). One channel can then serve both uses, which AGENTS.md "Keep one way to do each thing" asks for.
