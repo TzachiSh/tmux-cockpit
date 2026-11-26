@@ -1023,6 +1023,19 @@ fn a_reconcile_ends_a_running_agent_it_does_not_list() {
     );
 }
 
+/// #1474: an Agent call whose description is empty or only whitespace gives a teammate whose
+/// meta file holds no description, while the Stop's set lists a text Claude Code cut from the
+/// prompt (measured on 2.1.332). The set cannot name that teammate, so it does not end it.
+#[test]
+fn a_reconcile_leaves_a_teammate_with_no_description_running() {
+    let s = session("live-nodesc");
+    meta(&s.dir, "t", r#"{"agentType":"x","name":"mate","teamName":"crew"}"#);
+    rows(&s.dir, "t", &[FIRST, &tick(5)]);
+    s.log(&[ev(0, "start", "t")]);
+    s.live(&live(30, &[], &["Reply with the single word DONE. Do nothing else."]));
+    assert_eq!(s.one(T0 + 60).state, SubState::Running);
+}
+
 #[test]
 fn a_reconcile_leaves_an_agent_started_or_heard_from_after_it() {
     let s = session("live-later");
