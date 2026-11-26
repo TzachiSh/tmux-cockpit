@@ -389,34 +389,23 @@ Q_BOARD=$(shq "$DIR/scripts/cockpit-board")   # a window's default-shell reads i
 # cannot (display-popup expands none in its command), so its key leaves it on
 # the pane it was pressed in, for the board to take at start.
 pin=("${SRC_SET[@]}" set-option -pF @cockpit_board_client '#{client_name}' '\;')
+# prefix w and prefix r both open the board (#253, #1477): the review queue is the grouped
+# list, and `r` on a row opens the review. Each key's own option puts it in a window, whose
+# command cannot use SRC_PANE: new-window activates itself before its command runs, so
+# run-shell expands #{pane_id} on the source pane instead (#45). The popup's title has no
+# #{session_name}: it named the client's session, not the agent's.
+bind_board() {                # <name> <key> <window option> -> 1 when tmux refused the key
+    if [ "$(tmux show-option -gqv "$3")" = on ]; then
+        ckey "$1" "$2" run-shell "tmux new-window -n board -e COCKPIT_PANEL_MODE=${pmode:-auto} \
+$(sq "$(fesc "$Q_BOARD") -p '#{pane_id}' -c '#{client_name}'")"
+    else
+        ckey "$1" "$2" "${pin[@]}" display-popup -E -e "COCKPIT_PANEL_MODE=${pmode:-auto}" \
+            -w 90% -h "$PH" -T ' board ' "$(popup_sh "$SRC_RUN" "$DIR/scripts/cockpit-board")"
+    fi
+}
 # Bound even without the binary, so the wrapper can say "not installed".
-if [ -n "$bk" ]; then
-    # Not SRC_PANE, for the same reason as the review window below (#45).
-    if [ "$(tmux show-option -gqv @cockpit_board_window)" = on ]; then
-        ckey board "$bk" run-shell "tmux new-window -n board -e COCKPIT_PANEL_MODE=${pmode:-auto} \
-$(sq "$(fesc "$Q_BOARD") -p '#{pane_id}' -c '#{client_name}'")" || bk=""
-    else
-        # No #{session_name}: it named the client's session, not the agent's.
-        ckey board "$bk" "${pin[@]}" display-popup -E -e "COCKPIT_PANEL_MODE=${pmode:-auto}" \
-            -w 90% -h "$PH" -T ' board ' "$(popup_sh "$SRC_RUN" "$DIR/scripts/cockpit-board")" \
-            || bk=""
-    fi
-fi
-
-# prefix r is the board too (#253): the review queue is the grouped list, and
-# `r` on a row opens the review. The same command prefix w runs; the window form
-# cannot use SRC_PANE, since new-window activates itself before its command
-# runs, so run-shell expands #{pane_id} on the source pane instead (#45).
-if [ -n "$rk" ]; then
-    if [ "$(tmux show-option -gqv @cockpit_review_window)" = on ]; then
-        ckey review "$rk" run-shell "tmux new-window -n board -e COCKPIT_PANEL_MODE=${pmode:-auto} \
-$(sq "$(fesc "$Q_BOARD") -p '#{pane_id}' -c '#{client_name}'")" || rk=""
-    else
-        ckey review "$rk" "${pin[@]}" display-popup -E -e "COCKPIT_PANEL_MODE=${pmode:-auto}" \
-            -w 90% -h "$PH" -T ' board ' "$(popup_sh "$SRC_RUN" "$DIR/scripts/cockpit-board")" \
-            || rk=""
-    fi
-fi
+[ -z "$bk" ] || bind_board board "$bk" @cockpit_board_window || bk=""
+[ -z "$rk" ] || bind_board review "$rk" @cockpit_review_window || rk=""
 
 # Required (#199). Offline: one --version, never a fetch, on every load.
 tv=$(tui_check)
