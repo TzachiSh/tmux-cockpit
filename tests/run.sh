@@ -944,6 +944,21 @@ bs_box() {                    # <dir>
     done
     chmod +x "$1/bin/"*
 }
+# bs_pinned <dir> <PIN> <tarball> [<PIN> <tarball>...]: <dir>/p/bootstrap.sh, a copy whose
+# <PIN>= line holds that tarball's own sha256, beside install.sh and a link to the scripts. A
+# row whose curl serves a stub tarball runs it, so the stub passes the pin and the build goes on.
+bs_pinned() {
+    local o=$1 h se=()
+    shift
+    while [ $# -ge 2 ]; do
+        h=$(sha256sum < "$2") || return 1
+        se+=(-e "s/^$1=.*/$1=${h%% *}/")
+        shift 2
+    done
+    mkdir -p "$o/p" && sed "${se[@]}" "$DIR/bootstrap.sh" > "$o/p/bootstrap.sh" &&
+        chmod +x "$o/p/bootstrap.sh" && cp "$DIR/install.sh" "$o/p/" &&
+        ln -s "$DIR/scripts" "$o/p/scripts"
+}
 # bs_fetches_revdiff: bootstrap.sh fetches a prebuilt revdiff here, so its fetch_tool runs. That
 # is Linux on x86_64 or arm64: on macOS the brew stub takes the step.
 bs_fetches_revdiff() {
@@ -12563,14 +12578,17 @@ echo "== bootstrap.sh's tmux build and revdiff fetch rm -rf no dir mktemp did no
 # reached. The build ran its command in a "cd '<dir>' ..." string, which such a dir broke.
 # prefix: the same tarball under a plain TMPDIR. Its configure logs its argv, and the row reads
 # the --prefix it got, the row's own folder shown as <o>: the build installs into HOME/.local.
+# quote and prefix run bs_pinned's copy, whose tmux pin is the stub tarball's own.
+# pin: the same tarball and the real script. The tarball is off the pin, so the build says so
+# and configures nothing, and no "TLS only" note is left (#1465).
 bt_mk=$(PATH=/usr/bin:/bin command -v mktemp)
 bt_v=$(sed -n 's/.*TMUX_BUILD=\([0-9.]*\).*/\1/p' "$DIR/bootstrap.sh")
-bt_run() {      # <tmux|revdiff> <full|cwd|-|quote|prefix> <check> -> "<dir|mark>|<FAIL>|<cc>"
-    local s=$1 w=$2 o a k c what t=${TMPDIR:-/tmp}
+bt_run() {      # <tmux|revdiff> <full|cwd|-|quote|prefix|pin> <check> -> "<dir|mark>|<FAIL>|<cc>"
+    local s=$1 w=$2 o a k c what t=${TMPDIR:-/tmp} b=$DIR/bootstrap.sh
     o=$(mktmpd); bs_box "$o"; mkdir -p "$o/cwd/-" "$o/full" "$o/rel"
     echo keep > "$o/full/canary"; echo keep > "$o/cwd/-/canary"
     case $w in full) a=$o/full k=$o/full/canary ;; cwd) a=$o/cwd k=$o/cwd ;;
-               quote|prefix) a='' k=$o/configured ;; *) a=- k=$o/cwd/-/canary ;; esac
+               quote|prefix|pin) a='' k=$o/configured ;; *) a=- k=$o/cwd/-/canary ;; esac
     if [ -z "$a" ]; then
         if [ "$w" = quote ]; then t=$o/q\'d; else t=$o/plain; fi
         mkdir -p "$t" "$o/pack/tmux-$bt_v"
@@ -12580,6 +12598,7 @@ bt_run() {      # <tmux|revdiff> <full|cwd|-|quote|prefix> <check> -> "<dir|mark
         { printf '#!/bin/sh\necho "curl $*" >> %s\n' "$(tq "$o/calls")"
           printf 'while [ $# -gt 0 ]; do [ "$1" = -o ] && exec cp %s "$2"; shift; done\nexit 1\n' \
               "$(tq "$o/t.tgz")"; } > "$o/bin/curl"
+        [ "$w" = pin ] || { bs_pinned "$o" TMUX_SHA256 "$o/t.tgz"; b=$o/p/bootstrap.sh; }
     else
         printf '#!/bin/sh\ncase $1 in -d) printf "%%s\\n" %s ;; *) exec %s "$@" ;; esac\n' \
             "$(tq "$a")" "$(tq "$bt_mk")" > "$o/bin/mktemp"
@@ -12591,10 +12610,13 @@ bt_run() {      # <tmux|revdiff> <full|cwd|-|quote|prefix> <check> -> "<dir|mark
     chmod +x "$o/bin/"*
     (cd "$o/cwd" && env -u TMUX -u TMUX_PANE HOME="$o/h" PATH="$o/bin:/usr/bin:/bin" \
         TMPDIR="$t" COCKPIT_GITHUB="$(file_url "$o/rel")" timeout 60 \
-        "$DIR/bootstrap.sh" </dev/null >"$o/out" 2>&1)
+        "$b" </dev/null >"$o/out" 2>&1)
     case $w in
         quote) c=$([ -e "$k" ] && echo ran || echo not) ;;
         prefix) c=$(grep -- '^--prefix=' "$k" 2>/dev/null); c=${c/#"--prefix=$o"/--prefix=<o>} ;;
+        pin) c="$([ -e "$k" ] && echo ran || echo not),$(
+                 grep -cxF "  FAIL:  tmux-$bt_v checksum mismatch -- NOT built" "$o/out"),$(
+                 grep -c 'TLS only' "$o/out")" ;;
         *) c=$([ -e "$k" ] && echo kept || echo gone) ;;
     esac
     printf '%s|%s|%s' "$c" \
@@ -12614,6 +12636,8 @@ is "the tmux build runs its steps in a temp dir whose path holds a ', and compil
    "ran|0|0" "$(bt_run tmux quote none)"
 is "the tmux build configures with --prefix in the user's HOME, and compiles nothing" \
    "--prefix=<o>/h/.local|0|0" "$(bt_run tmux prefix none)"
+is "the tmux build: a tarball off its pin is refused, says so, and configures nothing" \
+   "not,1,0|0|0" "$(bt_run tmux pin none)"
 unset -f bt_run; unset bt_mk bt_v bt_c bt_w
 
 echo "== bootstrap.sh --no-sudo builds tmux's libraries from source and calls no sudo (#189) =="
@@ -12630,9 +12654,9 @@ ns_le=$(sed -n 's/^LIBEVENT_V=//p' "$DIR/bootstrap.sh")
 ns_nc=$(sed -n 's/^NCURSES_V=//p' "$DIR/bootstrap.sh")
 ns_tv=$(sed -n 's/.*TMUX_BUILD=\([0-9.]*\).*/\1/p' "$DIR/bootstrap.sh")
 ns_box() {                    # <dir> <real|libevent|both>: the box, and which pins match
-    local o=$1 d le nc se=()
+    local o=$1 d
     bs_box "$o" || return 1
-    mkdir -p "$o/cwd" "$o/plain" "$o/rel" "$o/pack" "$o/srv" "$o/p"
+    mkdir -p "$o/cwd" "$o/plain" "$o/rel" "$o/pack" "$o/srv"
     printf '#!/bin/sh\necho "make $*" >> %s\n' "$(tq "$o/calls")" > "$o/bin/make"
     printf '#!/bin/sh\ncase $1 in -V) echo "tmux 3.7" ;; esac\nexit 0\n' > "$o/bin/tmux"
     printf '#!/bin/sh\necho "version: 1.13.0"\n' > "$o/bin/revdiff"
@@ -12648,15 +12672,12 @@ ns_box() {                    # <dir> <real|libevent|both>: the box, and which p
       printf 's=%s/${1##*/}\n' "$(tq "$o/srv")"
       printf '[ -n "$f" ] && [ -f "$s" ] && exec cp "$s" "$f"\nexit 22\n'; } > "$o/bin/curl"
     chmod +x "$o/bin/"*
-    [ "$2" != real ] || return 0
-    le=$(sha256sum < "$o/srv/libevent-$ns_le.tar.gz")
-    se=(-e "s/^LIBEVENT_SHA256=.*/LIBEVENT_SHA256=${le%% *}/")
-    if [ "$2" = both ]; then
-        nc=$(sha256sum < "$o/srv/ncurses-$ns_nc.tar.gz")
-        se+=(-e "s/^NCURSES_SHA256=.*/NCURSES_SHA256=${nc%% *}/")
-    fi
-    sed "${se[@]}" "$DIR/bootstrap.sh" > "$o/p/bootstrap.sh" && chmod +x "$o/p/bootstrap.sh"
-    cp "$DIR/install.sh" "$o/p/" && ln -s "$DIR/scripts" "$o/p/scripts"
+    case $2 in
+        libevent) bs_pinned "$o" LIBEVENT_SHA256 "$o/srv/libevent-$ns_le.tar.gz" ;;
+        both) bs_pinned "$o" LIBEVENT_SHA256 "$o/srv/libevent-$ns_le.tar.gz" \
+                  NCURSES_SHA256 "$o/srv/ncurses-$ns_nc.tar.gz" \
+                  TMUX_SHA256 "$o/srv/tmux-$ns_tv.tar.gz" ;;
+    esac
 }
 ns_run() {                    # <dir> <script> <TMPDIR> [args...]: the output in <dir>/out
     local o=$1 s=$2 t=$3

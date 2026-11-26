@@ -195,7 +195,8 @@ The hooks and the state each one writes: [states-and-hooks.md](states-and-hooks.
 ## Requirements
 
 - **tmux >= 3.8**. Below it the plugin says so and binds nothing; `bootstrap.sh`
-  builds 3.8 into `~/.local/bin` when the distro's tmux is older. It first
+  builds 3.8 into `~/.local/bin` when the distro's tmux is older, from the
+  release tarball checked against a sha256 kept in the script (#1465). It first
   installs the build's packages with sudo, and when that fails it points to
   `--no-sudo`. Where sudo cannot run, with no terminal for its password or no
   rights, `bootstrap.sh --no-sudo` calls no sudo at all. It names the missing
