@@ -336,8 +336,8 @@ static HELD: Mutex<Option<PathBuf>> = Mutex::new(None);
 
 /// On the lookup thread at its end, still counted: waits for the rig's drop to begin
 /// (it writes `go`), then asks once more on this thread, as a one-shot caller does.
-/// The product has no stage ahead of its fork, so this second ask stands in for a
-/// lookup thread that has not forked yet when its rig drops (#969).
+/// This second ask stands in for a lookup thread that has not forked yet when its rig
+/// drops (#969).
 fn ask_again_at_the_drop(at: Stage, _pid: u32) {
     if at != Stage::Reaping {
         return;
@@ -992,9 +992,10 @@ fn own_pane_stays_no_agent(tag: &str, grandchild: bool, by_ps: bool, hold: Hold)
         Hold::EmptyFile => set_stage_hook(Some(hold_an_empty_stubpid)),
     }
     r.sess();
-    // `spawn` returns only after the exec, so the stub writes stubpid while the board
-    // may not hold its pid yet, and a walk then meets a child it does not know. And
-    // an empty read, between the stub's truncate and its write, checks nothing (#976).
+    // `spawn` returns only after the exec, so the stub writes stubpid before the board
+    // holds its pid. This walk comes after the store, as the one in
+    // `a_walk_while_the_lookup_spawns_waits_for_its_child` waits to (#1016). And an
+    // empty read, between the stub's truncate and its write, checks nothing (#976).
     let pid = wait_in_flight().to_string();
     // the stub is the board's child, and it is named claude
     std::fs::write(root.join("200/task/200/children"), &pid).unwrap();
@@ -1132,6 +1133,28 @@ fn a_walk_while_the_lookup_spawns_waits_for_its_child() {
     set_stage_hook(None);
     assert_eq!(ids, ["%1"], "a walk inside the spawn showed the board's own pane as an agent");
     std::fs::write(r.dir.join("go"), "").unwrap();
+    r.wait_cache();
+}
+
+/// As the lookup forks: a walk then (#1016).
+fn walk_at_the_fork(at: Stage, _pid: u32) {
+    if at == Stage::Forking {
+        walk_aside();
+    }
+}
+
+/// #1016: most of the window is inside `spawn`, from the child's exec to its return,
+/// where no hook runs. A walk that starts as the lookup forks waits until the board
+/// holds the child.
+#[test]
+fn a_walk_while_the_lookup_forks_waits_for_it() {
+    let r = Rig::new("forkwalk", ONE);
+    *aside() = Aside::default();
+    set_stage_hook(Some(walk_at_the_fork));
+    r.sess();
+    let (in_stage, _) = walked();
+    set_stage_hook(None);
+    assert!(!in_stage, "a walk ran to its end while the lookup forked");
     r.wait_cache();
 }
 

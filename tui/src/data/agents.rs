@@ -50,9 +50,18 @@ pub fn lookup_pid() -> Option<u32> {
     Some(CHILD.load(Ordering::Relaxed)).filter(|&c| c != 0)
 }
 
+/// Held from just before the lookup forks until its child's pid is in `CHILD`, and by
+/// [`is_lookup_child`] to read `CHILD`: a walk that meets the child then finds it
+/// stored, after waiting one fork and exec at most. `spawn` returns only once the
+/// child has exec'd, so without it a walk can meet a running `claude` that `CHILD`
+/// does not name yet (#1016).
+static SPAWNING: Mutex<()> = Mutex::new(());
+
 /// Where a lookup is, for a test that has to act inside one of its windows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Stage {
+    /// about to fork, holding [`SPAWNING`]; there is no child yet, so the pid is 0
+    Forking,
     /// forked, and its pid not yet in `CHILD`
     Spawned,
     /// exited, `CHILD` cleared, and not yet reaped
@@ -144,10 +153,15 @@ pub fn kill_lookup() {
 
 /// Whether `pid` is the lookup's own child. The board sits in a pane, so that
 /// child is in the pane's process tree: a walk would find a `claude` there and
-/// show the board's own pane as an agent for as long as the call runs.
+/// show the board's own pane as an agent for as long as the call runs. While a
+/// lookup forks, it waits for [`SPAWNING`].
 pub fn is_lookup_child(pid: &str) -> bool {
     let Ok(pid) = pid.parse::<u32>() else { return false };
-    if pid == CHILD.load(Ordering::Relaxed) && pid != 0 {
+    let child = {
+        let _no_spawn = SPAWNING.lock().unwrap_or_else(|e| e.into_inner());
+        CHILD.load(Ordering::Relaxed)
+    };
+    if pid == child && pid != 0 {
         return true;
     }
     let r = RECENT.lock().unwrap_or_else(|e| e.into_inner());
@@ -570,9 +584,14 @@ fn claude_agents_json(deadline: Duration) -> Option<Vec<u8>> {
             });
         }
     }
-    let mut child = cmd.spawn().ok()?;
-    stage(Stage::Spawned, child.id());
-    CHILD.store(child.id(), Ordering::Relaxed);
+    let mut child = {
+        let _spawning = SPAWNING.lock().unwrap_or_else(|e| e.into_inner());
+        stage(Stage::Forking, 0);
+        let child = cmd.spawn().ok()?;
+        stage(Stage::Spawned, child.id());
+        CHILD.store(child.id(), Ordering::Relaxed);
+        child
+    };
     lookup_output(&mut child, deadline)
 }
 
