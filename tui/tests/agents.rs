@@ -17,6 +17,14 @@ fn stat(start: &str) -> String {
     format!("100 (cl aude) S 1 100 100 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 {start} 0 0\n")
 }
 
+/// `pid` in the fake proc root `root`: named `comm`, with `kids` as its children.
+fn proc_entry(root: &Path, pid: &str, comm: &str, kids: &str) {
+    let d = root.join(pid);
+    std::fs::create_dir_all(d.join("task").join(pid)).unwrap();
+    std::fs::write(d.join("task").join(pid).join("children"), kids).unwrap();
+    std::fs::write(d.join("comm"), format!("{comm}\n")).unwrap();
+}
+
 struct Rig<'a> {
     dir: PathBuf,
     old: Vec<(&'static str, Option<String>)>,
@@ -135,10 +143,7 @@ impl Rig<'_> {
     }
 
     fn proc_dir(&self, pid: &str, comm: &str, kids: &str) {
-        let d = self.dir.join("proc").join(pid);
-        std::fs::create_dir_all(d.join("task").join(pid)).unwrap();
-        std::fs::write(d.join("task").join(pid).join("children"), kids).unwrap();
-        std::fs::write(d.join("comm"), format!("{comm}\n")).unwrap();
+        proc_entry(&self.dir.join("proc"), pid, comm, kids);
     }
 
     fn cache(&self) -> PathBuf {
@@ -331,8 +336,8 @@ static HELD: Mutex<Option<PathBuf>> = Mutex::new(None);
 
 /// On the lookup thread at its end, still counted: waits for the rig's drop to begin
 /// (it writes `go`), then asks once more on this thread, as a one-shot caller does.
-/// The product has no stage ahead of its fork, so this second ask stands in for a
-/// lookup thread that has not forked yet when its rig drops (#969).
+/// This second ask stands in for a lookup thread that has not forked yet when its rig
+/// drops (#969).
 fn ask_again_at_the_drop(at: Stage, _pid: u32) {
     if at != Stage::Reaping {
         return;
@@ -987,9 +992,10 @@ fn own_pane_stays_no_agent(tag: &str, grandchild: bool, by_ps: bool, hold: Hold)
         Hold::EmptyFile => set_stage_hook(Some(hold_an_empty_stubpid)),
     }
     r.sess();
-    // `spawn` returns only after the exec, so the stub writes stubpid while the board
-    // may not hold its pid yet, and a walk then meets a child it does not know. And
-    // an empty read, between the stub's truncate and its write, checks nothing (#976).
+    // `spawn` returns only after the exec, so the stub writes stubpid before the board
+    // holds its pid. This walk comes after the store, as the one in
+    // `a_walk_while_the_lookup_spawns_waits_for_its_child` waits to (#1016). And an
+    // empty read, between the stub's truncate and its write, checks nothing (#976).
     let pid = wait_in_flight().to_string();
     // the stub is the board's child, and it is named claude
     std::fs::write(root.join("200/task/200/children"), &pid).unwrap();
@@ -1047,6 +1053,109 @@ fn the_own_pane_check_waits_for_the_board_to_hold_the_stub() {
 #[test]
 fn the_own_pane_check_takes_no_pid_from_an_empty_stubpid() {
     own_pane_stays_no_agent("selfrow5", false, false, Hold::EmptyFile);
+}
+
+/// A walk of the fleet that a stage hook starts on a thread of its own (#1016): whether
+/// it ended inside the stage, known once the stage is over, and the panes it found.
+#[derive(Default)]
+struct Aside {
+    in_stage: Option<bool>,
+    ids: Option<Vec<String>>,
+}
+
+static ASIDE: Mutex<Aside> = Mutex::new(Aside { in_stage: None, ids: None });
+
+fn aside() -> std::sync::MutexGuard<'static, Aside> {
+    ASIDE.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// On the lookup thread, inside a stage: starts the walk, and waits for its end for
+/// 200 polls of 5 ms at most. A walk the lookup holds back runs them out.
+fn walk_aside() {
+    std::thread::spawn(|| {
+        let ids = list_panes().unwrap().into_iter().map(|p| p.id).collect();
+        aside().ids = Some(ids);
+    });
+    let mut ended = false;
+    for _ in 0..200 {
+        ended = aside().ids.is_some();
+        if ended {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    aside().in_stage = Some(ended);
+}
+
+/// Polls until the stage is over and the walk has ended, failing once [`GONE_BY`] has
+/// passed: whether the walk ended inside the stage, and its panes.
+fn walked() -> (bool, Vec<String>) {
+    let end = std::time::Instant::now() + GONE_BY;
+    loop {
+        if let Aside {
+            in_stage: Some(e),
+            ids: Some(ids),
+        } = &*aside()
+        {
+            return (*e, ids.clone());
+        }
+        assert!(std::time::Instant::now() < end, "the walk or its stage never ended");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+/// At `spawn`'s return, before the store: the stub under the board's pane, as the
+/// kernel lists it once the child has exec'd, and a walk then (#1016).
+fn walk_at_the_spawn(at: Stage, pid: u32) {
+    if at == Stage::Spawned {
+        let root = Path::new(&std::env::var("HOME").unwrap()).join("proc");
+        let pid = pid.to_string();
+        std::fs::write(root.join("200/task/200/children"), &pid).unwrap();
+        proc_entry(&root, &pid, "claude", "");
+        walk_aside();
+    }
+}
+
+/// #1016: `spawn` returns only once the child has exec'd, and the board stores its pid
+/// after that. A walk in between meets a `claude` under the board's own pane that the
+/// board does not hold yet, and it waits for the store.
+#[test]
+fn a_walk_while_the_lookup_spawns_waits_for_its_child() {
+    let r = Rig::new("spawnwalk", &format!("while [ ! -f $HOME/go ]; do sleep 0.02; done\n{ONE}"));
+    let row = fake::board_row(&["%2", "w:1", "board", "bash", "-", "-", "-", "-", "/w", "200", "-", "-", "@2"]);
+    let rows = std::fs::read_to_string(r.dir.join("rows")).unwrap() + &row + "\n";
+    std::fs::write(r.dir.join("rows"), rows).unwrap();
+    r.proc_dir("200", "bash", "");
+    *aside() = Aside::default();
+    set_stage_hook(Some(walk_at_the_spawn));
+    r.sess();
+    let (_, ids) = walked();
+    set_stage_hook(None);
+    assert_eq!(ids, ["%1"], "a walk inside the spawn showed the board's own pane as an agent");
+    std::fs::write(r.dir.join("go"), "").unwrap();
+    r.wait_cache();
+}
+
+/// As the lookup forks: a walk then (#1016).
+fn walk_at_the_fork(at: Stage, _pid: u32) {
+    if at == Stage::Forking {
+        walk_aside();
+    }
+}
+
+/// #1016: most of the window is inside `spawn`, from the child's exec to its return,
+/// where no hook runs. A walk that starts as the lookup forks waits until the board
+/// holds the child.
+#[test]
+fn a_walk_while_the_lookup_forks_waits_for_it() {
+    let r = Rig::new("forkwalk", ONE);
+    *aside() = Aside::default();
+    set_stage_hook(Some(walk_at_the_fork));
+    r.sess();
+    let (in_stage, _) = walked();
+    set_stage_hook(None);
+    assert!(!in_stage, "a walk ran to its end while the lookup forked");
+    r.wait_cache();
 }
 
 fn seeded_at(r: &Rig, age: u64, session: &str) {
