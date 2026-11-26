@@ -407,23 +407,18 @@ fi
 
 # ------------------------------------------------------------- fetch_tool ----
 # An unreachable sums file fails closed; an unreachable asset is only a skip.
-fetch_tool() {                # <name> <ver> <have> <asset-url> <sums-url|-> <path-in-tar>
-    local name=$1 ver=$2 have=$3 asset=$4 sums=$5 path=$6 a depth
+fetch_tool() {                # <name> <ver> <asset-url> <sums-url> <path-in-tar>
+    local name=$1 ver=$2 asset=$3 sums=$4 path=$5 a depth
     if [ "$dry" -eq 1 ]; then printf '  would: fetch %s %s\n' "$name" "$ver"; return 0; fi
-    if [ "$have" = "$ver" ]; then
-        printf '  ok:    %s %s already current\n' "$name" "$ver"; return 0
-    fi
     a=${asset##*/}
-    if [ "$sums" = - ]; then
-        printf '  note:  %s publishes no checksums; TLS only\n' "$name"
-    elif ! curl -fsSL --max-time 30 -o "$tmp/sums" "$sums"; then
+    if ! curl -fsSL --max-time 30 -o "$tmp/sums" "$sums"; then
         printf '  FAIL:  %s checksums unreachable\n' "$name" >&2; return 1
     fi
     if ! curl -fsSL --retry 2 --max-time 120 -o "$tmp/a.tgz" "$asset"; then
         printf '  skip:  %s (download failed -- offline?)\n' "$name" >&2; return 0
     fi
     # The published name is rewritten so sha256sum -c checks the bytes that arrived.
-    if [ "$sums" != - ] && ! ( cd "$tmp" && grep -E " \*?${a//./\\.}\$" sums |
+    if ! ( cd "$tmp" && grep -E " \*?${a//./\\.}\$" sums |
             sed -E "s| \*?${a//./\\.}\$| a.tgz|" | sha_c ) >/dev/null 2>&1; then
         printf '  FAIL:  %s checksum mismatch -- NOT installed\n' "$name" >&2; return 1
     fi
@@ -469,7 +464,7 @@ else
         skipped+=("revdiff: no curl")
     elif ask "fetch revdiff $REVDIFF into $BIN?" y; then
         rv_rel="${COCKPIT_GITHUB:-https://github.com}/umputun/revdiff/releases/download/v$REVDIFF"
-        in_own_tmpdir revdiff fetch_tool revdiff "$REVDIFF" "" \
+        in_own_tmpdir revdiff fetch_tool revdiff "$REVDIFF" \
             "$rv_rel/revdiff_${REVDIFF}_$rv_os.tar.gz" "$rv_rel/revdiff_${REVDIFF}_checksums.txt" \
             revdiff || failed+=("fetch revdiff")
     else
