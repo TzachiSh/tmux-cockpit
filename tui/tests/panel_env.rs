@@ -277,7 +277,7 @@ fn a_broken_prompt_file_falls_back_and_says_why() {
         std::fs::remove_file(&p).unwrap();
         std::fs::create_dir(&p).unwrap();
     }
-    let (explain, note) = prompts::explain_noted();
+    let (explain, note, _) = prompts::explain_noted();
     assert!(explain.starts_with("You help a user understand"), "{explain}");
     assert_eq!(note, Some(unread(&p)));
     assert_eq!(prompts::write_noted(&Ctx::default()).1, None, "an absent override is no note");

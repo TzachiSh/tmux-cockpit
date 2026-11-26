@@ -337,8 +337,9 @@ kind>`, `--out <file.jsonl>`, `--no-hermetic` and `--show-holdout` are the knobs
 `--pane-cwd-source` sends the work folder's source as pane-cwd, the source a
 user without the hooks gets, in place of session (#1387): on an agent's window
 the `<window>` line then ends `work folder not confirmed (pane-cwd)`, and
-another window's call does not change. Every call is a Write, so Explain's
-`<agent>` part is not measured. A run with the flag prints a `work source` line
+another window's call does not change. On an Explain case (below) the flag
+reaches Explain's `<agent>` part, whose `work folder:` line then ends
+`(pane-cwd)`. A run with the flag prints a `work source` line
 in its summary, and the modes that send no panel prompt refuse it as they refuse
 `--router-prompt`, below.
 `--router-prompt <file>` sends the file's text as every call's system prompt in
@@ -356,6 +357,32 @@ the tuning runs will too, so the note never reached the router there. Under
 the tune set), goes as a plain text call, with no repo access and no
 `files_read`. Tuning reports list it as a known exception, not a router miss,
 unless it routes like the others.
+
+**Explain cases** (#1405). A case with `flow: explain` runs through the panel's
+own Explain instead of a write: the rig types its request into the box Explain's
+own question opens and presses Enter, so the call carries Explain's prompt, its
+envelope with the request as the one user turn and six questions left, and
+Explain's model route (haiku). A case without the key is a write, so every write
+case, row and line is as it was. An Explain case may give a `--- agent` section
+of `state:`, `model:`, `doing:` and `asked:` lines, each at most once, the state
+a word the board writes (`needs-input`, `error`, `running` or `done`); they are
+the board's facts the `<agent>` part sends, so the section needs a Claude Code
+window. Explain sends no repo, refs, earlier rounds or output type, so an
+Explain case refuses `out`, `out_is`, `explore`, `--- repo`, `--- refs` and
+`--- conversation`, and a write case refuses the keys below. The reply is read
+by Explain's parser, as the panel reads it: a question, or an answer with any
+`<prompt>` for the agent split out. `expect: write` means it answers rather than
+asks. An answer passes when it holds every `must` group and no `must_not`, when
+each `lead:` group has a term in its first paragraph (the text before its first
+blank line, the `<prompt>` left out), as explain.txt asks it to start with the
+answer, and when `agent_prompt: yes` finds a `<prompt>` or `agent_prompt: no`
+finds none; with no `agent_prompt` key either passes. `lead` and `agent_prompt`
+are for write or either cases. An Explain row adds `flow` (`explain`), `ready`
+(whether a `<prompt>` came back), `ready_wrong` and `lead_missing`; a held-out
+row keeps the first three and `lead_missing_n`. `--check` adds `; N explain` to
+its count line when there is one. `--judge` and `--router-prompt` refuse a run
+with an Explain case before any call: the judge's rubric grades write replies,
+and the router text replaces the write prompt.
 
 Held-out cases live in `tui/evals/panel/holdout-blind.txt`, not in the cases
 file every tuning session reads. Its readers are the owner, the orchestrator,
