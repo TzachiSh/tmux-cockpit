@@ -383,7 +383,7 @@ if [ -n "$pk" ]; then
 fi
 
 # The board is wider than $PW: a 70% popup on 120 columns fits one tile column.
-Q_BOARD=$(sq "$DIR/scripts/cockpit-board")
+Q_BOARD=$(shq "$DIR/scripts/cockpit-board")   # a window's default-shell reads it (#1468)
 # The board's jump moves the pressing client, not the most recently active one
 # (#296). The window forms pass it (-c: run-shell expands formats); the popup
 # cannot (display-popup expands none in its command), so its key leaves it on
