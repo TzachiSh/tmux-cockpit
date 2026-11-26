@@ -99,7 +99,7 @@ at a main turn's answer (docs/mod.md). The settings hooks keep the rest, until
    - `session.end` when it exits
 3. It never puts agent text in a line. It hands each line to
    `scripts/cockpit-event` on stdin.
-4. Add the agent's process name to the default agent list (`cockpit.tmux:63`)
+4. Add the agent's process name to the default agent list (`cockpit.tmux:60`)
    if it is missing.
 5. Add contract rows: the native signal in, the expected agent-event lines out,
    and each line valid against the schema. Add one end-to-end row on a private

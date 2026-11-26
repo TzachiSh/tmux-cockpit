@@ -6664,11 +6664,11 @@ for ps_f in aXb aYc ad; do
     echo "set -g @cockpit_decoy $ps_f" > "$PS/p/$ps_f/scripts/lib/statusbar.conf"
 done
 ps_opts() {                   # <socket> <folder> -> name=value per @cockpit option, folder as P
-    local n v q=${2//\'/\'\\\'\'}   # the folder as sq() writes it
+    local n v q; q=$(tq "$2"); q=${q#\'}; q=${q%\'}   # the folder as lib/fmt.sh's shq writes it
     "$TMUX_REAL" -L "$1" show-options -g 2>/dev/null | while read -r n _; do
         case $n in @cockpit_sweep_seq) continue ;; @cockpit*) ;; *) continue ;; esac
         v=$("$TMUX_REAL" -L "$1" show-options -gv "$n" 2>/dev/null)
-        v=${v//"$q"/P}            # only that form: a value that lost sq() stays unequal
+        v=${v//"$q"/P}            # only that form: a value quoted another way stays unequal
         printf '%s=%s\n' "$n" "$v"
     done
 }
@@ -17127,7 +17127,7 @@ is "a missing binary says so once, on the pane the key was pressed in, and exits
    "$brc $(cat "$BD/wargv" 2>/dev/null)"
 
 # --- a plugin directory that is shell syntax -----------------------------------
-# sq() quotes $DIR into the bind, so pressing the key runs the wrapper and not
+# shq() quotes $DIR into the bind, so pressing the key runs the wrapper and not
 # the directory's name. Pressed for real: display-popup needs a client, so an
 # outer server provides the pty (the same shape as the RCE-via-directory-name
 # block above).
