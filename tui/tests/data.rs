@@ -1624,7 +1624,8 @@ fn an_open_question_is_the_message_and_its_header_the_doing() {
     assert_eq!(get(&ps, "%1").doing, "AskUserQuestion: Merge");
 }
 
-/// #453: the count of the questions after the first leads the message: the board cuts its end.
+/// #1504: "Q1 of N" leads the message when more than one question is asked: the board
+/// cuts its end.
 #[test]
 fn more_questions_than_one_are_counted_on_the_message() {
     let r = Rig::new("askmore");
@@ -1633,7 +1634,7 @@ fn more_questions_than_one_are_counted_on_the_message() {
     r.transcript("s2", &ask_row("tu1", serde_json::json!([q("Only?", "One")])));
     r.rows(&[hooked("%1", "needs-input", "s1"), hooked("%2", "needs-input", "s2")]);
     let ps = list_panes().unwrap();
-    assert_eq!(get(&ps, "%1").msg, "(+2) Which runner?");
+    assert_eq!(get(&ps, "%1").msg, "Q1 of 3: Which runner?");
     assert_eq!(get(&ps, "%2").msg, "Only?", "one question carries no count");
 }
 
@@ -1723,6 +1724,49 @@ fn a_question_of_the_wrong_shape_leaves_the_hooks_message() {
     let ps = list_panes().unwrap();
     for (i, s) in shapes.iter().enumerate() {
         assert_eq!(get(&ps, &format!("%{i}")).msg, "Claude needs your permission", "row {i}: {s}");
+    }
+}
+
+/// #1504: an ask missing a field of its shape, or holding one of the wrong type, is no
+/// ask, so the hook's text stays. The last row is the whole shape, which shows.
+#[test]
+fn an_ask_missing_a_field_leaves_the_hooks_message() {
+    let r = Rig::new("askfield");
+    let opt = serde_json::json!({"label": "Yes", "description": "merge it now"});
+    let whole = serde_json::json!({"question": "Merge?", "header": "Merge", "options": [opt, opt], "multiSelect": false});
+    let mut shapes = vec![];
+    for k in ["header", "options", "multiSelect"] {
+        let mut q = whole.clone();
+        q.as_object_mut().unwrap().remove(k);
+        shapes.push((format!("no {k}"), serde_json::json!([q])));
+    }
+    for k in ["label", "description"] {
+        let mut q = whole.clone();
+        q["options"][1].as_object_mut().unwrap().remove(k);
+        shapes.push((format!("an option with no {k}"), serde_json::json!([q])));
+    }
+    let (mut multi, mut preview, mut second) = (whole.clone(), whole.clone(), whole.clone());
+    multi["multiSelect"] = serde_json::json!("yes");
+    preview["options"][0]["preview"] = serde_json::json!(7);
+    second.as_object_mut().unwrap().remove("options");
+    shapes.push(("multiSelect a string".into(), serde_json::json!([multi])));
+    shapes.push(("a preview that is a number".into(), serde_json::json!([preview])));
+    shapes.push(("a second question with no options".into(), serde_json::json!([whole, second])));
+    shapes.push(("whole".into(), serde_json::json!([whole])));
+    let mut rows = vec![];
+    for (i, (_, s)) in shapes.iter().enumerate() {
+        r.transcript(&format!("s{i}"), &ask_row("tu1", s.clone()));
+        rows.push(hooked(&format!("%{i}"), "needs-input", &format!("s{i}")));
+    }
+    r.rows(&rows);
+    let ps = list_panes().unwrap();
+    for (i, (what, _)) in shapes.iter().enumerate() {
+        let want = if what == "whole" {
+            "Merge?"
+        } else {
+            "Claude needs your permission"
+        };
+        assert_eq!(get(&ps, &format!("%{i}")).msg, want, "row {i}: {what}");
     }
 }
 
