@@ -201,22 +201,19 @@ subs_build() {
     subs_cmd=(if-shell -F -t "$pane" "$cond" "$body")
 }
 
-# safe_word <text> <cap> -> REPLY: the run of [A-Za-z0-9._-] that starts <text>, at most <cap>
-# bytes. Nothing else ever leaves it: the text is untrusted and lands in a tmux option the bar
-# and board print. The letters are spelled out, not a range: a range follows the locale.
-al=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789
-safe_word() {
-    local w=${1%%[!"$al"._-]*}
-    REPLY=${w:0:$2}
-}
-# whole_word <key> -> REPLY: the payload's own "<key>" string, only when it is whole and comes
-# before "tool_input": one cut by a cap or an escape names nothing, and so does one inside the
-# tool's input, which may hold the same key (#1403). The key is matched with its quotes, so text
-# inside a string, where the quotes arrive escaped, cannot match. Then safe_word, 64 bytes at
-# most.
-whole_word() {
-    local LC_ALL=C re="\"$1\": ?\"([^\"\\\\]*)\"" s=${payload%%\"tool_input\"*}
-    REPLY=""; [[ $s =~ $re ]] && safe_word "${BASH_REMATCH[1]}" 64
+# tool_key -> REPLY: the payload's own tool_name, read before "tool_input", whose input may hold
+# the same key (#1403). The whole name or none, never a cut one, which two tools of one long
+# prefix share (#1489). Claude Code 2.1.332 builds an MCP tool name as mcp__<server>__<tool>,
+# each part's other characters made `_` and nothing cut, and its own checks take a tool name of
+# [a-zA-Z0-9_-] up to 128 bytes: the tool_use names it keeps for clear_tool_inputs, withdrawn
+# tool names, a frame's disallowed_tools (mcp__ names) and each part of an MCP name. The key is
+# matched with its quotes, so text inside a string, where the quotes arrive escaped, cannot
+# match, and only those characters ever leave: the name lands in tmux options the bar and the
+# board print. Empty for any other name: it names no tool.
+tool_key() {
+    local LC_ALL=C re='"tool_name": ?"([A-Za-z0-9_-]{1,128})"' s=${payload%%\"tool_input\"*}
+    REPLY=""; [[ $s =~ $re ]] && REPLY=${BASH_REMATCH[1]}
+    return 0
 }
 # agent_key -> REPLY: the payload's own agent_id, read before "tool_input" (a main-thread call
 # has none of its own, and its input may hold one, #1403) by subs_id's rule in lib/subslog.sh:
@@ -239,7 +236,7 @@ call_key() {
     if is_event PreToolUse; then ask_when="#{m:$a/*,#{@panestate_ask}}"
     elif is_event SubagentStart; then ask_when=0
     elif is_event PostToolUse || is_event PostToolUseFailure; then
-        whole_word tool_name; ask_when="#{==:#{@panestate_ask},$a/$REPLY}"
+        tool_key; ask_when="#{==:#{@panestate_ask},$a/$REPLY}"
     fi
     [ "$known" = 0 ] || [ -z "$ask_when" ] || ask_when=0
 }
@@ -248,7 +245,9 @@ call_key() {
 # and the ask reads plain "Bash": a word with `=`, a quote, `(`, `;` or `$` may carry a
 # value, an argument or a path, and the board shows it to anyone at the screen (#1330). So
 # `FOO=1 git` names none either (#1334: skipping NAME=value leaked a value three times).
-# JSON's \n, \t and \r are blanks. A word cut by the 4 KB cap is cut short, no more.
+# JSON's \n, \t and \r are blanks. A word cut by the 4 KB cap is cut short, no more. The
+# letters are spelled out, not a range: a range follows the locale.
+al=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789
 prog_name() {
     local LC_ALL=C s w re='"command": ?"([^"]*)'
     REPLY=""
@@ -282,7 +281,7 @@ needs-input|error)
         # be a whole file: 4 KB is read, no more.
         read_capped 4096 true
         if is_event PermissionRequest; then
-            whole_word tool_name; tool=$REPLY msg=$REPLY
+            tool_key; tool=$REPLY msg=$REPLY
             if [ "$msg" = Bash ]; then prog_name; [ -z "$REPLY" ] || msg="Bash: $REPLY"; fi
             # Before the sticky guard, as notify writes: a pane already waiting can be asked
             # again. Argv, not a format. No tool, no text, so notify's ask stays. The same call
