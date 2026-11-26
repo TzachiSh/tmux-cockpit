@@ -27793,12 +27793,41 @@ ts sub-reconcile \
 is "a monitor, workflow, cloud session and MCP task beside a subagent: skipped, the set written" \
     "set=[a1]" "$(tslive)"
 rm -rf "$TSD/state"
+# #1466: Claude Code 2.1.331 sends a description of up to 1000 UTF-16 units as it is, and cuts a
+# longer one to 1000 with "… [+N chars]" after it. Built from bytes: $'\xe4\xb8\xad' is a CJK
+# character, one unit in 3 bytes, and $'\xf0\x9f\x98\x80' an emoji, a surrogate pair, 2 units.
+tsrep() {                     # <text> <n>: the text n times
+    local s='' i
+    for ((i = 0; i < $2; i++)); do s+=$1; done
+    printf '%s' "$s"
+}
+tstm() {                      # <description body>: one Stop with a teammate that has it
+    ts sub-reconcile "$(tsfin "{\"id\":\"t1\",\"type\":\"teammate\",\"description\":\"$1\"}")" \
+        >/dev/null
+}
+tsdesc() {                    # <description body>: whole, changed or none in the set, then the log
+    local d=none
+    [ -f "$TSLIVE" ] && d=changed && [ "$(cut -f3 "$TSLIVE")" = "$1" ] && d=whole
+    printf '%s [%s]' "$d" "$(tsrows)"
+}
 ts sub-reconcile "$(tsfin '{"id":"t1","type":"teammate","status":"running"}')" >/dev/null
-ts sub-reconcile \
-    "$(tsfin "{\"id\":\"t1\",\"type\":\"teammate\",\"description\":\"$(printf '%0513d' 0)\"}")" \
-    >/dev/null
-is "a teammate with no description, or one past 512 bytes: no set, a bail row each (#407)" \
-    "none bail desc|bail desc" "$(tsbail)"
+tstm "$(tsrep x 1001)"
+tstm "$(tsrep x 1000)"$'\xe2\x80\xa6'" [+5 chars]"
+tstm "$(tsrep $'\xf0\x9f\x98\x80' 501)"
+tstm "$(tsrep x 998)"'\\u001f'
+is "a teammate with no description, or one past 1000 units: no set, a bail row each (#407, #1466)" \
+    "none bail desc|bail desc|bail desc|bail desc|bail desc" "$(tsbail)"
+for tsd in "ASCII:$(tsrep x 1000)" "CJK, 3000 bytes:$(tsrep $'\xe4\xb8\xad' 1000)" \
+        "emoji, 2000 bytes:$(tsrep $'\xf0\x9f\x98\x80' 500)" "escapes:$(tsrep x 998)"'\"\u001f'; do
+    rm -rf "$TSD/state"; tstm "${tsd#*:}"
+    is "a teammate's description of 1000 units, ${tsd%%:*}, is taken whole, with no bail (#1466)" \
+        "whole []" "$(tsdesc "${tsd#*:}")"
+done
+rm -rf "$TSD/state"
+ts sub-taskstop "$(tsstop tm1 t0sm6hcnt in_process_teammate "$(tsrep x 1000)")" >/dev/null
+is "a teammate's TaskStop keeps a description of 1000 units in its kill-tm row (#1466)" \
+    "kill-tm tm1 whole" "$(cut -f2,3 "$TSLOG" | tr '\t' ' ') $(
+        [ "$(cut -f4 "$TSLOG")" = "$(tsrep x 1000)" ] && echo whole || echo changed)"
 rm -rf "$TSD/state"
 ts sub-reconcile \
     "$(tsfin '{"id":"a1","type":"subagent"} x {"id":"a2","type":"subagent"}')" >/dev/null

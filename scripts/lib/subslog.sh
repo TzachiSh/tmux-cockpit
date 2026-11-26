@@ -46,13 +46,33 @@ subs_payload() {
 }
 
 # subs_desc <key> [text]: a "key": "string" of the text (default: the payload), as the JSON
-# string's body, 0 to 512 bytes, no control byte. REPLY empty and status 1 on any miss.
+# string's body, no control byte, and no longer than Claude Code sends a description whole:
+# 1000 UTF-16 units. Claude Code 2.1.331's Stop input holds _d(description, Qqt) with Qqt=1000:
+# up to 1000 units as String.length counts them, the text as it is, and past that ee() cuts it
+# to 1000 (999 rather than split a surrogate pair) with "… [+N chars]" after. A cut one is no
+# description a meta file holds, so a set with it would end a teammate that runs. Units, not
+# bytes: a byte bound wide enough for 1000 CJK characters lets a cut ASCII one through (#1466).
+# REPLY empty and status 1 on any miss.
 subs_desc() {
-    local LC_ALL=C re='"'"$1"'": ?"(([^"\\]|\\.)*)"' t=${2-$payload}
+    # LC_ALL=C: ${#x} counts bytes, and the byte ranges below are bytes.
+    local LC_ALL=C re='"'"$1"'": ?"(([^"\\]|\\.)*)"' t=${2-$payload} b u f
+    local cont=$'\x80-\xbf' four=$'\xf0-\xf7'
     REPLY=""
     [[ $t =~ $re ]] || return 1
-    [ "${#BASH_REMATCH[1]}" -le 512 ] && [[ ${BASH_REMATCH[1]} != *[[:cntrl:]]* ]] || return 1
-    REPLY=${BASH_REMATCH[1]}
+    b=${BASH_REMATCH[1]}
+    # 1000 units are 3000 bytes at most, but for hundreds of \uXXXX escapes, which no
+    # description holds: this bounds the work first and keeps a kill-tm row under PIPE_BUF.
+    [ "${#b}" -le 3000 ] && [[ $b != *[[:cntrl:]]* ]] || return 1
+    # Each escape to one byte, an escaped backslash first, so \\u001f is not read as \u001f.
+    u=${b//\\\\/e}
+    u=${u//\\u[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]/e}
+    u=${u//\\?/e}
+    # One unit per character, its continuation bytes dropped; one more for a 4-byte character,
+    # which JavaScript holds as a surrogate pair.
+    u=${u//[$cont]/}
+    f=${u//[!$four]/}
+    [ $((${#u} + ${#f})) -le 1000 ] || return 1
+    REPLY=$b
 }
 
 # subs_record <start|stop|idle>: one line for the payload's agent, or nothing at all.
