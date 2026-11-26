@@ -9716,7 +9716,7 @@ env -i PATH="$OST" HOME="$HOME" TMUX_LOG="$OST/log" CLICK_DIR="$OS" OPEN_EDITOR=
 case "$(cat "$OST/log")" in
     *NEWWIN*) bad "--folder opens the browser popup, not the editor" "a POPUP running --browse" \
             "$(cat "$OST/log")" ;;
-    *POPUP*"--browse '%1'"*) ok "--folder opens the browser popup, not the editor" ;;
+    *POPUP*"'--browse' '%1'"*) ok "--folder opens the browser popup, not the editor" ;;
     *) bad "--folder opens the browser popup, not the editor" "a POPUP running --browse" \
             "$(cat "$OST/log")" ;;
 esac
@@ -10760,19 +10760,19 @@ rqe_cmd() {                   # [VAR=value] -> the --loop root the popup was giv
     ( [ $# -eq 0 ] || export "${1%%=*}=${1#*=}"
       PATH="$RQESHIM:$PATH" XDG_STATE_HOME=$RQES "$DIR/scripts/tmux-review" --request "$RQEP" \
           >/dev/null 2>&1 )
-    # The popup's command is the mark, /bin/sh -c with its fixed script, sh, then the pane,
-    # tmux-review's path, the root, the store and rc (#1441). Each of those five is shq-quoted:
-    # '...' with each ' and \ outside them as \' and \\, so a blank inside the quotes is not a
-    # word's end.
-    local w="(\\\\.|'[^']*')+" pre="^COCKPIT_POPUP=1 \\/bin\\/sh -c '[^']*' sh"
+    # The popup's command is the mark, then each word shq-quoted (#1441, #1467): /bin/sh, -c,
+    # its fixed script, sh, then the pane, tmux-review's path, the root, the store and rc. A
+    # word is '...' with each ' and \ outside them as \' and \\, so a blank inside the quotes is
+    # not a word's end.
+    local w="(\\\\.|'[^']*')+" pre="^COCKPIT_POPUP=1 '\\/bin\\/sh' '-c' '[^']*' 'sh'"
     sed -nE "s/$pre $w $w ($w) $w $w\$/\\3/p" "$RQES/cmd" 2>/dev/null
 }
 rqewant=$(tq "$(git -C "$RQED/pane" rev-parse --show-toplevel)")
 is "the popup reviews the pane repo's root, nothing inherited" "$rqewant" "$(rqe_cmd)"
 # #1248: the same command starts with lib/fmt.sh's popup mark, which the pane scans skip
 case "$(cat "$RQES/cmd" 2>/dev/null)" in
-    "COCKPIT_POPUP=1 /bin/sh -c '"*) ok "...and the popup's command starts with the mark" ;;
-    *) bad "...and the popup's command starts with the mark" "COCKPIT_POPUP=1 /bin/sh -c '..." \
+    "COCKPIT_POPUP=1 '/bin/sh' '-c' '"*) ok "...and the popup's command starts with the mark" ;;
+    *) bad "...and the popup's command starts with the mark" "COCKPIT_POPUP=1 '/bin/sh' '-c' '..." \
            "$(cat "$RQES/cmd" 2>/dev/null)" ;;
 esac
 for v in GIT_DIR=@/.git GIT_WORK_TREE=@ GIT_COMMON_DIR=@/.git GIT_INDEX_FILE=@/.git/index; do
@@ -19208,7 +19208,8 @@ fi
 echo "== the menu's What is each agent doing? lists every pane with its state (#125, #222) =="
 # The row replays the cockpit table's t, a popup over one tmux list-panes. Its
 # -F format, the popup command's last word (#1456), is resolved here on a server,
-# the same pass the popup's shell runs.
+# the same pass the popup's shell runs. Every word is shq'd (#1467): the format
+# holds no ' and no \, so it is the word after 'sh', inside its '...'.
 if need_tmux "the agents popup"; then :; else
 AGS="cockpit-agents2-$$"; SOCKS="$SOCKS $AGS"
 "$TMUX_REAL" -L "$AGS" -f /dev/null new-session -d -s ag -x 200 -y 50 \
@@ -19222,7 +19223,7 @@ case "$("$TMUX_REAL" -L "$AGS" list-keys -T prefix | awk '$4=="a"')" in
             "What is each agent doing? ... send-keys -K t" "absent" ;;
 esac
 AGF=$("$TMUX_REAL" -L "$AGS" list-keys -T cockpit | awk '$4=="t"' |
-    sed -n "s/.* sh '\([^']*\)'\"\$/\1/p")
+    sed -n "s/.* 'sh' '\([^']*\)'\"\$/\1/p")
 "$TMUX_REAL" -L "$AGS" new-window -d -t ag: 'exec -a claude sleep 300' >/dev/null 2>&1
 AGP=$("$TMUX_REAL" -L "$AGS" new-window -d -t ag: -P -F '#{pane_id}' 'sleep 300' 2>/dev/null)
 "$TMUX_REAL" -L "$AGS" select-pane -t ag:0 -T 'alpha  two  spaces' >/dev/null 2>&1
@@ -22740,12 +22741,14 @@ is "@cockpit_touch on at a desktop width: full width" "-w 200 -h 14" "$(tpsize '
 is "the size options are ceilings, percent or cells" "-w 120 -h 10" \
     "$(tpsize '7|3||60%|10|' 200 50)"
 is "and never floors" "-w 140 -h 14" "$(tpsize '7|3||90%|40|' 200 50)"
+# tm hands its four values to tmux with -e, outside the command, so no shell reads them, and the
+# command is shq'd words only (#1467).
+tpenv="-e TM_POPUP=1 -e TM_SID=\$3 -e TM_CLIENT=/dev/pts/9 -e TM_PANE=%7"
 tpsize '7|3||||' 200 12 >/dev/null
 case "$(cat "$TP/log")" in
-    "WINDOW -t \$3: -n sessions TM_POPUP=1 TM_SID='\$3' TM_CLIENT='/dev/pts/9' TM_PANE='%7' '"*"/tm'") \
-            ok "but a window of its session, running tm" ;;
+    "WINDOW -t \$3: -n sessions $tpenv '"*"/tm'") ok "but a window of its session, running tm" ;;
     *) bad "but a window of its session, running tm" \
-            "WINDOW -t \$3: -n sessions TM_POPUP=1 ... TM_PANE='%7' '.../tm'" "$(cat "$TP/log")" ;;
+            "WINDOW -t \$3: -n sessions $tpenv '.../tm'" "$(cat "$TP/log")" ;;
 esac
 is "a client of 14 lines gets its popup, at the floor and not 70% of 14" "-w 140 -h 14" \
     "$(tpsize '7|3||||' 200 14)"
@@ -22756,17 +22759,17 @@ esac
 is "--needs sizes for the needs-you band" "-w 56 -h 14" "$(tpsize '7|4||||' 56 30 --needs)"
 tpsize '7|3||||' 200 50 >/dev/null
 case "$(cat "$TP/log")" in
-    "-c /dev/pts/9 -t \$3 -w 140 -h 14 -T  sessions  -E COCKPIT_POPUP=1 TM_POPUP=1 TM_SID='\$3' TM_CLIENT='/dev/pts/9' TM_PANE='%7' '"*"/tm'") \
+    "-c /dev/pts/9 -t \$3 -w 140 -h 14 -T  sessions  $tpenv -E COCKPIT_POPUP=1 '"*"/tm'") \
             ok "the popup goes to that client, in its session" ;;
     *) bad "the popup goes to that client, in its session" \
-            "-c /dev/pts/9 -t \$3 ... TM_SID='\$3' TM_CLIENT='/dev/pts/9' TM_PANE='%7' '.../tm'" \
-            "$(cat "$TP/log")" ;;
+            "-c /dev/pts/9 -t \$3 ... $tpenv -E COCKPIT_POPUP=1 '.../tm'" "$(cat "$TP/log")" ;;
 esac
 tpsize '7|3||||' 56 30 --needs >/dev/null
 case "$(cat "$TP/log")" in
-    *"/tm' --needs") ok "--needs rides into the popup" ;;
-    *) bad "--needs rides into the popup" "... tm' --needs" "$(cat "$TP/log")" ;;
+    *"/tm' '--needs'") ok "--needs rides into the popup" ;;
+    *) bad "--needs rides into the popup" "... tm' '--needs'" "$(cat "$TP/log")" ;;
 esac
+unset tpenv
 # #1189: default-shell runs both commands, and dash, /bin/sh on Debian, has no $'...', which
 # printf %q wrote for a tab, and for a non-ASCII byte under C. tm here sits at a path holding
 # a ', a tab and e-acute, and dash reads each command back.
@@ -22782,10 +22785,9 @@ if TPDASH=$(command -v dash); then
         "$TPDASH" -c "printf '[%s]' $(cat "$TP/log.cmd" 2>/dev/null)" 2>&1
     }
     is "dash reads tm's window command back whole, a ', a tab and e-acute under C in its path (#1189)" \
-       "[TM_POPUP=1][TM_SID=\$3][TM_CLIENT=/dev/pts/9][TM_PANE=%7][$tpself]" "$(tpdash 12)"
+       "[$tpself]" "$(tpdash 12)"
     is "dash reads tm's popup command back whole, a ', a tab and e-acute under C in its path (#1189)" \
-       "[COCKPIT_POPUP=1][TM_POPUP=1][TM_SID=\$3][TM_CLIENT=/dev/pts/9][TM_PANE=%7][$tpself]" \
-       "$(tpdash 50)"
+       "[COCKPIT_POPUP=1][$tpself]" "$(tpdash 50)"
     unset -f tpdash
 else
     bad "dash is installed, to read tm's command as a shell with no \$'...' does (#1189)" "dash" "none"
@@ -26153,7 +26155,7 @@ mvrun() {                     # mvrun <click line> <args...> -- the log after on
 MVQA=$(tq "$MV/w/a.md")
 is "a lone .md opens a popup the pane's size over it, which re-enters with --view" \
    "POPUP [-t] [%1] [-E] [-x] [P] [-y] [P] [-w] [90] [-h] [30] [-d] [$MV/w] [-T] [ a.md ] $(
-   )[COCKPIT_POPUP=1 $(tq "$DIR/scripts/tmux-open-path") --view '%1' $MVQA '']" \
+   )[COCKPIT_POPUP=1 $(tq "$DIR/scripts/tmux-open-path") '--view' '%1' $MVQA '']" \
    "$(mvrun 'see a.md' %1)"
 for f in B.MD c.markdown e.mdown g.mkd 'a.md:12'; do
     case "$(mvrun "$f" %1)" in
@@ -26162,8 +26164,9 @@ for f in B.MD c.markdown e.mdown g.mkd 'a.md:12'; do
     esac
 done
 case "$(mvrun 'a.md:12' %1)" in
-    *"--view '%1' $MVQA '12']") ok "and a clicked :line goes with it" ;;
-    *) bad "and a clicked :line goes with it" "--view '%1' .../a.md '12'" "$(mvrun 'a.md:12' %1)" ;;
+    *"'--view' '%1' $MVQA '12']") ok "and a clicked :line goes with it" ;;
+    *) bad "and a clicked :line goes with it" "'--view' '%1' .../a.md '12'" \
+           "$(mvrun 'a.md:12' %1)" ;;
 esac
 for f in n.md.txt t.txt d.md; do
     is "$f is not markdown: the editor, at once" "NEWWIN ed $(tq "$MV/w/$f")" \
@@ -26932,10 +26935,10 @@ env PATH="$FB/bin:$PATH" COCKPIT_TUI_BIN="$FB/bin/cockpit-tui" TMUX="$FBSOCK,0,0
 is "--folder opens one popup" "1" "$(fbn display-popup)"
 is "--folder opens no editor and no window" "0|0" "$(fbn run-shell)|$(fbn new-window)"
 case "$(grep '^display-popup' "$FB/calls")" in
-    *"[-T] [ files"*"--browse '$FBP']"*) \
+    *"[-T] [ files"*"'--browse' '$FBP']"*) \
             ok "the popup is titled and re-enters as --browse on the pane" ;;
-    *) bad "the popup is titled and re-enters as --browse on the pane" "-T files, --browse '$FBP'" \
-            "$(grep '^display-popup' "$FB/calls")" ;;
+    *) bad "the popup is titled and re-enters as --browse on the pane" \
+            "-T files, '--browse' '$FBP'" "$(grep '^display-popup' "$FB/calls")" ;;
 esac
 : > "$FB/calls"
 env PATH="$FB/bin:$PATH" COCKPIT_TUI_BIN="$FB/nope/cockpit-tui" TMUX="$FBSOCK,0,0" \
@@ -28099,10 +28102,10 @@ is "the board: cursor, OPENCODE, CLAUDE are agents, snooze is not" "0 0 0 1" \
     "$(ac_wd "$ACU") $(ac_wd "$ACO") $(ac_wd "$ACL") $(ac_wd "$ACS")"
 
 # prefix t's popup: its command, as the binding holds it, run on this server. It starts with
-# the popup mark, an assignment sh takes as it is (#1248), and /bin/sh runs list-panes (#1456).
-# list-keys prints each " in it as \", which goes back to " here.
-ac_t=$(ac list-keys -T cockpit t | sed -n 's/.* "\(COCKPIT_POPUP=1 \/bin\/sh -c .*\)"$/\1/p' |
-    sed 's/\\"/"/g')
+# the popup mark, an assignment sh takes as it is (#1248), then shq'd words only (#1467), and
+# /bin/sh runs list-panes (#1456). list-keys prints each " in it as \", which goes back to " here.
+ac_t=$(ac list-keys -T cockpit t |
+    sed -n "s/.* \"\\(COCKPIT_POPUP=1 '\\/bin\\/sh' '-c' .*\\)\"\$/\\1/p" | sed 's/\\"/"/g')
 for p in "$ACU" "$ACO" "$ACL" "$ACS"; do ac set -p -t "$p" @panestate needs-input; done
 is "prefix t: the state of cursor, OPENCODE, CLAUDE, and - for snooze" \
     "needs-input needs-input needs-input - " \
@@ -29875,6 +29878,12 @@ echo "== every popup key cockpit.tmux binds starts its command with the scans' m
 # would count as a pane on tmux next-3.9. The six popup keys a default load binds: t, b, f, i, r
 # and w. tmux prints a bound command's argument as #{pane_start_command} prints a pane's: both
 # go through args_escape, which double-quotes a string with a space.
+# A popup command built anywhere but lib/fmt.sh's popup_cmd could start without the mark, so
+# only fmt.sh names it, by its variable or its text (#1467). fmt.sh's own lines are the
+# pattern's positive control: a pattern that matches nothing lists no file at all.
+is "only lib/fmt.sh names the popup mark" "$DIR/scripts/lib/fmt.sh" \
+   "$(command grep -lF -e COCKPIT_POPUP_MARK -e 'COCKPIT_POPUP=1' \
+       "$DIR/cockpit.tmux" "$DIR"/scripts/* "$DIR"/scripts/lib/* 2>/dev/null)"
 if need_tmux "popup marks"; then :; else
 MPK="cockpit-mpk-$$"; SOCKS="$SOCKS $MPK"; MPKD=$(mktmpd)
 "$TMUX_REAL" -L "$MPK" -f /dev/null new-session -d -s t -x 120 -y 30 -c "$MPKD" \
@@ -29913,13 +29922,13 @@ mpo_run() {                   # mpo_run <click line> [args...]: the commands of 
     cat "$MPO/log"
 }
 case "$(mpo_run '' --folder)" in
-    'COCKPIT_POPUP=1 '*" --browse '%1'") ok "the folder browser's popup starts with the mark" ;;
-    *) bad "the folder browser's popup starts with the mark" "COCKPIT_POPUP=1 ... --browse '%1'" \
+    'COCKPIT_POPUP=1 '*" '--browse' '%1'") ok "the folder browser's popup starts with the mark" ;;
+    *) bad "the folder browser's popup starts with the mark" "COCKPIT_POPUP=1 ... '--browse' '%1'" \
            "$(mpo_run '' --folder)" ;;
 esac
 case "$(mpo_run 'f.txt g.txt')" in
-    'COCKPIT_POPUP=1 '*" --pick '%1'") ok "the picker's popup starts with the mark" ;;
-    *) bad "the picker's popup starts with the mark" "COCKPIT_POPUP=1 ... --pick '%1'" \
+    'COCKPIT_POPUP=1 '*" '--pick' '%1'") ok "the picker's popup starts with the mark" ;;
+    *) bad "the picker's popup starts with the mark" "COCKPIT_POPUP=1 ... '--pick' '%1'" \
            "$(mpo_run 'f.txt g.txt')" ;;
 esac
 unset -f mpo_run
