@@ -2,8 +2,8 @@
 
 This page is the freeze (#1503) of epic #1500. It fixes the module list, each module's
 interface, the tag grammar, the answer channel, the rules file and the log, so the children
-#1504 to #1513 can run in parallel. A child that needs a change here amends this page in its
-own PR and says so in the PR body.
+#1504 to #1513 and #1516 build against one page, in the order "Files and order" gives. A
+child that needs a change here amends this page in its own PR and says so in the PR body.
 
 ## The flow
 
@@ -40,13 +40,14 @@ AGENTS.md rule 5 forbids code with no caller.
 |--------|-------|-----------|
 | `ask::model` | #1504 | `Ask { use_id: String, questions: Vec<Question> }`, `Question { text, header, multi: bool, options: Vec<Choice> }`, `Choice { label, description, preview: Option<String> }`. `parse(use_id: &str, input: &Value) -> Option<Ask>`: `None` on any missing or mistyped field, never a panic. |
 | `data::transcript` | #1504 | `open_ask(path) -> Option<Ask>`: the newest AskUserQuestion `tool_use` with no `tool_result` yet, by fold's rule (fold.rs:89-93, 193). `question()` (transcript.rs:495-510) builds the row text from `parse` and shows "Q1 of N". |
-| `ask::tags` | #1505 | `option_tags(description: &str) -> (String, Tags)`, the text before the tags and the tags. `Tags { rec: Option<String>, risk: Option<Risk>, undo: Option<bool>, easiest: bool, qty: Option<Qty> }`, `Risk { Low, Medium, High }`, `Qty { name, value: f64, unit: String }`. `question_action(text: &str) -> (String, Option<Action>)`. `Action { kind: ActionKind, args: Vec<(String, String)> }`, `ActionKind { Merge, CleanupLane, ContinueQueue }`, the one fixed action set, which `ask::rules` uses too. `bars(&[Option<&Qty>]) -> Option<Vec<u16>>`. |
+| `ask::tags` | #1505 | `option_tags(description: &str) -> (String, Tags)`, the text before the tags and the tags. `Tags { rec: Option<String>, risk: Option<Risk>, undo: Option<bool>, easiest: bool, qty: Option<Qty> }`, `Risk { Low, Medium, High }`, `Qty { name, value: f64, unit: String }`. `question_action(text: &str) -> (String, Option<Action>)`. `Action { kind: rules::ActionKind, args: Vec<(String, String)> }`. `bars(&[Option<&Qty>]) -> Option<Vec<u16>>`. |
 | `ask::popup` | #1506, submit #1507 | `Popup::open(ask: Ask) -> Popup`, `key(&mut self, k: KeyEvent) -> Step`, `Step { Stay, Close, Submit(Answer) }`, `render(&self, f: &mut Frame, area: Rect, th: &Theme)`. Each question is drawn by `chrome::question` (see "One question view"). |
 | `ask::answer` | #1507 | `Answer { use_id: String, picks: Vec<Vec<usize>> }`. `put(store: &dyn Store, session: &str, a: &Answer) -> Result<Revision, PutError>`. `answers(ask: &Ask, picks: &[Vec<usize>]) -> Option<Map<String, Value>>`. `hook(payload: &Value) -> Option<String>`, the decision JSON, run as `cockpit-tui ask-hook`. |
-| `ask::rules` | #1508 | `load(rules: &Path, accepted: &Path) -> Rules`, which fails closed. `Rule { id, action: ActionKind, when: Vec<Pred>, mode: Mode, cap_per_hour: u32, examples }`, `Mode { Shadow, Live }`. `accept(rules: &Path, accepted: &Path) -> Result<Diff, Error>`. CLI: `cockpit-tui ask-rules check` and `accept`. |
-| `ask::facts` | #1509 | `read(action: &Action, pane: &Pane) -> Result<Facts, Missing>`, every fact read at the moment of acting. |
-| `ask::never` | #1509 | `refuses(ask: &Ask, action: Option<&Action>, facts: &Facts) -> Option<Never>`, `Never` holding the six items of "The never-list". |
-| `ask::shadow` | #1510 | `evaluate(ask: &Ask, rules: &Rules, facts: &Facts) -> Verdict`, `Verdict { Would(Answer), Refused(Never), NoRule }`. The promotion count and the hourly cap are read from the log, so they have one source. |
+| `data::transcript` | #1507, after #1504 | `ask_state(path: &Path, input: &Value) -> AskState`, the hook's lookup. `AskState { NotYet, Open { use_id: String }, Closed { use_id: String } }`: the newest AskUserQuestion `tool_use` whose `input` equals `input`, and whether a `tool_result` for its id follows it. The hook calls it on each look (see "What the payload holds"). |
+| `ask::rules` | #1508 | The rules vocabulary, which `ask::tags` and `ask::facts` use: `ActionKind { Merge, CleanupLane, ContinueQueue }`, the one fixed action set. `Pred`, the closed predicate list (see "The rules file"). `Facts = BTreeMap<Pred, bool>`, a fact set, where an absent predicate is unknown and fails every rule that needs it. And the file: `load(rules: &Path, accepted: &Path) -> Rules`, which fails closed. `Rule { id, action: ActionKind, when: Vec<Pred>, mode: Mode, cap_per_hour: u32, examples: Examples }`, `Mode { Shadow, Live }`, `Examples { matching: Vec<Facts>, not_matching: Vec<Facts> }`. `accept(rules: &Path, accepted: &Path) -> Result<Diff, Error>`. CLI: `cockpit-tui ask-rules check` and `accept`. |
+| `ask::facts` | #1509 | `read(action: &tags::Action, pane: &Pane) -> rules::Facts`, every fact read at the moment of acting. A fact it cannot read is left out. |
+| `ask::never` | #1509 | `refuses(ask: &Ask, action: Option<&tags::Action>, facts: &rules::Facts) -> Option<Never>`, `Never` holding the six items of "The never-list". |
+| `ask::shadow` | #1510 | `evaluate(ask: &Ask, rules: &Rules, facts: &rules::Facts) -> Verdict`, `Verdict { Would(Answer), Refused(Never), NoRule }`. The promotion count and the hourly cap are read from the log, so they have one source. |
 | `ask::log` | #1510 | `append(entry: &Entry) -> io::Result<()>`, one JSON line, 0600 (see "The log"). |
 | `ask::merge` | #1513, phase 2 | Decides only. docs/tui.md:2801 says every mutating action stays a shell script, so a script under `scripts/` runs `gh pr merge --squash --match-head-commit <sha>`. |
 
@@ -82,10 +83,11 @@ The `PermissionRequest` payload has no `tool_use_id`. The spike's perm run recor
 `tool_use_id`". So the hook finds its ask in the transcript. Its ask is the newest open
 AskUserQuestion `tool_use` whose `input` equals the payload's `tool_input`.
 
-The hook polls for that row. In both cases of the perm2 run (run-perm2-3115275) the
-transcript did not hold it yet when the hook started. The hook's first look after that found
-it, 0.5 s in for C3 and 1.0 s in for C4. Exact input equality and equal question texts named
-the same `toolu_` id both times, so the hook matches on exact input equality.
+The hook polls for that row through `data::transcript::ask_state`. In both cases of the
+perm2 run (run-perm2-3115275) the transcript did not hold it yet when the hook started. The
+probe hook looked every 0.5 s and found it 0.5 s after it started in C3 and 1.0 s after in
+C4, on its first and second looks. Exact input equality and equal question texts named the
+same `toolu_` id both times, so the hook matches on exact input equality.
 
 ### The store keys
 
@@ -125,8 +127,8 @@ measured it with a `PermissionRequest` hook that sleeps 45 s and then answers:
 - **C3, a pane answer.** `PostToolUse` came 50 ms after the last key, and the dialog closed
   10.1 s after the ask. The `tool_result` holds the pane's labels. Claude Code did not end the
   hook. The hook saw the `tool_result` 180 ms after the last key, slept on, and printed its
-  own answer at 46.6 s, 34 s after the turn's `Stop`. That late `allow` changed nothing: one
-  `PostToolUse`, one `Stop`, no second result and no error.
+  own answer 45.1 s after it started, 34 s after the turn's `Stop`. That late `allow` changed
+  nothing: one `PostToolUse`, one `Stop`, no second result and no error.
 - **C4, an Escape in the dialog.** Claude Code sent the hook SIGTERM 90 ms after the Escape.
   The `tool_result` is `User rejected tool use` with `is_error` true, and neither
   `PostToolUse` nor `Stop` fired.
@@ -226,7 +228,10 @@ The file holds one object:
       "when": ["verdict_merge_at_head", "ci_green_on_merge"],
       "mode": "shadow",
       "cap_per_hour": 3,
-      "examples": { "match": [], "no_match": [] }
+      "examples": {
+        "match": [{ "verdict_merge_at_head": true, "ci_green_on_merge": true }],
+        "no_match": [{ "verdict_merge_at_head": true, "ci_green_on_merge": false }]
+      }
     }
   ]
 }
@@ -236,14 +241,29 @@ The file holds one object:
 - `note` is free text for the owner, since JSON has no comments. The cockpit never matches on
   it and never logs it.
 - `action` is one of the fixed set (`merge`, `cleanup-lane`, `continue-queue`).
-- `when` lists predicates from the closed list that `ask::facts` defines (#1509). The names
-  above are placeholders until #1509 lands. An unknown name turns the rule off. No predicate
+- `when` lists names from the closed predicate list below. A rule matches a fact set when
+  every predicate it names is true there. An unknown name turns the rule off. No predicate
   reads question text (R6).
 - `mode` is `shadow` or `live`. Every new rule starts in `shadow` (R7).
-- `cap_per_hour` defaults to D6's 3.
-- `examples` holds fact sets that must match and fact sets that must not. A failing example
-  turns the rule off.
+- `cap_per_hour` defaults to D6's 3. `ask::rules` reads it, and `ask::shadow` counts it from
+  the log (#1510).
+- `examples` holds fact sets, `match` for those the rule must match and `no_match` for those
+  it must not. Either kind failing turns the rule off.
 - An unknown key anywhere refuses the whole file, as `contracts/README.md` treats payloads.
+
+`ask::rules` (#1508) owns the closed predicate list, so it can check names and run examples
+before any fact is read. `ask::facts` (#1509) computes each one for the PR or branch that the
+action tag names:
+
+| predicate | true when |
+|-----------|-----------|
+| `verdict_merge_at_head` | a `VERDICT: MERGE at <sha>` comment on the PR names its current head |
+| `ci_green_on_merge` | every check passed on the merge of that head into the current master |
+| `pr_merged` | the PR is merged |
+| `lane_clean` | the lane's worktree has no unpushed commit and no uncommitted change |
+| `queue_set` | the queue that continue-queue works from holds a next item |
+
+A child that needs another predicate amends this table and `Pred` together.
 
 The three first entries are merge after review and CI, clean up a merged lane, and continue
 the queue, all in `shadow`.
@@ -275,10 +295,10 @@ R8, in `ask::never` (#1509), outside the rules file. No rule can switch an item 
 ## One question view
 
 AGENTS.md rule 4 wants one way to draw a question. Today the panel draws it in
-tui/src/panel/view.rs:676-715:
+tui/src/panel/view.rs:677-715:
 
 - "question k of N" comes from `Run::place` (tui/src/panel/app.rs:255-258).
-- Each option goes through `tile()` (view.rs:327-353) and `push_entry()` (view.rs:380-385).
+- Each option goes through `tile()` (view.rs:327-351) and `push_entry()` (view.rs:380-385).
 - ★ marks `parse::Opt.recommended` (tui/src/panel/parse.rs:7-11).
 
 A refactor child, #1516, lands before #1506. The owner approved it on 2026-11-26 and
@@ -315,21 +335,25 @@ As the owner approved them in #1500 on 2026-11-26, with the rulings recorded sin
 
 | child | files |
 |-------|-------|
-| #1504 | `tui/src/ask.rs`, `tui/src/ask/model.rs`, `tui/src/data/transcript.rs`, `tui/src/lib.rs`, the docs/tui.md Modules row |
-| #1505 | `tui/src/ask/tags.rs`, `skills/cockpit-ask/SKILL.md` |
-| #1516 | `tui/src/chrome.rs`, `tui/src/panel/view.rs` |
-| #1506 | `tui/src/ask/popup.rs`, `tui/src/board.rs` (the key) |
-| #1507 | `tui/src/ask/answer.rs`, `tui/src/ask/popup.rs` (submit), `tui/src/main.rs` (`ask-hook`), `scripts/ask-hook`, `examples/claude-hooks.json` (the entry), `install.sh` (:596), `docs/states-and-hooks.md` (the hook row), the two `contracts/` schemas |
+| #1504 | `tui/src/ask.rs`, `tui/src/ask/model.rs`, `tui/src/data/transcript.rs` (`open_ask`), `tui/src/lib.rs`, the docs/tui.md Modules row for `ask` |
 | #1508 | `tui/src/ask/rules.rs`, `tui/src/main.rs` (`ask-rules`) |
+| #1505 | `tui/src/ask/tags.rs`, `skills/cockpit-ask/SKILL.md` |
 | #1509 | `tui/src/ask/facts.rs`, `tui/src/ask/never.rs` |
+| #1516 | `tui/src/chrome.rs`, `tui/src/panel/view.rs`, the docs/tui.md Modules row for `chrome` |
+| #1506 | `tui/src/ask/popup.rs`, `tui/src/board.rs` (the key), the docs/tui.md row for `a` |
+| #1507 | `tui/src/ask/answer.rs`, `tui/src/ask/popup.rs` (submit), `tui/src/data/transcript.rs` (`ask_state`), `tui/src/main.rs` (`ask-hook`), `scripts/ask-hook`, `examples/claude-hooks.json` (the entry), `install.sh` (:596), `docs/states-and-hooks.md` (the hook row), the two `contracts/` schemas, `contracts/README.md` |
 | #1510 | `tui/src/ask/shadow.rs`, `tui/src/ask/log.rs`, `tui/src/board.rs` (the list) |
 | #1512 | `tui/src/ask/shadow.rs` (live answers) |
 | #1513 | `tui/src/ask/merge.rs`, the merge script |
 
-- #1504, #1505 and #1508 run in parallel after this page.
-- #1516 runs beside them. #1506 waits for #1504, #1505 and #1516.
-- #1507 waits for #1506 and merges before #1508, since both edit `tui/src/main.rs`.
-- #1509 waits for #1508. #1510 waits for #1506 and #1509, since it shares `board.rs` with #1506.
+- #1504 and #1508 run in parallel after this page.
+- #1505 waits for #1508, which owns `ActionKind`. #1509 waits for #1508, which owns `Pred` and
+  `Facts`.
+- #1516 waits for #1504, since both edit the Modules table in docs/tui.md.
+- #1506 waits for #1504, #1505 and #1516.
+- #1507 waits for #1506. That chain puts it after #1504 in `data/transcript.rs` and after
+  #1508 in `tui/src/main.rs`.
+- #1510 waits for #1506 and #1509, since it shares `board.rs` with #1506.
 - #1511 to #1513 are phase 2 and stay parked until the owner promotes a rule.
 
 ## Open items
@@ -347,6 +371,8 @@ As the owner approved them in #1500 on 2026-11-26, with the rulings recorded sin
   session that answered from the popup. `Store` has no delete. A sweep would add one, which is
   a #61 change.
 - **#1510, the log's size.** Nothing caps it yet.
+- **#1513, the merge script's caller.** docs/tui.md:2801 has the binary print a verb that a
+  wrapper runs, and a hook has no wrapper. #1513 settles the shape.
 - **Not measured.** Asks in default and `bypassPermissions` modes, an ask made from inside Code
   Mode code, two asks at once, and labels holding `, ` or a double quote (spike.md, open
   points 2, 3, 5 and 6).
