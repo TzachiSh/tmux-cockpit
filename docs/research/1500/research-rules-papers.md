@@ -1,6 +1,6 @@
 # What recent papers say about the auto-answer rules
 
-tmux-cockpit-dd [8f35e6], 2026-11-27. For #1500 (R6, R7, R8, D5, D6), part of #1521. Read-only
+tmux-cockpit-dd [8f35e6], 2026-11-27. For #1500 (R2, R3, R6, R7, R8, R10, D5, D6), part of #1521. Read-only
 research that adds papers to `research-user-rules.md`, which covered how other tools do it.
 
 ## Question
@@ -50,9 +50,9 @@ and the passages quoted here, not every experiment.
 |---|---|---|---|
 | 1 | R6: rules match facts the cockpit reads, never question text. Facts are re-read when acting | Source 4: approvers that read only the request text miss what the action does | Keep |
 | 2 | R8: a built-in never-list. R2: risk and undo tags in the popup | Source 1 asks for clearer reversibility. Source 2: most overreach ran after a person approved it, not under a rule | Keep. The popup matters as much as the rules |
-| 3 | R7 and D5: promotion is offered after 5 matching shadow answers in a row | Source 1: repeated approval is not a stable preference and may be fatigue | Adapt, see below |
+| 3 | R7 and D5: promotion is offered after 5 matching shadow answers in a row | Source 1: systems should not treat repeated approval as a stable preference, since it may reflect fatigue | Adapt, see below |
 | 4 | D6 and R10: 3 answers per rule per hour, a notification for each | Source 3: attention is finite, and more prompts can lower safety. That result is simulated | Keep. Watch the notification count once rules go live |
-| 5 | R2 and D2: the asking agent writes the risk tag, and the tag proves nothing | Source 3: raters agree only moderately on "risky" | Keep D2's wording. The popup should not present the tag as a fact |
+| 5 | R3: the asking agent writes the risk tag | Source 3: raters agree only moderately on "risky" | Adapt: the popup shows the risk tag as the agent's claim (#1506) |
 | 6 | R6: a fixed action set, no learned model | Source 5 offers a learned gate, tested only in simulation | Ignore |
 
 ### Finding 3 in numbers
@@ -81,10 +81,10 @@ For the owner, through the orchestrator. Nothing here blocks #1508 to #1510.
 2. **D5: the owner picks N again with the table above.** A merge can't be undone in this repo, so
    the merge rule may deserve a higher N than cleanup-lane or continue-queue. Cost: one number
    per action in the rules file.
-3. **Shadow answers given in a burst count once.** Source 1's point is that a run of quick
-   approvals may be habit. One way is to count at most one match per rule per hour, which reuses
-   D6's window. Cost: a rule in #1510's counter. This one is my inference from source 1, not a
-   tested design.
+3. **Shadow answers given in a burst count once.** Source 1 warns that repeated approval may
+   reflect fatigue. Counting a burst once is my reading of that, not a tested design. One way is
+   to count at most one match per rule per hour, which reuses D6's window. Cost: a rule in
+   #1510's counter.
 
 ## Not known
 
