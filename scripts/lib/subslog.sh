@@ -126,11 +126,11 @@ subs_reconcile() {
 # subs_set -> REPLY: the payload's in-flight set, its ids joined by commas, then a tab before
 # each description: a subagent by its agent id, a teammate by a task id, so by its description.
 # Only Stop's: SubagentStop's lists the agent that is stopping as running. A list it cannot
-# read whole, an entry of a type it does not know, or a set past the bound is no set: a short
-# set would end live agents, and no set ends none. Then status 1, and REPLY says why:
+# read whole, an entry of a type it does not know, or an array past the bound is no set: a
+# short set would end live agents, and no set ends none. Then status 1, and REPLY says why:
 #   array   no whole array: no key, a payload cut short, or an array inside an entry
 #   nested  bytes between or after the flat entries: an object inside an entry, or junk
-#   bound   past 64 KB, 256 entries or a 3890-byte set
+#   bound   past 64 KB or 256 entries
 #   type    an entry with no type, or a type it does not know
 #   id      a subagent whose id is not plain
 #   desc    a teammate whose description it cannot take
@@ -142,7 +142,9 @@ subs_set() {
     [[ $payload =~ $re ]] || { REPLY='array'; return 1; }
     arr=${BASH_REMATCH[1]}
     # Bounded: each step below copies the rest of the array, so the loop is quadratic in its
-    # bytes, and each entry costs a few matches, so it is bounded in entries too (#423).
+    # bytes, and each entry costs a few matches, so it is bounded in entries too (#423). The set
+    # is a part of the array, at least 26 bytes shorter for each entry it lists, so this bounds
+    # it too, and the board's LIVE_MAX follows this figure (#1472).
     [ "${#arr}" -le 65536 ] || { REPLY='bound'; return 1; }
     # One flat object at a time, commas and spaces between: whole strings or bytes other than
     # braces and brackets, so a nested object or array is no match, and what is left at the
@@ -167,7 +169,6 @@ subs_set() {
         shell | monitor | workflow | 'cloud session' | 'MCP task') ;;
         *) REPLY='type'; return 1 ;;
         esac
-        [ $((${#ids} + ${#descs})) -le 3890 ] || { REPLY='bound'; return 1; }
     done
     [[ $arr =~ ^[[:space:],]*$ ]] || { REPLY='nested'; return 1; }
     REPLY=$ids$descs

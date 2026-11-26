@@ -316,16 +316,17 @@ longer one arrives cut, with `… [+N chars]` after it, and matches no teammate'
 - **Only `Stop`'s set.** `SubagentStop` carries `background_tasks` too, but lists the agent that
   is stopping as running.
 - **All or nothing.** A `background_tasks` array that does not parse whole (a nested array or
-  object in an entry included), one past 64 KB or 256 entries, an entry with a bad id or
-  description, or a set past 3890 bytes writes no set: a short set would end agents that
-  live. So does an entry whose `type` is neither `subagent` nor `teammate` nor one of the
-  non-agent labels the hooks reference lists, `shell`, `monitor`, `workflow`, `cloud session`
-  and `MCP task`, which are skipped (#423): a type a Claude Code update renames, or the raw
-  discriminant it falls back to, would otherwise drop its agents from the set and end them
-  all. With no new set the last one stands, and `end-unknown` covers the gap. Such a `Stop`
-  appends `<epoch>\tbail\t<why>` to the log instead (#407), which the board skips. `<why>` is
-  one word: `array` (no whole array: no key, a payload cut short, or an array inside an entry),
-  `nested` (an object inside an entry, or bytes between entries), `bound`, `type`, `id` or
+  object in an entry included), one past 64 KB or 256 entries, or an entry with a bad id or
+  description writes no set: a short set would end agents that live. So does an entry whose
+  `type` is neither `subagent` nor `teammate` nor one of the non-agent labels the hooks
+  reference lists, `shell`, `monitor`, `workflow`, `cloud session` and `MCP task`, which are
+  skipped (#423): a type a Claude Code update renames, or the raw discriminant it falls back
+  to, would otherwise drop its agents from the set and end them all. The set is a part of the
+  array, so its 64 KB bounds the set too, and the board reads a `.live` file up to that
+  figure (#1472). With no new set the last one stands, and `end-unknown` covers the gap.
+  Such a `Stop` appends `<epoch>\tbail\t<why>` to the log instead (#407), which the board skips.
+  `<why>` is one word: `array` (no whole array: no key, a payload cut short, or an array inside an
+  entry), `nested` (an object inside an entry, or bytes between entries), `bound`, `type`, `id` or
   `desc`. Claude Code 2.1.331 sends the key on every `Stop`, `[]` when nothing is in flight, so a
   `Stop` without it bails too.
 - **A file, not rows (#423).** Only the newest set is ever read, and as log rows a busy lead's

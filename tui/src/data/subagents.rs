@@ -104,8 +104,10 @@ const TAIL_MAX: u64 = 256 * 1024;
 const DIRS_MAX: usize = 64;
 /// The hook log is read from its last 64 KB: a few hundred events, the newest of each agent.
 const LOG_MAX: u64 = 64 * 1024;
-/// The hook writes a set of at most 3890 bytes; a `.live` file past this is not one.
-const LIVE_MAX: u64 = 8 * 1024;
+/// `subs_set`'s array bound in `scripts/lib/subslog.sh`, which owns the figure (#1472). The set
+/// is a part of that array, at least 26 bytes shorter for each entry it lists, and those bytes
+/// hold the `.live` line's epoch, tab and newline. A `.live` file past this is not one.
+const LIVE_MAX: u64 = 64 * 1024;
 
 type Stamp = (SystemTime, u64);
 /// A hook file's stamp and inode.
