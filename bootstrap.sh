@@ -35,8 +35,6 @@ for a in "$@"; do case "$a" in
     "") ;;
     --yes|-y)  assume_yes=1 ;;
     --check)   check=1 ;;
-    --full|--latest)
-        printf 'bootstrap.sh: %s does nothing now: fzf and bat are not used\n' "$a" ;;
     --dry-run) dry=1 ;;
     --no-sudo) nosudo=1 ;;
     --help|-h) sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;

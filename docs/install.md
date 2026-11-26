@@ -90,8 +90,7 @@ when none at the pinned version is on `PATH`, sha256 verified, with no sudo.
 Nothing is downloaded when tmux loads the plugin or when you press a key.
 Offline it skips the tool and carries on; a checksum it cannot fetch or cannot
 match installs nothing. On macOS with brew it runs `brew install` for revdiff.
-bat is not used any more (the previews it coloured went in #228), and `--full`
-and `--latest` went with it.
+bat is not used any more (the previews it coloured went in #228).
 
 The `cockpit-tui` binary is required: `install.sh` fetches it with your `gh`
 login or builds it from source, and stops with a message when it can do
