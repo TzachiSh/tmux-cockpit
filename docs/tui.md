@@ -2732,10 +2732,20 @@ tell the two quiet answers apart: `[]` with exit 0 is "no agents", exit 1 is
   redacted. It reads the whole path as one string, so a parent folder's name
   counts as the folder's own does (#911), and the glob characters are `*`, `?`, `[`,
   `]`, `{`, `}` and a backslash. A caller runs it to refuse up front. The
-  secret denies stay as a second wall. They name Claude's credentials under
-  `~/.claude` and, when `CLAUDE_CONFIG_DIR` is set, under that dir as well
-  (#1428). A set value that no rule can name exactly (relative, not UTF-8, or
-  holding a control, bidi or glob character or a `)`) refuses a read-only call
+  secret denies stay as a second wall. They name Claude's credentials and its
+  global config, which holds account ids, MCP servers that can carry tokens and
+  each project's last prompt: `.claude*.json*` (`.claude.json`,
+  `.claude-custom-oauth.json`, or the `.claude.json.backup` an older Claude Code
+  kept beside it), the older `.config.json*` (`.config.json`, which Claude Code
+  still reads in its place, and its `.config.json.<x>` copies), and the copies in
+  `backups/`. Each is denied at its default place
+  (`~/.claude*.json*`, the rest under `~/.claude`) and, when `CLAUDE_CONFIG_DIR` is
+  set, under that dir as well (#1428, #1431). `~/.claude/.claude*.json*` is denied
+  too: it is the global config of a claude run with `CLAUDE_CONFIG_DIR=~/.claude`,
+  which the panel's own environment need not share. A `*` in a rule never crosses
+  a `/`, so the rest of `~/.claude` stays readable. A set value that no rule can
+  name exactly (relative, not UTF-8, or holding a control, bidi or glob
+  character or a `)`) refuses a read-only call
   before claude starts, in a line that names the variable. Claude Code 2.1.331
   kept the rule whole for a dir holding one comma, `(`, `)`, space, tab, newline
   or U+3000, and split it, so it denied nothing, where a comma or a space came
@@ -3104,8 +3114,8 @@ the pane's agent can still read it. A ref is its file's canonical path, so a
 symlink in the folder that leads out is outside, as the read would be refused,
 and a link outside that leads in is inside; the folder is compared canonical
 too. A ref inside the folder that the read-only profile denies by rule (a
-`.env` or `.env.*`, a key under `~/.ssh`, Claude's credentials under `~/.claude`
-or `$CLAUDE_CONFIG_DIR`, the rest of `request.rs`'s list, read by
+`.env` or `.env.*`, a key under `~/.ssh`, Claude's credentials or global config
+in `~`, `~/.claude` or `$CLAUDE_CONFIG_DIR`, the rest of `request.rs`'s list, read by
 `request::read_denied` from that same list) is noted `a secret the write may
 not read, not read`. The written result, sent or inserted from its view, carries the basket as
 `^T` does, and cockpit-panel clears it once the paste lands, but only when the

@@ -995,6 +995,73 @@ fn a_ref_to_the_set_config_dirs_credentials_is_denied() {
     assert_eq!(wrong, [] as [&str; 0]);
 }
 
+/// Claude Code's global config holds account ids, MCP servers that can carry tokens
+/// and each project's last prompt (#1431). A set CLAUDE_CONFIG_DIR holds it as
+/// `.claude.json` (`.claude-custom-oauth.json` under a custom OAuth URL), with a
+/// `.claude.json.backup` an older Claude Code kept beside it, its copies in
+/// `backups/` and the older `.config.json` that Claude Code 2.1.332 still reads in
+/// its place, with its `.config.json.<x>` copies. A read-only call denies each
+/// there, and still at its default place:
+/// `~/.claude*.json*`, and the other two under `~/.claude`. `~/.claude/.claude*.json*`
+/// is the global config of a claude run with CLAUDE_CONFIG_DIR=~/.claude, which the
+/// panel's own environment need not share.
+#[test]
+fn a_set_config_dir_denies_its_global_config_beside_homes() {
+    let _e = Env::new("cfg-global", &[("CLAUDE_CONFIG_DIR", Some("/c/cfg".into()))]);
+    let want = [
+        "Read(~/.claude*.json*)",
+        "Read(~/.claude/.claude*.json*)",
+        "Read(~/.claude/.config.json*)",
+        "Read(~/.claude/backups/**)",
+        "Read(//c/cfg/.claude*.json*)",
+        "Read(//c/cfg/.config.json*)",
+        "Read(//c/cfg/backups/**)",
+    ];
+    for research in [false, true] {
+        let word = deny_word(research);
+        let rules: Vec<&str> = word.split(',').collect();
+        let missing: Vec<&str> = want.into_iter().filter(|r| !rules.contains(r)).collect();
+        assert_eq!(missing, [] as [&str; 0], "research {research}: {word}");
+    }
+}
+
+/// The write's note reads the same denies: a ref to the global config, by any of its
+/// names, is a secret under a set config dir and at its default place. A `*` in a
+/// rule never crosses a `/`, as in gitignore, so the files in `~/.claude/` and in
+/// the set dir's own `.claude/` stay readable.
+#[test]
+fn a_ref_to_the_set_config_dirs_global_config_is_denied() {
+    let _e = Env::new("cfg-global-ref", &[("CLAUDE_CONFIG_DIR", Some("/c/cfg".into()))]);
+    let home = Some(Path::new("/h/u"));
+    let rows = [
+        ("/c/cfg/.claude.json", true),
+        ("/c/cfg/.claude-custom-oauth.json", true),
+        ("/c/cfg/.claude.json.backup", true),
+        ("/c/cfg/.config.json", true),
+        ("/c/cfg/.config.json.backup", true),
+        ("/c/cfg/backups/.claude.json.backup.1", true),
+        ("/h/u/.claude.json", true),
+        ("/h/u/.claude-custom-oauth.json", true),
+        ("/h/u/.claude.json.backup", true),
+        ("/h/u/.claude/.claude.json", true),
+        ("/h/u/.claude/.config.json", true),
+        ("/h/u/.claude/.config.json.backup", true),
+        ("/h/u/.claude/backups/.claude.json.backup.1", true),
+        ("/c/cfgx/.claude.json", false),
+        ("/c/cfg/.claude/x.json", false),
+        ("/h/u/.claude/x/.claude.json", false),
+        ("/h/u/.claude/settings.json", false),
+        ("/h/u/.claude/projects/-w/s1.json", false),
+        ("/h/u/.config.json", false),
+    ];
+    let wrong: Vec<&str> = rows
+        .iter()
+        .filter(|(p, want)| read_denied(Path::new(p), home) != *want)
+        .map(|r| r.0)
+        .collect();
+    assert_eq!(wrong, [] as [&str; 0]);
+}
+
 /// An empty CLAUDE_CONFIG_DIR reads as unset, as scripts/lib/claudedir.sh reads it:
 /// the deny list names the credentials under `~/.claude` alone, as before #1428, and
 /// the transcript dir is under `$HOME/.claude`.
@@ -1100,14 +1167,17 @@ fn a_config_dir_with_a_closing_parenthesis_refuses_a_read_only_call() {
 /// A comma, a `(` and a space in a CLAUDE_CONFIG_DIR each left the rule whole: with
 /// it Claude Code 2.1.331 refused the credentials and read a file beside them
 /// (measured one at a time, #1433). So a dir holding them, "Application Support"
-/// among them, keeps its rule, whole, last in the deny word.
+/// among them, keeps its rules, whole, last in the deny word. Its splitter's one
+/// flag turns off at each rule's closing `)`, so the comma before the next rule
+/// still splits the word there (read from the 2.1.331 and 2.1.332 binaries, #1431).
 #[test]
 fn a_config_dir_with_a_comma_paren_or_space_keeps_its_rule() {
     let _e = Env::new("cfg-held", &[("CLAUDE_CONFIG_DIR", Some("/c/a,b(c d".into()))]);
-    let rule = ",Read(//c/a,b(c d/.credentials.json)";
+    let rules = ",Read(//c/a,b(c d/.credentials.json),Read(//c/a,b(c d/.claude*.json*),\
+                 Read(//c/a,b(c d/.config.json*),Read(//c/a,b(c d/backups/**)";
     for research in [false, true] {
         let word = deny_word(research);
-        assert!(word.ends_with(rule), "research {research}: {word}");
+        assert!(word.ends_with(rules), "research {research}: {word}");
     }
 }
 

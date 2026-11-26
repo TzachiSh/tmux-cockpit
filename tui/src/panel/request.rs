@@ -143,14 +143,17 @@ pub enum Output {
 
 const READ: &[&str] = &["Read", "Grep", "Glob"];
 const RESEARCH: &[&str] = &["Read", "Grep", "Glob", "WebSearch", "WebFetch", "Skill"];
-/// A read-only call's `--disallowedTools`, but for [`cfg_rule`]'s, which
+/// A read-only call's `--disallowedTools`, but for [`cfg_rules`]'s, which
 /// [`deny_list`] adds. First the writers, never offered:
 /// Agent too, as the CLI cannot keep it to the read-only Explore type (a rule
 /// can deny an agent type, not allow only one). Then the secret paths, the
 /// owner's call on review-432's finding 6: ssh, aws and gpg keys, Claude's own
-/// credentials (here those under `~/.claude`), and the token files of gh, git,
-/// netrc, docker, kube, npm, pypi and gcloud: a Read rule covers Grep and Glob as
-/// well and follows symlinks (probed). `~` is the home dir; `//` anchors at `/`,
+/// files of [`CFG_SECRETS`] at their default places (`~/.claude*.json*`, the rest
+/// under `~/.claude`) and the global config of a claude run with CLAUDE_CONFIG_DIR
+/// set to `~/.claude` (`~/.claude/.claude*.json*`), which the panel's own
+/// environment need not share, and the token files of gh, git, netrc, docker, kube, npm,
+/// pypi and gcloud: a Read rule covers Grep and Glob as well and follows symlinks
+/// (probed). `~` is the home dir; `//` anchors at `/`,
 /// as a bare `**/.env` is relative to the cwd (the cache dir) and would leave a
 /// repo's `.env` readable. Every `.env` is denied, the repo's and `.env.example`
 /// included: a code question has no need of them.
@@ -164,6 +167,10 @@ const DENY: &[&str] = &[
     "Read(~/.aws/**)",
     "Read(~/.gnupg/**)",
     "Read(~/.claude/.credentials.json)",
+    "Read(~/.claude*.json*)",
+    "Read(~/.claude/.claude*.json*)",
+    "Read(~/.claude/.config.json*)",
+    "Read(~/.claude/backups/**)",
     "Read(~/.config/gh/**)",
     "Read(~/.git-credentials)",
     "Read(~/.netrc)",
@@ -181,7 +188,7 @@ const DENY: &[&str] = &[
 const GLOB: [char; 7] = ['*', '?', '[', ']', '{', '}', '\\'];
 
 /// `dir` as the text a call carries, the one rule for a read dir ([`read_dir_ok`])
-/// and for the config dir in a deny rule ([`cfg_rule`]). The error is why not, in
+/// and for the config dir in a deny rule ([`cfg_rules`]). The error is why not, in
 /// words that follow the quoted path in a refusal: not UTF-8 (a call reaches claude
 /// as text), a control or bidi character (refused, never cleaned, as a cleaned path
 /// names another), or a glob character (a Read rule reads it as a pattern).
@@ -196,25 +203,37 @@ fn path_text(dir: &Path) -> Result<&str, &'static str> {
     Ok(s)
 }
 
-/// The Read deny for Claude's credentials under CLAUDE_CONFIG_DIR
+/// Claude Code's own files in its config dir that a read-only call never reads: the
+/// credentials (#1428), and the global config, which holds account ids, MCP servers
+/// that can carry tokens and each project's last prompt (#1431). The global config
+/// is `.claude.json`, or `.claude-custom-oauth.json` under a custom OAuth URL, and an
+/// older Claude Code kept a `.claude.json.backup` beside it (2.1.332 still names
+/// `^\.claude(-[a-z-]+)?\.json(\.backup)?$`); its copies go in `backups/`; and the
+/// older `.config.json`, when there, is read in its place, with copies named as
+/// 2.1.332's `/^\.config\.json(\.|$)/` names them, hence `.config.json*`. Under
+/// CLAUDE_CONFIG_DIR all of them sit in that dir. Unset, `.claude*.json*` sits in home
+/// and the rest in `~/.claude`, as [`DENY`] names them.
+const CFG_SECRETS: &[&str] = &[".credentials.json", ".claude*.json*", ".config.json*", "backups/**"];
+
+/// The Read denies for [`CFG_SECRETS`] under CLAUDE_CONFIG_DIR
 /// ([`crate::data::claude_config_dir`]), where Claude Code keeps them when the
-/// variable is set. [`DENY`]'s `~/.claude` one stays beside it: one box can hold
-/// both dirs, and denying more fails closed (#1428). `Ok(None)` when the variable
-/// names no dir. An error, a line for the user, when no rule can name the file
-/// exactly: a dir [`path_text`] refuses, a relative one (a rule reads it against
+/// variable is set. [`DENY`]'s rules for their default places stay beside them: one
+/// box can hold both dirs, and denying more fails closed (#1428). No rule when the
+/// variable names no dir. An error, a line for the user, when no rule can name the
+/// files exactly: a dir [`path_text`] refuses, a relative one (a rule reads it against
 /// the cwd, the cache dir), or one holding a `)`. The deny list reaches claude as
 /// one argv word, and Claude Code 2.1.331 split it at a comma or a space after a
 /// `)` inside a rule, which then denied nothing; a comma, a `(`, a space, a tab, a
 /// newline or U+3000 alone left the rule whole (measured, #1433).
-fn cfg_rule() -> Result<Option<String>, String> {
+fn cfg_rules() -> Result<Vec<String>, String> {
     let Some(dir) = crate::data::claude_config_dir() else {
-        return Ok(None);
+        return Ok(Vec::new());
     };
     let why = match path_text(&dir) {
         Err(why) => why,
         Ok(_) if !dir.is_absolute() => "is not an absolute path",
         Ok(s) if s.contains(')') => "holds a closing parenthesis",
-        Ok(_) => return Ok(Some(format!("Read(/{})", dir.join(".credentials.json").display()))),
+        Ok(_) => return Ok(CFG_SECRETS.iter().map(|f| format!("Read(/{})", dir.join(f).display())).collect()),
     };
     let shown = format!("{:?}", dir.display().to_string());
     Err(format!(
@@ -222,10 +241,14 @@ fn cfg_rule() -> Result<Option<String>, String> {
     ))
 }
 
-/// A read-only call's deny list: [`DENY`], then [`cfg_rule`]'s. A dir no rule can
+/// A read-only call's deny list: [`DENY`], then [`cfg_rules`]'s. A dir no rule can
 /// name adds none here, as [`start`] refuses the call before claude starts.
 fn deny_list() -> Vec<String> {
-    DENY.iter().copied().map(String::from).chain(cfg_rule().ok().flatten()).collect()
+    DENY.iter()
+        .copied()
+        .map(String::from)
+        .chain(cfg_rules().unwrap_or_default())
+        .collect()
 }
 
 /// `path` matches one of the read-only profile's Read denies ([`deny_list`]), so a
@@ -570,10 +593,10 @@ fn start(call: &Call, p: &Profile, system: &str, model: &str) -> Result<std::pro
     for d in &p.read_dirs {
         read_dir_ok(d)?;
     }
-    // a call with a deny list denies the credentials under CLAUDE_CONFIG_DIR too, so
-    // one whose dir no rule can name does not start (#1428)
+    // a call with a deny list denies Claude's files under CLAUDE_CONFIG_DIR too, so
+    // one whose dir no rule can name does not start (#1428, #1431)
     if !p.deny.is_empty() {
-        cfg_rule()?;
+        cfg_rules()?;
     }
     let system = match p.where_note() {
         Some(n) => format!("{system}\n\n{n}"),
