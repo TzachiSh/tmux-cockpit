@@ -115,21 +115,31 @@ cockpit_noted_key() {         # <name> <record option> -> the key
 # #{pane_start_command} prints it through args_escape, which double-quotes any string with a
 # space: so the mark reads back as `"COCKPIT_POPUP=1 ` at the start, whatever follows. The
 # flag is read as true or false, never as empty: tmux 3.8 already prints 0 or 1 for it. The
-# board holds a copy of the filter (tui/src/data.rs NOT_POPUP).
-# shellcheck disable=SC2034  # read by the scripts that source this
+# board holds a copy of the filter (tui/src/data.rs NOT_POPUP). popup_cmd writes the mark.
 COCKPIT_POPUP_MARK='COCKPIT_POPUP=1 '
 # shellcheck disable=SC2034  # read by the scripts that source this
 COCKPIT_NOT_POPUP='#{?pane_modal_flag,#{?#{m:"COCKPIT_POPUP=1 *,#{pane_start_command}},0,1},1}'
 
-# A popup's command that runs a shell script (#1441, #1456). tmux runs a one-string popup
-# command with the session's default-shell -c, and fish refuses a whole line that holds sh syntax
-# it lacks ($?, ${...}, a bare a=b), and has no read -r. So that shell gets the mark first, then
-# shq'd words only, which fish reads as sh does, and /bin/sh runs <script> with the args as $1 on.
-popup_sh() {                  # <sh script> <arg>... -> the command
-  local c a
-  c="${COCKPIT_POPUP_MARK}/bin/sh -c $(shq "$1") sh"; shift
-  for a in "$@"; do c+=" $(shq "$a")"; done
+# Words for a shell (#1467): each through shq, joined by blanks. tmux runs a window's and a
+# popup's one-string command with the session's default-shell -c, and fish refuses a whole line
+# that holds sh syntax it lacks ($?, ${...}, a bare a=b). It reads shq'd words as sh does.
+shq_words() {                 # <word>... -> the words
+  local c='' a
+  for a in "$@"; do c+="${c:+ }$(shq "$a")"; done
   printf '%s' "$c"
+}
+
+# Every cockpit popup's command (#1248, #1467): the mark, then shq_words. A value the program
+# reads that is not one of its words goes in with display-popup -e, outside the command.
+popup_cmd() {                 # <word>... -> the command
+  printf '%s%s' "$COCKPIT_POPUP_MARK" "$(shq_words "$@")"
+}
+
+# A popup's command that runs a shell script (#1441, #1456): /bin/sh runs <script> with the
+# args as $1 on, since fish has no read -r and refuses the rest of the syntax a script holds.
+popup_sh() {                  # <sh script> <arg>... -> the command
+  local s=$1; shift
+  popup_cmd /bin/sh -c "$s" sh "$@"
 }
 
 # A file name as a title: no control character and no bidi mark, which would

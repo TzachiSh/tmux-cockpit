@@ -32,7 +32,6 @@ tm_d=${BASH_SOURCE[0]}; case $tm_d in (*/*) ;; (*) tm_d=./$tm_d ;; esac
 case $tm_d in */*) tm_d=${tm_d%/*} ;; *) tm_d=. ;; esac
 # shellcheck source=lib/fmt.sh
 . "$tm_d/lib/fmt.sh" || die "cockpit: tm could not load lib/fmt.sh"
-QSELF=$(shq "$SELF")
 # shellcheck source=lib/tmpdir.sh
 . "$tm_d/lib/tmpdir.sh" || die "cockpit: tm could not load lib/tmpdir.sh"
 
@@ -232,17 +231,19 @@ popup() {  # popup CLIENT SESSION_ID CLIENT_WIDTH CLIENT_HEIGHT PANE [--needs]
     hmax=$((ch * 70 / 100)); clamp hmax 14 "$ch"; ceiling hmax "$ph" "$ch"
     h=$((rows + 5)); clamp h 14 "$hmax"
   fi
-  local cmd
-  printf -v cmd 'TM_POPUP=1 TM_SID=%s TM_CLIENT=%s TM_PANE=%s %s%s' \
-    "$(shq "$sid")" "$(shq "$client")" "$(shq "$pane")" "$QSELF" "${needs:+ --needs}"
+  # The four values go in with -e, outside the command: tmux puts each in the environment as
+  # it is, and no shell reads it (tmux 3.8 cmd-new-window.c:144-148, cmd-display-menu.c:647-654).
+  local -a words=("$SELF") tenv=(-e TM_POPUP=1 -e "TM_SID=$sid" -e "TM_CLIENT=$client"
+    -e "TM_PANE=$pane")
+  [ -z "$needs" ] || words+=(--needs)
   # A client under 14 lines has no room for a popup and its border: a window of
   # the client's session has it all.
   if [ "$ch" -lt 14 ]; then
-    tmux new-window -t "$sid:" -n sessions "$cmd"
+    tmux new-window -t "$sid:" -n sessions "${tenv[@]}" "$(shq_words "${words[@]}")"
     return
   fi
-  tmux display-popup -c "$client" -t "$sid" -w "$w" -h "$h" -T ' sessions ' \
-    -E "$COCKPIT_POPUP_MARK$cmd"
+  tmux display-popup -c "$client" -t "$sid" -w "$w" -h "$h" -T ' sessions ' "${tenv[@]}" \
+    -E "$(popup_cmd "${words[@]}")"
 }
 
 clamp() {  # clamp VAR LOW HIGH -- HIGH wins when the two cross
