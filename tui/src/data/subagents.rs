@@ -488,12 +488,15 @@ fn event_of(
     // The `.live` set ends an agent the log has running (a start or a resume is its newest
     // event) that started in an earlier second, wrote nothing after it, and is not in it. It
     // cannot tell killed from finished; a finished meta decided above. Not an idle teammate:
-    // no payload yet shows whether `background_tasks` lists one (#403).
+    // no payload yet shows whether `background_tasks` lists one (#403). Not a teammate whose
+    // meta file holds no description either: the set cannot name it. Claude Code 2.1.332
+    // writes none for an empty or whitespace-only Agent description, and the set then lists a
+    // text cut from the prompt (#1474).
     let gone = log.live.as_ref().is_some_and(|l| {
         r.start.is_some_and(|(t, _)| t < l.t)
             && wrote.is_none_or(|w| w <= l.t)
             && !l.ids.contains(id)
-            && !(mate && l.descs.contains(&m.desc))
+            && !(mate && (m.desc.is_empty() || l.descs.contains(&m.desc)))
     });
     Some(if r.ev == Ev::Start && gone { (Ev::Kill, r.t) } else { (r.ev, r.t) })
 }

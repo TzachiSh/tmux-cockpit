@@ -395,7 +395,10 @@ exactly one teammate has it (two alike stay unknown), and counts only after that
 last `start` in the tail. The `.live` set ends, as stopped, every agent whose newest event is
 a `start` (a resume included) from an earlier second than the set's, that wrote no transcript
 row after it, and that is in it neither by id nor (a teammate) by description. It cannot tell killed from finished, so a
-`finished: true` meta newer than the `start` still decides. `end-unknown` is left for an agent
+`finished: true` meta newer than the `start` still decides. A teammate whose meta file holds no
+description is never ended by the set, which cannot name it: Claude Code 2.1.332 writes none for
+an empty or whitespace-only Agent description, and the set then lists a text cut from the prompt
+(#1474). `end-unknown` is left for an agent
 none of these reaches: a UI stop before the parent's next `Stop`, or a box without the hooks.
 An idle teammate is left alone: no payload has yet shown whether `background_tasks` lists a
 teammate between turns, so its absence proves nothing. An agent with no record that never
