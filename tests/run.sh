@@ -5663,8 +5663,9 @@ bssaid() {                    # bssaid <label> <literal line the freeze spells>
 }
 
 mkrel
-# bat went with tmux-open-path's previews (#228), and --full with it: that tier
-# fetched nothing else. A bootstrap run names no bat anywhere.
+# bat went with tmux-open-path's previews (#228), and --full and --latest with it: that tier
+# fetched nothing else. A bootstrap run names no bat anywhere, and both options are unknown
+# options now, refused as any other one is (#1463).
 bsout=$(bs --dry-run); bsrc=$?
 # The step's own words, never a path (#987): the old bat step named the tool as a word of its
 # own (its package line, "fzf … and bat …", "brew install fzf bat"). A word holding a / is a
@@ -5673,13 +5674,12 @@ is "a run names no bat" "0" "$(printf '%s\n' "$bsout" | tr -s ' \t' '\n' | grep 
     grep -ciE '^[[:punct:]]*(bat|batcat)[[:punct:]]*$')"
 is "and names no latest-tools step" "0" "$(printf '%s\n' "$bsout" | grep -c 'latest tools')"
 is "and the run exits 0" "0" "$bsrc"
-bsout=$(bs --full --dry-run); bsrc=$?
-is "--full is a no-op: the run still exits 0" "0" "$bsrc"
-bssaid "and says so on one line" \
-    "bootstrap.sh: --full does nothing now: fzf and bat are not used" "$bsout"
-is "and the normal run happened (the revdiff step ran)" "1" \
-    "$(printf '%s\n' "$bsout" | grep -c '== revdiff ==')"
-bsout=$(bs --latest --dry-run); is "--latest is a no-op too (exit 0)" "0" "$?"
+for bs_o in --full --latest; do
+    bsout=$(bs "$bs_o" --dry-run); bsrc=$?
+    is "$bs_o is an unknown option: exit 2, refused by name, no notice" "2|1|0" \
+       "$bsrc|$(printf '%s\n' "$bsout" | grep -cxF -- "unknown option: $bs_o")|$(
+       printf '%s\n' "$bsout" | grep -c 'does nothing now')"
+done
 bsclear_check=$(bs --check --yes); is "--check runs alone" "2" "$?"
 bssaid "and says so" "--check runs alone" "$bsclear_check"
 is "no run reached for sudo" "absent" "$([ -e "$BS/SUDO_RAN" ] && echo present || echo absent)"
