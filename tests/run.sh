@@ -2283,7 +2283,30 @@ is "#1487: an agent id past 81 bytes gives the ask no key, and it still names it
     "needs-input||Bash: git" "$(bgo @panestate)|$(bgo @panestate_ask)|$(bgo @panestate_msg)"
 bqask ""; bqev PreToolUse "$BQAX" Read
 bqis "#1487: a call of an agent id past 81 bytes leaves the main thread's ask waiting" needs-input
-unset -f bqask bqev bqis; unset BQSA BQIN BQNK BQPP BQLB BQA1 BQA2 BQAX
+# #1489: Claude Code 2.1.332 builds an MCP tool name as mcp__<server>__<tool> with no length
+# cut, and its own checks take a tool name of [a-zA-Z0-9_-] up to 128 bytes. The key and the
+# ask's text take the whole name, and a longer one names no tool.
+bqtask() {                    # <agent or empty> <tool>: a fresh ask of that tool on a running pane
+    local ag=''
+    [ -n "$1" ] && ag="\"agent_id\":\"$1\","
+    "$TMUX_REAL" -L "$BG" set -pu -t "$BGP" @panestate_msg >/dev/null 2>&1
+    bgst running "$BGU"
+    bgst needs-input "{\"session_id\":\"s1\",$ag\"hook_event_name\":\"PermissionRequest\",\
+\"tool_name\":\"$2\",\"tool_input\":{\"q\":\"x\"}}"; }
+printf -v BQTO '%0118d' 0; BQTO=${BQTO//0/o}
+BQT128=mcp__srv__$BQTO BQT129=mcp__srv__${BQTO}o
+BQTA=mcp__srv__${BQTO:0:89}a BQTB=mcp__srv__${BQTO:0:89}b
+bqtask "" "$BQTA"; bqev PostToolUse "" "$BQTB"
+bqis "#1489: a tool sharing an ask's first 64 bytes leaves the ask waiting" needs-input
+bqtask "$BQA1" "$BQT128"
+is "#1489: the key and the text take a whole 128-byte tool name, after an 81-byte id" \
+    "needs-input|$BQA1/$BQT128|$BQT128" \
+    "$(bgo @panestate)|$(bgo @panestate_ask)|$(bgo @panestate_msg)"
+bqtask "" "$BQT129"
+is "#1489: a tool name past 128 bytes gives the ask no key and no text" "needs-input||" \
+    "$(bgo @panestate)|$(bgo @panestate_ask)|$(bgo @panestate_msg)"
+unset -f bqask bqev bqis bqtask; unset BQSA BQIN BQNK BQPP BQLB BQA1 BQA2 BQAX
+unset BQTO BQT128 BQT129 BQTA BQTB
 
 # Concurrent hooks: several report-back Stops and subagent tool calls at once.
 bgjobs() {                    # <n> <state> <payload>: n hooks at once, then wait for them
