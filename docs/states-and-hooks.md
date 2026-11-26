@@ -25,7 +25,10 @@ in place on a pane still waiting, and writes its own on any other pane.
 `<agent_id>/<tool_name>`, with no agent on the main thread (#1403). The agent
 id is the whole id or none, by the subagent log's rule for a plain id (below):
 two agents of one long label differ only in the id's last 16 hex digits, so a
-cut id could be both agents' key (#1487). Other
+cut id could be both agents' key (#1487). The tool name is whole too, up to
+128 bytes of `[A-Za-z0-9_-]`: Claude Code builds an MCP tool name,
+`mcp__<server>__<tool>`, with no length cut, and its own checks take a tool
+name up to 128 bytes. A longer one names no tool (#1489). Other
 agents and parallel calls fire tool hooks while an ask waits, and the payload
 carries no `tool_use_id` to tie them to it. So while a key is set, a
 `PostToolUse` or `PostToolUseFailure` ends the ask only with the same key, a
@@ -62,7 +65,7 @@ timer.
 | `UserPromptSubmit` | `running` |
 | `UserPromptSubmit` (2nd) | `session` — the same save, so `/clear` and `--resume` (a new `session_id`) are followed from the first prompt |
 | `CwdChanged` | `session` — saves the payload's `new_cwd` as `@cockpit_dir`, so the board shows the repo the agent `cd`'d into (see [Working tree](#working-tree)) |
-| `PermissionRequest` | `needs-input` — `@panestate_msg` names the tool; for `Bash` only the command's program, `Bash: git`, never its arguments or paths (#1330). The program is the first word with its path dropped, and only when that whole word is letters, digits and `._/+-`: anything else, `FOO=1 git` included, reads plain `Bash` (#1334). `@panestate_ask` keeps the ask's key (#1403, see above) |
+| `PermissionRequest` | `needs-input` — `@panestate_msg` names the tool, the whole name up to 128 bytes (#1489); for `Bash` only the command's program, `Bash: git`, never its arguments or paths (#1330). The program is the first word with its path dropped, and only when that whole word is letters, digits and `._/+-`: anything else, `FOO=1 git` included, reads plain `Bash` (#1334). `@panestate_ask` keeps the ask's key (#1403, see above) |
 | `PostToolUse` | `running`; over an ask with a key, only the asking agent's call of the asked tool (#1403) |
 | `PostToolUse` (matcher `TaskStop`) | `sub-taskstop` — records the stopped agent in the subagent log, since a TaskStop mid-turn fires no `SubagentStop` for a plain agent (see [Subagent event log](#subagent-event-log)); no pane state |
 | `PostToolUseFailure` | `running`, as `PostToolUse`: a tool's failure is not the turn's (#1331). So a routine non-zero Bash exit as a turn's last tool call ends the turn `done`, and an approved command that fails answers its ask (#1341). It runs `agent-state error`, as `StopFailure` does, and the payload's `hook_event_name` tells the two apart. Not when `is_interrupt` is true: a tool stopped with Esc writes nothing (#1330). Only the payload's first 4 KB is read: an `is_interrupt` past it, behind a large `tool_input`, is not seen, and the pane goes `running` (#1334). Over an ask with a key it ends the ask only as `PostToolUse` does (#1403) |
