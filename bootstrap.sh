@@ -63,7 +63,6 @@ ask() {  # ask <question> <default y|n>
 }
 
 have() { command -v "$1" >/dev/null 2>&1; }
-sha_c() { if have sha256sum; then sha256sum -c -; else shasum -a 256 -c -; fi; }
 
 # shellcheck source=scripts/lib/vnum.sh
 . "$DIR/scripts/lib/vnum.sh" || exit 1
@@ -75,6 +74,8 @@ sha_c() { if have sha256sum; then sha256sum -c -; else shasum -a 256 -c -; fi; }
 . "$DIR/scripts/lib/eol.sh" || exit 1
 # shellcheck source=scripts/lib/claudedir.sh
 . "$DIR/scripts/lib/claudedir.sh" || exit 1
+# shellcheck source=scripts/lib/sha256.sh
+. "$DIR/scripts/lib/sha256.sh" || exit 1
 # The plugins go where tpm installs and runs them, by tpm's own rule: the XDG tmux folder's
 # plugins when an XDG tmux.conf is there, else ~/.tmux/plugins. A folder picked any other way
 # left tpm installing a second copy in its own (#1310).
@@ -155,7 +156,7 @@ in_own_tmpdir() {             # <what> <step> [args...]
 # Downloads <dir>.tar.gz into the temp dir and checks it against its pin.
 fetch_src() {                 # <dir> <sha256> <url>
     run "download $1" curl -fsSL --retry 2 --max-time 120 -o "$tmp/$1.tar.gz" "$3" || return 1
-    printf '%s  %s\n' "$2" "$tmp/$1.tar.gz" | sha_c >/dev/null 2>&1 && return 0
+    printf '%s  %s\n' "$2" "$tmp/$1.tar.gz" | sha256_c >/dev/null 2>&1 && return 0
     printf '  FAIL:  %s checksum mismatch -- NOT built\n' "$1" >&2; return 1
 }
 # Builds <dir> from <dir>.tar.gz in the temp dir and installs it into <prefix>. The paths are
@@ -417,9 +418,9 @@ fetch_tool() {                # <name> <ver> <asset-url> <sums-url> <path-in-tar
     if ! curl -fsSL --retry 2 --max-time 120 -o "$tmp/a.tgz" "$asset"; then
         printf '  skip:  %s (download failed -- offline?)\n' "$name" >&2; return 0
     fi
-    # The published name is rewritten so sha256sum -c checks the bytes that arrived.
+    # The published name is rewritten so sha256_c checks the bytes that arrived.
     if ! ( cd "$tmp" && grep -E " \*?${a//./\\.}\$" sums |
-            sed -E "s| \*?${a//./\\.}\$| a.tgz|" | sha_c ) >/dev/null 2>&1; then
+            sed -E "s| \*?${a//./\\.}\$| a.tgz|" | sha256_c ) >/dev/null 2>&1; then
         printf '  FAIL:  %s checksum mismatch -- NOT installed\n' "$name" >&2; return 1
     fi
     depth=$(( $(printf '%s' "$path" | tr -cd / | wc -c) ))
