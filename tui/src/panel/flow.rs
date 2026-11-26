@@ -502,7 +502,7 @@ fn list(f: &Flow, w: usize) -> Vec<String> {
             let label = fit(&s.label, room);
             format!("{lead}{label}{}{tail}", " ".repeat(room - label.width()))
         } else {
-            fit(&format!("{lead}{} {who} {time}", s.label), w)
+            fit(format!("{lead}{} {who} {time}", s.label).trim_end(), w)
         };
         let line = line.trim_end();
         if cur == Some(i) && line.width() + 2 + HERE.width() <= w {
