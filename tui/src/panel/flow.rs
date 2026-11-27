@@ -5,14 +5,20 @@
 //! What it reads: `participant` and `actor` (with `as`), implicit participants,
 //! Mermaid's ten arrows (`->>`, `-->>`, `->`, `-->`, `-x`, `--x`, `-)`, `--)`,
 //! `<<->>` and `<<-->>`, each drawn with its own line and head in both shapes),
-//! `autonumber`, `Note left of`, `right of` and `over` (the ladder draws a note
-//! where its place says, the list under its step), and a
+//! `autonumber` with or without a start and an increment, `Note left of`,
+//! `right of` and `over` (the ladder draws a note where its place says, the
+//! list under its step), and a
 //! `%% status: <✓|●|○|✗|!|done|running|pending|failed|needs> [HH:MM]` line
-//! after a step. `loop`, `alt` and `opt` draw as frames around their steps, an
-//! `alt`'s `else` as a divider, at most [`MAX_FRAME_DEPTH`] deep, and a ledger
-//! line after the steps names what the drawing leaves out (#1535, #1536).
-//! Anything else is an `Err` naming the line, and [`render`] then shows
-//! [`not_drawn`]: the reason and the raw lines.
+//! after a step. `loop`, `alt`, `opt`, `par`, `critical` and `break` draw as
+//! frames around their steps, an `alt`'s `else`, a `par`'s `and` and a
+//! `critical`'s `option` as dividers, at most [`MAX_FRAME_DEPTH`] deep.
+//! `activate`, `deactivate`, a `+` or `-` before a target, a central
+//! connection's `()`, `rect`, `box`, `create` and `destroy` keep the steps and
+//! participants they hold and drop the rest, and a ledger line after the steps
+//! names what the drawing leaves out (#1535, #1536, #1537). A `;` ends a
+//! statement as a new line does, and `#59;` in text reads as `;`. Anything
+//! else is an `Err` naming the line, and [`render`] then shows [`not_drawn`]:
+//! the reason and the raw lines.
 //!
 //! Every glyph it draws comes from the caller's [`Glyphs`] tier, so the ASCII
 //! tier draws nothing but ASCII from an ASCII source. No line is ever wider
@@ -123,13 +129,32 @@ pub struct Step {
     pub notes: Vec<Note>,
 }
 
-/// A block that draws as a frame around its steps (#1536).
+/// A block that `end` closes: one drawn as a frame around its steps (#1536,
+/// #1537), or a `rect` or a `box`, which keeps its steps or participants and
+/// draws no frame.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Block {
     Loop,
     Alt,
     Opt,
+    Par,
+    Critical,
+    Break,
+    Rect,
+    Group,
 }
+
+/// Every block, as [`line()`] finds the one a keyword opens or a word divides.
+const BLOCKS: &[Block] = &[
+    Block::Loop,
+    Block::Alt,
+    Block::Opt,
+    Block::Par,
+    Block::Critical,
+    Block::Break,
+    Block::Rect,
+    Block::Group,
+];
 
 impl Block {
     /// The keyword that opens the block, as its frame's top rule shows it.
@@ -138,6 +163,31 @@ impl Block {
             Block::Loop => "loop",
             Block::Alt => "alt",
             Block::Opt => "opt",
+            Block::Par => "par",
+            Block::Critical => "critical",
+            Block::Break => "break",
+            Block::Rect => "rect",
+            Block::Group => "box",
+        }
+    }
+
+    /// The word that divides the block into branches, as its divider shows
+    /// it: `else` in an `alt`, `and` in a `par`, `option` in a `critical`.
+    fn divider(self) -> Option<&'static str> {
+        match self {
+            Block::Alt => Some("else"),
+            Block::Par => Some("and"),
+            Block::Critical => Some("option"),
+            _ => None,
+        }
+    }
+
+    /// The ledger's name for a block kept with no frame (#1537).
+    fn unframed(self) -> Option<&'static str> {
+        match self {
+            Block::Rect => Some(RECTS),
+            Block::Group => Some(BOXES),
+            _ => None,
         }
     }
 }
@@ -151,7 +201,8 @@ pub struct Spot {
 }
 
 /// A block's frame: its label, how many frames it sits inside, where it opens,
-/// each `else` divider with its label, and where it closes.
+/// each divider (`else`, `and` or `option`) with its label, and where it
+/// closes.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Frame {
     pub kind: Block,
@@ -179,7 +230,8 @@ pub struct Flow {
     pub dropped: Vec<String>,
     /// The frames, in the order their blocks open (#1536).
     pub frames: Vec<Frame>,
-    pub autonumber: bool,
+    /// `autonumber`'s start and increment, none without it (#1537).
+    pub autonumber: Option<(usize, usize)>,
 }
 
 /// How [`draw`] lays a flow out.
@@ -287,8 +339,15 @@ const ARROWS: [(&str, Line, Head); 10] = [
     ("->", Line::Solid, Head::None),
 ];
 
-/// One line, trimmed and not empty, into `f`. `open` holds each open block,
-/// outermost first, with its frame's index in `f.frames`, or none past
+/// A statement's first word and the rest, trimmed.
+fn first_word(l: &str) -> (&str, &str) {
+    l.split_once(char::is_whitespace).map_or((l, ""), |(w, r)| (w, r.trim()))
+}
+
+/// One statement, trimmed and not empty, into `f`: kept, drawn as a frame, or
+/// dropped with its name in the ledger and no actor added (#1537). `open`
+/// holds each open block, outermost first, with its frame's index in
+/// `f.frames`, or none for a `rect`, a `box` or a block past
 /// [`MAX_FRAME_DEPTH`].
 fn line(f: &mut Flow, l: &str, open: &mut Vec<(Block, Option<usize>)>) -> Result<(), String> {
     if let Some(comment) = l.strip_prefix("%%") {
@@ -303,27 +362,21 @@ fn line(f: &mut Flow, l: &str, open: &mut Vec<(Block, Option<usize>)>) -> Result
         }
         return Ok(());
     }
-    let (word, rest) = l.split_once(char::is_whitespace).map_or((l, ""), |(w, r)| (w, r.trim()));
+    let (word, rest) = first_word(l);
     match word {
-        "autonumber" if rest.is_empty() => f.autonumber = true,
-        "participant" | "actor" => {
-            let (id, name) = rest.split_once(" as ").map_or((rest, rest), |(i, n)| (i.trim(), n.trim()));
-            if !is_id(id) || name.is_empty() {
-                return Err("a participant needs an id".into());
+        "autonumber" => f.autonumber = Some(autonumber(rest)?),
+        "participant" | "actor" => participant(f, rest)?,
+        // The participant is kept, its late start is not.
+        "create" => match first_word(rest) {
+            ("participant" | "actor", p) => {
+                record_drop(f, LIFECYCLE);
+                participant(f, p)?;
             }
-            let i = f.actor(id);
-            f.actors[i].name = tidy(name);
-        }
-        "Note" | "note" => note(f, rest)?,
-        "else" => match open.last() {
-            Some(&(Block::Alt, frame)) => {
-                let at = f.here();
-                if let Some(fr) = frame.and_then(|i| f.frames.get_mut(i)) {
-                    fr.dividers.push((at, tidy(rest)));
-                }
-            }
-            _ => return Err("else outside an alt".into()),
+            _ => return Err("create without a participant".into()),
         },
+        "destroy" => record_drop(f, LIFECYCLE),
+        "activate" | "deactivate" => record_drop(f, ACTIVATIONS),
+        "Note" | "note" => note(f, rest)?,
         "end" => {
             let (_, frame) = open.pop().ok_or("end outside a block")?;
             let at = f.here();
@@ -331,29 +384,76 @@ fn line(f: &mut Flow, l: &str, open: &mut Vec<(Block, Option<usize>)>) -> Result
                 fr.close = at;
             }
         }
-        _ => match [Block::Loop, Block::Alt, Block::Opt].into_iter().find(|b| b.word() == word) {
-            Some(kind) if open.len() < MAX_FRAME_DEPTH => {
-                let at = f.here();
-                f.frames.push(Frame {
-                    kind,
-                    label: tidy(rest),
-                    depth: open.len(),
-                    open: at,
-                    dividers: vec![],
-                    close: at,
-                });
-                open.push((kind, Some(f.frames.len() - 1)));
+        _ => match BLOCKS.iter().find(|b| b.word() == word) {
+            Some(&kind) => {
+                // How deep its frame sits: a block with no frame around it does not count.
+                let depth = open.iter().filter(|(_, fr)| fr.is_some()).count();
+                let frame = if let Some(name) = kind.unframed() {
+                    record_drop(f, name);
+                    None
+                } else if depth >= MAX_FRAME_DEPTH {
+                    // Its steps are drawn and its frame is not, so the ledger names it.
+                    record_drop(f, &format!("frames past depth {MAX_FRAME_DEPTH}"));
+                    None
+                } else {
+                    let at = f.here();
+                    f.frames.push(Frame {
+                        kind,
+                        label: tidy(rest),
+                        depth,
+                        open: at,
+                        dividers: vec![],
+                        close: at,
+                    });
+                    Some(f.frames.len() - 1)
+                };
+                open.push((kind, frame));
             }
-            Some(kind) => {
-                // Its steps are drawn and its frame is not, so the ledger names it.
-                record_drop(f, &format!("frames past depth {MAX_FRAME_DEPTH}"));
-                open.push((kind, None));
-            }
+            // A divider word divides the innermost open block, and only one of the kind it divides.
+            None if BLOCKS.iter().any(|b| b.divider() == Some(word)) => match open.last() {
+                Some(&(kind, frame)) if kind.divider() == Some(word) => {
+                    let at = f.here();
+                    if let Some(fr) = frame.and_then(|i| f.frames.get_mut(i)) {
+                        fr.dividers.push((at, tidy(rest)));
+                    }
+                }
+                _ => return Err(format!("{word} outside the block it divides")),
+            },
             None => step(f, l)?,
         },
     }
     Ok(())
 }
+
+/// A participant line's rest, `<id>` or `<id> as <name>`, into `f`.
+fn participant(f: &mut Flow, rest: &str) -> Result<(), String> {
+    let (id, name) = rest.split_once(" as ").map_or((rest, rest), |(i, n)| (i.trim(), n.trim()));
+    if !is_id(id) || name.is_empty() {
+        return Err("a participant needs an id".into());
+    }
+    let i = f.actor(id);
+    f.actors[i].name = tidy(name);
+    Ok(())
+}
+
+/// `autonumber`'s rest: nothing, numbering from 1 by 1, or a start and an
+/// increment, each a whole number (Mermaid 11.15.0, #1537).
+fn autonumber(rest: &str) -> Result<(usize, usize), String> {
+    let bad = || format!("autonumber takes a start and an increment, not {rest}");
+    let words: Vec<&str> = rest.split_whitespace().collect();
+    match words.as_slice() {
+        [] => Ok((1, 1)),
+        [start, by] => Ok((start.parse().map_err(|_| bad())?, by.parse().map_err(|_| bad())?)),
+        _ => Err(bad()),
+    }
+}
+
+// The ledger's names for what a kept or dropped statement leaves out (#1537).
+const ACTIVATIONS: &str = "activations";
+const CENTRAL: &str = "central connections";
+const RECTS: &str = "rect highlights";
+const BOXES: &str = "participant boxes";
+const LIFECYCLE: &str = "create/destroy";
 
 /// Name `what` in the ledger once, in the order first met (#1535).
 fn record_drop(f: &mut Flow, what: &str) {
@@ -408,6 +508,23 @@ fn step(f: &mut Flow, l: &str) -> Result<(), String> {
         .iter()
         .find_map(|&(a, line, head)| arrow.split_once(a).map(|(x, y)| (x.trim(), y.trim(), line, head)))
         .ok_or("no arrow")?;
+    // Mermaid's marks beside the arrow: a central connection's `()` at either
+    // end, an activation's `+` or `-` before the target. The step is kept and
+    // the ledger names each kind (#1537).
+    let (from, to) = match (from.strip_suffix("()"), to.strip_prefix("()")) {
+        (None, None) => (from, to),
+        (a, b) => {
+            record_drop(f, CENTRAL);
+            (a.map_or(from, str::trim_end), b.map_or(to, str::trim_start))
+        }
+    };
+    let to = match to.strip_prefix(['+', '-']) {
+        Some(t) => {
+            record_drop(f, ACTIVATIONS);
+            t.trim_start()
+        }
+        None => to,
+    };
     if !is_id(from) || !is_id(to) {
         return Err("a step needs two participant ids".into());
     }
@@ -425,24 +542,47 @@ fn step(f: &mut Flow, l: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// A line's statements: a `;` ends one as a new line does, as in Mermaid,
+/// except the `;` that closes an entity code such as `#59;` (a `#`, then
+/// letters or digits). A `%%` line is one statement (#1537).
+fn statements(l: &str) -> Vec<&str> {
+    if l.starts_with("%%") {
+        return vec![l];
+    }
+    let (mut out, mut from) = (vec![], 0);
+    for (i, _) in l.match_indices(';') {
+        let code = l[from..i].trim_end_matches(|c: char| c.is_ascii_alphanumeric());
+        if !code.ends_with('#') || code.len() == i - from {
+            out.push(&l[from..i]);
+            from = i + 1;
+        }
+    }
+    out.push(&l[from..]);
+    out
+}
+
 /// Reads the subset in the module doc; an `Err` says why and on which line.
 pub fn parse(src: &str) -> Result<Flow, String> {
-    let mut lines = src
-        .lines()
-        .enumerate()
-        .map(|(n, l)| (n + 1, l.trim()))
-        .filter(|(_, l)| !l.is_empty());
+    // Each statement with its line's number. A line's escape sequences go
+    // first, whole, so a `;` in one ends no statement (#1530).
+    let mut lines = vec![];
+    for (n, l) in src.lines().enumerate() {
+        let l = super::action::strip_escapes(l);
+        lines.extend(statements(l.trim()).into_iter().map(|s| (n + 1, s.trim().to_string())));
+    }
+    let mut lines = lines.into_iter().filter(|(_, l)| !l.is_empty());
     match lines.find(|(_, l)| !l.starts_with("%%")) {
-        Some((_, "sequenceDiagram")) => {}
+        Some((_, l)) if l == "sequenceDiagram" => {}
         _ => return Err("no sequenceDiagram header".into()),
     }
     let mut f = Flow::default();
     let mut open = vec![];
     for (n, l) in lines {
-        line(&mut f, l, &mut open).map_err(|why| format!("line {n}: {why}: {l}"))?;
+        // `#59;` is the one entity code read: a `;` in text.
+        line(&mut f, &l.replace("#59;", ";"), &mut open).map_err(|why| format!("line {n}: {why}: {l}"))?;
     }
     if !open.is_empty() {
-        return Err("a loop, alt or opt is never closed".into());
+        return Err("a block is never closed".into());
     }
     if f.steps.is_empty() {
         return Err("no steps".into());
@@ -618,11 +758,16 @@ impl Row {
     }
 }
 
+/// Step `i`'s number under `autonumber`: the start, then the increment a step,
+/// held at the largest number rather than wrapping (#1537).
+fn number(f: &Flow, i: usize) -> Option<usize> {
+    f.autonumber.map(|(start, by)| start.saturating_add(i.saturating_mul(by)))
+}
+
 fn label(f: &Flow, i: usize) -> String {
-    if f.autonumber {
-        format!("{} {}", i + 1, f.steps[i].label)
-    } else {
-        f.steps[i].label.clone()
+    match number(f, i) {
+        Some(n) => format!("{n} {}", f.steps[i].label),
+        None => f.steps[i].label.clone(),
     }
 }
 
@@ -673,11 +818,11 @@ fn ledger(f: &Flow, w: usize, g: &Glyphs) -> Vec<String> {
     wrap(&format!("(dropped: {})", f.dropped.join(", ")), w, g)
 }
 
-/// A frame's rule row: its top with its block's keyword and label, an `else`
-/// divider with its label, or its bottom (#1536).
+/// A frame's rule row: its top with its block's keyword and label, a divider
+/// with its block's divider word and its label, or its bottom (#1536).
 enum Rule<'a> {
     Top(Block, &'a str),
-    Divider(&'a str),
+    Divider(Block, &'a str),
     Bottom,
 }
 
@@ -688,7 +833,11 @@ impl Rule<'_> {
         let b = g.plain;
         match self {
             Rule::Top(kind, label) => ([b.top_left, b.horizontal_top, b.top_right], format!("[{} {label}]", kind.word())),
-            Rule::Divider(label) => ([g.frame_tee_left, g.dashed, g.frame_tee_right], format!("[else {label}]")),
+            // A block built by hand with dividers it takes none of shows no word on them.
+            Rule::Divider(kind, label) => (
+                [g.frame_tee_left, g.dashed, g.frame_tee_right],
+                format!("[{} {label}]", kind.divider().unwrap_or_default()),
+            ),
             Rule::Bottom => ([b.bottom_left, b.horizontal_bottom, b.bottom_right], String::new()),
         }
     }
@@ -724,7 +873,7 @@ fn rules(f: &Flow) -> Vec<(Spot, usize, Rule<'_>)> {
                 .take_while(|(at, _)| inside.is_none_or(|n| *at <= n.open))
                 .collect();
             let drawn = drawn + due.len();
-            out.extend(due.into_iter().map(|(at, label)| (*at, nest, Rule::Divider(label))));
+            out.extend(due.into_iter().map(|(at, label)| (*at, nest, Rule::Divider(top.kind, label))));
             if inside.is_some() {
                 if let Some(o) = open.last_mut() {
                     o.1 = drawn;
@@ -905,7 +1054,8 @@ fn list(f: &Flow, w: usize, g: &Glyphs) -> Vec<String> {
     let cur = f.current();
     let status = f.has_status();
     let here = format!("{} here", g.head_left);
-    let digits = if f.autonumber { f.steps.len().to_string().len().max(2) } else { 0 };
+    // The number column holds the largest number, the last step's (#1537).
+    let digits = number(f, f.steps.len().saturating_sub(1)).map_or(0, |n| n.to_string().len().max(2));
     let parts = parts(f);
     // A line's label column holds its rails too, so who to whom still lines up.
     let longest = parts
@@ -927,7 +1077,7 @@ fn list(f: &Flow, w: usize, g: &Glyphs) -> Vec<String> {
     };
     let who_w = f.steps.iter().map(|s| who(s).width()).max().unwrap_or(0);
     let time_w = f.steps.iter().filter_map(|s| s.time.as_deref()).map(str::width).max().unwrap_or(0);
-    let lead_w = usize::from(status) * 2 + if f.autonumber { digits + 1 } else { 0 };
+    let lead_w = usize::from(status) * 2 + if f.autonumber.is_some() { digits + 1 } else { 0 };
     // One label column for every line: aligned when it holds the longest label
     // or 6 columns of it, whichever is less, and the rest of an aligned line
     // fits too (with every label empty the column holds them at any width);
@@ -966,8 +1116,8 @@ fn list(f: &Flow, w: usize, g: &Glyphs) -> Vec<String> {
             lead.push_str(s.status.map_or(" ", |st| st.glyph(g)));
             lead.push(' ');
         }
-        if f.autonumber {
-            lead.push_str(&format!("{:>digits$} ", i + 1));
+        if let Some(n) = number(f, i) {
+            lead.push_str(&format!("{n:>digits$} "));
         }
         let who = who(s);
         let time = s.time.as_deref().unwrap_or("");
@@ -1073,7 +1223,7 @@ mod tests {
                 dividers: vec![(Spot { steps: 1, notes: 0 }, format!("green{bad}y"))],
                 close: Spot { steps: 1, notes: 1 },
             }],
-            autonumber: true,
+            autonumber: Some((1, 1)),
         }
     }
 
