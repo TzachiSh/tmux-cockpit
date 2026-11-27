@@ -2,10 +2,10 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:tmux-cockpit:contracts:agent-message",
   "title": "agent-message",
-  "description": "One message between agents. The payload holds an intent_id and a body_ref only; the words live in the private file body_ref names.",
+  "description": "One message between agents. The payload holds ids and refs only: an intent_id, a body_ref for the message and a summary_ref for its one-line summary. The words live in the private files the refs name.",
   "type": "object",
   "properties": {
-    "schema_version": { "const": 1 },
+    "schema_version": { "const": 2 },
     "msg_id": { "$ref": "#/$defs/id" },
     "from": { "$ref": "#/$defs/id" },
     "to": { "$ref": "#/$defs/id" },
@@ -22,7 +22,8 @@
       "type": "object",
       "properties": {
         "intent_id": { "$ref": "#/$defs/id" },
-        "body_ref": { "$ref": "#/$defs/ref" }
+        "body_ref": { "$ref": "#/$defs/ref" },
+        "summary_ref": { "$ref": "#/$defs/ref" }
       },
       "additionalProperties": false
     }

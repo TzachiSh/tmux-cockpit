@@ -33,14 +33,15 @@ Nothing reads these schemas at run time. The Rust side is `tui/src/store.rs`, a
   `msg.`. No word or title fits one as written. A hex-encoded one still fits,
   and only the writer keeps it out. Pane ids (`%N`), the github-budget key (16
   hex or `global`) and timestamps keep their own shapes.
-- **Refs are opaque too** (`summary_ref`, the payload's `body_ref`): a file
-  name of 16 to 64 lowercase hex, then `.md`, `.json` or `.txt`, directly in
-  one fixed private folder, `$XDG_STATE_HOME/tmux-cockpit/refs/` (0700). No
-  folder part, no `..` and no `/` fits, and no word or title as written; a
-  hex-encoded one still fits, and only the writer keeps it out. The reader of
-  a ref still refuses a symlink that leads out of the folder.
-- **`agent-message.payload`** is a closed list: `intent_id` (an id) and
-  `body_ref` (a ref), both optional, and every other key is refused
+- **Refs are opaque too** (agent-intent's `summary_ref`, the payload's `body_ref`
+  and `summary_ref`): a file name of 16 to 64 lowercase hex, then `.md`,
+  `.json` or `.txt`, directly in one fixed private folder,
+  `$XDG_STATE_HOME/tmux-cockpit/refs/` (0700). No folder part, no `..` and no
+  `/` fits, and no word or title as written; a hex-encoded one still fits, and
+  only the writer keeps it out. The reader of a ref still refuses a symlink
+  that leads out of the folder.
+- **`agent-message.payload`** is a closed list: `intent_id` (an id), `body_ref`
+  and `summary_ref` (refs), all optional, and every other key is refused
   (`additionalProperties: false`). A key name cannot carry words either. A new
   key is a schema change, so it bumps `schema_version` by the rule above.
 - **Timestamps** are ISO-8601 in UTC with a `Z`, an optional fraction, checked

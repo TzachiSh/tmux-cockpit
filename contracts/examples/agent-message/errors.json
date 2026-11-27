@@ -19,6 +19,10 @@
     "keyword": "additionalProperties",
     "at": "$.payload"
   },
+  "invalid-raw-summary.json": {
+    "keyword": "pattern",
+    "at": "$.payload.summary_ref"
+  },
   "invalid-ref-trailing-newline.json": {
     "keyword": "pattern",
     "at": "$.payload.body_ref"
@@ -35,6 +39,10 @@
     "keyword": "pattern",
     "at": "$.subject"
   },
+  "invalid-summary-text.json": {
+    "keyword": "additionalProperties",
+    "at": "$.payload"
+  },
   "invalid-text-in-id.json": {
     "keyword": "pattern",
     "at": "$.payload.intent_id"
@@ -50,6 +58,10 @@
   "invalid-utc-trailing-newline.json": {
     "keyword": "pattern",
     "at": "$.timestamp"
+  },
+  "invalid-version-1.json": {
+    "keyword": "const",
+    "at": "$.schema_version"
   },
   "invalid-word-ref.json": {
     "keyword": "pattern",
