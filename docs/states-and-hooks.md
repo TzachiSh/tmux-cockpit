@@ -109,6 +109,15 @@ or errors at the agent — an unparseable payload, a missing `jq`, or a writer
 that stalls is a silent no-op within a bounded read, the same contract
 `agent-state` holds for hooks.
 
+It also records the 5-hour and weekly allowance from the payload's `rate_limits`
+in `@panestate_rl`, which the board draws on the tile (docs/tui.md, `allow`,
+#1600). The value is `<minute>_<used 5h>_<reset 5h>_<used 7d>_<reset 7d>`: the
+minute it was read, then each window's used share in whole percent rounded up and
+its `resets_at`, all times in epoch seconds. A window the payload lacks is `-_-`.
+Claude Code sends `rate_limits` to subscribers only, after the session's first
+answer, and a payload without it unsets the option. The minute is part of the
+value, so figures that stay the same are written once a minute at most.
+
 A `statusLine` fully replaces any other one you have configured, so it is not
 wired by default — see the commented `_statusline_comment` stanza in
 `examples/claude-hooks.json` for the setting to add. Once wired,
@@ -625,7 +634,7 @@ Lag is up to one tick, 10 s by default: a job that blocks shows on its pane at t
   - `scripts/agent-state:570` and `:561`, the state itself: a cut on `@panestate`'s own name
     keeps the old state until the pane's next event. The rest of the list still runs.
   - `scripts/agent-state:117`, put's set, and its copies at `cockpit.tmux:123` and
-    `scripts/agent-context:48`: a cut name drops that put's retest, so a session's or the
+    `scripts/agent-context:71`: a cut name drops that put's retest, so a session's or the
     fleet's sum waits for the next event. A window's set sits in an `if` body of its own, so
     its retest still runs.
   - `scripts/agent-state:99-103`, the stored formats: the stamp is set last, so after a cut

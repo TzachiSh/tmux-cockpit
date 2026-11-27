@@ -263,7 +263,8 @@ already makes, and each board pulls its next tick forward. See "Push wakeups".
 
 Read-only, and owned by bash: `@cockpit_session`, `@cockpit_dir`, `@panestate`,
 `@panestate_msg`, `@cockpit_review`, `@cockpit_review_spool`, `@cockpit_title`,
-`@cockpit_role` (a pane's own name, which `scripts/tmux-rename pane` writes), `@thm_*`.
+`@cockpit_role` (a pane's own name, which `scripts/tmux-rename pane` writes),
+`@panestate_rl` (the allowance `scripts/agent-context` writes), `@thm_*`.
 
 ## Environment
 
@@ -2403,6 +2404,14 @@ panel with the reason in a warn note.
 - `--json` and `--rows` are unchanged. The board reads the name as FIELDS' field 20 and
   draws it (#1409, the `role` field below).
 
+### Contract changes for the allowance (#1600)
+
+- FIELDS gains field 21, `@panestate_rl`, and `data::Pane` gains
+  `allow: Option<Allowance>` (the `allow` field below). `--json` and `--rows` are
+  unchanged.
+- The tile's bottom border puts the allowance before ` opus · 84k `. When both do not
+  fit, the allowance shows alone, and when it does not fit either, the context alone.
+
 ### The triage overlay
 
 Phase 2, not shipped. It answers a blocked agent in place rather than attaching
@@ -2693,6 +2702,17 @@ window's or the server's `@cockpit_role` for a pane with none of its own, and th
 server's ahead of the pane's (tmux's `format_find`). cockpit sets neither, and a name
 here only shows, as on the tabs and borders. `cockpit-tui pane <name>`, which acts on
 a name, reads each pane's own value with `show-options -p`. `--json` and `--rows` do
+not carry it.
+
+**`allow` (#1600):** the 5-hour and weekly allowance `scripts/agent-context` read
+from the status line, `@panestate_rl` (FIELDS' field 21, docs/states-and-hooks.md):
+when it was read and, per window, the share used and the reset, in epoch seconds. A
+value not of that shape, or with neither window, is `None`. The tile's bottom border
+draws it before the model and the context, ` 5h 58% 2h10m · 7d 82% 3d · opus · 84k `:
+what is left of each window and the time to its reset. A window whose reset is past,
+or more than 7 days and 1 hour away, is left out. A reading 5 minutes old or more
+adds its age, ` · 12m ago`. The countdown and the age go into the redraw gate as
+printed, so they move on screen while the fleet is quiet. `--json` and `--rows` do
 not carry it.
 
 **`--json`**: an array of objects with exactly these 16 keys, in this order:

@@ -31,7 +31,8 @@
   ],
   "_statusline_comment": [
     "Optional, and not part of the 'hooks' merge: a statusLine that records context",
-    "fill in @panestate_ctx, for the tab suffix in examples/tmux.conf. It replaces",
+    "fill in @panestate_ctx, for the tab suffix in examples/tmux.conf, and the 5-hour",
+    "and weekly allowance in @panestate_rl, for the board's tiles (#1600). It replaces",
     "any statusLine you have. To use it, add a top-level 'statusLine' key:",
     "",
     "  \"statusLine\": {",
