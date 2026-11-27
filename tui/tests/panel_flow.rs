@@ -256,6 +256,19 @@ fn the_ascii_tier_draws_nothing_but_ascii() {
 }
 
 #[test]
+fn the_ascii_tier_draws_a_control_left_in_a_hand_built_field_as_a_question_mark() {
+    // A parsed line holds no control after tidy, so only a field set by hand reaches the replacement mark.
+    let mut f = parsed("sequenceDiagram\nA->>B: x\n");
+    f.steps[0].label = "one\ntwo".into();
+    for (w, want) in [(60, Shape::Ladder), (40, Shape::List)] {
+        assert_eq!(flow::shape(&f, w), want, "w={w}");
+        let out = flow::draw(&f, w, &ASC);
+        assert!(out.iter().all(|l| l.is_ascii()), "w={w}: {out:?}");
+        assert!(out.iter().any(|l| l.contains("one?two")), "w={w}: {out:?}");
+    }
+}
+
+#[test]
 fn control_characters_never_reach_a_line() {
     for w in [0, 20, 60, 100] {
         let out = flow::render(WIDE, w, &UNI);

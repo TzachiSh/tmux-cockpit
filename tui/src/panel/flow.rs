@@ -289,9 +289,10 @@ pub fn shape(f: &Flow, w: usize) -> Shape {
     }
 }
 
-/// Cut `s` to at most `w` columns, ending in the tier's ellipsis when cut;
-/// narrower than the ellipsis, the first `w` columns and no ellipsis, as
-/// [`Glyphs::trunc`] does. Cuts between grapheme clusters, so an emoji
+/// Cut `s` to at most `w` columns, ending in the tier's ellipsis when cut.
+/// Below the ellipsis's width it keeps the first `w` columns and no ellipsis.
+/// At exactly that width it gives the ellipsis alone, where [`Glyphs::trunc`]
+/// keeps the first columns. Cuts between grapheme clusters, so an emoji
 /// sequence is kept whole or dropped whole.
 fn fit(s: &str, w: usize, g: &Glyphs) -> String {
     if s.width() <= w {
