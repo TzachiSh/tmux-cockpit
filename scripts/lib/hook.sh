@@ -78,13 +78,16 @@ subs_count() {
     done
 }
 
-# A session id is saved only as a UUID (#308); a value cut by a cap fails the test. A new id
-# drops the old transcript, which is not its transcript (/clear, --resume). 0 only when the
-# id is new to the pane: <old> is the id read before, from a read known to be whole (#707).
-# The same id writes nothing: every set-option redraws.
+# A session id is saved only in lib/fmt.sh's is_session_id form, the one the board resumes
+# (#308, #1589); a value cut by a cap fails the test. fmt.sh is loaded here: review-gate
+# does not load it before a save. A new id drops the old transcript, which is not its
+# transcript (/clear, --resume). 0 only when the id is new to the pane: <old> is the id read
+# before, from a read known to be whole (#707). The same id writes nothing: every set-option
+# redraws.
 save_session() {              # <pane> <sid> <old>
-    local uuid='^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
-    [[ ${2:-} =~ $uuid ]] && [ "${3:-}" != "$2" ] || return 1
+    # shellcheck source=fmt.sh
+    . "${BASH_SOURCE[0]%/*}/fmt.sh" 2>/dev/null || return 1
+    is_session_id "${2:-}" && [ "${3:-}" != "$2" ] || return 1
     tmux set-option -pu -t "$1" @cockpit_transcript 2>/dev/null
     tmux set-option -p -t "$1" @cockpit_session "$2" 2>/dev/null
     return 0

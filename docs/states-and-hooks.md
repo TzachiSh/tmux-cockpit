@@ -666,7 +666,7 @@ not expand formats:
 
 | option | from | saved when |
 |--------|------|------------|
-| `@cockpit_session` | `session_id` | it is a UUID |
+| `@cockpit_session` | `session_id` | it is a UUID in lower-case hex, the form the board's resume takes (#1589) |
 | `@cockpit_transcript` | `transcript_path` | it is an absolute path with no `..` and no `#`, and resolves (`realpath`, symlinks followed) to a regular file under `$CLAUDE_CONFIG_DIR/projects`, else `~/.claude/projects` |
 | `@cockpit_dir` | `new_cwd`, else `cwd` | it is a whole JSON string naming an existing directory by an absolute path with no control character or backslash, and the agent moved or a new session began (see [Working tree](#working-tree)) |
 
