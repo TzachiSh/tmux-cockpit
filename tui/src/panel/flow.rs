@@ -5,18 +5,21 @@
 //! What it reads: `participant` and `actor` (with `as`), implicit participants,
 //! Mermaid's ten arrows (`->>`, `-->>`, `->`, `-->`, `-x`, `--x`, `-)`, `--)`,
 //! `<<->>` and `<<-->>`, each drawn with its own line and head in both shapes),
-//! `autonumber` with or without a start and an increment, `Note left of`,
+//! `autonumber` with no start, a start, or a start and an increment, and
+//! `autonumber off`, `Note left of`,
 //! `right of` and `over` (the ladder draws a note where its place says, the
 //! list under its step), and a
 //! `%% status: <✓|●|○|✗|!|done|running|pending|failed|needs> [HH:MM]` line
-//! after a step. `loop`, `alt`, `opt`, `par`, `critical` and `break` draw as
-//! frames around their steps, an `alt`'s `else`, a `par`'s `and` and a
-//! `critical`'s `option` as dividers, at most [`MAX_FRAME_DEPTH`] deep.
+//! after a step. `loop`, `alt`, `opt`, `par` (and `par_over`), `critical` and
+//! `break` draw as frames around their steps, an `alt`'s `else`, a `par`'s `and`
+//! and a `critical`'s `option` as dividers, at most [`MAX_FRAME_DEPTH`] deep.
 //! `activate`, `deactivate`, a `+` or `-` before a target, a central
-//! connection's `()`, `rect`, `box`, `create` and `destroy` keep the steps and
-//! participants they hold and drop the rest, and a ledger line after the steps
-//! names what the drawing leaves out (#1535, #1536, #1537). A `;` ends a
-//! statement as a new line does, and `#59;` in text reads as `;`. Anything
+//! connection's `()`, `rect`, `box`, `create`, `destroy`, `title`, `accTitle`,
+//! `accDescr`, and an actor's menu (`links`, `link`, `properties`, `details`)
+//! keep the steps and participants they hold and drop the rest, and a ledger
+//! line after the steps names what the drawing leaves out (#1535, #1536, #1537,
+//! #1568). A `;` ends a statement as a new line does, except in the text of an
+//! `accTitle:` or an `accDescr:`, and `#59;` in text reads as `;`. Anything
 //! else is an `Err` naming the line, and [`render`] then shows [`not_drawn`]:
 //! the reason and the raw lines.
 //!
@@ -130,6 +133,8 @@ pub struct Step {
     pub time: Option<String>,
     /// Notes written after this step, other than NEED FROM YOU.
     pub notes: Vec<Note>,
+    /// Its number under `autonumber`, none where numbers are off (#1568).
+    pub number: Option<usize>,
 }
 
 /// A block that `end` closes: one drawn as a frame around its steps (#1536,
@@ -233,8 +238,6 @@ pub struct Flow {
     pub dropped: Vec<String>,
     /// The frames, in the order their blocks open (#1536).
     pub frames: Vec<Frame>,
-    /// `autonumber`'s start and increment, none without it (#1537).
-    pub autonumber: Option<(usize, usize)>,
 }
 
 /// How [`draw`] lays a flow out: the ladder, the compact ladder (a narrower
@@ -350,11 +353,11 @@ fn first_word(l: &str) -> (&str, &str) {
 }
 
 /// One statement, trimmed and not empty, into `f`: kept, drawn as a frame, or
-/// dropped with its name in the ledger and no actor added (#1537). `open`
-/// holds each open block, outermost first, with its frame's index in
-/// `f.frames`, or none for a `rect`, a `box` or a block past
-/// [`MAX_FRAME_DEPTH`].
-fn line(f: &mut Flow, l: &str, open: &mut Vec<(Block, Option<usize>)>) -> Result<(), String> {
+/// dropped with its name in the ledger and no actor added but a menu's, which
+/// Mermaid adds (#1537, #1568). `open` holds each open block, outermost first,
+/// with its frame's index in `f.frames`, or none for a `rect`, a `box` or a
+/// block past [`MAX_FRAME_DEPTH`]. `count` numbers the steps.
+fn line(f: &mut Flow, l: &str, open: &mut Vec<(Block, Option<usize>)>, count: &mut Count) -> Result<(), String> {
     if let Some(comment) = l.strip_prefix("%%") {
         let comment = comment.trim_start();
         // The key in any case: "%% Status: done" is a status, never a comment.
@@ -368,8 +371,19 @@ fn line(f: &mut Flow, l: &str, open: &mut Vec<(Block, Option<usize>)>) -> Result
         return Ok(());
     }
     let (word, rest) = first_word(l);
+    // A par whose branches may overlap, which Mermaid draws as a par (#1568).
+    let word = if word == "par_over" { "par" } else { word };
     match word {
-        "autonumber" => f.autonumber = Some(autonumber(rest)?),
+        // Screen-reader text, its `;` and all, and the title, which the drawing has no row for (#1568).
+        _ if acc_line(l) => record_drop(f, ACCESSIBILITY),
+        "title" | "title:" if !rest.is_empty() => record_drop(f, TITLE),
+        // As Mermaid reads a menu, its participant is kept (#1568).
+        "links" | "link" | "properties" | "details" => {
+            let id = rest.split_once(':').map(|(id, _)| id.trim()).filter(|id| is_id(id));
+            f.actor(id.ok_or("a menu needs a participant id and ':'")?);
+            record_drop(f, MENUS);
+        }
+        "autonumber" => autonumber(rest, count)?,
         "participant" | "actor" => participant(f, rest)?,
         // The participant is kept, its late start is not.
         "create" => match first_word(rest) {
@@ -424,7 +438,7 @@ fn line(f: &mut Flow, l: &str, open: &mut Vec<(Block, Option<usize>)>) -> Result
                 }
                 _ => return Err(format!("{word} outside the block it divides")),
             },
-            None => step(f, l)?,
+            None => step(f, l, count)?,
         },
     }
     Ok(())
@@ -441,24 +455,67 @@ fn participant(f: &mut Flow, rest: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// `autonumber`'s rest: nothing, numbering from 1 by 1, or a start and an
-/// increment, each a whole number (Mermaid 11.15.0, #1537).
-fn autonumber(rest: &str) -> Result<(usize, usize), String> {
-    let bad = || format!("autonumber takes a start and an increment, not {rest}");
-    let words: Vec<&str> = rest.split_whitespace().collect();
-    match words.as_slice() {
-        [] => Ok((1, 1)),
-        [start, by] => Ok((start.parse().map_err(|_| bad())?, by.parse().map_err(|_| bad())?)),
-        _ => Err(bad()),
-    }
+/// The numbering as [`parse`] reads the source: the next step's number, the
+/// increment, and whether numbers show. The count runs on while they are
+/// hidden, as Mermaid 11.15.0's renderer counts (#1568).
+struct Count {
+    next: usize,
+    by: usize,
+    on: bool,
 }
 
-// The ledger's names for what a kept or dropped statement leaves out (#1537).
+/// `autonumber`'s rest into `count`, each number a whole one (Mermaid 11.15.0,
+/// #1537, #1568): nothing shows the numbers, `off` hides them, and a start, with
+/// an increment or by 1, restarts them.
+fn autonumber(rest: &str, count: &mut Count) -> Result<(), String> {
+    let bad = || format!("autonumber takes off, a start, or a start and an increment, not {rest}");
+    let num = |w: &str| w.parse::<usize>().map_err(|_| bad());
+    let words: Vec<&str> = rest.split_whitespace().collect();
+    (count.next, count.by, count.on) = match words[..] {
+        [] => (count.next, count.by, true),
+        ["off"] => (count.next, count.by, false),
+        [start] => (num(start)?, 1, true),
+        [start, by] => (num(start)?, num(by)?, true),
+        _ => return Err(bad()),
+    };
+    Ok(())
+}
+
+// The ledger's names for what a kept or dropped statement leaves out (#1537, #1568).
 const ACTIVATIONS: &str = "activations";
 const CENTRAL: &str = "central connections";
 const RECTS: &str = "rect highlights";
 const BOXES: &str = "participant boxes";
 const LIFECYCLE: &str = "create/destroy";
+const TITLE: &str = "title";
+const ACCESSIBILITY: &str = "accessibility text";
+const MENUS: &str = "actor menus";
+
+/// Whether `l` is an `accTitle:` or an `accDescr:`, whose text runs to the end
+/// of its line, `;` and all, as Mermaid reads it (#1568).
+fn acc_line(l: &str) -> bool {
+    let colon = |k: &str| l.strip_prefix(k).is_some_and(|r| r.trim_start().starts_with(':'));
+    colon("accTitle") || colon("accDescr")
+}
+
+/// What is left to read of statement `l`, given whether an `accDescr { }` block
+/// is `open` before it: the block's text, over as many statements and lines as
+/// it takes, is dropped up to its `}` (#1568). `open` says whether it is still
+/// open after `l`.
+fn past_descr<'a>(f: &mut Flow, l: &'a str, open: &mut bool) -> &'a str {
+    let opened = l.strip_prefix("accDescr").map(str::trim_start).and_then(|r| r.strip_prefix('{'));
+    let text = match opened {
+        _ if *open => l,
+        Some(text) => {
+            record_drop(f, ACCESSIBILITY);
+            text
+        }
+        None => return l,
+    };
+    let rest = text.split_once('}').map(|(_, rest)| rest.trim_start());
+    *open = rest.is_none();
+    rest.unwrap_or_default()
+}
 
 /// Name `what` in the ledger once, in the order first met (#1535).
 fn record_drop(f: &mut Flow, what: &str) {
@@ -507,7 +564,7 @@ fn note(f: &mut Flow, rest: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn step(f: &mut Flow, l: &str) -> Result<(), String> {
+fn step(f: &mut Flow, l: &str, count: &mut Count) -> Result<(), String> {
     let (arrow, label) = l.split_once(':').ok_or("not a step")?;
     let (from, to, line, head) = ARROWS
         .iter()
@@ -543,19 +600,26 @@ fn step(f: &mut Flow, l: &str) -> Result<(), String> {
         status: None,
         time: None,
         notes: vec![],
+        number: count.on.then_some(count.next),
     });
+    // Held at the largest number rather than wrapping (#1537).
+    count.next = count.next.saturating_add(count.by);
     Ok(())
 }
 
 /// A line's statements: a `;` ends one as a new line does, as in Mermaid,
 /// except the `;` that closes an entity code such as `#59;` (a `#`, then
-/// letters or digits). A `%%` line is one statement (#1537).
+/// letters or digits). A `%%` line is one statement (#1537), and so is the
+/// rest of a line from an `accTitle:` or an `accDescr:` (#1568).
 fn statements(l: &str) -> Vec<&str> {
     if l.starts_with("%%") {
         return vec![l];
     }
     let (mut out, mut from) = (vec![], 0);
     for (i, _) in l.match_indices(';') {
+        if acc_line(l[from..].trim_start()) {
+            break;
+        }
         let code = l[from..i].trim_end_matches(|c: char| c.is_ascii_alphanumeric());
         if !code.ends_with('#') || code.len() == i - from {
             out.push(&l[from..i]);
@@ -581,12 +645,18 @@ pub fn parse(src: &str) -> Result<Flow, String> {
         _ => return Err("no sequenceDiagram header".into()),
     }
     let mut f = Flow::default();
-    let mut open = vec![];
+    let (mut open, mut descr) = (vec![], false);
+    // Numbers start at 1 by 1, hidden until an `autonumber` (Mermaid 11.15.0, #1568).
+    let mut count = Count { next: 1, by: 1, on: false };
     for (n, l) in lines {
+        let rest = past_descr(&mut f, &l, &mut descr);
+        if rest.is_empty() {
+            continue;
+        }
         // `#59;` is the one entity code read: a `;` in text.
-        line(&mut f, &l.replace("#59;", ";"), &mut open).map_err(|why| format!("line {n}: {why}: {l}"))?;
+        line(&mut f, &rest.replace("#59;", ";"), &mut open, &mut count).map_err(|why| format!("line {n}: {why}: {l}"))?;
     }
-    if !open.is_empty() {
+    if !open.is_empty() || descr {
         return Err("a block is never closed".into());
     }
     if f.steps.is_empty() {
@@ -794,14 +864,8 @@ impl Row {
     }
 }
 
-/// Step `i`'s number under `autonumber`: the start, then the increment a step,
-/// held at the largest number rather than wrapping (#1537).
-fn number(f: &Flow, i: usize) -> Option<usize> {
-    f.autonumber.map(|(start, by)| start.saturating_add(i.saturating_mul(by)))
-}
-
 fn label(f: &Flow, i: usize) -> String {
-    match number(f, i) {
+    match f.steps[i].number {
         Some(n) => format!("{n} {}", f.steps[i].label),
         None => f.steps[i].label.clone(),
     }
@@ -1092,8 +1156,9 @@ fn list(f: &Flow, w: usize, g: &Glyphs) -> Vec<String> {
     let cur = f.current();
     let status = f.has_status();
     let here = format!("{} here", g.head_left);
-    // The number column holds the largest number, the last step's (#1537).
-    let digits = number(f, f.steps.len().saturating_sub(1)).map_or(0, |n| n.to_string().len().max(2));
+    // The number column holds the largest number (#1537), and none without one.
+    let largest = f.steps.iter().filter_map(|s| s.number).max();
+    let digits = largest.map_or(0, |n| n.to_string().len().max(2));
     let parts = parts(f);
     // A line's label column holds its rails too, so who to whom still lines up.
     let longest = parts
@@ -1115,7 +1180,7 @@ fn list(f: &Flow, w: usize, g: &Glyphs) -> Vec<String> {
     };
     let who_w = f.steps.iter().map(|s| who(s).width()).max().unwrap_or(0);
     let time_w = f.steps.iter().filter_map(|s| s.time.as_deref()).map(str::width).max().unwrap_or(0);
-    let lead_w = usize::from(status) * 2 + if f.autonumber.is_some() { digits + 1 } else { 0 };
+    let lead_w = usize::from(status) * 2 + if digits > 0 { digits + 1 } else { 0 };
     // One label column for every line: aligned when it holds the longest label
     // or 6 columns of it, whichever is less, and the rest of an aligned line
     // fits too (with every label empty the column holds them at any width);
@@ -1154,7 +1219,9 @@ fn list(f: &Flow, w: usize, g: &Glyphs) -> Vec<String> {
             lead.push_str(s.status.map_or(" ", |st| st.glyph(g)));
             lead.push(' ');
         }
-        if let Some(n) = number(f, i) {
+        // A step with no number, where another has one, keeps the column blank (#1568).
+        if digits > 0 {
+            let n = s.number.map(|n| n.to_string()).unwrap_or_default();
             lead.push_str(&format!("{n:>digits$} "));
         }
         let who = who(s);
@@ -1242,6 +1309,7 @@ mod tests {
                 text: format!("note{bad}here"),
                 place: Place::Right(0),
             }],
+            number: Some(1),
         };
         Flow {
             actors: vec![actor("A"), actor("B")],
@@ -1261,7 +1329,6 @@ mod tests {
                 dividers: vec![(Spot { steps: 1, notes: 0 }, format!("green{bad}y"))],
                 close: Spot { steps: 1, notes: 1 },
             }],
-            autonumber: Some((1, 1)),
         }
     }
 

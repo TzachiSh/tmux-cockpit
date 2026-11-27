@@ -797,6 +797,149 @@ participant B\nend\ncreate participant C as Carol\nrect rgb(0, 0, 255)\nA->>+B: 
 par one\nA->>()C: p\nand two\nC()->>A: q\nend\ncritical lock\nB->>A: r\noption timeout\nA->>B: s\nend\nbreak red\n\
 deactivate A\nA-xB: t\nend\ndestroy C\n%% a; b\n";
 
+// ------------------------------------------- keep or drop the statements #1537 left (#1568)
+
+/// `src` at 60, its first two actors A and B: it parses, its first label rows hold `labels` between their
+/// lifelines, and its last line is the ledger `ledger`, or no ledger when that is none.
+fn kept(src: &str, labels: &[&str], ledger: Option<&str>) {
+    let got = flow::parse(src);
+    assert!(got.is_ok(), "{src:?}: {got:?}");
+    let out = flow::render(src, 60, &UNI);
+    let between = |row: &String| row.split('│').nth(1).unwrap_or_default().trim().to_string();
+    let rows: Vec<String> = out.iter().skip(1).step_by(2).take(labels.len()).map(between).collect();
+    assert_eq!(rows, labels, "{src:?}: {out:?}");
+    let last = out.last().filter(|l| l.starts_with("(dropped: ")).map(String::as_str);
+    assert_eq!(last, ledger, "{src:?}: {out:?}");
+}
+
+#[test]
+fn autonumber_with_a_start_counts_from_it_by_1() {
+    kept("sequenceDiagram\nautonumber 5\nA->>B: x\nB->>A: y\n", &["5 x", "6 y"], None);
+}
+
+#[test]
+fn autonumber_off_hides_the_numbers_while_the_count_runs_on() {
+    let src = "sequenceDiagram\nautonumber\nA->>B: x\nautonumber off\nB->>A: y\nautonumber\nA->>B: z\n";
+    kept(src, &["1 x", "y", "3 z"], None);
+    // The list keeps the number column blank on a step with no number.
+    assert_eq!(flow::render(src, 40, &UNI), [" 1 x  A─▶B", "   y  B─▶A", " 3 z  A─▶B"]);
+}
+
+#[test]
+fn a_later_autonumber_restarts_with_a_start_or_goes_on_from_the_count() {
+    // A start restarts the count, by 1 unless an increment is written.
+    let reset = "sequenceDiagram\nautonumber 10 5\nA->>B: x\nautonumber 1 1\nB->>A: y\n";
+    kept(reset, &["10 x", "1 y"], None);
+    let restart = "sequenceDiagram\nautonumber 10 5\nA->>B: x\nautonumber 1\nB->>A: y\nA->>B: z\n";
+    kept(restart, &["10 x", "1 y", "2 z"], None);
+    // A step before the first autonumber is counted and draws no number.
+    kept("sequenceDiagram\nA->>B: x\nautonumber\nB->>A: y\n", &["x", "2 y"], None);
+    // The list's number column fits the largest number, wherever it is.
+    let largest = "sequenceDiagram\nautonumber 100\nA->>B: x\nautonumber 1\nB->>A: y\n";
+    assert_eq!(flow::render(largest, 40, &UNI), ["100 x  A─▶B", "  1 y  B─▶A"]);
+}
+
+#[test]
+fn one_autonumber_at_the_top_or_none_draws_as_before() {
+    // The list at 40 as before #1568, and the ladder at 60 with each number the first word of its label.
+    let top = "sequenceDiagram\nautonumber\nA->>B: x\nB->>A: y\n";
+    let none = "sequenceDiagram\nA->>B: x\nB->>A: y\n";
+    assert_eq!(flow::render(top, 40, &UNI), [" 1 x  A─▶B", " 2 y  B─▶A"]);
+    assert_eq!(flow::render(none, 40, &UNI), ["x  A─▶B", "y  B─▶A"]);
+    let by_hand = flow::render("sequenceDiagram\nA->>B: 1 x\nB->>A: 2 y\n", 60, &UNI);
+    assert_eq!(flow::render(top, 60, &UNI), by_hand);
+}
+
+#[test]
+fn title_is_dropped_and_named() {
+    for src in [
+        "sequenceDiagram\ntitle Deploy flow\nA->>B: x\nB->>A: y\n",
+        "sequenceDiagram\nA->>B: x\ntitle: Deploy flow\nB->>A: y\n",
+    ] {
+        kept(src, &["x", "y"], Some("(dropped: title)"));
+    }
+    // A title needs its text, as Mermaid's lexer does.
+    assert!(flow::parse("sequenceDiagram\nA->>B: x\ntitle\n").is_err());
+}
+
+#[test]
+fn acc_title_is_dropped_and_named() {
+    // Its text runs to the end of the line, a `;` and all.
+    for src in [
+        "sequenceDiagram\nA->>B: x\naccTitle: Deploy steps\nB->>A: y\n",
+        "sequenceDiagram\nA->>B: x\naccTitle: one; A->>B: two\nB->>A: y\n",
+    ] {
+        kept(src, &["x", "y"], Some("(dropped: accessibility text)"));
+    }
+}
+
+#[test]
+fn acc_descr_and_its_block_are_dropped_and_named() {
+    for src in [
+        "sequenceDiagram\nA->>B: x\naccDescr : The steps; all of them\nB->>A: y\n",
+        // A block, over lines and statements, is dropped up to its `}`, and what follows it is read.
+        "sequenceDiagram\nA->>B: x\naccDescr {\nA->>B: inside\n}\nB->>A: y\n",
+        "sequenceDiagram\nA->>B: x\naccDescr { one; two } B->>A: y\n",
+    ] {
+        kept(src, &["x", "y"], Some("(dropped: accessibility text)"));
+    }
+    let unclosed = "sequenceDiagram\nA->>B: x\naccDescr {\nB->>A: y\n";
+    assert!(flow::parse(unclosed).is_err(), "a block never closed");
+}
+
+/// An actor's menu line, `kw`, between two steps: dropped and named, and the participant it names is
+/// kept, as Mermaid adds it.
+fn a_menu_is_dropped(kw: &str) {
+    let src = format!("sequenceDiagram\nparticipant A\n{kw} A: {{\"Dashboard\": \"https://x.test/d\"}}\nA->>B: x\nB->>A: y\n");
+    kept(&src, &["x", "y"], Some("(dropped: actor menus)"));
+    let named = parsed(&format!("sequenceDiagram\nA->>B: x\n{kw} C: Repo @ https://x.test/r\n"));
+    let ids: Vec<String> = named.actors.into_iter().map(|a| a.id).collect();
+    assert_eq!(ids, ["A", "B", "C"], "{kw}");
+    // It needs a participant id and a ':'.
+    for bad in [format!("{kw} A B: x"), format!("{kw} A")] {
+        assert!(flow::parse(&format!("sequenceDiagram\nA->>B: x\n{bad}\n")).is_err(), "{bad}");
+    }
+}
+
+#[test]
+fn links_is_dropped_and_its_participant_kept() {
+    a_menu_is_dropped("links");
+}
+
+#[test]
+fn link_is_dropped_and_its_participant_kept() {
+    a_menu_is_dropped("link");
+}
+
+#[test]
+fn properties_is_dropped_and_its_participant_kept() {
+    a_menu_is_dropped("properties");
+}
+
+#[test]
+fn details_is_dropped_and_its_participant_kept() {
+    a_menu_is_dropped("details");
+}
+
+#[test]
+fn par_over_draws_as_a_par_frame() {
+    let src = "sequenceDiagram\npar_over one\nA->>B: x\nand two\nB->>A: y\nend\n";
+    let got = flow::parse(src);
+    assert!(got.is_ok(), "{got:?}");
+    let out = flow::render(src, 60, &UNI);
+    for m in ["┌─[par one]", "├┄[and two]"] {
+        assert!(out.iter().any(|l| l.contains(m)), "{m}: {out:?}");
+    }
+    assert!(!out.iter().any(|l| l.starts_with("(dropped:")), "{out:?}");
+}
+
+/// Every statement #1568 reads: a title, accessibility text and its block, autonumber's start, off and a
+/// later one, the four menus, and a par_over.
+const MORE_STATEMENTS: &str = "sequenceDiagram\ntitle Deploy flow\naccTitle: Deploy; steps\naccDescr {\nall; of it\n}\n\
+autonumber 7\nparticipant A\nlinks A: {\"Dashboard\": \"https://x.test/d\"}\nlink B: Repo @ https://x.test/r\n\
+properties A: {\"class\": \"internal\"}\ndetails B: {\"owner\": \"ops\"}\npar_over one\nA->>B: x\nautonumber off\n\
+and two\nB->>A: y\nend\nautonumber\nA->>B: z\naccDescr: done; really\n";
+
 // --------------------------------------------- decision 7: never wider, no panic
 
 #[test]
@@ -819,6 +962,7 @@ fn every_prefix_of_every_sample_fits_every_width_from_0_to_130() {
             ("deep", DEEP),
             ("frames", FRAMES),
             ("statements", STATEMENTS),
+            ("more statements", MORE_STATEMENTS),
             ("five", FIVE),
             ("wide six", WIDE_SIX),
             ("nested six", NESTED_SIX),
@@ -859,6 +1003,7 @@ fn the_ascii_tier_draws_nothing_but_ascii() {
         ("deep", DEEP),
         ("frames", FRAMES),
         ("statements", STATEMENTS),
+        ("more statements", MORE_STATEMENTS),
         ("five", FIVE),
         ("nested six", NESTED_SIX),
     ] {
