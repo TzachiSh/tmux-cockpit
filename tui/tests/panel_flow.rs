@@ -3,7 +3,9 @@
 //! samples in tests/fixtures/flow, goldens in tests/golden.
 //!
 //! COCKPIT_BLESS=1 cargo test --test panel_flow  rewrites the goldens.
+use cockpit_tui::highlight;
 use cockpit_tui::panel::flow::{self, Block, Shape, Status};
+use cockpit_tui::panel::prompts::EXPLAIN;
 use cockpit_tui::theme::Glyphs;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
@@ -1260,4 +1262,29 @@ fn a_time_past_23_59_is_not_drawn() {
         let got = flow::parse(&format!("sequenceDiagram\nA->>B: x\n%% status: ✓ {time}\n"));
         assert_eq!(got.is_ok(), ok, "{row}: {got:?}");
     }
+}
+
+// ------------------------------------------- the Explain prompt's example (#1539)
+
+#[test]
+fn the_explain_prompts_example_flow_draws_whole_as_a_ladder_at_60() {
+    // The prompt's mermaid fences, by the rule the Answer view draws them by.
+    let lines: Vec<&str> = EXPLAIN.split('\n').collect();
+    let bodies: Vec<String> = highlight::split(&lines)
+        .iter()
+        .filter_map(|p| highlight::flow_body(p, &lines))
+        .collect();
+    let body = bodies.first().map_or("", String::as_str);
+    // 60 is the ladder's floor: the example's slots only widen past it. Its parties and labels keep to the
+    // budget the prompt teaches, at most 4 parties and 9 columns a label, so nothing is cut.
+    let out = flow::render(body, 60, &UNI);
+    let checks = [
+        ("one mermaid fence", bodies.len() == 1),
+        ("a ladder", flow::parse(body).is_ok_and(|f| flow::shape(&f, 60) == Shape::Ladder)),
+        ("drawn", !out.iter().any(|l| l.starts_with("(not drawn"))),
+        ("nothing dropped", !out.iter().any(|l| l.starts_with("(dropped"))),
+        ("nothing cut", !out.iter().any(|l| l.contains(UNI.ellipsis))),
+    ];
+    let failed: Vec<&str> = checks.iter().filter(|(_, ok)| !ok).map(|(name, _)| *name).collect();
+    assert!(failed.is_empty(), "failed: {failed:?}\n{out:?}");
 }
