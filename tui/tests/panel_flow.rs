@@ -345,6 +345,42 @@ fn a_placed_note_keeps_the_lifelines_it_does_not_reach() {
     assert_eq!(cols_of(&out[3], '│'), cols_of(&out[2], '│'), "{out:?}");
 }
 
+// ------------------------------------------------- a label cut before the next lifeline (#1534)
+
+/// A label longer than its gap: three actors, at 60 their lifelines at 10, 29 and 48.
+const LONG_LABEL: &str = "sequenceDiagram\nparticipant A\nparticipant B\nparticipant C\n\
+A->>B: a very long label that runs past the next lifeline\nB->>C: ok\n";
+
+/// A long self step on the last actor, with a time: at 60 the lifelines are at 15 and 40, the time at 55.
+const LAST_SELF: &str = "sequenceDiagram\nparticipant A\nparticipant B\n\
+B->>B: a self step label long enough to reach the time column\n%% status: done 09:00\n";
+
+#[test]
+fn a_label_never_writes_over_a_lifeline() {
+    assert_eq!(flow::render(LONG_LABEL, 60, &UNI)[1].matches('│').count(), 3);
+    for w in [60, 100] {
+        let out = flow::render(WIDE, w, &UNI);
+        assert_eq!(out[1].matches('│').count(), 2, "w={w}");
+        // Beside a CJK label each lifeline keeps the display column it has on the step's arrow row.
+        assert_eq!(cols_of(&out[1], '│'), cols_of(&out[2], '│'), "w={w}: {out:?}");
+    }
+}
+
+#[test]
+fn a_cut_label_ends_a_blank_cell_before_the_next_lifeline() {
+    // 16 columns from 12, two after A's lifeline, to 27: the label's first 15, then the ellipsis.
+    // Column 28 stays blank before B's lifeline at 29.
+    let row = format!("{}│ a very long lab… │{}│", " ".repeat(10), " ".repeat(18));
+    assert_eq!(flow::render(LONG_LABEL, 60, &UNI)[1], row);
+}
+
+#[test]
+fn a_label_right_of_the_last_lifeline_keeps_its_room_to_the_time_column() {
+    // No lifeline right of B's at 40: 12 columns from 42 to 53, column 54 blank, the time at 55.
+    let row = format!(" ✓{}│{}│ a self step… 09:00", " ".repeat(13), " ".repeat(24));
+    assert_eq!(flow::render(LAST_SELF, 60, &UNI)[1], row);
+}
+
 // --------------------------------------------- decision 7: never wider, no panic
 
 #[test]
@@ -362,6 +398,8 @@ fn every_prefix_of_every_sample_fits_every_width_from_0_to_130() {
             ("placed", PLACED),
             ("slid", SLID),
             ("over one", OVER_ONE),
+            ("long label", LONG_LABEL),
+            ("last self", LAST_SELF),
         ] {
             for cut in (0..=src.len()).filter(|&i| src.is_char_boundary(i)) {
                 for w in 0..=130 {
@@ -394,6 +432,8 @@ fn the_ascii_tier_draws_nothing_but_ascii() {
         ("placed", PLACED),
         ("slid", SLID),
         ("over one", OVER_ONE),
+        ("long label", LONG_LABEL),
+        ("last self", LAST_SELF),
     ] {
         for w in 0..=130 {
             let out = flow::render(src, w, &ASC);

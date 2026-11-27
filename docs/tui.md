@@ -1545,11 +1545,14 @@ not wired into Explain yet.
   <why>)`, then the raw lines, each cut to the width.
 - **Ladder or list.** The ladder at 60 columns or more with at most 4 actors,
   the numbered list otherwise. The ladder takes two rows a step, the label
-  above its arrow. The list gives every label one column, so who to whom lines
-  up, when that column holds the longest label or 6 columns of it, whichever
-  is less, and the rest of the line (who to whom and the time) fits too;
-  otherwise each line is the label, who to whom and the time with one space
-  between.
+  above its arrow. A label is cut to end at least one blank column before the
+  next lifeline right of its step's left end, so it covers none and a step
+  from A to C keeps its label between A and B (#1534). Past the last lifeline
+  it may run to the time column, or to the edge when no step has a time. The
+  list gives every label one column, so who to whom lines up, when that
+  column holds the longest label or 6 columns of it, whichever is less, and
+  the rest of the line (who to whom and the time) fits too; otherwise each
+  line is the label, who to whom and the time with one space between.
 - **Status.** With no status on any step there is no status column and no
   current step. Otherwise the current step is the first one not done: `▶` in
   the ladder's first column, `◀ here` at the end of its line in the list, or
