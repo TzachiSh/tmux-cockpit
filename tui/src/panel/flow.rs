@@ -466,16 +466,18 @@ struct Count {
 
 /// `autonumber`'s rest into `count`, each number a whole one (Mermaid 11.15.0,
 /// #1537, #1568): nothing shows the numbers, `off` hides them, and a start, with
-/// an increment or by 1, restarts them.
+/// an increment or by 1, restarts them. A 0 is none written, as Mermaid's
+/// renderer reads it, so the count or the increment goes on (#1586).
 fn autonumber(rest: &str, count: &mut Count) -> Result<(), String> {
     let bad = || format!("autonumber takes off, a start, or a start and an increment, not {rest}");
     let num = |w: &str| w.parse::<usize>().map_err(|_| bad());
+    let or = |n: usize, kept: usize| if n == 0 { kept } else { n };
     let words: Vec<&str> = rest.split_whitespace().collect();
     (count.next, count.by, count.on) = match words[..] {
         [] => (count.next, count.by, true),
         ["off"] => (count.next, count.by, false),
-        [start] => (num(start)?, 1, true),
-        [start, by] => (num(start)?, num(by)?, true),
+        [start] => (or(num(start)?, count.next), 1, true),
+        [start, by] => (or(num(start)?, count.next), or(num(by)?, count.by), true),
         _ => return Err(bad()),
     };
     Ok(())
@@ -500,8 +502,9 @@ fn acc_line(l: &str) -> bool {
 
 /// What is left to read of statement `l`, given whether an `accDescr { }` block
 /// is `open` before it: the block's text, over as many statements and lines as
-/// it takes, is dropped up to its `}` (#1568). `open` says whether it is still
-/// open after `l`.
+/// it takes, is dropped up to its `}` (#1568), or to the end when it is never
+/// closed, as Mermaid reads it (#1586). `open` says whether it is still open
+/// after `l`.
 fn past_descr<'a>(f: &mut Flow, l: &'a str, open: &mut bool) -> &'a str {
     let opened = l.strip_prefix("accDescr").map(str::trim_start).and_then(|r| r.strip_prefix('{'));
     let text = match opened {
@@ -656,7 +659,7 @@ pub fn parse(src: &str) -> Result<Flow, String> {
         // `#59;` is the one entity code read: a `;` in text.
         line(&mut f, &rest.replace("#59;", ";"), &mut open, &mut count).map_err(|why| format!("line {n}: {why}: {l}"))?;
     }
-    if !open.is_empty() || descr {
+    if !open.is_empty() {
         return Err("a block is never closed".into());
     }
     if f.steps.is_empty() {

@@ -1545,7 +1545,9 @@ ledger line, and its example flow is a test row (#1539).
   by 1, a start restarts the count by its increment, 1 when none is written,
   and the number holds at the largest rather than wrapping. A step before the
   first `autonumber` or after an `off` draws no number and is still counted,
-  so a later bare `autonumber` goes on from the count. The list's number
+  so a later bare `autonumber` goes on from the count. A 0 start or increment
+  is none written, as Mermaid's renderer reads it, so the count or the
+  increment goes on: `autonumber 5 0` numbers 5, 6 (#1586). The list's number
   column is as wide as the largest number, and blank on a step with none.
   `Note left of`, `right of` or `over`. A
   `%% status: <s> [HH:MM]` line after a step, the key in any case, `<s>` one of
@@ -1584,7 +1586,8 @@ ledger line, and its example flow is a test row (#1539).
   `create`, whose rest reads as a participant line; `frames past depth 3`;
   `title` for `title` and `title:`; `accessibility text` for `accTitle:`,
   `accDescr:` and an `accDescr { }` block, dropped up to its `}` over lines
-  and statements; and `actor menus` for `links`, `link`, `properties` and
+  and statements, or to the end when it is never closed, as Mermaid 11.15.0
+  reads it (#1586); and `actor menus` for `links`, `link`, `properties` and
   `details` (#1568). A dropped statement adds no actor, except a menu line:
   it keeps the participant it names, as Mermaid does.
 - **Arrows.** Each of Mermaid's ten arrows draws as its own kind, in the ladder
@@ -1600,13 +1603,23 @@ ledger line, and its example flow is a test row (#1539).
   `A◀─▶B` and `A◀┄▶B`.
 - **Anything else** is an `Err` naming the line: a line no Mermaid grammar
   knows such as `frobnicate A` or `autonumber ten`, a bad status word or time,
-  a `title` with no text, a menu line with no `<id>:`, an `accDescr {` never
-  closed, and the forms of Mermaid 11.15.0's grammar that the renderer does
-  not read yet: a keyword in another case such as `Participant`, a
-  participant's `@{ }` config, a half arrow such as `-|\`, and a decimal
-  `autonumber` start or increment. `flow::render` then shows
-  `flow::not_drawn`: `(not drawn: <why>)`, then the raw lines, each cut to the
-  width.
+  a `title` with no text, a menu line with no `<id>:`, and these forms of
+  Mermaid 11.15.0's grammar, each refused on purpose (#1586):
+  - a keyword in another case, such as `Participant`, `AUTONUMBER` or `-X`.
+    Keywords are lowercase here, and a note may start `Note`. Reading every
+    keyword in any case would touch each place a keyword is matched.
+  - a participant's `@{ }` config. It sets a drawn shape and can rename the
+    participant with `"alias"`, and reading that takes a JSON reader the
+    renderer does not have.
+  - a half arrow such as `-|\` or `--//`. Drawing one takes a half head in
+    every glyph tier.
+  - a decimal `autonumber` start or increment. Numbers here are whole (#1537).
+  - a line that starts with `#`. Mermaid ends text at a `#` that starts no
+    entity code, and here a `#` stays in a label, a note or a block's label, so
+    a label such as `PR #1585` keeps its number.
+
+  `flow::render` then shows `flow::not_drawn`: `(not drawn: <why>)`, then the
+  raw lines, each cut to the width.
 - **Ladder or list.** From 60 columns the ladder draws where its actors fit:
   each gets an even slot of the width less the gutter (1 column, 3 with a
   status) and the time column (6 with a time). A slot of 12 or more draws the
