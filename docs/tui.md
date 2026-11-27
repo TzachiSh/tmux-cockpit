@@ -18,8 +18,8 @@ source (Rust ≥ 1.88), and stops with a message when it can do neither.
   the board, a grouped list of agents with their diff stat and branch.
 - **Not an actor.** The binary renders and decides. It writes one line,
   `<verb> <pane-id>`, to the file named by `$COCKPIT_ACTION`, and the binding
-  runs the existing `tmux-jump` / `tmux-review` script. Every mutating path
-  stays shell.
+  runs the existing `tmux-jump` / `tmux-review` script. Every action the user
+  takes stays shell (the rule under "Modules" says what the binary writes itself).
 - **Not a replacement for `prefix i` or `prefix f`.** The board reaches them; it
   does not reimplement them.
 
@@ -2826,10 +2826,11 @@ workspace, no crate split.
 | `store` | the `Store` trait (`get`, `put_if_revision`, `watch`), `Key`, `Revision` and `LocalStore`, one 0600 file per key under XDG state (#1020); unwired, nothing calls it |
 | `ask` | an agent's open AskUserQuestion (epic #1500, [docs/ask.md](ask.md)): `ask::model` holds every question, header, option label, description, preview and multiSelect of its input, and `data::transcript::open_ask` reads it from the transcript (#1504); `ask::rules` loads and checks the owner's auto-answer rules file and `cockpit-tui ask-rules accept` accepts it (#1508) |
 
-Every mutating action on tmux, a pane or a repository stays a shell script: the binary
-prints `<verb> <pane-id>` and a wrapper runs it. The binary still writes its own 0600
-state files, such as the board's state, agents.json and the accepted copy of the ask
-rules (#1508); those are not such actions.
+Every action the user takes on a pane, a session or a repository stays a shell script:
+the binary prints `<verb> <target>` and a wrapper runs it. The binary still writes its
+own state: 0600 files (the board's state, agents.json, the accepted copy of the ask
+rules, #1508) and its own tmux options (`@cockpit_board_wake` in `push.rs`, a pane's
+basket in `basket.rs`).
 
 ### Push wakeups
 
