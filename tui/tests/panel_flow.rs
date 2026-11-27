@@ -632,6 +632,43 @@ fn a_self_step_on_the_last_actor_keeps_inside_the_innermost_frame() {
     assert_eq!(got, want);
 }
 
+/// Six actors and three loops, each inside the one before, around one step from the first actor to the last.
+const NESTED_SIX: &str = "sequenceDiagram\nparticipant A\nparticipant B\nparticipant C\nparticipant D\nparticipant E\n\
+participant F\nloop a\nloop b\nloop c\nA->>F: x\nend\nend\nend\n";
+
+/// NESTED_SIX with a status and a time on its step.
+fn nested_six_timed() -> String {
+    NESTED_SIX.replace("A->>F: x\n", "A->>F: x\n%% status: done 09:00\n")
+}
+
+#[test]
+fn a_frame_side_never_lands_on_the_last_lifeline() {
+    // Wherever NESTED_SIX draws as a ladder, with no status and with a status and a time, the third frame's
+    // corners sit right of the last lifeline. Rows: the header, three tops, the step's label and arrow, then
+    // the third frame's bottom. A slot of 10 with nothing left over put both at 56 at 61, and at 58 at 69
+    // with a status and a time (#1578).
+    let timed = nested_six_timed();
+    for src in [NESTED_SIX, timed.as_str()] {
+        for w in (60..=130).filter(|&w| flow::shape(&parsed(src), w) != Shape::List) {
+            let out = flow::render(src, w, &UNI);
+            let last = cols_of(&out[5], '▶')[0] + 1;
+            let sides = [cols_of(&out[3], '┐'), cols_of(&out[6], '┘')];
+            assert!(sides.iter().all(|s| s.len() == 1 && s[0] > last), "w={w} last={last}: {out:?}");
+        }
+    }
+}
+
+#[test]
+fn where_a_frame_side_would_land_on_the_last_lifeline_the_list_draws() {
+    // At a slot of 10 with nothing left over the third frame's side would sit on the last lifeline, so the
+    // list draws. A column more, or a frame less, and the compact ladder draws (#1578).
+    let shapes = |src: &str, ws: [usize; 2]| ws.map(|w| flow::shape(&parsed(src), w));
+    assert_eq!(shapes(NESTED_SIX, [61, 62]), [Shape::List, Shape::Compact]);
+    assert_eq!(shapes(nested_six_timed().as_str(), [69, 70]), [Shape::List, Shape::Compact]);
+    let two = NESTED_SIX.replacen("loop c\n", "", 1).replacen("end\n", "", 1);
+    assert_eq!(flow::shape(&parsed(&two), 61), Shape::Compact);
+}
+
 // ------------------------------------------------- keep or drop each statement (#1537)
 
 #[test]
@@ -784,6 +821,7 @@ fn every_prefix_of_every_sample_fits_every_width_from_0_to_130() {
             ("statements", STATEMENTS),
             ("five", FIVE),
             ("wide six", WIDE_SIX),
+            ("nested six", NESTED_SIX),
         ] {
             for cut in (0..=src.len()).filter(|&i| src.is_char_boundary(i)) {
                 for w in 0..=130 {
@@ -822,6 +860,7 @@ fn the_ascii_tier_draws_nothing_but_ascii() {
         ("frames", FRAMES),
         ("statements", STATEMENTS),
         ("five", FIVE),
+        ("nested six", NESTED_SIX),
     ] {
         for w in 0..=130 {
             let out = flow::render(src, w, &ASC);
