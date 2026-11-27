@@ -2386,11 +2386,26 @@ fn usage_row(model: &str, u: [u64; 4]) -> String {
 /// The tile of `%1` read off `body` through the fetch, drawn alone on a 60x8 board:
 /// its bottom border row.
 fn card_foot(tag: &str, body: &str) -> String {
+    card_foot_at(tag, body, "", 60)
+}
+
+/// [`card_foot`] on a board `w` columns wide, the pane's `@panestate_rl` (FIELDS' field 21,
+/// #1600) `rl` when it is not empty.
+fn card_foot_at(tag: &str, body: &str, rl: &str, w: u16) -> String {
     use cockpit_tui::board::{self, View};
     use cockpit_tui::theme::Theme;
     let r = Rig::new(tag);
     r.transcript("s1", body);
-    r.rows(&[hooked("%1", "done", "s1")]);
+    let base = hooked("%1", "done", "s1");
+    let row = if rl.is_empty() {
+        base
+    } else {
+        let mut f: Vec<&str> = base.split('\u{1f}').collect();
+        f.resize(21, "");
+        f.push(rl);
+        f.join("\u{1f}")
+    };
+    r.rows(&[row]);
     let ps = list_panes().unwrap();
     let one = [get(&ps, "%1").clone()];
     let th = Theme::fixed();
@@ -2410,7 +2425,7 @@ fn card_foot(tag: &str, body: &str) -> String {
         list: None,
         confirm: None,
     };
-    let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, 8)).unwrap();
+    let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, 8)).unwrap();
     t.draw(|f| board::render(f, f.area(), &v)).unwrap();
     let screen = t.backend().to_string();
     let rows: Vec<&str> = screen.lines().map(|l| l.trim_matches('"')).collect();
@@ -2489,6 +2504,105 @@ fn a_zero_usage_row_does_not_hide_the_last_model_call() {
 fn a_newer_prompt_keeps_the_last_turns_context() {
     let foot = card_foot("a2prompt", &(usage_row("claude-opus-4-5", [10, 84_000, 0, 0]) + &typed_row("next")));
     assert!(foot.contains(" opus · 84k "), "{foot}");
+}
+
+// ---------------------------------------------------- the allowance on the card (#1600)
+
+const HOUR: i64 = 3600;
+const DAY: i64 = 86400;
+
+fn epoch_now() -> i64 {
+    let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap();
+    i64::try_from(t.as_secs()).unwrap()
+}
+
+/// `@panestate_rl` as scripts/agent-context writes it, read `age` seconds ago: each
+/// window's used share and its reset, in seconds from now; `None` is a window the payload
+/// lacked.
+fn rl(age: i64, five: Option<(u8, i64)>, week: Option<(u8, i64)>) -> String {
+    let now = epoch_now();
+    let w = |x: Option<(u8, i64)>| x.map_or("-_-".to_string(), |(u, r)| format!("{u}_{}", now + r));
+    format!("{}_{}_{}", now - age, w(five), w(week))
+}
+
+/// The usage every allowance card draws with: `opus · 84k`.
+fn opus_84k() -> String {
+    usage_row("claude-opus-4-5", [10, 84_000, 0, 0])
+}
+
+/// 2h10m and 30 s of slack, so the countdown reads 2h10m however long the fetch takes.
+const R5: i64 = 2 * HOUR + 10 * 60 + 30;
+
+/// #1600: what is left of each window and the time to its reset show before the model and
+/// the context.
+#[test]
+fn the_allowance_shows_before_the_model_and_context_on_the_card() {
+    let foot = card_foot_at("rlmain", &opus_84k(), &rl(30, Some((42, R5)), Some((18, 3 * DAY + 2 * HOUR))), 60);
+    assert!(foot.contains(" 5h 58% 2h10m · 7d 82% 3d · opus · 84k "), "{foot}");
+}
+
+/// #1600: a window whose reset has passed shows nothing: its share is the old window's.
+#[test]
+fn a_window_whose_reset_has_passed_shows_nothing() {
+    let foot = card_foot_at("rlpast", &opus_84k(), &rl(30, Some((42, -1)), Some((18, 3 * DAY + 2 * HOUR))), 60);
+    assert!(foot.contains(" 7d 82% 3d · opus · 84k "), "{foot}");
+    assert!(!foot.contains("5h"), "{foot}");
+}
+
+/// #1600: a reset more than a week and an hour away is no window Claude Code has, so it
+/// shows nothing; one just inside that bound shows.
+#[test]
+fn a_reset_more_than_a_week_and_an_hour_away_shows_nothing() {
+    let far = rl(30, Some((42, R5)), Some((18, 7 * DAY + HOUR + 120)));
+    let foot = card_foot_at("rlfar", &opus_84k(), &far, 60);
+    assert!(foot.contains(" 5h 58% 2h10m · opus · 84k "), "{foot}");
+    assert!(!foot.contains("7d"), "{foot}");
+    let foot = card_foot_at("rlnear", &opus_84k(), &rl(30, None, Some((18, 7 * DAY + HOUR - 120))), 60);
+    assert!(foot.contains(" 7d 82% 7d · opus · 84k "), "{foot}");
+}
+
+/// #1600: a reading 5 minutes old or more says how old it is; a fresher one does not.
+#[test]
+fn a_reading_five_minutes_old_says_its_age() {
+    let foot = card_foot_at("rlage", &opus_84k(), &rl(12 * 60 + 30, Some((42, R5)), None), 60);
+    assert!(foot.contains(" 5h 58% 2h10m · 12m ago · opus · 84k "), "{foot}");
+    let foot = card_foot_at("rlage5", &opus_84k(), &rl(5 * 60 + 30, Some((42, R5)), None), 60);
+    assert!(foot.contains(" ago · opus · 84k "), "{foot}");
+    let foot = card_foot_at("rlfresh", &opus_84k(), &rl(4 * 60, Some((42, R5)), None), 60);
+    assert!(foot.contains(" 5h 58% 2h10m · opus · 84k "), "{foot}");
+}
+
+/// #1600: a card too narrow for both keeps the allowance whole and drops the context, and
+/// an allowance too wide for the card leaves the context alone.
+#[test]
+fn a_narrow_card_keeps_the_allowance_whole_then_the_context() {
+    // 40 columns leave 36 for the line: the allowance is 26, both together 39
+    let foot = card_foot_at("rlnarrow", &opus_84k(), &rl(30, Some((42, R5)), Some((18, 3 * DAY + 2 * HOUR))), 40);
+    assert!(foot.contains(" 5h 58% 2h10m · 7d 82% 3d "), "{foot}");
+    assert!(!foot.contains("84k"), "{foot}");
+    // 5h 100% 4h59m · 7d 100% 6d · 59m ago is 38 with its spaces
+    let wide = rl(59 * 60 + 30, Some((0, 4 * HOUR + 59 * 60 + 30)), Some((0, 6 * DAY + HOUR)));
+    let foot = card_foot_at("rlwide", &opus_84k(), &wide, 40);
+    assert!(foot.contains(" opus · 84k "), "{foot}");
+    assert!(!foot.contains('%'), "{foot}");
+}
+
+/// #1600: a value not of the shim's shape shows nothing, and the context still does.
+#[test]
+fn a_bad_allowance_value_shows_nothing() {
+    let (now, soon) = (epoch_now(), epoch_now() + R5);
+    let bad = [
+        "x".to_string(),
+        format!("{now}_42_{soon}"),
+        format!("{now}_101_{soon}_-_-"),
+        format!("{now}_+4_{soon}_-_-"),
+        format!("{now}_-_-_-_-"),
+        format!("-{now}_42_{soon}_-_-"),
+    ];
+    for (i, v) in bad.iter().enumerate() {
+        let foot = card_foot_at(&format!("rlbad{i}"), &opus_84k(), v, 60);
+        assert!(foot.contains(" opus · 84k ") && !foot.contains('%'), "{v}: {foot}");
+    }
 }
 
 /// #1374: tmux prints every field of the format the board passes, so a row one short of
