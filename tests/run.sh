@@ -12677,6 +12677,7 @@ echo "== own_tmpfile removes the file it refused only when that loses nothing (#
 #   open  an empty file of mode 0644      two   an empty 0600 file with a second name
 #   link  a symlink to an empty 0600 file of the user's
 #   fifo  a fifo of mode 0600             full  a 0600 file with a line in it
+#   /proc/version  an empty regular file of root's on Linux, under a logging rm
 OR=$(mktmpd); mkdir -p "$OR/bin" "$OR/cwd" "$OR/nod" "$OR/nols"
 or_bash=$(command -v bash)
 for or_t in mktemp dirname basename ls rm; do
@@ -12715,6 +12716,19 @@ is "own_tmpfile refusal: a fifo, the regular check, and the fifo stays" \
    "1 regular []|0|kept" "$(OR_ANSWER=$OR/fifo or_run "$OR/bin:$PATH")|$(or_has fifo)"
 is "own_tmpfile refusal: a 0600 file with a line in it, the nonempty check, and it stays" \
    "1 nonempty []|0|keep" "$(OR_ANSWER=$OR/full or_run "$OR/bin:$PATH")|$(cat "$OR/full")"
+# Refused at owner, an empty regular file of another user's is not removed. The real rm fails on
+# procfs, so a logging rm in a PATH dir of the row's own sees any call. As root, or with no such
+# file, the row is skipped.
+if [ -f /proc/version ] && [ ! -s /proc/version ] && [ ! -O /proc/version ]; then
+    mkdir -p "$OR/rml"
+    printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> %s\n' "$(tq "$OR/rm.log")" > "$OR/rml/rm"
+    chmod +x "$OR/rml/rm"
+    is "own_tmpfile refusal: an empty file of root's, the owner check, and no rm runs" \
+       "1 owner []|0|" "$(OR_ANSWER=/proc/version or_run "$OR/rml:$OR/bin:$PATH")|$(
+       cat "$OR/rm.log" 2>/dev/null)"
+else
+    skip_ "own_tmpfile refusal: no empty /proc/version of another user's (root?), no owner row"
+fi
 rm -rf "$OR"; unset -f or_new or_has or_run; unset OR or_bash or_t or_p
 
 echo "== board, panel, tm and tui-fetch rm -rf no dir their mktemp did not make (#947) =="
