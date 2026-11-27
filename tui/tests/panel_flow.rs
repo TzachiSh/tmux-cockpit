@@ -200,10 +200,9 @@ fn loop_alt_opt_else_and_end_keep_their_steps_in_frames() {
 }
 
 #[test]
-fn other_syntax_and_unbalanced_blocks_are_not_drawn() {
+fn a_line_no_grammar_knows_and_unbalanced_blocks_are_not_drawn() {
     for (row, src) in [
-        ("par block", "sequenceDiagram\npar a\nA->>B: x\nend\n"),
-        ("activate", "sequenceDiagram\nA->>B: x\nactivate B\n"),
+        ("unknown word", "sequenceDiagram\nA->>B: x\nfrobnicate A\n"),
         ("end without a block", "sequenceDiagram\nA->>B: x\nend\n"),
         ("unclosed loop", "sequenceDiagram\nloop x\nA->>B: x\n"),
     ] {
@@ -542,6 +541,134 @@ fn a_note_in_a_frame_slides_inside_its_sides() {
     assert_eq!(out[4], row, "{out:?}");
 }
 
+// ------------------------------------------------- keep or drop each statement (#1537)
+
+#[test]
+fn statements_we_do_not_draw_are_dropped_and_named() {
+    let created = "sequenceDiagram\nA->>B: x\ncreate participant C as Carol\nB->>C: hi\n";
+    let unknown = "sequenceDiagram\nA->>B: x\nactivate Z\ndestroy Z\n";
+    // A rect around three loops: the rect is no frame, so the third loop is still drawn as one.
+    let rect_deep = "sequenceDiagram\nrect rgb(0, 0, 255)\nloop a\nloop b\nloop c\nA->>B: x\nend\nend\nend\nend\n";
+    for (src, ledger) in [
+        (
+            "sequenceDiagram\nA->>B: x\nactivate B\nB-->>A: y\ndeactivate B\n",
+            "(dropped: activations)",
+        ),
+        ("sequenceDiagram\nA->>+B: x\nB -->>- A: y\n", "(dropped: activations)"),
+        ("sequenceDiagram\nA->>()B: x\nB()-->>A: y\n", "(dropped: central connections)"),
+        (
+            "sequenceDiagram\nrect rgb(0, 0, 255)\nA->>B: x\nend\n",
+            "(dropped: rect highlights)",
+        ),
+        (
+            "sequenceDiagram\nbox Aqua team\nparticipant A\nparticipant B\nend\nA->>B: x\n",
+            "(dropped: participant boxes)",
+        ),
+        (
+            "sequenceDiagram\nA->>B: x\ncreate participant C\nB->>C: hi\ndestroy C\nC-->>B: bye\n",
+            "(dropped: create/destroy)",
+        ),
+        (created, "(dropped: create/destroy)"),
+        (unknown, "(dropped: activations, create/destroy)"),
+        (rect_deep, "(dropped: rect highlights)"),
+    ] {
+        let out = flow::render(src, 60, &UNI);
+        assert_eq!(out.last().map(String::as_str), Some(ledger), "{src:?}: {out:?}");
+    }
+    // A dropped statement or mark adds no actor.
+    for src in [
+        "sequenceDiagram\nA->>+B: x\nB -->>- A: y\n",
+        "sequenceDiagram\nA->>()B: x\nB()-->>A: y\n",
+        unknown,
+    ] {
+        let ids: Vec<String> = parsed(src).actors.into_iter().map(|a| a.id).collect();
+        assert_eq!(ids, ["A", "B"], "{src:?}");
+    }
+    assert!(
+        !flow::render("sequenceDiagram\nrect rgb(0, 0, 255)\nA->>B: x\nend\n", 60, &UNI)
+            .iter()
+            .any(|l| l.contains('┌'))
+    );
+    // create reads its rest as a participant line, so C is named Carol.
+    let out = flow::render(created, 60, &UNI);
+    assert!(out[0].contains("Carol"), "{out:?}");
+}
+
+#[test]
+fn the_ledger_names_each_kind_in_the_order_first_met() {
+    for (src, ledger) in [
+        (
+            "sequenceDiagram\nA->>+B: x\nB()-->>A: y\n",
+            "(dropped: activations, central connections)",
+        ),
+        (
+            "sequenceDiagram\nA->>()B: x\nB-->>-A: y\n",
+            "(dropped: central connections, activations)",
+        ),
+    ] {
+        let out = flow::render(src, 60, &UNI);
+        assert_eq!(out.last().map(String::as_str), Some(ledger), "{src:?}: {out:?}");
+    }
+}
+
+#[test]
+fn par_critical_and_break_draw_as_frames() {
+    let rows: [(&str, &[&str]); 3] = [
+        (
+            "sequenceDiagram\npar to CI\nA->>C: push\nand to review\nA->>R: open\nend\n",
+            &["┌─[par to CI]", "├┄[and to review]"],
+        ),
+        (
+            "sequenceDiagram\ncritical lock held\nA->>B: x\noption timeout\nB->>A: y\nend\n",
+            &["┌─[critical lock held]", "├┄[option timeout]"],
+        ),
+        ("sequenceDiagram\nbreak on red\nA->>B: x\nend\n", &["┌─[break on red]"]),
+    ];
+    for (src, marks) in rows {
+        let out = flow::render(src, 60, &UNI);
+        for m in marks {
+            assert!(out.iter().any(|l| l.contains(m)), "{m}: {out:?}");
+        }
+    }
+    // Each divider word divides its own block only: and a par, option a critical.
+    for src in [
+        "sequenceDiagram\nalt x\nA->>B: y\nand z\nend\n",
+        "sequenceDiagram\npar x\nA->>B: y\noption z\nend\n",
+    ] {
+        assert!(flow::parse(src).is_err(), "{src:?}");
+    }
+}
+
+#[test]
+fn a_semicolon_ends_a_statement() {
+    let labels = |src: &str| parsed(src).steps.into_iter().map(|s| s.label).collect::<Vec<_>>();
+    assert_eq!(labels("sequenceDiagram\nA->>B: x; B-->>A: y\n"), ["x", "y"]);
+    // The ; that closes an entity code ends nothing: #59; reads as ;, and any other code stays as written.
+    assert_eq!(labels("sequenceDiagram\nA->>B: a #59; b\n"), ["a ; b"]);
+    assert_eq!(labels("sequenceDiagram\nA->>B: a #27; b\n"), ["a #27; b"]);
+    // A %% line is never split.
+    assert_eq!(labels("sequenceDiagram\nA->>B: x\n%% a; b\n"), ["x"]);
+}
+
+#[test]
+fn autonumber_starts_and_steps_as_written() {
+    let src = "sequenceDiagram\nautonumber 10 5\nA->>B: x\nB->>A: y\n";
+    assert_eq!(flow::render(src, 40, &UNI), ["10 x  A─▶B", "15 y  B─▶A"]);
+    let ladder = flow::render(src, 60, &UNI);
+    assert!(ladder[1].contains("10 x") && ladder[3].contains("15 y"), "{ladder:?}");
+    // The list's number column is as wide as the largest number.
+    let past = "sequenceDiagram\nautonumber 98 1\nA->>B: x\nB->>A: y\nA->>B: z\n";
+    assert_eq!(flow::render(past, 40, &UNI), [" 98 x  A─▶B", " 99 y  B─▶A", "100 z  A─▶B"]);
+    assert!(flow::parse("sequenceDiagram\nautonumber ten\nA->>B: x\n").is_err());
+}
+
+/// Every statement #1537 keeps or drops, two statements on one line, an entity code, and an autonumber start
+/// near usize::MAX.
+const STATEMENTS: &str = "sequenceDiagram\nautonumber 18446744073709551615 9\nbox Aqua team\nparticipant A\n\
+participant B\nend\ncreate participant C as Carol\nrect rgb(0, 0, 255)\nA->>+B: x #59; y\nB-->>-A: z; activate A\nend\n\
+par one\nA->>()C: p\nand two\nC()->>A: q\nend\ncritical lock\nB->>A: r\noption timeout\nA->>B: s\nend\nbreak red\n\
+deactivate A\nA-xB: t\nend\ndestroy C\n%% a; b\n";
+
 // --------------------------------------------- decision 7: never wider, no panic
 
 #[test]
@@ -563,6 +690,7 @@ fn every_prefix_of_every_sample_fits_every_width_from_0_to_130() {
             ("last self", LAST_SELF),
             ("deep", DEEP),
             ("frames", FRAMES),
+            ("statements", STATEMENTS),
         ] {
             for cut in (0..=src.len()).filter(|&i| src.is_char_boundary(i)) {
                 for w in 0..=130 {
@@ -599,6 +727,7 @@ fn the_ascii_tier_draws_nothing_but_ascii() {
         ("last self", LAST_SELF),
         ("deep", DEEP),
         ("frames", FRAMES),
+        ("statements", STATEMENTS),
     ] {
         for w in 0..=130 {
             let out = flow::render(src, w, &ASC);
