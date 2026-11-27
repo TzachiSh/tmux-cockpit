@@ -281,6 +281,13 @@ fn the_list_aligns_who_to_whom_whatever_the_label_widths() {
 }
 
 #[test]
+fn a_list_line_that_fits_exactly_is_not_cut() {
+    // A step with no time: the compact line's space before the empty time is no column (#1527).
+    assert_eq!(flow::render("sequenceDiagram\nA->>B: x\n", 5), ["x A→B"]);
+    assert_eq!(flow::render(BASE, 20)[0], " 1 brief owner→agent");
+}
+
+#[test]
 fn a_hand_built_step_naming_a_missing_actor_draws_without_a_panic() {
     let mut f = parsed("sequenceDiagram\nA->>B: x\n");
     f.steps[0].to = 7;
