@@ -3,7 +3,9 @@
 //! numbered list. Pure: no tmux, no clock, no terminal.
 //!
 //! What it reads: `participant` and `actor` (with `as`), implicit participants,
-//! the arrows `->>`, `-->>`, `->` and `-->`, `autonumber`, `Note`, and a
+//! Mermaid's ten arrows (`->>`, `-->>`, `->`, `-->`, `-x`, `--x`, `-)`, `--)`,
+//! `<<->>` and `<<-->>`, each drawn with its own line and head in both shapes),
+//! `autonumber`, `Note`, and a
 //! `%% status: <✓|●|○|✗|!|done|running|pending|failed|needs> [HH:MM]` line
 //! after a step. `loop`, `alt`, `opt`, `else` and `end` are dropped and their
 //! steps kept. Anything else is an `Err` naming the line, and [`render`] then
@@ -62,11 +64,39 @@ pub struct Actor {
     pub name: String,
 }
 
+/// An arrow's shaft: `->` and the like are solid, `-->` and the like dashed.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Line {
+    Solid,
+    Dashed,
+}
+
+impl Line {
+    fn glyph(self, g: &Glyphs) -> &'static str {
+        match self {
+            Line::Solid => g.plain.horizontal_top,
+            Line::Dashed => g.dashed,
+        }
+    }
+}
+
+/// An arrow's head: none (`->`), filled (`->>`), open (`-)`), a cross (`-x`),
+/// or filled at both ends (`<<->>`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Head {
+    None,
+    Filled,
+    Open,
+    Cross,
+    Both,
+}
+
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Step {
     pub from: usize,
     pub to: usize,
-    pub dashed: bool,
+    pub line: Line,
+    pub head: Head,
     pub label: String,
     pub status: Option<Status>,
     pub time: Option<String>,
@@ -169,7 +199,20 @@ fn status_line(rest: &str) -> Result<(Status, Option<String>), String> {
     }
 }
 
-const ARROWS: [(&str, bool); 4] = [("-->>", true), ("->>", false), ("-->", true), ("->", false)];
+/// Mermaid's ten arrows, longest first: a spelling that holds a shorter one
+/// (`-->>` holds `->>`, `--x` holds `-x`) is tried before it.
+const ARROWS: [(&str, Line, Head); 10] = [
+    ("<<-->>", Line::Dashed, Head::Both),
+    ("<<->>", Line::Solid, Head::Both),
+    ("-->>", Line::Dashed, Head::Filled),
+    ("->>", Line::Solid, Head::Filled),
+    ("--x", Line::Dashed, Head::Cross),
+    ("-x", Line::Solid, Head::Cross),
+    ("--)", Line::Dashed, Head::Open),
+    ("-)", Line::Solid, Head::Open),
+    ("-->", Line::Dashed, Head::None),
+    ("->", Line::Solid, Head::None),
+];
 
 /// One line, trimmed and not empty, into `f`. `depth` counts open blocks.
 fn line(f: &mut Flow, l: &str, depth: &mut usize) -> Result<(), String> {
@@ -235,10 +278,10 @@ fn note(f: &mut Flow, rest: &str) -> Result<(), String> {
 }
 
 fn step(f: &mut Flow, l: &str) -> Result<(), String> {
-    let (head, label) = l.split_once(':').ok_or("not a step")?;
-    let (from, to, dashed) = ARROWS
+    let (arrow, label) = l.split_once(':').ok_or("not a step")?;
+    let (from, to, line, head) = ARROWS
         .iter()
-        .find_map(|(a, dashed)| head.split_once(a).map(|(x, y)| (x.trim(), y.trim(), *dashed)))
+        .find_map(|&(a, line, head)| arrow.split_once(a).map(|(x, y)| (x.trim(), y.trim(), line, head)))
         .ok_or("no arrow")?;
     if !is_id(from) || !is_id(to) {
         return Err("a step needs two participant ids".into());
@@ -247,7 +290,8 @@ fn step(f: &mut Flow, l: &str) -> Result<(), String> {
     f.steps.push(Step {
         from,
         to,
-        dashed,
+        line,
+        head,
         label: tidy(label.trim()),
         status: None,
         time: None,
@@ -415,6 +459,22 @@ fn label(f: &Flow, i: usize) -> String {
     }
 }
 
+/// The glyphs at the left and the right end of a shaft as drawn, `""` where
+/// there is no head. A step drawn right to left has its head at the left end,
+/// pointing left; a two-way arrow has one at each end either way. Both shapes
+/// draw their ends from here (#1532).
+fn arrow_ends(head: Head, rightward: bool, g: &Glyphs) -> (&'static str, &'static str) {
+    // The head pointing right, then pointing left.
+    let (right, left) = match head {
+        Head::None => ("", ""),
+        Head::Filled => (g.head_right, g.head_left),
+        Head::Open => (g.open_right, g.open_left),
+        Head::Cross => (g.head_cross, g.head_cross),
+        Head::Both => return (g.head_left, g.head_right),
+    };
+    if rightward { ("", right) } else { (left, "") }
+}
+
 /// The closing box of NEED FROM YOU notes, the width wide.
 fn need_box(f: &Flow, w: usize, g: &Glyphs) -> Vec<String> {
     if f.need.is_empty() {
@@ -480,16 +540,25 @@ fn ladder(f: &Flow, w: usize, g: &Glyphs) -> Vec<String> {
         }
         out.push(lab.done());
         let mut arrow = lifelines();
+        let shaft = s.line.glyph(g);
         if a == b {
-            arrow.text(a + 1, &format!("{}{}{}", g.plain.horizontal_top, g.self_turn, g.self_back));
+            let back = match s.head {
+                Head::Filled | Head::Both => g.self_back,
+                Head::Open => g.open_left,
+                Head::Cross => g.head_cross,
+                Head::None => "",
+            };
+            arrow.text(a + 1, &format!("{shaft}{}{back}", g.self_turn));
         } else {
             for c in a + 1..b {
-                arrow.put(c, if s.dashed { g.dashed } else { g.plain.horizontal_top });
+                arrow.put(c, shaft);
             }
-            if s.to > s.from {
-                arrow.put(b - 1, g.head_right);
-            } else {
-                arrow.put(a + 1, g.head_left);
+            let (left_end, right_end) = arrow_ends(s.head, s.to > s.from, g);
+            if !left_end.is_empty() {
+                arrow.put(a + 1, left_end);
+            }
+            if !right_end.is_empty() {
+                arrow.put(b - 1, right_end);
             }
         }
         out.push(arrow.done());
@@ -507,7 +576,14 @@ fn list(f: &Flow, w: usize, g: &Glyphs) -> Vec<String> {
     let digits = if f.autonumber { f.steps.len().to_string().len().max(2) } else { 0 };
     let longest = f.steps.iter().map(|s| s.label.width()).max().unwrap_or(0);
     let name = |i: usize| f.actors.get(i).map_or("?", |a| a.name.as_str());
-    let who = |s: &Step| format!("{}{}{}", name(s.from), g.arrow, name(s.to));
+    // Who to whom, read left to right: the arrow's left end, its shaft, then
+    // its right end, or the shaft again where there is no head.
+    let who = |s: &Step| {
+        let (left, right) = arrow_ends(s.head, true, g);
+        let shaft = s.line.glyph(g);
+        let right = if right.is_empty() { shaft } else { right };
+        format!("{}{left}{shaft}{right}{}", name(s.from), name(s.to))
+    };
     let who_w = f.steps.iter().map(|s| who(s).width()).max().unwrap_or(0);
     let time_w = f.steps.iter().filter_map(|s| s.time.as_deref()).map(str::width).max().unwrap_or(0);
     let lead_w = usize::from(status) * 2 + if f.autonumber { digits + 1 } else { 0 };
@@ -589,7 +665,7 @@ pub fn render(src: &str, w: usize, g: &Glyphs) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Actor, Flow, Glyphs, Row, Shape, Status, Step, draw, fit, ladder, list, parse, shape};
+    use super::{Actor, Flow, Glyphs, Head, Line, Row, Shape, Status, Step, draw, fit, ladder, list, parse, shape};
 
     const UNI: Glyphs = Glyphs::unicode();
 
@@ -608,7 +684,8 @@ mod tests {
         let step = Step {
             from: 0,
             to: 1,
-            dashed: false,
+            line: Line::Solid,
+            head: Head::Filled,
             label: format!("deploy{bad}it"),
             status: Some(Status::Running),
             time: Some(format!("1{bad}2")),

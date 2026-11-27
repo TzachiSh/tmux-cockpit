@@ -65,7 +65,7 @@ fn six_actors_fall_back_to_the_list_at_any_width() {
     assert_eq!(f.actors.len(), 6);
     assert_eq!(flow::shape(&f, 200), Shape::List);
     assert!(
-        flow::render(SIX, 200, &UNI)[0].contains("owner→lead"),
+        flow::render(SIX, 200, &UNI)[0].contains("owner─▶lead"),
         "{:?}",
         flow::render(SIX, 200, &UNI)
     );
@@ -186,7 +186,6 @@ fn other_syntax_and_unbalanced_blocks_are_not_drawn() {
         ("activate", "sequenceDiagram\nA->>B: x\nactivate B\n"),
         ("end without a block", "sequenceDiagram\nA->>B: x\nend\n"),
         ("unclosed loop", "sequenceDiagram\nloop x\nA->>B: x\n"),
-        ("cross arrow", "sequenceDiagram\nA-xB: x\n"),
     ] {
         assert!(flow::parse(src).is_err(), "{row} parsed");
     }
@@ -199,6 +198,63 @@ fn a_malformed_sample_shows_why_then_the_raw_lines_cut_to_the_width() {
     assert_eq!(out[1], "sequenceDiagram");
     assert_eq!(out[2], "  participant O as owner");
     assert_eq!(out.len(), 1 + BAD.lines().count());
+}
+
+// ------------------------------------------------- Mermaid's arrow kinds (#1532)
+
+/// Each of Mermaid's ten arrows between three actors, both ways, and three self steps.
+const ARROW_KINDS: &str = "sequenceDiagram\nparticipant A\nparticipant B\nparticipant C\nA->>B: one\nB-->>A: two\n\
+A->C: three\nC-->A: four\nB-xC: five\nC--xA: six\nA-)C: seven\nC--)B: eight\nB<<->>A: nine\nC<<-->>A: ten\n\
+A-)A: open self\nB-xB: cross self\nC->C: plain self\n";
+
+#[test]
+fn each_arrow_kind_draws_its_own_line_and_head() {
+    let (s, d) = (|n: usize| "─".repeat(n), |n: usize| "┄".repeat(n));
+    let rows: [(&str, String, &str, &str); 10] = [
+        ("->>", s(27) + "▶", "─▶", "->"),
+        ("-->>", d(27) + "▶", "┄▶", ".>"),
+        ("->", s(28), "──", "--"),
+        ("-->", d(28), "┄┄", ".."),
+        ("-x", s(27) + "✕", "─✕", "-x"),
+        ("--x", d(27) + "✕", "┄✕", ".x"),
+        ("-)", s(27) + "▷", "─▷", "-)"),
+        ("--)", d(27) + "▷", "┄▷", ".)"),
+        ("<<->>", format!("◀{}▶", s(26)), "◀─▶", "<->"),
+        ("<<-->>", format!("◀{}▶", d(26)), "◀┄▶", "<.>"),
+    ];
+    for (spell, cells, uni, asc) in rows {
+        let src = format!("sequenceDiagram\nA{spell}B: m\n");
+        assert!(flow::parse(&src).is_ok(), "{spell}");
+        assert_eq!(flow::render(&src, 60, &UNI)[2], format!("{}│{cells}│", " ".repeat(15)), "{spell}");
+        assert_eq!(flow::render(&src, 40, &UNI)[0], format!("m  A{uni}B"), "{spell}");
+        assert_eq!(flow::render(&src, 40, &ASC)[0], format!("m  A{asc}B"), "{spell}");
+    }
+}
+
+#[test]
+fn a_dashed_self_arrow_draws_dashed() {
+    assert_eq!(
+        flow::render("sequenceDiagram\nA-->>A: x\n", 60, &UNI)[2],
+        format!("{}│┄╮↩", " ".repeat(30))
+    );
+}
+
+#[test]
+fn a_right_to_left_or_self_arrow_ends_in_its_own_head() {
+    // The ladder's arrow row with A declared first, so B to A is drawn right to left.
+    let rows: [(&str, String, String); 5] = [
+        ("B-)A", format!("│◁{}│", "─".repeat(27)), format!("|({}|", "-".repeat(27))),
+        ("B-xA", format!("│✕{}│", "─".repeat(27)), format!("|x{}|", "-".repeat(27))),
+        ("A-)A", format!("│─╮◁{}│", " ".repeat(25)), format!("|-+({}|", " ".repeat(25))),
+        ("A-xA", format!("│─╮✕{}│", " ".repeat(25)), format!("|-+x{}|", " ".repeat(25))),
+        ("A->A", format!("│─╮{}│", " ".repeat(26)), format!("|-+{}|", " ".repeat(26))),
+    ];
+    let pad = " ".repeat(15);
+    for (step, uni, asc) in rows {
+        let src = format!("sequenceDiagram\nparticipant A\nparticipant B\n{step}: m\n");
+        assert_eq!(flow::render(&src, 60, &UNI)[2], format!("{pad}{uni}"), "{step}");
+        assert_eq!(flow::render(&src, 60, &ASC)[2], format!("{pad}{asc}"), "{step}");
+    }
 }
 
 // --------------------------------------------- decision 7: never wider, no panic
@@ -214,6 +270,7 @@ fn every_prefix_of_every_sample_fits_every_width_from_0_to_130() {
             ("loop", LOOP),
             ("note", NOTE),
             ("wide", WIDE),
+            ("arrows", ARROW_KINDS),
         ] {
             for cut in (0..=src.len()).filter(|&i| src.is_char_boundary(i)) {
                 for w in 0..=130 {
@@ -242,6 +299,7 @@ fn the_ascii_tier_draws_nothing_but_ascii() {
         ("loop", LOOP),
         ("note", NOTE),
         ("gly", GLY),
+        ("arrows", ARROW_KINDS),
     ] {
         for w in 0..=130 {
             let out = flow::render(src, w, &ASC);
@@ -329,7 +387,7 @@ fn goldens_wide_graphemes_at_60_and_100() {
 
 #[test]
 fn the_list_aligns_who_to_whom_whatever_the_label_widths() {
-    // Where "→" sits on each line: one column for every step, short or long labels.
+    // Where the head "▶" sits on each line: one column for every step, short or long labels.
     for (row, labels) in [
         ("all short", ["go", "run", "ok"]),
         ("short and long", ["go", "run the suite", "ok"]),
@@ -339,7 +397,7 @@ fn the_list_aligns_who_to_whom_whatever_the_label_widths() {
             labels[0], labels[1], labels[2]
         );
         let out = flow::render(&src, 40, &UNI);
-        let cols: Vec<usize> = out.iter().map(|l| l.split('→').next().unwrap().width()).collect();
+        let cols: Vec<usize> = out.iter().map(|l| l.split('▶').next().unwrap().width()).collect();
         assert!(cols.windows(2).all(|p| p[0] == p[1]), "{row}: {out:?}");
     }
 }
@@ -347,23 +405,23 @@ fn the_list_aligns_who_to_whom_whatever_the_label_widths() {
 #[test]
 fn a_list_line_that_fits_exactly_is_not_cut() {
     // A step with no time: the compact line's space before the empty time is no column (#1527).
-    assert_eq!(flow::render("sequenceDiagram\nA->>B: x\n", 5, &UNI), ["x A→B"]);
-    assert_eq!(flow::render(BASE, 20, &UNI)[0], " 1 brief owner→agent");
+    assert_eq!(flow::render("sequenceDiagram\nA->>B: x\n", 6, &UNI), ["x A─▶B"]);
+    assert_eq!(flow::render(BASE, 21, &UNI)[0], " 1 brief owner─▶agent");
 }
 
 #[test]
 fn an_aligned_list_with_no_time_keeps_no_time_column() {
     // No step has a time: the aligned label column keeps no gap for a time column (#1528).
-    assert_eq!(flow::render("sequenceDiagram\nA->>B: abcdefgh\n", 13, &UNI), ["abcdefgh  A→B"]);
-    assert_eq!(flow::render(BASE, 25, &UNI)[1], " 2 PR op…  agent→reviewer");
+    assert_eq!(flow::render("sequenceDiagram\nA->>B: abcdefgh\n", 14, &UNI), ["abcdefgh  A─▶B"]);
+    assert_eq!(flow::render(BASE, 26, &UNI)[1], " 2 PR op…  agent─▶reviewer");
 }
 
 #[test]
 fn a_list_with_empty_labels_is_not_cut_where_compact_fits() {
-    // Every label empty, no time: an aligned line needs 2 + 3 columns here, so at 4 the compact one shows (#1541).
+    // Every label empty, no time: an aligned line needs 2 + 4 columns here, so at 5 the compact one shows (#1541).
     let src = "sequenceDiagram\nA->>B:\nB->>A:\n";
-    assert_eq!(flow::render(src, 4, &UNI), [" A→B", " B→A"]);
-    assert_eq!(flow::render(src, 5, &UNI), ["  A→B", "  B→A"]);
+    assert_eq!(flow::render(src, 5, &UNI), [" A─▶B", " B─▶A"]);
+    assert_eq!(flow::render(src, 6, &UNI), ["  A─▶B", "  B─▶A"]);
 }
 
 #[test]
@@ -438,7 +496,7 @@ fn a_wrapped_lead_note_in_the_list_marks_only_its_first_row() {
             "↳ the suite runs twice because the first",
             "  run on this box was flaky and the",
             "  second decides",
-            "x  A→B"
+            "x  A─▶B"
         ]
     );
 }

@@ -1520,16 +1520,27 @@ and `parse::fix` and `parse::explain` read only the first question, as before.
 not wired into Explain yet.
 
 - **What it reads.** `participant` and `actor`, with `as` for a display name,
-  and participants named only in a step. The arrows `->>`, `-->>`, `->` and
-  `-->`; the dashed ones draw `┄`. `autonumber`. `Note left of`, `right of` or
-  `over`. A `%% status: <s> [HH:MM]` line after a step, the key in any case,
-  `<s>` one of `✓ ● ○ ✗ !` or `done running pending failed needs`, the time
-  from 00:00 to 23:59; a `%%` at the end of a step line is part of its label,
-  as in Mermaid. Other `%%` lines are comments.
+  and participants named only in a step. Mermaid's ten arrows (see **Arrows**).
+  `autonumber`. `Note left of`, `right of` or `over`. A `%% status: <s> [HH:MM]`
+  line after a step, the key in any case, `<s>` one of `✓ ● ○ ✗ !` or
+  `done running pending failed needs`, the time from 00:00 to 23:59; a `%%` at
+  the end of a step line is part of its label, as in Mermaid. Other `%%` lines
+  are comments.
 - **Blocks.** `loop`, `alt`, `opt`, `else` and `end` are dropped and their steps
   kept in order. An `end` or `else` outside a block, or a block never closed,
   is an error.
-- **Anything else** (`par`, `activate`, `-x`, a bad status word or time) is an `Err`
+- **Arrows.** Each of Mermaid's ten arrows draws as its own kind, in the ladder
+  and in the list (#1532). The shaft is solid for `->>`, `->`, `-x`, `-)` and
+  `<<->>`, and dashed (`┄`) for `-->>`, `-->`, `--x`, `--)` and `<<-->>`. The
+  head is filled (`▶`) for `->>` and `-->>`, absent for `->` and `-->` as in
+  Mermaid, a cross (`✕`) for `-x` and `--x`, open (`▷`) for `-)` and `--)`, and
+  filled at both ends for `<<->>` and `<<-->>`. A step drawn right to left has
+  its head at the left end, pointing left (`◀`, `◁`). A self step is the shaft,
+  `╮`, then `↩` for a filled or two-way head, `◁` for an open one, `✕` for a
+  cross, and nothing for no head. The list writes who to whom with the same
+  ends: `A─▶B`, `A┄▶B`, `A──B`, `A┄┄B`, `A─✕B`, `A┄✕B`, `A─▷B`, `A┄▷B`,
+  `A◀─▶B` and `A◀┄▶B`.
+- **Anything else** (`par`, `activate`, a bad status word or time) is an `Err`
   naming the line. `flow::render` then shows `flow::not_drawn`: `(not drawn:
   <why>)`, then the raw lines, each cut to the width.
 - **Ladder or list.** The ladder at 60 columns or more with at most 4 actors,
@@ -1563,10 +1574,12 @@ not wired into Explain yet.
   `theme::Glyphs`, and every mark comes from it; `flow.rs` reads no env (#1529).
   Under `COCKPIT_GLYPHS=ascii` an ASCII source draws pure ASCII: the status
   marks `+ * . x !`, lifelines and the NEED box in `|`, `-` and `+`, a dashed
-  shaft `.`, the heads `>` and `<`, a self step `-+<`, a note `>`, `< here`,
-  who to whom with `->`, a cut ending in `...` and `?` for a control. A width
-  narrower than the ellipsis gets the first columns and no ellipsis. The
-  source's own words stay as written.
+  shaft `.`, the filled heads `>` and `<`, the open heads `)` and `(`, a cross
+  `x`, a self step `-+<`, a note `>`, `< here`, who to whom with the arrow's
+  ends (`->`, `.>`, `--`, `..`, `-x`, `.x`, `-)`, `.)`, `<->`, `<.>`), a cut
+  ending in `...` and `?` for a control. A width narrower than the ellipsis
+  gets the first columns and no ellipsis. The source's own words stay as
+  written.
 - **Goldens:** `flow-base-{40,60,100}`, `flow-status-{40,60,100}` and
   `flow-wide-{60,100}`.
 
