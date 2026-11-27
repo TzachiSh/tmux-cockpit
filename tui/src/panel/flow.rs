@@ -9,8 +9,9 @@
 //! where its place says, the list under its step), and a
 //! `%% status: <✓|●|○|✗|!|done|running|pending|failed|needs> [HH:MM]` line
 //! after a step. `loop`, `alt`, `opt`, `else` and `end` are dropped and their
-//! steps kept. Anything else is an `Err` naming the line, and [`render`] then
-//! shows [`not_drawn`]: the reason and the raw lines.
+//! steps kept, and a ledger line after the steps names what was dropped.
+//! Anything else is an `Err` naming the line, and [`render`] then shows
+//! [`not_drawn`]: the reason and the raw lines.
 //!
 //! Every glyph it draws comes from the caller's [`Glyphs`] tier, so the ASCII
 //! tier draws nothing but ASCII from an ASCII source. No line is ever wider
@@ -129,6 +130,9 @@ pub struct Flow {
     pub lead: Vec<Note>,
     /// The NEED FROM YOU notes, prefix dropped, for the closing box.
     pub need: Vec<String>,
+    /// What the drawing leaves out, one short name a kind in the order first
+    /// met, for the ledger line (#1535).
+    pub dropped: Vec<String>,
     pub autonumber: bool,
 }
 
@@ -257,13 +261,24 @@ fn line(f: &mut Flow, l: &str, depth: &mut usize) -> Result<(), String> {
             f.actors[i].name = tidy(name);
         }
         "Note" | "note" => note(f, rest)?,
-        "loop" | "alt" | "opt" => *depth += 1,
+        "loop" | "alt" | "opt" => {
+            // Its steps are drawn and its frame is not, so the ledger names it. An else goes with its alt.
+            record_drop(f, &format!("{word} frames"));
+            *depth += 1;
+        }
         "else" | "end" if *depth == 0 => return Err(format!("{word} outside a block")),
         "else" => {}
         "end" => *depth -= 1,
         _ => step(f, l)?,
     }
     Ok(())
+}
+
+/// Name `what` in the ledger once, in the order first met (#1535).
+fn record_drop(f: &mut Flow, what: &str) {
+    if !f.dropped.iter().any(|d| d == what) {
+        f.dropped.push(what.to_string());
+    }
 }
 
 fn note(f: &mut Flow, rest: &str) -> Result<(), String> {
@@ -567,6 +582,16 @@ fn need_box(f: &Flow, w: usize, g: &Glyphs) -> Vec<String> {
     out
 }
 
+/// The ledger: what the drawing leaves out, named on a line wrapped to the
+/// width, which both shapes put after the last step's rows and notes and
+/// before the NEED box; nothing when nothing was dropped (#1535).
+fn ledger(f: &Flow, w: usize, g: &Glyphs) -> Vec<String> {
+    if f.dropped.is_empty() {
+        return vec![];
+    }
+    wrap(&format!("(dropped: {})", f.dropped.join(", ")), w, g)
+}
+
 /// Actors across, two rows a step: the label, then the arrow under it.
 fn ladder(f: &Flow, w: usize, g: &Glyphs) -> Vec<String> {
     let gutter = if f.has_status() { 3 } else { 1 };
@@ -654,6 +679,7 @@ fn ladder(f: &Flow, w: usize, g: &Glyphs) -> Vec<String> {
         out.push(arrow.done());
         notes(&mut out, &s.notes);
     }
+    out.extend(ledger(f, w, g));
     out.extend(need_box(f, w, g));
     out
 }
@@ -726,6 +752,7 @@ fn list(f: &Flow, w: usize, g: &Glyphs) -> Vec<String> {
         .map(|l| fit(&l, w, g))
         .collect();
     head.extend(out);
+    head.extend(ledger(f, w, g));
     head.extend(need_box(f, w, g));
     head
 }
@@ -797,6 +824,7 @@ mod tests {
                 place: Place::Over(0, 1),
             }],
             need: vec![format!("need{bad}this")],
+            dropped: vec![format!("x{bad}y")],
             autonumber: true,
         }
     }
@@ -811,6 +839,8 @@ mod tests {
                 let out = draw(&f, w, &UNI);
                 let hit = out.iter().find(|l| l.chars().any(unsafe_char));
                 assert_eq!(hit, None, "{row} w={w}");
+                // The ledger is drawn too, its bad characters dropped (#1535).
+                assert!(out.iter().any(|l| l.starts_with("(dropped: x")), "{row} w={w}: {out:?}");
             }
         }
     }

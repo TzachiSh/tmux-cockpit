@@ -1529,6 +1529,11 @@ not wired into Explain yet.
 - **Blocks.** `loop`, `alt`, `opt`, `else` and `end` are dropped and their steps
   kept in order. An `end` or `else` outside a block, or a block never closed,
   is an error.
+- **Ledger.** The drawing names what it leaves out on a line after the last
+  step's rows and notes and before the NEED box, in both shapes (#1535):
+  `(dropped: loop frames, alt frames, opt frames)`, each name once, in the
+  order the source first has it, wrapped to the width. An `else` goes with its
+  `alt`. With nothing dropped there is no such line.
 - **Arrows.** Each of Mermaid's ten arrows draws as its own kind, in the ladder
   and in the list (#1532). The shaft is solid for `->>`, `->`, `-x`, `-)` and
   `<<->>`, and dashed (`┄`) for `-->>`, `-->`, `--x`, `--)` and `<<-->>`. The
