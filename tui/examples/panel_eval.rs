@@ -6399,15 +6399,48 @@ mod tests {
         let o = opts(args("")).unwrap();
         let blind = o.blind.clone().unwrap();
         load(&o.cases, Some(&blind)).unwrap();
-        let text = std::fs::read_to_string(&blind).unwrap();
-        let header: Vec<&str> = text.lines().take_while(|l| !l.starts_with("=== ")).collect();
-        let header = header.join(" ").replace("# ", "").replace('#', "");
+        let header = file_header(&blind);
         for who in [
             "the owner",
             "the orchestrator",
             "re-verify",
             "blindness",
             "commits cases",
+            "must not open",
+        ] {
+            assert!(header.contains(who), "the header does not say {who:?}");
+        }
+    }
+
+    /// A cases file's comment lines before its first case, joined as one line
+    /// with the `#` marks dropped: the header a held-out file names its readers in.
+    fn file_header(p: &Path) -> String {
+        let text = std::fs::read_to_string(p).unwrap();
+        let header: Vec<&str> = text.lines().take_while(|l| !l.starts_with("=== ")).collect();
+        header.join(" ").replace("# ", "").replace('#', "")
+    }
+
+    /// #1405: the shipped Explain cases load as `--cases` reads them, all of them
+    /// Explain cases and held out, and the file's header names who may read it.
+    /// Only the header and the counts are read here, never a case's text.
+    #[test]
+    fn the_shipped_explain_cases_load_as_held_out_explain_cases() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("evals/explain/holdout-blind.txt");
+        let o = opts(["--cases".to_string(), path.display().to_string()]).unwrap();
+        let cases = run_cases(&o).unwrap_or_else(|e| panic!("{e}")).cases;
+        assert_eq!(cases.len(), 20);
+        let odd: Vec<&str> = cases
+            .iter()
+            .filter(|c| c.flow != CaseFlow::Explain || !c.holdout)
+            .map(|c| c.id.as_str())
+            .collect();
+        assert!(odd.is_empty(), "not a held-out Explain case: {odd:?}");
+        let header = file_header(&path);
+        for who in [
+            "the owner",
+            "the orchestrator",
+            "the case writer",
+            "blindness reviewer",
             "must not open",
         ] {
             assert!(header.contains(who), "the header does not say {who:?}");
