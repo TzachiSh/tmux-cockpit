@@ -379,8 +379,13 @@ blank line, the `<prompt>` left out), as explain.txt asks it to start with the
 answer, and when `agent_prompt: yes` finds a `<prompt>` or `agent_prompt: no`
 finds none; with no `agent_prompt` key either passes. `lead` and `agent_prompt`
 are for write or either cases. An Explain row adds `flow` (`explain`), `ready`
-(whether a `<prompt>` came back), `ready_wrong` and `lead_missing`; a held-out
-row keeps the first three and `lead_missing_n`. `--check` adds `; N explain` to
+(whether a `<prompt>` came back), `ready_wrong`, `lead_missing` and `mermaid`,
+whether the answer's flow draws (#1570): `none` with no fence tagged `mermaid`,
+`not_drawn` when one fails the flow parser, `dropped` when one's ledger names
+what its drawing leaves out, else `drawn`. A held-out row keeps all of them but
+`lead_missing`, which it counts in `lead_missing_n`. The summary's `mermaid`
+line gives each value's share of the Explain answers. It is a measure: no case
+passes or fails by it. `--check` adds `; N explain` to
 its count line when there is one. `--judge` and `--router-prompt` refuse a run
 with an Explain case before any call: the judge's rubric grades write replies,
 and the router text replaces the write prompt. The Explain cases are

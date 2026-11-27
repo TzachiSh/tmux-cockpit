@@ -1,6 +1,6 @@
 //! The panel's code lexer (#282): per-language tables, fence detection, and the
 //! never-panic, text-preserving property over random input.
-use cockpit_tui::highlight::{Fence, Lang, Part, Role, State, block, fence, fenced, highlight, lang, line, split, tag, wrapper};
+use cockpit_tui::highlight::{Fence, Lang, Part, Role, State, block, fence, fenced, flow_body, highlight, lang, line, split, tag, wrapper};
 
 /// Every span of `src` (lines split on `\n`) lexed as `tag`, line breaks dropped.
 fn spans<'a>(tag: &str, src: &'a str) -> Vec<(Role, &'a str)> {
@@ -426,6 +426,18 @@ fn split_closes_only_on_as_many_ticks_or_more_and_nothing_else() {
 #[test]
 fn split_takes_inline_code_as_prose() {
     assert_eq!(parts("```a` b```"), vec![Part::Prose(0..1)]);
+}
+
+/// #1570: the one rule for which fence draws as a flow. A fence tagged exactly
+/// `mermaid`, closed or left open, gives its body, and any other part none:
+/// prose, another tag, the tag in another case.
+#[test]
+fn flow_body_gives_a_mermaid_fences_body_only() {
+    let text = "a\n```mermaid\nsequenceDiagram\nA->>B: x\n```\n```sh\nls\n```\n```Mermaid\nB->>A: y\n```\n```mermaid\nC->>D: z";
+    let lines: Vec<&str> = text.split('\n').collect();
+    let got: Vec<Option<String>> = split(&lines).iter().map(|p| flow_body(p, &lines)).collect();
+    let want = [None, Some("sequenceDiagram\nA->>B: x"), None, None, Some("C->>D: z")];
+    assert_eq!(got, want.map(|w| w.map(String::from)));
 }
 
 #[test]

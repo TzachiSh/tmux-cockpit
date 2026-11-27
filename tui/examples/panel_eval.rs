@@ -61,9 +61,11 @@
 //! `environment` line says which, with the claude version and the HOME and XDG
 //! variables.
 use cockpit_tui::data::workdir::{Source, WorkDir};
+use cockpit_tui::highlight;
 use cockpit_tui::panel::app::{App, InputKind, View};
 use cockpit_tui::panel::capture::Capture;
 use cockpit_tui::panel::envelope::{Flow, OutType, Role, Turn};
+use cockpit_tui::panel::flow;
 use cockpit_tui::panel::parse::{self, Reply, files_read, tool_calls};
 use cockpit_tui::panel::prompts::{self, fnv};
 use cockpit_tui::panel::request::{Call, Effort, Fail, Profile, Request};
@@ -971,7 +973,34 @@ struct Grade {
     ready: Option<bool>,
     /// For an Explain answer: `ready` is not what the case's `agent_prompt` says.
     ready_wrong: bool,
+    /// For an Explain answer (#1570): whether its flow draws, one of [`MERMAID`].
+    mermaid: Option<&'static str>,
     pass: bool,
+}
+
+/// What an Explain answer's flow did (#1570), as its row and the summary say it.
+const MERMAID: [&str; 4] = ["none", "drawn", "dropped", "not_drawn"];
+
+/// Whether an Explain answer's flow draws, one of [`MERMAID`]: `none` with no
+/// flow ([`highlight::flow_body`], the one rule for which fence draws as one),
+/// `not_drawn` when any of them fails [`flow::parse`], `dropped` when one's
+/// ledger names what its drawing leaves out, else `drawn`.
+fn mermaid_draws(answer: &str) -> &'static str {
+    let lines: Vec<&str> = answer.lines().collect();
+    let flows: Vec<_> = highlight::split(&lines)
+        .iter()
+        .filter_map(|p| highlight::flow_body(p, &lines))
+        .map(|body| flow::parse(&body))
+        .collect();
+    if flows.is_empty() {
+        "none"
+    } else if flows.iter().any(Result::is_err) {
+        "not_drawn"
+    } else if flows.iter().flatten().any(|f| !f.dropped.is_empty()) {
+        "dropped"
+    } else {
+        "drawn"
+    }
 }
 
 fn grade(c: &Case, raw: &str) -> Grade {
@@ -1009,6 +1038,7 @@ fn grade(c: &Case, raw: &str) -> Grade {
         g.lead_missing = c.lead.iter().filter(|m| !has(first, m)).cloned().collect();
         g.ready = Some(ready.is_some());
         g.ready_wrong = c.agent_prompt.is_some_and(|want| want != ready.is_some());
+        g.mermaid = Some(mermaid_draws(answer));
     }
     g.wrong_type = c.out_is.and_then(|want| reply_type(&reply).filter(|t| *t != out_name(want)));
     g.forbidden = c.must_not.iter().filter(|m| has_unnegated(&text, m)).cloned().collect();
@@ -1347,7 +1377,7 @@ fn show_case<T>(held: bool, full: impl FnOnce() -> T, blind: impl FnOnce() -> T)
 /// The `--out` fields a held-out case's row keeps (#792): none holds its
 /// phrases. Every other field, one added later included, is null on that row:
 /// the reply holds a passing case's must phrases, and the reads its searches.
-const HELD_FIELDS: [&str; 30] = [
+const HELD_FIELDS: [&str; 31] = [
     "id",
     "expect",
     "run",
@@ -1381,6 +1411,8 @@ const HELD_FIELDS: [&str; 30] = [
     "ready",
     "ready_wrong",
     "lead_missing_n",
+    // #1570: one of the four words of [`MERMAID`], never the reply's text
+    "mermaid",
 ];
 
 /// Why a `--show-holdout` run refuses to start, and the fix.
@@ -1575,6 +1607,7 @@ impl Ended<'_> {
             row["ready"] = g.and_then(|g| g.ready).into();
             row["ready_wrong"] = g.map(|g| g.ready_wrong).into();
             row["lead_missing"] = g.map(|g| g.lead_missing.clone()).into();
+            row["mermaid"] = g.and_then(|g| g.mermaid).into();
         }
         row
     }
@@ -2958,6 +2991,17 @@ fn pct_ci(o: Of) -> String {
     }
 }
 
+/// The summary's `mermaid` line (#1570): each [`MERMAID`] word's share of the
+/// Explain answers; `None` for a run with none, whose summary is as before.
+fn mermaid_line(done: &[(usize, u128, Option<Grade>)]) -> Option<String> {
+    let got: Vec<&str> = done.iter().filter_map(|(_, _, g)| g.as_ref()?.mermaid).collect();
+    if got.is_empty() {
+        return None;
+    }
+    let share = |w: &&str| format!("{w} {}", pct(Of(got.iter().filter(|&g| g == w).count(), got.len())));
+    Some(MERMAID.iter().map(share).collect::<Vec<_>>().join("  "))
+}
+
 fn summary(cases: &[Case], done: &[(usize, u128, Option<Grade>)], hashes: &[u64], o: &Opts) {
     let t = tally(cases, done);
     println!();
@@ -2993,6 +3037,9 @@ fn summary(cases: &[Case], done: &[(usize, u128, Option<Grade>)], hashes: &[u64]
     println!("  on target     {}", pct(t.on_target));
     println!("asking          FPR {}  FNR {}", pct(t.fpr), pct(t.fnr));
     println!("facts present   {}", pct(t.facts));
+    if let Some(l) = mermaid_line(done) {
+        println!("mermaid         {l}");
+    }
     if t.refused > 0 {
         println!("refused/cut off {}", t.refused);
     }
@@ -8257,6 +8304,88 @@ esac
             assert!(line.ends_with("  answered, lead missing: tap 2"), "{line}");
             let line = ended(&cases, "xp-held", reply).line();
             assert!(line.ends_with("  held out: lead missing 1, prompt wrong 1"), "{line}");
+        }
+
+        // ------------------------------------------- #1570: whether a flow draws
+
+        /// A stand-in Explain answer: a line, then a fence tagged `tag` per body.
+        fn with_fences(tag: &str, bodies: &[&str]) -> String {
+            let fences = bodies.iter().map(|b| format!("```{tag}\n{b}\n```\n"));
+            format!("It waits.\n\n{}", fences.collect::<Vec<_>>().join("\n"))
+        }
+
+        /// Stand-in Explain answers, each with the word its row wants: a fence of
+        /// another tag is no flow, and of several fences one that fails or drops
+        /// is enough.
+        fn mermaid_replies() -> [(&'static str, String); 7] {
+            let (good, lossy) = ("sequenceDiagram\nA->>B: x", "sequenceDiagram\nA->>B: x\nactivate B");
+            let bad = "sequenceDiagram\nA->>B: x\nfrobnicate A";
+            [
+                ("not_drawn", with_fences("mermaid", &[bad])),
+                ("dropped", with_fences("mermaid", &[lossy])),
+                ("drawn", with_fences("mermaid", &[good])),
+                ("none", "It waits.".to_string()),
+                ("none", with_fences("sh", &[bad])),
+                ("not_drawn", with_fences("mermaid", &[good, lossy, bad])),
+                ("dropped", with_fences("mermaid", &[good, lossy])),
+            ]
+        }
+
+        /// #1570: an Explain row says whether the flow in its answer draws, and a
+        /// write row has no such field.
+        #[test]
+        fn an_explain_row_says_whether_its_mermaid_flow_draws() {
+            let cases = parse_cases(EXPLAIN_QUIET).unwrap();
+            let replies = mermaid_replies();
+            for (want, reply) in &replies {
+                let row = row_of(&ended(&cases, "xp-tune", reply));
+                assert_eq!(row["mermaid"], json!(want), "{reply:?}: {row}");
+            }
+            let write = parse_cases(ONE).unwrap();
+            let row = row_of(&ended(&write, "crash", &replies[2].1));
+            assert_eq!(row.get("mermaid"), None, "{row}");
+        }
+
+        /// #1570: a held-out row keeps `mermaid`, the tune row's word, which
+        /// holds no case text.
+        #[test]
+        fn a_held_out_explain_row_keeps_mermaid() {
+            let cases = parse_cases(EXPLAIN_QUIET).unwrap();
+            for (_, reply) in mermaid_replies() {
+                let tune = row_of(&ended(&cases, "xp-tune", &reply));
+                let held = row_of(&ended(&cases, "xp-held", &reply));
+                assert!(held["mermaid"].is_string(), "{reply:?}: {held}");
+                assert_eq!(held["mermaid"], tune["mermaid"], "{reply:?}: {held}");
+            }
+        }
+
+        /// A stand-in claude whose Explain answer turns on its request's word.
+        const MERMAID_CLAUDE: &str = r#"#!/bin/sh
+[ "$1" = --version ] && { echo 9.9.9; exit 0; }
+case "$(cat)" in
+*zq-bad*) printf 'It waits.\n\n```mermaid\nsequenceDiagram\nA->>B: x\nfrobnicate A\n```\n' ;;
+*zq-drop*) printf 'It waits.\n\n```mermaid\nsequenceDiagram\nA->>B: x\nactivate B\n```\n' ;;
+*zq-drawn*) printf 'It waits.\n\n```mermaid\nsequenceDiagram\nA->>B: x\n```\n' ;;
+*) printf 'It waits.\n' ;;
+esac
+"#;
+
+        /// #1570: a run's summary gives each value's share of the Explain answers.
+        #[test]
+        fn a_run_summary_counts_each_mermaid_value() {
+            let case = |id: &str, word: &str| {
+                format!(
+                    "=== {id}\nkind: menu\nwindow: claude · claude · /home/u\nflow: explain\n\
+                     expect: write\nholdout: yes\n--- request\nwhat now {word}\n"
+                )
+            };
+            let words = ["zq-none", "zq-drawn", "zq-drop", "zq-bad", "zq-drop"];
+            let cases: String = words.iter().enumerate().map(|(i, w)| case(&format!("xp-mm{i}"), w)).collect();
+            let (code, out, err, rows) = rig_run_with("xp-mermaid", &cases, MERMAID_CLAUDE, &[]);
+            assert_eq!(code, Some(0), "{out}{err}");
+            let want = "\nmermaid         none 20% (1/5)  drawn 20% (1/5)  dropped 40% (2/5)  not_drawn 20% (1/5)\n";
+            assert!(out.contains(want), "{out}");
+            assert_eq!(row_by_id(&rows, "xp-mm3")["mermaid"], json!("not_drawn"), "{rows}");
         }
     }
 
