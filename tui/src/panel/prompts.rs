@@ -81,9 +81,12 @@ pub fn write_explore_noted(ctx: &Ctx) -> (String, Option<String>, String) {
     (format!("{write}\n\n{}", render(&explore, None)), note, hash)
 }
 
-pub fn explain_noted() -> (String, Option<String>) {
+/// The Explain prompt, a note when its override could not be read, and
+/// [`files_hash`] of the template this call read (#711, #1405).
+pub fn explain_noted() -> (String, Option<String>, String) {
     let (t, note) = load("explain", EXPLAIN);
-    (render(&t, None), note)
+    let hash = files_hash(&[&t]);
+    (render(&t, None), note, hash)
 }
 
 pub fn fix_noted() -> (String, Option<String>) {

@@ -44,6 +44,10 @@
 //! temp copy of `evals/panel/fixtures/<fixture>` as the pane's folder, through
 //! the panel's explore-first call; `--no-explore` runs it as a text call instead.
 //!
+//! A case with `flow: explain` (#1405) is the panel's Explain: its request is the
+//! user's question, sent as Explain sends it, and its reply is read by Explain's
+//! parser. `--judge` and `--router-prompt` refuse a run that holds one.
+//!
 //! Each call is hermetic by default (#598): `claude --setting-sources ""`, so
 //! no user, project or local settings load, and with them no CLAUDE.md, no
 //! plugin hooks and no user skills; and a fresh temp dir per call as its cwd.
@@ -54,7 +58,7 @@
 //! `environment` line says which, with the claude version and the HOME and XDG
 //! variables.
 use cockpit_tui::data::workdir::{Source, WorkDir};
-use cockpit_tui::panel::app::{App, View};
+use cockpit_tui::panel::app::{App, InputKind, View};
 use cockpit_tui::panel::capture::Capture;
 use cockpit_tui::panel::envelope::{Flow, OutType, Role, Turn};
 use cockpit_tui::panel::parse::{self, Reply, files_read, tool_calls};
@@ -98,6 +102,14 @@ impl Expect {
     }
 }
 
+/// The panel flow a case runs through (#1405): a write from the Compose box, or
+/// Explain's question.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CaseFlow {
+    Write,
+    Explain,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 struct Case {
     id: String,
@@ -135,6 +147,15 @@ struct Case {
     /// The prompt basket (#365 child 5): paths from the pane's folder and their
     /// lines, `None` for a whole file; a leading `../` is a file outside it.
     refs: Vec<CaseRef>,
+    /// `flow:`, a write unless it says explain (#1405).
+    flow: CaseFlow,
+    /// For an Explain answer: each of these is in its first paragraph.
+    lead: Vec<String>,
+    /// For an Explain answer: whether it ends with a `<prompt>` for the agent;
+    /// `None` takes either.
+    agent_prompt: Option<bool>,
+    /// `--- agent`: the board's facts on an Explain case's Claude Code agent.
+    agent: Option<cockpit_tui::data::AgentFacts>,
 }
 
 /// One `--- refs` line: a path from the pane's folder, and its lines.
@@ -156,9 +177,10 @@ fn out_type(s: &str) -> Option<OutType> {
 /// The keys a case's header lines may give, and the only ones [`parse_some`] reads.
 // Wrapped by hand to stay under 100 columns, as refs.rs does.
 #[rustfmt::skip]
-const KEYS: [&str; 11] = [
+const KEYS: [&str; 14] = [
     "kind", "window", "out", "out_is", "expect", "ask_any",
     "must", "must_not", "holdout", "explore", "note",
+    "flow", "lead", "agent_prompt",
 ];
 
 fn list(v: &str) -> Vec<String> {
@@ -276,6 +298,10 @@ fn parse_some(text: &str, quiet: bool) -> Result<Vec<Case>, String> {
             turns: vec![],
             explore: None,
             refs: vec![],
+            flow: CaseFlow::Write,
+            lead: vec![],
+            agent_prompt: None,
+            agent: None,
         };
         let mut expect = None;
         let mut seen: Vec<String> = vec![];
@@ -337,6 +363,21 @@ fn parse_some(text: &str, quiet: bool) -> Result<Vec<Case>, String> {
                     }
                     c.explore = Some(v.into())
                 }
+                "flow" => {
+                    c.flow = match v {
+                        "write" => CaseFlow::Write,
+                        "explain" => CaseFlow::Explain,
+                        _ => return Err(broke(at, "flow is write or explain")),
+                    }
+                }
+                "lead" => c.lead = list(v),
+                "agent_prompt" => {
+                    c.agent_prompt = Some(match v {
+                        "yes" => true,
+                        "no" => false,
+                        _ => return Err(broke(at, "agent_prompt is yes or no")),
+                    })
+                }
                 "note" => {}
                 k => unreachable!("KEYS lists {k}, which parse_some does not read"),
             }
@@ -388,6 +429,11 @@ fn parse_some(text: &str, quiet: bool) -> Result<Vec<Case>, String> {
                     let rule = "refs are path, path:a or path:a-b lines";
                     c.refs = case_refs(&text).map_err(|m| say(at, rule, m))?
                 }
+                "agent" => {
+                    dup(c.agent.is_some())?;
+                    let rule = "agent is state, model, doing and asked lines";
+                    c.agent = Some(agent_facts(&text).map_err(|m| say(at, rule, m))?)
+                }
                 x => return Err(say(at, "unknown section", format!("unknown section {x}"))),
             }
         }
@@ -405,6 +451,35 @@ fn parse_some(text: &str, quiet: bool) -> Result<Vec<Case>, String> {
         }
         if c.expect == Expect::Write && !c.ask_any.is_empty() {
             return Err(broke(0, "ask_any is for ask cases"));
+        }
+        // what one flow sends or grades, the other has no use for (#1405)
+        let given = |k: &str| seen.iter().any(|s| s == k);
+        let write_only = [
+            ("out", given("out")),
+            ("out_is", given("out_is")),
+            ("explore", given("explore")),
+            ("repo", !c.repo.is_empty()),
+            ("refs", !c.refs.is_empty()),
+            ("conversation", !c.turns.is_empty()),
+        ];
+        let explain_only = [
+            ("lead", given("lead")),
+            ("agent_prompt", given("agent_prompt")),
+            ("agent", c.agent.is_some()),
+        ];
+        let (other, only) = match c.flow {
+            CaseFlow::Explain => ("write", &write_only[..]),
+            CaseFlow::Write => ("explain", &explain_only[..]),
+        };
+        if let Some((name, _)) = only.iter().find(|(_, on)| *on) {
+            return Err(broke(0, &format!("{name} is for {other} cases")));
+        }
+        if c.expect == Expect::Ask && (given("lead") || given("agent_prompt")) {
+            return Err(broke(0, "lead and agent_prompt are for write or either cases"));
+        }
+        // the board has facts on a Claude Code agent only, as the rig's capture says
+        if c.agent.is_some() && !cockpit_tui::data::agentid::claude_cmd(&c.cmd) {
+            return Err(broke(0, "agent is for a claude window"));
         }
         if cases.iter().any(|o: &Case| o.id == c.id) {
             return Err(broke(0, "duplicate id"));
@@ -556,8 +631,13 @@ fn check_line(cases: &[Case], from: &[(PathBuf, usize)]) -> String {
     let count = |e: Expect| cases.iter().filter(|c| c.expect == e).count();
     let held = cases.iter().filter(|c| c.holdout).count();
     let files: Vec<String> = from.iter().map(|(p, n)| format!("{} ({n})", p.display())).collect();
+    // a run with no Explain case (#1405) prints the line it always did
+    let explain = match cases.iter().filter(|c| c.flow == CaseFlow::Explain).count() {
+        0 => String::new(),
+        n => format!("; {n} explain"),
+    };
     format!(
-        "{} cases ({} ask, {} write, {} either; {held} holdout) from {}",
+        "{} cases ({} ask, {} write, {} either; {held} holdout{explain}) from {}",
         cases.len(),
         count(Expect::Ask),
         count(Expect::Write),
@@ -614,6 +694,35 @@ fn case_refs(text: &str) -> Result<Vec<CaseRef>, String> {
         return Err("empty refs".into());
     }
     Ok(out)
+}
+
+/// `state:`, `model:`, `doing:` and `asked:` lines, each at most once: the board's
+/// facts on an Explain case's agent (#1405), its state one the board writes
+/// ([`State`](cockpit_tui::data::State)).
+fn agent_facts(text: &str) -> Result<cockpit_tui::data::AgentFacts, String> {
+    use cockpit_tui::data::State;
+    let mut f = cockpit_tui::data::AgentFacts::default();
+    let mut seen: Vec<&str> = vec![];
+    for line in text.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        let (k, v) = line.split_once(':').ok_or_else(|| format!("not key: value (got {line})"))?;
+        let (k, v) = (k.trim(), v.trim());
+        if seen.contains(&k) {
+            return Err(format!("{k} given twice"));
+        }
+        seen.push(k);
+        match k {
+            "state" if State::from(v) == State::Unknown => return Err(format!("state is a word the board writes (got {v})")),
+            "state" => f.state = v.into(),
+            "model" => f.model = v.into(),
+            "doing" => f.doing = v.into(),
+            "asked" => f.asked = v.into(),
+            _ => return Err(format!("unknown agent line {k}")),
+        }
+    }
+    if seen.is_empty() {
+        return Err("empty agent".into());
+    }
+    Ok(f)
 }
 
 /// The comments that head the next case trail the last body: a `#` block that a
@@ -741,10 +850,21 @@ fn negated(before: &str) -> bool {
     words[from..].iter().any(|w| single.contains(&w.as_str())) || words[from.saturating_sub(1)..].windows(2).any(|p| pair(&p[0], &p[1]))
 }
 
-/// What the panel shows for a reply, the text a `must` is looked for in; `None`
-/// for a reply the panel refuses (a file edit) or that was cut off.
-fn shown(raw: &str, out: OutType) -> Option<String> {
-    let p = parse::write(raw, out);
+/// The reply as the panel reads it for case `c`'s flow (`App::reply`): the write
+/// parser with its cut-off tag, or Explain's, which the panel never calls cut off.
+fn parsed(c: &Case, raw: &str) -> parse::Parsed {
+    match c.flow {
+        CaseFlow::Write => parse::write(raw, c.out),
+        CaseFlow::Explain => parse::Parsed {
+            reply: parse::explain(raw),
+            cut_off: None,
+        },
+    }
+}
+
+/// What the panel shows for a parsed reply, the text a `must` is looked for in;
+/// `None` for a reply the panel refuses (a file edit) or that was cut off.
+fn shown(p: parse::Parsed) -> Option<String> {
     if p.cut_off.is_some() {
         return None;
     }
@@ -774,6 +894,20 @@ fn shown(raw: &str, out: OutType) -> Option<String> {
 fn shown_question(text: &str, options: &[parse::Opt]) -> String {
     let o: Vec<&str> = options.iter().map(|o| o.label.as_str()).collect();
     format!("{text}\n{}", o.join("\n"))
+}
+
+/// An Explain answer's first paragraph, where its `lead` goes (#1405): the text up
+/// to its first line of blanks only, the `<prompt>` already split out.
+fn first_paragraph(answer: &str) -> &str {
+    let answer = answer.trim_start();
+    let mut at = 0;
+    for line in answer.split_inclusive('\n') {
+        if line.trim().is_empty() {
+            break;
+        }
+        at += line.len();
+    }
+    &answer[..at]
 }
 
 /// A question as a row records it: `text [a | b]`, or the text alone.
@@ -828,13 +962,20 @@ struct Grade {
     forbidden: Vec<String>,
     /// A reply the panel refuses or that was cut off: it fails every case.
     refused: bool,
+    /// For an Explain answer (#1405): the `lead` terms its first paragraph lacks.
+    lead_missing: Vec<String>,
+    /// For an Explain answer: whether it ends with a `<prompt>` for the agent.
+    ready: Option<bool>,
+    /// For an Explain answer: `ready` is not what the case's `agent_prompt` says.
+    ready_wrong: bool,
     pass: bool,
 }
 
 fn grade(c: &Case, raw: &str) -> Grade {
-    let reply = parse::write(raw, c.out).reply;
+    let p = parsed(c, raw);
+    let reply = p.reply.clone();
     let mut g = Grade::default();
-    let Some(text) = shown(raw, c.out) else {
+    let Some(text) = shown(p) else {
         g.refused = true;
         return g;
     };
@@ -860,10 +1001,17 @@ fn grade(c: &Case, raw: &str) -> Grade {
     if !g.asked {
         g.missing = c.must.iter().filter(|m| !has(&text, m)).cloned().collect();
     }
+    if let Reply::Answer { text: answer, ready } = &reply {
+        let first = first_paragraph(answer);
+        g.lead_missing = c.lead.iter().filter(|m| !has(first, m)).cloned().collect();
+        g.ready = Some(ready.is_some());
+        g.ready_wrong = c.agent_prompt.is_some_and(|want| want != ready.is_some());
+    }
     g.wrong_type = c.out_is.and_then(|want| reply_type(&reply).filter(|t| *t != out_name(want)));
     g.forbidden = c.must_not.iter().filter(|m| has_unnegated(&text, m)).cloned().collect();
     let asked_well = g.asked && g.on_target;
-    let wrote_well = !g.asked && g.missing.is_empty() && g.wrong_type.is_none();
+    let answered = g.lead_missing.is_empty() && !g.ready_wrong;
+    let wrote_well = !g.asked && g.missing.is_empty() && g.wrong_type.is_none() && answered;
     g.pass = g.forbidden.is_empty()
         && match c.expect {
             Expect::Ask => asked_well,
@@ -1196,7 +1344,7 @@ fn show_case<T>(held: bool, full: impl FnOnce() -> T, blind: impl FnOnce() -> T)
 /// The `--out` fields a held-out case's row keeps (#792): none holds its
 /// phrases. Every other field, one added later included, is null on that row:
 /// the reply holds a passing case's must phrases, and the reads its searches.
-const HELD_FIELDS: [&str; 26] = [
+const HELD_FIELDS: [&str; 30] = [
     "id",
     "expect",
     "run",
@@ -1225,6 +1373,11 @@ const HELD_FIELDS: [&str; 26] = [
     // #789: a router reply's label is one of three fixed words, ask, write or
     // other ([`router_label`]), never the reply's text, so it holds no phrase
     "label",
+    // #1405: an Explain row's flow is the word explain, and the rest a bool or a count
+    "flow",
+    "ready",
+    "ready_wrong",
+    "lead_missing_n",
 ];
 
 /// Why a `--show-holdout` run refuses to start, and the fix.
@@ -1254,6 +1407,7 @@ fn blind_row(mut row: serde_json::Value) -> serde_json::Value {
         ("missing", "missing_n"),
         ("forbidden", "forbidden_n"),
         ("files_read", "files_read_n"),
+        ("lead_missing", "lead_missing_n"),
     ];
     for (list, n) in lists {
         if let Some(l) = m.get(list).and_then(|l| l.as_array()) {
@@ -1344,7 +1498,12 @@ impl Ended<'_> {
             (None, Some(g)) => g,
             _ => return format!("held out: {}", self.class),
         };
-        let n = [("has", g.forbidden.len()), ("missing", g.missing.len())];
+        let n = [
+            ("has", g.forbidden.len()),
+            ("missing", g.missing.len()),
+            ("lead missing", g.lead_missing.len()),
+            ("prompt wrong", usize::from(g.ready_wrong)),
+        ];
         let n = n.iter().filter(|(_, k)| *k > 0).map(|(w, k)| format!("{w} {k}"));
         let n = n.collect::<Vec<_>>().join(", ");
         match n.is_empty() {
@@ -1356,6 +1515,7 @@ impl Ended<'_> {
     /// What a tune case's line says went wrong, its phrases included.
     fn what(&self) -> String {
         let (c, g) = (self.case, &self.grade);
+        let did = if c.flow == CaseFlow::Explain { "answered" } else { "wrote" };
         match (&self.err, g) {
             (Some(e), _) => e.clone(),
             (_, Some(g)) if g.refused => "refused by the panel (a file edit) or cut off".into(),
@@ -1365,8 +1525,11 @@ impl Ended<'_> {
                 let want = c.out_is.map_or("", out_name);
                 format!("wrote a {}, want {want}", g.wrong_type.unwrap_or(""))
             }
-            (_, Some(g)) if !g.missing.is_empty() => format!("wrote, missing: {}", g.missing.join("; ")),
-            _ => "wrote".into(),
+            (_, Some(g)) if !g.missing.is_empty() => format!("{did}, missing: {}", g.missing.join("; ")),
+            (_, Some(g)) if !g.lead_missing.is_empty() => format!("{did}, lead missing: {}", g.lead_missing.join("; ")),
+            (_, Some(g)) if g.ready_wrong && g.ready == Some(true) => format!("{did} with a <prompt> for the agent, want none"),
+            (_, Some(g)) if g.ready_wrong => format!("{did} with no <prompt> for the agent, want one"),
+            _ => did.into(),
         }
     }
 
@@ -1402,6 +1565,13 @@ impl Ended<'_> {
         // a failed call has no reply to label
         if self.router {
             row["label"] = self.err.as_ref().map_or(router_label(self.reply), |_| "other").into();
+        }
+        // only an Explain row says its flow: a write row stays as it was (#1405)
+        if c.flow == CaseFlow::Explain {
+            row["flow"] = "explain".into();
+            row["ready"] = g.and_then(|g| g.ready).into();
+            row["ready_wrong"] = g.map(|g| g.ready_wrong).into();
+            row["lead_missing"] = g.map(|g| g.lead_missing.clone()).into();
         }
         row
     }
@@ -1460,6 +1630,16 @@ fn main() {
     run(&o, std::env::current_exe());
 }
 
+/// Why a run with an Explain case cannot start (#1405): the judge's rubric grades
+/// write replies, and `--router-prompt`'s text replaces the write prompt. `None`
+/// when neither flag is given or no case is an Explain.
+fn explain_refusal(o: &Opts, cases: &[Case]) -> Option<String> {
+    let flags = [("--judge", o.judge), ("--router-prompt", o.router.is_some())];
+    let (flag, _) = flags.into_iter().find(|(_, on)| *on)?;
+    let explain = cases.iter().any(|c| c.flow == CaseFlow::Explain);
+    explain.then(|| format!("{flag} is for write cases, and this run has explain cases"))
+}
+
 /// A run of the cases `o` names: each call, its line and row, the summary.
 /// `me` is the rig's own binary, which wraps each call to read its cost.
 fn run(o: &Opts, me: std::io::Result<PathBuf>) {
@@ -1472,6 +1652,10 @@ fn run(o: &Opts, me: std::io::Result<PathBuf>) {
     if o.show_holdout && !one {
         let n = cases.len();
         eprintln!("panel_eval: {SHOW_ONE}; {n} matched");
+        std::process::exit(2);
+    }
+    if let Some(e) = explain_refusal(o, &cases) {
+        eprintln!("panel_eval: {e}");
         std::process::exit(2);
     }
     println!("{}", check_line(&cases, &from));
@@ -1545,20 +1729,17 @@ fn run(o: &Opts, me: std::io::Result<PathBuf>) {
             let path = pane_path(c, staged.0.as_deref());
             let explore = c.explore.is_some() && !o.no_explore;
             // per job, from the call's own read: an override edited mid-run shows in the rows
-            let (system, prompt, profile, prompt_files) = panel_call(c, &path, explore, o.work_source);
+            let (system, prompt, profile, prompt_files, flow) = panel_call(c, &path, explore, o.work_source);
             let (system, prompt_files) = routed(o.router.as_ref(), system, prompt_files);
             if !prompt_sets.contains(&prompt_files) {
                 prompt_sets.push(prompt_files.clone());
             }
-            let flow = Flow::Write {
-                draft: c.request.clone(),
-                out: c.out,
-            };
             let h = fnv(&system);
             if !hashes.contains(&h) {
                 hashes.push(h);
             }
-            // --model takes any name, so the route is the rig's, not the App's four
+            // --model takes any name, so the route is the rig's, not the App's four;
+            // the flow is the App's own (#1405)
             let model = route(&flow, &o.model).model;
             let call = call_in(&call, cwds.0.as_deref(), ci, run).unwrap_or_else(|e| {
                 eprintln!("panel_eval: {e}");
@@ -1978,11 +2159,12 @@ impl std::fmt::Display for Fingerprint {
     }
 }
 
-/// The system prompt, the user prompt and the profile the panel itself sends for
-/// case `c` on `path`: an App in Compose, its ^S, then its own picks. The work
-/// folder is `path`, from `source` (#1387): the envelope marks it not confirmed
-/// on an agent's window when `source` is a guess.
-fn panel_call(c: &Case, path: &str, explore: bool, source: Source) -> (String, String, Profile, String) {
+/// The system prompt, the user prompt, the profile, the prompt hash and the flow
+/// the panel itself sends for case `c` on `path`: for a write an App in Compose and
+/// its ^S, for an Explain (#1405) the question box Explain opens and its Enter, then
+/// the App's own picks. The work folder is `path`, from `source` (#1387): the
+/// envelope marks it not confirmed on an agent's window when `source` is a guess.
+fn panel_call(c: &Case, path: &str, explore: bool, source: Source) -> (String, String, Profile, String, Flow) {
     let cap = Capture {
         name: c.name.clone(),
         cmd: c.cmd.clone(),
@@ -1994,7 +2176,7 @@ fn panel_call(c: &Case, path: &str, explore: bool, source: Source) -> (String, S
         },
         screen: c.screen.clone(),
         repo: c.repo.as_str().into(),
-        agent: cockpit_tui::data::agentid::claude_cmd(&c.cmd).then(Default::default),
+        agent: cockpit_tui::data::agentid::claude_cmd(&c.cmd).then(|| c.agent.clone().unwrap_or_default()),
         label: None,
     };
     let mut a = App::new("%0", cap);
@@ -2010,16 +2192,38 @@ fn panel_call(c: &Case, path: &str, explore: bool, source: Source) -> (String, S
             }
         }
     }
-    (a.draft, a.cur) = (c.request.clone(), c.request.len());
-    a.key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
-    if let Some(r) = a.run.as_mut() {
-        // each question the panel asked used one of its rounds
-        r.rounds = c.turns.iter().filter(|t| t.role == Role::Assistant).count();
-        r.turns = c.turns.clone();
+    match c.flow {
+        CaseFlow::Write => {
+            (a.draft, a.cur) = (c.request.clone(), c.request.len());
+            a.key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
+            if let Some(r) = a.run.as_mut() {
+                // each question the panel asked used one of its rounds
+                r.rounds = c.turns.iter().filter(|t| t.role == Role::Assistant).count();
+                r.turns = c.turns.clone();
+            }
+        }
+        CaseFlow::Explain => {
+            // the box Explain's own question opens, back to the questions on esc
+            let (text, cur, back) = (c.request.clone(), c.request.len(), Box::new(View::ExplainAsk { sel: 0 }));
+            a.view = View::Input {
+                kind: InputKind::Explain,
+                text,
+                cur,
+                back,
+            };
+            a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        }
     }
-    let ((system, prompt, _), hash) = a.request_hashed().expect("^S on a draft starts a write");
-    let profile = a.run.as_ref().map_or(Profile::TEXT, |r| a.profile_for(&r.flow));
-    (system, prompt, profile, hash.expect("a write's call carries its prompt hash"))
+    let ((system, prompt, _), hash) = a.request_hashed().expect("the case's key starts a call");
+    let flow = a.run.as_ref().expect("a call runs a flow").flow.clone();
+    let profile = a.profile_for(&flow);
+    (
+        system,
+        prompt,
+        profile,
+        hash.expect("a write's or an Explain's call carries its prompt hash"),
+        flow,
+    )
 }
 
 /// The fixtures the `explore:` cases name, copied to a fresh temp dir of the
@@ -3712,10 +3916,10 @@ mod tests {
             draft: c.request.clone(),
             out: c.out,
         };
-        let (system, prompt, profile, _) = panel_call(c, "/r", false, Source::Session);
+        let (system, prompt, profile, ..) = panel_call(c, "/r", false, Source::Session);
         assert_eq!((system, profile), (prompts::write(&ctx), Profile::TEXT));
         assert_eq!(prompt, build(&flow, &cap, &[], 3));
-        let (system, _, profile, _) = panel_call(c, "/r", true, Source::Session);
+        let (system, _, profile, ..) = panel_call(c, "/r", true, Source::Session);
         assert_eq!(system, prompts::write_explore(&ctx));
         assert_eq!(profile, Profile::read_only("/r".into(), false, EXPLORE_BUDGET_USD, EXPLORE_TIMEOUT));
     }
@@ -3744,8 +3948,8 @@ mod tests {
     fn a_pane_cwd_source_marks_only_an_agent_windows_work_folder() {
         pinned_config();
         let agent = &parse_cases(&ONE.replace("bash · bash", "claude · claude")).unwrap()[0];
-        let (system, plain, profile, hash) = panel_call(agent, "/r", false, Source::Session);
-        let (s, marked, p, h) = panel_call(agent, "/r", false, Source::PaneCwd);
+        let (system, plain, profile, hash, ..) = panel_call(agent, "/r", false, Source::Session);
+        let (s, marked, p, h, ..) = panel_call(agent, "/r", false, Source::PaneCwd);
         assert!(plain.contains("<window>claude · claude · /r</window>"), "{plain}");
         let mark = " · work folder not confirmed (pane-cwd)";
         assert!(marked.contains(&format!("<window>claude · claude · /r{mark}</window>")), "{marked}");
@@ -3755,6 +3959,219 @@ mod tests {
         assert_eq!(
             panel_call(shell, "/r", false, Source::PaneCwd),
             panel_call(shell, "/r", false, Source::Session)
+        );
+    }
+
+    // ------------------------------------------- #1405: Explain cases
+
+    /// An Explain case on a Claude Code window, with the board's facts on its agent.
+    const EXPLAIN: &str = "=== xp-menu\nkind: menu\nwindow: claude · claude · /home/u\nflow: explain\n\
+                           expect: write\nlead: tap 2\nagent_prompt: no\nmust: kq-file\n\
+                           --- screen\nEdit kq-file?\n❯ 1. Yes\n  2. No\n\
+                           --- agent\nstate: needs-input\nmodel: zm-model\ndoing: zd-doing\nasked: za-asked\n\
+                           --- request\nWhat should happen next?\n";
+
+    /// The `--- agent` lines of [`EXPLAIN`].
+    const AGENT_LINES: &str = "state: needs-input\nmodel: zm-model\ndoing: zd-doing\nasked: za-asked\n";
+
+    #[test]
+    fn reads_an_explain_case() {
+        pinned_config();
+        let c = &parse_cases(EXPLAIN).unwrap()[0];
+        let got = (c.id.as_str(), c.cmd.as_str(), c.request.as_str());
+        assert_eq!(got, ("xp-menu", "claude", "What should happen next?"));
+        assert_eq!(c.must, ["kq-file"]);
+        assert_eq!(c.expect, Expect::Write);
+        // the board's facts reach the envelope's <agent> part
+        let prompt = panel_call(c, "/r", false, Source::Session).1;
+        let agent = "<agent state=\"needs-input\" model=\"zm-model\">\ndoing: zd-doing\nasked: za-asked\n\
+                     work folder: /r (session)\n</agent>";
+        assert!(prompt.contains(agent), "{prompt}");
+    }
+
+    #[test]
+    fn refuses_write_keys_on_an_explain_case_and_explain_keys_on_a_write_case() {
+        let before = |at: &str, add: &str| EXPLAIN.replacen(at, &format!("{add}\n{at}"), 1);
+        for (key, name) in [
+            ("out: prompt", "out"),
+            ("out_is: prompt", "out_is"),
+            ("explore: invoicer", "explore"),
+        ] {
+            let e = parse_cases(&before("expect: write", key)).unwrap_err();
+            assert_eq!(e, format!("case xp-menu: {name} is for write cases"));
+        }
+        let sections = [
+            ("--- repo\nmain", "repo"),
+            ("--- refs\na.rs", "refs"),
+            ("--- conversation\nuser: hi", "conversation"),
+        ];
+        for (section, name) in sections {
+            let e = parse_cases(&before("--- request", section)).unwrap_err();
+            assert_eq!(e, format!("case xp-menu: {name} is for write cases"));
+        }
+        for (key, name) in [("lead: x", "lead"), ("agent_prompt: yes", "agent_prompt")] {
+            let e = parse_cases(&ONE.replace("expect: write", &format!("expect: write\n{key}"))).unwrap_err();
+            assert_eq!(e, format!("case crash: {name} is for explain cases"));
+        }
+        let agent = ONE
+            .replace("bash · bash", "claude · claude")
+            .replace("--- request", "--- agent\nstate: done\n--- request");
+        assert_eq!(parse_cases(&agent).unwrap_err(), "case crash: agent is for explain cases");
+        let ask = EXPLAIN.replace("expect: write", "expect: ask").replace("must: kq-file\n", "");
+        let e = parse_cases(&ask).unwrap_err();
+        assert_eq!(e, "case xp-menu: lead and agent_prompt are for write or either cases");
+        let e = parse_cases(&EXPLAIN.replace("flow: explain", "flow: fix")).unwrap_err();
+        assert_eq!(e, "case xp-menu: flow is write or explain");
+    }
+
+    #[test]
+    fn refuses_a_bad_agent_section() {
+        let agent = |lines: &str| EXPLAIN.replace(AGENT_LINES, lines);
+        let rows = [
+            ("state: sleeping\n", "state is a word the board writes (got sleeping)"),
+            ("model: a\nmodel: b\n", "model given twice"),
+            ("mood: calm\n", "unknown agent line mood"),
+            ("just text\n", "not key: value (got just text)"),
+            ("\n", "empty agent"),
+        ];
+        for (lines, why) in rows {
+            let e = parse_cases(&agent(lines)).unwrap_err();
+            assert_eq!(e, format!("case xp-menu: {why}"), "{lines:?}");
+        }
+        let shell = EXPLAIN.replace("claude · claude", "bash · bash");
+        assert_eq!(parse_cases(&shell).unwrap_err(), "case xp-menu: agent is for a claude window");
+        for state in ["needs-input", "error", "running", "done"] {
+            assert!(parse_cases(&agent(&format!("state: {state}\n"))).is_ok(), "{state}");
+        }
+    }
+
+    /// The rig sends what the panel's own Explain sends: its prompt, the envelope with
+    /// the question as the one user turn and six questions left, and no tools.
+    #[test]
+    fn the_rig_sends_the_panels_own_explain_call() {
+        pinned_config();
+        use cockpit_tui::data::AgentFacts;
+        use cockpit_tui::panel::envelope::build;
+        let c = &parse_cases(EXPLAIN).unwrap()[0];
+        let facts = AgentFacts {
+            state: "needs-input".into(),
+            doing: "zd-doing".into(),
+            asked: "za-asked".into(),
+            model: "zm-model".into(),
+        };
+        let cap = Capture {
+            name: c.name.clone(),
+            cmd: c.cmd.clone(),
+            path: "/r".into(),
+            work: WorkDir {
+                dir: "/r".into(),
+                source: Source::Session,
+                ..Default::default()
+            },
+            screen: c.screen.clone(),
+            agent: Some(facts),
+            ..Default::default()
+        };
+        let turn = Turn {
+            role: Role::User,
+            text: c.request.clone(),
+        };
+        let (system, prompt, profile, ..) = panel_call(c, "/r", false, Source::Session);
+        assert_eq!((system, profile), (prompts::explain(), Profile::TEXT));
+        assert_eq!(prompt, build(&Flow::Explain, &cap, &[turn], 6));
+    }
+
+    /// #711 for Explain: the row's prompt hash is the template the call itself read.
+    #[test]
+    fn the_explain_rows_prompt_hash_is_the_calls_own() {
+        pinned_config();
+        let c = &parse_cases(EXPLAIN).unwrap()[0];
+        let template = prompts::load("explain", prompts::EXPLAIN).0;
+        assert_eq!(
+            panel_call(c, "/r", false, Source::Session).3,
+            prompts::files_hash(&[template.as_str()])
+        );
+    }
+
+    /// The panel shows an Explain answer with its `<prompt>` apart: the write parser
+    /// would read only the prompt, which lacks the must term.
+    #[test]
+    fn grades_an_explain_answer_with_the_explain_parser() {
+        let c = parse_cases(&EXPLAIN.replace("agent_prompt: no", "agent_prompt: yes"))
+            .unwrap()
+            .remove(0);
+        let g = grade(&c, "Tap 2: kq-file stays as it is.\n<prompt>Leave it alone.</prompt>");
+        assert!(g.pass && !g.asked, "{g:?}");
+    }
+
+    #[test]
+    fn the_lead_is_read_in_the_first_paragraph_only() {
+        let c = parse_cases(EXPLAIN).unwrap().remove(0);
+        let first = grade(&c, "Tap 2 to keep kq-file.\n\nIt asks before an edit.");
+        assert!(first.pass, "{first:?}");
+        let later = grade(&c, "It asks before an edit of kq-file.\n\nTap 2 to keep it.");
+        assert!(!later.pass, "{later:?}");
+        // the paragraph runs to its first blank line, one of spaces included
+        let wrapped = grade(&c, "It asks before an edit of kq-file;\ntap 2 to keep it.\n  \nMore.");
+        assert!(wrapped.pass, "{wrapped:?}");
+    }
+
+    #[test]
+    fn agent_prompt_yes_needs_a_prompt_and_no_forbids_one() {
+        let with = "Tap 2 to keep kq-file.\n<prompt>Keep kq-file.</prompt>";
+        let without = "Tap 2 to keep kq-file.";
+        for (want, reply, pass) in [
+            ("no", without, true),
+            ("no", with, false),
+            ("yes", with, true),
+            ("yes", without, false),
+        ] {
+            let c = parse_cases(&EXPLAIN.replace("agent_prompt: no", &format!("agent_prompt: {want}")))
+                .unwrap()
+                .remove(0);
+            assert_eq!(grade(&c, reply).pass, pass, "agent_prompt: {want}, {reply:?}");
+        }
+        let either = parse_cases(&EXPLAIN.replace("agent_prompt: no\n", "")).unwrap().remove(0);
+        assert!(grade(&either, with).pass && grade(&either, without).pass);
+        let e = parse_cases(&EXPLAIN.replace("agent_prompt: no", "agent_prompt: maybe")).unwrap_err();
+        assert_eq!(e, "case xp-menu: agent_prompt is yes or no");
+    }
+
+    #[test]
+    fn an_explain_ask_case_passes_on_a_question_on_target() {
+        let keys = "expect: write\nlead: tap 2\nagent_prompt: no\nmust: kq-file";
+        let c = parse_cases(&EXPLAIN.replace(keys, "expect: ask\nask_any: which edit"))
+            .unwrap()
+            .remove(0);
+        let q = "<question>Which edit do you mean?</question>\n<option>The first</option>\n<option>The second</option>";
+        assert!(grade(&c, q).pass);
+        assert!(!grade(&c, "Tap 2 to keep kq-file.").pass);
+    }
+
+    /// #1387 for Explain (#1405): the work folder's source shows on the `<agent>` line.
+    #[test]
+    fn a_pane_cwd_source_reaches_an_explain_agents_work_folder() {
+        pinned_config();
+        let c = &parse_cases(EXPLAIN).unwrap()[0];
+        let session = panel_call(c, "/r", false, Source::Session).1;
+        let guess = panel_call(c, "/r", false, Source::PaneCwd).1;
+        assert!(session.contains("work folder: /r (session)\n</agent>"), "{session}");
+        assert_eq!(
+            guess,
+            session.replacen("work folder: /r (session)", "work folder: /r (pane-cwd)", 1)
+        );
+    }
+
+    #[test]
+    fn check_names_explain_cases_only_when_there_are_some() {
+        let from = [(PathBuf::from("c.txt"), 2)];
+        let both = parse_cases(&format!("{ONE}{EXPLAIN}")).unwrap();
+        let want = "2 cases (0 ask, 2 write, 0 either; 0 holdout; 1 explain) from c.txt (2)";
+        assert_eq!(check_line(&both, &from), want);
+        let write = parse_cases(ONE).unwrap();
+        assert_eq!(
+            check_line(&write, &from),
+            "1 cases (0 ask, 1 write, 0 either; 0 holdout) from c.txt (2)"
         );
     }
 
@@ -5255,11 +5672,18 @@ mod tests {
             ("holdout", "no"),
             ("explore", "invoicer"),
             ("note", "made-up"),
+            ("flow", "explain"),
+            ("lead", "made-up"),
+            ("agent_prompt", "no"),
         ];
         assert_eq!(rows.map(|r| r.0), KEYS);
         for (k, v) in rows {
             let window = ("window", "bash · bash · /home/u");
             let mut head = vec![("kind", "bug"), window, ("expect", "either")];
+            // an Explain key goes on an Explain case (#1405)
+            if matches!(k, "lead" | "agent_prompt") {
+                head.push(("flow", "explain"));
+            }
             match head.iter_mut().find(|h| h.0 == k) {
                 Some(h) => h.1 = v,
                 None => head.push((k, v)),
@@ -6898,7 +7322,7 @@ esac
             let dir = scratch("quiet-err");
             let cases = parse_cases(QUIET).unwrap();
             let c = cases.iter().find(|c| c.id == "held-q").unwrap();
-            let (system, prompt, profile, _) = panel_call(c, &c.path, false, Source::Session);
+            let (system, prompt, profile, ..) = panel_call(c, &c.path, false, Source::Session);
             let call = Call {
                 claude: fake(&dir.0, ECHOER),
                 ..base_call(&dir.0)
@@ -7701,6 +8125,72 @@ esac
             let mut rows = vec![(row, judge::Input::default())];
             judge_apply(&mut rows, &[0], &[quoting()], "haiku");
             assert_eq!(rows[0].0["critique"], json!("says vi-nail, lacks em-quill"));
+        }
+
+        // ------------------------------------------- #1405: Explain cases
+
+        /// The row of each id in a run's `--out` rows.
+        fn row_by_id(rows: &str, id: &str) -> Value {
+            let mut all = rows.lines().map(|l| serde_json::from_str::<Value>(l).unwrap());
+            all.find(|r| r["id"] == id).unwrap_or_else(|| panic!("no row {id}: {rows}"))
+        }
+
+        /// An Explain case routes as the panel's Explain does, a write as a write,
+        /// and only the Explain row says its flow: a write row is as before.
+        #[test]
+        fn a_rig_run_routes_an_explain_case_to_the_explain_model() {
+            let (code, out, err, rows) = rig_run_on("xp-route", &format!("{ONE}{EXPLAIN}"), &[]);
+            assert_eq!(code, Some(0), "{out}{err}");
+            let (write, explain) = (row_by_id(&rows, "crash"), row_by_id(&rows, "xp-menu"));
+            assert_eq!((&write["model"], &explain["model"]), (&json!("sonnet"), &json!("haiku")));
+            assert_eq!((write.get("flow"), &explain["flow"]), (None, &json!("explain")));
+        }
+
+        /// The judge's rubric grades write replies and the router text replaces the
+        /// write prompt: a run with an Explain case takes neither, before any call.
+        #[test]
+        fn judge_and_router_prompt_refuse_a_run_with_an_explain_case() {
+            let log = scratch("xp-refuse-log");
+            let calls = log.0.join("calls");
+            let script = format!(
+                "#!/bin/sh\necho call >> '{}'\ncat >/dev/null\nprintf 'Tap 2.\\n'\n",
+                calls.display()
+            );
+            let router = log.0.join("router.txt");
+            std::fs::write(&router, ROUTER).unwrap();
+            let router = router.display().to_string();
+            let (judge, routed) = (["--judge"], ["--router-prompt", router.as_str()]);
+            for (name, flags) in [("xp-refuse-judge", &judge[..]), ("xp-refuse-router", &routed[..])] {
+                let (code, out, err, _) = rig_run_with(name, EXPLAIN, &script, flags);
+                assert_eq!(code, Some(2), "{out}{err}");
+                let want = format!("panel_eval: {} is for write cases, and this run has explain cases", flags[0]);
+                assert!(err.contains(&want), "{err}");
+            }
+            assert!(!calls.exists(), "a refused run called claude");
+        }
+
+        /// Made-up Explain cases, one tune and one held out.
+        const EXPLAIN_QUIET: &str = "=== xp-tune\nkind: menu\nwindow: claude · claude · /home/u\nflow: explain\n\
+            expect: write\nlead: tap 2\nagent_prompt: no\n--- request\nwhat next\n\
+            === xp-held\nkind: co-xp\nwindow: claude · claude · /home/u\nflow: explain\n\
+            expect: write\nholdout: yes\nlead: qz-tap\nagent_prompt: no\n--- request\nwhat now\n";
+
+        #[test]
+        fn an_explain_row_carries_flow_and_a_held_out_one_counts_its_lead() {
+            let cases = parse_cases(EXPLAIN_QUIET).unwrap();
+            let reply = "It waits.\n<prompt>Go on.</prompt>";
+            let tune = row_of(&ended(&cases, "xp-tune", reply));
+            let got = (&tune["flow"], &tune["ready"], &tune["ready_wrong"], &tune["lead_missing"]);
+            assert_eq!(got, (&json!("explain"), &json!(true), &json!(true), &json!(["tap 2"])), "{tune}");
+            let held = row_of(&ended(&cases, "xp-held", reply));
+            let got = (&held["flow"], &held["ready"], &held["ready_wrong"], &held["lead_missing"]);
+            assert_eq!(got, (&json!("explain"), &json!(true), &json!(true), &Value::Null), "{held}");
+            assert_eq!(held["lead_missing_n"], json!(1), "{held}");
+            assert!(!held.to_string().contains("qz-tap"), "{held}");
+            let line = ended(&cases, "xp-tune", reply).line();
+            assert!(line.ends_with("  answered, lead missing: tap 2"), "{line}");
+            let line = ended(&cases, "xp-held", reply).line();
+            assert!(line.ends_with("  held out: lead missing 1, prompt wrong 1"), "{line}");
         }
     }
 
