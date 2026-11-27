@@ -212,6 +212,30 @@ fn coded(th: &Theme, text: &str, w: usize, st: Style) -> Vec<Line<'static>> {
     highlight::fenced(text).iter().flat_map(|l| painted(th, l, w, "", st)).collect()
 }
 
+/// An answer's text (#1569): each [`highlight::split`] part that
+/// [`highlight::flow_body`] names a flow is drawn by
+/// [`flow::render`](super::flow::render) at the view's width and in the
+/// theme's tier, its lines already fitted, and the rest goes through
+/// [`coded`]. Only the Answer view calls this: a Result's text is typed into
+/// the pane, so its fence stays as written.
+fn answered(th: &Theme, text: &str, w: usize, st: Style) -> Vec<Line<'static>> {
+    let lines: Vec<&str> = text.split('\n').collect();
+    let mut out = vec![];
+    for part in highlight::split(&lines) {
+        if let Some(body) = highlight::flow_body(&part, &lines) {
+            let drawn = super::flow::render(&body, w, &th.g);
+            out.extend(drawn.into_iter().map(|l| styled(l, st)));
+            continue;
+        }
+        let shown = match part {
+            highlight::Part::Code(f) => f.open..f.close.map_or(lines.len(), |c| c + 1),
+            highlight::Part::Prose(r) => r,
+        };
+        out.extend(coded(th, &lines[shown].join("\n"), w, st));
+    }
+    out
+}
+
 /// A lexed step command, one source line per entry, each under `indent`.
 fn command(th: &Theme, cmd: &str, lang: &str, w: usize, indent: &str, st: Style) -> Vec<Line<'static>> {
     let lines: Vec<&str> = cmd.split('\n').collect();
@@ -841,7 +865,7 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
                 if *you {
                     b.lines.extend(many(&format!("you: {t}"), w, "", label));
                 } else {
-                    b.lines.extend(coded(th, t, w, value));
+                    b.lines.extend(answered(th, t, w, value));
                 }
                 b.lines.push(plain(""));
             }
