@@ -869,24 +869,20 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
                 }
                 b.lines.push(plain(""));
             }
+            let mut hints = vec![];
             if let Some(p) = &r.ready {
                 b.lines.push(styled("prompt for the agent:", heading));
                 b.lines.extend(many(p, w, "  ", Style::new().fg(th.done)));
-                b.footer = pills(&[
-                    ("i", "insert"),
-                    ("s", "send"),
-                    ("f", "follow up"),
-                    (g.key_updown, "scroll"),
-                    help,
-                    ("esc", "home"),
-                ]);
-            } else {
-                b.footer = pills(&[("f", "follow up"), (g.key_updown, "scroll"), help, ("esc", "home")]);
+                hints.extend([("i", "insert"), ("s", "send")]);
             }
-            // an ask's answer can go to the agent as a draft (#365 child 5, flow A)
-            if matches!(r.flow, Flow::Ask(_)) {
-                b.footer.insert(0, ("c".to_string(), "compose".to_string()));
+            hints.push(("f", "follow up"));
+            // the answer can go to the agent as a draft (#365 child 5, #1571), after
+            // the prompt's keys and the follow-up, so a narrow footer keeps those longest
+            if app.answer_drafts() {
+                hints.push(("c", "compose"));
             }
+            hints.extend([(g.key_updown, "scroll"), help, ("esc", "home")]);
+            b.footer = pills(&hints);
             if *armed && app.tablet {
                 // the esc chip becomes keep it in place, so a second tap on home keeps;
                 // n is a key Answer leaves unbound, and discard is up top, away from it
@@ -1156,8 +1152,8 @@ pub fn keys(app: &App, g: &Glyphs) -> Vec<(String, String)> {
                 s("esc q", "twice: drop it, back to home"),
                 s("^C", "close the panel"),
             ];
-            // an ask's answer can go to the agent as a draft (#365 child 5, flow A)
-            if app.run.as_ref().is_some_and(|r| matches!(r.flow, Flow::Ask(_))) {
+            // the answer can go to the agent as a draft (#365 child 5, #1571)
+            if app.answer_drafts() {
                 v.insert(0, s("c", "a draft for the agent: its prompt, or the Q and A"));
             }
             v

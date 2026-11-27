@@ -1052,28 +1052,36 @@ impl App {
         self.view = View::Compose;
     }
 
-    /// The run is the viewer's ask (#365): its answer can become a draft.
-    fn asking(&self) -> bool {
-        self.run.as_ref().is_some_and(|r| matches!(r.flow, Flow::Ask(_)))
+    /// The run's answer can become a draft for the agent: an ask's (#365) or an
+    /// Explain's (#1571), the runs that are a question and its answers. The `c`
+    /// key, its footer chip and its help row all ask this.
+    pub fn answer_drafts(&self) -> bool {
+        self.run.as_ref().is_some_and(|r| r.flow.is_qa())
     }
 
-    /// `c` on an ask's answer (#365 child 5, flow A): Compose with the answer's
-    /// `<prompt>`, or the owner's D8 template, cut to [`PREFILL_MAX`], and the
-    /// ask's lines in the basket, so the send carries them as a ref. Esc there
-    /// is back at the answer, the thread kept (D3).
+    /// `c` on an answer that [`App::answer_drafts`] allows (#365 child 5, flow A;
+    /// #1571): Compose with the answer's `<prompt>`, or the owner's D8 template,
+    /// cut to [`PREFILL_MAX`]. An ask's template opens `About <lines>:` and its
+    /// lines go in the basket, so the send carries them as a ref. An Explain has
+    /// no lines to send. Esc there is back at the answer, the thread kept (D3).
     fn prefill(&mut self, scroll: usize) {
         let Some(r) = self.run.as_ref() else { return };
-        let Flow::Ask(a) = &r.flow else { return };
+        let (about, ask_ref) = match &r.flow {
+            Flow::Ask(a) => (
+                format!("About {}: ", a.at),
+                crate::refs::Ref::new(a.repo.join(&a.path), Some(a.asked), None).ok(),
+            ),
+            _ => (String::new(), None),
+        };
         let text = match &r.ready {
             Some(p) => p.clone(),
             None => {
                 let q = r.log.iter().find(|(you, _)| *you).map_or("", |l| l.1.trim());
                 let last = r.log.iter().rfind(|(you, _)| !you).map_or("", |l| l.1.as_str());
                 let first = last.trim().split("\n\n").next().unwrap_or("").trim();
-                format!("About {}: {q}\n{first}", a.at)
+                format!("{about}{q}\n{first}")
             }
         };
-        let ask_ref = crate::refs::Ref::new(a.repo.join(&a.path), Some(a.asked), None);
         (self.draft, self.cur) = (String::new(), 0);
         // the model's text: no control, OSC or bidi character goes in the draft (review-510)
         let bidi = crate::pick::is_bidi;
@@ -1081,7 +1089,7 @@ impl App {
         let clean: String = plain.chars().filter(|&c| !bidi(c)).collect();
         let n = put(&mut self.draft, &mut self.cur, &cut_prefill(clean.trim_end()));
         self.cap_note(n);
-        if let Ok(rf) = ask_ref
+        if let Some(rf) = ask_ref
             && !self.basket.contains(&rf)
         {
             self.basket.push(rf.clone());
@@ -2154,7 +2162,7 @@ impl App {
                     back,
                 };
             }
-            KeyCode::Char('c') if self.asking() => self.prefill(scroll),
+            KeyCode::Char('c') if self.answer_drafts() => self.prefill(scroll),
             KeyCode::Char(c @ ('i' | 's')) => {
                 let Some(text) = ready else {
                     return self.say(Level::Info, "no prompt for the agent in this answer");

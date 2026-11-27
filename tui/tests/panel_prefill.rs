@@ -1,10 +1,11 @@
 //! Flow A's "send to agent" (#365 child 5, PR 4): `c` on an ask's answer opens
 //! Compose prefilled (owner's D8), the ask's ref in the basket; esc goes back to
-//! the answer (D3), and a write from there ends the thread. No tmux: the basket
-//! write is refused by the test guard, and the ref is kept on the App.
+//! the answer (D3), and a write from there ends the thread. An Explain's answer
+//! does the same with no ref (#1571). No tmux: the basket write is refused by
+//! the test guard, and the ref is kept on the App.
 mod fake;
 
-use cockpit_tui::panel::app::{App, View};
+use cockpit_tui::panel::app::{App, Tile, View};
 use cockpit_tui::panel::ask;
 use cockpit_tui::panel::capture::Capture;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -116,16 +117,83 @@ fn a_write_from_that_compose_ends_the_thread() {
     assert!(matches!(a.view, View::Home { .. }), "{:?}", a.view);
 }
 
-/// Flow A only: an Explain's answer has no file and lines to send.
-#[test]
-fn c_on_an_explain_answer_does_nothing() {
+/// An Explain of the first quick question, "What is it doing?", answered with `reply`.
+fn explained(reply: &str) -> App {
     let mut a = App::new("%3", Capture::default());
     a.view = View::ExplainAsk { sel: 0 };
     key(&mut a, KeyCode::Enter);
-    a.reply(Ok("an answer\n".into()));
+    a.reply(Ok(reply.into()));
     assert!(matches!(a.view, View::Answer { .. }), "the explain answered: {:?}", a.view);
+    a
+}
+
+/// #1571: `c` on an Explain's answer opens Compose with its `<prompt>`. Nothing
+/// is pasted or sent, and an Explain has no lines for the basket.
+#[test]
+fn c_on_an_explain_answer_prefills_its_prompt() {
+    let mut a = explained("Split it.\n<prompt>Make x a method of Counter.</prompt>\n");
     key(&mut a, KeyCode::Char('c'));
-    assert!(matches!(a.view, View::Answer { .. }), "{:?}", a.view);
+    assert!(matches!(a.view, View::Compose), "{:?}", a.view);
+    assert_eq!(a.draft, "Make x a method of Counter.");
+    assert!(a.action.is_none() && a.basket.is_empty(), "nothing sent, no ref");
+    key(&mut a, KeyCode::Esc);
+    assert!(matches!(a.view, View::Answer { .. }), "esc is back at the answer: {:?}", a.view);
+}
+
+/// #1571: with no `<prompt>`, the template: the question, then the answer's
+/// first paragraph.
+#[test]
+fn c_on_an_explain_answer_without_a_prompt_prefills_the_template() {
+    let mut a = explained("It waits for a key.\n\nMore below.\n");
+    key(&mut a, KeyCode::Char('c'));
+    assert!(matches!(a.view, View::Compose), "{:?}", a.view);
+    assert_eq!(a.draft, "What is it doing?\nIt waits for a key.");
+    assert!(a.action.is_none() && a.basket.is_empty(), "nothing sent, no ref");
+}
+
+/// #1571: an Explain's answer lists `c` in its help.
+#[test]
+fn an_explain_answer_offers_c_in_its_help() {
+    let a = explained("It is.\n");
+    let g = cockpit_tui::theme::Theme::fixed().g;
+    assert!(cockpit_tui::panel::view::keys(&a, &g).iter().any(|(k, _)| k == "c"));
+}
+
+/// #1571: the footer's `c` sits after a prompt's `i` and `s` and after `f`, so
+/// a narrow footer drops `c` before the prompt's keys and the follow-up.
+#[test]
+fn an_explain_answers_footer_puts_c_after_follow_up() {
+    let a = explained("Split it.\n<prompt>Do it.</prompt>\n");
+    let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 20)).unwrap();
+    t.draw(|f| {
+        cockpit_tui::panel::view::render(f, f.area(), &a, &cockpit_tui::theme::Theme::fixed(), 0);
+    })
+    .unwrap();
+    let f = t.backend().to_string();
+    assert!(f.contains("i insert  s send  f follow up  c compose"), "{f}");
+}
+
+/// #1571: `c` on a Write's Result still edits: Compose with the Result's text,
+/// never a prompt or a template, and the basket untouched.
+#[test]
+fn c_on_a_results_text_still_edits_it() {
+    let cap = Capture {
+        cmd: "bash".into(),
+        path: "/home/u/proj".into(),
+        screen: "$ ".into(),
+        ..Default::default()
+    };
+    let mut a = App::new("%3", cap);
+    let i = a.tiles().iter().position(|t| t.0 == Tile::Compose).unwrap();
+    key(&mut a, KeyCode::Char(char::from(b'1' + i as u8)));
+    key(&mut a, KeyCode::Char('x'));
+    ctrl(&mut a, 's');
+    a.reply(Ok("<text>one\ntwo</text>".into()));
+    assert!(matches!(a.view, View::Result { .. }), "{:?}", a.view);
+    key(&mut a, KeyCode::Char('c'));
+    assert!(matches!(a.view, View::Compose), "{:?}", a.view);
+    assert_eq!(a.draft, "one\ntwo");
+    assert!(a.basket.is_empty());
 }
 
 /// An ask's answer offers `c` on its footer and in its help.
