@@ -18,8 +18,8 @@ source (Rust ≥ 1.88), and stops with a message when it can do neither.
   the board, a grouped list of agents with their diff stat and branch.
 - **Not an actor.** The binary renders and decides. It writes one line,
   `<verb> <pane-id>`, to the file named by `$COCKPIT_ACTION`, and the binding
-  runs the existing `tmux-jump` / `tmux-review` script. Every mutating path
-  stays shell.
+  runs the existing `tmux-jump` / `tmux-review` script. Every action the user
+  takes stays shell (the rule under "Modules" says what the binary writes itself).
 - **Not a replacement for `prefix i` or `prefix f`.** The board reaches them; it
   does not reimplement them.
 
@@ -2659,7 +2659,7 @@ pane are different facts and a blank tile tells you which one it is.
 **CLI:** `-h` or `--help` prints the usage:
 
 ```
-cockpit-tui board [--select %N] [--note <file>] | pick | files <dir> [--select <name>] [--hidden] [--ignored] [--filter <text>] | branch [-C <dir>] | info [--text|--json] %N | workdir [--source] %N | pane <name> | label %N | sessions [--needs] [--current $N] | panel %N [--resume <state> --last ok|failed:<why>|hidden | --ask <file> <a> <b>] | view [--line N] [--] <file> | basket add %N <file> | --rows | --json | --version | -h
+cockpit-tui board [--select %N] [--note <file>] | pick | files <dir> [--select <name>] [--hidden] [--ignored] [--filter <text>] | branch [-C <dir>] | info [--text|--json] %N | workdir [--source] %N | pane <name> | label %N | sessions [--needs] [--current $N] | panel %N [--resume <state> --last ok|failed:<why>|hidden | --ask <file> <a> <b>] | view [--line N] [--] <file> | basket add %N <file> | ask-rules check|accept | --rows | --json | --version | -h
 ```
 
 `info %N` is the info screen, `info --text %N` its rows as text, and
@@ -2824,10 +2824,13 @@ workspace, no crate split.
 | `panel` | the type-panel port: capture, redaction, prompt envelope, the `claude -p` request, reply parsing; `panel::action` the action, text, cmd and state files |
 | `highlight` | the code lexer (#282) and `split`, the one fence rule the panel's view and its reply parsing share (#283) |
 | `store` | the `Store` trait (`get`, `put_if_revision`, `watch`), `Key`, `Revision` and `LocalStore`, one 0600 file per key under XDG state (#1020); unwired, nothing calls it |
-| `ask` | an agent's open AskUserQuestion (epic #1500, [docs/ask.md](ask.md)): `ask::model` holds every question, header, option label, description, preview and multiSelect of its input, and `data::transcript::open_ask` reads it from the transcript (#1504) |
+| `ask` | an agent's open AskUserQuestion (epic #1500, [docs/ask.md](ask.md)): `ask::model` holds every question, header, option label, description, preview and multiSelect of its input, and `data::transcript::open_ask` reads it from the transcript (#1504); `ask::rules` loads and checks the owner's auto-answer rules file and `cockpit-tui ask-rules accept` accepts it (#1508) |
 
-Every mutating action stays a shell script: the binary prints
-`<verb> <pane-id>` and a wrapper runs it.
+Every action the user takes on a pane, a session or a repository stays a shell script:
+the binary prints `<verb> <target>` and a wrapper runs it. The binary still writes its
+own state: 0600 files (the board's state, agents.json, the accepted copy of the ask
+rules, #1508) and its own tmux options (`@cockpit_board_wake` in `push.rs`, a pane's
+basket in `basket.rs`).
 
 ### Push wakeups
 

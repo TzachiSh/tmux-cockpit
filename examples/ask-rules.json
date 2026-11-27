@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "rules": [
+    {
+      "id": "merge-after-review",
+      "note": "Merge once the reviewer's MERGE verdict and CI are green at the same head.",
+      "action": "merge",
+      "when": ["verdict_merge_at_head", "ci_green_on_merge"],
+      "mode": "shadow",
+      "cap_per_hour": 3,
+      "examples": {
+        "match": [{ "verdict_merge_at_head": true, "ci_green_on_merge": true }],
+        "no_match": [{ "verdict_merge_at_head": true, "ci_green_on_merge": false }]
+      }
+    },
+    {
+      "id": "cleanup-merged-lane",
+      "note": "Clean up a lane whose PR is merged and whose worktree holds nothing unpushed.",
+      "action": "cleanup-lane",
+      "when": ["pr_merged", "lane_clean"],
+      "mode": "shadow",
+      "cap_per_hour": 3,
+      "examples": {
+        "match": [{ "pr_merged": true, "lane_clean": true }],
+        "no_match": [{ "pr_merged": true, "lane_clean": false }]
+      }
+    },
+    {
+      "id": "continue-queue",
+      "note": "Go on to the next item when the queue holds one.",
+      "action": "continue-queue",
+      "when": ["queue_set"],
+      "mode": "shadow",
+      "cap_per_hour": 3,
+      "examples": {
+        "match": [{ "queue_set": true }],
+        "no_match": [{ "queue_set": false }]
+      }
+    }
+  ]
+}
