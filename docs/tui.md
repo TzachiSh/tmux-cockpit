@@ -1521,27 +1521,43 @@ not wired into Explain yet.
 
 - **What it reads.** `participant` and `actor`, with `as` for a display name,
   and participants named only in a step. Mermaid's ten arrows (see **Arrows**).
-  `autonumber`. `Note left of`, `right of` or `over`. A `%% status: <s> [HH:MM]`
-  line after a step, the key in any case, `<s>` one of `✓ ● ○ ✗ !` or
-  `done running pending failed needs`, the time from 00:00 to 23:59; a `%%` at
-  the end of a step line is part of its label, as in Mermaid. Other `%%` lines
-  are comments.
-- **Blocks.** `loop`, `alt` and `opt` draw as frames around their steps and
-  notes, and an `alt`'s `else` as a divider (#1536). A frame spans the whole
-  ladder: its top rule `┌─[loop until green]──┐`, a divider `├┄[else
+  `autonumber`, or `autonumber <start> <increment>` (Mermaid 11.15.0), which
+  numbers from the start by the increment and holds at the largest number
+  rather than wrapping; the list's number column is as wide as the largest
+  number (#1537). `Note left of`, `right of` or `over`. A
+  `%% status: <s> [HH:MM]` line after a step, the key in any case, `<s>` one of
+  `✓ ● ○ ✗ !` or `done running pending failed needs`, the time from 00:00 to
+  23:59; a `%%` at the end of a step line is part of its label, as in Mermaid.
+  Other `%%` lines are comments.
+- **Statements.** A `;` ends a statement as a new line does, as in Mermaid,
+  except the `;` that closes an entity code such as `#59;`. `#59;` in text
+  reads as `;`, and every other entity code stays as written. A `%%` line is
+  never split, and a line's terminal escape sequences go before it is split
+  (#1537).
+- **Blocks.** `loop`, `alt`, `opt`, `par`, `critical` and `break` draw as
+  frames around their steps and notes, and an `alt`'s `else`, a `par`'s `and`
+  and a `critical`'s `option` as a divider (#1536, #1537). A frame spans the
+  whole ladder: its top rule `┌─[loop until green]──┐`, a divider `├┄[else
   green]┄┄┤` and its bottom `└──┘`, the tag two columns in, a lifeline
   crossing a rule drawn `┼` unless the tag covers it, and the sides two columns
   in from the frame around it. A note written after an `end` draws after the
   frame. The list draws the rule rows `┌─[loop until green]`, `├┄[else green]`
   and `└─`, and one rail `│` a frame between a line's status and number and its
   label. At most 3 frames nest: a block deeper still draws its steps with no
-  frame. An `else` outside an `alt`, an `end` outside a block, or a block never
-  closed is an error.
+  frame. `rect` and `box` draw no frame and do not count toward that depth;
+  their `end` closes them. An `else`, `and` or `option` outside the block it
+  divides, an `end` outside a block, or a block never closed is an error.
 - **Ledger.** The drawing names what it leaves out on a line after the last
   step's rows, notes and frames and before the NEED box, in both shapes
-  (#1535): `(dropped: frames past depth 3)`, each name once, in the order the
-  source first has it, wrapped to the width. With nothing dropped there is no
-  such line.
+  (#1535): `(dropped: activations, central connections)`, each name once, in
+  the order the source first has it, wrapped to the width. With nothing
+  dropped there is no such line. The names (#1536, #1537): `activations` for
+  `activate`, `deactivate` and a `+` or `-` before a step's target (no bar is
+  drawn); `central connections` for the `()` beside an arrow, the step kept;
+  `rect highlights` for a `rect`, its steps kept; `participant boxes` for a
+  `box`, its participants kept; `create/destroy` for `destroy` and for
+  `create`, whose rest reads as a participant line; and `frames past depth
+  3`. A dropped statement adds no actor.
 - **Arrows.** Each of Mermaid's ten arrows draws as its own kind, in the ladder
   and in the list (#1532). The shaft is solid for `->>`, `->`, `-x`, `-)` and
   `<<->>`, and dashed (`┄`) for `-->>`, `-->`, `--x`, `--)` and `<<-->>`. The
@@ -1553,8 +1569,12 @@ not wired into Explain yet.
   cross, and nothing for no head. The list writes who to whom with the same
   ends: `A─▶B`, `A┄▶B`, `A──B`, `A┄┄B`, `A─✕B`, `A┄✕B`, `A─▷B`, `A┄▷B`,
   `A◀─▶B` and `A◀┄▶B`.
-- **Anything else** (`par`, `activate`, a bad status word or time) is an `Err`
-  naming the line. `flow::render` then shows `flow::not_drawn`: `(not drawn:
+- **Anything else** is an `Err` naming the line: a line no Mermaid grammar
+  knows such as `frobnicate A` or `autonumber ten`, a bad status word or time,
+  and the statements of Mermaid 11.15.0's grammar that the renderer does not
+  read yet: `autonumber <start>` with no increment, `autonumber off`, `title`,
+  `accTitle`, `accDescr`, `links`, `link`, `properties`, `details` and
+  `par_over`. `flow::render` then shows `flow::not_drawn`: `(not drawn:
   <why>)`, then the raw lines, each cut to the width.
 - **Ladder or list.** The ladder at 60 columns or more with at most 4 actors,
   the numbered list otherwise. The ladder takes two rows a step, the label
