@@ -1569,10 +1569,13 @@ not wired into Explain yet.
   cross, and nothing for no head. The list writes who to whom with the same
   ends: `A─▶B`, `A┄▶B`, `A──B`, `A┄┄B`, `A─✕B`, `A┄✕B`, `A─▷B`, `A┄▷B`,
   `A◀─▶B` and `A◀┄▶B`.
-- **Anything else** (a line no Mermaid grammar knows such as `frobnicate A`,
-  `autonumber ten`, a bad status word or time) is an `Err` naming the line.
-  `flow::render` then shows `flow::not_drawn`: `(not drawn: <why>)`, then the
-  raw lines, each cut to the width.
+- **Anything else** is an `Err` naming the line: a line no Mermaid grammar
+  knows such as `frobnicate A` or `autonumber ten`, a bad status word or time,
+  and the statements of Mermaid 11.15.0's grammar that the renderer does not
+  read yet: `autonumber <start>` with no increment, `autonumber off`, `title`,
+  `accTitle`, `accDescr`, `links`, `link`, `properties`, `details` and
+  `par_over`. `flow::render` then shows `flow::not_drawn`: `(not drawn:
+  <why>)`, then the raw lines, each cut to the width.
 - **Ladder or list.** The ladder at 60 columns or more with at most 4 actors,
   the numbered list otherwise. The ladder takes two rows a step, the label
   above its arrow. A label is cut to end at least one blank column before the
