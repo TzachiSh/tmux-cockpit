@@ -1580,7 +1580,10 @@ not wired into Explain yet.
   each gets an even slot of the width less the gutter (1 column, 3 with a
   status) and the time column (6 with a time). A slot of 12 or more draws the
   ladder, 10 or 11 the compact ladder, drawn by the same rules, and a narrower
-  slot, or a width under 60, the numbered list (#1538). The ladder takes two
+  slot, or a width under 60, the numbered list (#1538). The list draws too
+  where a frame's right side would sit on or left of the last lifeline: at a
+  slot of 10 with no column left over, three frames put the third one's side
+  on it (#1578). The ladder takes two
   rows a step, the label above its arrow. A label is cut to end at least one
   blank column before the next lifeline right of its step's left end, so it
   covers none and a step

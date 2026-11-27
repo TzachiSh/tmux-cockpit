@@ -605,14 +605,29 @@ fn slots(f: &Flow, w: usize) -> (usize, usize, usize) {
     (gutter, right, (w.saturating_sub(gutter + right) / f.actors.len().max(1)).max(2))
 }
 
+/// Actor `i`'s lifeline column: the middle of its slot (#1538).
+fn column(gutter: usize, slot: usize, i: usize) -> usize {
+    gutter + slot * i + slot / 2
+}
+
+/// The columns of the sides of a frame `d` deep at width `w`, each two in
+/// from the one around it: a row inside `d` frames keeps to the columns from
+/// the first to the second, both in (#1536).
+fn frame_sides(w: usize, gutter: usize, right: usize, d: usize) -> (usize, usize) {
+    (gutter + 2 * d, w.saturating_sub(right + 1 + 2 * d))
+}
+
 /// The ladder at [`LADDER_MIN_WIDTH`] or more when each actor gets a slot of
 /// [`LADDER_SLOT`] columns, the compact ladder when it gets [`COMPACT_SLOT`],
 /// otherwise the list. The slot is the one the ladder draws in: the width
 /// less the gutter and the time column, split evenly between the actors
-/// (#1538).
+/// (#1538). The list draws too where a frame's right side would sit on or
+/// left of the last lifeline (#1578).
 pub fn shape(f: &Flow, w: usize) -> Shape {
-    let (_, _, slot) = slots(f, w);
-    if w < LADDER_MIN_WIDTH || slot < COMPACT_SLOT {
+    let (gutter, right, slot) = slots(f, w);
+    let last = column(gutter, slot, f.actors.len().saturating_sub(1));
+    let clear = rules(f).iter().all(|(_, nest, _)| frame_sides(w, gutter, right, *nest).1 > last);
+    if w < LADDER_MIN_WIDTH || slot < COMPACT_SLOT || !clear {
         Shape::List
     } else if slot < LADDER_SLOT {
         Shape::Compact
@@ -948,11 +963,9 @@ fn parts(f: &Flow) -> Vec<(Part<'_>, usize)> {
 fn ladder(f: &Flow, w: usize, g: &Glyphs) -> Vec<String> {
     let (gutter, right, slot) = slots(f, w);
     // One lifeline column an actor; a flow built by hand with no actor still has the first.
-    let cols: Vec<usize> = (0..f.actors.len().max(1)).map(|i| gutter + slot * i + slot / 2).collect();
+    let cols: Vec<usize> = (0..f.actors.len().max(1)).map(|i| column(gutter, slot, i)).collect();
     let x = |i: usize| lifeline(&cols, i);
-    // The columns of the sides of a frame `d` deep. A row inside `d` frames
-    // keeps to the columns from the first to the second, both in (#1536).
-    let sides = |d: usize| (gutter + 2 * d, w.saturating_sub(right + 1 + 2 * d));
+    let sides = |d: usize| frame_sides(w, gutter, right, d);
     // The lifelines, and the sides of the `nest` frames around the row.
     let lifelines = |nest: usize| {
         let mut r = Row::new(w);
