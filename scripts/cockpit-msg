@@ -7,16 +7,17 @@
 #                                  body and marks that message read
 #   cockpit-msg who                the sessions that can receive, one a line:
 #                                  <id> TAB <branch, or -> TAB <work folder>
-# Every session id here is the hex form a contract id takes (sid_hex). The caller is the pane
-# $TMUX_PANE names, and --session must name the session that pane publishes in
-# @cockpit_session (epic #1573, D9).
+# Every session id here is the hex form a contract id takes (sid_hex). Each command runs in a
+# pane of the tmux server $TMUX names. The caller of send and read is the pane $TMUX_PANE
+# names, and --session must name the session that pane publishes in @cockpit_session (epic
+# #1573, D9).
 # Exit: 0 done, 1 refused (one line on stderr says why), 2 usage, 3 cannot load.
 #
-# The store, under ${XDG_STATE_HOME:-~/.local/state}/tmux-cockpit, 0700 folders, 0600 files:
-#   refs/<msg_id>.md          the body           (contracts/README.md, Refs)
-#   refs/<msg_id>.txt         the summary line
-#   msg/<to>/<msg_id>.json    the envelope       (contracts/agent-message.schema.json)
-#   msg/<to>/read/<msg_id>    empty: the receiver read that message
+# The store, under the state folder (state_root), 0700 folders, 0600 files:
+#   tmux-cockpit/refs/<msg_id>.md          the body           (contracts/README.md, Refs)
+#   tmux-cockpit/refs/<msg_id>.txt         the summary line
+#   tmux-cockpit/msg/<to>/<msg_id>.json    the envelope       (contracts/agent-message.schema.json)
+#   tmux-cockpit/msg/<to>/read/<msg_id>    empty: the receiver read that message
 # Each file is written beside its name and linked into place, so a reader sees all of it or
 # none, and no name already stored is replaced. One read marker per message, not a cursor: a
 # newer message read first leaves an older one unread.
@@ -59,8 +60,9 @@ USAGE
     exit 2
 }
 
-# A temp file in flight, and the names a send has put in place: taken back if the send stops
-# before its envelope, so no ref is left with no envelope naming it.
+# A temp file in flight, and the names a send puts in place: taken back if the send stops
+# before its envelope, so no ref is left with no envelope naming it. A signal ends the run
+# through leave too, and none cuts leave short (#1107).
 TMPF='' PUT=()
 leave() {
     trap '' HUP INT TERM
@@ -68,13 +70,18 @@ leave() {
     [ "${#PUT[@]}" -eq 0 ] || rm -f -- "${PUT[@]}"
 }
 trap leave EXIT
-trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 die() { printf 'cockpit-msg: %s\n' "$1" >&2; exit 1; }
 
 # A session id as every contract id is written (#1575): the UUID Claude Code names a session
 # by, its dashes dropped, in lower case: 32 hex digits (contracts/README.md wants 16 to 64
-# lowercase hex). The one place that rule lives. REPLY empty and 1 for a value that is no UUID.
+# lowercase hex). REPLY empty and 1 for a value that is no UUID. The UUID shape is tested in
+# two more places, each its own copy: save_session in scripts/lib/hook.sh (either case) and
+# the resume in scripts/cockpit-board (lower case only). One helper for the three is a
+# refactor PR of its own.
 sid_hex() {                   # <UUID> -> REPLY
     local h='[0123456789abcdefABCDEF]'
     REPLY=''
@@ -82,63 +89,99 @@ sid_hex() {                   # <UUID> -> REPLY
     REPLY=${1//-/}; REPLY=${REPLY,,}
 }
 
-# Each pane of this server that publishes a session: "<pane> <hex id>" lines. A pane whose
-# @cockpit_session is no UUID publishes none.
-published() {
-    local us=$'\037' p s
-    while IFS= read -r p; do
-        s=${p#*"$us"} p=${p%%"$us"*}
-        sid_hex "$s" && printf '%s %s\n' "$p" "$REPLY"
-    done < <(tmux list-panes -a -F "#{pane_id}$us#{@cockpit_session}" 2>/dev/null)
+# The server and the pane a run is on: $TMUX names the server, $TMUX_PANE the pane.
+in_pane() {
+    [ -n "${TMUX:-}" ] && is_pane "${TMUX_PANE:-}" ||
+        die "not in a tmux pane: TMUX must be set and TMUX_PANE must be %N"
 }
 
-# The calling session (epic #1573, D9): the pane $TMUX_PANE names on the server $TMUX names,
-# that pane's @cockpit_session, and the id given with --session must be its hex form. ME is it.
+# The panes of this server that publish a session, as "<pane> <hex id>" words in PUBLISHED. A
+# pane whose @cockpit_session is no UUID publishes none. The list is read whole before it is
+# searched, and a tmux that fails is a refusal with its reason.
+published() {
+    local us=$'\037' out p s
+    out=$(tmux list-panes -a -F "#{pane_id}$us#{@cockpit_session}" 2>&1) ||
+        die "cannot list the panes of this tmux server: ${out%%$'\n'*}"
+    PUBLISHED=()
+    while IFS= read -r p; do
+        s=${p#*"$us"} p=${p%%"$us"*}
+        sid_hex "$s" && PUBLISHED+=("$p $REPLY")
+    done <<< "$out"
+}
+
+# The calling session (epic #1573, D9): the pane's @cockpit_session, and the id given with
+# --session must be its hex form. ME is it. A tmux that fails is a refusal with its reason.
 check_caller() {              # <id given>
-    local pane=${TMUX_PANE:-}
-    [ -n "${TMUX:-}" ] && is_pane "$pane" ||
-        die "not in a tmux pane: TMUX must be set and TMUX_PANE must be %N"
-    sid_hex "$(tmux display-message -p -t "$pane" '#{@cockpit_session}' 2>/dev/null)" ||
-        die "pane $pane publishes no session in @cockpit_session"
+    local pane out
+    in_pane; pane=$TMUX_PANE
+    out=$(tmux display-message -p -t "$pane" '#{@cockpit_session}' 2>&1) ||
+        die "cannot read pane $pane: ${out%%$'\n'*}"
+    sid_hex "$out" || die "pane $pane publishes no session in @cockpit_session"
     ME=$REPLY
     [ "$1" = "$ME" ] || die "session $1 is not the session of pane $pane"
 }
 
-# The state folder every cockpit script keeps its files under.
+# The state folder, by the rule tui/src/store.rs xdg_dir holds (#1508): XDG_STATE_HOME when it
+# is an absolute path, else $HOME/.local/state when HOME is one. A relative value is ignored,
+# as the XDG spec says, and with neither there is no store.
 state_root() {
-    local base=${XDG_STATE_HOME:-}
-    if [ -z "$base" ]; then
-        [ -n "${HOME:-}" ] || die "no state folder: XDG_STATE_HOME and HOME are both unset"
-        base=$HOME/.local/state
-    fi
+    local base
+    case ${XDG_STATE_HOME:-} in
+        /*) base=$XDG_STATE_HOME ;;
+        *) case ${HOME:-} in
+               /*) base=$HOME/.local/state ;;
+               *) die "no state folder: neither XDG_STATE_HOME nor HOME is an absolute path" ;;
+           esac ;;
+    esac
     ROOT=$base/tmux-cockpit
 }
 
-# A folder of the store, made 0700 (the umask) where it is missing.
-own_dir() { [ -d "$1" ] || mkdir -p -- "$1" 2>/dev/null || die "cannot make $1"; }
+# A folder of the store, made 0700 (the umask) where it is missing, or mkdir's reason.
+own_dir() {                   # <dir>
+    local err
+    err=$(mkdir -p -- "$1" 2>&1) || die "cannot make $1: ${err%%$'\n'*}"
+}
 
 # <tmp> in place as <name>, beside it, only when nothing is at <name>: ln makes the name or
-# fails in one step, where mv would replace a file stored there. The temp file goes either way.
+# fails, where mv would replace a file stored there. 1 when the name is taken; any other
+# failure of ln is a refusal with ln's reason. The temp file goes either way.
 put_new() {                   # <tmp> <name>
-    local rc=1
-    [ ! -e "$2" ] && [ ! -L "$2" ] && ln -- "$1" "$2" 2>/dev/null && rc=0
+    local err rc=0
+    if [ -e "$2" ] || [ -L "$2" ]; then rc=1
+    elif ! err=$(ln -- "$1" "$2" 2>&1); then rc=2
+    fi
     rm -f -- "$1"; TMPF=''
+    [ "$rc" != 2 ] || die "cannot link ${2##*/} into place: ${err%%$'\n'*}"
     return "$rc"
 }
 
-# A new file <dir>/<name> holding stdin, written to a temp file beside it and put in place by
-# put_new. 1 when a file of that name is stored already.
-write_new() {                 # <dir> <name>
+# A new file <dir>/<name> holding <src>'s bytes, else stdin's, written to a temp file beside it
+# and put in place by put_new. 1 when a file of that name is stored already.
+write_new() {                 # <dir> <name> [<src>]
     own_tmpfile TMPF "$1/.new.XXXXXX" ||
         die "cannot make a temp file in $1 (own_tmpfile: $own_tmpfile_why)"
-    cat > "$TMPF" || die "cannot write in $1"
+    cat -- "${@:3}" > "$TMPF" || die "cannot write in $1"
     put_new "$TMPF" "$1/$2"
+}
+
+# One of this send's files. Its name joins PUT before the link, so a signal at any point takes
+# it back. A name that is taken is no file of this send's: it leaves PUT, and the send is
+# refused. A signal that lands before put_new finds such a name would take it too: only a
+# msg_id drawn twice from /dev/urandom can bring that about.
+send_file() {                 # <dir> <name> [<src>]
+    PUT+=("$1/$2")
+    write_new "$@" && return 0
+    PUT=("${PUT[@]:0:${#PUT[@]}-1}")
+    die "msg_id ${2%.*} is already stored"
 }
 
 # The summary: one line, a final newline allowed, no other control byte, not empty and at
 # most SUMMARY_MAX bytes. Only SUMMARY_MAX + 2 bytes are read: past that it is too long.
 summary_line() {              # <file> -> REPLY
-    local LC_ALL=C s
+    local LC_ALL=C s nul
+    # A NUL first, counted: $( ) drops it, and the line it reads is not the file's.
+    nul=$(head -c $((SUMMARY_MAX + 2)) -- "$1" | tr -cd '\000' | wc -c)
+    [ "$((nul))" -eq 0 ] || die "the summary is not one line of text"
     s=$(head -c $((SUMMARY_MAX + 2)) -- "$1" && printf x) || die "cannot read $1"
     s=${s%x}; s=${s%$'\n'}
     [ -n "$s" ] || die "the summary is empty"
@@ -149,20 +192,19 @@ summary_line() {              # <file> -> REPLY
 
 # A new msg_id: 16 bytes from /dev/urandom as 32 lowercase hex.
 new_id() {
-    REPLY=$(od -A n -t x1 -N 16 -v /dev/urandom 2>/dev/null) || REPLY=''
-    REPLY=${REPLY//[!0123456789abcdef]/}
-    [ "${#REPLY}" -eq 32 ] || die "cannot read a new msg_id from /dev/urandom"
+    REPLY=$(od -A n -t x1 -N 16 -v /dev/urandom) && REPLY=${REPLY//[!0123456789abcdef]/} &&
+        [ "${#REPLY}" -eq 32 ] || die "cannot read 16 bytes from /dev/urandom"
 }
 
 cmd_send() {                  # --session <id> <to> <summary-file> <body-file>
     [ $# -eq 5 ] && [ "$1" = --session ] || usage
-    local to=$3 sum=$4 body=$5 line id box now json p h known=''
+    local to=$3 sum=$4 body=$5 line id box now json pe known=''
     check_caller "$2"
-    # Read to the end: a reader that stops early leaves published() writing into a closed pipe.
-    while read -r p h; do [ "$h" != "$to" ] || known=1; done < <(published)
+    published
+    for pe in ${PUBLISHED[@]+"${PUBLISHED[@]}"}; do [ "${pe#* }" != "$to" ] || known=1; done
     [ -n "$known" ] || die "no pane of this tmux server publishes session $to"
-    [ -f "$sum" ] && [ -r "$sum" ] || die "no summary file: $sum"
-    [ -f "$body" ] && [ -r "$body" ] || die "no body file: $body"
+    [ -f "$sum" ] && [ -r "$sum" ] || die "no readable summary file: $sum"
+    [ -f "$body" ] && [ -r "$body" ] || die "no readable body file: $body"
     summary_line "$sum"; line=$REPLY
     state_root; own_dir "$ROOT/refs"; box=$ROOT/msg/$to; own_dir "$box"
     new_id; id=$REPLY
@@ -171,11 +213,9 @@ cmd_send() {                  # --session <id> <to> <summary-file> <body-file>
     json+=",\"subject\":\"msg.$ME.$to\",\"timestamp\":\"$now\",\"correlation_id\":\"$id\""
     json+=",\"payload\":{\"body_ref\":\"$id.md\",\"summary_ref\":\"$id.txt\"}}"
     # The refs first and the envelope last: an envelope names only refs already in place.
-    write_new "$ROOT/refs" "$id.txt" <<< "$line" || die "msg_id $id is already stored"
-    PUT+=("$ROOT/refs/$id.txt")
-    write_new "$ROOT/refs" "$id.md" < "$body" || die "msg_id $id is already stored"
-    PUT+=("$ROOT/refs/$id.md")
-    write_new "$box" "$id.json" <<< "$json" || die "msg_id $id is already stored"
+    send_file "$ROOT/refs" "$id.txt" <<< "$line"
+    send_file "$ROOT/refs" "$id.md" "$body"
+    send_file "$box" "$id.json" <<< "$json"
     PUT=()
     printf '%s\n' "$id"
 }
@@ -194,7 +234,11 @@ cmd_read() {                  # --session <id> <msg_id>
     check_caller "$2"
     [[ $id =~ ^$HEX$ ]] || die "$id is not a msg_id"
     state_root; box=$ROOT/msg/$ME; f=$box/$id.json
-    [ -f "$f" ] && [ ! -L "$f" ] || die "no message $id for session $ME"
+    # The writer makes no link, so a link in the store is none of its files: an envelope or a
+    # ref that is one is refused, one that leads out of its folder with the rest
+    # (contracts/README.md, Refs).
+    [ ! -L "$f" ] || die "message $id is a symbolic link; envelopes are read only as files"
+    [ -f "$f" ] || die "no message $id for session $ME"
     text=$(head -c 4096 -- "$f") || die "cannot read message $id"
     [[ $text =~ \"schema_version\":\ ?2[,}] ]] || die "message $id is no agent-message v2"
     # A msg_id is delivered once: an envelope copied under a new name is no new message.
@@ -203,26 +247,41 @@ cmd_read() {                  # --session <id> <msg_id>
     env_field "$text" to "$HEX" && [ "$REPLY" = "$ME" ] ||
         die "message $id is not addressed to session $ME"
     env_field "$text" body_ref "$HEX\\.md" || die "message $id names no body"
-    # The writer makes no link, so a link in refs/ is none of the store's: one that leads out
-    # of the folder is refused with the rest (contracts/README.md, Refs).
     ref=$ROOT/refs/$REPLY
     [ ! -L "$ref" ] || die "ref ${ref##*/} is a symbolic link; refs are read only as files"
     [ -f "$ref" ] || die "message $id has no body in refs/"
     cat -- "$ref" || die "cannot read the body of message $id"
     own_dir "$box/read"
-    write_new "$box/read" "$id" < /dev/null || [ -e "$box/read/$id" ] ||
-        die "cannot mark message $id read"
+    # 1: an earlier read left the marker.
+    write_new "$box/read" "$id" < /dev/null || :
+}
+
+# The branch <dir> is on, in REPLY, or - for none: a detached HEAD (symbolic-ref --quiet exits
+# 1 and says nothing) or a folder in no repo. Any other failure of git is a refusal with git's
+# reason. git speaks C here, so the words matched are its own.
+branch_of() {                 # <dir> -> REPLY
+    local out rc
+    out=$(LC_ALL=C git -C "$1" symbolic-ref --quiet --short HEAD 2>&1); rc=$?
+    case $rc:$out in
+        0:?*) REPLY=$out ;;
+        1:) REPLY=- ;;
+        128:*'not a git repository'*) REPLY=- ;;
+        *) die "cannot read the branch of $1: ${out%%$'\n'*}" ;;
+    esac
 }
 
 cmd_who() {
     [ $# -eq 0 ] || usage
-    local p h dir br
-    while read -r p h; do
-        dir=$(pane_workdir "$p")
+    local pe dir
+    in_pane
+    published
+    for pe in ${PUBLISHED[@]+"${PUBLISHED[@]}"}; do
+        dir=$(pane_workdir "${pe%% *}")
+        # A pane gone since the list was read has no folder, and no session to list.
         [ -n "$dir" ] || continue
-        br=$(git -C "$dir" symbolic-ref --quiet --short HEAD 2>/dev/null) || br=-
-        printf '%s\t%s\t%s\n' "$h" "$br" "$dir"
-    done < <(published)
+        branch_of "$dir"
+        printf '%s\t%s\t%s\n' "${pe#* }" "$REPLY" "$dir"
+    done
 }
 
 case "${1:-}" in

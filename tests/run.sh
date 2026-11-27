@@ -30398,65 +30398,115 @@ echo "== cockpit-msg: send, read and who over a private store (#1575) =="
 # scripts/cockpit-msg on a private server. Each run names its pane by TMUX_PANE, as an agent's
 # shell does, and keeps its store in the block's own XDG_STATE_HOME. Pane A sends and B
 # receives: B is an agent pane, so its work folder is cockpit-tui workdir's answer, a stub
-# here, over its @cockpit_dir and its cwd. C has a session and a folder that is no repo, N
-# publishes no session, X one that is no UUID. The expected hex ids are written out by hand.
+# here, over its @cockpit_dir and its cwd. C has a session and a folder that is no repo, D one
+# on a detached HEAD, N publishes no session, X one that is no UUID. The expected hex ids are
+# written out by hand. A tool that must fail for one row is a stub first on PATH for that run.
 if need_tmux "cockpit-msg"; then :; else
 MG=$(cd "$(mktmpd)" && pwd -P); MGS="cockpit-mg-$$"; SOCKS="$SOCKS $MGS"
-MGST="$MG/state/tmux-cockpit"
-mkdir -p "$MG/bin" "$MG/od" "$MG/nocat" "$MG/big" "$MG/a" "$MG/b" "$MG/c" "$MG/n" "$MG/in"
+MGST="$MG/state/tmux-cockpit"; MGCAT=$(command -v cat); MGRM=$(command -v rm)
+mkdir -p "$MG/bin" "$MG/od" "$MG/sigcat" "$MG/sigrm" "$MG/tm" "$MG/a" "$MG/b" "$MG/c" "$MG/d" \
+    "$MG/n" "$MG/in" "$MG/home" "$MG/away" "$MG/bad" "$MG/cp/scripts/lib"
 git init -q -b main "$MG/a" >/dev/null 2>&1; git init -q -b feat "$MG/c" >/dev/null 2>&1
+( git init -q -b main "$MG/d" && cd "$MG/d" &&
+  git -c user.name=t -c user.email=t@e commit -q --allow-empty -m d &&
+  git checkout -q --detach ) >/dev/null 2>&1
 cat > "$MG/bin/cockpit-tui" <<STUB
 #!/bin/sh
 [ "\$1" != workdir ] || cat "$MG/wd.\$2" 2>/dev/null
 exit 0
 STUB
-# This od prints what od.out holds, so a row can hand a send its msg_id. This cat fails.
+# This od prints what od.out holds, so a row can hand a send its msg_id.
 cat > "$MG/od/od" <<STUB
 #!/bin/sh
-cat "$MG/od.out"
+exec "$MGCAT" "$MG/od.out"
 STUB
-printf '#!/bin/sh\nexit 1\n' > "$MG/nocat/cat"
-chmod +x "$MG/bin/cockpit-tui" "$MG/od/od" "$MG/nocat/cat"
+# These fail with no word: cat, head, mktemp and date. ln and git say why. This od prints 16
+# bytes and fails all the same.
+for MGI in cat head mktemp date; do
+    mkdir -p "$MG/no$MGI"; printf '#!/bin/sh\nexit 1\n' > "$MG/no$MGI/$MGI"
+done
+mkdir -p "$MG/noln" "$MG/nogit" "$MG/nood"
+printf '#!/bin/sh\necho "ln: stub refuses" >&2\nexit 1\n' > "$MG/noln/ln"
+printf '#!/bin/sh\necho "git: stub refuses" >&2\nexit 2\n' > "$MG/nogit/git"
+printf '#!/bin/sh\necho " 00 11 22 33 44 55 66 77 88 99 aa bb cc dd ee ff"\nexit 1\n' \
+    > "$MG/nood/od"
+# This cat sends the signal that sig names, on the call it names, to the script that ran it.
+# This rm sends it TERM on every call. Each then does its own work.
+cat > "$MG/sigcat/cat" <<STUB
+#!/bin/sh
+read -r sig at < "$MG/sig"
+echo x >> "$MG/sigcalls"
+[ "\$(( \$(wc -l < "$MG/sigcalls") ))" -ne "\$at" ] || kill -s "\$sig" "\$PPID"
+exec "$MGCAT" "\$@"
+STUB
+cat > "$MG/sigrm/rm" <<STUB
+#!/bin/sh
+kill -s TERM "\$PPID"
+exec "$MGRM" "\$@"
+STUB
+# This tmux lists one pane, B's session, and reads nothing of it: a pane gone between the list
+# and the read of its folder.
+cat > "$MG/tm/tmux" <<'STUB'
+#!/bin/sh
+case $1 in
+list-panes) printf '%%1\037%s\n' 7A1B2C3D-4E5F-4061-8273-94A5B6C7D8E9 ;;
+display-message) ;;
+*) exit 1 ;;
+esac
+STUB
+chmod +x "$MG/bin/cockpit-tui" "$MG/od/od" "$MG"/no*/* "$MG/sigcat/cat" "$MG/sigrm/rm" \
+    "$MG/tm/tmux"
 fresh_server -L "$MGS" -f /dev/null -- -d -s t -x 80 -y 24 -c "$MG/a" 'exec sleep 300'
 MGA=$("$TMUX_REAL" -L "$MGS" list-panes -t t -F '#{pane_id}')
 mg_pane() {                   # <cwd> -> a new pane's id
     "$TMUX_REAL" -L "$MGS" new-window -d -P -F '#{pane_id}' -t t: -c "$1" 'exec sleep 300'; }
-MGB=$(mg_pane "$MG/n"); MGC=$(mg_pane "$MG/n"); MGN=$(mg_pane "$MG/n"); MGX=$(mg_pane "$MG/n")
+MGB=$(mg_pane "$MG/n"); MGC=$(mg_pane "$MG/n"); MGDP=$(mg_pane "$MG/d")
+MGN=$(mg_pane "$MG/n"); MGX=$(mg_pane "$MG/n")
 mg_opt() { "$TMUX_REAL" -L "$MGS" set -p -t "$1" "$2" "$3"; }
 mg_opt "$MGA" @cockpit_session 3f2a9c0d-1e4b-4a67-8c9d-0e1f2a3b4c5d
 mg_opt "$MGB" @cockpit_session 7A1B2C3D-4E5F-4061-8273-94A5B6C7D8E9
 mg_opt "$MGC" @cockpit_session 0c4f2e9a-7b1d-4e58-9a6b-1c2d3e4f5a6b
+mg_opt "$MGDP" @cockpit_session 5b6c7d8e-9f0a-4b1c-8d2e-3f4a5b6c7d8e
 mg_opt "$MGX" @cockpit_session not-a-uuid
 mg_opt "$MGB" @panestate idle; mg_opt "$MGB" @cockpit_dir "$MG/b"
 printf '%s\n' "$MG/c" > "$MG/wd.$MGB"
 MGHA=3f2a9c0d1e4b4a678c9d0e1f2a3b4c5d MGHB=7a1b2c3d4e5f4061827394a5b6c7d8e9
-MGHC=0c4f2e9a7b1d4e589a6b1c2d3e4f5a6b MGHZ=00112233445566778899aabbccddeeff
+MGHC=0c4f2e9a7b1d4e589a6b1c2d3e4f5a6b MGHD=5b6c7d8e9f0a4b1c8d2e3f4a5b6c7d8e
+MGHZ=00112233445566778899aabbccddeeff
 sock_path "$MGS" MGSOCK
 printf 'hello from A\n' > "$MG/in/sum"; : > "$MG/in/empty"
-printf 'a\nb\n' > "$MG/in/two"; printf 'a\033[31mb\n' > "$MG/in/esc"
+printf 'a\nb\n' > "$MG/in/two"; printf 'a\033[31mb\n' > "$MG/in/esc"; printf 'a\0b\n' > "$MG/in/nul"
 head -c 201 /dev/zero | tr '\0' x > "$MG/in/long"
 { head -c 200 /dev/zero | tr '\0' y; echo; } > "$MG/in/edge"
 printf 'line one\n\tline two ## y\n' > "$MG/in/body"
 for MGI in 2 3 4 5; do printf 'body %s\n' "$MGI" > "$MG/in/b$MGI"; done
+printf 'x\n' > "$MG/in/locked"
 # One run from <pane>, from $MG/in: its stdout in $MG/o, and "<rc>|<stderr>" printed. MG_TMUX
-# set, empty too, stands in for the server's TMUX. The files are read by builtins, since one
-# row runs it with the cat above first on PATH. SIGPIPE is ignored for the run, as par.sh and
-# the CI runners ignore it: a write into a pipe whose reader is gone is then a stderr line
-# under every runner, only.sh's too (#1575). stderr is read from a pipe to its end, so a
-# process the run left behind is waited for while it still writes there.
+# set, empty too, stands in for the server's TMUX, and MG_ST holds env's words for the store:
+# XDG_STATE_HOME and HOME. The files are read by builtins, since rows run it with a cat that
+# fails first on PATH. SIGPIPE is ignored for the run, as par.sh and the CI runners ignore it:
+# a write into a pipe whose reader is gone is then a stderr line under every runner, only.sh's
+# too (#1575). stderr is read from a pipe to its end, so a process the run left behind is
+# waited for while it still writes there.
+MG_ST=(XDG_STATE_HOME="$MG/state")
 mg() {                        # <pane> <args...>
     local e rc
-    e=$(trap '' PIPE; cd "$MG/in" && env TMUX="${MG_TMUX-$MGSOCK,0,0}" TMUX_PANE="$1" \
-        XDG_STATE_HOME="$MG/state" COCKPIT_TUI_BIN="$MG/bin/cockpit-tui" \
-        GIT_CEILING_DIRECTORIES="$MG" timeout 20 "$DIR/scripts/cockpit-msg" "${@:2}" \
-        </dev/null 2>&1 >"$MG/o"); rc=$?
+    e=$(trap '' PIPE; cd "$MG/in" && env "${MG_ST[@]}" TMUX="${MG_TMUX-$MGSOCK,0,0}" \
+        TMUX_PANE="$1" COCKPIT_TUI_BIN="$MG/bin/cockpit-tui" GIT_CEILING_DIRECTORIES="$MG" \
+        timeout 20 "$DIR/scripts/cockpit-msg" "${@:2}" </dev/null 2>&1 >"$MG/o"); rc=$?
     printf '%s|%s' "$rc" "$e"
 }
 mg_send() { mg "$MGA" send --session "$MGHA" "$MGHB" "$@"; }   # <summary> <body>: A to B
 mg_read() { mg "$MGB" read --session "$MGHB" "$1"; }            # <msg_id>, as B
 mg_ls() { (cd "$MG/state" 2>/dev/null && find . -mindepth 1 | LC_ALL=C sort | tr '\n' ' '); }
 mg_tmp() { mg_ls | tr ' ' '\n' | grep -c '/\.new\.'; }          # temp files in the store
+mg_nf() { find "$MG/state" -type f 2>/dev/null | wc -l | tr -d ' '; }   # files in the store
 mg_marks() { ls -A "$MGST/msg/$MGHB/read" 2>&1 | LC_ALL=C sort | tr '\n' ' '; }
+mg_od() { printf ' %s\n' "$(printf '%s' "$1" | sed 's/../& /g')" > "$MG/od.out"; }   # <msg_id>
+mg_is() {                     # <name> <glob> <got>: one row, the got matched against the glob
+    # shellcheck disable=SC2254  # $2 is meant as a glob, not a literal
+    case $3 in $2) ok "$1" ;; *) bad "$1" "$2" "$3" ;; esac
+}
 mg_valid() {                  # <envelope> -> true when it passes the schema's own fields
     jq -r --slurpfile s "$DIR/contracts/agent-message.schema.json" '
         $s[0] as $S | $S["$defs"] as $D | . as $e
@@ -30471,12 +30521,29 @@ mg_valid() {                  # <envelope> -> true when it passes the schema's o
         | all' "$1" 2>&1
 }
 MGNO="cockpit-msg: not in a tmux pane: TMUX must be set and TMUX_PANE must be %N"
+MGUS='usage: cockpit-msg send --session <id> <to> <summary-file> <body-file>
+       cockpit-msg read --session <id> <msg_id>
+       cockpit-msg who'
+
+# A wrong argument list: the usage on stderr, exit 2.
+is "send with four arguments is a usage error, exit 2" "2|$MGUS" \
+   "$(mg "$MGA" send --session "$MGHA" "$MGHB" "$MG/in/sum")"
+is "send whose first argument is not --session is a usage error" "2|$MGUS" \
+   "$(mg "$MGA" send --from "$MGHA" "$MGHB" "$MG/in/sum" "$MG/in/body")"
+is "read with two arguments is a usage error" "2|$MGUS" "$(mg "$MGB" read --session "$MGHB")"
+is "read whose first argument is not --session is a usage error" "2|$MGUS" \
+   "$(mg "$MGB" read --from "$MGHB" 0011223344556677)"
+is "who with an argument is a usage error" "2|$MGUS" "$(mg "$MGA" who x)"
+is "an unknown command is a usage error" "2|$MGUS" "$(mg "$MGA" list)"
 
 # Each refusal: one line on stderr, exit 1, and nothing in the store.
 is "send refuses a run with no TMUX" "1|$MGNO|" \
    "$(MG_TMUX='' mg_send "$MG/in/sum" "$MG/in/body")|$(mg_ls)"
 is "send refuses a pane id that is not %N" "1|$MGNO|" \
    "$(mg x1 send --session "$MGHA" "$MGHB" "$MG/in/sum" "$MG/in/body")|$(mg_ls)"
+mg_is "send says why when tmux cannot read its pane, and stores nothing" \
+   "1|cockpit-msg: cannot read pane $MGA: ?*|" \
+   "$(MG_TMUX="$MG/none,0,0" mg_send "$MG/in/sum" "$MG/in/body")|$(mg_ls)"
 is "send refuses a pane that publishes no session" \
    "1|cockpit-msg: pane $MGN publishes no session in @cockpit_session|" \
    "$(mg "$MGN" send --session "$MGHA" "$MGHB" "$MG/in/sum" "$MG/in/body")|$(mg_ls)"
@@ -30490,9 +30557,19 @@ is "send refuses a receiver no pane of the server publishes" \
    "1|cockpit-msg: no pane of this tmux server publishes session $MGHZ|" \
    "$(mg "$MGA" send --session "$MGHA" "$MGHZ" "$MG/in/sum" "$MG/in/body")|$(mg_ls)"
 is "send refuses a summary file that is not there" \
-   "1|cockpit-msg: no summary file: $MG/in/none|" "$(mg_send "$MG/in/none" "$MG/in/body")|$(mg_ls)"
+   "1|cockpit-msg: no readable summary file: $MG/in/none|" \
+   "$(mg_send "$MG/in/none" "$MG/in/body")|$(mg_ls)"
 is "send refuses a body file that is not there" \
-   "1|cockpit-msg: no body file: $MG/in/none|" "$(mg_send "$MG/in/sum" "$MG/in/none")|$(mg_ls)"
+   "1|cockpit-msg: no readable body file: $MG/in/none|" \
+   "$(mg_send "$MG/in/sum" "$MG/in/none")|$(mg_ls)"
+chmod 000 "$MG/in/locked"
+is "send refuses a summary file it cannot read" \
+   "1|cockpit-msg: no readable summary file: $MG/in/locked|" \
+   "$(mg_send "$MG/in/locked" "$MG/in/body")|$(mg_ls)"
+is "send refuses a body file it cannot read" \
+   "1|cockpit-msg: no readable body file: $MG/in/locked|" \
+   "$(mg_send "$MG/in/sum" "$MG/in/locked")|$(mg_ls)"
+chmod 600 "$MG/in/locked"
 is "send refuses an empty summary" "1|cockpit-msg: the summary is empty|" \
    "$(mg_send "$MG/in/empty" "$MG/in/body")|$(mg_ls)"
 is "send refuses a summary of two lines" "1|cockpit-msg: the summary is not one line of text|" \
@@ -30500,8 +30577,29 @@ is "send refuses a summary of two lines" "1|cockpit-msg: the summary is not one 
 is "send refuses a summary holding an escape" \
    "1|cockpit-msg: the summary is not one line of text|" \
    "$(mg_send "$MG/in/esc" "$MG/in/body")|$(mg_ls)"
+is "send refuses a summary holding a NUL byte" \
+   "1|cockpit-msg: the summary is not one line of text|" \
+   "$(mg_send "$MG/in/nul" "$MG/in/body")|$(mg_ls)"
 is "send refuses a summary over 200 bytes" "1|cockpit-msg: the summary is over 200 bytes|" \
    "$(mg_send "$MG/in/long" "$MG/in/body")|$(mg_ls)"
+# 101 two-byte characters: 202 bytes, though 101 characters to a UTF-8 locale's count.
+printf '%s\n' "$(printf 'é%.0s' $(seq 101))" > "$MG/in/wide"
+MG_ST=(LC_ALL=C.UTF-8 XDG_STATE_HOME="$MG/state")
+is "send counts the summary in bytes under a UTF-8 locale too" \
+   "1|cockpit-msg: the summary is over 200 bytes|" "$(mg_send "$MG/in/wide" "$MG/in/body")|$(mg_ls)"
+MG_ST=(XDG_STATE_HOME="$MG/state")
+is "send says so when it cannot read the summary" "1|cockpit-msg: cannot read $MG/in/sum|" \
+   "$(PATH="$MG/nohead:$PATH" mg_send "$MG/in/sum" "$MG/in/body")|$(mg_ls)"
+# The state folder by store::xdg_dir's rule (#1508): with neither home absolute, no store.
+MG_ST=(-u XDG_STATE_HOME -u HOME)
+is "send with neither XDG_STATE_HOME nor HOME refuses: no state folder" \
+   "1|cockpit-msg: no state folder: neither XDG_STATE_HOME nor HOME is an absolute path|" \
+   "$(mg_send "$MG/in/sum" "$MG/in/body")|$(mg_ls)"
+: > "$MG/bad/tmux-cockpit"; MG_ST=(XDG_STATE_HOME="$MG/bad")
+mg_is "send gives mkdir's reason when it cannot make the store's folder" \
+   "1|cockpit-msg: cannot make $MG/bad/tmux-cockpit/refs: ?*|" \
+   "$(mg_send "$MG/in/sum" "$MG/in/body")|$(mg_ls)"
+MG_ST=(XDG_STATE_HOME="$MG/state")
 
 # The accepted send: its msg_id on stdout, the envelope in B's folder, both refs, the modes.
 MGR=$(mg_send "$MG/in/sum" "$MG/in/body"); MGM1=$(<"$MG/o")
@@ -30576,6 +30674,30 @@ sed 's/"schema_version":2/"schema_version":1/' "$MGV" > "$MG/v1" && cat "$MG/v1"
 is "an envelope of another schema_version is refused" \
    "1|cockpit-msg: message $MGM5 is no agent-message v2|" "$(mg_read "$MGM5")|$(<"$MG/o")"
 
+# An envelope that is a symbolic link, to a copy elsewhere that names the link's msg_id: read
+# through, it would print m1's body.
+MGL=1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d
+sed "s/\"msg_id\":\"$MGM1\"/\"msg_id\":\"$MGL\"/" "$MGE" > "$MG/away/$MGL.json"
+ln -s "$MG/away/$MGL.json" "$MGST/msg/$MGHB/$MGL.json"
+is "an envelope that is a symbolic link is refused, and nothing of it printed" \
+   "1|cockpit-msg: message $MGL is a symbolic link; envelopes are read only as files|" \
+   "$(mg_read "$MGL")|$(<"$MG/o")"
+rm -f "$MGST/msg/$MGHB/$MGL.json"
+MGNB=2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e
+sed -e "s/\"msg_id\":\"$MGM1\"/\"msg_id\":\"$MGNB\"/" -e 's/"body_ref":"[0-9a-f]*\.md",//' \
+    "$MGE" > "$MGST/msg/$MGHB/$MGNB.json"
+is "an envelope that names no body is refused" "1|cockpit-msg: message $MGNB names no body|" \
+   "$(mg_read "$MGNB")|$(<"$MG/o")"
+rm -f "$MGST/msg/$MGHB/$MGNB.json"
+mg_send "$MG/in/sum" "$MG/in/b2" >/dev/null; MGM6=$(<"$MG/o"); rm -f "$MGST/refs/$MGM6.md"
+is "a message whose body ref is gone is refused" \
+   "1|cockpit-msg: message $MGM6 has no body in refs/|" "$(mg_read "$MGM6")|$(<"$MG/o")"
+is "read says so when it cannot read the envelope" "1|cockpit-msg: cannot read message $MGM1|" \
+   "$(PATH="$MG/nohead:$PATH" mg_read "$MGM1")|$(<"$MG/o")"
+is "read says so when it cannot read the body, and prints none" \
+   "1|cockpit-msg: cannot read the body of message $MGM1|" \
+   "$(PATH="$MG/nocat:$PATH" mg_read "$MGM1")|$(<"$MG/o")"
+
 # A msg_id is stored once. The od stub hands two sends the same one.
 MGD=0f1e2d3c4b5a69788796a5b4c3d2e1f0
 printf ' 0f 1e 2d 3c 4b 5a 69 78 87 96 a5 b4 c3 d2 e1 f0\n' > "$MG/od.out"
@@ -30603,40 +30725,105 @@ is "a write that fails leaves no temp file in the store" \
    "1|cockpit-msg: cannot write in $MGST/refs|0" \
    "$(PATH="$MG/nocat:$PATH" mg_send "$MG/in/sum" "$MG/in/body")|$(mg_tmp)"
 
-# The published sessions as a list longer than a pipe holds, the receiver's line first: about
-# 151 KB from published(), over twice a 64 KiB pipe buffer, the most Linux with 4 KiB pages and
-# macOS give one. A send that stopped reading at its match would leave published() writing into
-# a pipe nobody reads, and with SIGPIPE ignored each write after that is a "write error" line
-# on stderr. For this one run a tmux first on PATH answers the caller's session and the list.
-cat > "$MG/big/tmux" <<STUB
-#!/bin/sh
-case \$1 in
-display-message) echo 3f2a9c0d-1e4b-4a67-8c9d-0e1f2a3b4c5d ;;
-list-panes) cat "$MG/panes" ;;
-*) exit 1 ;;
-esac
-STUB
-chmod +x "$MG/big/tmux"
-{ printf '%%1\037%s\n' 7A1B2C3D-4E5F-4061-8273-94A5B6C7D8E9
-  for ((MGI = 2; MGI <= 4001; MGI++)); do
-      printf '%%%s\037%s\n' "$MGI" 0c4f2e9a-7b1d-4e58-9a6b-1c2d3e4f5a6b; done; } > "$MG/panes"
-MGR=$(PATH="$MG/big:$PATH" mg_send "$MG/in/sum" "$MG/in/body")
-# Its first line, its line count, and the bytes published() writes: 4 fewer a line than the
-# list's, a UUID's dashes.
-is "send reads a session list longer than a pipe holds to its end: nothing on stderr" \
-   "0||1|over 128 KiB" \
-   "${MGR%%$'\n'*}|$(printf '%s' "$MGR" | grep -c '')|$(
-      [ $(( $(wc -c < "$MG/panes") - 4 * $(wc -l < "$MG/panes") )) -gt 131072 ] &&
-      echo over 128 KiB)"
+# Each refusal past the store's folders leaves no file: the store's count of files stays.
+MGF0=$(mg_nf)
+is "send says why when it cannot make a temp file, and leaves no file" \
+   "1|cockpit-msg: cannot make a temp file in $MGST/refs (own_tmpfile: mktemp)|$MGF0" \
+   "$(PATH="$MG/nomktemp:$PATH" mg_send "$MG/in/sum" "$MG/in/body")|$(mg_nf)"
+MGK=3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f; mg_od "$MGK"
+is "send gives ln's reason when a link fails, and leaves no file" \
+   "1|cockpit-msg: cannot link $MGK.txt into place: ln: stub refuses|$MGF0" \
+   "$(PATH="$MG/noln:$MG/od:$PATH" mg_send "$MG/in/sum" "$MG/in/body")|$(mg_nf)"
+MGJ=4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a; mg_od "$MGJ"
+ln -s "$MG/nowhere" "$MGST/refs/$MGJ.txt"
+is "a dangling symbolic link at a ref's name is a name taken: refused, and the link stays" \
+   "1|cockpit-msg: msg_id $MGJ is already stored|link" \
+   "$(PATH="$MG/od:$PATH" mg_send "$MG/in/sum" "$MG/in/body")|$(
+      [ -L "$MGST/refs/$MGJ.txt" ] && echo link)"
+rm -f "$MGST/refs/$MGJ.txt"
+is "send refuses an od that fails, though it printed 16 bytes" \
+   "1|cockpit-msg: cannot read 16 bytes from /dev/urandom|$MGF0" \
+   "$(PATH="$MG/nood:$PATH" mg_send "$MG/in/sum" "$MG/in/body")|$(mg_nf)"
+printf ' 0f 1e\n' > "$MG/od.out"
+is "send refuses an od that gives fewer than 16 bytes" \
+   "1|cockpit-msg: cannot read 16 bytes from /dev/urandom|$MGF0" \
+   "$(PATH="$MG/od:$PATH" mg_send "$MG/in/sum" "$MG/in/body")|$(mg_nf)"
+is "send refuses a clock it cannot read" "1|cockpit-msg: cannot read the clock|$MGF0" \
+   "$(PATH="$MG/nodate:$PATH" mg_send "$MG/in/sum" "$MG/in/body")|$(mg_nf)"
 
-# who: A, B (its folder cockpit-tui's answer, its upper-case UUID in lower case) and C (no
-# repo); N and X publish no session.
+# A signal mid-send ends the run with 128 + the signal, and leave takes back what it wrote.
+# The cat above sends it on its 2nd call, the body's copy, once the summary ref is in place.
+mg_sig() {                    # <signal> <msg_id> -> "<rc>|<stderr>|<files of that id>|<files>"
+    local r
+    printf '%s 2\n' "$1" > "$MG/sig"; : > "$MG/sigcalls"; mg_od "$2"
+    r=$(PATH="$MG/sigcat:$MG/od:$PATH" mg_send "$MG/in/sum" "$MG/in/body")
+    printf '%s|%s|%s' "$r" "$(find "$MG/state" -name "$2*" | wc -l | tr -d ' ')" "$(mg_nf)"
+}
+is "a TERM mid-send ends it with 143 and leaves no file" "143||0|$MGF0" \
+   "$(mg_sig TERM 5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b)"
+is "a HUP mid-send ends it with 129 and leaves no file" "129||0|$MGF0" \
+   "$(mg_sig HUP 6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c)"
+is "an INT mid-send ends it with 130 and leaves no file" "130||0|$MGF0" \
+   "$(mg_sig INT 7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d)"
+# A TERM in every rm, the first in put_new right after the summary's link: leave ignores it,
+# so the cleanup is not cut short and the summary ref goes.
+MGT=8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e; mg_od "$MGT"
+is "a TERM during the cleanup does not cut it short: no file left" "143||0|$MGF0" \
+   "$(PATH="$MG/sigrm:$MG/od:$PATH" mg_send "$MG/in/sum" "$MG/in/body")|$(
+      find "$MG/state" -name "$MGT*" | wc -l | tr -d ' ')|$(mg_nf)"
+
+# The state folder from HOME: XDG_STATE_HOME unset, or relative, which xdg_dir ignores.
+MG_ST=(-u XDG_STATE_HOME HOME="$MG/home")
+MGR=$(mg_send "$MG/in/sum" "$MG/in/body"); MGH1=$(<"$MG/o")
+is "with no XDG_STATE_HOME the store is under HOME, in .local/state/tmux-cockpit" "0||yes" \
+   "$MGR|$([ -f "$MG/home/.local/state/tmux-cockpit/msg/$MGHB/$MGH1.json" ] && echo yes)"
+MG_ST=(XDG_STATE_HOME=rel HOME="$MG/home")
+MGR=$(mg_send "$MG/in/sum" "$MG/in/body"); MGH2=$(<"$MG/o")
+is "a relative XDG_STATE_HOME is ignored: the store is under HOME, none under the cwd" \
+   "0||yes|none" \
+   "$MGR|$([ -f "$MG/home/.local/state/tmux-cockpit/msg/$MGHB/$MGH2.json" ] &&
+      echo yes)|$([ -e "$MG/in/rel" ] && echo some || echo none)"
+MG_ST=(XDG_STATE_HOME="$MG/state")
+
+# A copy of the script beside a copy of lib/: each top-level library broken in turn, then a
+# version test forced true, as under a bash older than 4.
+cp "$DIR/scripts/cockpit-msg" "$MG/cp/scripts/"
+MGL3=""
+for MGI in git-env git workdir tmpdir; do
+    cp "$DIR/scripts/lib/"*.sh "$MG/cp/scripts/lib/"
+    printf 'return 1\n' > "$MG/cp/scripts/lib/$MGI.sh"
+    "$MG/cp/scripts/cockpit-msg" who </dev/null >/dev/null 2>&1; MGL3="$MGL3 $MGI:$?"
+done
+is "the script exits 3 when git-env, git, workdir or tmpdir fails to load" \
+   " git-env:3 git:3 workdir:3 tmpdir:3" "$MGL3"
+cp "$DIR/scripts/lib/"*.sh "$MG/cp/scripts/lib/"
+sed 's/"${BASH_VERSINFO\[0\]:-0}" -lt 4/3 -lt 4/' "$DIR/scripts/cockpit-msg" \
+    > "$MG/cp/scripts/cockpit-msg"
+MGQ=$("$MG/cp/scripts/cockpit-msg" who 2>&1 </dev/null); MGI=$?
+is "under a bash older than 4 it exits 3 and says what it needs" \
+   "3|cockpit-msg needs bash 4 or newer" "$MGI|${MGQ%% (found*}"
+
+# who: in a pane of the server, its list read whole, a gone pane left out, git's failure said.
+is "who refuses a run with no TMUX" "1|$MGNO|" "$(MG_TMUX='' mg "$MGA" who)|$(<"$MG/o")"
+mg_is "who says why when tmux cannot list the panes, and prints no session" \
+   "1|cockpit-msg: cannot list the panes of this tmux server: ?*|" \
+   "$(MG_TMUX="$MG/none,0,0" mg "$MGA" who)|$(<"$MG/o")"
+is "who gives git's reason when git fails on a pane's folder" \
+   "1|cockpit-msg: cannot read the branch of $MG/a: git: stub refuses|" \
+   "$(PATH="$MG/nogit:$PATH" mg "$MGA" who)|$(<"$MG/o")"
+is "who leaves out a pane gone between the list and the read of its folder" "0||" \
+   "$(PATH="$MG/tm:$PATH" mg "$MGA" who)|$(<"$MG/o")"
+# A, B (its folder cockpit-tui's answer, its upper-case UUID in lower case), C (no repo) and D
+# (a detached HEAD); N and X publish no session.
 is "who lists each session that can receive: its hex id, branch and work folder" \
-   "$(printf '0||%s\t%s\t%s\n%s\t%s\t%s\n%s\t%s\t%s' "$MGHA" main "$MG/a" "$MGHB" feat "$MG/c" \
-       "$MGHC" - "$MG/n")" "$(mg "$MGA" who)|$(<"$MG/o")"
+   "$(printf '0||%s\t%s\t%s\n%s\t%s\t%s\n%s\t%s\t%s\n%s\t%s\t%s' "$MGHA" main "$MG/a" \
+       "$MGHB" feat "$MG/c" "$MGHC" - "$MG/n" "$MGHD" - "$MG/d")" "$(mg "$MGA" who)|$(<"$MG/o")"
 "$TMUX_REAL" -L "$MGS" kill-server >/dev/null 2>&1
-unset -f mg mg_pane mg_opt mg_send mg_read mg_ls mg_tmp mg_marks mg_valid
+unset -f mg mg_pane mg_opt mg_send mg_read mg_ls mg_tmp mg_nf mg_marks mg_od mg_is mg_valid \
+    mg_sig
 fi
+
+
 
 echo "== tmux-open-path and tmux-branch: the pane's work folder, not its launch folder (#1345) =="
 # The files browser, the click picker and the branch popup take the folder from pane_workdir
