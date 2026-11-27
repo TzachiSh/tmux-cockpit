@@ -154,10 +154,15 @@ fn the_ladder_draws_two_rows_a_step_with_the_label_above_the_arrow() {
 #[test]
 fn a_note_not_starting_need_from_you_shows_under_its_step_not_in_the_box() {
     let f = parsed(NOTE);
-    assert_eq!(f.steps[0].notes, vec!["reads the issue first".to_string()]);
+    let note = flow::Note {
+        text: "reads the issue first".into(),
+        place: flow::Place::Right(1),
+    };
+    assert_eq!(f.steps[0].notes, [note]);
     assert_eq!(f.need, vec!["pick a name".to_string()]);
     let out = flow::render(NOTE, 60, &UNI);
-    assert!(out[3].contains("reads the issue first"), "{out:?}");
+    // Right of the last lifeline it has 12 columns, so it grows to 16 over that lifeline and wraps (#1533).
+    assert!(out[3].ends_with("↳ reads the") && out[4].ends_with("issue first"), "{out:?}");
     let list = flow::render(NOTE, 40, &UNI);
     assert!(list[1].contains("reads the issue first"), "{list:?}");
 }
@@ -461,7 +466,11 @@ fn an_escape_sequence_in_a_label_leaves_no_trace() {
 #[test]
 fn need_from_you_is_a_whole_prefix_not_the_start_of_a_longer_word() {
     let f = parsed("sequenceDiagram\nA->>B: x\nNote over A: NEED FROM YOUR call is wanted\nNote over A: NEED FROM YOU pick one\n");
-    assert_eq!(f.steps[0].notes, vec!["NEED FROM YOUR call is wanted".to_string()]);
+    let note = flow::Note {
+        text: "NEED FROM YOUR call is wanted".into(),
+        place: flow::Place::Over(0, 0),
+    };
+    assert_eq!(f.steps[0].notes, [note]);
     assert_eq!(f.need, vec!["pick one".to_string()]);
 }
 
@@ -518,6 +527,10 @@ fn a_hand_built_step_naming_a_missing_actor_draws_without_a_panic() {
     let mut f = parsed("sequenceDiagram\nA->>B: x\n");
     f.steps[0].to = 7;
     f.steps[0].from = usize::MAX;
+    f.steps[0].notes.push(flow::Note {
+        text: "over actors past the end".into(),
+        place: flow::Place::Over(7, usize::MAX),
+    });
     let no_actors = flow::Flow {
         steps: f.steps.clone(),
         ..Default::default()
@@ -538,7 +551,11 @@ fn lead_and_long_note() -> String {
 #[test]
 fn a_note_before_the_first_step_shows_under_the_header() {
     let f = parsed(&lead_and_long_note());
-    assert_eq!(f.lead, vec!["starts after lunch".to_string()]);
+    let note = flow::Note {
+        text: "starts after lunch".into(),
+        place: flow::Place::Over(0, 0),
+    };
+    assert_eq!(f.lead, [note]);
     assert!(flow::render(&lead_and_long_note(), 60, &UNI)[1].contains("↳ starts after lunch"));
     assert!(flow::render(&lead_and_long_note(), 40, &UNI)[0].contains("↳ starts after lunch"));
 }

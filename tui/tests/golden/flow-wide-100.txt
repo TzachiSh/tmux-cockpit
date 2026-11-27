@@ -5,4 +5,7 @@
                          │◀┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄│
                          │                                            │ self 🇺🇸
                          │                                            │─╮↩
-   ↳ 長い注意書き 🧑‍💻 wraps across several rows of the narrow screen   │
+       ↳ 長い注意書き 🧑‍💻 │                                            │
+            wraps across │                                            │
+     several rows of the │                                            │
+           narrow screen │                                            │

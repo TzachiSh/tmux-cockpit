@@ -5,7 +5,8 @@
 //! What it reads: `participant` and `actor` (with `as`), implicit participants,
 //! Mermaid's ten arrows (`->>`, `-->>`, `->`, `-->`, `-x`, `--x`, `-)`, `--)`,
 //! `<<->>` and `<<-->>`, each drawn with its own line and head in both shapes),
-//! `autonumber`, `Note`, and a
+//! `autonumber`, `Note left of`, `right of` and `over` (the ladder draws a note
+//! where its place says, the list under its step), and a
 //! `%% status: <✓|●|○|✗|!|done|running|pending|failed|needs> [HH:MM]` line
 //! after a step. `loop`, `alt`, `opt`, `else` and `end` are dropped and their
 //! steps kept. Anything else is an `Err` naming the line, and [`render`] then
@@ -91,6 +92,22 @@ pub enum Head {
     Both,
 }
 
+/// Where a note sits, by actor index: left of or right of one lifeline, or
+/// over one or two (`Note over A` is `Over(a, a)`).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum Place {
+    Left(usize),
+    Right(usize),
+    Over(usize, usize),
+}
+
+/// A note other than NEED FROM YOU: its text and where it sits.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Note {
+    pub text: String,
+    pub place: Place,
+}
+
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Step {
     pub from: usize,
@@ -101,7 +118,7 @@ pub struct Step {
     pub status: Option<Status>,
     pub time: Option<String>,
     /// Notes written after this step, other than NEED FROM YOU.
-    pub notes: Vec<String>,
+    pub notes: Vec<Note>,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
@@ -109,7 +126,7 @@ pub struct Flow {
     pub actors: Vec<Actor>,
     pub steps: Vec<Step>,
     /// Notes before the first step.
-    pub lead: Vec<String>,
+    pub lead: Vec<Note>,
     /// The NEED FROM YOU notes, prefix dropped, for the closing box.
     pub need: Vec<String>,
     pub autonumber: bool,
@@ -252,16 +269,28 @@ fn line(f: &mut Flow, l: &str, depth: &mut usize) -> Result<(), String> {
 fn note(f: &mut Flow, rest: &str) -> Result<(), String> {
     let (place, text) = rest.split_once(':').ok_or("a note without ':'")?;
     let place = place.trim();
-    let ids = ["left of ", "right of ", "over "]
+    // Each place from the first and the last actor it names: over takes both,
+    // left of and right of the first.
+    type Make = fn(usize, usize) -> Place;
+    let places: [(&str, Make); 3] = [
+        ("left of ", |a, _| Place::Left(a)),
+        ("right of ", |a, _| Place::Right(a)),
+        ("over ", Place::Over),
+    ];
+    let (ids, make) = places
         .iter()
-        .find_map(|p| place.strip_prefix(p))
+        .find_map(|&(p, make)| place.strip_prefix(p).map(|ids| (ids, make)))
         .ok_or("a note without left of, right of or over")?;
+    let mut ends: Option<(usize, usize)> = None;
     for id in ids.split(',').map(str::trim) {
         if !is_id(id) {
             return Err("a note over no participant".into());
         }
-        f.actor(id);
+        let i = f.actor(id);
+        ends = Some(ends.map_or((i, i), |(first, _)| (first, i)));
     }
+    let (first, last) = ends.ok_or("a note over no participant")?;
+    let place = make(first, last);
     let text = tidy(text.trim());
     // The prefix ends the word: "NEED FROM YOUR call" is an ordinary note.
     let need = text
@@ -270,9 +299,9 @@ fn note(f: &mut Flow, rest: &str) -> Result<(), String> {
     if let Some(need) = need {
         f.need.push(need.trim_start_matches(':').trim().to_string());
     } else if let Some(step) = f.steps.last_mut() {
-        step.notes.push(text);
+        step.notes.push(Note { text, place });
     } else {
-        f.lead.push(text);
+        f.lead.push(Note { text, place });
     }
     Ok(())
 }
@@ -394,6 +423,43 @@ fn note_rows(text: &str, w: usize, g: &Glyphs) -> Vec<String> {
         .collect()
 }
 
+/// The fewest columns a ladder note gets. A layout floor, not a fallback
+/// value: a region its place leaves narrower (right of the last actor, left of
+/// the first, over one lifeline between near neighbours) grows to this and may
+/// then cover the lifeline it sits by, so the note still has room to read
+/// (#1533).
+const NOTE_MIN: usize = 16;
+
+/// Actor `i`'s lifeline column in `cols`. A step or a note built by hand may
+/// name an actor past the end: it draws at the last one.
+fn lifeline(cols: &[usize], i: usize) -> usize {
+    cols.get(i).or(cols.last()).copied().unwrap_or_default()
+}
+
+/// A ladder note's columns `[start, end)`, from the lifeline columns `cols`
+/// and the columns `lo..hi` a note may use (#1533). Right of a lifeline it
+/// starts two columns after it, left of one it ends two columns before it,
+/// over two it spans them, and over one it reaches halfway to the lifeline on
+/// each side, or to `lo` or `hi` where there is none. A region under
+/// [`NOTE_MIN`] grows to it about its centre, then slides back inside `lo..hi`.
+fn note_region(place: &Place, cols: &[usize], lo: usize, hi: usize) -> (usize, usize) {
+    let at = |i: usize| lifeline(cols, i);
+    let (start, end) = match *place {
+        Place::Right(a) => (at(a) + 2, hi),
+        Place::Left(a) => (lo, at(a).saturating_sub(1)),
+        Place::Over(a, b) if at(a) == at(b) => {
+            let c = at(a);
+            let before = cols.iter().copied().filter(|&l| l < c).max();
+            let after = cols.iter().copied().filter(|&l| l > c).min();
+            (before.map_or(lo, |l| l.midpoint(c)), after.map_or(hi, |r| c.midpoint(r)))
+        }
+        Place::Over(a, b) => (at(a).min(at(b)), at(a).max(at(b)) + 1),
+    };
+    let width = end.saturating_sub(start).max(NOTE_MIN).min(hi.saturating_sub(lo));
+    let start = ((start + end).saturating_sub(width) / 2).min(hi.saturating_sub(width)).max(lo);
+    (start, start + width)
+}
+
 /// A row of cells written at columns, one grapheme cluster a cell. A wide
 /// cluster takes two cells, the second empty; overwriting either half blanks
 /// the other.
@@ -501,8 +567,9 @@ fn ladder(f: &Flow, w: usize, g: &Glyphs) -> Vec<String> {
     let gutter = if f.has_status() { 3 } else { 1 };
     let right = if f.steps.iter().any(|s| s.time.is_some()) { 6 } else { 0 };
     let slot = (w.saturating_sub(gutter + right) / f.actors.len().max(1)).max(2);
-    // A step built by hand may name an actor past the end: it draws at the last.
-    let x = |i: usize| gutter + slot * i.min(f.actors.len().saturating_sub(1)) + slot / 2;
+    // One lifeline column an actor; a flow built by hand with no actor still has the first.
+    let cols: Vec<usize> = (0..f.actors.len().max(1)).map(|i| gutter + slot * i + slot / 2).collect();
+    let x = |i: usize| lifeline(&cols, i);
     let lifelines = || {
         let mut r = Row::new(w);
         for i in 0..f.actors.len() {
@@ -510,11 +577,22 @@ fn ladder(f: &Flow, w: usize, g: &Glyphs) -> Vec<String> {
         }
         r
     };
-    let notes = |out: &mut Vec<String>, notes: &[String]| {
-        for line in notes.iter().flat_map(|n| note_rows(n, w.saturating_sub(gutter), g)) {
-            let mut r = lifelines();
-            r.text(gutter, &line);
-            out.push(r.done());
+    // A note sits where its place says, between the gutter and the time column.
+    let notes = |out: &mut Vec<String>, notes: &[Note]| {
+        for n in notes {
+            let (start, end) = note_region(&n.place, &cols, gutter, w.saturating_sub(right));
+            for row in note_rows(&n.text, end - start, g) {
+                // Each row starts its region right of a lifeline, ends it left of one, and is centred over them.
+                let spare = (end - start).saturating_sub(row.width());
+                let pad = match n.place {
+                    Place::Right(_) => 0,
+                    Place::Left(_) => spare,
+                    Place::Over(..) => spare / 2,
+                };
+                let mut r = lifelines();
+                r.text(start + pad, &row);
+                out.push(r.done());
+            }
         }
     };
     let mut head = Row::new(w);
@@ -625,11 +703,16 @@ fn list(f: &Flow, w: usize, g: &Glyphs) -> Vec<String> {
             }
         }
         let indent = " ".repeat(lead.width());
-        for line in s.notes.iter().flat_map(|n| note_rows(n, w.saturating_sub(lead.width()), g)) {
+        for line in s.notes.iter().flat_map(|n| note_rows(&n.text, w.saturating_sub(lead.width()), g)) {
             out.push(fit(&format!("{indent}{line}"), w, g));
         }
     }
-    let mut head: Vec<String> = f.lead.iter().flat_map(|n| note_rows(n, w, g)).map(|l| fit(&l, w, g)).collect();
+    let mut head: Vec<String> = f
+        .lead
+        .iter()
+        .flat_map(|n| note_rows(&n.text, w, g))
+        .map(|l| fit(&l, w, g))
+        .collect();
     head.extend(out);
     head.extend(need_box(f, w, g));
     head
@@ -665,7 +748,7 @@ pub fn render(src: &str, w: usize, g: &Glyphs) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Actor, Flow, Glyphs, Head, Line, Row, Shape, Status, Step, draw, fit, ladder, list, parse, shape};
+    use super::{Actor, Flow, Glyphs, Head, Line, Note, Place, Row, Shape, Status, Step, draw, fit, ladder, list, parse, shape};
 
     const UNI: Glyphs = Glyphs::unicode();
 
@@ -689,12 +772,18 @@ mod tests {
             label: format!("deploy{bad}it"),
             status: Some(Status::Running),
             time: Some(format!("1{bad}2")),
-            notes: vec![format!("note{bad}here")],
+            notes: vec![Note {
+                text: format!("note{bad}here"),
+                place: Place::Right(0),
+            }],
         };
         Flow {
             actors: vec![actor("A"), actor("B")],
             steps: vec![step],
-            lead: vec![format!("lead{bad}line")],
+            lead: vec![Note {
+                text: format!("lead{bad}line"),
+                place: Place::Over(0, 1),
+            }],
             need: vec![format!("need{bad}this")],
             autonumber: true,
         }
