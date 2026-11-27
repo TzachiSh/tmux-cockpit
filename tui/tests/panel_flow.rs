@@ -381,6 +381,30 @@ fn a_label_right_of_the_last_lifeline_keeps_its_room_to_the_time_column() {
     assert_eq!(flow::render(LAST_SELF, 60, &UNI)[1], row);
 }
 
+// ------------------------------------------------- what the drawing leaves out (#1535)
+
+#[test]
+fn what_the_drawing_leaves_out_is_named_after_the_steps() {
+    // The list at 50, the ladder at 60: the ledger follows the last step's rows and comes before the NEED box.
+    let named = "(dropped: loop frames, alt frames, opt frames)";
+    for w in [50, 60] {
+        assert_eq!(flow::render(LOOP, w, &UNI).last().map(String::as_str), Some(named), "w={w}");
+        assert!(!flow::render(BASE, w, &UNI).iter().any(|l| l.starts_with("(dropped:")), "w={w}");
+        let need = flow::render(&format!("{LOOP}  Note over A: NEED FROM YOU: ok\n"), w, &UNI);
+        let top = need.iter().position(|l| l.starts_with("┌ NEED FROM YOU")).expect("a NEED box");
+        assert_eq!(need[top - 1], named, "w={w}");
+    }
+}
+
+#[test]
+fn a_kind_dropped_twice_is_named_once_in_first_seen_order() {
+    // An opt, a loop, then an opt again: one name a kind, opt first as the source has it.
+    let src = "sequenceDiagram\nopt a\nA->>B: x\nend\nloop b\nB->>A: y\nend\nopt c\nA->>B: z\nend\n";
+    let named = "(dropped: opt frames, loop frames)";
+    let out = flow::render(src, 60, &UNI);
+    assert_eq!(out.last().map(String::as_str), Some(named), "{out:?}");
+}
+
 // --------------------------------------------- decision 7: never wider, no panic
 
 #[test]
