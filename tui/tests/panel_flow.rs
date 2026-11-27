@@ -5,6 +5,7 @@
 //! COCKPIT_BLESS=1 cargo test --test panel_flow  rewrites the goldens.
 use cockpit_tui::panel::flow::{self, Shape, Status};
 use cockpit_tui::theme::Glyphs;
+use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 const UNI: Glyphs = Glyphs::unicode();
@@ -153,10 +154,15 @@ fn the_ladder_draws_two_rows_a_step_with_the_label_above_the_arrow() {
 #[test]
 fn a_note_not_starting_need_from_you_shows_under_its_step_not_in_the_box() {
     let f = parsed(NOTE);
-    assert_eq!(f.steps[0].notes, vec!["reads the issue first".to_string()]);
+    let note = flow::Note {
+        text: "reads the issue first".into(),
+        place: flow::Place::Right(1),
+    };
+    assert_eq!(f.steps[0].notes, [note]);
     assert_eq!(f.need, vec!["pick a name".to_string()]);
     let out = flow::render(NOTE, 60, &UNI);
-    assert!(out[3].contains("reads the issue first"), "{out:?}");
+    // Right of the last lifeline it has 12 columns, so it grows to 16 over that lifeline and wraps (#1533).
+    assert!(out[3].ends_with("↳ reads the") && out[4].ends_with("issue first"), "{out:?}");
     let list = flow::render(NOTE, 40, &UNI);
     assert!(list[1].contains("reads the issue first"), "{list:?}");
 }
@@ -257,6 +263,88 @@ fn a_right_to_left_or_self_arrow_ends_in_its_own_head() {
     }
 }
 
+// ------------------------------------------------- where a ladder note sits (#1533)
+
+/// A note right of, left of and over lifelines: three actors, at 60 their lifelines at 10, 29 and 48.
+const PLACED: &str = "sequenceDiagram\nparticipant A\nparticipant B\nparticipant C\nA->>B: x\n\
+Note right of B: hi\nNote left of B: lo\nNote over B,C: up\n";
+
+/// Notes with too few columns where they are placed: four actors and a status with a time, so at 61
+/// the lifelines are at 9, 22, 35 and 48 and a note may use columns 3 to 54.
+const SLID: &str = "sequenceDiagram\nparticipant A\nparticipant B\nparticipant C\nparticipant D\nA->>B: x\n\
+%% status: done 09:00\nNote right of D: rd\nNote left of A: la\nNote over A: oa\nNote over D: od\nNote over B: ob\n";
+
+/// A note over each of three lifelines: at 100 they are at 17, 50 and 83.
+const OVER_ONE: &str = "sequenceDiagram\nparticipant A\nparticipant B\nparticipant C\nA->>B: x\n\
+Note over A: owner reads the brief\nNote over B: agent runs the suite\nNote over C: CI reports back green\n";
+
+#[test]
+fn a_ladder_note_starts_where_its_placement_says() {
+    // Right of B two columns after its lifeline, left of B ending two before it, over B and C centred on both.
+    let out = flow::render(PLACED, 60, &UNI);
+    let col = |l: &String| l.chars().position(|c| c == '↳');
+    assert_eq!(
+        (col(&out[3]), col(&out[4]), col(&out[5])),
+        (Some(31), Some(24), Some(37)),
+        "{out:?}"
+    );
+}
+
+#[test]
+fn a_ladder_note_too_narrow_for_its_place_slides_inward() {
+    // Each region grows to 16 columns about its centre and slides back inside 3..55: right of D
+    // from 50..55 to 39..55, left of A from 3..8 to 3..19 (its row ends at 18), over A from 3..15
+    // (halfway to B) to 3..19, over D from 41..55 to 39..55, and over B from 15..28 (halfway to A
+    // and to C) to 13..29, each over row centred in its region.
+    let out = flow::render(SLID, 61, &UNI);
+    let col = |l: &String| l.chars().position(|c| c == '↳');
+    assert_eq!(
+        (col(&out[3]), col(&out[4]), col(&out[5]), col(&out[6]), col(&out[7])),
+        (Some(39), Some(15), Some(9), Some(45), Some(19)),
+        "{out:?}"
+    );
+}
+
+#[test]
+fn a_ladder_note_over_one_lifeline_spans_halfway_to_its_neighbours() {
+    // Over A from the gutter to halfway to B (1..33), over B halfway to A and to C (33..66), over C
+    // from halfway to B to the edge (66..100): each note fits on one row, centred, where 16 columns
+    // would wrap it.
+    let out = flow::render(OVER_ONE, 100, &UNI);
+    let col = |l: &String| l.chars().position(|c| c == '↳');
+    assert_eq!((col(&out[3]), col(&out[4]), col(&out[5])), (Some(5), Some(38), Some(71)), "{out:?}");
+    for (row, text) in [
+        (3, "owner reads the brief"),
+        (4, "agent runs the suite"),
+        (5, "CI reports back green"),
+    ] {
+        assert!(out[row].contains(&format!("↳ {text}")), "{out:?}");
+    }
+}
+
+/// The display columns of `c` in `l`, counted by grapheme cluster width.
+fn cols_of(l: &str, c: char) -> Vec<usize> {
+    let mut at = 0;
+    let mut out = vec![];
+    for g in l.graphemes(true) {
+        if g.starts_with(c) {
+            out.push(at);
+        }
+        at += g.width();
+    }
+    out
+}
+
+#[test]
+fn a_placed_note_keeps_the_lifelines_it_does_not_reach() {
+    let out = flow::render(
+        "sequenceDiagram\nparticipant 名 as 名前\nparticipant B as b\n名->>B: x\nNote right of 名: 漢字のノート\n",
+        60,
+        &UNI,
+    );
+    assert_eq!(cols_of(&out[3], '│'), cols_of(&out[2], '│'), "{out:?}");
+}
+
 // --------------------------------------------- decision 7: never wider, no panic
 
 #[test]
@@ -271,6 +359,9 @@ fn every_prefix_of_every_sample_fits_every_width_from_0_to_130() {
             ("note", NOTE),
             ("wide", WIDE),
             ("arrows", ARROW_KINDS),
+            ("placed", PLACED),
+            ("slid", SLID),
+            ("over one", OVER_ONE),
         ] {
             for cut in (0..=src.len()).filter(|&i| src.is_char_boundary(i)) {
                 for w in 0..=130 {
@@ -300,6 +391,9 @@ fn the_ascii_tier_draws_nothing_but_ascii() {
         ("note", NOTE),
         ("gly", GLY),
         ("arrows", ARROW_KINDS),
+        ("placed", PLACED),
+        ("slid", SLID),
+        ("over one", OVER_ONE),
     ] {
         for w in 0..=130 {
             let out = flow::render(src, w, &ASC);
@@ -372,7 +466,11 @@ fn an_escape_sequence_in_a_label_leaves_no_trace() {
 #[test]
 fn need_from_you_is_a_whole_prefix_not_the_start_of_a_longer_word() {
     let f = parsed("sequenceDiagram\nA->>B: x\nNote over A: NEED FROM YOUR call is wanted\nNote over A: NEED FROM YOU pick one\n");
-    assert_eq!(f.steps[0].notes, vec!["NEED FROM YOUR call is wanted".to_string()]);
+    let note = flow::Note {
+        text: "NEED FROM YOUR call is wanted".into(),
+        place: flow::Place::Over(0, 0),
+    };
+    assert_eq!(f.steps[0].notes, [note]);
     assert_eq!(f.need, vec!["pick one".to_string()]);
 }
 
@@ -429,6 +527,10 @@ fn a_hand_built_step_naming_a_missing_actor_draws_without_a_panic() {
     let mut f = parsed("sequenceDiagram\nA->>B: x\n");
     f.steps[0].to = 7;
     f.steps[0].from = usize::MAX;
+    f.steps[0].notes.push(flow::Note {
+        text: "over actors past the end".into(),
+        place: flow::Place::Over(7, usize::MAX),
+    });
     let no_actors = flow::Flow {
         steps: f.steps.clone(),
         ..Default::default()
@@ -449,7 +551,11 @@ fn lead_and_long_note() -> String {
 #[test]
 fn a_note_before_the_first_step_shows_under_the_header() {
     let f = parsed(&lead_and_long_note());
-    assert_eq!(f.lead, vec!["starts after lunch".to_string()]);
+    let note = flow::Note {
+        text: "starts after lunch".into(),
+        place: flow::Place::Over(0, 0),
+    };
+    assert_eq!(f.lead, [note]);
     assert!(flow::render(&lead_and_long_note(), 60, &UNI)[1].contains("↳ starts after lunch"));
     assert!(flow::render(&lead_and_long_note(), 40, &UNI)[0].contains("↳ starts after lunch"));
 }

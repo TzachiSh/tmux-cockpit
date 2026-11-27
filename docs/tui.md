@@ -1558,7 +1558,18 @@ not wired into Explain yet.
   closing the drawing (`NEED FROM YOUR` is an ordinary note). Any other note
   shows after a `↳`: under the step before it, or under the header when it
   comes before the first step. A long note wraps onto more rows with the `↳`
-  on the first only, the later rows lined up under its text (#1531).
+  on the first only, the later rows lined up under its text (#1531). In the
+  ladder a note sits where its place says (#1533), between the gutter and the
+  time column. Right of a lifeline it starts two columns after it, its rows
+  left aligned. Left of one it ends two columns before it, its rows right
+  aligned. Over two lifelines it spans them, and over one it reaches halfway
+  to the lifeline on each side, or to the gutter or the time column where
+  there is none, its rows centred. It gets at least 16 columns: a place that
+  leaves fewer (right of the last actor, left of the first, over one lifeline
+  between near neighbours) grows to 16 about its centre, slides back inside,
+  and may then cover the lifeline it sits by. Lifelines its rows do not reach
+  stay drawn. The list has no columns to place a note by, so it draws each one
+  under its step.
 - **Width.** No line is wider than the width, measured with `unicode-width` by
   grapheme cluster. Terminal escape sequences, bidi controls, U+2028/U+2029 and
   control characters never reach a line. `parse` tidies each name, label and
