@@ -723,3 +723,32 @@ by the 4 KB cap, or by a writer that died), not absolute, holds a control charac
 backslash, or names no directory. `#` is allowed: a directory may be named `x#y`, and
 `set-option -p` stores `#(...)` as written. tmux reads an argument's trailing `;` as a command
 separator, so a directory ending in `;` is passed as `\;`.
+
+## Messages between sessions
+
+`scripts/cockpit-msg` passes a message from one agent session to another, and no shared record
+holds its words (#1575, epic #1573). A session id here is the UUID in `@cockpit_session` with
+its dashes dropped, 32 lowercase hex digits, as every contract id is written.
+
+- `cockpit-msg who` lists the sessions that can receive, one a line: the id, the branch (`-`
+  for none) and the work folder, split by tabs. A session can receive when a pane of the tmux
+  server publishes it in `@cockpit_session`. The folder is the one the board shows for that
+  pane ([Working tree](#working-tree)).
+- `cockpit-msg send --session <id> <to> <summary-file> <body-file>` sends from the pane that
+  `$TMUX_PANE` names, and `<id>` must be the session that pane publishes. The summary is one
+  line of text, at most 200 bytes. It prints the new `msg_id`.
+- `cockpit-msg read --session <id> <msg_id>` prints the body of one of the calling session's
+  messages and marks that message read.
+
+A refusal is one line on stderr and exit 1, and it writes nothing. A usage error exits 2.
+
+The store is under `${XDG_STATE_HOME:-~/.local/state}/tmux-cockpit`, its folders 0700 and its
+files 0600. The body and the summary are refs, `refs/<msg_id>.md` and `refs/<msg_id>.txt`,
+in the folder and the shape `contracts/README.md` names. The envelope,
+`msg/<to>/<msg_id>.json`, passes `contracts/agent-message.schema.json` and holds ids and refs
+only. Each file is written beside its name and linked into place, so a reader sees all of it or
+none, and a send whose `msg_id` is stored already is refused. A read leaves one empty marker,
+`msg/<to>/read/<msg_id>`, so a newer message read first leaves an older one unread. A read
+refuses an envelope whose own `msg_id` is not the name it is stored under (a copied envelope
+is no new message), one addressed to another session, one of another `schema_version`, and a
+ref that is a symbolic link.
