@@ -2134,6 +2134,23 @@ fn golden_tablet_confirm() {
     tablet_goldens("confirm", &a);
 }
 
+/// #1516: the question in tablet mode, pinned before its layout moves into
+/// chrome. The text wraps at the body's width and each boxed option at 4
+/// columns less, so the question and its first option are long enough to wrap.
+#[test]
+fn golden_tablet_question() {
+    let mut a = tablet(app("work", "bash", "$ ls"));
+    writing(&mut a, "change the timeout there to 30");
+    a.reply(Ok(
+        "<question>Which of the two files should I change so that every pane times out after 30 seconds?</question>\n\
+                <option recommended=\"true\">~/bin/net-proxy, the one every pane sources when it starts and the old note names</option>\n\
+                <option>Both files</option>"
+            .into(),
+    ));
+    assert!(matches!(a.view, View::Question { .. }));
+    tablet_goldens("question", &a);
+}
+
 /// Past any tap guard: no test frame stamps the clock unless it means to.
 const LATER: u64 = 1_000_000;
 
