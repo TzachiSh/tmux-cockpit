@@ -1582,7 +1582,9 @@ not wired into Explain yet.
   next lifeline right of its step's left end, so it covers none and a step
   from A to C keeps its label between A and B (#1534). Past the last lifeline
   it may run to the time column, or to the edge when no step has a time, and
-  inside a frame it ends a blank column before the frame's side. The
+  inside a frame it ends a blank column before the frame's side. A self
+  step's mark keeps to the same room: short of it, the mark loses its shaft,
+  then its turn, and its head last (#1558). The
   list gives every label one column, so who to whom lines up, when that
   column holds the longest label or 6 columns of it, whichever is less, and
   the rest of the line (who to whom and the time) fits too; otherwise each
