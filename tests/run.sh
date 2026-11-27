@@ -30440,9 +30440,11 @@ printf 'line one\n\tline two ## y\n' > "$MG/in/body"
 for MGI in 2 3 4 5; do printf 'body %s\n' "$MGI" > "$MG/in/b$MGI"; done
 # One run from <pane>, from $MG/in: its stdout in $MG/o, and "<rc>|<stderr>" printed. MG_TMUX
 # set, empty too, stands in for the server's TMUX. The files are read by builtins, since one
-# row runs it with the cat above first on PATH.
+# row runs it with the cat above first on PATH. SIGPIPE is ignored for the run, as par.sh and
+# the CI runners ignore it: a write into a pipe whose reader is gone is then a stderr line
+# under every runner, only.sh's too (#1575).
 mg() {                        # <pane> <args...>
-    ( cd "$MG/in" && env TMUX="${MG_TMUX-$MGSOCK,0,0}" TMUX_PANE="$1" \
+    ( trap '' PIPE; cd "$MG/in" && env TMUX="${MG_TMUX-$MGSOCK,0,0}" TMUX_PANE="$1" \
         XDG_STATE_HOME="$MG/state" COCKPIT_TUI_BIN="$MG/bin/cockpit-tui" \
         GIT_CEILING_DIRECTORIES="$MG" timeout 20 "$DIR/scripts/cockpit-msg" "${@:2}" \
         </dev/null >"$MG/o" 2>"$MG/e" )

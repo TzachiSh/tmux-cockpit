@@ -158,7 +158,8 @@ cmd_send() {                  # --session <id> <to> <summary-file> <body-file>
     [ $# -eq 5 ] && [ "$1" = --session ] || usage
     local to=$3 sum=$4 body=$5 line id box now json p h known=''
     check_caller "$2"
-    while read -r p h; do [ "$h" != "$to" ] || { known=1; break; }; done < <(published)
+    # Read to the end: a reader that stops early leaves published() writing into a closed pipe.
+    while read -r p h; do [ "$h" != "$to" ] || known=1; done < <(published)
     [ -n "$known" ] || die "no pane of this tmux server publishes session $to"
     [ -f "$sum" ] && [ -r "$sum" ] || die "no summary file: $sum"
     [ -f "$body" ] && [ -r "$body" ] || die "no body file: $body"
