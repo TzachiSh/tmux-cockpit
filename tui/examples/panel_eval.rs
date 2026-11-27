@@ -8258,6 +8258,88 @@ esac
             let line = ended(&cases, "xp-held", reply).line();
             assert!(line.ends_with("  held out: lead missing 1, prompt wrong 1"), "{line}");
         }
+
+        // ------------------------------------------- #1570: whether a flow draws
+
+        /// A stand-in Explain answer: a line, then a fence tagged `tag` per body.
+        fn with_fences(tag: &str, bodies: &[&str]) -> String {
+            let fences = bodies.iter().map(|b| format!("```{tag}\n{b}\n```\n"));
+            format!("It waits.\n\n{}", fences.collect::<Vec<_>>().join("\n"))
+        }
+
+        /// Stand-in Explain answers, each with the word its row wants: a fence of
+        /// another tag is no flow, and of several fences one that fails or drops
+        /// is enough.
+        fn mermaid_replies() -> [(&'static str, String); 7] {
+            let (good, lossy) = ("sequenceDiagram\nA->>B: x", "sequenceDiagram\nA->>B: x\nactivate B");
+            let bad = "sequenceDiagram\nA->>B: x\nfrobnicate A";
+            [
+                ("not_drawn", with_fences("mermaid", &[bad])),
+                ("dropped", with_fences("mermaid", &[lossy])),
+                ("drawn", with_fences("mermaid", &[good])),
+                ("none", "It waits.".to_string()),
+                ("none", with_fences("sh", &[bad])),
+                ("not_drawn", with_fences("mermaid", &[good, lossy, bad])),
+                ("dropped", with_fences("mermaid", &[good, lossy])),
+            ]
+        }
+
+        /// #1570: an Explain row says whether the flow in its answer draws, and a
+        /// write row has no such field.
+        #[test]
+        fn an_explain_row_says_whether_its_mermaid_flow_draws() {
+            let cases = parse_cases(EXPLAIN_QUIET).unwrap();
+            let replies = mermaid_replies();
+            for (want, reply) in &replies {
+                let row = row_of(&ended(&cases, "xp-tune", reply));
+                assert_eq!(row["mermaid"], json!(want), "{reply:?}: {row}");
+            }
+            let write = parse_cases(ONE).unwrap();
+            let row = row_of(&ended(&write, "crash", &replies[2].1));
+            assert_eq!(row.get("mermaid"), None, "{row}");
+        }
+
+        /// #1570: a held-out row keeps `mermaid`, the tune row's word, which
+        /// holds no case text.
+        #[test]
+        fn a_held_out_explain_row_keeps_mermaid() {
+            let cases = parse_cases(EXPLAIN_QUIET).unwrap();
+            for (_, reply) in mermaid_replies() {
+                let tune = row_of(&ended(&cases, "xp-tune", &reply));
+                let held = row_of(&ended(&cases, "xp-held", &reply));
+                assert!(held["mermaid"].is_string(), "{reply:?}: {held}");
+                assert_eq!(held["mermaid"], tune["mermaid"], "{reply:?}: {held}");
+            }
+        }
+
+        /// A stand-in claude whose Explain answer turns on its request's word.
+        const MERMAID_CLAUDE: &str = r#"#!/bin/sh
+[ "$1" = --version ] && { echo 9.9.9; exit 0; }
+case "$(cat)" in
+*zq-bad*) printf 'It waits.\n\n```mermaid\nsequenceDiagram\nA->>B: x\nfrobnicate A\n```\n' ;;
+*zq-drop*) printf 'It waits.\n\n```mermaid\nsequenceDiagram\nA->>B: x\nactivate B\n```\n' ;;
+*zq-drawn*) printf 'It waits.\n\n```mermaid\nsequenceDiagram\nA->>B: x\n```\n' ;;
+*) printf 'It waits.\n' ;;
+esac
+"#;
+
+        /// #1570: a run's summary gives each value's share of the Explain answers.
+        #[test]
+        fn a_run_summary_counts_each_mermaid_value() {
+            let case = |id: &str, word: &str| {
+                format!(
+                    "=== {id}\nkind: menu\nwindow: claude · claude · /home/u\nflow: explain\n\
+                     expect: write\nholdout: yes\n--- request\nwhat now {word}\n"
+                )
+            };
+            let words = ["zq-none", "zq-drawn", "zq-drop", "zq-bad", "zq-drop"];
+            let cases: String = words.iter().enumerate().map(|(i, w)| case(&format!("xp-mm{i}"), w)).collect();
+            let (code, out, err, rows) = rig_run_with("xp-mermaid", &cases, MERMAID_CLAUDE, &[]);
+            assert_eq!(code, Some(0), "{out}{err}");
+            let want = "\nmermaid         none 20% (1/5)  drawn 20% (1/5)  dropped 40% (2/5)  not_drawn 20% (1/5)\n";
+            assert!(out.contains(want), "{out}");
+            assert_eq!(row_by_id(&rows, "xp-mm3")["mermaid"], json!("not_drawn"), "{rows}");
+        }
     }
 
     #[test]
