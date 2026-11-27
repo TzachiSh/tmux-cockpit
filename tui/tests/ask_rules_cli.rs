@@ -261,3 +261,61 @@ fn the_shipped_defaults_accept_as_three_shadow_rules() {
     }
     assert_eq!(out.matches(" on shadow").count(), 3, "{out}");
 }
+/// One rule with a note, as the file holds it.
+fn noted(id: &str, note: &str) -> String {
+    good(id).replacen("{", &format!(r#"{{"note": "{note}", "#), 1)
+}
+
+#[test]
+fn a_bidi_override_in_a_note_is_refused_and_never_printed() {
+    let h = Home::new("bidi");
+    h.write(&h.rules(), &file(&[noted("a", "shadow \u{202e}evil")]), 0o600);
+    let (code, out) = h.run(&["accept"], "y\n");
+    assert_eq!(code, 1, "{out}");
+    assert!(!out.contains('\u{202e}'), "the override was printed: {out:?}");
+    assert!(!h.copy().exists(), "a file holding an override was accepted: {out:?}");
+    h.write(&h.copy(), &fs::read_to_string(h.rules()).unwrap(), 0o600);
+    let (code, out) = h.check();
+    assert_eq!(code, 1, "{out:?}");
+    assert!(out.contains("the rules file holds a control or bidi character"), "{out:?}");
+    assert!(!out.contains('\u{202e}'), "{out:?}");
+}
+
+#[test]
+fn a_raw_c1_or_del_is_refused() {
+    for (name, c) in [("c1", '\u{85}'), ("del", '\u{7f}')] {
+        let h = Home::new(name);
+        h.accepted(&file(&[noted("a", &format!("odd {c} note"))]));
+        let (code, out) = h.check();
+        assert_eq!(code, 1, "{name}: {out:?}");
+        assert!(out.contains("the rules file holds a control or bidi character"), "{name}: {out:?}");
+        assert!(!out.contains(" on shadow"), "{name}: {out:?}");
+    }
+}
+
+#[test]
+fn an_unknown_keys_name_is_printed_cleaned() {
+    let h = Home::new("keyname");
+    // a JSON escape, so the file's bytes are plain ASCII and only the parsed key holds ESC
+    let odd = good("b").replacen("{", r#"{"co\u001b[31mlour": "red", "#, 1);
+    h.accepted(&file(&[good("a"), odd]));
+    let (code, out) = h.check();
+    assert_eq!(code, 1, "{out:?}");
+    assert!(out.contains("unknown key rules[1].co[31mlour"), "{out:?}");
+    assert!(!out.contains('\u{1b}'), "the escape was printed: {out:?}");
+}
+
+#[test]
+fn an_oversize_accepted_copy_is_refused() {
+    let h = Home::new("bigcopy");
+    let text = file(&[good("a")]);
+    h.write(&h.rules(), &text, 0o600);
+    h.write(&h.copy(), &"\n".repeat(3000), 0o600);
+    let (code, out) = h.check();
+    assert_eq!(code, 1, "{out}");
+    assert!(out.contains("the accepted copy is longer than 2000 lines"), "{out}");
+    let (code, out) = h.run(&["accept"], "y\n");
+    assert_eq!(code, 1, "{out}");
+    assert!(out.contains("the accepted copy is longer than 2000 lines"), "{out}");
+    assert_eq!(fs::read_to_string(h.copy()).unwrap(), "\n".repeat(3000), "accept replaced it");
+}
