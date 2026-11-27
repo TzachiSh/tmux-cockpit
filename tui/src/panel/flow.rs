@@ -337,6 +337,19 @@ fn wrap(s: &str, w: usize, g: &Glyphs) -> Vec<String> {
     out
 }
 
+/// A note in rows of at most `w` columns: the tier's note mark and a space
+/// before the first row, as many spaces before each later one, so a note that
+/// wraps still reads as one note (#1531).
+fn note_rows(text: &str, w: usize, g: &Glyphs) -> Vec<String> {
+    let mark = format!("{} ", g.note);
+    let pad = " ".repeat(mark.width());
+    wrap(text, w.saturating_sub(mark.width()), g)
+        .into_iter()
+        .enumerate()
+        .map(|(i, row)| format!("{}{row}", if i == 0 { &mark } else { &pad }))
+        .collect()
+}
+
 /// A row of cells written at columns, one grapheme cluster a cell. A wide
 /// cluster takes two cells, the second empty; overwriting either half blanks
 /// the other.
@@ -438,9 +451,9 @@ fn ladder(f: &Flow, w: usize, g: &Glyphs) -> Vec<String> {
         r
     };
     let notes = |out: &mut Vec<String>, notes: &[String]| {
-        for line in notes.iter().flat_map(|n| wrap(n, w.saturating_sub(gutter + 2), g)) {
+        for line in notes.iter().flat_map(|n| note_rows(n, w.saturating_sub(gutter), g)) {
             let mut r = lifelines();
-            r.text(gutter, &format!("{} {line}", g.note));
+            r.text(gutter, &line);
             out.push(r.done());
         }
     };
@@ -536,16 +549,11 @@ fn list(f: &Flow, w: usize, g: &Glyphs) -> Vec<String> {
             }
         }
         let indent = " ".repeat(lead.width());
-        for line in s.notes.iter().flat_map(|n| wrap(n, w.saturating_sub(lead.width() + 2), g)) {
-            out.push(fit(&format!("{indent}{} {line}", g.note), w, g));
+        for line in s.notes.iter().flat_map(|n| note_rows(n, w.saturating_sub(lead.width()), g)) {
+            out.push(fit(&format!("{indent}{line}"), w, g));
         }
     }
-    let mut head: Vec<String> = f
-        .lead
-        .iter()
-        .flat_map(|n| wrap(n, w.saturating_sub(2), g))
-        .map(|l| fit(&format!("{} {l}", g.note), w, g))
-        .collect();
+    let mut head: Vec<String> = f.lead.iter().flat_map(|n| note_rows(n, w, g)).map(|l| fit(&l, w, g)).collect();
     head.extend(out);
     head.extend(need_box(f, w, g));
     head
