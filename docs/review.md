@@ -127,7 +127,8 @@ agent's `tmux-review --request` gets `no review opened` and that reason, status
 1. The Stop hook's ◆ then stays as it was: such a diff neither sets nor clears
 it (#944). The same holds for a pane whose work dir cannot be found (status 2),
 when tmux-review cannot run at all, and when it cannot load, under bash older
-than 4 or with a library that fails (status 3): only a tree with no difference,
+than 4 or with a library that fails (status 3), and with no state folder (status 4, #1588):
+only a tree with no difference,
 or a work dir outside any git tree, clears the ◆ (#959).
 
 **Big files are counted, not hashed.** To tell whether a file changed at all

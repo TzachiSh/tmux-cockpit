@@ -168,7 +168,8 @@ A Stop whose `tmux-review --delta` cannot tell leaves the `◆` as it was and sa
 the pane option `@cockpit_review_err`, as the poller does in `@cockpit_poll_err`
 ([Agent view and background jobs](#agent-view-and-background-jobs)): `the diff cannot be
 read` (exit 2: the diff, the pane's work dir or its repo), `tmux-review cannot load`
-(exit 3), or `tmux-review cannot run (exit N)` (126, 127 or a signal). A Stop whose payload
+(exit 3), or `tmux-review cannot run (exit N)` (4 with no state folder, 126, 127 or a
+signal). A Stop whose payload
 `review-gate` cannot read, past its 2 s bound or with `head` failing, cannot tell a paused
 Stop from a finished one: it leaves the `◆` too, with `the Stop payload cannot be read`
 (#315). A message on the status line says it once per new reason, and the next Stop that
