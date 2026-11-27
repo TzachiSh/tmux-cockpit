@@ -6,4 +6,4 @@
                │                        │ self 🇺🇸
                │                        │─╮↩
    ↳ 長い注意書き 🧑‍💻 wraps across several rows of the narrow
-   ↳ screen    │                        │
+     screen    │                        │

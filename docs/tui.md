@@ -1546,7 +1546,8 @@ not wired into Explain yet.
 - **Notes.** A note whose first words are `NEED FROM YOU` goes in the box
   closing the drawing (`NEED FROM YOUR` is an ordinary note). Any other note
   shows after a `↳`: under the step before it, or under the header when it
-  comes before the first step. A long note wraps onto more rows.
+  comes before the first step. A long note wraps onto more rows with the `↳`
+  on the first only, the later rows lined up under its text (#1531).
 - **Width.** No line is wider than the width, measured with `unicode-width` by
   grapheme cluster. Terminal escape sequences, bidi controls, U+2028/U+2029 and
   control characters never reach a line. `parse` tidies each name, label and
