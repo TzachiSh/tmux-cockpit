@@ -197,6 +197,19 @@ pub struct Glyphs {
     pub key_left: &'static str,
     pub key_right: &'static str,
     pub key_updown: &'static str,
+    /// The flow renderer's marks (#935), with `plain` for its box, lifelines
+    /// and solid shafts: a failed and a needs step, a dashed shaft, the two
+    /// arrow heads, a self step's turn and return, a note, and what a control
+    /// character left in a drawn line becomes.
+    pub step_failed: &'static str,
+    pub step_needs: &'static str,
+    pub dashed: &'static str,
+    pub head_right: &'static str,
+    pub head_left: &'static str,
+    pub self_turn: &'static str,
+    pub self_back: &'static str,
+    pub note: &'static str,
+    pub replacement: &'static str,
 }
 
 const ASCII_PLAIN: border::Set = border::Set {
@@ -265,6 +278,15 @@ impl Glyphs {
             key_left: "←",
             key_right: "→",
             key_updown: "↑↓",
+            step_failed: "✗",
+            step_needs: "!",
+            dashed: "┄",
+            head_right: "▶",
+            head_left: "◀",
+            self_turn: "╮",
+            self_back: "↩",
+            note: "↳",
+            replacement: "\u{FFFD}",
         }
     }
 
@@ -311,6 +333,15 @@ impl Glyphs {
             key_left: "left",
             key_right: "right",
             key_updown: "up/dn",
+            step_failed: "x",
+            step_needs: "!",
+            dashed: ".",
+            head_right: ">",
+            head_left: "<",
+            self_turn: "+",
+            self_back: "<",
+            note: ">",
+            replacement: "?",
         }
     }
 
