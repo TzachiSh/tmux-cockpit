@@ -1524,7 +1524,9 @@ and `parse::fix` and `parse::explain` read only the first question, as before.
 ### The flow renderer (#935)
 
 `panel::flow` draws a Mermaid `sequenceDiagram` as text that fits a width. The
-panel's answers draw their `mermaid` fences with it (#1569).
+panel's answers draw their `mermaid` fences with it (#1569). The Explain prompt
+teaches the model a subset that draws as a full ladder from 60 columns with no
+ledger line, and its example flow is a test row (#1539).
 
 - **In an answer.** In the Answer view, which Explain and Ask share, each fence
   that `highlight::flow_body` names a flow (tagged exactly `mermaid`) is drawn by
