@@ -324,7 +324,8 @@ per case each side's pass count, the cases whose pass rate moved, `pass^k` for
 both sides over the cases both graded in full, and each side's own (unpaired)
 `pass^k` and cost. The case format, with its `expect: ask|write|either`,
 `must`, `must_not`, `out_is` and `holdout` keys, is described at the top of
-the cases file; held-out cases live in `tui/evals/panel/holdout-blind.txt`
+the cases file; held-out write cases live in `tui/evals/panel/holdout-blind.txt`
+(the held-out Explain cases in their own file, below)
 and are written after the prompt they run on, so a gain there is not
 overfitting. A `must` pass is a keyword screen (#868): each `;` separated group
 passes when the reply contains one of its `|` terms as a whole word, in any
@@ -389,8 +390,9 @@ does not load it. Its readers are the owner, the orchestrator, the case writer
 and a blindness reviewer. Whoever edits `explain.txt` must not open it, and its
 header says so.
 
-Held-out cases live in `tui/evals/panel/holdout-blind.txt`, not in the cases
-file every tuning session reads. Its readers are the owner, the orchestrator,
+Held-out write cases (the Explain ones have their own file, above) live in
+`tui/evals/panel/holdout-blind.txt`, not in the cases file every tuning session
+reads. Its readers are the owner, the orchestrator,
 the re-verify and blindness reviewers, and the lane that commits cases to it; a
 tuning session must not open it, and its header says so. The held-out cases
 written before #783 moved there from the cases file in #834, each block byte
@@ -693,7 +695,10 @@ opt-in and never part of the default run. The changed lines are the ones
 lacks, which covers the override file; `--base` beside `--from` is refused. Each
 changed line goes to the judge with each `holdout: yes` case's request, from
 `tui/evals/panel/holdout-blind.txt` (`--only` narrows the cases). The cases
-file gives none, since a loud file refuses a held-out case (#861). The judge
+file gives none, since a loud file refuses a held-out case (#861). An
+`explain.txt` edit is checked against the held-out Explain cases with
+`--overlap --cases evals/explain/holdout-blind.txt`, since the check takes its
+cases as a run does. The judge
 answers yes when the line paraphrases the request's specific scenario and no
 when it only shares its topic. The judge sees the request only: a line that
 mirrors a held-out case's screen, repo, refs or earlier rounds (an error line,
