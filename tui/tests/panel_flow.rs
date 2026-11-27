@@ -300,6 +300,18 @@ fn bidi_controls_and_line_separators_never_reach_a_line() {
 }
 
 #[test]
+fn an_escape_sequence_in_a_label_leaves_no_trace() {
+    // A CSI, an OSC 8 link ended by ST, an OSC 0 ended by BEL, a DCS: each goes whole, payload and all (#1530).
+    for label in ["x\x1b[31my", "x\x1b]8;;https://e.com\x1b\\y", "x\x1b]0;t\x07y", "x\x1bPq;p\x1b\\y"] {
+        let src = format!("sequenceDiagram\nA->>B: {label}\n");
+        assert_eq!(parsed(&src).steps[0].label, "xy", "{label:?}");
+        for w in [40, 60] {
+            assert!(flow::render(&src, w, &UNI).iter().any(|l| l.contains("xy")), "{label:?} w={w}");
+        }
+    }
+}
+
+#[test]
 fn need_from_you_is_a_whole_prefix_not_the_start_of_a_longer_word() {
     let f = parsed("sequenceDiagram\nA->>B: x\nNote over A: NEED FROM YOUR call is wanted\nNote over A: NEED FROM YOU pick one\n");
     assert_eq!(f.steps[0].notes, vec!["NEED FROM YOUR call is wanted".to_string()]);
