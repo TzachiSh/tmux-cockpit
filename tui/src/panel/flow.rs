@@ -482,8 +482,10 @@ fn list(f: &Flow, w: usize) -> Vec<String> {
     let time_w = f.steps.iter().filter_map(|s| s.time.as_deref()).map(str::width).max().unwrap_or(0);
     let lead_w = usize::from(status) * 2 + if f.autonumber { digits + 1 } else { 0 };
     // One label column for every line: aligned when it holds the longest label
-    // or 6 columns of it, whichever is less; compact otherwise.
-    let room = w.saturating_sub(lead_w + 2 + who_w + 2 + time_w).min(longest);
+    // or 6 columns of it, whichever is less; compact otherwise. The time
+    // column and the gap before it take room only when a step has a time.
+    let time_col = if time_w > 0 { 2 + time_w } else { 0 };
+    let room = w.saturating_sub(lead_w + 2 + who_w + time_col).min(longest);
     let aligned = room >= longest.min(6);
     let mut out = vec![];
     for (i, s) in f.steps.iter().enumerate() {

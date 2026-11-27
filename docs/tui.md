@@ -2817,7 +2817,7 @@ workspace, no crate split.
 | `backend` | the VS16 wide-glyph shim over the Crossterm backend, `init()` / `restore()` with the panel's bracketed paste and tablet-mode mouse capture, the OSC 52 copy, and `exit_on_hangup()`, the tty hangup watch |
 | `data` | every tmux and transcript read, `Pane`, the truncation helpers |
 | `board` | the tile grid and its event loop |
-| `chrome` | what the board and the panel share: the footer's hint fit, the full-popup `?` help and its scroll, the floor card |
+| `chrome` | what the board and the panel share: the footer's hint fit, the full-popup `?` help and its scroll, the floor card, and the question view with its option tiles (#1516) |
 | `fleet` | the headless `--rows` / `--json` formatters and the list widths |
 | `theme` | the `@thm_*` colour roles and the glyph tiers |
 | `push` | `@cockpit_board_wake`, the `tmux wait-for` waiter, the exit-path cleanup |

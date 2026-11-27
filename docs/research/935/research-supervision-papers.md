@@ -11,8 +11,8 @@ about those three parts?
 
 ## Sources
 
-Each quote was read in the paper's HTML on arxiv.org. I read the abstract, the findings and the
-passages quoted here, not every section.
+Each quote was read in the paper's full text from arxiv.org. Source 1 has no HTML version
+there. I read the abstract, the findings and the passages quoted here, not every section.
 
 1. Khan, Kumar, "Soei: Structured Observability of Evidence and Intent for Multi-Agent AI
    Software Engineering", arXiv 2610.39468v1. A corpus of 45 real coding-agent sessions.
@@ -29,8 +29,9 @@ passages quoted here, not every section.
 3. Long, Shi, Mozannar, Murad, Hosn, "ParallelPilot: Supporting Coordination and Monitoring in
    Parallel AI Coding", arXiv 2609.33113v1. A formative study of 14 and a within-subjects study
    of 16.
-   - Throughput rose by 63% and tracking effort dropped, but "these gains did not extend to
-     perceived control or participants' perceived success in redirecting the agent".
+   - Throughput rose by 63% "in short coding tasks" and tracking effort dropped, but "these
+     gains did not extend to perceived control or participants' perceived success in redirecting
+     the agent".
    - Tools "should pair high-level awareness with low-cost paths back to the implementation
      evidence developers need to judge and steer agent work".
    - Its own limit: the formative participants were "primarily researchers and research
@@ -83,4 +84,4 @@ recommendation 1 would edit the renderer, as its cost says.
 - Whether any of this carries to a text panel in a terminal. All five tools are graphical.
 - How often our agents mark a step done without proof. Source 1's rate comes from 45 sessions of
   other people's work.
-- Whether the studies' samples of 12 to 16 people generalise.
+- Whether the studies' samples of 8 to 20 people generalise.
