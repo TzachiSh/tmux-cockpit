@@ -1364,9 +1364,9 @@ impl App {
         self.request_noted().map(|(parts, ..)| parts)
     }
 
-    /// [`App::request_parts`], and for a write the [`prompts::files_hash`] of
-    /// the prompt files this same call read, so a file edited after it does not
-    /// change the hash (#711). `None` for any other flow.
+    /// [`App::request_parts`], and for a write or an Explain (#1405) the
+    /// [`prompts::files_hash`] of the prompt files this same call read, so a file
+    /// edited after it does not change the hash (#711). `None` for any other flow.
     pub fn request_hashed(&self) -> Option<((String, String, String), Option<String>)> {
         self.request_noted().map(|(parts, _, hash)| (parts, hash))
     }
@@ -1398,7 +1398,10 @@ impl App {
                 (t, n, Some(h))
             }
             Flow::Fix { .. } => noted(prompts::fix_noted()),
-            Flow::Explain => noted(prompts::explain_noted()),
+            Flow::Explain => {
+                let (t, n, h) = prompts::explain_noted();
+                (t, n, Some(h))
+            }
             Flow::Ask(_) => noted(prompts::ask_code_noted()),
         };
         let prompt = built.unwrap_or_else(|| self.envelope(r).text);
