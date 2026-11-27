@@ -398,9 +398,11 @@ fn a_note_before_the_first_step_shows_under_the_header() {
 
 #[test]
 fn a_long_note_wraps_onto_more_rows_and_keeps_every_word() {
-    for w in [40, 60] {
+    // The note's rows come after the step: in the list after the lead note and the step's line,
+    // in the ladder after the header, the lead note and the step's two rows.
+    for (w, first) in [(40, 2), (60, 4)] {
         let out = flow::render(&lead_and_long_note(), w, &UNI);
-        let rows: Vec<&String> = out.iter().filter(|l| l.contains('↳')).skip(1).collect();
+        let rows = &out[first..];
         assert!(rows.len() >= 2, "w={w}: {out:?}");
         let words: Vec<&str> = rows
             .iter()
@@ -409,6 +411,36 @@ fn a_long_note_wraps_onto_more_rows_and_keeps_every_word() {
             .collect();
         assert_eq!(words.join(" "), LONG_NOTE, "w={w}: {out:?}");
     }
+}
+
+#[test]
+fn a_wrapped_note_marks_only_its_first_row() {
+    // One note reads as one: its later rows line up under its text with no mark of their own (#1531).
+    let src = lead_and_long_note();
+    assert_eq!(
+        flow::render(&src, 40, &UNI)[2..],
+        [
+            "↳ the suite runs twice because the first",
+            "  run on this box was flaky and the",
+            "  second decides"
+        ]
+    );
+    assert_eq!(flow::render(&src, 60, &UNI).iter().filter(|l| l.contains('↳')).count(), 2);
+}
+
+#[test]
+fn a_wrapped_lead_note_in_the_list_marks_only_its_first_row() {
+    // The list draws a note before the first step from its own call, so it gets its own row (#1531).
+    let src = format!("sequenceDiagram\nNote over A: {LONG_NOTE}\nA->>B: x\n");
+    assert_eq!(
+        flow::render(&src, 40, &UNI),
+        [
+            "↳ the suite runs twice because the first",
+            "  run on this box was flaky and the",
+            "  second decides",
+            "x  A→B"
+        ]
+    );
 }
 
 #[test]
