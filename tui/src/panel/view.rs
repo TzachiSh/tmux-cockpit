@@ -186,17 +186,17 @@ pub fn too_small(area: Rect, tablet: bool) -> bool {
     area.width < w || area.height < h
 }
 
-fn plain(s: impl Into<String>) -> Line<'static> {
+pub(crate) fn plain(s: impl Into<String>) -> Line<'static> {
     Line::from(s.into())
 }
 
-fn styled(s: impl Into<String>, st: Style) -> Line<'static> {
+pub(crate) fn styled(s: impl Into<String>, st: Style) -> Line<'static> {
     Line::from(Span::styled(s.into(), st))
 }
 
 /// Tabs become 4 spaces first: a tab's width is the terminal's choice, and the
 /// widget would count it as one column.
-fn many(text: &str, w: usize, indent: &str, st: Style) -> Vec<Line<'static>> {
+pub(crate) fn many(text: &str, w: usize, indent: &str, st: Style) -> Vec<Line<'static>> {
     wrap(&text.replace('\t', "    "), w.saturating_sub(indent.chars().count()))
         .into_iter()
         .map(|l| styled(format!("{indent}{l}"), st))
@@ -320,34 +320,6 @@ fn pills(xs: &[(&str, &str)]) -> Vec<(String, String)> {
         .filter(|(k, _)| !k.is_empty())
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .collect()
-}
-
-/// A picker entry: the cursor, the number, the text wrapped under itself, and
-/// a description only where it fits whole or ends in an ellipsis.
-fn tile(th: &Theme, sel: bool, n: usize, mark: &str, text: &str, extra: &str, w: usize) -> Vec<Line<'static>> {
-    let cur = if sel { th.g.active } else { " " };
-    let st = if sel {
-        Style::new().fg(th.accent).add_modifier(Modifier::BOLD)
-    } else {
-        Style::new().fg(th.value)
-    };
-    let lead = format!("{cur}{n} {mark}");
-    let pad = " ".repeat(lead.width());
-    // the description is a gloss on the name: under 50 columns it would be cut to nothing useful
-    let show = !extra.is_empty() && w >= 50;
-    let text = if show { format!("{text:<16}") } else { text.to_string() };
-    let mut out: Vec<Line<'static>> = wrap(&text, w.saturating_sub(lead.width()))
-        .into_iter()
-        .enumerate()
-        .map(|(i, l)| styled(format!("{}{l}", if i == 0 { &lead } else { &pad }), st))
-        .collect();
-    let room = w.saturating_sub(out[0].width() + 2);
-    if show && room >= 10 {
-        out[0]
-            .spans
-            .push(Span::styled(format!("  {}", th.g.trunc(extra, room)), Style::new().fg(th.meta)));
-    }
-    out
 }
 
 /// Appends a tile, returning its line range for [`Body::sel`].
@@ -524,7 +496,7 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
         View::Home { sel } => {
             for (i, (_, name, desc)) in app.tiles().iter().enumerate() {
                 let mark = if i == 0 { star } else { " " };
-                let rows = tile(th, i == *sel, i + 1, &format!("{mark} "), name, desc, tw);
+                let rows = crate::chrome::tile(th, i == *sel, i + 1, &format!("{mark} "), name, desc, tw);
                 let r = push_entry(&mut b, th, tall, i == *sel, rows, w, Tap::Pick(i));
                 if i == *sel {
                     b.sel = Some(r);
@@ -677,15 +649,20 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
         View::Question { sel, scroll } => {
             let Some(r) = run else { return b };
             let (k, n) = r.place();
-            if n > 1 {
-                b.lines.extend(many(&format!("question {k} of {n}"), w, "", meta));
-            }
+            let rows: Vec<crate::chrome::Row> = r
+                .options
+                .iter()
+                .map(|o| crate::chrome::Row {
+                    label: o.label.clone(),
+                    note: String::new(),
+                    mark: if o.recommended { star } else { " " }.to_string(),
+                })
+                .collect();
+            // a tall option's box takes w - tw columns, as for every other tile
+            let (head, options) = crate::chrome::question(th, &r.question, (k, n), &rows, *sel, w, w - tw);
             // in the body, not the head: a long question must not push the options off
-            b.lines.extend(many(&r.question, w, "", bold));
-            b.lines.push(plain(""));
-            for (i, o) in r.options.iter().enumerate() {
-                let mark = if o.recommended { star } else { " " };
-                let rows = tile(th, i == *sel, i + 1, &format!("{mark} "), &o.label, "", tw);
+            b.lines.extend(head);
+            for (i, rows) in options.into_iter().enumerate() {
                 let t = push_entry(&mut b, th, tall, i == *sel, rows, w, Tap::Pick(i));
                 if i == *sel {
                     b.sel = Some(t);
@@ -775,7 +752,7 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
             for (i, s) in items.iter().enumerate() {
                 let at = b.lines.len();
                 let note = if s.note.is_empty() { "(run this)" } else { s.note.as_str() };
-                let mut rows = tile(th, i == *sel, i + 1, "", note, "", w);
+                let mut rows = crate::chrome::tile(th, i == *sel, i + 1, "", note, "", w);
                 if done.get(i) == Some(&true) {
                     // the verb is known for the step this run resumed on; earlier ones only as done
                     let what = match app.last_step {
@@ -823,7 +800,7 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
                 b.lines.push(styled(th.g.trunc("empty: the viewer's a adds a ref", w), meta));
             }
             for (i, r) in app.basket.iter().enumerate() {
-                let rows = tile(th, i == *sel, i + 1, "", &basket_row(app, r, i), "", tw);
+                let rows = crate::chrome::tile(th, i == *sel, i + 1, "", &basket_row(app, r, i), "", tw);
                 let t = push_entry(&mut b, th, tall, i == *sel, rows, w, Tap::Pick(i));
                 if i == *sel {
                     b.sel = Some(t);
@@ -841,7 +818,7 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
             b.head.push(plain(""));
             let words = "In your own words";
             for (i, shown) in QUICK.iter().map(|q| q.0).chain([words]).enumerate() {
-                let rows = tile(th, i == *sel, i + 1, "", shown, "", tw);
+                let rows = crate::chrome::tile(th, i == *sel, i + 1, "", shown, "", tw);
                 let t = push_entry(&mut b, th, tall, i == *sel, rows, w, Tap::Pick(i));
                 if i == *sel {
                     b.sel = Some(t);
