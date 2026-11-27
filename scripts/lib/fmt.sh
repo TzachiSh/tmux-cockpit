@@ -155,3 +155,13 @@ plain_name() {
   done
   printf '%s' "$s"
 }
+
+# A Claude Code session id: a UUID in lower-case hex, the form claude writes. The hooks save
+# only this one (lib/hook.sh's save_session) and the board's resume takes only this one, as it
+# goes on a command line (#301, #308). One rule for both, or the board shows an id its resume
+# refuses (#1589). Spelled out, not a range: in a UTF-8 locale such as en_US, bash's regex
+# [0-9] also matches ² (#830).
+is_session_id() {             # <id>
+  local h='[0123456789abcdef]'
+  [[ ${1:-} =~ ^$h{8}-$h{4}-$h{4}-$h{4}-$h{12}$ ]]
+}

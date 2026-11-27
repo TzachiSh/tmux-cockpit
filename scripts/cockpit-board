@@ -175,13 +175,11 @@ while :; do
         # its pane's cwd: Claude Code never moves its process's cwd (#312), so
         # that is the project the session started in, where --resume looks.
         # $f.expect is the session id the row showed; the pane must hold it
-        # still, and it must be a UUID, as it goes on a command line.
+        # still, and it must be a session id (lib/fmt.sh), as it goes on a command line.
         resume)
             want=
             [ -f "$f.expect" ] && [ ! -L "$f.expect" ] && want=$(head -c 64 -- "$f.expect" 2>/dev/null | head -n 1)
-            # 8-4-4-4-12 lowercase hex, spelled out: a range can take more under a locale
-            h='[0123456789abcdef]'
-            [[ $want =~ ^$h{8}-$h{4}-$h{4}-$h{4}-$h{12}$ ]] || want=
+            is_session_id "$want" || want=
             # the cwd last: it is the free-form field
             info=$(tmux display-message -p -t "$target" "#{?pane_id,=#{@cockpit_session}$sep#{pane_current_path},}" 2>/dev/null | head -n 1)
             have=${info%%"$sep"*} dir=${info#*"$sep"}
