@@ -295,6 +295,14 @@ fn an_aligned_list_with_no_time_keeps_no_time_column() {
 }
 
 #[test]
+fn a_list_with_empty_labels_is_not_cut_where_compact_fits() {
+    // Every label empty, no time: an aligned line needs 2 + 3 columns here, so at 4 the compact one shows (#1541).
+    let src = "sequenceDiagram\nA->>B:\nB->>A:\n";
+    assert_eq!(flow::render(src, 4), [" A→B", " B→A"]);
+    assert_eq!(flow::render(src, 5), ["  A→B", "  B→A"]);
+}
+
+#[test]
 fn a_hand_built_step_naming_a_missing_actor_draws_without_a_panic() {
     let mut f = parsed("sequenceDiagram\nA->>B: x\n");
     f.steps[0].to = 7;
