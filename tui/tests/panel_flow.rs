@@ -885,8 +885,6 @@ fn acc_descr_and_its_block_are_dropped_and_named() {
     ] {
         kept(src, &["x", "y"], Some("(dropped: accessibility text)"));
     }
-    let unclosed = "sequenceDiagram\nA->>B: x\naccDescr {\nB->>A: y\n";
-    assert!(flow::parse(unclosed).is_err(), "a block never closed");
 }
 
 /// An actor's menu line, `kw`, between two steps: dropped and named, and the participant it names is
@@ -941,6 +939,104 @@ const MORE_STATEMENTS: &str = "sequenceDiagram\ntitle Deploy flow\naccTitle: Dep
 autonumber 7\nparticipant A\nlinks A: {\"Dashboard\": \"https://x.test/d\"}\nlink B: Repo @ https://x.test/r\n\
 properties A: {\"class\": \"internal\"}\ndetails B: {\"owner\": \"ops\"}\npar_over one\nA->>B: x\nautonumber off\n\
 and two\nB->>A: y\nend\nautonumber\nA->>B: z\naccDescr: done; really\n";
+
+// ------------------------------------------- the Mermaid 11.15.0 forms #1568 left (#1586)
+
+/// `src` is not drawn: it is an `Err`, and at 60 render shows `not_drawn`.
+fn refused(src: &str) {
+    let got = flow::parse(src);
+    assert!(got.is_err(), "{src:?}: {got:?}");
+    let out = flow::render(src, 60, &UNI);
+    assert!(out[0].starts_with("(not drawn: "), "{src:?}: {out:?}");
+}
+
+#[test]
+fn a_half_arrow_is_not_drawn() {
+    // Mermaid 11.15.0's sixteen half arrows: drawing one needs a half head in every glyph tier.
+    let halves = [
+        "-|\\", "-|/", "-\\\\", "-//", "--|\\", "--|/", "--\\\\", "--//", "/|-", "\\|-", "//-", "\\\\-", "/|--", "\\|--", "//--", "\\\\--",
+    ];
+    for a in halves {
+        refused(&format!("sequenceDiagram\nA{a}B: x\n"));
+    }
+}
+
+#[test]
+fn a_keyword_in_another_case_is_not_drawn() {
+    // Mermaid's lexer reads a keyword in any case. Here keywords are lowercase, and a note may start `Note`.
+    for src in [
+        "sequenceDiagram\nParticipant A\nA->>B: x\n",
+        "sequenceDiagram\nAUTONUMBER\nA->>B: x\n",
+        "sequenceDiagram\nA->>B: x\nNOTE over A: n\n",
+        "sequenceDiagram\nLoop l\nA->>B: x\nend\n",
+        "sequenceDiagram\nA-XB: x\n",
+    ] {
+        refused(src);
+    }
+    kept("sequenceDiagram\nA->>B: x\nNote over A: n\n", &["x"], None);
+}
+
+#[test]
+fn a_participant_config_is_not_drawn() {
+    // Mermaid's `@{ }` gives a participant a drawn shape and can rename it with "alias": not read here.
+    for p in [
+        "participant A@{ \"type\": \"database\" }",
+        "participant A@{ \"type\": \"queue\" } as Alice",
+        "actor A@{ \"type\": \"boundary\" }",
+    ] {
+        refused(&format!("sequenceDiagram\n{p}\nA->>B: x\n"));
+    }
+}
+
+#[test]
+fn a_hash_stays_in_the_text() {
+    // Mermaid ends text at a `#` that starts no entity code. Here it stays, so an issue number keeps its `#`.
+    kept(
+        "sequenceDiagram\nA->>B: merge PR #1585\nB->>A: ok # late\n",
+        &["merge PR #1585", "ok # late"],
+        None,
+    );
+    let out = flow::render("sequenceDiagram\nloop every #3\nA->>B: x\nend\n", 60, &UNI);
+    assert!(out.iter().any(|l| l.contains("[loop every #3]")), "{out:?}");
+    // A line that starts with `#` is no statement here.
+    refused("sequenceDiagram\n# a comment\nA->>B: x\n");
+}
+
+#[test]
+fn a_zero_autonumber_start_or_increment_keeps_the_count_or_the_increment() {
+    // Mermaid 11.15.0's renderer reads a 0 as none written (`start ||`, `step ||`): these are the numbers its
+    // render drew for each.
+    let rows: [(&str, &[&str]); 6] = [
+        ("autonumber 0\nA->>B: x\nB->>A: y\n", &["1 x", "2 y"]),
+        ("autonumber 5 0\nA->>B: x\nB->>A: y\n", &["5 x", "6 y"]),
+        ("autonumber 0 2\nA->>B: x\nB->>A: y\n", &["1 x", "3 y"]),
+        ("autonumber 0 0\nA->>B: x\nB->>A: y\n", &["1 x", "2 y"]),
+        (
+            "autonumber 10 5\nA->>B: x\nautonumber 0\nB->>A: y\nA->>B: z\n",
+            &["10 x", "15 y", "16 z"],
+        ),
+        (
+            "autonumber 10 5\nA->>B: x\nautonumber 3 0\nB->>A: y\nA->>B: z\n",
+            &["10 x", "3 y", "8 z"],
+        ),
+    ];
+    for (src, labels) in rows {
+        kept(&format!("sequenceDiagram\n{src}"), labels, None);
+    }
+}
+
+#[test]
+fn an_acc_descr_block_never_closed_drops_the_rest() {
+    // As Mermaid 11.15.0 reads it: the steps before the block draw, and everything after its `{` is dropped.
+    for src in [
+        "sequenceDiagram\nA->>B: x\naccDescr {\nsome text\nB->>A: y\n",
+        "sequenceDiagram\nA->>B: x\naccDescr {\n",
+    ] {
+        kept(src, &["x"], Some("(dropped: accessibility text)"));
+    }
+    // A block whose end it drops is still never closed.
+    refused("sequenceDiagram\nloop l\nA->>B: x\naccDescr {\nend\n");
+}
 
 // --------------------------------------------- decision 7: never wider, no panic
 
