@@ -875,12 +875,13 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
                 b.lines.extend(many(p, w, "  ", Style::new().fg(th.done)));
                 hints.extend([("i", "insert"), ("s", "send")]);
             }
+            hints.push(("f", "follow up"));
             // the answer can go to the agent as a draft (#365 child 5, #1571), after
-            // a prompt's keys, so a narrow footer keeps those longest
+            // the prompt's keys and the follow-up, so a narrow footer keeps those longest
             if app.answer_drafts() {
                 hints.push(("c", "compose"));
             }
-            hints.extend([("f", "follow up"), (g.key_updown, "scroll"), help, ("esc", "home")]);
+            hints.extend([(g.key_updown, "scroll"), help, ("esc", "home")]);
             b.footer = pills(&hints);
             if *armed && app.tablet {
                 // the esc chip becomes keep it in place, so a second tap on home keeps;

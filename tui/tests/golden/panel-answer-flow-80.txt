@@ -17,4 +17,4 @@
 "│                                                                              │"
 "│                                                                              │"
 "│                                                                              │"
-"╰ c compose  f follow up  ↑↓ scroll  ^Z hide  ? keys  esc home ────────────────╯"
+"╰ f follow up  c compose  ↑↓ scroll  ^Z hide  ? keys  esc home ────────────────╯"

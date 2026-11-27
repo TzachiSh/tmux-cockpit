@@ -13,4 +13,4 @@
 "│                                                          │"
 "│                                                          │"
 "│                                                          │"
-"╰ i insert  s send  c compose  ? keys  esc home ───────────╯"
+"╰ i insert  s send  f follow up  ? keys  esc home ─────────╯"

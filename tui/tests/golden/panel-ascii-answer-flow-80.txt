@@ -17,4 +17,4 @@
 "|                                                                              |"
 "|                                                                              |"
 "|                                                                              |"
-"+ c compose  f follow up  up/dn scroll  ^Z hide  ? keys  esc home -------------+"
+"+ f follow up  c compose  up/dn scroll  ^Z hide  ? keys  esc home -------------+"

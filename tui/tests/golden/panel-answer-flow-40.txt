@@ -9,4 +9,4 @@
 "│                                      │"
 "│                                      │"
 "│                                      │"
-"╰ c compose  ? keys  esc home ─────────╯"
+"╰ f follow up  ? keys  esc home ───────╯"

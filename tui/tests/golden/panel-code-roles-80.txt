@@ -17,4 +17,4 @@ C                                                                              C
 C                                                                              C
 C                                                                              C
 C                                                                              C
-C K .......  K ...... ..  KK ......  KK ....  K ....  KKK .... CCCCCCCCCCCCCCCCC
+C K ...... ..  K .......  KK ......  KK ....  K ....  KKK .... CCCCCCCCCCCCCCCCC

@@ -159,10 +159,10 @@ fn an_explain_answer_offers_c_in_its_help() {
     assert!(cockpit_tui::panel::view::keys(&a, &g).iter().any(|(k, _)| k == "c"));
 }
 
-/// #1571: the footer's `c` sits after a prompt's `i` and `s` and before `f`, so
-/// a narrow footer keeps the prompt's keys longest.
+/// #1571: the footer's `c` sits after a prompt's `i` and `s` and after `f`, so
+/// a narrow footer drops `c` before the prompt's keys and the follow-up.
 #[test]
-fn an_explain_answers_footer_puts_c_after_the_prompts_keys() {
+fn an_explain_answers_footer_puts_c_after_follow_up() {
     let a = explained("Split it.\n<prompt>Do it.</prompt>\n");
     let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 20)).unwrap();
     t.draw(|f| {
@@ -170,7 +170,7 @@ fn an_explain_answers_footer_puts_c_after_the_prompts_keys() {
     })
     .unwrap();
     let f = t.backend().to_string();
-    assert!(f.contains("i insert  s send  c compose  f follow up"), "{f}");
+    assert!(f.contains("i insert  s send  f follow up  c compose"), "{f}");
 }
 
 /// #1571: `c` on a Write's Result still edits: Compose with the Result's text,
