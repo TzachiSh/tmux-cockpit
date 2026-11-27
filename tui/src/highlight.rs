@@ -3,7 +3,8 @@
 //! blocks (#283). It only labels slices of the input, so the concatenated spans
 //! are the input byte for byte and a width never moves. Built in, not syntect:
 //! the binary is the budget. [`split`] is the one fence rule the panel's view
-//! and its reply parsing share.
+//! and its reply parsing share, and [`flow_body`] the one rule for which fence
+//! draws as a flow.
 //!
 //! Each line is one forward pass that advances at least a byte per step, so a
 //! line costs time linear in its length, with no backtracking. What spans lines
@@ -510,6 +511,16 @@ pub fn split<'a>(lines: &[&'a str]) -> Vec<Part<'a>> {
         out.push(Part::Prose(prose..lines.len()));
     }
     out
+}
+
+/// The one rule for which fence draws as a flow (#935, #1570): a [`split`]
+/// part of `lines` that is a fence tagged exactly `mermaid`, closed or left
+/// open, gives its body, its lines joined by `\n`. Any other part gives none.
+pub fn flow_body(part: &Part, lines: &[&str]) -> Option<String> {
+    match part {
+        Part::Code(f) if f.tag == "mermaid" => Some(lines[f.body.clone()].join("\n")),
+        _ => None,
+    }
 }
 
 /// A text wrapped whole in one fence: the first line opens it, the last is a
