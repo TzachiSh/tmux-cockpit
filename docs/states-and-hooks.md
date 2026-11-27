@@ -734,18 +734,28 @@ in a pane of a tmux server: `$TMUX` and `$TMUX_PANE` must name both.
 - `cockpit-msg who` lists the sessions that can receive, one a line: the id, the branch (`-`
   for a detached HEAD or a folder in no repo) and the work folder, split by tabs. A session can
   receive when a pane of the tmux server publishes it in `@cockpit_session`. The folder is the
-  one the board shows for that pane ([Working tree](#working-tree)).
+  one the board shows for that pane ([Working tree](#working-tree)), from the fields of the one
+  `list-panes` call that found the session. A folder that is not a directory is a refusal.
 - `cockpit-msg send --session <id> <to> <summary-file> <body-file>` sends from the pane that
   `$TMUX_PANE` names, and `<id>` must be the session that pane publishes. The summary is one
-  line of text, at most 200 bytes, with no control byte and no NUL. It prints the new `msg_id`.
+  line of text, at most 200 bytes, with no control byte and no NUL. A path that is not absolute
+  is read from the current folder, so `-` is the file of that name, never stdin. It prints the
+  new `msg_id` once the message is stored.
 - `cockpit-msg read --session <id> <msg_id>` prints the body of one of the calling session's
   messages and marks that message read.
 
-A refusal is one line on stderr and exit 1, and it leaves no file in the store. A send or a read
-refused while it writes a file (no temp file, a write or a link that fails, a name already
-taken) can leave the store's folders it made, empty. A refusal before that makes no folder.
-When tmux, git, `mkdir` or `ln` fails, the line gives their reason. A usage error exits 2, and a
-library that fails to load, or a bash older than 4, exits 3.
+A refusal exits 1, and its last line on stderr, `cockpit-msg: <reason>`, says why. When tmux,
+git, `mkdir` or `ln` fails, that line gives their reason. Another tool that fails, such as
+`cat`, `head`, `od`, `date`, `mktemp` or `rm`, prints its own line before it. A send that
+cannot print its `msg_id` exits 1 too, and that last line names the `msg_id` of the message it
+stored.
+
+A refusal leaves no file in the store, with two exceptions. An `rm` that fails leaves what it
+could not remove, and says so on its own line. A temp file that `own_tmpfile` made and then
+refused stays, as `.new.XXXXXX` beside the name it was for (#1587). A send or a read refused
+while it writes a file (no temp file, a write, a link or an `rm` that fails, a name already
+taken) can leave the store's folders it made, empty. A refusal before that makes no folder. A
+usage error exits 2, and a library that fails to load, or a bash older than 4, exits 3.
 
 The store is under the state folder, `$XDG_STATE_HOME/tmux-cockpit`, else
 `$HOME/.local/state/tmux-cockpit`. As in `store::xdg_dir` (#1508), a relative value is ignored,
@@ -754,8 +764,9 @@ and with neither home an absolute path there is no store. Its folders are 0700 a
 folder and the shape `contracts/README.md` names. The envelope, `msg/<to>/<msg_id>.json`,
 passes `contracts/agent-message.schema.json` and holds ids and refs only. Each file is written
 beside its name and linked into place, so a reader sees all of it or none, and a send whose
-`msg_id` is stored already is refused. A signal mid-send takes back what the send wrote. A read
-leaves one empty marker, `msg/<to>/read/<msg_id>`, so a newer message read first leaves an older
-one unread. A read refuses an envelope whose own `msg_id` is not the name it is stored under (a
-copied envelope is no new message), one addressed to another session, one of another
-`schema_version`, one that names no body, and an envelope or a ref that is a symbolic link.
+`msg_id` is stored already is refused. A HUP, INT or TERM mid-send ends it with 129, 130 or 143
+and takes back what the send wrote. A read leaves one empty marker, `msg/<to>/read/<msg_id>`, so
+a newer message read first leaves an older one unread. A read refuses an envelope whose own
+`msg_id` is not the name it is stored under (a copied envelope is no new message), one addressed
+to another session, one of another `schema_version`, one that names no body, and an envelope or
+a ref that is a symbolic link.

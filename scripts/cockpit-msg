@@ -11,7 +11,8 @@
 # pane of the tmux server $TMUX names. The caller of send and read is the pane $TMUX_PANE
 # names, and --session must name the session that pane publishes in @cockpit_session (epic
 # #1573, D9).
-# Exit: 0 done, 1 refused (one line on stderr says why), 2 usage, 3 cannot load.
+# Exit: 0 done; 1 refused, the last line on stderr says why (a tool that failed may print its
+# own line before it); 2 usage; 3 cannot load; 129, 130 and 143 ended by HUP, INT and TERM.
 #
 # The store, under the state folder (state_root), 0700 folders, 0600 files:
 #   tmux-cockpit/refs/<msg_id>.md          the body           (contracts/README.md, Refs)
@@ -41,7 +42,8 @@ LIBDIR=${d%/*}/lib
 . "$LIBDIR/git-env.sh" || exit 3
 # shellcheck source=lib/git.sh
 . "$LIBDIR/git.sh" || exit 3
-# is_pane, and pane_workdir: the one rule for a pane's work folder (#470, #1342).
+# is_pane, and workdir_row and workdir_resolve: the one rule for a pane's work folder (#470,
+# #1342).
 # shellcheck source=lib/workdir.sh
 . "$LIBDIR/workdir.sh" || exit 3
 # shellcheck source=lib/tmpdir.sh
@@ -51,12 +53,11 @@ SUMMARY_MAX=200               # bytes
 HEX='[0123456789abcdef]{16,64}'
 umask 077
 
+# The usage through the printf builtin: no tool, and no here-document, whose temp file could
+# fail unread (#1575).
 usage() {
-    cat >&2 <<'USAGE'
-usage: cockpit-msg send --session <id> <to> <summary-file> <body-file>
-       cockpit-msg read --session <id> <msg_id>
-       cockpit-msg who
-USAGE
+    printf '%s\n' 'usage: cockpit-msg send --session <id> <to> <summary-file> <body-file>' \
+        '       cockpit-msg read --session <id> <msg_id>' '       cockpit-msg who' >&2
     exit 2
 }
 
@@ -95,18 +96,21 @@ in_pane() {
         die "not in a tmux pane: TMUX must be set and TMUX_PANE must be %N"
 }
 
-# The panes of this server that publish a session, as "<pane> <hex id>" words in PUBLISHED. A
-# pane whose @cockpit_session is no UUID publishes none. The list is read whole before it is
-# searched, and a tmux that fails is a refusal with its reason.
+# The panes of this server that publish a session, one word each in PUBLISHED: the hex id, a
+# space, and the pane's WORKDIR_FMT row, which who resolves to its work folder. A pane whose
+# @cockpit_session is no UUID publishes none. The list is one tmux call, read whole before it
+# is searched, and a tmux that fails is a refusal with its reason. Its lines are cut out by
+# expansion: a here-string into the loop is a redirect whose failure goes unread (#1575).
 published() {
-    local us=$'\037' out p s
-    out=$(tmux list-panes -a -F "#{pane_id}$us#{@cockpit_session}" 2>&1) ||
+    local us=$'\037' out rest p
+    out=$(tmux list-panes -a -F "#{@cockpit_session}$us$WORKDIR_FMT" 2>&1) ||
         die "cannot list the panes of this tmux server: ${out%%$'\n'*}"
     PUBLISHED=()
-    while IFS= read -r p; do
-        s=${p#*"$us"} p=${p%%"$us"*}
-        sid_hex "$s" && PUBLISHED+=("$p $REPLY")
-    done <<< "$out"
+    rest=$out$'\n'
+    while [ -n "$rest" ]; do
+        p=${rest%%$'\n'*} rest=${rest#*$'\n'}
+        sid_hex "${p%%"$us"*}" && PUBLISHED+=("$REPLY ${p#*"$us"}")
+    done
 }
 
 # The calling session (epic #1573, D9): the pane's @cockpit_session, and the id given with
@@ -144,23 +148,25 @@ own_dir() {                   # <dir>
 
 # <tmp> in place as <name>, beside it, only when nothing is at <name>: ln makes the name or
 # fails, where mv would replace a file stored there. 1 when the name is taken; any other
-# failure of ln is a refusal with ln's reason. The temp file goes either way.
+# failure of ln is a refusal with ln's reason. The temp file goes here, or in leave on a
+# refusal, and an rm that fails is a refusal: the temp would be a second name of the file.
 put_new() {                   # <tmp> <name>
     local err rc=0
     if [ -e "$2" ] || [ -L "$2" ]; then rc=1
-    elif ! err=$(ln -- "$1" "$2" 2>&1); then rc=2
+    elif ! err=$(ln -- "$1" "$2" 2>&1); then
+        die "cannot link ${2##*/} into place: ${err%%$'\n'*}"
     fi
-    rm -f -- "$1"; TMPF=''
-    [ "$rc" != 2 ] || die "cannot link ${2##*/} into place: ${err%%$'\n'*}"
+    rm -f -- "$1" || die "cannot remove $1"
+    TMPF=''
     return "$rc"
 }
 
-# A new file <dir>/<name> holding <src>'s bytes, else stdin's, written to a temp file beside it
-# and put in place by put_new. 1 when a file of that name is stored already.
-write_new() {                 # <dir> <name> [<src>]
+# A new file <dir>/<name> holding what <command> prints, written to a temp file beside it and
+# put in place by put_new. 1 when a file of that name is stored already.
+write_new() {                 # <dir> <name> <command...>
     own_tmpfile TMPF "$1/.new.XXXXXX" ||
         die "cannot make a temp file in $1 (own_tmpfile: $own_tmpfile_why)"
-    cat -- "${@:3}" > "$TMPF" || die "cannot write in $1"
+    "${@:3}" > "$TMPF" || die "cannot write in $1"
     put_new "$TMPF" "$1/$2"
 }
 
@@ -168,7 +174,7 @@ write_new() {                 # <dir> <name> [<src>]
 # it back. A name that is taken is no file of this send's: it leaves PUT, and the send is
 # refused. A signal that lands before put_new finds such a name would take it too: only a
 # msg_id drawn twice from /dev/urandom can bring that about.
-send_file() {                 # <dir> <name> [<src>]
+send_file() {                 # <dir> <name> <command...>
     PUT+=("$1/$2")
     write_new "$@" && return 0
     PUT=("${PUT[@]:0:${#PUT[@]}-1}")
@@ -176,13 +182,13 @@ send_file() {                 # <dir> <name> [<src>]
 }
 
 # The summary: one line, a final newline allowed, no other control byte, not empty and at
-# most SUMMARY_MAX bytes. Only SUMMARY_MAX + 2 bytes are read: past that it is too long.
+# most SUMMARY_MAX bytes. Only SUMMARY_MAX + 2 bytes are read: past that it is too long. A NUL
+# is read as \001, a control byte: $( ) would drop it, and the line kept would not be the file's.
+# pipefail: a head that fails is a refusal, not an empty summary.
 summary_line() {              # <file> -> REPLY
-    local LC_ALL=C s nul
-    # A NUL first, counted: $( ) drops it, and the line it reads is not the file's.
-    nul=$(head -c $((SUMMARY_MAX + 2)) -- "$1" | tr -cd '\000' | wc -c)
-    [ "$((nul))" -eq 0 ] || die "the summary is not one line of text"
-    s=$(head -c $((SUMMARY_MAX + 2)) -- "$1" && printf x) || die "cannot read $1"
+    local LC_ALL=C s
+    s=$(set -o pipefail; head -c $((SUMMARY_MAX + 2)) -- "$1" | tr '\000' '\001' && printf x) ||
+        die "cannot read $1"
     s=${s%x}; s=${s%$'\n'}
     [ -n "$s" ] || die "the summary is empty"
     [[ $s != *[[:cntrl:]]* ]] || die "the summary is not one line of text"
@@ -201,8 +207,12 @@ cmd_send() {                  # --session <id> <to> <summary-file> <body-file>
     local to=$3 sum=$4 body=$5 line id box now json pe known=''
     check_caller "$2"
     published
-    for pe in ${PUBLISHED[@]+"${PUBLISHED[@]}"}; do [ "${pe#* }" != "$to" ] || known=1; done
+    for pe in ${PUBLISHED[@]+"${PUBLISHED[@]}"}; do [ "${pe%% *}" != "$to" ] || known=1; done
     [ -n "$known" ] || die "no pane of this tmux server publishes session $to"
+    # A relative path under ./, so "-" names the file the checks below test: head and cat read
+    # stdin for a bare "-", after "--" too.
+    case $sum in /*) ;; *) sum=./$sum ;; esac
+    case $body in /*) ;; *) body=./$body ;; esac
     [ -f "$sum" ] && [ -r "$sum" ] || die "no readable summary file: $sum"
     [ -f "$body" ] && [ -r "$body" ] || die "no readable body file: $body"
     summary_line "$sum"; line=$REPLY
@@ -214,11 +224,12 @@ cmd_send() {                  # --session <id> <to> <summary-file> <body-file>
     json+=",\"subject\":\"msg.$ME.$to\",\"timestamp\":\"$now\",\"correlation_id\":\"$id\""
     json+=",\"payload\":{\"body_ref\":\"$id.md\",\"summary_ref\":\"$id.txt\"}}"
     # The refs first and the envelope last: an envelope names only refs already in place.
-    send_file "$ROOT/refs" "$id.txt" <<< "$line"
-    send_file "$ROOT/refs" "$id.md" "$body"
-    send_file "$box" "$id.json" <<< "$json"
+    send_file "$ROOT/refs" "$id.txt" printf '%s\n' "$line"
+    send_file "$ROOT/refs" "$id.md" cat -- "$body"
+    send_file "$box" "$id.json" printf '%s\n' "$json"
+    # Stored: a msg_id that cannot be printed leaves the message in place, and the line names it.
     PUT=()
-    printf '%s\n' "$id"
+    printf '%s\n' "$id" || die "message $id is stored, but its msg_id could not be printed"
 }
 
 # One "key":"value" of an envelope, the value of the shape <re>.
@@ -254,7 +265,7 @@ cmd_read() {                  # --session <id> <msg_id>
     cat -- "$ref" || die "cannot read the body of message $id"
     own_dir "$box/read"
     # 1: an earlier read left the marker.
-    write_new "$box/read" "$id" < /dev/null || :
+    write_new "$box/read" "$id" true || :
 }
 
 # The branch <dir> is on, in REPLY, or - for none: a detached HEAD (symbolic-ref --quiet exits
@@ -271,17 +282,20 @@ branch_of() {                 # <dir> -> REPLY
     esac
 }
 
+# Each folder from the fields the one checked list read (workdir_row), by the rule in
+# lib/workdir.sh (workdir_resolve): no second tmux call per pane, whose failure could pass
+# for a pane gone. A folder that is not a directory is a refusal: git -C would read another.
 cmd_who() {
     [ $# -eq 0 ] || usage
-    local pe dir
+    local pe
     in_pane
     published
     for pe in ${PUBLISHED[@]+"${PUBLISHED[@]}"}; do
-        dir=$(pane_workdir "${pe%% *}")
-        # A pane gone since the list was read has no folder, and no session to list.
-        [ -n "$dir" ] || continue
-        branch_of "$dir"
-        printf '%s\t%s\t%s\n' "${pe#* }" "$REPLY" "$dir"
+        workdir_row "${pe#* }"
+        workdir_resolve
+        workdir_ok "$WORKDIR" || die "no work folder for pane $WD_ID: '$WORKDIR' is not a directory"
+        branch_of "$WORKDIR"
+        printf '%s\t%s\t%s\n' "${pe%% *}" "$REPLY" "$WORKDIR" || die "cannot print the list"
     done
 }
 

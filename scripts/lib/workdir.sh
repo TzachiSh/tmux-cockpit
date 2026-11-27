@@ -79,16 +79,23 @@ workdir_row() {               # <row>
     if workdir_agent "$glob" "$st" "$cmd"; then WD_AGENT=1; else WD_AGENT=0; fi
 }
 
+# The folder of the row workdir_row read last, in WORKDIR: pane_workdir's rule, for a caller
+# that read the row itself, in a list of panes (cockpit-msg who, #1575).
+workdir_resolve() {
+    local dir=''
+    # Every agent pane asks, @cockpit_dir holding or not: a tree its tool calls reached
+    # outranks a hook-written one (#462). A shell pane has no transcript: the binary
+    # answers none for it (exit 1), so it is not asked.
+    [ "$WD_AGENT" = 1 ] && dir=$(workdir_ask "$WD_ID")
+    workdir_pick "$dir" "$WD_OPT" "$WD_CWD"
+}
+
 pane_workdir() {              # <pane> -> a directory; nothing when the pane is gone
-    local out dir=''
+    local out
     is_pane "${1-}" || return 0
     # display-message can exit 0 and expand to nothing for a missing pane: the id tells
     out=$(tmux display-message -p -t "$1" "$WORKDIR_FMT" 2>/dev/null)
     workdir_row "$out"
     [ -n "$WD_ID" ] || return 0
-    # Every agent pane asks, @cockpit_dir holding or not: a tree its tool calls reached
-    # outranks a hook-written one (#462). A shell pane has no transcript: the binary
-    # answers none for it (exit 1), so it is not asked.
-    [ "$WD_AGENT" = 1 ] && dir=$(workdir_ask "$1")
-    workdir_pick "$dir" "$WD_OPT" "$WD_CWD"; printf '%s\n' "$WORKDIR"
+    workdir_resolve; printf '%s\n' "$WORKDIR"
 }
