@@ -13,4 +13,4 @@
 │                                                          │
 │                                                          │
 │                                                          │
-╰ f follow up  ↑↓ scroll  ^Z hide  ? keys  esc home ───────╯
+╰ c compose  f follow up  ↑↓ scroll  ? keys  esc home ─────╯

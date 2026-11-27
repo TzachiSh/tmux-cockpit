@@ -21,4 +21,4 @@
 "│                                                                                                                      │"
 "│                                                                                                                      │"
 "│                                                                                                                      │"
-"╰ i insert  s send  f follow up  ↑↓ scroll  ^Z hide  ? keys  esc home ─────────────────────────────────────────────────╯"
+"╰ i insert  s send  c compose  f follow up  ↑↓ scroll  ^Z hide  ? keys  esc home ──────────────────────────────────────╯"

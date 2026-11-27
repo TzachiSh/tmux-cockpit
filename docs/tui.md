@@ -1326,7 +1326,11 @@ is.
   pane's prompt basket, so `^T` sends them as a ref ([the prompt
   basket](#the-prompt-basket-365-child-5)). Esc there is back at the answer with
   its thread kept (D3); `^S` or `^F` from there is a run of its own and ends the
-  thread, so esc after it goes to the board.
+  thread, so esc after it goes to the board. An Explain's answer has the same
+  `c` (#1571): its template is the question, then the answer's first
+  paragraph, and it puts nothing in the basket. Nothing is pasted or sent. The
+  footer's `c` sits after a prompt's `i` and `s` and before `f`, so a narrow
+  footer keeps the prompt's keys longest. On a Result, `c` is still edit.
 - **The prompt** is `ask-code.txt`, overridden like the others.
 
 ### Code in the panel (#282)

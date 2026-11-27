@@ -9,4 +9,4 @@
 │ ```                                  │
 │ Then 3 lines                         │
 │                                      │
-╰ f follow up  ? keys  esc home ───────╯
+╰ c compose  ? keys  esc home ─────────╯
