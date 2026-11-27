@@ -12524,8 +12524,8 @@ unset -f td_k; unset TDE td_a td_o td_w
 echo "== own_tmpdir takes mktemp's answer only when it is a fresh dir of the user's own (#947) =="
 # lib/tmpdir.sh, the check every rm -rf'd temp dir goes through. own_tmpdir_why names the first
 # check that refused, in a fixed order, so each row is one only its own check refuses first: a
-# check taken out moves its row on to the next check, or to accepted. The helper removes
-# nothing; each answer is judged from a cwd under scratch.
+# check taken out moves its row on to the next check, or to accepted. A refusal removes only an
+# empty dir of the user's (#1593, the block below); each answer is judged from a cwd under scratch.
 #   fail    mktemp exits 1            nope   a name that does not resolve
 #   ''      an empty answer, exit 0   /      never empty, and a user's only as root
 #   .       the cwd                   link   a symlink to an empty dir of the user's
@@ -12562,7 +12562,7 @@ fi
 printf '#!/bin/sh\nexit 2\n' > "$OT/bin/ls"; chmod +x "$OT/bin/ls"
 is "an empty dir an ls cannot list is refused by the nonempty check: it fails closed" \
    "1 nonempty []" "$(ot_run "$OT/e")"
-rm -f "$OT/bin/ls"
+rm -f "$OT/bin/ls"; mkdir -p "$OT/e"   # that refusal removed it, and the rows below answer it
 # cd -- - goes to $OLDPWD and prints it: an answer of - is refused before any cd, by its own
 # check, with OLDPWD naming an empty dir of the user's that every later check would pass.
 is "a mktemp answering [-], OLDPWD an empty dir of the user's, is refused by the dash check" \
@@ -12730,6 +12730,80 @@ else
     skip_ "own_tmpfile refusal: no empty /proc/version of another user's (root?), no owner row"
 fi
 rm -rf "$OR"; unset -f or_new or_has or_run; unset OR or_bash or_t or_p
+
+echo "== own_tmpdir removes the dir it refused only when that loses nothing (#1593) =="
+# A refusal empties <var>, so the caller's EXIT trap cannot remove the dir mktemp -d made, and
+# own_tmpdir removes it itself, with rmdir: only a dir of the user's that is no symlink, named
+# with no trailing / or /., and not the cwd, tested with bash's own tests on the answer as
+# mktemp gave it. rmdir takes an empty dir and nothing else. A missing ls or dirname refuses
+# with no attacker at all, and the dir still goes. Each row runs from a cwd under scratch, with
+# an empty TMPDIR. A row whose answer stays runs under a logging rmdir in a PATH dir of its own
+# and wants its log empty, but for the dir with a file in it, which needs the real one.
+#   nols, nod  PATH holds the real mktemp and the tools own_tmpdir runs, less ls or dirname
+#   -e    an empty dir of the user's in the cwd    shut  an empty dir of mode 0600, no search
+#   link  a symlink to an empty dir of the user's  file  an empty regular file of the user's
+#   full  a dir with a file in it
+DR=$(mktmpd); mkdir -p "$DR/bin" "$DR/cwd/-e" "$DR/nols" "$DR/nod" "$DR/rdl" "$DR/e" "$DR/full"
+dr_bash=$(command -v bash)
+for dr_t in mktemp dirname basename ls rmdir; do
+    dr_p=$(PATH=/usr/bin:/bin command -v "$dr_t")
+    [ "$dr_t" = ls ] || ln -s "$dr_p" "$DR/nols/$dr_t"
+    [ "$dr_t" = dirname ] || ln -s "$dr_p" "$DR/nod/$dr_t"
+done
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> %s\n' "$(tq "$DR/rmdir.log")" > "$DR/rdl/rmdir"
+chmod +x "$DR/rdl/rmdir"; ln -s "$DR/e" "$DR/link"; : > "$DR/file"; echo keep > "$DR/full/canary"
+mkdir -m 600 "$DR/shut"
+dr_has() { if [ -e "$DR/$1" ] || [ -L "$DR/$1" ]; then echo kept; else echo gone; fi; }
+# <PATH> -> "<status> <why> [<var>]|<entries left in TMPDIR>|<rmdir log>", from $DR/cwd. The
+# stub mktemp in $DR/bin prints DR_ANSWER; nols and nod run the real one.
+dr_run() {
+    rm -rf "$DR/t"; mkdir "$DR/t"; rm -f "$DR/rmdir.log"
+    printf '#!/bin/sh\nprintf "%%s\\n" %s\n' "$(tq "${DR_ANSWER-}")" > "$DR/bin/mktemp"
+    chmod +x "$DR/bin/mktemp"
+    (cd "$DR/cwd" && env PATH="$1" TMPDIR="$DR/t" "$dr_bash" -c \
+        '. "$1"; v=stale; own_tmpdir v; printf "%s %s [%s]" "$?" "$own_tmpdir_why" "$v"' _ \
+        "$DIR/scripts/lib/tmpdir.sh" 2>/dev/null)
+    printf '|%s|%s' "$(find "$DR/t" -mindepth 1 | wc -l | tr -d ' ')" \
+        "$(cat "$DR/rmdir.log" 2>/dev/null)"
+}
+is "own_tmpdir refusal: with no ls on PATH, the nonempty check, and the dir is gone" \
+   "1 nonempty []|0|" "$(dr_run "$DR/nols")"
+is "own_tmpdir refusal: with no dirname on PATH, the symlink check, and the dir is gone" \
+   "1 symlink []|0|" "$(dr_run "$DR/nod")"
+is "own_tmpdir refusal: an empty dir of the user's named -e, the dash check, and it is gone" \
+   "1 dash []|0||gone" "$(DR_ANSWER=-e dr_run "$DR/bin:$PATH")|$(dr_has cwd/-e)"
+# cd needs search on the dir and rmdir only on its parent. Root searches any dir, so as root the
+# answer is taken, and the row is skipped.
+if (cd "$DR/shut") 2>/dev/null; then
+    skip_ "own_tmpdir refusal: this user can cd into a dir of mode 0600 (root?), no resolve row"
+else
+    is "own_tmpdir refusal: an empty dir with no search, the resolve check, and it is gone" \
+       "1 resolve []|0||gone" "$(DR_ANSWER=$DR/shut dr_run "$DR/bin:$PATH")|$(dr_has shut)"
+fi
+is "own_tmpdir refusal: /, the root check, and no rmdir runs" \
+   "1 root []|0|" "$(DR_ANSWER=/ dr_run "$DR/rdl:$DR/bin:$PATH")"
+is "own_tmpdir refusal: the cwd by its absolute path, the cwd check, and no rmdir runs" \
+   "1 cwd []|0||kept" "$(DR_ANSWER=$(cd "$DR/cwd" && pwd -P) dr_run "$DR/rdl:$DR/bin:$PATH")|$(
+   dr_has cwd)"
+is "own_tmpdir refusal: a symlink, the symlink check, no rmdir, and the link and target stay" \
+   "1 symlink []|0||kept|kept" "$(DR_ANSWER=$DR/link dr_run "$DR/rdl:$DR/bin:$PATH")|$(
+   dr_has link)|$(dr_has e)"
+is "own_tmpdir refusal: the symlink spelled link/, the symlink check, and no rmdir runs" \
+   "1 symlink []|0|" "$(DR_ANSWER=$DR/link/ dr_run "$DR/rdl:$DR/bin:$PATH")"
+# -O, not a uid test, as in the #947 /usr row.
+if [ -O /usr ]; then
+    skip_ "own_tmpdir refusal: /usr is this user's own (root or a container), no owner row"
+else
+    is "own_tmpdir refusal: /usr, the owner check, and no rmdir runs" \
+       "1 owner []|0|" "$(DR_ANSWER=/usr dr_run "$DR/rdl:$DR/bin:$PATH")"
+fi
+is "own_tmpdir refusal: an empty regular file, the resolve check, no rmdir, and it stays" \
+   "1 resolve []|0||kept" "$(DR_ANSWER=$DR/file dr_run "$DR/rdl:$DR/bin:$PATH")|$(dr_has file)"
+is "own_tmpdir refusal: a dir with a file in it, the nonempty check, and both stay" \
+   "1 nonempty []|0||keep" "$(DR_ANSWER=$DR/full dr_run "$DR/bin:$PATH")|$(
+   cat "$DR/full/canary" 2>/dev/null)"
+# At master shut stays, with no search: rm -rf needs it back.
+chmod -R u+rwx "$DR" 2>/dev/null; rm -rf "$DR"; unset -f dr_has dr_run; unset DR dr_bash dr_t dr_p
 
 echo "== board, panel, tm and tui-fetch rm -rf no dir their mktemp did not make (#947) =="
 # Each armed rm -rf on whatever mktemp -d answered. Here a mktemp earlier on PATH answers a
