@@ -134,6 +134,9 @@ pub enum Off {
     /// The file, by name, is refused: a symlink, not a regular file, not the owner's,
     /// not mode 0600, too large or too long.
     Refused(&'static str, &'static str),
+    /// The file, by name, holds a control character other than a newline or tab, or a
+    /// bidi control: the consent screen must show the bytes it accepts (#1543).
+    Unsafe(&'static str),
     Unreadable(&'static str, String),
     Parse(String),
     UnknownKey(String),
@@ -154,14 +157,15 @@ impl fmt::Display for Off {
         match self {
             Off::Missing(w) => write!(f, "{w} is missing"),
             Off::Refused(w, why) => write!(f, "{w} is {why}"),
+            Off::Unsafe(w) => write!(f, "{w} holds a control or bidi character"),
             Off::Unreadable(w, e) => write!(f, "{w} cannot be read: {e}"),
-            Off::Parse(e) => write!(f, "not a rules file: {e}"),
-            Off::UnknownKey(k) => write!(f, "unknown key {k}"),
+            Off::Parse(e) => write!(f, "not a rules file: {}", crate::pick::clean(e)),
+            Off::UnknownKey(k) => write!(f, "unknown key {}", crate::pick::clean(k)),
             Off::NoAcceptedCopy => write!(f, "never accepted: run cockpit-tui ask-rules accept"),
             Off::NotAccepted => write!(f, "changed since it was accepted: run cockpit-tui ask-rules accept"),
             Off::BadField(k) => write!(f, "bad {k}"),
             Off::DupId => write!(f, "duplicate id"),
-            Off::UnknownPred(n) => write!(f, "unknown predicate {n}"),
+            Off::UnknownPred(n) => write!(f, "unknown predicate {}", crate::pick::clean(n)),
             Off::BadCap => write!(f, "cap_per_hour must be 1 to {CAP_MAX}"),
             Off::ExampleFails { kind, index } => write!(f, "{kind} example {index} fails"),
         }
@@ -256,7 +260,7 @@ pub fn load(rules: &Path, accepted: &Path) -> Rules {
 }
 
 /// Ok only when the accepted copy holds exactly these bytes.
-fn held(bytes: &[u8], accepted: &Path) -> Result<(), Off> {
+fn held(bytes: &str, accepted: &Path) -> Result<(), Off> {
     match read_owned(accepted, "the accepted copy") {
         Ok(copy) if copy == bytes => Ok(()),
         Ok(_) => Err(Off::NotAccepted),
@@ -279,10 +283,10 @@ pub fn accept(rules: &Path, accepted: &Path, yes: impl FnOnce(&Diff) -> bool) ->
     }
     let old = match read_owned(accepted, "the accepted copy") {
         Ok(c) => c,
-        Err(Off::Missing(_)) => Vec::new(),
+        Err(Off::Missing(_)) => String::new(),
         Err(o) => return Err(Error::Invalid(o)),
     };
-    let d = diff(&String::from_utf8_lossy(&old), &String::from_utf8_lossy(&bytes));
+    let d = diff(&old, &bytes);
     if old == bytes {
         return Ok(d);
     }
@@ -299,13 +303,15 @@ pub fn accept(rules: &Path, accepted: &Path, yes: impl FnOnce(&Diff) -> bool) ->
         .map_err(|e| Error::Io(dir.to_path_buf(), e))?;
     let mut tmp = accepted.as_os_str().to_owned();
     tmp.push("~tmp");
-    crate::store::replace_file(dir, Path::new(&tmp), accepted, &bytes).map_err(|(p, e)| Error::Io(p, e))?;
+    crate::store::replace_file(dir, Path::new(&tmp), accepted, bytes.as_bytes()).map_err(|(p, e)| Error::Io(p, e))?;
     Ok(d)
 }
 
-/// The bytes of a regular file the owner holds at mode 0600, opened without following
-/// a symlink, and checked on the open file itself.
-fn read_owned(p: &Path, what: &'static str) -> Result<Vec<u8>, Off> {
+/// The text of a regular file the owner holds at mode 0600, opened without following
+/// a symlink and checked on the open file itself. Both files pass here, so both share
+/// the bounds: 64 KiB, [`LINES_MAX`] lines, UTF-8, and no character `pick::clean`
+/// would drop, save a newline (#1543: the diff on the consent screen prints lines raw).
+fn read_owned(p: &Path, what: &'static str) -> Result<String, Off> {
     let f = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
@@ -327,7 +333,17 @@ fn read_owned(p: &Path, what: &'static str) -> Result<Vec<u8>, Off> {
     if bytes.len() as u64 > FILE_MAX {
         return Err(Off::Refused(what, "larger than 64 KiB"));
     }
-    Ok(bytes)
+    let text = String::from_utf8(bytes).map_err(|_| Off::Refused(what, "not UTF-8"))?;
+    if text.lines().count() > LINES_MAX {
+        return Err(Off::Refused(what, "longer than 2000 lines"));
+    }
+    if text
+        .chars()
+        .any(|c| c != '\n' && crate::pick::clean(c.encode_utf8(&mut [0; 4])).is_empty())
+    {
+        return Err(Off::Unsafe(what));
+    }
+    Ok(text)
 }
 
 /// The owner-only rule, on plain values so a row can try another uid.
@@ -349,17 +365,11 @@ fn perms(is_file: bool, uid: u32, mode: u32, len: u64, euid: u32) -> Result<(), 
 
 /// The file's text as rules. A shape or key error refuses the whole file; a bad rule is
 /// off alone.
-fn parse(bytes: &[u8]) -> Rules {
+fn parse(text: &str) -> Rules {
     let refuse = |o: Off| Rules {
         file: Err(o),
         rules: Vec::new(),
     };
-    let Ok(text) = std::str::from_utf8(bytes) else {
-        return refuse(Off::Parse("not UTF-8".into()));
-    };
-    if text.lines().count() > LINES_MAX {
-        return refuse(Off::Refused("the rules file", "longer than 2000 lines"));
-    }
     let v: Value = match serde_json::from_str(text) {
         Ok(v) => v,
         Err(e) => return refuse(Off::Parse(e.to_string())),

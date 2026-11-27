@@ -212,7 +212,10 @@ gives `accept` a real diff, which a hash could not.
   yes, read from stdin. It refuses a file in which any rule is off. It writes through
   `store::replace_file`, the store's own writer.
 - Both files are read without following a symlink, checked on the open file, and refused
-  over 64 KiB or 2000 lines.
+  over 64 KiB or 2000 lines, when not UTF-8, or when they hold any character that
+  `pick::clean` drops save a newline: a control character other than a newline or tab, or
+  a bidi control (#1543). The diff on the consent screen then shows exactly the bytes that
+  `accept` copies. Every name printed from the file goes through `pick::clean`.
 - Every rule is off while the file's bytes differ from the copy's, and while there is no copy.
   So any edit turns every rule off until the owner accepts it.
 - The cockpit never writes the rules file. A promotion (D5) is the owner's own edit of that
