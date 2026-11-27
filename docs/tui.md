@@ -382,7 +382,12 @@ are for write or either cases. An Explain row adds `flow` (`explain`), `ready`
 row keeps the first three and `lead_missing_n`. `--check` adds `; N explain` to
 its count line when there is one. `--judge` and `--router-prompt` refuse a run
 with an Explain case before any call: the judge's rubric grades write replies,
-and the router text replaces the write prompt.
+and the router text replaces the write prompt. The Explain cases are
+`tui/evals/explain/holdout-blind.txt`, all of them held out. A run reads that
+file alone, with `--cases evals/explain/holdout-blind.txt`, and the default run
+does not load it. Its readers are the owner, the orchestrator, the case writer
+and a blindness reviewer. Whoever edits `explain.txt` must not open it, and its
+header says so.
 
 Held-out cases live in `tui/evals/panel/holdout-blind.txt`, not in the cases
 file every tuning session reads. Its readers are the owner, the orchestrator,

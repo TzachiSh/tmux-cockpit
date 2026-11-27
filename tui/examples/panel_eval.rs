@@ -46,7 +46,9 @@
 //!
 //! A case with `flow: explain` (#1405) is the panel's Explain: its request is the
 //! user's question, sent as Explain sends it, and its reply is read by Explain's
-//! parser. `--judge` and `--router-prompt` refuse a run that holds one.
+//! parser. `--judge` and `--router-prompt` refuse a run that holds one. The
+//! Explain cases are evals/explain/holdout-blind.txt, all held out, which a run
+//! reads with `--cases`.
 //!
 //! Each call is hermetic by default (#598): `claude --setting-sources ""`, so
 //! no user, project or local settings load, and with them no CLAUDE.md, no
