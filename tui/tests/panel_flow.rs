@@ -288,6 +288,13 @@ fn a_list_line_that_fits_exactly_is_not_cut() {
 }
 
 #[test]
+fn an_aligned_list_with_no_time_keeps_no_time_column() {
+    // No step has a time: the aligned label column keeps no gap for a time column (#1528).
+    assert_eq!(flow::render("sequenceDiagram\nA->>B: abcdefgh\n", 13), ["abcdefgh  A→B"]);
+    assert_eq!(flow::render(BASE, 25)[1], " 2 PR op…  agent→reviewer");
+}
+
+#[test]
 fn a_hand_built_step_naming_a_missing_actor_draws_without_a_panic() {
     let mut f = parsed("sequenceDiagram\nA->>B: x\n");
     f.steps[0].to = 7;
