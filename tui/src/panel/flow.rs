@@ -9,10 +9,14 @@
 //! steps kept. Anything else is an `Err` naming the line, and [`render`] then
 //! shows [`not_drawn`]: the reason and the raw lines.
 //!
-//! No line is ever wider than the width, and nothing here panics: the release
-//! profile aborts on a panic.
+//! Every glyph it draws comes from the caller's [`Glyphs`] tier, so the ASCII
+//! tier draws nothing but ASCII from an ASCII source. No line is ever wider
+//! than the width, and nothing here panics: the release profile aborts on a
+//! panic.
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
+
+use crate::theme::Glyphs;
 
 /// The ladder needs this many columns...
 pub const LADDER_MIN_WIDTH: usize = 60;
@@ -30,13 +34,13 @@ pub enum Status {
 }
 
 impl Status {
-    pub fn glyph(self) -> char {
+    pub fn glyph(self, g: &Glyphs) -> &'static str {
         match self {
-            Status::Done => '✓',
-            Status::Running => '●',
-            Status::Pending => '○',
-            Status::Failed => '✗',
-            Status::Needs => '!',
+            Status::Done => g.done,
+            Status::Running => g.running,
+            Status::Pending => g.idle,
+            Status::Failed => g.step_failed,
+            Status::Needs => g.step_needs,
         }
     }
 
@@ -113,18 +117,25 @@ impl Flow {
     }
 }
 
-/// Untrusted text made safe to draw: [`action::sanitize`](super::action::sanitize)
+/// Untrusted text as [`parse`] keeps it: [`action::sanitize`](super::action::sanitize)
 /// drops bidi controls, U+2028/U+2029 and every control but tab and newline;
-/// then a tab is a space and a newline U+FFFD, so a width counts what shows.
-fn clean(s: &str) -> String {
-    super::action::sanitize(s)
-        .chars()
-        .map(|c| match c {
-            '\t' => ' ',
-            c if c.is_control() => '\u{FFFD}',
-            c => c,
-        })
-        .collect()
+/// then a tab is a space. A parsed line holds no newline, so no control is left.
+fn tidy(s: &str) -> String {
+    super::action::sanitize(s).replace('\t', " ")
+}
+
+/// [`tidy`], then any control left (a newline in a field set by hand) is the
+/// tier's replacement mark, so a width counts what shows.
+fn clean(s: &str, g: &Glyphs) -> String {
+    let mut out = String::new();
+    for c in tidy(s).chars() {
+        if c.is_control() {
+            out.push_str(g.replacement);
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 fn is_id(s: &str) -> bool {
@@ -181,7 +192,7 @@ fn line(f: &mut Flow, l: &str, depth: &mut usize) -> Result<(), String> {
                 return Err("a participant needs an id".into());
             }
             let i = f.actor(id);
-            f.actors[i].name = clean(name);
+            f.actors[i].name = tidy(name);
         }
         "Note" | "note" => note(f, rest)?,
         "loop" | "alt" | "opt" => *depth += 1,
@@ -206,7 +217,7 @@ fn note(f: &mut Flow, rest: &str) -> Result<(), String> {
         }
         f.actor(id);
     }
-    let text = clean(text.trim());
+    let text = tidy(text.trim());
     // The prefix ends the word: "NEED FROM YOUR call" is an ordinary note.
     let need = text
         .strip_prefix("NEED FROM YOU")
@@ -235,7 +246,7 @@ fn step(f: &mut Flow, l: &str) -> Result<(), String> {
         from,
         to,
         dashed,
-        label: clean(label.trim()),
+        label: tidy(label.trim()),
         status: None,
         time: None,
         notes: vec![],
@@ -278,33 +289,35 @@ pub fn shape(f: &Flow, w: usize) -> Shape {
     }
 }
 
-/// Cut `s` to at most `w` columns, ending in `…` when cut. Cuts between
-/// grapheme clusters, so an emoji sequence is kept whole or dropped whole.
-fn fit(s: &str, w: usize) -> String {
+/// Cut `s` to at most `w` columns, ending in the tier's ellipsis when cut.
+/// Below the ellipsis's width it keeps the first `w` columns and no ellipsis.
+/// At exactly that width it gives the ellipsis alone, where [`Glyphs::trunc`]
+/// keeps the first columns. Cuts between grapheme clusters, so an emoji
+/// sequence is kept whole or dropped whole.
+fn fit(s: &str, w: usize, g: &Glyphs) -> String {
     if s.width() <= w {
         return s.to_string();
     }
-    if w == 0 {
-        return String::new();
-    }
+    let e = g.ellipsis.width();
+    let (room, end) = if w < e { (w, "") } else { (w - e, g.ellipsis) };
     let mut kept: Vec<&str> = vec![];
     let mut used = 0;
-    for g in s.graphemes(true) {
-        if used + g.width() + 1 > w {
+    for c in s.graphemes(true) {
+        if used + c.width() > room {
             break;
         }
-        kept.push(g);
-        used += g.width();
+        kept.push(c);
+        used += c.width();
     }
     // Clusters can measure narrower apart than joined.
-    while kept.concat().width() + 1 > w {
+    while kept.concat().width() > room {
         kept.pop();
     }
-    kept.concat() + "…"
+    kept.concat() + end
 }
 
 /// Words into lines of at most `w` columns; a word wider than that is cut.
-fn wrap(s: &str, w: usize) -> Vec<String> {
+fn wrap(s: &str, w: usize, g: &Glyphs) -> Vec<String> {
     let mut out = vec![];
     let mut cur = String::new();
     for word in s.split_whitespace() {
@@ -314,7 +327,7 @@ fn wrap(s: &str, w: usize) -> Vec<String> {
         if !cur.is_empty() {
             cur.push(' ');
         }
-        cur.push_str(&fit(word, w));
+        cur.push_str(&fit(word, w, g));
     }
     if !cur.is_empty() || out.is_empty() {
         out.push(cur);
@@ -388,25 +401,28 @@ fn label(f: &Flow, i: usize) -> String {
 }
 
 /// The closing box of NEED FROM YOU notes, the width wide.
-fn need_box(f: &Flow, w: usize) -> Vec<String> {
+fn need_box(f: &Flow, w: usize, g: &Glyphs) -> Vec<String> {
     if f.need.is_empty() {
         return vec![];
     }
     if w < 6 {
-        return f.need.iter().map(|n| fit(&format!("NEED FROM YOU: {n}"), w)).collect();
+        return f.need.iter().map(|n| fit(&format!("NEED FROM YOU: {n}"), w, g)).collect();
     }
+    let b = g.plain;
     let inner = w - 4;
-    let title = fit(" NEED FROM YOU ", w - 2);
-    let mut out = vec![format!("┌{title}{}┐", "─".repeat(w - 2 - title.width()))];
-    for line in f.need.iter().flat_map(|n| wrap(n, inner)) {
-        out.push(format!("│ {line}{} │", " ".repeat(inner.saturating_sub(line.width()))));
+    let title = fit(" NEED FROM YOU ", w - 2, g);
+    let top = b.horizontal_top.repeat(w - 2 - title.width());
+    let mut out = vec![format!("{}{title}{top}{}", b.top_left, b.top_right)];
+    for line in f.need.iter().flat_map(|n| wrap(n, inner, g)) {
+        let pad = " ".repeat(inner.saturating_sub(line.width()));
+        out.push(format!("{} {line}{pad} {}", b.vertical_left, b.vertical_right));
     }
-    out.push(format!("└{}┘", "─".repeat(w - 2)));
+    out.push(format!("{}{}{}", b.bottom_left, b.horizontal_bottom.repeat(w - 2), b.bottom_right));
     out
 }
 
 /// Actors across, two rows a step: the label, then the arrow under it.
-fn ladder(f: &Flow, w: usize) -> Vec<String> {
+fn ladder(f: &Flow, w: usize, g: &Glyphs) -> Vec<String> {
     let gutter = if f.has_status() { 3 } else { 1 };
     let right = if f.steps.iter().any(|s| s.time.is_some()) { 6 } else { 0 };
     let slot = (w.saturating_sub(gutter + right) / f.actors.len().max(1)).max(2);
@@ -415,20 +431,20 @@ fn ladder(f: &Flow, w: usize) -> Vec<String> {
     let lifelines = || {
         let mut r = Row::new(w);
         for i in 0..f.actors.len() {
-            r.put(x(i), "│");
+            r.put(x(i), g.plain.vertical_left);
         }
         r
     };
     let notes = |out: &mut Vec<String>, notes: &[String]| {
-        for line in notes.iter().flat_map(|n| wrap(n, w.saturating_sub(gutter + 2))) {
+        for line in notes.iter().flat_map(|n| wrap(n, w.saturating_sub(gutter + 2), g)) {
             let mut r = lifelines();
-            r.text(gutter, &format!("↳ {line}"));
+            r.text(gutter, &format!("{} {line}", g.note));
             out.push(r.done());
         }
     };
     let mut head = Row::new(w);
     for (i, a) in f.actors.iter().enumerate() {
-        let name = fit(&a.name, slot - 1);
+        let name = fit(&a.name, slot - 1, g);
         head.text(x(i).saturating_sub(name.width() / 2), &name);
     }
     let mut out = vec![head.done()];
@@ -438,46 +454,45 @@ fn ladder(f: &Flow, w: usize) -> Vec<String> {
         let (a, b) = (x(s.from).min(x(s.to)), x(s.from).max(x(s.to)));
         let mut lab = lifelines();
         if cur == Some(i) {
-            lab.put(0, "▶");
+            lab.put(0, g.head_right);
         }
         if let Some(st) = s.status {
-            lab.put(1, st.glyph().encode_utf8(&mut [0; 4]));
+            lab.put(1, st.glyph(g));
         }
-        lab.text(a + 2, &fit(&label(f, i), w.saturating_sub(right + a + 2)));
+        lab.text(a + 2, &fit(&label(f, i), w.saturating_sub(right + a + 2), g));
         if let Some(t) = &s.time {
-            lab.text(w - right + 1, &fit(t, right - 1));
+            lab.text(w - right + 1, &fit(t, right - 1, g));
         }
         out.push(lab.done());
         let mut arrow = lifelines();
         if a == b {
-            arrow.text(a + 1, "─╮↩");
+            arrow.text(a + 1, &format!("{}{}{}", g.plain.horizontal_top, g.self_turn, g.self_back));
         } else {
             for c in a + 1..b {
-                arrow.put(c, if s.dashed { "┄" } else { "─" });
+                arrow.put(c, if s.dashed { g.dashed } else { g.plain.horizontal_top });
             }
             if s.to > s.from {
-                arrow.put(b - 1, "▶");
+                arrow.put(b - 1, g.head_right);
             } else {
-                arrow.put(a + 1, "◀");
+                arrow.put(a + 1, g.head_left);
             }
         }
         out.push(arrow.done());
         notes(&mut out, &s.notes);
     }
-    out.extend(need_box(f, w));
+    out.extend(need_box(f, w, g));
     out
 }
 
-const HERE: &str = "◀ here";
-
 /// One numbered line a step: status, number, label, who to whom, time.
-fn list(f: &Flow, w: usize) -> Vec<String> {
+fn list(f: &Flow, w: usize, g: &Glyphs) -> Vec<String> {
     let cur = f.current();
     let status = f.has_status();
+    let here = format!("{} here", g.head_left);
     let digits = if f.autonumber { f.steps.len().to_string().len().max(2) } else { 0 };
     let longest = f.steps.iter().map(|s| s.label.width()).max().unwrap_or(0);
     let name = |i: usize| f.actors.get(i).map_or("?", |a| a.name.as_str());
-    let who = |s: &Step| format!("{}→{}", name(s.from), name(s.to));
+    let who = |s: &Step| format!("{}{}{}", name(s.from), g.arrow, name(s.to));
     let who_w = f.steps.iter().map(|s| who(s).width()).max().unwrap_or(0);
     let time_w = f.steps.iter().filter_map(|s| s.time.as_deref()).map(str::width).max().unwrap_or(0);
     let lead_w = usize::from(status) * 2 + if f.autonumber { digits + 1 } else { 0 };
@@ -494,7 +509,7 @@ fn list(f: &Flow, w: usize) -> Vec<String> {
     for (i, s) in f.steps.iter().enumerate() {
         let mut lead = String::new();
         if status {
-            lead.push(s.status.map_or(' ', Status::glyph));
+            lead.push_str(s.status.map_or(" ", |st| st.glyph(g)));
             lead.push(' ');
         }
         if f.autonumber {
@@ -504,66 +519,69 @@ fn list(f: &Flow, w: usize) -> Vec<String> {
         let time = s.time.as_deref().unwrap_or("");
         let tail = format!("  {who}{}  {time}", " ".repeat(who_w - who.width()));
         let line = if aligned {
-            let label = fit(&s.label, room);
+            let label = fit(&s.label, room, g);
             format!("{lead}{label}{}{tail}", " ".repeat(room - label.width()))
         } else {
-            fit(format!("{lead}{} {who} {time}", s.label).trim_end(), w)
+            fit(format!("{lead}{} {who} {time}", s.label).trim_end(), w, g)
         };
         let line = line.trim_end();
-        if cur == Some(i) && line.width() + 2 + HERE.width() <= w {
-            out.push(format!("{line}  {HERE}"));
+        if cur == Some(i) && line.width() + 2 + here.width() <= w {
+            out.push(format!("{line}  {here}"));
         } else {
             out.push(line.to_string());
             if cur == Some(i) {
-                out.push(fit(&format!("{}{HERE}", " ".repeat(lead.width())), w));
+                out.push(fit(&format!("{}{here}", " ".repeat(lead.width())), w, g));
             }
         }
         let indent = " ".repeat(lead.width());
-        for line in s.notes.iter().flat_map(|n| wrap(n, w.saturating_sub(lead.width() + 2))) {
-            out.push(fit(&format!("{indent}↳ {line}"), w));
+        for line in s.notes.iter().flat_map(|n| wrap(n, w.saturating_sub(lead.width() + 2), g)) {
+            out.push(fit(&format!("{indent}{} {line}", g.note), w, g));
         }
     }
     let mut head: Vec<String> = f
         .lead
         .iter()
-        .flat_map(|n| wrap(n, w.saturating_sub(2)))
-        .map(|l| fit(&format!("↳ {l}"), w))
+        .flat_map(|n| wrap(n, w.saturating_sub(2), g))
+        .map(|l| fit(&format!("{} {l}", g.note), w, g))
         .collect();
     head.extend(out);
-    head.extend(need_box(f, w));
+    head.extend(need_box(f, w, g));
     head
 }
 
-/// `f` at width `w`, in the [`shape`] the width and actor count pick.
-pub fn draw(f: &Flow, w: usize) -> Vec<String> {
+/// `f` at width `w`, in the [`shape`] the width and actor count pick, with
+/// the glyphs of tier `g`.
+pub fn draw(f: &Flow, w: usize, g: &Glyphs) -> Vec<String> {
     let lines = match shape(f, w) {
-        Shape::Ladder => ladder(f, w),
-        Shape::List => list(f, w),
+        Shape::Ladder => ladder(f, w, g),
+        Shape::List => list(f, w, g),
     };
     // The layouts aim to fit; this makes it a guarantee. A Flow built by hand
-    // never went through parse's clean, so each line is cleaned here (#955).
-    lines.into_iter().map(|l| fit(&clean(&l), w)).collect()
+    // never went through parse's tidy, so each line is cleaned here (#955).
+    lines.into_iter().map(|l| fit(&clean(&l, g), w, g)).collect()
 }
 
 /// What the caller shows for source that does not parse: the reason, then the
 /// raw lines, each cut to the width.
-pub fn not_drawn(src: &str, why: &str, w: usize) -> Vec<String> {
-    std::iter::once(fit(&clean(&format!("(not drawn: {why})")), w))
-        .chain(src.lines().map(|l| fit(&clean(l), w)))
+pub fn not_drawn(src: &str, why: &str, w: usize, g: &Glyphs) -> Vec<String> {
+    std::iter::once(fit(&clean(&format!("(not drawn: {why})"), g), w, g))
+        .chain(src.lines().map(|l| fit(&clean(l, g), w, g)))
         .collect()
 }
 
 /// [`parse`] then [`draw`], or [`not_drawn`] when it does not parse.
-pub fn render(src: &str, w: usize) -> Vec<String> {
+pub fn render(src: &str, w: usize, g: &Glyphs) -> Vec<String> {
     match parse(src) {
-        Ok(f) => draw(&f, w),
-        Err(why) => not_drawn(src, &why, w),
+        Ok(f) => draw(&f, w, g),
+        Err(why) => not_drawn(src, &why, w, g),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Actor, Flow, Row, Shape, Status, Step, draw, fit, ladder, list, parse, shape};
+    use super::{Actor, Flow, Glyphs, Row, Shape, Status, Step, draw, fit, ladder, list, parse, shape};
+
+    const UNI: Glyphs = Glyphs::unicode();
 
     /// A character no drawn line may hold: a control, a bidi control, U+2028/U+2029.
     fn unsafe_char(c: char) -> bool {
@@ -602,7 +620,7 @@ mod tests {
             let f = hand_built(bad);
             for (w, want) in [(100, Shape::Ladder), (40, Shape::List)] {
                 assert_eq!(shape(&f, w), want, "{row} w={w}");
-                let out = draw(&f, w);
+                let out = draw(&f, w, &UNI);
                 let hit = out.iter().find(|l| l.chars().any(unsafe_char));
                 assert_eq!(hit, None, "{row} w={w}");
             }
@@ -615,10 +633,10 @@ mod tests {
         let src = "sequenceDiagram\nautonumber\nparticipant A as Ann ↳\nNote over A: lead\n\
                    A->>B: go ✓ │ …\n%% status: running 09:30\nNote over B: NEED FROM YOU: ok\n";
         let f = parse(src).expect("sample parses");
-        type Layout = fn(&Flow, usize) -> Vec<String>;
+        type Layout = fn(&Flow, usize, &Glyphs) -> Vec<String>;
         for (w, layout) in [(100, ladder as Layout), (40, list as Layout)] {
-            let plain: Vec<String> = layout(&f, w).iter().map(|l| fit(l, w)).collect();
-            assert_eq!(draw(&f, w), plain, "w={w}");
+            let plain: Vec<String> = layout(&f, w, &UNI).iter().map(|l| fit(l, w, &UNI)).collect();
+            assert_eq!(draw(&f, w, &UNI), plain, "w={w}");
         }
     }
 

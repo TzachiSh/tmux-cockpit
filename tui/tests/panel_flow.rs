@@ -4,7 +4,11 @@
 //!
 //! COCKPIT_BLESS=1 cargo test --test panel_flow  rewrites the goldens.
 use cockpit_tui::panel::flow::{self, Shape, Status};
+use cockpit_tui::theme::Glyphs;
 use unicode_width::UnicodeWidthStr;
+
+const UNI: Glyphs = Glyphs::unicode();
+const ASC: Glyphs = Glyphs::ascii();
 
 const BASE: &str = include_str!("fixtures/flow/base.mmd");
 const STATUS: &str = include_str!("fixtures/flow/status.mmd");
@@ -27,7 +31,7 @@ fn golden(name: &str, got: &str) {
 }
 
 fn drawn(src: &str, w: usize) -> String {
-    flow::render(src, w).iter().map(|l| format!("{l}\n")).collect()
+    flow::render(src, w, &UNI).iter().map(|l| format!("{l}\n")).collect()
 }
 
 fn parsed(src: &str) -> flow::Flow {
@@ -60,7 +64,11 @@ fn six_actors_fall_back_to_the_list_at_any_width() {
     let f = parsed(SIX);
     assert_eq!(f.actors.len(), 6);
     assert_eq!(flow::shape(&f, 200), Shape::List);
-    assert!(flow::render(SIX, 200)[0].contains("owner→lead"), "{:?}", flow::render(SIX, 200));
+    assert!(
+        flow::render(SIX, 200, &UNI)[0].contains("owner→lead"),
+        "{:?}",
+        flow::render(SIX, 200, &UNI)
+    );
 }
 
 // ---------------------------------- decision 2: no status, no column, no current
@@ -70,8 +78,8 @@ fn no_status_on_any_step_means_no_current_step_and_no_status_column() {
     let f = parsed(BASE);
     assert!(f.steps.iter().all(|s| s.status.is_none()));
     assert_eq!(f.current(), None);
-    assert!(!flow::render(BASE, 100).iter().any(|l| l.starts_with('▶')));
-    let list = flow::render(BASE, 50);
+    assert!(!flow::render(BASE, 100, &UNI).iter().any(|l| l.starts_with('▶')));
+    let list = flow::render(BASE, 50, &UNI);
     assert!(list[0].starts_with(" 1 brief"), "{list:?}");
 }
 
@@ -104,7 +112,7 @@ fn a_status_word_outside_the_set_is_not_drawn() {
 #[test]
 fn the_current_step_is_the_first_not_done_marked_in_ladder_and_list() {
     assert_eq!(parsed(STATUS).current(), Some(3));
-    let ladder = flow::render(STATUS, 60);
+    let ladder = flow::render(STATUS, 60, &UNI);
     let marked: Vec<usize> = ladder
         .iter()
         .enumerate()
@@ -112,7 +120,7 @@ fn the_current_step_is_the_first_not_done_marked_in_ladder_and_list() {
         .map(|(i, _)| i)
         .collect();
     assert_eq!(marked, vec![1 + 2 * 3], "{ladder:?}");
-    let list = flow::render(STATUS, 59);
+    let list = flow::render(STATUS, 59, &UNI);
     let here: Vec<usize> = list
         .iter()
         .enumerate()
@@ -132,7 +140,7 @@ fn every_step_done_leaves_no_current_step() {
 
 #[test]
 fn the_ladder_draws_two_rows_a_step_with_the_label_above_the_arrow() {
-    let out = flow::render(BASE, 100);
+    let out = flow::render(BASE, 100, &UNI);
     let labels = ["1 brief", "2 PR open", "3 NIT x2", "4 suite", "5 merge?"];
     for (i, label) in labels.iter().enumerate() {
         assert!(out[1 + 2 * i].contains(label), "row {} not {label}: {out:?}", 1 + 2 * i);
@@ -147,15 +155,15 @@ fn a_note_not_starting_need_from_you_shows_under_its_step_not_in_the_box() {
     let f = parsed(NOTE);
     assert_eq!(f.steps[0].notes, vec!["reads the issue first".to_string()]);
     assert_eq!(f.need, vec!["pick a name".to_string()]);
-    let out = flow::render(NOTE, 60);
+    let out = flow::render(NOTE, 60, &UNI);
     assert!(out[3].contains("reads the issue first"), "{out:?}");
-    let list = flow::render(NOTE, 40);
+    let list = flow::render(NOTE, 40, &UNI);
     assert!(list[1].contains("reads the issue first"), "{list:?}");
 }
 
 #[test]
 fn only_a_need_from_you_note_goes_in_the_closing_box() {
-    let out = flow::render(BASE, 60);
+    let out = flow::render(BASE, 60, &UNI);
     let top = out.iter().position(|l| l.contains("NEED FROM YOU")).expect("a NEED box");
     assert!(out[top].starts_with('┌'), "{out:?}");
     assert!(out[top + 1].contains("approve merge after CI green"), "{out:?}");
@@ -186,7 +194,7 @@ fn other_syntax_and_unbalanced_blocks_are_not_drawn() {
 
 #[test]
 fn a_malformed_sample_shows_why_then_the_raw_lines_cut_to_the_width() {
-    let out = flow::render(BAD, 30);
+    let out = flow::render(BAD, 30, &UNI);
     assert!(out[0].starts_with("(not drawn: "), "{out:?}");
     assert_eq!(out[1], "sequenceDiagram");
     assert_eq!(out[2], "  participant O as owner");
@@ -197,6 +205,35 @@ fn a_malformed_sample_shows_why_then_the_raw_lines_cut_to_the_width() {
 
 #[test]
 fn every_prefix_of_every_sample_fits_every_width_from_0_to_130() {
+    for g in [UNI, ASC] {
+        for (name, src) in [
+            ("base", BASE),
+            ("status", STATUS),
+            ("six", SIX),
+            ("bad", BAD),
+            ("loop", LOOP),
+            ("note", NOTE),
+            ("wide", WIDE),
+        ] {
+            for cut in (0..=src.len()).filter(|&i| src.is_char_boundary(i)) {
+                for w in 0..=130 {
+                    for l in flow::render(&src[..cut], w, &g) {
+                        assert!(l.width() <= w, "ascii={} {name} cut={cut} w={w}: {l:?}", g.ascii);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Every drawn shape from an ASCII source (flow-r2's GLY).
+const GLY: &str = "sequenceDiagram\nparticipant A as alpha\nparticipant B as beta\nNote over A: lead note\n\
+A->>B: one\n%% status: done 09:00\nB-->>A: two is a label long enough to be cut in the list\n%% status: failed\n\
+A->>A: self\n%% status: running\nNote over A: a note\nB->>A: four\n%% status: pending\nNote over A,B: NEED FROM YOU: pick\n";
+
+#[test]
+fn the_ascii_tier_draws_nothing_but_ascii() {
+    // WIDE stays out: its own words are CJK, and the tier covers glyphs, not text.
     for (name, src) in [
         ("base", BASE),
         ("status", STATUS),
@@ -204,22 +241,37 @@ fn every_prefix_of_every_sample_fits_every_width_from_0_to_130() {
         ("bad", BAD),
         ("loop", LOOP),
         ("note", NOTE),
-        ("wide", WIDE),
+        ("gly", GLY),
     ] {
-        for cut in (0..=src.len()).filter(|&i| src.is_char_boundary(i)) {
-            for w in 0..=130 {
-                for l in flow::render(&src[..cut], w) {
-                    assert!(l.width() <= w, "{name} cut={cut} w={w}: {l:?}");
-                }
-            }
+        for w in 0..=130 {
+            let out = flow::render(src, w, &ASC);
+            assert!(out.iter().all(|l| l.is_ascii()), "{name} w={w}: {out:?}");
         }
+    }
+    assert_eq!(flow::not_drawn("x", "a reason long enough to be cut", 12, &ASC)[0], "(not draw...");
+    assert_eq!(
+        flow::render(BASE, 60, &ASC)[2],
+        "        |------------>|             |             |"
+    );
+}
+
+#[test]
+fn the_ascii_tier_draws_a_control_left_in_a_hand_built_field_as_a_question_mark() {
+    // A parsed line holds no control after tidy, so only a field set by hand reaches the replacement mark.
+    let mut f = parsed("sequenceDiagram\nA->>B: x\n");
+    f.steps[0].label = "one\ntwo".into();
+    for (w, want) in [(60, Shape::Ladder), (40, Shape::List)] {
+        assert_eq!(flow::shape(&f, w), want, "w={w}");
+        let out = flow::draw(&f, w, &ASC);
+        assert!(out.iter().all(|l| l.is_ascii()), "w={w}: {out:?}");
+        assert!(out.iter().any(|l| l.contains("one?two")), "w={w}: {out:?}");
     }
 }
 
 #[test]
 fn control_characters_never_reach_a_line() {
     for w in [0, 20, 60, 100] {
-        let out = flow::render(WIDE, w);
+        let out = flow::render(WIDE, w, &UNI);
         assert!(out.iter().all(|l| !l.chars().any(char::is_control)), "w={w}: {out:?}");
     }
 }
@@ -227,8 +279,8 @@ fn control_characters_never_reach_a_line() {
 #[test]
 fn empty_input_is_not_drawn_and_width_0_draws_nothing_visible() {
     assert!(flow::parse("").is_err());
-    assert!(flow::render("", 40)[0].starts_with("(not drawn: "));
-    assert!(flow::render(STATUS, 0).iter().all(String::is_empty));
+    assert!(flow::render("", 40, &UNI)[0].starts_with("(not drawn: "));
+    assert!(flow::render(STATUS, 0, &UNI).iter().all(String::is_empty));
 }
 
 #[test]
@@ -240,7 +292,7 @@ fn bidi_controls_and_line_separators_never_reach_a_line() {
     ] {
         let src = format!("sequenceDiagram\nA->>B: {label}\n");
         for w in [40, 60] {
-            let out = flow::render(&src, w);
+            let out = flow::render(&src, w, &UNI);
             let bad = |c: char| matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{2028}' | '\u{2029}');
             assert!(out.iter().all(|l| !l.chars().any(bad)), "{row} w={w}: {out:?}");
         }
@@ -274,7 +326,7 @@ fn the_list_aligns_who_to_whom_whatever_the_label_widths() {
             "sequenceDiagram\nO->>A: {}\nA->>O: {}\nO->>A: {}\n",
             labels[0], labels[1], labels[2]
         );
-        let out = flow::render(&src, 40);
+        let out = flow::render(&src, 40, &UNI);
         let cols: Vec<usize> = out.iter().map(|l| l.split('→').next().unwrap().width()).collect();
         assert!(cols.windows(2).all(|p| p[0] == p[1]), "{row}: {out:?}");
     }
@@ -283,23 +335,23 @@ fn the_list_aligns_who_to_whom_whatever_the_label_widths() {
 #[test]
 fn a_list_line_that_fits_exactly_is_not_cut() {
     // A step with no time: the compact line's space before the empty time is no column (#1527).
-    assert_eq!(flow::render("sequenceDiagram\nA->>B: x\n", 5), ["x A→B"]);
-    assert_eq!(flow::render(BASE, 20)[0], " 1 brief owner→agent");
+    assert_eq!(flow::render("sequenceDiagram\nA->>B: x\n", 5, &UNI), ["x A→B"]);
+    assert_eq!(flow::render(BASE, 20, &UNI)[0], " 1 brief owner→agent");
 }
 
 #[test]
 fn an_aligned_list_with_no_time_keeps_no_time_column() {
     // No step has a time: the aligned label column keeps no gap for a time column (#1528).
-    assert_eq!(flow::render("sequenceDiagram\nA->>B: abcdefgh\n", 13), ["abcdefgh  A→B"]);
-    assert_eq!(flow::render(BASE, 25)[1], " 2 PR op…  agent→reviewer");
+    assert_eq!(flow::render("sequenceDiagram\nA->>B: abcdefgh\n", 13, &UNI), ["abcdefgh  A→B"]);
+    assert_eq!(flow::render(BASE, 25, &UNI)[1], " 2 PR op…  agent→reviewer");
 }
 
 #[test]
 fn a_list_with_empty_labels_is_not_cut_where_compact_fits() {
     // Every label empty, no time: an aligned line needs 2 + 3 columns here, so at 4 the compact one shows (#1541).
     let src = "sequenceDiagram\nA->>B:\nB->>A:\n";
-    assert_eq!(flow::render(src, 4), [" A→B", " B→A"]);
-    assert_eq!(flow::render(src, 5), ["  A→B", "  B→A"]);
+    assert_eq!(flow::render(src, 4, &UNI), [" A→B", " B→A"]);
+    assert_eq!(flow::render(src, 5, &UNI), ["  A→B", "  B→A"]);
 }
 
 #[test]
@@ -313,7 +365,7 @@ fn a_hand_built_step_naming_a_missing_actor_draws_without_a_panic() {
     };
     for (row, f) in [("past the end", &f), ("no actors at all", &no_actors)] {
         for w in [0, 40, 60, 100] {
-            assert!(flow::draw(f, w).iter().all(|l| l.width() <= w), "{row} w={w}");
+            assert!(flow::draw(f, w, &UNI).iter().all(|l| l.width() <= w), "{row} w={w}");
         }
     }
 }
@@ -328,14 +380,14 @@ fn lead_and_long_note() -> String {
 fn a_note_before_the_first_step_shows_under_the_header() {
     let f = parsed(&lead_and_long_note());
     assert_eq!(f.lead, vec!["starts after lunch".to_string()]);
-    assert!(flow::render(&lead_and_long_note(), 60)[1].contains("↳ starts after lunch"));
-    assert!(flow::render(&lead_and_long_note(), 40)[0].contains("↳ starts after lunch"));
+    assert!(flow::render(&lead_and_long_note(), 60, &UNI)[1].contains("↳ starts after lunch"));
+    assert!(flow::render(&lead_and_long_note(), 40, &UNI)[0].contains("↳ starts after lunch"));
 }
 
 #[test]
 fn a_long_note_wraps_onto_more_rows_and_keeps_every_word() {
     for w in [40, 60] {
-        let out = flow::render(&lead_and_long_note(), w);
+        let out = flow::render(&lead_and_long_note(), w, &UNI);
         let rows: Vec<&String> = out.iter().filter(|l| l.contains('↳')).skip(1).collect();
         assert!(rows.len() >= 2, "w={w}: {out:?}");
         let words: Vec<&str> = rows
