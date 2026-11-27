@@ -255,6 +255,68 @@ pub struct Pane {
     /// #1409: the pane's own name, `@cockpit_role` (field 20), cleaned; `""` when it has
     /// none. Shown before the title, never in its place: [`role_title`]
     pub role: String,
+    /// #1600: the 5-hour and weekly allowance the status line shim read, `@panestate_rl`
+    /// (field 21); `None` when the pane has none or it is not the shim's shape
+    pub allow: Option<Allowance>,
+}
+
+/// #1600: one window of a status line reading: the share used, in whole percent rounded up,
+/// and when the window resets, in epoch seconds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Window {
+    pub used: u8,
+    pub resets: u64,
+}
+
+/// The furthest a window's reset can be: a week and an hour. A reset further away, or one
+/// already past, is not the window's now, so it shows nothing (#1600).
+pub const RESET_MAX: u64 = 7 * 86400 + 3600;
+
+impl Window {
+    /// Seconds until the reset, or `None` when it is past or more than [`RESET_MAX`] away.
+    pub fn left(self, now: u64) -> Option<u64> {
+        let s = self.resets.saturating_sub(now);
+        (1..=RESET_MAX).contains(&s).then_some(s)
+    }
+}
+
+/// #1600: the allowance Claude Code passed to the status line, as scripts/agent-context
+/// writes it to `@panestate_rl`: `<minute>_<used 5h>_<reset 5h>_<used 7d>_<reset 7d>`, the
+/// minute it read them first and `-_-` for a window the payload lacked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Allowance {
+    /// when the shim read it, epoch seconds
+    pub at: u64,
+    pub five: Option<Window>,
+    pub week: Option<Window>,
+}
+
+impl Allowance {
+    /// `None` for a value not of the shim's shape, or with neither window: every number is
+    /// plain digits and a used share is at most 100.
+    pub fn parse(s: &str) -> Option<Self> {
+        let num = |x: &str| {
+            if x.bytes().all(|b| b.is_ascii_digit()) {
+                x.parse::<u64>().ok()
+            } else {
+                None
+            }
+        };
+        let window = |u: &str, r: &str| {
+            Some(Window {
+                used: u8::try_from(num(u)?).ok().filter(|&n| n <= 100)?,
+                resets: num(r)?,
+            })
+        };
+        let f: Vec<&str> = s.split('_').collect();
+        let [at, u5, r5, u7, r7] = f[..] else { return None };
+        let a = Allowance {
+            at: num(at)?,
+            five: window(u5, r5),
+            week: window(u7, r7),
+        };
+        (a.five.is_some() || a.week.is_some()).then_some(a)
+    }
 }
 
 /// Skips the three ages, which change every tick and would defeat the redraw
@@ -296,13 +358,14 @@ impl Hash for Pane {
             model,
             ctx,
             role,
+            allow,
         } = self;
         [
             id, wher, name, cmd, title, msg, sess, path, dir, root, spool, pid, review, doing, said, asked, loc, pm, win, job, topic,
             model, role,
         ]
         .hash(h);
-        (state, pinned, delivered, subs_n, ended, doing_failed, ctx).hash(h);
+        (state, pinned, delivered, subs_n, ended, doing_failed, ctx, allow).hash(h);
         // Sub hashes only what changes its drawing: never `started`, tokens by the thousand.
         subs.hash(h);
     }
@@ -980,6 +1043,9 @@ const FIELDS: &str = concat!(
     // name only shows, as on the tabs and borders. `cockpit-tui pane` reads -p. Last, so
     // no reader of 14 to 19 moves.
     "\u{1f}#{s/\n/ /:#{s/\t/ /:#{s/\u{1f}/ /:#{@cockpit_role}}}}",
+    // #1600: 21 the allowance scripts/agent-context writes from the status line. Last, so no
+    // reader of 14 to 20 moves.
+    "\u{1f}#{s/\n/ /:#{s/\t/ /:#{s/\u{1f}/ /:#{@panestate_rl}}}}",
 );
 
 /// How many fields FIELDS has: tmux prints every one, so a row with fewer is no row of this
@@ -1145,6 +1211,7 @@ fn row_pane(f: &[&str], procs_t: &mut Option<Procs>, want_ended: bool) -> RowPan
         // a pane title, so untrusted: control and bidi characters go
         job: crate::pick::clean(f[16]).trim().to_string(),
         role: role_of(f),
+        allow: Allowance::parse(f[21]),
         ..Default::default()
     };
     let by = if by_cmd {

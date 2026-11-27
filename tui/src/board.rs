@@ -3,7 +3,7 @@
 //! tmux, no clock); `run` is the only impure entry.
 use crate::data::fleet as facts;
 use crate::data::subagents::{Sub, SubKind, SubState};
-use crate::data::{Pane, State, fmt_dur, hash_rows, list_fleet, log};
+use crate::data::{Allowance, Pane, State, Window, fmt_dur, hash_rows, list_fleet, log};
 use crate::panel::view::wrap;
 use crate::push::Push;
 use crate::theme::{Glyphs, Theme};
@@ -396,10 +396,12 @@ fn names(g: &Glyphs, s: &str) -> String {
 }
 
 /// The redraw gate's extra input: `hash_rows` skips the ages, so hash the rail's
-/// rendered text, which changes only when the printed age does.
-pub fn gate_extra(ps: &[Pane], pvs: &[Option<String>]) -> String {
+/// rendered text, which changes only when the printed age does. The allowance's
+/// countdown and age are printed off `now`, so they go in as printed too (#1600).
+pub fn gate_extra(ps: &[Pane], pvs: &[Option<String>], now: u64) -> String {
     let mut out: String = pvs.iter().map(|p| p.as_deref().unwrap_or("\u{1}")).collect();
     out.extend(ps.iter().filter_map(|p| p.since).map(fmt_dur));
+    out.extend(ps.iter().filter_map(|p| p.allow.as_ref().and_then(|a| allow_text(a, now, "·"))));
     out
 }
 
@@ -523,8 +525,8 @@ fn tile(f: &mut Frame, cell: Rect, p: &Pane, num: usize, pv: Option<Option<&str>
     if active {
         block = block.title(Line::from(Span::styled(format!(" {} ", pane_mark(g)), Style::new().fg(th.accent))).right_aligned());
     }
-    // #1330 A2: the bottom border holds nothing else, so nothing above moves for it
-    if let Some(foot) = ctx_foot(p, g, (cell.width as usize).saturating_sub(4)) {
+    // #1330 A2, #1600: the bottom border holds nothing else, so nothing above moves for it
+    if let Some(foot) = tile_foot(p, g, (cell.width as usize).saturating_sub(4), crate::data::sessions::now()) {
         block = block.title_bottom(Line::from(Span::styled(foot, Style::new().fg(th.meta))).right_aligned());
     }
     let inner = block.inner(cell);
@@ -552,17 +554,52 @@ fn tile(f: &mut Frame, cell: Rect, p: &Pane, num: usize, pv: Option<Option<&str>
     f.render_widget(para, body);
 }
 
-/// #1330 A2: ` opus · 84k `, the model cut at 12 columns and the context floored to
-/// thousands (raw under 1000), whole or not at all in `w`; nothing with no usage.
-fn ctx_foot(p: &Pane, g: &Glyphs, w: usize) -> Option<String> {
+/// The card's bottom border: the allowance, then the model and the context, else the
+/// allowance alone, else the context alone, each whole in `w` or not at all (#1330 A2, #1600).
+fn tile_foot(p: &Pane, g: &Glyphs, w: usize, now: u64) -> Option<String> {
+    let allow = p.allow.as_ref().and_then(|a| allow_text(a, now, g.dot));
+    let ctx = ctx_text(p, g);
+    let both = allow.as_ref().zip(ctx.as_ref()).map(|(a, c)| format!("{a} {} {c}", g.dot));
+    [both, allow, ctx]
+        .into_iter()
+        .flatten()
+        .map(|s| format!(" {s} "))
+        .find(|s| s.width() <= w)
+}
+
+/// #1330 A2: `opus · 84k`, the model cut at 12 columns and the context floored to
+/// thousands (raw under 1000); `None` with no usage.
+fn ctx_text(p: &Pane, g: &Glyphs) -> Option<String> {
     let n = p.ctx?;
     let n = if n < 1000 { n.to_string() } else { format!("{}k", n / 1000) };
-    let s = if p.model.is_empty() {
-        format!(" {n} ")
+    Some(if p.model.is_empty() {
+        n
     } else {
-        format!(" {} {} {n} ", g.trunc(&p.model, 12), g.dot)
+        format!("{} {} {n}", g.trunc(&p.model, 12), g.dot)
+    })
+}
+
+/// A reading this old says its age on the card (#1600). The status line runs at each
+/// answer, so an older reading is a quiet agent's, and its account may have moved since.
+const AGED: u64 = 5 * 60;
+
+/// #1600: `5h 58% 2h10m · 7d 82% 3d`, what is left of each window and the time to its
+/// reset, a window [`Window::left`] refuses left out, and `12m ago` last once the reading
+/// is [`AGED`] old. `None` with no window left.
+fn allow_text(a: &Allowance, now: u64, dot: &str) -> Option<String> {
+    let win = |label: &str, w: Option<Window>| {
+        let w = w?;
+        Some(format!("{label} {}% {}", 100 - w.used, fmt_dur(w.left(now)?)))
     };
-    (s.width() <= w).then_some(s)
+    let mut parts: Vec<String> = [win("5h", a.five), win("7d", a.week)].into_iter().flatten().collect();
+    if parts.is_empty() {
+        return None;
+    }
+    let age = now.saturating_sub(a.at);
+    if age >= AGED {
+        parts.push(format!("{} ago", fmt_dur(age)));
+    }
+    Some(parts.join(format!(" {dot} ").as_str()))
 }
 
 fn head_lines(p: &Pane, iw: usize, rows: usize, needs: bool, th: &Theme) -> Vec<Line<'static>> {
@@ -4315,7 +4352,7 @@ pub fn run(o: &Opts) -> Option<Exit> {
                 if top != was && !list {
                     ask(Kind::Look, here, sel, top, list, &pick);
                 }
-                let mut extra = gate_extra(&panes, &pvs);
+                let mut extra = gate_extra(&panes, &pvs, crate::data::sessions::now());
                 if list {
                     extra.push_str(&nav.tree_gate(&panes));
                     extra.push_str(read_gate(pick.as_deref(), &seen));
