@@ -436,6 +436,11 @@ fn lifeline(cols: &[usize], i: usize) -> usize {
     cols.get(i).or(cols.last()).copied().unwrap_or_default()
 }
 
+/// The first lifeline column in `cols` right of column `c`, if any.
+fn lifeline_after(cols: &[usize], c: usize) -> Option<usize> {
+    cols.iter().copied().filter(|&l| l > c).min()
+}
+
 /// A ladder note's columns `[start, end)`, from the lifeline columns `cols`
 /// and the columns `lo..hi` a note may use (#1533). Right of a lifeline it
 /// starts two columns after it, left of one it ends two columns before it,
@@ -450,7 +455,7 @@ fn note_region(place: &Place, cols: &[usize], lo: usize, hi: usize) -> (usize, u
         Place::Over(a, b) if at(a) == at(b) => {
             let c = at(a);
             let before = cols.iter().copied().filter(|&l| l < c).max();
-            let after = cols.iter().copied().filter(|&l| l > c).min();
+            let after = lifeline_after(cols, c);
             (before.map_or(lo, |l| l.midpoint(c)), after.map_or(hi, |r| c.midpoint(r)))
         }
         Place::Over(a, b) => (at(a).min(at(b)), at(a).max(at(b)) + 1),
@@ -612,7 +617,14 @@ fn ladder(f: &Flow, w: usize, g: &Glyphs) -> Vec<String> {
         if let Some(st) = s.status {
             lab.put(1, st.glyph(g));
         }
-        lab.text(a + 2, &fit(&label(f, i), w.saturating_sub(right + a + 2), g));
+        // The label starts two columns after the step's left lifeline and ends at least one blank
+        // column before the next one, so it covers none, or at the time column past the last (#1534).
+        let start = a + 2;
+        let room = match lifeline_after(&cols, a) {
+            Some(next) => next.saturating_sub(start + 1),
+            None => w.saturating_sub(right + start),
+        };
+        lab.text(start, &fit(&label(f, i), room, g));
         if let Some(t) = &s.time {
             lab.text(w - right + 1, &fit(t, right - 1, g));
         }
