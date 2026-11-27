@@ -574,9 +574,10 @@ Lag is up to one tick, 10 s by default: a job that blocks shows on its pane at t
 
 - A session started **before** a hook was added never fires it — Claude Code
   snapshots hooks per session id. Such a pane stays grey until it restarts.
-- A long "thinking" phase fires no hook, so a working pane can read as idle.
-  CPU is not a usable substitute: an agent waiting on the API is
-  indistinguishable from an idle one.
+- A turn that starts with no prompt fires no hook until its first tool call, so
+  the pane keeps its last state, `done` or idle, while the model thinks.
+  `TeammateIdle` covers a teammate's wake, and a background subagent's
+  report-back fires `UserPromptSubmit`.
 - tmux 3.7 and later cut a format that runs past 100 ms of wall time, and every expansion
   after that point reads as empty (#736). A busy or paused server can cut an `if -F` test,
   and a bare `==` then reads its two cut sides as equal. The two tests whose cut lasted read

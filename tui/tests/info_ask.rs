@@ -56,9 +56,14 @@ fn facts(tag: &str, state: &str, body: &str) -> (String, String) {
     (x.state, x.msg)
 }
 
+/// An open AskUserQuestion `id` of two questions, the first asking `question`.
 fn ask(id: &str, question: &str) -> String {
+    let q = |text: &str| {
+        let opt = serde_json::json!({"label": "Yes", "description": "go on"});
+        serde_json::json!({"question": text, "header": "H", "options": [opt, opt], "multiSelect": false})
+    };
     let v = serde_json::json!({"type": "assistant", "version": "2.1.316", "message": {"content": [{"type": "tool_use",
-        "id": id, "name": "AskUserQuestion", "input": {"questions": [{"question": question, "header": "H"}, {}]}}]}});
+        "id": id, "name": "AskUserQuestion", "input": {"questions": [q(question), q("Then?")]}}]}});
     format!("{v}\n")
 }
 
@@ -72,7 +77,7 @@ fn the_open_question_is_the_info_message_only_while_input_is_needed() {
         .to_string()
         + "\n";
     let generic = "Claude needs your permission";
-    assert_eq!(facts("open", "needs-input", &ask("q1", "Merge\u{202e}?")).1, "(+1) Merge?");
+    assert_eq!(facts("open", "needs-input", &ask("q1", "Merge\u{202e}?")).1, "Q1 of 2: Merge?");
     assert_eq!(facts("running", "running", &ask("q1", "Merge?")).1, generic);
     assert_eq!(facts("answered", "needs-input", &answered).1, generic);
 }

@@ -151,7 +151,8 @@ impl Fold {
                             if ask && !id.is_empty() {
                                 self.asks.push((off, id.clone()));
                             }
-                            self.last_use = Some((off, (id, ask.then(|| transcript::question(&b["input"])).flatten())));
+                            let q = ask.then(|| crate::ask::model::parse(&id, &b["input"]).as_ref().and_then(transcript::question));
+                            self.last_use = Some((off, (id, q.flatten())));
                             if let Some(t) = ts {
                                 self.saw_dir(off, name, &b["input"], v["cwd"].as_str().unwrap_or(""), t);
                             }
@@ -473,7 +474,8 @@ mod tests {
     }
     /// A text block and a tool_use `u<n>`; an AskUserQuestion asks "q?".
     fn tool(n: usize, name: &str) -> String {
-        let input = json!({"command": format!("cmd {n}"), "questions": [{"question": "q?"}]});
+        let q = json!({"question": "q?", "header": "Q", "options": [], "multiSelect": false});
+        let input = json!({"command": format!("cmd {n}"), "questions": [q]});
         let text = json!({"type": "text", "text": format!("said {n}")});
         let call = json!({"type": "tool_use", "id": format!("u{n}"), "name": name, "input": input});
         row("assistant", n, json!({"content": [text, call]}))
