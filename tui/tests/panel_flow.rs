@@ -50,6 +50,14 @@ fn goldens_four_actors_at_40_60_100_without_and_with_status() {
     }
 }
 
+#[test]
+fn goldens_six_actors_compact_at_61_and_normal_at_73() {
+    // Slots of 10 and 12, the narrowest of each spacing (#1538).
+    for w in [61, 73] {
+        golden(&format!("flow-six-{w}"), &drawn(SIX, w));
+    }
+}
+
 // ------------------------------------------------- decision 1: ladder or list
 
 #[test]
@@ -61,15 +69,78 @@ fn four_actors_draw_a_ladder_from_width_60_and_a_list_below() {
 }
 
 #[test]
-fn six_actors_fall_back_to_the_list_at_any_width() {
+fn six_actors_fall_back_to_the_list_where_a_slot_is_under_10() {
     let f = parsed(SIX);
     assert_eq!(f.actors.len(), 6);
-    assert_eq!(flow::shape(&f, 200), Shape::List);
+    assert_eq!(flow::shape(&f, 200), Shape::Ladder);
     assert!(
-        flow::render(SIX, 200, &UNI)[0].contains("owner─▶lead"),
+        flow::render(SIX, 60, &UNI)[0].contains("owner─▶lead"),
         "{:?}",
-        flow::render(SIX, 200, &UNI)
+        flow::render(SIX, 60, &UNI)
     );
+}
+
+/// six.mmd less GitHub.
+const FIVE: &str = "sequenceDiagram\nautonumber\nparticipant O as owner\nparticipant L as lead\nparticipant A as agent\n\
+participant R as reviewer\nparticipant C as CI\nO->>L: brief\nL->>A: task\nA->>C: push\nC-->>R: green\nR-->>L: VERDICT\nL-->>O: merge?\n";
+
+#[test]
+fn five_and_six_actors_draw_a_ladder_where_they_fit() {
+    // No status and no time: each actor gets (w - 1) / actors columns, FIVE 11 at 60 and 12 at 61, SIX 9 at 60
+    // and 10 at 61. A slot of 12 or more draws the ladder, 10 or 11 the compact one, less the list (#1538).
+    assert_eq!(flow::shape(&parsed(FIVE), 60), Shape::Compact);
+    assert_eq!(flow::shape(&parsed(FIVE), 61), Shape::Ladder);
+    assert_eq!(flow::shape(&parsed(SIX), 60), Shape::List);
+    assert_eq!(flow::shape(&parsed(SIX), 61), Shape::Compact);
+}
+
+#[test]
+fn under_60_columns_the_list_draws_whatever_the_slot() {
+    // The floor stays: two actors at 59 would get slots of 29, and FIVE slots of 11 (#1538).
+    assert_eq!(flow::shape(&parsed("sequenceDiagram\nA->>B: x\n"), 59), Shape::List);
+    assert_eq!(flow::shape(&parsed(FIVE), 59), Shape::List);
+}
+
+#[test]
+fn the_slot_leaves_out_the_status_and_time_columns() {
+    // With a status and a time each of SIX's actors gets (w - 3 - 6) / 6 columns: 9 at 68, 10 at 69, 11 at 80
+    // and 12 at 81 (#1538).
+    let timed = parsed(&SIX.replacen("O->>L: brief\n", "O->>L: brief\n%% status: done 09:00\n", 1));
+    let got: Vec<Shape> = [68, 69, 80, 81].into_iter().map(|w| flow::shape(&timed, w)).collect();
+    assert_eq!(got, [Shape::List, Shape::Compact, Shape::Compact, Shape::Ladder]);
+}
+
+#[test]
+fn a_compact_ladder_keeps_each_lifeline_on_every_label_row() {
+    // FIVE at 60, a slot of 11: its lifelines at 6, 17, 28, 39 and 50, each label cut before the next (#1538).
+    let out = flow::render(FIVE, 60, &UNI);
+    for row in (1..12).step_by(2) {
+        assert_eq!(cols_of(&out[row], '│'), [6, 17, 28, 39, 50], "row {row}: {out:?}");
+    }
+    assert!(out[9].contains("│ 5 VERDI… │"), "{out:?}");
+}
+
+/// Six actors with a CJK name, label and note, inside a loop and an alt: at 61 each gets a slot of 10.
+const WIDE_SIX: &str = "sequenceDiagram\nparticipant 名 as 名前の長い人\nparticipant B\nparticipant C\nparticipant D\n\
+participant E\nparticipant F\nloop 長い\n名->>B: 漢字のラベル\nalt 赤\nB->>C: x\nNote over C: 漢字のノート\nend\nend\n";
+
+#[test]
+fn a_slot_of_10_keeps_its_lifelines_beside_labels_notes_and_frames() {
+    // At 61 the lifelines are at 6, 16, 26, 36, 46 and 56, the frames' sides at 1 and 60, then 3 and 58. The
+    // label's room is 7, so its CJK text is cut to 6 columns and the ellipsis before B's lifeline. The note
+    // over C grows to 16 columns, 18 to 34, and covers C's lifeline alone. The alt's bottom crosses every
+    // lifeline (#1538).
+    assert_eq!(flow::shape(&parsed(WIDE_SIX), 61), Shape::Compact);
+    let out = flow::render(WIDE_SIX, 61, &UNI);
+    assert!(out[2].contains("│ 漢字の… │"), "{out:?}");
+    let got = [(2, '│'), (5, '│'), (7, '│'), (8, '┼')].map(|(row, c)| cols_of(&out[row], c));
+    let want: [&[usize]; 4] = [
+        &[1, 6, 16, 26, 36, 46, 56, 60],
+        &[1, 3, 6, 16, 26, 36, 46, 56, 58, 60],
+        &[1, 3, 6, 16, 36, 46, 56, 58, 60],
+        &[6, 16, 26, 36, 46, 56],
+    ];
+    assert_eq!(got, want, "{out:?}");
 }
 
 // ---------------------------------- decision 2: no status, no column, no current
@@ -711,6 +782,8 @@ fn every_prefix_of_every_sample_fits_every_width_from_0_to_130() {
             ("deep", DEEP),
             ("frames", FRAMES),
             ("statements", STATEMENTS),
+            ("five", FIVE),
+            ("wide six", WIDE_SIX),
         ] {
             for cut in (0..=src.len()).filter(|&i| src.is_char_boundary(i)) {
                 for w in 0..=130 {
@@ -730,7 +803,7 @@ A->>A: self\n%% status: running\nNote over A: a note\nB->>A: four\n%% status: pe
 
 #[test]
 fn the_ascii_tier_draws_nothing_but_ascii() {
-    // WIDE stays out: its own words are CJK, and the tier covers glyphs, not text.
+    // WIDE and WIDE_SIX stay out: their own words are CJK, and the tier covers glyphs, not text.
     for (name, src) in [
         ("base", BASE),
         ("status", STATUS),
@@ -748,6 +821,7 @@ fn the_ascii_tier_draws_nothing_but_ascii() {
         ("deep", DEEP),
         ("frames", FRAMES),
         ("statements", STATEMENTS),
+        ("five", FIVE),
     ] {
         for w in 0..=130 {
             let out = flow::render(src, w, &ASC);
