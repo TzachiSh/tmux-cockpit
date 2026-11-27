@@ -14,7 +14,8 @@
 # does not defend against a race: a process of the user's own can swap the dir between this
 # check and the rm, and could remove what it names itself. Nor can it tell a dir mktemp made
 # from an empty dir of the user's that was there before; that one passes, and removing an
-# empty dir loses nothing.
+# empty dir loses nothing. A refusal after mktemp answered removes the answer only when that
+# loses nothing too: with rmdir, a dir of the user's that is no symlink and not the cwd (#1593).
 #
 # own_tmpfile <var> [mktemp args...]: the same for a temp file, which the caller writes, then
 # removes with rm -f or renames with mv (#1322). It runs mktemp itself and takes the answer
@@ -49,6 +50,30 @@ own_tmpdir() {                # <var> [mktemp args...]
     printf -v "$_ot_v" '%s' ''
     own_tmpdir_why=mktemp;   _ot_a=$(mktemp -d "$@") || return 1
     own_tmpdir_why=answer;   [ -n "$_ot_a" ] || return 1
+    if ! _own_tmpdir_ok; then
+        # <var> is empty, so no caller's trap removes the dir mktemp -d made: it goes here, with
+        # rmdir, which takes an empty dir and nothing else, so removing it loses nothing. Only a
+        # dir of the user's, by bash's own tests on the answer as mktemp gave it, so a missing
+        # ls, dirname or basename still removes it; a missing rmdir leaves it. A symlink is never
+        # followed: -L catches link, and a name ending in / or /. is left, since -L follows
+        # link/ and link/. to the target. The cwd stays, which rmdir would take when empty.
+        # Root needs no test of its own: -O refuses / for every user but root, and rmdir cannot
+        # remove it (EBUSY). As above, no defence against a race between these tests and rmdir.
+        case $_ot_a in
+            */|*/.) ;;
+            *) [ ! -L "$_ot_a" ] && [ -d "$_ot_a" ] && [ -O "$_ot_a" ] && ! [ "$_ot_a" -ef . ] \
+                   && rmdir -- "$_ot_a" 2>/dev/null ;;
+        esac
+        return 1
+    fi
+    own_tmpdir_why=''
+    printf -v "$_ot_v" '%s' "$_ot_r"
+}
+
+# own_tmpdir's checks on mktemp's answer _ot_a, from dash on, in own_tmpdir's locals: 0 with
+# _ot_r the physical path, 1 when a check refused, own_tmpdir_why naming it.
+# shellcheck disable=SC2034  # own_tmpdir_why is read by own_tmpdir's caller
+_own_tmpdir_ok() {
     # Before any cd, dirname or basename: cd -- - goes to $OLDPWD, and a leading - can read
     # as an option.
     own_tmpdir_why=dash;     case $_ot_a in -*) return 1 ;; esac
@@ -69,8 +94,6 @@ own_tmpdir() {                # <var> [mktemp args...]
     # Fails closed: an ls that cannot run or read the dir is a refusal, not an empty list.
     own_tmpdir_why=nonempty; _ot_e=$(ls -A -- "$_ot_r" 2>/dev/null) && [ -z "$_ot_e" ] \
         || return 1
-    own_tmpdir_why=''
-    printf -v "$_ot_v" '%s' "$_ot_r"
 }
 
 # shellcheck disable=SC2034  # own_tmpfile_why is read by the caller
