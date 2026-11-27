@@ -2352,6 +2352,90 @@ fi
 fi
 fi
 
+echo "== agent-state: recorded hook payloads walk the state by event table (#1566) =="
+# One payload per file in tests/fixtures/hook-payloads, recorded from Claude Code 2.1.332 on a
+# private server (#1562), with the home and project paths replaced. Each is fed here as Claude
+# Code pipes it. A table row is one hook: its payload, the agent-state verb that
+# examples/claude-hooks.json runs for it, and the state it leaves from idle, running,
+# needs-input, error and done. A Stop that lists a running shell or monitor reads done today
+# (#1561), and the idle prompt that follows it 60 s later would drop a running pane to idle.
+if need_tmux "recorded hook payloads"; then :; else
+SX="cockpit-sx-$$"; SOCKS="$SOCKS $SX"
+SXH=$(mktmpd); SXF="$DIR/tests/fixtures/hook-payloads"
+"$TMUX_REAL" -L "$SX" -f /dev/null new-session -d -s t -x 80 -y 24 -c "$SXH" \
+    'exec -a claude sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$SX" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
+SXP=$("$TMUX_REAL" -L "$SX" list-panes -t t -F '#{pane_id}')
+until_out claude "$TMUX_REAL" -L "$SX" display-message -p -t "$SXP" '#{pane_current_command}' \
+    >/dev/null
+sxh() {                       # <verb> <fixture>: one hook, its recorded payload on stdin
+    HOME="$SXH" CLAUDE_CONFIG_DIR="$SXH/claude" XDG_STATE_HOME="$SXH/state" \
+        TMUX="$SOCKDIR/$SX,0,0" "$DIR/scripts/agent-state" "$1" "$SXP" \
+        < "$SXF/$2.json" >/dev/null 2>&1; }
+sxs() {                       # the pane's state, idle when it has none
+    local s; s=$("$TMUX_REAL" -L "$SX" display-message -p -t "$SXP" '#{@panestate}')
+    printf %s "${s:-idle}"; }
+sxfrom() {                    # <state>: a new session brought there by its own hooks
+    sxh off session-start
+    case $1 in
+        running) sxh running user-prompt ;;
+        needs-input) sxh running user-prompt; sxh needs-input permission-request ;;
+        error) sxh running user-prompt; sxh error stop-failure ;;
+        done) sxh running user-prompt; sxh done stop-empty ;;
+    esac; }
+# payload, verb, then the state after it from: idle running needs-input error done
+SXU=""
+while read -r sxf sxv sx1 sx2 sx3 sx4 sx5 <&3; do
+    SXU="$SXU $sxf"
+    for sxw in "idle $sx1" "running $sx2" "needs-input $sx3" "error $sx4" "done $sx5"; do
+        sxfrom "${sxw%% *}"; sxh "$sxv" "$sxf"
+        is "$sxf from ${sxw%% *}" "${sxw#* }" "$(sxs)"
+    done
+done 3<<'EOT'
+session-start                off         idle        idle        idle        idle        idle
+user-prompt                  running     running     running     running     running     running
+pre-tool-bash-background     running     running     running     running     running     running
+post-tool-bash-background    running     running     running     running     running     running
+permission-request           needs-input needs-input needs-input needs-input needs-input needs-input
+notify-permission            notify      needs-input needs-input needs-input needs-input needs-input
+notify-idle                  notify      idle        idle        needs-input error       done
+stop-empty                   done        done        done        needs-input error       done
+stop-shell-running           done        done        done        needs-input error       done
+stop-shell-running-code-mode done        done        done        needs-input error       done
+stop-monitor-running         done        done        done        needs-input error       done
+stop-shell-of-subagent       done        done        done        needs-input error       done
+stop-subagent-running        done        idle        running     needs-input error       done
+stop-failure                 error       error       error       needs-input error       error
+wake-shell-finished          running     running     running     running     running     running
+wake-monitor-event           running     running     running     running     running     running
+session-end                  off         idle        idle        idle        idle        idle
+EOT
+sxm=""
+for sxf in "$SXF"/*.json; do
+    sxf=${sxf##*/}; case " $SXU " in *" ${sxf%.json} "*) ;; *) sxm="$sxm $sxf" ;; esac
+done
+is "every recorded payload has a row in the table" "" "$sxm"
+# The recorded run of one background shell, in the order its hooks fired: the turn ends with
+# the shell running, the idle prompt comes 60 s later, and the shell's end wakes the session
+# with a UserPromptSubmit.
+sxh off session-start; sxn=0
+while read -r sxv sxf sxw <&3; do
+    sxn=$((sxn + 1)); sxh "$sxv" "$sxf"
+    is "the background shell run, step $sxn $sxf" "$sxw" "$(sxs)"
+done 3<<'EOT'
+running user-prompt running
+running pre-tool-bash-background running
+running post-tool-bash-background running
+done stop-shell-running done
+notify notify-idle done
+running wake-shell-finished running
+done stop-empty done
+notify notify-idle done
+EOT
+"$TMUX_REAL" -L "$SX" kill-server >/dev/null 2>&1
+unset -f sxh sxs sxfrom
+fi
+
 echo "== state ranking: needs-input > error > running > done =="
 if need_tmux "state ranking"; then :; else
 rk() { tmux set -p -t "$PANE" @panestate "$1" >/dev/null 2>&1; st "$2" "$PANE" 2>/dev/null; sv; }
