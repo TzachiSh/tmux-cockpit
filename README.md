@@ -185,9 +185,9 @@ which job (the session is how the board reads the job's transcript). Any other
 pane marked as an agent view shows the worst state of all jobs, as before. A
 title is a hint, not an identity: a fresh `claude attach Y` that has not yet
 printed a title still shows the old name, and so the old job, until it does (a second
-signal would close that: #461). Drawing the
-bound job's name on the board is a follow-up (#460). A pane running a foreground session is
-never bound, whatever its title. The
+signal would close that: #461). The board draws the bound job's name, `→ <name>`, in
+place of the pane's title, and the info screen and `--json` carry it (#460). A pane
+running a foreground session is never bound, whatever its title. The
 details are in [docs/states-and-hooks.md](docs/states-and-hooks.md#agent-view-and-background-jobs).
 
 Actions (jump, review, the board, the path picker) are shell scripts bound to keys.
@@ -203,7 +203,7 @@ Details: [docs/states-and-hooks.md](docs/states-and-hooks.md).
   [migration table](docs/status-bar.md#moving-from-the-agent_-tokens);
   `install.sh --check` lists the lines that still carry one.
 - **A pane stays grey while its agent works.** The session started before the
-  hooks were installed; restart it. A long thinking phase also fires no hook.
+  hooks were installed; restart it.
 - **Ctrl+double-click opens a GUI editor instead of the picker.** The terminal
   is following an OSC 8 link. Use `Ctrl`+right-click on agent output; see
   [docs/path-picker.md](docs/path-picker.md#when-the-terminal-opens-the-file-itself).
