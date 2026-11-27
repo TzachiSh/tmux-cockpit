@@ -295,27 +295,23 @@ R8, in `ask::never` (#1509), outside the rules file. No rule can switch an item 
 
 ## One question view
 
-AGENTS.md rule 4 wants one way to draw a question. Today the panel draws it in
-tui/src/panel/view.rs:677-715:
+AGENTS.md rule 4 wants one way to draw a question. #1516 moved the panel's into `chrome`,
+"what the board and the panel share" (docs/tui.md:2788), so no module is added:
 
-- "question k of N" comes from `Run::place` (tui/src/panel/app.rs:255-258).
-- Each option goes through `tile()` (view.rs:327-351) and `push_entry()` (view.rs:380-385).
-- ★ marks `parse::Opt.recommended` (tui/src/panel/parse.rs:7-11).
-
-A refactor child, #1516, lands before #1506. The owner approved it on 2026-11-26 and
-stands in for the panel owner. It moves `tile()` and the question layout into `chrome`, "what
-the board and the panel share" (docs/tui.md:2788), so no module is added:
-
-- `chrome::Row { label: String, note: String, marks: Vec<String> }`, one option as drawn. The
-  panel passes ★ as a mark, and the popup passes the tags as text marks.
+- `chrome::Row { label: String, note: String, mark: String }`, one option as drawn. The mark
+  goes before the label, and a wrapped label pads under it, so it is one glyph: the panel
+  passes ★ for `parse::Opt.recommended` (tui/src/panel/parse.rs:7-11), or a blank.
 - `chrome::question(th: &Theme, text: &str, place: (usize, usize), rows: &[Row], sel: usize,
-  picked: &[bool], w: usize) -> (Vec<Line<'static>>, Vec<(usize, usize)>)`, the lines and
-  each option's line range. `picked` marks the chosen options of a multiSelect question. The
-  panel passes all false.
+  w: usize, inset: usize) -> (Vec<Line<'static>>, Vec<Vec<Line<'static>>>)`: the head's lines
+  ("question k of N" when N is more than 1, the text, a blank line) and each option's lines,
+  drawn by `chrome::tile`. The text wraps at `w` and each option at `w - inset`, the room
+  inside the caller's box around it. Each option comes back on its own, since a box changes
+  its line count.
 
-The panel keeps its taps, boxing, rounds line and footer. The child's proof is equal totals
-with the `panel-question-batch-{40,80}` goldens unchanged. #1516 may change these
-signatures and amends this section if it does.
+The panel passes `Run::place` (tui/src/panel/app.rs:255-258) as `place` and the columns its
+tablet box takes as `inset`, and keeps its taps, boxing, rounds line and footer.
+`golden_tablet_question` pins the tablet question. #1506 adds what the popup needs with its
+first caller: the picked options of a multiSelect question, and where the text tags go.
 
 ## Defaults
 

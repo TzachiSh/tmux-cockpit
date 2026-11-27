@@ -1,11 +1,12 @@
 //! The chrome the board and the panel share (D14): the footer's hints, the
-//! full-popup `?` help and the floor card. Callers bring their own key tables.
-use crate::panel::view::wrap;
+//! full-popup `?` help, the floor card, and the question view with its option
+//! tiles (#1516). Callers bring their own key tables.
+use crate::panel::view::{many, plain, styled, wrap};
 use crate::theme::Theme;
 use crossterm::event::KeyCode;
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::Style;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use unicode_width::UnicodeWidthStr;
@@ -144,4 +145,69 @@ pub fn floor(f: &mut Frame, area: Rect, th: &Theme, title: &str, msg: &str, back
         .collect();
     lines.extend(wrap(back, w).into_iter().map(|l| Line::styled(l, Style::new().fg(th.value))));
     f.render_widget(Paragraph::new(lines), inner);
+}
+
+/// One option as [`question`] draws it: the label, the gloss after it, and the
+/// mark before it (the panel's ★, or a blank).
+pub struct Row {
+    pub label: String,
+    pub note: String,
+    pub mark: String,
+}
+
+/// A picker entry: the cursor, the number, the text wrapped under itself, and
+/// a description only where it fits whole or ends in an ellipsis.
+pub fn tile(th: &Theme, sel: bool, n: usize, mark: &str, text: &str, extra: &str, w: usize) -> Vec<Line<'static>> {
+    let cur = if sel { th.g.active } else { " " };
+    let st = if sel {
+        Style::new().fg(th.accent).add_modifier(Modifier::BOLD)
+    } else {
+        Style::new().fg(th.value)
+    };
+    let lead = format!("{cur}{n} {mark}");
+    let pad = " ".repeat(lead.width());
+    // the description is a gloss on the name: under 50 columns it would be cut to nothing useful
+    let show = !extra.is_empty() && w >= 50;
+    let text = if show { format!("{text:<16}") } else { text.to_string() };
+    let mut out: Vec<Line<'static>> = wrap(&text, w.saturating_sub(lead.width()))
+        .into_iter()
+        .enumerate()
+        .map(|(i, l)| styled(format!("{}{l}", if i == 0 { &lead } else { &pad }), st))
+        .collect();
+    let room = w.saturating_sub(out[0].width() + 2);
+    if show && room >= 10 {
+        out[0]
+            .spans
+            .push(Span::styled(format!("  {}", th.g.trunc(extra, room)), Style::new().fg(th.meta)));
+    }
+    out
+}
+
+/// A question as the panel and the ask popup draw it: "question k of N" when
+/// `place` holds more than one, the text, a blank line, then each option's
+/// tile, `inset` columns narrower than `w` for the caller's box around it.
+/// Returns the head's lines and each option's, so the caller lays them out.
+pub fn question(
+    th: &Theme,
+    text: &str,
+    place: (usize, usize),
+    rows: &[Row],
+    sel: usize,
+    w: usize,
+    inset: usize,
+) -> (Vec<Line<'static>>, Vec<Vec<Line<'static>>>) {
+    let (k, n) = place;
+    let mut head = vec![];
+    if n > 1 {
+        head.extend(many(&format!("question {k} of {n}"), w, "", Style::new().fg(th.meta)));
+    }
+    head.extend(many(text, w, "", Style::new().add_modifier(Modifier::BOLD)));
+    head.push(plain(""));
+    let tw = w.saturating_sub(inset);
+    let options = rows
+        .iter()
+        .enumerate()
+        .map(|(i, r)| tile(th, i == sel, i + 1, &format!("{} ", r.mark), &r.label, &r.note, tw))
+        .collect();
+    (head, options)
 }
