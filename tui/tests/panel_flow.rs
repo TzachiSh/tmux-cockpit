@@ -3,7 +3,7 @@
 //! samples in tests/fixtures/flow, goldens in tests/golden.
 //!
 //! COCKPIT_BLESS=1 cargo test --test panel_flow  rewrites the goldens.
-use cockpit_tui::panel::flow::{self, Shape, Status};
+use cockpit_tui::panel::flow::{self, Block, Shape, Status};
 use cockpit_tui::theme::Glyphs;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
@@ -176,13 +176,27 @@ fn only_a_need_from_you_note_goes_in_the_closing_box() {
     assert!(out.last().unwrap().starts_with('└'), "{out:?}");
 }
 
-// --------------------------------------- decision 6: flatten blocks, Err the rest
+// ------------------------------------------- blocks as frames, Err the rest (#1536)
 
 #[test]
-fn loop_alt_opt_else_and_end_are_flattened_to_their_steps() {
+fn loop_alt_opt_else_and_end_keep_their_steps_in_frames() {
     let f = parsed(LOOP);
     let labels: Vec<&str> = f.steps.iter().map(|s| s.label.as_str()).collect();
     assert_eq!(labels, ["push", "failure log", "pass", "rerun"]);
+    // Each frame opens and closes after this many steps, and none of their notes: LOOP has none.
+    let spot = |steps: usize| flow::Spot { steps, notes: 0 };
+    let frame = |kind: Block, label: &str, depth: usize, open: usize, close: usize| flow::Frame {
+        kind,
+        label: label.into(),
+        depth,
+        open: spot(open),
+        dividers: vec![],
+        close: spot(close),
+    };
+    let mut alt = frame(Block::Alt, "red", 1, 1, 3);
+    alt.dividers.push((spot(2), "green".into()));
+    let want = [frame(Block::Loop, "until green", 0, 0, 3), alt, frame(Block::Opt, "flaky", 0, 3, 4)];
+    assert_eq!(f.frames, want);
 }
 
 #[test]
@@ -731,8 +745,19 @@ fn a_hand_built_step_naming_a_missing_actor_draws_without_a_panic() {
         text: "over actors past the end".into(),
         place: flow::Place::Over(7, usize::MAX),
     });
+    // A frame deeper than parse makes, every spot past the end (#1536).
+    let past = flow::Spot { steps: 99, notes: 99 };
+    f.frames.push(flow::Frame {
+        kind: Block::Loop,
+        label: "past the end".into(),
+        depth: 9,
+        open: past,
+        dividers: vec![(past, "and past".into())],
+        close: past,
+    });
     let no_actors = flow::Flow {
         steps: f.steps.clone(),
+        frames: f.frames.clone(),
         ..Default::default()
     };
     for (row, f) in [("past the end", &f), ("no actors at all", &no_actors)] {
