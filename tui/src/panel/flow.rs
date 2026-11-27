@@ -999,6 +999,13 @@ fn ladder(f: &Flow, w: usize, g: &Glyphs) -> Vec<String> {
             Part::Step(i, s) => (i, s),
         };
         let (a, b) = (x(s.from).min(x(s.to)), x(s.from).max(x(s.to)));
+        // The label and a self step's mark end before this column: a blank column before the next
+        // lifeline, so they cover none, or past the last at the time column or the edge, or a blank
+        // column before the innermost frame's side (#1534, #1536, #1558).
+        let room_end = match lifeline_after(&cols, a) {
+            Some(next) => next.saturating_sub(1),
+            None => sides(nest).1 + 1,
+        };
         let mut lab = lifelines(nest);
         if cur == Some(i) {
             lab.put(0, g.head_right);
@@ -1006,15 +1013,8 @@ fn ladder(f: &Flow, w: usize, g: &Glyphs) -> Vec<String> {
         if let Some(st) = s.status {
             lab.put(1, st.glyph(g));
         }
-        // The label starts two columns after the step's left lifeline and ends at least one blank
-        // column before the next one, so it covers none, or past the last at the time column or the
-        // innermost frame's side (#1534, #1536).
-        let start = a + 2;
-        let room = match lifeline_after(&cols, a) {
-            Some(next) => next.saturating_sub(start + 1),
-            None => (sides(nest).1 + 1).saturating_sub(start),
-        };
-        lab.text(start, &fit(&label(f, i), room, g));
+        // The label starts two columns after the step's left lifeline.
+        lab.text(a + 2, &fit(&label(f, i), room_end.saturating_sub(a + 2), g));
         if let Some(t) = &s.time {
             lab.text(w - right + 1, &fit(t, right - 1, g));
         }
@@ -1028,7 +1028,13 @@ fn ladder(f: &Flow, w: usize, g: &Glyphs) -> Vec<String> {
                 Head::Cross => g.head_cross,
                 Head::None => "",
             };
-            arrow.text(a + 1, &format!("{shaft}{}{back}", g.self_turn));
+            // The mark starts a column after the lifeline. Short of room it loses its shaft, then its
+            // turn, so the head that tells its kind shows longest (#1558).
+            let parts = [shaft, g.self_turn, back];
+            let lost = (0..parts.len())
+                .take_while(|&k| parts[k..].concat().width() > room_end.saturating_sub(a + 1))
+                .count();
+            arrow.text(a + 1, &parts[lost..].concat());
         } else {
             for c in a + 1..b {
                 arrow.put(c, shaft);
