@@ -1384,3 +1384,55 @@ fn the_explain_prompts_example_flow_draws_whole_as_a_ladder_at_60() {
     let failed: Vec<&str> = checks.iter().filter(|(_, ok)| !ok).map(|(name, _)| *name).collect();
     assert!(failed.is_empty(), "failed: {failed:?}\n{out:?}");
 }
+
+// ------------------------------------------- the prompt's cap holds for wide characters (#1592)
+
+/// The Explain prompt's cap on a flow name or label, read from its words: the number after "each name and
+/// label at most", and whether it counts a wide character as 2.
+fn prompt_cap() -> (usize, bool) {
+    let clause = EXPLAIN
+        .split_once("each name and label at most ")
+        .and_then(|(_, rest)| rest.split_once(", or the panel cuts it"))
+        .map_or("", |(clause, _)| clause);
+    let n = clause.split(' ').next().and_then(|w| w.parse().ok()).unwrap_or(0);
+    (n, clause.contains("wide character as 2"))
+}
+
+#[test]
+fn names_and_labels_at_the_prompts_cap_draw_whole_in_wide_characters_too() {
+    let (n, wide_counts_2) = prompt_cap();
+    assert!(n > 0, "no cap found in the prompt");
+    // The widest text the cap allows: n ASCII characters, or wide ones, two columns each where the prompt counts
+    // them so. Four parties with a status and a time on every step get the narrowest slot the budget reaches at
+    // 60, 12 columns, where a label has 9 (#1591).
+    let (k, pad) = if wide_counts_2 {
+        (n / 2, "x".repeat(n % 2))
+    } else {
+        (n, String::new())
+    };
+    let rows = [
+        ("ascii", ['a', 'b', 'c', 'd', 'y'], n, String::new()),
+        ("wide", ['名', '前', '後', '中', '字'], k, pad),
+    ];
+    for (row, chars, count, pad) in rows {
+        let text = |c: char| format!("{}{pad}", c.to_string().repeat(count));
+        let names: Vec<String> = chars[..4].iter().map(|&c| text(c)).collect();
+        let label = text(chars[4]);
+        let mut src = String::from("sequenceDiagram\n");
+        for (a, b) in [(0, 1), (1, 2), (2, 3), (3, 0)] {
+            src.push_str(&format!("{}->>{}: {label}\n%% status: done 09:00\n", names[a], names[b]));
+        }
+        assert_eq!(flow::shape(&parsed(&src), 60), Shape::Ladder, "{row}");
+        let out = flow::render(&src, 60, &UNI);
+        assert!(
+            names.iter().all(|name| out[0].contains(name.as_str())),
+            "{row}: a name cut: {out:?}"
+        );
+        assert_eq!(
+            out.iter().filter(|l| l.contains(label.as_str())).count(),
+            4,
+            "{row}: a label cut: {out:?}"
+        );
+        assert!(!out.iter().any(|l| l.contains(UNI.ellipsis)), "{row}: {out:?}");
+    }
+}
