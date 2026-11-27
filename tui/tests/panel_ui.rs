@@ -307,6 +307,57 @@ fn golden_answer_with_ready() {
     goldens("answer", &explained(), 0);
 }
 
+/// A bottom line, then a two-actor flow in a mermaid fence (#1569).
+const FLOW_REPLY: &str =
+    "bottom line\n\n```mermaid\nsequenceDiagram\n    autonumber\n    panel->>claude: question\n    claude-->>panel: answer\n```";
+
+fn flowed() -> App {
+    let mut a = app("claude", "claude", CLAUDE_SCREEN);
+    ch(&mut a, '3');
+    ch(&mut a, '2');
+    a.reply(Ok(FLOW_REPLY.into()));
+    a
+}
+
+/// An answer's mermaid fence is drawn as a flow in place of its source lines,
+/// at the view's width and in the theme's tier (#1569).
+#[test]
+fn an_answer_draws_its_mermaid_fence_as_a_flow() {
+    let a = flowed();
+    let f = frame(&a, 100, 20, 0);
+    assert!(!f.contains("```mermaid"), "no source line at 100:\n{f}");
+    assert!(
+        f.contains("bottom line") && f.contains("─▶│"),
+        "the bottom line, then a ladder:\n{f}"
+    );
+    let f = frame(&a, 40, 12, 0);
+    for want in [" 1 question  panel─▶claude ", " 2 answer    claude┄▶panel "] {
+        assert!(f.contains(want), "a numbered list at 40, {want:?}:\n{f}");
+    }
+    let f = framed(&a, 80, 20, &ascii_theme(), 0).0;
+    let bad: String = f.chars().filter(|c| !c.is_ascii()).collect();
+    assert!(
+        bad.is_empty() && f.contains("->|") && f.contains("|<."),
+        "an ascii ladder, not {bad:?}:\n{f}"
+    );
+}
+
+/// A Write's text is typed into the pane as written, so its mermaid fence
+/// stays as its source lines: only an answer draws a flow (#1569).
+#[test]
+fn a_results_mermaid_fence_stays_as_its_source() {
+    let mut a = app("w", "bash", "$ ");
+    writing(&mut a, "x");
+    a.reply(Ok(format!("<text>{FLOW_REPLY}</text>")));
+    assert!(matches!(a.view, View::Result { .. }), "{:?}", a.view);
+    let f = frame(&a, 100, 20, 0);
+    assert!(
+        f.contains("```mermaid") && f.contains("panel->>claude: question"),
+        "the source lines:\n{f}"
+    );
+    assert!(!f.contains("─▶"), "no flow:\n{f}");
+}
+
 #[test]
 fn golden_error() {
     let mut a = app("work", "bash", "$ ");
