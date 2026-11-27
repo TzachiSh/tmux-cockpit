@@ -1340,6 +1340,8 @@ tree-sitter were turned down for the binary's size.
   in a Result's text or an answer; a step's command, by its `lang`. Prose
   outside a fence is never lexed, so an `if` in a sentence stays text. A fence
   left open runs to the end of the text; a shorter fence inside is content.
+  An answer's fence that `highlight::flow_body` names a flow is drawn as one
+  instead (see **The flow renderer**).
 - **An answer that is one block.** A reply fenced whole is read from inside
   its fence: the first line opens it, the last line is a bare closer of at
   least as many backticks, and a tagged block inside is paired with its own
@@ -1521,9 +1523,19 @@ and `parse::fix` and `parse::explain` read only the first question, as before.
 
 ### The flow renderer (#935)
 
-`panel::flow` draws a Mermaid `sequenceDiagram` as text that fits a width. It is
-not wired into Explain yet.
+`panel::flow` draws a Mermaid `sequenceDiagram` as text that fits a width. The
+panel's answers draw their `mermaid` fences with it (#1569).
 
+- **In an answer.** In the Answer view, which Explain and Ask share, each fence
+  that `highlight::flow_body` names a flow (tagged exactly `mermaid`) is drawn by
+  `flow::render` in place of its lines, at the view's width and in the theme's
+  glyph tier, so it follows a resize. Its lines come back fitted and are not
+  wrapped again, and a fence that does not parse shows `flow::not_drawn`. The
+  rest of the answer draws as before (see **Code in the panel**). A Result's
+  text is typed into the pane, so its fence stays as written. A reply that is
+  nothing but a mermaid fence is unwrapped by the reply parser and shows as
+  source, and `x` still copies the answer as written. Goldens:
+  `panel-answer-flow-{40,60,80,120}` and `panel-ascii-answer-flow-80`.
 - **What it reads.** `participant` and `actor`, with `as` for a display name,
   and participants named only in a step. Mermaid's ten arrows (see **Arrows**).
   `autonumber`, or `autonumber <start> <increment>` (Mermaid 11.15.0), which

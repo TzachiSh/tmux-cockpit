@@ -359,6 +359,13 @@ fn a_results_mermaid_fence_stays_as_its_source() {
 }
 
 #[test]
+fn golden_answer_flow() {
+    let a = flowed();
+    goldens("answer-flow", &a, 0);
+    golden("panel-ascii-answer-flow-80", &framed(&a, 80, 20, &ascii_theme(), 0).0);
+}
+
+#[test]
 fn golden_error() {
     let mut a = app("work", "bash", "$ ");
     writing(&mut a, "x");
