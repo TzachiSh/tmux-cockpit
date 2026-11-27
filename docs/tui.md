@@ -1526,8 +1526,9 @@ not wired into Explain yet.
   the numbered list otherwise. The ladder takes two rows a step, the label
   above its arrow. The list gives every label one column, so who to whom lines
   up, when that column holds the longest label or 6 columns of it, whichever
-  is less; otherwise each line is the label, who to whom and the time with one
-  space between.
+  is less, and the rest of the line (who to whom and the time) fits too;
+  otherwise each line is the label, who to whom and the time with one space
+  between.
 - **Status.** With no status on any step there is no status column and no
   current step. Otherwise the current step is the first one not done: `▶` in
   the ladder's first column, `◀ here` at the end of its line in the list, or
