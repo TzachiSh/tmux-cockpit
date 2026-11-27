@@ -1,5 +1,7 @@
 //! The transcript reader: `file`, `doing` and `tail`. Its output is byte-identical to the jq
-//! reader it replaced (Freeze 1, #54). Every failure is `None`.
+//! reader it replaced (Freeze 1, #54). Every failure is `None`. `open_ask` reads the open
+//! AskUserQuestion whole (#1504).
+use crate::ask::model::{self, Ask};
 use serde_json::Value;
 use std::io::{Read, Seek, SeekFrom};
 use std::os::unix::ffi::OsStrExt;
@@ -492,20 +494,20 @@ pub(crate) fn pick<'a>(name: &str, input: &'a Value) -> Option<(&'static str, &'
         })
 }
 
-/// An AskUserQuestion's row text (#453): how many questions follow the first,
-/// then the first non-blank line of the first, made safe to draw. The count
-/// leads because the board cuts a long line's end. `None` when the input names
-/// no question.
-pub(crate) fn question(input: &Value) -> Option<String> {
-    let qs = input["questions"].as_array()?;
-    let line = qs.first()?["question"]
-        .as_str()?
+/// An ask's row text (#453, #1504): "Q1 of N: " when it asks more than one question,
+/// then the first non-blank line of the first, made safe to draw. The place leads
+/// because the board cuts a long line's end. `None` when there is no such line.
+pub(crate) fn question(a: &Ask) -> Option<String> {
+    let line = a
+        .questions
+        .first()?
+        .text
         .lines()
         .map(|l| crate::pick::clean(l).trim().to_string())
         .find(|l| !l.is_empty())?;
-    Some(match qs.len() - 1 {
-        0 => line,
-        n => format!("(+{n}) {line}"),
+    Some(match a.questions.len() {
+        1 => line,
+        n => format!("Q1 of {n}: {line}"),
     })
 }
 
@@ -592,19 +594,45 @@ pub fn cwd(path: &Path) -> Option<String> {
         .find_map(|r| r["cwd"].as_str().filter(|c| !c.is_empty()).map(String::from))
 }
 
-/// `doing\t<label>\t<secs>`, `said\t<text>`, `asked\t<prompt>\t<secs>`, each left
-/// out when unknown. Only the last tool_use counts, open parallel ones before it do not.
-/// Then `ask\t<question>` for the newest AskUserQuestion still open (#453).
-pub fn doing(path: &Path) -> Option<String> {
-    let t = turns(path)?;
-    let now = now();
-    let closed: Vec<&Value> = t
+/// The newest tool_use of the rows, its row, and whether no tool_result has closed it
+/// yet. Only the newest counts, open parallel ones before it do not.
+fn newest_use(t: &[Value]) -> Option<(&Value, &Value, bool)> {
+    let (i, r) = t
+        .iter()
+        .filter(|r| kind(r) == "assistant")
+        .flat_map(|r| items(r).filter(|i| kind(i) == "tool_use").map(move |i| (i, r)))
+        .last()?;
+    let id = i.get("id").unwrap_or(&Value::Null);
+    let open = !t
         .iter()
         .filter(|r| kind(r) == "user")
         .flat_map(items)
-        .filter(|i| kind(i) == "tool_result")
-        .map(|i| i.get("tool_use_id").unwrap_or(&Value::Null))
-        .collect();
+        .filter(|b| kind(b) == "tool_result")
+        .any(|b| jq_eq(b.get("tool_use_id").unwrap_or(&Value::Null), id));
+    Some((i, r, open))
+}
+
+/// The open AskUserQuestion, read whole (#1504): the newest tool_use, while no
+/// tool_result has closed it and no prompt was typed after it, the fold's rule.
+/// `None` too when its id is not a string or its input does not parse.
+pub fn open_ask(path: &Path) -> Option<Ask> {
+    let t = turns(path)?;
+    let (i, r, open) = newest_use(&t)?;
+    // a prompt typed after the ask means the human moved on from it
+    let at = t.iter().position(|x| std::ptr::eq(x, r));
+    let typed_after = t.iter().enumerate().any(|(k, x)| Some(k) > at && typed_prompt(x).is_some());
+    if i["name"] != "AskUserQuestion" || !open || typed_after {
+        return None;
+    }
+    model::parse(i["id"].as_str()?, &i["input"])
+}
+
+/// `doing\t<label>\t<secs>`, `said\t<text>`, `asked\t<prompt>\t<secs>`, each left
+/// out when unknown. Only the last tool_use counts, open parallel ones before it do not.
+/// Then `ask\t<question>` for [`open_ask`]'s ask (#453).
+pub fn doing(path: &Path) -> Option<String> {
+    let t = turns(path)?;
+    let now = now();
     let said_of = |r: &Value| {
         items(r)
             .filter(|i| kind(i) == "text")
@@ -612,19 +640,13 @@ pub fn doing(path: &Path) -> Option<String> {
             .filter(|s| !s.is_empty())
             .last()
     };
-    let assistant = || t.iter().filter(|r| kind(r) == "assistant");
-    let tu = assistant()
-        .flat_map(|r| items(r).filter(|i| kind(i) == "tool_use").map(move |i| (i, r)))
-        .last();
-    let said = assistant().filter_map(said_of).next_back();
+    let said = t.iter().filter(|r| kind(r) == "assistant").filter_map(said_of).next_back();
     let asked = t
         .iter()
         .filter_map(|r| typed_text(r).map(|c| (clean(&c), r)))
         .rfind(|(p, _)| !p.is_empty());
     let mut out = String::new();
-    if let Some((i, r)) = tu
-        && !closed.iter().any(|c| jq_eq(c, i.get("id").unwrap_or(&Value::Null)))
-    {
+    if let Some((i, r, true)) = newest_use(&t) {
         out += &format!("doing\t{}\t{}\n", tlabel(i), secs(r, now));
     }
     if let Some(s) = said {
@@ -633,18 +655,7 @@ pub fn doing(path: &Path) -> Option<String> {
     if let Some((p, r)) = asked {
         out += &format!("asked\t{p}\t{}\n", secs(r, now));
     }
-    // Only the newest tool_use's ask is what the agent waits on, and a prompt
-    // typed after it means the human moved on from it.
-    let typed_after = |r: &Value| {
-        let at = t.iter().position(|x| std::ptr::eq(x, r));
-        t.iter().enumerate().any(|(k, x)| Some(k) > at && typed_prompt(x).is_some())
-    };
-    if let Some((i, r)) = tu
-        && i["name"] == "AskUserQuestion"
-        && !closed.iter().any(|c| jq_eq(c, i.get("id").unwrap_or(&Value::Null)))
-        && !typed_after(r)
-        && let Some(q) = question(&i["input"])
-    {
+    if let Some(q) = open_ask(path).as_ref().and_then(question) {
         out += &format!("ask\t{q}\n");
     }
     (!out.is_empty()).then_some(out)
@@ -764,22 +775,21 @@ mod tests {
         );
     }
 
-    /// #453: rows are [input, question]; `None` where the input names no question.
+    /// #453, #1504: rows are [questions, row text]; `None` where no question is asked
+    /// or the first one's text is blank.
     #[test]
     fn question_reads_the_first_question_and_counts_the_rest() {
+        let q = |text: &str| serde_json::json!({"question": text, "header": "H", "options": [], "multiSelect": false});
         let rows = [
-            (serde_json::json!({"questions": [{"question": "a?"}]}), Some("a?")),
-            (serde_json::json!({"questions": [{"question": "a?"}, {}]}), Some("(+1) a?")),
-            (
-                serde_json::json!({"questions": [{"question": " \n\u{2066}b\u{7}?\nc"}]}),
-                Some("b?"),
-            ),
-            (serde_json::json!({"questions": []}), None),
-            (serde_json::json!({"questions": [{"question": ["a?"]}]}), None),
-            (serde_json::json!({"question": "a?"}), None),
+            (serde_json::json!([q("a?")]), Some("a?")),
+            (serde_json::json!([q("a?"), q("b?")]), Some("Q1 of 2: a?")),
+            (serde_json::json!([q(" \n\u{2066}b\u{7}?\nc")]), Some("b?")),
+            (serde_json::json!([q(" \t\n")]), None),
+            (serde_json::json!([]), None),
         ];
-        for (input, want) in rows {
-            assert_eq!(question(&input).as_deref(), want, "{input}");
+        for (qs, want) in rows {
+            let a = model::parse("u", &serde_json::json!({"questions": qs})).unwrap();
+            assert_eq!(question(&a).as_deref(), want, "{qs}");
         }
     }
 

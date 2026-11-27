@@ -2797,6 +2797,7 @@ workspace, no crate split.
 | `panel` | the type-panel port: capture, redaction, prompt envelope, the `claude -p` request, reply parsing; `panel::action` the action, text, cmd and state files |
 | `highlight` | the code lexer (#282) and `split`, the one fence rule the panel's view and its reply parsing share (#283) |
 | `store` | the `Store` trait (`get`, `put_if_revision`, `watch`), `Key`, `Revision` and `LocalStore`, one 0600 file per key under XDG state (#1020); unwired, nothing calls it |
+| `ask` | an agent's open AskUserQuestion (epic #1500, [docs/ask.md](ask.md)): `ask::model` holds every question, header, option label, description, preview and multiSelect of its input, and `data::transcript::open_ask` reads it from the transcript (#1504) |
 
 Every mutating action stays a shell script: the binary prints
 `<verb> <pane-id>` and a wrapper runs it.
