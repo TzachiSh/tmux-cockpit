@@ -741,9 +741,11 @@ in a pane of a tmux server: `$TMUX` and `$TMUX_PANE` must name both.
 - `cockpit-msg read --session <id> <msg_id>` prints the body of one of the calling session's
   messages and marks that message read.
 
-A refusal is one line on stderr and exit 1, and it leaves no file in the store. When tmux, git,
-`mkdir` or `ln` fails, the line gives their reason. A usage error exits 2, and a library that
-fails to load, or a bash older than 4, exits 3.
+A refusal is one line on stderr and exit 1, and it leaves no file in the store. A send or a read
+refused while it writes a file (no temp file, a write or a link that fails, a name already
+taken) can leave the store's folders it made, empty. A refusal before that makes no folder.
+When tmux, git, `mkdir` or `ln` fails, the line gives their reason. A usage error exits 2, and a
+library that fails to load, or a bash older than 4, exits 3.
 
 The store is under the state folder, `$XDG_STATE_HOME/tmux-cockpit`, else
 `$HOME/.local/state/tmux-cockpit`. As in `store::xdg_dir` (#1508), a relative value is ignored,

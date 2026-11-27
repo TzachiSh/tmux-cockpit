@@ -30750,6 +30750,19 @@ is "send refuses an od that gives fewer than 16 bytes" \
    "$(PATH="$MG/od:$PATH" mg_send "$MG/in/sum" "$MG/in/body")|$(mg_nf)"
 is "send refuses a clock it cannot read" "1|cockpit-msg: cannot read the clock|$MGF0" \
    "$(PATH="$MG/nodate:$PATH" mg_send "$MG/in/sum" "$MG/in/body")|$(mg_nf)"
+# A store not there yet: a send refused before it writes makes no folder, and one refused while
+# it writes leaves only the folders it made, empty (docs/states-and-hooks.md says which).
+MG_ST=(XDG_STATE_HOME="$MG/fresh1")
+is "a send refused before it writes makes no folder" "1|cockpit-msg: cannot read the clock|none" \
+   "$(PATH="$MG/nodate:$PATH" mg_send "$MG/in/sum" "$MG/in/body")|$(
+      [ -e "$MG/fresh1" ] && echo some || echo none)"
+MG_ST=(XDG_STATE_HOME="$MG/fresh2")
+MGW="1|cockpit-msg: cannot make a temp file in $MG/fresh2/tmux-cockpit/refs (own_tmpfile: mktemp)"
+MGW="$MGW|./tmux-cockpit ./tmux-cockpit/msg ./tmux-cockpit/msg/$MGHB ./tmux-cockpit/refs "
+is "a send refused while it writes leaves only the empty folders it made" "$MGW" \
+   "$(PATH="$MG/nomktemp:$PATH" mg_send "$MG/in/sum" "$MG/in/body")|$(
+      cd "$MG/fresh2" && find . -mindepth 1 | LC_ALL=C sort | tr '\n' ' ')"
+MG_ST=(XDG_STATE_HOME="$MG/state")
 
 # A signal mid-send ends the run with 128 + the signal, and leave takes back what it wrote.
 # The cat above sends it on its 2nd call, the body's copy, once the summary ref is in place.

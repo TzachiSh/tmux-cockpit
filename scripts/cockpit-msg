@@ -206,9 +206,10 @@ cmd_send() {                  # --session <id> <to> <summary-file> <body-file>
     [ -f "$sum" ] && [ -r "$sum" ] || die "no readable summary file: $sum"
     [ -f "$body" ] && [ -r "$body" ] || die "no readable body file: $body"
     summary_line "$sum"; line=$REPLY
-    state_root; own_dir "$ROOT/refs"; box=$ROOT/msg/$to; own_dir "$box"
     new_id; id=$REPLY
     now=$(date -u +%Y-%m-%dT%H:%M:%SZ) || die "cannot read the clock"
+    # Each check that needs no folder runs first: a send refused before here makes none.
+    state_root; own_dir "$ROOT/refs"; box=$ROOT/msg/$to; own_dir "$box"
     json="{\"schema_version\":2,\"msg_id\":\"$id\",\"from\":\"$ME\",\"to\":\"$to\""
     json+=",\"subject\":\"msg.$ME.$to\",\"timestamp\":\"$now\",\"correlation_id\":\"$id\""
     json+=",\"payload\":{\"body_ref\":\"$id.md\",\"summary_ref\":\"$id.txt\"}}"
