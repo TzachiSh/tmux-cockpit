@@ -34,8 +34,9 @@
 //! the modes that send no panel prompt refuse the flag.
 //!
 //! The cases are evals/panel/cases.txt and, beside it, the held-out file
-//! evals/panel/holdout-blind.txt (#783), where every held-out case lives since
-//! #834, and which tuning sessions do not open:
+//! evals/panel/holdout-blind.txt (#783), where every held-out write case lives
+//! since #834 (the Explain cases have their own, below), and which tuning
+//! sessions do not open:
 //! every case in it says `holdout: yes`, none shares an id with cases.txt, and
 //! it may hold none. `--check` prints each file with its count; `--cases FILE`
 //! reads only FILE.
@@ -46,7 +47,9 @@
 //!
 //! A case with `flow: explain` (#1405) is the panel's Explain: its request is the
 //! user's question, sent as Explain sends it, and its reply is read by Explain's
-//! parser. `--judge` and `--router-prompt` refuse a run that holds one.
+//! parser. `--judge` and `--router-prompt` refuse a run that holds one. The
+//! Explain cases are evals/explain/holdout-blind.txt, all held out, which a run
+//! reads with `--cases`.
 //!
 //! Each call is hermetic by default (#598): `claude --setting-sources ""`, so
 //! no user, project or local settings load, and with them no CLAUDE.md, no
@@ -6399,9 +6402,7 @@ mod tests {
         let o = opts(args("")).unwrap();
         let blind = o.blind.clone().unwrap();
         load(&o.cases, Some(&blind)).unwrap();
-        let text = std::fs::read_to_string(&blind).unwrap();
-        let header: Vec<&str> = text.lines().take_while(|l| !l.starts_with("=== ")).collect();
-        let header = header.join(" ").replace("# ", "").replace('#', "");
+        let header = file_header(&blind);
         for who in [
             "the owner",
             "the orchestrator",
@@ -6412,6 +6413,71 @@ mod tests {
         ] {
             assert!(header.contains(who), "the header does not say {who:?}");
         }
+    }
+
+    /// A cases file's comment lines before its first case, joined as one line
+    /// with the `#` marks dropped: the header a held-out file names its readers in.
+    fn file_header(p: &Path) -> String {
+        let text = std::fs::read_to_string(p).unwrap();
+        let header: Vec<&str> = text.lines().take_while(|l| !l.starts_with("=== ")).collect();
+        header.join(" ").replace("# ", "").replace('#', "")
+    }
+
+    /// The shipped Explain cases file (#1405) and its cases, loaded as `--cases`
+    /// reads it.
+    fn shipped_explain_cases() -> (PathBuf, Vec<Case>) {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("evals/explain/holdout-blind.txt");
+        let o = opts(["--cases".to_string(), path.display().to_string()]).unwrap();
+        let cases = run_cases(&o).unwrap_or_else(|e| panic!("{e}")).cases;
+        (path, cases)
+    }
+
+    /// #1405: the shipped Explain cases load as `--cases` reads them, all of them
+    /// Explain cases and held out, and the file's header names who may read it.
+    /// Only the header and the counts are read here, never a case's text, and a
+    /// failure names a case by its line, as `load` does (#834).
+    #[test]
+    fn the_shipped_explain_cases_load_as_held_out_explain_cases() {
+        let (path, cases) = shipped_explain_cases();
+        assert_eq!(cases.len(), 20);
+        let odd: Vec<usize> = cases
+            .iter()
+            .filter(|c| c.flow != CaseFlow::Explain || !c.holdout)
+            .map(|c| c.line)
+            .collect();
+        assert!(odd.is_empty(), "not a held-out Explain case, at lines {odd:?}");
+        let header = file_header(&path);
+        for who in [
+            "the owner",
+            "the orchestrator",
+            "the case writer",
+            "blindness reviewer",
+            "must not open",
+        ] {
+            assert!(header.contains(who), "the header does not say {who:?}");
+        }
+    }
+
+    /// #1405: no shipped Explain case forbids a word that its own screen or its
+    /// agent's doing and asked lines show. explain.txt asks a reply to mention an
+    /// instruction found there, so a `must_not` term taken from that text fails a
+    /// reply that reports it. A failure names each case by its line only.
+    #[test]
+    fn the_shipped_explain_cases_forbid_no_word_their_own_screen_shows() {
+        let (_, cases) = shipped_explain_cases();
+        let bad: Vec<usize> = cases
+            .iter()
+            .filter(|c| {
+                let a = c.agent.clone().unwrap_or_default();
+                let outside = format!("{}\n{}\n{}", c.screen, a.doing, a.asked);
+                c.must_not.iter().any(|m| has(&outside, m))
+            })
+            .map(|c| c.line)
+            .collect();
+        assert!(
+            bad.is_empty(),
+            "a must_not term is in its case's own screen or agent lines, at lines {bad:?}"
+        );
     }
 
     #[test]
