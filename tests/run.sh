@@ -16284,6 +16284,110 @@ unset -f cw_ls cw_unseen
 rm -rf "$cw_ct"
 unset CW cw cw_ct NEST_RC NEST_OUT NEST_PASS NEST_FAIL
 
+echo "== the state folder is XDG_STATE_HOME only when absolute, as in store::xdg_dir (#1588) =="
+# lib/xdg.sh's state_home, the rule the board's Rust reads with: a relative XDG_STATE_HOME is
+# ignored, so each script keeps its state under HOME's .local/state and writes nothing under
+# its cwd. With neither value absolute there is no state folder: each says so, keeps nothing.
+if need_tmux "the state folder"; then :; else
+XS="cockpit-xs-$$"; SOCKS="$SOCKS $XS"; XD=$(mktmpd); XSH="$XD/home/.local/state/tmux-cockpit"
+# the stub board and panel: a line on stderr, the hides the panel was told were dropped
+printf '#!/bin/sh\ncase "$1" in board|panel) ;; *) exit 1 ;; esac\necho XS-ERR >&2\n%s\n' \
+    "printf 'D=[%s]' \"\${COCKPIT_PANEL_DROPPED:-}\" > $(tq "$XD/ran")" > "$XD/bin"
+chmod +x "$XD/bin"
+"$TMUX_REAL" -L "$XS" -f /dev/null new-session -d -s t -x 100 -y 30 -c "$XD" \
+    'exec sleep 3600' >/dev/null 2>&1
+XSP=$("$TMUX_REAL" -L "$XS" list-panes -t t -F '#{pane_id}')
+XSPID=$("$TMUX_REAL" -L "$XS" display -p '#{pid}')
+xs_new() { rm -rf "${XD:?}/cwd" "${XD:?}/home" "$XD/ran" "$XD/done" "$XD/note" "$XD/err"
+    mkdir -p "$XD/cwd" "$XD/home"; }
+xs_cwd() { (cd "$XD/cwd" && find . -mindepth 1 | sort | tr '\n' ' '); }
+xs_ran() { [ -e "$XD/ran" ] && echo ran || echo no; }
+# <env words> <command>: in a window at the cwd, until it ended; its rc in done, stderr in err
+xs_win() {
+    "$TMUX_REAL" -L "$XS" new-window -d -c "$XD/cwd" -t t: \
+        "env $1 $2 2>$(tq "$XD/err"); echo \$? > $(tq "$XD/done")"
+    until_file "$XD/done" '?*'
+}
+XSREL="HOME=$(tq "$XD/home") XDG_STATE_HOME=rel COCKPIT_TUI_BIN=$(tq "$XD/bin")"
+xs_new
+xs_win "-u COCKPIT_LOG $XSREL" "$(tq "$DIR/scripts/cockpit-board") -p $XSP"
+is "XDG_STATE_HOME=rel: the board logs under HOME's .local/state, nothing under its cwd" \
+    "1|" "$(grep -c XS-ERR "$XSH/tui.log" 2>/dev/null)|$(xs_cwd)"
+xs_new; mkdir -p "$XSH/panel"; : > "$XSH/panel/$XSPID-9999.state"
+xs_win "-u COCKPIT_LOG $XSREL" "$(tq "$DIR/scripts/cockpit-panel") -p $XSP"
+is "XDG_STATE_HOME=rel: the panel logs under HOME's .local/state" \
+    "1" "$(grep -c XS-ERR "$XSH/tui.log" 2>/dev/null)"
+is "and reads its hidden panels there, nothing under its cwd" \
+    "D=[%9999]|" "$(cat "$XD/ran" 2>/dev/null)|$(xs_cwd)"
+xs_new
+(cd "$XD/cwd" && HOME="$XD/home" XDG_STATE_HOME=rel TMUX="$XD/sock,1,0" TMUX_PANE=%1 \
+    "$DIR/scripts/review-gate" --concede why >/dev/null 2>&1)
+is "XDG_STATE_HOME=rel: --concede records under HOME's .local/state, nothing under its cwd" \
+    "1|" "$(find "$XSH/review" -name 'concede-*' 2>/dev/null | wc -l | tr -d ' ')|$(xs_cwd)"
+# A repo one commit past main on a clean branch: --delta's own base, the branch, has a diff,
+# and the review's chosen base, uncommitted, in its dir under HOME's .local/state, has none.
+XSR="$XD/repo"
+(mkdir -p "$XSR" && cd "$XSR" && export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e \
+    GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e && git init -q -b main . && : > a &&
+    git add a && git commit -q -m a && git checkout -q -b feat && echo b > a &&
+    git commit -q -am b) >/dev/null 2>&1
+XSRP=$("$TMUX_REAL" -L "$XS" new-window -d -P -F '#{pane_id}' -c "$XSR" -t t: 'exec sleep 3600')
+XSRK=$(printf '%s' "$(git -C "$XSR" rev-parse --show-toplevel)" | cksum | cut -d' ' -f1)
+xs_new; mkdir -p "$XSH/review/${XSRP#%}-$XSRK"
+echo uncommitted > "$XSH/review/${XSRP#%}-$XSRK/comments.md.base"
+xs_win "$XSREL" "$(tq "$DIR/scripts/tmux-review") --delta $XSRP"
+is "XDG_STATE_HOME=rel: tmux-review --delta reads the review's base under HOME's .local/state" \
+    "1|" "$(cat "$XD/done")|$(xs_cwd)"
+xs_new
+(cd "$XD/cwd" && HOME="$XD/home" XDG_STATE_HOME=rel bash -c \
+    '. "$1/scripts/lib/subslog.sh" && subs_write s1 "start	a1"' _ "$DIR") 2>/dev/null
+is "XDG_STATE_HOME=rel: the subagent log is under HOME's .local/state, nothing under the cwd" \
+    "1|" "$(grep -c start "$XSH/subs/s1.log" 2>/dev/null)|$(xs_cwd)"
+# No state folder: XDG_STATE_HOME unset and HOME relative. A cache under that HOME would land
+# under the cwd too, so XDG_CACHE_HOME is a folder of its own.
+XSNO="-u XDG_STATE_HOME HOME=h XDG_CACHE_HOME=$(tq "$XD/cache") COCKPIT_TUI_BIN=$(tq "$XD/bin")"
+XSMSG='no state folder: neither XDG_STATE_HOME nor HOME is an absolute path'
+xs_new
+xs_win "-u COCKPIT_LOG $XSNO" "$(tq "$DIR/scripts/cockpit-board") -p $XSP"
+is "no state folder: the board refuses with 1, runs nothing and writes nothing" \
+    "1|no||" "$(cat "$XD/done")|$(xs_ran)|$(cat "$XD/err")|$(xs_cwd)"
+xs_new
+xs_win "-u COCKPIT_LOG $XSNO COCKPIT_PANEL_NOTE=$(tq "$XD/note")" \
+    "$(tq "$DIR/scripts/cockpit-panel") -p $XSP"
+is "no state folder: the panel says so, runs nothing and writes nothing" \
+    "✕ cockpit: $XSMSG|no|" "$(cat "$XD/note" 2>/dev/null)|$(xs_ran)|$(xs_cwd)"
+xs_new
+xs_win "$XSNO" "$(tq "$DIR/scripts/tmux-review") --delta $XSRP"
+is "no state folder: tmux-review --delta refuses with 4 and says so" \
+    "4|cockpit: $XSMSG|" "$(cat "$XD/done")|$(cat "$XD/err")|$(xs_cwd)"
+xs_new
+XSC=$(cd "$XD/cwd" && env -u XDG_STATE_HOME HOME=h TMUX="$XD/sock,1,0" TMUX_PANE=%1 \
+    "$DIR/scripts/review-gate" --concede why 2>&1 >/dev/null; echo "rc=$?")
+is "no state folder: --concede refuses with 1 and records nothing" \
+    "review-gate --concede: $XSMSG; nothing recorded
+rc=1|" "$XSC|$(xs_cwd)"
+# A Stop stays fail-open: it keeps no rewake count and reads no concession, and still runs.
+xs_new
+printf '{"session_id":"s","transcript_path":"","hook_event_name":"Stop",%s}\n' \
+    '"stop_hook_active":true' > "$XD/pay"
+xs_win "$XSNO TMUX_PANE=$XSP" "$(tq "$DIR/scripts/review-gate") < $(tq "$XD/pay")"
+is "no state folder: a rewake Stop exits 0, counts nothing and writes nothing" \
+    "0||" "$(cat "$XD/done")|$(cat "$XD/err")|$(xs_cwd)"
+xs_new
+(cd "$XD/cwd" && env -u XDG_STATE_HOME HOME=h bash -c \
+    '. "$1/scripts/lib/subslog.sh" && subs_write s1 "start	a1"' _ "$DIR") 2>/dev/null
+is "no state folder: the subagent log is not written" "" "$(xs_cwd)"
+# --concede is the agent's own call: a lib/xdg.sh that cannot load is said, not passed over.
+xs_new; mkdir -p "$XD/nolib"; cp "$DIR/scripts/review-gate" "$XD/nolib/"
+XSC=$(cd "$XD/cwd" && HOME="$XD/home" TMUX="$XD/sock,1,0" TMUX_PANE=%1 \
+    "$XD/nolib/review-gate" --concede why 2>&1 >/dev/null; echo "rc=$?")
+is "--concede with no lib/xdg.sh says so and records nothing" \
+    "review-gate --concede: lib/xdg.sh cannot load; nothing recorded
+rc=1|" "$XSC|$(find "$XD/home" -mindepth 1 | head -n 1)"
+"$TMUX_REAL" -L "$XS" kill-server >/dev/null 2>&1
+unset -f xs_new xs_cwd xs_ran xs_win
+fi
+
 echo "== the suite sees none of git's names, no BASH_ENV, no other switch (#1099, #1100) =="
 # The names, for this block and the next. A function, not a variable: only.sh and par.sh
 # give every block the file's top-level functions, and a block's variables to that block
