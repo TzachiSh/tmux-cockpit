@@ -157,15 +157,20 @@ pub trait Store: Send + Sync {
     fn watch(&self, prefix: &Key) -> Watch;
 }
 
-/// `$XDG_STATE_HOME/tmux-cockpit/store`, else `$HOME/.local/state/...`. A
-/// relative value is ignored, as the XDG spec says; `None` without either.
+/// An XDG base folder: `var` (XDG_STATE_HOME, XDG_CONFIG_HOME) when it is
+/// absolute, else `$HOME/<fallback>`. A relative value is ignored, as the XDG
+/// spec says; `None` without either. The one rule for both homes (#1508).
+pub fn xdg_dir(var: Option<&str>, home: Option<&str>, fallback: &str) -> Option<PathBuf> {
+    match (var, home) {
+        (Some(s), _) if s.starts_with('/') => Some(PathBuf::from(s)),
+        (_, Some(h)) if h.starts_with('/') => Some(Path::new(h).join(fallback)),
+        _ => None,
+    }
+}
+
+/// `$XDG_STATE_HOME/tmux-cockpit/store`, else `$HOME/.local/state/...`, by [`xdg_dir`].
 pub fn root_from(state_home: Option<&str>, home: Option<&str>) -> Option<PathBuf> {
-    let base = match (state_home, home) {
-        (Some(s), _) if s.starts_with('/') => PathBuf::from(s),
-        (_, Some(h)) if h.starts_with('/') => Path::new(h).join(".local/state"),
-        _ => return None,
-    };
-    Some(base.join("tmux-cockpit/store"))
+    Some(xdg_dir(state_home, home, ".local/state")?.join("tmux-cockpit/store"))
 }
 
 /// One file per key under a 0700 folder: a version line, `rev <n>`, the value
@@ -263,27 +268,40 @@ impl LocalStore {
     /// leftover is removed first. 0600 is passed to the create, which a umask
     /// can only narrow; fsync, then a rename the old file is replaced by whole.
     fn replace(&self, key: &Key, text: &str) -> Result<(), PutError> {
-        let (tmp, path) = (self.temp_path(key), self.path(key));
-        match std::fs::remove_file(&tmp) {
-            Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(at(&tmp)(e)),
-            _ => {}
-        }
-        let written = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(&tmp)
-            .and_then(|mut f| f.write_all(text.as_bytes()).and_then(|_| f.sync_all()))
-            .map_err(at(&tmp))
-            .and_then(|_| std::fs::rename(&tmp, &path).map_err(at(&path)));
-        if written.is_err() {
-            let _ = std::fs::remove_file(&tmp);
-        }
-        written?;
-        // The rename reaches the disk with the folder's own fsync.
-        File::open(&self.root).and_then(|d| d.sync_all()).map_err(at(&self.root))
+        replace_file(&self.root, &self.temp_path(key), &self.path(key), text.as_bytes())
+            .map_err(|(path, error)| PutError::Io { path, error })
     }
+}
+
+/// `bytes` as the whole of `path` in `dir`, through `tmp` beside it: a killed
+/// writer's leftover `tmp` is removed first. 0600 is passed to the create, which a
+/// umask can only narrow; fsync, then a rename the old file is replaced by whole.
+/// The error names the path it failed at. The caller keeps `tmp` to one writer:
+/// the store under the key's lock, `ask::rules::accept` by its own name (#1508).
+pub fn replace_file(dir: &Path, tmp: &Path, path: &Path, bytes: &[u8]) -> Result<(), (PathBuf, io::Error)> {
+    let at = |p: &Path| {
+        let p = p.to_path_buf();
+        move |e: io::Error| (p, e)
+    };
+    match std::fs::remove_file(tmp) {
+        Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(at(tmp)(e)),
+        _ => {}
+    }
+    let written = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(tmp)
+        .and_then(|mut f| f.write_all(bytes).and_then(|_| f.sync_all()))
+        .map_err(at(tmp))
+        .and_then(|_| std::fs::rename(tmp, path).map_err(at(path)));
+    if written.is_err() {
+        let _ = std::fs::remove_file(tmp);
+    }
+    written?;
+    // The rename reaches the disk with the folder's own fsync.
+    File::open(dir).and_then(|d| d.sync_all()).map_err(at(dir))
 }
 
 /// The last revision a put wrote for the key, kept in its lock file; 0 when

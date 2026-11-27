@@ -14,7 +14,7 @@ fn panes() -> Vec<data::Pane> {
     }
 }
 
-const USAGE: &str = "cockpit-tui board [--select %N] [--note <file>] | pick | files <dir> [--select <name>] [--hidden] [--ignored] [--filter <text>] | branch [-C <dir>] | info [--text|--json] %N | workdir [--source] %N | pane <name> | label %N | sessions [--needs] [--current $N] | panel %N [--resume <state> --last ok|failed:<why>|hidden | --ask <file> <a> <b>] | view [--line N] [--] <file> | basket add %N <file> | --rows | --json | --version | -h";
+const USAGE: &str = "cockpit-tui board [--select %N] [--note <file>] | pick | files <dir> [--select <name>] [--hidden] [--ignored] [--filter <text>] | branch [-C <dir>] | info [--text|--json] %N | workdir [--source] %N | pane <name> | label %N | sessions [--needs] [--current $N] | panel %N [--resume <state> --last ok|failed:<why>|hidden | --ask <file> <a> <b>] | view [--line N] [--] <file> | basket add %N <file> | ask-rules check|accept | --rows | --json | --version | -h";
 
 fn unix_now() -> u64 {
     std::time::SystemTime::now()
@@ -171,6 +171,8 @@ fn main() {
         // the markdown viewer (#283): prints `edit <line>` on stdout, as pick prints its key
         Some("view") => std::process::exit(cockpit_tui::mdview::main(&args[1..])),
         Some("basket") => std::process::exit(cockpit_tui::basket::main(&args[1..])),
+        // the owner's auto-answer rules (#1508): check them, or accept the file as it is
+        Some("ask-rules") => std::process::exit(cockpit_tui::ask::rules::main(&args[1..])),
         Some("panel") => {
             panel(&args[1..]);
             None

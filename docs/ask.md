@@ -45,7 +45,7 @@ Rust, since AGENTS.md rule 5 forbids code with no caller.
 | `ask::popup` | #1506, submit #1507 | `Popup::open(ask: Ask) -> Popup`, `key(&mut self, k: KeyEvent) -> Step`, `Step { Stay, Close, Submit(Answer) }`, `render(&self, f: &mut Frame, area: Rect, th: &Theme)`. Each question is drawn by `chrome::question` (see "One question view"). |
 | `ask::answer` | #1507 | `Answer { use_id: String, picks: Vec<Vec<usize>> }`. `put(store: &dyn Store, session: &str, a: &Answer) -> Result<Revision, PutError>`. `answers(ask: &Ask, picks: &[Vec<usize>]) -> Option<Map<String, Value>>`. `hook(payload: &Value) -> Option<String>`, the decision JSON, run as `cockpit-tui ask-hook`. |
 | `data::transcript` | #1507, after #1504 | `ask_state(path: &Path, input: &Value) -> AskState`, the hook's lookup. `AskState { NotYet, Open { use_id: String }, Closed { use_id: String } }`: the newest AskUserQuestion `tool_use` whose `input` equals `input`, and whether a `tool_result` for its id follows it. The hook calls it on each look (see "What the payload holds"). |
-| `ask::rules` | #1508 | The rules vocabulary, which `ask::tags` and `ask::facts` use: `ActionKind { Merge, CleanupLane, ContinueQueue }`, the one fixed action set. `Pred`, the closed predicate list (see "The rules file"). `Facts = BTreeMap<Pred, bool>`, a fact set, where an absent predicate is unknown and fails every rule that needs it. And the file: `load(rules: &Path, accepted: &Path) -> Rules`, which fails closed. `Rule { id, action: ActionKind, when: Vec<Pred>, mode: Mode, cap_per_hour: u32, examples: Examples }`, `Mode { Shadow, Live }`, `Examples { matching: Vec<Facts>, not_matching: Vec<Facts> }`. `accept(rules: &Path, accepted: &Path) -> Result<Diff, Error>`. CLI: `cockpit-tui ask-rules check` and `accept`. |
+| `ask::rules` | #1508 | The rules vocabulary, which `ask::tags` and `ask::facts` use: `ActionKind { Merge, CleanupLane, ContinueQueue }`, the one fixed action set. `Pred`, the closed predicate list (see "The rules file"). `Facts = BTreeMap<Pred, bool>`, a fact set, where an absent predicate is unknown and fails every rule that needs it. And the file: `load(rules: &Path, accepted: &Path) -> Rules`, which fails closed. `Rules { file: Result<(), Off>, rules: Vec<(String, Result<Rule, Off>)> }`, where `Off` is the reason and every rule is off while `file` is an error; `Rules::on()` lists the rules that are on. `Rule { id, action: ActionKind, when: Vec<Pred>, mode: Mode, cap_per_hour: u32, examples: Examples }` and `Rule::matches(&Facts) -> bool`, `Mode { Shadow, Live }`, `Examples { matching: Vec<Facts>, not_matching: Vec<Facts> }`. `accept(rules: &Path, accepted: &Path, yes: impl FnOnce(&Diff) -> bool) -> Result<Diff, Error>`: it reads the file once, refuses it unless every rule is on, asks `yes` with the diff, and writes those same bytes (#1508 added `yes`, so a file edited between the diff and the yes is never copied unseen). `paths_from(config_home, state_home, home)` gives both paths by `store::xdg_dir`. CLI: `cockpit-tui ask-rules check` (one line per rule, exit 0 only when every rule is on) and `accept`. |
 | `ask::facts` | #1509 | `read(action: &tags::Action, pane: &Pane) -> rules::Facts`, every fact read at the moment of acting. A fact it cannot read is left out. |
 | `ask::never` | #1509 | `refuses(ask: &Ask, action: Option<&tags::Action>, facts: &rules::Facts) -> Option<Never>`, `Never` holding the six items of "The never-list". |
 | `ask::shadow` | #1510 | `evaluate(ask: &Ask, rules: &Rules, facts: &rules::Facts) -> Verdict`, `Verdict { Would(Answer), Refused(Never), NoRule }`. The promotion count and the hourly cap are read from the log, so they have one source. |
@@ -209,7 +209,10 @@ gives `accept` a real diff, which a hash could not.
 - The accepted copy is `$XDG_STATE_HOME/tmux-cockpit/ask-rules.accepted.json`, with
   `~/.local/state` by default, mode 0600. Only `cockpit-tui ask-rules accept` writes it. It
   prints the diff between the copy and the file, then copies the file's bytes on the owner's
-  yes.
+  yes, read from stdin. It refuses a file in which any rule is off. It writes through
+  `store::replace_file`, the store's own writer.
+- Both files are read without following a symlink, checked on the open file, and refused
+  over 64 KiB or 2000 lines.
 - Every rule is off while the file's bytes differ from the copy's, and while there is no copy.
   So any edit turns every rule off until the owner accepts it.
 - The cockpit never writes the rules file. A promotion (D5) is the owner's own edit of that
@@ -242,14 +245,16 @@ The file holds one object:
 - `note` is free text for the owner, since JSON has no comments. The cockpit never matches on
   it and never logs it.
 - `action` is one of the fixed set (`merge`, `cleanup-lane`, `continue-queue`).
-- `when` lists names from the closed predicate list below. A rule matches a fact set when
-  every predicate it names is true there. An unknown name turns the rule off. No predicate
+- `when` lists names from the closed predicate list below, at least one. A rule matches a
+  fact set when every predicate it names is true there. An unknown name turns the rule
+  off. No predicate
   reads question text (R6).
 - `mode` is `shadow` or `live`. Every new rule starts in `shadow` (R7).
-- `cap_per_hour` defaults to D6's 3. `ask::rules` reads it, and `ask::shadow` counts it from
+- `cap_per_hour` defaults to D6's 3 and must be 1 to 60, or the rule is off. `ask::rules`
+  reads it, and `ask::shadow` counts it from
   the log (#1510).
 - `examples` holds fact sets, `match` for those the rule must match and `no_match` for those
-  it must not. Either kind failing turns the rule off.
+  it must not, at least one of each. Either kind failing turns the rule off.
 - An unknown key anywhere refuses the whole file, as `contracts/README.md` treats payloads.
 
 `ask::rules` (#1508) owns the closed predicate list, so it can check names and run examples
@@ -267,7 +272,8 @@ action tag names:
 A child that needs another predicate amends this table and `Pred` together.
 
 The three first entries are merge after review and CI, clean up a merged lane, and continue
-the queue, all in `shadow`.
+the queue, all in `shadow`. They ship in `examples/ask-rules.json`, which the owner copies to
+the rules file's path, sets to 0600 and accepts, since the cockpit never writes that file.
 
 ## The log
 
@@ -337,7 +343,7 @@ As the owner approved them in #1500 on 2026-11-26, with the rulings recorded sin
 | child | files |
 |-------|-------|
 | #1504 | `tui/src/ask.rs`, `tui/src/ask/model.rs`, `tui/src/data/transcript.rs` (`open_ask`), `tui/src/lib.rs`, the docs/tui.md Modules row for `ask` |
-| #1508 | `tui/src/ask/rules.rs`, `tui/src/main.rs` (`ask-rules`) |
+| #1508 | `tui/src/ask/rules.rs`, `tui/src/main.rs` (`ask-rules`), `tui/src/store.rs` (`xdg_dir`, `replace_file`), `tui/tests/ask_rules_cli.rs`, `examples/ask-rules.json`, this page, the docs/tui.md CLI line and `ask` Modules row |
 | #1505 | `tui/src/ask/tags.rs`, `skills/cockpit-ask/SKILL.md` |
 | #1509 | `tui/src/ask/facts.rs`, `tui/src/ask/never.rs` |
 | #1516 | `tui/src/chrome.rs`, `tui/src/panel/view.rs`, the docs/tui.md Modules row for `chrome` |
