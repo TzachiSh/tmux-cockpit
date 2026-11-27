@@ -12599,8 +12599,8 @@ echo "== own_tmpfile takes mktemp's answer only as a new, empty file of the user
 # own_tmpdir rows above, own_tmpfile_why names the first check that refused, in a fixed order,
 # so each row is one only its own check refuses first: a check taken out moves its row on to the
 # next check, or to accepted. <var> holds a stale value before each call, and a refusal must
-# leave it empty: install.sh's EXIT trap removes what it names. The helper removes nothing; each
-# answer is judged from a cwd under scratch.
+# leave it empty: install.sh's EXIT trap removes what it names. A refusal removes only an empty
+# file of the user's (#1587, the block below); each answer is judged from a cwd under scratch.
 #   fail    mktemp exits 1                 ''     an empty answer, exit 0
 #   nope/f  a folder that does not exist   link   a symlink to an empty 0600 file of the user's
 #   fifo    a fifo of mode 0600            full   a 0600 file with a line in it
@@ -12646,7 +12646,7 @@ OFLS
 chmod +x "$OF/bin/ls"
 is "own_tmpfile: an empty 0600 file whose ls fails is refused by the mode check: it fails closed" \
    "1 mode []" "$(of_run "$OF/e")"
-rm -f "$OF/bin/ls"
+rm -f "$OF/bin/ls"; of_new "$OF/e"   # that refusal removed it, and the rows below answer it
 is "own_tmpfile: a relative answer naming an empty 0600 file of the user's is taken, absolute" \
    "0  [$(cd "$OF/cwd" && pwd -P)/rel]" "$(of_run rel)"
 is "own_tmpfile: an empty 0600 file of the user's, named absolute, is taken" \
@@ -12666,6 +12666,70 @@ for of_a in '' 1x _ot_a; do
        "${of_o##*$'\n'}|$(printf '%s\n' "$of_o" | grep -c '^own_tmpfile: <var>')"
 done
 rm -rf "$OF"; unset -f of_run of_new; unset OF of_c of_a of_o of_v
+
+echo "== own_tmpfile removes the file it refused only when that loses nothing (#1587) =="
+# A refusal empties <var>, so the caller's EXIT trap cannot remove the file mktemp made, and
+# own_tmpfile removes it itself: only an empty regular file of the user's that is no symlink,
+# tested with bash's own tests on the answer as mktemp gave it. A missing dirname or ls refuses
+# with no attacker at all, and the file still goes. A symlink, a fifo and a file with a line in
+# it stay as they were. Each row runs from a cwd under scratch, with an empty TMPDIR.
+#   nod, nols  PATH holds the real mktemp and the tools own_tmpfile runs, less dirname or ls
+#   open  an empty file of mode 0644      two   an empty 0600 file with a second name
+#   link  a symlink to an empty 0600 file of the user's
+#   fifo  a fifo of mode 0600             full  a 0600 file with a line in it
+#   /proc/version  an empty regular file of root's on Linux, under a logging rm
+OR=$(mktmpd); mkdir -p "$OR/bin" "$OR/cwd" "$OR/nod" "$OR/nols"
+or_bash=$(command -v bash)
+for or_t in mktemp dirname basename ls rm; do
+    or_p=$(PATH=/usr/bin:/bin command -v "$or_t")
+    [ "$or_t" = dirname ] || ln -s "$or_p" "$OR/nod/$or_t"
+    [ "$or_t" = ls ] || ln -s "$or_p" "$OR/nols/$or_t"
+done
+or_new() { : > "$OR/$1" && chmod "$2" "$OR/$1"; }   # <name> <mode>: an empty file of the user's
+or_new open 644; or_new two 600; ln "$OR/two" "$OR/two.2"; or_new e 600; ln -s "$OR/e" "$OR/link"
+mkfifo -m 600 "$OR/fifo"; or_new full 600; echo keep > "$OR/full"
+or_has() { if [ -e "$OR/$1" ] || [ -L "$OR/$1" ]; then echo kept; else echo gone; fi; }
+# <PATH> -> "<status> <why> [<var>]|<files left in TMPDIR>". The stub mktemp in $OR/bin prints
+# OR_ANSWER; nod and nols run the real one.
+or_run() {
+    rm -rf "$OR/t"; mkdir "$OR/t"
+    printf '#!/bin/sh\nprintf "%%s\\n" %s\n' "$(tq "${OR_ANSWER-}")" > "$OR/bin/mktemp"
+    chmod +x "$OR/bin/mktemp"
+    (cd "$OR/cwd" && env PATH="$1" TMPDIR="$OR/t" "$or_bash" -c \
+        '. "$1"; v=stale; own_tmpfile v; printf "%s %s [%s]" "$?" "$own_tmpfile_why" "$v"' _ \
+        "$DIR/scripts/lib/tmpdir.sh" 2>/dev/null)
+    printf '|%s' "$(find "$OR/t" -mindepth 1 | wc -l | tr -d ' ')"
+}
+is "own_tmpfile refusal: with no dirname on PATH, the resolve check, and the file is gone" \
+   "1 resolve []|0" "$(or_run "$OR/nod")"
+is "own_tmpfile refusal: with no ls on PATH, the mode check, and the file is gone" \
+   "1 mode []|0" "$(or_run "$OR/nols")"
+is "own_tmpfile refusal: an empty 0644 file of the user's, the mode check, and it is gone" \
+   "1 mode []|0|gone" "$(OR_ANSWER=$OR/open or_run "$OR/bin:$PATH")|$(or_has open)"
+is "own_tmpfile refusal: an empty 0600 file with two names, the links check, that name is gone" \
+   "1 links []|0|gone|kept" "$(OR_ANSWER=$OR/two or_run "$OR/bin:$PATH")|$(or_has two)|$(
+   or_has two.2)"
+is "own_tmpfile refusal: a symlink, the symlink check, and the link and its target stay" \
+   "1 symlink []|0|kept|kept" "$(OR_ANSWER=$OR/link or_run "$OR/bin:$PATH")|$(or_has link)|$(
+   or_has e)"
+is "own_tmpfile refusal: a fifo, the regular check, and the fifo stays" \
+   "1 regular []|0|kept" "$(OR_ANSWER=$OR/fifo or_run "$OR/bin:$PATH")|$(or_has fifo)"
+is "own_tmpfile refusal: a 0600 file with a line in it, the nonempty check, and it stays" \
+   "1 nonempty []|0|keep" "$(OR_ANSWER=$OR/full or_run "$OR/bin:$PATH")|$(cat "$OR/full")"
+# Refused at owner, an empty regular file of another user's is not removed. The real rm fails on
+# procfs, so a logging rm in a PATH dir of the row's own sees any call. As root, or with no such
+# file, the row is skipped.
+if [ -f /proc/version ] && [ ! -s /proc/version ] && [ ! -O /proc/version ]; then
+    mkdir -p "$OR/rml"
+    printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> %s\n' "$(tq "$OR/rm.log")" > "$OR/rml/rm"
+    chmod +x "$OR/rml/rm"
+    is "own_tmpfile refusal: an empty file of root's, the owner check, and no rm runs" \
+       "1 owner []|0|" "$(OR_ANSWER=/proc/version or_run "$OR/rml:$OR/bin:$PATH")|$(
+       cat "$OR/rm.log" 2>/dev/null)"
+else
+    skip_ "own_tmpfile refusal: no empty /proc/version of another user's (root?), no owner row"
+fi
+rm -rf "$OR"; unset -f or_new or_has or_run; unset OR or_bash or_t or_p
 
 echo "== board, panel, tm and tui-fetch rm -rf no dir their mktemp did not make (#947) =="
 # Each armed rm -rf on whatever mktemp -d answered. Here a mktemp earlier on PATH answers a

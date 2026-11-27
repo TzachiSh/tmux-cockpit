@@ -25,6 +25,8 @@
 # own_tmpdir, and own_tmpfile_why names the first check that refused: mktemp answer resolve
 # symlink regular owner nonempty mode links. The same limits hold: no defence against a race,
 # and an empty 0600 file of the user's that was there before passes; taking it loses nothing.
+# A refusal after mktemp answered removes the answer only when that loses nothing too: an empty
+# regular file of the user's that is no symlink (#1587).
 own_tmpdir_why='' own_tmpfile_why=''
 
 # <caller> <var>: 0 when <var> names a variable own_tmpdir or own_tmpfile can set. Their own
@@ -80,6 +82,26 @@ own_tmpfile() {               # <var> [mktemp args...]
     printf -v "$_ot_v" '%s' ''
     own_tmpfile_why=mktemp;   _ot_a=$(mktemp "$@") || return 1
     own_tmpfile_why=answer;   [ -n "$_ot_a" ] || return 1
+    if ! _own_tmpfile_ok; then
+        # <var> is empty, so no caller's trap removes the file mktemp made: it goes here, but
+        # only an empty regular file of the user's that is no symlink. Empty is the bar: removing
+        # such a file loses nothing, as taking one does, while a file with content may be one of
+        # the user's that mktemp named. A symlink is never followed, and a fifo or another user's
+        # file stays. Bash's own tests, on the answer as mktemp gave it, so a missing dirname or
+        # ls still removes the file; a missing rm leaves it. As above, no defence against a race:
+        # the name can change between these tests and the rm.
+        [ ! -L "$_ot_a" ] && [ -f "$_ot_a" ] && [ -O "$_ot_a" ] && [ ! -s "$_ot_a" ] \
+            && rm -f -- "$_ot_a"
+        return 1
+    fi
+    own_tmpfile_why=''
+    printf -v "$_ot_v" '%s' "$_ot_r"
+}
+
+# own_tmpfile's checks on mktemp's answer _ot_a, from resolve on, in own_tmpfile's locals: 0
+# with _ot_r the physical path, 1 when a check refused, own_tmpfile_why naming it.
+# shellcheck disable=SC2034  # own_tmpfile_why is read by own_tmpfile's caller
+_own_tmpfile_ok() {
     # The folder resolved, CDPATH cleared, and the last name put back. Nothing cds to the
     # answer itself, so a leading - needs no check of its own. The folder and its parents may
     # be links (macOS /tmp and /var are): they are resolved, not refused.
@@ -100,6 +122,4 @@ own_tmpfile() {               # <var> [mktemp args...]
     # One link: a second name for the file would take the caller's writes.
     own_tmpfile_why=links;    _ot_l=${_ot_l#"${_ot_l%% *}"}; _ot_l=${_ot_l#"${_ot_l%%[! ]*}"}
     [ "${_ot_l%% *}" = 1 ] || return 1
-    own_tmpfile_why=''
-    printf -v "$_ot_v" '%s' "$_ot_r"
 }
