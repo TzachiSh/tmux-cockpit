@@ -30403,7 +30403,7 @@ echo "== cockpit-msg: send, read and who over a private store (#1575) =="
 if need_tmux "cockpit-msg"; then :; else
 MG=$(cd "$(mktmpd)" && pwd -P); MGS="cockpit-mg-$$"; SOCKS="$SOCKS $MGS"
 MGST="$MG/state/tmux-cockpit"
-mkdir -p "$MG/bin" "$MG/od" "$MG/nocat" "$MG/a" "$MG/b" "$MG/c" "$MG/n" "$MG/in"
+mkdir -p "$MG/bin" "$MG/od" "$MG/nocat" "$MG/big" "$MG/a" "$MG/b" "$MG/c" "$MG/n" "$MG/in"
 git init -q -b main "$MG/a" >/dev/null 2>&1; git init -q -b feat "$MG/c" >/dev/null 2>&1
 cat > "$MG/bin/cockpit-tui" <<STUB
 #!/bin/sh
@@ -30442,13 +30442,15 @@ for MGI in 2 3 4 5; do printf 'body %s\n' "$MGI" > "$MG/in/b$MGI"; done
 # set, empty too, stands in for the server's TMUX. The files are read by builtins, since one
 # row runs it with the cat above first on PATH. SIGPIPE is ignored for the run, as par.sh and
 # the CI runners ignore it: a write into a pipe whose reader is gone is then a stderr line
-# under every runner, only.sh's too (#1575).
+# under every runner, only.sh's too (#1575). stderr is read from a pipe to its end, so a
+# process the run left behind is waited for while it still writes there.
 mg() {                        # <pane> <args...>
-    ( trap '' PIPE; cd "$MG/in" && env TMUX="${MG_TMUX-$MGSOCK,0,0}" TMUX_PANE="$1" \
+    local e rc
+    e=$(trap '' PIPE; cd "$MG/in" && env TMUX="${MG_TMUX-$MGSOCK,0,0}" TMUX_PANE="$1" \
         XDG_STATE_HOME="$MG/state" COCKPIT_TUI_BIN="$MG/bin/cockpit-tui" \
         GIT_CEILING_DIRECTORIES="$MG" timeout 20 "$DIR/scripts/cockpit-msg" "${@:2}" \
-        </dev/null >"$MG/o" 2>"$MG/e" )
-    printf '%s|%s' "$?" "$(<"$MG/e")"
+        </dev/null 2>&1 >"$MG/o"); rc=$?
+    printf '%s|%s' "$rc" "$e"
 }
 mg_send() { mg "$MGA" send --session "$MGHA" "$MGHB" "$@"; }   # <summary> <body>: A to B
 mg_read() { mg "$MGB" read --session "$MGHB" "$1"; }            # <msg_id>, as B
@@ -30600,6 +30602,32 @@ is "a copied envelope is no new message: refused, and no marker made for it" \
 is "a write that fails leaves no temp file in the store" \
    "1|cockpit-msg: cannot write in $MGST/refs|0" \
    "$(PATH="$MG/nocat:$PATH" mg_send "$MG/in/sum" "$MG/in/body")|$(mg_tmp)"
+
+# The published sessions as a list longer than a pipe holds, the receiver's line first: about
+# 151 KB from published(), over twice a 64 KiB pipe buffer, the most Linux with 4 KiB pages and
+# macOS give one. A send that stopped reading at its match would leave published() writing into
+# a pipe nobody reads, and with SIGPIPE ignored each write after that is a "write error" line
+# on stderr. For this one run a tmux first on PATH answers the caller's session and the list.
+cat > "$MG/big/tmux" <<STUB
+#!/bin/sh
+case \$1 in
+display-message) echo 3f2a9c0d-1e4b-4a67-8c9d-0e1f2a3b4c5d ;;
+list-panes) cat "$MG/panes" ;;
+*) exit 1 ;;
+esac
+STUB
+chmod +x "$MG/big/tmux"
+{ printf '%%1\037%s\n' 7A1B2C3D-4E5F-4061-8273-94A5B6C7D8E9
+  for ((MGI = 2; MGI <= 4001; MGI++)); do
+      printf '%%%s\037%s\n' "$MGI" 0c4f2e9a-7b1d-4e58-9a6b-1c2d3e4f5a6b; done; } > "$MG/panes"
+MGR=$(PATH="$MG/big:$PATH" mg_send "$MG/in/sum" "$MG/in/body")
+# Its first line, its line count, and the bytes published() writes: 4 fewer a line than the
+# list's, a UUID's dashes.
+is "send reads a session list longer than a pipe holds to its end: nothing on stderr" \
+   "0||1|over 128 KiB" \
+   "${MGR%%$'\n'*}|$(printf '%s' "$MGR" | grep -c '')|$(
+      [ $(( $(wc -c < "$MG/panes") - 4 * $(wc -l < "$MG/panes") )) -gt 131072 ] &&
+      echo over 128 KiB)"
 
 # who: A, B (its folder cockpit-tui's answer, its upper-case UUID in lower case) and C (no
 # repo); N and X publish no session.
