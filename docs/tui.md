@@ -1548,14 +1548,16 @@ not wired into Explain yet.
   shows after a `↳`: under the step before it, or under the header when it
   comes before the first step. A long note wraps onto more rows.
 - **Width.** No line is wider than the width, measured with `unicode-width` by
-  grapheme cluster. Bidi controls, U+2028/U+2029 and control characters never
-  reach a line. `parse` tidies each name, label and note as it reads it:
-  `action::sanitize` drops those characters and a tab becomes a space. `draw`
-  tidies each drawn line the same way, turns any control left (a newline in a
-  field set by hand) into the tier's replacement mark, then cuts the line to
-  the width, so a `Flow` built by hand, its fields set directly, is safe too;
-  on a parsed flow that second pass changes nothing (#955). Nothing panics,
-  even on a `Flow` built by hand.
+  grapheme cluster. Terminal escape sequences, bidi controls, U+2028/U+2029 and
+  control characters never reach a line. `parse` tidies each name, label and
+  note as it reads it: `action::strip_escapes` takes each escape sequence out
+  whole, its parameters or payload with it (#1530), before `action::sanitize`
+  drops those characters, and a tab becomes a space. `draw` tidies each drawn
+  line the same way, turns any control left (a newline in a field set by hand)
+  into the tier's replacement mark, then cuts the line to the width, so a
+  `Flow` built by hand, its fields set directly, is safe too; on a parsed flow
+  that second pass changes nothing (#955). Nothing panics, even on a `Flow`
+  built by hand.
 - **Glyphs.** `render`, `draw` and `not_drawn` take the caller's
   `theme::Glyphs`, and every mark comes from it; `flow.rs` reads no env (#1529).
   Under `COCKPIT_GLYPHS=ascii` an ASCII source draws pure ASCII: the status

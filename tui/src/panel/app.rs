@@ -1077,7 +1077,7 @@ impl App {
         (self.draft, self.cur) = (String::new(), 0);
         // the model's text: no control, OSC or bidi character goes in the draft (review-510)
         let bidi = crate::pick::is_bidi;
-        let plain = pasted(&strip_escapes(&text), true);
+        let plain = pasted(&super::action::strip_escapes(&text), true);
         let clean: String = plain.chars().filter(|&c| !bidi(c)).collect();
         let n = put(&mut self.draft, &mut self.cur, &cut_prefill(clean.trim_end()));
         self.cap_note(n);
@@ -2409,38 +2409,6 @@ fn cut_prefill(text: &str) -> String {
         .position(|x| x.chars().all(char::is_whitespace));
     let keep = space.map_or(head.len(), |k| head.len() - 1 - k);
     format!("{}…", head[..keep].concat().trim_end())
-}
-
-/// A terminal's escape sequences out whole, not only their ESC: a CSI
-/// (`ESC [` to its final byte), a string (OSC `ESC ]`, DCS `ESC P`, APC `ESC _`,
-/// PM `ESC ^`, SOS `ESC X`) to BEL or `ESC \` with its payload (#603; one
-/// never terminated ends at the next newline or CR, which stays, #588), and
-/// any other `ESC x` pair (review-510's NIT). What is left is text.
-fn strip_escapes(s: &str) -> String {
-    let (mut out, mut it) = (String::new(), s.chars().peekable());
-    while let Some(c) = it.next() {
-        if c != '\u{1b}' {
-            out.push(c);
-            continue;
-        }
-        match it.next() {
-            Some('[') => while it.next().is_some_and(|x| !('@'..='~').contains(&x)) {},
-            Some(']' | 'P' | '_' | '^' | 'X') => {
-                while let Some(x) = it.next() {
-                    if x == '\u{7}' || (x == '\u{1b}' && it.next_if_eq(&'\\').is_some()) {
-                        break;
-                    }
-                    // never terminated: it ends at the line, which stays (#588)
-                    if x == '\n' || x == '\r' {
-                        out.push(x);
-                        break;
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    out
 }
 
 /// How far back [`cut_prefill`] looks for a space.

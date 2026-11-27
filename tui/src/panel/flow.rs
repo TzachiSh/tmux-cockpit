@@ -117,11 +117,13 @@ impl Flow {
     }
 }
 
-/// Untrusted text as [`parse`] keeps it: [`action::sanitize`](super::action::sanitize)
-/// drops bidi controls, U+2028/U+2029 and every control but tab and newline;
-/// then a tab is a space. A parsed line holds no newline, so no control is left.
+/// Untrusted text as [`parse`] keeps it: [`action::strip_escapes`](super::action::strip_escapes)
+/// takes each terminal escape sequence out whole, payload and all (#1530);
+/// [`action::sanitize`](super::action::sanitize) then drops bidi controls,
+/// U+2028/U+2029 and every control but tab and newline; then a tab is a
+/// space. A parsed line holds no newline, so no control is left.
 fn tidy(s: &str) -> String {
-    super::action::sanitize(s).replace('\t', " ")
+    super::action::sanitize(&super::action::strip_escapes(s)).replace('\t', " ")
 }
 
 /// [`tidy`], then any control left (a newline in a field set by hand) is the
