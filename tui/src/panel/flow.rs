@@ -29,10 +29,13 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::theme::Glyphs;
 
-/// The ladder needs this many columns...
+/// The ladder needs this many columns, whatever its slot...
 pub const LADDER_MIN_WIDTH: usize = 60;
-/// ...and at most this many actors; anything else is a list.
-pub const LADDER_MAX_ACTORS: usize = 4;
+/// ...and this many columns an actor for its normal spacing...
+pub const LADDER_SLOT: usize = 12;
+/// ...or this many for its compact one, drawn by the same rules; a narrower
+/// slot is a list (#1538).
+pub const COMPACT_SLOT: usize = 10;
 
 /// A step's status, from its `%% status:` line.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -234,10 +237,12 @@ pub struct Flow {
     pub autonumber: Option<(usize, usize)>,
 }
 
-/// How [`draw`] lays a flow out.
+/// How [`draw`] lays a flow out: the ladder, the compact ladder (a narrower
+/// slot, drawn by the same rules), or the list (#1538).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Shape {
     Ladder,
+    Compact,
     List,
 }
 
@@ -590,13 +595,29 @@ pub fn parse(src: &str) -> Result<Flow, String> {
     Ok(f)
 }
 
-/// The ladder at [`LADDER_MIN_WIDTH`] or more with at most
-/// [`LADDER_MAX_ACTORS`], otherwise the list.
+/// The ladder's gutter (the current step's mark and the status), its time
+/// column, and the slot each actor gets between them at width `w`, split
+/// evenly and at least 2. [`shape`] picks by this slot and [`ladder`] draws in
+/// it (#1538).
+fn slots(f: &Flow, w: usize) -> (usize, usize, usize) {
+    let gutter = if f.has_status() { 3 } else { 1 };
+    let right = if f.steps.iter().any(|s| s.time.is_some()) { 6 } else { 0 };
+    (gutter, right, (w.saturating_sub(gutter + right) / f.actors.len().max(1)).max(2))
+}
+
+/// The ladder at [`LADDER_MIN_WIDTH`] or more when each actor gets a slot of
+/// [`LADDER_SLOT`] columns, the compact ladder when it gets [`COMPACT_SLOT`],
+/// otherwise the list. The slot is the one the ladder draws in: the width
+/// less the gutter and the time column, split evenly between the actors
+/// (#1538).
 pub fn shape(f: &Flow, w: usize) -> Shape {
-    if w >= LADDER_MIN_WIDTH && f.actors.len() <= LADDER_MAX_ACTORS {
-        Shape::Ladder
-    } else {
+    let (_, _, slot) = slots(f, w);
+    if w < LADDER_MIN_WIDTH || slot < COMPACT_SLOT {
         Shape::List
+    } else if slot < LADDER_SLOT {
+        Shape::Compact
+    } else {
+        Shape::Ladder
     }
 }
 
@@ -925,9 +946,7 @@ fn parts(f: &Flow) -> Vec<(Part<'_>, usize)> {
 
 /// Actors across, two rows a step: the label, then the arrow under it.
 fn ladder(f: &Flow, w: usize, g: &Glyphs) -> Vec<String> {
-    let gutter = if f.has_status() { 3 } else { 1 };
-    let right = if f.steps.iter().any(|s| s.time.is_some()) { 6 } else { 0 };
-    let slot = (w.saturating_sub(gutter + right) / f.actors.len().max(1)).max(2);
+    let (gutter, right, slot) = slots(f, w);
     // One lifeline column an actor; a flow built by hand with no actor still has the first.
     let cols: Vec<usize> = (0..f.actors.len().max(1)).map(|i| gutter + slot * i + slot / 2).collect();
     let x = |i: usize| lifeline(&cols, i);
@@ -1150,11 +1169,11 @@ fn list(f: &Flow, w: usize, g: &Glyphs) -> Vec<String> {
     out
 }
 
-/// `f` at width `w`, in the [`shape`] the width and actor count pick, with
-/// the glyphs of tier `g`.
+/// `f` at width `w`, in the [`shape`] the width and the actors' slot pick,
+/// with the glyphs of tier `g`. The compact ladder draws as the ladder does.
 pub fn draw(f: &Flow, w: usize, g: &Glyphs) -> Vec<String> {
     let lines = match shape(f, w) {
-        Shape::Ladder => ladder(f, w, g),
+        Shape::Ladder | Shape::Compact => ladder(f, w, g),
         Shape::List => list(f, w, g),
     };
     // The layouts aim to fit; this makes it a guarantee. A Flow built by hand

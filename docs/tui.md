@@ -1576,10 +1576,14 @@ not wired into Explain yet.
   `accTitle`, `accDescr`, `links`, `link`, `properties`, `details` and
   `par_over`. `flow::render` then shows `flow::not_drawn`: `(not drawn:
   <why>)`, then the raw lines, each cut to the width.
-- **Ladder or list.** The ladder at 60 columns or more with at most 4 actors,
-  the numbered list otherwise. The ladder takes two rows a step, the label
-  above its arrow. A label is cut to end at least one blank column before the
-  next lifeline right of its step's left end, so it covers none and a step
+- **Ladder or list.** From 60 columns the ladder draws where its actors fit:
+  each gets an even slot of the width less the gutter (1 column, 3 with a
+  status) and the time column (6 with a time). A slot of 12 or more draws the
+  ladder, 10 or 11 the compact ladder, drawn by the same rules, and a narrower
+  slot, or a width under 60, the numbered list (#1538). The ladder takes two
+  rows a step, the label above its arrow. A label is cut to end at least one
+  blank column before the next lifeline right of its step's left end, so it
+  covers none and a step
   from A to C keeps its label between A and B (#1534). Past the last lifeline
   it may run to the time column, or to the edge when no step has a time, and
   inside a frame it ends a blank column before the frame's side. A self
