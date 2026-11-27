@@ -541,6 +541,26 @@ fn a_note_in_a_frame_slides_inside_its_sides() {
     assert_eq!(out[4], row, "{out:?}");
 }
 
+#[test]
+fn a_self_step_on_the_last_actor_keeps_inside_the_innermost_frame() {
+    // FRAMES' rerun, a self step on C inside three frames: its arrow row at three widths (#1558). With no
+    // status C's lifeline is at 53. At 61 the innermost side is at 56, so the row keeps to column 54 and the
+    // mark keeps its head alone; at 62 the side is at 57, so it keeps its turn and head. At 65 with a status
+    // and a time C's lifeline is at 52 and the side at 54, so no column is left for the mark.
+    let bare = FRAMES.replace("%% status: done 09:00\n", "").replace("%% status: running\n", "");
+    let gap = |n: usize| " ".repeat(n);
+    let want = [
+        format!(" │ │ │  │{0}│{0}│{0}│↩ │ │ │", gap(14)),
+        format!(" │ │ │  │{0}│{0}│{0}│╮↩ │ │ │", gap(14)),
+        format!("   │ │ │  │{0}│{0}│{0}│ │ │ │", gap(13)),
+    ];
+    let got: Vec<String> = [(bare.as_str(), 61), (bare.as_str(), 62), (FRAMES, 65)]
+        .into_iter()
+        .map(|(src, w)| flow::render(src, w, &UNI)[10].clone())
+        .collect();
+    assert_eq!(got, want);
+}
+
 // ------------------------------------------------- keep or drop each statement (#1537)
 
 #[test]
