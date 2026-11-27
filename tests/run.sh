@@ -22009,9 +22009,10 @@ is "a cwd named with #(...) is the directory, not a format" \
     "[$RSD/d#(touch \$RSPWN)][--resume][$SID]" "$(cat "$RSD/ran" 2>/dev/null)"
 
 # A session id that is no UUID never reaches a command line, whatever the pane
-# holds: the wrapper checks the shape itself, not only the board.
+# holds: the wrapper checks the shape itself, not only the board. One upper-case
+# letter is refused too, by lib/fmt.sh's is_session_id, the hook's rule (#1589).
 for bad in "x'; touch \$RSPWN; '" '$(touch $RSPWN)' "$(printf %s "$SID" | tr a-f A-F)" \
-    "$SID; touch \$RSPWN" ""; do
+    "${SID%c}C" "$SID; touch \$RSPWN" ""; do
     R=$(rs_agent "$bad")
     case "$(rs_run "resume $R" "$bad")" in
         '✕ cockpit: not resumed: the board named no session id') \
@@ -24564,12 +24565,36 @@ printf '{"session_id":"%s"}\n' "$SSU1" | env HOME="$SSH" "$DIR/scripts/agent-sta
 is "a payload with no transcript_path saves the session alone" "$SSU1 ." \
     "$(ss_opt session) .$(ss_opt transcript)"
 ss_clear
-for bad in sid-123 "../x" "#(touch $SSD/F)" "${SSU1}0" "${SSU1%?}" ""; do
+for bad in sid-123 "../x" "#(touch $SSD/F)" "${SSU1}0" "${SSU1%?}" "" "x$SSU1"; do
     ss "$bad" "$SSROOT/-p/$SSU1.jsonl"
     is "session_id '$bad' is not a UUID: not saved" "" "$(ss_opt session)"
 done
 is "and no command in it ran" "none" "$([ -e "$SSD/F" ] && echo ran || echo none)"
 ss_clear
+# #1589: the hook saves an id by lib/fmt.sh's is_session_id, the rule the board's resume reads
+# too. Claude writes lower-case hex: an id in upper case, or with one upper-case letter, is
+# not saved, so the board never shows an id its resume refuses.
+for bad in AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE "${SSU2%e}E"; do
+    ss "$bad" "$SSROOT/-p/$SSU2.jsonl"
+    is "session_id '$bad' is not lower-case hex: not saved (#1589)" "" "$(ss_opt session)"
+done
+ss $SSU2 "$SSROOT/-p/$SSU2.jsonl"
+is "and the same id in lower case is saved (#1589)" "$SSU2" "$(ss_opt session)"
+ss_clear
+# Spelled out, not a range: in a UTF-8 locale such as en_US, bash's regex [0-9] also matches
+# ², so a range saves an id holding one (#830, #1589).
+if SSLOC=$(utf8_loc); then
+    SSL=${SSU1/1/²}
+    ( export LOCPATH=$SSLOC LC_ALL=en_US.UTF-8; ss "$SSL" "$SSROOT/-p/$SSU1.jsonl" ) 2>/dev/null
+    is "in en_US.UTF-8 session_id '$SSL' is not saved: ² is no hex digit (#1589)" "" \
+        "$(ss_opt session)"
+    ( export LOCPATH=$SSLOC LC_ALL=en_US.UTF-8; ss $SSU1 "$SSROOT/-p/$SSU1.jsonl" ) 2>/dev/null
+    is "and in en_US.UTF-8 the id in ASCII digits is saved (#1589)" "$SSU1" "$(ss_opt session)"
+    ss_clear
+else
+    bad "agent-state session: a UTF-8 locale whose regex [0-9] matches ² loads (#1589)" \
+        "loaded" "none"
+fi
 ss $SSU1 "$SSROOT/-p/$SSU1.jsonl" ',"last_assistant_message":"SECRETREPLY","prompt":"SECRETPROMPT"'
 is "last_assistant_message and the prompt never reach a tmux option" "0" \
     "$(tmux show-options -p -t "$SSP" | grep -c SECRET)"
