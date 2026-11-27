@@ -8,8 +8,9 @@
 //! `autonumber`, `Note left of`, `right of` and `over` (the ladder draws a note
 //! where its place says, the list under its step), and a
 //! `%% status: <✓|●|○|✗|!|done|running|pending|failed|needs> [HH:MM]` line
-//! after a step. `loop`, `alt`, `opt`, `else` and `end` are dropped and their
-//! steps kept, and a ledger line after the steps names what was dropped.
+//! after a step. `loop`, `alt` and `opt` draw as frames around their steps, an
+//! `alt`'s `else` as a divider, at most [`MAX_FRAME_DEPTH`] deep, and a ledger
+//! line after the steps names what the drawing leaves out (#1535, #1536).
 //! Anything else is an `Err` naming the line, and [`render`] then shows
 //! [`not_drawn`]: the reason and the raw lines.
 //!
@@ -122,6 +123,49 @@ pub struct Step {
     pub notes: Vec<Note>,
 }
 
+/// A block that draws as a frame around its steps (#1536).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Block {
+    Loop,
+    Alt,
+    Opt,
+}
+
+impl Block {
+    /// The keyword that opens the block, as its frame's top rule shows it.
+    fn word(self) -> &'static str {
+        match self {
+            Block::Loop => "loop",
+            Block::Alt => "alt",
+            Block::Opt => "opt",
+        }
+    }
+}
+
+/// A place between drawn rows: after this many steps and this many notes of
+/// the last one, or of the notes before the first step when there is none.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub struct Spot {
+    pub steps: usize,
+    pub notes: usize,
+}
+
+/// A block's frame: its label, how many frames it sits inside, where it opens,
+/// each `else` divider with its label, and where it closes.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Frame {
+    pub kind: Block,
+    pub label: String,
+    pub depth: usize,
+    pub open: Spot,
+    pub dividers: Vec<(Spot, String)>,
+    pub close: Spot,
+}
+
+/// At most this many frames nest. A block deeper still draws its steps with
+/// no frame, and the ledger names the loss (#1536).
+pub const MAX_FRAME_DEPTH: usize = 3;
+
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct Flow {
     pub actors: Vec<Actor>,
@@ -133,6 +177,8 @@ pub struct Flow {
     /// What the drawing leaves out, one short name a kind in the order first
     /// met, for the ledger line (#1535).
     pub dropped: Vec<String>,
+    /// The frames, in the order their blocks open (#1536).
+    pub frames: Vec<Frame>,
     pub autonumber: bool,
 }
 
@@ -153,6 +199,12 @@ impl Flow {
             name: id.into(),
         });
         self.actors.len() - 1
+    }
+
+    /// Where the source read so far ends: after its steps and the last one's notes.
+    fn here(&self) -> Spot {
+        let (steps, notes) = (self.steps.len(), self.steps.last().map_or(self.lead.len(), |s| s.notes.len()));
+        Spot { steps, notes }
     }
 
     pub fn has_status(&self) -> bool {
@@ -235,8 +287,10 @@ const ARROWS: [(&str, Line, Head); 10] = [
     ("->", Line::Solid, Head::None),
 ];
 
-/// One line, trimmed and not empty, into `f`. `depth` counts open blocks.
-fn line(f: &mut Flow, l: &str, depth: &mut usize) -> Result<(), String> {
+/// One line, trimmed and not empty, into `f`. `open` holds each open block,
+/// outermost first, with its frame's index in `f.frames`, or none past
+/// [`MAX_FRAME_DEPTH`].
+fn line(f: &mut Flow, l: &str, open: &mut Vec<(Block, Option<usize>)>) -> Result<(), String> {
     if let Some(comment) = l.strip_prefix("%%") {
         let comment = comment.trim_start();
         // The key in any case: "%% Status: done" is a status, never a comment.
@@ -261,15 +315,42 @@ fn line(f: &mut Flow, l: &str, depth: &mut usize) -> Result<(), String> {
             f.actors[i].name = tidy(name);
         }
         "Note" | "note" => note(f, rest)?,
-        "loop" | "alt" | "opt" => {
-            // Its steps are drawn and its frame is not, so the ledger names it. An else goes with its alt.
-            record_drop(f, &format!("{word} frames"));
-            *depth += 1;
+        "else" => match open.last() {
+            Some(&(Block::Alt, frame)) => {
+                let at = f.here();
+                if let Some(fr) = frame.and_then(|i| f.frames.get_mut(i)) {
+                    fr.dividers.push((at, tidy(rest)));
+                }
+            }
+            _ => return Err("else outside an alt".into()),
+        },
+        "end" => {
+            let (_, frame) = open.pop().ok_or("end outside a block")?;
+            let at = f.here();
+            if let Some(fr) = frame.and_then(|i| f.frames.get_mut(i)) {
+                fr.close = at;
+            }
         }
-        "else" | "end" if *depth == 0 => return Err(format!("{word} outside a block")),
-        "else" => {}
-        "end" => *depth -= 1,
-        _ => step(f, l)?,
+        _ => match [Block::Loop, Block::Alt, Block::Opt].into_iter().find(|b| b.word() == word) {
+            Some(kind) if open.len() < MAX_FRAME_DEPTH => {
+                let at = f.here();
+                f.frames.push(Frame {
+                    kind,
+                    label: tidy(rest),
+                    depth: open.len(),
+                    open: at,
+                    dividers: vec![],
+                    close: at,
+                });
+                open.push((kind, Some(f.frames.len() - 1)));
+            }
+            Some(kind) => {
+                // Its steps are drawn and its frame is not, so the ledger names it.
+                record_drop(f, &format!("frames past depth {MAX_FRAME_DEPTH}"));
+                open.push((kind, None));
+            }
+            None => step(f, l)?,
+        },
     }
     Ok(())
 }
@@ -356,11 +437,11 @@ pub fn parse(src: &str) -> Result<Flow, String> {
         _ => return Err("no sequenceDiagram header".into()),
     }
     let mut f = Flow::default();
-    let mut depth = 0;
+    let mut open = vec![];
     for (n, l) in lines {
-        line(&mut f, l, &mut depth).map_err(|why| format!("line {n}: {why}: {l}"))?;
+        line(&mut f, l, &mut open).map_err(|why| format!("line {n}: {why}: {l}"))?;
     }
-    if depth > 0 {
+    if !open.is_empty() {
         return Err("a loop, alt or opt is never closed".into());
     }
     if f.steps.is_empty() {
@@ -592,6 +673,107 @@ fn ledger(f: &Flow, w: usize, g: &Glyphs) -> Vec<String> {
     wrap(&format!("(dropped: {})", f.dropped.join(", ")), w, g)
 }
 
+/// A frame's rule row: its top with its block's keyword and label, an `else`
+/// divider with its label, or its bottom (#1536).
+enum Rule<'a> {
+    Top(Block, &'a str),
+    Divider(&'a str),
+    Bottom,
+}
+
+impl Rule<'_> {
+    /// The rule's left end, fill and right end, and the tag two columns in;
+    /// both shapes draw a rule from here.
+    fn glyphs(&self, g: &Glyphs) -> ([&'static str; 3], String) {
+        let b = g.plain;
+        match self {
+            Rule::Top(kind, label) => ([b.top_left, b.horizontal_top, b.top_right], format!("[{} {label}]", kind.word())),
+            Rule::Divider(label) => ([g.frame_tee_left, g.dashed, g.frame_tee_right], format!("[else {label}]")),
+            Rule::Bottom => ([b.bottom_left, b.horizontal_bottom, b.bottom_right], String::new()),
+        }
+    }
+}
+
+/// What both shapes draw, in order: a frame's rule row, a note before the
+/// first step, a step, or a note after one.
+enum Part<'a> {
+    Rule(Rule<'a>),
+    Lead(&'a Note),
+    Step(usize, &'a Step),
+    Note(&'a Note),
+}
+
+/// Each frame's rule rows in the order the source has them, with the spot
+/// each sits at and how many frames are open around its frame: a frame opens
+/// once the open frames it is not inside have closed and its parent's
+/// dividers before it are drawn (#1536).
+fn rules(f: &Flow) -> Vec<(Spot, usize, Rule<'_>)> {
+    let mut out = vec![];
+    // Each open frame, outermost first, and how many of its dividers are drawn.
+    let mut open: Vec<(&Frame, usize)> = vec![];
+    // After the last frame, `None` closes every frame still open.
+    for next in f.frames.iter().map(Some).chain([None]) {
+        while let Some(&(top, drawn)) = open.last() {
+            let nest = open.len() - 1;
+            let inside = next.filter(|n| n.depth > top.depth);
+            // Before a frame inside it opens, the dividers before that frame; before it closes, all.
+            let due: Vec<&(Spot, String)> = top
+                .dividers
+                .iter()
+                .skip(drawn)
+                .take_while(|(at, _)| inside.is_none_or(|n| *at <= n.open))
+                .collect();
+            let drawn = drawn + due.len();
+            out.extend(due.into_iter().map(|(at, label)| (*at, nest, Rule::Divider(label))));
+            if inside.is_some() {
+                if let Some(o) = open.last_mut() {
+                    o.1 = drawn;
+                }
+                break;
+            }
+            out.push((top.close, nest, Rule::Bottom));
+            open.pop();
+        }
+        if let Some(n) = next {
+            out.push((n.open, open.len(), Rule::Top(n.kind, &n.label)));
+            open.push((n, 0));
+        }
+    }
+    out
+}
+
+/// The lead notes, the steps and their notes, with each frame's rule rows
+/// where their spots put them, each with how many frames are open around it,
+/// in the order both shapes draw them (#1536).
+fn parts(f: &Flow) -> Vec<(Part<'_>, usize)> {
+    // Each part and the spot it sits at: a step after every spot that names
+    // it, and the end, with no part, after them all.
+    let spot = |steps, notes| Spot { steps, notes };
+    let mut items = vec![];
+    for (k, n) in f.lead.iter().enumerate() {
+        items.push((spot(0, k), Some(Part::Lead(n))));
+    }
+    for (i, s) in f.steps.iter().enumerate() {
+        items.push((spot(i, usize::MAX), Some(Part::Step(i, s))));
+        for (k, n) in s.notes.iter().enumerate() {
+            items.push((spot(i + 1, k), Some(Part::Note(n))));
+        }
+    }
+    items.push((spot(usize::MAX, usize::MAX), None));
+    let mut pending = rules(f).into_iter().peekable();
+    let (mut out, mut open) = (vec![], 0);
+    for (at, part) in items {
+        // The rule rows at or before this part: its frame is open after a top
+        // or a divider, closed after a bottom.
+        while let Some((_, nest, rule)) = pending.next_if(|(s, _, _)| *s <= at) {
+            open = nest + usize::from(!matches!(rule, Rule::Bottom));
+            out.push((Part::Rule(rule), nest));
+        }
+        out.extend(part.map(|p| (p, open)));
+    }
+    out
+}
+
 /// Actors across, two rows a step: the label, then the arrow under it.
 fn ladder(f: &Flow, w: usize, g: &Glyphs) -> Vec<String> {
     let gutter = if f.has_status() { 3 } else { 1 };
@@ -600,29 +782,36 @@ fn ladder(f: &Flow, w: usize, g: &Glyphs) -> Vec<String> {
     // One lifeline column an actor; a flow built by hand with no actor still has the first.
     let cols: Vec<usize> = (0..f.actors.len().max(1)).map(|i| gutter + slot * i + slot / 2).collect();
     let x = |i: usize| lifeline(&cols, i);
-    let lifelines = || {
+    // The columns of the sides of a frame `d` deep. A row inside `d` frames
+    // keeps to the columns from the first to the second, both in (#1536).
+    let sides = |d: usize| (gutter + 2 * d, w.saturating_sub(right + 1 + 2 * d));
+    // The lifelines, and the sides of the `nest` frames around the row.
+    let lifelines = |nest: usize| {
         let mut r = Row::new(w);
         for i in 0..f.actors.len() {
             r.put(x(i), g.plain.vertical_left);
         }
+        for (left, end) in (0..nest).map(sides) {
+            r.put(left, g.plain.vertical_left);
+            r.put(end, g.plain.vertical_right);
+        }
         r
     };
-    // A note sits where its place says, between the gutter and the time column.
-    let notes = |out: &mut Vec<String>, notes: &[Note]| {
-        for n in notes {
-            let (start, end) = note_region(&n.place, &cols, gutter, w.saturating_sub(right));
-            for row in note_rows(&n.text, end - start, g) {
-                // Each row starts its region right of a lifeline, ends it left of one, and is centred over them.
-                let spare = (end - start).saturating_sub(row.width());
-                let pad = match n.place {
-                    Place::Right(_) => 0,
-                    Place::Left(_) => spare,
-                    Place::Over(..) => spare / 2,
-                };
-                let mut r = lifelines();
-                r.text(start + pad, &row);
-                out.push(r.done());
-            }
+    // A note sits where its place says, inside the frames around it and left of the time column.
+    let note = |out: &mut Vec<String>, n: &Note, nest: usize| {
+        let (lo, last) = sides(nest);
+        let (start, end) = note_region(&n.place, &cols, lo, last + 1);
+        for row in note_rows(&n.text, end - start, g) {
+            // Each row starts its region right of a lifeline, ends it left of one, and is centred over them.
+            let spare = (end - start).saturating_sub(row.width());
+            let pad = match n.place {
+                Place::Right(_) => 0,
+                Place::Left(_) => spare,
+                Place::Over(..) => spare / 2,
+            };
+            let mut r = lifelines(nest);
+            r.text(start + pad, &row);
+            out.push(r.done());
         }
     };
     let mut head = Row::new(w);
@@ -631,11 +820,37 @@ fn ladder(f: &Flow, w: usize, g: &Glyphs) -> Vec<String> {
         head.text(x(i).saturating_sub(name.width() / 2), &name);
     }
     let mut out = vec![head.done()];
-    notes(&mut out, &f.lead);
     let cur = f.current();
-    for (i, s) in f.steps.iter().enumerate() {
+    for (part, nest) in parts(f) {
+        let (i, s) = match part {
+            Part::Rule(rule) => {
+                // The rule from side to side, a cross at each lifeline, then the tag two columns in,
+                // so the tag wins over a cross.
+                let ([left, fill, end], tag) = rule.glyphs(g);
+                let (lo, hi) = sides(nest);
+                let mut r = lifelines(nest);
+                for c in lo + 1..hi {
+                    r.put(c, fill);
+                }
+                r.put(lo, left);
+                r.put(hi, end);
+                for i in 0..f.actors.len() {
+                    if (lo + 1..hi).contains(&x(i)) {
+                        r.put(x(i), g.frame_cross);
+                    }
+                }
+                r.text(lo + 2, &fit(&tag, hi.saturating_sub(lo + 3), g));
+                out.push(r.done());
+                continue;
+            }
+            Part::Lead(n) | Part::Note(n) => {
+                note(&mut out, n, nest);
+                continue;
+            }
+            Part::Step(i, s) => (i, s),
+        };
         let (a, b) = (x(s.from).min(x(s.to)), x(s.from).max(x(s.to)));
-        let mut lab = lifelines();
+        let mut lab = lifelines(nest);
         if cur == Some(i) {
             lab.put(0, g.head_right);
         }
@@ -643,18 +858,19 @@ fn ladder(f: &Flow, w: usize, g: &Glyphs) -> Vec<String> {
             lab.put(1, st.glyph(g));
         }
         // The label starts two columns after the step's left lifeline and ends at least one blank
-        // column before the next one, so it covers none, or at the time column past the last (#1534).
+        // column before the next one, so it covers none, or past the last at the time column or the
+        // innermost frame's side (#1534, #1536).
         let start = a + 2;
         let room = match lifeline_after(&cols, a) {
             Some(next) => next.saturating_sub(start + 1),
-            None => w.saturating_sub(right + start),
+            None => (sides(nest).1 + 1).saturating_sub(start),
         };
         lab.text(start, &fit(&label(f, i), room, g));
         if let Some(t) = &s.time {
             lab.text(w - right + 1, &fit(t, right - 1, g));
         }
         out.push(lab.done());
-        let mut arrow = lifelines();
+        let mut arrow = lifelines(nest);
         let shaft = s.line.glyph(g);
         if a == b {
             let back = match s.head {
@@ -677,20 +893,29 @@ fn ladder(f: &Flow, w: usize, g: &Glyphs) -> Vec<String> {
             }
         }
         out.push(arrow.done());
-        notes(&mut out, &s.notes);
     }
     out.extend(ledger(f, w, g));
     out.extend(need_box(f, w, g));
     out
 }
 
-/// One numbered line a step: status, number, label, who to whom, time.
+/// One numbered line a step: status, number, a rail for each frame around
+/// it, label, who to whom, time; each frame's rule rows between (#1536).
 fn list(f: &Flow, w: usize, g: &Glyphs) -> Vec<String> {
     let cur = f.current();
     let status = f.has_status();
     let here = format!("{} here", g.head_left);
     let digits = if f.autonumber { f.steps.len().to_string().len().max(2) } else { 0 };
-    let longest = f.steps.iter().map(|s| s.label.width()).max().unwrap_or(0);
+    let parts = parts(f);
+    // A line's label column holds its rails too, so who to whom still lines up.
+    let longest = parts
+        .iter()
+        .filter_map(|(p, nest)| match p {
+            Part::Step(_, s) => Some(nest + s.label.width()),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(0);
     let name = |i: usize| f.actors.get(i).map_or("?", |a| a.name.as_str());
     // Who to whom, read left to right: the arrow's left end, its shaft, then
     // its right end, or the shaft again where there is no head.
@@ -712,8 +937,30 @@ fn list(f: &Flow, w: usize, g: &Glyphs) -> Vec<String> {
     let rest_w = lead_w + 2 + who_w + time_col;
     let room = w.saturating_sub(rest_w).min(longest);
     let aligned = room >= longest.min(6) && rest_w <= w;
+    let pad = " ".repeat(lead_w);
     let mut out = vec![];
-    for (i, s) in f.steps.iter().enumerate() {
+    for (part, nest) in parts {
+        // One rail a frame around the line, between its status and number and its label.
+        let rails = g.plain.vertical_left.repeat(nest);
+        let (i, s) = match part {
+            Part::Rule(rule) => {
+                let ([left, fill, _], tag) = rule.glyphs(g);
+                out.push(format!("{pad}{rails}{left}{fill}{tag}"));
+                continue;
+            }
+            // A note before the first step starts its line, as it did before frames.
+            Part::Lead(n) if nest == 0 => {
+                out.extend(note_rows(&n.text, w, g).iter().map(|l| fit(l, w, g)));
+                continue;
+            }
+            Part::Lead(n) | Part::Note(n) => {
+                for line in note_rows(&n.text, w.saturating_sub(lead_w + nest), g) {
+                    out.push(fit(&format!("{pad}{rails}{line}"), w, g));
+                }
+                continue;
+            }
+            Part::Step(i, s) => (i, s),
+        };
         let mut lead = String::new();
         if status {
             lead.push_str(s.status.map_or(" ", |st| st.glyph(g)));
@@ -726,10 +973,11 @@ fn list(f: &Flow, w: usize, g: &Glyphs) -> Vec<String> {
         let time = s.time.as_deref().unwrap_or("");
         let tail = format!("  {who}{}  {time}", " ".repeat(who_w - who.width()));
         let line = if aligned {
-            let label = fit(&s.label, room, g);
-            format!("{lead}{label}{}{tail}", " ".repeat(room - label.width()))
+            let label = fit(&s.label, room.saturating_sub(nest), g);
+            let gap = " ".repeat(room.saturating_sub(nest + label.width()));
+            format!("{lead}{rails}{label}{gap}{tail}")
         } else {
-            fit(format!("{lead}{} {who} {time}", s.label).trim_end(), w, g)
+            fit(format!("{lead}{rails}{} {who} {time}", s.label).trim_end(), w, g)
         };
         let line = line.trim_end();
         if cur == Some(i) && line.width() + 2 + here.width() <= w {
@@ -737,24 +985,13 @@ fn list(f: &Flow, w: usize, g: &Glyphs) -> Vec<String> {
         } else {
             out.push(line.to_string());
             if cur == Some(i) {
-                out.push(fit(&format!("{}{here}", " ".repeat(lead.width())), w, g));
+                out.push(fit(&format!("{}{rails}{here}", " ".repeat(lead.width())), w, g));
             }
         }
-        let indent = " ".repeat(lead.width());
-        for line in s.notes.iter().flat_map(|n| note_rows(&n.text, w.saturating_sub(lead.width()), g)) {
-            out.push(fit(&format!("{indent}{line}"), w, g));
-        }
     }
-    let mut head: Vec<String> = f
-        .lead
-        .iter()
-        .flat_map(|n| note_rows(&n.text, w, g))
-        .map(|l| fit(&l, w, g))
-        .collect();
-    head.extend(out);
-    head.extend(ledger(f, w, g));
-    head.extend(need_box(f, w, g));
-    head
+    out.extend(ledger(f, w, g));
+    out.extend(need_box(f, w, g));
+    out
 }
 
 /// `f` at width `w`, in the [`shape`] the width and actor count pick, with
@@ -787,7 +1024,9 @@ pub fn render(src: &str, w: usize, g: &Glyphs) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Actor, Flow, Glyphs, Head, Line, Note, Place, Row, Shape, Status, Step, draw, fit, ladder, list, parse, shape};
+    use super::{
+        Actor, Block, Flow, Frame, Glyphs, Head, Line, Note, Place, Row, Shape, Spot, Status, Step, draw, fit, ladder, list, parse, shape,
+    };
 
     const UNI: Glyphs = Glyphs::unicode();
 
@@ -825,6 +1064,15 @@ mod tests {
             }],
             need: vec![format!("need{bad}this")],
             dropped: vec![format!("x{bad}y")],
+            // Around the lead note and the step, its else before the step's note (#1536).
+            frames: vec![Frame {
+                kind: Block::Alt,
+                label: format!("red{bad}x"),
+                depth: 0,
+                open: Spot { steps: 0, notes: 0 },
+                dividers: vec![(Spot { steps: 1, notes: 0 }, format!("green{bad}y"))],
+                close: Spot { steps: 1, notes: 1 },
+            }],
             autonumber: true,
         }
     }
@@ -839,8 +1087,9 @@ mod tests {
                 let out = draw(&f, w, &UNI);
                 let hit = out.iter().find(|l| l.chars().any(unsafe_char));
                 assert_eq!(hit, None, "{row} w={w}");
-                // The ledger is drawn too, its bad characters dropped (#1535).
+                // The ledger and the frame are drawn too, their bad characters dropped (#1535, #1536).
                 assert!(out.iter().any(|l| l.starts_with("(dropped: x")), "{row} w={w}: {out:?}");
+                assert!(out.iter().any(|l| l.contains("[alt red")), "{row} w={w}: {out:?}");
             }
         }
     }

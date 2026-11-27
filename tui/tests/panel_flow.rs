@@ -3,7 +3,7 @@
 //! samples in tests/fixtures/flow, goldens in tests/golden.
 //!
 //! COCKPIT_BLESS=1 cargo test --test panel_flow  rewrites the goldens.
-use cockpit_tui::panel::flow::{self, Shape, Status};
+use cockpit_tui::panel::flow::{self, Block, Shape, Status};
 use cockpit_tui::theme::Glyphs;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
@@ -176,13 +176,27 @@ fn only_a_need_from_you_note_goes_in_the_closing_box() {
     assert!(out.last().unwrap().starts_with('└'), "{out:?}");
 }
 
-// --------------------------------------- decision 6: flatten blocks, Err the rest
+// ------------------------------------------- blocks as frames, Err the rest (#1536)
 
 #[test]
-fn loop_alt_opt_else_and_end_are_flattened_to_their_steps() {
+fn loop_alt_opt_else_and_end_keep_their_steps_in_frames() {
     let f = parsed(LOOP);
     let labels: Vec<&str> = f.steps.iter().map(|s| s.label.as_str()).collect();
     assert_eq!(labels, ["push", "failure log", "pass", "rerun"]);
+    // Each frame opens and closes after this many steps, and none of their notes: LOOP has none.
+    let spot = |steps: usize| flow::Spot { steps, notes: 0 };
+    let frame = |kind: Block, label: &str, depth: usize, open: usize, close: usize| flow::Frame {
+        kind,
+        label: label.into(),
+        depth,
+        open: spot(open),
+        dividers: vec![],
+        close: spot(close),
+    };
+    let mut alt = frame(Block::Alt, "red", 1, 1, 3);
+    alt.dividers.push((spot(2), "green".into()));
+    let want = [frame(Block::Loop, "until green", 0, 0, 3), alt, frame(Block::Opt, "flaky", 0, 3, 4)];
+    assert_eq!(f.frames, want);
 }
 
 #[test]
@@ -385,24 +399,147 @@ fn a_label_right_of_the_last_lifeline_keeps_its_room_to_the_time_column() {
 
 #[test]
 fn what_the_drawing_leaves_out_is_named_after_the_steps() {
-    // The list at 50, the ladder at 60: the ledger follows the last step's rows and comes before the NEED box.
-    let named = "(dropped: loop frames, alt frames, opt frames)";
+    // The list at 50, the ladder at 60: the ledger follows the last step's rows and its frames' bottoms,
+    // and comes before the NEED box.
+    let named = "(dropped: frames past depth 3)";
     for w in [50, 60] {
-        assert_eq!(flow::render(LOOP, w, &UNI).last().map(String::as_str), Some(named), "w={w}");
+        assert_eq!(flow::render(DEEP, w, &UNI).last().map(String::as_str), Some(named), "w={w}");
         assert!(!flow::render(BASE, w, &UNI).iter().any(|l| l.starts_with("(dropped:")), "w={w}");
-        let need = flow::render(&format!("{LOOP}  Note over A: NEED FROM YOU: ok\n"), w, &UNI);
+        let need = flow::render(&format!("{DEEP}  Note over A: NEED FROM YOU: ok\n"), w, &UNI);
         let top = need.iter().position(|l| l.starts_with("┌ NEED FROM YOU")).expect("a NEED box");
         assert_eq!(need[top - 1], named, "w={w}");
     }
 }
 
 #[test]
-fn a_kind_dropped_twice_is_named_once_in_first_seen_order() {
-    // An opt, a loop, then an opt again: one name a kind, opt first as the source has it.
-    let src = "sequenceDiagram\nopt a\nA->>B: x\nend\nloop b\nB->>A: y\nend\nopt c\nA->>B: z\nend\n";
-    let named = "(dropped: opt frames, loop frames)";
+fn a_kind_dropped_twice_is_named_once() {
+    // Two nests four loops deep, one after the other: one name for both.
+    let src = format!("{DEEP}{}", DEEP.replacen("sequenceDiagram", "", 1));
+    let out = flow::render(&src, 60, &UNI);
+    assert_eq!(out.last().map(String::as_str), Some("(dropped: frames past depth 3)"), "{out:?}");
+}
+
+// ------------------------------------------------- frames for loop, alt and opt (#1536)
+
+/// Four loops, each inside the one before: the fourth is past MAX_FRAME_DEPTH.
+const DEEP: &str = "sequenceDiagram\nloop a\nloop b\nloop c\nloop d\nA->>B: x\nend\nend\nend\nend\n";
+
+/// Frames around everything else: four actors with a status and a time, a note before the first step
+/// inside a frame and one after an end, an else, a self step on the last actor, and a block past
+/// MAX_FRAME_DEPTH.
+const FRAMES: &str = "sequenceDiagram\nparticipant O as owner\nparticipant A as agent\nparticipant R as reviewer\n\
+participant C as CI\nloop until merged\nNote over O: starts here\nO->>A: brief\n%% status: done 09:00\nalt red\n\
+opt flaky\nloop again\nA->>C: push\nC->>C: rerun\n%% status: running\nend\nend\nelse green\nC-->>R: pass\n\
+Note right of C: a note in the alt\nend\nend\nNote over O,C: after the loop\nR->>O: merge?\n";
+
+/// The index of the first row holding `s`, or `usize::MAX`.
+fn at_in(rows: &[String], s: &str) -> usize {
+    rows.iter().position(|l| l.contains(s)).unwrap_or(usize::MAX)
+}
+
+#[test]
+fn loop_alt_and_opt_draw_as_frames_with_an_else_divider() {
+    let ladder = flow::render(LOOP, 60, &UNI);
+    assert!(ladder[1].starts_with(" ┌─[loop until green]"), "{ladder:?}");
+    let at = |s: &str| at_in(&ladder, s);
+    assert!(
+        at("[alt red]") < at("failure log") && at("failure log") < at("├┄[else green]"),
+        "{ladder:?}"
+    );
+    assert!(at("├┄[else green]") < at("pass") && at("┌─[opt flaky]") != usize::MAX, "{ladder:?}");
+    // The alt inside the loop: its sides two columns in from the loop's, which stay drawn, its rule
+    // crossing both lifelines (at 15 and 44) and its tag two columns in.
+    let alt = format!(" │ ┌─[alt red]─┼{}┼{}┐ │", "─".repeat(28), "─".repeat(12));
+    assert_eq!(ladder[4], alt, "{ladder:?}");
+    // The opt opens at depth 0, once the alt and the loop have closed.
+    assert!(ladder[12].starts_with(" ┌─[opt flaky]─┼"), "{ladder:?}");
+    let list = flow::render(LOOP, 40, &UNI);
+    assert_eq!(list[0], "┌─[loop until green]");
+    assert!(list.iter().any(|l| l == "│├┄[else green]"), "{list:?}");
+    assert!(
+        flow::parse("sequenceDiagram\nloop x\nA->>B: y\nelse z\nend\n")
+            .unwrap_err()
+            .contains("else")
+    );
+    let after = flow::render("sequenceDiagram\nloop x\nA->>B: y\nend\nNote over A: after\n", 60, &UNI);
+    let (note, close) = (at_in(&after, "after"), at_in(&after, " └"));
+    assert!(close < note && note != usize::MAX, "{after:?}");
+    // Outside the frame its row has no side: over A from the gutter to halfway to B, centred.
+    assert_eq!(after[note], format!("{}↳ after{}│", " ".repeat(11), " ".repeat(26)), "{after:?}");
+}
+
+#[test]
+fn an_else_right_before_a_block_draws_its_divider_first() {
+    // The divider and the loop sit at one spot. The source has the else first, so the loop is in its branch.
+    let src = "sequenceDiagram\nalt a\nA->>B: x\nelse b\nloop c\nB->>A: y\nend\nend\n";
     let out = flow::render(src, 60, &UNI);
-    assert_eq!(out.last().map(String::as_str), Some(named), "{out:?}");
+    let at: Vec<usize> = ["[alt a]", "│ x", "├┄[else b]", "┌─[loop c]", "│ y"]
+        .iter()
+        .map(|s| at_in(&out, s))
+        .collect();
+    assert!(at.windows(2).all(|p| p[0] < p[1]) && at[4] != usize::MAX, "{at:?}: {out:?}");
+}
+
+#[test]
+fn an_end_closes_the_innermost_open_block() {
+    // The first end closes the alt, after x: y is inside the loop alone, with the loop's sides at 1 and 59.
+    let src = "sequenceDiagram\nloop a\nalt b\nA->>B: x\nend\nB->>A: y\nend\n";
+    let out = flow::render(src, 60, &UNI);
+    let alt_bottom = format!(" │ └{}┼{}┼{}┘ │", "─".repeat(11), "─".repeat(28), "─".repeat(12));
+    assert_eq!(out[5], alt_bottom, "{out:?}");
+    assert_eq!(
+        out[6],
+        format!(" │{}│ y{}│{}│", " ".repeat(13), " ".repeat(26), " ".repeat(14)),
+        "{out:?}"
+    );
+}
+
+#[test]
+fn the_list_draws_a_frame_after_the_step_numbers() {
+    // The rule rows and the rails sit after the number column, and so does a note before the first step
+    // inside the frame; one outside every frame starts its line as before. Aligned at 40, compact at 10.
+    let src = "sequenceDiagram\nautonumber\nNote over A: out\nloop x\nNote over A: in\nA->>B: y\nend\n";
+    assert_eq!(
+        flow::render(src, 40, &UNI),
+        ["↳ out", "   ┌─[loop x]", "   │↳ in", " 1 │y  A─▶B", "   └─"]
+    );
+    assert_eq!(
+        flow::render(src, 10, &UNI),
+        ["↳ out", "   ┌─[loo…", "   │↳ in", " 1 │y A─▶B", "   └─"]
+    );
+}
+
+#[test]
+fn a_block_past_depth_3_draws_its_steps_and_names_the_loss() {
+    let out = flow::render(DEEP, 60, &UNI);
+    assert_eq!(out.last().map(String::as_str), Some("(dropped: frames past depth 3)"), "{out:?}");
+    // Frames for a, b and c around the step, none for d.
+    assert_eq!(out.iter().filter(|l| l.contains("┌─[loop ")).count(), 3, "{out:?}");
+    assert!(at_in(&out, "┌─[loop c]") < at_in(&out, "│ x"), "{out:?}");
+}
+
+#[test]
+fn a_frame_keeps_every_lifeline_column_beside_wide_text() {
+    let bare = "sequenceDiagram\nparticipant 名 as 名前\nparticipant B as b\n名->>B: 漢字\n";
+    let lines = cols_of(&flow::render(bare, 60, &UNI)[2], '│');
+    let framed = "sequenceDiagram\nparticipant 名 as 名前\nparticipant B as b\nloop 長い\n名->>B: 漢字\nend\n";
+    let out = flow::render(framed, 60, &UNI);
+    for row in [1, 4] {
+        assert_eq!(cols_of(&out[row], '┼'), lines, "rule row {row}: {out:?}");
+    }
+    for row in [2, 3] {
+        assert!(lines.iter().all(|c| cols_of(&out[row], '│').contains(c)), "row {row}: {out:?}");
+    }
+}
+
+#[test]
+fn a_note_in_a_frame_slides_inside_its_sides() {
+    // Right of B at 44, inside a frame with its sides at 1 and 59: the note may use columns 3 to 57,
+    // so its 16 columns slide in from 46..62 to 42..58.
+    let src = "sequenceDiagram\nparticipant A\nparticipant B\nloop x\nA->>B: y\nNote right of B: in the loop\nend\n";
+    let row = format!(" │{}│{}↳ in the loop{}│", " ".repeat(13), " ".repeat(26), " ".repeat(4));
+    let out = flow::render(src, 60, &UNI);
+    assert_eq!(out[4], row, "{out:?}");
 }
 
 // --------------------------------------------- decision 7: never wider, no panic
@@ -424,6 +561,8 @@ fn every_prefix_of_every_sample_fits_every_width_from_0_to_130() {
             ("over one", OVER_ONE),
             ("long label", LONG_LABEL),
             ("last self", LAST_SELF),
+            ("deep", DEEP),
+            ("frames", FRAMES),
         ] {
             for cut in (0..=src.len()).filter(|&i| src.is_char_boundary(i)) {
                 for w in 0..=130 {
@@ -458,6 +597,8 @@ fn the_ascii_tier_draws_nothing_but_ascii() {
         ("over one", OVER_ONE),
         ("long label", LONG_LABEL),
         ("last self", LAST_SELF),
+        ("deep", DEEP),
+        ("frames", FRAMES),
     ] {
         for w in 0..=130 {
             let out = flow::render(src, w, &ASC);
@@ -486,9 +627,18 @@ fn the_ascii_tier_draws_a_control_left_in_a_hand_built_field_as_a_question_mark(
 
 #[test]
 fn control_characters_never_reach_a_line() {
+    // A frame's label is untrusted text too: its escape sequence goes whole and its bidi control goes (#1536).
+    let framed = "sequenceDiagram\nloop a\x1b[31mb\u{202E}c\nA->>B: x\nend\n";
+    let bad = |c: char| c.is_control() || matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}');
     for w in [0, 20, 60, 100] {
-        let out = flow::render(WIDE, w, &UNI);
-        assert!(out.iter().all(|l| !l.chars().any(char::is_control)), "w={w}: {out:?}");
+        for src in [WIDE, framed] {
+            let out = flow::render(src, w, &UNI);
+            assert!(out.iter().all(|l| !l.chars().any(bad)), "w={w}: {out:?}");
+        }
+        if w > 0 {
+            let out = flow::render(framed, w, &UNI);
+            assert!(out.iter().any(|l| l.contains("[loop abc]")), "w={w}: {out:?}");
+        }
     }
 }
 
@@ -595,8 +745,19 @@ fn a_hand_built_step_naming_a_missing_actor_draws_without_a_panic() {
         text: "over actors past the end".into(),
         place: flow::Place::Over(7, usize::MAX),
     });
+    // A frame deeper than parse makes, every spot past the end (#1536).
+    let past = flow::Spot { steps: 99, notes: 99 };
+    f.frames.push(flow::Frame {
+        kind: Block::Loop,
+        label: "past the end".into(),
+        depth: 9,
+        open: past,
+        dividers: vec![(past, "and past".into())],
+        close: past,
+    });
     let no_actors = flow::Flow {
         steps: f.steps.clone(),
+        frames: f.frames.clone(),
         ..Default::default()
     };
     for (row, f) in [("past the end", &f), ("no actors at all", &no_actors)] {

@@ -1526,14 +1526,22 @@ not wired into Explain yet.
   `done running pending failed needs`, the time from 00:00 to 23:59; a `%%` at
   the end of a step line is part of its label, as in Mermaid. Other `%%` lines
   are comments.
-- **Blocks.** `loop`, `alt`, `opt`, `else` and `end` are dropped and their steps
-  kept in order. An `end` or `else` outside a block, or a block never closed,
-  is an error.
+- **Blocks.** `loop`, `alt` and `opt` draw as frames around their steps and
+  notes, and an `alt`'s `else` as a divider (#1536). A frame spans the whole
+  ladder: its top rule `┌─[loop until green]──┐`, a divider `├┄[else
+  green]┄┄┤` and its bottom `└──┘`, the tag two columns in, a lifeline
+  crossing a rule drawn `┼` unless the tag covers it, and the sides two columns
+  in from the frame around it. A note written after an `end` draws after the
+  frame. The list draws the rule rows `┌─[loop until green]`, `├┄[else green]`
+  and `└─`, and one rail `│` a frame between a line's status and number and its
+  label. At most 3 frames nest: a block deeper still draws its steps with no
+  frame. An `else` outside an `alt`, an `end` outside a block, or a block never
+  closed is an error.
 - **Ledger.** The drawing names what it leaves out on a line after the last
-  step's rows and notes and before the NEED box, in both shapes (#1535):
-  `(dropped: loop frames, alt frames, opt frames)`, each name once, in the
-  order the source first has it, wrapped to the width. An `else` goes with its
-  `alt`. With nothing dropped there is no such line.
+  step's rows, notes and frames and before the NEED box, in both shapes
+  (#1535): `(dropped: frames past depth 3)`, each name once, in the order the
+  source first has it, wrapped to the width. With nothing dropped there is no
+  such line.
 - **Arrows.** Each of Mermaid's ten arrows draws as its own kind, in the ladder
   and in the list (#1532). The shaft is solid for `->>`, `->`, `-x`, `-)` and
   `<<->>`, and dashed (`┄`) for `-->>`, `-->`, `--x`, `--)` and `<<-->>`. The
@@ -1553,7 +1561,8 @@ not wired into Explain yet.
   above its arrow. A label is cut to end at least one blank column before the
   next lifeline right of its step's left end, so it covers none and a step
   from A to C keeps its label between A and B (#1534). Past the last lifeline
-  it may run to the time column, or to the edge when no step has a time. The
+  it may run to the time column, or to the edge when no step has a time, and
+  inside a frame it ends a blank column before the frame's side. The
   list gives every label one column, so who to whom lines up, when that
   column holds the longest label or 6 columns of it, whichever is less, and
   the rest of the line (who to whom and the time) fits too; otherwise each
@@ -1568,7 +1577,8 @@ not wired into Explain yet.
   comes before the first step. A long note wraps onto more rows with the `↳`
   on the first only, the later rows lined up under its text (#1531). In the
   ladder a note sits where its place says (#1533), between the gutter and the
-  time column. Right of a lifeline it starts two columns after it, its rows
+  time column, and inside a frame two columns in from its sides. Right of a
+  lifeline it starts two columns after it, its rows
   left aligned. Left of one it ends two columns before it, its rows right
   aligned. Over two lifelines it spans them, and over one it reaches halfway
   to the lifeline on each side, or to the gutter or the time column where
@@ -1595,8 +1605,9 @@ not wired into Explain yet.
   marks `+ * . x !`, lifelines and the NEED box in `|`, `-` and `+`, a dashed
   shaft `.`, the filled heads `>` and `<`, the open heads `)` and `(`, a cross
   `x`, a self step `-+<`, a note `>`, `< here`, who to whom with the arrow's
-  ends (`->`, `.>`, `--`, `..`, `-x`, `.x`, `-)`, `.)`, `<->`, `<.>`), a cut
-  ending in `...` and `?` for a control. A width narrower than the ellipsis
+  ends (`->`, `.>`, `--`, `..`, `-x`, `.x`, `-)`, `.)`, `<->`, `<.>`), a
+  frame in `+`, `-` and `|` with its divider in `.`, a cut ending in `...` and
+  `?` for a control. A width narrower than the ellipsis
   gets the first columns and no ellipsis. The source's own words stay as
   written.
 - **Goldens:** `flow-base-{40,60,100}`, `flow-status-{40,60,100}` and

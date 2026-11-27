@@ -197,11 +197,12 @@ pub struct Glyphs {
     pub key_left: &'static str,
     pub key_right: &'static str,
     pub key_updown: &'static str,
-    /// The flow renderer's marks (#935), with `plain` for its box, lifelines
-    /// and solid shafts: a failed and a needs step, a dashed shaft, the filled
-    /// and the open arrow heads each way and a cross head (#1532), a self
-    /// step's turn and return, a note, and what a control character left in a
-    /// drawn line becomes.
+    /// The flow renderer's marks (#935), with `plain` for its box, lifelines,
+    /// solid shafts and frames: a failed and a needs step, a dashed shaft, the
+    /// filled and the open arrow heads each way and a cross head (#1532), a
+    /// self step's turn and return, a note, what a control character left in
+    /// a drawn line becomes, and a frame divider's ends and a lifeline crossing
+    /// a frame's rule (#1536).
     pub step_failed: &'static str,
     pub step_needs: &'static str,
     pub dashed: &'static str,
@@ -214,6 +215,9 @@ pub struct Glyphs {
     pub self_back: &'static str,
     pub note: &'static str,
     pub replacement: &'static str,
+    pub frame_tee_left: &'static str,
+    pub frame_tee_right: &'static str,
+    pub frame_cross: &'static str,
 }
 
 const ASCII_PLAIN: border::Set = border::Set {
@@ -294,6 +298,9 @@ impl Glyphs {
             self_back: "↩",
             note: "↳",
             replacement: "\u{FFFD}",
+            frame_tee_left: "├",
+            frame_tee_right: "┤",
+            frame_cross: "┼",
         }
     }
 
@@ -352,6 +359,9 @@ impl Glyphs {
             self_back: "<",
             note: ">",
             replacement: "?",
+            frame_tee_left: "+",
+            frame_tee_right: "+",
+            frame_cross: "+",
         }
     }
 
