@@ -738,7 +738,7 @@ at a time through the D9 loop. ⟦rev2: #228⟧
   `--select %N --note <file>`. After `jump`, `q`, or an exit with no action the
   loop ends.
 - Folds, the kept filter and the last selection persist in
-  `${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/board.state`, so both the
+  `$XDG_STATE_HOME/tmux-cockpit/board.state` (`~/.local/state` if not absolute), so both the
   reopened board and the next `prefix w` look the same. A file, not a tmux
   option: no write to the server.
 - The reopened board draws its first frame from `board.state` before the first
@@ -2171,7 +2171,7 @@ Each line changes something `docs/tui.md` freezes, so each needs a comment on
 - The board's popup title drops `#{session_name}`, which named the client's
   session, not the agent's.
 
-**State file.** `${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/board.state`:
+**State file.** `$XDG_STATE_HOME/tmux-cockpit/board.state` (`~/.local/state` if not absolute):
 a `cockpit-board-state 1` head, the last selection, the kept filter, one
 `fold <session>` line per folded session. Created new with `O_NOFOLLOW`, mode
 0600, at most 64 KiB, read back strictly; anything off means a fresh board and

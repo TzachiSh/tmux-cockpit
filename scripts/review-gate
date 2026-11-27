@@ -8,7 +8,16 @@ pane=${TMUX_PANE:-}
 # An agent-view background worker has no pane; its front end relays what matters (#174).
 # --concede is the agent's own call, not a hook, and still says it recorded nothing.
 [ "${1:-}" != --concede ] && [ -z "$pane" ] && [ "${CLAUDE_CODE_SESSION_KIND:-}" = bg ] && exit 0
-state="${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/review"
+d=${BASH_SOURCE[0]}; case $d in (*/*) ;; (*) d=./$d ;; esac
+[ -L "$d" ] && d=$(n=0
+    while [ -L "$d" ] && [ $((n += 1)) -le 40 ] && t=$(readlink "$d"); do
+        case $t in (/*) d=$t ;; (*) d=${d%/*}/$t ;; esac; done; printf %s "$d")
+# The state folder (lib/xdg.sh, #1588). With none, --concede refuses, and a Stop keeps no rewake
+# count and reads no concession; the drain and the mark still run.
+# shellcheck source=lib/xdg.sh
+. "${d%/*}/lib/xdg.sh" 2>/dev/null || { [ "${1:-}" = --concede ] || exit 0
+    echo "review-gate --concede: lib/xdg.sh cannot load; nothing recorded" >&2; exit 1; }
+if state_home; then state=$REPLY/tmux-cockpit/review; else state=; fi
 # Pane ids are per-server, so the socket joins the key (#88). Prefix-free encoding,
 # no fork.
 srv=${TMUX:-}; srv=${srv%%,*}; srv=${srv//_/__}; key="${srv//\//_.}-${pane#%}"
@@ -21,6 +30,7 @@ if [ "${1:-}" = --concede ]; then
     then echo "review-gate --concede: not in a tmux pane; nothing recorded" >&2; exit 1; fi
     # Checked first: under set -u the write's own ${2} would abort silently inside 2>/dev/null.
     [ -n "${2:-}" ] || { echo "review-gate --concede: needs a line saying what blocks the goal; nothing recorded" >&2; exit 1; }
+    [ -n "$state" ] || { echo "review-gate --concede: $NO_STATE_HOME; nothing recorded" >&2; exit 1; }
     { mkdir -p -- "$state" && printf '%s' "${2:0:400}" > "$state/concede-$key"; } 2>/dev/null \
         || { echo "review-gate --concede: cannot write $state; nothing recorded" >&2; exit 1; }
     echo "concession recorded; your next turn ends here, with that line as the reason"
@@ -28,10 +38,6 @@ if [ "${1:-}" = --concede ]; then
 fi
 case "$pane" in %[0-9]*) ;; *) exit 0 ;; esac
 
-d=${BASH_SOURCE[0]}; case $d in (*/*) ;; (*) d=./$d ;; esac
-[ -L "$d" ] && d=$(n=0
-    while [ -L "$d" ] && [ $((n += 1)) -le 40 ] && t=$(readlink "$d"); do
-        case $t in (/*) d=$t ;; (*) d=${d%/*}/$t ;; esac; done; printf %s "$d")
 # shellcheck source=lib/hook.sh
 . "${d%/*}/lib/hook.sh" 2>/dev/null || exit 0
 
@@ -156,14 +162,15 @@ end_turn() {                                # <reason>  ends the turn, exit 0
     printf '{"continue":false,"stopReason":"%s"}\n' "$(json "cockpit: $1")"
     exit 0
 }
-if [ -f "$concede" ] && [ ! -L "$concede" ]; then
+if [ -n "$state" ] && [ -f "$concede" ] && [ ! -L "$concede" ]; then
     if [ -n "$(find "$concede" -mmin -60 2>/dev/null)" ]; then
         { IFS= read -r why || :; } < "$concede"; why=${why//[$'\001'-$'\037']/}
         end_turn "the agent conceded the goal: ${why:-no reason given}"
     fi
     rm -f -- "$concede"     # stale: a killed agent's, or a reused pane id
 fi
-if [ "$active" = true ]; then
+if [ -z "$state" ]; then :      # no state folder: no rewake count (#1588)
+elif [ "$active" = true ]; then
     n=$(cat -- "$loop" 2>/dev/null); case "$n" in ''|*[!0-9]*) n=0 ;; esac
     n=$((n + 1)); mkdir -p -- "$state" 2>/dev/null; printf '%s' "$n" > "$loop"
     # 10+ digits fall back too: past intmax `[ -gt ]` errors and would leave the cap off.

@@ -290,7 +290,8 @@ Badge semantics (owner decision, #336; the board draws them, #313):
 `SubagentStart`, `SubagentStop`, `TeammateIdle` and `SessionEnd` also run
 `agent-state sub-start|sub-stop|sub-idle|sub-end` (#361). They set no pane state and call no
 tmux: each appends one line to
-`${XDG_STATE_HOME:-~/.local/state}/tmux-cockpit/subs/<session_id>.log`, `<epoch>\t<event>\t<agent_id>`
+`$XDG_STATE_HOME/tmux-cockpit/subs/<session_id>.log` (`~/.local/state` if not absolute),
+`<epoch>\t<event>\t<agent_id>`
 with the event `start`, `stop` or `idle`. `sub-end` deletes the session's log and any log
 unwritten for 7 days, and the same for the `.live` file below. With
 `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` on, the hooks see no `XDG_STATE_HOME` and write the log under

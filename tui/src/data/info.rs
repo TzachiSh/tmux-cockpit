@@ -94,14 +94,13 @@ pub fn cksum(data: &[u8]) -> u32 {
     !crc
 }
 
-/// tmux-review's `session_dir`: keyed on the pane id and the root.
-pub fn session_dir(id: &str, root: &str) -> PathBuf {
-    let state = std::env::var("XDG_STATE_HOME")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| format!("{}/.local/state", std::env::var("HOME").unwrap_or_default()));
+/// tmux-review's `session_dir`: keyed on the pane id and the root, in the state folder of
+/// [`crate::store::xdg_dir`] (#1588). None with no state folder, where tmux-review keeps none.
+pub fn session_dir(id: &str, root: &str) -> Option<PathBuf> {
+    let var = |k| std::env::var(k).ok();
+    let state = crate::store::xdg_dir(var("XDG_STATE_HOME").as_deref(), var("HOME").as_deref(), ".local/state")?;
     let n = cksum(root.as_bytes());
-    PathBuf::from(format!("{state}/tmux-cockpit/review/{}-{n}", id.trim_start_matches('%')))
+    Some(state.join(format!("tmux-cockpit/review/{}-{n}", id.trim_start_matches('%'))))
 }
 
 /// review-diff.sh's `review_base`, for `dir`: the first case that holds among
@@ -319,10 +318,13 @@ pub fn gather(pane: &str) -> Result<Facts, String> {
     }
     let sess = session_dir(&x.id, &root);
     if !root.is_empty() && !git(&root, &[], None, &["rev-parse", "-q", "--verify", "HEAD"]).trim().is_empty() {
-        let chosen = std::fs::read_to_string(sess.join("comments.md.base")).unwrap_or_default();
+        let chosen = sess
+            .as_ref()
+            .and_then(|s| std::fs::read_to_string(s.join("comments.md.base")).ok())
+            .unwrap_or_default();
         x.base = Some(review_base(&root, chosen.trim_end_matches('\n'), "", ""));
     }
-    if sess.is_dir() {
+    if let Some(sess) = sess.filter(|s| s.is_dir()) {
         let n = (count(&sess.join("comments.md")), count(&sess.join("delivered.md")));
         x.rev_dir = Some((clean(&sess.display().to_string()), n.0, n.1));
     }

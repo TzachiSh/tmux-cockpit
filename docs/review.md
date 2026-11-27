@@ -274,7 +274,7 @@ What this deliberately does **not** do, and why:
   (claude-code issues #63190, #30492).
 - **No review daemon, server, or port.** What *does* outlive the popup is
   one directory per review under
-  `${XDG_STATE_HOME:-~/.local/state}/tmux-cockpit/review/<pane>-<root>/`,
+  `$XDG_STATE_HOME/tmux-cockpit/review/<pane>-<root>/` (`~/.local/state` if not absolute),
   created `0700`, holding `comments.md`, the base `b` chose
   (`comments.md.base`), revdiff's history, the batches already delivered
   (`delivered.md`) and any queued spool. It exists so a dropped SSH client,

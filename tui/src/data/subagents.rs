@@ -199,15 +199,10 @@ pub fn reads() -> u64 {
     READS.with(Cell::get)
 }
 
-/// The hooks' log dir: `$XDG_STATE_HOME/tmux-cockpit/subs`, else `~/.local/state/...`, as
-/// `scripts/lib/subslog.sh` has it. None with neither set.
+/// The hooks' log dir, `tmux-cockpit/subs` in the state folder of [`crate::store::xdg_dir`], as
+/// `scripts/lib/subslog.sh` has it (#1588). None with no state folder.
 pub fn state_dir(xdg: Option<&str>, home: Option<&str>) -> Option<PathBuf> {
-    let base = match (xdg, home) {
-        (Some(x), _) if !x.is_empty() => PathBuf::from(x),
-        (_, Some(h)) if !h.is_empty() => PathBuf::from(h).join(".local").join("state"),
-        _ => return None,
-    };
-    Some(base.join("tmux-cockpit").join("subs"))
+    Some(crate::store::xdg_dir(xdg, home, ".local/state")?.join("tmux-cockpit").join("subs"))
 }
 
 /// A description as `scripts/lib/subslog.sh` writes it, the JSON string's body with its

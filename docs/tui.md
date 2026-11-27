@@ -272,7 +272,7 @@ Read-only, and owned by bash: `@cockpit_session`, `@cockpit_dir`, `@panestate`,
 | `COCKPIT_ACTION` | file the one action line is written to. Unset sends it to stdout |
 | `COCKPIT_TMUX` | overrides the tmux argv. The value is split on whitespace, so `tmux -L sock` works, but a tmux path holding a space can't be named here: reach it through a wrapper script or a symlink. Unset follows `$TMUX` to whatever socket the pane is on |
 | `COCKPIT_TEST_TMUX_GUARD` | the test guard on tmux, on in any debug build and wherever this is set to anything but `0` (`.cargo/config.toml` sets it for whatever cargo starts, `cargo run` included). The basket then runs tmux only on a `-L`/`-S` server or a stub. Every other tmux call, through `data::tmux` (the agent list, the theme, the pane reads, `tmux_set`), push's `wait-for` and the board's tile previews, runs a plain `tmux` only with `TMUX` unset and `TMUX_TMPDIR` an existing folder, as cargo's runner starts a test binary, and reads anything else as tmux giving no value (#1089): a test binary started by hand reads nothing of the caller's server, in whatever test. `COCKPIT_TEST_TMUX_GUARD=0 cargo run` lifts it from inside tmux. The board's footer says so once per run, until a key. A release build run outside cargo, as the plugin runs it, has it off |
-| `COCKPIT_LOG` | append target. The binding sets it to `${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/tui.log` |
+| `COCKPIT_LOG` | append target. The binding sets it to `$XDG_STATE_HOME/tmux-cockpit/tui.log` (`~/.local/state` if not absolute) |
 | `COCKPIT_PROC_DIR` | the proc root the pane-tree walk reads (default `/proc`); a test seam. A root without `self/task` or without `children` files sends the lookup to `ps` |
 | `COCKPIT_READONLY` | any non-empty value: never write to a tmux server, the pid included. The panel wrapper then pastes and sends nothing and logs what it would have done |
 | `COCKPIT_BRANCH_PANE` | set by `scripts/tmux-branch` for `branch`: the pane the popup came from, beside which goto opens its new window. Anything but `%<digits>` is none |
@@ -532,7 +532,7 @@ text too and whose summary names that file; `--compare` refuses a case
 whose rows on one side carry two hashes, naming its file and the hashes, unless
 given `--allow-mixed`. Each run
 appends its cost to `--ledger <file>`, else to `cost.tsv` next to `--out`, else to
-`${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/panel-eval-cost.tsv`; a
+`$XDG_STATE_HOME/tmux-cockpit/panel-eval-cost.tsv` (`~/.local/state` if not absolute); a
 `--judge` run adds a second row for the judge's spend. The ledger's `prompt`
 column lists every prompt hash the run saw, so a run mixing plain and exploring
 writes shows two with no file edited.
@@ -1171,7 +1171,7 @@ of at most 4 KiB, one `\n`-terminated line, control characters dropped. A note
 that fails those rules is logged and not shown.
 
 The selection is also kept in
-`${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/board.state`, so the next
+`$XDG_STATE_HOME/tmux-cockpit/board.state` (`~/.local/state` if not absolute), so the next
 plain `prefix w` opens on the same pane while it exists. Without one, or when
 the pane is gone, the board opens on the first `▲`, else the client's pane,
 else the first tile. The file is written on every exit, created new beside it
@@ -2013,10 +2013,11 @@ Backspace.
 line; the wrapper takes that pair as a hide and moves the file to
 
 ```
-${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/panel/<server pid>-<N>.state
+$XDG_STATE_HOME/tmux-cockpit/panel/<server pid>-<N>.state
 ```
 
-in a 0700 directory, `<N>` the pane id without its `%`. The server pid is in
+(`~/.local/state` if not absolute), in a 0700 directory, `<N>` the pane id
+without its `%`. The server pid is in
 the name because pane ids start again at `%0` with a new server and every `-L`
 server shares the directory. The next run on the pane moves the file into its
 private directory before the binary starts (a second client's `prefix f` finds
@@ -3069,7 +3070,7 @@ or `POLLERR` and exits when it comes; the action file is left unwritten. A
 
 **A crash left nothing behind.** `display-popup -E` closes the popup the moment
 the command exits, so a panic disappears with it. The log is at
-`${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/tui.log`, on by default, and
+`$XDG_STATE_HOME/tmux-cockpit/tui.log` (`~/.local/state` if not absolute), on by default, and
 the binding appends stderr to it. Past 1 MiB the binary moves it to `tui.log.1`
 and starts a new one (#291); the board logs a tick only when the fetch took over
 500 ms or the read started or stopped failing.
