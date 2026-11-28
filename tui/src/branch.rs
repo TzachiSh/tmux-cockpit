@@ -204,10 +204,9 @@ pub enum Action {
     Create(String),
 }
 
-/// An action line read as untrusted text, as `scripts/tmux-branch`'s `act` read it: a
-/// verb from `switch track create`, one line, a name git's own rule accepts, and for
-/// switch and track a ref that exists under `refs/heads` or `refs/remotes`. `Err` is
-/// the line the popup shows.
+/// An action line read as untrusted text: a verb from `switch track create`, one line, a
+/// name git's own rule accepts, and for switch and track a ref that exists under
+/// `refs/heads` or `refs/remotes`. `Err` is the line the popup shows.
 pub fn parse(dir: &str, line: &[u8]) -> Result<Action, String> {
     let owned = String::from_utf8_lossy(line);
     let line: &str = &owned;
@@ -244,8 +243,7 @@ pub fn act(dir: &str, line: &[u8]) -> Result<String, String> {
 }
 
 /// Where the popup came from, for goto. `scripts/tmux-branch` hands both over in the
-/// environment, not as flags: a 0.4.0 binary refuses an unknown flag and would not
-/// open, but ignores a variable (#228).
+/// environment (#228).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Origin {
     /// `COCKPIT_BRANCH_PANE`: the pane the popup came from; a new window goes beside it

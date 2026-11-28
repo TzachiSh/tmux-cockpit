@@ -402,7 +402,7 @@ fn origin_reads_only_a_pane_id_and_a_printable_client() {
 
 /// git before 2.36 rejects `worktree list -z`, as a shim here does: the plain porcelain
 /// still names w, whose pane is selected, and a path with a newline, cut in two there,
-/// is no worktree (the #303 rows on the old-binary path).
+/// is no worktree.
 #[test]
 fn without_worktree_list_z_the_tree_is_found_and_a_newline_path_refused() {
     let r = Rig::new("oldgit");

@@ -30,7 +30,7 @@ The binary ships as a release asset. `install.sh` fetches it. With
 background: tmux starting, `prefix R`, and tpm's update key `prefix U`, which
 reloads the config after updating. Otherwise run `scripts/tui-fetch` yourself,
 or build it with `make tui`.
-Releases after `cockpit-tui-v0.4.0` carry a Linux x86_64 asset only. On macOS
+Releases carry a Linux x86_64 asset only. On macOS
 and Linux aarch64, tui-fetch finds no asset for the platform and builds from
 source, which needs Rust (below).
 Either way: uname picks the asset, the `.sha256` is fetched first and verified,
@@ -3357,7 +3357,7 @@ shared picker (`pick.rs`). `scripts/tmux-branch` runs `cockpit-tui branch -C <di
 The popup runs switch, track, create and the goto to another worktree itself, and
 exits 0 with nothing printed (#228). The script hands goto the pane the popup came
 from and the client that pressed the key in `COCKPIT_BRANCH_PANE` and
-`COCKPIT_BRANCH_CLIENT`, not as flags, which a 0.4.0 binary would refuse.
+`COCKPIT_BRANCH_CLIENT`.
 
 | key | does |
 |---|---|
@@ -3403,18 +3403,16 @@ ref. Before it runs, the line is checked as untrusted text (`branch::parse`): a 
 from `switch track create`, one line, a name `git check-ref-format --branch` accepts,
 and for `switch`/`track` a ref that exists under `refs/heads` or `refs/remotes`. The
 switch runs through `gitsafe::git_write`: the `gitsafe` flags but the protocol pins (a
-switch may lazy-fetch a partial clone's blobs, as `scripts/lib/git.sh` lets it), every
-filter driver the repo names blanked, a repo whose driver name holds `=` refused
+switch may lazy-fetch a partial clone's blobs), every filter driver the repo names
+blanked, a repo whose driver name holds `=` refused
 (#331), no submodule checked out (`-c submodule.recurse=false`: a submodule's own
 config names drivers no blanking reads, #1272), the inherited `GIT_DIR` and its kin
 unset, and no prompt on the popup's terminal. Git's own refusal (a dirty tree) is the
 `✕` note, its first line, with the whole message in the preview until the next key;
 the picker stays. goto checks its path the same way before it acts: a path that `git
 worktree list` names, else `not a worktree of this repository`, and still a directory,
-else `is gone`. A `cockpit-tui` that still prints `switch`, `track`, `create` or
-`goto` lines (0.4.0, the release a default install fetches) gets the script's own
-checks, `git switch` and goto, as before #228, until `TUI_MIN` passes that release;
-any other answer is refused with the stale-binary message.
+else `is gone`. A line the binary prints on stdout is from one older than the plugin:
+the script acts on none, and refuses it with the stale-binary message (#1271).
 
 A branch name cannot contain a space, so the filter text `my branch` is refused with a
 note on `alt-↵`.

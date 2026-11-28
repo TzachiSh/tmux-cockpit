@@ -112,8 +112,8 @@ pub(crate) fn git(dir: &str, extra: &[String], index: Option<&Path>, args: &[&st
 }
 
 /// How many of [`SAFE`]'s entries a git that writes the work tree takes: all but the
-/// protocol pins. A user's switch may lazy-fetch a partial clone's blobs, as
-/// `scripts/lib/git.sh` lets its `switch` do; every read keeps the pins.
+/// protocol pins. A user's switch may lazy-fetch a partial clone's blobs; every read keeps
+/// the pins.
 pub const WRITE_SAFE: usize = 9;
 
 /// The refusal for a repo whose filter driver name holds `=`, in `scripts/lib/git.sh`'s

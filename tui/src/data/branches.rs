@@ -78,10 +78,10 @@ fn worktrees(dir: &str, top: &str) -> Vec<(String, Option<String>)> {
     v
 }
 
-/// True for a worktree of the repo whose common dir is `common`, as tmux-branch's
-/// `wt_ours` decides it, and holding `branch` if it names one. A forged record can
-/// pair a real tree's path with a cut tree's branch line; that tree's own HEAD names
-/// its real branch. A path that is gone is kept only as git would call it prunable.
+/// True for a worktree of the repo whose common dir is `common`, and holding `branch`
+/// if it names one. A forged record can pair a real tree's path with a cut tree's branch
+/// line; that tree's own HEAD names its real branch. A path that is gone is kept only as
+/// git would call it prunable.
 fn ours(p: &Path, branch: Option<&str>, common: &Path) -> bool {
     if !p.exists() {
         return prunable(p, common);
@@ -126,7 +126,7 @@ fn prunable(p: &Path, common: &Path) -> bool {
 /// `p` with `.` dropped and each `..` taking off the part before it, as text, so a path
 /// that is gone resolves too: no canonicalize. `/..` is `/`, as for git. A symlink is a
 /// name like any other: `link/..` drops it. `p` must be absolute: a relative one stays
-/// relative, where the shell's `wt_norm` roots it at `/`, not at the cwd.
+/// relative.
 fn lexical(p: &Path) -> PathBuf {
     use std::path::Component;
     let mut out = PathBuf::new();
