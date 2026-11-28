@@ -64,7 +64,8 @@ impl Rig {
             &format!(
                 "#!/bin/sh\ncase \"$1\" in\n\
                  list-panes) cat {d}/rows ;;\n\
-                 show-option) printf '|claude|codex|aider|cursor|opencode|gemini|crush|' ;;\n\
+                 show-option) case \"$*\" in *@cockpit_accounts*) cat {d}/accounts ;; \
+                 *) printf '|claude|codex|aider|cursor|opencode|gemini|crush|' ;; esac ;;\n\
                  capture-pane) [ -f {d}/cap ] || exit 1; cat {d}/cap ;;\n\
                  esac\n"
             ),
@@ -130,11 +131,25 @@ impl Rig {
     }
 
     fn transcript_in(&self, slug: &str, sess: &str, body: &str) -> PathBuf {
-        let dir = self.dir.join(format!(".claude/projects/{slug}"));
+        self.transcript_under(".claude", slug, sess, body)
+    }
+
+    /// `$HOME/<cfg>/projects/<slug>/<sess>.jsonl`: a transcript of the account whose dir is `cfg`.
+    fn transcript_under(&self, cfg: &str, slug: &str, sess: &str, body: &str) -> PathBuf {
+        let dir = self.dir.join(format!("{cfg}/projects/{slug}"));
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join(format!("{sess}.jsonl"));
         std::fs::write(&p, body).unwrap();
         p
+    }
+
+    /// #1601: `@cockpit_accounts`, as the fake's show-option prints it, and the dirs the
+    /// tests list made under the rig's HOME.
+    fn accounts(&self, list: &str) {
+        for d in [".claude", ".claude-2", ".claude-9"] {
+            std::fs::create_dir_all(self.dir.join(d)).unwrap();
+        }
+        std::fs::write(self.dir.join("accounts"), list).unwrap();
     }
 
     fn capture(&self, body: &str) {
@@ -2390,21 +2405,30 @@ fn card_foot(tag: &str, body: &str) -> String {
 }
 
 /// [`card_foot`] on a board `w` columns wide, the pane's `@panestate_rl` (FIELDS' field 21,
-/// #1600) `rl` when it is not empty.
+/// #1600) `rl`.
 fn card_foot_at(tag: &str, body: &str, rl: &str, w: u16) -> String {
-    use cockpit_tui::board::{self, View};
-    use cockpit_tui::theme::Theme;
     let r = Rig::new(tag);
     r.transcript("s1", body);
-    let base = hooked("%1", "done", "s1");
-    let row = if rl.is_empty() {
-        base
-    } else {
-        let mut f: Vec<&str> = base.split('\u{1f}').collect();
-        f.resize(21, "");
-        f.push(rl);
-        f.join("\u{1f}")
-    };
+    foot_of(&r, set_fields(&hooked("%1", "done", "s1"), &[(21, rl)]), w)
+}
+
+/// `row` with its fields `at` set, padded with empty ones up to the highest (#1600, #1601).
+fn set_fields(row: &str, at: &[(usize, &str)]) -> String {
+    let mut f: Vec<&str> = row.split('\u{1f}').collect();
+    for &(i, v) in at {
+        if f.len() <= i {
+            f.resize(i + 1, "");
+        }
+        f[i] = v;
+    }
+    f.join("\u{1f}")
+}
+
+/// The tile of `%1`, the rig's one row `row`, read through the fetch and drawn alone on a
+/// board `w` columns wide: its bottom border row.
+fn foot_of(r: &Rig, row: String, w: u16) -> String {
+    use cockpit_tui::board::{self, View};
+    use cockpit_tui::theme::Theme;
     r.rows(&[row]);
     let ps = list_panes().unwrap();
     let one = [get(&ps, "%1").clone()];
@@ -2630,6 +2654,114 @@ fn every_window_shut_shows_nothing_of_the_allowance() {
     assert!(
         foot.contains(" opus · 84k ") && !foot.contains('%') && !foot.contains("ago"),
         "{foot}"
+    );
+}
+
+// ------------------------------------------------ the account a pane runs under (#1601)
+
+/// The card of a pane whose transcript gives `opus · 84k`, with `@cockpit_accounts` `list` and
+/// its FIELDS `at` set, `$HOME` in a value being the rig's: its bottom border row.
+fn acct_foot(tag: &str, list: &str, at: &[(usize, &str)]) -> String {
+    let r = Rig::new(tag);
+    r.accounts(list);
+    r.transcript("s1", &opus_84k());
+    let home = r.dir.display().to_string();
+    let at: Vec<(usize, String)> = at.iter().map(|(i, v)| (*i, v.replace("$HOME", &home))).collect();
+    let at: Vec<(usize, &str)> = at.iter().map(|(i, v)| (*i, v.as_str())).collect();
+    foot_of(&r, set_fields(&hooked("%1", "done", "s1"), &at), 60)
+}
+
+/// #1601: the card names the account whose dir the pane's hooks recorded, `@cockpit_cfg`
+/// (FIELDS' field 22), before the model and the context. A pane with none recorded runs on
+/// Claude Code's default dir, `~/.claude`.
+#[test]
+fn the_tile_names_the_account_its_hooks_saw() {
+    let list = "p1=~/.claude p2=~/.claude-2";
+    let two = acct_foot("acct2", list, &[(22, "$HOME/.claude-2")]);
+    let one = acct_foot("acct1", list, &[]);
+    assert!(two.contains(" p2 · opus · 84k "), "{two}");
+    assert!(one.contains(" p1 · opus · 84k "), "{one}");
+}
+
+/// #1601: no name for a dir no account has, nor when the option is unset, nor when it is
+/// refused whole for one bad entry.
+#[test]
+fn a_pane_on_no_listed_account_is_named_nothing() {
+    let cases = [
+        ("acctnone", "p1=~/.claude p2=~/.claude-2", "$HOME/.claude-9"),
+        ("acctunset", "", ""),
+        ("acctbad", "p1=~/.claude p2", ""),
+    ];
+    for (tag, list, cfg) in cases {
+        let foot = acct_foot(tag, list, &[(22, cfg)]);
+        assert!(foot.contains(" opus · 84k ") && !foot.contains(" · opus"), "{tag}: {foot}");
+    }
+}
+
+/// #1601: a pane the hooks never marked, an agent by its command alone, has no record of its
+/// dir: no name, not the default account's.
+#[test]
+fn a_pane_the_hooks_never_marked_is_named_nothing() {
+    let r = Rig::new("acctnohook");
+    r.accounts("p1=~/.claude p2=~/.claude-2");
+    r.transcript("s1", &opus_84k());
+    let foot = foot_of(&r, row("%1", "claude", "-", "s1", "100"), 60);
+    assert!(foot.contains(" opus · 84k ") && !foot.contains(" · opus"), "{foot}");
+}
+
+/// #1601: a list refused whole for one bad entry says why in the board's log.
+#[test]
+fn a_refused_account_list_is_logged() {
+    let r = Rig::new("acctlog");
+    let log = r.dir.join("tui.log");
+    let _env = Env::set(fake::Held::Lent(r.held()), &[("COCKPIT_LOG", log.display().to_string())]);
+    r.accounts("p1=~/.claude p2");
+    r.rows(&[set_fields(&hooked("%1", "done", "s1"), &[(22, "")])]);
+    assert_eq!(get(&list_panes().unwrap(), "%1").doing, "");
+    let said = std::fs::read_to_string(&log).unwrap_or_default();
+    assert!(said.contains(" @cockpit_accounts refused: \"p2\" is not name=dir\n"), "{said:?}");
+}
+
+/// #1601: a pane whose hooks ran under Claude Code's env scrub saw no dir, and they marked it
+/// (`@cockpit_cfg_unseen`, field 23): its card says `?`, never the default account's name.
+#[test]
+fn a_pane_whose_hooks_ran_under_the_env_scrub_is_not_named_the_default_account() {
+    let foot = acct_foot("acctscrub", "p1=~/.claude p2=~/.claude-2", &[(23, "1")]);
+    assert!(foot.contains(" ? · opus · 84k ") && !foot.contains("p1"), "{foot}");
+}
+
+/// #1601: the doing line of a pane on a second listed account, the board's own being the
+/// first. `with_path`: the hook passed its transcript (field 15); else it refused it, as under
+/// the env scrub, and the session id finds it.
+fn second_account_doing(tag: &str, list: &str, with_path: bool) -> String {
+    let r = Rig::new(tag);
+    r.accounts(list);
+    let t = r.transcript_under(".claude-2", "-w", "s1", BASH_ROW).display().to_string();
+    let cfg = r.dir.join(".claude-2").display().to_string();
+    let at = [(15, if with_path { t.as_str() } else { "" }), (22, cfg.as_str())];
+    r.rows(&[set_fields(&hooked("%1", "running", "s1"), &at)]);
+    get(&list_panes().unwrap(), "%1").doing.clone()
+}
+
+#[test]
+fn a_transcript_under_a_second_listed_account_gives_the_doing_line() {
+    let list = "p1=~/.claude p2=~/.claude-2";
+    assert_eq!(second_account_doing("acctpath", list, true), "Bash: echo one", "with its path");
+    assert_eq!(
+        second_account_doing("acctsid", list, false),
+        "Bash: echo one",
+        "with the session id alone"
+    );
+}
+
+/// #1601: a dir no account lists is still not read, by path or by session id.
+#[test]
+fn a_transcript_under_an_unlisted_dir_is_still_refused() {
+    assert_eq!(second_account_doing("acctoffpath", "p1=~/.claude", true), "", "with its path");
+    assert_eq!(
+        second_account_doing("acctoffsid", "p1=~/.claude", false),
+        "",
+        "with the session id alone"
     );
 }
 
