@@ -12,13 +12,13 @@
 //!   [`Collector::collect`] writes nothing.
 //! - **Citations.** Every [`Item`] cites a 12-digit short sha, `#N` or a run
 //!   id; one that does not is dropped, never shown.
-//! - **Outside text.** Commit subjects, titles and workflow names go through
-//!   [`redact_clean`] before they reach an item.
+//! - **Outside text.** Commit subjects, folder and file names, titles and
+//!   workflow names go through [`redact_clean`] before they reach the list.
 //! - **Quiet.** A failed git or gh call leaves its items out and adds one
 //!   [`Note`]; nothing is printed and nothing panics.
 use super::capture::{self, Ran};
 use super::redact::redact_clean;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::OsString;
 use std::fs::{DirBuilder, OpenOptions};
 use std::io::{Read, Write};
@@ -31,6 +31,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 /// Items shown per kind, newest first; the rest are counted as "and K more".
 /// The owner may change it.
 pub const CAP: usize = 20;
+/// Names on the folder line; the rest are counted as "and K more" (#1612).
+/// The owner may change it.
+pub const FOLDERS_SHOWN: usize = 6;
 /// The shortest time between two gh refreshes of one repo, in seconds.
 pub const REFRESH_SECS: u64 = 60;
 /// GitHub search calls allowed in any 60 seconds, across repos.
@@ -80,6 +83,9 @@ pub enum More {
 pub enum Note {
     NotARepo,
     GitTimedOut,
+    /// The folder call ran past the git budget: the commits stay, their folder
+    /// line is left out, and the list can still be marked seen.
+    FoldersTimedOut,
     /// origin is not a github.com repo, so gh is never started.
     NoGithubRemote,
     NoGh,
@@ -108,6 +114,7 @@ impl std::fmt::Display for Note {
         match self {
             Note::NotARepo => f.write_str("changes: not in a git work tree"),
             Note::GitTimedOut => f.write_str("git: took too long, commits left out"),
+            Note::FoldersTimedOut => f.write_str("git: took too long, folders left out"),
             Note::NoGithubRemote => gh(f, "origin is not a github.com repo"),
             Note::NoGh => gh(f, "no gh on PATH"),
             Note::NotLoggedIn => gh(f, "gh is not logged in"),
@@ -144,11 +151,15 @@ pub struct Changes {
     pub seen: Option<Seen>,
     pub items: Vec<Item>,
     pub more: Vec<(Kind, More)>,
+    /// The top-level folders (`tui/`) and root files the listed commits
+    /// touched, cleaned, the most commits first, then by name (#1612).
+    pub touched: Vec<String>,
     pub notes: Vec<Note>,
 }
 
 impl Changes {
-    /// One line per item, each kind's "and K more" after its items, then the notes.
+    /// One line per item, each kind's "and K more" after its items, the folder
+    /// line after the commits', then the notes.
     pub fn lines(&self) -> Vec<String> {
         let mut out = vec![];
         for k in KINDS {
@@ -166,9 +177,29 @@ impl Changes {
                     More::AtLeast(n) => format!("and {n} or more"),
                 });
             }
+            if k == Kind::Commit && !self.touched.is_empty() {
+                out.push(self.folder_line());
+            }
         }
         out.extend(self.notes.iter().map(Note::to_string));
         out
+    }
+
+    /// `in: tui/, docs/`, cut past [`FOLDERS_SHOWN`] names with a count. With
+    /// commits cut past [`CAP`] it says the names are the listed commits' only.
+    fn folder_line(&self) -> String {
+        let cut = self.more.iter().any(|(k, _)| *k == Kind::Commit);
+        let head = if cut {
+            format!("in, for the {CAP} listed: ")
+        } else {
+            "in: ".to_string()
+        };
+        let (shown, rest) = self.touched.split_at(self.touched.len().min(FOLDERS_SHOWN));
+        let line = format!("{head}{}", shown.join(", "));
+        match rest.len() {
+            0 => line,
+            k => format!("{line} and {k} more"),
+        }
     }
 
     /// `item` if it carries its kind's citation; dropped otherwise.
@@ -519,6 +550,12 @@ fn commits(c: &mut Changes, top: &str, end: Instant) {
     let args = ["log", "-z", "--no-decorate", "--format=%H%x1f%s", &n, &range];
     let log = capture::spawn_git(top, &[], &args);
     let count = capture::spawn_git(top, &[], &["rev-list", "--count", &range]);
+    // The listed commits' files, in a call of its own so its failure costs only
+    // the folder line (#1612). No rename detection: a move touches both folders,
+    // and no blob is read. --root: a repo's log.showRoot cannot hide the root's.
+    let cap = format!("--max-count={CAP}");
+    let files = ["log", "-z", "--no-renames", "--root", "--name-only", "--format=%x00", &cap, &range];
+    let names = capture::spawn_git(top, &[], &files);
     let (log, count) = (capture::wait(log, end), capture::wait(count, end));
     let log = match log {
         Ran::Ok(s) => s,
@@ -544,6 +581,46 @@ fn commits(c: &mut Changes, top: &str, end: Instant) {
         None if listed > CAP => c.more.push((Kind::Commit, More::AtLeast(1))),
         _ => {}
     }
+    match capture::wait(names, end) {
+        Ran::Ok(s) => c.touched = touched(&s),
+        Ran::TimedOut => c.notes.push(Note::FoldersTimedOut),
+        // a treeless clone, say: the line is left out, as a failed log leaves its commits
+        Ran::Failed(_) => {}
+    }
+}
+
+/// The top-level entries in `log -z --name-only --format=%x00` output: an
+/// empty field opens each commit, as no path is empty, and git puts a newline
+/// before a commit's first path. A folder keeps its `/`, a root file is its
+/// name. Counted once a commit, the most commits first, then by name; each
+/// name is cleaned once, not once a path.
+fn touched(out: &str) -> Vec<String> {
+    let mut raw: HashMap<(&str, bool), usize> = HashMap::new();
+    let mut commit: HashSet<(&str, bool)> = HashSet::new();
+    let mut first = true;
+    for f in out.split('\0').chain([""]) {
+        if f.is_empty() {
+            for t in commit.drain() {
+                *raw.entry(t).or_default() += 1;
+            }
+            first = true;
+            continue;
+        }
+        let f = if first { f.strip_prefix('\n').unwrap_or(f) } else { f };
+        first = false;
+        commit.insert(match f.split_once('/') {
+            Some((dir, _)) => (dir, true),
+            None => (f, false),
+        });
+    }
+    let mut shown: HashMap<String, usize> = HashMap::new();
+    for ((name, dir), n) in raw {
+        let slash = if dir { "/" } else { "" };
+        *shown.entry(format!("{}{slash}", clean(name))).or_default() += n;
+    }
+    let mut all: Vec<(String, usize)> = shown.into_iter().collect();
+    all.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    all.into_iter().map(|(t, _)| t).collect()
 }
 
 /// The three gh calls, started at once under one deadline; the first failure
