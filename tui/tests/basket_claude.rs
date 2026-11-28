@@ -22,7 +22,7 @@ impl Server {
     /// A pane running a copy of bash named `name`: tmux reports that name.
     fn pane(&self, name: &str) -> (String, Vec<String>) {
         let bin = self.dir.join(name);
-        std::fs::copy("/bin/bash", &bin).unwrap();
+        fake::copy_exec(std::path::Path::new("/bin/bash"), &bin);
         let cmd = format!("{} -c 'sleep 300; :'", bin.display());
         let d = self.dir.display().to_string();
         let pane = self.tmux(&["new-window", "-d", "-P", "-F", "#{pane_id}", "-c", &d, &cmd]);
@@ -205,6 +205,74 @@ fn settle_does_not_end_on_the_default_shells_c_stage() {
     let raw = String::from_utf8_lossy(&raw);
     let argv: Vec<&str> = raw.strip_suffix('\0').unwrap_or(&raw).split('\0').collect();
     assert_eq!(argv, want, "pane {pane}'s argv once settled");
+}
+
+/// #1339: a pane's copy of bash is written by a `cp` child, never by this process. A
+/// fork on any other thread holds a copy of every fd this process has open until it
+/// execs, a writer on the copy among them, and the pane's exec of the copy is then
+/// ETXTBSY (#541). That race cannot be held, so the row reads its cause: this thread's
+/// count of bytes written (wchar in /proc/thread-self/io) grows by less than the copy.
+#[test]
+#[cfg(target_os = "linux")]
+fn a_panes_bash_copy_is_written_by_a_cp_child() {
+    use std::os::unix::fs::PermissionsExt;
+    let io = "/proc/thread-self/io";
+    let wrote = || {
+        let s = std::fs::read_to_string(io).unwrap_or_else(|e| panic!("{io}: {e}"));
+        let Some(n) = s.lines().find_map(|l| l.strip_prefix("wchar:")) else {
+            panic!("no wchar in {io}: {s:?}");
+        };
+        n.trim().parse::<u64>().unwrap()
+    };
+    let dir = fake::Scratch::fresh(std::env::temp_dir().join(format!("cockpit-copy-{}", std::process::id())));
+    let (bash, bin) = (std::path::Path::new("/bin/bash"), dir.join("fish"));
+    let before = wrote();
+    fake::copy_exec(bash, &bin);
+    let grew = wrote() - before;
+    let len = std::fs::metadata(bash).unwrap().len();
+    assert!(grew < len, "this thread wrote {grew} bytes while it made a copy of {len}");
+    assert_eq!(std::fs::read(&bin).unwrap(), std::fs::read(bash).unwrap(), "the copy is bash");
+    let mode = std::fs::metadata(&bin).unwrap().permissions().mode();
+    assert_ne!(mode & 0o111, 0, "the copy runs: mode {mode:o}");
+}
+
+/// #1339: a pane whose process ended has no pane_pid, as tmux 3.8 gives none once the
+/// pane's pty is closed (format.c, format_cb_pane_pid). settle says so at once, rather
+/// than reading /proc//cmdline, which is the kernel's command line, for its whole wait.
+/// remain-on-exit keeps the dead pane, so its pid reads empty every time.
+#[test]
+fn settle_names_a_pane_whose_process_ended() {
+    let sock = format!("cockpit-ended-{}", std::process::id());
+    let dir = std::env::temp_dir().join(&sock);
+    std::fs::create_dir_all(&dir).unwrap();
+    // built first, so a start that fails or panics still removes the folder
+    let mut s = Server {
+        _server: fake::Server::new(&sock),
+        sock,
+        dir,
+    };
+    let ok = s._server.start(|c| {
+        c.args(["set-option", "-g", "remain-on-exit", "on", ";"])
+            .args(["new-session", "-d", "-c"])
+            .arg(&s.dir)
+            .arg("sleep 300");
+    });
+    if !ok {
+        eprintln!("SKIP: no tmux");
+        return;
+    }
+    let d = s.dir.display().to_string();
+    let pane = s.tmux(&["new-window", "-d", "-P", "-F", "#{pane_id}", "-c", &d, "exit 3"]);
+    let dead = || s.tmux(&["display-message", "-p", "-t", &pane, "#{pane_dead}"]) == "1";
+    for _ in 0..2000 {
+        if dead() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(dead(), "pane {pane} never ended");
+    let said = fake::settle_within(&s.sock, &pane, "bash", &[], 3);
+    assert_eq!(said, Err(format!("pane {pane} has no process (it ended)")));
 }
 
 /// #1061, #1066: this binary's rig row, started again with TERM and HUP ignored and blocked, as a

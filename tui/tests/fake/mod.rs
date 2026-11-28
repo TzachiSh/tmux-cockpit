@@ -59,6 +59,12 @@ pub fn write_exec(path: &Path, body: &str) {
     std::fs::rename(&new, path).unwrap();
 }
 
+/// A copy of `from` as an executable at `to`.
+#[allow(dead_code)]
+pub fn copy_exec(from: &Path, to: &Path) {
+    std::fs::copy(from, to).unwrap();
+}
+
 /// A test's own directory, removed when the guard drops: on a pass and on a
 /// failing assert's unwind alike, so a run leaves nothing in the temp dir
 /// (#543, #544). A crate that loads this module only for `write_exec` leaves it
@@ -1511,7 +1517,7 @@ pub fn held_pane(sock: &str, dir: &Path, name: &str) -> (String, Vec<String>) {
     let bin = dir.join(name);
     // a copy a pane already runs cannot be written over (ETXTBSY)
     if !bin.exists() {
-        std::fs::copy("/bin/bash", &bin).unwrap();
+        copy_exec(Path::new("/bin/bash"), &bin);
     }
     let hold = dir.join("held");
     write_exec(&hold, "#!/bin/sh\nsleep 0.3\nexec \"$@\"\n");
@@ -1540,7 +1546,7 @@ pub fn named_pane(sock: &str, dir: &Path, name: &str) -> (String, Vec<String>) {
     let bin = dir.join(name);
     // a copy a pane already runs cannot be written over (ETXTBSY)
     if !bin.exists() {
-        std::fs::copy("/bin/bash", &bin).unwrap();
+        copy_exec(Path::new("/bin/bash"), &bin);
     }
     let named = dir.join("named");
     let body = concat!(
