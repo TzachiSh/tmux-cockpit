@@ -48,12 +48,14 @@ The work account is never in the pool. The switch is a key by default
 
 - **A router or proxy in front of the API.** A local test rig showed one changes the
   identity the client sends even with every option off. Phoebis and CLIProxyAPI change it on
-  purpose: CLIProxyAPI signs the billing hash under its own policy (`claude_signing.go:274`)
-  and fills a missing `account_uuid` with values "derived from seed"
-  (`helps/claude_cli_identity_seed.go:79`). Its own tracker reports banned accounts
-  (router-for-me/CLIProxyAPI issue 2211).
+  purpose: CLIProxyAPI signs the billing hash under its own policy
+  (`internal/runtime/executor/claude_signing.go:274`) and fills a missing `account_uuid`
+  with values "derived from seed"
+  (`internal/runtime/executor/helps/claude_cli_identity_seed.go:79`). Its own tracker reports
+  banned accounts (router-for-me/CLIProxyAPI issue 2211).
 - **Polling Anthropic's usage endpoint.** It needs the account's token, and claude-swap
-  measured its limit at about 28 to 30 requests an hour per identity (`poll_policy.py`). The
+  measured its limit at about 28 to 30 requests an hour per identity
+  (`src/claude_swap/poll_policy.py`). The
   status line already carries the same figures for free.
 - **Swapping the live login file and refreshing tokens,** claude-swap's main mode. It
   handles tokens. One directory per login needs none of that.
@@ -61,15 +63,16 @@ The work account is never in the pool. The switch is a key by default
   That file can hold MCP secrets, and the panel already treats it as secret-bearing
   (`tui/src/panel/request.rs`). The setup docs say one login per directory instead. Two
   directories on one login can drift when the server rotates the refresh token (claude-swap
-  `session.py`).
-- **A backoff when no reset time is known** (CLIProxyAPI `conductor_cooldown.go`). It is a
-  second path when the first fails, which AGENTS.md rule 3 rules out, and the status line
-  always carries `resets_at`.
+  `src/claude_swap/session.py`).
+- **A backoff when no reset time is known** (CLIProxyAPI
+  `sdk/cliproxy/auth/conductor_cooldown.go`). It is a second path when the first fails, which
+  AGENTS.md check 3, No new fallback, rules out. Every reading carries `resets_at`, and a
+  pane with no `rate_limits` has no reading to back off from.
 - **A time-to-empty projection.** claude-swap keeps its own out of the UI for its wide error
-  bars (`pace.py`).
+  bars (`src/claude_swap/pace.py`).
 - **"Most room first" order.** A 5-hour window starts at the first message, so spreading
   work over all accounts starts every clock at once. Filling one account before the next
-  keeps the resets apart (CLIProxyAPI `selector.go:92-95`).
+  keeps the resets apart (CLIProxyAPI `sdk/cliproxy/auth/selector.go:92-95`).
 - **Switching a busy agent.** Restarting a running or asking pane loses the turn in flight,
   so no mode does it.
 - **Out of scope:** logging in for the owner, moving a conversation between the work account
@@ -77,18 +80,22 @@ The work account is never in the pool. The switch is a key by default
 
 ## The transcript gap PR 2 fixes
 
-Read from the code, not yet shown by a test.
+[Session identity](../states-and-hooks.md#session-identity) holds the rule: the hook checks a
+transcript against the projects tree of the `CLAUDE_CONFIG_DIR` claude runs with, and the
+board against its own environment's. What several accounts add, read from the code and not
+yet shown by a test:
 
-- The hook writes `@cockpit_transcript` only for a file under its own
-  `$CLAUDE_CONFIG_DIR/projects`, symlinks resolved (`scripts/agent-state`, the check after
-  `claude_cfg_dir`). The hook runs in the agent's environment, so a pane on `~/.claude-2`
-  passes.
-- The board checks the path again, against the projects directory of its own environment
-  (`projects_dir` and `under` in `tui/src/data/transcript.rs`). The board is started
-  once, under one account, so a pane on any other account fails there. Its tile loses the
-  doing line, the model, the context and the subagent tree.
-- Linking `~/.claude-2/projects` to `~/.claude/projects` makes both paths resolve to one
-  place, so linked personal accounts pass. The work account keeps its own history and still
-  fails.
+- The board is started once, under one account, so it refuses the transcript of a pane on
+  any other unlinked account. That tile loses the doing line, the model, the context and the
+  subagent tree. Linking `projects/` between the personal directories makes their paths
+  resolve to one place, so they pass. The work account keeps its own history and still fails.
+- With `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` on, the hooks see no `CLAUDE_CONFIG_DIR`
+  ([Agent view and background jobs](../states-and-hooks.md#agent-view-and-background-jobs)).
+  The hook then refuses an unlinked account's transcript too, and leaves `@cockpit_cfg`
+  unset, which reads as `~/.claude`.
 - PR 2 makes the board accept a transcript under the projects directory of any account in
-  `@cockpit_accounts`.
+  `@cockpit_accounts`. It must not name the default account for a pane whose hooks ran
+  under the scrub, since the hook could not see that pane's directory. #1601 carries this
+  case.
+
+Third-party code is cited at CLIProxyAPI commit dbe641f2 and claude-swap commit 9bc83a5c.
