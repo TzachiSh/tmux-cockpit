@@ -2701,6 +2701,21 @@ fn a_pane_on_an_unlisted_dir_is_named_nothing() {
     assert!(unnamed(&foot), "{foot}");
 }
 
+/// #1601: the account goes before the allowance, which goes before the model and the context.
+#[test]
+fn the_account_goes_before_the_allowance_on_the_card() {
+    let rl = rl(30, Some((42, R5)), Some((18, 3 * DAY + 2 * HOUR)));
+    let foot = acct_foot("acctrl", "p1=~/.claude p2=~/.claude-2", &[(21, &rl), (22, "$HOME/.claude-2")]);
+    assert!(foot.contains(" p2 · 5h 58% 2h10m · 7d 82% 3d · opus · 84k "), "{foot}");
+}
+
+/// #1601: a pane the hooks marked is named nothing either while no account is listed.
+#[test]
+fn a_marked_pane_is_named_nothing_with_the_option_unset() {
+    let foot = acct_foot("acctmarkunset", "", &[(23, "1")]);
+    assert!(unnamed(&foot), "{foot}");
+}
+
 /// #1601: no name with the option unset.
 #[test]
 fn no_account_is_named_with_the_option_unset() {

@@ -29081,10 +29081,12 @@ for pesite in pe_hook pe_mark; do
     is "$pesite: a dir ending in ; is recorded whole" "$PE/c;" "$(pe_cfg)"
     for pebad in "newline:$PENL" "tab:$PETAB"; do
         "$TMUX_REAL" -L "$PES" set-option -p -t "$PEP" @cockpit_cfg "$PE/old" \; \
-            set-option -gu @cockpit_poll_err
+            set-option -gu @cockpit_poll_err \; set-option -pu -t "$PEP" @cockpit_cfg_unseen
         $pesite CLAUDE_CONFIG_DIR="$PE/a${pebad#*:}b"
         is "$pesite: a dir with a ${pebad%%:*} in it is not recorded, and said" \
            "|$PEMSG" "$(pe_cfg)|$(pe_err)"
+        is "$pesite: ...a ${pebad%%:*} in the dir marks the pane, its dir not known (#1601)" \
+           "1" "$(pe_unseen)"
     done
     # CLAUDE_CODE_SUBPROCESS_ENV_SCRUB takes CLAUDE_CONFIG_DIR and XDG_STATE_HOME out of the hooks'
     # env (#1429, #1438). A hook that sees it on and no dir says so, only into an empty slot. A

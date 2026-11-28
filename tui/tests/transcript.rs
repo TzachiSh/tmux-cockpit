@@ -136,7 +136,11 @@ impl Rig {
         let exec = |name: &str, body: String| fake::write_exec(&bin.join(name), &body);
         exec(
             "tmux",
-            format!("#!/bin/sh\ncase \"$1\" in show-option) printf '%s\\n' '{sid}' ;; display-message) echo {pane_pid} ;; esac\n"),
+            format!(
+                "#!/bin/sh\ncase \"$1\" in show-option) case \"$*\" in *@cockpit_accounts*) cat {d}/accounts ;; \
+                 *) printf '%s\\n' '{sid}' ;; esac ;; display-message) echo {pane_pid} ;; esac\n",
+                d = dir.display()
+            ),
         );
         exec(
             "claude",
@@ -189,6 +193,19 @@ fn file_takes_cockpit_session_and_the_first_project_holding_it() {
     let want = r.session("a-proj", "sid-aaa");
     r.session("b-proj", "sid-aaa");
     assert_eq!(file("%1", ""), Some(want));
+}
+
+/// #1601: the info screen's reader finds a session under a listed account's projects dir too,
+/// after the board's own.
+#[test]
+fn file_reads_a_session_under_a_second_listed_account() {
+    let r = Rig::new("acct", "sid-aaa", 0);
+    std::fs::create_dir_all(r.dir.join(".claude-2/projects/a-proj")).unwrap();
+    std::fs::write(r.dir.join("accounts"), "p1=~/.claude p2=~/.claude-2").unwrap();
+    let want = r.dir.join(".claude-2/projects/a-proj/sid-aaa.jsonl");
+    std::fs::write(&want, "").unwrap();
+    let real = |p: PathBuf| std::fs::canonicalize(p).unwrap();
+    assert_eq!(file("%1", "").map(real), Some(real(want)));
 }
 
 #[test]
